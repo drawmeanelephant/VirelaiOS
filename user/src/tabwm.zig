@@ -2880,7 +2880,12 @@ pub const overlay_max_apps: usize = 16;
 pub const overlay_panel_w: u32 = 480;
 pub const overlay_panel_h: u32 = 470;
 pub const overlay_row_h: u32 = 22;
-pub const overlay_manifest_max: usize = 1024;
+/// M82a (#1768): the shared manifest read budget (the parser's own constant,
+/// the same one WND.BIN's god menu and the Go seat carry). This buffer used to
+/// be a private 1024 B, and a manifest that outgrew it lost its tail rows from
+/// this overlay with no error — the truncation happens in the read, not in the
+/// parse.
+pub const overlay_manifest_max: usize = sexiburger_menu.manifest_buf_max;
 
 var overlay_open: bool = false;
 var overlay_loaded: bool = false;

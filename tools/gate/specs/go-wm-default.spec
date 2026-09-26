@@ -244,6 +244,58 @@ vgate_assert 01 serial-contains 'wm: unregistered, shim resumed'
 vgate_assert 01 serial-absent '[EXC] parking:'
 vgate_assert 01 serial-absent 'exited status=139'
 
+# --- M82a (#1768): the manifest on the share is the versioned schema -------
+# This spec never summons the launcher, so the decode receipt go-dogfood
+# asserts is not observable here. What IS observable is the file the seat
+# read: the staged share's APPS.TXT, decoded on the host with the same rules
+# the Go parser uses. What this proves is deliberately narrow — the manifest
+# the seat boots on is the v2 file, its positional fields are intact, and the
+# dock set is the 8 rows the Zig mirrors' comments claim. The v2 tail's
+# SEMANTICS (argv/caps/opens) are host-tested in user/go/gotabwm/apps_test.go
+# and read live by go-dogfood; this is the share-side half.
+vgate_assert 01 python <<'PY'
+import os, sys
+
+share = os.environ["VG_SHARE"]
+text = open(os.path.join(share, "APPS.TXT"), encoding="utf-8").read()
+rows = [ln for ln in text.splitlines() if ln.strip() and not ln.startswith("#")]
+if len(rows) != 14:
+    sys.exit("manifest has %d rows, want 14" % len(rows))
+dock = 0
+v2 = 0
+for ln in rows:
+    f = [x.strip() for x in ln.split("|")]
+    if len(f) < 2 or not f[0] or not f[1]:
+        sys.exit("row lost its positional fields: %r" % ln)
+    if len(f) > 3 and f[3] == "dock=true":
+        dock += 1
+    if f[4:]:
+        # A v2 tail only exists past field 4, and field 4 is the dock flag in
+        # every reader. An undocked row that skipped it put its `v=` where the
+        # dock flag goes: the row still parsed, but its version was invisible
+        # and its tail was read as fields the schema does not define. This is
+        # the one shape error a v1 reader cannot report, so it is reported
+        # here.
+        if len(f) < 5 or f[3] not in ("dock=true", "dock=false"):
+            sys.exit("row has a v2 tail but not all four positional fields "
+                     "(field 4 must be dock=true|dock=false): %r" % ln)
+        if f[4].split("=", 1)[0] != "v":
+            sys.exit("a v2 row must declare its version first: %r" % ln)
+    for tail in f[4:]:
+        if not tail or "=" not in tail:
+            sys.exit("trailing field is not key=value: %r" % ln)
+        if tail.split("=", 1)[0] == "v":
+            if tail != "v=2":
+                sys.exit("unexpected row version: %r" % ln)
+            v2 += 1
+if dock != 8:
+    sys.exit("dock rows = %d, want 8 (the number the Zig mirrors claim)" % dock)
+if v2 == 0:
+    sys.exit("no row declares v=2: this is the v1 file, not the v2 schema")
+print("share APPS.TXT: %d rows, %d docked, %d rows at v=2, %d bytes"
+      % (len(rows), dock, v2, len(text.encode())))
+PY
+
 # The prompt capture happens before the first-boot GOSH tab's bounded single-
 # tab close. Count the green prompt glyphs to prove it reached scanout.
 vgate_assert 01 snapshot 'screen-after' <<'PY'

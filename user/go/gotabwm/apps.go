@@ -2,6 +2,16 @@
 // catalog (D2): no second hardcoded app list. Wire format matches the M13
 // line `NAME | Display Name | icon | dock=true`. Pure so the host tests pin
 // it without a guest.
+//
+// M82a (#1768) makes the manifest a VERSIONED schema without moving a byte
+// that already exists: the four positional fields above are still fields
+// 1-4, and everything v2 adds is a trailing `key=value` field. The trailing
+// keys are the ones every consumer used to re-derive (what argv the entry
+// runs with, what it declares it can do, what it can be handed) plus the
+// version that says which of them the row is speaking. The wire format is
+// documented where it lives — the header of image/apps.txt — and the
+// in-tree precedent for `key=value` tails is the WASM import contract's
+// WASM.TXT (`abi=2 | caps=file`, user/src/wasm.zig).
 package main
 
 // AppEntry is one catalog row. Bin is the executable name on the share.
@@ -10,12 +20,31 @@ type AppEntry struct {
 	Label string
 	Icon  byte
 	Dock  bool
+	// Version is the row's schema version. 0 is a v1 row: the four positional
+	// fields only, no trailing fields honoured.
+	Version int
+	// Args is `argv=` — the fixed arguments the entry is launched with,
+	// after the binary. Empty on a v1 row, and the launch is the binary
+	// alone.
+	Args []string
+	// Caps is `caps=` — declared capabilities, metadata only (M82a's
+	// non-goal: nothing here grants or gates power).
+	Caps []string
+	// Opens is `opens=` — what the app can be handed: an M81b mime type
+	// name (text image audio archive binary) or a URL scheme.
+	Opens []string
 }
 
 const (
 	appsMax      = 24
 	appsMaxBytes = 4096
 	appsPath     = "/host/APPS.TXT"
+
+	// appsMaxArgv is the kernel's max_exec_args (vi.ExecMaxArgs, ADR 0007
+	// slot 28): a row may not ask for more arguments than exec can carry.
+	// Extra ones are dropped rather than refused — the app still launches,
+	// and the alternative (hiding the row) is a worse answer to a typo.
+	appsMaxArgv = 8
 )
 
 // parseAppsTXT decodes the M13 manifest. `#` comments and blank lines are
@@ -59,7 +88,172 @@ func parseAppLine(line string) (AppEntry, bool) {
 	if len(fields) >= 4 {
 		dock = trimSpace(fields[3]) == "dock=true"
 	}
-	return AppEntry{Bin: bin, Label: label, Icon: icon, Dock: dock}, true
+	e := AppEntry{Bin: bin, Label: label, Icon: icon, Dock: dock}
+	// M82a: the trailing fields. A v1 line has no field 5, so this loop never
+	// runs, which is the whole compatibility claim — the four positional
+	// fields decode exactly as they did before the version existed.
+	for _, f := range splitTail(fields) {
+		key, val, ok := cutField(trimSpace(f))
+		if !ok {
+			continue // not a `key=value` tail: a v1 reader ignored it too
+		}
+		switch key {
+		case "v":
+			// The one field that must be legible: a row whose version is
+			// garbage is refused rather than guessed at, because a guessed
+			// version is a silently misread manifest.
+			n, ok := parseUint(val)
+			if !ok || n == 0 {
+				return AppEntry{}, false
+			}
+			e.Version = n
+		case "argv":
+			e.Args = splitSpace(val, appsMaxArgv)
+		case "caps":
+			e.Caps = splitComma(val)
+		case "opens":
+			e.Opens = splitComma(val)
+		default:
+			// A key this reader does not know is a NEWER row, not a bad
+			// one: the positional fields still say what to launch, and the
+			// receipt reports the version so an operator can see it.
+		}
+	}
+	return e, true
+}
+
+// splitTail is the fields past the four positional ones, or nothing at all
+// when the line stops at four (a v1 row). Written as a helper so the `4` is
+// written once: the positional count and the tail's first field are the same
+// number by definition, and an off-by-one here would panic on every v1 row.
+func splitTail(fields []string) []string {
+	if len(fields) <= 4 {
+		return nil
+	}
+	return fields[4:]
+}
+
+// cutField splits a trailing field at its first `=`. A field with no `=` is
+// not a key=value pair and the caller ignores it.
+func cutField(s string) (key, val string, ok bool) {
+	for i := 0; i < len(s); i++ {
+		if s[i] == '=' {
+			return s[:i], trimSpace(s[i+1:]), i > 0
+		}
+	}
+	return "", "", false
+}
+
+// splitSpace splits a whitespace-separated value list into at most max items.
+func splitSpace(s string, max int) []string {
+	var out []string
+	rest := s
+	for len(rest) > 0 && len(out) < max {
+		var tok string
+		tok, rest = cutToken(rest)
+		if tok != "" {
+			out = append(out, tok)
+		}
+	}
+	return out
+}
+
+// cutToken takes the next run of non-space bytes off s, consuming the
+// leading separator even when the run is empty. Skipping the separators FIRST
+// is what guarantees progress: a scanner that stops at a leading space
+// returns the whole string again and loops forever.
+func cutToken(s string) (tok, rest string) {
+	i := 0
+	for i < len(s) && (s[i] == ' ' || s[i] == '\t') {
+		i++
+	}
+	j := i
+	for j < len(s) && s[j] != ' ' && s[j] != '\t' {
+		j++
+	}
+	return s[i:j], s[j:]
+}
+
+// splitComma splits a comma-separated value list, dropping empties. An empty
+// list is nil, not a one-element list holding "".
+func splitComma(s string) []string {
+	var out []string
+	rest := s
+	for len(rest) > 0 {
+		var tok string
+		tok, rest = cutComma(rest)
+		if tok != "" {
+			out = append(out, tok)
+		}
+	}
+	return out
+}
+
+func cutComma(s string) (tok, rest string) {
+	i := 0
+	for i < len(s) && s[i] != ',' {
+		i++
+	}
+	if i == len(s) {
+		return s, ""
+	}
+	return s[:i], s[i+1:]
+}
+
+// parseUint decodes a short unsigned decimal — the `v=` value. No strconv in
+// the EL0 slice, and no negative or huge value is a version.
+func parseUint(s string) (int, bool) {
+	if s == "" || len(s) > 3 {
+		return 0, false
+	}
+	n := 0
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c < '0' || c > '9' {
+			return 0, false
+		}
+		n = n*10 + int(c-'0')
+	}
+	return n, true
+}
+
+// AppsSchemaVersion is the highest row version this build was written
+// against. A row may declare a HIGHER version: its positional fields still
+// launch and its unknown keys are ignored, but the decode receipt says so
+// rather than pretending the row was fully understood.
+const appsSchemaVersion = 2
+
+// DecodeSummary is the honest report of one manifest read: how many rows
+// decoded, the highest row version seen, and how many rows actually spoke
+// each trailing key. A key with a zero count is a key no row in this
+// manifest uses — stated, not hidden.
+type DecodeSummary struct {
+	Rows   int
+	Schema int
+	Argv   int
+	Caps   int
+	Opens  int
+}
+
+// SummarizeApps is the pure report over a decoded catalog. Pure so the host
+// test pins the receipt's numbers without a guest console.
+func SummarizeApps(catalog []AppEntry) DecodeSummary {
+	s := DecodeSummary{Rows: len(catalog)}
+	for _, e := range catalog {
+		if e.Version > s.Schema {
+			s.Schema = e.Version
+		}
+		if len(e.Args) > 0 {
+			s.Argv++
+		}
+		if len(e.Caps) > 0 {
+			s.Caps++
+		}
+		if len(e.Opens) > 0 {
+			s.Opens++
+		}
+	}
+	return s
 }
 
 func filterApps(catalog []AppEntry, q string) []int {

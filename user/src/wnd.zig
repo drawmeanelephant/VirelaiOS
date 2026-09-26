@@ -778,7 +778,10 @@ const mascot_qoi_bytes = @embedFile("lib/fixtures/qoi/mascot_24x24.qoi");
 // these static buffers, which outlive every populate (the registry is
 // rebuilt from them each summon). Lengths mirror action_registry caps
 // (label 32 / verb 24); bin names cap at 16 (`NOTEPAD.BIN` is 11).
-pub const god_menu_manifest_max: usize = 1024;
+/// M82a (#1768): the read budget is the manifest parser's, not a private copy
+/// of the number. A manifest longer than this buffer is cut at the last whole
+/// line, so the tail rows stop existing in this menu with no error at all.
+pub const god_menu_manifest_max: usize = sexiburger.manifest_buf_max;
 
 var god_menu_manifest_buf: [god_menu_manifest_max]u8 = undefined;
 var god_menu_app_verbs: [sexiburger.menu_apps_max][24]u8 = [_][24]u8{[_]u8{0} ** 24} ** sexiburger.menu_apps_max;
@@ -3166,7 +3169,10 @@ test "wnd: dq1 app verb stems and bin lookup" {
 }
 
 test "wnd: dq1 selection over a 22-entry manifest caps at 16, dock-first" {
-    // Mirror image/apps.txt shape: 8 dock + dup stems past the cutoff.
+    // Mirror image/apps.txt shape: 8 dock + dup stems past the cutoff. The
+    // 8 is pinned against the REAL file by sexiburger.zig's manifest tests
+    // (which a gate runs); this fixture stays synthetic on purpose, because
+    // it is about the cap and the duplicate stems, not about the catalog.
     var parsed: [22]sexiburger.MenuApp = undefined;
     const names = [_][]const u8{ "GOCALC.ELF", "NOTEPAD.BIN", "TOP.BIN", "KEYTEST.BIN", "TYPE.BIN", "DIR.BIN", "FETCH.BIN", "CHAT.BIN", "FILE.BIN", "SETTINGS.BIN", "EDIT.BIN", "SYSMON.BIN", "HTTPD.BIN", "DYNAPP.ELF", "GOCALC.ELF", "NOTEPAD.ELF", "FILE.ELF", "DESKTOP.ELF", "ZC.BIN", "SEXIBURG.BIN", "VIEW.BIN", "SEXITEST.BIN" };
     const descs = [_][]const u8{ "Calc", "Editor", "Tasks", "Keys", "Type", "Dir", "Fetch", "Chat", "Files", "Settings", "Edit", "Sysmon", "Http", "Dyn", "Calc2", "Edit2", "Files2", "Desk", "Zc", "Sexi", "View", "Stest" };

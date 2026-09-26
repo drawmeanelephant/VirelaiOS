@@ -1,17 +1,44 @@
-# VirelaiOS app manifest (M69c2 #1535). NAME | Display Name | icon | dock=true
-# Shipping EL0 apps only. The Go seat's daily set is docked. TABWM.BIN is
-# the named Zig fallback (ADR 0034), not a default dock target.
+# VirelaiOS app manifest, schema v2 (M82a #1768). Shipping EL0 apps only; the
+# Go seat's daily set is docked. TABWM.BIN is the Zig fallback (ADR 0034), not
+# a default dock target.
+#
+#   NAME | Display Name | icon | dock=true | v=2 | argv= | caps= | opens=
+#
+# Fields 1-4 are the v1 shape every reader already parses. The trailing
+# key=value fields are ADDITIVE: order-insensitive, unknown keys ignored, and a
+# v1 reader that stops at field 4 is not wrong. No `v=` means v1 and no
+# trailing fields.
+#   v=     the row's schema version; only a v2 row is asked for the rest. A
+#          row with a tail MUST carry all four positional fields: field 4 is
+#          the dock flag in every reader (v1 included), so an undocked v2 row
+#          writes `dock=false` rather than leaving the field empty.
+#   argv=  fixed arguments after the binary, space separated (the kernel's
+#          exec takes at most 8, so 8 is the ceiling here too). v1: none.
+#   caps=  declared capabilities, comma separated: file window audio timer
+#          memory process debug net term. The first seven are the WASM import
+#          contract's Cap names (user/src/wasm.zig) so one word means one thing
+#          across manifests. DECLARATIVE: nothing grants or gates power from
+#          this field, by card.
+#   opens= what the app can be handed: an M81b mime type (text image audio
+#          archive binary) or a URL scheme (http https; M81c #1763 dispatches
+#          those). Naming a type is not a second opinion about a file.
+#
+# BUDGET: every reader buffers 4096 B — sexiburger.manifest_buf_max, which
+# wnd.zig's god_menu_manifest_max, tabwm.zig's overlay_manifest_max and the Go
+# seat's appsMaxBytes all carry — and a file at or over that is truncated at
+# the last whole line, silently dropping the tail rows from a seat's menu. A
+# host test in user/src/lib/sexiburger.zig pins this file under it.
 GOCALC.ELF | 64-bit Calc | c | dock=true
-NOTE.ELF | Text Editor | n | dock=true
-GOEDIT.ELF | Code Editor | e | dock=true
-GOFILES.ELF | Files | f | dock=true
+NOTE.ELF | Text Editor | n | dock=true | v=2 | opens=text
+GOEDIT.ELF | Code Editor | e | dock=true | v=2 | opens=text,binary
+GOFILES.ELF | Files | f | dock=true | v=2 | caps=file,window
 GOTERM.ELF | Terminal | t | dock=true
-WEB.ELF | Web | w | dock=true
+WEB.ELF | Web | w | dock=true | v=2 | caps=net | opens=http,https
 PULSE.ELF | Pulse | u | dock=true
-GOSH.ELF | Shell | s
+GOSH.ELF | Shell | s | dock=false | v=2 | caps=file,process,term
 GOHELP.ELF | Help | h
 GOTOP.ELF | Top | p | dock=true
-GOSET.ELF | Settings | g
-GOVIEW.ELF | Image Viewer | v
-ZC.BIN | Zig Compiler | z
+GOSET.ELF | Settings | g | dock=false | v=2 | caps=file
+GOVIEW.ELF | Image Viewer | v | dock=false | v=2 | opens=image
+ZC.BIN | Zig Compiler | z | dock=false | v=2 | caps=file,memory,process
 TABWM.BIN | Tabbed Desktop | m
