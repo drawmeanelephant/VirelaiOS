@@ -615,18 +615,39 @@ func (g *goshHost) SecretNames() ([]string, bool) {
 	return out, true
 }
 
+// WriteFile is the shell's whole write hook, and it used to be the last
+// in-place writer in the Go tree (M81e2 #1787): open(ModeWrite|ModeCreate
+// [|ModeAppend]) then FileWriteAll, no truncate barrier, no rename. Two
+// callers with DIFFERENT semantics share this one seam, so the policy
+// decision lives in vi.WriteFilePublish rather than here:
+//
+//   - REPLACE (appendMode false) is the history ring save (shlib.SaveHistory
+//     trimming the ring back to historyMax) and shell redirection `> file`.
+//     Both hold the complete new body in memory, and both mean "these bytes
+//     replace what was there" — app state, so it publishes crash-safe.
+//   - APPEND (appendMode true) is the history one-line append and `>>`. It
+//     is not a rewrite, so it stays an append; vi.WriteFilePublish owns that
+//     reason.
+//
+// Redirection `> file` is therefore NOT exempt from the safe publish. The
+// objection is real but does not survive contact with this shell: the
+// redirect buffer is capped (shlib maxRedirectBytes) and fully materialized
+// before this call, so there is no streaming case where a reader must watch
+// the file grow; and the observable contract is unchanged — an empty body
+// still yields an empty file, a missing path is still created, and a write
+// that fails now leaves the PREVIOUS contents rather than destroying them.
+// The one cost, stated plainly: a path within one byte of the kernel's
+// 64-byte cap cannot be published at all (vi.WriteFileSafe's `~` sibling
+// would exceed it) and now fails honestly instead of writing. go-sh pins
+// both halves.
 func (g *goshHost) WriteFile(path string, b []byte, appendMode bool) error {
-	flags := vi.ModeWrite | vi.ModeCreate
-	if appendMode {
-		flags |= vi.ModeAppend
-	}
-	h, r := vi.FileOpen(path, flags)
-	if r < 0 {
-		return shlib.ErrNotFound
-	}
-	defer vi.FileClose(uint32(h))
-	written, r := vi.FileWriteAll(uint32(h), b)
-	if r < 0 || written != len(b) {
+	if r := vi.WriteFilePublish(path, b, appendMode); r < 0 {
+		// A refused OPEN is a path problem (gone, denied, too long); a
+		// refused WRITE is the disk's. Folding both into ErrNotFound is
+		// what made this hook lie, so keep them apart.
+		if r == -vi.ErrEACCES || r == -vi.ErrENOENT || r == -vi.ErrENAMETOOLONG {
+			return shlib.ErrNotFound
+		}
 		return shlib.ErrWriteFailed
 	}
 	return nil

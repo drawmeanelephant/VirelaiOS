@@ -34,6 +34,24 @@ dui close 2
 echo rx-gosh-ok
 EOF
 
+# M81e2 (#1787) added two lines to the startup script below, and they are
+# the redirect decision pinned on the share. `>` is now a crash-safe
+# publish, so `echo shrunk-body > /host/GOOSHSHRINK.TXT` runs against a body
+# the setup hook seeded LONG (800 B) and must leave EXACTLY the 13 B new body
+# -- the share-equals assert is byte-equal, so a surviving tail fails rather
+# than passes. `echo first-appended >> /host/GOSHVARS.TXT` then appends to
+# the redirect above, so GOSHVARS.TXT reads back as body-plus-one-line; an
+# append that replaced would show only the appended line. Neither may leave
+# a `~` temp beside it (the last python assert).
+#
+# NOTE for the next editor: do NOT put comments inside this heredoc. The
+# startup block is a GUEST script run by shlib, where a leading `#` is a
+# parse-level no-op but is still submitted as a line -- so it lands in the
+# history ring and shifts the Up-arrow recall the typed-chord choreography
+# below depends on. (Observed 2026-09-26: six `#` lines here made run 01
+# recall the wrong entries and the `echo az` / `echo ay` markers never
+# printed. Comments belong in this prose, above the heredoc.)
+#
 # The startup contract: STARTUP.SH (then PROFILE.SH, absent here) runs
 # before the first prompt. `exec` inside GOSH is the monitor vocabulary --
 # it runs the named ELF; the -c child form is GOSH's own headless mode
@@ -52,6 +70,8 @@ vgate_file STARTUP.SH <<'EOF'
 echo gosh-startup-ran
 set GREET=hello-vars
 echo V=$GREET > /host/GOSHVARS.TXT
+echo shrunk-body > /host/GOOSHSHRINK.TXT
+echo first-appended >> /host/GOSHVARS.TXT
 echo alpha-beta | grep alpha > /host/GOSHPIPE.TXT
 exec GOSH.ELF -c "exit 7"
 echo rc=$? > /host/GOSHRC.TXT
@@ -71,6 +91,12 @@ if not os.path.exists(src):
              "bash tools/go/build-gosh.sh")
 shutil.copy(src, os.path.join(share, "GOSH.ELF"))
 shutil.copy(os.path.join(rd, "STARTUP.SH"), os.path.join(share, "STARTUP.SH"))
+# M81e2 (#1787): seed the shrink target LONG, so STARTUP.SH's
+# `echo shrunk-body > /host/GOOSHSHRINK.TXT` is a replace that SHRINKS. An
+# in-place writer that opens without truncating leaves the tail of this body
+# behind, and share-equals below is a byte-EQUAL check, so it would fail.
+with open(os.path.join(share, "GOOSHSHRINK.TXT"), "w") as fh:
+    fh.write("PREEXISTING-LONG-BODY\n" * 40)
 print("staged GOSH.ELF (%d bytes) + STARTUP.SH into share" %
       os.path.getsize(os.path.join(share, "GOSH.ELF")))
 PY
@@ -149,7 +175,31 @@ vgate_assert 01 serial-absent 'exited status=139'
 # The scripting subset's byte proof ON THE HOST, byte-EQUAL rather than
 # contains -- `rc=7` would also have matched `rc=70`. The share files carry
 # the trailing newline the typed echo wrote, hence the $'...' literals.
-vgate_assert 01 share-equals GOSHVARS.TXT $'V=hello-vars\n'
+# `>>` appended AFTER the `>` redirect above, so the file is the redirect's
+# body plus one appended line -- an append that replaced instead would read
+# back as just `first-appended`.
+vgate_assert 01 share-equals GOSHVARS.TXT $'V=hello-vars\nfirst-appended\n'
 vgate_assert 01 share-equals GOSHPIPE.TXT $'alpha-beta\n'
 vgate_assert 01 share-equals GOSHRC.TXT $'rc=7\n'
 vgate_assert 01 share-equals GOSHJOB.TXT $'jobrc=0\n'
+# M81e2 (#1787): the redirect decision, pinned on the share. `>` published
+# crash-safe, so over a 800 B pre-existing body the file must read back as
+# EXACTLY the 13 B new body -- byte-equal, so a surviving tail fails rather
+# than passes. The sacrificial temp must not be there either: a share holding
+# an orphan is a share a human has to clean by hand.
+vgate_assert 01 share-equals GOOSHSHRINK.TXT $'shrunk-body\n'
+vgate_assert 01 python <<'PY'
+import os, sys
+share = os.environ.get("VG_SHARE") or os.path.join(os.environ["RUN_DIR"], "share")
+# Scoped to the paths THIS script redirects to, not a blanket scan of the
+# share: the safe publish writes path+"~", so an orphan beside any of these
+# is a publish that did not finish. A share-wide scan would also assert other
+# components' publish hygiene, which is not what this run is here to prove.
+stray = [n for n in sorted(os.listdir(share))
+         if n.endswith("~") and n[:-1] in
+         ("GOOSHSHRINK.TXT", "GOSHVARS.TXT", "GOSHPIPE.TXT", "GOSHRC.TXT",
+          "GOSHJOB.TXT")]
+if stray:
+    sys.exit("orphan publish temp(s) beside a redirect target: " +
+             ", ".join(stray) + " - the publish did not complete")
+PY
