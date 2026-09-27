@@ -13,13 +13,15 @@
 # virfaulthandler arms sigpanic on the faulting stack (recover() works).
 #
 # HOST PREREQUISITE (not hermetic — see tools/go/README.md):
-# `just go-toolchain` must have produced .build/go/GOPANIC.ELF.
+# `just go-toolchain` must have produced .build/go/GOPANIC.ELF, and
+# `bash tools/go/build-goself.sh` must have produced .build/go/GOSELF.ELF.
 #
 # exec-order: assert-proven -- --script2-after waits on the program's
-# `go-panic done` line, then script2's echo ends the run; asserts read
-# the program's own phase lines, so a green run always proves it ran.
+# `go-panic done` line, then script2 launches GOSELF in its deliberate panic
+# fixture mode. Its recovery publishes a receipt before printing the marker;
+# the host byte-compares that share file before the final echo ends the run.
 
-vgate_name go-panic "issue #1228: GOOS=virelai fault delivery to sigpanic on VZ"
+vgate_name go-panic "issue #1228 + #1772: GOOS=virelai panic recovery and per-app crash receipt on VZ"
 vgate_share seed
 vgate_runner_flags -Xswiftc -DSPIKE
 
@@ -29,7 +31,20 @@ EOF
 
 vgate_file script2.txt <<'EOF'
 syscalls
+exec GOSELF.ELF --panic-receipt-fixture
+EOF
+
+vgate_file script3.txt <<'EOF'
 echo gopanic-held-window
+EOF
+
+vgate_file crash-receipt.expected <<'EOF'
+app=GOSELF.ELF
+outcome=panic: M82e fixture panic
+last-log:
+started
+fixture: before panic
+panic: M82e fixture panic
 EOF
 
 vgate_setup_python <<'PY'
@@ -43,18 +58,28 @@ if not os.path.exists(src):
 shutil.copy(src, os.path.join(share, "GOPANIC.ELF"))
 print("staged GOPANIC.ELF into share (%d bytes)" %
       os.path.getsize(os.path.join(share, "GOPANIC.ELF")))
+src = os.path.join(".build", "go", "GOSELF.ELF")
+if not os.path.exists(src):
+    sys.exit("GOSELF.ELF missing (expected " + src + ") - "
+             "build it first: bash tools/go/build-goself.sh")
+shutil.copy(src, os.path.join(share, "GOSELF.ELF"))
+print("staged GOSELF.ELF into share (%d bytes)" %
+      os.path.getsize(os.path.join(share, "GOSELF.ELF")))
 PY
 
-vgate_run 01 -- --script '$RUN_DIR/script.txt' --script2 '$RUN_DIR/script2.txt' --script2-after 'go-panic done' --script-expect 'gopanic-held-window' --timeout 120
+vgate_run 01 -- --script '$RUN_DIR/script.txt' --script2 '$RUN_DIR/script2.txt' --script2-after 'go-panic done' --script3 '$RUN_DIR/script3.txt' --script3-after 'goself: crash receipt written' --script-expect 'gopanic-held-window' --timeout 120
 
 vgate_assert 01 serial-contains 'exec: loaded GOPANIC.ELF'
+vgate_assert 01 serial-contains 'exec: loaded GOSELF.ELF'
 vgate_assert 01 serial-contains 'go-panic procs=2'
 vgate_assert 01 serial-contains 'go-panic main recovered=runtime error: invalid memory address'
 vgate_assert 01 serial-contains 'go-panic worker recovered=runtime error: invalid memory address'
 vgate_assert 01 serial-contains 'go-panic frames sigpanic=1 probe=1'
 vgate_assert 01 serial-contains 'go-panic done'
+vgate_assert 01 serial-contains 'goself: crash receipt written'
 vgate_assert 01 serial-absent '[EXC] parking:'
 vgate_assert 01 serial-absent 'exited status=139'
+vgate_assert 01 share-equals CRASH/GOSELF.ELF.TXT crash-receipt.expected
 
 vgate_assert 01 python <<'PY'
 import os, re, sys

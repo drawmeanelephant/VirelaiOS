@@ -49,6 +49,31 @@ type app struct {
 }
 
 func main() {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			outcome := "panic"
+			switch value := recovered.(type) {
+			case string:
+				outcome += ": " + value
+			case error:
+				outcome += ": " + value.Error()
+			}
+			_ = vi.Log(appName, outcome)
+			if rc := vi.WriteCrashReceipt(appName, outcome); rc < 0 {
+				vi.ConsoleLine("goself: crash receipt failed rc=" + vi.Itoa64(rc))
+			} else {
+				vi.ConsoleLine("goself: crash receipt written")
+			}
+			vi.Exit(2)
+		}
+	}()
+	_ = vi.Log(appName, "started")
+	for _, arg := range vi.Args() {
+		if arg == "--panic-receipt-fixture" {
+			_ = vi.Log(appName, "fixture: before panic")
+			panic("M82e fixture panic")
+		}
+	}
 	ta := tabapp.Init(tabapp.Config{
 		Name:  appName,
 		Title: appTitle,

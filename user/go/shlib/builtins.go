@@ -48,7 +48,7 @@ func init() {
 		"open": bOpen, "env": bEnv, "printenv": bPrintenv, "set": bSet, "unset": bUnset,
 		"export": bExport, "read": bRead, "jobs": bJobs, "fg": bFg,
 		"history": bHistory, "help": bHelp, "exit": bExit, "monitor": bMonitor,
-		"sleep": bSleep, "clear": bClear,
+		"sleep": bSleep, "clear": bClear, "log": bLog,
 		// M50 trust surface (ADR 0024): identity, owner-only chmod, and the
 		// secret store's names. Same verbs and the same output text as the
 		// Zig shell, so the M50 gates retarget without weakening an assert.
@@ -475,6 +475,45 @@ func bHistory(c *cmdCtx) int {
 	return 0
 }
 
+// bLog reads one per-app log ring, or all rings in stable app-name order.
+func bLog(c *cmdCtx) int {
+	reader, ok := c.sh.host.(interface {
+		AppLogNames() []string
+		ReadAppLog(app string) ([]byte, error)
+	})
+	if !ok {
+		c.out([]byte("log: unavailable\n"))
+		return 1
+	}
+	if len(c.args) > 1 {
+		c.out([]byte("gosh: log [APP]\n"))
+		return 2
+	}
+	if len(c.args) == 1 {
+		body, err := reader.ReadAppLog(c.args[0])
+		if err != nil {
+			c.out([]byte("log: " + c.args[0] + ": not found\n"))
+			return 1
+		}
+		c.out(body)
+		return 0
+	}
+	names := reader.AppLogNames()
+	if len(names) == 0 {
+		c.out([]byte("log: (no app logs)\n"))
+		return 0
+	}
+	for _, app := range names {
+		body, err := reader.ReadAppLog(app)
+		if err != nil {
+			continue
+		}
+		c.out([]byte(app + ":\n"))
+		c.out(body)
+	}
+	return 0
+}
+
 // --- ADR 0008 D1 discovery for the guest verbs (#1538) -------------------
 //
 // The milestone-eight ADR pinned a grouped catalog, `help <cmd>` and topic
@@ -518,6 +557,7 @@ var helpCatalog = map[string]helpEntry{
 	"exit":    {group: "shell", usage: "exit [STATUS]", blurb: "leave GOSH with STATUS (the last status when omitted)"},
 	"help":    {group: "shell", usage: "help [CMD|GROUP]", blurb: "the grouped catalog, or one verb's usage and description"},
 	"history": {group: "shell", usage: "history", blurb: "list this session's submitted lines, oldest first"},
+	"log":     {group: "shell", usage: "log [APP]", blurb: "read one app's bounded log ring, or all app rings"},
 	"monitor": {group: "shell", usage: "monitor", blurb: "hand the console back to the kernel monitor"},
 
 	// files

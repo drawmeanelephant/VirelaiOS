@@ -3,6 +3,7 @@ package shlib
 import (
 	"bytes"
 	"fmt"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -36,6 +37,7 @@ type fakeHost struct {
 	chdirErr       map[string]string // path -> errno name for a denied cd
 	chdirPlain     bool              // Chdir fails with a plain (no-errno) error
 	writeErr       bool              // every WriteFile refuses (M69f1 #1537 D3)
+	appLogs        map[string][]byte
 }
 
 func newFakeHost() *fakeHost {
@@ -69,6 +71,20 @@ func (f *fakeHost) SecretNames() ([]string, bool) {
 		return nil, false
 	}
 	return f.secNames, true
+}
+func (f *fakeHost) AppLogNames() []string {
+	names := make([]string, 0, len(f.appLogs))
+	for name := range f.appLogs {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+func (f *fakeHost) ReadAppLog(app string) ([]byte, error) {
+	if body, ok := f.appLogs[app]; ok {
+		return body, nil
+	}
+	return nil, ErrNotFound
 }
 
 func (f *fakeHost) Marker(line string)           { f.markers = append(f.markers, line) }
@@ -882,6 +898,25 @@ func TestHelpVerbPage(t *testing.T) {
 	}
 	if got := h.outString(); !strings.Contains(got, "usage: grep [-i] PATTERN [FILE...]\n") {
 		t.Fatalf("help grep = %q, missing the tool usage line", got)
+	}
+}
+
+func TestLogBuiltinReadsOneAndAllAppRings(t *testing.T) {
+	h := newFakeHost()
+	h.appLogs = map[string][]byte{
+		"APPB.ELF": []byte("second app\n"),
+		"APPA.ELF": []byte("first app\n"),
+	}
+	run, _ := session(h)
+	if st := run("log APPA.ELF"); st != 0 || h.outString() != "first app\n" {
+		t.Fatalf("log one status=%d output=%q", st, h.outString())
+	}
+	h.out = nil
+	if st := run("log"); st != 0 {
+		t.Fatalf("log all status=%d", st)
+	}
+	if got, want := h.outString(), "APPA.ELF:\nfirst app\nAPPB.ELF:\nsecond app\n"; got != want {
+		t.Fatalf("log all = %q, want %q", got, want)
 	}
 }
 

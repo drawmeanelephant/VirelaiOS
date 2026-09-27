@@ -211,8 +211,56 @@ case trash pass
 case file-write-publish pass
 case mime pass
 case file-snapshot pass
+case app-logs pass
 case window pass
-summary cases=19 failed=0
+summary cases=20 failed=0
+EOF
+vgate_file app-log.expected <<'EOF'
+line-04
+line-05
+line-06
+line-07
+line-08
+line-09
+line-10
+line-11
+line-12
+line-13
+line-14
+line-15
+line-16
+line-17
+line-18
+line-19
+line-20
+line-21
+line-22
+line-23
+line-24
+line-25
+line-26
+line-27
+line-28
+line-29
+line-30
+line-31
+line-32
+line-33
+line-34
+line-35
+EOF
+vgate_file app-log-receipt.expected <<'EOF'
+app=M82E.TEST
+outcome=panic: fixture failure
+last-log:
+line-28
+line-29
+line-30
+line-31
+line-32
+line-33
+line-34
+line-35
 EOF
 vgate_file trash.expected <<'EOF'
 M81a trash fixture
@@ -302,6 +350,7 @@ vgate_assert 01 serial-contains 'selftest: case file-fsync pass'
 vgate_assert 01 serial-contains 'selftest: case file-errors pass'
 vgate_assert 01 serial-contains 'selftest: case trash pass'
 vgate_assert 01 serial-contains 'selftest: case file-snapshot pass'
+vgate_assert 01 serial-contains 'selftest: case app-logs pass'
 vgate_assert 01 serial-contains 'selftest: case window pass'
 # The files were written BEFORE the summary (ADR 0031 ordering).
 vgate_assert 01 serial-contains 'selftest: report /host/SELFTEST/REPORT.txt n='
@@ -328,7 +377,9 @@ vgate_assert 01 share-equals SELFTEST/IN/fixture.txt intake-fixture.expected
 # than the python's byte-exact summary.txt compare below, and kept deliberately
 # as the kind's pilot in a real gate.
 vgate_assert 01 share-equals SELFTEST/OUT/trash.copy trash.expected
-vgate_assert 01 share-contains SELFTEST/OUT/summary.txt 'summary cases=19 failed=0'
+vgate_assert 01 share-equals SELFTEST/OUT/app-log.copy app-log.expected
+vgate_assert 01 share-equals CRASH/M82E.TEST.TXT app-log-receipt.expected
+vgate_assert 01 share-contains SELFTEST/OUT/summary.txt 'summary cases=20 failed=0'
 
 # The load-bearing assert: the copies and the receipts on the host's own
 # filesystem must be byte-exact, the share's directory state must agree with
@@ -405,7 +456,7 @@ win_open_rect = (32, 32, 640, 400)
 win_viewport_w = 1100
 win_viewport_h = 720
 
-want_summary = b"summary cases=19 failed=0\n"
+want_summary = b"summary cases=20 failed=0\n"
 want_hello = b"goself smoke\n"
 want_intake_receipt = b"case intake path=IN/fixture.txt bytes=25 match=yes\n"
 want_altered_receipt = b"case intake-altered path=IN/altered.txt bytes=25 differs=yes\n"

@@ -129,6 +129,58 @@ func (f *fakeFS) syscalls() *syscalls {
 			}
 			return append([]byte(nil), body...), int64(min(len(body), max))
 		},
+		logWrite: func(app, line string) int64 {
+			path := vi.AppLogPath(app)
+			if path == "" {
+				return -vi.ErrEINVAL
+			}
+			line = strings.ReplaceAll(strings.ReplaceAll(line, "\r", " "), "\n", " ")
+			if len(line) > vi.AppLogMaxLine {
+				line = line[:vi.AppLogMaxLine]
+			}
+			rows := strings.Split(strings.TrimSuffix(string(f.files[path]), "\n"), "\n")
+			if len(rows) == 1 && rows[0] == "" {
+				rows = nil
+			}
+			rows = append(rows, line)
+			if len(rows) > vi.AppLogMaxLines {
+				rows = rows[len(rows)-vi.AppLogMaxLines:]
+			}
+			f.files[path] = []byte(strings.Join(rows, "\n") + "\n")
+			return 0
+		},
+		logRead: func(app string) ([]byte, int64) {
+			path := vi.AppLogPath(app)
+			body, ok := f.files[path]
+			if path == "" {
+				return nil, -vi.ErrEINVAL
+			}
+			if !ok {
+				return nil, vi.ErrFileNotFound
+			}
+			return append([]byte(nil), body...), int64(len(body))
+		},
+		crashReceipt: func(app, outcome string) int64 {
+			path := vi.CrashReceiptPath(app)
+			if path == "" {
+				return -vi.ErrEINVAL
+			}
+			outcome = strings.ReplaceAll(strings.ReplaceAll(outcome, "\r", " "), "\n", " ")
+			log := f.files[vi.AppLogPath(app)]
+			rows := strings.Split(strings.TrimSuffix(string(log), "\n"), "\n")
+			if len(rows) == 1 && rows[0] == "" {
+				rows = nil
+			}
+			if len(rows) > 8 {
+				rows = rows[len(rows)-8:]
+			}
+			receipt := "app=" + app + "\noutcome=" + outcome + "\nlast-log:\n"
+			if len(rows) > 0 {
+				receipt += strings.Join(rows, "\n") + "\n"
+			}
+			f.files[path] = []byte(receipt)
+			return 0
+		},
 		trashDelete: func(path string) (string, int64) {
 			body, ok := f.files[path]
 			if !ok {
@@ -442,7 +494,7 @@ func resultFor(t *testing.T, rs []result, id string) result {
 	return result{}
 }
 
-// wantReport is the byte-exact report with the M81a trash case: the M61f `share-equals`
+// wantReport is the byte-exact report with the M82e app-log case: the M61f `share-equals`
 // fixture shape, and the report the go-selftest spec requires on the share.
 // Adding a case updates this and the spec together.
 const wantReport = "case intake pass\ncase intake-altered pass\n" +
@@ -452,8 +504,8 @@ const wantReport = "case intake pass\ncase intake-altered pass\n" +
 	"case file-append pass\ncase file-bigwrite pass\ncase file-clamp pass\n" +
 	"case file-fsync pass\ncase file-errors pass\n" +
 	"case file-write-safe pass\ncase trash pass\ncase file-write-publish pass\n" +
-	"case mime pass\ncase file-snapshot pass\ncase window pass\n" +
-	"summary cases=19 failed=0\n"
+	"case mime pass\ncase file-snapshot pass\ncase app-logs pass\ncase window pass\n" +
+	"summary cases=20 failed=0\n"
 
 // seedFixtures is the host's half of the intake contract: IN/fixture.txt holds
 // the canonical body, IN/altered.txt the altered one (ADR 0031 D2), and the
@@ -474,8 +526,8 @@ func TestRunCasesAllPassAndReportBytes(t *testing.T) {
 	seedFixtures(fs)
 	rs := runCases(fs.syscalls())
 
-	if len(rs) != 19 {
-		t.Fatalf("cases = %d, want 19", len(rs))
+	if len(rs) != 20 {
+		t.Fatalf("cases = %d, want 20", len(rs))
 	}
 	for _, r := range rs {
 		if !r.ok {
@@ -485,7 +537,7 @@ func TestRunCasesAllPassAndReportBytes(t *testing.T) {
 	if got := string(renderReport(rs)); got != wantReport {
 		t.Fatalf("report bytes:\n got %q\nwant %q", got, wantReport)
 	}
-	if got := string(renderSummary(rs)); got != "summary cases=19 failed=0\n" {
+	if got := string(renderSummary(rs)); got != "summary cases=20 failed=0\n" {
 		t.Fatalf("summary = %q", got)
 	}
 	if got := fs.files[helloPath]; !bytes.Equal(got, []byte(helloPayload)) {
@@ -567,7 +619,7 @@ func TestIntakeFailsOnAMutatedSeed(t *testing.T) {
 	if !strings.Contains(report, "case intake fail fixture mismatch") {
 		t.Fatalf("report lacks the intake failure: %q", report)
 	}
-	if !strings.Contains(report, "summary cases=19 failed=2") {
+	if !strings.Contains(report, "summary cases=20 failed=2") {
 		t.Fatalf("report summary wrong: %q", report)
 	}
 	if got := fs.files[intakeCopy]; !bytes.Equal(got, []byte(intakeAltered)) {
@@ -600,10 +652,10 @@ func TestIntakeFailsWhenTheFixtureIsMissing(t *testing.T) {
 	if got := string(fs.files[alteredReceipt]); !strings.Contains(got, "bytes=0 err=open rc=-6") {
 		t.Fatalf("altered receipt = %q", got)
 	}
-	// The report is still complete: 14 cases, the 2 intake ones failed (the
+	// The report is still complete: 20 cases, the 2 intake ones failed (the
 	// clock, file and window cases do not read IN/).
 	report := string(renderReport(rs))
-	if !strings.Contains(report, "summary cases=19 failed=2") {
+	if !strings.Contains(report, "summary cases=20 failed=2") {
 		t.Fatalf("report summary wrong: %q", report)
 	}
 	if lines := strings.Count(report, "\n"); lines != len(rs)+1 {
@@ -801,7 +853,7 @@ func TestFileWriteCaseFailsWhenTheWriteIsRefused(t *testing.T) {
 	if !strings.Contains(report, "case file-write fail ") {
 		t.Fatalf("report lacks the fail detail: %q", report)
 	}
-	if !strings.Contains(report, "summary cases=19 failed=1") {
+	if !strings.Contains(report, "summary cases=20 failed=1") {
 		t.Fatalf("report summary wrong: %q", report)
 	}
 }

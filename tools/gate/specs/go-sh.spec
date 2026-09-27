@@ -55,6 +55,11 @@ dui close 2
 echo rx-gosh-open-https-ok
 EOF
 
+vgate_file log-help.expected <<'EOF'
+log — read one app's bounded log ring, or all app rings
+usage: log [APP]
+EOF
+
 vgate_file open-unknown.txt <<'EOF'
 exec GOSH.ELF -c "open SONG.OGG"
 EOF
@@ -103,6 +108,7 @@ EOF
 # until that lands.
 vgate_file STARTUP.SH <<'EOF'
 echo gosh-startup-ran
+help log > /host/GOSHHELP.TXT
 set GREET=hello-vars
 echo V=$GREET > /host/GOSHVARS.TXT
 echo shrunk-body > /host/GOOSHSHRINK.TXT
@@ -110,6 +116,7 @@ echo first-appended >> /host/GOSHVARS.TXT
 echo alpha-beta | grep alpha > /host/GOSHPIPE.TXT
 exec GOSH.ELF -c "exit 7"
 echo rc=$? > /host/GOSHRC.TXT
+log > /host/GOSHLOG.TXT
 exec GOSH.ELF -c "echo nested-child-ok" &
 jobs
 fg 1
@@ -226,6 +233,8 @@ vgate_assert 01 serial-absent 'exited status=139'
 vgate_assert 01 share-equals GOSHVARS.TXT $'V=hello-vars\nfirst-appended\n'
 vgate_assert 01 share-equals GOSHPIPE.TXT $'alpha-beta\n'
 vgate_assert 01 share-equals GOSHRC.TXT $'rc=7\n'
+vgate_assert 01 share-contains GOSHLOG.TXT 'GOSH.ELF:'
+vgate_assert 01 share-equals GOSHHELP.TXT log-help.expected
 vgate_assert 01 share-equals GOSHJOB.TXT $'jobrc=0\n'
 # M81e2 (#1787): the redirect decision, pinned on the share. `>` published
 # crash-safe, so over a 800 B pre-existing body the file must read back as
