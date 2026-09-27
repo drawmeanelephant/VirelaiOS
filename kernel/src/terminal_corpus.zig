@@ -43,6 +43,12 @@
 //!         M79d's kind-11 seam, the clipboard bridge — is pinned by
 //!         registry tests in terminal.zig (the M73i precedent): a corpus
 //!         Screen has no pump to deliver on.
+//!       * M85a (#1813) lands the image-intake group: DCS `q` (sixel)
+//!         captures header Ps + payload bytes to the grid-side asset slot
+//!         (`sixel`/`sixel_p`/`sixel_ready`/`sixel_overflow`/`sixel_origin`
+//!         Case fields) and every other ESC string (APC/SOS/PM, non-`q`
+//!         DCS) plus OSC 1337 is "consumed, never painted". Decode and
+//!         placement are M85b and flip nothing here.
 //!       * Group I is a deterministic CSI parameter-soup FUZZ — not
 //!         goldens. It enforces INVARIANTS (no panic, whole wide pairs,
 //!         bounded indices, nothing below the used tail) under random
@@ -122,6 +128,20 @@ const Case = struct {
     /// Expected OSC 52 queue (M80g #1715) — the decoded clipboard bytes
     /// awaiting the pump; empty means no copy landed.
     clip: ?[]const u8 = null,
+    /// Expected DCS/sixel capture buffer (M85a #1813) — the payload bytes
+    /// after the `q`: in-flight while a string is pending, the asset once
+    /// `sixel_ready` (M85b reads only when ready). Empty means no bytes
+    /// were captured.
+    sixel: ?[]const u8 = null,
+    /// Expected DCS header Ps values (M85a).
+    sixel_p: ?[3]u16 = null,
+    /// Expected asset readiness (M85a): a complete in-bounds capture.
+    sixel_ready: ?bool = null,
+    /// Expected sticky overflow flag (M85a): the capture was dropped whole.
+    sixel_overflow: ?bool = null,
+    /// Expected cursor origin at the string's start (M85a) — M85b's
+    /// placement anchor.
+    sixel_origin: ?[2]usize = null,
     cells: []const CellSpot = &.{},
     styles: []const StyleSpot = &.{},
 };
@@ -140,6 +160,14 @@ fn run(c: Case) !void {
     if (c.keypad) |k| try std.testing.expectEqual(k, s.keypadApplication());
     if (c.title) |want| try std.testing.expectEqualStrings(want, s.title[0..s.title_len]);
     if (c.clip) |want| try std.testing.expectEqualStrings(want, s.clip_data[0..s.clip_len]);
+    if (c.sixel) |want| try std.testing.expectEqualStrings(want, s.sixel_buf[0..s.sixel_len]);
+    if (c.sixel_p) |p| try std.testing.expectEqual(p, s.sixel_p);
+    if (c.sixel_ready) |r| try std.testing.expectEqual(r, s.sixel_ready);
+    if (c.sixel_overflow) |o| try std.testing.expectEqual(o, s.sixel_overflow);
+    if (c.sixel_origin) |rc| {
+        try std.testing.expectEqual(rc[0], s.sixel_origin_line);
+        try std.testing.expectEqual(rc[1], s.sixel_origin_col);
+    }
     if (c.rendition) |r| {
         try std.testing.expectEqual(r.fg, t.styleForeground(s.style));
         try std.testing.expectEqual(r.bg, t.styleBackground(s.style));
@@ -204,6 +232,8 @@ const spaces3_a77: [80]u8 = [_]u8{' '} ** 3 ++ [_]u8{'a'} ** 77;
 /// (past title_max 64) — the overflow and truncation probes.
 const x780: [780]u8 = [_]u8{'x'} ** 780;
 const t70: [70]u8 = [_]u8{'t'} ** 70;
+/// M85a: one byte past sixel_max (4096) — the overflow probe.
+const s4097: [4097]u8 = [_]u8{'s'} ** 4097;
 
 // ---------------------------------------------------------------------------
 // Group A — ASCII control and line discipline.
@@ -1212,7 +1242,12 @@ test "terminal corpus: modes — alternate screen and DECTCEM" {
 const esc_cases = [_]Case{
     .{
         .name = "ESC followed by a non-[ byte consumes exactly that byte",
-        .input = "\x1bXabc",
+        // M85a (#1813) deliberate flip: `X` (SOS) is now an ESC *string*
+        // introducer, consumed through ST (pinned in the image-intake
+        // group). The row keeps its intent — an unknown plain final
+        // consumes exactly the ESC + final — on `V` (SPA, a no-op final
+        // here).
+        .input = "\x1bVabc",
         .lines = &.{"abc"},
         .cursor = .{ 0, 3 },
     },
@@ -1439,6 +1474,107 @@ const osc_cases = [_]Case{
 
 test "terminal corpus: OSC window titles and clipboard (M80g #1715)" {
     try runAll(&osc_cases);
+}
+
+// ---------------------------------------------------------------------------
+// M85a (#1813) — image-sequence intake: DCS/sixel capture and the
+// "consumed, never painted" rule. The rows pin the grid's innocence and the
+// capture state (`sixel_*` Case fields); decode and placement are M85b and
+// flip nothing here. Protocol pick (recorded on the M85a claim): **sixel is
+// PRIMARY** — the seam is cell-native (the kernel painter composites cell
+// fills + glyphs into the window buffer), so pixels that ride the grid are
+// the shape that fits; kitty's channel (APC and OSC 1337) stays a pinned
+// drain until a layer seam exists.
+// ---------------------------------------------------------------------------
+
+const sixel_cases = [_]Case{
+    .{
+        .name = "DCS q (sixel): the payload is captured; the grid is untouched",
+        .input = "A\x1bP1;2;3q#0~~??\x1b\\B",
+        .lines = &.{"AB"},
+        .cursor = .{ 0, 2 },
+        .sixel = "#0~~??",
+        .sixel_p = .{ 1, 2, 3 },
+        .sixel_ready = true,
+        .sixel_overflow = false,
+        .sixel_origin = .{ 0, 1 },
+    },
+    .{
+        .name = "params beyond three DCS Ps are consumed, never parsed",
+        .input = "\x1bP1;2;3;4qz\x1b\\",
+        .sixel = "z",
+        .sixel_p = .{ 1, 2, 3 },
+        .sixel_ready = true,
+    },
+    .{
+        .name = "an empty sixel payload is a valid empty asset",
+        .input = "\x1bP0;0q\x1b\\",
+        .sixel = "",
+        .sixel_ready = true,
+    },
+    .{
+        .name = "a non-q DCS final is consumed, never painted, and captures nothing",
+        .input = "A\x1bP1;2;3pDATA\x1b\\B",
+        .lines = &.{"AB"},
+        .cursor = .{ 0, 2 },
+        .sixel = "",
+        .sixel_ready = false,
+    },
+    .{
+        .name = "APC (kitty's channel), SOS and PM strings are consumed, never painted",
+        .input = "\x1b_Gm=1;aAA\x1b\\\x1bXsos\x1b\\\x1b^pm\x1b\\C",
+        .lines = &.{"C"},
+        .cursor = .{ 0, 1 },
+        .sixel = "",
+        .sixel_ready = false,
+    },
+    .{
+        .name = "OSC 1337 (kitty graphics) is consumed by the OSC path, never painted",
+        .input = "\x1b]1337;File=AAAA\x07D",
+        .lines = &.{"D"},
+        .cursor = .{ 0, 1 },
+        .sixel = "",
+        .sixel_ready = false,
+    },
+    .{
+        .name = "a sixel body past sixel_max is dropped WHOLE",
+        .input = "\x1bP0;0;0q" ++ &s4097 ++ "\x1b\\B",
+        .lines = &.{"B"},
+        .cursor = .{ 0, 1 },
+        .sixel = "",
+        .sixel_ready = false,
+        .sixel_overflow = true,
+    },
+    .{
+        .name = "an unterminated string stays pending: no asset, grid innocent",
+        .input = "A\x1bP1;2;3q~~",
+        .lines = &.{"A"},
+        .cursor = .{ 0, 1 },
+        // In-flight bytes sit in the capture buffer; the ASSET is gated on
+        // `sixel_ready` (M85b reads the slot only when ready).
+        .sixel = "~~",
+        .sixel_ready = false,
+    },
+    .{
+        .name = "CAN aborts the capture whole; the next byte prints",
+        .input = "\x1bP0;0;0q~~\x18C",
+        .lines = &.{"C"},
+        .cursor = .{ 0, 1 },
+        .sixel = "",
+        .sixel_ready = false,
+    },
+    .{
+        .name = "an ESC that does not complete ST aborts and the escape final runs",
+        .input = "\x1bP0;0;0q~~\x1bED",
+        .lines = &.{ "", "D" },
+        .cursor = .{ 1, 1 },
+        .sixel = "",
+        .sixel_ready = false,
+    },
+};
+
+test "terminal corpus: DCS/sixel intake and the image-sequence rule (M85a #1813)" {
+    try runAll(&sixel_cases);
 }
 
 // ---------------------------------------------------------------------------
