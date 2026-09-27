@@ -1498,8 +1498,23 @@ var cv_push_ack_buf: [16]u8 align(16) = [_]u8{0} ** 16;
 /// `gotabwm: key` / `charmhello: key` / resize followed, while scheduler
 /// and WM output continued. Bounded and non-blocking: safe in main
 /// context on core 0 between the reap and the idle spin.
+///
+/// #1757: service the kind-4 snapshot request in the SAME pass that armed
+/// it — this is where claim 0680's "after the input pump" order moved when
+/// the drain moved here. Two observed failures shaped the placement: a
+/// request serviced only from the console reader could sit pending past
+/// the run's end (the shell loop's servicing lagged the burst by seconds
+/// on live-term-depth run 03), and a request serviced WITHOUT the chord
+/// path's synchronous present shipped pre-composite frames. Both are
+/// closed: the hygiene chords composite before their markers print, so
+/// the pixels are on the scanout before the request can even exist, and
+/// this pass streams them the moment the request lands. Bounded: one
+/// stream of ~113 queue-4 exchanges with per-submit timeouts — the same
+/// inline cost the console reader always paid; serialized against the
+/// shell-loop caller by service_snapshot's own lock.
 fn cv_idle_input_pump() void {
     if (virtio_custom.cv_ready and virtio_custom.input_armed) virtio_custom.poll_input();
+    if (virtio_custom.snap_pending) virtio_custom.service_snapshot();
 }
 
 fn cv_input_dispatch(rep: []const u8) void {

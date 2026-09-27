@@ -26,6 +26,7 @@
 //! decode); the `drain()` path is hardware-gated (a no-op when unarmed).
 
 const std = @import("std");
+const builtin = @import("builtin");
 const xhci = @import("xhci.zig"); // I1/I2: the XHCI transport + enumerated HID devices
 const app_events = @import("events.zig"); // Milestone 9 (claim 7206): application event queues
 const driving_award = @import("driving_award.zig"); // Milestone six G5: window focus query for event routing
@@ -695,6 +696,25 @@ pub fn decode_keyboard_report(rep: []const u8) void {
                         switch (hyg) {
                             .clear_scrollback => {
                                 const before = s.historyCount();
+                                // #1757: the count alone was unexplained (run
+                                // 03 dropped 24 rows from a ~300-row fill —
+                                // exactly one viewport). The ring-state
+                                // figures AT READ TIME make the number
+                                // diagnosable: `hist`+`used` is the unified
+                                // depth, `pend` the tty output still queued
+                                // (a non-zero pend means the chord raced the
+                                // pump), `vis` the focused window's visible
+                                // rows for the viewport-cap comparison.
+                                const used_before = s.used;
+                                const total_before = s.lineCount();
+                                var vis: usize = 0;
+                                if (driving_award.find_user_window(driving_award.focused_window_id())) |w| {
+                                    vis = if (w.h > driving_award.user_title_h)
+                                        (w.h - driving_award.user_title_h) / driving_award.font_metrics.cell_h
+                                    else
+                                        1;
+                                }
+                                const pend = tt.pendingOut();
                                 s.clearScrollback();
                                 // Snap to the tail even when the clear
                                 // itself was a no-op (the alternate
@@ -702,8 +722,15 @@ pub fn decode_keyboard_report(rep: []const u8) void {
                                 // grid): "scroll to tail" is half the
                                 // promise, and it is unconditional.
                                 s.scrollReset();
-                                var cmsg: [40]u8 = undefined;
-                                const cm = std.fmt.bufPrint(&cmsg, "tty: clear {d} lines\n", .{before - s.historyCount()}) catch "tty: clear\n";
+                                var cmsg: [112]u8 = undefined;
+                                const cm = std.fmt.bufPrint(&cmsg, "tty: clear {d} lines (hist={d} used={d} total={d} vis={d} pend={d})\n", .{
+                                    before - s.historyCount(),
+                                    before,
+                                    used_before,
+                                    total_before,
+                                    vis,
+                                    pend,
+                                }) catch "tty: clear\n";
                                 klog.line(cm);
                             },
                             .soft_reset => {
@@ -722,6 +749,29 @@ pub fn decode_keyboard_report(rep: []const u8) void {
                                 s.hardReset();
                                 klog.line("tty: reset full\n");
                             },
+                        }
+                        // #1757: composite the chord's effect NOW, under the
+                        // win+ev hold this decode already runs in. Post-1747
+                        // the chords decode on the idle task while the
+                        // compositor drains in the shell loop, so the
+                        // framebuffer lagged the marker by an unbounded
+                        // number of passes — and the claim-0680 snapshot
+                        // fired from this very marker raced it (observed on
+                        // live-term-depth run 03: the RIS snapshot shipped
+                        // the pre-RIS grid). Present-then-marker makes the
+                        // frame fresh by construction: the request can only
+                        // arrive after the marker, and the pixels it must
+                        // capture are already on the scanout. The chord
+                        // mutates the Screen directly, so the dirty flag
+                        // needs marking first — the same user_present seam
+                        // the tty write path uses — or paint_scene finds a
+                        // clean scene and paints nothing (observed). Host
+                        // builds skip the hardware half (the established
+                        // !is_test gate: paint/composite reach MMU + virtio
+                        // GPU MMIO that aborts a host test binary).
+                        if (comptime !builtin.is_test) {
+                            _ = driving_award.user_present(driving_award.focused_window_id());
+                            _ = driving_award.composite();
                         }
                     }
                     events += 1;

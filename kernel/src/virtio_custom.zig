@@ -1326,6 +1326,12 @@ fn tee_send_line(line_bytes: []const u8) bool {
 /// The tee's own TX staging (BSS — runtime address discipline, claim 0015).
 var tee_tx_buf: [tee_line_cap]u8 align(16) = undefined;
 
+/// #1757: the snapshot stream's TX lock — the idle pass and the console
+/// reader both service kind-4 requests now, and the framing buffers plus
+/// `cv_scatter` are shared BSS. Same IRQ-save discipline as `tee_tx_lock`
+/// (a chunk submit spins on the host's OK ack, so holders run bounded).
+var snap_tx_lock = spinlock.IrqSaveSpinlock{};
+
 // ---------------------------------------------------------------------------
 // Framebuffer snapshot channel (claim 0680, issue #523 item 3): a kind-4
 // request arms `snap_pending`; the idle seam calls service_snapshot(), which
@@ -1443,12 +1449,17 @@ fn snap_submit(parts: []const []const u8) bool {
     return std.mem.eql(u8, snap_ack_buf[0..3], "OK" ++ ":");
 }
 
-/// Stream the whole framebuffer (called from the idle seam AFTER poll_input
-/// so the latest composite is what ships). One-shot per kind-4 request;
+/// Stream the whole framebuffer (called from the console reader's idle tick
+/// after poll_input, and — since #1757 — from the scheduler idle pass right
+/// after the drain that armed the request). Two callers on two contexts
+/// means the stream itself needs serializing: the framing buffers and
+/// `cv_scatter` below are shared module BSS. One-shot per kind-4 request;
 /// failures increment `snap_fail_count` and end the stream early — the
 /// host-side assembly reports what it got.
 pub fn service_snapshot() void {
     snap_pending = false;
+    const daif = snap_tx_lock.lock();
+    defer snap_tx_lock.unlock(daif);
     if (!cv_ready or !has_snap_queue) {
         snap_fail_count += 1;
         return;

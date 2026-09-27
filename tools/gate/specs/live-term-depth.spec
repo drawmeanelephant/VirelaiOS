@@ -81,11 +81,16 @@ for name, how in (("GOTERM.ELF", "build-goterm.sh"),):
 lines = ["echo LINE-%02d pppp" % i for i in range(20)]
 with open(os.path.join(share, "BIG.SH"), "w") as f:
     f.write("\n".join(lines) + "\n")
-# M80k (#1727): FILL.SH is the scrollback FILLER for run 03. 150 commands
-# plus 150 output rows is 300 grid rows against a 128-row grid, so the
-# ring really does hold history when the clear chord fires (a 20-line
-# script does not: `used` never reaches 128, so there is no history to
-# clear and the chord would honestly report 0).
+# M80k (#1727): FILL.SH is the scrollback FILLER for run 03. The real
+# arithmetic (#1757, measured — the original "~300 grid rows" here was
+# arithmetic on a wrong assumption): gosh does NOT echo `source`d script
+# lines, so 150 echo outputs plus the typed `source FILL.SH` line is 151
+# newlines against the 128-row grid — the grid absorbs 127 of them and
+# exactly 24 rows scroll into the ring. The observed `clear 24` matching
+# the window's 24 visible rows was numerology, not a viewport cap (the
+# class-A pin in kernel/src/terminal.zig holds both halves). A 20-line
+# script would not reach the ring at all: `used` never gets to 128, so
+# there is no history to clear and the chord would honestly report 0.
 fill = ["echo FILL-%03d pppp" % i for i in range(150)]
 with open(os.path.join(share, "FILL.SH"), "w") as f:
     f.write("\n".join(fill) + "\n")
@@ -312,17 +317,31 @@ vgate_assert 03 serial-absent '\[EXC\]'
 vgate_assert 03 serial-absent '[EXC] parking:'
 
 # The clear marker counts what the ring ACTUALLY dropped (Screen.historyCount
-# before minus after), so a non-zero count is the only honest evidence that
-# the scrollback existed and went. The chord order is the contract: the RIS
-# is the ctrl+shift+alt-R one, and a mis-dispatch would show up as a
-# soft/full pair out of order or missing.
+# before minus after) and, since #1757, carries the ring-state figures AT
+# READ TIME: hist/used/total (the unified depth), vis (the focused window's
+# visible rows) and pend (tty output still queued). The chord order is the
+# contract: the RIS is the ctrl+shift+alt-R one, and a mis-dispatch would
+# show up as a soft/full pair out of order or missing.
 vgate_assert 03 python <<'PY'
 import os, re
 ser = open(os.environ["VG_SER"], errors="replace").read()
-m = re.search(r"tty: clear (\d+) lines", ser)
-assert m, "clear-scrollback chord marker missing from serial"
-n = int(m.group(1))
-assert n > 0, f"FILL.SH must have scrolled the ring before the chord (cleared {n})"
+# #1757: the figures are deterministic and ARE the root-cause evidence.
+# 151 newlines (the typed line + 150 echo outputs; gosh does not echo
+# source'd script lines) against the 128-row grid: 127 absorbed, 24
+# scrolled into the ring. hist=24 used=128 total=152 says the ring held
+# exactly the fill's overshoot — NOT a viewport cap (24 == rows_visible
+# is numerology; the class-A pin in terminal.zig proves a deeper fill
+# saturates at history_lines instead) — and pend=0 total=152 at read
+# time is the pump-timing proof: the chord read the COMPLETE fill, so
+# the "chord raced the pump" reading from the original observation is
+# dead too.
+m = re.search(r"tty: clear (\d+) lines \(hist=(\d+) used=(\d+) total=(\d+) vis=(\d+) pend=(\d+)\)", ser)
+assert m, "clear-scrollback chord marker (with #1757 figures) missing from serial"
+n, hist, used, total, vis, pend = (int(m.group(i)) for i in range(1, 7))
+assert (n, hist, used, total, vis, pend) == (24, 24, 128, 152, 24, 0), (
+    f"clear figures drifted: clear={n} hist={hist} used={used} total={total} "
+    f"vis={vis} pend={pend} — expected 24/24/128/152/24/0; see the #1757 "
+    f"arithmetic above before touching this pin")
 i_fill = ser.find("goterm: done status=0")
 i_clear = ser.find(m.group(0))
 i_soft = ser.find("tty: reset soft")
@@ -334,7 +353,8 @@ for name, i in (("fill finished", i_fill), ("clear", i_clear),
 assert i_fill < i_clear < i_soft < i_ris < i_done, (
     f"chord chain out of order: fill={i_fill} clear={i_clear} "
     f"soft={i_soft} ris={i_ris} done={i_done}")
-print(f"M80k chords OK: cleared {n} scrollback lines; clear < soft < RIS; guest alive after")
+print(f"M80k chords OK: cleared {n} scrollback lines (hist={hist} used={used} "
+      f"total={total} vis={vis} pend={pend}); clear < soft < RIS; guest alive after")
 PY
 
 # The scanout, in the same run. Window client = x 64..700, y 64..448 (run
