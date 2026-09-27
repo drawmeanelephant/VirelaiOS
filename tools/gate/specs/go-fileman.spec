@@ -31,7 +31,7 @@
 # app's own marker; an app that never ran, never renamed, never settled or
 # never refused cannot pass.
 
-vgate_name go-fileman "M74a #1644: the GOFILES.ELF Charm file manager navigates, previews (pixel-asserted) and renames over the bound tty"
+vgate_name go-fileman "M74a #1644 + M81a #1761 + M81b #1762: GOFILES navigates, previews, renames, trashes, restores, and dispatches opens"
 vgate_share seed
 vgate_runner_flags -Xswiftc -DSPIKE
 
@@ -59,6 +59,24 @@ EOF
 vgate_file script5.txt <<'EOF'
 dui close 2
 echo rx-go-fileman-open-ok
+EOF
+
+vgate_file script7.txt <<'EOF'
+exec GOFILES.ELF /host/FM3
+EOF
+
+vgate_file script8.txt <<'EOF'
+dui
+EOF
+
+vgate_file script9.txt <<'EOF'
+dui close 2
+echo rx-go-fileman-trash-ok
+EOF
+
+vgate_file fm3.expected <<'EOF'
+trash-and-restore-exact
+original bytes stay intact
 EOF
 
 vgate_setup_python <<'PY'
@@ -110,9 +128,13 @@ with open(pic, "wb") as f:
 ogg = os.path.join(om, "SONG.OGG")
 with open(ogg, "wb") as f:
     f.write(b"OggS\x00\x02" + bytes(58))
+fm3 = os.path.join(share, "FM3")
+os.makedirs(fm3, exist_ok=True)
+with open(os.path.join(fm3, "NOTE.TXT"), "w") as f:
+    f.write("trash-and-restore-exact\noriginal bytes stay intact\n")
 
 print("staged GOFILES.ELF into share (%d bytes), %s (%d bytes), %s (%d bytes), "
-      "GOVIEW.ELF (%d bytes), %s (%d bytes), %s (%d bytes)" %
+      "GOVIEW.ELF (%d bytes), %s (%d bytes), %s (%d bytes), FM3/NOTE.TXT" %
       (os.path.getsize(os.path.join(share, "GOFILES.ELF")),
        known, os.path.getsize(known), inner, os.path.getsize(inner),
        os.path.getsize(os.path.join(share, "GOVIEW.ELF")),
@@ -121,14 +143,14 @@ PY
 
 # The chord batch, in full (17 strokes at the cv-input transport's fixed
 # 0.25 s): enter the sorted-first dir SUB, come back up, move onto
-# KNOWN.TXT (dirs sort first), open the EMPTY rename prompt, type the new
+# KNOWN.TXT (dirs sort first, selected with `j`), open the EMPTY rename prompt, type the new
 # name one rune at a time, commit. Lowercase avoids any shift ambiguity in
 # the HID chord table.
 vgate_run 01 -- \
     --screen '$RUN_DIR/fileman-screen' \
     --input --via-virtio \
     --script '$RUN_DIR/script.txt' \
-    --input-chords 'return,backspace,down,r,n,e,w,n,a,m,e,.,t,x,t,return' \
+    --input-chords 'return,backspace,j,r,n,e,w,n,a,m,e,.,t,x,t,return' \
     --input-chords-after 'gofiles: ready' \
     --screenshot-after 'gofiles: renamed KNOWN.TXT -> newname.txt' \
     --script2 '$RUN_DIR/script2.txt' \
@@ -168,7 +190,7 @@ vgate_assert 01 serial-contains 'gofiles: cd /host/FM/SUB'
 vgate_assert 01 serial-contains 'gofiles: view INNER.TXT bytes='
 vgate_assert 01 serial-contains 'gofiles: key return'
 vgate_assert 01 serial-contains 'gofiles: key backspace'
-vgate_assert 01 serial-contains 'gofiles: key down'
+vgate_assert 01 serial-contains 'gofiles: key j'
 vgate_assert 01 serial-contains 'gofiles: view KNOWN.TXT bytes='
 
 # Act: rename commits (the syscall returned) and the re-list shows the new
@@ -202,7 +224,10 @@ vgate_assert 01 serial-absent 'exited status=139'
 # painted by the kernel's truecolour path at exactly (122,162,255) — is in
 # the right pane; the selected-row background is (44,58,76). Tolerances
 # absorb the capture path's edge interpolation; the counts are far above
-# what any other window element can contribute.
+# what any other window element can contribute. The VM screenshot's tagged
+# colour space shifts the decoded preview ink from the source RGB to roughly
+# (116,143,220); use a bounded max-channel tolerance for the capture, not an
+# exact source-byte comparison.
 vgate_assert 01 snapshot 'fileman-screen-after' <<'PY'
 import struct, sys, zlib
 
@@ -263,7 +288,7 @@ for y in range(48, 48 + 368):
     for x in range(32, 32 + 512):
         k = (y * w + x) * bpp
         r, g, b = out[k], out[k + 1], out[k + 2]
-        if abs(r - 122) <= 8 and abs(g - 162) <= 8 and abs(b - 255) <= 8:
+        if max(abs(r - 122), abs(g - 162), abs(b - 255)) <= 40:
             accent += 1
         if abs(r - 44) <= 6 and abs(g - 58) <= 6 and abs(b - 76) <= 6:
             selbg += 1
@@ -339,3 +364,31 @@ vgate_assert 02 serial-absent 'gofiles: no /dev/tty'
 vgate_assert 02 serial-absent 'gofiles: attach failed'
 vgate_assert 02 serial-absent 'gofiles: list error'
 vgate_assert 02 serial-absent 'exited status=139'
+
+# --- M81a (#1761): run 03, trash then restore -------------------------------
+# The one-file directory makes the move and restoration unambiguous. The
+# restored row is re-listed before the window closes; share-equals proves the
+# original file bytes came back exactly.
+vgate_run 03 -- \
+    --screen '$RUN_DIR/fileman-trash-screen' \
+    --input --via-virtio \
+    --script '$RUN_DIR/script7.txt' \
+    --input-chords 'd,y,u' \
+    --input-chords-after 'gofiles: ready' \
+    --script2 '$RUN_DIR/script8.txt' \
+    --script2-after 'gofiles: deleted NOTE.TXT trash=' \
+    --script3 '$RUN_DIR/script9.txt' \
+    --script3-after 'gofiles: restored NOTE.TXT trash=' \
+    --script-expect 'rx-go-fileman-trash-ok' --timeout 240
+
+vgate_assert 03 serial-contains 'gofiles: deleted NOTE.TXT trash='
+vgate_assert 03 serial-contains 'gofiles: restored NOTE.TXT trash='
+vgate_assert 03 serial-contains 'gofiles: list /host/FM3 n=1'
+vgate_assert 03 serial-contains 'gofiles: entry NOTE.TXT file'
+vgate_assert 03 serial-contains 'rx-go-fileman-trash-ok'
+vgate_assert 03 share-equals FM3/NOTE.TXT fm3.expected
+vgate_assert 03 share-contains RECENT/LOG.TXT '|delete|'
+vgate_assert 03 share-contains RECENT/LOG.TXT '|restore|'
+vgate_assert 03 serial-absent 'gofiles: delete refused NOTE.TXT rc='
+vgate_assert 03 serial-absent 'gofiles: restore refused rc='
+vgate_assert 03 serial-absent 'exited status=139'

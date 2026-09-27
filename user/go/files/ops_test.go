@@ -63,10 +63,10 @@ func TestRenameEntryValidatesFirst(t *testing.T) {
 }
 
 func TestDeleteEntryValidatesFirst(t *testing.T) {
-	if rc := deleteEntry("/host/FM", ".."); rc != -viErrEINVAL {
+	if _, rc := deleteEntry("/host/FM", ".."); rc != -viErrEINVAL {
 		t.Errorf("dotdot delete rc=%d, want %d", rc, -viErrEINVAL)
 	}
-	if rc := deleteEntry("/host/FM", "KNOWN.TXT"); rc != -viErrENOSYS {
+	if _, rc := deleteEntry("/host/FM", "KNOWN.TXT"); rc != -viErrENOSYS {
 		t.Errorf("valid delete rc=%d, want %d", rc, -viErrENOSYS)
 	}
 }

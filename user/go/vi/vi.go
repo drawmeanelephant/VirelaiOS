@@ -6,6 +6,10 @@
 package vi
 
 import (
+	"bytes"
+	"encoding/hex"
+	"strconv"
+	"strings"
 	"unsafe"
 
 	"virelai/vsys"
@@ -296,7 +300,7 @@ func Exit(status int) {
 
 // Time returns wall-clock unix seconds (negative when the firmware gave no
 // boot epoch).
-func Time() int64 { return syscall0(SlotTime) }
+func Time() int64 { return svc0(SlotTime) }
 
 // Random fills p from the kernel CSPRNG (slot 72 sys_getrandom, ADR 0025 D5).
 // The kernel clamps each call to 256 bytes and returns the count actually
@@ -697,6 +701,333 @@ func FileDelete(path string) int64 {
 	return svc2(SlotFileDelete, strPtr(path), uintptr(len(path)))
 }
 
+// Shared M81a locations on the host share. Keep the path contract here so
+// every app using trash/recent agrees on the same storage.
+const (
+	TrashDir                    = "/host/TRASH"
+	RecentDir                   = "/host/RECENT"
+	RecentLogPath               = RecentDir + "/LOG.TXT"
+	TrashRetentionSeconds int64 = 30 * 24 * 60 * 60
+	maxRecentBytes              = 8192
+	maxRecentRows               = 64
+	trashHeader                 = "VTRASH1\n"
+)
+
+// TrashItemPath returns the item path for a generated trash id. IDs are
+// 8-byte CSPRNG values rendered as lowercase hex.
+func TrashItemPath(id string) string {
+	if !validTrashID(id) {
+		return ""
+	}
+	return TrashDir + "/" + id + ".item"
+}
+
+// TrashMetaPath returns the companion receipt path for a trash id.
+func TrashMetaPath(id string) string {
+	if !validTrashID(id) {
+		return ""
+	}
+	return TrashDir + "/" + id + ".meta"
+}
+
+func validTrashID(id string) bool {
+	if len(id) != 16 {
+		return false
+	}
+	for i := range id {
+		c := id[i]
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return false
+		}
+	}
+	return true
+}
+
+func ensureFileDir(path string) int64 {
+	h, rc := FileOpen(path, ModeWrite|ModeCreate|ModeDir)
+	if rc == ErrFileExists {
+		return 0
+	}
+	if rc < 0 {
+		return rc
+	}
+	FileClose(uint32(h))
+	return 0
+}
+
+func validShareFilePath(path string) bool {
+	if !strings.HasPrefix(path, "/host/") || len(path) > 64 {
+		return false
+	}
+	for _, part := range strings.Split(path[len("/host/"):], "/") {
+		if part == "" || part == "." || part == ".." {
+			return false
+		}
+	}
+	for i := range path {
+		if path[i] < 0x20 || path[i] == 0x7f {
+			return false
+		}
+	}
+	return true
+}
+
+func reservedStoragePath(path string) bool {
+	return strings.HasPrefix(path, TrashDir+"/") ||
+		strings.HasPrefix(path, RecentDir+"/")
+}
+
+func trashRecord(timestamp int64, path string) []byte {
+	var b strings.Builder
+	b.WriteString(trashHeader)
+	b.WriteString(strconv.FormatInt(timestamp, 10))
+	b.WriteByte('\n')
+	b.WriteString(hex.EncodeToString([]byte(path)))
+	b.WriteString("\n\n")
+	return []byte(b.String())
+}
+
+// TrashRead loads and validates a trash item, returning its original path,
+// exact bytes and deletion time. Malformed receipts fail closed.
+func TrashRead(id string) (path string, body []byte, timestamp int64, rc int64) {
+	item, meta := TrashItemPath(id), TrashMetaPath(id)
+	if item == "" || meta == "" {
+		return "", nil, 0, -ErrEINVAL
+	}
+	record, rr := ReadFileAll(meta, 512)
+	if rr < 0 {
+		return "", nil, 0, rr
+	}
+	if len(record) >= 512 {
+		return "", nil, 0, -ErrENOSPC
+	}
+	if !bytes.HasPrefix(record, []byte(trashHeader)) {
+		return "", nil, 0, -ErrEINVAL
+	}
+	rest := record[len(trashHeader):]
+	cut := bytes.Index(rest, []byte("\n\n"))
+	if cut < 0 {
+		return "", nil, 0, -ErrEINVAL
+	}
+	rows := strings.SplitN(string(rest[:cut]), "\n", 2)
+	if len(rows) != 2 {
+		return "", nil, 0, -ErrEINVAL
+	}
+	stamp, err := strconv.ParseInt(rows[0], 10, 64)
+	if err != nil {
+		return "", nil, 0, -ErrEINVAL
+	}
+	pathBytes, err := hex.DecodeString(rows[1])
+	original := string(pathBytes)
+	if err != nil || !validShareFilePath(original) || reservedStoragePath(original) {
+		return "", nil, 0, -ErrEINVAL
+	}
+	body, br := ReadFileAll(item, MaxFileBytes)
+	if br < 0 {
+		return "", nil, 0, br
+	}
+	if len(body) >= MaxFileBytes {
+		return "", nil, 0, -ErrENOSPC
+	}
+	return original, body, stamp, int64(len(body))
+}
+
+// appendRecent adds one deterministic action row and atomically compacts the
+// log to its newest bounded tail before publishing with WriteFileSafe.
+func appendRecent(action, id, path string, timestamp int64) int64 {
+	if !validTrashID(id) || (action != "delete" && action != "restore") || !validShareFilePath(path) {
+		return -ErrEINVAL
+	}
+	if rc := ensureFileDir(RecentDir); rc < 0 {
+		return rc
+	}
+	old, rc := ReadFileAll(RecentLogPath, maxRecentBytes)
+	if rc < 0 && rc != ErrFileNotFound {
+		return rc
+	}
+	rows := strings.Split(strings.TrimRight(string(old), "\n"), "\n")
+	if len(rows) == 1 && rows[0] == "" {
+		rows = nil
+	}
+	row := strconv.FormatInt(timestamp, 10) + "|" + action + "|" + id + "|" +
+		hex.EncodeToString([]byte(path))
+	rows = append(rows, row)
+	contents := []byte(strings.Join(rows, "\n") + "\n")
+	for len(rows) > 1 && (len(rows) > maxRecentRows || len(contents) > maxRecentBytes) {
+		if len(rows) > maxRecentRows {
+			rows = rows[1:]
+		} else if len(contents) > maxRecentBytes {
+			rows = rows[1:]
+		}
+		contents = []byte(strings.Join(rows, "\n") + "\n")
+	}
+	return WriteFileSafe(RecentLogPath, contents)
+}
+
+// TrashDelete safely moves a regular share file into /host/TRASH. It copies
+// and verifies the complete bytes before unlinking the source; oversized or
+// unreadable files remain untouched. On success it returns the receipt id.
+func TrashDelete(path string) (string, int64) {
+	if !validShareFilePath(path) || reservedStoragePath(path) {
+		return "", -ErrEINVAL
+	}
+	if rc := ensureFileDir(TrashDir); rc < 0 {
+		return "", rc
+	}
+	var entries [MaxDirEntries]DirEntry
+	n, rc := DirList(TrashDir, entries[:])
+	if rc < 0 {
+		return "", rc
+	}
+	// Each complete item consumes a data file and a receipt file.
+	if n > MaxDirEntries-2 {
+		return "", -ErrENOSPC
+	}
+	body, rc := ReadFileAll(path, MaxFileBytes)
+	if rc < 0 {
+		return "", rc
+	}
+	// ReadFileAll intentionally caps at MaxFileBytes and cannot distinguish a
+	// larger file from a file exactly at the cap. Refuse that boundary rather
+	// than ever trashing a silent prefix.
+	if len(body) >= MaxFileBytes {
+		return "", -ErrENOSPC
+	}
+	var entropy [8]byte
+	if n, err := Random(entropy[:]); err != nil || n != len(entropy) {
+		if err != nil {
+			return "", -ErrENOSYS
+		}
+		return "", -ErrEAGAIN
+	}
+	id := hex.EncodeToString(entropy[:])
+	item := TrashItemPath(id)
+	meta := TrashMetaPath(id)
+	if FileExists(item) || FileExists(meta) {
+		return "", -ErrEAGAIN
+	}
+	timestamp := Time()
+	if rc := WriteFileSafe(item, body); rc < 0 {
+		return "", rc
+	}
+	if rc := WriteFileSafe(meta, trashRecord(timestamp, path)); rc < 0 {
+		_ = FileDelete(item)
+		return "", rc
+	}
+	original, copied, gotTime, rr := TrashRead(id)
+	if rr < 0 || original != path || gotTime != timestamp || !bytes.Equal(copied, body) {
+		_ = FileDelete(item)
+		_ = FileDelete(meta)
+		if rr < 0 {
+			return "", rr
+		}
+		return "", -ErrEINVAL
+	}
+	if rc := FileDelete(path); rc < 0 {
+		_ = FileDelete(item)
+		_ = FileDelete(meta)
+		return "", rc
+	}
+	if rc := appendRecent("delete", id, path, timestamp); rc < 0 {
+		if rollback := WriteFileSafe(path, body); rollback >= 0 {
+			_ = FileDelete(item)
+			_ = FileDelete(meta)
+			return "", rc
+		}
+		// Keep the verified receipt if rollback failed. The caller gets the id
+		// so the retained bytes are not silently orphaned.
+		return id, rc
+	}
+	return id, 0
+}
+
+// TrashRestoreLatest restores the newest still-present delete receipt to its
+// original path. Existing targets are never overwritten.
+func TrashRestoreLatest() (path, id string, rc int64) {
+	log, rr := ReadFileAll(RecentLogPath, maxRecentBytes)
+	if rr < 0 {
+		return "", "", rr
+	}
+	rows := strings.Split(strings.TrimRight(string(log), "\n"), "\n")
+	for i := len(rows) - 1; i >= 0; i-- {
+		fields := strings.Split(rows[i], "|")
+		if len(fields) != 4 || fields[1] != "delete" || !validTrashID(fields[2]) {
+			continue
+		}
+		item := TrashItemPath(fields[2])
+		target, body, _, tr := TrashRead(fields[2])
+		if tr == ErrFileNotFound {
+			continue
+		}
+		if tr < 0 {
+			return "", "", tr
+		}
+		if wr := FileRename(item, target); wr < 0 {
+			return "", "", wr
+		}
+		got, gr := ReadFileAll(target, MaxFileBytes)
+		if gr < 0 || !bytes.Equal(got, body) {
+			_ = FileRename(target, item)
+			return "", "", -ErrEINVAL
+		}
+		if ar := appendRecent("restore", fields[2], target, Time()); ar < 0 {
+			_ = FileRename(target, item)
+			return "", "", ar
+		}
+		if dr := FileDelete(TrashMetaPath(fields[2])); dr < 0 {
+			return "", "", dr
+		}
+		return target, fields[2], 0
+	}
+	return "", "", ErrFileNotFound
+}
+
+// TrashExpire removes items at least TrashRetentionSeconds old. The kernel's
+// directory ABI returns at most 16 rows; TrashDelete enforces the same cap.
+func TrashExpire(now int64) (int, int64) {
+	if now < 0 {
+		return 0, -ErrEINVAL
+	}
+	var entries [MaxDirEntries]DirEntry
+	n, rc := DirList(TrashDir, entries[:])
+	if rc == ErrFileNotFound {
+		return 0, 0
+	}
+	if rc < 0 {
+		return 0, rc
+	}
+	removed := 0
+	for _, entry := range entries[:n] {
+		name := entry.NameString()
+		if entry.Dir() || !strings.HasSuffix(name, ".meta") {
+			continue
+		}
+		id := strings.TrimSuffix(name, ".meta")
+		_, _, timestamp, tr := TrashRead(id)
+		if tr == ErrFileNotFound {
+			if dr := FileDelete(TrashMetaPath(id)); dr < 0 {
+				return removed, dr
+			}
+			removed++
+			continue
+		}
+		if tr < 0 {
+			return removed, tr
+		}
+		if timestamp < 0 || now < timestamp || now-timestamp < TrashRetentionSeconds {
+			continue
+		}
+		if dr := FileDelete(TrashItemPath(id)); dr < 0 && dr != ErrFileNotFound {
+			return removed, dr
+		}
+		if dr := FileDelete(TrashMetaPath(id)); dr < 0 {
+			return removed, dr
+		}
+		removed++
+	}
+	return removed, 0
+}
+
 // ExecMaxArgs is the kernel's max_exec_args (kernel/src/exec.zig).
 // ExecArgMax is the usable bytes of one slot (arg_slot_bytes - 1). A longer
 // argument is refused; the kernel does not chop it.
@@ -768,7 +1099,7 @@ func DirList(path string, buf []DirEntry) (int, int64) {
 	if len(buf) > MaxDirEntries {
 		buf = buf[:MaxDirEntries]
 	}
-	r := syscall4(SlotDirList, strPtr(path), uintptr(len(path)), uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)))
+	r := svc4(SlotDirList, strPtr(path), uintptr(len(path)), uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)))
 	if r < 0 {
 		return 0, r
 	}

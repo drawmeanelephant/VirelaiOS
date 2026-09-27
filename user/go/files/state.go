@@ -70,6 +70,14 @@ type model struct {
 func newModel(path string, cols, rows int) model {
 	m := model{path: path}
 	m.setSize(cols, rows)
+	if now := vi.Time(); now >= 0 {
+		expired, rc := vi.TrashExpire(now)
+		if rc < 0 {
+			m.emit(markerTrashExpireNo + "rc=" + vi.Itoa64(rc))
+		} else if expired > 0 {
+			m.emit(markerTrashExpired + vi.Itoa64(int64(expired)))
+		}
+	}
 	m.refresh()
 	return m
 }
@@ -381,6 +389,8 @@ func (m *model) handleKey(ev keys.Event) {
 			m.startRename()
 		case 'd':
 			m.startDelete()
+		case 'u':
+			m.restoreLatest()
 		case 'c':
 			m.yankClip(false)
 		case 'x':
@@ -470,16 +480,36 @@ func (m *model) doDelete() {
 		return
 	}
 	name := e.NameString()
-	rc := deleteEntry(m.path, name)
+	id, rc := deleteEntry(m.path, name)
 	if rc < 0 {
 		m.emit(markerDeleteNo + name + " rc=" + vi.Itoa64(rc))
 		m.status = "delete refused"
 		return
 	}
-	m.emit(markerDeleted + name)
+	m.emit(markerDeleted + name + " trash=" + id)
 	m.status = "deleted " + name
 	m.refresh()
 	m.status = "deleted " + name
+}
+
+// restoreLatest restores the newest item in the shared trash. The vi helper
+// refuses an occupied original path, so restore never overwrites user data.
+func (m *model) restoreLatest() {
+	path, id, rc := vi.TrashRestoreLatest()
+	if rc < 0 {
+		m.emit(markerRestoreNo + "rc=" + vi.Itoa64(rc))
+		m.status = "restore refused"
+		return
+	}
+	name := baseName(path)
+	m.status = "restored " + name
+	if parentPath(path) == m.path {
+		m.refresh()
+		m.status = "restored " + name
+	}
+	// Emit after refresh so a gate waiting on this marker also observes the
+	// restored item in the immediately preceding listing rows.
+	m.emit(markerRestored + name + " trash=" + id)
 }
 
 // yankClip holds the selected file for a later paste (c = copy, x = move).

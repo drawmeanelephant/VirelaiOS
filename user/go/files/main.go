@@ -30,20 +30,14 @@ const (
 	natH     = 384
 
 	ttyPath = "/dev/tty"
-	cellPx  = 8 // font8x8 cell: the kernel grid is client_px/8
 )
 
-// gridOf maps the window rect onto the kernel's grid: cols = client width/8
-// (terminal.syncWindowCols), rows = (height - title bar)/8 (the dui/charm
-// geometry: rect W,H with a 16 px title above the client area).
+// gridOf maps the window rect onto the kernel's active terminal grid. The
+// kernel reflows by the current font-metric cell width and paints rows at the
+// current cell height; the user window's 16 px title bar is not client area.
 func gridOf(w, h uint32) (int, int) {
-	cols := int(w) / cellPx
-	ch := int(h)
-	if ch > titleBarPx {
-		ch -= titleBarPx
-	}
-	rows := ch / cellPx
-	return cols, rows
+	cellW, cellH := vi.TerminalCell()
+	return gridForCell(w, h, cellW, cellH)
 }
 
 // paint writes one frame into the bound tty. A tty write marks the window
