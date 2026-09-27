@@ -55,6 +55,21 @@ func TestInsertionFor(t *testing.T) {
 			t.Fatalf("insertionFor(%#x) = (%q,%v) want (%q,true)", c.ev.Arg1, got, gotOK, c.want)
 		}
 	}
+	// HID usage 0x1b is the physical X key. The kernel translates it before
+	// delivering the app event, so the editor inserts Arg1 rather than
+	// re-translating Arg0 as the seat does for its own kind-21 events.
+	translated := vi.Event{Kind: vi.EvKeyDown, Arg0: 0x1b, Arg1: 'X'}
+	if got, ok := insertionFor(translated); !ok || got != 'X' {
+		t.Fatalf("insertionFor(raw usage %#x, translated %#x) = (%q,%v) want ('X',true)",
+			translated.Arg0, translated.Arg1, got, ok)
+	}
+	// An unmapped key has no translated byte. Its raw usage must not turn into
+	// text via an app-side fallback.
+	unmapped := vi.Event{Kind: vi.EvKeyDown, Arg0: 0x1b}
+	if got, ok := insertionFor(unmapped); ok {
+		t.Fatalf("insertionFor(raw usage %#x, no translated byte) = (%q,true) want not-insertable",
+			unmapped.Arg0, got)
+	}
 	bad := []vi.Event{
 		down(0x1b, 0),                         // escape
 		down('a', modCtrl),                    // a chord, not text
