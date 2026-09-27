@@ -99,6 +99,12 @@ const (
 	MarkerSnapshotBad     = "gotabwm: snapshot bad "
 	MarkerSnapshotMissing = "gotabwm: snapshot missing"
 	MarkerSnapshotFail    = "gotabwm: snapshot fail "
+	// MarkerSnapshotPersist is the one condition that weakens the one-shot
+	// guarantee: the request could not be consumed, so it is still on the
+	// share and the NEXT boot will try the same bundle again. It never
+	// changes this boot's verdict — a restore that worked worked, a refusal
+	// still refused — it only says out loud that the guarantee did not hold.
+	MarkerSnapshotPersist = "gotabwm: snapshot request persist "
 )
 
 // The share calls the bundle is written through. Vars, not direct calls, for
@@ -171,11 +177,15 @@ func captureBundle() ([]byte, int, int, bool) {
 	return raw, len(entries), len(docs), true
 }
 
-// captureDocs is the documents selection: the first maxDocs regular files a
-// listing of docsDir returns, in NAME order. Sorting is not decoration — it
-// makes the encoded bundle a function of the directory's CONTENTS rather than
-// of the order the host happened to hand back, so the same share captures the
-// same bytes twice and a gate can compare a capture against itself.
+// captureDocs is the documents selection: the maxDocs alphabetically-first
+// regular files of docsDir. Sorting is not decoration — it makes the encoded
+// bundle a function of the directory's CONTENTS rather than of the order the
+// host happened to hand back, so the same share captures the same bytes twice
+// and a gate can compare a capture against itself. Truncating AFTER the sort
+// (not before) is what makes that true when the directory holds more than
+// maxDocs files: take the first maxDocs of the LISTING and the selection would
+// depend on readdir order, so a share with seven documents could capture a
+// different bundle on two boots with nothing on the share having changed.
 //
 // A missing or unreadable docsDir is an empty selection, not a failure: the
 // documents are the optional part of the bundle, and a share with no DOCS must
@@ -192,7 +202,7 @@ func captureDocs() []snapshot.Entry {
 		size uint32
 	}
 	var found []doc
-	for i := 0; i < n && len(found) < maxDocs; i++ {
+	for i := 0; i < n; i++ {
 		e := rows[i]
 		if e.Dir() {
 			continue
@@ -207,8 +217,9 @@ func captureDocs() []snapshot.Entry {
 		}
 		found = append(found, doc{name: name, size: e.Size})
 	}
-	// Insertion sort by name, bounded at maxDocs. A capture of a 16-entry
-	// listing does not need a general sort, and the guest keeps no heap.
+	// Insertion sort by name, bounded by the kernel's 16-entry listing
+	// window. A capture of that window does not need a general sort, and the
+	// guest keeps no heap.
 	for i := 1; i < len(found); i++ {
 		d := found[i]
 		j := i - 1
@@ -217,6 +228,9 @@ func captureDocs() []snapshot.Entry {
 			j--
 		}
 		found[j+1] = d
+	}
+	if len(found) > maxDocs {
+		found = found[:maxDocs]
 	}
 	out := make([]snapshot.Entry, 0, len(found))
 	for _, d := range found {
@@ -264,7 +278,13 @@ func restoreSnapshot() bool {
 	if !snapExists(restoreFlag) {
 		return false
 	}
-	snapDelete(restoreFlag)
+	// The return is checked rather than dropped: a failed delete leaves the
+	// request on the share, which is the one way the one-shot guarantee can
+	// fail, and the reader of this serial deserves to be told instead of
+	// being shown a clean restore and a request that is still there.
+	if rc := snapDelete(restoreFlag); rc != 0 {
+		snapLog(MarkerSnapshotPersist + vi.Itoa64(rc))
+	}
 
 	raw, rc := snapRead(bundlePath, maxBundleRead)
 	if rc < 0 || raw == nil {

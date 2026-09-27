@@ -371,9 +371,14 @@ func splitEntryHeader(line []byte) (name string, num int, reason string) {
 
 // parseCount reads the entry count out of the header's tail. Strict for the
 // same reason splitEntryHeader is: digits only, bounded length, and a value
-// that must be at least 1 and at most MaxEntries.
+// that must be at least 1 and at most MaxEntries. A LEADING ZERO is refused
+// too, so both numeric fields in the container share one grammar and there is
+// a single way to spell a count.
 func parseCount(d []byte) (int, bool) {
 	if len(d) == 0 || len(d) > 3 {
+		return 0, false
+	}
+	if len(d) > 1 && d[0] == '0' {
 		return 0, false
 	}
 	n := 0

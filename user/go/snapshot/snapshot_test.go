@@ -170,6 +170,11 @@ func TestRefusalReasons(t *testing.T) {
 		{"zero entries declared", "#vb1 0\n", ReasonCount},
 		{"count over the cap", "#vb1 99\n", ReasonCount},
 		{"non-digit count", "#vb1 x\nsettings 1\nx", ReasonCount},
+		// One grammar for both numeric fields: a count is not spelled with
+		// a leading zero, and not with a padded one either.
+		{"leading-zero count", "#vb1 04\nsettings 1\nxsession 1\ny", ReasonCount},
+		{"zero-padded count", "#vb1 004\n", ReasonCount},
+		{"count with a sign", "#vb1 +1\nsettings 1\nx", ReasonCount},
 		{"no separator", string(Header(1)) + "settings1\nx", ReasonEntryHeader},
 		{"name only", string(Header(1)) + "settings\n", ReasonEntryHeader},
 		{"two separators", string(Header(1)) + "settings 1 2\nx", ReasonEntryHeader},

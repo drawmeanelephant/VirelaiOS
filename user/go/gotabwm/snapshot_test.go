@@ -588,3 +588,82 @@ func itoaTest(v int) string {
 	}
 	return string(b)
 }
+
+// The documents selection is the maxDocs alphabetically-FIRST regular files,
+// not the first maxDocs the listing happened to return. Truncating before the
+// sort would make the bundle a function of readdir order, so a share with more
+// documents than the cap could capture two different bundles with nothing on
+// the share having changed — which would quietly break the card's byte-exact
+// claim for exactly the shares with the most to lose.
+func TestCaptureDocsTakesTheAlphabeticallyFirstBeyondTheCap(t *testing.T) {
+	f := newFakeShare()
+	f.install(t)
+	f.dirs[docsDir] = true
+	// maxDocs+2 documents, staged in an order no sort would preserve, and
+	// with the two that must WIN the cap placed LAST in the listing.
+	names := []string{"e.TXT", "c.TXT", "g.TXT", "a.TXT", "f.TXT", "b.TXT", "d.TXT", "h.TXT"}
+	for _, n := range names {
+		f.put(docsDir+"/"+n, []byte(n+" body\n"))
+	}
+	got := captureDocs()
+	if len(got) != maxDocs {
+		t.Fatalf("captured %d documents, want the cap %d", len(got), maxDocs)
+	}
+	// The first maxDocs of the ALPHABET, whatever order they were listed in.
+	want := []string{"a.TXT", "b.TXT", "c.TXT", "d.TXT", "e.TXT", "f.TXT"}
+	for i, w := range want {
+		if got[i].Name != snapshot.DocsPrefix+w {
+			t.Fatalf("docs[%d] = %q, want %q (alphabetical, then capped)",
+				i, got[i].Name, snapshot.DocsPrefix+w)
+		}
+	}
+	// The same share, listed in a different order, captures the same bundle.
+	f2 := newFakeShare()
+	f2.install(t)
+	f2.dirs[docsDir] = true
+	for i := len(names) - 1; i >= 0; i-- {
+		f2.put(docsDir+"/"+names[i], []byte(names[i]+" body\n"))
+	}
+	other := captureDocs()
+	for i := range got {
+		if got[i].Name != other[i].Name || !bytes.Equal(got[i].Body, other[i].Body) {
+			t.Fatalf("listing order changed the selection: %q vs %q",
+				got[i].Name, other[i].Name)
+		}
+	}
+}
+
+// A request that cannot be consumed is the one way the one-shot guarantee
+// fails, and it must be said out loud rather than hidden behind a clean
+// restore marker — the share still carries the request and the next boot will
+// try the same bundle again.
+func TestRestoreReportsARequestItCouldNotConsume(t *testing.T) {
+	f := newFakeShare()
+	f.install(t)
+	f.seedBundle(t)
+	snapDelete = func(path string) int64 {
+		delete(f.files, path)
+		f.ops = append(f.ops, "delete:"+path)
+		return -5 // the honest failure the share hands back
+	}
+	// The restore still happened — the verdict is unchanged...
+	if !restoreSnapshot() {
+		t.Fatal("a failed request-delete must not turn a good restore into a failure")
+	}
+	// ...but the weakened guarantee is named.
+	saw := false
+	for _, l := range f.lines() {
+		if strings.HasPrefix(l, MarkerSnapshotPersist) {
+			saw = true
+			if !strings.Contains(l, "-5") {
+				t.Fatalf("marker %q does not name the return", l)
+			}
+		}
+		if strings.HasPrefix(l, MarkerSnapshotFail) {
+			t.Fatalf("a failed request-delete was reported as a restore failure: %q", l)
+		}
+	}
+	if !saw {
+		t.Fatalf("no %s line in %v", MarkerSnapshotPersist, f.lines())
+	}
+}

@@ -526,7 +526,7 @@ PY
 #                   it. That script then sets theme=dark (so a later restore is
 #                   observable) and stages the one-shot SNAPSHOT.RESTORE.
 #   07  restore     the seat rehydrates the share from the bundle: the token
-#                   probe reports theme=amber again and SETTINGS.TXT
+#                   probe reports theme=light again and SETTINGS.TXT
 #                   byte-equals settings-snapshot.expected.
 #   08  corrupt     64 probe-pattern bytes are staged over the bundle and the
 #                   request re-armed. The seat refuses the bundle WHOLE:
