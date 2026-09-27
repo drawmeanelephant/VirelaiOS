@@ -65,6 +65,7 @@ const (
 	markerSet      = "goset: set "
 	markerDiscard  = "goset: discard "
 	markerSaved    = "goset: saved "
+	markerNotified = "goset: settings notified key="
 	markerRefused  = "goset: save refused"
 	markerSaveFail = "goset: save failed rc="
 	markerPresent  = "goset: present"
@@ -282,6 +283,7 @@ func (a *panel) save() {
 		return
 	}
 	f := settings.File{Rows: a.disp, State: settings.StateOK}
+	changed := changedSettingKeys(a.file, f)
 	rc := f.Save()
 	if rc == settings.SaveRefused {
 		vi.ConsoleLine(markerRefused)
@@ -292,9 +294,38 @@ func (a *panel) save() {
 		a.status = "save failed rc=" + vi.Itoa64(rc)
 		return
 	}
-	a.file = f
+	// Keep the on-disk baseline separate from the editable table. Later edits
+	// mutate a.disp in place, and must remain diffable against this save.
+	a.file = settings.File{
+		Rows:  append([]settings.Setting(nil), f.Rows...),
+		State: f.State,
+	}
 	vi.ConsoleLine(markerSaved + a.summary())
 	a.status = "saved " + settings.Path
+	for _, key := range changed {
+		if settings.PublishChange(key, uint32(a.ta.Win), a.ta.Name) {
+			vi.ConsoleLine(markerNotified + key)
+		}
+	}
+}
+
+// changedSettingKeys compares effective values rather than file presence:
+// materializing compiled defaults in the first save is not itself a change.
+func changedSettingKeys(before, after settings.File) []string {
+	var changed []string
+	for i, row := range after.Rows {
+		if !settings.Editable(row.Key) {
+			continue
+		}
+		if _, later := settings.Get(after.Rows[i+1:], row.Key); later {
+			continue
+		}
+		old, found := before.Effective(row.Key)
+		if !found || old != row.Val {
+			changed = append(changed, row.Key)
+		}
+	}
+	return changed
 }
 
 // cycle moves the selected row to the next value in its vocabulary. A key with

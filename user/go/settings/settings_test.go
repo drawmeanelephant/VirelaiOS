@@ -5,6 +5,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"virelai/vi"
 )
 
 // ---------------------------------------------------------------------------
@@ -243,6 +245,36 @@ func TestEffectivePrefersTheFileValue(t *testing.T) {
 	}
 	if v, ok := f.Effective("not_a_key"); ok {
 		t.Fatalf("unknown key produced %q", v)
+	}
+}
+
+func TestDefaultIncludesAcceptedUnseededKeys(t *testing.T) {
+	for key, want := range map[string]string{
+		"palette_fg":     "00ff00",
+		"palette_bg":     "101418",
+		"palette_accent": "3b82f6",
+		"font_size":      "medium",
+	} {
+		if got, ok := Default(key); !ok || got != want {
+			t.Errorf("Default(%q) = (%q, %v), want (%q, true)", key, got, ok, want)
+		}
+	}
+	if _, ok := Default("not_a_key"); ok {
+		t.Fatal("unknown key acquired a default")
+	}
+}
+
+func TestSubscriptionAndPublishRejectUnknownKeys(t *testing.T) {
+	prev := vi.SetSyscallHookForTest(func(uintptr, uintptr, uintptr, uintptr, uintptr) int64 {
+		t.Fatal("unknown setting touched the syscall seam")
+		return 0
+	})
+	defer vi.SetSyscallHookForTest(prev)
+	if Subscribe("not_a_key", 4, "NOTE.ELF") {
+		t.Fatal("unknown setting subscribed")
+	}
+	if PublishChange("not_a_key", 4, "GOSET.ELF") {
+		t.Fatal("unknown setting published")
 	}
 }
 

@@ -3,6 +3,8 @@ package main
 import (
 	"testing"
 
+	"virelai/settings"
+	"virelai/theme"
 	"virelai/vi"
 )
 
@@ -16,6 +18,8 @@ func TestInteropMarkerShapes(t *testing.T) {
 		{MarkerRpcDetach, "gotabwm: rpc detach id="},
 		{MarkerRpcCycle, "gotabwm: rpc cycle"},
 		{MarkerTitle, "gotabwm: title id="},
+		{MarkerSettingsSubscribe, "gotabwm: settings subscribe pid="},
+		{MarkerSettingsBroadcast, "gotabwm: settings broadcast key="},
 		{MarkerRpcOther, "gotabwm: rpc other kind="},
 		{MarkerHostFocus, "gotabwm: host focus id="},
 		{MarkerHostView, "gotabwm: host view id="},
@@ -338,6 +342,88 @@ func TestApplyRpcNotify(t *testing.T) {
 		t.Fatalf("notifyDropped = %d want %d (the first toast, plus the one the flood evicted)",
 			notifyDropped, wantDrops)
 	}
+}
+
+func TestSettingsSubscribeAndBroadcastDispatch(t *testing.T) {
+	savedTabs := tabs
+	savedLoad, savedSend := loadSettingsForBus, sendSettingsNotice
+	savedSubs := settingsSubscriptions
+	savedValues := settingsBusValues
+	savedTheme := theme.Current
+	t.Cleanup(func() {
+		tabs = savedTabs
+		loadSettingsForBus, sendSettingsNotice = savedLoad, savedSend
+		settingsSubscriptions = savedSubs
+		settingsBusValues = savedValues
+		theme.Current = savedTheme
+	})
+	tabs = TabStrip{}
+	resetSettingsSubscriptions()
+	if !tabs.OpenTab(4, "calc") || !tabs.OpenTab(5, "settings") {
+		t.Fatal("open subscriber and publisher tabs")
+	}
+
+	var target uint32
+	var sent vi.WmRpc
+	sendSettingsNotice = func(pid uint32, body []byte) int64 {
+		target = pid
+		var ok bool
+		sent, ok = vi.DecodeWmRpc(body)
+		if !ok {
+			t.Fatal("invalid event frame")
+		}
+		return int64(len(body))
+	}
+	req := vi.WmRpc{Kind: vi.WmRpcKindSettingsSubscribe, ID: 4, ReplyTo: 77}
+	req.SetTitle("theme")
+	if !applyRPC(req) {
+		t.Fatal("valid subscription refused")
+	}
+	if !applyRPC(req) {
+		t.Fatal("repeated subscription should be idempotent")
+	}
+	if got := countSettingsSubscriptions(); got != 1 {
+		t.Fatalf("subscription count = %d, want 1", got)
+	}
+
+	loadSettingsForBus = func() settings.File {
+		return settings.File{State: settings.StateOK, Rows: []settings.Setting{{Key: "theme", Val: "light"}}}
+	}
+	seedSettingsBusValues(settings.File{State: settings.StateOK, Rows: []settings.Setting{{Key: "theme", Val: "dark"}}})
+	publish := vi.WmRpc{Kind: vi.WmRpcKindSettingsPublish, ID: 5, ReplyTo: 88}
+	publish.SetTitle("theme")
+	if !applyRPC(publish) {
+		t.Fatal("valid published setting refused")
+	}
+	if target != 77 || sent.Kind != vi.WmRpcKindSettingsChanged ||
+		sent.ID != 4 || sent.ReplyTo != 0 || sent.TitleString() != "theme" {
+		t.Fatalf("broadcast target=%d frame=%+v title=%q", target, sent, sent.TitleString())
+	}
+
+	bad := vi.WmRpc{Kind: vi.WmRpcKindSettingsPublish, ID: 5, ReplyTo: 88}
+	bad.SetTitle("not_a_key")
+	if applyRPC(bad) {
+		t.Fatal("unknown setting publish applied")
+	}
+	if applyRPC(publish) {
+		t.Fatal("duplicate publish was broadcast as a second change")
+	}
+	if !tabs.CloseTab(4) {
+		t.Fatal("close subscriber tab")
+	}
+	if got := countSettingsSubscriptions(); got != 0 {
+		t.Fatalf("subscriptions after close = %d, want 0", got)
+	}
+}
+
+func countSettingsSubscriptions() int {
+	n := 0
+	for _, s := range settingsSubscriptions {
+		if s.active {
+			n++
+		}
+	}
+	return n
 }
 
 // Closing a tab takes its toasts with it, through the same CloseTab choke
