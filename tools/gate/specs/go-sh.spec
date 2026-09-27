@@ -79,6 +79,14 @@ EOF
 # history ring and shifts the Up-arrow recall the typed-chord choreography
 # so it lands in the history ring and changes the session history. Comments
 # belong in this prose, above the heredoc.
+
+# Seed one known history entry before GOSH opens its editor. The first live
+# Up/Return is a transport probe: if the key path works, a non-empty history
+# MUST submit this line. This separates a lost Up chord from an empty live
+# history ring before the following typed-line history regression.
+vgate_file GOSH-HISTORY.TXT <<'EOF'
+echo history-seed
+EOF
 # The startup contract: STARTUP.SH (then PROFILE.SH, absent here) runs
 # before the first prompt. `exec` inside GOSH is the monitor vocabulary --
 # it runs the named ELF; the -c child form is GOSH's own headless mode
@@ -136,23 +144,21 @@ with open(os.path.join(share, "README.TXT"), "w") as fh:
     fh.write("open-contract-text\n")
 with open(os.path.join(share, "SONG.OGG"), "wb") as fh:
     fh.write(b"OggS\x00\x02")
-print("staged GOSH.ELF, GOEDIT.ELF, WEB.ELF + STARTUP.SH and open fixtures")
+shutil.copy(os.path.join(rd, "GOSH-HISTORY.TXT"),
+            os.path.join(share, "GOSH-HISTORY.TXT"))
+print("staged GOSH.ELF, GOEDIT.ELF, WEB.ELF + STARTUP.SH and history fixture")
 PY
 
-# Typed at the prompt -- THREE submitted lines, because `gosh: line ` is
-# emitted on submit only: `echo abc` is typed and returned; Ctrl+R searches
-# for `echo`, Enter accepts the newest match, two backspaces and a z turn it
-# into `echo az`, returned; another Ctrl+R search recalls THAT, a backspace
-# removes the z and a y makes it `echo ay`, the marker the stage gate waits
-# on. The third line is deliberately NOT `echo azx`: `echo az` would be a
-# prefix of it, and no substring-tolerant assert can then distinguish them.
+# The first Up/Return submits the seeded history entry as a live transport
+# probe. Then the typed-line sequence uses reverse-i-search to recall lines,
+# exercising the current editor behavior while keeping the raw Up path pinned.
 vgate_run 01 -- \
     --screen '$RUN_DIR/screen' \
     --via-virtio \
     --script '$RUN_DIR/script.txt' \
     --script2 '$RUN_DIR/script2.txt' \
     --script2-after 'tabwm: sidebar-rendered' \
-    --input-chords 'e,c,h,o,space,a,b,c,return,ctrl-r,e,c,h,o,return,backspace,backspace,z,return,ctrl-r,e,c,h,o,return,backspace,y,return' \
+    --input-chords 'up,return,e,c,h,o,space,a,b,c,return,ctrl-r,e,c,h,o,return,backspace,backspace,z,return,ctrl-r,e,c,h,o,return,backspace,y,return' \
     --input-chords-after 'gosh: prompt' \
     --script3 '$RUN_DIR/script3.txt' \
     --script3-after 'gosh: line echo ay' \
@@ -172,6 +178,7 @@ vgate_assert 01 serial-contains 'gosh: attached'
 # as the same `gosh: line ` markers a typed line gets.
 vgate_assert 01 serial-contains 'gosh: line echo gosh-startup-ran'
 vgate_assert 01 serial-contains 'gosh: prompt'
+vgate_assert 01 serial-contains 'gosh: line echo history-seed'
 vgate_assert 01 serial-contains 'gosh: job 1 pid='
 vgate_assert 01 serial-contains 'gosh: job 1 done exit=0'
 # The four markers neither existing kind can carry honestly -- the child's own
