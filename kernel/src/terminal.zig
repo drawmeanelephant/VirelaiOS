@@ -61,6 +61,11 @@ pub const reply_max: usize = 32;
 /// OSC is dropped whole at its terminator — consumed, never painted,
 /// never partially applied.
 pub const osc_max: usize = 768;
+
+/// M85a (#1813): the DCS/sixel capture bound. A sixel payload past this is
+/// dropped WHOLE (the OSC overflow rule); M85b revisits the bound when
+/// decode and placement land ("grow with the consumer").
+pub const sixel_max: usize = 4096;
 /// M80g: the stored window-title bound. Delivery sinks truncate further:
 /// the window title buffer takes 63 bytes + NUL, the seat's kind-11
 /// frame the frozen 24-byte `wm_rpc_title_max` field.
@@ -440,7 +445,8 @@ pub const Screen = struct {
     tab_stops: [2]u64 = default_tab_stops,
     alt_tab_stops: [2]u64 = default_tab_stops,
     /// Parser state: 0 normal, 1 ESC, 2 CSI, 3 ESC character-set final,
-    /// 4 OSC string, 5 OSC string after its ESC (ST pending).
+    /// 4 OSC string, 5 OSC string after its ESC (ST pending), 6 ESC string
+    /// (DCS/APC/SOS/PM), 7 ESC string after its ESC (ST pending).
     esc_state: u8 = 0,
     esc_charset_slot: u8 = 0,
     csi_params: [16]u16 = [_]u16{0} ** 16,
@@ -466,6 +472,36 @@ pub const Screen = struct {
     clip_data: [clipboard.capacity]u8 = undefined,
     clip_len: usize = 0,
     clip_dirty: bool = false,
+    /// M85a (#1813): image-sequence intake — the DCS/sixel capture and the
+    /// "consumed, never painted" rule for every other ESC string (APC —
+    /// kitty's channel — SOS, PM, non-`q` DCS). Stream state like the OSC
+    /// parser's: bounded, never swapped with the alternate screen, dropped
+    /// WHOLE past the bound. This card parses and captures only; M85b
+    /// decodes and places.
+    /// The string introducer that opened the in-flight string: 'P' (DCS),
+    /// '_' (APC), 'X' (SOS), '^' (PM).
+    dcs_intro: u8 = 0,
+    /// 0 = parameter string (before the DCS final), 1 = sixel payload
+    /// (after `q`), 2 = drain-only (non-`q` final or non-DCS introducer).
+    dcs_phase: u8 = 0,
+    /// The three DCS Ps values (`P1;P2;P3`); params beyond three are
+    /// consumed, never parsed.
+    sixel_p: [3]u16 = [_]u16{0} ** 3,
+    sixel_pcount: usize = 0,
+    /// The sixel payload buffer — the grid-side asset slot M85b decodes.
+    /// It holds IN-FLIGHT bytes while a string is pending and the asset
+    /// once `sixel_ready`; readers (the pump, M85b) read it only when
+    /// ready.
+    sixel_buf: [sixel_max]u8 = undefined,
+    sixel_len: usize = 0,
+    /// Sticky until the next string begins: the capture overflowed its
+    /// bound and was dropped WHOLE (the OSC overflow rule).
+    sixel_overflow: bool = false,
+    /// A complete capture is ready for M85b (ST seen, within bounds).
+    sixel_ready: bool = false,
+    /// Cursor origin at the string's start — M85b's placement anchor.
+    sixel_origin_line: usize = 0,
+    sixel_origin_col: usize = 0,
     /// M80a (#1712): REP (CSI b)'s "last printed rune" — the placement is
     /// repeated VERBATIM (rune, overlay mark and rendition). Stream state
     /// like the CSI parser's own: not swapped with the alternate screen,
@@ -661,6 +697,85 @@ pub const Screen = struct {
         @memcpy(self.clip_data[0..n], scratch[0..n]);
         self.clip_len = n;
         self.clip_dirty = true;
+    }
+
+    /// M85a (#1813): open an ESC string — DCS `P` (sixel's channel), APC
+    /// `_` (kitty's), SOS `X`, PM `^`. All four are consumed through ST
+    /// and never painted; only a DCS whose final is `q` (sixel) captures
+    /// payload. The cursor origin is recorded for M85b's placement.
+    fn dcsBegin(self: *Screen, intro: u8) void {
+        self.esc_state = 6;
+        self.dcs_intro = intro;
+        self.dcs_phase = 0;
+        self.sixel_p = [_]u16{0} ** 3;
+        self.sixel_pcount = 0;
+        self.sixel_len = 0;
+        self.sixel_overflow = false;
+        self.sixel_ready = false;
+        self.sixel_origin_line = self.cur;
+        self.sixel_origin_col = self.col;
+    }
+
+    /// M85a: one byte of an ESC string. Phase 0 collects the DCS parameter
+    /// string — digits and `;` into at most three Ps values, everything
+    /// else consumed — until the first final byte (0x40–0x7E): `q` after a
+    /// DCS opens the sixel payload capture, any other final or introducer
+    /// opens a pure drain. C0 bytes inside a string are consumed as
+    /// payload: never executed, never painted.
+    fn dcsByte(self: *Screen, b: u8) void {
+        switch (self.dcs_phase) {
+            0 => {
+                if (b >= '0' and b <= '9') {
+                    if (self.sixel_pcount < self.sixel_p.len) {
+                        self.sixel_p[self.sixel_pcount] = self.sixel_p[self.sixel_pcount] *% 10 +% (b - '0');
+                    }
+                    return;
+                }
+                if (b == ';') {
+                    // Params beyond three are consumed, never parsed: the
+                    // selector saturates at 3 (= exhausted) and the digit
+                    // guard then drops their digits.
+                    self.sixel_pcount = @min(self.sixel_pcount + 1, self.sixel_p.len);
+                    return;
+                }
+                if (b >= 0x40 and b <= 0x7e) {
+                    self.dcs_phase = if (self.dcs_intro == 'P' and b == 'q') 1 else 2;
+                }
+                return;
+            },
+            1 => {
+                if (self.sixel_len < sixel_max) {
+                    self.sixel_buf[self.sixel_len] = b;
+                    self.sixel_len += 1;
+                } else {
+                    self.sixel_overflow = true;
+                }
+            },
+            else => {}, // phase 2: pure drain
+        }
+    }
+
+    /// M85a: ST completed the string. A complete sixel capture commits as
+    /// the grid-side asset slot; every other outcome — a non-`q` final, a
+    /// non-DCS introducer, a malformed or over-bound body — drops WHOLE
+    /// ("consumed, never painted"). `sixel_overflow` stays sticky so the
+    /// drop reason is observable until the next string begins.
+    fn dcsFinish(self: *Screen) void {
+        self.esc_state = 0;
+        if (self.dcs_phase == 1 and !self.sixel_overflow) {
+            self.sixel_ready = true;
+        } else {
+            self.sixel_len = 0;
+            self.sixel_ready = false;
+        }
+    }
+
+    /// M85a: drop the in-flight string whole (CAN/SUB, or an ESC that did
+    /// not complete ST).
+    fn dcsAbort(self: *Screen) void {
+        self.esc_state = 0;
+        self.sixel_len = 0;
+        self.sixel_ready = false;
     }
 
     fn clearSavedCursor(self: *Screen) void {
@@ -1899,6 +2014,13 @@ pub const Screen = struct {
                         // M80d: HTS sets a stop at the current column.
                         self.setTabStop(self.col);
                     },
+                    'P', '_', 'X', '^' => {
+                        // M85a (#1813): an ESC string — DCS (sixel's
+                        // channel), APC (kitty's), SOS, PM. All are
+                        // consumed through ST, never painted; only DCS `q`
+                        // captures payload.
+                        self.dcsBegin(b);
+                    },
                     else => {},
                 }
                 return;
@@ -1966,6 +2088,34 @@ pub const Screen = struct {
                     return;
                 }
                 self.oscAbort();
+                self.esc_state = 1;
+                self.putByte(b);
+                return;
+            },
+            6 => {
+                // M85a (#1813): ESC-string collection (DCS/APC/SOS/PM).
+                // Consumed through ST, never painted; CAN/SUB aborts and
+                // the partial capture is dropped whole.
+                if (b == 0x1b) {
+                    self.esc_state = 7;
+                    return;
+                }
+                if (b == 0x18 or b == 0x1a) {
+                    self.dcsAbort();
+                    return;
+                }
+                self.dcsByte(b);
+                return;
+            },
+            7 => {
+                // M85a: the byte after an ESC inside a string — the OSC
+                // state-5 rule, mirrored: `\\` completes the ST, anything
+                // else aborts the string and runs as an escape final.
+                if (b == '\\') {
+                    self.dcsFinish();
+                    return;
+                }
+                self.dcsAbort();
                 self.esc_state = 1;
                 self.putByte(b);
                 return;
