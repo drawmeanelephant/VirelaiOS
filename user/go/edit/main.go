@@ -69,6 +69,8 @@
 package main
 
 import (
+	"strings"
+
 	"virelai/tabapp"
 	"virelai/vi"
 	"virelai/webrender/font"
@@ -101,6 +103,16 @@ const (
 
 	// M42 UX r2 / WMS8 Gate 4 rehomed (#1485): the unsaved-changes dialog.
 	markerUnsaved = "goedit: win_unsaved"
+
+	// M81d (#1764): the advisory write lease's console receipts. The open
+	// marker names the holder pid the record now carries (the takeover's
+	// receipt); the save-error line carries the -ErrEAGAIN refusal when
+	// another writer holds it live.
+	markerLeaseOK   = "goedit: lease acquired pid="
+	markerLeaseHeld = "goedit: lease held rc="
+	markerLeaseRel  = "goedit: lease released"
+	// The gate fixture verb's receipt (see leaseFixture).
+	markerLeaseFixture = "goedit: lease fixture "
 
 	// modCtrl is the ADR 0009 Ctrl modifier bit; every chord below tests it.
 	modCtrl = uint16(0x0002)
@@ -212,6 +224,50 @@ type editor struct {
 	cur  int
 	mode inputMode
 	bar  []byte
+
+	// M81d (#1764): the advisory write lease taken at open and held for the
+	// session, so a file manager cannot delete or overwrite the file out
+	// from under the editing session. nil when the open-time acquire was
+	// refused (another writer holds it live) — every save then retries.
+	lease *vi.FileLease
+}
+
+// leaseFixture stamps a FOREIGN lease record on the edited path before the
+// editor's own acquire — the second writer's side of the M81d drill without
+// needing a second process (the GOSELF --panic-receipt-fixture precedent:
+// a named fixture verb, not a hidden side door). `live` carries a stamp no
+// run outlives (the year 2286), `stale` one every rule reads as expired
+// (ts=1); pid=0 keeps the record's liveness purely on the stamp, so the
+// fixture is timing-proof either way. The record text is the on-share
+// VLEASE1 convention, hand-rendered the way a foreign writer would.
+func leaseFixture(path, mode string) bool {
+	ts := "1"
+	if mode == "live" {
+		ts = "9999999999"
+	} else if mode != "stale" {
+		return false
+	}
+	lp := vi.LeasePathFor(path)
+	if lp == "" {
+		return false
+	}
+	// The record's directory may not exist yet (the fixture can run before
+	// any acquire); the MODE_DIR create triple's EEXIST is fine.
+	h, rc := vi.FileOpen(vi.LeaseDir, vi.ModeWrite|vi.ModeCreate|vi.ModeDir)
+	if rc < 0 && rc != -9 {
+		vi.ConsoleLine(markerLeaseFixture + mode + " rc=" + vi.Itoa64(rc))
+		return false
+	}
+	if rc >= 0 {
+		vi.FileClose(uint32(h))
+	}
+	rec := "VLEASE1\npid=0\nts=" + ts + "\ntoken=fedcba9876543210\npath=" + path + "\n"
+	if rc := vi.WriteFileSafe(lp, []byte(rec)); rc < 0 {
+		vi.ConsoleLine(markerLeaseFixture + mode + " rc=" + vi.Itoa64(rc))
+		return false
+	}
+	vi.ConsoleLine(markerLeaseFixture + mode)
+	return true
 }
 
 func main() {
@@ -219,6 +275,11 @@ func main() {
 	path := defaultPath
 	if len(args) > 1 && len(args[1]) > 0 {
 		path = args[1]
+	}
+	for _, a := range args[2:] {
+		if strings.HasPrefix(a, "--lease-fixture=") {
+			leaseFixture(path, strings.TrimPrefix(a, "--lease-fixture="))
+		}
 	}
 
 	ta := tabapp.Init(tabapp.Config{
@@ -242,6 +303,12 @@ func main() {
 
 	e := &editor{ta: ta, path: path}
 	e.load()
+	// M81d: the session's advisory write lease. A refusal is reported and
+	// the editor stays usable — every save retries the acquire, so a
+	// writer that lets go while we edit is honored on the next Ctrl-S.
+	if rc := e.ensureLease(); rc < 0 {
+		vi.ConsoleLine(markerLeaseHeld + vi.Itoa64(rc))
+	}
 	e.draw()
 	ta.Present()
 	// The first frame is on the scanout: the gate releases the injected
@@ -265,6 +332,7 @@ func main() {
 		}
 		switch ta.Dispatch(ev) {
 		case tabapp.ActionClosed:
+			e.releaseLease()
 			vi.ConsoleLine(markerClose)
 			vi.ConsoleLine(markerOK)
 			ta.CloseAndExit(0)
@@ -278,6 +346,9 @@ func main() {
 			}
 		}
 	}
+	// The event loop broke on a poll error — the same exit discipline as the
+	// clean paths, so a lease is not left standing on a dead session.
+	e.releaseLease()
 }
 
 // load reads the fixture into the buffer. A missing file is not fatal: the
@@ -437,6 +508,7 @@ func (e *editor) unsavedExit(ev vi.Event) {
 	if ev.Arg0 == 0 {
 		published = e.save()
 	}
+	e.releaseLease()
 	vi.ConsoleLine(markerUnsaved)
 	vi.ConsoleLine(markerClose)
 	if !published {
@@ -535,6 +607,10 @@ func (e *editor) markDirty() {
 // only place this app writes) and the false return is what the callers use to
 // decide whether they may report a clean exit.
 func (e *editor) save() bool {
+	if rc := e.ensureLease(); rc < 0 {
+		vi.ConsoleLine(markerSaveErr + e.path + " " + vi.Itoa64(rc))
+		return false
+	}
 	if rc := vi.WriteFileSafe(e.path, e.buf); rc < 0 {
 		vi.ConsoleLine(markerSaveErr + e.path + " " + vi.Itoa64(rc))
 		return false
@@ -542,6 +618,46 @@ func (e *editor) save() bool {
 	e.dirty = false
 	vi.ConsoleLine(markerSaved + e.path + " n=" + vi.Itoa64(int64(len(e.buf))))
 	return true
+}
+
+// ensureLease acquires or refreshes this editor's advisory write lease
+// (M81d #1764). The open-time call takes the lease for the session; every
+// save re-stamps it first, so a session longer than vi.LeaseExpirySeconds
+// renews instead of fighting its own record. A refusal (-ErrEAGAIN: another
+// writer holds the lease live) is the caller's sign to report and back off;
+// a lease that was taken over meanwhile drops the stale handle so the next
+// save retries from scratch.
+func (e *editor) ensureLease() int64 {
+	if e.lease == nil {
+		l, rc := vi.AcquireFileLease(e.path, appName)
+		if rc < 0 {
+			return rc
+		}
+		e.lease = l
+		vi.ConsoleLine(markerLeaseOK + vi.Itoa64(int64(l.PID)))
+		return 0
+	}
+	if rc := e.lease.Refresh(); rc < 0 {
+		e.lease = nil
+		return rc
+	}
+	return 0
+}
+
+// releaseLease drops the session's lease at every exit path. A lease that
+// was taken over meanwhile belongs to the new holder and Release refuses to
+// delete it — the marker says which happened, because the gates read these
+// lines.
+func (e *editor) releaseLease() {
+	if e.lease == nil {
+		return
+	}
+	if rc := e.lease.Release(); rc >= 0 {
+		vi.ConsoleLine(markerLeaseRel)
+	} else {
+		vi.ConsoleLine(markerLeaseRel + " rc=" + vi.Itoa64(rc))
+	}
+	e.lease = nil
 }
 
 // findMarker is the find bar's serial result, in the Zig app's exact shape:

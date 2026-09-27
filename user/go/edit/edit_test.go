@@ -1,7 +1,9 @@
 package main
 
 import (
+	"strings"
 	"testing"
+	"unsafe"
 
 	"virelai/vi"
 )
@@ -312,5 +314,167 @@ func TestMarkDirtyIsAnEdge(t *testing.T) {
 	e.markDirty()
 	if !e.dirty {
 		t.Fatal("markDirty must stay set")
+	}
+}
+
+// editKernel is an in-memory kernel for the save() flow's syscalls: the
+// lease rows (time/random/procs/file-ABI) plus WriteFileSafe's
+// temp+fsync+delete+rename publish. It captures console writes so the
+// lease markers are pinned on the host, the way the gate greps them live.
+type editKernel struct {
+	files   map[string][]byte
+	fds     map[uint32]*editHandle
+	next    uint32
+	now     int64
+	console strings.Builder
+}
+
+type editHandle struct {
+	path   string
+	cursor int
+	read   bool
+}
+
+func hookStrAt(a0, a1 uintptr) string {
+	if a0 == 0 || a1 == 0 {
+		return ""
+	}
+	return string(unsafe.Slice((*byte)(unsafe.Pointer(a0)), a1))
+}
+
+func installEditKernel(t *testing.T, now int64) *editKernel {
+	t.Helper()
+	k := &editKernel{files: map[string][]byte{}, fds: map[uint32]*editHandle{}, now: now}
+	prev := vi.SetSyscallHookForTest(func(num uintptr, a0, a1, a2, a3 uintptr) int64 {
+		switch num {
+		case vi.SlotWrite:
+			k.console.WriteString(hookStrAt(a1, a2))
+			return int64(a2)
+		case vi.SlotTime:
+			return k.now
+		case vi.SlotGetRandom:
+			buf := unsafe.Slice((*byte)(unsafe.Pointer(a0)), a1)
+			for i := range buf {
+				buf[i] = byte(i + 1)
+			}
+			return int64(a1)
+		case vi.SlotProcs:
+			return 0 // no registry rows: the lease records pid=0, honestly
+		case vi.SlotFileOpen:
+			path := hookStrAt(a0, a1)
+			flags := uint32(a2)
+			if flags&vi.ModeDir != 0 {
+				return -9 // EEXIST: the LEASES dir already exists in the map-less fake
+			}
+			if _, ok := k.files[path]; !ok {
+				if flags&vi.ModeCreate == 0 {
+					return -vi.ErrENOENT
+				}
+				k.files[path] = nil
+			}
+			k.next++
+			k.fds[k.next] = &editHandle{path: path, read: flags&vi.ModeWrite == 0}
+			return int64(k.next)
+		case vi.SlotFileRead:
+			h := k.fds[uint32(a0)]
+			if h == nil || !h.read {
+				return -vi.ErrEBADF
+			}
+			buf := unsafe.Slice((*byte)(unsafe.Pointer(a1)), a2)
+			body := k.files[h.path]
+			n := copy(buf, body[h.cursor:])
+			h.cursor += n
+			return int64(n)
+		case vi.SlotFileWrite:
+			h := k.fds[uint32(a0)]
+			if h == nil || h.read {
+				return -vi.ErrEBADF
+			}
+			src := unsafe.Slice((*byte)(unsafe.Pointer(a1)), a2)
+			body := k.files[h.path]
+			if h.cursor+len(src) > len(body) {
+				grown := make([]byte, h.cursor+len(src))
+				copy(grown, body)
+				body = grown
+			}
+			copy(body[h.cursor:], src)
+			k.files[h.path] = body
+			h.cursor += len(src)
+			return int64(a2)
+		case vi.SlotFileTruncate:
+			h := k.fds[uint32(a0)]
+			if h == nil || h.read {
+				return -vi.ErrEBADF
+			}
+			k.files[h.path] = k.files[h.path][:a1]
+			return 0
+		case vi.SlotFileSync, vi.SlotFileClose:
+			delete(k.fds, uint32(a0))
+			return 0
+		case vi.SlotFileDelete:
+			path := hookStrAt(a0, a1)
+			if _, ok := k.files[path]; !ok {
+				return -vi.ErrENOENT
+			}
+			delete(k.files, path)
+			return 0
+		case vi.SlotFileRename:
+			from, to := hookStrAt(a0, a1), hookStrAt(a2, a3)
+			if _, ok := k.files[from]; !ok {
+				return -vi.ErrENOENT
+			}
+			k.files[to] = k.files[from]
+			delete(k.files, from)
+			return 0
+		}
+		t.Fatalf("editKernel: unexpected slot %d", num)
+		return 0
+	})
+	t.Cleanup(func() { vi.SetSyscallHookForTest(prev) })
+	return k
+}
+
+// M81d (#1764): save() refuses while another writer's live lease stands on
+// the path, and the refusal is the save-error marker with the EAGAIN code —
+// the exact line the go-edit gate asserts for the second writer.
+func TestSaveUnderALiveLeaseRefuses(t *testing.T) {
+	const target = "/host/EDIT/SEED.TXT"
+	k := installEditKernel(t, 1000)
+	k.files[vi.LeasePathFor(target)] = []byte(
+		"VLEASE1\npid=0\nts=1000\ntoken=0102030405060708\npath=" + target + "\n")
+	e := &editor{path: target, buf: []byte("XYZ")}
+	if e.save() {
+		t.Fatal("save must refuse under a live lease")
+	}
+	if _, ok := k.files[target]; ok {
+		t.Fatal("a refused save must not touch the file")
+	}
+	if _, ok := k.files[vi.LeasePathFor(target)+"~"]; ok {
+		t.Fatal("a refused save must not stage a temp")
+	}
+	// vi.Console does not route through the hook seam, so the marker's text
+	// is not host-capturable; the code it prints is. ensureLease's refusal
+	// is exactly the number the save-error marker carries (the go-edit gate
+	// greps the full line live).
+	if rc := (&editor{path: target}).ensureLease(); rc != -vi.ErrEAGAIN {
+		t.Fatalf("ensureLease under a live lease = %d, want -ErrEAGAIN", rc)
+	}
+}
+
+// The unopposed path: save takes the lease, publishes, and the record is
+// on the share for the next writer to find.
+func TestSavePublishesUnderTheLease(t *testing.T) {
+	const target = "/host/EDIT/SEED.TXT"
+	k := installEditKernel(t, 1000)
+	e := &editor{path: target, buf: []byte("XYZ")}
+	if !e.save() {
+		t.Fatal("save must publish when no lease stands")
+	}
+	if got := string(k.files[target]); got != "XYZ" {
+		t.Fatalf("published = %q want %q", got, "XYZ")
+	}
+	rec, ok := k.files[vi.LeasePathFor(target)]
+	if !ok || !strings.HasPrefix(string(rec), "VLEASE1\n") {
+		t.Fatalf("lease record after save = %q %v", rec, ok)
 	}
 }

@@ -168,6 +168,18 @@
 #             boundary. The host checks the bytes, receipt, trash directory
 #             state and recent action order.
 #
+#   * file-lease — the M81d (#1764) advisory write lease drill: acquire,
+#             the foreign refusal (-11), the read-only check agreeing, the
+#             STALE takeover (a foreign record stamped past the expiry),
+#             the DEAD-HOLDER takeover (a fresh stamp on a pid the procs
+#             scan proves gone — the crash shape), the release rules (a
+#             foreign record is never deleted; an absent one is a no-op),
+#             and the free check. The foreign records are hand-rendered
+#             VLEASE1 text (the on-share convention), and the stale one is
+#             lifted to OUT/file-lease.copy as the takeover's evidence.
+#             `clock=yes` in the receipt is the boot's EFI epoch present;
+#             the same drill would prove the pid rules in a no-epoch boot.
+#
 # The report fixture below is byte-exact on purpose — the report is
 # deterministic (ADR 0031). Adding a case updates the fixture, the
 # share-contains case count, and want_summary in the python block.
@@ -212,8 +224,12 @@ case file-write-publish pass
 case mime pass
 case file-snapshot pass
 case app-logs pass
+case file-lease pass
 case window pass
-summary cases=20 failed=0
+summary cases=21 failed=0
+EOF
+vgate_file file-lease.expected <<'EOF'
+case file-lease dir=LEASES clock=yes foreign-refused=-11 stale-takeover=ok dead-holder=ok foreign-release=-11 release=ok free=0
 EOF
 vgate_file app-log.expected <<'EOF'
 line-04
@@ -351,6 +367,7 @@ vgate_assert 01 serial-contains 'selftest: case file-errors pass'
 vgate_assert 01 serial-contains 'selftest: case trash pass'
 vgate_assert 01 serial-contains 'selftest: case file-snapshot pass'
 vgate_assert 01 serial-contains 'selftest: case app-logs pass'
+vgate_assert 01 serial-contains 'selftest: case file-lease pass'
 vgate_assert 01 serial-contains 'selftest: case window pass'
 # The files were written BEFORE the summary (ADR 0031 ordering).
 vgate_assert 01 serial-contains 'selftest: report /host/SELFTEST/REPORT.txt n='
@@ -378,8 +395,13 @@ vgate_assert 01 share-equals SELFTEST/IN/fixture.txt intake-fixture.expected
 # as the kind's pilot in a real gate.
 vgate_assert 01 share-equals SELFTEST/OUT/trash.copy trash.expected
 vgate_assert 01 share-equals SELFTEST/OUT/app-log.copy app-log.expected
+vgate_assert 01 share-equals SELFTEST/OUT/file-lease.ok file-lease.expected
+# The takeover evidence: the record as the FOREIGN writer left it (stamped
+# past the expiry), not GOSELF's own — the copy is of the pre-takeover text.
+vgate_assert 01 share-contains SELFTEST/OUT/file-lease.copy 'token=0123456789abcdef'
+vgate_assert 01 share-contains SELFTEST/OUT/file-lease.copy 'path=/host/SELFTEST/LEASE/TARGET.TXT'
 vgate_assert 01 share-equals CRASH/M82E.TEST.TXT app-log-receipt.expected
-vgate_assert 01 share-contains SELFTEST/OUT/summary.txt 'summary cases=20 failed=0'
+vgate_assert 01 share-contains SELFTEST/OUT/summary.txt 'summary cases=21 failed=0'
 
 # The load-bearing assert: the copies and the receipts on the host's own
 # filesystem must be byte-exact, the share's directory state must agree with
@@ -456,7 +478,7 @@ win_open_rect = (32, 32, 640, 400)
 win_viewport_w = 1100
 win_viewport_h = 720
 
-want_summary = b"summary cases=20 failed=0\n"
+want_summary = b"summary cases=21 failed=0\n"
 want_hello = b"goself smoke\n"
 want_intake_receipt = b"case intake path=IN/fixture.txt bytes=25 match=yes\n"
 want_altered_receipt = b"case intake-altered path=IN/altered.txt bytes=25 differs=yes\n"

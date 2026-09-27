@@ -499,7 +499,7 @@ func (m *model) commitRename() {
 	rc := renameEntry(m.path, fromName, to)
 	if rc < 0 {
 		m.emit(markerRenameNo + fromName + " -> " + to + " rc=" + vi.Itoa64(rc))
-		m.status = "rename refused"
+		m.status = refusalStatus("rename", rc)
 		return
 	}
 	m.emit(markerRenamed + fromName + " -> " + to)
@@ -537,7 +537,7 @@ func (m *model) doDelete() {
 	id, rc := deleteEntry(m.path, name)
 	if rc < 0 {
 		m.emit(markerDeleteNo + name + " rc=" + vi.Itoa64(rc))
-		m.status = "delete refused"
+		m.status = refusalStatus("delete", rc)
 		return
 	}
 	m.emit(markerDeleted + name + " trash=" + id)
@@ -612,7 +612,7 @@ func (m *model) pasteClip() {
 		rc := pasteMove(m.path, m.clip)
 		if rc < 0 {
 			m.emit(markerPasteNo + name + " rc=" + vi.Itoa64(rc))
-			m.status = "paste refused"
+			m.status = refusalStatus("paste", rc)
 			return
 		}
 		m.emit(markerPasted + name)
@@ -637,7 +637,7 @@ func (m *model) pasteClip() {
 	rc = pasteCopy(m.path, m.clip, data)
 	if rc < 0 {
 		m.emit(markerPasteNo + name + " rc=" + vi.Itoa64(rc))
-		m.status = "paste refused"
+		m.status = refusalStatus("paste", rc)
 		return
 	}
 	m.emit(markerPasted + name)

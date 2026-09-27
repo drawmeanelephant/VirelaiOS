@@ -16,6 +16,8 @@
 package main
 
 import (
+	"strings"
+
 	tea "charm.land/bubbletea/v2"
 
 	"virelai/rss/keys"
@@ -104,7 +106,43 @@ func settle(m *model) {
 	vi.ConsoleLine(markerSettled)
 }
 
+// leaseFixture stamps a FOREIGN live lease record on the target path before
+// the TUI starts — the M81d drill's other side: a file that some other
+// writer holds while GOFILES tries to mutate it. The stamp is one no run
+// outlives (the year 2286) and pid=0, so the fixture is timing-proof; the
+// record text is the on-share VLEASE1 convention, hand-rendered the way a
+// foreign writer would (the GOSELF --panic-receipt-fixture precedent: a
+// named fixture verb, not a hidden side door).
+func leaseFixture(target string) {
+	lp := vi.LeasePathFor(target)
+	if lp == "" {
+		vi.ConsoleLine("gofiles: lease fixture bad path")
+		return
+	}
+	// The record's directory may not exist yet; the MODE_DIR create
+	// triple's EEXIST (-9) is fine.
+	h, rc := vi.FileOpen(vi.LeaseDir, vi.ModeWrite|vi.ModeCreate|vi.ModeDir)
+	if rc < 0 && rc != -9 {
+		vi.ConsoleLine("gofiles: lease fixture rc=" + vi.Itoa64(rc))
+		return
+	}
+	if rc >= 0 {
+		vi.FileClose(uint32(h))
+	}
+	rec := "VLEASE1\npid=0\nts=9999999999\ntoken=fedcba9876543210\npath=" + target + "\n"
+	if rc := vi.WriteFileSafe(lp, []byte(rec)); rc < 0 {
+		vi.ConsoleLine("gofiles: lease fixture rc=" + vi.Itoa64(rc))
+		return
+	}
+	vi.ConsoleLine("gofiles: lease fixture " + target)
+}
+
 func main() {
+	for _, a := range vi.Args() {
+		if strings.HasPrefix(a, "--lease-fixture=") {
+			leaseFixture(strings.TrimPrefix(a, "--lease-fixture="))
+		}
+	}
 	ta := tabapp.Init(tabapp.Config{Name: appName, Title: appTitle, X: 32, Y: 32, W: natW, H: natH})
 	if ta == nil {
 		vi.ConsoleLine("gofiles: error open -1")
