@@ -154,6 +154,12 @@ func main() {
 	vi.ConsoleLine(markerReady)
 	declared := m.path
 
+	// M81f (#1766): the change feed is polled from the IDLE branch only,
+	// every watchEvery-th quiet pass — a listing is one queue-5 round trip,
+	// and while the user is acting the app already refreshes itself.
+	const watchEvery = 5
+	idlePasses := 0
+
 	var in [64]byte
 	for {
 		// Keys and mouse reports: the tty read is non-blocking (0 when
@@ -209,6 +215,23 @@ func main() {
 		}
 
 		if !progress {
+			idlePasses++
+			// M81f (#1766): poll the change feed on the quiet cadence.
+			// Anything it says (armed, or >= 1 event) repaints + flushes on
+			// the spot — the watch markers ride the same post-paint barrier
+			// as every other marker this app prints.
+			if idlePasses%watchEvery == 0 {
+				if ev := m.watchStep(); ev >= 0 {
+					if !paint(fd, m) {
+						shutdown(ta, fd, 4)
+					}
+					vi.Sleep(1)
+					flush(&m, ta)
+					if ev > 0 {
+						vi.ConsoleLine(markerRepaint)
+					}
+				}
+			}
 			// M79e (#1708): poll the seat for a back/forward target the
 			// user queued with Ctrl+Shift+[ / ]. This sits in the IDLE
 			// branch on purpose: every poll is a mailbox round trip, and
