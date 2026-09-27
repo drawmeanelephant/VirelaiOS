@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"virelai/chords"
 	"virelai/settings"
 	"virelai/vi"
 	"virelai/widgets"
@@ -306,5 +307,85 @@ func TestFontSurfaceCyclesWithoutMovingKeys(t *testing.T) {
 	a.cycle(1)
 	if v, _ := settings.Get(a.disp, "font_size"); v != "small" {
 		t.Fatalf("font_size = %q from outside the vocabulary, want small (the top)", v)
+	}
+}
+
+// M82c (#1770): the panel's registered chord (ctrl+shift+h — a GOSET.ELF
+// row in the global shortcuts registry; re-bound from ctrl+shift+s when
+// M81g's snapshot arm claimed that chord first) flips between the settings
+// table and the read-only shortcuts view, printing the view's marker after
+// the table is in hand.
+func TestShortcutsChordTogglesTheRegistryView(t *testing.T) {
+	a := newPanel(nil)
+	if a.showChords {
+		t.Fatal("the panel starts on the settings table")
+	}
+	if !isShortcutsChord(vi.Event{Kind: vi.EvKeyDown,
+		Flags: vi.ModCtrl | vi.ModShift, Arg0: uint32(chords.UsageH), Arg1: 0x08}) {
+		t.Fatal("the ctrl+shift+h control-code spelling must be the chord")
+	}
+	if isShortcutsChord(vi.Event{Kind: vi.EvKeyDown, Flags: vi.ModCtrl, Arg1: 0x13}) {
+		t.Fatal("plain ctrl+s (GOEDIT's save chord, another registry row) must not toggle the view")
+	}
+	if isShortcutsChord(vi.Event{Kind: vi.EvKeyDown, Flags: vi.ModCtrl | vi.ModShift, Arg0: uint32(chords.UsageS), Arg1: 0x13}) {
+		t.Fatal("ctrl+shift+s is the seat's snapshot chord now — it must not toggle the view")
+	}
+	if !a.toggleShortcuts() {
+		t.Fatal("toggleShortcuts consumed the chord")
+	}
+	if !a.showChords {
+		t.Fatal("the view did not open")
+	}
+	if got := a.labels(); len(got) != len(chords.Global) {
+		t.Fatalf("shortcuts view rows = %d, registry rows = %d", len(got), len(chords.Global))
+	}
+	if !a.toggleShortcuts() || a.showChords {
+		t.Fatal("the view did not close")
+	}
+	if len(a.labels()) != len(a.disp) {
+		t.Fatal("closing the view lost the settings rows")
+	}
+}
+
+// M82c (#1770): the shortcuts view renders the registry, not the settings:
+// the frozen kernel chrome, the seat's own rows and the app rows are all
+// visible, and nothing in the view is editable or saveable.
+func TestShortcutsViewShowsTheRegistry(t *testing.T) {
+	a := newPanel(nil)
+	a.toggleShortcuts()
+	labels := a.labels()
+	find := func(prefix string) bool {
+		for _, l := range labels {
+			if strings.HasPrefix(l, prefix) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, want := range []string{
+		"ctrl+shift+k  kernel  ",    // frozen kernel chrome (M80k)
+		"ctrl+shift+f  seat  ",      // the seat's freeze badge
+		"ctrl+2  seat  ",            // the digit rows
+		"ctrl+s  GOEDIT.ELF  ",      // an app row
+		"ctrl+shift+h  GOSET.ELF  ", // this panel's own row (re-bound from ctrl+shift+s at the M81g rebase)
+	} {
+		if !find(want) {
+			t.Errorf("shortcuts view missing a row starting %q", want)
+		}
+	}
+	if a.headLabel() != "Shortcuts  n="+vi.Itoa64(int64(len(chords.Global)))+"  (one owner per chord)" {
+		t.Fatalf("head label = %q", a.headLabel())
+	}
+	// Read-only: Enter and Save are refused by name in this view.
+	a.key(vi.Event{Kind: vi.EvKeyDown, Arg1: 0x0a}) // Enter (appkit maps it below; the guard sits before it)
+	if a.showChords && !strings.Contains(a.status, "compiled in") {
+		t.Fatalf("enter in the shortcuts view must name the read-only guard, got %q", a.status)
+	}
+	a.save()
+	if !strings.Contains(a.status, "returns to Settings") {
+		t.Fatalf("save in the shortcuts view must name the read-only guard, got %q", a.status)
+	}
+	if a.file.State != settings.StateMissing {
+		t.Fatal("the view must not touch the settings file")
 	}
 }

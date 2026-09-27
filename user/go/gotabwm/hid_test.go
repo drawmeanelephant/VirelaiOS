@@ -1,9 +1,11 @@
 package main
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
+	"virelai/chords"
 	"virelai/vi"
 )
 
@@ -1198,5 +1200,122 @@ func TestToastHitPrecedesTheLauncher(t *testing.T) {
 		Flags: uint16(hidBtnLeft)})
 	if launch.open {
 		t.Fatal("a press on the desktop beside the toast no longer reaches the launcher")
+	}
+}
+
+// M82c (#1770): the local usage constants and the registry cannot drift.
+// Every named chord's row must carry the number the runner and the kernel
+// assume, and the launcher's modal keys must match the registry's usages.
+func TestHidUsagesMatchRegistry(t *testing.T) {
+	rowUsage := func(action string) uint8 {
+		for _, r := range chords.Global.SeatRows() {
+			if r.Action == action {
+				return r.Chord.Usage
+			}
+		}
+		t.Fatalf("no seat row for action %q", action)
+		return 0
+	}
+	for action, usage := range map[string]uint8{
+		"pin": hidUsageP, "reopen": hidUsageT, "duplicate": hidUsageD,
+		"snapshot-bundle": hidUsageS,
+		"freeze-badge":    hidUsageF, "split-cycle": hidUsageV,
+		"nav-back": hidUsageLeftBracket, "nav-forward": hidUsageRightBracket,
+	} {
+		if rowUsage(action) != usage {
+			t.Errorf("registry action %q usage drifted from the local constant %#x", action, usage)
+		}
+	}
+	if chords.UsageSpace != hidUsageSpace || chords.UsageEnter != hidUsageEnter ||
+		chords.UsageEscape != hidUsageEscape || chords.UsageBksp != hidUsageBksp {
+		t.Fatal("launcher modal usages drifted from the registry")
+	}
+}
+
+// M82c (#1770): the dispatch IS the registry walk, so a chord the table
+// carries must reach its action through handleWmKey — ctrl-space (closed
+// launcher) opens the launcher from the table's "launcher" row.
+func TestLauncherSummonDispatchesFromRegistry(t *testing.T) {
+	savedLaunch := launch
+	defer func() { launch = savedLaunch }()
+	launch = launcherState{}
+	handleWmKey(vi.Event{Kind: vi.EvWmKey, Flags: vi.ModCtrl, Arg0: uint32(hidUsageSpace)})
+	if !launch.open {
+		t.Fatal("ctrl-space (registry row 'launcher') did not open the launcher")
+	}
+	// Plain Enter on a POPULATED strip is not the start surface row's
+	// business: the row matches, the action honestly no-ops.
+	launch = launcherState{}
+	savedTabs := tabs
+	defer func() { tabs = savedTabs }()
+	tabs = TabStrip{}
+	if !tabs.OpenTab(7, "Calc") {
+		t.Fatal("OpenTab")
+	}
+	handleWmKey(vi.Event{Kind: vi.EvWmKey, Flags: 0, Arg0: uint32(hidUsageEnter)})
+	if launch.open {
+		t.Fatal("enter with a populated strip must not open the launcher")
+	}
+	// ...and on an EMPTY strip it is the start surface.
+	tabs = TabStrip{}
+	handleWmKey(vi.Event{Kind: vi.EvWmKey, Flags: 0, Arg0: uint32(hidUsageEnter)})
+	if !launch.open {
+		t.Fatal("enter on an empty strip (registry row 'start-surface') did not open the launcher")
+	}
+}
+
+// M82c (#1770): the fixture attempt's verdict. With the trigger file
+// present, the checker is fed the deliberately conflicting fixture and
+// refuses it with the full named error; without the trigger, nothing is
+// attempted. The prologue's printed lines are run 08's serial asserts —
+// the host test owns the verdict, the gate owns the guest evidence.
+func TestChordFixtureAttempt(t *testing.T) {
+	if err := chords.Global.Validate(); err != nil {
+		t.Fatalf("shipped table must validate (the prologue is fail-closed): %v", err)
+	}
+	savedOpen := openFile
+	defer func() { openFile = savedOpen }()
+
+	// No trigger file: nothing attempted, nothing refused.
+	openFile = func(path string, flags uint32) (int64, int64) { return -1, -1 }
+	attempted, err := chordFixtureAttempt()
+	if attempted || err != nil {
+		t.Fatalf("without the trigger nothing must be attempted, got (%v, %v)", attempted, err)
+	}
+
+	// Trigger present: the refusal is the checker's named sentence.
+	openFile = func(path string, flags uint32) (int64, int64) { return 4, 4 }
+	attempted, err = chordFixtureAttempt()
+	if !attempted {
+		t.Fatal("the trigger file must arm the fixture attempt")
+	}
+	if !errors.Is(err, chords.ErrChordConflict) {
+		t.Fatalf("fixture must be refused with ErrChordConflict, got: %v", err)
+	}
+	want := "chord conflict: ctrl+shift+p at seat owned by seat and FIXTURE.ELF"
+	if err == nil || err.Error() != want {
+		t.Fatalf("refusal:\n got: %v\nwant: %s", err, want)
+	}
+}
+
+// M82c (#1770): the summary line's counts are internally consistent —
+// every row lands in exactly one owner class and the seat class matches
+// the dispatch surface the tests pin.
+func TestChordSummaryCounts(t *testing.T) {
+	var kernel, seat, app int
+	for _, r := range chords.Global {
+		switch {
+		case r.Scope == chords.ScopeKernelTerminal:
+			kernel++
+		case r.Scope == chords.ScopeSeat:
+			seat++
+		default:
+			app++
+		}
+	}
+	got := chordSummary(len(chords.Global), seat, kernel, app)
+	want := "gotabwm: chords n=51 seat=23 kernel=12 app=16"
+	if got != want {
+		t.Fatalf("chordSummary = %q want %q", got, want)
 	}
 }

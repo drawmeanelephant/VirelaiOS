@@ -1,0 +1,205 @@
+package chords
+
+import (
+	"errors"
+	"strings"
+	"testing"
+)
+
+// TestGlobalValidates pins the shipped table: it must pass the checker, or
+// the seat's fail-closed prologue would refuse to run.
+func TestGlobalValidates(t *testing.T) {
+	if err := Global.Validate(); err != nil {
+		t.Fatalf("Global.Validate: %v", err)
+	}
+}
+
+// TestFixtureRefused is the card's conflict test: the deliberately
+// conflicting fixture — FIXTURE.ELF claiming the seat's pin chord at the
+// seat's own dispatch point — is refused with the NAMED error, and the
+// refusal names the chord, the scope, and both owners.
+func TestFixtureRefused(t *testing.T) {
+	bad := append(Global[:0:0], Global...)
+	bad = append(bad, FixtureRow())
+	err := bad.Validate()
+	if !errors.Is(err, ErrChordConflict) {
+		t.Fatalf("fixture must be refused with ErrChordConflict, got: %v", err)
+	}
+	for _, want := range []string{"ctrl+shift+p", "seat", "seat", FixtureOwner()} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal %q does not name %q", err, want)
+		}
+	}
+}
+
+// TestSecondOwnerConflict synthesizes the case the registry exists to end:
+// two features claiming one chord at one dispatch point.
+func TestSecondOwnerConflict(t *testing.T) {
+	chord := Chord{Mods: ModCtrl, Usage: UsageL}
+	bad := Table{
+		{Chord: chord, Owner: "seat", Scope: ScopeSeat, Action: "clear"},
+		{Chord: chord, Owner: "SOMEAPP.ELF", Scope: ScopeSeat, Action: "clear"},
+	}
+	err := bad.Validate()
+	if !errors.Is(err, ErrChordConflict) {
+		t.Fatalf("want ErrChordConflict, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "seat") || !strings.Contains(err.Error(), "SOMEAPP.ELF") {
+		t.Errorf("refusal must name both owners: %v", err)
+	}
+}
+
+// TestCrossScopeCoexistence: the same chord at DIFFERENT dispatch points is
+// not a conflict — that is the documented kernel-chrome/seat coexistence
+// (ctrl+shift+f, ctrl+shift+v), not something the checker refuses.
+func TestCrossScopeCoexistence(t *testing.T) {
+	chord := Chord{Mods: ModCtrl | ModShift, Usage: UsageF}
+	ok := Table{
+		{Chord: chord, Owner: "kernel", Scope: ScopeKernelTerminal, Frozen: true},
+		{Chord: chord, Owner: "seat", Scope: ScopeSeat, Action: "freeze-badge"},
+	}
+	if err := ok.Validate(); err != nil {
+		t.Fatalf("cross-scope rows must validate: %v", err)
+	}
+}
+
+// TestDuplicateRowRefused: the same row twice is a table bug, named as one.
+func TestDuplicateRowRefused(t *testing.T) {
+	row := Row{Chord: Chord{Mods: ModCtrl, Usage: UsageP}, Owner: "seat", Scope: ScopeSeat, Action: "pin"}
+	bad := Table{row, row}
+	err := bad.Validate()
+	if err == nil || !strings.Contains(err.Error(), "listed twice") {
+		t.Fatalf("duplicate row must be refused, got: %v", err)
+	}
+}
+
+// TestSeatRowIntegrity: a seat row without an action cannot dispatch; a
+// non-seat row with one has no dispatcher.
+func TestSeatRowIntegrity(t *testing.T) {
+	noAction := Table{{Chord: Chord{Mods: ModCtrl, Usage: UsageP}, Owner: "seat", Scope: ScopeSeat}}
+	if err := noAction.Validate(); err == nil || !strings.Contains(err.Error(), "no action") {
+		t.Fatalf("seat row without action must be refused, got: %v", err)
+	}
+	strayAction := Table{{Chord: Chord{Mods: ModCtrl, Usage: UsageP}, Owner: "GOEDIT.ELF", Scope: AppScope("GOEDIT.ELF"), Action: "pin"}}
+	if err := strayAction.Validate(); err == nil || !strings.Contains(err.Error(), "action") {
+		t.Fatalf("non-seat row with action must be refused, got: %v", err)
+	}
+	// An app row's scope must name its owner — the redundancy can never
+	// drift into a row claiming another app's dispatch point.
+	mismatch := Table{{Chord: Chord{Mods: ModCtrl, Usage: UsageS}, Owner: "GOEDIT.ELF", Scope: AppScope("NOTE.ELF")}}
+	if err := mismatch.Validate(); err == nil || !strings.Contains(err.Error(), "scope must name its owner") {
+		t.Fatalf("app scope/owner mismatch must be refused, got: %v", err)
+	}
+}
+
+// TestAppScopesAreIndependent: GOEDIT.ELF and NOTE.ELF both own ctrl+s —
+// real, grep-verified consumers — and that is not a conflict, because focus
+// is exclusive: two apps never dispatch the same event.
+func TestAppScopesAreIndependent(t *testing.T) {
+	both := Table{
+		{Chord: Chord{Mods: ModCtrl, Usage: UsageS}, Owner: "GOEDIT.ELF", Scope: AppScope("GOEDIT.ELF")},
+		{Chord: Chord{Mods: ModCtrl, Usage: UsageS}, Owner: "NOTE.ELF", Scope: AppScope("NOTE.ELF")},
+	}
+	if err := both.Validate(); err != nil {
+		t.Fatalf("per-app scopes must not conflict: %v", err)
+	}
+}
+
+// TestLetterUsages pins the HID letter block: 'a' = 0x04 .. 'z' = 0x1D, the
+// arithmetic kernel/src/input.zig and the runner both assume.
+func TestLetterUsages(t *testing.T) {
+	for letter, usage := range map[string]uint8{
+		"a": UsageA, "c": UsageC, "d": UsageD, "e": UsageE, "f": UsageF,
+		"g": UsageG, "k": UsageK, "l": UsageL, "p": UsageP, "r": UsageR,
+		"s": UsageS, "t": UsageT, "u": UsageU, "v": UsageV, "w": UsageW, "y": UsageY,
+	} {
+		if want := uint8(0x04 + letter[0] - 'a'); usage != want {
+			t.Errorf("usage %q = %#x want %#x (USB HID keyboard block)", letter, usage, want)
+		}
+	}
+}
+
+// TestChordString pins the rendering the refusal and GOSET name chords by:
+// modifiers in ctrl,shift,alt order, then the key.
+func TestChordString(t *testing.T) {
+	cases := map[Chord]string{
+		{ModCtrl | ModShift, UsageP}:           "ctrl+shift+p",
+		{ModCtrl | ModShift | ModAlt, UsageR}:  "ctrl+shift+alt+r",
+		{ModCtrl, UsageDigit1 + 2}:             "ctrl+3",
+		{0, UsageEnter}:                        "enter",
+		{0, UsagePageUp}:                       "pageup",
+		{ModShift, UsageEnd}:                   "shift+end",
+		{ModCtrl | ModShift, UsageLeftBracket}: "ctrl+shift+[",
+		{ModAlt | ModShift, UsageTab}:          "shift+alt+tab",
+		{ModCtrl, UsageSpace}:                  "ctrl+space",
+		{ModCtrl, 0x99}:                        "ctrl+0x99",
+	}
+	for c, want := range cases {
+		if got := c.String(); got != want {
+			t.Errorf("Chord(%d,%#x).String() = %q want %q", c.Mods, c.Usage, got, want)
+		}
+	}
+}
+
+// TestEveryUsageNamed: a row whose usage renders as hex is a transcription
+// error — the table only carries keys the name table knows.
+func TestEveryUsageNamed(t *testing.T) {
+	for i, r := range Global {
+		if strings.Contains(r.Chord.String(), "0x") {
+			t.Errorf("row %d (%s): usage %#x has no name", i, r.Chord, r.Chord.Usage)
+		}
+	}
+}
+
+// TestKernelRowsFrozen: the kernel chrome rows are recorded as frozen
+// owners — the kernel is untouched by this registry.
+func TestKernelRowsFrozen(t *testing.T) {
+	for _, r := range Global {
+		if r.Scope == ScopeKernelTerminal && !r.Frozen {
+			t.Errorf("kernel row %s is not frozen", r.Chord)
+		}
+		if r.Scope != ScopeKernelTerminal && r.Frozen {
+			t.Errorf("non-kernel row %s must not be frozen", r.Chord)
+		}
+	}
+}
+
+// TestCoexistenceRowsDocumented: the two chords genuinely served at two
+// dispatch points (kernel terminal chrome + seat) carry both rows, so the
+// coexistence is in the table instead of silent.
+func TestCoexistenceRowsDocumented(t *testing.T) {
+	for _, usage := range []uint8{UsageF, UsageV} {
+		chord := Chord{Mods: ModCtrl | ModShift, Usage: usage}
+		owners := map[Scope]bool{}
+		for _, r := range Global {
+			if r.Chord == chord {
+				owners[r.Scope] = true
+			}
+		}
+		if !owners[ScopeKernelTerminal] || !owners[ScopeSeat] {
+			t.Errorf("%s must be recorded at both dispatch points, got %v", chord, owners)
+		}
+	}
+}
+
+// TestSeatRowsAreTheSeatSurface: the seat's rows are exactly the chords
+// hid.go dispatches — the full named set, plus the nine digit rows.
+func TestSeatRowsAreTheSeatSurface(t *testing.T) {
+	wantActions := map[string]int{
+		"launcher": 1, "start-surface": 1, "cycle-focus": 4, "focus-index": 9,
+		"pin": 1, "reopen": 1, "duplicate": 1, "snapshot-bundle": 1, "freeze-badge": 1,
+		"split-cycle": 1, "nav-back": 1, "nav-forward": 1,
+	}
+	got := map[string]int{}
+	for _, r := range Global.SeatRows() {
+		got[r.Action]++
+	}
+	for action, want := range wantActions {
+		if got[action] != want {
+			t.Errorf("seat action %q: %d rows want %d", action, got[action], want)
+		}
+	}
+	if len(got) != len(wantActions) {
+		t.Errorf("unexpected seat actions: %v", got)
+	}
+}
