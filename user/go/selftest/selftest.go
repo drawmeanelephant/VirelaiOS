@@ -29,6 +29,7 @@ import (
 	"strings"
 
 	"virelai/mime"
+	"virelai/snapshot"
 	"virelai/vi"
 )
 
@@ -64,6 +65,18 @@ const (
 const (
 	intakeFixture = "goself intake fixture v1\n"
 	intakeAltered = "goself intake fixture v2\n"
+
+	// M81g (#1767): the four bodies the snapshot case carries, seeded by the
+	// host under IN/ and READ back by the guest — so the bundle is made of
+	// bytes that came off the share. snapshotSessionBody is deliberately
+	// BINARY (NULs, a newline, high bytes) and exactly 12 bytes long: the
+	// real SESSION.TABS is a binary strip, and a container that could only
+	// carry text could not carry the state this card is about. One
+	// expression reconstructs each body on the host side too.
+	snapshotSettingsBody = "#v2\ntheme=amber\nwm=gotabwm\n"
+	snapshotSessionBody  = "\x54\x41\x42\x53\x00\x02\x00\x0a\xff\xfe\x10\x20"
+	snapshotNoteBody     = "goself snapshot note\n"
+	snapshotSecondBody   = "goself snapshot second document\n"
 )
 
 // helloPayload is the file-write case's known bytes: short, fixed, and
@@ -135,6 +148,36 @@ const (
 	publishTmp  = publishPath + "~"
 	publishCopy = outDir + "/publish.copy"
 	publishOk   = outDir + "/file-write-publish.ok"
+
+	// M81g (#1767): the snapshot bundle drill. The four INPUTS are host
+	// fixtures under IN/ (the host owns that directory, ADR 0031 D2), so
+	// every body in the bundle is bytes that came off the share rather than
+	// a constant compiled into this binary — the same anti-embedding
+	// property the intake cases exist for. The session fixture is BINARY:
+	// the real SESSION.TABS is a binary strip, and a container that could
+	// only carry text could not carry the state the card is about.
+	snapshotInSettings = inDir + "/snapshot-settings.txt"
+	snapshotInSession  = inDir + "/snapshot-session.tabs"
+	snapshotInDocs     = inDir + "/snapshot-docs"
+	snapshotInNote     = snapshotInDocs + "/NOTE.TXT"
+	snapshotInSecond   = snapshotInDocs + "/SECOND.TXT"
+
+	// What the case publishes, and what it rehydrates FROM. RESTORED/ is the
+	// drill's own output: the bundle is parsed back and each entry published
+	// again, so a host that byte-compares RESTORED/ against IN/ is looking at
+	// a real round trip through the container, not at a copy.
+	snapshotBundle     = outDir + "/snapshot.bundle"
+	snapshotBundleTmp  = snapshotBundle + "~"
+	snapshotBundleCopy = outDir + "/snapshot.copy"
+	snapshotOk         = outDir + "/file-snapshot.ok"
+
+	restoredDir       = outDir + "/RESTORED"
+	restoredSettings  = restoredDir + "/settings.txt"
+	restoredSession   = restoredDir + "/session.tabs"
+	restoredDocsDir   = restoredDir + "/docs"
+	restoredNote      = restoredDocsDir + "/NOTE.TXT"
+	restoredSecond    = restoredDocsDir + "/SECOND.TXT"
+	snapshotEntryDocs = 2
 )
 
 // fileUnit is the payload unit of the round-trip and truncate cases: the same
@@ -167,6 +210,14 @@ const (
 	// fileWriteMax mirrors the kernel's sys_file_write stage cap
 	// (handle_file_write refuses count > 2048 with -ENOSPC).
 	fileWriteMax = 2048
+
+	// M81g (#1767): the bundle read caps. The container's own caps do the
+	// bounding; these are the read windows the case uses, one byte past
+	// each so an oversize file is DETECTED rather than silently truncated
+	// into something that would still parse.
+	snapshotReadSettings = 8 * 1024
+	snapshotReadBody     = 64 * 1024
+	snapshotReadBundle   = snapshot.MaxBundle + 1
 )
 
 // roundtripPayload / truncatePayload / truncateKept are the byte bodies above
@@ -344,6 +395,12 @@ func cases() []testCase {
 		// inserted before the window case so the M61d report prefix stays
 		// untouched.
 		{id: "mime", run: caseMime},
+		// M81g (#1767): the snapshot bundle DRILL, both halves on the share
+		// — carry settings + a BINARY session strip + a documents selection
+		// into one crash-safe bundle, read it back, parse it, and rehydrate
+		// every entry byte-exact; then refuse a truncated one. Inserted
+		// before the window case so the M61d report prefix stays untouched.
+		{id: "file-snapshot", run: caseFileSnapshot},
 		// M61e (#1385): the window receipt — appended last so the M61d report
 		// prefix is untouched (the report is byte-compared).
 		{id: "window", run: caseWindow},
@@ -1396,6 +1453,154 @@ func caseFileWritePublish(s *syscalls) error {
 		return errors.New("after two appends the file read " +
 			strconv.Itoa(len(after)) + "B, want the " + strconv.Itoa(len(want)) +
 			"B base-plus-lines body — an append must add, never truncate")
+	}
+	return nil
+}
+
+// M81g (#1767): caseFileSnapshot is the restore DRILL, both halves, on the
+// share. The seat (GOTABWM.ELF) is what actually snapshots and restores in
+// the product; this case exists because a drill nobody can read back is a
+// drill nobody can believe, and the receipt idiom (ADR 0031/0032) already
+// proves `/host` state by host-side byte comparison.
+//
+// What it pins, in order:
+//
+//  1. CARRY. Four host-seeded fixtures under IN/ — a settings table, a BINARY
+//     session strip, and two documents — go into one bundle. The bodies are
+//     READ from the share, never compiled in, so a case that answered from a
+//     constant could not match what the host seeded.
+//  2. PUBLISH. The bundle is published through the crash-safe write, and the
+//     bytes are read BACK and compared to what was built. The sacrificial
+//     temp must not survive, exactly as the file-write-safe case pins.
+//  3. REHYDRATE. The bundle is parsed back out of the file and every entry is
+//     published again under RESTORED/. The host byte-compares RESTORED/
+//     against IN/, so what it is looking at is a round trip through the
+//     container — the card's "byte-exact" claim, checked from outside.
+//  4. REFUSE. One byte is taken off the end and the result must be refused
+//     whole. The receipt's `corrupt=` field is that verdict; a codec that
+//     tolerated a truncated tail would restore a session strip that was never
+//     whole, which is the exact failure M62e/M66b refuse to allow.
+func caseFileSnapshot(s *syscalls) error {
+	s.mkdir(outDir)
+	s.mkdir(snapshotInDocs)
+	s.mkdir(restoredDir)
+	s.mkdir(restoredDocsDir)
+
+	// 1. CARRY — the bodies come off the share.
+	bodies := make([][]byte, 0, 4)
+	for _, in := range []struct {
+		path string
+		max  int
+	}{
+		{snapshotInSettings, snapshotReadSettings},
+		{snapshotInSession, snapshotReadBody},
+		{snapshotInNote, snapshotReadBody},
+		{snapshotInSecond, snapshotReadBody},
+	} {
+		b, err := readFile(s, in.path, in.max)
+		if err != nil {
+			return err
+		}
+		bodies = append(bodies, b)
+	}
+	settingsBody, sessionBody := bodies[0], bodies[1]
+	// The documents go in NAME order (NOTE.TXT before SECOND.TXT), which is
+	// the order the seat's capture sorts them into. Keeping the two captures
+	// identical in shape is what makes one container serve both apps.
+	entries := []snapshot.Entry{
+		{Name: snapshot.EntrySettings, Body: settingsBody},
+		{Name: snapshot.EntrySession, Body: sessionBody},
+		{Name: snapshot.DocsPrefix + "NOTE.TXT", Body: bodies[2]},
+		{Name: snapshot.DocsPrefix + "SECOND.TXT", Body: bodies[3]},
+	}
+	raw, ok := snapshot.Build(entries)
+	if !ok {
+		return errors.New("snapshot.Build refused the four seeded entries")
+	}
+
+	// 2. PUBLISH crash-safe, then read the bundle back off the share.
+	if rc := s.writeSafe(snapshotBundle, raw); rc < 0 {
+		return errors.New("bundle publish rc=" + strconv.FormatInt(rc, 10))
+	}
+	got, err := readFile(s, snapshotBundle, snapshotReadBundle)
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(got, raw) {
+		return errors.New("the published bundle read back " + strconv.Itoa(len(got)) +
+			"B, want the " + strconv.Itoa(len(raw)) + "B body that was published")
+	}
+	orphan := "none"
+	if h, rc := s.open(snapshotBundleTmp, vi.ModeRead); rc >= 0 {
+		s.close(uint32(h))
+		orphan = "survived"
+	}
+	if cerr := copyBytes(s, snapshotBundleCopy, got); cerr != nil {
+		return cerr
+	}
+
+	// 3. REHYDRATE — parse the bytes that came back, and republish each entry.
+	b, ok, reason := snapshot.Parse(got)
+	if !ok {
+		return errors.New("Parse refused the bundle this case published: " + reason)
+	}
+	out := []struct {
+		entry string
+		path  string
+	}{
+		{snapshot.EntrySettings, restoredSettings},
+		{snapshot.EntrySession, restoredSession},
+		{snapshot.DocsPrefix + "NOTE.TXT", restoredNote},
+		{snapshot.DocsPrefix + "SECOND.TXT", restoredSecond},
+	}
+	for _, o := range out {
+		body, found := b.Get(o.entry)
+		if !found {
+			return errors.New("the parsed bundle is missing " + o.entry)
+		}
+		if rc := s.writeSafe(o.path, body); rc < 0 {
+			return errors.New("rehydrate " + o.entry + " rc=" + strconv.FormatInt(rc, 10))
+		}
+		// Read it back: a publish that landed a different length would
+		// decode the same on a later boot and still be a failed restore.
+		back, rerr := readFile(s, o.path, snapshotReadBody)
+		if rerr != nil {
+			return rerr
+		}
+		if !bytes.Equal(back, body) {
+			return errors.New("rehydrated " + o.entry + " read " +
+				strconv.Itoa(len(back)) + "B, want " + strconv.Itoa(len(body)) + "B byte-exact")
+		}
+	}
+
+	// 4. REFUSE — one byte off the end is not a bundle any more.
+	_, truncatedOK, _ := snapshot.Parse(got[:len(got)-1])
+	corrupt := "refused"
+	if truncatedOK {
+		corrupt = "accepted"
+	}
+
+	line := "case file-snapshot path=OUT/snapshot.bundle entries=" +
+		strconv.Itoa(len(b.Entries)) +
+		" docs=" + strconv.Itoa(snapshotEntryDocs) +
+		" bytes=" + strconv.Itoa(len(got)) +
+		" settings=" + strconv.Itoa(len(settingsBody)) +
+		" session=" + strconv.Itoa(len(sessionBody)) +
+		" match=" + yesNo(bytes.Equal(got, raw)) +
+		" orphan=" + orphan + " corrupt=" + corrupt
+	if rerr := writeReceipt(s, snapshotOk, line); rerr != nil {
+		return rerr
+	}
+	switch {
+	case orphan != "none":
+		return errors.New("the sacrificial temp " + snapshotBundleTmp + " survived the publish")
+	case corrupt != "refused":
+		return errors.New("a bundle one byte short parsed clean — a truncated " +
+			"container must be refused whole")
+	case len(b.Entries) != 4 || b.DocsCount() != snapshotEntryDocs:
+		return errors.New("the parsed bundle carried " + strconv.Itoa(len(b.Entries)) +
+			" entries and " + strconv.Itoa(b.DocsCount()) + " documents, want 4 and " +
+			strconv.Itoa(snapshotEntryDocs))
 	}
 	return nil
 }

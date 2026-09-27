@@ -18,7 +18,10 @@
 //	                 the panes through applySashDrag (M79c); motion while
 //	                 armed is chrome, never content
 //	ctrl-shift-v  -> split cycle none -> V -> H -> none (M79c: live mode has
-//	                 no other split entry; the choreography is demo-only)
+//	                no other split entry; the choreography is demo-only)
+//	ctrl-shift-s  -> take a SNAPSHOT BUNDLE (M81g: settings + SESSION.TABS +
+//	                a docs selection, published crash-safe to
+//	                /host/SNAPSHOT.BUNDLE; snapshot.go)
 //	ordinary keys -> ignored here (ADR 0009: KEY_DOWN still reaches the app)
 //
 // Markers print only after the mutation/syscall that made them true.
@@ -60,6 +63,7 @@ const (
 	hidUsageD uint8 = 0x07 // 'd'
 	hidUsageF uint8 = 0x09 // 'f'; M71e (#1564) freeze-badge toggle
 	hidUsageP uint8 = 0x13
+	hidUsageS uint8 = 0x16 // 's'; M81g (#1767) snapshot bundle
 	hidUsageT uint8 = 0x17 // 't'
 	hidUsageV uint8 = 0x19 // 'v'; M79c (#1706) split cycle
 	// M79e (#1708): M48/BT5's per-tab history chords, the SAME two Zig
@@ -158,6 +162,13 @@ func handleWmKey(e vi.Event) {
 			_ = applyFreezeToggle()
 		case hidUsageV:
 			_ = applySplitCycle()
+		// M81g (#1767): the snapshot arm. It is a chord rather than a
+		// timer on purpose — the card rules out scheduled snapshots, and a
+		// bundle taken because time passed is a bundle nobody chose. Free
+		// on this seat (Zig TABWM binds no ctrl-shift-s) and additive:
+		// nothing existing is rebound.
+		case hidUsageS:
+			_ = saveSnapshot()
 		// M79e (#1708): back/forward for the FOCUSED tab, queued for its
 		// app to poll. The step is refused (and silent) at either end of
 		// the history, so the chord is a no-op rather than a marker for

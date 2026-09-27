@@ -179,6 +179,17 @@ func main() {
 	vi.ConsoleLine(MarkerDraw)
 	vi.ConsoleLine(MarkerHolding)
 
+	// M81g (#1767): the restore drill, BEFORE the settings decode below and
+	// therefore before loadSession as well. A bundle rehydrates the three
+	// files on the share, and the seat's ordinary boot then reads them
+	// through the ordinary paths — so a restored settings table is decoded
+	// by the M66b decode and a restored strip by the M62e one, and neither
+	// needed to learn about bundles. It is a no-op unless the share carries
+	// the one-shot SNAPSHOT.RESTORE request, and a corrupt or absent bundle
+	// is refused WHOLE: nothing is written, the refusal is one line, and the
+	// missing/corrupt handling below is the whole story from there.
+	restoreSnapshot()
+
 	// M66b (#1444): decode /host/SETTINGS.TXT (schema v2) BEFORE any phase
 	// that waits on the harness (the window choreography would otherwise
 	// sit between boot and the decode). Missing is silent; corrupt fails
