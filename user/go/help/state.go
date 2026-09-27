@@ -13,12 +13,6 @@ import (
 	"virelai/vi"
 )
 
-// titleBarPx is the window title band the client area sits below: the
-// kernel's grid is client_w/8 columns (terminal.syncWindowCols) and the
-// client height is H-16 (the dui/charmhello geometry: rect 32,32,W,H with a
-// 16 px title, client origin y+16).
-const titleBarPx = 16
-
 // docsDir is the in-guest docs bundle the `d` section browses — the share
 // root's docs/ directory, the /host/docs path convention the tabwm nav
 // tests already pin (user/src/tabwm.zig). Absent on a bare share: the
@@ -269,7 +263,7 @@ func (m *model) handleClick(x, y int) {
 
 // handleKey runs one decoded key through the state machine. It is the whole
 // flow: browse ←→ detail, browse ←→ docs ←→ doc, `/` filter with esc to
-// clear, ←/→ group jumps, j/k or arrows to move, q to quit (browse only).
+// clear, h/l or ←/→ group jumps, j/k or arrows to move, q to quit (browse only).
 func (m *model) handleKey(ev keys.Event) {
 	if ev.Key == keys.KeyCtrlC {
 		m.quit = true
@@ -360,6 +354,10 @@ func (m *model) keyBrowse(ev keys.Event) {
 		m.move(+1)
 	case 'k':
 		m.move(-1)
+	case 'h':
+		m.jumpGroup(-1)
+	case 'l':
+		m.jumpGroup(+1)
 	case '/':
 		m.filtering = true
 		m.status = "filter: "

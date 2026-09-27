@@ -8,13 +8,21 @@ import (
 	"virelai/vi"
 )
 
-// testModel builds a fresh 64x46 model and drops the boot markers (the
+// testModel builds a fresh 64x23 model and drops the boot markers (the
 // host's vi layer is ENOSYS, so docs load as n=0 — the gate's n=2 comes
 // from its seeded bundle).
 func testModel() model {
-	m := newModel(64, 46)
+	m := newModel(64, 23)
 	m.drain()
 	return m
+}
+
+func TestGridOfUsesKernelTerminalCell(t *testing.T) {
+	cols, rows := gridOf(512, 384)
+	if cols != 64 || rows != 23 {
+		t.Fatalf("gridOf(512,384) = %dx%d, want 64x23 for the default 8x16 cell",
+			cols, rows)
+	}
 }
 
 func key(m *model, ev keys.Event) []string {
@@ -45,12 +53,12 @@ func hasLine(lines []string, want string) bool {
 }
 
 func TestBootMarkers(t *testing.T) {
-	m := newModel(64, 46)
+	m := newModel(64, 23)
 	got := m.drain()
-	// n=44 is the catalog row count (three M78a net CLIs add 3 to M71n's 41);
+	// n=45 is the catalog row count (M81c adds the `open` builtin);
 	// a catalog change trips this AND the class-B gate deliberately — both
 	// are the drift tripwire for shlib.HelpRows.
-	if !hasLine(got, "gohelp: catalog n=44") {
+	if !hasLine(got, "gohelp: catalog n=45") {
 		t.Errorf("boot markers missing catalog count: %v", got)
 	}
 	if !hasLine(got, "gohelp: docs n=0") {
@@ -63,11 +71,11 @@ func TestBootMarkers(t *testing.T) {
 
 func TestGroupJumps(t *testing.T) {
 	m := testModel()
-	if got := key(&m, kRight); !hasLine(got, "gohelp: focus . group=files") {
-		t.Errorf("right did not jump to the files group head: %v", got)
+	if got := key(&m, runeKey('l')); !hasLine(got, "gohelp: focus . group=files") {
+		t.Errorf("l did not jump to the files group head: %v", got)
 	}
-	if got := key(&m, kLeft); !hasLine(got, "gohelp: focus clear group=shell") {
-		t.Errorf("left did not jump back to the shell group head: %v", got)
+	if got := key(&m, runeKey('h')); !hasLine(got, "gohelp: focus clear group=shell") {
+		t.Errorf("h did not jump back to the shell group head: %v", got)
 	}
 }
 
@@ -92,7 +100,7 @@ func TestFilterFlow(t *testing.T) {
 		t.Errorf("filter ec matched %v, want echo,secrets,exec", names)
 	}
 	got = key(&m, kEsc)
-	if !hasLine(got, "gohelp: filter cleared n=44") {
+	if !hasLine(got, "gohelp: filter cleared n=45") {
 		t.Errorf("escape did not clear the filter: %v", got)
 	}
 	if m.filter != "" || m.filtering {
@@ -102,8 +110,8 @@ func TestFilterFlow(t *testing.T) {
 
 func TestDetailFlow(t *testing.T) {
 	m := testModel()
-	if got := key(&m, kDown); !hasLine(got, "gohelp: focus echo group=shell") {
-		t.Fatalf("down did not focus echo: %v", got)
+	if got := key(&m, runeKey('j')); !hasLine(got, "gohelp: focus echo group=shell") {
+		t.Fatalf("j did not focus echo: %v", got)
 	}
 	got := key(&m, kEnter)
 	if !hasLine(got, "gohelp: detail echo usage=echo [ARG...]") {

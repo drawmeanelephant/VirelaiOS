@@ -4,8 +4,8 @@
 # line uses: env/variables, one pipe, and > redirects (each read back ON
 # THE HOST, byte-equal), a foreground exec whose status arrives through $?,
 # and a background job cycled through jobs/fg. Then the harness types at
-# the prompt: a fresh line, a Backspace edit, and an Up-arrow recall edited
-# by one character -- each visible as its own `gosh: line ` marker.
+# the prompt: a fresh line, a Backspace edit, and a reverse-i-search recall
+# edited by one character -- each visible as its own `gosh: line ` marker.
 #
 # HOST PREREQUISITE (fails the gate honestly when missing):
 #   bash tools/go/build-gosh.sh   ->  .build/go/GOSH.ELF
@@ -34,6 +34,35 @@ dui close 2
 echo rx-gosh-ok
 EOF
 
+# M81c (#1763): GOSH's headless `-c` runs the same shell engine without its
+# startup children. Each boot opens exactly one app; the stage gate waits for
+# that app's own first-frame marker before the monitor closes its window.
+vgate_file open-file.txt <<'EOF'
+exec GOSH.ELF -c "open README.TXT"
+EOF
+
+vgate_file close-opened-file.txt <<'EOF'
+dui close 2
+echo rx-gosh-open-file-ok
+EOF
+
+vgate_file open-https.txt <<'EOF'
+exec GOSH.ELF -c "open https://example.com/"
+EOF
+
+vgate_file close-opened-web.txt <<'EOF'
+dui close 2
+echo rx-gosh-open-https-ok
+EOF
+
+vgate_file open-unknown.txt <<'EOF'
+exec GOSH.ELF -c "open SONG.OGG"
+EOF
+
+vgate_file finish-open-unknown.txt <<'EOF'
+echo rx-gosh-open-unknown-ok
+EOF
+
 # M81e2 (#1787) added two lines to the startup script below, and they are
 # the redirect decision pinned on the share. `>` is now a crash-safe
 # publish, so `echo shrunk-body > /host/GOOSHSHRINK.TXT` runs against a body
@@ -48,10 +77,8 @@ EOF
 # startup block is a GUEST script run by shlib, where a leading `#` is a
 # parse-level no-op but is still submitted as a line -- so it lands in the
 # history ring and shifts the Up-arrow recall the typed-chord choreography
-# below depends on. (Observed 2026-09-26: six `#` lines here made run 01
-# recall the wrong entries and the `echo az` / `echo ay` markers never
-# printed. Comments belong in this prose, above the heredoc.)
-#
+# so it lands in the history ring and changes the session history. Comments
+# belong in this prose, above the heredoc.
 # The startup contract: STARTUP.SH (then PROFILE.SH, absent here) runs
 # before the first prompt. `exec` inside GOSH is the monitor vocabulary --
 # it runs the named ELF; the -c child form is GOSH's own headless mode
@@ -89,7 +116,15 @@ src = os.path.join(".build", "go", "GOSH.ELF")
 if not os.path.exists(src):
     sys.exit("GOSH.ELF missing (expected " + src + ") - build it first: "
              "bash tools/go/build-gosh.sh")
-shutil.copy(src, os.path.join(share, "GOSH.ELF"))
+for name, build in (
+    ("GOSH.ELF", "bash tools/go/build-gosh.sh"),
+    ("GOEDIT.ELF", "bash tools/go/build-goedit.sh"),
+    ("WEB.ELF", "bash tools/go/build-web.sh browser"),
+):
+    src = os.path.join(".build", "go", name)
+    if not os.path.exists(src):
+        sys.exit(name + " missing (expected " + src + ") - build it first: " + build)
+    shutil.copy(src, os.path.join(share, name))
 shutil.copy(os.path.join(rd, "STARTUP.SH"), os.path.join(share, "STARTUP.SH"))
 # M81e2 (#1787): seed the shrink target LONG, so STARTUP.SH's
 # `echo shrunk-body > /host/GOOSHSHRINK.TXT` is a replace that SHRINKS. An
@@ -97,24 +132,27 @@ shutil.copy(os.path.join(rd, "STARTUP.SH"), os.path.join(share, "STARTUP.SH"))
 # behind, and share-equals below is a byte-EQUAL check, so it would fail.
 with open(os.path.join(share, "GOOSHSHRINK.TXT"), "w") as fh:
     fh.write("PREEXISTING-LONG-BODY\n" * 40)
-print("staged GOSH.ELF (%d bytes) + STARTUP.SH into share" %
-      os.path.getsize(os.path.join(share, "GOSH.ELF")))
+with open(os.path.join(share, "README.TXT"), "w") as fh:
+    fh.write("open-contract-text\n")
+with open(os.path.join(share, "SONG.OGG"), "wb") as fh:
+    fh.write(b"OggS\x00\x02")
+print("staged GOSH.ELF, GOEDIT.ELF, WEB.ELF + STARTUP.SH and open fixtures")
 PY
 
 # Typed at the prompt -- THREE submitted lines, because `gosh: line ` is
-# emitted on submit only: `echo abc` is typed and returned; Up recalls it,
-# two backspaces and a z turn it into `echo az`, returned; Up recalls THAT,
-# a backspace removes the z and a y makes it `echo ay`, the marker the stage
-# gate waits on. The third line is deliberately NOT `echo azx`: `echo az`
-# would be a prefix of it, and no substring-tolerant assert can then tell the
-# two recall lines apart (see the marker assert below).
+# emitted on submit only: `echo abc` is typed and returned; Ctrl+R searches
+# for `echo`, Enter accepts the newest match, two backspaces and a z turn it
+# into `echo az`, returned; another Ctrl+R search recalls THAT, a backspace
+# removes the z and a y makes it `echo ay`, the marker the stage gate waits
+# on. The third line is deliberately NOT `echo azx`: `echo az` would be a
+# prefix of it, and no substring-tolerant assert can then distinguish them.
 vgate_run 01 -- \
     --screen '$RUN_DIR/screen' \
     --via-virtio \
     --script '$RUN_DIR/script.txt' \
     --script2 '$RUN_DIR/script2.txt' \
     --script2-after 'tabwm: sidebar-rendered' \
-    --input-chords 'e,c,h,o,space,a,b,c,return,up,backspace,backspace,z,return,up,backspace,y,return' \
+    --input-chords 'e,c,h,o,space,a,b,c,return,ctrl-r,e,c,h,o,return,backspace,backspace,z,return,ctrl-r,e,c,h,o,return,backspace,y,return' \
     --input-chords-after 'gosh: prompt' \
     --script3 '$RUN_DIR/script3.txt' \
     --script3-after 'gosh: line echo ay' \
@@ -159,8 +197,8 @@ ser = open(os.environ["VG_SER"], errors="replace").read()
 wants = {
     "nested-child-ok": "the background child's own console output",
     "gosh: line echo abc": "typed line 1 (a fresh line, submitted)",
-    "gosh: line echo az": "typed line 2 (Up recall, two Backspaces, z)",
-    "gosh: line echo ay": "typed line 3 (Up recall of echo az, Backspace, y)",
+    "gosh: line echo az": "typed line 2 (reverse-i-search, two Backspaces, z)",
+    "gosh: line echo ay": "typed line 3 (reverse-i-search of echo az, Backspace, y)",
 }
 missing = [w for w in wants if not re.search(r"(?m)^" + re.escape(w), ser)]
 if missing:
@@ -203,3 +241,56 @@ if stray:
     sys.exit("orphan publish temp(s) beside a redirect target: " +
              ", ".join(stray) + " - the publish did not complete")
 PY
+
+# --- M81c (#1763): the shared GOSH `open` contract -------------------------
+# File path -> the registered text handler. The handler's own frame marker
+# is the close barrier, and the exit script closes its first user window.
+vgate_run 02 -- \
+    --screen '$RUN_DIR/screen-open-file' \
+    --script '$RUN_DIR/open-file.txt' \
+    --script2 '$RUN_DIR/close-opened-file.txt' \
+    --script2-after 'goedit: present' \
+    --script-expect 'rx-gosh-open-file-ok' --timeout 240
+
+vgate_assert 02 serial-contains 'gosh: open launched scheme=file target=/host/README.TXT handler=GOEDIT.ELF pid='
+vgate_assert 02 serial-contains 'goedit: read /host/README.TXT n=19'
+vgate_assert 02 serial-contains 'goedit: present'
+vgate_assert 02 serial-contains 'dui close: closed=2'
+vgate_assert 02 serial-contains 'rx-gosh-open-file-ok'
+vgate_assert 02 serial-absent 'gosh: open refused'
+vgate_assert 02 serial-absent '[EXC] parking:'
+vgate_assert 02 serial-absent 'exited status=139'
+
+# HTTPS -> WEB.ELF. example.com deliberately reaches WEB's named DNS refusal:
+# this proves routing without pretending this browser slice resolves names.
+vgate_run 03 -- \
+    --screen '$RUN_DIR/screen-open-https' \
+    --script '$RUN_DIR/open-https.txt' \
+    --script2 '$RUN_DIR/close-opened-web.txt' \
+    --script2-after 'web: ready' \
+    --script-expect 'rx-gosh-open-https-ok' --timeout 240
+
+vgate_assert 03 serial-contains 'gosh: open launched scheme=https target=https://example.com/ handler=WEB.ELF pid='
+vgate_assert 03 serial-contains 'web: url https://example.com/'
+vgate_assert 03 serial-contains 'web: error dns'
+vgate_assert 03 serial-contains 'web: ready'
+vgate_assert 03 serial-contains 'dui close: closed=2'
+vgate_assert 03 serial-contains 'rx-gosh-open-https-ok'
+vgate_assert 03 serial-absent 'gosh: open refused'
+vgate_assert 03 serial-absent '[EXC] parking:'
+vgate_assert 03 serial-absent 'exited status=139'
+
+# A type with no handler is a named refusal, and must not spawn an app.
+vgate_run 04 -- \
+    --screen '$RUN_DIR/screen-open-unknown' \
+    --script '$RUN_DIR/open-unknown.txt' \
+    --script2 '$RUN_DIR/finish-open-unknown.txt' \
+    --script2-after 'gosh: open refused target=SONG.OGG reason=no handler for audio' \
+    --script-expect 'rx-gosh-open-unknown-ok' --timeout 240
+
+vgate_assert 04 serial-contains 'gosh: open refused target=SONG.OGG reason=no handler for audio'
+vgate_assert 04 serial-contains 'gosh: open: SONG.OGG: no handler for audio'
+vgate_assert 04 serial-contains 'rx-gosh-open-unknown-ok'
+vgate_assert 04 serial-absent 'gosh: open launched'
+vgate_assert 04 serial-absent '[EXC] parking:'
+vgate_assert 04 serial-absent 'exited status=139'

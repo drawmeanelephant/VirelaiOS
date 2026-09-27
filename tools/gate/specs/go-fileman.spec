@@ -5,7 +5,7 @@
 # (M73h) in the real scanout — not a host ANSI render.
 #
 # Shape: go-charmhello — direct exec on the kernel desktop (no `tabwm start`
-# seat), native 512x384 window = the kernel grid's 64x46 client (cols <= the
+# seat), native 512x384 window = the kernel grid's 64x23 client (cols <= the
 # grid's 80-col cap), chords over the real HID path, `dui` rect proof, and a
 # screenshot barrier on the app's own post-rename marker. This spec RETIRES
 # go-files.spec (M58a): one file manager, one spec.
@@ -61,6 +61,16 @@ dui close 2
 echo rx-go-fileman-open-ok
 EOF
 
+vgate_file script7.txt <<'EOF'
+exec GOFILES.ELF /host/FM3
+EOF
+
+vgate_file script8.txt <<'EOF'
+dui close 3
+dui close 2
+echo rx-go-fileman-default-open-ok
+EOF
+
 vgate_setup_python <<'PY'
 import os, shutil, sys
 rd = os.environ["RUN_DIR"]
@@ -89,6 +99,11 @@ if not os.path.exists(view):
     sys.exit("GOVIEW.ELF missing (expected " + view + ") - build it first: "
              "bash tools/go/build-goview.sh")
 shutil.copy(view, os.path.join(share, "GOVIEW.ELF"))
+edit = os.path.join(".build", "go", "GOEDIT.ELF")
+if not os.path.exists(edit):
+    sys.exit("GOEDIT.ELF missing (expected " + edit + ") - build it first: "
+             "bash tools/go/build-goedit.sh")
+shutil.copy(edit, os.path.join(share, "GOEDIT.ELF"))
 # Run 02 starts the app in its OWN directory (FM2) so run 01's seeded listing
 # — and every assert pinned on its two entries — is untouched by this card.
 # A real 4x4 QOI: header, QOI_OP_RGB per pixel, the 8-byte end marker. Only the
@@ -110,25 +125,33 @@ with open(pic, "wb") as f:
 ogg = os.path.join(om, "SONG.OGG")
 with open(ogg, "wb") as f:
     f.write(b"OggS\x00\x02" + bytes(58))
+fm3 = os.path.join(share, "FM3")
+os.makedirs(fm3, exist_ok=True)
+readme = os.path.join(fm3, "README.TXT")
+with open(readme, "w") as f:
+    f.write("open-contract-text\n")
 
-print("staged GOFILES.ELF into share (%d bytes), %s (%d bytes), %s (%d bytes), "
-      "GOVIEW.ELF (%d bytes), %s (%d bytes), %s (%d bytes)" %
+print("staged GOFILES.ELF (%d bytes), GOEDIT.ELF (%d bytes), %s (%d bytes), "
+      "%s (%d bytes), GOVIEW.ELF (%d bytes), %s (%d bytes), %s (%d bytes), "
+      "%s (%d bytes)" %
       (os.path.getsize(os.path.join(share, "GOFILES.ELF")),
+       os.path.getsize(os.path.join(share, "GOEDIT.ELF")),
        known, os.path.getsize(known), inner, os.path.getsize(inner),
        os.path.getsize(os.path.join(share, "GOVIEW.ELF")),
-       pic, os.path.getsize(pic), ogg, os.path.getsize(ogg)))
+       pic, os.path.getsize(pic), ogg, os.path.getsize(ogg),
+       readme, os.path.getsize(readme)))
 PY
 
 # The chord batch, in full (17 strokes at the cv-input transport's fixed
-# 0.25 s): enter the sorted-first dir SUB, come back up, move onto
+# 0.25 s): enter the sorted-first dir SUB, come back up, use `j` to select
 # KNOWN.TXT (dirs sort first), open the EMPTY rename prompt, type the new
 # name one rune at a time, commit. Lowercase avoids any shift ambiguity in
-# the HID chord table.
+# the HID chord table; `j` avoids the unreliable multi-byte arrow input path.
 vgate_run 01 -- \
     --screen '$RUN_DIR/fileman-screen' \
     --input --via-virtio \
     --script '$RUN_DIR/script.txt' \
-    --input-chords 'return,backspace,down,r,n,e,w,n,a,m,e,.,t,x,t,return' \
+    --input-chords 'return,backspace,j,r,n,e,w,n,a,m,e,.,t,x,t,return' \
     --input-chords-after 'gofiles: ready' \
     --screenshot-after 'gofiles: renamed KNOWN.TXT -> newname.txt' \
     --script2 '$RUN_DIR/script2.txt' \
@@ -168,7 +191,7 @@ vgate_assert 01 serial-contains 'gofiles: cd /host/FM/SUB'
 vgate_assert 01 serial-contains 'gofiles: view INNER.TXT bytes='
 vgate_assert 01 serial-contains 'gofiles: key return'
 vgate_assert 01 serial-contains 'gofiles: key backspace'
-vgate_assert 01 serial-contains 'gofiles: key down'
+vgate_assert 01 serial-contains 'gofiles: key j'
 vgate_assert 01 serial-contains 'gofiles: view KNOWN.TXT bytes='
 
 # Act: rename commits (the syscall returned) and the re-list shows the new
@@ -254,16 +277,25 @@ for _ in range(h):
     out += row
     prev = row
 
-# The window occupies the native 512x384 client at (32, 48): the preview
-# pane lives right of the list split (col 28+) and below the pane headers
-# (row 2+), so the accent is only ever painted inside that rect — and the
-# selected row's background band is a solid slab of (44,58,76).
+# The capture is 2x Retina: the native 512x384 window at (32,32) occupies
+# x=64..1088, y=64..832, and its client starts at y=96. Each 8x16 terminal
+# cell is 16x32 capture pixels. listWidth(64)=28, the separator is col 28,
+# and the preview starts at col 29 (x=528); its three fixture lines occupy
+# rows 2..4 (y=160..256). The capture path blends glyph pixels, so the
+# measured preview accent is counted within +/-24 of (122,162,255) there.
+# The selected-row background band is (44,58,76).
 accent = selbg = 0
-for y in range(48, 48 + 368):
-    for x in range(32, 32 + 512):
+for y in range(96, 96 + 736):
+    for x in range(64, 64 + 1024):
         k = (y * w + x) * bpp
         r, g, b = out[k], out[k + 1], out[k + 2]
-        if abs(r - 122) <= 8 and abs(g - 162) <= 8 and abs(b - 255) <= 8:
+        if (
+            528 <= x < 1088
+            and 160 <= y < 256
+            and abs(r - 122) <= 24
+            and abs(g - 162) <= 24
+            and abs(b - 255) <= 24
+        ):
             accent += 1
         if abs(r - 44) <= 6 and abs(g - 58) <= 6 and abs(b - 76) <= 6:
             selbg += 1
@@ -339,3 +371,32 @@ vgate_assert 02 serial-absent 'gofiles: no /dev/tty'
 vgate_assert 02 serial-absent 'gofiles: attach failed'
 vgate_assert 02 serial-absent 'gofiles: list error'
 vgate_assert 02 serial-absent 'exited status=139'
+
+# --- M81c (#1763): GOFILES takes the shared default-open path ---------------
+# Enter on a text file selects the same virelai/mime.Open resolver as GOSH's
+# `open` builtin. The host builds and stages GOEDIT.ELF so a successful
+# marker is backed by the handler actually reading the path.
+vgate_run 03 -- \
+    --screen '$RUN_DIR/fileman-default-open-screen' \
+    --input --via-virtio \
+    --script '$RUN_DIR/script7.txt' \
+    --input-chords 'return' \
+    --input-chords-after 'gofiles: ready' \
+    --script3 '$RUN_DIR/script8.txt' \
+    --script3-after 'goedit: present' \
+    --script-expect 'rx-go-fileman-default-open-ok' --timeout 240
+
+vgate_assert 03 serial-contains 'exec: loaded GOFILES.ELF'
+vgate_assert 03 serial-contains 'gofiles: list /host/FM3 n=1'
+vgate_assert 03 serial-contains 'gofiles: open file README.TXT type=text handler=GOEDIT.ELF'
+vgate_assert 03 serial-contains 'gofiles: open launched README.TXT handler=GOEDIT.ELF pid='
+vgate_assert 03 serial-contains 'goedit: open id='
+vgate_assert 03 serial-contains 'goedit: read /host/FM3/README.TXT n=19'
+vgate_assert 03 serial-contains 'goedit: present'
+vgate_assert 03 serial-contains 'dui close: closed=3'
+vgate_assert 03 serial-contains 'dui close: closed=2'
+vgate_assert 03 serial-contains 'rx-go-fileman-default-open-ok'
+vgate_assert 03 serial-absent 'gofiles: open refused README.TXT'
+vgate_assert 03 serial-absent 'gofiles: open launch refused'
+vgate_assert 03 serial-absent '[EXC] parking:'
+vgate_assert 03 serial-absent 'exited status=139'

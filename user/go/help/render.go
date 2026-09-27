@@ -113,7 +113,7 @@ func (m model) renderBrowse() []string {
 	}
 
 	lines = append(lines, m.statusLine())
-	hint := "j/k move · ←→ group · enter detail · / filter · d docs · q quit"
+	hint := "j/k move · h/l group · enter detail · / filter · d docs · q quit"
 	if m.filtering {
 		hint = "type to filter · enter apply · esc clear · ↑↓ move"
 	}

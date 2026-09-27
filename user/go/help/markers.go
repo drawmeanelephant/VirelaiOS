@@ -35,7 +35,7 @@ const (
 	markerBrowse = "gohelp: browse"
 
 	// `/`-to-filter: one marker per edit (n = visible matches), then the
-	// clear. The gate pins `filter ec n=3` and the 44-row catalog clear.
+	// clear. The gate pins `filter ec n=3` and the 45-row catalog clear.
 	markerFilter        = "gohelp: filter "
 	markerFilterOn      = "gohelp: filter on"
 	markerFilterCleared = "gohelp: filter cleared n="

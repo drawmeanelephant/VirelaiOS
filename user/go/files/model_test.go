@@ -23,7 +23,7 @@ func entry(name string, isDir bool) vi.DirEntry {
 // ENOSYS on the host, so listings are placed directly.
 func testModel(entries ...vi.DirEntry) model {
 	m := model{path: "/host/FM"}
-	m.setSize(64, 46)
+	m.setSize(64, 23)
 	copy(m.entries[:], entries)
 	m.n = len(entries)
 	sortEntries(m.entries[:], m.n)
@@ -32,6 +32,14 @@ func testModel(entries ...vi.DirEntry) model {
 	m.previewOf = ""
 	m.preview = "(no selection)"
 	return m
+}
+
+func TestGridOfUsesKernelTerminalCell(t *testing.T) {
+	cols, rows := gridOf(512, 384)
+	if cols != 64 || rows != 23 {
+		t.Fatalf("gridOf(512,384) = %dx%d, want 64x23 for the default 8x16 cell",
+			cols, rows)
+	}
 }
 
 func runeKey(r rune) keys.Event { return keys.Event{Key: keys.KeyRune, Rune: r} }
