@@ -60,6 +60,10 @@
 //          owns the framebuffer). Implies --cvc-snap.)
 //         [--snapshot-out <base>] (claim 0680: override the snapshot output
 //          base path; default is the --screen base + "-snap".)
+//         [--snapshot-drain-timeout <sec>] (issue 1788: hold the VM at
+//          teardown, up to <sec>, while an armed kind-4 snapshot stream is
+//          still in flight, so a stop cannot eat a frame the gate is
+//          entitled to. Default 20; 0 = stop immediately.)
 //         [--sound] (milestone fifteen card A1, claim 6140: attach one
 //          VZVirtioSoundDeviceConfiguration with one
 //          VZVirtioSoundDeviceOutputStreamConfiguration (the PCM output
@@ -496,6 +500,11 @@ struct SnapshotTrigger {
 }
 var snapshotAfterMarkers: [String] = []
 var snapshotOutBase: String?
+// Issue #1788: a kind-4 snapshot is a 3.5 MiB round trip, so a trigger
+// marker printed microseconds before the --script-expect match leaves the
+// stream mid-flight when the teardown would otherwise fire. Hold the VM
+// this long (bounded) while a stream is in flight. 0 = stop immediately.
+var snapshotDrainTimeout: Double = 20
 var snapshotTriggers: [SnapshotTrigger] = []
 // Milestone five card N1 (claim 1373): `--net <capture-file>` attaches the
 // virtio-net device; the guest's TX frames are captured byte-exactly to the
@@ -984,6 +993,12 @@ while idx < arguments.count {
         idx += 2
     } else if arg == "--snapshot-out", idx + 1 < arguments.count {
         snapshotOutBase = arguments[idx + 1]
+        idx += 2
+    } else if arg == "--snapshot-drain-timeout", idx + 1 < arguments.count {
+        // Issue #1788: seconds to hold the VM at teardown while an armed
+        // kind-4 snapshot stream is still in flight. 0 = legacy
+        // stop-immediately.
+        snapshotDrainTimeout = Double(arguments[idx + 1]) ?? 20
         idx += 2
     } else if arg == "--net", idx + 1 < arguments.count {
         netCapturePath = arguments[idx + 1]
@@ -2325,6 +2340,7 @@ if consoleMode {
     if let screenshotAfter { print("  screenshot-after: \"\(screenshotAfter)\"  (capture the framebuffer once after this serial text appears)") }
     if !snapshotTriggers.isEmpty {
         for t in snapshotTriggers { print("  snapshot-after: \"\(t.marker)\"  (claim 0680: kind-4 request over queue 3; guest streams the scanout → \(t.outPath))") }
+        print("  snapshot-drain-timeout: \(snapshotDrainTimeout)s  (issue 1788: hold the VM at teardown until every armed kind-4 stream has landed; 0 = stop immediately)")
     }
     if let cvcConsoleFilePath { print("  cvc-console-file: \(cvcConsoleFilePath)  (claim 0680: structured console — every queue-1 log line captured; kind-3 arms the guest tee on \"cvconsole-ready\")") }
     if let scriptExpect { print("  script-expect: \"\(scriptExpect)\"  (exit 0 iff observed in the serial log)") }
@@ -2678,9 +2694,10 @@ func screenCaptureKitScreenshot() -> CGImage? {
     return cropped
 }
 
-func finish(success: Bool) {
-    let wantDump = markerDumpPath != nil
-    let wantNvram = nvramConsolePath != nil
+// Issue #1788: stop the device, then run the post-stop evidence reads and
+// exit. Split out of finish() so the teardown drain can gate the stop
+// itself without duplicating this body.
+func stopDeviceAndExit(success: Bool, wantDump: Bool, wantNvram: Bool) {
     runner.queue.async {
         runner.vm.stop { _ in
             // Claim 2188: the VM is stopped, so every guest byte VZ will
@@ -2746,6 +2763,73 @@ func finish(success: Bool) {
             print("vm-stop: state=\(runner.vm.state.rawValue)\(vmDelegate.verdict())")
             exit(finalSuccess ? 0 : 1)
         }
+    }
+}
+
+// Issue #1788: hold the VM before the teardown while an armed kind-4
+// snapshot stream is still in flight, then run `done`.
+//
+// A kind-4 snapshot is a 3.5 MiB round trip (claim 0680: 113 chunks back
+// over queue 4 after one request over queue 3), and a `--snapshot-after`
+// marker can be printed microseconds before the `--script-expect` match
+// that ends the run — live-web boot 13 prints `web-ink-20s` and then
+// `web-ink-done` back to back, so ONE poll tick fires the second request
+// and records the match. The old path then stopped the device one
+// `--script-expect-tail` (default 1.5 s) later, mid-transfer, and the gate
+// failed on a .raw the guest was still streaming. Other specs arm a
+// snapshot on the very marker they expect (live-wm4-paint A/B,
+// live-win-hig), so the honest fix belongs here, not in one spec.
+//
+// Bounded by --snapshot-drain-timeout; a stream that never lands (dead
+// guest) costs that many seconds once and says so loudly.
+func drainSnapshotsBeforeStop(_ context: String, then done: @escaping () -> Void) {
+    guard snapshotDrainTimeout > 0, !snapshotTriggers.isEmpty else { done(); return }
+    let started = Date()
+    let deadline = started.addingTimeInterval(snapshotDrainTimeout)
+    var announced = false
+    func step() {
+        // Nothing can land once the device is gone or faulted.
+        if runner.vm.state == .stopped || runner.vm.state == .error { done(); return }
+        if !snapshotStreamInFlight() {
+            if announced {
+                FileHandle.standardOutput.write(Data("CVC-SNAP-DRAIN: in-flight stream landed in \(String(format: "%.1f", Date().timeIntervalSince(started)))s — stopping the device (\(context))\n".utf8))
+            }
+            done()
+            return
+        }
+        if !announced {
+            announced = true
+            FileHandle.standardOutput.write(Data("CVC-SNAP-DRAIN: kind-4 stream still in flight at \(context) — holding the VM up to \(snapshotDrainTimeout)s so the frame lands\n".utf8))
+        }
+        guard Date() < deadline else {
+            FileHandle.standardError.write(Data("CVC-SNAP-DRAIN: TIMEOUT after \(snapshotDrainTimeout)s with a kind-4 stream still in flight — its .raw will be missing or short (\(context))\n".utf8))
+            done()
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { step() }
+    }
+    step()
+}
+
+// Issue #1788: is a kind-4 scanout stream in flight right now? The read
+// hops onto the device's serial queue — the same discipline every callback
+// uses — so the (pendingSnapPath, snap) pair is read consistently, and a
+// fire already dispatched onto that queue has necessarily run (FIFO), so a
+// request enqueued microseconds earlier is never missed.
+func snapshotStreamInFlight() -> Bool {
+    #if SPIKE
+    guard #available(macOS 27.0, *) else { return false }
+    return CustomVirtioSpike.snapshotStreamInFlight()
+    #else
+    return false
+    #endif
+}
+
+// Issue #1788: every exit path goes through here. Stopping the device is
+// what truncates an in-flight kind-4 stream, so the drain runs first.
+func finish(success: Bool) {
+    drainSnapshotsBeforeStop("finish(success:\(success))") {
+        stopDeviceAndExit(success: success, wantDump: markerDumpPath != nil, wantNvram: nvramConsolePath != nil)
     }
 }
 
@@ -3056,12 +3140,21 @@ func fireSnapshotsIfMarker(_ text: String) {
         snapshotTriggers[i].fired = true
         guard #available(macOS 27.0, *) else { continue }
         FileHandle.standardOutput.write(Data("CVC-SNAP-REQ: kind-4 request scheduled after \"\(trigger.marker)\" transport=cv-input → \(trigger.outPath)\n".utf8))
-        CustomVirtioSpike.pendingSnapPath = trigger.outPath
         CustomVirtioSpike.deviceQueue.async {
+            // Issue #1788: claim pendingSnapPath on the device queue, where
+            // the stream's header message consumes it — so the teardown drain
+            // (which reads the pair with a sync hop onto this same serial
+            // queue) cannot observe a fired trigger whose request has not
+            // been sent yet, and cannot miss one that has.
+            CustomVirtioSpike.pendingSnapPath = trigger.outPath
             if !CustomVirtioSpike.enqueueMessageNow(
                 CustomVirtioSpike.controlMessage(CustomVirtioSpike.inputKindSnapshotReq, payload: []),
                 label: "snap-req → \(trigger.outPath)"
             ) {
+                // The request never left the host: clear the pending path so
+                // the drain does not wait out its whole window for a stream
+                // that was never armed.
+                CustomVirtioSpike.pendingSnapPath = nil
                 FileHandle.standardError.write(Data("ERROR: CVC-SNAP-REQ: queue 3 pool empty at request time (\(trigger.outPath))\n".utf8))
             }
         }
@@ -6028,6 +6121,13 @@ enum CustomVirtioSpike {
     /// The output path of the snapshot request most recently sent — set by
     /// fireSnapshotsIfMarker, consumed by the stream's header message.
     static var pendingSnapPath: String?
+
+    /// Issue #1788: is a kind-4 scanout stream in flight right now? Read
+    /// with a sync hop onto deviceQueue, so the pair is observed the same
+    /// serial way the callbacks mutate it.
+    static func snapshotStreamInFlight() -> Bool {
+        deviceQueue.sync { snap != nil || pendingSnapPath != nil }
+    }
 
     // ---- Claim 3141 host-push echo state (all touched only on the
     // device's serial deviceQueue) ----
