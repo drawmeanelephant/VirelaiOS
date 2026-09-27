@@ -32,15 +32,15 @@
 # M81f (#1766) adds run 05: the change feed. The app boots in its own dir
 # (FM5), arms the vi watcher from its idle loop (`gofiles: watch armed` — the
 # baseline listing is taken), and the RUNNER mutates the share macOS-side once
-# that marker appears (`--host-write-after`, the same anchor discipline as
-# --screenshot-after; the mutation is a real host-side write into the live
-# share). The feed's event marker (`gofiles: watch created LATE.TXT`) follows
-# within the idle cadence — 5 quiet ticks per poll, so a few tens of ms — and
-# is the anchor for the closing script: a feed that never observes the host's
-# write can never reach the expect line, so the bound is structural, not a
-# timing hope. The probe measured WHY the feed is guest-side (queue 5 is a
-# stateless request/reply transport; a host push would need a kernel seam):
-# recorded on the card.
+# that marker appears (`--host-write` + `--host-write-content` +
+# `--host-write-after`, the same anchor discipline as --screenshot-after; the
+# mutation is a real host-side write into the live share). The feed's event
+# marker (`gofiles: watch created LATE.TXT`) follows within the idle cadence —
+# 5 quiet ticks per poll, so a few tens of ms — and is the anchor for the
+# closing script: a feed that never observes the host's write can never reach
+# the expect line, so the bound is structural, not a timing hope. The probe
+# measured WHY the feed is guest-side (queue 5 is a stateless request/reply
+# transport; a host push would need a kernel seam): recorded on the card.
 #
 # exec-order: assert-proven -- each run ends on its own `rx-go-fileman-*`
 # marker, which only its closing script prints, and that script waits on the
@@ -498,7 +498,9 @@ vgate_run 05 -- \
     --screen '$RUN_DIR/fileman-watch-screen' \
     --input --via-virtio \
     --script '$RUN_DIR/script13.txt' \
-    --host-write-after 'gofiles: watch armed:FM5/LATE.TXT:host wrote this line mid-boot' \
+    --host-write 'FM5/LATE.TXT' \
+    --host-write-content 'host wrote this line mid-boot' \
+    --host-write-after 'gofiles: watch armed' \
     --script3 '$RUN_DIR/script15.txt' \
     --script3-after 'gofiles: watch created LATE.TXT' \
     --script-expect 'rx-go-fileman-watch-ok' --timeout 240

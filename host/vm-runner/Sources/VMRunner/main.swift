@@ -269,20 +269,20 @@ var screenshotPath: String?
 // a no-op without `--screen` (validated at parse time).
 var screenshotAfter: String?
 var screenshotAfterCaptured = false
-// M81f (#1766): `--host-write-after <marker>:<relpath>:<content>` — when
-// <marker> appears in the serial log, write <content> (+ newline) into
-// <relpath> under the --cvc-file share dir, macOS-side. Test CHOREOGRAPHY
-// for the change-feed gates: the guest must observe the mutation through
-// the same stateless file channel it always reads through, so the write
-// happens outside the guest, exactly like a real host-side edit. Repeatable;
-// each trigger fires once. Requires --cvc-file (validated at parse time).
-struct HostWriteTrigger {
-    let marker: String
-    let relPath: String
-    let content: String
-    var fired = false
-}
-var hostWriteTriggers: [HostWriteTrigger] = []
+// M81f (#1766): `--host-write <relpath>` + `--host-write-content <text>` +
+// `--host-write-after <marker>` — one marker-anchored macOS-side share
+// mutation: when <marker> appears in the serial log, write <text> (+ newline)
+// into <relpath> under the --cvc-file share dir. Test CHOREOGRAPHY for the
+// change-feed gates: the guest must observe the mutation through the same
+// stateless file channel it always reads through, so the write happens
+// outside the guest, exactly like a real host-side edit. Three flags, not a
+// joined `marker:path:text` value — guest markers carry colons (`gofiles:
+// watch armed`), so no combined format can delimit them (observed: the
+// colon-split first gate run wrote the wrong path). Requires --cvc-file.
+var hostWritePath: String?
+var hostWriteContent: String?
+var hostWriteAfter: String?
+var hostWriteFired = false
 // Milestone six card G1 (claim 6053): `--display` attaches the virtio-gpu
 // device and shows the VM window for the whole session (the machine boots
 // to a screen). OFF by default — without the flag config.graphicsDevices
@@ -795,15 +795,14 @@ while idx < arguments.count {
     } else if arg == "--screenshot-after", idx + 1 < arguments.count {
         screenshotAfter = arguments[idx + 1]
         idx += 2
+    } else if arg == "--host-write", idx + 1 < arguments.count {
+        hostWritePath = arguments[idx + 1]
+        idx += 2
+    } else if arg == "--host-write-content", idx + 1 < arguments.count {
+        hostWriteContent = arguments[idx + 1]
+        idx += 2
     } else if arg == "--host-write-after", idx + 1 < arguments.count {
-        // M81f (#1766): <marker>:<relpath>:<content> — the content is the
-        // remainder after the second colon, so it may itself contain colons.
-        let spec = arguments[idx + 1]
-        let parts = spec.split(separator: ":", maxSplits: 2, omittingEmptySubsequences: false)
-        guard parts.count == 3, !parts[0].isEmpty, !parts[1].isEmpty else {
-            fail("--host-write-after wants <marker>:<relpath>:<content>, got '\(spec)'.")
-        }
-        hostWriteTriggers.append(HostWriteTrigger(marker: String(parts[0]), relPath: String(parts[1]), content: String(parts[2])))
+        hostWriteAfter = arguments[idx + 1]
         idx += 2
     } else if arg == "--display" {
         displayMode = true
@@ -1747,9 +1746,16 @@ if screenshotAfter != nil, screenshotPath == nil {
     fail("--screenshot-after requires --screen (the marker capture writes into the --screen base filename).")
 }
 // M81f (#1766): a host-side share mutation only means anything when the
-// guest is actually reading that share over the file channel.
-if !hostWriteTriggers.isEmpty, !cvcFileEnabled {
-    fail("--host-write-after requires --cvc-file <share-dir> (the mutation must land in the share the guest reads).")
+// guest is actually reading that share over the file channel, and the three
+// flags form ONE trigger — a half-specified one is a parse error, not a
+// silent no-op.
+if hostWriteAfter != nil || hostWritePath != nil || hostWriteContent != nil {
+    guard hostWriteAfter != nil, hostWritePath != nil else {
+        fail("--host-write/--host-write-after/--host-write-content form one marker-anchored mutation: give --host-write <relpath> and --host-write-after <marker> (--host-write-content is the optional body).")
+    }
+    guard cvcFileEnabled else {
+        fail("--host-write-after requires --cvc-file <share-dir> (the mutation must land in the share the guest reads).")
+    }
 }
 // Claim 9367: --pointer-virtio rides the four-queue device; the after-marker
 // only makes sense with a sequence to schedule.
@@ -2423,8 +2429,8 @@ if consoleMode {
     if let script3Path { print("  script3: \(script3Path)  (claim 7786: forwarded once after script3-after appears)") }
     if let script3After { print("  script3-after: \"\(script3After)\"  (forward script3 once after this serial text appears)") }
     if let screenshotAfter { print("  screenshot-after: \"\(screenshotAfter)\"  (capture the framebuffer once after this serial text appears)") }
-    if !hostWriteTriggers.isEmpty {
-        for t in hostWriteTriggers { print("  host-write-after: \"\(t.marker)\" -> \(t.relPath)  (M81f #1766: write \(t.content.count) bytes into the share once this serial text appears)") }
+    if hostWriteAfter != nil {
+        print("  host-write: \(hostWritePath ?? "<none>")  (M81f #1766: write \(hostWriteContent?.count ?? 0) bytes into the share once \"\(hostWriteAfter!)\" appears)")
     }
     if !snapshotTriggers.isEmpty {
         for t in snapshotTriggers { print("  snapshot-after: \"\(t.marker)\"  (claim 0680: kind-4 request over queue 3; guest streams the scanout → \(t.outPath))") }
@@ -3219,28 +3225,27 @@ func captureScreenshotIfMarker(_ text: String) {
     }
 }
 
-// M81f (#1766): marker-driven host-side share mutation. When a registered
+// M81f (#1766): marker-driven host-side share mutation. When the
 // --host-write-after marker appears in the serial stream, the runner writes
-// the named file into the share dir (macOS-side, FileManager). The serial
-// marker is CHOREOGRAPHY (when to mutate); how the guest comes to observe
-// the change through the file channel is the behavior under test. Each
-// trigger fires once; a failed write is named on stdout, never silent.
-func fireHostWritesIfMarker(_ text: String) {
-    for i in hostWriteTriggers.indices {
-        if hostWriteTriggers[i].fired { continue }
-        guard text.contains(hostWriteTriggers[i].marker) else { continue }
-        let trigger = hostWriteTriggers[i]
-        hostWriteTriggers[i].fired = true
-        guard let root = cvcFileShareDir else { continue }
-        let url = URL(fileURLWithPath: root).appendingPathComponent(trigger.relPath)
-        let body = trigger.content.hasSuffix("\n") ? trigger.content : trigger.content + "\n"
-        do {
-            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try body.write(to: url, atomically: true, encoding: .utf8)
-            FileHandle.standardOutput.write(Data("HOST-WRITE: wrote \(trigger.relPath) (\(body.utf8.count) bytes) after \"\(trigger.marker)\"\n".utf8))
-        } catch {
-            FileHandle.standardOutput.write(Data("HOST-WRITE: FAILED for \(trigger.relPath): \(error)\n".utf8))
-        }
+// the --host-write-content body into --host-write under the share dir
+// (macOS-side, FileManager). The serial marker is CHOREOGRAPHY (when to
+// mutate); how the guest comes to observe the change through the file
+// channel is the behavior under test. Fires once; a failed write is named
+// on stdout, never silent.
+func fireHostWriteIfMarker(_ text: String) {
+    guard let marker = hostWriteAfter, !hostWriteFired, let relPath = hostWritePath,
+          text.contains(marker) else { return }
+    hostWriteFired = true
+    guard let root = cvcFileShareDir else { return }
+    let url = URL(fileURLWithPath: root).appendingPathComponent(relPath)
+    let body = hostWriteContent ?? ""
+    let payload = body.hasSuffix("\n") ? body : body + "\n"
+    do {
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try payload.write(to: url, atomically: true, encoding: .utf8)
+        FileHandle.standardOutput.write(Data("HOST-WRITE: wrote \(relPath) (\(payload.utf8.count) bytes) after \"\(marker)\"\n".utf8))
+    } catch {
+        FileHandle.standardOutput.write(Data("HOST-WRITE: FAILED for \(relPath): \(error)\n".utf8))
     }
 }
 
@@ -5648,7 +5653,7 @@ func scriptPoll(matchedAt: Date? = nil) {
     captureScreenshotIfDue()
     captureScreenshotIfMarker(lastText)
     fireSnapshotsIfMarker(lastText)
-    fireHostWritesIfMarker(lastText)
+    fireHostWriteIfMarker(lastText)
     // Fix 3: the liveness heartbeat — unbuffered stderr every 30 s.
     if Date().timeIntervalSince(scriptPollLastBeat) >= 30 {
         scriptPollLastBeat = Date()
