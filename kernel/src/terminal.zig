@@ -4839,6 +4839,57 @@ test "terminal: history ring keeps lines past the grid, drops oldest (#1637)" {
     try std.testing.expect(!(std.mem.eql(u8, s.line(0), "L000")));
 }
 
+test "terminal: the run-03 fill shape pins the ring at the fill's overshoot, not the viewport (#1757)" {
+    // live-term-depth run 03 observed `tty: clear 24 lines` from a
+    // "~300-row fill" and 24 == the window's visible rows, so the count
+    // looked like a hidden viewport cap. It is arithmetic, not a cap:
+    // gosh does not echo `source`d script lines, so FILL.SH (150 echo
+    // outputs) plus the typed line is 151 newlines — the 128-row grid
+    // absorbs 127 of them and exactly 24 rows scroll into the ring. The
+    // match with rows_visible was numerology. This pin reproduces the
+    // exact guest byte shape and holds both halves: the 24, and the ring
+    // saturating at history_lines (never any viewport figure) when the
+    // fill is deeper — M73k's promise to Shift+Home stands.
+    for (&terminals) |*t| t.reset();
+    for (&screens) |*sc| sc.reset();
+    const h = create(7) orelse return error.TestUnexpectedResult;
+    const t = get(h).?;
+    try std.testing.expect(t.attachWindow(7));
+    const s = screenForWindow(7).?;
+    // The editor paints prompt + typed line on row 0; submit emits CR LF.
+    s.feed("gosh> source FILL.SH\r\n");
+    // `source` runs 150 echoes; each output row ends in exactly one LF.
+    var i: usize = 0;
+    while (i < 150) : (i += 1) {
+        var b: [16]u8 = undefined;
+        const row = std.fmt.bufPrint(&b, "FILL-{d:0>3} pppp\n", .{i}) catch unreachable;
+        s.feed(row);
+    }
+    // 151 newlines: 127 absorbed by the grid, 24 scrolled into the ring.
+    try std.testing.expectEqual(@as(usize, 24), s.hist_count);
+    try std.testing.expectEqual(@as(usize, grid_lines), s.used);
+    try std.testing.expectEqual(@as(usize, 152), s.lineCount());
+    // Ring contents: the typed row, then FILL-000..FILL-022.
+    try std.testing.expectEqualStrings("gosh> source FILL.SH", s.line(0));
+    try std.testing.expectEqualStrings("FILL-000 pppp", s.line(1));
+    try std.testing.expectEqualStrings("FILL-022 pppp", s.line(23));
+    // The grid tail: FILL-023 at the top, FILL-149 above the cursor row.
+    try std.testing.expectEqualStrings("FILL-023 pppp", s.line(24));
+    try std.testing.expectEqualStrings("FILL-149 pppp", s.line(150));
+    try std.testing.expectEqualStrings("", s.line(151));
+    // A deeper fill saturates the ring at history_lines, with the oldest
+    // rows dropping — no viewport-shaped cap anywhere in the path.
+    while (i < 600) : (i += 1) {
+        var b: [16]u8 = undefined;
+        const row = std.fmt.bufPrint(&b, "MORE-{d:0>3}\n", .{i}) catch unreachable;
+        s.feed(row);
+    }
+    try std.testing.expectEqual(@as(usize, history_lines), s.hist_count);
+    try std.testing.expect(s.hist_dropped > 0);
+    for (&terminals) |*tt| tt.reset();
+    for (&screens) |*ss| ss.reset();
+}
+
 test "terminal: history is normal-screen only; alt walks its own space (#1637)" {
     for (&terminals) |*t| t.reset();
     for (&screens) |*sc| sc.reset();
