@@ -653,6 +653,18 @@ pub const MenuApp = struct {
 /// Registry section cap: the apps section holds at most this many entries.
 pub const menu_apps_max: usize = 16;
 
+/// The manifest read budget, shared by every reader of APPS.TXT: WND.BIN's
+/// god-menu buffer, TABWM.BIN's overlay buffer, and the Go seat's
+/// `appsMaxBytes`. It is ONE constant because the failure is silent: a
+/// manifest bigger than a reader's buffer is cut at the last whole line that
+/// fits, so the tail rows simply stop existing in that seat's menu — no
+/// error, no marker, just a shorter list. The readers used to carry their own
+/// 1024 B copies of this number and M82a (#1768) grew the file past all of
+/// them; the test at the bottom of this file pins the real file under it, so
+/// the next card that adds rows has to move this number rather than discover
+/// the truncation in a screenshot.
+pub const manifest_buf_max: usize = 4096;
+
 /// Parse manifest text into `out`, returning the entry count (capped at
 /// `out.len`). Malformed lines (fewer than 2 fields, empty name/desc) are
 /// skipped, never trapped.
@@ -853,4 +865,81 @@ test "sexiburger manifest: empty text yields zero, overlong input caps at out.le
     try std.testing.expectEqual(@as(usize, 2), n);
     try std.testing.expectEqualStrings("A.BIN", tiny[0].name);
     try std.testing.expectEqualStrings("B.BIN", tiny[1].name);
+}
+
+// --- M82a (#1768): the real manifest, and the two Zig mirrors -------------
+//
+// These are the pins the card asks for, kept HERE rather than in the two
+// reader call sites for a plain reason: this is the module whose
+// `parse_apps_manifest` every Zig seat actually runs, and this file is the
+// only one of the three whose tests a gate executes
+// (tools/verify-unit-tests.sh runs `zig test user/src/sexiburger.zig`).
+// A pin in a test root nothing runs is a comment with braces.
+
+/// Read `image/apps.txt` from the repo root. The direct `zig test` runs with
+/// the repo root as its working directory; the `../../` form is for a runner
+/// that sets it to the module's own directory. Neither existing, so the file
+/// is reported missing rather than skipped.
+fn readRepoManifest(io: anytype, allocator: std.mem.Allocator) ![]u8 {
+    const limit = std.Io.Limit.limited(manifest_buf_max);
+    return std.Io.Dir.cwd().readFileAlloc(io, "image/apps.txt", allocator, limit) catch |err| switch (err) {
+        error.FileNotFound => std.Io.Dir.cwd().readFileAlloc(
+            io,
+            "../../image/apps.txt",
+            allocator,
+            limit,
+        ) catch |err2| {
+            std.debug.print("sexiburger: image/apps.txt is not readable from this " ++
+                "working directory ({s}, then {s})\n", .{ @errorName(err), @errorName(err2) });
+            return err2;
+        },
+        else => |e| e,
+    };
+}
+
+test "sexiburger manifest: the real image/apps.txt fits the shared read budget" {
+    const allocator = std.testing.allocator;
+    var io_impl = std.Io.Threaded.init_single_threaded;
+    const text = try readRepoManifest(io_impl.io(), allocator);
+    defer allocator.free(text);
+
+    // The pin itself. A file at or over manifest_buf_max would be truncated
+    // at the last whole line in every reader, so this is the property that
+    // keeps a longer manifest from quietly losing its tail rows.
+    try std.testing.expect(text.len > 0);
+    try std.testing.expect(text.len < manifest_buf_max);
+}
+
+test "sexiburger manifest: the real image/apps.txt decodes whole under the v1 four fields" {
+    const allocator = std.testing.allocator;
+    var io_impl = std.Io.Threaded.init_single_threaded;
+    const text = try readRepoManifest(io_impl.io(), allocator);
+    defer allocator.free(text);
+
+    // Every row must survive, not just the ones that fit a smaller buffer:
+    // the v2 schema (M82a) added TRAILING fields to rows, and this reader
+    // reads at most four, so a full parse here is the proof that the
+    // additive change is invisible to the Zig seats.
+    var out: [64]MenuApp = undefined;
+    const n = parse_apps_manifest(text, &out);
+    try std.testing.expectEqual(@as(usize, 14), n);
+
+    // The dock set is what the mirrors claim about this file. WND.BIN's
+    // god-menu selection test says "8 dock + dup stems past the cutoff" and
+    // the kernel dock renderer says "first 5 from image/apps.txt" — the
+    // first number is only true while this file has exactly 8 docked rows,
+    // so it is pinned here against the real file rather than left to a
+    // synthetic 22-entry fixture that can drift from it unnoticed.
+    var dock: usize = 0;
+    for (out[0..n]) |app| {
+        if (app.dock) dock += 1;
+        try std.testing.expect(app.name.len > 0);
+        try std.testing.expect(app.desc.len > 0);
+    }
+    try std.testing.expectEqual(@as(usize, 8), dock);
+
+    // The manifest's own contract: a v2 row declares its version in field 5,
+    // which no reader above looks at, and every row still has a name and a
+    // label in the first two.
+    try std.testing.expect(std.mem.indexOf(u8, text, " | v=2 ") != null);
 }

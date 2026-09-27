@@ -51,4 +51,45 @@ if not re.search(r'inventory: \d+ application\(s\):', ser):
     sys.exit("missing inventory header in serial log")
 if "NOTE.ELF" not in ser:
     sys.exit("NOTE.ELF not listed in inventory")
+
+# M82a (#1768): the manifest and the share are the same catalog, and the
+# kernel's `inventory` is the guest's own view of it. The check runs over the
+# INVENTORY BLOCK of the log (header to the run's own `rx-inv-ok`), not the
+# whole serial, so a name cannot be satisfied by an unrelated boot message.
+# A manifest row that exists in this share must be a file the guest listed:
+# a row naming a file the guest cannot see is a row the launcher would offer
+# and then fail to exec, which is the class of lie this card exists to stop.
+# Rows NOT staged in this gate are counted and reported, never silently
+# skipped — this spec stages one Go ELF, so most of the catalog is absent by
+# design.
+share = os.environ.get("VG_SHARE") or os.path.join(os.environ["RUN_DIR"], "share")
+rows = [ln for ln in open(os.path.join(share, "APPS.TXT"), encoding="utf-8").read().splitlines()
+        if ln.strip() and not ln.startswith("#")]
+if len(rows) != 14:
+    sys.exit("manifest has %d rows, want 14" % len(rows))
+m = re.search(r'inventory: \d+ application\(s\):\n(.*?)rx-inv-ok', ser, re.S)
+if not m:
+    sys.exit("cannot isolate the inventory block in the serial log")
+block = m.group(1)
+present = unstaged = 0
+for ln in rows:
+    f = [x.strip() for x in ln.split("|")]
+    if len(f) < 2 or not f[0] or not f[1]:
+        sys.exit("malformed manifest row: %r" % ln)
+    if f[4:] and (len(f) < 5 or f[3] not in ("dock=true", "dock=false") or
+                  f[4].split("=", 1)[0] != "v"):
+        sys.exit("row has a v2 tail but not four positional fields plus a "
+                 "leading v=: %r" % ln)
+    for tail in f[4:]:
+        if not tail or "=" not in tail:
+            sys.exit("trailing field is not key=value: %r" % ln)
+    if os.path.exists(os.path.join(share, f[0])):
+        present += 1
+        if f[0] not in block:
+            sys.exit("manifest row %s is in the share but not in the guest's "
+                     "inventory listing" % f[0])
+    else:
+        unstaged += 1
+print("manifest: %d rows, %d staged in this share and all listed by the "
+      "guest, %d not staged here" % (len(rows), present, unstaged))
 PY

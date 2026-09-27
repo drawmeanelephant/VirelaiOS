@@ -1,6 +1,11 @@
 // GOTABWM.ELF — M69c2 (#1535): Ctrl+Space launcher. One list parsed from
 // /host/APPS.TXT, type-to-filter, Enter/click execs the named ELF as a
 // hosted tab. Not a Sexiburger port (D1). Fail closed on a missing ELF (D3).
+//
+// M82a (#1768): the row the manifest gives is the row that launches. The
+// `argv=` field's fixed arguments ride the exec, and the decode receipt says
+// what the manifest said — how many rows, the highest row version, and how
+// many rows spoke each trailing key (a zero is reported, not hidden).
 package main
 
 import (
@@ -16,6 +21,7 @@ const (
 	MarkerLaunchExec    = "gotabwm: launcher exec "
 	MarkerLaunchDismiss = "gotabwm: launcher dismiss"
 	MarkerLaunchMissing = "gotabwm: launcher missing "
+	MarkerAppsDecode    = "gotabwm: apps decode n="
 
 	hidUsageSpace  uint8 = 0x2C
 	hidUsageEnter  uint8 = 0x28
@@ -96,6 +102,17 @@ func openLauncher() {
 	launch.sel = 0
 	launch.open = true
 	launch.refresh()
+	// The manifest's own report, before the launcher's: a reader that
+	// silently ignored every v2 field would still print `launcher open n=14`,
+	// so the decode numbers are what a gate reads to know the v2 fields were
+	// decoded rather than skipped.
+	s := SummarizeApps(launch.catalog)
+	vi.ConsoleLine(MarkerAppsDecode + vi.Itoa64(int64(s.Rows)) +
+		" v=" + vi.Itoa64(int64(s.Schema)) +
+		" schema=" + vi.Itoa64(int64(appsSchemaVersion)) +
+		" argv=" + vi.Itoa64(int64(s.Argv)) +
+		" caps=" + vi.Itoa64(int64(s.Caps)) +
+		" opens=" + vi.Itoa64(int64(s.Opens)))
 	vi.ConsoleLine(MarkerLaunchOpen + vi.Itoa64(int64(len(launch.catalog))))
 	vi.ConsoleLine(MarkerLaunchFilter + launch.filter + " n=" + vi.Itoa64(int64(len(launch.filtered))))
 }
@@ -118,13 +135,33 @@ func execSelected() {
 	if !ok || e.Bin == "" {
 		return
 	}
-	_, err := vi.Exec(e.Bin)
+	// M82a: `argv=` rides the exec. A row with no `argv=` launches exactly as
+	// it did before the field existed — the binary alone — which is why the
+	// marker below is unchanged for every shipping row today.
+	_, err := execApp(e.Bin, e.Args...)
 	if err != nil {
 		vi.ConsoleLine(MarkerLaunchMissing + e.Bin)
 		return
 	}
-	vi.ConsoleLine(MarkerLaunchExec + e.Bin)
+	if len(e.Args) > 0 {
+		vi.ConsoleLine(MarkerLaunchExec + e.Bin + " argv=" + joinSpace(e.Args))
+	} else {
+		vi.ConsoleLine(MarkerLaunchExec + e.Bin)
+	}
 	dismissLauncher()
+}
+
+// joinSpace renders a decoded argv for the marker. It is the inverse of the
+// `argv=` split, so the marker and the manifest read the same.
+func joinSpace(args []string) string {
+	out := ""
+	for i, a := range args {
+		if i > 0 {
+			out += " "
+		}
+		out += a
+	}
+	return out
 }
 
 func handleLauncherKey(e vi.Event) bool {

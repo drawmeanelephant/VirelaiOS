@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 
 	"virelai/vi"
@@ -74,13 +75,15 @@ func TestHandleWmKeyFreezeToggle(t *testing.T) {
 	}
 }
 
-// execRecorder swaps the chord exec seam for one that records every bin and
-// acks it, so the chord -> re-exec path is observable off the guest.
+// execRecorder swaps the chord exec seam for one that records every exec's
+// full command line and acks it, so the chord -> re-exec path (and the
+// manifest's `argv=`) is observable off the guest. A no-argument exec records
+// the bare binary, which is what the chord tests compare.
 func execRecorder() (*[]string, func()) {
 	execs := &[]string{}
 	prev := execApp
 	execApp = func(name string, args ...string) (int64, error) {
-		*execs = append(*execs, name)
+		*execs = append(*execs, strings.TrimSpace(name+" "+joinSpace(args)))
 		return 42, nil
 	}
 	return execs, func() { execApp = prev }
@@ -791,6 +794,38 @@ func TestLaunchRowAtHitsFirstRow(t *testing.T) {
 	}
 	if _, ok := launchRowAt(10, 10); ok {
 		t.Fatal("outside panel must miss")
+	}
+}
+
+// M82a (#1768): the row the manifest describes is the row that launches. A
+// row with `argv=` carries those arguments into the exec; a row without one
+// launches exactly as it did before the field existed.
+func TestLauncherExecCarriesTheManifestArgv(t *testing.T) {
+	saved := launch
+	defer func() { launch = saved }()
+	launch = launcherState{}
+	execs, restore := execRecorder()
+	defer restore()
+
+	catalog := parseAppsTXT("PLAIN.ELF | Plain | p | dock=true\n" +
+		"WITHARG.ELF | With Arg | w | dock=true | v=2 | argv=--mode fast\n")
+	launch = launcherState{open: true, catalog: catalog, sel: 1}
+	launch.refresh()
+	if launch.catalog[launch.filtered[1]].Bin != "WITHARG.ELF" {
+		t.Fatalf("catalog order changed: %+v", launch.filtered)
+	}
+	execSelected()
+	if len(*execs) != 1 || (*execs)[0] != "WITHARG.ELF --mode fast" {
+		t.Fatalf("argv row exec = %v", *execs)
+	}
+
+	// The same path with a v1 row: the binary alone, no empty argument and
+	// no marker change. This is the half of the additive claim the user sees.
+	launch = launcherState{open: true, catalog: catalog, sel: 0}
+	launch.refresh()
+	execSelected()
+	if len(*execs) != 2 || (*execs)[1] != "PLAIN.ELF" {
+		t.Fatalf("v1 row exec = %v", *execs)
 	}
 }
 
