@@ -153,6 +153,11 @@ func main() {
 	}
 	vi.ConsoleLine(MarkerRegistered)
 
+	// 1b. M82c (#1770): the global shortcuts registry — validate the table
+	//     fail-closed, refuse the harness's conflicting fixture when seeded
+	//     (/host/GOTABWM.CHORDCONFLICT), and print the summary line.
+	chordRegistryPrologue()
+
 	// 2. One-seat discipline: the kernel refuses a second registration with
 	//    EACCES (-7). Fail the gate honestly if that is not what came back.
 	if r2 := vi.WmctlRegister(); r2 != -vi.ErrEACCES {

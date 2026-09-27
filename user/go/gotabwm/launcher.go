@@ -164,15 +164,16 @@ func joinSpace(args []string) string {
 	return out
 }
 
+// handleLauncherKey owns the launcher's MODAL keys. M82c (#1770): the
+// summon chord itself (ctrl+space) is a registry row — hid.go's table
+// dispatch opens the launcher with it when the launcher is closed; this
+// handler owns only what happens while it is open, including the
+// re-summon below.
 func handleLauncherKey(e vi.Event) bool {
 	usage := uint8(e.Arg0)
 	ctrl := e.Flags&vi.ModCtrl != 0
 	shift := e.Flags&vi.ModShift != 0
 	alt := e.Flags&vi.ModAlt != 0
-	if ctrl && !shift && !alt && usage == hidUsageSpace {
-		openLauncher()
-		return true
-	}
 	if !launch.open {
 		return false
 	}
@@ -198,6 +199,15 @@ func handleLauncherKey(e vi.Event) bool {
 	// (virtio HID keeps the modifier on the next report).
 	if c, ok := hidUsageChar(usage); ok {
 		if usage == hidUsageSpace && ctrl {
+			// The summon chord while the launcher is open re-opens it —
+			// the same behaviour the old top-of-handler summon had for
+			// both open and closed (the closed case now dispatches
+			// through the registry row). ctrl+shift+space stays
+			// swallowed, exactly as before.
+			if shift {
+				return true
+			}
+			openLauncher()
 			return true
 		}
 		if len(launch.filter) < filterMax {
