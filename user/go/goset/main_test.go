@@ -21,6 +21,7 @@ func TestPanelMarkerShapes(t *testing.T) {
 		markerSet:      "goset: set ",
 		markerDiscard:  "goset: discard ",
 		markerSaved:    "goset: saved ",
+		markerNotified: "goset: settings notified key=",
 		markerRefused:  "goset: save refused",
 		markerSaveFail: "goset: save failed rc=",
 		markerPresent:  "goset: present",
@@ -31,6 +32,22 @@ func TestPanelMarkerShapes(t *testing.T) {
 		if got != expect {
 			t.Fatalf("marker %q, want %q", got, expect)
 		}
+	}
+}
+
+func TestChangedSettingKeysIgnoresMaterializedDefaults(t *testing.T) {
+	before := settings.File{State: settings.StateMissing}
+	after := settings.File{
+		State: settings.StateOK,
+		Rows:  settings.File{State: settings.StateMissing}.Display(),
+	}
+	if got := changedSettingKeys(before, after); len(got) != 0 {
+		t.Fatalf("materialized defaults reported changed keys: %v", got)
+	}
+	after.Rows = settings.Set(after.Rows, "theme", "light")
+	got := changedSettingKeys(before, after)
+	if len(got) != 1 || got[0] != "theme" {
+		t.Fatalf("changed keys = %v, want [theme]", got)
 	}
 }
 

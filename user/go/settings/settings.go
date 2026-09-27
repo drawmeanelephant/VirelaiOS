@@ -215,6 +215,12 @@ func Default(key string) (string, bool) {
 	if k, ok := Known(key); ok {
 		return k.Default, true
 	}
+	if k, ok := PaletteKey(key); ok {
+		return k.Default, true
+	}
+	if k, ok := FontKey(key); ok {
+		return k.Default, true
+	}
 	return "", false
 }
 
@@ -397,6 +403,43 @@ func (f File) Save() int64 {
 		return SaveRefused
 	}
 	return vi.WriteFileSafe(Path, Render(f.Rows))
+}
+
+// Subscribe asks the active WM seat to deliver changes to key to this tab.
+// The subscriber still reads the persisted value after a notification, so the
+// mailbox carries only the key and never becomes a second settings store.
+func Subscribe(key string, winID uint32, selfName string) bool {
+	if !Editable(key) {
+		return false
+	}
+	return vi.SubscribeSetting(winID, key, selfName)
+}
+
+// PublishChange tells the active WM seat that a successful Save changed key.
+// Call this only after the crash-safe publish has completed.
+func PublishChange(key string, winID uint32, selfName string) bool {
+	if !Editable(key) {
+		return false
+	}
+	return vi.PublishSettingChange(winID, key, selfName)
+}
+
+// PollChange consumes one delivered key and returns its current persisted
+// value. A malformed or missing settings file fails closed.
+func PollChange(winID uint32) (key, value string, ok bool) {
+	key, ok = vi.PollSettingChanged(winID)
+	if !ok || !Editable(key) {
+		return "", "", false
+	}
+	f := Load()
+	if f.State != StateOK {
+		return "", "", false
+	}
+	value, ok = f.Effective(key)
+	if !ok {
+		return "", "", false
+	}
+	return key, value, true
 }
 
 // cutLine splits s after the first newline (if any); the remainder keeps its

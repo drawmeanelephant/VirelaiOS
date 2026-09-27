@@ -825,3 +825,73 @@ if os.path.exists(os.path.join(share, "SNAPSHOT.RESTORE")):
 print("the restore request is a ONE-SHOT: consumed by the boot 09 refusal, "
       "and boot 09 armed nothing, so it is gone from the share")
 PY
+
+# --- M82b (#1769): settings broadcast reaches a live second app -------------
+# Boot 01's hosted app already persisted a session, so the rebooted default
+# seat does not auto-open the first-boot GOSH workspace. Boot 10 therefore has
+# exactly the two apps this proof needs: GOSET writes theme=light while GOCALC
+# remains live and subscribed to theme. SETTINGS.TXT is still the persistent
+# source of truth; the WM_RPC notice only names the changed key.
+vgate_file script-10.txt <<'EOF'
+settings set wm gotabwm
+reboot
+EOF
+
+vgate_file script-10-seat.txt <<'EOF'
+dui focus 0
+exec GOCALC.ELF
+EOF
+
+vgate_file script-10-publish.txt <<'EOF'
+exec GOSET.ELF
+EOF
+
+vgate_run 10 -- \
+    --screen '$RUN_DIR/screen-10' \
+    --via-virtio \
+    --script '$RUN_DIR/script-10.txt' \
+    --script2 '$RUN_DIR/script-10-seat.txt' \
+    --script2-after 'gotabwm: win focus' \
+    --input-string $'theme=light\n' \
+    --input-string-after 'goset: ready ' \
+    --script3 '$RUN_DIR/script-10-publish.txt' \
+    --script3-after 'gocalc: settings subscribed key=theme' \
+    --script-expect 'gocalc: settings repaint key=theme value=light' \
+    --script-expect-tail 30 --timeout 420
+
+vgate_assert 10 serial-contains 'wm: autostart gotabwm (settings wm=gotabwm)'
+vgate_assert 10 serial-contains 'gotabwm: settings wm=gotabwm'
+vgate_assert 10 serial-contains 'gotabwm: session load n='
+vgate_assert 10 serial-absent 'gotabwm: first-boot workspace'
+vgate_assert 10 serial-contains 'exec: loaded GOCALC.ELF'
+vgate_assert 10 serial-contains 'gocalc: settings subscribed key=theme'
+vgate_assert 10 serial-contains 'exec: loaded GOSET.ELF'
+vgate_assert 10 serial-contains 'goset: set theme=light'
+vgate_assert 10 serial-contains 'goset: saved '
+vgate_assert 10 serial-contains 'gotabwm: settings subscribe pid='
+vgate_assert 10 serial-contains 'gotabwm: settings broadcast key=theme listeners=1'
+vgate_assert 10 serial-contains 'goset: settings notified key=theme'
+vgate_assert 10 serial-contains 'gocalc: settings repaint key=theme value=light'
+vgate_assert 10 serial-absent 'gocalc: close'
+vgate_assert 10 serial-absent 'gocalc OK'
+vgate_assert 10 serial-absent '[EXC] parking:'
+vgate_assert 10 serial-absent 'exited status=139'
+vgate_assert 10 python <<'PY'
+import os, re, sys
+ser = open(os.environ["VG_SER"], errors="replace").read()
+patterns = [
+    "gocalc: settings subscribed key=theme",
+    "goset: set theme=light",
+    "goset: saved ",
+    "gotabwm: settings broadcast key=theme listeners=1",
+    "gocalc: settings repaint key=theme value=light",
+]
+positions = [ser.find(p) for p in patterns]
+if any(p < 0 for p in positions) or positions != sorted(positions):
+    sys.exit("settings propagation out of order: " + repr(list(zip(patterns, positions))))
+if ser.count("gocalc: open id=") != 1:
+    sys.exit("calculator restarted: saw %d open markers" % ser.count("gocalc: open id="))
+if not re.search(r"gotabwm: settings broadcast key=theme listeners=1", ser):
+    sys.exit("seat did not deliver to exactly one subscriber")
+print("settings publication reached one live subscriber and repainted without restart")
+PY

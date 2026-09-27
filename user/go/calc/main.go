@@ -21,15 +21,17 @@ const (
 	natW     = 512
 	natH     = 384
 
-	markerOpen    = "gocalc: open id="
-	markerDeclare = "gocalc: declare accepted"
-	markerDogfood = "dogfood: calc" // M69a (#1528): go-dogfood.spec's marker
-	markerPresent = "gocalc: present"
-	markerResult  = "gocalc: result "
-	markerSaveErr = "gocalc: save error "
-	markerClose   = "gocalc: close"
-	markerOK      = "gocalc OK"
-	markerOpenErr = "gocalc: error open "
+	markerOpen              = "gocalc: open id="
+	markerDeclare           = "gocalc: declare accepted"
+	markerDogfood           = "dogfood: calc" // M69a (#1528): go-dogfood.spec's marker
+	markerPresent           = "gocalc: present"
+	markerSettingSubscribed = "gocalc: settings subscribed key=theme"
+	markerSettingPresent    = "gocalc: settings repaint key="
+	markerResult            = "gocalc: result "
+	markerSaveErr           = "gocalc: save error "
+	markerClose             = "gocalc: close"
+	markerOK                = "gocalc OK"
+	markerOpenErr           = "gocalc: error open "
 
 	defaultPath = "/host/CALC/RESULT.TXT"
 
@@ -91,6 +93,14 @@ func main() {
 
 	a := &app{ta: ta, path: path}
 	loop := appkit.NewLoop(a.ta, a.draw, a.handle)
+	if loop.SubscribeSetting("theme", func(value string) bool {
+		return theme.Set(value)
+	}) {
+		vi.ConsoleLine(markerSettingSubscribed)
+	}
+	loop.OnSettingPresent = func(key, value string) {
+		vi.ConsoleLine(markerSettingPresent + key + " value=" + value)
+	}
 	loop.OnInitialPresent = func() { vi.ConsoleLine(markerPresent) }
 	loop.OnExit = func(status int) {
 		vi.ConsoleLine(markerClose)

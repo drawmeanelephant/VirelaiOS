@@ -450,6 +450,7 @@ func (s *TabStrip) CloseTab(id uint32) bool {
 	// M79k (#1720): same rule for a toast — a click-through whose sender is
 	// gone would focus nothing. clearNotify prints the dismiss markers.
 	clearNotify(id)
+	clearSettingsSubscriptions(id)
 	for j := i; j+1 < s.count; j++ {
 		s.tabs[j] = s.tabs[j+1]
 	}
