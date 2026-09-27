@@ -49,11 +49,37 @@ type fakeFS struct {
 	// catches it. Left nil, syscalls() binds the honest fakePublish.
 	publishOverride func(path string, b []byte, appendMode bool) int64
 
+	// M81d (#1764): the lease rows are a SCRIPTED honest shape — the vi
+	// semantics are pinned in vi's own suite; these tests pin the case's
+	// sequence and its failure naming. Each script is popped per call and
+	// sticks on its last value; an empty script means "always succeed".
+	// leaseDenyAcquire forces every acquire to refuse (the failure test).
+	leaseAcqScript   []int64
+	leaseChkScript   []int64
+	leaseRelScript   []int64
+	leaseAcqCalls    int
+	leaseChkCalls    int
+	leaseRelCalls    int
+	leaseDenyAcquire bool
+
 	winID         int       // the id the shell would have bound (-1 = open failed)
 	winGeometry   [8]uint32 // the record sys_win_query answers with
 	winQueryErr   bool      // query fails
 	winFillErr    bool      // fill fails
 	winPresentErr bool      // present fails
+}
+
+// popLease pops the next scripted value, sticking on the script's last
+// entry once the calls run past it (0 = success).
+func (f *fakeFS) popLease(script []int64, calls *int) int64 {
+	if len(script) == 0 {
+		return 0
+	}
+	i := *calls - 1
+	if i >= len(script) {
+		i = len(script) - 1
+	}
+	return script[i]
 }
 
 type fakeTrash struct {
@@ -89,6 +115,13 @@ func newFakeFS() *fakeFS {
 		winID:   2,
 		winGeometry: [8]uint32{winGotX, winGotY, winGotW, winGotH,
 			0 /*z*/, 1 /*focused*/, 1 /*visible*/, 0 /*dirty*/},
+		// The lease drill's honest default: the case's exact call order —
+		// acquire ok / foreign refused / two takeovers ok, target refused
+		// then free then free, release refused then released. Tests that
+		// need a different shape override or deny.
+		leaseAcqScript: []int64{0, -vi.ErrEAGAIN, 0, 0},
+		leaseChkScript: []int64{-vi.ErrEAGAIN, 0, 0},
+		leaseRelScript: []int64{-vi.ErrEAGAIN, 0},
 	}
 }
 
@@ -180,6 +213,25 @@ func (f *fakeFS) syscalls() *syscalls {
 			}
 			f.files[path] = []byte(receipt)
 			return 0
+		},
+		leaseAcquire: func(path, selfName string) (*vi.FileLease, int64) {
+			f.leaseAcqCalls++
+			if f.leaseDenyAcquire {
+				return nil, -vi.ErrEAGAIN
+			}
+			if rc := f.popLease(f.leaseAcqScript, &f.leaseAcqCalls); rc < 0 {
+				return nil, rc
+			}
+			return &vi.FileLease{Target: path, LeasePath: vi.LeasePathFor(path),
+				Token: [8]byte{byte(f.leaseAcqCalls)}}, 0
+		},
+		leaseCheck: func(path string) int64 {
+			f.leaseChkCalls++
+			return f.popLease(f.leaseChkScript, &f.leaseChkCalls)
+		},
+		leaseRelease: func(l *vi.FileLease) int64 {
+			f.leaseRelCalls++
+			return f.popLease(f.leaseRelScript, &f.leaseRelCalls)
 		},
 		trashDelete: func(path string) (string, int64) {
 			body, ok := f.files[path]
@@ -494,9 +546,10 @@ func resultFor(t *testing.T, rs []result, id string) result {
 	return result{}
 }
 
-// wantReport is the byte-exact report with the M82e app-log case: the M61f `share-equals`
-// fixture shape, and the report the go-selftest spec requires on the share.
-// Adding a case updates this and the spec together.
+// wantReport is the byte-exact report with the M82e app-log case and the
+// M81d file-lease case: the M61f `share-equals` fixture shape, and the
+// report the go-selftest spec requires on the share. Adding a case updates
+// this and the spec together.
 const wantReport = "case intake pass\ncase intake-altered pass\n" +
 	"case clock-monotonic pass\ncase file-write pass\n" +
 	"case file-roundtrip pass\ncase file-truncate pass\n" +
@@ -504,8 +557,9 @@ const wantReport = "case intake pass\ncase intake-altered pass\n" +
 	"case file-append pass\ncase file-bigwrite pass\ncase file-clamp pass\n" +
 	"case file-fsync pass\ncase file-errors pass\n" +
 	"case file-write-safe pass\ncase trash pass\ncase file-write-publish pass\n" +
-	"case mime pass\ncase file-snapshot pass\ncase app-logs pass\ncase window pass\n" +
-	"summary cases=20 failed=0\n"
+	"case mime pass\ncase file-snapshot pass\ncase app-logs pass\n" +
+	"case file-lease pass\ncase window pass\n" +
+	"summary cases=21 failed=0\n"
 
 // seedFixtures is the host's half of the intake contract: IN/fixture.txt holds
 // the canonical body, IN/altered.txt the altered one (ADR 0031 D2), and the
@@ -526,8 +580,8 @@ func TestRunCasesAllPassAndReportBytes(t *testing.T) {
 	seedFixtures(fs)
 	rs := runCases(fs.syscalls())
 
-	if len(rs) != 20 {
-		t.Fatalf("cases = %d, want 20", len(rs))
+	if len(rs) != 21 {
+		t.Fatalf("cases = %d, want 21", len(rs))
 	}
 	for _, r := range rs {
 		if !r.ok {
@@ -537,7 +591,7 @@ func TestRunCasesAllPassAndReportBytes(t *testing.T) {
 	if got := string(renderReport(rs)); got != wantReport {
 		t.Fatalf("report bytes:\n got %q\nwant %q", got, wantReport)
 	}
-	if got := string(renderSummary(rs)); got != "summary cases=20 failed=0\n" {
+	if got := string(renderSummary(rs)); got != "summary cases=21 failed=0\n" {
 		t.Fatalf("summary = %q", got)
 	}
 	if got := fs.files[helloPath]; !bytes.Equal(got, []byte(helloPayload)) {
@@ -619,7 +673,7 @@ func TestIntakeFailsOnAMutatedSeed(t *testing.T) {
 	if !strings.Contains(report, "case intake fail fixture mismatch") {
 		t.Fatalf("report lacks the intake failure: %q", report)
 	}
-	if !strings.Contains(report, "summary cases=20 failed=2") {
+	if !strings.Contains(report, "summary cases=21 failed=2") {
 		t.Fatalf("report summary wrong: %q", report)
 	}
 	if got := fs.files[intakeCopy]; !bytes.Equal(got, []byte(intakeAltered)) {
@@ -655,7 +709,7 @@ func TestIntakeFailsWhenTheFixtureIsMissing(t *testing.T) {
 	// The report is still complete: 20 cases, the 2 intake ones failed (the
 	// clock, file and window cases do not read IN/).
 	report := string(renderReport(rs))
-	if !strings.Contains(report, "summary cases=20 failed=2") {
+	if !strings.Contains(report, "summary cases=21 failed=2") {
 		t.Fatalf("report summary wrong: %q", report)
 	}
 	if lines := strings.Count(report, "\n"); lines != len(rs)+1 {
@@ -853,7 +907,7 @@ func TestFileWriteCaseFailsWhenTheWriteIsRefused(t *testing.T) {
 	if !strings.Contains(report, "case file-write fail ") {
 		t.Fatalf("report lacks the fail detail: %q", report)
 	}
-	if !strings.Contains(report, "summary cases=20 failed=1") {
+	if !strings.Contains(report, "summary cases=21 failed=1") {
 		t.Fatalf("report summary wrong: %q", report)
 	}
 }
@@ -868,6 +922,47 @@ func TestClockCaseFailsWhenTheClockStandsStill(t *testing.T) {
 	}
 	if !strings.Contains(rs[2].detail, "clock did not advance") {
 		t.Fatalf("detail = %q", rs[2].detail)
+	}
+}
+
+// M81d (#1764): the lease drill runs its full sequence against the scripted
+// rows — acquire, the foreign refusal, both takeovers, the release rules.
+// The scripts mirror the drill's exact call order; the vi rules behind each
+// verdict are pinned in vi's own suite and proven live by the gate.
+func TestFileLeaseCaseRunsTheDrill(t *testing.T) {
+	fs := newFakeFS()
+	rs := runCases(fs.syscalls())
+
+	r := resultFor(t, rs, "file-lease")
+	if !r.ok {
+		t.Fatalf("file-lease failed: %s", r.detail)
+	}
+	if fs.leaseAcqCalls != 4 || fs.leaseChkCalls != 3 || fs.leaseRelCalls != 2 {
+		t.Fatalf("call counts acq=%d chk=%d rel=%d, want 4/3/2",
+			fs.leaseAcqCalls, fs.leaseChkCalls, fs.leaseRelCalls)
+	}
+	receipt := string(fs.files[leaseOk])
+	if !strings.Contains(receipt, "case file-lease dir=LEASES clock=yes") ||
+		!strings.Contains(receipt, "stale-takeover=ok dead-holder=ok") {
+		t.Fatalf("receipt = %q", receipt)
+	}
+	if got := fs.files[leaseCopy]; !strings.Contains(string(got), "token="+leaseForeignToken) {
+		t.Fatalf("stale copy = %q", got)
+	}
+}
+
+// A refused first acquire is the case's failure, named by its detail.
+func TestFileLeaseCaseFailsWhenAcquireIsRefused(t *testing.T) {
+	fs := newFakeFS()
+	fs.leaseDenyAcquire = true
+	rs := runCases(fs.syscalls())
+
+	r := resultFor(t, rs, "file-lease")
+	if r.ok {
+		t.Fatal("file-lease should have failed under a denied acquire")
+	}
+	if !strings.Contains(r.detail, "acquire rc=-11") {
+		t.Fatalf("detail = %q", r.detail)
 	}
 }
 

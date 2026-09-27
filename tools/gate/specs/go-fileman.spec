@@ -42,6 +42,14 @@
 # measured WHY the feed is guest-side (queue 5 is a stateless request/reply
 # transport; a host push would need a kernel seam): recorded on the card.
 #
+# M81d (#1764) adds run 06: the lease half of the convention. A foreign LIVE
+# lease record (`--lease-fixture=`, the named fixture verb — the GOSELF
+# --panic-receipt-fixture precedent) stands on FM6/NOTE.TXT, so the confirmed
+# delete is refused with the emit marker `delete refused NOTE.TXT rc=-11`
+# (-ErrEAGAIN, the lease row) and the file's bytes stay on the share — the
+# exact silent-loss shape (editor holds the file, manager deletes it, the
+# editor's next save resurrects it) the lease makes visible.
+#
 # exec-order: assert-proven -- each run ends on its own `rx-go-fileman-*`
 # marker, which only its closing script prints, and that script waits on the
 # app's own marker; an app that never ran, never renamed, never settled or
@@ -98,6 +106,15 @@ EOF
 vgate_file script15.txt <<'EOF'
 dui close 2
 echo rx-go-fileman-watch-ok
+EOF
+
+vgate_file script16.txt <<'EOF'
+exec GOFILES.ELF /host/FM6 --lease-fixture=/host/FM6/NOTE.TXT
+EOF
+
+vgate_file script17.txt <<'EOF'
+dui close 2
+echo rx-go-fileman-lease-ok
 EOF
 
 vgate_file script11.txt <<'EOF'
@@ -188,6 +205,14 @@ with open(base5, "w") as f:
     f.write("watch-baseline\n")
 if os.path.exists(os.path.join(fm5, "LATE.TXT")):
     sys.exit("FM5/LATE.TXT already staged - run 05 would prove nothing")
+# M81d (#1764): run 06's one-file directory. NOTE.TXT is the leased path; the
+# foreign live record itself is written in-guest by the app's fixture verb,
+# which is what keeps the drill on the guest's own file ABI.
+fm6 = os.path.join(share, "FM6")
+os.makedirs(fm6, exist_ok=True)
+note6 = os.path.join(fm6, "NOTE.TXT")
+with open(note6, "w") as f:
+    f.write("leased-file-body\nsecond line\n")
 
 print("staged GOFILES.ELF (%d bytes), GOEDIT.ELF (%d bytes), %s (%d bytes), "
       "%s (%d bytes), GOVIEW.ELF (%d bytes), %s (%d bytes), %s (%d bytes), "
@@ -526,3 +551,50 @@ vgate_assert 05 serial-absent 'gofiles: watch path gone'
 vgate_assert 05 serial-absent 'gofiles: list error'
 vgate_assert 05 serial-absent '[EXC] parking:'
 vgate_assert 05 serial-absent 'exited status=139'
+
+# --- M81d (#1764): run 06, the leased file is not deletable -----------------
+# GOFILES in /host/FM6 with a foreign LIVE lease standing on NOTE.TXT (the
+# fixture verb writes it before the TUI starts, and names it on the console).
+# One chord batch: `d` arms the confirm, `y` commits — the op refuses with the
+# EAGAIN row instead of trashing the file out from under its holder.
+vgate_run 06 -- \
+    --screen '$RUN_DIR/fileman-lease-screen' \
+    --input --via-virtio \
+    --script '$RUN_DIR/script16.txt' \
+    --input-chords 'd,y' \
+    --input-chords-after 'gofiles: ready' \
+    --script3 '$RUN_DIR/script17.txt' \
+    --script3-after 'gofiles: delete refused NOTE.TXT rc=-11' \
+    --script-expect 'rx-go-fileman-lease-ok' --timeout 240
+
+# The app ran, the fixture record is on the share's contract path, and the
+# listing this run acts on really held the leased file.
+vgate_assert 06 serial-contains 'exec: loaded GOFILES.ELF'
+vgate_assert 06 serial-contains 'gofiles: lease fixture /host/FM6/NOTE.TXT'
+vgate_assert 06 serial-contains 'gofiles: list /host/FM6 n=1'
+vgate_assert 06 serial-contains 'gofiles: entry NOTE.TXT file'
+
+# The refusal: the confirmed delete reports the lease row (-ErrEAGAIN = -11).
+vgate_assert 06 serial-contains 'gofiles: delete refused NOTE.TXT rc=-11'
+vgate_assert 06 serial-contains 'rx-go-fileman-lease-ok'
+# Nothing may be trashed behind the refusal, and nothing may be restored.
+vgate_assert 06 serial-absent 'gofiles: deleted NOTE.TXT'
+vgate_assert 06 serial-absent 'gofiles: restore refused'
+vgate_assert 06 serial-absent 'gofiles: no /dev/tty'
+vgate_assert 06 serial-absent '[EXC] parking:'
+vgate_assert 06 serial-absent 'exited status=139'
+
+# The load-bearing assert: NOTE.TXT still holds its exact seeded bytes — the
+# delete never reached the trash, so the holder's next save cannot resurrect
+# a file the user deleted.
+vgate_assert 06 python <<'PY'
+import os
+share = os.environ["VG_SHARE"]
+path = os.path.join(share, "FM6", "NOTE.TXT")
+want = b"leased-file-body\nsecond line\n"
+got = open(path, "rb").read()
+if got != want:
+    print("LEASED FILE WAS MUTATED: got %r want %r" % (got, want))
+    raise SystemExit(1)
+print("leased file verified untouched on the host (%d bytes)" % len(got))
+PY

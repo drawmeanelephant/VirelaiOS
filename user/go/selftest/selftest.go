@@ -282,6 +282,14 @@ type syscalls struct {
 	// above would re-implement the very thing being pinned.
 	publish func(path string, b []byte, appendMode bool) int64
 
+	// M81d (#1764): the advisory write lease, as function rows like
+	// writeSafe/publish — the case drives the helper end to end (acquire,
+	// refuse, take over, release), and WHICH state the standing record is
+	// in is the property under test.
+	leaseAcquire func(path, selfName string) (*vi.FileLease, int64)
+	leaseCheck   func(path string) int64
+	leaseRelease func(l *vi.FileLease) int64
+
 	// M81a (#1761): shared trash/recent operations.
 	readAll      func(path string, max int) ([]byte, int64)
 	trashDelete  func(path string) (string, int64)
@@ -340,8 +348,13 @@ func guestSyscalls() syscalls {
 		writeSafe: vi.WriteFileSafe,
 		// M81e2 (#1787): the two-contract policy seam — replace publishes
 		// crash-safe, append stays an append.
-		publish:      vi.WriteFilePublish,
-		readAll:      vi.ReadFileAll,
+		publish: vi.WriteFilePublish,
+		readAll: vi.ReadFileAll,
+		// M81d (#1764): the real lease helpers — the case proves them on
+		// the live share, not against a re-implementation.
+		leaseAcquire: vi.AcquireFileLease,
+		leaseCheck:   vi.CheckFileLease,
+		leaseRelease: func(l *vi.FileLease) int64 { return l.Release() },
 		trashDelete:  vi.TrashDelete,
 		trashRead:    vi.TrashRead,
 		trashRestore: vi.TrashRestoreLatest,
@@ -431,6 +444,11 @@ func cases() []testCase {
 		// M82e (#1772): app log rings and crash receipts. The host compares
 		// both the retained ring tail and the GOSELF-style failure receipt.
 		{id: "app-logs", run: caseAppLogs},
+		// M81d (#1764): the advisory write lease drill — acquire, the
+		// foreign refusal, the stale and dead-holder takeovers, the
+		// release rules. Inserted before the window case so the M61d
+		// report prefix stays untouched.
+		{id: "file-lease", run: caseFileLease},
 		// M61e (#1385): the window receipt — appended last so the M61d report
 		// prefix is untouched (the report is byte-compared).
 		{id: "window", run: caseWindow},
@@ -442,6 +460,113 @@ const (
 	appLogCopy    = outDir + "/app-log.copy"
 	appLogReceipt = "/host/CRASH/M82E.TEST.TXT"
 )
+
+// M81d (#1764): the lease drill's paths and the foreign holder's identity.
+// The forgeries carry a token that is NOT this process's on purpose — the
+// drills prove the rules a record a FOREIGN writer produced is honored by.
+const (
+	leaseDir    = "/host/SELFTEST/LEASE"
+	leaseTarget = leaseDir + "/TARGET.TXT"
+	leaseOther  = leaseDir + "/UNLEASED.TXT"
+	leaseOk     = outDir + "/file-lease.ok"
+	leaseCopy   = outDir + "/file-lease.copy"
+
+	leaseForeignToken = "0123456789abcdef"
+	leaseDeadPid      = uint32(424242)
+)
+
+// leaseRecord hand-renders one VLEASE1 record for the drills: the format is
+// the on-share convention (vi/lease.go), so the case writes it directly the
+// way a foreign writer would, instead of through the holder's own helpers.
+// A negative stamp renders as 0 — the no-clock record the classify rules
+// read as "pid liveness only".
+func leaseRecord(pid uint32, ts int64, tokenHex, path string) []byte {
+	if ts < 0 {
+		ts = 0
+	}
+	var b strings.Builder
+	b.WriteString("VLEASE1\n")
+	b.WriteString("pid=" + strconv.FormatUint(uint64(pid), 10) + "\n")
+	b.WriteString("ts=" + strconv.FormatInt(ts, 10) + "\n")
+	b.WriteString("token=" + tokenHex + "\n")
+	b.WriteString("path=" + path + "\n")
+	return []byte(b.String())
+}
+
+func caseFileLease(s *syscalls) error {
+	if rc := s.mkdir(leaseDir); rc < 0 && rc != -9 {
+		return errors.New("mkdir rc=" + strconv.FormatInt(rc, 10))
+	}
+	if rc := s.writeSafe(leaseTarget, []byte("lease target body\n")); rc < 0 {
+		return errors.New("seed rc=" + strconv.FormatInt(rc, 10))
+	}
+	if rc := s.writeSafe(leaseOther, []byte("unleased\n")); rc < 0 {
+		return errors.New("seed other rc=" + strconv.FormatInt(rc, 10))
+	}
+	now := s.now()
+	l1, rc := s.leaseAcquire(leaseTarget, appName)
+	if rc < 0 || l1 == nil {
+		return errors.New("acquire rc=" + strconv.FormatInt(rc, 10))
+	}
+	// A second writer under a live lease is refused with the convention's
+	// one EAGAIN row, and the read-only check agrees.
+	if _, rc := s.leaseAcquire(leaseTarget, "OTHER.ELF"); rc != -vi.ErrEAGAIN {
+		return errors.New("foreign acquire rc=" + strconv.FormatInt(rc, 10) + " want -11")
+	}
+	if rc := s.leaseCheck(leaseTarget); rc != -vi.ErrEAGAIN {
+		return errors.New("check rc=" + strconv.FormatInt(rc, 10) + " want -11")
+	}
+	if rc := s.leaseCheck(leaseOther); rc != 0 {
+		return errors.New("free check rc=" + strconv.FormatInt(rc, 10) + " want 0")
+	}
+	// Stale takeover: a foreign record stamped past the expiry is taken
+	// over at the next acquire. The stale .copy is the takeover's evidence
+	// — the record as the foreign writer left it.
+	staleStamp := now - vi.LeaseExpirySeconds - 5
+	if rc := s.writeSafe(l1.LeasePath, leaseRecord(leaseDeadPid, staleStamp, leaseForeignToken, leaseTarget)); rc < 0 {
+		return errors.New("forge stale rc=" + strconv.FormatInt(rc, 10))
+	}
+	l2, rc := s.leaseAcquire(leaseTarget, appName)
+	if rc < 0 || l2 == nil || l2.LeasePath != l1.LeasePath {
+		return errors.New("stale takeover rc=" + strconv.FormatInt(rc, 10))
+	}
+	if cerr := copyBytes(s, leaseCopy, leaseRecord(leaseDeadPid, staleStamp, leaseForeignToken, leaseTarget)); cerr != nil {
+		return cerr
+	}
+	// Dead-holder recovery: a FRESH stamp whose pid is not running is the
+	// crash shape, recovered immediately instead of at expiry. (In a
+	// no-epoch boot both forgeries carry ts=0 and this rule is the only
+	// takeover path — the same drill proves the rule either way.)
+	if rc := s.writeSafe(l2.LeasePath, leaseRecord(leaseDeadPid, now, leaseForeignToken, leaseTarget)); rc < 0 {
+		return errors.New("forge dead rc=" + strconv.FormatInt(rc, 10))
+	}
+	l3, rc := s.leaseAcquire(leaseTarget, appName)
+	if rc < 0 || l3 == nil {
+		return errors.New("dead-holder takeover rc=" + strconv.FormatInt(rc, 10))
+	}
+	// A live foreign record is never deleted by a release that does not
+	// own it: the token, not the staleness rules, gate the delete.
+	if rc := s.writeSafe(l3.LeasePath, leaseRecord(0, now, leaseForeignToken, leaseTarget)); rc < 0 {
+		return errors.New("forge foreign rc=" + strconv.FormatInt(rc, 10))
+	}
+	if rc := s.leaseRelease(l3); rc != -vi.ErrEAGAIN {
+		return errors.New("foreign release rc=" + strconv.FormatInt(rc, 10) + " want -11")
+	}
+	// With the record gone (the foreign holder released it) our own
+	// release is a no-op, and the path reads free again.
+	if rc := s.remove(l3.LeasePath); rc < 0 {
+		return errors.New("clear rc=" + strconv.FormatInt(rc, 10))
+	}
+	if rc := s.leaseRelease(l3); rc != 0 {
+		return errors.New("release rc=" + strconv.FormatInt(rc, 10) + " want 0")
+	}
+	if rc := s.leaseCheck(leaseTarget); rc != 0 {
+		return errors.New("final check rc=" + strconv.FormatInt(rc, 10) + " want 0")
+	}
+	line := "case file-lease dir=LEASES clock=" + yesNo(now > 0) +
+		" foreign-refused=-11 stale-takeover=ok dead-holder=ok foreign-release=-11 release=ok free=0"
+	return writeReceipt(s, leaseOk, line)
+}
 
 func caseAppLogs(s *syscalls) error {
 	s.mkdir(outDir)
