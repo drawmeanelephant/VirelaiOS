@@ -6706,10 +6706,19 @@ fn vf_write_fb_bmp(path: []const u8, width: u32, height: u32, fb: [*]const u8) b
 /// a no-op success).
 fn vf_flush_chunk(h: u16, chunk: []u8, off: *usize) bool {
     if (off.* == 0) return true;
-    var written: u64 = 0;
-    const st = virtio_file.write(h, chunk[0..off.*], &written);
+    var flushed: usize = 0;
+    while (flushed < off.*) {
+        const take = @min(off.* - flushed, virtio_file.write_chunk_limit());
+        var written: u64 = 0;
+        const st = virtio_file.write(h, chunk[flushed .. flushed + take], &written);
+        if (st != virtio_file.st_ok or written == 0 or written > take) {
+            off.* = 0;
+            return false;
+        }
+        flushed += @intCast(written);
+    }
     off.* = 0;
-    return st == virtio_file.st_ok;
+    return true;
 }
 
 /// M27 G27 (Issue #470): capture current framebuffer and save as BMP — to

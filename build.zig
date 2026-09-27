@@ -1993,6 +1993,7 @@ pub fn build(b: *std.Build) void {
         "kernel/src/virtio_custom.zig",
         "kernel/src/virtio_entropy.zig",
         "kernel/src/virtio_file.zig",
+        "kernel/src/virtio_fs.zig",
         "kernel/src/virtio_gpu.zig",
         "kernel/src/virtio_net.zig",
         "kernel/src/wm_server.zig",

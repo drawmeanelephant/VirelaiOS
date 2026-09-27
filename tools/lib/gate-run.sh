@@ -95,25 +95,35 @@ gate_begin() {
     GATE_RUNNER_ARGS=(--overlay-base "$repo_root/artifacts/disk.img" --vars "$RUN_DIR/efi-vars.bin")
 }
 
-# gate_arm_share -- arm the host file channel with an EMPTY private share
-# (for gates that only need the channel, not the app bundle — e.g. shell
-# history persistence).
-gate_arm_share() {
+# gate_prepare_share -- create the empty private share directory.
+gate_prepare_share() {
     [ -n "$RUN_DIR" ] || { echo "gate-run: gate_arm_share called before gate_begin" >&2; exit 1; }
     SHARE="$RUN_DIR/share"
     mkdir -p "$SHARE"
+}
+
+# gate_arm_share -- arm the custom-virtio host file channel with an EMPTY
+# private share (for gates that only need the channel, not the app bundle).
+gate_arm_share() {
+    gate_prepare_share
     GATE_RUNNER_ARGS+=(--cvc-file "$SHARE")
     echo "gate-run: share armed (empty) at $SHARE"
 }
 
-# gate_seed_share -- arm the host file channel with the app bundle.
-# M34 HF6 (issue #740): apps are NOT in the image anymore; a gate that
-# execs a guest app seeds its private share from the compiled bundle
-# (zig-out/bin) + freshly generated ELF/.SO fixtures +
-# image/apps.txt, then arms --cvc-file.
-gate_seed_share() {
-    [ -n "$RUN_DIR" ] || { echo "gate-run: gate_seed_share called before gate_begin" >&2; exit 1; }
-    gate_arm_share
+# gate_arm_virtiofs_share -- arm Apple's standard VirtioFS device with an
+# EMPTY private share. This is independent of custom virtio and saveable by VZ.
+gate_arm_virtiofs_share() {
+    gate_prepare_share
+    GATE_RUNNER_ARGS+=(--virtio-fs "$SHARE")
+    echo "gate-run: VirtioFS share armed (empty) at $SHARE"
+}
+
+# gate_seed_share_contents -- seed the app bundle and shared static assets.
+# Used with either transport so the boot image contents stay identical.
+gate_seed_share_contents() {
+    [ -n "$SHARE" ] || { echo "gate-run: gate_seed_share_contents called before share setup" >&2; exit 1; }
+    local repo_root
+    repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
     # 1. The compiled Zig app bundle (USER.BIN, GOCALC.ELF, ...).
     if [ -d zig-out/bin ]; then
         cp -R zig-out/bin/. "$SHARE/" 2>/dev/null || true
@@ -161,6 +171,19 @@ gate_seed_share() {
         cp FONTS-CHOOSE/Fira_Code_v6.2/ttf/FiraCode-Regular.ttf "$SHARE/FIRACODE.TTF"
     fi
     echo "gate-run: share seeded at $SHARE ($(find "$SHARE" -maxdepth 1 -type f | wc -l | tr -d ' ') files, $(grep -cE '^[A-Z]' "$SHARE/APPS.TXT" 2>/dev/null || echo 0) APPS.TXT entries)"
+}
+
+# gate_seed_share -- arm the custom-virtio channel then seed its app bundle.
+gate_seed_share() {
+    gate_arm_share
+    gate_seed_share_contents
+}
+
+# gate_seed_virtiofs_share -- arm standard VirtioFS then seed the same app
+# bundle. Used by restore gates because custom virtio is not saveable by VZ.
+gate_seed_virtiofs_share() {
+    gate_arm_virtiofs_share
+    gate_seed_share_contents
 }
 
 # gate_reset_share_state -- delete per-boot guest persistence from the

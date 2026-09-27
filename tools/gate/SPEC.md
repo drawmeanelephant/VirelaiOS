@@ -7,7 +7,8 @@ header is WHAT + WHY in ≤15 lines.
 
 ```
 vgate_name NAME [DESCRIPTION]      # required; evidence files are NAME-*
-vgate_share none|arm|seed          # default none (gate-run.sh arm/seed)
+vgate_share none|arm|seed          # custom-virtio share (default none)
+                                   #   arm-virtiofs|seed-virtiofs for standard VZ VirtioFS
 vgate_fmt PATH...                  # default: boot/src/*.zig kernel/src/*.zig
                                    #   user/src/*.zig build.zig
 vgate_runner_flags FLAGS...        # extra swift build flags (e.g. -Xswiftc -DSPIKE)
@@ -22,7 +23,8 @@ vgate_setup_python <<'PY'          # python3 hook, $RUN_DIR env (repeatable,
 PY
 vgate_run TAG -- FLAGS...          # one boot; FLAGS pass through verbatim
                                    # to VMRunner after the harness-owned
-                                   # --serial/--overlay-base/--vars/--cvc-file
+                                   # --serial/--overlay-base/--vars and the
+                                   #   selected share device/host directory
 vgate_client TAG -- FLAGS...       # (M46 RC2 #1069) a during-run TCP client:
                                    # tools/lib/vgate-client.py runs in the
                                    # background while the TAG run boots; it
@@ -69,7 +71,8 @@ Rules:
 - Assert values are **literal** — no expansion. Files a hook needs go
   through `vgate_file`/`vgate_setup_python` (`$RUN_DIR` env) or the
   `FILE`/`FIXTURE` operands (resolved under `$RUN_DIR`).
-- The `share-*` kinds read the **armed share** (`vgate_share arm|seed`),
+- The `share-*` kinds read the **armed share** (`vgate_share arm|seed` or
+  `arm-virtiofs|seed-virtiofs`),
   which is what makes them differ from the `capture-*` kinds (those read
   `$RUN_DIR` files a client hook wrote). Both fail closed: a share that was
   never armed, a `RELPATH` that is not there, or a mismatch are all FAILs,

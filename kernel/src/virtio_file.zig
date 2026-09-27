@@ -41,6 +41,7 @@
 //! the shared class-A fixture `tests/vf-pattern-32k.bin` (sha256-pinned).
 
 const virtio_custom = @import("virtio_custom.zig");
+const virtio_fs = @import("virtio_fs.zig");
 const spinlock = @import("spinlock.zig");
 /// Claim 9094 (#810 writer hunt): the task-ring audit is a LIVE-gate
 /// instrument only — the scheduler import is comptime-conditional so
@@ -127,6 +128,14 @@ pub const max_file_handles: usize = 8;
 /// fit the request nicely under the u16 length field AND stay within the
 /// 32 KiB reply-cap symmetry (a chunked write never needs a large reply).
 pub const write_chunk_max: usize = reply_cap - reply_hdr_len - handle_len;
+
+/// Maximum payload accepted by one write round trip on the active backend.
+/// VirtioFS negotiates a smaller FUSE max_write than the custom channel's
+/// 32 KiB request bound.
+pub fn write_chunk_limit() usize {
+    if (virtio_fs.available()) return @min(write_chunk_max, virtio_fs.write_chunk_limit());
+    return write_chunk_max;
+}
 /// The most payload a READ reply can carry — the host bounds a read reply
 /// by the queue's reply buffer. The test override serves at most this much
 /// per call too, so host tests exercise the same round-trip loop the
@@ -143,6 +152,18 @@ pub const DirEntry = struct {
     type: u8 = dir_type_file,
     size: u64 = 0,
 };
+
+comptime {
+    if (@sizeOf(DirEntry) != @sizeOf(virtio_fs.DirectoryEntry) or
+        @alignOf(DirEntry) != @alignOf(virtio_fs.DirectoryEntry) or
+        @offsetOf(DirEntry, "name") != @offsetOf(virtio_fs.DirectoryEntry, "name") or
+        @offsetOf(DirEntry, "name_len") != @offsetOf(virtio_fs.DirectoryEntry, "name_len") or
+        @offsetOf(DirEntry, "type") != @offsetOf(virtio_fs.DirectoryEntry, "type") or
+        @offsetOf(DirEntry, "size") != @offsetOf(virtio_fs.DirectoryEntry, "size"))
+    {
+        @compileError("VirtioFS directory rows must match virtio_file.DirEntry");
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Pure encode/decode (host-testable; no transport state)
@@ -325,7 +346,7 @@ fn test_lookup(raw_name: []const u8) ?[]const u8 {
 /// boots.
 pub fn available() bool {
     if (builtin.is_test and test_share != null) return true;
-    return virtio_custom.cv_ready and virtio_custom.has_file_queue;
+    return virtio_fs.available() or (virtio_custom.cv_ready and virtio_custom.has_file_queue);
 }
 
 /// Cross-core serialization for the file queue (claim #899 — the z2a
@@ -497,6 +518,11 @@ pub fn list(raw_path: []const u8, out: *ListResult) u8 {
         out.status = st_ok;
         return st_ok;
     }
+    if (virtio_fs.available()) {
+        const status = virtio_fs.list(path, @ptrCast(out.entries[0..]), &out.count);
+        out.status = status;
+        return status;
+    }
     const n = exchange(op_list, 0, path, &vf_reply_buf) orelse return st_host_error;
     const rep = decode_reply(vf_reply_buf[0..n]);
     out.status = rep.status;
@@ -533,6 +559,16 @@ pub fn stat(raw_path: []const u8, out: *StatResult) u8 {
         }
         return st_not_found;
     }
+    if (virtio_fs.available()) {
+        var result = virtio_fs.StatResult{};
+        const status = virtio_fs.stat(path, &result);
+        out.status = status;
+        if (status == st_ok) {
+            out.size = result.size;
+            out.is_dir = result.is_dir;
+        }
+        return status;
+    }
     const n = exchange(op_stat, 0, path, &vf_reply_buf) orelse return st_host_error;
     const rep = decode_reply(vf_reply_buf[0..n]);
     out.status = rep.status;
@@ -563,6 +599,13 @@ pub fn read(raw_path: []const u8, offset: u64) ReadResult {
         const data = test_lookup(path) orelse return .{ .status = st_not_found, .data = "" };
         if (offset >= data.len) return .{ .status = st_ok, .data = "" };
         return .{ .status = st_ok, .data = data[@intCast(offset)..] };
+    }
+    if (virtio_fs.available()) {
+        const result = virtio_fs.read(path, offset);
+        return .{
+            .status = result.status,
+            .data = if (result.status == st_ok) virtio_fs.read_result() else "",
+        };
     }
     var payload: [path_max + read_offset_len]u8 = undefined;
     const plen = build_read_payload(path, offset, &payload) orelse return .{ .status = st_host_error, .data = "" };
@@ -599,6 +642,10 @@ pub fn read_chunk(raw_path: []const u8, offset: u64, out: []u8) ReadChunkResult 
         const take = @min(@min(src.len, out.len), read_chunk_max);
         @memcpy(out[0..take], src[0..take]);
         return .{ .status = st_ok, .bytes = take };
+    }
+    if (virtio_fs.available()) {
+        const result = virtio_fs.read_chunk(path, offset, out);
+        return .{ .status = result.status, .bytes = result.bytes };
     }
     var payload: [path_max + read_offset_len]u8 = undefined;
     const plen = build_read_payload(path, offset, &payload) orelse return .{ .status = st_host_error, .bytes = 0 };
@@ -679,6 +726,7 @@ pub fn open(raw_path: []const u8, flags: u8, out_handle: *u16) u8 {
     const path = clean_path(raw_path);
     out_handle.* = 0;
     if (!available()) return st_host_error;
+    if (virtio_fs.available()) return virtio_fs.open(path, flags, out_handle);
     const n = exchange(op_open, flags, path, &vf_reply_buf) orelse return st_host_error;
     const rep = decode_reply(vf_reply_buf[0..n]);
     if (rep.status != st_ok) return rep.status;
@@ -689,12 +737,14 @@ pub fn open(raw_path: []const u8, flags: u8, out_handle: *u16) u8 {
 
 /// CLOSE a host handle (flush + free the slot).
 pub fn close(handle: u16) u8 {
+    if (virtio_fs.available()) return virtio_fs.close(handle);
     return exchange_simple(op_close, handle);
 }
 
 /// FSYNC a host handle — real durability (the host calls synchronize() on
 /// the live FileHandle).
 pub fn fsync(handle: u16) u8 {
+    if (virtio_fs.available()) return virtio_fs.fsync(handle);
     return exchange_simple(op_fsync, handle);
 }
 
@@ -712,6 +762,7 @@ fn exchange_simple(op: u8, handle: u16) u8 {
 pub fn write(handle: u16, data: []const u8, out_written: *u64) u8 {
     out_written.* = 0;
     if (!available()) return st_host_error;
+    if (virtio_fs.available()) return virtio_fs.write(handle, data, out_written);
     if (data.len > write_chunk_max) return st_host_error;
     // The lock covers the ASSEMBLY too — vf_write_buf is module-global and
     // a concurrent (other-core) assembly would splice two requests (claim
@@ -739,6 +790,7 @@ pub fn write(handle: u16, data: []const u8, out_written: *u64) u8 {
 /// the cursor clamps the cursor; does not move the cursor otherwise).
 pub fn truncate(handle: u16, size: u64) u8 {
     if (!available()) return st_host_error;
+    if (virtio_fs.available()) return virtio_fs.truncate(handle, size);
     var payload: [handle_len + truncate_size_len]u8 = undefined;
     write_le_u16(&payload, 0, handle);
     write_le_u64(&payload, handle_len, size);
@@ -755,6 +807,7 @@ pub fn rename(raw_from: []const u8, raw_to: []const u8) u8 {
     const from = clean_path(raw_from);
     const to = clean_path(raw_to);
     if (!available()) return st_host_error;
+    if (virtio_fs.available()) return virtio_fs.rename(from, to);
     if (from.len == 0 or to.len == 0 or from.len > path_max or to.len > path_max) return st_host_error;
     var payload: [path_max * 2 + 1]u8 = undefined;
     @memcpy(payload[0..from.len], from);
@@ -768,6 +821,7 @@ pub fn rename(raw_from: []const u8, raw_to: []const u8) u8 {
 /// MKDIR a directory on the host share (one level; parents must exist).
 /// Returns st_exists when the target already exists.
 pub fn mkdir(path: []const u8) u8 {
+    if (virtio_fs.available()) return virtio_fs.mkdir(path);
     return exchange_path(op_mkdir, path);
 }
 
@@ -786,6 +840,7 @@ pub fn clone(raw_from: []const u8, raw_to: []const u8) u8 {
     const from = clean_path(raw_from);
     const to = clean_path(raw_to);
     if (!available()) return st_host_error;
+    if (virtio_fs.available()) return st_host_error;
     if (from.len == 0 or to.len == 0 or from.len > path_max or to.len > path_max) return st_host_error;
     if (std.mem.indexOfScalar(u8, from, 0) != null or std.mem.indexOfScalar(u8, to, 0) != null) return st_host_error;
     var payload: [path_max * 2 + 1]u8 = undefined;
@@ -800,6 +855,7 @@ pub fn clone(raw_from: []const u8, raw_to: []const u8) u8 {
 /// DELETE a file or EMPTY directory on the host share. Non-empty
 /// directories fail honestly with a host error (never recursive).
 pub fn delete(path: []const u8) u8 {
+    if (virtio_fs.available()) return virtio_fs.delete(path);
     return exchange_path(op_delete, path);
 }
 
@@ -826,7 +882,7 @@ pub fn write_whole(path: []const u8, data: []const u8) u8 {
     if (truncate(h, 0) != st_ok) return st_host_error;
     var off: usize = 0;
     while (off < data.len) {
-        const take = @min(data.len - off, write_chunk_max);
+        const take = @min(data.len - off, write_chunk_limit());
         var written: u64 = 0;
         const wst = write(h, data[off .. off + take], &written);
         if (wst != st_ok) return wst;
@@ -872,7 +928,7 @@ pub fn write_pattern(handle: u16, n: u64) WritePatternResult {
     var remaining = n;
     var res = WritePatternResult{};
     while (remaining > 0) {
-        const take: usize = @intCast(@min(remaining, write_chunk_max));
+        const take: usize = @intCast(@min(remaining, write_chunk_limit()));
         var i: usize = 0;
         while (i < take) : (i += 1) vf_write_pattern_buf[i] = pattern(@intCast(res.total + i));
         var written: u64 = 0;
@@ -1253,6 +1309,28 @@ test "virtio_file: G12 — pattern chunk plan for the mutation gate" {
     try testing.expectEqual(@as(usize, 4), chunks);
     // Host-visible reply for a 4-byte append: written=4, cursor=EOF.
     try testing.expectEqual(@as(usize, 4), @as(usize, 4));
+}
+
+test "virtio_file: write chunk limit follows active transport" {
+    const was_ready = virtio_fs.fs_ready;
+    const was_initialized = virtio_fs.fs_initialized;
+    const was_max_write = virtio_fs.fs_max_write;
+    defer {
+        virtio_fs.fs_ready = was_ready;
+        virtio_fs.fs_initialized = was_initialized;
+        virtio_fs.fs_max_write = was_max_write;
+    }
+
+    virtio_fs.fs_ready = false;
+    virtio_fs.fs_initialized = false;
+    try testing.expectEqual(write_chunk_max, write_chunk_limit());
+
+    virtio_fs.fs_ready = true;
+    virtio_fs.fs_initialized = true;
+    virtio_fs.fs_max_write = 512;
+    try testing.expectEqual(@as(usize, 512), write_chunk_limit());
+    virtio_fs.fs_max_write = 4096;
+    try testing.expectEqual(@as(usize, 2048), write_chunk_limit());
 }
 
 test "virtio_file: G13 — HF7 clone op: 0x0c, NUL frame, bounds, honest refusal" {

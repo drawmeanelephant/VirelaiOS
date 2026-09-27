@@ -38,8 +38,7 @@ if [ ! -d "$FORK_DIR" ]; then
     mkdir -p "$FORK_DIR"
     rsync -a --exclude bin --exclude pkg "$STOCK/" "$FORK_DIR/"
     ( cd "$FORK_DIR" && git init -q && git add -A &&
-      git -c user.email=go-port@virelaios -c user.name=go-port \
-        commit -qm "go${GO_VERSION} distribution baseline (pre-GOOS=${SRC_GOOS})" )
+      git commit -qm "go${GO_VERSION} distribution baseline (pre-GOOS=${SRC_GOOS})" )
 fi
 
 F="$FORK_DIR/src"
@@ -577,8 +576,7 @@ fi
 # --- 4. commit the delta ----------------------------------------------
 if [ "$edits" -gt 0 ]; then
     ( cd "$FORK_DIR" && git add -A &&
-      git -c user.email=go-port@virelaios -c user.name=go-port \
-        commit -qm "GOOS=virelai: overlay + wiring (issue #1163 phase 0a)" )
+      git commit -qm "GOOS=virelai: overlay + wiring (issue #1163 phase 0a)" )
 fi
 log "fork ready at $FORK_DIR ($edits new edits)"
 log "next: GOROOT_BOOTSTRAP=<stock go> bash $FORK_DIR/src/make.bash"

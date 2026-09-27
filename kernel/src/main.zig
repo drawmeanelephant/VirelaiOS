@@ -122,6 +122,7 @@ const syscall = @import("syscall.zig"); // claim 3594: fixed syscall ABI + runti
 const exec = @import("exec.zig"); // milestone-three card 6: ESP exec — owns the shared rebuild_user_root (claims 2665/3693)
 const virtio_custom = @import("virtio_custom.zig"); // claim 0828: custom-virtio spike driver (DID 0x1082)
 const virtio_file = @import("virtio_file.zig"); // M34 HF1+HF2 (issues #735/#736): host file channel client (queue 5)
+const virtio_fs = @import("virtio_fs.zig"); // M83g: standard VirtioFS/FUSE backend for /host
 // M34 HF5 (issue #739): one-time /data → /host migration at boot.
 
 const HandoffV2 = handoff.HandoffV2;
@@ -396,6 +397,9 @@ fn kernel_main(base: u64, size: u64, st: *const SystemTable, handoff_rec: *Hando
     // 5844 run; ABOVE the 4 GiB blanket on a later boot), so the transport
     // BAR is handed to the identity map below like the console/blk windows.
     const cv_probed = virtio_custom.probe();
+    // M83g: discover Apple's standard virtio-fs device before
+    // ExitBootServices; configure queues and FUSE after the MMU switch.
+    const fs_probed = virtio_fs.probe();
 
     var exited = false;
     var attempt: usize = 0;
@@ -442,7 +446,7 @@ fn kernel_main(base: u64, size: u64, st: *const SystemTable, handoff_rec: *Hando
     // (discovered pre-exit) are handed to mmu.build_identity_map as the
     // extra Device windows above the blanket; mmu.zig stays
     // transport-agnostic.
-    var extra_windows: [6]mmu.DeviceWindow = undefined;
+    var extra_windows: [9]mmu.DeviceWindow = undefined;
     var extra_count: usize = 0;
     if (virtio_console.vp_ready and virtio_console.vp_bar0 != 0) {
         extra_windows[extra_count] = .{ .base = virtio_console.vp_bar0, .len = 0x10000 };
@@ -457,6 +461,7 @@ fn kernel_main(base: u64, size: u64, st: *const SystemTable, handoff_rec: *Hando
         extra_windows[extra_count] = virtio_custom.device_window();
         extra_count += 1;
     }
+    if (fs_probed) extra_count += virtio_fs.add_device_windows(extra_windows[extra_count..]);
     // Milestone four (claim 2665): the entropy transport BAR (pre-exit
     // resolved) — same Device-window treatment as the console/blk/custom
     // transports so post-MMU common-config reads reach the device.
@@ -513,6 +518,40 @@ fn kernel_main(base: u64, size: u64, st: *const SystemTable, handoff_rec: *Hando
     exceptions.init(exception_report_writer);
     exceptions.install();
     mmu.install_identity_map();
+    if (fs_probed) {
+        const pre_rearm_status = mmio.mmio_read8(virtio_fs.fs_common + 0x14);
+        if (virtio_fs.init()) {
+            uart_puts("virtio-fs: ready did=0x105a dev=");
+            uart_hex(virtio_fs.fs_dev);
+            uart_puts(" tag=virelaios queues=");
+            uart_hex(virtio_fs.fs_request_queues + 1);
+            uart_puts(" qsize=");
+            uart_hex(virtio_fs.fs_request_queue_size);
+            uart_puts(" pre-rearm-st=");
+            uart_hex8(pre_rearm_status);
+            uart_puts(" fuse=7.");
+            uart_hex(virtio_fs.fs_minor);
+            uart_puts(" max-write=");
+            uart_hex(virtio_fs.fs_max_write);
+            uart_puts("\n");
+        } else {
+            uart_puts("virtio-fs: init failed did=0x105a dev=");
+            uart_hex(virtio_fs.fs_dev);
+            uart_puts(" pre-rearm-st=");
+            uart_hex8(pre_rearm_status);
+            uart_puts(" stage=");
+            uart_hex(virtio_fs.fs_init_stage);
+            uart_puts(" fuse-errno=");
+            uart_hex(@as(u64, @intCast(@as(u32, @bitCast(virtio_fs.fs_error)))));
+            uart_puts(" feature-lo=");
+            uart_hex(virtio_fs.fs_feature_lo);
+            uart_puts(" feature-hi=");
+            uart_hex(virtio_fs.fs_feature_hi);
+            uart_puts(" request-queues=");
+            uart_hex(virtio_fs.fs_request_queues);
+            uart_puts("\n");
+        }
+    }
     // Claim 9746 (roadmap item 5, first half): install the VBAR_EL1
     // exception vectors + basic synchronous/IRQ handlers NOW — after
     // ExitBootServices and the identity-map switch, when the kernel owns

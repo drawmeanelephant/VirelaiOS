@@ -33,11 +33,35 @@ func TestMarkerShapes(t *testing.T) {
 		{MarkerLaunchExec, "gotabwm: launcher exec "},
 		{MarkerLaunchDismiss, "gotabwm: launcher dismiss"},
 		{MarkerLaunchMissing, "gotabwm: launcher missing "},
+		{MarkerRestoreWitness, "gotabwm: restore witness "},
 	}
 	for _, c := range cases {
 		if c.got != c.want {
 			t.Fatalf("marker = %q want %q", c.got, c.want)
 		}
+	}
+}
+
+func TestRestoreWitnessCapturesResumedSeatState(t *testing.T) {
+	oldTabs, oldTheme, oldWM := tabs, theme.Current, restoreSettingsWM
+	defer func() {
+		tabs, theme.Current, restoreSettingsWM = oldTabs, oldTheme, oldWM
+	}()
+	tabs = TabStrip{}
+	if !tabs.OpenTab(sessionIDBase, "Notes") || !tabs.OpenTab(sessionIDBase+1, "Calc") {
+		t.Fatal("restore witness fixture tabs")
+	}
+	if !tabs.FocusTab(sessionIDBase + 1) {
+		t.Fatal("focus restored active tab")
+	}
+	tabs.tabs[0].Pinned = true
+	restoreSettingsWM = "gotabwm"
+	if !theme.Set("light") {
+		t.Fatal("select light theme")
+	}
+	const want = "gotabwm: restore witness wm=gotabwm theme=light file=wake-fuse-ok Notes,Calc pin=1,0 active=1"
+	if got := restoreWitnessLine(); got != want {
+		t.Fatalf("restore witness = %q want %q", got, want)
 	}
 }
 

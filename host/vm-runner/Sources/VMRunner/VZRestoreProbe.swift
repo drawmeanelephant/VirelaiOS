@@ -32,6 +32,9 @@ final class VZRestoreProbe {
     private let input: FileHandle
     private let deadline: Date
     private let mode: Mode
+    private let witnessLine: String?
+    private let verifyCommand: String?
+    private let verifyOutput: String?
     private let marker: String
     private let stateURL: URL
     private let stateDir: URL?
@@ -39,12 +42,17 @@ final class VZRestoreProbe {
     private var serialOffset = 0
 
     init(vm: VZVirtualMachine, queue: DispatchQueue, serialURL: URL, input: FileHandle, timeout: TimeInterval,
+         witnessLine: String? = nil,
+         verifyCommand: String? = nil, verifyOutput: String? = nil,
          mode: Mode = .sameProcess) {
         self.vm = vm
         self.queue = queue
         self.serialURL = serialURL
         self.input = input
         self.mode = mode
+        self.witnessLine = witnessLine
+        self.verifyCommand = verifyCommand
+        self.verifyOutput = verifyOutput
         deadline = Date().addingTimeInterval(timeout)
         switch mode {
         case .sameProcess:
@@ -112,8 +120,12 @@ final class VZRestoreProbe {
             if case .failure(let error) = result { self.abort("resume: \(error as NSError)") }
             self.checked(nil, "resume", state: .running)
             self.phase = "after-restore"
-            self.send("clip\n")
-            self.poll()
+            var commands = "clip\n"
+            if let verifyCommand = self.verifyCommand {
+                commands += verifyCommand + "\n"
+            }
+            self.send(commands)
+            self.queue.asyncAfter(deadline: .now() + 0.5) { self.poll() }
         }
     }
 
@@ -166,15 +178,26 @@ final class VZRestoreProbe {
         let text = String(decoding: data.dropFirst(serialOffset), as: UTF8.self)
         let markerLine = "clip: \(marker)"
         let hasMarker = text.components(separatedBy: "\n").contains(markerLine)
+        let hasWitness = witnessLine.map { text.components(separatedBy: "\n").contains($0) } ?? true
+        let hasVerifyOutput = verifyOutput.map { text.contains($0) } ?? true
         if phase == "boot", text.contains("kernel terminal state") {
             phase = "before-save"
             send("clip \(marker)\nclip\n")
-        } else if phase == "before-save", hasMarker {
+        } else if phase == "before-save", hasMarker, hasWitness {
             print("VZ-RESTORE: before-save guest marker=\(marker)")
+            if let witnessLine {
+                print("VZ-RESTORE: before-save guest witness=\(witnessLine)")
+            }
             if case .save = mode { saveAndExit() } else { saveAndRestore() }
             return
-        } else if phase == "after-restore", hasMarker {
+        } else if phase == "after-restore", hasMarker, hasWitness, hasVerifyOutput {
             print("VZ-RESTORE: after-restore guest marker=\(marker) serial-offset=\(serialOffset)")
+            if let witnessLine {
+                print("VZ-RESTORE: after-restore guest witness=\(witnessLine)")
+            }
+            if let verifyOutput {
+                print("VZ-RESTORE: after-restore guest verify=\(verifyOutput)")
+            }
             phase = "final-stop"
             vm.stop { error in
                 self.checked(error, "final stop", state: .stopped)

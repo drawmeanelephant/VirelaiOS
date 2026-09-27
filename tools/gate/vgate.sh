@@ -56,7 +56,7 @@ trap 'if [ "${VGATE_COMPLETED:-0}" != 1 ]; then echo "vgate: harness exited befo
 
 # --- DSL (the only commands a spec may use) ----------------------------------
 vgate_name() { VGATE_NAME="$1"; VGATE_DESC="${2:-$VGATE_DESC}"; }
-vgate_share() { case "$1" in none|arm|seed) VGATE_SHARE="$1";; *) echo "vgate: bad share mode: $1" >&2; exit 2;; esac; }
+vgate_share() { case "$1" in none|arm|seed|arm-virtiofs|seed-virtiofs) VGATE_SHARE="$1";; *) echo "vgate: bad share mode: $1" >&2; exit 2;; esac; }
 vgate_fmt() { VGATE_FMT="$*"; }
 vgate_runner_flags() { VGATE_RUNNER_FLAGS="$*"; }
 vgate_repeat() { VGATE_REPEAT="$1"; VGATE_REPEAT_ENV="${2:-}"; }
@@ -172,6 +172,8 @@ gate_begin "$VGATE_NAME"
 case "$VGATE_SHARE" in
     arm) gate_arm_share ;;
     seed) gate_seed_share ;;
+    arm-virtiofs) gate_arm_virtiofs_share ;;
+    seed-virtiofs) gate_seed_virtiofs_share ;;
 esac
 echo "run dir: $RUN_DIR"
 
