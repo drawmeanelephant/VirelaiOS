@@ -204,18 +204,6 @@ pub fn hid_to_ascii(usage: u8, shift: bool) ?u8 {
     };
 }
 
-fn navFinal(usage: u8) ?u8 {
-    return switch (usage) {
-        0x4f => 'C', // Right
-        0x50 => 'D', // Left
-        0x51 => 'B', // Down
-        0x52 => 'A', // Up
-        0x4a => 'H', // Home
-        0x4d => 'F', // End
-        else => null,
-    };
-}
-
 fn emitCsiTilde(out: *[max_key_bytes]u8, number: u8, modifier: u8) usize {
     out[0] = 0x1b;
     out[1] = '[';
@@ -276,11 +264,20 @@ pub fn hid_to_bytes(usage: u8, shift: bool, alt: bool, ctrl: bool, out: *[max_ke
     const modifier: u8 = 1 + @as(u8, if (shift) 1 else 0) +
         @as(u8, if (alt) 2 else 0) + @as(u8, if (ctrl) 4 else 0);
 
-    if (navFinal(usage)) |final| {
+    const nav_final: u8 = switch (usage) {
+        0x4f => 'C', // Right
+        0x50 => 'D', // Left
+        0x51 => 'B', // Down
+        0x52 => 'A', // Up
+        0x4a => 'H', // Home
+        0x4d => 'F', // End
+        else => 0,
+    };
+    if (nav_final != 0) {
         if (modifier == 1) {
             out[0] = 0x1b;
             out[1] = '[';
-            out[2] = final;
+            out[2] = nav_final;
             return 3;
         }
         out[0] = 0x1b;
@@ -288,7 +285,7 @@ pub fn hid_to_bytes(usage: u8, shift: bool, alt: bool, ctrl: bool, out: *[max_ke
         out[2] = '1';
         out[3] = ';';
         out[4] = '0' + modifier;
-        out[5] = final;
+        out[5] = nav_final;
         return 6;
     }
 

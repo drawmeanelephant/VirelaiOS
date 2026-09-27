@@ -37,6 +37,8 @@ const fat32_ro = @import("fat32_ro.zig");
 // routed to this process's controlling terminal (open/read/write reuse the
 // frozen file ABI — no new syscall slot).
 const terminal = @import("terminal.zig");
+const app_events = @import("events.zig");
+const input = @import("input.zig");
 // #1082 (ADR 0020 Amendment A): a `.tty` write to a WINDOW-bound terminal
 // drains the ring into the window's presentation grid and marks the bound
 // `.user` window damaged (the deferred present) — the compositor blits it.
@@ -1220,6 +1222,42 @@ test "file_table: /dev/tty routes to the process's terminal device (#1072)" {
     // Process reset releases the terminal (owner death).
     reset_process(pid);
     try std.testing.expectEqual(@as(?*terminal.Terminal, null), terminal.get(th));
+}
+
+test "file_table: window tty reads preserve keyboard CSI bytes (#1794)" {
+    init();
+    app_events.init();
+    driving_award.arm();
+    for (&terminal.terminals) |*tt| tt.reset();
+
+    const pid: u8 = 3;
+    const res = driving_award.user_open(10, 10, 100, 100, pid);
+    try std.testing.expect(res == .opened);
+    const win_id = res.opened;
+    defer _ = driving_award.user_close(win_id);
+
+    const fd = open(pid, "/dev/tty", MODE_READ | MODE_WRITE);
+    try std.testing.expect(fd >= 0);
+    const th = handles[pid][@intCast(fd)].term_handle;
+    const t = terminal.get(th).?;
+    try std.testing.expect(t.attachWindow(win_id));
+
+    // Consume WIN_FOCUS and clear any stale held-key state from another test.
+    _ = app_events.pop(pid);
+    input.decode_keyboard_report(&[_]u8{0} ** 8);
+    app_events.init();
+    input.decode_keyboard_report(&[_]u8{ 0, 0, 0x52, 0, 0, 0, 0, 0 });
+    try std.testing.expectEqual(@as(usize, 0), app_events.pending(pid));
+
+    var got: [8]u8 = undefined;
+    const n = read(pid, @intCast(fd), &got);
+    try std.testing.expectEqual(@as(i64, 3), n);
+    try std.testing.expectEqualSlices(u8, "\x1b[A", got[0..@intCast(n)]);
+
+    // Release the test key so it cannot become held state for another test.
+    input.decode_keyboard_report(&[_]u8{0} ** 8);
+    reset_process(pid);
+    for (&terminal.terminals) |*tt| tt.reset();
 }
 
 test "file_table: window tty write larger than the ring cannot drop (M73f-1)" {
