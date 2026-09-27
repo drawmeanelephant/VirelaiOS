@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestHistoryBackForward(t *testing.T) {
 	h := newHistory()
@@ -130,12 +133,12 @@ func TestArgvTargetJoinsSlotsAndReadsHandoff(t *testing.T) {
 	if file || got != "http://10.0.0.2/" {
 		t.Fatalf("single arg = %q file=%v", got, file)
 	}
-	// 31-byte slots, the kernel's cap, reassembled with no separator.
-	long := "https://example.com/posts/1-a-long-article-slug"
+	// Slots at the kernel's 255-byte cap reassemble with no separator.
+	long := "https://example.com/" + strings.Repeat("x", 540)
 	var slots []string
 	slots = append(slots, "WEB.ELF")
-	for i := 0; i < len(long); i += 31 {
-		j := i + 31
+	for i := 0; i < len(long); i += 255 {
+		j := i + 255
 		if j > len(long) {
 			j = len(long)
 		}

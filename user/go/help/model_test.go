@@ -79,6 +79,62 @@ func TestGroupJumps(t *testing.T) {
 	}
 }
 
+func TestBrowseScrollKeepsFocusedRowVisible(t *testing.T) {
+	m := testModel()
+	for i := 0; i < 25; i++ {
+		key(&m, kDown)
+	}
+	if m.sel != 25 || m.listTop <= 0 ||
+		m.sel < m.listTop || m.sel >= m.listTop+m.bodyRows() {
+		t.Fatalf("selection=%d listTop=%d bodyRows=%d; selection is not visible",
+			m.sel, m.listTop, m.bodyRows())
+	}
+	lines := m.renderLines()
+	screenRow := 2 + m.sel - m.listTop
+	if screenRow >= len(lines) {
+		t.Fatalf("focused row screen line %d exceeds rendered frame of %d lines",
+			screenRow, len(lines))
+	}
+	if !strings.Contains(lines[screenRow], "> "+m.visible()[m.sel].Name) {
+		t.Fatalf("focused row %q is not highlighted in line %d: %q",
+			m.visible()[m.sel].Name, screenRow, lines[screenRow])
+	}
+}
+
+func TestBrowseClickSelectsScrolledRow(t *testing.T) {
+	m := testModel()
+	m.listTop = 3
+	want := m.visible()[m.listTop]
+	m.handleClick(1, 3) // first list row follows title and pane header
+	if m.sel != m.listTop || !hasLine(m.drain(),
+		"gohelp: focus "+want.Name+" group="+want.Group) {
+		t.Fatalf("first visible row selected index %d, want 3", m.sel)
+	}
+}
+
+func TestBrowseResizeKeepsFocusedRowVisible(t *testing.T) {
+	m := testModel()
+	for i := 0; i < 26; i++ {
+		key(&m, kDown)
+	}
+	m.setSize(64, 16)
+	if m.sel != 26 || m.sel < m.listTop ||
+		m.sel >= m.listTop+m.bodyRows() {
+		t.Fatalf("after resize selection=%d listTop=%d bodyRows=%d",
+			m.sel, m.listTop, m.bodyRows())
+	}
+	lines := m.renderLines()
+	screenRow := 2 + m.sel - m.listTop
+	if screenRow >= len(lines) {
+		t.Fatalf("focused row screen line %d exceeds rendered frame of %d lines",
+			screenRow, len(lines))
+	}
+	if !strings.Contains(lines[screenRow], "> "+m.visible()[m.sel].Name) {
+		t.Fatalf("focused row not highlighted after resize: line %d = %q",
+			screenRow, lines[screenRow])
+	}
+}
+
 func TestFilterFlow(t *testing.T) {
 	m := testModel()
 	if got := key(&m, runeKey('/')); !hasLine(got, "gohelp: filter on") {

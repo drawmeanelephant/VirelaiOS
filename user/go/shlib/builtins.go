@@ -3,6 +3,7 @@
 package shlib
 
 import (
+	"errors"
 	"sort"
 	"strings"
 
@@ -241,7 +242,15 @@ func bOpen(c *cmdCtx) int {
 		c.out([]byte("gosh: open: " + c.args[0] + ": " + err.Error() + "\n"))
 		return 1
 	}
-	pid, err := c.sh.host.RunExternal(req.Handler.Bin, []string{req.Target})
+	args, ok := openTargetArgs(req.Target)
+	if !ok {
+		err := errOpenTargetTooLong
+		c.sh.host.Marker("gosh: open refused target=" + req.Target +
+			" reason=" + err.Error())
+		c.out([]byte("gosh: open: " + req.Target + ": " + err.Error() + "\n"))
+		return 1
+	}
+	pid, err := c.sh.host.RunExternal(req.Handler.Bin, args)
 	if err != nil {
 		c.sh.host.Marker("gosh: open refused target=" + req.Target +
 			" handler=" + req.Handler.Bin + " unavailable")
@@ -252,6 +261,35 @@ func bOpen(c *cmdCtx) int {
 		" target=" + req.Target + " handler=" + req.Handler.Bin +
 		" pid=" + vsys.Itoa64(pid))
 	return 0
+}
+
+const (
+	openExecArgBytes = 255
+	// WEB.ELF uses one of the kernel's eight argv slots for argv[0].
+	openExecArgSlots = 8 - 1
+)
+
+var errOpenTargetTooLong = errors.New("URL too long for WEB.ELF argv")
+
+// openTargetArgs preserves the complete target within the kernel's
+// per-argument and argv-slot limits. WEB.ELF concatenates split URL slots.
+func openTargetArgs(target string) ([]string, bool) {
+	n := (len(target) + openExecArgBytes - 1) / openExecArgBytes
+	if n == 0 {
+		return nil, false
+	}
+	if n > openExecArgSlots {
+		return nil, false
+	}
+	args := make([]string, 0, n)
+	for start := 0; start < len(target); start += openExecArgBytes {
+		end := start + openExecArgBytes
+		if end > len(target) {
+			end = len(target)
+		}
+		args = append(args, target[start:end])
+	}
+	return args, true
 }
 
 func bPwd(c *cmdCtx) int {

@@ -125,10 +125,11 @@ func (m model) renderBrowse() []string {
 // background spans the full pane. Each row shows its group at the right
 // edge — the catalog's grouping stays visible without header rows.
 func (m model) listRow(i int, w int, vis []shlib.HelpRow) string {
-	if i >= len(vis) {
+	index := m.listTop + i
+	if index < 0 || index >= len(vis) {
 		return strings.Repeat(" ", w)
 	}
-	r := vis[i]
+	r := vis[index]
 	avail := w - 2 // "> " prefix
 	grp := r.Group
 	if len(grp) >= avail {
@@ -139,7 +140,7 @@ func (m model) listRow(i int, w int, vis []shlib.HelpRow) string {
 	if fill < 0 {
 		fill = 0
 	}
-	if i == m.sel {
+	if index == m.sel {
 		return colSel + "> " + left + strings.Repeat(" ", fill) + grp + colReset
 	}
 	return colRow + "  " + left + strings.Repeat(" ", fill) + grp + colReset

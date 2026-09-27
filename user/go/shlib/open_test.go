@@ -102,6 +102,42 @@ func TestOpenBuiltinRoutesHTTPSDirectlyToWeb(t *testing.T) {
 	}
 }
 
+func TestOpenBuiltinSplitsLongHTTPSAcrossExecArgs(t *testing.T) {
+	h := newOpenHost()
+	target := "https://example.com/" + strings.Repeat("a", 540)
+	status, _ := runOpenLine(t, h, "open "+target)
+	if status != 0 {
+		t.Fatalf("open status = %d, output=%q", status, h.outString())
+	}
+	if len(h.launches) != 1 || h.launches[0].name != "WEB.ELF" {
+		t.Fatalf("launches = %+v; want one WEB.ELF launch", h.launches)
+	}
+	args := h.launches[0].args
+	if len(args) < 2 || len(args) > openExecArgSlots {
+		t.Fatalf("URL args = %d, want 2..%d slots: %v", len(args), openExecArgSlots, args)
+	}
+	for _, arg := range args {
+		if len(arg) > openExecArgBytes {
+			t.Fatalf("URL arg has %d bytes, exceeds exec cap %d", len(arg), openExecArgBytes)
+		}
+	}
+	if got := strings.Join(args, ""); got != target {
+		t.Fatalf("joined URL = %q, want %q", got, target)
+	}
+}
+
+func TestOpenBuiltinNamesHTTPSBeyondExecArgLimit(t *testing.T) {
+	h := newOpenHost()
+	target := "https://example.com/" +
+		strings.Repeat("b", openExecArgBytes*openExecArgSlots)
+	status, _ := runOpenLine(t, h, "open "+target)
+	if status != 1 || len(h.launches) != 0 ||
+		!strings.Contains(h.outString(), errOpenTargetTooLong.Error()) {
+		t.Fatalf("oversized URL: status=%d launches=%v output=%q",
+			status, h.launches, h.outString())
+	}
+}
+
 func TestOpenBuiltinNamesUnsupportedSchemeAndMissingHandler(t *testing.T) {
 	h := newOpenHost()
 	status, _ := runOpenLine(t, h, "open ftp://example.com/file")

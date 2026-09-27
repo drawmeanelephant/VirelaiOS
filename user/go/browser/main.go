@@ -11,9 +11,9 @@
 //	exec WEB.ELF https://10.0.0.2:24533/  (in-process TLS; fixture SNI)
 //	exec WEB.ELF @/host/RSS.LINK      (first line of that file is the page)
 //
-// Exec keeps 31 bytes of each argument. A longer URL is split across
-// consecutive arguments (joined with no separator) or, when it will not fit
-// in eight slots, written to a file and passed as @path.
+// vi.Exec allows 255 bytes per argument. Callers can split longer URLs
+// across argv slots (joined with no separator) or pass @path to a file whose
+// first line is the URL.
 package main
 
 import (
@@ -256,9 +256,9 @@ const (
 )
 
 // argvTarget joins exec arguments into the page to open. args[0] is the
-// program name. Later slots are concatenated because vi.Exec stores at most
-// 31 bytes in each. A target that starts with '@' is a path; the first line
-// of that file is the page (urlFromHandoff).
+// program name. Later slots are concatenated because vi.Exec caps each at
+// 255 bytes. A target that starts with '@' is a path; the first line of that
+// file is the page (urlFromHandoff).
 func argvTarget(args []string) (target string, fromFile bool) {
 	if len(args) < 2 {
 		return "", false
