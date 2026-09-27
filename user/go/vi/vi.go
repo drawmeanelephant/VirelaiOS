@@ -693,6 +693,53 @@ func WriteFileSafe(path string, b []byte) int64 {
 	return 0
 }
 
+// WriteFilePublish is WriteFileSafe for a writer that can also APPEND — the
+// one seam the shell host hooks go through (M81e2 #1787). It is the whole
+// "which of these two contracts applies" decision, in one place, so no
+// caller has to re-derive it and the recursion guard
+// (vi/publish_guard_test.go) has exactly one policy site to point at.
+//
+// The split, and the reason for it:
+//
+//   - REPLACE (appendMode false) is a REWRITE: the caller holds the whole
+//     new body in memory and the old file's bytes are meant to be gone. That
+//     is app state — settings, an editor buffer, a saved history ring, a
+//     `> file` redirect — so it goes through WriteFileSafe. A crash leaves
+//     the old file or none, never a half-written one.
+//   - APPEND (appendMode true) is NOT a rewrite: an append never truncates
+//     a file it is not rewriting, so there is no partial-file hazard to fix.
+//     WriteFileSafe cannot express it (it publishes a replacement), and
+//     routing an append through it would rewrite the whole file per line.
+//     It stays an in-place append, and the guard exempts it by RULE rather
+//     than by name: an open carrying ModeAppend is by definition
+//     non-truncating.
+//
+// Returns 0, or the negative kernel code of the step that failed. The
+// append branch inlines FileAppend's open+write rather than calling it, so
+// the caller gets the kernel's OWN code (a refused open is -ErrEACCES, not a
+// generic "false"); FileAppend's bool is for callers that genuinely do not
+// care which. This function, plus WriteFileSafe's `~` temp, are the only
+// shipped in-place opens left in the Go tree.
+func WriteFilePublish(path string, b []byte, appendMode bool) int64 {
+	if !appendMode {
+		return WriteFileSafe(path, b)
+	}
+	h, r := FileOpen(path, ModeWrite|ModeCreate|ModeAppend)
+	if r < 0 {
+		return r
+	}
+	defer FileClose(uint32(h))
+	// A short write on an append is NOT silently fine: the caller is told
+	// so it can say the line did not land. The bytes already written stay
+	// written, which is the append contract (nothing was truncated).
+	if n, wr := FileWriteAll(uint32(h), b); wr < 0 {
+		return wr
+	} else if n != len(b) {
+		return -ErrENOSPC
+	}
+	return 0
+}
+
 // FileDelete removes a file by path (slot 34).
 func FileDelete(path string) int64 {
 	if path == "" {

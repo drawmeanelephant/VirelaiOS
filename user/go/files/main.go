@@ -32,14 +32,6 @@ const (
 	ttyPath = "/dev/tty"
 )
 
-// gridOf maps the window rect onto the kernel's active terminal grid. The
-// kernel reflows by the current font-metric cell width and paints rows at the
-// current cell height; the user window's 16 px title bar is not client area.
-func gridOf(w, h uint32) (int, int) {
-	cellW, cellH := vi.TerminalCell()
-	return gridForCell(w, h, cellW, cellH)
-}
-
 // paint writes one frame into the bound tty. A tty write marks the window
 // dirty; callers yield once before their markers so the markers describe a
 // painted frame. A two-pane frame is many KiB and sys_file_write refuses

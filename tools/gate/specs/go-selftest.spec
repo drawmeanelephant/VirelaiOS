@@ -133,11 +133,40 @@
 #                      sacrificial temp does not survive, so the share
 #                      holds one file and no orphan.
 #
-# M81a (#1761) adds `trash`: GOSELF reads back the `.item` bytes, restores
-# them to the original path, writes delete/restore/delete rows to RECENT, and
-# runs an expiry pass at the exact retention boundary. The host compares the
-# body-copy and receipt, then checks TRASH is empty and RECENT contains all
-# three rows.
+#   * file-snapshot — the M81g (#1767) snapshot bundle, the DRILL the
+#                      card is about. The host seeds four inputs under
+#                      IN/ (a settings table, a BINARY session strip, two
+#                      documents); the guest carries them into one bundle,
+#                      publishes it through the safe write, reads it back,
+#                      parses it and republishes every entry under
+#                      OUT/RESTORED/. The host then rebuilds the bundle
+#                      FROM ITS OWN SEEDED BODIES and byte-compares, so
+#                      what is verified is a round trip through the
+#                      container rather than the guest agreeing with
+#                      itself — and it re-parses the published bundle with
+#                      an INDEPENDENT reader, which is what makes the
+#                      format self-describing instead of guest-private.
+#                      The binary session body is the load-bearing part: a
+#                      text-only container could not carry a real strip.
+#                      The receipt's `corrupt=refused` is the refusal half,
+#                      and a one-byte-short bundle must never parse.
+#   * file-write-publish — the seam BOTH shell hooks now call (M81e2
+#                      #1787): vi.WriteFilePublish's two contracts. The
+#                      REPLACE half is the GOSH history ring save and `>
+#                      file` (a long body replaced by a short one, no
+#                      tail, no orphan temp). The APPEND half is the
+#                      history one-line append and `>>`, and it must ADD
+#                      to the file rather than rewrite it — so the
+#                      read-back is the whole base-plus-lines body
+#                      byte-compared, not a "the new line is present"
+#                      contains, which a rewrite-per-line
+#                      implementation would also pass.
+#
+#   * trash — the M81a (#1761) recoverable-delete flow. The guest reads the
+#             trashed bytes, restores them to the original path, records both
+#             actions in RECENT, and expires an old item at the retention
+#             boundary. The host checks the bytes, receipt, trash directory
+#             state and recent action order.
 #
 # The report fixture below is byte-exact on purpose — the report is
 # deterministic (ADR 0031). Adding a case updates the fixture, the
@@ -146,7 +175,7 @@
 # HOST PREREQUISITE (fails the gate honestly when missing):
 #   bash tools/go/build-goself.sh   ->  .build/go/GOSELF.ELF
 
-vgate_name go-selftest "M61b-f + M81a #1761: GOSELF proves guest file ABI, trash/restore/recent/expiry, and window behavior over the host share"
+vgate_name go-selftest "issues #1382-#1386 M61b-f: GOSELF.ELF runs the guest self-test cases over host-seeded intake fixtures, the file-ABI case pack and the window receipt; the host reads REPORT.txt and every OUT/ receipt on the share (share-assert pilot)"
 vgate_share seed
 vgate_runner_flags -Xswiftc -DSPIKE
 
@@ -179,9 +208,11 @@ case file-fsync pass
 case file-errors pass
 case file-write-safe pass
 case trash pass
+case file-write-publish pass
 case mime pass
+case file-snapshot pass
 case window pass
-summary cases=17 failed=0
+summary cases=19 failed=0
 EOF
 vgate_file trash.expected <<'EOF'
 M81a trash fixture
@@ -212,9 +243,32 @@ altered = b"goself intake fixture v2\n"
 for name, body in (("fixture.txt", fixture), ("altered.txt", altered)):
     with open(os.path.join(st, "IN", name), "wb") as fh:
         fh.write(body)
+
+# M81g (#1767): the four inputs the snapshot case carries. Seeded HERE, on the
+# host, and READ by the guest — so the bundle it builds is made of bytes that
+# came off the share, and a guest that answered from constants in its binary
+# would produce a bundle the asserts below could not match. The session body
+# is deliberately BINARY (NULs, a newline, high bytes) and exactly 12 bytes:
+# the real SESSION.TABS is a binary strip, and a text-only container could not
+# carry the state the card is about.
+snap_settings = b"#v2\ntheme=amber\nwm=gotabwm\n"
+snap_session = bytes([0x54, 0x41, 0x42, 0x53, 0x00, 0x02, 0x00, 0x0a,
+                      0xff, 0xfe, 0x10, 0x20])
+snap_note = b"goself snapshot note\n"
+snap_second = b"goself snapshot second document\n"
+docs = os.path.join(st, "IN", "snapshot-docs")
+os.makedirs(docs, exist_ok=True)
+for name, body in (("snapshot-settings.txt", snap_settings),
+                   ("snapshot-session.tabs", snap_session),
+                   (os.path.join("snapshot-docs", "NOTE.TXT"), snap_note),
+                   (os.path.join("snapshot-docs", "SECOND.TXT"), snap_second)):
+    with open(os.path.join(st, "IN", name), "wb") as fh:
+        fh.write(body)
 print("staged GOSELF.ELF into share (%d bytes) and %s/{IN,OUT}; seeded "
-      "IN/fixture.txt %r and IN/altered.txt %r"
-      % (os.path.getsize(os.path.join(share, "GOSELF.ELF")), st, fixture, altered))
+      "IN/fixture.txt %r, IN/altered.txt %r and the four M81g snapshot inputs "
+      "(session %d B binary)"
+      % (os.path.getsize(os.path.join(share, "GOSELF.ELF")), st, fixture, altered,
+         len(snap_session)))
 PY
 
 vgate_run 01 -- \
@@ -247,6 +301,7 @@ vgate_assert 01 serial-contains 'selftest: case file-clamp pass'
 vgate_assert 01 serial-contains 'selftest: case file-fsync pass'
 vgate_assert 01 serial-contains 'selftest: case file-errors pass'
 vgate_assert 01 serial-contains 'selftest: case trash pass'
+vgate_assert 01 serial-contains 'selftest: case file-snapshot pass'
 vgate_assert 01 serial-contains 'selftest: case window pass'
 # The files were written BEFORE the summary (ADR 0031 ordering).
 vgate_assert 01 serial-contains 'selftest: report /host/SELFTEST/REPORT.txt n='
@@ -273,7 +328,7 @@ vgate_assert 01 share-equals SELFTEST/IN/fixture.txt intake-fixture.expected
 # than the python's byte-exact summary.txt compare below, and kept deliberately
 # as the kind's pilot in a real gate.
 vgate_assert 01 share-equals SELFTEST/OUT/trash.copy trash.expected
-vgate_assert 01 share-contains SELFTEST/OUT/summary.txt 'summary cases=17 failed=0'
+vgate_assert 01 share-contains SELFTEST/OUT/summary.txt 'summary cases=19 failed=0'
 
 # The load-bearing assert: the copies and the receipts on the host's own
 # filesystem must be byte-exact, the share's directory state must agree with
@@ -311,6 +366,38 @@ fsync_body = unit * 7               # 147 B, fsync'd through slot 77 before clos
 write_safe_long = unit * 40         # 840 B published, then replaced by the short one
 write_safe_short = unit * 5         # 105 B expected after the shorter publish
 
+# The M81g (#1767) snapshot bodies, reconstructed from ONE expression each —
+# the same bytes the setup hook seeded under IN/. The session one is BINARY:
+# 12 bytes with NULs, a newline and high bytes, because the real SESSION.TABS
+# is a binary strip and the container has to carry it as it is.
+snap_settings = b"#v2\ntheme=amber\nwm=gotabwm\n"
+snap_session = bytes([0x54, 0x41, 0x42, 0x53, 0x00, 0x02, 0x00, 0x0a,
+                      0xff, 0xfe, 0x10, 0x20])
+snap_note = b"goself snapshot note\n"
+snap_second = b"goself snapshot second document\n"
+# The bundle, built HERE from those bodies — the host does not take the
+# guest's word for the container's shape, it recomputes it. An independent
+# construction is the point: if this and virelai/snapshot disagreed about the
+# format, the byte-compare below fails rather than both sides being wrong
+# together.
+snap_entries = [(b"settings", snap_settings),
+                (b"session", snap_session),
+                (b"docs/NOTE.TXT", snap_note),
+                (b"docs/SECOND.TXT", snap_second)]
+want_bundle = (b"#vb1 %d\n" % len(snap_entries)
+               + b"".join(b"%s %d\n%s" % (n, len(bd), bd) for n, bd in snap_entries))
+want_snapshot_receipt = (b"case file-snapshot path=OUT/snapshot.bundle entries=4 docs=2 "
+                         b"bytes=%d settings=%d session=%d match=yes orphan=none "
+                         b"corrupt=refused\n"
+                         % (len(want_bundle), len(snap_settings), len(snap_session)))
+# M81e2 (#1787): the publish case's bodies. The base is the 105 B short body
+# (so the replace is a SHRINK), and the two appended lines are the history
+# appends — 17 B each including the LF.
+publish_base = write_safe_short
+publish_line1 = b"gosh-history-one\n"
+publish_line2 = b"gosh-history-two\n"
+publish_want = publish_base + publish_line1 + publish_line2
+
 # The window, from the outside: the app's tabapp.Config at open, and the
 # tab-aware content viewport TABWM proposes afterwards
 # (user/src/tabwm.zig compute_tab_viewport: 180,0 1100x720).
@@ -318,7 +405,7 @@ win_open_rect = (32, 32, 640, 400)
 win_viewport_w = 1100
 win_viewport_h = 720
 
-want_summary = b"summary cases=17 failed=0\n"
+want_summary = b"summary cases=19 failed=0\n"
 want_hello = b"goself smoke\n"
 want_intake_receipt = b"case intake path=IN/fixture.txt bytes=25 match=yes\n"
 want_altered_receipt = b"case intake-altered path=IN/altered.txt bytes=25 differs=yes\n"
@@ -341,6 +428,14 @@ want_write_safe_receipt = (b"case file-write-safe path=OUT/write-safe.txt long=8
                            b"short=105 bytes=105 tail=none orphan=none match=yes\n")
 want_trash_receipt = (b"case trash path=OUT/trash-source.txt bytes=19 match=yes "
                       b"restored=yes expiry=1 recent=delete,restore,delete\n")
+# M81e2 (#1787): the receipt's byte counts are RECONSTRUCTED from the bodies
+# above, not copied from the guest, so the host is checking the share
+# against its own reading of the contract.
+want_publish_receipt = (
+    b"case file-write-publish path=OUT/publish.txt base="
+    + str(len(publish_base)).encode() + b" after=" + str(len(publish_want)).encode() +
+    b" want=" + str(len(publish_want)).encode() + b" tail=none orphan=none"
+    b" replaced=yes appended=yes\n")
 
 # M81b (#1762): the MIME case. The fixture bodies are reconstructed here from
 # ONE expression each, exactly as selftest.go builds them, so the host checks
@@ -420,6 +515,93 @@ require(os.path.join(out, "write-safe.copy"), write_safe_short,
         "WRITE-SAFE COPY (no tail)")
 require(os.path.join(out, "trash.ok"), want_trash_receipt, "TRASH RECEIPT")
 require(os.path.join(out, "trash.copy"), b"M81a trash fixture\n", "TRASH COPY")
+require(os.path.join(out, "trash-source.txt"), b"M81a trash fixture\n",
+        "RESTORED TRASH FILE")
+if os.path.exists(os.path.join(out, "expiry-source.txt")):
+    print("OUT/expiry-source.txt still exists - the trash delete did not move it")
+    raise SystemExit(1)
+trash_dir = os.path.join(share, "TRASH")
+if not os.path.isdir(trash_dir) or os.listdir(trash_dir):
+    print("TRASH should be empty after restore and expiry, got %r" %
+          (sorted(os.listdir(trash_dir)) if os.path.isdir(trash_dir) else None))
+    raise SystemExit(1)
+recent_path = os.path.join(share, "RECENT", "LOG.TXT")
+recent = read(recent_path).decode("ascii").splitlines()
+if len(recent) != 3:
+    print("RECENT has %d rows, want 3: %r" % (len(recent), recent))
+    raise SystemExit(1)
+recent_re = re.compile(r"^-?[0-9]+\|(delete|restore)\|[0-9a-f]{16}\|[0-9a-f]+$")
+if any(not recent_re.fullmatch(row) for row in recent):
+    print("RECENT rows have an invalid shape: %r" % recent)
+    raise SystemExit(1)
+if [row.split("|", 2)[1] for row in recent] != ["delete", "restore", "delete"]:
+    print("RECENT action order is wrong: %r" % recent)
+    raise SystemExit(1)
+
+# M81g (#1767): the snapshot drill, checked from outside. The bundle on the
+# share is byte-equal to one the HOST rebuilt from the seeded bodies, and
+# every entry the guest rehydrated is byte-equal to the input it came from —
+# so what is being verified is a round trip THROUGH the container, not a copy.
+# The container is then re-parsed below with an independent reader, which is
+# what makes "byte-exact" mean something about the FORMAT and not just about
+# the guest agreeing with itself.
+require(os.path.join(out, "snapshot.bundle"), want_bundle, "SNAPSHOT BUNDLE")
+require(os.path.join(out, "snapshot.copy"), want_bundle, "SNAPSHOT COPY (bytes read back)")
+require(os.path.join(out, "file-snapshot.ok"), want_snapshot_receipt,
+        "SNAPSHOT RECEIPT")
+require(os.path.join(out, "RESTORED", "settings.txt"), snap_settings,
+        "RESTORED SETTINGS")
+require(os.path.join(out, "RESTORED", "session.tabs"), snap_session,
+        "RESTORED SESSION (binary strip)")
+require(os.path.join(out, "RESTORED", "docs", "NOTE.TXT"), snap_note,
+        "RESTORED DOC NOTE.TXT")
+require(os.path.join(out, "RESTORED", "docs", "SECOND.TXT"), snap_second,
+        "RESTORED DOC SECOND.TXT")
+if os.path.exists(os.path.join(out, "snapshot.bundle~")):
+    print("OUT/snapshot.bundle~ survived the publish - the temp leaked")
+    raise SystemExit(1)
+
+# An independent parse of the bundle the guest published: header, declared
+# entry count, then each entry's name and EXACT byte count. A guest that
+# published something only it can read fails here.
+raw = read(os.path.join(out, "snapshot.bundle"))
+nl = raw.index(b"\n")
+if raw[:nl] != b"#vb1 %d" % len(snap_entries):
+    print("SNAPSHOT BUNDLE header is %r, want %r"
+          % (raw[:nl], b"#vb1 %d" % len(snap_entries)))
+    raise SystemExit(1)
+rest = raw[nl + 1:]
+parsed = {}
+for _ in range(len(snap_entries)):
+    eol = rest.index(b"\n")
+    name, _, count = rest[:eol].partition(b" ")
+    count = int(count)
+    body = rest[eol + 1:eol + 1 + count]
+    if len(body) != count:
+        print("SNAPSHOT BUNDLE entry %r declared %d bytes and carried %d"
+              % (name, count, len(body)))
+        raise SystemExit(1)
+    parsed[name] = body
+    rest = rest[eol + 1 + count:]
+if rest:
+    print("SNAPSHOT BUNDLE has %d trailing bytes after its last entry" % len(rest))
+    raise SystemExit(1)
+if parsed != {n: bd for n, bd in snap_entries}:
+    print("the independently parsed bundle does not match the seeded bodies: %r"
+          % sorted(parsed))
+    raise SystemExit(1)
+# M81e2 (#1787): the publish receipt, the whole body the case read back
+# (base + both appended lines, byte-equal -- an "contains the new line"
+# check would also pass a rewrite-per-line append, which is the regression
+# this case exists to catch), and the share's own directory state: the
+# sacrificial temp must not be there.
+require(os.path.join(out, "file-write-publish.ok"), want_publish_receipt,
+        "PUBLISH RECEIPT")
+require(os.path.join(out, "publish.copy"), publish_want,
+        "PUBLISH COPY (replace + two appends)")
+if os.path.exists(os.path.join(out, "publish.txt~")):
+    print("OUT/publish.txt~ survived the publish - the temp leaked")
+    raise SystemExit(1)
 
 # M81b: the sniff receipt, the one-line summary of it, and the fixture bytes
 # the share itself holds. The receipt alone could be a table printed from
@@ -447,28 +629,6 @@ require(os.path.join(out, "write-safe.txt"), write_safe_short,
         "WRITE-SAFE FILE (no tail)")
 if os.path.exists(os.path.join(out, "write-safe.txt~")):
     print("OUT/write-safe.txt~ survived the publish - the temp leaked")
-    raise SystemExit(1)
-require(os.path.join(out, "trash-source.txt"), b"M81a trash fixture\n",
-        "RESTORED TRASH FILE")
-if os.path.exists(os.path.join(out, "expiry-source.txt")):
-    print("OUT/expiry-source.txt still exists - the trash delete did not move it")
-    raise SystemExit(1)
-trash_dir = os.path.join(share, "TRASH")
-if not os.path.isdir(trash_dir) or os.listdir(trash_dir):
-    print("TRASH should be empty after restore and expiry, got %r" %
-          (sorted(os.listdir(trash_dir)) if os.path.isdir(trash_dir) else None))
-    raise SystemExit(1)
-recent_path = os.path.join(share, "RECENT", "LOG.TXT")
-recent = read(recent_path).decode("ascii").splitlines()
-if len(recent) != 3:
-    print("RECENT has %d rows, want 3: %r" % (len(recent), recent))
-    raise SystemExit(1)
-recent_re = re.compile(r"^-?[0-9]+\|(delete|restore)\|[0-9a-f]{16}\|[0-9a-f]+$")
-if any(not recent_re.fullmatch(row) for row in recent):
-    print("RECENT rows have an invalid shape: %r" % recent)
-    raise SystemExit(1)
-if [row.split("|", 2)[1] for row in recent] != ["delete", "restore", "delete"]:
-    print("RECENT action order is wrong: %r" % recent)
     raise SystemExit(1)
 if os.path.exists(os.path.join(out, "deleted.txt")):
     print("OUT/deleted.txt still exists - the delete case did not remove it")
@@ -560,6 +720,17 @@ for name, path in (("intake.txt", os.path.join(out, "intake.txt")),
                    ("file-errors.ok", os.path.join(out, "file-errors.ok")),
                    ("file-write-safe.ok", os.path.join(out, "file-write-safe.ok")),
                    ("write-safe.copy", os.path.join(out, "write-safe.copy")),
+                   ("file-snapshot.ok", os.path.join(out, "file-snapshot.ok")),
+                   ("snapshot.bundle", os.path.join(out, "snapshot.bundle")),
+                   ("snapshot.copy", os.path.join(out, "snapshot.copy")),
+                   ("restored-settings.txt",
+                    os.path.join(out, "RESTORED", "settings.txt")),
+                   ("restored-session.tabs",
+                    os.path.join(out, "RESTORED", "session.tabs")),
+                   ("restored-NOTE.TXT",
+                    os.path.join(out, "RESTORED", "docs", "NOTE.TXT")),
+                   ("restored-SECOND.TXT",
+                    os.path.join(out, "RESTORED", "docs", "SECOND.TXT")),
                    ("append.copy", os.path.join(out, "append.copy")),
                    ("bigwrite.copy", os.path.join(out, "bigwrite.copy")),
                    ("clamp.copy", os.path.join(out, "clamp.copy")),

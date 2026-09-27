@@ -11,6 +11,8 @@ func TestCalcMarkerShapes(t *testing.T) {
 		{markerOpen, "gocalc: open id="},
 		{markerDeclare, "gocalc: declare accepted"},
 		{markerPresent, "gocalc: present"},
+		{markerSettingSubscribed, "gocalc: settings subscribed key=theme"},
+		{markerSettingPresent, "gocalc: settings repaint key="},
 		{markerResult, "gocalc: result "},
 		{markerSaveErr, "gocalc: save error "},
 		{markerClose, "gocalc: close"},

@@ -315,6 +315,10 @@ func applyRPC(req vi.WmRpc) bool {
 		// the queue does not hold. The next composite tick paints it.
 		vi.ConsoleLine(MarkerNotify + vi.Itoa64(int64(id)) + " " + text)
 		return true
+	case vi.WmRpcKindSettingsSubscribe: // 13, client -> seat: subscribe to one key
+		return applySettingsSubscribe(req)
+	case vi.WmRpcKindSettingsPublish: // 14, writer -> seat: a persisted key changed
+		return applySettingsPublish(req)
 	default:
 		vi.ConsoleLine(MarkerRpcOther + vi.Itoa64(int64(req.Kind&0x7f)))
 		return false

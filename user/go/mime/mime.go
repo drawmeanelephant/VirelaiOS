@@ -297,6 +297,282 @@ func Default(id ID) (Handler, bool) {
 	return Handler{}, false
 }
 
+// ReadFunc reads up to max bytes from a path. Open supplies HeadBytes and
+// owns the classification; callers own only the file-channel adapter.
+type ReadFunc func(path string, max int) ([]byte, error)
+
+// OpenRequest is the one dispatch decision shared by shell and file manager.
+// Target is either the canonical file path passed to a file handler or the
+// original HTTPS URL passed to WEB.ELF.
+type OpenRequest struct {
+	Handler Handler
+	Target  string
+	Type    ID
+	Scheme  string
+}
+
+// OpenErrorKind distinguishes a broken target, an unavailable read, and a
+// file type for which the system has no registered handler.
+type OpenErrorKind uint8
+
+const (
+	OpenInvalidTarget OpenErrorKind = iota + 1
+	OpenUnsupportedScheme
+	OpenUnreadable
+	OpenNoHandler
+)
+
+// OpenError is an expected, user-reportable refusal from Open.
+type OpenError struct {
+	Kind   OpenErrorKind
+	Type   ID
+	Scheme string
+}
+
+func (e *OpenError) Error() string {
+	switch e.Kind {
+	case OpenUnsupportedScheme:
+		return "unsupported URL scheme " + e.Scheme
+	case OpenUnreadable:
+		return "file is unreadable"
+	case OpenNoHandler:
+		return "no handler for " + e.Type.String()
+	default:
+		return "invalid file path or URL"
+	}
+}
+
+// Open routes one local file or HTTPS URL to its default application.
+// Local files are sniffed through the MIME table and resolved relative to
+// cwd; file:// accepts local absolute paths (including localhost authority).
+// HTTPS is handed to WEB.ELF without weakening its own TLS/DNS checks.
+// Other URL schemes fail by name rather than being mistaken for file paths.
+func Open(target, cwd string, read ReadFunc) (OpenRequest, error) {
+	if target == "" {
+		return OpenRequest{}, &OpenError{Kind: OpenInvalidTarget}
+	}
+	if path, ok := localVolumePath(target); ok {
+		return openFile(path, cwd, read)
+	}
+	if scheme, ok := urlScheme(target); ok {
+		switch strings.ToLower(scheme) {
+		case "https":
+			if !validHTTPSURL(target) {
+				return OpenRequest{}, &OpenError{Kind: OpenInvalidTarget}
+			}
+			return OpenRequest{
+				Handler: Handler{Bin: "WEB.ELF", Label: "Web Browser"},
+				Target:  target,
+				Type:    Unknown,
+				Scheme:  "https",
+			}, nil
+		case "file":
+			path, ok := localFileURL(target)
+			if !ok {
+				return OpenRequest{}, &OpenError{Kind: OpenInvalidTarget}
+			}
+			return openFile(path, cwd, read)
+		default:
+			return OpenRequest{}, &OpenError{
+				Kind: OpenUnsupportedScheme, Scheme: strings.ToLower(scheme),
+			}
+		}
+	}
+	return openFile(target, cwd, read)
+}
+
+func localVolumePath(target string) (string, bool) {
+	i := strings.IndexByte(target, ':')
+	if i <= 0 {
+		return "", false
+	}
+	volume := target[:i]
+	switch {
+	case strings.EqualFold(volume, "host"), strings.EqualFold(volume, "usb"):
+	case len(volume) == 4 && strings.EqualFold(volume[:3], "usb") &&
+		volume[3] >= '1' && volume[3] <= '4':
+	default:
+		return "", false
+	}
+	return "/" + volume + "/" + strings.TrimLeft(target[i+1:], "/"), true
+}
+
+func openFile(target, cwd string, read ReadFunc) (OpenRequest, error) {
+	path, ok := sharePath(target, cwd)
+	if !ok {
+		return OpenRequest{}, &OpenError{Kind: OpenInvalidTarget}
+	}
+	if read == nil {
+		return OpenRequest{}, &OpenError{Kind: OpenUnreadable}
+	}
+	head, err := read(path, HeadBytes)
+	if err != nil {
+		return OpenRequest{}, &OpenError{Kind: OpenUnreadable}
+	}
+	if len(head) > HeadBytes {
+		head = head[:HeadBytes]
+	}
+	id := Sniff(baseName(path), head)
+	handler, ok := Default(id)
+	if !ok {
+		return OpenRequest{}, &OpenError{Kind: OpenNoHandler, Type: id}
+	}
+	return OpenRequest{Handler: handler, Target: path, Type: id, Scheme: "file"}, nil
+}
+
+// urlScheme recognizes an RFC 3986 scheme prefix without treating a colon
+// inside an absolute path as a scheme separator.
+func urlScheme(target string) (string, bool) {
+	i := strings.IndexByte(target, ':')
+	if i <= 0 || strings.ContainsAny(target[:i], "/?#") {
+		return "", false
+	}
+	for j := 0; j < i; j++ {
+		c := target[j]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z':
+		case j > 0 && (c >= '0' && c <= '9' || c == '+' || c == '-' || c == '.'):
+		default:
+			return "", false
+		}
+	}
+	return target[:i], true
+}
+
+func validHTTPSURL(target string) bool {
+	const prefix = "https://"
+	if len(target) < len(prefix) || !strings.EqualFold(target[:len(prefix)], prefix) {
+		return false
+	}
+	rest := target[len(prefix):]
+	end := strings.IndexAny(rest, "/?#")
+	if end >= 0 {
+		rest = rest[:end]
+	}
+	return rest != "" && !strings.ContainsAny(rest, " \t\r\n")
+}
+
+func localFileURL(target string) (string, bool) {
+	const prefix = "file://"
+	if len(target) < len(prefix) || !strings.EqualFold(target[:len(prefix)], prefix) {
+		return "", false
+	}
+	rest := target[len(prefix):]
+	var path string
+	if strings.HasPrefix(rest, "/") {
+		path = rest
+	} else {
+		slash := strings.IndexByte(rest, '/')
+		if slash < 0 || !strings.EqualFold(rest[:slash], "localhost") {
+			return "", false
+		}
+		path = rest[slash:]
+	}
+	if end := strings.IndexAny(path, "?#"); end >= 0 {
+		path = path[:end]
+	}
+	if path == "" || path[0] != '/' {
+		return "", false
+	}
+	return percentDecode(path)
+}
+
+func percentDecode(s string) (string, bool) {
+	out := make([]byte, 0, len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] != '%' {
+			out = append(out, s[i])
+			continue
+		}
+		if i+2 >= len(s) {
+			return "", false
+		}
+		hi, okHi := hexValue(s[i+1])
+		lo, okLo := hexValue(s[i+2])
+		if !okHi || !okLo || hi == 0 && lo == 0 {
+			return "", false
+		}
+		out = append(out, hi<<4|lo)
+		i += 2
+	}
+	return string(out), true
+}
+
+func hexValue(c byte) (byte, bool) {
+	switch {
+	case c >= '0' && c <= '9':
+		return c - '0', true
+	case c >= 'a' && c <= 'f':
+		return c - 'a' + 10, true
+	case c >= 'A' && c <= 'F':
+		return c - 'A' + 10, true
+	default:
+		return 0, false
+	}
+}
+
+// sharePath joins relative targets to cwd, rejects traversal, and returns a
+// canonical path the kernel's file ABI accepts. The only local partitions
+// retained here are the host share and the read-only USB volumes.
+func sharePath(target, cwd string) (string, bool) {
+	if target == "" || strings.IndexByte(target, 0) >= 0 {
+		return "", false
+	}
+	full := target
+	if !strings.HasPrefix(full, "/") {
+		base := cwd
+		if base == "" {
+			base = "/"
+		}
+		if strings.HasSuffix(base, "/") {
+			full = base + target
+		} else {
+			full = base + "/" + target
+		}
+	}
+	parts := make([]string, 0, 8)
+	for _, part := range strings.Split(full, "/") {
+		switch part {
+		case "", ".":
+			continue
+		case "..":
+			return "", false
+		default:
+			parts = append(parts, part)
+		}
+	}
+	prefix := "/host"
+	if len(parts) > 0 && strings.EqualFold(parts[0], "host") {
+		parts = parts[1:]
+	} else if len(parts) > 0 && usbRoot(parts[0]) {
+		prefix = "/" + strings.ToLower(parts[0])
+		parts = parts[1:]
+	}
+	path := prefix
+	if len(parts) > 0 {
+		path += "/" + strings.Join(parts, "/")
+	}
+	if len(path) > 64 {
+		return "", false
+	}
+	return path, true
+}
+
+func usbRoot(part string) bool {
+	if strings.EqualFold(part, "usb") {
+		return true
+	}
+	return len(part) == 4 && strings.EqualFold(part[:3], "usb") &&
+		part[3] >= '0' && part[3] <= '9'
+}
+
+func baseName(path string) string {
+	if i := strings.LastIndexByte(path, '/'); i >= 0 {
+		return path[i+1:]
+	}
+	return path
+}
+
 // init registers the two live adopters (the card's day-one requirement):
 // GOVIEW.ELF opens images and takes a path in argv[1]; GOEDIT.ELF opens text
 // and takes a path in argv[1] as well. GOEDIT is ALSO an image handler,

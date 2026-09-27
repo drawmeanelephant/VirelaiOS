@@ -55,6 +55,18 @@
 # cell to cell 1, then Ctrl+2 focusing cell 2. Both chords intentionally emit
 # the established alt-tab marker chain because they share the same focus path.
 #
+# Run 08 (M82c / #1770): the global shortcuts registry. The monitor seeds
+# GOTABWM.CHORDCONFLICT, so the seat's prologue feeds the checker the
+# deliberately conflicting fixture (FIXTURE.ELF claiming the seat's pin
+# chord at the seat's own dispatch point) and prints the full named
+# refusal, then the whole table (one `gotabwm: chord` line per row) and the
+# summary. The seat carries on with the UNTOUCHED shipped table: the
+# fixture is a refusal exercise, not a reconfiguration. GOSET then opens
+# its shortcuts view with the panel's own registered chord (ctrl+shift+h,
+# a GOSET.ELF app row — re-bound from ctrl+shift+s when M81g #1767 landed
+# the seat's snapshot arm on that chord first) — the registry is visible
+# to a user, not just asserted. Two Go runtimes is inside the #1449 wall.
+#
 # Two equal-width cells on a 1280 rail: tab 0 [0,640)=(320,10), tab 1
 # [640,1280)=(960,10). Zig's left-rail (158,70) is the wrong target.
 # Pane rects include y=0. No client-area mouse. No edit/term rewrite.
@@ -64,6 +76,7 @@
 #   bash tools/go/build-goedit.sh    ->  .build/go/GOEDIT.ELF
 #   bash tools/go/build-goterm.sh    ->  .build/go/GOTERM.ELF
 #   bash tools/go/build-gocalc.sh    ->  .build/go/GOCALC.ELF
+#   bash tools/go/build-goset.sh     ->  .build/go/GOSET.ELF   (run 08)
 #
 # exec-order: assert-proven -- each run ends on a script-only marker
 # (`rx-gotabwm-hid-ok` / `rx-gotabwm-hid-drag-ok`), and every stage gate
@@ -147,6 +160,14 @@ if not os.path.exists(src):
 shutil.copy(src, os.path.join(share, "GOCALC.ELF"))
 print("staged GOCALC.ELF into share (%d bytes)" %
       os.path.getsize(os.path.join(share, "GOCALC.ELF")))
+# M82c (#1770): run 08 opens the shortcuts registry in the GO panel.
+src = os.path.join(".build", "go", "GOSET.ELF")
+if not os.path.exists(src):
+    sys.exit("GOSET.ELF missing (expected " + src + ") - build it first: "
+             "bash tools/go/build-goset.sh")
+shutil.copy(src, os.path.join(share, "GOSET.ELF"))
+print("staged GOSET.ELF into share (%d bytes)" %
+      os.path.getsize(os.path.join(share, "GOSET.ELF")))
 ed = os.path.join(share, "EDIT")
 os.makedirs(ed, exist_ok=True)
 seed = os.path.join(ed, "SEED.TXT")
@@ -847,4 +868,132 @@ if int(direct_o.group(7)) != want_direct:
         direct_o.group(7), want_direct))
 print("M79f: focus %s --ctrl-tab--> %s --ctrl-2--> %s across three tabs" % (
     rail_m.group(1), wrap_o.group(7), direct_o.group(7)))
+PY
+
+# ---------------------------------------------------------------------------
+# Run 08 (M82c / #1770): the global shortcuts registry and the conflict
+# fixture.
+#
+# The monitor seeds GOTABWM.CHORDCONFLICT before the seat execs: the prologue
+# validates the shipped table (fail-closed), feeds the checker the
+# deliberately conflicting fixture — FIXTURE.ELF claiming the seat's pin
+# chord (ctrl+shift+p) at the seat's own dispatch point — prints the full
+# named refusal, then the whole table (one `gotabwm: chord` line per row)
+# and the summary line. The seat carries on with the UNTOUCHED shipped
+# table: the fixture is a refusal exercise, not a reconfiguration. GOSET
+# then opens its shortcuts view with the panel's own registered chord
+# (ctrl+shift+h, a GOSET.ELF app row — re-bound from ctrl+shift+s when
+# M81g #1767 landed the seat's snapshot arm on that chord first) — the
+# registry a user can actually look at. Two Go runtimes is inside the
+# #1449 wall; GOMAXPROCS=1.
+vgate_file script-m82c.txt <<'EOF'
+set GOMAXPROCS=1
+write GOTABWM.CHORDCONFLICT conflict
+wm
+exec GOTABWM.ELF
+EOF
+
+vgate_file script2-m82c.txt <<'EOF'
+dui focus 0
+exec GOSET.ELF
+EOF
+
+vgate_file script3-m82c.txt <<'EOF'
+wm
+dui
+echo rx-gotabwm-chords-ok
+EOF
+
+vgate_run 08 -- \
+    --screen '$RUN_DIR/screen-08' \
+    --via-virtio \
+    --script '$RUN_DIR/script-m82c.txt' \
+    --script2 '$RUN_DIR/script2-m82c.txt' \
+    --script2-after 'gotabwm: win focus' \
+    --input-chords 'ctrl-shift-h' \
+    --input-chords-after 'goset: ready ' \
+    --script3 '$RUN_DIR/script3-m82c.txt' \
+    --script3-after 'wm: unregistered, shim resumed' \
+    --script-expect 'rx-gotabwm-chords-ok' --timeout 300
+
+vgate_assert 08 serial-contains 'VirelaiOS kernel has seized control.'
+vgate_assert 08 serial-contains 'exec: loaded GOTABWM.ELF'
+vgate_assert 08 serial-contains 'gotabwm: registered'
+# M82c: the checker refused the conflicting fixture with the NAMED error —
+# chord, dispatch point, both owners, one sentence.
+vgate_assert 08 serial-contains 'gotabwm: chords refused chord conflict: ctrl+shift+p at seat owned by seat and FIXTURE.ELF'
+# The loud failure (the checker accepting the fixture) must never print.
+vgate_assert 08 serial-absent 'gotabwm: chords fixture accepted'
+# The registry table itself, in the guest: a frozen kernel chrome row, the
+# seat rows the fixture fought over and that M81g added (the snapshot
+# arm), and two app rows (GOEDIT's save chord, and the GOSET chord that
+# just drove this boot's shortcuts view).
+vgate_assert 08 serial-contains 'gotabwm: chord ctrl+shift+k owner=kernel scope=kernel-terminal'
+vgate_assert 08 serial-contains 'gotabwm: chord ctrl+shift+p owner=seat scope=seat'
+vgate_assert 08 serial-contains 'gotabwm: chord ctrl+s owner=GOEDIT.ELF scope=app/GOEDIT.ELF'
+vgate_assert 08 serial-contains 'gotabwm: chord ctrl+shift+s owner=seat scope=seat'
+vgate_assert 08 serial-contains 'gotabwm: chord ctrl+shift+h owner=GOSET.ELF scope=app/GOSET.ELF'
+# The one-seat probe still ran after the prologue; the seat still came up.
+vgate_assert 08 serial-contains 'gotabwm: seat-taken'
+vgate_assert 08 serial-contains 'dogfood: seat'
+# The GO panel's shortcuts view, opened with its registered chord.
+vgate_assert 08 serial-contains 'exec: loaded GOSET.ELF'
+vgate_assert 08 serial-contains 'goset: open id='
+vgate_assert 08 serial-contains 'goset: shortcuts n='
+vgate_assert 08 serial-contains 'gotabwm: close'
+vgate_assert 08 serial-contains 'gotabwm OK'
+vgate_assert 08 serial-contains 'wm: unregistered, shim resumed'
+vgate_assert 08 serial-contains 'rx-gotabwm-chords-ok'
+vgate_assert 08 serial-absent '[EXC] parking:'
+vgate_assert 08 serial-absent 'exited status=139'
+vgate_assert 08 python <<'PY'
+import os, re, sys
+ser = open(os.environ["VG_SER"], errors="replace").read().splitlines()
+
+def first_after(prefix, start=0):
+    for i in range(start, len(ser)):
+        if ser[i].startswith(prefix):
+            return i
+    sys.exit("missing %s" % prefix)
+
+reg_i = first_after("gotabwm: registered")
+ref_i = first_after(
+    "gotabwm: chords refused chord conflict: ctrl+shift+p at seat owned by seat and FIXTURE.ELF")
+sum_i = first_after("gotabwm: chords n=")
+if not (reg_i < ref_i < sum_i):
+    sys.exit("prologue out of order (registered@%d refused@%d summary@%d)" % (
+        reg_i, ref_i, sum_i))
+m = re.match(r"^gotabwm: chords n=(\d+) seat=(\d+) kernel=(\d+) app=(\d+)$", ser[sum_i])
+if not m:
+    sys.exit("summary line malformed: %s" % ser[sum_i])
+n, seat, kernel, app = map(int, m.groups())
+if not (n == seat + kernel + app and min(seat, kernel, app) > 0):
+    sys.exit("summary counts inconsistent: %s" % ser[sum_i])
+
+# The dump is the whole table: one line per row, and no (chord, scope) pair
+# twice — the checker's invariant, observed on the serial.
+rows = [l for l in ser if l.startswith("gotabwm: chord ")]
+if len(rows) != n:
+    sys.exit("dumped %d rows for n=%d" % (len(rows), n))
+seen = set()
+for r in rows:
+    body = r[len("gotabwm: chord "):]
+    chord = body.split(" owner=")[0]
+    scope = body.split(" scope=")[1].split(" ")[0]
+    if (chord, scope) in seen:
+        sys.exit("two rows for %s at %s" % (chord, scope))
+    seen.add((chord, scope))
+
+# The GO panel's view: opened after the refusal, and its size is the table.
+goset_i = first_after("goset: open id=")
+view_i = first_after("goset: shortcuts n=")
+if view_i <= goset_i:
+    sys.exit("the shortcuts view must follow the panel's open (open@%d view@%d)" % (
+        goset_i, view_i))
+vm = re.search(r"goset: shortcuts n=(\d+)", ser[view_i])
+if int(vm.group(1)) != n:
+    sys.exit("GOSET rendered n=%s, seat dumped n=%d" % (vm.group(1), n))
+print("M82c: refused@%d summary@%d n=%d (%d seat, %d kernel, %d app); "
+      "%d dumped rows all unique per (chord, scope); GOSET view@%d" % (
+          ref_i, sum_i, n, seat, kernel, app, len(rows), view_i))
 PY

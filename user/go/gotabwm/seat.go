@@ -153,6 +153,11 @@ func main() {
 	}
 	vi.ConsoleLine(MarkerRegistered)
 
+	// 1b. M82c (#1770): the global shortcuts registry — validate the table
+	//     fail-closed, refuse the harness's conflicting fixture when seeded
+	//     (/host/GOTABWM.CHORDCONFLICT), and print the summary line.
+	chordRegistryPrologue()
+
 	// 2. One-seat discipline: the kernel refuses a second registration with
 	//    EACCES (-7). Fail the gate honestly if that is not what came back.
 	if r2 := vi.WmctlRegister(); r2 != -vi.ErrEACCES {
@@ -178,6 +183,17 @@ func main() {
 	_ = paintBlank(scan, blankRGB())
 	vi.ConsoleLine(MarkerDraw)
 	vi.ConsoleLine(MarkerHolding)
+
+	// M81g (#1767): the restore drill, BEFORE the settings decode below and
+	// therefore before loadSession as well. A bundle rehydrates the three
+	// files on the share, and the seat's ordinary boot then reads them
+	// through the ordinary paths — so a restored settings table is decoded
+	// by the M66b decode and a restored strip by the M62e one, and neither
+	// needed to learn about bundles. It is a no-op unless the share carries
+	// the one-shot SNAPSHOT.RESTORE request, and a corrupt or absent bundle
+	// is refused WHOLE: nothing is written, the refusal is one line, and the
+	// missing/corrupt handling below is the whole story from there.
+	restoreSnapshot()
 
 	// M66b (#1444): decode /host/SETTINGS.TXT (schema v2) BEFORE any phase
 	// that waits on the harness (the window choreography would otherwise

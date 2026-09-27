@@ -73,6 +73,14 @@ print("staged GOTERM.ELF into share (%d bytes)" %
 # (same as GOSH's), so the assert below would otherwise never fire.
 os.makedirs(os.path.join(share, "data"), exist_ok=True)
 print("seeded data/ for cd")
+# M81e2 (#1787): seed GOSH-HISTORY.TXT with a body LONGER than anything this
+# run appends, so the history save is a write over existing bytes. The two
+# lines the harness types are APPENDED (one per submit), so the file grows
+# rather than shrinks here; what this run proves is that the append adds to
+# the seeded body instead of replacing it, and leaves no orphan temp.
+with open(os.path.join(share, "GOSH-HISTORY.TXT"), "w") as fh:
+    fh.write("seeded-history-line\n" * 3)
+print("seeded GOSH-HISTORY.TXT (3 lines) for the append half")
 PY
 
 vgate_run 01 -- \
@@ -112,6 +120,30 @@ vgate_assert 01 serial-contains 'goterm OK'
 vgate_assert 01 serial-contains 'rx-goterm-ok'
 vgate_assert 01 serial-absent '[EXC] parking:'
 vgate_assert 01 serial-absent 'exited status=139'
+# M81e2 (#1787): the history save, on the share. GOTERM calls
+# shlib.SaveHistory on every submit through the SAME termHost.WriteFile the
+# shell hook uses, so this is the second front-end's half of the card. The
+# file must still carry the three seeded lines AND the typed ones (an append
+# that replaced would drop the seeded body), and the sacrificial temp must
+# not be beside it.
+vgate_assert 01 python <<'PY'
+import os, sys
+share = os.environ.get("VG_SHARE") or os.path.join(os.environ["RUN_DIR"], "share")
+hist = os.path.join(share, "GOSH-HISTORY.TXT")
+if not os.path.exists(hist):
+    sys.exit("GOSH-HISTORY.TXT is missing - the history save never landed")
+body = open(hist, errors="replace").read()
+if body.count("seeded-history-line") != 3:
+    sys.exit("the seeded history body is %d lines, want 3 - the save " +
+             "replaced instead of appending:\n%s" %
+             (body.count("seeded-history-line"), body))
+for want in ("cd /data", "cd /nosuchdir"):
+    if want not in body:
+        sys.exit("the typed line %r is not in the history file:\n%s" % (want, body))
+orphan = hist + "~"
+if os.path.exists(orphan):
+    sys.exit("GOSH-HISTORY.TXT~ survived the history save")
+PY
 # THE execution proof + the whole chain in order: prompt, submit 1, its
 # done marker with status=0 (host.Chdir verified /data -- `data/` is
 # seeded), submit 2, its done marker with a NONZERO status (the negative

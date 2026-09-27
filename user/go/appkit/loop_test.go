@@ -104,3 +104,47 @@ func TestLoopEmptyPollYieldsWithoutDrawingAgain(t *testing.T) {
 		t.Fatalf("draws=%d slept=%d, want initial draw and one yield", draws, slept)
 	}
 }
+
+func TestLoopSubscriptionRepaintsAfterReadingPublishedValue(t *testing.T) {
+	oldSubscribe, oldPoll := subscribeSetting, pollSetting
+	t.Cleanup(func() {
+		subscribeSetting, pollSetting = oldSubscribe, oldPoll
+	})
+	subscribeSetting = func(key string, win uint32, name string) bool {
+		return key == "theme" && win == 7 && name == "GOCALC.ELF"
+	}
+	polls := 0
+	pollSetting = func(win uint32) (string, string, bool) {
+		polls++
+		if win != 7 || polls != 1 {
+			return "", "", false
+		}
+		return "theme", "light", true
+	}
+
+	ta := &tabapp.TabApp{Win: 7, Name: "GOCALC.ELF"}
+	draws := 0
+	loop := NewLoop(ta, func() { draws++ }, nil)
+	applied, notified := "", ""
+	if !loop.SubscribeSetting("theme", func(value string) bool {
+		applied = value
+		return true
+	}) {
+		t.Fatal("theme subscription refused")
+	}
+	loop.OnSettingPresent = func(key, value string) {
+		notified = key + "=" + value
+	}
+	poll := func() (vi.Event, int64, bool) {
+		return vi.Event{}, -1, false
+	}
+	if status := loop.RunWith(poll, nil); status != 0 {
+		t.Fatalf("status = %d", status)
+	}
+	if applied != "light" || notified != "theme=light" {
+		t.Fatalf("applied=%q notified=%q", applied, notified)
+	}
+	if draws != 2 {
+		t.Fatalf("draws=%d, want initial and changed frame", draws)
+	}
+}

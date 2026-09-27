@@ -37,9 +37,11 @@ const (
 func loadSettings() string {
 	f := settings.Load()
 	if f.State == settings.StateCorrupt {
+		seedSettingsBusValues(settings.File{State: settings.StateMissing})
 		vi.ConsoleLine(MarkerSettingsBad)
 		return "gotabwm"
 	}
+	seedSettingsBusValues(f)
 	wm, ok := f.Effective("wm")
 	if !ok {
 		wm = "gotabwm"

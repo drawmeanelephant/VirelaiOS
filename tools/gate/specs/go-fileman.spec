@@ -5,7 +5,7 @@
 # (M73h) in the real scanout — not a host ANSI render.
 #
 # Shape: go-charmhello — direct exec on the kernel desktop (no `tabwm start`
-# seat), native 512x384 window = the kernel grid's 64x46 client (cols <= the
+# seat), native 512x384 window = the kernel grid's 64x23 client (cols <= the
 # grid's 80-col cap), chords over the real HID path, `dui` rect proof, and a
 # screenshot barrier on the app's own post-rename marker. This spec RETIRES
 # go-files.spec (M58a): one file manager, one spec.
@@ -26,12 +26,15 @@
 # returned. GOVIEW.ELF's own `goview: open id=` line is the third reporter: the
 # image viewer really opened the file the manager named.
 #
+# M81a (#1761) adds run 04: confirmed delete to TRASH followed by `u` restore,
+# with a host byte comparison of FM4/NOTE.TXT and RECENT action checks.
+#
 # exec-order: assert-proven -- each run ends on its own `rx-go-fileman-*`
 # marker, which only its closing script prints, and that script waits on the
 # app's own marker; an app that never ran, never renamed, never settled or
 # never refused cannot pass.
 
-vgate_name go-fileman "M74a #1644 + M81a #1761 + M81b #1762: GOFILES navigates, previews, renames, trashes, restores, and dispatches opens"
+vgate_name go-fileman "M74a + M81a #1761: GOFILES navigates, previews, renames, trashes, restores, and opens files"
 vgate_share seed
 vgate_runner_flags -Xswiftc -DSPIKE
 
@@ -66,15 +69,25 @@ exec GOFILES.ELF /host/FM3
 EOF
 
 vgate_file script8.txt <<'EOF'
+dui close 3
+dui close 2
+echo rx-go-fileman-default-open-ok
+EOF
+
+vgate_file script10.txt <<'EOF'
+exec GOFILES.ELF /host/FM4
+EOF
+
+vgate_file script11.txt <<'EOF'
 dui
 EOF
 
-vgate_file script9.txt <<'EOF'
+vgate_file script12.txt <<'EOF'
 dui close 2
 echo rx-go-fileman-trash-ok
 EOF
 
-vgate_file fm3.expected <<'EOF'
+vgate_file fm4.expected <<'EOF'
 trash-and-restore-exact
 original bytes stay intact
 EOF
@@ -107,6 +120,11 @@ if not os.path.exists(view):
     sys.exit("GOVIEW.ELF missing (expected " + view + ") - build it first: "
              "bash tools/go/build-goview.sh")
 shutil.copy(view, os.path.join(share, "GOVIEW.ELF"))
+edit = os.path.join(".build", "go", "GOEDIT.ELF")
+if not os.path.exists(edit):
+    sys.exit("GOEDIT.ELF missing (expected " + edit + ") - build it first: "
+             "bash tools/go/build-goedit.sh")
+shutil.copy(edit, os.path.join(share, "GOEDIT.ELF"))
 # Run 02 starts the app in its OWN directory (FM2) so run 01's seeded listing
 # — and every assert pinned on its two entries — is untouched by this card.
 # A real 4x4 QOI: header, QOI_OP_RGB per pixel, the 8-byte end marker. Only the
@@ -130,22 +148,30 @@ with open(ogg, "wb") as f:
     f.write(b"OggS\x00\x02" + bytes(58))
 fm3 = os.path.join(share, "FM3")
 os.makedirs(fm3, exist_ok=True)
-with open(os.path.join(fm3, "NOTE.TXT"), "w") as f:
+readme = os.path.join(fm3, "README.TXT")
+with open(readme, "w") as f:
+    f.write("open-contract-text\n")
+fm4 = os.path.join(share, "FM4")
+os.makedirs(fm4, exist_ok=True)
+with open(os.path.join(fm4, "NOTE.TXT"), "w") as f:
     f.write("trash-and-restore-exact\noriginal bytes stay intact\n")
 
-print("staged GOFILES.ELF into share (%d bytes), %s (%d bytes), %s (%d bytes), "
-      "GOVIEW.ELF (%d bytes), %s (%d bytes), %s (%d bytes), FM3/NOTE.TXT" %
+print("staged GOFILES.ELF (%d bytes), GOEDIT.ELF (%d bytes), %s (%d bytes), "
+      "%s (%d bytes), GOVIEW.ELF (%d bytes), %s (%d bytes), %s (%d bytes), "
+      "%s (%d bytes)" %
       (os.path.getsize(os.path.join(share, "GOFILES.ELF")),
+       os.path.getsize(os.path.join(share, "GOEDIT.ELF")),
        known, os.path.getsize(known), inner, os.path.getsize(inner),
        os.path.getsize(os.path.join(share, "GOVIEW.ELF")),
-       pic, os.path.getsize(pic), ogg, os.path.getsize(ogg)))
+       pic, os.path.getsize(pic), ogg, os.path.getsize(ogg),
+       readme, os.path.getsize(readme)))
 PY
 
 # The chord batch, in full (17 strokes at the cv-input transport's fixed
-# 0.25 s): enter the sorted-first dir SUB, come back up, move onto
-# KNOWN.TXT (dirs sort first, selected with `j`), open the EMPTY rename prompt, type the new
+# 0.25 s): enter the sorted-first dir SUB, come back up, use `j` to select
+# KNOWN.TXT (dirs sort first), open the EMPTY rename prompt, type the new
 # name one rune at a time, commit. Lowercase avoids any shift ambiguity in
-# the HID chord table.
+# the HID chord table; `j` avoids the unreliable multi-byte arrow input path.
 vgate_run 01 -- \
     --screen '$RUN_DIR/fileman-screen' \
     --input --via-virtio \
@@ -223,11 +249,10 @@ vgate_assert 01 serial-absent 'exited status=139'
 # At that frame the selection sits on newname.txt and its preview text —
 # painted by the kernel's truecolour path at exactly (122,162,255) — is in
 # the right pane; the selected-row background is (44,58,76). Tolerances
-# absorb the capture path's edge interpolation; the counts are far above
-# what any other window element can contribute. The VM screenshot's tagged
-# colour space shifts the decoded preview ink from the source RGB to roughly
-# (116,143,220); use a bounded max-channel tolerance for the capture, not an
-# exact source-byte comparison.
+# The capture path shifts its tagged color space: source (122,162,255) is
+# observed around (116,143,220). A bounded max-channel tolerance of 40 covers
+# that measured shift; the ROI and minimum pixel count still require preview
+# text ink, while the selection background remains a separate assertion.
 vgate_assert 01 snapshot 'fileman-screen-after' <<'PY'
 import struct, sys, zlib
 
@@ -279,16 +304,23 @@ for _ in range(h):
     out += row
     prev = row
 
-# The window occupies the native 512x384 client at (32, 48): the preview
-# pane lives right of the list split (col 28+) and below the pane headers
-# (row 2+), so the accent is only ever painted inside that rect — and the
-# selected row's background band is a solid slab of (44,58,76).
+# The capture is 2x Retina: the native 512x384 window at (32,32) occupies
+# x=64..1088, y=64..832, and its client starts at y=96. Each 8x16 terminal
+# cell is 16x32 capture pixels. listWidth(64)=28, the separator is col 28,
+# and the preview starts at col 29 (x=528); its three fixture lines occupy
+# rows 2..4 (y=160..256). The capture path blends glyph pixels, so the
+# measured preview accent is counted within +/-24 of (122,162,255) there.
+# The selected-row background band is (44,58,76).
 accent = selbg = 0
-for y in range(48, 48 + 368):
-    for x in range(32, 32 + 512):
+for y in range(96, 96 + 736):
+    for x in range(64, 64 + 1024):
         k = (y * w + x) * bpp
         r, g, b = out[k], out[k + 1], out[k + 2]
-        if max(abs(r - 122), abs(g - 162), abs(b - 255)) <= 40:
+        if (
+            528 <= x < 1088
+            and 160 <= y < 256
+            and max(abs(r - 122), abs(g - 162), abs(b - 255)) <= 40
+        ):
             accent += 1
         if abs(r - 44) <= 6 and abs(g - 58) <= 6 and abs(b - 76) <= 6:
             selbg += 1
@@ -365,30 +397,59 @@ vgate_assert 02 serial-absent 'gofiles: attach failed'
 vgate_assert 02 serial-absent 'gofiles: list error'
 vgate_assert 02 serial-absent 'exited status=139'
 
-# --- M81a (#1761): run 03, trash then restore -------------------------------
-# The one-file directory makes the move and restoration unambiguous. The
-# restored row is re-listed before the window closes; share-equals proves the
-# original file bytes came back exactly.
+# --- M81c (#1763): GOFILES takes the shared default-open path ---------------
+# Enter on a text file selects the same virelai/mime.Open resolver as GOSH's
+# `open` builtin. The host builds and stages GOEDIT.ELF so a successful
+# marker is backed by the handler actually reading the path.
 vgate_run 03 -- \
-    --screen '$RUN_DIR/fileman-trash-screen' \
+    --screen '$RUN_DIR/fileman-default-open-screen' \
     --input --via-virtio \
     --script '$RUN_DIR/script7.txt' \
+    --input-chords 'return' \
+    --input-chords-after 'gofiles: ready' \
+    --script3 '$RUN_DIR/script8.txt' \
+    --script3-after 'goedit: present' \
+    --script-expect 'rx-go-fileman-default-open-ok' --timeout 240
+
+vgate_assert 03 serial-contains 'exec: loaded GOFILES.ELF'
+vgate_assert 03 serial-contains 'gofiles: list /host/FM3 n=1'
+vgate_assert 03 serial-contains 'gofiles: open file README.TXT type=text handler=GOEDIT.ELF'
+vgate_assert 03 serial-contains 'gofiles: open launched README.TXT handler=GOEDIT.ELF pid='
+vgate_assert 03 serial-contains 'goedit: open id='
+vgate_assert 03 serial-contains 'goedit: read /host/FM3/README.TXT n=19'
+vgate_assert 03 serial-contains 'goedit: present'
+vgate_assert 03 serial-contains 'dui close: closed=3'
+vgate_assert 03 serial-contains 'dui close: closed=2'
+vgate_assert 03 serial-contains 'rx-go-fileman-default-open-ok'
+vgate_assert 03 serial-absent 'gofiles: open refused README.TXT'
+vgate_assert 03 serial-absent 'gofiles: open launch refused'
+vgate_assert 03 serial-absent '[EXC] parking:'
+vgate_assert 03 serial-absent 'exited status=139'
+
+# --- M81a (#1761): run 04, trash then restore -------------------------------
+# Keep this independent of the newer default-open run 03. The one-file
+# directory makes the move and restoration unambiguous; share-equals proves
+# the original bytes came back exactly.
+vgate_run 04 -- \
+    --screen '$RUN_DIR/fileman-trash-screen' \
+    --input --via-virtio \
+    --script '$RUN_DIR/script10.txt' \
     --input-chords 'd,y,u' \
     --input-chords-after 'gofiles: ready' \
-    --script2 '$RUN_DIR/script8.txt' \
+    --script2 '$RUN_DIR/script11.txt' \
     --script2-after 'gofiles: deleted NOTE.TXT trash=' \
-    --script3 '$RUN_DIR/script9.txt' \
+    --script3 '$RUN_DIR/script12.txt' \
     --script3-after 'gofiles: restored NOTE.TXT trash=' \
     --script-expect 'rx-go-fileman-trash-ok' --timeout 240
 
-vgate_assert 03 serial-contains 'gofiles: deleted NOTE.TXT trash='
-vgate_assert 03 serial-contains 'gofiles: restored NOTE.TXT trash='
-vgate_assert 03 serial-contains 'gofiles: list /host/FM3 n=1'
-vgate_assert 03 serial-contains 'gofiles: entry NOTE.TXT file'
-vgate_assert 03 serial-contains 'rx-go-fileman-trash-ok'
-vgate_assert 03 share-equals FM3/NOTE.TXT fm3.expected
-vgate_assert 03 share-contains RECENT/LOG.TXT '|delete|'
-vgate_assert 03 share-contains RECENT/LOG.TXT '|restore|'
-vgate_assert 03 serial-absent 'gofiles: delete refused NOTE.TXT rc='
-vgate_assert 03 serial-absent 'gofiles: restore refused rc='
-vgate_assert 03 serial-absent 'exited status=139'
+vgate_assert 04 serial-contains 'gofiles: deleted NOTE.TXT trash='
+vgate_assert 04 serial-contains 'gofiles: restored NOTE.TXT trash='
+vgate_assert 04 serial-contains 'gofiles: list /host/FM4 n=1'
+vgate_assert 04 serial-contains 'gofiles: entry NOTE.TXT file'
+vgate_assert 04 serial-contains 'rx-go-fileman-trash-ok'
+vgate_assert 04 share-equals FM4/NOTE.TXT fm4.expected
+vgate_assert 04 share-contains RECENT/LOG.TXT '|delete|'
+vgate_assert 04 share-contains RECENT/LOG.TXT '|restore|'
+vgate_assert 04 serial-absent 'gofiles: delete refused NOTE.TXT rc='
+vgate_assert 04 serial-absent 'gofiles: restore refused rc='
+vgate_assert 04 serial-absent 'exited status=139'

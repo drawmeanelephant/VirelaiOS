@@ -44,6 +44,7 @@ import (
 	"strings"
 
 	"virelai/appkit"
+	"virelai/chords"
 	"virelai/settings"
 	"virelai/tabapp"
 	"virelai/theme"
@@ -64,11 +65,15 @@ const (
 	markerSet      = "goset: set "
 	markerDiscard  = "goset: discard "
 	markerSaved    = "goset: saved "
+	markerNotified = "goset: settings notified key="
 	markerRefused  = "goset: save refused"
 	markerSaveFail = "goset: save failed rc="
 	markerPresent  = "goset: present"
 	markerClose    = "goset: close"
 	markerOK       = "goset OK"
+	// M82c (#1770): the shortcuts registry view, opened with the panel's
+	// own registered chord (ctrl+shift+s, owner GOSET.ELF in the table).
+	markerShortcuts = "goset: shortcuts n="
 
 	inputMax = settings.MaxKey + settings.MaxVal + 2
 )
@@ -83,6 +88,10 @@ type panel struct {
 	input         appkit.TextField
 	status        string
 	exitRequested bool
+	// showChords is the M82c (#1770) shortcuts registry view: the same
+	// list surface rendering the global chord table instead of the
+	// settings rows. Toggled by the panel's registered chord.
+	showChords bool
 
 	listCtl     *appkit.ListController
 	focus       *appkit.FocusRing
@@ -151,10 +160,10 @@ func newPanel(ta *tabapp.TabApp) *panel {
 		// Show what is in force, not what the file said: the kernel refused
 		// the file whole, so the compiled defaults are the live table.
 		a.disp = settings.File{State: settings.StateMissing}.Display()
-		a.status = "corrupt file: read-only"
+		a.status = "corrupt file: read-only — ctrl+shift+h for shortcuts"
 	default:
 		a.disp = a.file.Display()
-		a.status = "type key=value + Enter to save"
+		a.status = "type key=value + Enter to save — ctrl+shift+h for shortcuts"
 	}
 	vi.ConsoleLine(markerReady + a.summary() + " mode=" + a.mode())
 	// M73m: a file that already chose `custom` shows its colours as rows.
@@ -260,12 +269,21 @@ func (a *panel) applyInput() bool {
 // line, nothing written); any other negative return is the kernel code of the
 // step that failed, and the temp is gone either way.
 func (a *panel) save() {
+	if a.showChords {
+		// The registry view is read-only: the compiled table has nothing
+		// to publish, and the settings rows underneath must not be
+		// written from a surface that does not show them.
+		vi.ConsoleLine(markerRefused)
+		a.status = "the shortcuts registry is compiled in — ctrl+shift+h returns to Settings to save"
+		return
+	}
 	if a.file.State == settings.StateCorrupt {
 		vi.ConsoleLine(markerRefused)
 		a.status = "corrupt file: read-only"
 		return
 	}
 	f := settings.File{Rows: a.disp, State: settings.StateOK}
+	changed := changedSettingKeys(a.file, f)
 	rc := f.Save()
 	if rc == settings.SaveRefused {
 		vi.ConsoleLine(markerRefused)
@@ -276,9 +294,38 @@ func (a *panel) save() {
 		a.status = "save failed rc=" + vi.Itoa64(rc)
 		return
 	}
-	a.file = f
+	// Keep the on-disk baseline separate from the editable table. Later edits
+	// mutate a.disp in place, and must remain diffable against this save.
+	a.file = settings.File{
+		Rows:  append([]settings.Setting(nil), f.Rows...),
+		State: f.State,
+	}
 	vi.ConsoleLine(markerSaved + a.summary())
 	a.status = "saved " + settings.Path
+	for _, key := range changed {
+		if settings.PublishChange(key, uint32(a.ta.Win), a.ta.Name) {
+			vi.ConsoleLine(markerNotified + key)
+		}
+	}
+}
+
+// changedSettingKeys compares effective values rather than file presence:
+// materializing compiled defaults in the first save is not itself a change.
+func changedSettingKeys(before, after settings.File) []string {
+	var changed []string
+	for i, row := range after.Rows {
+		if !settings.Editable(row.Key) {
+			continue
+		}
+		if _, later := settings.Get(after.Rows[i+1:], row.Key); later {
+			continue
+		}
+		old, found := before.Effective(row.Key)
+		if !found || old != row.Val {
+			changed = append(changed, row.Key)
+		}
+	}
+	return changed
 }
 
 // cycle moves the selected row to the next value in its vocabulary. A key with
@@ -343,6 +390,14 @@ func (a *panel) handle(ev vi.Event) bool {
 }
 
 func (a *panel) key(ev vi.Event) bool {
+	// M82c (#1770): ctrl+shift+s — the panel's own registered chord (a
+	// GOSET.ELF row in the global shortcuts registry) — flips between the
+	// settings table and the shortcuts registry view. Checked on the raw
+	// event, before appkit normalizes it away, exactly like GOEDIT's own
+	// chord checks.
+	if isShortcutsChord(ev) {
+		return a.toggleShortcuts()
+	}
 	k, ok := appkit.NormalizeKey(ev)
 	if !ok {
 		return false
@@ -352,6 +407,12 @@ func (a *panel) key(ev vi.Event) bool {
 		a.exitRequested = true
 		return true
 	case appkit.NamedEnter:
+		if a.showChords {
+			// The registry view is read-only: nothing to apply, nothing
+			// to save. Named in the status line, never a silent no-op.
+			a.status = "the shortcuts registry is compiled in — ctrl+shift+h returns to Settings"
+			return true
+		}
 		a.applyInput()
 		a.save()
 		return true
@@ -360,6 +421,10 @@ func (a *panel) key(ev vi.Event) bool {
 		a.sel = a.list.Sel
 		return changed
 	case appkit.NamedLeft, appkit.NamedRight:
+		if a.showChords {
+			a.status = "the shortcuts registry is compiled in — no values to cycle"
+			return true
+		}
 		if current, _ := a.focus.Current(); current == &a.input {
 			return a.input.OnKey(k)
 		}
@@ -373,6 +438,36 @@ func (a *panel) key(ev vi.Event) bool {
 	return a.focus.HandleKey(k)
 }
 
+// isShortcutsChord reports whether ev is ctrl+shift+h, accepting either
+// spelling of the derived byte (the isChord duality GOEDIT pins): the
+// control code ('h' & 0x1f) or the shifted capital, or the raw HID usage
+// in arg0. M82c rebase note: this was ctrl+shift+s until M81g (#1767)
+// landed the seat's snapshot arm on that chord first — the registry's
+// row and the gate's chord both moved to 'h'.
+func isShortcutsChord(ev vi.Event) bool {
+	if ev.Kind != vi.EvKeyDown {
+		return false
+	}
+	if ev.Flags&vi.ModCtrl == 0 || ev.Flags&vi.ModShift == 0 {
+		return false
+	}
+	return ev.Arg0 == uint32(chords.UsageH) || ev.Arg1 == 'H' || ev.Arg1 == 0x08
+}
+
+// toggleShortcuts flips the panel between the settings table and the
+// shortcuts registry view. Opening the view prints its marker (after the
+// table it renders is in hand), so a gate can grep the registry's size.
+func (a *panel) toggleShortcuts() bool {
+	a.showChords = !a.showChords
+	if a.showChords {
+		vi.ConsoleLine(markerShortcuts + vi.Itoa64(int64(len(chords.Global))))
+		a.status = "the global shortcuts registry — one owner per chord (read-only)"
+	} else {
+		a.status = "type key=value + Enter to save"
+	}
+	return true
+}
+
 // --- paint ------------------------------------------------------------------
 
 func (a *panel) layout() {
@@ -380,7 +475,7 @@ func (a *panel) layout() {
 	w := int(natW) - 16
 	a.headTxt = widgets.Text{
 		R:     scaleR(ta, widgets.Rect{X: 8, Y: 8, W: w, H: 22}),
-		Label: "Settings  " + settings.Path,
+		Label: a.headLabel(),
 		Fg:    theme.Current.Text,
 		Bg:    theme.Current.Surface,
 	}
@@ -436,11 +531,27 @@ func (a *panel) layout() {
 	}
 }
 
+// headLabel names the surface the list is showing: the settings file's
+// table, or the M82c shortcuts registry.
+func (a *panel) headLabel() string {
+	if a.showChords {
+		return "Shortcuts  n=" + vi.Itoa64(int64(len(chords.Global))) + "  (one owner per chord)"
+	}
+	return "Settings  " + settings.Path
+}
+
 // labels renders the display table: the value in force for every row, with the
 // seat-choosing key first so the row that matters is never off-screen. The
 // palette rows (M73m) are first-class — never marked "(kept)", which is the
 // marker for a key the kernel table does NOT carry.
+//
+// M82c (#1770): in the shortcuts view the same list renders the global
+// chord registry instead — chord, owner, description — one owner per chord
+// per dispatch point.
 func (a *panel) labels() []string {
+	if a.showChords {
+		return chordLabels()
+	}
 	out := make([]string, 0, len(a.disp))
 	for _, s := range a.disp {
 		line := s.Key + " = " + s.Val
@@ -448,6 +559,16 @@ func (a *panel) labels() []string {
 			line += "  (kept)"
 		}
 		out = append(out, line)
+	}
+	return out
+}
+
+// chordLabels renders the shortcuts registry for the list: one line per
+// row, chord first (the sorted-by-nothing, historical table order).
+func chordLabels() []string {
+	out := make([]string, 0, len(chords.Global))
+	for _, r := range chords.Global {
+		out = append(out, r.Chord.String()+"  "+r.Owner+"  "+r.Label)
 	}
 	return out
 }

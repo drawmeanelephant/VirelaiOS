@@ -199,7 +199,8 @@ func TestWmRpcKindConstants(t *testing.T) {
 		{WmRpcKindInvokeAction, 4}, {WmRpcKindAttachTab, 5}, {WmRpcKindDetachTab, 6},
 		{WmRpcKindCycleTab, 7}, {WmRpcKindDeclareFullscreen, 8},
 		{WmRpcKindNavDeclare, 9}, {WmRpcKindNavPoll, 10}, {WmRpcKindSetTitle, 11},
-		{WmRpcKindNotify, 12},
+		{WmRpcKindNotify, 12}, {WmRpcKindSettingsSubscribe, 13},
+		{WmRpcKindSettingsPublish, 14}, {WmRpcKindSettingsChanged, 15},
 	}
 	for _, p := range pairs {
 		if p.got != p.want {
@@ -307,7 +308,11 @@ func (f *wmMailFake) hook(num uintptr, a0, a1, a2, a3 uintptr) int64 {
 func startWmMailFake(t *testing.T) *wmMailFake {
 	t.Helper()
 	wmSeq.Store(0)
-	t.Cleanup(func() { wmSeq.Store(0) })
+	resetSettingChangeQueue()
+	t.Cleanup(func() {
+		wmSeq.Store(0)
+		resetSettingChangeQueue()
+	})
 	f := &wmMailFake{}
 	prev := SetSyscallHookForTest(f.hook)
 	t.Cleanup(func() { SetSyscallHookForTest(prev) })
@@ -538,5 +543,41 @@ func TestPollNavAckReturnsPath(t *testing.T) {
 	}
 	if f.sleepCalls != 0 {
 		t.Fatalf("parks = %d want 0", f.sleepCalls)
+	}
+}
+
+func TestSettingsBusRequestsAndAsyncNoticeDuringAckWait(t *testing.T) {
+	f := startWmMailFake(t)
+	req := WmRpc{Kind: WmRpcKindSettingsSubscribe | WmRpcReplyFlag, ID: 4, Seq: 1, ReplyTo: 9, Applied: 1}
+	change := WmRpc{Kind: WmRpcKindSettingsChanged, ID: 4}
+	change.SetTitle("theme")
+	f.replies = [][]byte{change.Encode(), req.Encode()}
+	f.replyAt = 1
+	if !SubscribeSetting(4, "theme", "NOTE.ELF") {
+		t.Fatal("theme subscription should receive its applied ack")
+	}
+	if len(f.sent) != 1 || f.sent[0].Kind != WmRpcKindSettingsSubscribe ||
+		f.sent[0].ID != 4 || f.sent[0].TitleString() != "theme" {
+		t.Fatalf("subscription request = %+v", f.sent)
+	}
+	if key, ok := PollSettingChanged(4); !ok || key != "theme" {
+		t.Fatalf("queued async key = (%q, %v), want (theme, true)", key, ok)
+	}
+	if key, ok := PollSettingChanged(4); ok || key != "" {
+		t.Fatalf("notice was not consumed: (%q, %v)", key, ok)
+	}
+}
+
+func TestSettingsBusRefusesInvalidKeysBeforeSending(t *testing.T) {
+	f := startWmMailFake(t)
+	if SubscribeSetting(4, "font_size_extra_123456789", "NOTE.ELF") {
+		t.Fatal("unknown overlong setting key must refuse")
+	}
+	if PublishSettingChange(4, "", "NOTE.ELF") {
+		t.Fatal("empty setting key must refuse")
+	}
+	if f.procsCalls != 0 || f.sendCalls != 0 || f.recvCalls != 0 {
+		t.Fatalf("invalid key touched the wire: procs=%d send=%d recv=%d",
+			f.procsCalls, f.sendCalls, f.recvCalls)
 	}
 }

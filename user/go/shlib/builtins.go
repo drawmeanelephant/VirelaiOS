@@ -3,9 +3,11 @@
 package shlib
 
 import (
+	"errors"
 	"sort"
 	"strings"
 
+	"virelai/mime"
 	"virelai/vsys"
 )
 
@@ -43,7 +45,7 @@ var builtins map[string]func(*cmdCtx) int
 func init() {
 	builtins = map[string]func(*cmdCtx) int{
 		"echo": bEcho, "cat": bCat, "pwd": bPwd, "cd": bCd,
-		"env": bEnv, "printenv": bPrintenv, "set": bSet, "unset": bUnset,
+		"open": bOpen, "env": bEnv, "printenv": bPrintenv, "set": bSet, "unset": bUnset,
 		"export": bExport, "read": bRead, "jobs": bJobs, "fg": bFg,
 		"history": bHistory, "help": bHelp, "exit": bExit, "monitor": bMonitor,
 		"sleep": bSleep, "clear": bClear,
@@ -221,6 +223,73 @@ func bCat(c *cmdCtx) int {
 		c.out(b)
 	}
 	return 0
+}
+
+// bOpen applies the shared MIME/URL decision, then launches through the same
+// host seam as every other GOSH external. Like a desktop "open", it returns
+// once the handler has started rather than holding the shell until its window
+// closes. The marker is printed only after exec returned a pid.
+func bOpen(c *cmdCtx) int {
+	if len(c.args) != 1 {
+		c.out([]byte("gosh: open: usage: open PATH|URL\n"))
+		return 2
+	}
+	cwd, _ := c.sh.env.Get("PWD")
+	req, err := mime.Open(c.args[0], cwd, c.sh.host.ReadFile)
+	if err != nil {
+		c.sh.host.Marker("gosh: open refused target=" + c.args[0] +
+			" reason=" + err.Error())
+		c.out([]byte("gosh: open: " + c.args[0] + ": " + err.Error() + "\n"))
+		return 1
+	}
+	args, ok := openTargetArgs(req.Target)
+	if !ok {
+		err := errOpenTargetTooLong
+		c.sh.host.Marker("gosh: open refused target=" + req.Target +
+			" reason=" + err.Error())
+		c.out([]byte("gosh: open: " + req.Target + ": " + err.Error() + "\n"))
+		return 1
+	}
+	pid, err := c.sh.host.RunExternal(req.Handler.Bin, args)
+	if err != nil {
+		c.sh.host.Marker("gosh: open refused target=" + req.Target +
+			" handler=" + req.Handler.Bin + " unavailable")
+		c.out([]byte("gosh: open: handler " + req.Handler.Bin + " unavailable\n"))
+		return 127
+	}
+	c.sh.host.Marker("gosh: open launched scheme=" + req.Scheme +
+		" target=" + req.Target + " handler=" + req.Handler.Bin +
+		" pid=" + vsys.Itoa64(pid))
+	return 0
+}
+
+const (
+	openExecArgBytes = 255
+	// WEB.ELF uses one of the kernel's eight argv slots for argv[0].
+	openExecArgSlots = 8 - 1
+)
+
+var errOpenTargetTooLong = errors.New("URL too long for WEB.ELF argv")
+
+// openTargetArgs preserves the complete target within the kernel's
+// per-argument and argv-slot limits. WEB.ELF concatenates split URL slots.
+func openTargetArgs(target string) ([]string, bool) {
+	n := (len(target) + openExecArgBytes - 1) / openExecArgBytes
+	if n == 0 {
+		return nil, false
+	}
+	if n > openExecArgSlots {
+		return nil, false
+	}
+	args := make([]string, 0, n)
+	for start := 0; start < len(target); start += openExecArgBytes {
+		end := start + openExecArgBytes
+		if end > len(target) {
+			end = len(target)
+		}
+		args = append(args, target[start:end])
+	}
+	return args, true
 }
 
 func bPwd(c *cmdCtx) int {
@@ -454,6 +523,7 @@ var helpCatalog = map[string]helpEntry{
 	// files
 	"cat":    {group: "files", usage: "cat [FILE...]", blurb: "write FILE... (the bound stdin when none is named)"},
 	"cd":     {group: "files", usage: "cd [DIR]", blurb: "change the working directory (checked against the share)"},
+	"open":   {group: "files", usage: "open PATH|URL", blurb: "open a file with its MIME handler or an HTTPS URL in WEB.ELF", notes: "Supports local paths, file://, and https://. Other URL schemes are refused by name."},
 	"pwd":    {group: "files", usage: "pwd", blurb: "print the working directory"},
 	"read":   {group: "files", usage: "read VAR", blurb: "read one line into VAR, preferring the bound stdin"},
 	"source": {group: "files", usage: "source FILE", blurb: "run FILE's lines in this shell"},

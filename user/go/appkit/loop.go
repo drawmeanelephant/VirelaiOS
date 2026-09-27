@@ -11,6 +11,7 @@
 package appkit
 
 import (
+	"virelai/settings"
 	"virelai/tabapp"
 	"virelai/vi"
 )
@@ -18,6 +19,21 @@ import (
 // EventSource is the injectable form of vi.PollEventRaw. Tests can provide a
 // finite sequence without making guest syscalls.
 type EventSource func() (vi.Event, int64, bool)
+
+// SettingHandler receives the current persisted value for a subscribed key.
+// Return true when the app's visible state changed and needs a repaint.
+type SettingHandler func(value string) bool
+
+type settingSubscription struct {
+	key     string
+	handler SettingHandler
+}
+
+// Package seams for host tests. Guest builds use the settings bus directly.
+var (
+	subscribeSetting = settings.Subscribe
+	pollSetting      = settings.PollChange
+)
 
 // Loop is the standard tab-app event loop. Draw must paint the current state;
 // Handle returns true only when the event changed visible state. ShouldQuit is
@@ -32,8 +48,12 @@ type Loop struct {
 	ShouldQuit       func() (status int, requested bool)
 	OnExit           func(status int)
 	OnInitialPresent func()
+	// OnSettingPresent runs after a subscribed change was applied and the
+	// resulting frame was presented.
+	OnSettingPresent func(key, value string)
 
 	presented bool
+	settings  []settingSubscription
 }
 
 func NewLoop(ta *tabapp.TabApp, draw func(), handle func(vi.Event) bool) *Loop {
@@ -53,6 +73,44 @@ func (l *Loop) Present() {
 		l.OnInitialPresent()
 	}
 	l.presented = true
+}
+
+// SubscribeSetting registers an app-specific reaction to one setting key.
+// It may be called before Run; events are then delivered by the same loop
+// that handles window and input events.
+func (l *Loop) SubscribeSetting(key string, handler SettingHandler) bool {
+	if l == nil || l.Tab == nil || handler == nil || !subscribeSetting(key, uint32(l.Tab.Win), l.Tab.Name) {
+		return false
+	}
+	for i := range l.settings {
+		if l.settings[i].key == key {
+			l.settings[i].handler = handler
+			return true
+		}
+	}
+	l.settings = append(l.settings, settingSubscription{key: key, handler: handler})
+	return true
+}
+
+func (l *Loop) pollSettingChange() bool {
+	if l.Tab == nil || len(l.settings) == 0 {
+		return false
+	}
+	key, value, ok := pollSetting(uint32(l.Tab.Win))
+	if !ok {
+		return false
+	}
+	for _, sub := range l.settings {
+		if sub.key != key || !sub.handler(value) {
+			continue
+		}
+		l.Present()
+		if l.OnSettingPresent != nil {
+			l.OnSettingPresent(key, value)
+		}
+		return true
+	}
+	return false
 }
 
 // Exit runs the configured clean-exit contract. A caller-supplied OnExit is
@@ -79,6 +137,7 @@ func (l *Loop) Run() int {
 func (l *Loop) RunWith(poll EventSource, sleep func(uint64)) int {
 	l.Present()
 	for {
+		l.pollSettingChange()
 		ev, result, ok := poll()
 		if !ok {
 			if result < 0 {

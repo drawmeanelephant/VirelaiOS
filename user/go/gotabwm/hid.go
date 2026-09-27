@@ -1,15 +1,27 @@
 // GOTABWM.ELF — M63b–e (issues #1420–#1423): chords, rail click/drag, type-in.
 //
-// Frozen table on #1418, plus M71d (#1563) BT1 reopen/duplicate and
-// M79f (#1717) keyboard parity:
+// M82c (#1770): the seat's chords are DEFINED by the global shortcuts
+// registry (virelai/chords) and dispatched FROM it — the list below is now
+// descriptive; `user/go/chords/table.go` is the normative table, one owner
+// per chord per dispatch point. The registry's kernel rows record the
+// frozen chrome consumers (kernel/src/input.zig). The seat rows are:
 //
+//	ctrl-space    -> openLauncher (the APPS.TXT catalogue; M69c)
+//	enter         -> openLauncher on an EMPTY strip (start surface, M71e)
+//	alt-tab       -> FocusTab + WmctlTaskbarClick (cmd 12), wrapping
+//	ctrl-tab      -> the same wrapping cycle; shift reverses it (M79f)
+//	ctrl-1..9     -> focus the Nth rail cell; out-of-range is a no-op (M79f)
 //	ctrl-shift-p  -> Pin() the focused tab
 //	ctrl-shift-t  -> reopen the most recently closed tab (re-exec its bin)
 //	ctrl-shift-d  -> duplicate the focused tab (re-exec its bin)
 //	ctrl-shift-f  -> toggle the focused tab's frozen BADGE (M71e / #1564)
-//	alt-tab       -> FocusTab + WmctlTaskbarClick (cmd 12), wrapping
-//	ctrl-tab      -> the same wrapping cycle; shift reverses it (M79f)
-//	ctrl-1..9     -> focus the Nth rail cell; out-of-range is a no-op (M79f)
+//	ctrl-shift-v  -> split cycle none -> V -> H -> none (M79c: live mode has
+//	                 no other split entry; the choreography is demo-only)
+//	ctrl-shift-s  -> take a SNAPSHOT BUNDLE (M81g: settings + SESSION.TABS +
+//	                 a docs selection, published crash-safe to
+//	                 /host/SNAPSHOT.BUNDLE; snapshot.go)
+//	ctrl-shift-[  -> nav back for the FOCUSED tab (M79e)
+//	ctrl-shift-]  -> nav forward (M79e)
 //	rail click    -> top strip, equal-width cells, same TASKBAR+FocusTab
 //	rail drag     -> press/release over different cells → existing Reorder()
 //	rail close-x  -> the cell's rightmost railCloseW px: close that tab (M79b)
@@ -17,12 +29,11 @@
 //	sash drag     -> press-drag-release on the split divider re-proportions
 //	                 the panes through applySashDrag (M79c); motion while
 //	                 armed is chrome, never content
-//	ctrl-shift-v  -> split cycle none -> V -> H -> none (M79c: live mode has
-//	                 no other split entry; the choreography is demo-only)
 //	ordinary keys -> ignored here (ADR 0009: KEY_DOWN still reaches the app)
 //
 // Markers print only after the mutation/syscall that made them true.
-// Ctrl+W is not bound (it collides with the editor).
+// Ctrl+W is not bound (it collides with the editor — a GOSH.ELF row in the
+// registry says so).
 // M79b (#1705): the rail's close-x and hover highlight live here. Hover-
 // preview stays a later card. Client-area is ignored.
 //
@@ -41,7 +52,10 @@
 // path — so the port keeps that shape rather than inventing a lock.
 package main
 
-import "virelai/vi"
+import (
+	"virelai/chords"
+	"virelai/vi"
+)
 
 const (
 	MarkerAltTab    = "gotabwm: alt-tab id="
@@ -56,10 +70,23 @@ const (
 	MarkerReopenMissing    = "gotabwm: reopen missing "
 	MarkerDuplicateMissing = "gotabwm: duplicate missing "
 
-	// USB HID keyboard usages (the kernel's WM_KEY arg0).
+	// M82c (#1770): the registry's guest-side markers. The summary line
+	// follows `registered`; the refusal names the checker's error sentence;
+	// `fixture accepted` is the loud failure (the checker passing a table
+	// it must refuse) and every gate asserts it absent.
+	MarkerChords             = "gotabwm: chords n="
+	MarkerChordsRefused      = "gotabwm: chords refused "
+	MarkerChordsFixtureOK    = "gotabwm: chords fixture accepted "
+	MarkerChord              = "gotabwm: chord "
+	chordsFixtureTriggerPath = "/host/GOTABWM.CHORDCONFLICT"
+
+	// USB HID keyboard usages (the kernel's WM_KEY arg0). The registry
+	// (virelai/chords) is the chord definitions' single source; hid_test.go
+	// pins these locals against it so the two cannot drift.
 	hidUsageD uint8 = 0x07 // 'd'
 	hidUsageF uint8 = 0x09 // 'f'; M71e (#1564) freeze-badge toggle
 	hidUsageP uint8 = 0x13
+	hidUsageS uint8 = 0x16 // 's'; M81g (#1767) snapshot bundle
 	hidUsageT uint8 = 0x17 // 't'
 	hidUsageV uint8 = 0x19 // 'v'; M79c (#1706) split cycle
 	// M79e (#1708): M48/BT5's per-tab history chords, the SAME two Zig
@@ -120,59 +147,174 @@ var (
 	sashDragging bool
 )
 
+// seatChords is the registry's seat-scope dispatch, resolved once at init:
+// every seat row maps its chord to the action hid.go implements. A chord
+// not in the table is not the seat's — handleWmKey ignores it, and ADR 0009
+// still routes KEY_DOWN to the focused app. Built from chords.Global so a
+// table edit IS the dispatch edit; the host tests pin the action set.
+var seatChords = func() map[chords.Chord]string {
+	m := make(map[chords.Chord]string, len(chords.Global))
+	for _, r := range chords.Global.SeatRows() {
+		m[r.Chord] = r.Action
+	}
+	return m
+}()
+
+// chordEvent reduces one kind-21 WM_KEY to the registry's chord identity
+// (the ADR 0009 modifier flags narrowed to the three the table names).
+func chordEvent(e vi.Event) chords.Chord {
+	var m chords.Mods
+	if e.Flags&vi.ModCtrl != 0 {
+		m |= chords.ModCtrl
+	}
+	if e.Flags&vi.ModShift != 0 {
+		m |= chords.ModShift
+	}
+	if e.Flags&vi.ModAlt != 0 {
+		m |= chords.ModAlt
+	}
+	return chords.Chord{Mods: m, Usage: uint8(e.Arg0)}
+}
+
+// runSeatAction is WHAT each registry action does; the registry owns WHICH
+// chords fire. The seams (execApp, focusByIndex) are read at call time so
+// tests can swap them exactly as before. No marker here: every apply*
+// below prints its own, after the syscall that made it true.
+func runSeatAction(action string, c chords.Chord) {
+	switch action {
+	case "launcher":
+		openLauncher()
+	case "start-surface":
+		// M71e (#1564): Enter on an empty strip is the start surface's
+		// keyboard affordance; a populated strip ignores plain Enter.
+		if tabs.Count() == 0 {
+			openLauncher()
+		}
+	case "cycle-focus":
+		_ = applyAltTab(c.Mods&chords.ModShift != 0)
+	case "focus-index":
+		if i, ok := ctrlIndex(c.Usage); ok {
+			_ = applyCtrlIndex(i)
+		}
+	case "pin":
+		_ = applyHidPin()
+	case "reopen":
+		_ = applyReopen()
+	case "duplicate":
+		_ = applyDuplicate()
+	case "freeze-badge":
+		_ = applyFreezeToggle()
+	case "split-cycle":
+		_ = applySplitCycle()
+	case "snapshot-bundle":
+		// M81g (#1767): the snapshot arm. It is a chord rather than a
+		// timer on purpose — the card rules out scheduled snapshots, and
+		// a bundle taken because time passed is a bundle nobody chose.
+		// The chord's DEFINITION moved into the registry (a seat row);
+		// this is what the row does.
+		_ = saveSnapshot()
+	case "nav-back":
+		_ = applyNavStep(true)
+	case "nav-forward":
+		_ = applyNavStep(false)
+	}
+}
+
 func handleWmKey(e vi.Event) {
 	if handleLauncherKey(e) {
 		return
 	}
-	usage := uint8(e.Arg0)
-	ctrl := e.Flags&vi.ModCtrl != 0
-	shift := e.Flags&vi.ModShift != 0
-	alt := e.Flags&vi.ModAlt != 0
-	if alt && !ctrl && usage == hidUsageTab {
-		_ = applyAltTab(shift)
-		return
+	// M82c (#1770): dispatch IS the registry walk — one exact (mods, usage)
+	// match, so there is no branch precedence to reason about (the old
+	// scattered `if`s folded ctrl+shift+tab into the ctrl branch; the table
+	// carries the reverse cycle as its own row). A matched row is consumed
+	// even when its action honestly no-ops, exactly as before; an
+	// unmatched chord falls through to nothing.
+	c := chordEvent(e)
+	if action, ok := seatChords[c]; ok {
+		runSeatAction(action, c)
 	}
-	// M79f (#1717): the ctrl branch sits before ctrl-shift so tab and
-	// digits have one dispatch point while the launcher above keeps
-	// modal precedence. Ctrl+Shift+Tab reverses the same cycle; a
-	// digit outside the current strip is an honest no-op.
-	if ctrl && !alt {
-		if usage == hidUsageTab {
-			_ = applyAltTab(shift)
-			return
-		}
-		if i, ok := ctrlIndex(usage); ok {
-			_ = applyCtrlIndex(i)
-			return
+}
+
+// chordRegistryPrologue is M82c's guest-side evidence, run once at seat
+// startup right after registration (seat.go):
+//
+//   - the shipped table must pass the checker — fail-closed, Exit(1), if
+//     it ever does not. A registry that lies about ownership must stop
+//     the seat, not print a warning;
+//   - when the harness seeds /host/GOTABWM.CHORDCONFLICT, the checker is
+//     fed the deliberately conflicting fixture and its refusal is printed
+//     with the full named error — the in-guest half of the fixture test
+//     (go-wm-hid run 08). The shipped table is untouched either way; the
+//     fixture boot also dumps the whole table so the gate can pin rows;
+//   - the summary line names the counts per owner class.
+func chordRegistryPrologue() {
+	if err := chords.Global.Validate(); err != nil {
+		vi.ConsoleLine(MarkerChordsRefused + err.Error())
+		vi.Exit(1)
+	}
+	attempted, fixtureErr := chordFixtureAttempt()
+	if attempted {
+		if fixtureErr != nil {
+			vi.ConsoleLine(MarkerChordsRefused + fixtureErr.Error())
+		} else {
+			vi.ConsoleLine(MarkerChordsFixtureOK + "checker accepted " + chords.FixtureOwner() + "'s ctrl+shift+p claim")
 		}
 	}
-	if ctrl && shift && !alt {
-		switch usage {
-		case hidUsageP:
-			_ = applyHidPin()
-		case hidUsageT:
-			_ = applyReopen()
-		case hidUsageD:
-			_ = applyDuplicate()
-		case hidUsageF:
-			_ = applyFreezeToggle()
-		case hidUsageV:
-			_ = applySplitCycle()
-		// M79e (#1708): back/forward for the FOCUSED tab, queued for its
-		// app to poll. The step is refused (and silent) at either end of
-		// the history, so the chord is a no-op rather than a marker for
-		// a step that did not happen.
-		case hidUsageLeftBracket:
-			_ = applyNavStep(true)
-		case hidUsageRightBracket:
-			_ = applyNavStep(false)
+	var kernel, seat, app int
+	for _, r := range chords.Global {
+		switch {
+		case r.Scope == chords.ScopeKernelTerminal:
+			kernel++
+		case r.Scope == chords.ScopeSeat:
+			seat++
+		default:
+			app++
 		}
-		return
 	}
-	// M71e (#1564): Enter on an empty strip is the start surface's keyboard
-	// affordance — it summons the same launcher the panel points at.
-	if !ctrl && !shift && !alt && usage == hidUsageEnter && tabs.Count() == 0 {
-		openLauncher()
+	vi.ConsoleLine(chordSummary(len(chords.Global), seat, kernel, app))
+	if attempted {
+		dumpChordTable()
+	}
+}
+
+// chordSummary renders the prologue's one summary line: the registry size
+// and the counts per owner class.
+func chordSummary(n, seat, kernel, app int) string {
+	return MarkerChords +
+		vi.Itoa64(int64(n)) +
+		" seat=" + vi.Itoa64(int64(seat)) +
+		" kernel=" + vi.Itoa64(int64(kernel)) +
+		" app=" + vi.Itoa64(int64(app))
+}
+
+// chordFixtureAttempt feeds the checker the deliberately conflicting
+// fixture when the harness seeded the trigger file. It reports whether the
+// fixture was attempted and the checker's verdict — nil error when
+// attempted means the checker ACCEPTED a table it must refuse (the loud
+// failure the gates assert absent). No printing: the prologue owns the
+// markers, the host tests own the verdict.
+func chordFixtureAttempt() (attempted bool, err error) {
+	h, r := openFile(chordsFixtureTriggerPath, vi.ModeRead)
+	if r < 0 {
+		return false, nil
+	}
+	vi.FileClose(uint32(h))
+	bad := append(chords.Global[:0:0], chords.Global...)
+	bad = append(bad, chords.FixtureRow())
+	return true, bad.Validate()
+}
+
+// dumpChordTable prints every row, one line each, as the fixture boot's
+// registry record:
+//
+//	gotabwm: chord <chord> owner=<owner> scope=<scope> <label>
+func dumpChordTable() {
+	for _, r := range chords.Global {
+		vi.ConsoleLine(MarkerChord + r.Chord.String() +
+			" owner=" + r.Owner +
+			" scope=" + string(r.Scope) +
+			" " + r.Label)
 	}
 }
 

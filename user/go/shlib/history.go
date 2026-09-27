@@ -86,6 +86,16 @@ func SaveHistory(st histStore, h *History, line string, s *HistorySink) {
 		s.appended = len(h.Entries())
 		return
 	}
+	// The APPEND, and it stays one (M81e2 #1787). vi.WriteFileSafe is
+	// replace-only — it publishes a whole new body — so it cannot express
+	// this case at all; routing the append through it would rewrite the
+	// entire history file once per submitted line, which is slower and
+	// strictly worse. The hazard the safe publish fixes is a TORN file from
+	// a rewrite, and an append never rewrites: nothing already in the file
+	// is at risk when this one line lands, or fails to. The one honest
+	// limit is that a crash mid-append can leave a partial LAST line, which
+	// LoadHistory already treats as a line to drop (it parses LF-terminated
+	// rows) rather than a file to refuse.
 	if err := st.WriteFile(histPath, []byte(line+"\n"), true); err != nil {
 		s.warn()
 		return
@@ -94,8 +104,15 @@ func SaveHistory(st histStore, h *History, line string, s *HistorySink) {
 	s.appended++
 }
 
-// writeHistoryFile replaces the file with the ring's contents (write-open
-// truncates, kernel/src/file_table.zig: "a fresh write-open truncates").
+// writeHistoryFile replaces the file with the ring's contents. This IS a
+// rewrite — the ring has dropped the oldest lines, so the file must shrink —
+// which makes it app state and puts it on the same crash-safe publish as
+// settings, the editor buffer and the session file (M81e2 #1787). The host
+// hook (goshHost.WriteFile / termHost.WriteFile) routes appendMode=false
+// through vi.WriteFileSafe, so a crash here leaves the previous history file
+// or none, never a history that has lost its oldest entries to a torn write.
+// The appendMode=false is the whole contract; what that means for a redirect
+// is argued in user/go/sh/main.go.
 func writeHistoryFile(st histStore, h *History) error {
 	var b []byte
 	for _, ln := range h.Entries() {

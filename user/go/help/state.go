@@ -13,12 +13,6 @@ import (
 	"virelai/vi"
 )
 
-// titleBarPx is the window title band the client area sits below: the
-// kernel's grid is client_w/8 columns (terminal.syncWindowCols) and the
-// client height is H-16 (the dui/charmhello geometry: rect 32,32,W,H with a
-// 16 px title, client origin y+16).
-const titleBarPx = 16
-
 // docsDir is the in-guest docs bundle the `d` section browses — the share
 // root's docs/ directory, the /host/docs path convention the tabwm nav
 // tests already pin (user/src/tabwm.zig). Absent on a bare share: the
@@ -50,6 +44,7 @@ type model struct {
 	cmds     []shlib.HelpRow // the whole catalog, section-ordered
 	sections []string        // display order (shlib.HelpSections)
 	sel      int             // cursor into visible()
+	listTop  int             // first visible catalog index in browse mode
 
 	filter    string // `/`-to-filter, matched case-folded against names
 	filtering bool   // the filter line owns the keyboard
@@ -106,6 +101,7 @@ func (m *model) setSize(cols, rows int) {
 		rows = 8
 	}
 	m.cols, m.rows = cols, rows
+	m.clampSel()
 }
 
 // bodyRows is the pane height: header + pane headers + status + hints.
@@ -173,6 +169,23 @@ func (m *model) clampSel() {
 	if m.sel < 0 {
 		m.sel = 0
 	}
+	body := m.bodyRows()
+	maxTop := len(vis) - body
+	if maxTop < 0 {
+		maxTop = 0
+	}
+	if m.listTop < 0 {
+		m.listTop = 0
+	}
+	if m.listTop > maxTop {
+		m.listTop = maxTop
+	}
+	if m.sel < m.listTop {
+		m.listTop = m.sel
+	}
+	if m.sel >= m.listTop+body {
+		m.listTop = m.sel - body + 1
+	}
 }
 
 // emitFocus queues the focus marker for the selected row — the exact shape
@@ -239,25 +252,30 @@ func (m *model) openDetail(r shlib.HelpRow) {
 }
 
 // handleClick consumes the kernel's SGR cell coordinates (1-based over the
-// client area): a click in the list selects that row, anywhere else is a
-// no-op. Rows are cell-sized, so no scrolling arithmetic is involved.
+// client area). Browse has a title and pane-header row before its list; docs
+// has only the title row.
 func (m *model) handleClick(x, y int) {
 	row := y - 1 // 0-based screen line
-	i := row - 1 // body line i sits at screen line i+1 (0=header)
-	if i < 0 {
-		return
-	}
 	switch m.mode {
 	case modeBrowse:
 		if m.filtering {
 			return
 		}
+		i := row - 2 // list body starts below title and pane headers
+		if i < 0 || i >= m.bodyRows() {
+			return
+		}
 		vis := m.visible()
-		if i < len(vis) {
-			m.sel = i
+		selected := m.listTop + i
+		if selected < len(vis) {
+			m.sel = selected
 			m.emitFocus()
 		}
 	case modeDocs:
+		i := row - 1 // docs body starts below its title
+		if i < 0 {
+			return
+		}
 		if i < m.docN {
 			m.docSel = i
 			name := m.docs[m.docSel].NameString()
@@ -269,7 +287,7 @@ func (m *model) handleClick(x, y int) {
 
 // handleKey runs one decoded key through the state machine. It is the whole
 // flow: browse ←→ detail, browse ←→ docs ←→ doc, `/` filter with esc to
-// clear, ←/→ group jumps, j/k or arrows to move, q to quit (browse only).
+// clear, h/l or ←/→ group jumps, j/k or arrows to move, q to quit (browse only).
 func (m *model) handleKey(ev keys.Event) {
 	if ev.Key == keys.KeyCtrlC {
 		m.quit = true
@@ -360,6 +378,10 @@ func (m *model) keyBrowse(ev keys.Event) {
 		m.move(+1)
 	case 'k':
 		m.move(-1)
+	case 'h':
+		m.jumpGroup(-1)
+	case 'l':
+		m.jumpGroup(+1)
 	case '/':
 		m.filtering = true
 		m.status = "filter: "

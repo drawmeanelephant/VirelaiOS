@@ -1,6 +1,9 @@
 package vi
 
-import "sync/atomic"
+import (
+	"sync"
+	"sync/atomic"
+)
 
 // M56b (issue #1316): the tab-client WM_RPC wire + event dispatch. The frame
 // is byte-identical to kernel/src/wnd_core.zig's `WmRpc` (mirrored in
@@ -45,6 +48,11 @@ const (
 	// text (24 NUL-padded bytes, the whole budget), and the request id is
 	// the sender's own tab so the seat can click the toast back to it.
 	WmRpcKindNotify uint8 = 12
+	// M82b (#1769): key-only settings subscription and publish requests.
+	// The seat sends kind 15 asynchronously to matching subscribers.
+	WmRpcKindSettingsSubscribe uint8 = 13
+	WmRpcKindSettingsPublish   uint8 = 14
+	WmRpcKindSettingsChanged   uint8 = 15
 )
 
 // WmRpc is the 38-byte app-to-WM mailbox frame. Field order and widths are the
@@ -150,6 +158,63 @@ const wmMailWaitTicks = 8
 // keeps two goroutines making requests from receiving the same sequence.
 var wmSeq atomic.Uint32
 
+// A blocking WM_RPC request can receive another request's ack or a
+// settings-change frame while it waits. Preserve both for the rightful
+// consumer; the shared mailbox remains safe when an app has concurrent RPC
+// callers and an appkit loop polling asynchronous settings.
+var (
+	wmInboxMu      sync.Mutex
+	pendingWmInbox [MailboxMaxMessages]WmRpc
+	pendingWmCount int
+)
+
+func enqueueWmMessage(m WmRpc) {
+	wmInboxMu.Lock()
+	defer wmInboxMu.Unlock()
+	if m.Kind == WmRpcKindSettingsChanged {
+		for i := 0; i < pendingWmCount; i++ {
+			old := pendingWmInbox[i]
+			if old.Kind == m.Kind && old.ID == m.ID && old.TitleString() == m.TitleString() {
+				pendingWmInbox[i] = m
+				return
+			}
+		}
+	}
+	if pendingWmCount == len(pendingWmInbox) {
+		copy(pendingWmInbox[:], pendingWmInbox[1:])
+		pendingWmCount--
+	}
+	pendingWmInbox[pendingWmCount] = m
+	pendingWmCount++
+}
+
+func takePendingWmMessage(matches func(WmRpc) bool) (WmRpc, bool) {
+	wmInboxMu.Lock()
+	defer wmInboxMu.Unlock()
+	for i := 0; i < pendingWmCount; i++ {
+		m := pendingWmInbox[i]
+		if !matches(m) {
+			continue
+		}
+		copy(pendingWmInbox[i:], pendingWmInbox[i+1:pendingWmCount])
+		pendingWmCount--
+		pendingWmInbox[pendingWmCount] = WmRpc{}
+		return m, true
+	}
+	return WmRpc{}, false
+}
+
+func receiveWmMessage() (WmRpc, bool) {
+	var raw [WmRpcMax]byte
+	wmInboxMu.Lock()
+	n, r := IpcRecv(raw[:])
+	wmInboxMu.Unlock()
+	if r < 0 || n < 38 {
+		return WmRpc{}, false
+	}
+	return DecodeWmRpc(raw[:n])
+}
+
 func nextWmSeq() uint8 {
 	for {
 		seq := wmSeq.Add(1)
@@ -168,14 +233,17 @@ func fitsWire8(v uint32) bool {
 // runs out; it never yield-spins. Replies with another sequence or requester
 // are foreign and are discarded rather than accepted as this request's ack.
 func waitWmRpcAck(seq, replyTo uint8) (WmRpc, bool) {
-	var raw [WmRpcMax]byte
 	for tick := uint64(0); tick < wmMailWaitTicks; tick++ {
-		n, _ := IpcRecv(raw[:])
-		if n >= 38 {
-			rep, ok := DecodeWmRpc(raw[:n])
-			if ok && rep.Kind&WmRpcReplyFlag != 0 && rep.Seq == seq && rep.ReplyTo == replyTo {
-				return rep, true
+		if rep, ok := takePendingWmMessage(func(m WmRpc) bool {
+			return m.Kind&WmRpcReplyFlag != 0 && m.Seq == seq && m.ReplyTo == replyTo
+		}); ok {
+			return rep, true
+		}
+		if m, ok := receiveWmMessage(); ok {
+			if m.Kind&WmRpcReplyFlag != 0 && m.Seq == seq && m.ReplyTo == replyTo {
+				return m, true
 			}
+			enqueueWmMessage(m)
 		}
 		if tick+1 >= wmMailWaitTicks {
 			return WmRpc{}, false
@@ -286,6 +354,57 @@ func Notify(winID uint32, text, selfName string) bool {
 		return false
 	}
 	return WmMailRequest(WmRpcKindNotify, winID, 0, 0, 0, 0, text, selfName)
+}
+
+// SubscribeSetting asks the seat to send kind-15 notices when key changes.
+// Keys longer than the frame title are refused rather than subscribed under a
+// truncated name.
+func SubscribeSetting(winID uint32, key, selfName string) bool {
+	if key == "" || len(key) > WmRpcTitleMax {
+		return false
+	}
+	return WmMailRequest(WmRpcKindSettingsSubscribe, winID, 0, 0, 0, 0, key, selfName)
+}
+
+// PublishSettingChange tells the seat a persisted key changed. The seat
+// validates the key against SETTINGS.TXT, then fans out kind-15 notices.
+func PublishSettingChange(winID uint32, key, selfName string) bool {
+	if key == "" || len(key) > WmRpcTitleMax {
+		return false
+	}
+	return WmMailRequest(WmRpcKindSettingsPublish, winID, 0, 0, 0, 0, key, selfName)
+}
+
+// PollSettingChanged returns the next asynchronous key notice for winID.
+// It never waits; ordinary appkit polling remains paced by the event loop.
+func PollSettingChanged(winID uint32) (string, bool) {
+	if !fitsWire8(winID) {
+		return "", false
+	}
+	if m, ok := takePendingWmMessage(func(m WmRpc) bool {
+		return m.Kind == WmRpcKindSettingsChanged && m.ReplyTo == 0 &&
+			m.ID == uint8(winID) && m.TitleString() != ""
+	}); ok {
+		return m.TitleString(), true
+	}
+	for i := 0; i < MailboxMaxMessages; i++ {
+		m, ok := receiveWmMessage()
+		if !ok {
+			return "", false
+		}
+		if m.Kind == WmRpcKindSettingsChanged && m.ReplyTo == 0 && m.TitleString() != "" && m.ID == uint8(winID) {
+			return m.TitleString(), true
+		}
+		enqueueWmMessage(m)
+	}
+	return "", false
+}
+
+func resetSettingChangeQueue() {
+	wmInboxMu.Lock()
+	pendingWmInbox = [MailboxMaxMessages]WmRpc{}
+	pendingWmCount = 0
+	wmInboxMu.Unlock()
 }
 
 // WmAction is what a tab client's event dispatch decided to do.

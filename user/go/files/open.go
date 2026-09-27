@@ -13,6 +13,8 @@
 package main
 
 import (
+	"errors"
+
 	"virelai/mime"
 	"virelai/vi"
 )
@@ -32,18 +34,27 @@ const maxCandidates = 9
 // else in the model reads a file for this purpose.
 var readHead = func(path string, cap int) ([]byte, int64) { return readCapped(path, cap) }
 
-// sniffOf peeks mime.HeadBytes of path and asks the table.
-//
-// The bool is "could we read it at all", and it is deliberately NOT folded
-// into the type: a file the share will not hand over is not `unknown`, it is
-// unreadable, and the user is told which. Reporting it as unknown sends them
-// looking for a file type that was never the problem.
-func sniffOf(path string) (mime.ID, bool) {
-	head, rc := readHead(path, mime.HeadBytes)
-	if rc < 0 {
-		return mime.Unknown, false
+var errHeadUnreadable = errors.New("file head is unreadable")
+
+// resolveFile uses the same Open contract as GOSH. The file manager supplies
+// its syscall-backed head reader; classification, path normalization, and
+// handler selection all stay in virelai/mime.
+func resolveFile(path string) (mime.OpenRequest, *mime.OpenError) {
+	req, err := mime.Open(path, "/", func(path string, max int) ([]byte, error) {
+		head, rc := readHead(path, max)
+		if rc < 0 {
+			return nil, errHeadUnreadable
+		}
+		return head, nil
+	})
+	if err == nil {
+		return req, nil
 	}
-	return mime.Sniff(baseName(path), head), true
+	var openErr *mime.OpenError
+	if errors.As(err, &openErr) {
+		return mime.OpenRequest{}, openErr
+	}
+	return mime.OpenRequest{}, &mime.OpenError{Kind: mime.OpenInvalidTarget}
 }
 
 // refuseUnreadable is the shared wording for "the share would not give us the
@@ -51,6 +62,21 @@ func sniffOf(path string) (mime.ID, bool) {
 func (m *model) refuseUnreadable(name string) {
 	m.emit(markerOpenNo + name + " (unreadable)")
 	m.status = name + ": unreadable"
+}
+
+func (m *model) refuseOpen(name string, err *mime.OpenError) {
+	if err == nil {
+		return
+	}
+	switch err.Kind {
+	case mime.OpenUnreadable:
+		m.refuseUnreadable(name)
+	case mime.OpenNoHandler:
+		m.emit(markerOpenNo + name + " type=" + err.Type.String())
+		m.status = "no handler for " + err.Type.String()
+	default:
+		m.status = "open: invalid path"
+	}
 }
 
 // openSelPath resolves the selected entry to an absolute share path.
@@ -76,22 +102,14 @@ func (m *model) openFile() {
 		m.status = "open: path too long"
 		return
 	}
-	id, readable := sniffOf(path)
-	if !readable {
-		m.refuseUnreadable(name)
+	req, openErr := resolveFile(path)
+	if openErr != nil {
+		m.refuseOpen(name, openErr)
 		return
 	}
-	h, has := mime.Default(id)
-	if !has {
-		// A named refusal, not a silent no-op: the user learns the type AND
-		// that nothing on the system opens it.
-		m.emit(markerOpenNo + name + " type=" + id.String())
-		m.status = "no handler for " + id.String()
-		return
-	}
-	m.emit(markerOpenFile + name + " type=" + id.String() + " handler=" + h.Bin)
-	m.launch = launchReq{bin: h.Bin, path: path}
-	m.status = "opening " + baseName(h.Bin)
+	m.emit(markerOpenFile + name + " type=" + req.Type.String() + " handler=" + req.Handler.Bin)
+	m.launch = launchReq{bin: req.Handler.Bin, path: req.Target}
+	m.status = "opening " + baseName(req.Handler.Bin)
 }
 
 // startOpenWith arms the candidate list for the selection. Zero candidates is
@@ -102,24 +120,24 @@ func (m *model) startOpenWith() {
 		m.status = "open with: path too long"
 		return
 	}
-	id, readable := sniffOf(path)
-	if !readable {
-		m.refuseUnreadable(name)
+	req, openErr := resolveFile(path)
+	if openErr != nil {
+		m.refuseOpen(name, openErr)
 		return
 	}
-	cands := mime.Handlers(id)
+	cands := mime.Handlers(req.Type)
 	if len(cands) == 0 {
-		m.emit(markerOpenNo + name + " type=" + id.String())
-		m.status = "no handler for " + id.String()
+		m.emit(markerOpenNo + name + " type=" + req.Type.String())
+		m.status = "no handler for " + req.Type.String()
 		return
 	}
 	if len(cands) > maxCandidates {
 		cands = cands[:maxCandidates]
 	}
 	m.mode = modeOpenWith
-	m.openName, m.openPath, m.openID = name, path, id
+	m.openName, m.openPath, m.openID = name, req.Target, req.Type
 	m.openCands = cands
-	m.emit(markerOpenWith + name + " type=" + id.String() +
+	m.emit(markerOpenWith + name + " type=" + req.Type.String() +
 		" candidates=" + vi.Itoa64(int64(len(cands))))
 	m.status = "open with: 1-" + vi.Itoa64(int64(len(cands)))
 }

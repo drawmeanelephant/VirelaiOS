@@ -835,6 +835,21 @@ vgate_assert 04 share-contains APPS.TXT 'GOTERM.ELF | Terminal | t | dock=true'
 vgate_assert 04 serial-contains 'wm: autostart gotabwm (settings wm=gotabwm)'
 vgate_assert 04 serial-contains 'dogfood: seat'
 
+# --- M82a (#1768): the manifest the launcher read, and what it read --------
+# The share's APPS.TXT is the versioned schema, byte for byte: the four v1
+# positional fields first, then the v2 tail. GOTERM's own row above is
+# deliberately still v1 (four fields, no `v=`) — a row that declares no
+# trailing field must be able to stay one, and this is that pin. NOTE's row
+# is the v2 shape.
+vgate_assert 04 share-contains APPS.TXT 'NOTE.ELF | Text Editor | n | dock=true | v=2 | opens=text'
+vgate_assert 04 share-contains APPS.TXT 'WEB.ELF | Web | w | dock=true | v=2 | caps=net | opens=http,https'
+# The seat's own decode receipt, printed by the launcher as it parses
+# (apps.go SummarizeApps): 14 rows, the highest row version the file
+# declares, this build's schema, and how many rows spoke each trailing key.
+# A parser that skipped the tail would still print `launcher open n=14` and
+# would report v=0 here.
+vgate_assert 04 serial-contains 'gotabwm: apps decode n=14 v=2 schema=2'
+
 # --- (a) the docked Terminal entry opens through the launcher ---------------
 # The seat's own 16-tick choreography emptied the strip first; without it
 # Enter lands in the focused app's tty instead of summoning.
