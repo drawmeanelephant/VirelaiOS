@@ -63,7 +63,8 @@
 //         [--snapshot-drain-timeout <sec>] (issue 1788: hold the VM at
 //          teardown, up to <sec>, while an armed kind-4 snapshot stream is
 //          still in flight, so a stop cannot eat a frame the gate is
-//          entitled to. Default 20; 0 = stop immediately.)
+//          entitled to. Default 20; 0, negative, or unparsable = stop
+//          immediately, the --script-expect-tail convention.)
 //         [--sound] (milestone fifteen card A1, claim 6140: attach one
 //          VZVirtioSoundDeviceConfiguration with one
 //          VZVirtioSoundDeviceOutputStreamConfiguration (the PCM output
@@ -996,9 +997,13 @@ while idx < arguments.count {
         idx += 2
     } else if arg == "--snapshot-drain-timeout", idx + 1 < arguments.count {
         // Issue #1788: seconds to hold the VM at teardown while an armed
-        // kind-4 snapshot stream is still in flight. 0 = legacy
-        // stop-immediately.
+        // kind-4 snapshot stream is still in flight. Clamp a negative value
+        // to 0 here so `snapshotDrainTimeout > 0` in the drain is the
+        // documented "do not wait" switch rather than a silent fallthrough:
+        // a gate that fat-fingers `-5` gets the legacy stop, not a drain
+        // that exits instantly on the first poll.
         snapshotDrainTimeout = Double(arguments[idx + 1]) ?? 20
+        if snapshotDrainTimeout < 0 { snapshotDrainTimeout = 0 }
         idx += 2
     } else if arg == "--net", idx + 1 < arguments.count {
         netCapturePath = arguments[idx + 1]
