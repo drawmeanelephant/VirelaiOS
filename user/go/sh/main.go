@@ -81,6 +81,22 @@ const (
 )
 
 func main() {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			outcome := "panic"
+			switch value := recovered.(type) {
+			case string:
+				outcome += ": " + value
+			case error:
+				outcome += ": " + value.Error()
+			}
+			_ = vi.Log(appName, outcome)
+			_ = vi.WriteCrashReceipt(appName, outcome)
+			vi.ConsoleLine("gosh: crash receipt written")
+			vi.Exit(2)
+		}
+	}()
+	_ = vi.Log(appName, "started")
 	args := vi.Args()
 	if line, headless := headlessLine(args); headless {
 		runHeadless(line)
@@ -130,6 +146,9 @@ func runHeadless(line string) {
 	sh := shlib.NewShell(h, &shlib.History{})
 	st, _ := sh.RunLine(line)
 	h.flushOut()
+	if st != 0 {
+		_ = vi.WriteCrashReceipt(appName, "exit="+vi.Itoa64(int64(st)))
+	}
 	vi.Exit(st)
 }
 
@@ -382,6 +401,9 @@ func shutdown(ta *tabapp.TabApp, fd uint32, status int) {
 	// the second call only keeps this the single exit path.
 	_ = vi.TtyAttach(vi.TtyDetach)
 	vi.FileClose(fd)
+	if status != 0 {
+		_ = vi.WriteCrashReceipt(appName, "exit="+vi.Itoa64(int64(status)))
+	}
 	vi.ConsoleLine(markerClose)
 	vi.ConsoleLine(markerOK)
 	if ta == nil {
@@ -471,9 +493,10 @@ func completeFn(host *goshHost) func(string, bool) []string {
 // front-end). Headless, Out buffers console lines. fd 0 is a valid kernel
 // file handle (the first open), so it cannot mean "no tty".
 type goshHost struct {
-	fd      uint32
-	tty     bool
-	lineBuf []byte
+	fd       uint32
+	tty      bool
+	lineBuf  []byte
+	children map[int64]string
 }
 
 func (g *goshHost) Marker(line string) { vi.ConsoleLine(line) }
@@ -535,13 +558,24 @@ func candidateNames(name string) []string {
 func (g *goshHost) RunExternal(name string, args []string) (int64, error) {
 	for _, cand := range candidateNames(name) {
 		if pid, err := vi.Exec(cand, args...); err == nil {
+			if g.children == nil {
+				g.children = make(map[int64]string)
+			}
+			g.children[pid] = cand
 			return pid, nil
 		}
 	}
 	return 0, shlib.ErrNotFound
 }
 
-func (g *goshHost) WaitExternal(pid int64) (int64, error) { return vi.Wait(pid) }
+func (g *goshHost) WaitExternal(pid int64) (int64, error) {
+	status, err := vi.Wait(pid)
+	if err == nil && status != 0 {
+		g.RecordCrash(g.children[pid], status)
+	}
+	delete(g.children, pid)
+	return status, err
+}
 
 func (g *goshHost) ProbeExternal(pid int64) (int64, int) {
 	st, state := vi.Probe(pid)
@@ -613,6 +647,28 @@ func (g *goshHost) SecretNames() ([]string, bool) {
 		out = append(out, recs[i].KeyString())
 	}
 	return out, true
+}
+
+func (g *goshHost) AppLogNames() []string {
+	names, rc := vi.AppLogNames()
+	if rc < 0 {
+		return nil
+	}
+	return names
+}
+
+func (g *goshHost) ReadAppLog(app string) ([]byte, error) {
+	b, rc := vi.ReadLog(app)
+	if rc < 0 {
+		return nil, shlib.ErrNotFound
+	}
+	return b, nil
+}
+
+func (g *goshHost) RecordCrash(app string, status int64) {
+	outcome := "exit=" + vi.Itoa64(status)
+	_ = vi.Log(app, outcome)
+	_ = vi.WriteCrashReceipt(app, outcome)
 }
 
 // WriteFile is the shell's whole write hook, and it used to be the last

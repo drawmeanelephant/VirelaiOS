@@ -288,6 +288,9 @@ type syscalls struct {
 	trashRead    func(id string) (path string, body []byte, timestamp int64, rc int64)
 	trashRestore func() (path, id string, rc int64)
 	trashExpire  func(now int64) (int, int64)
+	logWrite     func(app, line string) int64
+	logRead      func(app string) ([]byte, int64)
+	crashReceipt func(app, outcome string) int64
 
 	// M61e (#1385): the window surface. Separate from the file rows above
 	// because id/reqW/reqH are STATE the shell copied out of tabapp.Init, not
@@ -343,6 +346,9 @@ func guestSyscalls() syscalls {
 		trashRead:    vi.TrashRead,
 		trashRestore: vi.TrashRestoreLatest,
 		trashExpire:  vi.TrashExpire,
+		logWrite:     vi.Log,
+		logRead:      vi.ReadLog,
+		crashReceipt: vi.WriteCrashReceipt,
 		// M61e: the real window rows. id/reqW/reqH stay -1/0 here — the shell
 		// binds them from tabapp.Init, so this function never claims a window
 		// the app did not get.
@@ -422,10 +428,73 @@ func cases() []testCase {
 		// every entry byte-exact; then refuse a truncated one. Inserted
 		// before the window case so the M61d report prefix stays untouched.
 		{id: "file-snapshot", run: caseFileSnapshot},
+		// M82e (#1772): app log rings and crash receipts. The host compares
+		// both the retained ring tail and the GOSELF-style failure receipt.
+		{id: "app-logs", run: caseAppLogs},
 		// M61e (#1385): the window receipt — appended last so the M61d report
 		// prefix is untouched (the report is byte-compared).
 		{id: "window", run: caseWindow},
 	}
+}
+
+const (
+	appLogFixture = "M82E.TEST"
+	appLogCopy    = outDir + "/app-log.copy"
+	appLogReceipt = "/host/CRASH/M82E.TEST.TXT"
+)
+
+func caseAppLogs(s *syscalls) error {
+	s.mkdir(outDir)
+	var want strings.Builder
+	for i := 1; i <= vi.AppLogMaxLines+3; i++ {
+		line := "line-" + twoDigits(i)
+		if rc := s.logWrite(appLogFixture, line); rc < 0 {
+			return errors.New("log write rc=" + strconv.FormatInt(rc, 10))
+		}
+		if i > 3 {
+			want.WriteString(line + "\n")
+		}
+	}
+	got, rc := s.logRead(appLogFixture)
+	if rc < 0 || string(got) != want.String() {
+		return errors.New("ring tail mismatch rc=" + strconv.FormatInt(rc, 10))
+	}
+	if _, err := writeFile(s, appLogCopy, got); err != nil {
+		return err
+	}
+	outcome := "panic: fixture failure"
+	if rc := writePanicReceipt(s, appLogFixture); rc < 0 {
+		return errors.New("receipt write rc=" + strconv.FormatInt(rc, 10))
+	}
+	receipt, rr := s.readAll(appLogReceipt, 1024)
+	if rr < 0 {
+		return errors.New("receipt read rc=" + strconv.FormatInt(rr, 10))
+	}
+	var wantReceipt strings.Builder
+	wantReceipt.WriteString("app=" + appLogFixture + "\noutcome=" + outcome + "\nlast-log:\n")
+	for i := vi.AppLogMaxLines - 4; i <= vi.AppLogMaxLines+3; i++ {
+		wantReceipt.WriteString("line-" + twoDigits(i) + "\n")
+	}
+	if string(receipt) != wantReceipt.String() {
+		return errors.New("receipt bytes mismatch")
+	}
+	return writeReceipt(s, outDir+"/app-log.ok", "ring="+strconv.Itoa(vi.AppLogMaxLines)+" outcome=panic")
+}
+
+func writePanicReceipt(s *syscalls, app string) (rc int64) {
+	defer func() {
+		if recover() != nil {
+			rc = s.crashReceipt(app, "panic: fixture failure")
+		}
+	}()
+	panic("fixture failure")
+}
+
+func twoDigits(n int) string {
+	if n < 10 {
+		return "0" + strconv.Itoa(n)
+	}
+	return strconv.Itoa(n)
 }
 
 // The two intake cases, as fixtureCheck values.
