@@ -1,9 +1,260 @@
 package vi
 
 import (
+	"bytes"
+	"encoding/binary"
+	"strings"
 	"testing"
 	"unsafe"
 )
+
+func TestTrashPathAndValidation(t *testing.T) {
+	if got, want := TrashItemPath("0123456789abcdef"), TrashDir+"/0123456789abcdef.item"; got != want {
+		t.Fatalf("TrashItemPath = %q, want %q", got, want)
+	}
+	for _, id := range []string{"", "../bad", "0123456789ABCDEG", "0123456789abcde"} {
+		if got := TrashItemPath(id); got != "" {
+			t.Errorf("TrashItemPath(%q) = %q, want empty", id, got)
+		}
+	}
+	calls := 0
+	prev := SetSyscallHookForTest(func(num uintptr, a0, a1, a2, a3 uintptr) int64 {
+		calls++
+		return -ErrENOSYS
+	})
+	defer SetSyscallHookForTest(prev)
+	if _, rc := TrashDelete("/tmp/not-on-share"); rc != -ErrEINVAL {
+		t.Fatalf("outside-share delete rc=%d, want -EINVAL", rc)
+	}
+	if _, _, _, rc := TrashRead("../bad"); rc != -ErrEINVAL {
+		t.Fatalf("invalid trash id read rc=%d, want -EINVAL", rc)
+	}
+	if _, rc := TrashExpire(-1); rc != -ErrEINVAL {
+		t.Fatalf("negative expiry time rc=%d, want -EINVAL", rc)
+	}
+	if calls != 0 {
+		t.Fatalf("invalid inputs made %d syscalls before refusing", calls)
+	}
+}
+
+func TestTrashOperationsFailClosedOnHost(t *testing.T) {
+	if _, rc := TrashDelete("/host/FM/NOTE.TXT"); rc != -ErrENOSYS {
+		t.Fatalf("host TrashDelete rc=%d, want -ENOSYS", rc)
+	}
+	if _, _, _, rc := TrashRead("0123456789abcdef"); rc != -ErrENOSYS {
+		t.Fatalf("host TrashRead rc=%d, want -ENOSYS", rc)
+	}
+	if _, _, rc := TrashRestoreLatest(); rc != -ErrENOSYS {
+		t.Fatalf("host TrashRestoreLatest rc=%d, want -ENOSYS", rc)
+	}
+	if _, rc := TrashExpire(0); rc != -ErrENOSYS {
+		t.Fatalf("host TrashExpire rc=%d, want -ENOSYS", rc)
+	}
+}
+
+type trashTestFS struct {
+	files   map[string][]byte
+	dirs    map[string]bool
+	handles map[uint64]string
+	cursors map[uint64]int
+	next    uint64
+	random  uint64
+}
+
+func newTrashTestFS() *trashTestFS {
+	return &trashTestFS{
+		files:   map[string][]byte{"/host/FM/NOTE.TXT": []byte("byte-exact trash payload\n")},
+		dirs:    map[string]bool{"/host": true, "/host/FM": true},
+		handles: map[uint64]string{},
+		cursors: map[uint64]int{},
+	}
+}
+
+func (f *trashTestFS) path(ptr, n uintptr) string {
+	return string(unsafe.Slice((*byte)(unsafe.Pointer(ptr)), int(n)))
+}
+
+func (f *trashTestFS) syscall(num uintptr, a0, a1, a2, a3 uintptr) int64 {
+	switch num {
+	case SlotTime:
+		return 1_000
+	case SlotGetRandom:
+		f.random++
+		binary.LittleEndian.PutUint64(unsafe.Slice((*byte)(unsafe.Pointer(a0)), int(a1)), f.random)
+		return int64(a1)
+	case SlotFileOpen:
+		path, flags := f.path(a0, a1), uint32(a2)
+		if flags&ModeDir != 0 {
+			if f.dirs[path] {
+				return ErrFileExists
+			}
+			f.dirs[path] = true
+			return 0
+		}
+		if flags&ModeWrite != 0 {
+			if f.dirs[path] {
+				return ErrFileIsDir
+			}
+			if flags&ModeAppend == 0 {
+				f.files[path] = nil
+			}
+			f.next++
+			f.handles[f.next] = path
+			f.cursors[f.next] = len(f.files[path])
+			return int64(f.next)
+		}
+		if flags&ModeRead != 0 {
+			if _, ok := f.files[path]; !ok {
+				return ErrFileNotFound
+			}
+			f.next++
+			f.handles[f.next] = path
+			f.cursors[f.next] = 0
+			return int64(f.next)
+		}
+		return -ErrEINVAL
+	case SlotFileRead:
+		path, ok := f.handles[uint64(a0)]
+		if !ok {
+			return -ErrEBADF
+		}
+		body := f.files[path]
+		cursor := f.cursors[uint64(a0)]
+		n := copy(unsafe.Slice((*byte)(unsafe.Pointer(a1)), int(a2)), body[cursor:])
+		f.cursors[uint64(a0)] += n
+		return int64(n)
+	case SlotFileWrite:
+		path, ok := f.handles[uint64(a0)]
+		if !ok {
+			return -ErrEBADF
+		}
+		data := unsafe.Slice((*byte)(unsafe.Pointer(a1)), int(a2))
+		cursor := f.cursors[uint64(a0)]
+		end := cursor + len(data)
+		if end > len(f.files[path]) {
+			f.files[path] = append(f.files[path], make([]byte, end-len(f.files[path]))...)
+		}
+		copy(f.files[path][cursor:end], data)
+		f.cursors[uint64(a0)] = end
+		return int64(len(data))
+	case SlotFileClose:
+		delete(f.handles, uint64(a0))
+		delete(f.cursors, uint64(a0))
+		return 0
+	case SlotFileSync:
+		if _, ok := f.handles[uint64(a0)]; !ok {
+			return -ErrEBADF
+		}
+		return 0
+	case SlotFileDelete:
+		path := f.path(a0, a1)
+		if _, ok := f.files[path]; !ok {
+			return ErrFileNotFound
+		}
+		delete(f.files, path)
+		return 0
+	case SlotFileRename:
+		from, to := f.path(a0, a1), f.path(a2, a3)
+		if _, exists := f.files[to]; exists {
+			return ErrFileExists
+		}
+		body, exists := f.files[from]
+		if !exists {
+			return ErrFileNotFound
+		}
+		f.files[to] = body
+		delete(f.files, from)
+		return 0
+	case SlotDirList:
+		path := f.path(a0, a1)
+		if !f.dirs[path] {
+			return ErrFileNotFound
+		}
+		rows := unsafe.Slice((*DirEntry)(unsafe.Pointer(a2)), int(a3))
+		prefix, count := path+"/", 0
+		for file, body := range f.files {
+			rest, ok := strings.CutPrefix(file, prefix)
+			if !ok || rest == "" || strings.Contains(rest, "/") || count >= len(rows) {
+				continue
+			}
+			copy(rows[count].Name[:], rest)
+			rows[count].Size = uint32(len(body))
+			count++
+		}
+		for dir := range f.dirs {
+			rest, ok := strings.CutPrefix(dir, prefix)
+			if !ok || rest == "" || strings.Contains(rest, "/") || count >= len(rows) {
+				continue
+			}
+			copy(rows[count].Name[:], rest)
+			rows[count].IsDir = 1
+			count++
+		}
+		return int64(count)
+	}
+	return -ErrENOSYS
+}
+
+func TestTrashDeleteRestoreAndExpire(t *testing.T) {
+	fs := newTrashTestFS()
+	prev := SetSyscallHookForTest(fs.syscall)
+	defer SetSyscallHookForTest(prev)
+
+	source := "/host/FM/NOTE.TXT"
+	want := []byte("byte-exact trash payload\n")
+	id, rc := TrashDelete(source)
+	if rc < 0 || id == "" {
+		t.Fatalf("TrashDelete = %q, %d", id, rc)
+	}
+	if _, ok := fs.files[source]; ok {
+		t.Fatal("source survived TrashDelete")
+	}
+	path, body, stamp, rc := TrashRead(id)
+	if rc != int64(len(want)) || path != source || stamp != 1_000 || !bytes.Equal(body, want) {
+		t.Fatalf("TrashRead = %q, %q, %d, %d", path, body, stamp, rc)
+	}
+	restored, restoredID, rc := TrashRestoreLatest()
+	if rc != 0 || restored != source || restoredID != id || !bytes.Equal(fs.files[source], want) {
+		t.Fatalf("TrashRestoreLatest = %q, %q, %d, file=%q", restored, restoredID, rc, fs.files[source])
+	}
+	if _, _, _, rc := TrashRead(id); rc != ErrFileNotFound {
+		t.Fatalf("restored trash receipt rc=%d, want ENOENT", rc)
+	}
+	recent, rc := ReadFileAll(RecentLogPath, maxRecentBytes)
+	if rc < 0 || !strings.Contains(string(recent), "|delete|"+id+"|") ||
+		!strings.Contains(string(recent), "|restore|"+id+"|") {
+		t.Fatalf("RECENT log rc=%d bytes=%q", rc, recent)
+	}
+
+	secondID, rc := TrashDelete(source)
+	if rc < 0 || secondID == id {
+		t.Fatalf("second TrashDelete = %q, %d (first id %q)", secondID, rc, id)
+	}
+	expired, rc := TrashExpire(stamp + TrashRetentionSeconds)
+	if rc < 0 || expired != 1 {
+		t.Fatalf("TrashExpire = %d, %d, want 1, 0", expired, rc)
+	}
+	if _, _, _, rc := TrashRead(secondID); rc != ErrFileNotFound {
+		t.Fatalf("expired trash item rc=%d, want ENOENT", rc)
+	}
+}
+
+func TestTrashRestoreNeverOverwrites(t *testing.T) {
+	fs := newTrashTestFS()
+	prev := SetSyscallHookForTest(fs.syscall)
+	defer SetSyscallHookForTest(prev)
+	source := "/host/FM/NOTE.TXT"
+	if _, rc := TrashDelete(source); rc < 0 {
+		t.Fatalf("TrashDelete rc=%d", rc)
+	}
+	fs.files[source] = []byte("new contents")
+	if _, _, rc := TrashRestoreLatest(); rc != ErrFileExists {
+		t.Fatalf("restore over existing path rc=%d, want EEXIST", rc)
+	}
+	if got := string(fs.files[source]); got != "new contents" {
+		t.Fatalf("existing file overwritten: %q", got)
+	}
+}
 
 // The slot table is the browser's contract with the kernel (ADR 0007); these
 // numbers are pinned so a drift fails the host suite instead of the VM gate.

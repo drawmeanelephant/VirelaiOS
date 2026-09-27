@@ -51,17 +51,18 @@ func renameEntry(dir, from, to string) int64 {
 	return vi.FileRename(src, dst)
 }
 
-// deleteEntry removes the file `name` from dir. Directories are refused by
-// the model before this is reached (ADR 0007 has no rmdir slot).
-func deleteEntry(dir, name string) int64 {
+// deleteEntry moves the file `name` from dir into the shared trash.
+// Directories are refused by the model before this is reached (ADR 0007 has
+// no rmdir slot).
+func deleteEntry(dir, name string) (string, int64) {
 	if !validName(name) {
-		return -vi.ErrEINVAL
+		return "", -vi.ErrEINVAL
 	}
 	p, ok := joinPath(dir, name)
 	if !ok {
-		return -vi.ErrEINVAL
+		return "", -vi.ErrEINVAL
 	}
-	return vi.FileDelete(p)
+	return vi.TrashDelete(p)
 }
 
 // readCapped reads a whole file up to cap bytes. Returns (data, rc) with

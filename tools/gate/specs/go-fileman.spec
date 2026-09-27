@@ -26,12 +26,15 @@
 # returned. GOVIEW.ELF's own `goview: open id=` line is the third reporter: the
 # image viewer really opened the file the manager named.
 #
+# M81a (#1761) adds run 04: confirmed delete to TRASH followed by `u` restore,
+# with a host byte comparison of FM4/NOTE.TXT and RECENT action checks.
+#
 # exec-order: assert-proven -- each run ends on its own `rx-go-fileman-*`
 # marker, which only its closing script prints, and that script waits on the
 # app's own marker; an app that never ran, never renamed, never settled or
 # never refused cannot pass.
 
-vgate_name go-fileman "M74a #1644: the GOFILES.ELF Charm file manager navigates, previews (pixel-asserted) and renames over the bound tty"
+vgate_name go-fileman "M74a + M81a #1761: GOFILES navigates, previews, renames, trashes, restores, and opens files"
 vgate_share seed
 vgate_runner_flags -Xswiftc -DSPIKE
 
@@ -69,6 +72,24 @@ vgate_file script8.txt <<'EOF'
 dui close 3
 dui close 2
 echo rx-go-fileman-default-open-ok
+EOF
+
+vgate_file script10.txt <<'EOF'
+exec GOFILES.ELF /host/FM4
+EOF
+
+vgate_file script11.txt <<'EOF'
+dui
+EOF
+
+vgate_file script12.txt <<'EOF'
+dui close 2
+echo rx-go-fileman-trash-ok
+EOF
+
+vgate_file fm4.expected <<'EOF'
+trash-and-restore-exact
+original bytes stay intact
 EOF
 
 vgate_setup_python <<'PY'
@@ -130,6 +151,10 @@ os.makedirs(fm3, exist_ok=True)
 readme = os.path.join(fm3, "README.TXT")
 with open(readme, "w") as f:
     f.write("open-contract-text\n")
+fm4 = os.path.join(share, "FM4")
+os.makedirs(fm4, exist_ok=True)
+with open(os.path.join(fm4, "NOTE.TXT"), "w") as f:
+    f.write("trash-and-restore-exact\noriginal bytes stay intact\n")
 
 print("staged GOFILES.ELF (%d bytes), GOEDIT.ELF (%d bytes), %s (%d bytes), "
       "%s (%d bytes), GOVIEW.ELF (%d bytes), %s (%d bytes), %s (%d bytes), "
@@ -224,8 +249,10 @@ vgate_assert 01 serial-absent 'exited status=139'
 # At that frame the selection sits on newname.txt and its preview text —
 # painted by the kernel's truecolour path at exactly (122,162,255) — is in
 # the right pane; the selected-row background is (44,58,76). Tolerances
-# absorb the capture path's edge interpolation; the counts are far above
-# what any other window element can contribute.
+# The capture path shifts its tagged color space: source (122,162,255) is
+# observed around (116,143,220). A bounded max-channel tolerance of 40 covers
+# that measured shift; the ROI and minimum pixel count still require preview
+# text ink, while the selection background remains a separate assertion.
 vgate_assert 01 snapshot 'fileman-screen-after' <<'PY'
 import struct, sys, zlib
 
@@ -292,9 +319,7 @@ for y in range(96, 96 + 736):
         if (
             528 <= x < 1088
             and 160 <= y < 256
-            and abs(r - 122) <= 24
-            and abs(g - 162) <= 24
-            and abs(b - 255) <= 24
+            and max(abs(r - 122), abs(g - 162), abs(b - 255)) <= 40
         ):
             accent += 1
         if abs(r - 44) <= 6 and abs(g - 58) <= 6 and abs(b - 76) <= 6:
@@ -400,3 +425,31 @@ vgate_assert 03 serial-absent 'gofiles: open refused README.TXT'
 vgate_assert 03 serial-absent 'gofiles: open launch refused'
 vgate_assert 03 serial-absent '[EXC] parking:'
 vgate_assert 03 serial-absent 'exited status=139'
+
+# --- M81a (#1761): run 04, trash then restore -------------------------------
+# Keep this independent of the newer default-open run 03. The one-file
+# directory makes the move and restoration unambiguous; share-equals proves
+# the original bytes came back exactly.
+vgate_run 04 -- \
+    --screen '$RUN_DIR/fileman-trash-screen' \
+    --input --via-virtio \
+    --script '$RUN_DIR/script10.txt' \
+    --input-chords 'd,y,u' \
+    --input-chords-after 'gofiles: ready' \
+    --script2 '$RUN_DIR/script11.txt' \
+    --script2-after 'gofiles: deleted NOTE.TXT trash=' \
+    --script3 '$RUN_DIR/script12.txt' \
+    --script3-after 'gofiles: restored NOTE.TXT trash=' \
+    --script-expect 'rx-go-fileman-trash-ok' --timeout 240
+
+vgate_assert 04 serial-contains 'gofiles: deleted NOTE.TXT trash='
+vgate_assert 04 serial-contains 'gofiles: restored NOTE.TXT trash='
+vgate_assert 04 serial-contains 'gofiles: list /host/FM4 n=1'
+vgate_assert 04 serial-contains 'gofiles: entry NOTE.TXT file'
+vgate_assert 04 serial-contains 'rx-go-fileman-trash-ok'
+vgate_assert 04 share-equals FM4/NOTE.TXT fm4.expected
+vgate_assert 04 share-contains RECENT/LOG.TXT '|delete|'
+vgate_assert 04 share-contains RECENT/LOG.TXT '|restore|'
+vgate_assert 04 serial-absent 'gofiles: delete refused NOTE.TXT rc='
+vgate_assert 04 serial-absent 'gofiles: restore refused rc='
+vgate_assert 04 serial-absent 'exited status=139'

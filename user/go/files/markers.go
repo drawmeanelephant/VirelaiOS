@@ -32,13 +32,17 @@ const (
 	markerMouse   = "gofiles: mouse b="
 	markerResized = "gofiles: resized "
 
-	markerRenamed  = "gofiles: renamed "
-	markerRenameNo = "gofiles: rename refused "
-	markerDeleted  = "gofiles: deleted "
-	markerDeleteNo = "gofiles: delete refused "
-	markerClip     = "gofiles: clip "
-	markerPasted   = "gofiles: pasted "
-	markerPasteNo  = "gofiles: paste refused "
+	markerRenamed       = "gofiles: renamed "
+	markerRenameNo      = "gofiles: rename refused "
+	markerDeleted       = "gofiles: deleted "
+	markerDeleteNo      = "gofiles: delete refused "
+	markerRestored      = "gofiles: restored "
+	markerRestoreNo     = "gofiles: restore refused "
+	markerTrashExpired  = "gofiles: trash expired "
+	markerTrashExpireNo = "gofiles: trash expiry refused "
+	markerClip          = "gofiles: clip "
+	markerPasted        = "gofiles: pasted "
+	markerPasteNo       = "gofiles: paste refused "
 	// M79k (#1720): this app is the notify adopter. The seat owns the
 	// toast; the app's own half is the round trip. `notify sent` follows
 	// an accepted ack, `notify refused` an absent seat or a refused

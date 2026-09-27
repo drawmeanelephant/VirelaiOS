@@ -136,6 +136,12 @@ const (
 	writeSafeCopy = outDir + "/write-safe.copy"
 	writeSafeOk   = outDir + "/file-write-safe.ok"
 
+	// M81a (#1761): trash, restore, recent and expiry.
+	trashSourcePath  = outDir + "/trash-source.txt"
+	trashCopyPath    = outDir + "/trash.copy"
+	trashReceiptPath = outDir + "/trash.ok"
+	expirySourcePath = outDir + "/expiry-source.txt"
+
 	// M61e window receipt (issue #1385), in the card's shape: the id the
 	// kernel assigned, the geometry the KERNEL reports for that window, and
 	// the present verdict.
@@ -276,6 +282,13 @@ type syscalls struct {
 	// above would re-implement the very thing being pinned.
 	publish func(path string, b []byte, appendMode bool) int64
 
+	// M81a (#1761): shared trash/recent operations.
+	readAll      func(path string, max int) ([]byte, int64)
+	trashDelete  func(path string) (string, int64)
+	trashRead    func(id string) (path string, body []byte, timestamp int64, rc int64)
+	trashRestore func() (path, id string, rc int64)
+	trashExpire  func(now int64) (int, int64)
+
 	// M61e (#1385): the window surface. Separate from the file rows above
 	// because id/reqW/reqH are STATE the shell copied out of tabapp.Init, not
 	// syscall bindings — the three function rows are the ADR 0007 window rows
@@ -324,7 +337,12 @@ func guestSyscalls() syscalls {
 		writeSafe: vi.WriteFileSafe,
 		// M81e2 (#1787): the two-contract policy seam — replace publishes
 		// crash-safe, append stays an append.
-		publish: vi.WriteFilePublish,
+		publish:      vi.WriteFilePublish,
+		readAll:      vi.ReadFileAll,
+		trashDelete:  vi.TrashDelete,
+		trashRead:    vi.TrashRead,
+		trashRestore: vi.TrashRestoreLatest,
+		trashExpire:  vi.TrashExpire,
 		// M61e: the real window rows. id/reqW/reqH stay -1/0 here — the shell
 		// binds them from tabapp.Init, so this function never claims a window
 		// the app did not get.
@@ -381,6 +399,9 @@ func cases() []testCase {
 		// (no tail), and that the sacrificial temp did not survive. Inserted
 		// before the window case so the M61d report prefix stays untouched.
 		{id: "file-write-safe", run: caseFileWriteSafe},
+		// M81a (#1761): the destructive path is reversible, records both
+		// actions in RECENT, and expires an old item without touching a new one.
+		{id: "trash", run: caseTrash},
 		// M81e2 (#1787): the PUBLISH seam the shell hook now stands on —
 		// both halves. The replace half is the history ring save and `>
 		// file`; the append half is the history one-line append and `>>`.
@@ -1363,6 +1384,75 @@ func caseFileWriteSafe(s *syscalls) error {
 			"B body with no tail")
 	case orphan != "none":
 		return errors.New("the sacrificial temp " + writeSafeTmp + " survived the publish")
+	}
+	return nil
+}
+
+// caseTrash proves the app-facing undo contract on bytes read from the share:
+// delete into TRASH, copy the trashed bytes into OUT/, restore to the original
+// path and read them back, then expire a second old item. RECENT must contain
+// all three actions in order.
+func caseTrash(s *syscalls) error {
+	s.mkdir(outDir)
+	want := []byte("M81a trash fixture\n")
+	if _, err := writeFile(s, trashSourcePath, want); err != nil {
+		return err
+	}
+	id, drc := s.trashDelete(trashSourcePath)
+	if drc < 0 {
+		return errors.New("trash delete rc=" + strconv.FormatInt(drc, 10))
+	}
+	original, body, _, trc := s.trashRead(id)
+	if trc < 0 {
+		return errors.New("trash read rc=" + strconv.FormatInt(trc, 10))
+	}
+	match := original == trashSourcePath && bytes.Equal(body, want)
+	if err := copyBytes(s, trashCopyPath, body); err != nil {
+		return err
+	}
+	restoredPath, restoredID, rrc := s.trashRestore()
+	if rrc < 0 || restoredPath != trashSourcePath || restoredID != id {
+		return errors.New("restore path/id mismatch: " + restoredPath + "/" + restoredID +
+			" rc=" + strconv.FormatInt(rrc, 10))
+	}
+	restored, readRC := s.readAll(trashSourcePath, len(want)+1)
+	if readRC < 0 || !bytes.Equal(restored, want) {
+		return errors.New("restored bytes mismatch rc=" + strconv.FormatInt(readRC, 10))
+	}
+	if _, err := writeFile(s, expirySourcePath, []byte("expire me\n")); err != nil {
+		return err
+	}
+	expiryID, erc := s.trashDelete(expirySourcePath)
+	if erc < 0 {
+		return errors.New("expiry trash rc=" + strconv.FormatInt(erc, 10))
+	}
+	_, _, created, readTrashRC := s.trashRead(expiryID)
+	if readTrashRC < 0 {
+		return errors.New("expiry item read rc=" + strconv.FormatInt(readTrashRC, 10))
+	}
+	expired, xrc := s.trashExpire(created + vi.TrashRetentionSeconds)
+	if xrc < 0 || expired != 1 {
+		return errors.New("expiry count=" + strconv.Itoa(expired) +
+			" rc=" + strconv.FormatInt(xrc, 10))
+	}
+	_, _, _, missingRC := s.trashRead(expiryID)
+	if missingRC != vi.ErrFileNotFound {
+		return errors.New("expired receipt still readable rc=" + strconv.FormatInt(missingRC, 10))
+	}
+	recent, recentRC := s.readAll(vi.RecentLogPath, 8192)
+	if recentRC < 0 || !strings.Contains(string(recent), "|delete|"+id+"|") ||
+		!strings.Contains(string(recent), "|restore|"+id+"|") ||
+		!strings.Contains(string(recent), "|delete|"+expiryID+"|") {
+		return errors.New("recent log missing trash actions rc=" + strconv.FormatInt(recentRC, 10))
+	}
+	line := "case trash path=OUT/trash-source.txt bytes=" + strconv.Itoa(len(body)) +
+		" match=" + yesNo(match) + " restored=yes expiry=" + strconv.Itoa(expired) +
+		" recent=delete,restore,delete"
+	if err := writeReceipt(s, trashReceiptPath, line); err != nil {
+		return err
+	}
+	if !match {
+		return errors.New("trash bytes differ from original")
 	}
 	return nil
 }

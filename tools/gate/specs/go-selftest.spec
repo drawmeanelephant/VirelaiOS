@@ -162,6 +162,12 @@
 #                      contains, which a rewrite-per-line
 #                      implementation would also pass.
 #
+#   * trash — the M81a (#1761) recoverable-delete flow. The guest reads the
+#             trashed bytes, restores them to the original path, records both
+#             actions in RECENT, and expires an old item at the retention
+#             boundary. The host checks the bytes, receipt, trash directory
+#             state and recent action order.
+#
 # The report fixture below is byte-exact on purpose — the report is
 # deterministic (ADR 0031). Adding a case updates the fixture, the
 # share-contains case count, and want_summary in the python block.
@@ -201,11 +207,15 @@ case file-clamp pass
 case file-fsync pass
 case file-errors pass
 case file-write-safe pass
+case trash pass
 case file-write-publish pass
 case mime pass
 case file-snapshot pass
 case window pass
-summary cases=18 failed=0
+summary cases=19 failed=0
+EOF
+vgate_file trash.expected <<'EOF'
+M81a trash fixture
 EOF
 
 # The canonical intake fixture as the spec seeds it (see the setup hook). The
@@ -290,6 +300,7 @@ vgate_assert 01 serial-contains 'selftest: case file-bigwrite pass'
 vgate_assert 01 serial-contains 'selftest: case file-clamp pass'
 vgate_assert 01 serial-contains 'selftest: case file-fsync pass'
 vgate_assert 01 serial-contains 'selftest: case file-errors pass'
+vgate_assert 01 serial-contains 'selftest: case trash pass'
 vgate_assert 01 serial-contains 'selftest: case file-snapshot pass'
 vgate_assert 01 serial-contains 'selftest: case window pass'
 # The files were written BEFORE the summary (ADR 0031 ordering).
@@ -316,7 +327,8 @@ vgate_assert 01 share-equals SELFTEST/IN/fixture.txt intake-fixture.expected
 # share-contains is the substring kind: the guest's own summary count. Weaker
 # than the python's byte-exact summary.txt compare below, and kept deliberately
 # as the kind's pilot in a real gate.
-vgate_assert 01 share-contains SELFTEST/OUT/summary.txt 'summary cases=18 failed=0'
+vgate_assert 01 share-equals SELFTEST/OUT/trash.copy trash.expected
+vgate_assert 01 share-contains SELFTEST/OUT/summary.txt 'summary cases=19 failed=0'
 
 # The load-bearing assert: the copies and the receipts on the host's own
 # filesystem must be byte-exact, the share's directory state must agree with
@@ -393,7 +405,7 @@ win_open_rect = (32, 32, 640, 400)
 win_viewport_w = 1100
 win_viewport_h = 720
 
-want_summary = b"summary cases=18 failed=0\n"
+want_summary = b"summary cases=19 failed=0\n"
 want_hello = b"goself smoke\n"
 want_intake_receipt = b"case intake path=IN/fixture.txt bytes=25 match=yes\n"
 want_altered_receipt = b"case intake-altered path=IN/altered.txt bytes=25 differs=yes\n"
@@ -414,6 +426,8 @@ want_fsync_receipt = b"case file-fsync path=OUT/fsync.txt bytes=147 fsync=0 clos
 want_errors_receipt = b"case file-errors missing=-6 exists=-9 isdir=-1 ninth=-5\n"
 want_write_safe_receipt = (b"case file-write-safe path=OUT/write-safe.txt long=840 "
                            b"short=105 bytes=105 tail=none orphan=none match=yes\n")
+want_trash_receipt = (b"case trash path=OUT/trash-source.txt bytes=19 match=yes "
+                      b"restored=yes expiry=1 recent=delete,restore,delete\n")
 # M81e2 (#1787): the receipt's byte counts are RECONSTRUCTED from the bodies
 # above, not copied from the guest, so the host is checking the share
 # against its own reading of the contract.
@@ -499,6 +513,30 @@ require(os.path.join(out, "file-write-safe.ok"), want_write_safe_receipt,
         "WRITE-SAFE RECEIPT")
 require(os.path.join(out, "write-safe.copy"), write_safe_short,
         "WRITE-SAFE COPY (no tail)")
+require(os.path.join(out, "trash.ok"), want_trash_receipt, "TRASH RECEIPT")
+require(os.path.join(out, "trash.copy"), b"M81a trash fixture\n", "TRASH COPY")
+require(os.path.join(out, "trash-source.txt"), b"M81a trash fixture\n",
+        "RESTORED TRASH FILE")
+if os.path.exists(os.path.join(out, "expiry-source.txt")):
+    print("OUT/expiry-source.txt still exists - the trash delete did not move it")
+    raise SystemExit(1)
+trash_dir = os.path.join(share, "TRASH")
+if not os.path.isdir(trash_dir) or os.listdir(trash_dir):
+    print("TRASH should be empty after restore and expiry, got %r" %
+          (sorted(os.listdir(trash_dir)) if os.path.isdir(trash_dir) else None))
+    raise SystemExit(1)
+recent_path = os.path.join(share, "RECENT", "LOG.TXT")
+recent = read(recent_path).decode("ascii").splitlines()
+if len(recent) != 3:
+    print("RECENT has %d rows, want 3: %r" % (len(recent), recent))
+    raise SystemExit(1)
+recent_re = re.compile(r"^-?[0-9]+\|(delete|restore)\|[0-9a-f]{16}\|[0-9a-f]+$")
+if any(not recent_re.fullmatch(row) for row in recent):
+    print("RECENT rows have an invalid shape: %r" % recent)
+    raise SystemExit(1)
+if [row.split("|", 2)[1] for row in recent] != ["delete", "restore", "delete"]:
+    print("RECENT action order is wrong: %r" % recent)
+    raise SystemExit(1)
 
 # M81g (#1767): the snapshot drill, checked from outside. The bundle on the
 # share is byte-equal to one the HOST rebuilt from the seeded bodies, and

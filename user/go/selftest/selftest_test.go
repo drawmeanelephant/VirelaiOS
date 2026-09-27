@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"regexp"
 	"sort"
 	"strconv"
@@ -24,6 +25,9 @@ type fakeFS struct {
 	cursors map[int64]int
 	next    int64
 	clock   int64
+	trash   map[string]fakeTrash
+	trashID uint64
+	recent  []string
 
 	frozenClock bool   // sleep does not advance the clock
 	shortWrite  bool   // every write accepts one byte (the loop path)
@@ -52,6 +56,12 @@ type fakeFS struct {
 	winPresentErr bool      // present fails
 }
 
+type fakeTrash struct {
+	path string
+	body []byte
+	time int64
+}
+
 // The window the real run hands GOSELF. It is opened at 32,32 as 640x400 (the
 // app's own request) and TABWM then re-proposes the tab-aware content
 // viewport, so the geometry sys_win_query answers with is NOT what the app
@@ -74,6 +84,7 @@ func newFakeFS() *fakeFS {
 		handles: map[int64]string{},
 		hflags:  map[int64]uint32{},
 		cursors: map[int64]int{},
+		trash:   map[string]fakeTrash{},
 		clock:   1000,
 		winID:   2,
 		winGeometry: [8]uint32{winGotX, winGotY, winGotW, winGotH,
@@ -108,8 +119,71 @@ func (f *fakeFS) syscalls() *syscalls {
 			delete(f.hflags, int64(h))
 		},
 		writeSafe: f.writeSafe,
-		publish:   f.publishFn(),
-		win:       f.windowSeam(),
+		readAll: func(path string, max int) ([]byte, int64) {
+			body, ok := f.files[path]
+			if !ok {
+				return nil, vi.ErrFileNotFound
+			}
+			if len(body) > max {
+				body = body[:max]
+			}
+			return append([]byte(nil), body...), int64(min(len(body), max))
+		},
+		trashDelete: func(path string) (string, int64) {
+			body, ok := f.files[path]
+			if !ok {
+				return "", vi.ErrFileNotFound
+			}
+			f.trashID++
+			id := fmt.Sprintf("%016x", f.trashID)
+			f.trash[id] = fakeTrash{path: path, body: append([]byte(nil), body...), time: f.clock}
+			delete(f.files, path)
+			f.dirs[vi.TrashDir] = true
+			f.recent = append(f.recent, fmt.Sprintf("%d|delete|%s|%s", f.clock, id, path))
+			f.files[vi.RecentLogPath] = []byte(strings.Join(f.recent, "\n") + "\n")
+			return id, 0
+		},
+		trashRead: func(id string) (string, []byte, int64, int64) {
+			item, ok := f.trash[id]
+			if !ok {
+				return "", nil, 0, vi.ErrFileNotFound
+			}
+			return item.path, append([]byte(nil), item.body...), item.time, int64(len(item.body))
+		},
+		trashRestore: func() (string, string, int64) {
+			for i := len(f.recent) - 1; i >= 0; i-- {
+				fields := strings.Split(f.recent[i], "|")
+				if len(fields) != 4 || fields[1] != "delete" {
+					continue
+				}
+				id := fields[2]
+				item, ok := f.trash[id]
+				if !ok {
+					continue
+				}
+				if _, exists := f.files[item.path]; exists {
+					return "", "", vi.ErrFileExists
+				}
+				f.files[item.path] = append([]byte(nil), item.body...)
+				delete(f.trash, id)
+				f.recent = append(f.recent, fmt.Sprintf("%d|restore|%s|%s", f.clock, id, item.path))
+				f.files[vi.RecentLogPath] = []byte(strings.Join(f.recent, "\n") + "\n")
+				return item.path, id, 0
+			}
+			return "", "", vi.ErrFileNotFound
+		},
+		trashExpire: func(now int64) (int, int64) {
+			removed := 0
+			for id, item := range f.trash {
+				if now >= item.time && now-item.time >= vi.TrashRetentionSeconds {
+					delete(f.trash, id)
+					removed++
+				}
+			}
+			return removed, 0
+		},
+		publish: f.publishFn(),
+		win:     f.windowSeam(),
 	}
 }
 
@@ -368,7 +442,7 @@ func resultFor(t *testing.T, rs []result, id string) result {
 	return result{}
 }
 
-// wantReport is the byte-exact report after M66a: the M61f `share-equals`
+// wantReport is the byte-exact report with the M81a trash case: the M61f `share-equals`
 // fixture shape, and the report the go-selftest spec requires on the share.
 // Adding a case updates this and the spec together.
 const wantReport = "case intake pass\ncase intake-altered pass\n" +
@@ -377,9 +451,9 @@ const wantReport = "case intake pass\ncase intake-altered pass\n" +
 	"case file-delete pass\ncase file-list pass\n" +
 	"case file-append pass\ncase file-bigwrite pass\ncase file-clamp pass\n" +
 	"case file-fsync pass\ncase file-errors pass\n" +
-	"case file-write-safe pass\ncase file-write-publish pass\n" +
+	"case file-write-safe pass\ncase trash pass\ncase file-write-publish pass\n" +
 	"case mime pass\ncase file-snapshot pass\ncase window pass\n" +
-	"summary cases=18 failed=0\n"
+	"summary cases=19 failed=0\n"
 
 // seedFixtures is the host's half of the intake contract: IN/fixture.txt holds
 // the canonical body, IN/altered.txt the altered one (ADR 0031 D2), and the
@@ -400,8 +474,8 @@ func TestRunCasesAllPassAndReportBytes(t *testing.T) {
 	seedFixtures(fs)
 	rs := runCases(fs.syscalls())
 
-	if len(rs) != 18 {
-		t.Fatalf("cases = %d, want 18", len(rs))
+	if len(rs) != 19 {
+		t.Fatalf("cases = %d, want 19", len(rs))
 	}
 	for _, r := range rs {
 		if !r.ok {
@@ -411,11 +485,26 @@ func TestRunCasesAllPassAndReportBytes(t *testing.T) {
 	if got := string(renderReport(rs)); got != wantReport {
 		t.Fatalf("report bytes:\n got %q\nwant %q", got, wantReport)
 	}
-	if got := string(renderSummary(rs)); got != "summary cases=18 failed=0\n" {
+	if got := string(renderSummary(rs)); got != "summary cases=19 failed=0\n" {
 		t.Fatalf("summary = %q", got)
 	}
 	if got := fs.files[helloPath]; !bytes.Equal(got, []byte(helloPayload)) {
 		t.Fatalf("hello.txt = %q, want %q", got, helloPayload)
+	}
+	trashWant := []byte("M81a trash fixture\n")
+	if got := fs.files[trashCopyPath]; !bytes.Equal(got, trashWant) {
+		t.Fatalf("trash.copy = %q, want %q", got, trashWant)
+	}
+	if got := fs.files[trashSourcePath]; !bytes.Equal(got, trashWant) {
+		t.Fatalf("restored source = %q, want %q", got, trashWant)
+	}
+	if got := string(fs.files[trashReceiptPath]); got !=
+		"case trash path=OUT/trash-source.txt bytes=19 match=yes restored=yes expiry=1 recent=delete,restore,delete\n" {
+		t.Fatalf("trash receipt = %q", got)
+	}
+	if got := string(fs.files[vi.RecentLogPath]); !strings.Contains(got, "|restore|") ||
+		strings.Count(got, "|delete|") != 2 {
+		t.Fatalf("recent log missing expected actions: %q", got)
 	}
 	if !fs.dirs[outDir] {
 		t.Fatal("the file-write case did not ensure OUT/ exists")
@@ -478,7 +567,7 @@ func TestIntakeFailsOnAMutatedSeed(t *testing.T) {
 	if !strings.Contains(report, "case intake fail fixture mismatch") {
 		t.Fatalf("report lacks the intake failure: %q", report)
 	}
-	if !strings.Contains(report, "summary cases=18 failed=2") {
+	if !strings.Contains(report, "summary cases=19 failed=2") {
 		t.Fatalf("report summary wrong: %q", report)
 	}
 	if got := fs.files[intakeCopy]; !bytes.Equal(got, []byte(intakeAltered)) {
@@ -514,7 +603,7 @@ func TestIntakeFailsWhenTheFixtureIsMissing(t *testing.T) {
 	// The report is still complete: 14 cases, the 2 intake ones failed (the
 	// clock, file and window cases do not read IN/).
 	report := string(renderReport(rs))
-	if !strings.Contains(report, "summary cases=18 failed=2") {
+	if !strings.Contains(report, "summary cases=19 failed=2") {
 		t.Fatalf("report summary wrong: %q", report)
 	}
 	if lines := strings.Count(report, "\n"); lines != len(rs)+1 {
@@ -712,7 +801,7 @@ func TestFileWriteCaseFailsWhenTheWriteIsRefused(t *testing.T) {
 	if !strings.Contains(report, "case file-write fail ") {
 		t.Fatalf("report lacks the fail detail: %q", report)
 	}
-	if !strings.Contains(report, "summary cases=18 failed=1") {
+	if !strings.Contains(report, "summary cases=19 failed=1") {
 		t.Fatalf("report summary wrong: %q", report)
 	}
 }
@@ -1458,8 +1547,8 @@ func TestMimeCaseSniffsTheBytesItReadBack(t *testing.T) {
 	fs := newFakeFS()
 	seedFixtures(fs)
 	rs := runCases(fs.syscalls())
-	if !rs[15].ok || rs[15].id != "mime" {
-		t.Fatalf("mime should have passed, got %+v", rs[15])
+	if !resultFor(t, rs, "mime").ok {
+		t.Fatalf("mime should have passed, got %+v", resultFor(t, rs, "mime"))
 	}
 	want := "sniff README.TXT image bytes=16\n" +
 		"sniff PIC.QOI image bytes=16\n" +
@@ -1489,11 +1578,11 @@ func TestMimeCaseFailsWhenTheShareLies(t *testing.T) {
 	seedFixtures(fs)
 	fs.refuseRead = true
 	rs := runCases(fs.syscalls())
-	if rs[15].ok {
-		t.Fatalf("mime passed with unreadable fixtures, got %+v", rs[15])
+	if resultFor(t, rs, "mime").ok {
+		t.Fatalf("mime passed with unreadable fixtures, got %+v", resultFor(t, rs, "mime"))
 	}
-	if !strings.Contains(rs[15].detail, "read ") {
-		t.Fatalf("detail = %q, want the refused read named", rs[15].detail)
+	if !strings.Contains(resultFor(t, rs, "mime").detail, "read ") {
+		t.Fatalf("detail = %q, want the refused read named", resultFor(t, rs, "mime").detail)
 	}
 }
 
