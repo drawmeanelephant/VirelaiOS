@@ -70,4 +70,15 @@ const (
 	markerOpenCancel   = "gofiles: open cancelled "
 	markerOpenLaunched = "gofiles: open launched "
 	markerOpenLaunchNo = "gofiles: open launch refused "
+
+	// M81f (#1766): the change feed. `watch armed` says the subscription is
+	// live (the baseline listing is taken); the event markers name what the
+	// feed observed since the previous poll, followed by the refreshed
+	// listing rows that back them — all flushed only after the frame paints,
+	// so a gate waiting on an event marker sees the screen that shows it.
+	markerWatchArmed   = "gofiles: watch armed"
+	markerWatchCreated = "gofiles: watch created "
+	markerWatchRemoved = "gofiles: watch removed "
+	markerWatchChanged = "gofiles: watch changed "
+	markerWatchGone    = "gofiles: watch path gone"
 )

@@ -199,7 +199,9 @@ for it.
   1. **Runner `--net-tcp-bridge`**: host listens on a Mac port and
      bridges into the `--net` emulation toward the guest's listen.
      Host-Swift-only work, no guest or kernel change. This is what the
-     M84d Screen Sharing tape needs on real iron.
+     M84d Screen Sharing tape needs on real iron. **Trusted-local test
+     path only**: the bridge binds 127.0.0.1, same user, same machine —
+     it authenticates nobody and is not a remote-access story (see D6).
   2. **Guest SSH `-R`**: the guest dials out (NAT allows it) and
      reverse-forwards; needs `-R` in `user/go/ssh` (does not exist).
 - M84 claims nothing about real-device inbound. The milestone is
@@ -232,10 +234,17 @@ Why exposure-enforcement satisfies "no unauthenticated *direct* RFB":
 
 - The server is never on the boot path (D3) and never bound for LAN
   exposure by default; the operator starts it explicitly per session.
-- The documented access path is an **authenticated SSH tunnel**
-  (GOSSHD publickey, Ed25519 — the proven M70g G1 transport) once the
-  §D5 follow-ups land; until then, the hermetic `--net` gates, where the
-  runner is the trusted peer.
+- There is **no authenticated remote path in M84**, and this document
+  does not claim one. D4 rules out guest-side sshd co-tenancy in a
+  serving boot (one system-wide TCP connection), and D5(1)'s bridge
+  authenticates nobody — so "authenticated SSH tunnel" cannot describe
+  anything M84 ships. Remote use of the RFB server is **unsupported**
+  until an authenticated transport exists (the SSH-channel-plumbed
+  card named below, or a TLS-server card).
+- What M84 does have: the hermetic `--net` gates (the runner is the
+  trusted peer) and the trusted-local bridge (D5(1): 127.0.0.1,
+  same-user) for the M84d tape. Both are same-trust-domain paths;
+  neither crosses a network an adversary can reach.
 - Binding the RFB listen to a routable network without the tunnel is an
   operator error the docs forbid — it is not a mode the server
   advertises, defaults to, or documents.

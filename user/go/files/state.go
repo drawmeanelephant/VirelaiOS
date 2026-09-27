@@ -63,6 +63,13 @@ type model struct {
 	// main alongside `pending`. The model stays pure: it decides WHAT
 	// happened, main owns the one seam that talks to the seat.
 	notify string
+
+	// M81f (#1766): the change-feed subscription for the listing being
+	// shown. The watcher's baseline is adopted by every refresh (the feed
+	// reports what the app did NOT cause); watchArmed gates the one-time
+	// armed marker. Polled from main's idle branch via watchStep.
+	watcher    vi.Watcher
+	watchArmed bool
 }
 
 // newModel starts at path on a cols x rows grid and takes the first listing
@@ -136,18 +143,24 @@ func (m *model) clampSel() {
 
 // refresh re-lists the current directory, emits the M58a marker family
 // (list / entry / found / list error) and reloads the preview.
+//
+// Every refresh also re-baselines the M81f change feed: the listing the app
+// itself just took is what "unchanged" means, so its own cd/rename/paste
+// never comes back as a watch event.
 func (m *model) refresh() {
 	n, rc := vi.DirList(m.path, m.entries[:])
 	if rc < 0 {
 		m.n, m.sel = 0, 0
 		m.status = "list err"
 		m.emit(markerListErr + vi.Itoa64(rc))
+		m.watcher.Adopt(vi.DirSnapshot{OK: false})
 		m.loadPreview()
 		return
 	}
 	m.n = n
 	sortEntries(m.entries[:], m.n)
 	m.clampSel()
+	m.watcher.Adopt(vi.DirSnapshot{OK: true, Rows: append([]vi.DirEntry(nil), m.entries[:m.n]...)})
 	m.emit(markerList + m.path + " n=" + vi.Itoa64(int64(m.n)))
 	for i := 0; i < m.n; i++ {
 		name := m.entries[i].NameString()
@@ -199,6 +212,47 @@ func (m *model) loadPreview() {
 			vi.Itoa64(int64(e.Size)) + " bytes)"
 	}
 	m.emit(markerView + name + " bytes=" + vi.Itoa64(int64(len(body))))
+}
+
+// watchStep polls the M81f (#1766) change feed once for the listing being
+// shown. It returns -1 when the feed said nothing (the common idle case),
+// 0 when it armed (the first poll takes the baseline listing and queues the
+// armed marker), or the number of events observed — each event is queued as
+// its marker and the listing is refreshed so the screen shows what the feed
+// named. main paints + flushes on anything >= 0, so every watch marker
+// prints only after the frame that backs it.
+//
+// The event's own re-list takes a fresher snapshot than the one the event
+// was diffed against; that fresher listing is the new baseline (refresh
+// adopts it), so a second change landing inside that window is reported on
+// the NEXT poll — the feed is advisory, never a lossless log.
+func (m *model) watchStep() int {
+	first := !m.watchArmed
+	m.watchArmed = true
+	evs := m.watcher.ObserveDir(m.path)
+	if first {
+		m.emit(markerWatchArmed)
+	}
+	if len(evs) == 0 {
+		if first {
+			return 0
+		}
+		return -1
+	}
+	for _, ev := range evs {
+		switch ev.Kind {
+		case vi.WatchCreated:
+			m.emit(markerWatchCreated + ev.Name)
+		case vi.WatchRemoved:
+			m.emit(markerWatchRemoved + ev.Name)
+		case vi.WatchChanged:
+			m.emit(markerWatchChanged + ev.Name + " size=" + vi.Itoa64(int64(ev.Size)))
+		case vi.WatchPathGone:
+			m.emit(markerWatchGone)
+		}
+	}
+	m.refresh()
+	return len(evs)
 }
 
 func (m *model) selEntry() (vi.DirEntry, bool) {

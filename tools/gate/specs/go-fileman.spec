@@ -29,6 +29,19 @@
 # M81a (#1761) adds run 04: confirmed delete to TRASH followed by `u` restore,
 # with a host byte comparison of FM4/NOTE.TXT and RECENT action checks.
 #
+# M81f (#1766) adds run 05: the change feed. The app boots in its own dir
+# (FM5), arms the vi watcher from its idle loop (`gofiles: watch armed` — the
+# baseline listing is taken), and the RUNNER mutates the share macOS-side once
+# that marker appears (`--host-write` + `--host-write-content` +
+# `--host-write-after`, the same anchor discipline as --screenshot-after; the
+# mutation is a real host-side write into the live share). The feed's event
+# marker (`gofiles: watch created LATE.TXT`) follows within the idle cadence —
+# 5 quiet ticks per poll, so a few tens of ms — and is the anchor for the
+# closing script: a feed that never observes the host's write can never reach
+# the expect line, so the bound is structural, not a timing hope. The probe
+# measured WHY the feed is guest-side (queue 5 is a stateless request/reply
+# transport; a host push would need a kernel seam): recorded on the card.
+#
 # exec-order: assert-proven -- each run ends on its own `rx-go-fileman-*`
 # marker, which only its closing script prints, and that script waits on the
 # app's own marker; an app that never ran, never renamed, never settled or
@@ -76,6 +89,15 @@ EOF
 
 vgate_file script10.txt <<'EOF'
 exec GOFILES.ELF /host/FM4
+EOF
+
+vgate_file script13.txt <<'EOF'
+exec GOFILES.ELF /host/FM5
+EOF
+
+vgate_file script15.txt <<'EOF'
+dui close 2
+echo rx-go-fileman-watch-ok
 EOF
 
 vgate_file script11.txt <<'EOF'
@@ -155,16 +177,27 @@ fm4 = os.path.join(share, "FM4")
 os.makedirs(fm4, exist_ok=True)
 with open(os.path.join(fm4, "NOTE.TXT"), "w") as f:
     f.write("trash-and-restore-exact\noriginal bytes stay intact\n")
+# M81f (#1766): run 05's watched directory — one file at boot. LATE.TXT is
+# written INTO the live share by the runner mid-run (--host-write-after),
+# which is exactly the host-side mutation the feed must observe; it must not
+# exist at boot, or the run proves nothing.
+fm5 = os.path.join(share, "FM5")
+os.makedirs(fm5, exist_ok=True)
+base5 = os.path.join(fm5, "BASE.TXT")
+with open(base5, "w") as f:
+    f.write("watch-baseline\n")
+if os.path.exists(os.path.join(fm5, "LATE.TXT")):
+    sys.exit("FM5/LATE.TXT already staged - run 05 would prove nothing")
 
 print("staged GOFILES.ELF (%d bytes), GOEDIT.ELF (%d bytes), %s (%d bytes), "
       "%s (%d bytes), GOVIEW.ELF (%d bytes), %s (%d bytes), %s (%d bytes), "
-      "%s (%d bytes)" %
+      "%s (%d bytes), %s (%d bytes)" %
       (os.path.getsize(os.path.join(share, "GOFILES.ELF")),
        os.path.getsize(os.path.join(share, "GOEDIT.ELF")),
        known, os.path.getsize(known), inner, os.path.getsize(inner),
        os.path.getsize(os.path.join(share, "GOVIEW.ELF")),
        pic, os.path.getsize(pic), ogg, os.path.getsize(ogg),
-       readme, os.path.getsize(readme)))
+       readme, os.path.getsize(readme), base5, os.path.getsize(base5)))
 PY
 
 # The chord batch, in full (17 strokes at the cv-input transport's fixed
@@ -453,3 +486,43 @@ vgate_assert 04 share-contains RECENT/LOG.TXT '|restore|'
 vgate_assert 04 serial-absent 'gofiles: delete refused NOTE.TXT rc='
 vgate_assert 04 serial-absent 'gofiles: restore refused rc='
 vgate_assert 04 serial-absent 'exited status=139'
+
+# --- M81f (#1766): run 05, the change feed ----------------------------------
+# GOFILES in /host/FM5 with no chords typed at all: the watch is armed from
+# the app's IDLE loop (first poll takes the baseline listing and prints
+# `gofiles: watch armed`), the runner mutates the share macOS-side when that
+# marker appears, and the feed must name the mutation on a later poll with
+# the refreshed listing behind it. No input path is involved — the proof is
+# that the app learned about a change it did not cause.
+vgate_run 05 -- \
+    --screen '$RUN_DIR/fileman-watch-screen' \
+    --input --via-virtio \
+    --script '$RUN_DIR/script13.txt' \
+    --host-write 'FM5/LATE.TXT' \
+    --host-write-content 'host wrote this line mid-boot' \
+    --host-write-after 'gofiles: watch armed' \
+    --script3 '$RUN_DIR/script15.txt' \
+    --script3-after 'gofiles: watch created LATE.TXT' \
+    --script-expect 'rx-go-fileman-watch-ok' --timeout 240
+
+# The app ran, armed the feed, and the runner really mutated the share.
+vgate_assert 05 serial-contains 'exec: loaded GOFILES.ELF'
+vgate_assert 05 serial-contains 'gofiles: list /host/FM5 n=1'
+vgate_assert 05 serial-contains 'gofiles: watch armed'
+vgate_assert 05 output-contains 'HOST-WRITE: wrote FM5/LATE.TXT'
+vgate_assert 05 share-contains FM5/LATE.TXT 'host wrote this line mid-boot'
+
+# The feed observed it: the event marker, then the refreshed listing that
+# backs it (the two-entry dir with LATE.TXT among them).
+vgate_assert 05 serial-contains 'gofiles: watch created LATE.TXT'
+vgate_assert 05 serial-contains 'gofiles: list /host/FM5 n=2'
+vgate_assert 05 serial-contains 'gofiles: entry BASE.TXT file size='
+vgate_assert 05 serial-contains 'gofiles: entry LATE.TXT file size='
+vgate_assert 05 serial-contains 'rx-go-fileman-watch-ok'
+
+# The refusals that must NOT happen: the watch never fires a path-gone (the
+# dir stays put), the mutation never fails, and the listing never errors.
+vgate_assert 05 serial-absent 'gofiles: watch path gone'
+vgate_assert 05 serial-absent 'gofiles: list error'
+vgate_assert 05 serial-absent '[EXC] parking:'
+vgate_assert 05 serial-absent 'exited status=139'
