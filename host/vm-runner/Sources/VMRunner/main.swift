@@ -172,6 +172,11 @@
 //   spike proves discovery + queue transport (audit step 4) and the
 //   used-ring IRQ via returnToQueue (audit step 5, claim 0828).
 //
+// * --virtio-fs <host-dir> (M83g): attach Apple's standard VirtioFS device,
+//   independently of the custom-virtio spike. The directory is shared
+//   writable under the guest's fixed `virelaios` tag. Unlike custom virtio,
+//   this standard device is eligible for VZ machine-state save/restore.
+//
 // * --nvram-console <file> (M1.5 VZ serial-gate successor, claim 0015):
 //   before exiting, reconstruct the kernel's post-exit console stream from
 //   the EFI variable store (artifacts/efi-vars.bin). In nvram-console
@@ -397,6 +402,10 @@ let vzRestore = arguments.contains("--vz-restore")
 // booting, and must recover the marker by a fresh serial query.
 var vzRestoreSaveDir: String?
 var vzRestoreLoadDir: String?
+var vzRestoreWitness: String?
+var vzRestoreVerifyCommand: String?
+var vzRestoreVerifyOutput: String?
+var virtioFSShareDir: String?
 var cpuCount = 2
 var timeout: TimeInterval = 30
 var timeoutExplicit = false
@@ -738,10 +747,12 @@ while idx < arguments.count {
         // M70g G3 (#1459): the probe also takes the save/load directory and
         // the device knobs whose save/restore support it measures.
         let valued = ["--overlay-base", "--vars", "--serial", "--cpus", "--timeout",
-                      "--vz-restore-save", "--vz-restore-load", "--usb-msd"]
+                      "--vz-restore-save", "--vz-restore-load", "--vz-restore-witness",
+                      "--vz-restore-verify-command", "--vz-restore-verify-output",
+                      "--usb-msd", "--virtio-fs"]
         let bare = ["--vz-restore", "--display", "--input", "--custom-virtio"]
         guard valued.contains(arg) || bare.contains(arg) else {
-            fail("--vz-restore is a standalone headless save/restore probe; supports only --overlay-base, --vars, --serial, --cpus, --timeout, --vz-restore-save/--vz-restore-load <dir>, and the device knobs --display, --input, --usb-msd, --custom-virtio.")
+            fail("--vz-restore is a standalone headless save/restore probe; supports only --overlay-base, --vars, --serial, --cpus, --timeout, --vz-restore-save/--vz-restore-load <dir>, --vz-restore-witness <serial-line>, --vz-restore-verify-command/--vz-restore-verify-output, --virtio-fs <host-dir>, and the device knobs --display, --input, --usb-msd, --custom-virtio.")
         }
         if valued.contains(arg) {
             guard idx + 1 < arguments.count, !arguments[idx + 1].hasPrefix("--") else {
@@ -832,6 +843,18 @@ while idx < arguments.count {
         idx += 2
     } else if arg == "--vz-restore-load", idx + 1 < arguments.count {
         vzRestoreLoadDir = arguments[idx + 1]
+        idx += 2
+    } else if arg == "--vz-restore-witness", idx + 1 < arguments.count {
+        vzRestoreWitness = arguments[idx + 1]
+        idx += 2
+    } else if arg == "--vz-restore-verify-command", idx + 1 < arguments.count {
+        vzRestoreVerifyCommand = arguments[idx + 1]
+        idx += 2
+    } else if arg == "--vz-restore-verify-output", idx + 1 < arguments.count {
+        vzRestoreVerifyOutput = arguments[idx + 1]
+        idx += 2
+    } else if arg == "--virtio-fs", idx + 1 < arguments.count {
+        virtioFSShareDir = arguments[idx + 1]
         idx += 2
     } else if arg == "--cpus", idx + 1 < arguments.count {
         guard let n = Int(arguments[idx + 1]), n >= 1, n <= 8 else {
@@ -1362,6 +1385,19 @@ guard osVersion.majorVersion >= 27 else {
 if vzRestore, !timeout.isFinite || timeout <= 0 || timeout > 600 {
     fail("--vz-restore requires --timeout in (0, 600] seconds; it never runs unbounded.")
 }
+if vzRestoreWitness != nil, !vzRestore {
+    fail("--vz-restore-witness requires --vz-restore.")
+}
+if let witness = vzRestoreWitness, witness.isEmpty || witness.contains("\n") {
+    fail("--vz-restore-witness requires one non-empty serial line.")
+}
+if vzRestoreVerifyCommand != nil || vzRestoreVerifyOutput != nil {
+    guard vzRestore, vzRestoreWitness != nil, vzRestoreSaveDir == nil,
+          let command = vzRestoreVerifyCommand, !command.isEmpty, !command.contains("\n"),
+          let output = vzRestoreVerifyOutput, !output.isEmpty, !output.contains("\n") else {
+        fail("--vz-restore-verify-command and --vz-restore-verify-output require a witness and a run that resumes the VM.")
+    }
+}
 // M70g G3 (#1459): the cross-process pair is two processes with one role each.
 if vzRestoreSaveDir != nil || vzRestoreLoadDir != nil {
     guard vzRestore else { fail("--vz-restore-save/--vz-restore-load require --vz-restore.") }
@@ -1698,6 +1734,20 @@ if !snapshotAfterMarkers.isEmpty, screenshotPath == nil {
 }
 if cvcConsoleFilePath != nil, !customVirtioEnabled {
     fail("--cvc-console-file requires the custom virtio device (queue 1 carries the structured console).")
+}
+if let sharePath = virtioFSShareDir {
+    let shareURL = URL(fileURLWithPath: sharePath, isDirectory: true)
+    var isDirectory: ObjCBool = false
+    guard FileManager.default.fileExists(atPath: shareURL.path, isDirectory: &isDirectory),
+          isDirectory.boolValue else {
+        fail("--virtio-fs requires an existing host directory, got '\(sharePath)'.")
+    }
+    let fileSystem = VZVirtioFileSystemDeviceConfiguration(tag: "virelaios")
+    fileSystem.share = VZSingleDirectoryShare(
+        directory: VZSharedDirectory(url: shareURL, readOnly: false)
+    )
+    config.directorySharingDevices = [fileSystem]
+    print("VIRTIO-FS: ENABLED tag=virelaios share=\(shareURL.path) read-write")
 }
 // Claim 0680: build the trigger list — one numbered raw file per
 // --snapshot-after instance, in registration order.
@@ -2237,6 +2287,7 @@ if vzRestore {
     if inputMode { vzRestoreExtras.append("usb-hid(xhci)") }
     if usbMsdPath != nil { vzRestoreExtras.append("usb-msd(xhci)") }
     if customVirtioEnabled { vzRestoreExtras.append("custom-virtio") }
+    if virtioFSShareDir != nil { vzRestoreExtras.append("virtio-fs") }
     let vzRestoreDevices = vzRestoreExtras.isEmpty ? "headless-base" : vzRestoreExtras.joined(separator: ",")
     print("VZ-RESTORE: devices=\(vzRestoreDevices) mode=\(vzRestoreLoadDir != nil ? "load" : vzRestoreSaveDir != nil ? "save" : "same-process")")
     do {
@@ -2469,6 +2520,9 @@ runner.queue.async {
         // other process's saved state into this fresh VZVirtualMachine.
         let probe = VZRestoreProbe(vm: runner.vm, queue: runner.queue, serialURL: serialURL,
                                    input: consoleInputPipe.fileHandleForWriting, timeout: timeout,
+                                   witnessLine: vzRestoreWitness,
+                                   verifyCommand: vzRestoreVerifyCommand,
+                                   verifyOutput: vzRestoreVerifyOutput,
                                    mode: .load(URL(fileURLWithPath: load, isDirectory: true)))
         probe.startFromSavedState()
         return
@@ -2484,6 +2538,9 @@ runner.queue.async {
             let mode: VZRestoreProbe.Mode = vzRestoreSaveDir.map { .save(URL(fileURLWithPath: $0, isDirectory: true)) } ?? .sameProcess
             let probe = VZRestoreProbe(vm: runner.vm, queue: runner.queue, serialURL: serialURL,
                                        input: consoleInputPipe.fileHandleForWriting, timeout: timeout,
+                                       witnessLine: vzRestoreWitness,
+                                       verifyCommand: vzRestoreVerifyCommand,
+                                       verifyOutput: vzRestoreVerifyOutput,
                                        mode: mode)
             probe.start()
         }

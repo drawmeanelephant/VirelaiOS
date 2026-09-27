@@ -753,7 +753,7 @@ pub fn write(pid: u64, fd: u64, in_buf: []const u8) i64 {
     if (in_buf.len == 0) return 0;
     var off: usize = 0;
     while (off < in_buf.len) {
-        const take = @min(in_buf.len - off, virtio_file.write_chunk_max);
+        const take = @min(in_buf.len - off, virtio_file.write_chunk_limit());
         var written: u64 = 0;
         const st = virtio_file.write(h.host_handle, in_buf[off .. off + take], &written);
         if (st != virtio_file.st_ok or written == 0) {

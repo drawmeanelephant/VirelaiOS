@@ -177,6 +177,91 @@ vgate_assert cvc output-contains 'VZ-RESTORE: validateSaveRestoreSupport REFUSED
 vgate_assert cvc output-contains 'Unsupported custom virtio device in configuration.'
 vgate_assert cvc output-contains 'ERROR: --vz-restore validateSaveRestoreSupport failed'
 
+# --- M83g #1780: cross-process restore with a live VirtioFS-backed Go seat --
+# A real session/settings fixture is read by the guest before save. The Go
+# seat emits its in-memory state only after a composite tick; the load process
+# must recover that witness after resuming the saved VM, then issue a fresh
+# `vf cat` through the restored FUSE queue. The host asserts fixture bytes
+# survived unchanged. Do not insert a run between save and load: the machine
+# identifier, ASIF overlay and virtio-fs directory are one restore pair.
+vgate_setup_python <<'PY'
+import os, shutil, subprocess
+run = os.environ["RUN_DIR"]
+share = os.path.join(run, "share")
+os.makedirs(share, exist_ok=True)
+subprocess.run(["bash", "tools/go/build-gotabwm.sh"], check=True)
+shutil.copy2(".build/go/GOTABWM.ELF", os.path.join(share, "GOTABWM.ELF"))
+
+settings = b"#v2\nwm=gotabwm\ntheme=light\n"
+(open(os.path.join(share, "SETTINGS.TXT"), "wb")).write(settings)
+(open(os.path.join(share, "VZRESTORE.WITNESS"), "wb")).write(b"wake-fuse-ok\n")
+
+def record(title, flags, binary):
+    return (title.encode().ljust(32, b"\0") + bytes([flags]) + bytes(12) +
+            binary.encode().ljust(24, b"\0"))
+
+session = bytes([2, 2, 2, 7, 0, 0]) + record("Notes", 1, "NOTE.ELF") + record("Calc", 0, "GOCALC.ELF")
+(open(os.path.join(share, "SESSION.TABS"), "wb")).write(session)
+print("staged VirtioFS restore share: GOTABWM.ELF=%d settings=%d session=%d witness=%d" %
+      (os.path.getsize(os.path.join(share, "GOTABWM.ELF")), len(settings),
+       len(session), len(b"wake-fuse-ok\n")))
+PY
+
+vgate_run fs-save -- --vz-restore --display --virtio-fs '$RUN_DIR/share' \
+  --vz-restore-save '$RUN_DIR/vzfs' \
+  --vz-restore-witness 'gotabwm: restore witness wm=gotabwm theme=light file=wake-fuse-ok Notes,Calc pin=1,0 active=1' \
+  --timeout 120
+vgate_assert fs-save output-contains 'VZ-RESTORE: devices=virtio-gpu,virtio-fs mode=save'
+vgate_assert fs-save output-contains 'VZ-RESTORE: validateSaveRestoreSupport passed'
+vgate_assert fs-save output-contains 'VZ-RESTORE: before-save guest witness=gotabwm: restore witness wm=gotabwm theme=light file=wake-fuse-ok Notes,Calc pin=1,0 active=1'
+vgate_assert fs-save output-contains 'VZ-RESTORE: SAVE PASS'
+vgate_assert fs-save serial-contains 'virtio-fs: ready did=0x105a'
+vgate_assert fs-save serial-contains 'gotabwm: settings wm=gotabwm'
+vgate_assert fs-save serial-contains 'gotabwm: tokens theme=light'
+vgate_assert fs-save serial-contains 'gotabwm: session load n=2 mode=restore'
+vgate_assert fs-save serial-contains 'gotabwm: session titles=Notes,Calc pin=1,0 active=1'
+vgate_assert fs-save serial-absent '[EXC]'
+vgate_assert fs-save python <<'PY'
+import os
+from pathlib import Path
+share = Path(os.environ["RUN_DIR"], "share")
+session = (bytes([2, 2, 2, 7, 0, 0]) +
+           b"Notes".ljust(32, b"\0") + bytes([1]) + bytes(12) + b"NOTE.ELF".ljust(24, b"\0") +
+           b"Calc".ljust(32, b"\0") + bytes([0]) + bytes(12) + b"GOCALC.ELF".ljust(24, b"\0"))
+assert (share / "SETTINGS.TXT").read_bytes() == b"#v2\nwm=gotabwm\ntheme=light\n"
+assert (share / "SESSION.TABS").read_bytes() == session
+assert (share / "VZRESTORE.WITNESS").read_bytes() == b"wake-fuse-ok\n"
+PY
+
+vgate_run fs-load -- --vz-restore --display --virtio-fs '$RUN_DIR/share' \
+  --vz-restore-load '$RUN_DIR/vzfs' \
+  --vz-restore-witness 'gotabwm: restore witness wm=gotabwm theme=light file=wake-fuse-ok Notes,Calc pin=1,0 active=1' \
+  --vz-restore-verify-command 'vf open VZRESTORE.LARGE; vf write 1 4097; vf fsync 1; vf close 1' \
+  --vz-restore-verify-output 'vf: close 1 ok' \
+  --timeout 120
+vgate_assert fs-load output-contains 'VZ-RESTORE: devices=virtio-gpu,virtio-fs mode=load'
+vgate_assert fs-load output-contains 'VZ-RESTORE: validateSaveRestoreSupport passed'
+vgate_assert fs-load output-contains 'VZ-RESTORE: after-restore guest witness=gotabwm: restore witness wm=gotabwm theme=light file=wake-fuse-ok Notes,Calc pin=1,0 active=1'
+vgate_assert fs-load output-contains 'VZ-RESTORE: after-restore guest verify=vf: close 1 ok'
+vgate_assert fs-load output-contains 'VZ-RESTORE: CROSS-PROCESS PASS'
+vgate_assert fs-load serial-absent 'VirelaiOS kernel has seized control.'
+vgate_assert fs-load serial-absent '[EXC]'
+vgate_assert fs-load serial-contains 'vf: write 1 n=4097 wrote=4097 chunks=3'
+vgate_assert fs-load serial-contains 'vf: fsync 1 ok'
+vgate_assert fs-load serial-contains 'vf: close 1 ok'
+vgate_assert fs-load python <<'PY'
+import os
+from pathlib import Path
+share = Path(os.environ["RUN_DIR"], "share")
+assert (share / "SETTINGS.TXT").read_bytes() == b"#v2\nwm=gotabwm\ntheme=light\n"
+assert (share / "VZRESTORE.WITNESS").read_bytes() == b"wake-fuse-ok\n"
+data = (share / "SESSION.TABS").read_bytes()
+assert data[0:6] == bytes([2, 2, 2, 7, 0, 0]) and len(data) == 6 + 2 * 69, data
+pattern = bytes(((i & 0xff) ^ ((i >> 8) & 0xff)) for i in range(4097))
+assert (share / "VZRESTORE.LARGE").read_bytes() == pattern
+assert (Path(os.environ["RUN_DIR"]) / "vzfs").exists() is False
+PY
+
 # --- flag negatives (parse-time, no boot) -------------------------------------
 vgate_run incompatible -- --vz-restore --cvc-snap
 vgate_allow_rc incompatible 1
@@ -201,3 +286,10 @@ vgate_assert both output-contains 'ERROR: --vz-restore-save and --vz-restore-loa
 vgate_run loadmissing -- --vz-restore --vz-restore-load '$RUN_DIR/absent' --timeout 30
 vgate_allow_rc loadmissing 1
 vgate_assert loadmissing output-contains 'ERROR: --vz-restore-load: no valid machine-id.bin'
+
+vgate_run verifyonsave -- --vz-restore --vz-restore-save '$RUN_DIR/verify-save' \
+  --vz-restore-witness 'witness' \
+  --vz-restore-verify-command 'vf cat VZRESTORE.WITNESS' \
+  --vz-restore-verify-output 'vf: cat ok bytes=13' --timeout 30
+vgate_allow_rc verifyonsave 1
+vgate_assert verifyonsave output-contains 'ERROR: --vz-restore-verify-command and --vz-restore-verify-output require a witness and a run that resumes the VM.'

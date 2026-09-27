@@ -79,6 +79,9 @@ const (
 	MarkerDogfoodSeat        = "dogfood: seat"
 	MarkerDogfoodOK          = "dogfood: ok"
 	MarkerFirstBootWorkspace = "gotabwm: first-boot workspace"
+	// M83g (#1780): emitted after a real composite tick. The VZ restore
+	// runner waits for a fresh copy after resuming the saved VM.
+	MarkerRestoreWitness = "gotabwm: restore witness "
 )
 
 // blankRGB is the blank desktop's colour, packed 0x00RRGGBB as the fill seam
@@ -101,6 +104,20 @@ var openFile = vi.FileOpen
 // demoMode is this process's seat mode, decided once in main via detectDemo.
 // False (live) is the product default and the zero value.
 var demoMode bool
+var restoreWitnessMode bool
+var restoreSettingsWM = "gotabwm"
+
+const restoreWitnessPath = "/host/VZRESTORE.WITNESS"
+
+func detectRestoreWitness() bool {
+	data, n := vi.ReadFileAll(restoreWitnessPath, 64)
+	return n == int64(len("wake-fuse-ok\n")) && string(data) == "wake-fuse-ok\n"
+}
+
+func restoreWitnessLine() string {
+	return MarkerRestoreWitness + "wm=" + restoreSettingsWM +
+		" theme=" + theme.Name() + " file=wake-fuse-ok " + sessionTitlesLine(&tabs)
+}
 
 // detectDemo probes the trigger's existence: found -> demo, absent (or any
 // open error, including the host's -ENOSYS) -> live. Content is deliberately
@@ -195,12 +212,22 @@ func main() {
 	// missing/corrupt handling below is the whole story from there.
 	restoreSnapshot()
 
+	// M83g (#1780): the restore gate starts the default Go seat without a
+	// host script to drive runWindowPhase's interactive blur. The marker file
+	// opts only that gate boot into the live composite loop, keeping the
+	// session/settings witness independent of the window choreography.
+	restoreWitnessMode = detectRestoreWitness()
+	if restoreWitnessMode {
+		vi.ConsoleLine("gotabwm: restore witness mode")
+	}
+
 	// M66b (#1444): decode /host/SETTINGS.TXT (schema v2) BEFORE any phase
 	// that waits on the harness (the window choreography would otherwise
 	// sit between boot and the decode). Missing is silent; corrupt fails
 	// closed — one marker line, then the seat runs on its own defaults. A
 	// marker only after its syscall returned.
 	seatWM := loadSettings()
+	restoreSettingsWM = seatWM
 	emitTokens()
 
 	// M79a (#1704): decide the seat mode once, and name it before the window
@@ -216,8 +243,9 @@ func main() {
 	// 5. The seat's OWN window lifecycle (M57b, issue #1317): open a Go
 	//    window, submit a chrome descriptor and a kernel-clamped rect, take
 	//    focus and lose it, close through the WM seam, and leave a window
-	//    open at exit so the kernel's client-death seam must reap it.
-	if !runWindowPhase() {
+	//    open at exit so the kernel's client-death seam must reap it. The
+	//    M83g restore-witness fixture skips this interactive blur phase.
+	if !restoreWitnessMode && !runWindowPhase() {
 		vi.Exit(7)
 	}
 
@@ -387,6 +415,9 @@ func compositeTick(scan []byte, ticks uint64, presents *int) {
 	// would be reading a frame the seat had not presented yet.
 	if line, once := notifyPaintMarker(painted > 0 && presented); once {
 		vi.ConsoleLine(line)
+	}
+	if restoreWitnessMode && presented && ticks%8 == 0 {
+		vi.ConsoleLine(restoreWitnessLine())
 	}
 	if stripDone || !demoMode {
 		// M79a (#1704): the auto-reorder/pin/split/close chain and the

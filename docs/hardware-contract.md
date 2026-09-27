@@ -403,8 +403,33 @@ Non-PCI platform facts:
     file channel, snapshot channel, structured console) is therefore
     unsaveable on macOS 27.2; the gate run `cvc` pins the refusal verbatim so
     a release that lifts it fails loudly.
+  - **Standard VirtioFS configuration: [observed, host-side validation only]**
+    an entitlement-signed host probe with
+    `VZVirtioFileSystemDeviceConfiguration` passes
+    `validateSaveRestoreSupport` on this Mac. This establishes configuration
+    eligibility only; the guest observation is recorded below.
   - **Not measured:** cross-host and cross-macOS-version portability of a
     saved state (one host available). Nothing here promises them.
+- **M83g (#1780) — standard VirtioFS/FUSE: [observed] 2026-09-27,
+  macOS 27.2 (26B5091g), arm64, `live-vz-restore` 16/16:**
+  - `VZVirtioFileSystemDeviceConfiguration` passes
+    `validateSaveRestoreSupport`. In the guest, PCI device `0x1af4:0x105a`
+    initializes with tag `virelaios`, two queues (high-priority plus one
+    request queue), FUSE 7.31, and a 2048-byte maximum write.
+  - `/host` works through the FUSE queue: a live `vf ls` lists the attached
+    directory, and `vf cat` reads a host file byte-exactly (85 bytes,
+    checksum `0xf346` in the focused I/O boot).
+  - The cross-process `fs-save`/`fs-load` pair passes. GOTABWM reads
+    `SETTINGS.TXT` (`wm=gotabwm`, `theme=light`) and `SESSION.TABS`
+    (`Notes,Calc`, pinned `1,0`, active tab `1`) before save, then emits the
+    same state-bearing witness after process B restores and resumes. A fresh
+    `vf cat VZRESTORE.WITNESS` after resume returns all 13 bytes. The guest
+    also writes and syncs a 4,097-byte deterministic pattern in three FUSE
+    writes, and the host byte-checks it; the staged settings/session/witness
+    bytes remain unchanged.
+  - The custom-virtio negative remains pinned: VZ refuses it at
+    `validateSaveRestoreSupport` on this host. VirtioFS remains explicit
+    (`--virtio-fs`); the boot default and `/host` API are unchanged.
 - Config used: 256 MiB RAM, 2 vCPUs, optional virtio-gpu/sound/net devices
   (flag-gated; the default VM stays byte-identical without flags).
 - **A large image is not a RAM problem by itself, and the guest does not
