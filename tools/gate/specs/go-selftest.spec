@@ -132,6 +132,24 @@
 #                      body (a whole-file publish, no tail) and the
 #                      sacrificial temp does not survive, so the share
 #                      holds one file and no orphan.
+#
+#   * file-snapshot — the M81g (#1767) snapshot bundle, the DRILL the
+#                      card is about. The host seeds four inputs under
+#                      IN/ (a settings table, a BINARY session strip, two
+#                      documents); the guest carries them into one bundle,
+#                      publishes it through the safe write, reads it back,
+#                      parses it and republishes every entry under
+#                      OUT/RESTORED/. The host then rebuilds the bundle
+#                      FROM ITS OWN SEEDED BODIES and byte-compares, so
+#                      what is verified is a round trip through the
+#                      container rather than the guest agreeing with
+#                      itself — and it re-parses the published bundle with
+#                      an INDEPENDENT reader, which is what makes the
+#                      format self-describing instead of guest-private.
+#                      The binary session body is the load-bearing part: a
+#                      text-only container could not carry a real strip.
+#                      The receipt's `corrupt=refused` is the refusal half,
+#                      and a one-byte-short bundle must never parse.
 #   * file-write-publish — the seam BOTH shell hooks now call (M81e2
 #                      #1787): vi.WriteFilePublish's two contracts. The
 #                      REPLACE half is the GOSH history ring save and `>
@@ -185,8 +203,9 @@ case file-errors pass
 case file-write-safe pass
 case file-write-publish pass
 case mime pass
+case file-snapshot pass
 case window pass
-summary cases=17 failed=0
+summary cases=18 failed=0
 EOF
 
 # The canonical intake fixture as the spec seeds it (see the setup hook). The
@@ -214,9 +233,32 @@ altered = b"goself intake fixture v2\n"
 for name, body in (("fixture.txt", fixture), ("altered.txt", altered)):
     with open(os.path.join(st, "IN", name), "wb") as fh:
         fh.write(body)
+
+# M81g (#1767): the four inputs the snapshot case carries. Seeded HERE, on the
+# host, and READ by the guest — so the bundle it builds is made of bytes that
+# came off the share, and a guest that answered from constants in its binary
+# would produce a bundle the asserts below could not match. The session body
+# is deliberately BINARY (NULs, a newline, high bytes) and exactly 12 bytes:
+# the real SESSION.TABS is a binary strip, and a text-only container could not
+# carry the state the card is about.
+snap_settings = b"#v2\ntheme=amber\nwm=gotabwm\n"
+snap_session = bytes([0x54, 0x41, 0x42, 0x53, 0x00, 0x02, 0x00, 0x0a,
+                      0xff, 0xfe, 0x10, 0x20])
+snap_note = b"goself snapshot note\n"
+snap_second = b"goself snapshot second document\n"
+docs = os.path.join(st, "IN", "snapshot-docs")
+os.makedirs(docs, exist_ok=True)
+for name, body in (("snapshot-settings.txt", snap_settings),
+                   ("snapshot-session.tabs", snap_session),
+                   (os.path.join("snapshot-docs", "NOTE.TXT"), snap_note),
+                   (os.path.join("snapshot-docs", "SECOND.TXT"), snap_second)):
+    with open(os.path.join(st, "IN", name), "wb") as fh:
+        fh.write(body)
 print("staged GOSELF.ELF into share (%d bytes) and %s/{IN,OUT}; seeded "
-      "IN/fixture.txt %r and IN/altered.txt %r"
-      % (os.path.getsize(os.path.join(share, "GOSELF.ELF")), st, fixture, altered))
+      "IN/fixture.txt %r, IN/altered.txt %r and the four M81g snapshot inputs "
+      "(session %d B binary)"
+      % (os.path.getsize(os.path.join(share, "GOSELF.ELF")), st, fixture, altered,
+         len(snap_session)))
 PY
 
 vgate_run 01 -- \
@@ -248,6 +290,7 @@ vgate_assert 01 serial-contains 'selftest: case file-bigwrite pass'
 vgate_assert 01 serial-contains 'selftest: case file-clamp pass'
 vgate_assert 01 serial-contains 'selftest: case file-fsync pass'
 vgate_assert 01 serial-contains 'selftest: case file-errors pass'
+vgate_assert 01 serial-contains 'selftest: case file-snapshot pass'
 vgate_assert 01 serial-contains 'selftest: case window pass'
 # The files were written BEFORE the summary (ADR 0031 ordering).
 vgate_assert 01 serial-contains 'selftest: report /host/SELFTEST/REPORT.txt n='
@@ -273,7 +316,7 @@ vgate_assert 01 share-equals SELFTEST/IN/fixture.txt intake-fixture.expected
 # share-contains is the substring kind: the guest's own summary count. Weaker
 # than the python's byte-exact summary.txt compare below, and kept deliberately
 # as the kind's pilot in a real gate.
-vgate_assert 01 share-contains SELFTEST/OUT/summary.txt 'summary cases=17 failed=0'
+vgate_assert 01 share-contains SELFTEST/OUT/summary.txt 'summary cases=18 failed=0'
 
 # The load-bearing assert: the copies and the receipts on the host's own
 # filesystem must be byte-exact, the share's directory state must agree with
@@ -310,6 +353,31 @@ clamp_body = unit * 8               # 168 B: kept 5 + extra 3 at the clamp point
 fsync_body = unit * 7               # 147 B, fsync'd through slot 77 before close
 write_safe_long = unit * 40         # 840 B published, then replaced by the short one
 write_safe_short = unit * 5         # 105 B expected after the shorter publish
+
+# The M81g (#1767) snapshot bodies, reconstructed from ONE expression each —
+# the same bytes the setup hook seeded under IN/. The session one is BINARY:
+# 12 bytes with NULs, a newline and high bytes, because the real SESSION.TABS
+# is a binary strip and the container has to carry it as it is.
+snap_settings = b"#v2\ntheme=amber\nwm=gotabwm\n"
+snap_session = bytes([0x54, 0x41, 0x42, 0x53, 0x00, 0x02, 0x00, 0x0a,
+                      0xff, 0xfe, 0x10, 0x20])
+snap_note = b"goself snapshot note\n"
+snap_second = b"goself snapshot second document\n"
+# The bundle, built HERE from those bodies — the host does not take the
+# guest's word for the container's shape, it recomputes it. An independent
+# construction is the point: if this and virelai/snapshot disagreed about the
+# format, the byte-compare below fails rather than both sides being wrong
+# together.
+snap_entries = [(b"settings", snap_settings),
+                (b"session", snap_session),
+                (b"docs/NOTE.TXT", snap_note),
+                (b"docs/SECOND.TXT", snap_second)]
+want_bundle = (b"#vb1 %d\n" % len(snap_entries)
+               + b"".join(b"%s %d\n%s" % (n, len(bd), bd) for n, bd in snap_entries))
+want_snapshot_receipt = (b"case file-snapshot path=OUT/snapshot.bundle entries=4 docs=2 "
+                         b"bytes=%d settings=%d session=%d match=yes orphan=none "
+                         b"corrupt=refused\n"
+                         % (len(want_bundle), len(snap_settings), len(snap_session)))
 # M81e2 (#1787): the publish case's bodies. The base is the 105 B short body
 # (so the replace is a SHRINK), and the two appended lines are the history
 # appends — 17 B each including the LF.
@@ -325,7 +393,7 @@ win_open_rect = (32, 32, 640, 400)
 win_viewport_w = 1100
 win_viewport_h = 720
 
-want_summary = b"summary cases=17 failed=0\n"
+want_summary = b"summary cases=18 failed=0\n"
 want_hello = b"goself smoke\n"
 want_intake_receipt = b"case intake path=IN/fixture.txt bytes=25 match=yes\n"
 want_altered_receipt = b"case intake-altered path=IN/altered.txt bytes=25 differs=yes\n"
@@ -431,6 +499,59 @@ require(os.path.join(out, "file-write-safe.ok"), want_write_safe_receipt,
         "WRITE-SAFE RECEIPT")
 require(os.path.join(out, "write-safe.copy"), write_safe_short,
         "WRITE-SAFE COPY (no tail)")
+
+# M81g (#1767): the snapshot drill, checked from outside. The bundle on the
+# share is byte-equal to one the HOST rebuilt from the seeded bodies, and
+# every entry the guest rehydrated is byte-equal to the input it came from —
+# so what is being verified is a round trip THROUGH the container, not a copy.
+# The container is then re-parsed below with an independent reader, which is
+# what makes "byte-exact" mean something about the FORMAT and not just about
+# the guest agreeing with itself.
+require(os.path.join(out, "snapshot.bundle"), want_bundle, "SNAPSHOT BUNDLE")
+require(os.path.join(out, "snapshot.copy"), want_bundle, "SNAPSHOT COPY (bytes read back)")
+require(os.path.join(out, "file-snapshot.ok"), want_snapshot_receipt,
+        "SNAPSHOT RECEIPT")
+require(os.path.join(out, "RESTORED", "settings.txt"), snap_settings,
+        "RESTORED SETTINGS")
+require(os.path.join(out, "RESTORED", "session.tabs"), snap_session,
+        "RESTORED SESSION (binary strip)")
+require(os.path.join(out, "RESTORED", "docs", "NOTE.TXT"), snap_note,
+        "RESTORED DOC NOTE.TXT")
+require(os.path.join(out, "RESTORED", "docs", "SECOND.TXT"), snap_second,
+        "RESTORED DOC SECOND.TXT")
+if os.path.exists(os.path.join(out, "snapshot.bundle~")):
+    print("OUT/snapshot.bundle~ survived the publish - the temp leaked")
+    raise SystemExit(1)
+
+# An independent parse of the bundle the guest published: header, declared
+# entry count, then each entry's name and EXACT byte count. A guest that
+# published something only it can read fails here.
+raw = read(os.path.join(out, "snapshot.bundle"))
+nl = raw.index(b"\n")
+if raw[:nl] != b"#vb1 %d" % len(snap_entries):
+    print("SNAPSHOT BUNDLE header is %r, want %r"
+          % (raw[:nl], b"#vb1 %d" % len(snap_entries)))
+    raise SystemExit(1)
+rest = raw[nl + 1:]
+parsed = {}
+for _ in range(len(snap_entries)):
+    eol = rest.index(b"\n")
+    name, _, count = rest[:eol].partition(b" ")
+    count = int(count)
+    body = rest[eol + 1:eol + 1 + count]
+    if len(body) != count:
+        print("SNAPSHOT BUNDLE entry %r declared %d bytes and carried %d"
+              % (name, count, len(body)))
+        raise SystemExit(1)
+    parsed[name] = body
+    rest = rest[eol + 1 + count:]
+if rest:
+    print("SNAPSHOT BUNDLE has %d trailing bytes after its last entry" % len(rest))
+    raise SystemExit(1)
+if parsed != {n: bd for n, bd in snap_entries}:
+    print("the independently parsed bundle does not match the seeded bodies: %r"
+          % sorted(parsed))
+    raise SystemExit(1)
 # M81e2 (#1787): the publish receipt, the whole body the case read back
 # (base + both appended lines, byte-equal -- an "contains the new line"
 # check would also pass a rewrite-per-line append, which is the regression
@@ -561,6 +682,17 @@ for name, path in (("intake.txt", os.path.join(out, "intake.txt")),
                    ("file-errors.ok", os.path.join(out, "file-errors.ok")),
                    ("file-write-safe.ok", os.path.join(out, "file-write-safe.ok")),
                    ("write-safe.copy", os.path.join(out, "write-safe.copy")),
+                   ("file-snapshot.ok", os.path.join(out, "file-snapshot.ok")),
+                   ("snapshot.bundle", os.path.join(out, "snapshot.bundle")),
+                   ("snapshot.copy", os.path.join(out, "snapshot.copy")),
+                   ("restored-settings.txt",
+                    os.path.join(out, "RESTORED", "settings.txt")),
+                   ("restored-session.tabs",
+                    os.path.join(out, "RESTORED", "session.tabs")),
+                   ("restored-NOTE.TXT",
+                    os.path.join(out, "RESTORED", "docs", "NOTE.TXT")),
+                   ("restored-SECOND.TXT",
+                    os.path.join(out, "RESTORED", "docs", "SECOND.TXT")),
                    ("append.copy", os.path.join(out, "append.copy")),
                    ("bigwrite.copy", os.path.join(out, "bigwrite.copy")),
                    ("clamp.copy", os.path.join(out, "clamp.copy")),

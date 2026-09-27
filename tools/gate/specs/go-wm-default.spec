@@ -31,6 +31,17 @@
 # `settings set` heals the file through the crash-safe save (temp + fsync
 # + delete/rename). The healed bytes are byte-compared on the host.
 #
+# M81g (#1767) adds boots 05-09: the SNAPSHOT bundle and the restore DRILL, in
+# five steps staged by the seat and the monitor together — prep the table, take
+# the snapshot with the seat's own Ctrl+Shift+S chord, restore it into the next
+# boot, then refuse a corrupt bundle and a missing one. The card's deliverable
+# is the drill, so the positive half is a boot like any other: the seat
+# rehydrates the share and the boot then reads the restored files through its
+# ORDINARY loadSettings/loadSession paths, which is why boot 07's byte-exact
+# `share-equals` needs no new assert shape. The refusal halves are the M66b
+# corrupt-settings story reused verbatim — one honest line, nothing written,
+# the boot carries on. See the run-by-run table above the boots.
+#
 # HOST PREREQUISITE (fails the gate honestly when missing):
 #   bash tools/go/build-gotabwm.sh   ->  .build/go/GOTABWM.ELF
 #   bash tools/go/build-gosh.sh      ->  .build/go/GOSH.ELF (M76b first boot)
@@ -141,6 +152,27 @@ if os.path.exists(os.path.join(share, "SESSION.TABS")):
              "the missing-session first-boot branch")
 PY
 
+# M81g (#1767): the documents selection the snapshot carries, seeded here on
+# the HOST share. The seat's capture lists /host/DOCS and takes the first
+# maxDocs regular files in NAME order, so these two are what `docs=2` on the
+# snapshot marker counts. They are staged from the host rather than through
+# the monitor's `vf` verbs because the seat only READS this directory here —
+# the restore writes through the EL0 file ABI, and vf's own trust gate is not
+# part of what this card is testing.
+vgate_setup_python <<'PY'
+import os
+rd = os.environ["RUN_DIR"]
+share = os.environ.get("VG_SHARE") or os.path.join(rd, "share")
+docs = os.path.join(share, "DOCS")
+os.makedirs(docs, exist_ok=True)
+bodies = {"NOTE.TXT": b"m81g snapshot document one\n",
+          "SECOND.TXT": b"m81g snapshot document two\n"}
+for name, body in bodies.items():
+    with open(os.path.join(docs, name), "wb") as fh:
+        fh.write(body)
+print("seeded DOCS/{%s} for the M81g documents selection" % ", ".join(sorted(bodies)))
+PY
+
 # The default-seat table with `wm=tabwm`, in the kernel's settings.zig init()
 # order (the `prompt` row's trailing space is part of the value). It is shared
 # by TWO runs ON PURPOSE, because two different writers must produce it: boot 01
@@ -157,6 +189,40 @@ shadow=off
 focus_follows_mouse=off
 shell=monitor
 wm=tabwm
+EOF
+
+# M81g (#1767): the settings table the SNAPSHOT carries, and the one the
+# restore must put back byte-exact. It differs from settings-healed.expected in
+# exactly two rows — `theme=light` and `wm=gotabwm` — which is what makes the
+# restore observable rather than circular: the live file is set to theme=dark
+# after the snapshot is taken, so boot 07 reporting `theme=light` AND
+# byte-equalling THIS fixture can only have got those bytes from the bundle.
+# `wm=gotabwm` is also what seats the Go desktop that performs the restore, so
+# it has to be in the table.
+#
+# `theme` has to be a value the theme module HONORS: user/go/theme's Set
+# accepts only dark and light, so `theme=amber` — a legal settings vocab value —
+# leaves the seat painting dark and the token probe would report `theme=dark`
+# whatever the file said (observed on the first M81g run). light is real, so
+# the probe is a true witness of the decoded row.
+#
+# `prompt` carries NO trailing space here, unlike settings-healed.expected.
+# That is not a typo: boot 04 heals a CORRUPT file, so the kernel serializes
+# its compiled default table with `prompt=virelai> ` intact, whereas boot 05's
+# `settings set` re-serializes a PARSED table — and the schema-v2 parse
+# trims each value (virelai/settings Parse). So after any parse+set cycle the
+# space is gone, and a fixture carrying it can never match (observed on the
+# first M81g run, boot 05).
+vgate_file settings-snapshot.expected <<'EOF'
+#v2
+hostname=virelai
+prompt=virelai>
+theme=light
+scrollback=1000
+shadow=off
+focus_follows_mouse=off
+shell=monitor
+wm=gotabwm
 EOF
 
 # M71f (#1565): the run gains HID. Once the panel says it is ready, one typed
@@ -443,4 +509,319 @@ stale = os.path.join(share, "SETTINGS.TXT~")
 if os.path.exists(stale):
     sys.exit("SETTINGS.TXT~ survived the publish - the rename did not run")
 print("crash-safe publish left no SETTINGS.TXT~ on the share")
+PY
+
+# ---------------------------------------------------------------------------
+# M81g (#1767): the snapshot bundle, and the restore DRILL
+# ---------------------------------------------------------------------------
+# The card's deliverable is the drill, not the archive step, so the runs below
+# are staged by the seat and the monitor together and every step is checked
+# against the share from the host:
+#
+#   05  prep        the settings table the snapshot will carry (wm=gotabwm so
+#                   the Go desktop is seated, theme=light as the marker value)
+#   06  take        the SEAT presses Ctrl+Shift+S; the follow-up script runs
+#                   only after the `snapshot saved` marker, so the capture is
+#                   provably taken BEFORE the settings are changed underneath
+#                   it. That script then sets theme=dark (so a later restore is
+#                   observable) and stages the one-shot SNAPSHOT.RESTORE.
+#   07  restore     the seat rehydrates the share from the bundle: the token
+#                   probe reports theme=light again and SETTINGS.TXT
+#                   byte-equals settings-snapshot.expected.
+#   08  corrupt     64 probe-pattern bytes are staged over the bundle and the
+#                   request re-armed. The seat refuses the bundle WHOLE:
+#                   one `snapshot bad` line, SETTINGS.TXT untouched, the
+#                   request consumed, the boot otherwise normal.
+#   09  absent      the bundle is removed and the request re-armed. A missing
+#                   bundle is a different diagnosis from a corrupt one and is
+#                   named as such; nothing is written either way.
+#
+# The two refusal runs are the M66b corrupt-settings shape reused verbatim:
+# refuse whole, one honest line, compiled defaults, never a boot failure.
+
+# Boot 05: the table the snapshot will carry. `wm=gotabwm` cannot be assumed —
+# boot 04 healed the file to wm=tabwm — so the Go seat that performs the
+# capture has to be asked for first, and the seat is chosen at boot.
+vgate_file script-05.txt <<'EOF'
+settings set wm gotabwm
+settings set theme light
+echo rx-m81g-prep-ok
+EOF
+
+vgate_run 05 -- \
+    --screen '$RUN_DIR/screen-05' \
+    --script '$RUN_DIR/script-05.txt' \
+    --script-expect 'rx-m81g-prep-ok' --timeout 300
+
+vgate_assert 05 serial-contains 'settings: wm=gotabwm (persisted)'
+vgate_assert 05 serial-contains 'settings: theme=light (persisted)'
+vgate_assert 05 serial-absent '[EXC] parking:'
+
+# The table boot 06 snapshots, and boot 07 must bring back.
+vgate_assert 05 share-equals SETTINGS.TXT settings-snapshot.expected
+
+# Boot 06: the seat takes the snapshot. Two orderings have to be right and both
+# are marker-caused, never slept on:
+#
+#   - `dui focus 0` (script 1) hands focus away from the seat's window, which is
+#     what the seat's bounded choreography waits for. Without it the seat sits
+#     in `win blur timeout` and never reaches the loop that handles keys — the
+#     first M81g run stalled there for the full 300 s and no chord was ever
+#     read. This is boot 01's own focus step, and the seat needs it here for the
+#     same reason.
+#   - the chord is anchored AFTER `gotabwm: win gone`, so it is delivered once
+#     the seat is actually polling events, and --script2-after keys the
+#     follow-up off the seat's OWN `snapshot saved` marker — establishing
+#     "capture, then change the settings under it" without a sleep.
+vgate_file script-06-focus.txt <<'EOF'
+dui focus 0
+EOF
+
+vgate_file script-06.txt <<'EOF'
+settings set theme dark
+vf open SNAPSHOT.RESTORE
+vf write 0 1
+vf close 0
+echo rx-m81g-snapshot-staged
+EOF
+
+vgate_run 06 -- \
+    --screen '$RUN_DIR/screen-06' \
+    --via-virtio \
+    --script '$RUN_DIR/script-06-focus.txt' \
+    --script-after 'gotabwm: win focus' \
+    --input-chords 'ctrl-shift-s' \
+    --input-chords-after 'gotabwm: win gone' \
+    --script2 '$RUN_DIR/script-06.txt' \
+    --script2-after 'gotabwm: snapshot saved' \
+    --script-expect 'rx-m81g-snapshot-staged' --timeout 300
+
+# The seat is the Go desktop (boot 05 asked for it) and the chord armed.
+vgate_assert 06 serial-contains 'wm: autostart gotabwm (settings wm=gotabwm)'
+vgate_assert 06 serial-contains 'gotabwm: registered'
+# The capture marker, printed only after the crash-safe publish returned.
+vgate_assert 06 serial-contains 'gotabwm: snapshot saved bytes='
+# The follow-up then moved the live settings AWAY from what was captured, and
+# armed the one-shot restore request.
+vgate_assert 06 serial-contains 'settings: theme=dark (persisted)'
+vgate_assert 06 serial-contains 'vf: open SNAPSHOT.RESTORE h=0'
+vgate_assert 06 serial-contains 'vf: close 0 ok'
+vgate_assert 06 serial-contains 'rx-m81g-snapshot-staged'
+vgate_assert 06 serial-absent '[EXC] parking:'
+vgate_assert 06 serial-absent 'exited status=139'
+# The publish consumed its temp, like every other safe publish in this spec.
+vgate_assert 06 python <<'PY'
+import os, sys
+share = os.environ["VG_SHARE"]
+stale = os.path.join(share, "SNAPSHOT.BUNDLE~")
+if os.path.exists(stale):
+    sys.exit("SNAPSHOT.BUNDLE~ survived the publish - the rename did not run")
+print("crash-safe bundle publish left no SNAPSHOT.BUNDLE~ on the share")
+PY
+# The bundle's shape, read on the HOST: the header carries the entry count, and
+# the selection is settings + the session strip + both documents. The byte
+# count is checked against the file's real size, so the marker's `bytes=` is
+# held to what actually landed rather than trusted.
+vgate_assert 06 python <<'PY'
+import os, re, sys
+share = os.environ["VG_SHARE"]
+rd = os.environ["RUN_DIR"]
+serial = open(os.environ.get("VG_SER") or
+              os.path.join(rd, "vm-serial-06.log"), "rb").read()
+path = os.path.join(share, "SNAPSHOT.BUNDLE")
+if not os.path.exists(path):
+    sys.exit("no SNAPSHOT.BUNDLE on the share - the seat published nothing")
+raw = open(path, "rb").read()
+nl = raw.index(b"\n")
+if raw[:nl] != b"#vb1 4":
+    print("bundle header is %r, want b'#vb1 4' (settings+session+2 docs)" % raw[:nl])
+    sys.exit(1)
+m = re.search(rb"gotabwm: snapshot saved bytes=(\d+) entries=(\d+) docs=(\d+)", serial)
+if not m:
+    sys.exit("the seat printed no `snapshot saved` marker")
+if int(m.group(1)) != len(raw):
+    print("the marker claims %s bytes, the file is %d" % (m.group(1).decode(), len(raw)))
+    sys.exit(1)
+if (int(m.group(2)), int(m.group(3))) != (4, 2):
+    print("marker says entries=%s docs=%s, want 4 and 2"
+          % (m.group(2).decode(), m.group(3).decode()))
+    sys.exit(1)
+for name in (b"settings ", b"session ", b"docs/NOTE.TXT ", b"docs/SECOND.TXT "):
+    if name not in raw:
+        print("the bundle does not carry a %r entry" % name)
+        sys.exit(1)
+# And the two document BODIES are the seeded bytes: the capture really read
+# /host/DOCS off the share rather than naming the entries and inventing them.
+# (The documents' RESTORE is proven in go-selftest, where the guest rehydrates
+# them and the host compares OUT/RESTORED/docs/* against the seeded inputs.)
+rest = raw[raw.index(b"\n") + 1:]
+for _ in range(4):
+    eol = rest.index(b"\n")
+    name, _, count = rest[:eol].partition(b" ")
+    body = rest[eol + 1:eol + 1 + int(count)]
+    rest = rest[eol + 1 + int(count):]
+    if name == b"docs/NOTE.TXT" and body != b"m81g snapshot document one\n":
+        print("the bundle's NOTE.TXT body is %r, not the seeded bytes" % body)
+        sys.exit(1)
+    if name == b"docs/SECOND.TXT" and body != b"m81g snapshot document two\n":
+        print("the bundle's SECOND.TXT body is %r, not the seeded bytes" % body)
+        sys.exit(1)
+print("bundle on the share: %d bytes, header `#vb1 4`, entries settings+session"
+      "+2 docs whose bodies are the seeded files (the marker agreed with the "
+      "file)" % len(raw))
+PY
+
+# Boot 07: the drill's positive half. The seat finds the one-shot request,
+# rehydrates the share, and the boot then reads the restored files through its
+# ORDINARY paths — which is why no boot-07 assert is about a new code path.
+#
+# The script is anchored on `gotabwm: tokens theme=`, NOT left to run at
+# monitor-ready: the seat's restore happens EARLY in its own life, and a script
+# with no --script-after runs as soon as the console is up, which the first
+# M81g run showed is BEFORE the seat gets there — the corruption landed at
+# serial line 93 and the seat then refused its own snapshot at line 126. The
+# token probe is printed unconditionally right after the settings decode, so it
+# is both always-present and always after the restore.
+vgate_file script-07.txt <<'EOF'
+vf open SNAPSHOT.BUNDLE
+vf truncate 0 0
+vf write 0 64
+vf close 0
+vf open SNAPSHOT.RESTORE
+vf write 0 1
+vf close 0
+echo rx-m81g-corrupt-staged
+EOF
+
+vgate_run 07 -- \
+    --screen '$RUN_DIR/screen-07' \
+    --script '$RUN_DIR/script-07.txt' \
+    --script-after 'gotabwm: tokens theme=' \
+    --script-expect 'rx-m81g-corrupt-staged' --timeout 300
+
+# The restore marker, printed only after the last publish returned.
+vgate_assert 07 serial-contains 'gotabwm: snapshot restore bytes='
+# The restored settings are what the seat HONORS: the theme probe reports the
+# value the bundle carried, not the theme=dark the live file was left on.
+vgate_assert 07 serial-contains 'gotabwm: tokens theme=light'
+vgate_assert 07 serial-contains 'gotabwm: settings wm=gotabwm'
+# Byte-exact: the whole file, not "a settings table that decodes the same".
+vgate_assert 07 share-equals SETTINGS.TXT settings-snapshot.expected
+# The seat's restore ran BEFORE this boot's script re-armed the request for
+# boot 08 — which is the ordering that makes the one-shot property checkable
+# at all. Boats 07 and 08 deliberately re-stage the request, so the FILE is
+# legitimately present at their end; what has to hold is that the seat had
+# already consumed it. Boot 09 is where the file's ABSENCE is the evidence.
+vgate_assert 07 python <<'PY'
+import os, sys
+rd = os.environ["RUN_DIR"]
+serial = open(os.environ.get("VG_SER") or
+              os.path.join(rd, "vm-serial-07.log"), "rb").read().splitlines()
+def line_of(needle):
+    for i, l in enumerate(serial):
+        if needle in l:
+            return i
+    sys.exit("the serial has no %r line" % needle)
+restore = line_of(b"gotabwm: snapshot restore bytes=")
+rearm = line_of(b"vf open SNAPSHOT.RESTORE")
+if restore >= rearm:
+    print("the restore is at serial line %d but the request was re-armed at %d - "
+          "the corruption would have landed BEFORE the restore" % (restore, rearm))
+    sys.exit(1)
+print("restore (line %d) preceded this boot's re-arm of the request (line %d), "
+      "so the seat had already consumed it" % (restore, rearm))
+PY
+vgate_assert 07 serial-absent '[EXC] parking:'
+vgate_assert 07 serial-absent 'exited status=139'
+# 07's script then staged the corruption and re-armed the request for boot 08.
+vgate_assert 07 serial-contains 'vf: open SNAPSHOT.BUNDLE h=0'
+vgate_assert 07 serial-contains 'vf: truncate 0 size=0 ok'
+vgate_assert 07 serial-contains 'vf: write 0 n=64 wrote=64 chunks=1'
+vgate_assert 07 serial-contains 'rx-m81g-corrupt-staged'
+
+# Boot 08: the refusal half, the M66b shape. A corrupt bundle is refused
+# WHOLE — one line naming the reason, nothing written, and the boot continues
+# on the live settings it already had.
+vgate_file script-08.txt <<'EOF'
+vf rm SNAPSHOT.BUNDLE
+vf open SNAPSHOT.RESTORE
+vf write 0 1
+vf close 0
+echo rx-m81g-absent-staged
+EOF
+
+vgate_run 08 -- \
+    --screen '$RUN_DIR/screen-08' \
+    --script '$RUN_DIR/script-08.txt' \
+    --script-after 'gotabwm: tokens theme=' \
+    --script-expect 'rx-m81g-absent-staged' --timeout 300
+
+vgate_assert 08 serial-contains 'gotabwm: snapshot bad header'
+# A refusal is not a boot failure: the seat ran, and it ran on the settings
+# that were already there.
+vgate_assert 08 serial-contains 'wm: autostart gotabwm (settings wm=gotabwm)'
+vgate_assert 08 serial-contains 'gotabwm: registered'
+vgate_assert 08 serial-contains 'gotabwm: tokens theme=light'
+# Refused WHOLE: the live settings are exactly what boot 07 left there.
+vgate_assert 08 share-equals SETTINGS.TXT settings-snapshot.expected
+# Same ordering evidence as boot 07: the refusal is the seat's, and it happened
+# before this boot's script re-armed the request for boot 09.
+vgate_assert 08 python <<'PY'
+import os, sys
+rd = os.environ["RUN_DIR"]
+serial = open(os.environ.get("VG_SER") or
+              os.path.join(rd, "vm-serial-08.log"), "rb").read().splitlines()
+def line_of(needle):
+    for i, l in enumerate(serial):
+        if needle in l:
+            return i
+    sys.exit("the serial has no %r line" % needle)
+refusal = line_of(b"gotabwm: snapshot bad")
+rearm = line_of(b"vf open SNAPSHOT.RESTORE")
+if refusal >= rearm:
+    print("the refusal is at serial line %d but the request was re-armed at %d"
+          % (refusal, rearm))
+    sys.exit(1)
+print("refusal (line %d) preceded this boot's re-arm of the request (line %d)"
+      % (refusal, rearm))
+PY
+vgate_assert 08 serial-absent 'gotabwm: snapshot restore'
+vgate_assert 08 serial-absent '[EXC] parking:'
+vgate_assert 08 serial-absent 'exited status=139'
+vgate_assert 08 serial-contains 'rx-m81g-absent-staged'
+
+# Boot 09: the absent half. Different diagnosis, same outcome — nothing is
+# written and the boot is normal.
+vgate_file script-09.txt <<'EOF'
+echo rx-m81g-absent-ok
+EOF
+
+vgate_run 09 -- \
+    --screen '$RUN_DIR/screen-09' \
+    --script '$RUN_DIR/script-09.txt' \
+    --script-after 'gotabwm: snapshot missing' \
+    --script-expect 'rx-m81g-absent-ok' --timeout 300
+
+vgate_assert 09 serial-contains 'gotabwm: snapshot missing'
+# A missing bundle is NOT a corrupt one: the two lines must not be confused.
+vgate_assert 09 serial-absent 'gotabwm: snapshot bad'
+vgate_assert 09 serial-absent 'gotabwm: snapshot restore'
+vgate_assert 09 serial-contains 'wm: autostart gotabwm (settings wm=gotabwm)'
+vgate_assert 09 share-equals SETTINGS.TXT settings-snapshot.expected
+vgate_assert 09 serial-contains 'rx-m81g-absent-ok'
+vgate_assert 09 serial-absent '[EXC] parking:'
+vgate_assert 09 serial-absent 'exited status=139'
+# The one-shot property, where the file's ABSENCE is the evidence: boot 08's
+# script armed this request, boot 09's seat consumed it while refusing the
+# absent bundle, and boot 09's own script arms nothing — so a request left on
+# the share would mean the seat does not consume it, and a bad bundle could
+# refuse on every later boot.
+vgate_assert 09 python <<'PY'
+import os, sys
+share = os.environ["VG_SHARE"]
+if os.path.exists(os.path.join(share, "SNAPSHOT.RESTORE")):
+    sys.exit("SNAPSHOT.RESTORE is still on the share after boot 09 consumed it "
+             "- the request is not one-shot")
+print("the restore request is a ONE-SHOT: consumed by the boot 09 refusal, "
+      "and boot 09 armed nothing, so it is gone from the share")
 PY

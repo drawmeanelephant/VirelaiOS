@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"virelai/snapshot"
 	"virelai/vi"
 )
 
@@ -353,6 +354,20 @@ func (f *fakeFS) write(h uint32, b []byte) (int, int64) {
 	return len(b), int64(len(b))
 }
 
+// resultFor returns the verdict for one case by id. The window tests used to
+// hardcode a list index, which every added case shifts — M81b, M81e2 and M81g
+// each had to renumber them. Asking by id is what the test means.
+func resultFor(t *testing.T, rs []result, id string) result {
+	t.Helper()
+	for _, r := range rs {
+		if r.id == id {
+			return r
+		}
+	}
+	t.Fatalf("no case %q in this run", id)
+	return result{}
+}
+
 // wantReport is the byte-exact report after M66a: the M61f `share-equals`
 // fixture shape, and the report the go-selftest spec requires on the share.
 // Adding a case updates this and the spec together.
@@ -363,14 +378,21 @@ const wantReport = "case intake pass\ncase intake-altered pass\n" +
 	"case file-append pass\ncase file-bigwrite pass\ncase file-clamp pass\n" +
 	"case file-fsync pass\ncase file-errors pass\n" +
 	"case file-write-safe pass\ncase file-write-publish pass\n" +
-	"case mime pass\ncase window pass\n" +
-	"summary cases=17 failed=0\n"
+	"case mime pass\ncase file-snapshot pass\ncase window pass\n" +
+	"summary cases=18 failed=0\n"
 
 // seedFixtures is the host's half of the intake contract: IN/fixture.txt holds
-// the canonical body, IN/altered.txt the altered one (ADR 0031 D2).
+// the canonical body, IN/altered.txt the altered one (ADR 0031 D2), and the
+// M81g (#1767) snapshot case's four inputs live there too — the guest READS
+// them, so a bundle built from constants rather than from the share would not
+// match what the host seeded.
 func seedFixtures(fs *fakeFS) {
 	fs.files[intakePath] = []byte(intakeFixture)
 	fs.files[alteredPath] = []byte(intakeAltered)
+	fs.files[snapshotInSettings] = []byte(snapshotSettingsBody)
+	fs.files[snapshotInSession] = []byte(snapshotSessionBody)
+	fs.files[snapshotInNote] = []byte(snapshotNoteBody)
+	fs.files[snapshotInSecond] = []byte(snapshotSecondBody)
 }
 
 func TestRunCasesAllPassAndReportBytes(t *testing.T) {
@@ -378,8 +400,8 @@ func TestRunCasesAllPassAndReportBytes(t *testing.T) {
 	seedFixtures(fs)
 	rs := runCases(fs.syscalls())
 
-	if len(rs) != 17 {
-		t.Fatalf("cases = %d, want 17", len(rs))
+	if len(rs) != 18 {
+		t.Fatalf("cases = %d, want 18", len(rs))
 	}
 	for _, r := range rs {
 		if !r.ok {
@@ -389,7 +411,7 @@ func TestRunCasesAllPassAndReportBytes(t *testing.T) {
 	if got := string(renderReport(rs)); got != wantReport {
 		t.Fatalf("report bytes:\n got %q\nwant %q", got, wantReport)
 	}
-	if got := string(renderSummary(rs)); got != "summary cases=17 failed=0\n" {
+	if got := string(renderSummary(rs)); got != "summary cases=18 failed=0\n" {
 		t.Fatalf("summary = %q", got)
 	}
 	if got := fs.files[helloPath]; !bytes.Equal(got, []byte(helloPayload)) {
@@ -432,6 +454,11 @@ func TestIntakeCopiesTheBytesItRead(t *testing.T) {
 // holds what was read, so the host can see the mutation that failed it.
 func TestIntakeFailsOnAMutatedSeed(t *testing.T) {
 	fs := newFakeFS()
+	seedFixtures(fs)
+	// Swap the two intake fixtures: the canonical path now holds the
+	// altered body and vice versa, which is the mutation the M61c
+	// end-to-end rehearsal recorded on issue #1383. The M81g fixtures stay
+	// as seeded so the snapshot case is not a third failure here.
 	fs.files[intakePath] = []byte(intakeAltered)
 	fs.files[alteredPath] = []byte(intakeFixture)
 	rs := runCases(fs.syscalls())
@@ -451,7 +478,7 @@ func TestIntakeFailsOnAMutatedSeed(t *testing.T) {
 	if !strings.Contains(report, "case intake fail fixture mismatch") {
 		t.Fatalf("report lacks the intake failure: %q", report)
 	}
-	if !strings.Contains(report, "summary cases=17 failed=2") {
+	if !strings.Contains(report, "summary cases=18 failed=2") {
 		t.Fatalf("report summary wrong: %q", report)
 	}
 	if got := fs.files[intakeCopy]; !bytes.Equal(got, []byte(intakeAltered)) {
@@ -467,6 +494,12 @@ func TestIntakeFailsOnAMutatedSeed(t *testing.T) {
 // a crash and never a skipped report (issue #1383 acceptance).
 func TestIntakeFailsWhenTheFixtureIsMissing(t *testing.T) {
 	fs := newFakeFS()
+	// The M81g snapshot fixtures ARE seeded: this test is about the two
+	// intake cases finding nothing, and the snapshot case reads IN/ too, so
+	// leaving them out would fail a third case for an unrelated reason.
+	seedFixtures(fs)
+	delete(fs.files, intakePath)
+	delete(fs.files, alteredPath)
 	rs := runCases(fs.syscalls())
 
 	if rs[0].ok || rs[0].id != "intake" {
@@ -481,7 +514,7 @@ func TestIntakeFailsWhenTheFixtureIsMissing(t *testing.T) {
 	// The report is still complete: 14 cases, the 2 intake ones failed (the
 	// clock, file and window cases do not read IN/).
 	report := string(renderReport(rs))
-	if !strings.Contains(report, "summary cases=17 failed=2") {
+	if !strings.Contains(report, "summary cases=18 failed=2") {
 		t.Fatalf("report summary wrong: %q", report)
 	}
 	if lines := strings.Count(report, "\n"); lines != len(rs)+1 {
@@ -492,8 +525,9 @@ func TestIntakeFailsWhenTheFixtureIsMissing(t *testing.T) {
 // ---------------------------------------------------------------------------
 // M61e (#1385): the window receipt
 // ---------------------------------------------------------------------------
-// Index map after M66a: … 7 file-list · 8 file-append · 9 file-bigwrite ·
-// 10 file-clamp · 11 file-fsync · 12 file-errors · 13 window.
+// Cases are looked up by id (resultFor), not by index — the index map this
+// comment used to carry was renumbered by every case M66a, M81b, M81e2 and
+// M81g added.
 
 // The receipt carries the KERNEL's geometry from the query, which is NOT what
 // the app asked for at open: if the case restated its request, the w/h here
@@ -504,8 +538,8 @@ func TestWindowReceiptCarriesTheKernelsGeometry(t *testing.T) {
 	fs := newFakeFS()
 	seedFixtures(fs)
 	rs := runCases(fs.syscalls())
-	if !rs[16].ok || rs[16].id != "window" {
-		t.Fatalf("window should have passed, got %+v", rs[16])
+	if !resultFor(t, rs, "window").ok {
+		t.Fatalf("window should have passed, got %+v", resultFor(t, rs, "window"))
 	}
 	wantLine := "case window win=2 w=1100 h=720 present=ok\n"
 	if got := string(fs.files[windowReceipt]); got != wantLine {
@@ -525,8 +559,8 @@ func TestWindowReceiptFollowsTheQueryWhereverItPoints(t *testing.T) {
 	seedFixtures(fs)
 	fs.winGeometry = [8]uint32{32, 32, winReqW, winReqH, 0, 1, 1, 0}
 	rs := runCases(fs.syscalls())
-	if !rs[16].ok {
-		t.Fatalf("window should have passed, got %+v", rs[16])
+	if !resultFor(t, rs, "window").ok {
+		t.Fatalf("window should have passed, got %+v", resultFor(t, rs, "window"))
 	}
 	wantLine := "case window win=2 w=640 h=400 present=ok\n"
 	if got := string(fs.files[windowReceipt]); got != wantLine {
@@ -541,11 +575,11 @@ func TestWindowFailsWithoutAWindow(t *testing.T) {
 	seedFixtures(fs)
 	fs.winID = -1
 	rs := runCases(fs.syscalls())
-	if rs[16].ok {
-		t.Fatalf("window passed with no window, got %+v", rs[16])
+	if resultFor(t, rs, "window").ok {
+		t.Fatalf("window passed with no window, got %+v", resultFor(t, rs, "window"))
 	}
-	if !strings.Contains(rs[16].detail, "no window") {
-		t.Fatalf("detail = %q", rs[16].detail)
+	if !strings.Contains(resultFor(t, rs, "window").detail, "no window") {
+		t.Fatalf("detail = %q", resultFor(t, rs, "window").detail)
 	}
 	if _, ok := fs.files[windowReceipt]; ok {
 		t.Fatal("a window-less run still wrote a receipt")
@@ -568,11 +602,11 @@ func TestWindowNamesEachRefusal(t *testing.T) {
 			seedFixtures(fs)
 			tc.break_(fs)
 			rs := runCases(fs.syscalls())
-			if rs[16].ok {
-				t.Fatalf("window passed with %s refused, got %+v", tc.name, rs[16])
+			if resultFor(t, rs, "window").ok {
+				t.Fatalf("window passed with %s refused, got %+v", tc.name, resultFor(t, rs, "window"))
 			}
-			if !strings.Contains(rs[16].detail, tc.want) {
-				t.Fatalf("detail = %q, want %q", rs[16].detail, tc.want)
+			if !strings.Contains(resultFor(t, rs, "window").detail, tc.want) {
+				t.Fatalf("detail = %q, want %q", resultFor(t, rs, "window").detail, tc.want)
 			}
 		})
 	}
@@ -585,11 +619,11 @@ func TestWindowCatchesAnEmptyWindow(t *testing.T) {
 	seedFixtures(fs)
 	fs.winGeometry = [8]uint32{0, 0, 0, 0, 0, 1, 1, 0}
 	rs := runCases(fs.syscalls())
-	if rs[16].ok {
-		t.Fatalf("window passed on an empty window, got %+v", rs[16])
+	if resultFor(t, rs, "window").ok {
+		t.Fatalf("window passed on an empty window, got %+v", resultFor(t, rs, "window"))
 	}
-	if !strings.Contains(rs[16].detail, "query reports an empty window: 0x0") {
-		t.Fatalf("detail = %q", rs[16].detail)
+	if !strings.Contains(resultFor(t, rs, "window").detail, "query reports an empty window: 0x0") {
+		t.Fatalf("detail = %q", resultFor(t, rs, "window").detail)
 	}
 	// The receipt still holds what was measured, so the host sees the zeros.
 	if got := string(fs.files[windowReceipt]); got != "case window win=2 w=0 h=0 present=ok\n" {
@@ -678,7 +712,7 @@ func TestFileWriteCaseFailsWhenTheWriteIsRefused(t *testing.T) {
 	if !strings.Contains(report, "case file-write fail ") {
 		t.Fatalf("report lacks the fail detail: %q", report)
 	}
-	if !strings.Contains(report, "summary cases=17 failed=1") {
+	if !strings.Contains(report, "summary cases=18 failed=1") {
 		t.Fatalf("report summary wrong: %q", report)
 	}
 }
@@ -809,6 +843,7 @@ func TestOneLineBoundsAndFlattensDetails(t *testing.T) {
 // ---------------------------------------------------------------------------
 //
 // Index map after M61d: 0 intake · 1 intake-altered · 2 clock-monotonic ·
+// (the window cases below now use resultFor by id, not an index)
 // 3 file-write · 4 file-roundtrip · 5 file-truncate · 6 file-delete ·
 // 7 file-list.
 
@@ -1001,8 +1036,9 @@ func TestMkdirRowNeedsCreateAndWrite(t *testing.T) {
 // M66a (#1443): the file-semantics hardening pack
 // ---------------------------------------------------------------------------
 //
-// Index map after M66a: … 7 file-list · 8 file-append · 9 file-bigwrite ·
-// 10 file-clamp · 11 file-fsync · 12 file-errors · 13 window.
+// Cases are looked up by id (resultFor), not by index — the index map this
+// comment used to carry was renumbered by every case M66a, M81b, M81e2 and
+// M81g added.
 
 // Append-at-EOF: the reopened append write lands AFTER the base body. If the
 // append flag were dropped anywhere below the ABI, the open would replace
@@ -1458,5 +1494,108 @@ func TestMimeCaseFailsWhenTheShareLies(t *testing.T) {
 	}
 	if !strings.Contains(rs[15].detail, "read ") {
 		t.Fatalf("detail = %q, want the refused read named", rs[15].detail)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// M81g (#1767): the snapshot bundle drill
+// ---------------------------------------------------------------------------
+
+// The drill, on the fake share: the four seeded bodies go into one bundle, the
+// bundle is published crash-safe and read back, every entry is rehydrated
+// byte-exact, and a one-byte-short bundle is refused whole.
+//
+// The rehydration assertions are the point. RESTORED/ is compared against the
+// INPUTS, so what is under test is a round trip THROUGH the container — a case
+// that wrote the bundles' own constants straight back out would pass a weaker
+// check, and the BINARY session body is what makes "through the container"
+// mean something (a text-only container could not carry it at all).
+func TestSnapshotCaseCarriesRehydratesAndRefuses(t *testing.T) {
+	fs := newFakeFS()
+	seedFixtures(fs)
+	rs := runCases(fs.syscalls())
+	r := resultFor(t, rs, "file-snapshot")
+	if !r.ok {
+		t.Fatalf("the snapshot case failed: %s", r.detail)
+	}
+
+	// Every entry came back byte-exact, against the SEEDED bodies.
+	for _, c := range []struct {
+		got, want []byte
+		what      string
+	}{
+		{fs.files[restoredSettings], []byte(snapshotSettingsBody), "settings"},
+		{fs.files[restoredSession], []byte(snapshotSessionBody), "session"},
+		{fs.files[restoredNote], []byte(snapshotNoteBody), "NOTE.TXT"},
+		{fs.files[restoredSecond], []byte(snapshotSecondBody), "SECOND.TXT"},
+	} {
+		if !bytes.Equal(c.got, c.want) {
+			t.Fatalf("rehydrated %s = %q, want %q", c.what, c.got, c.want)
+		}
+	}
+	// The binary session body is specifically what a text container would
+	// have mangled, so pin that it really is binary.
+	if bytes.IndexByte(fs.files[restoredSession], 0) < 0 {
+		t.Fatal("the session fixture is not binary — this case is not testing what it claims")
+	}
+
+	// The bundle itself is on the share, and the .copy is the bytes that came
+	// BACK off it (never the bytes the case intended to write).
+	bundle := fs.files[snapshotBundle]
+	if !bytes.Equal(bundle, fs.files[snapshotBundleCopy]) {
+		t.Fatal("the bundle copy is not the bundle that was read back")
+	}
+	if len(bundle) == 0 {
+		t.Fatal("no bundle was published")
+	}
+	// The container really is the one the seat parses, and it holds all four
+	// entries — which is the property the seat's restore depends on.
+	parsed, ok, reason := snapshot.Parse(bundle)
+	if !ok {
+		t.Fatalf("the published bundle does not parse: %s", reason)
+	}
+	if len(parsed.Entries) != 4 || parsed.DocsCount() != snapshotEntryDocs {
+		t.Fatalf("bundle carried %d entries / %d docs, want 4 / %d",
+			len(parsed.Entries), parsed.DocsCount(), snapshotEntryDocs)
+	}
+	// The sacrificial temp is gone: the publish is whole-file.
+	if _, ok := fs.files[snapshotBundleTmp]; ok {
+		t.Fatal("the bundle's sacrificial temp survived the publish")
+	}
+
+	// The receipt names the two verdicts the host cannot see: that the
+	// read-back matched, and that a truncated bundle was refused.
+	want := "case file-snapshot path=OUT/snapshot.bundle entries=4 docs=" +
+		strconv.Itoa(snapshotEntryDocs) + " bytes=" + strconv.Itoa(len(bundle)) +
+		" settings=" + strconv.Itoa(len(snapshotSettingsBody)) +
+		" session=" + strconv.Itoa(len(snapshotSessionBody)) +
+		" match=yes orphan=none corrupt=refused\n"
+	if got := string(fs.files[snapshotOk]); got != want {
+		t.Fatalf("receipt = %q\nwant %q", got, want)
+	}
+}
+
+// The refusal half, as a property over EVERY prefix. The receipt claims
+// `corrupt=refused` for a one-byte-short bundle; this is the stronger version
+// of the same claim — no prefix of a real bundle may ever parse as a real
+// bundle, at any length. It is the property a restore actually depends on: a
+// container that tolerated a short read would put back a session strip that
+// was never whole, which is exactly what M62e and M66b refuse to allow.
+func TestNoTruncatedPrefixOfABundleParses(t *testing.T) {
+	fs := newFakeFS()
+	seedFixtures(fs)
+	runCases(fs.syscalls())
+	full := fs.files[snapshotBundle]
+	if _, ok, reason := snapshot.Parse(full); !ok {
+		t.Fatalf("the whole bundle does not parse: %s", reason)
+	}
+	for n := 0; n < len(full); n++ {
+		if _, ok, _ := snapshot.Parse(full[:n]); ok {
+			t.Fatalf("a bundle truncated to %d of %d bytes parsed clean", n, len(full))
+		}
+	}
+	// And one byte PAST the end is a refusal too, not a silent accept.
+	if _, ok, _ := snapshot.Parse(append(append([]byte(nil), full...), 'x')); ok {
+		t.Fatal("a bundle with a trailing byte parsed clean")
 	}
 }
