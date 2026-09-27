@@ -531,18 +531,19 @@ func (g *termHost) SecretNames() ([]string, bool) {
 	return out, true
 }
 
+// WriteFile is GOTERM's twin of goshHost.WriteFile (M81e2 #1787) — same
+// shlib seam, same two callers (the history ring save and `> file`
+// redirection), and it was a SECOND in-place writer the M81e audit missed.
+// It now defers to the same vi.WriteFilePublish policy, and carries the same
+// reasoning: replace is app state and publishes crash-safe; an append is not
+// a rewrite and stays an append. See user/go/sh/main.go for the full
+// argument, and user/go/vi/publish_guard_test.go for the rule that keeps
+// this hook from decaying back into an in-place writer.
 func (g *termHost) WriteFile(path string, b []byte, appendMode bool) error {
-	flags := vi.ModeWrite | vi.ModeCreate
-	if appendMode {
-		flags |= vi.ModeAppend
-	}
-	h, r := vi.FileOpen(path, flags)
-	if r < 0 {
-		return shlib.ErrNotFound
-	}
-	defer vi.FileClose(uint32(h))
-	written, r := vi.FileWriteAll(uint32(h), b)
-	if r < 0 || written != len(b) {
+	if r := vi.WriteFilePublish(path, b, appendMode); r < 0 {
+		if r == -vi.ErrEACCES || r == -vi.ErrENOENT || r == -vi.ErrENAMETOOLONG {
+			return shlib.ErrNotFound
+		}
 		return shlib.ErrWriteFailed
 	}
 	return nil

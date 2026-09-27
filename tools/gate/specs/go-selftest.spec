@@ -132,6 +132,17 @@
 #                      body (a whole-file publish, no tail) and the
 #                      sacrificial temp does not survive, so the share
 #                      holds one file and no orphan.
+#   * file-write-publish — the seam BOTH shell hooks now call (M81e2
+#                      #1787): vi.WriteFilePublish's two contracts. The
+#                      REPLACE half is the GOSH history ring save and `>
+#                      file` (a long body replaced by a short one, no
+#                      tail, no orphan temp). The APPEND half is the
+#                      history one-line append and `>>`, and it must ADD
+#                      to the file rather than rewrite it — so the
+#                      read-back is the whole base-plus-lines body
+#                      byte-compared, not a "the new line is present"
+#                      contains, which a rewrite-per-line
+#                      implementation would also pass.
 #
 # The report fixture below is byte-exact on purpose — the report is
 # deterministic (ADR 0031). Adding a case updates the fixture, the
@@ -172,9 +183,10 @@ case file-clamp pass
 case file-fsync pass
 case file-errors pass
 case file-write-safe pass
+case file-write-publish pass
 case mime pass
 case window pass
-summary cases=16 failed=0
+summary cases=17 failed=0
 EOF
 
 # The canonical intake fixture as the spec seeds it (see the setup hook). The
@@ -261,7 +273,7 @@ vgate_assert 01 share-equals SELFTEST/IN/fixture.txt intake-fixture.expected
 # share-contains is the substring kind: the guest's own summary count. Weaker
 # than the python's byte-exact summary.txt compare below, and kept deliberately
 # as the kind's pilot in a real gate.
-vgate_assert 01 share-contains SELFTEST/OUT/summary.txt 'summary cases=16 failed=0'
+vgate_assert 01 share-contains SELFTEST/OUT/summary.txt 'summary cases=17 failed=0'
 
 # The load-bearing assert: the copies and the receipts on the host's own
 # filesystem must be byte-exact, the share's directory state must agree with
@@ -298,6 +310,13 @@ clamp_body = unit * 8               # 168 B: kept 5 + extra 3 at the clamp point
 fsync_body = unit * 7               # 147 B, fsync'd through slot 77 before close
 write_safe_long = unit * 40         # 840 B published, then replaced by the short one
 write_safe_short = unit * 5         # 105 B expected after the shorter publish
+# M81e2 (#1787): the publish case's bodies. The base is the 105 B short body
+# (so the replace is a SHRINK), and the two appended lines are the history
+# appends — 17 B each including the LF.
+publish_base = write_safe_short
+publish_line1 = b"gosh-history-one\n"
+publish_line2 = b"gosh-history-two\n"
+publish_want = publish_base + publish_line1 + publish_line2
 
 # The window, from the outside: the app's tabapp.Config at open, and the
 # tab-aware content viewport TABWM proposes afterwards
@@ -306,7 +325,7 @@ win_open_rect = (32, 32, 640, 400)
 win_viewport_w = 1100
 win_viewport_h = 720
 
-want_summary = b"summary cases=16 failed=0\n"
+want_summary = b"summary cases=17 failed=0\n"
 want_hello = b"goself smoke\n"
 want_intake_receipt = b"case intake path=IN/fixture.txt bytes=25 match=yes\n"
 want_altered_receipt = b"case intake-altered path=IN/altered.txt bytes=25 differs=yes\n"
@@ -327,6 +346,14 @@ want_fsync_receipt = b"case file-fsync path=OUT/fsync.txt bytes=147 fsync=0 clos
 want_errors_receipt = b"case file-errors missing=-6 exists=-9 isdir=-1 ninth=-5\n"
 want_write_safe_receipt = (b"case file-write-safe path=OUT/write-safe.txt long=840 "
                            b"short=105 bytes=105 tail=none orphan=none match=yes\n")
+# M81e2 (#1787): the receipt's byte counts are RECONSTRUCTED from the bodies
+# above, not copied from the guest, so the host is checking the share
+# against its own reading of the contract.
+want_publish_receipt = (
+    b"case file-write-publish path=OUT/publish.txt base="
+    + str(len(publish_base)).encode() + b" after=" + str(len(publish_want)).encode() +
+    b" want=" + str(len(publish_want)).encode() + b" tail=none orphan=none"
+    b" replaced=yes appended=yes\n")
 
 # M81b (#1762): the MIME case. The fixture bodies are reconstructed here from
 # ONE expression each, exactly as selftest.go builds them, so the host checks
@@ -404,6 +431,18 @@ require(os.path.join(out, "file-write-safe.ok"), want_write_safe_receipt,
         "WRITE-SAFE RECEIPT")
 require(os.path.join(out, "write-safe.copy"), write_safe_short,
         "WRITE-SAFE COPY (no tail)")
+# M81e2 (#1787): the publish receipt, the whole body the case read back
+# (base + both appended lines, byte-equal -- an "contains the new line"
+# check would also pass a rewrite-per-line append, which is the regression
+# this case exists to catch), and the share's own directory state: the
+# sacrificial temp must not be there.
+require(os.path.join(out, "file-write-publish.ok"), want_publish_receipt,
+        "PUBLISH RECEIPT")
+require(os.path.join(out, "publish.copy"), publish_want,
+        "PUBLISH COPY (replace + two appends)")
+if os.path.exists(os.path.join(out, "publish.txt~")):
+    print("OUT/publish.txt~ survived the publish - the temp leaked")
+    raise SystemExit(1)
 
 # M81b: the sniff receipt, the one-line summary of it, and the fixture bytes
 # the share itself holds. The receipt alone could be a table printed from

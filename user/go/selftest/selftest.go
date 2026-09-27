@@ -127,6 +127,14 @@ const (
 	// kernel assigned, the geometry the KERNEL reports for that window, and
 	// the present verdict.
 	windowReceipt = outDir + "/window.txt"
+
+	// M81e2 (#1787): the publish seam the shell hook stands on. The file
+	// is named for what it models — GOSH's history save — because that IS
+	// the caller: the ring-replace save and the one-line append.
+	publishPath = outDir + "/publish.txt"
+	publishTmp  = publishPath + "~"
+	publishCopy = outDir + "/publish.copy"
+	publishOk   = outDir + "/file-write-publish.ok"
 )
 
 // fileUnit is the payload unit of the round-trip and truncate cases: the same
@@ -209,6 +217,14 @@ type syscalls struct {
 	// because the ORDER is the property under test.
 	writeSafe func(path string, b []byte) int64
 
+	// M81e2 (#1787): the two-contract policy seam. `publish` is
+	// vi.WriteFilePublish — replace (appendMode false) takes the safe
+	// publish, append (appendMode true) stays an in-place append. It is a
+	// function row for the same reason writeSafe is: WHICH contract
+	// applies is the property under test, and composing it from the rows
+	// above would re-implement the very thing being pinned.
+	publish func(path string, b []byte, appendMode bool) int64
+
 	// M61e (#1385): the window surface. Separate from the file rows above
 	// because id/reqW/reqH are STATE the shell copied out of tabapp.Init, not
 	// syscall bindings — the three function rows are the ADR 0007 window rows
@@ -255,6 +271,9 @@ func guestSyscalls() syscalls {
 		list:      vi.DirList,
 		close:     vi.FileClose,
 		writeSafe: vi.WriteFileSafe,
+		// M81e2 (#1787): the two-contract policy seam — replace publishes
+		// crash-safe, append stays an append.
+		publish: vi.WriteFilePublish,
 		// M61e: the real window rows. id/reqW/reqH stay -1/0 here — the shell
 		// binds them from tabapp.Init, so this function never claims a window
 		// the app did not get.
@@ -311,6 +330,13 @@ func cases() []testCase {
 		// (no tail), and that the sacrificial temp did not survive. Inserted
 		// before the window case so the M61d report prefix stays untouched.
 		{id: "file-write-safe", run: caseFileWriteSafe},
+		// M81e2 (#1787): the PUBLISH seam the shell hook now stands on —
+		// both halves. The replace half is the history ring save and `>
+		// file`; the append half is the history one-line append and `>>`.
+		// Both are pinned here because this is the only place that drives
+		// the primitive end to end on the share and hands the host bytes to
+		// byte-compare.
+		{id: "file-write-publish", run: caseFileWritePublish},
 		// M81b (#1762): the MIME table itself, exercised through the file
 		// ABI — every fixture is WRITTEN to the share and READ BACK before it
 		// is sniffed, so the verdict is about the bytes that came back over
@@ -1280,6 +1306,96 @@ func caseFileWriteSafe(s *syscalls) error {
 			"B body with no tail")
 	case orphan != "none":
 		return errors.New("the sacrificial temp " + writeSafeTmp + " survived the publish")
+	}
+	return nil
+}
+
+// M81e2 (#1787): caseFileWritePublish pins the seam BOTH shell hooks now
+// call — the history ring-replace save and the history append, which is to
+// say the whole of what vi.WriteFilePublish decides. Three facts, in order:
+//
+//  1. a REPLACE (appendMode false) over a LONGER existing body leaves
+//     exactly the new body and no tail — the history ring trimming itself
+//     back to historyMax must not leave the oldest line's bytes behind;
+//  2. that same replace leaves no sacrificial temp, so the share holds one
+//     history file and no orphan;
+//  3. an APPEND (appendMode true) ADDS to what is there and truncates
+//     nothing — the one-line history append and `>>`. This is the half
+//     that must NOT be routed through the safe publish, and the half that
+//     would be silently wrong if it were: a rewrite-per-line history would
+//     still pass a "the line is in the file" check while getting the
+//     durability and the cost entirely wrong.
+//
+// The receipt is host-byte-compared (go-selftest.spec), so the verdict is
+// about bytes that came back over the share, not a constant in this binary.
+func caseFileWritePublish(s *syscalls) error {
+	s.mkdir(outDir)
+	// A long body first, so the replace is a SHRINK — the case that catches
+	// a publish that appends instead of replacing, and the case a bare
+	// "the new bytes are present" check would pass.
+	long := writeSafeLong()
+	short := writeSafeShort()
+	line1 := []byte("gosh-history-one\n")
+	line2 := []byte("gosh-history-two\n")
+
+	if rc := s.publish(publishPath, long, false); rc < 0 {
+		return errors.New("initial publish rc=" + strconv.FormatInt(rc, 10))
+	}
+	if rc := s.publish(publishPath, short, false); rc < 0 {
+		return errors.New("replace publish rc=" + strconv.FormatInt(rc, 10))
+	}
+	got, err := readFile(s, publishPath, len(long)+1)
+	if err != nil {
+		return err
+	}
+	replaced := bytes.Equal(got, short)
+	tail := "none"
+	if len(got) > len(short) {
+		tail = strconv.Itoa(len(got)-len(short)) + "B"
+	}
+	orphan := "none"
+	if h, rc := s.open(publishTmp, vi.ModeRead); rc >= 0 {
+		s.close(uint32(h))
+		orphan = "survived"
+	}
+
+	// Now the append half, against the file the replace just left.
+	if rc := s.publish(publishPath, line1, true); rc < 0 {
+		return errors.New("append publish rc=" + strconv.FormatInt(rc, 10))
+	}
+	if rc := s.publish(publishPath, line2, true); rc < 0 {
+		return errors.New("second append publish rc=" + strconv.FormatInt(rc, 10))
+	}
+	after, err := readFile(s, publishPath, len(long)+len(line1)+len(line2)+1)
+	if err != nil {
+		return err
+	}
+	want := append(append([]byte{}, short...), append(line1, line2...)...)
+	appended := bytes.Equal(after, want)
+
+	if cerr := copyBytes(s, publishCopy, after); cerr != nil {
+		return cerr
+	}
+	rec := "case file-write-publish path=OUT/publish.txt base=" +
+		strconv.Itoa(len(short)) + " after=" + strconv.Itoa(len(after)) +
+		" want=" + strconv.Itoa(len(want)) + " tail=" + tail +
+		" orphan=" + orphan + " replaced=" + yesNo(replaced) +
+		" appended=" + yesNo(appended)
+	if rerr := writeReceipt(s, publishOk, rec); rerr != nil {
+		return rerr
+	}
+	switch {
+	case !replaced || len(got) != len(short):
+		return errors.New("after the replace the file read " +
+			strconv.Itoa(len(got)) + "B, want the " + strconv.Itoa(len(short)) +
+			"B body with no tail of the " + strconv.Itoa(len(long)) + "B it replaced")
+	case orphan != "none":
+		return errors.New("the sacrificial temp " + publishTmp +
+			" survived the publish — the share would hold an orphan")
+	case !appended:
+		return errors.New("after two appends the file read " +
+			strconv.Itoa(len(after)) + "B, want the " + strconv.Itoa(len(want)) +
+			"B base-plus-lines body — an append must add, never truncate")
 	}
 	return nil
 }
