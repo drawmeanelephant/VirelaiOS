@@ -1457,9 +1457,18 @@ fn snap_submit(parts: []const []const u8) bool {
 /// failures increment `snap_fail_count` and end the stream early — the
 /// host-side assembly reports what it got.
 pub fn service_snapshot() void {
-    snap_pending = false;
     const daif = snap_tx_lock.lock();
     defer snap_tx_lock.unlock(daif);
+    // #1796 review: the arming guard is re-checked UNDER the lock. Both
+    // callers test `snap_pending` outside as a fast path, so two contexts
+    // can enter on one arming; without the re-check the lock loser would
+    // stream a duplicate framebuffer for the same kind-4 request — the
+    // overlapped-stream shape the runner's single pendingSnapPath slot
+    // mislabels. A call that loses here returns silently: no stream, no
+    // fail-counter movement (the request the winner is streaming is the
+    // same one).
+    if (!snap_pending) return;
+    snap_pending = false;
     if (!cv_ready or !has_snap_queue) {
         snap_fail_count += 1;
         return;
