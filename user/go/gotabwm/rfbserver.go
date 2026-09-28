@@ -10,7 +10,7 @@ import (
 	"virelai/vi"
 )
 
-// RFB is opt-in, one viewer, on the hermetic --net test attachment only.
+// RFB is opt-in, one viewer per invocation, on the hermetic --net test attachment only.
 // None authenticates nobody. There is no LAN/remote deployment mode here:
 // ADR 0037 D6 requires an authenticated transport for that. The kernel TCP
 // machine owns only one connection system-wide while this listener is open.
@@ -95,9 +95,10 @@ func (s *rfbServer) serve(conn *vi.Conn) {
 	}
 	vi.ConsoleLine(markerRFBReady)
 
-	// Exactly one immutable snapshot (3,686,400 B), allocated only after a
-	// viewer requests pixels. The codec owns at most one sent-frame cache
-	// and one known-pixel map; no frame backlog or unbounded client queue.
+	// One immutable snapshot (3,686,400 B), allocated only after a viewer
+	// requests pixels. The codec also owns a sent-frame cache and known-pixel
+	// map; full updates transiently allocate an encoded body and packet copy.
+	// All are framebuffer-bounded, with no frame backlog or client queue growth.
 	var frame []byte
 	var lastPresent uint64
 	var pending *rfb.Request // exactly one outstanding update, no frame queue
@@ -156,9 +157,9 @@ func (s *rfbServer) serve(conn *vi.Conn) {
 				return
 			}
 		case rfb.PointerInput:
-			if msg.Pointer.Buttons&^uint8(0x07) != 0 {
-				return // only the seat's left/right/middle button bits
-			}
+			// ReadMessage already rejects coordinates outside the 1280x720
+			// session. Ignore wheel/extra button bits, which have no seat
+			// representation, without disconnecting an otherwise valid viewer.
 			buttons := rfbButtonsToSeat(msg.Pointer.Buttons)
 			e := vi.Event{
 				Kind: vi.EvWmPointer, Flags: uint16(buttons),
@@ -217,6 +218,7 @@ func (s *rfbServer) finishInput() bool {
 
 // RFB button 2 means middle and 3 means right; the seat's HID bit 1
 // means right and bit 2 means middle. Left is bit 0 on both wires.
+// Higher RFB button bits (wheel and extra buttons) have no seat mapping.
 func rfbButtonsToSeat(b uint8) uint8 {
 	return b&1 | (b&2)<<1 | (b&4)>>1
 }
@@ -279,7 +281,9 @@ func (m *rfbModifiers) key(k rfb.KeyEvent) (vi.Event, bool) {
 
 // The codec uses io.Reader/io.Writer; vi.Conn intentionally does not claim
 // POSIX net.Conn semantics. TCP's one pending segment must be ACKed before
-// sending the next <=192 B chunk. A deadline bounds each stalled segment.
+// sending the next <=192 B chunk. The 30-tick deadline bounds each stalled
+// segment, not a whole update. A raw full frame needs ~19,200 such ACKs and
+// is not a practical interactive mode on this hermetic transport.
 type rfbStream struct{ conn *vi.Conn }
 
 func (s *rfbStream) Read(p []byte) (int, error) {

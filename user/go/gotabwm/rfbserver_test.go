@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"io"
 	"testing"
 
 	"virelai/rfb"
@@ -50,9 +52,49 @@ func TestRFBInputUsesWmEventWires(t *testing.T) {
 }
 
 func TestRFBButtonOrderingMatchesSeat(t *testing.T) {
-	for _, c := range []struct{ wire, seat uint8 }{{0, 0}, {1, 1}, {2, 4}, {4, 2}, {7, 7}} {
+	for _, c := range []struct{ wire, seat uint8 }{
+		{0, 0}, {1, 1}, {2, 4}, {4, 2}, {7, 7},
+		{8, 0}, {9, 1}, {0xff, 7},
+	} {
 		if got := rfbButtonsToSeat(c.wire); got != c.seat {
 			t.Fatalf("RFB mask %d -> seat %d want %d", c.wire, got, c.seat)
+		}
+	}
+}
+
+func TestRFBDecoderAcceptsWheelButton(t *testing.T) {
+	client := append([]byte("RFB 003.008\n\x01\x01"), 5, 8, 0, 100, 2, 88)
+	s, err := rfb.NewSession(bytes.NewReader(client), io.Discard,
+		vi.ScanoutWidth, vi.ScanoutHeight, "VirelaiOS")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Handshake(); err != nil {
+		t.Fatal(err)
+	}
+	msg, err := s.ReadMessage()
+	if err != nil || msg.Kind != rfb.PointerInput || msg.Pointer.Buttons != 8 ||
+		rfbButtonsToSeat(msg.Pointer.Buttons) != 0 {
+		t.Fatalf("wheel-only pointer = %+v, %v", msg, err)
+	}
+}
+
+func TestRFBDecoderRejectsPointerOutsideSeat(t *testing.T) {
+	for _, pointer := range [][]byte{
+		{5, 1, 0xea, 0x60, 0, 16}, // x=60000
+		{5, 1, 0, 16, 2, 0xd0},    // y=720
+	} {
+		client := append([]byte("RFB 003.008\n\x01\x01"), pointer...)
+		s, err := rfb.NewSession(bytes.NewReader(client), io.Discard,
+			vi.ScanoutWidth, vi.ScanoutHeight, "VirelaiOS")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.Handshake(); err != nil {
+			t.Fatal(err)
+		}
+		if msg, err := s.ReadMessage(); err == nil {
+			t.Fatalf("out-of-bounds pointer reached seat: %+v", msg)
 		}
 	}
 }

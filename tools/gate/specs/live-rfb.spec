@@ -23,16 +23,15 @@ exec GOCALC.ELF
 EOF
 
 vgate_setup_python <<'PY'
-import os, shutil, sys
+import os, shutil, subprocess, sys
 share = os.environ.get("VG_SHARE") or os.path.join(os.environ["RUN_DIR"], "share")
+subprocess.run(["bash", "tools/go/rfbprobe/build.sh"], check=True)
 for name, cmd in (("GOTABWM.ELF", "bash tools/go/build-gotabwm.sh"),
                   ("GOCALC.ELF", "bash tools/go/build-gocalc.sh")):
     src = os.path.join(".build", "go", name)
     if not os.path.isfile(src):
         sys.exit(name + " missing: " + cmd)
     shutil.copy(src, os.path.join(share, name))
-if not os.path.isfile(".build/go/rfbprobe"):
-    sys.exit("rfbprobe missing: go build -C tools/go/rfbprobe -o ../../../.build/go/rfbprobe .")
 # Disable autostart, then explicitly exec the opt-in seat from the monitor.
 # Do not seed GOTABWM.DEMO: the real live seat must outlast the exchange.
 with open(os.path.join(share, "SETTINGS.TXT"), "w") as f:
