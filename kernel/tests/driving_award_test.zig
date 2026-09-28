@@ -740,6 +740,57 @@ test "driving_award: a 38;2 cell paints its exact RGB on the scanout" {
     try std.testing.expect(hits >= 4);
 }
 
+fn countRedInRect(buf: []const u8, width: usize, x0: usize, y0: usize, w: usize, h: usize) usize {
+    var hits: usize = 0;
+    var y: usize = y0;
+    while (y < y0 + h) : (y += 1) {
+        var x: usize = x0;
+        while (x < x0 + w) : (x += 1) {
+            const k = (y * width + x) * 4;
+            if (buf[k + 2] == 0xff and buf[k + 1] == 0x00 and buf[k] == 0x00) hits += 1;
+        }
+    }
+    return hits;
+}
+
+test "driving_award: a sixel image cell paints its set pixels and scales with the zoom (M85b #1814)" {
+    const W = 80;
+    const H = 64;
+    var buf: [W * H * 4]u8 = undefined;
+    const prev_size = driving_award.font_metrics.size;
+    defer driving_award.font_metrics.set_size(prev_size);
+    driving_award.font_metrics.set_size(.medium);
+    var screen = terminal.Screen{};
+    // One 8x16 image (the medium cell): columns 0..3 red on all 16 rows
+    // (two full bands + `N` = the top four rows of the third), columns
+    // 4..7 transparent. The cursor is hidden so it paints nothing.
+    screen.feed("\x1b[?25l\x1bPq\"1;1;8;16#1;2;100;0;0!4~-!4~-!4N\x1b\\");
+    const window = Window{
+        .id = 2,
+        .title = "term",
+        .x = 0,
+        .y = 0,
+        .w = W,
+        .h = H,
+        .kind = .user,
+        .visible = true,
+        .dirty = true,
+    };
+    const y0: usize = geom.title_bar_h;
+    render_terminal_screen(&buf, &window, &screen);
+    // Exactly the set half is red; the transparent half and the next cell
+    // show the fill.
+    try std.testing.expectEqual(@as(usize, 4 * 16), countRedInRect(&buf, W, 0, y0, 8, 16));
+    try std.testing.expectEqual(@as(usize, 0), countRedInRect(&buf, W, 4, y0, 4, 16));
+    try std.testing.expectEqual(@as(usize, 0), countRedInRect(&buf, W, 8, y0, 8, 16));
+    // Large zoom (10x21): the tile scales nearest-neighbour — source
+    // column 3 covers destination columns up to 4, every row stays red.
+    driving_award.font_metrics.set_size(.large);
+    render_terminal_screen(&buf, &window, &screen);
+    try std.testing.expectEqual(@as(usize, 5 * 21), countRedInRect(&buf, W, 0, y0, 10, 21));
+    try std.testing.expectEqual(@as(usize, 0), countRedInRect(&buf, W, 5, y0, 5, 21));
+}
+
 test "driving_award: SGR 4 underline strokes the bottom row of even a blank cell" {
     const W = 80;
     const H = 32;

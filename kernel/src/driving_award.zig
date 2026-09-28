@@ -4247,6 +4247,22 @@ pub fn terminalRendition(style: terminal.CellStyle, fg_side: ?terminal.Rgb, bg_s
     return .{ .fg = fg, .bg = bg, .italic = style.italic, .underline = style.underline };
 }
 
+/// M85b (#1814): one image cell — its tile's SET pixels over the cell
+/// (unset sixel pixels are transparent), scaled nearest-neighbour from
+/// the geometry the image was placed at to the active cell, so a font
+/// zoom keeps the image covering exactly its cells.
+fn paint_image_tile(dst: [*]u8, stride: usize, x0: usize, y0: usize, tile: terminal.term_image.Tile) void {
+    const cw: usize = font_metrics.cell_w;
+    const ch: usize = font_metrics.cell_h;
+    var dy: usize = 0;
+    while (dy < ch) : (dy += 1) {
+        var dx: usize = 0;
+        while (dx < cw) : (dx += 1) {
+            if (tile.sample(dx, dy, cw, ch)) |rgb| put_px(dst, stride, x0 + dx, y0 + dy, rgb);
+        }
+    }
+}
+
 pub fn render_terminal_screen(dst: [*]u8, w: *const Window, scr: *const terminal.Screen) void {
     const wu: usize = @intCast(w.w);
     const hu: usize = @intCast(w.h);
@@ -4292,6 +4308,12 @@ pub fn render_terminal_screen(dst: [*]u8, w: *const Window, scr: *const terminal
                 const span: usize = if (wide) font_metrics.wide_cell_w else font_metrics.cell_w;
                 fill_rect(dst, stride, x, ry, span, font_metrics.cell_h, colours.bg);
                 if (c < line.len) draw_cell_glyph(dst, stride, x, ry, cell, colours.fg, wide, colours.italic);
+            }
+            // M85b (#1814): an image cell composites its tile over the
+            // fill it just got (image cells carry the erase default, so
+            // that is the theme background — or the selection's ink).
+            if (cell.img != 0) {
+                if (scr.imageTile(ri, c)) |tile| paint_image_tile(dst, stride, x, ry, tile);
             }
             // M73h: underline strokes the cell's bottom row (the base owns
             // its whole pair — a continuation skips so the line draws
