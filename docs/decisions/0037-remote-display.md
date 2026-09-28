@@ -112,8 +112,9 @@ Linux VM are named in §"Blocked steps" and stay CI-verified.
   challenge-response (`VIRELAIOS-AUTH/1`); the proven strong remote auth
   in the tree is **SSH-2 publickey via GOSSHD** (Ed25519 host key from
   `ssh-host-ed25519`, `SSH/AUTHORIZED_KEYS` — M70g G1, gated).
-- M47 crypto is userland-Zig-only; there is **no DES** anywhere in the
-  tree (matters for D6).
+- M47 crypto is userland-Zig-only; there was **no DES** in the tree at
+  this survey. M84e's host-only compatibility exception is recorded
+  in D6; no DES enters the guest.
 
 ### S6. The fallback that was not needed (ADR 0016)
 
@@ -194,37 +195,58 @@ for it.
 - M84b/c/d run against the `--net-tcp-connect` emulation (the
   `live-ssh-server` topology). The runner is the trusted peer; the link
   is hermetic.
-- Real-device inbound ("a Mac opens a socket to the guest") is a
-  recorded negative (§S4). Enabling follow-ups, neither in M84:
-  1. **Runner `--net-tcp-bridge`**: host listens on a Mac port and
-     bridges into the `--net` emulation toward the guest's listen.
-     Host-Swift-only work, no guest or kernel change. This is what the
-     M84d Screen Sharing tape needs on real iron. **Trusted-local test
-     path only**: the bridge binds 127.0.0.1, same user, same machine —
-     it authenticates nobody and is not a remote-access story (see D6).
+- Direct real-device inbound ("a Mac opens a socket to the guest") is a
+  recorded negative (§S4). The class-C tape has a host-side loopback
+  bridge; production reachability remains a separate follow-up:
+  1. **Host loopback bridge**: the M84d tape uses `rfbprobe -bridge`
+     behind the runner's hermetic `--net-tcp-connect-stream` adapter.
+     No guest or kernel change. **Trusted-local test path only**: the
+     bridge binds 127.0.0.1, serves one same-machine viewer, and now
+     authenticates it with a one-shot VNC password (M84e, D6).
+     This is not a remote-access story.
   2. **Guest SSH `-R`**: the guest dials out (NAT allows it) and
      reverse-forwards; needs `-R` in `user/go/ssh` (does not exist).
-- M84 claims nothing about real-device inbound. The milestone is
-  complete when the hermetic gates are green and the tape exists via
-  follow-up (1).
+- M84 claims nothing about direct real-device inbound. Its tape
+  uses the host bridge (1); the hermetic gates remain independent.
 
 ### D6. Auth/exposure posture — the critical call
 
-**On the RFB wire the server offers exactly one security type: None
-(RFB 3.8 §7.2.1). "No unauthenticated direct RFB" is enforced by
-exposure, not by the wire.**
+**On the guest RFB wire the server offers exactly one security type:
+None (RFB 3.8 §7.2.1). The class-C Screen Sharing tape uses VNC
+authentication (type 2) only on the host loopback bridge. "No
+unauthenticated direct RFB" is enforced by exposure, not by the guest
+wire.**
 
-Why None is the only honest offering:
+M84e amendment (#1835, 2026-09-28): the original claim that "macOS
+Screen Sharing speaks None and VNC-password-auth on a standard
+connection" was **inferred and false for None**. M84d observed on
+macOS 27.2 (`artifacts/rfb-tape/m84d/runner.log`, quoted on #1835):
 
-- macOS Screen Sharing speaks None and VNC-password-auth on a standard
-  connection. The milestone's headline ("a Mac can Screen-Share into
-  it") and M84d's tape require one of the two.
-- **VNC password auth is rejected.** It is DES-based (8-character
-  password limit, cryptographically broken challenge-response), DES
-  exists nowhere in the M47 tree, and minting broken crypto for a
-  compatibility checkbox would be a deliberate downgrade from the
-  project's established remote-auth bar (SSH-2 publickey, M70g G1).
-  The project's modern-primitives culture does not mint DES.
+```text
+seat->viewer "RFB 003.008\n"
+viewer->seat "RFB 003.003\n"
+seat->viewer 00 00 00 01 (None)
+bridge closed: viewer->seat 12 bytes
+gotabwm: rfb handshake refused
+gotabwm: rfb drop handshake peer
+```
+
+Screen Sharing hung up before ClientInit and then prompted for a password.
+The same result was observed against the codec on localhost without a VM.
+The tape cannot use direct guest None. The chosen compatibility boundary:
+
+- **Guest VNC password auth remains rejected.** DES-based VNC auth has
+  an eight-byte password limit and is not a strong remote-auth control.
+  The guest's server and M47 crypto keep DES out; the hermetic
+  `live-rfb` wire and its 6/6 runs remain RFB 3.8/None.
+- **Host bridge exception, type 2 only.** `rfbprobe -bridge` generates
+  one random eight-character password for its single loopback viewer,
+  speaks VNC auth to Screen Sharing (3.3/3.7/3.8), refuses bad type or
+  password before guest bytes, then speaks 3.8/None to the guest. Only
+  host Go `crypto/des` implements the legacy challenge response. The
+  password goes to the operator, not the tape's captured runner log.
+  This protects one same-user, same-machine demonstration, **not**
+  routable remote access or confidentiality.
 - **A custom challenge security type is rejected.** Screen Sharing
   would not speak it; the headline dies.
 - **VeNCrypt/TLS is deferred** to a later card: it needs a Go TLS
@@ -236,14 +258,15 @@ Why exposure-enforcement satisfies "no unauthenticated *direct* RFB":
   exposure by default; the operator starts it explicitly per session.
 - There is **no authenticated remote path in M84**, and this document
   does not claim one. D4 rules out guest-side sshd co-tenancy in a
-  serving boot (one system-wide TCP connection), and D5(1)'s bridge
-  authenticates nobody — so "authenticated SSH tunnel" cannot describe
-  anything M84 ships. Remote use of the RFB server is **unsupported**
+  serving boot (one system-wide TCP connection); D5(1)'s VNC-authenticated
+  bridge is loopback-only and is not an SSH tunnel. Remote use is
+  **unsupported**
   until an authenticated transport exists (the SSH-channel-plumbed
   card named below, or a TLS-server card).
 - What M84 does have: the hermetic `--net` gates (the runner is the
-  trusted peer) and the trusted-local bridge (D5(1): 127.0.0.1,
-  same-user) for the M84d tape. Both are same-trust-domain paths;
+  trusted peer) and the VNC-authenticated trusted-local bridge
+  (D5(1): 127.0.0.1, same-user) for the Screen Sharing tape. Both
+  are same-trust-domain paths;
   neither crosses a network an adversary can reach.
 - Binding the RFB listen to a routable network without the tunnel is an
   operator error the docs forbid — it is not a mode the server
@@ -268,8 +291,8 @@ the first time.
   (D5); rfbprobe speaks plain RFB 3.8/None to the emulated peer — the
   gate proves the wire and the pixels, the ADR proves the posture.
 - M84d: negatives + client-death (D3); the Screen Sharing tape is
-  class-C and needs follow-up D5(1) on real iron — the tape is not
-  blocked on M84's gates.
+  class-C, with the D5(1) bridge and M84e's host auth amendment on
+  real iron — it is not M84's gate evidence.
 
 ## Consequences
 
@@ -279,17 +302,18 @@ the first time.
   (WM_RPC, hosted apps); the RFB module is still explicit-start-only and
   single-connection, and the seat's demo/live loop is untouched when RFB
   is not started.
-- The auth story is honest about what it is: wire-None for Screen
-  Sharing compatibility, with authentication living at the SSH layer and
-  exposure controlled operationally. Any future reader who wants
-  wire-level auth gets the VeNCrypt/TLS card, not a DES revival.
+- The auth story is honest about what it is: guest wire-None, host-bridge
+  VNC auth only for the local tape, and no supported remote path.
+  Any future reader who wants remote wire-level auth gets the
+  SSH-channel or VeNCrypt/TLS card, not a guest DES revival.
 
 ## Rejected alternatives
 
 - **Snapshot-fed daemon** (§S6): all cost, no benefit; the seam it
   routes around exists.
-- **VNC password (DES) auth** (D6): broken crypto, absent from the
-  tree, 8-char passwords — a downgrade from the SSH-publickey bar.
+- **Guest VNC password (DES) auth** (D6): broken crypto and eight-byte
+  passwords would downgrade the SSH-publickey remote-auth bar.
+  The host-only loopback tape exception is not a remote control.
 - **Custom Ed25519 challenge as an RFB security type** (D6): kills the
   macOS headline; Screen Sharing would not speak it.
 - **TLS-wrapped direct RFB in M84** (D6): needs a Go TLS server; M53
@@ -301,8 +325,8 @@ the first time.
 
 ## Open issues (not M84)
 
-1. Runner `--net-tcp-bridge` host-listen mode (enables the M84d Screen
-   Sharing tape on real iron). Host-Swift only.
+1. A production host-to-guest reachability path. The `rfbprobe` loopback
+   tape bridge is hermetic and does not enable direct remote access.
 2. Guest SSH `-R` remote-forward (the pure-SSH real-device path).
 3. Go TLS server (the VeNCrypt/TLS direct-RFB card).
 4. SSH-channel-plumbed RFB (the D6 strong path; needs M84b's
@@ -320,17 +344,18 @@ the first time.
   emulation; GOSSHD/GOHTTPD as listen precedents; no NAT port-forward,
   no runner bridge, no guest `-R`; no DES in the tree; no damage
   tracking; shared-anon fallback shape.
-- **Inferred** (reasonable, flagged): macOS Screen Sharing's supported
-  security types on a standard connection (None, VNC-password) — from
-  the RFB 3.8 spec and Screen Sharing's documented behavior, not from a
-  packet capture; the judgment that DES-minting is the wrong trade
-  (D6) — a values call, stated as such.
-- **Blocked**: VZ-boot probe receipts (frame address, present-cadence
-  observation, `--net` reachability) — no Apple Virtualization on this
-  Linux VM. The seam *shapes* are code-measured above; the boot receipts
-  stay open for the reference-host runs (per AGENTS.md, 0 class-B gates
-  run in CI — the reference host runs them out-of-band). Nothing in this
-  ADR claims a receipt that was not captured.
+- **Observed later (M84d, #1835):** macOS 27.2 Screen Sharing replies
+  3.3 and hangs up on security None before ClientInit (transcript in D6).
+  The former inferred support for None is withdrawn. The host-only VNC
+  auth exception is the M84e decision, not evidence of remote safety.
+- **Inferred:** guest-side DES would be the wrong remote-auth trade
+  (D6), a values call. The original M84a survey had not tested Screen
+  Sharing; its security-type guess was not a result.
+- **Original M84a blocked step:** VZ-boot probe receipts (frame address,
+  present cadence, `--net` reachability) could not run on the Linux VM
+  used for that survey. The seam *shapes* above were code-measured.
+  M84d's later Screen Sharing transcript is a separate macOS 27.2
+  observation, not retroactive M84a boot evidence.
 - **Not blocked**: `go test ./vi/...` host suite — green on this VM
   (Go 1.24.7 toolchain, repo-pinned go1.27.0 downloaded for the module).
   No Go code was changed by this card (docs-only diff).

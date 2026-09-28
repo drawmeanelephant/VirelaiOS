@@ -37,10 +37,17 @@ exit is its close: status 0 makes the runner send FIN, any other status RST.
 | `die-focus` | opens the launcher, holds `c`, dies (exit 3) | `rfb drop peer`, the launcher stays usable locally |
 
 `-bridge 127.0.0.1:PORT` is the class-C tape path (`tools/rfb-tape.sh`,
-ADR 0037 D5(1)): it accepts exactly one viewer on a loopback address and
-pipes it to the guest, logging the first 64 bytes each way. It refuses a
-non-loopback address.
+ADR 0037 D5(1)/D6 amendment): it accepts exactly one viewer on a loopback
+address with an eight-character, one-shot VNC password. The password is
+printed to the operator (or delivered over a private named pipe to the tape,
+which prints it without recording it in runner.log). RFB 3.3/3.7/3.8
+viewers see only security type 2; a wrong password or type is refused
+before any guest bytes are exchanged. After authentication the bridge
+speaks RFB 3.8/None to the guest, forwards ClientInit, ServerInit and
+frames, and logs the handshake progress without challenge/response or
+password bytes. It refuses non-loopback addresses. This is not a
+remote-access path: legacy DES exists only in the host probe.
 
-None has no authentication or confidentiality. This probe and the
-`--rfb-hermetic` seat opt-in are for same-trust-domain tests only, never
-direct LAN exposure. See ADR 0037 D5/D6.
+The guest's None wire has no authentication or confidentiality. The
+`--rfb-hermetic` seat opt-in and this one-viewer bridge are same-trust-domain
+tests only, never direct LAN exposure. See ADR 0037 D5/D6.

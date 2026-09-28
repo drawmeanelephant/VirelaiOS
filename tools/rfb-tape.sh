@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 #
-# rfb-tape.sh -- M84d class-C demo: a real macOS Screen Sharing viewer
+# rfb-tape.sh -- M84d/M84e class-C demo: a real macOS Screen Sharing viewer
 # against the guest seat, through rfbprobe's loopback-only one-viewer bridge
 # (ADR 0037 D5(1)) on the hermetic --net stream. Records the guest's own
 # scanout as PNGs under gitignored artifacts/. Never gate evidence: the gate
 # is live-rfb.spec. Exits 3 with the viewer's transcript when the viewer
 # never completes the RFB handshake, instead of producing an empty tape.
+# The host bridge's one-shot VNC password crosses a private FIFO, not the
+# VMRunner's captured stderr (runner.log); the guest still speaks None.
 
 set -euo pipefail
 
@@ -21,8 +23,9 @@ usage: bash tools/rfb-tape.sh [--dry-run] [--no-viewer]
 Boots the seat with --rfb-hermetic, bridges one viewer from 127.0.0.1:$PORT
 (RFB_TAPE_PORT, default 5901) into the guest, and opens vnc://127.0.0.1:$PORT
 in macOS Screen Sharing. --no-viewer waits up to 120 s for a viewer started
-by hand instead. RFB_TAPE_OUT selects the artifact directory. The bridge
-accepts exactly one loopback connection and authenticates nobody.
+by hand instead. Enter the printed one-shot password in Screen Sharing.
+RFB_TAPE_OUT selects the artifact directory. The bridge accepts exactly one
+loopback connection with VNC authentication; the guest wire remains None.
 EOF
 }
 
@@ -39,7 +42,7 @@ done
 if [ "$DRY_RUN" -eq 1 ]; then
     cat <<EOF
 Would build disk, VMRunner (-DSPIKE), rfbprobe, GOTABWM.ELF, and GOCALC.ELF.
-Would bridge one viewer on 127.0.0.1:$PORT and $([ "$VIEWER" -eq 1 ] && echo "open vnc://127.0.0.1:$PORT" || echo "wait for a manual viewer").
+Would bridge one viewer on 127.0.0.1:$PORT with a one-shot VNC password and $([ "$VIEWER" -eq 1 ] && echo "open vnc://127.0.0.1:$PORT" || echo "wait for a manual viewer").
 Would record $OUT/rfb-{5s,10s,15s,after}.png (after = the first frame served to the viewer).
 EOF
     exit 0
@@ -47,6 +50,7 @@ fi
 
 [ "$(uname -s)" = Darwin ] || { echo "rfb-tape: requires macOS Virtualization.framework" >&2; exit 1; }
 cd "$ROOT"
+umask 077
 mkdir -p "$OUT/share"
 zig build image
 swift build --package-path host/vm-runner --configuration release -Xswiftc -DSPIKE
@@ -76,6 +80,7 @@ dui focus 0
 exec GOCALC.ELF
 EOF
 
+mkfifo -m 600 "$OUT/password.pipe"
 host/vm-runner/.build/release/VMRunner \
     --overlay-base artifacts/disk.img --vars "$OUT/vars.bin" \
     --cvc-file "$OUT/share" --serial "$OUT/serial.log" \
@@ -84,6 +89,7 @@ host/vm-runner/.build/release/VMRunner \
     --net-tcp-connect 10.0.0.1:5900 \
     --net-tcp-connect-stream .build/go/rfbprobe \
     --net-tcp-connect-stream-arg "-bridge=127.0.0.1:$PORT" \
+    --net-tcp-connect-stream-arg "-bridge-password-fifo=$OUT/password.pipe" \
     --net-tcp-connect-after 'gocalc: present' \
     --script "$OUT/boot.txt" \
     --script2 "$OUT/calc.txt" --script2-after 'gotabwm: win focus' \
@@ -97,8 +103,14 @@ for _ in $(seq 1 300); do
     sleep 0.5
 done
 if grep -q 'RFBPROBE: bridge listening' "$OUT/runner.log"; then
+    password="$(cat "$OUT/password.pipe")"
+    rm "$OUT/password.pipe"
+    echo "rfb-tape: Screen Sharing one-shot VNC password: $password"
+    unset password
     if [ "$VIEWER" -eq 1 ]; then
-        open "vnc://127.0.0.1:$PORT"
+        # A previous Screen Sharing process can keep a stale connection
+        # dialog and ignore a second URL open. Give each tape a fresh app.
+        open -n -a "Screen Sharing" "vnc://127.0.0.1:$PORT"
     else
         echo "rfb-tape: connect a viewer to vnc://127.0.0.1:$PORT within 120 s"
     fi
@@ -111,6 +123,10 @@ grep -a 'gotabwm: rfb' "$OUT/serial.log" || true
 if ! grep -aq 'gotabwm: rfb frame' "$OUT/serial.log"; then
     echo "rfb-tape: BLOCKED: the viewer was never served a frame (runner rc=$rc); transcript above, logs in $OUT" >&2
     exit 3
+fi
+if [ "$rc" -ne 0 ]; then
+    echo "rfb-tape: runner failed (rc=$rc); logs in $OUT" >&2
+    exit "$rc"
 fi
 python3 - "$OUT" <<'PY'
 import os, struct, sys
