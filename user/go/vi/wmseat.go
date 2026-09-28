@@ -39,6 +39,9 @@ const (
 	// REGISTERED WM's WRITABLE view of the virtio-gpu framebuffer (the
 	// compose-N target). Seat-only, full-frame only.
 	M33ScanoutTag uintptr = 0x4000000000000000
+	// M33WindowTag binds the low-eight-bit window id to a shared, writable
+	// owner surface. Unlike a normal mmap address the tag is not page-aligned.
+	M33WindowTag uintptr = 0x8000000000000000
 
 	// The framebuffer geometry the scanout bind is full-frame against
 	// (kernel/src/virtio_gpu.zig: fb_width x fb_height x fb_bpp).
@@ -96,6 +99,23 @@ func WmctlContentPtr(x, y uint32, buttons uint8) int64 {
 func MmapScanout() ([]byte, error) {
 	return MmapHint(M33ScanoutTag, ScanoutFbBytes,
 		ProtRead|ProtWrite, MapAnonymous|M33MapShared)
+}
+
+// MmapWindowSurface binds the caller's window backing buffer (M33 SB3).
+// The kernel validates the window owner and size and selects the actual VA.
+// Unlike MmapHint this tag has a window id in its low bits, so it must not
+// pass the ordinary page-alignment check.
+func MmapWindowSurface(id, size int) ([]byte, error) {
+	if id <= 0 || id > 255 || size <= 0 || size > int(^uint(0)>>1)-(PageSize-1) {
+		return nil, errno(ErrEINVAL)
+	}
+	n := (size + PageSize - 1) &^ (PageSize - 1)
+	r := syscall4(SlotMmap, M33WindowTag|uintptr(id), uintptr(n),
+		uintptr(ProtRead|ProtWrite), uintptr(MapAnonymous|M33MapShared))
+	if r < 0 {
+		return nil, errno(-r)
+	}
+	return mmapSlice(uintptr(r), n), nil
 }
 
 // ErrnoOf maps a negative syscall result to the kernel's own error magnitude

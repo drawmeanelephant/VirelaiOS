@@ -14,6 +14,7 @@
 package main
 
 import (
+	"virelai/draw"
 	"virelai/tabapp"
 	"virelai/tls"
 	"virelai/vi"
@@ -232,7 +233,7 @@ func (a *app) handle(ev vi.Event) bool {
 func (a *app) draw() {
 	var f vi.Filler
 	f.Rect(a.ta.Win, 0, 0, a.ta.W, a.ta.H, 0x101418)
-	cv := &widgetCanvas{f: &f, win: a.ta.Win}
+	cv := &draw.FillerCanvas{Filler: &f, WindowID: a.ta.Win}
 	a.title = widgets.Text{
 		R:     scaleR(a.ta, widgets.Rect{X: 8, Y: 8, W: int(natW) - 16, H: 20}),
 		Label: appTitle,
@@ -255,18 +256,6 @@ func (a *app) draw() {
 	a.body.Draw(cv)
 	a.stat.Draw(cv)
 	f.Flush()
-}
-
-type widgetCanvas struct {
-	f   *vi.Filler
-	win int
-}
-
-func (c *widgetCanvas) FillRect(r widgets.Rect, rgb uint32) {
-	if r.W <= 0 || r.H <= 0 {
-		return
-	}
-	c.f.Rect(c.win, uint32(r.X), uint32(r.Y), uint32(r.W), uint32(r.H), rgb)
 }
 
 func scaleR(ta *tabapp.TabApp, r widgets.Rect) widgets.Rect {
