@@ -67,6 +67,29 @@ func TestInsertInMiddle(t *testing.T) {
 	}
 }
 
+func TestUTF8CaretEditsWholeRunes(t *testing.T) {
+	b := NewBuffer()
+	b.InsertText("a")
+	if !b.InsertRune('ö') {
+		t.Fatal("InsertRune refused")
+	}
+	b.InsertText("b")
+	if got := text(b); got != "aöb" || b.Col() != 3 {
+		t.Fatalf("UTF-8 text/column = %q/%d want aöb/3", got, b.Col())
+	}
+	if !b.Left() || b.Cursor() != len("aö") {
+		t.Fatalf("Left split a rune: cursor=%d", b.Cursor())
+	}
+	b.SetCursor(2)
+	if b.Cursor() != 1 {
+		t.Fatalf("SetCursor into a continuation byte yielded %d, want rune boundary 1", b.Cursor())
+	}
+	b.SetCursor(len("aö"))
+	if !b.Backspace() || text(b) != "ab" || b.Cursor() != 1 {
+		t.Fatalf("Backspace split a rune: text=%q cursor=%d", text(b), b.Cursor())
+	}
+}
+
 // A host editor's line endings: CRLF becomes LF, a bare CR becomes LF, a NUL is
 // dropped. Otherwise the file opens with carriage returns drawn as glyphs and
 // the line structure the user sees is not the one the frame counted.
@@ -385,24 +408,19 @@ func TestDeleteAtEndOfLineJoins(t *testing.T) {
 	}
 }
 
-// UTF-8 asymmetry, pinned so a later change is a decision rather than an
-// accident. The engine is BYTEWISE: a loaded 'é' is two bytes, the horizontals
-// step over each one, and the caret can therefore sit inside a codepoint. That
-// is safe here only because input cannot create one -- insertionFor accepts
-// ASCII only (TestInsertionFor pins 0x80 and the control codes), so no edit the
-// app performs can split a codepoint it accepted. A rune-aware caret means
-// changing both halves together, and this is where that argument lives.
-func TestUTF8IsBytewise(t *testing.T) {
+// The buffer counts UTF-8 bytes for file limits and offsets, but the caret
+// moves by whole Unicode scalars.
+func TestUTF8CaretMovesByRune(t *testing.T) {
 	b := NewBuffer()
 	b.Load([]byte("é"))
 	if b.Len() != 2 {
 		t.Fatalf("Len = %d want 2: é is two bytes and the engine counts bytes", b.Len())
 	}
 	b.SetCursor(0)
-	if !b.Right() || b.Cursor() != 1 {
-		t.Fatalf("Right = %d want 1: the horizontals move by byte", b.Cursor())
+	if !b.Right() || b.Cursor() != 2 || b.Col() != 1 {
+		t.Fatalf("Right = %d/%d want byte offset 2, rune column 1", b.Cursor(), b.Col())
 	}
 	if got := text(b); got != "é" {
-		t.Fatalf("the bytewise caret re-joined the two bytes as %q want %q", got, "é")
+		t.Fatalf("the rune-aware caret re-joined the two bytes as %q want %q", got, "é")
 	}
 }

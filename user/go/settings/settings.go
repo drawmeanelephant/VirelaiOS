@@ -11,22 +11,24 @@
 // fsync + delete/rename), the same publish the kernel's `settings set` uses, so
 // a panel save can never leave a partial file behind.
 //
-// KnownKeys mirrors the kernel's compiled table (kernel/src/settings.zig). It is
-// a MIRROR, not a second schema: the panel offers exactly the keys the kernel
-// already knows (card D1) and writes only those. The mirror is pinned against
-// the kernel source by a host test, so a key added there and not here is a
-// failing test rather than a silent drift.
+// KnownKeys mirrors the kernel's seeded table (kernel/src/settings.zig). It is
+// a MIRROR, not a second schema: the panel offers every key the kernel seeds,
+// plus its explicitly accepted-unseeded palette/font/layout rows. The mirror
+// is pinned against the kernel source by a host test, so a key added there and
+// not here is a failing test rather than a silent drift.
 //
 // M73m (#1662) grows the surface WITHOUT touching this table: the three
 // custom-palette keys below are accepted keys the kernel does not seed (the
-// `color`/`font_size` pattern), so a default table — and the SETTINGS.TXT a
-// fresh share carries — stays byte-identical to the pre-M73m image, and the
-// `keys=` a default panel reports does not move.
+// `color`/`font_size`/`keyboard_layout` pattern), so a default settings table
+// — and the SETTINGS.TXT a fresh share carries — stays byte-identical to the
+// pre-M73m image. GOSET's display row count can grow without materializing
+// these optional values in the file.
 package settings
 
 import (
 	"strings"
 
+	"virelai/layout"
 	"virelai/vi"
 )
 
@@ -36,14 +38,16 @@ const (
 	Path = "/host/SETTINGS.TXT"
 	// Caps mirror the kernel's table (max_entries / max_key_len / max_val_len)
 	// and its bounded load buffer.
-	MaxKeys = 16
+	MaxKeys = 17
 	MaxKey  = 32
 	MaxVal  = 64
 	MaxBody = 2048
 
 	// SaveRefused is Save's return when the decode was corrupt: no file was
-	// written. It is a package-local sentinel, not a kernel errno.
+	// written. The two negative sentinels are not kernel error codes.
 	SaveRefused int64 = -4097
+	// SaveFull refuses a panel table that the kernel cannot load intact.
+	SaveFull int64 = -4098
 )
 
 // State is the decode verdict for the file.
@@ -99,8 +103,9 @@ var KnownKeys = []Key{
 // `theme=custom` resolves to at paint time (the kernel's palette_fg /
 // palette_bg / palette_accent). They are NOT KnownKeys — the kernel does not
 // seed them either — so the mirror table above stays exactly the kernel's,
-// and a default panel stays `keys=8`. The panel reveals them as rows the
-// moment `custom` is chosen and accepts them as typed input at any time.
+// and a default panel stays at eight kernel rows plus keyboard_layout. The
+// panel reveals them as rows the moment `custom` is chosen and accepts them
+// as typed input at any time.
 // Defaults mirror kernel/src/settings.zig *_default (pinned by host test).
 var PaletteKeys = []Key{
 	{Name: "palette_fg", Default: "00ff00"},
@@ -112,8 +117,9 @@ var PaletteKeys = []Key{
 // key, two ladders (the framebuffer text layer 8x8/16x16/24x24 and the
 // terminal GRID's 7x13/8x16/10x21 — the kernel's apply_font_size drives
 // both). Not KnownKeys, for the same reason as the palette rows: the
-// kernel does not seed it either, so a default panel stays `keys=8` and
-// the SETTINGS.TXT a fresh share carries stays byte-identical. The panel
+// kernel does not seed it either, so a default panel stays at eight kernel
+// rows plus keyboard_layout and a fresh share's SETTINGS.TXT stays
+// byte-identical. The panel
 // accepts it as typed input at any time and cycles it (small -> medium
 // -> large) once the row exists; it never fabricates the row, because an
 // ABSENT key is the boot look (text small + grid medium) — which no
@@ -122,6 +128,24 @@ var PaletteKeys = []Key{
 // vi.TerminalCellForSize, pinned against kernel/src/font_atlas_data.zig).
 var FontKeys = []Key{
 	{Name: "font_size", Default: "medium", Vocab: []string{"small", "medium", "large"}},
+}
+
+// KeyboardLayoutKeys are the M83d2 layout selector. The kernel uses US when
+// the key is absent, so this remains accepted-but-unseeded there; GOSET still
+// surfaces the row with that effective default so the choice is discoverable.
+var KeyboardLayoutKeys = []Key{
+	{Name: "keyboard_layout", Default: string(layout.US), Vocab: layout.Values()},
+}
+
+// IsKeyboardLayoutKey reports whether key is the M83d2 layout selector.
+func IsKeyboardLayoutKey(key string) bool {
+	return key == "keyboard_layout"
+}
+
+// ValidKeyboardLayout reports whether the value names a shipped layout.
+func ValidKeyboardLayout(value string) bool {
+	_, ok := layout.Parse(value)
+	return ok
 }
 
 // FontKey returns the font_size row (found=false otherwise).
@@ -157,11 +181,11 @@ func IsPaletteKey(key string) bool {
 }
 
 // Editable is the panel's write gate: a kernel-table key, one of the
-// custom-palette keys, or font_size (M80i). Anything else is named and
-// dropped, never written.
+// custom-palette keys, font_size (M80i), or keyboard_layout (M83d2).
+// Anything else is named and dropped, never written.
 func Editable(key string) bool {
 	_, known := Known(key)
-	return known || IsPaletteKey(key) || IsFontKey(key)
+	return known || IsPaletteKey(key) || IsFontKey(key) || IsKeyboardLayoutKey(key)
 }
 
 // ValidColour is the palette value grammar, mirrored from the kernel's
@@ -221,18 +245,31 @@ func Default(key string) (string, bool) {
 	if k, ok := FontKey(key); ok {
 		return k.Default, true
 	}
+	for _, k := range KeyboardLayoutKeys {
+		if k.Name == key {
+			return k.Default, true
+		}
+	}
 	return "", false
 }
 
 // Vocab returns the values the panel may cycle key through, and whether
 // key is cyclable at all. A kernel-table key with no vocabulary is free
-// text; font_size (M80i) carries its three-rung ladder.
+// text; font_size (M80i) and keyboard_layout (M83d2) carry declared lists.
 func Vocab(key string) ([]string, bool) {
 	k, ok := Known(key)
 	if !ok {
 		k, ok = FontKey(key)
 		if !ok {
-			return nil, false
+			for _, layoutKey := range KeyboardLayoutKeys {
+				if layoutKey.Name == key {
+					k, ok = layoutKey, true
+					break
+				}
+			}
+			if !ok {
+				return nil, false
+			}
 		}
 	}
 	return k.Vocab, true
@@ -362,9 +399,14 @@ func (f File) Effective(key string) (string, bool) {
 // the file is still visible and still settable. Unknown keys present in the
 // file are preserved untouched (see Set key), never offered for editing.
 func (f File) Display() []Setting {
-	out := make([]Setting, 0, len(f.Rows)+len(KnownKeys))
+	out := make([]Setting, 0, len(f.Rows)+len(KnownKeys)+len(KeyboardLayoutKeys))
 	out = append(out, f.Rows...)
 	for _, k := range KnownKeys {
+		if _, ok := Get(f.Rows, k.Name); !ok {
+			out = append(out, Setting{Key: k.Name, Val: k.Default})
+		}
+	}
+	for _, k := range KeyboardLayoutKeys {
 		if _, ok := Get(f.Rows, k.Name); !ok {
 			out = append(out, Setting{Key: k.Name, Val: k.Default})
 		}
@@ -395,12 +437,16 @@ func Load() File {
 
 // Save publishes the file's rows crash-safe (vi.WriteFileSafe: temp + fsync +
 // delete/rename). It REFUSES a corrupt decode — a panel must never launder a
-// file the kernel refused — returning SaveRefused. Any other negative return is
-// the kernel code of the step that failed; every failure removes the temp, so
-// the target is either the old bytes, the new bytes, or absent (defaults).
+// file the kernel refused — returning SaveRefused. SaveFull likewise refuses a
+// table the kernel would truncate. Any other negative return is the kernel
+// code of the step that failed; every failure removes the temp, so the target
+// is either the old bytes, the new bytes, or absent (defaults).
 func (f File) Save() int64 {
 	if f.State == StateCorrupt {
 		return SaveRefused
+	}
+	if len(f.Rows) > MaxKeys {
+		return SaveFull
 	}
 	return vi.WriteFileSafe(Path, Render(f.Rows))
 }

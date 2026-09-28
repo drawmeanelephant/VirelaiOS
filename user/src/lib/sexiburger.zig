@@ -175,7 +175,7 @@ pub const SexiburgerMenu = struct {
         switch (ev.kind) {
             ui.KEY_DOWN => {
                 const keycode = ev.arg0;
-                const ascii_char = @as(u8, @truncate(ev.arg1));
+                const ascii_char: u8 = if (ev.arg1 <= 0x7f) @intCast(ev.arg1) else 0;
 
                 // Chord toggles/dismisses menu
                 if (is_chord and keycode == 0x05) {

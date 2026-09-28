@@ -64,7 +64,7 @@ func TestSettingsParseIsFailClosed(t *testing.T) {
 
 // The kernel's parser drops a malformed ROW and the load stands; only the
 // header gates the whole file. The decoder mirrors that (and caps the
-// table like the kernel's 16 entries / 32-byte keys / 64-byte values).
+// table like the kernel's 17 entries / 32-byte keys / 64-byte values).
 func TestSettingsParseDropsRowsButStands(t *testing.T) {
 	ss, ok := Parse([]byte("#v2\nwm=none\nno_equals_here\n=emptykey\n"))
 	if !ok {
@@ -213,16 +213,19 @@ func TestKnownKeysMirrorTheKernelTable(t *testing.T) {
 func TestDisplaySurfacesAbsentKnownKeysWithTheValueInForce(t *testing.T) {
 	f := File{Rows: []Setting{{"hostname", "box"}}, State: StateOK}
 	d := f.Display()
-	// The one file row IS a known key, so the table is exactly the kernel's
-	// eight: it is filled out, never duplicated.
-	if len(d) != len(KnownKeys) {
-		t.Fatalf("display rows = %d, want %d", len(d), len(KnownKeys))
+	// The file row plus the kernel keys and accepted-unseeded layout are
+	// filled out, never duplicated.
+	if len(d) != len(KnownKeys)+len(KeyboardLayoutKeys) {
+		t.Fatalf("display rows = %d, want %d", len(d), len(KnownKeys)+len(KeyboardLayoutKeys))
 	}
 	if v, ok := Get(d, "wm"); !ok || v != "gotabwm" {
 		t.Fatalf("wm row = %q ok=%v, want the compiled default", v, ok)
 	}
 	if v, ok := Get(d, "theme"); !ok || v != "dark" {
 		t.Fatalf("theme row = %q ok=%v", v, ok)
+	}
+	if v, ok := Get(d, "keyboard_layout"); !ok || v != "us" {
+		t.Fatalf("keyboard_layout row = %q ok=%v, want the compiled default", v, ok)
 	}
 	if v, ok := Get(d, "hostname"); !ok || v != "box" {
 		t.Fatalf("file row lost: %q ok=%v", v, ok)
@@ -250,10 +253,11 @@ func TestEffectivePrefersTheFileValue(t *testing.T) {
 
 func TestDefaultIncludesAcceptedUnseededKeys(t *testing.T) {
 	for key, want := range map[string]string{
-		"palette_fg":     "00ff00",
-		"palette_bg":     "101418",
-		"palette_accent": "3b82f6",
-		"font_size":      "medium",
+		"palette_fg":      "00ff00",
+		"palette_bg":      "101418",
+		"palette_accent":  "3b82f6",
+		"font_size":       "medium",
+		"keyboard_layout": "us",
 	} {
 		if got, ok := Default(key); !ok || got != want {
 			t.Errorf("Default(%q) = (%q, %v), want (%q, true)", key, got, ok, want)
@@ -466,14 +470,15 @@ func TestSaveRefusesOnlyACorruptDecode(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // font_size must stay OUT of KnownKeys (the kernel does not seed it — a
-// default panel stays keys=8 and the fresh-share bytes stay identical),
+// the eight kernel rows plus keyboard_layout, and the fresh-share bytes stay
+// identical),
 // while its vocabulary is exactly the ladder the kernel applies.
 func TestFontKeysMirrorTheKernelVocabulary(t *testing.T) {
 	if len(FontKeys) != 1 || FontKeys[0].Name != "font_size" {
 		t.Fatalf("FontKeys = %+v, want the one font_size row", FontKeys)
 	}
 	if _, known := Known("font_size"); known {
-		t.Fatal("font_size must not be a KnownKeys row (the kernel does not seed it; keys=8 is pinned)")
+		t.Fatal("font_size must not be a KnownKeys row (the kernel does not seed it)")
 	}
 	if !Editable("font_size") {
 		t.Fatal("font_size is not editable — the panel could not choose the zoom rung")
@@ -497,5 +502,58 @@ func TestFontKeysMirrorTheKernelVocabulary(t *testing.T) {
 		if !strings.Contains(block, "\""+name+"\"") {
 			t.Errorf("kernel apply_font_size does not accept %q", name)
 		}
+	}
+}
+
+// M83d2 (#1786): the layout selector is accepted but not seeded, preserving
+// the kernel defaults/file bytes while giving GOSET a real two-layout row.
+func TestKeyboardLayoutSettingVocabulary(t *testing.T) {
+	if len(KeyboardLayoutKeys) != 1 || KeyboardLayoutKeys[0].Name != "keyboard_layout" {
+		t.Fatalf("KeyboardLayoutKeys = %+v, want the one selector row", KeyboardLayoutKeys)
+	}
+	if _, known := Known("keyboard_layout"); known {
+		t.Fatal("keyboard_layout must remain outside the seeded kernel table")
+	}
+	if !Editable("keyboard_layout") {
+		t.Fatal("keyboard_layout is not editable")
+	}
+	if got, ok := Default("keyboard_layout"); !ok || got != "us" {
+		t.Fatalf("Default(keyboard_layout) = (%q,%v), want (us,true)", got, ok)
+	}
+	if got, ok := Vocab("keyboard_layout"); !ok || !hasOnly(got, "us", "de") {
+		t.Fatalf("Vocab(keyboard_layout) = (%v,%v), want [us de]", got, ok)
+	}
+	for _, value := range []string{"us", "de"} {
+		if !ValidKeyboardLayout(value) {
+			t.Errorf("ValidKeyboardLayout(%q) = false", value)
+		}
+	}
+	if ValidKeyboardLayout("fr") || Editable("not_a_key") {
+		t.Fatal("unsupported layout or unknown setting was accepted")
+	}
+}
+
+func TestKeyboardLayoutFitsFullLegacyTable(t *testing.T) {
+	rows := make([]Setting, 0, 16)
+	for _, k := range KnownKeys {
+		rows = append(rows, Setting{Key: k.Name, Val: k.Default})
+	}
+	for i := 0; i < 8; i++ {
+		rows = append(rows, Setting{Key: "extension" + string(rune('a'+i)), Val: "v"})
+	}
+	display := (File{Rows: rows, State: StateOK}).Display()
+	if len(rows) != 16 || len(display) != MaxKeys {
+		t.Fatalf("rows = %d, want 16 pre-layout and 17 with layout", len(rows))
+	}
+	Set(display, "keyboard_layout", "de")
+	decoded, ok := Parse(Render(display))
+	if !ok || len(decoded) != MaxKeys {
+		t.Fatalf("layout was dropped at the new cap: rows=%d ok=%v", len(decoded), ok)
+	}
+	if got, _ := Get(decoded, "keyboard_layout"); got != "de" {
+		t.Fatalf("keyboard_layout = %q after round-trip, want de", got)
+	}
+	if rc := (File{Rows: append(display, Setting{Key: "overflow", Val: "v"}), State: StateOK}).Save(); rc != SaveFull {
+		t.Fatalf("over-cap panel save = %d, want SaveFull", rc)
 	}
 }

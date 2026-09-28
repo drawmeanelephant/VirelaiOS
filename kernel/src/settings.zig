@@ -108,7 +108,9 @@ pub const wm_default: []const u8 = "gotabwm";
 
 pub const max_key_len: usize = 32;
 pub const max_val_len: usize = 64;
-pub const max_entries: usize = 16;
+// Eight seeded rows, eight optional/extension rows, and the optional
+// keyboard_layout selector can coexist in a persisted table.
+pub const max_entries: usize = 17;
 
 pub const Entry = struct {
     key: [max_key_len]u8 = [_]u8{0} ** max_key_len,
@@ -917,6 +919,28 @@ test "settings: a valid v2 file still loads (M66b #1444)" {
     try std.testing.expect(apply_bytes("#v2\nwm=tabwm\nhostname=m66b\n"));
     try std.testing.expectEqualStrings("tabwm", wm_seat());
     try std.testing.expectEqualStrings("m66b", get_hostname());
+}
+
+test "settings: a full legacy table can gain the persisted layout" {
+    init();
+    defer init();
+    try std.testing.expectEqual(@as(usize, 8), count());
+    for (0..8) |i| {
+        var key: [16]u8 = undefined;
+        const name = try std.fmt.bufPrint(&key, "extension{d}", .{i});
+        try std.testing.expectEqual(SetResult.ok, set(name, "v"));
+    }
+    try std.testing.expectEqual(@as(usize, 16), count());
+    try std.testing.expectEqual(SetResult.ok, set("keyboard_layout", "de"));
+    try std.testing.expectEqual(max_entries, count());
+    try std.testing.expectEqual(SetResult.table_full, set("overflow", "v"));
+
+    var bytes: [2048]u8 = undefined;
+    const len = serialize(&bytes);
+    init();
+    try std.testing.expect(apply_bytes(bytes[0..len]));
+    try std.testing.expectEqualStrings("de", get("keyboard_layout").?);
+    try std.testing.expectEqualStrings("v", get("extension7").?);
 }
 
 test "settings: save_to_share without a channel is an honest no-op (M66b #1444)" {

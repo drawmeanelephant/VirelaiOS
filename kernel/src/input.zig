@@ -5,13 +5,14 @@
 //! events. The shell idle loop is the drain site (the card-3d shell-idle-
 //! drain pattern, next to the net RX drain): `drain()` polls the armed
 //! interrupt-IN endpoints, decodes keyboard HID boot reports (modifier +
-//! 6-key rollover) into ASCII bytes through a pure keymap, and records
+//! 6-key rollover) into UTF-8 console bytes / Unicode app codepoints through a
+//! pure keymap, and records
 //! pointer reports (buttons + absolute X/Y, best-effort — raw bytes are
 //! the ground truth). The decoded bytes sit in a bounded pure-BSS FIFO that
 //! the Road Pops tee's read path (`pop_byte`) hands to the shell's line
 //! editor — the FIRST screen-side keystrokes reach the terminal.
 //!
-//! The keymap covers the usable ASCII subset: letters (shift → caps,
+//! The keymap covers the usable printable subset: letters (shift → caps,
 //! ctrl → the ADR 0008 D2 editing chords 0x01..0x1a), digits (shift → the
 //! shifted symbol), Enter, Backspace, Tab, Space, the common punctuation,
 //! and the editing nav cluster (arrows, Home, End, Delete) encoded as
@@ -33,6 +34,16 @@ const driving_award = @import("driving_award.zig"); // Milestone six G5: window 
 const terminal = @import("terminal.zig"); // #1082 (ADR 0020 A5): window-front-end key routing
 const svclock = @import("svclock.zig"); // claim 9498 follow-on: the keyboard decode interleaves WIN + EV state
 const klog = @import("klog.zig"); // M49 SD5 (#1132): the terminal copy audit line
+const settings = @import("settings.zig"); // M83d2 (#1786): selected kernel keymap
+
+pub const KeyboardLayout = enum { us, de };
+
+/// Resolve the optional persisted selector. Any absent or unknown value keeps
+/// the compiled US table, without adding a default row to SETTINGS.TXT.
+pub fn selected_layout() KeyboardLayout {
+    const val = settings.get("keyboard_layout") orelse return .us;
+    return if (std.mem.eql(u8, val, "de")) .de else .us;
+}
 
 pub const max_fifo: usize = 64;
 
@@ -169,39 +180,107 @@ pub fn hygieneChord(usage: u8, shift: bool, alt: bool, ctrl: bool) ?HygieneChord
     };
 }
 
-/// Map a HID keyboard boot-protocol usage ID to an ASCII byte, applying
-/// shift when set. Returns null for usages outside the usable subset (the
-/// card's honest bound: no invented bytes).
-pub fn hid_to_ascii(usage: u8, shift: bool) ?u8 {
+const KeyPair = struct { plain: u21 = 0, shifted: u21 = 0 };
+
+/// Punctuation rows are indexed from usage 0x2d through 0x38. Zero means
+/// the physical key has no symbol in this layout's printable subset.
+const us_punctuation = [_]KeyPair{
+    .{ .plain = '-', .shifted = '_' },
+    .{ .plain = '=', .shifted = '+' },
+    .{ .plain = '[', .shifted = '{' },
+    .{ .plain = ']', .shifted = '}' },
+    .{ .plain = '\\', .shifted = '|' },
+    .{},
+    .{ .plain = ';', .shifted = ':' },
+    .{ .plain = '\'', .shifted = '"' },
+    .{ .plain = '`', .shifted = '~' },
+    .{ .plain = ',', .shifted = '<' },
+    .{ .plain = '.', .shifted = '>' },
+    .{ .plain = '/', .shifted = '?' },
+};
+const de_punctuation = [_]KeyPair{
+    .{ .plain = 0x00df, .shifted = '?' }, // ß / ?
+    .{}, // dead acute key
+    .{ .plain = 0x00fc, .shifted = 0x00dc }, // ü / Ü
+    .{ .plain = '+', .shifted = '*' },
+    .{ .plain = '#', .shifted = '\'' },
+    .{},
+    .{ .plain = 0x00f6, .shifted = 0x00d6 }, // ö / Ö
+    .{ .plain = 0x00e4, .shifted = 0x00c4 }, // ä / Ä
+    .{ .plain = '^', .shifted = 0x00b0 }, // ^ / °; dead keys are not composed
+    .{ .plain = ',', .shifted = ';' },
+    .{ .plain = '.', .shifted = ':' },
+    .{ .plain = '-', .shifted = '_' },
+};
+
+const LayoutTable = struct {
+    letters: []const u8,
+    shifted_digits: [10]u21,
+    punctuation: *const [12]KeyPair,
+    iso_angle_bracket_key: bool = false,
+};
+
+const us_table = LayoutTable{
+    .letters = "abcdefghijklmnopqrstuvwxyz",
+    .shifted_digits = .{ '!', '@', '#', '$', '%', '^', '&', '*', '(', ')' },
+    .punctuation = &us_punctuation,
+};
+const de_table = LayoutTable{
+    // German QWERTZ swaps the symbols on the physical Y and Z keys.
+    .letters = "abcdefghijklmnopqrstuvwxzy",
+    .shifted_digits = .{ '!', '"', 0x00a7, '$', '%', '&', '/', '(', ')', '=' },
+    .punctuation = &de_punctuation,
+    .iso_angle_bracket_key = true,
+};
+
+fn layout_table(layout: KeyboardLayout) *const LayoutTable {
+    return if (layout == .de) &de_table else &us_table;
+}
+
+/// Map a HID keyboard boot-protocol usage through the selected data table to
+/// its Unicode symbol. KEY_DOWN/KEY_UP carry this codepoint in the existing
+/// arg1 field (ADR 0014); kind-21 remains raw usage+flags.
+pub fn hid_to_codepoint_layout(layout: KeyboardLayout, usage: u8, shift: bool) ?u21 {
+    const table = layout_table(layout);
     if (usage >= 0x04 and usage <= 0x1d) {
-        // a..z
-        return if (shift) 'A' + (usage - 0x04) else 'a' + (usage - 0x04);
+        const plain = table.letters[usage - 0x04];
+        return if (shift) 'A' + (plain - 'a') else plain;
     }
     if (usage >= 0x1e and usage <= 0x27) {
-        // 1..0 (the top row)
-        const unshifted = "1234567890";
-        const shifted = "!@#$%^&*()";
         const i = usage - 0x1e;
-        return if (shift) shifted[i] else unshifted[i];
+        return if (shift) table.shifted_digits[i] else "1234567890"[i];
+    }
+    if (usage >= 0x2d and usage <= 0x38) {
+        const pair = table.punctuation[usage - 0x2d];
+        const symbol = if (shift) pair.shifted else pair.plain;
+        return if (symbol == 0) null else symbol;
     }
     return switch (usage) {
-        0x28 => '\n', // Enter / Return
-        0x2a => 0x08, // Backspace
-        0x2b => '\t', // Tab
-        0x2c => ' ', // Space
-        0x2d => if (shift) '_' else '-',
-        0x2e => if (shift) '+' else '=',
-        0x2f => if (shift) '{' else '[',
-        0x30 => if (shift) '}' else ']',
-        0x31 => if (shift) '|' else '\\',
-        0x33 => if (shift) ':' else ';',
-        0x34 => if (shift) '"' else '\'',
-        0x35 => if (shift) '~' else '`',
-        0x36 => if (shift) '<' else ',',
-        0x37 => if (shift) '>' else '.',
-        0x38 => if (shift) '?' else '/',
+        0x28 => '\n',
+        0x2a => 0x08,
+        0x2b => '\t',
+        0x2c => ' ',
+        0x64 => if (table.iso_angle_bracket_key) (if (shift) '>' else '<') else null,
         else => null,
     };
+}
+
+/// Map a HID usage to the ASCII subset used by control chords and compose
+/// lookup. Printable app and terminal paths use the full codepoint mapping.
+pub fn hid_to_ascii_layout(layout: KeyboardLayout, usage: u8, shift: bool) ?u8 {
+    const cp = hid_to_codepoint_layout(layout, usage, shift) orelse return null;
+    if (cp > 0x7f) return null;
+    return @intCast(cp);
+}
+
+/// Map the printable key using the persisted layout in force.
+pub fn hid_to_codepoint(usage: u8, shift: bool) ?u21 {
+    return hid_to_codepoint_layout(selected_layout(), usage, shift);
+}
+
+/// Map the ASCII subset using the persisted layout in force.
+pub fn hid_to_ascii(usage: u8, shift: bool) ?u8 {
+    return hid_to_ascii_layout(selected_layout(), usage, shift);
 }
 
 fn emitCsiTilde(out: *[max_key_bytes]u8, number: u8, modifier: u8) usize {
@@ -253,13 +332,40 @@ fn emitFunctionKey(out: *[max_key_bytes]u8, usage: u8, modifier: u8) usize {
     }
 }
 
+fn emitUtf8(cp: u21, out: *[max_key_bytes]u8) usize {
+    if (cp <= 0x7f) {
+        out[0] = @intCast(cp);
+        return 1;
+    }
+    if (cp <= 0x7ff) {
+        out[0] = @intCast(0xc0 | (cp >> 6));
+        out[1] = @intCast(0x80 | (cp & 0x3f));
+        return 2;
+    }
+    if (cp >= 0xd800 and cp <= 0xdfff) return 0;
+    if (cp <= 0xffff) {
+        out[0] = @intCast(0xe0 | (cp >> 12));
+        out[1] = @intCast(0x80 | ((cp >> 6) & 0x3f));
+        out[2] = @intCast(0x80 | (cp & 0x3f));
+        return 3;
+    }
+    if (cp <= 0x10ffff) {
+        out[0] = @intCast(0xf0 | (cp >> 18));
+        out[1] = @intCast(0x80 | ((cp >> 12) & 0x3f));
+        out[2] = @intCast(0x80 | ((cp >> 6) & 0x3f));
+        out[3] = @intCast(0x80 | (cp & 0x3f));
+        return 4;
+    }
+    return 0;
+}
+
 /// Decode one HID keyboard usage (with shift/alt/ctrl modifiers) into 0-7
 /// bytes of console input, written to `out`; returns the byte count (0 =
 /// the usage is outside the usable subset — no bytes are invented). The
 /// editing nav cluster arrives as `ESC [ <final>` sequences, modified nav
 /// uses xterm's `CSI 1;<modifier><final>` form, and F1-F12/Insert use
 /// xterm's SS3/CSI-tilde forms. Ctrl + a-z remains the ASCII control-code
-/// mapping (ADR 0008 D2); printable keys still use `hid_to_ascii`.
+/// mapping (ADR 0008 D2); printable keys use UTF-8 for the selected symbol.
 pub fn hid_to_bytes(usage: u8, shift: bool, alt: bool, ctrl: bool, out: *[max_key_bytes]u8) usize {
     const modifier: u8 = 1 + @as(u8, if (shift) 1 else 0) +
         @as(u8, if (alt) 2 else 0) + @as(u8, if (ctrl) 4 else 0);
@@ -299,7 +405,9 @@ pub fn hid_to_bytes(usage: u8, shift: bool, alt: bool, ctrl: bool, out: *[max_ke
 
     if (ctrl) {
         if (usage >= 0x04 and usage <= 0x1d) {
-            out[0] = (usage - 0x04) + 0x01; // Ctrl-A..Ctrl-Z
+            const letter = hid_to_ascii_layout(selected_layout(), usage, false) orelse return 0;
+            if (letter < 'a' or letter > 'z') return 0;
+            out[0] = letter - 'a' + 0x01; // Ctrl + the layout's a-z
             return 1;
         }
         // Preserve the original honest refusal for Ctrl+Enter, Ctrl+Space,
@@ -335,11 +443,8 @@ pub fn hid_to_bytes(usage: u8, shift: bool, alt: bool, ctrl: bool, out: *[max_ke
         },
         else => {},
     }
-    if (hid_to_ascii(usage, shift)) |b| {
-        out[0] = b;
-        return 1;
-    }
-    return 0;
+    const cp = hid_to_codepoint(usage, shift) orelse return 0;
+    return emitUtf8(cp, out);
 }
 
 // ---------------------------------------------------------------------------
@@ -826,7 +931,7 @@ pub fn decode_keyboard_report(rep: []const u8) void {
             }
             if (!held) {
                 kb_last_usage = k;
-                const ascii_char: u32 = if (hid_to_ascii(k, shift)) |ch| ch else 0;
+                const key_codepoint: u32 = if (hid_to_codepoint(k, shift)) |ch| ch else 0;
                 // Arc5 #245: Compose state machine (ADR 0014).
                 // When Alt is held, route through compose logic instead of
                 // immediately dispatching KEY_DOWN.
@@ -850,13 +955,13 @@ pub fn decode_keyboard_report(rep: []const u8) void {
                         events += 1;
                     } else {
                         // Compose miss: dispatch both keys as normal KEY_DOWN.
-                        const first_ascii: u32 = if (hid_to_ascii(compose_first, shift)) |ch| ch else 0;
+                        const first_codepoint: u32 = if (hid_to_codepoint(compose_first, shift)) |ch| ch else 0;
                         app_events.push(owner_pid, .{
                             .kind = app_events.KEY_DOWN,
                             .flags = flags,
                             .seq = 0,
                             .arg0 = compose_first,
-                            .arg1 = first_ascii,
+                            .arg1 = first_codepoint,
                         });
                         events += 1;
                         app_events.push(owner_pid, .{
@@ -864,7 +969,7 @@ pub fn decode_keyboard_report(rep: []const u8) void {
                             .flags = flags,
                             .seq = 0,
                             .arg0 = k,
-                            .arg1 = ascii_char,
+                            .arg1 = key_codepoint,
                         });
                         events += 1;
                     }
@@ -875,7 +980,7 @@ pub fn decode_keyboard_report(rep: []const u8) void {
                         .flags = flags,
                         .seq = 0,
                         .arg0 = k,
-                        .arg1 = ascii_char,
+                        .arg1 = key_codepoint,
                     });
                     events += 1;
                 }
@@ -916,13 +1021,13 @@ pub fn decode_keyboard_report(rep: []const u8) void {
                 }
             }
             if (!still_held) {
-                const ascii_char: u32 = if (hid_to_ascii(h, shift)) |ch| ch else 0;
+                const codepoint: u32 = if (hid_to_codepoint(h, shift)) |ch| ch else 0;
                 app_events.push(owner_pid, .{
                     .kind = app_events.KEY_UP,
                     .flags = flags,
                     .seq = 0,
                     .arg0 = h,
-                    .arg1 = ascii_char,
+                    .arg1 = codepoint,
                 });
             }
         }
@@ -1103,19 +1208,60 @@ pub fn take_move() ?MoveDelta {
 // ---------------------------------------------------------------------------
 
 test "input: hid_to_ascii maps the usable subset (unshifted + shifted)" {
-    try std.testing.expectEqual(@as(?u8, 'a'), hid_to_ascii(0x04, false));
-    try std.testing.expectEqual(@as(?u8, 'A'), hid_to_ascii(0x04, true));
-    try std.testing.expectEqual(@as(?u8, 'z'), hid_to_ascii(0x1d, false));
-    try std.testing.expectEqual(@as(?u8, 'Z'), hid_to_ascii(0x1d, true));
-    try std.testing.expectEqual(@as(?u8, '1'), hid_to_ascii(0x1e, false));
-    try std.testing.expectEqual(@as(?u8, '!'), hid_to_ascii(0x1e, true));
-    try std.testing.expectEqual(@as(?u8, '0'), hid_to_ascii(0x27, false));
-    try std.testing.expectEqual(@as(?u8, ')'), hid_to_ascii(0x27, true));
-    try std.testing.expectEqual(@as(?u8, '\n'), hid_to_ascii(0x28, false));
-    try std.testing.expectEqual(@as(?u8, ' '), hid_to_ascii(0x2c, false));
-    try std.testing.expectEqual(@as(?u8, '-'), hid_to_ascii(0x2d, false));
-    try std.testing.expectEqual(@as(?u8, '_'), hid_to_ascii(0x2d, true));
-    try std.testing.expectEqual(@as(?u8, 0x08), hid_to_ascii(0x2a, false));
+    try std.testing.expectEqual(@as(?u8, 'a'), hid_to_ascii_layout(.us, 0x04, false));
+    try std.testing.expectEqual(@as(?u8, 'A'), hid_to_ascii_layout(.us, 0x04, true));
+    try std.testing.expectEqual(@as(?u8, 'z'), hid_to_ascii_layout(.us, 0x1d, false));
+    try std.testing.expectEqual(@as(?u8, 'Z'), hid_to_ascii_layout(.us, 0x1d, true));
+    try std.testing.expectEqual(@as(?u8, '1'), hid_to_ascii_layout(.us, 0x1e, false));
+    try std.testing.expectEqual(@as(?u8, '!'), hid_to_ascii_layout(.us, 0x1e, true));
+    try std.testing.expectEqual(@as(?u8, '0'), hid_to_ascii_layout(.us, 0x27, false));
+    try std.testing.expectEqual(@as(?u8, ')'), hid_to_ascii_layout(.us, 0x27, true));
+    try std.testing.expectEqual(@as(?u8, '\n'), hid_to_ascii_layout(.us, 0x28, false));
+    try std.testing.expectEqual(@as(?u8, ' '), hid_to_ascii_layout(.us, 0x2c, false));
+    try std.testing.expectEqual(@as(?u8, '-'), hid_to_ascii_layout(.us, 0x2d, false));
+    try std.testing.expectEqual(@as(?u8, '_'), hid_to_ascii_layout(.us, 0x2d, true));
+    try std.testing.expectEqual(@as(?u8, 0x08), hid_to_ascii_layout(.us, 0x2a, false));
+}
+
+test "input: keyboard layouts map symbols to Unicode codepoints" {
+    try std.testing.expectEqual(@as(?u8, 'y'), hid_to_ascii_layout(.us, 0x1c, false));
+    try std.testing.expectEqual(@as(?u8, 'z'), hid_to_ascii_layout(.us, 0x1d, false));
+    try std.testing.expectEqual(@as(?u8, 'z'), hid_to_ascii_layout(.de, 0x1c, false));
+    try std.testing.expectEqual(@as(?u8, 'y'), hid_to_ascii_layout(.de, 0x1d, false));
+    try std.testing.expectEqual(@as(?u8, 'Z'), hid_to_ascii_layout(.de, 0x1c, true));
+    try std.testing.expectEqual(@as(?u8, ';'), hid_to_ascii_layout(.de, 0x36, true));
+    try std.testing.expectEqual(@as(?u8, ':'), hid_to_ascii_layout(.de, 0x37, true));
+    try std.testing.expectEqual(@as(?u8, '<'), hid_to_ascii_layout(.de, 0x64, false));
+    try std.testing.expectEqual(@as(?u8, '>'), hid_to_ascii_layout(.de, 0x64, true));
+    try std.testing.expectEqual(@as(?u21, 0x00f6), hid_to_codepoint_layout(.de, 0x33, false));
+    try std.testing.expectEqual(@as(?u21, 0x00d6), hid_to_codepoint_layout(.de, 0x33, true));
+    // The ASCII-only helper remains useful for control chords, but the app
+    // event arg1 and terminal text path carry the full codepoint/UTF-8.
+    try std.testing.expectEqual(@as(?u8, null), hid_to_ascii_layout(.de, 0x33, false));
+    try std.testing.expectEqual(@as(?u8, null), hid_to_ascii_layout(.de, 0x20, true));
+}
+
+test "input: selected layout comes from the persisted setting" {
+    settings.init();
+    defer settings.init();
+    try std.testing.expectEqual(KeyboardLayout.us, selected_layout());
+    try std.testing.expectEqual(settings.SetResult.ok, settings.set("keyboard_layout", "de"));
+    try std.testing.expectEqual(KeyboardLayout.de, selected_layout());
+    try std.testing.expectEqual(@as(?u8, 'z'), hid_to_ascii(0x1c, false));
+    try std.testing.expectEqual(@as(?u21, 'z'), hid_to_codepoint(0x1c, false));
+    try std.testing.expectEqual(settings.SetResult.ok, settings.set("keyboard_layout", "invalid"));
+    try std.testing.expectEqual(KeyboardLayout.us, selected_layout());
+}
+
+test "input: selected German symbols encode as UTF-8 console bytes" {
+    settings.init();
+    defer settings.init();
+    try std.testing.expectEqual(settings.SetResult.ok, settings.set("keyboard_layout", "de"));
+    var out: [max_key_bytes]u8 = undefined;
+    var n = hid_to_bytes(0x33, false, false, false, &out);
+    try std.testing.expectEqualSlices(u8, "\xc3\xb6", out[0..n]); // ö
+    n = hid_to_bytes(0x33, true, false, false, &out);
+    try std.testing.expectEqualSlices(u8, "\xc3\x96", out[0..n]); // Ö
 }
 
 test "input: usages outside the usable subset are refused (no invented bytes)" {

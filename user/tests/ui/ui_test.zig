@@ -428,6 +428,30 @@ test "ui: TextInput buffer typing, backspace, and cursor" {
     try std.testing.expectEqual(@as(usize, 1), input.cursor);
 }
 
+test "ui: TextInput keeps Unicode codepoints intact" {
+    var input = TextInput.init(Rect.make(10, 10, 120, 20));
+    input.focused = true;
+    input.set_text("AB");
+    input.cursor = 1;
+
+    var ev_o_umlaut = Event{ .kind = KEY_DOWN, .flags = 0, .seq = 1, .arg0 = 0x33, .arg1 = 0x00f6 };
+    try std.testing.expect(input.handle_event(&ev_o_umlaut));
+    try std.testing.expectEqualStrings("AöB", input.get_text());
+    try std.testing.expectEqual(@as(usize, 3), input.cursor);
+
+    var ev_bs = Event{ .kind = KEY_DOWN, .flags = 0, .seq = 2, .arg0 = 0x2a, .arg1 = 0x08 };
+    try std.testing.expect(input.handle_event(&ev_bs));
+    try std.testing.expectEqualStrings("AB", input.get_text());
+    try std.testing.expectEqual(@as(usize, 1), input.cursor);
+
+    // U+0108 ends in the same low byte as Backspace. The full codepoint,
+    // rather than a truncated u8, must decide which behavior to run.
+    var ev_circumflex = Event{ .kind = KEY_DOWN, .flags = 0, .seq = 3, .arg0 = 0x06, .arg1 = 0x0108 };
+    try std.testing.expect(input.handle_event(&ev_circumflex));
+    try std.testing.expectEqualStrings("AĈB", input.get_text());
+    try std.testing.expectEqual(@as(usize, 3), input.cursor);
+}
+
 test "ui: ListView row selection and keyboard navigation" {
     var list = ListView.init(Rect.make(10, 10, 100, 100), 16);
     list.item_count = 5;

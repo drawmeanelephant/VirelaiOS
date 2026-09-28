@@ -12,7 +12,7 @@
 //!   flags: u16      - modifiers / button bitmask
 //!   seq: u32        - monotonic sequence counter
 //!   arg0: u32       - event argument 0 (keycode, local X, win ID)
-//!   arg1: u32       - event argument 1 (ASCII byte, local Y, old focus)
+//!   arg1: u32       - event argument 1 (Unicode key codepoint, local Y, old focus)
 //!
 //! No allocation, no libc, no POSIX.
 

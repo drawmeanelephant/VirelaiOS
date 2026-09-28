@@ -43,7 +43,7 @@ func TestInsertionFor(t *testing.T) {
 	}
 	ok := []struct {
 		ev   vi.Event
-		want byte
+		want rune
 	}{
 		{down('a', 0), 'a'},
 		{down('Z', 0), 'Z'},
@@ -64,6 +64,9 @@ func TestInsertionFor(t *testing.T) {
 	if got, ok := insertionFor(translated); !ok || got != 'X' {
 		t.Fatalf("insertionFor(raw usage %#x, translated %#x) = (%q,%v) want ('X',true)",
 			translated.Arg0, translated.Arg1, got, ok)
+	}
+	if got, ok := insertionFor(down(0x00f6, 0)); !ok || got != 'ö' {
+		t.Fatalf("insertionFor(U+00F6) = (%q,%v) want ('ö',true)", got, ok)
 	}
 	// An unmapped key has no translated byte. Its raw usage must not turn into
 	// text via an app-side fallback.
@@ -256,7 +259,7 @@ func TestCaretEditing(t *testing.T) {
 	// The append-at-the-end path load() sets up: the gate types into a seed.
 	e.buf, e.cur = []byte("seed-line\n"), len("seed-line\n")
 	for _, b := range []byte("XYZ") {
-		e.insert(b)
+		e.insert(rune(b))
 	}
 	if string(e.buf) != "seed-line\nXYZ" {
 		t.Fatalf("typed buffer = %q want \"seed-line\\nXYZ\"", e.buf)
@@ -266,6 +269,16 @@ func TestCaretEditing(t *testing.T) {
 	e.cur = 99
 	if e.backspace() && len(e.buf) == 0 {
 		t.Fatal("a clamped caret must have removed the last byte")
+	}
+}
+
+func TestUnicodeInsertionAndBackspace(t *testing.T) {
+	e := &editor{}
+	if !e.insert('ö') || string(e.buf) != "ö" || e.cur != len("ö") {
+		t.Fatalf("insert umlaut = (%q,cur=%d) want (ö,2)", e.buf, e.cur)
+	}
+	if !e.backspace() || len(e.buf) != 0 || e.cur != 0 {
+		t.Fatalf("backspace umlaut = (%q,cur=%d) want empty", e.buf, e.cur)
 	}
 }
 

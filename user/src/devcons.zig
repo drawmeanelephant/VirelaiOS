@@ -178,9 +178,9 @@ pub export fn _start() callconv(.c) noreturn {
 
 /// The DEVCONS prompt's KEY_DOWN handling — shared by the wait path and the
 /// poll drain so no queued keystroke is lost (see the drain-loop note
-/// above). ADR 0009 event convention (as EDIT.BIN consumes it): arg0 is the
-/// raw HID usage (Enter 0x28, Backspace 0x2a), arg1 is the ASCII byte for
-/// printable keys.
+/// above). ADR 0014 event convention: arg0 is the raw HID usage (Enter 0x28,
+/// Backspace 0x2a), arg1 is a Unicode codepoint. The command prompt remains
+/// ASCII-only and refuses symbols it cannot encode.
 fn handle_key_down(win: u32, ev: *const ui.Event, input_buf: *[input_max]u8, input_len: *usize) void {
     const usage = ev.arg0;
     const ascii = ev.arg1;

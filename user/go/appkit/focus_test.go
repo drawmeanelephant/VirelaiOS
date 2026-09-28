@@ -34,6 +34,10 @@ func TestNormalizeKeyAndFocusOrder(t *testing.T) {
 	if !ok || k.Rune != 'x' || k.Named() != NamedNone {
 		t.Fatalf("printable key = %+v ok=%v", k, ok)
 	}
+	k, ok = NormalizeKey(keyEvent(0, 0x00f6, 0))
+	if !ok || k.Rune != 'ö' {
+		t.Fatalf("Unicode key = %+v ok=%v", k, ok)
+	}
 	k, ok = NormalizeKey(keyEvent(0, 0, vi.ModCtrl))
 	if !ok || k.Rune != 0 || k.Named() != NamedNone {
 		t.Fatalf("ctrl printable = %+v ok=%v", k, ok)
@@ -87,6 +91,9 @@ func TestTextFieldEditsAtCaretAndHonorsBound(t *testing.T) {
 		if !f.OnKey(Key{Rune: r}) {
 			t.Fatalf("insert %c", r)
 		}
+	}
+	if f.OnKey(Key{Rune: 'ö'}) || f.Value() != "abc" {
+		t.Fatalf("byte field must refuse non-ASCII without truncating: %q", f.Value())
 	}
 	if f.Value() != "abc" || f.CaretPosition() != 3 {
 		t.Fatalf("field = %q caret %d", f.Value(), f.CaretPosition())
