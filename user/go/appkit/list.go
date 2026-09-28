@@ -1,6 +1,9 @@
 package appkit
 
 import (
+	"unicode/utf8"
+
+	"virelai/layout"
 	"virelai/shlib"
 	"virelai/widgets"
 )
@@ -121,6 +124,14 @@ func (c *ListController) ensureVisible() {
 
 // TextField is a bounded GUI single-line editor. It uses shlib.LineBuffer for
 // byte/caret operations while appkit owns normalized key handling and paint.
+//
+// The buffer holds UTF-8 and Max bounds its bytes. Text goes in and out one
+// whole scalar at a time, so a rune that does not fit is refused rather than
+// truncated, and the caret and the delete keys never stop inside a rune.
+//
+// A field created without SetLayout has no dead keys and behaves as a plain
+// editor. With a layout, a dead key stages an accent that shows in the field
+// (see Preedit) until the next key resolves it.
 type TextField struct {
 	R           widgets.Rect
 	Buffer      shlib.LineBuffer
@@ -131,6 +142,8 @@ type TextField struct {
 	Max         int
 	Prefix      string
 	Placeholder string
+
+	stage layout.Stage
 }
 
 func NewTextField(r widgets.Rect, max int) TextField {
@@ -146,34 +159,176 @@ func (f *TextField) HitTest(x, y int) bool { return f.R.Contains(x, y) }
 func (f *TextField) Value() string      { return f.Buffer.Value() }
 func (f *TextField) CaretPosition() int { return f.Buffer.Caret() }
 
-func (f *TextField) SetValue(s string) { f.Buffer.SetValue(s) }
-func (f *TextField) Clear()            { f.Buffer.Clear() }
-func (f *TextField) SetFocused(v bool) { f.Focused = v }
+// SetLayout selects the keyboard layout whose dead keys the field composes.
+// Call it when the field is set up; it drops a half-typed sequence.
+func (f *TextField) SetLayout(id layout.ID) { f.stage.SetLayout(id) }
 
+// Preedit is the pending dead-key accent as the field paints it, or "" when
+// nothing is staged. The text is not in Value yet.
+func (f *TextField) Preedit() string { return f.stage.Preedit() }
+
+// SetValue replaces the text. A value longer than Max is clipped to a whole
+// rune, and a staged accent is dropped because it no longer follows the text
+// it was typed after.
+func (f *TextField) SetValue(s string) {
+	f.stage.Cancel()
+	if f.Max > 0 && len(s) > f.Max {
+		cut := f.Max
+		for cut > 0 && !utf8.RuneStart(s[cut]) {
+			cut--
+		}
+		s = s[:cut]
+	}
+	f.Buffer.SetValue(s)
+}
+
+func (f *TextField) Clear() {
+	f.stage.Cancel()
+	f.Buffer.Clear()
+}
+
+// SetFocused commits a staged accent as its literal character when the field
+// loses focus, so leaving the field never swallows what was typed.
+func (f *TextField) SetFocused(v bool) {
+	if !v {
+		f.flush()
+	}
+	f.Focused = v
+}
+
+// OnKey reports whether the field consumed the key. A key that ends a dead-key
+// sequence without being text (Enter, Escape, an unmapped key) first types the
+// staged accent, so Value already includes it, and then returns false so the
+// caller still acts on the key. Preedit is the state to repaint from.
 func (f *TextField) OnKey(k Key) bool {
+	before, _ := f.stage.Pending()
+	step := f.stage.Feed(layout.Input{
+		Usage: k.Usage,
+		Shift: k.Shift,
+		Chord: k.Ctrl || k.Alt,
+		Sym:   k.Rune,
+	})
+	changed := false
+	for _, r := range step.Commit {
+		if f.insertRune(r) {
+			changed = true
+		}
+	}
+	if after, _ := f.stage.Pending(); after != before {
+		changed = true
+	}
+	if !step.Pass {
+		return changed
+	}
+	return f.editKey(k)
+}
+
+func (f *TextField) editKey(k Key) bool {
 	switch k.Named() {
 	case NamedBackspace:
-		return f.Buffer.Backspace()
+		return f.backspace()
 	case NamedDelete:
-		return f.Buffer.Delete()
+		return f.deleteRune()
 	case NamedLeft:
-		return f.Buffer.Left()
+		return f.stepCaret(false)
 	case NamedRight:
-		return f.Buffer.Right()
+		return f.stepCaret(true)
 	case NamedHome:
 		return f.Buffer.Home()
 	case NamedEnd:
 		return f.Buffer.End()
 	}
-	// The SDK line buffer is byte-oriented, so reject non-ASCII codepoints
-	// rather than truncating a Unicode rune into an invalid byte.
-	if k.Rune >= 0x20 && k.Rune < 0x7f && !k.Ctrl && !k.Alt {
-		return f.Buffer.InsertByte(byte(k.Rune))
+	if k.Rune != 0 && !k.Ctrl && !k.Alt {
+		return f.insertRune(k.Rune)
 	}
 	return false
 }
 
-func (f *TextField) OnClick(x, y int) bool { return f.HitTest(x, y) }
+// insertRune types one scalar at the caret. The bytes go in together or not at
+// all: if the bound stops the encoding part-way, the bytes already placed are
+// taken back out.
+func (f *TextField) insertRune(r rune) bool {
+	if !layout.Printable(r) {
+		return false
+	}
+	var enc [utf8.UTFMax]byte
+	n := utf8.EncodeRune(enc[:], r)
+	for i := 0; i < n; i++ {
+		if f.Buffer.InsertByte(enc[i]) {
+			continue
+		}
+		for ; i > 0; i-- {
+			f.Buffer.Backspace()
+		}
+		return false
+	}
+	return true
+}
+
+func (f *TextField) flush() bool {
+	typed := false
+	for _, r := range f.stage.Flush() {
+		if f.insertRune(r) {
+			typed = true
+		}
+	}
+	return typed
+}
+
+func (f *TextField) backspace() bool {
+	v, c := f.Buffer.Value(), f.Buffer.Caret()
+	if c == 0 {
+		return false
+	}
+	_, n := utf8.DecodeLastRuneInString(v[:c])
+	for i := 0; i < n; i++ {
+		f.Buffer.Backspace()
+	}
+	return true
+}
+
+func (f *TextField) deleteRune() bool {
+	v, c := f.Buffer.Value(), f.Buffer.Caret()
+	if c >= len(v) {
+		return false
+	}
+	_, n := utf8.DecodeRuneInString(v[c:])
+	for i := 0; i < n; i++ {
+		f.Buffer.Delete()
+	}
+	return true
+}
+
+// stepCaret moves the caret one whole rune, right when forward is set.
+func (f *TextField) stepCaret(forward bool) bool {
+	v, c := f.Buffer.Value(), f.Buffer.Caret()
+	var n int
+	switch {
+	case forward && c < len(v):
+		_, n = utf8.DecodeRuneInString(v[c:])
+	case !forward && c > 0:
+		_, n = utf8.DecodeLastRuneInString(v[:c])
+	default:
+		return false
+	}
+	for i := 0; i < n; i++ {
+		if forward {
+			f.Buffer.Right()
+		} else {
+			f.Buffer.Left()
+		}
+	}
+	return true
+}
+
+// OnClick commits a staged accent first: a click ends the sequence.
+func (f *TextField) OnClick(x, y int) bool {
+	typed := f.flush()
+	return f.HitTest(x, y) || typed
+}
+
+// glyphW is the 8x8 face's advance, and so the width of one text cell.
+const glyphW = 8
 
 func (f *TextField) Draw(c widgets.RectCanvas) {
 	if f.R.Empty() {
@@ -190,15 +345,37 @@ func (f *TextField) Draw(c widgets.RectCanvas) {
 		f.Caret = 0x3b82f6
 	}
 	c.FillRect(f.R, bg)
-	// The existing widget text painter is intentionally reused. A caret is a
-	// one-cell accent line at the current byte position, clamped to the plate.
-	text := f.Prefix + f.Value()
-	if text == "" && f.Placeholder != "" {
-		text = f.Placeholder
+	// The existing widget text painter is intentionally reused. The caret is a
+	// one-cell accent line at the caret's cell, clamped to the plate.
+	v, caret := f.Value(), f.Buffer.Caret()
+	col := utf8.RuneCountInString(f.Prefix + v[:caret])
+	if pre := f.stage.Preedit(); pre != "" {
+		// A staged accent is painted where it will land, in the accent colour
+		// and underlined, between the text before and after the caret. The
+		// text after it moves right one cell, as it will when the accent
+		// commits.
+		widgets.DrawText(c, f.R, f.Prefix+v[:caret], fg)
+		widgets.DrawText(c, f.cellPlate(col), pre, f.Caret)
+		widgets.DrawText(c, f.cellPlate(col+1), v[caret:], fg)
+		// The underline sits one row under the glyph, where the painter puts
+		// it (centred in the inset plate, never above its top edge).
+		glyphY := f.R.Y + 2 + (f.R.H-4-8)/2
+		if glyphY < f.R.Y+2 {
+			glyphY = f.R.Y + 2
+		}
+		if y := glyphY + 8; y < f.R.Bottom() {
+			c.FillRect(widgets.Rect{X: f.R.X + 2 + col*glyphW, Y: y, W: glyphW, H: 1}, f.Caret)
+		}
+		col++
+	} else {
+		text := f.Prefix + v
+		if text == "" && f.Placeholder != "" {
+			text = f.Placeholder
+		}
+		widgets.DrawText(c, f.R, text, fg)
 	}
-	widgets.DrawText(c, f.R, text, fg)
 	if f.Focused {
-		x := f.R.X + 2 + (len([]rune(f.Prefix+f.Value())))*8
+		x := f.R.X + 2 + col*glyphW
 		if x >= f.R.Right()-2 {
 			x = f.R.Right() - 3
 		}
@@ -207,4 +384,13 @@ func (f *TextField) Draw(c widgets.RectCanvas) {
 		}
 		c.FillRect(widgets.Rect{X: x, Y: f.R.Y + 2, W: 2, H: f.R.H - 4}, f.Caret)
 	}
+}
+
+// cellPlate is the field's plate shifted right by col text cells, so a run
+// painted into it starts at that cell and is still clipped to the field.
+func (f *TextField) cellPlate(col int) widgets.Rect {
+	p := f.R
+	p.X += col * glyphW
+	p.W -= col * glyphW
+	return p
 }
