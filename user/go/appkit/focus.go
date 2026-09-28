@@ -201,10 +201,10 @@ type ActionButton struct {
 	OnActivate func() bool
 }
 
-func (b *ActionButton) Bounds() widgets.Rect  { return b.Button.Bounds() }
-func (b *ActionButton) HitTest(x, y int) bool { return b.Button.HitTest(x, y) }
-func (b *ActionButton) Draw(c widgets.Canvas) { b.Button.Draw(c) }
-func (b *ActionButton) SetFocused(v bool)     { b.Button.Focused = v }
+func (b *ActionButton) Bounds() widgets.Rect      { return b.Button.Bounds() }
+func (b *ActionButton) HitTest(x, y int) bool     { return b.Button.HitTest(x, y) }
+func (b *ActionButton) Draw(c widgets.RectCanvas) { b.Button.Draw(c) }
+func (b *ActionButton) SetFocused(v bool)         { b.Button.Focused = v }
 func (b *ActionButton) OnKey(k Key) bool {
 	if k.Named() != NamedEnter || b.OnActivate == nil {
 		return false

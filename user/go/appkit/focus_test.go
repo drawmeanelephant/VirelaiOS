@@ -14,10 +14,10 @@ type focusProbe struct {
 	pressed bool
 }
 
-func (p *focusProbe) Bounds() widgets.Rect  { return p.r }
-func (p *focusProbe) HitTest(x, y int) bool { return p.r.Contains(x, y) }
-func (p *focusProbe) Draw(widgets.Canvas)   {}
-func (p *focusProbe) OnKey(Key) bool        { p.keys++; return true }
+func (p *focusProbe) Bounds() widgets.Rect    { return p.r }
+func (p *focusProbe) HitTest(x, y int) bool   { return p.r.Contains(x, y) }
+func (p *focusProbe) Draw(widgets.RectCanvas) {}
+func (p *focusProbe) OnKey(Key) bool          { p.keys++; return true }
 func (p *focusProbe) OnClick(x, y int) bool {
 	p.clicks++
 	p.pressed = p.HitTest(x, y)

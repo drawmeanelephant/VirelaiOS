@@ -11,7 +11,7 @@
 // zero-regression fixed point.
 //
 // No LIBUI, no cgo, no OS surface: a widget only needs a Canvas, which a test
-// can record and the guest can back with vi.Filler.
+// can record and the guest can back with draw.BufferCanvas or draw.FillerCanvas.
 package widgets
 
 import (
@@ -48,9 +48,20 @@ func (r Rect) Inset(n int) Rect {
 	return Rect{r.X + n, r.Y + n, w, h}
 }
 
-// Canvas is the minimal drawing surface a widget needs. Tests supply a
-// recording canvas; the guest supplies one that batches into vi.Filler.
+// Canvas is the M86 chrome set. FillRect keeps its original signature and
+// behavior; the other operations let controls and appkit use the same
+// geometry on a shared window buffer or the legacy fill-batch path.
 type Canvas interface {
+	FillRect(r Rect, rgb uint32)
+	FillRoundedRect(r Rect, radius int, rgb uint32)
+	StrokeRoundedRect(r Rect, radius, weight int, rgb uint32)
+	BlitTinted(src []uint32, srcW, srcH, x, y int, rgb uint32)
+}
+
+// RectCanvas is the pre-M86 fill-only subset. Existing widgets still draw
+// through it unchanged, including clients that cannot bind a window buffer.
+// New chrome (appkit.Dialog) asks for the full Canvas above.
+type RectCanvas interface {
 	FillRect(r Rect, rgb uint32)
 }
 
@@ -58,7 +69,7 @@ type Canvas interface {
 type Widget interface {
 	Bounds() Rect
 	HitTest(x, y int) bool
-	Draw(c Canvas)
+	Draw(c RectCanvas)
 }
 
 // Scale maps r from a fromW x fromH canvas into toW x toH, integer math only,
@@ -128,7 +139,7 @@ func (t *Text) Bounds() Rect { return t.R }
 func (t *Text) HitTest(x, y int) bool { return t.R.Contains(x, y) }
 
 // Draw paints the plate then a run of fixed glyph cells clipped inside it.
-func (t *Text) Draw(c Canvas) {
+func (t *Text) Draw(c RectCanvas) {
 	if t.R.Empty() {
 		return
 	}
@@ -162,7 +173,7 @@ func (b *Button) Bounds() Rect { return b.R }
 func (b *Button) HitTest(x, y int) bool { return b.R.Contains(x, y) }
 
 // Draw paints the border, the inset face, then the centred label run.
-func (b *Button) Draw(c Canvas) {
+func (b *Button) Draw(c RectCanvas) {
 	if b.R.Empty() {
 		return
 	}
@@ -265,7 +276,7 @@ func (l *List) ItemAt(x, y int) int {
 }
 
 // Draw paints the list background, the selected row, then each row's label.
-func (l *List) Draw(c Canvas) {
+func (l *List) Draw(c RectCanvas) {
 	if l.R.Empty() {
 		return
 	}
@@ -312,7 +323,7 @@ func (l *List) Draw(c Canvas) {
 // DrawText paints a clipped glyph run using the shared widget face. It is
 // exported for appkit controls that compose the same text primitive without
 // copying the rasterizer or its clipping rules.
-func DrawText(c Canvas, plate Rect, s string, rgb uint32) {
+func DrawText(c RectCanvas, plate Rect, s string, rgb uint32) {
 	drawGlyphRun(c, plate, s, rgb)
 }
 
@@ -321,7 +332,7 @@ func DrawText(c Canvas, plate Rect, s string, rgb uint32) {
 // A solid cell per rune reads as a horizontal bar the width of the line —
 // that is what the desktop was showing anywhere a Text, Button, or List
 // labelled itself.
-func drawGlyphRun(c Canvas, plate Rect, s string, rgb uint32) {
+func drawGlyphRun(c RectCanvas, plate Rect, s string, rgb uint32) {
 	const cellH = 8
 	cellW := font.Advance(1)
 	inner := plate.Inset(2)

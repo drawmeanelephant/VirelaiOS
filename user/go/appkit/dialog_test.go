@@ -1,8 +1,14 @@
 package appkit
 
 import (
+	"crypto/sha256"
+	"encoding/binary"
+	"fmt"
+	"os"
 	"testing"
 
+	"virelai/draw"
+	"virelai/ttf"
 	"virelai/vi"
 )
 
@@ -65,5 +71,73 @@ func TestDialogMouseChoosesHitButton(t *testing.T) {
 	}
 	if d.Result != "No" || d.Open {
 		t.Fatalf("mouse result = %+v", d)
+	}
+}
+
+func TestDialogPrimitiveChrome(t *testing.T) {
+	ui, err := os.ReadFile("../../../image/fonts/Inter-Regular.ttf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	chrome, err := os.ReadFile("../../../image/fonts/VirelaiChrome-Regular.ttf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := NewPrompt("Open file", "Enter a path to open")
+	d.UIFace, err = ttf.Parse(ui)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.IconFace, err = ttf.Parse(chrome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.Input = "notes.txt"
+	const w, h = 512, 384
+	c := &draw.BufferCanvas{Pix: make([]uint32, w*h), W: w, H: h}
+	draw.FillRect(c, d.R, draw.Opaque(0x182026))
+	d.Draw(c)
+	pixel := func(x, y int) uint32 { return c.Pix[y*w+x] }
+	if pixel(96, 72) != draw.Opaque(0x182026) {
+		t.Fatalf("corner is not rounded: %#x", pixel(96, 72))
+	}
+	if pixel(256, 72) != draw.Opaque(0x334155) {
+		t.Fatalf("top border missing: %#x", pixel(256, 72))
+	}
+	if pixel(180, 160) != draw.Opaque(0x11171c) {
+		t.Fatalf("recessed input missing: %#x", pixel(180, 160))
+	}
+	if pixel(284, 189) != draw.Opaque(0x3b82f6) {
+		t.Fatalf("inside focus ring missing: %#x", pixel(284, 189))
+	}
+	iconInk := 0
+	for y := 84; y < 108; y++ {
+		for x := 108; x < 124; x++ {
+			if pixel(x, y) == draw.Opaque(0x3b82f6) {
+				iconInk++
+			}
+		}
+	}
+	if iconInk < 8 {
+		t.Fatalf("chrome PUA icon missing: %d pixels", iconInk)
+	}
+	if got := d.Buttons[len(d.Buttons)-1].R.Right(); got != d.R.Right()-12 {
+		t.Fatalf("last button not right aligned: %d", got)
+	}
+	// Composite golden in a byte vector: the host and guest use the same
+	// integer shape rasterizer, font masks, and 0xAARRGGBB canvas path.
+	var bytes [w * h * 4]byte
+	for i, px := range c.Pix {
+		binary.LittleEndian.PutUint32(bytes[4*i:], px)
+	}
+	const golden = "6f86f33a779f0d3fb7e5a19119df25201d41b5dc4f934c6f472aa753bc5c2c85"
+	if got := fmt.Sprintf("%x", sha256.Sum256(bytes[:])); got != golden {
+		t.Fatalf("dialog composite SHA-256 = %s (want %s)", got, golden)
+	}
+	// A moved dialog reuses its paint rects for pointer hit-testing.
+	d.R.X += 12
+	d.Draw(c)
+	if d.Buttons[1].R.Right() != d.R.Right()-12 {
+		t.Fatal("moved dialog left stale button hit rect")
 	}
 }

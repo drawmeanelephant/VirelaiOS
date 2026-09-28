@@ -5,6 +5,7 @@
 package main
 
 import (
+	"virelai/draw"
 	"virelai/theme"
 	"virelai/vi"
 	"virelai/vsys"
@@ -25,14 +26,8 @@ const (
 var argvEnvpGuard [0x1000]byte
 
 type canvas struct {
+	draw.FillerCanvas
 	filler vi.Filler
-	win    int
-}
-
-func (c *canvas) FillRect(r widgets.Rect, rgb uint32) {
-	if r.W > 0 && r.H > 0 {
-		c.filler.Rect(c.win, uint32(r.X), uint32(r.Y), uint32(r.W), uint32(r.H), rgb)
-	}
 }
 
 func ipString(ip [4]byte) string { return vi.FormatIPv4(ip) }
@@ -113,7 +108,7 @@ func drawSection(c *canvas, y int, name string) int {
 
 func drawSnapshot(c *canvas, s vi.NetStats) {
 	t := theme.Current
-	c.filler.Rect(c.win, 0, 0, winW, winH, t.Bg)
+	c.filler.Rect(c.WindowID, 0, 0, winW, winH, t.Bg)
 	title := widgets.Text{
 		R:     widgets.Rect{X: 12, Y: 8, W: 488, H: 20},
 		Label: "GONETSTAT.ELF - network dashboard",
@@ -198,7 +193,8 @@ func main() {
 	for _, section := range []string{"iface", "dhcp", "tcp", "udp", "arp", "counters"} {
 		vi.ConsoleLine("netstat: section " + section)
 	}
-	c := &canvas{win: win}
+	c := &canvas{}
+	c.Filler, c.WindowID = &c.filler, win
 	drawSnapshot(c, snap)
 	if vi.WinPresent(win) < 0 {
 		vi.WinClose(win)

@@ -9,6 +9,7 @@ package main
 
 import (
 	"virelai/appkit"
+	"virelai/draw"
 	"virelai/tabapp"
 	"virelai/theme"
 	"virelai/vi"
@@ -291,24 +292,12 @@ func (a *app) draw() {
 	a.layout()
 	var f vi.Filler
 	f.Rect(a.ta.Win, 0, 0, a.ta.W, a.ta.H, tabapp.FillRGB())
-	cv := &widgetCanvas{f: &f, win: a.ta.Win}
+	cv := &draw.FillerCanvas{Filler: &f, WindowID: a.ta.Win}
 	a.disp.Draw(cv)
 	for i := range a.keys {
 		a.keys[i].Draw(cv)
 	}
 	f.Flush()
-}
-
-type widgetCanvas struct {
-	f   *vi.Filler
-	win int
-}
-
-func (c *widgetCanvas) FillRect(r widgets.Rect, rgb uint32) {
-	if r.W <= 0 || r.H <= 0 {
-		return
-	}
-	c.f.Rect(c.win, uint32(r.X), uint32(r.Y), uint32(r.W), uint32(r.H), rgb)
 }
 
 func scaleR(ta *tabapp.TabApp, r widgets.Rect) widgets.Rect {

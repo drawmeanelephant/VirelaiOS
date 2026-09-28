@@ -60,9 +60,9 @@ func (c *ListController) End() bool {
 	return changed
 }
 
-func (c *ListController) Bounds() widgets.Rect   { return c.List.Bounds() }
-func (c *ListController) HitTest(x, y int) bool  { return c.List.HitTest(x, y) }
-func (c *ListController) Draw(cv widgets.Canvas) { c.List.Draw(cv) }
+func (c *ListController) Bounds() widgets.Rect       { return c.List.Bounds() }
+func (c *ListController) HitTest(x, y int) bool      { return c.List.HitTest(x, y) }
+func (c *ListController) Draw(cv widgets.RectCanvas) { c.List.Draw(cv) }
 func (c *ListController) OnClick(x, y int) bool {
 	if !c.valid() {
 		return false
@@ -173,7 +173,7 @@ func (f *TextField) OnKey(k Key) bool {
 
 func (f *TextField) OnClick(x, y int) bool { return f.HitTest(x, y) }
 
-func (f *TextField) Draw(c widgets.Canvas) {
+func (f *TextField) Draw(c widgets.RectCanvas) {
 	if f.R.Empty() {
 		return
 	}
