@@ -11,7 +11,10 @@
 // Ctrl-Y yank.
 package shlib
 
-import "strings"
+import (
+	"strings"
+	"unicode/utf8"
+)
 
 // historyMax is the session history ring bound (SH.BIN kept 16 entries; a
 // Go shell can afford more without changing the contract: session-only,
@@ -158,6 +161,7 @@ type Editor struct {
 	state    int    // edGround / edEsc / edCSI
 	csiParam int    // accumulated CSI parameter
 	csiGotP  bool   // saw at least one parameter digit
+	utf8Need uint8  // continuation bytes left in the current input rune
 	pending  []byte // unread input after a submit cut a chunk short
 	// reverse-i-search (M45 SH3): while searching, every byte feeds the
 	// query matcher instead of the line, and the draft line is held so a
@@ -277,7 +281,11 @@ func (e *Editor) Feed(chunk []byte) ([]byte, EditEvent) {
 		// `Ctrl+R query CR CR` accept the recall and then submit it.
 		var out []byte
 		for i := 0; i < len(chunk); i++ {
+			incomplete := e.trackInputRune(chunk[i])
 			w, finished := e.searchByte(chunk[i])
+			if incomplete {
+				w = nil
+			}
 			out = append(out, w...)
 			if finished {
 				if i+1 < len(chunk) {
@@ -291,6 +299,12 @@ func (e *Editor) Feed(chunk []byte) ([]byte, EditEvent) {
 	var out []byte
 	for i := 0; i < len(chunk); i++ {
 		b := chunk[i]
+		incomplete := false
+		if e.state != edCSI {
+			incomplete = e.trackInputRune(b)
+		} else {
+			e.utf8Need = 0
+		}
 		// Any byte that is not Tab ends the completion menu: a printable
 		// key dismisses it and inserts, a chord or an arrow dismisses it
 		// and does its own thing. Tab keeps it up so a repeat can page or
@@ -362,6 +376,9 @@ func (e *Editor) Feed(chunk []byte) ([]byte, EditEvent) {
 		default:
 			w, ev = e.keyGround(b)
 		}
+		if incomplete {
+			w = nil
+		}
 		out = append(out, w...)
 		if ev.Kind != evNone {
 			if i+1 < len(chunk) {
@@ -382,6 +399,32 @@ func (e *Editor) Feed(chunk []byte) ([]byte, EditEvent) {
 		}
 	}
 	return out, EditEvent{}
+}
+
+// trackInputRune reports whether b leaves a UTF-8 rune incomplete. The tty
+// renderer decodes UTF-8 across writes; repainting after each byte of a pasted
+// rune would put CR and the prompt between its lead and continuation bytes,
+// turning a valid rune into replacement glyphs. The editor still buffers each
+// byte, but suppresses those intermediate repaints until the rune is whole.
+func (e *Editor) trackInputRune(b byte) bool {
+	if e.utf8Need > 0 {
+		if b&0xC0 == 0x80 {
+			e.utf8Need--
+			return e.utf8Need > 0
+		}
+		e.utf8Need = 0
+	}
+	switch {
+	case b >= 0xC2 && b <= 0xDF:
+		e.utf8Need = 1
+	case b >= 0xE0 && b <= 0xEF:
+		e.utf8Need = 2
+	case b >= 0xF0 && b <= 0xF4:
+		e.utf8Need = 3
+	default:
+		return false
+	}
+	return true
 }
 
 // Pending reports whether the editor is still holding input that arrived
@@ -463,7 +506,7 @@ func (e *Editor) searchByte(b byte) ([]byte, bool) {
 		return e.searchExit(true), true
 	case b == 0x7f, b == 0x08: // Backspace: trim the query
 		if n := len(e.query); n > 0 {
-			e.query = e.query[:n-1]
+			e.query = e.query[:previousRuneBoundary(e.query, n)]
 			return e.searchPaint(), false
 		}
 		return nil, false
@@ -554,7 +597,7 @@ func (e *Editor) keyGround(b byte) ([]byte, EditEvent) {
 	case '\t':
 		return e.keyTab()
 	}
-	if b < 0x20 || b >= 0x7f {
+	if b < 0x20 {
 		return nil, EditEvent{} // other control bytes are not text
 	}
 	if len(e.buf) >= maxLineBytes {
@@ -574,15 +617,17 @@ func (e *Editor) keyBackspace() ([]byte, EditEvent) {
 		return nil, EditEvent{}
 	}
 	e.breakKill()
-	e.buf = append(e.buf[:e.cur-1], e.buf[e.cur:]...)
-	e.cur--
+	start := previousRuneBoundary(e.buf, e.cur)
+	e.buf = append(e.buf[:start], e.buf[e.cur:]...)
+	e.cur = start
 	return e.paint(), EditEvent{}
 }
 
 func (e *Editor) keyDelete() ([]byte, EditEvent) {
 	if e.cur < len(e.buf) {
 		e.breakKill()
-		e.buf = append(e.buf[:e.cur], e.buf[e.cur+1:]...)
+		end := nextRuneBoundary(e.buf, e.cur)
+		e.buf = append(e.buf[:e.cur], e.buf[end:]...)
 		return e.paint(), EditEvent{}
 	}
 	return nil, EditEvent{}
@@ -591,7 +636,7 @@ func (e *Editor) keyDelete() ([]byte, EditEvent) {
 func (e *Editor) keyLeft() ([]byte, EditEvent) {
 	if e.cur > 0 {
 		e.breakKill()
-		e.cur--
+		e.cur = previousRuneBoundary(e.buf, e.cur)
 		return e.paint(), EditEvent{}
 	}
 	return nil, EditEvent{}
@@ -600,7 +645,7 @@ func (e *Editor) keyLeft() ([]byte, EditEvent) {
 func (e *Editor) keyRight() ([]byte, EditEvent) {
 	if e.cur < len(e.buf) {
 		e.breakKill()
-		e.cur++
+		e.cur = nextRuneBoundary(e.buf, e.cur)
 		return e.paint(), EditEvent{}
 	}
 	return nil, EditEvent{}
@@ -900,19 +945,55 @@ func (e *Editor) keyTranspose() ([]byte, EditEvent) {
 	if len(e.buf) < 2 {
 		return nil, EditEvent{}
 	}
-	i := e.cur
-	if i == 0 {
+	if e.cur == 0 {
 		return nil, EditEvent{}
 	}
-	if i == len(e.buf) {
-		i-- // at the end: transpose the final pair
+	start, middle, end := 0, e.cur, e.cur
+	if e.cur >= len(e.buf) {
+		end = len(e.buf)
+		middle = previousRuneBoundary(e.buf, end)
+		start = previousRuneBoundary(e.buf, middle)
+	} else {
+		start = previousRuneBoundary(e.buf, middle)
+		end = nextRuneBoundary(e.buf, middle)
 	}
-	e.buf[i-1], e.buf[i] = e.buf[i], e.buf[i-1]
-	if e.cur < len(e.buf) {
-		e.cur++
+	if start == middle || middle == end {
+		return nil, EditEvent{}
 	}
+	leftLen, rightLen := middle-start, end-middle
+	var pair [8]byte // two UTF-8 scalars need at most eight bytes
+	copy(pair[:rightLen], e.buf[middle:end])
+	copy(pair[rightLen:rightLen+leftLen], e.buf[start:middle])
+	copy(e.buf[start:end], pair[:leftLen+rightLen])
+	e.cur = end
 	e.breakKill()
 	return e.paint(), EditEvent{}
+}
+
+func previousRuneBoundary(buf []byte, end int) int {
+	if end <= 0 {
+		return 0
+	}
+	if end > len(buf) {
+		end = len(buf)
+	}
+	start := end - 1
+	for start > 0 && !utf8.RuneStart(buf[start]) {
+		start--
+	}
+	_, size := utf8.DecodeRune(buf[start:end])
+	if start+size != end {
+		return end - 1
+	}
+	return start
+}
+
+func nextRuneBoundary(buf []byte, start int) int {
+	if start >= len(buf) {
+		return len(buf)
+	}
+	_, size := utf8.DecodeRune(buf[start:])
+	return start + size
 }
 
 // breakKill ends a consecutive-kill chain. The ring keeps its text, so the

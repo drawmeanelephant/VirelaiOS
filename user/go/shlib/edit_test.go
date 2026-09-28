@@ -42,6 +42,50 @@ func TestEditorTyping(t *testing.T) {
 	}
 }
 
+func TestEditorUnicodeCursorEditsStayOnRuneBoundaries(t *testing.T) {
+	e := NewEditor("gosh> ", &History{})
+	feedE(e, "AöB")
+	if e.cur != len("AöB") {
+		t.Fatalf("initial cursor = %d, want %d", e.cur, len("AöB"))
+	}
+
+	feedE(e, "\x1b[D")
+	if e.cur != len("Aö") {
+		t.Fatalf("first left cursor = %d, want %d", e.cur, len("Aö"))
+	}
+	feedE(e, "\x1b[D")
+	if e.cur != 1 {
+		t.Fatalf("second left cursor = %d, want 1", e.cur)
+	}
+	feedE(e, "\x1b[C")
+	if e.cur != len("Aö") {
+		t.Fatalf("right cursor = %d, want %d", e.cur, len("Aö"))
+	}
+	feedE(e, "\x7f")
+	if string(e.buf) != "AB" || e.cur != 1 {
+		t.Fatalf("backspace left buf=%q cur=%d, want AB at 1", e.buf, e.cur)
+	}
+
+	feedE(e, "ø")
+	if string(e.buf) != "AøB" || e.cur != len("Aø") {
+		t.Fatalf("Unicode insert left buf=%q cur=%d, want AøB at %d",
+			e.buf, e.cur, len("Aø"))
+	}
+	feedE(e, "\x1b[3~")
+	if string(e.buf) != "Aø" || e.cur != len("Aø") {
+		t.Fatalf("delete left buf=%q cur=%d, want Aø at %d",
+			e.buf, e.cur, len("Aø"))
+	}
+
+	transposed := NewEditor("gosh> ", &History{})
+	feedE(transposed, "AöB")
+	feedE(transposed, "\x14")
+	if string(transposed.buf) != "ABö" || transposed.cur != len("ABö") {
+		t.Fatalf("transpose left buf=%q cur=%d, want ABö at %d",
+			transposed.buf, transposed.cur, len("ABö"))
+	}
+}
+
 // TestEditorSubmit pins the submit protocol: a bare \r\n (M73d #1628:
 // the next prompt is the FRONT-END's post-RunLine write, the reference
 // shell loop's order — not part of the submit echo), the pushed history,
@@ -493,6 +537,23 @@ func TestSearchBackspaceTrimsTheQuery(t *testing.T) {
 	}
 }
 
+func TestSearchBackspaceRemovesWholeUnicodeRune(t *testing.T) {
+	h := &History{}
+	h.Push("ö")
+	e := NewEditor("gosh> ", h)
+	drainFeed(e, "\x12ö")
+	if string(e.query) != "ö" {
+		t.Fatalf("query = %q, want ö", e.query)
+	}
+	out := feedE(e, "\x7f")
+	if len(e.query) != 0 {
+		t.Fatalf("query after backspace = %q, want empty", e.query)
+	}
+	if !strings.Contains(out, "(reverse-i-search)`_`: (no match)") {
+		t.Fatalf("empty-query paint = %q", out)
+	}
+}
+
 // TestSearchQueryIsBounded: the query buffer does not grow without limit.
 func TestSearchQueryIsBounded(t *testing.T) {
 	e := NewEditor("gosh> ", &History{})
@@ -659,6 +720,33 @@ func TestHistoryLoadReadsOldestFirst(t *testing.T) {
 	h.Load([]byte("one\ntwo\nthree\n"))
 	if got, want := strings.Join(h.Entries(), ","), "one,two,three"; got != want {
 		t.Fatalf("entries = %q want %q", got, want)
+	}
+}
+
+func TestPastePreservesUTF8Runes(t *testing.T) {
+	e := NewEditor("gosh> ", &History{})
+	line := "echo ┌─┐你 ppp"
+	feedE(e, "echo ")
+	for _, r := range []rune("┌─┐你") {
+		encoded := []byte(string(r))
+		for i, b := range encoded {
+			out, _ := e.Feed([]byte{b})
+			if i+1 < len(encoded) && len(out) != 0 {
+				t.Fatalf("partial UTF-8 rune %q repainted after byte %d: %q",
+					r, i+1, out)
+			}
+			if i+1 == len(encoded) && !strings.Contains(string(out), string(r)) {
+				t.Fatalf("complete UTF-8 rune %q missing from repaint: %q", r, out)
+			}
+		}
+	}
+	feedE(e, " ppp")
+	_, ev := e.Feed([]byte("\n"))
+	if ev.Kind != EvSubmit {
+		t.Fatalf("event = %v, want submit", ev.Kind)
+	}
+	if ev.Line != line {
+		t.Fatalf("submitted line = %q, want %q", ev.Line, line)
 	}
 }
 

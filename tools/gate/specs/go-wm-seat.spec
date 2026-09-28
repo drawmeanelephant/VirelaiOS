@@ -595,8 +595,10 @@ vgate_assert 05 serial-absent 'exited status=139'
 #                                       the push, never before)
 #   gotabwm: notify paint id=<n>       the toast is ON THE SCANOUT and
 #                                       the frame was PRESENTED
-#   gotabwm: notify dismiss id=<n>     the click took it away, and the
-#                                       focus landed on the sender
+#   gotabwm: notify dismiss id=<n>     the toast click took it away and
+#                                       focused its sender
+#   gotabwm: notify center paint       the history center was presented
+#   gotabwm: notify center dismiss    its row control removed one item
 #
 # The pixel probe is a kind-4 snapshot fired on `notify paint`, not a host
 # framebuffer grab: the guest streams its own composed scanout, so the
@@ -624,16 +626,17 @@ vgate_assert 05 serial-absent 'exited status=139'
 #  \n  open the selection       `gofiles: cd /host/NOTIFY/SUB`
 #   p  paste                    `gofiles: pasted SOURCE.TXT` + the toast
 #
-# The click is a `--pointer-virtio` press+release at the toast's centre,
+# The first click is a `--pointer-virtio` press+release at the toast's centre,
 # (112, 702) = the middle of notifyRect(1280,720,0) = (8, 692, 208, 20). It
-# is scheduled on the PAINT marker, not on the request marker, so the toast
-# is provably on the scanout when the pointer arrives. The seat's tick is
-# ~1 s, NotifyTicks is 8, and the pointer transport paces 2.5 s per
-# message, so the down edge lands well inside the lifetime.
+# then opens the center from the clock/status panel, selects the sender, and
+# presses that row's X control. The sequence is scheduled on the PAINT marker,
+# not on the request marker, so the toast is provably on the scanout when the
+# first pointer edge arrives. The seat's tick is ~1 s, NotifyTicks is 8, and
+# pointer transport paces 2.5 s per message.
 #
 # exec-order: assert-proven -- the run ends on `rx-gotabwm-notify-ok`, which
-# only script3 prints, and script3 is held behind `gotabwm: notify dismiss`,
-# a marker only the seat's click path can print.
+# only script3 prints, and script3 is held behind the center's row-dismiss
+# marker, which only the seat's notification-center action can print.
 vgate_file script-06.txt <<'EOF'
 vf rm GOTABWM.DEMO
 set GOMAXPROCS=1
@@ -662,10 +665,10 @@ vgate_run 06 -- \
     --script2-after 'gotabwm: win focus' \
     --input-string $'jck\np' \
     --input-string-after 'gofiles: ready' \
-    --pointer-virtio '112,702,d;112,702,u' \
+    --pointer-virtio '112,702,d;112,702,u;1198,702,d;1198,702,u;400,227,d;400,227,u;880,227,d;880,227,u' \
     --pointer-virtio-after 'gotabwm: notify paint id=' \
     --script3 '$RUN_DIR/script3-06.txt' \
-    --script3-after 'gotabwm: notify dismiss id=' \
+    --script3-after 'gotabwm: notify center dismiss' \
     --script-expect 'rx-gotabwm-notify-ok' --timeout 360
 
 vgate_assert 06 serial-contains 'exec: loaded GOTABWM.ELF'
@@ -686,6 +689,10 @@ vgate_assert 06 serial-contains 'gotabwm: notify id='
 vgate_assert 06 serial-contains 'copied SOURCE.TXT'
 vgate_assert 06 serial-contains 'gotabwm: notify paint id='
 vgate_assert 06 serial-contains 'gotabwm: notify dismiss id='
+vgate_assert 06 serial-contains 'gotabwm: notify center open'
+vgate_assert 06 serial-contains 'gotabwm: notify center paint'
+vgate_assert 06 serial-contains 'gotabwm: notify center focus id='
+vgate_assert 06 serial-contains 'gotabwm: notify center dismiss'
 # Click-to-focus is the whole point of a toast raised by another tab, so the
 # focus must be visible in the log: the same `tab focus` / `host focus` pair
 # alt-tab and a rail click print.

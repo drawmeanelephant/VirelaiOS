@@ -281,8 +281,18 @@ func paintChrome(scan []byte, width, height int, clock string) int {
 	written += fillRect(pix, width, maxH, x, y, 2, h, tok.Accent)
 	tx, ty := chromeTextOrigin(x, y)
 	written += drawText8(pix, width, maxH, tx, ty, clock, tok.Ink)
-	written += drawText8(pix, width, maxH, tx+font.Measure(clock, chromeScale)+8, ty, statusText, tok.Muted)
+	written += drawText8(pix, width, maxH, tx+font.Measure(clock, chromeScale)+8, ty, chromeStatusText(), tok.Muted)
 	return written
+}
+
+// chromeStatusText makes the clock panel's notification-center affordance
+// discoverable without changing its geometry: pending history replaces the
+// seat label with a short prompt, and clicking this same panel opens it.
+func chromeStatusText() string {
+	if len(notifyCenter) > 0 {
+		return "NOTIFY!"
+	}
+	return statusText
 }
 
 // --- M71e (#1564): the empty-strip start surface ---------------------------

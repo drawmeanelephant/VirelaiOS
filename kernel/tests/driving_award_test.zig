@@ -938,6 +938,7 @@ test "driving_award: ASCII cells paint the atlas fixture's own bytes (M73l #1661
     defer driving_award.font_metrics.set_size(prev_size);
     driving_award.font_metrics.set_size(.medium);
     const m = driving_award.font_metrics;
+    const atlas = m.active().blob;
     const off: usize = ('A' - m.first_cp) * m.glyph_bytes;
     const row_stride = m.row_bytes;
     var lvl15: usize = 0;
@@ -947,7 +948,7 @@ test "driving_award: ASCII cells paint the atlas fixture's own bytes (M73l #1661
     while (dy < m.cell_h) : (dy += 1) {
         var gx: usize = 0;
         while (gx < m.cell_w) : (gx += 1) {
-            const byte = m.blob[off + dy * row_stride + gx / 2];
+            const byte = atlas[off + dy * row_stride + gx / 2];
             const lvl: u8 = if (@rem(gx, 2) == 0) byte >> 4 else byte & 0x0f;
             const k = ((y0 + dy) * W + gx) * 4;
             const pr: u32 = buf[k + 2];

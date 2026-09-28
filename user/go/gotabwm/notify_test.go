@@ -23,15 +23,30 @@ func resetNotify(t *testing.T) {
 	savedDropped := notifyDropped
 	savedTick := seatTick
 	savedPainted := notifyPainted
+	savedCenter := notifyCenter
+	savedCenterOpen := notifyCenterOpen
+	savedCenterPainted := notifyCenterPainted
+	savedCenterNextID := notifyCenterNextID
+	savedFocusNotifySource := focusNotifySource
 	notifyQueue = nil
 	notifyDropped = 0
 	notifyPainted = false
 	seatTick = 0
+	notifyCenter = nil
+	notifyCenterOpen = false
+	notifyCenterPainted = false
+	notifyCenterNextID = 0
+	focusNotifySource = focusHosted
 	t.Cleanup(func() {
 		notifyQueue = saved
 		notifyDropped = savedDropped
 		notifyPainted = savedPainted
 		seatTick = savedTick
+		notifyCenter = savedCenter
+		notifyCenterOpen = savedCenterOpen
+		notifyCenterPainted = savedCenterPainted
+		notifyCenterNextID = savedCenterNextID
+		focusNotifySource = savedFocusNotifySource
 	})
 }
 

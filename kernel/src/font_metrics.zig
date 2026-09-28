@@ -103,7 +103,6 @@ pub var row_bytes: u32 = data.medium.row_bytes;
 pub var glyph_bytes: usize = data.medium.glyph_bytes;
 pub var first_cp: u32 = data.medium.first_cp;
 pub var last_cp: u32 = data.medium.last_cp;
-pub var blob: [*]const u8 = data.medium.blob;
 
 /// Move the zoom ladder to `s`. The flat metrics follow in one
 /// straight-line pass (one struct read, then the writes) — CONVENTION,
@@ -128,7 +127,6 @@ pub fn set_size(s: Size) void {
     glyph_bytes = m.glyph_bytes;
     first_cp = m.first_cp;
     last_cp = m.last_cp;
-    blob = m.blob;
 }
 
 /// The active metrics as a struct (tests and one-shot readers that want
@@ -173,6 +171,7 @@ test "the active cell is the boot look and follows set_size" {
     try std.testing.expectEqual(@as(u32, 16), cell_h);
     try std.testing.expectEqual(@as(usize, 64), glyph_bytes);
     try std.testing.expectEqual(@as(u32, 4), row_bytes);
+    try std.testing.expectEqual(@intFromPtr(cellFor(.medium).blob), @intFromPtr(active().blob));
     defer set_size(.medium);
     set_size(.large);
     try std.testing.expectEqual(Size.large, size);
@@ -180,11 +179,13 @@ test "the active cell is the boot look and follows set_size" {
     try std.testing.expectEqual(@as(u32, 21), cell_h);
     try std.testing.expectEqual(@as(u32, 20), wide_cell_w);
     try std.testing.expectEqual(@as(u32, 20), underline_row);
+    try std.testing.expectEqual(@intFromPtr(cellFor(.large).blob), @intFromPtr(active().blob));
     set_size(.small);
     try std.testing.expectEqual(Size.small, size);
     try std.testing.expectEqual(@as(u32, 7), cell_w);
     try std.testing.expectEqual(@as(u32, 13), cell_h);
     try std.testing.expectEqual(@as(usize, 52), glyph_bytes);
+    try std.testing.expectEqual(@intFromPtr(cellFor(.small).blob), @intFromPtr(active().blob));
     try std.testing.expectEqual(@as(u32, 4), row_bytes);
 }
 
