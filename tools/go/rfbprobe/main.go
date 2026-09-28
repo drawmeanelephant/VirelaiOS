@@ -423,7 +423,10 @@ func bridgeOne(ln *net.TCPListener, wait time.Duration, password string, guestIn
 		done <- fmt.Sprintf("seat->viewer %d bytes", n)
 	}()
 	go func() {
-		n, _ := io.Copy(onlyWriter{guestOut}, viewer)
+		n, err := forwardViewerMessages(viewer, onlyWriter{guestOut})
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "RFBPROBE: bridge viewer messages:", err)
+		}
 		done <- fmt.Sprintf("viewer->seat %d bytes", n)
 	}()
 	fmt.Fprintln(os.Stderr, "RFBPROBE: bridge closed:", <-done)

@@ -49,6 +49,9 @@ speaks RFB 3.8/None to the guest, forwards ClientInit, ServerInit and
 frames, and logs the handshake progress without challenge/response or
 password bytes. It refuses non-loopback addresses. This is not a
 remote-access path: legacy DES exists only in the host probe.
+For the paced hermetic stream, the bridge prefers viewer-advertised
+hextile or RRE ahead of Raw when forwarding SetEncodings. It never
+offers the guest an encoding the viewer did not advertise.
 
 The guest's None wire has no authentication or confidentiality. The
 `--rfb-hermetic` seat opt-in and this one-viewer bridge are same-trust-domain
