@@ -27,6 +27,7 @@
 package main
 
 import (
+	"virelai/draw"
 	"virelai/tabapp"
 	"virelai/theme"
 	"virelai/vi"
@@ -309,7 +310,7 @@ func (a *app) footLine() string {
 func (a *app) draw() {
 	var f vi.Filler
 	f.Rect(a.ta.Win, 0, 0, a.ta.W, a.ta.H, theme.Current.Bg)
-	cv := &canvas{f: &f, win: a.ta.Win}
+	cv := &draw.FillerCanvas{Filler: &f, WindowID: a.ta.Win}
 
 	a.summary.Draw(cv)
 	a.procsBtn.Draw(cv)
@@ -476,17 +477,4 @@ func (a *app) columnAt(x int, header widgets.Rect) Column {
 		return ColState
 	}
 	return ColExit
-}
-
-// canvas adapts widgets.Canvas onto the vi fill batcher.
-type canvas struct {
-	f   *vi.Filler
-	win int
-}
-
-func (c *canvas) FillRect(r widgets.Rect, rgb uint32) {
-	if r.W <= 0 || r.H <= 0 {
-		return
-	}
-	c.f.Rect(c.win, uint32(r.X), uint32(r.Y), uint32(r.W), uint32(r.H), rgb)
 }

@@ -61,6 +61,18 @@ func TestMmapScanoutHostDegrades(t *testing.T) {
 	}
 }
 
+func TestMmapWindowSurfaceHostDegrades(t *testing.T) {
+	if _, err := MmapWindowSurface(0, 1024); err != errno(ErrEINVAL) {
+		t.Fatalf("invalid window: %v", err)
+	}
+	if _, err := MmapWindowSurface(1, 0); err != errno(ErrEINVAL) {
+		t.Fatalf("empty surface: %v", err)
+	}
+	if _, err := MmapWindowSurface(1, 1024); err != errno(ErrENOSYS) {
+		t.Fatalf("host window surface: %v", err)
+	}
+}
+
 func TestErrnoOf(t *testing.T) {
 	if ErrnoOf(0) != 0 {
 		t.Fatalf("ErrnoOf(0) = %d want 0", ErrnoOf(0))

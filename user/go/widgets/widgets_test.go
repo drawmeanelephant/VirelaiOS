@@ -22,6 +22,16 @@ func (c *recordingCanvas) FillRect(r Rect, rgb uint32) {
 	}{r, rgb})
 }
 
+func (c *recordingCanvas) FillRoundedRect(r Rect, _ int, rgb uint32) {
+	c.FillRect(r, rgb)
+}
+
+func (c *recordingCanvas) StrokeRoundedRect(r Rect, _, _ int, rgb uint32) {
+	c.FillRect(r, rgb)
+}
+
+func (c *recordingCanvas) BlitTinted(_ []uint32, _, _, _, _ int, _ uint32) {}
+
 // gridAgreement asserts HitTest(x,y) == Bounds().Contains(x,y) over a grid
 // that brackets the widget, for every widget kind.
 func gridAgreement(t *testing.T, w Widget, loX, loY, hiX, hiY int) {

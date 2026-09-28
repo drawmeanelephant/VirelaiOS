@@ -8,6 +8,7 @@
 package main
 
 import (
+	uidraw "virelai/draw"
 	"virelai/tabapp"
 	"virelai/theme"
 	"virelai/vi"
@@ -71,7 +72,7 @@ func draw(ta *tabapp.TabApp) {
 	tok := theme.Current
 	f.Rect(ta.Win, 0, 0, w, h, tabapp.FillRGB())
 
-	cv := &widgetCanvas{f: &f, win: ta.Win, ta: ta}
+	cv := &uidraw.FillerCanvas{Filler: &f, WindowID: ta.Win}
 	title := &widgets.Text{
 		R:     scaleR(ta, widgets.Rect{X: tok.PadMD, Y: tok.PadMD, W: int(natW) - 2*tok.PadMD, H: 20}),
 		Label: appTitle,
@@ -98,21 +99,6 @@ func draw(ta *tabapp.TabApp) {
 	list.Draw(cv)
 
 	f.Flush()
-}
-
-// widgetCanvas adapts vi.Filler to widgets.Canvas, converting the widget rect
-// type onto the app's own scaled geometry.
-type widgetCanvas struct {
-	f   *vi.Filler
-	win int
-	ta  *tabapp.TabApp
-}
-
-func (c *widgetCanvas) FillRect(r widgets.Rect, rgb uint32) {
-	if r.W <= 0 || r.H <= 0 {
-		return
-	}
-	c.f.Rect(c.win, uint32(r.X), uint32(r.Y), uint32(r.W), uint32(r.H), rgb)
 }
 
 // scaleR maps a native-canvas widget rect into the app's current canvas.
