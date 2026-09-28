@@ -6,8 +6,10 @@ import (
 	"errors"
 	"sort"
 	"strings"
+	"time"
 
 	"virelai/mime"
+	"virelai/vi"
 	"virelai/vsys"
 )
 
@@ -48,7 +50,7 @@ func init() {
 		"open": bOpen, "env": bEnv, "printenv": bPrintenv, "set": bSet, "unset": bUnset,
 		"export": bExport, "read": bRead, "jobs": bJobs, "fg": bFg,
 		"history": bHistory, "help": bHelp, "exit": bExit, "monitor": bMonitor,
-		"sleep": bSleep, "clear": bClear, "log": bLog,
+		"sleep": bSleep, "clear": bClear, "log": bLog, "date": bDate,
 		// M50 trust surface (ADR 0024): identity, owner-only chmod, and the
 		// secret store's names. Same verbs and the same output text as the
 		// Zig shell, so the M50 gates retarget without weakening an assert.
@@ -514,6 +516,33 @@ func bLog(c *cmdCtx) int {
 	return 0
 }
 
+// These clock sources are replaceable in host tests. The guest takes the
+// epoch from the kernel and the fallback from the monotonic counter.
+var dateNow = vi.Now
+var dateMonotonic = vi.Nanos
+
+func bDate(c *cmdCtx) int {
+	if len(c.args) != 0 {
+		c.out([]byte("gosh: date: usage: date\n"))
+		return 2
+	}
+	epoch := dateNow()
+	if epoch == -vi.ErrENOSYS {
+		c.out([]byte("date: no firmware epoch; monotonic=" +
+			vsys.Itoa64(dateMonotonic()/1_000_000_000) + "s\n"))
+		return 1
+	}
+	if epoch < 0 {
+		c.out([]byte("date: clock error " + vsys.Itoa64(epoch) + "\n"))
+		return 1
+	}
+	// EFI's broken-down wall-clock fields were converted to an epoch as
+	// written. Format the same calendar face; do not assert a timezone.
+	face := time.Unix(epoch, 0).UTC().Format("2006-01-02 15:04:05")
+	c.out([]byte(face + " (epoch=" + vsys.Itoa64(epoch) + ")\n"))
+	return 0
+}
+
 // --- ADR 0008 D1 discovery for the guest verbs (#1538) -------------------
 //
 // The milestone-eight ADR pinned a grouped catalog, `help <cmd>` and topic
@@ -553,6 +582,7 @@ const subsetBlurb = "one pipe per line, > >> < redirects, $VAR ${VAR} $?"
 var helpCatalog = map[string]helpEntry{
 	// shell
 	"clear":   {group: "shell", usage: "clear", blurb: "clear the tty screen"},
+	"date":    {group: "shell", usage: "date", blurb: "show the firmware wall clock, or name the monotonic fallback", notes: "The calendar face has no timezone; without a firmware epoch the command exits 1."},
 	"echo":    {group: "shell", usage: "echo [ARG...]", blurb: "write ARG... separated by single spaces and a newline", notes: "The engine expands $VAR, ${VAR} and $? before echo runs."},
 	"exit":    {group: "shell", usage: "exit [STATUS]", blurb: "leave GOSH with STATUS (the last status when omitted)"},
 	"help":    {group: "shell", usage: "help [CMD|GROUP]", blurb: "the grouped catalog, or one verb's usage and description"},

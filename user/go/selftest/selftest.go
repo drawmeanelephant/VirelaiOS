@@ -226,6 +226,8 @@ const (
 	snapshotReadBundle   = snapshot.MaxBundle + 1
 )
 
+const epochReceipt = outDir + "/clock-epoch.ok"
+
 // roundtripPayload / truncatePayload / truncateKept are the byte bodies above
 // as the cases write them, shrink to and read back.
 func roundtripPayload() []byte { return []byte(strings.Repeat(fileUnit, roundtripUnits)) }
@@ -257,6 +259,7 @@ func writeSafeShort() []byte { return []byte(strings.Repeat(fileUnit, 5)) }
 // of a missing path, a listing's direct children).
 type syscalls struct {
 	now      func() int64
+	epoch    func() int64
 	sleep    func(ticks uint64)
 	mkdir    func(path string) int64
 	open     func(path string, flags uint32) (int64, int64)
@@ -322,7 +325,8 @@ type windowSeam struct {
 // guestSyscalls is the real EL0 surface (vi over ADR 0007).
 func guestSyscalls() syscalls {
 	return syscalls{
-		now:   vi.Time,
+		now:   vi.Nanos,
+		epoch: vi.Now,
 		sleep: vi.Sleep,
 		// MODE_DIR creates the directory, but the kernel's open validation
 		// requires it together with MODE_WRITE|MODE_CREATE (file_table.open:
@@ -449,9 +453,11 @@ func cases() []testCase {
 		// release rules. Inserted before the window case so the M61d
 		// report prefix stays untouched.
 		{id: "file-lease", run: caseFileLease},
-		// M61e (#1385): the window receipt — appended last so the M61d report
-		// prefix is untouched (the report is byte-compared).
+		// M61e (#1385): the window receipt.
 		{id: "window", run: caseWindow},
+		// M83a (#1774): add the epoch receipt at the tail so existing
+		// report rows keep their order and their host-test indexes.
+		{id: "clock-epoch", run: caseClockEpoch},
 	}
 }
 
@@ -791,6 +797,20 @@ func caseClockMonotonic(s *syscalls) error {
 			" -> " + strconv.FormatInt(t1, 10))
 	}
 	return nil
+}
+
+// caseClockEpoch records the actual slot-66 result for the host to compare
+// against its own wall clock. The receipt is dynamic, never a golden epoch.
+// No usable EFI epoch remains named as such, not forged from monotonic time.
+func caseClockEpoch(s *syscalls) error {
+	epoch := s.epoch()
+	if epoch == -vi.ErrENOSYS {
+		return writeReceipt(s, epochReceipt, "case clock-epoch unavailable fallback=monotonic")
+	}
+	if epoch < 0 {
+		return errors.New("epoch rc=" + strconv.FormatInt(epoch, 10))
+	}
+	return writeReceipt(s, epochReceipt, "case clock-epoch epoch="+strconv.FormatInt(epoch, 10)+" source=firmware")
 }
 
 // caseFileWrite: create the OUT directory (EEXIST tolerated), write a known

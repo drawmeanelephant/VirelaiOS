@@ -183,6 +183,10 @@
 # The report fixture below is byte-exact on purpose — the report is
 # deterministic (ADR 0031). Adding a case updates the fixture, the
 # share-contains case count, and want_summary in the python block.
+# M83a (#1774): clock-epoch is a dynamic OUT/ receipt, not a golden report
+# value. The host bounds its numeric epoch against its OWN pre/post run
+# samples with 60 seconds of slack; -ENOSYS has a named fallback in unit
+# tests rather than a made-up calendar value.
 #
 # HOST PREREQUISITE (fails the gate honestly when missing):
 #   bash tools/go/build-goself.sh   ->  .build/go/GOSELF.ELF
@@ -226,7 +230,8 @@ case file-snapshot pass
 case app-logs pass
 case file-lease pass
 case window pass
-summary cases=21 failed=0
+case clock-epoch pass
+summary cases=22 failed=0
 EOF
 vgate_file file-lease.expected <<'EOF'
 case file-lease dir=LEASES clock=yes foreign-refused=-11 stale-takeover=ok dead-holder=ok foreign-release=-11 release=ok free=0
@@ -289,8 +294,10 @@ goself intake fixture v1
 EOF
 
 vgate_setup_python <<'PY'
-import os, shutil, sys
+import os, shutil, sys, time
 rd = os.environ["RUN_DIR"]
+with open(os.path.join(rd, "host-epoch-start.txt"), "w") as fh:
+    fh.write(str(time.time()))
 share = os.environ.get("VG_SHARE") or os.path.join(rd, "share")
 src = os.path.join(".build", "go", "GOSELF.ELF")
 if not os.path.exists(src):
@@ -354,6 +361,7 @@ vgate_assert 01 serial-contains 'goself: declare accepted'
 vgate_assert 01 serial-contains 'selftest: case intake pass'
 vgate_assert 01 serial-contains 'selftest: case intake-altered pass'
 vgate_assert 01 serial-contains 'selftest: case clock-monotonic pass'
+vgate_assert 01 serial-contains 'selftest: case clock-epoch pass'
 vgate_assert 01 serial-contains 'selftest: case file-write pass'
 vgate_assert 01 serial-contains 'selftest: case file-roundtrip pass'
 vgate_assert 01 serial-contains 'selftest: case file-truncate pass'
@@ -401,7 +409,7 @@ vgate_assert 01 share-equals SELFTEST/OUT/file-lease.ok file-lease.expected
 vgate_assert 01 share-contains SELFTEST/OUT/file-lease.copy 'token=0123456789abcdef'
 vgate_assert 01 share-contains SELFTEST/OUT/file-lease.copy 'path=/host/SELFTEST/LEASE/TARGET.TXT'
 vgate_assert 01 share-equals CRASH/M82E.TEST.TXT app-log-receipt.expected
-vgate_assert 01 share-contains SELFTEST/OUT/summary.txt 'summary cases=21 failed=0'
+vgate_assert 01 share-contains SELFTEST/OUT/summary.txt 'summary cases=22 failed=0'
 
 # The load-bearing assert: the copies and the receipts on the host's own
 # filesystem must be byte-exact, the share's directory state must agree with
@@ -417,7 +425,7 @@ vgate_assert 01 share-contains SELFTEST/OUT/summary.txt 'summary cases=21 failed
 # This block uses `go-selftest-share-*`, and the share kinds use
 # `go-selftest-share-<RELPATH with / and space to _>`.
 vgate_assert 01 python <<'PY'
-import os, re, shutil
+import os, re, shutil, time
 share = os.environ["VG_SHARE"]
 rd = os.environ["RUN_DIR"]
 serial_path = os.environ.get("VG_SER") or os.path.join(rd, "vm-serial-01.log")
@@ -478,7 +486,7 @@ win_open_rect = (32, 32, 640, 400)
 win_viewport_w = 1100
 win_viewport_h = 720
 
-want_summary = b"summary cases=21 failed=0\n"
+want_summary = b"summary cases=22 failed=0\n"
 want_hello = b"goself smoke\n"
 want_intake_receipt = b"case intake path=IN/fixture.txt bytes=25 match=yes\n"
 want_altered_receipt = b"case intake-altered path=IN/altered.txt bytes=25 differs=yes\n"
@@ -551,6 +559,21 @@ def require(path, want, what):
 # owns the evidence copy). This block is what share-* cannot express — the
 # share's own directory state, the window cross-checks against the serial log.
 require(os.path.join(out, "summary.txt"), want_summary, "SUMMARY")
+clock_path = os.path.join(out, "clock-epoch.ok")
+clock = read(clock_path)
+match = re.fullmatch(rb"case clock-epoch epoch=([0-9]+) source=firmware\n", clock)
+if not match:
+    raise SystemExit("CLOCK RECEIPT has no live firmware epoch: %r" % clock)
+epoch = int(match.group(1))
+with open(os.path.join(rd, "host-epoch-start.txt")) as fh:
+    host_start = float(fh.read())
+host_end = time.time()
+if not host_start - 60 <= epoch <= host_end + 60:
+    raise SystemExit("guest epoch %d outside host wall-clock interval "
+                     "[%d, %d] with 60 s slack" %
+                     (epoch, host_start, host_end))
+print("guest epoch %d lies within 60 s of host wall-clock interval [%d, %d]"
+      % (epoch, host_start, host_end))
 require(os.path.join(out, "hello.txt"), want_hello, "HELLO")
 # The guest read the fixtures it says it read: these copies hold the bytes the
 # share held, not the constant the binary carries.
@@ -776,6 +799,7 @@ require(os.path.join(st, "IN", "altered.txt"), altered, "IN/ALTERED (guest wrote
 
 os.makedirs("artifacts", exist_ok=True)
 for name, path in (("intake.txt", os.path.join(out, "intake.txt")),
+                   ("clock-epoch.ok", clock_path),
                    ("intake-altered.txt", os.path.join(out, "intake-altered.txt")),
                    ("fixture.copy", os.path.join(out, "fixture.copy")),
                    ("altered.copy", os.path.join(out, "altered.copy")),

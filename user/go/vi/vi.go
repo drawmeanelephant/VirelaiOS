@@ -298,8 +298,12 @@ func Exit(status int) {
 	}
 }
 
-// Time returns wall-clock unix seconds (negative when the firmware gave no
-// boot epoch).
+// Now returns wall-clock Unix seconds, or -ENOSYS when EFI supplied no epoch.
+// Unlike Nanos, this is a calendar clock, not a deadline source. Slot 66 has
+// supplied it since #1058; M83a makes the distinction explicit to apps.
+func Now() int64 { return Time() }
+
+// Time is the original slot-66 wrapper, retained for existing callers.
 func Time() int64 { return svc0(SlotTime) }
 
 // Random fills p from the kernel CSPRNG (slot 72 sys_getrandom, ADR 0025 D5).
