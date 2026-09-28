@@ -38,14 +38,16 @@ const (
 	Path = "/host/SETTINGS.TXT"
 	// Caps mirror the kernel's table (max_entries / max_key_len / max_val_len)
 	// and its bounded load buffer.
-	MaxKeys = 16
+	MaxKeys = 17
 	MaxKey  = 32
 	MaxVal  = 64
 	MaxBody = 2048
 
 	// SaveRefused is Save's return when the decode was corrupt: no file was
-	// written. It is a package-local sentinel, not a kernel errno.
+	// written. The two negative sentinels are not kernel error codes.
 	SaveRefused int64 = -4097
+	// SaveFull refuses a panel table that the kernel cannot load intact.
+	SaveFull int64 = -4098
 )
 
 // State is the decode verdict for the file.
@@ -435,12 +437,16 @@ func Load() File {
 
 // Save publishes the file's rows crash-safe (vi.WriteFileSafe: temp + fsync +
 // delete/rename). It REFUSES a corrupt decode — a panel must never launder a
-// file the kernel refused — returning SaveRefused. Any other negative return is
-// the kernel code of the step that failed; every failure removes the temp, so
-// the target is either the old bytes, the new bytes, or absent (defaults).
+// file the kernel refused — returning SaveRefused. SaveFull likewise refuses a
+// table the kernel would truncate. Any other negative return is the kernel
+// code of the step that failed; every failure removes the temp, so the target
+// is either the old bytes, the new bytes, or absent (defaults).
 func (f File) Save() int64 {
 	if f.State == StateCorrupt {
 		return SaveRefused
+	}
+	if len(f.Rows) > MaxKeys {
+		return SaveFull
 	}
 	return vi.WriteFileSafe(Path, Render(f.Rows))
 }

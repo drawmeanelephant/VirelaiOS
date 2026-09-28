@@ -26,9 +26,9 @@
 //! console and the framebuffer text layer (`text.zig`, which honors `\b`
 //! and `\r`) render it: left/homes emit backspace (`\b`), and every
 //! mid-line edit/recall redraws the whole line with backspace-back-to-start
-//! + reprint + trailing-space clear + backspace-reposition. The classic
-//! byte seam is preserved for the unchanged fast paths: backspace-at-end
-//! emits `\b \b`, submit emits `\r\n`, cancel emits `^C\r\n`. Editing
+//! + reprint + trailing-space clear + backspace-reposition. UTF-8 input
+//! inserts and edits whole scalars; the ASCII backspace-at-end fast path
+//! still emits `\b \b`, submit emits `\r\n`, cancel emits `^C\r\n`. Editing
 //! across a wrapped line is approximate (the same honest bound as the
 //! original erase pair); no ANSI is emitted except Ctrl-L's screen clear.
 
@@ -70,9 +70,8 @@ pub const CompleterFn = *const fn (line: []const u8, cursor: usize, index: usize
 pub const LineEditor = struct {
     buffer: [max_line]u8 = undefined,
     len: usize = 0,
-    /// The insertion point (0..len). The terminal cursor is kept at
-    /// prompt_len + cursor (the shell owns prompt_len; the editor tracks
-    /// only the content-relative column).
+    /// The insertion point as a byte offset (0..len), always at a UTF-8
+    /// boundary. The shell owns the prompt; redraw uses character columns.
     cursor: usize = 0,
     /// True when at least one input byte was refused because the buffer
     /// was full. Survives until `nextLine`/`reset`; the shell prints an
@@ -103,6 +102,12 @@ pub const LineEditor = struct {
     /// `3` of Delete's `ESC [ 3 ~`). Saturates: a longer parameter can
     /// only fail to match a key we handle, never wrap into one.
     esc_param: u8 = 0,
+    /// A multi-byte scalar is staged until all its bytes arrive, so an edit
+    /// or the buffer bound cannot split it.
+    utf8_pending: [4]u8 = undefined,
+    utf8_len: u8 = 0,
+    utf8_need: u8 = 0,
+    utf8_discard: u8 = 0,
 
     /// Tab-completion source (ADR 0008 D2), wired by the shell to the
     /// command registry. Given the line + cursor it returns the suffix to
@@ -127,6 +132,9 @@ pub const LineEditor = struct {
         self.rejected = false;
         self.submitted_cr = false;
         self.esc_state = 0;
+        self.utf8_len = 0;
+        self.utf8_need = 0;
+        self.utf8_discard = 0;
         self.hist_cursor = 0;
         self.completing = false;
     }
@@ -139,6 +147,9 @@ pub const LineEditor = struct {
         self.cursor = 0;
         self.rejected = false;
         self.esc_state = 0;
+        self.utf8_len = 0;
+        self.utf8_need = 0;
+        self.utf8_discard = 0;
         self.hist_cursor = 0;
         self.completing = false;
     }
@@ -159,12 +170,40 @@ pub const LineEditor = struct {
     /// cursor. No redraw bookkeeping — the screen is already cleared.
     pub fn reprint(self: *const LineEditor, con: console.Console) void {
         con.puts(self.buffer[0..self.len]);
-        var i: usize = self.cursor;
-        while (i < self.len) : (i += 1) con.putc(0x08);
+        var i: usize = 0;
+        const tail_cells = cellCount(self.buffer[self.cursor..self.len]);
+        while (i < tail_cells) : (i += 1) con.putc(0x08);
     }
 
     /// Feed one console byte. Echoes editing onto `con` as it goes.
     pub fn feed(self: *LineEditor, con: console.Console, byte: u8) LineResult {
+        if (self.utf8_discard > 0) {
+            if (byte >= 0x80 and byte <= 0xbf) {
+                self.utf8_discard -= 1;
+                return .none;
+            }
+            self.utf8_discard = 0;
+        }
+        if (self.utf8_need > 0) {
+            if (byte >= 0x80 and byte <= 0xbf) {
+                self.utf8_pending[self.utf8_len] = byte;
+                self.utf8_len += 1;
+                if (self.utf8_len == self.utf8_need) {
+                    const encoded = self.utf8_pending[0..self.utf8_len];
+                    self.utf8_len = 0;
+                    self.utf8_need = 0;
+                    _ = std.unicode.utf8Decode(encoded) catch {
+                        con.putc(0x07);
+                        return .none;
+                    };
+                    return self.insert_bytes(con, encoded);
+                }
+                return .none;
+            }
+            self.utf8_len = 0;
+            self.utf8_need = 0;
+            con.putc(0x07); // incomplete scalar; keep the next key
+        }
         // The LF half of a CRLF pair arrives on the very next feed and is
         // swallowed (one Enter = one line).
         if (self.submitted_cr and byte == '\n') {
@@ -268,9 +307,23 @@ pub const LineEditor = struct {
             return .repaint;
         }
         if (byte == '\t') return self.complete(con);
-        // M20-U2 (claim 5127): bytes >= 0x80 insert as ordinary data —
-        // they are the continuation/lead bytes of UTF-8, which the
-        // framebuffer text layer decodes downstream. DEL stays an edit.
+        if (byte >= 0xc2 and byte <= 0xf4) {
+            const n = std.unicode.utf8ByteSequenceLength(byte) catch unreachable;
+            if (self.len + n > max_line) {
+                self.rejected = true;
+                self.utf8_discard = n - 1;
+                con.putc(0x07);
+                return .none;
+            }
+            self.utf8_pending[0] = byte;
+            self.utf8_len = 1;
+            self.utf8_need = n;
+            return .none;
+        }
+        if (byte >= 0x80) {
+            con.putc(0x07); // stray continuation or invalid lead
+            return .none;
+        }
         if (byte >= 0x20 and byte != 0x7f) return self.insert(con, byte);
         // Other control bytes are ignored: not echoed, not appended.
         return .none;
@@ -283,22 +336,19 @@ pub const LineEditor = struct {
             con.putc(0x07); // nothing to delete: bell
             return .none;
         }
-        if (self.cursor == self.len) {
-            // Fast path (byte seam): delete the last char with the classic
-            // erase pair — no redraw.
+        const start = previousRune(self.buffer[0..self.len], self.cursor);
+        if (self.cursor == self.len and start + 1 == self.cursor) {
+            // Keep the classic erase pair for ASCII at the end.
             self.len -= 1;
             self.cursor -= 1;
             con.puts("\x08 \x08");
             return .none;
         }
-        const old_len = self.len;
-        const old_cursor = self.cursor;
-        // Delete buffer[cursor-1]: shift the tail left by one.
-        var i = self.cursor;
-        while (i < self.len) : (i += 1) self.buffer[i - 1] = self.buffer[i];
-        self.len -= 1;
-        self.cursor -= 1;
-        self.redraw(con, old_len, old_cursor);
+        const old = self.displayPos();
+        std.mem.copyForwards(u8, self.buffer[start..], self.buffer[self.cursor..self.len]);
+        self.len -= self.cursor - start;
+        self.cursor = start;
+        self.redraw(con, old);
         return .none;
     }
 
@@ -307,13 +357,11 @@ pub const LineEditor = struct {
             con.putc(0x07);
             return .none;
         }
-        const old_len = self.len;
-        const old_cursor = self.cursor;
-        // Delete buffer[cursor]: shift the tail left by one.
-        var i = self.cursor;
-        while (i + 1 < self.len) : (i += 1) self.buffer[i] = self.buffer[i + 1];
-        self.len -= 1;
-        self.redraw(con, old_len, old_cursor);
+        const old = self.displayPos();
+        const end = nextRune(self.buffer[0..self.len], self.cursor);
+        std.mem.copyForwards(u8, self.buffer[self.cursor..], self.buffer[end..self.len]);
+        self.len -= end - self.cursor;
+        self.redraw(con, old);
         return .none;
     }
 
@@ -331,20 +379,19 @@ pub const LineEditor = struct {
             con.putc(byte);
             return .none;
         }
-        const old_len = self.len;
-        const old_cursor = self.cursor;
+        const old = self.displayPos();
         var i = self.len;
         while (i > self.cursor) : (i -= 1) self.buffer[i] = self.buffer[i - 1];
         self.buffer[self.cursor] = byte;
         self.len += 1;
         self.cursor += 1;
-        self.redraw(con, old_len, old_cursor);
+        self.redraw(con, old);
         return .none;
     }
 
     fn cursor_left(self: *LineEditor, con: console.Console) LineResult {
         if (self.cursor > 0) {
-            self.cursor -= 1;
+            self.cursor = previousRune(self.buffer[0..self.len], self.cursor);
             con.putc(0x08);
         } else {
             con.putc(0x07);
@@ -354,8 +401,9 @@ pub const LineEditor = struct {
 
     fn cursor_right(self: *LineEditor, con: console.Console) LineResult {
         if (self.cursor < self.len) {
-            self.cursor += 1;
-            self.redraw(con, self.len, self.cursor - 1);
+            const old = self.displayPos();
+            self.cursor = nextRune(self.buffer[0..self.len], self.cursor);
+            self.redraw(con, old);
         } else {
             con.putc(0x07);
         }
@@ -364,7 +412,7 @@ pub const LineEditor = struct {
 
     fn cursor_home(self: *LineEditor, con: console.Console) LineResult {
         if (self.cursor == 0) return .none;
-        var i = self.cursor;
+        var i = cellCount(self.buffer[0..self.cursor]);
         while (i > 0) : (i -= 1) con.putc(0x08);
         self.cursor = 0;
         return .none;
@@ -372,32 +420,30 @@ pub const LineEditor = struct {
 
     fn cursor_end(self: *LineEditor, con: console.Console) LineResult {
         if (self.cursor == self.len) return .none;
-        const old_cursor = self.cursor;
+        const old = self.displayPos();
         self.cursor = self.len;
-        self.redraw(con, self.len, old_cursor);
+        self.redraw(con, old);
         return .none;
     }
 
     fn kill_to_end(self: *LineEditor, con: console.Console) LineResult {
         if (self.cursor >= self.len) return .none; // nothing to kill
-        const old_len = self.len;
-        const old_cursor = self.cursor;
+        const old = self.displayPos();
         self.len = self.cursor;
-        self.redraw(con, old_len, old_cursor);
+        self.redraw(con, old);
         return .none;
     }
 
     fn kill_to_start(self: *LineEditor, con: console.Console) LineResult {
         if (self.cursor == 0) return .none;
-        const old_len = self.len;
-        const old_cursor = self.cursor;
+        const old = self.displayPos();
         // Shift buffer[cursor..len] to the start.
         const tail = self.len - self.cursor;
         var i: usize = 0;
         while (i < tail) : (i += 1) self.buffer[i] = self.buffer[self.cursor + i];
         self.len = tail;
         self.cursor = 0;
-        self.redraw(con, old_len, old_cursor);
+        self.redraw(con, old);
         return .none;
     }
 
@@ -421,8 +467,7 @@ pub const LineEditor = struct {
     }
 
     fn complete_cycle(self: *LineEditor, con: console.Console, completer_fn: CompleterFn) LineResult {
-        const old_len = self.len;
-        const old_cursor = self.cursor;
+        const old = self.displayPos();
 
         if (!self.completing) {
             const m = completer_fn(self.buffer[0..self.len], self.cursor, 0) orelse {
@@ -474,7 +519,7 @@ pub const LineEditor = struct {
 
             self.cursor = m.replace_start + new_token_len;
             self.len = m.replace_start + new_token_len + tail_len;
-            self.redraw(con, old_len, old_cursor);
+            self.redraw(con, old);
 
             if (m.match_count > 1) {
                 self.completing = true;
@@ -532,7 +577,7 @@ pub const LineEditor = struct {
             self.complete_cur_token_len = m.text.len;
             self.cursor = new_token_end;
             self.len = new_token_end + tail_len;
-            self.redraw(con, old_len, old_cursor);
+            self.redraw(con, old);
             return .none;
         }
     }
@@ -550,15 +595,14 @@ pub const LineEditor = struct {
             con.puts(bytes);
             return .none;
         }
-        const old_len = self.len;
-        const old_cursor = self.cursor;
+        const old = self.displayPos();
         // Shift the tail right by bytes.len (high to low, no overlap).
         var i = self.len;
         while (i > self.cursor) : (i -= 1) self.buffer[i - 1 + bytes.len] = self.buffer[i - 1];
         @memcpy(self.buffer[self.cursor..][0..bytes.len], bytes);
         self.len += bytes.len;
         self.cursor += bytes.len;
-        self.redraw(con, old_len, old_cursor);
+        self.redraw(con, old);
         return .none;
     }
 
@@ -586,12 +630,11 @@ pub const LineEditor = struct {
     }
 
     fn load_line(self: *LineEditor, con: console.Console, line: []const u8) void {
-        const old_cursor = self.cursor;
-        const old_len = self.len;
+        const old = self.displayPos();
         @memcpy(self.buffer[0..line.len], line);
         self.len = line.len;
         self.cursor = line.len;
-        self.redraw(con, old_len, old_cursor);
+        self.redraw(con, old);
     }
 
     fn recall_older(self: *LineEditor, con: console.Console) LineResult {
@@ -626,22 +669,50 @@ pub const LineEditor = struct {
     // -- dumb-terminal redraw ----------------------------------------------
 
     /// Redraw the line content. The terminal cursor is at prompt_len +
-    /// `old_cursor` (the position before this edit); after the call it is
-    /// at prompt_len + `self.cursor`. Emits only `\b`, the reprint, and
-    /// trailing spaces, so the framebuffer (`text.zig`, honoring `\b`)
-    /// renders it exactly like a serial terminal. Approximate across a
-    /// wrapped line (the documented honest bound).
-    fn redraw(self: *LineEditor, con: console.Console, old_len: usize, old_cursor: usize) void {
+    /// the old cursor column; after the call it is at the new cursor column.
+    /// Emits only `\b`, the reprint, and trailing spaces. Approximate across
+    /// a wrapped line (the documented honest bound).
+    fn redraw(self: *LineEditor, con: console.Console, old: DisplayPos) void {
         var i: usize = 0;
-        while (i < old_cursor) : (i += 1) con.putc(0x08); // back to content start
+        while (i < old.cursor) : (i += 1) con.putc(0x08); // back to content start
         con.puts(self.buffer[0..self.len]); // reprint the line
-        i = self.len;
-        while (i < old_len) : (i += 1) con.putc(' '); // clear leftover cells
-        const end_col = @max(self.len, old_len);
-        i = self.cursor;
+        const now = self.displayPos();
+        i = now.len;
+        while (i < old.len) : (i += 1) con.putc(' '); // clear leftover cells
+        const end_col = @max(now.len, old.len);
+        i = now.cursor;
         while (i < end_col) : (i += 1) con.putc(0x08); // reposition to cursor
     }
+
+    const DisplayPos = struct { len: usize, cursor: usize };
+
+    fn displayPos(self: *const LineEditor) DisplayPos {
+        return .{
+            .len = cellCount(self.buffer[0..self.len]),
+            .cursor = cellCount(self.buffer[0..self.cursor]),
+        };
+    }
 };
+
+fn nextRune(bytes: []const u8, at: usize) usize {
+    const n = std.unicode.utf8ByteSequenceLength(bytes[at]) catch return at + 1;
+    if (n > bytes.len - at) return at + 1;
+    _ = std.unicode.utf8Decode(bytes[at .. at + n]) catch return at + 1;
+    return at + n;
+}
+
+fn previousRune(bytes: []const u8, end: usize) usize {
+    var at = end - 1;
+    while (at > 0 and (bytes[at] & 0xc0) == 0x80 and end - at < 4) : (at -= 1) {}
+    return if (nextRune(bytes, at) == end) at else end - 1;
+}
+
+fn cellCount(bytes: []const u8) usize {
+    var count: usize = 0;
+    var at: usize = 0;
+    while (at < bytes.len) : (count += 1) at = nextRune(bytes, at);
+    return count;
+}
 
 // ---------------------------------------------------------------------------
 // Tests (host-side; no hardware)
@@ -697,6 +768,52 @@ test "lineedit: backspace at start is refused with a bell" {
     try std.testing.expectEqual(LineResult.none, editor.feed(mock.console(), 0x7f));
     try std.testing.expectEqual(@as(usize, 0), editor.len);
     try std.testing.expectEqualStrings("\x07", mock.contents());
+}
+
+test "lineedit: UTF-8 input edits whole scalars at end and in the middle" {
+    var mock = console.MockConsole(256){};
+    var editor = LineEditor{};
+    for ("aöb") |byte| _ = editor.feed(mock.console(), byte);
+    try std.testing.expectEqualStrings("aöb", editor.buffer[0..editor.len]);
+    try std.testing.expectEqual(@as(usize, 4), editor.cursor);
+
+    mock.reset();
+    for ("\x1b[D\x1b[D") |byte| _ = editor.feed(mock.console(), byte);
+    try std.testing.expectEqual(@as(usize, 1), editor.cursor); // before ö
+    try std.testing.expectEqualStrings("\x08\x08", mock.contents());
+    mock.reset();
+    for ("\x1b[3~") |byte| _ = editor.feed(mock.console(), byte);
+    try std.testing.expectEqualStrings("ab", editor.buffer[0..editor.len]);
+    try std.testing.expectEqual(@as(usize, 1), editor.cursor);
+    try std.testing.expectEqualStrings("\x08ab \x08\x08", mock.contents());
+
+    editor.next_line();
+    mock.reset();
+    for ("aö") |byte| _ = editor.feed(mock.console(), byte);
+    _ = editor.feed(mock.console(), 0x08);
+    try std.testing.expectEqualStrings("a", editor.buffer[0..editor.len]);
+    try std.testing.expectEqual(@as(usize, 1), editor.cursor);
+    try std.testing.expectEqualStrings("aö\x08\x08a \x08", mock.contents());
+}
+
+test "lineedit: UTF-8 staging refuses partial input at the byte bound" {
+    var mock = console.MockConsole(512){};
+    var editor = LineEditor{};
+    for (0..max_line - 1) |_| _ = editor.feed(mock.console(), 'a');
+    mock.reset();
+    for ("ö") |byte| _ = editor.feed(mock.console(), byte);
+    try std.testing.expect(editor.rejected);
+    try std.testing.expectEqual(@as(usize, max_line - 1), editor.len);
+    try std.testing.expectEqualStrings("\x07", mock.contents());
+    _ = editor.feed(mock.console(), 0x08);
+    try std.testing.expectEqual(@as(usize, max_line - 2), editor.len);
+
+    editor.next_line();
+    mock.reset();
+    _ = editor.feed(mock.console(), 0xc3);
+    _ = editor.feed(mock.console(), 'x'); // incomplete scalar must not eat x
+    try std.testing.expectEqualStrings("x", editor.buffer[0..editor.len]);
+    try std.testing.expectEqualStrings("\x07x", mock.contents());
 }
 
 test "lineedit: 255 and 256 chars fit exactly and submit" {

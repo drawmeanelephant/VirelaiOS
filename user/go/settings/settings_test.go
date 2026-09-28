@@ -64,7 +64,7 @@ func TestSettingsParseIsFailClosed(t *testing.T) {
 
 // The kernel's parser drops a malformed ROW and the load stands; only the
 // header gates the whole file. The decoder mirrors that (and caps the
-// table like the kernel's 16 entries / 32-byte keys / 64-byte values).
+// table like the kernel's 17 entries / 32-byte keys / 64-byte values).
 func TestSettingsParseDropsRowsButStands(t *testing.T) {
 	ss, ok := Parse([]byte("#v2\nwm=none\nno_equals_here\n=emptykey\n"))
 	if !ok {
@@ -530,5 +530,30 @@ func TestKeyboardLayoutSettingVocabulary(t *testing.T) {
 	}
 	if ValidKeyboardLayout("fr") || Editable("not_a_key") {
 		t.Fatal("unsupported layout or unknown setting was accepted")
+	}
+}
+
+func TestKeyboardLayoutFitsFullLegacyTable(t *testing.T) {
+	rows := make([]Setting, 0, 16)
+	for _, k := range KnownKeys {
+		rows = append(rows, Setting{Key: k.Name, Val: k.Default})
+	}
+	for i := 0; i < 8; i++ {
+		rows = append(rows, Setting{Key: "extension" + string(rune('a'+i)), Val: "v"})
+	}
+	display := (File{Rows: rows, State: StateOK}).Display()
+	if len(rows) != 16 || len(display) != MaxKeys {
+		t.Fatalf("rows = %d, want 16 pre-layout and 17 with layout", len(rows))
+	}
+	Set(display, "keyboard_layout", "de")
+	decoded, ok := Parse(Render(display))
+	if !ok || len(decoded) != MaxKeys {
+		t.Fatalf("layout was dropped at the new cap: rows=%d ok=%v", len(decoded), ok)
+	}
+	if got, _ := Get(decoded, "keyboard_layout"); got != "de" {
+		t.Fatalf("keyboard_layout = %q after round-trip, want de", got)
+	}
+	if rc := (File{Rows: append(display, Setting{Key: "overflow", Val: "v"}), State: StateOK}).Save(); rc != SaveFull {
+		t.Fatalf("over-cap panel save = %d, want SaveFull", rc)
 	}
 }

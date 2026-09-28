@@ -295,6 +295,11 @@ func (a *panel) save() {
 		vi.ConsoleLine(markerRefused)
 		return
 	}
+	if rc == settings.SaveFull {
+		vi.ConsoleLine(markerRefused)
+		a.status = "settings full: remove a row before saving"
+		return
+	}
 	if rc < 0 {
 		vi.ConsoleLine(markerSaveFail + vi.Itoa64(rc))
 		a.status = "save failed rc=" + vi.Itoa64(rc)

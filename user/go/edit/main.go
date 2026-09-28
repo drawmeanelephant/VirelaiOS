@@ -277,9 +277,11 @@ func main() {
 	if len(args) > 1 && len(args[1]) > 0 {
 		path = args[1]
 	}
-	for _, a := range args[2:] {
-		if strings.HasPrefix(a, "--lease-fixture=") {
-			leaseFixture(path, strings.TrimPrefix(a, "--lease-fixture="))
+	if len(args) > 2 {
+		for _, a := range args[2:] {
+			if strings.HasPrefix(a, "--lease-fixture=") {
+				leaseFixture(path, strings.TrimPrefix(a, "--lease-fixture="))
+			}
 		}
 	}
 
