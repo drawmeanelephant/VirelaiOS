@@ -9,9 +9,9 @@
 # is exec'd under the seat after the first-boot shell tab, typed into, and applies
 # `wm=tabwm` with one command line -- the panel publishes it crash-safe. That is
 # the card's premise repaired in place: on the DEFAULT seat, a Go UI changes the
-# seat. The published bytes are then compared to settings-healed.expected, the
-# same fixture boot 04's kernel-side save is pinned against, so the panel's
-# serializer and the kernel's must agree byte-for-byte.
+# seat. Boot 01's publish includes the visible, accepted-but-unseeded
+# idle_minutes default row; boot 04's kernel-side heal does not seed it.
+# Boots 11/12 set a nondefault idle_minutes FROM GOSET and read it on reboot.
 #
 # The panel takes focus when its declare is accepted and is typed into before
 # the two-tab close choreography completes (the runner's --input-string
@@ -76,6 +76,7 @@ EOF
 # reach scanout, capture it and launch the settings panel. GOSH and GOSET share
 # the seat's proven two-client envelope; the seat closes both before stage 3.
 vgate_file script2.txt <<'EOF'
+echo M76B_FIRSTBOOT_CAPTURE
 echo M76B_FIRSTBOOT_CAPTURE
 set GOMAXPROCS=1
 wm
@@ -173,12 +174,8 @@ for name, body in bodies.items():
 print("seeded DOCS/{%s} for the M81g documents selection" % ", ".join(sorted(bodies)))
 PY
 
-# The default-seat table with `wm=tabwm`, in the kernel's settings.zig init()
-# order (the `prompt` row's trailing space is part of the value). It is shared
-# by TWO runs ON PURPOSE, because two different writers must produce it: boot 01
-# publishes it from the GO PANEL (vi.WriteFileSafe), boot 04 heals a corrupt
-# file through the MONITOR's crash-safe save. If the Go serializer ever drifts
-# from the kernel's, one of those runs fails.
+# The kernel's compiled table with `wm=tabwm` (boot 04's corrupt-file heal).
+# The accepted-but-unseeded idle_minutes row is absent by design.
 vgate_file settings-healed.expected <<'EOF'
 #v2
 hostname=virelai
@@ -191,6 +188,17 @@ shell=monitor
 wm=tabwm
 keyboard_layout=de
 EOF
+
+# Boot 01's panel publishes the same rows plus its visible idle_minutes row.
+# Generate from the kernel fixture to keep its trailing prompt space exact.
+vgate_setup_python <<'PY'
+import os
+rd = os.environ["RUN_DIR"]
+with open(os.path.join(rd, "settings-healed.expected"), "rb") as src:
+    body = src.read()
+with open(os.path.join(rd, "settings-panel.expected"), "wb") as dst:
+    dst.write(body + b"idle_minutes=5\n")
+PY
 
 # M81g (#1767): the settings table the SNAPSHOT carries, and the one the
 # restore must put back byte-exact. It differs from settings-healed.expected in
@@ -227,8 +235,10 @@ wm=gotabwm
 keyboard_layout=de
 EOF
 
-# M71f (#1565): the run gains HID. Once the panel says it is ready, one typed
-# line edits and saves in a single keypress (Enter applies then publishes). The
+# M71f (#1565): the run gains HID. Once the panel says it is ready, the
+# idle and seat rows save on Enter through the same safe path. The layout
+# row follows by the gate's existing chord path, with leading spaces
+# trimmed by GOSET so lost HID startup strokes cannot eat the key name. The
 # keys ride the custom-virtio INPUT queue (headless HID reports, no view), the
 # same channel go-wm-hid's type-in boot uses, and they land in the FOCUSED
 # window -- which is GOSET, because its declare takes focus over the starter.
@@ -242,7 +252,7 @@ vgate_run 01 -- \
     --script2-after 'gosh: prompt' --script2-delay 4 \
     --input-string $'wm=tabwm\n' \
     --input-string-after 'goset: ready ' \
-    --input-chords 'space,space,space,space,k,e,y,b,o,a,r,d,_,l,a,y,o,u,t,=,d,e,return' \
+    --input-chords 'space,space,space,space,space,space,space,space,space,space,space,space,k,e,y,b,o,a,r,d,_,l,a,y,o,u,t,=,d,e,return' \
     --input-chords-after 'goset: saved ' \
     --script3 '$RUN_DIR/script3.txt' \
     --script3-after 'goset: close' \
@@ -285,15 +295,13 @@ vgate_assert 01 serial-contains 'gotabwm: win gone'
 # takes the typed command line, and publishes.
 vgate_assert 01 serial-contains 'exec: loaded GOSET.ELF'
 vgate_assert 01 serial-contains 'goset: open id='
-vgate_assert 01 serial-contains 'goset: ready keys=9 wm=gotabwm theme=dark mode=rw'
+vgate_assert 01 serial-contains 'goset: ready keys=10 wm=gotabwm theme=dark mode=rw'
 vgate_assert 01 serial-contains 'goset: set keyboard_layout=de'
 vgate_assert 01 serial-contains 'goset: set wm=tabwm'
-vgate_assert 01 serial-contains 'goset: saved keys=9 wm=tabwm theme=dark'
+vgate_assert 01 serial-contains 'goset: saved keys=10 wm=tabwm theme=dark'
 vgate_assert 01 serial-contains 'goset OK'
-# The publish is a real file on the share, byte-identical to what the kernel's
-# own serializer emits for the same table -- the fixture boot 04's kernel-side
-# save is pinned against too. Two writers, one byte shape.
-vgate_assert 01 share-equals SETTINGS.TXT settings-healed.expected
+# The panel's publish is a real file on the share, including idle_minutes.
+vgate_assert 01 share-equals SETTINGS.TXT settings-panel.expected
 # The panel's window closed before the second client was exec'd: the strip
 # really emptied, so GOCALC never shared the strip with it.
 vgate_assert 01 serial-contains 'gotabwm: tabs empty'
@@ -425,6 +433,7 @@ PY
 # --- boot 02: the PANEL's `wm=tabwm` from boot 01 -> the Zig fallback seat ---
 vgate_file script-02.txt <<'EOF'
 settings get keyboard_layout
+settings get idle_minutes
 tabwm
 echo rx-m59-fallback-ok
 EOF
@@ -441,6 +450,7 @@ vgate_run 02 -- \
 # from the default seat. Panel-driven save, and the panel-driven fallback.
 vgate_assert 02 serial-contains 'wm: autostart tabwm (settings wm=tabwm)'
 vgate_assert 02 serial-contains 'settings: keyboard_layout=de'
+vgate_assert 02 serial-contains 'settings: idle_minutes=5'
 vgate_assert 02 serial-contains 'tabwm: registered'
 vgate_assert 02 serial-contains 'tabwm: sidebar-rendered'
 vgate_assert 02 serial-contains 'tabwm: registered pid='
@@ -905,3 +915,51 @@ if not re.search(r"gotabwm: settings broadcast key=theme listeners=1", ser):
     sys.exit("seat did not deliver to exactly one subscriber")
 print("settings publication reached one live subscriber and repainted without restart")
 PY
+
+# M83f (#1779): one typed GOSET edit, one safe publish, then a fresh boot
+# reads the value. Boot 01 keeps its proven wm/layout choreography; running a
+# second HID line there loses the first stroke on this input transport. This
+# separate boot avoids confusing a transport race with settings persistence.
+vgate_file script-11-focus.txt <<'EOF'
+dui focus 0
+EOF
+
+vgate_file script-11-panel.txt <<'EOF'
+set GOMAXPROCS=1
+exec GOSET.ELF
+EOF
+
+vgate_run 11 -- \
+    --screen '$RUN_DIR/screen-11' \
+    --via-virtio \
+    --script '$RUN_DIR/script-11-focus.txt' \
+    --script-after 'gotabwm: win focus' \
+    --script2 '$RUN_DIR/script-11-panel.txt' \
+    --script2-after 'gotabwm: win gone' \
+    --input-string $'idle_minutes=7\n' \
+    --input-string-after 'goset: ready ' \
+    --script-expect 'goset: saved keys=10 wm=gotabwm theme=light' \
+    --script-expect-tail 10 --timeout 300
+
+vgate_assert 11 serial-contains 'goset: ready keys=10 wm=gotabwm theme=light mode=rw'
+vgate_assert 11 serial-contains 'goset: set idle_minutes=7'
+vgate_assert 11 serial-contains 'goset: saved keys=10 wm=gotabwm theme=light'
+vgate_assert 11 share-contains SETTINGS.TXT 'idle_minutes=7'
+vgate_assert 11 serial-absent '[EXC] parking:'
+vgate_assert 11 serial-absent 'exited status=139'
+
+vgate_file script-12.txt <<'EOF'
+settings get idle_minutes
+echo rx-m83f-persisted
+EOF
+
+vgate_run 12 -- \
+    --screen '$RUN_DIR/screen-12' \
+    --script '$RUN_DIR/script-12.txt' \
+    --script-expect 'rx-m83f-persisted' --timeout 300
+
+vgate_assert 12 serial-contains 'settings: idle_minutes=7'
+vgate_assert 12 share-contains SETTINGS.TXT 'idle_minutes=7'
+vgate_assert 12 serial-contains 'rx-m83f-persisted'
+vgate_assert 12 serial-absent '[EXC] parking:'
+vgate_assert 12 serial-absent 'exited status=139'

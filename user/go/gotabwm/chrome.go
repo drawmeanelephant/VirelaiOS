@@ -389,3 +389,58 @@ func startSurfaceHit(px, py uint32) bool {
 	}
 	return int(px) >= x && int(px) < x+w && int(py) >= y && int(py) < y+h
 }
+
+// M83f (#1779): virtio-gpu has no observed backlight control. "Dim" is a
+// software-blended, opaque BGRX frame: half of each colour channel remains
+// visible, but the scanout's X byte stays 0xff so VZ displays the pixels.
+func paintIdleDim(scan []byte, width, height int) int {
+	if width <= 0 || height <= 0 || len(scan) < 4 {
+		return 0
+	}
+	pix := unsafe.Slice((*uint32)(unsafe.Pointer(&scan[0])), len(scan)/4)
+	n := width * height
+	if n > len(pix) {
+		n = len(pix)
+	}
+	for i := 0; i < n; i++ {
+		pix[i] = 0xff000000 | ((pix[i] >> 1) & 0x007f7f7f)
+	}
+	return n
+}
+
+const (
+	curtainW = 256
+	curtainH = 64
+)
+
+// This is a seat-painted visual curtain, NOT a password prompt, an
+// authenticated lock, or a boundary against an app receiving input.
+func paintIdleCurtain(scan []byte, width, height int) int {
+	if width <= 0 || height <= 0 || len(scan) < 4 {
+		return 0
+	}
+	pix := unsafe.Slice((*uint32)(unsafe.Pointer(&scan[0])), len(scan)/4)
+	maxH := len(pix) / width
+	if maxH <= 0 {
+		return 0
+	}
+	tok := theme.Current
+	written := fillRect(pix, width, maxH, 0, 0, width, height, tok.ChromeBg)
+	w, h := curtainW, curtainH
+	if w > width-2*chromeInset {
+		w = width - 2*chromeInset
+	}
+	if h > height-2*chromeInset {
+		h = height - 2*chromeInset
+	}
+	if w <= 0 || h <= 0 {
+		return written
+	}
+	x, y := (width-w)/2, (height-h)/2
+	written += fillRect(pix, width, maxH, x, y, w, h, tok.Surface)
+	written += fillRect(pix, width, maxH, x, y, 2, h, tok.Accent)
+	written += drawText8(pix, width, maxH, x+10, y+8, "VISUAL CURTAIN", tok.Ink)
+	written += drawText8(pix, width, maxH, x+10, y+25, "NOT AUTHENTICATION", tok.Ink)
+	written += drawText8(pix, width, maxH, x+10, y+42, "ANY INPUT WAKES", tok.InkMuted)
+	return written
+}

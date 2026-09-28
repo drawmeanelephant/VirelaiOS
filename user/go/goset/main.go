@@ -7,9 +7,9 @@
 // changed from a Go UI on the default seat.
 //
 // What it edits is exactly what is IN FORCE (card D1, no new schema): the rows
-// the file carries, plus one row per kernel-table key the file omits, holding
-// the compiled default (settings.KnownKeys, pinned against kernel/src/settings.zig
-// by a host test). Unknown keys that a file happens to carry are preserved
+// the file carries, plus the kernel-table keys it omits (settings.KnownKeys,
+// pinned against kernel/src/settings.zig), and visible accepted-but-unseeded
+// rows such as idle_minutes. Unknown keys a file carries are preserved
 // byte-for-byte through a save but are not offered for editing.
 //
 // Two ways to edit, both reading the SAME display table:
@@ -163,7 +163,7 @@ func newPanel(ta *tabapp.TabApp) *panel {
 		a.status = "corrupt file: read-only — ctrl+shift+h for shortcuts"
 	default:
 		a.disp = a.file.Display()
-		a.status = "type key=value + Enter to save — ctrl+shift+h for shortcuts"
+		a.status = "key=value + Enter — idle curtain is visual, not authentication"
 	}
 	vi.ConsoleLine(markerReady + a.summary() + " mode=" + a.mode())
 	// M73m: a file that already chose `custom` shows its colours as rows.
@@ -177,8 +177,8 @@ func newPanel(ta *tabapp.TabApp) *panel {
 // a row (a palette written while custom stays visible and saved when the
 // theme cycles back: the kernel ignores those keys for any preset, so keeping
 // them costs nothing and keeps the user's colours around). While theme is a
-// preset the table is untouched; keyboard_layout remains the one
-// accepted-unseeded row exposed on the default surface.
+// preset the table is untouched; keyboard_layout and idle_minutes remain
+// accepted-unseeded rows exposed on the default surface.
 func (a *panel) ensurePaletteRows() {
 	if theme, _ := settings.Get(a.disp, "theme"); theme != "custom" {
 		return
@@ -266,6 +266,13 @@ func (a *panel) applyInput() bool {
 		a.status = "keyboard_layout: choose us or de"
 		vi.ConsoleLine(markerDiscard + line)
 		return true
+	}
+	if settings.IsIdleMinutesKey(key) {
+		if _, ok := settings.IdleMinutes(val); !ok {
+			a.status = "idle_minutes: whole minutes, 1..120"
+			vi.ConsoleLine(markerDiscard + line)
+			return true
+		}
 	}
 	a.set(key, val)
 	return true
@@ -492,9 +499,7 @@ func (a *panel) layout() {
 		Fg:    theme.Current.Text,
 		Bg:    theme.Current.Surface,
 	}
-	// M73m: 18px rows so all ELEVEN rows (the eight defaults + the three
-	// palette rows once `custom` is chosen) fit the 200px list — the surface
-	// never scrolls a chosen colour off-screen.
+	// 18px rows: the ten default rows fit; extra palette rows scroll.
 	scrollTop, focused := a.list.ScrollTop, a.list.Focused
 	a.list = widgets.List{
 		R:         scaleR(ta, widgets.Rect{X: 8, Y: 36, W: w, H: 200}),
