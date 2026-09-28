@@ -188,14 +188,16 @@ func (d *Dialog) Draw(c widgets.Canvas) {
 	c.StrokeRoundedRect(d.R, 8, tok.BorderW, draw.Opaque(tok.Border))
 	title := widgets.Rect{X: d.R.X + inset + 20, Y: d.R.Y + inset, W: d.R.W - 2*inset - 20, H: 24}
 	icon := widgets.Rect{X: d.R.X + inset, Y: d.R.Y + inset, W: 16, H: 24}
-	cp := icons.Inventory[12].Codepoint // search for prompts
+	iconName := "search"
 	switch d.Kind {
 	case MessageDialog:
-		cp = icons.Inventory[18].Codepoint // info-circle
+		iconName = "info-circle"
 	case ConfirmDialog:
-		cp = icons.Inventory[16].Codepoint // warning-triangle
+		iconName = "warning-triangle"
 	}
-	draw.Glyph(c, d.IconFace, icon, icon.X, icon.Y+20, icons.NominalPx, cp, draw.Opaque(tok.Accent))
+	if cp, ok := icons.Codepoint(iconName); ok {
+		draw.Glyph(c, d.IconFace, icon, icon.X, icon.Y+20, icons.NominalPx, cp, draw.Opaque(tok.Accent))
+	}
 	dialogText(c, d.UIFace, title, d.Title, tok.Text, false)
 	body := widgets.Rect{X: d.R.X + inset, Y: d.R.Y + 44, W: d.R.W - 2*inset, H: 28}
 	dialogText(c, d.UIFace, body, d.Message, tok.Muted, false)

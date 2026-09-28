@@ -134,6 +134,34 @@ func TestDialogPrimitiveChrome(t *testing.T) {
 	if got := fmt.Sprintf("%x", sha256.Sum256(bytes[:])); got != golden {
 		t.Fatalf("dialog composite SHA-256 = %s (want %s)", got, golden)
 	}
+	// Each dialog kind must resolve a distinct shipped PUA glyph by name.
+	seen := map[[32]byte]bool{}
+	for _, kind := range []DialogKind{PromptDialog, MessageDialog, ConfirmDialog} {
+		other := newDialog(kind, "Title", "Body", kind == PromptDialog)
+		other.IconFace = d.IconFace
+		canvas := &draw.BufferCanvas{Pix: make([]uint32, w*h), W: w, H: h}
+		other.Draw(canvas)
+		mask := make([]byte, 0, 16*24*4)
+		ink := 0
+		for y := 84; y < 108; y++ {
+			for x := 108; x < 124; x++ {
+				var px [4]byte
+				binary.LittleEndian.PutUint32(px[:], canvas.Pix[y*w+x])
+				mask = append(mask, px[:]...)
+				if canvas.Pix[y*w+x] == draw.Opaque(0x3b82f6) {
+					ink++
+				}
+			}
+		}
+		if ink < 8 {
+			t.Fatalf("dialog kind %d has no chrome icon: %d pixels", kind, ink)
+		}
+		sum := sha256.Sum256(mask)
+		if seen[sum] {
+			t.Fatalf("dialog kind %d reused an icon", kind)
+		}
+		seen[sum] = true
+	}
 	// A moved dialog reuses its paint rects for pointer hit-testing.
 	d.R.X += 12
 	d.Draw(c)
