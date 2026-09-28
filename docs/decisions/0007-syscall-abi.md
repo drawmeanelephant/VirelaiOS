@@ -1436,3 +1436,18 @@ page.
 **GOSSHD.** A session command is `GOSH.ELF -c '<command> > SSH/EXEC.OUT'`
 when that one slot fits. `SSH/EXEC.IN` is gone. A line that does not fit
 is refused.
+
+## Amendment (2026-09-28, M83a #1774 — wall time in Go, no new slot)
+
+| Existing slot | Contract | M83a consumer |
+|---------------|----------|---------------|
+| 66 `sys_time()` | Unix wall-clock seconds from the loader's EFI epoch plus 1 Hz kernel ticks; `-ENOSYS` without a usable firmware epoch | `vsys.Now` and `vi.Now` expose the same value alongside `Nanotime` / `Nanos`; GOSH `date` formats the calendar face without a timezone and names a monotonic-only fallback when no epoch exists. |
+
+This is an **append-only clarification**, not another ABI entry. Slot 66
+already exported the needed seconds in #1058, and `vi.Time` already called
+it. M83a's originally proposed next slot, 78 (after M66a's fsync slot 77),
+would duplicate it. `implemented_count` stays 78, existing callers keep
+their numbers and results, and neither NTP nor kernel-side formatting is
+introduced. GOSELF compares the live epoch to the host wall clock on the
+class-B reference host; host tests pin the `-ENOSYS` path without inventing
+an epoch.

@@ -25,6 +25,7 @@ type fakeFS struct {
 	cursors map[int64]int
 	next    int64
 	clock   int64
+	epoch   int64
 	trash   map[string]fakeTrash
 	trashID uint64
 	recent  []string
@@ -112,6 +113,7 @@ func newFakeFS() *fakeFS {
 		cursors: map[int64]int{},
 		trash:   map[string]fakeTrash{},
 		clock:   1000,
+		epoch:   1_789_043_696,
 		winID:   2,
 		winGeometry: [8]uint32{winGotX, winGotY, winGotW, winGotH,
 			0 /*z*/, 1 /*focused*/, 1 /*visible*/, 0 /*dirty*/},
@@ -128,6 +130,9 @@ func newFakeFS() *fakeFS {
 func (f *fakeFS) syscalls() *syscalls {
 	return &syscalls{
 		now: func() int64 { return f.clock },
+		epoch: func() int64 {
+			return f.epoch
+		},
 		sleep: func(ticks uint64) {
 			if !f.frozenClock {
 				f.clock += int64(ticks)
@@ -558,8 +563,8 @@ const wantReport = "case intake pass\ncase intake-altered pass\n" +
 	"case file-fsync pass\ncase file-errors pass\n" +
 	"case file-write-safe pass\ncase trash pass\ncase file-write-publish pass\n" +
 	"case mime pass\ncase file-snapshot pass\ncase app-logs pass\n" +
-	"case file-lease pass\ncase window pass\n" +
-	"summary cases=21 failed=0\n"
+	"case file-lease pass\ncase window pass\ncase clock-epoch pass\n" +
+	"summary cases=22 failed=0\n"
 
 // seedFixtures is the host's half of the intake contract: IN/fixture.txt holds
 // the canonical body, IN/altered.txt the altered one (ADR 0031 D2), and the
@@ -580,8 +585,8 @@ func TestRunCasesAllPassAndReportBytes(t *testing.T) {
 	seedFixtures(fs)
 	rs := runCases(fs.syscalls())
 
-	if len(rs) != 21 {
-		t.Fatalf("cases = %d, want 21", len(rs))
+	if len(rs) != 22 {
+		t.Fatalf("cases = %d, want 22", len(rs))
 	}
 	for _, r := range rs {
 		if !r.ok {
@@ -591,7 +596,7 @@ func TestRunCasesAllPassAndReportBytes(t *testing.T) {
 	if got := string(renderReport(rs)); got != wantReport {
 		t.Fatalf("report bytes:\n got %q\nwant %q", got, wantReport)
 	}
-	if got := string(renderSummary(rs)); got != "summary cases=21 failed=0\n" {
+	if got := string(renderSummary(rs)); got != "summary cases=22 failed=0\n" {
 		t.Fatalf("summary = %q", got)
 	}
 	if got := fs.files[helloPath]; !bytes.Equal(got, []byte(helloPayload)) {
@@ -614,6 +619,10 @@ func TestRunCasesAllPassAndReportBytes(t *testing.T) {
 	}
 	if !fs.dirs[outDir] {
 		t.Fatal("the file-write case did not ensure OUT/ exists")
+	}
+	if got := string(fs.files[epochReceipt]); got !=
+		"case clock-epoch epoch=1789043696 source=firmware\n" {
+		t.Fatalf("epoch receipt = %q", got)
 	}
 }
 
@@ -673,7 +682,7 @@ func TestIntakeFailsOnAMutatedSeed(t *testing.T) {
 	if !strings.Contains(report, "case intake fail fixture mismatch") {
 		t.Fatalf("report lacks the intake failure: %q", report)
 	}
-	if !strings.Contains(report, "summary cases=21 failed=2") {
+	if !strings.Contains(report, "summary cases=22 failed=2") {
 		t.Fatalf("report summary wrong: %q", report)
 	}
 	if got := fs.files[intakeCopy]; !bytes.Equal(got, []byte(intakeAltered)) {
@@ -706,10 +715,10 @@ func TestIntakeFailsWhenTheFixtureIsMissing(t *testing.T) {
 	if got := string(fs.files[alteredReceipt]); !strings.Contains(got, "bytes=0 err=open rc=-6") {
 		t.Fatalf("altered receipt = %q", got)
 	}
-	// The report is still complete: 20 cases, the 2 intake ones failed (the
+	// The report is still complete: 22 cases, the 2 intake ones failed (the
 	// clock, file and window cases do not read IN/).
 	report := string(renderReport(rs))
-	if !strings.Contains(report, "summary cases=21 failed=2") {
+	if !strings.Contains(report, "summary cases=22 failed=2") {
 		t.Fatalf("report summary wrong: %q", report)
 	}
 	if lines := strings.Count(report, "\n"); lines != len(rs)+1 {
@@ -907,7 +916,7 @@ func TestFileWriteCaseFailsWhenTheWriteIsRefused(t *testing.T) {
 	if !strings.Contains(report, "case file-write fail ") {
 		t.Fatalf("report lacks the fail detail: %q", report)
 	}
-	if !strings.Contains(report, "summary cases=21 failed=1") {
+	if !strings.Contains(report, "summary cases=22 failed=1") {
 		t.Fatalf("report summary wrong: %q", report)
 	}
 }
@@ -922,6 +931,28 @@ func TestClockCaseFailsWhenTheClockStandsStill(t *testing.T) {
 	}
 	if !strings.Contains(rs[2].detail, "clock did not advance") {
 		t.Fatalf("detail = %q", rs[2].detail)
+	}
+}
+
+func TestEpochCaseNamesMissingFirmwareTime(t *testing.T) {
+	fs := newFakeFS()
+	fs.epoch = -vi.ErrENOSYS
+	rs := runCases(fs.syscalls())
+	if got := resultFor(t, rs, "clock-epoch"); !got.ok {
+		t.Fatalf("missing firmware clock should be an honest fallback: %+v", got)
+	}
+	if got := string(fs.files[epochReceipt]); got != "case clock-epoch unavailable fallback=monotonic\n" {
+		t.Fatalf("no-epoch receipt = %q", got)
+	}
+}
+
+func TestEpochCaseRejectsOtherKernelErrors(t *testing.T) {
+	fs := newFakeFS()
+	fs.epoch = -vi.ErrEFAULT
+	rs := runCases(fs.syscalls())
+	got := resultFor(t, rs, "clock-epoch")
+	if got.ok || got.detail != "epoch rc=-3" {
+		t.Fatalf("clock error must fail the case: %+v", got)
 	}
 }
 

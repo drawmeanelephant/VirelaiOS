@@ -1,6 +1,7 @@
 package vsys
 
-// User space has a CLOCK (GOOS=virelai phase 2.1).
+// User space has a monotonic clock (GOOS=virelai phase 2.1) and the boot
+// firmware's wall-clock epoch (ADR 0007 slot 66).
 //
 // CNTPCT_EL0 / CNTFRQ_EL0 are EL0-readable: the kernel arms
 // CNTKCTL_EL1.EL0PCTEN|EL0VCTEN in timer.allow_el0_counter() (see
@@ -18,12 +19,22 @@ package vsys
 // deterministic clock — the same injection seam as syscallFn.
 var nowFn = platformNano
 
+// SlotTime is the existing ADR 0007 wall-clock slot (#1058), not an M83a
+// addition. vi.Time and the Go runtime port use the same ABI number.
+const SlotTime uintptr = 66
+
 // Nanotime returns the guest's monotonic clock in nanoseconds since boot.
 //
 // It reads the architectural counter directly (no syscall, no fd, no
 // alloc); only the multiply/divide is Go. On a non-virelai build it
 // returns 0 (the host has no VirelaiOS counter) — inject nowFn in tests.
 func Nanotime() int64 { return nowFn() }
+
+// Now returns Unix wall-clock seconds from the kernel's existing sys_time
+// slot. -ENOSYS means the firmware supplied no usable epoch: callers must
+// not turn Nanotime into a calendar date. The host gateway returns -ENOSYS
+// too, and tests can inject the syscallFn seam.
+func Now() int64 { return syscallFn(SlotTime, 0, 0, 0, 0) }
 
 // ticksToNanos converts a raw CNTPCT_EL0 reading to nanoseconds using
 // CNTFRQ_EL0. Split into whole seconds plus a remainder so no intermediate

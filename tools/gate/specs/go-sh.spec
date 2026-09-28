@@ -109,6 +109,7 @@ EOF
 vgate_file STARTUP.SH <<'EOF'
 echo gosh-startup-ran
 help log > /host/GOSHHELP.TXT
+date > /host/GOSHDATE.TXT
 set GREET=hello-vars
 echo V=$GREET > /host/GOSHVARS.TXT
 echo shrunk-body > /host/GOOSHSHRINK.TXT
@@ -124,8 +125,10 @@ echo jobrc=$? > /host/GOSHJOB.TXT
 EOF
 
 vgate_setup_python <<'PY'
-import os, shutil, sys
+import os, shutil, sys, time
 rd = os.environ["RUN_DIR"]
+with open(os.path.join(rd, "host-epoch-start.txt"), "w") as fh:
+    fh.write(str(time.time()))
 share = os.environ.get("VG_SHARE") or os.path.join(rd, "share")
 src = os.path.join(".build", "go", "GOSH.ELF")
 if not os.path.exists(src):
@@ -184,6 +187,7 @@ vgate_assert 01 serial-contains 'gosh: attached'
 # The startup contract ran before the first prompt; its lines are visible
 # as the same `gosh: line ` markers a typed line gets.
 vgate_assert 01 serial-contains 'gosh: line echo gosh-startup-ran'
+vgate_assert 01 serial-contains 'gosh: line date > /host/GOSHDATE.TXT'
 vgate_assert 01 serial-contains 'gosh: prompt'
 vgate_assert 01 serial-contains 'gosh: line echo history-seed'
 vgate_assert 01 serial-contains 'gosh: job 1 pid='
@@ -236,6 +240,32 @@ vgate_assert 01 share-equals GOSHRC.TXT $'rc=7\n'
 vgate_assert 01 share-contains GOSHLOG.TXT 'GOSH.ELF:'
 vgate_assert 01 share-equals GOSHHELP.TXT log-help.expected
 vgate_assert 01 share-equals GOSHJOB.TXT $'jobrc=0\n'
+# The live date is dynamic. Pin its formatting against the epoch it printed
+# and compare that epoch to the host's own pre/post run samples. The EFI face
+# is taken as written; no timezone or NTP conclusion follows from this.
+vgate_assert 01 python <<'PY'
+import datetime, os, re, shutil, time
+rd = os.environ["RUN_DIR"]
+with open(os.path.join(os.environ["VG_SHARE"], "GOSHDATE.TXT"), "rb") as fh:
+    line = fh.read()
+m = re.fullmatch(rb"(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) \(epoch=([0-9]+)\)\n", line)
+if not m:
+    raise SystemExit("date did not print a calendar face + epoch: %r" % line)
+epoch = int(m.group(2))
+face = datetime.datetime.fromtimestamp(epoch, datetime.timezone.utc)
+if m.group(1).decode() != face.strftime("%Y-%m-%d %H:%M:%S"):
+    raise SystemExit("date face %r disagrees with epoch %d" % (m.group(1), epoch))
+with open(os.path.join(rd, "host-epoch-start.txt")) as fh:
+    host_start = float(fh.read())
+host_end = time.time()
+if not host_start - 60 <= epoch <= host_end + 60:
+    raise SystemExit("date epoch %d outside host interval [%d, %d] with 60 s slack" %
+                     (epoch, host_start, host_end))
+shutil.copy(os.path.join(os.environ["VG_SHARE"], "GOSHDATE.TXT"),
+            "artifacts/go-sh-share-date.txt")
+print("date epoch %d agrees with face and lies within 60 s of host [%d, %d]" %
+      (epoch, host_start, host_end))
+PY
 # M81e2 (#1787): the redirect decision, pinned on the share. `>` published
 # crash-safe, so over a 800 B pre-existing body the file must read back as
 # EXACTLY the 13 B new body -- byte-equal, so a surviving tail fails rather
