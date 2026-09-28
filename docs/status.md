@@ -119,7 +119,7 @@ The only threads not closed:
 
 | **M83 — Sleep/wake contract** | Landing (PR #1805): standard VirtioFS/FUSE preserves `/host` across cross-process VZ save/restore | #1780 |
 | **M84 — Remote framebuffer** | M84a ADR 0037 landed; M84b #1810 adds the transport-agnostic RFB 3.8/3.3 None-only codec, raw/hextile/RRE, seat-neutral input, DesktopSize/RichCursor, and SHA-pinned wire fixtures. Trusted hermetic/local paths only; serving remains M84c. | #1807 |
-| **M85 — Terminal graphics** | M85a #1813 picked sixel, cell-native. M85b #1814: streaming sixel decode into a pool-backed bank (≤ 96×64 px, 1 image per terminal, refused whole past a bound), image cells scroll/erase/reflow like text; corpus `image_cases`. Next: M85c client + gate. | #1808 |
+| **M85 — Terminal graphics** | M85a #1813 picked sixel, cell-native. M85b #1814: streaming sixel decode into a pool-backed bank (≤ 96×64 px, 1 image per terminal, refused whole past a bound), image cells scroll/erase/reflow like text; corpus `image_cases`. M85c #1815: QOI `IMGCAT.ELF`, `live-term-graphics` 2-boot scanout pixels, real-scanout PNG tape. | #1808 |
 | **M86 — Window chrome & UI primitives** | This PR lands M86a: `docs/ui-primitives.md` contract v1 (buffer model over Seam-B `[]u32`, widened `widgets.Canvas`, AA guarantees, chrome design language, 20-glyph PUA inventory). Claimable next: M86c #1819 (engine), M86b #1818 (glyphs). | #1816 |
 
 
