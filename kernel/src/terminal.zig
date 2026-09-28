@@ -19,6 +19,8 @@
 //!     never evicts keys the owner has not read yet.
 
 const std = @import("std");
+const builtin = @import("builtin");
+const alloc = @import("alloc.zig");
 const console = @import("console.zig");
 const klog = @import("klog.zig");
 // M49 SD5 (#1132): copy a terminal selection into the shared clipboard.
@@ -46,6 +48,8 @@ const timer = @import("timer.zig");
 // cells, so width/combining policy comes from the same `text` helpers the
 // painter uses.
 const text = @import("text.zig");
+// M85b (#1814): the sixel decoder and the pixel buffers image cells show.
+pub const term_image = @import("term_image.zig");
 
 /// Output ring capacity (bytes the owner has written, awaiting a front-end).
 pub const out_capacity: usize = 4096;
@@ -62,10 +66,6 @@ pub const reply_max: usize = 32;
 /// never partially applied.
 pub const osc_max: usize = 768;
 
-/// M85a (#1813): the DCS/sixel capture bound. A sixel payload past this is
-/// dropped WHOLE (the OSC overflow rule); M85b revisits the bound when
-/// decode and placement land ("grow with the consumer").
-pub const sixel_max: usize = 4096;
 /// M80g: the stored window-title bound. Delivery sinks truncate further:
 /// the window title buffer takes 63 bytes + NUL, the seat's kind-11
 /// frame the frozen 24-byte `wm_rpc_title_max` field.
@@ -138,13 +138,28 @@ pub const Point = struct { line: usize, col: usize };
 /// state. `base` is the rune anchored here (U+0000..U+10FFFF), `mark` an
 /// optional combining overlay on that rune (0 = none), and `cont` marks the
 /// right half of a double-width pair — its `base` is always 0 and the glyph
-/// lives in the cell to the left. Packed (43 bits) so the 80x128 grids and
-/// the reflow snapshot stay contiguous.
+/// lives in the cell to the left. Packed (60 bits, still 8 bytes) so the
+/// 80x128 grids and the reflow snapshot stay contiguous.
+///
+/// M85b (#1814): `img` != 0 makes this an IMAGE cell — it shows tile
+/// (`tx`, `ty`) of image buffer `img - 1` in the screen's image bank
+/// (`term_image`). An image cell's rune is a blank, so selection, search
+/// and `line()` read it as a space; it is written only by sixel
+/// placement, and any rune write, erase or clear replaces it like text.
+/// The fields ride in bits the 43-bit layout already paid for, so no
+/// grid, history bank or snapshot grows.
 pub const Cell = packed struct {
     base: u21 = ' ',
     mark: u21 = 0,
     cont: u1 = 0,
+    img: u3 = 0,
+    tx: u7 = 0,
+    ty: u7 = 0,
 };
+
+comptime {
+    std.debug.assert(@sizeOf(Cell) == 8);
+}
 
 /// The erased/initial cell: a blank, unmarked, glyph-owning cell.
 pub const empty_cell: Cell = .{};
@@ -351,6 +366,50 @@ fn histOf(s: *const Screen) ?*HistoryBank {
     return null;
 }
 
+/// M85b (#1814): per-terminal image banks, linked to `screens[i]` by
+/// pointer identity like the history banks — but carved from the page
+/// pool on the terminal's first sixel, not module BSS: KERNEL.BIN carries
+/// BSS as zero fill and has no room for pixels (term_image's header has
+/// the measurement). A bank, once carved, is kept for the kernel's life.
+var image_bank: [max_terminals]?*term_image.Bank = [_]?*term_image.Bank{null} ** max_terminals;
+/// A Screen outside the registry (a corpus or test value) borrows this
+/// ONE shared bank. It belongs to the last such Screen that began a sixel
+/// decode; a Screen that lost it paints its image cells blank, and scrubs
+/// them if it ever reclaims the bank, so it can never show another
+/// Screen's pixels.
+var image_loose: ?*term_image.Bank = null;
+var image_loose_owner: ?*const Screen = null;
+
+const image_bank_pages: u64 = (@sizeOf(term_image.Bank) + alloc.page_size - 1) / alloc.page_size;
+/// Host tests cannot dereference pool addresses (driving_award's user
+/// windows have the same rule), so their banks are static.
+var test_image_bank: [max_terminals + 1]term_image.Bank = undefined;
+var test_image_pool_empty: bool = false;
+
+/// Bank `slot` (`max_terminals` = the loose bank), or null when the pool
+/// has no run for it — the sixel is then refused whole.
+fn imageBankAlloc(slot: usize) ?*term_image.Bank {
+    if (builtin.is_test) return if (test_image_pool_empty) null else &test_image_bank[slot];
+    const pa = alloc.alloc_pages(image_bank_pages) orelse return null;
+    return @ptrFromInt(pa);
+}
+
+fn imageBankOf(s: *const Screen) ?*term_image.Bank {
+    for (&screens, 0..) |*sc, i| {
+        if (sc == s) return image_bank[i];
+    }
+    if (image_loose_owner == s) return image_loose;
+    return null;
+}
+
+fn imageBit(cell: Cell) u8 {
+    return if (cell.img == 0) 0 else @as(u8, 1) << (cell.img - 1);
+}
+
+fn scrubCell(cell: *Cell, buf: u3) void {
+    if (cell.img != 0 and (buf == 0 or cell.img == buf)) cell.* = empty_cell;
+}
+
 pub const Screen = struct {
     cells: [grid_lines][grid_cols]Cell = [_][grid_cols]Cell{[_]Cell{empty_cell} ** grid_cols} ** grid_lines,
     styles: [grid_lines][grid_cols]CellStyle = [_][grid_cols]CellStyle{[_]CellStyle{default_cell_style} ** grid_cols} ** grid_lines,
@@ -472,12 +531,10 @@ pub const Screen = struct {
     clip_data: [clipboard.capacity]u8 = undefined,
     clip_len: usize = 0,
     clip_dirty: bool = false,
-    /// M85a (#1813): image-sequence intake — the DCS/sixel capture and the
+    /// M85a (#1813): image-sequence intake — DCS `q` (sixel) and the
     /// "consumed, never painted" rule for every other ESC string (APC —
     /// kitty's channel — SOS, PM, non-`q` DCS). Stream state like the OSC
-    /// parser's: bounded, never swapped with the alternate screen, dropped
-    /// WHOLE past the bound. This card parses and captures only; M85b
-    /// decodes and places.
+    /// parser's: never swapped with the alternate screen.
     /// The string introducer that opened the in-flight string: 'P' (DCS),
     /// '_' (APC), 'X' (SOS), '^' (PM).
     dcs_intro: u8 = 0,
@@ -485,23 +542,27 @@ pub const Screen = struct {
     /// (after `q`), 2 = drain-only (non-`q` final or non-DCS introducer).
     dcs_phase: u8 = 0,
     /// The three DCS Ps values (`P1;P2;P3`); params beyond three are
-    /// consumed, never parsed.
+    /// consumed, never parsed. M85b parses but does not honour them (see
+    /// term_image: square pixels, unset pixels transparent).
     sixel_p: [3]u16 = [_]u16{0} ** 3,
     sixel_pcount: usize = 0,
-    /// The sixel payload buffer — the grid-side asset slot M85b decodes.
-    /// It holds IN-FLIGHT bytes while a string is pending and the asset
-    /// once `sixel_ready`; readers (the pump, M85b) read it only when
-    /// ready.
-    sixel_buf: [sixel_max]u8 = undefined,
-    sixel_len: usize = 0,
-    /// Sticky until the next string begins: the capture overflowed its
-    /// bound and was dropped WHOLE (the OSC overflow rule).
+    /// M85b (#1814): the payload is DECODED as it streams (M85a's 4 KiB
+    /// capture buffer is gone — it bounded bytes, when the real bound is
+    /// pixels, and cost 16 KiB of kernel image across the registry).
+    sixel: term_image.Decoder = .{},
+    /// Sticky until the next string begins: the image broke a bound (or
+    /// lost its buffer) and was refused WHOLE — nothing placed.
     sixel_overflow: bool = false,
-    /// A complete capture is ready for M85b (ST seen, within bounds).
-    sixel_ready: bool = false,
-    /// Cursor origin at the string's start — M85b's placement anchor.
+    /// The cursor at the string's start — where the image is placed.
     sixel_origin_line: usize = 0,
     sixel_origin_col: usize = 0,
+    /// M85b: placement order for the bank's oldest-first eviction, and
+    /// the counted outcomes (the overflow policy is explicit and counted):
+    /// images placed, refused whole, and evicted by a newer one.
+    img_seq: u32 = 0,
+    img_placed: u32 = 0,
+    img_refused: u32 = 0,
+    img_evicted: u32 = 0,
     /// M80a (#1712): REP (CSI b)'s "last printed rune" — the placement is
     /// repeated VERBATIM (rune, overlay mark and rendition). Stream state
     /// like the CSI parser's own: not swapped with the alternate screen,
@@ -700,18 +761,16 @@ pub const Screen = struct {
     }
 
     /// M85a (#1813): open an ESC string — DCS `P` (sixel's channel), APC
-    /// `_` (kitty's), SOS `X`, PM `^`. All four are consumed through ST
-    /// and never painted; only a DCS whose final is `q` (sixel) captures
-    /// payload. The cursor origin is recorded for M85b's placement.
+    /// `_` (kitty's), SOS `X`, PM `^`. All four are consumed through ST;
+    /// only a DCS whose final is `q` (sixel) decodes, and M85b (#1814)
+    /// places the image at the cursor recorded here.
     fn dcsBegin(self: *Screen, intro: u8) void {
         self.esc_state = 6;
         self.dcs_intro = intro;
         self.dcs_phase = 0;
         self.sixel_p = [_]u16{0} ** 3;
         self.sixel_pcount = 0;
-        self.sixel_len = 0;
         self.sixel_overflow = false;
-        self.sixel_ready = false;
         self.sixel_origin_line = self.cur;
         self.sixel_origin_col = self.col;
     }
@@ -719,7 +778,7 @@ pub const Screen = struct {
     /// M85a: one byte of an ESC string. Phase 0 collects the DCS parameter
     /// string — digits and `;` into at most three Ps values, everything
     /// else consumed — until the first final byte (0x40–0x7E): `q` after a
-    /// DCS opens the sixel payload capture, any other final or introducer
+    /// DCS starts the sixel decode (M85b), any other final or introducer
     /// opens a pure drain. C0 bytes inside a string are consumed as
     /// payload: never executed, never painted.
     fn dcsByte(self: *Screen, b: u8) void {
@@ -740,42 +799,198 @@ pub const Screen = struct {
                 }
                 if (b >= 0x40 and b <= 0x7e) {
                     self.dcs_phase = if (self.dcs_intro == 'P' and b == 'q') 1 else 2;
+                    if (self.dcs_phase == 1) self.imageBegin();
                 }
                 return;
             },
             1 => {
-                if (self.sixel_len < sixel_max) {
-                    self.sixel_buf[self.sixel_len] = b;
-                    self.sixel_len += 1;
-                } else {
-                    self.sixel_overflow = true;
-                }
+                const bank = imageBankOf(self) orelse return self.sixel.refuse();
+                self.sixel.feed(&bank.img[self.sixel.stage], b);
             },
             else => {}, // phase 2: pure drain
         }
     }
 
-    /// M85a: ST completed the string. A complete sixel capture commits as
-    /// the grid-side asset slot; every other outcome — a non-`q` final, a
-    /// non-DCS introducer, a malformed or over-bound body — drops WHOLE
-    /// ("consumed, never painted"). `sixel_overflow` stays sticky so the
-    /// drop reason is observable until the next string begins.
+    /// M85a: ST completed the string. M85b: a sixel string commits its
+    /// image — placed, refused whole (`sixel_overflow`, sticky until the
+    /// next string begins), or nothing at all for an empty one. Every
+    /// other string was consumed and is simply over ("never painted").
     fn dcsFinish(self: *Screen) void {
         self.esc_state = 0;
-        if (self.dcs_phase == 1 and !self.sixel_overflow) {
-            self.sixel_ready = true;
-        } else {
-            self.sixel_len = 0;
-            self.sixel_ready = false;
-        }
+        if (self.dcs_phase == 1) self.imageCommit();
     }
 
     /// M85a: drop the in-flight string whole (CAN/SUB, or an ESC that did
-    /// not complete ST).
+    /// not complete ST). A half-decoded image only ever touched its
+    /// staging buffer, so dropping it costs nothing on screen.
     fn dcsAbort(self: *Screen) void {
         self.esc_state = 0;
-        self.sixel_len = 0;
-        self.sixel_ready = false;
+    }
+
+    // -- M85b (#1814): image placement --------------------------------------
+
+    /// Bit i set = some cell this Screen can still show refers to image
+    /// buffer i: the grid, the swapped-out other screen, the history ring,
+    /// and the row stashed under the search prompt (it is restored later).
+    fn imageRefs(self: *const Screen) u8 {
+        var mask: u8 = 0;
+        for (&self.cells) |*row| {
+            for (row) |cell| mask |= imageBit(cell);
+        }
+        for (&self.alt_cells) |*row| {
+            for (row) |cell| mask |= imageBit(cell);
+        }
+        if (histOf(self)) |bank| {
+            for (0..self.hist_count) |i| {
+                for (&bank.cells[(self.hist_start + i) % history_lines]) |cell| mask |= imageBit(cell);
+            }
+        }
+        if (self.ov_valid) {
+            for (self.ov_cells) |cell| mask |= imageBit(cell);
+        }
+        return mask;
+    }
+
+    /// Blank every cell showing image buffer `buf - 1` (`buf` 0 = every
+    /// image), wherever `imageRefs` looks. Image cells carry the
+    /// erase-default rendition, so only the cell itself changes.
+    fn imageScrub(self: *Screen, buf: u3) void {
+        for (&self.cells) |*row| {
+            for (row) |*cell| scrubCell(cell, buf);
+        }
+        for (&self.alt_cells) |*row| {
+            for (row) |*cell| scrubCell(cell, buf);
+        }
+        if (histOf(self)) |bank| {
+            for (0..self.hist_count) |i| {
+                for (&bank.cells[(self.hist_start + i) % history_lines]) |*cell| scrubCell(cell, buf);
+            }
+        }
+        for (&self.ov_cells) |*cell| scrubCell(cell, buf);
+    }
+
+    /// This Screen's bank, carving it from the pool on first use. A loose
+    /// Screen (re)claims the shared bank; whatever it showed from an
+    /// earlier ownership may have been overwritten since.
+    fn imageBankClaim(self: *Screen) ?*term_image.Bank {
+        for (&screens, 0..) |*sc, i| {
+            if (sc != self) continue;
+            if (image_bank[i] == null) image_bank[i] = imageBankAlloc(i);
+            return image_bank[i];
+        }
+        if (image_loose == null) image_loose = imageBankAlloc(max_terminals);
+        const bank = image_loose orelse return null;
+        if (image_loose_owner != self) {
+            self.imageScrub(0);
+            image_loose_owner = self;
+        }
+        return bank;
+    }
+
+    /// The `q` final: pick the staging buffer (one no cell refers to —
+    /// `buffers` = `slots` + 1 guarantees one) and start decoding into it.
+    /// No bank (pool exhausted) refuses the image at ST.
+    fn imageBegin(self: *Screen) void {
+        const bank = self.imageBankClaim() orelse {
+            self.sixel = .{};
+            self.sixel.refuse();
+            return;
+        };
+        const refs = self.imageRefs();
+        var stage: u8 = 0;
+        while (stage < term_image.buffers and refs & (@as(u8, 1) << @intCast(stage)) != 0) : (stage += 1) {}
+        if (stage == term_image.buffers) {
+            self.sixel = .{};
+            self.sixel.refuse();
+            return;
+        }
+        self.sixel.begin(&bank.img[stage], stage);
+    }
+
+    /// ST on a sixel string: stamp the image, make room (oldest-first
+    /// eviction down to `slots - 1` live images), then place it.
+    fn imageCommit(self: *Screen) void {
+        const bank = imageBankOf(self) orelse {
+            self.sixel.refuse();
+            return self.imageRefused();
+        };
+        const stage = self.sixel.stage;
+        const img = &bank.img[stage];
+        if (!self.sixel.finish(img, font_metrics.cell_w, font_metrics.cell_h)) {
+            if (self.sixel.refused) self.imageRefused();
+            return;
+        }
+        var live = self.imageRefs();
+        while (@popCount(live) >= term_image.slots) {
+            var victim: u8 = 0;
+            var oldest: u32 = 0;
+            for (0..term_image.buffers) |i| {
+                if (live & (@as(u8, 1) << @intCast(i)) == 0) continue;
+                const age = self.img_seq -% bank.img[i].seq;
+                if (age >= oldest) {
+                    oldest = age;
+                    victim = @intCast(i);
+                }
+            }
+            self.imageScrub(@intCast(victim + 1));
+            live &= ~(@as(u8, 1) << @intCast(victim));
+            self.img_evicted +%= 1;
+        }
+        self.img_seq +%= 1;
+        img.seq = self.img_seq;
+        self.imagePlace(@intCast(stage + 1), img);
+        self.img_placed +%= 1;
+    }
+
+    fn imageRefused(self: *Screen) void {
+        self.sixel_overflow = true;
+        self.img_refused +%= 1;
+    }
+
+    /// Cell-native placement (sixel scrolling on — the DECSDM default):
+    /// the image's top-left tile lands on the cursor cell and it covers
+    /// ceil(w / cell_w) x ceil(h / cell_h) cells, REPLACING whatever text
+    /// was there. Columns past the right margin are cropped (never
+    /// wrapped); each further tile row is an IND, so an image taller than
+    /// the room below scrolls the region like text would, rows already
+    /// placed moving up with it. The cursor ends at the left margin of the
+    /// line below the image (the xterm-family "next line" rule; the
+    /// right-of-image variant, xterm DECSET 8452, is not implemented).
+    fn imagePlace(self: *Screen, id: u3, img: *const term_image.Image) void {
+        const ncols = (@as(usize, img.w) + img.cell_w - 1) / img.cell_w;
+        const nrows = (@as(usize, img.h) + img.cell_h - 1) / img.cell_h;
+        self.cancelPendingWrap();
+        self.materializeForWrite();
+        const col0 = self.col;
+        const end = @min(col0 + ncols, self.cols);
+        var ty: usize = 0;
+        while (ty < nrows) : (ty += 1) {
+            if (ty > 0) self.index();
+            // Pair repair, putRune's rule: never leave half a wide pair.
+            if (col0 > 0 and self.cells[self.cur][col0].cont != 0) self.blankCell(self.cur, col0 - 1);
+            if (end < grid_cols and self.cells[self.cur][end].cont != 0) self.blankCell(self.cur, end);
+            var c = col0;
+            while (c < end) : (c += 1) {
+                self.blankCell(self.cur, c);
+                self.cells[self.cur][c] = .{ .img = id, .tx = @intCast(c - col0), .ty = @intCast(ty) };
+            }
+            if (end > self.lens[self.cur]) self.lens[self.cur] = end;
+        }
+        self.nextLine();
+    }
+
+    /// The image tile the cell at unified (line, col) shows, or null: a
+    /// text cell, or a loose Screen that lost the shared bank.
+    pub fn imageTile(self: *const Screen, line_index: usize, col_index: usize) ?term_image.Tile {
+        const cell = self.cellAt(line_index, col_index);
+        if (cell.img == 0) return null;
+        const bank = imageBankOf(self) orelse return null;
+        const img = &bank.img[cell.img - 1];
+        return .{
+            .img = img,
+            .x0 = @as(usize, cell.tx) * img.cell_w,
+            .y0 = @as(usize, cell.ty) * img.cell_h,
+        };
     }
 
     fn clearSavedCursor(self: *Screen) void {
@@ -1284,6 +1499,11 @@ pub const Screen = struct {
             if (base_col > 0 and self.cells[self.cur][base_col].cont != 0) base_col -= 1;
             if (self.cells[self.cur][base_col].cont != 0) {
                 // A continuation at column 0 would be corrupt; be honest.
+                self.putRune(0xFFFD, 0, style);
+                return;
+            }
+            if (self.cells[self.cur][base_col].img != 0) {
+                // M85b (#1814): an image cell is no base — the no-base rule.
                 self.putRune(0xFFFD, 0, style);
                 return;
             }
@@ -2351,6 +2571,13 @@ pub const Screen = struct {
         var col: usize = 0;
         for (cells_in) |cell| {
             if (cell.cont != 0) continue;
+            if (cell.img != 0) {
+                // M85b (#1814): an image cell never wraps — past the new
+                // right margin it is dropped (`reflow` and `reflowHistory`
+                // apply the same rule, so the row counts agree).
+                if (col < cols) col += 1;
+                continue;
+            }
             const w: usize = if (text.char_width(cell.base) >= 2) 2 else 1;
             if (col + w > cols) {
                 rows += 1;
@@ -2416,6 +2643,9 @@ pub const Screen = struct {
             while (cell < reflow_lens[n]) : (cell += 1) {
                 const src = reflow_lines[n][cell];
                 if (src.cont != 0) continue; // its base re-creates the pair
+                // M85b (#1814): an image cell never wraps; at the new
+                // right margin it is dropped (the `wrappedRows` rule).
+                if (src.img != 0 and self.col >= self.cols) continue;
                 const width = text.char_width(src.base);
                 self.putRune(src.base, src.mark, reflow_styles[n][cell]);
                 if (width > 0) {
@@ -2429,6 +2659,8 @@ pub const Screen = struct {
                         self.fg_rgb[self.cur][landed + 1] = reflow_fg_rgb[n][cell];
                         self.bg_rgb[self.cur][landed + 1] = reflow_bg_rgb[n][cell];
                     }
+                    // M85b: the tile rides with its blank rune.
+                    if (src.img != 0) self.cells[self.cur][landed] = src;
                 }
             }
             if (n + 1 < count) self.newline();
@@ -2487,6 +2719,7 @@ pub const Screen = struct {
             while (ci < len) : (ci += 1) {
                 const src = history_temp.cells[t][ci];
                 if (src.cont != 0) continue; // its base already placed the pair
+                if (src.img != 0 and oc >= new_cols) continue; // M85b: never wraps
                 const w: usize = if (text.char_width(src.base) >= 2) 2 else 1;
                 if (oc + w > new_cols and oc > 0) {
                     self.closeHistRow(bank, oc);
@@ -5993,4 +6226,91 @@ test "terminal: a 12-param SGR line fits the widened csi_params" {
     try std.testing.expectEqual(@as(u8, 2), fg.g);
     try std.testing.expectEqual(@as(u8, 3), fg.b);
     try std.testing.expectEqual(@as(?u8, 9), styleBackground(s.styleAt(0, 0)));
+}
+
+// -- M85b (#1814): image layer --------------------------------------------
+
+const test_red_cell = "\x1bPq\"1;1;8;16#1;2;100;0;0~\x1b\\";
+
+test "terminal: image rows scroll into history with their tiles; eviction and ED 3 reach the ring (M85b #1814)" {
+    for (&screens) |*sc| sc.reset();
+    const s = &screens[0];
+    s.feed(test_red_cell);
+    while (s.hist_count == 0) s.feed("x\n");
+    // The image row is the oldest history row now: its tile rode the
+    // push (history stores the Cell repr whole) and still paints.
+    try std.testing.expectEqual(@as(usize, 1), s.hist_count);
+    try std.testing.expect(s.cellAt(0, 0).img != 0);
+    const tile = s.imageTile(0, 0) orelse return error.TestExpectedImageCell;
+    try std.testing.expectEqual(@as(?u32, 0xff0000), tile.sample(0, 0, 8, 16));
+    // A second image evicts the first even though it lives in the ring.
+    s.feed(test_red_cell);
+    try std.testing.expectEqual(@as(u3, 0), s.cellAt(0, 0).img);
+    try std.testing.expectEqual(@as(u32, 1), s.img_evicted);
+    // Scroll the second image into the ring too, then ED 3: the ring —
+    // and every reference in it — is gone, so a third image evicts
+    // nothing.
+    for (0..grid_lines) |_| s.feed("x\n");
+    try std.testing.expect(s.imageRefs() != 0);
+    s.feed("\x1b[3J");
+    try std.testing.expectEqual(@as(u8, 0), s.imageRefs());
+    s.feed(test_red_cell);
+    try std.testing.expectEqual(@as(u32, 1), s.img_evicted);
+    try std.testing.expectEqual(@as(u32, 3), s.img_placed);
+    for (&screens) |*sc| sc.reset();
+}
+
+test "terminal: a loose Screen that lost the shared image bank paints nothing and scrubs on reclaim (M85b #1814)" {
+    var a = Screen{};
+    var b = Screen{};
+    a.feed(test_red_cell);
+    try std.testing.expect(a.imageTile(0, 0) != null);
+    b.feed(test_red_cell);
+    // `a` still has its image cell, but the bank is b's now: no pixels.
+    try std.testing.expect(a.cellAt(0, 0).img != 0);
+    try std.testing.expect(a.imageTile(0, 0) == null);
+    try std.testing.expect(b.imageTile(0, 0) != null);
+    // Reclaiming scrubs a's stale cell before the new image lands.
+    a.feed(test_red_cell);
+    try std.testing.expectEqual(@as(u3, 0), a.cellAt(0, 0).img);
+    try std.testing.expect(a.imageTile(1, 0) != null);
+    try std.testing.expect(b.imageTile(0, 0) == null);
+}
+
+test "terminal: an empty page pool refuses the sixel whole, and the next one carves the bank (M85b #1814)" {
+    for (&screens) |*sc| sc.reset();
+    const s = &screens[1];
+    const kept = image_bank[1];
+    defer {
+        image_bank[1] = kept;
+        test_image_pool_empty = false;
+        for (&screens) |*sc| sc.reset();
+    }
+    image_bank[1] = null;
+    test_image_pool_empty = true;
+    s.feed(test_red_cell ++ "A");
+    try std.testing.expectEqual(@as(u32, 1), s.img_refused);
+    try std.testing.expectEqual(@as(u32, 0), s.img_placed);
+    try std.testing.expect(s.sixel_overflow);
+    // Nothing placed, cursor unmoved: the text after ST lands at 0,0.
+    try std.testing.expectEqual(@as(u3, 0), s.cellAt(0, 0).img);
+    try std.testing.expectEqual(@as(u21, 'A'), s.cellAt(0, 0).base);
+    try std.testing.expect(image_bank[1] == null);
+    test_image_pool_empty = false;
+    s.feed("\r\n" ++ test_red_cell);
+    try std.testing.expect(image_bank[1] != null);
+    try std.testing.expectEqual(@as(u32, 1), s.img_placed);
+    try std.testing.expect(!s.sixel_overflow);
+    try std.testing.expect(s.imageTile(1, 0) != null);
+}
+
+test "terminal: the search overlay's stashed row keeps its image buffer referenced (M85b #1814)" {
+    var s = Screen{};
+    s.feed(test_red_cell);
+    s.ov_cells[0] = s.cells[0][0];
+    s.ov_valid = true;
+    s.cells[0][0] = empty_cell;
+    try std.testing.expect(s.imageRefs() != 0);
+    s.imageScrub(0);
+    try std.testing.expectEqual(@as(u3, 0), s.ov_cells[0].img);
 }

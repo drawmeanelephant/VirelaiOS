@@ -44,11 +44,20 @@
 //!         registry tests in terminal.zig (the M73i precedent): a corpus
 //!         Screen has no pump to deliver on.
 //!       * M85a (#1813) lands the image-intake group: DCS `q` (sixel)
-//!         captures header Ps + payload bytes to the grid-side asset slot
-//!         (`sixel`/`sixel_p`/`sixel_ready`/`sixel_overflow`/`sixel_origin`
-//!         Case fields) and every other ESC string (APC/SOS/PM, non-`q`
-//!         DCS) plus OSC 1337 is "consumed, never painted". Decode and
-//!         placement are M85b and flip nothing here.
+//!         header Ps (`sixel_p`/`sixel_origin` Case fields) and every
+//!         other ESC string (APC/SOS/PM, non-`q` DCS) plus OSC 1337 is
+//!         "consumed, never painted".
+//!       * M85b (#1814) decodes and places sixel, so it deliberately flips
+//!         M85a's capture rows: the 4 KiB payload capture (`sixel`/
+//!         `sixel_ready`) is gone — decode streams, the bound is PIXELS
+//!         (`term_image.max_w`/`max_h`), and `sixel_overflow` now means
+//!         "refused whole". The two rows whose payload was a valid image
+//!         now place it (the grid is no longer innocent: that is the
+//!         point). Its placement group pins default placement, overlap
+//!         with text, scrolling with the buffer, ED/EL/ICH/DCH/ECH, the
+//!         alternate screen and eviction (`images` counts, `tile` cell
+//!         spots, `pixels` spots); resize and history are pinned by the
+//!         test blocks after the group and by terminal.zig.
 //!       * Group I is a deterministic CSI parameter-soup FUZZ — not
 //!         goldens. It enforces INVARIANTS (no panic, whole wide pairs,
 //!         bounded indices, nothing below the used tail) under random
@@ -100,9 +109,23 @@ const StyleSpot = struct {
 const CellSpot = struct {
     row: usize,
     col: usize,
-    base: u21,
+    base: u21 = ' ',
     mark: u21 = 0,
     cont: u1 = 0,
+    /// M85b (#1814): the image tile {tx, ty} this cell shows; null
+    /// asserts a text cell (no image).
+    tile: ?[2]u7 = null,
+};
+
+/// M85b (#1814): an image pixel spot-check — pixel (dx, dy) of the tile
+/// the cell at (row, col) shows, sampled at its placement geometry.
+/// `rgb` null = transparent (an unset sixel pixel, or outside the image).
+const PixelSpot = struct {
+    row: usize,
+    col: usize,
+    dx: usize = 0,
+    dy: usize = 0,
+    rgb: ?u32,
 };
 
 const Case = struct {
@@ -128,22 +151,19 @@ const Case = struct {
     /// Expected OSC 52 queue (M80g #1715) — the decoded clipboard bytes
     /// awaiting the pump; empty means no copy landed.
     clip: ?[]const u8 = null,
-    /// Expected DCS/sixel capture buffer (M85a #1813) — the payload bytes
-    /// after the `q`: in-flight while a string is pending, the asset once
-    /// `sixel_ready` (M85b reads only when ready). Empty means no bytes
-    /// were captured.
-    sixel: ?[]const u8 = null,
     /// Expected DCS header Ps values (M85a).
     sixel_p: ?[3]u16 = null,
-    /// Expected asset readiness (M85a): a complete in-bounds capture.
-    sixel_ready: ?bool = null,
-    /// Expected sticky overflow flag (M85a): the capture was dropped whole.
+    /// Expected sticky refusal flag (M85b #1814; M85a's overflow flag):
+    /// the last sixel string broke a bound and was refused whole.
     sixel_overflow: ?bool = null,
-    /// Expected cursor origin at the string's start (M85a) — M85b's
-    /// placement anchor.
+    /// Expected cursor origin at the string's start (M85a) — where M85b
+    /// places the image.
     sixel_origin: ?[2]usize = null,
+    /// Expected image outcome counters (M85b): {placed, refused, evicted}.
+    images: ?[3]u32 = null,
     cells: []const CellSpot = &.{},
     styles: []const StyleSpot = &.{},
+    pixels: []const PixelSpot = &.{},
 };
 
 fn run(c: Case) !void {
@@ -160,10 +180,13 @@ fn run(c: Case) !void {
     if (c.keypad) |k| try std.testing.expectEqual(k, s.keypadApplication());
     if (c.title) |want| try std.testing.expectEqualStrings(want, s.title[0..s.title_len]);
     if (c.clip) |want| try std.testing.expectEqualStrings(want, s.clip_data[0..s.clip_len]);
-    if (c.sixel) |want| try std.testing.expectEqualStrings(want, s.sixel_buf[0..s.sixel_len]);
     if (c.sixel_p) |p| try std.testing.expectEqual(p, s.sixel_p);
-    if (c.sixel_ready) |r| try std.testing.expectEqual(r, s.sixel_ready);
     if (c.sixel_overflow) |o| try std.testing.expectEqual(o, s.sixel_overflow);
+    if (c.images) |n| {
+        try std.testing.expectEqual(n[0], s.img_placed);
+        try std.testing.expectEqual(n[1], s.img_refused);
+        try std.testing.expectEqual(n[2], s.img_evicted);
+    }
     if (c.sixel_origin) |rc| {
         try std.testing.expectEqual(rc[0], s.sixel_origin_line);
         try std.testing.expectEqual(rc[1], s.sixel_origin_col);
@@ -178,6 +201,17 @@ fn run(c: Case) !void {
         try std.testing.expectEqual(x.base, cell.base);
         try std.testing.expectEqual(x.mark, cell.mark);
         try std.testing.expectEqual(x.cont, cell.cont);
+        if (x.tile) |tile| {
+            try std.testing.expect(cell.img != 0);
+            try std.testing.expectEqual(tile[0], cell.tx);
+            try std.testing.expectEqual(tile[1], cell.ty);
+        } else {
+            try std.testing.expectEqual(@as(u3, 0), cell.img);
+        }
+    }
+    for (c.pixels) |x| {
+        const tile = s.imageTile(x.row, x.col) orelse return error.TestExpectedImageCell;
+        try std.testing.expectEqual(x.rgb, tile.sample(x.dx, x.dy, tile.img.cell_w, tile.img.cell_h));
     }
     for (c.styles) |x| {
         const st = s.styleAt(x.row, x.col);
@@ -232,8 +266,13 @@ const spaces3_a77: [80]u8 = [_]u8{' '} ** 3 ++ [_]u8{'a'} ** 77;
 /// (past title_max 64) — the overflow and truncation probes.
 const x780: [780]u8 = [_]u8{'x'} ** 780;
 const t70: [70]u8 = [_]u8{'t'} ** 70;
-/// M85a: one byte past sixel_max (4096) — the overflow probe.
+/// M85a: 4097 sixels — once one byte past the 4 KiB capture bound; since
+/// M85b (#1814) an image 4097 pixels wide, far past `term_image.max_w`.
 const s4097: [4097]u8 = [_]u8{'s'} ** 4097;
+/// M85b: wrap a sixel payload in its DCS `q` … ST envelope.
+fn sx(comptime payload: []const u8) *const [payload.len + 5]u8 {
+    return "\x1bPq" ++ payload ++ "\x1b\\";
+}
 
 // ---------------------------------------------------------------------------
 // Group A — ASCII control and line discipline.
@@ -1477,104 +1516,393 @@ test "terminal corpus: OSC window titles and clipboard (M80g #1715)" {
 }
 
 // ---------------------------------------------------------------------------
-// M85a (#1813) — image-sequence intake: DCS/sixel capture and the
-// "consumed, never painted" rule. The rows pin the grid's innocence and the
-// capture state (`sixel_*` Case fields); decode and placement are M85b and
-// flip nothing here. Protocol pick (recorded on the M85a claim): **sixel is
+// M85a (#1813) — image-sequence intake: DCS/sixel and the "consumed, never
+// painted" rule. Protocol pick (recorded on the M85a claim): **sixel is
 // PRIMARY** — the seam is cell-native (the kernel painter composites cell
 // fills + glyphs into the window buffer), so pixels that ride the grid are
 // the shape that fits; kitty's channel (APC and OSC 1337) stays a pinned
-// drain until a layer seam exists.
+// drain until a layer seam exists. M85b (#1814) flipped the capture rows
+// here (see the header contract): a valid payload now PLACES an image.
 // ---------------------------------------------------------------------------
 
 const sixel_cases = [_]Case{
     .{
-        .name = "DCS q (sixel): the payload is captured; the grid is untouched",
+        .name = "DCS q (sixel) decodes and places at the string's origin; the cursor lands below",
         .input = "A\x1bP1;2;3q#0~~??\x1b\\B",
-        .lines = &.{"AB"},
-        .cursor = .{ 0, 2 },
-        .sixel = "#0~~??",
+        // `#0~~??` is two full columns of register 0 (VT340 black): a 2x6
+        // image, one cell at the origin. The cursor goes to the left
+        // margin of the next line, where `B` prints.
+        .lines = &.{ "A ", "B" },
+        .cursor = .{ 1, 1 },
         .sixel_p = .{ 1, 2, 3 },
-        .sixel_ready = true,
         .sixel_overflow = false,
         .sixel_origin = .{ 0, 1 },
+        .images = .{ 1, 0, 0 },
+        .cells = &.{
+            .{ .row = 0, .col = 0, .base = 'A' },
+            .{ .row = 0, .col = 1, .tile = .{ 0, 0 } },
+            .{ .row = 1, .col = 0, .base = 'B' },
+        },
+        .pixels = &.{
+            .{ .row = 0, .col = 1, .dx = 1, .dy = 5, .rgb = 0x000000 },
+            .{ .row = 0, .col = 1, .dx = 2, .dy = 0, .rgb = null },
+            .{ .row = 0, .col = 1, .dx = 0, .dy = 6, .rgb = null },
+        },
     },
     .{
         .name = "params beyond three DCS Ps are consumed, never parsed",
         .input = "\x1bP1;2;3;4qz\x1b\\",
-        .sixel = "z",
+        // `z` = 59 = bits 0,1,3,4,5: a 1x6 image with row 2 unset.
         .sixel_p = .{ 1, 2, 3 },
-        .sixel_ready = true,
+        .cursor = .{ 1, 0 },
+        .images = .{ 1, 0, 0 },
+        .cells = &.{.{ .row = 0, .col = 0, .tile = .{ 0, 0 } }},
+        .pixels = &.{
+            .{ .row = 0, .col = 0, .dy = 1, .rgb = 0x000000 },
+            .{ .row = 0, .col = 0, .dy = 2, .rgb = null },
+            .{ .row = 0, .col = 0, .dy = 3, .rgb = 0x000000 },
+        },
     },
     .{
-        .name = "an empty sixel payload is a valid empty asset",
+        .name = "an empty sixel payload places nothing and is not a refusal",
         .input = "\x1bP0;0q\x1b\\",
-        .sixel = "",
-        .sixel_ready = true,
+        .lines = &.{""},
+        .cursor = .{ 0, 0 },
+        .sixel_overflow = false,
+        .images = .{ 0, 0, 0 },
     },
     .{
-        .name = "a non-q DCS final is consumed, never painted, and captures nothing",
+        .name = "a non-q DCS final is consumed, never painted, and decodes nothing",
         .input = "A\x1bP1;2;3pDATA\x1b\\B",
         .lines = &.{"AB"},
         .cursor = .{ 0, 2 },
-        .sixel = "",
-        .sixel_ready = false,
+        .images = .{ 0, 0, 0 },
     },
     .{
         .name = "APC (kitty's channel), SOS and PM strings are consumed, never painted",
         .input = "\x1b_Gm=1;aAA\x1b\\\x1bXsos\x1b\\\x1b^pm\x1b\\C",
         .lines = &.{"C"},
         .cursor = .{ 0, 1 },
-        .sixel = "",
-        .sixel_ready = false,
+        .images = .{ 0, 0, 0 },
     },
     .{
         .name = "OSC 1337 (kitty graphics) is consumed by the OSC path, never painted",
         .input = "\x1b]1337;File=AAAA\x07D",
         .lines = &.{"D"},
         .cursor = .{ 0, 1 },
-        .sixel = "",
-        .sixel_ready = false,
+        .images = .{ 0, 0, 0 },
     },
     .{
-        .name = "a sixel body past sixel_max is dropped WHOLE",
+        .name = "a sixel wider than term_image.max_w is refused WHOLE; the grid is innocent",
         .input = "\x1bP0;0;0q" ++ &s4097 ++ "\x1b\\B",
         .lines = &.{"B"},
         .cursor = .{ 0, 1 },
-        .sixel = "",
-        .sixel_ready = false,
         .sixel_overflow = true,
+        .images = .{ 0, 1, 0 },
+        .cells = &.{.{ .row = 0, .col = 1 }},
     },
     .{
-        .name = "an unterminated string stays pending: no asset, grid innocent",
+        .name = "an unterminated string stays pending: nothing placed, grid innocent",
         .input = "A\x1bP1;2;3q~~",
         .lines = &.{"A"},
         .cursor = .{ 0, 1 },
-        // In-flight bytes sit in the capture buffer; the ASSET is gated on
-        // `sixel_ready` (M85b reads the slot only when ready).
-        .sixel = "~~",
-        .sixel_ready = false,
+        .images = .{ 0, 0, 0 },
+        .cells = &.{.{ .row = 0, .col = 1 }},
     },
     .{
-        .name = "CAN aborts the capture whole; the next byte prints",
+        .name = "CAN aborts the decode whole; the next byte prints",
         .input = "\x1bP0;0;0q~~\x18C",
         .lines = &.{"C"},
         .cursor = .{ 0, 1 },
-        .sixel = "",
-        .sixel_ready = false,
+        .images = .{ 0, 0, 0 },
     },
     .{
         .name = "an ESC that does not complete ST aborts and the escape final runs",
         .input = "\x1bP0;0;0q~~\x1bED",
         .lines = &.{ "", "D" },
         .cursor = .{ 1, 1 },
-        .sixel = "",
-        .sixel_ready = false,
+        .images = .{ 0, 0, 0 },
     },
 };
 
 test "terminal corpus: DCS/sixel intake and the image-sequence rule (M85a #1813)" {
     try runAll(&sixel_cases);
+}
+
+// ---------------------------------------------------------------------------
+// M85b (#1814) — image placement. Cell-native (the M85a pick): an image is
+// a block of image cells from the cursor, ceil(w / cell_w) x ceil(h /
+// cell_h) at the corpus's 8x16 cell, and every grid operation treats those
+// cells like text cells. `"1;1;W;H` raster attributes size an image without
+// drawing it (a transparent W x H), which keeps the rows readable.
+// ---------------------------------------------------------------------------
+
+const image_cases = [_]Case{
+    .{
+        .name = "default placement: a 16x32 image covers 2x2 cells; cursor at the left margin below",
+        .input = sx("\"1;1;16;32#1;2;100;0;0~"),
+        .lines = &.{ "  ", "  ", "" },
+        .cursor = .{ 2, 0 },
+        .used = 3,
+        .images = .{ 1, 0, 0 },
+        .cells = &.{
+            .{ .row = 0, .col = 0, .tile = .{ 0, 0 } },
+            .{ .row = 0, .col = 1, .tile = .{ 1, 0 } },
+            .{ .row = 1, .col = 0, .tile = .{ 0, 1 } },
+            .{ .row = 1, .col = 1, .tile = .{ 1, 1 } },
+            .{ .row = 0, .col = 2 },
+            .{ .row = 2, .col = 0 },
+        },
+        .pixels = &.{
+            .{ .row = 0, .col = 0, .dx = 0, .dy = 5, .rgb = 0xff0000 },
+            .{ .row = 0, .col = 0, .dx = 0, .dy = 6, .rgb = null },
+            .{ .row = 0, .col = 0, .dx = 1, .dy = 0, .rgb = null },
+            .{ .row = 1, .col = 1, .dx = 7, .dy = 15, .rgb = null },
+        },
+    },
+    .{
+        .name = "colour registers: RGB and DEC HLS (hue 120 = red), one column each",
+        .input = sx("#1;2;0;100;0~#2;1;120;50;100~#3;2;0;0;100?~"),
+        .images = .{ 1, 0, 0 },
+        .pixels = &.{
+            .{ .row = 0, .col = 0, .dx = 0, .rgb = 0x00ff00 },
+            .{ .row = 0, .col = 0, .dx = 1, .rgb = 0xff0000 },
+            .{ .row = 0, .col = 0, .dx = 2, .rgb = null },
+            .{ .row = 0, .col = 0, .dx = 3, .rgb = 0x0000ff },
+        },
+    },
+    .{
+        .name = "the payload has no byte bound: 4.8 KiB of register definitions still places",
+        .input = sx("#1;2;100;0;0" ** 400 ++ "~"),
+        .images = .{ 1, 0, 0 },
+        .pixels = &.{.{ .row = 0, .col = 0, .rgb = 0xff0000 }},
+    },
+    .{
+        .name = "an image replaces the text cells it covers; the rest of the line keeps its text",
+        .input = "abcdef\r\x1b[3C" ++ sx("\"1;1;16;1"),
+        .lines = &.{ "abc  f", "" },
+        .cursor = .{ 1, 0 },
+        .cells = &.{
+            .{ .row = 0, .col = 2, .base = 'c' },
+            .{ .row = 0, .col = 3, .tile = .{ 0, 0 } },
+            .{ .row = 0, .col = 4, .tile = .{ 1, 0 } },
+            .{ .row = 0, .col = 5, .base = 'f' },
+        },
+    },
+    .{
+        .name = "text overwrites an image cell; the other tiles stay",
+        .input = sx("\"1;1;24;16") ++ "\x1b[1;2HX",
+        .lines = &.{" X "},
+        .cells = &.{
+            .{ .row = 0, .col = 0, .tile = .{ 0, 0 } },
+            .{ .row = 0, .col = 1, .base = 'X' },
+            .{ .row = 0, .col = 2, .tile = .{ 2, 0 } },
+        },
+    },
+    .{
+        .name = "a wide rune over an image replaces two tiles",
+        .input = sx("\"1;1;24;16") ++ "\x1b[1;1H\xe4\xb8\xad",
+        .cells = &.{
+            .{ .row = 0, .col = 0, .base = 0x4e2d },
+            .{ .row = 0, .col = 1, .base = ' ', .cont = 1 },
+            .{ .row = 0, .col = 2, .tile = .{ 2, 0 } },
+        },
+    },
+    .{
+        .name = "a combining mark after an image cell takes the no-base rule (U+FFFD)",
+        .input = sx("\"1;1;8;16") ++ "\x1b[1;2H\xcc\x81",
+        .cursor = .{ 0, 2 },
+        .cells = &.{
+            .{ .row = 0, .col = 0, .tile = .{ 0, 0 } },
+            .{ .row = 0, .col = 1, .base = 0xfffd },
+        },
+    },
+    .{
+        .name = "placing over half a wide pair blanks the orphaned half",
+        .input = "\xe4\xb8\xad\xe4\xb8\xad\x1b[1;2H" ++ sx("\"1;1;16;16"),
+        .cells = &.{
+            .{ .row = 0, .col = 0, .base = ' ' },
+            .{ .row = 0, .col = 1, .tile = .{ 0, 0 } },
+            .{ .row = 0, .col = 2, .tile = .{ 1, 0 } },
+            .{ .row = 0, .col = 3, .base = ' ' },
+        },
+    },
+    .{
+        .name = "the right margin crops an image — tiles never wrap to the next line",
+        .input = "\x1b[1;79H" ++ sx("\"1;1;32;16"),
+        .cursor = .{ 1, 0 },
+        .cells = &.{
+            .{ .row = 0, .col = 78, .tile = .{ 0, 0 } },
+            .{ .row = 0, .col = 79, .tile = .{ 1, 0 } },
+            .{ .row = 1, .col = 0 },
+        },
+    },
+    .{
+        .name = "a pending wrap places at the last column",
+        .input = &a80 ++ sx("\"1;1;16;16"),
+        .lines = &.{ &a79 ++ " ", "" },
+        .cursor = .{ 1, 0 },
+        .cells = &.{
+            .{ .row = 0, .col = 79, .tile = .{ 0, 0 } },
+            .{ .row = 1, .col = 0 },
+        },
+    },
+    .{
+        .name = "an image taller than the room below scrolls the region (sixel scrolling)",
+        // Region rows 1-3; the image starts on the region's bottom row, so
+        // each further tile row — and the cursor's move below it — scrolls.
+        .input = "\x1b[1;3rL0\r\nL1\r\nL2\r" ++ sx("\"1;1;8;32"),
+        .lines = &.{ " 2", " ", "" },
+        .cursor = .{ 2, 0 },
+        .cells = &.{
+            .{ .row = 0, .col = 0, .tile = .{ 0, 0 } },
+            .{ .row = 1, .col = 0, .tile = .{ 0, 1 } },
+            .{ .row = 2, .col = 0 },
+        },
+    },
+    .{
+        .name = "SU moves image rows up with the text (scroll with the buffer)",
+        .input = "A\r\n" ++ sx("\"1;1;8;32") ++ "B\x1b[1S",
+        .lines = &.{ " ", " ", "B" },
+        .cells = &.{
+            .{ .row = 0, .col = 0, .tile = .{ 0, 0 } },
+            .{ .row = 1, .col = 0, .tile = .{ 0, 1 } },
+            .{ .row = 2, .col = 0, .base = 'B' },
+        },
+    },
+    .{
+        .name = "IL pushes image rows down with the text",
+        .input = sx("\"1;1;8;32") ++ "\x1b[1;1H\x1b[L",
+        .cells = &.{
+            .{ .row = 0, .col = 0 },
+            .{ .row = 1, .col = 0, .tile = .{ 0, 0 } },
+            .{ .row = 2, .col = 0, .tile = .{ 0, 1 } },
+        },
+    },
+    .{
+        .name = "ED 2 erases images like text",
+        .input = sx("\"1;1;16;16") ++ "\x1b[2J",
+        .lines = &.{""},
+        .images = .{ 1, 0, 0 },
+        .cells = &.{
+            .{ .row = 0, .col = 0 },
+            .{ .row = 0, .col = 1 },
+        },
+    },
+    .{
+        .name = "ED 0 erases the image rows below the cursor, not above",
+        .input = sx("\"1;1;8;48") ++ "\x1b[2;1H\x1b[J",
+        .cells = &.{
+            .{ .row = 0, .col = 0, .tile = .{ 0, 0 } },
+            .{ .row = 1, .col = 0 },
+            .{ .row = 2, .col = 0 },
+        },
+    },
+    .{
+        .name = "EL 2 erases the image tiles on its row only",
+        .input = sx("\"1;1;8;32") ++ "\x1b[1;1H\x1b[2K",
+        .cells = &.{
+            .{ .row = 0, .col = 0 },
+            .{ .row = 1, .col = 0, .tile = .{ 0, 1 } },
+        },
+    },
+    .{
+        .name = "ECH blanks one tile in place",
+        .input = sx("\"1;1;24;16") ++ "\x1b[1;2H\x1b[X",
+        .cells = &.{
+            .{ .row = 0, .col = 0, .tile = .{ 0, 0 } },
+            .{ .row = 0, .col = 1 },
+            .{ .row = 0, .col = 2, .tile = .{ 2, 0 } },
+        },
+    },
+    .{
+        .name = "DCH pulls tiles left; ICH pushes them right",
+        .input = sx("\"1;1;24;16") ++ "\x1b[1;1H\x1b[P" ++ "\x1b[1;1H\x1b[2@",
+        .cells = &.{
+            .{ .row = 0, .col = 0 },
+            .{ .row = 0, .col = 1 },
+            .{ .row = 0, .col = 2, .tile = .{ 1, 0 } },
+            .{ .row = 0, .col = 3, .tile = .{ 2, 0 } },
+            .{ .row = 0, .col = 4 },
+        },
+    },
+    .{
+        .name = "the primary's image survives an alternate-screen round trip",
+        .input = sx("\"1;1;8;16") ++ "\x1b[?1049hx\x1b[?1049l",
+        .alt = false,
+        .images = .{ 1, 0, 0 },
+        .cells = &.{.{ .row = 0, .col = 0, .tile = .{ 0, 0 } }},
+    },
+    .{
+        .name = "one image per terminal: a second image evicts the first, whose cells go blank",
+        .input = sx("\"1;1;8;16") ++ sx("\"1;1;8;16"),
+        .cursor = .{ 2, 0 },
+        .images = .{ 2, 0, 1 },
+        .cells = &.{
+            .{ .row = 0, .col = 0 },
+            .{ .row = 1, .col = 0, .tile = .{ 0, 0 } },
+        },
+    },
+    .{
+        .name = "an alternate-screen image evicts the primary's; the primary shows a blank on return",
+        .input = sx("\"1;1;8;16") ++ "\x1b[?1049h" ++ sx("\"1;1;8;16") ++ "\x1b[?1049l",
+        .images = .{ 2, 0, 1 },
+        .cells = &.{.{ .row = 0, .col = 0 }},
+    },
+    .{
+        .name = "an image whose every cell was overwritten is not evicted — its buffer was free",
+        .input = sx("\"1;1;8;16") ++ "\x1b[1;1HX\r\n" ++ sx("\"1;1;8;16"),
+        .images = .{ 2, 0, 0 },
+        .cells = &.{
+            .{ .row = 0, .col = 0, .base = 'X' },
+            .{ .row = 1, .col = 0, .tile = .{ 0, 0 } },
+        },
+    },
+    .{
+        .name = "a refused image leaves the placed one untouched and the cursor where it was",
+        .input = sx("\"1;1;8;16") ++ sx("!97~"),
+        .cursor = .{ 1, 0 },
+        .sixel_overflow = true,
+        .images = .{ 1, 1, 0 },
+        .cells = &.{
+            .{ .row = 0, .col = 0, .tile = .{ 0, 0 } },
+            .{ .row = 1, .col = 0 },
+        },
+    },
+    .{
+        .name = "a raster declaration past the bound is refused whole",
+        .input = sx("\"1;1;97;1~"),
+        .cursor = .{ 0, 0 },
+        .sixel_overflow = true,
+        .images = .{ 0, 1, 0 },
+        .cells = &.{.{ .row = 0, .col = 0 }},
+    },
+};
+
+test "terminal corpus: image placement (M85b #1814)" {
+    try runAll(&image_cases);
+}
+
+test "terminal corpus: resize never wraps an image cell; widening does not bring it back (M85b #1814)" {
+    var s: t.Screen = .{};
+    // A 3-cell image at columns 6..8, then a text line under it.
+    s.feed("\x1b[1;7H" ++ sx("\"1;1;24;16") ++ "abcdefghijk");
+    try std.testing.expectEqual(@as(u3, 0), s.cellAt(0, 5).img);
+    try std.testing.expect(s.cellAt(0, 8).img != 0);
+    _ = s.setCols(8);
+    // Text re-wraps as ever; the image row keeps columns 6 and 7 and drops
+    // the tile past the new margin instead of wrapping it onto a new row.
+    try std.testing.expectEqualStrings("        ", s.line(0));
+    try std.testing.expectEqual(@as(u7, 0), s.cellAt(0, 6).tx);
+    try std.testing.expect(s.cellAt(0, 6).img != 0);
+    try std.testing.expectEqual(@as(u7, 1), s.cellAt(0, 7).tx);
+    try std.testing.expectEqualStrings("abcdefgh", s.line(1));
+    try std.testing.expectEqualStrings("ijk", s.line(2));
+    try std.testing.expect(s.imageTile(0, 7) != null);
+    _ = s.setCols(80);
+    try std.testing.expect(s.cellAt(0, 7).img != 0);
+    try std.testing.expectEqual(@as(u3, 0), s.cellAt(0, 8).img);
+    try std.testing.expectEqual(@as(usize, 8), s.line(0).len);
 }
 
 // ---------------------------------------------------------------------------
