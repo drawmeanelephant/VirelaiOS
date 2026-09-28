@@ -162,6 +162,7 @@ type Editor struct {
 	csiParam int    // accumulated CSI parameter
 	csiGotP  bool   // saw at least one parameter digit
 	utf8Need uint8  // continuation bytes left in the current input rune
+	utf8Drop uint8  // continuation bytes left in a rune rejected at a byte cap
 	pending  []byte // unread input after a submit cut a chunk short
 	// reverse-i-search (M45 SH3): while searching, every byte feeds the
 	// query matcher instead of the line, and the draft line is held so a
@@ -281,6 +282,12 @@ func (e *Editor) Feed(chunk []byte) ([]byte, EditEvent) {
 		// `Ctrl+R query CR CR` accept the recall and then submit it.
 		var out []byte
 		for i := 0; i < len(chunk); i++ {
+			if dropped, ring := e.discardOverflowingRune(chunk[i], maxSearchQuery-len(e.query)); dropped {
+				if ring {
+					out = append(out, 0x07)
+				}
+				continue
+			}
 			incomplete := e.trackInputRune(chunk[i])
 			w, finished := e.searchByte(chunk[i])
 			if incomplete {
@@ -301,6 +308,12 @@ func (e *Editor) Feed(chunk []byte) ([]byte, EditEvent) {
 		b := chunk[i]
 		incomplete := false
 		if e.state != edCSI {
+			if dropped, ring := e.discardOverflowingRune(b, maxLineBytes-len(e.buf)); dropped {
+				if ring {
+					out = append(out, 0x07)
+				}
+				continue
+			}
 			incomplete = e.trackInputRune(b)
 		} else {
 			e.utf8Need = 0
@@ -425,6 +438,36 @@ func (e *Editor) trackInputRune(b byte) bool {
 		return false
 	}
 	return true
+}
+
+// discardOverflowingRune rejects a multibyte rune before its first byte can
+// leave a partial UTF-8 sequence in a capped line or search query. Once a
+// rune is rejected, its continuation bytes are consumed across Feed calls.
+func (e *Editor) discardOverflowingRune(b byte, remaining int) (discarded, ring bool) {
+	if e.utf8Drop > 0 {
+		if b&0xC0 == 0x80 {
+			e.utf8Drop--
+			return true, false
+		}
+		e.utf8Drop = 0
+	}
+
+	runeBytes := 1
+	switch {
+	case b >= 0xC2 && b <= 0xDF:
+		runeBytes = 2
+	case b >= 0xE0 && b <= 0xEF:
+		runeBytes = 3
+	case b >= 0xF0 && b <= 0xF4:
+		runeBytes = 4
+	default:
+		return false, false
+	}
+	if runeBytes <= remaining {
+		return false, false
+	}
+	e.utf8Drop = uint8(runeBytes - 1)
+	return true, true
 }
 
 // Pending reports whether the editor is still holding input that arrived

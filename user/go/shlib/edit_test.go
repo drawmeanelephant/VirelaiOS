@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // feedE pushes bytes through a fresh editor and returns the tty output.
@@ -345,6 +346,41 @@ func TestEditorLineCap(t *testing.T) {
 	}
 	if !strings.Contains(out, "\x07") {
 		t.Fatalf("capped completion = %q, want a bell", out)
+	}
+}
+
+func TestEditorRejectsUnicodeRuneAtomicallyAtLineCap(t *testing.T) {
+	e := NewEditor("gosh> ", &History{})
+	e.buf = []byte(strings.Repeat("x", maxLineBytes-1))
+	e.cur = len(e.buf)
+
+	out, _ := e.Feed([]byte{0xC3})
+	if !strings.Contains(string(out), "\x07") {
+		t.Fatalf("overflowing rune lead = %q, want a bell", out)
+	}
+	e.Feed([]byte{0xB6})
+	if len(e.buf) != maxLineBytes-1 || !utf8.Valid(e.buf) {
+		t.Fatalf("rejected rune changed line to len=%d valid=%v", len(e.buf), utf8.Valid(e.buf))
+	}
+
+	feedE(e, "y")
+	if len(e.buf) != maxLineBytes || e.buf[len(e.buf)-1] != 'y' {
+		t.Fatalf("input after rejected rune = len %d, tail %q; want ASCII y accepted", len(e.buf), e.buf[len(e.buf)-1:])
+	}
+}
+
+func TestSearchRejectsUnicodeRuneAtomicallyAtQueryCap(t *testing.T) {
+	e := NewEditor("gosh> ", &History{})
+	e.searching = true
+	e.query = []byte(strings.Repeat("a", maxSearchQuery-1))
+
+	out, _ := e.Feed([]byte{0xC3})
+	if !strings.Contains(string(out), "\x07") {
+		t.Fatalf("overflowing query rune lead = %q, want a bell", out)
+	}
+	e.Feed([]byte{0xB6})
+	if len(e.query) != maxSearchQuery-1 || !utf8.Valid(e.query) {
+		t.Fatalf("rejected query rune changed query to len=%d valid=%v", len(e.query), utf8.Valid(e.query))
 	}
 }
 
