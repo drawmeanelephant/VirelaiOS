@@ -248,6 +248,9 @@ func main() {
 	if !restoreWitnessMode && !runWindowPhase() {
 		vi.Exit(7)
 	}
+	// Explicit operator opt-in only. A normal/default boot never listens.
+	// The RFB worker owns TCP; the seat alone owns paint and input policy.
+	remote := startRFB(vi.Args(), scan)
 
 	// M62e: restore `.tabs` v2 from /host/SESSION.TABS if a prior boot
 	// wrote it. Missing is a no-op; corrupt fails closed (empty strip).
@@ -279,6 +282,11 @@ func main() {
 	presents, ticks := 0, 0
 	for events := 0; !demoMode || (events < maxEvents && ticks < tickLimit); {
 		serviceRPC()
+		if remote != nil {
+			if remote.drainInput() {
+				remote = nil
+			}
+		}
 		e, ok := vi.PollEvent()
 		if !ok {
 			vi.Sleep(1)
@@ -300,7 +308,17 @@ func main() {
 				return false
 			}
 			ticks++
+			if remote != nil {
+				remote.frameMu.Lock()
+			}
+			before := presents
 			compositeTick(scan, uint64(ticks), &presents)
+			if remote != nil {
+				if presents > before {
+					remote.presented++
+				}
+				remote.frameMu.Unlock()
+			}
 			if !demoMode && ticks == maxTicks+1 {
 				// The live-persistence proof: printed only once the loop has
 				// ACTUALLY ticked past the demo ceiling, carrying how many

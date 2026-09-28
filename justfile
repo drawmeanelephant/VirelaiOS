@@ -108,6 +108,10 @@ go-sshd:
 go-ssh:
     bash tools/go/build-ssh.sh
 
+# Build the independent host RFB probe for the M84c hermetic live gate.
+go-rfbprobe:
+    bash tools/go/rfbprobe/build.sh
+
 # Compile the AArch64 UEFI application and kernel image (class A — zig build)
 build:
     zig build
