@@ -213,10 +213,10 @@ func TestKnownKeysMirrorTheKernelTable(t *testing.T) {
 func TestDisplaySurfacesAbsentKnownKeysWithTheValueInForce(t *testing.T) {
 	f := File{Rows: []Setting{{"hostname", "box"}}, State: StateOK}
 	d := f.Display()
-	// The file row plus the kernel keys and accepted-unseeded layout are
+	// The file row plus the kernel keys and accepted-unseeded rows are
 	// filled out, never duplicated.
-	if len(d) != len(KnownKeys)+len(KeyboardLayoutKeys) {
-		t.Fatalf("display rows = %d, want %d", len(d), len(KnownKeys)+len(KeyboardLayoutKeys))
+	if len(d) != len(KnownKeys)+len(KeyboardLayoutKeys)+len(IdleKeys) {
+		t.Fatalf("display rows = %d, want %d", len(d), len(KnownKeys)+len(KeyboardLayoutKeys)+len(IdleKeys))
 	}
 	if v, ok := Get(d, "wm"); !ok || v != "gotabwm" {
 		t.Fatalf("wm row = %q ok=%v, want the compiled default", v, ok)
@@ -226,6 +226,9 @@ func TestDisplaySurfacesAbsentKnownKeysWithTheValueInForce(t *testing.T) {
 	}
 	if v, ok := Get(d, "keyboard_layout"); !ok || v != "us" {
 		t.Fatalf("keyboard_layout row = %q ok=%v, want the compiled default", v, ok)
+	}
+	if v, ok := Get(d, "idle_minutes"); !ok || v != "5" {
+		t.Fatalf("idle_minutes row = %q ok=%v, want the compiled default", v, ok)
 	}
 	if v, ok := Get(d, "hostname"); !ok || v != "box" {
 		t.Fatalf("file row lost: %q ok=%v", v, ok)
@@ -258,6 +261,7 @@ func TestDefaultIncludesAcceptedUnseededKeys(t *testing.T) {
 		"palette_accent":  "3b82f6",
 		"font_size":       "medium",
 		"keyboard_layout": "us",
+		"idle_minutes":    "5",
 	} {
 		if got, ok := Default(key); !ok || got != want {
 			t.Errorf("Default(%q) = (%q, %v), want (%q, true)", key, got, ok, want)
@@ -533,19 +537,20 @@ func TestKeyboardLayoutSettingVocabulary(t *testing.T) {
 	}
 }
 
-func TestKeyboardLayoutFitsFullLegacyTable(t *testing.T) {
-	rows := make([]Setting, 0, 16)
+func TestOptionalRowsRespectFullTable(t *testing.T) {
+	rows := make([]Setting, 0, 15)
 	for _, k := range KnownKeys {
 		rows = append(rows, Setting{Key: k.Name, Val: k.Default})
 	}
-	for i := 0; i < 8; i++ {
+	for i := 0; i < 7; i++ {
 		rows = append(rows, Setting{Key: "extension" + string(rune('a'+i)), Val: "v"})
 	}
 	display := (File{Rows: rows, State: StateOK}).Display()
-	if len(rows) != 16 || len(display) != MaxKeys {
-		t.Fatalf("rows = %d, want 16 pre-layout and 17 with layout", len(rows))
+	if len(rows) != 15 || len(display) != MaxKeys {
+		t.Fatalf("rows = %d, want 15 pre-optional and 17 with layout+idle", len(rows))
 	}
 	Set(display, "keyboard_layout", "de")
+	Set(display, "idle_minutes", "7")
 	decoded, ok := Parse(Render(display))
 	if !ok || len(decoded) != MaxKeys {
 		t.Fatalf("layout was dropped at the new cap: rows=%d ok=%v", len(decoded), ok)
@@ -553,7 +558,53 @@ func TestKeyboardLayoutFitsFullLegacyTable(t *testing.T) {
 	if got, _ := Get(decoded, "keyboard_layout"); got != "de" {
 		t.Fatalf("keyboard_layout = %q after round-trip, want de", got)
 	}
+	if got, _ := Get(decoded, "idle_minutes"); got != "7" {
+		t.Fatalf("idle_minutes = %q after round-trip, want 7", got)
+	}
 	if rc := (File{Rows: append(display, Setting{Key: "overflow", Val: "v"}), State: StateOK}).Save(); rc != SaveFull {
 		t.Fatalf("over-cap panel save = %d, want SaveFull", rc)
+	}
+
+	// Before idle_minutes existed, a 16-row table could still be saved
+	// from GOSET after materializing keyboard_layout. Keep that contract:
+	// the idle default is implicit when there is no free kernel slot.
+	legacy := append(append([]Setting(nil), rows...), Setting{Key: "extensionh", Val: "v"})
+	full := (File{Rows: legacy, State: StateOK}).Display()
+	if len(legacy) != 16 || len(full) != MaxKeys {
+		t.Fatalf("legacy table rows = %d, display = %d, want 16 and 17", len(legacy), len(full))
+	}
+	if _, found := Get(full, "idle_minutes"); found {
+		t.Fatal("full table materialized idle_minutes beyond the kernel cap")
+	}
+	if _, found := Get(full, "keyboard_layout"); !found {
+		t.Fatal("full table lost the preexisting layout row")
+	}
+}
+
+func TestIdleMinutesAcceptedUnseededAndBounded(t *testing.T) {
+	if _, known := Known("idle_minutes"); known {
+		t.Fatal("the kernel does not seed idle_minutes")
+	}
+	if !Editable("idle_minutes") {
+		t.Fatal("GOSET must be able to edit idle_minutes")
+	}
+	for _, val := range []string{"1", "5", "120", "007"} {
+		if _, ok := IdleMinutes(val); !ok {
+			t.Errorf("valid minutes %q refused", val)
+		}
+	}
+	for _, val := range []string{"", "0", "121", "-1", "1.5", "1x", "1000"} {
+		if _, ok := IdleMinutes(val); ok {
+			t.Errorf("invalid minutes %q accepted", val)
+		}
+	}
+	f := File{Rows: []Setting{{Key: "idle_minutes", Val: "7"}}, State: StateOK}
+	if v, ok := f.Effective("idle_minutes"); !ok || v != "7" {
+		t.Fatalf("persisted idle_minutes = %q ok=%v", v, ok)
+	}
+	if rows, ok := Parse(Render(f.Display())); !ok {
+		t.Fatal("GOSET display cannot round-trip via the safe codec")
+	} else if v, found := Get(rows, "idle_minutes"); !found || v != "7" {
+		t.Fatalf("round-trip idle_minutes = %q found=%v", v, found)
 	}
 }

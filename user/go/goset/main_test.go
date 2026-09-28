@@ -65,11 +65,14 @@ func TestPanelStartsWithTheTableInForce(t *testing.T) {
 	if a.mode() != "rw" {
 		t.Fatalf("mode = %q, want rw", a.mode())
 	}
-	if got := a.summary(); got != "keys=9 wm=gotabwm theme=dark" {
+	if got := a.summary(); got != "keys=10 wm=gotabwm theme=dark" {
 		t.Fatalf("summary = %q", got)
 	}
 	if v, ok := settings.Get(a.disp, "keyboard_layout"); !ok || v != "us" {
 		t.Fatalf("keyboard_layout = %q ok=%v, want the compiled default", v, ok)
+	}
+	if v, ok := settings.Get(a.disp, "idle_minutes"); !ok || v != "5" {
+		t.Fatalf("idle_minutes = %q ok=%v, want the compiled default", v, ok)
 	}
 	if len(a.labels()) != len(a.disp) {
 		t.Fatalf("labels = %d, rows = %d", len(a.labels()), len(a.disp))
@@ -90,7 +93,7 @@ func TestPanelAppliesATypedRowOnlyForKnownKeys(t *testing.T) {
 	if v, _ := settings.Get(a.disp, "wm"); v != "tabwm" {
 		t.Fatalf("wm = %q, want tabwm", v)
 	}
-	if got := a.summary(); got != "keys=9 wm=tabwm theme=dark" {
+	if got := a.summary(); got != "keys=10 wm=tabwm theme=dark" {
 		t.Fatalf("summary = %q", got)
 	}
 
@@ -223,15 +226,15 @@ func rowOf(t *testing.T, a *panel, key string) int {
 	return -1
 }
 
-// M73m (#1662): the palette surface. A default panel is UNCHANGED (the eight
-// kernel rows plus keyboard_layout); choosing `custom` reveals the three
+// M73m (#1662): the palette surface. A default panel has the eight kernel
+// rows plus keyboard_layout and idle_minutes; choosing `custom` reveals three
 // colour rows with the compiled dark defaults, they are typed-editable as
 // six hex digits, and a malformed value never reaches the table.
 func TestPaletteSurfaceRevealsTheColoursOnCustom(t *testing.T) {
 	a := newPanel(nil)
-	if len(a.disp) != len(settings.KnownKeys)+len(settings.KeyboardLayoutKeys) {
-		t.Fatalf("default rows = %d, want %d kernel+layout rows (palette rows are NOT default rows)",
-			len(a.disp), len(settings.KnownKeys)+len(settings.KeyboardLayoutKeys))
+	if len(a.disp) != len(settings.KnownKeys)+len(settings.KeyboardLayoutKeys)+len(settings.IdleKeys) {
+		t.Fatalf("default rows = %d, want %d kernel+layout+idle rows (palette rows are NOT default rows)",
+			len(a.disp), len(settings.KnownKeys)+len(settings.KeyboardLayoutKeys)+len(settings.IdleKeys))
 	}
 	for _, k := range settings.PaletteKeys {
 		if _, ok := settings.Get(a.disp, k.Name); ok {
@@ -246,7 +249,7 @@ func TestPaletteSurfaceRevealsTheColoursOnCustom(t *testing.T) {
 			t.Fatalf("%s row = %q ok=%v, want the default %q", k.Name, v, ok, k.Default)
 		}
 	}
-	if got := a.summary(); got != "keys=12 wm=gotabwm theme=custom" {
+	if got := a.summary(); got != "keys=13 wm=gotabwm theme=custom" {
 		t.Fatalf("summary = %q", got)
 	}
 	// The palette rows are first-class: never the "(kept)" marker (that is
@@ -284,15 +287,15 @@ func TestPaletteSurfaceRevealsTheColoursOnCustom(t *testing.T) {
 	}
 }
 
-// M80i (#1725): the font_size surface. A default panel is UNCHANGED (the
-// kernel's eight rows plus keyboard_layout); font_size is typed input at any time
+// M80i (#1725): the font_size surface. A default panel has the kernel's
+// eight rows plus keyboard_layout and idle_minutes; font_size is typed input at any time
 // and cycles small -> medium -> large once the row exists. The panel never
 // fabricates the row: an ABSENT key is the boot look (text small + grid
 // medium), which no single stored value can represent.
 func TestFontSurfaceCyclesWithoutMovingKeys(t *testing.T) {
 	a := newPanel(nil)
-	if len(a.disp) != len(settings.KnownKeys)+len(settings.KeyboardLayoutKeys) {
-		t.Fatalf("default rows = %d, want %d (font_size is NOT a default row)", len(a.disp), len(settings.KnownKeys)+len(settings.KeyboardLayoutKeys))
+	if len(a.disp) != len(settings.KnownKeys)+len(settings.KeyboardLayoutKeys)+len(settings.IdleKeys) {
+		t.Fatalf("default rows = %d, want %d (font_size is NOT a default row)", len(a.disp), len(settings.KnownKeys)+len(settings.KeyboardLayoutKeys)+len(settings.IdleKeys))
 	}
 	// Typed input applies (the accepted-not-seeded pattern)...
 	a.input.SetValue("font_size=large")
@@ -302,7 +305,7 @@ func TestFontSurfaceCyclesWithoutMovingKeys(t *testing.T) {
 	if v, _ := settings.Get(a.disp, "font_size"); v != "large" {
 		t.Fatalf("font_size = %q, want large", v)
 	}
-	if got := a.summary(); got != "keys=10 wm=gotabwm theme=dark" {
+	if got := a.summary(); got != "keys=11 wm=gotabwm theme=dark" {
 		t.Fatalf("summary = %q (the typed row is real, so the count grew)", got)
 	}
 	// ...the row is first-class (no "(kept)") and cyclable.
@@ -327,6 +330,32 @@ func TestFontSurfaceCyclesWithoutMovingKeys(t *testing.T) {
 	a.cycle(1)
 	if v, _ := settings.Get(a.disp, "font_size"); v != "small" {
 		t.Fatalf("font_size = %q from outside the vocabulary, want small (the top)", v)
+	}
+}
+
+func TestIdleMinutesRowValidatesBeforeSave(t *testing.T) {
+	a := newPanel(nil)
+	i := rowOf(t, a, "idle_minutes")
+	if a.disp[i].Val != "5" {
+		t.Fatalf("initial idle minutes = %q", a.disp[i].Val)
+	}
+	if strings.Contains(a.labels()[i], "(kept)") {
+		t.Fatalf("idle row is not editable: %q", a.labels()[i])
+	}
+	for _, val := range []string{"0", "121", "1.5"} {
+		a.input.SetValue("idle_minutes=" + val)
+		a.applyInput()
+		if got, _ := settings.Get(a.disp, "idle_minutes"); got != "5" {
+			t.Fatalf("invalid %q changed idle_minutes to %q", val, got)
+		}
+	}
+	a.input.SetValue("idle_minutes=7")
+	a.applyInput()
+	if got, _ := settings.Get(a.disp, "idle_minutes"); got != "7" {
+		t.Fatalf("typed idle_minutes = %q, want 7", got)
+	}
+	if got := changedSettingKeys(settings.File{State: settings.StateMissing}, settings.File{Rows: a.disp, State: settings.StateOK}); len(got) != 1 || got[0] != "idle_minutes" {
+		t.Fatalf("change notification keys = %v, want idle_minutes", got)
 	}
 }
 

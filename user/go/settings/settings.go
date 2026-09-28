@@ -13,7 +13,7 @@
 //
 // KnownKeys mirrors the kernel's seeded table (kernel/src/settings.zig). It is
 // a MIRROR, not a second schema: the panel offers every key the kernel seeds,
-// plus its explicitly accepted-unseeded palette/font/layout rows. The mirror
+// plus its explicitly accepted-unseeded palette/font/layout/idle rows. The mirror
 // is pinned against the kernel source by a host test, so a key added there and
 // not here is a failing test rather than a silent drift.
 //
@@ -103,7 +103,7 @@ var KnownKeys = []Key{
 // `theme=custom` resolves to at paint time (the kernel's palette_fg /
 // palette_bg / palette_accent). They are NOT KnownKeys — the kernel does not
 // seed them either — so the mirror table above stays exactly the kernel's,
-// and a default panel stays at eight kernel rows plus keyboard_layout. The
+// and a default panel stays at the kernel rows plus the layout/idle rows. The
 // panel reveals them as rows the moment `custom` is chosen and accepts them
 // as typed input at any time.
 // Defaults mirror kernel/src/settings.zig *_default (pinned by host test).
@@ -118,7 +118,7 @@ var PaletteKeys = []Key{
 // terminal GRID's 7x13/8x16/10x21 — the kernel's apply_font_size drives
 // both). Not KnownKeys, for the same reason as the palette rows: the
 // kernel does not seed it either, so a default panel stays at eight kernel
-// rows plus keyboard_layout and a fresh share's SETTINGS.TXT stays
+// rows plus keyboard_layout/idle_minutes and a fresh share's SETTINGS.TXT stays
 // byte-identical. The panel
 // accepts it as typed input at any time and cycles it (small -> medium
 // -> large) once the row exists; it never fabricates the row, because an
@@ -136,6 +136,32 @@ var FontKeys = []Key{
 var KeyboardLayoutKeys = []Key{
 	{Name: "keyboard_layout", Default: string(layout.US), Vocab: layout.Values()},
 }
+
+// IdleKeys is the seat's accepted-but-unseeded idle policy. An absent row
+// leaves the kernel's eight-row table unchanged; GOSET still shows the
+// effective five-minute default. The seat alone interprets the value.
+var IdleKeys = []Key{
+	{Name: "idle_minutes", Default: "5"},
+}
+
+// IdleMinutes accepts whole minutes from 1 to 120. Invalid persisted values
+// cannot make the seat dim immediately or turn the curtain into a security
+// boundary; the seat uses the compiled default instead.
+func IdleMinutes(value string) (uint64, bool) {
+	if value == "" || len(value) > 3 {
+		return 0, false
+	}
+	var minutes uint64
+	for i := 0; i < len(value); i++ {
+		if value[i] < '0' || value[i] > '9' {
+			return 0, false
+		}
+		minutes = minutes*10 + uint64(value[i]-'0')
+	}
+	return minutes, minutes >= 1 && minutes <= 120
+}
+
+func IsIdleMinutesKey(key string) bool { return key == "idle_minutes" }
 
 // IsKeyboardLayoutKey reports whether key is the M83d2 layout selector.
 func IsKeyboardLayoutKey(key string) bool {
@@ -181,11 +207,12 @@ func IsPaletteKey(key string) bool {
 }
 
 // Editable is the panel's write gate: a kernel-table key, one of the
-// custom-palette keys, font_size (M80i), or keyboard_layout (M83d2).
+// custom-palette keys, font_size (M80i), keyboard_layout (M83d2), or
+// idle_minutes (M83f).
 // Anything else is named and dropped, never written.
 func Editable(key string) bool {
 	_, known := Known(key)
-	return known || IsPaletteKey(key) || IsFontKey(key) || IsKeyboardLayoutKey(key)
+	return known || IsPaletteKey(key) || IsFontKey(key) || IsKeyboardLayoutKey(key) || IsIdleMinutesKey(key)
 }
 
 // ValidColour is the palette value grammar, mirrored from the kernel's
@@ -246,6 +273,11 @@ func Default(key string) (string, bool) {
 		return k.Default, true
 	}
 	for _, k := range KeyboardLayoutKeys {
+		if k.Name == key {
+			return k.Default, true
+		}
+	}
+	for _, k := range IdleKeys {
 		if k.Name == key {
 			return k.Default, true
 		}
@@ -393,13 +425,12 @@ func (f File) Effective(key string) (string, bool) {
 	return Default(key)
 }
 
-// Display returns the rows the panel shows: the decoded rows, plus one row per
-// KNOWN key the file does not carry, holding the value actually in force. The
-// edit surface is therefore exactly what the seat honors — a key absent from
-// the file is still visible and still settable. Unknown keys present in the
-// file are preserved untouched (see Set key), never offered for editing.
+// Display returns the decoded rows, then the missing compiled-table and
+// visible accepted-but-unseeded rows with their effective defaults. An
+// already-full table keeps the idle default implicit to respect MaxKeys.
+// Unknown file rows are preserved untouched, not offered for editing.
 func (f File) Display() []Setting {
-	out := make([]Setting, 0, len(f.Rows)+len(KnownKeys)+len(KeyboardLayoutKeys))
+	out := make([]Setting, 0, len(f.Rows)+len(KnownKeys)+len(KeyboardLayoutKeys)+len(IdleKeys))
 	out = append(out, f.Rows...)
 	for _, k := range KnownKeys {
 		if _, ok := Get(f.Rows, k.Name); !ok {
@@ -408,6 +439,17 @@ func (f File) Display() []Setting {
 	}
 	for _, k := range KeyboardLayoutKeys {
 		if _, ok := Get(f.Rows, k.Name); !ok {
+			out = append(out, Setting{Key: k.Name, Val: k.Default})
+		}
+	}
+	for _, k := range IdleKeys {
+		if _, ok := Get(f.Rows, k.Name); !ok {
+			// A legacy table may already have 16 rows; its visible layout
+			// row fills the kernel's 17-slot cap. Do not make an unchanged
+			// GOSET save fail merely by displaying one more default.
+			if len(out) >= MaxKeys {
+				break
+			}
 			out = append(out, Setting{Key: k.Name, Val: k.Default})
 		}
 	}
