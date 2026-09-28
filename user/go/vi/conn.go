@@ -29,7 +29,7 @@ import (
 const (
 	// TCPPayloadMax is tcp.payload_max (kernel/src/tcp.zig): the largest
 	// single segment the seam accepts. Send chunks at this size.
-	TCPPayloadMax = 192
+	TCPPayloadMax = 1460
 	// DefaultRecvBudgetNs is the bounded-wait ceiling used when no recv
 	// deadline is set. An unbounded wait is deliberately not expressible.
 	DefaultRecvBudgetNs = 30_000_000_000

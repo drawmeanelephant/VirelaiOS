@@ -12,9 +12,8 @@ import (
 )
 
 // maxRequestBytes bounds the request line + headers buffered before the
-// connection is refused. The kernel's TCP seam does not reassemble and one
-// payload is 192 bytes (vi.TCPPayloadMax), so a header burst is capped here
-// rather than grown.
+// connection is refused. The kernel's TCP seam does not reassemble; this
+// application limit stays independent of the larger single-segment bound.
 const maxRequestBytes = 1024
 
 // sharePath is the one file this server publishes, and shareTarget is the only

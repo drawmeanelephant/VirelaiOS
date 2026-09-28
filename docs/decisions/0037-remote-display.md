@@ -85,8 +85,9 @@ Linux VM are named in §"Blocked steps" and stay CI-verified.
   (`kernel/src/tcp.zig:29`). A guest process cannot TCP-connect to the
   guest's own listen port. TCP-in-TCP tunneling inside the guest is
   impossible — this decides the tunnel shape in D6.
-- Bounds: `payload_max = 192`, one RX segment, no reassembly
-  (`kernel/src/tcp.zig:59-67`). RFB's client messages are small; fine.
+- Bounds: M84e raised `payload_max` from 192 to 1460 (one Ethernet MTU)
+  after measuring the first-frame ACK latency. There is still one RX
+  segment and no reassembly (`kernel/src/tcp.zig:59-69`).
 
 ### S4. Reachability: gates yes, real iron no (recorded negative)
 

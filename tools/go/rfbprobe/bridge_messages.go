@@ -9,7 +9,7 @@ import (
 
 // The guest picks the first supported image encoding a viewer advertises.
 // Screen Sharing can list Raw before hextile/RRE; that would send a 3.7 MB
-// first frame through the runner's paced 192-byte TCP segments. Reorder only
+// first frame through the runner's paced TCP segments. Reorder only
 // encodings the viewer itself advertised, and leave every other message
 // byte-for-byte intact. No pixel format or input bytes are logged.
 func forwardViewerMessages(viewer io.Reader, guest io.Writer) (int64, error) {

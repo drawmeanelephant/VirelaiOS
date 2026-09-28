@@ -22,8 +22,9 @@ usage: bash tools/rfb-tape.sh [--dry-run] [--no-viewer]
 
 Boots the seat with --rfb-hermetic, bridges one viewer from 127.0.0.1:$PORT
 (RFB_TAPE_PORT, default 5901) into the guest, and opens vnc://127.0.0.1:$PORT
-in macOS Screen Sharing. --no-viewer waits up to 120 s for a viewer started
-by hand instead. Enter the printed one-shot password in Screen Sharing.
+in macOS Screen Sharing. --no-viewer leaves viewer launch to the operator.
+Enter the printed one-shot password in Screen Sharing, then disconnect
+after the desktop appears so the tape can record session teardown.
 RFB_TAPE_OUT selects the artifact directory. The bridge serves one
 authenticated loopback viewer (up to three pre-auth attempts); the guest
 wire remains None.
@@ -81,6 +82,9 @@ dui focus 0
 exec GOCALC.ELF
 EOF
 
+# A full-screen hextile update took nearly five minutes on the measured
+# stop-and-wait guest TCP seam. Leave room for human password entry and
+# the viewer's clean disconnect; this is a class-C tape, not a gate.
 mkfifo -m 600 "$OUT/password.pipe"
 host/vm-runner/.build/release/VMRunner \
     --overlay-base artifacts/disk.img --vars "$OUT/vars.bin" \
@@ -94,7 +98,7 @@ host/vm-runner/.build/release/VMRunner \
     --net-tcp-connect-after 'gocalc: present' \
     --script "$OUT/boot.txt" \
     --script2 "$OUT/calc.txt" --script2-after 'gotabwm: win focus' \
-    --script-expect 'gotabwm: rfb done' --script-expect-tail 4 --timeout 300 \
+    --script-expect 'gotabwm: rfb done' --script-expect-tail 4 --timeout 600 \
     >"$OUT/runner.log" 2>&1 &
 RUNNER=$!
 

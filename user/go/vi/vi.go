@@ -1159,7 +1159,7 @@ func TCPConnect(ip [4]byte, port uint16) int64 {
 	return svc2(SlotTCPConnect, uintptr(word), uintptr(port))
 }
 
-// TCPSend writes b to the socket (at most the kernel's 192-byte payload_max
+// TCPSend writes b to the socket (at most the kernel's 1460-byte payload_max
 // per call; a caller with more must loop — see the browser's sendAll).
 func TCPSend(b []byte) (int, int64) {
 	if len(b) == 0 {

@@ -17,7 +17,7 @@ coordinates. Those came from the Calc/widget layout and seat launcher code,
 and are pinned by `live-rfb.spec`. It also did not describe the runner's
 single-slot TCP pacing; the hermetic stream adapter handles that separately.
 The seat accepts one viewer per explicit invocation, with no reconnect.
-Full raw frames take roughly 19,200 paced TCP segments and are not intended
+Full raw frames take roughly 2,525 paced TCP segments and are not intended
 as an interactive display on this transport. Each unacknowledged segment
 times out after 30 s of guest wall clock (`stalled`); a viewer whose RST or
 FIN arrives while a segment waits drops at once (`peer`).

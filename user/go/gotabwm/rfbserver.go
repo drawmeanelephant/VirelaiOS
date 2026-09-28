@@ -46,6 +46,7 @@ const (
 var (
 	errRFBSendStalled = errors.New("rfb: TCP send stalled")
 	errRFBSocket      = errors.New("rfb: TCP readiness refused")
+	errRFBInputFlood  = errors.New("rfb: input during send overflowed")
 )
 
 type remoteInput struct {
@@ -230,6 +231,8 @@ func rfbDropReason(err error) string {
 		return rfbDropPeer
 	case errors.Is(err, errRFBSendStalled):
 		return rfbDropStalled
+	case errors.Is(err, errRFBInputFlood):
+		return rfbDropFlood
 	case errors.Is(err, errRFBSocket):
 		return rfbDropSocket
 	case err != nil && err.Error() == "ETIMEDOUT": // vi keeps its errno type private
@@ -359,16 +362,18 @@ type rfbSocket interface {
 
 // The codec uses io.Reader/io.Writer; vi.Conn intentionally does not claim
 // POSIX net.Conn semantics. TCP's one pending segment must be ACKed before
-// sending the next <=192 B chunk. The stall budget bounds each unACKed
-// segment, not a whole update. It is wall clock, not polls: one worker
-// tick can take seconds while the seat is idle. A raw full frame needs
-// ~19,200 such ACKs and is not a practical interactive mode on this
-// hermetic transport.
+// sending the next <=1460 B chunk. The stall budget bounds each unACKed
+// segment, not a whole update. Slot 76 probes readiness but does NOT drain
+// incoming ACKs; slot 32 does. While a send waits, drain via TCPRecv and
+// buffer any viewer input for Read. The quiet session loop still sleeps.
+// A raw full frame needs ~2,525 ACKs, so compression remains necessary.
 type rfbStream struct {
-	conn    rfbSocket
-	ready   func() (int64, int64)
-	idle    func()
-	stallNs int64
+	conn     rfbSocket
+	ready    func() (int64, int64)
+	idle     func()
+	sendIdle func()
+	drain    func([]byte) (int, int64)
+	stallNs  int64
 	// Viewer bytes taken while a send waited on its ACK, owed to Read.
 	held  [2 * vi.TCPPayloadMax]byte
 	heldN int
@@ -376,6 +381,7 @@ type rfbStream struct {
 
 func newRFBStream(conn *vi.Conn) *rfbStream {
 	return &rfbStream{conn: conn, ready: vi.TCPReady, idle: func() { vi.Sleep(1) },
+		sendIdle: vi.Yield, drain: vi.TCPRecv,
 		stallNs: vi.DefaultRecvBudgetNs}
 }
 
@@ -419,10 +425,37 @@ func (s *rfbStream) Write(p []byte) (int, error) {
 					return total, err
 				}
 			}
+			if s.drain != nil {
+				// TCPRecv drains ACK-only frames as well as viewer input.
+				// Input taken here is owed to the session's next Read.
+				buf := s.held[s.heldN:]
+				if len(buf) == 0 {
+					var scratch [1]byte
+					buf = scratch[:]
+				}
+				n, rc := s.drain(buf)
+				if rc < 0 {
+					return total, errRFBSocket
+				}
+				if s.heldN == len(s.held) {
+					if n > 0 {
+						return total, errRFBInputFlood
+					}
+				} else {
+					s.heldN += n
+				}
+				mask, rc = s.ready()
+				if rc < 0 {
+					return total, errRFBSocket
+				}
+				if mask&2 != 0 {
+					break
+				}
+			}
 			if vi.Nanos() >= deadline {
 				return total, errRFBSendStalled
 			}
-			s.idle()
+			s.sendIdle()
 		}
 		end := total + vi.TCPPayloadMax
 		if end > len(p) {

@@ -58,13 +58,15 @@ pub const default_src_port: u16 = 8000;
 /// truncation on TX; a longer RX payload is dropped, counted).
 /// M50 TS4 (#1138, ADR 0024 D6): raised 64 -> 192 so one
 /// `VIRELAIOS-AUTH/1` challenge line (95 bytes) or one hex reply line
-/// (129 bytes) fits a single segment. Fixed-size and reassembly-free —
-/// the single-connection contract is unchanged in kind.
-pub const payload_max: usize = 192;
+/// (129 bytes) fits a single segment. M84e (#1835): raised to the Ethernet
+/// MTU's 1460-byte TCP payload after measuring multi-second ACK round trips
+/// on full-screen RFB updates. Still one bounded, reassembly-free segment;
+/// no IP fragmentation or TCP options are introduced.
+pub const payload_max: usize = 1500 - ipv4_hdr_len - tcp_hdr_len;
 /// The segment buffer bound: 20-byte header + the bounded payload.
-pub const segment_max: usize = tcp_hdr_len + payload_max; // 212
+pub const segment_max: usize = tcp_hdr_len + payload_max; // 1480
 /// The largest full frame: Ethernet + IPv4 + the bounded segment.
-pub const frame_max: usize = eth_hdr_len + ipv4_hdr_len + segment_max; // 246
+pub const frame_max: usize = eth_hdr_len + ipv4_hdr_len + segment_max; // 1514
 /// The smallest full frame: Ethernet + IPv4 + the 20-byte header.
 pub const frame_min: usize = eth_hdr_len + ipv4_hdr_len + tcp_hdr_len; // 54
 /// The fixed advertised window (no window scaling — honest bound).

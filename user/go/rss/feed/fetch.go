@@ -15,7 +15,7 @@ const (
 	// MaxBodyBytes bounds one feed document. Feeds larger than this are
 	// truncated rather than allowed to grow the heap without limit.
 	MaxBodyBytes = 256 * 1024
-	// readChunk is the per-read buffer; TCPPayloadMax is 192, so a larger
+	// readChunk is the per-read buffer; TCPPayloadMax is 1460, so a larger
 	// buffer simply amortises the calls without changing the wire shape.
 	readChunk = 8192
 	// maxRedirects bounds a redirect chain. Past this the peer is looping

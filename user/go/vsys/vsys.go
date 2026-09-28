@@ -69,7 +69,7 @@ const (
 	// MaxHandlesPerProcess is file_table.max_handles_per_process.
 	MaxHandlesPerProcess = 8
 	// TCPPayloadMax is tcp.payload_max: the largest single send/recv.
-	TCPPayloadMax = 192
+	TCPPayloadMax = 1460
 )
 
 // Errno is the kernel's error magnitude as a Go error.
