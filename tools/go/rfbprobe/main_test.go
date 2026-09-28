@@ -309,6 +309,46 @@ func TestBridgeRetriesAfterViewerClosesBeforeAnswer(t *testing.T) {
 	}
 }
 
+func TestBridgeBoundsUnauthenticatedAttempts(t *testing.T) {
+	ln, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var toGuest bytes.Buffer
+	done := make(chan error, 1)
+	go func() { done <- bridgeOne(ln, 5*time.Second, "password", bytes.NewReader(handshake()), &toGuest) }()
+	for range 3 {
+		c, err := net.Dial("tcp", ln.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = c.SetDeadline(time.Now().Add(5 * time.Second))
+		readTestBytes(t, c, 12)
+		_, _ = c.Write([]byte("RFB 003.003\n"))
+		readTestBytes(t, c, 4)
+		var challenge [16]byte
+		copy(challenge[:], readTestBytes(t, c, 16))
+		response, err := vncResponse("wrongpwd", challenge)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = c.Write(response[:])
+		if got := readTestBytes(t, c, 4); !bytes.Equal(got, []byte{0, 0, 0, 1}) {
+			t.Fatalf("refusal: %x", got)
+		}
+		_ = c.Close()
+	}
+	if err := <-done; err == nil || !strings.Contains(err.Error(), "after 3 attempts") {
+		t.Fatalf("bridge did not bound attempts: %v", err)
+	}
+	if toGuest.Len() != 0 {
+		t.Fatalf("unauthenticated attempts reached guest: %x", toGuest.Bytes())
+	}
+	if _, err := net.DialTimeout("tcp", ln.Addr().String(), time.Second); err == nil {
+		t.Fatal("bridge accepted a fourth viewer")
+	}
+}
+
 func TestOneShotPassword(t *testing.T) {
 	a, err := randomVNCPassword()
 	if err != nil {
