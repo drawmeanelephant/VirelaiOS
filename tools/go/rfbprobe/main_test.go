@@ -244,7 +244,7 @@ func TestBridgeRejectsViewerBeforeGuestHandshake(t *testing.T) {
 	}
 	var toGuest bytes.Buffer
 	done := make(chan error, 1)
-	go func() { done <- bridgeOne(ln, 5*time.Second, "password", bytes.NewReader(handshake()), &toGuest) }()
+	go func() { done <- bridgeOne(ln, time.Second, "password", bytes.NewReader(handshake()), &toGuest) }()
 	c, err := net.Dial("tcp", ln.Addr().String())
 	if err != nil {
 		t.Fatal(err)
@@ -267,6 +267,45 @@ func TestBridgeRejectsViewerBeforeGuestHandshake(t *testing.T) {
 	}
 	if toGuest.Len() != 0 {
 		t.Fatalf("unauthenticated viewer reached guest: %x", toGuest.Bytes())
+	}
+}
+
+func TestBridgeRetriesAfterViewerClosesBeforeAnswer(t *testing.T) {
+	ln, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var toGuest bytes.Buffer
+	done := make(chan error, 1)
+	go func() { done <- bridgeOne(ln, 5*time.Second, "password", bytes.NewReader(handshake()), &toGuest) }()
+
+	first, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = first.SetDeadline(time.Now().Add(5 * time.Second))
+	readTestBytes(t, first, 12)
+	_, _ = first.Write([]byte("RFB 003.003\n"))
+	if got := readTestBytes(t, first, 4); !bytes.Equal(got, []byte{0, 0, 0, 2}) {
+		t.Fatalf("first offer: %x", got)
+	}
+	readTestBytes(t, first, 16) // challenge sent; the viewer closes without responding
+	_ = first.Close()
+
+	second, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = second.SetDeadline(time.Now().Add(5 * time.Second))
+	authenticateTestViewer(t, second, "RFB 003.003\n", "password")
+	_, _ = second.Write([]byte{1})
+	readTestBytes(t, second, 24+9)
+	_ = second.Close()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if got := toGuest.Bytes(); !bytes.Equal(got, []byte("RFB 003.008\n\x01\x01")) {
+		t.Fatalf("guest got %x, want only the authenticated viewer's handshake", got)
 	}
 }
 

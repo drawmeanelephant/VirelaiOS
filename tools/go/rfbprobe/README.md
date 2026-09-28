@@ -37,8 +37,10 @@ exit is its close: status 0 makes the runner send FIN, any other status RST.
 | `die-focus` | opens the launcher, holds `c`, dies (exit 3) | `rfb drop peer`, the launcher stays usable locally |
 
 `-bridge 127.0.0.1:PORT` is the class-C tape path (`tools/rfb-tape.sh`,
-ADR 0037 D5(1)/D6 amendment): it accepts exactly one viewer on a loopback
-address with an eight-character, one-shot VNC password. The password is
+ADR 0037 D5(1)/D6 amendment): it serves one authenticated viewer on a
+loopback address (up to three pre-auth connections, since Screen Sharing
+may close and reconnect after showing its password prompt) with an
+eight-character, one-shot VNC password. The password is
 printed to the operator (or delivered over a private named pipe to the tape,
 which prints it without recording it in runner.log). RFB 3.3/3.7/3.8
 viewers see only security type 2; a wrong password or type is refused

@@ -378,20 +378,39 @@ func runBridge(addr, passwordFIFO string, guestIn io.Reader, guestOut io.Writer)
 }
 
 func bridgeOne(ln *net.TCPListener, wait time.Duration, password string, guestIn io.Reader, guestOut io.Writer) error {
+	defer ln.Close()
 	_ = ln.SetDeadline(time.Now().Add(wait))
-	viewer, err := ln.Accept()
-	_ = ln.Close()
-	if err != nil {
-		return fmt.Errorf("no viewer connected: %w", err)
+	const maxAuthAttempts = 3
+	var viewer *net.TCPConn
+	var lastAuthError error
+	for attempt := 1; attempt <= maxAuthAttempts; attempt++ {
+		next, err := ln.AcceptTCP()
+		if err != nil {
+			if lastAuthError != nil {
+				return fmt.Errorf("no authenticated viewer after attempt %d (%v): %w", attempt-1, lastAuthError, err)
+			}
+			return fmt.Errorf("no viewer connected: %w", err)
+		}
+		fmt.Fprintf(os.Stderr, "RFBPROBE: bridge viewer %s (attempt %d)\n", next.RemoteAddr(), attempt)
+		// Screen Sharing can close its first connection after seeing the
+		// security offer, then reconnect when the operator enters a password.
+		// Neither attempt touches the guest before authentication succeeds.
+		_ = next.SetDeadline(time.Now().Add(wait))
+		if err := authenticateViewer(next, password); err != nil {
+			lastAuthError = err
+			fmt.Fprintf(os.Stderr, "RFBPROBE: bridge auth attempt %d refused: %v\n", attempt, err)
+			_ = next.Close()
+			continue
+		}
+		viewer = next
+		break
 	}
-	fmt.Fprintf(os.Stderr, "RFBPROBE: bridge viewer %s\n", viewer.RemoteAddr())
+	if viewer == nil {
+		return fmt.Errorf("no authenticated viewer after %d attempts: %w", maxAuthAttempts, lastAuthError)
+	}
+	_ = ln.Close() // a successful viewer consumes the one session
 	defer viewer.Close()
-	// The operator has to read and enter the one-shot password in the
-	// Screen Sharing prompt; do not time out a human after 30 seconds.
-	_ = viewer.SetDeadline(time.Now().Add(120 * time.Second))
-	if err := authenticateViewer(viewer, password); err != nil {
-		return fmt.Errorf("viewer VNC auth: %w", err)
-	}
+	_ = viewer.SetDeadline(time.Now().Add(wait))
 	shared, err := negotiateGuest(viewer, guestIn, guestOut)
 	if err != nil {
 		return fmt.Errorf("guest None handshake: %w", err)

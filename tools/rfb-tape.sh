@@ -24,8 +24,9 @@ Boots the seat with --rfb-hermetic, bridges one viewer from 127.0.0.1:$PORT
 (RFB_TAPE_PORT, default 5901) into the guest, and opens vnc://127.0.0.1:$PORT
 in macOS Screen Sharing. --no-viewer waits up to 120 s for a viewer started
 by hand instead. Enter the printed one-shot password in Screen Sharing.
-RFB_TAPE_OUT selects the artifact directory. The bridge accepts exactly one
-loopback connection with VNC authentication; the guest wire remains None.
+RFB_TAPE_OUT selects the artifact directory. The bridge serves one
+authenticated loopback viewer (up to three pre-auth attempts); the guest
+wire remains None.
 EOF
 }
 

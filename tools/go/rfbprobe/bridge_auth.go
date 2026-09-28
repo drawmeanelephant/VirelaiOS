@@ -84,21 +84,22 @@ func authenticateViewer(viewer io.ReadWriter, password string) error {
 	}
 	var banner [12]byte
 	if _, err := io.ReadFull(viewer, banner[:]); err != nil {
-		return err
+		return fmt.Errorf("viewer version: %w", err)
 	}
 	version := string(banner[:])
+	fmt.Fprintf(os.Stderr, "RFBPROBE: bridge viewer version %q\n", version)
 	switch version {
 	case "RFB 003.003\n":
 		if err := write(viewer, []byte{0, 0, 0, 2}); err != nil {
-			return err
+			return fmt.Errorf("VNC security offer: %w", err)
 		}
 	case "RFB 003.007\n", "RFB 003.008\n":
 		if err := write(viewer, []byte{1, 2}); err != nil {
-			return err
+			return fmt.Errorf("VNC security offer: %w", err)
 		}
 		var selection [1]byte
 		if _, err := io.ReadFull(viewer, selection[:]); err != nil {
-			return err
+			return fmt.Errorf("viewer security selection: %w", err)
 		}
 		if selection[0] != 2 {
 			_ = authRefused(viewer, version, "security type refused")
@@ -112,11 +113,11 @@ func authenticateViewer(viewer io.ReadWriter, password string) error {
 		return err
 	}
 	if err := write(viewer, challenge[:]); err != nil {
-		return err
+		return fmt.Errorf("VNC challenge: %w", err)
 	}
 	var answer [16]byte
 	if _, err := io.ReadFull(viewer, answer[:]); err != nil {
-		return err
+		return fmt.Errorf("viewer VNC response: %w", err)
 	}
 	expected, err := vncResponse(password, challenge)
 	if err != nil {
