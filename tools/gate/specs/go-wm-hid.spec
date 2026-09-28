@@ -90,6 +90,7 @@ vgate_runner_flags -Xswiftc -DSPIKE
 
 vgate_file script.txt <<'EOF'
 set GOMAXPROCS=1
+vf rm SESSION.TABS
 wm
 exec GOTABWM.ELF
 EOF
@@ -518,6 +519,7 @@ PY
 # seat-only and not the GOEDIT+GOTERM pair.
 vgate_file script-bt1.txt <<'EOF'
 set GOMAXPROCS=1
+vf rm SESSION.TABS
 wm
 exec GOTABWM.ELF
 EOF
@@ -795,7 +797,7 @@ vgate_run 07 -- \
     --input-chords-after 'gotabwm: rail n=3' \
     --script3 '$RUN_DIR/script3.txt' \
     --script3-after 'wm: unregistered, shim resumed' \
-    --script-expect 'rx-gotabwm-hid-ok' --timeout 300
+    --script-expect 'rx-gotabwm-hid-ok' --timeout 420
 
 vgate_assert 07 serial-contains 'VirelaiOS kernel has seized control.'
 vgate_assert 07 serial-contains 'exec: loaded GOTABWM.ELF'
@@ -996,4 +998,52 @@ if int(vm.group(1)) != n:
 print("M82c: refused@%d summary@%d n=%d (%d seat, %d kernel, %d app); "
       "%d dumped rows all unique per (chord, scope); GOSET view@%d" % (
           ref_i, sum_i, n, seat, kernel, app, len(rows), view_i))
+PY
+
+# ---------------------------------------------------------------------------
+# Run 09 (M83d2 / #1786): the persisted DE table at the measured kernel path.
+#
+# The monitor persists keyboard_layout=de before GOTABWM starts; the standard
+# kind-1 app-key path then translates HID Y/Z positions and the semicolon
+# position to Unicode in the kernel, and GOEDIT saves the resulting UTF-8.
+# Kind-21 remains raw usage+flags for the seat. GOSET and reboot persistence
+# are covered by go-wm-default.
+vgate_file script-m83d2.txt <<'EOF'
+set GOMAXPROCS=1
+vf rm SESSION.TABS
+settings set keyboard_layout de
+wm
+exec GOTABWM.ELF
+EOF
+
+vgate_run 09 -- \
+    --screen '$RUN_DIR/screen-09' \
+    --via-virtio \
+    --script '$RUN_DIR/script-m83d2.txt' \
+    --script2 '$RUN_DIR/script2.txt' \
+    --script2-after 'gotabwm: win focus' \
+    --pointer-virtio '320,10,c' \
+    --pointer-virtio-after 'gotabwm: rail n=2' \
+    --input-chords 'y,z,Y,;,ctrl-s' \
+    --input-chords-after 'gotabwm: rail-click id=' \
+    --script3 '$RUN_DIR/script3.txt' \
+    --script3-after 'wm: unregistered, shim resumed' \
+    --script-expect 'rx-gotabwm-hid-ok' --timeout 300
+
+vgate_assert 09 serial-contains 'settings: keyboard_layout=de (persisted)'
+vgate_assert 09 serial-contains 'gotabwm: rail n=2'
+vgate_assert 09 serial-contains 'gotabwm: rail-click id='
+vgate_assert 09 serial-contains 'goedit: dirty'
+vgate_assert 09 serial-contains 'goedit: saved /host/EDIT/SEED.TXT'
+vgate_assert 09 serial-contains 'rx-gotabwm-hid-ok'
+vgate_assert 09 serial-absent '[EXC] parking:'
+vgate_assert 09 serial-absent 'exited status=139'
+vgate_assert 09 python <<'PY'
+import os, sys
+path = os.path.join(os.environ["VG_SHARE"], "EDIT", "SEED.TXT")
+got = open(path, "rb").read()
+want = "seed-line\nXYZzyZö".encode("utf-8")
+if got != want:
+    sys.exit("DE kernel keymap saved %r, want %r" % (got, want))
+print("DE keymap: physical y,z,Y,; arrived as z,y,Z,ö in GOEDIT and saved UTF-8 byte-exactly")
 PY

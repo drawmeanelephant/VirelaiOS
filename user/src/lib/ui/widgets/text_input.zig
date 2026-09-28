@@ -48,7 +48,7 @@ pub const TextInput = struct {
     }
 
     pub fn set_text(self: *TextInput, text: []const u8) void {
-        const copy_len = @min(text.len, self.buf.len);
+        const copy_len = utf8PrefixLength(text, self.buf.len);
         @memcpy(self.buf[0..copy_len], text[0..copy_len]);
         self.len = copy_len;
         self.cursor = copy_len;
@@ -76,17 +76,18 @@ pub const TextInput = struct {
                         var best_cursor: usize = 0;
                         var cur_w: u32 = 0;
                         while (best_cursor < text.len) {
-                            const next_w = measure_text(text[0 .. best_cursor + 1]);
+                            const next_cursor = bestCursor(text, best_cursor);
+                            const next_w = measure_text(text[0..next_cursor]);
                             if (next_w > rel_x) {
                                 if (rel_x - cur_w < next_w - rel_x) {
                                     break;
                                 } else {
-                                    best_cursor += 1;
+                                    best_cursor = next_cursor;
                                     break;
                                 }
                             }
                             cur_w = next_w;
-                            best_cursor += 1;
+                            best_cursor = next_cursor;
                         }
                         self.cursor = best_cursor;
                     }
@@ -96,32 +97,38 @@ pub const TextInput = struct {
             KEY_DOWN => {
                 if (!self.focused) return false;
                 const keycode = ev.arg0;
-                const ascii_char = @as(u8, @truncate(ev.arg1));
 
                 // Backspace (ASCII 0x08 or keycode 0x2a)
-                if (ascii_char == 0x08 or keycode == 0x2a) {
+                if (ev.arg1 == 0x08 or keycode == 0x2a) {
                     if (self.cursor > 0 and self.len > 0) {
-                        var i = self.cursor - 1;
-                        while (i < self.len - 1) : (i += 1) {
-                            self.buf[i] = self.buf[i + 1];
-                        }
-                        self.len -= 1;
-                        self.cursor -= 1;
+                        const start = previousRuneBoundary(self.get_text(), self.cursor);
+                        const removed = self.cursor - start;
+                        std.mem.copyForwards(
+                            u8,
+                            self.buf[start..][0 .. self.len - self.cursor],
+                            self.buf[self.cursor..self.len],
+                        );
+                        self.len -= removed;
+                        self.cursor = start;
                         return true;
                     }
                     return false;
                 }
 
-                // Printable character insertion
-                if (ascii_char >= 0x20 and ascii_char <= 0x7e) {
-                    if (self.len < self.buf.len) {
-                        var i = self.len;
-                        while (i > self.cursor) : (i -= 1) {
-                            self.buf[i] = self.buf[i - 1];
-                        }
-                        self.buf[self.cursor] = ascii_char;
-                        self.len += 1;
-                        self.cursor += 1;
+                // Printable Unicode scalar insertion. arg1 carries the full
+                // translated codepoint; truncating it to u8 corrupts or
+                // discards non-ASCII input.
+                if (((ev.arg1 >= 0x20 and ev.arg1 <= 0x7e) or ev.arg1 >= 0xa0) and
+                    ev.arg1 <= 0x10ffff and (ev.arg1 < 0xd800 or ev.arg1 > 0xdfff))
+                {
+                    var encoded: [4]u8 = undefined;
+                    const encoded_len = std.unicode.utf8Encode(@intCast(ev.arg1), &encoded) catch return false;
+                    const n: usize = encoded_len;
+                    if (self.len + n <= self.buf.len) {
+                        @memmove(self.buf[self.cursor + n .. self.len + n], self.buf[self.cursor..self.len]);
+                        @memcpy(self.buf[self.cursor..][0..n], encoded[0..n]);
+                        self.len += n;
+                        self.cursor += n;
                         return true;
                     }
                 }
@@ -149,3 +156,34 @@ pub const TextInput = struct {
         }
     }
 };
+
+fn runeLengthAt(text: []const u8, at: usize) usize {
+    if (at >= text.len) return 0;
+    const length = std.unicode.utf8ByteSequenceLength(text[at]) catch return 1;
+    const n: usize = @intCast(length);
+    if (n > text.len - at) return 1;
+    _ = std.unicode.utf8Decode(text[at .. at + n]) catch return 1;
+    return n;
+}
+
+fn previousRuneBoundary(text: []const u8, end: usize) usize {
+    if (end == 0) return 0;
+    var start = @min(end, text.len) - 1;
+    while (start > 0 and (text[start] & 0xc0) == 0x80) : (start -= 1) {}
+    if (start + runeLengthAt(text, start) == end) return start;
+    return end - 1;
+}
+
+fn bestCursor(text: []const u8, cursor: usize) usize {
+    return @min(cursor + runeLengthAt(text, cursor), text.len);
+}
+
+fn utf8PrefixLength(text: []const u8, max_len: usize) usize {
+    var end: usize = 0;
+    while (end < text.len) {
+        const next = end + runeLengthAt(text, end);
+        if (next > max_len) break;
+        end = next;
+    }
+    return end;
+}

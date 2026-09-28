@@ -1,18 +1,19 @@
 // The notepad's text buffer, caret and view model: M66c (issue #1445), the Go
 // successor to the Zig notepad that #1485 retired.
 //
-// Deliberately import-free. The editing surface is where the bugs live (line
-// joins, column memory across lines, the caret at a clip boundary), so it is
-// pure byte-slice work that `go test ./note` exercises on the host — the split
-// user/go/calc uses for its engine, and the reason user/go/fart's synthesis
-// carries no `math`. The guest runtime's ported surface also stays tiny, which
-// is not academic: GOEDIT's header records that pulling the full webrender
-// package in blew the kernel's 16-region sbrk budget at runtime init.
+// The editing surface is byte-backed for exact file saves, with UTF-8-aware
+// caret boundaries and columns. `go test ./note` exercises it on the host —
+// the split user/go/calc uses for its engine, and the reason user/go/fart's
+// synthesis carries no `math`. The guest runtime's ported surface also stays
+// tiny, which is not academic: GOEDIT's header records that pulling the full
+// webrender package in blew the kernel's 16-region sbrk budget at runtime init.
 //
 // This is a notepad, not an editor: no find/replace, no selection, no undo
 // (the card's non-goals — GOEDIT owns the arms race).
 
 package main
+
+import "unicode/utf8"
 
 // MaxBytes is the notepad's own buffer bound. The host file channel would carry
 // more; this is a UI limit, and it is what makes "the buffer is full" an
@@ -40,10 +41,10 @@ func (b *Buffer) Bytes() []byte { return b.buf }
 // point after the last byte).
 func (b *Buffer) Cursor() int { return b.cur }
 
-// SetCursor moves the caret, clamped into range. Out-of-range is clamped
-// rather than refused: the only caller is a resize/relayout path where a
-// stale offset is possible and a refusal would strand the caret.
-func (b *Buffer) SetCursor(i int) { b.cur = clamp(i, 0, len(b.buf)) }
+// SetCursor moves the caret to the nearest preceding rune boundary, clamped
+// into range. Out-of-range is clamped rather than refused: stale offsets must
+// not strand the caret or split a UTF-8 sequence.
+func (b *Buffer) SetCursor(i int) { b.cur = runeBoundary(b.buf, clamp(i, 0, len(b.buf))) }
 
 // Load replaces the text with src and leaves the caret at the start. CRLF
 // becomes LF, a bare CR (the old-Mac convention) becomes LF too, and a NUL is
@@ -79,13 +80,25 @@ func (b *Buffer) Load(src []byte) int {
 // Insert puts ch at the caret and advances it. It returns false, changing
 // nothing, when the buffer is full.
 func (b *Buffer) Insert(ch byte) bool {
-	if len(b.buf) >= MaxBytes {
+	return b.insertBytes([]byte{ch})
+}
+
+// InsertRune encodes one Unicode scalar as UTF-8 and inserts it at the caret.
+func (b *Buffer) InsertRune(ch rune) bool {
+	if !utf8.ValidRune(ch) {
 		return false
 	}
-	b.buf = append(b.buf, 0)
-	copy(b.buf[b.cur+1:], b.buf[b.cur:])
-	b.buf[b.cur] = ch
-	b.cur++
+	return b.insertBytes([]byte(string(ch)))
+}
+
+func (b *Buffer) insertBytes(encoded []byte) bool {
+	if len(b.buf)+len(encoded) > MaxBytes {
+		return false
+	}
+	b.buf = append(b.buf, make([]byte, len(encoded))...)
+	copy(b.buf[b.cur+len(encoded):], b.buf[b.cur:len(b.buf)-len(encoded)])
+	copy(b.buf[b.cur:], encoded)
+	b.cur += len(encoded)
 	return true
 }
 
@@ -105,38 +118,42 @@ func (b *Buffer) InsertText(s string) int {
 // Newline inserts a line break at the caret.
 func (b *Buffer) Newline() bool { return b.Insert('\n') }
 
-// Backspace removes the byte before the caret. At the start of a line that
+// Backspace removes the Unicode scalar before the caret. At the start of a line that
 // byte is the '\n', so the lines join — the caret lands at the end of the
 // joined line, which is what a typist expects.
 func (b *Buffer) Backspace() bool {
 	if b.cur == 0 {
 		return false
 	}
-	copy(b.buf[b.cur-1:], b.buf[b.cur:])
-	b.buf = b.buf[:len(b.buf)-1]
-	b.cur--
+	start := runeBoundary(b.buf, b.cur-1)
+	size := b.cur - start
+	copy(b.buf[start:], b.buf[b.cur:])
+	b.buf = b.buf[:len(b.buf)-size]
+	b.cur = start
 	return true
 }
 
-// Delete removes the byte at the caret without moving it.
+// Delete removes the Unicode scalar at the caret without moving it.
 func (b *Buffer) Delete() bool {
 	if b.cur >= len(b.buf) {
 		return false
 	}
-	copy(b.buf[b.cur:], b.buf[b.cur+1:])
-	b.buf = b.buf[:len(b.buf)-1]
+	end := nextRuneBoundary(b.buf, b.cur)
+	size := end - b.cur
+	copy(b.buf[b.cur:], b.buf[end:])
+	b.buf = b.buf[:len(b.buf)-size]
 	return true
 }
 
 // Left, Right, Up, Down, Home and End move the caret and report whether they
 // moved it, so a key handler can repaint only when something changed. Up and
-// Down keep the byte column where the target line is long enough and clamp to
+// Down keep the rune column where the target line is long enough and clamp to
 // its end where it is not — the caret never wraps to the next line.
 func (b *Buffer) Left() bool {
 	if b.cur == 0 {
 		return false
 	}
-	b.cur--
+	b.cur = runeBoundary(b.buf, b.cur-1)
 	return true
 }
 
@@ -144,7 +161,7 @@ func (b *Buffer) Right() bool {
 	if b.cur >= len(b.buf) {
 		return false
 	}
-	b.cur++
+	b.cur = nextRuneBoundary(b.buf, b.cur)
 	return true
 }
 
@@ -155,10 +172,7 @@ func (b *Buffer) Up() bool {
 	}
 	at := b.Col()
 	s, e := b.lineBounds(line - 1)
-	if at > e-s {
-		at = e - s
-	}
-	b.cur = s + at
+	b.cur = s + runeOffset(b.buf[s:e], at)
 	return true
 }
 
@@ -169,10 +183,7 @@ func (b *Buffer) Down() bool {
 	}
 	at := b.Col()
 	s, e := b.lineBounds(line + 1)
-	if at > e-s {
-		at = e - s
-	}
-	b.cur = s + at
+	b.cur = s + runeOffset(b.buf[s:e], at)
 	return true
 }
 
@@ -205,7 +216,7 @@ func (b *Buffer) Line() int {
 	return line
 }
 
-// Col is the caret's 0-based byte column within its line.
+// Col is the caret's 0-based rune column within its line.
 func (b *Buffer) Col() int {
 	start := 0
 	for i := 0; i < b.cur; i++ {
@@ -213,7 +224,7 @@ func (b *Buffer) Col() int {
 			start = i + 1
 		}
 	}
-	return b.cur - start
+	return utf8.RuneCount(b.buf[start:b.cur])
 }
 
 // LineCount counts lines. A trailing newline opens an (empty) last line, so a
@@ -307,8 +318,8 @@ func (b *Buffer) View(top, rows, width int) []ViewLine {
 		}
 		if line >= top {
 			text := string(b.buf[start:i])
-			if width > 0 && len(text) > width {
-				text = text[:width]
+			if width > 0 && utf8.RuneCountInString(text) > width {
+				text = text[:runeOffset([]byte(text), width)]
 			}
 			vl := ViewLine{Text: text, Line: line, Col: -1}
 			if line == caretLine {
@@ -320,6 +331,39 @@ func (b *Buffer) View(top, rows, width int) []ViewLine {
 		start = i + 1
 	}
 	return out
+}
+
+func runeBoundary(buf []byte, at int) int {
+	if at < 0 {
+		return 0
+	}
+	if at > len(buf) {
+		at = len(buf)
+	}
+	for at > 0 && at < len(buf) && buf[at]&0xc0 == 0x80 {
+		at--
+	}
+	return at
+}
+
+func nextRuneBoundary(buf []byte, at int) int {
+	if at >= len(buf) {
+		return len(buf)
+	}
+	_, size := utf8.DecodeRune(buf[at:])
+	return at + size
+}
+
+// runeOffset returns the byte offset of rune column column, clamped to len.
+func runeOffset(buf []byte, column int) int {
+	if column <= 0 {
+		return 0
+	}
+	at := 0
+	for n := 0; n < column && at < len(buf); n++ {
+		at = nextRuneBoundary(buf, at)
+	}
+	return at
 }
 
 // clamp is int min/max without importing anything.

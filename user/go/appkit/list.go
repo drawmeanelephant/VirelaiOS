@@ -165,7 +165,9 @@ func (f *TextField) OnKey(k Key) bool {
 	case NamedEnd:
 		return f.Buffer.End()
 	}
-	if k.Rune != 0 && !k.Ctrl && !k.Alt {
+	// The SDK line buffer is byte-oriented, so reject non-ASCII codepoints
+	// rather than truncating a Unicode rune into an invalid byte.
+	if k.Rune >= 0x20 && k.Rune < 0x7f && !k.Ctrl && !k.Alt {
 		return f.Buffer.InsertByte(byte(k.Rune))
 	}
 	return false

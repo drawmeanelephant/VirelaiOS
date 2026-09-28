@@ -70,6 +70,7 @@ package main
 
 import (
 	"strings"
+	"unicode/utf8"
 
 	"virelai/tabapp"
 	"virelai/vi"
@@ -117,9 +118,9 @@ const (
 	// modCtrl is the ADR 0009 Ctrl modifier bit; every chord below tests it.
 	modCtrl = uint16(0x0002)
 	// keyS/keyF/keyG are the LOWERCASE Unicode codepoints. kernel/src/input.zig
-	// puts the derived ASCII char in arg1, and for a Ctrl chord that is the
-	// control code ('s' & 0x1f = 0x13), so both spellings are accepted for
-	// every chord (the duality the save chord has always handled).
+	// puts the decoded Unicode codepoint in arg1; Ctrl chord handling retains
+	// the established ASCII control-code convention ('s' & 0x1f = 0x13), so
+	// both spellings are accepted for the save chord.
 	keyS     = 0x73
 	keyCtrlS = 0x13
 	keyF     = 0x66
@@ -180,15 +181,15 @@ func (e *editor) fill(x, y, w, h int, rgb uint32) {
 	e.f.Rect(e.ta.Win, uint32(x), uint32(y), uint32(w), uint32(h), rgb)
 }
 
-// drawText paints ASCII with the VirelaiOS 8x8 face (virelai/webrender/font),
+// drawText paints text with the VirelaiOS 8x8 face (virelai/webrender/font),
 // coalescing each row's lit run into ONE fill. It is deliberately local: the
 // full webrender package drags in layout + HTML parsing, and the Go runtime's
 // init then exceeds the kernel's 16-region sbrk budget (observed live as
 // "runtime: cannot allocate memory" in mallocinit).
 func (e *editor) drawText(x, y int, text string, rgb uint32) {
 	cx := x
-	for i := 0; i < len(text); i++ {
-		g := font.Glyph8(rune(text[i]))
+	for _, ch := range text {
+		g := font.Glyph8(ch)
 		for row := 0; row < 8; row++ {
 			bits := g[row]
 			col := 0
@@ -406,8 +407,8 @@ func (e *editor) key(ev vi.Event) bool {
 	if ev.Arg1 == codeBackspace || ev.Arg1 == codeDelete {
 		return e.backspace()
 	}
-	if b, ok := insertionFor(ev); ok {
-		return e.insert(b)
+	if ch, ok := insertionFor(ev); ok {
+		return e.insert(ch)
 	}
 	return false
 }
@@ -451,11 +452,12 @@ func (e *editor) barKey(ev vi.Event, run func()) bool {
 		if len(e.bar) == 0 {
 			return false
 		}
-		e.bar = e.bar[:len(e.bar)-1]
+		_, size := utf8.DecodeLastRune(e.bar)
+		e.bar = e.bar[:len(e.bar)-size]
 		return true
 	}
-	if b, ok := insertionFor(ev); ok && len(e.bar) < barMax {
-		e.bar = append(e.bar, b)
+	if ch, ok := insertionFor(ev); ok && len(e.bar)+utf8.RuneLen(ch) <= barMax {
+		e.bar = append(e.bar, []byte(string(ch))...)
 		return true
 	}
 	return false
@@ -522,46 +524,50 @@ func (e *editor) unsavedExit(ev vi.Event) {
 	e.ta.CloseAndExit(0)
 }
 
-// insertionFor maps a key event to the byte it inserts. The kernel puts the
-// Unicode codepoint in arg1 (ADR 0009), so a printable ASCII codepoint is
-// inserted verbatim; Return becomes a newline. Anything else inserts nothing.
-func insertionFor(ev vi.Event) (byte, bool) {
+// insertionFor maps a key event to the Unicode scalar it inserts. The kernel
+// puts the decoded codepoint in arg1 (ADR 0014); Return becomes a newline.
+func insertionFor(ev vi.Event) (rune, bool) {
 	if ev.Kind != vi.EvKeyDown || ev.Flags&modCtrl != 0 {
 		return 0, false
 	}
 	if ev.Arg1 == codeReturn || ev.Arg1 == codeNewline {
 		return '\n', true
 	}
-	if ev.Arg1 >= 0x20 && ev.Arg1 < 0x7f {
-		return byte(ev.Arg1), true
+	if (ev.Arg1 >= 0x20 && ev.Arg1 < 0x7f || ev.Arg1 >= 0xa0) &&
+		ev.Arg1 <= utf8.MaxRune &&
+		(ev.Arg1 < 0xd800 || ev.Arg1 > 0xdfff) {
+		return rune(ev.Arg1), true
 	}
 	return 0, false
 }
 
-// insert splices one byte in at the caret and marks the buffer dirty (the
-// dirty marker prints once, on the first edit).
-func (e *editor) insert(b byte) bool {
-	if len(e.buf) >= maxBuffer {
+// insert splices one UTF-8 encoded scalar at the byte caret and marks the
+// buffer dirty (the dirty marker prints once, on the first edit).
+func (e *editor) insert(ch rune) bool {
+	encoded := []byte(string(ch))
+	if len(e.buf)+len(encoded) > maxBuffer {
 		return false
 	}
 	e.clampCaret()
-	e.buf = append(e.buf, 0)
-	copy(e.buf[e.cur+1:], e.buf[e.cur:])
-	e.buf[e.cur] = b
-	e.cur++
+	oldLen := len(e.buf)
+	e.buf = append(e.buf, make([]byte, len(encoded))...)
+	copy(e.buf[e.cur+len(encoded):], e.buf[e.cur:oldLen])
+	copy(e.buf[e.cur:], encoded)
+	e.cur += len(encoded)
 	e.markDirty()
 	return true
 }
 
-// backspace removes the byte before the caret.
+// backspace removes the Unicode scalar before the byte caret.
 func (e *editor) backspace() bool {
 	e.clampCaret()
 	if e.cur == 0 {
 		return false
 	}
-	copy(e.buf[e.cur-1:], e.buf[e.cur:])
-	e.buf = e.buf[:len(e.buf)-1]
-	e.cur--
+	_, size := utf8.DecodeLastRune(e.buf[:e.cur])
+	copy(e.buf[e.cur-size:], e.buf[e.cur:])
+	e.buf = e.buf[:len(e.buf)-size]
+	e.cur -= size
 	e.markDirty()
 	return true
 }
@@ -821,7 +827,7 @@ func (e *editor) draw() {
 		}
 		// M20 U3: the caret's cell, so a find or a goto visibly MOVED it.
 		if e.cur >= start && e.cur <= i {
-			caretRow, caretCol = line, e.cur-start
+			caretRow, caretCol = line, utf8.RuneCount(e.buf[start:e.cur])
 		}
 		y += lineH
 		line++

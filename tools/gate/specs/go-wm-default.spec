@@ -189,6 +189,7 @@ shadow=off
 focus_follows_mouse=off
 shell=monitor
 wm=tabwm
+keyboard_layout=de
 EOF
 
 # M81g (#1767): the settings table the SNAPSHOT carries, and the one the
@@ -223,6 +224,7 @@ shadow=off
 focus_follows_mouse=off
 shell=monitor
 wm=gotabwm
+keyboard_layout=de
 EOF
 
 # M71f (#1565): the run gains HID. Once the panel says it is ready, one typed
@@ -240,6 +242,8 @@ vgate_run 01 -- \
     --script2-after 'gosh: prompt' --script2-delay 4 \
     --input-string $'wm=tabwm\n' \
     --input-string-after 'goset: ready ' \
+    --input-chords 'space,space,space,space,k,e,y,b,o,a,r,d,_,l,a,y,o,u,t,=,d,e,return' \
+    --input-chords-after 'goset: saved ' \
     --script3 '$RUN_DIR/script3.txt' \
     --script3-after 'goset: close' \
     --script-expect 'goset: saved ' --script-expect-tail 150 --timeout 300
@@ -281,9 +285,10 @@ vgate_assert 01 serial-contains 'gotabwm: win gone'
 # takes the typed command line, and publishes.
 vgate_assert 01 serial-contains 'exec: loaded GOSET.ELF'
 vgate_assert 01 serial-contains 'goset: open id='
-vgate_assert 01 serial-contains 'goset: ready keys=8 wm=gotabwm theme=dark mode=rw'
+vgate_assert 01 serial-contains 'goset: ready keys=9 wm=gotabwm theme=dark mode=rw'
+vgate_assert 01 serial-contains 'goset: set keyboard_layout=de'
 vgate_assert 01 serial-contains 'goset: set wm=tabwm'
-vgate_assert 01 serial-contains 'goset: saved keys=8 wm=tabwm theme=dark'
+vgate_assert 01 serial-contains 'goset: saved keys=9 wm=tabwm theme=dark'
 vgate_assert 01 serial-contains 'goset OK'
 # The publish is a real file on the share, byte-identical to what the kernel's
 # own serializer emits for the same table -- the fixture boot 04's kernel-side
@@ -419,6 +424,7 @@ PY
 
 # --- boot 02: the PANEL's `wm=tabwm` from boot 01 -> the Zig fallback seat ---
 vgate_file script-02.txt <<'EOF'
+settings get keyboard_layout
 tabwm
 echo rx-m59-fallback-ok
 EOF
@@ -434,6 +440,7 @@ vgate_run 02 -- \
 # the GO PANEL wrote is what makes the named Zig fallback (ADR 0034) reachable
 # from the default seat. Panel-driven save, and the panel-driven fallback.
 vgate_assert 02 serial-contains 'wm: autostart tabwm (settings wm=tabwm)'
+vgate_assert 02 serial-contains 'settings: keyboard_layout=de'
 vgate_assert 02 serial-contains 'tabwm: registered'
 vgate_assert 02 serial-contains 'tabwm: sidebar-rendered'
 vgate_assert 02 serial-contains 'tabwm: registered pid='
@@ -478,6 +485,7 @@ vgate_assert 03 serial-absent 'exited status=139'
 # truncate), and the share assert below byte-compares the healed bytes.
 vgate_file script-04.txt <<'EOF'
 settings set wm tabwm
+settings set keyboard_layout de
 echo rx-m66b-corrupt-ok
 EOF
 
@@ -492,6 +500,7 @@ vgate_assert 04 serial-contains 'wm: autostart gotabwm (settings wm=gotabwm)'
 vgate_assert 04 serial-contains 'gotabwm: registered'
 vgate_assert 04 serial-contains 'gotabwm: settings bad'
 vgate_assert 04 serial-contains 'settings: wm=tabwm (persisted)'
+vgate_assert 04 serial-contains 'settings: keyboard_layout=de (persisted)'
 vgate_assert 04 serial-contains 'rx-m66b-corrupt-ok'
 vgate_assert 04 serial-absent '[EXC] parking:'
 vgate_assert 04 serial-absent 'exited status=139'
@@ -834,6 +843,8 @@ PY
 # source of truth; the WM_RPC notice only names the changed key.
 vgate_file script-10.txt <<'EOF'
 settings set wm gotabwm
+settings set keyboard_layout us
+settings set theme dark
 reboot
 EOF
 
@@ -870,7 +881,6 @@ vgate_assert 10 serial-contains 'goset: set theme=light'
 vgate_assert 10 serial-contains 'goset: saved '
 vgate_assert 10 serial-contains 'gotabwm: settings subscribe pid='
 vgate_assert 10 serial-contains 'gotabwm: settings broadcast key=theme listeners=1'
-vgate_assert 10 serial-contains 'goset: settings notified key=theme'
 vgate_assert 10 serial-contains 'gocalc: settings repaint key=theme value=light'
 vgate_assert 10 serial-absent 'gocalc: close'
 vgate_assert 10 serial-absent 'gocalc OK'

@@ -65,8 +65,11 @@ func TestPanelStartsWithTheTableInForce(t *testing.T) {
 	if a.mode() != "rw" {
 		t.Fatalf("mode = %q, want rw", a.mode())
 	}
-	if got := a.summary(); got != "keys=8 wm=gotabwm theme=dark" {
+	if got := a.summary(); got != "keys=9 wm=gotabwm theme=dark" {
 		t.Fatalf("summary = %q", got)
+	}
+	if v, ok := settings.Get(a.disp, "keyboard_layout"); !ok || v != "us" {
+		t.Fatalf("keyboard_layout = %q ok=%v, want the compiled default", v, ok)
 	}
 	if len(a.labels()) != len(a.disp) {
 		t.Fatalf("labels = %d, rows = %d", len(a.labels()), len(a.disp))
@@ -87,7 +90,7 @@ func TestPanelAppliesATypedRowOnlyForKnownKeys(t *testing.T) {
 	if v, _ := settings.Get(a.disp, "wm"); v != "tabwm" {
 		t.Fatalf("wm = %q, want tabwm", v)
 	}
-	if got := a.summary(); got != "keys=8 wm=tabwm theme=dark" {
+	if got := a.summary(); got != "keys=9 wm=tabwm theme=dark" {
 		t.Fatalf("summary = %q", got)
 	}
 
@@ -220,15 +223,15 @@ func rowOf(t *testing.T, a *panel, key string) int {
 	return -1
 }
 
-// M73m (#1662): the palette surface. A default panel is UNCHANGED (eight
-// rows, keys=8 — go-wm-default pins it); choosing `custom` reveals the three
+// M73m (#1662): the palette surface. A default panel is UNCHANGED (the eight
+// kernel rows plus keyboard_layout); choosing `custom` reveals the three
 // colour rows with the compiled dark defaults, they are typed-editable as
 // six hex digits, and a malformed value never reaches the table.
 func TestPaletteSurfaceRevealsTheColoursOnCustom(t *testing.T) {
 	a := newPanel(nil)
-	if len(a.disp) != len(settings.KnownKeys) {
-		t.Fatalf("default rows = %d, want the kernel's %d (palette rows are NOT default rows)",
-			len(a.disp), len(settings.KnownKeys))
+	if len(a.disp) != len(settings.KnownKeys)+len(settings.KeyboardLayoutKeys) {
+		t.Fatalf("default rows = %d, want %d kernel+layout rows (palette rows are NOT default rows)",
+			len(a.disp), len(settings.KnownKeys)+len(settings.KeyboardLayoutKeys))
 	}
 	for _, k := range settings.PaletteKeys {
 		if _, ok := settings.Get(a.disp, k.Name); ok {
@@ -243,7 +246,7 @@ func TestPaletteSurfaceRevealsTheColoursOnCustom(t *testing.T) {
 			t.Fatalf("%s row = %q ok=%v, want the default %q", k.Name, v, ok, k.Default)
 		}
 	}
-	if got := a.summary(); got != "keys=11 wm=gotabwm theme=custom" {
+	if got := a.summary(); got != "keys=12 wm=gotabwm theme=custom" {
 		t.Fatalf("summary = %q", got)
 	}
 	// The palette rows are first-class: never the "(kept)" marker (that is
@@ -281,15 +284,15 @@ func TestPaletteSurfaceRevealsTheColoursOnCustom(t *testing.T) {
 	}
 }
 
-// M80i (#1725): the font_size surface. A default panel is UNCHANGED (eight
-// rows — go-wm-default pins keys=8); font_size is typed input at any time
+// M80i (#1725): the font_size surface. A default panel is UNCHANGED (the
+// kernel's eight rows plus keyboard_layout); font_size is typed input at any time
 // and cycles small -> medium -> large once the row exists. The panel never
 // fabricates the row: an ABSENT key is the boot look (text small + grid
 // medium), which no single stored value can represent.
 func TestFontSurfaceCyclesWithoutMovingKeys(t *testing.T) {
 	a := newPanel(nil)
-	if len(a.disp) != len(settings.KnownKeys) {
-		t.Fatalf("default rows = %d, want %d (font_size is NOT a default row)", len(a.disp), len(settings.KnownKeys))
+	if len(a.disp) != len(settings.KnownKeys)+len(settings.KeyboardLayoutKeys) {
+		t.Fatalf("default rows = %d, want %d (font_size is NOT a default row)", len(a.disp), len(settings.KnownKeys)+len(settings.KeyboardLayoutKeys))
 	}
 	// Typed input applies (the accepted-not-seeded pattern)...
 	a.input.SetValue("font_size=large")
@@ -299,7 +302,7 @@ func TestFontSurfaceCyclesWithoutMovingKeys(t *testing.T) {
 	if v, _ := settings.Get(a.disp, "font_size"); v != "large" {
 		t.Fatalf("font_size = %q, want large", v)
 	}
-	if got := a.summary(); got != "keys=9 wm=gotabwm theme=dark" {
+	if got := a.summary(); got != "keys=10 wm=gotabwm theme=dark" {
 		t.Fatalf("summary = %q (the typed row is real, so the count grew)", got)
 	}
 	// ...the row is first-class (no "(kept)") and cyclable.
@@ -404,5 +407,39 @@ func TestShortcutsViewShowsTheRegistry(t *testing.T) {
 	}
 	if a.file.State != settings.StateMissing {
 		t.Fatal("the view must not touch the settings file")
+	}
+}
+
+// M83d2 (#1786): GOSET exposes the kernel's table selector, cycles US ↔ DE,
+// accepts only shipped identifiers, and keeps the row editable on disk.
+func TestKeyboardLayoutSurfaceCyclesAndValidates(t *testing.T) {
+	a := newPanel(nil)
+	i := rowOf(t, a, "keyboard_layout")
+	if a.disp[i].Val != "us" {
+		t.Fatalf("initial layout = %q, want us", a.disp[i].Val)
+	}
+	for _, label := range a.labels() {
+		if strings.HasPrefix(label, "keyboard_layout") && strings.Contains(label, "(kept)") {
+			t.Fatalf("layout row marked not-editable: %q", label)
+		}
+	}
+	a.sel = i
+	a.cycle(1)
+	if got, _ := settings.Get(a.disp, "keyboard_layout"); got != "de" {
+		t.Fatalf("keyboard_layout after cycle = %q, want de", got)
+	}
+	a.cycle(1)
+	if got, _ := settings.Get(a.disp, "keyboard_layout"); got != "us" {
+		t.Fatalf("keyboard_layout after wrap = %q, want us", got)
+	}
+	a.input.SetValue("keyboard_layout=de")
+	a.applyInput()
+	if got, _ := settings.Get(a.disp, "keyboard_layout"); got != "de" {
+		t.Fatalf("typed keyboard_layout = %q, want de", got)
+	}
+	a.input.SetValue("keyboard_layout=fr")
+	a.applyInput()
+	if got, _ := settings.Get(a.disp, "keyboard_layout"); got != "de" {
+		t.Fatalf("unsupported layout changed keyboard_layout to %q", got)
 	}
 }

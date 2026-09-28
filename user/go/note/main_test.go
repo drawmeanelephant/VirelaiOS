@@ -102,7 +102,7 @@ func TestInsertionFor(t *testing.T) {
 	cases := []struct {
 		name string
 		ev   vi.Event
-		want byte
+		want rune
 		ok   bool
 	}{
 		{"space", keyDown(0, 0x20), ' ', true},
@@ -111,7 +111,8 @@ func TestInsertionFor(t *testing.T) {
 		{"newline", keyDown(0, codeNewline), '\n', true},
 		{"control code", keyDown(0, 0x01), 0, false},
 		{"delete", keyDown(0, codeDelete), 0, false},
-		{"non-ascii", keyDown(0, 0x80), 0, false},
+		{"control range", keyDown(0, 0x80), 0, false},
+		{"umlaut", keyDown(0x33, 0x00f6), 'ö', true},
 		{"arrow", keyDown(hidRight, 0), 0, false},
 		{"chord", vi.Event{Kind: vi.EvKeyDown, Flags: modCtrl, Arg1: 'a'}, 0, false},
 		{"key up", vi.Event{Kind: vi.EvKeyUp, Arg1: 'a'}, 0, false},
@@ -121,6 +122,16 @@ func TestInsertionFor(t *testing.T) {
 		if got != c.want || ok != c.ok {
 			t.Fatalf("%s: insertionFor = %q,%v want %q,%v", c.name, got, ok, c.want, c.ok)
 		}
+	}
+}
+
+func TestUnicodeKeyPath(t *testing.T) {
+	a := &app{buf: NewBuffer(), top: 1}
+	if !a.key(keyDown(0x33, 0x00f6)) || string(a.buf.Bytes()) != "ö" {
+		t.Fatalf("Unicode key path saved %q, want ö", a.buf.Bytes())
+	}
+	if !a.key(keyDown(0, codeBackspace)) || len(a.buf.Bytes()) != 0 {
+		t.Fatalf("backspace left partial UTF-8 bytes: %x", a.buf.Bytes())
 	}
 }
 

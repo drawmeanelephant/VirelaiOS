@@ -32,15 +32,17 @@
 //     Buffer.View). Wrapping would make one logical line two rows, and the
 //     caret's row a function of the canvas width.
 //
-// Non-ASCII input: the event wire carries a decoded symbol byte (ADR 0009), and
-// the 8x8 face this app draws with is ASCII, so a codepoint above 0x7e is
-// ignored rather than inserted as a byte that cannot be rendered.
+// The event wire carries a Unicode codepoint in arg1 (ADR 0014). The 8x8 face
+// falls back to '?' for unsupported glyphs, but the buffer and saved file keep
+// the codepoint's complete UTF-8 encoding.
 //
 // Every marker below is printed only AFTER its syscall returned, so a gate
 // asserting them can only pass if the app actually ran.
 package main
 
 import (
+	"unicode/utf8"
+
 	"virelai/tabapp"
 	"virelai/theme"
 	"virelai/vi"
@@ -424,8 +426,8 @@ func (a *app) key(ev vi.Event) bool {
 	if ev.Arg1 == codeDelete {
 		return a.edit(a.buf.Delete())
 	}
-	if b, ok := insertionFor(ev); ok {
-		return a.edit(a.buf.Insert(b))
+	if ch, ok := insertionFor(ev); ok {
+		return a.edit(a.buf.InsertRune(ch))
 	}
 	return false
 }
@@ -451,19 +453,19 @@ func isSave(ev vi.Event) bool {
 	return ev.Arg1 == keyCtrlS || ev.Arg1 == keyS
 }
 
-// insertionFor maps a key event to the byte it inserts. The kernel puts the
-// decoded symbol in arg1 (ADR 0009), so a printable ASCII symbol inserts
-// verbatim and Return/Newline become '\n'. Anything outside that range inserts
-// nothing — see the file header on non-ASCII input.
-func insertionFor(ev vi.Event) (byte, bool) {
+// insertionFor maps a key event to the Unicode scalar it inserts. The kernel
+// puts the decoded codepoint in arg1 (ADR 0014); Return/Newline become '\n'.
+func insertionFor(ev vi.Event) (rune, bool) {
 	if ev.Kind != vi.EvKeyDown || ev.Flags&modCtrl != 0 {
 		return 0, false
 	}
 	if ev.Arg1 == codeReturn || ev.Arg1 == codeNewline {
 		return '\n', true
 	}
-	if ev.Arg1 >= 0x20 && ev.Arg1 < 0x7f {
-		return byte(ev.Arg1), true
+	if (ev.Arg1 >= 0x20 && ev.Arg1 < 0x7f || ev.Arg1 >= 0xa0) &&
+		ev.Arg1 <= utf8.MaxRune &&
+		(ev.Arg1 < 0xd800 || ev.Arg1 > 0xdfff) {
+		return rune(ev.Arg1), true
 	}
 	return 0, false
 }
@@ -476,15 +478,15 @@ func (a *app) fill(x, y, w, h int, rgb uint32) {
 	a.f.Rect(a.ta.Win, uint32(x), uint32(y), uint32(w), uint32(h), rgb)
 }
 
-// drawText paints ASCII with the VirelaiOS 8x8 face (virelai/webrender/font),
+// drawText paints text with the VirelaiOS 8x8 face (virelai/webrender/font),
 // coalescing each row's lit run into one fill. Local on purpose: the full
 // webrender package drags in layout and HTML parsing, and GOEDIT's header
 // records what that costs — the Go runtime's init then exceeds the kernel's
 // 16-region sbrk budget ("runtime: cannot allocate memory" in mallocinit).
 func (a *app) drawText(x, y int, text string, rgb uint32) {
 	cx := x
-	for i := 0; i < len(text); i++ {
-		g := font.Glyph8(rune(text[i]))
+	for _, ch := range text {
+		g := font.Glyph8(ch)
 		for row := 0; row < 8; row++ {
 			bits := g[row]
 			col := 0

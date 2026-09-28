@@ -177,7 +177,8 @@ func newPanel(ta *tabapp.TabApp) *panel {
 // a row (a palette written while custom stays visible and saved when the
 // theme cycles back: the kernel ignores those keys for any preset, so keeping
 // them costs nothing and keeps the user's colours around). While theme is a
-// preset the table is untouched, so a default panel still reports keys=8.
+// preset the table is untouched; keyboard_layout remains the one
+// accepted-unseeded row exposed on the default surface.
 func (a *panel) ensurePaletteRows() {
 	if theme, _ := settings.Get(a.disp, "theme"); theme != "custom" {
 		return
@@ -261,6 +262,11 @@ func (a *panel) applyInput() bool {
 		vi.ConsoleLine(markerDiscard + line)
 		return true
 	}
+	if settings.IsKeyboardLayoutKey(key) && !settings.ValidKeyboardLayout(val) {
+		a.status = "keyboard_layout: choose us or de"
+		vi.ConsoleLine(markerDiscard + line)
+		return true
+	}
 	a.set(key, val)
 	return true
 }
@@ -341,6 +347,8 @@ func (a *panel) cycle(dir int) bool {
 	if !ok || len(vocab) == 0 {
 		if settings.IsPaletteKey(key) {
 			a.status = key + ": six hex digits (RRGGBB) + Enter"
+		} else if settings.IsKeyboardLayoutKey(key) {
+			a.status = "keyboard_layout: choose us or de"
 		} else {
 			a.status = key + ": type a value (key=value)"
 		}

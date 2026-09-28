@@ -77,7 +77,9 @@ func NormalizeKey(ev vi.Event) (Key, bool) {
 		Shift: ev.Flags&vi.ModShift != 0,
 		Alt:   ev.Flags&vi.ModAlt != 0,
 	}
-	if ev.Arg1 >= 0x20 && ev.Arg1 < 0x7f && !k.Ctrl {
+	if (ev.Arg1 >= 0x20 && ev.Arg1 < 0x7f || ev.Arg1 >= 0xa0) &&
+		ev.Arg1 <= 0x10ffff &&
+		(ev.Arg1 < 0xd800 || ev.Arg1 > 0xdfff) && !k.Ctrl {
 		k.Rune = rune(ev.Arg1)
 	}
 	// Keep the existing control-code spellings useful to a normalized caller.
