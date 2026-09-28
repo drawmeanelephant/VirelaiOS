@@ -104,6 +104,10 @@ const (
 // path unobservable off the guest.
 var execApp = vi.Exec
 
+// forwardContentPointer is the content-path syscall. The indirection lets
+// host tests assert which pointer samples reach an app without a guest kernel.
+var forwardContentPointer = vi.WmctlContentPtr
+
 // hidChordHold is how many composite ticks the two-tab choreography waits
 // after first seeing n>=2, so a rail click (3×2.5 s), a press/release drag
 // (pointerDragHold), `--input-string` into GOEDIT, and `--input-chords`
@@ -221,6 +225,14 @@ func runSeatAction(action string, c chords.Chord) {
 }
 
 func handleWmKey(e vi.Event) {
+	// Escape dismisses the seat-owned notification center without stealing
+	// ordinary app keystrokes when the overlay is closed.
+	if notifyCenterOpen && e.Arg0 == 0x29 && e.Flags&(vi.ModCtrl|vi.ModShift|vi.ModAlt) == 0 {
+		notifyCenterOpen = false
+		notifyCenterPainted = false
+		vi.ConsoleLine(MarkerNotifyCenterClose)
+		return
+	}
 	if handleLauncherKey(e) {
 		return
 	}
@@ -524,6 +536,17 @@ func handleWmPointer(e vi.Event) {
 	// no press outside a toast; TestToastHitPrecedesTheLauncher pins the
 	// order rather than the coincidence.
 	if down {
+		if notifyCenterClick(px, py) {
+			return
+		}
+	}
+	// The center is painted over the content, so every pointer sample inside
+	// its panel belongs to it, not to the app underneath. Down edges are
+	// handled above; this also consumes motion and release samples.
+	if notifyCenterHit(px, py, vi.ScanoutWidth, vi.ScanoutHeight) {
+		return
+	}
+	if down {
 		if _, onToast := notifyHit(px, py, vi.ScanoutWidth, vi.ScanoutHeight); onToast {
 			notifyClicked(px, py)
 			return
@@ -584,7 +607,7 @@ func handleWmPointer(e vi.Event) {
 			// kernel derives press/release edges from this serialized
 			// stream itself; consumed chrome is never forwarded.
 			contentDown = true
-			vi.WmctlContentPtr(px, py, btn)
+			forwardContentPointer(px, py, btn)
 		}
 		return
 	}
@@ -607,7 +630,7 @@ func handleWmPointer(e vi.Event) {
 		}
 		_ = endRailDrag(px, py)
 		if contentDown {
-			vi.WmctlContentPtr(px, py, btn)
+			forwardContentPointer(px, py, btn)
 			contentDown = false
 		}
 		return
@@ -631,7 +654,7 @@ func handleWmPointer(e vi.Event) {
 		return
 	}
 	if _, onRail := railCellAt(px, py, vi.ScanoutWidth, tabs.Count(), RailHeight); !onRail {
-		vi.WmctlContentPtr(px, py, btn)
+		forwardContentPointer(px, py, btn)
 	}
 }
 

@@ -3996,6 +3996,7 @@ fn italic_shear(dy: usize) usize {
 /// ACTIVE cell (font_metrics), so the painter follows the zoom ladder
 /// — each size's atlas is rasterized at its own pixel size.
 fn draw_atlas_glyph(buf: [*]u8, stride: usize, x0: usize, y0: usize, cp: u21, rgb: u32, italic: bool) void {
+    const blob = font_metrics.active().blob;
     const off: usize = @as(usize, cp - font_metrics.first_cp) * font_metrics.glyph_bytes;
     const row_stride = font_metrics.row_bytes; // cell_w/2 rounded up: 4-bit pixels
     var dy: usize = 0;
@@ -4004,7 +4005,7 @@ fn draw_atlas_glyph(buf: [*]u8, stride: usize, x0: usize, y0: usize, cp: u21, rg
         const row = off + dy * row_stride;
         var gx: usize = 0;
         while (gx < font_metrics.cell_w) : (gx += 1) {
-            const byte = font_metrics.blob[row + gx / 2];
+            const byte = blob[row + gx / 2];
             const lvl: u8 = if (@rem(gx, 2) == 0) byte >> 4 else byte & 0x0f;
             if (lvl == 0) continue;
             if (gx + xoff >= font_metrics.cell_w) continue;

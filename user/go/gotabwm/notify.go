@@ -33,8 +33,9 @@
 //     clicks use, so a toast is one more way to the same focus transition
 //     (WIN_FOCUS to the sender) — not a private path.
 //
-// Non-goals (the card says so): a history centre, sounds, per-app
-// permission gating. Dismissal is a timeout or a click; nothing else.
+// The transient toast strip and the seat-owned history center share each
+// accepted notice. Toasts expire; center entries remain until dismissed or
+// cleared. Sounds and per-app permission gating are out of scope.
 package main
 
 import (
@@ -96,10 +97,11 @@ const (
 // notifyToast is one queued notification. tabID is the SENDER (the window
 // the request carried), and it is what a click focuses — not a slot index.
 type notifyToast struct {
-	tabID   uint32
-	text    string
-	born    uint64
-	expires uint64
+	tabID    uint32
+	text     string
+	born     uint64
+	expires  uint64
+	centerID uint32
 }
 
 // notifyQueue is the seat's toast strip: oldest first, so the newest is
@@ -135,10 +137,11 @@ func notifyQueueSet(q []notifyToast) {
 	}
 }
 
-// notifyPush queues one notification for tabID at tick `ticks` and returns
-// the text as it was bounded onto the wire (NUL-trimmed at 24 bytes by the
-// frame title) plus whether an older entry was dropped to make room.
-// Refuses an empty text before it can paint an empty panel.
+// notifyPush queues one transient toast and adds the accepted notification
+// to the bounded in-memory center history. It returns the text as it was
+// bounded onto the wire (NUL-trimmed at 24 bytes by the frame title) plus
+// whether an older toast was dropped to make room. Empty text is refused
+// before either surface changes.
 func notifyPush(tabID uint32, text string, ticks uint64) (string, bool, bool) {
 	if text == "" {
 		return "", false, false
@@ -150,10 +153,11 @@ func notifyPush(tabID uint32, text string, ticks uint64) (string, bool, bool) {
 		dropped = true
 	}
 	notifyQueue = append(notifyQueue, notifyToast{
-		tabID:   tabID,
-		text:    text,
-		born:    ticks,
-		expires: ticks + NotifyTicks,
+		tabID:    tabID,
+		text:     text,
+		born:     ticks,
+		expires:  ticks + NotifyTicks,
+		centerID: notifyCenterPush(tabID, text),
 	})
 	return text, true, dropped
 }
@@ -184,6 +188,7 @@ func clearNotify(id uint32) int {
 		keep = append(keep, t)
 	}
 	notifyQueueSet(keep)
+	notifyCenterSourceClosed(id)
 	for i := 0; i < gone; i++ {
 		vi.ConsoleLine(MarkerNotifyDismiss + vi.Itoa64(int64(id)))
 	}

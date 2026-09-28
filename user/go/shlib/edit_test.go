@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // feedE pushes bytes through a fresh editor and returns the tty output.
@@ -39,6 +40,50 @@ func TestEditorTyping(t *testing.T) {
 	out = feedE(e, "\x05!")
 	if !strings.Contains(out, "xeho!") {
 		t.Fatalf("ctrl-e append = %q", out)
+	}
+}
+
+func TestEditorUnicodeCursorEditsStayOnRuneBoundaries(t *testing.T) {
+	e := NewEditor("gosh> ", &History{})
+	feedE(e, "AöB")
+	if e.cur != len("AöB") {
+		t.Fatalf("initial cursor = %d, want %d", e.cur, len("AöB"))
+	}
+
+	feedE(e, "\x1b[D")
+	if e.cur != len("Aö") {
+		t.Fatalf("first left cursor = %d, want %d", e.cur, len("Aö"))
+	}
+	feedE(e, "\x1b[D")
+	if e.cur != 1 {
+		t.Fatalf("second left cursor = %d, want 1", e.cur)
+	}
+	feedE(e, "\x1b[C")
+	if e.cur != len("Aö") {
+		t.Fatalf("right cursor = %d, want %d", e.cur, len("Aö"))
+	}
+	feedE(e, "\x7f")
+	if string(e.buf) != "AB" || e.cur != 1 {
+		t.Fatalf("backspace left buf=%q cur=%d, want AB at 1", e.buf, e.cur)
+	}
+
+	feedE(e, "ø")
+	if string(e.buf) != "AøB" || e.cur != len("Aø") {
+		t.Fatalf("Unicode insert left buf=%q cur=%d, want AøB at %d",
+			e.buf, e.cur, len("Aø"))
+	}
+	feedE(e, "\x1b[3~")
+	if string(e.buf) != "Aø" || e.cur != len("Aø") {
+		t.Fatalf("delete left buf=%q cur=%d, want Aø at %d",
+			e.buf, e.cur, len("Aø"))
+	}
+
+	transposed := NewEditor("gosh> ", &History{})
+	feedE(transposed, "AöB")
+	feedE(transposed, "\x14")
+	if string(transposed.buf) != "ABö" || transposed.cur != len("ABö") {
+		t.Fatalf("transpose left buf=%q cur=%d, want ABö at %d",
+			transposed.buf, transposed.cur, len("ABö"))
 	}
 }
 
@@ -304,6 +349,41 @@ func TestEditorLineCap(t *testing.T) {
 	}
 }
 
+func TestEditorRejectsUnicodeRuneAtomicallyAtLineCap(t *testing.T) {
+	e := NewEditor("gosh> ", &History{})
+	e.buf = []byte(strings.Repeat("x", maxLineBytes-1))
+	e.cur = len(e.buf)
+
+	out, _ := e.Feed([]byte{0xC3})
+	if !strings.Contains(string(out), "\x07") {
+		t.Fatalf("overflowing rune lead = %q, want a bell", out)
+	}
+	e.Feed([]byte{0xB6})
+	if len(e.buf) != maxLineBytes-1 || !utf8.Valid(e.buf) {
+		t.Fatalf("rejected rune changed line to len=%d valid=%v", len(e.buf), utf8.Valid(e.buf))
+	}
+
+	feedE(e, "y")
+	if len(e.buf) != maxLineBytes || e.buf[len(e.buf)-1] != 'y' {
+		t.Fatalf("input after rejected rune = len %d, tail %q; want ASCII y accepted", len(e.buf), e.buf[len(e.buf)-1:])
+	}
+}
+
+func TestSearchRejectsUnicodeRuneAtomicallyAtQueryCap(t *testing.T) {
+	e := NewEditor("gosh> ", &History{})
+	e.searching = true
+	e.query = []byte(strings.Repeat("a", maxSearchQuery-1))
+
+	out, _ := e.Feed([]byte{0xC3})
+	if !strings.Contains(string(out), "\x07") {
+		t.Fatalf("overflowing query rune lead = %q, want a bell", out)
+	}
+	e.Feed([]byte{0xB6})
+	if len(e.query) != maxSearchQuery-1 || !utf8.Valid(e.query) {
+		t.Fatalf("rejected query rune changed query to len=%d valid=%v", len(e.query), utf8.Valid(e.query))
+	}
+}
+
 // A lone ESC must not eat the next character. Escape followed by anything but
 // '[' is not a sequence this keymap consumes, so the ESC is dropped and the
 // character is ground input -- otherwise pressing Escape and then typing
@@ -493,6 +573,23 @@ func TestSearchBackspaceTrimsTheQuery(t *testing.T) {
 	}
 }
 
+func TestSearchBackspaceRemovesWholeUnicodeRune(t *testing.T) {
+	h := &History{}
+	h.Push("ö")
+	e := NewEditor("gosh> ", h)
+	drainFeed(e, "\x12ö")
+	if string(e.query) != "ö" {
+		t.Fatalf("query = %q, want ö", e.query)
+	}
+	out := feedE(e, "\x7f")
+	if len(e.query) != 0 {
+		t.Fatalf("query after backspace = %q, want empty", e.query)
+	}
+	if !strings.Contains(out, "(reverse-i-search)`_`: (no match)") {
+		t.Fatalf("empty-query paint = %q", out)
+	}
+}
+
 // TestSearchQueryIsBounded: the query buffer does not grow without limit.
 func TestSearchQueryIsBounded(t *testing.T) {
 	e := NewEditor("gosh> ", &History{})
@@ -659,6 +756,33 @@ func TestHistoryLoadReadsOldestFirst(t *testing.T) {
 	h.Load([]byte("one\ntwo\nthree\n"))
 	if got, want := strings.Join(h.Entries(), ","), "one,two,three"; got != want {
 		t.Fatalf("entries = %q want %q", got, want)
+	}
+}
+
+func TestPastePreservesUTF8Runes(t *testing.T) {
+	e := NewEditor("gosh> ", &History{})
+	line := "echo ┌─┐你 ppp"
+	feedE(e, "echo ")
+	for _, r := range []rune("┌─┐你") {
+		encoded := []byte(string(r))
+		for i, b := range encoded {
+			out, _ := e.Feed([]byte{b})
+			if i+1 < len(encoded) && len(out) != 0 {
+				t.Fatalf("partial UTF-8 rune %q repainted after byte %d: %q",
+					r, i+1, out)
+			}
+			if i+1 == len(encoded) && !strings.Contains(string(out), string(r)) {
+				t.Fatalf("complete UTF-8 rune %q missing from repaint: %q", r, out)
+			}
+		}
+	}
+	feedE(e, " ppp")
+	_, ev := e.Feed([]byte("\n"))
+	if ev.Kind != EvSubmit {
+		t.Fatalf("event = %v, want submit", ev.Kind)
+	}
+	if ev.Line != line {
+		t.Fatalf("submitted line = %q, want %q", ev.Line, line)
 	}
 }
 

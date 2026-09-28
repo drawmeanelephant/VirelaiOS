@@ -402,6 +402,7 @@ func compositeTick(scan []byte, ticks uint64, presents *int) {
 	// in the same tick the pixels stop changing.
 	notifyTick(ticks)
 	painted := paintNotify(scan, vi.ScanoutWidth, vi.ScanoutHeight, ticks)
+	centerPainted := paintNotifyCenter(scan, vi.ScanoutWidth, vi.ScanoutHeight)
 	presented := vi.WmctlRequestPresent() == 0
 	if presented {
 		*presents++
@@ -414,6 +415,9 @@ func compositeTick(scan []byte, ticks uint64, presents *int) {
 	// flushed. A gate that keyed a pixel probe on `gotabwm: notify id=`
 	// would be reading a frame the seat had not presented yet.
 	if line, once := notifyPaintMarker(painted > 0 && presented); once {
+		vi.ConsoleLine(line)
+	}
+	if line, once := notifyCenterPaintMarker(centerPainted > 0, presented); once {
 		vi.ConsoleLine(line)
 	}
 	if restoreWitnessMode && presented && ticks%8 == 0 {
