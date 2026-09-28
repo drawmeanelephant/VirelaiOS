@@ -118,7 +118,11 @@
 //          check, never a CI gate.
 //          Requires --net. OFF by default: the default VM is unchanged.)
 //         [--net-tcp-connect <guest-ip>:<port>[:<payload-file>|ssh]]
-//          [--net-tcp-connect-stream <executable>] (hermetic --net gate only)
+//          [--net-tcp-connect-stream <executable>] (hermetic --net gate only;
+//           its exit closes the connection: status 0 sends FIN, else RST)
+//          [--net-tcp-connect-stream-arg <arg>] (repeatable; stream argv)
+//          [--net-tcp-connect-intruder] (stream only: a second SYN from
+//           another port once the guest speaks; reports whether it answered)
 //          [--net-tcp-connect-after <text>]
 //          [--net-tcp-connect-close-after <text>]
 //          [--net-tcp-connect-secret <s>] (M50 TS4: answer the guest's
@@ -730,11 +734,20 @@ var netTcpConnectSSHGuestDataSeen = false
 // client this pipes a local probe's stdin/stdout through the existing
 // host->guest TCP emulation. It never binds a host port or uses --net-nat.
 var netTcpConnectStreamExec: String?
+var netTcpConnectStreamArgs: [String] = []
 var netTcpStreamProcess: Process?
 var netTcpStreamInput: FileHandle?
 var netTcpStreamTx: [UInt8] = []
 var netTcpStreamInFlight = false
 var netTcpStreamDone = false
+var netTcpStreamEOF = false // the probe exited 0: FIN once its bytes are ACKed
+// A second viewer's SYN, sent from the next source port while the first
+// holds the guest's one connection. The guest's answer (or silence) is the
+// over-cap receipt.
+var netTcpConnectIntruder = false
+var netTcpIntruderSent = false
+var netTcpIntruderAnswered = false
+let netTcpIntruderIsn: UInt32 = 0x0badf00d
 let netTcpStreamLock = NSLock()
 let netTcpStreamMaxTx = 16 * 1024
 let netTcpStreamMaxRx = 64 * 1024
@@ -1282,6 +1295,12 @@ while idx < arguments.count {
     } else if arg == "--net-tcp-connect-stream", idx + 1 < arguments.count {
         netTcpConnectStreamExec = arguments[idx + 1]
         idx += 2
+    } else if arg == "--net-tcp-connect-stream-arg", idx + 1 < arguments.count {
+        netTcpConnectStreamArgs.append(arguments[idx + 1])
+        idx += 2
+    } else if arg == "--net-tcp-connect-intruder" {
+        netTcpConnectIntruder = true
+        idx += 1
     } else if arg == "--net-tcp-connect-ssh-user", idx + 1 < arguments.count {
         netTcpConnectSSHUser = arguments[idx + 1]
         idx += 2
@@ -1735,6 +1754,9 @@ if netTcpConnectGuestIP != nil, netCapturePath == nil {
 if netTcpConnectStreamExec != nil && (netTcpConnectGuestIP == nil || netTcpConnectSSHMode || !netTcpConnectPayload.isEmpty || netNatEnabled) {
     fail("--net-tcp-connect-stream requires --net-tcp-connect <ip>:<port> with --net; no SSH, payload, or NAT")
 }
+if netTcpConnectStreamExec == nil && (!netTcpConnectStreamArgs.isEmpty || netTcpConnectIntruder) {
+    fail("--net-tcp-connect-stream-arg and --net-tcp-connect-intruder require --net-tcp-connect-stream")
+}
 if netTcpConnectSSHMode {
     guard SSHFixtures.cipherSelfCheck() else {
         fail("--net-tcp-connect :ssh cipher self-check FAILED (the OpenSSH PROTOCOL.chacha20poly1305 pinned vector did not reproduce). Refusing to arm the SSH client.")
@@ -2095,6 +2117,14 @@ if let netCapturePath {
                     }
                 }
             }
+            if netTcpIntruderSent, !netTcpIntruderAnswered,
+               let guestIP = netTcpConnectGuestIP, let guestPort = netTcpConnectPort,
+               isTcpSegmentFromGuest(buf, n, guestIP, guestPort, netTcpCliPort &+ 1) {
+                netTcpIntruderAnswered = true
+                let flags = tcpFlags(buf)
+                let verdict = (flags & 0x04) != 0 ? "refused (RST)" : ((flags & 0x12) == 0x12 ? "ADMITTED (SYN-ACK)" : "answered")
+                print("NET-TCP-INTRUDER: the guest \(verdict) flags=0x\(String(flags, radix: 16))")
+            }
             // SH7 (#1083, ADR 0020 Amendment B): the host-initiated inbound
             // TCP client. Match the guest server's segments (src = the
             // guest listener) and drive the handshake / data / close.
@@ -2207,10 +2237,19 @@ if let netCapturePath {
                     } else if netTcpConnectStreamExec != nil {
                         netTcpStreamLock.lock()
                         if !payload.isEmpty {
+                            if netTcpConnectIntruder && !netTcpIntruderSent {
+                                // The guest is ESTABLISHED and serving: now a
+                                // second viewer knocks from the next port.
+                                netTcpIntruderSent = true
+                                let synLen = buildTcpFrameExplicit(&reply, netTcpGuestMAC, [0x02, 0x00, 0x00, 0x00, 0x00, 0x02], netTcpCliSrcIP, guestIP, netTcpCliPort &+ 1, guestPort, netTcpIntruderIsn, 0, 0x02, [])
+                                try? netCaptureReadSocket!.write(contentsOf: Data(reply[0..<synLen]))
+                                print("NET-TCP-INTRUDER: sent a second SYN from port \(netTcpCliPort &+ 1) while the first viewer is connected")
+                            }
                             let fresh = netTcpConnectStreamAccept(seq, payload)
                             if !fresh.isEmpty {
                                 netTcpStreamRxBytes += fresh.count
                                 if netTcpStreamRxBytes <= netTcpStreamMaxRx {
+                                    // nil once the probe exited: a dead viewer reads nothing.
                                     try? netTcpStreamInput?.write(contentsOf: Data(fresh))
                                 } else {
                                     netTcpStreamDone = true
@@ -5410,9 +5449,13 @@ func startNetTcpStream(_ guestIP: [UInt8], _ guestPort: UInt16) {
     let proc = Process()
     let stdin = Pipe(), stdout = Pipe()
     proc.executableURL = URL(fileURLWithPath: path)
+    proc.arguments = netTcpConnectStreamArgs
     proc.standardInput = stdin
     proc.standardOutput = stdout
     proc.standardError = FileHandle.standardError
+    // A viewer that dies mid-update leaves guest bytes in flight; writing
+    // them to its closed pipe must be an error, not a SIGPIPE to the runner.
+    _ = fcntl(stdin.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1)
     do {
         try proc.run()
     } catch {
@@ -5444,11 +5487,37 @@ func startNetTcpStream(_ guestIP: [UInt8], _ guestPort: UInt16) {
             netTcpStreamLock.unlock()
         }
         proc.waitUntilExit()
+        let status = proc.terminationStatus
+        print("NET-TCP-STREAM: probe exited status=\(status)")
+        if netTcpIntruderSent && !netTcpIntruderAnswered {
+            print("NET-TCP-INTRUDER: no answer to the second SYN (dropped without RST)")
+        }
+        // The viewer's exit is its close: a clean exit is a FIN after its
+        // last byte is ACKed, any other exit is a peer that vanished (RST).
         netTcpStreamLock.lock()
-        if proc.terminationStatus != 0 { netTcpStreamDone = true }
+        try? netTcpStreamInput?.close()
+        netTcpStreamInput = nil
+        if status == 0 && !netTcpStreamDone {
+            netTcpStreamEOF = true
+            netTcpStreamPump(guestIP, guestPort)
+        } else {
+            netTcpStreamDone = true
+            netTcpStreamReset(guestIP, guestPort)
+        }
         netTcpStreamLock.unlock()
-        print("NET-TCP-STREAM: probe exited status=\(proc.terminationStatus)")
     }
+}
+
+// Called under streamLock. Only an ESTABLISHED stream is reset: once the
+// guest has closed first there is nothing left to tear down.
+func netTcpStreamReset(_ guestIP: [UInt8], _ guestPort: UInt16) {
+    guard netTcpConnectState == 2 else { return }
+    var rst: [UInt8] = []
+    let len = buildTcpFrameExplicit(&rst, netTcpGuestMAC, [0x02, 0, 0, 0, 0, 0x02],
+        netTcpCliSrcIP, guestIP, netTcpCliPort, guestPort, netTcpCliSeq, netTcpCliAck, 0x14, [])
+    try? netCaptureReadSocket?.write(contentsOf: Data(rst[0..<len]))
+    netTcpConnectState = 3
+    print("NET-TCP-STREAM: the viewer died; sent RST")
 }
 
 // In-order, retransmit-safe byte delivery to the probe. The kernel only has
@@ -5465,6 +5534,18 @@ func netTcpConnectStreamAccept(_ seq: UInt32, _ payload: [UInt8]) -> [UInt8] {
 }
 
 func netTcpStreamPump(_ guestIP: [UInt8], _ guestPort: UInt16) {
+    if netTcpStreamEOF && netTcpStreamTx.isEmpty && !netTcpStreamInFlight && !netTcpStreamDone {
+        netTcpStreamDone = true
+        guard netTcpConnectState == 2 else { return }
+        var fin: [UInt8] = []
+        let len = buildTcpFrameExplicit(&fin, netTcpGuestMAC, [0x02, 0, 0, 0, 0, 0x02],
+            netTcpCliSrcIP, guestIP, netTcpCliPort, guestPort, netTcpCliSeq, netTcpCliAck, 0x11, [])
+        try? netCaptureReadSocket?.write(contentsOf: Data(fin[0..<len]))
+        netTcpCliSeq = netTcpCliSeq &+ 1
+        netTcpConnectState = 4
+        print("NET-TCP-STREAM: the viewer closed; sent FIN")
+        return
+    }
     guard !netTcpStreamInFlight && !netTcpStreamTx.isEmpty && !netTcpStreamDone else { return }
     let count = min(192, netTcpStreamTx.count)
     let chunk = Array(netTcpStreamTx.prefix(count))
