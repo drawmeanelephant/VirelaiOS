@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"errors"
+	"fmt"
 	"io"
 	"testing"
 
@@ -19,8 +21,105 @@ func TestRFBRequiresExplicitOperatorArgument(t *testing.T) {
 	if !rfbRequested([]string{"GOTABWM.ELF", "--rfb-hermetic"}) {
 		t.Fatal("operator opt-in refused")
 	}
-	if rfbInputLimit > 16 || rfbWaitTicks <= 0 {
+	if rfbInputLimit > 16 || newRFBStream(nil).stallNs <= 0 {
 		t.Fatal("client queue/deadlines must be bounded")
+	}
+}
+
+// rfbFakeSocket is the kernel's one-connection TCP as the stream sees it:
+// at most one queued viewer segment, one unACKed send, and an RST.
+type rfbFakeSocket struct {
+	rx    [][]byte
+	reset bool // the viewer's RST arrived (queued rx survives it, as in the kernel)
+	acked bool
+	sent  []byte
+	ackOn int // idle ticks until a pending send is ACKed; <0 never
+	ticks int
+}
+
+func (f *rfbFakeSocket) ready() (int64, int64) {
+	var mask int64
+	if len(f.rx) > 0 || f.reset {
+		mask |= 1
+	}
+	if f.acked && !f.reset {
+		mask |= 2
+	}
+	return mask, 0
+}
+
+func (f *rfbFakeSocket) idle() {
+	f.ticks++
+	if f.ackOn >= 0 && f.ticks >= f.ackOn {
+		f.acked = true
+	}
+}
+
+func (f *rfbFakeSocket) Recv(p []byte) (int, error) {
+	if len(f.rx) > 0 {
+		n := copy(p, f.rx[0])
+		f.rx = f.rx[1:]
+		return n, nil
+	}
+	if f.reset {
+		return 0, vi.ErrPeerGone
+	}
+	return 0, errors.New("ETIMEDOUT")
+}
+
+func (f *rfbFakeSocket) Send(p []byte) (int, error) {
+	f.sent = append(f.sent, p...)
+	f.acked = false
+	return len(p), nil
+}
+
+func (f *rfbFakeSocket) SetRecvDeadline(int64) {}
+
+func rfbFakeStream(f *rfbFakeSocket, stallNs int64) *rfbStream {
+	return &rfbStream{conn: f, ready: f.ready, idle: f.idle, stallNs: stallNs}
+}
+
+// A viewer that dies while a frame waits on its ACK ends the send at once:
+// the stall budget (an hour here) is for a live viewer that stopped ACKing.
+func TestRFBStreamSendSeesPeerReset(t *testing.T) {
+	for _, rx := range [][][]byte{nil, {[]byte("k")}} {
+		f := &rfbFakeSocket{rx: rx, reset: true, ackOn: -1}
+		s := rfbFakeStream(f, 3600_000_000_000)
+		n, err := s.Write(make([]byte, 400))
+		if n != 0 || rfbDropReason(err) != rfbDropPeer || f.ticks != 0 {
+			t.Fatalf("rx %q: wrote %d, err %v after %d ticks", rx, n, err, f.ticks)
+		}
+	}
+}
+
+// Input that arrives while a send waits is held for the session loop, in
+// order, not consumed by the check for a dead peer.
+func TestRFBStreamHoldsInputDuringSend(t *testing.T) {
+	press := rfbPress(1, 300, 400)
+	f := &rfbFakeSocket{rx: [][]byte{press}, ackOn: 1}
+	s := rfbFakeStream(f, 3600_000_000_000)
+	body := bytes.Repeat([]byte{0xab}, vi.TCPPayloadMax+10)
+	if n, err := s.Write(body); n != len(body) || err != nil {
+		t.Fatalf("wrote %d, %v", n, err)
+	}
+	if !bytes.Equal(f.sent, body) {
+		t.Fatal("send bytes changed")
+	}
+	if mask, _ := s.poll(); mask&1 == 0 {
+		t.Fatal("held input not reported readable")
+	}
+	head, tail := make([]byte, 4), make([]byte, 8)
+	n, _ := s.Read(head)
+	m, _ := s.Read(tail)
+	if got := append(head[:n], tail[:m]...); !bytes.Equal(got, press) || s.heldN != 0 {
+		t.Fatalf("held input read back as %v, want %v", got, press)
+	}
+}
+
+func TestRFBStreamSendStallIsBounded(t *testing.T) {
+	f := &rfbFakeSocket{ackOn: -1}
+	if _, err := rfbFakeStream(f, 1).Write([]byte("x")); rfbDropReason(err) != rfbDropStalled {
+		t.Fatalf("unACKed send ended as %v", err)
 	}
 }
 
@@ -123,4 +222,181 @@ func TestRFBDeathReleasesHeldPointer(t *testing.T) {
 	if prevPtrButtons != 0 {
 		t.Fatal("held remote button survived viewer death")
 	}
+}
+
+func rfbTestServer() *rfbServer {
+	return &rfbServer{
+		scan:      make([]byte, vi.ScanoutFbBytes),
+		presented: 1,
+		input:     make(chan remoteInput, rfbInputLimit),
+	}
+}
+
+// rfbTestSession completes a valid 3.8/None handshake, then serves the
+// remaining client bytes to the session loop.
+func rfbTestSession(t testing.TB, after []byte) *rfb.Session {
+	t.Helper()
+	client := append([]byte("RFB 003.008\n\x01\x01"), after...)
+	s, err := rfb.NewSession(bytes.NewReader(client), io.Discard,
+		vi.ScanoutWidth, vi.ScanoutHeight, "VirelaiOS")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Handshake(); err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+func rfbReadable() (int64, int64) { return 1, 0 }
+
+func rfbPress(buttons uint8, x, y uint16) []byte {
+	return []byte{5, buttons, byte(x >> 8), byte(x), byte(y >> 8), byte(y)}
+}
+
+func TestRFBDropReasons(t *testing.T) {
+	for _, c := range []struct {
+		err  error
+		want string
+	}{
+		{fmt.Errorf("%w: client message 99", rfb.ErrProtocol), rfbDropMalformed},
+		{rfb.ErrUnsupported, rfbDropMalformed},
+		{io.EOF, rfbDropPeer},
+		{io.ErrUnexpectedEOF, rfbDropPeer},
+		{vi.ErrPeerGone, rfbDropPeer},
+		{vi.ErrConnClosed, rfbDropPeer},
+		{errRFBSendStalled, rfbDropStalled},
+		{errRFBSocket, rfbDropSocket},
+		{errors.New("ETIMEDOUT"), rfbDropTimeout},
+		{errors.New("EIO"), rfbDropIO},
+	} {
+		if got := rfbDropReason(c.err); got != c.want {
+			t.Errorf("rfbDropReason(%v) = %q want %q", c.err, got, c.want)
+		}
+	}
+}
+
+// Hostile client bytes after a valid handshake. Each case ends the session
+// for its named reason, and nothing after the offending bytes reaches the
+// seat's input queue.
+var rfbHostileCases = []struct {
+	name   string
+	wire   []byte
+	reason string
+	inputs int
+}{
+	{"unknown message", []byte{0xff}, rfbDropMalformed, 0},
+	{"press then unknown message", append(rfbPress(1, 100, 200), 99, 5, 0, 0, 1, 0, 1), rfbDropMalformed, 1},
+	{"oversized SetEncodings", []byte{2, 0, 0xff, 0xff, 0, 0, 0, 0}, rfbDropMalformed, 0},
+	{"palette SetPixelFormat", []byte{0, 0, 0, 0, 8, 8, 0, 0, 0, 7, 0, 7, 0, 3, 0, 3, 6, 0, 0, 0}, rfbDropMalformed, 0},
+	{"update outside the frame", []byte{3, 0, 5, 0, 0, 0, 0, 1, 0, 1}, rfbDropMalformed, 0},
+	{"key state 2", []byte{4, 2, 0, 0, 0, 0, 0, 0x61}, rfbDropMalformed, 0},
+	{"pointer outside the seat", rfbPress(1, 1280, 10), rfbDropMalformed, 0},
+	{"truncated pointer", []byte{5, 1, 0}, rfbDropPeer, 0},
+	{"press then peer death", rfbPress(1, 100, 200), rfbDropPeer, 1},
+}
+
+func TestRFBHostileClientsFailClosed(t *testing.T) {
+	for _, c := range rfbHostileCases {
+		s := rfbTestServer()
+		reason := s.run(rfbTestSession(t, c.wire), rfbReadable, func() {})
+		if reason != c.reason || len(s.input) != c.inputs {
+			t.Errorf("%s: reason %q with %d queued inputs, want %q with %d",
+				c.name, reason, len(s.input), c.reason, c.inputs)
+		}
+	}
+}
+
+func TestRFBRepeatedRequestsCoalesce(t *testing.T) {
+	a := rfb.Request{Incremental: true, Rectangle: rfb.Rectangle{X: 10, Y: 20, Width: 30, Height: 40}}
+	b := rfb.Request{Incremental: true, Rectangle: rfb.Rectangle{X: 100, Y: 5, Width: 16, Height: 16}}
+	want := rfb.Request{Incremental: true, Rectangle: rfb.Rectangle{X: 10, Y: 5, Width: 106, Height: 55}}
+	if got := mergeRFBRequests(a, b); got != want {
+		t.Fatalf("merge %+v want %+v", got, want)
+	}
+	b.Incremental = false
+	if mergeRFBRequests(a, b).Incremental {
+		t.Fatal("a full request merged into an incremental one")
+	}
+	// A full request is answered at once; the next two incremental ones
+	// wait on an unchanged screen together instead of ending the session.
+	wire := []byte{3, 0, 0, 0, 0, 0, 0, 16, 0, 16, 3, 1, 0, 0, 0, 0, 0, 16, 0, 16, 3, 1, 0, 32, 0, 32, 0, 16, 0, 16}
+	s := rfbTestServer()
+	if reason := s.run(rfbTestSession(t, wire), rfbReadable, func() {}); reason != rfbDropPeer {
+		t.Fatalf("repeated requests ended the session as %q", reason)
+	}
+}
+
+func TestRFBInputFloodDropsSession(t *testing.T) {
+	var wire []byte
+	for i := 0; i <= rfbInputLimit; i++ {
+		wire = append(wire, rfbPress(0, uint16(i), 10)...)
+	}
+	s := rfbTestServer()
+	if reason := s.run(rfbTestSession(t, wire), rfbReadable, func() {}); reason != rfbDropFlood {
+		t.Fatalf("undrained input flood ended as %q", reason)
+	}
+	if len(s.input) != rfbInputLimit {
+		t.Fatalf("queue holds %d, want its %d bound", len(s.input), rfbInputLimit)
+	}
+}
+
+// M52's bar for a viewer that dies holding a content press: the app sees
+// the press AND a release at the last point, and the seat's capture state
+// is idle for the next local click.
+func TestRFBPeerDeathMidContentDragReleasesCapture(t *testing.T) {
+	savedTabs, savedForward := tabs, forwardContentPointer
+	savedButtons, savedContent, savedDrag := prevPtrButtons, contentDown, railDragFrom
+	savedLaunch := launch
+	t.Cleanup(func() {
+		tabs, forwardContentPointer = savedTabs, savedForward
+		prevPtrButtons, contentDown, railDragFrom = savedButtons, savedContent, savedDrag
+		launch = savedLaunch
+	})
+	tabs = TabStrip{}
+	if !tabs.OpenTab(7, "Calc") {
+		t.Fatal("OpenTab")
+	}
+	prevPtrButtons, contentDown, railDragFrom = 0, false, -1
+	launch = launcherState{}
+	type sample struct {
+		x, y uint32
+		b    uint8
+	}
+	var got []sample
+	forwardContentPointer = func(x, y uint32, b uint8) int64 {
+		got = append(got, sample{x, y, b})
+		return 0
+	}
+
+	wire := append(rfbPress(1, 300, 400), rfbPress(1, 340, 420)...)
+	s := rfbTestServer()
+	if reason := s.run(rfbTestSession(t, wire), rfbReadable, func() {}); reason != rfbDropPeer {
+		t.Fatalf("mid-drag EOF ended as %q", reason)
+	}
+	s.closed.Store(true)
+	if !s.drainInput() {
+		t.Fatal("dead session not retired after its queue drained")
+	}
+	want := []sample{{300, 400, 1}, {340, 420, 1}, {340, 420, 0}}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("content samples %v want %v", got, want)
+	}
+	if prevPtrButtons != 0 || contentDown {
+		t.Fatalf("capture survived viewer death: buttons=%d contentDown=%t", prevPtrButtons, contentDown)
+	}
+}
+
+func FuzzRFBSessionLoop(f *testing.F) {
+	for _, c := range rfbHostileCases {
+		f.Add(c.wire)
+	}
+	f.Add([]byte{3, 1, 0, 0, 0, 0, 0, 16, 0, 16, 4, 1, 0, 0, 0, 0, 0xff, 0xe3})
+	f.Fuzz(func(t *testing.T, wire []byte) {
+		s := rfbTestServer()
+		reason := s.run(rfbTestSession(t, wire), rfbReadable, func() {})
+		if reason == "" || len(s.input) > rfbInputLimit {
+			t.Fatalf("reason %q with %d queued inputs", reason, len(s.input))
+		}
+	})
 }

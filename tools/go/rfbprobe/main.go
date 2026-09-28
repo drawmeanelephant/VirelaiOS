@@ -1,13 +1,19 @@
 // rfbprobe is a deliberately independent RFB 3.8 client for the hermetic
 // live-rfb gate. Its stdin/stdout are a binary byte stream supplied by the
 // runner's --net attachment, NOT a host TCP socket or routable endpoint.
+// The one exception is -bridge, the trusted-local tape path (ADR 0037 D5):
+// it accepts exactly one viewer on a loopback address and pipes it through.
 package main
 
 import (
 	"encoding/binary"
+	"errors"
+	"flag"
 	"fmt"
 	"io"
+	"net"
 	"os"
+	"time"
 )
 
 const (
@@ -17,33 +23,80 @@ const (
 	patchY = 150
 	patchW = 16
 	patchH = 16
+
+	// Content inside the hosted Calc window, below the seat's rail and away
+	// from the launcher panel: a press here is forwarded to the app.
+	contentX = 88
+	contentY = 158
+
+	// Exit status of a viewer that dies without closing its socket. The
+	// runner answers a non-zero exit with a TCP RST toward the guest.
+	diedStatus = 3
 )
 
+// closeWait bounds how long a probe waits for the seat to hang up. The
+// guest's own read budget is 30 s, so a stalled viewer needs longer.
+var closeWait = 50 * time.Second
+
+// settle gives the seat a composite pass to take earlier input before the
+// next write, so the two land in distinct TCP segments.
+var settle = 3 * time.Second
+
+var modes = map[string]func(io.Reader, io.Writer) error{
+	"pixels":    probe,
+	"security":  probeSecurityRefused,
+	"malformed": probeMalformed,
+	"stall":     probeStall,
+	"die-drag":  probeDieDrag,
+	"die-focus": probeDieFocus,
+}
+
 func main() {
-	if err := probe(os.Stdin, os.Stdout); err != nil {
+	mode := flag.String("mode", "pixels", "probe mode")
+	bridge := flag.String("bridge", "", "loopback host:port for one real viewer (tape only)")
+	flag.Parse()
+	if *bridge != "" {
+		if err := runBridge(*bridge, os.Stdin, os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, "RFBPROBE: FAIL:", err)
+			os.Exit(1)
+		}
+		return
+	}
+	run, ok := modes[*mode]
+	if !ok {
+		fmt.Fprintln(os.Stderr, "RFBPROBE: FAIL: unknown mode", *mode)
+		os.Exit(2)
+	}
+	err := run(os.Stdin, os.Stdout)
+	var death errDied
+	if errors.As(err, &death) {
+		fmt.Fprintln(os.Stderr, "RFBPROBE: viewer dies "+string(death))
+		os.Exit(diedStatus)
+	}
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "RFBPROBE: FAIL:", err)
 		os.Exit(1)
 	}
-	fmt.Fprintln(os.Stderr, "RFBPROBE: pixel and input exchange complete")
+	if *mode == "pixels" {
+		fmt.Fprintln(os.Stderr, "RFBPROBE: pixel and input exchange complete")
+	}
 }
 
-func probe(r io.Reader, w io.Writer) error {
-	var banner [12]byte
-	if _, err := io.ReadFull(r, banner[:]); err != nil {
-		return fmt.Errorf("server banner: %w", err)
-	}
-	if string(banner[:]) != "RFB 003.008\n" {
-		return fmt.Errorf("server banner %q", banner)
-	}
-	if err := write(w, banner[:]); err != nil {
+// errDied is not a failure: the mode's point is to vanish at this moment.
+type errDied string
+
+func (e errDied) Error() string { return "died " + string(e) }
+
+// negotiate runs the client side of RFB 3.8 with security None.
+func negotiate(r io.Reader, w io.Writer) error {
+	if err := readBanner(r); err != nil {
 		return err
 	}
-	var security [2]byte
-	if _, err := io.ReadFull(r, security[:]); err != nil {
-		return fmt.Errorf("security types: %w", err)
+	if err := write(w, []byte("RFB 003.008\n")); err != nil {
+		return err
 	}
-	if security != [2]byte{1, 1} {
-		return fmt.Errorf("security types %v, want exactly None", security)
+	if err := readNoneOffer(r); err != nil {
+		return err
 	}
 	if err := write(w, []byte{1}); err != nil {
 		return err
@@ -76,15 +129,41 @@ func probe(r io.Reader, w io.Writer) error {
 		return fmt.Errorf("server name: %w", err)
 	}
 	fmt.Fprintf(os.Stderr, "RFBPROBE: RFB 3.8 None %dx%d %s\n", frameW, frameH, name)
+	return nil
+}
 
+func readBanner(r io.Reader) error {
+	var banner [12]byte
+	if _, err := io.ReadFull(r, banner[:]); err != nil {
+		return fmt.Errorf("server banner: %w", err)
+	}
+	if string(banner[:]) != "RFB 003.008\n" {
+		return fmt.Errorf("server banner %q", banner)
+	}
+	return nil
+}
+
+func readNoneOffer(r io.Reader) error {
+	var security [2]byte
+	if _, err := io.ReadFull(r, security[:]); err != nil {
+		return fmt.Errorf("security types: %w", err)
+	}
+	if security != [2]byte{1, 1} {
+		return fmt.Errorf("security types %v, want exactly None", security)
+	}
+	return nil
+}
+
+func probe(r io.Reader, w io.Writer) error {
+	if err := negotiate(r, w); err != nil {
+		return err
+	}
 	// Raw only, never a library call into the server codec. The probe asks
 	// for a 16x16 region fully inside Calc's first idle button, where its
 	// token is dark BtnIdle #2d3748. The empty desktop is #182026, so a
 	// passing comparison cannot come from the seat's blank frame alone.
-	if err := write(w, []byte{2, 0, 0, 1, 0, 0, 0, 0}); err != nil {
-		return err
-	}
-	req := []byte{3, 0, 0, patchX, 0, patchY, 0, patchW, 0, patchH}
+	// SetEncodings and the request go out as one write: one TCP segment.
+	req := append([]byte{2, 0, 0, 1, 0, 0, 0, 0}, 3, 0, 0, patchX, 0, patchY, 0, patchW, 0, patchH)
 	if err := write(w, req); err != nil {
 		return err
 	}
@@ -115,15 +194,226 @@ func probe(r io.Reader, w io.Writer) error {
 
 	// Ctrl+Space opens the seat launcher. A left press OUTSIDE its panel
 	// dismisses it. They traverse the same kind-21/19 path as local input.
-	for _, event := range [][]byte{
+	return write(w, concat(
 		key(true, 0xffe3), key(true, ' '), key(false, ' '), key(false, 0xffe3),
 		pointer(1, 100, 600), pointer(0, 100, 600),
-	} {
-		if err := write(w, event); err != nil {
+	))
+}
+
+// probeSecurityRefused asks for VNC authentication (type 2), which the
+// seat never offers, then keeps talking as if it had been let in: a
+// 16-byte challenge answer and a pointer press. None of it may reach the
+// seat, and the seat must hang up.
+func probeSecurityRefused(r io.Reader, w io.Writer) error {
+	if err := readBanner(r); err != nil {
+		return err
+	}
+	if err := write(w, []byte("RFB 003.008\n")); err != nil {
+		return err
+	}
+	if err := readNoneOffer(r); err != nil {
+		return err
+	}
+	answer := make([]byte, 16) // what a VncAuth DES response would occupy
+	for i := range answer {
+		answer[i] = byte(0xa5 ^ i)
+	}
+	if err := write(w, concat([]byte{2}, answer, []byte{1}, pointer(1, contentX, contentY))); err != nil {
+		return err
+	}
+	var result [8]byte
+	if _, err := io.ReadFull(r, result[:]); err != nil {
+		return fmt.Errorf("refusal SecurityResult: %w", err)
+	}
+	if binary.BigEndian.Uint32(result[:4]) != 1 {
+		return fmt.Errorf("SecurityResult %x, want failed (1)", result[:4])
+	}
+	n := binary.BigEndian.Uint32(result[4:])
+	if n == 0 || n > 255 {
+		return fmt.Errorf("refusal reason length %d", n)
+	}
+	reason := make([]byte, n)
+	if _, err := io.ReadFull(r, reason); err != nil {
+		return fmt.Errorf("refusal reason: %w", err)
+	}
+	fmt.Fprintf(os.Stderr, "RFBPROBE: security type 2 refused: %s\n", reason)
+	return expectClose(r, "after the refusal")
+}
+
+// probeMalformed holds a content press, then sends a SetEncodings whose
+// count (65535) is beyond the codec's 256 bound. The seat must drop the
+// session and release the press itself.
+func probeMalformed(r io.Reader, w io.Writer) error {
+	if err := negotiate(r, w); err != nil {
+		return err
+	}
+	if err := write(w, pointer(1, contentX, contentY)); err != nil {
+		return err
+	}
+	// The seat's receipt for the press must land before the malformed bytes.
+	time.Sleep(settle)
+	if err := write(w, []byte{2, 0, 0xff, 0xff, 0, 0, 0, 0}); err != nil {
+		return err
+	}
+	fmt.Fprintln(os.Stderr, "RFBPROBE: sent SetEncodings count=65535 with a held press")
+	return expectClose(r, "after the oversized message")
+}
+
+// probeStall starts a FramebufferUpdateRequest and never finishes it.
+func probeStall(r io.Reader, w io.Writer) error {
+	if err := negotiate(r, w); err != nil {
+		return err
+	}
+	if err := write(w, []byte{3, 0, 0}); err != nil {
+		return err
+	}
+	fmt.Fprintln(os.Stderr, "RFBPROBE: stalled 7 bytes short of a FramebufferUpdateRequest")
+	return expectClose(r, "while stalled mid-message")
+}
+
+// probeDieDrag presses on Calc, drags, then asks for the whole screen raw
+// and vanishes after reading the first rectangle's opening bytes: the
+// viewer dies mid-drag and mid-update at once.
+func probeDieDrag(r io.Reader, w io.Writer) error {
+	if err := negotiate(r, w); err != nil {
+		return err
+	}
+	if err := write(w, concat(
+		pointer(1, contentX, contentY), pointer(1, contentX+40, contentY+30),
+		[]byte{2, 0, 0, 1, 0, 0, 0, 0},
+		[]byte{3, 0, 0, 0, 0, 0, frameW >> 8, frameW & 0xff, frameH >> 8, frameH & 0xff},
+	)); err != nil {
+		return err
+	}
+	var header [16]byte
+	if _, err := io.ReadFull(r, header[:]); err != nil {
+		return fmt.Errorf("FramebufferUpdate: %w", err)
+	}
+	if header[0] != 0 || binary.BigEndian.Uint32(header[12:16]) != 0 {
+		return fmt.Errorf("full-frame update header: %x", header)
+	}
+	part := make([]byte, 2048)
+	if _, err := io.ReadFull(r, part); err != nil {
+		return fmt.Errorf("full-frame pixels: %w", err)
+	}
+	return errDied(fmt.Sprintf("mid-drag and mid-update (%d of %d raw bytes read)",
+		len(part), frameW*frameH*4))
+}
+
+// probeDieFocus opens the launcher, types into its filter, and dies with
+// the key still down: the seat's modal keyboard owner is the one the dead
+// viewer summoned.
+func probeDieFocus(r io.Reader, w io.Writer) error {
+	if err := negotiate(r, w); err != nil {
+		return err
+	}
+	if err := write(w, concat(
+		key(true, 0xffe3), key(true, ' '), key(false, ' '), key(false, 0xffe3),
+		key(true, 'c'),
+	)); err != nil {
+		return err
+	}
+	time.Sleep(settle)
+	return errDied("mid-focus with the launcher open and 'c' held")
+}
+
+// expectClose reads until the seat closes the stream. Any byte the seat
+// sends after a refusal is a failure: nothing may follow a hang-up.
+func expectClose(r io.Reader, when string) error {
+	start := time.Now()
+	done := make(chan error, 1)
+	go func() {
+		var b [1]byte
+		n, err := r.Read(b[:])
+		if n > 0 {
+			done <- fmt.Errorf("seat sent %x %s", b[:n], when)
+			return
+		}
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil && err != io.EOF {
 			return err
 		}
+		fmt.Fprintf(os.Stderr, "RFBPROBE: seat closed the connection %s (%.0fs)\n",
+			when, time.Since(start).Seconds())
+		return nil
+	case <-time.After(closeWait):
+		return fmt.Errorf("seat kept the connection open %s for %s", when, closeWait)
 	}
+}
+
+// runBridge is the D5(1) trusted-local path for the class-C tape: one
+// viewer on loopback, piped to the guest stream, with a short transcript of
+// the negotiation so a failed session says how far it got.
+func runBridge(addr string, guestIn io.Reader, guestOut io.Writer) error {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return err
+	}
+	if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() {
+		return fmt.Errorf("bridge address %q is not loopback", addr)
+	}
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "RFBPROBE: bridge listening %s (one viewer, loopback only)\n", ln.Addr())
+	return bridgeOne(ln.(*net.TCPListener), 120*time.Second, guestIn, guestOut)
+}
+
+func bridgeOne(ln *net.TCPListener, wait time.Duration, guestIn io.Reader, guestOut io.Writer) error {
+	_ = ln.SetDeadline(time.Now().Add(wait))
+	viewer, err := ln.Accept()
+	_ = ln.Close()
+	if err != nil {
+		return fmt.Errorf("no viewer connected: %w", err)
+	}
+	fmt.Fprintf(os.Stderr, "RFBPROBE: bridge viewer %s\n", viewer.RemoteAddr())
+	defer viewer.Close()
+	done := make(chan string, 2)
+	go func() {
+		n, _ := io.Copy(viewer, &transcript{r: guestIn, dir: "seat->viewer", left: 64})
+		done <- fmt.Sprintf("seat->viewer %d bytes", n)
+	}()
+	go func() {
+		n, _ := io.Copy(onlyWriter{guestOut}, &transcript{r: viewer, dir: "viewer->seat", left: 64})
+		done <- fmt.Sprintf("viewer->seat %d bytes", n)
+	}()
+	fmt.Fprintln(os.Stderr, "RFBPROBE: bridge closed:", <-done)
 	return nil
+}
+
+type onlyWriter struct{ w io.Writer }
+
+func (o onlyWriter) Write(p []byte) (int, error) { return o.w.Write(p) }
+
+type transcript struct {
+	r    io.Reader
+	dir  string
+	left int
+}
+
+func (t *transcript) Read(p []byte) (int, error) {
+	n, err := t.r.Read(p)
+	if n > 0 && t.left > 0 {
+		show := p[:n]
+		if len(show) > t.left {
+			show = show[:t.left]
+		}
+		t.left -= len(show)
+		fmt.Fprintf(os.Stderr, "RFBPROBE: bridge %s % x %q\n", t.dir, show, show)
+	}
+	return n, err
+}
+
+func concat(parts ...[]byte) []byte {
+	var out []byte
+	for _, p := range parts {
+		out = append(out, p...)
+	}
+	return out
 }
 
 func key(down bool, sym uint32) []byte {
