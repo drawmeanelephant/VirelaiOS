@@ -177,8 +177,8 @@ func newPanel(ta *tabapp.TabApp) *panel {
 // a row (a palette written while custom stays visible and saved when the
 // theme cycles back: the kernel ignores those keys for any preset, so keeping
 // them costs nothing and keeps the user's colours around). While theme is a
-// preset the table is untouched; keyboard_layout, idle_minutes and notify_dnd
-// remain accepted-unseeded rows exposed on the default surface.
+// preset the table is untouched; keyboard_layout, idle_minutes, notify_dnd and
+// timezone remain accepted-unseeded rows exposed on the default surface.
 func (a *panel) ensurePaletteRows() {
 	if theme, _ := settings.Get(a.disp, "theme"); theme != "custom" {
 		return
@@ -283,6 +283,14 @@ func (a *panel) applyInput() bool {
 			vi.ConsoleLine(markerDiscard + line)
 			return true
 		}
+	}
+	// M83c (#1776): the timezone row takes a fixed offset (UTC, or
+	// UTC+HH:MM). A shape the shared formatter would fall back to UTC on is
+	// refused HERE: a typo must not quietly relabel every clock UTC.
+	if settings.IsTimezoneKey(key) && !settings.ValidTimezone(val) {
+		a.status = "timezone: UTC or UTC+HH:MM"
+		vi.ConsoleLine(markerDiscard + line)
+		return true
 	}
 	a.set(key, val)
 	return true

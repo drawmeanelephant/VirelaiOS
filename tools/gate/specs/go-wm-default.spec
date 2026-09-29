@@ -18,6 +18,10 @@
 # corrupt NOTIFY.HIST is refused whole and heals to an empty one; the boot
 # after finds nothing wrong). The notify -> DND -> held -> restart chain with
 # a real sender is go-dogfood's boots 05/06.
+# M83c (#1776) adds boots 17/18: the `timezone` row is a visible
+# accepted-but-unseeded GOSET row like the two above, and a typed fixed
+# offset survives the safe publish into the next boot (`settings get`). The
+# zone's effect on `date` is go-sh's two-zone boot.
 #
 # The panel takes focus when its declare is accepted and is typed into before
 # the two-tab close choreography completes (the runner's --input-string
@@ -195,16 +199,17 @@ wm=tabwm
 keyboard_layout=de
 EOF
 
-# Boot 01's panel publishes the same rows plus its visible idle_minutes and
-# notify_dnd rows (both accepted-but-unseeded, shown with their defaults).
-# Generate from the kernel fixture to keep its trailing prompt space exact.
+# Boot 01's panel publishes the same rows plus its visible idle_minutes,
+# notify_dnd and timezone rows (all accepted-but-unseeded, shown with their
+# defaults, in Display() order). Generate from the kernel fixture to keep its
+# trailing prompt space exact.
 vgate_setup_python <<'PY'
 import os
 rd = os.environ["RUN_DIR"]
 with open(os.path.join(rd, "settings-healed.expected"), "rb") as src:
     body = src.read()
 with open(os.path.join(rd, "settings-panel.expected"), "wb") as dst:
-    dst.write(body + b"idle_minutes=5\nnotify_dnd=off\n")
+    dst.write(body + b"idle_minutes=5\nnotify_dnd=off\ntimezone=UTC\n")
 PY
 
 # M81g (#1767): the settings table the SNAPSHOT carries, and the one the
@@ -302,10 +307,10 @@ vgate_assert 01 serial-contains 'gotabwm: win gone'
 # takes the typed command line, and publishes.
 vgate_assert 01 serial-contains 'exec: loaded GOSET.ELF'
 vgate_assert 01 serial-contains 'goset: open id='
-vgate_assert 01 serial-contains 'goset: ready keys=11 wm=gotabwm theme=dark mode=rw'
+vgate_assert 01 serial-contains 'goset: ready keys=12 wm=gotabwm theme=dark mode=rw'
 vgate_assert 01 serial-contains 'goset: set keyboard_layout=de'
 vgate_assert 01 serial-contains 'goset: set wm=tabwm'
-vgate_assert 01 serial-contains 'goset: saved keys=11 wm=tabwm theme=dark'
+vgate_assert 01 serial-contains 'goset: saved keys=12 wm=tabwm theme=dark'
 vgate_assert 01 serial-contains 'goset OK'
 # The panel's publish is a real file on the share, including idle_minutes and
 # the M82d2 do-not-disturb default.
@@ -946,12 +951,12 @@ vgate_run 11 -- \
     --script2-after 'gotabwm: win gone' \
     --input-string $'idle_minutes=7\n' \
     --input-string-after 'goset: ready ' \
-    --script-expect 'goset: saved keys=11 wm=gotabwm theme=light' \
+    --script-expect 'goset: saved keys=12 wm=gotabwm theme=light' \
     --script-expect-tail 10 --timeout 300
 
-vgate_assert 11 serial-contains 'goset: ready keys=11 wm=gotabwm theme=light mode=rw'
+vgate_assert 11 serial-contains 'goset: ready keys=12 wm=gotabwm theme=light mode=rw'
 vgate_assert 11 serial-contains 'goset: set idle_minutes=7'
-vgate_assert 11 serial-contains 'goset: saved keys=11 wm=gotabwm theme=light'
+vgate_assert 11 serial-contains 'goset: saved keys=12 wm=gotabwm theme=light'
 vgate_assert 11 share-contains SETTINGS.TXT 'idle_minutes=7'
 vgate_assert 11 serial-absent '[EXC] parking:'
 vgate_assert 11 serial-absent 'exited status=139'
@@ -1030,9 +1035,9 @@ vgate_run 13 -- \
     --script-expect 'gotabwm: notify dnd=on via=settings' \
     --script-expect-tail 10 --timeout 300
 
-vgate_assert 13 serial-contains 'goset: ready keys=11 wm=gotabwm theme=light mode=rw'
+vgate_assert 13 serial-contains 'goset: ready keys=12 wm=gotabwm theme=light mode=rw'
 vgate_assert 13 serial-contains 'goset: set notify_dnd=on'
-vgate_assert 13 serial-contains 'goset: saved keys=11 wm=gotabwm theme=light'
+vgate_assert 13 serial-contains 'goset: saved keys=12 wm=gotabwm theme=light'
 vgate_assert 13 share-contains SETTINGS.TXT 'notify_dnd=on'
 # The seat applied the published value live, and told any subscriber.
 vgate_assert 13 serial-contains 'gotabwm: notify dnd=on via=settings'
@@ -1192,3 +1197,54 @@ vgate_assert 16 serial-contains 'rx-m82d2-healed-ok'
 vgate_assert 16 serial-absent '[EXC] parking:'
 vgate_assert 16 serial-absent 'exited status=139'
 vgate_assert 16 share-equals NOTIFY.HIST notify-empty.expected
+
+# --- M83c (#1776): the timezone row persists -------------------------------
+# Boots 17/18 are the idle_minutes pair's shape: one typed GOSET edit, one
+# safe publish, then a fresh boot reads the row back through the kernel's
+# `settings get`. The value is a fixed offset with the canonical label
+# clockfmt parses; a mistyped one is refused by the panel before it can
+# reach the file (host-tested in user/go/goset), so nothing here stages a
+# bad value.
+vgate_file script-17-focus.txt <<'EOF'
+dui focus 0
+EOF
+
+vgate_file script-17-panel.txt <<'EOF'
+set GOMAXPROCS=1
+exec GOSET.ELF
+EOF
+
+vgate_run 17 -- \
+    --screen '$RUN_DIR/screen-17' \
+    --via-virtio \
+    --script '$RUN_DIR/script-17-focus.txt' \
+    --script-after 'gotabwm: win focus' \
+    --script2 '$RUN_DIR/script-17-panel.txt' \
+    --script2-after 'gotabwm: win gone' \
+    --input-string $'timezone=UTC+05:30\n' \
+    --input-string-after 'goset: ready ' \
+    --script-expect 'goset: saved keys=12 wm=gotabwm theme=light' \
+    --script-expect-tail 10 --timeout 300
+
+vgate_assert 17 serial-contains 'goset: ready keys=12 wm=gotabwm theme=light mode=rw'
+vgate_assert 17 serial-contains 'goset: set timezone=UTC+05:30'
+vgate_assert 17 serial-contains 'goset: saved keys=12 wm=gotabwm theme=light'
+vgate_assert 17 share-contains SETTINGS.TXT 'timezone=UTC+05:30'
+vgate_assert 17 serial-absent '[EXC] parking:'
+vgate_assert 17 serial-absent 'exited status=139'
+
+vgate_file script-18.txt <<'EOF'
+settings get timezone
+echo rx-m83c-tz-persisted
+EOF
+
+vgate_run 18 -- \
+    --screen '$RUN_DIR/screen-18' \
+    --script '$RUN_DIR/script-18.txt' \
+    --script-expect 'rx-m83c-tz-persisted' --timeout 300
+
+vgate_assert 18 serial-contains 'settings: timezone=UTC+05:30'
+vgate_assert 18 share-contains SETTINGS.TXT 'timezone=UTC+05:30'
+vgate_assert 18 serial-contains 'rx-m83c-tz-persisted'
+vgate_assert 18 serial-absent '[EXC] parking:'
+vgate_assert 18 serial-absent 'exited status=139'

@@ -6,6 +6,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"virelai/clockfmt"
 )
 
 // fakeHost is the engine's test kernel: externals resolve to canned exit
@@ -172,7 +174,7 @@ func TestDateBuiltinUsesEpochAndNamesMissingFirmwareClock(t *testing.T) {
 	if status := run("date"); status != 0 {
 		t.Fatalf("date status = %d, want 0", status)
 	}
-	if got := h.outString(); got != "2026-09-10 12:34:56 (epoch=1789043696)\n" {
+	if got := h.outString(); got != "2026-09-10 12:34:56 UTC (epoch=1789043696)\n" {
 		t.Fatalf("date output = %q", got)
 	}
 	h.out = nil
@@ -191,6 +193,32 @@ func TestDateBuiltinUsesEpochAndNamesMissingFirmwareClock(t *testing.T) {
 	}
 	if got := h.outString(); got != "gosh: date: usage: date\n" {
 		t.Fatalf("date args output = %q", got)
+	}
+}
+
+// TestDateBuiltinFormatsInTheConfiguredZone (M83c #1776): the same epoch
+// under the `timezone` row's fixed offset, and an invalid row falling back
+// to UTC rather than shifting every clock silently.
+func TestDateBuiltinFormatsInTheConfiguredZone(t *testing.T) {
+	prevNow, prevZone := dateNow, dateZone
+	t.Cleanup(func() { dateNow, dateZone = prevNow, prevZone })
+	h := newFakeHost()
+	run, _ := session(h)
+	dateNow = func() int64 { return 1_789_043_696 }
+	dateZone = func() clockfmt.Zone { return 5*3600 + 30*60 }
+	if status := run("date"); status != 0 {
+		t.Fatalf("date status = %d, want 0", status)
+	}
+	if got := h.outString(); got != "2026-09-10 18:04:56 UTC+05:30 (epoch=1789043696)\n" {
+		t.Fatalf("zoned date output = %q", got)
+	}
+	h.out = nil
+	dateZone = func() clockfmt.Zone { return -8 * 3600 }
+	if status := run("date"); status != 0 {
+		t.Fatalf("date status = %d, want 0", status)
+	}
+	if got := h.outString(); got != "2026-09-10 04:34:56 UTC-08:00 (epoch=1789043696)\n" {
+		t.Fatalf("west-zoned date output = %q", got)
 	}
 }
 

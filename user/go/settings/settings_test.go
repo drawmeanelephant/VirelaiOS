@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"virelai/clockfmt"
 	"virelai/vi"
 )
 
@@ -215,8 +216,9 @@ func TestDisplaySurfacesAbsentKnownKeysWithTheValueInForce(t *testing.T) {
 	d := f.Display()
 	// The file row plus the kernel keys and accepted-unseeded rows are
 	// filled out, never duplicated.
-	if len(d) != len(KnownKeys)+len(KeyboardLayoutKeys)+len(IdleKeys)+len(NotifyKeys) {
-		t.Fatalf("display rows = %d, want %d", len(d), len(KnownKeys)+len(KeyboardLayoutKeys)+len(IdleKeys)+len(NotifyKeys))
+	want := len(KnownKeys) + len(KeyboardLayoutKeys) + len(IdleKeys) + len(NotifyKeys) + len(TimezoneKeys)
+	if len(d) != want {
+		t.Fatalf("display rows = %d, want %d", len(d), want)
 	}
 	if v, ok := Get(d, "notify_dnd"); !ok || v != "off" {
 		t.Fatalf("notify_dnd row = %q ok=%v, want the compiled default off", v, ok)
@@ -232,6 +234,9 @@ func TestDisplaySurfacesAbsentKnownKeysWithTheValueInForce(t *testing.T) {
 	}
 	if v, ok := Get(d, "idle_minutes"); !ok || v != "5" {
 		t.Fatalf("idle_minutes row = %q ok=%v, want the compiled default", v, ok)
+	}
+	if v, ok := Get(d, "timezone"); !ok || v != "UTC" {
+		t.Fatalf("timezone row = %q ok=%v, want the compiled default", v, ok)
 	}
 	if v, ok := Get(d, "hostname"); !ok || v != "box" {
 		t.Fatalf("file row lost: %q ok=%v", v, ok)
@@ -586,8 +591,14 @@ func TestOptionalRowsRespectFullTable(t *testing.T) {
 	if _, found := Get(full, "notify_dnd"); found {
 		t.Fatal("full table materialized notify_dnd beyond the kernel cap")
 	}
+	if _, found := Get(full, "timezone"); found {
+		t.Fatal("full table materialized timezone beyond the kernel cap")
+	}
 	if _, found := Get(display, "notify_dnd"); found {
 		t.Fatal("a table full after layout+idle materialized notify_dnd beyond the kernel cap")
+	}
+	if _, found := Get(display, "timezone"); found {
+		t.Fatal("a table full after layout+idle materialized timezone beyond the kernel cap")
 	}
 }
 
@@ -663,5 +674,52 @@ func TestIdleMinutesAcceptedUnseededAndBounded(t *testing.T) {
 		t.Fatal("GOSET display cannot round-trip via the safe codec")
 	} else if v, found := Get(rows, "idle_minutes"); !found || v != "7" {
 		t.Fatalf("round-trip idle_minutes = %q found=%v", v, found)
+	}
+}
+
+// M83c (#1776): the timezone row is accepted-but-unseeded and cyclable, and
+// its resolver is strict-fallback — a value that does not parse is UTC, so a
+// typo can never shift every clock silently.
+func TestTimezoneAcceptedUnseededCyclableAndFallsBackToUTC(t *testing.T) {
+	if _, known := Known("timezone"); known {
+		t.Fatal("the kernel does not seed timezone")
+	}
+	if !Editable(TimezoneKey) || !IsTimezoneKey(TimezoneKey) || IsTimezoneKey("time") {
+		t.Fatal("GOSET must be able to edit exactly timezone")
+	}
+	if got, ok := Default(TimezoneKey); !ok || got != "UTC" {
+		t.Fatalf("Default(timezone) = (%q,%v), want (UTC,true)", got, ok)
+	}
+	vocab, ok := Vocab(TimezoneKey)
+	if !ok || len(vocab) != len(clockfmt.Offsets) || vocab[0] != clockfmt.Label(clockfmt.Offsets[0]) {
+		t.Fatalf("timezone vocab = %v ok=%v, want clockfmt's curated labels", vocab, ok)
+	}
+	for _, val := range []string{"UTC", "UTC+05:30", "UTC-08:00", "UTC+05:45"} {
+		if !ValidTimezone(val) {
+			t.Errorf("ValidTimezone(%q) = false", val)
+		}
+	}
+	for _, val := range []string{"", "utc", "UTC+5:30", "UTC+15:00", "Europe/Paris", "5:30"} {
+		if ValidTimezone(val) {
+			t.Errorf("ValidTimezone(%q) = true", val)
+		}
+	}
+	f := File{Rows: []Setting{{Key: TimezoneKey, Val: "UTC+05:30"}}, State: StateOK}
+	if z := f.Timezone(); z != 5*3600+30*60 {
+		t.Fatalf("persisted timezone = %d, want 19800", z)
+	}
+	if z := (File{State: StateMissing}).Timezone(); z != clockfmt.UTC {
+		t.Fatalf("absent timezone = %d, want UTC", z)
+	}
+	bad := File{Rows: []Setting{{Key: TimezoneKey, Val: "Europe/Paris"}}, State: StateOK}
+	if z := bad.Timezone(); z != clockfmt.UTC {
+		t.Fatalf("invalid persisted timezone = %d, want the UTC fallback", z)
+	}
+	rows, ok := Parse(Render(f.Display()))
+	if !ok {
+		t.Fatal("GOSET display cannot round-trip via the safe codec")
+	}
+	if v, found := Get(rows, TimezoneKey); !found || v != "UTC+05:30" {
+		t.Fatalf("round-trip timezone = %q found=%v", v, found)
 	}
 }
