@@ -40,6 +40,12 @@ let package = Package(
             name: "VSSH",
             path: "Sources/VSSH"
         ),
+        // M83b (#1775): the host SNTP responder behind `--net-sntp-respond`.
+        // Pure Swift/Foundation, zero Virtualization imports.
+        .target(
+            name: "VSNTP",
+            path: "Sources/VSNTP"
+        ),
         // #1278: the VM stop-reason recorder — the host half of the fault/state
         // recorder that unblocks #1261. Pure Swift/Foundation, ZERO
         // Virtualization imports, so its formatting and ordering rules are
@@ -50,12 +56,12 @@ let package = Package(
         ),
         .executableTarget(
             name: "VMRunner",
-            dependencies: ["VFWire", "VSSH", "VMPostmortem"],
+            dependencies: ["VFWire", "VSSH", "VSNTP", "VMPostmortem"],
             path: "Sources/VMRunner"
         ),
         .testTarget(
             name: "VMRunnerTests",
-            dependencies: ["VFWire", "VSSH", "VMPostmortem"]
+            dependencies: ["VFWire", "VSSH", "VSNTP", "VMPostmortem"]
         )
     ],
     swiftLanguageModes: [.v5]

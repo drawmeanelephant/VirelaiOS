@@ -108,6 +108,7 @@ const sys_win_set_unsaved = syscall.sys_win_set_unsaved;
 const sys_win_set_visible = syscall.sys_win_set_visible;
 const sys_wmctl = syscall.sys_wmctl;
 const sys_time = syscall.sys_time;
+const sys_time_set = syscall.sys_time_set;
 const sys_tty_attach = syscall.sys_tty_attach;
 const sys_tty_net_auth = syscall.sys_tty_net_auth;
 const sys_principal = syscall.sys_principal;
@@ -165,7 +166,7 @@ test "syscall: runtime table has 128 slots and seventy-eight unique implemented 
             implemented += 1;
         }
     }
-    try std.testing.expectEqual(@as(usize, 78), implemented);
+    try std.testing.expectEqual(@as(usize, 79), implemented);
     try std.testing.expectEqualStrings("sys_pipe_read", entry_info(sys_pipe_read).?.name);
     try std.testing.expectEqualStrings("sys_pipe_write", entry_info(sys_pipe_write).?.name);
     try std.testing.expectEqualStrings("sys_font_size", entry_info(sys_font_size).?.name);
@@ -253,13 +254,14 @@ test "syscall: adapter decodes x8 and x0-x5 and unknown numbers return ENOSYS" {
     // Unimplemented in-range slots still return ENOSYS (65..72 are now
     // registered rows; 73/74 are ADR 0027's sys_thread/sys_futex; 75 is
     // issue #1228's sys_exnotify; 76 is issue #1163 phase 2's
-    // sys_sock_ready — use 78/79, still unregistered).
-    try std.testing.expect(exceptions.frame_write(&frame, 8, 78));
+    // sys_sock_ready; 77 is M66a's sys_file_sync and 78 is M83b's
+    // sys_time_set — use 79/80, still unregistered).
+    try std.testing.expect(exceptions.frame_write(&frame, 8, 79));
     try std.testing.expect(handle_svc(&frame, svc_immediate));
     try std.testing.expectEqual(error_result(.enosys), exceptions.frame_read(&frame, 0));
-    try std.testing.expectEqual(@as(u64, 1), call_count(78));
+    try std.testing.expectEqual(@as(u64, 1), call_count(79));
 
-    try std.testing.expect(exceptions.frame_write(&frame, 8, 79));
+    try std.testing.expect(exceptions.frame_write(&frame, 8, 80));
     try std.testing.expect(handle_svc(&frame, svc_immediate));
     try std.testing.expectEqual(error_result(.enosys), exceptions.frame_read(&frame, 0));
 }
@@ -1251,7 +1253,7 @@ test "syscall: counters are monotonic and report is deterministic" {
     var con = mock.console();
     report(&con);
     try std.testing.expectEqualStrings(
-        "syscalls: slots=64 implemented=78\n" ++
+        "syscalls: slots=64 implemented=79\n" ++
             "  0 sys_ping calls=2\n" ++
             "  1 sys_write calls=0\n" ++
             "  2 sys_yield calls=0\n" ++
@@ -1329,7 +1331,8 @@ test "syscall: counters are monotonic and report is deterministic" {
             "  74 sys_futex calls=0\n" ++
             "  75 sys_exnotify calls=0\n" ++
             "  76 sys_sock_ready calls=0\n" ++
-            "  77 sys_file_sync calls=0\n",
+            "  77 sys_file_sync calls=0\n" ++
+            "  78 sys_time_set calls=0\n",
         mock.contents(),
     );
 }
@@ -3787,7 +3790,7 @@ test "syscall: SYS_TIME (slot 66, #1058) returns the firmware wall-clock epoch" 
     // TS5 slot 70 (sys_secret_get), TS4 slot 71 (sys_tty_net_auth);
     // M51 SSH-P1 (#1166) slot 72 (sys_getrandom); issue #1228 slot 75;
     // issue #1163 phase 2 slot 76 (sys_sock_ready).
-    try std.testing.expectEqual(@as(usize, 78), syscall.implemented_count);
+    try std.testing.expectEqual(@as(usize, 79), syscall.implemented_count);
 
     const saved_epoch = timer.boot_epoch_secs;
     const saved_ticks = timer.ticks;
@@ -3804,6 +3807,54 @@ test "syscall: SYS_TIME (slot 66, #1058) returns the firmware wall-clock epoch" 
     timer.boot_epoch_secs = 1_789_043_696; // 2026-09-10 12:34:56 wall-clock
     timer.ticks = 3;
     try std.testing.expectEqual(@as(u64, 1_789_043_699), dispatch(sys_time, .{ 0, 0, 0, 0, 0, 0 }, &frame));
+}
+
+test "syscall: SYS_TIME_SET (slot 78, M83b #1775) re-anchors the wall clock inside its range" {
+    userspace.init();
+    init(test_writer);
+    _ = scheduler.init();
+    _ = scheduler.register_worker(0x2000);
+    _ = scheduler.register_user(0x3000, 0); // task 2 = process 0 (uid_user)
+    scheduler.start();
+    var frame = fresh_frame();
+
+    try std.testing.expectEqualStrings("sys_time_set", entry_info(sys_time_set).?.name);
+    try std.testing.expectEqual(@as(u64, 78), sys_time_set);
+
+    const saved_epoch = timer.boot_epoch_secs;
+    const saved_ticks = timer.ticks;
+    defer {
+        timer.boot_epoch_secs = saved_epoch;
+        timer.ticks = saved_ticks;
+    }
+    timer.boot_epoch_secs = std.math.maxInt(u64);
+    timer.ticks = 5;
+
+    // An EL1h caller (the shell) is not a process: EINVAL, clock untouched.
+    const synced: u64 = 1_789_043_696; // 2026-09-10 12:34:56 wall-clock
+    try std.testing.expectEqual(error_result(.einval), dispatch(sys_time_set, .{ synced, 0, 0, 0, 0, 0 }, &frame));
+    try std.testing.expectEqual(error_result(.enosys), dispatch(sys_time, .{ 0, 0, 0, 0, 0, 0 }, &frame));
+
+    try std.testing.expect(scheduler.yield_current()); // shell -> worker
+    try std.testing.expect(scheduler.yield_current()); // worker -> user (2)
+    try std.testing.expectEqual(@as(usize, 2), scheduler.current_id());
+
+    // A process gives a no-firmware-epoch boot a clock; slot 66 reads it back.
+    try std.testing.expectEqual(@as(u64, 0), dispatch(sys_time_set, .{ synced, 0, 0, 0, 0, 0 }, &frame));
+    try std.testing.expectEqual(synced, dispatch(sys_time, .{ 0, 0, 0, 0, 0, 0 }, &frame));
+    // The tick count did not move; the clock keeps advancing from the anchor.
+    timer.ticks = 9;
+    try std.testing.expectEqual(synced + 4, dispatch(sys_time, .{ 0, 0, 0, 0, 0, 0 }, &frame));
+
+    // Every out-of-range value is EINVAL and leaves the clock exactly as it was.
+    const held = dispatch(sys_time, .{ 0, 0, 0, 0, 0, 0 }, &frame);
+    for ([_]u64{ 0, timer.wall_epoch_min - 1, timer.wall_epoch_max + 1, 0xffff_ffff, std.math.maxInt(u64) }) |bad| {
+        try std.testing.expectEqual(error_result(.einval), dispatch(sys_time_set, .{ bad, 0, 0, 0, 0, 0 }, &frame));
+        try std.testing.expectEqual(held, dispatch(sys_time, .{ 0, 0, 0, 0, 0, 0 }, &frame));
+    }
+    // A backwards correction is accepted: this is a set, not a monotonic clock.
+    try std.testing.expectEqual(@as(u64, 0), dispatch(sys_time_set, .{ synced - 3600, 0, 0, 0, 0, 0 }, &frame));
+    try std.testing.expectEqual(synced - 3600, dispatch(sys_time, .{ 0, 0, 0, 0, 0, 0 }, &frame));
 }
 
 test "syscall: SYS_PRINCIPAL (slot 68, #1135) reports uid_user and is read-only" {
@@ -3878,18 +3929,22 @@ test "syscall: M50 TS3 gate table is explicit, bounded, and exactly the ADR 0024
         // M51 SSH-P1 (#1166): the EL0 entropy read is capability-free by
         // contract — every principal may read entropy (ADR 0025 D5).
         sys_getrandom,
+        // M83b (#1775): the wall-clock write is bounded by its range check,
+        // not a capability — every EL0 principal is uid_user with no caps and
+        // nothing elevates, so a row here could only ever say no.
+        sys_time_set,
     };
     for (not_gated) |number| {
         try std.testing.expectEqual(@as(?u32, null), syscall.gated(number));
     }
     // Every gated row names an EXISTING implemented slot, and TS3 adds NO
-    // slot: implemented_count is 77 after issue #1228's slot 75 (73/74 came
-    // from ADR 0027, 76 from issue #1163 phase 2).
+    // slot: implemented_count is 79 after M83b's slot 78 (issue #1228's 75,
+    // ADR 0027's 73/74, issue #1163 phase 2's 76 and M66a's 77 came earlier).
     for (syscall.capability_gates) |gate| {
         try std.testing.expect(gate.number < syscall.implemented_count);
         try std.testing.expect(entry_info(gate.number) != null);
     }
-    try std.testing.expectEqual(@as(usize, 78), syscall.implemented_count);
+    try std.testing.expectEqual(@as(usize, 79), syscall.implemented_count);
 }
 
 test "syscall: no slot can raise uid/caps (TS3 consumes caps, adds no setter)" {
