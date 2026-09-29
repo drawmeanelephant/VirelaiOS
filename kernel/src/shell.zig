@@ -3951,6 +3951,17 @@ fn park_body(mon: *monitor.Monitor) callconv(.c) void {
             // mutate virtio_net's TCP state — the same NET-domain bracket
             // as the RX drain above.
             svclock.net.acquire();
+            // M84f (#1836): flush the over-cap refusal's own slot — a RST+ACK
+            // staged by the drain above goes out from the idle loop (the same
+            // transmit-from-idle precedent as the retransmit below), so every
+            // driving seam (syscall / `net tcp` / net front-end) answers an
+            // over-cap SYN within one idle tick.
+            if (virtio_net.tcp.rst_pending) {
+                var rst_out: usize = 0;
+                if (virtio_net.net_tcp_send(virtio_net.tcp.rst_msg[0..virtio_net.tcp.rst_len], &rst_out) == .ok) {
+                    virtio_net.tcp.rst_pending = false;
+                }
+            }
             switch (virtio_net.tcp.poll_rto()) {
                 .none => {},
                 .retransmit => {
