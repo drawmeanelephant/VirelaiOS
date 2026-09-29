@@ -1470,7 +1470,7 @@ pub const NetStats = extern struct {
     lease_server: [4]u8 = .{ 0, 0, 0, 0 },
     lease_secs: u32 = 0,
     // ---- TCP ----------------------------------------------------------------
-    tcp_state: u8 = 0, // 0 idle,1 syn_sent,2 established,3 fin_sent,4 closed
+    tcp_state: u8 = 0, // 0 idle,1 listen,2 syn_sent,3 syn_received,4 established,5 fin_sent,6 closed (the tcp.State enum naturals)
     tcp_peer_ip: [4]u8 = .{ 0, 0, 0, 0 },
     tcp_peer_port: u16 = 0,
     // ---- UDP ----------------------------------------------------------------
@@ -2647,6 +2647,7 @@ fn handle_tcp_connect(args: Args, _: *exceptions.VectorFrame) u64 {
 
     while (tcp.state == .syn_sent) {
         virtio_net.net_rx_drain();
+        tcp_flush_rst(); // M84f: an over-cap SYN during our connect is refused too
         if (tcp.ack_pending) {
             var ack_len: usize = 0;
             if (virtio_net.net_tcp_send(tcp.msg[0..tcp.msg_len], &ack_len) == .ok) {
@@ -2699,6 +2700,18 @@ fn handle_tcp_connect(args: Args, _: *exceptions.VectorFrame) u64 {
     return error_result(.einval);
 }
 
+/// M84f (#1836): flush the over-cap refusal's OWN bounded slot
+/// (`tcp.rst_msg` — never `tcp.msg`, so the connection's pending segment
+/// and retransmit state are undisturbed). Best-effort: a transport
+/// refusal keeps the refusal queued for the next TX site (and the shell
+/// idle loop). Called at every syscall TCP TX site — the refusal goes
+/// out before the connection's own queued segments.
+fn tcp_flush_rst() void {
+    if (!tcp.rst_pending) return;
+    var out_len: usize = 0;
+    if (virtio_net.net_tcp_send(tcp.rst_msg[0..tcp.rst_len], &out_len) == .ok) tcp.rst_pending = false;
+}
+
 /// Slot 31: `sys_tcp_send(buf, len)`: Send up to payload_max (64) bytes.
 fn handle_tcp_send(args: Args, _: *exceptions.VectorFrame) u64 {
     const address = args[0];
@@ -2709,6 +2722,19 @@ fn handle_tcp_send(args: Args, _: *exceptions.VectorFrame) u64 {
     if (!tcp_owned_by_caller()) return error_result(.eacces);
 
     if (uaccess.copy_in(&tcp_send_staging, address, @intCast(len)) != .ok) return error_result(.efault);
+
+    // M84f (#1836): TX-site discipline — flush the over-cap refusal's own
+    // slot first, then any built segment in the shared `tcp.msg` slot
+    // BEFORE the data build would overwrite it (a queued SYN-ACK is an
+    // unACKed segment too). A flush failure is the transport's einval —
+    // the slot and its occupant stay intact for the caller's retry.
+    tcp_flush_rst();
+    if (tcp.ack_pending) {
+        var ctl_len: usize = 0;
+        if (virtio_net.net_tcp_send(tcp.msg[0..tcp.msg_len], &ctl_len) != .ok) return error_result(.einval);
+        tcp.ack_pending = false;
+        tcp.ack_sent += 1;
+    }
 
     tcp.build_data_msg(tcp_send_staging[0..@intCast(len)]);
     var out_len: usize = 0;
@@ -2736,6 +2762,7 @@ fn handle_tcp_recv(args: Args, _: *exceptions.VectorFrame) u64 {
 
     virtio_net.net_rx_drain();
 
+    tcp_flush_rst(); // M84f: the refusal goes before the built ACK
     if (tcp.ack_pending) {
         var out_len: usize = 0;
         if (virtio_net.net_tcp_send(tcp.msg[0..tcp.msg_len], &out_len) == .ok) {
@@ -2771,6 +2798,16 @@ fn handle_tcp_close(_: Args, _: *exceptions.VectorFrame) u64 {
         return 0;
     }
     if (tcp.state == .established) {
+        // M84f (#1836): the shared-slot discipline — flush the refusal's
+        // own slot, then a built segment (a queued SYN-ACK/ACK) before the
+        // FIN build overwrites it (as in `handle_tcp_send`).
+        tcp_flush_rst();
+        if (tcp.ack_pending) {
+            var ctl_len: usize = 0;
+            if (virtio_net.net_tcp_send(tcp.msg[0..tcp.msg_len], &ctl_len) != .ok) return error_result(.einval);
+            tcp.ack_pending = false;
+            tcp.ack_sent += 1;
+        }
         tcp.build_fin_msg();
         var out_len: usize = 0;
         if (virtio_net.net_tcp_send(tcp.msg[0..tcp.msg_len], &out_len) == .ok) {
@@ -2786,6 +2823,7 @@ fn handle_tcp_close(_: Args, _: *exceptions.VectorFrame) u64 {
         virtio_net.net_rx_drain();
     }
 
+    tcp_flush_rst(); // M84f: a refusal queued by the drains above still goes
     if (tcp.ack_pending or tcp.state == .closed) {
         if (tcp.ack_pending) {
             var out_len: usize = 0;
