@@ -1451,3 +1451,40 @@ their numbers and results, and neither NTP nor kernel-side formatting is
 introduced. GOSELF compares the live epoch to the host wall clock on the
 class-B reference host; host tests pin the `-ENOSYS` path without inventing
 an epoch.
+
+## Amendment (2026-09-28, M83b #1775 — slot 78 `sys_time_set`, the bounded wall-clock write)
+
+| Slot | Name | Contract |
+|------|------|----------|
+| 78 | `sys_time_set` | `time_set(epoch_secs) -> i64`. Re-anchor the wall clock so slot 66 reads `epoch_secs` (Unix seconds) now. Returns `0`. `EINVAL` for a non-process caller or an `epoch_secs` outside `[1_735_689_600, 4_102_444_800]` (2025-01-01 through 2100-01-01 UTC); the clock is untouched on every refusal. Plain number, no uaccess. |
+
+`implemented_count` becomes 79 (rows 0–78; reserved slots become 79–127).
+
+**Why a new slot.** M83a exposed the wall clock through slot 66, which takes no
+arguments. Slot 66 cannot also carry a write: existing callers do not zero `a0`,
+so a stray register value would set the clock. A separate row keeps every
+existing caller's meaning and gives the write its own named line in the monitor's
+`syscalls` report.
+
+**What it moves.** The clock is `boot_epoch_secs + ticks`. The call moves the
+anchor (`boot_epoch_secs = epoch_secs - ticks`) and never the tick count, so
+uptime, the monotonic counter and every tick-based deadline are unaffected. It
+works on a boot with no firmware epoch (`no_boot_epoch`, where slot 66 was
+`ENOSYS`), which is the case an SNTP sync exists for. Resolution is the 1 Hz
+tick: the clock never claims sub-second accuracy.
+
+**Trust posture.** There is no capability gate. Every EL0 process is `uid_user`
+with no caps and no syscall elevates (ADR 0024 D5), so a `capability_gates` row
+could only ever answer no and `time sync` would be unusable from the desktop
+shell. The bound is the range check, which refuses the values a bug or a hostile
+reply produces (0, a wrapped NTP era, all-ones). The consequence is real and
+stated: any EL0 process may now step the wall clock, and time feeds TLS
+validity checks. This matches the existing same-uid model (any EL0 process may
+already kill another's), and `syscalls` shows a non-zero
+`sys_time_set calls=` when anyone has used it. A capability row becomes the
+right shape the day a second principal is reachable from EL0.
+
+**Consumers.** `user/go/timesync` (one-shot SNTP over the UDP seam) and GOSH
+`time sync`. GOSELF pins the write's range checks and read-back on the class-B
+reference host. Not introduced: an NTP daemon or periodic sync, reference-clock
+discipline, auth extension fields, or a timezone (M83c).

@@ -89,6 +89,34 @@ pub fn wall_epoch() ?u64 {
     return boot_epoch_secs + ticks;
 }
 
+/// The range `set_wall_epoch` accepts, in Unix seconds: 2025-01-01T00:00:00Z
+/// through 2100-01-01T00:00:00Z. Slot 78 is callable by every EL0 process, so
+/// the kernel refuses the values a bug or a hostile reply would produce (0,
+/// a wrapped NTP era, all-ones) instead of trusting the caller's arithmetic.
+pub const wall_epoch_min: u64 = 1_735_689_600;
+pub const wall_epoch_max: u64 = 4_102_444_800;
+
+/// Re-anchor the wall clock so `wall_epoch()` reads `epoch` now (M83b
+/// #1775). The clock is `boot_epoch_secs + ticks`, so the anchor moves and
+/// the tick count does not: uptime and every tick-based deadline are
+/// untouched. Works from the no-firmware-epoch state too, which is the point
+/// for a boot with no RTC. False (nothing changed) when `epoch` is outside
+/// `[wall_epoch_min, wall_epoch_max]`.
+///
+/// The result is only as fine as the 1 Hz tick: a tick landing between the
+/// read and the store is caught by re-reading, but the clock never claims
+/// sub-second accuracy.
+pub fn set_wall_epoch(epoch: u64) bool {
+    if (epoch < wall_epoch_min or epoch > wall_epoch_max) return false;
+    var seen = @atomicLoad(u64, &ticks, .monotonic);
+    while (true) {
+        boot_epoch_secs = epoch - seen;
+        const now = @atomicLoad(u64, &ticks, .monotonic);
+        if (now == seen) return true;
+        seen = now;
+    }
+}
+
 /// Current LOCAL seconds since midnight: `wall_epoch() % 86400`. Null when
 /// there is no firmware epoch.
 pub fn local_time_of_day() ?u64 {
@@ -417,4 +445,43 @@ test "timer: wall_epoch tracks the boot epoch and local_time_of_day wraps (#1058
     set_boot_epoch_secs(boot - (12 * 3600 + 34 * 60 + 56) + 23 * 3600 + 59 * 60 + 50);
     ticks = 20;
     try std.testing.expectEqual(@as(?u64, 10), local_time_of_day());
+}
+
+test "timer: set_wall_epoch re-anchors the clock and refuses out-of-range values (M83b #1775)" {
+    const saved = boot_epoch_secs;
+    const saved_ticks = ticks;
+    defer {
+        boot_epoch_secs = saved;
+        ticks = saved_ticks;
+    }
+
+    // A boot with no firmware epoch has no clock; a set gives it one.
+    set_boot_epoch_secs(std.math.maxInt(u64));
+    ticks = 7;
+    try std.testing.expectEqual(@as(?u64, null), wall_epoch());
+    const synced: u64 = 1_789_043_696; // 2026-09-10 12:34:56
+    try std.testing.expect(set_wall_epoch(synced));
+    try std.testing.expectEqual(@as(?u64, synced), wall_epoch());
+
+    // The tick count is untouched, so the clock keeps advancing from the new
+    // anchor and uptime is not rewritten.
+    ticks = 10;
+    try std.testing.expectEqual(@as(?u64, synced + 3), wall_epoch());
+    try std.testing.expectEqual(@as(u64, 10), ticks);
+
+    // A backwards step is allowed: this is a correction, not a monotonic clock.
+    try std.testing.expect(set_wall_epoch(synced - 3600));
+    try std.testing.expectEqual(@as(?u64, synced - 3600), wall_epoch());
+
+    // The range is inclusive at both ends; one second outside either end,
+    // zero, and all-ones change nothing.
+    try std.testing.expect(set_wall_epoch(wall_epoch_min));
+    try std.testing.expectEqual(@as(?u64, wall_epoch_min), wall_epoch());
+    try std.testing.expect(set_wall_epoch(wall_epoch_max));
+    try std.testing.expectEqual(@as(?u64, wall_epoch_max), wall_epoch());
+    const held = boot_epoch_secs;
+    for ([_]u64{ 0, wall_epoch_min - 1, wall_epoch_max + 1, 0xffff_ffff, std.math.maxInt(u64) }) |bad| {
+        try std.testing.expect(!set_wall_epoch(bad));
+        try std.testing.expectEqual(held, boot_epoch_secs);
+    }
 }
