@@ -194,6 +194,196 @@ manifest executable name and the builder's output name in agreement. A gate
 may stage an app directly without adding it to the daily catalogue, but that
 proves the binary, not the launcher integration.
 
+## 7. Claim a manifest entry (M82a, #1768)
+
+The catalogue row in [`image/apps.txt`](../image/apps.txt) — baked into the
+image as `/host/APPS.TXT` — is a **versioned, additive** schema. Fields 1–4
+are the v1 shape every reader already parses; everything a v2 row adds is a
+trailing `key=value` field:
+
+```
+NAME | Display Name | icon | dock=true | v=2 | argv= | caps= | opens=
+```
+
+A minimal v2 entry for an undocked app:
+
+```
+MYAPP.ELF | My App | y | dock=false | v=2 | caps=window | opens=text
+```
+
+The rules the parser actually enforces (the format's normative description is
+the comment header at the top of `image/apps.txt`):
+
+- A row with a tail must carry `v=` and all four positional fields: field 4 is
+  the dock flag in every reader, so an undocked v2 row writes `dock=false`
+  rather than leaving the field empty. A `v=` value that is not a positive
+  integer refuses the row instead of guessing at it.
+- Trailing fields are order-insensitive and unknown keys are ignored, so a v1
+  reader that stops at field 4 is not wrong. No `v=` means v1 and no trailing
+  fields are honoured.
+- `argv=` is the fixed arguments after the binary, space separated, at most 8
+  (the kernel's exec ceiling). Extra arguments are dropped rather than refused
+  — the app still launches.
+- `caps=` is declarative metadata: nothing grants or gates power from it. The
+  vocabulary is `file window audio timer memory process debug net term`, the
+  WASM import contract's Cap names.
+- `opens=` names what the app can be handed: an M81b mime type (`text image
+  audio archive binary`) or a URL scheme (`http https`).
+- Keep the manifest small: every reader buffers 4096 bytes and a file at or
+  over that is truncated at the last whole line, silently dropping tail rows
+  from a seat's menu.
+
+The Go decoder is pure and host-tested
+([`user/go/gotabwm/apps.go`](../user/go/gotabwm/apps.go), `parseAppLine`), and
+its tolerance of trailing v1 fields is itself pinned. The seam is pinned by
+[`go-wm-default`](../tools/gate/specs/go-wm-default.spec) (dock decode),
+[`go-dogfood`](../tools/gate/specs/go-dogfood.spec) (launcher row → entry) and
+[`live-inventory`](../tools/gate/specs/live-inventory.spec).
+
+## 8. Settings: subscribe, do not re-read (M82b, #1769)
+
+When a persisted setting changes, the seat broadcasts the key over the same
+WM_RPC wire the rest of the app platform uses. The mailbox carries only the
+key and never becomes a second settings store: the subscriber re-reads the
+persisted value. With `appkit` the common case is one line inside the section
+1 skeleton:
+
+```go
+var theme string // the app's current theme; draw() reads it
+
+loop := appkit.NewLoop(ta, func() { draw(ta) }, nil)
+loop.SubscribeSetting("theme", func(value string) bool {
+    theme = value // value is the current persisted value
+    return true   // true only when the frame changed: the loop presents
+})
+loop.Run()
+```
+
+The handler runs in the same loop that dispatches window and input events,
+and `loop.OnSettingPresent` fires after the resulting frame was presented — a
+marker printed there is honest (section 2). A key `settings.Editable` refuses
+is not subscribed: `SubscribeSetting` returns false and the app keeps its
+static behaviour.
+
+Outside the loop the same seam is explicit: `settings.Subscribe(key,
+uint32(ta.Win), appName)` subscribes and `settings.PollChange(uint32(ta.Win))`
+consumes one delivered key. A writer is GOSET's shape — save crash-safe first,
+publish only after the save returned:
+
+```go
+f := settings.Load()
+f.Rows = settings.Set(f.Rows, "theme", "light")
+if f.Save() == 0 {
+    settings.PublishChange("theme", uint32(ta.Win), appName) // after Save
+}
+```
+
+Subscribing is best-effort like every WM_RPC call: a missing seat, a timeout,
+or an id that does not fit the wire is an honest `false`. The seam is pinned by
+[`go-wm-seat`](../tools/gate/specs/go-wm-seat.spec) (the codec and the notice
+dispatch) and [`go-wm-default`](../tools/gate/specs/go-wm-default.spec) (app A
+changes a setting, app B's repaint follows without a restart).
+
+## 9. Chords: one owner per chord (M82c, #1770)
+
+A global shortcut is a row in the registry
+[`user/go/chords/table.go`](../user/go/chords/table.go) — the one table that
+names every global chord, its owner, and the dispatch point it is served at.
+An app's chords are rows in the app's own scope, which exclusive focus makes
+legal (GOEDIT.ELF and NOTE.ELF both own `ctrl+s`, at different dispatch
+points):
+
+```go
+{Chord{ModCtrl, UsageS}, "MYAPP.ELF", AppScope("MYAPP.ELF"), "",
+    "save the document", "#<your card>", false},
+```
+
+The fields are the chord (modifier mask plus USB HID usage), the owner (the
+app binary), the scope — `AppScope("MYAPP.ELF")` must name the owner;
+`Validate` refuses drift — an action name (seat rows only), the label GOSET
+shows, the card that landed the row, and the frozen flag (kernel chrome rows
+only).
+
+Adding the row is how you claim the chord. `chords.Table.Validate()` refuses
+two owners of one chord at one dispatch point with the named
+`ErrChordConflict` sentence, so a conflict fails `go test ./chords/...` and
+the seat's fail-closed prologue (the deliberate fixture is seeded through
+`/host/GOTABWM.CHORDCONFLICT` and refused) rather than surprising a person.
+GOSET's shortcuts view (its own registered chord, `ctrl+shift+h`) renders the
+whole table — look there before you claim anything. The seam is pinned by
+[`go-wm-hid`](../tools/gate/specs/go-wm-hid.spec) (the registry walk, the
+refused fixture, the table dump, the GOSET view) and
+[`live-help`](../tools/gate/specs/live-help.spec) (the monitor's chord list is
+unchanged).
+
+## 10. Notify: tell the user something (M82d1/d2, #1771/#1785)
+
+```go
+if !ta.Notify("copied notes.txt") {
+    vi.ConsoleLine("myapp: notify refused") // the user was not told; say so
+}
+```
+
+One call (WM_RPC kind 12). The frame's 24-byte title is the whole message
+budget, so the text is a short human string — never a path or a payload. The
+request id is the sender, so the toast is click-to-focus back to your tab;
+when an app dies its toasts are dropped with it (the M52 client-death
+discipline) while the notifications center keeps the history.
+
+Best-effort, and the refusals are honest: empty text, a sender with no tab, a
+missing seat, or a timeout ack all return `false`. A full toast queue drops
+its oldest entry and counts the drops. Return values are the only truth —
+never assume the user was told.
+
+Do-not-disturb is the user's choice, not an error. With the `notify_dnd`
+settings key on (GOSET's row, or the center's header toggle) the seat still
+acks your notice — an app must not learn the user is away — but holds the
+toast off the strip. The notice lands in the notifications center and its
+crash-safe history survives a seat restart. So `true` means "the seat took
+it", not "the user saw it". The seam is pinned by
+[`go-wm-seat`](../tools/gate/specs/go-wm-seat.spec) (notify → center lists →
+dismiss → clear), [`go-dogfood`](../tools/gate/specs/go-dogfood.spec) (DND
+holds the toast but keeps the notice; history survives the restart) and
+[`go-wm-default`](../tools/gate/specs/go-wm-default.spec) (the DND key and the
+corrupt-history heal).
+
+## 11. Logs and crash receipts (M82e, #1772)
+
+When an app misbehaves there must be somewhere to look. `vi.Log` appends one
+line to a bounded per-app ring on the share, and the failure path publishes a
+receipt — the GOSELF shape:
+
+```go
+defer func() {
+    if recovered := recover(); recovered != nil {
+        outcome := "panic"
+        if s, ok := recovered.(string); ok {
+            outcome += ": " + s
+        }
+        _ = vi.Log(appName, outcome)
+        _ = vi.WriteCrashReceipt(appName, outcome) // /host/CRASH/MYAPP.ELF.TXT
+        vi.Exit(2)
+    }
+}()
+_ = vi.Log(appName, "started")
+```
+
+The ring is `/host/APPLOG/<APP>.LOG`: at most 32 lines of 256 bytes, each
+message normalized to one line and capped before it enters. The receipt at
+`/host/CRASH/<APP>.TXT` carries the app, the outcome, and the last eight log
+lines. These are deliberately small share files a host-side helper can read
+after the app exits — diagnostic records only, never an isolation or
+authorization mechanism (ADR 0024). In the guest, GOSH's `log [APP]` reads
+one app's ring or all of them (`log` with no argument).
+
+Markers still rule (section 2): log the line after the work returned.
+`GOSH.ELF` logs its own start/exit and writes a receipt on every exit — copy
+that shape rather than inventing a second one. The seam is pinned by
+[`go-panic`](../tools/gate/specs/go-panic.spec) (a panicking app leaves a
+receipt the host reads), [`go-selftest`](../tools/gate/specs/go-selftest.spec)
+(the ring-buffer receipt, host-compared) and
+[`go-sh`](../tools/gate/specs/go-sh.spec) (the `log` builtin).
+
 Before opening a PR, run the focused host tests, the app's class-B gate,
 `bash tools/status/verify-issue-coordination.sh`, and the relevant portable
 checks. The canonical gate policy is in [`docs/testing.md`](testing.md); the
