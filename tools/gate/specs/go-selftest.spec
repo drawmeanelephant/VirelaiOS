@@ -187,6 +187,9 @@
 # value. The host bounds its numeric epoch against its OWN pre/post run
 # samples with 60 seconds of slack; -ENOSYS has a named fallback in unit
 # tests rather than a made-up calendar value.
+# M83b (#1775): clock-set drives the slot-78 setter on the live kernel (the
+# refusals, a +100 s step with read-back, the exact restore) and is the LAST
+# case, so the clock-epoch bound above still sees the untouched boot clock.
 #
 # HOST PREREQUISITE (fails the gate honestly when missing):
 #   bash tools/go/build-goself.sh   ->  .build/go/GOSELF.ELF
@@ -231,7 +234,11 @@ case app-logs pass
 case file-lease pass
 case window pass
 case clock-epoch pass
-summary cases=22 failed=0
+case clock-set pass
+summary cases=23 failed=0
+EOF
+vgate_file clock-set.expected <<'EOF'
+case clock-set refused=4 stepped=+100 restored=yes
 EOF
 vgate_file file-lease.expected <<'EOF'
 case file-lease dir=LEASES clock=yes foreign-refused=-11 stale-takeover=ok dead-holder=ok foreign-release=-11 release=ok free=0
@@ -362,6 +369,7 @@ vgate_assert 01 serial-contains 'selftest: case intake pass'
 vgate_assert 01 serial-contains 'selftest: case intake-altered pass'
 vgate_assert 01 serial-contains 'selftest: case clock-monotonic pass'
 vgate_assert 01 serial-contains 'selftest: case clock-epoch pass'
+vgate_assert 01 serial-contains 'selftest: case clock-set pass'
 vgate_assert 01 serial-contains 'selftest: case file-write pass'
 vgate_assert 01 serial-contains 'selftest: case file-roundtrip pass'
 vgate_assert 01 serial-contains 'selftest: case file-truncate pass'
@@ -404,12 +412,15 @@ vgate_assert 01 share-equals SELFTEST/IN/fixture.txt intake-fixture.expected
 vgate_assert 01 share-equals SELFTEST/OUT/trash.copy trash.expected
 vgate_assert 01 share-equals SELFTEST/OUT/app-log.copy app-log.expected
 vgate_assert 01 share-equals SELFTEST/OUT/file-lease.ok file-lease.expected
+# M83b (#1775): the setter drilled on the real kernel -- four out-of-range
+# epochs refused, +100 s stepped and read back, then stepped exactly back.
+vgate_assert 01 share-equals SELFTEST/OUT/clock-set.ok clock-set.expected
 # The takeover evidence: the record as the FOREIGN writer left it (stamped
 # past the expiry), not GOSELF's own — the copy is of the pre-takeover text.
 vgate_assert 01 share-contains SELFTEST/OUT/file-lease.copy 'token=0123456789abcdef'
 vgate_assert 01 share-contains SELFTEST/OUT/file-lease.copy 'path=/host/SELFTEST/LEASE/TARGET.TXT'
 vgate_assert 01 share-equals CRASH/M82E.TEST.TXT app-log-receipt.expected
-vgate_assert 01 share-contains SELFTEST/OUT/summary.txt 'summary cases=22 failed=0'
+vgate_assert 01 share-contains SELFTEST/OUT/summary.txt 'summary cases=23 failed=0'
 
 # The load-bearing assert: the copies and the receipts on the host's own
 # filesystem must be byte-exact, the share's directory state must agree with
@@ -486,7 +497,7 @@ win_open_rect = (32, 32, 640, 400)
 win_viewport_w = 1100
 win_viewport_h = 720
 
-want_summary = b"summary cases=22 failed=0\n"
+want_summary = b"summary cases=23 failed=0\n"
 want_hello = b"goself smoke\n"
 want_intake_receipt = b"case intake path=IN/fixture.txt bytes=25 match=yes\n"
 want_altered_receipt = b"case intake-altered path=IN/altered.txt bytes=25 differs=yes\n"

@@ -14,6 +14,16 @@
 #   boot 02   GOSH types `exec GOFETCH.ELF https://10.0.0.2:24533/`
 #             against the pinned TLS 1.3 fixture relayed to the guest
 #             ->  `gofetch: handshake ok` / `gofetch: body complete`
+#   boot 03   M83b (#1775): GOSH types `time sync 10.0.0.2`, `echo rc=$?` and
+#             `date` against the runner's SNTP responder serving host time
+#             +3600 s -> the guest clock is STEPPED an hour forward, exit 0,
+#             and the next `date` reads the new clock
+#   boot 04   M83b: the same three lines with NO responder -> one query on the
+#             wire, `no reply ... clock untouched`, exit 1, and `date` still
+#             reads the boot clock
+#   boot 05   M83b: bare `time sync` (the default NAME) with no network at all
+#             -> the live-net-offline sentence, `clock untouched`, exit 1, and
+#             no DNS query attempted
 #
 # WHY THE CONSOLE SHELL AND NOT THE WINDOW: a windowed GOSH would need
 # GOTABWM.ELF staged and a third live Go runtime (seat + shell + CLI), and
@@ -80,6 +90,20 @@ with open(os.path.join(rd, "typed-ping.bin"), "wb") as f:
     f.write(b"exec GOPING.ELF -c 3 10.0.0.2\r")
 with open(os.path.join(rd, "typed-fetch.bin"), "wb") as f:
     f.write(b"exec GOFETCH.ELF https://10.0.0.2:24533/\r")
+PY
+
+# M83b (#1775): boots 03 and 04 type three lines in one burst. `time sync` is a
+# GOSH builtin (no ELF to stage); the host wall clock at setup is the
+# reference the served and set epochs are bounded against.
+vgate_setup_python <<'PY'
+import os, time
+rd = os.environ["RUN_DIR"]
+with open(os.path.join(rd, "host-epoch-start.txt"), "w") as f:
+    f.write(str(time.time()))
+with open(os.path.join(rd, "typed-sync.bin"), "wb") as f:
+    f.write(b"time sync 10.0.0.2\recho rc=$?\rdate\r")
+with open(os.path.join(rd, "typed-sync-default.bin"), "wb") as f:
+    f.write(b"time sync\recho rc=$?\rdate\r")
 PY
 
 # The TLS 1.3 responder the Go shelf's own fixtures use (leaf.example.com,
@@ -182,4 +206,196 @@ if "gofetch: dial 10.0.0.2 24533" not in ser:
 if "gofetch: fail-closed" in ser:
     sys.exit("FAIL: the fetch failed closed; the fixture body was not read")
 print("go-net-clis 02 ok: GOSH exec'd GOFETCH.ELF, TLS handshake + body")
+PY
+
+# --- boot 03: `time sync` steps the clock from the SNTP responder ----------
+# M83b (#1775). The runner answers the guest's UDP :123 query with the HOST
+# wall clock + 3600 s, so a correct client must land an hour ahead of the
+# boot clock. Three lines are typed at once: the sync, its exit status, and
+# `date` -- the read-back through the ordinary slot-66 path, a different code
+# path from the client's own after-set read.
+vgate_run 03 -- \
+    --screen '$RUN_DIR/screen-03' \
+    --net '$RUN_DIR/cap-03.bin' --net-arp-respond 10.0.0.2 \
+    --net-sntp-respond 10.0.0.2 --net-sntp-skew 3600 \
+    --script '$RUN_DIR/net.txt' \
+    --script2 '$RUN_DIR/sh.txt' --script2-after 'net arp: ' \
+    --script3 '$RUN_DIR/typed-sync.bin' --script3-after 'gosh: attached' \
+    --script-expect '(epoch=' --timeout 180
+
+vgate_assert 03 serial-contains 'gosh: attached'
+vgate_assert 03 serial-contains 'time sync: synced server=10.0.0.2 stratum=2 delay='
+vgate_assert 03 serial-absent 'clock untouched'
+vgate_assert 03 output-contains 'NET-SNTP: answered 10.0.0.1:7000 served_unix='
+vgate_assert 03 serial-absent '[EXC] parking:'
+vgate_assert 03 serial-absent 'fatal error: runtime:'
+vgate_assert 03 python <<'PY'
+import os, re, sys, time
+rd = os.environ["RUN_DIR"]
+ser = open(os.environ["VG_SER"], errors="replace").read()
+out = open(os.path.join(rd, "run-" + os.environ["VG_TAG"] + ".out"), errors="replace").read()
+start = float(open(os.path.join(rd, "host-epoch-start.txt")).read())
+end = time.time()
+
+# The host side: the responder served the host clock + 3600, and the epoch it
+# served is bounded by the host's own samples around the run.
+m = re.search(r"NET-SNTP: answered 10\.0\.0\.1:7000 served_unix=(\d+) skew=3600 originate=([0-9a-f]{16})", out)
+if not m:
+    sys.exit("FAIL: no NET-SNTP answer line with skew=3600 in the runner output")
+served, originate = int(m.group(1)), m.group(2)
+if not start + 3600 - 2 <= served <= end + 3600 + 2:
+    sys.exit("FAIL: served epoch %d outside host interval [%d, %d] + 3600" % (served, start, end))
+
+# The wire: exactly ONE guest query to 10.0.0.2:123 from the seam's fixed
+# source port, a 48-byte v4 client packet, and its transmit stamp is the
+# originate the responder echoed (so the reply answered THIS query).
+d = open(os.path.join(rd, "cap-03.bin"), "rb").read()
+off, queries = 0, []
+while off < len(d):
+    if d[off+12:off+14] == b"\x08\x00":
+        flen = 14 + ((d[off+16] << 8) | d[off+17])
+        f = d[off:off+flen]
+        off += flen
+        if f[23] == 17 and f[30:34] == bytes([10, 0, 0, 2]) and f[36:38] == b"\x00\x7b":
+            queries.append(f)
+    else:
+        off += 42
+if len(queries) != 1:
+    sys.exit("FAIL: want exactly 1 SNTP query on the wire, saw %d" % len(queries))
+q = queries[0]
+if q[34:36] != (7000).to_bytes(2, "big") or len(q) != 42 + 48 or q[42] != 0x23:
+    sys.exit("FAIL: query shape src=%r len=%d b0=%#x" % (q[34:36], len(q), q[42]))
+if q[42+40:42+48].hex() != originate:
+    sys.exit("FAIL: originate %s does not echo the query's transmit stamp %s"
+             % (originate, q[42+40:42+48].hex()))
+
+# The guest side: the console line, the correction it names, the exit status,
+# and the read-back through `date`, in that order.
+typed = re.search(r"(?m)^gosh: line time sync 10\.0\.0\.2", ser)
+line = re.search(r"(?m)^time sync: synced server=10\.0\.0\.2 stratum=2 delay=(\d+)ms "
+                 r"correction=([+-]\d+)s epoch=(\d+)$", ser)
+rc = re.search(r"(?m)^rc=(\d+)\s*$", ser)
+dline = re.search(r"(?m)^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) \(epoch=(\d+)\)$", ser)
+for name, mm in (("typed line", typed), ("sync line", line), ("rc line", rc), ("date line", dline)):
+    if not mm:
+        sys.exit("FAIL: no %s in the serial log" % name)
+if not typed.start() < line.start() < rc.start() < dline.start():
+    sys.exit("FAIL: order want typed < sync < rc < date")
+if rc.group(1) != "0":
+    sys.exit("FAIL: `time sync` exit status %s, want 0" % rc.group(1))
+correction, set_epoch, date_epoch = int(line.group(2)), int(line.group(3)), int(dline.group(2))
+# The boot clock came from the host's own clock, so an hour of skew reads as
+# about +3600 (a few seconds of boot-clock drift and tick phase allowed).
+if not 3590 <= correction <= 3610:
+    sys.exit("FAIL: correction %+d, want about +3600" % correction)
+# The set epoch is the served second plus what elapsed since, and `date`
+# reads the same clock a moment later.
+if not served <= set_epoch <= served + 10:
+    sys.exit("FAIL: set epoch %d not within 10 s of served %d" % (set_epoch, served))
+if not set_epoch <= date_epoch <= set_epoch + 30:
+    sys.exit("FAIL: date epoch %d not within 30 s after set epoch %d" % (date_epoch, set_epoch))
+print("go-net-clis 03 ok: served %d (host+3600), 1 query, correction %+d, set %d, date %d"
+      % (served, correction, set_epoch, date_epoch))
+PY
+
+# --- boot 04: no reply leaves the clock alone -------------------------------
+# M83b. The route is real (ARP resolves 10.0.0.2) but nothing answers UDP
+# :123, so the client sends ONE query, waits its 5 s budget and gives up.
+# Honest failure is the acceptance: the line names it, the status is 1, and
+# the clock `date` then reads is still the boot clock, not a stepped one.
+vgate_run 04 -- \
+    --screen '$RUN_DIR/screen-04' \
+    --net '$RUN_DIR/cap-04.bin' --net-arp-respond 10.0.0.2 \
+    --script '$RUN_DIR/net.txt' \
+    --script2 '$RUN_DIR/sh.txt' --script2-after 'net arp: ' \
+    --script3 '$RUN_DIR/typed-sync.bin' --script3-after 'gosh: attached' \
+    --script-expect '(epoch=' --timeout 180
+
+vgate_assert 04 serial-contains 'gosh: attached'
+vgate_assert 04 serial-contains 'time sync: no reply from 10.0.0.2 within 5s; clock untouched'
+vgate_assert 04 serial-absent 'time sync: synced'
+vgate_assert 04 serial-absent '[EXC] parking:'
+vgate_assert 04 serial-absent 'fatal error: runtime:'
+vgate_assert 04 python <<'PY'
+import os, re, sys, time
+rd = os.environ["RUN_DIR"]
+ser = open(os.environ["VG_SER"], errors="replace").read()
+out = open(os.path.join(rd, "run-" + os.environ["VG_TAG"] + ".out"), errors="replace").read()
+start = float(open(os.path.join(rd, "host-epoch-start.txt")).read())
+end = time.time()
+if "NET-SNTP" in out:
+    sys.exit("FAIL: a responder answered in the no-responder run")
+
+d = open(os.path.join(rd, "cap-04.bin"), "rb").read()
+off, queries = 0, 0
+while off < len(d):
+    if d[off+12:off+14] == b"\x08\x00":
+        flen = 14 + ((d[off+16] << 8) | d[off+17])
+        f = d[off:off+flen]
+        off += flen
+        if f[23] == 17 and f[30:34] == bytes([10, 0, 0, 2]) and f[36:38] == b"\x00\x7b":
+            queries += 1
+    else:
+        off += 42
+if queries != 1:
+    sys.exit("FAIL: want exactly 1 SNTP query (no retry), saw %d" % queries)
+
+typed = re.search(r"(?m)^gosh: line time sync 10\.0\.0\.2", ser)
+fail = re.search(r"(?m)^time sync: no reply from 10\.0\.0\.2 within 5s; clock untouched$", ser)
+rc = re.search(r"(?m)^rc=(\d+)\s*$", ser)
+dline = re.search(r"(?m)^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) \(epoch=(\d+)\)$", ser)
+for name, mm in (("typed line", typed), ("failure line", fail), ("rc line", rc), ("date line", dline)):
+    if not mm:
+        sys.exit("FAIL: no %s in the serial log" % name)
+if not typed.start() < fail.start() < rc.start() < dline.start():
+    sys.exit("FAIL: order want typed < failure < rc < date")
+if rc.group(1) != "1":
+    sys.exit("FAIL: `time sync` exit status %s, want 1" % rc.group(1))
+epoch = int(dline.group(2))
+# Still the boot clock: the host's own clock within the 60 s slack go-selftest
+# uses for the same reading.
+if not start - 60 <= epoch <= end + 60:
+    sys.exit("FAIL: date epoch %d outside host interval [%d, %d] with 60 s slack" % (epoch, start, end))
+print("go-net-clis 04 ok: 1 query, no reply, exit 1, clock untouched (date epoch %d)" % epoch)
+PY
+
+# --- boot 05: offline says offline ------------------------------------------
+# M83b. No --net at all, so the guest has no IP. Bare `time sync` names the
+# default server, which needs DNS -- and the client must say "offline" (the
+# live-net-offline sentence) before it tries a resolver it cannot reach, not
+# surface the resolver's ARP-flavoured send refusal.
+vgate_run 05 -- \
+    --screen '$RUN_DIR/screen-05' \
+    --script '$RUN_DIR/sh.txt' \
+    --script3 '$RUN_DIR/typed-sync-default.bin' --script3-after 'gosh: attached' \
+    --script-expect '(epoch=' --timeout 120
+
+vgate_assert 05 serial-contains 'gosh: attached'
+vgate_assert 05 serial-contains 'time sync: offline — no IP address (set one: net ip <a.b.c.d> or net dhcp)'
+vgate_assert 05 serial-contains 'time sync: clock untouched'
+vgate_assert 05 serial-absent 'time sync: synced'
+vgate_assert 05 serial-absent 'cannot resolve'
+vgate_assert 05 serial-absent '[EXC] parking:'
+vgate_assert 05 serial-absent 'fatal error: runtime:'
+vgate_assert 05 python <<'PY'
+import os, re, sys, time
+rd = os.environ["RUN_DIR"]
+ser = open(os.environ["VG_SER"], errors="replace").read()
+start = float(open(os.path.join(rd, "host-epoch-start.txt")).read())
+end = time.time()
+typed = re.search(r"(?m)^gosh: line time sync$", ser)
+fail = re.search(r"(?m)^time sync: clock untouched$", ser)
+rc = re.search(r"(?m)^rc=(\d+)\s*$", ser)
+dline = re.search(r"(?m)^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) \(epoch=(\d+)\)$", ser)
+for name, mm in (("typed line", typed), ("failure line", fail), ("rc line", rc), ("date line", dline)):
+    if not mm:
+        sys.exit("FAIL: no %s in the serial log" % name)
+if not typed.start() < fail.start() < rc.start() < dline.start():
+    sys.exit("FAIL: order want typed < failure < rc < date")
+if rc.group(1) != "1":
+    sys.exit("FAIL: `time sync` exit status %s, want 1" % rc.group(1))
+epoch = int(dline.group(2))
+if not start - 60 <= epoch <= end + 60:
+    sys.exit("FAIL: date epoch %d outside host interval [%d, %d] with 60 s slack" % (epoch, start, end))
+print("go-net-clis 05 ok: offline, exit 1, clock untouched (date epoch %d)" % epoch)
 PY
