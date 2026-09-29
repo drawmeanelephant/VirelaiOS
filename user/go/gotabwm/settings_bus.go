@@ -88,6 +88,9 @@ func applySettingsPublish(req vi.WmRpc) bool {
 	if key == "theme" {
 		_ = theme.Set(value)
 	}
+	if settings.IsNotifyDNDKey(key) {
+		applyNotifyDNDSetting(value)
+	}
 	listeners := broadcastSettingsChange(key)
 	vi.ConsoleLine(MarkerSettingsBroadcast + key + " listeners=" + vi.Itoa64(int64(listeners)))
 	return true
@@ -117,6 +120,9 @@ func seedSettingsBusValues(file settings.File) {
 		appendKey(key.Name)
 	}
 	for _, key := range settings.FontKeys {
+		appendKey(key.Name)
+	}
+	for _, key := range settings.NotifyKeys {
 		appendKey(key.Name)
 	}
 }

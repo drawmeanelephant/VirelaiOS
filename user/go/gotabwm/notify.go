@@ -35,7 +35,10 @@
 //
 // The transient toast strip and the seat-owned history center share each
 // accepted notice. Toasts expire; center entries remain until dismissed or
-// cleared. Sounds and per-app permission gating are out of scope.
+// cleared. M82d2 (#1785) adds the policy half in notify_policy.go: while
+// do-not-disturb is on a notice goes to the center only, and the center's
+// history survives a seat restart. Sounds and per-app permission gating are
+// out of scope.
 package main
 
 import (
@@ -138,13 +141,22 @@ func notifyQueueSet(q []notifyToast) {
 }
 
 // notifyPush queues one transient toast and adds the accepted notification
-// to the bounded in-memory center history. It returns the text as it was
+// to the bounded center history. It returns the text as it was
 // bounded onto the wire (NUL-trimmed at 24 bytes by the frame title) plus
 // whether an older toast was dropped to make room. Empty text is refused
 // before either surface changes.
+//
+// Under do-not-disturb (M82d2, #1785) only the history takes the notice: no
+// toast is queued, so nothing on the strip is dropped either. The notice is
+// accepted all the same (ok is true), which is what keeps suppression from
+// ever losing one; the caller tells the two outcomes apart by notifyDND.
 func notifyPush(tabID uint32, text string, ticks uint64) (string, bool, bool) {
 	if text == "" {
 		return "", false, false
+	}
+	centerID := notifyCenterPush(tabID, text)
+	if notifyDND {
+		return text, true, false
 	}
 	dropped := false
 	if len(notifyQueue) >= NotifyMax {
@@ -157,7 +169,7 @@ func notifyPush(tabID uint32, text string, ticks uint64) (string, bool, bool) {
 		text:     text,
 		born:     ticks,
 		expires:  ticks + NotifyTicks,
-		centerID: notifyCenterPush(tabID, text),
+		centerID: centerID,
 	})
 	return text, true, dropped
 }

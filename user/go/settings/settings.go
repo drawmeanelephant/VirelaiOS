@@ -163,6 +163,35 @@ func IdleMinutes(value string) (uint64, bool) {
 
 func IsIdleMinutesKey(key string) bool { return key == "idle_minutes" }
 
+// NotifyKeys is the M82d2 (#1785) do-not-disturb policy row. Like the idle
+// row it is accepted-but-unseeded: the kernel's eight-row table stays exactly
+// as it was, an absent row means "off", and GOSET still surfaces the
+// effective default so the toggle is discoverable. The seat alone interprets
+// it: `on` keeps a new notice out of the toast strip and lets it go straight
+// to the history the notifications center holds.
+var NotifyKeys = []Key{
+	{Name: "notify_dnd", Default: "off", Vocab: []string{"on", "off"}},
+}
+
+// NotifyDNDKey is the do-not-disturb key's name, for the seat's own writes.
+const NotifyDNDKey = "notify_dnd"
+
+// NotifyDND parses a stored do-not-disturb value. ok is false for anything
+// but exactly `on` or `off`: a mistyped value must never silence the user's
+// notifications by accident, so the caller treats it as the default (off).
+func NotifyDND(value string) (on, ok bool) {
+	switch value {
+	case "on":
+		return true, true
+	case "off":
+		return false, true
+	}
+	return false, false
+}
+
+// IsNotifyDNDKey reports whether key is the do-not-disturb row.
+func IsNotifyDNDKey(key string) bool { return key == NotifyDNDKey }
+
 // IsKeyboardLayoutKey reports whether key is the M83d2 layout selector.
 func IsKeyboardLayoutKey(key string) bool {
 	return key == "keyboard_layout"
@@ -207,12 +236,13 @@ func IsPaletteKey(key string) bool {
 }
 
 // Editable is the panel's write gate: a kernel-table key, one of the
-// custom-palette keys, font_size (M80i), keyboard_layout (M83d2), or
-// idle_minutes (M83f).
+// custom-palette keys, font_size (M80i), keyboard_layout (M83d2),
+// idle_minutes (M83f), or notify_dnd (M82d2).
 // Anything else is named and dropped, never written.
 func Editable(key string) bool {
 	_, known := Known(key)
-	return known || IsPaletteKey(key) || IsFontKey(key) || IsKeyboardLayoutKey(key) || IsIdleMinutesKey(key)
+	return known || IsPaletteKey(key) || IsFontKey(key) || IsKeyboardLayoutKey(key) ||
+		IsIdleMinutesKey(key) || IsNotifyDNDKey(key)
 }
 
 // ValidColour is the palette value grammar, mirrored from the kernel's
@@ -282,29 +312,42 @@ func Default(key string) (string, bool) {
 			return k.Default, true
 		}
 	}
+	for _, k := range NotifyKeys {
+		if k.Name == key {
+			return k.Default, true
+		}
+	}
 	return "", false
 }
 
 // Vocab returns the values the panel may cycle key through, and whether
 // key is cyclable at all. A kernel-table key with no vocabulary is free
-// text; font_size (M80i) and keyboard_layout (M83d2) carry declared lists.
+// text; font_size (M80i), keyboard_layout (M83d2) and notify_dnd (M82d2)
+// carry declared lists.
 func Vocab(key string) ([]string, bool) {
 	k, ok := Known(key)
 	if !ok {
 		k, ok = FontKey(key)
-		if !ok {
-			for _, layoutKey := range KeyboardLayoutKeys {
-				if layoutKey.Name == key {
-					k, ok = layoutKey, true
-					break
-				}
-			}
-			if !ok {
-				return nil, false
-			}
-		}
+	}
+	if !ok {
+		k, ok = findKey(KeyboardLayoutKeys, key)
+	}
+	if !ok {
+		k, ok = findKey(NotifyKeys, key)
+	}
+	if !ok {
+		return nil, false
 	}
 	return k.Vocab, true
+}
+
+func findKey(keys []Key, name string) (Key, bool) {
+	for _, k := range keys {
+		if k.Name == name {
+			return k, true
+		}
+	}
+	return Key{}, false
 }
 
 // Next returns the vocabulary value after cur, wrapping; a cur outside the
@@ -427,10 +470,11 @@ func (f File) Effective(key string) (string, bool) {
 
 // Display returns the decoded rows, then the missing compiled-table and
 // visible accepted-but-unseeded rows with their effective defaults. An
-// already-full table keeps the idle default implicit to respect MaxKeys.
+// already-full table keeps the idle and do-not-disturb defaults implicit to
+// respect MaxKeys.
 // Unknown file rows are preserved untouched, not offered for editing.
 func (f File) Display() []Setting {
-	out := make([]Setting, 0, len(f.Rows)+len(KnownKeys)+len(KeyboardLayoutKeys)+len(IdleKeys))
+	out := make([]Setting, 0, len(f.Rows)+len(KnownKeys)+len(KeyboardLayoutKeys)+len(IdleKeys)+len(NotifyKeys))
 	out = append(out, f.Rows...)
 	for _, k := range KnownKeys {
 		if _, ok := Get(f.Rows, k.Name); !ok {
@@ -442,15 +486,17 @@ func (f File) Display() []Setting {
 			out = append(out, Setting{Key: k.Name, Val: k.Default})
 		}
 	}
-	for _, k := range IdleKeys {
-		if _, ok := Get(f.Rows, k.Name); !ok {
-			// A legacy table may already have 16 rows; its visible layout
-			// row fills the kernel's 17-slot cap. Do not make an unchanged
-			// GOSET save fail merely by displaying one more default.
-			if len(out) >= MaxKeys {
-				break
+	for _, group := range [][]Key{IdleKeys, NotifyKeys} {
+		for _, k := range group {
+			if _, ok := Get(f.Rows, k.Name); !ok {
+				// A legacy table may already have 16 rows; its visible layout
+				// row fills the kernel's 17-slot cap. Do not make an unchanged
+				// GOSET save fail merely by displaying one more default.
+				if len(out) >= MaxKeys {
+					break
+				}
+				out = append(out, Setting{Key: k.Name, Val: k.Default})
 			}
-			out = append(out, Setting{Key: k.Name, Val: k.Default})
 		}
 	}
 	return out

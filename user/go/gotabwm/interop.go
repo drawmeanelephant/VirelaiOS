@@ -305,6 +305,14 @@ func applyRPC(req vi.WmRpc) bool {
 			return false
 		}
 		text, _, dropped := notifyPush(id, text, seatTick)
+		// M82d2 (#1785): under do-not-disturb the notice is in the center's
+		// history and nothing else — no toast was queued, so there is no
+		// drop to report and no `notify id=` to claim. The ack is applied
+		// all the same: an app must not learn the user is away.
+		if notifyDND {
+			vi.ConsoleLine(MarkerNotifyHeld + vi.Itoa64(int64(id)) + " " + text)
+			return true
+		}
 		// The drop marker comes FIRST: the older toast has already left
 		// the queue, and a stream that silently lost one must say so
 		// before it announces the one it kept.

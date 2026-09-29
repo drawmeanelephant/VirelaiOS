@@ -7,9 +7,11 @@ import (
 	"virelai/vi"
 )
 
-// The center is an in-memory history of recently queued kind-12 notices.
+// The center is the history of recently accepted kind-12 notices.
 // It is intentionally separate from the short-lived toast queue: expiry
 // removes a toast, but the user can still review and act on its notice.
+// M82d2 (#1785) adds its policy in notify_policy.go: the history is persisted
+// across a seat restart, and the header carries the do-not-disturb control.
 const (
 	NotifyCenterMax = 8
 	notifyCenterW   = 520
@@ -18,6 +20,12 @@ const (
 	notifyHeaderH   = 30
 	notifyFooterH   = 28
 	notifyCenterPad = 12
+	// The do-not-disturb control sits in the header, left of the close X
+	// (whose hit zone is the trailing 42px). It exists only when the panel
+	// is wide enough that it cannot run into the title.
+	notifyDNDW    = 176
+	notifyDNDMinW = 360
+	notifyDNDGapX = 42
 
 	MarkerNotifyCenterOpen   = "gotabwm: notify center open"
 	MarkerNotifyCenterClose  = "gotabwm: notify center close"
@@ -57,6 +65,7 @@ func notifyCenterPush(tabID uint32, text string) uint32 {
 	notifyCenter = append(notifyCenter, centerNotification{
 		tabID: tabID, id: notifyCenterNextID, source: source, text: text,
 	})
+	notifyHistoryChanged()
 	return notifyCenterNextID
 }
 
@@ -78,6 +87,7 @@ func dismissNotifyCenter(index int) bool {
 	copy(notifyCenter[index:], notifyCenter[index+1:])
 	notifyCenter[len(notifyCenter)-1] = centerNotification{}
 	notifyCenter = notifyCenter[:len(notifyCenter)-1]
+	notifyHistoryChanged()
 	return true
 }
 
@@ -108,6 +118,9 @@ func dismissNotifyCenterEntry(index int) bool {
 func clearNotifyCenter() int {
 	n := len(notifyCenter)
 	notifyCenter = nil
+	if n > 0 {
+		notifyHistoryChanged()
+	}
 	if len(notifyQueue) > 0 {
 		queued := notifyQueue
 		notifyQueueSet(nil)
@@ -133,6 +146,26 @@ func notifyCenterRect(width, height int) (x, y, w, h int) {
 		return 0, 0, 0, 0
 	}
 	return (width - w) / 2, (height - h) / 2, w, h
+}
+
+// notifyCenterDNDRect is the do-not-disturb control's rect: the header band,
+// right-aligned against the close X's zone. Paint and hit test both use it, so
+// the drawn control and the clickable one cannot disagree. A panel too narrow
+// to fit it beside the title has no control (the zero rect), never an
+// overlapping one.
+func notifyCenterDNDRect(width, height int) (x, y, w, h int) {
+	px, py, pw, _ := notifyCenterRect(width, height)
+	if pw < notifyDNDMinW {
+		return 0, 0, 0, 0
+	}
+	return px + pw - notifyDNDGapX - notifyDNDW, py, notifyDNDW, notifyHeaderH
+}
+
+func notifyCenterDNDLabel() string {
+	if notifyDND {
+		return "Do not disturb [on]"
+	}
+	return "Do not disturb [off]"
 }
 
 func notifyCenterClockHit(px, py uint32, width, height int) bool {
@@ -182,6 +215,11 @@ func notifyCenterClick(px, py uint32) bool {
 		notifyCenterOpen = false
 		notifyCenterPainted = false
 		vi.ConsoleLine(MarkerNotifyCenterClose)
+		return true
+	}
+	if dx, dy, dw, dh := notifyCenterDNDRect(vi.ScanoutWidth, vi.ScanoutHeight); dw > 0 &&
+		pxi >= dx && pxi < dx+dw && pyi >= dy && pyi < dy+dh {
+		toggleNotifyDND()
 		return true
 	}
 	visible := notifyCenterVisibleRows(h)
@@ -252,6 +290,15 @@ func paintNotifyCenter(scan []byte, width, height int) int {
 	written += fillRect(pix, width, maxH, x, y, 2, h, tok.Accent)
 	written += drawText8(pix, width, maxH, x+notifyCenterPad, y+10, "Notifications", tok.Ink)
 	written += drawText8(pix, width, maxH, x+w-28, y+10, "X", tok.Muted)
+	if dx, _, dw, _ := notifyCenterDNDRect(width, height); dw > 0 {
+		// Accent when on: the mode has to be readable at a glance, because
+		// a silenced center is a state the user must not forget they set.
+		fg := tok.Muted
+		if notifyDND {
+			fg = tok.Accent
+		}
+		written += drawText8(pix, width, maxH, dx, y+10, notifyCenterDNDLabel(), fg)
+	}
 	written += fillRect(pix, width, maxH, x+notifyCenterPad, y+notifyHeaderH-1,
 		w-2*notifyCenterPad, 1, tok.Border)
 

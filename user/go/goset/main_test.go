@@ -65,7 +65,7 @@ func TestPanelStartsWithTheTableInForce(t *testing.T) {
 	if a.mode() != "rw" {
 		t.Fatalf("mode = %q, want rw", a.mode())
 	}
-	if got := a.summary(); got != "keys=10 wm=gotabwm theme=dark" {
+	if got := a.summary(); got != "keys=11 wm=gotabwm theme=dark" {
 		t.Fatalf("summary = %q", got)
 	}
 	if v, ok := settings.Get(a.disp, "keyboard_layout"); !ok || v != "us" {
@@ -74,8 +74,46 @@ func TestPanelStartsWithTheTableInForce(t *testing.T) {
 	if v, ok := settings.Get(a.disp, "idle_minutes"); !ok || v != "5" {
 		t.Fatalf("idle_minutes = %q ok=%v, want the compiled default", v, ok)
 	}
+	if v, ok := settings.Get(a.disp, "notify_dnd"); !ok || v != "off" {
+		t.Fatalf("notify_dnd = %q ok=%v, want the compiled default", v, ok)
+	}
 	if len(a.labels()) != len(a.disp) {
 		t.Fatalf("labels = %d, rows = %d", len(a.labels()), len(a.disp))
+	}
+}
+
+// M82d2 (#1785): the do-not-disturb row is a first-class, cyclable on|off row
+// and a typed value outside that vocabulary never reaches the table, because
+// the seat would read it as off while the panel showed something else.
+func TestNotifyDNDRowCyclesAndValidatesBeforeSave(t *testing.T) {
+	a := newPanel(nil)
+	i := rowOf(t, a, "notify_dnd")
+	if strings.Contains(a.labels()[i], "(kept)") {
+		t.Fatalf("notify_dnd row is not editable: %q", a.labels()[i])
+	}
+	a.sel = i
+	a.cycle(1)
+	if got, _ := settings.Get(a.disp, "notify_dnd"); got != "on" {
+		t.Fatalf("cycling off gave notify_dnd = %q, want on", got)
+	}
+	a.cycle(1)
+	if got, _ := settings.Get(a.disp, "notify_dnd"); got != "off" {
+		t.Fatalf("second cycle = %q, want off", got)
+	}
+	for _, val := range []string{"true", "1", "ON", "", "yes"} {
+		a.input.SetValue("notify_dnd=" + val)
+		a.applyInput()
+		if got, _ := settings.Get(a.disp, "notify_dnd"); got != "off" {
+			t.Fatalf("invalid %q changed notify_dnd to %q", val, got)
+		}
+	}
+	a.input.SetValue("notify_dnd=on")
+	a.applyInput()
+	if got, _ := settings.Get(a.disp, "notify_dnd"); got != "on" {
+		t.Fatalf("typed notify_dnd = %q, want on", got)
+	}
+	if got := changedSettingKeys(settings.File{State: settings.StateMissing}, settings.File{Rows: a.disp, State: settings.StateOK}); len(got) != 1 || got[0] != "notify_dnd" {
+		t.Fatalf("change notification keys = %v, want notify_dnd", got)
 	}
 }
 
@@ -93,7 +131,7 @@ func TestPanelAppliesATypedRowOnlyForKnownKeys(t *testing.T) {
 	if v, _ := settings.Get(a.disp, "wm"); v != "tabwm" {
 		t.Fatalf("wm = %q, want tabwm", v)
 	}
-	if got := a.summary(); got != "keys=10 wm=tabwm theme=dark" {
+	if got := a.summary(); got != "keys=11 wm=tabwm theme=dark" {
 		t.Fatalf("summary = %q", got)
 	}
 
@@ -227,14 +265,14 @@ func rowOf(t *testing.T, a *panel, key string) int {
 }
 
 // M73m (#1662): the palette surface. A default panel has the eight kernel
-// rows plus keyboard_layout and idle_minutes; choosing `custom` reveals three
+// rows plus keyboard_layout, idle_minutes and notify_dnd; choosing `custom` reveals three
 // colour rows with the compiled dark defaults, they are typed-editable as
 // six hex digits, and a malformed value never reaches the table.
 func TestPaletteSurfaceRevealsTheColoursOnCustom(t *testing.T) {
 	a := newPanel(nil)
-	if len(a.disp) != len(settings.KnownKeys)+len(settings.KeyboardLayoutKeys)+len(settings.IdleKeys) {
-		t.Fatalf("default rows = %d, want %d kernel+layout+idle rows (palette rows are NOT default rows)",
-			len(a.disp), len(settings.KnownKeys)+len(settings.KeyboardLayoutKeys)+len(settings.IdleKeys))
+	if len(a.disp) != len(settings.KnownKeys)+len(settings.KeyboardLayoutKeys)+len(settings.IdleKeys)+len(settings.NotifyKeys) {
+		t.Fatalf("default rows = %d, want %d kernel+layout+idle+notify rows (palette rows are NOT default rows)",
+			len(a.disp), len(settings.KnownKeys)+len(settings.KeyboardLayoutKeys)+len(settings.IdleKeys)+len(settings.NotifyKeys))
 	}
 	for _, k := range settings.PaletteKeys {
 		if _, ok := settings.Get(a.disp, k.Name); ok {
@@ -249,7 +287,7 @@ func TestPaletteSurfaceRevealsTheColoursOnCustom(t *testing.T) {
 			t.Fatalf("%s row = %q ok=%v, want the default %q", k.Name, v, ok, k.Default)
 		}
 	}
-	if got := a.summary(); got != "keys=13 wm=gotabwm theme=custom" {
+	if got := a.summary(); got != "keys=14 wm=gotabwm theme=custom" {
 		t.Fatalf("summary = %q", got)
 	}
 	// The palette rows are first-class: never the "(kept)" marker (that is
@@ -288,14 +326,14 @@ func TestPaletteSurfaceRevealsTheColoursOnCustom(t *testing.T) {
 }
 
 // M80i (#1725): the font_size surface. A default panel has the kernel's
-// eight rows plus keyboard_layout and idle_minutes; font_size is typed input at any time
+// eight rows plus keyboard_layout, idle_minutes and notify_dnd; font_size is typed input at any time
 // and cycles small -> medium -> large once the row exists. The panel never
 // fabricates the row: an ABSENT key is the boot look (text small + grid
 // medium), which no single stored value can represent.
 func TestFontSurfaceCyclesWithoutMovingKeys(t *testing.T) {
 	a := newPanel(nil)
-	if len(a.disp) != len(settings.KnownKeys)+len(settings.KeyboardLayoutKeys)+len(settings.IdleKeys) {
-		t.Fatalf("default rows = %d, want %d (font_size is NOT a default row)", len(a.disp), len(settings.KnownKeys)+len(settings.KeyboardLayoutKeys)+len(settings.IdleKeys))
+	if len(a.disp) != len(settings.KnownKeys)+len(settings.KeyboardLayoutKeys)+len(settings.IdleKeys)+len(settings.NotifyKeys) {
+		t.Fatalf("default rows = %d, want %d (font_size is NOT a default row)", len(a.disp), len(settings.KnownKeys)+len(settings.KeyboardLayoutKeys)+len(settings.IdleKeys)+len(settings.NotifyKeys))
 	}
 	// Typed input applies (the accepted-not-seeded pattern)...
 	a.input.SetValue("font_size=large")
@@ -305,7 +343,7 @@ func TestFontSurfaceCyclesWithoutMovingKeys(t *testing.T) {
 	if v, _ := settings.Get(a.disp, "font_size"); v != "large" {
 		t.Fatalf("font_size = %q, want large", v)
 	}
-	if got := a.summary(); got != "keys=11 wm=gotabwm theme=dark" {
+	if got := a.summary(); got != "keys=12 wm=gotabwm theme=dark" {
 		t.Fatalf("summary = %q (the typed row is real, so the count grew)", got)
 	}
 	// ...the row is first-class (no "(kept)") and cyclable.

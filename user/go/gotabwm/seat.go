@@ -335,7 +335,14 @@ func main() {
 	// phase so every script anchor downstream sees it. Live is the product
 	// default; demo is the harness's explicit opt-in (the seeded trigger).
 	demoMode = detectDemo()
-	configureIdle(settings.Load(), idleTicksPerMinute())
+	seatSettings := settings.Load()
+	configureIdle(seatSettings, idleTicksPerMinute())
+	// M82d2 (#1785): the do-not-disturb key and the persisted center history
+	// are both settled here, before the window phase and long before the
+	// first composite paint, so the first frame already shows the restored
+	// count and the first notice already obeys DND.
+	configureNotifyDND(seatSettings)
+	loadNotifyHistory()
 	if demoMode {
 		vi.ConsoleLine(MarkerModeDemo)
 	} else {
@@ -439,6 +446,9 @@ func main() {
 	// every hosted app still observes its close on the way out; a strip
 	// the choreography or countdown already emptied is a no-op.
 	sweepHosted(closeHosted)
+	// M82d2 (#1785): the tail of the center's history (whatever landed since
+	// the last tick) is published before the seat says it is done.
+	flushNotifyHistory()
 	vi.ConsoleLine(MarkerHostDone)
 
 	// M69a (#1528): the beat's closing marker for THIS boot. Gated on the
@@ -548,6 +558,9 @@ func compositeTick(scan []byte, ticks uint64, presents *int) {
 		vi.ConsoleLine(line)
 	}
 	idlePresentedFrame(presented)
+	// M82d2 (#1785): AFTER the present, so the fsync'd publish never delays a
+	// frame, and BEFORE the live-mode early return below.
+	flushNotifyHistory()
 	if restoreWitnessMode && presented && ticks%8 == 0 {
 		vi.ConsoleLine(restoreWitnessLine())
 	}

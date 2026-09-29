@@ -215,8 +215,11 @@ func TestDisplaySurfacesAbsentKnownKeysWithTheValueInForce(t *testing.T) {
 	d := f.Display()
 	// The file row plus the kernel keys and accepted-unseeded rows are
 	// filled out, never duplicated.
-	if len(d) != len(KnownKeys)+len(KeyboardLayoutKeys)+len(IdleKeys) {
-		t.Fatalf("display rows = %d, want %d", len(d), len(KnownKeys)+len(KeyboardLayoutKeys)+len(IdleKeys))
+	if len(d) != len(KnownKeys)+len(KeyboardLayoutKeys)+len(IdleKeys)+len(NotifyKeys) {
+		t.Fatalf("display rows = %d, want %d", len(d), len(KnownKeys)+len(KeyboardLayoutKeys)+len(IdleKeys)+len(NotifyKeys))
+	}
+	if v, ok := Get(d, "notify_dnd"); !ok || v != "off" {
+		t.Fatalf("notify_dnd row = %q ok=%v, want the compiled default off", v, ok)
 	}
 	if v, ok := Get(d, "wm"); !ok || v != "gotabwm" {
 		t.Fatalf("wm row = %q ok=%v, want the compiled default", v, ok)
@@ -262,6 +265,7 @@ func TestDefaultIncludesAcceptedUnseededKeys(t *testing.T) {
 		"font_size":       "medium",
 		"keyboard_layout": "us",
 		"idle_minutes":    "5",
+		"notify_dnd":      "off",
 	} {
 		if got, ok := Default(key); !ok || got != want {
 			t.Errorf("Default(%q) = (%q, %v), want (%q, true)", key, got, ok, want)
@@ -578,6 +582,59 @@ func TestOptionalRowsRespectFullTable(t *testing.T) {
 	}
 	if _, found := Get(full, "keyboard_layout"); !found {
 		t.Fatal("full table lost the preexisting layout row")
+	}
+	if _, found := Get(full, "notify_dnd"); found {
+		t.Fatal("full table materialized notify_dnd beyond the kernel cap")
+	}
+	if _, found := Get(display, "notify_dnd"); found {
+		t.Fatal("a table full after layout+idle materialized notify_dnd beyond the kernel cap")
+	}
+}
+
+// M82d2 (#1785): do-not-disturb is an accepted-but-unseeded, cyclable row, and
+// its parser is strict — a typo must fall back to the default (off) at the
+// seat, never silence notifications.
+func TestNotifyDNDAcceptedUnseededCyclableAndStrict(t *testing.T) {
+	if _, known := Known("notify_dnd"); known {
+		t.Fatal("the kernel does not seed notify_dnd")
+	}
+	if !Editable("notify_dnd") || !IsNotifyDNDKey("notify_dnd") || IsNotifyDNDKey("notify") {
+		t.Fatal("GOSET must be able to edit exactly notify_dnd")
+	}
+	vocab, ok := Vocab("notify_dnd")
+	if !ok || len(vocab) != 2 || vocab[0] != "on" || vocab[1] != "off" {
+		t.Fatalf("notify_dnd vocab = %v ok=%v, want [on off]", vocab, ok)
+	}
+	if got := Next(vocab, "off"); got != "on" {
+		t.Fatalf("cycle off -> %q, want on", got)
+	}
+	if got := Next(vocab, "on"); got != "off" {
+		t.Fatalf("cycle on -> %q, want off", got)
+	}
+	for val, want := range map[string]bool{"on": true, "off": false} {
+		if on, ok := NotifyDND(val); !ok || on != want {
+			t.Errorf("NotifyDND(%q) = (%v, %v), want (%v, true)", val, on, ok, want)
+		}
+	}
+	for _, val := range []string{"", "ON", "true", "1", "yes", "on ", "maybe"} {
+		if on, ok := NotifyDND(val); ok || on {
+			t.Errorf("NotifyDND(%q) = (%v, %v), want (false, false)", val, on, ok)
+		}
+	}
+	// The value in force survives the safe codec, and an absent row is off.
+	f := File{Rows: []Setting{{Key: "notify_dnd", Val: "on"}}, State: StateOK}
+	if v, ok := f.Effective("notify_dnd"); !ok || v != "on" {
+		t.Fatalf("persisted notify_dnd = %q ok=%v", v, ok)
+	}
+	if v, ok := (File{State: StateMissing}).Effective("notify_dnd"); !ok || v != "off" {
+		t.Fatalf("absent notify_dnd = %q ok=%v, want off", v, ok)
+	}
+	rows, ok := Parse(Render(f.Display()))
+	if !ok {
+		t.Fatal("GOSET display cannot round-trip via the safe codec")
+	}
+	if v, found := Get(rows, "notify_dnd"); !found || v != "on" {
+		t.Fatalf("round-trip notify_dnd = %q found=%v", v, found)
 	}
 }
 

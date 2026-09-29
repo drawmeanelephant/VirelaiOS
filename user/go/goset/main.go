@@ -9,7 +9,7 @@
 // What it edits is exactly what is IN FORCE (card D1, no new schema): the rows
 // the file carries, plus the kernel-table keys it omits (settings.KnownKeys,
 // pinned against kernel/src/settings.zig), and visible accepted-but-unseeded
-// rows such as idle_minutes. Unknown keys a file carries are preserved
+// rows such as idle_minutes and notify_dnd. Unknown keys a file carries are preserved
 // byte-for-byte through a save but are not offered for editing.
 //
 // Two ways to edit, both reading the SAME display table:
@@ -177,8 +177,8 @@ func newPanel(ta *tabapp.TabApp) *panel {
 // a row (a palette written while custom stays visible and saved when the
 // theme cycles back: the kernel ignores those keys for any preset, so keeping
 // them costs nothing and keeps the user's colours around). While theme is a
-// preset the table is untouched; keyboard_layout and idle_minutes remain
-// accepted-unseeded rows exposed on the default surface.
+// preset the table is untouched; keyboard_layout, idle_minutes and notify_dnd
+// remain accepted-unseeded rows exposed on the default surface.
 func (a *panel) ensurePaletteRows() {
 	if theme, _ := settings.Get(a.disp, "theme"); theme != "custom" {
 		return
@@ -270,6 +270,16 @@ func (a *panel) applyInput() bool {
 	if settings.IsIdleMinutesKey(key) {
 		if _, ok := settings.IdleMinutes(val); !ok {
 			a.status = "idle_minutes: whole minutes, 1..120"
+			vi.ConsoleLine(markerDiscard + line)
+			return true
+		}
+	}
+	// M82d2 (#1785): the do-not-disturb row is on|off and nothing else. The
+	// seat reads any other value as off, so a typo saved here would look
+	// like a mode the seat is not in; refuse it before it reaches the file.
+	if settings.IsNotifyDNDKey(key) {
+		if _, ok := settings.NotifyDND(val); !ok {
+			a.status = "notify_dnd: choose on or off"
 			vi.ConsoleLine(markerDiscard + line)
 			return true
 		}
