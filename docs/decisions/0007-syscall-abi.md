@@ -1441,7 +1441,7 @@ is refused.
 
 | Existing slot | Contract | M83a consumer |
 |---------------|----------|---------------|
-| 66 `sys_time()` | Unix wall-clock seconds from the loader's EFI epoch plus 1 Hz kernel ticks; `-ENOSYS` without a usable firmware epoch | `vsys.Now` and `vi.Now` expose the same value alongside `Nanotime` / `Nanos`; GOSH `date` formats the calendar face without a timezone and names a monotonic-only fallback when no epoch exists. |
+| 66 `sys_time()` | Unix wall-clock seconds from the loader's EFI epoch plus 1 Hz kernel ticks; `-ENOSYS` without a usable firmware epoch | `vsys.Now` and `vi.Now` expose the same value alongside `Nanotime` / `Nanos`; GOSH `date` formats the calendar face — the `timezone` setting's fixed offset with its label since M83c (#1776), UTC when the row is absent or unparseable — and names a monotonic-only fallback when no epoch exists. |
 
 This is an **append-only clarification**, not another ABI entry. Slot 66
 already exported the needed seconds in #1058, and `vi.Time` already called

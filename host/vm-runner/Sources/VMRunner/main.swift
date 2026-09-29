@@ -6202,9 +6202,10 @@ enum CustomVirtioSpike {
         case "7": return (0x24, false); case "8": return (0x25, false)
         case "9": return (0x26, false); case "0": return (0x27, false)
         case "\n", "\r": return (0x28, false) // Enter / Return
-        case " ": return (0x2C, false)
-        case "_": return (0x2D, true)
-        case "-": return (0x2D, false); case "=": return (0x2E, false)
+        case " ": return (0x2C, false)		case "_": return (0x2D, true)
+		case "+": return (0x2E, true)
+		case ":": return (0x33, true)
+		case "-": return (0x2D, false); case "=": return (0x2E, false)
         case "[": return (0x2F, false); case "]": return (0x30, false)
         case "\\": return (0x31, false)
         case ";": return (0x33, false); case "'": return (0x34, false)

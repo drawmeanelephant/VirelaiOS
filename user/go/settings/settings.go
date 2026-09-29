@@ -28,6 +28,7 @@ package settings
 import (
 	"strings"
 
+	"virelai/clockfmt"
 	"virelai/layout"
 	"virelai/vi"
 )
@@ -192,6 +193,43 @@ func NotifyDND(value string) (on, ok bool) {
 // IsNotifyDNDKey reports whether key is the do-not-disturb row.
 func IsNotifyDNDKey(key string) bool { return key == NotifyDNDKey }
 
+// TimezoneKeys is the M83c (#1776) timezone row: accepted-but-unseeded like
+// the idle row — the kernel's eight-row table stays exactly as it was, an
+// absent row means UTC, and GOSET still surfaces the effective default so
+// the choice is discoverable. The vocabulary is clockfmt's curated
+// fixed-offset list; DST rules are named risk, not scope.
+var TimezoneKeys = []Key{
+	{Name: "timezone", Default: "UTC", Vocab: clockfmt.Names()},
+}
+
+// TimezoneKey is the timezone key's name, for the shared formatter's callers.
+const TimezoneKey = "timezone"
+
+// IsTimezoneKey reports whether key is the M83c timezone row.
+func IsTimezoneKey(key string) bool { return key == TimezoneKey }
+
+// ValidTimezone reports whether the value names a fixed offset clockfmt
+// parses.
+func ValidTimezone(value string) bool {
+	_, ok := clockfmt.Parse(value)
+	return ok
+}
+
+// Timezone resolves the zone in force: the file's row when it parses, UTC
+// otherwise. An invalid persisted value must never shift every clock
+// silently, so the fallback is the same default an absent row carries.
+func (f File) Timezone() clockfmt.Zone {
+	v, ok := f.Effective(TimezoneKey)
+	if !ok {
+		return clockfmt.UTC
+	}
+	z, ok := clockfmt.Parse(v)
+	if !ok {
+		return clockfmt.UTC
+	}
+	return z
+}
+
 // IsKeyboardLayoutKey reports whether key is the M83d2 layout selector.
 func IsKeyboardLayoutKey(key string) bool {
 	return key == "keyboard_layout"
@@ -237,12 +275,12 @@ func IsPaletteKey(key string) bool {
 
 // Editable is the panel's write gate: a kernel-table key, one of the
 // custom-palette keys, font_size (M80i), keyboard_layout (M83d2),
-// idle_minutes (M83f), or notify_dnd (M82d2).
+// idle_minutes (M83f), notify_dnd (M82d2), or timezone (M83c).
 // Anything else is named and dropped, never written.
 func Editable(key string) bool {
 	_, known := Known(key)
 	return known || IsPaletteKey(key) || IsFontKey(key) || IsKeyboardLayoutKey(key) ||
-		IsIdleMinutesKey(key) || IsNotifyDNDKey(key)
+		IsIdleMinutesKey(key) || IsNotifyDNDKey(key) || IsTimezoneKey(key)
 }
 
 // ValidColour is the palette value grammar, mirrored from the kernel's
@@ -312,9 +350,11 @@ func Default(key string) (string, bool) {
 			return k.Default, true
 		}
 	}
-	for _, k := range NotifyKeys {
-		if k.Name == key {
-			return k.Default, true
+	for _, group := range [][]Key{NotifyKeys, TimezoneKeys} {
+		for _, k := range group {
+			if k.Name == key {
+				return k.Default, true
+			}
 		}
 	}
 	return "", false
@@ -334,6 +374,9 @@ func Vocab(key string) ([]string, bool) {
 	}
 	if !ok {
 		k, ok = findKey(NotifyKeys, key)
+	}
+	if !ok {
+		k, ok = findKey(TimezoneKeys, key)
 	}
 	if !ok {
 		return nil, false
@@ -470,11 +513,11 @@ func (f File) Effective(key string) (string, bool) {
 
 // Display returns the decoded rows, then the missing compiled-table and
 // visible accepted-but-unseeded rows with their effective defaults. An
-// already-full table keeps the idle and do-not-disturb defaults implicit to
-// respect MaxKeys.
+// already-full table keeps the idle, do-not-disturb and timezone defaults
+// implicit to respect MaxKeys.
 // Unknown file rows are preserved untouched, not offered for editing.
 func (f File) Display() []Setting {
-	out := make([]Setting, 0, len(f.Rows)+len(KnownKeys)+len(KeyboardLayoutKeys)+len(IdleKeys)+len(NotifyKeys))
+	out := make([]Setting, 0, len(f.Rows)+len(KnownKeys)+len(KeyboardLayoutKeys)+len(IdleKeys)+len(NotifyKeys)+len(TimezoneKeys))
 	out = append(out, f.Rows...)
 	for _, k := range KnownKeys {
 		if _, ok := Get(f.Rows, k.Name); !ok {
@@ -486,7 +529,7 @@ func (f File) Display() []Setting {
 			out = append(out, Setting{Key: k.Name, Val: k.Default})
 		}
 	}
-	for _, group := range [][]Key{IdleKeys, NotifyKeys} {
+	for _, group := range [][]Key{IdleKeys, NotifyKeys, TimezoneKeys} {
 		for _, k := range group {
 			if _, ok := Get(f.Rows, k.Name); !ok {
 				// A legacy table may already have 16 rows; its visible layout

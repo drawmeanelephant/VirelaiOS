@@ -241,17 +241,21 @@ vgate_assert 01 share-contains GOSHLOG.TXT 'GOSH.ELF:'
 vgate_assert 01 share-equals GOSHHELP.TXT log-help.expected
 vgate_assert 01 share-equals GOSHJOB.TXT $'jobrc=0\n'
 # The live date is dynamic. Pin its formatting against the epoch it printed
-# and compare that epoch to the host's own pre/post run samples. The EFI face
-# is taken as written; no timezone or NTP conclusion follows from this.
+# and compare that epoch to the host's own pre/post run samples. The face is
+# the `timezone` row's (M83c #1776): this boot carries no settings file, so
+# the label must be the UTC default and the face the epoch itself. Run 05 is
+# the second zone. No NTP conclusion follows from either.
 vgate_assert 01 python <<'PY'
 import datetime, os, re, shutil, time
 rd = os.environ["RUN_DIR"]
 with open(os.path.join(os.environ["VG_SHARE"], "GOSHDATE.TXT"), "rb") as fh:
     line = fh.read()
-m = re.fullmatch(rb"(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) \(epoch=([0-9]+)\)\n", line)
+m = re.fullmatch(rb"(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) (UTC(?:[+-]\d\d:\d\d)?) \(epoch=([0-9]+)\)\n", line)
 if not m:
-    raise SystemExit("date did not print a calendar face + epoch: %r" % line)
-epoch = int(m.group(2))
+    raise SystemExit("date did not print a calendar face + zone + epoch: %r" % line)
+if m.group(2) != b"UTC":
+    raise SystemExit("a boot with no timezone row must print UTC, got %r" % m.group(2))
+epoch = int(m.group(3))
 face = datetime.datetime.fromtimestamp(epoch, datetime.timezone.utc)
 if m.group(1).decode() != face.strftime("%Y-%m-%d %H:%M:%S"):
     raise SystemExit("date face %r disagrees with epoch %d" % (m.group(1), epoch))
@@ -263,7 +267,7 @@ if not host_start - 60 <= epoch <= host_end + 60:
                      (epoch, host_start, host_end))
 shutil.copy(os.path.join(os.environ["VG_SHARE"], "GOSHDATE.TXT"),
             "artifacts/go-sh-share-date.txt")
-print("date epoch %d agrees with face and lies within 60 s of host [%d, %d]" %
+print("date epoch %d agrees with the UTC face and lies within 60 s of host [%d, %d]" %
       (epoch, host_start, host_end))
 PY
 # M81e2 (#1787): the redirect decision, pinned on the share. `>` published
@@ -340,3 +344,67 @@ vgate_assert 04 serial-contains 'rx-gosh-open-unknown-ok'
 vgate_assert 04 serial-absent 'gosh: open launched'
 vgate_assert 04 serial-absent '[EXC] parking:'
 vgate_assert 04 serial-absent 'exited status=139'
+
+# --- M83c (#1776): date under a SECOND zone -------------------------------
+# `date` formats the epoch in the `timezone` row's fixed offset and labels
+# the face with it. Run 01 pinned the UTC default; this boot stores
+# `timezone=UTC+05:30` through the kernel's own crash-safe `settings set`
+# BEFORE the shell starts, so the same startup `date` line must come out
+# shifted and labelled. The two zones' outputs are pinned against the epochs
+# they print -- deterministic checks on a live clock. (Boots 02-04 need no
+# zone: `date` runs only in STARTUP.SH, which run 01 and this run carry.)
+vgate_file script-05.txt <<'EOF'
+settings set timezone UTC+05:30
+tabwm
+tabwm start
+EOF
+
+vgate_file script2-05.txt <<'EOF'
+exec GOSH.ELF
+EOF
+
+vgate_file script3-05.txt <<'EOF'
+dui close 2
+echo rx-m83c-tz-ok
+EOF
+
+vgate_run 05 -- \
+    --screen '$RUN_DIR/screen-05' \
+    --via-virtio \
+    --script '$RUN_DIR/script-05.txt' \
+    --script2 '$RUN_DIR/script2-05.txt' \
+    --script2-after 'tabwm: sidebar-rendered' \
+    --script3 '$RUN_DIR/script3-05.txt' \
+    --script3-after 'gosh: prompt' \
+    --script-expect 'rx-m83c-tz-ok' --timeout 240
+
+vgate_assert 05 serial-contains 'settings: timezone=UTC+05:30 (persisted)'
+vgate_assert 05 serial-contains 'gosh: line date > /host/GOSHDATE.TXT'
+vgate_assert 05 serial-contains 'rx-m83c-tz-ok'
+vgate_assert 05 serial-absent '[EXC] parking:'
+vgate_assert 05 serial-absent 'exited status=139'
+vgate_assert 05 python <<'PY'
+import datetime, os, re, shutil, time
+rd = os.environ["RUN_DIR"]
+with open(os.path.join(os.environ["VG_SHARE"], "GOSHDATE.TXT"), "rb") as fh:
+    line = fh.read()
+m = re.fullmatch(rb"(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) (UTC(?:[+-]\d\d:\d\d)?) \(epoch=([0-9]+)\)\n", line)
+if not m:
+    raise SystemExit("date did not print a calendar face + zone + epoch: %r" % line)
+if m.group(2) != b"UTC+05:30":
+    raise SystemExit("date labelled %r, want the configured UTC+05:30" % m.group(2))
+epoch = int(m.group(3))
+face = datetime.datetime.fromtimestamp(epoch + 5 * 3600 + 30 * 60, datetime.timezone.utc)
+if m.group(1).decode() != face.strftime("%Y-%m-%d %H:%M:%S"):
+    raise SystemExit("date face %r disagrees with epoch %d at +05:30" % (m.group(1), epoch))
+with open(os.path.join(rd, "host-epoch-start.txt")) as fh:
+    host_start = float(fh.read())
+host_end = time.time()
+if not host_start - 60 <= epoch <= host_end + 60:
+    raise SystemExit("date epoch %d outside host interval [%d, %d] with 60 s slack" %
+                     (epoch, host_start, host_end))
+shutil.copy(os.path.join(os.environ["VG_SHARE"], "GOSHDATE.TXT"),
+            "artifacts/go-sh-share-date-tz.txt")
+print("date epoch %d agrees with the +05:30 face and lies within 60 s of host [%d, %d]" %
+      (epoch, host_start, host_end))
+PY
