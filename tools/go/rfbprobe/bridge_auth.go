@@ -143,9 +143,9 @@ func authRefused(viewer io.Writer, version, reason string) error {
 	return write(viewer, result)
 }
 
-// The authenticated viewer sees ServerInit and later frames unmodified.
-// Only the greeting, security exchange, and ClientInit differ on each
-// side. The guest still receives exactly RFB 3.8/None.
+// The authenticated viewer sees ServerInit unmodified. The guest still
+// receives exactly RFB 3.8/None; frame translation, when needed, follows
+// this handshake on the host side only.
 func negotiateGuest(viewer io.ReadWriter, guestIn io.Reader, guestOut io.Writer) (byte, error) {
 	if err := readBanner(guestIn); err != nil {
 		return 0, err

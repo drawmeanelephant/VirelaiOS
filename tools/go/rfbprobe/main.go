@@ -416,14 +416,39 @@ func bridgeOne(ln *net.TCPListener, wait time.Duration, password string, guestIn
 		return fmt.Errorf("guest None handshake: %w", err)
 	}
 	fmt.Fprintf(os.Stderr, "RFBPROBE: bridge ClientInit shared=%d (viewer VNC auth -> guest None)\n", shared)
+	var init [24]byte
+	if _, err := io.ReadFull(guestIn, init[:]); err != nil {
+		return fmt.Errorf("guest ServerInit: %w", err)
+	}
+	nameLen := binary.BigEndian.Uint32(init[20:24])
+	if nameLen > 255 || init[4] != 8 && init[4] != 16 && init[4] != 32 {
+		return fmt.Errorf("guest ServerInit bounds or pixel format refused")
+	}
+	name := make([]byte, nameLen)
+	if _, err := io.ReadFull(guestIn, name); err != nil {
+		return fmt.Errorf("guest ServerInit name: %w", err)
+	}
+	if err := write(viewer, append(init[:], name...)); err != nil {
+		return fmt.Errorf("viewer ServerInit: %w", err)
+	}
+	plan := newBridgeFramePlan(int(init[4] / 8))
 	_ = viewer.SetDeadline(time.Time{})
 	done := make(chan string, 2)
 	go func() {
-		n, _ := io.Copy(viewer, guestIn)
+		var n int64
+		var err error
+		if plan.mode() {
+			n, err = forwardTranscodedFrames(guestIn, viewer, plan)
+		} else {
+			n, err = io.Copy(viewer, guestIn)
+		}
+		if err != nil && err != io.EOF {
+			fmt.Fprintln(os.Stderr, "RFBPROBE: bridge guest frames:", err)
+		}
 		done <- fmt.Sprintf("seat->viewer %d bytes", n)
 	}()
 	go func() {
-		n, err := forwardViewerMessages(viewer, onlyWriter{guestOut})
+		n, err := forwardViewerMessagesWithPlan(viewer, onlyWriter{guestOut}, plan)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "RFBPROBE: bridge viewer messages:", err)
 		}

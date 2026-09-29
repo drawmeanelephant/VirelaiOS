@@ -8,11 +8,18 @@ import (
 )
 
 // The guest picks the first supported image encoding a viewer advertises.
-// Screen Sharing can list Raw before hextile/RRE; that would send a 3.7 MB
-// first frame through the runner's paced TCP segments. Reorder only
-// encodings the viewer itself advertised, and leave every other message
-// byte-for-byte intact. No pixel format or input bytes are logged.
+// Reorder viewer-advertised compression before Raw. When there is none,
+// request hextile as the bridge's own guest-side encoding and decode it
+// back to viewer-compatible Raw on the host. All other client messages
+// keep their wire format; no pixels or input bytes are logged.
 func forwardViewerMessages(viewer io.Reader, guest io.Writer) (int64, error) {
+	return forwardViewerMessagesWithPlan(viewer, guest, nil)
+}
+
+func forwardViewerMessagesWithPlan(viewer io.Reader, guest io.Writer, plan *bridgeFramePlan) (int64, error) {
+	if plan != nil {
+		defer plan.start()
+	}
 	var forwarded int64
 	for {
 		var kind [1]byte
@@ -24,8 +31,15 @@ func forwardViewerMessages(viewer io.Reader, guest io.Writer) (int64, error) {
 		}
 		switch kind[0] {
 		case 0: // SetPixelFormat: 3 padding + 16 format bytes
-			if err := forwardFixed(viewer, guest, kind[0], 19); err != nil {
+			var format [20]byte
+			if _, err := io.ReadFull(viewer, format[1:]); err != nil {
 				return forwarded, err
+			}
+			if err := write(guest, format[:]); err != nil {
+				return forwarded, err
+			}
+			if plan != nil {
+				plan.setBPP(int(format[4] / 8))
 			}
 			forwarded += 20
 		case 2: // SetEncodings: 1 padding + count:u16 + count * i32
@@ -59,14 +73,21 @@ func forwardViewerMessages(viewer io.Reader, guest io.Writer) (int64, error) {
 			if best < 0 {
 				best = rre
 			}
-			if best >= 0 {
+			translate := plan != nil && plan.wantTranslation(best < 0)
+			if translate && count < 256 {
+				codes = append([]byte{0, 0, 0, 5}, codes...)
+				binary.BigEndian.PutUint16(header[1:], uint16(count+1))
+				fmt.Fprintf(os.Stderr, "RFBPROBE: bridge translating guest hextile to viewer Raw (count=%d)\n", count)
+			} else if best >= 0 {
 				code := append([]byte(nil), codes[best*4:best*4+4]...)
 				copy(codes[4:best*4+4], codes[:best*4])
 				copy(codes[:4], code)
 				fmt.Fprintf(os.Stderr, "RFBPROBE: bridge preferred viewer-advertised encoding %d (count=%d)\n",
 					binary.BigEndian.Uint32(code), count)
-			} else {
+			} else if !translate {
 				fmt.Fprintf(os.Stderr, "RFBPROBE: bridge viewer advertised no hextile/RRE (count=%d)\n", count)
+			} else {
+				return forwarded, fmt.Errorf("viewer encoding list cannot fit bridge hextile")
 			}
 			if err := write(guest, append(append(kind[:], header[:]...), codes...)); err != nil {
 				return forwarded, err
@@ -77,6 +98,9 @@ func forwardViewerMessages(viewer io.Reader, guest io.Writer) (int64, error) {
 				return forwarded, err
 			}
 			forwarded += 10
+			if plan != nil {
+				plan.start()
+			}
 		case 4: // KeyEvent
 			if err := forwardFixed(viewer, guest, kind[0], 7); err != nil {
 				return forwarded, err

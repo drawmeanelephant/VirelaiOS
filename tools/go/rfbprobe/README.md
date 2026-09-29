@@ -45,13 +45,16 @@ printed to the operator (or delivered over a private named pipe to the tape,
 which prints it without recording it in runner.log). RFB 3.3/3.7/3.8
 viewers see only security type 2; a wrong password or type is refused
 before any guest bytes are exchanged. After authentication the bridge
-speaks RFB 3.8/None to the guest, forwards ClientInit, ServerInit and
-frames, and logs the handshake progress without challenge/response or
+speaks RFB 3.8/None to the guest, forwards ClientInit and ServerInit, and
+logs the handshake progress without challenge/response or
 password bytes. It refuses non-loopback addresses. This is not a
 remote-access path: legacy DES exists only in the host probe.
 For the paced hermetic stream, the bridge prefers viewer-advertised
-hextile or RRE ahead of Raw when forwarding SetEncodings. It never
-offers the guest an encoding the viewer did not advertise.
+hextile or RRE ahead of Raw when forwarding SetEncodings. If the viewer
+advertises neither (as observed with Screen Sharing), the bridge itself
+requests hextile from the guest and streams decoded Raw rows to the viewer
+in bounded 16-row bands. Raw is mandatory for RFB viewers; no guest-only
+encoding reaches Screen Sharing.
 
 The guest's None wire has no authentication or confidentiality. The
 `--rfb-hermetic` seat opt-in and this one-viewer bridge are same-trust-domain
