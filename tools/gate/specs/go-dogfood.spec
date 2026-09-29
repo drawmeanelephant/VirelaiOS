@@ -74,6 +74,7 @@
 #                                             defaults it now)
 #   bash tools/go/build-goterm.sh         ->  .build/go/GOTERM.ELF    (boot 04)
 #   bash tools/go/build-charmhello.sh     ->  .build/go/CHARMHELLO.ELF (boot 04)
+#   bash tools/go/build-files.sh          ->  .build/go/GOFILES.ELF   (boots 05/06)
 #   (the page is the pinned fixture user/go/browser/testdata/gate-page.html,
 #    staged as /host/DOGFOOD.HTML; no new fixture)
 #
@@ -124,6 +125,19 @@
 # all four boots on purpose: boot 03's pixel pin counts terminal-green pixels
 # in row 0 and the first staged row is a dense ASCII echo, so the assertion
 # still measures green ink, not a prompt.
+#
+# M82d2 (#1785) adds boots 05 and 06: the notifications center's POLICY, on the
+# LIVE default seat (the demo trigger is removed between boots 04 and 05 -- see
+# the hook there). Boot 05 is a user's away-from-keyboard sequence: an app
+# raises a toast (GOFILES, a completed copy), the user opens the center and
+# turns do-not-disturb ON from its header, the same app raises a SECOND notice
+# and it is HELD -- acked to the app, kept in the center's history, never
+# painted as a toast. Boot 06 restarts the seat on the same share: the DND
+# choice and both notices are still there, restored before the first paint,
+# and the reopened center shows them. GOTABWM.DEMO's removal is what makes the
+# seat live; nothing else about the default seat is overridden (still no `wm`
+# row anywhere). The corrupt-history half of the card is go-wm-default's
+# boots 13-16.
 #
 # exec-order: assert-proven -- every phase gate is anchored on guest output
 # (the seat's, an app's, or the kernel's own marker: dogfood: seat ->
@@ -194,7 +208,8 @@ for name, how in (("GOTABWM.ELF", "build-gotabwm.sh"),
                   ("GOCALC.ELF", "build-gocalc.sh"),
                   ("WEB.ELF", "build-web.sh browser WEB"),
                   ("GOTERM.ELF", "build-goterm.sh"),
-                  ("CHARMHELLO.ELF", "build-charmhello.sh")):
+                  ("CHARMHELLO.ELF", "build-charmhello.sh"),
+                  ("GOFILES.ELF", "build-files.sh")):
     src = os.path.join(".build", "go", name)
     if not os.path.exists(src):
         sys.exit(name + " missing (expected " + src + ") - build it first: "
@@ -209,6 +224,24 @@ if os.path.exists(os.path.join(share, "SETTINGS.TXT")):
              "boot with no persisted `wm`")
 print("staged GOTABWM/GOSH/NOTE/GOCALC/WEB + DOGFOOD.HTML from the pinned "
       "gate-page.html fixture")
+PY
+
+# M82d2 (#1785): boot 05's notice sender is GOFILES.ELF (its completed copy
+# raises a toast, go-wm-seat run 06's adopter), so stage the tree its copies
+# need. Directories sort first: DIR1 is entry 0, DIR2 entry 1, SOURCE.TXT
+# entry 2 -- which is what the key batches in boot 05 count on. Two
+# destinations because a paste never overwrites: the SECOND notice needs a
+# copy that succeeds, and the same file cannot be pasted twice into one dir.
+vgate_setup_python <<'PY'
+import os
+rd = os.environ["RUN_DIR"]
+share = os.environ.get("VG_SHARE") or os.path.join(rd, "share")
+notify = os.path.join(share, "NOTIFY")
+for d in ("DIR1", "DIR2"):
+    os.makedirs(os.path.join(notify, d), exist_ok=True)
+with open(os.path.join(notify, "SOURCE.TXT"), "w") as f:
+    f.write("notify-policy-payload\n")
+print("staged NOTIFY/{DIR1,DIR2,SOURCE.TXT} for the M82d2 notify boots")
 PY
 
 vgate_run 01 -- \
@@ -1129,4 +1162,392 @@ assert gap <= 10, "cell after the wide rune must be blank (got %d)" % gap
 assert pfield >= 100, "the P-run after col 6 is absent (got %d)" % pfield
 assert past <= 20, "ink past col 79: the grid shifted (got %d)" % past
 print("(e) rune cell rendered, alignment exact, no ink past col 79")
+PY
+
+# ---------------------------------------------------------------------------
+# M82d2 (#1785): the notifications center's policy, on the LIVE default seat
+# ---------------------------------------------------------------------------
+# Boots 01-04 run the seat in DEMO mode (the seeded GOTABWM.DEMO): a bounded
+# choreography that auto-closes a lone tab after 16 ticks, far shorter than the
+# away-from-keyboard sequence below needs. The policy under test is the
+# product's, so these two boots run the seat as a user does -- LIVE, no run
+# budget, no auto-close -- by removing the trigger BETWEEN boots 04 and 05.
+# That is the same between-run slot boot 03's tag-03 assert uses for
+# SESSION.TABS (see above), and the SESSION.TABS goes here too: boot 04's close
+# left restored-placeholder ids that are not kernel windows, and boot 05 wants
+# the first-boot workspace branch (a real GOSH tab), not a strip of ghosts.
+vgate_assert 04 python <<'PY'
+import os, sys
+share = os.environ.get("VG_SHARE")
+if not share:
+    sys.exit("no armed share exported to the assert (vgate_share arm?)")
+removed = []
+for name in ("GOTABWM.DEMO", "SESSION.TABS"):
+    p = os.path.join(share, name)
+    if os.path.exists(p):
+        os.remove(p)
+        removed.append(name)
+    assert not os.path.exists(p), name + " survived removal"
+if "GOTABWM.DEMO" not in removed:
+    sys.exit("GOTABWM.DEMO was already gone: the demo trigger's staging changed, "
+             "re-check what boots 05/06 run on")
+print("between-run cleanup: removed " + ", ".join(removed) +
+      " (boots 05/06 run the LIVE seat on a first-boot strip)")
+PY
+
+# --- boot 05: notify -> do-not-disturb ON -> notify HELD -> history holds both
+# Every stage is caused by a marker the guest printed, never by a delay:
+#
+#   gotabwm: win focus     script a: `dui focus 0` hands focus away from the
+#                          seat's startup probe (boot 01's own first phase).
+#   gosh: prompt           script b: GOFILES on the second slot, at the fixture
+#                          tree, under `set GOMAXPROCS=1` like every app in boots
+#                          01-04. The starter GOSH is tab one.
+#   gofiles: ready         --input-string `jjckk\np`: down, down (SOURCE.TXT),
+#                          c (copy), up, up (DIR1), Enter (cd DIR1), p (paste)
+#                          -> the copy completes -> the app raises a toast.
+#                          Printable bytes only (j/k), never arrows: an arrow's
+#                          three-byte CSI is not delivered atomically over this
+#                          transport (go-wm-seat run 06 measured it).
+#   notify paint id=       --pointer-virtio: press the clock panel (the
+#                          center's affordance) -> the center OPENS; then press
+#                          its header's do-not-disturb control at (770, 195)
+#                          = the middle of notifyCenterDNDRect(1280,720) =
+#                          (682, 180, 176, 30). Anchored on the PAINT marker so
+#                          the toast is provably on the scanout first.
+#   notify dnd=on via=seat --input-chords `h,j,l,p`: up to /host/NOTIFY, down
+#                          to DIR2, open it, paste -> the SECOND completed copy
+#                          raises a SECOND notice. It arrives with DND ON.
+#   history write n=2      script c: the tick after the held notice published
+#                          the history with both entries. The run then KILLS
+#                          the seat (go-wm-seat run 05's ending: a live seat
+#                          has no budget), so boot 06 restarts from a seat
+#                          that did not get a clean-exit flush -- the file must
+#                          already be whole, which is the crash-safe claim.
+#
+# The chords' letters ride the same virtio keyboard as the string; only the
+# anchors differ.
+vgate_file script-05a.txt <<'EOF'
+dui focus 0
+EOF
+
+vgate_file script-05b.txt <<'EOF'
+set GOMAXPROCS=1
+exec GOFILES.ELF /host/NOTIFY
+EOF
+
+vgate_file script-05c.txt <<'EOF'
+kill GOTABWM.ELF
+echo rx-dogfood-05-ok
+EOF
+
+vgate_run 05 -- \
+    --via-virtio \
+    --screen '$RUN_DIR/screen-05' \
+    --script '$RUN_DIR/script-05a.txt' \
+    --script-after 'gotabwm: win focus' \
+    --script2 '$RUN_DIR/script-05b.txt' \
+    --script2-after 'gosh: prompt' \
+    --input-string $'jjckk\np' \
+    --input-string-after 'gofiles: ready' \
+    --pointer-virtio '1198,702,d;1198,702,u;770,195,d;770,195,u' \
+    --pointer-virtio-after 'gotabwm: notify paint id=' \
+    --input-chords 'h,j,l,p' \
+    --input-chords-after 'gotabwm: notify dnd=on via=seat' \
+    --script3 '$RUN_DIR/script-05c.txt' \
+    --script3-after 'gotabwm: notify history write n=2' \
+    --script-expect 'rx-dogfood-05-ok' --timeout 420
+
+# The LIVE default seat: the demo trigger is gone and nothing named a seat.
+vgate_assert 05 serial-contains 'wm: autostart gotabwm (settings wm=gotabwm)'
+vgate_assert 05 serial-contains 'gotabwm: mode live'
+vgate_assert 05 serial-absent 'gotabwm: mode demo'
+vgate_assert 05 serial-contains 'gotabwm: first-boot workspace'
+vgate_assert 05 serial-contains 'gosh: prompt'
+vgate_assert 05 serial-contains 'exec: loaded GOFILES.ELF'
+vgate_assert 05 serial-contains 'gofiles: declare accepted'
+# The sender's half: both copies completed, and the notice sent under DND was
+# ACKED (`notify sent`): the seat still answers, so the app cannot tell the
+# user is away. The python below pins that ack to the second notice; the first
+# notice's ack is not asserted here, because the seat is starved for ~10 s
+# right after the first paste (three Go runtimes on two CPUs: no `gotabwm: tick`
+# between the paste and the seat's answer, observed on both runs of this
+# boot), so GOFILES's 8-tick ack wait can expire and print `notify refused`
+# for a notice the seat then queues and paints. The seat's own `notify id=` /
+# `notify paint id=` lines are what prove that first notice was accepted.
+vgate_assert 05 serial-contains 'gofiles: cd /host/NOTIFY/DIR1'
+vgate_assert 05 serial-contains 'gofiles: cd /host/NOTIFY/DIR2'
+vgate_assert 05 serial-count 'gofiles: pasted SOURCE.TXT' 2
+vgate_assert 05 serial-contains 'gofiles: notify sent copied SOURCE.TXT'
+# The seat's half.
+vgate_assert 05 serial-contains 'gotabwm: notify id='
+vgate_assert 05 serial-contains 'gotabwm: notify paint id='
+vgate_assert 05 serial-contains 'gotabwm: notify center open'
+vgate_assert 05 serial-contains 'gotabwm: notify dnd=on via=seat persisted=1'
+vgate_assert 05 serial-contains 'gotabwm: notify held id='
+vgate_assert 05 serial-contains 'gotabwm: notify history write n=1'
+vgate_assert 05 serial-contains 'gotabwm: notify history write n=2'
+vgate_assert 05 serial-absent 'gotabwm: notify history write fail'
+vgate_assert 05 serial-absent 'gotabwm: notify history bad'
+# The toggle is the SEAT's, persisted through the settings file...
+vgate_assert 05 share-contains SETTINGS.TXT 'notify_dnd=on'
+# ...and it is not a `wm` override: the default seat is still the compiled one.
+vgate_assert 05 serial-absent 'wm: autostart tabwm'
+vgate_assert 05 serial-absent '[EXC] parking:'
+vgate_assert 05 serial-absent 'exited status=139'
+vgate_assert 05 serial-contains 'rx-dogfood-05-ok'
+
+# The chain as an ORDERING check, and the "not shown" half: exactly ONE toast
+# was ever queued and painted (the one before DND), the second notice reached
+# the seat AFTER DND was on and was held, and the held line names the same
+# sender the toast did.
+vgate_assert 05 python <<'PY'
+import os, re, sys
+ser = open(os.environ["VG_SER"], errors="replace").read()
+
+def all_at(pat):
+    return [m for m in re.finditer(pat, ser, re.M)]
+
+def one(pat, what):
+    ms = all_at(pat)
+    if len(ms) != 1:
+        sys.exit("want exactly one %s, found %d (%s)" % (what, len(ms), pat))
+    return ms[0]
+
+pasted = all_at(r"gofiles: pasted SOURCE\.TXT$")
+if len(pasted) != 2:
+    sys.exit("want two completed copies, saw %d" % len(pasted))
+queued = all_at(r"gotabwm: notify id=(\d+) copied SOURCE\.TXT$")
+if len(queued) != 1:
+    sys.exit("want exactly ONE queued toast (the one before DND), saw %d: a held "
+             "notice must not be queued" % len(queued))
+painted = all_at(r"gotabwm: notify paint id=(\d+)$")
+if len(painted) != 1:
+    sys.exit("want exactly ONE toast painted, saw %d: the held notice was shown" % len(painted))
+dnd = one(r"gotabwm: notify dnd=on via=seat persisted=1$", "DND-on transition")
+held = all_at(r"gotabwm: notify held id=(\d+) copied SOURCE\.TXT$")
+if len(held) != 1:
+    sys.exit("want exactly one held notice, saw %d" % len(held))
+w1 = one(r"gotabwm: notify history write n=1$", "one-entry publish")
+w2 = one(r"gotabwm: notify history write n=2$", "two-entry publish")
+outcomes = sorted(
+    [(m.start(), "sent") for m in all_at(r"gofiles: notify sent copied SOURCE\.TXT$")] +
+    [(m.start(), "refused") for m in all_at(r"gofiles: notify refused copied SOURCE\.TXT$")])
+if len(outcomes) != 2:
+    sys.exit("want one app-side ack outcome per copy, saw %r" % outcomes)
+
+order = [
+    ("first copy", pasted[0].start()),
+    ("toast queued", queued[0].start()),
+    ("toast painted", painted[0].start()),
+    ("DND on", dnd.start()),
+    ("second copy", pasted[1].start()),
+    ("notice held", held[0].start()),
+    ("two-entry publish", w2.start()),
+]
+if [n for n, _ in order] != [n for n, _ in sorted(order, key=lambda p: p[1])]:
+    sys.exit("notify/DND chain out of order: " + repr(order))
+# The one-entry publish belongs to the toast, so it precedes DND.
+if not (queued[0].start() < w1.start() < dnd.start()):
+    sys.exit("the one-entry publish is not between the toast and DND-on")
+# The second notice was held and yet ACKED, and the ack answers the seat's
+# decision (never before it). Only the first notice's outcome is allowed to be
+# a timeout (see the assertions above).
+if outcomes[1][1] != "sent":
+    sys.exit("the notice sent under DND was not acked: the app saw a refusal")
+if not held[0].start() < outcomes[1][0]:
+    sys.exit("the app's second ack came before the seat's hold")
+# One sender throughout.
+if not (queued[0].group(1) == painted[0].group(1) == held[0].group(1)):
+    sys.exit("sender ids differ: toast %s, paint %s, held %s"
+             % (queued[0].group(1), painted[0].group(1), held[0].group(1)))
+# After DND-on, nothing was queued or painted.
+tail = ser[dnd.start():]
+if re.search(r"gotabwm: notify (id=|paint id=)", tail, re.M):
+    sys.exit("a toast was queued or painted after DND was turned on")
+print("M82d2 chain OK: toast (id=%s) -> center open -> DND on -> second notice HELD "
+      "(id=%s, acked, never painted) -> history published n=1 then n=2"
+      % (queued[0].group(1), held[0].group(1)))
+PY
+
+# What is on the share, decoded on the HOST by an independent reader of the
+# documented layout ("VNH\x01", a count byte, length-framed (source, text)
+# records, FNV-1a 32 trailer): a valid two-entry history whose entries are the
+# two notices -- the held one included -- and no temp left behind. The bytes
+# are also kept for boot 06, which must leave them untouched.
+vgate_assert 05 python <<'PY'
+import os, shutil, sys
+share = os.environ["VG_SHARE"]
+rd = os.environ["RUN_DIR"]
+path = os.path.join(share, "NOTIFY.HIST")
+if not os.path.exists(path):
+    sys.exit("no NOTIFY.HIST on the share")
+if os.path.exists(path + "~"):
+    sys.exit("NOTIFY.HIST~ survived the publish - the rename did not run")
+raw = open(path, "rb").read()
+
+def fnv(b):
+    h = 2166136261
+    for c in b:
+        h ^= c
+        h = (h * 16777619) & 0xffffffff
+    return h
+
+if raw[:4] != b"VNH\x01":
+    sys.exit("bad magic %r" % raw[:4])
+body, tail = raw[:-4], raw[-4:]
+if fnv(body) != int.from_bytes(tail, "little"):
+    sys.exit("checksum does not match the body")
+n = body[4]
+off = 5
+recs = []
+for _ in range(n):
+    sl, tl = body[off], body[off + 1]
+    off += 2
+    recs.append((body[off:off + sl], body[off + sl:off + sl + tl]))
+    off += sl + tl
+if off != len(body):
+    sys.exit("%d stray bytes after the last record" % (len(body) - off))
+if n != 2 or any(t != b"copied SOURCE.TXT" for _, t in recs):
+    sys.exit("history holds %r, want the two copied-SOURCE.TXT notices" % recs)
+shutil.copy(path, os.path.join(rd, "notify-hist-05.bin"))
+print("NOTIFY.HIST on the share: %d bytes, %d valid entries (%s), no temp left"
+      % (len(raw), n, ", ".join(repr(t.decode()) for _, t in recs)))
+PY
+
+# --- boot 06: restart -> DND still on, both notices still there ---------------
+# A fresh VM on the same share. The seat that left was killed, not asked to
+# exit, so everything below survived on the strength of the crash-safe publish.
+#
+#   gotabwm: win focus     script a: `dui focus 0`, as in every boot here.
+#   gotabwm: win gone      --pointer-virtio: press the clock panel -> the center
+#                          OPENS with the restored history; the snapshot fires
+#                          when it is PRESENTED (`notify center paint`); a later
+#                          press on the header control turns DND back OFF, so
+#                          the toggle's persistence is proven both directions.
+#   dnd=off via=seat       script b: kill the seat, then the run's end marker.
+vgate_file script-06a.txt <<'EOF'
+dui focus 0
+EOF
+
+vgate_file script-06b.txt <<'EOF'
+kill GOTABWM.ELF
+echo rx-dogfood-06-ok
+EOF
+
+vgate_run 06 -- \
+    --via-virtio --cvc-snap \
+    --screen '$RUN_DIR/screen-06' \
+    --snapshot-after 'gotabwm: notify center paint' \
+    --snapshot-out '$RUN_DIR/snap-06' \
+    --script '$RUN_DIR/script-06a.txt' \
+    --script-after 'gotabwm: win focus' \
+    --pointer-virtio '1198,702,d;1198,702,u;770,195,d;770,195,u' \
+    --pointer-virtio-after 'gotabwm: win gone' \
+    --script2 '$RUN_DIR/script-06b.txt' \
+    --script2-after 'gotabwm: notify dnd=off via=seat' \
+    --script-expect 'rx-dogfood-06-ok' --timeout 420
+
+vgate_assert 06 serial-contains 'gotabwm: mode live'
+vgate_assert 06 serial-absent 'gotabwm: mode demo'
+# The choice survived the restart: read from the persisted key before the loop.
+vgate_assert 06 serial-contains 'gotabwm: notify dnd=on via=boot'
+# And so did both notices: restored from the file boot 05 published.
+vgate_assert 06 serial-contains 'gotabwm: notify history restore n=2'
+vgate_assert 06 serial-absent 'gotabwm: notify history bad'
+vgate_assert 06 serial-absent 'gotabwm: notify history healed'
+# The center opened on the restored history, and the seat control turned DND
+# off again, persisting it.
+vgate_assert 06 serial-contains 'gotabwm: notify center open'
+vgate_assert 06 serial-contains 'gotabwm: notify center paint'
+vgate_assert 06 serial-contains 'gotabwm: notify dnd=off via=seat persisted=1'
+vgate_assert 06 share-contains SETTINGS.TXT 'notify_dnd=off'
+# Nothing in this boot changed the history, so the file is boot 05's, byte for
+# byte (`notify-hist-05.bin` is the copy boot 05's assert took).
+vgate_assert 06 share-equals NOTIFY.HIST notify-hist-05.bin
+vgate_assert 06 serial-absent 'gotabwm: notify history write'
+vgate_assert 06 serial-absent '[EXC] parking:'
+vgate_assert 06 serial-absent 'exited status=139'
+vgate_assert 06 serial-contains 'rx-dogfood-06-ok'
+
+# Restored BEFORE the first paint: the history load precedes the loop, so its
+# line comes before the seat's first tick and first present -- there is no
+# frame that showed an empty center which then filled in. DND is read before
+# that too, so the first notice this seat ever receives already obeys it.
+vgate_assert 06 python <<'PY'
+import os, sys
+ser = open(os.environ["VG_SER"], errors="replace").read().splitlines()
+def line_of(prefix):
+    for i, l in enumerate(ser):
+        if prefix in l:
+            return i
+    sys.exit("the serial has no %r line" % prefix)
+dnd = line_of("gotabwm: notify dnd=on via=boot")
+restore = line_of("gotabwm: notify history restore n=2")
+mode = line_of("gotabwm: mode live")
+tick = line_of("gotabwm: tick")
+present = line_of("gotabwm: present")
+opened = line_of("gotabwm: notify center open")
+off = line_of("gotabwm: notify dnd=off via=seat")
+if not (dnd < mode and restore < mode):
+    sys.exit("DND (%d) and the restore (%d) must both precede the mode line (%d)"
+             % (dnd, restore, mode))
+if not (restore < tick and restore < present):
+    sys.exit("restore (line %d) did not precede the first tick (%d) / present (%d)"
+             % (restore, tick, present))
+if not (present < opened < off):
+    sys.exit("center open (%d) / DND off (%d) out of order after the first present (%d)"
+             % (opened, off, present))
+print("boot read DND (line %d) and restored 2 entries (line %d) before the first "
+      "tick (%d) and present (%d); center opened at %d, DND turned off at %d"
+      % (dnd, restore, tick, present, opened, off))
+PY
+
+# THE pixel proof, from the guest's own composed scanout at the moment the
+# reopened center was PRESENTED: the panel holds the two restored entries (their
+# text in the InkMuted token on rows 0 and 1, nothing on row 2), their sender
+# rendered as closed (the Muted token), and the header's do-not-disturb label in
+# the Accent -- the mode is readable at a glance. Geometry is
+# notifyCenterRect(1280,720) = (380, 180, 520, 360); row i's source line is at
+# y = 180+30+34i+2 and its text at +16; the control is at (682, 180, 176, 30).
+# Dark palette: Accent 0x3b82f6, Muted 0x94a3b8, InkMuted 0x8b98a5.
+vgate_assert 06 snapshot 'snap-06-*.raw' <<'PY'
+import sys
+
+W, H = 1280, 720
+raw = open(sys.argv[1], "rb").read()
+need = W * H * 4
+if len(raw) < need:
+    sys.exit("snapshot is %d bytes, want at least %d (%dx%d BGRX)" % (len(raw), need, W, H))
+
+def px(x, y):
+    off = (y * W + x) * 4
+    return (raw[off + 2], raw[off + 1], raw[off])
+
+def count(color, x0, x1, y0, y1):
+    return sum(1 for y in range(y0, y1) for x in range(x0, x1) if px(x, y) == color)
+
+ACCENT = (0x3b, 0x82, 0xf6)
+MUTED = (0x94, 0xa3, 0xb8)
+INKMUTED = (0x8b, 0x98, 0xa5)
+PX, PY, PW, PH = 380, 180, 520, 360
+ROW0, ROW = PY + 30, 34
+
+dnd = count(ACCENT, 682, 858, PY + 4, PY + 26)
+src0 = count(MUTED, PX + 12, PX + 12 + 48 * 8, ROW0 + 2, ROW0 + 10)
+src1 = count(MUTED, PX + 12, PX + 12 + 48 * 8, ROW0 + ROW + 2, ROW0 + ROW + 10)
+txt0 = count(INKMUTED, PX + 12, PX + 12 + 48 * 8, ROW0 + 16, ROW0 + 24)
+txt1 = count(INKMUTED, PX + 12, PX + 12 + 48 * 8, ROW0 + ROW + 16, ROW0 + ROW + 24)
+txt2 = count(INKMUTED, PX + 12, PX + 12 + 48 * 8, ROW0 + 2 * ROW + 16, ROW0 + 2 * ROW + 24)
+print("center rows: dnd-accent=%d closed-source=%d/%d text=%d/%d row2-text=%d"
+      % (dnd, src0, src1, txt0, txt1, txt2))
+assert dnd >= 20, ("only %d accent pixels in the DND control: the label is not in "
+                   "the ON colour, or the control did not paint" % dnd)
+assert src0 >= 10 and src1 >= 10, ("the restored senders are not rendered as closed "
+                                   "(%d/%d muted pixels)" % (src0, src1))
+assert txt0 >= 20 and txt1 >= 20, ("the restored notices' text is not on the scanout "
+                                   "(%d/%d ink pixels)" % (txt0, txt1))
+assert txt2 == 0, ("a third row painted text (%d px): the center holds more than the "
+                   "two restored notices" % txt2)
+print("the reopened center shows exactly the two restored notices, DND on")
 PY
