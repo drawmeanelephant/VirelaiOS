@@ -25,9 +25,18 @@ type fakeFS struct {
 	cursors map[int64]int
 	next    int64
 	clock   int64
+	epoch   int64
 	trash   map[string]fakeTrash
 	trashID uint64
 	recent  []string
+
+	// M83b (#1775): the setter's fake. The honest shape mirrors the kernel:
+	// EINVAL outside [clockSetMin, clockSetMax], otherwise the epoch is the
+	// new reading. The knobs are deliberately WRONG shapes the case must catch.
+	setCalls   []int64
+	setLies    bool // reports success and leaves the clock alone
+	setNoRange bool // accepts any epoch, including out-of-range ones
+	setDeny    int64
 
 	frozenClock bool   // sleep does not advance the clock
 	shortWrite  bool   // every write accepts one byte (the loop path)
@@ -112,6 +121,7 @@ func newFakeFS() *fakeFS {
 		cursors: map[int64]int{},
 		trash:   map[string]fakeTrash{},
 		clock:   1000,
+		epoch:   1_789_043_696,
 		winID:   2,
 		winGeometry: [8]uint32{winGotX, winGotY, winGotW, winGotH,
 			0 /*z*/, 1 /*focused*/, 1 /*visible*/, 0 /*dirty*/},
@@ -125,9 +135,27 @@ func newFakeFS() *fakeFS {
 	}
 }
 
+func (f *fakeFS) setEpoch(epoch int64) int64 {
+	f.setCalls = append(f.setCalls, epoch)
+	if f.setDeny != 0 {
+		return f.setDeny
+	}
+	if !f.setNoRange && (epoch < clockSetMin || epoch > clockSetMax) {
+		return -vi.ErrEINVAL
+	}
+	if !f.setLies {
+		f.epoch = epoch
+	}
+	return 0
+}
+
 func (f *fakeFS) syscalls() *syscalls {
 	return &syscalls{
 		now: func() int64 { return f.clock },
+		epoch: func() int64 {
+			return f.epoch
+		},
+		setEpoch: f.setEpoch,
 		sleep: func(ticks uint64) {
 			if !f.frozenClock {
 				f.clock += int64(ticks)
@@ -558,8 +586,8 @@ const wantReport = "case intake pass\ncase intake-altered pass\n" +
 	"case file-fsync pass\ncase file-errors pass\n" +
 	"case file-write-safe pass\ncase trash pass\ncase file-write-publish pass\n" +
 	"case mime pass\ncase file-snapshot pass\ncase app-logs pass\n" +
-	"case file-lease pass\ncase window pass\n" +
-	"summary cases=21 failed=0\n"
+	"case file-lease pass\ncase window pass\ncase clock-epoch pass\n" +
+	"case clock-set pass\nsummary cases=23 failed=0\n"
 
 // seedFixtures is the host's half of the intake contract: IN/fixture.txt holds
 // the canonical body, IN/altered.txt the altered one (ADR 0031 D2), and the
@@ -580,8 +608,8 @@ func TestRunCasesAllPassAndReportBytes(t *testing.T) {
 	seedFixtures(fs)
 	rs := runCases(fs.syscalls())
 
-	if len(rs) != 21 {
-		t.Fatalf("cases = %d, want 21", len(rs))
+	if len(rs) != 23 {
+		t.Fatalf("cases = %d, want 23", len(rs))
 	}
 	for _, r := range rs {
 		if !r.ok {
@@ -591,7 +619,7 @@ func TestRunCasesAllPassAndReportBytes(t *testing.T) {
 	if got := string(renderReport(rs)); got != wantReport {
 		t.Fatalf("report bytes:\n got %q\nwant %q", got, wantReport)
 	}
-	if got := string(renderSummary(rs)); got != "summary cases=21 failed=0\n" {
+	if got := string(renderSummary(rs)); got != "summary cases=23 failed=0\n" {
 		t.Fatalf("summary = %q", got)
 	}
 	if got := fs.files[helloPath]; !bytes.Equal(got, []byte(helloPayload)) {
@@ -614,6 +642,10 @@ func TestRunCasesAllPassAndReportBytes(t *testing.T) {
 	}
 	if !fs.dirs[outDir] {
 		t.Fatal("the file-write case did not ensure OUT/ exists")
+	}
+	if got := string(fs.files[epochReceipt]); got !=
+		"case clock-epoch epoch=1789043696 source=firmware\n" {
+		t.Fatalf("epoch receipt = %q", got)
 	}
 }
 
@@ -673,7 +705,7 @@ func TestIntakeFailsOnAMutatedSeed(t *testing.T) {
 	if !strings.Contains(report, "case intake fail fixture mismatch") {
 		t.Fatalf("report lacks the intake failure: %q", report)
 	}
-	if !strings.Contains(report, "summary cases=21 failed=2") {
+	if !strings.Contains(report, "summary cases=23 failed=2") {
 		t.Fatalf("report summary wrong: %q", report)
 	}
 	if got := fs.files[intakeCopy]; !bytes.Equal(got, []byte(intakeAltered)) {
@@ -706,10 +738,10 @@ func TestIntakeFailsWhenTheFixtureIsMissing(t *testing.T) {
 	if got := string(fs.files[alteredReceipt]); !strings.Contains(got, "bytes=0 err=open rc=-6") {
 		t.Fatalf("altered receipt = %q", got)
 	}
-	// The report is still complete: 20 cases, the 2 intake ones failed (the
+	// The report is still complete: 23 cases, the 2 intake ones failed (the
 	// clock, file and window cases do not read IN/).
 	report := string(renderReport(rs))
-	if !strings.Contains(report, "summary cases=21 failed=2") {
+	if !strings.Contains(report, "summary cases=23 failed=2") {
 		t.Fatalf("report summary wrong: %q", report)
 	}
 	if lines := strings.Count(report, "\n"); lines != len(rs)+1 {
@@ -907,7 +939,7 @@ func TestFileWriteCaseFailsWhenTheWriteIsRefused(t *testing.T) {
 	if !strings.Contains(report, "case file-write fail ") {
 		t.Fatalf("report lacks the fail detail: %q", report)
 	}
-	if !strings.Contains(report, "summary cases=21 failed=1") {
+	if !strings.Contains(report, "summary cases=23 failed=1") {
 		t.Fatalf("report summary wrong: %q", report)
 	}
 }
@@ -922,6 +954,138 @@ func TestClockCaseFailsWhenTheClockStandsStill(t *testing.T) {
 	}
 	if !strings.Contains(rs[2].detail, "clock did not advance") {
 		t.Fatalf("detail = %q", rs[2].detail)
+	}
+}
+
+func TestEpochCaseNamesMissingFirmwareTime(t *testing.T) {
+	fs := newFakeFS()
+	fs.epoch = -vi.ErrENOSYS
+	rs := runCases(fs.syscalls())
+	if got := resultFor(t, rs, "clock-epoch"); !got.ok {
+		t.Fatalf("missing firmware clock should be an honest fallback: %+v", got)
+	}
+	if got := string(fs.files[epochReceipt]); got != "case clock-epoch unavailable fallback=monotonic\n" {
+		t.Fatalf("no-epoch receipt = %q", got)
+	}
+}
+
+func TestEpochCaseRejectsOtherKernelErrors(t *testing.T) {
+	fs := newFakeFS()
+	fs.epoch = -vi.ErrEFAULT
+	rs := runCases(fs.syscalls())
+	got := resultFor(t, rs, "clock-epoch")
+	if got.ok || got.detail != "epoch rc=-3" {
+		t.Fatalf("clock error must fail the case: %+v", got)
+	}
+}
+
+// M83b (#1775): the clock-set case — four refusals, one real step, one exact
+// restore, and a receipt that says so. The boot clock is what the rest of the
+// run (and the host's bound on clock-epoch) still sees afterward.
+func TestClockSetCaseRefusesStepsAndRestores(t *testing.T) {
+	fs := newFakeFS()
+	boot := fs.epoch
+	rs := runCases(fs.syscalls())
+	if got := resultFor(t, rs, "clock-set"); !got.ok {
+		t.Fatalf("clock-set failed: %s", got.detail)
+	}
+	if got := string(fs.files[clockSetReceipt]); got != "case clock-set refused=4 stepped=+100 restored=yes\n" {
+		t.Fatalf("clock-set receipt = %q", got)
+	}
+	want := []int64{0, -1, clockSetMin - 1, clockSetMax + 1, boot + 100, boot}
+	if len(fs.setCalls) != len(want) {
+		t.Fatalf("set calls = %v, want %v", fs.setCalls, want)
+	}
+	for i := range want {
+		if fs.setCalls[i] != want[i] {
+			t.Fatalf("set call %d = %d, want %d (all: %v)", i, fs.setCalls[i], want[i], fs.setCalls)
+		}
+	}
+	if fs.epoch != boot {
+		t.Fatalf("clock left at %d, boot reading was %d", fs.epoch, boot)
+	}
+	// clock-epoch ran first, so its receipt is the untouched boot value.
+	if got := string(fs.files[epochReceipt]); got != "case clock-epoch epoch=1789043696 source=firmware\n" {
+		t.Fatalf("epoch receipt = %q", got)
+	}
+}
+
+func TestClockSetCaseCatchesAKernelThatAcceptsAnyEpoch(t *testing.T) {
+	fs := newFakeFS()
+	fs.setNoRange = true
+	got := resultFor(t, runCases(fs.syscalls()), "clock-set")
+	if got.ok || !strings.Contains(got.detail, "set 0 rc=0") {
+		t.Fatalf("an out-of-range set that succeeds must fail the case: %+v", got)
+	}
+}
+
+func TestClockSetCaseCatchesASetThatDoesNothing(t *testing.T) {
+	fs := newFakeFS()
+	boot := fs.epoch
+	fs.setLies = true
+	got := resultFor(t, runCases(fs.syscalls()), "clock-set")
+	if got.ok || !strings.Contains(got.detail, "read-back after set") {
+		t.Fatalf("a set that reports success and changes nothing must fail: %+v", got)
+	}
+	if fs.epoch != boot {
+		t.Fatalf("the failing case moved the clock to %d", fs.epoch)
+	}
+}
+
+func TestClockSetCaseRestoresTheClockEvenWhenReadBackIsWrong(t *testing.T) {
+	fs := newFakeFS()
+	boot := fs.epoch
+	// A kernel that steps to the wrong value: the case must fail AND hand the
+	// run its boot clock back, not leave it a minute off.
+	calls := 0
+	sc := fs.syscalls()
+	sc.setEpoch = func(e int64) int64 {
+		calls++
+		if e == boot+clockSetStep {
+			fs.epoch = e + 60
+			return 0
+		}
+		return fs.setEpoch(e)
+	}
+	got := resultFor(t, runCases(sc), "clock-set")
+	if got.ok || !strings.Contains(got.detail, "read-back after set") {
+		t.Fatalf("a wrong read-back must fail the case: %+v", got)
+	}
+	if fs.epoch != boot {
+		t.Fatalf("clock left at %d, want the boot reading %d", fs.epoch, boot)
+	}
+}
+
+func TestClockSetCaseNamesAKernelThatRefusesTheStep(t *testing.T) {
+	fs := newFakeFS()
+	sc := fs.syscalls()
+	sc.setEpoch = func(e int64) int64 {
+		if e >= clockSetMin && e <= clockSetMax {
+			return -vi.ErrEACCES
+		}
+		return -vi.ErrEINVAL
+	}
+	got := resultFor(t, runCases(sc), "clock-set")
+	if got.ok || !strings.Contains(got.detail, "rc=-") {
+		t.Fatalf("a refused step must fail the case: %+v", got)
+	}
+}
+
+func TestClockSetCaseOnANoEpochBootOnlyChecksRefusals(t *testing.T) {
+	fs := newFakeFS()
+	fs.epoch = -vi.ErrENOSYS
+	rs := runCases(fs.syscalls())
+	if got := resultFor(t, rs, "clock-set"); !got.ok {
+		t.Fatalf("a no-epoch boot should pass on the refusals alone: %+v", got)
+	}
+	if got := string(fs.files[clockSetReceipt]); got != "case clock-set refused=4 step=skipped reason=no-epoch\n" {
+		t.Fatalf("no-epoch receipt = %q", got)
+	}
+	if len(fs.setCalls) != 4 {
+		t.Fatalf("set calls = %v, want only the four refusals", fs.setCalls)
+	}
+	if fs.epoch != -vi.ErrENOSYS {
+		t.Fatalf("the case gave a no-epoch boot a clock: %d", fs.epoch)
 	}
 }
 

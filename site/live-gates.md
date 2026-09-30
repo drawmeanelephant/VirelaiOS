@@ -46,9 +46,11 @@ Each gate is a declarative spec under `tools/gate/specs/`, run with
 - **Custom-virtio control plane** — `live-pointer-virtio` and `live-virtio-e2e` (input + structured console + raw scanout in one headless boot)
 
 The aggregate `verify-vz` sweep re-checks the shared seam across every
-subsystem in one run (247 gate specs at the current tree) — the
-standing regression proof that a new subsystem did not break the ones before
-it.
+subsystem in one run — the standing regression proof that a new subsystem did
+not break the ones before it. The count is not written here on purpose: run
+`bash tools/gate/fleet.sh count` for the current number (the fleet is
+discovered from `tools/gate/specs/`, plus four legacy class-B scripts, so a
+hard-coded number here would rot on the next spec).
 
 <Aside kind="tip">
 

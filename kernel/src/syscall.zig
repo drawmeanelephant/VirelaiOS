@@ -113,10 +113,10 @@ pub const slot_count: usize = 128;
 /// slot 72 is sys_getrandom; ADR 0027 (#1214 round 2): slots 73/74 are
 /// sys_thread/sys_futex; issue #1228 (phase 0c): slot 75 is sys_exnotify;
 /// issue #1163 (phase 2): slot 76 is sys_sock_ready; M66a (#1443): slot 77
-/// is sys_file_sync.
+/// is sys_file_sync; M83b (#1775): slot 78 is sys_time_set.
 /// `implemented_count` is the number of
 /// registered rows (rows 0..implemented_count-1).
-pub const implemented_count: usize = 78;
+pub const implemented_count: usize = 79;
 /// Card G6 (claim 0487) follow-on (slot 18): the fixed `sys_win_get` shape —
 /// four u32 LE words (x, y, w, h), 16 bytes, marshaled per call and copy_out'd
 /// through uaccess (the procs snapshot pattern).
@@ -376,6 +376,12 @@ pub const sys_sock_ready: u64 = 76;
 // before it trusts them. One argument (the fd); no ops. See the ADR 0007
 // amendment + file_table.sync.
 pub const sys_file_sync: u64 = 77;
+// M83b (#1775): slot 78 — sys_time_set(epoch_secs). ADR 0007 append-only
+// amendment (2026-09-28): slot 66 reads the wall clock and takes no
+// arguments, so it cannot also carry a write (existing callers do not
+// zero a0). This row hands EL0 one bounded write: re-anchor the wall clock
+// so slot 66 reads `epoch_secs` now.
+pub const sys_time_set: u64 = 78;
 /// The fixed per-call fill cap of slot 72 (ADR 0025 D5: "capped at a bounded
 /// maximum"). 256 matches `write_cap` — enough for an ephemeral X25519
 /// secret (32 B), a KEXINIT cookie (16 B), or a burst of per-packet padding,
@@ -559,6 +565,8 @@ pub fn ensure_table() *const [slot_count]Entry {
         table_storage[sys_file_free] = .{ .name = "sys_file_free", .handler = handle_file_free };
         // M66a (#1443): slot 77 — the EL0 durability verb (file_table.sync).
         table_storage[sys_file_sync] = .{ .name = "sys_file_sync", .handler = handle_file_sync };
+        // M83b (#1775): slot 78 — the bounded wall-clock write (timer.set_wall_epoch).
+        table_storage[sys_time_set] = .{ .name = "sys_time_set", .handler = handle_time_set };
         table_storage[sys_clipboard_set] = .{ .name = "sys_clipboard_set", .handler = handle_clipboard_set };
         table_storage[sys_clipboard_get] = .{ .name = "sys_clipboard_get", .handler = handle_clipboard_get };
         table_storage[sys_timer_set] = .{ .name = "sys_timer_set", .handler = handle_timer_set };
@@ -656,7 +664,7 @@ fn doms_of(number: u64) u5 {
         sys_exec => f | k,
         sys_win_open, sys_win_fill, sys_win_present, sys_win_close, sys_win_move, sys_win_raise, sys_win_get, sys_win_query, sys_win_set_visible, sys_win_fill_batch, sys_win_resize, 48, sys_win_raise_front, sys_win_lower_back, 52, sys_win_set_unsaved, sys_win_set_title, sys_drag_read, sys_font_size => w,
         sys_ipc_send, sys_ipc_recv, sys_poll_event, sys_wait_event, sys_timer_set, sys_timer_cancel, sys_notify, sys_wmctl => e,
-        sys_procs, sys_wait, sys_kill, sys_clipboard_set, sys_clipboard_get, sys_audio_info, sys_audio_play, sys_audio_volume, sys_audio_mute, sys_pipe_read, sys_pipe_write, 54, sys_mmap, sys_munmap, sys_time, sys_tty_attach, sys_principal, sys_secret_get, sys_tty_net_auth, sys_getrandom, sys_thread, sys_futex, sys_exnotify => k,
+        sys_procs, sys_wait, sys_kill, sys_clipboard_set, sys_clipboard_get, sys_audio_info, sys_audio_play, sys_audio_volume, sys_audio_mute, sys_pipe_read, sys_pipe_write, 54, sys_mmap, sys_munmap, sys_time, sys_time_set, sys_tty_attach, sys_principal, sys_secret_get, sys_tty_net_auth, sys_getrandom, sys_thread, sys_futex, sys_exnotify => k,
         sys_exit => svclock.all_bits,
         else => 0,
     };
@@ -1462,7 +1470,7 @@ pub const NetStats = extern struct {
     lease_server: [4]u8 = .{ 0, 0, 0, 0 },
     lease_secs: u32 = 0,
     // ---- TCP ----------------------------------------------------------------
-    tcp_state: u8 = 0, // 0 idle,1 syn_sent,2 established,3 fin_sent,4 closed
+    tcp_state: u8 = 0, // 0 idle,1 listen,2 syn_sent,3 syn_received,4 established,5 fin_sent,6 closed (the tcp.State enum naturals)
     tcp_peer_ip: [4]u8 = .{ 0, 0, 0, 0 },
     tcp_peer_port: u16 = 0,
     // ---- UDP ----------------------------------------------------------------
@@ -2164,6 +2172,24 @@ fn handle_time(_: Args, _: *exceptions.VectorFrame) u64 {
     return timer.wall_epoch() orelse error_result(.enosys);
 }
 
+/// `sys_time_set(epoch_secs)` (slot 78, M83b #1775): re-anchor the wall clock
+/// so `sys_time` reads `epoch_secs` (Unix seconds) now. Returns 0. `EINVAL`
+/// for a non-process caller or an epoch outside
+/// `[timer.wall_epoch_min, timer.wall_epoch_max]` — the clock is untouched on
+/// every refusal. Works when the firmware gave no epoch (`sys_time` was
+/// `ENOSYS`); it moves the anchor, never the tick count, so uptime and every
+/// tick-based deadline are unaffected.
+///
+/// No capability gate: every EL0 process is `uid_user` with no caps and no
+/// syscall elevates (ADR 0024 D5), so a row in `capability_gates` could only
+/// ever answer no. The range check is the bound; the monitor's `syscalls`
+/// report shows whether anyone has called it.
+fn handle_time_set(args: Args, _: *exceptions.VectorFrame) u64 {
+    _ = process.find_by_task(scheduler.current_id()) orelse return error_result(.einval);
+    if (!timer.set_wall_epoch(args[0])) return error_result(.einval);
+    return 0;
+}
+
 /// `sys_tty_attach(front_end, arg, mode, reserved, allow_ip)` (slot 67,
 /// #1072/ADR 0020): attach (or detach) the CALLING process's controlling
 /// terminal — opened as `/dev/tty` — to a front-end. a0: 0 = detach, 1 = the
@@ -2621,6 +2647,7 @@ fn handle_tcp_connect(args: Args, _: *exceptions.VectorFrame) u64 {
 
     while (tcp.state == .syn_sent) {
         virtio_net.net_rx_drain();
+        tcp_flush_rst(); // M84f: an over-cap SYN during our connect is refused too
         if (tcp.ack_pending) {
             var ack_len: usize = 0;
             if (virtio_net.net_tcp_send(tcp.msg[0..tcp.msg_len], &ack_len) == .ok) {
@@ -2673,6 +2700,18 @@ fn handle_tcp_connect(args: Args, _: *exceptions.VectorFrame) u64 {
     return error_result(.einval);
 }
 
+/// M84f (#1836): flush the over-cap refusal's OWN bounded slot
+/// (`tcp.rst_msg` — never `tcp.msg`, so the connection's pending segment
+/// and retransmit state are undisturbed). Best-effort: a transport
+/// refusal keeps the refusal queued for the next TX site (and the shell
+/// idle loop). Called at every syscall TCP TX site — the refusal goes
+/// out before the connection's own queued segments.
+fn tcp_flush_rst() void {
+    if (!tcp.rst_pending) return;
+    var out_len: usize = 0;
+    if (virtio_net.net_tcp_send(tcp.rst_msg[0..tcp.rst_len], &out_len) == .ok) tcp.rst_pending = false;
+}
+
 /// Slot 31: `sys_tcp_send(buf, len)`: Send up to payload_max (64) bytes.
 fn handle_tcp_send(args: Args, _: *exceptions.VectorFrame) u64 {
     const address = args[0];
@@ -2683,6 +2722,19 @@ fn handle_tcp_send(args: Args, _: *exceptions.VectorFrame) u64 {
     if (!tcp_owned_by_caller()) return error_result(.eacces);
 
     if (uaccess.copy_in(&tcp_send_staging, address, @intCast(len)) != .ok) return error_result(.efault);
+
+    // M84f (#1836): TX-site discipline — flush the over-cap refusal's own
+    // slot first, then any built segment in the shared `tcp.msg` slot
+    // BEFORE the data build would overwrite it (a queued SYN-ACK is an
+    // unACKed segment too). A flush failure is the transport's einval —
+    // the slot and its occupant stay intact for the caller's retry.
+    tcp_flush_rst();
+    if (tcp.ack_pending) {
+        var ctl_len: usize = 0;
+        if (virtio_net.net_tcp_send(tcp.msg[0..tcp.msg_len], &ctl_len) != .ok) return error_result(.einval);
+        tcp.ack_pending = false;
+        tcp.ack_sent += 1;
+    }
 
     tcp.build_data_msg(tcp_send_staging[0..@intCast(len)]);
     var out_len: usize = 0;
@@ -2710,6 +2762,7 @@ fn handle_tcp_recv(args: Args, _: *exceptions.VectorFrame) u64 {
 
     virtio_net.net_rx_drain();
 
+    tcp_flush_rst(); // M84f: the refusal goes before the built ACK
     if (tcp.ack_pending) {
         var out_len: usize = 0;
         if (virtio_net.net_tcp_send(tcp.msg[0..tcp.msg_len], &out_len) == .ok) {
@@ -2745,6 +2798,16 @@ fn handle_tcp_close(_: Args, _: *exceptions.VectorFrame) u64 {
         return 0;
     }
     if (tcp.state == .established) {
+        // M84f (#1836): the shared-slot discipline — flush the refusal's
+        // own slot, then a built segment (a queued SYN-ACK/ACK) before the
+        // FIN build overwrites it (as in `handle_tcp_send`).
+        tcp_flush_rst();
+        if (tcp.ack_pending) {
+            var ctl_len: usize = 0;
+            if (virtio_net.net_tcp_send(tcp.msg[0..tcp.msg_len], &ctl_len) != .ok) return error_result(.einval);
+            tcp.ack_pending = false;
+            tcp.ack_sent += 1;
+        }
         tcp.build_fin_msg();
         var out_len: usize = 0;
         if (virtio_net.net_tcp_send(tcp.msg[0..tcp.msg_len], &out_len) == .ok) {
@@ -2760,6 +2823,7 @@ fn handle_tcp_close(_: Args, _: *exceptions.VectorFrame) u64 {
         virtio_net.net_rx_drain();
     }
 
+    tcp_flush_rst(); // M84f: a refusal queued by the drains above still goes
     if (tcp.ack_pending or tcp.state == .closed) {
         if (tcp.ack_pending) {
             var out_len: usize = 0;

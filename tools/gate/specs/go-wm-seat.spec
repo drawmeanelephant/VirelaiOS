@@ -856,3 +856,89 @@ assert cbest == CHROME_BG, ("the clock panel reads #%02x%02x%02x, want the Chrom
 print("toast: rule=%d ink=%d surface=%d; clock panel intact at #%02x%02x%02x (n=%d)"
       % (rule, ink, surface, cbest[0], cbest[1], cbest[2], cn))
 PY
+
+# --- M83f (#1779) run 07: seat-owned presence, never a waited-out minute ---
+# The monitor persists idle_minutes=1 and seeds a gate-only threshold of
+# two composite ticks per minute. The production minute is 60 ticks, and a
+# normal share has no GOTABWM.IDLE.TEST. Dim at tick 2, curtain at tick 4;
+# one pointer event wakes. The seat announces transitions only AFTER a
+# successful present. A kind-4 snapshot probes the curtain on the scanout.
+vgate_file script-07.txt <<'EOF'
+vf rm GOTABWM.DEMO
+settings set idle_minutes 1
+write GOTABWM.IDLE.TEST 2
+set GOMAXPROCS=1
+exec GOTABWM.ELF
+EOF
+
+vgate_file script2-07.txt <<'EOF'
+dui focus 0
+EOF
+
+vgate_file script3-07.txt <<'EOF'
+kill GOTABWM.ELF
+echo rx-gotabwm-idle-ok
+EOF
+
+vgate_run 07 -- \
+    --screen '$RUN_DIR/screen-07' \
+    --via-virtio --cvc-snap \
+    --snapshot-after 'gotabwm: idle lock' \
+    --snapshot-out '$RUN_DIR/snap-idle' \
+    --script '$RUN_DIR/script-07.txt' \
+    --script2 '$RUN_DIR/script2-07.txt' \
+    --script2-after 'gotabwm: win focus' \
+    --pointer-virtio '600,360,d;600,360,u' \
+    --pointer-virtio-after 'gotabwm: idle lock' \
+    --script3 '$RUN_DIR/script3-07.txt' \
+    --script3-after 'gotabwm: idle wake' \
+    --script-expect 'rx-gotabwm-idle-ok' --timeout 300
+
+vgate_assert 07 serial-contains 'settings: idle_minutes=1 (persisted)'
+vgate_assert 07 serial-contains 'gotabwm: idle thresholds dim=2 lock=4'
+vgate_assert 07 serial-contains 'gotabwm: idle dim'
+vgate_assert 07 serial-contains 'gotabwm: idle lock'
+vgate_assert 07 serial-contains 'gotabwm: idle wake'
+vgate_assert 07 serial-contains 'rx-gotabwm-idle-ok'
+vgate_assert 07 serial-absent '[EXC] parking:'
+vgate_assert 07 serial-absent 'exited status=139'
+vgate_assert 07 python <<'PY'
+import os, sys
+ser = open(os.environ["VG_SER"], errors="replace").read()
+names = ["gotabwm: idle thresholds dim=2 lock=4", "gotabwm: idle dim",
+         "gotabwm: idle lock", "gotabwm: ptr", "gotabwm: idle wake",
+         "rx-gotabwm-idle-ok"]
+positions = [ser.find(name) for name in names]
+if any(p < 0 for p in positions) or positions != sorted(positions):
+    sys.exit("seat presence order: " + repr(list(zip(names, positions))))
+print("seeded thresholds -> presented dim -> presented curtain -> input -> presented wake")
+PY
+
+# Full-frame cover, centred Surface panel, accent rule, and actual text ink.
+# The top-left is ChromeBg, not the bright underlying desktop; the panel
+# text is the seat's explicit NOT AUTHENTICATION notice (unit-pinned).
+vgate_assert 07 snapshot 'snap-idle-0.raw' <<'PY'
+import sys
+from collections import Counter
+W, H = 1280, 720
+raw = open(sys.argv[1], "rb").read()
+if len(raw) < W*H*4:
+    sys.exit("no full BGRX scanout in idle snapshot")
+def px(x, y):
+    i = (y*W+x)*4
+    return tuple(raw[i+2-j] for j in range(3))
+bg = (0x11, 0x17, 0x1c)
+surface = (0x22, 0x2d, 0x35)
+accent = (0x3b, 0x82, 0xf6)
+x, y = (W-256)//2, (H-64)//2
+if px(40, 40) != bg or px(W-40, H-40) != bg:
+    sys.exit("curtain does not cover the full scanout")
+if px(x, y+8) != accent or px(x+3, y+3) != surface:
+    sys.exit("curtain panel or accent rule absent")
+colours = Counter(px(col, row) for row in range(y+8, y+40)
+                  for col in range(x+10, x+240))
+ink = sum(n for c, n in colours.items() if min(c) >= 150)
+if ink < 20:
+    sys.exit("curtain's honesty text did not paint (%d ink pixels)" % ink)
+print("curtain covers full frame; panel accent and honesty text painted (ink=%d)" % ink)
+PY

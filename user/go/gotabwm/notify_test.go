@@ -28,6 +28,19 @@ func resetNotify(t *testing.T) {
 	savedCenterPainted := notifyCenterPainted
 	savedCenterNextID := notifyCenterNextID
 	savedFocusNotifySource := focusNotifySource
+	savedDND := notifyDND
+	savedHistDirty := notifyHistDirty
+	savedHistFailLogged := notifyHistFailLogged
+	savedSaveDND, savedRead, savedWrite := saveNotifyDND, readNotifyFile, writeNotifyFile
+	// M82d2 (#1785): the policy's three file seams degrade to ENOSYS on the
+	// host, so every case starts with inert ones (a test that cares swaps in
+	// a fake through fakeNotifyShare).
+	notifyDND = false
+	notifyHistDirty = false
+	notifyHistFailLogged = false
+	saveNotifyDND = func(bool) bool { return true }
+	readNotifyFile = func(string, int) ([]byte, int64) { return nil, -1 }
+	writeNotifyFile = func(string, []byte) bool { return true }
 	notifyQueue = nil
 	notifyDropped = 0
 	notifyPainted = false
@@ -47,6 +60,10 @@ func resetNotify(t *testing.T) {
 		notifyCenterPainted = savedCenterPainted
 		notifyCenterNextID = savedCenterNextID
 		focusNotifySource = savedFocusNotifySource
+		notifyDND = savedDND
+		notifyHistDirty = savedHistDirty
+		notifyHistFailLogged = savedHistFailLogged
+		saveNotifyDND, readNotifyFile, writeNotifyFile = savedSaveDND, savedRead, savedWrite
 	})
 }
 

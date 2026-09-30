@@ -43,6 +43,7 @@ package main
 import (
 	"unsafe"
 
+	"virelai/settings"
 	"virelai/theme"
 	"virelai/vi"
 )
@@ -82,7 +83,107 @@ const (
 	// M83g (#1780): emitted after a real composite tick. The VZ restore
 	// runner waits for a fresh copy after resuming the saved VM.
 	MarkerRestoreWitness = "gotabwm: restore witness "
+	// M83f (#1779): transitions only, after a frame carrying the state was
+	// presented. The curtain is visual, not authentication.
+	MarkerIdleDim  = "gotabwm: idle dim"
+	MarkerIdleLock = "gotabwm: idle lock"
+	MarkerIdleWake = "gotabwm: idle wake"
 )
+
+const idleThresholdPath = "/host/GOTABWM.IDLE.TEST"
+
+type idleStage uint8
+
+const (
+	idleActive idleStage = iota
+	idleDim
+	idleCurtain
+)
+
+// The composite heartbeat is ~1 Hz. The last input tick is owned by this
+// seat, not the kernel or an app. Zero idleAfter disables the policy before
+// main configures it (host tests call compositeTick without booting a seat).
+var (
+	idleAfter       uint64
+	lastInputTick   uint64
+	idleState       idleStage
+	idlePresented   idleStage
+	idleWakePending bool
+)
+
+// The host gate writes this one-shot fixture before exec. On a normal share
+// there is no file, so one minute is 60 heartbeat ticks. It is deliberately
+// a test-only threshold override, never a persisted settings value.
+func idleTicksPerMinute() uint64 {
+	b, r := vi.ReadFileAll(idleThresholdPath, 8)
+	if r >= 0 && string(b) == "2" {
+		return 2
+	}
+	return 60
+}
+
+func configureIdle(f settings.File, ticksPerMinute uint64) {
+	value, _ := f.Effective("idle_minutes")
+	minutes, ok := settings.IdleMinutes(value)
+	if !ok || f.State == settings.StateCorrupt {
+		minutes, _ = settings.IdleMinutes(settings.IdleKeys[0].Default)
+	}
+	idleAfter = minutes * ticksPerMinute
+	lastInputTick, idleState, idlePresented, idleWakePending = 0, idleActive, idleActive, false
+	vi.ConsoleLine("gotabwm: idle thresholds dim=" + vi.Itoa64(int64(idleAfter)) +
+		" lock=" + vi.Itoa64(int64(2*idleAfter)))
+}
+
+func idleAdvance(ticks uint64) {
+	if idleAfter == 0 || ticks < lastInputTick {
+		return
+	}
+	elapsed := ticks - lastInputTick
+	switch {
+	case elapsed >= 2*idleAfter:
+		idleState = idleCurtain
+	case elapsed >= idleAfter:
+		idleState = idleDim
+	default:
+		idleState = idleActive
+	}
+}
+
+// The waking edge is consumed by the seat instead of activating its chrome.
+// This is NOT an input firewall: ADR 0009 still fans app events out, and the
+// curtain neither authenticates a user nor protects a running app.
+func idleInput(ticks uint64) bool {
+	lastInputTick = ticks
+	if idleState == idleActive && !idleWakePending {
+		return false
+	}
+	idleState = idleActive
+	idleWakePending = true
+	return true
+}
+
+// Never announce a visual state before the scanout containing it was flushed.
+func idlePresentedFrame(presented bool) {
+	if !presented {
+		return
+	}
+	if idleState != idlePresented {
+		switch idleState {
+		case idleDim:
+			vi.ConsoleLine(MarkerIdleDim)
+		case idleCurtain:
+			vi.ConsoleLine(MarkerIdleLock)
+		case idleActive:
+			if idleWakePending {
+				vi.ConsoleLine(MarkerIdleWake)
+			}
+		}
+		idlePresented = idleState
+	}
+	if idleState == idleActive {
+		idleWakePending = false
+	}
+}
 
 // blankRGB is the blank desktop's colour, packed 0x00RRGGBB as the fill seam
 // takes it (the scanout stores it B,G,R,X).
@@ -234,6 +335,14 @@ func main() {
 	// phase so every script anchor downstream sees it. Live is the product
 	// default; demo is the harness's explicit opt-in (the seeded trigger).
 	demoMode = detectDemo()
+	seatSettings := settings.Load()
+	configureIdle(seatSettings, idleTicksPerMinute())
+	// M82d2 (#1785): the do-not-disturb key and the persisted center history
+	// are both settled here, before the window phase and long before the
+	// first composite paint, so the first frame already shows the restored
+	// count and the first notice already obeys DND.
+	configureNotifyDND(seatSettings)
+	loadNotifyHistory()
 	if demoMode {
 		vi.ConsoleLine(MarkerModeDemo)
 	} else {
@@ -337,6 +446,9 @@ func main() {
 	// every hosted app still observes its close on the way out; a strip
 	// the choreography or countdown already emptied is a no-op.
 	sweepHosted(closeHosted)
+	// M82d2 (#1785): the tail of the center's history (whatever landed since
+	// the last tick) is published before the seat says it is done.
+	flushNotifyHistory()
 	vi.ConsoleLine(MarkerHostDone)
 
 	// M69a (#1528): the beat's closing marker for THIS boot. Gated on the
@@ -400,6 +512,7 @@ var seatTick uint64
 func compositeTick(scan []byte, ticks uint64, presents *int) {
 	seatTick = ticks
 	vi.ConsoleLine(MarkerTick)
+	idleAdvance(ticks)
 	if tabs.Count() == 0 {
 		_ = paintBlank(scan, blankRGB())
 		startSurfaceTick(scan)
@@ -421,6 +534,12 @@ func compositeTick(scan []byte, ticks uint64, presents *int) {
 	notifyTick(ticks)
 	painted := paintNotify(scan, vi.ScanoutWidth, vi.ScanoutHeight, ticks)
 	centerPainted := paintNotifyCenter(scan, vi.ScanoutWidth, vi.ScanoutHeight)
+	switch idleState {
+	case idleDim:
+		_ = paintIdleDim(scan, vi.ScanoutWidth, vi.ScanoutHeight)
+	case idleCurtain:
+		_ = paintIdleCurtain(scan, vi.ScanoutWidth, vi.ScanoutHeight)
+	}
 	presented := vi.WmctlRequestPresent() == 0
 	if presented {
 		*presents++
@@ -438,6 +557,10 @@ func compositeTick(scan []byte, ticks uint64, presents *int) {
 	if line, once := notifyCenterPaintMarker(centerPainted > 0, presented); once {
 		vi.ConsoleLine(line)
 	}
+	idlePresentedFrame(presented)
+	// M82d2 (#1785): AFTER the present, so the fsync'd publish never delays a
+	// frame, and BEFORE the live-mode early return below.
+	flushNotifyHistory()
 	if restoreWitnessMode && presented && ticks%8 == 0 {
 		vi.ConsoleLine(restoreWitnessLine())
 	}
@@ -534,11 +657,17 @@ func drainSeatEvents(first vi.Event, poll func() (vi.Event, bool), consume func(
 func consumeSeatEvent(e vi.Event) bool {
 	if e.Kind == vi.EvWmPointer {
 		vi.ConsoleLine(MarkerPtr)
+		if idleInput(seatTick) {
+			return false
+		}
 		handleWmPointer(e)
 		return false
 	}
 	if e.Kind == vi.EvWmKey {
 		vi.ConsoleLine(MarkerKey)
+		if idleInput(seatTick) {
+			return false
+		}
 		handleWmKey(e)
 		// Yield only when the launcher is closed: a hosted client (GOEDIT
 		// ctrl-s) needs a tick to drain KEY_DOWN before the next virtio

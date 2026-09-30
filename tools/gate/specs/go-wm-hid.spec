@@ -67,6 +67,11 @@
 # the seat's snapshot arm on that chord first) — the registry is visible
 # to a user, not just asserted. Two Go runtimes is inside the #1449 wall.
 #
+# Run 09/10 (M83d2 / #1786, M83e / #1778): the persisted DE layout. Run 10 is
+# the dead keys: GOEDIT stages an accent, shows it, and resolves it to a
+# composed letter or to literals, never dropping a key. Same two-runtime
+# boot as run 09.
+
 # Two equal-width cells on a 1280 rail: tab 0 [0,640)=(320,10), tab 1
 # [640,1280)=(960,10). Zig's left-rail (158,70) is the wrong target.
 # Pane rects include y=0. No client-area mouse. No edit/term rewrite.
@@ -1046,4 +1051,58 @@ want = "seed-line\nXYZzyZö".encode("utf-8")
 if got != want:
     sys.exit("DE kernel keymap saved %r, want %r" % (got, want))
 print("DE keymap: physical y,z,Y,; arrived as z,y,Z,ö in GOEDIT and saved UTF-8 byte-exactly")
+PY
+
+# ---------------------------------------------------------------------------
+# Run 10 (M83e / #1778): dead keys under the persisted DE table.
+#
+# Same boot as run 09. The kernel delivers the DE acute key (usage 0x2e, the
+# runner's `=`) with no symbol and the circumflex key (0x35, the runner's
+# backtick) as a literal '^'; GOEDIT decides "dead" by (layout, usage) and
+# composes in the app. The chords are one of each outcome:
+#   =,e        acute + e            -> é      (composed)
+#   `,o        circumflex + o       -> ô      (composed)
+#   =,x        acute + x            -> ´x     (stray: both typed, none lost)
+#   =,space    acute + space        -> ´      (the bare accent)
+# `goedit: stage <accent>` is printed after the frame that shows the pending
+# accent was presented, so it is the receipt the staging buffer was on
+# screen. The grave (Shift+acute) has no runner token, so the layout and
+# editor host tests carry it. The share persists from run 09, so the file is
+# checked as a seed plus an exact appended tail.
+vgate_run 10 -- \
+    --screen '$RUN_DIR/screen-10' \
+    --via-virtio \
+    --script '$RUN_DIR/script-m83d2.txt' \
+    --script2 '$RUN_DIR/script2.txt' \
+    --script2-after 'gotabwm: win focus' \
+    --pointer-virtio '320,10,c' \
+    --pointer-virtio-after 'gotabwm: rail n=2' \
+    --input-chords '=,e,`,o,=,x,=,space,ctrl-s' \
+    --input-chords-after 'gotabwm: rail-click id=' \
+    --script3 '$RUN_DIR/script3.txt' \
+    --script3-after 'wm: unregistered, shim resumed' \
+    --script-expect 'rx-gotabwm-hid-ok' --timeout 300
+
+vgate_assert 10 serial-contains 'settings: keyboard_layout=de (persisted)'
+vgate_assert 10 serial-contains 'goedit: layout de'
+vgate_assert 10 serial-contains 'gotabwm: rail-click id='
+vgate_assert 10 serial-count 'goedit: stage acute' 3
+vgate_assert 10 serial-contains 'goedit: stage circumflex'
+vgate_assert 10 serial-contains 'goedit: dirty'
+vgate_assert 10 serial-contains 'goedit: saved /host/EDIT/SEED.TXT'
+vgate_assert 10 serial-contains 'rx-gotabwm-hid-ok'
+vgate_assert 10 serial-absent '[EXC] parking:'
+vgate_assert 10 serial-absent 'exited status=139'
+vgate_assert 10 python <<'PY'
+import os, sys
+path = os.path.join(os.environ["VG_SHARE"], "EDIT", "SEED.TXT")
+got = open(path, "rb").read()
+tail = "\u00e9\u00f4\u00b4x\u00b4".encode("utf-8")
+if not got.startswith(b"seed-line\n"):
+    sys.exit("seed lost: %r" % got)
+if not got.endswith(tail) or got.count(tail) != 1:
+    sys.exit("dead keys saved %r, want the run to end in %r (e-acute, o-circumflex, "
+             "stray acute + x, bare acute)" % (got, tail))
+print("dead keys: =e -> e-acute, `o -> o-circumflex, =x -> acute+x, =space -> acute; "
+      "%d bytes saved UTF-8 byte-exactly" % len(got))
 PY

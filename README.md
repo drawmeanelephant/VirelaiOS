@@ -17,22 +17,19 @@ to GitHub Pages).
 
 ## Status
 
-Every milestone through **M74** has landed and closed (observed 2026-09-23),
-except **M73**, whose acceptance card is still open
-([#1624](https://github.com/drawmeanelephant/DipshitOS/issues/1624)), and
-the **boot default is the Go seat**: `GOTABWM.ELF` autostarts and hosts Go EL0
+Every milestone through **M86** has landed, and every milestone index but one
+has closed (observed 2026-09-29). The **boot default is the Go seat**:
+`GOTABWM.ELF` autostarts and hosts Go EL0
 clients over the `WM_RPC` tab contract, with Zig `TABWM.BIN` retained by
-decision (ADR 0034) as the `settings set wm tabwm` fallback. Four fresh arcs
-are filed and claimable: docs & site truth-up
-([#1669](https://github.com/drawmeanelephant/DipshitOS/issues/1669), landing in
-[PR #1686](https://github.com/drawmeanelephant/DipshitOS/pull/1686)), boot past
-the wall ([#1673](https://github.com/drawmeanelephant/DipshitOS/issues/1673)),
-the tuios exploration
-([#1678](https://github.com/drawmeanelephant/DipshitOS/issues/1678)), and the
-Zig userland final pass
-([#1681](https://github.com/drawmeanelephant/DipshitOS/issues/1681)).
-[`docs/status.md`](docs/status.md) is the canonical accounting and the readable
-summary is the
+decision (ADR 0034) as the `settings set wm tabwm` fallback. The one open arc is
+**M84, remote framebuffer** ([#1807](https://github.com/drawmeanelephant/DipshitOS/issues/1807)) —
+an RFB server a Mac can Screen Share into. The guest wire and its live gate
+landed; the macOS Screen Sharing tape is blocked on
+[#1835](https://github.com/drawmeanelephant/DipshitOS/issues/1835), because
+Screen Sharing refuses the `None` security type. The arcs around it — terminal
+graphics (`IMGCAT.ELF` over sixel) and window chrome with the published
+`appkit` canvas — are closed. [`docs/status.md`](docs/status.md) is the canonical
+accounting and the readable summary is the
 [documentation site](https://drawmeanelephant.github.io/DipshitOS/).
 
 The first thirty-one milestones — the boot

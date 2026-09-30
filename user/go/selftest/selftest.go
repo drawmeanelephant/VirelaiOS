@@ -226,6 +226,22 @@ const (
 	snapshotReadBundle   = snapshot.MaxBundle + 1
 )
 
+const epochReceipt = outDir + "/clock-epoch.ok"
+
+// M83b (#1775): the clock-set case. The kernel's accepted range is
+// 2025-01-01..2100-01-01 UTC (timer.wall_epoch_min/max); the step is far
+// enough to be unmistakable next to the 1 Hz tick and small enough to stay
+// inside the range from any plausible boot clock.
+const (
+	clockSetReceipt = outDir + "/clock-set.ok"
+	clockSetMin     = 1_735_689_600
+	clockSetMax     = 4_102_444_800
+	clockSetStep    = 100
+	// clockSetSlack bounds how far a read may sit past the value just set:
+	// the tick's phase plus the scheduling between two syscalls.
+	clockSetSlack = 3
+)
+
 // roundtripPayload / truncatePayload / truncateKept are the byte bodies above
 // as the cases write them, shrink to and read back.
 func roundtripPayload() []byte { return []byte(strings.Repeat(fileUnit, roundtripUnits)) }
@@ -257,6 +273,8 @@ func writeSafeShort() []byte { return []byte(strings.Repeat(fileUnit, 5)) }
 // of a missing path, a listing's direct children).
 type syscalls struct {
 	now      func() int64
+	epoch    func() int64
+	setEpoch func(epoch int64) int64 // M83b: slot 78, 0 or a negative errno
 	sleep    func(ticks uint64)
 	mkdir    func(path string) int64
 	open     func(path string, flags uint32) (int64, int64)
@@ -322,8 +340,10 @@ type windowSeam struct {
 // guestSyscalls is the real EL0 surface (vi over ADR 0007).
 func guestSyscalls() syscalls {
 	return syscalls{
-		now:   vi.Time,
-		sleep: vi.Sleep,
+		now:      vi.Nanos,
+		epoch:    vi.Now,
+		setEpoch: vi.TimeSet,
+		sleep:    vi.Sleep,
 		// MODE_DIR creates the directory, but the kernel's open validation
 		// requires it together with MODE_WRITE|MODE_CREATE (file_table.open:
 		// `(flags & (MODE_CREATE|MODE_WRITE)) != (MODE_CREATE|MODE_WRITE)` is
@@ -449,9 +469,15 @@ func cases() []testCase {
 		// release rules. Inserted before the window case so the M61d
 		// report prefix stays untouched.
 		{id: "file-lease", run: caseFileLease},
-		// M61e (#1385): the window receipt — appended last so the M61d report
-		// prefix is untouched (the report is byte-compared).
+		// M61e (#1385): the window receipt.
 		{id: "window", run: caseWindow},
+		// M83a (#1774): add the epoch receipt at the tail so existing
+		// report rows keep their order and their host-test indexes.
+		{id: "clock-epoch", run: caseClockEpoch},
+		// M83b (#1775): the clock setter (slot 78). LAST, after every case
+		// that stamps or expires by wall time, and after clock-epoch so that
+		// receipt is the untouched boot value.
+		{id: "clock-set", run: caseClockSet},
 	}
 }
 
@@ -791,6 +817,82 @@ func caseClockMonotonic(s *syscalls) error {
 			" -> " + strconv.FormatInt(t1, 10))
 	}
 	return nil
+}
+
+// caseClockEpoch records the actual slot-66 result for the host to compare
+// against its own wall clock. The receipt is dynamic, never a golden epoch.
+// No usable EFI epoch remains named as such, not forged from monotonic time.
+func caseClockEpoch(s *syscalls) error {
+	epoch := s.epoch()
+	if epoch == -vi.ErrENOSYS {
+		return writeReceipt(s, epochReceipt, "case clock-epoch unavailable fallback=monotonic")
+	}
+	if epoch < 0 {
+		return errors.New("epoch rc=" + strconv.FormatInt(epoch, 10))
+	}
+	return writeReceipt(s, epochReceipt, "case clock-epoch epoch="+strconv.FormatInt(epoch, 10)+" source=firmware")
+}
+
+// caseClockSet drives the slot-78 setter (M83b, #1775) end to end. The
+// refusals come first, on a clock that must not move: every epoch outside the
+// kernel's range has to answer -EINVAL, and a set that was wrongly accepted
+// would show as a jump. Then, when the boot has a clock, a real step: forward
+// by clockSetStep, read it back, and step back, so the rest of the run — and
+// the host's bound on the clock-epoch receipt — still sees the boot clock.
+// A boot with no firmware epoch keeps the refusals and skips the step, since
+// there is no clock to hand back.
+func caseClockSet(s *syscalls) error {
+	before := s.epoch()
+	hasClock := before != -vi.ErrENOSYS
+	if hasClock && before < 0 {
+		return errors.New("epoch rc=" + strconv.FormatInt(before, 10))
+	}
+	for _, bad := range []int64{0, -1, clockSetMin - 1, clockSetMax + 1} {
+		if rc := s.setEpoch(bad); rc != -vi.ErrEINVAL {
+			return errors.New("set " + strconv.FormatInt(bad, 10) + " rc=" +
+				strconv.FormatInt(rc, 10) + ", want " + strconv.FormatInt(-vi.ErrEINVAL, 10))
+		}
+	}
+	if !hasClock {
+		if now := s.epoch(); now != -vi.ErrENOSYS {
+			return errors.New("a refused set gave the clock an epoch: " + strconv.FormatInt(now, 10))
+		}
+		return writeReceipt(s, clockSetReceipt, "case clock-set refused=4 step=skipped reason=no-epoch")
+	}
+	if now := s.epoch(); now < before || now > before+clockSetSlack {
+		return errors.New("a refused set moved the clock: " +
+			strconv.FormatInt(before, 10) + " -> " + strconv.FormatInt(now, 10))
+	}
+
+	target := before + clockSetStep
+	if rc := s.setEpoch(target); rc != 0 {
+		return errors.New("set " + strconv.FormatInt(target, 10) + " rc=" + strconv.FormatInt(rc, 10))
+	}
+	stepped := s.epoch()
+	var failure error
+	back := before
+	if stepped < target || stepped > target+clockSetSlack {
+		failure = errors.New("read-back after set " + strconv.FormatInt(target, 10) +
+			" was " + strconv.FormatInt(stepped, 10))
+	} else {
+		// The exact inverse of the step: whatever the clock ran during the
+		// case is kept, so the restore lands on the true boot clock.
+		back = stepped - clockSetStep
+	}
+	// Restore even when the read-back was wrong, so a failing case cannot
+	// leave the rest of the run on a clock 100 s fast.
+	if rc := s.setEpoch(back); rc != 0 && failure == nil {
+		failure = errors.New("restore to " + strconv.FormatInt(back, 10) + " rc=" + strconv.FormatInt(rc, 10))
+	}
+	if failure != nil {
+		return failure
+	}
+	if final := s.epoch(); final < before || final > before+clockSetSlack {
+		return errors.New("restore left the clock at " + strconv.FormatInt(final, 10) +
+			", boot reading was " + strconv.FormatInt(before, 10))
+	}
+	return writeReceipt(s, clockSetReceipt, "case clock-set refused=4 stepped=+"+
+		strconv.Itoa(clockSetStep)+" restored=yes")
 }
 
 // caseFileWrite: create the OUT directory (EEXIST tolerated), write a known

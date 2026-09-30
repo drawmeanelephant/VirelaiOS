@@ -1,8 +1,9 @@
 # live-rfb.spec -- M84c/M84d: explicit in-seat RFB 3.8/None over hermetic --net.
 # Run 01: an independent host probe reads Calc's real button pixels, drives
-# Ctrl+Space and a launcher-dismiss click, and a second viewer's SYN is not
-# admitted. Runs 02-04 are the negatives: a refused security type, an
-# oversized message with a press held, and a wedged viewer. Runs 05-06 are
+# Ctrl+Space and a launcher-dismiss click, and a second viewer's SYN is
+# refused honestly with RST (M84f, #1836). Runs 02-04 are the negatives:
+# a refused security type, an oversized message with a press held, and a
+# wedged viewer. Runs 05-06 are
 # the M52 death sweep: the viewer dies mid-drag+mid-update, then mid-focus.
 # Every refusal must name its drop reason, and the seat must then take
 # LOCAL input: a fresh press edge is the proof that no capture is stuck.
@@ -93,10 +94,11 @@ vgate_assert 01 serial-contains 'gotabwm: rfb key usage=44'
 vgate_assert 01 serial-contains 'gotabwm: rfb pointer x=100 y=600 buttons=1'
 vgate_assert 01 serial-contains 'gotabwm: launcher dismiss'
 vgate_assert 01 serial-contains 'gotabwm: rfb drop peer'
-# Over the cap: the kernel has one connection and drops another peer's SYN
-# without an RST. Pinned as observed; the session it knocked on is intact.
+# Over the cap: the kernel has one connection and refuses a second peer's
+# SYN with RST+ACK (M84f, #1836 — RFC 793 §3.4); the session it knocked
+# on is intact.
 vgate_assert 01 output-contains 'NET-TCP-INTRUDER: sent a second SYN from port'
-vgate_assert 01 output-contains 'NET-TCP-INTRUDER: no answer to the second SYN (dropped without RST)'
+vgate_assert 01 output-contains 'NET-TCP-INTRUDER: the guest refused (RST)'
 vgate_assert 01 serial-absent '[EXC] parking:'
 vgate_assert 01 serial-absent 'exited status=139'
 vgate_assert 01 python <<'PY'
@@ -109,9 +111,11 @@ ordered(ser, ("gocalc: present", "gotabwm: rfb ready", "gotabwm: rfb frame",
               "gotabwm: launcher dismiss", "gotabwm: rfb pointer x=100 y=600 buttons=1"))
 ordered(ser, ("gotabwm: rfb ready", "gotabwm: rfb drop peer", "gotabwm: rfb done"))
 probe_ok(out)
-if "NET-TCP-INTRUDER: the guest" in out:
-    sys.exit("the guest answered a second viewer's SYN while serving the first")
-print("RFB pixels + seat key/pointer receipts ordered; FIN closed it; second SYN not admitted")
+if "NET-TCP-INTRUDER: the guest refused (RST)" not in out:
+    sys.exit("the over-cap second SYN was not refused (no RST for the second viewer)")
+if "NET-TCP-INTRUDER: the guest ADMITTED (SYN-ACK)" in out:
+    sys.exit("the guest admitted a second viewer's SYN while serving the first")
+print("RFB pixels + seat key/pointer receipts ordered; FIN closed it; the second SYN was refused (RST)")
 PY
 
 # ---- 02: a viewer that asks for VNC password auth (never offered) ----

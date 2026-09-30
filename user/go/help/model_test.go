@@ -55,10 +55,10 @@ func hasLine(lines []string, want string) bool {
 func TestBootMarkers(t *testing.T) {
 	m := newModel(64, 23)
 	got := m.drain()
-	// n=46 is the catalog row count (M82e adds the `log` builtin);
+	// n=48 is the catalog row count (M83b adds the `time` builtin);
 	// a catalog change trips this AND the class-B gate deliberately — both
 	// are the drift tripwire for shlib.HelpRows.
-	if !hasLine(got, "gohelp: catalog n=46") {
+	if !hasLine(got, "gohelp: catalog n=48") {
 		t.Errorf("boot markers missing catalog count: %v", got)
 	}
 	if !hasLine(got, "gohelp: docs n=0") {
@@ -156,7 +156,7 @@ func TestFilterFlow(t *testing.T) {
 		t.Errorf("filter ec matched %v, want echo,secrets,exec", names)
 	}
 	got = key(&m, kEsc)
-	if !hasLine(got, "gohelp: filter cleared n=46") {
+	if !hasLine(got, "gohelp: filter cleared n=48") {
 		t.Errorf("escape did not clear the filter: %v", got)
 	}
 	if m.filter != "" || m.filtering {
@@ -166,8 +166,9 @@ func TestFilterFlow(t *testing.T) {
 
 func TestDetailFlow(t *testing.T) {
 	m := testModel()
+	key(&m, runeKey('j')) // date now sits between clear and echo
 	if got := key(&m, runeKey('j')); !hasLine(got, "gohelp: focus echo group=shell") {
-		t.Fatalf("j did not focus echo: %v", got)
+		t.Fatalf("second j did not focus echo: %v", got)
 	}
 	got := key(&m, kEnter)
 	if !hasLine(got, "gohelp: detail echo usage=echo [ARG...]") {

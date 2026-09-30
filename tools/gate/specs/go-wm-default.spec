@@ -9,9 +9,19 @@
 # is exec'd under the seat after the first-boot shell tab, typed into, and applies
 # `wm=tabwm` with one command line -- the panel publishes it crash-safe. That is
 # the card's premise repaired in place: on the DEFAULT seat, a Go UI changes the
-# seat. The published bytes are then compared to settings-healed.expected, the
-# same fixture boot 04's kernel-side save is pinned against, so the panel's
-# serializer and the kernel's must agree byte-for-byte.
+# seat. Boot 01's publish includes the visible, accepted-but-unseeded
+# idle_minutes default row; boot 04's kernel-side heal does not seed it.
+# Boots 11/12 set a nondefault idle_minutes FROM GOSET and read it on reboot.
+# M82d2 (#1785) adds the notifications policy's two persisted halves as boots
+# 13-16: the do-not-disturb key (GOSET writes `notify_dnd=on`, the seat applies
+# it live, the next boot reads it) and the crash-safe notification history (a
+# corrupt NOTIFY.HIST is refused whole and heals to an empty one; the boot
+# after finds nothing wrong). The notify -> DND -> held -> restart chain with
+# a real sender is go-dogfood's boots 05/06.
+# M83c (#1776) adds boots 17/18: the `timezone` row is a visible
+# accepted-but-unseeded GOSET row like the two above, and a typed fixed
+# offset survives the safe publish into the next boot (`settings get`). The
+# zone's effect on `date` is go-sh's two-zone boot.
 #
 # The panel takes focus when its declare is accepted and is typed into before
 # the two-tab close choreography completes (the runner's --input-string
@@ -76,6 +86,7 @@ EOF
 # reach scanout, capture it and launch the settings panel. GOSH and GOSET share
 # the seat's proven two-client envelope; the seat closes both before stage 3.
 vgate_file script2.txt <<'EOF'
+echo M76B_FIRSTBOOT_CAPTURE
 echo M76B_FIRSTBOOT_CAPTURE
 set GOMAXPROCS=1
 wm
@@ -173,12 +184,8 @@ for name, body in bodies.items():
 print("seeded DOCS/{%s} for the M81g documents selection" % ", ".join(sorted(bodies)))
 PY
 
-# The default-seat table with `wm=tabwm`, in the kernel's settings.zig init()
-# order (the `prompt` row's trailing space is part of the value). It is shared
-# by TWO runs ON PURPOSE, because two different writers must produce it: boot 01
-# publishes it from the GO PANEL (vi.WriteFileSafe), boot 04 heals a corrupt
-# file through the MONITOR's crash-safe save. If the Go serializer ever drifts
-# from the kernel's, one of those runs fails.
+# The kernel's compiled table with `wm=tabwm` (boot 04's corrupt-file heal).
+# The accepted-but-unseeded idle_minutes row is absent by design.
 vgate_file settings-healed.expected <<'EOF'
 #v2
 hostname=virelai
@@ -191,6 +198,19 @@ shell=monitor
 wm=tabwm
 keyboard_layout=de
 EOF
+
+# Boot 01's panel publishes the same rows plus its visible idle_minutes,
+# notify_dnd and timezone rows (all accepted-but-unseeded, shown with their
+# defaults, in Display() order). Generate from the kernel fixture to keep its
+# trailing prompt space exact.
+vgate_setup_python <<'PY'
+import os
+rd = os.environ["RUN_DIR"]
+with open(os.path.join(rd, "settings-healed.expected"), "rb") as src:
+    body = src.read()
+with open(os.path.join(rd, "settings-panel.expected"), "wb") as dst:
+    dst.write(body + b"idle_minutes=5\nnotify_dnd=off\ntimezone=UTC\n")
+PY
 
 # M81g (#1767): the settings table the SNAPSHOT carries, and the one the
 # restore must put back byte-exact. It differs from settings-healed.expected in
@@ -227,8 +247,10 @@ wm=gotabwm
 keyboard_layout=de
 EOF
 
-# M71f (#1565): the run gains HID. Once the panel says it is ready, one typed
-# line edits and saves in a single keypress (Enter applies then publishes). The
+# M71f (#1565): the run gains HID. Once the panel says it is ready, the
+# idle and seat rows save on Enter through the same safe path. The layout
+# row follows by the gate's existing chord path, with leading spaces
+# trimmed by GOSET so lost HID startup strokes cannot eat the key name. The
 # keys ride the custom-virtio INPUT queue (headless HID reports, no view), the
 # same channel go-wm-hid's type-in boot uses, and they land in the FOCUSED
 # window -- which is GOSET, because its declare takes focus over the starter.
@@ -242,7 +264,7 @@ vgate_run 01 -- \
     --script2-after 'gosh: prompt' --script2-delay 4 \
     --input-string $'wm=tabwm\n' \
     --input-string-after 'goset: ready ' \
-    --input-chords 'space,space,space,space,k,e,y,b,o,a,r,d,_,l,a,y,o,u,t,=,d,e,return' \
+    --input-chords 'space,space,space,space,space,space,space,space,space,space,space,space,k,e,y,b,o,a,r,d,_,l,a,y,o,u,t,=,d,e,return' \
     --input-chords-after 'goset: saved ' \
     --script3 '$RUN_DIR/script3.txt' \
     --script3-after 'goset: close' \
@@ -285,15 +307,14 @@ vgate_assert 01 serial-contains 'gotabwm: win gone'
 # takes the typed command line, and publishes.
 vgate_assert 01 serial-contains 'exec: loaded GOSET.ELF'
 vgate_assert 01 serial-contains 'goset: open id='
-vgate_assert 01 serial-contains 'goset: ready keys=9 wm=gotabwm theme=dark mode=rw'
+vgate_assert 01 serial-contains 'goset: ready keys=12 wm=gotabwm theme=dark mode=rw'
 vgate_assert 01 serial-contains 'goset: set keyboard_layout=de'
 vgate_assert 01 serial-contains 'goset: set wm=tabwm'
-vgate_assert 01 serial-contains 'goset: saved keys=9 wm=tabwm theme=dark'
+vgate_assert 01 serial-contains 'goset: saved keys=12 wm=tabwm theme=dark'
 vgate_assert 01 serial-contains 'goset OK'
-# The publish is a real file on the share, byte-identical to what the kernel's
-# own serializer emits for the same table -- the fixture boot 04's kernel-side
-# save is pinned against too. Two writers, one byte shape.
-vgate_assert 01 share-equals SETTINGS.TXT settings-healed.expected
+# The panel's publish is a real file on the share, including idle_minutes and
+# the M82d2 do-not-disturb default.
+vgate_assert 01 share-equals SETTINGS.TXT settings-panel.expected
 # The panel's window closed before the second client was exec'd: the strip
 # really emptied, so GOCALC never shared the strip with it.
 vgate_assert 01 serial-contains 'gotabwm: tabs empty'
@@ -425,6 +446,7 @@ PY
 # --- boot 02: the PANEL's `wm=tabwm` from boot 01 -> the Zig fallback seat ---
 vgate_file script-02.txt <<'EOF'
 settings get keyboard_layout
+settings get idle_minutes
 tabwm
 echo rx-m59-fallback-ok
 EOF
@@ -441,6 +463,7 @@ vgate_run 02 -- \
 # from the default seat. Panel-driven save, and the panel-driven fallback.
 vgate_assert 02 serial-contains 'wm: autostart tabwm (settings wm=tabwm)'
 vgate_assert 02 serial-contains 'settings: keyboard_layout=de'
+vgate_assert 02 serial-contains 'settings: idle_minutes=5'
 vgate_assert 02 serial-contains 'tabwm: registered'
 vgate_assert 02 serial-contains 'tabwm: sidebar-rendered'
 vgate_assert 02 serial-contains 'tabwm: registered pid='
@@ -905,3 +928,323 @@ if not re.search(r"gotabwm: settings broadcast key=theme listeners=1", ser):
     sys.exit("seat did not deliver to exactly one subscriber")
 print("settings publication reached one live subscriber and repainted without restart")
 PY
+
+# M83f (#1779): one typed GOSET edit, one safe publish, then a fresh boot
+# reads the value. Boot 01 keeps its proven wm/layout choreography; running a
+# second HID line there loses the first stroke on this input transport. This
+# separate boot avoids confusing a transport race with settings persistence.
+vgate_file script-11-focus.txt <<'EOF'
+dui focus 0
+EOF
+
+vgate_file script-11-panel.txt <<'EOF'
+set GOMAXPROCS=1
+exec GOSET.ELF
+EOF
+
+vgate_run 11 -- \
+    --screen '$RUN_DIR/screen-11' \
+    --via-virtio \
+    --script '$RUN_DIR/script-11-focus.txt' \
+    --script-after 'gotabwm: win focus' \
+    --script2 '$RUN_DIR/script-11-panel.txt' \
+    --script2-after 'gotabwm: win gone' \
+    --input-string $'idle_minutes=7\n' \
+    --input-string-after 'goset: ready ' \
+    --script-expect 'goset: saved keys=12 wm=gotabwm theme=light' \
+    --script-expect-tail 10 --timeout 300
+
+vgate_assert 11 serial-contains 'goset: ready keys=12 wm=gotabwm theme=light mode=rw'
+vgate_assert 11 serial-contains 'goset: set idle_minutes=7'
+vgate_assert 11 serial-contains 'goset: saved keys=12 wm=gotabwm theme=light'
+vgate_assert 11 share-contains SETTINGS.TXT 'idle_minutes=7'
+vgate_assert 11 serial-absent '[EXC] parking:'
+vgate_assert 11 serial-absent 'exited status=139'
+
+vgate_file script-12.txt <<'EOF'
+settings get idle_minutes
+echo rx-m83f-persisted
+EOF
+
+vgate_run 12 -- \
+    --screen '$RUN_DIR/screen-12' \
+    --script '$RUN_DIR/script-12.txt' \
+    --script-expect 'rx-m83f-persisted' --timeout 300
+
+vgate_assert 12 serial-contains 'settings: idle_minutes=7'
+vgate_assert 12 share-contains SETTINGS.TXT 'idle_minutes=7'
+vgate_assert 12 serial-contains 'rx-m83f-persisted'
+vgate_assert 12 serial-absent '[EXC] parking:'
+vgate_assert 12 serial-absent 'exited status=139'
+
+# --- M82d2 (#1785): notifications policy, the persisted halves --------------
+# Boots 13-16 prove what a restart must not lose or resurrect wrongly.
+#
+#   13  one typed GOSET edit, `notify_dnd=on`: a safe publish, and the LIVE
+#       seat applies it without a restart (`via=settings`).
+#   14  a fresh boot reads the persisted key (`via=boot`, printed only when it
+#       is ON, so a default boot's log is unchanged) before the loop. The
+#       script then stages a corrupt NOTIFY.HIST with the monitor's vf verbs,
+#       the M66b boot-03 shape: 64 probe-pattern bytes, no valid header.
+#   15  boots on the corrupt history. The seat refuses it WHOLE (`history
+#       bad`, nothing restored) and heals it at once with a valid empty one
+#       (`history healed`) -- BEFORE the first composite paint, so there is no
+#       frame that ever showed a half-trusted history. The healed bytes are
+#       byte-compared on the host.
+#   16  the boot after the heal restores the empty history cleanly and says
+#       nothing is wrong: a bad file costs the user their history once, and is
+#       never re-reported.
+#
+# The seat's history file is /host/NOTIFY.HIST, written through the same
+# crash-safe publish as SETTINGS.TXT (temp + fsync + delete/rename); a stale
+# NOTIFY.HIST~ on the share after a publish would mean the rename never ran.
+
+# The empty history the heal publishes, computed on the host from the codec's
+# documented layout: magic "VNH" + version 1, a zero count, then the FNV-1a 32
+# of those five bytes, little-endian (user/go/gotabwm/notify_policy.go).
+vgate_setup_python <<'PY'
+import os
+rd = os.environ["RUN_DIR"]
+body = b"VNH\x01\x00"
+h = 2166136261
+for c in body:
+    h ^= c
+    h = (h * 16777619) & 0xffffffff
+with open(os.path.join(rd, "notify-empty.expected"), "wb") as dst:
+    dst.write(body + h.to_bytes(4, "little"))
+PY
+
+vgate_file script-13-focus.txt <<'EOF'
+dui focus 0
+EOF
+
+vgate_file script-13-panel.txt <<'EOF'
+set GOMAXPROCS=1
+exec GOSET.ELF
+EOF
+
+vgate_run 13 -- \
+    --screen '$RUN_DIR/screen-13' \
+    --via-virtio \
+    --script '$RUN_DIR/script-13-focus.txt' \
+    --script-after 'gotabwm: win focus' \
+    --script2 '$RUN_DIR/script-13-panel.txt' \
+    --script2-after 'gotabwm: win gone' \
+    --input-string $'notify_dnd=on\n' \
+    --input-string-after 'goset: ready ' \
+    --script-expect 'gotabwm: notify dnd=on via=settings' \
+    --script-expect-tail 10 --timeout 300
+
+vgate_assert 13 serial-contains 'goset: ready keys=12 wm=gotabwm theme=light mode=rw'
+vgate_assert 13 serial-contains 'goset: set notify_dnd=on'
+vgate_assert 13 serial-contains 'goset: saved keys=12 wm=gotabwm theme=light'
+vgate_assert 13 share-contains SETTINGS.TXT 'notify_dnd=on'
+# The seat applied the published value live, and told any subscriber.
+vgate_assert 13 serial-contains 'gotabwm: notify dnd=on via=settings'
+vgate_assert 13 serial-contains 'gotabwm: settings broadcast key=notify_dnd listeners=0'
+# The control: the boot itself read no DND (the key was default-off), and a
+# boot that received no notice has no history to report -- a default boot's
+# log is unchanged by the policy.
+vgate_assert 13 serial-absent 'gotabwm: notify dnd=on via=boot'
+vgate_assert 13 serial-absent 'gotabwm: notify history'
+vgate_assert 13 serial-absent '[EXC] parking:'
+vgate_assert 13 serial-absent 'exited status=139'
+vgate_assert 13 python <<'PY'
+import os, sys
+ser = open(os.environ["VG_SER"], errors="replace").read()
+patterns = [
+    "goset: set notify_dnd=on",
+    "goset: saved ",
+    "gotabwm: notify dnd=on via=settings",
+]
+positions = [ser.find(p) for p in patterns]
+if any(p < 0 for p in positions) or positions != sorted(positions):
+    sys.exit("DND publication out of order: " + repr(list(zip(patterns, positions))))
+print("notify_dnd: typed edit -> safe save -> live seat applied it, in that order")
+PY
+
+vgate_file script-14.txt <<'EOF'
+settings get notify_dnd
+vf open NOTIFY.HIST
+vf write 0 64
+vf close 0
+echo rx-m82d2-history-staged
+EOF
+
+# Anchored on the mode marker, which the seat prints AFTER its DND read and its
+# history load: the corruption below can only land on a seat that has already
+# looked, so this boot reports a MISSING history (silent) and boot 15 is the
+# one that meets the bad bytes.
+vgate_run 14 -- \
+    --screen '$RUN_DIR/screen-14' \
+    --script '$RUN_DIR/script-14.txt' \
+    --script-after 'gotabwm: mode ' \
+    --script-expect 'rx-m82d2-history-staged' --timeout 300
+
+vgate_assert 14 serial-contains 'settings: notify_dnd=on'
+vgate_assert 14 serial-contains 'gotabwm: notify dnd=on via=boot'
+vgate_assert 14 serial-contains 'vf: open NOTIFY.HIST h=0'
+vgate_assert 14 serial-contains 'vf: write 0 n=64 wrote=64 chunks=1'
+vgate_assert 14 serial-contains 'vf: close 0 ok'
+vgate_assert 14 serial-contains 'rx-m82d2-history-staged'
+# No history existed, so the seat said nothing about one and wrote nothing.
+vgate_assert 14 serial-absent 'gotabwm: notify history'
+vgate_assert 14 serial-absent '[EXC] parking:'
+vgate_assert 14 serial-absent 'exited status=139'
+vgate_assert 14 python <<'PY'
+import os, sys
+rd = os.environ["RUN_DIR"]
+ser = open(os.environ["VG_SER"], errors="replace").read().splitlines()
+def line_of(prefix):
+    for i, l in enumerate(ser):
+        if prefix in l:
+            return i
+    sys.exit("the serial has no %r line" % prefix)
+dnd = line_of("gotabwm: notify dnd=on via=boot")
+mode = line_of("gotabwm: mode ")
+stage = line_of("vf: open NOTIFY.HIST")
+if not dnd < mode < stage:
+    sys.exit("boot 14 order: dnd read %d, mode %d, corruption staged %d" % (dnd, mode, stage))
+share = os.environ["VG_SHARE"]
+size = os.path.getsize(os.path.join(share, "NOTIFY.HIST"))
+if size != 64:
+    sys.exit("NOTIFY.HIST is %d bytes, want the 64 staged probe bytes" % size)
+print("DND read from the persisted key (line %d) before the loop (mode line %d); "
+      "the 64-byte corrupt history was staged after the seat's look (line %d)"
+      % (dnd, mode, stage))
+PY
+
+# The run must reach the seat's first PRESENT before it ends, or the "healed
+# before the first paint" order below has nothing to compare: the run ends on
+# its own marker, and a seat still holding its startup probe never ticks (boot
+# 01's `dui focus 0`, phase one, is what lets the composite loop start). So
+# phase one hands focus away, phase two waits for the first present.
+vgate_file script-15-focus.txt <<'EOF'
+dui focus 0
+EOF
+
+vgate_file script-15.txt <<'EOF'
+echo rx-m82d2-heal-ok
+EOF
+
+vgate_run 15 -- \
+    --screen '$RUN_DIR/screen-15' \
+    --script '$RUN_DIR/script-15-focus.txt' \
+    --script-after 'gotabwm: win focus' \
+    --script2 '$RUN_DIR/script-15.txt' \
+    --script2-after 'gotabwm: present' \
+    --script-expect 'rx-m82d2-heal-ok' --timeout 300
+
+# Refused WHOLE, then healed: one honest line each, nothing restored.
+vgate_assert 15 serial-contains 'gotabwm: notify history bad'
+vgate_assert 15 serial-contains 'gotabwm: notify history healed'
+vgate_assert 15 serial-contains 'gotabwm: notify history write n=0'
+vgate_assert 15 serial-absent 'gotabwm: notify history restore'
+vgate_assert 15 serial-absent 'gotabwm: notify history write fail'
+# A bad history is not a boot failure: the seat ran, on the DND the settings
+# file carries.
+vgate_assert 15 serial-contains 'wm: autostart gotabwm (settings wm=gotabwm)'
+vgate_assert 15 serial-contains 'gotabwm: notify dnd=on via=boot'
+vgate_assert 15 serial-contains 'rx-m82d2-heal-ok'
+vgate_assert 15 serial-absent '[EXC] parking:'
+vgate_assert 15 serial-absent 'exited status=139'
+# The healed file, byte-exact: a valid EMPTY history, never a partial one.
+vgate_assert 15 share-equals NOTIFY.HIST notify-empty.expected
+vgate_assert 15 python <<'PY'
+import os, sys
+ser = open(os.environ["VG_SER"], errors="replace").read().splitlines()
+def line_of(prefix):
+    for i, l in enumerate(ser):
+        if prefix in l:
+            return i
+    sys.exit("the serial has no %r line" % prefix)
+bad = line_of("gotabwm: notify history bad")
+healed = line_of("gotabwm: notify history healed")
+mode = line_of("gotabwm: mode ")
+tick = line_of("gotabwm: tick")
+present = line_of("gotabwm: present")
+if not bad < healed < mode:
+    sys.exit("refuse/heal order: bad %d, healed %d, mode %d" % (bad, healed, mode))
+if not healed < tick or not healed < present:
+    sys.exit("the heal (line %d) did not precede the first tick (%d) / present (%d)"
+             % (healed, tick, present))
+share = os.environ["VG_SHARE"]
+if os.path.exists(os.path.join(share, "NOTIFY.HIST~")):
+    sys.exit("NOTIFY.HIST~ survived the publish - the rename did not run")
+print("history refused (line %d) and healed (line %d) before the first paint "
+      "(tick line %d, present line %d); no NOTIFY.HIST~ left on the share"
+      % (bad, healed, tick, present))
+PY
+
+vgate_file script-16.txt <<'EOF'
+echo rx-m82d2-healed-ok
+EOF
+
+vgate_run 16 -- \
+    --screen '$RUN_DIR/screen-16' \
+    --script '$RUN_DIR/script-16.txt' \
+    --script-after 'gotabwm: mode ' \
+    --script-expect 'rx-m82d2-healed-ok' --timeout 300
+
+# The healed file is a valid history like any other: restored, silent about
+# trouble, and left untouched.
+vgate_assert 16 serial-contains 'gotabwm: notify history restore n=0'
+vgate_assert 16 serial-absent 'gotabwm: notify history bad'
+vgate_assert 16 serial-absent 'gotabwm: notify history healed'
+vgate_assert 16 serial-absent 'gotabwm: notify history write'
+vgate_assert 16 serial-contains 'gotabwm: notify dnd=on via=boot'
+vgate_assert 16 serial-contains 'rx-m82d2-healed-ok'
+vgate_assert 16 serial-absent '[EXC] parking:'
+vgate_assert 16 serial-absent 'exited status=139'
+vgate_assert 16 share-equals NOTIFY.HIST notify-empty.expected
+
+# --- M83c (#1776): the timezone row persists -------------------------------
+# Boots 17/18 are the idle_minutes pair's shape: one typed GOSET edit, one
+# safe publish, then a fresh boot reads the row back through the kernel's
+# `settings get`. The value is a fixed offset with the canonical label
+# clockfmt parses; a mistyped one is refused by the panel before it can
+# reach the file (host-tested in user/go/goset), so nothing here stages a
+# bad value.
+vgate_file script-17-focus.txt <<'EOF'
+dui focus 0
+EOF
+
+vgate_file script-17-panel.txt <<'EOF'
+set GOMAXPROCS=1
+exec GOSET.ELF
+EOF
+
+vgate_run 17 -- \
+    --screen '$RUN_DIR/screen-17' \
+    --via-virtio \
+    --script '$RUN_DIR/script-17-focus.txt' \
+    --script-after 'gotabwm: win focus' \
+    --script2 '$RUN_DIR/script-17-panel.txt' \
+    --script2-after 'gotabwm: win gone' \
+    --input-string $'timezone=UTC+05:30\n' \
+    --input-string-after 'goset: ready ' \
+    --script-expect 'goset: saved keys=12 wm=gotabwm theme=light' \
+    --script-expect-tail 10 --timeout 300
+
+vgate_assert 17 serial-contains 'goset: ready keys=12 wm=gotabwm theme=light mode=rw'
+vgate_assert 17 serial-contains 'goset: set timezone=UTC+05:30'
+vgate_assert 17 serial-contains 'goset: saved keys=12 wm=gotabwm theme=light'
+vgate_assert 17 share-contains SETTINGS.TXT 'timezone=UTC+05:30'
+vgate_assert 17 serial-absent '[EXC] parking:'
+vgate_assert 17 serial-absent 'exited status=139'
+
+vgate_file script-18.txt <<'EOF'
+settings get timezone
+echo rx-m83c-tz-persisted
+EOF
+
+vgate_run 18 -- \
+    --screen '$RUN_DIR/screen-18' \
+    --script '$RUN_DIR/script-18.txt' \
+    --script-expect 'rx-m83c-tz-persisted' --timeout 300
+
+vgate_assert 18 serial-contains 'settings: timezone=UTC+05:30'
+vgate_assert 18 share-contains SETTINGS.TXT 'timezone=UTC+05:30'
+vgate_assert 18 serial-contains 'rx-m83c-tz-persisted'
+vgate_assert 18 serial-absent '[EXC] parking:'
+vgate_assert 18 serial-absent 'exited status=139'

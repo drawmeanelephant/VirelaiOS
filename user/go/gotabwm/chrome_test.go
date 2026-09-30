@@ -280,6 +280,58 @@ func TestPaintStartSurfaceUsesTokens(t *testing.T) {
 	}
 }
 
+func TestIdleDimBlendsEveryPixelAndKeepsScanoutOpaque(t *testing.T) {
+	const w, h = 3, 2
+	scan := make([]byte, w*h*4)
+	pix := asUint32(scan)
+	for i := range pix {
+		pix[i] = 0xffabcdef
+	}
+	if got := paintIdleDim(scan, w, h); got != w*h {
+		t.Fatalf("dim pixels = %d, want %d", got, w*h)
+	}
+	for i, v := range pix {
+		if v != 0xff556677 {
+			t.Fatalf("dim pixel %d = %#x, want opaque half-brightness", i, v)
+		}
+	}
+	if got := paintIdleDim(scan, 0, h); got != 0 {
+		t.Fatalf("zero-width dim wrote %d pixels", got)
+	}
+}
+
+func TestIdleCurtainCoversScanoutAndNamesNoAuthentication(t *testing.T) {
+	const w, h = 320, 160
+	scan := make([]byte, w*h*4)
+	if got := paintIdleCurtain(scan, w, h); got < w*h {
+		t.Fatalf("curtain wrote %d pixels, want a full scanout", got)
+	}
+	pix := asUint32(scan)
+	tok := theme.Current
+	if pix[0] != 0xff000000|tok.ChromeBg || pix[len(pix)-1] != 0xff000000|tok.ChromeBg {
+		t.Fatal("curtain did not cover both corners")
+	}
+	x, y := (w-curtainW)/2, (h-curtainH)/2
+	if pix[y*w+x] != 0xff000000|tok.Accent || pix[(y+2)*w+x+3] != 0xff000000|tok.Surface {
+		t.Fatal("curtain panel lacks its accent rule or surface")
+	}
+	var ink, muted int
+	for _, v := range pix {
+		switch v & 0xffffff {
+		case tok.Ink:
+			ink++
+		case tok.InkMuted:
+			muted++
+		}
+	}
+	if ink < 20 || muted < 20 {
+		t.Fatalf("curtain text absent: ink=%d muted=%d", ink, muted)
+	}
+	if got := paintIdleCurtain(make([]byte, 3), w, h); got != 0 {
+		t.Fatalf("sub-pixel curtain wrote %d pixels", got)
+	}
+}
+
 func TestPaintChromeRefusesDegenerateScanouts(t *testing.T) {
 	if n := paintChrome(nil, 0, 0, "00:00:00"); n != 0 {
 		t.Errorf("nil scanout painted %d pixels", n)

@@ -8,6 +8,23 @@ import (
 	"unsafe"
 )
 
+func TestNowUsesSlot66AndPreservesMissingEpoch(t *testing.T) {
+	prev := SetSyscallHookForTest(func(num uintptr, a0, a1, a2, a3 uintptr) int64 {
+		if num != SlotTime || a0 != 0 || a1 != 0 || a2 != 0 || a3 != 0 {
+			t.Fatalf("Now syscall = (%d,%d,%d,%d,%d), want slot 66 with no args", num, a0, a1, a2, a3)
+		}
+		return 1_789_043_696
+	})
+	defer SetSyscallHookForTest(prev)
+	if got := Now(); got != 1_789_043_696 {
+		t.Fatalf("Now() = %d", got)
+	}
+	SetSyscallHookForTest(func(num uintptr, a0, a1, a2, a3 uintptr) int64 { return -ErrENOSYS })
+	if got := Now(); got != -ErrENOSYS {
+		t.Fatalf("Now() without firmware epoch = %d, want -ENOSYS", got)
+	}
+}
+
 func TestTrashPathAndValidation(t *testing.T) {
 	if got, want := TrashItemPath("0123456789abcdef"), TrashDir+"/0123456789abcdef.item"; got != want {
 		t.Fatalf("TrashItemPath = %q, want %q", got, want)

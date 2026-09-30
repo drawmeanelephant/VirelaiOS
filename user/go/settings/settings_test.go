@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"virelai/clockfmt"
 	"virelai/vi"
 )
 
@@ -213,10 +214,14 @@ func TestKnownKeysMirrorTheKernelTable(t *testing.T) {
 func TestDisplaySurfacesAbsentKnownKeysWithTheValueInForce(t *testing.T) {
 	f := File{Rows: []Setting{{"hostname", "box"}}, State: StateOK}
 	d := f.Display()
-	// The file row plus the kernel keys and accepted-unseeded layout are
+	// The file row plus the kernel keys and accepted-unseeded rows are
 	// filled out, never duplicated.
-	if len(d) != len(KnownKeys)+len(KeyboardLayoutKeys) {
-		t.Fatalf("display rows = %d, want %d", len(d), len(KnownKeys)+len(KeyboardLayoutKeys))
+	want := len(KnownKeys) + len(KeyboardLayoutKeys) + len(IdleKeys) + len(NotifyKeys) + len(TimezoneKeys)
+	if len(d) != want {
+		t.Fatalf("display rows = %d, want %d", len(d), want)
+	}
+	if v, ok := Get(d, "notify_dnd"); !ok || v != "off" {
+		t.Fatalf("notify_dnd row = %q ok=%v, want the compiled default off", v, ok)
 	}
 	if v, ok := Get(d, "wm"); !ok || v != "gotabwm" {
 		t.Fatalf("wm row = %q ok=%v, want the compiled default", v, ok)
@@ -226,6 +231,12 @@ func TestDisplaySurfacesAbsentKnownKeysWithTheValueInForce(t *testing.T) {
 	}
 	if v, ok := Get(d, "keyboard_layout"); !ok || v != "us" {
 		t.Fatalf("keyboard_layout row = %q ok=%v, want the compiled default", v, ok)
+	}
+	if v, ok := Get(d, "idle_minutes"); !ok || v != "5" {
+		t.Fatalf("idle_minutes row = %q ok=%v, want the compiled default", v, ok)
+	}
+	if v, ok := Get(d, "timezone"); !ok || v != "UTC" {
+		t.Fatalf("timezone row = %q ok=%v, want the compiled default", v, ok)
 	}
 	if v, ok := Get(d, "hostname"); !ok || v != "box" {
 		t.Fatalf("file row lost: %q ok=%v", v, ok)
@@ -258,6 +269,8 @@ func TestDefaultIncludesAcceptedUnseededKeys(t *testing.T) {
 		"palette_accent":  "3b82f6",
 		"font_size":       "medium",
 		"keyboard_layout": "us",
+		"idle_minutes":    "5",
+		"notify_dnd":      "off",
 	} {
 		if got, ok := Default(key); !ok || got != want {
 			t.Errorf("Default(%q) = (%q, %v), want (%q, true)", key, got, ok, want)
@@ -533,19 +546,20 @@ func TestKeyboardLayoutSettingVocabulary(t *testing.T) {
 	}
 }
 
-func TestKeyboardLayoutFitsFullLegacyTable(t *testing.T) {
-	rows := make([]Setting, 0, 16)
+func TestOptionalRowsRespectFullTable(t *testing.T) {
+	rows := make([]Setting, 0, 15)
 	for _, k := range KnownKeys {
 		rows = append(rows, Setting{Key: k.Name, Val: k.Default})
 	}
-	for i := 0; i < 8; i++ {
+	for i := 0; i < 7; i++ {
 		rows = append(rows, Setting{Key: "extension" + string(rune('a'+i)), Val: "v"})
 	}
 	display := (File{Rows: rows, State: StateOK}).Display()
-	if len(rows) != 16 || len(display) != MaxKeys {
-		t.Fatalf("rows = %d, want 16 pre-layout and 17 with layout", len(rows))
+	if len(rows) != 15 || len(display) != MaxKeys {
+		t.Fatalf("rows = %d, want 15 pre-optional and 17 with layout+idle", len(rows))
 	}
 	Set(display, "keyboard_layout", "de")
+	Set(display, "idle_minutes", "7")
 	decoded, ok := Parse(Render(display))
 	if !ok || len(decoded) != MaxKeys {
 		t.Fatalf("layout was dropped at the new cap: rows=%d ok=%v", len(decoded), ok)
@@ -553,7 +567,159 @@ func TestKeyboardLayoutFitsFullLegacyTable(t *testing.T) {
 	if got, _ := Get(decoded, "keyboard_layout"); got != "de" {
 		t.Fatalf("keyboard_layout = %q after round-trip, want de", got)
 	}
+	if got, _ := Get(decoded, "idle_minutes"); got != "7" {
+		t.Fatalf("idle_minutes = %q after round-trip, want 7", got)
+	}
 	if rc := (File{Rows: append(display, Setting{Key: "overflow", Val: "v"}), State: StateOK}).Save(); rc != SaveFull {
 		t.Fatalf("over-cap panel save = %d, want SaveFull", rc)
+	}
+
+	// Before idle_minutes existed, a 16-row table could still be saved
+	// from GOSET after materializing keyboard_layout. Keep that contract:
+	// the idle default is implicit when there is no free kernel slot.
+	legacy := append(append([]Setting(nil), rows...), Setting{Key: "extensionh", Val: "v"})
+	full := (File{Rows: legacy, State: StateOK}).Display()
+	if len(legacy) != 16 || len(full) != MaxKeys {
+		t.Fatalf("legacy table rows = %d, display = %d, want 16 and 17", len(legacy), len(full))
+	}
+	if _, found := Get(full, "idle_minutes"); found {
+		t.Fatal("full table materialized idle_minutes beyond the kernel cap")
+	}
+	if _, found := Get(full, "keyboard_layout"); !found {
+		t.Fatal("full table lost the preexisting layout row")
+	}
+	if _, found := Get(full, "notify_dnd"); found {
+		t.Fatal("full table materialized notify_dnd beyond the kernel cap")
+	}
+	if _, found := Get(full, "timezone"); found {
+		t.Fatal("full table materialized timezone beyond the kernel cap")
+	}
+	if _, found := Get(display, "notify_dnd"); found {
+		t.Fatal("a table full after layout+idle materialized notify_dnd beyond the kernel cap")
+	}
+	if _, found := Get(display, "timezone"); found {
+		t.Fatal("a table full after layout+idle materialized timezone beyond the kernel cap")
+	}
+}
+
+// M82d2 (#1785): do-not-disturb is an accepted-but-unseeded, cyclable row, and
+// its parser is strict — a typo must fall back to the default (off) at the
+// seat, never silence notifications.
+func TestNotifyDNDAcceptedUnseededCyclableAndStrict(t *testing.T) {
+	if _, known := Known("notify_dnd"); known {
+		t.Fatal("the kernel does not seed notify_dnd")
+	}
+	if !Editable("notify_dnd") || !IsNotifyDNDKey("notify_dnd") || IsNotifyDNDKey("notify") {
+		t.Fatal("GOSET must be able to edit exactly notify_dnd")
+	}
+	vocab, ok := Vocab("notify_dnd")
+	if !ok || len(vocab) != 2 || vocab[0] != "on" || vocab[1] != "off" {
+		t.Fatalf("notify_dnd vocab = %v ok=%v, want [on off]", vocab, ok)
+	}
+	if got := Next(vocab, "off"); got != "on" {
+		t.Fatalf("cycle off -> %q, want on", got)
+	}
+	if got := Next(vocab, "on"); got != "off" {
+		t.Fatalf("cycle on -> %q, want off", got)
+	}
+	for val, want := range map[string]bool{"on": true, "off": false} {
+		if on, ok := NotifyDND(val); !ok || on != want {
+			t.Errorf("NotifyDND(%q) = (%v, %v), want (%v, true)", val, on, ok, want)
+		}
+	}
+	for _, val := range []string{"", "ON", "true", "1", "yes", "on ", "maybe"} {
+		if on, ok := NotifyDND(val); ok || on {
+			t.Errorf("NotifyDND(%q) = (%v, %v), want (false, false)", val, on, ok)
+		}
+	}
+	// The value in force survives the safe codec, and an absent row is off.
+	f := File{Rows: []Setting{{Key: "notify_dnd", Val: "on"}}, State: StateOK}
+	if v, ok := f.Effective("notify_dnd"); !ok || v != "on" {
+		t.Fatalf("persisted notify_dnd = %q ok=%v", v, ok)
+	}
+	if v, ok := (File{State: StateMissing}).Effective("notify_dnd"); !ok || v != "off" {
+		t.Fatalf("absent notify_dnd = %q ok=%v, want off", v, ok)
+	}
+	rows, ok := Parse(Render(f.Display()))
+	if !ok {
+		t.Fatal("GOSET display cannot round-trip via the safe codec")
+	}
+	if v, found := Get(rows, "notify_dnd"); !found || v != "on" {
+		t.Fatalf("round-trip notify_dnd = %q found=%v", v, found)
+	}
+}
+
+func TestIdleMinutesAcceptedUnseededAndBounded(t *testing.T) {
+	if _, known := Known("idle_minutes"); known {
+		t.Fatal("the kernel does not seed idle_minutes")
+	}
+	if !Editable("idle_minutes") {
+		t.Fatal("GOSET must be able to edit idle_minutes")
+	}
+	for _, val := range []string{"1", "5", "120", "007"} {
+		if _, ok := IdleMinutes(val); !ok {
+			t.Errorf("valid minutes %q refused", val)
+		}
+	}
+	for _, val := range []string{"", "0", "121", "-1", "1.5", "1x", "1000"} {
+		if _, ok := IdleMinutes(val); ok {
+			t.Errorf("invalid minutes %q accepted", val)
+		}
+	}
+	f := File{Rows: []Setting{{Key: "idle_minutes", Val: "7"}}, State: StateOK}
+	if v, ok := f.Effective("idle_minutes"); !ok || v != "7" {
+		t.Fatalf("persisted idle_minutes = %q ok=%v", v, ok)
+	}
+	if rows, ok := Parse(Render(f.Display())); !ok {
+		t.Fatal("GOSET display cannot round-trip via the safe codec")
+	} else if v, found := Get(rows, "idle_minutes"); !found || v != "7" {
+		t.Fatalf("round-trip idle_minutes = %q found=%v", v, found)
+	}
+}
+
+// M83c (#1776): the timezone row is accepted-but-unseeded and cyclable, and
+// its resolver is strict-fallback — a value that does not parse is UTC, so a
+// typo can never shift every clock silently.
+func TestTimezoneAcceptedUnseededCyclableAndFallsBackToUTC(t *testing.T) {
+	if _, known := Known("timezone"); known {
+		t.Fatal("the kernel does not seed timezone")
+	}
+	if !Editable(TimezoneKey) || !IsTimezoneKey(TimezoneKey) || IsTimezoneKey("time") {
+		t.Fatal("GOSET must be able to edit exactly timezone")
+	}
+	if got, ok := Default(TimezoneKey); !ok || got != "UTC" {
+		t.Fatalf("Default(timezone) = (%q,%v), want (UTC,true)", got, ok)
+	}
+	vocab, ok := Vocab(TimezoneKey)
+	if !ok || len(vocab) != len(clockfmt.Offsets) || vocab[0] != clockfmt.Label(clockfmt.Offsets[0]) {
+		t.Fatalf("timezone vocab = %v ok=%v, want clockfmt's curated labels", vocab, ok)
+	}
+	for _, val := range []string{"UTC", "UTC+05:30", "UTC-08:00", "UTC+05:45"} {
+		if !ValidTimezone(val) {
+			t.Errorf("ValidTimezone(%q) = false", val)
+		}
+	}
+	for _, val := range []string{"", "utc", "UTC+5:30", "UTC+15:00", "Europe/Paris", "5:30"} {
+		if ValidTimezone(val) {
+			t.Errorf("ValidTimezone(%q) = true", val)
+		}
+	}
+	f := File{Rows: []Setting{{Key: TimezoneKey, Val: "UTC+05:30"}}, State: StateOK}
+	if z := f.Timezone(); z != 5*3600+30*60 {
+		t.Fatalf("persisted timezone = %d, want 19800", z)
+	}
+	if z := (File{State: StateMissing}).Timezone(); z != clockfmt.UTC {
+		t.Fatalf("absent timezone = %d, want UTC", z)
+	}
+	bad := File{Rows: []Setting{{Key: TimezoneKey, Val: "Europe/Paris"}}, State: StateOK}
+	if z := bad.Timezone(); z != clockfmt.UTC {
+		t.Fatalf("invalid persisted timezone = %d, want the UTC fallback", z)
+	}
+	rows, ok := Parse(Render(f.Display()))
+	if !ok {
+		t.Fatal("GOSET display cannot round-trip via the safe codec")
+	}
+	if v, found := Get(rows, TimezoneKey); !found || v != "UTC+05:30" {
+		t.Fatalf("round-trip timezone = %q found=%v", v, found)
 	}
 }

@@ -3,6 +3,7 @@ package main
 import (
 	"testing"
 
+	"virelai/settings"
 	"virelai/theme"
 	"virelai/vi"
 )
@@ -34,11 +35,77 @@ func TestMarkerShapes(t *testing.T) {
 		{MarkerLaunchDismiss, "gotabwm: launcher dismiss"},
 		{MarkerLaunchMissing, "gotabwm: launcher missing "},
 		{MarkerRestoreWitness, "gotabwm: restore witness "},
+		{MarkerIdleDim, "gotabwm: idle dim"},
+		{MarkerIdleLock, "gotabwm: idle lock"},
+		{MarkerIdleWake, "gotabwm: idle wake"},
 	}
 	for _, c := range cases {
 		if c.got != c.want {
 			t.Fatalf("marker = %q want %q", c.got, c.want)
 		}
+	}
+}
+
+func TestIdleThresholdsAndInputWake(t *testing.T) {
+	savedAfter, savedLast := idleAfter, lastInputTick
+	savedState, savedPresented, savedWake := idleState, idlePresented, idleWakePending
+	savedTick := seatTick
+	defer func() {
+		idleAfter, lastInputTick = savedAfter, savedLast
+		idleState, idlePresented, idleWakePending = savedState, savedPresented, savedWake
+		seatTick = savedTick
+	}()
+	configureIdle(settings.File{Rows: []settings.Setting{{Key: "idle_minutes", Val: "1"}}, State: settings.StateOK}, 2)
+	if idleAfter != 2 {
+		t.Fatalf("seeded threshold = %d ticks, want 2", idleAfter)
+	}
+	idleAdvance(1)
+	if idleState != idleActive {
+		t.Fatal("dimmed before the first threshold")
+	}
+	idleAdvance(2)
+	if idleState != idleDim {
+		t.Fatal("failed to dim at the first threshold")
+	}
+	idlePresentedFrame(true)
+	idleAdvance(3)
+	if idleState != idleDim {
+		t.Fatal("left dim before the lock threshold")
+	}
+	idleAdvance(4)
+	if idleState != idleCurtain {
+		t.Fatal("failed to curtain at twice the threshold")
+	}
+	idlePresentedFrame(true)
+	seatTick = 4
+	if consumeSeatEvent(vi.Event{Kind: vi.EvWmKey, Arg0: 0}) || idleState != idleActive {
+		// consumeSeatEvent returns false for input, including the waking edge.
+		t.Fatal("keyboard wake failed")
+	}
+	idlePresentedFrame(true)
+	if idleWakePending || lastInputTick != 4 {
+		t.Fatalf("wake pending=%v last=%d", idleWakePending, lastInputTick)
+	}
+	idleAdvance(5)
+	if idleState != idleActive {
+		t.Fatal("re-dimmed before another complete threshold")
+	}
+	idleAdvance(6)
+	if idleState != idleDim {
+		t.Fatal("did not resume the idle clock from the waking input")
+	}
+	seatTick = 6
+	if consumeSeatEvent(vi.Event{Kind: vi.EvWmPointer}) || idleState != idleActive || lastInputTick != 6 {
+		t.Fatal("pointer wake failed")
+	}
+}
+
+func TestIdleInvalidSettingFallsBackToFiveMinutes(t *testing.T) {
+	savedAfter := idleAfter
+	defer func() { idleAfter = savedAfter }()
+	configureIdle(settings.File{Rows: []settings.Setting{{Key: "idle_minutes", Val: "0"}}, State: settings.StateOK}, 60)
+	if idleAfter != 300 {
+		t.Fatalf("invalid idle threshold = %d, want default 300 ticks", idleAfter)
 	}
 }
 

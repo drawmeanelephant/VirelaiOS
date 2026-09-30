@@ -72,6 +72,8 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"virelai/layout"
+	"virelai/settings"
 	"virelai/tabapp"
 	"virelai/vi"
 	"virelai/webrender/font"
@@ -101,6 +103,14 @@ const (
 	// binary name and marker prefix alone.
 	markerFind = "goedit: find '"
 	markerGoto = "goedit: goto line="
+
+	// M83e (#1778): the dead-key stage. `layout` names the keyboard layout
+	// the editor composes under, printed once after the read. `stage` prints
+	// when an accent becomes pending, AFTER the frame showing it was
+	// presented, so the marker means the pending mark is on the scanout. The
+	// composed or literal text is the saved file's business, not a marker.
+	markerLayout = "goedit: layout "
+	markerStage  = "goedit: stage "
 
 	// M42 UX r2 / WMS8 Gate 4 rehomed (#1485): the unsaved-changes dialog.
 	markerUnsaved = "goedit: win_unsaved"
@@ -178,6 +188,10 @@ func (e *editor) fill(x, y, w, h int, rgb uint32) {
 	if w <= 0 || h <= 0 || x < 0 || y < 0 {
 		return
 	}
+	if e.rec != nil {
+		e.rec(x, y, w, h, rgb)
+		return
+	}
 	e.f.Rect(e.ta.Win, uint32(x), uint32(y), uint32(w), uint32(h), rgb)
 }
 
@@ -218,6 +232,10 @@ type editor struct {
 	buf   []byte
 	dirty bool
 	f     vi.Filler
+	// rec, when set, receives every fill instead of the kernel batcher. It is
+	// nil in the guest; host tests set it because vi.Filler.Flush does not go
+	// through the syscall-hook seam.
+	rec func(x, y, w, h int, rgb uint32)
 
 	// M20 U3: cur is the caret as a byte offset into buf, clamped on every use
 	// so a buffer that shrank under it cannot index out of range; mode says
@@ -225,6 +243,13 @@ type editor struct {
 	cur  int
 	mode inputMode
 	bar  []byte
+
+	// M83e (#1778): the dead-key stage. It sits in front of whichever surface
+	// owns the keyboard (the document or a bar) and hands it the text a
+	// sequence resolves to. marked is the accent whose `stage` marker was last
+	// printed, so the marker is an edge like markDirty.
+	stage  layout.Stage
+	marked layout.Accent
 
 	// M81d (#1764): the advisory write lease taken at open and held for the
 	// session, so a file manager cannot delete or overwrite the file out
@@ -306,6 +331,11 @@ func main() {
 
 	e := &editor{ta: ta, path: path}
 	e.load()
+	// The layout is read once, at open: it decides which physical keys are
+	// dead. A change made in GOSET while this editor is open applies to the
+	// next one; until then an unmapped dead key is ignored, as it always was.
+	e.stage.SetLayout(layoutFor(settings.Load()))
+	vi.ConsoleLine(markerLayout + string(e.stage.Layout()))
 	// M81d: the session's advisory write lease. A refusal is reported and
 	// the editor stays usable — every save retries the acquire, so a
 	// writer that lets go while we edit is honored on the next Ctrl-S.
@@ -343,9 +373,10 @@ func main() {
 			e.draw()
 			ta.Present()
 		case tabapp.ActionNone:
-			if e.key(ev) {
+			if e.handle(ev) {
 				e.draw()
 				ta.Present()
+				e.markStage()
 			}
 		}
 	}
@@ -373,11 +404,96 @@ func (e *editor) load() {
 	vi.ConsoleLine(markerRead + e.path + " n=" + vi.Itoa64(int64(len(b))))
 }
 
-// key feeds one event to the buffer or to the focused bar, and reports whether
-// the frame needs a redraw. The bar chords own the keyboard from ANY mode, so
-// a Ctrl-G straight after a find's Return opens the goto bar instead of being
-// swallowed as text.
+// layoutFor is the keyboard layout the kernel is translating under: the
+// settings file's keyboard_layout, else the compiled default. A value the
+// layout package does not know (the kernel refuses it too) is US.
+func layoutFor(f settings.File) layout.ID {
+	v, _ := f.Effective("keyboard_layout")
+	if id, ok := layout.Parse(v); ok {
+		return id
+	}
+	return layout.US
+}
+
+// handle is the loop's entry for events that are not window lifecycle. Losing
+// focus types a staged accent as its literal, so a sequence abandoned by
+// switching tabs is never swallowed.
+func (e *editor) handle(ev vi.Event) bool {
+	if ev.Kind == vi.EvWinBlur {
+		return e.commitAll(e.stage.Flush())
+	}
+	return e.key(ev)
+}
+
+// key runs one key-down through the dead-key stage and then, unless the stage
+// consumed it, through handleKey. Whatever the stage resolved to is inserted
+// first, so a key that ends a sequence without being text (Ctrl-S, Return)
+// still finds the accent already in the buffer. It reports whether the frame
+// needs a redraw, which a changed pending state also requires.
 func (e *editor) key(ev vi.Event) bool {
+	if ev.Kind != vi.EvKeyDown {
+		return false
+	}
+	before, _ := e.stage.Pending()
+	step := e.stage.Feed(layout.Input{
+		Usage: ev.Arg0,
+		Shift: ev.Flags&vi.ModShift != 0,
+		Chord: ev.Flags&(vi.ModCtrl|vi.ModAlt) != 0,
+		Sym:   rune(ev.Arg1),
+	})
+	changed := e.commitAll(step.Commit)
+	if after, _ := e.stage.Pending(); after != before {
+		changed = true
+	}
+	if !step.Pass {
+		return changed
+	}
+	return e.handleKey(ev) || changed
+}
+
+// commitAll inserts resolved text into the surface that owns the keyboard.
+func (e *editor) commitAll(rs []rune) bool {
+	changed := false
+	for _, r := range rs {
+		if e.mode == modeEdit {
+			changed = e.insert(r) || changed
+		} else {
+			changed = e.barAppend(r) || changed
+		}
+	}
+	return changed
+}
+
+// markStage prints the `stage` marker when an accent becomes pending. Call it
+// after the frame that shows the mark was presented.
+func (e *editor) markStage() {
+	if m := e.stageMarker(); m != "" {
+		vi.ConsoleLine(m)
+	}
+}
+
+// stageMarker is the line markStage prints now, or "" when the pending state
+// has not changed since the last one. It is separate so a host test can pin
+// the edge without a console (vi.ConsoleLine does not go through the
+// syscall-hook seam).
+func (e *editor) stageMarker() string {
+	a, ok := e.stage.Pending()
+	if !ok {
+		e.marked = 0
+		return ""
+	}
+	if a == e.marked {
+		return ""
+	}
+	e.marked = a
+	return markerStage + a.Name()
+}
+
+// handleKey feeds one event to the buffer or to the focused bar, and reports
+// whether the frame needs a redraw. The bar chords own the keyboard from ANY
+// mode, so a Ctrl-G straight after a find's Return opens the goto bar instead
+// of being swallowed as text.
+func (e *editor) handleKey(ev vi.Event) bool {
 	if ev.Kind != vi.EvKeyDown {
 		return false
 	}
@@ -458,11 +574,19 @@ func (e *editor) barKey(ev vi.Event, run func()) bool {
 		e.bar = e.bar[:len(e.bar)-size]
 		return true
 	}
-	if ch, ok := insertionFor(ev); ok && len(e.bar)+utf8.RuneLen(ch) <= barMax {
-		e.bar = append(e.bar, []byte(string(ch))...)
-		return true
+	if ch, ok := insertionFor(ev); ok {
+		return e.barAppend(ch)
 	}
 	return false
+}
+
+// barAppend adds one scalar to the focused bar's entry, bounded by barMax.
+func (e *editor) barAppend(ch rune) bool {
+	if len(e.bar)+utf8.RuneLen(ch) > barMax {
+		return false
+	}
+	e.bar = append(e.bar, []byte(string(ch))...)
+	return true
 }
 
 // runFind runs the find bar's Return: search from the caret, move it to the
@@ -814,6 +938,12 @@ func (e *editor) draw() {
 	e.fill(0, chromeH, w, h-chromeH, colPageBg)
 	e.drawText(textOrigin, 8, "Edit  "+e.path, colInk)
 
+	adv := font.Advance(1)
+	// M83e: a staged accent belongs to the surface that owns the keyboard, so
+	// the document shows it only in edit mode; a bar shows it below.
+	pre := e.stage.Preedit()
+	inDoc := pre != "" && e.mode == modeEdit
+
 	y := chromeH + 4
 	line, start := 0, 0
 	caretRow, caretCol := -1, 0
@@ -824,26 +954,50 @@ func (e *editor) draw() {
 		if line >= maxLines {
 			break
 		}
-		if i > start {
+		onCaret := e.cur >= start && e.cur <= i
+		if inDoc && onCaret {
+			// The accent is drawn where it will land, and the text after the
+			// caret moves right one cell, as it will when the accent commits.
+			col := utf8.RuneCount(e.buf[start:e.cur])
+			e.drawText(textOrigin, y, string(e.buf[start:e.cur]), colText)
+			e.drawPreedit(textOrigin+col*adv, y, pre)
+			e.drawText(textOrigin+(col+1)*adv, y, string(e.buf[e.cur:i]), colText)
+		} else if i > start {
 			e.drawText(textOrigin, y, string(e.buf[start:i]), colText)
 		}
 		// M20 U3: the caret's cell, so a find or a goto visibly MOVED it.
-		if e.cur >= start && e.cur <= i {
+		if onCaret {
 			caretRow, caretCol = line, utf8.RuneCount(e.buf[start:e.cur])
+			if inDoc {
+				caretCol++
+			}
 		}
 		y += lineH
 		line++
 		start = i + 1
 	}
 	if caretRow >= 0 && caretRow < maxLines {
-		e.fill(textOrigin+caretCol*font.Advance(1), chromeH+4+caretRow*lineH, caretW, 8, colCaret)
+		e.fill(textOrigin+caretCol*adv, chromeH+4+caretRow*lineH, caretW, 8, colCaret)
 	}
 	if e.mode != modeEdit {
 		label := "Find: "
 		if e.mode == modeGoto {
 			label = "Goto: "
 		}
-		e.drawText(textOrigin, h-lineH-2, label+string(e.bar), colDim)
+		barY := h - lineH - 2
+		e.drawText(textOrigin, barY, label+string(e.bar), colDim)
+		if pre != "" {
+			col := utf8.RuneCountInString(label) + utf8.RuneCount(e.bar)
+			e.drawPreedit(textOrigin+col*adv, barY, pre)
+		}
 	}
 	_ = e.f.Flush()
+}
+
+// drawPreedit paints a pending dead-key accent in the caret colour with an
+// underline in the spare pixel row under the glyph (lines are lineH apart and
+// glyphs are 8 rows), so it reads as text that is not committed yet.
+func (e *editor) drawPreedit(x, y int, mark string) {
+	e.drawText(x, y, mark, colCaret)
+	e.fill(x, y+8, font.Advance(1), 1, colCaret)
 }

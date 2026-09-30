@@ -6,6 +6,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"virelai/clockfmt"
 )
 
 // fakeHost is the engine's test kernel: externals resolve to canned exit
@@ -161,6 +163,63 @@ func session(h *fakeHost) (func(string) int, *Shell) {
 		st, _ := sh.RunLine(line)
 		return st
 	}, sh
+}
+
+func TestDateBuiltinUsesEpochAndNamesMissingFirmwareClock(t *testing.T) {
+	prevNow, prevMono := dateNow, dateMonotonic
+	t.Cleanup(func() { dateNow, dateMonotonic = prevNow, prevMono })
+	h := newFakeHost()
+	run, _ := session(h)
+	dateNow = func() int64 { return 1_789_043_696 }
+	if status := run("date"); status != 0 {
+		t.Fatalf("date status = %d, want 0", status)
+	}
+	if got := h.outString(); got != "2026-09-10 12:34:56 UTC (epoch=1789043696)\n" {
+		t.Fatalf("date output = %q", got)
+	}
+	h.out = nil
+	dateNow = func() int64 { return -4 } // slot 66: ENOSYS, no EFI epoch
+	dateMonotonic = func() int64 { return 12_500_000_000 }
+	if status := run("date"); status != 1 {
+		t.Fatalf("date without epoch status = %d, want 1", status)
+	}
+	if got := h.outString(); got != "date: no firmware epoch; monotonic=12s\n" {
+		t.Fatalf("no-epoch date output = %q", got)
+	}
+	h.out = nil
+	dateNow = func() int64 { t.Fatal("date args must not read clock"); return 0 }
+	if status := run("date --utc"); status != 2 {
+		t.Fatalf("date args status = %d, want 2", status)
+	}
+	if got := h.outString(); got != "gosh: date: usage: date\n" {
+		t.Fatalf("date args output = %q", got)
+	}
+}
+
+// TestDateBuiltinFormatsInTheConfiguredZone (M83c #1776): the same epoch
+// under the `timezone` row's fixed offset, and an invalid row falling back
+// to UTC rather than shifting every clock silently.
+func TestDateBuiltinFormatsInTheConfiguredZone(t *testing.T) {
+	prevNow, prevZone := dateNow, dateZone
+	t.Cleanup(func() { dateNow, dateZone = prevNow, prevZone })
+	h := newFakeHost()
+	run, _ := session(h)
+	dateNow = func() int64 { return 1_789_043_696 }
+	dateZone = func() clockfmt.Zone { return 5*3600 + 30*60 }
+	if status := run("date"); status != 0 {
+		t.Fatalf("date status = %d, want 0", status)
+	}
+	if got := h.outString(); got != "2026-09-10 18:04:56 UTC+05:30 (epoch=1789043696)\n" {
+		t.Fatalf("zoned date output = %q", got)
+	}
+	h.out = nil
+	dateZone = func() clockfmt.Zone { return -8 * 3600 }
+	if status := run("date"); status != 0 {
+		t.Fatalf("date status = %d, want 0", status)
+	}
+	if got := h.outString(); got != "2026-09-10 04:34:56 UTC-08:00 (epoch=1789043696)\n" {
+		t.Fatalf("west-zoned date output = %q", got)
+	}
 }
 
 // TestEngineVarsAndStatus pins the env/variables subset end to end.

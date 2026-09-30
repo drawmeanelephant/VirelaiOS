@@ -46,8 +46,8 @@ is the canonical, always-current source; this is the readable summary.
 | 30 | Dynamic linking: freestanding `LD.SO`, `LIBUI.SO`/`LIBFONT.SO`, W^X multi-aperture isolation |
 | 31 | Dynamic linking ecosystem: `CALC.ELF`/`NOTEPAD.ELF`/`FILE.ELF`/`DESKTOP.ELF`, `dlopen`/`dlsym` |
 
-Every milestone through **M74** is closed on the tracker (M73 waits on its
-acceptance card); `docs/status.md` is the ledger. Post-milestone landings
+Every milestone through **M86** has landed, and all but one index is closed on
+the tracker (observed 2026-09-29); `docs/status.md` is the ledger. Post-milestone landings
 include the in-guest HTTP/1.1 web server (claim 0750; Zig `HTTPD.BIN` was
 retired to `GOHTTPD.ELF` in M71l), the M26 offline-preflight cards
 N13/N14 (claim 8852), and
@@ -55,8 +55,13 @@ the `sys_tcp_connect` wall-clock fix (issue #613, claim 2572).
 
 ## Current
 
-M69 through M74 are all closed on the GitHub tracker except M73, which
-waits on its acceptance card. Open work and its cards live in the canonical
+The only open arc on the tracker is **M84, remote framebuffer**
+([#1807](https://github.com/drawmeanelephant/DipshitOS/issues/1807)): the
+guest-side RFB wire and its live gate landed, and the macOS Screen Sharing
+tape is blocked on
+[#1835](https://github.com/drawmeanelephant/DipshitOS/issues/1835) — Screen
+Sharing refuses the `None` security type, so the host bridge has to
+authenticate the viewer. Open work and its cards live in the canonical
 table: `docs/status.md`.
 
 Honest-bound edges that remain planned regardless of milestone:

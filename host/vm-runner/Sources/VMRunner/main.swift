@@ -86,6 +86,17 @@
 //          deterministic and gate-assertable. OFF by default: without the
 //          flag config.networkDevices stays [] — every existing gate is
 //          byte-identical.)
+//         [--net-sntp-respond <host-ip>[:<port>]] (M83b #1775: a tiny
+//          deterministic host-side SNTP server inside the capture thread
+//          — the guest's client-mode (3) NTP request for <host-ip>:<port>
+//          (default 123) is answered with an RFC 4330 server packet
+//          carrying host wall-clock time, the request's transmit
+//          timestamp echoed as the originate timestamp. Requires --net.
+//          OFF by default.)
+//         [--net-sntp-skew <seconds>] (M83b: signed seconds added to the
+//          host clock for every served timestamp, so a gate can prove the
+//          guest clock really moved; default 0; requires
+//          --net-sntp-respond.)
 //         [--net-dhcp-respond <lease-ip>] (milestone five card N8, claim
 //          0351: a tiny deterministic host-side DHCP server inside the
 //          capture thread — the guest's DHCPDISCOVER is answered with an
@@ -257,6 +268,7 @@ import ScreenCaptureKit
 import Virtualization
 import VFWire
 import VMPostmortem
+import VSNTP
 import VSSH
 
 // Diagnostics and the console tee must survive signal exits (SIGINT/SIGTERM),
@@ -588,6 +600,11 @@ var netUdpRespondHostPort: UInt16?
 // DNS resolver inside the capture thread.
 var netDnsRespondHostIP: [UInt8]?
 var netDnsRespondHostPort: UInt16 = 53
+// M83b (#1775): `--net-sntp-respond <host-ip>[:<port>]` answers the guest's
+// SNTP queries with host wall-clock time + `--net-sntp-skew` seconds.
+var netSntpRespondHostIP: [UInt8]?
+var netSntpRespondHostPort: UInt16 = 123
+var netSntpSkew: Int64?
 // Milestone five card N8 (claim 0351): `--net-dhcp-respond <lease-ip>`
 // answers the guest's DHCP handshake from the HOST side — a tiny
 // deterministic host-side DHCP server inside the capture thread: when a
@@ -1132,6 +1149,27 @@ while idx < arguments.count {
         } else if halves.count == 2 {
             fail("--net-dns-respond port must be 1..65535, got '\(halves[1])'.")
         }
+        idx += 2
+    } else if arg == "--net-sntp-respond", idx + 1 < arguments.count {
+        let token = arguments[idx + 1]
+        let halves = token.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+        let octets = String(halves[0]).split(separator: ".", omittingEmptySubsequences: false).compactMap { UInt8($0) }
+        guard octets.count == 4, halves[0].split(separator: ".", omittingEmptySubsequences: false).count == 4 else {
+            fail("--net-sntp-respond requires a dotted-quad IPv4 address, got '\(token)'.")
+        }
+        netSntpRespondHostIP = octets
+        if halves.count == 2 {
+            guard let port = UInt16(halves[1]), port >= 1 else {
+                fail("--net-sntp-respond port must be 1..65535, got '\(halves[1])'.")
+            }
+            netSntpRespondHostPort = port
+        }
+        idx += 2
+    } else if arg == "--net-sntp-skew", idx + 1 < arguments.count {
+        guard let skew = Int64(arguments[idx + 1]) else {
+            fail("--net-sntp-skew requires a signed integer number of seconds, got '\(arguments[idx + 1])'.")
+        }
+        netSntpSkew = skew
         idx += 2
     } else if arg == "--net-dhcp-respond", idx + 1 < arguments.count {
         // Card N9 (claim 9489): the optional ":<lease-seconds>" suffix
@@ -1727,6 +1765,16 @@ if netUdpRespondHostIP != nil, netCapturePath == nil {
 if netDnsRespondHostIP != nil, netCapturePath == nil {
     fail("--net-dns-respond requires --net (the DNS reply is written into the SAME attachment's socket).")
 }
+if netSntpRespondHostIP != nil, netCapturePath == nil {
+    fail("--net-sntp-respond requires --net (the SNTP reply is written into the SAME attachment's socket).")
+}
+if netSntpSkew != nil, netSntpRespondHostIP == nil {
+    fail("--net-sntp-skew requires --net-sntp-respond.")
+}
+let netSntpResponder: SNTPResponder? = netSntpRespondHostIP.map {
+    SNTPResponder(hostIP: $0, hostPort: netSntpRespondHostPort, skew: netSntpSkew ?? 0,
+                  clock: { Date().timeIntervalSince1970 })
+}
 if netDhcpRespondLeaseIP != nil, netCapturePath == nil {
     fail("--net-dhcp-respond requires --net (the DHCP reply is written into the SAME attachment's socket).")
 }
@@ -1907,6 +1955,12 @@ if let netCapturePath {
                     let srcPort = (UInt16(buf[34]) << 8) | UInt16(buf[35])
                     print("NET-DNS: answered the guest's DNS query for '\(qname)' (reply to guest src port \(srcPort), resolved to 93.184.216.34)")
                 }
+            }
+            // M83b (#1775): SNTP responder
+            if let sntp = netSntpResponder, let answer = sntp.answer(buf, n) {
+                try? netCaptureReadSocket!.write(contentsOf: Data(answer.frame))
+                let originate = answer.originate.map { String(format: "%02x", $0) }.joined()
+                print("NET-SNTP: answered \(answer.guestIP.map(String.init).joined(separator: ".")):\(answer.guestPort) served_unix=\(answer.servedUnix) skew=\(sntp.skew) originate=\(originate)")
             }
             // Card N8 (claim 0351): if the guest ran the DHCP client,
             // answer the handshake from the host — a tiny deterministic
@@ -2606,6 +2660,12 @@ if let hostIP = netUdpRespondHostIP, let hostPort = netUdpRespondHostPort {
 if let hostIP = netDnsRespondHostIP {
     let ipText = hostIP.map(String.init).joined(separator: ".")
     print("  net-dns-respond: ENABLED (milestone twelve card N2, claim 7566) — the host answers the guest's DNS queries for \(ipText):\(netDnsRespondHostPort) via the capture thread (deterministic, request-driven)")
+}
+if let hostIP = netSntpRespondHostIP {
+    let ipText = hostIP.map(String.init).joined(separator: ".")
+    let skew = netSntpSkew ?? 0
+    let skewText = skew == 0 ? "" : (skew > 0 ? "+\(skew)s" : "\(skew)s")
+    print("  net-sntp-respond: ENABLED (M83b #1775) — the host answers the guest's SNTP queries for \(ipText):\(netSntpRespondHostPort) with host time\(skewText) via the capture thread (deterministic, request-driven)")
 }
 if let leaseIP = netDhcpRespondLeaseIP {
     let ipText = leaseIP.map(String.init).joined(separator: ".")
@@ -6144,9 +6204,10 @@ enum CustomVirtioSpike {
         case "7": return (0x24, false); case "8": return (0x25, false)
         case "9": return (0x26, false); case "0": return (0x27, false)
         case "\n", "\r": return (0x28, false) // Enter / Return
-        case " ": return (0x2C, false)
-        case "_": return (0x2D, true)
-        case "-": return (0x2D, false); case "=": return (0x2E, false)
+        case " ": return (0x2C, false)		case "_": return (0x2D, true)
+		case "+": return (0x2E, true)
+		case ":": return (0x33, true)
+		case "-": return (0x2D, false); case "=": return (0x2E, false)
         case "[": return (0x2F, false); case "]": return (0x30, false)
         case "\\": return (0x31, false)
         case ";": return (0x33, false); case "'": return (0x34, false)

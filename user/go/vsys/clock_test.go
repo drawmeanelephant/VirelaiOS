@@ -40,6 +40,24 @@ func TestNanotimeUsesInjectedClock(t *testing.T) {
 	}
 }
 
+func TestNowReadsExistingEpochSlot(t *testing.T) {
+	prev := syscallFn
+	t.Cleanup(func() { syscallFn = prev })
+	syscallFn = func(num uintptr, a0, a1, a2, a3 uintptr) int64 {
+		if num != 66 || a0 != 0 || a1 != 0 || a2 != 0 || a3 != 0 {
+			t.Fatalf("Now syscall = (%d,%d,%d,%d,%d), want slot 66 with no args", num, a0, a1, a2, a3)
+		}
+		return 1_789_043_696
+	}
+	if got := Now(); got != 1_789_043_696 {
+		t.Fatalf("Now() = %d", got)
+	}
+	syscallFn = func(num uintptr, a0, a1, a2, a3 uintptr) int64 { return -ErrENOSYS }
+	if got := Now(); got != -ErrENOSYS {
+		t.Fatalf("Now() without firmware epoch = %d, want -ENOSYS", got)
+	}
+}
+
 func TestSetReadDeadline_AbsoluteAndClearable(t *testing.T) {
 	resetConn(t)
 	fakeClock(t, func() int64 { return 100_000_000 })

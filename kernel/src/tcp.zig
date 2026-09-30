@@ -34,9 +34,11 @@
 //! close is client-driven (FIN -> FIN-ACK -> final ACK); a clean
 //! server FIN+ACK in ESTABLISHED is ACKed and counted
 //! (`finack_recv`), and the caller's `net tcp close` then completes
-//! the close; anything else is counted `dropped_malformed`. The fixed
-//! source port is 8000 (the UDP layer's 7000 analog — deterministic,
-//! gate-assertable).
+//! the close; an over-cap SYN (a second peer knocking while the ONE
+//! connection is taken, in any non-listen state) is refused HONESTLY
+//! with RST+ACK (M84f, #1836) — never silently dropped; anything else
+//! is counted `dropped_malformed`. The fixed source port is 8000 (the
+//! UDP layer's 7000 analog — deterministic, gate-assertable).
 
 const std = @import("std");
 pub const arp = @import("arp.zig"); // N3: our static IP (`arp.own_ip` — the ONE copy)
@@ -157,6 +159,18 @@ pub var msg_len: usize = 0;
 /// builds it; the monitor transmits it on the next `net tcp` — the
 /// polled-drain contract, never a transmit from the drain context).
 pub var ack_pending: bool = false;
+/// M84f (#1836): the over-cap refusal's OWN bounded slot. The refusal
+/// NEVER rides `msg`/`record_pending` — the shared build_msg/tx slot
+/// must not overwrite an unACKed data segment, and a later build (the
+/// peer's next data ACK) must not swallow the queued refusal. The
+/// RST+ACK stages here until a TX site flushes it: the syscall seam's
+/// TCP TX sites and the shell idle loop send `rst_msg` FIRST, then
+/// `msg` as before. `rst_pending` is the queue bit (cleared on
+/// transmit; `reset` clears it, a connection transition does not — the
+/// refusal answers the knock it saw, whatever the connection does).
+pub var rst_msg: [segment_max]u8 = undefined;
+pub var rst_len: usize = 0;
+pub var rst_pending: bool = false;
 /// The bounded RX buffer (ONE segment — no reassembly, honest bound).
 pub var rx_payload: [payload_max]u8 = undefined;
 pub var rx_len: usize = 0;
@@ -376,6 +390,8 @@ pub fn reset() void {
     rcv_nxt = 0;
     msg_len = 0;
     ack_pending = false;
+    rst_len = 0;
+    rst_pending = false;
     rx_len = 0;
     rx_pending = false;
     peer_fin = false;
@@ -599,6 +615,34 @@ pub fn build_rst_msg() void {
     build_msg(snd_una, rcv_nxt, flag_ack | flag_rst, &.{});
 }
 
+/// M84f (#1836): the over-cap refusal — answer a SYN the ONE connection
+/// cannot admit with RST+ACK, the RFC 793 §3.4 closed-port form (the
+/// listen-state allowlist's honest form: seq 0, ack = the SYN's next
+/// sequence number). The refusal stages in its OWN slot (`rst_msg`): it
+/// never touches `msg`, `record_pending`'s pending segment, or the
+/// retransmit state — the shared build_msg/tx slot cannot overwrite an
+/// unACKed data segment and no later build can swallow the refusal.
+/// In a live state the peer record is NOT touched either: the segment
+/// addresses the requester's PORT, and the frame rides the seam's ONE TX
+/// identity (`net_tcp_send` stamps `peer_mac`/`peer_ip`) — an over-cap
+/// requester on the peer's host (the second-viewer case) is answered
+/// exactly; a different host is refused at the segment level only (the
+/// one-connection seam's honest bound). With no live connection
+/// (IDLE/CLOSED) nothing live is disturbed, so the peer record — the
+/// seam's TX addressing — is pointed at the requester (the allowlist
+/// form) and the answer is fully addressed.
+fn refuse_overcap_syn(requester_ip: [4]u8, requester_port: u16, seq: u32, requester_mac: []const u8) void {
+    if (state == .idle or state == .closed) {
+        peer_ip = requester_ip;
+        peer_port = requester_port;
+        @memcpy(&peer_mac, requester_mac);
+    }
+    const local_port = if (is_server) listen_port else default_src_port;
+    rst_len = build_segment(&rst_msg, arp.own_ip, peer_ip, local_port, requester_port, 0, seq +% 1, flag_rst | flag_ack, &.{});
+    rst_pending = true;
+    rst_sent += 1;
+}
+
 /// Copy the received payload out of the bounded RX buffer and clear it
 /// (the caller — `net tcp recv` — prints it). Returns the payload slice.
 pub fn take_rx() []const u8 {
@@ -645,10 +689,6 @@ pub fn handle_rx(frame: []const u8) Event {
         dropped_malformed += 1; // a segment for a port we do not own
         return .none;
     }
-    if (state != .listen and src_port != peer_port) {
-        dropped_malformed += 1; // not the peer we connected to
-        return .none;
-    }
     if (segment[12] >> 4 != 5) {
         dropped_malformed += 1; // options — the honest bound (offset != 5)
         return .none;
@@ -659,6 +699,22 @@ pub fn handle_rx(frame: []const u8) Event {
     const payload = segment[tcp_hdr_len..];
     if (payload.len > payload_max) {
         dropped_malformed += 1; // no reassembly — the honest bound
+        return .none;
+    }
+    if (state != .listen and src_port != peer_port) {
+        // M84f (#1836): an over-cap SYN (SYN set, ACK clear — a second
+        // client knocking while the ONE connection is taken, in any
+        // non-listen state) is refused HONESTLY — RST+ACK in the RFC 793
+        // §3.4 closed-port form (the listen allowlist's form: seq 0,
+        // ack = the SYN's next sequence number) — instead of a silent
+        // drop (a server that silently drops looks like a dead host to
+        // the caller). Anything else from a port that is not ours to
+        // answer is dropped, counted.
+        if ((flags & (flag_syn | flag_ack)) == flag_syn) {
+            refuse_overcap_syn(src, src_port, seq, frame[6..12]);
+            return .none;
+        }
+        dropped_malformed += 1; // not the peer we connected to
         return .none;
     }
     switch (state) {

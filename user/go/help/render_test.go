@@ -40,6 +40,7 @@ func TestBrowseFrameShape(t *testing.T) {
 func TestDetailFrameIsAccentText(t *testing.T) {
 	m := testModel()
 	key(&m, kDown)
+	key(&m, kDown)
 	key(&m, kEnter)
 	lines := m.renderLines()
 	if len(lines) != m.rows {

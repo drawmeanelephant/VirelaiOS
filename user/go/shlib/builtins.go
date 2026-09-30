@@ -7,7 +7,11 @@ import (
 	"sort"
 	"strings"
 
+	"virelai/clockfmt"
 	"virelai/mime"
+	"virelai/settings"
+	"virelai/timesync"
+	"virelai/vi"
 	"virelai/vsys"
 )
 
@@ -48,7 +52,8 @@ func init() {
 		"open": bOpen, "env": bEnv, "printenv": bPrintenv, "set": bSet, "unset": bUnset,
 		"export": bExport, "read": bRead, "jobs": bJobs, "fg": bFg,
 		"history": bHistory, "help": bHelp, "exit": bExit, "monitor": bMonitor,
-		"sleep": bSleep, "clear": bClear, "log": bLog,
+		"sleep": bSleep, "clear": bClear, "log": bLog, "date": bDate,
+		"time": bTime,
 		// M50 trust surface (ADR 0024): identity, owner-only chmod, and the
 		// secret store's names. Same verbs and the same output text as the
 		// Zig shell, so the M50 gates retarget without weakening an assert.
@@ -514,6 +519,64 @@ func bLog(c *cmdCtx) int {
 	return 0
 }
 
+// These clock sources are replaceable in host tests. The guest takes the
+// epoch from the kernel and the fallback from the monotonic counter.
+var dateNow = vi.Now
+var dateMonotonic = vi.Nanos
+
+// dateZone resolves the `timezone` row through the shared settings codec
+// (M83c #1776): the file's fixed offset when it parses, UTC otherwise.
+// Replaceable in host tests, like the clock sources above.
+var dateZone = func() clockfmt.Zone { return settings.Load().Timezone() }
+
+func bDate(c *cmdCtx) int {
+	if len(c.args) != 0 {
+		c.out([]byte("gosh: date: usage: date\n"))
+		return 2
+	}
+	epoch := dateNow()
+	if epoch == -vi.ErrENOSYS {
+		c.out([]byte("date: no firmware epoch; monotonic=" +
+			vsys.Itoa64(dateMonotonic()/1_000_000_000) + "s\n"))
+		return 1
+	}
+	if epoch < 0 {
+		c.out([]byte("date: clock error " + vsys.Itoa64(epoch) + "\n"))
+		return 1
+	}
+	// EFI's broken-down wall-clock fields were converted to an epoch as
+	// written; clockfmt shifts that epoch by the configured fixed offset
+	// (M83c) and labels the face with it.
+	c.out([]byte(clockfmt.Format(epoch, dateZone()) +
+		" (epoch=" + vsys.Itoa64(epoch) + ")\n"))
+	return 0
+}
+
+// timeSync is replaceable in host tests: the real one puts a datagram on the
+// wire and, on a valid reply, steps the kernel clock.
+var timeSync = timesync.Sync
+
+// bTime is `time sync [SERVER]`: one SNTP query (M83b #1775). `sync` is the
+// only subcommand; the verb is `time` so that a later `time zone` has a home
+// without another top-level name. Exit 0 when the clock is correct afterward
+// (stepped, or already within a tick), 1 for every failure, 2 for misuse.
+func bTime(c *cmdCtx) int {
+	if len(c.args) < 1 || len(c.args) > 2 || c.args[0] != "sync" {
+		c.out([]byte("gosh: time: usage: time sync [SERVER]\n"))
+		return 2
+	}
+	server := timesync.DefaultServer
+	if len(c.args) == 2 {
+		server = c.args[1]
+	}
+	res := timeSync(server)
+	c.out([]byte(res.Line()))
+	if !res.OK() {
+		return 1
+	}
+	return 0
+}
+
 // --- ADR 0008 D1 discovery for the guest verbs (#1538) -------------------
 //
 // The milestone-eight ADR pinned a grouped catalog, `help <cmd>` and topic
@@ -553,12 +616,14 @@ const subsetBlurb = "one pipe per line, > >> < redirects, $VAR ${VAR} $?"
 var helpCatalog = map[string]helpEntry{
 	// shell
 	"clear":   {group: "shell", usage: "clear", blurb: "clear the tty screen"},
+	"date":    {group: "shell", usage: "date", blurb: "show the firmware wall clock, or name the monotonic fallback", notes: "The calendar face carries the timezone setting's fixed offset (UTC by default); without a firmware epoch the command exits 1."},
 	"echo":    {group: "shell", usage: "echo [ARG...]", blurb: "write ARG... separated by single spaces and a newline", notes: "The engine expands $VAR, ${VAR} and $? before echo runs."},
 	"exit":    {group: "shell", usage: "exit [STATUS]", blurb: "leave GOSH with STATUS (the last status when omitted)"},
 	"help":    {group: "shell", usage: "help [CMD|GROUP]", blurb: "the grouped catalog, or one verb's usage and description"},
 	"history": {group: "shell", usage: "history", blurb: "list this session's submitted lines, oldest first"},
 	"log":     {group: "shell", usage: "log [APP]", blurb: "read one app's bounded log ring, or all app rings"},
 	"monitor": {group: "shell", usage: "monitor", blurb: "hand the console back to the kernel monitor"},
+	"time":    {group: "shell", usage: "time sync [SERVER]", blurb: "set the clock from one SNTP query (default time.apple.com)", notes: "SERVER is a name or a dotted IPv4 address. One query, no retry; on no reply the clock is left untouched and the exit is 1."},
 
 	// files
 	"cat":    {group: "files", usage: "cat [FILE...]", blurb: "write FILE... (the bound stdin when none is named)"},

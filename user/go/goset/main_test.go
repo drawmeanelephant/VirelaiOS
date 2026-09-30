@@ -65,14 +65,58 @@ func TestPanelStartsWithTheTableInForce(t *testing.T) {
 	if a.mode() != "rw" {
 		t.Fatalf("mode = %q, want rw", a.mode())
 	}
-	if got := a.summary(); got != "keys=9 wm=gotabwm theme=dark" {
+	if got := a.summary(); got != "keys=12 wm=gotabwm theme=dark" {
 		t.Fatalf("summary = %q", got)
 	}
 	if v, ok := settings.Get(a.disp, "keyboard_layout"); !ok || v != "us" {
 		t.Fatalf("keyboard_layout = %q ok=%v, want the compiled default", v, ok)
 	}
+	if v, ok := settings.Get(a.disp, "idle_minutes"); !ok || v != "5" {
+		t.Fatalf("idle_minutes = %q ok=%v, want the compiled default", v, ok)
+	}
+	if v, ok := settings.Get(a.disp, "notify_dnd"); !ok || v != "off" {
+		t.Fatalf("notify_dnd = %q ok=%v, want the compiled default", v, ok)
+	}
+	if v, ok := settings.Get(a.disp, "timezone"); !ok || v != "UTC" {
+		t.Fatalf("timezone = %q ok=%v, want the compiled default", v, ok)
+	}
 	if len(a.labels()) != len(a.disp) {
 		t.Fatalf("labels = %d, rows = %d", len(a.labels()), len(a.disp))
+	}
+}
+
+// M82d2 (#1785): the do-not-disturb row is a first-class, cyclable on|off row
+// and a typed value outside that vocabulary never reaches the table, because
+// the seat would read it as off while the panel showed something else.
+func TestNotifyDNDRowCyclesAndValidatesBeforeSave(t *testing.T) {
+	a := newPanel(nil)
+	i := rowOf(t, a, "notify_dnd")
+	if strings.Contains(a.labels()[i], "(kept)") {
+		t.Fatalf("notify_dnd row is not editable: %q", a.labels()[i])
+	}
+	a.sel = i
+	a.cycle(1)
+	if got, _ := settings.Get(a.disp, "notify_dnd"); got != "on" {
+		t.Fatalf("cycling off gave notify_dnd = %q, want on", got)
+	}
+	a.cycle(1)
+	if got, _ := settings.Get(a.disp, "notify_dnd"); got != "off" {
+		t.Fatalf("second cycle = %q, want off", got)
+	}
+	for _, val := range []string{"true", "1", "ON", "", "yes"} {
+		a.input.SetValue("notify_dnd=" + val)
+		a.applyInput()
+		if got, _ := settings.Get(a.disp, "notify_dnd"); got != "off" {
+			t.Fatalf("invalid %q changed notify_dnd to %q", val, got)
+		}
+	}
+	a.input.SetValue("notify_dnd=on")
+	a.applyInput()
+	if got, _ := settings.Get(a.disp, "notify_dnd"); got != "on" {
+		t.Fatalf("typed notify_dnd = %q, want on", got)
+	}
+	if got := changedSettingKeys(settings.File{State: settings.StateMissing}, settings.File{Rows: a.disp, State: settings.StateOK}); len(got) != 1 || got[0] != "notify_dnd" {
+		t.Fatalf("change notification keys = %v, want notify_dnd", got)
 	}
 }
 
@@ -90,7 +134,7 @@ func TestPanelAppliesATypedRowOnlyForKnownKeys(t *testing.T) {
 	if v, _ := settings.Get(a.disp, "wm"); v != "tabwm" {
 		t.Fatalf("wm = %q, want tabwm", v)
 	}
-	if got := a.summary(); got != "keys=9 wm=tabwm theme=dark" {
+	if got := a.summary(); got != "keys=12 wm=tabwm theme=dark" {
 		t.Fatalf("summary = %q", got)
 	}
 
@@ -223,15 +267,18 @@ func rowOf(t *testing.T, a *panel, key string) int {
 	return -1
 }
 
-// M73m (#1662): the palette surface. A default panel is UNCHANGED (the eight
-// kernel rows plus keyboard_layout); choosing `custom` reveals the three
-// colour rows with the compiled dark defaults, they are typed-editable as
-// six hex digits, and a malformed value never reaches the table.
+// M73m (#1662): the palette surface. A default panel has the eight kernel
+// rows plus keyboard_layout, idle_minutes, notify_dnd and timezone; choosing
+// `custom` reveals three colour rows with the compiled dark defaults, they
+// are typed-editable as six hex digits, and a malformed value never reaches
+// the table.
 func TestPaletteSurfaceRevealsTheColoursOnCustom(t *testing.T) {
 	a := newPanel(nil)
-	if len(a.disp) != len(settings.KnownKeys)+len(settings.KeyboardLayoutKeys) {
-		t.Fatalf("default rows = %d, want %d kernel+layout rows (palette rows are NOT default rows)",
-			len(a.disp), len(settings.KnownKeys)+len(settings.KeyboardLayoutKeys))
+	want := len(settings.KnownKeys) + len(settings.KeyboardLayoutKeys) + len(settings.IdleKeys) +
+		len(settings.NotifyKeys) + len(settings.TimezoneKeys)
+	if len(a.disp) != want {
+		t.Fatalf("default rows = %d, want %d kernel+layout+idle+notify+timezone rows (palette rows are NOT default rows)",
+			len(a.disp), want)
 	}
 	for _, k := range settings.PaletteKeys {
 		if _, ok := settings.Get(a.disp, k.Name); ok {
@@ -246,7 +293,7 @@ func TestPaletteSurfaceRevealsTheColoursOnCustom(t *testing.T) {
 			t.Fatalf("%s row = %q ok=%v, want the default %q", k.Name, v, ok, k.Default)
 		}
 	}
-	if got := a.summary(); got != "keys=12 wm=gotabwm theme=custom" {
+	if got := a.summary(); got != "keys=15 wm=gotabwm theme=custom" {
 		t.Fatalf("summary = %q", got)
 	}
 	// The palette rows are first-class: never the "(kept)" marker (that is
@@ -284,15 +331,18 @@ func TestPaletteSurfaceRevealsTheColoursOnCustom(t *testing.T) {
 	}
 }
 
-// M80i (#1725): the font_size surface. A default panel is UNCHANGED (the
-// kernel's eight rows plus keyboard_layout); font_size is typed input at any time
-// and cycles small -> medium -> large once the row exists. The panel never
-// fabricates the row: an ABSENT key is the boot look (text small + grid
-// medium), which no single stored value can represent.
+// M80i (#1725): the font_size surface. A default panel has the kernel's
+// eight rows plus keyboard_layout, idle_minutes, notify_dnd and timezone;
+// font_size is typed input at any time and cycles small -> medium -> large
+// once the row exists. The panel never fabricates the row: an ABSENT key is
+// the boot look (text small + grid medium), which no single stored value can
+// represent.
 func TestFontSurfaceCyclesWithoutMovingKeys(t *testing.T) {
 	a := newPanel(nil)
-	if len(a.disp) != len(settings.KnownKeys)+len(settings.KeyboardLayoutKeys) {
-		t.Fatalf("default rows = %d, want %d (font_size is NOT a default row)", len(a.disp), len(settings.KnownKeys)+len(settings.KeyboardLayoutKeys))
+	want := len(settings.KnownKeys) + len(settings.KeyboardLayoutKeys) + len(settings.IdleKeys) +
+		len(settings.NotifyKeys) + len(settings.TimezoneKeys)
+	if len(a.disp) != want {
+		t.Fatalf("default rows = %d, want %d (font_size is NOT a default row)", len(a.disp), want)
 	}
 	// Typed input applies (the accepted-not-seeded pattern)...
 	a.input.SetValue("font_size=large")
@@ -302,7 +352,7 @@ func TestFontSurfaceCyclesWithoutMovingKeys(t *testing.T) {
 	if v, _ := settings.Get(a.disp, "font_size"); v != "large" {
 		t.Fatalf("font_size = %q, want large", v)
 	}
-	if got := a.summary(); got != "keys=10 wm=gotabwm theme=dark" {
+	if got := a.summary(); got != "keys=13 wm=gotabwm theme=dark" {
 		t.Fatalf("summary = %q (the typed row is real, so the count grew)", got)
 	}
 	// ...the row is first-class (no "(kept)") and cyclable.
@@ -327,6 +377,32 @@ func TestFontSurfaceCyclesWithoutMovingKeys(t *testing.T) {
 	a.cycle(1)
 	if v, _ := settings.Get(a.disp, "font_size"); v != "small" {
 		t.Fatalf("font_size = %q from outside the vocabulary, want small (the top)", v)
+	}
+}
+
+func TestIdleMinutesRowValidatesBeforeSave(t *testing.T) {
+	a := newPanel(nil)
+	i := rowOf(t, a, "idle_minutes")
+	if a.disp[i].Val != "5" {
+		t.Fatalf("initial idle minutes = %q", a.disp[i].Val)
+	}
+	if strings.Contains(a.labels()[i], "(kept)") {
+		t.Fatalf("idle row is not editable: %q", a.labels()[i])
+	}
+	for _, val := range []string{"0", "121", "1.5"} {
+		a.input.SetValue("idle_minutes=" + val)
+		a.applyInput()
+		if got, _ := settings.Get(a.disp, "idle_minutes"); got != "5" {
+			t.Fatalf("invalid %q changed idle_minutes to %q", val, got)
+		}
+	}
+	a.input.SetValue("idle_minutes=7")
+	a.applyInput()
+	if got, _ := settings.Get(a.disp, "idle_minutes"); got != "7" {
+		t.Fatalf("typed idle_minutes = %q, want 7", got)
+	}
+	if got := changedSettingKeys(settings.File{State: settings.StateMissing}, settings.File{Rows: a.disp, State: settings.StateOK}); len(got) != 1 || got[0] != "idle_minutes" {
+		t.Fatalf("change notification keys = %v, want idle_minutes", got)
 	}
 }
 
@@ -441,5 +517,43 @@ func TestKeyboardLayoutSurfaceCyclesAndValidates(t *testing.T) {
 	a.applyInput()
 	if got, _ := settings.Get(a.disp, "keyboard_layout"); got != "de" {
 		t.Fatalf("unsupported layout changed keyboard_layout to %q", got)
+	}
+}
+
+// M83c (#1776): the timezone row is a visible, cyclable fixed-offset row,
+// and a typed value that does not parse is dropped before it can reach the
+// file — a typo must not quietly relabel every clock UTC.
+func TestTimezoneRowCyclesAndValidatesBeforeSave(t *testing.T) {
+	a := newPanel(nil)
+	i := rowOf(t, a, "timezone")
+	if a.disp[i].Val != "UTC" {
+		t.Fatalf("initial timezone = %q, want UTC", a.disp[i].Val)
+	}
+	if strings.Contains(a.labels()[i], "(kept)") {
+		t.Fatalf("timezone row is not editable: %q", a.labels()[i])
+	}
+	a.sel = i
+	a.cycle(1)
+	if got, _ := settings.Get(a.disp, "timezone"); got != "UTC+01:00" {
+		t.Fatalf("timezone after cycle = %q, want the next curated offset (UTC+01:00)", got)
+	}
+	a.cycle(1)
+	if got, _ := settings.Get(a.disp, "timezone"); got != "UTC+02:00" {
+		t.Fatalf("timezone after second cycle = %q, want UTC+02:00", got)
+	}
+	a.input.SetValue("timezone=UTC+05:30")
+	a.applyInput()
+	if got, _ := settings.Get(a.disp, "timezone"); got != "UTC+05:30" {
+		t.Fatalf("typed timezone = %q, want UTC+05:30", got)
+	}
+	for _, val := range []string{"utc", "Europe/Paris", "UTC+5:30", "UTC+15:00", ""} {
+		a.input.SetValue("timezone=" + val)
+		a.applyInput()
+		if got, _ := settings.Get(a.disp, "timezone"); got != "UTC+05:30" {
+			t.Fatalf("invalid %q changed timezone to %q", val, got)
+		}
+	}
+	if got := changedSettingKeys(settings.File{State: settings.StateMissing}, settings.File{Rows: a.disp, State: settings.StateOK}); len(got) != 1 || got[0] != "timezone" {
+		t.Fatalf("change notification keys = %v, want timezone", got)
 	}
 }

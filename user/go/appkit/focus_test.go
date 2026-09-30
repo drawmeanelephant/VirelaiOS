@@ -93,7 +93,7 @@ func TestTextFieldEditsAtCaretAndHonorsBound(t *testing.T) {
 		}
 	}
 	if f.OnKey(Key{Rune: 'ö'}) || f.Value() != "abc" {
-		t.Fatalf("byte field must refuse non-ASCII without truncating: %q", f.Value())
+		t.Fatalf("a rune that does not fit the byte bound must be refused whole, not truncated: %q", f.Value())
 	}
 	if f.Value() != "abc" || f.CaretPosition() != 3 {
 		t.Fatalf("field = %q caret %d", f.Value(), f.CaretPosition())

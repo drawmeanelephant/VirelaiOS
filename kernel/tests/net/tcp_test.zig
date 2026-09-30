@@ -590,3 +590,158 @@ test "tcp: M46 #1105 — a half-open server accept aborts on the SYN-ACK retrans
     try std.testing.expectEqual(State.listen, tcp.state); // the listener survives
     try std.testing.expectEqual(@as(u64, 1), tcp.retx_aborted);
 }
+
+test "tcp: M84f — an over-cap SYN is refused RST+ACK; the established connection is undisturbed" {
+    arp.own_ip = ip_guest;
+    defer arp.own_ip = .{ 0, 0, 0, 0 };
+    reset();
+    defer reset();
+    tcp.now_ticks = 100;
+    start(ip_host, 9999, 0x55555555, host_mac);
+    advance_snd(1); // the SYN was transmitted
+    const sa = craft_frame(ip_host, host_mac, ip_guest, test_mac, 9999, default_src_port, 0xaaaa0000, 0x55555556, flag_syn | flag_ack, &.{});
+    try std.testing.expectEqual(Event.synack_recv, handle_rx(&sa));
+    try std.testing.expectEqual(State.established, tcp.state);
+    tcp.ack_pending = false; // the TX side transmitted the handshake ACK
+
+    // ONE unACKed data segment pending (the framebuffer-update shape).
+    build_data_msg("frame");
+    advance_snd(5);
+    record_pending();
+    var data0: [segment_max]u8 = undefined;
+    @memcpy(data0[0..tcp.retx_len], tcp.retx_msg[0..tcp.retx_len]);
+    const data_len = tcp.retx_len;
+    const before = ready_mask();
+
+    // The over-cap second viewer: a SYN from a foreign port (9998), no ACK.
+    const syn = craft_frame(ip_host, host_mac, ip_guest, test_mac, 9998, default_src_port, 0x77777777, 0, flag_syn, &.{});
+    try std.testing.expectEqual(Event.none, handle_rx(&syn));
+
+    // The honest refusal — RST+ACK in the RFC 793 §3.4 closed-port form
+    // (the listen allowlist's form): seq 0, ack = the SYN's next sequence
+    // number, addressed to the intruder's port. It stages in its OWN slot
+    // (`rst_msg`) — never the shared `msg`/pending slot. Counted, never
+    // dropped.
+    try std.testing.expect(tcp.rst_pending);
+    try std.testing.expectEqual(@as(usize, 20), tcp.rst_len);
+    try std.testing.expectEqual(@as(u8, flag_rst | flag_ack), tcp.rst_msg[13]);
+    try std.testing.expectEqualSlices(u8, &.{ 0, 0, 0, 0 }, tcp.rst_msg[4..8]); // seq 0
+    try std.testing.expectEqualSlices(u8, &.{ 0x77, 0x77, 0x77, 0x78 }, tcp.rst_msg[8..12]); // ack = seq+1
+    try std.testing.expectEqual(@as(u16, default_src_port), (@as(u16, tcp.rst_msg[0]) << 8) | tcp.rst_msg[1]);
+    try std.testing.expectEqual(@as(u16, 9998), (@as(u16, tcp.rst_msg[2]) << 8) | tcp.rst_msg[3]); // to the intruder
+    try std.testing.expectEqual(@as(u64, 1), tcp.rst_sent);
+    try std.testing.expectEqual(@as(u64, 0), tcp.dropped_malformed); // answered — not dropped
+
+    // The established connection is UNDISTURBED: state, peer record, the
+    // ONE pending segment byte-exact, and its retransmit state.
+    try std.testing.expectEqual(State.established, tcp.state);
+    try std.testing.expectEqualSlices(u8, &ip_host, &tcp.peer_ip);
+    try std.testing.expectEqual(@as(u16, 9999), tcp.peer_port);
+    try std.testing.expectEqualSlices(u8, &host_mac, &tcp.peer_mac);
+    try std.testing.expectEqual(@as(u32, 0x5555555b), tcp.snd_una);
+    try std.testing.expectEqual(@as(u32, 0xaaaa0001), tcp.rcv_nxt);
+    try std.testing.expect(tcp.tx_pending);
+    try std.testing.expectEqual(@as(u64, 0), tcp.retx_count);
+    try std.testing.expectEqual(@as(u64, 100), tcp.tx_ticks);
+    try std.testing.expectEqual(@as(usize, data_len), tcp.retx_len);
+    try std.testing.expectEqualSlices(u8, data0[0..data_len], tcp.retx_msg[0..tcp.retx_len]);
+
+    // Readable/writable exactly as before the knock.
+    try std.testing.expectEqual(before, ready_mask());
+
+    // The peer's next data segment builds its bare ACK into the SHARED
+    // slot — the refusal has its OWN slot and survives it (the observed
+    // run-01 failure mode: a later build must not swallow the refusal).
+    const d = craft_frame(ip_host, host_mac, ip_guest, test_mac, 9999, default_src_port, 0xaaaa0001, 0x5555555a, flag_ack, "ok");
+    try std.testing.expectEqual(Event.data_recv, handle_rx(&d));
+    try std.testing.expect(tcp.ack_pending); // the bare ACK queued in `msg`
+    try std.testing.expectEqual(@as(u8, flag_ack), tcp.msg[13]);
+    try std.testing.expect(tcp.rst_pending); // the refusal is UNTOUCHED
+    try std.testing.expectEqual(@as(u8, flag_rst | flag_ack), tcp.rst_msg[13]);
+    try std.testing.expectEqual(@as(usize, 20), tcp.rst_len);
+    try std.testing.expectEqualSlices(u8, "ok", take_rx());
+
+    // The app's next send builds into the shared slot — the refusal is
+    // still queued in its own slot.
+    build_data_msg("reply");
+    try std.testing.expect(tcp.rst_pending);
+    try std.testing.expectEqual(@as(u8, flag_rst | flag_ack), tcp.rst_msg[13]);
+
+    // The TX side flushes the refusal and the ACK; the RTO then
+    // retransmits the ORIGINAL data segment byte-exact (the retransmit
+    // state survived everything).
+    tcp.rst_pending = false;
+    tcp.ack_pending = false;
+    tcp.now_ticks += rto_ticks;
+    try std.testing.expectEqual(RtoEvent.retransmit, poll_rto());
+    try std.testing.expectEqualSlices(u8, data0[0..data_len], tcp.msg[0..tcp.msg_len]);
+
+    // ...and the real peer's traffic still flows both ways.
+    const ack = craft_frame(ip_host, host_mac, ip_guest, test_mac, 9999, default_src_port, 0xaaaa0003, 0x5555555b, flag_ack, &.{});
+    try std.testing.expectEqual(Event.none, handle_rx(&ack));
+    try std.testing.expect(!tcp.tx_pending); // the ACK covered the pending data
+    build_data_msg("reply2");
+    try std.testing.expectEqual(@as(u16, 9999), (@as(u16, tcp.msg[2]) << 8) | tcp.msg[3]); // to the real peer
+    try std.testing.expectEqual(@as(u64, 2), ready_mask() & 2); // writable again
+}
+
+test "tcp: M84f — a queued refusal coexists with the RTO: the pending data retransmits while it waits" {
+    arp.own_ip = ip_guest;
+    defer arp.own_ip = .{ 0, 0, 0, 0 };
+    reset();
+    defer reset();
+    tcp.now_ticks = 100;
+    start(ip_host, 9999, 0x88888888, host_mac);
+    advance_snd(1);
+    const sa = craft_frame(ip_host, host_mac, ip_guest, test_mac, 9999, default_src_port, 0xaaaa0000, 0x88888889, flag_syn | flag_ack, &.{});
+    try std.testing.expectEqual(Event.synack_recv, handle_rx(&sa));
+    tcp.ack_pending = false; // the handshake ACK was transmitted
+    build_data_msg("hold");
+    advance_snd(4);
+    record_pending();
+    var data0: [segment_max]u8 = undefined;
+    @memcpy(data0[0..tcp.msg_len], tcp.msg[0..tcp.msg_len]);
+    const data_len = tcp.msg_len;
+
+    // The over-cap SYN queues the refusal into its own slot.
+    const syn = craft_frame(ip_host, host_mac, ip_guest, test_mac, 9997, default_src_port, 0x99999999, 0, flag_syn, &.{});
+    try std.testing.expectEqual(Event.none, handle_rx(&syn));
+    try std.testing.expect(tcp.rst_pending);
+    try std.testing.expectEqual(@as(u8, flag_rst | flag_ack), tcp.rst_msg[13]);
+
+    // The refusal does NOT block or disturb the retransmission: the RTO
+    // fires and the pending data is rebuilt byte-exact while the refusal
+    // keeps waiting in its own slot (both obligations survive).
+    tcp.now_ticks += rto_ticks;
+    try std.testing.expectEqual(RtoEvent.retransmit, poll_rto());
+    try std.testing.expectEqualSlices(u8, data0[0..data_len], tcp.msg[0..tcp.msg_len]);
+    try std.testing.expectEqual(@as(u64, 1), tcp.retransmitted);
+    try std.testing.expect(tcp.rst_pending); // still queued
+    try std.testing.expectEqual(@as(u8, flag_rst | flag_ack), tcp.rst_msg[13]);
+
+    // The refusal flushes independently of the connection's segments.
+    tcp.rst_pending = false;
+    try std.testing.expect(!tcp.rst_pending);
+}
+
+test "tcp: M84f — a SYN with no connection (IDLE) is refused RST+ACK to the requester" {
+    arp.own_ip = ip_guest;
+    defer arp.own_ip = .{ 0, 0, 0, 0 };
+    reset();
+    defer reset();
+    const syn = craft_frame(ip_host, host_mac, ip_guest, test_mac, 40000, default_src_port, 0x12345678, 0, flag_syn, &.{});
+    try std.testing.expectEqual(Event.none, handle_rx(&syn));
+    // No connection appears — the refusal is answered to the requester.
+    try std.testing.expectEqual(State.idle, tcp.state);
+    try std.testing.expect(tcp.rst_pending);
+    try std.testing.expectEqual(@as(u8, flag_rst | flag_ack), tcp.rst_msg[13]);
+    try std.testing.expectEqualSlices(u8, &.{ 0, 0, 0, 0 }, tcp.rst_msg[4..8]); // seq 0
+    try std.testing.expectEqualSlices(u8, &.{ 0x12, 0x34, 0x56, 0x79 }, tcp.rst_msg[8..12]); // ack = seq+1
+    try std.testing.expectEqual(@as(u16, default_src_port), (@as(u16, tcp.rst_msg[0]) << 8) | tcp.rst_msg[1]);
+    try std.testing.expectEqual(@as(u16, 40000), (@as(u16, tcp.rst_msg[2]) << 8) | tcp.rst_msg[3]); // to the requester
+    // No live peer exists: the seam's TX identity is the requester's.
+    try std.testing.expectEqualSlices(u8, &ip_host, &tcp.peer_ip);
+    try std.testing.expectEqual(@as(u16, 40000), tcp.peer_port);
+    try std.testing.expectEqualSlices(u8, &host_mac, &tcp.peer_mac);
+    try std.testing.expectEqual(@as(u64, 1), tcp.rst_sent);
+}

@@ -13,7 +13,7 @@
 //
 // KnownKeys mirrors the kernel's seeded table (kernel/src/settings.zig). It is
 // a MIRROR, not a second schema: the panel offers every key the kernel seeds,
-// plus its explicitly accepted-unseeded palette/font/layout rows. The mirror
+// plus its explicitly accepted-unseeded palette/font/layout/idle rows. The mirror
 // is pinned against the kernel source by a host test, so a key added there and
 // not here is a failing test rather than a silent drift.
 //
@@ -28,6 +28,7 @@ package settings
 import (
 	"strings"
 
+	"virelai/clockfmt"
 	"virelai/layout"
 	"virelai/vi"
 )
@@ -103,7 +104,7 @@ var KnownKeys = []Key{
 // `theme=custom` resolves to at paint time (the kernel's palette_fg /
 // palette_bg / palette_accent). They are NOT KnownKeys — the kernel does not
 // seed them either — so the mirror table above stays exactly the kernel's,
-// and a default panel stays at eight kernel rows plus keyboard_layout. The
+// and a default panel stays at the kernel rows plus the layout/idle rows. The
 // panel reveals them as rows the moment `custom` is chosen and accepts them
 // as typed input at any time.
 // Defaults mirror kernel/src/settings.zig *_default (pinned by host test).
@@ -118,7 +119,7 @@ var PaletteKeys = []Key{
 // terminal GRID's 7x13/8x16/10x21 — the kernel's apply_font_size drives
 // both). Not KnownKeys, for the same reason as the palette rows: the
 // kernel does not seed it either, so a default panel stays at eight kernel
-// rows plus keyboard_layout and a fresh share's SETTINGS.TXT stays
+// rows plus keyboard_layout/idle_minutes and a fresh share's SETTINGS.TXT stays
 // byte-identical. The panel
 // accepts it as typed input at any time and cycles it (small -> medium
 // -> large) once the row exists; it never fabricates the row, because an
@@ -135,6 +136,98 @@ var FontKeys = []Key{
 // surfaces the row with that effective default so the choice is discoverable.
 var KeyboardLayoutKeys = []Key{
 	{Name: "keyboard_layout", Default: string(layout.US), Vocab: layout.Values()},
+}
+
+// IdleKeys is the seat's accepted-but-unseeded idle policy. An absent row
+// leaves the kernel's eight-row table unchanged; GOSET still shows the
+// effective five-minute default. The seat alone interprets the value.
+var IdleKeys = []Key{
+	{Name: "idle_minutes", Default: "5"},
+}
+
+// IdleMinutes accepts whole minutes from 1 to 120. Invalid persisted values
+// cannot make the seat dim immediately or turn the curtain into a security
+// boundary; the seat uses the compiled default instead.
+func IdleMinutes(value string) (uint64, bool) {
+	if value == "" || len(value) > 3 {
+		return 0, false
+	}
+	var minutes uint64
+	for i := 0; i < len(value); i++ {
+		if value[i] < '0' || value[i] > '9' {
+			return 0, false
+		}
+		minutes = minutes*10 + uint64(value[i]-'0')
+	}
+	return minutes, minutes >= 1 && minutes <= 120
+}
+
+func IsIdleMinutesKey(key string) bool { return key == "idle_minutes" }
+
+// NotifyKeys is the M82d2 (#1785) do-not-disturb policy row. Like the idle
+// row it is accepted-but-unseeded: the kernel's eight-row table stays exactly
+// as it was, an absent row means "off", and GOSET still surfaces the
+// effective default so the toggle is discoverable. The seat alone interprets
+// it: `on` keeps a new notice out of the toast strip and lets it go straight
+// to the history the notifications center holds.
+var NotifyKeys = []Key{
+	{Name: "notify_dnd", Default: "off", Vocab: []string{"on", "off"}},
+}
+
+// NotifyDNDKey is the do-not-disturb key's name, for the seat's own writes.
+const NotifyDNDKey = "notify_dnd"
+
+// NotifyDND parses a stored do-not-disturb value. ok is false for anything
+// but exactly `on` or `off`: a mistyped value must never silence the user's
+// notifications by accident, so the caller treats it as the default (off).
+func NotifyDND(value string) (on, ok bool) {
+	switch value {
+	case "on":
+		return true, true
+	case "off":
+		return false, true
+	}
+	return false, false
+}
+
+// IsNotifyDNDKey reports whether key is the do-not-disturb row.
+func IsNotifyDNDKey(key string) bool { return key == NotifyDNDKey }
+
+// TimezoneKeys is the M83c (#1776) timezone row: accepted-but-unseeded like
+// the idle row — the kernel's eight-row table stays exactly as it was, an
+// absent row means UTC, and GOSET still surfaces the effective default so
+// the choice is discoverable. The vocabulary is clockfmt's curated
+// fixed-offset list; DST rules are named risk, not scope.
+var TimezoneKeys = []Key{
+	{Name: "timezone", Default: "UTC", Vocab: clockfmt.Names()},
+}
+
+// TimezoneKey is the timezone key's name, for the shared formatter's callers.
+const TimezoneKey = "timezone"
+
+// IsTimezoneKey reports whether key is the M83c timezone row.
+func IsTimezoneKey(key string) bool { return key == TimezoneKey }
+
+// ValidTimezone reports whether the value names a fixed offset clockfmt
+// parses.
+func ValidTimezone(value string) bool {
+	_, ok := clockfmt.Parse(value)
+	return ok
+}
+
+// Timezone resolves the zone in force: the file's row when it parses, UTC
+// otherwise. An invalid persisted value must never shift every clock
+// silently, so the fallback is the same default an absent row carries.
+func (f File) Timezone() clockfmt.Zone {
+	v, ok := f.Effective(TimezoneKey)
+	if !ok {
+		return clockfmt.UTC
+	}
+	z, ok := clockfmt.Parse(v)
+	if !ok {
+		return clockfmt.UTC
+	}
+	return z
 }
 
 // IsKeyboardLayoutKey reports whether key is the M83d2 layout selector.
@@ -181,11 +274,13 @@ func IsPaletteKey(key string) bool {
 }
 
 // Editable is the panel's write gate: a kernel-table key, one of the
-// custom-palette keys, font_size (M80i), or keyboard_layout (M83d2).
+// custom-palette keys, font_size (M80i), keyboard_layout (M83d2),
+// idle_minutes (M83f), notify_dnd (M82d2), or timezone (M83c).
 // Anything else is named and dropped, never written.
 func Editable(key string) bool {
 	_, known := Known(key)
-	return known || IsPaletteKey(key) || IsFontKey(key) || IsKeyboardLayoutKey(key)
+	return known || IsPaletteKey(key) || IsFontKey(key) || IsKeyboardLayoutKey(key) ||
+		IsIdleMinutesKey(key) || IsNotifyDNDKey(key) || IsTimezoneKey(key)
 }
 
 // ValidColour is the palette value grammar, mirrored from the kernel's
@@ -250,29 +345,52 @@ func Default(key string) (string, bool) {
 			return k.Default, true
 		}
 	}
+	for _, k := range IdleKeys {
+		if k.Name == key {
+			return k.Default, true
+		}
+	}
+	for _, group := range [][]Key{NotifyKeys, TimezoneKeys} {
+		for _, k := range group {
+			if k.Name == key {
+				return k.Default, true
+			}
+		}
+	}
 	return "", false
 }
 
 // Vocab returns the values the panel may cycle key through, and whether
 // key is cyclable at all. A kernel-table key with no vocabulary is free
-// text; font_size (M80i) and keyboard_layout (M83d2) carry declared lists.
+// text; font_size (M80i), keyboard_layout (M83d2) and notify_dnd (M82d2)
+// carry declared lists.
 func Vocab(key string) ([]string, bool) {
 	k, ok := Known(key)
 	if !ok {
 		k, ok = FontKey(key)
-		if !ok {
-			for _, layoutKey := range KeyboardLayoutKeys {
-				if layoutKey.Name == key {
-					k, ok = layoutKey, true
-					break
-				}
-			}
-			if !ok {
-				return nil, false
-			}
-		}
+	}
+	if !ok {
+		k, ok = findKey(KeyboardLayoutKeys, key)
+	}
+	if !ok {
+		k, ok = findKey(NotifyKeys, key)
+	}
+	if !ok {
+		k, ok = findKey(TimezoneKeys, key)
+	}
+	if !ok {
+		return nil, false
 	}
 	return k.Vocab, true
+}
+
+func findKey(keys []Key, name string) (Key, bool) {
+	for _, k := range keys {
+		if k.Name == name {
+			return k, true
+		}
+	}
+	return Key{}, false
 }
 
 // Next returns the vocabulary value after cur, wrapping; a cur outside the
@@ -393,13 +511,13 @@ func (f File) Effective(key string) (string, bool) {
 	return Default(key)
 }
 
-// Display returns the rows the panel shows: the decoded rows, plus one row per
-// KNOWN key the file does not carry, holding the value actually in force. The
-// edit surface is therefore exactly what the seat honors — a key absent from
-// the file is still visible and still settable. Unknown keys present in the
-// file are preserved untouched (see Set key), never offered for editing.
+// Display returns the decoded rows, then the missing compiled-table and
+// visible accepted-but-unseeded rows with their effective defaults. An
+// already-full table keeps the idle, do-not-disturb and timezone defaults
+// implicit to respect MaxKeys.
+// Unknown file rows are preserved untouched, not offered for editing.
 func (f File) Display() []Setting {
-	out := make([]Setting, 0, len(f.Rows)+len(KnownKeys)+len(KeyboardLayoutKeys))
+	out := make([]Setting, 0, len(f.Rows)+len(KnownKeys)+len(KeyboardLayoutKeys)+len(IdleKeys)+len(NotifyKeys)+len(TimezoneKeys))
 	out = append(out, f.Rows...)
 	for _, k := range KnownKeys {
 		if _, ok := Get(f.Rows, k.Name); !ok {
@@ -409,6 +527,19 @@ func (f File) Display() []Setting {
 	for _, k := range KeyboardLayoutKeys {
 		if _, ok := Get(f.Rows, k.Name); !ok {
 			out = append(out, Setting{Key: k.Name, Val: k.Default})
+		}
+	}
+	for _, group := range [][]Key{IdleKeys, NotifyKeys, TimezoneKeys} {
+		for _, k := range group {
+			if _, ok := Get(f.Rows, k.Name); !ok {
+				// A legacy table may already have 16 rows; its visible layout
+				// row fills the kernel's 17-slot cap. Do not make an unchanged
+				// GOSET save fail merely by displaying one more default.
+				if len(out) >= MaxKeys {
+					break
+				}
+				out = append(out, Setting{Key: k.Name, Val: k.Default})
+			}
 		}
 	}
 	return out
