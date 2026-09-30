@@ -21,7 +21,8 @@ func TestRFBRequiresExplicitOperatorArgument(t *testing.T) {
 	if !rfbRequested([]string{"GOTABWM.ELF", "--rfb-hermetic"}) {
 		t.Fatal("operator opt-in refused")
 	}
-	if rfbInputLimit > 16 || newRFBStream(nil).stallNs <= 0 {
+	stream := newRFBStream(nil)
+	if rfbInputLimit > 16 || stream.stallNs <= 0 || stream.idle == nil || stream.sendIdle == nil || stream.drain == nil {
 		t.Fatal("client queue/deadlines must be bounded")
 	}
 }
@@ -76,7 +77,63 @@ func (f *rfbFakeSocket) Send(p []byte) (int, error) {
 func (f *rfbFakeSocket) SetRecvDeadline(int64) {}
 
 func rfbFakeStream(f *rfbFakeSocket, stallNs int64) *rfbStream {
-	return &rfbStream{conn: f, ready: f.ready, idle: f.idle, stallNs: stallNs}
+	return &rfbStream{conn: f, ready: f.ready, idle: f.idle, sendIdle: f.idle, stallNs: stallNs}
+}
+
+// ACK pacing must not park the worker for a full guest scheduler tick.
+// The quiet session loop still uses idle; this send path uses sendIdle.
+func TestRFBStreamSendYieldsBetweenSegments(t *testing.T) {
+	f := &rfbFakeSocket{acked: true, ackOn: 2}
+	s := rfbFakeStream(f, 3600_000_000_000)
+	s.idle = func() { t.Fatal("a frame send used the quiet-session sleep") }
+	body := bytes.Repeat([]byte{0xab}, vi.TCPPayloadMax+1)
+	if n, err := s.Write(body); n != len(body) || err != nil {
+		t.Fatalf("wrote %d, %v", n, err)
+	}
+	if f.ticks != 2 || !bytes.Equal(f.sent, body) {
+		t.Fatalf("send paced %d yields; bytes %d, want %d", f.ticks, len(f.sent), len(body))
+	}
+}
+
+// Slot 76 readiness alone cannot see an ACK still queued in the virtio RX
+// ring. The slot-32 drain advances the kernel TCP state, then readiness
+// admits the next segment without waiting for the monitor's idle poll.
+func TestRFBStreamSendDrainsACKAndHoldsInput(t *testing.T) {
+	f := &rfbFakeSocket{acked: true, ackOn: -1}
+	s := rfbFakeStream(f, 3600_000_000_000)
+	s.idle = func() { t.Fatal("a send slept for a scheduler tick") }
+	s.sendIdle = func() { t.Fatal("ACK was not drained on the first probe") }
+	input := rfbPress(1, 300, 400)
+	drains := 0
+	s.drain = func(p []byte) (int, int64) {
+		drains++
+		f.acked = true
+		if drains == 1 {
+			return copy(p, input), 0
+		}
+		return 0, 0
+	}
+	body := bytes.Repeat([]byte{0xab}, vi.TCPPayloadMax+1)
+	if n, err := s.Write(body); n != len(body) || err != nil {
+		t.Fatalf("wrote %d, %v", n, err)
+	}
+	if drains != 1 || !bytes.Equal(f.sent, body) {
+		t.Fatalf("drains=%d, sent=%d want %d", drains, len(f.sent), len(body))
+	}
+	got := make([]byte, len(input))
+	if n, err := s.Read(got); n != len(input) || err != nil || !bytes.Equal(got, input) {
+		t.Fatalf("input after ACK drain: n=%d err=%v bytes=%x", n, err, got)
+	}
+}
+
+func TestRFBStreamDrainRefusesInputOverflow(t *testing.T) {
+	f := &rfbFakeSocket{ackOn: -1}
+	s := rfbFakeStream(f, 3600_000_000_000)
+	s.heldN = len(s.held)
+	s.drain = func(p []byte) (int, int64) { p[0] = 1; return 1, 0 }
+	if n, err := s.Write([]byte{1}); n != 0 || rfbDropReason(err) != rfbDropFlood {
+		t.Fatalf("overflow wrote %d, %v", n, err)
+	}
 }
 
 // A viewer that dies while a frame waits on its ACK ends the send at once:
@@ -266,6 +323,7 @@ func TestRFBDropReasons(t *testing.T) {
 		{vi.ErrPeerGone, rfbDropPeer},
 		{vi.ErrConnClosed, rfbDropPeer},
 		{errRFBSendStalled, rfbDropStalled},
+		{errRFBInputFlood, rfbDropFlood},
 		{errRFBSocket, rfbDropSocket},
 		{errors.New("ETIMEDOUT"), rfbDropTimeout},
 		{errors.New("EIO"), rfbDropIO},

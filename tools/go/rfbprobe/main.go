@@ -54,13 +54,18 @@ var modes = map[string]func(io.Reader, io.Writer) error{
 func main() {
 	mode := flag.String("mode", "pixels", "probe mode")
 	bridge := flag.String("bridge", "", "loopback host:port for one real viewer (tape only)")
+	passwordFIFO := flag.String("bridge-password-fifo", "", "named pipe for the one-shot bridge password (tape only)")
 	flag.Parse()
 	if *bridge != "" {
-		if err := runBridge(*bridge, os.Stdin, os.Stdout); err != nil {
+		if err := runBridge(*bridge, *passwordFIFO, os.Stdin, os.Stdout); err != nil {
 			fmt.Fprintln(os.Stderr, "RFBPROBE: FAIL:", err)
 			os.Exit(1)
 		}
 		return
+	}
+	if *passwordFIFO != "" {
+		fmt.Fprintln(os.Stderr, "RFBPROBE: FAIL: -bridge-password-fifo requires -bridge")
+		os.Exit(2)
 	}
 	run, ok := modes[*mode]
 	if !ok {
@@ -344,10 +349,11 @@ func expectClose(r io.Reader, when string) error {
 	}
 }
 
-// runBridge is the D5(1) trusted-local path for the class-C tape: one
-// viewer on loopback, piped to the guest stream, with a short transcript of
-// the negotiation so a failed session says how far it got.
-func runBridge(addr string, guestIn io.Reader, guestOut io.Writer) error {
+// runBridge is the D5(1) trusted-local path for the class-C tape. The
+// password is handed to the operator, never to the runner's log when the
+// tape supplies a FIFO. Only the host bridge speaks VNC auth; the guest
+// still sees its usual RFB 3.8/None client.
+func runBridge(addr, passwordFIFO string, guestIn io.Reader, guestOut io.Writer) error {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
 		return err
@@ -359,26 +365,93 @@ func runBridge(addr string, guestIn io.Reader, guestOut io.Writer) error {
 	if err != nil {
 		return err
 	}
+	defer ln.Close()
+	password, err := randomVNCPassword()
+	if err != nil {
+		return err
+	}
 	fmt.Fprintf(os.Stderr, "RFBPROBE: bridge listening %s (one viewer, loopback only)\n", ln.Addr())
-	return bridgeOne(ln.(*net.TCPListener), 120*time.Second, guestIn, guestOut)
+	if err := deliverPassword(passwordFIFO, password); err != nil {
+		return err
+	}
+	return bridgeOne(ln.(*net.TCPListener), 120*time.Second, password, guestIn, guestOut)
 }
 
-func bridgeOne(ln *net.TCPListener, wait time.Duration, guestIn io.Reader, guestOut io.Writer) error {
+func bridgeOne(ln *net.TCPListener, wait time.Duration, password string, guestIn io.Reader, guestOut io.Writer) error {
+	defer ln.Close()
 	_ = ln.SetDeadline(time.Now().Add(wait))
-	viewer, err := ln.Accept()
-	_ = ln.Close()
-	if err != nil {
-		return fmt.Errorf("no viewer connected: %w", err)
+	const maxAuthAttempts = 3
+	var viewer *net.TCPConn
+	var lastAuthError error
+	for attempt := 1; attempt <= maxAuthAttempts; attempt++ {
+		next, err := ln.AcceptTCP()
+		if err != nil {
+			if lastAuthError != nil {
+				return fmt.Errorf("no authenticated viewer after attempt %d (%v): %w", attempt-1, lastAuthError, err)
+			}
+			return fmt.Errorf("no viewer connected: %w", err)
+		}
+		fmt.Fprintf(os.Stderr, "RFBPROBE: bridge viewer %s (attempt %d)\n", next.RemoteAddr(), attempt)
+		// Screen Sharing can close its first connection after seeing the
+		// security offer, then reconnect when the operator enters a password.
+		// Neither attempt touches the guest before authentication succeeds.
+		_ = next.SetDeadline(time.Now().Add(wait))
+		if err := authenticateViewer(next, password); err != nil {
+			lastAuthError = err
+			fmt.Fprintf(os.Stderr, "RFBPROBE: bridge auth attempt %d refused: %v\n", attempt, err)
+			_ = next.Close()
+			continue
+		}
+		viewer = next
+		break
 	}
-	fmt.Fprintf(os.Stderr, "RFBPROBE: bridge viewer %s\n", viewer.RemoteAddr())
+	if viewer == nil {
+		return fmt.Errorf("no authenticated viewer after %d attempts: %w", maxAuthAttempts, lastAuthError)
+	}
+	_ = ln.Close() // a successful viewer consumes the one session
 	defer viewer.Close()
+	_ = viewer.SetDeadline(time.Now().Add(wait))
+	shared, err := negotiateGuest(viewer, guestIn, guestOut)
+	if err != nil {
+		return fmt.Errorf("guest None handshake: %w", err)
+	}
+	fmt.Fprintf(os.Stderr, "RFBPROBE: bridge ClientInit shared=%d (viewer VNC auth -> guest None)\n", shared)
+	var init [24]byte
+	if _, err := io.ReadFull(guestIn, init[:]); err != nil {
+		return fmt.Errorf("guest ServerInit: %w", err)
+	}
+	nameLen := binary.BigEndian.Uint32(init[20:24])
+	if nameLen > 255 || init[4] != 8 && init[4] != 16 && init[4] != 32 {
+		return fmt.Errorf("guest ServerInit bounds or pixel format refused")
+	}
+	name := make([]byte, nameLen)
+	if _, err := io.ReadFull(guestIn, name); err != nil {
+		return fmt.Errorf("guest ServerInit name: %w", err)
+	}
+	if err := write(viewer, append(init[:], name...)); err != nil {
+		return fmt.Errorf("viewer ServerInit: %w", err)
+	}
+	plan := newBridgeFramePlan(int(init[4] / 8))
+	_ = viewer.SetDeadline(time.Time{})
 	done := make(chan string, 2)
 	go func() {
-		n, _ := io.Copy(viewer, &transcript{r: guestIn, dir: "seat->viewer", left: 64})
+		var n int64
+		var err error
+		if plan.mode() {
+			n, err = forwardTranscodedFrames(guestIn, viewer, plan)
+		} else {
+			n, err = io.Copy(viewer, guestIn)
+		}
+		if err != nil && err != io.EOF {
+			fmt.Fprintln(os.Stderr, "RFBPROBE: bridge guest frames:", err)
+		}
 		done <- fmt.Sprintf("seat->viewer %d bytes", n)
 	}()
 	go func() {
-		n, _ := io.Copy(onlyWriter{guestOut}, &transcript{r: viewer, dir: "viewer->seat", left: 64})
+		n, err := forwardViewerMessagesWithPlan(viewer, onlyWriter{guestOut}, plan)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "RFBPROBE: bridge viewer messages:", err)
+		}
 		done <- fmt.Sprintf("viewer->seat %d bytes", n)
 	}()
 	fmt.Fprintln(os.Stderr, "RFBPROBE: bridge closed:", <-done)
@@ -388,25 +461,6 @@ func bridgeOne(ln *net.TCPListener, wait time.Duration, guestIn io.Reader, guest
 type onlyWriter struct{ w io.Writer }
 
 func (o onlyWriter) Write(p []byte) (int, error) { return o.w.Write(p) }
-
-type transcript struct {
-	r    io.Reader
-	dir  string
-	left int
-}
-
-func (t *transcript) Read(p []byte) (int, error) {
-	n, err := t.r.Read(p)
-	if n > 0 && t.left > 0 {
-		show := p[:n]
-		if len(show) > t.left {
-			show = show[:t.left]
-		}
-		t.left -= len(show)
-		fmt.Fprintf(os.Stderr, "RFBPROBE: bridge %s % x %q\n", t.dir, show, show)
-	}
-	return n, err
-}
 
 func concat(parts ...[]byte) []byte {
 	var out []byte

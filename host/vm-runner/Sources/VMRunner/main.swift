@@ -662,7 +662,7 @@ var netTcpRespondHandshakeOnly = false
 // M51 SSH1 (#1168): the optional `:packet` responder mode — after the
 // handshake, page a caller-supplied byte payload out as ≤chunk-byte TCP
 // segments, one per guest ACK. This is the deterministic peer the
-// `live-ssh-packet` gate needs: the guest's kernel RX is one 192-byte slot
+// `live-ssh-packet` gate needs: the guest's kernel RX is one bounded slot
 // with no reassembly, so the host MUST pace (blast several segments and the
 // guest drops all but the first; the host has no retransmission).
 var netTcpRespondPacketMode = false
@@ -675,7 +675,7 @@ var netTcpRespondPacketIndex = 0
 // publickey ed25519 userauth, one session channel, one fixed exec. The
 // guest's `SSH.BIN` is the client. TX is paced exactly like `:packet`
 // (one ≤192-byte segment per guest ACK) because the guest kernel RX is a
-// single 192-byte slot with no reassembly. The pinned fixtures default to
+// single bounded slot with no reassembly. The pinned fixtures default to
 // RFC 8032 §7.1 TEST 1/TEST 2; the flags allow the negative runs to pin
 // different keys.
 var netTcpRespondSSHMode = false
@@ -693,7 +693,7 @@ var netTcpRespondSSHTxOffset = 0
 // (typically a local OpenSSH `sshd`). The runner performs NO SSH/crypto:
 // it only carries bytes, so the guest's SSH.BIN negotiates with real
 // OpenSSH. TX is paced exactly like `:ssh` (one ≤192-byte segment per
-// guest ACK) because the guest kernel RX is a single 192-byte slot with
+// guest ACK) because the guest kernel RX is a single bounded slot with
 // no reassembly. OFF by default: every existing gate is byte-identical.
 var netTcpRespondRelayMode = false
 var netTcpRespondRelayHost = "127.0.0.1"
@@ -767,7 +767,9 @@ var netTcpIntruderAnswered = false
 let netTcpIntruderIsn: UInt32 = 0x0badf00d
 let netTcpStreamLock = NSLock()
 let netTcpStreamMaxTx = 16 * 1024
-let netTcpStreamMaxRx = 64 * 1024
+// Lifetime byte bound, not a queue: one raw 1280x720x4 RFB frame plus
+// handshake fits; the old 64 KiB cut off even a compressed first frame.
+let netTcpStreamMaxRx = 4 * 1024 * 1024
 var netTcpStreamRxBytes = 0
 var netTcpConnectState: UInt8 = 0 // 0 idle, 1 synSent, 2 established, 3 closed, 4 finSent, 5 awaitingChallenge
 var netTcpConnRecvText: String = ""
@@ -5433,7 +5435,7 @@ func netTcpSendPacketChunk(_ reply: inout [UInt8], _ buf: [UInt8], _ n: Int, _ h
 // stream out in `--net-tcp-respond :ssh` mode. Called once per accepted
 // guest segment; `guestSeq`/`guestPayload` are the incoming segment's seq
 // and payload length (so our ACK covers it). Same contract as
-// `netTcpSendPacketChunk`: the guest kernel RX is a single 192-byte slot
+// `netTcpSendPacketChunk`: the guest kernel RX is a single bounded slot
 // with no reassembly and the host has no retransmission, so at most one
 // segment goes out per guest ACK. Returns true when a chunk was sent.
 func netTcpRespondSSHSendChunk(_ reply: inout [UInt8], _ buf: [UInt8], _ n: Int, _ hostMAC: [UInt8], _ hostPort: UInt16, _ guestSeq: UInt32, _ guestPayload: Int) -> Bool {
@@ -5480,7 +5482,7 @@ func netTcpConnectSSHAccept(_ seq: UInt32, _ payload: [UInt8]) -> [UInt8] {
 
 // M70g G1 (#1491): pace one ≤192-byte segment of the SSH client's output
 // toward the guest. Same contract as netTcpRespondSSHSendChunk: the guest
-// kernel RX is a single 192-byte slot with no reassembly.
+// kernel RX is a single bounded slot with no reassembly.
 func netTcpConnectSSHSendChunk(_ guestIP: [UInt8], _ guestPort: UInt16) -> Bool {
     guard netTcpConnectSSHMode else { return false }
     let total = netTcpConnectSSHTx.count
@@ -5731,7 +5733,7 @@ func netTcpRespondRelaySaveTemplate(_ buf: [UInt8], _ n: Int) {
 
 /// Pump at most ONE ≤192-byte upstream chunk to the guest, and only when
 /// the previously sent chunk has been ACKed (`netTcpSrvNxt == GuestAck` —
-/// the guest kernel RX is a single 192-byte slot with no reassembly and
+/// the guest kernel RX is a single bounded slot with no reassembly and
 /// the host has no retransmission). Called from the capture thread (guest
 /// traffic) AND the upstream reader (real-server bytes); the lock
 /// serializes, so exactly one segment is in flight. Returns true when a

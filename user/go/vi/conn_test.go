@@ -348,10 +348,10 @@ func TestClose_FailureKeepsTheSlotClaimed(t *testing.T) {
 
 func TestSend_ChunksByConfirmedCounts(t *testing.T) {
 	// A body longer than one segment is a run of honest sends, each
-	// advancing by the CONFIRMED count: 500 bytes is 192/192/116.
+	// advancing by the CONFIRMED count: two maximal segments and a tail.
 	f := startConnFake(t)
 	c, _ := Dial("10.0.0.2", 8080)
-	body := make([]byte, 500)
+	body := make([]byte, 2*TCPPayloadMax+116)
 	for i := range body {
 		body[i] = byte(i)
 	}
@@ -359,8 +359,8 @@ func TestSend_ChunksByConfirmedCounts(t *testing.T) {
 	if err != nil || n != len(body) {
 		t.Fatalf("Send = %d, %v want %d, nil", n, err, len(body))
 	}
-	if len(f.sentSizes) != 3 || f.sentSizes[0] != 192 || f.sentSizes[1] != 192 || f.sentSizes[2] != 116 {
-		t.Fatalf("segment plan = %v, want 192/192/116", f.sentSizes)
+	if len(f.sentSizes) != 3 || f.sentSizes[0] != TCPPayloadMax || f.sentSizes[1] != TCPPayloadMax || f.sentSizes[2] != 116 {
+		t.Fatalf("segment plan = %v, want %d/%d/116", f.sentSizes, TCPPayloadMax, TCPPayloadMax)
 	}
 	for i := range body {
 		if f.sentBytes[i] != byte(i) {
@@ -393,7 +393,7 @@ func TestSend_AdvancesByConfirmedCounts(t *testing.T) {
 		case SlotTCPSend:
 			calls++
 			if calls == 1 {
-				return 64 // confirms 64 of the offered 192
+				return 64 // confirms 64 of the offered TCPPayloadMax
 			}
 			return int64(a1)
 		}
@@ -407,9 +407,10 @@ func TestSend_AdvancesByConfirmedCounts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	n, err := c.Send(make([]byte, 300))
-	if err != nil || n != 300 {
-		t.Fatalf("Send over a short confirm = %d, %v want 300, nil", n, err)
+	body := make([]byte, TCPPayloadMax+65)
+	n, err := c.Send(body)
+	if err != nil || n != len(body) {
+		t.Fatalf("Send over a short confirm = %d, %v want %d, nil", n, err, len(body))
 	}
 	if calls < 3 {
 		t.Fatalf("sends = %d, want the shortfall re-sent (>=3)", calls)

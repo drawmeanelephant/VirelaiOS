@@ -17,7 +17,7 @@ coordinates. Those came from the Calc/widget layout and seat launcher code,
 and are pinned by `live-rfb.spec`. It also did not describe the runner's
 single-slot TCP pacing; the hermetic stream adapter handles that separately.
 The seat accepts one viewer per explicit invocation, with no reconnect.
-Full raw frames take roughly 19,200 paced TCP segments and are not intended
+Full raw frames take roughly 2,525 paced TCP segments and are not intended
 as an interactive display on this transport. Each unacknowledged segment
 times out after 30 s of guest wall clock (`stalled`); a viewer whose RST or
 FIN arrives while a segment waits drops at once (`peer`).
@@ -37,10 +37,25 @@ exit is its close: status 0 makes the runner send FIN, any other status RST.
 | `die-focus` | opens the launcher, holds `c`, dies (exit 3) | `rfb drop peer`, the launcher stays usable locally |
 
 `-bridge 127.0.0.1:PORT` is the class-C tape path (`tools/rfb-tape.sh`,
-ADR 0037 D5(1)): it accepts exactly one viewer on a loopback address and
-pipes it to the guest, logging the first 64 bytes each way. It refuses a
-non-loopback address.
+ADR 0037 D5(1)/D6 amendment): it serves one authenticated viewer on a
+loopback address (up to three pre-auth connections, since Screen Sharing
+may close and reconnect after showing its password prompt) with an
+eight-character, one-shot VNC password. The password is
+printed to the operator (or delivered over a private named pipe to the tape,
+which prints it without recording it in runner.log). RFB 3.3/3.7/3.8
+viewers see only security type 2; a wrong password or type is refused
+before any guest bytes are exchanged. After authentication the bridge
+speaks RFB 3.8/None to the guest, forwards ClientInit and ServerInit, and
+logs the handshake progress without challenge/response or
+password bytes. It refuses non-loopback addresses. This is not a
+remote-access path: legacy DES exists only in the host probe.
+For the paced hermetic stream, the bridge prefers viewer-advertised
+hextile or RRE ahead of Raw when forwarding SetEncodings. If the viewer
+advertises neither (as observed with Screen Sharing), the bridge itself
+requests hextile from the guest and streams decoded Raw rows to the viewer
+in bounded 16-row bands. Raw is mandatory for RFB viewers; no guest-only
+encoding reaches Screen Sharing.
 
-None has no authentication or confidentiality. This probe and the
-`--rfb-hermetic` seat opt-in are for same-trust-domain tests only, never
-direct LAN exposure. See ADR 0037 D5/D6.
+The guest's None wire has no authentication or confidentiality. The
+`--rfb-hermetic` seat opt-in and this one-viewer bridge are same-trust-domain
+tests only, never direct LAN exposure. See ADR 0037 D5/D6.

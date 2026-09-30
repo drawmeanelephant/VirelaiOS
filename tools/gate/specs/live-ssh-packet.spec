@@ -1,7 +1,7 @@
 # live-ssh-packet.spec -- M51 SSH1 (#1168): the guest stream adapter
 # reassembles ONE SSH binary packet that the deterministic host responder
 # sends split across many ≤192-byte TCP segments, paced one segment per
-# guest ACK (the kernel's RX is one 192-byte slot with no reassembly). The
+# guest ACK (the kernel's RX is one bounded slot with no reassembly). The
 # guest echoes a SHA-256 over the reassembled payload; the python hook
 # re-parses the SAME bytes it handed the responder and checks the digest,
 # so framing + reassembly are proven, not just "some bytes arrived".

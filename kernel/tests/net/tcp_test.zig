@@ -117,6 +117,21 @@ test "tcp: build_frame is byte-exact — the full 54-byte SYN frame" {
     try std.testing.expectEqualSlices(u8, seg[0..seg_len], frame[34 .. 34 + seg_len]);
 }
 
+test "tcp: largest segment fits the Ethernet MTU and truncates longer writes" {
+    try std.testing.expectEqual(@as(usize, 1460), payload_max);
+    var body: [payload_max + 1]u8 = undefined;
+    for (&body, 0..) |*b, i| b.* = @truncate(i);
+    var seg: [segment_max]u8 = undefined;
+    const n = build_segment(&seg, ip_guest, ip_host, default_src_port, 5900, 42, 0, flag_ack, &body);
+    try std.testing.expectEqual(segment_max, n);
+    try std.testing.expectEqualSlices(u8, body[0..payload_max], seg[tcp_hdr_len..n]);
+    try std.testing.expectEqual(@as(u16, 0), checksum_tcp(ip_guest, ip_host, seg[0..n]));
+    var frame: [frame_max]u8 = undefined;
+    const len = build_frame(&frame, &test_mac, ip_guest, host_mac, ip_host, seg[0..n]);
+    try std.testing.expectEqual(@as(usize, 1514), len);
+    try std.testing.expectEqualSlices(u8, seg[0..n], frame[eth_hdr_len + ipv4_hdr_len .. len]);
+}
+
 test "tcp: the four-segment lifecycle — SYN -> SYN-ACK -> ACK -> data -> FIN -> FIN-ACK" {
     arp.own_ip = ip_guest;
     defer arp.own_ip = .{ 0, 0, 0, 0 };
@@ -216,8 +231,9 @@ test "tcp: malformed + unexpected segments are counted, never assumed away" {
     try std.testing.expectEqual(Event.none, handle_rx(&opts));
     try std.testing.expectEqual(@as(u64, 3), tcp.dropped_malformed);
 
-    // An oversize payload (193 bytes > payload_max) -> tcp.dropped_malformed.
-    const big: [193]u8 = .{0x41} ** 193;
+    // A SYN-ACK carrying payload (not permitted), even at the segment
+    // bound, is malformed.
+    const big: [payload_max]u8 = .{0x41} ** payload_max;
     const over = craft_frame(ip_host, host_mac, ip_guest, test_mac, 9999, default_src_port, 0x22222222, 0x11111112, flag_syn | flag_ack, &big);
     try std.testing.expectEqual(Event.none, handle_rx(&over));
     try std.testing.expectEqual(@as(u64, 4), tcp.dropped_malformed);

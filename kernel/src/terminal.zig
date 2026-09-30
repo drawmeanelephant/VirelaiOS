@@ -5048,8 +5048,9 @@ test "terminal: the TS4 auth framing fits one bounded TCP segment (bounds audit)
     try std.testing.expect(NetAuthScheme.hmac_sha256.expectedReplyLen() + 1 <= tcp.payload_max);
     try std.testing.expect(NetAuthScheme.ed25519.expectedReplyLen() + 1 <= tcp.payload_max);
     try std.testing.expect(net_auth_line_max >= NetAuthScheme.ed25519.expectedReplyLen());
-    try std.testing.expectEqual(@as(usize, 192), tcp.payload_max);
-    try std.testing.expectEqual(@as(usize, 212), tcp.segment_max);
+    // M84e raises the bound to one full, unfragmented Ethernet MTU.
+    try std.testing.expectEqual(@as(usize, 1460), tcp.payload_max);
+    try std.testing.expectEqual(@as(usize, 1480), tcp.segment_max);
 }
 
 test "terminal: explicit open mode reproduces SH7 byte flow (TS4)" {
