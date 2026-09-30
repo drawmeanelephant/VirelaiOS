@@ -22,8 +22,9 @@ see [[evidence]].
 
 ## Current status
 
-Every milestone through **M74** is closed on the tracker (2026-09-23) except
-**M73**, which waits on its acceptance card. The table below is the first 31 —
+Every milestone through **M86** has landed, and all but one index is closed on
+the tracker (observed 2026-09-29); the open one is M84, remote framebuffer. The
+table below is the first 31 —
 the arc this site grew alongside; the
 always-current accounting for everything since is
 [`docs/status.md`](https://github.com/drawmeanelephant/DipshitOS/blob/main/docs/status.md)
