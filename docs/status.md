@@ -167,12 +167,14 @@ shim ladder, NVRAM console, custom-virtio, the M5 net sweep, …) are in git
 history at `e5480c9`.
 
 > Legacy M2/M20/M22/M34 scripts that are **manual-only** (not in the fleet, CI,
-> or `just`; run by hand if ever needed) — candidates for deletion:
-> `audit-vz-irq-api.sh`, `check-zc-host-contract.py`, `probe-pointer-routes.sh`,
-> `test-unicode-torture.sh`, `verify-custom-virtio.sh`, `verify-cvc-echo.sh`,
-> `verify-fw-mmu-capture.sh`, `verify-pointer-manual.sh`,
-> `verify-t0sz16-walkprobe.sh`, `verify-t0sz16.sh`, `verify-transcript.sh`,
-> `verify-tx-transition.sh`, `verify-zc-corpus.sh`.
+> or `just`; run by hand if ever needed). Each is a capability, not rot, so
+> none is a deletion candidate: `verify-pointer-manual.sh` is the real-mouse
+> route `hardware-contract.md` cites for the activation wall, and
+> `verify-zc-corpus.sh` (+ `build-zc-host.sh`, `zc-host-link.ld`,
+> `check-zc-host-contract.py`) is the host-side dual-run of the Zig dialect
+> corpus that `docs/testing.md` and ADR 0035 name. Note that
+> `verify-transcript.sh` is **not** on this list: `build.zig` wires it into
+> `zig build test-console`, which `just verify-portable` runs.
 
 ## Assumptions & gaps (checked against merged `main`)
 

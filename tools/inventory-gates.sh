@@ -61,13 +61,10 @@ class_of() {
         # Class C (interactive) -- gate-inventory.md non-gate registers.
         verify-pointer-manual.sh) echo "C"; return ;;
         # Class D (diagnostics, not gates).
-        verify-preexit-tx.sh|verify-tx-diag.sh|verify-tx-transition.sh|\
-        verify-fw-mmu-capture.sh|verify-t0sz16-walkprobe.sh|verify-t0sz16.sh|\
-        audit-vz-irq-api.sh|probe-pointer-routes.sh|test-unicode-torture.sh) echo "D"; return ;;
+        verify-preexit-tx.sh|verify-tx-diag.sh) echo "D"; return ;;
         # Class B without the verify-live- prefix.
         verify-bad-handoff.sh|verify-marker.sh|verify-nvram-console.sh|\
-        verify-host-console.sh|verify-custom-virtio.sh|verify-cvc-echo.sh|\
-        verify-zc-corpus.sh) echo "B"; return ;;
+        verify-host-console.sh|verify-zc-corpus.sh) echo "B"; return ;;
         # Class A without the live prefix (portable / CI).
         verify-transcript.sh|verify-unit-tests.sh|verify-mmu-debt.sh|\
         verify-bss-budget.sh|verify-mutations.sh|verify-glyph-raster.sh|\
