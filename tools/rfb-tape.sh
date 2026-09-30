@@ -15,14 +15,53 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT="${RFB_TAPE_OUT:-$ROOT/artifacts/rfb-tape/$(date -u +%Y%m%dT%H%M%SZ)}"
 PORT="${RFB_TAPE_PORT:-5901}"
 VIEWER=1
+TYPE_PASSWORD=0
+
+# Answer Screen Sharing's own password sheet through System Events, so an
+# unattended tape can finish the handshake without a human at the keyboard.
+# This is RACE-CRITICAL, not cosmetic: the runner has already dialled the
+# guest, so the guest's RFB handshake budget (vi.DefaultRecvBudgetNs, 30 s)
+# is burning from the moment the bridge starts listening. The password must
+# land well inside that. Hence a 0.1 s poll on the one button that proves
+# the password sheet is up, and a direct field write rather than
+# synthesizing keystrokes. The bridge's one-shot password is alphanumeric
+# (bridge_auth.go), so no modifier keys are needed either way.
+# Best effort by design: on any failure the operator can still type the
+# printed password, and the bridge allows three pre-auth attempts.
+# Requires Accessibility for the calling app.
+type_password() {
+    osascript - "$1" <<'OSA' 2>&1 || true
+on run argv
+    set pw to item 1 of argv
+    tell application "System Events"
+        tell process "Screen Sharing"
+            repeat 200 times
+                try
+                    if (exists button "Sign In" of window 1) then
+                        set value of text field 1 of window 1 to pw
+                        click button "Sign In" of window 1
+                        return "typed the one-shot password and clicked Sign In"
+                    end if
+                end try
+                delay 0.1
+            end repeat
+        end tell
+    end tell
+    return "no password dialog appeared"
+end run
+OSA
+}
 
 usage() {
     cat <<'EOF'
-usage: bash tools/rfb-tape.sh [--dry-run] [--no-viewer]
+usage: bash tools/rfb-tape.sh [--dry-run] [--no-viewer] [--type-password]
 
 Boots the seat with --rfb-hermetic, bridges one viewer from 127.0.0.1:$PORT
 (RFB_TAPE_PORT, default 5901) into the guest, and opens vnc://127.0.0.1:$PORT
 in macOS Screen Sharing. --no-viewer leaves viewer launch to the operator.
+--type-password answers Screen Sharing's own password prompt through
+System Events instead of waiting for a human (needs Accessibility for the
+app that runs this script). Off by default; --no-viewer ignores it.
 Enter the printed one-shot password in Screen Sharing, then disconnect
 after the desktop appears so the tape can record session teardown.
 RFB_TAPE_OUT selects the artifact directory. The bridge serves one
@@ -36,6 +75,7 @@ for arg in "$@"; do
     case "$arg" in
         --dry-run) DRY_RUN=1 ;;
         --no-viewer) VIEWER=0 ;;
+        --type-password) TYPE_PASSWORD=1 ;;
         -h|--help) usage; exit 0 ;;
         *) usage >&2; exit 2 ;;
     esac
@@ -111,14 +151,23 @@ if grep -q 'RFBPROBE: bridge listening' "$OUT/runner.log"; then
     password="$(cat "$OUT/password.pipe")"
     rm "$OUT/password.pipe"
     echo "rfb-tape: Screen Sharing one-shot VNC password: $password"
-    unset password
     if [ "$VIEWER" -eq 1 ]; then
         # A previous Screen Sharing process can keep a stale connection
         # dialog and ignore a second URL open. Give each tape a fresh app.
+        if [ "$TYPE_PASSWORD" -eq 1 ]; then
+            # System Events addresses a process by name, so a leftover
+            # instance would win the race for the prompt. This tape owns
+            # the viewer's lifetime, so clear any stale one first.
+            pkill -x "Screen Sharing" 2>/dev/null || true
+        fi
         open -n -a "Screen Sharing" "vnc://127.0.0.1:$PORT"
+        if [ "$TYPE_PASSWORD" -eq 1 ]; then
+            echo "rfb-tape: --type-password: $(type_password "$password")"
+        fi
     else
         echo "rfb-tape: connect a viewer to vnc://127.0.0.1:$PORT within 120 s"
     fi
+    unset password
 fi
 rc=0
 wait "$RUNNER" || rc=$?
