@@ -440,3 +440,45 @@ clarification and explicit C1 input-limit / C3 entropy requirements from
 that review. Only the approved landing unblocks A2 and the dependency
 order above. Remaining measurements belong to the named implementation
 cards and are release gates, never assumed successful results.
+
+## 8. A2 implementation and use
+
+The A2 fixture is `user/zig/fixture.zig`; the reusable entry adapter,
+startup views, single-arena allocator and console-only runtime live beside
+it. `tools/zig/lock.json` pins official compiler archives. A2 has no
+third-party packages and an explicitly empty std overlay; A3 owns the
+subsequent type/Io integration. The materializer verifies every original
+file against the pinned archive, refuses drift/additions, and never edits
+the installed compiler or downloads during a build.
+
+```sh
+python3 tools/zig/sdk.py fetch          # explicit one-time network step
+python3 tools/zig/sdk.py build          # .build/zig-guest/ZGUEST.BIN + receipt
+zig build zig-guest-check              # two fresh caches, parser/probes/unit tests
+bash tools/gate/vgate.sh tools/gate/specs/live-el0-exec.spec
+bash tools/gate/vgate.sh tools/gate/specs/live-vm-depth.spec
+```
+
+The receipt includes compiler/archive/library/input hashes, artifact hash
+and maximum compiler frame. Builds emit assembly for per-function frame
+checks; the entry paints 132 KiB below SP and the fixture measures high-water
+use against the 128 KiB budget. Neither proves arbitrary recursive workload
+depth: A3/C1–C4 must supply their own enforceable call-depth bounds.
+Archive pins also exist for Linux build hosts; native execution remains
+macOS 27+/Apple silicon/VZ, and A2's observed compiler host is arm64 macOS.
+
+The monitor env route has a **narrower** limit than the loader: sixteen
+variables, names ≤32 bytes and values ≤64 bytes (`shell.zig`), with silent
+clipping before packing. The live fixture uses only lossless inputs on
+that route; host tests separately exercise all sixteen 127-byte ABI
+entries. `startup.pack` rejects invalid/over-limit owned inputs before
+writing; slot 28 still has **no environment parameter** and takes user
+arguments only, with the gap loader prepending the program name.
+
+A2's console writes are synchronous and unbuffered. Startup refusal exits
+64, application/resource/write failure exits 70, and panic exits 71;
+success is 0. No file handles or streams are opened. Separate stderr,
+buffered flush/close and full `std.process.Init` remain A3+B1 work, not
+success-shaped placeholders. The live reservation-failure fixture fills
+the native region table using unpopulated pages, then verifies SDK
+`OutOfMemory` and post-reap page recovery without exhausting physical RAM.

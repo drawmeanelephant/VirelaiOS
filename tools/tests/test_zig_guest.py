@@ -1,0 +1,259 @@
+#!/usr/bin/env python3
+"""A2 checker unit tests; --integration adds pinned clean builds and Zig probes."""
+import argparse
+import importlib.util
+import io
+import json
+from pathlib import Path
+import struct
+import subprocess
+import sys
+import tarfile
+import tempfile
+import unittest
+from unittest.mock import patch
+
+sys.dont_write_bytecode = True
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def module(name, path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    result = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(result)
+    return result
+
+
+checker = module("checker", ROOT / "tools/check-zc-host-contract.py")
+sdk = module("sdk", ROOT / "tools/zig/sdk.py")
+
+
+def elf():
+    data = bytearray(0x3100)
+    data[:16] = b"\x7fELF\x02\x01\x01" + bytes(9)
+    struct.pack_into("<HHIQQQIHHHHHH", data, 16, 2, 183, 1, 0x400000, 64, 0x3000, 0, 64, 56, 2, 64, 2, 0)
+    struct.pack_into("<II6Q", data, 64, 1, 5, 0x1000, 0x400000, 0x400000, 16, 16, 4096)
+    struct.pack_into("<II6Q", data, 120, 1, 6, 0x2000, 0x402000, 0x402000, 16, 16, 4096)
+    struct.pack_into("<II4QII2Q", data, 0x3040, 0, 1, 3, 0x402000, 0x2000, 16, 0, 0, 8, 0)
+    return data
+
+
+def field(data, offset, value, fmt="Q"):
+    result = bytearray(data)
+    struct.pack_into("<" + fmt, result, offset, value)
+    return result
+
+
+def corpus(data):
+    phoff = struct.unpack_from("<Q", data, 32)[0]
+    second = phoff + 56
+    text_mem = struct.unpack_from("<Q", data, phoff + 40)[0]
+    outside_window = bytearray(data)
+    phbytes = struct.unpack_from("<H", data, 56)[0] * 56
+    outside_window.extend(bytes(max(0, checker.HEADER_WINDOW + phbytes - len(outside_window))))
+    outside_window[checker.HEADER_WINDOW:checker.HEADER_WINDOW + phbytes] = data[phoff:phoff + phbytes]
+    struct.pack_into("<Q", outside_window, 32, checker.HEADER_WINDOW)
+    # SDK-specific restrictions intentionally exceed what parse_head enforces.
+    return [
+        ("valid", data, True, True),
+        ("headers-outside-window", outside_window, False, False),
+        ("bad-machine", field(data, 18, 62, "H"), False, False),
+        ("bad-entry", field(data, 24, 0), False, False),
+        ("writable-text", field(data, phoff + 4, 7, "I"), False, False),
+        ("executable-data", field(data, second + 4, 7, "I"), False, True),
+        ("readonly-data", field(data, second + 4, 4, "I"), False, False),
+        ("overlap-file", field(data, second + 8, 0), False, False),
+        ("escaping-file", field(data, second + 8, len(data) + 1), False, False),
+        ("filesz-gt-memsz", field(data, second + 40, 0), False, False),
+        ("misaligned-data", field(data, second + 16, 0x400001), False, False),
+        ("static-type", field(data, 16, 3, "H"), False, True),
+        ("tls", field(data, second + 56, 7, "I"), False, True)
+        if struct.unpack_from("<H", data, 56)[0] > 2 else
+        ("bad-alignment", field(data, second + 48, 3), False, True),
+        ("oversize-map", field(data, second + 40, checker.SDK_MAP_MAX), False, True),
+        ("two-page-gap", field(data, second + 16, checker.aligned(0x400000 + text_mem) + 8192), False, True),
+    ]
+
+
+class CheckerTests(unittest.TestCase):
+    def test_compiler_frame_ceiling_and_unknown_adjustments(self):
+        prefix = ".type f,@function\n"
+        self.assertEqual(sdk.stack_frames(prefix + "sub sp, sp, #32, lsl #12\n"), {"f": 128 * 1024})
+        with self.assertRaisesRegex(ValueError, "StackBudget"):
+            sdk.stack_frames(prefix + "sub sp, sp, #33, lsl #12\n")
+        with self.assertRaisesRegex(ValueError, "unreviewed"):
+            sdk.stack_frames(prefix + "sub sp, sp, x8\n")
+        with self.assertRaisesRegex(ValueError, "missing"):
+            sdk.stack_frames("")
+
+    def test_materializer_archive_and_private_tree_drift(self):
+        with tempfile.TemporaryDirectory() as temp:
+            cache = Path(temp)
+            archive = cache / "test.tar.xz"
+            with tarfile.open(archive, "w:xz") as output:
+                for name, data in (("zig", b"not executed"), ("lib/std/std.zig", b"// pinned input\n")):
+                    member = tarfile.TarInfo("test/" + name)
+                    member.size = len(data)
+                    member.mode = 0o755 if name == "zig" else 0o644
+                    output.addfile(member, io.BytesIO(data))
+            lock = dict(sdk.LOCK, archives={"test": {"url": "https://example.invalid/test.tar.xz",
+                                                   "sha256": sdk.digest(archive.read_bytes())}})
+            with patch.object(sdk, "LOCK", lock), patch.object(sdk, "host", return_value="test"):
+                installed, first = sdk.prepare(cache)
+                self.assertEqual(sdk.prepare(cache)[1], first)
+                std = installed / "lib/std/std.zig"
+                original = std.read_bytes()
+                std.write_bytes(b"// unreviewed edit")
+                with self.assertRaisesRegex(ValueError, "drift"):
+                    sdk.prepare(cache)
+                std.write_bytes(original)
+                extra = installed / "lib/std/extra.zig"
+                extra.write_bytes(b"// unreviewed import")
+                with self.assertRaisesRegex(ValueError, "additional"):
+                    sdk.prepare(cache)
+                extra.unlink()
+                archive.write_bytes(b"corrupt archive")
+                with self.assertRaisesRegex(ValueError, "checksum"):
+                    sdk.prepare(cache)
+
+    def test_corpus(self):
+        for name, data, accepted, _kernel in corpus(elf()):
+            with self.subTest(name=name):
+                if accepted:
+                    self.assertEqual(checker.check(data, "sdk")["mapped_bytes"], 12288)
+                else:
+                    with self.assertRaises(checker.ContractError):
+                        checker.check(data, "sdk")
+
+    def test_malformed_headers_fail_closed(self):
+        for size in range(64):
+            with self.subTest(size=size), self.assertRaises(checker.ContractError):
+                checker.check(elf()[:size], "sdk")
+        for offset, value, fmt in ((32, 2**64 - 1, "Q"), (56, 65535, "H"), (40, 2**64 - 1, "Q"),
+                                   (58, 0, "H"), (60, 65535, "H"), (120 + 16, 2**64 - 1, "Q")):
+            with self.subTest(offset=offset), self.assertRaises(checker.ContractError):
+                checker.check(field(elf(), offset, value, fmt), "sdk")
+
+    def test_file_budget_exact_and_one_over(self):
+        data = elf()
+        data.extend(bytes(checker.SDK_FILE_MAX - len(data)))
+        self.assertEqual(checker.check(data, "sdk")["file_bytes"], checker.SDK_FILE_MAX)
+        data.append(0)
+        with self.assertRaisesRegex(checker.ContractError, "ImageBudget"):
+            checker.check(data, "sdk")
+
+    def test_map_budget_includes_rounded_argument_tail(self):
+        data = field(elf(), 120 + 40, checker.SDK_MAP_MAX - 4096 - 4096)
+        self.assertEqual(checker.check(data, "sdk")["mapped_bytes"], checker.SDK_MAP_MAX)
+        with self.assertRaisesRegex(checker.ContractError, "ImageBudget"):
+            checker.check(field(data, 120 + 40, checker.SDK_MAP_MAX - 8192 + 1), "sdk")
+
+    def test_dynamic_tls_relocations_and_symbols(self):
+        for kind in (2, 3, 7):
+            data = field(elf(), 56, 3, "H")
+            data = field(data, 176, kind, "I")
+            with self.subTest(kind=kind), self.assertRaises(checker.ContractError):
+                checker.check(data, "sdk")
+        for kind in (4, 9, 19, 6, 11):
+            with self.subTest(section_kind=kind), self.assertRaises(checker.ContractError):
+                checker.check(field(elf(), 0x3040 + 4, kind, "I"), "sdk")
+        with self.assertRaisesRegex(checker.ContractError, "TLS"):
+            checker.check(field(elf(), 0x3040 + 8, 0x403), "sdk")
+        data = elf()
+        struct.pack_into("<II4QII2Q", data, 0x3040, 0, 2, 0, 0, 0x2100, 48, 0, 0, 8, 24)
+        struct.pack_into("<IBBHQQ", data, 0x2118, 0, 0x10, 0, 0, 0, 0)
+        with self.assertRaisesRegex(checker.ContractError, "unresolved"):
+            checker.check(data, "sdk")
+
+    def test_legacy_zc_stays_contiguous_and_small(self):
+        data = field(elf(), 120 + 16, 0x400010)
+        checker.check(data, "zc")
+        with self.assertRaises(checker.ContractError):
+            checker.check(elf(), "zc")
+        with self.assertRaises(checker.ContractError):
+            checker.check(field(data, 120 + 40, checker.LOAD_MAX), "zc")
+        # ELF32 has a different PHDR field order; preserve actual legacy input.
+        data = bytearray(256)
+        data[:16] = b"\x7fELF\x01\x01\x01" + bytes(9)
+        struct.pack_into("<HHIIIIIHHHHHH", data, 16, 2, 183, 1, 0x400000, 52, 0, 0, 52, 32, 1, 0, 0, 0)
+        struct.pack_into("<8I", data, 52, 1, 128, 0x400000, 0, 16, 16, 5, 4096)
+        checker.check(data, "zc")
+
+
+def integration(cache, work):
+    work.mkdir(parents=True, exist_ok=True)
+    # New local AND global caches, different output paths; no prior compiler
+    # objects can make a stale fixture masquerade as a reproducible rebuild.
+    with tempfile.TemporaryDirectory(prefix="reproduce-", dir=work) as temp:
+        temp = Path(temp)
+        outputs = [temp / name / "ZGUEST.BIN" for name in ("first", "second")]
+        for output in outputs:
+            sdk.build(cache, output, output.parent / "cache")
+        if outputs[0].read_bytes() != outputs[1].read_bytes():
+            raise ValueError("clean fixture builds are not byte-identical")
+        if outputs[0].with_suffix(".BIN.json").read_bytes() != outputs[1].with_suffix(".BIN.json").read_bytes():
+            raise ValueError("build provenance is not reproducible")
+        output = work / "ZGUEST.BIN"
+        output.write_bytes(outputs[0].read_bytes())
+        output.with_suffix(".BIN.json").write_bytes(outputs[0].with_suffix(".BIN.json").read_bytes())
+    compiler, _ = sdk.prepare(cache)
+    cases = corpus(output.read_bytes())
+    for name, data, accepted, _kernel in cases:
+        try:
+            checker.check(data, "sdk")
+        except checker.ContractError:
+            if accepted:
+                raise
+        else:
+            if not accepted:
+                raise ValueError(f"SDK checker unexpectedly accepted {name}")
+        (work / f"{name}.bin").write_bytes(data)
+    (work / "cases.zig").write_text(
+        "const Case = struct { name: []const u8, bytes: []const u8, accepted: bool };\n"
+        "pub const fixtures = [_]Case{\n" +
+        "".join(f'.{{ .name="{name}", .bytes=@embedFile("{name}.bin"), .accepted={str(kernel).lower()} }},\n'
+                for name, _data, _accepted, kernel in cases) + "};\n")
+    subprocess.run([
+        str(compiler / "zig"), "test", "--dep", "elf", "--dep", "cases",
+        f"-Mroot={ROOT / 'tools/zig/kernel_contract.zig'}",
+        f"-Melf={ROOT / 'kernel/src/elf.zig'}", f"-Mcases={work / 'cases.zig'}",
+    ], cwd=ROOT, check=True)
+    probes = {
+        "allocator-format": (
+            'const std = @import("std"); const sdk = @import("sdk");\n'
+            "pub const os = sdk.os; pub const std_options = sdk.std_options;\n"
+            "pub const panic = std.debug.FullPanic(sdk.panic);\n"
+            'export fn probe() usize { const a = std.heap.page_allocator; const p = a.alloc(u8, 32) catch return 0; '
+            'defer a.free(p); return (std.fmt.bufPrint(p, "{d}", .{@as(u32, 42)}) catch return 0).len; }\n', True, ""),
+        "threads": ('const std=@import("std"); fn child() void {} export fn probe() void { '
+                    '_ = std.Thread.spawn(.{}, child, .{}) catch return; }\n', False, "unsupported"),
+        "stdout": ('const std=@import("std"); export fn probe() void { _ = std.Io.File.stdout(); }\n',
+                   False, "STDOUT_FILENO"),
+        "args": ('const std=@import("std"); export fn probe() void { var a: std.process.Args = .{.vector={}}; '
+                 'var i=a.iterate(); _=i.next(); }\n', False, "void"),
+    }
+    for name, (source, accepted, diagnostic) in probes.items():
+        path = work / f"probe-{name}.zig"
+        path.write_text(source)
+        result = subprocess.run([
+            str(compiler / "zig"), "build-obj", "--zig-lib-dir", str(compiler / "lib"),
+            "-target", sdk.LOCK["target"], "-O", "ReleaseSafe", "-fno-emit-bin",
+            "--dep", "sdk", f"-Mroot={path}", f"-Msdk={ROOT / 'user/zig/runtime.zig'}",
+        ], cwd=ROOT, text=True, capture_output=True)
+        (work / f"probe-{name}.log").write_text(result.stdout + result.stderr)
+        if (result.returncode == 0) != accepted or (not accepted and diagnostic.lower() not in result.stderr.lower()):
+            raise ValueError(f"unexpected {name} probe result:\n{result.stderr}")
+    print("zig-guest: clean builds identical; kernel corpus and exported-body std probes passed")
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--integration", action="store_true")
+    parser.add_argument("--cache", type=Path, default=sdk.DEFAULT_CACHE)
+    parser.add_argument("--work", type=Path, default=ROOT / "artifacts/zig-guest")
+    args = parser.parse_args()
+    result = unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.loadTestsFromTestCase(CheckerTests))
+    if not result.wasSuccessful():
+        sys.exit(1)
+    if args.integration:
+        integration(args.cache.resolve(), args.work.resolve())

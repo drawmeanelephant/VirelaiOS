@@ -1,115 +1,145 @@
 #!/usr/bin/env python3
-"""Z4b (issue #761): check an ELF against the VirelaiOS static-loader contract.
+"""Check an ELF against an explicit VirelaiOS artifact profile.
 
-Replicates the checks in kernel/src/elf.zig `parse()` (the loader itself is
-class-agnostic — ELF32 or ELF64 — and the *layout* is the contract):
-
-  * e_ident class 1 or 2, little-endian, EM_AARCH64, correct phentsize;
-  * only PT_LOAD segments are collected (others skipped); at most 2;
-  * segment 0 is not writable (W^X) and p_vaddr == 0x0040_0000
-    (elf.zig `text_base`);
-  * an optional segment 1 is writable and p_vaddr == text_base +
-    p_memsz[0] EXACTLY (data directly after the text memory image);
-  * file ranges ordered + disjoint, p_memsz >= p_filesz, ranges inside
-    the file;
-  * total p_memsz <= 512 KiB (`load_max` / `exec_program_max`);
-  * e_entry lands inside segment 0's INITIALIZED (file) bytes.
-
-Exit 0 with "CONTRACT OK" when every check passes; prints each PT_LOAD and
-exits 1 otherwise. This is the machine half of the host link contract —
-tools/build-zc-host.sh runs it on every emitted image.
-
-Usage: check-zc-host-contract.py <elf-file>
+`zc` (default) preserves the legacy <=512 KiB contiguous, <=2-load shape.
+It is NOT the current kernel's general loader limit. `sdk` is ADR 0038's
+static ELF64 two-segment gap shape, <=8 MiB file / <=16 MiB mapped with
+the rounded argument/environment tail. tools/zig tests cross-check this
+narrower profile against the real kernel elf.parse_head implementation.
 """
-
+import argparse
 import struct
 import sys
+from pathlib import Path
 
 TEXT_BASE = 0x00400000
-# Mirrors `elf.load_max` / `exec.exec_program_max` in the kernel. Was 256 KiB
-# here until 2026-09-12 (issue #1177) — the kernel constants have been 512 KiB
-# for a long time, and a stale kernel doc comment (`kernel/src/elf.zig:26`)
-# kept this tool's copy stale with it.
 LOAD_MAX = 512 * 1024
+SDK_FILE_MAX = 8 * 1024 * 1024
+SDK_MAP_MAX = 16 * 1024 * 1024
+GAP_BASE_MAX = 0x10000000
+ARG_ENV_BYTES = 4096
+HEADER_WINDOW = 16 * 1024  # exec.header_window, including streamed SDK files.
 EM_AARCH64 = 0xB7
 PT_LOAD = 1
 
 
-def fail(msg: str) -> None:
-    print(f"CONTRACT FAIL: {msg}", file=sys.stderr)
-    sys.exit(1)
+class ContractError(ValueError):
+    pass
 
 
-def main() -> None:
-    path = sys.argv[1] if len(sys.argv) > 1 else "a.out"
-    buf = open(path, "rb").read()
-    if buf[:4] != b"\x7fELF":
-        fail("not an ELF")
+def require(condition, message):
+    if not condition:
+        raise ContractError(message)
+
+
+def aligned(value, alignment=4096):
+    return (value + alignment - 1) & -alignment
+
+
+def check(buf, profile="zc"):
+    require(len(buf) >= 16 and buf[:4] == b"\x7fELF", "not an ELF")
     cls = buf[4]
-    if cls not in (1, 2):
-        fail("unsupported class")
-    if buf[5] != 1:
-        fail("unsupported endian (need little)")
-    if struct.unpack("<H", buf[18:20])[0] != EM_AARCH64:
-        fail("unsupported machine (need EM_AARCH64)")
+    require(cls in (1, 2), "unsupported class")
+    require(buf[5] == 1, "unsupported endian (need little)")
+    header_size = 52 if cls == 1 else 64
+    require(len(buf) >= header_size, "truncated ELF header")
+    require(struct.unpack_from("<H", buf, 18)[0] == EM_AARCH64, "unsupported machine")
     if cls == 1:
-        entry, phoff = struct.unpack("<II", buf[24:32])
-        phnum = struct.unpack("<H", buf[44:46])[0]
-        if struct.unpack("<H", buf[42:44])[0] != 32:
-            fail("bad phentsize (ELF32 needs 32)")
+        entry, phoff = struct.unpack_from("<II", buf, 24)
+        phentsize, phnum = struct.unpack_from("<HH", buf, 42)
     else:
-        entry, phoff = struct.unpack("<QQ", buf[24:40])
-        phnum = struct.unpack("<H", buf[56:58])[0]
-        if struct.unpack("<H", buf[54:56])[0] != 56:
-            fail("bad phentsize (ELF64 needs 56)")
-
+        entry, phoff = struct.unpack_from("<QQ", buf, 24)
+        phentsize, phnum = struct.unpack_from("<HH", buf, 54)
+    require(phentsize == (32 if cls == 1 else 56), "bad phentsize")
+    require(phoff <= len(buf) and phnum * phentsize <= len(buf) - phoff, "truncated program headers")
     segs = []
     for i in range(phnum):
-        rec = phoff + i * (32 if cls == 1 else 56)
-        p_type = struct.unpack("<I", buf[rec : rec + 4])[0]
-        if p_type != PT_LOAD:
+        rec = phoff + i * phentsize
+        kind = struct.unpack_from("<I", buf, rec)[0]
+        if profile == "sdk":
+            require(kind not in (2, 3, 7), "dynamic interpreter, dynamic segment or TLS")
+            if kind == 0x6474E551:
+                require(struct.unpack_from("<I", buf, rec + 4)[0] & 1 == 0, "executable stack")
+        if kind != PT_LOAD:
             continue
         if cls == 1:
-            fl, off, va, _pa, fs, ms, _al = struct.unpack("<I6I", buf[rec + 4 : rec + 32])
+            off, va, _pa, fs, ms, fl, alignment = struct.unpack_from("<7I", buf, rec + 4)
         else:
-            fl, off, va, _pa, fs, ms, _al = struct.unpack("<I6Q", buf[rec + 4 : rec + 56])
-        segs.append((fl, off, va, fs, ms))
-        print(
-            f"PT_LOAD off={off:#x} va={va:#x} filesz={fs:#x} memsz={ms:#x} "
-            f"flags={fl:#x}"
-        )
-    print(f"entry={entry:#x} phnum={phnum} file={len(buf)} B")
-
-    if not segs:
-        fail("no PT_LOAD segments")
-    if len(segs) > 2:
-        fail("more than 2 PT_LOAD segments")
+            fl, off, va, _pa, fs, ms, alignment = struct.unpack_from("<I6Q", buf, rec + 4)
+        segs.append(dict(flags=fl, offset=off, vaddr=va, filesz=fs, memsz=ms, alignment=alignment))
+    require(0 < len(segs) <= 2, "need one or two PT_LOAD segments")
     s0 = segs[0]
-    if s0[0] & 2:
-        fail("segment 0 is writable (W^X)")
-    total_mem = 0
+    require(not s0["flags"] & 2, "segment 0 is writable (W^X)")
+    prev_end = 0
     for s in segs:
-        if s[3] > s[4]:
-            fail("p_memsz < p_filesz")
-        if s[1] + s[3] > len(buf):
-            fail("segment file range escapes the file")
-        total_mem += s[4]
-    if total_mem > LOAD_MAX:
-        fail(f"total load {total_mem} > {LOAD_MAX}")
-    if s0[2] != TEXT_BASE:
-        fail(f"text base {s0[2]:#x} != {TEXT_BASE:#x}")
-    if len(segs) == 2:
-        s1 = segs[1]
-        if not (s1[0] & 2):
-            fail("segment 1 is not writable")
-        want = s0[2] + s0[4]
-        if s1[2] != want:
-            fail(f"data base {s1[2]:#x} != text_base + p_memsz[0] ({want:#x})")
-        if s0[1] + s0[3] > s1[1]:
-            fail("overlapping file ranges")
-    if not (s0[2] <= entry < s0[2] + s0[3]):
-        fail("e_entry outside segment 0 initialized bytes")
-    print("CONTRACT OK")
+        require(s["filesz"] <= s["memsz"], "p_memsz < p_filesz")
+        require(s["offset"] <= len(buf) and s["filesz"] <= len(buf) - s["offset"], "segment file range escapes file")
+        require(s["offset"] >= prev_end, "overlapping or unordered file ranges")
+        prev_end = s["offset"] + s["filesz"]
+        require(s["vaddr"] + s["memsz"] < 1 << 64, "virtual range overflow")
+    require(s0["vaddr"] == TEXT_BASE, "bad text base")
+    require(s0["vaddr"] <= entry < s0["vaddr"] + s0["filesz"], "entry outside initialized text")
+    if profile == "zc":
+        require(sum(s["memsz"] for s in segs) <= LOAD_MAX, "legacy zc load budget")
+        if len(segs) == 2:
+            require(segs[1]["flags"] & 2, "segment 1 is not writable")
+            require(segs[1]["vaddr"] == TEXT_BASE + s0["memsz"], "zc requires contiguous data")
+        return dict(segments=segs, entry=entry, file_bytes=len(buf))
+
+    require(profile == "sdk", "unknown profile")
+    require(phoff + phnum * phentsize <= HEADER_WINDOW, "program headers escape loader window")
+    require(cls == 2 and buf[6] == 1, "SDK requires ELF64 version 1")
+    require(struct.unpack_from("<HHI", buf, 16) == (2, EM_AARCH64, 1), "SDK requires static ET_EXEC")
+    require(struct.unpack_from("<H", buf, 52)[0] == 64, "bad ELF64 header size")
+    require(len(segs) == 2, "SDK requires exactly two loads")
+    s1 = segs[1]
+    require(s0["flags"] == 5 and s1["flags"] == 6, "SDK requires R+X / R+W (no W+X)")
+    require(s1["memsz"] > 0, "SDK requires writable startup state")
+    require(s1["vaddr"] == aligned(TEXT_BASE + s0["memsz"]) + 4096, "SDK requires one-page gap after rounded text")
+    for s in segs:
+        alignment = s["alignment"]
+        require(alignment >= 4096 and alignment & (alignment - 1) == 0, "bad load alignment")
+        require(s["offset"] % alignment == s["vaddr"] % alignment, "load offset/address incongruence")
+    tail_bytes = aligned(s1["memsz"], 8) + ARG_ENV_BYTES
+    mapped = aligned(s0["memsz"]) + aligned(tail_bytes)
+    require(len(buf) <= SDK_FILE_MAX and mapped <= SDK_MAP_MAX, "ImageBudget")
+    require(s1["vaddr"] + aligned(tail_bytes) <= GAP_BASE_MAX, "argument tail escapes loader aperture")
+    _check_sections(buf)
+    return dict(segments=segs, entry=entry, file_bytes=len(buf), mapped_bytes=mapped, argument_tail_bytes=ARG_ENV_BYTES)
+
+
+def _check_sections(buf):
+    shoff = struct.unpack_from("<Q", buf, 40)[0]
+    shentsize, shnum = struct.unpack_from("<HH", buf, 58)
+    require(shnum > 0 and shentsize == 64 and shoff <= len(buf) and shnum * 64 <= len(buf) - shoff,
+            "SDK requires inspectable section headers")
+    for i in range(shnum):
+        _name, kind, flags, _addr, off, size, _link, _info, _align, entsize = struct.unpack_from("<II4QII2Q", buf, shoff + i * 64)
+        require(kind == 8 or (off <= len(buf) and size <= len(buf) - off), "section escapes file")
+        require(not flags & 0x400, "TLS section")
+        require(kind not in (4, 9, 19) or size == 0, "relocations require runtime support")
+        require(kind not in (6, 11), "dynamic section/symbol table")
+        if kind == 2:
+            require(entsize == 24 and size % 24 == 0, "bad symbol table")
+            for pos in range(off + 24, off + size, 24):
+                _name, info, _other, section = struct.unpack_from("<IBBH", buf, pos)
+                require(not (section == 0 and info >> 4 in (1, 2)), "unresolved symbol")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--profile", choices=("zc", "sdk"), default="zc")
+    parser.add_argument("elf", nargs="?", default="a.out")
+    args = parser.parse_args()
+    try:
+        result = check(Path(args.elf).read_bytes(), args.profile)
+        for s in result["segments"]:
+            print(f"PT_LOAD off={s['offset']:#x} va={s['vaddr']:#x} filesz={s['filesz']:#x} memsz={s['memsz']:#x} flags={s['flags']:#x}")
+        print(f"entry={result['entry']:#x} file={result['file_bytes']} B" +
+              (f" mapped+args={result['mapped_bytes']} B" if args.profile == "sdk" else ""))
+        print("CONTRACT OK")
+    except (OSError, ContractError, struct.error) as error:
+        parser.exit(1, f"CONTRACT FAIL: {error}\n")
 
 
 if __name__ == "__main__":
