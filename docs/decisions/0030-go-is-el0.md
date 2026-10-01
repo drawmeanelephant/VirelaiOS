@@ -6,7 +6,8 @@
 - Amended: 2026-09-21 (M71k / #1570 — the EL0 HTTPS consumer is Go; `FETCHS.BIN` deleted, `lib/tls` is host-side interop)
 - Amended: 2026-09-21 (M71j / #1569 — the EL0 SSH-2 client is Go; `SSH.BIN` deleted, `lib/ssh` wire/packet/stream stay for SSHPACKET.BIN)
 - Amended: 2026-10-01 (A1 / #1865 — bounded native Zig portfolio exception)
-- Zig Guest Target/Backend Owner (A1 / #1865): TBD — owner to appoint before R1 starts
+- Zig Guest Target/Backend Owner (A1 / #1865): **drawmeanelephant**,
+  explicitly appointed by the project owner on 2026-10-01
 - Issue: #1293 (this document), umbrella #1292, M60 #1297
 - Related: ADR 0001 (Zig as guest language — narrowed here), ADR 0007
   (syscall ABI; kernel changes still ride amendments of that file only),
@@ -301,6 +302,11 @@ R1 supplies one approved cross-cutting target design before A2/A3 or
 workload implementation. Astra is the requested R1 design role and Sol
 the requested implementation role, not automatic assignments and not
 a substitute for the accountable maintainer.
+
+The separately owner-approved R1 design and workload budgets are recorded
+in [ADR 0038](0038-zig-guest-target.md) (#1879), accepted on 2026-10-01.
+Implementation remains gated on landing that accepted design together
+with the maintainer appointment above.
 
 The design maps each std/platform requirement to an existing native
 facility, an adaptation/replacement, an honest refusal or a listed
