@@ -115,6 +115,55 @@ calling `tools/session.sh` directly; the runner, `artifacts/disk.img`, and
 staged files must already exist. `just session` retains its normal Zig image
 dependency.
 
+### Remote-only terminal through host SSH
+
+On the Apple-silicon VM host, start a foreground service with a **dedicated**
+absolute share (not your desktop share):
+
+```bash
+bash tools/remote-terminal.sh serve --share /absolute/remote-share
+```
+
+In another host terminal, or from a different machine through OpenSSH:
+
+```bash
+bash tools/remote-terminal.sh attach --share /absolute/remote-share
+ssh -tt operator@vm-host 'cd /absolute/VirelaiOS && bash tools/remote-terminal.sh attach --share /absolute/remote-share'
+```
+
+The operator must already have authorized SSH key access and Remote Login
+enabled on the host. Use the same host account for serve and attach.
+Verify the host-key fingerprint through a trusted
+channel before accepting it; never disable host-key checking. These tools do
+not enable SSH, install servers, use sudo, or change firewall/router settings.
+SSH supplies remote encryption. The loopback HMAC bridge authenticates but
+does **not** encrypt; host-account authorization grants guest-console authority.
+
+`serve` builds/checks the image, SPIKE runner and source-fresh GOSH. It seeds
+`#v2`, `wm=none`, `shell=sh`, GOSH and serial support files, without a GUI
+seat or a boot-default change. Documents and `GOSH-HISTORY.TXT` persist.
+Executable/support files refresh on service restart. Incompatible settings,
+an active `.virelairc`, or a nonempty unconfigured share are refused, never
+rewritten. `--port 24681` is the default, validated and always loopback-only.
+Private session state and the file-only random secret live outside the share
+under `~/.virelai/remote-terminal/`; reattachments reuse the live secret.
+The build needs the provisioned `GOOS=virelai` fork (`bash tools/go/apply.sh`
+then `just go-toolchain`); set `GO_FORK_DIR` when it is outside the checkout's
+parent directory.
+
+Ctrl-C in **attach** cancels the guest line; Ctrl-] disconnects only the
+client. Reattach reaches the same live VM, and a disconnected partial line
+is cancelled. Ctrl-C in **serve** stops the VM and cleans only its temporary
+state/vars/overlay, not the share. Ctrl-D on an empty GOSH line, `exit`, or
+`monitor` hands serial back to the kernel monitor; that is not a GOSH
+acceptance. From the still-connected monitor, `exec GOSH.ELF serial` returns
+to GOSH, or restart the service. A second client gets a busy refusal.
+
+This is a host terminal rendering serial bytes, not guest SSH, Screen,
+PTY-size negotiation, graphics, resize, or expanded TUI compatibility.
+The required **real two-machine** fixture and its precise blockers are in
+[`docs/testing.md`](docs/testing.md#remote-terminal-m87).
+
 For serial-only development or deterministic builds, use the lower-level
 commands:
 

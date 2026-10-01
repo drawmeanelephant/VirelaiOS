@@ -34,6 +34,76 @@ Every verification command belongs to exactly one class (canonical inventory:
   platform capability is unavailable, everything else still runs and the
   blocked step is reported precisely.
 
+## Remote terminal (M87)
+
+Class A uses isolated build/runner/client stand-ins, never a VM:
+
+```bash
+python3 -m unittest discover -s tools/tests -p test_remote_terminal.py
+bash -n tools/remote-terminal.sh tools/remote-terminal-tape.sh
+```
+
+Class B extends the existing HMAC gate with a source-fresh, explicit
+`wm=none`, `shell=sh` GOSH boot and M87b's real client. It checks late
+attach, guest identity, editing/cancel/history, byte-exact host-share receipt
+and history, a pipeline, an external ELF, wrong auth, busy refusal, an
+11-second idle partial line and same-boot reconnect. Every client exit is
+checked, including both old silent/deadline clients.
+
+```bash
+just gate live-remote-console
+just gate live-console-tcp
+just gate live-sh-monitor
+bash tools/inventory-gates.sh --check
+just verify-coordination
+```
+
+Class C requires **another physical machine**, authorized key-based host
+OpenSSH access and a verified host key. Operator prerequisites: configure
+Remote Login/key authorization yourself, verify the fingerprint through a
+trusted channel, and ensure SSH reachability. Do not disable host-key checks.
+Neither script enables Remote Login, uses sudo, or changes network rules.
+
+On the Apple-silicon/macOS 27+ VM host:
+
+```bash
+bash tools/remote-terminal.sh serve --share /absolute/remote-share
+```
+
+On the other machine:
+
+```bash
+ssh -tt operator@vm-host 'cd /absolute/VirelaiOS && bash tools/remote-terminal.sh attach --share /absolute/remote-share'
+# Record only the explicit scripted fixture, never an arbitrary operator session:
+bash tools/remote-terminal-tape.sh --ssh-target operator@vm-host \
+  --host-repo /absolute/VirelaiOS --share /absolute/remote-share --fixture-only
+```
+
+The fixture uses `BatchMode=yes`, `StrictHostKeyChecking=yes` and `ssh -tt`
+for attach, compares digested machine identities (same-host SSH is refused),
+records SSH address families/loopback relationship without raw addresses,
+and pins service/runner identity across Ctrl-] and reconnect. It verifies
+GOSH/guest principal, receipt read-back plus host-side byte comparison,
+editing/Up, Ctrl-C cancellation, UTF-8/ANSI, pipeline and external command.
+Evidence lives under `artifacts/remote-terminal/<UTC timestamp>/` on the
+connecting machine. Use a clean fixture share: the driver writes
+`REMOTE.RECEIPT` and checks absence of `CANCEL.RECEIPT`/`PARTIAL.RECEIPT`.
+It does not copy owner documents or history into the transcript.
+
+Controls: attach Ctrl-C goes to GOSH; Ctrl-] disconnects without stopping
+the VM. Serve Ctrl-C stops its own runner. Ctrl-D on an empty line, `exit`,
+or `monitor` ends GOSH and returns the raw kernel monitor, not product
+acceptance. `exec GOSH.ELF serial` there resumes GOSH. Documents and
+`GOSH-HISTORY.TXT` survive service restart; VM RAM/vars/overlay do not.
+The bridge is loopback-only, HMAC-authenticated plaintext inside the SSH
+boundary. One client, serial-only, no guest SSH/PTY/resize/Screen/graphics
+or new kernel TUI claims.
+
+Missing second machine, SSH service, verified host key, or authorized key is
+**BLOCKED class C**, not a local success. Keep M87 product acceptance open
+until both the desktop and remote product journeys have evidence; canonical
+state is only in `docs/status.md`.
+
 ## Guest self-test (M61) — the split of labor
 
 ADR 0031 ([`decisions/0031-guest-selftest.md`](decisions/0031-guest-selftest.md))
