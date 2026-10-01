@@ -22,6 +22,8 @@
 package main
 
 import (
+	"unsafe"
+
 	"virelai/theme"
 	"virelai/vi"
 )
@@ -78,6 +80,232 @@ const scratchVA = 0x0000_0002_8000_0000
 
 // maxWinEvents bounds every window-phase wait so a boot can never hang.
 const maxWinEvents = 200
+
+// The menu has its own ordinary window, never the lifecycle/death probe.
+// WinOpen and taskbar focus change the kernel's focused key/tty destination;
+// kind-21 WM_KEY still reaches the seat. No event-consumption ABI is implied.
+var (
+	openInputSink = vi.WinOpen
+	queryWindow   = vi.WinQuery
+)
+
+func acquireLauncherFocus() bool {
+	id, r := openInputSink(launchX, launchY, launchW, uint32(launch.panelH()))
+	if r < 0 {
+		launch.err = "Input sink unavailable"
+		return false
+	}
+	launch.sink = uint32(id)
+	if !ensureLauncherFocus() {
+		_ = releaseLauncherFocus(false)
+		return false
+	}
+	vi.ConsoleLine("gotabwm: launcher focus sink=" + vi.Itoa64(int64(id)))
+	return true
+}
+
+func ensureLauncherFocus() bool {
+	if launch.sink == 0 {
+		return false
+	}
+	st, r := queryWindow(int(launch.sink))
+	if r < 0 {
+		launch.err = "Input sink closed"
+		return false
+	}
+	if st[5] == 0 && focusRaise(launch.sink) != 0 {
+		launch.err = "Input focus unavailable"
+		return false
+	}
+	return true
+}
+
+func releaseLauncherFocus(restore bool) bool {
+	if launch.sink != 0 {
+		if closeWin(launch.sink) != 0 {
+			if _, r := queryWindow(int(launch.sink)); r >= 0 {
+				launch.err = "Input sink close failed"
+				return false
+			}
+		}
+		launch.sink = 0
+	}
+	menuPixels = windowPixels{}
+	if restore {
+		// WinQuery is owner-only: use the existing WM focus seam for clients,
+		// not a query that would reject every app owned by another process.
+		// Release mirrors remove dead/reused ids; an EINVAL focus catches a
+		// death before its mirror was drained.
+		id := launch.prior
+		if tabs.index(id) < 0 || id >= sessionIDBase {
+			id = 0
+		}
+		restored := false
+		if id != 0 {
+			r := focusRaise(id)
+			restored = r == 0
+			if r == -vi.ErrEINVAL {
+				_ = tabs.CloseTab(id)
+				id = 0
+			}
+		}
+		if id == 0 {
+			for i := 0; i < tabs.Count(); i++ {
+				candidate := tabs.At(i).ID
+				if candidate >= sessionIDBase {
+					continue
+				}
+				if focusRaise(candidate) == 0 {
+					id = candidate
+					restored = true
+					break
+				}
+			}
+		}
+		if restored {
+			_ = tabs.FocusTab(id)
+			hostedApp = id
+			vi.ConsoleLine("gotabwm: launcher restore id=" + vi.Itoa64(int64(id)))
+		}
+	}
+	launch.prior = 0
+	return true
+}
+
+// Unmigrated app windows are kernel-blitted on the following tick. Keep the
+// button and menu in ordinary seat-owned back buffers too, rather than losing
+// their direct scanout paint under the next app blit. Raising is not focusing.
+type windowPixels struct {
+	id     int
+	x, y   int
+	w, h   int
+	pixels []uint32
+}
+
+var buttonPixels, menuPixels windowPixels
+var chromeScratch []byte
+
+func setSeatWindowChrome(id int) bool {
+	if chromeScratch == nil {
+		var err error
+		chromeScratch, err = vi.MmapHint(scratchVA+vi.PageSize, vi.PageSize,
+			vi.ProtRead|vi.ProtWrite, vi.MapAnonymous)
+		if err != nil {
+			return false
+		}
+	}
+	desc := chromeScratch[:vi.ChromeDescBytes]
+	fillBorderChrome(desc)
+	return vi.WmctlSetWindowChrome(uint32(id), desc) == 0
+}
+
+// upload emits only changed, same-color horizontal runs, in batched fills.
+// The source is the very same painted scanout used by layout/hit tests.
+func (p *windowPixels) upload(scan []byte, width, x, y, w, h int, rect func(int, uint32, uint32, uint32, uint32, uint32)) {
+	if width <= 0 || x < 0 || y < 0 || w <= 0 || h <= 0 ||
+		x+w > width || len(scan)/4/width < y+h {
+		return
+	}
+	fresh := p.w != w || p.h != h || len(p.pixels) != w*h
+	if fresh {
+		p.pixels = make([]uint32, w*h)
+	}
+	p.x, p.y, p.w, p.h = x, y, w, h
+	src := unsafe.Slice((*uint32)(unsafe.Pointer(&scan[0])), len(scan)/4)
+	for row := 0; row < h; row++ {
+		for col := 0; col < w; {
+			at := row*w + col
+			color := src[(y+row)*width+x+col] & 0xffffff
+			if !fresh && p.pixels[at] == color {
+				col++
+				continue
+			}
+			start := col
+			for col < w && src[(y+row)*width+x+col]&0xffffff == color {
+				p.pixels[row*w+col] = color
+				col++
+			}
+			rect(p.id, uint32(start), uint32(row), uint32(col-start), 1, color)
+		}
+	}
+}
+
+func syncSeatChrome(scan []byte) {
+	x, y, w, h := godMenuRect(vi.ScanoutWidth, vi.ScanoutHeight)
+	if buttonPixels.id == 0 {
+		// Opening an ordinary window focuses it. Restore the live hosted
+		// destination immediately, including the menu sink if it is open.
+		focus := hostedApp
+		if launch.open {
+			focus = launch.sink
+		}
+		id, r := vi.WinOpen(uint32(x), uint32(y), uint32(w), uint32(h))
+		if r < 0 {
+			launch.err = "Apps button unavailable"
+			return
+		}
+		ok := setSeatWindowChrome(id)
+		if focus != 0 && focus < sessionIDBase && focusRaise(focus) != 0 {
+			ok = false
+		}
+		if !ok {
+			_ = vi.WinClose(id)
+			launch.err = "Apps button focus unavailable"
+			return
+		}
+		buttonPixels.id = id
+	}
+	var fills vi.Filler
+	buttonPixels.upload(scan, vi.ScanoutWidth, x, y, w, h, fills.Rect)
+	_ = vi.WinRaise(buttonPixels.id)
+	if launch.open && launch.sink != 0 {
+		h = launch.panelH()
+		if menuPixels.id != int(launch.sink) {
+			menuPixels = windowPixels{id: int(launch.sink)}
+			if !setSeatWindowChrome(menuPixels.id) {
+				launch.err = "Menu chrome unavailable"
+				return
+			}
+		}
+		if menuPixels.w != launchW || menuPixels.h != h {
+			if vi.WmctlSetWindowRect(launch.sink, launchX, launchY, launchW, uint32(h)) != 0 {
+				launch.err = "Menu layout unavailable"
+				return
+			}
+		}
+		menuPixels.upload(scan, vi.ScanoutWidth, launchX, launchY, launchW, h, fills.Rect)
+		_ = vi.WinRaise(menuPixels.id)
+	}
+	fills.Flush()
+}
+
+func launcherWindowEvent(e vi.Event) {
+	if e.Kind != vi.EvWmWindow || e.Flags&(1<<13) == 0 {
+		return
+	}
+	id := uint32(e.Flags & 0xff)
+	if int(id) == buttonPixels.id {
+		if _, r := queryWindow(int(id)); r < 0 {
+			buttonPixels = windowPixels{}
+		}
+	}
+	if id == launch.prior {
+		launch.prior = 0
+	}
+	if tabs.index(id) >= 0 {
+		_ = tabs.CloseTab(id)
+		syncHostedFromStrip()
+	}
+	// A delayed mirror can name a reused id. Only a failed query proves
+	// the current sink is gone; ordinary sink KEY_DOWN/BLUR events drain
+	// on the same seat queue and are intentionally ignored.
+	if id == launch.sink {
+		if _, r := queryWindow(int(id)); r < 0 {
+			launch.sink = 0
+			dismissLauncher()
+		}
+	}
+}
 
 // runWindowPhase drives the seat's own window lifecycle end to end. It returns
 // whether every step succeeded; main turns a false into a distinct exit code,

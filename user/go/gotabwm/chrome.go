@@ -89,12 +89,48 @@ func chromeTick(scan []byte, ticks uint64) {
 	face := clockNow(ticks)
 	text := formatClock(face.h, face.m, face.s)
 	_ = paintChrome(scan, vi.ScanoutWidth, vi.ScanoutHeight, text)
+	_ = paintGodMenuButton(scan, vi.ScanoutWidth, vi.ScanoutHeight)
 	if chromeLogged {
 		return
 	}
 	chromeLogged = true
 	vi.ConsoleLine(MarkerClockSource + face.source)
 	vi.ConsoleLine(MarkerClock + text)
+}
+
+// Reserved bottom chrome, between the toast column and the clock. Neither
+// the rail cells nor pane geometry move when the tab count changes.
+const godMenuW = 96
+
+func godMenuRect(width, height int) (x, y, w, h int) {
+	x, y, w, h = notifyInset+NotifyW+chromeInset, height-chromeInset-ChromeH, godMenuW, ChromeH
+	cx, _, _, _ := chromeRect(width, height)
+	if y < RailHeight || x+w+chromeInset > cx {
+		return 0, 0, 0, 0
+	}
+	return
+}
+
+func godMenuHit(px, py uint32, width, height int) bool {
+	x, y, w, h := godMenuRect(width, height)
+	return w > 0 && int(px) >= x && int(px) < x+w && int(py) >= y && int(py) < y+h
+}
+
+func paintGodMenuButton(scan []byte, width, height int) int {
+	x, y, w, h := godMenuRect(width, height)
+	if w == 0 || width <= 0 || len(scan)/4/width < y+h {
+		return 0
+	}
+	pix := unsafe.Slice((*uint32)(unsafe.Pointer(&scan[0])), len(scan)/4)
+	tok := theme.Current
+	n := fillRect(pix, width, height, x, y, w, h, tok.ChromeBg)
+	n += fillRect(pix, width, height, x, y, 2, h, tok.Accent)
+	label, ink := "Apps", tok.Ink
+	if launch.err != "" && !launch.open {
+		label, ink = "Apps error", tok.Danger
+	}
+	n += drawText8(pix, width, height, x+chromePad, y+chromePad, label, ink)
+	return n
 }
 
 // clockNow resolves the face from the honest sources in D2's order.

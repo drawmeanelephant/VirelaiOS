@@ -149,6 +149,7 @@ var (
 	// disjoint from railDragFrom: a sash down returns before
 	// beginRailDrag, so endRailDrag can never also reorder.
 	sashDragging bool
+	menuGesture  bool // survives dismissal/exec until every button is up
 )
 
 // seatChords is the registry's seat-scope dispatch, resolved once at init:
@@ -517,6 +518,12 @@ func handleWmPointer(e vi.Event) {
 	down := pointerDownEdge(btn, prevPtrButtons)
 	up := pointerUpEdge(btn, prevPtrButtons)
 	prevPtrButtons = btn
+	if menuGesture {
+		if btn == 0 {
+			menuGesture = false
+		}
+		return
+	}
 	// M79k (#1720): the notify strip is chrome, so a press on a toast is
 	// consumed HERE — it dismisses the toast and focuses its SENDER, and
 	// it never reaches the content forward below (a stray content drag
@@ -549,14 +556,25 @@ func handleWmPointer(e vi.Event) {
 	if down {
 		if _, onToast := notifyHit(px, py, vi.ScanoutWidth, vi.ScanoutHeight); onToast {
 			notifyClicked(px, py)
+			if launch.open {
+				menuGesture = true
+				_ = ensureLauncherFocus()
+			}
 			return
 		}
 	}
 	if launch.open {
+		if btn != 0 {
+			menuGesture = true
+			railDragFrom, contentDown, sashDragging = -1, false, false
+		}
 		if down {
 			i, ok := launchRowAt(px, py)
 			if !ok {
-				dismissLauncher()
+				x, y := int(px), int(py)
+				if x < launchX || x >= launchX+launchW || y < launchY || y >= launchY+launch.panelH() {
+					dismissLauncher()
+				}
 				return
 			}
 			launch.sel = i
@@ -565,11 +583,18 @@ func handleWmPointer(e vi.Event) {
 		return
 	}
 	if down {
+		if godMenuHit(px, py, vi.ScanoutWidth, vi.ScanoutHeight) {
+			menuGesture = true
+			railDragFrom, contentDown, sashDragging = -1, false, false
+			openLauncher()
+			return
+		}
 		// M71e (#1564): on an empty strip the start surface is the click
 		// target. Checked before the rail so it cannot be shadowed by a
 		// rail cell that happens to span the point (the rail has no cells
 		// when the strip is empty, so this is belt-and-braces).
 		if tabs.Count() == 0 && startSurfaceHit(px, py) {
+			menuGesture = true
 			openLauncher()
 			return
 		}
@@ -646,6 +671,9 @@ func handleWmPointer(e vi.Event) {
 	// pointer. No live preview either (the seat paints no content-area
 	// chrome); the rects move once, on the release edge above.
 	if sashDragging {
+		return
+	}
+	if godMenuHit(px, py, vi.ScanoutWidth, vi.ScanoutHeight) {
 		return
 	}
 	if _, onToast := notifyHit(px, py, vi.ScanoutWidth, vi.ScanoutHeight); onToast {

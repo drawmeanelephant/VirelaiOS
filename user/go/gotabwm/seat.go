@@ -396,6 +396,9 @@ func main() {
 				remote = nil
 			}
 		}
+		if launch.open && launch.sink != 0 && !ensureLauncherFocus() {
+			dismissLauncher()
+		}
 		e, ok := vi.PollEvent()
 		if !ok {
 			vi.Sleep(1)
@@ -445,6 +448,7 @@ func main() {
 	// closed cleanly, pure timing variance). Sweep whatever remains so
 	// every hosted app still observes its close on the way out; a strip
 	// the choreography or countdown already emptied is a no-op.
+	dismissLauncher()
 	sweepHosted(closeHosted)
 	// M82d2 (#1785): the tail of the center's history (whatever landed since
 	// the last tick) is published before the seat says it is done.
@@ -540,6 +544,9 @@ func compositeTick(scan []byte, ticks uint64, presents *int) {
 	case idleCurtain:
 		_ = paintIdleCurtain(scan, vi.ScanoutWidth, vi.ScanoutHeight)
 	}
+	if !demoMode {
+		syncSeatChrome(scan)
+	}
 	presented := vi.WmctlRequestPresent() == 0
 	if presented {
 		*presents++
@@ -563,6 +570,9 @@ func compositeTick(scan []byte, ticks uint64, presents *int) {
 	flushNotifyHistory()
 	if restoreWitnessMode && presented && ticks%8 == 0 {
 		vi.ConsoleLine(restoreWitnessLine())
+	}
+	if launch.open && presented && launch.painted {
+		vi.ConsoleLine("gotabwm: launcher presented")
 	}
 	if stripDone || !demoMode {
 		// M79a (#1704): the auto-reorder/pin/split/close chain and the
@@ -655,6 +665,7 @@ func drainSeatEvents(first vi.Event, poll func() (vi.Event, bool), consume func(
 // Any other kind is the pre-M63a ignore-non-tick path. Only
 // EvCompositeTick returns true.
 func consumeSeatEvent(e vi.Event) bool {
+	launcherWindowEvent(e)
 	if e.Kind == vi.EvWmPointer {
 		vi.ConsoleLine(MarkerPtr)
 		if idleInput(seatTick) {

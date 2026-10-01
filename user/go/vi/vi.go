@@ -89,6 +89,7 @@ const (
 	SlotWinFill      uintptr = 13
 	SlotWinPresent   uintptr = 14
 	SlotWinClose     uintptr = 15
+	SlotWinRaise     uintptr = 17
 	SlotWinQuery     uintptr = 19
 	SlotPollEvent    uintptr = 21
 	SlotWaitEvent    uintptr = 22
@@ -387,6 +388,9 @@ func WinResize(id int, w, h uint32) int64 {
 
 // WinClose closes the caller's window.
 func WinClose(id int) int64 { return syscall1(SlotWinClose, uintptr(id)) }
+
+// WinRaise raises the caller's window without changing keyboard focus.
+func WinRaise(id int) int64 { return svc1(SlotWinRaise, uintptr(id)) }
 
 // WinQuery reads the full window state (x, y, w, h, z, focused, visible,
 // dirty) — 32 bytes out through uaccess.
