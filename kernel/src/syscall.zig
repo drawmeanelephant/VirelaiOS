@@ -80,6 +80,7 @@ pub const events = @import("events.zig"); // Milestone 9 (claim 1016): applicati
 pub const file_table = @import("file_table.zig"); // Milestone 10 (claim 3570): userland storage ABI
 pub const esp_exec = @import("exec.zig"); // Claim 6359 (ADR 0007 slot 28): the EL0 exec seam — reuse the EL1h loader
 pub const virtio_file = @import("virtio_file.zig"); // HF6: the host channel's path max is the exec name bound (the ESP window is gone)
+pub const trust = @import("trust.zig");
 pub const tcp = @import("tcp.zig"); // Milestone 12 (claim 7483): TCP client seam
 pub const timer = @import("timer.zig"); // Hardware cycle counter + ticks for TCP timeouts
 pub const csprng = @import("csprng.zig"); // ISN generation for TCP connect
@@ -226,8 +227,11 @@ pub const sys_tcp_recv: u64 = 32;
 pub const sys_tcp_close: u64 = 33;
 /// Milestone 13 (claim 5801): `sys_file_delete(path_ptr, path_len)` — slot 34.
 pub const sys_file_delete: u64 = 34;
-/// Milestone 13 (claim 5801): `sys_file_rename(old_ptr, old_len, new_ptr, new_len)` — slot 35.
+/// Slot 35: old_len bit 63 explicitly selects replacement. Four-argument
+/// callers retain no-overwrite; x4/x5 are still unused (legacy gateways do
+/// not initialize them). Other length bits remain the bounded byte count.
 pub const sys_file_rename: u64 = 35;
+pub const file_rename_replace: u64 = @as(u64, 1) << 63;
 /// Milestone 13 (claim 5801): `sys_file_truncate(handle, size)` — slot 36.
 pub const sys_file_truncate: u64 = 36;
 /// Milestone 13 (claim 5801): `sys_file_free(volume)` — slot 37.
@@ -1906,10 +1910,12 @@ fn handle_file_delete(args: Args, _: *exceptions.VectorFrame) u64 {
     return 0;
 }
 
-/// Milestone 13 (claim 5801): slot 35 — sys_file_rename(old_ptr, old_len, new_ptr, new_len)
+/// Slot 35 — old_len is the byte count optionally OR'd with
+/// file_rename_replace. No extra registers or new syscall are required.
 fn handle_file_rename(args: Args, _: *exceptions.VectorFrame) u64 {
     const old_ptr = args[0];
-    const old_len = args[1];
+    const old_len = args[1] & ~file_rename_replace;
+    const mode: file_table.RenameMode = if ((args[1] & file_rename_replace) != 0) .replace else .preserve_existing;
     const new_ptr = args[2];
     const new_len = args[3];
     if (old_len == 0 or old_len > file_table.max_path_len or new_len == 0 or new_len > file_table.max_path_len) return error_result(.einval);
@@ -1918,7 +1924,7 @@ fn handle_file_rename(args: Args, _: *exceptions.VectorFrame) u64 {
     var new_buf: [file_table.max_path_len]u8 = undefined;
     if (uaccess.copy_in(&old_buf, old_ptr, @intCast(old_len)) != .ok) return error_result(.efault);
     if (uaccess.copy_in(&new_buf, new_ptr, @intCast(new_len)) != .ok) return error_result(.efault);
-    const res = file_table.rename(pid, old_buf[0..old_len], new_buf[0..new_len]);
+    const res = file_table.rename_mode(pid, old_buf[0..old_len], new_buf[0..new_len], mode);
     if (res < 0) return @bitCast(res);
     return 0;
 }

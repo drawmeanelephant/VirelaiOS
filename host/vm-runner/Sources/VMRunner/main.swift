@@ -6851,7 +6851,9 @@ final class CustomVirtioSpikeDeviceDelegate: NSObject, VZCustomVirtioDeviceDeleg
         case VFWire.opFsync:
             serveFsync(payload, element: element)
         case VFWire.opRename:
-            serveRename(payload, element: element)
+            serveRename(payload, mode: .preserveExisting, element: element)
+        case VFWire.opReplace:
+            serveRename(payload, mode: .replace, element: element)
         case VFWire.opMkdir:
             serveMkdir(payload, element: element)
         case VFWire.opDelete:
@@ -7098,35 +7100,17 @@ final class CustomVirtioSpikeDeviceDelegate: NSObject, VZCustomVirtioDeviceDeleg
         print("VF-FILE: FSYNC h=\(handle) → status \(status)")
     }
 
-    /// RENAME [from][0x00][to]: moveItem, both resolved inside the share.
-    private func serveRename(_ payload: [UInt8], element: VZVirtioQueueElement) {
-        guard let root = shareRootURL(), let nul = payload.firstIndex(of: 0),
-              let from = String(bytes: payload[0..<nul], encoding: .utf8),
-              let to = String(bytes: payload[(nul + 1)...], encoding: .utf8),
-              let fromURL = VFWire.resolveSubpath(root: root, path: from),
-              let toURL = VFWire.resolveSubpath(root: root, path: to),
-              !to.isEmpty else {
+    /// RENAME/REPLACE [from][0x00][to]: one atomic host primitive.
+    private func serveRename(_ payload: [UInt8], mode: VFWire.RenameMode, element: VZVirtioQueueElement) {
+        guard let root = shareRootURL() else {
             writeFileReply(element: element, status: VFWire.stHostError, data: [])
             return
         }
-        let fm = FileManager.default
-        var fromIsDir: ObjCBool = false
-        guard fm.fileExists(atPath: fromURL.path, isDirectory: &fromIsDir) else {
-            writeFileReply(element: element, status: VFWire.stNotFound, data: [])
-            return
-        }
-        var toIsDir: ObjCBool = false
-        if fm.fileExists(atPath: toURL.path, isDirectory: &toIsDir) {
-            writeFileReply(element: element, status: VFWire.stExists, data: [])
-            return
-        }
-        do {
-            try fm.moveItem(at: fromURL, to: toURL)
-            writeFileReply(element: element, status: VFWire.stOk, data: [])
-            print("VF-FILE: RENAME \(from) → \(to)")
-        } catch {
-            writeFileReply(element: element, status: VFWire.stHostError, data: [])
-        }
+        let status = VFWire.rename(root: root, payload: payload, mode: mode)
+        writeFileReply(element: element, status: status, data: [])
+        let operation = mode == .replace ? "REPLACE" : "RENAME"
+        let paths = String(bytes: payload, encoding: .utf8)?.replacingOccurrences(of: "\0", with: " → ") ?? "<invalid>"
+        print("VF-FILE: \(operation) \(paths) → status \(status)")
     }
 
     /// MKDIR [path]: one level (parents must exist). stExists when the

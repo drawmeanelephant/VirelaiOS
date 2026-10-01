@@ -73,6 +73,40 @@ Class-A ownership/error tests and `live-user-fs`'s native probe verify the
 facility. Their HTML/JSON fixture is not Oliver CLI acceptance; that needs
 A3+C1 and an independent pinned-engine comparison.
 
+## Amendment (2026-10-01, B4 #1871 — explicit staged replacement)
+
+Slot 35 keeps its four-argument signature. `old_len` bit 63
+(`0x8000_0000_0000_0000`) selects **replace-on-publish**; its remaining bits
+are the source byte count. Without that bit, rename is **preserve-existing**
+on every backend. Both lengths use B2's 1–512-byte bound; other set length
+bits are invalid. x4/x5 remain ignored: existing four-argument gateways do not
+initialize them, so making either register a flags word would break callers.
+No new slot, widened path, handle, allocation or native error number.
+
+Both operations stay within `/host` and authorize source deletion and
+destination creation before backend mutation. Secret/poisoned paths refuse
+at either end, including privileged actors. Success moves the source trust
+metadata (implicit defaults included); a backend refusal leaves both entries
+unchanged. Same-path/case-only success does not change metadata.
+
+Replacement is one backend rename: VirtioFS `FUSE_RENAME`, or additive
+legacy file-channel opcode `0x10` backed by the host's atomic rename
+(B2 keeps `0x0d`–`0x0f` and statuses 7–9; B4 adds statuses 10–11).
+Preserve-existing uses `FUSE_RENAME2` with `RENAME_NOREPLACE`, or legacy
+opcode `0x09` backed by `RENAME_EXCL`. There is no stat-then-overwrite,
+delete-then-rename or copy fallback. An unsupported primitive refuses before
+mutation. An older legacy host rejects the new opcode instead of ignoring
+a replacement flag.
+
+Results: 0 success, `EINVAL` (-1) invalid path/type/backend failure,
+`EFAULT` (-3) either bad user path, `ENOSYS` (-4) unsupported primitive,
+`ENOENT` (-6) missing source/parent, `EACCES` (-7) permission/trust denial,
+file-domain `EEXIST` (-9) preserved destination. Backend rejection preserves
+the prior destination and staged source. Transport loss after submission
+has an **unknown commit outcome**, not a claimed rollback guarantee.
+No directory-fsync/power-loss durability or multi-file atomic switch is
+promised. `live-user-fs` covers both backends and the unchanged ABI consumers.
+
 ## Context
 
 Claim 8215 / PR #60 proved the smallest real EL0 boundary: a statically

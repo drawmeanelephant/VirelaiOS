@@ -731,10 +731,9 @@ fn migrate(from_version: u32) void {
 /// SHARE — crash-safe (M66b #1444): the body is written to a sacrificial
 /// `SETTINGS.TXT.tmp` (write_whole may truncate OUR temp; the live file is
 /// never touched until publish), fsync'd through the handle, and published
-/// by the host's rename. The HF rename is no-overwrite (the host answers
-/// st_exists for a live target), so the publish is delete-then-rename —
-/// the crash window leaves the file ABSENT, which the next load reads as
-/// compiled defaults; the file is never truncated or left partial. An
+/// by one replacement rename. A rejected publish preserves the previous
+/// settings, with no delete-then-rename absence window. This does not promise
+/// directory-fsync/power-loss durability. An
 /// orphan tmp from a save that crashed between its close and the publish
 /// is not cleaned at boot — the next save simply replaces it.
 /// HF6 (issue #740): without a channel the save is an honest no-op.
@@ -742,16 +741,14 @@ pub fn save_to_share() bool {
     ensure_init();
     if (!virtio_file.available()) return false;
     if (trust.check(trust.kernel_actor(), .host, filename, .write) != .allow) return false;
+    const tmp_name = filename ++ ".tmp";
+    if (trust.check(trust.kernel_actor(), .host, tmp_name, .create) != .allow or
+        trust.check(trust.kernel_actor(), .host, tmp_name, .delete) != .allow or
+        trust.check(trust.kernel_actor(), .host, filename, .create) != .allow) return false;
     var buf: [2048]u8 = undefined;
     const len = serialize(&buf);
-    const tmp_name = filename ++ ".tmp";
     if (virtio_file.write_whole(tmp_name, buf[0..len]) != virtio_file.st_ok) return false;
-    const dst = virtio_file.delete(filename);
-    if (dst != virtio_file.st_ok and dst != virtio_file.st_not_found) {
-        _ = virtio_file.delete(tmp_name);
-        return false;
-    }
-    if (virtio_file.rename(tmp_name, filename) != virtio_file.st_ok) {
+    if (virtio_file.replace(tmp_name, filename) != virtio_file.st_ok) {
         _ = virtio_file.delete(tmp_name);
         return false;
     }

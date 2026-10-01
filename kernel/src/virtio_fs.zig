@@ -24,6 +24,10 @@ pub const st_handle: u8 = 6;
 pub const st_limit: u8 = 7;
 pub const st_path_limit: u8 = 8;
 pub const st_changed: u8 = 9;
+pub const st_access: u8 = 10;
+pub const st_unsupported: u8 = 11;
+
+pub const RenameMode = enum { preserve_existing, replace };
 
 pub const virtio_fs_did: u32 = 0x105a;
 pub const virtio_fs_device_id: u32 = 26;
@@ -155,6 +159,8 @@ const fuse_mkdir: u32 = 9;
 const fuse_unlink: u32 = 10;
 const fuse_rmdir: u32 = 11;
 const fuse_rename: u32 = 12;
+const fuse_rename2: u32 = 45;
+const rename_noreplace: u32 = 1;
 const fuse_open: u32 = 14;
 const fuse_read: u32 = 15;
 const fuse_write: u32 = 16;
@@ -556,6 +562,8 @@ fn status_from_error() u8 {
         2 => st_not_found, // ENOENT
         17 => st_exists, // EEXIST
         21 => st_is_dir, // EISDIR
+        1, 13 => st_access, // EPERM / EACCES (FUSE wire errno, not native errno)
+        38, 95 => st_unsupported, // ENOSYS / EOPNOTSUPP
         else => st_host_error,
     };
 }
@@ -1093,26 +1101,85 @@ pub fn delete(raw_path: []const u8) u8 {
     return st_ok;
 }
 
-pub fn rename(raw_from: []const u8, raw_to: []const u8) u8 {
+/// One server-side rename: replacement uses FUSE_RENAME; preserve-existing
+/// requires FUSE_RENAME2/NOREPLACE. Never emulate it with a racy lookup followed
+/// by FUSE_RENAME. An older/unsupported server refuses without a fallback.
+pub fn rename(raw_from: []const u8, raw_to: []const u8, mode: RenameMode) u8 {
     if (!available()) return st_host_error;
     const saved = fs_lock.lock();
     defer fs_lock.unlock(saved);
+    if (mode == .preserve_existing and fs_minor < 23) return st_unsupported;
     const from = resolve_parent(raw_from) orelse return status_from_error();
     const to = resolve_parent(raw_to) orelse return status_from_error();
     var input: [16 + max_path * 2 + 2]u8 = [_]u8{0} ** (16 + max_path * 2 + 2);
-    write64(&input, 0, to.parent);
-    var len: usize = 8;
-    @memcpy(input[len..][0..from.name.len], from.name);
-    len += from.name.len;
-    input[len] = 0;
-    len += 1;
-    @memcpy(input[len..][0..to.name.len], to.name);
-    len += to.name.len;
-    input[len] = 0;
-    len += 1;
-    _ = transact(fuse_rename, from.parent, input[0..len]) orelse return status_from_error();
+    const len = encode_rename(to.parent, from.name, to.name, mode, &input) orelse return st_host_error;
+    const opcode = if (mode == .replace) fuse_rename else fuse_rename2;
+    _ = transact(opcode, from.parent, input[0..len]) orelse return status_from_error();
     cache_clear();
     return st_ok;
+}
+
+fn encode_rename(parent: u64, from: []const u8, to: []const u8, mode: RenameMode, out: []u8) ?usize {
+    const header_len: usize = if (mode == .replace) 8 else 16;
+    const len = header_len + from.len + 1 + to.len + 1;
+    if (from.len == 0 or to.len == 0 or from.len > max_path or to.len > max_path or len > out.len) return null;
+    if (std.mem.indexOfScalar(u8, from, 0) != null or std.mem.indexOfScalar(u8, to, 0) != null) return null;
+    @memset(out[0..len], 0);
+    write64(out, 0, parent);
+    if (mode == .preserve_existing) write32(out, 8, rename_noreplace);
+    @memcpy(out[header_len..][0..from.len], from);
+    @memcpy(out[header_len + from.len + 1 ..][0..to.len], to);
+    return len;
+}
+
+test "virtio_fs: replacement and atomic no-replace have distinct FUSE requests" {
+    var payload: [16 + max_path * 2 + 2]u8 = undefined;
+    const replace_len = encode_rename(19, "stage", "output", .replace, &payload).?;
+    try std.testing.expectEqual(@as(usize, 21), replace_len);
+    try std.testing.expectEqual(@as(u64, 19), read64(&payload, 0));
+    try std.testing.expectEqualSlices(u8, "stage\x00output\x00", payload[8..replace_len]);
+    const preserve_len = encode_rename(19, "stage", "output", .preserve_existing, &payload).?;
+    try std.testing.expectEqual(@as(usize, 29), preserve_len);
+    try std.testing.expectEqual(rename_noreplace, read32(&payload, 8));
+    try std.testing.expectEqual(@as(u32, 0), read32(&payload, 12));
+    try std.testing.expectEqualSlices(u8, "stage\x00output\x00", payload[16..preserve_len]);
+    try std.testing.expect(encode_rename(1, "stage", "output", .replace, payload[0..20]) == null);
+    try std.testing.expect(encode_rename(1, "", "output", .replace, &payload) == null);
+    try std.testing.expect(encode_rename(1, "stage\x00escape", "output", .replace, &payload) == null);
+}
+
+test "virtio_fs: rename failure statuses are explicit" {
+    const before = fs_error;
+    defer fs_error = before;
+    for ([_]struct { errno: i32, status: u8 }{
+        .{ .errno = -2, .status = st_not_found },
+        .{ .errno = -17, .status = st_exists },
+        .{ .errno = -13, .status = st_access },
+        .{ .errno = -1, .status = st_access },
+        .{ .errno = -38, .status = st_unsupported },
+        .{ .errno = -95, .status = st_unsupported },
+        .{ .errno = -5, .status = st_host_error },
+    }) |case| {
+        fs_error = case.errno;
+        try std.testing.expectEqual(case.status, status_from_error());
+    }
+}
+
+test "virtio_fs: an old server refuses no-replace before any request" {
+    const ready = fs_ready;
+    const initialized = fs_initialized;
+    const minor = fs_minor;
+    const unique = next_unique;
+    defer {
+        fs_ready = ready;
+        fs_initialized = initialized;
+        fs_minor = minor;
+    }
+    fs_ready = true;
+    fs_initialized = true;
+    fs_minor = 22;
+    try std.testing.expectEqual(st_unsupported, rename("stage", "output", .preserve_existing));
+    try std.testing.expectEqual(unique, next_unique);
 }
 
 test "virtio_fs: virtio-fs identity and bounded wire helpers" {

@@ -288,15 +288,15 @@ pub fn ensure_secret_file() bool {
 }
 
 /// Move metadata old→new in the same transaction as a rename. Returns true
-/// when the table changed. A destination entry is replaced (the host rename
-/// overwrites the target).
+/// when the table changed. A successful replacement adopts the source's
+/// metadata, including implicit defaults; failures must not call this.
 pub fn rename_meta(old_partition: file_table.Partition, old_path: []const u8, new_partition: file_table.Partition, new_path: []const u8) bool {
     if (old_path.len == 0 or old_path.len > max_path_len) return false;
     if (new_path.len == 0 or new_path.len > max_path_len) return false;
-    const src = find(old_partition, old_path) orelse return false;
     // A same-key rename (a case-only rename canonicalizes the same way) is a
     // no-op: its source and destination are literally the same slot.
     if (old_partition == new_partition and std.ascii.eqlIgnoreCase(old_path, new_path)) return false;
+    const src = find(old_partition, old_path) orelse return remove(new_partition, new_path);
     // Snapshot the source before any mutation (find returns a pointer into
     // the same table, so move the bytes into a local first).
     const moved = src.*;
@@ -696,6 +696,24 @@ test "trust: remove and rename_meta keep the table consistent" {
     // Delete b drops its entry.
     try std.testing.expect(remove(.host, "b.txt"));
     try std.testing.expectEqual(@as(usize, 1), count());
+}
+
+test "trust: replacement adopts explicit or implicit source metadata" {
+    init();
+    defer init();
+    _ = load("#v1\nstage\t600\t1000\t-\noutput\t606\t0\t-\n");
+    try std.testing.expect(rename_meta(.host, "stage", .host, "output"));
+    try std.testing.expectEqual(@as(usize, 1), count());
+    try std.testing.expectEqual(Verdict.eacces, check(actor_other, .host, "output", .read));
+    var buf: [save_max]u8 = undefined;
+    const n = save(&buf);
+    try std.testing.expectEqualStrings("#v1\noutput\t600\t1000\t-\n", buf[0..n]);
+
+    _ = load("#v1\noutput\t600\t1000\t-\n");
+    try std.testing.expect(rename_meta(.host, "implicit-stage", .host, "output"));
+    try std.testing.expectEqual(@as(usize, 0), count());
+    try std.testing.expectEqual(Verdict.allow, check(actor_other, .host, "output", .read));
+    try std.testing.expect(!rename_meta(.host, "implicit-stage", .host, "output"));
 }
 
 test "trust: over-long paths never falsely match a short entry" {

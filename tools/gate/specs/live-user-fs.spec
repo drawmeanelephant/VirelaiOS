@@ -7,6 +7,8 @@
 # exec-order: assert-proven -- stream boot waits for the probe's exit.
 # B2 runs one raw native fixture on both backends, with independent
 # share-byte validation, real continuation/EOF and post-death page recovery.
+# B4: one raw native-ABI probe runs against each backend. The host compares
+# both publications, retained stages, failure receipts and trust metadata.
 
 vgate_name live-user-fs "userland storage ABI & utilities on VZ"
 vgate_share arm
@@ -260,3 +262,273 @@ lines = pathlib.Path(os.environ["VG_SER"]).read_text()
 pages = re.findall(r"^pages: armed=1 total=(0x[0-9a-f]+) free=(0x[0-9a-f]+)", lines, re.M)
 assert len(pages) >= 2 and pages[0] == pages[-1], ("cursor/EL0 page leak", pages)
 PY
+
+# This is a gate-only ABI probe, not an additional Zig product/SDK adapter.
+vgate_file publish.ld <<'EOF'
+ENTRY(_start)
+PHDRS {
+    text PT_LOAD FLAGS(5);
+    data PT_LOAD FLAGS(6);
+}
+SECTIONS {
+    . = 0x00400000;
+    .text : { *(.text .text.*) } :text
+    .rodata : { *(.rodata .rodata.*) } :text
+    . = ALIGN(4096) + 4096;
+    .data : { BYTE(0); *(.data .data.*) } :data
+    .bss (NOLOAD) : { *(.bss .bss.*) } :data
+    /DISCARD/ : { *(.note.*) *(.eh_frame .eh_frame_hdr) }
+}
+EOF
+
+vgate_file publish.zig <<'EOF'
+const replace_bit: u64 = @as(u64, 1) << 63;
+
+fn svc(number: u64, a0: u64, a1: u64, a2: u64, a3: u64) i64 {
+    var result: i64 = undefined;
+    asm volatile ("svc #0"
+        : [result] "={x0}" (result),
+        : [number] "{x8}" (number),
+          [a0] "{x0}" (a0),
+          [a1] "{x1}" (a1),
+          [a2] "{x2}" (a2),
+          [a3] "{x3}" (a3),
+          [unused4] "{x4}" (@as(u64, 0x1234)),
+          [unused5] "{x5}" (@as(u64, 0x5678)),
+        : .{ .memory = true });
+    return result;
+}
+
+fn say(message: []const u8) void {
+    _ = svc(1, 1, @intFromPtr(message.ptr), message.len, 0);
+}
+
+fn expect(result: i64, wanted: i64) void {
+    if (result != wanted) {
+        say("b4: FAIL native result\n");
+        _ = svc(3, 1, 0, 0, 0);
+        while (true) {}
+    }
+}
+
+fn write(path: []const u8, body: []const u8) void {
+    const fd = svc(23, @intFromPtr(path.ptr), path.len, 6, 0);
+    if (fd < 0) expect(fd, 0);
+    expect(svc(25, @intCast(fd), @intFromPtr(body.ptr), body.len, 0), @intCast(body.len));
+    expect(svc(77, @intCast(fd), 0, 0, 0), 0);
+    expect(svc(26, @intCast(fd), 0, 0, 0), 0);
+}
+
+fn read(path: []const u8, body: []const u8) void {
+    read_checked(path, body, null);
+}
+
+fn read_checked(path: []const u8, body: []const u8, copy: ?[]const u8) void {
+    const fd = svc(23, @intFromPtr(path.ptr), path.len, 1, 0);
+    if (fd < 0) expect(fd, 0);
+    var bytes: [128]u8 = undefined;
+    expect(svc(24, @intCast(fd), @intFromPtr(&bytes), bytes.len, 0), @intCast(body.len));
+    for (body, 0..) |byte, i| expect(bytes[i], byte);
+    expect(svc(26, @intCast(fd), 0, 0, 0), 0);
+    if (copy) |copy_path| write(copy_path, bytes[0..body.len]);
+}
+
+fn rename(from: []const u8, to: []const u8, replace: bool) i64 {
+    const length = from.len | (if (replace) replace_bit else @as(u64, 0));
+    return svc(35, @intFromPtr(from.ptr), length, @intFromPtr(to.ptr), to.len);
+}
+
+export fn b4_main() noreturn {
+    write("/host/B4/stage", "first publication\n");
+    expect(rename("/host/B4/stage", "/host/B4/output", true), 0);
+    read_checked("/host/B4/output", "first publication\n", "/host/B4/first.copy");
+    write("/host/B4/stage", "second publication\n");
+    expect(rename("/host/B4/stage", "/host/B4/output", true), 0);
+    read("/host/B4/output", "second publication\n");
+    say("b4: two publications ok\n");
+
+    write("/host/B4/stage", "retained stage\n");
+    expect(rename("/host/B4/stage", "/host/B4/output", false), -9);
+    read("/host/B4/output", "second publication\n");
+    read("/host/B4/stage", "retained stage\n");
+    expect(rename("/host/B4/stage", "/host/B4/fresh", false), 0);
+    read("/host/B4/fresh", "retained stage\n");
+    say("b4: no-overwrite EEXIST and fresh rename ok\n");
+
+    // Inject a missing-stage failure, then an actual backend type conflict.
+    expect(rename("/host/B4/missing", "/host/B4/output", true), -6);
+    expect(rename("/host/B4/directory", "/host/B4/output", true), -1);
+    read("/host/B4/output", "second publication\n");
+    say("b4: replacement ENOENT and EINVAL preserve output\n");
+
+    // Four both-end policy failures, through the actual native syscall.
+    expect(rename("/host/B4/denied-src", "/host/B4/output", true), -7);
+    write("/host/B4/stage", "retained stage\n");
+    expect(rename("/host/B4/stage", "/host/B4/denied-dst", true), -7);
+    expect(rename("/host/B4/secret-src", "/host/B4/output", true), -7);
+    expect(rename("/host/B4/stage", "/host/B4/secret-dst", true), -7);
+    // The preserve-existing operation has the same policy, not a bypass.
+    expect(rename("/host/B4/denied-src", "/host/B4/output", false), -7);
+    expect(rename("/host/B4/stage", "/host/B4/denied-dst", false), -7);
+    read("/host/B4/stage", "retained stage\n");
+    read("/host/B4/output", "second publication\n");
+    say("b4: both-end permission and secret EACCES ok\n");
+
+    const source = "/host/B4/stage";
+    const destination = "/host/B4/output";
+    expect(svc(35, @intFromPtr(source.ptr), source.len | replace_bit | (@as(u64, 1) << 62),
+        @intFromPtr(destination.ptr), destination.len), -1);
+    expect(svc(35, 0xfffffffffffff000, source.len | replace_bit,
+        @intFromPtr(destination.ptr), destination.len), -3);
+    expect(svc(35, @intFromPtr(source.ptr), source.len | replace_bit,
+        0xfffffffffffff000, destination.len), -3);
+    read("/host/B4/output", "second publication\n");
+    write("/host/B4/receipt", "publications=2 refusals=12 failed=0\n");
+    say("b4: PASS publications=2 refusals=12\n");
+    _ = svc(3, 0, 0, 0, 0);
+    while (true) {}
+}
+
+export fn _start() callconv(.naked) noreturn {
+    asm volatile (
+        \\bl b4_main
+    );
+}
+EOF
+
+vgate_file script-publish.txt <<'EOF'
+settings set hostname b4-first
+settings set hostname b4-second
+exec B4PUB.ELF
+EOF
+
+vgate_file script-publish-done.txt <<'EOF'
+echo done-b4-publication
+EOF
+
+vgate_file b4-first.txt <<'EOF'
+first publication
+EOF
+vgate_file b4-second.txt <<'EOF'
+second publication
+EOF
+vgate_file b4-stage.txt <<'EOF'
+retained stage
+EOF
+vgate_file b4-receipt.txt <<'EOF'
+publications=2 refusals=12 failed=0
+EOF
+
+vgate_setup_python <<'PY'
+import os, subprocess
+rd = os.environ["RUN_DIR"]
+share = os.environ.get("VG_SHARE") or os.path.join(rd, "share")
+subprocess.run([
+    "zig", "build-exe", "-target", "aarch64-freestanding-none",
+    "-O", "ReleaseSafe", "-fstrip", "-fno-stack-check", "-T", os.path.join(rd, "publish.ld"),
+    os.path.join(rd, "publish.zig"), "-femit-bin=" + os.path.join(share, "B4PUB.ELF")
+], check=True)
+# Disjoint per-backend fixtures: the VirtioFS run also attaches the legacy
+# share, so wrong backend dispatch cannot pass the independent host checks.
+policy = ("#v1\n"
+          "B4/denied-src\t400\t1000\t-\n"
+          "B4/denied-dst\t400\t1000\t-\n"
+          "B4/secret-src\t600\t0\tsecret\n"
+          "B4/secret-dst\t600\t0\tsecret\n"
+          "B4/stage\t600\t1000\t-\n"
+          "B4/output\t606\t0\t-\n")
+for root in (share, os.path.join(rd, "virtiofs")):
+    os.makedirs(os.path.join(root, "B4", "directory"), exist_ok=True)
+    if root != share:
+        import shutil
+        shutil.copy(os.path.join(share, "B4PUB.ELF"), os.path.join(root, "B4PUB.ELF"))
+    for name, body in (("output", "original publication\n"),
+                       ("denied-src", "denied source\n"),
+                       ("denied-dst", "denied destination\n"),
+                       ("secret-src", "secret source\n"),
+                       ("secret-dst", "secret destination\n")):
+        open(os.path.join(root, "B4", name), "w").write(body)
+    open(os.path.join(root, "OWNERS.TXT"), "w").write(policy)
+print("B4 native probe bytes=%d; no SDK dependencies or extra handles" %
+      os.path.getsize(os.path.join(share, "B4PUB.ELF")))
+PY
+
+vgate_run publish-legacy -- --script '$RUN_DIR/script-publish.txt' \
+    --script-after 'tasks user-el0 exited status=7' \
+    --script2 '$RUN_DIR/script-publish-done.txt' \
+    --script2-after 'tasks user-exec exited status=0' \
+    --script-expect 'done-b4-publication' --timeout 60
+vgate_assert publish-legacy serial-contains 'b4: PASS publications=2 refusals=12'
+vgate_assert publish-legacy serial-contains 'settings: hostname=b4-first (persisted)'
+vgate_assert publish-legacy serial-contains 'settings: hostname=b4-second (persisted)'
+vgate_assert publish-legacy serial-absent 'b4: FAIL'
+vgate_assert publish-legacy serial-absent '[EXC] parking'
+vgate_assert publish-legacy output-contains 'VF-FILE: REPLACE B4/stage'
+vgate_assert publish-legacy share-equals B4/first.copy $'first publication\n'
+vgate_assert publish-legacy share-equals B4/output $'second publication\n'
+vgate_assert publish-legacy share-equals B4/stage $'retained stage\n'
+vgate_assert publish-legacy share-equals B4/fresh $'retained stage\n'
+vgate_assert publish-legacy share-equals B4/receipt b4-receipt.txt
+vgate_assert publish-legacy share-equals B4/denied-src $'denied source\n'
+vgate_assert publish-legacy share-equals B4/denied-dst $'denied destination\n'
+vgate_assert publish-legacy share-equals B4/secret-src $'secret source\n'
+vgate_assert publish-legacy share-equals B4/secret-dst $'secret destination\n'
+vgate_assert publish-legacy share-contains OWNERS.TXT $'B4/secret-dst\t600\t0\tsecret'
+vgate_assert publish-legacy share-contains SETTINGS.TXT 'hostname=b4-second'
+vgate_assert publish-legacy python <<'PY'
+import os
+root = os.environ["VG_SHARE"]
+assert os.path.isdir(os.path.join(root, "B4", "directory"))
+assert open(os.path.join(os.environ["RUN_DIR"], "virtiofs", "B4", "output"), "rb").read() == b"original publication\n"
+body = open(os.path.join(root, "OWNERS.TXT")).read()
+for entry in ("B4/denied-src\t400\t1000\t-", "B4/denied-dst\t400\t1000\t-",
+              "B4/secret-src\t600\t0\tsecret", "B4/secret-dst\t600\t0\tsecret"):
+    assert entry in body, entry
+assert "B4/stage\t" not in body
+assert "B4/output\t" not in body  # Second stage had implicit/default metadata.
+print("legacy: both publications, retained failure source, policies and backend dispatch verified")
+PY
+
+vgate_run publish-virtiofs -- --virtio-fs '$RUN_DIR/virtiofs' \
+    --script '$RUN_DIR/script-publish.txt' \
+    --script-after 'tasks user-el0 exited status=7' \
+    --script2 '$RUN_DIR/script-publish-done.txt' \
+    --script2-after 'tasks user-exec exited status=0' \
+    --script-expect 'done-b4-publication' --timeout 60
+vgate_assert publish-virtiofs serial-contains 'b4: PASS publications=2 refusals=12'
+vgate_assert publish-virtiofs serial-contains 'settings: hostname=b4-first (persisted)'
+vgate_assert publish-virtiofs serial-contains 'settings: hostname=b4-second (persisted)'
+vgate_assert publish-virtiofs serial-absent 'b4: FAIL'
+vgate_assert publish-virtiofs serial-absent '[EXC] parking'
+vgate_assert publish-virtiofs serial-contains 'virtio-fs: ready did=0x105a'
+vgate_assert publish-virtiofs python <<'PY'
+import os, shutil
+rd = os.environ["RUN_DIR"]
+root = os.path.join(rd, "virtiofs")
+expected = {
+    "first.copy": b"first publication\n", "output": b"second publication\n",
+    "stage": b"retained stage\n", "fresh": b"retained stage\n",
+    "receipt": b"publications=2 refusals=12 failed=0\n",
+    "denied-src": b"denied source\n", "denied-dst": b"denied destination\n",
+    "secret-src": b"secret source\n", "secret-dst": b"secret destination\n",
+}
+for name, want in expected.items():
+    path = os.path.join(root, "B4", name)
+    assert open(path, "rb").read() == want, name
+    shutil.copy(path, os.path.join(rd, "virtiofs-" + name))
+assert os.path.isdir(os.path.join(root, "B4", "directory"))
+body = open(os.path.join(root, "OWNERS.TXT")).read()
+assert "B4/output\t" not in body
+assert "B4/stage\t" not in body
+for entry in ("B4/denied-src\t400\t1000\t-", "B4/denied-dst\t400\t1000\t-",
+              "B4/secret-src\t600\t0\tsecret", "B4/secret-dst\t600\t0\tsecret"):
+    assert entry in body, entry
+shutil.copy(os.path.join(root, "OWNERS.TXT"), os.path.join(rd, "virtiofs-owners"))
+assert "hostname=b4-second\n" in open(os.path.join(root, "SETTINGS.TXT")).read()
+print("VirtioFS: 9 independent byte comparisons, directory/source preservation and both-end policy verified")
+PY
+vgate_assert publish-virtiofs capture-equals virtiofs-first.copy b4-first.txt
+vgate_assert publish-virtiofs capture-equals virtiofs-output b4-second.txt
+vgate_assert publish-virtiofs capture-equals virtiofs-stage b4-stage.txt
+vgate_assert publish-virtiofs capture-equals virtiofs-fresh b4-stage.txt
+vgate_assert publish-virtiofs capture-equals virtiofs-receipt b4-receipt.txt
