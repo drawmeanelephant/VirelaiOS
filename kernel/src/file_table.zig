@@ -17,6 +17,7 @@
 //! FAT replace semantics (write-open truncates to 0 unless append).
 
 const std = @import("std");
+const builtin = @import("builtin");
 const process = @import("process.zig");
 // M34 HF4 (issue #738): the `.host` partition serves the `--cvc-file`
 // share through the host file channel — no FAT. HF5 (issue #739) makes
@@ -139,6 +140,186 @@ pub const ParsedPath = struct {
 var handles: [process.max_processes][max_handles_per_process]FileHandle = [_][max_handles_per_process]FileHandle{[_]FileHandle{.{}} ** max_handles_per_process} ** process.max_processes;
 var initialized = false;
 
+/// B1: stream identities are disjoint from the legacy file table's 0..7.
+pub const stream_base: u64 = 0x100;
+pub const stream_inherit: u64 = std.math.maxInt(u64);
+pub const stream_closed: u64 = stream_inherit - 1;
+pub const stream_console: u64 = stream_inherit - 2;
+pub const StreamRequest = extern struct {
+    version: u32 = 1,
+    reserved: u32 = 0,
+    sources: [3]u64 = [_]u64{stream_inherit} ** 3,
+};
+const Binding = union(enum) { closed, console, file: usize };
+const default_streams: [3]Binding = .{ .closed, .console, .console };
+var streams: [process.max_processes][3]Binding = [_][3]Binding{default_streams} ** process.max_processes;
+pub const stream_endpoint_max = process.max_processes * 3;
+const Endpoint = struct { refs: usize = 0, file: FileHandle = .{} };
+var endpoints: [stream_endpoint_max]Endpoint = [_]Endpoint{.{}} ** stream_endpoint_max;
+/// Host-only fault injection. Production always calls the real backend.
+pub var test_stream_write: ?*const fn (u16, []const u8, *u64) u8 = null;
+pub var test_stream_close: ?*const fn (u16) u8 = null;
+
+/// Prepared before loading; committed immediately before task publication.
+/// Explicit file sources MOVE from the parent only on successful spawn.
+/// Inherited streams share the endpoint and its confirmed sequential cursor.
+pub const StreamPlan = struct {
+    parent: usize = 0,
+    bindings: [3]Binding = default_streams,
+    moved: [3]?usize = .{ null, null, null },
+    active: bool = false,
+};
+
+pub fn is_stream(fd: u64) bool {
+    return fd >= stream_base and fd < stream_base + 3;
+}
+
+fn release_binding(binding: Binding) i64 {
+    switch (binding) {
+        .file => |idx| {
+            const ep = &endpoints[idx];
+            if (ep.refs > 1) {
+                ep.refs -= 1;
+                return 0;
+            }
+            if (ep.file.host_handle_valid) {
+                const st = if (builtin.is_test and test_stream_close != null)
+                    test_stream_close.?(ep.file.host_handle)
+                else
+                    virtio_file.close(ep.file.host_handle);
+                if (st != virtio_file.st_ok) return hf_handle_errno(st);
+            }
+            ep.* = .{};
+        },
+        else => {},
+    }
+    return 0;
+}
+
+pub fn prepare_streams(parent: usize, request: StreamRequest, plan: *StreamPlan) i64 {
+    plan.* = .{ .parent = parent };
+    if (parent >= process.max_processes or request.version != 1 or request.reserved != 0) return -1;
+    // Validate the whole request before reserving or consuming anything.
+    for (request.sources, 0..) |source, i| {
+        if (source == stream_inherit or source == stream_closed) continue;
+        if (source == stream_console) {
+            if (i == 0) return -7;
+            continue;
+        }
+        if (source >= max_handles_per_process) return -2;
+        const h = &handles[parent][source];
+        if (!h.in_use) return -2;
+        if (h.partition != .host or h.is_dir) return -1;
+        const want = if (i == 0) MODE_READ else MODE_WRITE;
+        if ((h.flags & want) == 0) return -7;
+        for (request.sources[0..i]) |prior| {
+            if (prior == source) return -1; // no accidental stdout/stderr alias
+        }
+    }
+    plan.active = true;
+    for (request.sources, 0..) |source, i| {
+        if (source == stream_inherit) {
+            plan.bindings[i] = streams[parent][i];
+            if (plan.bindings[i] == .file) endpoints[plan.bindings[i].file].refs += 1;
+        } else if (source == stream_closed) {
+            plan.bindings[i] = .closed;
+        } else if (source == stream_console) {
+            plan.bindings[i] = .console;
+        } else {
+            var free: ?usize = null;
+            for (&endpoints, 0..) |*ep, idx| {
+                if (ep.refs == 0) {
+                    free = idx;
+                    break;
+                }
+            }
+            const idx = free orelse {
+                cancel_streams(plan);
+                return -5;
+            };
+            endpoints[idx] = .{ .refs = 1, .file = handles[parent][source] };
+            plan.bindings[i] = .{ .file = idx };
+            plan.moved[i] = @intCast(source);
+        }
+    }
+    return 0;
+}
+
+pub fn cancel_streams(plan: *StreamPlan) void {
+    if (!plan.active) return;
+    for (plan.bindings, plan.moved) |binding, moved| {
+        if (moved != null) {
+            // The parent still owns this file, including its host handle.
+            endpoints[binding.file] = .{};
+        } else {
+            _ = release_binding(binding);
+        }
+    }
+    plan.active = false;
+}
+
+pub fn commit_streams(pid: usize, plan: *StreamPlan) void {
+    std.debug.assert(plan.active and pid < process.max_processes);
+    for (plan.moved) |fd| {
+        if (fd) |n| handles[plan.parent][n] = .{};
+    }
+    streams[pid] = plan.bindings;
+    plan.active = false;
+}
+
+pub fn stream_is_console(pid: u64, fd: u64) bool {
+    return pid < process.max_processes and is_stream(fd) and streams[pid][fd - stream_base] == .console;
+}
+
+pub fn stream_access(pid: u64, fd: u64, writing: bool) i64 {
+    if (pid >= process.max_processes or !is_stream(fd)) return -2;
+    if ((fd == stream_base) == writing) return -7;
+    return if (streams[pid][fd - stream_base] == .closed) -2 else 0;
+}
+
+pub fn stream_read(pid: u64, fd: u64, out: []u8) i64 {
+    const access = stream_access(pid, fd, false);
+    if (access < 0) return access;
+    return switch (streams[pid][fd - stream_base]) {
+        .file => |idx| read_handle(pid, &endpoints[idx].file, out, true),
+        else => -2, // never attach an absent input to unrelated tty input
+    };
+}
+
+pub fn stream_peek(pid: u64, fd: u64, out: []u8) i64 {
+    const access = stream_access(pid, fd, false);
+    if (access < 0) return access;
+    return switch (streams[pid][fd - stream_base]) {
+        .file => |idx| blk: {
+            var snapshot = endpoints[idx].file;
+            break :blk read_handle(pid, &snapshot, out, true);
+        },
+        else => -2,
+    };
+}
+
+pub fn stream_advance(pid: u64, fd: u64, count: usize) void {
+    endpoints[streams[pid][fd - stream_base].file].file.cursor += @intCast(count);
+}
+
+pub fn stream_write(pid: u64, fd: u64, bytes: []const u8) i64 {
+    const access = stream_access(pid, fd, true);
+    if (access < 0) return access;
+    return switch (streams[pid][fd - stream_base]) {
+        .file => |idx| write_handle(pid, &endpoints[idx].file, bytes),
+        else => -2, // console is emitted by syscall's registered writer
+    };
+}
+
+pub fn stream_close(pid: u64, fd: u64) i64 {
+    if (pid >= process.max_processes or !is_stream(fd)) return -2;
+    const binding = &streams[pid][fd - stream_base];
+    if (binding.* == .closed) return -2;
+    const result = release_binding(binding.*);
+    if (result == 0) binding.* = .closed;
+    return result;
+}
+
 /// #1072 (ADR 0020): each process's controlling terminal (a `terminal.zig`
 /// registry index), created on the first `/dev/tty` open and released when
 /// the process is reset. Null = no terminal opened yet.
@@ -173,6 +354,7 @@ var usb_sector: [usb_msc.block_len]u8 align(64) = undefined;
 var usb_fat_sector: [fat32_ro.sector_len]u8 align(64) = undefined;
 
 pub fn init() void {
+    for (0..process.max_processes) |pid| reset_process(pid);
     for (&handles) |*proc_handles| {
         for (proc_handles) |*h| {
             h.* = .{};
@@ -187,6 +369,12 @@ pub fn init() void {
 
 pub fn reset_process(pid: u64) void {
     if (pid >= process.max_processes) return;
+    for (streams[pid]) |binding| {
+        // Teardown cannot return an error. Reclaim the bounded record even
+        // when a disconnected backend refuses the final close.
+        if (release_binding(binding) < 0 and binding == .file) endpoints[binding.file] = .{};
+    }
+    streams[pid] = default_streams;
     for (&handles[pid]) |*h| {
         // HF5: a killed/exited process must free its HOST write handles
         // (the host table is global — a leaked slot would starve others).
@@ -461,6 +649,14 @@ pub fn open(pid: u64, path_bytes: []const u8, flags: u32) i64 {
     if (path_bytes.len > max_path_len) return -8;
 
     // Find free handle slot for calling process
+    var owned: usize = 0;
+    for (handles[pid]) |h| {
+        if (h.in_use) owned += 1;
+    }
+    for (streams[pid]) |binding| {
+        if (binding == .file) owned += 1;
+    }
+    if (owned >= max_handles_per_process) return -5;
     var free_slot: ?usize = null;
     for (handles[pid], 0..) |h, idx| {
         if (!h.in_use) {
@@ -638,7 +834,10 @@ pub fn open(pid: u64, path_bytes: []const u8, flags: u32) i64 {
 /// Returns bytes read (0 at EOF), or negative error code.
 pub fn read(pid: u64, fd: u64, out_buf: []u8) i64 {
     if (pid >= process.max_processes or fd >= max_handles_per_process) return -2;
-    var h = &handles[pid][fd];
+    return read_handle(pid, &handles[pid][fd], out_buf, false);
+}
+
+fn read_handle(pid: u64, h: *FileHandle, out_buf: []u8, strict: bool) i64 {
     if (!h.in_use) return -2; // EBADF
     if ((h.flags & MODE_READ) == 0) return -7; // EACCES
     if (h.is_dir) return 0; // M25 Lane B: a dir handle reads as empty
@@ -699,8 +898,13 @@ pub fn read(pid: u64, fd: u64, out_buf: []u8) i64 {
     const subpath = h.path[0..h.path_len];
     var total: usize = 0;
     while (total < out_buf.len and h.cursor < h.size) {
-        const rc = virtio_file.read_chunk(subpath, h.cursor, out_buf[total..]);
-        if (rc.status != virtio_file.st_ok or rc.bytes == 0) break;
+        const take = @min(out_buf.len - total, h.size - h.cursor);
+        const rc = virtio_file.read_chunk(subpath, h.cursor, out_buf[total..][0..take]);
+        if (rc.status != virtio_file.st_ok or rc.bytes == 0) {
+            if (strict and total == 0) return if (rc.status == virtio_file.st_not_found) -6 else -1;
+            break;
+        }
+        if (rc.bytes > out_buf.len - total or rc.bytes > h.size - h.cursor) return if (total == 0) -1 else @intCast(total);
         total += rc.bytes;
         h.cursor += @intCast(rc.bytes);
     }
@@ -711,7 +915,10 @@ pub fn read(pid: u64, fd: u64, out_buf: []u8) i64 {
 /// Returns bytes written, or negative error code.
 pub fn write(pid: u64, fd: u64, in_buf: []const u8) i64 {
     if (pid >= process.max_processes or fd >= max_handles_per_process) return -2;
-    var h = &handles[pid][fd];
+    return write_handle(pid, &handles[pid][fd], in_buf);
+}
+
+fn write_handle(pid: u64, h: *FileHandle, in_buf: []const u8) i64 {
     if (!h.in_use) return -2; // EBADF
     if ((h.flags & MODE_WRITE) == 0) return -7; // EACCES
     if (h.is_dir) return -7; // M25 Lane B: never write through a dir handle
@@ -751,11 +958,15 @@ pub fn write(pid: u64, fd: u64, in_buf: []const u8) i64 {
     // count, which is what advances our mirror cursor).
     if (!h.host_handle_valid) return -7; // EACCES (no write handle)
     if (in_buf.len == 0) return 0;
+    if (in_buf.len > std.math.maxInt(u32) - h.cursor) return -5;
     var off: usize = 0;
     while (off < in_buf.len) {
         const take = @min(in_buf.len - off, virtio_file.write_chunk_limit());
         var written: u64 = 0;
-        const st = virtio_file.write(h.host_handle, in_buf[off .. off + take], &written);
+        const st = if (builtin.is_test and test_stream_write != null)
+            test_stream_write.?(h.host_handle, in_buf[off .. off + take], &written)
+        else
+            virtio_file.write(h.host_handle, in_buf[off .. off + take], &written);
         if (st != virtio_file.st_ok or written == 0) {
             // Honest accounting (M66a): the guest mirror advances by the
             // host-CONFIRMED count only, so a mid-stream failure reports the
@@ -766,8 +977,10 @@ pub fn write(pid: u64, fd: u64, in_buf: []const u8) i64 {
             if (off > 0) return @intCast(off);
             return if (st == virtio_file.st_ok) -1 else hf_handle_errno(st);
         }
+        if (written > take) return if (off == 0) -1 else @intCast(off);
         off += @intCast(written);
         h.cursor += @intCast(written);
+        h.size = @max(h.size, h.cursor);
     }
     h.size = @max(h.size, h.cursor);
     return @intCast(in_buf.len);
@@ -988,6 +1201,234 @@ pub fn free_space(pid: u64, volume: u32) i64 {
 // ---------------------------------------------------------------------------
 // Unit tests
 // ---------------------------------------------------------------------------
+
+test "B1: redirected input reaches real EOF and never reads unrelated input" {
+    init();
+    var content: [128 * 1024]u8 = undefined;
+    for (&content, 0..) |*b, i| b.* = @intCast(i % 251);
+    const files = [_]virtio_file.TestFile{
+        .{ .name = "INPUT", .data = &content },
+        .{ .name = "OTHER", .data = "unrelated" },
+    };
+    virtio_file.set_test_share(&files);
+    defer virtio_file.set_test_share(null);
+    const fd = open(0, "INPUT", MODE_READ);
+    try std.testing.expectEqual(@as(i64, 0), fd);
+    var plan: StreamPlan = .{};
+    try std.testing.expectEqual(@as(i64, 0), prepare_streams(0, .{ .sources = .{ @intCast(fd), stream_inherit, stream_inherit } }, &plan));
+    commit_streams(1, &plan);
+    try std.testing.expectEqual(@as(i64, -2), read(0, @intCast(fd), content[0..1]));
+    try std.testing.expectEqual(@as(i64, -2), stream_read(0, stream_base, content[0..1]));
+    var buf: [3001]u8 = undefined;
+    var total: usize = 0;
+    while (true) {
+        const n = stream_read(1, stream_base, &buf);
+        try std.testing.expect(n >= 0);
+        if (n == 0) break;
+        const count: usize = @intCast(n);
+        try std.testing.expectEqualSlices(u8, content[total..][0..count], buf[0..count]);
+        total += count;
+    }
+    try std.testing.expectEqual(content.len, total);
+    try std.testing.expectEqual(@as(i64, 0), stream_read(1, stream_base, &buf));
+    try std.testing.expectEqual(@as(i64, -7), stream_read(1, stream_base + 1, &buf));
+    try std.testing.expectEqual(@as(i64, -7), stream_write(1, stream_base, "x"));
+    try std.testing.expectEqual(@as(i64, 0), stream_close(1, stream_base));
+    try std.testing.expectEqual(@as(i64, -2), stream_close(1, stream_base));
+    try std.testing.expectEqual(@as(i64, -2), stream_read(1, stream_base, &buf));
+    reset_process(1);
+}
+
+test "B1: inherited cursors survive parent closure death and pid reuse" {
+    init();
+    const files = [_]virtio_file.TestFile{.{ .name = "INPUT", .data = "abcdef" }};
+    virtio_file.set_test_share(&files);
+    defer virtio_file.set_test_share(null);
+    const fd = open(0, "INPUT", MODE_READ);
+    var first: StreamPlan = .{};
+    try std.testing.expectEqual(@as(i64, 0), prepare_streams(0, .{ .sources = .{ @intCast(fd), stream_closed, stream_closed } }, &first));
+    commit_streams(1, &first);
+    var child: StreamPlan = .{};
+    try std.testing.expectEqual(@as(i64, 0), prepare_streams(1, .{}, &child));
+    commit_streams(2, &child);
+    var buf: [3]u8 = undefined;
+    try std.testing.expectEqual(@as(i64, 3), stream_read(1, stream_base, &buf));
+    try std.testing.expectEqualStrings("abc", &buf);
+    try std.testing.expectEqual(@as(i64, 0), stream_close(1, stream_base));
+    reset_process(1);
+    try std.testing.expectEqual(@as(i64, -2), stream_read(1, stream_base, &buf));
+    try std.testing.expectEqual(@as(i64, 3), stream_read(2, stream_base, &buf));
+    try std.testing.expectEqualStrings("def", &buf);
+    try std.testing.expectEqual(@as(i64, 0), stream_read(2, stream_base, &buf));
+    reset_process(2);
+    for (endpoints) |ep| try std.testing.expectEqual(@as(usize, 0), ep.refs);
+}
+
+test "B1: two process inputs are isolated and peek does not consume on copy refusal" {
+    init();
+    const files = [_]virtio_file.TestFile{
+        .{ .name = "ONE", .data = "one" },
+        .{ .name = "TWO", .data = "two" },
+    };
+    virtio_file.set_test_share(&files);
+    defer virtio_file.set_test_share(null);
+    for ([_][]const u8{ "ONE", "TWO" }, 1..) |name, pid| {
+        const fd = open(0, name, MODE_READ);
+        var plan: StreamPlan = .{};
+        try std.testing.expectEqual(@as(i64, 0), prepare_streams(0, .{ .sources = .{ @intCast(fd), stream_closed, stream_closed } }, &plan));
+        commit_streams(pid, &plan);
+    }
+    var buf: [3]u8 = undefined;
+    try std.testing.expectEqual(@as(i64, 3), stream_peek(1, stream_base, &buf));
+    try std.testing.expectEqual(@as(i64, 3), stream_peek(1, stream_base, &buf));
+    try std.testing.expectEqualStrings("one", &buf);
+    try std.testing.expectEqual(@as(i64, 3), stream_read(2, stream_base, &buf));
+    try std.testing.expectEqualStrings("two", &buf);
+    stream_advance(1, stream_base, 3);
+    try std.testing.expectEqual(@as(i64, 0), stream_read(1, stream_base, &buf));
+    reset_process(1);
+    reset_process(2);
+}
+
+test "B1: missing truncated or disconnected input is not fabricated EOF" {
+    init();
+    const files = [_]virtio_file.TestFile{.{ .name = "INPUT", .data = "abc" }};
+    virtio_file.set_test_share(&files);
+    defer virtio_file.set_test_share(null);
+    const fd = open(0, "INPUT", MODE_READ);
+    var plan: StreamPlan = .{};
+    try std.testing.expectEqual(@as(i64, 0), prepare_streams(0, .{ .sources = .{ @intCast(fd), stream_closed, stream_closed } }, &plan));
+    commit_streams(1, &plan);
+    var buf: [3]u8 = undefined;
+    const truncated = [_]virtio_file.TestFile{.{ .name = "INPUT", .data = "" }};
+    virtio_file.set_test_share(&truncated);
+    try std.testing.expectEqual(@as(i64, -1), stream_read(1, stream_base, &buf));
+    virtio_file.set_test_share(&.{});
+    try std.testing.expectEqual(@as(i64, -6), stream_read(1, stream_base, &buf));
+    virtio_file.set_test_share(null);
+    try std.testing.expectEqual(@as(i64, -6), stream_read(1, stream_base, &buf));
+    reset_process(1);
+}
+
+test "B1: invalid spawn requests and cancelled reservations preserve parent ownership" {
+    init();
+    handles[0][0] = .{ .in_use = true, .flags = MODE_READ };
+    handles[0][1] = .{ .in_use = true, .flags = MODE_WRITE };
+    handles[0][2] = .{ .in_use = true, .flags = MODE_WRITE, .partition = .tty };
+    var plan: StreamPlan = .{};
+    try std.testing.expectEqual(@as(i64, -1), prepare_streams(0, .{ .version = 2 }, &plan));
+    try std.testing.expectEqual(@as(i64, -1), prepare_streams(0, .{ .reserved = 1 }, &plan));
+    try std.testing.expectEqual(@as(i64, -7), prepare_streams(0, .{ .sources = .{ stream_console, stream_closed, stream_closed } }, &plan));
+    try std.testing.expectEqual(@as(i64, -2), prepare_streams(0, .{ .sources = .{ 7, stream_closed, stream_closed } }, &plan));
+    try std.testing.expectEqual(@as(i64, -7), prepare_streams(0, .{ .sources = .{ 1, stream_closed, stream_closed } }, &plan));
+    try std.testing.expectEqual(@as(i64, -1), prepare_streams(0, .{ .sources = .{ 0, 1, 1 } }, &plan));
+    try std.testing.expectEqual(@as(i64, -1), prepare_streams(0, .{ .sources = .{ 0, 2, stream_closed } }, &plan));
+    handles[0][0].is_dir = true;
+    try std.testing.expectEqual(@as(i64, -1), prepare_streams(0, .{ .sources = .{ 0, stream_closed, stream_closed } }, &plan));
+    handles[0][0].is_dir = false;
+    try std.testing.expectEqual(@as(i64, 0), prepare_streams(0, .{ .sources = .{ 0, 1, stream_closed } }, &plan));
+    cancel_streams(&plan);
+    cancel_streams(&plan);
+    try std.testing.expect(handles[0][0].in_use and handles[0][1].in_use);
+    for (endpoints) |ep| try std.testing.expectEqual(@as(usize, 0), ep.refs);
+    reset_process(0);
+}
+
+test "B1: endpoint exhaustion rolls back and native resources remain bounded at eight" {
+    init();
+    handles[0][0] = .{ .in_use = true, .flags = MODE_READ };
+    handles[0][1] = .{ .in_use = true, .flags = MODE_WRITE };
+    for (endpoints[1..], 1..) |_, idx| endpoints[idx].refs = 1;
+    var plan: StreamPlan = .{};
+    try std.testing.expectEqual(@as(i64, -5), prepare_streams(0, .{ .sources = .{ 0, 1, stream_closed } }, &plan));
+    try std.testing.expect(handles[0][0].in_use and handles[0][1].in_use);
+    try std.testing.expectEqual(@as(usize, 0), endpoints[0].refs);
+    for (&endpoints) |*ep| ep.* = .{};
+    try std.testing.expectEqual(@as(i64, 0), prepare_streams(0, .{ .sources = .{ 0, stream_closed, stream_closed } }, &plan));
+    commit_streams(1, &plan);
+    for (handles[1][0..7], 0..) |_, idx| handles[1][idx] = .{ .in_use = true, .flags = MODE_READ };
+    try std.testing.expectEqual(@as(i64, -5), open(1, "OTHER", MODE_READ));
+    try std.testing.expectEqual(@as(i64, 0), stream_close(1, stream_base));
+    try std.testing.expectEqual(@as(i64, -6), open(1, "OTHER", MODE_READ)); // room, no backend
+    reset_process(0);
+    reset_process(1);
+}
+
+var stream_test_bytes: [2][8192]u8 = undefined;
+var stream_test_counts: [2]usize = .{ 0, 0 };
+var stream_test_fail_at: usize = std.math.maxInt(usize);
+var stream_test_zero = false;
+var stream_test_over = false;
+var stream_test_closes: usize = 0;
+var stream_test_close_fail = false;
+
+fn stream_test_writer(handle: u16, bytes: []const u8, written: *u64) u8 {
+    const idx: usize = handle - 10;
+    if (stream_test_counts[idx] >= stream_test_fail_at) return virtio_file.st_handle;
+    const n = if (stream_test_zero) 0 else @min(bytes.len, 17);
+    @memcpy(stream_test_bytes[idx][stream_test_counts[idx]..][0..n], bytes[0..n]);
+    stream_test_counts[idx] += n;
+    written.* = if (stream_test_over) bytes.len + 1 else n;
+    return virtio_file.st_ok;
+}
+
+fn stream_test_closer(_: u16) u8 {
+    if (stream_test_close_fail) return virtio_file.st_host_error;
+    stream_test_closes += 1;
+    return virtio_file.st_ok;
+}
+
+test "B1: distinct output destinations confirm short writes errors zero progress and final close" {
+    init();
+    test_stream_write = stream_test_writer;
+    test_stream_close = stream_test_closer;
+    defer {
+        reset_process(1);
+        reset_process(2);
+        test_stream_write = null;
+        test_stream_close = null;
+    }
+    stream_test_counts = .{ 0, 0 };
+    stream_test_fail_at = std.math.maxInt(usize);
+    stream_test_zero = false;
+    stream_test_over = false;
+    stream_test_close_fail = false;
+    stream_test_closes = 0;
+    for (0..2) |idx| handles[0][idx] = .{ .in_use = true, .flags = MODE_WRITE, .host_handle_valid = true, .host_handle = @intCast(10 + idx) };
+    var plan: StreamPlan = .{};
+    try std.testing.expectEqual(@as(i64, 0), prepare_streams(0, .{ .sources = .{ stream_closed, 0, 1 } }, &plan));
+    commit_streams(1, &plan);
+    var html: [6001]u8 = undefined;
+    @memset(&html, 'H');
+    try std.testing.expectEqual(@as(i64, html.len), stream_write(1, stream_base + 1, &html));
+    try std.testing.expectEqual(@as(i64, 10), stream_write(1, stream_base + 2, "{\"err\":1}\n"));
+    try std.testing.expectEqualSlices(u8, &html, stream_test_bytes[0][0..stream_test_counts[0]]);
+    try std.testing.expectEqualStrings("{\"err\":1}\n", stream_test_bytes[1][0..stream_test_counts[1]]);
+    stream_test_fail_at = stream_test_counts[0] + 17;
+    try std.testing.expectEqual(@as(i64, 17), stream_write(1, stream_base + 1, "123456789012345678901234567890"));
+    try std.testing.expectEqual(@as(i64, -2), stream_write(1, stream_base + 1, "next"));
+    stream_test_fail_at = std.math.maxInt(usize);
+    stream_test_zero = true;
+    try std.testing.expectEqual(@as(i64, -1), stream_write(1, stream_base + 1, "next"));
+    stream_test_zero = false;
+    stream_test_over = true;
+    try std.testing.expectEqual(@as(i64, -1), stream_write(1, stream_base + 1, "next"));
+    stream_test_over = false;
+    var child: StreamPlan = .{};
+    try std.testing.expectEqual(@as(i64, 0), prepare_streams(1, .{}, &child));
+    commit_streams(2, &child);
+    try std.testing.expectEqual(@as(i64, 0), stream_close(1, stream_base + 1));
+    try std.testing.expectEqual(@as(usize, 0), stream_test_closes);
+    reset_process(1);
+    try std.testing.expectEqual(@as(usize, 0), stream_test_closes);
+    stream_test_close_fail = true;
+    try std.testing.expectEqual(@as(i64, -1), stream_close(2, stream_base + 1));
+    stream_test_close_fail = false;
+    try std.testing.expectEqual(@as(i64, 0), stream_close(2, stream_base + 1));
+    reset_process(2);
+    try std.testing.expectEqual(@as(usize, 2), stream_test_closes);
+    for (endpoints) |ep| try std.testing.expectEqual(@as(usize, 0), ep.refs);
+}
 
 test "file_table: path parsing and volume routing" {
     // Bare paths default to the host share (HF6: the only partition).

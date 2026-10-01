@@ -398,7 +398,7 @@ pub fn argv_va_for(content_len: usize) u64 {
 /// ESP stays the fallback (dual path until HF6 deletes the FAT app path),
 /// so every default boot is byte-identical.
 pub fn exec_file(name: []const u8, args: []const []const u8) ExecResult {
-    return exec_file_impl(name, args, null, process.default_principal);
+    return exec_file_impl(name, args, null, process.default_principal, null);
 }
 
 /// `exec_file` with an explicit spawn principal (M50 TS1, issue #1135,
@@ -406,7 +406,13 @@ pub fn exec_file(name: []const u8, args: []const []const u8) ExecResult {
 /// here; the EL1h monitor uses it for an administrative spawn. No EL0 path
 /// raises privilege — only the kernel can name a principal.
 pub fn exec_file_as(name: []const u8, args: []const []const u8, principal: process.Principal) ExecResult {
-    return exec_file_impl(name, args, null, principal);
+    return exec_file_impl(name, args, null, principal, null);
+}
+
+/// B1: the syscall has reserved stream references under the file lock.
+/// Publish them with the child, never after another core can execute it.
+pub fn exec_file_streams_as(name: []const u8, args: []const []const u8, principal: process.Principal, plan: *file_table.StreamPlan) ExecResult {
+    return exec_file_impl(name, args, null, principal, plan);
 }
 
 /// `exec_file` plus an SMP pin (claim 2369): the spawned task may run ONLY
@@ -416,15 +422,15 @@ pub fn exec_file_as(name: []const u8, args: []const []const u8, principal: proce
 /// Pinned user tasks are safe on a secondary core because console TX is
 /// now locked; they stay on their pinned core for their whole lifetime.
 pub fn exec_file_pinned(name: []const u8, args: []const []const u8, pin: usize) ExecResult {
-    return exec_file_impl(name, args, pin, process.default_principal);
+    return exec_file_impl(name, args, pin, process.default_principal, null);
 }
 
 /// `exec_file_pinned` with an explicit spawn principal (M50 TS1).
 pub fn exec_file_pinned_as(name: []const u8, args: []const []const u8, pin: usize, principal: process.Principal) ExecResult {
-    return exec_file_impl(name, args, pin, principal);
+    return exec_file_impl(name, args, pin, principal, null);
 }
 
-fn exec_file_impl(name: []const u8, args: []const []const u8, pin: ?usize, principal: process.Principal) ExecResult {
+fn exec_file_impl(name: []const u8, args: []const []const u8, pin: ?usize, principal: process.Principal, streams: ?*file_table.StreamPlan) ExecResult {
     defer clear_envp();
     // `head()` reports the newest load; a staged exec answers from the
     // staging buffer, so clear the streamed snapshot until one takes one.
@@ -481,7 +487,7 @@ fn exec_file_impl(name: []const u8, args: []const []const u8, pin: ?usize, princ
                     // traceback is unaffected; stated in the M70c-K PR and
                     // in the docs.
                     symbol.reset();
-                    return exec_static_elf_gap(name, args, .streamed, image, pin, principal);
+                    return exec_static_elf_gap(name, args, .streamed, image, pin, principal, streams);
                 }
                 // The shape parses and is under `load_max`, but it is a
                 // STAGED shape: DSK1/DSK3 are not ELF at all, a contiguous
@@ -583,7 +589,7 @@ fn exec_file_impl(name: []const u8, args: []const []const u8, pin: ?usize, princ
 
             if (image.interp) |interp_name| {
                 // Dynamic ELF executable (claim 7921): load runtime interpreter (LD.SO), setup auxv and shared library aperture.
-                return exec_dynamic_elf(name, args, program[0..got], image, interp_name, pin, principal);
+                return exec_dynamic_elf(name, args, program[0..got], image, interp_name, pin, principal, streams);
             }
 
             if (image.gap_layout) {
@@ -593,7 +599,7 @@ fn exec_file_impl(name: []const u8, args: []const []const u8, pin: ?usize, princ
                 // represent them. The gap path maps every segment at its
                 // DECLARED vaddr (aperture machinery from the dynamic
                 // path); symbols were already collected above.
-                return exec_static_elf_gap(name, args, .{ .staged = program[0..got] }, image, pin, principal);
+                return exec_static_elf_gap(name, args, .{ .staged = program[0..got] }, image, pin, principal, streams);
             }
 
             // The CONTIGUOUS staging contract below represents exactly
@@ -824,6 +830,7 @@ fn exec_file_impl(name: []const u8, args: []const []const u8, pin: ?usize, princ
         // instant it lands on a ring, so a post-publish `pin_task` would
         // lose that race (observed: an `exec -c0` hammer running on a
         // secondary forever).
+        if (streams) |plan| file_table.commit_streams(proc_id, plan);
         scheduler.publish_task(task_id);
     } else {
         // Defensive rollback (the upfront slot check makes this
@@ -889,6 +896,7 @@ fn exec_static_elf_gap(
     image: elf_mod.Image,
     pin: ?usize,
     principal: process.Principal,
+    streams: ?*file_table.StreamPlan,
 ) ExecResult {
     // Issue #1163 B2 (phase 0b): ELF images take the card-3e argv contract.
     // Go's os.Args[0] is the program name, so the block is
@@ -1148,6 +1156,7 @@ fn exec_static_elf_gap(
         scheduler.set_task_text_region(task_id, seg0.vaddr, text_len_pages);
         _ = process.bind(proc_id, task_id);
         // M70b (#1454): pin-before-publish — see the flat-image path above.
+        if (streams) |plan| file_table.commit_streams(proc_id, plan);
         scheduler.publish_task(task_id);
     } else {
         _ = process.reap(proc_id);
@@ -1165,6 +1174,7 @@ fn exec_dynamic_elf(
     interp_name: []const u8,
     pin: ?usize,
     principal: process.Principal,
+    streams: ?*file_table.StreamPlan,
 ) ExecResult {
     if (!scheduler.has_free_slot()) return .pool_full;
 
@@ -1452,6 +1462,7 @@ fn exec_dynamic_elf(
         if (!scheduler.add_task_read_region(task_id, .{ .base = lib_va, .len = lib_pages * alloc.page_size })) return .pool_full;
         _ = process.bind(proc_id, task_id);
         // M70b (#1454): pin-before-publish — see the flat-image path above.
+        if (streams) |plan| file_table.commit_streams(proc_id, plan);
         scheduler.publish_task(task_id);
     } else {
         _ = process.reap(proc_id);
