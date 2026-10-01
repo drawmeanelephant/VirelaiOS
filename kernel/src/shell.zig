@@ -48,7 +48,7 @@ pub const clipboard = @import("clipboard.zig"); // M18 T2 (issue #405): shared c
 pub const virtio_file = @import("virtio_file.zig");
 const svclock = @import("svclock.zig"); // claim 9498 follow-on: the idle loop's service-state brackets (NET/WIN+EV/FILE)
 const trust = @import("trust.zig"); // M50 TS2 (#1136, ADR 0024 D4): the kernel-actor gate for history/env
-const forensics = @import("forensics.zig"); // #1261: console-free liveness sample from the idle loop
+pub const forensics = @import("forensics.zig"); // #1261: console-free liveness sample from the idle loop
 
 /// M18 T4: path for persistent shell history file.
 const history_path = "HISTORY.TXT";
@@ -3713,6 +3713,79 @@ fn login_console_relinquished(mon: *monitor.Monitor) bool {
     return login_relinquished;
 }
 
+/// Only the idle report dispatch uses this adapter. Scheduler reports mix
+/// routine, single-write records with fault/exit/audit evidence, so unknown
+/// writes pass through there. Commands, jobs and exceptions never use it.
+const IdleReportSink = struct {
+    output: console.Console,
+    scheduler_only: bool = false,
+
+    // ADR 0005: construct function-pointer tables at runtime in BSS, not
+    // const data (whose absolute pointers do not follow the kernel load).
+    var vtable: console.Console.VTable = undefined;
+    var vtable_ready = false;
+
+    fn console_handle(self: *IdleReportSink) console.Console {
+        if (!vtable_ready) {
+            vtable = .{ .write = write, .flush = flush, .readByte = readByte };
+            vtable_ready = true;
+        }
+        return .{ .ctx = self, .vtable = &vtable };
+    }
+
+    fn write(ctx: *anyopaque, bytes: []const u8) void {
+        const self: *IdleReportSink = @ptrCast(@alignCast(ctx));
+        if (!self.scheduler_only or routine_scheduler_write(bytes)) return;
+        // Console.write already ran the recorder hook on this sink. Forward
+        // the evidence bytes without invoking that hook a second time.
+        self.output.vtable.write(self.output.ctx, bytes);
+    }
+
+    fn flush(ctx: *anyopaque) void {
+        const self: *IdleReportSink = @ptrCast(@alignCast(ctx));
+        if (self.scheduler_only) self.output.flush();
+    }
+
+    fn readByte(_: *anyopaque) ?u8 {
+        return null;
+    }
+};
+
+fn decimal_report_tail(bytes: []const u8, separator: []const u8, suffix: []const u8) bool {
+    if (!std.mem.endsWith(u8, bytes, suffix)) return false;
+    const at = std.mem.lastIndexOf(u8, bytes, separator) orelse return false;
+    const digits = bytes[at + separator.len .. bytes.len - suffix.len];
+    if (digits.len == 0) return false;
+    for (digits) |b| if (b < '0' or b > '9') return false;
+    return true;
+}
+
+fn routine_scheduler_write(bytes: []const u8) bool {
+    // These producers format a complete record in one write. In particular,
+    // do not discard the fragmented fault symbol note or audit error fields,
+    // nor task/process exit and reap receipts.
+    if (std.mem.startsWith(u8, bytes, "smp: secondary runs=") or
+        std.mem.startsWith(u8, bytes, "smp: steal runs=")) return true;
+    if (!std.mem.startsWith(u8, bytes, "tasks ")) return false;
+    return decimal_report_tail(bytes, " advances=", "\n") or
+        decimal_report_tail(bytes, " sleeping ", " ticks\n");
+}
+
+/// M87c: discard routine writes, not calls. Drain pending reports and advance
+/// sampling even while serial is owned, so handback has no deferred burst.
+/// The actual terminal registry, not the login setting, selects the sink.
+pub fn idle_reports(output: console.Console, counter: u64, freq: u64) void {
+    var quiet = IdleReportSink{ .output = output };
+    var scheduler_sink = IdleReportSink{ .output = output, .scheduler_only = true };
+    const owned = terminal.attachedSerial() != null;
+    var routine_con = if (owned) quiet.console_handle() else output;
+    var scheduler_con = if (owned) scheduler_sink.console_handle() else output;
+    timer.maybe_heartbeat(&routine_con);
+    scheduler.maybe_report(&scheduler_con);
+    userspace.maybe_report(&routine_con);
+    forensics.sample(routine_con, counter, freq);
+}
+
 /// Park-path body: the ENTIRE RX-wired shell path — init, history/env/
 /// window restore, .virelairc, then the interactive loop that never
 /// returns. Runs on park_stack: `boot_and_park` (aarch64) SP-switches to
@@ -3764,19 +3837,7 @@ fn park_body(mon: *monitor.Monitor) callconv(.c) void {
             // reentrancy-safe in IRQ context. Claim 5275: the worker task's
             // progress report prints the same way (the worker never touches
             // the console itself).
-            timer.maybe_heartbeat(&mon.console);
-            scheduler.maybe_report(&mon.console);
-            userspace.maybe_report(&mon.console);
-            // #1261: the console-free liveness sample. If the guest is still
-            // executing, `fxs:` lines keep appearing in the serial log every
-            // `forensics.sample_period_secs` seconds regardless of what the
-            // console traffic is doing — the cleanest way to tell "the guest
-            // stopped" from "the recorder had nothing to ride on". The clock
-            // is the free-running hardware counter divided by the programmed
-            // frequency: monotonic, wall-clock, shared by both cores (an
-            // earlier choice, `timer.irq_ticks`, is shared and resettable and
-            // flooded the trace at ~47 samples/s).
-            forensics.sample(mon.console, timer.cntpct(), timer.freq);
+            idle_reports(mon.console, timer.cntpct(), timer.freq);
             // M19 P7 (issue #296): reap finished background jobs — the
             // `[N] Done:` line prints from the same idle path as every
             // other asynchronous report above.

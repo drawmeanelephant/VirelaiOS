@@ -28,6 +28,8 @@ const scheduler = shell_mod.scheduler;
 const settings = shell_mod.settings;
 const timer = shell_mod.timer;
 const userspace = shell_mod.userspace;
+const terminal = shell_mod.terminal;
+const forensics = shell_mod.forensics;
 const input = shell_mod.input;
 const clipboard = shell_mod.clipboard;
 const virtio_file = shell_mod.virtio_file;
@@ -58,6 +60,180 @@ const make_shell = shell_mod.make_shell;
 const test_reset_share = shell_mod.test_reset_share;
 const test_seed_dir = shell_mod.test_seed_dir;
 const test_seed_share = shell_mod.test_seed_share;
+
+fn reset_idle_reports() void {
+    for (0..terminal.max_terminals) |i| terminal.release(i);
+    _ = scheduler.init();
+    userspace.init();
+    forensics.reset();
+    forensics.enabled = false;
+    // Drain any flags inherited from other tests before resetting the clock.
+    var mock = console.MockConsole(4096){};
+    var con = mock.console();
+    timer.maybe_heartbeat(&con);
+    timer.ticks = 0;
+    timer.irq_ticks = 0;
+    timer.poll_ticks = 0;
+}
+
+fn queue_idle_reports() void {
+    for (0..5) |_| timer.on_tick();
+    scheduler.note_advance();
+    scheduler.request_report();
+    _ = userspace.ping(1);
+    _ = userspace.ping(2);
+}
+
+test "serial owner routine diagnostics use quiet sink" {
+    reset_idle_reports();
+    defer reset_idle_reports();
+    const handle = terminal.create(null).?;
+    const tty = terminal.get(handle).?;
+    try std.testing.expect(tty.attach(.serial));
+    var mock = console.MockConsole(4096){};
+    _ = scheduler.register_worker(0).?;
+    scheduler.current[0] = 1;
+    queue_idle_reports();
+    forensics.enabled = true;
+    shell_mod.idle_reports(mock.console(), 100, 10);
+    try std.testing.expectEqualStrings("", mock.contents());
+    scheduler.start();
+    try std.testing.expect(scheduler.sleep_current(3));
+    shell_mod.idle_reports(mock.console(), 100, 10);
+    try std.testing.expectEqualStrings("", mock.contents());
+
+    // Real scheduler fault/exit records share maybe_report with the routine
+    // records. They must survive, including the fault's separate newline.
+    _ = scheduler.register_user(0, 0).?;
+    scheduler.current[0] = 2;
+    try std.testing.expect(bg_job_add(process.find_by_task(2).?, "user-el0"));
+    defer bg_job_free(1);
+    scheduler.fault_current(0x90000004, 0x1234, 0);
+    shell_mod.idle_reports(mock.console(), 100, 10);
+    try std.testing.expect(std.mem.indexOf(u8, mock.contents(), "fault: user-el0 ") != null);
+    try std.testing.expect(std.mem.indexOf(u8, mock.contents(), "tasks user-el0 exited status=139\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, mock.contents(), "procs user-el0 exited status=139\n") != null);
+
+    mock.reset();
+    // A diagnostic-looking command response does not use the idle sink.
+    var shell = make_shell(&mock, make_view());
+    handle_line(&shell.mon, "echo timer heartbeat ticks=literal");
+    try std.testing.expectEqualStrings("timer heartbeat ticks=literal\n", mock.contents());
+    mock.reset();
+    handle_line(&shell.mon, "timer");
+    try std.testing.expect(std.mem.startsWith(u8, mock.contents(), "timer: armed="));
+    mock.reset();
+    bg_reap(&shell.mon);
+    try std.testing.expectEqualStrings("[1] Done: user-el0 (exit=139)\n", mock.contents());
+}
+
+test "quiet serial reports still advance and drain" {
+    reset_idle_reports();
+    defer reset_idle_reports();
+    const handle = terminal.create(null).?;
+    try std.testing.expect(terminal.get(handle).?.attach(.serial));
+    var mock = console.MockConsole(4096){};
+    _ = scheduler.register_worker(0).?;
+    scheduler.current[0] = 1;
+    forensics.enabled = true;
+    for (0..2) |i| {
+        queue_idle_reports();
+        shell_mod.idle_reports(mock.console(), (10 + i * 4) * 10, 10);
+    }
+    try std.testing.expectEqual(@as(u64, 10), timer.ticks);
+    try std.testing.expectEqual(@as(u64, 2), scheduler.tasks[1].advances);
+    try std.testing.expectEqual(@as(u64, 4), userspace.stats().calls);
+    try std.testing.expectEqual(@as(u64, 2), forensics.emitted);
+    try std.testing.expectEqual(@as(usize, 0), forensics.pending());
+    try std.testing.expectEqualStrings("", mock.contents());
+    terminal.get(handle).?.detach();
+    // Calling the original producers directly proves their pending flags
+    // were consumed, not merely hidden behind a skipped dispatch.
+    var con = mock.console();
+    timer.maybe_heartbeat(&con);
+    scheduler.maybe_report(&con);
+    userspace.maybe_report(&con);
+    forensics.sample(con, 140, 10);
+    try std.testing.expectEqualStrings("", mock.contents());
+}
+
+test "serial detach restores diagnostics without backlog" {
+    reset_idle_reports();
+    defer reset_idle_reports();
+    const handle = terminal.create(null).?;
+    try std.testing.expect(terminal.get(handle).?.attach(.serial));
+    var mock = console.MockConsole(4096){};
+    _ = scheduler.register_worker(0).?;
+    scheduler.current[0] = 1;
+    queue_idle_reports();
+    forensics.enabled = true;
+    shell_mod.idle_reports(mock.console(), 100, 10);
+    terminal.get(handle).?.detach();
+    shell_mod.idle_reports(mock.console(), 100, 10);
+    try std.testing.expectEqualStrings("", mock.contents());
+    queue_idle_reports();
+    shell_mod.idle_reports(mock.console(), 140, 10);
+    try std.testing.expectEqualStrings(
+        "timer heartbeat ticks=10 irq=0 poll=0\n" ++
+            "tasks worker advances=2\n" ++
+            "fx: site=shot core=0 seq=1 t=0 arg=14\n",
+        mock.contents(),
+    );
+    // Registry release is the owner-death path and must also restore output.
+    mock.reset();
+    try std.testing.expect(terminal.get(handle).?.attach(.serial));
+    queue_idle_reports();
+    shell_mod.idle_reports(mock.console(), 180, 10);
+    terminal.release(handle);
+    shell_mod.idle_reports(mock.console(), 180, 10);
+    try std.testing.expectEqualStrings("", mock.contents());
+    queue_idle_reports();
+    shell_mod.idle_reports(mock.console(), 220, 10);
+    try std.testing.expect(std.mem.startsWith(u8, mock.contents(), "timer heartbeat ticks=20 irq=0 poll=0\n"));
+    try std.testing.expect(std.mem.indexOf(u8, mock.contents(), "advances=3") == null);
+}
+
+test "unowned console diagnostics remain byte-identical" {
+    reset_idle_reports();
+    defer reset_idle_reports();
+    // shell=sh alone, an unattached tty, and a graphical tty do not mute
+    // diagnostics. Only actual serial ownership does.
+    settings.reset();
+    defer settings.reset();
+    _ = settings.set("shell", "sh");
+    const handle = terminal.create(null).?;
+    var direct = console.MockConsole(4096){};
+    var routed = console.MockConsole(4096){};
+    for (0..2) |i| {
+        _ = scheduler.init();
+        userspace.init();
+        _ = scheduler.register_worker(0).?;
+        scheduler.current[0] = 1;
+        queue_idle_reports();
+        forensics.reset();
+        forensics.enabled = true;
+        if (i == 1) try std.testing.expect(terminal.get(handle).?.attachWindow(1));
+        shell_mod.idle_reports(routed.console(), 100, 10);
+        // Recreate the same snapshots and invoke the pre-change sequence.
+        timer.ticks = 0;
+        _ = scheduler.init();
+        userspace.init();
+        _ = scheduler.register_worker(0).?;
+        scheduler.current[0] = 1;
+        queue_idle_reports();
+        forensics.reset();
+        var con = direct.console();
+        timer.maybe_heartbeat(&con);
+        scheduler.maybe_report(&con);
+        userspace.maybe_report(&con);
+        forensics.sample(con, 100, 10);
+        try std.testing.expectEqualStrings(direct.contents(), routed.contents());
+        try std.testing.expect(direct.contents().len > 0);
+        direct.reset();
+        routed.reset();
+        timer.ticks = 0;
+    }
+}
 
 test "shell: over-long line is refused with a bell and an overflow notice" {
     var mock = console.MockConsole(2048){};
