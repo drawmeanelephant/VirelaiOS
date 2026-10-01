@@ -96,7 +96,7 @@ class CheckerTests(unittest.TestCase):
                     member.size = len(data)
                     member.mode = 0o755 if name == "zig" else 0o644
                     output.addfile(member, io.BytesIO(data))
-            lock = dict(sdk.LOCK, archives={"test": {"url": "https://example.invalid/test.tar.xz",
+            lock = dict(sdk.LOCK, patches=[], overlay_sha256=sdk.digest(b""), archives={"test": {"url": "https://example.invalid/test.tar.xz",
                                                    "sha256": sdk.digest(archive.read_bytes())}})
             with patch.object(sdk, "LOCK", lock), patch.object(sdk, "host", return_value="test"):
                 installed, first = sdk.prepare(cache)
@@ -115,6 +115,48 @@ class CheckerTests(unittest.TestCase):
                 archive.write_bytes(b"corrupt archive")
                 with self.assertRaisesRegex(ValueError, "checksum"):
                     sdk.prepare(cache)
+
+    def test_overlay_is_pinned_and_only_selects_native_integration(self):
+        overlay = sdk.load_overlay()
+        self.assertEqual(len(overlay), 6)
+        for name, row in overlay.items():
+            self.assertTrue(name.startswith("lib/std/"))
+            self.assertEqual(len(row["original_sha256"]), 64)
+            for edit in row["edits"]:
+                self.assertIn('@hasDecl(@import("root"), "virelai")', edit["after"])
+                self.assertIn("freestanding", edit["after"])
+        with patch.object(sdk, "LOCK", dict(sdk.LOCK, overlay_sha256="0" * 64)):
+            with self.assertRaisesRegex(ValueError, "overlay checksum"):
+                sdk.load_overlay()
+
+    def test_overlay_checks_original_and_unique_anchor_offline(self):
+        with tempfile.TemporaryDirectory() as temp:
+            cache = Path(temp)
+            archive = cache / "test.tar.xz"
+            original = b"// original\n"
+            with tarfile.open(archive, "w:xz") as output:
+                for name, data in (("zig", b"compiler"), ("lib/std/std.zig", original)):
+                    member = tarfile.TarInfo("test/" + name)
+                    member.size = len(data)
+                    output.addfile(member, io.BytesIO(data))
+            lock = dict(sdk.LOCK, archives={"test": {
+                "url": "https://example.invalid/test.tar.xz", "sha256": sdk.digest(archive.read_bytes()),
+            }})
+            row = {"original_sha256": "0" * 64, "edits": [{"before": "original", "after": "native"}]}
+            with patch.object(sdk, "LOCK", lock), patch.object(sdk, "host", return_value="test"), \
+                    patch.object(sdk, "load_overlay", return_value={"lib/std/std.zig": row}), \
+                    patch.object(sdk.urllib.request, "urlopen", side_effect=AssertionError("offline")):
+                with self.assertRaisesRegex(ValueError, "original checksum"):
+                    sdk.prepare(cache)
+                row["original_sha256"] = sdk.digest(original)
+                row["edits"][0]["before"] = "absent"
+                with self.assertRaisesRegex(ValueError, "anchor not unique"):
+                    sdk.prepare(cache)
+                row["edits"][0]["before"] = "original"
+                compiler, _ = sdk.prepare(cache)
+                self.assertEqual((compiler / "lib/std/std.zig").read_bytes(), b"// native\n")
+                sdk.prepare(cache)
+                self.assertEqual(sdk.digest(archive.read_bytes()), lock["archives"]["test"]["sha256"])
 
     def test_corpus(self):
         for name, data, accepted, _kernel in corpus(elf()):
@@ -187,8 +229,9 @@ def integration(cache, work):
     with tempfile.TemporaryDirectory(prefix="reproduce-", dir=work) as temp:
         temp = Path(temp)
         outputs = [temp / name / "ZGUEST.BIN" for name in ("first", "second")]
-        for output in outputs:
-            sdk.build(cache, output, output.parent / "cache")
+        with patch.object(sdk.urllib.request, "urlopen", side_effect=AssertionError("build must be offline")):
+            for output in outputs:
+                sdk.build(cache, output, output.parent / "cache")
         if outputs[0].read_bytes() != outputs[1].read_bytes():
             raise ValueError("clean fixture builds are not byte-identical")
         if outputs[0].with_suffix(".BIN.json").read_bytes() != outputs[1].with_suffix(".BIN.json").read_bytes():
@@ -232,18 +275,78 @@ def integration(cache, work):
         "args": ('const std=@import("std"); export fn probe() void { var a: std.process.Args = .{.vector={}}; '
                  'var i=a.iterate(); _=i.next(); }\n', False, "void"),
     }
+    recipe = (
+        'const std = @import("std"); const sdk = @import("sdk");\n'
+        'pub const virelai = sdk.platform;\n'
+        'pub const os = sdk.os; pub const std_options = sdk.std_options;\n'
+        'pub const std_options_debug_io = sdk.std_options_debug_io;\n'
+        'pub const std_options_FilePermissions = sdk.std_options_FilePermissions;\n'
+        'pub const std_options_cwd = sdk.std_options_cwd;\n'
+        'pub const panic = std.debug.FullPanic(sdk.panic);\n'
+    )
+    native_probes = {
+        "page-allocator": ('export fn probe() void { const a=std.heap.page_allocator; '
+                           'const p=a.alloc(u8,4096) catch return; defer a.free(p); '
+                           '_=a.resize(p,8192); }\n', True, ""),
+        "streams": ('export fn probe() void { const a=std.Io.File.stdin(); const b=std.Io.File.stdout(); '
+                    'const c=std.Io.File.stderr(); if(a.handle==b.handle or b.handle==c.handle) @panic("alias"); '
+                    'b.writeStreamingAll(sdk.io,"hello") catch {}; }\n', True, ""),
+        "debug": ('export fn probe() void { std.debug.print("native {d}\\n", .{@as(u32,42)}); }\n', True, ""),
+        "args-env-init": ('export fn probe() void { var block:[sdk.startup.block_bytes]u8=undefined; '
+                          'sdk.startup.pack(&.{"program","arg"},&.{"A=B"},&block) catch return; '
+                          'const args=sdk.startup.Startup.parse(2,&block) catch return; '
+                          'var state=sdk.InitState.init(&args) catch return; defer state.deinit(); '
+                          'const init=state.get(args.argc,args.envc); var it=init.minimal.args.iterate(); _=it.next(); '
+                          'var env=init.minimal.environ.createMap(init.gpa) catch return; defer env.deinit(); '
+                          '_=init.preopens.get("/host"); }\n', True, ""),
+        "cli-files": ('export fn probe() void { const cwd:std.Io.Dir=.cwd(); '
+                      'const f=cwd.openFile(sdk.io,"input",.{}) catch return; defer f.close(sdk.io); '
+                      'var bytes:[4097]u8=undefined; _=sdk.io_helpers.readBounded(f,sdk.io,&bytes) catch return; '
+                      'const out=cwd.createFile(sdk.io,"output",.{}) catch return; defer out.close(sdk.io); '
+                      'var w=out.writer(sdk.io,&bytes); w.interface.print("{d}",.{@as(u32,42)}) catch return; '
+                      'w.interface.flush() catch return; out.sync(sdk.io) catch return; }\n', True, ""),
+        "exit": ('export fn probe() noreturn { std.process.exit(7); }\n', True, ""),
+        "abort": ('export fn probe() noreturn { std.process.abort(); }\n', True, ""),
+        "threaded": ('export fn probe() void { var t:std.Io.Threaded=.init(std.heap.page_allocator,.{}); '
+                     '_=t.io(); }\n', False, "VirelaiUnsupportedThreaded"),
+        "threads": ('fn child() void {} export fn probe() void { _=std.Thread.spawn(.{},child,.{}) catch return; }\n',
+                    False, "single-threaded"),
+        "posix-mmap": ('export fn probe() usize { return std.posix.PROT.READ; }\n', False, "VirelaiUnsupportedPosix"),
+        "posix-mremap": ('export fn probe() usize { return std.posix.MREMAP.MAYMOVE; }\n', False, "VirelaiUnsupportedPosix"),
+        "posix-errno": ('export fn probe() usize { return @intFromEnum(std.posix.errno(@as(isize,-1))); }\n',
+                        False, "VirelaiUnsupportedPosix"),
+        "posix-getrandom": ('export fn probe() void { var b:[1]u8=undefined; _=std.posix.system.getrandom(&b,1,0); }\n',
+                            False, "VirelaiUnsupportedPosix"),
+    }
+    probes.update({f"native-{name}": (recipe + source, accepted, diagnostic)
+                   for name, (source, accepted, diagnostic) in native_probes.items()})
     for name, (source, accepted, diagnostic) in probes.items():
         path = work / f"probe-{name}.zig"
         path.write_text(source)
         result = subprocess.run([
             str(compiler / "zig"), "build-obj", "--zig-lib-dir", str(compiler / "lib"),
             "-target", sdk.LOCK["target"], "-O", "ReleaseSafe", "-fno-emit-bin",
+            *(["-fsingle-threaded"] if name.startswith("native-") else []),
             "--dep", "sdk", f"-Mroot={path}", f"-Msdk={ROOT / 'user/zig/runtime.zig'}",
         ], cwd=ROOT, text=True, capture_output=True)
         (work / f"probe-{name}.log").write_text(result.stdout + result.stderr)
         if (result.returncode == 0) != accepted or (not accepted and diagnostic.lower() not in result.stderr.lower()):
             raise ValueError(f"unexpected {name} probe result:\n{result.stderr}")
-    print("zig-guest: clean builds identical; kernel corpus and exported-body std probes passed")
+    fatal_fixture = work / "refusal-fixture"
+    subprocess.run([str(compiler / "zig"), "build-exe", str(ROOT / "user/zig/refusal_fixture.zig"),
+                    f"-femit-bin={fatal_fixture}"], check=True)
+    for name, diagnostic in {
+        "now": "Unsupported:now", "futexWait": "Unsupported:futexWaitUncancelable",
+        "close": "CloseFailed", "unlock": "Unsupported:fileUnlock",
+        "tty": "Unsupported:fileIsTty", "netClose": "Unsupported:netClose",
+        "random": "EntropyUnavailable",
+    }.items():
+        result = subprocess.run([str(fatal_fixture), name], text=True, capture_output=True)
+        (work / f"fatal-{name}.log").write_text(result.stdout + result.stderr)
+        if result.returncode != 70 or diagnostic not in result.stderr:
+            raise ValueError(f"no-error API {name} did not refuse loudly: {result}")
+    print(f"zig-guest: clean builds identical; {len(cases)} kernel cases; "
+          f"{len(probes)} exported-body probes; 7 fatal refusals passed")
 
 
 if __name__ == "__main__":

@@ -3,6 +3,25 @@ pub const startup = @import("startup.zig");
 pub const memory = @import("arena.zig");
 pub const native = @import("native.zig");
 pub const console = @import("console.zig");
+pub const platform = @import("platform.zig");
+pub const io_helpers = @import("io.zig");
+const Backend = io_helpers.Backend(struct {
+    pub const call = native.call;
+    pub fn instance() *anyopaque {
+        return io_state orelse fail("IoNotInitialized", 70);
+    }
+    pub fn diagnostic(bytes: []const u8) void {
+        diagnostics.emit(native.consoleChunk, bytes) catch native.exit(70);
+    }
+    pub fn fatal(name: []const u8) noreturn {
+        fail(name, 70);
+    }
+});
+var io_state: ?*Backend = null;
+pub const io: std.Io = .{ .userdata = null, .vtable = &Backend.vtable };
+pub const std_options_debug_io = io;
+pub const std_options_FilePermissions = platform.Permissions;
+pub const std_options_cwd = platform.cwd;
 
 var arena: ?memory.Arena = null;
 var attempted = false;
@@ -35,7 +54,48 @@ pub fn initialize(bytes: usize) error{ OutOfMemory, AlreadyInitialized }!void {
     if (attempted) return error.AlreadyInitialized;
     attempted = true;
     arena = try memory.Arena.reserve(bytes, native.map);
+    io_state = try arena.?.allocator().create(Backend);
+    io_state.?.* = .{};
 }
+
+/// Caller keeps this object alive and stationary until deinit. All dynamically
+/// allocated std state uses the same bounded arena, including the env map.
+pub const InitState = struct {
+    permanent: std.heap.ArenaAllocator,
+    environ_map: std.process.Environ.Map,
+    argv: [startup.arg_count][*:0]const u8 = undefined,
+    envp: [startup.env_count:null]?[*:0]const u8 = @splat(null),
+
+    pub fn init(args: *const startup.Startup) !InitState {
+        const a = os.heap.page_allocator;
+        var result: InitState = .{ .permanent = .init(a), .environ_map = .init(a) };
+        errdefer result.environ_map.deinit();
+        for (args.args[0..args.argc], 0..) |arg, i| result.argv[i] = @ptrCast(arg.ptr);
+        for (args.env[0..args.envc], 0..) |entry, i| {
+            result.envp[i] = @ptrCast(entry.ptr);
+            const equal = std.mem.indexOfScalar(u8, entry, '=').?;
+            try result.environ_map.put(entry[0..equal], entry[equal + 1 ..]);
+        }
+        return result;
+    }
+    pub fn get(self: *InitState, argc: usize, envc: usize) std.process.Init {
+        return .{
+            .minimal = .{
+                .args = .{ .vector = self.argv[0..argc] },
+                .environ = .{ .block = .{ .slice = self.envp[0..envc :null] } },
+            },
+            .arena = &self.permanent,
+            .gpa = os.heap.page_allocator,
+            .io = io,
+            .environ_map = &self.environ_map,
+            .preopens = .empty, // The overlay declares only the borrowed /host token.
+        };
+    }
+    pub fn deinit(self: *InitState) void {
+        self.environ_map.deinit();
+        self.permanent.deinit();
+    }
+};
 
 pub fn currentArena() memory.Arena {
     return arena.?;
@@ -77,8 +137,12 @@ pub noinline fn stackHighWater() usize {
 }
 
 pub fn finish(status: u8) noreturn {
-    // A2 owns no buffered streams or handles. Every console write completes
-    // synchronously and propagates failure. A3/B1 must add real flush/close.
+    // Application-owned writers must be flushed explicitly before finish.
+    // The diagnostic hook flushes on unlock; no hidden standard-stream buffer.
+    if (io_state) |backend| {
+        if (backend.debug_locked) backend.io().unlockStderr();
+        backend.closeAll() catch fail("CloseFailed", 70);
+    }
     native.exit(status);
 }
 
@@ -86,4 +150,5 @@ test {
     _ = startup;
     _ = memory;
     _ = console;
+    _ = io_helpers;
 }

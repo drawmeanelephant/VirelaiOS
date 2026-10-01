@@ -4,6 +4,10 @@ const sdk = @import("runtime.zig");
 pub const os = sdk.os;
 pub const std_options = sdk.std_options;
 pub const panic = std.debug.FullPanic(sdk.panic);
+pub const virelai = sdk.platform;
+pub const std_options_debug_io = sdk.std_options_debug_io;
+pub const std_options_FilePermissions = sdk.std_options_FilePermissions;
+pub const std_options_cwd = sdk.std_options_cwd;
 var initialized_data: u64 = 0x1879_1866;
 
 comptime {
@@ -50,6 +54,14 @@ fn run(args: *const sdk.startup.Startup) !void {
     if (mode(args, "launch")) {
         try launchBoundary();
         return;
+    }
+    if (mode(args, "io")) {
+        try @import("io_fixture.zig").run(args);
+        return;
+    }
+    if (mode(args, "unsupported")) {
+        _ = std.Io.Clock.real.now(sdk.io);
+        return error.UnsupportedReturned;
     }
 
     // Echo bytes, not just a precomputed success marker. The gate compares

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Pinned, offline-by-default A2 build. Only `fetch` accesses the network."""
+"""Pinned, offline-by-default native SDK. Only `fetch` accesses the network."""
 import argparse
 import hashlib
 import json
@@ -62,9 +62,8 @@ def prepare(cache):
         raise ValueError(f"missing pinned archive; run: python3 tools/zig/sdk.py fetch --cache {cache}")
     if digest(archive.read_bytes()) != pin["sha256"]:
         raise ValueError(f"archive checksum mismatch: {archive}")
-    if LOCK["dependencies"] or LOCK["patches"] or LOCK["overlay_sha256"] != digest(b""):
-        raise ValueError("A2 has no external dependencies or std patches; nonempty overlay requires A3 review")
-    destination = cache / pin["sha256"]
+    overlay = load_overlay()
+    destination = cache / (pin["sha256"] + "-" + LOCK["overlay_sha256"])
     exists = destination.exists()
     stage = destination if exists else Path(tempfile.mkdtemp(prefix="materialize-", dir=cache))
     manifest = {}
@@ -82,6 +81,16 @@ def prepare(cache):
                         output.mkdir(parents=True, exist_ok=True)
                     continue
                 data = source.extractfile(member).read()
+                if relative.as_posix() in overlay:
+                    patch = overlay[relative.as_posix()]
+                    if digest(data) != patch["original_sha256"]:
+                        raise ValueError(f"overlay original checksum mismatch: {relative}")
+                    text = data.decode()
+                    for edit in patch["edits"]:
+                        if text.count(edit["before"]) != 1:
+                            raise ValueError(f"overlay anchor not unique: {relative}")
+                        text = text.replace(edit["before"], edit["after"], 1)
+                    data = text.encode()
                 manifest[relative.as_posix()] = digest(data)
                 if exists:
                     if output.is_symlink() or not output.is_file() or digest(output.read_bytes()) != digest(data):
@@ -94,6 +103,8 @@ def prepare(cache):
         actual = {p.relative_to(stage).as_posix() for p in stage.rglob("*") if p.is_file() or p.is_symlink()}
         if actual != set(manifest):
             raise ValueError("materialized compiler/library has additional files")
+        if not set(overlay) <= set(manifest):
+            raise ValueError("overlay targets absent from compiler archive")
         if not exists:
             stage.rename(destination)
     finally:
@@ -106,6 +117,25 @@ def prepare(cache):
         "stdlib_tree_sha256": lib_hash,
         "overlay_sha256": LOCK["overlay_sha256"],
     }
+
+
+def load_overlay():
+    if LOCK["dependencies"]:
+        raise ValueError("the SDK has no external dependencies")
+    patches = LOCK["patches"]
+    if not patches:
+        if LOCK["overlay_sha256"] != digest(b""):
+            raise ValueError("empty overlay checksum mismatch")
+        return {}
+    if patches != ["tools/zig/overlay.json"]:
+        raise ValueError("unreviewed overlay manifest")
+    data = (ROOT / patches[0]).read_bytes()
+    if digest(data) != LOCK["overlay_sha256"]:
+        raise ValueError("overlay checksum mismatch")
+    overlay = json.loads(data)
+    if any(not name.startswith("lib/std/") or ".." in Path(name).parts for name in overlay):
+        raise ValueError("overlay must remain inside the private stdlib")
+    return overlay
 
 
 def stack_frames(assembly):
@@ -158,7 +188,7 @@ def build(cache, output, work):
     frames = stack_frames((work / "fixture.s").read_text())
     (work / "stack-frames.json").write_text(json.dumps(frames, sort_keys=True, indent=2) + "\n")
     subprocess.run(["python3", str(ROOT / "tools/check-zc-host-contract.py"), "--profile", "sdk", str(output)], check=True)
-    inputs = [LOCK_PATH, Path(__file__), ROOT / "tools/zig/guest.ld",
+    inputs = [LOCK_PATH, Path(__file__), *(ROOT / p for p in LOCK["patches"]), ROOT / "tools/zig/guest.ld",
               ROOT / "tools/check-zc-host-contract.py", *sorted((ROOT / "user/zig").glob("*.zig"))]
     provenance.update({
         "target": LOCK["target"], "cpu": LOCK["cpu"], "optimize": LOCK["optimize"],

@@ -4,6 +4,8 @@
 # complete. A kstack overflow on create_as used to kill the caller.
 # A2 also checks the pinned native SDK's gap ELF, exact startup bounds,
 # one retained reusable arena, failure/panic exits and page recovery.
+# A3 exercises the native std backend, explicit-file byte comparison and a
+# no-error-return API that must terminate rather than invent a clock.
 # exec-order: assert-proven -- SDK stages wait for reap or the launcher exit;
 # independent assertions require all guest output and final page recovery.
 
@@ -19,6 +21,7 @@ output = rd / "share/ZGUEST.BIN"
 subprocess.run(["python3", "tools/zig/sdk.py", "build", "--output", str(output),
                 "--work", str(rd / "sdk-build")], check=True)
 shutil.copyfile(output, rd / "share/ZLAUNCH.BIN")
+(rd / "share/ZIO.INPUT").write_bytes(bytes(i % 251 for i in range(5000)))
 # The monitor has a narrower 64-byte VALUE limit than the ABI's 127-byte
 # KEY=VALUE slots. Test this real route losslessly; full slots are host-tested.
 env = [f"G{i:02}=" + "e" * 64 for i in range(16)]
@@ -95,6 +98,16 @@ pages
 exec ZGUEST.BIN panic
 EOF
 
+vgate_file sdk-io.txt <<'EOF'
+pages
+exec ZGUEST.BIN io
+EOF
+
+vgate_file sdk-unsupported.txt <<'EOF'
+pages
+exec ZGUEST.BIN unsupported
+EOF
+
 vgate_run sdk-env -- --script '$RUN_DIR/sdk-env.txt' --script-after 'tasks user-el0 reaped' --script2 '$RUN_DIR/sdk-after.txt' --script2-after 'tasks user-exec reaped' --script-expect 'rx-zig-guest-ok' --timeout 90
 # The two tasks share a reap marker. Anchor on the parent's unique exit,
 # allow the idle reaper to run, then REQUIRE both reaps before the snapshot.
@@ -102,6 +115,8 @@ vgate_run sdk-launch -- --script '$RUN_DIR/sdk-launch.txt' --script-after 'tasks
 vgate_run sdk-oom -- --script '$RUN_DIR/sdk-oom.txt' --script-after 'tasks user-el0 reaped' --script2 '$RUN_DIR/sdk-after.txt' --script2-after 'tasks user-exec reaped' --script-expect 'rx-zig-guest-ok' --timeout 90
 vgate_run sdk-reserve -- --script '$RUN_DIR/sdk-reserve.txt' --script-after 'tasks user-el0 reaped' --script2 '$RUN_DIR/sdk-after.txt' --script2-after 'tasks user-exec reaped' --script-expect 'rx-zig-guest-ok' --timeout 90
 vgate_run sdk-panic -- --script '$RUN_DIR/sdk-panic.txt' --script-after 'tasks user-el0 reaped' --script2 '$RUN_DIR/sdk-after.txt' --script2-after 'tasks user-exec reaped' --script-expect 'rx-zig-guest-ok' --timeout 90
+vgate_run sdk-io -- --script '$RUN_DIR/sdk-io.txt' --script-after 'tasks user-el0 reaped' --script2 '$RUN_DIR/sdk-after.txt' --script2-after 'tasks user-exec reaped' --script-expect 'rx-zig-guest-ok' --timeout 90
+vgate_run sdk-unsupported -- --script '$RUN_DIR/sdk-unsupported.txt' --script-after 'tasks user-el0 reaped' --script2 '$RUN_DIR/sdk-after.txt' --script2-after 'tasks user-exec reaped' --script-expect 'rx-zig-guest-ok' --timeout 90
 
 vgate_assert sdk-env serial-exact 'zig-guest: done' 1
 vgate_assert sdk-env serial-exact 'tasks user-exec exited status=0' 1
@@ -142,6 +157,29 @@ vgate_assert sdk-reserve serial-exact 'tasks user-exec exited status=70' 1
 vgate_assert sdk-reserve serial-contains '63 sys_mmap calls=17'
 vgate_assert sdk-panic serial-exact 'zig-guest: panic: requested fixture panic' 1
 vgate_assert sdk-panic serial-exact 'tasks user-exec exited status=71' 1
+vgate_assert sdk-io serial-exact 'zig-io: debug 1867' 1
+vgate_assert sdk-io serial-exact 'zig-io: done' 1
+vgate_assert sdk-io serial-exact 'Unsupported:fileStat' 1
+vgate_assert sdk-io serial-exact 'Unsupported:UnboundOrClosedOutput' 1
+vgate_assert sdk-io serial-absent 'must not reach console'
+vgate_assert sdk-io serial-exact 'tasks user-exec exited status=0' 1
+vgate_assert sdk-io serial-contains '72 sys_getrandom calls=3'
+vgate_assert sdk-io serial-contains '77 sys_file_sync calls=2'
+vgate_assert sdk-io serial-contains '36 sys_file_truncate calls=1'
+vgate_assert sdk-io python <<'PY'
+import os, pathlib, re
+rd = pathlib.Path(os.environ["RUN_DIR"])
+ser = pathlib.Path(os.environ["VG_SER"]).read_text()
+expected = bytes(i % 251 for i in range(5000))
+assert (rd / "share/ZIO.INPUT").read_bytes() == expected
+assert (rd / "share/ZIO.OUTPUT").read_bytes() == expected
+assert (rd / "share/ZIO.DIR/TRUNCATED").read_bytes() == b"tru"
+peak, stack = map(int, re.search(r"zig-io: file=5000 arena_peak=(\d+) stack_high_water=(\d+)", ser).groups())
+assert 5000 < peak < 1024 * 1024 and 0 < stack <= 128 * 1024
+PY
+vgate_assert sdk-unsupported serial-contains 'Unsupported:now'
+vgate_assert sdk-unsupported serial-exact 'tasks user-exec exited status=70' 1
+vgate_assert sdk-unsupported serial-absent 'UnsupportedReturned'
 
 # Check *independent kernel* page observations after the reap, not merely
 # the fixture's success marker. The same assertion runs for every exit path.
@@ -175,6 +213,14 @@ import os, runpy
 runpy.run_path(os.path.join(os.environ["RUN_DIR"], "sdk-cleanup.py"))
 PY
 vgate_assert sdk-panic python <<'PY'
+import os, runpy
+runpy.run_path(os.path.join(os.environ["RUN_DIR"], "sdk-cleanup.py"))
+PY
+vgate_assert sdk-io python <<'PY'
+import os, runpy
+runpy.run_path(os.path.join(os.environ["RUN_DIR"], "sdk-cleanup.py"))
+PY
+vgate_assert sdk-unsupported python <<'PY'
 import os, runpy
 runpy.run_path(os.path.join(os.environ["RUN_DIR"], "sdk-cleanup.py"))
 PY
