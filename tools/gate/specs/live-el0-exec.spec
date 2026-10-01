@@ -2,11 +2,30 @@
 # EL0EXEC.BIN execs a missing name (ENOENT, caller untouched), then
 # USER.BIN with argv alpha, uses the stack after spawn, waits, and both
 # complete. A kstack overflow on create_as used to kill the caller.
+# A2 also checks the pinned native SDK's gap ELF, exact startup bounds,
+# one retained reusable arena, failure/panic exits and page recovery.
+# exec-order: assert-proven -- SDK stages wait for reap or the launcher exit;
+# independent assertions require all guest output and final page recovery.
 
 vgate_name live-el0-exec "EL0 sys_exec: caller survives spawn + ENOENT"
 vgate_share seed
 vgate_repeat 1 BOOTS
 vgate_runner_flags -Xswiftc -DSPIKE
+
+vgate_setup_python <<'PY'
+import json, os, pathlib, shutil, subprocess
+rd = pathlib.Path(os.environ["RUN_DIR"])
+output = rd / "share/ZGUEST.BIN"
+subprocess.run(["python3", "tools/zig/sdk.py", "build", "--output", str(output),
+                "--work", str(rd / "sdk-build")], check=True)
+shutil.copyfile(output, rd / "share/ZLAUNCH.BIN")
+# The monitor has a narrower 64-byte VALUE limit than the ABI's 127-byte
+# KEY=VALUE slots. Test this real route losslessly; full slots are host-tested.
+env = [f"G{i:02}=" + "e" * 64 for i in range(16)]
+(rd / "sdk-env.txt").write_text(
+    "".join(f"set {entry}\n" for entry in env) + "pages\nexec ZGUEST.BIN alpha beta\n")
+(rd / "sdk-env.json").write_text(json.dumps(env))
+PY
 
 vgate_file script.txt <<'EOF'
 ls
@@ -47,4 +66,115 @@ bad = [(n, c, w) for n, c, w in bad if c != w]
 if bad:
     sys.exit("FAIL: el0-exec markers off: %s" % bad)
 print("el0-exec markers ok")
+PY
+
+vgate_file sdk-after.txt <<'EOF'
+pages
+procs
+syscalls
+echo rx-zig-guest-ok
+EOF
+
+vgate_file sdk-launch.txt <<'EOF'
+pages
+exec ZLAUNCH.BIN launch
+EOF
+
+vgate_file sdk-oom.txt <<'EOF'
+pages
+exec ZGUEST.BIN oom
+EOF
+
+vgate_file sdk-reserve.txt <<'EOF'
+pages
+exec ZGUEST.BIN reserve-fail
+EOF
+
+vgate_file sdk-panic.txt <<'EOF'
+pages
+exec ZGUEST.BIN panic
+EOF
+
+vgate_run sdk-env -- --script '$RUN_DIR/sdk-env.txt' --script-after 'tasks user-el0 reaped' --script2 '$RUN_DIR/sdk-after.txt' --script2-after 'tasks user-exec reaped' --script-expect 'rx-zig-guest-ok' --timeout 90
+# The two tasks share a reap marker. Anchor on the parent's unique exit,
+# allow the idle reaper to run, then REQUIRE both reaps before the snapshot.
+vgate_run sdk-launch -- --script '$RUN_DIR/sdk-launch.txt' --script-after 'tasks user-el0 reaped' --script2 '$RUN_DIR/sdk-after.txt' --script2-after 'procs ZLAUNCH.BIN exited status=0' --script2-delay 1 --script-expect 'rx-zig-guest-ok' --timeout 90
+vgate_run sdk-oom -- --script '$RUN_DIR/sdk-oom.txt' --script-after 'tasks user-el0 reaped' --script2 '$RUN_DIR/sdk-after.txt' --script2-after 'tasks user-exec reaped' --script-expect 'rx-zig-guest-ok' --timeout 90
+vgate_run sdk-reserve -- --script '$RUN_DIR/sdk-reserve.txt' --script-after 'tasks user-el0 reaped' --script2 '$RUN_DIR/sdk-after.txt' --script2-after 'tasks user-exec reaped' --script-expect 'rx-zig-guest-ok' --timeout 90
+vgate_run sdk-panic -- --script '$RUN_DIR/sdk-panic.txt' --script-after 'tasks user-el0 reaped' --script2 '$RUN_DIR/sdk-after.txt' --script2-after 'tasks user-exec reaped' --script-expect 'rx-zig-guest-ok' --timeout 90
+
+vgate_assert sdk-env serial-exact 'zig-guest: done' 1
+vgate_assert sdk-env serial-exact 'tasks user-exec exited status=0' 1
+vgate_assert sdk-env serial-contains '63 sys_mmap calls=1'
+vgate_assert sdk-env python <<'PY'
+import json, os, pathlib, re
+rd = pathlib.Path(os.environ["RUN_DIR"])
+ser = pathlib.Path(os.environ["VG_SER"]).read_text()
+lines = ser.splitlines()
+expected = ["zig-guest: arg[0]=ZGUEST.BIN", "zig-guest: arg[1]=alpha",
+            "zig-guest: arg[2]=beta"]
+expected += ["zig-guest: env=" + entry for entry in json.loads((rd / "sdk-env.json").read_text())]
+assert all(lines.count(line) == 1 for line in expected), "startup bytes differ"
+assert len([line for line in lines if line.startswith("zig-guest: env=")]) == 16
+peak, stack = map(int, re.search(r"reuse=64 arena_peak=(\d+) stack_high_water=(\d+)", ser).groups())
+assert 49152 < peak <= 1024 * 1024 and 0 < stack <= 128 * 1024
+PY
+
+vgate_assert sdk-launch serial-exact 'zig-guest: ArgumentLimit (256-byte argument)' 1
+vgate_assert sdk-launch serial-exact 'zig-guest: ArgumentLimit (eight user arguments)' 1
+vgate_assert sdk-launch serial-exact 'zig-guest: launcher done' 1
+vgate_assert sdk-launch serial-exact 'tasks user-exec exited status=0' 2
+vgate_assert sdk-launch serial-contains '28 sys_exec calls=1'
+vgate_assert sdk-launch python <<'PY'
+import os, pathlib
+lines = pathlib.Path(os.environ["VG_SER"]).read_text().splitlines()
+args = ["ZGUEST.BIN", "boundary", "x" * 255, "", "alpha", "beta", "six", "seven"]
+assert all(lines.count(f"zig-guest: arg[{i}]={arg}") == 1 for i, arg in enumerate(args))
+assert not any(line.startswith("zig-guest: env=") for line in lines), "slot 28 must not claim env inheritance"
+PY
+
+vgate_assert sdk-oom serial-exact 'zig-guest: bounded allocation refused' 1
+vgate_assert sdk-oom serial-exact 'OutOfMemory' 1
+vgate_assert sdk-oom serial-exact 'tasks user-exec exited status=70' 1
+vgate_assert sdk-reserve serial-exact 'zig-guest: native reservation refused' 1
+vgate_assert sdk-reserve serial-exact 'OutOfMemory' 1
+vgate_assert sdk-reserve serial-exact 'tasks user-exec exited status=70' 1
+vgate_assert sdk-reserve serial-contains '63 sys_mmap calls=17'
+vgate_assert sdk-panic serial-exact 'zig-guest: panic: requested fixture panic' 1
+vgate_assert sdk-panic serial-exact 'tasks user-exec exited status=71' 1
+
+# Check *independent kernel* page observations after the reap, not merely
+# the fixture's success marker. The same assertion runs for every exit path.
+vgate_file sdk-cleanup.py <<'PY'
+import os, pathlib, re
+tag = os.environ["VG_TAG"]
+ser = pathlib.Path(os.environ["VG_SER"]).read_text()
+pages = re.findall(r"^pages: armed=1 total=(0x[0-9a-f]+) free=(0x[0-9a-f]+)", ser, re.M)
+assert len(pages) == 2 and pages[0] == pages[1], (tag, pages)
+reaps = 2 if tag.startswith("sdk-launch") else 1
+assert ser.splitlines().count("tasks user-exec reaped") == reaps and "[EXC]" not in ser, tag
+assert ser.rfind("tasks user-exec reaped") < ser.rfind("pages: armed=1"), tag
+if any(tag.startswith(kind) for kind in ("sdk-oom", "sdk-reserve", "sdk-panic")):
+    assert "zig-guest: done" not in ser, tag
+print(tag + ": exact post-reap page recovery")
+PY
+vgate_assert sdk-env python <<'PY'
+import os, runpy
+runpy.run_path(os.path.join(os.environ["RUN_DIR"], "sdk-cleanup.py"))
+PY
+vgate_assert sdk-launch python <<'PY'
+import os, runpy
+runpy.run_path(os.path.join(os.environ["RUN_DIR"], "sdk-cleanup.py"))
+PY
+vgate_assert sdk-oom python <<'PY'
+import os, runpy
+runpy.run_path(os.path.join(os.environ["RUN_DIR"], "sdk-cleanup.py"))
+PY
+vgate_assert sdk-reserve python <<'PY'
+import os, runpy
+runpy.run_path(os.path.join(os.environ["RUN_DIR"], "sdk-cleanup.py"))
+PY
+vgate_assert sdk-panic python <<'PY'
+import os, runpy
+runpy.run_path(os.path.join(os.environ["RUN_DIR"], "sdk-cleanup.py"))
 PY

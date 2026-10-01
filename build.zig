@@ -1939,8 +1939,16 @@ pub fn build(b: *std.Build) void {
     // Host: Unified Unit Tests (M41 TS1, issue #952)
     // ------------------------------------------------------------------
     const test_step = b.step("test", "Run host-side unit tests in parallel (M41 TS1)");
+    const zig_guest_checks = b.addSystemCommand(&.{ "python3", "tools/tests/test_zig_guest.py" });
+    test_step.dependOn(&zig_guest_checks.step);
+    const zig_guest_step = b.step("zig-guest-check", "Rebuild the pinned A2 fixture twice, check ELF/startup/allocator contracts (fetch archive first)");
+    const zig_guest_integration = b.addSystemCommand(&.{ "python3", "tools/tests/test_zig_guest.py", "--integration" });
+    zig_guest_integration.has_side_effects = true;
+    zig_guest_integration.stdio = .inherit;
+    zig_guest_step.dependOn(&zig_guest_integration.step);
 
     const core_test_sources = [_][]const u8{
+        "user/zig/runtime.zig",
         "boot/src/efi_time.zig",
         "kernel/src/alloc.zig",
         "kernel/src/app_timers.zig",
@@ -2220,6 +2228,9 @@ pub fn build(b: *std.Build) void {
         });
         const run_t = b.addRunArtifact(t);
         test_step.dependOn(&run_t.step);
+        if (std.mem.eql(u8, src_path, "user/zig/runtime.zig")) {
+            zig_guest_step.dependOn(&run_t.step);
+        }
     }
 
     const test_console_step = b.step("test-console", "Run the automated 'virelai>' transcript test (M1.5 march step 19; class A — mock console, no VM)");
