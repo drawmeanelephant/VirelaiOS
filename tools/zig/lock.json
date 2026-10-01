@@ -18,6 +18,8 @@
     }
   },
   "dependencies": [],
-  "patches": [],
-  "overlay_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  "patches": [
+    "tools/zig/overlay.json"
+  ],
+  "overlay_sha256": "b6d4fadbaae7526b7ece849732391685f9e1ba1b979ef8e231ef0820bd9064b7"
 }

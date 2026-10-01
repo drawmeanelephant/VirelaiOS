@@ -10,8 +10,8 @@
 - Related: [ADR 0007](0007-syscall-abi.md), [ADR 0024](0024-trust-and-isolation.md),
   [ADR 0027](0027-go-threads-futex.md).
 
-This is the single target design for A2/A3, B1–B4 and C1–C4. It contains
-no implementation and allocates no syscall numbers. The owner separately
+This is the single target design for A2/A3, B1–B4 and C1–C4. Implementation
+recipes are recorded below; it allocates no syscall numbers. The owner separately
 approved the maintainer appointment and this design with its budgets.
 Downstream implementation remains gated on landing both records.
 
@@ -445,9 +445,9 @@ cards and are release gates, never assumed successful results.
 
 The A2 fixture is `user/zig/fixture.zig`; the reusable entry adapter,
 startup views, single-arena allocator and console-only runtime live beside
-it. `tools/zig/lock.json` pins official compiler archives. A2 has no
-third-party packages and an explicitly empty std overlay; A3 owns the
-subsequent type/Io integration. The materializer verifies every original
+it. `tools/zig/lock.json` pins official compiler archives. A2 introduced no
+third-party packages and an empty std overlay; A3 adds the narrowly owned
+type/Io integration in §9. The materializer verifies every original
 file against the pinned archive, refuses drift/additions, and never edits
 the installed compiler or downloads during a build.
 
@@ -477,8 +477,121 @@ arguments only, with the gap loader prepending the program name.
 
 A2's console writes are synchronous and unbuffered. Startup refusal exits
 64, application/resource/write failure exits 70, and panic exits 71;
-success is 0. No file handles or streams are opened. Separate stderr,
-buffered flush/close and full `std.process.Init` remain A3+B1 work, not
-success-shaped placeholders. The live reservation-failure fixture fills
+success is 0. A2's modes open no file handles or streams. A3 adds explicit
+files, flush/close and `std.process.Init`; separate stderr remains B1 work,
+not a success-shaped placeholder. The live reservation-failure fixture fills
 the native region table using unpopulated pages, then verifies SDK
 `OutOfMemory` and post-reap page recovery without exhausting physical RAM.
+
+## 9. A3 std boundary and upgrade contract
+
+**Owner:** drawmeanelephant maintains `tools/zig/overlay.json`,
+`user/zig/platform.zig`, `io.zig`, `operations.zig`, `refusals.zig` and
+the root hooks in `runtime.zig`. The six-file overlay selects native
+types, argument/environment views, declared preopens, exit/abort and the
+explicit rejection of the default `Threaded` backend. Every selection
+requires both freestanding and the root `virelai` declaration. It does
+not implement POSIX. Archive checksums, original-file checksums, unique
+replacement anchors and the lock's overlay checksum all fail closed.
+Materializations are private and keyed by archive **and** overlay hashes.
+
+### Target recipe
+
+Use the §8 offline builder/checker. The complete root contract, also used
+by every native exported-body probe, is:
+
+```zig
+const std = @import("std");
+const sdk = @import("runtime.zig");
+pub const virelai = sdk.platform;
+pub const os = sdk.os;
+pub const std_options = sdk.std_options;
+pub const std_options_debug_io = sdk.std_options_debug_io;
+pub const std_options_FilePermissions = sdk.std_options_FilePermissions;
+pub const std_options_cwd = sdk.std_options_cwd;
+pub const panic = std.debug.FullPanic(sdk.panic);
+```
+
+The root explicitly exports `entry.zig`'s native entry, calls
+`sdk.initialize(arena_bytes)` before using Io/debug, and constructs
+`sdk.InitState.init(startup)` in stationary storage. `InitState.get`
+supplies the real allocator, Io, args, borrowed environment vector, env
+map and borrowed `/host` cwd preopen. Do not free the loader's borrowed
+args/environment. `InitState.deinit` frees only its owned allocations.
+No stdin/stdout/stderr preopens are declared before B1.
+
+`sdk.py build` records the exact compiler flags: private `--zig-lib-dir`,
+`-target aarch64-freestanding-none -mcpu baseline -O ReleaseSafe
+-fsingle-threaded -fno-PIE`, native entry/linker script and no libc.
+Compilation without single-threaded selection is rejected by name.
+Using the installed stdlib instead of this recipe is **not** this target.
+
+| Audit probe | Result under this recipe |
+|---|---|
+| Default page allocator, including the configured-page variant | Supported through `root.os.heap.page_allocator`; both page sizes are 4,096. Resize/remap refuse and allocations remain in A2's single arena |
+| `File.stdout()` and incomplete handles | Supported typed SDK tokens; stdin/stdout/stderr are distinct negative identities, not kernel handles 0–7. Actual unbound stream I/O returns `Unexpected` plus `Unsupported:UnboundOrClosedInput/Output`, never EOF or discarded writes |
+| `Thread.spawn` | Compile-time single-threaded refusal; B5 is not activated |
+| Default `Io.Threaded` (`getrandom` / `IOV_MAX`) | Named `VirelaiUnsupportedThreaded`; use `sdk.io`, not invented constants to make a hosted backend compile |
+| Default `debug.print` | Supported by the explicit debug Io hook, allocation-free chunked slot-1 console diagnostics **after initialize**, not a claim of stderr separation |
+| Direct POSIX `PROT`, `MREMAP`, errno or `getrandom` | Named `VirelaiUnsupportedPosix`; the allocator/entropy paths do not instantiate POSIX primitives or import Linux errno values |
+| Args/env, exit/abort | Native views and std Init compile; normal exit cleans up SDK files, abort diagnoses and exits nonzero |
+
+### Capability/refusal ownership
+
+`operations.zig` pins all **109** Zig 0.16 vtable field names and order.
+The complete typed table is linked, including every refusal body. A field
+with no implementation in `Backend` uses the signature-preserving refusal
+adapter: `OperationUnsupported` / `UnsupportedOperation` when available,
+otherwise `Unexpected`, with `Unsupported:<operation>` diagnostics. If the
+return type cannot express a truthful refusal (including cancellation-only
+errors), it diagnoses and exits 70. There is no `Io.failing` fallback.
+
+| Implemented selection | Exact scope / limit |
+|---|---|
+| `dirOpenFile`, `dirCreateFile`, `dirCreateDir` | Sequential read-only open; write-only create/truncate; single mkdir with default native permissions. Reject read/write or write-only nontruncating open, exclusive/append, locks, custom permissions, no-follow/resolve-beneath requests **before** calling the kernel |
+| `operate` file arms, `fileClose`, `fileSync`, `fileSetLength` | Slots 23–26/36/77; ≤2,048 B chunks, confirmed short counts, zero write progress is an error, EOF only from a real input read. Truncate rejects lengths above u32 before narrowing. Close failure terminates for std's void API; SDK `closeChecked` is fallible |
+| Positional reads/writes and seeks | `Unseekable`, allowing std Reader/Writer's supported streaming fallback at initial offset zero. No fake positioning |
+| Cwd/path state | Borrowed `/host` token and `processCurrentPath`; ≤64 B full paths and ≤31 B components. Reject escapes, NUL, empty/dot components and non-host absolute paths. This is **not** B3's symlink/TOCTOU containment proof; cwd changes and directory opens/iteration refuse |
+| `randomSecure`, `random` | Slot 72, ≤256 B confirmed fills; short fills loop, zero/error/overcount fails `EntropyUnavailable`. The void API terminates on failure, never seeds a deterministic fallback |
+| `async`, `groupAsync`, cancellation state | Synchronous completed work, no future/task allocation. `concurrent`, `groupConcurrent`, concurrent batches return `ConcurrencyUnavailable`; parked waits and asynchronous batches refuse |
+| Debug lock/unlock | Single-threaded synchronous console hook; flush/write failures are fatal, nested lock refuses, only no-color mode. Ordinary `File.stderr()` still refuses before B1 |
+| Everything else in the pinned table | Explicit refusal: stat/length/full metadata (B3), traversal (B2), publication/rename (B4), permissions/ownership changes, links, file-backed mmap, subprocesses, network, tty queries, clocks/sleep and futexes. No forged stat, time, identity, successful lock or successful unsupported close |
+
+Use `io_helpers.readBounded` for metadata-free sequential input, including
+the extra-byte limit probe. Buffer/render and check the workload output
+limit **before creating/truncating the destination**; `writeBounded`
+additionally checks it before writing. Flush each application-owned writer
+explicitly and propagate failure before `sdk.finish`. Generic hosted
+convenience readers requiring stat/seek and atomic publishers are not
+silently made compatible.
+
+**Existing native finding, no A3 ABI change:** `file_table.close` discards
+the host backend's close status before returning slot-26 success. A3 can
+check only the native result; it does not claim host-close durability.
+Explicit slot-77 sync is tested and failures propagate. Any requirement to
+expose host-close failures belongs to a separately approved native B-card.
+
+### Budgets and upgrade checks
+
+Backend records and dynamic std state use the same arena. A3 conservatively
+allows four open files plus three reserved stream identities and one
+borrowed cwd, at most eight SDK resources; stale tokens cannot alias a
+reused native fd. This does **not** expand Boris's resource budget.
+Diagnostics retain A2's aggregate 16 KiB cap and reserved limit message.
+The fixture reserves 1 MiB; no workload ceilings or boot defaults change.
+SDK file helpers are iterative, not recursive tree walkers. Compiler-frame
+and stack-paint checks cover the fixture, not arbitrary user formatters or
+engine recursion; C1–C4 still need their enforceable input/call-depth bounds.
+
+On **every compiler upgrade**, re-pin archives and review all six original
+file hashes/anchors, the root hooks' types, native handle/constants,
+argument/environment/entry selection and all 109 vtable signatures,
+including `Operation` arms. Run `zig build zig-guest-check` (two clean
+offline builds, ELF/parser corpus, exported-body positive/negative probes,
+fatal-refusal subprocesses and SDK unit tests), `zig build test`, and
+`live-el0-exec`, `live-vm-depth`, `live-user-fs`, `live-trust-modes`.
+Preserve the unmarked stock-target negative probes and the `zc` checker.
+Re-run affected workload goldens and gates when those workloads exist.
+Clean patch application alone is never upgrade acceptance. Test counts,
+measurements and observed versus blocked native steps belong in the landing
+PR and local gate artifacts, not a duplicated status log here.

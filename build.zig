@@ -1941,7 +1941,7 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run host-side unit tests in parallel (M41 TS1)");
     const zig_guest_checks = b.addSystemCommand(&.{ "python3", "tools/tests/test_zig_guest.py" });
     test_step.dependOn(&zig_guest_checks.step);
-    const zig_guest_step = b.step("zig-guest-check", "Rebuild the pinned A2 fixture twice, check ELF/startup/allocator contracts (fetch archive first)");
+    const zig_guest_step = b.step("zig-guest-check", "Rebuild the pinned SDK twice; check ELF, startup, allocator and native std boundary (fetch archive first)");
     const zig_guest_integration = b.addSystemCommand(&.{ "python3", "tools/tests/test_zig_guest.py", "--integration" });
     zig_guest_integration.has_side_effects = true;
     zig_guest_integration.stdio = .inherit;
