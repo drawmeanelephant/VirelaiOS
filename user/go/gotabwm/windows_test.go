@@ -2,9 +2,48 @@ package main
 
 import (
 	"testing"
+	"unsafe"
 
 	"virelai/vi"
 )
+
+func TestSeatChromeBackBufferMatchesPaintAndCaches(t *testing.T) {
+	scan := launcherScan()
+	paintGodMenuButton(scan, vi.ScanoutWidth, vi.ScanoutHeight)
+	x, y, w, h := godMenuRect(vi.ScanoutWidth, vi.ScanoutHeight)
+	got := make([]uint32, w*h)
+	p := windowPixels{id: 7}
+	calls := 0
+	fill := func(id int, x, y, w, h, color uint32) {
+		calls++
+		if id != 7 || h != 1 {
+			t.Fatal("wrong back-buffer destination")
+		}
+		for col := x; col < x+w; col++ {
+			got[int(y)*p.w+int(col)] = color
+		}
+	}
+	p.upload(scan, vi.ScanoutWidth, x, y, w, h, fill)
+	src := unsafe.Slice((*uint32)(unsafe.Pointer(&scan[0])), len(scan)/4)
+	for row := 0; row < h; row++ {
+		for col := 0; col < w; col++ {
+			want := src[(y+row)*vi.ScanoutWidth+x+col] & 0xffffff
+			if got[row*w+col] != want {
+				t.Fatalf("pixel %d,%d did not reach the window buffer", col, row)
+			}
+		}
+	}
+	before := calls
+	p.upload(scan, vi.ScanoutWidth, x, y, w, h, fill)
+	if calls != before {
+		t.Fatal("unchanged paint should not issue fills")
+	}
+	src[y*vi.ScanoutWidth+x] ^= 0xff
+	p.upload(scan, vi.ScanoutWidth, x, y, w, h, fill)
+	if calls == before || got[0] != src[y*vi.ScanoutWidth+x]&0xffffff {
+		t.Fatal("changed pixel did not update")
+	}
+}
 
 // The gate greps these exact strings; a drift is a host-test failure rather
 // than a live run that silently asserts nothing.

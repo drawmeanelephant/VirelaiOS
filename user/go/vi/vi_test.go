@@ -281,7 +281,7 @@ func TestSlotNumbers(t *testing.T) {
 		5: "ipc_send", 6: "ipc_recv", 7: "procs",
 		9: "udp_listen", 10: "udp_send", 11: "udp_recv",
 		12: "win_open", 13: "win_fill", 14: "win_present", 15: "win_close",
-		19: "win_query", 21: "poll_event", 22: "wait_event",
+		17: "win_raise", 19: "win_query", 21: "poll_event", 22: "wait_event",
 		23: "file_open", 24: "file_read", 25: "file_write", 26: "file_close", 27: "dir_list",
 		28: "exec",
 		30: "tcp_connect", 31: "tcp_send", 32: "tcp_recv", 33: "tcp_close",
@@ -295,7 +295,7 @@ func TestSlotNumbers(t *testing.T) {
 		SlotIPCSend: "ipc_send", SlotIPCRecv: "ipc_recv", SlotProcs: "procs",
 		SlotUDPListen: "udp_listen", SlotUDPSend: "udp_send", SlotUDPRecv: "udp_recv",
 		SlotWinOpen: "win_open", SlotWinFill: "win_fill", SlotWinPresent: "win_present",
-		SlotWinClose: "win_close", SlotWinQuery: "win_query",
+		SlotWinClose: "win_close", SlotWinRaise: "win_raise", SlotWinQuery: "win_query",
 		SlotPollEvent: "poll_event", SlotWaitEvent: "wait_event",
 		SlotFileOpen: "file_open", SlotFileRead: "file_read", SlotFileWrite: "file_write",
 		SlotFileClose: "file_close", SlotDirList: "dir_list", SlotExec: "exec",
@@ -314,6 +314,19 @@ func TestSlotNumbers(t *testing.T) {
 	}
 	if len(got) != len(want) {
 		t.Fatalf("slot table drift: %d entries want %d", len(got), len(want))
+	}
+}
+
+func TestWinRaiseUsesExistingOwnerOnlySlot(t *testing.T) {
+	old := SetSyscallHookForTest(func(slot, a0, a1, a2, a3 uintptr) int64 {
+		if slot != 17 || a0 != 7 || a1 != 0 || a2 != 0 || a3 != 0 {
+			t.Fatalf("raise call = %d %d %d %d %d", slot, a0, a1, a2, a3)
+		}
+		return -ErrEINVAL
+	})
+	defer SetSyscallHookForTest(old)
+	if got := WinRaise(7); got != -ErrEINVAL {
+		t.Fatalf("raise result = %d", got)
 	}
 }
 

@@ -282,6 +282,7 @@ func TestHandleWmKeyCtrlTabAndDigitDispatch(t *testing.T) {
 }
 
 func TestHandleWmKeyLauncherPrecedesCtrlChords(t *testing.T) {
+	stubLauncherWindows(t)
 	savedTabs := tabs
 	savedLaunch := launch
 	defer func() {
@@ -291,7 +292,7 @@ func TestHandleWmKeyLauncherPrecedesCtrlChords(t *testing.T) {
 	tabs = TabStrip{}
 	tabs.OpenTab(3, "A")
 	tabs.OpenTab(4, "B")
-	launch = launcherState{open: true}
+	launch = launcherState{open: true, sink: 9}
 	indices, restore := focusIndexRecorder()
 	defer restore()
 
@@ -737,6 +738,7 @@ func TestHidUsageCharLetters(t *testing.T) {
 }
 
 func TestLauncherCtrlSpaceToggleAndFilter(t *testing.T) {
+	stubLauncherWindows(t)
 	saved := launch
 	defer func() { launch = saved }()
 	launch = launcherState{}
@@ -766,10 +768,12 @@ func TestLauncherCtrlSpaceToggleAndFilter(t *testing.T) {
 }
 
 func TestLauncherFilterIgnoresStickyCtrl(t *testing.T) {
+	stubLauncherWindows(t)
 	saved := launch
 	defer func() { launch = saved }()
 	launch = launcherState{
 		open:     true,
+		sink:     9,
 		catalog:  []AppEntry{{Bin: "GOCALC.ELF", Label: "64-bit Calc"}},
 		filtered: []int{0},
 	}
@@ -790,6 +794,7 @@ func TestLaunchRowAtHitsFirstRow(t *testing.T) {
 	}
 	cx := uint32(launchX + 20)
 	cy := uint32(launchY + launchHdr + 2)
+	paintLauncher(launcherScan(), vi.ScanoutWidth, vi.ScanoutHeight)
 	i, ok := launchRowAt(cx, cy)
 	if !ok || i != 0 {
 		t.Fatalf("row at (%d,%d) = %d ok=%v", cx, cy, i, ok)
@@ -803,6 +808,8 @@ func TestLaunchRowAtHitsFirstRow(t *testing.T) {
 // row with `argv=` carries those arguments into the exec; a row without one
 // launches exactly as it did before the field existed.
 func TestLauncherExecCarriesTheManifestArgv(t *testing.T) {
+	defer saveSeatState()()
+	stubLauncherWindows(t)
 	saved := launch
 	defer func() { launch = saved }()
 	launch = launcherState{}
@@ -811,7 +818,8 @@ func TestLauncherExecCarriesTheManifestArgv(t *testing.T) {
 
 	catalog := parseAppsTXT("PLAIN.ELF | Plain | p | dock=true\n" +
 		"WITHARG.ELF | With Arg | w | dock=true | v=2 | argv=--mode fast\n")
-	launch = launcherState{open: true, catalog: catalog, sel: 1}
+	openLauncher()
+	launch.catalog, launch.sel = catalog, 1
 	launch.refresh()
 	if launch.catalog[launch.filtered[1]].Bin != "WITHARG.ELF" {
 		t.Fatalf("catalog order changed: %+v", launch.filtered)
@@ -823,7 +831,8 @@ func TestLauncherExecCarriesTheManifestArgv(t *testing.T) {
 
 	// The same path with a v1 row: the binary alone, no empty argument and
 	// no marker change. This is the half of the additive claim the user sees.
-	launch = launcherState{open: true, catalog: catalog, sel: 0}
+	openLauncher()
+	launch.catalog, launch.sel = catalog, 0
 	launch.refresh()
 	execSelected()
 	if len(*execs) != 2 || (*execs)[1] != "PLAIN.ELF" {
@@ -863,9 +872,13 @@ func rectRecorder() (*[]rectCall, func()) {
 func saveSeatState() func() {
 	ts, pl := tabs, launch
 	pb, cd, rd, rh, sd := prevPtrButtons, contentDown, railDragFrom, railHover, sashDragging
+	mg := menuGesture
+	bp, mp := buttonPixels, menuPixels
 	return func() {
 		tabs, launch = ts, pl
 		prevPtrButtons, contentDown, railDragFrom, railHover, sashDragging = pb, cd, rd, rh, sd
+		menuGesture = mg
+		buttonPixels, menuPixels = bp, mp
 	}
 }
 
@@ -1071,6 +1084,7 @@ func TestRailReorderReappliesWhileSplit(t *testing.T) {
 // focusHosted helper every other focus path (alt-tab, rail click) already
 // runs. The class-B gate proves the focus lands on the guest.
 func TestHandleWmPointerPressOnToastIsChrome(t *testing.T) {
+	defer saveSeatState()()
 	resetNotify(t)
 	saved := tabs
 	savedHosted := hostedApp
@@ -1160,6 +1174,7 @@ func TestHandleWmPointerPressOnToastIsChrome(t *testing.T) {
 // not that coincidence: widen the strip or move the launcher and the order is
 // still right.
 func TestToastHitPrecedesTheLauncher(t *testing.T) {
+	defer saveSeatState()()
 	resetNotify(t)
 	saved := tabs
 	savedLaunch := launch
@@ -1236,6 +1251,8 @@ func TestHidUsagesMatchRegistry(t *testing.T) {
 // carries must reach its action through handleWmKey — ctrl-space (closed
 // launcher) opens the launcher from the table's "launcher" row.
 func TestLauncherSummonDispatchesFromRegistry(t *testing.T) {
+	defer saveSeatState()()
+	stubLauncherWindows(t)
 	savedLaunch := launch
 	defer func() { launch = savedLaunch }()
 	launch = launcherState{}
@@ -1317,5 +1334,56 @@ func TestChordSummaryCounts(t *testing.T) {
 	want := "gotabwm: chords n=51 seat=23 kernel=12 app=16"
 	if got != want {
 		t.Fatalf("chordSummary = %q want %q", got, want)
+	}
+}
+
+func TestGodMenuGestureNeverForwardsContent(t *testing.T) {
+	defer saveSeatState()()
+	stubLauncherWindows(t)
+	resetNotify(t)
+	oldPtr, oldExec := forwardContentPointer, execApp
+	defer func() { forwardContentPointer, execApp = oldPtr, oldExec }()
+	forwards := 0
+	forwardContentPointer = func(uint32, uint32, uint8) int64 {
+		forwards++
+		return 0
+	}
+	execApp = func(string, ...string) (int64, error) { return 42, nil }
+	tabs = TabStrip{}
+	tabs.OpenTab(3, "Edit")
+	tabs.OpenTab(4, "Terminal")
+	for _, action := range []string{"launch", "dismiss", "header"} {
+		launch = launcherState{}
+		prevPtrButtons, menuGesture = 0, false
+		railDragFrom, contentDown, sashDragging = -1, false, false
+		x, y, w, h := godMenuRect(vi.ScanoutWidth, vi.ScanoutHeight)
+		handleWmPointer(ptrEvent(uint32(x+w/2), uint32(y+h/2), hidBtnLeft))
+		handleWmPointer(ptrEvent(800, 400, hidBtnLeft))
+		handleWmPointer(ptrEvent(800, 400, 0))
+		if !launch.open {
+			t.Fatal("button must open with tabs")
+		}
+		paintLauncher(launcherScan(), vi.ScanoutWidth, vi.ScanoutHeight)
+		px, py := uint32(launchX+20), uint32(launchY+launchHdr+2)
+		switch action {
+		case "dismiss":
+			px, py = 800, 650
+		case "header":
+			py = launchY + launchHdr - 1
+		}
+		handleWmPointer(ptrEvent(px, py, hidBtnLeft))
+		handleWmPointer(ptrEvent(960, 10, hidBtnLeft)) // not a rail drag
+		handleWmPointer(ptrEvent(800, 400, hidBtnLeft))
+		handleWmPointer(ptrEvent(800, 400, 0))
+		if forwards != 0 || contentDown || railDragFrom != -1 || menuGesture {
+			t.Fatalf("%s gesture escaped: forwards=%d content=%v drag=%d latch=%v",
+				action, forwards, contentDown, railDragFrom, menuGesture)
+		}
+		if tabs.At(0).ID != 3 || tabs.At(1).ID != 4 {
+			t.Fatal("menu gesture reordered the rail")
+		}
+		if (action == "header") != launch.open {
+			t.Fatalf("%s open=%v", action, launch.open)
+		}
 	}
 }

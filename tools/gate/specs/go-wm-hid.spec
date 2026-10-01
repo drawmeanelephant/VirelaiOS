@@ -174,12 +174,18 @@ if not os.path.exists(src):
 shutil.copy(src, os.path.join(share, "GOSET.ELF"))
 print("staged GOSET.ELF into share (%d bytes)" %
       os.path.getsize(os.path.join(share, "GOSET.ELF")))
+src = os.path.join(".build", "go", "GOSH.ELF")
+if not os.path.exists(src):
+    sys.exit("GOSH.ELF missing - build it first: bash tools/go/build-gosh.sh")
+shutil.copy(src, os.path.join(share, "GOSH.ELF"))
 ed = os.path.join(share, "EDIT")
 os.makedirs(ed, exist_ok=True)
 seed = os.path.join(ed, "SEED.TXT")
 with open(seed, "wb") as f:
     f.write(b"seed-line\n")
 print("seeded %s (%d bytes)" % (seed, os.path.getsize(seed)))
+with open(os.path.join(ed, "M87.TXT"), "wb") as f:
+    f.write(b"seed-line\n")
 with open(os.path.join(share, "SETTINGS.TXT"), "w") as f:
     f.write("#v2\nwm=none\n")
 print("seeded SETTINGS.TXT (wm=none: shim-only boot, explicit seat opt-in)")
@@ -1105,4 +1111,215 @@ if not got.endswith(tail) or got.count(tail) != 1:
              "stray acute + x, bare acute)" % (got, tail))
 print("dead keys: =e -> e-acute, `o -> o-circumflex, =x -> acute+x, =space -> acute; "
       "%d bytes saved UTF-8 byte-exactly" % len(got))
+PY
+
+# M87a: keep every prior rail/drag/close boot above. The live menu boots
+# below have no demo choreography and no keyboard launch stand-ins.
+vgate_file script-m87.txt <<'EOF'
+set GOMAXPROCS=1
+vf rm SESSION.TABS
+vf rm GOTABWM.DEMO
+vf rm GOTABWM.CHORDCONFLICT
+settings set keyboard_layout us
+wm
+exec GOTABWM.ELF
+EOF
+
+vgate_file script2-m87-edit.txt <<'EOF'
+dui focus 0
+exec GOEDIT.ELF /host/EDIT/M87.TXT
+EOF
+
+vgate_file script2-m87-shell.txt <<'EOF'
+dui focus 0
+exec GOSH.ELF
+EOF
+
+vgate_file script3-m87.txt <<'EOF'
+dui
+echo rx-gotabwm-menu-ok
+EOF
+
+# Raw kind-4 pixels are the presented GUEST scanout, not the host VM view.
+# Three pinned glyph masks distinguish real title/named-row text from fills.
+# Save a PNG of those exact guest pixels as small local review evidence.
+vgate_file menu-glyphs.py <<'PY'
+import os, pathlib, struct, sys, zlib
+raw = open(sys.argv[1], "rb").read()
+W, H = 1280, 720
+if len(raw) != W * H * 4:
+    sys.exit("missing full guest scanout")
+glyphs = [
+    ("Apps title A", 248, 86, [0x0c, 0x1e, 0x33, 0x33, 0x3f, 0x33, 0x33, 0]),
+    ("64-bit Calc C", 310, 122, [0x3c, 0x66, 3, 3, 3, 0x66, 0x3c, 0]),
+    ("Terminal T", 254, 218, [0x3f, 0x2d, 0x0c, 0x0c, 0x0c, 0x0c, 0x1e, 0]),
+]
+for name, x, y, rows in glyphs:
+    def pixel(dx, dy):
+        p = ((y + dy) * W + x + dx) * 4
+        return raw[p:p+3]
+    # Ordinary windows have the existing kernel fade-in. The first
+    # presented frame may be dimmed, but must contain the SAME exact
+    # foreground/background glyph mask, with visible contrast.
+    background = pixel(7, 7)
+    first = next((dx, dy) for dy, bits in enumerate(rows)
+                 for dx in range(8) if bits & (1 << dx))
+    ink = pixel(*first)
+    if min(abs(a-b) for a, b in zip(ink, background)) < 32:
+        sys.exit("%s glyph has no readable contrast" % name)
+    for dy, bits in enumerate(rows):
+        for dx in range(8):
+            want = ink if bits & (1 << dx) else background
+            if pixel(dx, dy) != want:
+                sys.exit("%s glyph mismatch at %d,%d" % (name, dx, dy))
+def chunk(kind, data):
+    return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+rows = bytearray()
+for y in range(H):
+    rows.append(0)
+    for x in range(W):
+        p = (y * W + x) * 4
+        rows.extend((raw[p+2], raw[p+1], raw[p]))
+png = b"\x89PNG\r\n\x1a\n"
+png += chunk(b"IHDR", struct.pack(">IIBBBBB", W, H, 8, 2, 0, 0, 0))
+png += chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b"")
+out = "artifacts/go-wm-hid-menu-%s%s.png" % (
+    pathlib.Path(sys.argv[1]).name.split("-")[1], os.environ.get("VIRELAI_GATE_SUFFIX", ""))
+open(out, "wb").write(png)
+print("guest menu glyph masks match; saved " + out)
+PY
+
+# Existing editor -> Apps button -> header (no exec) -> named Calculator.
+# Held motion/release crosses the rail/content after exec and stays chrome.
+vgate_run 11 -- \
+    --screen '$RUN_DIR/screen-11' --via-virtio --cvc-snap \
+    --snapshot-after 'gotabwm: launcher presented' \
+    --snapshot-out '$RUN_DIR/menu-11' \
+    --script '$RUN_DIR/script-m87.txt' \
+    --script2 '$RUN_DIR/script2-m87-edit.txt' \
+    --script2-after 'gotabwm: win focus' \
+    --pointer-virtio '272,702,d;272,702,u;270,115,d;800,650;800,650,u;270,126,d;960,10;800,400,u' \
+    --pointer-virtio-after 'goedit: present' \
+    --script3 '$RUN_DIR/script3-m87.txt' \
+    --script3-after 'gocalc: declare accepted' --script3-delay 8 \
+    --script-expect 'rx-gotabwm-menu-ok' --timeout 300
+vgate_assert 11 serial-contains 'gotabwm: mode live'
+vgate_assert 11 serial-contains 'goedit: declare accepted'
+vgate_assert 11 serial-contains 'gotabwm: launcher focus sink='
+vgate_assert 11 serial-contains 'gotabwm: launcher presented'
+vgate_assert 11 serial-exact 'gotabwm: launcher exec GOCALC.ELF' 1
+vgate_assert 11 serial-contains 'gocalc: declare accepted'
+vgate_assert 11 serial-absent 'gotabwm: launcher missing '
+vgate_assert 11 serial-absent 'gotabwm: reorder '
+vgate_assert 11 serial-absent 'dui: term sel '
+vgate_assert 11 serial-absent '[EXC] parking:'
+vgate_assert 11 serial-absent 'exited status=139'
+vgate_assert 11 snapshot 'menu-11-*.raw' <<'PY'
+import pathlib, sys
+exec((pathlib.Path(sys.argv[1]).parent / "menu-glyphs.py").read_text())
+PY
+vgate_assert 11 python <<'PY'
+import os, re, sys
+s = open(os.environ["VG_SER"], errors="replace").read()
+opened = re.search(r'gocalc: open id=(\d+)', s)
+if not opened:
+    sys.exit("Calculator never opened a real window")
+focus = 'gotabwm: host focus id=' + opened[1]
+launch = s.index('gotabwm: launcher exec GOCALC.ELF')
+if focus not in s[launch:]:
+    sys.exit("launched Calculator did not take real hosted focus")
+if s.count("gotabwm: launcher exec ") != 1:
+    sys.exit("header/held/release caused another exec")
+print("pointer Calculator declared and focused; header did not exec")
+PY
+
+# Existing GOSH -> pointer-open -> named Terminal row (manifest index 4).
+# The launched app must attach a tty, present its prompt, and run a command
+# with an actual successful shell status. The existing cv-input ASCII
+# transport does not map '>'; do not replace typing with a monitor script.
+vgate_run 12 -- \
+    --screen '$RUN_DIR/screen-12' --via-virtio --cvc-snap \
+    --snapshot-after 'gotabwm: launcher presented' \
+    --snapshot-out '$RUN_DIR/menu-12' \
+    --script '$RUN_DIR/script-m87.txt' \
+    --script2 '$RUN_DIR/script2-m87-shell.txt' \
+    --script2-after 'gotabwm: win focus' \
+    --pointer-virtio '272,702,d;272,702,u;270,222,d;960,10;800,400,u' \
+    --pointer-virtio-after 'gosh: declare accepted' \
+    --input-string $'echo m87-terminal\n' \
+    --input-string-after 'goterm: prompt' \
+    --script3 '$RUN_DIR/script3-m87.txt' \
+    --script3-after 'goterm: done status=0' --script3-delay 8 \
+    --script-expect 'rx-gotabwm-menu-ok' --timeout 300
+vgate_assert 12 serial-contains 'gotabwm: mode live'
+vgate_assert 12 serial-contains 'gotabwm: launcher focus sink='
+vgate_assert 12 serial-contains 'gotabwm: launcher presented'
+vgate_assert 12 serial-exact 'gotabwm: launcher exec GOTERM.ELF' 1
+vgate_assert 12 serial-contains 'goterm: declare accepted'
+vgate_assert 12 serial-contains 'goterm: attached'
+vgate_assert 12 serial-contains 'goterm: prompt'
+vgate_assert 12 serial-contains 'goterm: line echo m87-terminal'
+vgate_assert 12 serial-contains 'goterm: done status=0'
+vgate_assert 12 serial-absent 'dui: term sel '
+vgate_assert 12 serial-absent 'gotabwm: reorder '
+vgate_assert 12 serial-absent '[EXC] parking:'
+vgate_assert 12 serial-absent 'exited status=139'
+vgate_assert 12 snapshot 'menu-12-*.raw' <<'PY'
+import pathlib, sys
+exec((pathlib.Path(sys.argv[1]).parent / "menu-glyphs.py").read_text())
+PY
+vgate_assert 12 python <<'PY'
+import os, re, sys
+s = open(os.environ["VG_SER"], errors="replace").read()
+opened = re.search(r'goterm: open id=(\d+)', s)
+if not opened:
+    sys.exit("Terminal never opened a real window")
+launch = s.index('gotabwm: launcher exec GOTERM.ELF')
+if 'gotabwm: host focus id=' + opened[1] not in s[launch:]:
+    sys.exit("launched Terminal never took hosted focus")
+if s.count("gotabwm: launcher exec ") != 1:
+    sys.exit("Terminal gesture caused more than one exec")
+print("pointer Terminal declared, focused, attached, prompted and ran the receipt command")
+PY
+
+# The dual-path negative: pointer-open while GOEDIT owns focus, filter with
+# ordinary HID keys, header press (no exec), outside press (no underlying
+# click), restore the old editor and SAVE it. The bytes, not consumed=true,
+# prove the old app did not receive the filter text.
+vgate_run 13 -- \
+    --screen '$RUN_DIR/screen-13' --via-virtio \
+    --script '$RUN_DIR/script-m87.txt' \
+    --script2 '$RUN_DIR/script2-m87-edit.txt' \
+    --script2-after 'gotabwm: win focus' \
+    --pointer-virtio '272,702,d;272,702,u;270,115,d;270,115,u;800,650,d;960,10;800,400,u' \
+    --pointer-virtio-after 'goedit: present' \
+    --input-string 'calc' --input-string-after 'gotabwm: launcher open n=' \
+    --input-chords 'ctrl-s' --input-chords-after 'gotabwm: launcher restore id=' \
+    --script3 '$RUN_DIR/script3-m87.txt' \
+    --script3-after 'goedit: saved /host/EDIT/M87.TXT n=10' --script3-delay 8 \
+    --script-expect 'rx-gotabwm-menu-ok' --timeout 300
+vgate_assert 13 serial-contains 'gotabwm: launcher focus sink='
+vgate_assert 13 serial-contains 'gotabwm: launcher filter q=calc n=1'
+vgate_assert 13 serial-contains 'gotabwm: launcher restore id='
+vgate_assert 13 serial-contains 'goedit: saved /host/EDIT/M87.TXT n=10'
+vgate_assert 13 share-equals EDIT/M87.TXT $'seed-line\n'
+vgate_assert 13 serial-absent 'goedit: dirty'
+vgate_assert 13 serial-absent 'gotabwm: launcher exec '
+vgate_assert 13 serial-absent 'gotabwm: rail-click id='
+vgate_assert 13 serial-absent 'gotabwm: reorder '
+vgate_assert 13 serial-absent 'dui: term sel '
+vgate_assert 13 serial-absent '[EXC] parking:'
+vgate_assert 13 serial-absent 'exited status=139'
+vgate_assert 13 python <<'PY'
+import os, re, sys
+s = open(os.environ["VG_SER"], errors="replace").read()
+edit = re.search(r'goedit: open id=(\d+)', s)
+sink = re.search(r'gotabwm: launcher focus sink=(\d+)', s)
+restore = re.search(r'gotabwm: launcher restore id=(\d+)', s)
+if not edit or not sink or not restore or edit[1] != restore[1] or sink[1] == edit[1]:
+    sys.exit("menu did not own a distinct sink and restore the former live editor")
+if not (sink.start() < s.index('gotabwm: launcher filter q=calc') < restore.start()
+        < s.index('goedit: saved /host/EDIT/M87.TXT n=10')):
+    sys.exit("sink/filter/restore/save order wrong")
+print("real-focus dual-path negative: filtered while editor unfocused, restored, saved unchanged")
 PY

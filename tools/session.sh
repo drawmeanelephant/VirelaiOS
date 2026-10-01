@@ -70,9 +70,13 @@ fi
 # --- 2. seed the persistent share (idempotent; never clobbers user files) ---
 mkdir -p "$SHARE"
 
-# The compiled app bundle (GOCALC.ELF, TABWM.BIN, LD.SO, ...).
+# Refresh executable assets only. The bundle is not a document/settings
+# backup and must never recursively overwrite the persistent share.
 if [ -d "$ROOT/zig-out/bin" ]; then
-    cp -R "$ROOT/zig-out/bin/." "$SHARE/" 2>/dev/null || true
+    for src in "$ROOT"/zig-out/bin/*.BIN "$ROOT"/zig-out/bin/*.ELF "$ROOT"/zig-out/bin/*.SO; do
+        [ -f "$src" ] || continue
+        cp "$src" "$SHARE/"
+    done
 fi
 # Freshly generated ELF fixtures (static + the M30/M31 dynamic set) so the
 # dynamic apps resolve even when the last image build predates them.
@@ -102,12 +106,46 @@ fi
 # rc below says which). The default first-boot workspace also needs GOSH.ELF.
 GO_SEAT_STAGED=0
 if [ "${VIRELAI_SESSION_NO_GOTABWM:-0}" != "1" ]; then
-    if bash "$ROOT/tools/go/build-gotabwm.sh" && bash "$ROOT/tools/go/build-gosh.sh"; then
-        cp "$ROOT/.build/go/GOTABWM.ELF" "$SHARE/GOTABWM.ELF"
-        cp "$ROOT/.build/go/GOSH.ELF" "$SHARE/GOSH.ELF"
+    # NAME is the existing manifest executable field, not a new schema. The
+    # seat and first-boot shell are the only non-catalog prerequisites.
+    go_apps="$(python3 - "$ROOT/image/apps.txt" <<'PY'
+import pathlib, sys
+names = ["GOTABWM.ELF", "GOSH.ELF"]
+for line in pathlib.Path(sys.argv[1]).read_text().splitlines():
+    line = line.strip()
+    if not line or line.startswith("#") or "|" not in line:
+        continue
+    name = line.split("|", 1)[0].strip()
+    if name.endswith(".ELF") and name not in names:
+        names.append(name)
+print("\n".join(names))
+PY
+)"
+    while IFS= read -r app; do
+        case "$app" in
+            GOFILES.ELF) builder=files ;;
+            GOHELP.ELF) builder=help ;;
+            *) builder="$(printf '%s' "${app%.ELF}" | tr '[:upper:]' '[:lower:]')" ;;
+        esac
+        script="$ROOT/tools/go/build-$builder.sh"
+        if [ ! -f "$script" ]; then
+            echo "session: WARNING — $app unavailable: missing builder $script"
+        elif ! bash "$script"; then
+            echo "session: WARNING — $app unavailable: builder failed ($script)"
+        elif [ ! -s "$ROOT/.build/go/$app" ]; then
+            echo "session: WARNING — $app unavailable: builder produced no binary"
+        else
+            cp "$ROOT/.build/go/$app" "$SHARE/$app"
+            echo "session: staged $app"
+        fi
+        # A failed builder never copies a stale output or reports success.
+        # A binary already on a persistent share remains user-owned; exec
+        # still validates that image and reports a real load failure.
+    done <<< "$go_apps"
+    if [ -s "$SHARE/GOTABWM.ELF" ] && [ -s "$SHARE/GOSH.ELF" ]; then
         GO_SEAT_STAGED=1
     else
-        echo "session: WARNING — the Go seat or its GOSH.ELF first-boot shell did not build."
+        echo "session: WARNING — the Go seat or its GOSH.ELF first-boot shell is unavailable."
         echo "session:           build commands: 'bash tools/go/build-gotabwm.sh' and 'bash tools/go/build-gosh.sh'."
         echo "session:           if the fork toolchain is missing, provision it with 'bash tools/go/apply.sh && just go-toolchain'."
         echo "session:           the Zig TABWM seat is the fallback when this share has no .virelairc."
@@ -174,7 +212,7 @@ cat <<EOF
 
 A 1280x720 VM window is opening. The default Go seat (GOTABWM.ELF) starts a
 first-boot GOSH shell workspace when there is no saved session. The Zig TABWM
-seat remains available with `settings set wm tabwm`.
+seat remains available with \`settings set wm tabwm\`.
 
   * the seat's markers and the guest shell output are in
       artifacts/session-serial.log

@@ -16,6 +16,45 @@ import (
 	"virelai/webrender/font"
 )
 
+func TestGodMenuButtonPaintAndHitAgree(t *testing.T) {
+	defer saveSeatState()()
+	for _, n := range []int{0, 1, 4} {
+		tabs = TabStrip{}
+		for i := 0; i < n; i++ {
+			tabs.OpenTab(uint32(i+3), "App")
+		}
+		scan := launcherScan()
+		if paintGodMenuButton(scan, vi.ScanoutWidth, vi.ScanoutHeight) == 0 {
+			t.Fatalf("%d tabs: button disappeared", n)
+		}
+		x, y, w, h := godMenuRect(vi.ScanoutWidth, vi.ScanoutHeight)
+		for py := y - 1; py <= y+h; py++ {
+			for px := x - 1; px <= x+w; px++ {
+				want := px >= x && px < x+w && py >= y && py < y+h
+				if godMenuHit(uint32(px), uint32(py), vi.ScanoutWidth, vi.ScanoutHeight) != want {
+					t.Fatalf("%d tabs: paint/hit mismatch %d,%d", n, px, py)
+				}
+			}
+		}
+		if countLaunchInk(scan, x+chromePad, y+chromePad, 32, 8, theme.Current.Ink) < 10 {
+			t.Fatal("Apps button has no glyph pixels")
+		}
+		cx, cy, cw, ch := chromeRect(vi.ScanoutWidth, vi.ScanoutHeight)
+		overlap := func(rx, ry, rw, rh int) bool {
+			return x < rx+rw && rx < x+w && y < ry+rh && ry < y+h
+		}
+		if overlap(cx, cy, cw, ch) || y < RailHeight {
+			t.Fatal("button overlaps clock or rail")
+		}
+		for i := 0; i < NotifyMax; i++ {
+			nx, ny, nw, nh := notifyRect(vi.ScanoutWidth, vi.ScanoutHeight, i, NotifyMax)
+			if overlap(nx, ny, nw, nh) {
+				t.Fatal("button overlaps notification target")
+			}
+		}
+	}
+}
+
 func TestParseClockEpoch(t *testing.T) {
 	ok := []struct {
 		in   string

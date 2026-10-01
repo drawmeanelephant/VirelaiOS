@@ -1,6 +1,5 @@
-// GOTABWM.ELF — M69c2 (#1535): Ctrl+Space launcher. One list parsed from
-// /host/APPS.TXT, type-to-filter, Enter/click execs the named ELF as a
-// hosted tab. Not a Sexiburger port (D1). Fail closed on a missing ELF (D3).
+// GOTABWM.ELF — the pointer-first Apps menu and Ctrl+Space share one
+// APPS.TXT catalog, layout, exec path and seat-owned input sink.
 //
 // M82a (#1768): the row the manifest gives is the row that launches. The
 // `argv=` field's fixed arguments ride the exec, and the decode receipt says
@@ -27,6 +26,8 @@ const (
 	hidUsageEnter  uint8 = 0x28
 	hidUsageEscape uint8 = 0x29
 	hidUsageBksp   uint8 = 0x2A
+	hidUsageDown   uint8 = 0x51
+	hidUsageUp     uint8 = 0x52
 
 	launchX    = 240
 	launchY    = 80
@@ -37,14 +38,37 @@ const (
 )
 
 type launcherState struct {
-	open     bool
-	catalog  []AppEntry
-	filter   string
-	filtered []int
-	sel      int
+	open      bool
+	catalog   []AppEntry
+	filter    string
+	filtered  []int
+	sel       int
+	first     int // first visible filtered row
+	reasons   []string
+	err       string
+	sink      uint32
+	prior     uint32
+	painted   bool
+	width     int
+	height    int
+	launching bool
 }
 
 var launch launcherState
+var readAppsFile = vi.ReadFileAll
+
+func appUnavailable(e AppEntry) string {
+	bin := e.Bin
+	if bin == "TABWM.BIN" || bin == "GOTABWM.ELF" || bin == "WND.BIN" {
+		return "Seat: use settings wm"
+	}
+	h, r := openFile("/host/"+bin, vi.ModeRead)
+	if r < 0 {
+		return "Binary not staged"
+	}
+	vi.FileClose(uint32(h))
+	return ""
+}
 
 func (l *launcherState) rowH() int {
 	h := theme.Current.PadLG + theme.Current.PadMD
@@ -67,6 +91,7 @@ func (l *launcherState) panelH() int {
 }
 
 func (l *launcherState) refresh() {
+	l.painted = false
 	l.filtered = filterApps(l.catalog, l.filter)
 	if l.sel >= len(l.filtered) {
 		l.sel = len(l.filtered) - 1
@@ -74,6 +99,39 @@ func (l *launcherState) refresh() {
 	if l.sel < 0 {
 		l.sel = 0
 	}
+	l.first = 0
+	l.keepSelectionVisible()
+}
+
+func (l *launcherState) visibleRows() int {
+	return (l.panelH() - launchHdr - theme.Current.PadMD) / l.rowH()
+}
+
+func (l *launcherState) keepSelectionVisible() {
+	first := l.first
+	n := l.visibleRows()
+	if n < 1 {
+		return
+	}
+	if l.sel < l.first {
+		l.first = l.sel
+	}
+	if l.sel >= l.first+n {
+		l.first = l.sel - n + 1
+	}
+	if l.first != first {
+		l.painted = false
+	}
+}
+
+// A row is only a target where its complete painted rectangle exists.
+// Inter-row gaps, side padding and partial scanout rows are not targets.
+func (l *launcherState) rowRect(i, width, height int) (x, y, w, h int, ok bool) {
+	x, y = launchX+theme.Current.PadMD, launchY+launchHdr+(i-l.first)*l.rowH()
+	w, h = launchW-2*theme.Current.PadMD, l.rowH()-theme.Current.PadXS
+	ok = i >= l.first && i < len(l.filtered) && i < l.first+l.visibleRows() &&
+		w > 0 && h >= 8 && x+w <= width && y+l.rowH() <= height
+	return
 }
 
 func (l *launcherState) selected() (AppEntry, bool) {
@@ -92,14 +150,33 @@ func openLauncher() {
 		dismissLauncher()
 		return
 	}
-	body, r := vi.ReadFileAll(appsPath, appsMaxBytes)
+	launch.err = ""
+	launch.catalog, launch.reasons, launch.filtered = nil, nil, nil
+	launch.filter, launch.sel, launch.first = "", 0, 0
+	launch.painted, launch.launching = false, false
+	launch.prior, _ = tabs.Focused()
+	if !acquireLauncherFocus() {
+		vi.ConsoleLine("gotabwm: launcher unavailable " + launch.err)
+		// Never claim a modal menu while an app still owns keyboard focus.
+		// The always-visible button paints the failed-open error instead.
+		launch.open = launch.sink != 0
+		return
+	}
+	body, r := readAppsFile(appsPath, appsMaxBytes)
 	if r < 0 || body == nil {
 		launch.catalog = nil
+		launch.err = "APPS.TXT unavailable"
 	} else {
 		launch.catalog = parseAppsTXT(string(body))
 	}
 	launch.filter = ""
 	launch.sel = 0
+	launch.first = 0
+	launch.painted = false
+	launch.reasons = make([]string, len(launch.catalog))
+	for i, e := range launch.catalog {
+		launch.reasons[i] = appUnavailable(e)
+	}
 	launch.open = true
 	launch.refresh()
 	// The manifest's own report, before the launcher's: a reader that
@@ -121,8 +198,16 @@ func dismissLauncher() {
 	if !launch.open {
 		return
 	}
+	if !releaseLauncherFocus(true) {
+		return
+	}
+	finishLauncher()
+}
+
+func finishLauncher() {
 	launch.open = false
 	launch.filter = ""
+	launch.painted = false
 	vi.ConsoleLine(MarkerLaunchDismiss)
 }
 
@@ -131,16 +216,35 @@ func emitLaunchFilter() {
 }
 
 func execSelected() {
+	if launch.launching {
+		if releaseLauncherFocus(false) {
+			finishLauncher()
+		}
+		return
+	}
 	e, ok := launch.selected()
 	if !ok || e.Bin == "" {
 		return
 	}
-	// M82a: `argv=` rides the exec. A row with no `argv=` launches exactly as
-	// it did before the field existed — the binary alone — which is why the
-	// marker below is unchanged for every shipping row today.
-	_, err := execApp(e.Bin, e.Args...)
+	if !ensureLauncherFocus() {
+		return
+	}
+	ci := launch.filtered[launch.sel]
+	if ci < len(launch.reasons) && launch.reasons[ci] != "" {
+		launch.err = launch.reasons[ci]
+		return
+	}
+	bin := e.Bin
+	// Non-app seat entries are refused even if a caller skipped the probe.
+	if bin == "TABWM.BIN" || bin == "GOTABWM.ELF" || bin == "WND.BIN" {
+		launch.err = "Seat: use settings wm"
+		return
+	}
+	// Preserve the manifest's fixed argv; v1 rows still launch with argc=0.
+	_, err := execApp(bin, e.Args...)
 	if err != nil {
 		vi.ConsoleLine(MarkerLaunchMissing + e.Bin)
+		launch.err = "Launch failed: " + bin
 		return
 	}
 	if len(e.Args) > 0 {
@@ -148,7 +252,10 @@ func execSelected() {
 	} else {
 		vi.ConsoleLine(MarkerLaunchExec + e.Bin)
 	}
-	dismissLauncher()
+	launch.launching = true
+	if releaseLauncherFocus(false) {
+		finishLauncher()
+	}
 }
 
 // joinSpace renders a decoded argv for the marker. It is the inverse of the
@@ -177,15 +284,28 @@ func handleLauncherKey(e vi.Event) bool {
 	if !launch.open {
 		return false
 	}
+	if usage == hidUsageEscape {
+		dismissLauncher()
+		return true
+	}
+	if !ensureLauncherFocus() {
+		return true
+	}
 	if alt {
 		return true // swallow while modal
 	}
 	switch usage {
-	case hidUsageEscape:
-		dismissLauncher()
-		return true
 	case hidUsageEnter:
 		execSelected()
+		return true
+	case hidUsageUp, hidUsageDown:
+		if usage == hidUsageUp && launch.sel > 0 {
+			launch.sel--
+		}
+		if usage == hidUsageDown && launch.sel+1 < len(launch.filtered) {
+			launch.sel++
+		}
+		launch.keepSelectionVisible()
 		return true
 	case hidUsageBksp:
 		if len(launch.filter) > 0 {
@@ -243,47 +363,76 @@ func hidUsageChar(usage uint8) (byte, bool) {
 }
 
 func launchRowAt(px, py uint32) (int, bool) {
-	if !launch.open {
+	if !launch.open || !launch.painted {
 		return 0, false
 	}
 	x, y := int(px), int(py)
-	if x < launchX || x >= launchX+launchW || y < launchY || y >= launchY+launch.panelH() {
+	if y < launchY+launchHdr {
 		return 0, false
 	}
-	row := (y - launchY - launchHdr) / launch.rowH()
-	if row < 0 || row >= len(launch.filtered) {
-		return 0, false
-	}
-	return row, true
+	row := launch.first + (y-launchY-launchHdr)/launch.rowH()
+	// The scanout is fixed in the guest. Tests can also pin a clipped
+	// paint; hit-testing then uses precisely that paint's dimensions.
+	width, height := launch.width, launch.height
+	rx, ry, rw, rh, ok := launch.rowRect(row, width, height)
+	return row, ok && x >= rx && x < rx+rw && y >= ry && y < ry+rh
 }
 
 func paintLauncher(scan []byte, width, height int) int {
+	launch.painted = false
 	if !launch.open || width <= 0 || height <= 0 || len(scan) < 4 {
 		return 0
 	}
 	pixN := len(scan) / 4
 	pix := unsafe.Slice((*uint32)(unsafe.Pointer(&scan[0])), pixN)
 	maxH := pixN / width
+	if maxH > height {
+		maxH = height
+	}
 	if maxH <= 0 {
 		return 0
 	}
 	tok := theme.Current
+	launch.painted, launch.width, launch.height = true, width, maxH
 	h := launch.panelH()
 	written := fillRect(pix, width, maxH, launchX, launchY, launchW, h, tok.Surface)
 	written += fillRect(pix, width, maxH, launchX, launchY, tok.BorderW, h, tok.Accent)
 	written += fillRect(pix, width, maxH, launchX+launchW-tok.BorderW, launchY, tok.BorderW, h, tok.Accent)
-	rowH := launch.rowH()
-	for i, ci := range launch.filtered {
-		y := launchY + launchHdr + i*rowH
-		if y+rowH > launchY+h {
+	written += drawText8(pix, width, maxH, launchX+tok.PadMD, launchY+6, "Apps", tok.Ink)
+	written += drawText8(pix, width, maxH, launchX+tok.PadMD, launchY+20, "Filter: "+launch.filter, tok.InkMuted)
+	if launch.err != "" {
+		written += drawText8(pix, width, maxH, launchX+160, launchY+6, launchText(launch.err, 76), tok.Danger)
+	}
+	if len(launch.filtered) == 0 {
+		written += drawText8(pix, width, maxH, launchX+tok.PadMD, launchY+launchHdr+6, "No matching apps", tok.InkMuted)
+	}
+	for i := launch.first; i < len(launch.filtered); i++ {
+		x, y, w, rh, ok := launch.rowRect(i, width, maxH)
+		if !ok {
 			break
+		}
+		ci := launch.filtered[i]
+		if ci < 0 || ci >= len(launch.catalog) {
+			continue
 		}
 		bg := tok.Surface
 		if i == launch.sel {
 			bg = tok.Selection
 		}
-		written += fillRect(pix, width, maxH, launchX+tok.PadMD, y, launchW-2*tok.PadMD, rowH-tok.PadXS, bg)
-		_ = ci
+		written += fillRect(pix, width, maxH, x, y, w, rh, bg)
+		ink := tok.Ink
+		if ci < len(launch.reasons) && launch.reasons[ci] != "" {
+			ink = tok.InkMuted
+			written += drawText8(pix, width, maxH, x+400, y+6, launchText(launch.reasons[ci], 44), ink)
+		}
+		written += drawText8(pix, width, maxH, x+6, y+6, launchText(launch.catalog[ci].Label, 48), ink)
 	}
 	return written
+}
+
+func launchText(s string, max int) string {
+	if len(s) > max {
+		return s[:max-3] + "..."
+	}
+	return s
 }
