@@ -139,7 +139,7 @@ const write_cap = syscall.write_cap;
 // Shared test helper from helpers.task_mock
 const fresh_frame = task_mock.fresh_frame;
 
-var test_write_buffer: [write_cap]u8 = undefined;
+var test_write_buffer: [8192]u8 = undefined;
 var test_write_len: usize = 0;
 
 fn test_writer(bytes: []const u8) void {
@@ -288,7 +288,7 @@ test "syscall: handle_svc marshals every x0-x5 argument before replacing x0" {
     try std.testing.expectEqual(@as(u64, 0xcafe), exceptions.frame_read(&frame, 0));
 }
 
-test "syscall: write validates fd, cap, and the uaccess EFAULT contract" {
+test "syscall: write validates stream fd, short staging, and the uaccess EFAULT contract" {
     init(test_writer);
     test_write_len = 0;
     var frame = fresh_frame();
@@ -302,10 +302,13 @@ test "syscall: write validates fd, cap, and the uaccess EFAULT contract" {
     try std.testing.expectEqualStrings(bytes, test_write_buffer[0..test_write_len]);
 
     args[0] = 2;
+    test_write_len = 0;
+    try std.testing.expectEqual(@as(u64, bytes.len), dispatch(sys_write, args, &frame));
+    args[0] = 3;
     try std.testing.expectEqual(error_result(.ebadf), dispatch(sys_write, args, &frame));
     args[0] = 1;
     args[2] = write_cap + 1;
-    try std.testing.expectEqual(error_result(.einval), dispatch(sys_write, args, &frame));
+    try std.testing.expectEqual(error_result(.efault), dispatch(sys_write, args, &frame));
     // Bad user pointers now return the reserved EFAULT (-3), never EINVAL:
     // arithmetic overflow, one byte before the region, one byte past it,
     // and an unmapped address above the identity blanket.
@@ -328,6 +331,98 @@ test "syscall: write validates fd, cap, and the uaccess EFAULT contract" {
     args[2] = 0;
     try std.testing.expectEqual(@as(u64, 0), dispatch(sys_write, args, &frame));
     try std.testing.expectEqual(@as(usize, 0), test_write_len);
+}
+
+test "B1: console writes larger than staging complete through confirmed short counts" {
+    userspace.init();
+    init(test_writer);
+    _ = scheduler.init();
+    test_write_len = 0;
+    var frame = fresh_frame();
+    var bytes: [1103]u8 = undefined;
+    for (&bytes, 0..) |*b, i| b.* = @intCast(i % 251);
+    set_user_regions(.{ .base = @intFromPtr(&bytes), .len = bytes.len }, .{ .base = 0, .len = 0 });
+    var sent: usize = 0;
+    while (sent < bytes.len) {
+        const n = dispatch(sys_write, .{ 2, @intFromPtr(&bytes) + sent, bytes.len - sent, 0, 0, 0 }, &frame);
+        try std.testing.expect(n > 0 and n <= write_cap);
+        sent += @intCast(n);
+    }
+    try std.testing.expectEqual(@as(u64, 5), call_count(sys_write));
+    try std.testing.expectEqualSlices(u8, &bytes, test_write_buffer[0..test_write_len]);
+}
+
+test "B1: stream syscall identities EOF EFAULT closure and legacy file zero do not alias" {
+    userspace.init();
+    init(test_writer);
+    _ = scheduler.init();
+    _ = scheduler.register_worker(0x2000);
+    _ = scheduler.register_user(0x3000, 0);
+    scheduler.start();
+    try std.testing.expect(scheduler.yield_current());
+    try std.testing.expect(scheduler.yield_current());
+    const files = [_]virtio_file.TestFile{.{ .name = "INPUT", .data = "bytes" }};
+    virtio_file.set_test_share(&files);
+    defer virtio_file.set_test_share(null);
+    const fd = file_table.open(1, "INPUT", file_table.MODE_READ);
+    var plan: file_table.StreamPlan = .{};
+    try std.testing.expectEqual(@as(i64, 0), file_table.prepare_streams(1, .{ .sources = .{ @intCast(fd), file_table.stream_console, file_table.stream_closed } }, &plan));
+    file_table.commit_streams(0, &plan);
+    var frame = fresh_frame();
+    var bytes: [4097]u8 = undefined;
+    @memset(&bytes, 'x');
+    set_user_regions(.{ .base = 0, .len = 0 }, .{ .base = @intFromPtr(&bytes), .len = bytes.len });
+    const stdin = file_table.stream_base;
+    try std.testing.expectEqual(error_result(.efault), dispatch(sys_file_read, .{ stdin, uaccess.diagnostic_unmapped, bytes.len, 0, 0, 0 }, &frame));
+    try std.testing.expectEqual(@as(u64, 5), dispatch(sys_file_read, .{ stdin, @intFromPtr(&bytes), bytes.len, 0, 0, 0 }, &frame));
+    try std.testing.expectEqualStrings("bytes", bytes[0..5]);
+    try std.testing.expectEqual(@as(u64, 0), dispatch(sys_file_read, .{ stdin, @intFromPtr(&bytes), bytes.len, 0, 0, 0 }, &frame));
+    try std.testing.expectEqual(error_result(.ebadf), dispatch(sys_file_read, .{ 0, @intFromPtr(&bytes), 5, 0, 0, 0 }, &frame));
+    try std.testing.expectEqual(error_result(.eacces), dispatch(sys_file_write, .{ stdin, @intFromPtr(&bytes), 5, 0, 0, 0 }, &frame));
+    test_write_len = 0;
+    try std.testing.expectEqual(@as(u64, write_cap), dispatch(sys_file_write, .{ stdin + 1, @intFromPtr(&bytes), bytes.len, 0, 0, 0 }, &frame));
+    try std.testing.expectEqual(error_result(.ebadf), dispatch(sys_write, .{ 2, @intFromPtr(&bytes), 5, 0, 0, 0 }, &frame));
+    try std.testing.expectEqual(@as(u64, 0), dispatch(sys_file_close, .{ stdin, 0, 0, 0, 0, 0 }, &frame));
+    try std.testing.expectEqual(error_result(.ebadf), dispatch(sys_file_read, .{ stdin, @intFromPtr(&bytes), 0, 0, 0, 0 }, &frame));
+    try std.testing.expectEqual(error_result(.ebadf), dispatch(sys_file_close, .{ stdin, 0, 0, 0, 0, 0 }, &frame));
+    file_table.reset_process(0);
+}
+
+test "B1: versioned spawn marshalling and loader failures preserve source ownership" {
+    userspace.init();
+    init(test_writer);
+    _ = scheduler.init();
+    _ = scheduler.register_worker(0x2000);
+    _ = scheduler.register_user(0x3000, 0);
+    scheduler.start();
+    try std.testing.expect(scheduler.yield_current());
+    try std.testing.expect(scheduler.yield_current());
+    const files = [_]virtio_file.TestFile{.{ .name = "INPUT", .data = "bytes" }};
+    virtio_file.set_test_share(&files);
+    defer virtio_file.set_test_share(null);
+    const fd = file_table.open(0, "INPUT", file_table.MODE_READ);
+    var wire = extern struct {
+        request: file_table.StreamRequest,
+        path: [10]u8,
+    }{ .request = .{ .sources = .{ @intCast(fd), file_table.stream_console, file_table.stream_console } }, .path = "NOSUCH.BIN".* };
+    set_user_regions(.{ .base = 0, .len = 0 }, .{ .base = @intFromPtr(&wire), .len = @sizeOf(@TypeOf(wire)) });
+    var frame = fresh_frame();
+    var args: Args = .{ @intFromPtr(&wire.path), wire.path.len, 0, syscall.exec_stream_flag, @intFromPtr(&wire.request), @sizeOf(file_table.StreamRequest) };
+    args[5] -= 1;
+    try std.testing.expectEqual(error_result(.einval), dispatch(sys_exec, args, &frame));
+    args[5] += 1;
+    args[4] = uaccess.diagnostic_unmapped;
+    try std.testing.expectEqual(error_result(.efault), dispatch(sys_exec, args, &frame));
+    args[4] = @intFromPtr(&wire.request);
+    wire.request.version = 2;
+    try std.testing.expectEqual(error_result(.einval), dispatch(sys_exec, args, &frame));
+    wire.request.version = 1;
+    try std.testing.expectEqual(error_result(.enoent), dispatch(sys_exec, args, &frame));
+    var buf: [5]u8 = undefined;
+    try std.testing.expectEqual(@as(i64, 5), file_table.read(0, @intCast(fd), &buf));
+    try std.testing.expectEqualStrings("bytes", &buf);
+    try std.testing.expectEqual(@as(?usize, 0), process.find_by_task(scheduler.current_id()));
+    try std.testing.expectEqual(@as(i64, 0), file_table.close(0, @intCast(fd)));
 }
 
 test "syscall: yield returns zero and exit removes the current task" {

@@ -650,7 +650,7 @@ pub fn call_count(number: u64) u64 {
 /// lock covers the registry/misc syscalls; sys_exit takes the full set so
 /// its teardown runs under every lock it touches; sys_exec loads files
 /// (FILE) AND registers a process (KERNEL). Syscalls with no shared
-/// service state (ping/write/yield/sleep — console and scheduler locks
+/// service state (ping/yield/sleep — scheduler locks
 /// cover them) take nothing.
 fn doms_of(number: u64) u5 {
     const f: u5 = svclock.dom_bit(.file);
@@ -662,6 +662,7 @@ fn doms_of(number: u64) u5 {
         sys_udp_listen, sys_udp_send, sys_udp_recv, sys_tcp_connect, sys_tcp_send, sys_tcp_recv, sys_tcp_close, sys_sock_ready, sys_ping_send, sys_ping_poll, sys_net_stats => n,
         sys_file_open, sys_file_read, sys_file_write, sys_file_close, sys_dir_list, sys_file_delete, sys_file_rename, sys_file_truncate, sys_file_free, sys_file_sync => f,
         sys_exec => f | k,
+        sys_write => f,
         sys_win_open, sys_win_fill, sys_win_present, sys_win_close, sys_win_move, sys_win_raise, sys_win_get, sys_win_query, sys_win_set_visible, sys_win_fill_batch, sys_win_resize, 48, sys_win_raise_front, sys_win_lower_back, 52, sys_win_set_unsaved, sys_win_set_title, sys_drag_read, sys_font_size => w,
         sys_ipc_send, sys_ipc_recv, sys_poll_event, sys_wait_event, sys_timer_set, sys_timer_cancel, sys_notify, sys_wmctl => e,
         sys_procs, sys_wait, sys_kill, sys_clipboard_set, sys_clipboard_get, sys_audio_info, sys_audio_play, sys_audio_volume, sys_audio_mute, sys_pipe_read, sys_pipe_write, 54, sys_mmap, sys_munmap, sys_time, sys_time_set, sys_tty_attach, sys_principal, sys_secret_get, sys_tty_net_auth, sys_getrandom, sys_thread, sys_futex, sys_exnotify => k,
@@ -886,10 +887,18 @@ fn handle_ping(args: Args, _: *exceptions.VectorFrame) u64 {
 }
 
 fn handle_write(args: Args, _: *exceptions.VectorFrame) u64 {
-    if (args[0] != 1) return error_result(.ebadf);
+    if (args[0] != 1 and args[0] != 2) return error_result(.ebadf);
+    const stream = file_table.stream_base + args[0];
+    const pid = process.find_by_task(scheduler.current_id());
+    if (pid) |p| {
+        const access = file_table.stream_access(p, stream, true);
+        if (access < 0) return @bitCast(access);
+        if (!file_table.stream_is_console(p, stream)) {
+            return write_stream(p, stream, args[1], args[2]);
+        }
+    }
     const address = args[1];
-    const len = args[2];
-    if (len > write_cap) return error_result(.einval);
+    const len = @min(args[2], write_cap);
     if (len == 0) return 0;
     // Claim 6120: copy the user bytes into a kernel staging buffer through
     // the uaccess layer. A bad user pointer (out-of-region, overflow,
@@ -900,6 +909,22 @@ fn handle_write(args: Args, _: *exceptions.VectorFrame) u64 {
     const writer = write_fn orelse return error_result(.einval);
     writer(buf[0..@intCast(len)]);
     return len;
+}
+
+fn write_stream(pid: usize, fd: u64, address: u64, count: u64) u64 {
+    const access = file_table.stream_access(pid, fd, true);
+    if (access < 0) return @bitCast(access);
+    const is_console = file_table.stream_is_console(pid, fd);
+    const take = @min(count, if (is_console) write_cap else 2048);
+    if (take == 0) return 0;
+    var staging: [2048]u8 = undefined;
+    if (uaccess.copy_in(&staging, address, @intCast(take)) != .ok) return error_result(.efault);
+    if (is_console) {
+        const writer = write_fn orelse return error_result(.einval);
+        writer(staging[0..@intCast(take)]);
+        return take;
+    }
+    return @bitCast(file_table.stream_write(pid, fd, staging[0..@intCast(take)]));
 }
 
 fn handle_yield(_: Args, _: *exceptions.VectorFrame) u64 {
@@ -1746,19 +1771,27 @@ fn handle_file_read(args: Args, _: *exceptions.VectorFrame) u64 {
     const fd = args[0];
     const buf_ptr = args[1];
     const count = args[2];
-    if (fd >= file_table.max_handles_per_process) return error_result(.ebadf);
+    if (fd >= file_table.max_handles_per_process and !file_table.is_stream(fd)) return error_result(.ebadf);
     const pid = process.find_by_task(scheduler.current_id()) orelse return error_result(.einval);
+    if (file_table.is_stream(fd)) {
+        const access = file_table.stream_access(pid, fd, false);
+        if (access < 0) return @bitCast(access);
+    }
     if (count == 0) return 0;
 
     const take_count = @min(count, 2048);
     var read_staging: [2048]u8 = undefined;
-    const res = file_table.read(pid, fd, read_staging[0..take_count]);
+    const res = if (file_table.is_stream(fd))
+        file_table.stream_peek(pid, fd, read_staging[0..take_count])
+    else
+        file_table.read(pid, fd, read_staging[0..take_count]);
     if (res < 0) {
         return @bitCast(res);
     }
     const bytes_read: usize = @intCast(res);
     if (bytes_read > 0) {
         if (uaccess.copy_out(buf_ptr, read_staging[0..bytes_read], bytes_read) != .ok) return error_result(.efault);
+        if (file_table.is_stream(fd)) file_table.stream_advance(pid, fd, bytes_read);
     }
     return @intCast(bytes_read);
 }
@@ -1768,6 +1801,10 @@ fn handle_file_write(args: Args, _: *exceptions.VectorFrame) u64 {
     const fd = args[0];
     const buf_ptr = args[1];
     const count = args[2];
+    if (file_table.is_stream(fd)) {
+        const pid = process.find_by_task(scheduler.current_id()) orelse return error_result(.einval);
+        return write_stream(pid, fd, buf_ptr, count);
+    }
     if (fd >= file_table.max_handles_per_process) return error_result(.ebadf);
     if (count > 2048) return error_result(.enospc);
     const pid = process.find_by_task(scheduler.current_id()) orelse return error_result(.einval);
@@ -1786,6 +1823,10 @@ fn handle_file_write(args: Args, _: *exceptions.VectorFrame) u64 {
 /// Milestone 10 (claim 3570): slot 26 — sys_file_close(fd)
 fn handle_file_close(args: Args, _: *exceptions.VectorFrame) u64 {
     const fd = args[0];
+    if (file_table.is_stream(fd)) {
+        const pid = process.find_by_task(scheduler.current_id()) orelse return error_result(.einval);
+        return @bitCast(file_table.stream_close(pid, fd));
+    }
     if (fd >= file_table.max_handles_per_process) return error_result(.ebadf);
     const pid = process.find_by_task(scheduler.current_id()) orelse return error_result(.einval);
     const res = file_table.close(pid, fd);
@@ -2457,18 +2498,30 @@ fn handle_audio_mute(args: Args, _: *exceptions.VectorFrame) u64 {
 /// bad image, oversize, no args room); `EFAULT` for a bad path or argv
 /// pointer; `ENOENT` when the file is absent; `ENOSPC` when a capacity
 /// gate refuses (pool, page allocator, page-table carve-out, process
-/// registry).
+/// registry). B1 adds the opt-in stream request described in ADR 0007:
+/// bit 63 in argc, request pointer in x4, exact request size in x5.
+pub const exec_stream_flag: u64 = @as(u64, 1) << 63;
+
 fn handle_exec(args: Args, _: *exceptions.VectorFrame) u64 {
     const path_ptr = args[0];
     const path_len = args[1];
     const argv_ptr = args[2];
-    const argc = args[3];
+    const argc = args[3] & ~exec_stream_flag;
     // M34 HF6 (issue #740): the name bound is the host channel's path
     // max (the ESP 8.3 window is gone).
     if (path_len == 0 or path_len > virtio_file.path_max) return error_result(.einval);
     if (argc > esp_exec.max_exec_args) return error_result(.einval);
     // The caller must be a process (an EL1h task cannot exec from EL0).
     const caller = process.find_by_task(scheduler.current_id()) orelse return error_result(.einval);
+    var request = file_table.StreamRequest{};
+    if ((args[3] & exec_stream_flag) != 0) {
+        if (args[5] != @sizeOf(file_table.StreamRequest)) return error_result(.einval);
+        if (uaccess.copy_in(std.mem.asBytes(&request), args[4], @sizeOf(file_table.StreamRequest)) != .ok) return error_result(.efault);
+    }
+    var plan: file_table.StreamPlan = .{};
+    const prepared = file_table.prepare_streams(caller, request, &plan);
+    if (prepared < 0) return @bitCast(prepared);
+    defer file_table.cancel_streams(&plan);
 
     var path_buf: [virtio_file.path_max]u8 = undefined;
     if (uaccess.copy_in(&path_buf, path_ptr, @intCast(path_len)) != .ok) return error_result(.efault);
@@ -2493,7 +2546,7 @@ fn handle_exec(args: Args, _: *exceptions.VectorFrame) u64 {
     // no setuid semantics, no elevation path. The spawned process inherits
     // the caller's uid and caps.
     const principal = process.principal(caller) orelse process.default_principal;
-    const res = esp_exec.exec_file_as(path_buf[0..path_len], exec_args, principal);
+    const res = esp_exec.exec_file_streams_as(path_buf[0..path_len], exec_args, principal, &plan);
     return switch (res) {
         .ok => blk: {
             // The pid is set at the loader's success point; a missing

@@ -2,6 +2,77 @@
 
 Status: **accepted** · Date: 2026-08-10 · Milestone: three (claim 3594)
 
+## B1 amendment (2026-10-01, #1868): bounded process standard streams
+
+This additive wire amendment is submitted for approval with B1. It uses
+existing slots only; ADR 0038, the 79 registered rows and the boot default
+are unchanged. A3 owns the SDK/std adapter and C1 owns Oliver's actual CLI.
+
+- **Identities:** stdin/stdout/stderr are `0x100`/`0x101`/`0x102` for
+  slots 24 (read), 25 (write) and 26 (close). They never alias native file
+  handles 0–7. Reads are stdin-only; writes are stdout/stderr-only, with
+  wrong direction returning `EACCES`. Slot 1's fd 1/2 select the same
+  stdout/stderr bindings, including panic/debug writes.
+- **Defaults:** a kernel/monitor spawn has absent stdin and two console
+  outputs. Absent or closed input returns `EBADF`, never tty input or
+  fabricated EOF. Console outputs are separate identities but share the
+  physical console unless explicitly redirected.
+- **Spawn:** legacy slot 28 inherits all three caller bindings. Existing
+  path/argv conventions remain unchanged. To supply bindings, set bit 63
+  of x3 (argc), x4 to a request pointer and x5 to exactly 32. Low argc bits
+  keep their existing bound. Without that bit, x4/x5 remain ignored.
+  The request is little-endian `[version:u32=1, reserved:u32=0,
+  sources:3*u64]`, ordered stdin, stdout, stderr. Unsupported version,
+  nonzero reserved or wrong size is `EINVAL`; a bad pointer is `EFAULT`.
+  Sources are `UINT64_MAX` (inherit), `UINT64_MAX-1` (closed),
+  `UINT64_MAX-2` (console, output only), or a live caller-owned file handle
+  0–7. File sources must be host-share, non-directory handles with the
+  required access mode. Tty/USB/directory bindings refuse `EINVAL`, invalid
+  handles `EBADF`, and wrong mode `EACCES`. Repeated explicit file sources
+  refuse `EINVAL` rather than accidentally mixing diagnostics with output.
+- **Ownership:** explicit file sources **move** out of the parent on
+  successful spawn. Any marshalling, reservation or loader failure leaves
+  parent handles and bindings unchanged. Reservations precede loading;
+  commit precedes publishing the child on any core. Inherited file streams
+  share a refcounted endpoint and sequential cursor, not independent
+  positions. Closing one binding or losing its process drops that reference;
+  the last reference closes the backend handle. Process-slot reuse never
+  reconnects a child to a new owner's file. Threads share process bindings.
+- **Bounds:** three bindings/process, 48 endpoint records globally, no heap
+  or input-copy buffer. Capacity refusal is `ENOSPC`, never eviction.
+  Open files plus file-backed stream bindings remain bounded by eight per
+  process; console identities consume no native file handle. A3 separately
+  charges all three stream resource records against the eight SDK records.
+  Stream input/output and diagnostic byte budgets stay in workload adapters,
+  not a silent truncation in this facility.
+- **I/O:** slot 1 and console stream writes confirm at most 256 bytes/call;
+  file stream writes confirm at most 2,048. Larger requests return a short
+  count, not the old slot-1 `EINVAL`. Callers must advance by the confirmed
+  count and retry; zero progress or a negative result is failure, not a
+  completed flush. Existing raw file-slot write limits are unchanged.
+  Backend short writes advance by confirmed counts only; a failed later
+  chunk returns the confirmed prefix, while first-chunk errors, zero
+  progress and impossible oversized confirmations refuse. Slot 24 clamps
+  reads at 2,048 and consumes a stream cursor only after successful copy-out.
+  A stream reaches EOF at its captured open size. Premature zero-byte reads,
+  missing paths and backend disconnection are errors, not EOF. Host read
+  handles retain the existing stateless path+size semantics; B1 does not
+  promise stable inode identity or containment under mutation (B3's area).
+- **Closure:** slot 26 closes only that process binding. Repeated close
+  returns `EBADF`; subsequent I/O refuses, with no console fallback. A
+  final backend close error is returned and keeps the binding for retry.
+  Death teardown releases all references even if the disconnected backend
+  refuses cleanup; it cannot manufacture successful close or remote cleanup.
+  Writes are synchronous and unbuffered here; an SDK buffered flush must
+  still surface its own failures.
+
+The shell's slots 56/57 remain one global 4 KiB sequential buffer. This
+amendment supplies file redirection and inherited streams, **not general
+concurrent pipes**, POSIX descriptors or a shell redirection integration.
+Class-A ownership/error tests and `live-user-fs`'s native probe verify the
+facility. Their HTML/JSON fixture is not Oliver CLI acceptance; that needs
+A3+C1 and an independent pinned-engine comparison.
+
 ## Context
 
 Claim 8215 / PR #60 proved the smallest real EL0 boundary: a statically
