@@ -5,6 +5,8 @@
 - Amended: 2026-09-16 (M60 / #1297 — no new Zig EL0 apps; first leftover `EDIT.BIN` deleted)
 - Amended: 2026-09-21 (M71k / #1570 — the EL0 HTTPS consumer is Go; `FETCHS.BIN` deleted, `lib/tls` is host-side interop)
 - Amended: 2026-09-21 (M71j / #1569 — the EL0 SSH-2 client is Go; `SSH.BIN` deleted, `lib/ssh` wire/packet/stream stay for SSHPACKET.BIN)
+- Amended: 2026-10-01 (A1 / #1865 — bounded native Zig portfolio exception)
+- Zig Guest Target/Backend Owner (A1 / #1865): TBD — owner to appoint before R1 starts
 - Issue: #1293 (this document), umbrella #1292, M60 #1297
 - Related: ADR 0001 (Zig as guest language — narrowed here), ADR 0007
   (syscall ABI; kernel changes still ride amendments of that file only),
@@ -219,3 +221,140 @@ M51 shipped `SSH.BIN`. M70g G1 already moved the **server** to
   `user/go/sshlib/` (split out of `user/go/sshd/` so GOSSHD and GOSSH
   share one crate). ADR 0023 D2 stands.
 - **GOSSHD is not this card.** The in-guest server (#1491) stays.
+
+## Amendment (A1 / #1865) — bounded native Zig portfolio exception
+
+This amendment creates a closed exception to D4 and the M60
+no-new-`user/src/*.zig`-apps rule. It qualifies D2's app-language rule
+only for the four workloads below. It is not a reversal of the Go
+desktop decision.
+
+### A1.1 — Allowlist and first stage
+
+Permit native AArch64 EL0 adapters, non-UI supporting libraries and
+guest artifacts for these workloads only:
+
+- Oliver: refresh the real-library native proof, then render/meta CLI
+  operation with redirected input to EOF, HTML output and separate JSON
+  diagnostics. Recursive planning/walk and mutating commands are deferred.
+- k4o: the existing template/JSON engine and bounded render CLI, preserving
+  its supported output formats and diagnostic contract.
+- Boris: an explicitly single-job, serial, offline compile-and-publish
+  artifact retaining the existing compiler and publication contracts.
+  Require complete nested discovery, lossless names, stable identity,
+  no-follow behavior and safe repeated publication. Resolve and verify
+  the artifact's no-libc dependency closure; the audit did not prove it.
+- fart-app: the actual deterministic synthesizer using caller-owned
+  allocation, with bounded mono 16-bit 44.1 kHz PCM/WAV generation and
+  deterministic WAV export. Optional finite native playback requires
+  verified rate/channel/format conversion and raw PCM submission;
+  WAV headers are never PCM. Go FART is not this workload.
+
+Wrappers for this allowlist may be new Zig EL0 source, including under
+`user/src/`. Changing a path or product name does not enlarge the exception.
+Libraries exist to support these native guest artifacts, not to expose a
+Zig library ABI to Go or create another app platform.
+
+### A1.2 — Meaning of bounded
+
+First-stage workloads are single-threaded, offline, finite operations
+over explicitly supplied inputs and permitted guest/share paths.
+They inherit existing principal/capability, path-containment and access
+checks, and acquire no ambient host-command or service authority.
+
+The approved target design must state numeric per-workload limits for
+input/output bytes, aggregate heap and stack use, open handles, argv/env,
+path/name lengths, and applicable tree depth/entry count and PCM duration.
+It must map each limit to enforcement and a named error/refusal. Unknown
+footprints are measurements owed, not an unlimited resource allowance.
+No workload implementation starts before those budgets are approved.
+
+The initial recipe consumes the existing eight 256-byte argv slots
+(255 bytes plus NUL each) and sixteen 128-byte env slots on the
+env-capable gap-ELF path. The program name occupies one argv slot.
+It must satisfy the selected image shape's actual loader/link contract.
+No limit increase, silent truncation or fabricated metadata is authorized
+by this amendment. k4o's host 16 MiB input and 256 MiB output defaults
+are not guest budgets by adoption.
+
+Unsupported operations must be compile-time excluded or fail explicitly
+at the supported boundary. Host std/libc fallback and success-shaped
+stubs are forbidden. Failure must not contaminate normal output,
+escape the share, or destroy the previous published artifact.
+
+### A1.3 — Ownership and design gate
+
+The project owner appoints one named accountable maintainer to the role
+**Zig Guest Target/Backend Owner**. The appointment is recorded with
+this decision; no unowned exception starts implementation.
+
+That role owns the pinned Zig/dependency recipe, target/build/stdlib
+integration, startup and image validation, native allocation and I/O
+backend, honest unsupported behavior, workload budgets and regression
+coverage. It owns upgrade checks and the decision to revalidate, hold
+the pin or suspend a failing workload. It does not own the Go desktop
+or obtain authority to change the kernel ABI without review.
+The initial toolchain pin is Zig 0.16.0; R1 records dependency pins
+and the integration recipe. Version changes require revalidation.
+
+R1 supplies one approved cross-cutting target design before A2/A3 or
+workload implementation. Astra is the requested R1 design role and Sol
+the requested implementation role, not automatic assignments and not
+a substitute for the accountable maintainer.
+
+The design maps each std/platform requirement to an existing native
+facility, an adaptation/replacement, an honest refusal or a listed
+native-facility card. It must not assume an upstream out-of-tree OS
+plugin exists. A custom Io vtable is only part of the integration.
+Supported hooks may include `root.os.heap.page_allocator`,
+`std_options_debug_io`, `std_options_FilePermissions` and
+`std_options_cwd`; missing POSIX-shaped std definitions do not mandate
+corresponding kernel operations.
+
+Any native ABI extension uses a separately accepted ADR 0007 amendment
+and preserves existing consumers and security checks. A1 adds no slots.
+
+### A1.4 — Non-goals and unchanged decisions
+
+Go still owns the desktop, WM, chrome, general apps and interactive
+shell. No new Zig GUI, widget toolkit, LIBUI revival, Go-to-Zig FFI,
+Go kernel rewrite or crypto port merely because of this exception.
+The Swift host launcher and Apple Virtualization.framework boot path
+stay unchanged. No libc/POSIX guest dependency or Linux-ABI disguise.
+
+No full Zig compiler self-hosting or expansion of `zc` into Zig/std
+conformance is authorized. Host-built native Zig artifacts, the
+in-guest `zc` dialect and a full in-guest Zig toolchain are distinct.
+
+Boris watch/preview, parallel compile, online publication/authentication,
+editor hosting and child-process capture are outside the first stage.
+fart-app host UI, host speech/audio commands, NINJAM, capture and
+continuous low-latency playback are outside it. Oliver walk/mutation
+requires a later explicit scope approval after B1-B4.
+
+B5 threading/TLS, B6 preview networking and B7 continuous audio remain
+conditional later cards, not first-stage prerequisites or delivery
+promises. Activating them requires owner-approved scope and target-design
+updates with their own limits and evidence.
+
+The `gotabwm` boot default, frozen `tabwm` fallback and `none` setting
+are unchanged. TLS/SSH retirements and other leftover-retirement rules
+remain in force. Refresh obsolete support claims only within this arc.
+
+### A1.5 — Acceptance and maintenance
+
+Permission is not a claim that a workload runs. Require reproducible
+no-libc builds and artifact checks, then native VZ execution with
+independent output comparisons and negative tests at the approved bounds.
+Verify stream separation/EOF, cleanup and each workload's actual behavior;
+a library compile or self-reported success marker is not CLI acceptance.
+
+Refresh and extend `live-oliver` rather than duplicate its gate.
+Verification follows repository gate policy: existing specs where
+applicable, new declarative specs only where needed, and no new
+`tools/verify-*.sh` scripts or committed run logs.
+
+Record observed versus inferred behavior and the still-unsupported
+features. An unmaintained or failing workload can be suspended without
+changing Go ownership, the boot default or existing ABI consumers.
+Adding another program requires another owner-approved ADR amendment.
