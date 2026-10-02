@@ -84,7 +84,12 @@ pub const Arena = struct {
 
     fn free(ctx: *anyopaque, memory: []u8, _: Alignment, _: usize) void {
         const state: *State = @ptrCast(@alignCast(ctx));
-        const header: *const Allocation = @ptrFromInt(@intFromPtr(memory.ptr) - @sizeOf(Allocation));
+        const addr = @intFromPtr(memory.ptr);
+        const base = @intFromPtr(state);
+        // The header read below touches [addr - @sizeOf(Allocation), addr):
+        // keep every free inside the arena mapping.
+        std.debug.assert(addr >= base + @sizeOf(Allocation) and addr <= base + state.capacity);
+        const header: *const Allocation = @ptrFromInt(addr - @sizeOf(Allocation));
         const start = header.start;
         const len = header.len;
         var link = &state.head;
