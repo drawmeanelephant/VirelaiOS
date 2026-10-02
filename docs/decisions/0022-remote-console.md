@@ -209,3 +209,55 @@ door.
 - A `settings` key for a persistent listen port / allowlist (surfaced as a
   follow-up; the CLI is the v1 mechanism).
 - Rate-limiting / lockout after repeated failed secrets.
+
+## Amendment: M87 SSH-to-host operator deployment (#1858–#1860)
+
+The supported remote product boundary is **host OpenSSH → host interactive
+client → loopback HMAC serial bridge → guest GOSH**. This does not repair or
+expose GOSSHD, guest `pty-req`, or guest TCP. Host authorization is
+guest-console operator authority. Remote Login, authorized SSH keys,
+verified host keys and SSH reachability are operator prerequisites; the
+tools never enable services, elevate privileges, alter network policy or
+disable host-key checks. SSH supplies confidentiality; HMAC does not encrypt.
+
+`tools/remote-terminal.sh serve --share /absolute/remote-share` is a
+foreground persistent-VM service. `attach --share /absolute/remote-share`
+uses M87b's exact `--addr`/`--secret-file` client contract. The wrapper only
+binds `127.0.0.1`, defaults to port 24681, validates the port, and stores a
+random mode-0600 secret inside mode-0700 private session state **outside the
+guest share**. The secret never enters argv, environment, logs or tapes and
+is reused for the service's whole lifetime. A per-share host lock and port
+preflight refuse a competing serve. Unknown stale state is refused, not
+deleted/resecreted; investigate it before manually removing it.
+An empty, private per-share lock inode remains for race-free restarts; it
+contains no credential.
+
+The dedicated share is seeded with `#v2\nwm=none\nshell=sh\n`, source-fresh
+GOSH and serial support files. Existing documents/history and comment-only
+`.virelairc` are preserved. Another settings mode, active `.virelairc`, or
+nonempty unconfigured share is refused, never rewritten. This is an explicit
+serial-only mode, not a boot-default flip or a dependency on the Go seat.
+Executable/support names are distribution-owned and refresh at restart.
+
+The VM runs with `--timeout 0`, private vars and a throwaway overlay. Client
+Ctrl-C cancels the guest line, Ctrl-] only disconnects, and mid-line
+disconnect injects the existing cancel byte. Reattach uses the same live
+VM. Service SIGINT/SIGTERM stops only its own runner and removes only its
+own temporary state/vars/overlay, never the persistent share. Ctrl-D on an
+empty GOSH line, `exit`, or `monitor` hands back the raw kernel monitor;
+attach refuses that as a shell session until GOSH is resumed or restarted.
+
+M87b owns the client (#1858), M87c quiet attached serial (#1859), and M87d
+the wrapper, five class-A contracts, existing `live-remote-console` extension
+and real two-machine SSH fixture (#1860). Class B enforces every child exit
+and compares guest-written receipt/history bytes; a bare monitor or command
+echo is insufficient. Class C's consented tape checks distinct machine and
+same-live-VM identities, verified-key SSH, GOSH identity, receipt, editing,
+history/cancel, UTF-8/ANSI and external command. It never falls back to a
+local peer. Missing prerequisites leave product acceptance open.
+
+This is serial byte rendering by the host terminal. No kernel Screen,
+PTY-size negotiation, graphics/resize, concurrent desktop/serial tty, LAN
+binding, RFB or expanded TUI compatibility is promised. M87 completes only
+with A/B/C and both desktop and remote product-journey evidence;
+`docs/status.md` remains its single compact status row.
