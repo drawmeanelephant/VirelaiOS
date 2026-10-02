@@ -9,6 +9,8 @@
 # share-byte validation, real continuation/EOF and post-death page recovery.
 # B4: one raw native-ABI probe runs against each backend. The host compares
 # both publications, retained stages, failure receipts and trust metadata.
+# Shared SDK: rich pages, native containment, honest refusals, publication
+# and mixed-resource limits through the real Zig 0.16 EL0 adapter.
 
 vgate_name live-user-fs "userland storage ABI & utilities on VZ"
 vgate_share arm
@@ -617,3 +619,137 @@ checks = re.search(r"b3: PASS checks=(\d+) death-cursors=8", serial)
 assert checks and int(checks[1]) >= 220, checks
 print("B3: native metadata checks=%s; 8 rich death cursors reclaimed, outside unchanged" % checks[1])
 PY
+
+vgate_setup_python <<'PY'
+import json, os, pathlib, shutil, subprocess
+rd = pathlib.Path(os.environ["RUN_DIR"])
+subprocess.run(["python3", "tools/zig/fs.py", "--work", str(rd / "sdk-build")], check=True)
+names = sorted([f"entry-{i:02}" for i in range(20)] +
+               ["p" * 31 + "-one", "p" * 31 + "-two", "x" * 255, "nested"])
+(rd / "sdk-names").write_bytes(b"".join(n.encode() + b"\n" for n in names))
+for backend in ("legacy", "virtiofs"):
+    root = rd / ("sdk-" + backend)
+    (root / "SDK/content/nested/deep").mkdir(parents=True)
+    (root / "SDK/content/nested/deep/page").write_bytes(b"safe")
+    for name in names:
+        if name != "nested":
+            (root / "SDK/content" / name).write_bytes(b"row")
+    # Host mode is a factual attribute, not the Virelai guest ACL.
+    (root / "SDK/content/entry-00").chmod(0o600)
+    st = (root / "SDK/content/entry-00").stat()
+    (rd / ("sdk-" + backend + "-facts.json")).write_text(json.dumps(
+        dict(mode=st.st_mode, uid=st.st_uid, gid=st.st_gid, size=st.st_size, mtime=st.st_mtime_ns)))
+    (root / "SDK/directory").mkdir()
+    (root / "SDK/outside/deep").mkdir(parents=True)
+    (root / "SDK/outside/deep/page").write_bytes(b"outside unchanged\n")
+    (root / "SDK/LINKS").mkdir()
+    (root / "SDK/LINKS/leaf").symlink_to("../outside/deep/page")
+    (root / "SDK/LINKS/dir").symlink_to("../outside")
+    (root / "SDK/LINKS/dangling").symlink_to("../missing")
+    (root / "SDK/root-link").symlink_to("content")
+    (root / "SDK/SWAP").symlink_to("../outside")
+    (root / "SDK/denied").write_bytes(b"denied unchanged\n")
+    (root / "SDK/secret").write_bytes(b"secret fixture unchanged\n")
+    (root / "SDK/denied-dir").mkdir()
+    (root / "SDK/denied-dir/leaf").write_bytes(b"denied\n")
+    (root / "OWNERS.TXT").write_text(
+        "#v1\nSDK/denied\t600\t0\t-\nSDK/secret\t600\t0\tsecret\nSDK/denied-dir\t600\t0\t-\n")
+    (root / ("a" * 250) / ("b" * 255)).mkdir(parents=True)
+    (root / "d/e/e/e/e/e/e/e").mkdir(parents=True)
+    for directory, count in (("LIMIT", 256), ("OVER", 257)):
+        (root / directory).mkdir()
+        for i in range(count):
+            (root / directory / f"f-{i:03}").write_bytes(b"")
+    shutil.copyfile(rd / "sdk-build/ZFS.BIN", root / "ZFS.BIN")
+PY
+
+vgate_file sdk-legacy.txt <<'EOF'
+pages
+exec ZFS.BIN legacy
+EOF
+vgate_file sdk-virtiofs.txt <<'EOF'
+pages
+exec ZFS.BIN virtiofs
+EOF
+vgate_file sdk-bounds.txt <<'EOF'
+pages
+exec ZFS.BIN bounds
+EOF
+vgate_file sdk-over.txt <<'EOF'
+pages
+exec ZFS.BIN over
+EOF
+vgate_file sdk-after.txt <<'EOF'
+pages
+procs
+echo done-zig-fs
+EOF
+vgate_run sdk-legacy -- --cvc-file '$RUN_DIR/sdk-legacy' --script '$RUN_DIR/sdk-legacy.txt' --script-after 'tasks user-el0 reaped' --script2 '$RUN_DIR/sdk-after.txt' --script2-after 'tasks user-exec reaped' --script-expect 'done-zig-fs' --timeout 120
+vgate_run sdk-virtiofs -- --virtio-fs '$RUN_DIR/sdk-virtiofs' --script '$RUN_DIR/sdk-virtiofs.txt' --script-after 'tasks user-el0 reaped' --script2 '$RUN_DIR/sdk-after.txt' --script2-after 'tasks user-exec reaped' --script-expect 'done-zig-fs' --timeout 120
+vgate_run sdk-bounds -- --virtio-fs '$RUN_DIR/sdk-virtiofs' --script '$RUN_DIR/sdk-bounds.txt' --script-after 'tasks user-el0 reaped' --script2 '$RUN_DIR/sdk-after.txt' --script2-after 'tasks user-exec reaped' --script-expect 'done-zig-fs' --timeout 120
+vgate_run sdk-over -- --virtio-fs '$RUN_DIR/sdk-virtiofs' --script '$RUN_DIR/sdk-over.txt' --script-after 'tasks user-el0 reaped' --script2 '$RUN_DIR/sdk-after.txt' --script2-after 'tasks user-exec reaped' --script-expect 'done-zig-fs' --timeout 120
+vgate_assert sdk-legacy serial-contains 'zig-fs: legacy unsupported=5 no leaked records'
+vgate_assert sdk-legacy serial-contains 'zig-fs: publications=2 failure-preservation refusals=8'
+vgate_assert sdk-legacy serial-contains 'zig-fs: PASS'
+vgate_assert sdk-legacy serial-absent 'zig-fs: FAIL'
+vgate_assert sdk-legacy serial-absent '[EXC]'
+vgate_assert sdk-legacy python <<'PY'
+import os, pathlib, re
+rd = pathlib.Path(os.environ["RUN_DIR"])
+root = rd / "sdk-legacy/SDK"
+assert (root / "output").read_bytes() == b"second publication\n"
+assert (root / "stage").read_bytes() == b"retained stage\n"
+assert (root / "denied").read_bytes() == b"denied unchanged\n"
+assert (root / "secret").read_bytes() == b"secret fixture unchanged\n"
+assert (root / "content/nested/deep/page").read_bytes() == b"safe"
+serial = pathlib.Path(os.environ["VG_SER"]).read_text()
+assert "procs ZFS.BIN exited status=0" in serial
+pages = re.findall(r"^pages: armed=1 total=(0x[0-9a-f]+) free=(0x[0-9a-f]+)", serial, re.M)
+assert len(pages) >= 2 and pages[0] == pages[-1], pages
+PY
+vgate_assert sdk-virtiofs serial-contains 'zig-fs: rich rows=24 pages=4 long-names=3 identities=stable'
+vgate_assert sdk-virtiofs serial-contains 'zig-fs: nofollow and guest permissions refused=15'
+vgate_assert sdk-virtiofs serial-contains 'zig-fs: pinned reads/writes survive replacement; fd-stat refused'
+vgate_assert sdk-virtiofs serial-contains 'zig-fs: resources=8 overflow refused finish-cursors=4'
+vgate_assert sdk-virtiofs serial-contains 'zig-fs: PASS'
+vgate_assert sdk-virtiofs serial-absent 'zig-fs: FAIL'
+vgate_assert sdk-virtiofs serial-absent '[EXC]'
+vgate_assert sdk-virtiofs python <<'PY'
+import json, os, pathlib, re, shutil
+rd = pathlib.Path(os.environ["RUN_DIR"])
+root = rd / "sdk-virtiofs/SDK"
+assert (root / "names").read_bytes() == (rd / "sdk-names").read_bytes()
+assert (root / "output").read_bytes() == b"second publication\n"
+assert (root / "stage").read_bytes() == b"retained stage\n"
+assert (root / "content/nested/deep/page").read_bytes() == b"pinned"
+assert (root / "outside/deep/page").read_bytes() == b"outside unchanged\n"
+assert (root / "denied").read_bytes() == b"denied unchanged\n"
+assert (root / "secret").read_bytes() == b"secret fixture unchanged\n"
+assert not (root / "overflow").exists()
+serial = pathlib.Path(os.environ["VG_SER"]).read_text()
+assert "procs ZFS.BIN exited status=0" in serial
+facts = json.loads((rd / "sdk-virtiofs-facts.json").read_text())
+observed = re.search(r"zig-fs: host-mode=(\d+) uid=(\d+) gid=(\d+) size=(\d+) mtime=(\d+)", serial)
+assert observed, serial
+values = [int(v) for v in observed.groups()]
+assert [values[0], values[3], values[4]] == [facts["mode"], facts["size"], facts["mtime"]], (values, facts)
+owners = re.search(r"zig-fs: native-owners uid=(\d+) gid=(\d+)", serial)
+assert owners and values[1:3] == [int(v) for v in owners.groups()], (values, owners)
+print("SDK: native uid/gid=%s; macOS uid/gid=%s (backend mapping, not guest ACL)" %
+      (values[1:3], [facts["uid"], facts["gid"]]))
+usage = re.search(r"zig-fs: PASS checks=(\d+) arena_peak=(\d+) stack_high_water=(\d+)", serial)
+assert usage and int(usage[1]) >= 80 and int(usage[2]) <= 1024*1024 and int(usage[3]) <= 128*1024, usage
+pages = re.findall(r"^pages: armed=1 total=(0x[0-9a-f]+) free=(0x[0-9a-f]+)", serial, re.M)
+assert len(pages) >= 2 and int(pages[0][1], 16) - int(pages[-1][1], 16) == 2, pages
+shutil.copyfile(root / "names", rd / "sdk-actual-names")
+print("SDK: independent names, bytes, metadata and cleanup verified")
+PY
+vgate_assert sdk-virtiofs capture-equals sdk-actual-names sdk-names
+vgate_assert sdk-bounds serial-contains 'zig-fs: path=512 name=255 depth=8 entries=256 path-over refused'
+vgate_assert sdk-bounds serial-contains 'zig-fs: PASS'
+vgate_assert sdk-bounds serial-absent 'zig-fs: FAIL'
+vgate_assert sdk-bounds serial-absent '[EXC]'
+vgate_assert sdk-over serial-contains 'zig-fs: entries=257 refused no leaked records'
+vgate_assert sdk-over serial-contains 'zig-fs: PASS'
+vgate_assert sdk-over serial-absent 'zig-fs: FAIL'
+vgate_assert sdk-over serial-absent '[EXC]'

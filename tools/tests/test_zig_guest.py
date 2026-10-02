@@ -261,6 +261,63 @@ def integration(cache, work):
         f"-Mroot={ROOT / 'tools/zig/kernel_contract.zig'}",
         f"-Melf={ROOT / 'kernel/src/elf.zig'}", f"-Mcases={work / 'cases.zig'}",
     ], cwd=ROOT, check=True)
+    # Independent shared-SDK declarations must match the merged native wire.
+    wire_contract = work / "filesystem-wire.zig"
+    wire_contract.write_text('''
+const std = @import("std");
+const sdk = @import("fs");
+const native = @import("metadata");
+test "SDK wire matches native B2/B3 without importing kernel into the guest" {
+    try std.testing.expectEqual(native.max_guest_path, sdk.path_max);
+    try std.testing.expectEqual(native.max_component, sdk.name_max);
+    try std.testing.expectEqual(native.max_depth, sdk.depth_max);
+    inline for (.{.{sdk.Metadata, native.Wire}, .{sdk.Identity, native.Identity},
+                  .{sdk.Entry, native.Entry}, .{sdk.Page, native.Page}}) |pair| {
+        try std.testing.expectEqual(@sizeOf(pair[1]), @sizeOf(pair[0]));
+        inline for (@typeInfo(pair[0]).@"struct".fields) |field| {
+            try std.testing.expectEqual(@offsetOf(pair[1], field.name), @offsetOf(pair[0], field.name));
+        }
+    }
+    const fact = native.Wire.from(.{
+        .kind = .file, .identity = .{.filesystem = 9, .inode = 7}, .size = 0x100000001,
+        .atime = .{.seconds = -1, .nanoseconds = 3},
+        .mtime = .{.seconds = 2, .nanoseconds = 4},
+        .ctime = .{.seconds = 3, .nanoseconds = 5},
+        .host_mode = 0o100640, .host_uid = 501, .host_gid = 20,
+    });
+    const decoded: sdk.Metadata = @bitCast(fact);
+    try decoded.validate();
+    try std.testing.expectEqual(fact.size, decoded.size);
+    try std.testing.expectEqual(fact.atime.seconds, decoded.atime.seconds);
+}
+''')
+    subprocess.run([
+        str(compiler / "zig"), "test", "-O", "ReleaseSafe", "--dep", "fs", "--dep", "metadata",
+        f"-Mroot={wire_contract}", f"-Mfs={ROOT / 'user/zig/fs.zig'}",
+        f"-Mmetadata={ROOT / 'kernel/src/fs_metadata.zig'}",
+    ], cwd=ROOT, check=True)
+    # Native rich-page acceptance also depends on the kernel not overflowing
+    # its exception stack. Block sort used a 512 * 360-byte automatic cache.
+    sort_contract = work / "filesystem-sort.zig"
+    sort_contract.write_text('''
+const metadata = @import("metadata");
+export fn sortSnapshot(snapshot: *metadata.Snapshot) void {
+    snapshot.sort();
+}
+''')
+    for mode in ("ReleaseSafe", "ReleaseSmall"):
+        assembly = work / f"filesystem-sort-{mode}.s"
+        subprocess.run([
+            str(compiler / "zig"), "build-obj", "-target", sdk.LOCK["target"],
+            "-mcpu", sdk.LOCK["cpu"], "-O", mode, "-fno-emit-bin",
+            "--dep", "metadata", f"-Mroot={sort_contract}",
+            f"-Mmetadata={ROOT / 'kernel/src/fs_metadata.zig'}",
+            f"-femit-asm={assembly}",
+        ], cwd=ROOT, check=True)
+        maximum = max(sdk.stack_frames(assembly.read_text()).values())
+        if maximum > 8192:
+            raise ValueError(f"native snapshot sort frame exceeds 8 KiB: {mode} {maximum}")
+        print(f"zig-guest: native snapshot sort {mode} maximum frame={maximum}")
     probes = {
         "allocator-format": (
             'const std = @import("std"); const sdk = @import("sdk");\n'
@@ -285,6 +342,16 @@ def integration(cache, work):
         'pub const panic = std.debug.FullPanic(sdk.panic);\n'
     )
     native_probes = {
+        "filesystem": (
+            'export fn probe() void { const f=sdk.filesystem(); '
+            '_=f.metadata("/host","content") catch return; '
+            '_=f.identity("/host","content") catch return; '
+            'const file=f.openContained("/host/content","a",.read) catch return; '
+            '_=f.fileMetadata(file) catch {}; file.close(sdk.io); '
+            'const c=f.openSnapshot("/host/content","") catch return; '
+            'var p:sdk.fs.Page=undefined; f.snapshotPage(c,0,16,&p) catch return; '
+            'f.closeSnapshot(c) catch return; f.publish("stage","out",.replace) catch return; }\n',
+            True, ""),
         "page-allocator": ('export fn probe() void { const a=std.heap.page_allocator; '
                            'const p=a.alloc(u8,4096) catch return; defer a.free(p); '
                            '_=a.resize(p,8192); }\n', True, ""),
@@ -347,6 +414,18 @@ def integration(cache, work):
             raise ValueError(f"no-error API {name} did not refuse loudly: {result}")
     print(f"zig-guest: clean builds identical; {len(cases)} kernel cases; "
           f"{len(probes)} exported-body probes; 7 fatal refusals passed")
+    sys.path.insert(0, str(ROOT / "tools/zig"))
+    filesystem = module("filesystem", ROOT / "tools/zig/fs.py")
+    with tempfile.TemporaryDirectory(prefix="fs-reproduce-", dir=work) as temp:
+        with patch.object(filesystem.sdk.urllib.request, "urlopen", side_effect=AssertionError("offline")):
+            outputs = [filesystem.build(cache, Path(temp) / name) for name in ("first", "second")]
+        if outputs[0].read_bytes() != outputs[1].read_bytes():
+            raise ValueError("filesystem clean builds differ")
+        if outputs[0].with_suffix(".BIN.json").read_bytes() != outputs[1].with_suffix(".BIN.json").read_bytes():
+            raise ValueError("filesystem provenance differs")
+        (work / "ZFS.BIN").write_bytes(outputs[0].read_bytes())
+        (work / "ZFS.BIN.json").write_bytes(outputs[0].with_suffix(".BIN.json").read_bytes())
+    print("zig-guest: filesystem clean builds and provenance identical, offline")
 
 
 if __name__ == "__main__":

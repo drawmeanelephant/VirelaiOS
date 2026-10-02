@@ -5,12 +5,21 @@ const File = Io.File;
 const Dir = Io.Dir;
 const platform = @import("platform.zig");
 const refusals = @import("refusals.zig");
+const fs = @import("fs.zig");
 
 pub fn Backend(comptime Driver: type) type {
     return struct {
         const Self = @This();
-        const Record = struct { token: i64, fd: u64, writable: bool };
-        // Three reserved stream identities + the borrowed cwd + four files.
+        const NativeFs = fs.Native(Driver);
+        const wide_paths = if (@hasDecl(Driver, "filesystem_b2")) Driver.filesystem_b2 else false;
+        const path_bytes = if (wide_paths) fs.path_max else 64;
+        const Record = struct {
+            token: i64,
+            fd: u64,
+            writable: bool = false,
+            kind: enum { file, snapshot } = .file,
+        };
+        // Three reserved streams + borrowed cwd + FOUR files/cursors combined.
         records: [4]?Record = @splat(null),
         next_token: i64 = 1,
         peak_files: usize = 0,
@@ -47,7 +56,7 @@ pub fn Backend(comptime Driver: type) type {
         fn fileRecord(self: *Self, file: File) ?*Record {
             for (&self.records) |*entry| {
                 if (entry.*) |*record| {
-                    if (record.token == file.handle) return record;
+                    if (record.token == file.handle and record.kind == .file) return record;
                 }
             }
             return null;
@@ -59,7 +68,80 @@ pub fn Backend(comptime Driver: type) type {
             };
             return count;
         }
-        /// Cwd is lexical SDK state, not proof of no-follow containment (B3).
+        pub fn liveResources(self: *Self) usize {
+            return 4 + self.liveFiles();
+        }
+        fn reserve(self: *Self) fs.Error!*?Record {
+            if (self.next_token == std.math.maxInt(i64)) return error.ResourceLimit;
+            for (&self.records) |*entry| if (entry.* == null) return entry;
+            return error.ResourceLimit;
+        }
+        fn track(self: *Self, entry: *?Record, fd: u64, kind: @FieldType(Record, "kind"), writable: bool) i64 {
+            const token = self.next_token;
+            self.next_token += 1;
+            entry.* = .{ .token = token, .fd = fd, .kind = kind, .writable = writable };
+            self.peak_files = @max(self.peak_files, self.liveFiles());
+            return token;
+        }
+        /// Fresh no-follow PATH metadata. Never an fd-stat implementation.
+        pub fn metadata(_: *Self, root: []const u8, relative: []const u8) fs.Error!fs.Metadata {
+            return NativeFs.metadata(root, relative);
+        }
+        pub fn identity(_: *Self, root: []const u8, relative: []const u8) fs.Error!fs.Identity {
+            return NativeFs.identity(root, relative);
+        }
+        pub fn openContained(self: *Self, root: []const u8, relative: []const u8, mode: fs.OpenMode) fs.Error!File {
+            const entry = try self.reserve();
+            const fd = try NativeFs.pathCall(if (mode == .read) 2 else 3, root, relative, 0);
+            if (fd >= 8) Driver.fatal("InvalidNativeHandle");
+            const token = self.track(entry, fd, .file, mode == .write);
+            return .{ .handle = @intCast(token), .flags = .{ .nonblocking = false } };
+        }
+        pub fn openSnapshot(self: *Self, root: []const u8, relative: []const u8) fs.Error!fs.Snapshot {
+            const entry = try self.reserve();
+            const cursor = try NativeFs.pathCall(4, root, relative, 0);
+            if (cursor == 0) return error.ProtocolViolation;
+            return .{ .token = self.track(entry, cursor, .snapshot, false) };
+        }
+        fn snapshotRecord(self: *Self, snapshot: fs.Snapshot) fs.Error!*?Record {
+            for (&self.records) |*entry| if (entry.*) |record| {
+                if (record.token == snapshot.token and record.kind == .snapshot) return entry;
+            };
+            return error.InvalidHandle;
+        }
+        pub fn snapshotPage(self: *Self, snapshot: fs.Snapshot, offset: u64, limit: usize, output: *fs.Page) fs.Error!void {
+            const entry = try self.snapshotRecord(snapshot);
+            try NativeFs.page(entry.*.?.fd, offset, limit, output);
+        }
+        pub fn closeSnapshot(self: *Self, snapshot: fs.Snapshot) fs.Error!void {
+            const entry = try self.snapshotRecord(snapshot);
+            try NativeFs.close(entry.*.?.fd);
+            entry.* = null;
+        }
+        pub fn fileMetadata(self: *Self, file: File) fs.Error!fs.Metadata {
+            _ = self.fileRecord(file) orelse return error.InvalidHandle;
+            return error.Unsupported; // No native fd-stat. No pathname retained.
+        }
+        pub fn publish(_: *Self, from: []const u8, to: []const u8, mode: fs.Publication) fs.Error!void {
+            try NativeFs.publish(from, to, mode);
+        }
+        fn openError(err: fs.Error) File.OpenError {
+            return switch (err) {
+                error.ResourceLimit, error.OutOfMemory => error.SystemResources,
+                error.FileNotFound => error.FileNotFound,
+                error.AccessDenied => error.AccessDenied,
+                error.NameTooLong => error.NameTooLong,
+                error.PathAlreadyExists => error.PathAlreadyExists,
+                else => rejected: {
+                    Driver.diagnostic("Filesystem:");
+                    Driver.diagnostic(@errorName(err));
+                    Driver.diagnostic("\n");
+                    break :rejected error.Unexpected;
+                },
+            };
+        }
+        /// Preserve the pre-B2 helper used by bounded workload preflights.
+        /// Native Io and fs operations use the wider B2 contract separately.
         pub fn path(dir: Dir, name: []const u8, buffer: *[64]u8) File.OpenError![]const u8 {
             if (dir.handle != platform.cwd_token) return reject("DirectoryToken", File.OpenError![]const u8);
             if (name.len == 0 or std.mem.indexOfAny(u8, name, "\x00\\:") != null)
@@ -78,38 +160,34 @@ pub fn Backend(comptime Driver: type) type {
             @memcpy(buffer[6..][0..relative.len], relative);
             return buffer[0 .. 6 + relative.len];
         }
-        fn open(self: *Self, dir: Dir, name: []const u8, flags: u32) File.OpenError!File {
-            var buffer: [64]u8 = undefined;
-            const full = try path(dir, name, &buffer);
-            var free: ?*?Record = null;
-            for (&self.records) |*entry| {
-                if (entry.* == null) {
-                    free = entry;
-                    break;
-                }
-            }
-            const entry = free orelse return error.ProcessFdQuotaExceeded;
-            if (self.next_token == std.math.maxInt(i64)) return error.SystemResources;
-            const result = Driver.call(23, .{ @intFromPtr(full.ptr), full.len, flags, 0, 0, 0 });
-            if (result < 0) return switch (result) {
-                -5 => error.SystemResources,
-                -6 => error.FileNotFound,
-                -7 => error.AccessDenied,
-                -8 => error.NameTooLong,
-                -9 => error.PathAlreadyExists,
-                else => error.Unexpected,
+        /// Cwd is lexical SDK state, not proof of no-follow containment.
+        fn nativePath(dir: Dir, name: []const u8, buffer: []u8) File.OpenError![]const u8 {
+            if (dir.handle != platform.cwd_token) return reject("DirectoryToken", File.OpenError![]const u8);
+            return fs.fullPath(name, buffer) catch |err| return switch (err) {
+                error.InvalidArgument => error.BadPathName,
+                else => openError(err),
             };
+        }
+        fn open(self: *Self, dir: Dir, name: []const u8, flags: u32) File.OpenError!File {
+            var buffer: [path_bytes]u8 = undefined;
+            const full = try if (wide_paths) nativePath(dir, name, &buffer) else path(dir, name, &buffer);
+            const entry = self.reserve() catch return error.ProcessFdQuotaExceeded;
+            const result = Driver.call(23, .{ @intFromPtr(full.ptr), full.len, flags, 0, 0, 0 });
+            const fd = fs.result(result) catch |err| return openError(err);
             if (result >= 8) Driver.fatal("InvalidNativeHandle");
-            const token = self.next_token;
-            self.next_token += 1;
-            entry.* = .{ .token = token, .fd = @intCast(result), .writable = flags & 2 != 0 };
-            self.peak_files = @max(self.peak_files, self.liveFiles());
+            const token = self.track(entry, fd, .file, flags & 2 != 0);
             return .{ .handle = @intCast(token), .flags = .{ .nonblocking = false } };
         }
         fn dirOpenFile(ptr: ?*anyopaque, dir: Dir, name: []const u8, options: Dir.OpenFileOptions) File.OpenError!File {
-            if (options.mode != .read_only or options.path_only or options.lock != .none or
-                options.lock_nonblocking or options.allow_ctty or !options.follow_symlinks or options.resolve_beneath)
+            if (options.mode == .read_write or options.path_only or options.lock != .none or
+                options.lock_nonblocking or options.allow_ctty)
                 return reject("OpenOptions", File.OpenError!File);
+            if (!options.follow_symlinks or options.resolve_beneath) {
+                var buffer: [path_bytes]u8 = undefined;
+                const full = try if (wide_paths) nativePath(dir, name, &buffer) else path(dir, name, &buffer);
+                return state(ptr).openContained("/host", full[6..], if (options.mode == .read_only) .read else .write) catch |err| return openError(err);
+            }
+            if (options.mode != .read_only) return reject("OpenOptions", File.OpenError!File);
             return state(ptr).open(dir, name, 1);
         }
         fn dirCreateFile(ptr: ?*anyopaque, dir: Dir, name: []const u8, options: Dir.CreateFileOptions) File.OpenError!File {
@@ -136,7 +214,7 @@ pub fn Backend(comptime Driver: type) type {
         pub fn closeChecked(self: *Self, file: File) error{CloseFailed}!void {
             for (&self.records) |*entry| {
                 if (entry.*) |record| {
-                    if (record.token != file.handle) continue;
+                    if (record.token != file.handle or record.kind != .file) continue;
                     if (Driver.call(26, .{ record.fd, 0, 0, 0, 0, 0 }) != 0) return error.CloseFailed;
                     entry.* = null;
                     return;
@@ -146,7 +224,62 @@ pub fn Backend(comptime Driver: type) type {
         }
         pub fn closeAll(self: *Self) error{CloseFailed}!void {
             for (self.records) |entry| if (entry) |record| {
-                try self.closeChecked(.{ .handle = @intCast(record.token), .flags = .{ .nonblocking = false } });
+                if (record.kind == .snapshot)
+                    self.closeSnapshot(.{ .token = record.token }) catch return error.CloseFailed
+                else
+                    try self.closeChecked(.{ .handle = @intCast(record.token), .flags = .{ .nonblocking = false } });
+            };
+        }
+        fn fileStat(_: ?*anyopaque, _: File) File.StatError!File.Stat {
+            return reject("FdMetadataUnavailable", File.StatError!File.Stat);
+        }
+        fn fileLength(_: ?*anyopaque, _: File) File.LengthError!u64 {
+            return reject("FdMetadataUnavailable", File.LengthError!u64);
+        }
+        fn renameError(err: fs.Error) Dir.RenamePreserveError {
+            return switch (err) {
+                error.InvalidArgument => refused: {
+                    Driver.diagnostic("Filesystem:InvalidArgument\n");
+                    break :refused error.Unexpected;
+                },
+                error.Unsupported => error.OperationUnsupported,
+                error.AccessDenied => error.AccessDenied,
+                error.FileNotFound => error.FileNotFound,
+                error.NameTooLong => error.NameTooLong,
+                error.PathAlreadyExists => error.PathAlreadyExists,
+                error.ResourceLimit, error.OutOfMemory => error.SystemResources,
+                else => refused: {
+                    Driver.diagnostic("Filesystem:");
+                    Driver.diagnostic(@errorName(err));
+                    Driver.diagnostic("\n");
+                    break :refused error.Unexpected;
+                },
+            };
+        }
+        fn checkRenamePaths(from_dir: Dir, from: []const u8, to_dir: Dir, to: []const u8) Dir.RenameError!void {
+            if (from_dir.handle != platform.cwd_token or to_dir.handle != platform.cwd_token)
+                return reject("DirectoryToken", Dir.RenameError!void);
+            if (!wide_paths) {
+                var buffer: [64]u8 = undefined;
+                for ([_][]const u8{ from, to }) |name| {
+                    _ = path(from_dir, name, &buffer) catch |err| return switch (err) {
+                        error.AccessDenied => error.AccessDenied,
+                        error.NameTooLong => error.NameTooLong,
+                        error.BadPathName => error.BadPathName,
+                        else => error.Unexpected,
+                    };
+                }
+            }
+        }
+        fn dirRenamePreserve(ptr: ?*anyopaque, from_dir: Dir, from: []const u8, to_dir: Dir, to: []const u8) Dir.RenamePreserveError!void {
+            try checkRenamePaths(from_dir, from, to_dir, to);
+            state(ptr).publish(from, to, .preserve_existing) catch |err| return renameError(err);
+        }
+        fn dirRename(ptr: ?*anyopaque, from_dir: Dir, from: []const u8, to_dir: Dir, to: []const u8) Dir.RenameError!void {
+            try checkRenamePaths(from_dir, from, to_dir, to);
+            state(ptr).publish(from, to, .replace) catch |err| return switch (renameError(err)) {
+                error.OperationUnsupported, error.PathAlreadyExists => reject("RenameUnavailable", Dir.RenameError!void),
+                else => |mapped| mapped,
             };
         }
         fn fileClose(ptr: ?*anyopaque, files: []const File) void {
@@ -412,9 +545,8 @@ test "native Io: unsupported open options refuse before touching a path" {
     var backend: TestBackend = .{};
     const io = backend.io();
     for ([_]Dir.OpenFileOptions{
-        .{ .mode = .write_only },     .{ .mode = .read_write },      .{ .follow_symlinks = false },
-        .{ .resolve_beneath = true }, .{ .path_only = true },        .{ .lock = .exclusive },
-        .{ .allow_ctty = true },      .{ .lock_nonblocking = true },
+        .{ .mode = .write_only }, .{ .mode = .read_write }, .{ .path_only = true },
+        .{ .lock = .exclusive },  .{ .allow_ctty = true },  .{ .lock_nonblocking = true },
     }) |options| try std.testing.expectError(error.Unexpected, platform.cwd().openFile(io, "unchanged", options));
     for ([_]Dir.CreateFileOptions{
         .{ .read = true },            .{ .truncate = false }, .{ .exclusive = true },
@@ -434,6 +566,10 @@ test "native Io: path component and full limits reject escapes without clipping"
         try std.testing.expectError(error.BadPathName, TestBackend.path(cwd, name, &path_buffer));
     for ([_][]const u8{ "/usb/x", "/dev/tty", "/hostile/x", "//host/x" }) |name|
         try std.testing.expectError(error.AccessDenied, TestBackend.path(cwd, name, &path_buffer));
+    Mock.reset();
+    var backend: TestBackend = .{};
+    try std.testing.expectError(error.NameTooLong, cwd.openFile(backend.io(), "x" ** 32, .{}));
+    try std.testing.expectEqual(@as(usize, 0), Mock.calls);
 }
 
 test "native Io: resource ceiling, output preflight and native truncate width" {
@@ -455,7 +591,7 @@ test "native Io: resource ceiling, output preflight and native truncate width" {
     try std.testing.expectEqual(@as(usize, 0), backend.liveFiles());
 }
 
-test "native Io: metadata, locks, traversal, rename, network and spawn refuse" {
+test "native Io: fd metadata, locks, std traversal, network and spawn refuse" {
     Mock.reset();
     var backend: TestBackend = .{};
     const io = backend.io();
@@ -465,7 +601,6 @@ test "native Io: metadata, locks, traversal, rename, network and spawn refuse" {
     try std.testing.expectError(error.Unexpected, file.tryLock(io, .exclusive));
     try std.testing.expectError(error.Unseekable, io.vtable.fileSeekTo(io.userdata, file, 0));
     try std.testing.expectError(error.Unexpected, platform.cwd().openDir(io, "nested", .{}));
-    try std.testing.expectError(error.Unexpected, io.vtable.dirRename(io.userdata, platform.cwd(), "a", platform.cwd(), "b"));
     try std.testing.expectError(error.OperationUnsupported, io.vtable.processSpawn(io.userdata, .{ .argv = &.{"child"} }));
     try std.testing.expectEqual(error.Unexpected, io.vtable.netSend(io.userdata, 0, &.{}, .{})[0].?);
     try std.testing.expect(Mock.diagnostics > 0);

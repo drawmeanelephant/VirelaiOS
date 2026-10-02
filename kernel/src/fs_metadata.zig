@@ -256,7 +256,9 @@ pub const Snapshot = struct {
     }
 
     pub fn sort(self: *Snapshot) void {
-        std.mem.sort(Entry, self.entries[0..self.count], {}, less);
+        // Block sort's 512-entry cache consumes 184,320 stack bytes here.
+        // Names are unique, so stable ordering is unnecessary.
+        std.sort.heap(Entry, self.entries[0..self.count], {}, less);
     }
 };
 comptime {
@@ -990,4 +992,30 @@ test "B3: supplied root and relative depth budgets remain independent" {
     try validateRootedPath("content/one/two/three", "a/b/c/d/e/f/g/h");
     try std.testing.expectError(error.TreeLimit, validateRootedPath("content", "a/b/c/d/e/f/g/h/i"));
     try std.testing.expectError(error.PathLimit, validateRootedPath("root", "a" ** 255 ++ "/" ++ "b" ** 250));
+}
+
+test "B3: in-place snapshot sort preserves every full-capacity row" {
+    var snapshot = Snapshot{};
+    var name: [16]u8 = undefined;
+    for (0..directory.entry_max) |i| {
+        const index = directory.entry_max - i - 1;
+        var value = try decodeFuseAttr(7, &testAttr(index + 1, 0o100640));
+        value.size = index;
+        try snapshot.append(try std.fmt.bufPrint(&name, "row-{d:0>3}", .{index}), value);
+    }
+    for (0..2) |_| {
+        snapshot.sort();
+        try std.testing.expectEqual(directory.entry_max, snapshot.count);
+        for (snapshot.entries[0..snapshot.count], 0..) |entry, i| {
+            try std.testing.expectEqualStrings(
+                try std.fmt.bufPrint(&name, "row-{d:0>3}", .{i}),
+                entry.name[0..entry.name_len],
+            );
+            try std.testing.expectEqual(@as(u64, i + 1), entry.metadata.identity.inode);
+            try std.testing.expectEqual(@as(u64, i), entry.metadata.size);
+            try std.testing.expectEqual(@as(u32, 0o100640), entry.metadata.host_mode);
+            try std.testing.expect(std.mem.allEqual(u8, entry.name[entry.name_len..], 0));
+            try std.testing.expect(std.mem.allEqual(u8, &entry.reserved, 0));
+        }
+    }
 }
