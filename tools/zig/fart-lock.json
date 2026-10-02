@@ -1,0 +1,21 @@
+{
+  "repository": "https://github.com/drawmeanelephant/fart-app",
+  "revision": "bd453937b30ae6eb28c69f6a497ba202efe4cd05",
+  "golden_sha256": {
+    "a.wav": "a62ad430e53741188447d842344e26e4fdc72bf86793fb5b84143ab0421f80f9",
+    "phrase.wav": "21c6faa26eb63b958968a6dfe2fcf33073182be7f34c0cef416894c84b045f3d",
+    "breath.wav": "35d29bb39b96c665286bfa07f51bedf3ee2af621f1db333599bff613107e1773",
+    "cluster.wav": "13075afca4407e50c050dd2a8fa5f677d7d8068ab848a7bb24a038f96ea3fe29",
+    "seed0.wav": "7e763663eadf675a0c5a26b05f460af57cb89566d68df11fd10b57796556fa8a",
+    "seed42.wav": "4c0500f416ca522f8bda17db9a1bb3a11f107be23fda353d6e66268d3e44c46a",
+    "seedmax.wav": "f66ed5c6c2440d7fa05cfa0664c32859302347758b3e48231b04e9080dad159b",
+    "limit.wav": "8429d046966246f883b852d1b936d36520149cb50a64b405f848829141b89ae6",
+    "input.wav": "f21a1eeefd9b9efeceb8c5ab9ebe8933c020b4f1832cd2a3dbff0ea3479b1dd9"
+  },
+  "sources": {
+    "user/zig/fart/upstream/synth.zig": {
+      "upstream_path": "src/synth.zig",
+      "sha256": "a4cfc8806b70e494df2b66193045695aad2ed52440822d1019a766f95be3c53b"
+    }
+  }
+}
