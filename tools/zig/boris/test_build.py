@@ -29,6 +29,13 @@ boris_stack_refused = refused
 
 
 class BuildTests(unittest.TestCase):
+    def test_platform_register_is_reserved_across_syscalls_and_preemption(self):
+        self.assertEqual(build.GUEST_CPU, "baseline+reserve_x18")
+        build.check_registers("mov x17, sp\n.ascii \"x18\"\n")
+        for body in ("ldr x18, [x8]\n", "mov w18, #1\n", "cmp x0, x18\n"):
+            with self.assertRaisesRegex(ValueError, "UnpreservedPlatformRegister"):
+                build.check_registers(body)
+
     def test_frame_accounting_retains_oversize_evidence(self):
         frames = stack.frames(ASM)
         self.assertEqual(frames, {"entry": 0, "refused": 0, "body": 8208})

@@ -7,6 +7,7 @@ const t = std.testing;
 comptime {
     _ = @import("workspace.zig");
     _ = @import("memory.zig");
+    _ = @import("discovery_test.zig");
 }
 
 test "compiler corpus retains Oliver, nested identities, includes, assets and offline evidence" {
@@ -51,7 +52,9 @@ test "unsupported product surfaces and parallel options refuse explicitly" {
         try t.expectError(error.UnsupportedFeature, policy.parse(&.{name}));
     for ([_][]const u8{ "--jobs=1", "--jobs=2", "--jobs", "--jobs=0" }) |name|
         try t.expectError(error.UnsupportedParallelism, policy.parse(&.{ "probe", name }));
-    try t.expectEqual(policy.Command.build, try policy.parse(&.{"build"}));
+    try t.expectEqual(policy.Command.build, try policy.parse(&.{ "build", "/host/content", "/host/site" }));
+    try t.expectEqual(policy.Command.compile, try policy.parse(&.{ "compile", "/host/content" }));
+    try t.expectError(error.Usage, policy.parse(&.{"build"}));
     try t.expectError(error.Usage, policy.parse(&.{}));
 }
 

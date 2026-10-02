@@ -1,4 +1,5 @@
-//! Compiler-only corpus. This does NOT exercise native B2/B3 discovery.
+//! Shared compiler corpus. The native gate materializes these exact inputs;
+//! importing this array alone remains a compiler-only proof.
 const std = @import("std");
 const boris = @import("boris");
 pub const files = make();

@@ -1,4 +1,4 @@
-//! C3 bounds. Native discovery/publication awaits the shared SDK bridge.
+//! C3 bounds; publication remains fail-closed on missing native guarantees.
 const std = @import("std");
 pub const file_limit = 128 * 1024;
 pub const input_limit = 1024 * 1024;
@@ -7,7 +7,7 @@ pub const arena_bytes = 12 * 1024 * 1024;
 pub const entry_limit = 256;
 pub const artifact_limit = 128;
 
-pub const Command = enum { help, version, probe, build };
+pub const Command = enum { help, version, probe, inspect, compile, build };
 pub fn parse(args: []const []const u8) !Command {
     if (args.len == 0) return error.Usage;
     for (args) |arg| {
@@ -15,9 +15,18 @@ pub fn parse(args: []const []const u8) !Command {
             if (std.mem.eql(u8, arg, name)) return error.UnsupportedFeature;
         if (std.mem.startsWith(u8, arg, "--jobs")) return error.UnsupportedParallelism;
     }
-    if (args.len != 1) return error.Usage;
-    inline for (std.meta.fields(Command)) |field|
-        if (std.mem.eql(u8, args[0], field.name)) return @enumFromInt(field.value);
+    inline for (std.meta.fields(Command)) |field| {
+        if (std.mem.eql(u8, args[0], field.name)) {
+            const command: Command = @enumFromInt(field.value);
+            const count: usize = switch (command) {
+                .inspect, .compile => 2,
+                .build => 3,
+                else => 1,
+            };
+            if (args.len != count) return error.Usage;
+            return command;
+        }
+    }
     return error.UnsupportedFeature;
 }
 
