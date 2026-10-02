@@ -41,6 +41,8 @@ public enum VFWire {
     public static let opDirOpen: UInt8 = 0x0d
     public static let opDirPage: UInt8 = 0x0e
     public static let opDirClose: UInt8 = 0x0f
+    // B4: old hosts refuse this unknown opcode before touching either path.
+    public static let opReplace: UInt8 = 0x10
 
     // Reply statuses
     public static let stOk: UInt8 = 0
@@ -53,6 +55,8 @@ public enum VFWire {
     public static let stLimit: UInt8 = 7
     public static let stPathLimit: UInt8 = 8
     public static let stChanged: UInt8 = 9
+    public static let stAccess: UInt8 = 10
+    public static let stUnsupported: UInt8 = 11
 
     // OPEN request flags byte (per-op modifiers in the reserved byte)
     public static let openFlagCreate: UInt8 = 0x01

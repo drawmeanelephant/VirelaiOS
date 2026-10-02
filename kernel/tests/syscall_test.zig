@@ -1571,6 +1571,57 @@ test "B2: slot 27 versioned marshaling, fault retry, EOF and legacy compatibilit
     try std.testing.expectEqual(@as(usize, 40), @sizeOf(file_table.DirEntry));
 }
 
+test "syscall: slot 35 replacement selector preserves legacy register behavior" {
+    const vf = syscall.virtio_file;
+    const Probe = struct {
+        var mode: file_table.RenameMode = .replace;
+        var calls: usize = 0;
+        fn rename_probe(_: []const u8, _: []const u8, selected: file_table.RenameMode) u8 {
+            mode = selected;
+            calls += 1;
+            return syscall.virtio_file.st_not_found;
+        }
+    };
+    userspace.init();
+    init(test_writer);
+    _ = scheduler.init();
+    _ = scheduler.register_worker(0x2000);
+    _ = scheduler.register_user(0x3000, 0);
+    scheduler.start();
+    _ = scheduler.yield_current();
+    _ = scheduler.yield_current();
+    syscall.trust.init();
+    defer syscall.trust.init();
+    vf.set_test_rename(Probe.rename_probe);
+    defer vf.set_test_rename(null);
+    Probe.calls = 0;
+    var frame = fresh_frame();
+    const max_length = file_table.max_path_len;
+    var paths = [_]u8{'a'} ** (max_length * 2);
+    for (0..2) |i| {
+        var separator = file_table.directory.name_max;
+        while (separator + 1 < max_length) : (separator += file_table.directory.name_max)
+            paths[i * max_length + separator] = '/';
+    }
+    const address = @intFromPtr(&paths);
+    set_user_regions(.{ .base = address, .len = paths.len }, .{ .base = address, .len = paths.len });
+
+    // Existing four-argument gateways leave x4/x5 unspecified.
+    try std.testing.expectEqual(error_result(.enoent), dispatch(sys_file_rename, .{ address, 64, address + 64, 64, 0xffff, 0x12345678 }, &frame));
+    try std.testing.expectEqual(file_table.RenameMode.preserve_existing, Probe.mode);
+    try std.testing.expectEqual(error_result(.enoent), dispatch(sys_file_rename, .{ address, max_length, address + max_length, max_length, 0xffff, 0x12345678 }, &frame));
+    try std.testing.expectEqual(file_table.RenameMode.preserve_existing, Probe.mode);
+    try std.testing.expectEqual(error_result(.enoent), dispatch(sys_file_rename, .{ address, max_length | syscall.file_rename_replace, address + max_length, max_length, 0, 0 }, &frame));
+    try std.testing.expectEqual(file_table.RenameMode.replace, Probe.mode);
+    try std.testing.expectEqual(error_result(.einval), dispatch(sys_file_rename, .{ address, syscall.file_rename_replace, address, 4, 0, 0 }, &frame));
+    try std.testing.expectEqual(error_result(.einval), dispatch(sys_file_rename, .{ address, (max_length + 1) | syscall.file_rename_replace, address, 4, 0, 0 }, &frame));
+    try std.testing.expectEqual(error_result(.einval), dispatch(sys_file_rename, .{ address, 4 | (@as(u64, 1) << 62), address, 4, 0, 0 }, &frame));
+    try std.testing.expectEqual(error_result(.einval), dispatch(sys_file_rename, .{ address, 4 | syscall.file_rename_replace, address, max_length + 1, 0, 0 }, &frame));
+    try std.testing.expectEqual(error_result(.efault), dispatch(sys_file_rename, .{ uaccess.diagnostic_unmapped, 4 | syscall.file_rename_replace, address, 4, 0, 0 }, &frame));
+    try std.testing.expectEqual(error_result(.efault), dispatch(sys_file_rename, .{ address, 4 | syscall.file_rename_replace, uaccess.diagnostic_unmapped, 4, 0, 0 }, &frame));
+    try std.testing.expectEqual(@as(usize, 3), Probe.calls);
+}
+
 test "syscall: clipboard slots 38..39 dispatch and fault safety (claim 0169)" {
     userspace.init();
     init(test_writer);

@@ -91,6 +91,9 @@ pub const op_clone: u8 = 0x0c;
 pub const op_dir_open: u8 = 0x0d;
 pub const op_dir_page: u8 = 0x0e;
 pub const op_dir_close: u8 = 0x0f;
+// B4 (#1871): separate opcode, not an ignored flags bit on legacy RENAME.
+// An older host refuses this before any filesystem mutation.
+pub const op_replace: u8 = 0x10;
 
 pub const st_ok: u8 = 0;
 pub const st_not_found: u8 = 1;
@@ -102,6 +105,9 @@ pub const st_handle: u8 = 6;
 pub const st_limit: u8 = 7;
 pub const st_path_limit: u8 = 8;
 pub const st_changed: u8 = 9;
+pub const st_access: u8 = 10;
+pub const st_unsupported: u8 = 11;
+pub const RenameMode = virtio_fs.RenameMode;
 
 /// OPEN request `flags` byte bits (the framing's reserved byte picks up
 /// per-op modifiers): bit0 create-if-missing, bit1 append-writes.
@@ -327,9 +333,16 @@ pub const TestFile = struct {
 /// outlive the setter). `null` restores hardware mode; an empty slice
 /// arms the share with NO files (honest not_found for every name).
 var test_share: ?[]const TestFile = null;
+pub const TestRenameFn = *const fn ([]const u8, []const u8, RenameMode) u8;
+var test_rename: ?TestRenameFn = null;
 
 pub fn set_test_share(files: ?[]const TestFile) void {
     test_share = files;
+}
+
+/// Host-test failure injection only; never a guest transport or fallback.
+pub fn set_test_rename(callback: ?TestRenameFn) void {
+    if (builtin.is_test) test_rename = callback;
 }
 
 /// Strip leading slashes to conform to the root-relative wire contract
@@ -352,6 +365,7 @@ fn test_lookup(raw_name: []const u8) ?[]const u8 {
 /// commands to print the honest "no host file channel" line on default
 /// boots.
 pub fn available() bool {
+    if (builtin.is_test and test_rename != null) return true;
     if (builtin.is_test and test_share != null) return true;
     return virtio_fs.available() or (virtio_custom.cv_ready and virtio_custom.has_file_queue);
 }
@@ -924,23 +938,38 @@ pub fn truncate(handle: u16, size: u64) u8 {
     return decode_reply(vf_reply_buf[0..n]).status;
 }
 
-/// RENAME `from` → `to` on the host share (stateless). The host publishes
-/// with a moveItem and REFUSES a live target (st_exists — the rename is
-/// no-overwrite), so a replace is the caller's delete-then-rename sequence
-/// (M66b #1444: the crash-safe save's publish step). NUL-separated payload
-/// (paths are NUL-free by construction).
+/// Preserve an existing destination on every backend. The legacy channel
+/// uses RENAME_EXCL; VirtioFS requires FUSE_RENAME2/NOREPLACE and refuses
+/// unsupported servers. Historically only the legacy host refused overwrite:
+/// VirtioFS used plain FUSE_RENAME. That backend difference is now explicit.
 pub fn rename(raw_from: []const u8, raw_to: []const u8) u8 {
+    return rename_mode(raw_from, raw_to, .preserve_existing);
+}
+
+/// Publish a staged path with one atomic backend rename, replacing an existing
+/// destination. A backend rejection leaves both names/content unchanged.
+/// This is not directory-fsync durability or a multi-file transaction.
+pub fn replace(raw_from: []const u8, raw_to: []const u8) u8 {
+    return rename_mode(raw_from, raw_to, .replace);
+}
+
+fn rename_mode(raw_from: []const u8, raw_to: []const u8, mode: RenameMode) u8 {
     const from = clean_path(raw_from);
     const to = clean_path(raw_to);
     if (!available()) return st_host_error;
-    if (virtio_fs.available()) return virtio_fs.rename(from, to);
     if (from.len == 0 or to.len == 0 or from.len > path_max or to.len > path_max) return st_host_error;
+    if (std.mem.indexOfScalar(u8, from, 0) != null or std.mem.indexOfScalar(u8, to, 0) != null) return st_host_error;
+    if (builtin.is_test) {
+        if (test_rename) |callback| return callback(from, to, mode);
+    }
+    if (virtio_fs.available()) return virtio_fs.rename(from, to, mode);
     var payload: [path_max * 2 + 1]u8 = undefined;
     @memcpy(payload[0..from.len], from);
     payload[from.len] = 0;
     @memcpy(payload[from.len + 1 ..][0..to.len], to);
     const plen = from.len + 1 + to.len;
-    const n = exchange(op_rename, 0, payload[0..plen], &vf_reply_buf) orelse return st_host_error;
+    const opcode = if (mode == .replace) op_replace else op_rename;
+    const n = exchange(opcode, 0, payload[0..plen], &vf_reply_buf) orelse return st_host_error;
     return decode_reply(vf_reply_buf[0..n]).status;
 }
 
@@ -1417,6 +1446,39 @@ test "virtio_file: G11 — rename NUL-framed payload + bounds" {
     const long = [_]u8{0x41} ** (path_max + 1);
     try testing.expectEqual(@as(u8, st_host_error), rename(&long, "x"));
     try testing.expectEqual(@as(u8, st_host_error), rename("x", &long));
+}
+
+test "virtio_file: replacement is additive and malformed paths never dispatch" {
+    const Probe = struct {
+        var calls: usize = 0;
+        var mode: RenameMode = .preserve_existing;
+        fn rename_probe(_: []const u8, _: []const u8, selected: RenameMode) u8 {
+            calls += 1;
+            mode = selected;
+            return st_not_found;
+        }
+    };
+    Probe.calls = 0;
+    set_test_rename(Probe.rename_probe);
+    defer set_test_rename(null);
+    try testing.expectEqual(@as(u8, 0x0d), op_dir_open);
+    try testing.expectEqual(@as(u8, 0x0e), op_dir_page);
+    try testing.expectEqual(@as(u8, 0x0f), op_dir_close);
+    try testing.expectEqual(@as(u8, 0x10), op_replace);
+    try testing.expectEqual(@as(u8, 7), st_limit);
+    try testing.expectEqual(@as(u8, 8), st_path_limit);
+    try testing.expectEqual(@as(u8, 9), st_changed);
+    try testing.expectEqual(@as(u8, 10), st_access);
+    try testing.expectEqual(@as(u8, 11), st_unsupported);
+    try testing.expectEqual(st_not_found, rename("stage", "out"));
+    try testing.expectEqual(RenameMode.preserve_existing, Probe.mode);
+    try testing.expectEqual(st_not_found, replace("stage", "out"));
+    try testing.expectEqual(RenameMode.replace, Probe.mode);
+    try testing.expectEqual(st_host_error, replace("stage\x00escape", "out"));
+    try testing.expectEqual(st_host_error, replace("stage", ""));
+    const long = [_]u8{'x'} ** (path_max + 1);
+    try testing.expectEqual(st_host_error, replace(&long, "out"));
+    try testing.expectEqual(@as(usize, 2), Probe.calls);
 }
 
 test "virtio_file: G12 — pattern chunk plan for the mutation gate" {

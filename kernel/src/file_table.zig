@@ -1338,9 +1338,17 @@ pub fn delete(pid: u64, path_bytes: []const u8) i64 {
     return rc;
 }
 
-/// Rename `old_path` to `new_path` (same directory — cross-directory moves
-/// are refused with EINVAL). Returns 0 on success.
+pub const RenameMode = virtio_file.RenameMode;
+
+/// Rename within the host share, refusing an existing destination.
 pub fn rename(pid: u64, old_bytes: []const u8, new_bytes: []const u8) i64 {
+    return rename_mode(pid, old_bytes, new_bytes, .preserve_existing);
+}
+
+/// Replacement and preserve-existing use the same both-end authorization.
+/// Backend rejection preserves the publication; only acknowledged success
+/// moves trust metadata. A lost transport reply has an unknown commit outcome.
+pub fn rename_mode(pid: u64, old_bytes: []const u8, new_bytes: []const u8, mode: RenameMode) i64 {
     if (pid >= process.max_processes) return -1;
     if (old_bytes.len == 0 or old_bytes.len > max_path_len or
         new_bytes.len == 0 or new_bytes.len > max_path_len) return -1;
@@ -1358,14 +1366,13 @@ pub fn rename(pid: u64, old_bytes: []const u8, new_bytes: []const u8) i64 {
         if (!hostAllowed(pid, newp, .create)) return -7; // EACCES
     }
     if (!virtio_file.available()) return -6;
-    // M34 HF5 (issue #739): host renames route to the channel (stateless
-    // NUL-framed RENAME; the host overwrites nothing — a live target is
-    // status 5). M66a: exists maps to the file-domain EEXIST row (-9), the
-    // same row the MODE_DIR mkdir path pinned, not a bare EINVAL.
-    const rc: i64 = switch (virtio_file.rename(oldp, newp)) {
+    const status = if (mode == .replace) virtio_file.replace(oldp, newp) else virtio_file.rename(oldp, newp);
+    const rc: i64 = switch (status) {
         virtio_file.st_ok => 0,
         virtio_file.st_not_found => -6,
         virtio_file.st_exists => -9,
+        virtio_file.st_access => -7,
+        virtio_file.st_unsupported => -4,
         else => -1,
     };
     // M50 TS2: move the metadata with the file (persist on change).
@@ -2080,6 +2087,63 @@ test "file_table: mutating ops validate pids, paths, and volumes (claim 5801)" {
     // Truncate on an unopened handle is EBADF.
     init();
     try std.testing.expectEqual(@as(i64, -2), truncate(1, 0, 4));
+}
+
+test "file_table: replacement authorizes both ends before backend mutation" {
+    const Probe = struct {
+        var calls: usize = 0;
+        fn rename_probe(_: []const u8, _: []const u8, _: RenameMode) u8 {
+            calls += 1;
+            return virtio_file.st_host_error;
+        }
+    };
+    Probe.calls = 0;
+    trust.init();
+    defer trust.init();
+    virtio_file.set_test_rename(Probe.rename_probe);
+    defer virtio_file.set_test_rename(null);
+    const pid = process.max_processes - 1;
+    for ([_]RenameMode{ .preserve_existing, .replace }) |mode| {
+        for ([_][]const u8{
+            "#v1\nstage\t400\t1000\t-\n",
+            "#v1\noutput\t400\t1000\t-\n",
+            "#v1\nstage\t600\t0\tsecret\n",
+            "#v1\noutput\t600\t0\tsecret\n",
+            "#v1\noutput\tbad\t1000\t-\n",
+        }) |policy| {
+            _ = trust.load(policy);
+            try std.testing.expectEqual(@as(i64, -7), rename_mode(pid, "stage", "output", mode));
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 0), Probe.calls);
+}
+
+test "file_table: rejected replacement keeps both trust entries" {
+    const Probe = struct {
+        var status: u8 = virtio_file.st_host_error;
+        fn rename_probe(_: []const u8, _: []const u8, _: RenameMode) u8 {
+            return status;
+        }
+    };
+    trust.init();
+    defer trust.init();
+    virtio_file.set_test_rename(Probe.rename_probe);
+    defer virtio_file.set_test_rename(null);
+    const policy = "#v1\nstage\t600\t1000\t-\noutput\t606\t0\t-\n";
+    _ = trust.load(policy);
+    for ([_]struct { status: u8, errno: i64 }{
+        .{ .status = virtio_file.st_host_error, .errno = -1 },
+        .{ .status = virtio_file.st_not_found, .errno = -6 },
+        .{ .status = virtio_file.st_exists, .errno = -9 },
+        .{ .status = virtio_file.st_access, .errno = -7 },
+        .{ .status = virtio_file.st_unsupported, .errno = -4 },
+    }) |case| {
+        Probe.status = case.status;
+        try std.testing.expectEqual(case.errno, rename_mode(process.max_processes - 1, "stage", "output", .replace));
+        var saved: [trust.save_max]u8 = undefined;
+        const n = trust.save(&saved);
+        try std.testing.expectEqualStrings(policy, saved[0..n]);
+    }
 }
 
 test "file_table: M66a HF-status mapping keeps the four rows distinct" {
