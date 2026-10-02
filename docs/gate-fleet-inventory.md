@@ -155,7 +155,7 @@ of them with `just verify-vz`.
 | spec | `live-net-udp` | 4 run / 28 assert | live-net-udp.spec -- UDP live on VZ. Mirrors |
 | spec | `live-net-udp-syscall` | 1 run / 15 assert | live-net-udp-syscall.spec -- the UDP syscall seam from EL0: UDP.BIN |
 | spec | `live-netstat` | 1 run / 8 assert | live-netstat.spec -- NETSTAT.BIN dashboard sections live: iface, |
-| spec | `live-oliver` | 7 run / 62 assert | live-oliver.spec -- a REAL Zig HTML tool (oliver, commit 3f05bacb) on |
+| spec | `live-oliver` | 7 run / 62 assert | live-oliver.spec -- a REAL Zig HTML tool (oliver, commit 3615e625) on |
 | spec | `live-pipe` | 1 run / 5 assert | live-pipe.spec -- the pipe operator: left-echo output travels through |
 | spec | `live-pointer-cg` | 0 run / 0 assert | live-pointer-cg.spec -- milestone eight card U4 (claim 4993) CG |
 | spec | `live-pointer-virtio` | 1 run / 9 assert | live-pointer-virtio.spec -- claim 9367 (issue #523 item 3 |
