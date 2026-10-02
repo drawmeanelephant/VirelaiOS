@@ -49,6 +49,7 @@ const driving_award = @import("driving_award.zig");
 // and the bounded metadata table `OWNERS.TXT` persists.
 const trust = @import("trust.zig");
 pub const directory = @import("directory.zig");
+pub const metadata = @import("fs_metadata.zig");
 
 pub const max_handles_per_process: usize = 8;
 pub const max_path_len: usize = directory.path_max;
@@ -104,6 +105,9 @@ pub const FileHandle = struct {
     path_len: u16 = 0,
     dir_token: u64 = 0,
     dir_snapshot: usize = 0,
+    rich_directory: bool = false,
+    contained: bool = false,
+    contained_cursor: u64 = 0,
     /// M25 Lane B (claim 2539): set when MODE_DIR created the entry —
     /// the handle must never be read or written (a directory write would
     /// overwrite host metadata through the channel's replace path).
@@ -146,6 +150,9 @@ const handle_pages: u64 = (@sizeOf(HandleTable) + alloc.page_size - 1) / alloc.p
 var handles: [][max_handles_per_process]FileHandle = &.{};
 var test_handles: HandleTable = undefined;
 var snapshots: [directory.cursor_max]?*directory.Snapshot = .{null} ** directory.cursor_max;
+var metadata_snapshots: [directory.cursor_max]?*metadata.Snapshot = .{null} ** directory.cursor_max;
+const metadata_pages: u64 = (@sizeOf(metadata.Snapshot) + alloc.page_size - 1) / alloc.page_size;
+var test_metadata_snapshots: [directory.cursor_max]metadata.Snapshot = undefined;
 var snapshot_used: [directory.cursor_max]bool = .{false} ** directory.cursor_max;
 const snapshot_pages: u64 = (@sizeOf(directory.Snapshot) + alloc.page_size - 1) / alloc.page_size;
 var test_snapshots: [directory.cursor_max]directory.Snapshot = undefined;
@@ -186,6 +193,10 @@ fn release_snapshot(slot: usize) void {
         if (!builtin.is_test) _ = alloc.free_pages(@intFromPtr(snapshot), snapshot_pages);
     }
     snapshots[slot] = null;
+    if (metadata_snapshots[slot]) |snapshot| {
+        if (!builtin.is_test) _ = alloc.free_pages(@intFromPtr(snapshot), metadata_pages);
+    }
+    metadata_snapshots[slot] = null;
     snapshot_used[slot] = false;
 }
 
@@ -255,6 +266,12 @@ fn release_binding(binding: Binding) i64 {
                 return 0;
             }
             if (ep.file.host_handle_valid) {
+                if (ep.file.contained) {
+                    virtio_file.contained_close(ep.file.host_handle) catch |err| return metadata_errno(err);
+                    ep.* = .{};
+                    release_empty_endpoints();
+                    return 0;
+                }
                 const st = if (builtin.is_test and test_stream_close != null)
                     test_stream_close.?(ep.file.host_handle)
                 else
@@ -378,7 +395,8 @@ pub fn stream_peek(pid: u64, fd: u64, out: []u8) i64 {
 }
 
 pub fn stream_advance(pid: u64, fd: u64, count: usize) void {
-    endpoints[streams[pid][fd - stream_base].file].file.cursor += @intCast(count);
+    const h = &endpoints[streams[pid][fd - stream_base].file].file;
+    if (h.contained) h.contained_cursor += count else h.cursor += @intCast(count);
 }
 
 pub fn stream_write(pid: u64, fd: u64, bytes: []const u8) i64 {
@@ -466,7 +484,11 @@ pub fn reset_process(pid: u64) void {
         // HF5: a killed/exited process must free its HOST write handles
         // (the host table is global — a leaked slot would starve others).
         if (h.in_use and h.host_handle_valid) {
-            _ = virtio_file.close(h.host_handle);
+            if (h.contained) {
+                virtio_file.contained_close(h.host_handle) catch {};
+            } else {
+                _ = virtio_file.close(h.host_handle);
+            }
         }
         h.* = .{};
     };
@@ -522,6 +544,167 @@ fn trustWant(flags: u32) trust.Want {
 
 fn hostAllowed(pid: u64, path: []const u8, want: trust.Want) bool {
     return trust.check(actorFor(pid), .host, path, want) == .allow;
+}
+
+pub fn metadata_errno(err: metadata.Error) i64 {
+    return switch (err) {
+        error.MetadataUnavailable, error.ContainmentUnavailable => -4,
+        error.FileNotFound => -6,
+        error.AccessDenied, error.SymlinkRejected => -7,
+        error.PathLimit => -8,
+        error.HandleLimit, error.TreeLimit => -5,
+        error.StaleIdentity => -2,
+        else => -1,
+    };
+}
+
+const MetadataAuth = struct {
+    pid: u64,
+    root: []const u8,
+
+    fn check(context: *anyopaque, path: []const u8, access: metadata.Access) metadata.Error!void {
+        const self: *MetadataAuth = @ptrCast(@alignCast(context));
+        var buffer: [metadata.max_relative_path]u8 = undefined;
+        const full = try join_metadata(self.root, path, &buffer);
+        // Check every share-relative ancestor, including ancestors of the
+        // supplied root. Host uid/mode must never substitute for this policy.
+        if (!hostAllowed(self.pid, "", .list)) return error.AccessDenied;
+        var at: usize = 0;
+        while (at < full.len) {
+            const end = std.mem.indexOfScalarPos(u8, full, at, '/') orelse full.len;
+            const want: trust.Want = if (end < full.len or access == .metadata) .list else if (access == .write) .write else .read;
+            if (!hostAllowed(self.pid, full[0..end], want)) return error.AccessDenied;
+            at = end + 1;
+        }
+    }
+
+    fn authorizer(self: *MetadataAuth) metadata.Authorizer {
+        return .{ .context = self, .check = check };
+    }
+};
+
+fn metadata_root(raw: []const u8) metadata.Error![]const u8 {
+    // No normalization may erase an escape or symlink component. Only the
+    // documented native host prefix is stripped; USB/tty are unsupported.
+    const path = if (std.mem.eql(u8, raw, "/host") or std.mem.eql(u8, raw, "/host/"))
+        ""
+    else if (std.mem.startsWith(u8, raw, "/host/"))
+        raw[6..]
+    else
+        return error.ContainmentUnavailable;
+    try metadata.validatePath(path);
+    return path;
+}
+
+fn join_metadata(root: []const u8, relative: []const u8, out: []u8) metadata.Error![]const u8 {
+    if (!directory.valid_path(root, metadata.max_depth * 2) or
+        !directory.valid_path(relative, metadata.max_depth * 2)) return error.InvalidPath;
+    const sep: usize = @intFromBool(root.len != 0 and relative.len != 0);
+    const len = root.len + sep + relative.len;
+    if (len > metadata.max_relative_path or len > out.len) return error.PathLimit;
+    @memcpy(out[0..root.len], root);
+    if (sep != 0) out[root.len] = '/';
+    @memcpy(out[root.len + sep ..][0..relative.len], relative);
+    return out[0..len];
+}
+
+pub fn metadata_at(pid: u64, root_bytes: []const u8, relative: []const u8, out: *metadata.Wire) i64 {
+    if (pid >= process.max_processes) return -1;
+    const path = metadata_root(root_bytes) catch |err| return metadata_errno(err);
+    var root = virtio_file.MetadataRoot{ .path = path };
+    var auth = MetadataAuth{ .pid = pid, .root = path };
+    const value = metadata.stat(virtio_file.metadata_backend(&root), auth.authorizer(), relative) catch |err| return metadata_errno(err);
+    out.* = metadata.Wire.from(value);
+    return 0;
+}
+
+/// Opens an existing pinned regular file, without create/truncate/append.
+/// The returned native fd uses slots 24/25/26, never reopens a pathname.
+pub fn contained_open(pid: u64, root_bytes: []const u8, relative: []const u8, writing: bool) i64 {
+    if (pid >= process.max_processes) return -1;
+    const root_path = metadata_root(root_bytes) catch |err| return metadata_errno(err);
+    var full: [max_path_len]u8 = undefined;
+    const path = join_metadata(root_path, relative, &full) catch |err| return metadata_errno(err);
+    if (!ensure_handles()) return -10;
+    defer release_empty_handles();
+    if (resource_count(pid) >= max_handles_per_process) return -5;
+    var slot: usize = 0;
+    while (slot < max_handles_per_process and handles[pid][slot].in_use) : (slot += 1) {}
+    if (slot == max_handles_per_process) return -5;
+    var root = virtio_file.MetadataRoot{ .path = root_path };
+    var auth = MetadataAuth{ .pid = pid, .root = root_path };
+    const token = metadata.openToken(virtio_file.metadata_backend(&root), auth.authorizer(), relative, if (writing) .write else .read) catch |err| return metadata_errno(err);
+    var h = FileHandle{
+        .in_use = true,
+        .flags = if (writing) MODE_WRITE else MODE_READ,
+        .path_len = @intCast(path.len),
+        .host_handle = @intCast(token),
+        .host_handle_valid = true,
+        .contained = true,
+    };
+    @memcpy(h.path[0..path.len], path);
+    handles[pid][slot] = h;
+    return @intCast(slot);
+}
+
+pub fn metadata_dir_open(pid: u64, root_bytes: []const u8, relative: []const u8) i64 {
+    if (pid >= process.max_processes) return -1;
+    const root_path = metadata_root(root_bytes) catch |err| return metadata_errno(err);
+    var full: [max_path_len]u8 = undefined;
+    const path = join_metadata(root_path, relative, &full) catch |err| return metadata_errno(err);
+    if (!ensure_handles()) return -10;
+    defer release_empty_handles();
+    if (resource_count(pid) >= max_handles_per_process) return -5;
+    var fd: usize = 0;
+    while (fd < max_handles_per_process and handles[pid][fd].in_use) : (fd += 1) {}
+    var slot: usize = 0;
+    while (slot < snapshot_used.len and snapshot_used[slot]) : (slot += 1) {}
+    if (fd == max_handles_per_process or slot == snapshot_used.len or next_dir_token > std.math.maxInt(i64)) return -5;
+    const snapshot: *metadata.Snapshot = if (builtin.is_test)
+        &test_metadata_snapshots[slot]
+    else
+        @ptrFromInt(alloc.alloc_pages(metadata_pages) orelse return -10);
+    metadata_snapshots[slot] = snapshot;
+    var root = virtio_file.MetadataRoot{ .path = root_path };
+    var auth = MetadataAuth{ .pid = pid, .root = root_path };
+    virtio_file.metadata_snapshot(virtio_file.metadata_backend(&root), auth.authorizer(), relative, snapshot) catch |err| {
+        release_snapshot(slot);
+        return metadata_errno(err);
+    };
+    const token = next_dir_token;
+    next_dir_token += 1;
+    var h = FileHandle{
+        .in_use = true,
+        .is_dir = true,
+        .rich_directory = true,
+        .dir_token = token,
+        .dir_snapshot = slot,
+        .path_len = @intCast(path.len),
+    };
+    @memcpy(h.path[0..path.len], path);
+    handles[pid][fd] = h;
+    snapshot_used[slot] = true;
+    return @intCast(token);
+}
+
+pub fn metadata_dir_page(pid: u64, token: u64, offset: u64, limit: u64, page: *metadata.Page) i64 {
+    const h = dir_handle(pid, token) orelse return -2;
+    if (!h.rich_directory) return -2;
+    var auth = MetadataAuth{ .pid = pid, .root = "" };
+    MetadataAuth.check(&auth, h.path[0..h.path_len], .metadata) catch |err| return metadata_errno(err);
+    if (limit == 0 or limit > directory.page_max) return -1;
+    const snapshot = metadata_snapshots[h.dir_snapshot].?;
+    if (offset > snapshot.count) return -1;
+    const take: usize = @intCast(@min(limit, snapshot.count - offset));
+    // Reauthorize child rows too: a captured snapshot is not an ACL grant.
+    for (snapshot.entries[@intCast(offset)..][0..take]) |entry| {
+        var full: [max_path_len]u8 = undefined;
+        const path = join_metadata(h.path[0..h.path_len], entry.name[0..entry.name_len], &full) catch |err| return metadata_errno(err);
+        MetadataAuth.check(&auth, path, .metadata) catch |err| return metadata_errno(err);
+    }
+    page.header = .{ .count = @intCast(take), .next = offset + take, .end = @intFromBool(offset + take == snapshot.count) };
+    @memcpy(page.entries[0..take], snapshot.entries[@intCast(offset)..][0..take]);
+    return @intCast(take);
 }
 
 /// Serialize the trust table and persist it to `OWNERS.TXT` on the share.
@@ -965,6 +1148,20 @@ pub fn read(pid: u64, fd: u64, out_buf: []u8) i64 {
     return read_handle(pid, &handles[pid][fd], out_buf, false);
 }
 
+pub fn is_contained(pid: u64, fd: u64) bool {
+    return pid < process.max_processes and fd < max_handles_per_process and
+        handles.len != 0 and handles[pid][fd].in_use and handles[pid][fd].contained;
+}
+
+pub fn contained_peek(pid: u64, fd: u64, out: []u8) i64 {
+    var h = handles[pid][fd];
+    return read_handle(pid, &h, out, true);
+}
+
+pub fn contained_advance(pid: u64, fd: u64, count: usize) void {
+    handles[pid][fd].contained_cursor += count;
+}
+
 fn read_handle(pid: u64, h: *FileHandle, out_buf: []u8, strict: bool) i64 {
     if (!h.in_use) return -2; // EBADF
     if ((h.flags & MODE_READ) == 0) return -7; // EACCES
@@ -985,6 +1182,13 @@ fn read_handle(pid: u64, h: *FileHandle, out_buf: []u8, strict: bool) i64 {
     // M50 TS2 (ADR 0024 D4): the host-share ownership/mode gate for reads.
     if (h.partition == .host and !hostAllowed(pid, h.path[0..h.path_len], .read)) return -7; // EACCES
 
+    if (h.contained) {
+        var auth = MetadataAuth{ .pid = pid, .root = "" };
+        MetadataAuth.check(&auth, h.path[0..h.path_len], .read) catch |err| return metadata_errno(err);
+        const n = virtio_file.contained_read(h.host_handle, h.contained_cursor, out_buf) catch |err| return metadata_errno(err);
+        h.contained_cursor += n;
+        return @intCast(n);
+    }
     if (out_buf.len == 0) return 0;
     if (h.cursor >= h.size) return 0; // EOF
 
@@ -1082,6 +1286,10 @@ fn write_handle(pid: u64, h: *FileHandle, in_buf: []const u8) i64 {
 
     // M50 TS2 (ADR 0024 D4): the host-share ownership/mode gate for writes.
     if (h.partition == .host and !hostAllowed(pid, h.path[0..h.path_len], .write)) return -7; // EACCES
+    if (h.contained) {
+        var auth = MetadataAuth{ .pid = pid, .root = "" };
+        MetadataAuth.check(&auth, h.path[0..h.path_len], .write) catch |err| return metadata_errno(err);
+    }
 
     // M34 HF5 (issue #739): host writes ride the host handle's cursor
     // (chunked across WRITE round trips; the host returns the confirmed
@@ -1093,7 +1301,9 @@ fn write_handle(pid: u64, h: *FileHandle, in_buf: []const u8) i64 {
     while (off < in_buf.len) {
         const take = @min(in_buf.len - off, virtio_file.write_chunk_limit());
         var written: u64 = 0;
-        const st = if (builtin.is_test and test_stream_write != null)
+        const st = if (h.contained)
+            virtio_file.contained_write(h.host_handle, in_buf[off .. off + take], &written)
+        else if (builtin.is_test and test_stream_write != null)
             test_stream_write.?(h.host_handle, in_buf[off .. off + take], &written)
         else
             virtio_file.write(h.host_handle, in_buf[off .. off + take], &written);
@@ -1125,7 +1335,11 @@ pub fn close(pid: u64, fd: u64) i64 {
     if (handles[pid][fd].dir_token != 0) release_snapshot(handles[pid][fd].dir_snapshot);
 
     if (handles[pid][fd].host_handle_valid) {
-        _ = virtio_file.close(handles[pid][fd].host_handle);
+        if (handles[pid][fd].contained) {
+            virtio_file.contained_close(handles[pid][fd].host_handle) catch |err| return metadata_errno(err);
+        } else {
+            _ = virtio_file.close(handles[pid][fd].host_handle);
+        }
     }
     handles[pid][fd] = .{};
     release_empty_handles();
@@ -1199,6 +1413,7 @@ fn dir_handle(pid: u64, token: u64) ?*FileHandle {
 /// continuation offset. Zero rows + end=1 is EOF, never an I/O refusal.
 pub fn dir_page(pid: u64, token: u64, offset: u64, limit: u64, page: *directory.Page) i64 {
     const h = dir_handle(pid, token) orelse return -2;
+    if (h.rich_directory) return -2;
     if (!hostAllowed(pid, h.path[0..h.path_len], .list)) return -7;
     if (limit == 0 or limit > directory.page_max) return -1;
     const snapshot = snapshots[h.dir_snapshot].?;
@@ -1396,7 +1611,11 @@ pub fn truncate(pid: u64, fd: u64, new_size: u32) i64 {
     // status maps honestly (a dead host handle is EBADF); the host clamps
     // its own cursor to the new size, mirrored below.
     if (!h.host_handle_valid) return -7; // EACCES
-    const st = virtio_file.truncate(h.host_handle, new_size);
+    if (h.contained) {
+        var auth = MetadataAuth{ .pid = pid, .root = "" };
+        MetadataAuth.check(&auth, h.path[0..h.path_len], .write) catch |err| return metadata_errno(err);
+    }
+    const st = if (h.contained) virtio_file.contained_truncate(h.host_handle, new_size) else virtio_file.truncate(h.host_handle, new_size);
     if (st != virtio_file.st_ok) return hf_handle_errno(st);
     h.size = new_size;
     if (h.cursor > new_size) h.cursor = new_size;
@@ -1415,6 +1634,11 @@ pub fn sync(pid: u64, fd: u64) i64 {
     if (h.dir_token != 0) return -2;
     if (h.partition != .host) return 0; // no host-side state to push
     if (!h.host_handle_valid) return 0; // stateless read handle: nothing to sync
+    if (h.contained) {
+        var auth = MetadataAuth{ .pid = pid, .root = "" };
+        MetadataAuth.check(&auth, h.path[0..h.path_len], if ((h.flags & MODE_WRITE) != 0) .write else .read) catch |err| return metadata_errno(err);
+        return hf_handle_errno(virtio_file.contained_sync(h.host_handle));
+    }
     return hf_handle_errno(virtio_file.fsync(h.host_handle));
 }
 

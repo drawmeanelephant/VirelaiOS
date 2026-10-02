@@ -117,7 +117,7 @@ pub const slot_count: usize = 128;
 /// is sys_file_sync; M83b (#1775): slot 78 is sys_time_set.
 /// `implemented_count` is the number of
 /// registered rows (rows 0..implemented_count-1).
-pub const implemented_count: usize = 79;
+pub const implemented_count: usize = 80;
 /// Card G6 (claim 0487) follow-on (slot 18): the fixed `sys_win_get` shape —
 /// four u32 LE words (x, y, w, h), 16 bytes, marshaled per call and copy_out'd
 /// through uaccess (the procs snapshot pattern).
@@ -386,6 +386,8 @@ pub const sys_file_sync: u64 = 77;
 // zero a0). This row hands EL0 one bounded write: re-anchor the wall clock
 // so slot 66 reads `epoch_secs` now.
 pub const sys_time_set: u64 = 78;
+/// B3: one bounded native metadata/contained-filesystem operation family.
+pub const sys_fs_metadata: u64 = 79;
 /// The fixed per-call fill cap of slot 72 (ADR 0025 D5: "capped at a bounded
 /// maximum"). 256 matches `write_cap` — enough for an ephemeral X25519
 /// secret (32 B), a KEXINIT cookie (16 B), or a burst of per-packet padding,
@@ -571,6 +573,7 @@ pub fn ensure_table() *const [slot_count]Entry {
         table_storage[sys_file_sync] = .{ .name = "sys_file_sync", .handler = handle_file_sync };
         // M83b (#1775): slot 78 — the bounded wall-clock write (timer.set_wall_epoch).
         table_storage[sys_time_set] = .{ .name = "sys_time_set", .handler = handle_time_set };
+        table_storage[sys_fs_metadata] = .{ .name = "sys_fs_metadata", .handler = handle_fs_metadata };
         table_storage[sys_clipboard_set] = .{ .name = "sys_clipboard_set", .handler = handle_clipboard_set };
         table_storage[sys_clipboard_get] = .{ .name = "sys_clipboard_get", .handler = handle_clipboard_get };
         table_storage[sys_timer_set] = .{ .name = "sys_timer_set", .handler = handle_timer_set };
@@ -664,7 +667,7 @@ fn doms_of(number: u64) u5 {
     const k: u5 = svclock.dom_bit(.kernel);
     return switch (number) {
         sys_udp_listen, sys_udp_send, sys_udp_recv, sys_tcp_connect, sys_tcp_send, sys_tcp_recv, sys_tcp_close, sys_sock_ready, sys_ping_send, sys_ping_poll, sys_net_stats => n,
-        sys_file_open, sys_file_read, sys_file_write, sys_file_close, sys_dir_list, sys_file_delete, sys_file_rename, sys_file_truncate, sys_file_free, sys_file_sync => f,
+        sys_file_open, sys_file_read, sys_file_write, sys_file_close, sys_dir_list, sys_file_delete, sys_file_rename, sys_file_truncate, sys_file_free, sys_file_sync, sys_fs_metadata => f,
         sys_exec => f | k,
         sys_write => f,
         sys_win_open, sys_win_fill, sys_win_present, sys_win_close, sys_win_move, sys_win_raise, sys_win_get, sys_win_query, sys_win_set_visible, sys_win_fill_batch, sys_win_resize, 48, sys_win_raise_front, sys_win_lower_back, 52, sys_win_set_unsaved, sys_win_set_title, sys_drag_read, sys_font_size => w,
@@ -1770,6 +1773,53 @@ fn handle_file_open(args: Args, _: *exceptions.VectorFrame) u64 {
     return @intCast(res);
 }
 
+/// Slot 79. Path operations: (op, root_ptr, root_len, relative_ptr,
+/// relative_len, out_ptr). Open returns an ordinary fd. Page:
+/// (5, token, offset, limit, out_ptr, 0). Close: (6, token, 0,0,0,0).
+fn handle_fs_metadata(args: Args, _: *exceptions.VectorFrame) u64 {
+    const meta = file_table.metadata;
+    const pid = process.find_by_task(scheduler.current_id()) orelse return error_result(.einval);
+    if (args[0] == meta.dir_page_op) {
+        if (args[5] != 0) return error_result(.einval);
+        var page: meta.Page = undefined;
+        const n = file_table.metadata_dir_page(pid, args[1], args[2], args[3], &page);
+        if (n < 0) return @bitCast(n);
+        const len = @sizeOf(file_table.directory.Header) + @as(usize, @intCast(n)) * @sizeOf(meta.Entry);
+        const bytes: [*]const u8 = @ptrCast(&page);
+        if (uaccess.copy_out(args[4], bytes[0..len], len) != .ok) return error_result(.efault);
+        return @intCast(n);
+    }
+    if (args[0] == meta.dir_close_op) {
+        if (args[2] != 0 or args[3] != 0 or args[4] != 0 or args[5] != 0) return error_result(.einval);
+        return @bitCast(file_table.dir_close(pid, args[1]));
+    }
+    if (args[0] > meta.dir_open_op) return error_result(.einval);
+    if (args[2] == 0) return error_result(.einval);
+    if (args[2] > meta.max_guest_path or args[4] > meta.max_relative_path)
+        return error_result(.enametoolong);
+    if (args[0] >= meta.read_open_op and args[5] != 0) return error_result(.einval);
+    var root: [meta.max_guest_path]u8 = undefined;
+    var relative: [meta.max_relative_path]u8 = undefined;
+    if (uaccess.copy_in(&root, args[1], @intCast(args[2])) != .ok) return error_result(.efault);
+    if (args[4] != 0 and uaccess.copy_in(&relative, args[3], @intCast(args[4])) != .ok) return error_result(.efault);
+    const root_path = root[0..args[2]];
+    const path = relative[0..args[4]];
+    const result: i64 = switch (args[0]) {
+        meta.stat_op, meta.identity_op => blk: {
+            var value: meta.Wire = undefined;
+            const rc = file_table.metadata_at(pid, root_path, path, &value);
+            if (rc < 0) break :blk rc;
+            const bytes = if (args[0] == meta.identity_op) std.mem.asBytes(&value.identity) else std.mem.asBytes(&value);
+            if (uaccess.copy_out(args[5], bytes, bytes.len) != .ok) return error_result(.efault);
+            break :blk 0;
+        },
+        meta.read_open_op, meta.write_open_op => file_table.contained_open(pid, root_path, path, args[0] == meta.write_open_op),
+        meta.dir_open_op => file_table.metadata_dir_open(pid, root_path, path),
+        else => unreachable,
+    };
+    return @bitCast(result);
+}
+
 /// Milestone 10 (claim 3570): slot 24 — sys_file_read(fd, buf_ptr, count)
 fn handle_file_read(args: Args, _: *exceptions.VectorFrame) u64 {
     const fd = args[0];
@@ -1787,6 +1837,8 @@ fn handle_file_read(args: Args, _: *exceptions.VectorFrame) u64 {
     var read_staging: [2048]u8 = undefined;
     const res = if (file_table.is_stream(fd))
         file_table.stream_peek(pid, fd, read_staging[0..take_count])
+    else if (file_table.is_contained(pid, fd))
+        file_table.contained_peek(pid, fd, read_staging[0..take_count])
     else
         file_table.read(pid, fd, read_staging[0..take_count]);
     if (res < 0) {
@@ -1796,6 +1848,7 @@ fn handle_file_read(args: Args, _: *exceptions.VectorFrame) u64 {
     if (bytes_read > 0) {
         if (uaccess.copy_out(buf_ptr, read_staging[0..bytes_read], bytes_read) != .ok) return error_result(.efault);
         if (file_table.is_stream(fd)) file_table.stream_advance(pid, fd, bytes_read);
+        if (file_table.is_contained(pid, fd)) file_table.contained_advance(pid, fd, bytes_read);
     }
     return @intCast(bytes_read);
 }

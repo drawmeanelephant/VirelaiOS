@@ -41,7 +41,7 @@
 //! the shared class-A fixture `tests/vf-pattern-32k.bin` (sha256-pinned).
 
 const virtio_custom = @import("virtio_custom.zig");
-const virtio_fs = @import("virtio_fs.zig");
+pub const virtio_fs = @import("virtio_fs.zig");
 const spinlock = @import("spinlock.zig");
 /// Claim 9094 (#810 writer hunt): the task-ring audit is a LIVE-gate
 /// instrument only — the scheduler import is comptime-conditional so
@@ -64,6 +64,40 @@ const scheduler = if (builtin.is_test) struct {
 const std = @import("std");
 const builtin = @import("builtin");
 const directory = @import("directory.zig");
+pub const metadata = @import("fs_metadata.zig");
+pub const MetadataRoot = virtio_fs.Root;
+
+/// The legacy custom channel has neither honest attrs nor pinned lookups.
+/// It explicitly refuses B3; never fall back to its path STAT/READ.
+pub fn metadata_backend(root: *MetadataRoot) metadata.Backend {
+    if (virtio_fs.available()) return virtio_fs.contained_backend(root);
+    return .{ .context = root, .root_path = root.path, .ops = null };
+}
+
+pub fn metadata_snapshot(backend: metadata.Backend, auth: metadata.Authorizer, path: []const u8, out: *metadata.Snapshot) metadata.Error!void {
+    if (backend.ops == null) return error.ContainmentUnavailable;
+    return virtio_fs.metadata_snapshot(backend, auth, path, out);
+}
+
+pub fn contained_read(handle: u16, offset: u64, out: []u8) metadata.Error!usize {
+    return virtio_fs.contained_read(handle, offset, out);
+}
+
+pub fn contained_close(handle: u16) metadata.Error!void {
+    return virtio_fs.contained_close(handle);
+}
+
+pub fn contained_write(handle: u16, bytes: []const u8, written: *u64) u8 {
+    return virtio_fs.write(handle, bytes, written);
+}
+
+pub fn contained_sync(handle: u16) u8 {
+    return virtio_fs.fsync(handle);
+}
+
+pub fn contained_truncate(handle: u16, size: u64) u8 {
+    return virtio_fs.truncate(handle, size);
+}
 
 // ---------------------------------------------------------------------------
 // Wire constants (mirrored by the host's VFWire module)

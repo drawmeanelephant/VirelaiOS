@@ -1678,3 +1678,82 @@ and SDK resource accounting still belong to C3/A3. B2's conservative native
 depth limit is rooted at `/host`, not an arbitrary deeper supplied root.
 This discrepancy with ADR 0038's proposed root-relative workload depth must
 be reported in the B2 PR, not patched into the frozen target contract.
+
+## Amendment (2026-10-01, B3 #1870 — honest metadata and contained operations)
+
+Landing approval approves **slot 79 `sys_fs_metadata`**, the only new slot
+in B3. There are now 80 registered rows. Slots 0–78 and B2's rows remain
+unchanged. This is a native bounded operation family, not POSIX `stat/openat`.
+
+Path operations use `(op, root_ptr, root_len, relative_ptr, relative_len,
+out_ptr)` in x0–x5. Root is an explicit `/host` or `/host/...` directory;
+relative is normalized, may be empty, and never contains NUL, empty, dot or
+dot-dot components. No prefix/path normalization can erase an escape.
+The full joined guest path is ≤512 bytes, each name ≤255 bytes, and the
+relative path has ≤8 components below the supplied root. The supplied root
+itself also has ≤8 share-relative components. Over-limit paths return
+`ENAMETOOLONG`; depth/entry/resource exhaustion returns `ENOSPC`.
+
+| op | Operation | Output/result |
+|----|-----------|---------------|
+| 0 | Fresh no-follow metadata | 96-byte record at x5, result 0 |
+| 1 | Fresh no-follow filesystem identity | 16-byte identity at x5, result 0 |
+| 2 | Contained existing-file read-open | native fd 0–7, x5 must be 0 |
+| 3 | Contained existing-file write-open | native fd 0–7, x5 must be 0 |
+| 4 | Contained rich directory snapshot | positive process-owned token, x5 must be 0 |
+| 5 | Indexed rich page | `(5, token, offset, limit, out_ptr, 0)`, row count |
+| 6 | Close directory snapshot | `(6, token, 0, 0, 0, 0)`, result 0 |
+
+The little-endian metadata record is `version:u32=1, kind:u32,
+filesystem:u64, inode:u64, size:u64`, followed by atime/mtime/ctime,
+each `seconds:i64, nanoseconds:u32, reserved:u32=0`, then
+`host_mode:u32, host_uid:u32, host_gid:u32, reserved:u32=0`.
+Kinds are 0 file, 1 directory, 2 symlink, 3 character device, 4 block device,
+5 FIFO, 6 socket. The identity-only record is `filesystem:u64, inode:u64`.
+Neither identity word may be zero. Inodes come from FUSE attributes, not a
+path hash, a directory flag or FUSE's transport node ID. The filesystem word
+is a mount-generation discriminator valid for this guest boot's filesystem
+lifetime; it changes on reinitialization. It is not a cross-boot identity.
+Host ownership/mode is factual metadata, **not** the guest principal policy.
+
+Rich pages use B2's 16-byte header and 1–16 rows. Each **360-byte** row is
+`name:[256]u8, name_len:u16, reserved:[6]u8, metadata:<96-byte record>`.
+All reserved bytes/name padding are zero. Size is the actual u64 attribute,
+including for directories, and timestamps are never defaulted or fabricated.
+A failed capture publishes no token; malformed/missing attributes, stale
+identity or changed directory mtime/ctime are errors, never partial EOF.
+Indexed pages and contained file reads can retry `EFAULT` without consuming
+data. A snapshot's metadata is immutable; a new op-0 query is fresh for
+watch-stamp comparisons. This does not activate B6/watch or a watcher.
+
+VirtioFS performs uncached component LOOKUPs, holds their FUSE references,
+GETATTRs the pinned node and opens that same node. FORGET releases lookup
+references beyond one mount-lifetime identity pin per object; OPEN handles
+retain the actual object across pathname replacement. The VZ server was
+observed to change attribute inode IDs after the last reference was released.
+The bounded ledger retains real references for at most 512 objects, using two
+pool pages, and refuses a new object at capacity (`ENOSPC`). It does not
+cache paths or metadata, invent IDs, or evict pins and silently destabilize
+previous identities. Reinitialization ends this lifetime and frees the ledger.
+READ/WRITE/TRUNCATE/FSYNC/CLOSE use that handle and never fall back to a path
+or another backend. Opens do not create, truncate or append. Root,
+intermediate, leaf, dangling and enumerated symlinks are refused (`EACCES`),
+never followed. Changed identity is `EBADF`; missing is `ENOENT`, denied is
+`EACCES`, unsupported metadata/containment is `ENOSYS`, malformed facts or
+transport I/O is `EINVAL`. Output buffers are untouched on backend refusal.
+The custom file-channel backend and USB explicitly refuse this family:
+their existing calls still work, but supply no B3 containment primitive.
+B2's legacy name snapshot is explicitly **not containment**.
+
+Guest ownership/secret checks apply to every ancestor and target before
+lookup/open, and again at each file read/write/truncate/sync or directory
+page, including the page's child rows. Close is allowed after revocation.
+Cross-process/stale directory tokens refuse; no snapshot is an ACL grant.
+All resources share the existing eight-native-resource/process ceiling.
+Eight globally shared B2/B3 cursor slots are unchanged; a B3 rich snapshot
+uses 23 temporary pool pages (92 KiB), at most 736 KiB globally, released
+on close, death or any capture failure. It adds no permanent large BSS bank.
+The native handle table is 19 temporary pool pages; the mount identity ledger
+is the only two-page persistent reservation made by B3 queries.
+SDK resource, total visited-entry, artifact and arena accounting remain
+the C-card owners' responsibility; no SDK or ADR 0038 changes land here.
