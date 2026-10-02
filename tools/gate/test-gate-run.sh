@@ -478,6 +478,96 @@ else
     bad "ensure-guest-elf check must run before zig build (check=$check_line zig=$zig_line)"
 fi
 
+# Exercise the shipped k4o hook, not a copy of its cleanup assertions.
+echo
+echo "── live-k4o cleanup evidence (no VM) ──"
+if run python3 - "$TMP" <<'PY'
+import json, os, pathlib, sys
+from unittest.mock import patch
+
+root = pathlib.Path(sys.argv[1]) / "k4o"
+(root / "expected").mkdir(parents=True)
+cases = [{"id": f"case-{i}", "binary": "K4OTEST.BIN" if i % 7 == 0 else "K4O.BIN",
+          "status": 70 if i % 5 == 0 else 0} for i in range(212)]
+(root / "expected/cases.json").write_text(json.dumps(cases))
+hook = pathlib.Path("tools/gate/specs/live-k4o.spec").read_text().split(
+    "vgate_file check.py <<'PY'\n", 1)[1].split("\nPY\n", 1)[0]
+page = "pages: armed=1 total=0x1000 free=0x0800\n"
+pool = "tasks: enabled=1 current=0 switches=1 pool=3/16 zombies=0\n"
+reap = "tasks user-exec reaped\n"
+exit_ok = "procs K4OGATE.BIN exited status=0\n"
+calls = "72 sys_getrandom calls=0\n73 sys_thread calls=0\n74 sys_futex calls=0\n"
+
+def process(name, status, pid):
+    return f"procs: id={pid} name={name} uid=1000 caps=0 state=exited task=reaped stack=0x1000 exit={status}\n"
+
+def transcript(batch, late):
+    selected = cases[batch * 12:(batch + 1) * 12]
+    work = "".join("k4o-gate: case " + c["id"] + "\n" for c in selected)
+    work += "k4o-gate: ArgumentLimit native length/count\n"
+    work += f"k4o-gate: done cases={len(selected)}\n"
+    reports = exit_ok + reap * (len(selected) + 1)
+    snapshot = pool.replace("switches=1", "switches=99") + page
+    snapshot += process("K4OGATE.BIN", 0, 1)
+    snapshot += "".join(process(c["binary"], c["status"], i + 2) for i, c in enumerate(selected))
+    snapshot += calls
+    return pool + page + work + (snapshot + reports if late else reports + snapshot)
+
+count = 0
+def expect(label, serial, batch=0, succeeds=False):
+    global count
+    path = root / "serial.log"
+    path.write_text(serial)
+    env = dict(RUN_DIR=str(root), VG_SER=str(path), VG_TAG=f"b{batch}", VG_SHARE=str(root / "share"))
+    with patch.dict(os.environ, env), patch("subprocess.run") as compare:
+        try:
+            exec(compile(hook, "live-k4o.spec:check.py", "exec"), {})
+            passed = True
+        except AssertionError:
+            passed = False
+        assert passed == succeeds, label
+        assert compare.call_count == int(passed), label + ": byte comparison must follow successful assertions"
+        if passed:
+            args, = compare.call_args.args
+            assert args[:4] == ["python3", "tools/zig/k4o/check.py", "compare", "--share"]
+            assert compare.call_args.kwargs == {"check": True}
+    count += 1
+
+for batch in (0, 17):
+    for late in (False, True):
+        expect(f"complete batch {batch}, late={late}", transcript(batch, late), batch, True)
+serial = transcript(0, True)
+expect("dropped deferred reports", serial.replace(reap, "").replace(exit_ok, ""), succeeds=True)
+expect("unreaped task slot", serial.replace("switches=99 pool=3", "switches=99 pool=4"))
+expect("zombie awaiting reap", serial.replace("switches=99 pool=3/16 zombies=0", "switches=99 pool=4/16 zombies=1"))
+expect("nonzero baseline zombies", serial.replace("zombies=0", "zombies=1"))
+expect("missing task snapshot", serial.replace(pool, "", 1))
+expect("missing launcher", serial.replace(process("K4OGATE.BIN", 0, 1), ""))
+expect("failed launcher", serial.replace(process("K4OGATE.BIN", 0, 1), process("K4OGATE.BIN", 70, 1)))
+child = process(cases[0]["binary"], cases[0]["status"], 2)
+expect("missing child exit", serial.replace(child, ""))
+expect("duplicate child exit", serial + child)
+expect("wrong child status", serial.replace(child, process(cases[0]["binary"], 0, 2)))
+expect("wrong child binary", serial.replace(child, process("K4O.BIN", cases[0]["status"], 2)))
+expect("running child", serial.replace(child, child.replace("state=exited", "state=running")))
+expect("page leak", serial.replace(page, page.replace("0x0800", "0x07ff"), 1))
+expect("changed total", serial.replace(page, page.replace("0x1000", "0x1001"), 1))
+expect("missing snapshot", serial.replace(page, "", 1))
+expect("snapshot before workload", page * 2 + serial.replace(page, ""))
+expect("task snapshot before workload", serial.replace(pool, pool * 2, 1).replace(
+    pool.replace("switches=1", "switches=99"), ""))
+expect("missing case", serial.replace("k4o-gate: case case-0\n", ""))
+expect("child failure", serial + "k4o-gate: FAIL\n")
+expect("native exception", serial + "[EXC]\n")
+expect("forbidden call", serial.replace("72 sys_getrandom calls=0", "72 sys_getrandom calls=1"))
+print(f"live-k4o: {count} cleanup/order/exit/resource regression cases passed")
+PY
+then
+    ok "$CASE_OUT"
+else
+    bad "live-k4o cleanup regression: $CASE_OUT"
+fi
+
 # --- the real probe: it must build, and carry the right entitlement --------
 echo
 echo "── the shipped probe (no stubs) ──"

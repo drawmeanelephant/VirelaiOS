@@ -1,7 +1,7 @@
 # live-k4o — pinned CLI, not a library-only or host-only proof.
 # B1 gives each child separate stdout/stderr; host engine oracles format bytes.
 # Twelve children/boot bound the harness after an uncharacterised late refusal.
-# exec-order: assert-proven -- done follows all waits; delayed pages follow reap.
+# exec-order: assert-proven -- done follows all waits; task/page snapshots prove cleanup.
 vgate_name live-k4o "k4o CLI host goldens, explicit refusals and resource budgets"
 vgate_share arm
 vgate_runner_flags -Xswiftc -DSPIKE
@@ -13,9 +13,10 @@ rd = pathlib.Path(os.environ["RUN_DIR"])
 subprocess.run(["python3", "tools/zig/k4o/check.py", "stage", "--share", str(rd / "share"),
                 "--expected", str(rd / "expected")], check=True)
 for batch in range(18):
-    (rd / f"start-{batch}.txt").write_text(f"pages\nexec K4OGATE.BIN {batch}\n")
+    (rd / f"start-{batch}.txt").write_text(f"tasks\npages\nexec K4OGATE.BIN {batch}\n")
 PY
 vgate_file after.txt <<'EOF'
+tasks
 pages
 procs
 syscalls
@@ -36,7 +37,14 @@ for call in ("72 sys_getrandom", "73 sys_thread", "74 sys_futex"):
     assert call + " calls=0" in serial
 pages = re.findall(r"^pages: armed=1 total=(0x[0-9a-f]+) free=(0x[0-9a-f]+)", serial, re.M)
 assert len(pages) == 2 and pages[0] == pages[1], pages
-assert serial.rfind("tasks user-exec reaped") < serial.rfind("pages: armed=1")
+# Reap reports are deferred and their bounded FIFO can drop old entries.
+# Check native pool/page recovery instead; procs' task=reaped alone means exited.
+pools = re.findall(r"^tasks: enabled=1 current=\d+ switches=\d+ pool=(\d+)/(\d+) zombies=(\d+)$", serial, re.M)
+assert len(pools) == 2 and pools[0] == pools[1] and pools[0][2] == "0", pools
+assert serial.index(f"k4o-gate: done cases={len(cases)}\n") < serial.rfind("tasks: enabled=1") < serial.rfind("pages: armed=1")
+processes = re.findall(r"^procs: id=\d+ name=(K4O(?:GATE|TEST)?\.BIN) uid=\d+ caps=\d+ state=(\w+) task=\S+ stack=0x[0-9a-f]+ exit=(\S+)$", serial, re.M)
+assert processes == [("K4OGATE.BIN", "exited", "0")] + [
+    (c["binary"], "exited", str(c["status"])) for c in cases], processes
 subprocess.run(["python3", "tools/zig/k4o/check.py", "compare", "--share", os.environ["VG_SHARE"],
                 "--expected", str(rd / "expected"), "--evidence", "artifacts/live-k4o-bytes",
                 "--batch", str(batch)], check=True)
