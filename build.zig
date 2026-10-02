@@ -1939,6 +1939,9 @@ pub fn build(b: *std.Build) void {
     // Host: Unified Unit Tests (M41 TS1, issue #952)
     // ------------------------------------------------------------------
     const test_step = b.step("test", "Run host-side unit tests in parallel (M41 TS1)");
+    const elf2bin_checks = b.addSystemCommand(&.{ "python3", "tools/tests/test_elf2bin.py" });
+    elf2bin_checks.has_side_effects = true;
+    test_step.dependOn(&elf2bin_checks.step);
     const zig_guest_checks = b.addSystemCommand(&.{ "python3", "tools/tests/test_zig_guest.py" });
     test_step.dependOn(&zig_guest_checks.step);
     const zig_guest_step = b.step("zig-guest-check", "Rebuild the pinned SDK twice; check ELF, startup, allocator and native std boundary (fetch archive first)");
