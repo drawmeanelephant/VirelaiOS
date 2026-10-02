@@ -33,6 +33,9 @@ core
 # --- Freebuff local state ---
 .freebuff/
 
+# --- Local environment (never commit) ---
+.env
+
 # --- Editors & OS noise ---
 .DS_Store
 .vscode/
