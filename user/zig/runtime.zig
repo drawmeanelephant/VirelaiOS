@@ -5,8 +5,10 @@ pub const native = @import("native.zig");
 pub const console = @import("console.zig");
 pub const platform = @import("platform.zig");
 pub const io_helpers = @import("io.zig");
+pub const fs = @import("fs.zig");
 const Backend = io_helpers.Backend(struct {
     pub const call = native.call;
+    pub const filesystem_b2 = true;
     pub fn instance() *anyopaque {
         return io_state orelse fail("IoNotInitialized", 70);
     }
@@ -101,6 +103,11 @@ pub fn currentArena() memory.Arena {
     return arena.?;
 }
 
+/// Files and rich cursors use the SAME eight-resource accounting as std.Io.
+pub fn filesystem() *Backend {
+    return io_state orelse fail("IoNotInitialized", 70);
+}
+
 pub fn receive(argc: usize, ptr: usize, sp: usize) startup.Error!startup.Startup {
     initial_sp = sp;
     if (ptr < 4096 or ptr > 0x10000000 - startup.block_bytes)
@@ -151,4 +158,5 @@ test {
     _ = memory;
     _ = console;
     _ = io_helpers;
+    _ = @import("fs_test.zig");
 }
