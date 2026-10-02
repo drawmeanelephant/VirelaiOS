@@ -1,143 +1,91 @@
-# oliver-spike — a real Zig HTML tool as a native app on VirelaiOS
+# Oliver native proof and bounded CLI
 
-`oliver` (a Markdown → HTML tool, <https://github.com/drawmeanelephant/oliver>)
-running on VirelaiOS as **two images from one source**: a native AArch64 ELF
-(`exec OLIVER.ELF`) and a DSK1 flat image (`exec OLIVER.BIN`) that carries real
-arguments. Proof: `tools/gate/specs/live-oliver.spec` (class-B, live VZ, 7/7).
-Two further images are *derived inside the gate* (never committed) to prove the
-argv bound bites: see "The bound is a boundary" below.
+C1 (#1875) refreshes, rather than replaces, the #1177/#1188 history.
+The frozen ADR 0038 pin is
+`3615e6253f0e17b410cf1b987507d30bfcde537c`, recorded with every original
+source hash and adapter edit in `tools/zig/oliver.lock.json`.
+`md-fixture.txt` and the 754-byte `expect.html` remain unchanged: the
+independent pinned host CLI must freshly reproduce those exact bytes.
 
-| file | what it is | size | sha256 |
-|---|---|---|---|
-| `OLIVER.ELF` | the pinned native image (1 PT_LOAD R+X @0x0040_0000) | 253,576 B | `4d79d76ad725e2017cef49eaab4c006027a2e3c93897a8103636d44cd264ccb5` |
-| `OLIVER.BIN` | the DSK1 flat image (`elf2bin.py`), the argv carrier | 249,220 B | `83b6549c853f5cf1e32ceb10ea966190bc3c2fac8ebe5915806d8ee0f4084743` |
-| `oliver-native.zig` | the slice source: `_start(argc, argv)` + oliver's real `parse`/`html.render` | — | — |
-| `md-fixture.txt` | the input document staged as `/host/MD.TXT` | 415 B | `acbdb682ac243f4a9d2adf6111f1cd64ca99e7c86e7631755d01637c8a8011f7` |
-| `expect.html` | the reference tool's own output for that fixture | 754 B | `540f240054ad929c7311f29d83e0432b01551300ab97f01cf2aaac82f76a390e` |
-| `sizeprobe-*.zig` | library-floor size probes (see the gap report) | — | — |
+## Build and verification
 
-## Arguments
-
-`OLIVER.BIN <in> <out>` — each argument falls back to its default (`MD.TXT`,
-`OLIVER.HTML`) when absent, so the no-argument invocation is the documented
-default path. A name starting with `/` is a full guest path; a bare name gets
-the `/host/` prefix. The app prints what it received before touching any file:
-
-```
-oliver: argc=2 in=MD.TXT out=OUT2.HTML
-oliver: wrote 754 bytes
+```sh
+python3 tools/zig/oliver.py fetch       # explicit network step, including A2 compiler
+python3 tools/zig/oliver.py build       # offline; .build/oliver-build/OLIVER.BIN
+python3 tools/zig/oliver.py test
+python3 tools/zig/oliver_test.py
+bash tools/gate/vgate.sh tools/gate/specs/live-oliver.spec
 ```
 
-That line is the difference between argv reaching the app and argv being
-silently dropped, so the gate asserts it rather than only the output file. The
-exit status is the number of HTML bytes written (the `wc`/filerocks discipline).
+`--cache PATH` selects a private SDK cache; `ZIG_GUEST_CACHE=PATH` selects
+it for the live gate. Do not place that cache in a Finder-watched directory:
+unexpected `.DS_Store` files correctly trigger A2's materializer drift check.
+Builds never fetch. Original source drift or missing inputs fail closed.
+The native artifact is an ELF despite its `.BIN` filename, with RX text,
+a full-page gap, and RW startup state. The SDK checker charges the rounded
+argv/env tail. No libc, Linux ABI, installed-stdlib edits or kernel changes.
+Old tracked images and the eight-32-byte-slot wrapper are retired; the gate
+builds fresh images and keeps evidence only under `artifacts/`.
 
-| exit | meaning | | exit | meaning |
-|---|---|---|---|---|
-| 2 | bad path | | 35 | output write failed |
-| 31 | input open failed | | 36 | mmap (populate) failed |
-| 32 | input read failed | | 37 | mmap (demand) failed |
-| 33 | input larger than the cap | | 38 | write made no progress |
-| 34 | output open failed | | 41/42 | parse / render failed |
+## What is supported
 
-The input buffer holds 128 KiB and the output buffer 64 KiB; a file that
-*exactly* fills a cap is legal (only a file with bytes left over exits 33).
+| Surface | Boundary |
+|---|---|
+| **CLI:** `render --from markdown\|textile\|cooklang` | HTML/XHTML/HTML4-strict, upstream render options and Markdown extensions; input from the real B1 stdin binding, normal bytes on stdout, `--diagnostics json` on stderr |
+| **CLI:** `meta --from markdown\|textile\|cooklang --format json` | Pinned upstream seven-string YAML projection, pure JSON stdout |
+| **Library-only:** `library INPUT OUTPUT` | Historical real `parse` + `html.render` proof; relative `/host` paths or absolute `/host/…`, conservative 64-byte paths / 31-byte components |
+| **Deferred:** `wrap`, `plan`, `manifest`, `serialize`, `scale`, `menu` | `UnsupportedCommand` before input reads or file work; not contemporary CLI coverage |
 
-## Why two shapes
+Arguments include the program name at slot zero, with eight 256-byte slots.
+An owned native launcher must provide B1 redirection using ADR 0007's
+versioned slot-28 stream request. The kernel monitor does not provide stdin
+redirection, and this card does not add shell integration or claim general
+concurrent pipes. `oliver_probe.zig` is a test-only sequential launcher, not
+a new shipped workload.
 
-`kernel/src/exec.zig` packs the argv block only for DSK1/DSK3 images; a raw ELF
-returns `.no_args_room`, so `exec OLIVER.ELF` always arrives with `argc == 0`.
-The DSK1 flat image is the argv carrier today: the loader places the block at
-`align8(content_len)` inside the program's own text page.
+The library proof deliberately does not claim the CLI's link rewriting.
+The host-side `tools/oliver-publish.sh` still emits the historical positional
+commands; updating that host workflow is outside this guest-only card.
+The CLI retains the pinned upstream argument parser, parse options, rewrite
+pass, diagnostics serializer, metadata extractor and renderers. Adapter edits
+only expose pure helpers and exclude C ABI exports from the guest graph.
+The hosted `main` is not imported as a guest entry; ignored hosted flush
+errors and unbounded hosted stdin buffering are not carried over.
 
-That budget is measured, not assumed: content 249,196 B, block at
-249,200 + 256 = 249,456, `page_limit` 249,856 → **400 B of slack** before the
-block would need a 62nd text page. The gate reproduces this arithmetic from the
-image header on the host side and fails if it ever stops fitting. A larger app
-needs the loader work in #1163 (or the DSK3 shape, which reserves a data tail).
+## Resource and refusal policy
 
-### The bound is a boundary, and the gate proves it bites
+- One populated 8 MiB SDK arena charges buffers, allocator metadata, SDK
+  state and parser/render allocations. Reusable frees stay within that arena.
+- Input is at most 131,072 bytes, with a real extra-byte EOF probe.
+  131,073 refuses `InputLimit`. Normal output is at most 524,288 bytes,
+  buffered before any output write; the next byte refuses `OutputLimit`.
+- Diagnostics have a 16 KiB aggregate cap and reserved refusal message.
+  All panic, error and file-helper diagnostics use stderr without fallback.
+  Confirmed short writes loop; zero progress, native failure, sync or close
+  failure exits nonzero. Success is zero, not the output length.
+- Grammar recursion is conservatively bounded at 32: Markdown counts even
+  literal `[` tokens before parsing; YAML frontmatter limits indentation;
+  TOML frontmatter counts structural tokens. The parsed document/recipe is
+  checked iteratively before recursive rendering. Some otherwise-valid
+  within-byte-limit inputs therefore refuse `DepthLimit`.
+- The pinned assembly builder guards every emitted function entry before
+  its frame. Entry SP may descend at most 120 KiB; every compiler frame must
+  fit the reserved 8 KiB. Unknown label formats or oversized frames block
+  the build. A stack-limit refusal writes an allocation-free stderr message
+  and exits before the kernel guard page. This is an enforceable stack
+  bound, not an inference from a small example.
+  The five required memory/u128 compiler helpers are workload-owned and
+  compiled through the same guards; the final link disables automatic
+  compiler-runtime linkage so new support symbols fail closed.
+- At most three stream identities and one explicit file are live at once.
+  Gate-only instrumentation records actual arena/stack high-water and
+  file-resource peak after each successful invocation. `--probe` enables
+  that receipt and the panic/stack refusal probes; normal builds omit them.
 
-Size alone does not decide — *where the content ends inside its last page* does
-(`page_limit = round_up(content_len, 4096)`), so the rule is not monotonic.
-`live-oliver` boots 05–07 exercise it with two fixtures **derived from the
-pinned image** by appending zeros: same code, same entry point, only the
-trailing length differs.
-
-| derived fixture | content | block_off | page_limit | block end | slack | argv |
-|---|---|---|---|---|---|---|
-| `OLIVER-NEAR.BIN` | 249,700 | 249,704 | 249,856 | 249,960 | **−104** | **refused** |
-| `OLIVER-FAR.BIN` | 249,912 | 249,912 | 253,952 | 250,168 | +3,784 | accepted |
-
-`OLIVER-FAR.BIN` is **212 B larger** than the refused fixture and is accepted,
-because it crossed into a fresh page with more slack; the refusal window for
-this image is `content_len ∈ [249,601, 249,856]`. Both derived headers are
-re-validated inside the gate (`argv-boundary.txt`), so the case cannot quietly
-stop proving what it claims.
-
-The refused case fails **closed**: boot 05 asserts that
-`error: image leaves no room for the argv block (256 bytes)` is the *only* error
-line, that `exec: loaded` never appears (the app never starts, so there is no
-truncated argv and no partial run), that no `oliver: argc=` line exists, and
-that `OUT5.HTML` was never created. Boot 06 then runs the same argument against
-the accepted fixture (byte-exact HTML), and boot 07 runs the refused fixture
-with **no** arguments — it loads and writes byte-exact HTML — which is what
-makes boot 05 a statement about argv rather than about a padded image.
-
-## Rebuilding
-
-The reference project is never modified in place. Vendor a copy of its `src/`
-as untracked build input (`tests/oliver-spike/.gitignore` ignores `vendor/`),
-then run the repo's host link recipe:
-
-```bash
-git -C /path/to/oliver rev-parse HEAD   # 3f05bacb188ab28ad797430c82d9ee20080c5ed6
-mkdir -p tests/oliver-spike/vendor/oliver
-cp -R /path/to/oliver/src tests/oliver-spike/vendor/oliver/src
-
-zig build-exe -target aarch64-freestanding -O ReleaseSmall -fstrip \
-    -fno-PIE -fno-entry -z max-page-size=4096 -T tools/zc-host-link.ld \
-    --dep zc --dep oliver \
-    -Mroot=tests/oliver-spike/oliver-native.zig \
-    -Mzc=user/src/lib/zc.zig \
-    -Moliver=tests/oliver-spike/vendor/oliver/src/oliver.zig \
-    -femit-bin=tests/oliver-spike/OLIVER.ELF
-
-python3 tools/check-zc-host-contract.py tests/oliver-spike/OLIVER.ELF   # CONTRACT OK
-```
-
-Then convert the SAME image to the flat argv-carrying form (a DSK1 image is
-mapped read-only, so it must have no writable segment — oliver has none, and
-`elf2bin.py` refuses otherwise):
-
-```bash
-python3 tools/elf2bin.py tests/oliver-spike/OLIVER.ELF tests/oliver-spike/OLIVER.BIN
-python3 tools/elf2bin.py --info tests/oliver-spike/OLIVER.BIN
-# elf2bin: ... entry_offset=0x2b38 image_size=249220 (content 249196 bytes from 1 PT_LOAD segment)
-shasum -a 256 tests/oliver-spike/OLIVER.BIN   # keep this pin in step with the spec
-```
-
-Regenerating `expect.html` (the host-side ground truth):
-
-```bash
-zig build --build-file /path/to/oliver/build.zig   # or build in a copy of the project
-/path/to/oliver/bin/oliver render --from markdown < tests/oliver-spike/md-fixture.txt
-```
-
-Neither path emits a timestamp or version stamp, so the compare is byte-exact
-rather than normalized (recorded in the spec's setup hook).
-
-## Known limits (measured — see `artifacts/oliver-spike/gap-report.md`)
-
-* Raw-ELF `exec` still delivers **no argv** (`.no_args_room`), so argument-driven
-  CLI use of `OLIVER.ELF` waits on the loader work in #1163. Until then ship the
-  DSK1 image when arguments matter.
-* The flat image's argv headroom is **400 B** of text growth (above); the size
-  cap itself is not the binding constraint — 249,196 B is 47.6% of the real
-  512 KiB (`exec_program_max` / `elf.load_max`).
-* The image uses **no static writable buffers** (every buffer is anonymous
-  `sys_mmap`): that keeps it a single R+X PT_LOAD and avoids the
-  `data == text_base + p_memsz[0]` alignment trap the size probes hit.
-* `exec` spawns a task and returns immediately, so a script cannot issue two
-  invocations back to back and expect them ordered — the gate gives each one its
-  own boot and ends it on `procs <name> exited status=754`.
+The existing `live-oliver` spec compares both streams independently to the
+fresh pinned host CLI, checks semantic/resource refusals publish no normal
+bytes, preserves a prior library destination on path refusal, and checks
+post-reap page recovery. Its separate flat fixtures prove exactly 2,048 bytes
+of argv slack, one alignment step too little, next-page acceptance and the
+same refused image without arguments. They are **loader probes**, not
+Oliver CLI or library coverage.

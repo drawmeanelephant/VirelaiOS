@@ -1,7 +1,3 @@
 vendor/
 
-# The shipped DSK1 image IS the fixture live-oliver.spec stages and pins, so it
-# is tracked deliberately (the root .gitignore ignores *.bin broadly; other
-# pinned fixtures are force-added instead). Rebuild it with the recipe in
-# README.md and keep the spec's digest in step.
-!OLIVER.BIN
+__pycache__/

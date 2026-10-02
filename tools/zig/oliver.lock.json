@@ -1,0 +1,67 @@
+{
+  "repository": "https://github.com/drawmeanelephant/oliver.git",
+  "revision": "3615e6253f0e17b410cf1b987507d30bfcde537c",
+  "sources": {
+    "src/c_abi.zig": "5d66b168373290db51fa60db1b8cfb15d45169dc843b7979d1bfe801fc7aa484",
+    "src/cooklang.zig": "0c9479688156f24490b6f77c4ecdf35fbcc14afa9b9aede7ce720e88288033ef",
+    "src/cooklang_html.zig": "3fb8c13927da23d8a47df2c70ee9a8b12c602c80fa0eaf5467de909d5e9c3b31",
+    "src/cooklang_menu.zig": "4ffc5ccc91eff227bd9226c91e53a10768cc730db9d295a5a489125f90f4da36",
+    "src/cooklang_scale.zig": "e6afa78b2daf231817d4458ff9ac13df664a9c202d2cf5909ba8578c9f74548b",
+    "src/cooklang_serialize.zig": "5b5c69e9e8d76ec3be64150bd67f2a3e44058d66cd845fc836336e48c8a098a9",
+    "src/diagnostic.zig": "93e713af75a7ed5438bc94a176df896dd2c82ef1a23b6540047b36cdeb8ad8f2",
+    "src/document.zig": "51f90b01606d7690bcfc8e8a0275d25d605ac060de6da1782915bd557abe3219",
+    "src/entities.zig": "2131114436c7aa07483b53ef84dc0d67ab784c8196542936ac566e38a0a94195",
+    "src/frontmatter.zig": "dc49977c4c7efb56d0f634c48366a02419a0dc516f71cb5e62b1de6bc2c57e23",
+    "src/html.zig": "c9bbd8e7d697d6d770429e82e26731b44074b3f271b9081645d6369b096a95e7",
+    "src/main.zig": "2b4dc4e9f119619032bc050059d31a11be017586242939be4a519690af1afdd5",
+    "src/manifest.zig": "d6cce659822b930b979e446a6602d518d027804e45dabb25d26265e99e9a7563",
+    "src/markdown.zig": "6cbfc41abffae460f31ba32bc388c808403917fe3ac04d241214c66b8271aff4",
+    "src/meta.zig": "ee82caacb10508f8c38e3506808b96e0784ed6fd8fb42c7b6631e5a3de0016e2",
+    "src/oliver.zig": "8c28822bd512f95086388d1d9fb0c918ae65773d124a9a1ae194cec9678dd475",
+    "src/plan.zig": "0cd27110421f61487d87869282aa914fce34f8714e106f9d09e87168018394b7",
+    "src/rewrite.zig": "f8267e03c8969f08a300935b4722fd1749cf19696e1ce7ad9b0a09e1fe73fce9",
+    "src/source.zig": "2505d95efd77654374ba4b90554e2376fa755640a8d1a09daab557c9809c3e3d",
+    "src/textile.zig": "361048c80c37bf6c0280b46c267708e3bc92c1f16b10b31de4ecc2a2eafdfd95",
+    "src/typography.zig": "48308112e7cac208fda282e5d1a365445567c777d096c6f9dc2072a72214c9ee",
+    "src/unicode.zig": "c31b7941d6de128feee2d762b37e96e5de8533e36eb32ca2e8b4e551d982f840",
+    "src/wrap.zig": "a14a4903bd0c4fd21d4efceddc939abaeeea149efafa14f020ca0ce7c3353534"
+  },
+  "edits": {
+    "src/oliver.zig": [
+      {
+        "before": "pub const c_abi = @import(\"c_abi.zig\");",
+        "after": "pub const c_abi = struct {}; // C1 excludes C embedding from the guest build graph."
+      },
+      {
+        "before": "    _ = c_abi;",
+        "after": "    // No C ABI exports in the native workload."
+      }
+    ],
+    "src/main.zig": [
+      {
+        "before": "fn markdownParseOptions(",
+        "after": "pub fn markdownParseOptions("
+      },
+      {
+        "before": "fn cooklangParseOptions(",
+        "after": "pub fn cooklangParseOptions("
+      },
+      {
+        "before": "fn renderOptionsFor(",
+        "after": "pub fn renderOptionsFor("
+      },
+      {
+        "before": "fn diagnosticsJson(",
+        "after": "pub fn diagnosticsJson("
+      },
+      {
+        "before": "const meta = @import(\"meta.zig\");",
+        "after": "pub const meta = @import(\"meta.zig\");"
+      },
+      {
+        "before": "const rewrite = @import(\"rewrite.zig\");",
+        "after": "pub const rewrite = @import(\"rewrite.zig\");"
+      }
+    ]
+  }
+}
