@@ -47,6 +47,7 @@ fn panicImpl(message: []const u8, _: ?usize) noreturn {
     sdk.native.exit(71);
 }
 comptime {
+    _ = @import("boris/memory.zig");
     @export(&start, .{ .name = "_start" });
     @export(&enter, .{ .name = "boris_guest_start" });
     @export(&stackRefused, .{ .name = "boris_stack_refused" });
@@ -85,7 +86,7 @@ fn stackRefused() callconv(.naked) noreturn {
 fn enter(argc: usize, argv: usize, sp: usize) callconv(.c) noreturn {
     const args = sdk.receive(argc, argv, sp) catch |err| fail(@errorName(err), 64);
     const command = policy.parse(args.args[1..args.argc]) catch |err| fail(@errorName(err), 64);
-    if (command == .build) fail("FilesystemIdentityUnavailable:B3NotIntegrated", 70);
+    if (command == .build) fail("SharedSdkFilesystemBridgeUnavailable", 70);
     sdk.initialize(policy.arena_bytes) catch |err| fail(@errorName(err), 70);
     backend = os.heap.page_allocator.create(Backend) catch fail("OutOfMemory", 70);
     backend.?.* = .{};
@@ -98,7 +99,7 @@ fn enter(argc: usize, argv: usize, sp: usize) callconv(.c) noreturn {
 }
 fn run(command: policy.Command) !void {
     switch (command) {
-        .help => try sdk.print("boris-guest: compiler closure probe only; probe | version | help\nbuild refuses until B3 native identity/containment integration exists.\nwatch/preview/online/auth/editor/capture/parallel are unsupported.\n"),
+        .help => try sdk.print("boris-guest: compiler closure probe only; probe | version | help\nbuild awaits the shared SDK filesystem bridge (B3 kernel ABI is landed).\nwatch/preview/online/auth/editor/capture/parallel are unsupported.\n"),
         .version => try sdk.print("boris-guest 08969742f85238443ce5cd1cd53ceab1b1f3f85a (closure probe, not native publication)\n"),
         .build => unreachable,
         .probe => {

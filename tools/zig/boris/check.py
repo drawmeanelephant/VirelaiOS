@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Class-A compiler evidence only. Never boot the over-stack-budget candidate."""
+"""Class-A compiler semantics, no-libc closure and universal stack bounds."""
 import argparse
 import json
 from pathlib import Path
@@ -47,6 +47,9 @@ def check(work):
     if first != second:
         raise ValueError("host compiler is not byte-stable")
     records = unpack(first)
+    patched = build.build("patched-host", work / "patched-host")
+    if subprocess.check_output([str(patched)]) != first:
+        raise ValueError("workspace changes altered pinned compiler artifact bytes")
     if golden(records) != json.loads((build.HERE / "golden.json").read_text()):
         raise ValueError("pinned compiler golden mismatch")
     if records["index.html"][1] != (build.HERE / "golden/index.html").read_bytes():
@@ -56,20 +59,25 @@ def check(work):
     long_names = [p for p in records if p.startswith("guides/nested/") and p.endswith(".html")]
     if len(long_names) != 18 or len({p.split("/")[-1][:31] for p in long_names}) != 1:
         raise ValueError("long-name corpus lost its >16 colliding-prefix entries")
-    build.build("test", work / "tests")
-    candidates = [build.build("audit", work / f"candidate-{n}") for n in range(2)]
+    build.build("patched-test", work / "tests")
+    candidates = [build.build("guest", work / f"release-{n}") for n in range(2)]
     if candidates[0].read_bytes() != candidates[1].read_bytes():
         raise ValueError("offline compiler candidates are not byte-identical")
-    receipt = json.loads((work / "candidate-0/closure.json").read_text())
-    if not receipt["no_libc"] or receipt["release_ready"] or receipt["maximum_frame_bytes"] <= 131072:
-        raise ValueError("expected blockers must not be reported as release success")
-    result = subprocess.run([sys.executable, str(build.HERE / "build.py"), "guest",
-                             "--work", str(work / "refused-release")], capture_output=True, text=True)
-    (work / "release-refusal.log").write_text(result.stdout + result.stderr)
-    if result.returncode == 0 or "StackBudget" not in result.stderr or (work / "refused-release/BORIS.BIN").exists():
-        raise ValueError("unsafe release was not refused")
+    receipt = json.loads(candidates[0].with_suffix(".BIN.json").read_text())
+    if not receipt["no_libc"] or receipt["release_ready"] or not receipt["stack_budget_verified"]:
+        raise ValueError("compiler probe must prove stack safety, not native acceptance")
+    bounds = receipt["stack_proof"]
+    if not (bounds["maximum_frame_bytes"] <= bounds["guarded_stack_bytes"] < bounds["stack_budget_bytes"] == 131072):
+        raise ValueError("invalid universal stack bound")
+    (work / "result.json").write_text(json.dumps({
+        "golden_artifacts": len(records), "long_names": len(long_names),
+        "compiler_artifact_sha256": receipt["artifact_sha256"],
+        "stack_proof": bounds, "native_acceptance": False,
+        "blockers": receipt["blockers"],
+    }, indent=2, sort_keys=True) + "\n")
     print(f"Compiler-only: {len(records)} golden artifacts byte-stable, {len(long_names)} long nested names; "
-          f"two identical no-libc candidates; release correctly blocked")
+          f"patched/untouched oracle bytes equal; two identical guarded no-libc probes; "
+          f"worst-case stack <= {bounds['guarded_stack_bytes']} B; native acceptance still pending")
 
 
 def main():

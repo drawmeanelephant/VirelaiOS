@@ -1,0 +1,201 @@
+{
+  "src/artifact_inventory.zig": {
+    "stable_sorts": {
+      "std.mem.sort(": 2
+    }
+  },
+  "src/atproto_session_store.zig": {
+    "stable_sorts": {
+      "std.mem.sort(": 2
+    }
+  },
+  "src/cache.zig": {
+    "stable_sorts": {
+      "std.mem.sort(": 1
+    }
+  },
+  "src/compile.zig": {
+    "stable_sorts": {
+      "std.mem.sort(": 1
+    }
+  },
+  "src/compile_heading.zig": {
+    "stable_sorts": {
+      "std.mem.sort(": 1
+    }
+  },
+  "src/content_asset.zig": {
+    "stable_sorts": {
+      "std.mem.sort(": 1
+    }
+  },
+  "src/diag.zig": {
+    "stable_sorts": {
+      "std.mem.sort(": 1
+    }
+  },
+  "src/doctor.zig": {
+    "stable_sorts": {
+      "std.mem.sort(": 6
+    }
+  },
+  "src/emitter_hostile_test.zig": {
+    "stable_sorts": {
+      "std.mem.sort(": 1
+    }
+  },
+  "src/graph.zig": {
+    "stable_sorts": {
+      "std.mem.sort(": 3
+    }
+  },
+  "src/graph_render.zig": {
+    "stable_sorts": {
+      "std.mem.sort(": 2
+    }
+  },
+  "src/hardening_test.zig": {
+    "stable_sorts": {
+      "std.mem.sort(": 3
+    }
+  },
+  "src/html_body.zig": {
+    "stable_sorts": {
+      "std.mem.sort(": 1
+    }
+  },
+  "src/html_relations.zig": {
+    "stable_sorts": {
+      "std.mem.sort(": 2
+    }
+  },
+  "src/incremental_scale_smoke_test.zig": {
+    "stable_sorts": {
+      "std.mem.sort(": 2
+    }
+  },
+  "src/intelligence.zig": {
+    "stable_sorts": {
+      "std.mem.sort(": 2
+    }
+  },
+  "src/ir_emit.zig": {
+    "stable_sorts": {
+      "std.mem.sort(": 2,
+      "std.sort.block(": 1
+    }
+  },
+  "src/job_runner.zig": {
+    "stable_sorts": {
+      "std.mem.sort(": 2
+    }
+  },
+  "src/layout_select.zig": {
+    "stable_sorts": {
+      "std.mem.sort(": 1
+    }
+  },
+  "src/layout_select_hostile_test.zig": {
+    "stable_sorts": {
+      "std.mem.sort(": 2
+    }
+  },
+  "src/main.zig": {
+    "stable_sorts": {
+      "std.mem.sort(": 1
+    }
+  },
+  "src/nostr.zig": {
+    "stable_sorts": {
+      "std.mem.sort(": 1
+    }
+  },
+  "src/package.zig": {
+    "stable_sorts": {
+      "std.mem.sort(": 1
+    }
+  },
+  "src/page.zig": {
+    "stable_sorts": {
+      "std.mem.sort(": 1
+    }
+  },
+  "src/parser.zig": {
+    "parse_into": true
+  },
+  "src/pipeline.zig": {
+    "stable_sorts": {
+      "std.mem.sort(": 3
+    }
+  },
+  "src/publication_checks.zig": {
+    "stable_sorts": {
+      "std.mem.sort(": 1
+    }
+  },
+  "src/publication_claims.zig": {
+    "stable_sorts": {
+      "std.mem.sort(": 1
+    }
+  },
+  "src/publication_profile.zig": {
+    "stable_sorts": {
+      "std.mem.sort(": 2
+    }
+  },
+  "src/publication_touches.zig": {
+    "stable_sorts": {
+      "std.mem.sort(": 1
+    }
+  },
+  "src/rag.zig": {
+    "stable_sorts": {
+      "std.mem.sort(": 2
+    }
+  },
+  "src/rag_emit.zig": {
+    "stable_sorts": {
+      "std.mem.sort(": 1
+    }
+  },
+  "src/rss.zig": {
+    "stable_sorts": {
+      "std.mem.sort(": 1
+    }
+  },
+  "src/search_index.zig": {
+    "stable_sorts": {
+      "std.mem.sort(": 1
+    }
+  },
+  "src/sitemap.zig": {
+    "stable_sorts": {
+      "std.mem.sort(": 1
+    }
+  },
+  "src/static_files.zig": {
+    "stable_sorts": {
+      "std.mem.sort(": 1
+    }
+  },
+  "src/target.zig": {
+    "stable_sorts": {
+      "std.mem.sort(": 2
+    }
+  },
+  "src/theme.zig": {
+    "stable_sorts": {
+      "std.mem.sort(": 2
+    }
+  },
+  "src/watch.zig": {
+    "stable_sorts": {
+      "std.mem.sort(": 1
+    }
+  },
+  "src/wikilink.zig": {
+    "stable_sorts": {
+      "std.mem.sort(": 1
+    }
+  }
+}

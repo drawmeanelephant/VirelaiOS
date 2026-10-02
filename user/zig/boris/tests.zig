@@ -4,6 +4,10 @@ const core = @import("core.zig");
 const fixture = @import("fixture.zig");
 const boris = @import("boris");
 const t = std.testing;
+comptime {
+    _ = @import("workspace.zig");
+    _ = @import("memory.zig");
+}
 
 test "compiler corpus retains Oliver, nested identities, includes, assets and offline evidence" {
     var result = try core.compile(t.io, t.allocator, &fixture.files);
@@ -93,4 +97,35 @@ test "aggregate output exact and over boundaries" {
     const Record = struct { path: []const u8, bytes: []const u8 };
     try policy.outputs(&[_]Record{.{ .path = "a.html", .bytes = bytes[0..policy.output_limit] }});
     try t.expectError(error.OutputLimit, policy.outputs(&[_]Record{.{ .path = "a.html", .bytes = bytes }}));
+}
+
+test "real compiler accepts exact include recursion depth and refuses one beyond" {
+    for ([_]usize{ 32, 33 }) |depth| {
+        const files = try t.allocator.alloc(boris.SourceFile, depth + 2);
+        defer t.allocator.free(files);
+        files[0] = .{ .path = "index.md", .bytes = "# Home\n\n{{include includes/link-0.md}}\n" };
+        files[1] = fixture.files[3];
+        var initialized: usize = 2;
+        defer for (files[2..initialized]) |file| {
+            t.allocator.free(file.path);
+            t.allocator.free(file.bytes);
+        };
+        for (0..depth) |i| {
+            const path = try std.fmt.allocPrint(t.allocator, "includes/link-{d}.md", .{i});
+            errdefer t.allocator.free(path);
+            const bytes = if (i + 1 == depth)
+                try t.allocator.dupe(u8, "Terminal include.\n")
+            else
+                try std.fmt.allocPrint(t.allocator, "{{{{include includes/link-{d}.md}}}}\n", .{i + 1});
+            files[i + 2] = .{ .path = path, .bytes = bytes };
+            initialized += 1;
+        }
+        if (depth == 32) {
+            var result = try core.compile(t.io, t.allocator, files);
+            defer result.deinit();
+            try t.expect(std.mem.indexOf(u8, result.artifacts.get("index.html").?, "Terminal include.") != null);
+        } else {
+            try t.expectError(error.CompilationFailed, core.compile(t.io, t.allocator, files));
+        }
+    }
 }

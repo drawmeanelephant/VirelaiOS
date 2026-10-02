@@ -1,4 +1,4 @@
-//! C3 bounds. Native discovery/publication remains blocked on B3 integration.
+//! C3 bounds. Native discovery/publication awaits the shared SDK bridge.
 const std = @import("std");
 pub const file_limit = 128 * 1024;
 pub const input_limit = 1024 * 1024;
