@@ -256,14 +256,27 @@ pub fn Backend(comptime Driver: type) type {
                 },
             };
         }
-        fn dirRenamePreserve(ptr: ?*anyopaque, from_dir: Dir, from: []const u8, to_dir: Dir, to: []const u8) Dir.RenamePreserveError!void {
+        fn checkRenamePaths(from_dir: Dir, from: []const u8, to_dir: Dir, to: []const u8) Dir.RenameError!void {
             if (from_dir.handle != platform.cwd_token or to_dir.handle != platform.cwd_token)
-                return reject("DirectoryToken", Dir.RenamePreserveError!void);
+                return reject("DirectoryToken", Dir.RenameError!void);
+            if (!wide_paths) {
+                var buffer: [64]u8 = undefined;
+                for ([_][]const u8{ from, to }) |name| {
+                    _ = path(from_dir, name, &buffer) catch |err| return switch (err) {
+                        error.AccessDenied => error.AccessDenied,
+                        error.NameTooLong => error.NameTooLong,
+                        error.BadPathName => error.BadPathName,
+                        else => error.Unexpected,
+                    };
+                }
+            }
+        }
+        fn dirRenamePreserve(ptr: ?*anyopaque, from_dir: Dir, from: []const u8, to_dir: Dir, to: []const u8) Dir.RenamePreserveError!void {
+            try checkRenamePaths(from_dir, from, to_dir, to);
             state(ptr).publish(from, to, .preserve_existing) catch |err| return renameError(err);
         }
         fn dirRename(ptr: ?*anyopaque, from_dir: Dir, from: []const u8, to_dir: Dir, to: []const u8) Dir.RenameError!void {
-            if (from_dir.handle != platform.cwd_token or to_dir.handle != platform.cwd_token)
-                return reject("DirectoryToken", Dir.RenameError!void);
+            try checkRenamePaths(from_dir, from, to_dir, to);
             state(ptr).publish(from, to, .replace) catch |err| return switch (renameError(err)) {
                 error.OperationUnsupported, error.PathAlreadyExists => reject("RenameUnavailable", Dir.RenameError!void),
                 else => |mapped| mapped,

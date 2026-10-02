@@ -318,6 +318,47 @@ test "SDK fs: publication is one B4 rename, correct bits and no fallback" {
     try equal(@as(usize, 5), Mock.calls);
 }
 
+test "SDK fs: std rename preserves both legacy path bounds unless opted into B2" {
+    const Legacy = @import("io.zig").Backend(struct {
+        pub const call = Mock.call;
+        pub const instance = Mock.instance;
+        pub const fatal = Mock.fatal;
+        pub const diagnostic = Mock.diagnostic;
+    });
+    const cwd = platform.cwd();
+    const legacy_limit = "x" ** 31 ++ "/" ++ "y" ** 26;
+    const wide_limit = "x" ** 255 ++ "/" ++ "y" ** 250;
+    inline for (.{ std.Io.Dir.rename, std.Io.Dir.renamePreserve }) |rename| {
+        Mock.reset();
+        var legacy: Legacy = .{};
+        for ([_][]const u8{ "x" ** 32, legacy_limit ++ "z" }) |over| {
+            try expectError(error.NameTooLong, rename(cwd, over, cwd, "out", legacy.io()));
+            try expectError(error.NameTooLong, rename(cwd, "stage", cwd, over, legacy.io()));
+            try equal(@as(usize, 0), Mock.calls);
+        }
+        try rename(cwd, legacy_limit, cwd, legacy_limit, legacy.io());
+        try equal(@as(usize, 1), Mock.calls);
+        try equal(@as(usize, 64), Mock.from_len);
+        try equal(@as(usize, 64), Mock.to_len);
+
+        // The custom filesystem API keeps native bounds independently of std.Io.
+        try legacy.publish("stage", wide_limit, .replace);
+        try equal(@as(usize, 512), Mock.to_len);
+
+        Mock.reset();
+        var wide: Backend = .{};
+        try rename(cwd, wide_limit, cwd, wide_limit, wide.io());
+        try equal(@as(usize, 1), Mock.calls);
+        try equal(@as(usize, 512), Mock.from_len);
+        try equal(@as(usize, 512), Mock.to_len);
+        for ([_][]const u8{ "x" ** 256, wide_limit ++ "z" }) |over| {
+            try expectError(error.NameTooLong, rename(cwd, over, cwd, "out", wide.io()));
+            try expectError(error.NameTooLong, rename(cwd, "stage", cwd, over, wide.io()));
+            try equal(@as(usize, 1), Mock.calls);
+        }
+    }
+}
+
 test "SDK fs: std maps native I/O failure without inventing a path or fd-quota cause" {
     Mock.reset();
     var backend: Backend = .{};
