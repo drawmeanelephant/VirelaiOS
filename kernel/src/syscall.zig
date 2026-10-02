@@ -1773,12 +1773,68 @@ fn handle_file_open(args: Args, _: *exceptions.VectorFrame) u64 {
     return @intCast(res);
 }
 
+/// B5: copies one 1–255-byte name before any lookup or mutation.
+fn copy_fs_name(ptr: u64, len: u64, out: *[file_table.directory.name_max]u8) ?ErrorCode {
+    if (len == 0) return .einval;
+    if (len > out.len) return .enametoolong;
+    if (uaccess.copy_in(out, ptr, @intCast(len)) != .ok) return .efault;
+    return null;
+}
+
+/// Slot 79 B5 ops 8–14: (op, dir, name_ptr, name_len, x4, 0), plus
+/// close (9, dir, 0…), handle metadata (10, handle, kind, 0, 0, out_ptr)
+/// and rename (14, from_dir, from_ptr, to_dir, to_ptr, lengths|replace).
+fn handle_fs_pinned(pid: u64, args: Args) u64 {
+    const meta = file_table.metadata;
+    const name_max = file_table.directory.name_max;
+    switch (args[0]) {
+        meta.pin_close_op => {
+            if (args[2] != 0 or args[3] != 0 or args[4] != 0 or args[5] != 0) return error_result(.einval);
+            return @bitCast(file_table.pin_close(pid, args[1]));
+        },
+        meta.handle_metadata_op => {
+            if (args[3] != 0 or args[4] != 0) return error_result(.einval);
+            var value: meta.Wire = undefined;
+            const rc = file_table.handle_metadata(pid, args[1], args[2], &value);
+            if (rc < 0) return @bitCast(rc);
+            if (uaccess.copy_out(args[5], std.mem.asBytes(&value), @sizeOf(meta.Wire)) != .ok) return error_result(.efault);
+            return 0;
+        },
+        meta.rename_op => {
+            const packed_lengths = args[5];
+            if ((packed_lengths & ~(meta.rename_replace | 0xffff_ffff)) != 0) return error_result(.einval);
+            var from: [name_max]u8 = undefined;
+            var to: [name_max]u8 = undefined;
+            const from_len = packed_lengths & meta.rename_length_mask;
+            const to_len = (packed_lengths >> 16) & meta.rename_length_mask;
+            if (copy_fs_name(args[2], from_len, &from)) |code| return error_result(code);
+            if (copy_fs_name(args[4], to_len, &to)) |code| return error_result(code);
+            return @bitCast(file_table.pin_rename(pid, args[1], from[0..@intCast(from_len)], args[3], to[0..@intCast(to_len)], (packed_lengths & meta.rename_replace) != 0));
+        },
+        else => {},
+    }
+    if (args[5] != 0 or (args[0] != meta.remove_op and args[4] != 0)) return error_result(.einval);
+    var name: [name_max]u8 = undefined;
+    if (copy_fs_name(args[2], args[3], &name)) |code| return error_result(code);
+    const bytes = name[0..@intCast(args[3])];
+    const result: i64 = switch (args[0]) {
+        meta.pin_child_op => file_table.pin_child(pid, args[1], bytes),
+        meta.create_op => file_table.pin_create(pid, args[1], bytes),
+        meta.mkdir_op => file_table.pin_mkdir(pid, args[1], bytes),
+        meta.remove_op => file_table.pin_remove(pid, args[1], bytes, args[4]),
+        else => return error_result(.einval),
+    };
+    return @bitCast(result);
+}
+
 /// Slot 79. Path operations: (op, root_ptr, root_len, relative_ptr,
 /// relative_len, out_ptr). Open returns an ordinary fd. Page:
 /// (5, token, offset, limit, out_ptr, 0). Close: (6, token, 0,0,0,0).
+/// B5 op 7 pins a directory with the path form and x5 = 0.
 fn handle_fs_metadata(args: Args, _: *exceptions.VectorFrame) u64 {
     const meta = file_table.metadata;
     const pid = process.find_by_task(scheduler.current_id()) orelse return error_result(.einval);
+    if (args[0] >= meta.pin_child_op and args[0] <= meta.rename_op) return handle_fs_pinned(pid, args);
     if (args[0] == meta.dir_page_op) {
         if (args[5] != 0) return error_result(.einval);
         var page: meta.Page = undefined;
@@ -1793,7 +1849,7 @@ fn handle_fs_metadata(args: Args, _: *exceptions.VectorFrame) u64 {
         if (args[2] != 0 or args[3] != 0 or args[4] != 0 or args[5] != 0) return error_result(.einval);
         return @bitCast(file_table.dir_close(pid, args[1]));
     }
-    if (args[0] > meta.dir_open_op) return error_result(.einval);
+    if (args[0] > meta.dir_open_op and args[0] != meta.pin_open_op) return error_result(.einval);
     if (args[2] == 0) return error_result(.einval);
     if (args[2] > meta.max_guest_path or args[4] > meta.max_relative_path)
         return error_result(.enametoolong);
@@ -1815,6 +1871,7 @@ fn handle_fs_metadata(args: Args, _: *exceptions.VectorFrame) u64 {
         },
         meta.read_open_op, meta.write_open_op => file_table.contained_open(pid, root_path, path, args[0] == meta.write_open_op),
         meta.dir_open_op => file_table.metadata_dir_open(pid, root_path, path),
+        meta.pin_open_op => file_table.pin_open(pid, root_path, path),
         else => unreachable,
     };
     return @bitCast(result);

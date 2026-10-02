@@ -169,22 +169,93 @@ fn containment() !void {
     checkpoint = "pinned replacement";
     const reader = try fs.openContained("/host/SDK/content", "nested/deep/page", .read);
     const writer = try fs.openContained("/host/SDK/content", "nested/deep/page", .write);
+    const opened = try fs.fileMetadata(reader);
+    try check(opened.kind == .file and opened.size == 5);
     try fs.publish("SDK/content/nested", "SDK/parked", .replace);
     try fs.publish("SDK/SWAP", "SDK/content/nested", .replace);
     try refused(error.AccessDenied, fs.openContained("/host/SDK/content", "nested/deep/page", .read));
     try refused(error.AccessDenied, fs.metadata("/host/SDK/content", "nested/deep/page"));
-    try refused(error.Unsupported, fs.fileMetadata(reader));
+    // The fd's own object, not whatever its old name now resolves to.
+    try check((try fs.fileMetadata(reader)).identity.eql(opened.identity));
+    try check(try reader.length(sdk.io) == 5);
     try refused(error.Unexpected, reader.stat(sdk.io));
-    try refused(error.Unexpected, reader.length(sdk.io));
     try read(reader, "safe!");
     try writer.writeStreamingAll(sdk.io, "pinned");
     try writer.setLength(sdk.io, 6);
     try writer.sync(sdk.io);
+    try check(try reader.length(sdk.io) == 6);
     reader.close(sdk.io);
     writer.close(sdk.io);
     try fs.publish("SDK/content/nested", "SDK/SWAP", .replace);
     try fs.publish("SDK/parked", "SDK/content/nested", .replace);
-    try sdk.print("zig-fs: pinned reads/writes survive replacement; fd-stat refused\n");
+    try sdk.print("zig-fs: pinned reads/writes/fd-metadata survive replacement; File.stat refused\n");
+}
+
+fn pinned() !void {
+    checkpoint = "pinned publication";
+    const fs = sdk.filesystem();
+    const top = try fs.openDirectory("/host/SDK", "PUB");
+    const top_metadata = try fs.directoryMetadata(top);
+    try check(top_metadata.kind == .directory and top_metadata.identity.eql(try fs.identity("/host/SDK", "PUB")));
+    const stage = try fs.makeDirectory(top, "stage");
+    const assets = try fs.makeDirectory(stage, "assets");
+    const page = try fs.createExclusive(stage, "index.html");
+    try page.writeStreamingAll(sdk.io, "<p>sdk</p>\n");
+    try page.sync(sdk.io);
+    try check(try page.length(sdk.io) == 11);
+    try check((try fs.fileMetadata(page)).identity.eql(try fs.identity("/host/SDK/PUB", "stage/index.html")));
+    try check(fs.liveResources() == 8);
+    try refused(error.ResourceLimit, fs.openDirectory("/host/SDK", "PUB"));
+    page.close(sdk.io);
+    try refused(error.PathAlreadyExists, fs.createExclusive(stage, "index.html"));
+    try refused(error.PathAlreadyExists, fs.makeDirectory(stage, "assets"));
+    const css = try fs.createExclusive(assets, "site.css");
+    try css.writeStreamingAll(sdk.io, "p{}\n");
+    try css.sync(sdk.io);
+    css.close(sdk.io);
+    try fs.closeDirectory(assets);
+    // Boris's publish: swap, else park the old output, swap, drop the parked tree.
+    try refused(error.PathAlreadyExists, fs.rename(top, "stage", top, "out", .preserve_existing));
+    try fs.rename(top, "out", top, "out.prev", .preserve_existing);
+    try fs.rename(top, "stage", top, "out", .preserve_existing);
+    try refused(error.InvalidHandle, fs.createExclusive(stage, "late"));
+    try refused(error.InvalidHandle, fs.directoryMetadata(stage));
+    try fs.closeDirectory(stage);
+    try refused(error.InvalidHandle, fs.closeDirectory(stage));
+    const prev = try fs.openChildDirectory(top, "out.prev");
+    try refused(error.PathAlreadyExists, fs.removeDirectory(top, "out.prev"));
+    try refused(error.InvalidArgument, fs.removeFile(prev, "keep"));
+    try fs.removeFile(prev, "old.html");
+    try fs.removeDirectory(prev, "keep");
+    try refused(error.FileNotFound, fs.removeFile(prev, "old.html"));
+    try fs.closeDirectory(prev);
+    try fs.removeDirectory(top, "out.prev");
+    try sdk.print("zig-fs: pinned publication staged=4 swapped parked-removed stale-refusals=2\n");
+
+    checkpoint = "pinned atomic replace and refusals";
+    const out = try fs.openChildDirectory(top, "out");
+    const next = try fs.createExclusive(out, "index.tmp");
+    try next.writeStreamingAll(sdk.io, "<p>v2</p>\n");
+    try next.sync(sdk.io);
+    next.close(sdk.io);
+    try refused(error.PathAlreadyExists, fs.rename(out, "index.tmp", out, "index.html", .preserve_existing));
+    try fs.rename(out, "index.tmp", out, "index.html", .replace);
+    const live = try fs.openContained("/host/SDK/PUB", "out/index.html", .read);
+    try check(try live.length(sdk.io) == 10);
+    try read(live, "<p>v2</p>\n");
+    live.close(sdk.io);
+    for ([_][]const u8{ "", ".", "..", "a/b", "nul\x00" }) |name|
+        try refused(error.InvalidArgument, fs.createExclusive(out, name));
+    try refused(error.NameTooLong, fs.createExclusive(out, "n" ** 256));
+    try refused(error.AccessDenied, fs.openChildDirectory(top, "link"));
+    try refused(error.AccessDenied, fs.removeFile(top, "link"));
+    try refused(error.AccessDenied, fs.createExclusive(top, "denied"));
+    try refused(error.AccessDenied, fs.removeFile(top, "secret"));
+    try refused(error.AccessDenied, fs.rename(out, "index.html", top, "secret", .replace));
+    try fs.closeDirectory(out);
+    try fs.closeDirectory(top);
+    try check(fs.liveResources() == 4);
+    try sdk.print("zig-fs: pinned atomic replace; names symlinks and ACLs refused=11\n");
 }
 
 fn capacity() !void {
@@ -192,10 +263,14 @@ fn capacity() !void {
     const fs = sdk.filesystem();
     const file = try fs.openContained("/host/SDK/content", "nested/deep/page", .read);
     const legacy = try std.Io.Dir.cwd().openFile(sdk.io, "SDK/output", .{});
+    // A path fd has no pinned object; no pathname is retained to emulate one.
+    try refused(error.Unsupported, fs.fileMetadata(legacy));
+    try refused(error.Unexpected, legacy.length(sdk.io));
     const a = try fs.openSnapshot("/host/SDK/content", "");
     const b = try fs.openSnapshot("/host/SDK/content", "nested");
     try check(fs.liveResources() == 8);
     try refused(error.ResourceLimit, fs.openSnapshot("/host/SDK", "directory"));
+    try refused(error.ResourceLimit, fs.openDirectory("/host/SDK", "PUB"));
     try refused(error.ResourceLimit, fs.openContained("/host/SDK/content", "entry-00", .read));
     try refused(error.ProcessFdQuotaExceeded, std.Io.Dir.cwd().createFile(sdk.io, "SDK/overflow", .{}));
     try fs.closeSnapshot(a);
@@ -232,13 +307,19 @@ fn run(args: *const sdk.startup.Startup) !void {
         try refused(error.Unsupported, fs.openContained("/host/SDK", "output", .read));
         try refused(error.Unsupported, fs.openContained("/host/SDK", "output", .write));
         try refused(error.Unsupported, fs.openSnapshot("/host/SDK", ""));
+        try refused(error.Unsupported, fs.openDirectory("/host/SDK", "PUB"));
+        const file = try std.Io.Dir.cwd().openFile(sdk.io, "SDK/output", .{});
+        try refused(error.Unsupported, fs.fileMetadata(file));
+        try refused(error.Unexpected, file.length(sdk.io));
+        file.close(sdk.io);
         try check(fs.liveResources() == 4);
-        try sdk.print("zig-fs: legacy unsupported=5 no leaked records\n");
+        try sdk.print("zig-fs: legacy unsupported=8 no leaked records\n");
     } else {
         try check(std.mem.eql(u8, args.args[1], "virtiofs"));
         try publication();
         try discovery();
         try containment();
+        try pinned();
         // B3 retains only 512 mount identities. The 257-row failed capture
         // also pins identities, so exercise the entry boundary in its own boot.
         try capacity();

@@ -1,12 +1,26 @@
-//! ADR 0007 B2/B3/B4, not POSIX. Host attributes are facts, not guest ACLs.
-//! Use runtime.filesystem() so cursors and files share the SDK resource table.
+//! ADR 0007 B2/B3/B4/B5, not POSIX. Host attributes are facts, not guest ACLs.
+//! Use runtime.filesystem() so cursors, pins and files share the SDK resource table.
 const std = @import("std");
 
 pub const path_max = 512;
 pub const name_max = 255;
 pub const depth_max = 8;
+/// B5: a pinned directory's share-relative path, including child pins.
+pub const pinned_depth_max = 16;
 pub const entry_max = 256;
 pub const page_max = 16;
+// B5 slot-79 operations and register encodings (native wire values).
+pub const pin_open_op: u64 = 7;
+pub const pin_child_op: u64 = 8;
+pub const pin_close_op: u64 = 9;
+pub const handle_metadata_op: u64 = 10;
+pub const create_op: u64 = 11;
+pub const mkdir_op: u64 = 12;
+pub const remove_op: u64 = 13;
+pub const rename_op: u64 = 14;
+pub const handle_file: u64 = 0;
+pub const handle_directory: u64 = 1;
+pub const rename_replace: u64 = 1 << 32;
 pub const Error = error{
     InvalidArgument,
     InvalidHandle,
@@ -24,6 +38,10 @@ pub const OpenMode = enum { read, write };
 pub const Publication = enum { replace, preserve_existing };
 /// Not a native cursor or file descriptor. Tokens are never recycled.
 pub const Snapshot = struct { token: i64 };
+/// A B5 pinned directory: the native object, not its pathname. SDK tokens
+/// are never recycled and never alias snapshots or files.
+pub const Directory = struct { token: i64 };
+pub const EntryKind = enum { file, directory };
 pub const Identity = extern struct {
     filesystem: u64,
     inode: u64,
@@ -177,6 +195,14 @@ pub fn rootedPath(root: []const u8, relative: []const u8) Error!void {
     try relativePath(relative);
 }
 
+/// One B5 directory entry name. Opaque bytes except `/`, NUL and dot names.
+pub fn entryName(name: []const u8) Error!void {
+    if (name.len == 0 or std.mem.indexOfAny(u8, name, "/\x00") != null or
+        std.mem.eql(u8, name, ".") or std.mem.eql(u8, name, ".."))
+        return error.InvalidArgument;
+    if (name.len > name_max) return error.NameTooLong;
+}
+
 /// Legacy/B4 full paths have eight components below /host, not below an
 /// arbitrary deeper content root. No normalization, clipping or escape repair.
 pub fn fullPath(name: []const u8, buffer: []u8) Error![]const u8 {
@@ -222,6 +248,56 @@ pub fn Native(comptime Driver: type) type {
         }
         pub fn close(token: u64) Error!void {
             if (try result(Driver.call(79, .{ 6, token, 0, 0, 0, 0 })) != 0) return error.ProtocolViolation;
+        }
+        fn pinToken(value: u64) Error!u64 {
+            return if (value == 0) error.ProtocolViolation else value;
+        }
+        fn named(op: u64, dir: u64, name: []const u8, x4: u64) Error!u64 {
+            try entryName(name);
+            return result(Driver.call(79, .{ op, dir, @intFromPtr(name.ptr), name.len, x4, 0 }));
+        }
+        /// B5 pins an existing directory by the B3 no-follow walk.
+        pub fn openDirectory(root: []const u8, relative: []const u8) Error!u64 {
+            return pinToken(try pathCall(pin_open_op, root, relative, 0));
+        }
+        /// One no-follow lookup from the pinned directory, not a path walk.
+        pub fn childDirectory(dir: u64, name: []const u8) Error!u64 {
+            return pinToken(try named(pin_child_op, dir, name, 0));
+        }
+        pub fn closeDirectory(dir: u64) Error!void {
+            if (try result(Driver.call(79, .{ pin_close_op, dir, 0, 0, 0, 0 })) != 0) return error.ProtocolViolation;
+        }
+        /// Live attributes of the handle's own object, never of its old name.
+        pub fn handleMetadata(handle: u64, kind: u64) Error!Metadata {
+            var value = std.mem.zeroes(Metadata);
+            if (try result(Driver.call(79, .{ handle_metadata_op, handle, kind, 0, 0, @intFromPtr(&value) })) != 0)
+                return error.ProtocolViolation;
+            try value.validate();
+            const expected: Kind = if (kind == handle_directory) .directory else .file;
+            if (value.kind != expected) return error.ProtocolViolation;
+            return value;
+        }
+        /// Exclusive create of a new regular file; returns a write-only fd.
+        /// Never opens, truncates or replaces an existing entry.
+        pub fn create(dir: u64, name: []const u8) Error!u64 {
+            return named(create_op, dir, name, 0);
+        }
+        /// Returns the new directory already pinned.
+        pub fn makeDirectory(dir: u64, name: []const u8) Error!u64 {
+            return pinToken(try named(mkdir_op, dir, name, 0));
+        }
+        /// One file or one empty directory of exactly `kind`; never recursive.
+        pub fn remove(dir: u64, name: []const u8, kind: EntryKind) Error!void {
+            if (try named(remove_op, dir, name, @intFromEnum(kind)) != 0) return error.ProtocolViolation;
+        }
+        /// One backend rename between two pins. No rollback or fallback after
+        /// failure, whose outcome may be unknown.
+        pub fn rename(from_dir: u64, from: []const u8, to_dir: u64, to: []const u8, mode: Publication) Error!void {
+            try entryName(from);
+            try entryName(to);
+            const lengths: u64 = from.len | to.len << 16 | (if (mode == .replace) rename_replace else 0);
+            if (try result(Driver.call(79, .{ rename_op, from_dir, @intFromPtr(from.ptr), to_dir, @intFromPtr(to.ptr), lengths })) != 0)
+                return error.ProtocolViolation;
         }
         /// Path-based single-entry B4 publication, NOT contained mutation.
         /// No rollback or fallback after failure, whose outcome may be unknown.

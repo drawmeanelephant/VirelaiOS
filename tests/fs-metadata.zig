@@ -1,4 +1,4 @@
-//! B3 raw EL0 acceptance probe, independent of the C-card SDK trees.
+//! B3/B5 raw EL0 acceptance probe, independent of the C-card SDK trees.
 const std = @import("std");
 const meta = @import("metadata");
 var value: meta.Wire = undefined;
@@ -75,6 +75,132 @@ fn rename(from: []const u8, to: []const u8) void {
     check(svc(35, .{ @intFromPtr(from.ptr), from.len | (@as(u64, 1) << 63), @intFromPtr(to.ptr), to.len, 0, 0 }) == 0);
 }
 
+fn named(op: u64, dir: i64, name: []const u8, x4: u64) i64 {
+    return svc(79, .{ op, @bitCast(dir), @intFromPtr(name.ptr), name.len, x4, 0 });
+}
+
+fn renameAt(from: i64, a: []const u8, to: i64, b: []const u8, replace: bool) i64 {
+    const packed_lengths = a.len | b.len << 16 | (if (replace) meta.rename_replace else 0);
+    return svc(79, .{ meta.rename_op, @bitCast(from), @intFromPtr(a.ptr), @bitCast(to), @intFromPtr(b.ptr), packed_lengths });
+}
+
+fn handleStat(handle: i64, kind: u64) i64 {
+    return svc(79, .{ meta.handle_metadata_op, @bitCast(handle), kind, 0, 0, @intFromPtr(&value) });
+}
+
+fn unpin(dir: i64) void {
+    check(svc(79, .{ meta.pin_close_op, @bitCast(dir), 0, 0, 0, 0 }) == 0);
+}
+
+fn createWith(dir: i64, name: []const u8, content: []const u8) void {
+    const fd = named(meta.create_op, dir, name, 0);
+    check(fd >= 0 and fd < 8);
+    check(svc(25, .{ @intCast(fd), @intFromPtr(content.ptr), content.len, 0, 0, 0 }) == content.len);
+    check(svc(77, .{ @intCast(fd), 0, 0, 0, 0, 0 }) == 0);
+    check(handleStat(fd, meta.handle_file) == 0 and value.kind == .file and value.size == content.len);
+    close(fd);
+}
+
+/// B5: the Boris C3 publication sequence through pinned directories.
+fn pinned() void {
+    checkpoint = "B5 pin and handle metadata";
+    const top = call(meta.pin_open_op, "/host/PUB", "");
+    check(top > 0);
+    const top_id = stat("/host", "PUB").identity;
+    check(handleStat(top, meta.handle_directory) == 0 and value.kind == .directory and value.identity.eql(top_id));
+    check(handleStat(top, meta.handle_file) == -2);
+    check(call(meta.pin_open_op, "/host/PUB", "link") == -7);
+    const path_fd = svc(23, .{ @intFromPtr("/host/PUB/out/old.html"), 22, 1, 0, 0, 0 });
+    check(path_fd >= 0);
+    check(handleStat(path_fd, meta.handle_file) == -4);
+    close(path_fd);
+    say("b5: pin metadata own-object path-fd unsupported symlink refused\n");
+
+    checkpoint = "B5 Boris stage";
+    const stage = named(meta.mkdir_op, top, "stage", 0);
+    check(stage > 0);
+    check(named(meta.mkdir_op, top, "stage", 0) == -9);
+    const assets = named(meta.mkdir_op, stage, "assets", 0);
+    check(assets > 0);
+    createWith(stage, "index.html", "<p>raw</p>\n");
+    check(named(meta.create_op, stage, "index.html", 0) == -9);
+    createWith(assets, "site.css", "p{}\n");
+    unpin(assets);
+    check(stat("/host/PUB", "stage/index.html").size == 11);
+    say("b5: staged directories=2 files=2 exclusive EEXIST=2\n");
+
+    checkpoint = "B5 Boris publish";
+    check(renameAt(top, "stage", top, "out", false) == -9);
+    check(renameAt(top, "stage", top, "out", true) == -9);
+    check(renameAt(top, "out", top, "out.prev", false) == 0);
+    check(renameAt(top, "stage", top, "out", false) == 0);
+    check(named(meta.create_op, stage, "late", 0) == -2);
+    check(handleStat(stage, meta.handle_directory) == -2);
+    unpin(stage);
+    check(svc(79, .{ meta.pin_close_op, @bitCast(stage), 0, 0, 0, 0 }) == -2);
+    const prev = named(meta.pin_child_op, top, "out.prev", 0);
+    check(prev > 0);
+    check(named(meta.remove_op, top, "out.prev", meta.remove_directory) == -9);
+    check(named(meta.remove_op, prev, "keep", meta.remove_file) == -1);
+    check(named(meta.remove_op, prev, "old.html", meta.remove_directory) == -1);
+    check(named(meta.remove_op, prev, "old.html", meta.remove_file) == 0);
+    check(named(meta.remove_op, prev, "old.html", meta.remove_file) == -6);
+    check(named(meta.remove_op, prev, "keep", meta.remove_directory) == 0);
+    unpin(prev);
+    check(named(meta.remove_op, top, "out.prev", meta.remove_directory) == 0);
+    check(call(meta.stat_op, "/host/PUB", "out.prev") == -6);
+    say("b5: Boris publish EEXIST=2 park swap remove stale-refusals=2\n");
+
+    checkpoint = "B5 atomic file replace";
+    const out = named(meta.pin_child_op, top, "out", 0);
+    check(out > 0);
+    createWith(out, "index.tmp", "<p>v2</p>\n");
+    check(renameAt(out, "index.tmp", out, "index.html", false) == -9);
+    check(renameAt(out, "index.tmp", out, "index.html", true) == 0);
+    check(renameAt(out, "index.tmp", out, "index.html", true) == -6);
+    const reader = call(meta.read_open_op, "/host/PUB", "out/index.html");
+    check(reader >= 0);
+    read(reader, "<p>v2</p>\n");
+    check(handleStat(reader, meta.handle_file) == 0 and value.size == 10);
+    close(reader);
+    // A slot-35 rename stales pins at or under either name, too.
+    rename("/host/PUB/out", "/host/PUB/moved");
+    check(handleStat(out, meta.handle_directory) == -2);
+    rename("/host/PUB/moved", "/host/PUB/out");
+    check(handleStat(out, meta.handle_directory) == -2);
+    unpin(out);
+    say("b5: atomic replace preserve EEXIST replace ok slot-35 stales pins\n");
+
+    checkpoint = "B5 names registers faults and policy";
+    for ([_][]const u8{ ".", "..", "a/b", "nul\x00" }) |name| check(named(meta.create_op, top, name, 0) == -1);
+    check(named(meta.create_op, top, "", 0) == -1);
+    check(named(meta.create_op, top, "n" ** 256, 0) == -8);
+    check(svc(79, .{ meta.create_op, @bitCast(top), 0x1_2000_0000, 4, 0, 0 }) == -3);
+    check(svc(79, .{ meta.create_op, @bitCast(top), @intFromPtr("x"), 1, 1, 0 }) == -1);
+    check(svc(79, .{ meta.pin_close_op, @bitCast(top), 1, 0, 0, 0 }) == -1);
+    check(svc(79, .{ meta.handle_metadata_op, @bitCast(top), meta.handle_directory, 0, 0, 0x1_2000_0000 }) == -3);
+    check(svc(79, .{ meta.handle_metadata_op, @bitCast(top), 2, 0, 0, @intFromPtr(&value) }) == -1);
+    check(svc(79, .{ meta.rename_op, @bitCast(top), @intFromPtr("out"), @bitCast(top), @intFromPtr("x"), 3 | 1 << 16 | 1 << 33 }) == -1);
+    check(named(meta.remove_op, top, "out", 2) == -1);
+    check(named(meta.pin_child_op, top, "link", 0) == -7);
+    check(named(meta.remove_op, top, "link", meta.remove_file) == -7);
+    check(named(meta.create_op, top, "denied", 0) == -7);
+    check(named(meta.remove_op, top, "denied", meta.remove_file) == -7);
+    check(named(meta.remove_op, top, "secret", meta.remove_file) == -7);
+    check(renameAt(top, "secret", top, "leaked", false) == -7);
+    check(renameAt(top, "out", top, "secret", true) == -7);
+    check(named(meta.create_op, 1 << 40, "x", 0) == -2);
+    // PUB itself lists a symlink, which a B3 snapshot refuses.
+    const cursor = call(meta.dir_open_op, "/host/PUB", "out");
+    check(cursor > 0);
+    check(named(meta.create_op, cursor, "x", 0) == -2);
+    check(svc(79, .{ meta.dir_close_op, @intCast(top), 0, 0, 0, 0 }) == -2);
+    check(svc(79, .{ meta.dir_close_op, @intCast(cursor), 0, 0, 0, 0 }) == 0);
+    check(svc(79, .{ meta.pin_close_op, @intCast(cursor), 0, 0, 0, 0 }) == -2);
+    unpin(top);
+    say("b5: refusals names=6 registers=7 policy=7 tokens=4\n");
+}
+
 fn discover(root: []const u8, root_id: meta.Identity) void {
     // Boris's cycle rule: remember the root, refuse a repeated directory
     // identity, and walk returned names, not a host-supplied file list.
@@ -139,6 +265,14 @@ export fn b3_main() noreturn {
         check(call(meta.write_open_op, root, "a/b/page.md") == -4);
         check(call(meta.dir_open_op, root, "") == -4);
         say("b3: legacy explicitly unsupported operations=5\n");
+        checkpoint = "B5 legacy unsupported";
+        check(call(meta.pin_open_op, "/host/PUB", "") == -4);
+        const fd = svc(23, .{ @intFromPtr("/host/PUB/out/old.html"), 22, 1, 0, 0, 0 });
+        check(fd >= 0);
+        check(handleStat(fd, meta.handle_file) == -4);
+        close(fd);
+        check(named(meta.create_op, 1, "x", 0) == -2);
+        say("b5: legacy explicitly unsupported pin=1 path-fd=1 unbound=1\n");
         finish(0);
     }
     if (first != 0) {
@@ -260,6 +394,7 @@ export fn b3_main() noreturn {
     }
     check(call(meta.stat_op, "/host/DENIEDDIR", "leaf") == -7);
     say("b3: ownership and secret refusals=7\n");
+    pinned();
     checkpoint = "resource capacity and teardown";
     var fds: [8]i64 = undefined;
     for (&fds) |*fd| {
@@ -267,14 +402,20 @@ export fn b3_main() noreturn {
         check(fd.* >= 0);
     }
     check(call(meta.read_open_op, root, "a/b/page.md") == -5);
+    check(call(meta.pin_open_op, root, "") == -5);
     for (fds) |fd| close(fd);
-    // Leave rich cursors for process-death cleanup, within native ceilings.
-    for (&fds) |*fd| {
+    // Leave rich cursors and pins for process-death cleanup, within native ceilings.
+    for (fds[0..4]) |*fd| {
         fd.* = call(meta.dir_open_op, root, "");
         check(fd.* > 0);
     }
+    for (fds[4..]) |*fd| {
+        fd.* = call(meta.pin_open_op, root, "a");
+        check(fd.* > 0);
+    }
+    check(call(meta.pin_open_op, root, "") == -5);
     var diagnostic: [96]u8 = undefined;
-    say(std.fmt.bufPrint(&diagnostic, "b3: PASS checks={d} death-cursors=8\n", .{checks}) catch unreachable);
+    say(std.fmt.bufPrint(&diagnostic, "b3: PASS checks={d} death-cursors=4 death-pins=4\n", .{checks}) catch unreachable);
     finish(0);
 }
 

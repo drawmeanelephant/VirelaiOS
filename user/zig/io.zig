@@ -17,9 +17,9 @@ pub fn Backend(comptime Driver: type) type {
             token: i64,
             fd: u64,
             writable: bool = false,
-            kind: enum { file, snapshot } = .file,
+            kind: enum { file, snapshot, directory } = .file,
         };
-        // Three reserved streams + borrowed cwd + FOUR files/cursors combined.
+        // Three reserved streams + borrowed cwd + FOUR files/cursors/pins combined.
         records: [4]?Record = @splat(null),
         next_token: i64 = 1,
         peak_files: usize = 0,
@@ -118,9 +118,72 @@ pub fn Backend(comptime Driver: type) type {
             try NativeFs.close(entry.*.?.fd);
             entry.* = null;
         }
+        /// Live attributes of a contained or exclusively created file's own
+        /// object. Legacy path fds refuse `Unsupported`; no pathname is
+        /// retained to emulate them.
         pub fn fileMetadata(self: *Self, file: File) fs.Error!fs.Metadata {
-            _ = self.fileRecord(file) orelse return error.InvalidHandle;
-            return error.Unsupported; // No native fd-stat. No pathname retained.
+            const record = self.fileRecord(file) orelse return error.InvalidHandle;
+            return NativeFs.handleMetadata(record.fd, fs.handle_file);
+        }
+        fn directoryRecord(self: *Self, dir: fs.Directory) fs.Error!*?Record {
+            for (&self.records) |*entry| if (entry.*) |record| {
+                if (record.token == dir.token and record.kind == .directory) return entry;
+            };
+            return error.InvalidHandle;
+        }
+        fn pin(self: *Self, dir: fs.Directory) fs.Error!u64 {
+            return (try self.directoryRecord(dir)).*.?.fd;
+        }
+        /// B5: pins an existing directory. Name operations below act on the
+        /// pinned object, never on a re-resolved pathname.
+        pub fn openDirectory(self: *Self, root: []const u8, relative: []const u8) fs.Error!fs.Directory {
+            const entry = try self.reserve();
+            const native = try NativeFs.openDirectory(root, relative);
+            return .{ .token = self.track(entry, native, .directory, false) };
+        }
+        pub fn openChildDirectory(self: *Self, dir: fs.Directory, name: []const u8) fs.Error!fs.Directory {
+            const parent = try self.pin(dir);
+            const entry = try self.reserve();
+            const native = try NativeFs.childDirectory(parent, name);
+            return .{ .token = self.track(entry, native, .directory, false) };
+        }
+        /// Also succeeds for a stale or revoked pin. A failure keeps the record.
+        pub fn closeDirectory(self: *Self, dir: fs.Directory) fs.Error!void {
+            const entry = try self.directoryRecord(dir);
+            try NativeFs.closeDirectory(entry.*.?.fd);
+            entry.* = null;
+        }
+        pub fn directoryMetadata(self: *Self, dir: fs.Directory) fs.Error!fs.Metadata {
+            return NativeFs.handleMetadata(try self.pin(dir), fs.handle_directory);
+        }
+        /// A new write-only regular file below the pin; `PathAlreadyExists`
+        /// when the name is occupied. Never opens or truncates an existing one.
+        pub fn createExclusive(self: *Self, dir: fs.Directory, name: []const u8) fs.Error!File {
+            const parent = try self.pin(dir);
+            const entry = try self.reserve();
+            const fd = try NativeFs.create(parent, name);
+            if (fd >= 8) Driver.fatal("InvalidNativeHandle");
+            const token = self.track(entry, fd, .file, true);
+            return .{ .handle = @intCast(token), .flags = .{ .nonblocking = false } };
+        }
+        /// Returns the new directory already pinned.
+        pub fn makeDirectory(self: *Self, dir: fs.Directory, name: []const u8) fs.Error!fs.Directory {
+            const parent = try self.pin(dir);
+            const entry = try self.reserve();
+            const native = try NativeFs.makeDirectory(parent, name);
+            return .{ .token = self.track(entry, native, .directory, false) };
+        }
+        pub fn removeFile(self: *Self, dir: fs.Directory, name: []const u8) fs.Error!void {
+            try NativeFs.remove(try self.pin(dir), name, .file);
+        }
+        /// Empty directories only; never recursive.
+        pub fn removeDirectory(self: *Self, dir: fs.Directory, name: []const u8) fs.Error!void {
+            try NativeFs.remove(try self.pin(dir), name, .directory);
+        }
+        /// One native rename between two pins. A guest rename stales pins at
+        /// or under either name; reopen them from a live parent.
+        pub fn rename(self: *Self, from_dir: fs.Directory, from: []const u8, to_dir: fs.Directory, to: []const u8, mode: fs.Publication) fs.Error!void {
+            try NativeFs.rename(try self.pin(from_dir), from, try self.pin(to_dir), to, mode);
         }
         pub fn publish(_: *Self, from: []const u8, to: []const u8, mode: fs.Publication) fs.Error!void {
             try NativeFs.publish(from, to, mode);
@@ -223,18 +286,30 @@ pub fn Backend(comptime Driver: type) type {
             return error.CloseFailed;
         }
         pub fn closeAll(self: *Self) error{CloseFailed}!void {
-            for (self.records) |entry| if (entry) |record| {
-                if (record.kind == .snapshot)
-                    self.closeSnapshot(.{ .token = record.token }) catch return error.CloseFailed
-                else
-                    try self.closeChecked(.{ .handle = @intCast(record.token), .flags = .{ .nonblocking = false } });
+            for (self.records) |entry| if (entry) |record| switch (record.kind) {
+                .snapshot => self.closeSnapshot(.{ .token = record.token }) catch return error.CloseFailed,
+                .directory => self.closeDirectory(.{ .token = record.token }) catch return error.CloseFailed,
+                .file => try self.closeChecked(.{ .handle = @intCast(record.token), .flags = .{ .nonblocking = false } }),
             };
         }
+        /// A full std `File.Stat` would need invented fields; use fileMetadata.
         fn fileStat(_: ?*anyopaque, _: File) File.StatError!File.Stat {
             return reject("FdMetadataUnavailable", File.StatError!File.Stat);
         }
-        fn fileLength(_: ?*anyopaque, _: File) File.LengthError!u64 {
-            return reject("FdMetadataUnavailable", File.LengthError!u64);
+        fn fileLength(ptr: ?*anyopaque, file: File) File.LengthError!u64 {
+            const value = state(ptr).fileMetadata(file) catch |err| return switch (err) {
+                error.InvalidHandle => reject("UnboundOrClosedFile", File.LengthError!u64),
+                error.Unsupported => reject("FdMetadataUnavailable", File.LengthError!u64),
+                error.AccessDenied => error.AccessDenied,
+                error.ResourceLimit, error.OutOfMemory => error.SystemResources,
+                else => refused: {
+                    Driver.diagnostic("Filesystem:");
+                    Driver.diagnostic(@errorName(err));
+                    Driver.diagnostic("\n");
+                    break :refused error.Unexpected;
+                },
+            };
+            return value.size;
         }
         fn renameError(err: fs.Error) Dir.RenamePreserveError {
             return switch (err) {
@@ -707,6 +782,11 @@ const Mock = struct {
                 return @intCast(n);
             },
             26, 36, 77 => return 0,
+            79 => {
+                // Op 10 on a legacy path fd: no pinned object to describe.
+                std.debug.assert(args[0] == fs.handle_metadata_op and args[2] == fs.handle_file);
+                return -4;
+            },
             72 => {
                 std.debug.assert(args[1] <= 256);
                 const n = @min(args[1], maximum);

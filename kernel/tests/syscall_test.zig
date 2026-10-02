@@ -1573,6 +1573,22 @@ test "B2: slot 27 versioned marshaling, fault retry, EOF and legacy compatibilit
     try std.testing.expectEqual(@as(usize, 40), @sizeOf(file_table.DirEntry));
 }
 
+fn start_metadata_case(frame: *exceptions.VectorFrame, base: usize, len: usize) void {
+    userspace.init();
+    init(test_writer);
+    _ = scheduler.init();
+    _ = scheduler.register_worker(0x2000);
+    _ = scheduler.register_user(0x3000, 0);
+    scheduler.start();
+    file_table.init();
+    syscall.trust.init();
+    frame.* = fresh_frame();
+    std.debug.assert(scheduler.yield_current());
+    std.debug.assert(scheduler.yield_current());
+    B3Case.Server.start();
+    set_user_regions(.{ .base = 0, .len = 0 }, .{ .base = base, .len = len });
+}
+
 const B3Case = struct {
     const meta = file_table.metadata;
     const Server = syscall.virtio_file.virtio_fs.TestMetadataServer;
@@ -1586,22 +1602,7 @@ const B3Case = struct {
     frame: exceptions.VectorFrame = undefined,
 
     fn start(self: *B3Case) void {
-        userspace.init();
-        init(test_writer);
-        _ = scheduler.init();
-        _ = scheduler.register_worker(0x2000);
-        _ = scheduler.register_user(0x3000, 0);
-        scheduler.start();
-        file_table.init();
-        syscall.trust.init();
-        self.frame = fresh_frame();
-        std.debug.assert(scheduler.yield_current());
-        std.debug.assert(scheduler.yield_current());
-        Server.start();
-        set_user_regions(.{ .base = 0, .len = 0 }, .{
-            .base = @intFromPtr(&self.storage),
-            .len = @sizeOf(@TypeOf(self.storage)),
-        });
+        start_metadata_case(&self.frame, @intFromPtr(&self.storage), @sizeOf(@TypeOf(self.storage)));
     }
 
     fn stop(_: *B3Case) void {
@@ -1786,6 +1787,300 @@ test "B3 EL0: malformed calls fault bounds and backend failures never consume re
     try std.testing.expectEqualStrings("safe", c.storage.data[0..4]);
     try std.testing.expectEqual(@as(u64, 0), dispatch(26, .{ @intCast(fd), 0, 0, 0, 0, 0 }, &c.frame));
     try std.testing.expectEqual(@as(usize, 0), B3Case.Server.transient_pins());
+}
+
+const B5Case = struct {
+    const meta = file_table.metadata;
+    const Server = B3Case.Server;
+    const root = "/host/content";
+    storage: extern struct {
+        root: [512]u8,
+        relative: [506]u8,
+        from: [256]u8,
+        to: [256]u8,
+        value: meta.Wire,
+        data: [8]u8,
+    } = undefined,
+    frame: exceptions.VectorFrame = undefined,
+
+    fn start(self: *B5Case) void {
+        start_metadata_case(&self.frame, @intFromPtr(&self.storage), @sizeOf(@TypeOf(self.storage)));
+    }
+
+    fn stop(_: *B5Case) void {
+        file_table.init();
+        Server.stop();
+        syscall.trust.init();
+    }
+
+    fn pid() u64 {
+        return process.find_by_task(scheduler.current_id()).?;
+    }
+
+    fn raw(self: *B5Case, args: Args) i64 {
+        return @bitCast(dispatch(79, args, &self.frame));
+    }
+
+    fn path_call(self: *B5Case, op: u64, path: []const u8) i64 {
+        @memcpy(self.storage.root[0..root.len], root);
+        @memcpy(self.storage.relative[0..path.len], path);
+        return self.raw(.{ op, @intFromPtr(&self.storage.root), root.len, @intFromPtr(&self.storage.relative), path.len, 0 });
+    }
+
+    fn pin(self: *B5Case, path: []const u8) i64 {
+        return self.path_call(meta.pin_open_op, path);
+    }
+
+    fn named(self: *B5Case, op: u64, dir: i64, name: []const u8, x4: u64) i64 {
+        @memcpy(self.storage.from[0..name.len], name);
+        return self.raw(.{ op, @bitCast(dir), @intFromPtr(&self.storage.from), name.len, x4, 0 });
+    }
+
+    fn close(self: *B5Case, dir: i64) i64 {
+        return self.raw(.{ meta.pin_close_op, @bitCast(dir), 0, 0, 0, 0 });
+    }
+
+    fn stat(self: *B5Case, handle: i64, kind: u64) i64 {
+        return self.raw(.{ meta.handle_metadata_op, @bitCast(handle), kind, 0, 0, @intFromPtr(&self.storage.value) });
+    }
+
+    fn rename(self: *B5Case, from_dir: i64, from: []const u8, to_dir: i64, to: []const u8, replace: bool) i64 {
+        @memcpy(self.storage.from[0..from.len], from);
+        @memcpy(self.storage.to[0..to.len], to);
+        const lengths: u64 = from.len | (to.len << 16) | (if (replace) meta.rename_replace else 0);
+        return self.raw(.{ meta.rename_op, @bitCast(from_dir), @intFromPtr(&self.storage.from), @bitCast(to_dir), @intFromPtr(&self.storage.to), lengths });
+    }
+};
+
+test "B5 EL0: pinned directories create stat rename and remove by name" {
+    var c: B5Case = .{};
+    c.start();
+    defer c.stop();
+    const meta = file_table.metadata;
+    const S = B5Case.Server;
+    const trust = syscall.trust;
+    const a = c.pin("a");
+    try std.testing.expect(a > 0);
+    try std.testing.expectEqual(@as(i64, 0), c.stat(a, meta.handle_directory));
+    try std.testing.expectEqual(meta.Kind.directory, c.storage.value.kind);
+    try std.testing.expectEqual(@as(u64, 103), c.storage.value.identity.inode);
+    const b = c.named(meta.pin_child_op, a, "b", 0);
+    try std.testing.expect(b > 0 and b != a);
+    try std.testing.expectEqual(@as(i64, 0), c.stat(b, meta.handle_directory));
+    try std.testing.expectEqual(@as(u64, 104), c.storage.value.identity.inode);
+    try std.testing.expectEqual(@as(i64, -6), c.named(meta.pin_child_op, a, "missing", 0));
+    try std.testing.expectEqual(@as(i64, -7), c.named(meta.pin_child_op, a, "link", 0));
+    try std.testing.expectEqual(@as(i64, -1), c.named(meta.pin_child_op, b, "page.md", 0));
+    try std.testing.expectEqual(@as(i64, -1), c.pin("a/b/page.md"));
+
+    const fd = c.named(meta.create_op, a, "new.txt", 0);
+    try std.testing.expect(fd >= 0 and fd < file_table.max_handles_per_process);
+    try std.testing.expectEqual(@as(i64, -9), c.named(meta.create_op, a, "new.txt", 0));
+    @memcpy(c.storage.data[0..4], "four");
+    try std.testing.expectEqual(@as(u64, 4), dispatch(25, .{ @intCast(fd), @intFromPtr(&c.storage.data), 4, 0, 0, 0 }, &c.frame));
+    try std.testing.expectEqual(@as(i64, 0), c.stat(fd, meta.handle_file));
+    try std.testing.expectEqual(meta.Kind.file, c.storage.value.kind);
+    try std.testing.expectEqual(@as(u64, 4), c.storage.value.size);
+    try std.testing.expectEqual(@as(u64, 150), c.storage.value.identity.inode);
+    try std.testing.expectEqual(@as(i64, -2), c.stat(fd, meta.handle_directory));
+    try std.testing.expectEqual(@as(u64, 0), dispatch(26, .{ @intCast(fd), 0, 0, 0, 0, 0 }, &c.frame));
+    try std.testing.expectEqual(@as(i64, -2), c.stat(fd, meta.handle_file));
+
+    const sub = c.named(meta.mkdir_op, a, "sub", 0);
+    try std.testing.expect(sub > 0);
+    try std.testing.expectEqual(@as(i64, -9), c.named(meta.mkdir_op, a, "sub", 0));
+    try std.testing.expectEqual(@as(i64, 0), c.stat(sub, meta.handle_directory));
+    try std.testing.expectEqual(@as(u64, 151), c.storage.value.identity.inode);
+    // Ownership metadata moves with a guest rename and goes with a removal.
+    try std.testing.expectEqual(trust.SetResult.ok, trust.set_mode(file_table.actorFor(B5Case.pid()), .host, "content/a/new.txt", 0o640));
+    try std.testing.expectEqual(@as(i64, 0), c.rename(a, "new.txt", sub, "moved.txt", false));
+    try std.testing.expect(!S.exists(3, "new.txt") and S.exists(51, "moved.txt"));
+    var saved: [trust.save_max]u8 = undefined;
+    const owners = saved[0..trust.save(&saved)];
+    try std.testing.expect(std.mem.indexOf(u8, owners, "content/a/sub/moved.txt") != null);
+    try std.testing.expect(std.mem.indexOf(u8, owners, "content/a/new.txt") == null);
+    const other = c.named(meta.create_op, a, "x", 0);
+    try std.testing.expect(other >= 0);
+    try std.testing.expectEqual(@as(u64, 0), dispatch(26, .{ @intCast(other), 0, 0, 0, 0, 0 }, &c.frame));
+    try std.testing.expectEqual(@as(i64, -9), c.rename(a, "x", sub, "moved.txt", false));
+    try std.testing.expect(S.exists(3, "x"));
+    try std.testing.expectEqual(@as(i64, 0), c.rename(a, "x", sub, "moved.txt", true));
+    try std.testing.expect(!S.exists(3, "x") and S.exists(51, "moved.txt"));
+
+    const mutations = S.mutations;
+    try std.testing.expectEqual(@as(i64, -1), c.named(meta.remove_op, a, "sub", meta.remove_file));
+    try std.testing.expectEqual(mutations, S.mutations);
+    try std.testing.expectEqual(@as(i64, -9), c.named(meta.remove_op, a, "sub", meta.remove_directory));
+    try std.testing.expectEqual(@as(i64, 0), c.named(meta.remove_op, sub, "moved.txt", meta.remove_file));
+    try std.testing.expectEqual(@as(usize, 0), trust.count());
+    try std.testing.expectEqual(@as(i64, 0), c.named(meta.remove_op, a, "sub", meta.remove_directory));
+    // The removed directory's pin is stale: only close is accepted.
+    try std.testing.expectEqual(@as(i64, -2), c.stat(sub, meta.handle_directory));
+    try std.testing.expectEqual(@as(i64, -2), c.named(meta.create_op, sub, "x", 0));
+    try std.testing.expectEqual(@as(i64, -6), c.named(meta.remove_op, a, "sub", meta.remove_directory));
+    for ([_]i64{ sub, b, a }) |token| try std.testing.expectEqual(@as(i64, 0), c.close(token));
+    try std.testing.expectEqual(@as(i64, -2), c.close(a));
+    try std.testing.expectEqual(@as(usize, 0), S.transient_pins());
+}
+
+test "B5 EL0: guest renames and removals stale every process's pins at or under the names" {
+    var c: B5Case = .{};
+    c.start();
+    defer c.stop();
+    const meta = file_table.metadata;
+    const S = B5Case.Server;
+    const pid = B5Case.pid();
+    const peer_pid: u64 = if (pid == 1) 2 else 1;
+    const a = c.pin("a");
+    const d = c.named(meta.mkdir_op, a, "d", 0);
+    const inner = c.named(meta.mkdir_op, d, "inner", 0);
+    const sibling = c.named(meta.mkdir_op, a, "dd", 0);
+    try std.testing.expect(a > 0 and d > 0 and inner > 0 and sibling > 0);
+    const peer = file_table.pin_open(peer_pid, "/host/content", "a/d/inner");
+    const peer_live = file_table.pin_open(peer_pid, "/host/content", "a");
+    try std.testing.expect(peer > 0 and peer_live > 0);
+    // Tokens belong to the process that opened them.
+    var value: meta.Wire = undefined;
+    try std.testing.expectEqual(@as(i64, -2), file_table.pin_close(peer_pid, @intCast(a)));
+    try std.testing.expectEqual(@as(i64, -2), file_table.handle_metadata(peer_pid, @intCast(d), meta.handle_directory, &value));
+    try std.testing.expectEqual(@as(i64, -2), c.close(peer));
+
+    try std.testing.expectEqual(@as(i64, 0), c.rename(a, "d", a, "e", false));
+    for ([_]i64{ d, inner }) |token| {
+        try std.testing.expectEqual(@as(i64, -2), c.stat(token, meta.handle_directory));
+        try std.testing.expectEqual(@as(i64, -2), c.named(meta.pin_child_op, token, "inner", 0));
+        try std.testing.expectEqual(@as(i64, -2), c.named(meta.mkdir_op, token, "x", 0));
+    }
+    try std.testing.expectEqual(@as(i64, -2), file_table.handle_metadata(peer_pid, @intCast(peer), meta.handle_directory, &value));
+    // A shared name prefix is not a path prefix.
+    try std.testing.expectEqual(@as(i64, 0), c.stat(sibling, meta.handle_directory));
+    try std.testing.expectEqual(@as(i64, 0), file_table.handle_metadata(peer_pid, @intCast(peer_live), meta.handle_directory, &value));
+    const e = c.named(meta.pin_child_op, a, "e", 0);
+    try std.testing.expect(e > 0);
+    const moved = c.named(meta.pin_child_op, e, "inner", 0);
+    try std.testing.expect(moved > 0);
+    try std.testing.expectEqual(@as(i64, 0), c.stat(moved, meta.handle_directory));
+    try std.testing.expectEqual(@as(u64, 151), c.storage.value.identity.inode);
+
+    // Pins, snapshots and fds never share a close or page path.
+    try std.testing.expectEqual(@as(i64, -2), c.raw(.{ meta.dir_close_op, @bitCast(a), 0, 0, 0, 0 }));
+    try std.testing.expectEqual(@as(i64, -2), c.raw(.{ meta.dir_page_op, @bitCast(a), 0, 1, @intFromPtr(&c.storage.value), 0 }));
+    for (0..file_table.max_handles_per_process) |slot|
+        try std.testing.expectEqual(error_result(.ebadf), dispatch(26, .{ slot, 0, 0, 0, 0, 0 }, &c.frame));
+    try std.testing.expectEqual(@as(i64, 0), c.close(moved));
+    const listing = c.path_call(meta.dir_open_op, "a");
+    try std.testing.expect(listing > 0);
+    try std.testing.expectEqual(@as(i64, -2), c.close(listing));
+    try std.testing.expectEqual(@as(i64, -2), c.named(meta.create_op, listing, "x", 0));
+    try std.testing.expectEqual(@as(i64, -2), c.stat(listing, meta.handle_directory));
+    try std.testing.expectEqual(@as(i64, 0), c.raw(.{ meta.dir_close_op, @bitCast(listing), 0, 0, 0, 0 }));
+
+    try std.testing.expectEqual(@as(i64, 0), c.named(meta.remove_op, a, "dd", meta.remove_directory));
+    try std.testing.expectEqual(@as(i64, -2), c.stat(sibling, meta.handle_directory));
+    for ([_]i64{ d, inner, sibling, e, a }) |token| try std.testing.expectEqual(@as(i64, 0), c.close(token));
+    // Process teardown releases its stale and live pins alike.
+    file_table.reset_process(peer_pid);
+    try std.testing.expectEqual(@as(i64, -2), file_table.pin_close(peer_pid, @intCast(peer_live)));
+    try std.testing.expectEqual(@as(usize, 0), S.transient_pins());
+}
+
+test "B5 EL0: malformed registers faults limits and revocation refuse before backend use" {
+    var c: B5Case = .{};
+    c.start();
+    defer c.stop();
+    const meta = file_table.metadata;
+    const S = B5Case.Server;
+    const bad = uaccess.diagnostic_unmapped;
+    const a = c.pin("a");
+    try std.testing.expect(a > 0);
+    const dir: u64 = @intCast(a);
+    const r = @intFromPtr(&c.storage.root);
+    const p = @intFromPtr(&c.storage.relative);
+    const name = @intFromPtr(&c.storage.from);
+    const to = @intFromPtr(&c.storage.to);
+    c.storage.from[0] = 'x';
+    c.storage.to[0] = 'y';
+    const one: u64 = 1 | 1 << 16;
+    const lookups = S.lookup_count;
+    for ([_]Args{
+        .{ meta.pin_open_op, bad, 13, p, 1, 0 },
+        .{ meta.pin_child_op, dir, bad, 1, 0, 0 },
+        .{ meta.create_op, dir, bad, 1, 0, 0 },
+        .{ meta.mkdir_op, dir, bad, 1, 0, 0 },
+        .{ meta.remove_op, dir, bad, 1, 0, 0 },
+        .{ meta.rename_op, dir, bad, dir, to, one },
+        .{ meta.rename_op, dir, name, dir, bad, one },
+        .{ meta.handle_metadata_op, dir, meta.handle_directory, 0, 0, bad },
+    }) |args| try std.testing.expectEqual(error_result(.efault), dispatch(79, args, &c.frame));
+    for ([_]Args{
+        .{ meta.pin_child_op, dir, name, 0, 0, 0 },
+        .{ meta.pin_child_op, dir, name, 1, 1, 0 },
+        .{ meta.create_op, dir, name, 1, 0, 1 },
+        .{ meta.mkdir_op, dir, name, 1, 1, 0 },
+        .{ meta.remove_op, dir, name, 1, 0, 1 },
+        .{ meta.remove_op, dir, name, 1, 2, 0 },
+        .{ meta.pin_close_op, dir, 1, 0, 0, 0 },
+        .{ meta.handle_metadata_op, dir, meta.handle_directory, 1, 0, name },
+        .{ meta.handle_metadata_op, dir, 2, 0, 0, name },
+        .{ meta.rename_op, dir, name, dir, to, one | 1 << 33 },
+        .{ meta.rename_op, dir, name, dir, to, 1 },
+        .{ meta.pin_open_op, r, 13, p, 1, name },
+        .{ meta.rename_op + 1, dir, name, 1, 0, 0 },
+    }) |args| try std.testing.expectEqual(error_result(.einval), dispatch(79, args, &c.frame));
+    try std.testing.expectEqual(error_result(.enametoolong), dispatch(79, .{ meta.create_op, dir, name, 256, 0, 0 }, &c.frame));
+    try std.testing.expectEqual(error_result(.enametoolong), dispatch(79, .{ meta.rename_op, dir, name, dir, to, 256 | 1 << 16 }, &c.frame));
+    for ([_][]const u8{ ".", "..", "x/y", "x\x00" }) |invalid| {
+        try std.testing.expectEqual(@as(i64, -1), c.named(meta.create_op, a, invalid, 0));
+        try std.testing.expectEqual(@as(i64, -1), c.named(meta.pin_child_op, a, invalid, 0));
+        try std.testing.expectEqual(@as(i64, -1), c.rename(a, invalid, a, "y", true));
+    }
+    try std.testing.expectEqual(lookups, S.lookup_count);
+    try std.testing.expectEqual(@as(usize, 0), S.mutations);
+
+    // The per-process resource limit counts pins and refuses before lookup.
+    var held: [file_table.max_handles_per_process - 1]i64 = undefined;
+    for (&held) |*token| {
+        token.* = c.named(meta.pin_child_op, a, "b", 0);
+        try std.testing.expect(token.* > 0);
+    }
+    const full = S.lookup_count;
+    try std.testing.expectEqual(@as(i64, -5), c.named(meta.pin_child_op, a, "b", 0));
+    try std.testing.expectEqual(@as(i64, -5), c.named(meta.create_op, a, "x", 0));
+    try std.testing.expectEqual(@as(i64, -5), c.named(meta.mkdir_op, a, "x", 0));
+    try std.testing.expectEqual(@as(i64, -5), c.pin("a"));
+    try std.testing.expectEqual(full, S.lookup_count);
+    try std.testing.expectEqual(@as(usize, 0), S.mutations);
+    for (held) |token| try std.testing.expectEqual(@as(i64, 0), c.close(token));
+
+    // A legacy fd has no pinned object to describe.
+    var files = [_]syscall.virtio_file.TestFile{.{ .name = "legacy.txt", .data = "old" }};
+    syscall.virtio_file.set_test_share(&files);
+    const legacy = file_table.open(B5Case.pid(), "/host/legacy.txt", file_table.MODE_READ);
+    syscall.virtio_file.set_test_share(null);
+    try std.testing.expect(legacy >= 0);
+    try std.testing.expectEqual(@as(i64, -4), c.stat(legacy, meta.handle_file));
+    try std.testing.expectEqual(@as(i64, -2), c.stat(7, meta.handle_file));
+    try std.testing.expectEqual(@as(i64, 0), file_table.close(B5Case.pid(), @intCast(legacy)));
+
+    // Revocation applies at every use; close still releases the reference.
+    const fd = c.named(meta.create_op, a, "x", 0);
+    try std.testing.expect(fd >= 0);
+    _ = syscall.trust.load("#v1\ncontent/a\t600\t0\t-\n");
+    const before = S.lookup_count;
+    try std.testing.expectEqual(@as(i64, -7), c.stat(a, meta.handle_directory));
+    try std.testing.expectEqual(@as(i64, -7), c.stat(fd, meta.handle_file));
+    for ([_]u64{ meta.pin_child_op, meta.create_op, meta.mkdir_op, meta.remove_op }) |op|
+        try std.testing.expectEqual(@as(i64, -7), c.named(op, a, "b", 0));
+    try std.testing.expectEqual(@as(i64, -7), c.rename(a, "x", a, "y", true));
+    try std.testing.expectEqual(before, S.lookup_count);
+    try std.testing.expectEqual(@as(usize, 1), S.mutations);
+    try std.testing.expectEqual(@as(i64, -7), c.pin("a"));
+    try std.testing.expectEqual(@as(u64, 0), dispatch(26, .{ @intCast(fd), 0, 0, 0, 0, 0 }, &c.frame));
+    try std.testing.expectEqual(@as(i64, 0), c.close(a));
+    syscall.trust.init();
+    try std.testing.expectEqual(@as(usize, 0), S.transient_pins());
+    S.stop();
+    try std.testing.expectEqual(@as(i64, -4), c.pin("a"));
 }
 
 test "syscall: slot 35 replacement selector preserves legacy register behavior" {

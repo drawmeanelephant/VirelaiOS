@@ -34,11 +34,19 @@ const Mock = struct {
     var from_len: usize = 0;
     var to_len: usize = 0;
     var diagnostics: usize = 0;
+    var next_pin: u64 = 0;
+    var directory: fs.Metadata = undefined;
+    var last_name: [256]u8 = undefined;
+    var last_name_len: usize = 0;
 
     fn reset() void {
         calls = 0;
         diagnostics = 0;
         forced = null;
+        next_pin = 500;
+        directory = facts(7);
+        directory.kind = .directory;
+        directory.host_mode = 0o040755;
         value = facts(42);
         page = std.mem.zeroes(fs.Page);
         page.header = .{ .count = 2, .next = 2, .end = 0 };
@@ -99,7 +107,34 @@ const Mock = struct {
                     out.* = page;
                     return page.header.count;
                 },
-                6 => return 0,
+                6, 9 => return 0,
+                7 => {
+                    next_pin += 1;
+                    return @intCast(next_pin);
+                },
+                8, 11, 12, 13 => {
+                    last_name_len = @intCast(args[3]);
+                    const bytes: [*]const u8 = @ptrFromInt(args[2]);
+                    @memcpy(last_name[0..last_name_len], bytes[0..last_name_len]);
+                    if (args[0] == 11) return 5;
+                    if (args[0] == 13) return 0;
+                    next_pin += 1;
+                    return @intCast(next_pin);
+                },
+                10 => {
+                    const out: *fs.Metadata = @ptrFromInt(args[5]);
+                    out.* = if (args[2] == fs.handle_directory) directory else value;
+                    return 0;
+                },
+                14 => {
+                    from_len = @intCast(args[5] & 0xffff);
+                    to_len = @intCast((args[5] >> 16) & 0xffff);
+                    const a: [*]const u8 = @ptrFromInt(args[2]);
+                    const b: [*]const u8 = @ptrFromInt(args[4]);
+                    @memcpy(from[0..from_len], a[0..from_len]);
+                    @memcpy(to[0..to_len], b[0..to_len]);
+                    return 0;
+                },
                 else => @panic("unknown metadata operation"),
             },
             else => @panic("unexpected syscall"),
@@ -152,6 +187,7 @@ test "SDK fs: native errors stay distinct, never fabricate metadata or EOF" {
         try expectError(err, backend.openContained("/host", "a", .read));
         try expectError(err, backend.openSnapshot("/host", ""));
         try expectError(err, backend.publish("a", "b", .replace));
+        try expectError(err, backend.openDirectory("/host", ""));
         try equal(@as(usize, 4), backend.liveResources());
     }
 }
@@ -187,7 +223,7 @@ test "SDK fs: B2 path/name bounds, B3 relative-root depth and opaque names" {
     try expectError(error.AccessDenied, fs.rootedPath("/hostile", "a"));
 }
 
-test "SDK fs: contained open is one native open, no preflight stat or old-path fd stat" {
+test "SDK fs: contained open is one native open; fd metadata is the handle's own object" {
     Mock.reset();
     var backend: Backend = .{};
     const file = try backend.openContained("/host/root", "file", .write);
@@ -196,10 +232,26 @@ test "SDK fs: contained open is one native open, no preflight stat or old-path f
     try equal(@as(u64, 3), Mock.last[0]);
     try equal(@as(u64, 0), Mock.last[5]);
     const before = Mock.calls;
-    try expectError(error.Unsupported, backend.fileMetadata(file));
+    const live = try backend.fileMetadata(file);
+    try equal(@as(u64, 0x1_0000_0001), live.size);
+    try equal(fs.handle_metadata_op, Mock.last[0]);
+    try equal(@as(u64, 0), Mock.last[1]); // the native fd, not a path
+    try equal(fs.handle_file, Mock.last[2]);
+    try equal(@as(u64, 0x1_0000_0001), try file.length(backend.io()));
+    try equal(before + 2, Mock.calls);
+    // A full std stat would need invented fields: still refused, no call.
     try expectError(error.Unexpected, file.stat(backend.io()));
+    try equal(before + 2, Mock.calls);
+    Mock.value.kind = .directory;
+    Mock.value.host_mode = 0o040755;
+    try expectError(error.ProtocolViolation, backend.fileMetadata(file));
+    Mock.value = facts(42);
+    Mock.forced = -4; // legacy path fds have no pinned object
+    try expectError(error.Unsupported, backend.fileMetadata(file));
     try expectError(error.Unexpected, file.length(backend.io()));
-    try equal(before, Mock.calls);
+    Mock.forced = -2;
+    try expectError(error.InvalidHandle, backend.fileMetadata(file));
+    Mock.forced = null;
     try file.writeStreamingAll(backend.io(), "new");
     try equal(@as(u64, 25), Mock.number);
     try file.setLength(backend.io(), 3);
@@ -370,4 +422,146 @@ test "SDK fs: std maps native I/O failure without inventing a path or fd-quota c
     const before = Mock.calls;
     try expectError(error.BadPathName, platform.cwd().openFile(backend.io(), "a/../b", .{}));
     try equal(before, Mock.calls);
+}
+
+test "SDK fs: B5 pins, exclusive create and pinned renames are one native call each" {
+    Mock.reset();
+    var backend: Backend = .{};
+    const io = backend.io();
+    const dir = try backend.openDirectory("/host/content", "out");
+    try equal(@as(usize, 1), Mock.calls);
+    try equal(fs.pin_open_op, Mock.last[0]);
+    try equal(@as(u64, 13), Mock.last[2]);
+    try equal(@as(u64, 3), Mock.last[4]);
+    try equal(@as(u64, 0), Mock.last[5]);
+    const child = try backend.openChildDirectory(dir, "nested");
+    try equal(fs.pin_child_op, Mock.last[0]);
+    try equal(@as(u64, 501), Mock.last[1]); // the native pin, not the SDK token
+    try std.testing.expectEqualStrings("nested", Mock.last_name[0..Mock.last_name_len]);
+    try expect(child.token != dir.token);
+    const meta = try backend.directoryMetadata(child);
+    try equal(fs.Kind.directory, meta.kind);
+    try equal(@as(u64, 502), Mock.last[1]);
+    try equal(fs.handle_directory, Mock.last[2]);
+
+    const file = try backend.createExclusive(dir, "page.html");
+    try equal(fs.create_op, Mock.last[0]);
+    try equal(@as(u64, 0), Mock.last[4]);
+    try file.writeStreamingAll(io, "<p>");
+    try equal(@as(u64, 25), Mock.number);
+    try equal(@as(u64, 5), Mock.last[0]);
+    try equal(@as(u64, 0x1_0000_0001), try file.length(io));
+    try equal(@as(u64, 5), Mock.last[1]);
+    try expectError(error.NotOpenForReading, readOne(file, io));
+    const sub = try backend.makeDirectory(dir, "assets");
+    try equal(fs.mkdir_op, Mock.last[0]);
+    try equal(@as(usize, 8), backend.liveResources());
+    const calls = Mock.calls;
+    try expectError(error.ResourceLimit, backend.openDirectory("/host", ""));
+    try expectError(error.ResourceLimit, backend.openChildDirectory(dir, "x"));
+    try expectError(error.ResourceLimit, backend.createExclusive(dir, "x"));
+    try expectError(error.ResourceLimit, backend.makeDirectory(dir, "x"));
+    try equal(calls, Mock.calls);
+
+    try backend.rename(dir, "page.html", sub, "index.html", .preserve_existing);
+    try equal(fs.rename_op, Mock.last[0]);
+    try equal(@as(u64, 501), Mock.last[1]);
+    try equal(@as(u64, 503), Mock.last[3]);
+    try equal(@as(u64, 9 | 10 << 16), Mock.last[5]);
+    try std.testing.expectEqualStrings("page.html", Mock.from[0..Mock.from_len]);
+    try std.testing.expectEqualStrings("index.html", Mock.to[0..Mock.to_len]);
+    try backend.rename(sub, "index.html", dir, "page.html", .replace);
+    try equal(@as(u64, 10 | 9 << 16) | fs.rename_replace, Mock.last[5]);
+    try backend.removeFile(sub, "index.html");
+    try equal(fs.remove_op, Mock.last[0]);
+    try equal(@as(u64, 0), Mock.last[4]);
+    try backend.removeDirectory(dir, "assets");
+    try equal(@as(u64, 1), Mock.last[4]);
+    try std.testing.expectEqualStrings("assets", Mock.last_name[0..Mock.last_name_len]);
+
+    try backend.closeChecked(file);
+    try backend.closeDirectory(child);
+    try equal(fs.pin_close_op, Mock.last[0]);
+    try equal(@as(u64, 502), Mock.last[1]);
+    try expectError(error.InvalidHandle, backend.closeDirectory(child));
+    try backend.closeAll();
+    try equal(fs.pin_close_op, Mock.last[0]);
+    try equal(@as(usize, 4), backend.liveResources());
+}
+
+fn readOne(file: std.Io.File, io: std.Io) !usize {
+    var byte: [1]u8 = undefined;
+    var reader: std.Io.File.Reader = .initStreaming(file, io, &.{});
+    return reader.interface.readSliceShort(&byte) catch return reader.err.?;
+}
+
+test "SDK fs: B5 names and token kinds refuse before any native call" {
+    Mock.reset();
+    var backend: Backend = .{};
+    const dir = try backend.openDirectory("/host", "");
+    const snapshot = try backend.openSnapshot("/host", "");
+    const file = try backend.openContained("/host", "a", .read);
+    const calls = Mock.calls;
+    for ([_][]const u8{ "", ".", "..", "a/b", "/a", "a\x00" }) |bad| {
+        try expectError(error.InvalidArgument, backend.openChildDirectory(dir, bad));
+        try expectError(error.InvalidArgument, backend.createExclusive(dir, bad));
+        try expectError(error.InvalidArgument, backend.makeDirectory(dir, bad));
+        try expectError(error.InvalidArgument, backend.removeFile(dir, bad));
+        try expectError(error.InvalidArgument, backend.rename(dir, bad, dir, "x", .replace));
+        try expectError(error.InvalidArgument, backend.rename(dir, "x", dir, bad, .replace));
+    }
+    try expectError(error.NameTooLong, backend.createExclusive(dir, "x" ** 256));
+    try expectError(error.NameTooLong, backend.rename(dir, "x" ** 256, dir, "y", .replace));
+    const other: fs.Directory = .{ .token = snapshot.token };
+    try expectError(error.InvalidHandle, backend.closeDirectory(other));
+    try expectError(error.InvalidHandle, backend.directoryMetadata(.{ .token = file.handle }));
+    try expectError(error.InvalidHandle, backend.createExclusive(other, "x"));
+    try expectError(error.InvalidHandle, backend.rename(dir, "x", other, "y", .replace));
+    try expectError(error.InvalidHandle, backend.closeSnapshot(.{ .token = dir.token }));
+    try expectError(error.CloseFailed, backend.closeChecked(.{ .handle = @intCast(dir.token), .flags = .{ .nonblocking = false } }));
+    try equal(calls, Mock.calls);
+    // A name accepted by both bounds reaches the kernel byte-for-byte.
+    _ = try backend.openChildDirectory(dir, "x" ** 255);
+    try equal(@as(usize, 255), Mock.last_name_len);
+    try equal(@as(usize, 8), backend.liveResources());
+    try backend.closeAll();
+}
+
+test "SDK fs: B5 native refusals and malformed successes never leak records" {
+    Mock.reset();
+    var backend: Backend = .{};
+    const dir = try backend.openDirectory("/host", "");
+    for ([_]struct { rc: i64, err: fs.Error }{
+        .{ .rc = -9, .err = error.PathAlreadyExists },
+        .{ .rc = -2, .err = error.InvalidHandle },
+        .{ .rc = -7, .err = error.AccessDenied },
+        .{ .rc = -4, .err = error.Unsupported },
+        .{ .rc = -5, .err = error.ResourceLimit },
+        .{ .rc = -6, .err = error.FileNotFound },
+    }) |case| {
+        Mock.forced = case.rc;
+        try expectError(case.err, backend.createExclusive(dir, "x"));
+        try expectError(case.err, backend.makeDirectory(dir, "x"));
+        try expectError(case.err, backend.openChildDirectory(dir, "x"));
+        try expectError(case.err, backend.removeDirectory(dir, "x"));
+        try expectError(case.err, backend.rename(dir, "x", dir, "y", .preserve_existing));
+        try expectError(case.err, backend.directoryMetadata(dir));
+        try equal(@as(usize, 5), backend.liveResources());
+    }
+    Mock.forced = -1;
+    try expectError(error.InvalidArgument, backend.closeDirectory(dir));
+    try equal(@as(usize, 5), backend.liveResources());
+    Mock.forced = 0;
+    try expectError(error.ProtocolViolation, backend.openDirectory("/host", ""));
+    try expectError(error.ProtocolViolation, backend.makeDirectory(dir, "x"));
+    Mock.forced = 1;
+    try expectError(error.ProtocolViolation, backend.removeFile(dir, "x"));
+    try expectError(error.ProtocolViolation, backend.closeDirectory(dir));
+    Mock.forced = null;
+    try equal(@as(usize, 5), backend.liveResources());
+    Mock.directory.kind = .file;
+    Mock.directory.host_mode = 0o100644;
+    try expectError(error.ProtocolViolation, backend.directoryMetadata(dir));
+    try backend.closeDirectory(dir);
+    try equal(@as(usize, 4), backend.liveResources());
 }
