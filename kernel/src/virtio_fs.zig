@@ -13,6 +13,8 @@ const mmu = @import("mmu.zig");
 const pci = @import("pci.zig");
 const spinlock = @import("spinlock.zig");
 const directory = @import("directory.zig");
+const alloc = @import("alloc.zig");
+pub const metadata = @import("fs_metadata.zig");
 
 pub const st_ok: u8 = 0;
 pub const st_not_found: u8 = 1;
@@ -37,16 +39,17 @@ pub const max_io: usize = 2048;
 
 const descriptor_count: usize = 16;
 const max_payload: usize = 40 + max_io;
-const max_message: usize = 40 + max_payload;
+const max_message: usize = std.mem.alignForward(usize, 40 + max_payload, 64);
 const max_queue: u16 = @intCast(descriptor_count);
 const root_nodeid: u64 = 1;
 const fuse_in_header_len: usize = 40;
 const fuse_out_header_len: usize = 16;
 const poll_budget: usize = 16_000_000;
-const node_cache_count: usize = 64;
-// Caching is optional. Keep its existing storage budget; longer paths are
-// resolved losslessly without caching, not refused or prefix-aliased.
-const cache_path_max: usize = 255;
+// Legacy caching is optional; one short-path entry plus root keeps the
+// encoded kernel below the unchanged 16 MiB loader ceiling. Longer paths
+// remain lossless, uncached. B3 never consumes this pathname cache.
+const node_cache_count: usize = 2;
+const cache_path_max: usize = 31;
 const file_handle_count: usize = 8;
 
 const VirtqDesc = extern struct {
@@ -76,10 +79,11 @@ const VirtqUsed = extern struct {
 };
 
 const Queue = struct {
-    desc: [descriptor_count]VirtqDesc align(16) = undefined,
-    avail: VirtqAvail align(2) = undefined,
-    used: VirtqUsed align(4) = undefined,
-    last_used: u16 = 0,
+    // Cache maintenance must not discard dirty CPU-owned queue state.
+    desc: [descriptor_count]VirtqDesc align(64) = undefined,
+    avail: VirtqAvail align(64) = undefined,
+    used: VirtqUsed align(64) = undefined,
+    last_used: u16 align(64) = 0,
     size: u16 = 0,
     notify_off: u16 = 0,
 };
@@ -98,6 +102,8 @@ const FileHandle = struct {
     fuse_handle: u64 = 0,
     cursor: u64 = 0,
     valid: bool = false,
+    contained: bool = false,
+    access: metadata.Access = .read,
 };
 
 pub const DirectoryEntry = struct {
@@ -140,11 +146,19 @@ var notify_multiplier: u32 = 0;
 var request_queue = Queue{};
 var hiprio_queue = Queue{};
 var next_unique: u64 = 1;
+// Mount lifetime discriminator, not a pathname hash or synthesized inode.
+var mount_identity: u64 = 0;
+pub const identity_pin_max: usize = 512;
+const IdentityPin = extern struct { node: u64, pending: u64 };
+var identity_nodes: ?*[identity_pin_max]IdentityPin = null;
+pub var identity_pin_count: usize = 0;
+var test_identity_nodes: [identity_pin_max]IdentityPin = undefined;
+pub var test_exchange: ?*const fn (u32, u64, []const u8) ?[]const u8 = null;
 var nodes: [node_cache_count]Node = [_]Node{.{}} ** node_cache_count;
 var handles: [file_handle_count]FileHandle = [_]FileHandle{.{}} ** file_handle_count;
 var fs_lock = spinlock.IrqSaveSpinlock{};
-var request_buf: [max_message]u8 align(16) = undefined;
-var reply_buf: [max_message]u8 align(16) = undefined;
+var request_buf: [max_message]u8 align(64) = undefined;
+var reply_buf: [max_message]u8 align(64) = undefined;
 var read_result_buf: [max_io]u8 align(16) = undefined;
 var read_result_len: usize = 0;
 
@@ -152,6 +166,7 @@ const flag_next: u16 = 1;
 const flag_write: u16 = 2;
 const fuse_init: u32 = 26;
 const fuse_lookup: u32 = 1;
+const fuse_forget: u32 = 2;
 const fuse_getattr: u32 = 3;
 const fuse_setattr: u32 = 4;
 const fuse_mknod: u32 = 8;
@@ -414,6 +429,7 @@ fn init_ring(q: *Queue, queue_index: u16, wanted: u16) bool {
 /// POST-MMU queue setup and FUSE_INIT handshake. Returns false on an
 /// unsupported tag, feature set, queue layout, or FUSE protocol version.
 pub fn init() bool {
+    reset_identity_nodes(); // Device reset ends the previous pin lifetime.
     fs_ready = false;
     fs_initialized = false;
     fs_init_stage = 1; // transport reset
@@ -480,6 +496,7 @@ pub fn init() bool {
     if (fs_max_write == 0) fs_max_write = @intCast(max_io);
     fs_request_queue_size = request_queue.size;
     fs_initialized = true;
+    mount_identity += 1;
     fs_init_stage = 11; // initialized
     nodes[0] = .{
         .path_len = 0,
@@ -507,6 +524,12 @@ pub fn write_chunk_limit() usize {
 /// device-readable request and a device-writable reply buffer, then polls
 /// the used ring; VZ's FUSE backend does not require guest IRQs.
 fn transact(opcode: u32, nodeid: u64, payload: []const u8) ?[]const u8 {
+    if (builtin.is_test) {
+        if (test_exchange) |exchange| {
+            fs_error = 0;
+            return exchange(opcode, nodeid, payload);
+        }
+    }
     if (!fs_ready or payload.len > max_payload) return null;
     fs_error = 0;
     const unique = next_unique;
@@ -543,14 +566,529 @@ fn transact(opcode: u32, nodeid: u64, payload: []const u8) ?[]const u8 {
         const slot = request_queue.last_used % request_queue.size;
         const used = request_queue.used.ring[slot];
         request_queue.last_used +%= 1;
-        if (used.id != 0 or used.len < fuse_out_header_len or used.len > reply_buf.len) return null;
+        if (used.id != 0 or used.len > reply_buf.len) return null;
+        // FUSE_FORGET has no reply. The used descriptor still acknowledges
+        // consumption, so the request storage can safely be reused.
+        if (opcode == fuse_forget) return "";
+        if (used.len < fuse_out_header_len) return null;
         mmu.invalidate_dcache_range(@intFromPtr(&reply_buf), used.len);
         const decoded = decode_fuse_reply(reply_buf[0..used.len], unique) orelse return null;
         fs_error = decoded.errno;
         if (fs_error != 0) return null;
         return decoded.body;
     }
+    fs_ready = false; // Do not reuse buffers while a timed-out DMA is armed.
     return null;
+}
+
+pub const Root = struct { path: []const u8 };
+
+pub fn contained_backend(root: *Root) metadata.Backend {
+    // The relocatable kernel must materialize callbacks at its live base.
+    // Individual volatile stores prevent a compiler-generated memcpy from
+    // an absolute-address rodata table (see B3's loader finding).
+    const ops: *volatile metadata.ContainedOps = &contained_ops;
+    ops.root = pin_root;
+    ops.lookup = pin_lookup;
+    ops.release = unpin;
+    ops.stat = pin_stat;
+    ops.open = pin_open;
+    ops.close = pin_close;
+    ops.read = pin_read;
+    ops.write = pin_write;
+    return .{ .context = root, .root_path = root.path, .ops = if (available()) &contained_ops else null };
+}
+
+fn metadata_failure() metadata.Error {
+    return if (fs_error == 0) error.Io else metadata.fuseError(fs_error);
+}
+
+fn attr_locked(node: u64) metadata.Error!metadata.Metadata {
+    const input = [_]u8{0} ** 16;
+    const reply = transact(fuse_getattr, node, &input) orelse return metadata_failure();
+    return metadata.decodeFuseGetattr(mount_identity, reply);
+}
+
+fn lookup_locked(parent: u64, name: []const u8) metadata.Error!metadata.Object {
+    if (!directory.valid_name(name)) return error.InvalidPath;
+    var input: [directory.name_max + 1]u8 = .{0} ** (directory.name_max + 1);
+    @memcpy(input[0..name.len], name);
+    const reply = transact(fuse_lookup, parent, input[0 .. name.len + 1]) orelse return metadata_failure();
+    // Even malformed attributes can carry a valid lookup reference.
+    const decoded = metadata.decodeFuseLookup(mount_identity, reply) catch |err| {
+        if (reply.len >= 8 and read64(reply, 0) != 0) forget_locked(read64(reply, 0));
+        return err;
+    };
+    // VZ may recycle attr.ino after the last LOOKUP reference is dropped.
+    // Keep one actual reference per object for the bounded mount lifetime,
+    // never a pathname hash or invented inode. Extra lookups still release.
+    if (decoded.metadata.kind != .symlink) {
+        retain_identity_locked(decoded.node) catch |err| {
+            forget_locked(decoded.node);
+            return err;
+        };
+    }
+    return .{ .token = decoded.node, .metadata = decoded.metadata };
+}
+
+fn retain_identity_locked(node: u64) metadata.Error!void {
+    if (node == root_nodeid) return;
+    if (identity_nodes) |entries| {
+        for (entries[0..identity_pin_count]) |pinned| if (pinned.node == node) return;
+    }
+    if (identity_pin_count == identity_pin_max) return error.TreeLimit;
+    if (identity_nodes == null) {
+        identity_nodes = if (builtin.is_test) &test_identity_nodes else @ptrFromInt(alloc.alloc_pages(2) orelse return error.HandleLimit);
+    }
+    // Retain the existing reference; unpin skips exactly its first release.
+    identity_nodes.?[identity_pin_count] = .{ .node = node, .pending = 1 };
+    identity_pin_count += 1;
+}
+
+fn release_lookup_locked(node: u64) void {
+    if (identity_nodes) |entries| {
+        for (entries[0..identity_pin_count]) |*pinned| {
+            if (pinned.node == node and pinned.pending != 0) {
+                pinned.pending = 0;
+                return;
+            }
+        }
+    }
+    forget_locked(node);
+}
+
+fn reset_identity_nodes() void {
+    if (!builtin.is_test) {
+        if (identity_nodes) |entries| _ = alloc.free_pages(@intFromPtr(entries), 2);
+    }
+    identity_nodes = null;
+    identity_pin_count = 0;
+}
+
+fn forget_locked(node: u64) void {
+    if (node == root_nodeid) return;
+    var input: [8]u8 = undefined;
+    write64(&input, 0, 1);
+    // A failed release poisons this mount instead of claiming recovery.
+    if (transact(fuse_forget, node, &input) == null) fs_ready = false;
+}
+
+fn pin_root(context: *anyopaque) metadata.Error!metadata.Object {
+    const root: *Root = @ptrCast(@alignCast(context));
+    try metadata.validatePath(root.path);
+    if (!available()) return error.ContainmentUnavailable;
+    const saved = fs_lock.lock();
+    defer fs_lock.unlock(saved);
+    var current = metadata.Object{ .token = root_nodeid, .metadata = try attr_locked(root_nodeid) };
+    errdefer release_lookup_locked(current.token);
+    var parts = std.mem.splitScalar(u8, root.path, '/');
+    while (parts.next()) |name| {
+        if (current.metadata.kind == .symlink) return error.SymlinkRejected;
+        if (current.metadata.kind != .directory) return error.NotDirectory;
+        if (name.len == 0) break;
+        const child = try lookup_locked(current.token, name);
+        release_lookup_locked(current.token);
+        current = child;
+    }
+    return current;
+}
+
+fn pin_lookup(_: *anyopaque, parent: metadata.Object, name: []const u8) metadata.Error!metadata.Object {
+    if (!available()) return error.ContainmentUnavailable;
+    const saved = fs_lock.lock();
+    defer fs_lock.unlock(saved);
+    return lookup_locked(parent.token, name);
+}
+
+fn unpin(_: *anyopaque, object: metadata.Object) void {
+    const saved = fs_lock.lock();
+    defer fs_lock.unlock(saved);
+    release_lookup_locked(object.token);
+}
+
+fn pin_stat(_: *anyopaque, object: metadata.Object) metadata.Error!metadata.Metadata {
+    if (!available()) return error.ContainmentUnavailable;
+    const saved = fs_lock.lock();
+    defer fs_lock.unlock(saved);
+    return attr_locked(object.token);
+}
+
+fn pin_open(_: *anyopaque, object: metadata.Object, access: metadata.Access) metadata.Error!u64 {
+    if (!available()) return error.ContainmentUnavailable;
+    const saved = fs_lock.lock();
+    defer fs_lock.unlock(saved);
+    var slot: usize = 0;
+    while (slot < handles.len and handles[slot].valid) : (slot += 1) {}
+    if (slot == handles.len) return error.HandleLimit;
+    var input: [8]u8 = .{0} ** 8;
+    // FUSE opens this lookup-pinned inode, not its former name. Never
+    // create/truncate, never O_RDWR for a read-only request.
+    write32(&input, 0, if (access == .read) open_read_only else open_write_only);
+    const reply = transact(fuse_open, object.token, &input) orelse return metadata_failure();
+    if (reply.len < 16) return error.InvalidMetadata;
+    handles[slot] = .{
+        .nodeid = object.token,
+        .fuse_handle = read64(reply, 0),
+        .valid = true,
+        .contained = true,
+        .access = access,
+    };
+    return slot + 1;
+}
+
+pub fn contained_close(id: u16) metadata.Error!void {
+    if (!available()) return error.ContainmentUnavailable;
+    const saved = fs_lock.lock();
+    defer fs_lock.unlock(saved);
+    const handle = find_handle(id) orelse return error.StaleIdentity;
+    var input: [24]u8 = .{0} ** 24;
+    write64(&input, 0, handle.fuse_handle);
+    _ = transact(fuse_release, handle.nodeid, &input) orelse return metadata_failure();
+    handle.* = .{};
+}
+
+fn pin_close(_: *anyopaque, id: u64) metadata.Error!void {
+    if (id > handles.len) return error.StaleIdentity;
+    return contained_close(@intCast(id));
+}
+
+pub fn contained_read(id: u16, offset: u64, out: []u8) metadata.Error!usize {
+    if (!available()) return error.ContainmentUnavailable;
+    const saved = fs_lock.lock();
+    defer fs_lock.unlock(saved);
+    const handle = find_handle(id) orelse return error.StaleIdentity;
+    if (!handle.contained or handle.access != .read) return error.AccessDenied;
+    const take = @min(out.len, max_io);
+    if (take == 0) return 0;
+    var input: [40]u8 = .{0} ** 40;
+    write64(&input, 0, handle.fuse_handle);
+    write64(&input, 8, offset);
+    write32(&input, 16, @intCast(take));
+    const reply = transact(fuse_read, handle.nodeid, &input) orelse return metadata_failure();
+    if (reply.len > take) return error.InvalidMetadata;
+    @memcpy(out[0..reply.len], reply);
+    return reply.len;
+}
+
+fn pin_read(_: *anyopaque, id: u64, out: []u8) metadata.Error!usize {
+    if (id > handles.len) return error.StaleIdentity;
+    const h = find_handle(@intCast(id)) orelse return error.StaleIdentity;
+    const n = try contained_read(@intCast(id), h.cursor, out);
+    h.cursor += n;
+    return n;
+}
+
+fn pin_write(_: *anyopaque, id: u64, bytes: []const u8) metadata.Error!usize {
+    if (id > handles.len) return error.StaleIdentity;
+    var written: u64 = 0;
+    const st = write(@intCast(id), bytes, &written);
+    if (st != st_ok) return metadata_failure();
+    if (written > bytes.len) return error.InvalidMetadata;
+    return @intCast(written);
+}
+
+var contained_ops: metadata.ContainedOps = undefined;
+
+/// Wire-level fixture for backend + EL0 host tests, never a live backend.
+pub const TestMetadataServer = struct {
+    pub var lookup_count: usize = 0;
+    pub var pins: usize = 0;
+    pub var opens: usize = 0;
+    pub var swap_directory: bool = false;
+    pub var swapped: bool = false;
+    pub var swap_leaf: bool = false;
+    var leaf_swapped: bool = false;
+    pub var include_link: bool = false;
+    pub var symlink_node: u64 = 6;
+    pub var fail_opcode: u32 = 0;
+    pub var fail_errno: i32 = -5;
+    pub var short_attr: bool = false;
+    pub var zero_inode: bool = false;
+    pub var mtime: u64 = 1_790_897_123;
+    pub var size: u64 = 4;
+    var bytes: [4]u8 = undefined;
+    var reply: [512]u8 = undefined;
+
+    pub fn start() void {
+        std.debug.assert(builtin.is_test);
+        reset_identity_nodes();
+        lookup_count = 0;
+        pins = 0;
+        opens = 0;
+        swap_directory = false;
+        swapped = false;
+        swap_leaf = false;
+        leaf_swapped = false;
+        include_link = false;
+        symlink_node = 6;
+        fail_opcode = 0;
+        short_attr = false;
+        zero_inode = false;
+        size = 4;
+        mtime = 1_790_897_123;
+        bytes = .{ 's', 'a', 'f', 'e' };
+        handles = [_]FileHandle{.{}} ** file_handle_count;
+        mount_identity = 7;
+        fs_ready = true;
+        fs_initialized = true;
+        test_exchange = exchange;
+    }
+
+    pub fn stop() void {
+        fail_opcode = 0;
+        if (identity_nodes) |entries| {
+            for (entries[0..identity_pin_count]) |pinned| forget_locked(pinned.node);
+        }
+        std.debug.assert(pins == 0);
+        reset_identity_nodes();
+        test_exchange = null;
+        fs_ready = false;
+        fs_initialized = false;
+        handles = [_]FileHandle{.{}} ** file_handle_count;
+    }
+
+    pub fn transient_pins() usize {
+        return pins - identity_pin_count;
+    }
+
+    fn attr(node: u64, at: usize) void {
+        write64(&reply, at, if (zero_inode) 0 else 100 + node);
+        write64(&reply, at + 8, if (node == 5) size else 4096);
+        write64(&reply, at + 24, 1_790_897_100);
+        write64(&reply, at + 32, mtime);
+        write64(&reply, at + 40, 1_790_897_124);
+        write32(&reply, at + 52, 123);
+        write32(&reply, at + 60, if (node == symlink_node) 0o120777 else if (node == 5) 0o100644 else 0o040755);
+        write32(&reply, at + 68, 501);
+        write32(&reply, at + 72, 20);
+    }
+
+    fn row(at: usize, cookie: u64, name: []const u8) usize {
+        write64(&reply, at + 8, cookie);
+        write32(&reply, at + 16, @intCast(name.len));
+        @memcpy(reply[at + 24 ..][0..name.len], name);
+        return (24 + name.len + 7) & ~@as(usize, 7);
+    }
+
+    fn exchange(opcode: u32, node: u64, input: []const u8) ?[]const u8 {
+        @memset(&reply, 0);
+        if (opcode == fail_opcode) {
+            fs_error = fail_errno;
+            return null;
+        }
+        switch (opcode) {
+            fuse_lookup => {
+                lookup_count += 1;
+                const name = input[0 .. input.len - 1];
+                const child: u64 = if (node == 1 and std.mem.eql(u8, name, "content")) 2 else if (node == 2 and std.mem.eql(u8, name, "a")) (if (swapped) 6 else 3) else if (node == 3 and std.mem.eql(u8, name, "b")) 4 else if (node == 4 and std.mem.eql(u8, name, "page.md")) (if (leaf_swapped) 6 else 5) else if (std.mem.eql(u8, name, "link")) 6 else {
+                    fs_error = -2;
+                    return null;
+                };
+                write64(&reply, 0, child);
+                write64(&reply, 8, 1);
+                attr(child, 40);
+                pins += 1;
+                if (swap_directory and child == 3) swapped = true;
+                return reply[0..128];
+            },
+            fuse_getattr => {
+                attr(node, 16);
+                return reply[0..if (short_attr) @as(usize, 103) else 104];
+            },
+            fuse_forget => {
+                std.debug.assert(pins > 0);
+                pins -= 1;
+                return "";
+            },
+            fuse_open => {
+                opens += 1;
+                if (swap_leaf) leaf_swapped = true;
+                write64(&reply, 0, node + 1000);
+                return reply[0..16];
+            },
+            fuse_read => {
+                if (node != 5) return null;
+                const offset = read64(input, 8);
+                if (offset >= bytes.len) return "";
+                const n: usize = @intCast(@min(read32(input, 16), bytes.len - offset));
+                @memcpy(reply[0..n], bytes[@intCast(offset)..][0..n]);
+                return reply[0..n];
+            },
+            fuse_write => {
+                if (node != 5) return null;
+                const n = @min(bytes.len, read32(input, 16));
+                @memcpy(bytes[0..n], input[40..][0..n]);
+                size = n;
+                mtime += 1;
+                write32(&reply, 0, @intCast(n));
+                return reply[0..8];
+            },
+            fuse_opendir => {
+                write64(&reply, 0, node + 1000);
+                return reply[0..16];
+            },
+            fuse_readdir => {
+                if (read64(input, 8) != 0) return "";
+                const name: []const u8 = switch (node) {
+                    1 => "content",
+                    2 => "a",
+                    3 => "b",
+                    4 => "page.md",
+                    else => return "",
+                };
+                var len = row(0, 10, name);
+                if (include_link) len += row(len, 20, "link");
+                return reply[0..len];
+            },
+            fuse_release, fuse_releasedir, fuse_fsync => return "",
+            else => return null,
+        }
+    }
+};
+
+test "B3 backend: uncached pinned FUSE traversal survives directory replacement" {
+    const S = TestMetadataServer;
+    S.start();
+    defer S.stop();
+    const Allow = struct {
+        fn check(_: *anyopaque, _: []const u8, _: metadata.Access) metadata.Error!void {}
+    };
+    var root = Root{ .path = "content" };
+    const auth = metadata.Authorizer{ .context = &root, .check = Allow.check };
+    S.swap_directory = true;
+    var file = try metadata.open(contained_backend(&root), auth, "a/b/page.md", .read);
+    var bytes: [4]u8 = undefined;
+    try std.testing.expectEqual(@as(usize, 4), try file.read(&bytes));
+    try std.testing.expectEqualStrings("safe", &bytes);
+    try file.close();
+    try std.testing.expectEqual(@as(usize, 0), S.transient_pins());
+    try std.testing.expectError(error.SymlinkRejected, metadata.stat(contained_backend(&root), auth, "a/b/page.md"));
+    try std.testing.expectEqual(@as(usize, 0), S.transient_pins());
+}
+
+test "B3 backend: root intermediate and leaf links refuse with balanced pins" {
+    const S = TestMetadataServer;
+    const Allow = struct {
+        fn check(_: *anyopaque, _: []const u8, _: metadata.Access) metadata.Error!void {}
+    };
+    for ([_]u64{ 2, 3, 4, 5 }) |node| {
+        S.start();
+        defer S.stop();
+        S.symlink_node = node;
+        var root = Root{ .path = "content" };
+        const auth = metadata.Authorizer{ .context = &root, .check = Allow.check };
+        try std.testing.expectError(error.SymlinkRejected, metadata.stat(contained_backend(&root), auth, "a/b/page.md"));
+        try std.testing.expectError(error.SymlinkRejected, metadata.open(contained_backend(&root), auth, "a/b/page.md", .read));
+        try std.testing.expectEqual(@as(usize, 0), S.transient_pins());
+        try std.testing.expectEqual(@as(usize, 0), S.opens);
+    }
+}
+
+test "B3 backend: identity pins are bounded, reused and released at mount end" {
+    const S = TestMetadataServer;
+    S.start();
+    defer S.stop();
+    const Allow = struct {
+        fn check(_: *anyopaque, _: []const u8, _: metadata.Access) metadata.Error!void {}
+    };
+    var root = Root{ .path = "content" };
+    const auth = metadata.Authorizer{ .context = &root, .check = Allow.check };
+    const first = try metadata.stat(contained_backend(&root), auth, "a/b/page.md");
+    try std.testing.expectEqual(@as(usize, 4), identity_pin_count);
+    const again = try metadata.stat(contained_backend(&root), auth, "a/b/page.md");
+    try std.testing.expect(first.identity.eql(again.identity));
+    try std.testing.expectEqual(@as(usize, 4), S.pins);
+    try std.testing.expectEqual(@as(usize, 0), S.transient_pins());
+    for (test_identity_nodes[identity_pin_count..], 0..) |*pin, i| {
+        pin.* = .{ .node = 100 + i, .pending = 0 };
+        S.pins += 1;
+    }
+    identity_pin_count = identity_pin_max;
+    S.symlink_node = 0;
+    try std.testing.expectError(error.TreeLimit, metadata.stat(contained_backend(&root), auth, "link"));
+    try std.testing.expectEqual(identity_pin_max, S.pins);
+}
+
+test "B3 backend: DMA invalidation ranges are cache-line isolated" {
+    try std.testing.expectEqual(@as(usize, 0), @offsetOf(Queue, "used") % 64);
+    const used_end = @offsetOf(Queue, "used") + @sizeOf(VirtqUsed);
+    const owned = @offsetOf(Queue, "last_used");
+    try std.testing.expect(owned < @offsetOf(Queue, "used") or owned >= std.mem.alignForward(usize, used_end, 64));
+    try std.testing.expectEqual(@as(usize, 0), max_message % 64);
+    try std.testing.expectEqual(@as(usize, 8192), @sizeOf([identity_pin_max]IdentityPin));
+}
+
+/// B3 enumeration uses a pinned directory and fresh no-follow LOOKUPs.
+/// B2's immutable name snapshot, by contrast, is not containment.
+pub fn metadata_snapshot(backend: metadata.Backend, auth: metadata.Authorizer, path: []const u8, out: *metadata.Snapshot) metadata.Error!void {
+    out.count = 0;
+    const object = try metadata.resolve(backend, auth, path, .metadata);
+    defer unpin(backend.context, object);
+    const before = try metadata.checkedStat(backend, object);
+    if (before.kind != .directory) return error.NotDirectory;
+    const saved = fs_lock.lock();
+    defer fs_lock.unlock(saved);
+    var open_input: [8]u8 = .{0} ** 8;
+    const opened = transact(fuse_opendir, object.token, &open_input) orelse return metadata_failure();
+    if (opened.len < 16) return error.InvalidMetadata;
+    var release: [24]u8 = .{0} ** 24;
+    write64(&release, 0, read64(opened, 0));
+    var released = false;
+    defer if (!released) {
+        if (transact(fuse_releasedir, object.token, &release) == null) fs_ready = false;
+    };
+    var offset: u64 = 0;
+    var pages: usize = 0;
+    while (true) {
+        if (pages == directory.entry_max + 2) return error.TreeLimit;
+        pages += 1;
+        var input: [40]u8 = .{0} ** 40;
+        write64(&input, 0, read64(&release, 0));
+        write64(&input, 8, offset);
+        write32(&input, 16, max_io);
+        const reply = transact(fuse_readdir, object.token, &input) orelse return metadata_failure();
+        if (reply.len == 0) break;
+        if (reply.len > max_io) return error.InvalidMetadata;
+        var page: [max_io]u8 = undefined;
+        @memcpy(page[0..reply.len], reply);
+        const len = reply.len;
+        var at: usize = 0;
+        while (at < len) {
+            if (len - at < 24) return error.InvalidMetadata;
+            const next = read64(&page, at + 8);
+            const nlen = read32(&page, at + 16);
+            if (nlen > directory.name_max) return error.PathLimit;
+            const step = (@as(usize, 24) + nlen + 7) & ~@as(usize, 7);
+            if (nlen == 0 or step > len - at or next == offset or next == 0) return error.InvalidMetadata;
+            const name = page[at + 24 ..][0..nlen];
+            if (!std.mem.eql(u8, name, ".") and !std.mem.eql(u8, name, "..")) {
+                var relative: [metadata.max_relative_path]u8 = undefined;
+                const prefix: usize = if (path.len == 0) 0 else path.len + 1;
+                if (prefix + name.len > relative.len) return error.PathLimit;
+                @memcpy(relative[0..path.len], path);
+                if (prefix != 0) relative[path.len] = '/';
+                @memcpy(relative[prefix..][0..name.len], name);
+                const child_path = relative[0 .. prefix + name.len];
+                try metadata.validatePath(child_path);
+                if (backend.root_path.len + @intFromBool(backend.root_path.len != 0) + child_path.len > metadata.max_relative_path) return error.PathLimit;
+                try auth.check(auth.context, child_path, .metadata);
+                const child = try lookup_locked(object.token, name);
+                defer release_lookup_locked(child.token);
+                const value = try attr_locked(child.token);
+                if (!value.identity.eql(child.metadata.identity)) return error.StaleIdentity;
+                try out.append(name, value);
+            }
+            offset = next;
+            at += step;
+        }
+    }
+    const after = try attr_locked(object.token);
+    if (!after.identity.eql(before.identity) or
+        metadata.Metadata.watchChanged(before, after) or
+        after.ctime.toNanoseconds() != before.ctime.toNanoseconds()) return error.StaleIdentity;
+    _ = transact(fuse_releasedir, object.token, &release) orelse return metadata_failure();
+    released = true;
+    out.sort();
 }
 
 fn status_from_error() u8 {
@@ -797,6 +1335,7 @@ pub fn write(id: u16, data: []const u8, written: *u64) u8 {
     const saved = fs_lock.lock();
     defer fs_lock.unlock(saved);
     const handle = find_handle(id) orelse return st_handle;
+    if (handle.contained and handle.access != .write) return st_access;
     var input: [40 + max_io]u8 = [_]u8{0} ** (40 + max_io);
     write64(&input, 0, handle.fuse_handle);
     write64(&input, 8, handle.cursor);

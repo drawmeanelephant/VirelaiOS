@@ -532,3 +532,88 @@ vgate_assert publish-virtiofs capture-equals virtiofs-output b4-second.txt
 vgate_assert publish-virtiofs capture-equals virtiofs-stage b4-stage.txt
 vgate_assert publish-virtiofs capture-equals virtiofs-fresh b4-stage.txt
 vgate_assert publish-virtiofs capture-equals virtiofs-receipt b4-receipt.txt
+
+# B3: raw EL0 metadata/containment, not a host-side scanner or C-card SDK.
+vgate_setup_python <<'PY'
+import os, pathlib, subprocess
+rd = pathlib.Path(os.environ["RUN_DIR"])
+roots = [rd / "b3-legacy", rd / "b3-virtiofs"]
+for root in roots:
+    (root / "content/a/b").mkdir(parents=True)
+    (root / "content/a/b/page.md").write_bytes(b"safe")
+    for i in range(20):
+        (root / "content" / f"entry-{i:02}").write_bytes(b"row")
+    for name in ("p" * 31 + "-one", "x" * 255):
+        (root / "content" / name).write_bytes(b"long")
+    (root / "outside/b").mkdir(parents=True)
+    (root / "outside/b/page.md").write_bytes(b"outside must stay untouched\n")
+    (root / "B3LINKS").mkdir()
+    (root / "B3LINKS/leaf").symlink_to("../outside/b/page.md")
+    (root / "B3LINKS/dir").symlink_to("../outside/b")
+    (root / "B3LINKS/dangling").symlink_to("../absent")
+    (root / "ROOTLINK").symlink_to("content")
+    (root / "SWAPDIR").symlink_to("outside")
+    (root / "SWAPLEAF").symlink_to("../../../outside/b/page.md")
+    (root / "DENIED").write_bytes(b"denied\n")
+    (root / "SECRET").write_bytes(b"secret fixture\n")
+    (root / "DENIEDDIR").mkdir()
+    (root / "DENIEDDIR/leaf").write_bytes(b"denied\n")
+    (root / "OWNERS.TXT").write_text(
+        "#v1\nDENIED\t600\t0\t-\nSECRET\t600\t0\tsecret\nDENIEDDIR\t600\t0\t-\n")
+subprocess.run(["zig", "build-exe", "-target", "aarch64-freestanding-none",
+    "-O", "ReleaseSafe", "-fentry=_start", "-fno-PIE", "-fsingle-threaded",
+    "-T", str(rd / "streams.ld"), "--dep", "metadata",
+    "-Mroot=tests/fs-metadata.zig", "-Mmetadata=kernel/src/fs_metadata.zig",
+    "-femit-bin=" + str(roots[0] / "B3.ELF")], check=True)
+(roots[1] / "B3.ELF").write_bytes((roots[0] / "B3.ELF").read_bytes())
+print("B3 raw ELF bytes=%d; nested 3-directory/25-entry discovery corpus" %
+      (roots[0] / "B3.ELF").stat().st_size)
+PY
+
+vgate_file b3-start.txt <<'EOF'
+pages
+exec B3.ELF
+EOF
+vgate_file b3-after.txt <<'EOF'
+pages
+procs
+echo done-b3
+EOF
+vgate_run b3-legacy -- --cvc-file '$RUN_DIR/b3-legacy' --script '$RUN_DIR/b3-start.txt' --script-after 'tasks user-el0 reaped' --script2 '$RUN_DIR/b3-after.txt' --script2-after 'tasks user-exec reaped' --script-expect 'done-b3' --timeout 120
+vgate_run b3-virtiofs -- --virtio-fs '$RUN_DIR/b3-virtiofs' --script '$RUN_DIR/b3-start.txt' --script-after 'tasks user-el0 reaped' --script2 '$RUN_DIR/b3-after.txt' --script2-after 'tasks user-exec reaped' --script-expect 'done-b3' --timeout 120
+vgate_assert b3-legacy serial-exact 'b3: legacy explicitly unsupported operations=5' 1
+vgate_assert b3-legacy serial-absent 'b3: FAIL'
+vgate_assert b3-legacy serial-absent '[EXC]'
+vgate_assert b3-legacy python <<'PY'
+import os, pathlib
+root = pathlib.Path(os.environ["RUN_DIR"]) / "b3-legacy"
+assert (root / "content/a/b/page.md").read_bytes() == b"safe"
+assert (root / "outside/b/page.md").read_bytes() == b"outside must stay untouched\n"
+PY
+vgate_assert b3-virtiofs serial-exact 'b3: nested discovery directories=3 stable distinct' 1
+vgate_assert b3-virtiofs serial-exact 'b3: directory rows=23 pages=4 long-names=2 fresh metadata' 1
+vgate_assert b3-virtiofs serial-exact 'b3: Boris-style discovery directories=3 entries=25 cycles=0' 1
+vgate_assert b3-virtiofs serial-exact 'b3: no-follow refusals=17 root intermediate leaf dangling' 1
+vgate_assert b3-virtiofs serial-exact 'b3: watch independent mtime and size changes detected' 1
+vgate_assert b3-virtiofs serial-exact 'b3: replacement races pinned reads and mutation safe' 1
+vgate_assert b3-virtiofs serial-exact 'b3: ownership and secret refusals=7' 1
+vgate_assert b3-virtiofs serial-contains 'b3: PASS checks='
+vgate_assert b3-virtiofs serial-absent 'b3: FAIL'
+vgate_assert b3-virtiofs serial-absent '[EXC]'
+vgate_assert b3-virtiofs python <<'PY'
+import os, pathlib, re
+root = pathlib.Path(os.environ["RUN_DIR"]) / "b3-virtiofs"
+assert (root / "content/a/b/page.md").read_bytes() == b"safe!"
+assert (root / "outside/b/page.md").read_bytes() == b"outside must stay untouched\n"
+assert (root / "SWAPDIR").is_symlink() and (root / "SWAPLEAF").is_symlink()
+assert (root / "DENIED").read_bytes() == b"denied\n"
+assert (root / "SECRET").read_bytes() == b"secret fixture\n"
+serial = pathlib.Path(os.environ["VG_SER"]).read_text()
+assert "secret fixture" not in serial and "outside must stay untouched" not in serial
+pages = re.findall(r"^pages: armed=1 total=(0x[0-9a-f]+) free=(0x[0-9a-f]+)", serial, re.M)
+assert len(pages) >= 2 and pages[0][0] == pages[-1][0], pages
+assert int(pages[0][1], 16) - int(pages[-1][1], 16) == 2, ("B3 transient leak beyond the two-page mount identity ledger", pages)
+checks = re.search(r"b3: PASS checks=(\d+) death-cursors=8", serial)
+assert checks and int(checks[1]) >= 220, checks
+print("B3: native metadata checks=%s; 8 rich death cursors reclaimed, outside unchanged" % checks[1])
+PY

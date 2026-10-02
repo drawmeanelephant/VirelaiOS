@@ -1,0 +1,283 @@
+//! B3 raw EL0 acceptance probe, independent of the C-card SDK trees.
+const std = @import("std");
+const meta = @import("metadata");
+var value: meta.Wire = undefined;
+var page: meta.Page = undefined;
+var bytes: [64]u8 = undefined;
+var checkpoint: []const u8 = "start";
+var checks: usize = 0;
+var pending: [8][meta.max_relative_path]u8 = undefined;
+var lengths: [8]usize = .{0} ** 8;
+var identities: [8]meta.Identity = undefined;
+
+fn svc(number: u64, args: [6]u64) i64 {
+    return asm volatile ("svc #0"
+        : [result] "={x0}" (-> i64),
+        : [number] "{x8}" (number),
+          [a0] "{x0}" (args[0]),
+          [a1] "{x1}" (args[1]),
+          [a2] "{x2}" (args[2]),
+          [a3] "{x3}" (args[3]),
+          [a4] "{x4}" (args[4]),
+          [a5] "{x5}" (args[5]),
+        : .{ .memory = true });
+}
+
+fn say(text: []const u8) void {
+    var at: usize = 0;
+    while (at < text.len) {
+        const n = @min(text.len - at, 256);
+        if (svc(1, .{ 1, @intFromPtr(text.ptr + at), n, 0, 0, 0 }) != n) finish(1);
+        at += n;
+    }
+}
+
+fn finish(status: u64) noreturn {
+    _ = svc(3, .{ status, 0, 0, 0, 0, 0 });
+    while (true) asm volatile ("wfe");
+}
+
+fn check(ok: bool) void {
+    if (!ok) {
+        say("b3: FAIL ");
+        say(checkpoint);
+        var diagnostic: [48]u8 = undefined;
+        say(std.fmt.bufPrint(&diagnostic, " checks={d}\n", .{checks}) catch unreachable);
+        finish(1);
+    }
+    checks += 1;
+}
+
+fn call(op: u64, root: []const u8, path: []const u8) i64 {
+    return svc(79, .{
+        op,                                                     @intFromPtr(root.ptr), root.len, @intFromPtr(path.ptr), path.len,
+        if (op <= meta.identity_op) @intFromPtr(&value) else 0,
+    });
+}
+
+fn stat(root: []const u8, path: []const u8) meta.Wire {
+    check(call(meta.stat_op, root, path) == 0);
+    check(value.version == 1 and value.identity.filesystem != 0 and value.identity.inode != 0);
+    check(value.mtime.nanoseconds < 1_000_000_000);
+    return value;
+}
+
+fn close(fd: i64) void {
+    check(svc(26, .{ @intCast(fd), 0, 0, 0, 0, 0 }) == 0);
+}
+
+fn read(fd: i64, expected: []const u8) void {
+    check(svc(24, .{ @intCast(fd), @intFromPtr(&bytes), bytes.len, 0, 0, 0 }) == expected.len);
+    check(std.mem.eql(u8, bytes[0..expected.len], expected));
+}
+
+fn rename(from: []const u8, to: []const u8) void {
+    check(svc(35, .{ @intFromPtr(from.ptr), from.len | (@as(u64, 1) << 63), @intFromPtr(to.ptr), to.len, 0, 0 }) == 0);
+}
+
+fn discover(root: []const u8, root_id: meta.Identity) void {
+    // Boris's cycle rule: remember the root, refuse a repeated directory
+    // identity, and walk returned names, not a host-supplied file list.
+    lengths = .{0} ** 8;
+    identities[0] = root_id;
+    var queued: usize = 1;
+    var current: usize = 0;
+    var visited: usize = 0;
+    while (current < queued) : (current += 1) {
+        const parent = pending[current][0..lengths[current]];
+        checkpoint = "Boris directory open";
+        const token = call(meta.dir_open_op, root, parent);
+        check(token > 0);
+        var offset: u64 = 0;
+        while (true) {
+            checkpoint = "Boris page";
+            const n = svc(79, .{ meta.dir_page_op, @intCast(token), offset, 7, @intFromPtr(&page), 0 });
+            check(n >= 0 and n <= 7);
+            for (page.entries[0..@intCast(n)]) |entry| {
+                checkpoint = "Boris entry bound";
+                visited += 1;
+                if (visited > 256 or queued >= pending.len) {
+                    var details: [96]u8 = undefined;
+                    say(std.fmt.bufPrint(&details, "b3: Boris visited={d} queued={d} kind={d}\n", .{ visited, queued, @intFromEnum(entry.metadata.kind) }) catch unreachable);
+                }
+                check(visited <= 256);
+                if (entry.metadata.kind != .directory) continue;
+                check(queued < pending.len);
+                checkpoint = "Boris directory identity cycle";
+                for (identities[0..queued]) |seen| check(!seen.eql(entry.metadata.identity));
+                identities[queued] = entry.metadata.identity;
+                const sep: usize = @intFromBool(parent.len != 0);
+                const len = parent.len + sep + entry.name_len;
+                checkpoint = "Boris path length";
+                check(len <= meta.max_relative_path);
+                @memcpy(pending[queued][0..parent.len], parent);
+                if (sep != 0) pending[queued][parent.len] = '/';
+                @memcpy(pending[queued][parent.len + sep ..][0..entry.name_len], entry.name[0..entry.name_len]);
+                lengths[queued] = len;
+                queued += 1;
+            }
+            offset = page.header.next;
+            if (page.header.end == 1) break;
+            check(n > 0);
+        }
+        checkpoint = "Boris cursor close";
+        check(svc(79, .{ meta.dir_close_op, @intCast(token), 0, 0, 0, 0 }) == 0);
+    }
+    checkpoint = "Boris totals";
+    check(queued == 3 and visited == 25);
+    say("b3: Boris-style discovery directories=3 entries=25 cycles=0\n");
+}
+
+export fn b3_main() noreturn {
+    say("b3: starting\n");
+    const root = "/host/content";
+    const first = call(meta.stat_op, root, "");
+    if (first == -4) {
+        checkpoint = "legacy unsupported";
+        check(call(meta.identity_op, root, "") == -4);
+        check(call(meta.read_open_op, root, "a/b/page.md") == -4);
+        check(call(meta.write_open_op, root, "a/b/page.md") == -4);
+        check(call(meta.dir_open_op, root, "") == -4);
+        say("b3: legacy explicitly unsupported operations=5\n");
+        finish(0);
+    }
+    if (first != 0) {
+        var diagnostic: [64]u8 = undefined;
+        say(std.fmt.bufPrint(&diagnostic, "b3: root metadata result={d}\n", .{first}) catch unreachable);
+    }
+    check(first == 0);
+    checkpoint = "nested scanner identities";
+    var ids: [3]meta.Identity = undefined;
+    for ([_][]const u8{ "", "a", "a/b" }, 0..) |path, i| {
+        const info = stat(root, path);
+        ids[i] = info.identity;
+        check(info.kind == .directory);
+        const again = stat(root, path);
+        check(info.identity.eql(again.identity));
+        for (ids[0..i]) |prior| check(!prior.eql(info.identity));
+        check(call(meta.identity_op, root, path) == 0);
+        const identity: *const meta.Identity = @ptrCast(&value);
+        check(identity.*.eql(ids[i]));
+    }
+    say("b3: nested discovery directories=3 stable distinct\n");
+    checkpoint = "rich directory pages";
+    const token = call(meta.dir_open_op, root, "");
+    check(token > 0);
+    check(svc(79, .{ meta.dir_page_op, @intCast(token), 0, 7, 0x1_2000_0000, 0 }) == -3);
+    var offset: u64 = 0;
+    var count: usize = 0;
+    var directories: usize = 0;
+    var long_names: usize = 0;
+    while (true) {
+        const n = svc(79, .{ meta.dir_page_op, @intCast(token), offset, 7, @intFromPtr(&page), 0 });
+        check(n >= 0 and n <= 7 and page.header.count == n);
+        for (page.entries[0..@intCast(n)]) |entry| {
+            const name = entry.name[0..entry.name_len];
+            const info = stat(root, name);
+            check(info.identity.eql(entry.metadata.identity));
+            check(info.kind == entry.metadata.kind and info.size == entry.metadata.size);
+            check(info.mtime.seconds == entry.metadata.mtime.seconds and info.mtime.nanoseconds == entry.metadata.mtime.nanoseconds);
+            if (entry.metadata.kind == .directory) {
+                if (!info.identity.eql(ids[1])) {
+                    var diagnostic: [128]u8 = undefined;
+                    say(std.fmt.bufPrint(&diagnostic, "b3: row directory ino={d} expected={d} name=", .{ info.identity.inode, ids[1].inode }) catch unreachable);
+                    say(name);
+                    say("\n");
+                }
+                check(info.identity.eql(ids[1]));
+                directories += 1;
+            }
+            if (name.len > 31) long_names += 1;
+            count += 1;
+        }
+        offset = page.header.next;
+        if (page.header.end == 1) break;
+        check(n > 0);
+    }
+    check(count == 23 and directories == 1 and long_names == 2);
+    check(svc(79, .{ meta.dir_close_op, @intCast(token), 0, 0, 0, 0 }) == 0);
+    check(svc(79, .{ meta.dir_page_op, @intCast(token), 0, 1, @intFromPtr(&page), 0 }) == -2);
+    say("b3: directory rows=23 pages=4 long-names=2 fresh metadata\n");
+    checkpoint = "Boris-style discovery";
+    discover(root, ids[0]);
+
+    checkpoint = "root intermediate leaf dangling no-follow";
+    for ([_][]const u8{ "leaf", "dir/page.md", "dangling" }) |path| {
+        for ([_]u64{ meta.stat_op, meta.identity_op, meta.read_open_op, meta.write_open_op }) |op| check(call(op, "/host/B3LINKS", path) == -7);
+    }
+    check(call(meta.stat_op, "/host/ROOTLINK", "") == -7);
+    check(call(meta.dir_open_op, "/host/B3LINKS", "") == -7);
+    check(call(meta.stat_op, root, "../outside") == -1);
+    check(call(meta.stat_op, root, "missing") == -6);
+    check(call(meta.stat_op, "/usb", "") == -4);
+    say("b3: no-follow refusals=17 root intermediate leaf dangling\n");
+
+    checkpoint = "watch stamps";
+    const old = stat(root, "a/b/page.md");
+    const writer = call(meta.write_open_op, root, "a/b/page.md");
+    check(writer >= 0);
+    check(svc(25, .{ @intCast(writer), @intFromPtr("edit"), 4, 0, 0, 0 }) == 4);
+    check(svc(77, .{ @intCast(writer), 0, 0, 0, 0, 0 }) == 0);
+    const edited = stat(root, "a/b/page.md");
+    check(edited.size == old.size);
+    check(edited.mtime.seconds != old.mtime.seconds or edited.mtime.nanoseconds != old.mtime.nanoseconds);
+    check(svc(25, .{ @intCast(writer), @intFromPtr("!"), 1, 0, 0, 0 }) == 1);
+    check(svc(77, .{ @intCast(writer), 0, 0, 0, 0, 0 }) == 0);
+    check(stat(root, "a/b/page.md").size == 5);
+    close(writer);
+    say("b3: watch independent mtime and size changes detected\n");
+
+    checkpoint = "pinned directory and leaf replacements";
+    const reader = call(meta.read_open_op, root, "a/b/page.md");
+    check(reader >= 0);
+    const pinned_writer = call(meta.write_open_op, root, "a/b/page.md");
+    check(pinned_writer >= 0);
+    rename("/host/content/a", "/host/saved-a");
+    rename("/host/SWAPDIR", "/host/content/a");
+    check(call(meta.stat_op, root, "a/b/page.md") == -7);
+    read(reader, "edit!");
+    close(reader);
+    check(svc(25, .{ @intCast(pinned_writer), @intFromPtr("safe"), 4, 0, 0, 0 }) == 4);
+    close(pinned_writer);
+    rename("/host/content/a", "/host/SWAPDIR");
+    rename("/host/saved-a", "/host/content/a");
+    const leaf_reader = call(meta.read_open_op, root, "a/b/page.md");
+    check(leaf_reader >= 0);
+    rename("/host/content/a/b/page.md", "/host/content/a/b/saved.md");
+    rename("/host/SWAPLEAF", "/host/content/a/b/page.md");
+    check(call(meta.identity_op, root, "a/b/page.md") == -7);
+    read(leaf_reader, "safe!");
+    close(leaf_reader);
+    rename("/host/content/a/b/page.md", "/host/SWAPLEAF");
+    rename("/host/content/a/b/saved.md", "/host/content/a/b/page.md");
+    say("b3: replacement races pinned reads and mutation safe\n");
+
+    checkpoint = "ownership secret and ancestor policy";
+    for ([_][]const u8{ "DENIED", "SECRET" }) |path| {
+        check(call(meta.stat_op, "/host", path) == -7);
+        check(call(meta.identity_op, "/host", path) == -7);
+        check(call(meta.read_open_op, "/host", path) == -7);
+    }
+    check(call(meta.stat_op, "/host/DENIEDDIR", "leaf") == -7);
+    say("b3: ownership and secret refusals=7\n");
+    checkpoint = "resource capacity and teardown";
+    var fds: [8]i64 = undefined;
+    for (&fds) |*fd| {
+        fd.* = call(meta.read_open_op, root, "a/b/page.md");
+        check(fd.* >= 0);
+    }
+    check(call(meta.read_open_op, root, "a/b/page.md") == -5);
+    for (fds) |fd| close(fd);
+    // Leave rich cursors for process-death cleanup, within native ceilings.
+    for (&fds) |*fd| {
+        fd.* = call(meta.dir_open_op, root, "");
+        check(fd.* > 0);
+    }
+    var diagnostic: [96]u8 = undefined;
+    say(std.fmt.bufPrint(&diagnostic, "b3: PASS checks={d} death-cursors=8\n", .{checks}) catch unreachable);
+    finish(0);
+}
+
+export fn _start() callconv(.naked) noreturn {
+    asm volatile ("b b3_main");
+}
