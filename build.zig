@@ -2050,6 +2050,7 @@ pub fn build(b: *std.Build) void {
         // HF-wire mutation corpus. Class A only (no VM, no device).
         "kernel/tests/fuzz_test.zig",
         "kernel/tests/net/tcp_test.zig",
+        "kernel/tests/net/socket_core_test.zig",
         "kernel/tests/net/dhcp_test.zig",
         "kernel/tests/driving_award_test.zig",
         "test/helpers/helpers.zig",
@@ -2148,6 +2149,12 @@ pub fn build(b: *std.Build) void {
     });
     tcp_mod.addOptions("build_options", kernel_options);
 
+    const socket_core_mod = b.createModule(.{
+        .root_source_file = b.path("kernel/src/socket_core.zig"),
+        .target = b.graph.host,
+        .optimize = .Debug,
+    });
+
     const dhcp_mod = b.createModule(.{
         .root_source_file = b.path("kernel/src/dhcp.zig"),
         .target = b.graph.host,
@@ -2224,6 +2231,9 @@ pub fn build(b: *std.Build) void {
         test_mod.addImport("shell", shell_mod);
         test_mod.addImport("alloc", alloc_mod);
         test_mod.addImport("tcp", tcp_mod);
+        if (std.mem.eql(u8, src_path, "kernel/tests/net/socket_core_test.zig")) {
+            test_mod.addImport("socket_core", socket_core_mod);
+        }
         test_mod.addImport("dhcp", dhcp_mod);
         test_mod.addImport("driving_award", driving_award_mod);
         const t = b.addTest(.{
