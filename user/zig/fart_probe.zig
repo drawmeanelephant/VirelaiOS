@@ -1,4 +1,5 @@
-//! C4 test-only native allocation and full-width launch proof, not an app.
+//! C4 test-only native allocation and full-width launch proof, not an app —
+//! it drives the real CLI user/zig/fart.zig (FARTSYN.BIN, built by tools/zig/fart.py).
 const std = @import("std");
 const sdk = @import("runtime.zig");
 const port = @import("fart/port.zig");
