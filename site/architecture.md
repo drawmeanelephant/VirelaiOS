@@ -17,16 +17,15 @@ map; the satellites below carry the detail.
 │  EL0 user programs + desktop apps (GOCALC.ELF, │
 │  GOTABWM.ELF, GO* Go apps, …)                 │
 │  runtime linker LD.SO + LIBUI.SO/LIBFONT.SO   │
-│  syscalls: 78 implemented slots (of 128):     │
-│  ipc/win/events/file/exec/kill/tcp/fs/clip/   │
-│  timer/audio/pipe/font/ping/net/mmap          │
+│  syscalls: 80 implemented slots (of 128):     │
+│  IPC/window/events/files/net/time/memory …    │
 ├───────────────────────────────────────────────┤
 │  Monitor + shell (virelai>)                   │
 │  Road Pops terminal · Driving Award compositor │
 ├───────────────────────────────────────────────┤
 │  SMP scheduler (round-robin, 2 cores)         │
-│  Physical allocator · MMU (identity map, no    │
-│  demand paging, no swap)                      │
+│  EFI-map allocator · MMU (per-process roots,  │
+│  demand-zero paging + copy-on-write; no swap) │
 ├───────────────────────────────────────────────┤
 │  Drivers: virtio console/entropy/gpu/net/snd/  │
 │  custom + USB XHCI (HID + MSC) · GICv3 · timer │
@@ -47,12 +46,13 @@ map; the satellites below carry the detail.
 Three rules show up everywhere:
 
 1. **Bounded static storage.** Rings, FIFOs, window tables, and frame buffers
-   are fixed-size BSS carve-outs. There is no general heap in the device
-   paths; a full ring refuses or drops oldest, it does not grow.
-2. **One request at a time.** Device queues are small (size 4) and drained
-   polled — the project observes device behavior rather than assuming
-   interrupt delivery, then records what it saw in
-   [`docs/hardware-contract.md`](https://github.com/drawmeanelephant/DipshitOS/blob/main/docs/hardware-contract.md).
+   use fixed-capacity storage. There is no general heap in the device paths;
+   full queues refuse work or apply their documented overflow policy rather
+   than growing.
+2. **Per-device contracts.** Queue capacity, request concurrency, and
+   completion handling vary by device. Hardware behavior is observed rather
+   than generalized, then recorded in
+   [`docs/hardware-contract.md`](https://github.com/drawmeanelephant/VirelaiOS/blob/main/docs/hardware-contract.md).
 3. **Evidence over assertion.** Every subsystem has host tests (deterministic)
    and, where hardware is involved, a live Virtualization.framework gate. See
    [[evidence]].
@@ -62,12 +62,12 @@ Three rules show up everywhere:
 | Subsystem | What it does |
 |-----------|--------------|
 | Boot loader | loads `KERNEL.BIN`, writes `BOOTED.TXT`/`RC.TXT` evidence, jumps to the kernel |
-| MMU | identity-map TTBR0_EL1 tables (T0SZ=16), per-task user roots, EL1-only kernel overlay, lazy `mmap` reservations (M29) — no swap |
+| MMU | identity-map TTBR0_EL1 tables (T0SZ=16), per-process user roots, EL1-only kernel overlay, demand-zero `mmap` pages and copy-on-write (M29) — no swap |
 | Allocator | first-fit bitmap over the captured EFI map, with exclusion ranges |
-| Scheduler | tick-driven round-robin across 2 cores (SMP, M28); 11 slots (shell + worker + 8 EL0 + idle) |
+| Scheduler | fixed 16-task pool, tick-driven scheduling, SMP support and per-core ready rings |
 | Processes | bounded registry, lifecycle states, exit-status propagation, IPC mailboxes |
 | SMP | PSCI `CPU_ON` core bringup, per-core schedulers, spinlocks, GICv3 SGI IPIs (M28) |
-| Syscalls | ADR 0007: 128-slot table, 78 implemented (0–77), deterministic counters |
+| Syscalls | ADR 0007: 128-slot table, 80 registered slots (0–79), deterministic counters |
 | Networking | virtio-net → ARP → IPv4/ICMP → UDP → DHCP → DNS → TCP (client + `GOHTTPD.ELF` passive-open server), plus a NAT mode and the EL0 TCP seam |
 | Graphics | virtio-gpu framebuffer → text → Road Pops → Driving Award compositor |
 | Audio | virtio-snd → PCM playback → `beep` → the EL0 audio seam (slots 42–45) |

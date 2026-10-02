@@ -7,14 +7,13 @@ tags: [capabilities, userspace, demos]
 
 # User programs & demos
 
-The `user/` tree builds flat `.BIN` images that `exec` loads from the host
-share and runs at EL0 (since M34 HF6 the boot image carries only the loader
-and the kernel). Each one is a small proof of a seam. Remaining Zig programs
-are built by `zig build`; the notable seam proofs and apps are below
-(the SB*/SMP*/WMRPC gate fixtures are elided, as are the dynamic
-executables and shared libraries listed after the table). Go ELFs are built
-separately by the relevant `tools/go/build-*.sh` host prerequisites and
-staged by their gates.
+The boot image carries the loader and kernel; user images are staged from the
+host share and run at EL0. This page is a seam-proof and application history,
+not a claim that every row is a current build output. Rows marked retired or
+deleted are historical; current boot and desktop applications are identified
+separately below. The SB*/SMP*/WMRPC gate fixtures are elided, as are the
+dynamic executables and shared libraries listed after the table. Go ELFs are
+built by pinned host-toolchain recipes and staged by their gates.
 
 | Image | Source | Proves |
 |-------|--------|--------|

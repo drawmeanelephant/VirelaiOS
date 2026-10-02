@@ -34,7 +34,7 @@ kernel running under real firmware — and it cannot run in CI.
 | **gate** | a declarative spec (`tools/gate/specs/*.spec`) run by `just gate <id>` that exits 0 only on passing evidence |
 
 Hardware assumptions are marked `[observed]` vs `[inferred]` in
-[`docs/hardware-contract.md`](https://github.com/drawmeanelephant/DipshitOS/blob/main/docs/hardware-contract.md)
+[`docs/hardware-contract.md`](https://github.com/drawmeanelephant/VirelaiOS/blob/main/docs/hardware-contract.md)
 and only flip when a matching probe or serial log lands.
 
 ## Reproducing the checks

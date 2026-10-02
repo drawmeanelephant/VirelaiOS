@@ -11,8 +11,8 @@ firmware on **Apple silicon**, hosted by Apple's **Virtualization.framework**
 (macOS **27 or newer**). It is **not Linux, not Unix, and not QEMU** — no
 libc, no POSIX, no existing guest OS, no emulator anywhere in the boot path.
 
-The guest is written in freestanding [Zig](https://ziglang.org/) (no standard
-library); the host launcher is Swift. The kernel seizes the machine itself:
+The guest is written in freestanding [Zig](https://ziglang.org/) without
+libc or POSIX; the host launcher is Swift. The kernel seizes the machine itself:
 it ends UEFI Boot Services, installs its own page tables, and drives the
 hardware directly through virtio and MMIO drivers.
 
@@ -22,13 +22,13 @@ see [[evidence]].
 
 ## Current status
 
-Every milestone through **M86** has landed, and all but one index is closed on
-the tracker (observed 2026-09-29); the open one is M84, remote framebuffer. The
-table below is the first 31 —
-the arc this site grew alongside; the
-always-current accounting for everything since is
-[`docs/status.md`](https://github.com/drawmeanelephant/DipshitOS/blob/main/docs/status.md)
-and [[roadmap]]:
+Milestones through **M86** have landed. **M87**, first impressions and remote
+terminal, is still open: the remote workflow's class-C acceptance needs a
+separate connecting machine and an authorized SSH target, neither of which was
+supplied as of 2026-10-02. The table below is the first 31 milestones; the
+current tracker is
+[`docs/status.md`](https://github.com/drawmeanelephant/VirelaiOS/blob/main/docs/status.md)
+and [[roadmap]].
 
 | Milestone | What it is | Status |
 |-----------|-----------|--------|
@@ -41,7 +41,7 @@ and [[roadmap]]:
 | Input | USB XHCI, HID enumeration, keyboard events feeding the terminal | Done |
 | Usability & HIG | ADR 0008: grouped `help`, line editing + history, one error contract, window chrome, `sysinfo`, persistent settings | Done |
 | Events | Per-process event queues: keyboard/pointer/window events to focused EL0 apps (`sys_poll_event`/`sys_wait_event`) | Done |
-| User filesystem ABI | Per-process file table, `/esp/` + `/data/` routing, file syscalls (slots 23–27), storage utilities | Done |
+| User filesystem ABI | Per-process file table, host-backed `/host` API, file syscalls (slots 23–27), storage utilities | Done |
 | Desktop platform | ADR 0011: zero-heap `ui.zig` widget toolkit; the current shipping seat is `GOTABWM.ELF` with Go clients (`GOCALC.ELF`, `NOTE.ELF`, `GOTOP.ELF`, `GOFILES.ELF`) | Done |
 | Network apps | TCP syscall seam (slots 30–33), RFC 1035 DNS, `TCP.BIN`/`GOFETCH.ELF`, and Go network clients (`GOPING.ELF`, `GONETSTAT.ELF`, `GODNS.ELF`, `GOTRACEROUTE.ELF`) | Done |
 | Files & applications | Mutating filesystem seam (slots 34–37), `APPS.TXT` manifest, graphical data browser (now `GOFILES.ELF`), desktop composition | Done |
@@ -70,7 +70,7 @@ calculator `GOCALC.ELF`, the browser `WEB.ELF` — as tabs over the `WM_RPC`
 contract; Zig `TABWM.BIN` is retained by decision (ADR 0034) as the
 `settings set wm tabwm` fallback. M71 seat honesty and M72 Charm TUI have
 closed since — read
-[`docs/status.md`](https://github.com/drawmeanelephant/DipshitOS/blob/main/docs/status.md)
+[`docs/status.md`](https://github.com/drawmeanelephant/VirelaiOS/blob/main/docs/status.md)
 for what is open today instead of a date-stamped claim from this page. The Go
 toolchain already builds and runs programs in-guest (`live-selfhost-go`).
 
@@ -93,7 +93,7 @@ A single boot of VirelaiOS gets you, in order:
 - A window manager — **Driving Award** — compositing a terminal and a live
   clock overlay.
 - EL0 user programs, exec'd from the host share, running as real processes
-  with a syscall ABI of **78 implemented slots** (of a 128-slot table) covering IPC,
+  with a syscall ABI of **80 implemented slots** (0–79 of a 128-slot table) covering IPC,
   windows, files, events, process control, TCP, filesystem mutation,
   clipboard, app timers, audio, pipes, fonts, ping, net-stats, and anonymous
   memory.
@@ -143,9 +143,9 @@ shell `GOSH.ELF`, the editor, the calculator, and the browser rendering a page
 in-guest. The pixels exposed two things the markers could not see. The first —
 `GOSH.ELF`'s tab holding no pixels while the shell's own markers were green
 (observed on
-[#1529](https://github.com/drawmeanelephant/DipshitOS/issues/1529)) — was
+[#1529](https://github.com/drawmeanelephant/VirelaiOS/issues/1529)) — was
 diagnosed and fixed by M69g
-([#1558](https://github.com/drawmeanelephant/DipshitOS/issues/1558)): the
+([#1558](https://github.com/drawmeanelephant/VirelaiOS/issues/1558)): the
 seat's own client-death probe window painted its chrome over the tab's first
 line, a band holding 55 terminal-green pixels before the fix and 578 after, and
 `go-dogfood` boot 03 now fails on a blank tab. `gosh.png` above is therefore a

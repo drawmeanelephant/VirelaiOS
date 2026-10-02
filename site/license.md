@@ -11,7 +11,7 @@ VirelaiOS is **source-available, not open source**.
 You can read the code — that is deliberate and part of the project's
 personality. But "publicly visible" is not the same as "free to take." The
 binding terms are the
-[`LICENSE`](https://github.com/drawmeanelephant/DipshitOS/blob/main/LICENSE)
+[`LICENSE`](https://github.com/drawmeanelephant/VirelaiOS/blob/main/LICENSE)
 file in the repository (the *VirelaiOS Proprietary Source-Available License*,
 version 1.0). This page is a plain-language summary, not the license.
 

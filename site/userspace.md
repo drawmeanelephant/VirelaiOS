@@ -14,8 +14,8 @@ and scheduled as processes. The syscall boundary is a frozen, numbered ABI.
 
 The syscall ABI is frozen in `docs/decisions/0007-syscall-abi.md`: the syscall
 number goes in x8, arguments in x0–x5, the result in x0, dispatched through a
-runtime-built **128-slot** table. **Seventy-eight slots are implemented**
-(0–77, contiguous); the rest return `ENOSYS`.
+runtime-built **128-slot** table. **Eighty slots are implemented**
+(0–79); the remaining slots return `ENOSYS`.
 
 | Slot | Name | What it does |
 |-----:|------|--------------|
@@ -56,7 +56,7 @@ runtime-built **128-slot** table. **Seventy-eight slots are implemented**
 | 62 | `net_stats` | net-stats snapshot (M26) |
 | 63/64 | `mmap` / `munmap` | anonymous user memory (M29) |
 | 65 | `wmctl` | the registered WM server's exclusive control surface (M32, ADR 0015) |
-| 66 | `time` | Unix wall-clock seconds from the EFI epoch (#1058) |
+| 66 | `time` | Unix wall-clock seconds from the EFI epoch or SNTP-set clock (#1058, #1775) |
 | 67 | `tty_attach` | attach/detach the controlling terminal front-end (ADR 0020) |
 | 68 | `principal` | read the calling process's `{uid, caps}` (M50, ADR 0024) |
 | 69 | `file_mode` | owner-only chmod, persisted to `OWNERS.TXT` (M50, ADR 0024) |
@@ -67,6 +67,8 @@ runtime-built **128-slot** table. **Seventy-eight slots are implemented**
 | 75 | `exnotify` | EL0 fault-handler register (#1228) |
 | 76 | `sock_ready` | socket readiness for the Go netpoll (#1163) |
 | 77 | `file_sync` | `fsync` for EL0 — push `/host` writes to the live fd (M66a, ADR 0007 amendment) |
+| 78 | `time_set` | set the guest wall clock within the documented epoch range (M83b, ADR 0007 amendment) |
+| 79 | `fs_metadata` | bounded filesystem metadata and contained operations (B3) |
 
 ## Fault-safe uaccess
 
