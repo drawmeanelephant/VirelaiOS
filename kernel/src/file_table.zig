@@ -2,7 +2,7 @@
 //!
 //! Exposes a bounded in-memory file handle table for EL0 userland storage:
 //! - 8 open file handles per process slot (`max_handles_per_process = 8`).
-//! - 0 heap allocations; pure static BSS tables (`[process.max_processes][8]FileHandle`).
+//! - Bounded kernel-page-pool storage, no heap or guest allocator dependency.
 //! - Tracks the host share partition (`.host`), path, byte cursor offset,
 //!   file size, access mode.
 //! - Path canonicalization and volume routing (`/host/...`, bare paths -> host share).
@@ -18,6 +18,7 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+const alloc = @import("alloc.zig");
 const process = @import("process.zig");
 // M34 HF4 (issue #738): the `.host` partition serves the `--cvc-file`
 // share through the host file channel — no FAT. HF5 (issue #739) makes
@@ -47,9 +48,10 @@ const driving_award = @import("driving_award.zig");
 // M50 TS2 (issue #1136, ADR 0024 D3/D4): the file-ownership/mode predicate
 // and the bounded metadata table `OWNERS.TXT` persists.
 const trust = @import("trust.zig");
+pub const directory = @import("directory.zig");
 
 pub const max_handles_per_process: usize = 8;
-pub const max_path_len: usize = 64;
+pub const max_path_len: usize = directory.path_max;
 
 // Access mode bitmasks (ADR 0010 D2)
 pub const MODE_READ: u32 = 0x0001;
@@ -99,7 +101,9 @@ pub const FileHandle = struct {
     cursor: u32 = 0,
     size: u32 = 0,
     path: [max_path_len]u8 = [_]u8{0} ** max_path_len,
-    path_len: u8 = 0,
+    path_len: u16 = 0,
+    dir_token: u64 = 0,
+    dir_snapshot: usize = 0,
     /// M25 Lane B (claim 2539): set when MODE_DIR created the entry —
     /// the handle must never be read or written (a directory write would
     /// overwrite host metadata through the channel's replace path).
@@ -123,7 +127,7 @@ pub const FileHandle = struct {
 pub const ParsedPath = struct {
     partition: Partition,
     path: [max_path_len]u8,
-    path_len: u8,
+    path_len: u16,
     /// M70f F1 (issue #1458): the 1-based MBR partition index a `.usb_fat`
     /// path selects (0 for every other partition).
     usb_index: u8 = 0,
@@ -134,11 +138,56 @@ pub const ParsedPath = struct {
 };
 
 // ---------------------------------------------------------------------------
-// Module State (Static BSS)
+// Module State (bounded page-pool storage; small BSS indexes)
 // ---------------------------------------------------------------------------
 
-var handles: [process.max_processes][max_handles_per_process]FileHandle = [_][max_handles_per_process]FileHandle{[_]FileHandle{.{}} ** max_handles_per_process} ** process.max_processes;
-var initialized = false;
+const HandleTable = [process.max_processes][max_handles_per_process]FileHandle;
+const handle_pages: u64 = (@sizeOf(HandleTable) + alloc.page_size - 1) / alloc.page_size;
+var handles: [][max_handles_per_process]FileHandle = &.{};
+var test_handles: HandleTable = undefined;
+var snapshots: [directory.cursor_max]?*directory.Snapshot = .{null} ** directory.cursor_max;
+var snapshot_used: [directory.cursor_max]bool = .{false} ** directory.cursor_max;
+const snapshot_pages: u64 = (@sizeOf(directory.Snapshot) + alloc.page_size - 1) / alloc.page_size;
+var test_snapshots: [directory.cursor_max]directory.Snapshot = undefined;
+var test_snapshot_pool_empty = false;
+// Never reset on pid/handle reuse: a dead token cannot become live again.
+var next_dir_token: u64 = 1;
+
+fn ensure_handles() bool {
+    if (handles.len != 0) return true;
+    const table: *HandleTable = if (builtin.is_test) &test_handles else blk: {
+        const pa = alloc.alloc_pages(handle_pages) orelse return false;
+        break :blk @ptrFromInt(pa);
+    };
+    for (table) |*row| for (row) |*h| {
+        h.* = .{};
+    };
+    handles = table;
+    return true;
+}
+
+fn release_empty_handles() void {
+    if (builtin.is_test or handles.len == 0) return;
+    for (handles) |row| for (row) |h| {
+        if (h.in_use) return;
+    };
+    _ = alloc.free_pages(@intFromPtr(handles.ptr), handle_pages);
+    handles = &.{};
+}
+
+fn allocate_snapshot(slot: usize) ?*directory.Snapshot {
+    if (builtin.is_test) return if (test_snapshot_pool_empty) null else &test_snapshots[slot];
+    const pa = alloc.alloc_pages(snapshot_pages) orelse return null;
+    return @ptrFromInt(pa);
+}
+
+fn release_snapshot(slot: usize) void {
+    if (snapshots[slot]) |snapshot| {
+        if (!builtin.is_test) _ = alloc.free_pages(@intFromPtr(snapshot), snapshot_pages);
+    }
+    snapshots[slot] = null;
+    snapshot_used[slot] = false;
+}
 
 /// B1: stream identities are disjoint from the legacy file table's 0..7.
 pub const stream_base: u64 = 0x100;
@@ -155,7 +204,30 @@ const default_streams: [3]Binding = .{ .closed, .console, .console };
 var streams: [process.max_processes][3]Binding = [_][3]Binding{default_streams} ** process.max_processes;
 pub const stream_endpoint_max = process.max_processes * 3;
 const Endpoint = struct { refs: usize = 0, file: FileHandle = .{} };
-var endpoints: [stream_endpoint_max]Endpoint = [_]Endpoint{.{}} ** stream_endpoint_max;
+const EndpointTable = [stream_endpoint_max]Endpoint;
+const endpoint_pages: u64 = (@sizeOf(EndpointTable) + alloc.page_size - 1) / alloc.page_size;
+var endpoints: []Endpoint = &.{};
+var test_endpoints: EndpointTable = undefined;
+var test_endpoint_pool_empty = false;
+
+fn ensure_endpoints() bool {
+    if (endpoints.len != 0) return true;
+    if (builtin.is_test and test_endpoint_pool_empty) return false;
+    const table: *EndpointTable = if (builtin.is_test) &test_endpoints else blk: {
+        const pa = alloc.alloc_pages(endpoint_pages) orelse return false;
+        break :blk @ptrFromInt(pa);
+    };
+    for (table) |*ep| ep.* = .{};
+    endpoints = table;
+    return true;
+}
+
+fn release_empty_endpoints() void {
+    if (builtin.is_test or endpoints.len == 0) return;
+    for (endpoints) |ep| if (ep.refs != 0) return;
+    _ = alloc.free_pages(@intFromPtr(endpoints.ptr), endpoint_pages);
+    endpoints = &.{};
+}
 /// Host-only fault injection. Production always calls the real backend.
 pub var test_stream_write: ?*const fn (u16, []const u8, *u64) u8 = null;
 pub var test_stream_close: ?*const fn (u16) u8 = null;
@@ -190,6 +262,7 @@ fn release_binding(binding: Binding) i64 {
                 if (st != virtio_file.st_ok) return hf_handle_errno(st);
             }
             ep.* = .{};
+            release_empty_endpoints();
         },
         else => {},
     }
@@ -200,13 +273,14 @@ pub fn prepare_streams(parent: usize, request: StreamRequest, plan: *StreamPlan)
     plan.* = .{ .parent = parent };
     if (parent >= process.max_processes or request.version != 1 or request.reserved != 0) return -1;
     // Validate the whole request before reserving or consuming anything.
+    var needs_endpoint = false;
     for (request.sources, 0..) |source, i| {
         if (source == stream_inherit or source == stream_closed) continue;
         if (source == stream_console) {
             if (i == 0) return -7;
             continue;
         }
-        if (source >= max_handles_per_process) return -2;
+        if (source >= max_handles_per_process or handles.len == 0) return -2;
         const h = &handles[parent][source];
         if (!h.in_use) return -2;
         if (h.partition != .host or h.is_dir) return -1;
@@ -215,7 +289,10 @@ pub fn prepare_streams(parent: usize, request: StreamRequest, plan: *StreamPlan)
         for (request.sources[0..i]) |prior| {
             if (prior == source) return -1; // no accidental stdout/stderr alias
         }
+        needs_endpoint = true;
     }
+    if (needs_endpoint and !ensure_endpoints()) return -10;
+    defer release_empty_endpoints();
     plan.active = true;
     for (request.sources, 0..) |source, i| {
         if (source == stream_inherit) {
@@ -227,7 +304,7 @@ pub fn prepare_streams(parent: usize, request: StreamRequest, plan: *StreamPlan)
             plan.bindings[i] = .console;
         } else {
             var free: ?usize = null;
-            for (&endpoints, 0..) |*ep, idx| {
+            for (endpoints, 0..) |*ep, idx| {
                 if (ep.refs == 0) {
                     free = idx;
                     break;
@@ -256,6 +333,7 @@ pub fn cancel_streams(plan: *StreamPlan) void {
         }
     }
     plan.active = false;
+    release_empty_endpoints();
 }
 
 pub fn commit_streams(pid: usize, plan: *StreamPlan) void {
@@ -265,6 +343,7 @@ pub fn commit_streams(pid: usize, plan: *StreamPlan) void {
     }
     streams[pid] = plan.bindings;
     plan.active = false;
+    release_empty_handles();
 }
 
 pub fn stream_is_console(pid: u64, fd: u64) bool {
@@ -355,7 +434,12 @@ var usb_fat_sector: [fat32_ro.sector_len]u8 align(64) = undefined;
 
 pub fn init() void {
     for (0..process.max_processes) |pid| reset_process(pid);
-    for (&handles) |*proc_handles| {
+    for (0..snapshots.len) |slot| release_snapshot(slot);
+    if (builtin.is_test) {
+        _ = ensure_handles();
+        _ = ensure_endpoints();
+    }
+    for (handles) |*proc_handles| {
         for (proc_handles) |*h| {
             h.* = .{};
         }
@@ -364,7 +448,8 @@ pub fn init() void {
         if (t.*) |h| terminal.release(h);
         t.* = null;
     }
-    initialized = true;
+    @memset(&snapshot_used, false);
+    release_empty_handles();
 }
 
 pub fn reset_process(pid: u64) void {
@@ -375,14 +460,17 @@ pub fn reset_process(pid: u64) void {
         if (release_binding(binding) < 0 and binding == .file) endpoints[binding.file] = .{};
     }
     streams[pid] = default_streams;
-    for (&handles[pid]) |*h| {
+    release_empty_endpoints();
+    if (handles.len != 0) for (&handles[pid]) |*h| {
+        if (h.in_use and h.dir_token != 0) release_snapshot(h.dir_snapshot);
         // HF5: a killed/exited process must free its HOST write handles
         // (the host table is global — a leaked slot would starve others).
         if (h.in_use and h.host_handle_valid) {
             _ = virtio_file.close(h.host_handle);
         }
         h.* = .{};
-    }
+    };
+    release_empty_handles();
     // #1072: a dead process's controlling terminal is released.
     if (process_terminal[pid]) |th| {
         terminal.release(th);
@@ -400,9 +488,21 @@ pub fn reset_process(pid: u64) void {
 // verdict is EACCES, never a silent allow.
 // ---------------------------------------------------------------------------
 
-/// Fixed BSS buffer for `OWNERS.TXT` load/save (no allocation; no large
-/// stack frame in the exception-context syscall path).
-var owners_scratch: [trust.save_max]u8 = undefined;
+/// `OWNERS.TXT` save uses bounded pool pages, released on every outcome,
+/// rather than a large exception-context stack or static image reservation.
+var test_owners_scratch: [trust.save_max]u8 = undefined;
+const owners_pages: u64 = (trust.save_max + alloc.page_size - 1) / alloc.page_size;
+
+fn owners_buffer() ?[]u8 {
+    if (builtin.is_test) return &test_owners_scratch;
+    const pa = alloc.alloc_pages(owners_pages) orelse return null;
+    const ptr: [*]u8 = @ptrFromInt(pa);
+    return ptr[0..trust.save_max];
+}
+
+fn free_owners_buffer(buffer: []u8) void {
+    if (!builtin.is_test) _ = alloc.free_pages(@intFromPtr(buffer.ptr), owners_pages);
+}
 
 /// The actor for a `file_table` caller: the process principal (ADR 0024 D2).
 /// An unknown pid (host tests, a non-process caller) defaults to
@@ -426,17 +526,48 @@ fn hostAllowed(pid: u64, path: []const u8, want: trust.Want) bool {
 
 /// Serialize the trust table and persist it to `OWNERS.TXT` on the share.
 fn persist_trust() bool {
-    const n = trust.save(&owners_scratch);
+    const scratch = owners_buffer() orelse return false;
+    defer free_owners_buffer(scratch);
+    const n = trust.save(scratch);
     if (n == 0) return false;
-    return virtio_file.write_whole(trust.filename, owners_scratch[0..n]) == virtio_file.st_ok;
+    return virtio_file.write_whole(trust.filename, scratch[0..n]) == virtio_file.st_ok;
 }
 
 /// Load `OWNERS.TXT` from the host share at boot (no-op without a channel or
 /// when the file is absent — the empty table is today's behavior).
 pub fn load_trust_from_share() bool {
     if (!virtio_file.available()) return false;
-    const n = virtio_file.read_whole(trust.filename, &owners_scratch) orelse return false;
-    return trust.load(owners_scratch[0..n]) == .ok;
+    var st = virtio_file.StatResult{};
+    if (virtio_file.stat(trust.filename, &st) != virtio_file.st_ok or
+        st.is_dir or st.size == 0 or st.size > trust.save_max) return false;
+    // The custom-device boot probe calls this before alloc.init.
+    var chunk: [1024]u8 = undefined;
+    var line: [trust.max_path_len + 64]u8 = undefined;
+    var len: usize = 0;
+    var overlong = false;
+    var offset: u64 = 0;
+    trust.init();
+    var state = trust.LoadState{};
+    while (offset < st.size) {
+        const take: usize = @intCast(@min(chunk.len, st.size - offset));
+        const n = virtio_file.read_at_into(trust.filename, offset, chunk[0..take]) orelse return false;
+        if (n == 0 or n > take) return false;
+        for (chunk[0..n]) |c| {
+            if (c == '\n') {
+                state.consume(line[0..len], overlong);
+                len = 0;
+                overlong = false;
+            } else if (len < line.len) {
+                line[len] = c;
+                len += 1;
+            } else {
+                overlong = true;
+            }
+        }
+        offset += n;
+    }
+    if (len != 0 or overlong) state.consume(line[0..len], overlong);
+    return state.result() == .ok;
 }
 
 /// ADR 0024 D10 slot 69: `sys_file_mode(path, mode)` — owner-only chmod on an
@@ -578,6 +709,8 @@ pub fn parse_path(raw: []const u8) ?ParsedPath {
     while (out_len > 0 and out[out_len - 1] == '/') {
         out_len -= 1;
     }
+    // Preserve legacy deep paths; their byte bound already bounds parsing.
+    if (!directory.valid_path(out[0..out_len], max_path_len)) return null;
 
     return ParsedPath{
         .partition = partition,
@@ -636,7 +769,7 @@ pub fn hf_handle_errno(st: u8) i64 {
 /// - `-5` (`ENOSPC`): Handle table full — the guest's 8 open handles, or the
 ///   host's 8 (M66a: HF status 6 rides the same row)
 /// - `-6` (`ENOENT`): File not found and MODE_CREATE not set (or no share)
-/// - `-8` (`ENAMETOOLONG`): Path length > 64
+/// - `-8` (`ENAMETOOLONG`): Path length > 512
 /// - `-9` (`EEXIST`): MODE_DIR create and the name already exists
 pub fn open(pid: u64, path_bytes: []const u8, flags: u32) i64 {
     if (pid >= process.max_processes) return -1;
@@ -647,16 +780,11 @@ pub fn open(pid: u64, path_bytes: []const u8, flags: u32) i64 {
     if ((flags & MODE_DIR) != 0 and (flags & (MODE_CREATE | MODE_WRITE)) != (MODE_CREATE | MODE_WRITE)) return -1;
 
     if (path_bytes.len > max_path_len) return -8;
+    if (!ensure_handles()) return -10;
+    defer release_empty_handles();
 
     // Find free handle slot for calling process
-    var owned: usize = 0;
-    for (handles[pid]) |h| {
-        if (h.in_use) owned += 1;
-    }
-    for (streams[pid]) |binding| {
-        if (binding == .file) owned += 1;
-    }
-    if (owned >= max_handles_per_process) return -5;
+    if (resource_count(pid) >= max_handles_per_process) return -5;
     var free_slot: ?usize = null;
     for (handles[pid], 0..) |h, idx| {
         if (!h.in_use) {
@@ -833,13 +961,14 @@ pub fn open(pid: u64, path_bytes: []const u8, flags: u32) i64 {
 /// Read from open handle `fd`.
 /// Returns bytes read (0 at EOF), or negative error code.
 pub fn read(pid: u64, fd: u64, out_buf: []u8) i64 {
-    if (pid >= process.max_processes or fd >= max_handles_per_process) return -2;
+    if (pid >= process.max_processes or fd >= max_handles_per_process or handles.len == 0) return -2;
     return read_handle(pid, &handles[pid][fd], out_buf, false);
 }
 
 fn read_handle(pid: u64, h: *FileHandle, out_buf: []u8, strict: bool) i64 {
     if (!h.in_use) return -2; // EBADF
     if ((h.flags & MODE_READ) == 0) return -7; // EACCES
+    if (h.dir_token != 0) return -2;
     if (h.is_dir) return 0; // M25 Lane B: a dir handle reads as empty
 
     // #1072 (ADR 0020): a `.tty` handle drains the terminal's input queue
@@ -914,13 +1043,14 @@ fn read_handle(pid: u64, h: *FileHandle, out_buf: []u8, strict: bool) i64 {
 /// Write to open handle `fd`.
 /// Returns bytes written, or negative error code.
 pub fn write(pid: u64, fd: u64, in_buf: []const u8) i64 {
-    if (pid >= process.max_processes or fd >= max_handles_per_process) return -2;
+    if (pid >= process.max_processes or fd >= max_handles_per_process or handles.len == 0) return -2;
     return write_handle(pid, &handles[pid][fd], in_buf);
 }
 
 fn write_handle(pid: u64, h: *FileHandle, in_buf: []const u8) i64 {
     if (!h.in_use) return -2; // EBADF
     if ((h.flags & MODE_WRITE) == 0) return -7; // EACCES
+    if (h.dir_token != 0) return -2;
     if (h.is_dir) return -7; // M25 Lane B: never write through a dir handle
 
     // #1072 (ADR 0020): a `.tty` handle appends to the terminal's output
@@ -990,13 +1120,104 @@ fn write_handle(pid: u64, h: *FileHandle, in_buf: []const u8) i64 {
 /// Returns 0 on success, or -2 (`EBADF`). A host write handle is closed
 /// on the HOST (flush + free the table slot) before the guest slot frees.
 pub fn close(pid: u64, fd: u64) i64 {
-    if (pid >= process.max_processes or fd >= max_handles_per_process) return -2;
+    if (pid >= process.max_processes or fd >= max_handles_per_process or handles.len == 0) return -2;
     if (!handles[pid][fd].in_use) return -2; // EBADF
+    if (handles[pid][fd].dir_token != 0) release_snapshot(handles[pid][fd].dir_snapshot);
 
     if (handles[pid][fd].host_handle_valid) {
         _ = virtio_file.close(handles[pid][fd].host_handle);
     }
     handles[pid][fd] = .{};
+    release_empty_handles();
+    return 0;
+}
+
+fn resource_count(pid: u64) usize {
+    var count: usize = 0;
+    if (handles.len != 0) for (handles[pid]) |h| {
+        if (h.in_use) count += 1;
+    };
+    for (streams[pid]) |binding| {
+        if (binding == .file) count += 1;
+    }
+    return count;
+}
+
+/// Slot 27 v2: capture a complete immutable directory, reserving one of
+/// the process's eight native resources. USB is explicitly unsupported.
+pub fn dir_open(pid: u64, path_bytes: []const u8) i64 {
+    if (pid >= process.max_processes) return -1;
+    if (path_bytes.len > max_path_len) return -8;
+    const parsed = parse_path(if (path_bytes.len == 0) "/host" else path_bytes) orelse return -8;
+    if (parsed.partition != .host) return -4;
+    const path = parsed.path[0..parsed.path_len];
+    if (!directory.valid_path(path, directory.depth_max)) return -8;
+    if (!hostAllowed(pid, path, .list)) return -7;
+    if (!ensure_handles()) return -10;
+    defer release_empty_handles();
+    if (resource_count(pid) >= max_handles_per_process) return -5;
+    var fd: usize = 0;
+    while (fd < max_handles_per_process and handles[pid][fd].in_use) : (fd += 1) {}
+    if (fd == max_handles_per_process) return -5;
+    var slot: usize = 0;
+    while (slot < snapshot_used.len and snapshot_used[slot]) : (slot += 1) {}
+    if (slot == snapshot_used.len or next_dir_token > std.math.maxInt(i64)) return -5;
+    const snapshot = allocate_snapshot(slot) orelse return -10; // ENOMEM, not cursor exhaustion
+    snapshots[slot] = snapshot;
+    const status = virtio_file.snapshot(path, snapshot);
+    if (status != virtio_file.st_ok) {
+        release_snapshot(slot);
+        return switch (status) {
+            virtio_file.st_limit, virtio_file.st_handle => -5,
+            virtio_file.st_path_limit => -8,
+            else => hf_open_errno(status),
+        };
+    }
+    const token = next_dir_token;
+    next_dir_token += 1;
+    handles[pid][fd] = .{
+        .in_use = true,
+        .is_dir = true,
+        .dir_token = token,
+        .dir_snapshot = slot,
+        .path = parsed.path,
+        .path_len = parsed.path_len,
+    };
+    snapshot_used[slot] = true;
+    return @intCast(token);
+}
+
+fn dir_handle(pid: u64, token: u64) ?*FileHandle {
+    if (pid >= process.max_processes or token == 0 or handles.len == 0) return null;
+    for (&handles[pid]) |*h| {
+        if (h.in_use and h.dir_token == token) return h;
+    }
+    return null;
+}
+
+/// Indexed pages make retries after EFAULT lossless; `next` is the actual
+/// continuation offset. Zero rows + end=1 is EOF, never an I/O refusal.
+pub fn dir_page(pid: u64, token: u64, offset: u64, limit: u64, page: *directory.Page) i64 {
+    const h = dir_handle(pid, token) orelse return -2;
+    if (!hostAllowed(pid, h.path[0..h.path_len], .list)) return -7;
+    if (limit == 0 or limit > directory.page_max) return -1;
+    const snapshot = snapshots[h.dir_snapshot].?;
+    if (offset > snapshot.count) return -1;
+    const take: usize = @intCast(@min(limit, snapshot.count - offset));
+    page.header = .{
+        .count = @intCast(take),
+        .next = offset + take,
+        .end = @intFromBool(offset + take == snapshot.count),
+    };
+    @memcpy(page.entries[0..take], snapshot.entries[@intCast(offset)..][0..take]);
+    return @intCast(take);
+}
+
+pub fn dir_close(pid: u64, token: u64) i64 {
+    const h = dir_handle(pid, token) orelse return -2;
+    release_snapshot(h.dir_snapshot);
+    h.* = .{};
+    release_empty_handles();
     return 0;
 }
 
@@ -1156,10 +1377,11 @@ pub fn rename(pid: u64, old_bytes: []const u8, new_bytes: []const u8) i64 {
 /// zero-fills). Returns 0; EBADF for a bad/closed handle, EACCES when not
 /// open for write.
 pub fn truncate(pid: u64, fd: u64, new_size: u32) i64 {
-    if (pid >= process.max_processes or fd >= max_handles_per_process) return -2;
+    if (pid >= process.max_processes or fd >= max_handles_per_process or handles.len == 0) return -2;
     var h = &handles[pid][fd];
     if (!h.in_use) return -2; // EBADF
     if ((h.flags & MODE_WRITE) == 0) return -7; // EACCES
+    if (h.dir_token != 0) return -2;
     if (h.is_dir) return -7; // M25 Lane B: never truncate through a dir handle
     // M50 TS2 (ADR 0024 D4): the host-share ownership/mode gate for resize.
     if (h.partition == .host and !hostAllowed(pid, h.path[0..h.path_len], .write)) return -7; // EACCES
@@ -1180,9 +1402,10 @@ pub fn truncate(pid: u64, fd: u64, new_size: u32) i64 {
 /// syncs through the channel; handles with no host-side dirty state
 /// (stateless read handles, read-only `.usb`, `.tty`) are honest no-ops.
 pub fn sync(pid: u64, fd: u64) i64 {
-    if (pid >= process.max_processes or fd >= max_handles_per_process) return -2;
+    if (pid >= process.max_processes or fd >= max_handles_per_process or handles.len == 0) return -2;
     const h = &handles[pid][fd];
     if (!h.in_use) return -2; // EBADF
+    if (h.dir_token != 0) return -2;
     if (h.partition != .host) return 0; // no host-side state to push
     if (!h.host_handle_valid) return 0; // stateless read handle: nothing to sync
     return hf_handle_errno(virtio_file.fsync(h.host_handle));
@@ -1343,7 +1566,7 @@ test "B1: endpoint exhaustion rolls back and native resources remain bounded at 
     try std.testing.expectEqual(@as(i64, -5), prepare_streams(0, .{ .sources = .{ 0, 1, stream_closed } }, &plan));
     try std.testing.expect(handles[0][0].in_use and handles[0][1].in_use);
     try std.testing.expectEqual(@as(usize, 0), endpoints[0].refs);
-    for (&endpoints) |*ep| ep.* = .{};
+    for (endpoints) |*ep| ep.* = .{};
     try std.testing.expectEqual(@as(i64, 0), prepare_streams(0, .{ .sources = .{ 0, stream_closed, stream_closed } }, &plan));
     commit_streams(1, &plan);
     for (handles[1][0..7], 0..) |_, idx| handles[1][idx] = .{ .in_use = true, .flags = MODE_READ };
@@ -1430,6 +1653,280 @@ test "B1: distinct output destinations confirm short writes errors zero progress
     for (endpoints) |ep| try std.testing.expectEqual(@as(usize, 0), ep.refs);
 }
 
+test "B2: complete pages, long names, stable mutation snapshot and EOF" {
+    init();
+    trust.init();
+    var files: [40]virtio_file.TestFile = undefined;
+    var names: [38][16]u8 = undefined;
+    for (files[0..38], 0..) |*f, i| {
+        f.* = .{ .name = try std.fmt.bufPrint(&names[i], "entry-{d:0>2}", .{i}), .data = "data" };
+    }
+    const prefix = "abcdefghijklmnopqrstuvwxyzABCDE";
+    files[38] = .{ .name = prefix ++ "-one", .data = "one" };
+    files[39] = .{ .name = prefix ++ "-two", .data = "two" };
+    virtio_file.set_test_share(&files);
+    defer virtio_file.set_test_share(null);
+    const token: u64 = @intCast(dir_open(0, "/host"));
+    // Changing the backing share after capture does not change its pages.
+    virtio_file.set_test_share(&.{});
+    var page: directory.Page = undefined;
+    var offset: u64 = 0;
+    var seen: usize = 0;
+    var last: [256]u8 = .{0} ** 256;
+    var last_len: usize = 0;
+    while (true) {
+        const count = dir_page(0, token, offset, 7, &page);
+        try std.testing.expect(count >= 0);
+        try std.testing.expectEqual(offset + @as(u64, @intCast(count)), page.header.next);
+        for (page.entries[0..@intCast(count)]) |entry| {
+            const name = entry.name[0..entry.name_len];
+            if (seen > 0) try std.testing.expect(std.mem.order(u8, last[0..last_len], name) == .lt);
+            @memcpy(last[0..name.len], name);
+            last_len = name.len;
+            if (seen == 0) try std.testing.expectEqualStrings(prefix ++ "-one", name);
+            if (seen == 1) try std.testing.expectEqualStrings(prefix ++ "-two", name);
+            seen += 1;
+        }
+        offset = page.header.next;
+        if (page.header.end == 1) break;
+        try std.testing.expect(count > 0);
+    }
+    try std.testing.expectEqual(@as(usize, 40), seen);
+    try std.testing.expectEqual(@as(i64, 0), dir_page(0, token, offset, 16, &page));
+    try std.testing.expectEqual(@as(u32, 1), page.header.end);
+    try std.testing.expectEqual(@as(i64, -1), dir_page(0, token, offset + 1, 16, &page));
+    try std.testing.expectEqual(@as(i64, -1), dir_page(0, token, 0, 17, &page));
+    try std.testing.expectEqual(@as(i64, -1), dir_page(0, token, 0, 0, &page));
+    try std.testing.expectEqual(@as(i64, 0), dir_close(0, token));
+}
+
+test "B2: first directory open preserves the table for ordinary files" {
+    init();
+    handles = &.{};
+    virtio_file.set_test_share(&.{
+        .{ .name = "D", .data = "", .is_dir = true },
+        .{ .name = "D/item", .data = "item" },
+        .{ .name = "file", .data = "file" },
+    });
+    defer virtio_file.set_test_share(null);
+    const token = dir_open(0, "D");
+    try std.testing.expect(token > 0);
+    const fd = open(0, "file", MODE_READ);
+    try std.testing.expectEqual(@as(i64, 1), fd);
+    var page: directory.Page = undefined;
+    try std.testing.expectEqual(@as(i64, 1), dir_page(0, @intCast(token), 0, 1, &page));
+    try std.testing.expectEqualStrings("item", page.entries[0].name[0..page.entries[0].name_len]);
+    try std.testing.expectEqual(@as(i64, 0), close(0, @intCast(fd)));
+    try std.testing.expectEqual(@as(i64, 0), dir_close(0, @intCast(token)));
+}
+
+test "B2: boot ownership load streams wide keys and poisons overlong records" {
+    init();
+    var key: [506]u8 = undefined;
+    @memset(key[0..250], 'a');
+    key[250] = '/';
+    @memset(key[251..], 'b');
+    var second = key;
+    second[505] = 'c';
+    var owners: [2400]u8 = undefined;
+    const text = try std.fmt.bufPrint(&owners, "#v1\r\n{s}\t600\t0\t-\r\n{s}\t600\t0\t-\r\n", .{ key, second });
+    virtio_file.set_test_share(&.{.{ .name = trust.filename, .data = text }});
+    defer virtio_file.set_test_share(null);
+    try std.testing.expect(load_trust_from_share());
+    try std.testing.expectEqual(@as(usize, 2), trust.count());
+    const user = trust.Actor{ .uid = process.uid_user, .caps = 0 };
+    try std.testing.expectEqual(trust.Verdict.eacces, trust.check(user, .host, &key, .list));
+    try std.testing.expectEqual(trust.Verdict.eacces, trust.check(user, .host, &second, .read));
+
+    const bad = try std.fmt.bufPrint(&owners, "#v1\n{s}\t600\t1000\t", .{key});
+    @memset(owners[bad.len..][0..700], 'x');
+    owners[bad.len + 700] = '\n';
+    virtio_file.set_test_share(&.{.{ .name = trust.filename, .data = owners[0 .. bad.len + 701] }});
+    try std.testing.expect(load_trust_from_share());
+    try std.testing.expectEqual(trust.Verdict.eacces, trust.check(trust.kernel_actor(), .host, &key, .read));
+}
+
+test "B2: unopened or reclaimed table fails descriptors and tokens safely" {
+    const saved = handles;
+    handles = &.{};
+    defer handles = saved;
+    var byte: [1]u8 = undefined;
+    var page: directory.Page = undefined;
+    try std.testing.expectEqual(@as(i64, -2), read(0, 0, &byte));
+    try std.testing.expectEqual(@as(i64, -2), write(0, 0, "x"));
+    try std.testing.expectEqual(@as(i64, -2), close(0, 0));
+    try std.testing.expectEqual(@as(i64, -2), truncate(0, 0, 0));
+    try std.testing.expectEqual(@as(i64, -2), sync(0, 0));
+    try std.testing.expectEqual(@as(i64, -2), dir_page(0, 1, 0, 1, &page));
+    try std.testing.expectEqual(@as(i64, -2), dir_close(0, 1));
+    var plan: StreamPlan = .{};
+    try std.testing.expectEqual(@as(i64, -2), prepare_streams(0, .{ .sources = .{ 0, stream_closed, stream_closed } }, &plan));
+    try std.testing.expectEqual(@as(i64, 0), prepare_streams(0, .{}, &plan));
+    cancel_streams(&plan);
+    reset_process(process.max_processes);
+}
+
+test "B2: file streams and directory cursors share the eight-resource limit" {
+    init();
+    trust.init();
+    virtio_file.set_test_share(&.{
+        .{ .name = "INPUT", .data = "input" },
+        .{ .name = "D", .data = "", .is_dir = true },
+    });
+    defer virtio_file.set_test_share(null);
+    const fd = open(0, "INPUT", MODE_READ);
+    try std.testing.expectEqual(@as(i64, 0), fd);
+    var plan: StreamPlan = .{};
+    try std.testing.expectEqual(@as(i64, 0), prepare_streams(0, .{ .sources = .{ @intCast(fd), stream_closed, stream_closed } }, &plan));
+    commit_streams(1, &plan);
+    var tokens: [7]u64 = undefined;
+    for (&tokens) |*token| {
+        const opened = dir_open(1, "D");
+        try std.testing.expect(opened > 0);
+        token.* = @intCast(opened);
+    }
+    try std.testing.expectEqual(@as(i64, -5), dir_open(1, "D"));
+    try std.testing.expectEqual(@as(i64, -5), open(1, "INPUT", MODE_READ));
+    // A cursor's native index cannot be moved into a byte stream.
+    try std.testing.expectEqual(@as(i64, -1), prepare_streams(1, .{ .sources = .{ 0, stream_closed, stream_closed } }, &plan));
+    try std.testing.expectEqual(@as(i64, 0), dir_close(1, tokens[0]));
+    const replacement = open(1, "INPUT", MODE_READ);
+    try std.testing.expectEqual(@as(i64, 0), replacement);
+    try std.testing.expectEqual(@as(i64, -5), dir_open(1, "D"));
+    try std.testing.expectEqual(@as(i64, 0), stream_close(1, stream_base));
+    const fresh = dir_open(1, "D");
+    try std.testing.expect(fresh > 0);
+    reset_process(1);
+    var page: directory.Page = undefined;
+    try std.testing.expectEqual(@as(i64, -2), dir_page(1, @intCast(fresh), 0, 1, &page));
+    for (endpoints) |ep| try std.testing.expectEqual(@as(usize, 0), ep.refs);
+    for (snapshot_used) |used| try std.testing.expect(!used);
+}
+
+test "B2: stream pool refusal preserves parent handles and default bindings" {
+    init();
+    const saved = endpoints;
+    endpoints = &.{};
+    test_endpoint_pool_empty = true;
+    defer {
+        test_endpoint_pool_empty = false;
+        endpoints = saved;
+        reset_process(0);
+    }
+    handles[0][0] = .{ .in_use = true, .flags = MODE_READ };
+    var plan: StreamPlan = .{};
+    try std.testing.expectEqual(@as(i64, -10), prepare_streams(0, .{ .sources = .{ 0, stream_closed, stream_closed } }, &plan));
+    try std.testing.expect(handles[0][0].in_use);
+    try std.testing.expect(!plan.active and endpoints.len == 0);
+    try std.testing.expectEqual(@as(i64, 0), prepare_streams(0, .{}, &plan));
+    cancel_streams(&plan);
+    try std.testing.expect(stream_is_console(0, stream_base + 1));
+    try std.testing.expect(handles[0][0].in_use and endpoints.len == 0);
+}
+
+test "B2: cursor ownership, stale reuse, close and process death recover capacity" {
+    init();
+    trust.init();
+    virtio_file.set_test_share(&.{});
+    defer virtio_file.set_test_share(null);
+    var tokens: [8]u64 = undefined;
+    for (&tokens) |*token| token.* = @intCast(dir_open(0, ""));
+    try std.testing.expectEqual(@as(i64, -5), dir_open(0, ""));
+    try std.testing.expectEqual(@as(i64, -5), dir_open(1, ""));
+    var page: directory.Page = undefined;
+    try std.testing.expectEqual(@as(i64, -2), dir_page(1, tokens[0], 0, 16, &page));
+    try std.testing.expectEqual(@as(i64, -2), dir_close(1, tokens[0]));
+    try std.testing.expectEqual(@as(i64, 0), dir_close(0, tokens[0]));
+    try std.testing.expectEqual(@as(i64, -2), dir_close(0, tokens[0]));
+    const fresh = dir_open(0, "");
+    try std.testing.expect(fresh > 0 and fresh != tokens[0]);
+    try std.testing.expectEqual(@as(i64, -2), dir_page(0, tokens[0], 0, 16, &page));
+    reset_process(0);
+    try std.testing.expectEqual(@as(i64, -2), dir_page(0, @intCast(fresh), 0, 16, &page));
+    for (&tokens) |*token| token.* = @intCast(dir_open(1, ""));
+    reset_process(1);
+    // Cursors share native handle capacity with files, never an extra table.
+    for (&handles[0]) |*h| h.* = .{ .in_use = true };
+    try std.testing.expectEqual(@as(i64, -5), dir_open(0, ""));
+    reset_process(0);
+    test_snapshot_pool_empty = true;
+    defer test_snapshot_pool_empty = false;
+    try std.testing.expectEqual(@as(i64, -10), dir_open(0, ""));
+    for (snapshot_used) |used| try std.testing.expect(!used);
+}
+
+test "B2: exact and over entry, full native path, component and depth bounds" {
+    init();
+    trust.init();
+    var files: [257]virtio_file.TestFile = undefined;
+    var names: [257][16]u8 = undefined;
+    for (&files, 0..) |*f, i| {
+        f.* = .{ .name = try std.fmt.bufPrint(&names[i], "entry-{d}", .{i}), .data = "" };
+    }
+    virtio_file.set_test_share(files[0..256]);
+    defer virtio_file.set_test_share(null);
+    const token = dir_open(0, "");
+    try std.testing.expect(token > 0);
+    var page: directory.Page = undefined;
+    try std.testing.expectEqual(@as(i64, 16), dir_page(0, @intCast(token), 240, 16, &page));
+    try std.testing.expectEqual(@as(u32, 1), page.header.end);
+    try std.testing.expectEqual(@as(i64, 0), dir_close(0, @intCast(token)));
+    virtio_file.set_test_share(&files);
+    try std.testing.expectEqual(@as(i64, -5), dir_open(0, ""));
+    const exact = "/host/" ++ ([_]u8{'a'} ** 255) ++ "/" ++ ([_]u8{'b'} ** 250);
+    try std.testing.expectEqual(@as(usize, 512), exact.len);
+    const nested = [_]virtio_file.TestFile{
+        .{ .name = exact[6..], .data = "", .is_dir = true },
+        .{ .name = "a/b/c/d/e/f/g/h", .data = "", .is_dir = true },
+    };
+    virtio_file.set_test_share(&nested);
+    const exact_token = dir_open(0, exact);
+    try std.testing.expect(exact_token > 0);
+    try std.testing.expectEqual(@as(i64, 0), dir_close(0, @intCast(exact_token)));
+    try std.testing.expectEqual(@as(i64, -8), dir_open(0, exact ++ "c"));
+    const deep = dir_open(0, "/host/a/b/c/d/e/f/g/h");
+    try std.testing.expect(deep > 0);
+    try std.testing.expectEqual(@as(i64, 0), dir_close(0, @intCast(deep)));
+    try std.testing.expectEqual(@as(i64, -8), dir_open(0, "/host/a/b/c/d/e/f/g/h/i"));
+    try std.testing.expectEqual(@as(i64, -8), dir_open(0, &([_]u8{'x'} ** 256)));
+    const long = [_]virtio_file.TestFile{.{ .name = &([_]u8{'x'} ** 255), .data = "" }};
+    virtio_file.set_test_share(&long);
+    const name_token = dir_open(0, "");
+    try std.testing.expect(name_token > 0);
+    try std.testing.expectEqual(@as(i64, 1), dir_page(0, @intCast(name_token), 0, 16, &page));
+    try std.testing.expectEqualStrings(long[0].name, page.entries[0].name[0..page.entries[0].name_len]);
+    try std.testing.expectEqual(@as(i64, 0), dir_close(0, @intCast(name_token)));
+    const over = [_]virtio_file.TestFile{.{ .name = &([_]u8{'x'} ** 256), .data = "" }};
+    virtio_file.set_test_share(&over);
+    try std.testing.expectEqual(@as(i64, -8), dir_open(0, ""));
+    try std.testing.expectEqual(@as(i64, -4), dir_open(0, "usb1"));
+}
+
+test "B2: access denial at capture and page, including persisted wide keys" {
+    init();
+    trust.init();
+    const files = [_]virtio_file.TestFile{.{ .name = "private", .data = "", .is_dir = true }};
+    virtio_file.set_test_share(&files);
+    defer virtio_file.set_test_share(null);
+    try std.testing.expectEqual(trust.LoadResult.ok, trust.load("#v1\nprivate\t600\t0\t-\n"));
+    try std.testing.expectEqual(@as(i64, -7), dir_open(0, "private"));
+    trust.init();
+    const token = dir_open(0, "private");
+    try std.testing.expect(token > 0);
+    _ = trust.load("#v1\nprivate\t600\t0\t-\n");
+    var page: directory.Page = undefined;
+    try std.testing.expectEqual(@as(i64, -7), dir_page(0, @intCast(token), 0, 16, &page));
+    try std.testing.expectEqual(@as(i64, 0), dir_close(0, @intCast(token)));
+    const key = ([_]u8{'a'} ** 200) ++ "/" ++ ([_]u8{'b'} ** 200);
+    const owners = "#v1\n" ++ key ++ "\t600\t0\t-\n";
+    try std.testing.expectEqual(trust.LoadResult.ok, trust.load(owners));
+    try std.testing.expectEqual(trust.Verdict.eacces, trust.check(.{ .uid = process.uid_user, .caps = 0 }, .host, key, .list));
+    var saved: [trust.save_max]u8 = undefined;
+    const n = trust.save(&saved);
+    try std.testing.expectEqualStrings(owners, saved[0..n]);
+    trust.init();
+}
+
 test "file_table: path parsing and volume routing" {
     // Bare paths default to the host share (HF6: the only partition).
     const p1 = parse_path("hello.txt").?;
@@ -1468,6 +1965,7 @@ test "file_table: path parsing and volume routing" {
     try std.testing.expect(parse_path("/host/../secret.txt") == null);
     try std.testing.expect(parse_path("dir/../../file") == null);
     try std.testing.expect(parse_path("..") == null);
+    try std.testing.expect(parse_path("a/b/c/d/e/f/g/h/i/file") != null);
 }
 
 test "file_table: the usb volume is read-only and absent without a device" {

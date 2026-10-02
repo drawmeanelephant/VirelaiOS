@@ -1559,3 +1559,88 @@ right shape the day a second principal is reachable from EL0.
 `time sync`. GOSELF pins the write's range checks and read-back on the class-B
 reference host. Not introduced: an NTP daemon or periodic sync, reference-clock
 discipline, auth extension fields, or a timezone (M83c).
+
+## Amendment (2026-10-01, B2 #1869 — versioned slot-27 directory snapshots)
+
+This is the proposed B2 ABI amendment required by frozen ADR 0038. Approval
+of this landing PR approves the interface; no additional syscall is allocated.
+The registration count remains 79.
+
+Legacy slot 27 (`path_ptr, path_len, rows_ptr, max_entries`) is unchanged:
+40-byte rows, at most sixteen per call, and its historical short names.
+Unused x4/x5 remain ignored. **It is not a complete directory walker.**
+Version 2 is selected only by x3's high bit, which cannot be a valid legacy
+user-buffer capacity:
+
+| x3 | x0 | x1 | x2 | x4 | Result |
+|----|----|----|----|----|--------|
+| `0x8000000000000001` | path pointer | path byte length (0 = `/host`) | unused | unused | positive opaque snapshot token |
+| `0x8000000000000002` | token | entry offset (initially 0) | page pointer | requested rows, 1–16 | row count, or error |
+| `0x8000000000000003` | token | unused | unused | unused | 0 after close, or error |
+
+All scalars are native little-endian. A page starts with a 16-byte header:
+`next: u64`, `count: u32`, `end: u32` (0 or 1). Exactly `count` rows follow.
+Each **272-byte** row is `[256]u8 name` (zero-padded), `size: u64`,
+`name_len: u16`, `is_dir: u8`, `[5]u8 reserved` (zero). `name_len` is the
+lossless byte length, 1–255; directories have size 0. `next` is the entry
+offset for the next call, not a repeated listing. The final nonempty page
+has `end=1`; reading offset `next` then returns count 0 and `end=1`.
+An offset beyond the snapshot or row capacity outside 1–16 is `EINVAL`.
+Retries of an indexed page, including after `EFAULT`, do not consume rows.
+
+Open captures the entire directory **before** publishing the token, including
+hidden and ignored names. Both backends collect through actual EOF, refuse
+duplicate/malformed rows and more than 256 entries, and check directory
+mtime/ctime (seconds and nanoseconds) around capture. Detected capture
+mutation is `EINVAL`: restart with a new open. After successful capture,
+names/type/size are immutable until close, irrespective of later host changes.
+This is a directory-membership snapshot, not a snapshot of file contents or
+a no-follow/containment guarantee (B3 owns those). Transport/metadata failure
+is an error, never EOF.
+
+Full native input paths are now ≤512 bytes, including the guest prefix.
+Each normalized component is ≤255 bytes; at most eight components below
+the **share root** are supported. Traversal, NUL and dot components refuse.
+Over-limit v2 paths/names return `ENAMETOOLONG`; directory entry/cursor/native
+handle exhaustion returns `ENOSPC`. USB v2 enumeration returns `ENOSYS`,
+not an empty directory. Existing USB/tty interfaces remain available.
+
+A cursor occupies one of the process's eight native resources; there are
+eight snapshot slots globally, with 256 rows each. Each live snapshot uses
+18 contiguous kernel-pool pages (72 KiB), freed on close/death or failed
+capture, at most 576 KiB globally. Pool exhaustion is `ENOMEM`. There is no
+permanent large BSS reservation. Tokens are globally unique
+until exhaustion, process-bound, never recycled and explicitly closed.
+Cross-process, stale and closed tokens return `EBADF`. Process teardown
+releases every slot. No live resource is evicted. Ordinary file operations
+cannot read/write/truncate/sync a directory cursor. Native close also frees
+the slot if the caller closes its underlying resource index.
+The widened shared handle table uses 19 pool pages (76 KiB), allocated
+on first open and released when the last handle closes or dies. Ownership
+save scratch uses nine temporary pages (36 KiB); boot load streams bounded
+lines before the allocator is armed. B1's widened 48-record stream endpoint
+table uses seven pool pages (28 KiB), allocated before an explicit file
+binding is reserved and freed when its last reference/reservation is
+released. Allocation failure returns `ENOMEM` without consuming parent
+handles. Together with all eight snapshots these reservations peak at
+716 KiB, without increasing the kernel BSS or bootloader image ceilings.
+Files, directory cursors and file-backed stream bindings share the same
+eight-resource limit per process.
+The same listing authorization check runs at open **and every page**;
+authorization changes do not expose a previously authorized snapshot.
+Ownership keys and serialization carry the full widened path, never a prefix.
+
+The legacy custom channel gains additive operations `0x0d/0x0e/0x0f`:
+open(root-relative path) returns an eight-byte token; page takes
+`token:u64, offset:u16, limit:u16` and returns the native header/row bytes;
+close takes the eight-byte token. Status 7 is entry exhaustion, 8 path/name
+exhaustion, 9 capture mutation. Old hosts refuse unknown operations.
+The kernel materializes and closes the host snapshot before publishing its
+process token; VirtioFS uses OPENDIR/READDIR's opaque continuation cookies
+and RELEASEDIR, with the same limits and EOF contract.
+
+Boris's total visited-entry limit, relative-root depth, emitted-file budget
+and SDK resource accounting still belong to C3/A3. B2's conservative native
+depth limit is rooted at `/host`, not an arbitrary deeper supplied root.
+This discrepancy with ADR 0038's proposed root-relative workload depth must
+be reported in the B2 PR, not patched into the frozen target contract.

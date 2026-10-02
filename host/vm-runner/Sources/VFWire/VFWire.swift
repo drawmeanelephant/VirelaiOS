@@ -38,6 +38,9 @@ public enum VFWire {
     // rule: an old host answers it with status 4 host error and an old
     // guest never sends it.
     public static let opClone: UInt8 = 0x0c
+    public static let opDirOpen: UInt8 = 0x0d
+    public static let opDirPage: UInt8 = 0x0e
+    public static let opDirClose: UInt8 = 0x0f
 
     // Reply statuses
     public static let stOk: UInt8 = 0
@@ -47,6 +50,9 @@ public enum VFWire {
     public static let stHostError: UInt8 = 4
     public static let stExists: UInt8 = 5
     public static let stHandle: UInt8 = 6
+    public static let stLimit: UInt8 = 7
+    public static let stPathLimit: UInt8 = 8
+    public static let stChanged: UInt8 = 9
 
     // OPEN request flags byte (per-op modifiers in the reserved byte)
     public static let openFlagCreate: UInt8 = 0x01
@@ -55,7 +61,7 @@ public enum VFWire {
     // Frame constants (mirror kernel/src/virtio_file.zig)
     public static let requestHdrLen = 4 // [op][flags][len u16le]
     public static let replyHdrLen = 3 // [status][dlen u16le]
-    public static let pathMax = 255
+    public static let pathMax = 512
     public static let replyCap = 32768 // full-cap device-write reply (HF1)
     public static let listMaxEntries = 128
     public static let entryRowLen = 40 // [name 31][type u8][size u64le]

@@ -12,6 +12,7 @@ const mmio = @import("mmio.zig");
 const mmu = @import("mmu.zig");
 const pci = @import("pci.zig");
 const spinlock = @import("spinlock.zig");
+const directory = @import("directory.zig");
 
 pub const st_ok: u8 = 0;
 pub const st_not_found: u8 = 1;
@@ -20,11 +21,14 @@ pub const st_truncated: u8 = 3;
 pub const st_host_error: u8 = 4;
 pub const st_exists: u8 = 5;
 pub const st_handle: u8 = 6;
+pub const st_limit: u8 = 7;
+pub const st_path_limit: u8 = 8;
+pub const st_changed: u8 = 9;
 
 pub const virtio_fs_did: u32 = 0x105a;
 pub const virtio_fs_device_id: u32 = 26;
 pub const tag = "virelaios";
-pub const max_path: usize = 255;
+pub const max_path: usize = directory.path_max;
 pub const max_io: usize = 2048;
 
 const descriptor_count: usize = 16;
@@ -36,6 +40,9 @@ const fuse_in_header_len: usize = 40;
 const fuse_out_header_len: usize = 16;
 const poll_budget: usize = 16_000_000;
 const node_cache_count: usize = 64;
+// Caching is optional. Keep its existing storage budget; longer paths are
+// resolved losslessly without caching, not refused or prefix-aliased.
+const cache_path_max: usize = 255;
 const file_handle_count: usize = 8;
 
 const VirtqDesc = extern struct {
@@ -74,7 +81,7 @@ const Queue = struct {
 };
 
 const Node = struct {
-    path: [max_path]u8 = [_]u8{0} ** max_path,
+    path: [cache_path_max]u8 = [_]u8{0} ** cache_path_max,
     path_len: usize = 0,
     nodeid: u64 = 0,
     mode: u32 = 0,
@@ -561,12 +568,12 @@ fn cache_find(path: []const u8) ?Node {
 }
 
 fn cache_put(path: []const u8, nodeid: u64, mode: u32, size: u64) void {
-    if (path.len > max_path) return;
+    if (path.len == 0 or path.len > cache_path_max) return;
     var slot: usize = 1;
     while (slot < nodes.len and nodes[slot].valid) : (slot += 1) {}
     if (slot == nodes.len) slot = 1 + (nodeid % (nodes.len - 1));
     nodes[slot] = .{
-        .path = [_]u8{0} ** max_path,
+        .path = [_]u8{0} ** cache_path_max,
         .path_len = path.len,
         .nodeid = nodeid,
         .mode = mode,
@@ -581,7 +588,7 @@ fn cache_clear() void {
 }
 
 fn lookup(parent: u64, name: []const u8, full_path: []const u8) ?Node {
-    if (name.len == 0 or name.len > max_path or std.mem.indexOfScalar(u8, name, 0) != null) return null;
+    if (!directory.valid_name(name)) return null;
     var payload: [max_path + 1]u8 = [_]u8{0} ** (max_path + 1);
     @memcpy(payload[0..name.len], name);
     const reply = transact(fuse_lookup, parent, payload[0 .. name.len + 1]) orelse return null;
@@ -592,8 +599,8 @@ fn lookup(parent: u64, name: []const u8, full_path: []const u8) ?Node {
     const size = read64(reply, attr + 8);
     const mode = read32(reply, attr + 60);
     const node = Node{
-        .path = [_]u8{0} ** max_path,
-        .path_len = full_path.len,
+        .path = [_]u8{0} ** cache_path_max,
+        .path_len = 0, // Only cache_put materializes a bounded cache key.
         .nodeid = nodeid,
         .mode = mode,
         .size = size,
@@ -927,6 +934,136 @@ pub fn list(raw_path: []const u8, out: []DirectoryEntry, out_count: *usize) u8 {
     return st_ok;
 }
 
+fn directory_stamp(nodeid: u64) ?[24]u8 {
+    var input: [16]u8 = .{0} ** 16;
+    const reply = transact(fuse_getattr, nodeid, &input) orelse return null;
+    if (reply.len < 104) return null;
+    var stamp: [24]u8 = undefined;
+    // fuse_attr mtime/ctime seconds and their nanoseconds (not atime).
+    @memcpy(stamp[0..16], reply[16 + 32 ..][0..16]);
+    @memcpy(stamp[16..24], reply[16 + 52 ..][0..8]);
+    return stamp;
+}
+
+/// Parse a complete FUSE page and preserve the backend's opaque cookie.
+/// A malformed/non-progressing page is an error, never end-of-directory.
+pub fn snapshot_page(page: []const u8, offset: *u64, parent: ?u64, out: *directory.Snapshot) u8 {
+    var at: usize = 0;
+    while (at < page.len) {
+        if (page.len - at < 24) return st_host_error;
+        const next = read64(page, at + 8);
+        const nlen = read32(page, at + 16);
+        if (nlen > directory.name_max) return st_path_limit;
+        const len = (@as(usize, 24) + nlen + 7) & ~@as(usize, 7);
+        if (nlen == 0 or len > page.len - at or next == offset.* or next == 0) return st_host_error;
+        const name = page[at + 24 ..][0..nlen];
+        if (!std.mem.eql(u8, name, ".") and !std.mem.eql(u8, name, "..")) {
+            var size: u64 = 0;
+            var is_dir = read32(page, at + 20) == dirent_type_dir;
+            if (parent) |nodeid| {
+                const child = lookup(nodeid, name, "") orelse return status_from_error();
+                size = child.size;
+                is_dir = (child.mode & file_type_mask) == file_type_dir;
+                if (is_dir) size = 0;
+            }
+            out.append(name, size, is_dir) catch |err| return switch (err) {
+                error.EntryLimit => st_limit,
+                error.NameLimit => st_path_limit,
+                else => st_changed,
+            };
+        }
+        offset.* = next;
+        at += len;
+    }
+    return st_ok;
+}
+
+pub fn snapshot(path: []const u8, out: *directory.Snapshot) u8 {
+    out.count = 0;
+    if (!directory.valid_path(path, directory.depth_max)) return st_path_limit;
+    if (!available()) return st_host_error;
+    const saved = fs_lock.lock();
+    defer fs_lock.unlock(saved);
+    // A snapshot opens the current path, not a stale cached directory.
+    cache_clear();
+    const node = resolve_path(path) orelse return status_from_error();
+    if ((node.mode & file_type_mask) != file_type_dir) return st_is_dir;
+    const before = directory_stamp(node.nodeid) orelse return st_host_error;
+    var open_in: [8]u8 = .{0} ** 8;
+    const opened = transact(fuse_opendir, node.nodeid, &open_in) orelse return status_from_error();
+    if (opened.len < 8) return st_host_error;
+    var release: [24]u8 = .{0} ** 24;
+    write64(&release, 0, read64(opened, 0));
+    var released = false;
+    defer if (!released) {
+        _ = transact(fuse_releasedir, node.nodeid, &release);
+    };
+    var offset: u64 = 0;
+    // Even hostile streams containing only dot entries cannot loop forever.
+    var pages: usize = 0;
+    while (true) {
+        if (pages == directory.entry_max + 2) return st_host_error;
+        pages += 1;
+        var input: [40]u8 = .{0} ** 40;
+        write64(&input, 0, read64(&release, 0));
+        write64(&input, 8, offset);
+        write32(&input, 16, max_io);
+        const reply = transact(fuse_readdir, node.nodeid, &input) orelse return status_from_error();
+        if (reply.len == 0) break; // FUSE EOF, including after exactly 256 entries
+        if (reply.len > max_io) return st_host_error;
+        // LOOKUP uses the transport reply buffer too.
+        var page: [max_io]u8 = undefined;
+        @memcpy(page[0..reply.len], reply);
+        const status = snapshot_page(page[0..reply.len], &offset, node.nodeid, out);
+        if (status != st_ok) return status;
+    }
+    const after = directory_stamp(node.nodeid) orelse return st_host_error;
+    if (!std.mem.eql(u8, &before, &after)) return st_changed;
+    _ = transact(fuse_releasedir, node.nodeid, &release) orelse return status_from_error();
+    released = true;
+    out.sort();
+    return st_ok;
+}
+
+test "B2: FUSE pages retain opaque continuation and names without clipping" {
+    var snapshot_rows = directory.Snapshot{};
+    var offset: u64 = 0;
+    var page: [280]u8 = .{0} ** 280;
+    write64(&page, 8, 0x1234);
+    write32(&page, 16, 255);
+    @memset(page[24..279], 'x');
+    try std.testing.expectEqual(st_ok, snapshot_page(&page, &offset, null, &snapshot_rows));
+    try std.testing.expectEqual(@as(u64, 0x1234), offset);
+    try std.testing.expectEqual(@as(u16, 255), snapshot_rows.entries[0].name_len);
+    try std.testing.expectEqualStrings(&([_]u8{'x'} ** 255), snapshot_rows.entries[0].name[0..255]);
+    write64(&page, 8, 0x5678);
+    write32(&page, 16, 4);
+    @memcpy(page[24..28], "next");
+    try std.testing.expectEqual(st_ok, snapshot_page(page[0..32], &offset, null, &snapshot_rows));
+    try std.testing.expectEqual(@as(u64, 0x5678), offset);
+    try std.testing.expectEqual(@as(usize, 2), snapshot_rows.count);
+    try std.testing.expectEqual(st_ok, snapshot_page("", &offset, null, &snapshot_rows));
+}
+
+test "B2: malformed, duplicate, non-progressing and overlong FUSE rows refuse" {
+    var snapshot_rows = directory.Snapshot{};
+    var offset: u64 = 0;
+    var page: [280]u8 = .{0} ** 280;
+    write64(&page, 8, 1);
+    write32(&page, 16, 4);
+    @memcpy(page[24..28], "file");
+    try std.testing.expectEqual(st_host_error, snapshot_page(page[0..27], &offset, null, &snapshot_rows));
+    try std.testing.expectEqual(st_ok, snapshot_page(page[0..32], &offset, null, &snapshot_rows));
+    try std.testing.expectEqual(st_host_error, snapshot_page(page[0..32], &offset, null, &snapshot_rows));
+    write64(&page, 8, 2);
+    try std.testing.expectEqual(st_changed, snapshot_page(page[0..32], &offset, null, &snapshot_rows));
+    write32(&page, 16, 256);
+    try std.testing.expectEqual(st_path_limit, snapshot_page(&page, &offset, null, &snapshot_rows));
+    write32(&page, 16, 4);
+    @memcpy(page[24..28], "a\x00bc");
+    try std.testing.expectEqual(st_changed, snapshot_page(page[0..32], &offset, null, &snapshot_rows));
+}
+
 pub fn mkdir(raw_path: []const u8) u8 {
     if (!available()) return st_host_error;
     const saved = fs_lock.lock();
@@ -1025,7 +1162,7 @@ test "virtio_fs: paths refuse traversal and keep host-relative names" {
         nodes = [_]Node{.{}} ** node_cache_count;
     }
     nodes[1] = .{
-        .path = [_]u8{0} ** max_path,
+        .path = [_]u8{0} ** cache_path_max,
         .path_len = "SELFTEST".len,
         .nodeid = 2,
         .mode = file_type_dir | 0o755,

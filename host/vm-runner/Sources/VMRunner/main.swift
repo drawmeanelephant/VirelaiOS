@@ -524,6 +524,7 @@ var cvcFileEnabled: Bool { cvcFileShareDir != nil }
 // (parity with the kernel's file_table.zig — cursors live HERE, not in
 // the guest). VZ-free class lives in the VFWire module.
 var fileHandleTable = FileHandleTable()
+var directoryTable = DirectoryTable()
 // Claim 0680: `--cvc-console-file <path>` captures every queue-1 guest log
 // line to a structured file (the structured console). When the file is set,
 // the host also answers the guest's "cvconsole-ready" line with a kind-3
@@ -6822,6 +6823,19 @@ final class CustomVirtioSpikeDeviceDelegate: NSObject, VZCustomVirtioDeviceDeleg
             serveProbe(element: element)
         case VFWire.opList:
             serveList(payload, element: element)
+        case VFWire.opDirOpen:
+            guard let root = shareRootURL(), let path = String(bytes: payload, encoding: .utf8) else {
+                writeFileReply(element: element, status: VFWire.stHostError, data: [])
+                return
+            }
+            let (status, data) = directoryTable.open(root: root, path: path)
+            writeFileReply(element: element, status: status, data: data)
+        case VFWire.opDirPage:
+            let (status, data) = directoryTable.page(payload)
+            writeFileReply(element: element, status: status, data: data)
+        case VFWire.opDirClose:
+            let (status, data) = directoryTable.close(payload)
+            writeFileReply(element: element, status: status, data: data)
         case VFWire.opRead:
             serveRead(payload, element: element)
         case VFWire.opStat:
