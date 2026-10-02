@@ -1,7 +1,7 @@
 //! B3 (#1870): honest metadata and a bounded, no-follow traversal core.
 //!
-//! This is NOT an EL0 ABI or a backend implementation. The shared file
-//! table/FUSE/syscall integration belongs to the sequential B2/B3 handoff.
+//! The live adapter is virtio_fs.zig; file_table.zig authorizes every use,
+//! and syscall slot 79 exposes the bounded metadata/contained operations.
 //! An adapter may opt into `ContainedOps` only when it pins each lookup
 //! result, never follows links, and operates on those pins rather than
 //! re-opening a checked pathname. A stat-then-path-open adapter is unsafe.
@@ -13,6 +13,7 @@
 //! it must be nonzero, stable for that lifetime, and change on remount.
 
 const std = @import("std");
+const directory = @import("directory.zig");
 
 pub const Error = error{
     InvalidPath,
@@ -31,7 +32,7 @@ pub const Error = error{
     Io,
 };
 
-pub const Kind = enum {
+pub const Kind = enum(u32) {
     file,
     directory,
     symlink,
@@ -41,7 +42,7 @@ pub const Kind = enum {
     socket,
 };
 
-pub const Identity = struct {
+pub const Identity = extern struct {
     filesystem: u64,
     inode: u64,
 
@@ -96,16 +97,21 @@ fn read64(bytes: []const u8, off: usize) u64 {
 }
 
 fn kindFromMode(mode: u32) Error!Kind {
-    return switch (mode & 0o170000) {
-        0o100000 => .file,
-        0o040000 => .directory,
-        0o120000 => .symlink,
-        0o020000 => .character_device,
-        0o060000 => .block_device,
-        0o010000 => .fifo,
-        0o140000 => .socket,
-        else => error.InvalidMetadata,
-    };
+    // Avoid LLVM's pointer table of constant error-union results. Such
+    // absolute rodata pointers are not relocated by the current encoder.
+    var kind: Kind = undefined;
+    const out: *volatile Kind = &kind;
+    switch (mode & 0o170000) {
+        0o100000 => out.* = .file,
+        0o040000 => out.* = .directory,
+        0o120000 => out.* = .symlink,
+        0o020000 => out.* = .character_device,
+        0o060000 => out.* = .block_device,
+        0o010000 => out.* = .fifo,
+        0o140000 => out.* = .socket,
+        else => return error.InvalidMetadata,
+    }
+    return kind;
 }
 
 pub const fuse_attr_bytes: usize = 88;
@@ -168,13 +174,95 @@ pub fn fuseError(errno: i32) Error {
     };
 }
 
-// Before B2, retain ADR 0038's conservative full-native-path/component
-// ceilings. No wider path or name ABI is introduced by this core.
+// B2's approved full-native-path/name ceilings, still bounded below a root.
 pub const guest_prefix = "/host/";
-pub const max_guest_path: usize = 64;
+pub const max_guest_path: usize = directory.path_max;
 pub const max_relative_path: usize = max_guest_path - guest_prefix.len;
-pub const max_component: usize = 31;
-pub const max_depth: usize = 8;
+pub const max_component: usize = directory.name_max;
+pub const max_depth: usize = directory.depth_max;
+
+pub const stat_op: u64 = 0;
+pub const identity_op: u64 = 1;
+pub const read_open_op: u64 = 2;
+pub const write_open_op: u64 = 3;
+pub const dir_open_op: u64 = 4;
+pub const dir_page_op: u64 = 5;
+pub const dir_close_op: u64 = 6;
+
+pub const WireTime = extern struct {
+    seconds: i64,
+    nanoseconds: u32,
+    reserved: u32 = 0,
+};
+/// Host attributes are facts, never guest ownership/capabilities.
+pub const Wire = extern struct {
+    version: u32 = 1,
+    kind: Kind,
+    identity: Identity,
+    size: u64,
+    atime: WireTime,
+    mtime: WireTime,
+    ctime: WireTime,
+    host_mode: u32,
+    host_uid: u32,
+    host_gid: u32,
+    reserved: u32 = 0,
+
+    pub fn from(value: Metadata) Wire {
+        return .{
+            .kind = value.kind,
+            .identity = value.identity,
+            .size = value.size,
+            .atime = .{ .seconds = value.atime.seconds, .nanoseconds = value.atime.nanoseconds },
+            .mtime = .{ .seconds = value.mtime.seconds, .nanoseconds = value.mtime.nanoseconds },
+            .ctime = .{ .seconds = value.ctime.seconds, .nanoseconds = value.ctime.nanoseconds },
+            .host_mode = value.host_mode,
+            .host_uid = value.host_uid,
+            .host_gid = value.host_gid,
+        };
+    }
+};
+
+pub const Entry = extern struct {
+    name: [256]u8 = .{0} ** 256,
+    name_len: u16,
+    reserved: [6]u8 = .{0} ** 6,
+    metadata: Wire,
+};
+pub const Page = extern struct {
+    header: directory.Header = .{},
+    entries: [directory.page_max]Entry = undefined,
+};
+pub const Snapshot = struct {
+    count: usize = 0,
+    entries: [directory.entry_max]Entry = undefined,
+
+    pub fn append(self: *Snapshot, name: []const u8, value: Metadata) Error!void {
+        if (!directory.valid_name(name)) return error.InvalidMetadata;
+        try value.validate();
+        if (value.kind == .symlink) return error.SymlinkRejected;
+        if (self.count == directory.entry_max) return error.TreeLimit;
+        for (self.entries[0..self.count]) |entry| {
+            if (std.mem.eql(u8, entry.name[0..entry.name_len], name)) return error.StaleIdentity;
+        }
+        var entry = Entry{ .name_len = @intCast(name.len), .metadata = Wire.from(value) };
+        @memcpy(entry.name[0..name.len], name);
+        self.entries[self.count] = entry;
+        self.count += 1;
+    }
+
+    fn less(_: void, a: Entry, b: Entry) bool {
+        return std.mem.order(u8, a.name[0..a.name_len], b.name[0..b.name_len]) == .lt;
+    }
+
+    pub fn sort(self: *Snapshot) void {
+        std.mem.sort(Entry, self.entries[0..self.count], {}, less);
+    }
+};
+comptime {
+    if (@sizeOf(Wire) != 96 or @sizeOf(Entry) != 360)
+        @compileError("B3 metadata wire layout changed");
+}
 
 pub fn validatePath(path: []const u8) Error!void {
     if (path.len > max_relative_path) return error.PathLimit;
@@ -247,7 +335,7 @@ fn noSymlink(metadata: Metadata) Error!void {
     if (metadata.kind == .symlink) return error.SymlinkRejected;
 }
 
-fn checkedStat(backend: Backend, object: Object) Error!Metadata {
+pub fn checkedStat(backend: Backend, object: Object) Error!Metadata {
     const result = try (try backend.contained()).stat(backend.context, object);
     try noSymlink(result);
     if (!result.identity.eql(object.metadata.identity) or result.kind != object.metadata.kind)
@@ -267,7 +355,7 @@ fn authorizePath(auth: Authorizer, path: []const u8, access: Access) Error!void 
 
 /// At most two simultaneous pins. No per-depth handles, heap, or recursion.
 /// The caller owns the returned pin and must release it.
-fn resolve(backend: Backend, auth: Authorizer, path: []const u8, access: Access) Error!Object {
+pub fn resolve(backend: Backend, auth: Authorizer, path: []const u8, access: Access) Error!Object {
     try validateRootedPath(backend.root_path, path);
     const ops = try backend.contained();
     try auth.check(auth.context, "", .metadata);
@@ -343,7 +431,7 @@ pub const File = struct {
     }
 };
 
-pub fn open(backend: Backend, auth: Authorizer, path: []const u8, access: Access) Error!File {
+pub fn openToken(backend: Backend, auth: Authorizer, path: []const u8, access: Access) Error!u64 {
     if (access == .metadata) return error.NotFile;
     const ops = try backend.contained();
     const object = try resolve(backend, auth, path, access);
@@ -351,7 +439,11 @@ pub fn open(backend: Backend, auth: Authorizer, path: []const u8, access: Access
     const metadata = try checkedStat(backend, object);
     if (metadata.kind != .file) return error.NotFile;
     try authorizePath(auth, path, access);
-    const token = try ops.open(backend.context, object, access);
+    return ops.open(backend.context, object, access);
+}
+
+pub fn open(backend: Backend, auth: Authorizer, path: []const u8, access: Access) Error!File {
+    const token = try openToken(backend, auth, path, access);
     var result = File{
         .backend = backend,
         .auth = auth,
@@ -642,14 +734,14 @@ test "metadata: watch stamp detects independent mtime and size changes" {
     try std.testing.expect(!Metadata.watchChanged(before, f.objects[3]));
 }
 
-test "metadata: legacy full-path and component budgets are exact" {
-    try validatePath("x" ** 31);
-    try std.testing.expectError(error.PathLimit, validatePath("x" ** 32));
-    const exact = "x" ** 29 ++ "/" ++ "y" ** 28;
+test "metadata: approved B2 full-path and component budgets are exact" {
+    try validatePath("x" ** 255);
+    try std.testing.expectError(error.PathLimit, validatePath("x" ** 256));
+    const exact = "x" ** 255 ++ "/" ++ "y" ** 250;
     try std.testing.expectEqual(@as(usize, max_guest_path), exact.len + guest_prefix.len);
     try validatePath(exact);
     try std.testing.expectError(error.PathLimit, validatePath(exact ++ "y"));
-    const at_content_root = "x" ** 31 ++ "/" ++ "y" ** 18;
+    const at_content_root = "x" ** 255 ++ "/" ++ "y" ** 242;
     try std.testing.expectEqual(@as(usize, max_guest_path), guest_prefix.len + "content/".len + at_content_root.len);
     try validateRootedPath("content", at_content_root);
     try std.testing.expectError(error.PathLimit, validateRootedPath("content", at_content_root ++ "y"));
@@ -869,4 +961,33 @@ test "metadata: close failure is explicit and does not pretend resource recovery
     try file.close();
     try std.testing.expect(file.closed);
     try std.testing.expectEqual(@as(usize, 0), f.handles);
+}
+
+test "B3: rich snapshot wire preserves facts padding and exact entry ceiling" {
+    var snapshot = Snapshot{};
+    const attr = testAttr(123, 0o040755);
+    const value = try decodeFuseAttr(7, &attr);
+    try snapshot.append("directory", value);
+    const row = snapshot.entries[0];
+    try std.testing.expectEqual(@as(u64, 0x1_0000_0017), row.metadata.size);
+    try std.testing.expectEqual(value.identity, row.metadata.identity);
+    try std.testing.expectEqual(@as(u32, 456), row.metadata.mtime.nanoseconds);
+    try std.testing.expectEqualSlices(u8, &([_]u8{0} ** 6), &row.reserved);
+    try std.testing.expectEqualSlices(u8, &([_]u8{0} ** 247), row.name[9..]);
+    try std.testing.expectEqual(@as(u32, 0), row.metadata.mtime.reserved);
+    try std.testing.expectError(error.StaleIdentity, snapshot.append("directory", value));
+    const link = try decodeFuseAttr(7, &testAttr(124, 0o120777));
+    try std.testing.expectError(error.SymlinkRejected, snapshot.append("link", link));
+    var name: [16]u8 = undefined;
+    while (snapshot.count < directory.entry_max) {
+        try snapshot.append(try std.fmt.bufPrint(&name, "row-{d}", .{snapshot.count}), value);
+    }
+    try std.testing.expectError(error.TreeLimit, snapshot.append("overflow", value));
+    try std.testing.expectEqual(directory.entry_max, snapshot.count);
+}
+
+test "B3: supplied root and relative depth budgets remain independent" {
+    try validateRootedPath("content/one/two/three", "a/b/c/d/e/f/g/h");
+    try std.testing.expectError(error.TreeLimit, validateRootedPath("content", "a/b/c/d/e/f/g/h/i"));
+    try std.testing.expectError(error.PathLimit, validateRootedPath("root", "a" ** 255 ++ "/" ++ "b" ** 250));
 }

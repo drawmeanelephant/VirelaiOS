@@ -153,7 +153,7 @@ fn capture_marshaled_args(args: Args, _: *exceptions.VectorFrame) u64 {
     return 0xcafe;
 }
 
-test "syscall: runtime table has 128 slots and seventy-eight unique implemented rows" {
+test "syscall: runtime table has 128 slots and eighty unique implemented rows" {
     init(test_writer);
     const table = ensure_table();
     try std.testing.expectEqual(@as(usize, 128), table.len);
@@ -166,7 +166,8 @@ test "syscall: runtime table has 128 slots and seventy-eight unique implemented 
             implemented += 1;
         }
     }
-    try std.testing.expectEqual(@as(usize, 79), implemented);
+    try std.testing.expectEqual(@as(usize, 80), implemented);
+    try std.testing.expectEqualStrings("sys_fs_metadata", entry_info(79).?.name);
     try std.testing.expectEqualStrings("sys_pipe_read", entry_info(sys_pipe_read).?.name);
     try std.testing.expectEqualStrings("sys_pipe_write", entry_info(sys_pipe_write).?.name);
     try std.testing.expectEqualStrings("sys_font_size", entry_info(sys_font_size).?.name);
@@ -255,13 +256,13 @@ test "syscall: adapter decodes x8 and x0-x5 and unknown numbers return ENOSYS" {
     // registered rows; 73/74 are ADR 0027's sys_thread/sys_futex; 75 is
     // issue #1228's sys_exnotify; 76 is issue #1163 phase 2's
     // sys_sock_ready; 77 is M66a's sys_file_sync and 78 is M83b's
-    // sys_time_set — use 79/80, still unregistered).
-    try std.testing.expect(exceptions.frame_write(&frame, 8, 79));
+    // sys_time_set; 79 is B3 metadata — use 80/81, still unregistered).
+    try std.testing.expect(exceptions.frame_write(&frame, 8, 80));
     try std.testing.expect(handle_svc(&frame, svc_immediate));
     try std.testing.expectEqual(error_result(.enosys), exceptions.frame_read(&frame, 0));
-    try std.testing.expectEqual(@as(u64, 1), call_count(79));
+    try std.testing.expectEqual(@as(u64, 1), call_count(80));
 
-    try std.testing.expect(exceptions.frame_write(&frame, 8, 80));
+    try std.testing.expect(exceptions.frame_write(&frame, 8, 81));
     try std.testing.expect(handle_svc(&frame, svc_immediate));
     try std.testing.expectEqual(error_result(.enosys), exceptions.frame_read(&frame, 0));
 }
@@ -1348,7 +1349,7 @@ test "syscall: counters are monotonic and report is deterministic" {
     var con = mock.console();
     report(&con);
     try std.testing.expectEqualStrings(
-        "syscalls: slots=64 implemented=79\n" ++
+        "syscalls: slots=64 implemented=80\n" ++
             "  0 sys_ping calls=2\n" ++
             "  1 sys_write calls=0\n" ++
             "  2 sys_yield calls=0\n" ++
@@ -1427,7 +1428,8 @@ test "syscall: counters are monotonic and report is deterministic" {
             "  75 sys_exnotify calls=0\n" ++
             "  76 sys_sock_ready calls=0\n" ++
             "  77 sys_file_sync calls=0\n" ++
-            "  78 sys_time_set calls=0\n",
+            "  78 sys_time_set calls=0\n" ++
+            "  79 sys_fs_metadata calls=0\n",
         mock.contents(),
     );
 }
@@ -1569,6 +1571,221 @@ test "B2: slot 27 versioned marshaling, fault retry, EOF and legacy compatibilit
     try std.testing.expectEqual(@as(u64, 16), dispatch(sys_dir_list, .{ path_addr, 5, @intFromPtr(&storage.legacy), 40, dir.version, 999 }, &frame));
     try std.testing.expectEqualStrings("entry-00", storage.legacy[0].name[0..8]);
     try std.testing.expectEqual(@as(usize, 40), @sizeOf(file_table.DirEntry));
+}
+
+const B3Case = struct {
+    const meta = file_table.metadata;
+    const Server = syscall.virtio_file.virtio_fs.TestMetadataServer;
+    storage: extern struct {
+        root: [512]u8,
+        relative: [506]u8,
+        value: meta.Wire,
+        page: meta.Page,
+        data: [8]u8,
+    } = undefined,
+    frame: exceptions.VectorFrame = undefined,
+
+    fn start(self: *B3Case) void {
+        userspace.init();
+        init(test_writer);
+        _ = scheduler.init();
+        _ = scheduler.register_worker(0x2000);
+        _ = scheduler.register_user(0x3000, 0);
+        scheduler.start();
+        file_table.init();
+        syscall.trust.init();
+        self.frame = fresh_frame();
+        std.debug.assert(scheduler.yield_current());
+        std.debug.assert(scheduler.yield_current());
+        Server.start();
+        set_user_regions(.{ .base = 0, .len = 0 }, .{
+            .base = @intFromPtr(&self.storage),
+            .len = @sizeOf(@TypeOf(self.storage)),
+        });
+    }
+
+    fn stop(_: *B3Case) void {
+        file_table.init();
+        Server.stop();
+        syscall.trust.init();
+    }
+
+    fn call(self: *B3Case, op: u64, root: []const u8, path: []const u8) i64 {
+        @memcpy(self.storage.root[0..root.len], root);
+        @memcpy(self.storage.relative[0..path.len], path);
+        return @bitCast(dispatch(79, .{
+            op,                                  @intFromPtr(&self.storage.root), root.len,
+            @intFromPtr(&self.storage.relative), path.len,                        if (op <= meta.identity_op) @intFromPtr(&self.storage.value) else 0,
+        }, &self.frame));
+    }
+
+    fn page(self: *B3Case, token: u64, offset: u64, limit: u64, address: u64) i64 {
+        return @bitCast(dispatch(79, .{ meta.dir_page_op, token, offset, limit, address, 0 }, &self.frame));
+    }
+};
+
+test "B3 EL0: nested stable identities honest rich rows and indexed fault retry" {
+    var c: B3Case = .{};
+    c.start();
+    defer c.stop();
+    const meta = file_table.metadata;
+    var ids: [3]meta.Identity = undefined;
+    for ([_][]const u8{ "", "a", "a/b" }, 0..) |path, i| {
+        try std.testing.expectEqual(@as(i64, 0), c.call(meta.stat_op, "/host/content", path));
+        ids[i] = c.storage.value.identity;
+        try std.testing.expectEqual(meta.Kind.directory, c.storage.value.kind);
+        try std.testing.expectEqual(@as(u64, 4096), c.storage.value.size);
+        try std.testing.expectEqual(@as(u32, 501), c.storage.value.host_uid);
+        try std.testing.expectEqual(@as(u32, 123), c.storage.value.mtime.nanoseconds);
+        try std.testing.expectEqual(@as(i64, 0), c.call(meta.identity_op, "/host/content", path));
+        const queried: *const meta.Identity = @ptrCast(&c.storage.value);
+        try std.testing.expect(ids[i].eql(queried.*));
+        for (ids[0..i]) |prior| try std.testing.expect(!prior.eql(ids[i]));
+    }
+    const token = c.call(meta.dir_open_op, "/host/content", "");
+    try std.testing.expect(token > 0);
+    try std.testing.expectEqual(@as(i64, -3), c.page(@intCast(token), 0, 1, uaccess.diagnostic_unmapped));
+    try std.testing.expectEqual(@as(i64, 1), c.page(@intCast(token), 0, 1, @intFromPtr(&c.storage.page)));
+    try std.testing.expectEqualStrings("a", c.storage.page.entries[0].name[0..1]);
+    try std.testing.expect(ids[1].eql(c.storage.page.entries[0].metadata.identity));
+    try std.testing.expectEqual(@as(u32, 1), c.storage.page.header.end);
+    try std.testing.expectEqual(@as(i64, 0), c.page(@intCast(token), 1, 1, @intFromPtr(&c.storage.page)));
+    try std.testing.expectEqual(@as(i64, -2), file_table.metadata_dir_page(1, @intCast(token), 0, 1, &c.storage.page));
+    try std.testing.expectEqual(@as(u64, 0), dispatch(79, .{ meta.dir_close_op, @intCast(token), 0, 0, 0, 0 }, &c.frame));
+    try std.testing.expectEqual(@as(i64, -2), c.page(@intCast(token), 0, 1, @intFromPtr(&c.storage.page)));
+    try std.testing.expectEqual(@as(usize, 0), B3Case.Server.transient_pins());
+}
+
+test "B3 EL0: fresh watch stamps pinned reads and writes survive leaf replacement" {
+    var c: B3Case = .{};
+    c.start();
+    defer c.stop();
+    const meta = file_table.metadata;
+    try std.testing.expectEqual(@as(i64, 0), c.call(meta.stat_op, "/host/content", "a/b/page.md"));
+    const old = c.storage.value;
+    B3Case.Server.mtime += 1;
+    try std.testing.expectEqual(@as(i64, 0), c.call(meta.stat_op, "/host/content", "a/b/page.md"));
+    try std.testing.expect(c.storage.value.mtime.seconds != old.mtime.seconds);
+    B3Case.Server.mtime = @intCast(old.mtime.seconds);
+    B3Case.Server.size += 1;
+    try std.testing.expectEqual(@as(i64, 0), c.call(meta.stat_op, "/host/content", "a/b/page.md"));
+    try std.testing.expect(c.storage.value.size != old.size);
+    B3Case.Server.swap_leaf = true;
+    const fd = c.call(meta.read_open_op, "/host/content", "a/b/page.md");
+    try std.testing.expect(fd >= 0);
+    try std.testing.expectEqual(error_result(.efault), dispatch(24, .{ @intCast(fd), uaccess.diagnostic_unmapped, 4, 0, 0, 0 }, &c.frame));
+    try std.testing.expectEqual(@as(u64, 4), dispatch(24, .{ @intCast(fd), @intFromPtr(&c.storage.data), 4, 0, 0, 0 }, &c.frame));
+    try std.testing.expectEqualStrings("safe", c.storage.data[0..4]);
+    try std.testing.expectEqual(@as(i64, -7), c.call(meta.stat_op, "/host/content", "a/b/page.md"));
+    try std.testing.expectEqual(@as(u64, 0), dispatch(26, .{ @intCast(fd), 0, 0, 0, 0, 0 }, &c.frame));
+    B3Case.Server.start();
+    B3Case.Server.swap_leaf = true;
+    const writer = c.call(meta.write_open_op, "/host/content", "a/b/page.md");
+    try std.testing.expect(writer >= 0);
+    @memcpy(c.storage.data[0..4], "edit");
+    try std.testing.expectEqual(@as(u64, 4), dispatch(25, .{ @intCast(writer), @intFromPtr(&c.storage.data), 4, 0, 0, 0 }, &c.frame));
+    try std.testing.expectEqual(@as(i64, -7), c.call(meta.read_open_op, "/host/content", "a/b/page.md"));
+    try std.testing.expectEqual(@as(u64, 0), dispatch(26, .{ @intCast(writer), 0, 0, 0, 0, 0 }, &c.frame));
+    try std.testing.expectEqual(@as(usize, 0), B3Case.Server.transient_pins());
+}
+
+test "B3 EL0: all no-follow shortcuts and malformed metadata refuse without output" {
+    var c: B3Case = .{};
+    c.start();
+    defer c.stop();
+    const meta = file_table.metadata;
+    for ([_]u64{ 2, 3, 4, 5 }) |node| {
+        B3Case.Server.symlink_node = node;
+        for ([_]u64{ meta.stat_op, meta.identity_op, meta.read_open_op, meta.write_open_op }) |op|
+            try std.testing.expectEqual(@as(i64, -7), c.call(op, "/host/content", "a/b/page.md"));
+    }
+    B3Case.Server.symlink_node = 6;
+    B3Case.Server.include_link = true;
+    try std.testing.expectEqual(@as(i64, -7), c.call(meta.dir_open_op, "/host/content", ""));
+    B3Case.Server.include_link = false;
+    @memset(std.mem.asBytes(&c.storage.value), 0xa5);
+    const unchanged = c.storage.value;
+    B3Case.Server.short_attr = true;
+    try std.testing.expectEqual(@as(i64, -1), c.call(meta.stat_op, "/host/content", ""));
+    try std.testing.expectEqualSlices(u8, std.mem.asBytes(&unchanged), std.mem.asBytes(&c.storage.value));
+    B3Case.Server.short_attr = false;
+    B3Case.Server.zero_inode = true;
+    try std.testing.expectEqual(@as(i64, -1), c.call(meta.stat_op, "/host/content", ""));
+    B3Case.Server.zero_inode = false;
+    for ([_]struct { wire: i32, native: i64 }{
+        .{ .wire = -2, .native = -6 },
+        .{ .wire = -13, .native = -7 },
+        .{ .wire = -38, .native = -4 },
+        .{ .wire = -5, .native = -1 },
+        .{ .wire = -116, .native = -2 },
+    }) |case| {
+        B3Case.Server.fail_opcode = 3;
+        B3Case.Server.fail_errno = case.wire;
+        try std.testing.expectEqual(case.native, c.call(meta.stat_op, "/host/content", ""));
+    }
+    B3Case.Server.fail_opcode = 0;
+    for ([_][]const u8{ "../escape", "a//b", "a/./b", "a\x00b" }) |path|
+        try std.testing.expectEqual(@as(i64, -1), c.call(meta.stat_op, "/host/content", path));
+    try std.testing.expectEqual(@as(i64, -4), c.call(meta.stat_op, "/usb", ""));
+    try std.testing.expectEqual(@as(usize, 0), B3Case.Server.transient_pins());
+    B3Case.Server.stop();
+    try std.testing.expectEqual(@as(i64, -4), c.call(meta.stat_op, "/host/content", ""));
+    try std.testing.expectEqual(@as(i64, -4), c.call(meta.read_open_op, "/host/content", "a/b/page.md"));
+    try std.testing.expectEqual(@as(i64, -4), c.call(meta.dir_open_op, "/host/content", ""));
+}
+
+test "B3 EL0: principal policy applies before lookup and after handle or page revocation" {
+    var c: B3Case = .{};
+    c.start();
+    defer c.stop();
+    const meta = file_table.metadata;
+    const fd = c.call(meta.read_open_op, "/host/content", "a/b/page.md");
+    const cursor = c.call(meta.dir_open_op, "/host/content", "");
+    try std.testing.expect(fd >= 0 and cursor > 0);
+    _ = syscall.trust.load("#v1\ncontent/a\t600\t0\t-\n");
+    const lookups = B3Case.Server.lookup_count;
+    try std.testing.expectEqual(@as(i64, -7), c.call(meta.stat_op, "/host/content/a", "b/page.md"));
+    try std.testing.expectEqual(lookups, B3Case.Server.lookup_count);
+    try std.testing.expectEqual(@as(i64, -7), c.page(@intCast(cursor), 0, 1, @intFromPtr(&c.storage.page)));
+    try std.testing.expectEqual(error_result(.eacces), dispatch(24, .{ @intCast(fd), @intFromPtr(&c.storage.data), 4, 0, 0, 0 }, &c.frame));
+    syscall.trust.init();
+    _ = syscall.trust.load("#v1\ncontent/a/b/page.md\t600\t0\tsecret\n");
+    try std.testing.expectEqual(@as(i64, -7), c.call(meta.identity_op, "/host/content", "a/b/page.md"));
+    try std.testing.expectEqual(@as(i64, -7), c.call(meta.read_open_op, "/host/content", "a/b/page.md"));
+    try std.testing.expectEqual(@as(u64, 0), dispatch(26, .{ @intCast(fd), 0, 0, 0, 0, 0 }, &c.frame));
+    try std.testing.expectEqual(@as(u64, 0), dispatch(79, .{ meta.dir_close_op, @intCast(cursor), 0, 0, 0, 0 }, &c.frame));
+}
+
+test "B3 EL0: malformed calls fault bounds and backend failures never consume resources or EOF" {
+    var c: B3Case = .{};
+    c.start();
+    defer c.stop();
+    const meta = file_table.metadata;
+    const bad = uaccess.diagnostic_unmapped;
+    const r = @intFromPtr(&c.storage.root);
+    const p = @intFromPtr(&c.storage.relative);
+    try std.testing.expectEqual(@as(i64, 0), c.call(meta.stat_op, "/host/content", ""));
+    for ([_]Args{
+        .{ 0, bad, 13, p, 0, @intFromPtr(&c.storage.value) },
+        .{ 0, r, 13, bad, 1, @intFromPtr(&c.storage.value) },
+        .{ 0, r, 13, p, 0, bad },
+        .{ 1, r, 13, p, 0, bad },
+    }) |args| try std.testing.expectEqual(error_result(.efault), dispatch(79, args, &c.frame));
+    try std.testing.expectEqual(error_result(.enametoolong), dispatch(79, .{ 0, r, 513, p, 0, 0 }, &c.frame));
+    try std.testing.expectEqual(error_result(.einval), dispatch(79, .{ 99, 0, 0, 0, 0, 0 }, &c.frame));
+    try std.testing.expectEqual(error_result(.einval), dispatch(79, .{ 2, r, 13, p, 0, 1 }, &c.frame));
+    const fd = c.call(meta.read_open_op, "/host/content", "a/b/page.md");
+    try std.testing.expect(fd >= 0);
+    B3Case.Server.fail_opcode = 15; // FUSE_READ
+    B3Case.Server.fail_errno = -5;
+    try std.testing.expectEqual(error_result(.einval), dispatch(24, .{ @intCast(fd), @intFromPtr(&c.storage.data), 4, 0, 0, 0 }, &c.frame));
+    B3Case.Server.fail_opcode = 18; // FUSE_RELEASE
+    try std.testing.expectEqual(error_result(.einval), dispatch(26, .{ @intCast(fd), 0, 0, 0, 0, 0 }, &c.frame));
+    B3Case.Server.fail_opcode = 0;
+    try std.testing.expectEqual(@as(u64, 4), dispatch(24, .{ @intCast(fd), @intFromPtr(&c.storage.data), 4, 0, 0, 0 }, &c.frame));
+    try std.testing.expectEqualStrings("safe", c.storage.data[0..4]);
+    try std.testing.expectEqual(@as(u64, 0), dispatch(26, .{ @intCast(fd), 0, 0, 0, 0, 0 }, &c.frame));
+    try std.testing.expectEqual(@as(usize, 0), B3Case.Server.transient_pins());
 }
 
 test "syscall: slot 35 replacement selector preserves legacy register behavior" {
@@ -3993,7 +4210,7 @@ test "syscall: SYS_TIME (slot 66, #1058) returns the firmware wall-clock epoch" 
     // TS5 slot 70 (sys_secret_get), TS4 slot 71 (sys_tty_net_auth);
     // M51 SSH-P1 (#1166) slot 72 (sys_getrandom); issue #1228 slot 75;
     // issue #1163 phase 2 slot 76 (sys_sock_ready).
-    try std.testing.expectEqual(@as(usize, 79), syscall.implemented_count);
+    try std.testing.expectEqual(@as(usize, 80), syscall.implemented_count);
 
     const saved_epoch = timer.boot_epoch_secs;
     const saved_ticks = timer.ticks;
@@ -4147,7 +4364,7 @@ test "syscall: M50 TS3 gate table is explicit, bounded, and exactly the ADR 0024
         try std.testing.expect(gate.number < syscall.implemented_count);
         try std.testing.expect(entry_info(gate.number) != null);
     }
-    try std.testing.expectEqual(@as(usize, 79), syscall.implemented_count);
+    try std.testing.expectEqual(@as(usize, 80), syscall.implemented_count);
 }
 
 test "syscall: no slot can raise uid/caps (TS3 consumes caps, adds no setter)" {
