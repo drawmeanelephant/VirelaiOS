@@ -2046,6 +2046,7 @@ pub fn build(b: *std.Build) void {
         "kernel/tests/monitor_test.zig",
         "kernel/tests/shell_test.zig",
         "kernel/tests/alloc_test.zig",
+        "kernel/tests/pcm_stream_test.zig",
         // M70a (#1453): the seeded fuzz fleet — the syscall-seam sweep plus the
         // HF-wire mutation corpus. Class A only (no VM, no device).
         "kernel/tests/fuzz_test.zig",
@@ -2205,6 +2206,13 @@ pub fn build(b: *std.Build) void {
             .target = b.graph.host,
             .optimize = .Debug,
         });
+        if (std.mem.eql(u8, src_path, "kernel/tests/pcm_stream_test.zig")) {
+            test_mod.addImport("pcm_stream", b.createModule(.{
+                .root_source_file = b.path("kernel/src/pcm_stream.zig"),
+                .target = b.graph.host,
+                .optimize = .Debug,
+            }));
+        }
         test_mod.addOptions("build_options", kernel_options);
         // The fuzz root is the only one that reads the wire fixtures.
         if (std.mem.eql(u8, src_path, "kernel/tests/fuzz_test.zig")) {
