@@ -1838,6 +1838,7 @@ fn handle_file_close(args: Args, _: *exceptions.VectorFrame) u64 {
 
 /// Milestone 10 (claim 3570): slot 27 — sys_dir_list(path_ptr, path_len, buf_ptr, max_entries)
 fn handle_dir_list(args: Args, _: *exceptions.VectorFrame) u64 {
+    if ((args[3] & file_table.directory.version) != 0) return handle_dir_v2(args);
     const path_ptr = args[0];
     const path_len = args[1];
     const buf_ptr = args[2];
@@ -1864,6 +1865,32 @@ fn handle_dir_list(args: Args, _: *exceptions.VectorFrame) u64 {
         if (uaccess.copy_out(buf_ptr, raw_bytes[0..bytes_to_copy], bytes_to_copy) != .ok) return error_result(.efault);
     }
     return @intCast(populated);
+}
+
+fn handle_dir_v2(args: Args) u64 {
+    const dir = file_table.directory;
+    const pid = process.find_by_task(scheduler.current_id()) orelse return error_result(.einval);
+    const res: i64 = switch (args[3]) {
+        dir.open_op => blk: {
+            if (args[1] > file_table.max_path_len) return error_result(.enametoolong);
+            var path: [file_table.max_path_len]u8 = undefined;
+            if (args[1] > 0 and uaccess.copy_in(&path, args[0], @intCast(args[1])) != .ok)
+                return error_result(.efault);
+            break :blk file_table.dir_open(pid, path[0..args[1]]);
+        },
+        dir.page_op => blk: {
+            var page: dir.Page = undefined;
+            const count = file_table.dir_page(pid, args[0], args[1], args[4], &page);
+            if (count < 0) break :blk count;
+            const len = @sizeOf(dir.Header) + @as(usize, @intCast(count)) * @sizeOf(dir.Entry);
+            const bytes: [*]const u8 = @ptrCast(&page);
+            if (uaccess.copy_out(args[2], bytes[0..len], len) != .ok) return error_result(.efault);
+            break :blk count;
+        },
+        dir.close_op => file_table.dir_close(pid, args[0]),
+        else => -1,
+    };
+    return @bitCast(res);
 }
 
 /// Milestone 13 (claim 5801): slot 34 — sys_file_delete(path_ptr, path_len)

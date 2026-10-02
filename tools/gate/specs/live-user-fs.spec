@@ -5,6 +5,8 @@
 # B1's kernel-owned native probe independently checks redirected EOF,
 # separate HTML/JSON destinations, inheritance, close/panic and short writes.
 # exec-order: assert-proven -- stream boot waits for the probe's exit.
+# B2 runs one raw native fixture on both backends, with independent
+# share-byte validation, real continuation/EOF and post-death page recovery.
 
 vgate_name live-user-fs "userland storage ABI & utilities on VZ"
 vgate_share arm
@@ -79,9 +81,11 @@ vgate_run A -- --script '$RUN_DIR/script-A.txt' --script-after 'tasks user-el0 e
 vgate_run B -- --display --screen '$RUN_DIR/screen' --via-virtio --script '$RUN_DIR/script-B.txt' --script-after 'tasks user-el0 exited status=7' --script2 '$RUN_DIR/script-B2.txt' --script2-after 'tasks user-exec exited status=0' --input-chords 'q' --input-chords-after 'gofiles: ready' --script3 '$RUN_DIR/script-B3.txt' --script3-after 'gofiles OK' --script-expect 'done-user-fs-read' --timeout 120
 
 vgate_file script-streams.txt <<'EOF'
+pages
 exec STREAMS.BIN
 EOF
 vgate_file script-streams-after.txt <<'EOF'
+pages
 procs
 syscalls
 echo done-user-fs-streams
@@ -114,6 +118,8 @@ for tag, n in (("A", 5003), ("B", 7001)):
     assert share.joinpath("B1.ERR." + tag).read_bytes() == b'{"kind":"b1","eof":true}\n'
 assert share.joinpath("B1.PANIC.OUT").read_bytes() == b""
 assert share.joinpath("B1.PANIC.ERR").read_bytes() == b"b1: panic\n"
+pages = re.findall(rb"^pages: armed=1 total=(0x[0-9a-f]+) free=(0x[0-9a-f]+)", serial, re.M)
+assert len(pages) >= 2 and pages[0] == pages[-1], ("stream/EL0 page leak", pages)
 print("B1: 12004 input bytes, 12034 HTML bytes, 2 JSON destinations, "
       "1103 console bytes; inherited close and panic isolation verified")
 PY
@@ -149,4 +155,108 @@ data = open(hpath, "r", errors="replace").read()
 if "Hello from VirelaiOS EL0 Storage!" not in data:
     sys.exit("ERROR: hello.txt content mismatch on host share")
 print("user-fs ok: GOSH round-trip and GOFILES enumeration verified")
+PY
+
+vgate_setup_python <<'PY'
+import os, pathlib, subprocess
+rd = pathlib.Path(os.environ["RUN_DIR"])
+# Keep the wide B2 tree out of GOFILES' intentionally clamped legacy listing.
+share = rd / "b2-legacy-share"
+share.mkdir()
+# Raw ELF exec loads RX and RW PT_LOADs. Include constants in the RX segment;
+# the DSK3 converter's separate read-only-segment coalescing is not used here.
+linker = rd / "b2.ld"
+linker.write_text("""ENTRY(_start)
+SECTIONS {
+  . = 0x00400000;
+  .text : ALIGN(16) { *(.text .text.*) *(.rodata .rodata.*) }
+  . = ALIGN(4096) + 4096;
+  .data : ALIGN(16) { *(.data .data.*) }
+  .bss : ALIGN(16) { *(.bss .bss.*) }
+  /DISCARD/ : { *(.note.*) *(.eh_frame .eh_frame_hdr) *(.ARM.exidx*) }
+}
+""")
+subprocess.run(["zig", "build-exe", "-target", "aarch64-freestanding-none",
+    "-O", "ReleaseSafe", "-fentry=_start", "-fno-PIE",
+    "-fsingle-threaded", "-T", str(linker),
+    "--dep", "directory", "-Mroot=tests/dir-enum.zig",
+    "-Mdirectory=kernel/src/directory.zig", "-femit-bin=" + str(share / "B2.ELF")], check=True)
+names = [f"entry-{i:02d}" for i in range(35)] + [
+    "p" * 31 + "-one", "p" * 31 + "-two", "x" * 255, ".hidden", "last"]
+expected = "".join(n + "\n" for n in sorted(names)).encode()
+(rd / "b2-expected.txt").write_bytes(expected)
+# Each backend gets its own identically seeded tree and mutation fixture.
+virtio = rd / "virtio-share"
+virtio.mkdir()
+for root in (share, virtio):
+    if root != share:
+        (root / "B2.ELF").write_bytes((share / "B2.ELF").read_bytes())
+    (root / "B2").mkdir()
+    for name in names:
+        (root / "B2" / name).write_bytes(b"entry-data")
+    for dirname, count in (("B2LIMIT", 256), ("B2OVER", 257)):
+        (root / dirname).mkdir()
+        for i in range(count):
+            (root / dirname / f"f-{i:03d}").write_bytes(b"")
+    (root / ("a" * 250) / ("b" * 255)).mkdir(parents=True)
+    (root / ("a" * 250) / ("b" * 255) / "leaf").write_bytes(b"leaf")
+    (root / "d/e/e/e/e/e/e/e").mkdir(parents=True)
+    (root / "B2DENIED").mkdir()
+    (root / "B2MUTATE").mkdir()
+    (root / "B2MUTATE/old").write_bytes(b"old")
+    (root / "OWNERS.TXT").write_text("#v1\nB2DENIED\t600\t0\t-\n")
+PY
+
+vgate_file b2-start.txt <<'EOF'
+pages
+exec B2.ELF
+EOF
+
+vgate_file b2-after.txt <<'EOF'
+pages
+procs
+echo done-b2
+EOF
+
+vgate_run b2-legacy -- --cvc-file '$RUN_DIR/b2-legacy-share' --script '$RUN_DIR/b2-start.txt' --script-after 'tasks user-el0 reaped' --script2 '$RUN_DIR/b2-after.txt' --script2-after 'tasks user-exec reaped' --script-expect 'done-b2' --timeout 120
+# VirtioFS wins backend selection when both devices exist. Stage an
+# independent identical share; the harness still owns the legacy device.
+vgate_run b2-virtiofs -- --virtio-fs '$RUN_DIR/virtio-share' --script '$RUN_DIR/b2-start.txt' --script-after 'tasks user-el0 reaped' --script2 '$RUN_DIR/b2-after.txt' --script2-after 'tasks user-exec reaped' --script-expect 'done-b2' --timeout 120
+
+vgate_assert b2-legacy serial-exact 'b2: lossless count=40 pages=6 eof=1' 1
+vgate_assert b2-legacy serial-exact 'b2: entries 256 accepted 257 refused' 1
+vgate_assert b2-legacy serial-exact 'b2: path 512 accepted 513 refused depth 8 accepted 9 refused acl denied' 1
+vgate_assert b2-legacy serial-exact 'b2: stable snapshot mutation ok' 1
+vgate_assert b2-legacy serial-exact 'b2: capacity close ok death cursors=8' 1
+vgate_assert b2-legacy serial-exact 'tasks user-exec exited status=0' 1
+vgate_assert b2-legacy serial-absent 'b2: FAIL'
+vgate_assert b2-legacy serial-absent '[EXC]'
+vgate_assert b2-legacy python <<'PY'
+import os, pathlib, re, shutil
+rd = pathlib.Path(os.environ["RUN_DIR"])
+actual = rd / "b2-legacy-share/B2.RECEIPT"
+assert actual.read_bytes() == (rd / "b2-expected.txt").read_bytes()
+shutil.copyfile(actual, pathlib.Path("artifacts/live-user-fs-b2-legacy-receipt.txt"))
+lines = pathlib.Path(os.environ["VG_SER"]).read_text()
+pages = re.findall(r"^pages: armed=1 total=(0x[0-9a-f]+) free=(0x[0-9a-f]+)", lines, re.M)
+assert len(pages) >= 2 and pages[0] == pages[-1], ("cursor/EL0 page leak", pages)
+PY
+
+vgate_assert b2-virtiofs serial-exact 'b2: lossless count=40 pages=6 eof=1' 1
+vgate_assert b2-virtiofs serial-exact 'b2: entries 256 accepted 257 refused' 1
+vgate_assert b2-virtiofs serial-exact 'b2: path 512 accepted 513 refused depth 8 accepted 9 refused acl denied' 1
+vgate_assert b2-virtiofs serial-exact 'b2: stable snapshot mutation ok' 1
+vgate_assert b2-virtiofs serial-exact 'b2: capacity close ok death cursors=8' 1
+vgate_assert b2-virtiofs serial-exact 'tasks user-exec exited status=0' 1
+vgate_assert b2-virtiofs serial-absent 'b2: FAIL'
+vgate_assert b2-virtiofs serial-absent '[EXC]'
+vgate_assert b2-virtiofs python <<'PY'
+import os, pathlib, re, shutil
+rd = pathlib.Path(os.environ["RUN_DIR"])
+actual = rd / "virtio-share/B2.RECEIPT"
+assert actual.read_bytes() == (rd / "b2-expected.txt").read_bytes()
+shutil.copyfile(actual, pathlib.Path("artifacts/live-user-fs-b2-virtiofs-receipt.txt"))
+lines = pathlib.Path(os.environ["VG_SER"]).read_text()
+pages = re.findall(r"^pages: armed=1 total=(0x[0-9a-f]+) free=(0x[0-9a-f]+)", lines, re.M)
+assert len(pages) >= 2 and pages[0] == pages[-1], ("cursor/EL0 page leak", pages)
 PY

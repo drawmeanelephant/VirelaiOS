@@ -65,9 +65,9 @@ const process = @import("process.zig");
 /// operation, never silent eviction.
 pub const max_entries: usize = 64;
 pub const max_path_len: usize = file_table.max_path_len;
-/// The serialized `OWNERS.TXT` bound: 64 entries × (path ≤ 64 + separators +
+/// The serialized `OWNERS.TXT` bound: 64 entries × (path ≤ 512 + separators +
 /// octal mode + uid + flags) plus the header, with generous headroom.
-pub const save_max: usize = 8192;
+pub const save_max: usize = 64 * (max_path_len + 32) + 4;
 pub const filename = "OWNERS.TXT";
 /// The secret store's share file (ADR 0024 D8). Defined here (not imported
 /// from `secret.zig`, which imports THIS module) so `ensure_secret_file`
@@ -115,7 +115,7 @@ const Entry = struct {
     secret: bool = false,
     partition: file_table.Partition = .host,
     path: [max_path_len]u8 = [_]u8{0} ** max_path_len,
-    path_len: u8 = 0,
+    path_len: u16 = 0,
     mode: u16 = default_file_mode,
     uid: u32 = process.uid_user,
 };
@@ -126,7 +126,8 @@ var entry_count: usize = 0;
 
 /// Clear the table (boot + host tests; `load` also starts from empty).
 pub fn init() void {
-    entries = [_]Entry{.{}} ** max_entries;
+    // Avoid embedding a second full-width table in rodata just to reset it.
+    for (&entries) |*entry| entry.* = .{};
     entry_count = 0;
 }
 
@@ -454,31 +455,43 @@ fn lineKeyExists(line: []const u8) bool {
 /// when more valid entries existed than the 64-entry cap (what fit is kept).
 pub fn load(text: []const u8) LoadResult {
     init();
-    var seen_header = false;
-    var known_schema = false;
-    var overflow = false;
+    var state = LoadState{};
     var it = std.mem.splitScalar(u8, text, '\n');
-    while (it.next()) |raw| {
+    while (it.next()) |raw| state.consume(raw, false);
+    return state.result();
+}
+
+/// Boot runs before the page allocator is armed. Stream bounded lines rather
+/// than reserve a second whole ownership table in the kernel image.
+pub const LoadState = struct {
+    seen_header: bool = false,
+    known_schema: bool = false,
+    overflow: bool = false,
+
+    pub fn consume(self: *LoadState, raw: []const u8, overlong: bool) void {
         const line = std.mem.trimEnd(u8, raw, "\r");
-        if (line.len == 0) continue;
-        if (!seen_header) {
-            seen_header = true;
-            known_schema = std.mem.eql(u8, line, "#v1");
-            if (known_schema) continue;
+        if (line.len == 0 and !overlong) return;
+        if (!self.seen_header) {
+            self.seen_header = true;
+            self.known_schema = !overlong and std.mem.eql(u8, line, "#v1");
+            if (self.known_schema) return;
             // Unknown/absent schema: fall through and poison the line.
         }
-        if (!known_schema) {
+        if (!self.known_schema or overlong) {
             // Poison the listed path (field 0) — fail closed.
             const tab = std.mem.indexOfScalar(u8, line, '\t') orelse line.len;
             addDeny(line[0..tab]);
-            continue;
+            return;
         }
         const before = entry_count;
         parseEntry(line);
-        if (entry_count == before and !lineKeyExists(line)) overflow = true;
+        if (entry_count == before and !lineKeyExists(line)) self.overflow = true;
     }
-    return if (overflow) .full else .ok;
-}
+
+    pub fn result(self: LoadState) LoadResult {
+        return if (self.overflow) .full else .ok;
+    }
+};
 
 // ---------------------------------------------------------------------------
 // Host tests (pure; no syscalls, no filesystem)

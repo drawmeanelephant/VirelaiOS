@@ -63,6 +63,7 @@ const scheduler = if (builtin.is_test) struct {
 } else @import("scheduler.zig");
 const std = @import("std");
 const builtin = @import("builtin");
+const directory = @import("directory.zig");
 
 // ---------------------------------------------------------------------------
 // Wire constants (mirrored by the host's VFWire module)
@@ -87,6 +88,9 @@ pub const op_delete: u8 = 0x0b;
 // rule as the HF3 set: an old host answers it with status 4 and an old
 // guest never sends it.
 pub const op_clone: u8 = 0x0c;
+pub const op_dir_open: u8 = 0x0d;
+pub const op_dir_page: u8 = 0x0e;
+pub const op_dir_close: u8 = 0x0f;
 
 pub const st_ok: u8 = 0;
 pub const st_not_found: u8 = 1;
@@ -95,6 +99,9 @@ pub const st_truncated: u8 = 3;
 pub const st_host_error: u8 = 4;
 pub const st_exists: u8 = 5;
 pub const st_handle: u8 = 6;
+pub const st_limit: u8 = 7;
+pub const st_path_limit: u8 = 8;
+pub const st_changed: u8 = 9;
 
 /// OPEN request `flags` byte bits (the framing's reserved byte picks up
 /// per-op modifiers): bit0 create-if-missing, bit1 append-writes.
@@ -105,8 +112,8 @@ pub const open_flag_append: u8 = 0x02;
 pub const request_hdr_len: usize = 4;
 /// Reply header: [status u8][dlen u16le] then `dlen` data bytes.
 pub const reply_hdr_len: usize = 3;
-/// Paths are bounded (255 bytes) — honest refusal beyond.
-pub const path_max: usize = 255;
+/// Paths are bounded (512 bytes) — honest refusal beyond.
+pub const path_max: usize = directory.path_max;
 /// The guest's reply buffer cap: full-cap 32 KiB device-write (HF1).
 pub const reply_cap: usize = 32768;
 /// LIST replies carry at most 128 40-byte rows (matches fat.max_root_slots;
@@ -283,7 +290,7 @@ pub const exchange_budget: usize = 320_000_000;
 
 /// BSS staging — the flat kernel does not relocate, so every buffer the
 /// device touches must hold a runtime-correct address (claim 0015: no
-/// comptime-folded pointers into .rodata). The request fits a 255-byte
+/// comptime-folded pointers into .rodata). The request fits a 512-byte
 /// path + u64 offset + the 4-byte header; the reply is the full 32 KiB.
 var vf_req_buf: [request_hdr_len + path_max + read_offset_len]u8 align(16) = undefined;
 /// WRITE staging: the full request [op][flags][len][handle u16][data] —
@@ -533,6 +540,125 @@ pub fn list(raw_path: []const u8, out: *ListResult) u8 {
         out.count += 1;
     }
     return st_ok;
+}
+
+fn snapshot_exchange(op: u8, payload: []const u8) ?Reply {
+    const len = encode_request(op, 0, payload, &vf_req_buf) orelse return null;
+    const n = exchange_raw(vf_req_buf[0..len], &vf_reply_buf) orelse return null;
+    const reply = decode_reply(vf_reply_buf[0..n]);
+    if (reply.clamped) return null;
+    return reply;
+}
+
+/// Decode only a complete v2 page. No truncated row, duplicate name,
+/// non-progressing continuation or success-shaped EOF is accepted.
+pub fn decode_snapshot_page(data: []const u8, offset: usize, out: *directory.Snapshot) u8 {
+    if (offset > directory.entry_max or data.len < @sizeOf(directory.Header)) return st_host_error;
+    const next = read_le_u64(data, 0);
+    const count = @as(u32, read_le_u16(data, 8)) | (@as(u32, read_le_u16(data, 10)) << 16);
+    const end = @as(u32, read_le_u16(data, 12)) | (@as(u32, read_le_u16(data, 14)) << 16);
+    if (count > directory.page_max or end > 1 or next != offset + count or
+        next > directory.entry_max or (count == 0 and end == 0) or
+        data.len != @sizeOf(directory.Header) + count * @sizeOf(directory.Entry)) return st_host_error;
+    var at: usize = @sizeOf(directory.Header);
+    var i: usize = 0;
+    while (i < count) : (i += 1) {
+        const row = data[at..][0..@sizeOf(directory.Entry)];
+        const nlen = read_le_u16(row, 264);
+        if (nlen > directory.name_max or row[266] > 1) return st_host_error;
+        for (row[nlen..256]) |byte| if (byte != 0) return st_host_error;
+        for (row[267..272]) |byte| if (byte != 0) return st_host_error;
+        out.append(row[0..nlen], read_le_u64(row, 256), row[266] != 0) catch return st_host_error;
+        at += @sizeOf(directory.Entry);
+    }
+    return if (end == 1) st_ok else st_truncated; // internal continuation, not a refusal
+}
+
+pub fn snapshot(raw_path: []const u8, out: *directory.Snapshot) u8 {
+    const path = clean_path(raw_path);
+    out.count = 0;
+    if (!directory.valid_path(path, directory.depth_max)) return st_path_limit;
+    if (!available()) return st_not_found;
+    if (builtin.is_test and test_share != null) {
+        const files = test_share.?;
+        if (path.len != 0) {
+            var exists = false;
+            for (files) |f| {
+                if (std.mem.eql(u8, f.name, path)) {
+                    if (!f.is_dir) return st_is_dir;
+                    exists = true;
+                }
+            }
+            if (!exists) return st_not_found;
+        }
+        for (files) |f| {
+            const name = if (path.len == 0) f.name else blk: {
+                if (!std.mem.startsWith(u8, f.name, path) or f.name.len <= path.len or f.name[path.len] != '/') continue;
+                break :blk f.name[path.len + 1 ..];
+            };
+            if (std.mem.indexOfScalar(u8, name, '/') != null) continue;
+            out.append(name, if (f.is_dir) 0 else (f.stat_size orelse f.data.len), f.is_dir) catch |err| return switch (err) {
+                error.EntryLimit => st_limit,
+                error.NameLimit => st_path_limit,
+                else => st_host_error,
+            };
+        }
+        out.sort();
+        return st_ok;
+    }
+    if (virtio_fs.available()) return virtio_fs.snapshot(path, out);
+    const saved = vf_lock.lock();
+    defer vf_lock.unlock(saved);
+    const opened = snapshot_exchange(op_dir_open, path) orelse return st_host_error;
+    if (opened.status != st_ok) return opened.status;
+    if (opened.data.len != 8) return st_host_error;
+    var request: [12]u8 = .{0} ** 12;
+    @memcpy(request[0..8], opened.data);
+    var closed = false;
+    defer if (!closed) {
+        _ = snapshot_exchange(op_dir_close, request[0..8]);
+    };
+    while (true) {
+        write_le_u16(&request, 8, @intCast(out.count));
+        write_le_u16(&request, 10, directory.page_max);
+        const page = snapshot_exchange(op_dir_page, &request) orelse return st_host_error;
+        if (page.status != st_ok) return page.status;
+        const status = decode_snapshot_page(page.data, out.count, out);
+        if (status == st_ok) break;
+        if (status != st_truncated) return status;
+    }
+    const reply = snapshot_exchange(op_dir_close, request[0..8]) orelse return st_host_error;
+    if (reply.status != st_ok or reply.data.len != 0) return st_host_error;
+    closed = true;
+    out.sort();
+    return st_ok;
+}
+
+test "B2: legacy backend v2 rows and EOF decode losslessly and fail closed" {
+    var snapshot_rows = directory.Snapshot{};
+    var page = directory.Page{
+        .header = .{ .next = 1, .count = 1, .end = 1 },
+    };
+    const name = [_]u8{'n'} ** 255;
+    page.entries[0] = .{ .name_len = 255, .size = 0x0123456789abcdef };
+    @memcpy(page.entries[0].name[0..255], &name);
+    const raw: [*]const u8 = @ptrCast(&page);
+    const bytes = raw[0 .. @sizeOf(directory.Header) + @sizeOf(directory.Entry)];
+    try std.testing.expectEqual(st_ok, decode_snapshot_page(bytes, 0, &snapshot_rows));
+    try std.testing.expectEqualStrings(&name, snapshot_rows.entries[0].name[0..255]);
+    try std.testing.expectEqual(@as(u64, 0x0123456789abcdef), snapshot_rows.entries[0].size);
+    try std.testing.expectEqual(st_host_error, decode_snapshot_page(bytes, 1, &snapshot_rows));
+    try std.testing.expectEqual(st_host_error, decode_snapshot_page(bytes[0 .. bytes.len - 1], 0, &snapshot_rows));
+    page.header = .{ .next = 1, .count = 0, .end = 1 };
+    try std.testing.expectEqual(st_ok, decode_snapshot_page(raw[0..16], 1, &snapshot_rows));
+    page.header.end = 0;
+    try std.testing.expectEqual(st_host_error, decode_snapshot_page(raw[0..16], 1, &snapshot_rows));
+    page.header = .{ .next = 1, .count = 1, .end = 1 };
+    page.entries[0].name_len = 256;
+    try std.testing.expectEqual(st_host_error, decode_snapshot_page(bytes, 0, &snapshot_rows));
+    page.entries[0].name_len = 255;
+    page.entries[0].reserved[0] = 1;
+    try std.testing.expectEqual(st_host_error, decode_snapshot_page(bytes, 0, &snapshot_rows));
 }
 
 /// STAT a path: size, type. Returns the reply status.

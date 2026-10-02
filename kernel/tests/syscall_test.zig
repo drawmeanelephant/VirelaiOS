@@ -1514,6 +1514,63 @@ test "syscall: mutating file slots 34..37 dispatch and fault safety (claim 5801)
     try std.testing.expectEqual(error_result(.einval), dispatch(sys_file_free, .{ 2, 0, 0, 0, 0, 0 }, &frame));
 }
 
+test "B2: slot 27 versioned marshaling, fault retry, EOF and legacy compatibility" {
+    userspace.init();
+    init(test_writer);
+    _ = scheduler.init();
+    _ = scheduler.register_worker(0x2000);
+    _ = scheduler.register_user(0x3000, 0);
+    scheduler.start();
+    file_table.init();
+    var frame = fresh_frame();
+    try std.testing.expect(scheduler.yield_current());
+    try std.testing.expect(scheduler.yield_current());
+    const dir = file_table.directory;
+    var files: [40]syscall.virtio_file.TestFile = undefined;
+    var names: [40][16]u8 = undefined;
+    for (&files, 0..) |*f, i| f.* = .{
+        .name = try std.fmt.bufPrint(&names[i], "entry-{d:0>2}", .{i}),
+        .data = "payload",
+    };
+    syscall.virtio_file.set_test_share(&files);
+    defer syscall.virtio_file.set_test_share(null);
+    var storage: extern struct {
+        path: [512]u8,
+        page: dir.Page,
+        legacy: [16]file_table.DirEntry,
+    } = undefined;
+    @memcpy(storage.path[0..5], "/host");
+    const addr = @intFromPtr(&storage);
+    const path_addr = @intFromPtr(&storage.path);
+    const page_addr = @intFromPtr(&storage.page);
+    set_user_regions(.{ .base = 0, .len = 0 }, .{ .base = addr, .len = @sizeOf(@TypeOf(storage)) });
+    try std.testing.expectEqual(error_result(.efault), dispatch(sys_dir_list, .{ uaccess.diagnostic_unmapped, 5, 0, dir.open_op, 0, 0 }, &frame));
+    try std.testing.expectEqual(error_result(.enametoolong), dispatch(sys_dir_list, .{ path_addr, 513, 0, dir.open_op, 0, 0 }, &frame));
+    const token = dispatch(sys_dir_list, .{ path_addr, 5, 0, dir.open_op, 0, 0 }, &frame);
+    try std.testing.expect(@as(i64, @bitCast(token)) > 0);
+    try std.testing.expectEqual(error_result(.efault), dispatch(sys_dir_list, .{ token, 0, uaccess.diagnostic_unmapped, dir.page_op, 16, 0 }, &frame));
+    // The failed copy must not consume a page.
+    try std.testing.expectEqual(@as(u64, 16), dispatch(sys_dir_list, .{ token, 0, page_addr, dir.page_op, 16, 0 }, &frame));
+    try std.testing.expectEqualStrings("entry-00", storage.page.entries[0].name[0..8]);
+    try std.testing.expectEqual(@as(u64, 16), storage.page.header.next);
+    try std.testing.expectEqual(@as(u32, 0), storage.page.header.end);
+    try std.testing.expectEqual(@as(u64, 16), dispatch(sys_dir_list, .{ token, 16, page_addr, dir.page_op, 16, 0 }, &frame));
+    try std.testing.expectEqualStrings("entry-16", storage.page.entries[0].name[0..8]);
+    try std.testing.expectEqual(@as(u64, 8), dispatch(sys_dir_list, .{ token, 32, page_addr, dir.page_op, 16, 0 }, &frame));
+    try std.testing.expectEqual(@as(u64, 40), storage.page.header.next);
+    try std.testing.expectEqual(@as(u32, 1), storage.page.header.end);
+    try std.testing.expectEqual(@as(u64, 0), dispatch(sys_dir_list, .{ token, 40, page_addr, dir.page_op, 16, 0 }, &frame));
+    try std.testing.expectEqual(@as(u32, 1), storage.page.header.end);
+    try std.testing.expectEqual(error_result(.einval), dispatch(sys_dir_list, .{ token, 0, page_addr, dir.page_op, 17, 0 }, &frame));
+    try std.testing.expectEqual(error_result(.einval), dispatch(sys_dir_list, .{ token, 0, page_addr, dir.version | 4, 16, 0 }, &frame));
+    try std.testing.expectEqual(@as(u64, 0), dispatch(sys_dir_list, .{ token, 0, 0, dir.close_op, 0, 0 }, &frame));
+    try std.testing.expectEqual(error_result(.ebadf), dispatch(sys_dir_list, .{ token, 0, page_addr, dir.page_op, 16, 0 }, &frame));
+    // Legacy callers keep 40-byte rows, ignore x4/x5 and retain their clamp.
+    try std.testing.expectEqual(@as(u64, 16), dispatch(sys_dir_list, .{ path_addr, 5, @intFromPtr(&storage.legacy), 40, dir.version, 999 }, &frame));
+    try std.testing.expectEqualStrings("entry-00", storage.legacy[0].name[0..8]);
+    try std.testing.expectEqual(@as(usize, 40), @sizeOf(file_table.DirEntry));
+}
+
 test "syscall: clipboard slots 38..39 dispatch and fault safety (claim 0169)" {
     userspace.init();
     init(test_writer);
