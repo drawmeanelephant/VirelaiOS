@@ -1,9 +1,10 @@
-//! C3 closure probe. Native site build fails before any filesystem mutation.
+//! C3 native discovery/capture/compiler diagnostic. Site publication blocked.
 const std = @import("std");
-const sdk = @import("runtime.zig");
+const sdk = @import("sdk");
 const core = @import("boris/core.zig");
 const fixture = @import("boris/fixture.zig");
 const policy = @import("boris/policy.zig");
+const discovery = @import("boris/discovery.zig");
 pub const virelai = sdk.platform;
 pub const os = sdk.os;
 pub const std_options = sdk.std_options;
@@ -18,6 +19,7 @@ export var boris_stack_floor: usize = 0;
 
 const Driver = struct {
     pub const call = sdk.native.call;
+    pub const filesystem_b2 = true;
     pub fn instance() *anyopaque {
         return backend orelse fail("IoNotInitialized", 70);
     }
@@ -35,6 +37,7 @@ fn emit(bytes: []const u8) void {
     diagnostics.emit(stderr, bytes) catch sdk.native.exit(70);
 }
 fn fail(name: []const u8, status: u8) noreturn {
+    if (backend) |state| state.closeAll() catch emit("boris-guest: CloseFailed\n");
     emit("boris-guest: ");
     emit(name);
     emit("\n");
@@ -86,39 +89,65 @@ fn stackRefused() callconv(.naked) noreturn {
 fn enter(argc: usize, argv: usize, sp: usize) callconv(.c) noreturn {
     const args = sdk.receive(argc, argv, sp) catch |err| fail(@errorName(err), 64);
     const command = policy.parse(args.args[1..args.argc]) catch |err| fail(@errorName(err), 64);
-    if (command == .build) fail("SharedSdkFilesystemBridgeUnavailable", 70);
-    sdk.initialize(policy.arena_bytes) catch |err| fail(@errorName(err), 70);
+    // Never create output/stage names with the bridge's legacy truncating open.
+    if (command == .build) fail("NativePublicationUnavailable:ContainedExclusiveCreate,PinnedParentMutation,FdMetadata", 70);
+    sdk.initialize(@import("boris_options").arena_bytes) catch |err| fail(@errorName(err), 70);
     backend = os.heap.page_allocator.create(Backend) catch fail("OutOfMemory", 70);
     backend.?.* = .{};
-    run(command) catch |err| fail(@errorName(err), 70);
+    run(command, args.args[1..args.argc]) catch |err| fail(@errorName(err), 70);
     backend.?.closeAll() catch fail("CloseFailed", 70);
     for (1..3) |i|
         if (sdk.native.call(26, .{ 0x100 + i, 0, 0, 0, 0, 0 }) != 0)
             fail("StreamCloseFailed", 70);
     sdk.native.exit(0);
 }
-fn run(command: policy.Command) !void {
+fn run(command: policy.Command, args: []const []const u8) !void {
     switch (command) {
-        .help => try sdk.print("boris-guest: compiler closure probe only; probe | version | help\nbuild awaits the shared SDK filesystem bridge (B3 kernel ABI is landed).\nwatch/preview/online/auth/editor/capture/parallel are unsupported.\n"),
-        .version => try sdk.print("boris-guest 08969742f85238443ce5cd1cd53ceab1b1f3f85a (closure probe, not native publication)\n"),
+        .help => try sdk.print("boris-guest: inspect ROOT | compile ROOT | probe | version | help\ncompile captures native inputs and emits a diagnostic bundle, not a published site.\nbuild ROOT OUT refuses: fd metadata, contained exclusive staging and pinned-parent mutation unavailable.\nwatch/preview/online/auth/editor/capture/parallel are unsupported.\n"),
+        .version => try sdk.print("boris-guest 08969742f85238443ce5cd1cd53ceab1b1f3f85a (native input diagnostic, publication blocked)\n"),
         .build => unreachable,
+        .inspect, .compile => {
+            if (@import("boris_options").exhaust_resources) {
+                for (0..4) |_| _ = try backend.?.openSnapshot(args[1], "");
+                emit("boris-test: resources_peak=8\n");
+            }
+            var inventory = try discovery.discover(backend.?, os.heap.page_allocator, args[1]);
+            defer inventory.deinit();
+            if (command == .inspect) {
+                var receipt: [128]u8 = undefined;
+                try sdk.print(try std.fmt.bufPrint(&receipt, "boris-inventory: visited={d} resources_peak={d}\n", .{
+                    inventory.entries.items.len, 4 + backend.?.peak_files,
+                }));
+            } else {
+                var captured = try discovery.capture(backend.?, os.heap.page_allocator, args[1], &inventory);
+                defer captured.deinit();
+                var result = try core.compile(backend.?.io(), os.heap.page_allocator, captured.files.items);
+                defer result.deinit();
+                try bundle(&result);
+                emit("boris-native: diagnostic capture only; open/snapshot identity continuity and publication unproven\n");
+                var receipt: [192]u8 = undefined;
+                emit(try std.fmt.bufPrint(&receipt, "boris-native: visited={d} input_bytes={d} arena_peak={d} stack_high_water={d} resources_peak={d}\n", .{
+                    inventory.entries.items.len, captured.bytes, sdk.currentArena().peak(), sdk.stackHighWater(), 4 + backend.?.peak_files,
+                }));
+            }
+        },
         .probe => {
             var result = try core.compile(backend.?.io(), os.heap.page_allocator, &fixture.files);
             defer result.deinit();
-            // Complete and validate compilation before writing any normal output.
-            var buffer: [4096]u8 = undefined;
-            var writer: std.Io.Writer = .{
-                .buffer = &buffer,
-                .vtable = &.{ .drain = drain },
-            };
-            try core.write(&writer, &result);
-            try writer.flush();
+            try bundle(&result);
             var receipt: [128]u8 = undefined;
             emit(try std.fmt.bufPrint(&receipt, "boris-probe: arena_peak={d} stack_high_water={d} files_peak={d}\n", .{
                 sdk.currentArena().peak(), sdk.stackHighWater(), backend.?.peak_files,
             }));
         },
     }
+}
+fn bundle(result: *const @import("boris").Compilation) !void {
+    // Complete and validate compilation before writing any normal output.
+    var buffer: [4096]u8 = undefined;
+    var writer: std.Io.Writer = .{ .buffer = &buffer, .vtable = &.{ .drain = drain } };
+    try core.write(&writer, result);
+    try writer.flush();
 }
 fn drain(writer: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io.Writer.Error!usize {
     sdk.print(writer.buffered()) catch return error.WriteFailed;

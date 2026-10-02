@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Pinned C3 compiler closure probe. Only `fetch` may use the network."""
+"""Pinned C3 native-input diagnostic. Only `fetch` may use the network."""
 import argparse
 import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -14,6 +15,9 @@ ROOT = Path(__file__).resolve().parents[3]
 HERE = Path(__file__).resolve().parent
 LOCK = json.loads((HERE / "lock.json").read_text())
 INPUTS = ROOT / ".build/boris-inputs"
+# The native exception frame deliberately omits platform register x18.
+# Reserve it for the entire image, including code between asynchronous IRQs.
+GUEST_CPU = "baseline+reserve_x18"
 spec = importlib.util.spec_from_file_location("sdk", ROOT / "tools/zig/sdk.py")
 sdk = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(sdk)
@@ -31,7 +35,7 @@ def verify(name, source):
         raise ValueError(f"{name} source inventory drift")
 
 
-def fetch():
+def fetch(cache=sdk.DEFAULT_CACHE):
     INPUTS.mkdir(parents=True, exist_ok=True)
     for name in ("boris", "oliver"):
         source = INPUTS / name
@@ -48,7 +52,7 @@ def fetch():
                 raise ValueError(name + " revision mismatch")
             verify(name, stage)
             stage.rename(source)
-    sdk.fetch(sdk.DEFAULT_CACHE)
+    sdk.fetch(cache)
 
 
 def clean_env():
@@ -112,9 +116,9 @@ def materialize(work):
     return target
 
 
-def build(mode, work):
+def build(mode, work, cache=sdk.DEFAULT_CACHE):
     work.mkdir(parents=True, exist_ok=True)
-    compiler, receipt = sdk.prepare(sdk.DEFAULT_CACHE)
+    compiler, receipt = sdk.prepare(cache)
     for name in ("boris", "oliver"):
         verify(name, INPUTS / name)
     inputs = [*sorted((ROOT / "user/zig").glob("*.zig")),
@@ -125,11 +129,11 @@ def build(mode, work):
               ROOT / "tools/zig/overlay.json", ROOT / "tools/zig/guest.ld",
               ROOT / "tools/check-zc-host-contract.py"]
     hashes = {str(p.relative_to(ROOT)): sdk.digest(p.read_bytes()) for p in inputs}
-    guest = mode in ("guest", "audit")
-    patched = mode in ("guest", "audit", "patched-host", "patched-test", "patched-upstream-test")
+    guest = mode in ("guest", "guest-oom", "guest-resources", "audit")
+    patched = mode in ("guest", "guest-oom", "guest-resources", "audit", "patched-host", "patched-test", "patched-upstream-test")
     source = materialize(work) if patched else INPUTS / "boris"
     tests = mode in ("test", "upstream-test", "patched-test", "patched-upstream-test")
-    output = work / ("BORIS.BIN" if guest else "boris-oracle")
+    output = work / ("BORISFULL.BIN" if mode == "guest-resources" else "BORISOOM.BIN" if mode == "guest-oom" else "BORIS.BIN" if guest else "boris-oracle")
     root = ROOT / ("user/zig/boris.zig" if guest else "user/zig/boris/tests.zig" if tests else "user/zig/boris/host.zig")
     if mode in ("upstream-test", "patched-upstream-test"):
         root = source / "src/embed.zig"
@@ -137,7 +141,7 @@ def build(mode, work):
                "--cache-dir", str(work / "local"), "--global-cache-dir", str(work / "global"),
                "--zig-lib-dir", str(compiler / "lib"), "-O", "ReleaseSafe", "-freference-trace=40"]
     if guest:
-        command += ["-target", sdk.LOCK["target"], "-mcpu", sdk.LOCK["cpu"],
+        command += ["-target", sdk.LOCK["target"], "-mcpu", GUEST_CPU,
                     "-fsingle-threaded", "-fstrip", "-fno-PIE", "-fno-unwind-tables",
                     "-fno-stack-check", "-fno-stack-protector", "-fentry=_start",
                     "-fno-compiler-rt",
@@ -148,12 +152,23 @@ def build(mode, work):
     if mode in ("upstream-test", "patched-upstream-test"):
         command += ["--dep", "oliver", "-Mroot=" + str(root)]
     else:
+        if guest:
+            options = work / "options.zig"
+            options.write_text(f"pub const arena_bytes: usize = {4096 if mode == 'guest-oom' else 12 * 1024 * 1024};\n"
+                               f"pub const exhaust_resources = {'true' if mode == 'guest-resources' else 'false'};\n")
+            command += ["--dep", "boris_options"]
+        command += ["--dep", "sdk"]
         command += ["--dep", "boris", "-Mroot=" + str(root),
                     "--dep", "oliver", "-Mboris=" + str(source / "src/embed.zig")]
     command += ["-Moliver=" + str(INPUTS / "oliver/src/oliver.zig")]
+    if guest:
+        command += ["-Mboris_options=" + str(options)]
+    if mode not in ("upstream-test", "patched-upstream-test"):
+        command += ["-Msdk=" + str(ROOT / "user/zig/runtime.zig")]
     log = run(command, work / "compiler.log", INPUTS / "boris" if mode in ("upstream-test", "patched-upstream-test") else ROOT)
     if guest:
         assembly = (work / "boris.s").read_text()
+        check_registers(assembly)
         frame_sizes = frames(assembly)
         candidate = work / "unguarded.elf"
         run([sys.executable, str(ROOT / "tools/check-zc-host-contract.py"),
@@ -170,9 +185,14 @@ def build(mode, work):
             maximum_frame_bytes=max(frame_sizes.values()),
             oversized_frames={name: n for name, n in frame_sizes.items() if n > 8192},
             stack_budget_bytes=128 * 1024, entry_floor_bytes=120 * 1024,
+            arena_bytes=4096 if mode == "guest-oom" else 12 * 1024 * 1024,
+            reserved_platform_register="x18",
+            acceptance_instrumentation=mode in ("guest-oom", "guest-resources"),
             release_ready=False,
-            blockers=["Shared SDK filesystem bridge pending"],
-            scope="compiler memory closure only; no native discovery or publication",
+            blockers=["No fd metadata/open identity binding",
+                      "No contained exclusive creation or contained mkdir/delete",
+                      "No pinned-parent rename; B4 is path-based"],
+            scope="native snapshot discovery and contained input capture; diagnostic compilation, no publication",
         )
         (work / "closure.json").write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n")
         (work / "frames.json").write_text(json.dumps(frame_sizes, indent=2, sort_keys=True) + "\n")
@@ -186,12 +206,43 @@ def build(mode, work):
         verify(name, INPUTS / name)
     if any(sdk.digest(p.read_bytes()) != hashes[str(p.relative_to(ROOT))] for p in inputs):
         raise ValueError("BuildInputChanged")
-    if mode == "guest":
+    if mode in ("guest", "guest-oom", "guest-resources"):
         (work / "guarded.elf").replace(output)
         output.with_suffix(".BIN.json").write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n")
     if tests:
         print(log, end="")
     return None if tests else output
+
+
+def gate(work, cache=sdk.DEFAULT_CACHE):
+    work.mkdir(parents=True, exist_ok=True)
+    compiler, _ = sdk.prepare(cache)
+    output = work / "BORISGATE.BIN"
+    run([str(compiler / "zig"), "build-exe", "--zig-lib-dir", str(compiler / "lib"),
+         "--cache-dir", str(work / "local"), "--global-cache-dir", str(work / "global"),
+         "-target", sdk.LOCK["target"], "-mcpu", GUEST_CPU,
+         "-O", "ReleaseSafe", "-fsingle-threaded", "-fstrip", "-fno-PIE",
+         "-fentry=_start", "-T", str(ROOT / "tools/zig/guest.ld"),
+         "-femit-bin=" + str(output), "-femit-asm=" + str(work / "gate.s"),
+         "--dep", "native", "--dep", "startup",
+         "-Mroot=" + str(ROOT / "user/zig/boris/gate.zig"),
+         "-Mnative=" + str(ROOT / "user/zig/native.zig"),
+         "-Mstartup=" + str(ROOT / "user/zig/startup.zig")], work / "compiler.log")
+    if max(frames((work / "gate.s").read_text()).values()) > 32768:
+        raise ValueError("GateFrameBudget")
+    check_registers((work / "gate.s").read_text())
+    run([sys.executable, str(ROOT / "tools/check-zc-host-contract.py"), "--profile", "sdk",
+         str(output)], work / "elf-check.log")
+    return output
+
+
+def check_registers(assembly):
+    for line in assembly.splitlines():
+        instruction = line.split("//", 1)[0].strip()
+        if not instruction or instruction.startswith("."):
+            continue
+        if re.search(r"\b[wx]18\b", instruction):
+            raise ValueError("UnpreservedPlatformRegister:x18")
 
 
 def release(compiler, work, assembly, frame_sizes, receipt):
@@ -202,7 +253,7 @@ def release(compiler, work, assembly, frame_sizes, receipt):
          str(work / "guarded.s"), "-o", str(work / "guarded.o")], work / "assembler.log")
     run([str(compiler / "zig"), "build-exe", str(work / "guarded.o"),
          "--zig-lib-dir", str(compiler / "lib"), "-target", sdk.LOCK["target"],
-         "-mcpu", sdk.LOCK["cpu"], "-O", "ReleaseSafe", "-fstrip", "-fno-PIE",
+         "-mcpu", GUEST_CPU, "-O", "ReleaseSafe", "-fstrip", "-fno-PIE",
          "-fno-compiler-rt", "-fentry=_start", "-T", str(ROOT / "tools/zig/guest.ld"),
          "-femit-bin=" + str(work / "guarded.elf")], work / "link.log")
     run([sys.executable, str(ROOT / "tools/check-zc-host-contract.py"),
@@ -213,7 +264,7 @@ def release(compiler, work, assembly, frame_sizes, receipt):
         guarded_assembly_sha256=sdk.digest(guarded.encode()),
         stack_proof={k: v for k, v in stack_proof.items() if k != "calls"},
         stack_budget_verified=True,
-        scope="compiler memory closure probe; native discovery/publication awaits shared SDK bridge",
+        scope="guarded native discovery/input compiler diagnostic; publication blocked by native contracts",
     )
     (work / "stack-proof.json").write_text(json.dumps(stack_proof, indent=2, sort_keys=True) + "\n")
     print((work / "elf-check.log").read_text(), end="")
@@ -221,15 +272,18 @@ def release(compiler, work, assembly, frame_sizes, receipt):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("fetch", "audit", "guest", "host", "test", "upstream-test",
+    parser.add_argument("command", choices=("fetch", "audit", "guest", "guest-oom", "guest-resources", "gate", "host", "test", "upstream-test",
                                           "patched-host", "patched-test", "patched-upstream-test"))
     parser.add_argument("--work", type=Path)
+    parser.add_argument("--cache", type=Path, default=sdk.DEFAULT_CACHE)
     args = parser.parse_args()
     try:
         if args.command == "fetch":
-            fetch()
+            fetch(args.cache.resolve())
+        elif args.command == "gate":
+            print(gate((args.work or ROOT / ".build/boris/gate").resolve(), args.cache.resolve()))
         else:
-            print(build(args.command, (args.work or ROOT / ".build/boris" / args.command).resolve()) or "tests passed")
+            print(build(args.command, (args.work or ROOT / ".build/boris" / args.command).resolve(), args.cache.resolve()) or "tests passed")
     except (ValueError, OSError, subprocess.CalledProcessError) as error:
         parser.exit(1, f"boris-build: {error}\n")
 
