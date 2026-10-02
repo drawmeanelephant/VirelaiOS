@@ -7,22 +7,29 @@ tags: [capabilities, storage, fat]
 
 # Storage & filesystem
 
-Files live on the macOS **host share** — a folder served to the guest over
-the custom-virtio file channel — not in guest FAT volumes and not in NVRAM.
+Files live on the macOS **host share**, exposed to the guest through the
+existing `/host` API. The runner can use the retained custom-virtio channel or
+the explicitly selected standard VirtioFS/FUSE backend (`--virtio-fs`); the
+guest-facing API is the same. Files are not stored in a guest FAT volume.
 Since M34 HF6 (issue #740) the boot image is a boot volume only: it embeds
 `EFI/BOOT/BOOTAA64.EFI` + `KERNEL.BIN` and nothing else; applications, data,
 and evidence all ride the share.
 
 ## The stack
 
-- **`virtio_file.zig`** — the guest client for the host file channel:
-  custom-virtio queue 5 (`--cvc-file <host-dir>`), a request/reply wire
+- **`virtio_file.zig`** — the guest-facing host-file API and backend
+  selection. The legacy custom-virtio channel uses queue 5
+  (`--cvc-file <host-dir>`); standard VirtioFS/FUSE is an explicit
+  alternative for VZ save/restore (`--virtio-fs <host-dir>`). Both feed the
+  same `/host` file API.
+  The custom-virtio request/reply wire includes
   (`PROBE`/`LIST`/`READ`/`STAT` plus the HF3 mutation set — OPEN/CLOSE/
   WRITE/TRUNCATE/FSYNC/RENAME/MKDIR/DELETE — and `CLONE` dedup) pinned
   byte-for-byte by the class-A channel fixtures.
 - **`file_table.zig`** — the per-process 8-handle file table behind the file
   syscalls (open/read/write/close/dir at slots 23–27, the mutating slots
-  34–37, and `file_sync` at 77), with paths canonicalized onto `/host/...`.
+  34–37, `file_sync` at 77, and `fs_metadata` at 79), with paths
+  canonicalized onto `/host/...`.
 - **`fat32_ro.zig`** — read-only FAT32 parsing for images attached through
   the USB mass-storage seam (`--usb-msd <image>`): the guest can read files
   off a USB disk image. The MSC block layer itself can write raw sectors
@@ -76,7 +83,8 @@ the userland file syscall ABI across two boots.
 **LIMITATION.** One host-backed store: no guest-side volume management, no
 journaling, no block cache, and a bounded direct-read cap (2 KiB per EL0
 call — larger reads loop). The ABI covers delete, rename, truncate, free,
-and fsync (slots 34–37 and 77), but it is a bounded file API, not a POSIX
-filesystem.
+fsync, and metadata operations (slots 34–37, 77, and 79), but it is a
+bounded file API, not a POSIX filesystem. VirtioFS remains opt-in and its
+save/restore observation is limited to the documented macOS 27.2 host.
 
 </Aside>

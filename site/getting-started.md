@@ -13,8 +13,8 @@ that is a deliberate constraint, not a bug.
 The short version:
 
 ```bash
-git clone https://github.com/drawmeanelephant/DipshitOS.git
-cd DipshitOS
+git clone https://github.com/drawmeanelephant/VirelaiOS.git
+cd VirelaiOS
 zig build            # compile the AArch64 UEFI application
 zig build image      # build the GPT+FAT32 disk image
 zig build run        # boot it under Virtualization.framework

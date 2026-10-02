@@ -25,6 +25,7 @@ default VM stays byte-identical:
 | `--input` | the USB keyboard + pointing devices (an Apple XHCI controller) |
 | `--net` | the virtio-net device with a deterministic file-handle attachment |
 | `--net-nat` | the virtio-net device with a NAT attachment (real outbound connectivity) |
+| `--virtio-fs <host-dir>` | Apple's standard VirtioFS device for `/host`; explicit opt-in, does not change the boot default |
 
 The launcher also carries the deterministic scripted-input, network
 responder, host-share, and console seams the live gates use (`--script`, `--input-string`,

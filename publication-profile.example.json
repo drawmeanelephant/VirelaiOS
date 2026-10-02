@@ -3,13 +3,13 @@
   "schema_version": 1,
   "input": "site",
   "site": {
-    "url": "https://drawmeanelephant.github.io/DipshitOS"
+    "url": "https://drawmeanelephant.github.io/VirelaiOS"
   },
   "publication": {
     "target": "github-pages",
-    "base_url": "https://drawmeanelephant.github.io/DipshitOS",
+    "base_url": "https://drawmeanelephant.github.io/VirelaiOS",
     "origin": "https://drawmeanelephant.github.io",
-    "base_path": "/DipshitOS"
+    "base_path": "/VirelaiOS"
   },
   "targets": [
     {

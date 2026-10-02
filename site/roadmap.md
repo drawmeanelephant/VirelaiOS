@@ -7,7 +7,7 @@ tags: [roadmap, status]
 # Roadmap & status
 
 This page summarizes the milestone plan. The repository's
-[`docs/status.md`](https://github.com/drawmeanelephant/DipshitOS/blob/main/docs/status.md)
+[`docs/status.md`](https://github.com/drawmeanelephant/VirelaiOS/blob/main/docs/status.md)
 is the canonical, always-current source; this is the readable summary.
 
 ## Shipped
@@ -23,7 +23,7 @@ is the canonical, always-current source; this is the readable summary.
 | 7 | Input I1–I3: XHCI transport, USB enumeration + HID, the event FIFO + keycode decode |
 | 8 | Usability U0–U8: ADR 0008 HIG, grouped `help`, line editing + history, the one error contract, window chrome (focus rings + title bars), `welcome`/`about`/`motd`, `sysinfo`, persistent settings on disk |
 | 9 | Events E0–E6: per-process event queues, keyboard/pointer/window events to focused EL0 apps, `sys_poll_event`/`sys_wait_event` (slots 21/22), `KEYTEST.BIN` |
-| 10 | Files & storage F0–F4: ADR 0010, per-process file table, `/esp/` + `/data/` routing, file syscalls (slots 23–27), the original `SAVETEXT.BIN`/`TYPE.BIN`/`DIR.BIN` demos (retired M78c; live storage coverage uses GOSH/GOFILES) |
+| 10 | Files & storage F0–F4: ADR 0010, per-process file table, initial `/esp/` + `/data/` routing (later replaced by the host-backed `/host` API), file syscalls (slots 23–27), the original `SAVETEXT.BIN`/`TYPE.BIN`/`DIR.BIN` demos (retired M78c; live storage coverage uses GOSH/GOFILES) |
 | 11 | Desktop platform A0–A5: ADR 0011, the zero-heap `ui.zig` toolkit, the original `CALC.BIN`/`NOTEPAD.BIN`/`TOP.BIN`/`DESKTOP.BIN` programs (retired to Go — the current seat and clients are `GOTABWM.ELF` and the Go ELFs), `sys_exec`/`sys_kill` (slots 28/29) |
 | 12 | Network apps N0–N3: TCP syscall seam (slots 30–33), RFC 1035 DNS, the original `TCP.BIN`/`GOFETCH.ELF`/`CHAT.BIN` programs (the Zig clients are retired; product clients are now Go ELFs) |
 | 13 | Files & applications B1–B4: mutating filesystem seam (B1, slots 34–37), `APPS.TXT` identity manifest (B2), graphical data browser (B3; now `GOFILES.ELF`), and manifest-driven desktop composition (B4) |
@@ -46,29 +46,25 @@ is the canonical, always-current source; this is the readable summary.
 | 30 | Dynamic linking: freestanding `LD.SO`, `LIBUI.SO`/`LIBFONT.SO`, W^X multi-aperture isolation |
 | 31 | Dynamic linking ecosystem: `CALC.ELF`/`NOTEPAD.ELF`/`FILE.ELF`/`DESKTOP.ELF`, `dlopen`/`dlsym` |
 
-Every milestone through **M86** has landed, and all but one index is closed on
-the tracker (observed 2026-09-29); `docs/status.md` is the ledger. Post-milestone landings
-include the in-guest HTTP/1.1 web server (claim 0750; Zig `HTTPD.BIN` was
-retired to `GOHTTPD.ELF` in M71l), the M26 offline-preflight cards
-N13/N14 (claim 8852), and
-the `sys_tcp_connect` wall-clock fix (issue #613, claim 2572).
+Milestones through **M86** have landed. **M87**, First impressions + remote
+terminal, is still open on the tracker; `docs/status.md` is the ledger. For a
+curated account of merged work from 2026-09-01 through 2026-10-02, see the
+[[chronicle|weekly merged-PR chronicle]].
 
 ## Current
 
-The only open arc on the tracker is **M84, remote framebuffer**
-([#1807](https://github.com/drawmeanelephant/DipshitOS/issues/1807)): the
-guest-side RFB wire and its live gate landed, and the macOS Screen Sharing
-tape is blocked on
-[#1835](https://github.com/drawmeanelephant/DipshitOS/issues/1835) — Screen
-Sharing refuses the `None` security type, so the host bridge has to
-authenticate the viewer. Open work and its cards live in the canonical
-table: `docs/status.md`.
+**M87, First impressions + remote terminal**, remains open
+([#1856](https://github.com/drawmeanelephant/VirelaiOS/issues/1856)). The
+default-desktop launcher and authenticated serial client landed, but remote
+class-C acceptance needs a distinct connecting machine and an authorized SSH
+target. That resource was not supplied for the current verification; see
+[#1860](https://github.com/drawmeanelephant/VirelaiOS/issues/1860). The M84
+remote-framebuffer arc closed on 2026-09-30.
 
 Honest-bound edges that remain planned regardless of milestone:
 
-- **The balloon device** — the last unattached virtio surface (low priority;
-  the guest is a fixed 256 MiB, and demand paging now exists but does not
-  make memory reclaimable).
+- **The balloon device** — not attached. Demand paging does not itself provide
+  memory reclaim.
 - **Routing beyond the NAT gateway** and any IPv6 stack; TCP RTO stays fixed
   (no adaptive estimation), and the TCP client is single-connection.
 - **Deeper filesystem semantics** — M13's B1 shipped delete/rename/
@@ -83,9 +79,10 @@ fixed by the headless virtio input channel (claims 9588/0680).
 
 <Aside kind="note">
 
-**PLANNED.** Nothing on this page is shipped until it has a gate; the march
-trackers (`docs/march-m*.md`) are the live per-card status, and this page
-reports only what has actually landed.
+**PLANNED.** This page is a summary, not a live card tracker. Check
+[`docs/status.md`](https://github.com/drawmeanelephant/VirelaiOS/blob/main/docs/status.md)
+and the linked issues for current work; the [[evidence]] page explains how
+this site distinguishes landed work from observed behavior.
 
 </Aside>
 
