@@ -1944,11 +1944,20 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&elf2bin_checks.step);
     const zig_guest_checks = b.addSystemCommand(&.{ "python3", "tools/tests/test_zig_guest.py" });
     test_step.dependOn(&zig_guest_checks.step);
+    const thread_tls_checks = b.addSystemCommand(&.{ "python3", "-B", "tools/tests/test_zig_thread_tls.py" });
+    thread_tls_checks.has_side_effects = true;
+    test_step.dependOn(&thread_tls_checks.step);
     const zig_guest_step = b.step("zig-guest-check", "Rebuild the pinned SDK twice; check ELF, startup, allocator and native std boundary (fetch archive first)");
     const zig_guest_integration = b.addSystemCommand(&.{ "python3", "tools/tests/test_zig_guest.py", "--integration" });
     zig_guest_integration.has_side_effects = true;
     zig_guest_integration.stdio = .inherit;
     zig_guest_step.dependOn(&zig_guest_integration.step);
+    const thread_tls_integration = b.addSystemCommand(&.{ "python3", "-B", "tools/tests/test_zig_thread_tls.py", "--integration" });
+    thread_tls_integration.has_side_effects = true;
+    thread_tls_integration.stdio = .inherit;
+    // Share the checked compiler only after the existing SDK materializer finishes.
+    thread_tls_integration.step.dependOn(&zig_guest_integration.step);
+    zig_guest_step.dependOn(&thread_tls_integration.step);
 
     const core_test_sources = [_][]const u8{
         "user/zig/runtime.zig",
@@ -1996,6 +2005,7 @@ pub fn build(b: *std.Build) void {
         "kernel/src/terminal_corpus.zig",
         "kernel/src/trust.zig",
         "kernel/src/text.zig",
+        "kernel/src/thread_tls.zig",
         "kernel/src/timer.zig",
         "kernel/src/tokenizer.zig",
         "kernel/src/uaccess.zig",
@@ -2249,7 +2259,9 @@ pub fn build(b: *std.Build) void {
         });
         const run_t = b.addRunArtifact(t);
         test_step.dependOn(&run_t.step);
-        if (std.mem.eql(u8, src_path, "user/zig/runtime.zig")) {
+        if (std.mem.eql(u8, src_path, "user/zig/runtime.zig") or
+            std.mem.eql(u8, src_path, "kernel/src/thread_tls.zig"))
+        {
             zig_guest_step.dependOn(&run_t.step);
         }
     }
