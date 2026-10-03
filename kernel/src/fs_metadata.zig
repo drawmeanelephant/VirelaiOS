@@ -29,6 +29,9 @@ pub const Error = error{
     SymlinkRejected,
     StaleIdentity,
     HandleLimit,
+    /// B5: an occupied preserve-existing/exclusive target or a non-empty
+    /// directory removal. Never a replacement or a recursive delete.
+    Exists,
     Io,
 };
 
@@ -165,7 +168,10 @@ pub fn fuseError(errno: i32) Error {
     return switch (errno) {
         -1, -13 => error.AccessDenied,
         -2 => error.FileNotFound,
+        -17, -39 => error.Exists, // EEXIST, ENOTEMPTY
+        -18 => error.ContainmentUnavailable, // EXDEV
         -20 => error.NotDirectory,
+        -21 => error.NotFile, // EISDIR
         -40 => error.SymlinkRejected,
         -38, -95 => error.MetadataUnavailable,
         -116 => error.StaleIdentity,
@@ -188,6 +194,23 @@ pub const write_open_op: u64 = 3;
 pub const dir_open_op: u64 = 4;
 pub const dir_page_op: u64 = 5;
 pub const dir_close_op: u64 = 6;
+// B5 (#1895): pinned-directory handles and mutations relative to them.
+pub const pin_open_op: u64 = 7;
+pub const pin_child_op: u64 = 8;
+pub const pin_close_op: u64 = 9;
+pub const handle_metadata_op: u64 = 10;
+pub const create_op: u64 = 11;
+pub const mkdir_op: u64 = 12;
+pub const remove_op: u64 = 13;
+pub const rename_op: u64 = 14;
+pub const handle_file: u64 = 0;
+pub const handle_directory: u64 = 1;
+pub const remove_file: u64 = 0;
+pub const remove_directory: u64 = 1;
+pub const rename_length_mask: u64 = 0xffff;
+pub const rename_replace: u64 = 1 << 32;
+/// A pinned path may join a ≤8-component root and ≤8 relative components.
+pub const max_pinned_depth: usize = max_depth * 2;
 
 pub const WireTime = extern struct {
     seconds: i64,
@@ -294,7 +317,7 @@ pub const Object = struct {
     metadata: Metadata,
 };
 
-pub const Access = enum { metadata, read, write };
+pub const Access = enum { metadata, read, write, create, delete };
 pub const Authorizer = struct {
     context: *anyopaque,
     /// Paths are relative to Backend.root_path. The adapter must join that
@@ -318,6 +341,31 @@ pub const ContainedOps = struct {
     close: *const fn (*anyopaque, u64) Error!void,
     read: *const fn (*anyopaque, u64, []u8) Error!usize,
     write: *const fn (*anyopaque, u64, []const u8) Error!usize,
+    /// B5: the remaining operations act on one name inside a pinned
+    /// directory, never on a re-resolved pathname. Each preflights its own
+    /// bounded resources and refuses before mutation when they are full.
+    /// Exclusive create returns a write-only handle on the new object.
+    create: *const fn (*anyopaque, Object, []const u8) Error!Created,
+    /// Returns the new directory pinned; the caller must release it.
+    mkdir: *const fn (*anyopaque, Object, []const u8) Error!Object,
+    /// Removes a file or an empty directory of exactly `Kind`.
+    remove: *const fn (*anyopaque, Object, []const u8, Kind) Error!void,
+    /// `true` replaces an existing target; `false` refuses it atomically.
+    rename: *const fn (*anyopaque, Object, []const u8, Object, []const u8, bool) Error!void,
+    /// Live attributes of an open handle's own object, never its old name.
+    handle_stat: *const fn (*anyopaque, u64) Error!Metadata,
+};
+
+pub const Created = struct {
+    handle: u64,
+    metadata: Metadata,
+};
+
+/// A pinned directory and the share-relative name it was authorized under.
+/// The name is kept only for reauthorization at every use.
+pub const Directory = struct {
+    object: Object,
+    path: []const u8,
 };
 
 pub const Backend = struct {
@@ -434,7 +482,7 @@ pub const File = struct {
 };
 
 pub fn openToken(backend: Backend, auth: Authorizer, path: []const u8, access: Access) Error!u64 {
-    if (access == .metadata) return error.NotFile;
+    if (access != .read and access != .write) return error.NotFile;
     const ops = try backend.contained();
     const object = try resolve(backend, auth, path, access);
     defer ops.release(backend.context, object);
@@ -456,6 +504,115 @@ pub fn open(backend: Backend, auth: Authorizer, path: []const u8, access: Access
     };
     @memcpy(result.path[0..path.len], path);
     return result;
+}
+
+/// Joins one validated name below a pinned directory's path. The result
+/// keeps B2's full-path and component bounds and B5's 16-component depth.
+pub fn childPath(parent: []const u8, name: []const u8, out: []u8) Error![]const u8 {
+    if (name.len > max_component) return error.PathLimit;
+    if (!directory.valid_name(name)) return error.InvalidPath;
+    const separator: usize = @intFromBool(parent.len != 0);
+    const len = parent.len + separator + name.len;
+    if (len > max_relative_path or len > out.len) return error.PathLimit;
+    const depth = if (parent.len == 0) 1 else std.mem.count(u8, parent, "/") + 2;
+    if (depth > max_pinned_depth) return error.TreeLimit;
+    @memcpy(out[0..parent.len], parent);
+    if (separator != 0) out[parent.len] = '/';
+    @memcpy(out[parent.len + separator ..][0..name.len], name);
+    return out[0..len];
+}
+
+fn pinnedDirectory(backend: Backend, object: Object) Error!Object {
+    const ops = try backend.contained();
+    errdefer ops.release(backend.context, object);
+    try noSymlink(object.metadata);
+    if (object.metadata.kind != .directory) return error.NotDirectory;
+    const fresh = try checkedStat(backend, object);
+    if (fresh.kind != .directory) return error.NotDirectory;
+    return object;
+}
+
+/// Pins an existing directory by the B3 no-follow walk. Caller releases.
+pub fn openDirectory(backend: Backend, auth: Authorizer, path: []const u8) Error!Object {
+    return pinnedDirectory(backend, try resolve(backend, auth, path, .metadata));
+}
+
+/// One no-follow LOOKUP from the pinned parent, never a path re-walk.
+pub fn childDirectory(backend: Backend, auth: Authorizer, parent: Directory, name: []const u8) Error!Object {
+    var buffer: [max_relative_path]u8 = undefined;
+    const path = try childPath(parent.path, name, &buffer);
+    const ops = try backend.contained();
+    try authorizePath(auth, path, .metadata);
+    const child = try ops.lookup(backend.context, parent.object, name);
+    if (child.metadata.identity.filesystem != parent.object.metadata.identity.filesystem) {
+        ops.release(backend.context, child);
+        return error.ContainmentUnavailable;
+    }
+    return pinnedDirectory(backend, child);
+}
+
+pub fn directoryMetadata(backend: Backend, auth: Authorizer, dir: Directory) Error!Metadata {
+    try authorizePath(auth, dir.path, .metadata);
+    return checkedStat(backend, dir.object);
+}
+
+/// `path` is the handle's authorized name; the attributes come from the
+/// handle itself. A changed identity or kind is stale, never re-resolved.
+pub fn handleMetadata(backend: Backend, auth: Authorizer, handle: u64, path: []const u8) Error!Metadata {
+    const ops = try backend.contained();
+    try authorizePath(auth, path, .metadata);
+    const result = try ops.handle_stat(backend.context, handle);
+    try noSymlink(result);
+    if (result.kind != .file) return error.StaleIdentity;
+    return result;
+}
+
+pub fn createFile(backend: Backend, auth: Authorizer, dir: Directory, name: []const u8) Error!Created {
+    var buffer: [max_relative_path]u8 = undefined;
+    const ops = try backend.contained();
+    try authorizePath(auth, try childPath(dir.path, name, &buffer), .create);
+    const result = try ops.create(backend.context, dir.object, name);
+    if (result.metadata.kind != .file) {
+        ops.close(backend.context, result.handle) catch {};
+        return error.InvalidMetadata;
+    }
+    return result;
+}
+
+/// Returns the new directory pinned. Caller releases.
+pub fn makeDirectory(backend: Backend, auth: Authorizer, dir: Directory, name: []const u8) Error!Object {
+    var buffer: [max_relative_path]u8 = undefined;
+    const ops = try backend.contained();
+    try authorizePath(auth, try childPath(dir.path, name, &buffer), .create);
+    const result = try ops.mkdir(backend.context, dir.object, name);
+    if (result.metadata.kind != .directory) {
+        ops.release(backend.context, result);
+        return error.InvalidMetadata;
+    }
+    return result;
+}
+
+pub fn remove(backend: Backend, auth: Authorizer, dir: Directory, name: []const u8, kind: Kind) Error!void {
+    if (kind != .file and kind != .directory) return error.InvalidPath;
+    var buffer: [max_relative_path]u8 = undefined;
+    const ops = try backend.contained();
+    try authorizePath(auth, try childPath(dir.path, name, &buffer), .delete);
+    return ops.remove(backend.context, dir.object, name, kind);
+}
+
+/// Authorizes deletion at the source and creation at the destination,
+/// then submits one backend rename between the two pinned directories.
+pub fn rename(backend: Backend, auth: Authorizer, from: Directory, from_name: []const u8, to: Directory, to_name: []const u8, replace: bool) Error!void {
+    var source: [max_relative_path]u8 = undefined;
+    var target: [max_relative_path]u8 = undefined;
+    const from_path = try childPath(from.path, from_name, &source);
+    const to_path = try childPath(to.path, to_name, &target);
+    const ops = try backend.contained();
+    try authorizePath(auth, from_path, .delete);
+    try authorizePath(auth, to_path, .create);
+    if (from.object.metadata.identity.filesystem != to.object.metadata.identity.filesystem)
+        return error.ContainmentUnavailable;
+    return ops.rename(backend.context, from.object, from_name, to.object, to_name, replace);
 }
 
 // Unit fixtures are an explicit in-memory backend. Passing these tests does
@@ -506,6 +663,11 @@ const Fixture = struct {
     replace_after_lookup: ?usize = null,
     replace_before_open: bool = false,
     bytes: [4]u8 = .{ 's', 'a', 'f', 'e' },
+    mutations: usize = 0,
+    mutation_failure: ?Error = null,
+    created_kind: Kind = .file,
+    last_kind: ?Kind = null,
+    last_replace: ?bool = null,
 
     fn init() !Fixture {
         var result: Fixture = .{ .objects = undefined };
@@ -613,6 +775,44 @@ const Fixture = struct {
         return n;
     }
 
+    fn mutate(f: *Fixture) Error!void {
+        f.mutations += 1;
+        if (f.mutation_failure) |err| return err;
+    }
+
+    fn createEntry(context: *anyopaque, _: Object, _: []const u8) Error!Created {
+        const f = self(context);
+        try f.mutate();
+        f.handles += 1;
+        var value = f.objects[3];
+        if (f.created_kind != .file) value = f.objects[1];
+        return .{ .handle = 3, .metadata = value };
+    }
+
+    fn makeDir(context: *anyopaque, _: Object, _: []const u8) Error!Object {
+        const f = self(context);
+        try f.mutate();
+        return f.pin(if (f.created_kind == .directory) 1 else 3);
+    }
+
+    fn removeEntry(context: *anyopaque, _: Object, _: []const u8, kind: Kind) Error!void {
+        const f = self(context);
+        f.last_kind = kind;
+        try f.mutate();
+    }
+
+    fn renameEntry(context: *anyopaque, _: Object, _: []const u8, _: Object, _: []const u8, replace: bool) Error!void {
+        const f = self(context);
+        f.last_replace = replace;
+        try f.mutate();
+    }
+
+    fn handleAttr(context: *anyopaque, token: u64) Error!Metadata {
+        const f = self(context);
+        if (f.stat_failure) |err| return err;
+        return f.objects[token];
+    }
+
     const ops = ContainedOps{
         .root = root,
         .lookup = lookup,
@@ -622,6 +822,11 @@ const Fixture = struct {
         .close = closeFile,
         .read = readFile,
         .write = writeFile,
+        .create = createEntry,
+        .mkdir = makeDir,
+        .remove = removeEntry,
+        .rename = renameEntry,
+        .handle_stat = handleAttr,
     };
 };
 
@@ -715,6 +920,10 @@ test "metadata: FUSE failures have explicit distinct meanings" {
     try std.testing.expectEqual(error.MetadataUnavailable, fuseError(-38));
     try std.testing.expectEqual(error.MetadataUnavailable, fuseError(-95));
     try std.testing.expectEqual(error.StaleIdentity, fuseError(-116));
+    try std.testing.expectEqual(error.Exists, fuseError(-17));
+    try std.testing.expectEqual(error.Exists, fuseError(-39));
+    try std.testing.expectEqual(error.ContainmentUnavailable, fuseError(-18));
+    try std.testing.expectEqual(error.NotFile, fuseError(-21));
     try std.testing.expectEqual(error.Io, fuseError(-5));
     try std.testing.expectEqual(error.Io, fuseError(std.math.minInt(i32)));
     try std.testing.expectEqual(error.InvalidMetadata, fuseError(0));
@@ -1018,4 +1227,133 @@ test "B3: in-place snapshot sort preserves every full-capacity row" {
             try std.testing.expect(std.mem.allEqual(u8, &entry.reserved, 0));
         }
     }
+}
+
+fn testDirectory(f: *Fixture, token: u64, path: []const u8) Directory {
+    return .{ .object = .{ .token = token, .metadata = f.objects[token] }, .path = path };
+}
+
+test "B5: names joined paths and depth refuse before backend use" {
+    var buffer: [max_relative_path]u8 = undefined;
+    try std.testing.expectEqualStrings("a/b", try childPath("a", "b", &buffer));
+    try std.testing.expectEqualStrings("b", try childPath("", "b", &buffer));
+    for ([_][]const u8{ "", ".", "..", "a/b", "a\x00" }) |name|
+        try std.testing.expectError(error.InvalidPath, childPath("a", name, &buffer));
+    try std.testing.expectError(error.PathLimit, childPath("a", "x" ** 256, &buffer));
+    _ = try childPath("x" ** 255, "y" ** 250, &buffer);
+    try std.testing.expectError(error.PathLimit, childPath("x" ** 255, "y" ** 251, &buffer));
+    const deep = "a/b/c/d/e/f/g/h/i/j/k/l/m/n/o";
+    _ = try childPath(deep, "p", &buffer);
+    try std.testing.expectError(error.TreeLimit, childPath(deep ++ "/p", "q", &buffer));
+    var f = try Fixture.init();
+    const dir = testDirectory(&f, 1, "a");
+    try std.testing.expectError(error.InvalidPath, createFile(f.backend(), f.auth(), dir, ".."));
+    try std.testing.expectError(error.InvalidPath, makeDirectory(f.backend(), f.auth(), dir, "x/y"));
+    try std.testing.expectError(error.InvalidPath, remove(f.backend(), f.auth(), dir, "", .file));
+    try std.testing.expectError(error.InvalidPath, remove(f.backend(), f.auth(), dir, "x", .symlink));
+    try std.testing.expectError(error.InvalidPath, rename(f.backend(), f.auth(), dir, ".", dir, "x", false));
+    try std.testing.expectError(error.InvalidPath, rename(f.backend(), f.auth(), dir, "x", dir, "..", true));
+    try std.testing.expectError(error.InvalidPath, childDirectory(f.backend(), f.auth(), dir, "x/y"));
+    try std.testing.expectEqual(@as(usize, 0), f.mutations + f.lookups + f.pins);
+}
+
+test "B5: every mutation authorizes root ancestors and target before backend use" {
+    for ([_][]const u8{ "", "a", "a/x" }) |denied| {
+        var f = try Fixture.init();
+        f.denies = denied;
+        const dir = testDirectory(&f, 1, "a");
+        try std.testing.expectError(error.AccessDenied, createFile(f.backend(), f.auth(), dir, "x"));
+        try std.testing.expectError(error.AccessDenied, makeDirectory(f.backend(), f.auth(), dir, "x"));
+        try std.testing.expectError(error.AccessDenied, remove(f.backend(), f.auth(), dir, "x", .file));
+        try std.testing.expectError(error.AccessDenied, rename(f.backend(), f.auth(), dir, "x", dir, "y", true));
+        try std.testing.expectError(error.AccessDenied, rename(f.backend(), f.auth(), dir, "y", dir, "x", true));
+        try std.testing.expectError(error.AccessDenied, childDirectory(f.backend(), f.auth(), dir, "x"));
+        if (denied.len < 2) {
+            try std.testing.expectError(error.AccessDenied, directoryMetadata(f.backend(), f.auth(), dir));
+            try std.testing.expectError(error.AccessDenied, openDirectory(f.backend(), f.auth(), "a"));
+        }
+        try std.testing.expectEqual(@as(usize, 0), f.mutations + f.lookups + f.pins);
+    }
+    var f = try Fixture.init();
+    const dir = testDirectory(&f, 1, "a");
+    f.denies = "a/x";
+    f.deny_access = .delete;
+    try std.testing.expectError(error.AccessDenied, rename(f.backend(), f.auth(), dir, "x", dir, "y", false));
+    try std.testing.expectError(error.AccessDenied, remove(f.backend(), f.auth(), dir, "x", .directory));
+    try rename(f.backend(), f.auth(), dir, "y", dir, "x", false);
+    try std.testing.expectEqual(@as(?bool, false), f.last_replace);
+    _ = try createFile(f.backend(), f.auth(), dir, "x");
+    f.deny_access = .create;
+    try std.testing.expectError(error.AccessDenied, rename(f.backend(), f.auth(), dir, "y", dir, "x", true));
+    try std.testing.expectError(error.AccessDenied, createFile(f.backend(), f.auth(), dir, "x"));
+    try std.testing.expectError(error.AccessDenied, makeDirectory(f.backend(), f.auth(), dir, "x"));
+    try rename(f.backend(), f.auth(), dir, "x", dir, "y", true);
+    try std.testing.expectEqual(@as(?bool, true), f.last_replace);
+    try remove(f.backend(), f.auth(), dir, "x", .directory);
+    try std.testing.expectEqual(@as(?Kind, .directory), f.last_kind);
+    try std.testing.expectEqual(@as(usize, 4), f.mutations);
+}
+
+test "B5: child pins refuse links files stale identities and other filesystems" {
+    var f = try Fixture.init();
+    const root_pin = try openDirectory(f.backend(), f.auth(), "");
+    const parent = Directory{ .object = root_pin, .path = "" };
+    const a = try childDirectory(f.backend(), f.auth(), parent, "a");
+    try std.testing.expectEqual(@as(u64, 101), a.metadata.identity.inode);
+    try std.testing.expectEqual(@as(u64, 101), (try directoryMetadata(f.backend(), f.auth(), .{ .object = a, .path = "a" })).identity.inode);
+    Fixture.release(&f, a);
+    try std.testing.expectError(error.SymlinkRejected, childDirectory(f.backend(), f.auth(), parent, "link"));
+    try std.testing.expectError(error.FileNotFound, childDirectory(f.backend(), f.auth(), parent, "missing"));
+    const b = try openDirectory(f.backend(), f.auth(), "a/b");
+    try std.testing.expectError(error.NotDirectory, childDirectory(f.backend(), f.auth(), .{ .object = b, .path = "a/b" }, "page.md"));
+    try std.testing.expectError(error.NotDirectory, openDirectory(f.backend(), f.auth(), "a/b/page.md"));
+    f.objects[2].identity.inode += 1;
+    try std.testing.expectError(error.StaleIdentity, directoryMetadata(f.backend(), f.auth(), .{ .object = b, .path = "a/b" }));
+    Fixture.release(&f, b);
+    f.objects[1].identity.filesystem = 8;
+    try std.testing.expectError(error.ContainmentUnavailable, childDirectory(f.backend(), f.auth(), parent, "a"));
+    Fixture.release(&f, root_pin);
+    try std.testing.expectEqual(@as(usize, 0), f.pins);
+}
+
+test "B5: created objects must have the requested kind and refusals stay refusals" {
+    var f = try Fixture.init();
+    const dir = testDirectory(&f, 1, "a");
+    const created = try createFile(f.backend(), f.auth(), dir, "x");
+    try std.testing.expectEqual(@as(u64, 103), created.metadata.identity.inode);
+    try std.testing.expectError(error.InvalidMetadata, makeDirectory(f.backend(), f.auth(), dir, "x"));
+    try std.testing.expectEqual(@as(usize, 0), f.pins);
+    f.created_kind = .directory;
+    try std.testing.expectError(error.InvalidMetadata, createFile(f.backend(), f.auth(), dir, "x"));
+    Fixture.release(&f, try makeDirectory(f.backend(), f.auth(), dir, "x"));
+    try std.testing.expectEqual(@as(usize, 0), f.pins);
+    f.mutation_failure = error.Exists;
+    try std.testing.expectError(error.Exists, createFile(f.backend(), f.auth(), dir, "x"));
+    try std.testing.expectError(error.Exists, makeDirectory(f.backend(), f.auth(), dir, "x"));
+    try std.testing.expectError(error.Exists, remove(f.backend(), f.auth(), dir, "x", .directory));
+    try std.testing.expectError(error.Exists, rename(f.backend(), f.auth(), dir, "x", dir, "y", false));
+    try std.testing.expectEqual(@as(u64, 103), (try handleMetadata(f.backend(), f.auth(), 3, "a/b/page.md")).identity.inode);
+    try std.testing.expectError(error.StaleIdentity, handleMetadata(f.backend(), f.auth(), 1, "a/b/page.md"));
+    try std.testing.expectError(error.SymlinkRejected, handleMetadata(f.backend(), f.auth(), 4, "a/b/page.md"));
+    f.denies = "a/b/page.md";
+    try std.testing.expectError(error.AccessDenied, handleMetadata(f.backend(), f.auth(), 3, "a/b/page.md"));
+    var other = testDirectory(&f, 2, "a/b");
+    other.object.metadata.identity.filesystem = 8;
+    f.mutation_failure = null;
+    try std.testing.expectError(error.ContainmentUnavailable, rename(f.backend(), f.auth(), dir, "x", other, "y", true));
+}
+
+test "B5: backends without containment refuse every pinned operation" {
+    var f = try Fixture.init();
+    const unsupported = Backend{ .context = &f, .root_path = "", .ops = null };
+    const dir = testDirectory(&f, 1, "a");
+    try std.testing.expectError(error.ContainmentUnavailable, openDirectory(unsupported, f.auth(), ""));
+    try std.testing.expectError(error.ContainmentUnavailable, childDirectory(unsupported, f.auth(), dir, "b"));
+    try std.testing.expectError(error.ContainmentUnavailable, directoryMetadata(unsupported, f.auth(), dir));
+    try std.testing.expectError(error.ContainmentUnavailable, handleMetadata(unsupported, f.auth(), 3, "a/b/page.md"));
+    try std.testing.expectError(error.ContainmentUnavailable, createFile(unsupported, f.auth(), dir, "x"));
+    try std.testing.expectError(error.ContainmentUnavailable, makeDirectory(unsupported, f.auth(), dir, "x"));
+    try std.testing.expectError(error.ContainmentUnavailable, remove(unsupported, f.auth(), dir, "x", .file));
+    try std.testing.expectError(error.ContainmentUnavailable, rename(unsupported, f.auth(), dir, "x", dir, "y", true));
+    try std.testing.expectEqual(@as(usize, 0), f.mutations + f.lookups + f.pins);
 }

@@ -1757,3 +1757,89 @@ The native handle table is 19 temporary pool pages; the mount identity ledger
 is the only two-page persistent reservation made by B3 queries.
 SDK resource, total visited-entry, artifact and arena accounting remain
 the C-card owners' responsibility; no SDK or ADR 0038 changes land here.
+
+## Amendment (2026-10-02, B5 #1895 — pinned directories and name operations)
+
+Landing approval approves slot 79 ops 7–14 for Boris C3 publication
+(#1877). No slot is added: there are still 80 registered rows, ops 0–6 keep
+B3's registers and results, and ADR 0038 and the boot default are unchanged.
+This is a native bounded family, not POSIX `openat`/`mkdirat`/`renameat`.
+
+A **pin** is a positive process-owned token for one directory object. It
+holds that object's FUSE lookup reference and records its identity and
+share-relative path (≤16 components, ≤512 bytes). Every use reauthorizes the
+recorded path; the backend acts on the pinned node, never on a re-resolved
+pathname. A name is one 1–255-byte component without `/` or NUL that is not
+`.` or `..`. It is copied in once, before any lookup or mutation.
+
+| op | x1–x5 | Result |
+|----|-------|--------|
+| 7 | root_ptr, root_len, relative_ptr, relative_len, 0 | pin of an existing directory (B3's no-follow walk) |
+| 8 | pin, name_ptr, name_len, 0, 0 | pin of a child directory (one no-follow LOOKUP from the pin) |
+| 9 | pin, 0, 0, 0, 0 | 0; releases the pin, also after revocation or staleness |
+| 10 | handle, kind, 0, 0, out_ptr | 0 and B3's 96-byte record of the handle's own object; kind 0 contained fd, 1 pin |
+| 11 | pin, name_ptr, name_len, 0, 0 | write-only native fd 0–7 on a newly created regular file |
+| 12 | pin, name_ptr, name_len, 0, 0 | pin of a newly created directory |
+| 13 | pin, name_ptr, name_len, kind, 0 | 0; removes a file (kind 0) or an empty directory (kind 1) |
+| 14 | from_pin, from_ptr, to_pin, to_ptr, lengths | 0; one backend rename between two of the caller's pins |
+
+Op 14's x5 carries `from_len` in bits 0–15, `to_len` in bits 16–31 and
+**replace** in bit 32; any other set bit is `EINVAL`. Without bit 32 rename
+is preserve-existing. Registers shown as 0 must be zero.
+
+**Backend.** VirtioFS only. Create is `FUSE_CREATE` with
+`O_WRONLY|O_CREAT|O_EXCL`, mode 0644. A server answering `ENOSYS` gets
+`FUSE_MKNOD` (regular, 0644, itself exclusive), then OPEN of the new node ID.
+Mkdir is `FUSE_MKDIR`, mode 0755. Remove classifies the name with a
+LOOKUP+FORGET probe and refuses a symlink or the wrong kind before
+`FUSE_UNLINK`/`FUSE_RMDIR`. Replace is `FUSE_RENAME`; preserve-existing is
+`FUSE_RENAME2` with `RENAME_NOREPLACE`. There is no stat-then-act,
+delete-then-rename, copy or pathname fallback. Servers older than FUSE 7.12
+(create) or 7.23 (preserve-existing rename) refuse before mutation. The
+custom file channel and USB refuse the whole family; op 10 on a legacy
+(non-contained) fd refuses. The process's eight resources, the eight shared
+VirtioFS file handles and a new object's ledger row are all checked before
+the server is asked to mutate anything. A pin from an earlier mount lifetime
+is stale: its node ID is never sent or forgotten.
+
+**Policy.** Every ancestor is checked for list. The target is checked for
+list (ops 7, 8, 10), create (ops 11, 12 and the op-14 destination) or delete
+(op 13 and the op-14 source). Secret and poisoned paths refuse create and
+delete for every actor. Success removes (op 13) or moves (op 14) the target's
+trust metadata and persists `OWNERS.TXT`, as slots 34/35 do; creation mints
+no entry. Host mode and uid remain facts, not policy.
+
+**Staleness.** A successful guest rename (op 14 or slot 35) stales every
+process's pins at or under either name. A successful removal (op 13 or slot
+34) stales pins at or under the removed name. Matching is by whole components,
+ASCII case-insensitive. A stale pin refuses everything except close with
+`EBADF`. Host-side moves are not observed: the pin keeps acting on its node
+and authorizing by its recorded name. A pinned node or fd object whose
+identity changed is `EBADF`.
+
+**Errors.** `EINVAL` (-1): bad name, register or kind; a non-directory pin
+target; the wrong kind for removal; a malformed reply or transport I/O.
+`EBADF` (-2): unknown, cross-process, stale or changed handle, or a snapshot
+token given as a pin. `EFAULT` (-3): any bad user pointer, with no state
+change. `ENOSYS` (-4): unsupported backend or primitive, or a cross-filesystem
+rename. `ENOSPC` (-5): resource, handle or ledger exhaustion, or depth >16.
+`ENOENT` (-6). `EACCES` (-7): policy denial, a symlink at the name, or server
+denial. `ENAMETOOLONG` (-8): name >255 bytes or joined path >512. File-domain
+`EEXIST` (-9): an occupied create, mkdir or preserve-existing target, or a
+non-empty directory removal. Op 13 never recurses; op 14 never replaces
+without bit 32. Transport loss or a malformed reply after submission is an
+**unknown commit outcome** (the new file may exist), not a rollback.
+
+**Resources.** A pin is one of the process's eight native resources plus one
+FUSE lookup reference, released on close or process death. A created fd also
+holds one of the eight shared VirtioFS file handles. Native handle records
+grow to 624 bytes, so the temporary handle table is 20 pool pages (was 19).
+No persistent reservation, BSS bank or path cache is added. Snapshots (ops
+4–6) are unchanged and are never pins: slot 26 and op 6 refuse pins, and op 9
+refuses snapshots.
+
+The SDK exposes these through `fs.Native` and `runtime.filesystem()`, and
+`File.length` uses op 10 (`tools/zig/filesystem.md`); `File.stat` stays
+refused. `std.Io.Dir` wiring, watch (B6) and directory-fsync or power-loss
+durability are not part of B5. Class-A wire/EL0 tests and `live-user-fs`'s
+native probe verify the facility.

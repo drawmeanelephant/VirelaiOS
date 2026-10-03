@@ -11,6 +11,9 @@
 # both publications, retained stages, failure receipts and trust metadata.
 # Shared SDK: rich pages, native containment, honest refusals, publication
 # and mixed-resource limits through the real Zig 0.16 EL0 adapter.
+# B5 (#1895): pinned create/mkdir/remove/rename and handle metadata run a
+# Boris-style stage/swap/park publication raw and through the SDK; the host
+# checks the resulting tree, untouched refusals and reclaimed pins.
 
 vgate_name live-user-fs "userland storage ABI & utilities on VZ"
 vgate_share arm
@@ -560,8 +563,15 @@ for root in roots:
     (root / "SECRET").write_bytes(b"secret fixture\n")
     (root / "DENIEDDIR").mkdir()
     (root / "DENIEDDIR/leaf").write_bytes(b"denied\n")
+    # B5: a live output tree for the pinned Boris-style publication.
+    (root / "PUB/out/keep").mkdir(parents=True)
+    (root / "PUB/out/old.html").write_bytes(b"old output\n")
+    (root / "PUB/link").symlink_to("../outside")
+    (root / "PUB/denied").write_bytes(b"denied pub\n")
+    (root / "PUB/secret").write_bytes(b"secret pub\n")
     (root / "OWNERS.TXT").write_text(
-        "#v1\nDENIED\t600\t0\t-\nSECRET\t600\t0\tsecret\nDENIEDDIR\t600\t0\t-\n")
+        "#v1\nDENIED\t600\t0\t-\nSECRET\t600\t0\tsecret\nDENIEDDIR\t600\t0\t-\n"
+        "PUB/denied\t600\t0\t-\nPUB/secret\t600\t0\tsecret\n")
 subprocess.run(["zig", "build-exe", "-target", "aarch64-freestanding-none",
     "-O", "ReleaseSafe", "-fentry=_start", "-fno-PIE", "-fsingle-threaded",
     "-T", str(rd / "streams.ld"), "--dep", "metadata",
@@ -584,6 +594,7 @@ EOF
 vgate_run b3-legacy -- --cvc-file '$RUN_DIR/b3-legacy' --script '$RUN_DIR/b3-start.txt' --script-after 'tasks user-el0 reaped' --script2 '$RUN_DIR/b3-after.txt' --script2-after 'tasks user-exec reaped' --script-expect 'done-b3' --timeout 120
 vgate_run b3-virtiofs -- --virtio-fs '$RUN_DIR/b3-virtiofs' --script '$RUN_DIR/b3-start.txt' --script-after 'tasks user-el0 reaped' --script2 '$RUN_DIR/b3-after.txt' --script2-after 'tasks user-exec reaped' --script-expect 'done-b3' --timeout 120
 vgate_assert b3-legacy serial-exact 'b3: legacy explicitly unsupported operations=5' 1
+vgate_assert b3-legacy serial-exact 'b5: legacy explicitly unsupported pin=1 path-fd=1 unbound=1' 1
 vgate_assert b3-legacy serial-absent 'b3: FAIL'
 vgate_assert b3-legacy serial-absent '[EXC]'
 vgate_assert b3-legacy python <<'PY'
@@ -591,6 +602,8 @@ import os, pathlib
 root = pathlib.Path(os.environ["RUN_DIR"]) / "b3-legacy"
 assert (root / "content/a/b/page.md").read_bytes() == b"safe"
 assert (root / "outside/b/page.md").read_bytes() == b"outside must stay untouched\n"
+assert sorted(p.name for p in (root / "PUB").iterdir()) == ["denied", "link", "out", "secret"]
+assert (root / "PUB/out/old.html").read_bytes() == b"old output\n"
 PY
 vgate_assert b3-virtiofs serial-exact 'b3: nested discovery directories=3 stable distinct' 1
 vgate_assert b3-virtiofs serial-exact 'b3: directory rows=23 pages=4 long-names=2 fresh metadata' 1
@@ -599,6 +612,11 @@ vgate_assert b3-virtiofs serial-exact 'b3: no-follow refusals=17 root intermedia
 vgate_assert b3-virtiofs serial-exact 'b3: watch independent mtime and size changes detected' 1
 vgate_assert b3-virtiofs serial-exact 'b3: replacement races pinned reads and mutation safe' 1
 vgate_assert b3-virtiofs serial-exact 'b3: ownership and secret refusals=7' 1
+vgate_assert b3-virtiofs serial-exact 'b5: pin metadata own-object path-fd unsupported symlink refused' 1
+vgate_assert b3-virtiofs serial-exact 'b5: staged directories=2 files=2 exclusive EEXIST=2' 1
+vgate_assert b3-virtiofs serial-exact 'b5: Boris publish EEXIST=2 park swap remove stale-refusals=2' 1
+vgate_assert b3-virtiofs serial-exact 'b5: atomic replace preserve EEXIST replace ok slot-35 stales pins' 1
+vgate_assert b3-virtiofs serial-exact 'b5: refusals names=6 registers=7 policy=7 tokens=4' 1
 vgate_assert b3-virtiofs serial-contains 'b3: PASS checks='
 vgate_assert b3-virtiofs serial-absent 'b3: FAIL'
 vgate_assert b3-virtiofs serial-absent '[EXC]'
@@ -615,9 +633,24 @@ assert "secret fixture" not in serial and "outside must stay untouched" not in s
 pages = re.findall(r"^pages: armed=1 total=(0x[0-9a-f]+) free=(0x[0-9a-f]+)", serial, re.M)
 assert len(pages) >= 2 and pages[0][0] == pages[-1][0], pages
 assert int(pages[0][1], 16) - int(pages[-1][1], 16) == 2, ("B3 transient leak beyond the two-page mount identity ledger", pages)
-checks = re.search(r"b3: PASS checks=(\d+) death-cursors=8", serial)
-assert checks and int(checks[1]) >= 220, checks
-print("B3: native metadata checks=%s; 8 rich death cursors reclaimed, outside unchanged" % checks[1])
+checks = re.search(r"b3: PASS checks=(\d+) death-cursors=4 death-pins=4", serial)
+assert checks and int(checks[1]) >= 400, checks
+# B5: only the published tree remains; refused names and policy entries are untouched.
+pub = root / "PUB"
+assert sorted(p.name for p in pub.iterdir()) == ["denied", "link", "out", "secret"], list(pub.iterdir())
+assert sorted(p.name for p in (pub / "out").iterdir()) == ["assets", "index.html"]
+assert sorted(p.name for p in (pub / "out/assets").iterdir()) == ["site.css"]
+assert (pub / "out/index.html").read_bytes() == b"<p>v2</p>\n"
+assert (pub / "out/assets/site.css").read_bytes() == b"p{}\n"
+assert (pub / "link").is_symlink() and os.readlink(pub / "link") == "../outside"
+assert (pub / "denied").read_bytes() == b"denied pub\n"
+assert (pub / "secret").read_bytes() == b"secret pub\n"
+for created in (pub / "out", pub / "out/assets", pub / "out/index.html", pub / "out/assets/site.css"):
+    assert created.lstat().st_mode & 0o022 == 0, (created, oct(created.lstat().st_mode))
+owners = (root / "OWNERS.TXT").read_text()
+assert "PUB/denied\t600\t0\t-" in owners and "PUB/secret\t600\t0\tsecret" in owners, owners
+print("B3: native metadata checks=%s; 4 rich death cursors and 4 pins reclaimed, outside unchanged" % checks[1])
+print("B5: pinned stage/swap/park/remove and atomic replace verified on the host share")
 PY
 
 vgate_setup_python <<'PY'
@@ -652,8 +685,14 @@ for backend in ("legacy", "virtiofs"):
     (root / "SDK/secret").write_bytes(b"secret fixture unchanged\n")
     (root / "SDK/denied-dir").mkdir()
     (root / "SDK/denied-dir/leaf").write_bytes(b"denied\n")
+    (root / "SDK/PUB/out/keep").mkdir(parents=True)
+    (root / "SDK/PUB/out/old.html").write_bytes(b"old output\n")
+    (root / "SDK/PUB/link").symlink_to("../outside")
+    (root / "SDK/PUB/denied").write_bytes(b"denied pub\n")
+    (root / "SDK/PUB/secret").write_bytes(b"secret pub\n")
     (root / "OWNERS.TXT").write_text(
-        "#v1\nSDK/denied\t600\t0\t-\nSDK/secret\t600\t0\tsecret\nSDK/denied-dir\t600\t0\t-\n")
+        "#v1\nSDK/denied\t600\t0\t-\nSDK/secret\t600\t0\tsecret\nSDK/denied-dir\t600\t0\t-\n"
+        "SDK/PUB/denied\t600\t0\t-\nSDK/PUB/secret\t600\t0\tsecret\n")
     (root / ("a" * 250) / ("b" * 255)).mkdir(parents=True)
     (root / "d/e/e/e/e/e/e/e").mkdir(parents=True)
     for directory, count in (("LIMIT", 256), ("OVER", 257)):
@@ -688,7 +727,7 @@ vgate_run sdk-legacy -- --cvc-file '$RUN_DIR/sdk-legacy' --script '$RUN_DIR/sdk-
 vgate_run sdk-virtiofs -- --virtio-fs '$RUN_DIR/sdk-virtiofs' --script '$RUN_DIR/sdk-virtiofs.txt' --script-after 'tasks user-el0 reaped' --script2 '$RUN_DIR/sdk-after.txt' --script2-after 'tasks user-exec reaped' --script-expect 'done-zig-fs' --timeout 120
 vgate_run sdk-bounds -- --virtio-fs '$RUN_DIR/sdk-virtiofs' --script '$RUN_DIR/sdk-bounds.txt' --script-after 'tasks user-el0 reaped' --script2 '$RUN_DIR/sdk-after.txt' --script2-after 'tasks user-exec reaped' --script-expect 'done-zig-fs' --timeout 120
 vgate_run sdk-over -- --virtio-fs '$RUN_DIR/sdk-virtiofs' --script '$RUN_DIR/sdk-over.txt' --script-after 'tasks user-el0 reaped' --script2 '$RUN_DIR/sdk-after.txt' --script2-after 'tasks user-exec reaped' --script-expect 'done-zig-fs' --timeout 120
-vgate_assert sdk-legacy serial-contains 'zig-fs: legacy unsupported=5 no leaked records'
+vgate_assert sdk-legacy serial-contains 'zig-fs: legacy unsupported=8 no leaked records'
 vgate_assert sdk-legacy serial-contains 'zig-fs: publications=2 failure-preservation refusals=8'
 vgate_assert sdk-legacy serial-contains 'zig-fs: PASS'
 vgate_assert sdk-legacy serial-absent 'zig-fs: FAIL'
@@ -702,6 +741,8 @@ assert (root / "stage").read_bytes() == b"retained stage\n"
 assert (root / "denied").read_bytes() == b"denied unchanged\n"
 assert (root / "secret").read_bytes() == b"secret fixture unchanged\n"
 assert (root / "content/nested/deep/page").read_bytes() == b"safe"
+assert sorted(p.name for p in (root / "PUB").iterdir()) == ["denied", "link", "out", "secret"]
+assert (root / "PUB/out/old.html").read_bytes() == b"old output\n"
 serial = pathlib.Path(os.environ["VG_SER"]).read_text()
 assert "procs ZFS.BIN exited status=0" in serial
 pages = re.findall(r"^pages: armed=1 total=(0x[0-9a-f]+) free=(0x[0-9a-f]+)", serial, re.M)
@@ -709,7 +750,9 @@ assert len(pages) >= 2 and pages[0] == pages[-1], pages
 PY
 vgate_assert sdk-virtiofs serial-contains 'zig-fs: rich rows=24 pages=4 long-names=3 identities=stable'
 vgate_assert sdk-virtiofs serial-contains 'zig-fs: nofollow and guest permissions refused=15'
-vgate_assert sdk-virtiofs serial-contains 'zig-fs: pinned reads/writes survive replacement; fd-stat refused'
+vgate_assert sdk-virtiofs serial-contains 'zig-fs: pinned reads/writes/fd-metadata survive replacement; File.stat refused'
+vgate_assert sdk-virtiofs serial-contains 'zig-fs: pinned publication staged=4 swapped parked-removed stale-refusals=2'
+vgate_assert sdk-virtiofs serial-contains 'zig-fs: pinned atomic replace; names symlinks and ACLs refused=11'
 vgate_assert sdk-virtiofs serial-contains 'zig-fs: resources=8 overflow refused finish-cursors=4'
 vgate_assert sdk-virtiofs serial-contains 'zig-fs: PASS'
 vgate_assert sdk-virtiofs serial-absent 'zig-fs: FAIL'
@@ -726,6 +769,14 @@ assert (root / "outside/deep/page").read_bytes() == b"outside unchanged\n"
 assert (root / "denied").read_bytes() == b"denied unchanged\n"
 assert (root / "secret").read_bytes() == b"secret fixture unchanged\n"
 assert not (root / "overflow").exists()
+pub = root / "PUB"
+assert sorted(p.name for p in pub.iterdir()) == ["denied", "link", "out", "secret"], list(pub.iterdir())
+assert sorted(p.name for p in (pub / "out").iterdir()) == ["assets", "index.html"]
+assert (pub / "out/index.html").read_bytes() == b"<p>v2</p>\n"
+assert (pub / "out/assets/site.css").read_bytes() == b"p{}\n"
+assert (pub / "link").is_symlink()
+assert (pub / "denied").read_bytes() == b"denied pub\n"
+assert (pub / "secret").read_bytes() == b"secret pub\n"
 serial = pathlib.Path(os.environ["VG_SER"]).read_text()
 assert "procs ZFS.BIN exited status=0" in serial
 facts = json.loads((rd / "sdk-virtiofs-facts.json").read_text())

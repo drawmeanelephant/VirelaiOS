@@ -104,6 +104,8 @@ const FileHandle = struct {
     valid: bool = false,
     contained: bool = false,
     access: metadata.Access = .read,
+    /// B5: the attributes' identity at open, for handle-metadata staleness.
+    identity: metadata.Identity = .{ .filesystem = 0, .inode = 0 },
 };
 
 pub const DirectoryEntry = struct {
@@ -184,6 +186,7 @@ const fuse_fsync: u32 = 20;
 const fuse_opendir: u32 = 27;
 const fuse_readdir: u32 = 28;
 const fuse_releasedir: u32 = 29;
+const fuse_create: u32 = 35;
 
 const file_type_mask: u32 = 0o170000;
 const file_type_dir: u32 = 0o040000;
@@ -194,6 +197,9 @@ const open_read_only: u32 = 0;
 const open_write_only: u32 = 1;
 const open_read_write: u32 = 2;
 const open_append: u32 = 0o2000;
+// FUSE carries Linux open flags; the VZ server translates them.
+const open_create: u32 = 0o100;
+const open_exclusive: u32 = 0o200;
 const dirent_type_dir: u32 = 4;
 
 fn read16(bytes: []const u8, off: usize) u16 {
@@ -596,6 +602,11 @@ pub fn contained_backend(root: *Root) metadata.Backend {
     ops.close = pin_close;
     ops.read = pin_read;
     ops.write = pin_write;
+    ops.create = pin_create;
+    ops.mkdir = pin_mkdir;
+    ops.remove = pin_remove;
+    ops.rename = pin_rename;
+    ops.handle_stat = pin_handle_stat;
     return .{ .context = root, .root_path = root.path, .ops = if (available()) &contained_ops else null };
 }
 
@@ -614,6 +625,12 @@ fn lookup_locked(parent: u64, name: []const u8) metadata.Error!metadata.Object {
     var input: [directory.name_max + 1]u8 = .{0} ** (directory.name_max + 1);
     @memcpy(input[0..name.len], name);
     const reply = transact(fuse_lookup, parent, input[0 .. name.len + 1]) orelse return metadata_failure();
+    return adopt_entry_locked(reply);
+}
+
+/// LOOKUP, MKNOD, MKDIR and CREATE replies each carry one FUSE lookup
+/// reference on the returned node; this is its only owner.
+fn adopt_entry_locked(reply: []const u8) metadata.Error!metadata.Object {
     // Even malformed attributes can carry a valid lookup reference.
     const decoded = metadata.decodeFuseLookup(mount_identity, reply) catch |err| {
         if (reply.len >= 8 and read64(reply, 0) != 0) forget_locked(read64(reply, 0));
@@ -693,16 +710,24 @@ fn pin_root(context: *anyopaque) metadata.Error!metadata.Object {
     return current;
 }
 
+/// B5 pins outlive one call. FUSE node IDs from an earlier mount may name
+/// different objects now, so they are refused and never sent or forgotten.
+fn live_locked(object: metadata.Object) metadata.Error!void {
+    if (object.metadata.identity.filesystem != mount_identity) return error.StaleIdentity;
+}
+
 fn pin_lookup(_: *anyopaque, parent: metadata.Object, name: []const u8) metadata.Error!metadata.Object {
     if (!available()) return error.ContainmentUnavailable;
     const saved = fs_lock.lock();
     defer fs_lock.unlock(saved);
+    try live_locked(parent);
     return lookup_locked(parent.token, name);
 }
 
 fn unpin(_: *anyopaque, object: metadata.Object) void {
     const saved = fs_lock.lock();
     defer fs_lock.unlock(saved);
+    live_locked(object) catch return;
     release_lookup_locked(object.token);
 }
 
@@ -710,16 +735,186 @@ fn pin_stat(_: *anyopaque, object: metadata.Object) metadata.Error!metadata.Meta
     if (!available()) return error.ContainmentUnavailable;
     const saved = fs_lock.lock();
     defer fs_lock.unlock(saved);
+    try live_locked(object);
     return attr_locked(object.token);
+}
+
+fn free_handle_locked() metadata.Error!usize {
+    var slot: usize = 0;
+    while (slot < handles.len and handles[slot].valid) : (slot += 1) {}
+    if (slot == handles.len) return error.HandleLimit;
+    return slot;
+}
+
+/// A new object always needs a new ledger row. Check (and allocate) it
+/// before the server mutates anything, so a full ledger creates nothing.
+fn ledger_room_locked() metadata.Error!void {
+    if (identity_pin_count == identity_pin_max) return error.TreeLimit;
+    if (identity_nodes == null) {
+        identity_nodes = if (builtin.is_test) &test_identity_nodes else @ptrFromInt(alloc.alloc_pages(2) orelse return error.HandleLimit);
+    }
+}
+
+fn name_request(header: usize, name: []const u8, out: []u8) metadata.Error![]const u8 {
+    if (!directory.valid_name(name) or header + name.len + 1 > out.len) return error.InvalidPath;
+    @memset(out[0 .. header + name.len + 1], 0);
+    @memcpy(out[header..][0..name.len], name);
+    return out[0 .. header + name.len + 1];
+}
+
+/// LOOKUP and immediately FORGET: classifies an entry without consuming a
+/// ledger row. The classification is advisory; the mutation acts by name.
+fn probe_locked(parent: u64, name: []const u8) metadata.Error!metadata.Metadata {
+    var input: [directory.name_max + 1]u8 = undefined;
+    const request = try name_request(0, name, &input);
+    const reply = transact(fuse_lookup, parent, request) orelse return metadata_failure();
+    if (reply.len >= 8 and read64(reply, 0) != 0) {
+        const node = read64(reply, 0);
+        const decoded = metadata.decodeFuseLookup(mount_identity, reply);
+        forget_locked(node);
+        return (try decoded).metadata;
+    }
+    return error.InvalidMetadata;
+}
+
+fn release_fuse_handle_locked(node: u64, fuse_handle: u64) void {
+    var input: [24]u8 = .{0} ** 24;
+    write64(&input, 0, fuse_handle);
+    if (transact(fuse_release, node, &input) == null) fs_ready = false;
+}
+
+fn pin_create(_: *anyopaque, parent: metadata.Object, name: []const u8) metadata.Error!metadata.Created {
+    if (!available()) return error.ContainmentUnavailable;
+    const saved = fs_lock.lock();
+    defer fs_lock.unlock(saved);
+    try live_locked(parent);
+    // FUSE 7.12 fixed the 16-byte create/mknod request layout.
+    if (fs_minor < 12) return error.ContainmentUnavailable;
+    const slot = try free_handle_locked();
+    try ledger_room_locked();
+    var input: [16 + directory.name_max + 1]u8 = undefined;
+    const request = try name_request(16, name, &input);
+    write32(&input, 0, open_write_only | open_create | open_exclusive);
+    write32(&input, 4, file_type_regular | 0o644);
+    var created: metadata.Object = undefined;
+    var fuse_handle: u64 = undefined;
+    if (transact(fuse_create, parent.token, request)) |reply| {
+        // Cleanup requests reuse the reply buffer; copy what they need first.
+        const node = if (reply.len >= 8) read64(reply, 0) else 0;
+        if (reply.len < metadata.fuse_entry_bytes + 16) {
+            if (node != 0) forget_locked(node);
+            return error.InvalidMetadata;
+        }
+        fuse_handle = read64(reply, metadata.fuse_entry_bytes);
+        created = adopt_entry_locked(reply[0..metadata.fuse_entry_bytes]) catch |err| {
+            if (node != 0) release_fuse_handle_locked(node, fuse_handle);
+            return err;
+        };
+    } else {
+        // Without CREATE, MKNOD is the server's exclusive primitive; the
+        // new node is then opened by ID. Neither step follows a name.
+        if (fs_error != -38) return metadata_failure();
+        write32(&input, 0, file_type_regular | 0o644);
+        write32(&input, 4, 0);
+        const reply = transact(fuse_mknod, parent.token, request) orelse return metadata_failure();
+        created = try adopt_entry_locked(reply);
+        var open_input: [8]u8 = .{0} ** 8;
+        write32(&open_input, 0, open_write_only);
+        const opened = transact(fuse_open, created.token, &open_input) orelse {
+            const err = metadata_failure();
+            release_lookup_locked(created.token);
+            return err;
+        };
+        if (opened.len < 16) {
+            release_lookup_locked(created.token);
+            return error.InvalidMetadata;
+        }
+        fuse_handle = read64(opened, 0);
+    }
+    // The ledger keeps the new object's one reference; the fd keeps the open.
+    release_lookup_locked(created.token);
+    if (created.metadata.kind != .file) {
+        release_fuse_handle_locked(created.token, fuse_handle);
+        return error.InvalidMetadata;
+    }
+    handles[slot] = .{
+        .nodeid = created.token,
+        .fuse_handle = fuse_handle,
+        .valid = true,
+        .contained = true,
+        .access = .write,
+        .identity = created.metadata.identity,
+    };
+    cache_clear();
+    return .{ .handle = slot + 1, .metadata = created.metadata };
+}
+
+fn pin_mkdir(_: *anyopaque, parent: metadata.Object, name: []const u8) metadata.Error!metadata.Object {
+    if (!available()) return error.ContainmentUnavailable;
+    const saved = fs_lock.lock();
+    defer fs_lock.unlock(saved);
+    try live_locked(parent);
+    try ledger_room_locked();
+    var input: [8 + directory.name_max + 1]u8 = undefined;
+    const request = try name_request(8, name, &input);
+    write32(&input, 0, file_type_dir | 0o755);
+    const reply = transact(fuse_mkdir, parent.token, request) orelse return metadata_failure();
+    cache_clear();
+    const created = try adopt_entry_locked(reply);
+    if (created.metadata.kind != .directory) {
+        release_lookup_locked(created.token);
+        return error.InvalidMetadata;
+    }
+    return created;
+}
+
+fn pin_remove(_: *anyopaque, parent: metadata.Object, name: []const u8, kind: metadata.Kind) metadata.Error!void {
+    if (!available()) return error.ContainmentUnavailable;
+    const saved = fs_lock.lock();
+    defer fs_lock.unlock(saved);
+    try live_locked(parent);
+    const found = try probe_locked(parent.token, name);
+    if (found.kind == .symlink) return error.SymlinkRejected;
+    if (found.kind != kind) return if (kind == .directory) error.NotDirectory else error.NotFile;
+    var input: [directory.name_max + 1]u8 = undefined;
+    const request = try name_request(0, name, &input);
+    _ = transact(if (kind == .directory) fuse_rmdir else fuse_unlink, parent.token, request) orelse return metadata_failure();
+    cache_clear();
+}
+
+fn pin_rename(_: *anyopaque, from: metadata.Object, from_name: []const u8, to: metadata.Object, to_name: []const u8, replace: bool) metadata.Error!void {
+    if (!available()) return error.ContainmentUnavailable;
+    if (!directory.valid_name(from_name) or !directory.valid_name(to_name)) return error.InvalidPath;
+    const saved = fs_lock.lock();
+    defer fs_lock.unlock(saved);
+    try live_locked(from);
+    try live_locked(to);
+    if (!replace and fs_minor < 23) return error.ContainmentUnavailable;
+    var input: [16 + 2 * (directory.name_max + 1)]u8 = undefined;
+    const len = encode_rename(to.token, from_name, to_name, if (replace) .replace else .preserve_existing, &input) orelse return error.InvalidPath;
+    _ = transact(if (replace) fuse_rename else fuse_rename2, from.token, input[0..len]) orelse return metadata_failure();
+    cache_clear();
+}
+
+fn pin_handle_stat(_: *anyopaque, id: u64) metadata.Error!metadata.Metadata {
+    if (!available()) return error.ContainmentUnavailable;
+    if (id == 0 or id > handles.len) return error.StaleIdentity;
+    const saved = fs_lock.lock();
+    defer fs_lock.unlock(saved);
+    const handle = find_handle(@intCast(id)) orelse return error.StaleIdentity;
+    if (!handle.contained) return error.ContainmentUnavailable;
+    if (handle.identity.filesystem != mount_identity) return error.StaleIdentity;
+    const value = try attr_locked(handle.nodeid);
+    if (!value.identity.eql(handle.identity)) return error.StaleIdentity;
+    return value;
 }
 
 fn pin_open(_: *anyopaque, object: metadata.Object, access: metadata.Access) metadata.Error!u64 {
     if (!available()) return error.ContainmentUnavailable;
     const saved = fs_lock.lock();
     defer fs_lock.unlock(saved);
-    var slot: usize = 0;
-    while (slot < handles.len and handles[slot].valid) : (slot += 1) {}
-    if (slot == handles.len) return error.HandleLimit;
+    try live_locked(object);
+    const slot = try free_handle_locked();
     var input: [8]u8 = .{0} ** 8;
     // FUSE opens this lookup-pinned inode, not its former name. Never
     // create/truncate, never O_RDWR for a read-only request.
@@ -732,6 +927,7 @@ fn pin_open(_: *anyopaque, object: metadata.Object, access: metadata.Access) met
         .valid = true,
         .contained = true,
         .access = access,
+        .identity = object.metadata.identity,
     };
     return slot + 1;
 }
@@ -796,6 +992,8 @@ pub const TestMetadataServer = struct {
     pub var opens: usize = 0;
     pub var swap_directory: bool = false;
     pub var swapped: bool = false;
+    /// The share's "content" name now resolves to the symlink node.
+    pub var root_swapped: bool = false;
     pub var swap_leaf: bool = false;
     var leaf_swapped: bool = false;
     pub var include_link: bool = false;
@@ -808,15 +1006,39 @@ pub const TestMetadataServer = struct {
     pub var size: u64 = 4;
     var bytes: [4]u8 = undefined;
     var reply: [512]u8 = undefined;
+    /// B5: objects created at run time; the static tree above is immutable.
+    const Extra = struct {
+        used: bool = false,
+        parent: u64 = 0,
+        node: u64 = 0,
+        directory: bool = false,
+        size: u64 = 0,
+        name: [32]u8 = undefined,
+        name_len: usize = 0,
+    };
+    var extras: [8]Extra = [_]Extra{.{}} ** 8;
+    var next_node: u64 = 50;
+    pub var mutations: usize = 0;
+    pub var releases: usize = 0;
+    pub var create_enosys: bool = false;
+    pub var short_create: bool = false;
 
     pub fn start() void {
         std.debug.assert(builtin.is_test);
         reset_identity_nodes();
+        extras = [_]Extra{.{}} ** extras.len;
+        next_node = 50;
+        mutations = 0;
+        releases = 0;
+        create_enosys = false;
+        short_create = false;
+        fs_minor = 31;
         lookup_count = 0;
         pins = 0;
         opens = 0;
         swap_directory = false;
         swapped = false;
+        root_swapped = false;
         swap_leaf = false;
         leaf_swapped = false;
         include_link = false;
@@ -844,6 +1066,7 @@ pub const TestMetadataServer = struct {
         test_exchange = null;
         fs_ready = false;
         fs_initialized = false;
+        fs_minor = 0;
         handles = [_]FileHandle{.{}} ** file_handle_count;
     }
 
@@ -851,14 +1074,81 @@ pub const TestMetadataServer = struct {
         return pins - identity_pin_count;
     }
 
+    pub fn exists(parent: u64, name: []const u8) bool {
+        return child_of(parent, name) != null;
+    }
+
+    fn extra(node: u64) ?*Extra {
+        for (&extras) |*e| if (e.used and e.node == node) return e;
+        return null;
+    }
+
+    fn extra_index(parent: u64, name: []const u8) ?usize {
+        for (extras, 0..) |e, i| {
+            if (e.used and e.parent == parent and std.mem.eql(u8, e.name[0..e.name_len], name)) return i;
+        }
+        return null;
+    }
+
+    fn static_child(node: u64, name: []const u8) ?u64 {
+        if (node == 1 and std.mem.eql(u8, name, "content")) return if (root_swapped) 6 else 2;
+        if (node == 2 and std.mem.eql(u8, name, "a")) return if (swapped) 6 else 3;
+        if (node == 3 and std.mem.eql(u8, name, "b")) return 4;
+        if (node == 4 and std.mem.eql(u8, name, "page.md")) return if (leaf_swapped) 6 else 5;
+        if (std.mem.eql(u8, name, "link")) return 6;
+        return null;
+    }
+
+    fn child_of(parent: u64, name: []const u8) ?u64 {
+        if (static_child(parent, name)) |node| return node;
+        return if (extra_index(parent, name)) |i| extras[i].node else null;
+    }
+
+    fn set_name(e: *Extra, name: []const u8) void {
+        @memcpy(e.name[0..name.len], name);
+        e.name_len = name.len;
+    }
+
+    fn add(parent: u64, name: []const u8, is_directory: bool) ?u64 {
+        if (child_of(parent, name) != null) {
+            fs_error = -17;
+            return null;
+        }
+        if (name.len > 32) {
+            fs_error = -36;
+            return null;
+        }
+        for (&extras) |*e| {
+            if (e.used) continue;
+            e.* = .{ .used = true, .parent = parent, .node = next_node, .directory = is_directory };
+            set_name(e, name);
+            next_node += 1;
+            return e.node;
+        }
+        fs_error = -28;
+        return null;
+    }
+
+    fn entry(child: u64) []const u8 {
+        write64(&reply, 0, child);
+        write64(&reply, 8, 1);
+        attr(child, 40);
+        pins += 1;
+        return reply[0..128];
+    }
+
     fn attr(node: u64, at: usize) void {
+        const dynamic = extra(node);
         write64(&reply, at, if (zero_inode) 0 else 100 + node);
-        write64(&reply, at + 8, if (node == 5) size else 4096);
+        write64(&reply, at + 8, if (dynamic) |e| e.size else if (node == 5) size else 4096);
         write64(&reply, at + 24, 1_790_897_100);
         write64(&reply, at + 32, mtime);
         write64(&reply, at + 40, 1_790_897_124);
         write32(&reply, at + 52, 123);
-        write32(&reply, at + 60, if (node == symlink_node) 0o120777 else if (node == 5) 0o100644 else 0o040755);
+        const mode: u32 = if (dynamic) |e|
+            (if (e.directory) 0o040755 else 0o100644)
+        else if (node == symlink_node) 0o120777 else if (node == 5) 0o100644 else 0o040755;
+        write32(&reply, at + 60, mode);
         write32(&reply, at + 68, 501);
         write32(&reply, at + 72, 20);
     }
@@ -880,16 +1170,77 @@ pub const TestMetadataServer = struct {
             fuse_lookup => {
                 lookup_count += 1;
                 const name = input[0 .. input.len - 1];
-                const child: u64 = if (node == 1 and std.mem.eql(u8, name, "content")) 2 else if (node == 2 and std.mem.eql(u8, name, "a")) (if (swapped) 6 else 3) else if (node == 3 and std.mem.eql(u8, name, "b")) 4 else if (node == 4 and std.mem.eql(u8, name, "page.md")) (if (leaf_swapped) 6 else 5) else if (std.mem.eql(u8, name, "link")) 6 else {
+                const child = child_of(node, name) orelse {
                     fs_error = -2;
                     return null;
                 };
-                write64(&reply, 0, child);
-                write64(&reply, 8, 1);
-                attr(child, 40);
-                pins += 1;
+                _ = entry(child);
                 if (swap_directory and child == 3) swapped = true;
                 return reply[0..128];
+            },
+            fuse_create, fuse_mknod, fuse_mkdir => {
+                // A read-only share root keeps legacy OWNERS.TXT persistence
+                // (path MKNOD, never forgotten) out of the pin accounting.
+                if (node == 1) {
+                    fs_error = -13;
+                    return null;
+                }
+                mutations += 1;
+                if (opcode == fuse_create and create_enosys) {
+                    fs_error = -38;
+                    return null;
+                }
+                const header: usize = if (opcode == fuse_mkdir) 8 else 16;
+                const child = add(node, input[header .. input.len - 1], opcode == fuse_mkdir) orelse return null;
+                _ = entry(child);
+                if (opcode != fuse_create) return reply[0..128];
+                opens += 1;
+                write64(&reply, 128, child + 1000);
+                return reply[0..if (short_create) @as(usize, 128) else 144];
+            },
+            fuse_unlink, fuse_rmdir => {
+                mutations += 1;
+                const i = extra_index(node, input[0 .. input.len - 1]) orelse {
+                    fs_error = -2;
+                    return null;
+                };
+                if (extras[i].directory != (opcode == fuse_rmdir)) {
+                    fs_error = if (opcode == fuse_rmdir) -20 else -21;
+                    return null;
+                }
+                for (extras) |e| if (opcode == fuse_rmdir and e.used and e.parent == extras[i].node) {
+                    fs_error = -39;
+                    return null;
+                };
+                extras[i].used = false;
+                return "";
+            },
+            fuse_rename, fuse_rename2 => {
+                mutations += 1;
+                const names = input[if (opcode == fuse_rename) 8 else 16..];
+                const split = std.mem.indexOfScalar(u8, names, 0).?;
+                const from = names[0..split];
+                const to = names[split + 1 .. names.len - 1];
+                const target = read64(input, 0);
+                const i = extra_index(node, from) orelse {
+                    fs_error = -2;
+                    return null;
+                };
+                if (child_of(target, to) != null) {
+                    if (opcode == fuse_rename2 and (read32(input, 8) & rename_noreplace) != 0) {
+                        fs_error = -17;
+                        return null;
+                    }
+                    // The static tree is immutable; only dynamic targets are replaced.
+                    const j = extra_index(target, to) orelse {
+                        fs_error = -1;
+                        return null;
+                    };
+                    if (j != i) extras[j].used = false;
+                }
+                extras[i].parent = target;
+                set_name(&extras[i], to);
+                return "";
             },
             fuse_getattr => {
                 attr(node, 16);
@@ -915,6 +1266,12 @@ pub const TestMetadataServer = struct {
                 return reply[0..n];
             },
             fuse_write => {
+                if (extra(node)) |e| {
+                    const n = read32(input, 16);
+                    e.size = @max(e.size, read64(input, 8) + n);
+                    write32(&reply, 0, n);
+                    return reply[0..8];
+                }
                 if (node != 5) return null;
                 const n = @min(bytes.len, read32(input, 16));
                 @memcpy(bytes[0..n], input[40..][0..n]);
@@ -940,7 +1297,11 @@ pub const TestMetadataServer = struct {
                 if (include_link) len += row(len, 20, "link");
                 return reply[0..len];
             },
-            fuse_release, fuse_releasedir, fuse_fsync => return "",
+            fuse_release => {
+                releases += 1;
+                return "";
+            },
+            fuse_releasedir, fuse_fsync => return "",
             else => return null,
         }
     }
@@ -1016,6 +1377,325 @@ test "B3 backend: DMA invalidation ranges are cache-line isolated" {
     try std.testing.expect(owned < @offsetOf(Queue, "used") or owned >= std.mem.alignForward(usize, used_end, 64));
     try std.testing.expectEqual(@as(usize, 0), max_message % 64);
     try std.testing.expectEqual(@as(usize, 8192), @sizeOf([identity_pin_max]IdentityPin));
+}
+
+const B5Backend = struct {
+    const S = TestMetadataServer;
+    root: Root = .{ .path = "content" },
+
+    fn allow(_: *anyopaque, _: []const u8, _: metadata.Access) metadata.Error!void {}
+
+    fn auth(self: *B5Backend) metadata.Authorizer {
+        return .{ .context = &self.root, .check = allow };
+    }
+
+    fn backend(self: *B5Backend) metadata.Backend {
+        return contained_backend(&self.root);
+    }
+
+    fn pin(self: *B5Backend, path: []const u8) !metadata.Directory {
+        return .{ .object = try metadata.openDirectory(self.backend(), self.auth(), path), .path = path };
+    }
+
+    fn release(self: *B5Backend, dir: metadata.Directory) void {
+        unpin(&self.root, dir.object);
+    }
+};
+
+test "B5 backend: pinned create mkdir rename and remove act on node IDs" {
+    const S = B5Backend.S;
+    S.start();
+    defer S.stop();
+    var c = B5Backend{};
+    const dir = try c.pin("a");
+    defer c.release(dir);
+    const created = try metadata.createFile(c.backend(), c.auth(), dir, "new.txt");
+    try std.testing.expectEqual(metadata.Kind.file, created.metadata.kind);
+    try std.testing.expectEqual(@as(u64, 150), created.metadata.identity.inode);
+    try std.testing.expectEqual(@as(usize, 1), S.mutations);
+    try std.testing.expectError(error.Exists, metadata.createFile(c.backend(), c.auth(), dir, "new.txt"));
+    var written: u64 = 0;
+    try std.testing.expectEqual(st_ok, write(@intCast(created.handle), "four", &written));
+    const live = try metadata.handleMetadata(c.backend(), c.auth(), created.handle, "a/new.txt");
+    try std.testing.expectEqual(@as(u64, 4), live.size);
+    try std.testing.expect(live.identity.eql(created.metadata.identity));
+    try contained_close(@intCast(created.handle));
+    try std.testing.expectError(error.StaleIdentity, metadata.handleMetadata(c.backend(), c.auth(), created.handle, "a/new.txt"));
+
+    const sub_object = try metadata.makeDirectory(c.backend(), c.auth(), dir, "sub");
+    const sub = metadata.Directory{ .object = sub_object, .path = "a/sub" };
+    const again = try metadata.childDirectory(c.backend(), c.auth(), dir, "sub");
+    try std.testing.expect(again.metadata.identity.eql(sub_object.metadata.identity));
+    unpin(&c.root, again);
+    try metadata.rename(c.backend(), c.auth(), dir, "new.txt", sub, "moved.txt", false);
+    try std.testing.expect(!S.exists(3, "new.txt") and S.exists(51, "moved.txt"));
+    const other = try metadata.createFile(c.backend(), c.auth(), dir, "x");
+    try contained_close(@intCast(other.handle));
+    try std.testing.expectError(error.Exists, metadata.rename(c.backend(), c.auth(), dir, "x", sub, "moved.txt", false));
+    try std.testing.expect(S.exists(3, "x"));
+    try metadata.rename(c.backend(), c.auth(), dir, "x", sub, "moved.txt", true);
+    try std.testing.expect(!S.exists(3, "x") and S.exists(51, "moved.txt"));
+    try std.testing.expectError(error.Exists, metadata.remove(c.backend(), c.auth(), dir, "sub", .directory));
+    const before = S.mutations;
+    try std.testing.expectError(error.NotFile, metadata.remove(c.backend(), c.auth(), dir, "sub", .file));
+    try std.testing.expectError(error.NotDirectory, metadata.remove(c.backend(), c.auth(), sub, "moved.txt", .directory));
+    try std.testing.expectError(error.SymlinkRejected, metadata.remove(c.backend(), c.auth(), dir, "link", .file));
+    try std.testing.expectEqual(before, S.mutations);
+    try metadata.remove(c.backend(), c.auth(), sub, "moved.txt", .file);
+    c.release(sub);
+    try metadata.remove(c.backend(), c.auth(), dir, "sub", .directory);
+    try std.testing.expectError(error.FileNotFound, metadata.remove(c.backend(), c.auth(), dir, "sub", .directory));
+    try std.testing.expectEqual(@as(usize, 0), S.transient_pins());
+}
+
+test "B5 backend: create falls back to exclusive MKNOD then opens the new node" {
+    const S = B5Backend.S;
+    S.start();
+    defer S.stop();
+    var c = B5Backend{};
+    const dir = try c.pin("a");
+    defer c.release(dir);
+    S.create_enosys = true;
+    const created = try metadata.createFile(c.backend(), c.auth(), dir, "fallback");
+    try std.testing.expectEqual(@as(usize, 2), S.mutations);
+    try std.testing.expectEqual(@as(usize, 1), S.opens);
+    try std.testing.expectError(error.Exists, metadata.createFile(c.backend(), c.auth(), dir, "fallback"));
+    try std.testing.expectEqual(@as(u64, 0), (try metadata.handleMetadata(c.backend(), c.auth(), created.handle, "a/fallback")).size);
+    try contained_close(@intCast(created.handle));
+    S.fail_opcode = fuse_open;
+    S.fail_errno = -13;
+    try std.testing.expectError(error.AccessDenied, metadata.createFile(c.backend(), c.auth(), dir, "unopened"));
+    try std.testing.expect(S.exists(3, "unopened"));
+    try std.testing.expectEqual(@as(usize, 0), S.transient_pins());
+}
+
+test "B5 backend: full handle table or identity ledger refuses before any mutation" {
+    const S = B5Backend.S;
+    S.start();
+    defer S.stop();
+    var c = B5Backend{};
+    const dir = try c.pin("a");
+    defer c.release(dir);
+    for (&handles) |*h| h.valid = true;
+    try std.testing.expectError(error.HandleLimit, metadata.createFile(c.backend(), c.auth(), dir, "x"));
+    handles = [_]FileHandle{.{}} ** file_handle_count;
+    for (test_identity_nodes[identity_pin_count..], 0..) |*entry, i| {
+        entry.* = .{ .node = 1000 + i, .pending = 0 };
+        S.pins += 1;
+    }
+    identity_pin_count = identity_pin_max;
+    try std.testing.expectError(error.TreeLimit, metadata.createFile(c.backend(), c.auth(), dir, "x"));
+    try std.testing.expectError(error.TreeLimit, metadata.makeDirectory(c.backend(), c.auth(), dir, "x"));
+    try std.testing.expectEqual(@as(usize, 0), S.mutations);
+    try std.testing.expect(!S.exists(3, "x"));
+}
+
+test "B5 backend: pins from an earlier mount are refused and never forgotten" {
+    const S = B5Backend.S;
+    S.start();
+    defer S.stop();
+    var c = B5Backend{};
+    const dir = try c.pin("a");
+    const created = try metadata.createFile(c.backend(), c.auth(), dir, "x");
+    mount_identity = 8;
+    const pins = S.pins;
+    try std.testing.expectError(error.StaleIdentity, metadata.createFile(c.backend(), c.auth(), dir, "y"));
+    try std.testing.expectError(error.StaleIdentity, metadata.makeDirectory(c.backend(), c.auth(), dir, "y"));
+    try std.testing.expectError(error.StaleIdentity, metadata.remove(c.backend(), c.auth(), dir, "x", .file));
+    try std.testing.expectError(error.StaleIdentity, metadata.rename(c.backend(), c.auth(), dir, "x", dir, "y", true));
+    try std.testing.expectError(error.StaleIdentity, metadata.childDirectory(c.backend(), c.auth(), dir, "b"));
+    try std.testing.expectError(error.StaleIdentity, metadata.directoryMetadata(c.backend(), c.auth(), dir));
+    try std.testing.expectError(error.StaleIdentity, metadata.handleMetadata(c.backend(), c.auth(), created.handle, "a/x"));
+    c.release(dir);
+    try std.testing.expectEqual(pins, S.pins);
+    try std.testing.expectEqual(@as(usize, 1), S.mutations);
+    mount_identity = 7;
+    c.release(dir);
+    try contained_close(@intCast(created.handle));
+}
+
+test "B5 backend: old servers wire errors and malformed creates stay explicit" {
+    const S = B5Backend.S;
+    S.start();
+    defer S.stop();
+    var c = B5Backend{};
+    const dir = try c.pin("a");
+    defer c.release(dir);
+    fs_minor = 22;
+    try std.testing.expectError(error.ContainmentUnavailable, metadata.rename(c.backend(), c.auth(), dir, "x", dir, "y", false));
+    fs_minor = 11;
+    try std.testing.expectError(error.ContainmentUnavailable, metadata.createFile(c.backend(), c.auth(), dir, "x"));
+    try std.testing.expectEqual(@as(usize, 0), S.mutations);
+    fs_minor = 31;
+    for ([_]struct { wire: i32, err: metadata.Error }{
+        .{ .wire = -13, .err = error.AccessDenied },
+        .{ .wire = -17, .err = error.Exists },
+        .{ .wire = -18, .err = error.ContainmentUnavailable },
+        .{ .wire = -5, .err = error.Io },
+    }) |case| {
+        S.fail_errno = case.wire;
+        S.fail_opcode = fuse_mkdir;
+        try std.testing.expectError(case.err, metadata.makeDirectory(c.backend(), c.auth(), dir, "x"));
+        S.fail_opcode = fuse_rename;
+        try std.testing.expectError(case.err, metadata.rename(c.backend(), c.auth(), dir, "x", dir, "y", true));
+    }
+    S.fail_opcode = 0;
+    S.short_create = true;
+    try std.testing.expectError(error.InvalidMetadata, metadata.createFile(c.backend(), c.auth(), dir, "short"));
+    // A lost or malformed reply is an unknown outcome, not a rollback.
+    try std.testing.expect(S.exists(3, "short"));
+    try std.testing.expectEqual(@as(usize, 0), S.transient_pins());
+    for (handles) |h| try std.testing.expect(!h.valid);
+}
+
+test "B5 backend: pins keep their nodes when the root or an intermediate becomes a symlink" {
+    const S = B5Backend.S;
+    S.start();
+    defer S.stop();
+    var c = B5Backend{};
+    const a = try c.pin("a");
+    // "a" is replaced by a symlink between two steps of this walk.
+    S.swap_directory = true;
+    const b = try c.pin("a/b");
+    try std.testing.expect(S.swapped);
+    try std.testing.expectEqual(@as(u64, 104), b.object.metadata.identity.inode);
+    const held = S.transient_pins();
+    try std.testing.expectError(error.SymlinkRejected, c.pin("a"));
+    try std.testing.expectError(error.SymlinkRejected, c.pin("a/b"));
+    S.root_swapped = true;
+    try std.testing.expectError(error.SymlinkRejected, c.pin("a"));
+    try std.testing.expectEqual(held, S.transient_pins());
+
+    try std.testing.expectEqual(@as(u64, 103), (try metadata.directoryMetadata(c.backend(), c.auth(), a)).identity.inode);
+    const file = try metadata.createFile(c.backend(), c.auth(), a, "out");
+    try contained_close(@intCast(file.handle));
+    const sub = try metadata.makeDirectory(c.backend(), c.auth(), b, "out");
+    unpin(&c.root, sub);
+    const child = try metadata.childDirectory(c.backend(), c.auth(), a, "b");
+    try std.testing.expect(child.metadata.identity.eql(b.object.metadata.identity));
+    unpin(&c.root, child);
+    try metadata.rename(c.backend(), c.auth(), a, "out", b, "moved", false);
+    try std.testing.expect(!S.exists(3, "out") and S.exists(4, "moved") and S.exists(4, "out"));
+    // Nothing ever reached the symlink's node, the stand-in for outside.
+    for (S.extras) |e| try std.testing.expect(!e.used or e.parent != 6);
+    try metadata.remove(c.backend(), c.auth(), b, "moved", .file);
+    try metadata.remove(c.backend(), c.auth(), b, "out", .directory);
+    for (S.extras) |e| try std.testing.expect(!e.used);
+    c.release(b);
+    c.release(a);
+    try std.testing.expectEqual(@as(usize, 0), S.transient_pins());
+}
+
+test "B5 backend: replace and remove act on the final name, not an expected inode" {
+    const S = B5Backend.S;
+    S.start();
+    defer S.stop();
+    var c = B5Backend{};
+    const dir = try c.pin("a");
+    defer c.release(dir);
+    const old = try metadata.createFile(c.backend(), c.auth(), dir, "out.html");
+    // The host moves the object away and puts another one at its name.
+    const i = S.extra_index(3, "out.html").?;
+    S.set_name(&S.extras[i], "displaced");
+    const substitute = S.add(3, "out.html", false).?;
+    const held = try metadata.handleMetadata(c.backend(), c.auth(), old.handle, "a/out.html");
+    try std.testing.expect(held.identity.eql(old.metadata.identity));
+    var written: u64 = 0;
+    try std.testing.expectEqual(st_ok, write(@intCast(old.handle), "old", &written));
+    try std.testing.expectEqual(@as(u64, 3), S.extras[i].size);
+    try std.testing.expectEqual(@as(u64, 0), S.extra(substitute).?.size);
+    try contained_close(@intCast(old.handle));
+
+    const staged = try metadata.createFile(c.backend(), c.auth(), dir, "stage");
+    try contained_close(@intCast(staged.handle));
+    try std.testing.expectError(error.Exists, metadata.rename(c.backend(), c.auth(), dir, "stage", dir, "out.html", false));
+    try std.testing.expect(S.extra(substitute) != null);
+    // No compare-and-swap: whatever the name holds now is replaced.
+    try metadata.rename(c.backend(), c.auth(), dir, "stage", dir, "out.html", true);
+    try std.testing.expect(S.extra(substitute) == null);
+    try std.testing.expectEqual(staged.metadata.identity.inode, 100 + S.child_of(3, "out.html").?);
+    try std.testing.expect(S.exists(3, "displaced"));
+
+    try metadata.remove(c.backend(), c.auth(), dir, "out.html", .file);
+    const directory_substitute = S.add(3, "out.html", true).?;
+    const before = S.mutations;
+    try std.testing.expectError(error.NotFile, metadata.remove(c.backend(), c.auth(), dir, "out.html", .file));
+    try std.testing.expectEqual(before, S.mutations);
+    try std.testing.expect(S.extra(directory_substitute) != null);
+    try std.testing.expectEqual(@as(usize, 0), S.transient_pins());
+}
+
+test "B5 backend: failed staged writes syncs or renames leave the published output" {
+    const S = B5Backend.S;
+    S.start();
+    defer S.stop();
+    var c = B5Backend{};
+    const dir = try c.pin("a");
+    defer c.release(dir);
+    const published = try metadata.createFile(c.backend(), c.auth(), dir, "out.html");
+    var written: u64 = 0;
+    try std.testing.expectEqual(st_ok, write(@intCast(published.handle), "prior", &written));
+    try contained_close(@intCast(published.handle));
+    const prior = S.child_of(3, "out.html").?;
+    S.fail_errno = -28;
+    for ([_]u32{ fuse_write, fuse_fsync, fuse_rename }) |failing| {
+        const staged = try metadata.createFile(c.backend(), c.auth(), dir, "stage");
+        S.fail_opcode = failing;
+        const committed = commit: {
+            if (write(@intCast(staged.handle), "next!", &written) != st_ok) break :commit false;
+            if (fsync(@intCast(staged.handle)) != st_ok) break :commit false;
+            metadata.rename(c.backend(), c.auth(), dir, "stage", dir, "out.html", true) catch |err| {
+                try std.testing.expectEqual(error.Io, err);
+                break :commit false;
+            };
+            break :commit true;
+        };
+        S.fail_opcode = 0;
+        try std.testing.expect(!committed);
+        try contained_close(@intCast(staged.handle));
+        try std.testing.expectEqual(prior, S.child_of(3, "out.html").?);
+        try std.testing.expectEqual(@as(u64, 5), S.extra(prior).?.size);
+        try metadata.remove(c.backend(), c.auth(), dir, "stage", .file);
+    }
+    const staged = try metadata.createFile(c.backend(), c.auth(), dir, "stage");
+    try std.testing.expectEqual(st_ok, write(@intCast(staged.handle), "next!", &written));
+    try std.testing.expectEqual(st_ok, fsync(@intCast(staged.handle)));
+    try contained_close(@intCast(staged.handle));
+    try metadata.rename(c.backend(), c.auth(), dir, "stage", dir, "out.html", true);
+    try std.testing.expectEqual(staged.metadata.identity.inode, 100 + S.child_of(3, "out.html").?);
+    try std.testing.expect(S.extra(prior) == null and !S.exists(3, "stage"));
+    try std.testing.expectEqual(@as(usize, 0), S.transient_pins());
+}
+
+test "B5 backend: two staged publications park swap and remove independently" {
+    const S = B5Backend.S;
+    S.start();
+    defer S.stop();
+    var c = B5Backend{};
+    const dir = try c.pin("a");
+    defer c.release(dir);
+    var stages: [2]metadata.Directory = undefined;
+    for (&stages, [_][]const u8{ "stage-1", "stage-2" }, [_][]const u8{ "a/stage-1", "a/stage-2" }) |*stage, name, path| {
+        stage.* = .{ .object = try metadata.makeDirectory(c.backend(), c.auth(), dir, name), .path = path };
+        const page = try metadata.createFile(c.backend(), c.auth(), stage.*, "index.html");
+        var written: u64 = 0;
+        try std.testing.expectEqual(st_ok, write(@intCast(page.handle), name, &written));
+        try contained_close(@intCast(page.handle));
+    }
+    try metadata.rename(c.backend(), c.auth(), dir, "stage-1", dir, "site", false);
+    try std.testing.expectError(error.Exists, metadata.rename(c.backend(), c.auth(), dir, "stage-2", dir, "site", false));
+    try metadata.rename(c.backend(), c.auth(), dir, "site", dir, "parked", false);
+    try metadata.rename(c.backend(), c.auth(), dir, "stage-2", dir, "site", false);
+    try std.testing.expectEqual(stages[1].object.metadata.identity.inode, 100 + S.child_of(3, "site").?);
+    // The first stage's pin still names the parked tree, not "site".
+    try std.testing.expectError(error.Exists, metadata.remove(c.backend(), c.auth(), dir, "parked", .directory));
+    try metadata.remove(c.backend(), c.auth(), stages[0], "index.html", .file);
+    try std.testing.expect(S.exists(stages[1].object.token, "index.html"));
+    c.release(stages[0]);
+    try metadata.remove(c.backend(), c.auth(), dir, "parked", .directory);
+    c.release(stages[1]);
+    try std.testing.expect(S.exists(3, "site") and !S.exists(3, "parked"));
+    try std.testing.expectEqual(@as(usize, 0), S.transient_pins());
 }
 
 /// B3 enumeration uses a pinned directory and fresh no-follow LOOKUPs.

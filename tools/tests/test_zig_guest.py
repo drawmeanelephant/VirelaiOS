@@ -267,10 +267,18 @@ def integration(cache, work):
 const std = @import("std");
 const sdk = @import("fs");
 const native = @import("metadata");
-test "SDK wire matches native B2/B3 without importing kernel into the guest" {
+test "SDK wire matches native B2/B3/B5 without importing kernel into the guest" {
     try std.testing.expectEqual(native.max_guest_path, sdk.path_max);
     try std.testing.expectEqual(native.max_component, sdk.name_max);
     try std.testing.expectEqual(native.max_depth, sdk.depth_max);
+    try std.testing.expectEqual(native.max_pinned_depth, sdk.pinned_depth_max);
+    inline for (.{"pin_open_op", "pin_child_op", "pin_close_op", "handle_metadata_op",
+                  "create_op", "mkdir_op", "remove_op", "rename_op", "handle_file",
+                  "handle_directory", "rename_replace"}) |name| {
+        try std.testing.expectEqual(@field(native, name), @field(sdk, name));
+    }
+    try std.testing.expectEqual(native.remove_file, @intFromEnum(sdk.EntryKind.file));
+    try std.testing.expectEqual(native.remove_directory, @intFromEnum(sdk.EntryKind.directory));
     inline for (.{.{sdk.Metadata, native.Wire}, .{sdk.Identity, native.Identity},
                   .{sdk.Entry, native.Entry}, .{sdk.Page, native.Page}}) |pair| {
         try std.testing.expectEqual(@sizeOf(pair[1]), @sizeOf(pair[0]));
@@ -347,10 +355,16 @@ export fn sortSnapshot(snapshot: *metadata.Snapshot) void {
             '_=f.metadata("/host","content") catch return; '
             '_=f.identity("/host","content") catch return; '
             'const file=f.openContained("/host/content","a",.read) catch return; '
-            '_=f.fileMetadata(file) catch {}; file.close(sdk.io); '
+            '_=f.fileMetadata(file) catch {}; _=file.length(sdk.io) catch {}; file.close(sdk.io); '
             'const c=f.openSnapshot("/host/content","") catch return; '
             'var p:sdk.fs.Page=undefined; f.snapshotPage(c,0,16,&p) catch return; '
-            'f.closeSnapshot(c) catch return; f.publish("stage","out",.replace) catch return; }\n',
+            'f.closeSnapshot(c) catch return; f.publish("stage","out",.replace) catch return; '
+            'const d=f.openDirectory("/host","out") catch return; defer f.closeDirectory(d) catch {}; '
+            '_=f.directoryMetadata(d) catch {}; const s=f.makeDirectory(d,"stage") catch return; '
+            'const n=f.createExclusive(s,"page") catch return; n.close(sdk.io); f.closeDirectory(s) catch return; '
+            'const k=f.openChildDirectory(d,"stage") catch return; f.closeDirectory(k) catch return; '
+            'f.rename(d,"stage",d,"live",.preserve_existing) catch return; '
+            'f.removeFile(d,"page") catch {}; f.removeDirectory(d,"live") catch {}; }\n',
             True, ""),
         "page-allocator": ('export fn probe() void { const a=std.heap.page_allocator; '
                            'const p=a.alloc(u8,4096) catch return; defer a.free(p); '

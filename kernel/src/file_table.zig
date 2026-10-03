@@ -108,6 +108,13 @@ pub const FileHandle = struct {
     rich_directory: bool = false,
     contained: bool = false,
     contained_cursor: u64 = 0,
+    /// B5 (#1895): a pinned-directory token. It holds one FUSE lookup
+    /// reference (`pin_node`) and the identity it was opened with. A stale
+    /// pin (renamed or removed at/under its path) only accepts close.
+    pin: bool = false,
+    pin_stale: bool = false,
+    pin_node: u64 = 0,
+    pin_identity: metadata.Identity = .{ .filesystem = 0, .inode = 0 },
     /// M25 Lane B (claim 2539): set when MODE_DIR created the entry —
     /// the handle must never be read or written (a directory write would
     /// overwrite host metadata through the channel's replace path).
@@ -480,7 +487,9 @@ pub fn reset_process(pid: u64) void {
     streams[pid] = default_streams;
     release_empty_endpoints();
     if (handles.len != 0) for (&handles[pid]) |*h| {
-        if (h.in_use and h.dir_token != 0) release_snapshot(h.dir_snapshot);
+        if (h.in_use and h.pin) {
+            release_pin(h);
+        } else if (h.in_use and h.dir_token != 0) release_snapshot(h.dir_snapshot);
         // HF5: a killed/exited process must free its HOST write handles
         // (the host table is global — a leaked slot would starve others).
         if (h.in_use and h.host_handle_valid) {
@@ -554,7 +563,18 @@ pub fn metadata_errno(err: metadata.Error) i64 {
         error.PathLimit => -8,
         error.HandleLimit, error.TreeLimit => -5,
         error.StaleIdentity => -2,
+        error.Exists => -9, // file-domain EEXIST (B4)
         else => -1,
+    };
+}
+
+fn metadataWant(access: metadata.Access) trust.Want {
+    return switch (access) {
+        .metadata => .list,
+        .read => .read,
+        .write => .write,
+        .create => .create,
+        .delete => .delete,
     };
 }
 
@@ -572,7 +592,7 @@ const MetadataAuth = struct {
         var at: usize = 0;
         while (at < full.len) {
             const end = std.mem.indexOfScalarPos(u8, full, at, '/') orelse full.len;
-            const want: trust.Want = if (end < full.len or access == .metadata) .list else if (access == .write) .write else .read;
+            const want: trust.Want = if (end < full.len) .list else metadataWant(access);
             if (!hostAllowed(self.pid, full[0..end], want)) return error.AccessDenied;
             at = end + 1;
         }
@@ -705,6 +725,211 @@ pub fn metadata_dir_page(pid: u64, token: u64, offset: u64, limit: u64, page: *m
     page.header = .{ .count = @intCast(take), .next = offset + take, .end = @intFromBool(offset + take == snapshot.count) };
     @memcpy(page.entries[0..take], snapshot.entries[@intCast(offset)..][0..take]);
     return @intCast(take);
+}
+
+// ---------------------------------------------------------------------------
+// B5 (#1895, ADR 0007): pinned directories and name operations below them.
+// Every use reauthorizes the pin's recorded share-relative path; the backend
+// acts on the pinned FUSE node, never on a re-resolved pathname.
+// ---------------------------------------------------------------------------
+
+fn pin_object(h: *const FileHandle) metadata.Object {
+    var value = std.mem.zeroes(metadata.Metadata);
+    value.identity = h.pin_identity;
+    value.kind = .directory;
+    value.host_mode = 0o040000;
+    return .{ .token = h.pin_node, .metadata = value };
+}
+
+fn pin_directory(h: *const FileHandle) metadata.Directory {
+    return .{ .object = pin_object(h), .path = h.path[0..h.path_len] };
+}
+
+fn release_pin(h: *FileHandle) void {
+    var root = virtio_file.MetadataRoot{ .path = "" };
+    const backend = virtio_file.metadata_backend(&root);
+    // Without a live backend the mount lifetime (and its reference) ended.
+    if (backend.ops) |ops| ops.release(backend.context, pin_object(h));
+}
+
+fn live_pin(pid: u64, token: u64) ?*FileHandle {
+    const h = dir_handle(pid, token) orelse return null;
+    return if (h.pin and !h.pin_stale) h else null;
+}
+
+fn free_resource_slot(pid: u64) ?usize {
+    if (resource_count(pid) >= max_handles_per_process) return null;
+    for (handles[pid], 0..) |h, slot| {
+        if (!h.in_use) return slot;
+    }
+    return null;
+}
+
+fn install_pin(pid: u64, slot: usize, path: []const u8, object: metadata.Object) i64 {
+    const token = next_dir_token;
+    next_dir_token += 1;
+    var h = FileHandle{
+        .in_use = true,
+        .is_dir = true,
+        .dir_token = token,
+        .pin = true,
+        .pin_node = object.token,
+        .pin_identity = object.metadata.identity,
+        .path_len = @intCast(path.len),
+    };
+    @memcpy(h.path[0..path.len], path);
+    handles[pid][slot] = h;
+    return @intCast(token);
+}
+
+fn path_at_or_under(path: []const u8, prefix: []const u8) bool {
+    if (path.len < prefix.len or !std.ascii.eqlIgnoreCase(path[0..prefix.len], prefix)) return false;
+    return path.len == prefix.len or path[prefix.len] == '/';
+}
+
+/// A pin's recorded path authorizes its uses. After a successful guest
+/// rename or directory removal that path may name another object, so every
+/// process's pins at/under it go stale (EBADF until closed). Host-side
+/// moves are not observed.
+fn invalidate_pins(path: []const u8) void {
+    if (handles.len == 0 or path.len == 0) return;
+    for (handles) |*row| for (row) |*h| {
+        if (h.in_use and h.pin and path_at_or_under(h.path[0..h.path_len], path)) h.pin_stale = true;
+    };
+}
+
+/// Op 7: pins an existing directory by the B3 no-follow walk.
+pub fn pin_open(pid: u64, root_bytes: []const u8, relative: []const u8) i64 {
+    if (pid >= process.max_processes) return -1;
+    const root_path = metadata_root(root_bytes) catch |err| return metadata_errno(err);
+    var full: [max_path_len]u8 = undefined;
+    const path = join_metadata(root_path, relative, &full) catch |err| return metadata_errno(err);
+    if (!ensure_handles()) return -10;
+    defer release_empty_handles();
+    const slot = free_resource_slot(pid) orelse return -5;
+    if (next_dir_token > std.math.maxInt(i64)) return -5;
+    var root = virtio_file.MetadataRoot{ .path = root_path };
+    var auth = MetadataAuth{ .pid = pid, .root = root_path };
+    const object = metadata.openDirectory(virtio_file.metadata_backend(&root), auth.authorizer(), relative) catch |err| return metadata_errno(err);
+    return install_pin(pid, slot, path, object);
+}
+
+/// Op 8: one no-follow LOOKUP of a child directory from a live pin.
+pub fn pin_child(pid: u64, token: u64, name: []const u8) i64 {
+    if (pid >= process.max_processes) return -1;
+    const parent = live_pin(pid, token) orelse return -2;
+    var child: [max_path_len]u8 = undefined;
+    const path = metadata.childPath(parent.path[0..parent.path_len], name, &child) catch |err| return metadata_errno(err);
+    const slot = free_resource_slot(pid) orelse return -5;
+    if (next_dir_token > std.math.maxInt(i64)) return -5;
+    var root = virtio_file.MetadataRoot{ .path = "" };
+    var auth = MetadataAuth{ .pid = pid, .root = "" };
+    const object = metadata.childDirectory(virtio_file.metadata_backend(&root), auth.authorizer(), pin_directory(parent), name) catch |err| return metadata_errno(err);
+    return install_pin(pid, slot, path, object);
+}
+
+/// Op 9. Allowed after revocation or invalidation; releases the reference.
+pub fn pin_close(pid: u64, token: u64) i64 {
+    const h = dir_handle(pid, token) orelse return -2;
+    if (!h.pin) return -2;
+    release_pin(h);
+    h.* = .{};
+    release_empty_handles();
+    return 0;
+}
+
+/// Op 10: live attributes of a pin (kind 1) or a contained fd (kind 0).
+/// A changed identity is EBADF; legacy fds have no pinned object (ENOSYS).
+pub fn handle_metadata(pid: u64, handle: u64, kind: u64, out: *metadata.Wire) i64 {
+    if (pid >= process.max_processes) return -1;
+    if (kind != metadata.handle_file and kind != metadata.handle_directory) return -1;
+    var root = virtio_file.MetadataRoot{ .path = "" };
+    var auth = MetadataAuth{ .pid = pid, .root = "" };
+    const backend = virtio_file.metadata_backend(&root);
+    var value: metadata.Metadata = undefined;
+    if (kind == metadata.handle_directory) {
+        const h = live_pin(pid, handle) orelse return -2;
+        value = metadata.directoryMetadata(backend, auth.authorizer(), pin_directory(h)) catch |err| return metadata_errno(err);
+    } else {
+        if (handle >= max_handles_per_process or handles.len == 0) return -2;
+        const h = &handles[pid][handle];
+        if (!h.in_use or h.dir_token != 0 or h.is_dir) return -2;
+        if (!h.contained or !h.host_handle_valid) return -4;
+        value = metadata.handleMetadata(backend, auth.authorizer(), h.host_handle, h.path[0..h.path_len]) catch |err| return metadata_errno(err);
+    }
+    out.* = metadata.Wire.from(value);
+    return 0;
+}
+
+/// Op 11: exclusive create below a live pin; returns a write-only fd.
+pub fn pin_create(pid: u64, token: u64, name: []const u8) i64 {
+    if (pid >= process.max_processes) return -1;
+    const parent = live_pin(pid, token) orelse return -2;
+    var child: [max_path_len]u8 = undefined;
+    const path = metadata.childPath(parent.path[0..parent.path_len], name, &child) catch |err| return metadata_errno(err);
+    const slot = free_resource_slot(pid) orelse return -5;
+    var root = virtio_file.MetadataRoot{ .path = "" };
+    var auth = MetadataAuth{ .pid = pid, .root = "" };
+    const created = metadata.createFile(virtio_file.metadata_backend(&root), auth.authorizer(), pin_directory(parent), name) catch |err| return metadata_errno(err);
+    var h = FileHandle{
+        .in_use = true,
+        .flags = MODE_WRITE,
+        .path_len = @intCast(path.len),
+        .host_handle = @intCast(created.handle),
+        .host_handle_valid = true,
+        .contained = true,
+    };
+    @memcpy(h.path[0..path.len], path);
+    handles[pid][slot] = h;
+    return @intCast(slot);
+}
+
+/// Op 12: creates a directory below a live pin and returns it pinned.
+pub fn pin_mkdir(pid: u64, token: u64, name: []const u8) i64 {
+    if (pid >= process.max_processes) return -1;
+    const parent = live_pin(pid, token) orelse return -2;
+    var child: [max_path_len]u8 = undefined;
+    const path = metadata.childPath(parent.path[0..parent.path_len], name, &child) catch |err| return metadata_errno(err);
+    const slot = free_resource_slot(pid) orelse return -5;
+    if (next_dir_token > std.math.maxInt(i64)) return -5;
+    var root = virtio_file.MetadataRoot{ .path = "" };
+    var auth = MetadataAuth{ .pid = pid, .root = "" };
+    const object = metadata.makeDirectory(virtio_file.metadata_backend(&root), auth.authorizer(), pin_directory(parent), name) catch |err| return metadata_errno(err);
+    return install_pin(pid, slot, path, object);
+}
+
+/// Op 13: removes one file (kind 0) or empty directory (kind 1) by name.
+pub fn pin_remove(pid: u64, token: u64, name: []const u8, kind: u64) i64 {
+    if (pid >= process.max_processes) return -1;
+    if (kind != metadata.remove_file and kind != metadata.remove_directory) return -1;
+    const parent = live_pin(pid, token) orelse return -2;
+    var child: [max_path_len]u8 = undefined;
+    const path = metadata.childPath(parent.path[0..parent.path_len], name, &child) catch |err| return metadata_errno(err);
+    const want: metadata.Kind = if (kind == metadata.remove_directory) .directory else .file;
+    var root = virtio_file.MetadataRoot{ .path = "" };
+    var auth = MetadataAuth{ .pid = pid, .root = "" };
+    metadata.remove(virtio_file.metadata_backend(&root), auth.authorizer(), pin_directory(parent), name, want) catch |err| return metadata_errno(err);
+    if (want == .directory) invalidate_pins(path);
+    if (trust.remove(.host, path)) _ = persist_trust();
+    return 0;
+}
+
+/// Op 14: one backend rename between two live pins of this process.
+pub fn pin_rename(pid: u64, from_token: u64, from_name: []const u8, to_token: u64, to_name: []const u8, replace: bool) i64 {
+    if (pid >= process.max_processes) return -1;
+    const from = live_pin(pid, from_token) orelse return -2;
+    const to = live_pin(pid, to_token) orelse return -2;
+    var source: [max_path_len]u8 = undefined;
+    var target: [max_path_len]u8 = undefined;
+    const from_path = metadata.childPath(from.path[0..from.path_len], from_name, &source) catch |err| return metadata_errno(err);
+    const to_path = metadata.childPath(to.path[0..to.path_len], to_name, &target) catch |err| return metadata_errno(err);
+    var root = virtio_file.MetadataRoot{ .path = "" };
+    var auth = MetadataAuth{ .pid = pid, .root = "" };
+    metadata.rename(virtio_file.metadata_backend(&root), auth.authorizer(), pin_directory(from), from_name, pin_directory(to), to_name, replace) catch |err| return metadata_errno(err);
+    invalidate_pins(from_path);
+    invalidate_pins(to_path);
+    if (trust.rename_meta(.host, from_path, .host, to_path)) _ = persist_trust();
+    return 0;
 }
 
 /// Serialize the trust table and persist it to `OWNERS.TXT` on the share.
@@ -1332,6 +1557,7 @@ fn write_handle(pid: u64, h: *FileHandle, in_buf: []const u8) i64 {
 pub fn close(pid: u64, fd: u64) i64 {
     if (pid >= process.max_processes or fd >= max_handles_per_process or handles.len == 0) return -2;
     if (!handles[pid][fd].in_use) return -2; // EBADF
+    if (handles[pid][fd].pin) return -2; // a pin token is not an fd (op 9)
     if (handles[pid][fd].dir_token != 0) release_snapshot(handles[pid][fd].dir_snapshot);
 
     if (handles[pid][fd].host_handle_valid) {
@@ -1413,7 +1639,7 @@ fn dir_handle(pid: u64, token: u64) ?*FileHandle {
 /// continuation offset. Zero rows + end=1 is EOF, never an I/O refusal.
 pub fn dir_page(pid: u64, token: u64, offset: u64, limit: u64, page: *directory.Page) i64 {
     const h = dir_handle(pid, token) orelse return -2;
-    if (h.rich_directory) return -2;
+    if (h.rich_directory or h.pin) return -2;
     if (!hostAllowed(pid, h.path[0..h.path_len], .list)) return -7;
     if (limit == 0 or limit > directory.page_max) return -1;
     const snapshot = snapshots[h.dir_snapshot].?;
@@ -1430,6 +1656,7 @@ pub fn dir_page(pid: u64, token: u64, offset: u64, limit: u64, page: *directory.
 
 pub fn dir_close(pid: u64, token: u64) i64 {
     const h = dir_handle(pid, token) orelse return -2;
+    if (h.pin) return -2; // pins close through op 9 only
     release_snapshot(h.dir_snapshot);
     h.* = .{};
     release_empty_handles();
@@ -1549,6 +1776,7 @@ pub fn delete(pid: u64, path_bytes: []const u8) i64 {
         else => -1,
     };
     // M50 TS2: drop the metadata in the same transaction (persist on change).
+    if (rc == 0) invalidate_pins(subpath);
     if (rc == 0 and trust.remove(.host, subpath)) _ = persist_trust();
     return rc;
 }
@@ -1590,6 +1818,10 @@ pub fn rename_mode(pid: u64, old_bytes: []const u8, new_bytes: []const u8, mode:
         virtio_file.st_unsupported => -4,
         else => -1,
     };
+    if (rc == 0) {
+        invalidate_pins(oldp);
+        invalidate_pins(newp);
+    }
     // M50 TS2: move the metadata with the file (persist on change).
     if (rc == 0 and old.partition == .host and trust.rename_meta(.host, oldp, .host, newp)) _ = persist_trust();
     return rc;
