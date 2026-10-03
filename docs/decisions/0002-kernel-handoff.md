@@ -192,3 +192,17 @@ across runs, and `zig build run` now **gates** on its content
   not a patch to this one.
 - Any change to the flat format or ABI must update this ADR, `elf2bin.py`,
   the loader, and the kernel together.
+
+## Amendment (2026-10-02, B7 / #1874): preserve the image ceiling
+
+The production PCM binding retains the **16 MiB KRN2 loader ceiling**.
+Current main (`e48be7a7`) built a 16,775,848-byte image, leaving 1,368
+bytes. The kernel linker now discards unused `.eh_frame`/`.eh_frame_hdr`:
+there is no kernel DWARF unwinder or language exception path consuming them.
+Frame-pointer diagnostics and host-test unwind metadata are unchanged.
+This changes neither the flat format, relocations, nor the handoff ABI.
+
+PCM storage is one fixed `ceil(sizeof(Playback)/4096)` page-pool charge
+on first open, reused thereafter and retained even on failed-reset
+quarantine. The default soundless boot allocates none. There is no
+per-period allocation or unbounded queue growth.

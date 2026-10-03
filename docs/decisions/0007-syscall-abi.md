@@ -1872,3 +1872,65 @@ The SDK exposes these through `fs.Native` and `runtime.filesystem()`, and
 refused. `std.Io.Dir` wiring, watch (B6) and directory-fsync or power-loss
 durability are not part of B5. Class-A wire/EL0 tests and `live-user-fs`'s
 native probe verify the facility.
+
+## Amendment (2026-10-02, B7 / #1874): opt-in continuous output PCM
+
+Slot 43 preserves legacy `(ptr, len)` synchronous playback with its 64 KiB
+per-call limit. **Bit 63 of x1** opts into streams: lower bits are the
+exact byte length, x2 is the operation, x3 is the generation. Unused x2
+in a legacy call is still ignored. No new slot or boot-default change.
+
+| x2 | Operation | x0 / lower x1 | Result |
+|----|-----------|---------------|--------|
+| 1 | open | pointer / 8 | positive generation |
+| 2 | submit | PCM pointer / 1..4096, whole frames | exact bytes accepted |
+| 3 | start | 0 / 0 | 0, requires prefill |
+| 4 | end | 0 / 0 | 0, begins asynchronous drain |
+| 5 | abort | 0 / 0 | 0, explicit teardown, including sticky XRUN |
+| 6 | status | writable pointer / 72 | 0, copies status |
+
+Open requires x3=0. All other operations require the open generation and
+the same process (threads share it). Status remains readable by that process
+after close until another open. A live stream excludes legacy playback and
+other opens (`EAGAIN`). Process death revokes ownership immediately and
+defers transport cleanup to the main-context pump.
+
+The 8-byte little-endian open request is `format:u8, rate:u8, channels:u8,
+reserved:u8=0, version:u32=1`. Formats are S16=5, S32=17, FLOAT32=19;
+rates are 8000=1, 16000=3, 22050=4, 32000=5, 44100=6, 48000=7;
+channels are 1 or 2. The **exact tuple must be advertised by PCM_INFO(0)**,
+whose direction must be output. No fallback, conversion, capture, or 96 kHz
+claim. SET_PARAMS uses 32768 buffer bytes and 4096 period bytes.
+
+The queue owns eight 4096-byte slots (32768 PCM bytes), 32 TX descriptors
+(three per slot), and 1984 bytes of cache-line-isolated DMA metadata.
+The fixed model/pump page allocation is separately charged, not a second
+PCM buffer bank. Submit reserves, copies and commits atomically, with no
+partial acceptance. Full queue is `EAGAIN` (-11), accepting **zero bytes**.
+Bad pointers roll reservations back (`EFAULT`); invalid tuples/frames,
+tokens, states or operations return `EINVAL`; periods over 4096 return
+`ENAMETOOLONG`. Missing device, capacity, transport refusal or quarantine
+is `ENXIO` (-9), never successful playback.
+
+Status layout: five u64 fields `generation, accepted, submitted, completed,
+canceled`, then eight u32 fields `state, reason, outstanding, slots,
+starts, stops, releases, resets`. State values: closed=0, preparing=1,
+prepared=2, starting=3, running=4, draining=5, stopping=6, releasing=7,
+resetting=8, xrun=9, quarantined=10. Reason values: none=0, underrun=1,
+owner_died=2, aborted=3, control_failed=4, device_failed=5,
+malformed_completion=6, timeout=7.
+
+Running out of queued and device-owned periods sets sticky XRUN.
+Submit/start/end then refuse; abort closes the generation before reopening.
+End drains before STOP/RELEASE. Failure or remaining DMA ownership after
+RELEASE requires acknowledged device reset before reuse; failed reset
+quarantines storage. Control, period ownership and drain budgets are 5 s
+with bounded transport polling. The pump runs on stream calls and the
+shell's main-context report loop, not in IRQ context. This is not a
+low-latency scheduling guarantee. Completion proves returned buffer
+ownership, **not measured audible consumption or captured waveform**.
+
+Verification: the existing PCM model suite, production pump and syscall
+tests, and `live-sound-playback`'s real-device 128 KiB / single START,
+backpressure, copy rollback, sticky XRUN, abort, owner-death/reopen and
+soundless-refusal runs. Legacy audio specs remain regression gates.

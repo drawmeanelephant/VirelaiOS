@@ -4,10 +4,13 @@
 # periods of FLOAT/stereo/48 kHz) -> drain -> PCM_STOP -> PCM_RELEASE.
 
 vgate_name live-sound-playback "M15 A2 PCM playback on VZ"
+vgate_share seed
+vgate_runner_flags -Xswiftc -DSPIKE
 vgate_repeat 1 BOOTS
 
 vgate_file script.txt <<'EOF'
 beep 440 300
+sound
 EOF
 
 vgate_run 01 -- --sound --script '$RUN_DIR/script.txt' --script-after 'tasks user-el0 exited status=7' --script-expect 'beep: ok' --timeout 150
@@ -54,3 +57,64 @@ if drained != submitted:
 if "pcm_status=0x0000000000008000" not in ser:
     sys.exit("ERROR: pcm_status is not the virtio-snd OK value 0x8000")
 PY
+
+# B7 (#1874): same real output device, opt-in slot 43 streaming. This is
+# ownership/accounting evidence, not capture or a low-latency guarantee.
+vgate_setup_python <<'PY'
+import os, subprocess
+rd = os.environ["RUN_DIR"]
+share = os.environ.get("VG_SHARE") or os.path.join(rd, "share")
+elf = os.path.join(rd, "pcm.elf")
+subprocess.run([
+    "zig", "build-exe", "kernel/tests/pcm_guest.zig",
+    "-target", "aarch64-freestanding-none", "-O", "ReleaseSafe",
+    "-fsingle-threaded", "-fno-PIE", "-fno-stack-check", "-fno-stack-protector",
+    "-fno-unwind-tables", "--script", "user/linker-segmented.ld", "-fentry=_start",
+    "-femit-bin=" + elf,
+], check=True)
+subprocess.run(["python3", "tools/elf2bin.py", "--segments", elf,
+                os.path.join(share, "PCM.BIN")], check=True)
+PY
+
+vgate_file pcm.txt <<'EOF'
+exec PCM.BIN
+EOF
+vgate_file pcm-done.txt <<'EOF'
+echo b7-gate-done
+EOF
+
+vgate_run stream -- --sound --script '$RUN_DIR/pcm.txt' \
+    --script-after 'tasks user-el0 exited status=7' \
+    --script2 '$RUN_DIR/pcm-done.txt' --script2-after 'b7: done' \
+    --script2-delay 3 --script-expect 'b7-gate-done' --timeout 150
+vgate_assert stream output-contains 'SOUND: virtio-snd attached'
+vgate_assert stream serial-contains 'b7: bounds=8x4096 backpressure=EAGAIN accepted=32768 copy-rollback=0'
+vgate_assert stream serial-contains 'b7: continuous accepted=131072 submitted=131072 completed=131072 starts=1 stops=1 releases=1 resets=0'
+vgate_assert stream serial-contains 'b7: underrun=XRUN sticky=1 explicit-abort=ok'
+vgate_assert stream serial-contains 'b7: abort canceled=32768 outstanding=0'
+vgate_assert stream serial-contains 'b7: owner exits with queued PCM'
+vgate_assert stream serial-contains 'b7: owner-death teardown reopened=ok'
+vgate_assert stream serial-contains 'b7: output only, no capture or low-latency claim'
+vgate_assert stream serial-contains 'b7: done'
+vgate_assert stream serial-absent 'b7: FAIL'
+vgate_assert stream serial-absent 'b7: PANIC'
+vgate_assert stream serial-absent '[EXC] parking'
+vgate_assert stream serial-absent 'exited status=139'
+vgate_assert stream python <<'PY'
+import os, re
+serial = open(os.environ["VG_SER"], "rb").read()
+assert serial.count(b"b7: continuous accepted=131072") == 1
+assert len(re.findall(rb"procs PCM\.BIN exited status=0", serial)) == 2
+PY
+
+vgate_run absent -- --script '$RUN_DIR/pcm.txt' \
+    --script-after 'tasks user-el0 exited status=7' \
+    --script2 '$RUN_DIR/pcm-done.txt' --script2-after 'b7: done' \
+    --script2-delay 3 --script-expect 'b7-gate-done' --timeout 150
+vgate_assert absent serial-contains 'b7: NO AUDIO DEVICE (ENXIO), playback refused'
+vgate_assert absent serial-contains 'b7: done'
+vgate_assert absent serial-contains 'procs PCM.BIN exited status=0'
+vgate_assert absent serial-absent 'b7: continuous'
+vgate_assert absent serial-absent 'b7: FAIL'
+vgate_assert absent serial-absent 'b7: PANIC'
+vgate_assert absent serial-absent '[EXC] parking'

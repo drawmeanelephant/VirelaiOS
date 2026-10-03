@@ -2582,6 +2582,8 @@ fn handle_timer_cancel(args: Args, _: *exceptions.VectorFrame) u64 {
 fn handle_audio_info(args: Args, _: *exceptions.VectorFrame) u64 {
     const out_ptr = args[0];
     _ = process.find_by_task(scheduler.current_id()) orelse return error_result(.einval);
+    const saved = virtio_snd.audio_lock.lock();
+    defer virtio_snd.audio_lock.unlock(saved);
     const info = virtio_snd.snd_audio_info();
     const bytes = std.mem.asBytes(&info);
     if (uaccess.copy_out(out_ptr, bytes, bytes.len) != .ok) return error_result(.efault);
@@ -2599,7 +2601,11 @@ fn handle_audio_info(args: Args, _: *exceptions.VectorFrame) u64 {
 fn handle_audio_play(args: Args, _: *exceptions.VectorFrame) u64 {
     const ptr = args[0];
     const raw_len = args[1];
-    _ = process.find_by_task(scheduler.current_id()) orelse return error_result(.einval);
+    const owner = process.find_by_task(scheduler.current_id()) orelse return error_result(.einval);
+    const saved = virtio_snd.audio_lock.lock();
+    defer virtio_snd.audio_lock.unlock(saved);
+    if (raw_len & virtio_snd.audio_stream_flag != 0) return handle_audio_stream(args, owner);
+    if (!virtio_snd.snd_legacy_available()) return error_result(.eagain);
     if (raw_len == 0) return error_result(.einval);
     if (raw_len > virtio_snd.audio_max_len) return error_result(.enametoolong);
     if (!virtio_snd.snd_ready) return error_result(.enxio);
@@ -2621,6 +2627,74 @@ fn handle_audio_play(args: Args, _: *exceptions.VectorFrame) u64 {
     }
     if (virtio_snd.snd_audio_stop() != virtio_snd.S_OK) return error_result(.enxio);
     return @intCast(len);
+}
+
+fn audio_stream_error(err: virtio_snd.playback.pcm.Error) u64 {
+    return error_result(switch (err) {
+        error.Backpressure, error.Busy => .eagain,
+        error.NoDevice, error.InsufficientCapacity, error.Quarantined, error.DeviceFailed, error.MalformedCompletion => .enxio,
+        else => .einval,
+    });
+}
+
+/// B7 additive slot-43 opt-in. Zero acceptance on EAGAIN or failed copy.
+/// All operations are serialized with legacy playback and the main pump.
+fn handle_audio_stream(args: Args, owner: usize) u64 {
+    const pcm = virtio_snd.playback.pcm;
+    const len = args[1] & ~virtio_snd.audio_stream_flag;
+    const op = std.enums.fromInt(virtio_snd.StreamOp, args[2]) orelse return error_result(.einval);
+    const token = pcm.StreamToken{ .owner = owner, .generation = args[3] };
+    virtio_snd.snd_stream_drive();
+    switch (op) {
+        .open => {
+            if (len != @sizeOf(virtio_snd.StreamParams) or args[3] != 0) return error_result(.einval);
+            var request: virtio_snd.StreamParams = undefined;
+            if (uaccess.copy_in(std.mem.asBytes(&request), args[0], @intCast(len)) != .ok) return error_result(.efault);
+            const opened = virtio_snd.snd_stream_open(owner, request) catch |err| return audio_stream_error(err);
+            return opened.generation;
+        },
+        .submit => {
+            if (len > pcm.period_bytes) return error_result(.enametoolong);
+            const current = virtio_snd.stream orelse return error_result(.einval);
+            const reservation = current.model.reserve(token, @intCast(len)) catch |err| return audio_stream_error(err);
+            var buffer: [pcm.period_bytes]u8 = undefined;
+            if (uaccess.copy_in(buffer[0..@intCast(len)], args[0], @intCast(len)) != .ok) {
+                current.model.cancel(reservation) catch {};
+                return error_result(.efault);
+            }
+            const request = current.model.params;
+            virtio_snd.snd_apply_gain(buffer[0..@intCast(len)], switch (request.format) {
+                .s16 => virtio_snd.FMT_S16,
+                .s32 => virtio_snd.FMT_S32,
+                .float32 => virtio_snd.FMT_FLOAT,
+            }, request.channels);
+            const accepted = current.model.commit(reservation, buffer[0..@intCast(len)]) catch |err| return audio_stream_error(err);
+            virtio_snd.snd_stream_drive();
+            return accepted;
+        },
+        .start, .end, .abort => {
+            if (len != 0 or args[0] != 0) return error_result(.einval);
+            const now = virtio_snd.snd_stream_now();
+            const current = virtio_snd.stream orelse return error_result(.einval);
+            const model = &current.model;
+            switch (op) {
+                .start => model.start(token, now) catch |err| return audio_stream_error(err),
+                .end => model.end(token, now) catch |err| return audio_stream_error(err),
+                .abort => model.abort(token, now) catch |err| return audio_stream_error(err),
+                else => unreachable,
+            }
+            virtio_snd.snd_stream_drive();
+            if (op == .start and model.state != .running) return error_result(.enxio);
+            if (model.state == .quarantined) return error_result(.enxio);
+            return 0;
+        },
+        .status => {
+            if (len != @sizeOf(virtio_snd.StreamStatus)) return error_result(.einval);
+            const status = virtio_snd.snd_stream_status(owner, token.generation) catch |err| return audio_stream_error(err);
+            if (uaccess.copy_out(args[0], std.mem.asBytes(&status), @intCast(len)) != .ok) return error_result(.efault);
+            return 0;
+        },
+    }
 }
 
 /// M15 follow-up (claim 9297): slot 44 — sys_audio_volume(vol)

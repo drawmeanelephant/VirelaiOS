@@ -1,4 +1,4 @@
-//! Device-free PCM ownership/lifecycle model. Not wired to production audio.
+//! Device-free PCM ownership/lifecycle model, bound by pcm_playback/virtio_snd.
 //! The caller serializes access and injects capabilities, replies and time.
 //! Completion returns buffer ownership, not evidence of audible consumption.
 const std = @import("std");
@@ -37,8 +37,9 @@ pub const Limits = struct {
     period_ns: u64,
     drain_ns: u64,
 };
-pub const State = enum { closed, preparing, prepared, starting, running, draining, stopping, releasing, resetting, xrun, quarantined };
-pub const Reason = enum { none, underrun, owner_died, aborted, control_failed, device_failed, malformed_completion, timeout };
+// Values are exported by slot 43's B7 status ABI.
+pub const State = enum(u32) { closed = 0, preparing = 1, prepared = 2, starting = 3, running = 4, draining = 5, stopping = 6, releasing = 7, resetting = 8, xrun = 9, quarantined = 10 };
+pub const Reason = enum(u32) { none = 0, underrun = 1, owner_died = 2, aborted = 3, control_failed = 4, device_failed = 5, malformed_completion = 6, timeout = 7 };
 pub const Control = enum { prepare, start, stop, release, reset };
 pub const StreamToken = struct { owner: u64, generation: u64 };
 pub const Reservation = struct { stream: StreamToken, slot: usize, serial: u64 };

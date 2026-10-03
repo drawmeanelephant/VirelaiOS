@@ -3366,6 +3366,78 @@ test "syscall: slots 44/45 — sys_audio_volume/sys_audio_mute are bounded and p
     virtio_snd.stream_muted = false;
 }
 
+test "syscall: B7 device binding, atomic copy rollback, bounds, tokens and exit cleanup" {
+    const pcm = virtio_snd.playback.pcm;
+    userspace.init();
+    init(test_writer);
+    _ = scheduler.init();
+    _ = scheduler.register_worker(0x2000);
+    _ = scheduler.register_user(0x3000, 0);
+    scheduler.start();
+    try std.testing.expect(scheduler.yield_current());
+    try std.testing.expect(scheduler.yield_current());
+    var device = virtio_snd.playback.Fixture{};
+    var current = virtio_snd.playback.Playback{};
+    virtio_snd.stream = &current;
+    virtio_snd.snd_ready = false;
+    virtio_snd.ctrl_armed = true;
+    virtio_snd.tx_armed = true;
+    virtio_snd.test_stream_io = device.io();
+    virtio_snd.test_stream_caps = .{ .present = true, .output = true, .queue_descriptors = 32, .formats = &.{.float32}, .rates_hz = &.{48000}, .channels_min = 1, .channels_max = 2 };
+    defer {
+        virtio_snd.stream = null;
+        virtio_snd.test_stream_io = null;
+        virtio_snd.test_stream_caps = null;
+        virtio_snd.snd_ready = false;
+        virtio_snd.ctrl_armed = false;
+        virtio_snd.tx_armed = false;
+    }
+    const Memory = extern struct {
+        params: virtio_snd.StreamParams,
+        status: virtio_snd.StreamStatus = undefined,
+        samples: [4096]u8 = @splat(0),
+    };
+    var memory = Memory{ .params = .{ .format = 19, .rate = 7, .channels = 2 } };
+    set_user_regions(.{ .base = 0, .len = 0 }, .{ .base = @intFromPtr(&memory), .len = @sizeOf(Memory) });
+    var frame = fresh_frame();
+    const flag = virtio_snd.audio_stream_flag;
+    const request = @intFromPtr(&memory.params);
+    const source = @intFromPtr(&memory.samples);
+    try std.testing.expectEqual(error_result(.enxio), dispatch(43, .{ request, flag | 8, 1, 0, 0, 0 }, &frame));
+    try std.testing.expectEqual(pcm.State.closed, current.model.state);
+    virtio_snd.snd_ready = true;
+    memory.params.channels = 3;
+    try std.testing.expectEqual(error_result(.einval), dispatch(43, .{ request, flag | 8, 1, 0, 0, 0 }, &frame));
+    memory.params.channels = 2;
+    try std.testing.expectEqual(error_result(.efault), dispatch(43, .{ uaccess.diagnostic_unmapped, flag | 8, 1, 0, 0, 0 }, &frame));
+    const generation = dispatch(43, .{ request, flag | 8, 1, 0, 0, 0 }, &frame);
+    try std.testing.expectEqual(@as(u64, 1), generation);
+    try std.testing.expectEqual(error_result(.eagain), dispatch(43, .{ request, flag | 8, 1, 0, 0, 0 }, &frame));
+    try std.testing.expectEqual(error_result(.eagain), dispatch(43, .{ source, 8, 999, 0, 0, 0 }, &frame));
+    try std.testing.expectEqual(error_result(.einval), dispatch(43, .{ 0, flag, 3, generation, 0, 0 }, &frame));
+    try std.testing.expectEqual(error_result(.einval), dispatch(43, .{ source, flag | 7, 2, generation, 0, 0 }, &frame));
+    try std.testing.expectEqual(error_result(.enametoolong), dispatch(43, .{ source, flag | 4097, 2, generation, 0, 0 }, &frame));
+    try std.testing.expectEqual(error_result(.einval), dispatch(43, .{ source, flag | 8, 2, generation + 1, 0, 0 }, &frame));
+    try std.testing.expectEqual(error_result(.efault), dispatch(43, .{ uaccess.diagnostic_unmapped, flag | 4096, 2, generation, 0, 0 }, &frame));
+    try std.testing.expectEqual(@as(u64, 0), current.model.counts.accepted);
+    for (0..8) |_| try std.testing.expectEqual(@as(u64, 4096), dispatch(43, .{ source, flag | 4096, 2, generation, 0, 0 }, &frame));
+    const before = current.model.counts;
+    try std.testing.expectEqual(error_result(.eagain), dispatch(43, .{ source, flag | 4096, 2, generation, 0, 0 }, &frame));
+    try std.testing.expectEqual(before, current.model.counts);
+    try std.testing.expectEqual(@as(u64, 0), dispatch(43, .{ 0, flag, 3, generation, 0, 0 }, &frame));
+    try std.testing.expectEqual(@as(usize, 8), current.model.owned);
+    try std.testing.expectEqual(@as(u64, 0), dispatch(43, .{ @intFromPtr(&memory.status), flag | 72, 6, generation, 0, 0 }, &frame));
+    try std.testing.expectEqual(@as(u64, 32768), memory.status.accepted);
+    // Real process exit, not just the model's injected death.
+    try std.testing.expect(scheduler.exit_current(0));
+    try std.testing.expect(current.model.owner == null);
+    virtio_snd.snd_stream_poll();
+    try std.testing.expectEqual(pcm.State.closed, current.model.state);
+    try std.testing.expectEqual(pcm.Reason.owner_died, current.model.reason);
+    try std.testing.expectEqual(@as(u64, 32768), current.model.counts.canceled);
+    try std.testing.expectEqual(@as(u64, 1), current.resets);
+}
+
 test "syscall: sys_mmap and sys_munmap anonymous allocation and teardown" {
     mmu.reset();
     alloc.reset_refcounts();
