@@ -1964,6 +1964,24 @@ pub fn build(b: *std.Build) void {
     native_network_integration.step.dependOn(&thread_tls_integration.step);
     zig_guest_step.dependOn(&native_network_integration.step);
 
+    // C3's closed, pinned no-libc build is opt-in; only its fetch command
+    // accesses the network. Do not route it through Boris's hosted build.zig.
+    const boris_tests = b.addSystemCommand(&.{ "python3", "-B", "-m", "unittest", "discover", "-s", "tools/zig/boris", "-p", "test_*.py" });
+    boris_tests.has_side_effects = true;
+    test_step.dependOn(&boris_tests.step);
+    const boris_guest_step = b.step("boris-guest", "Build/install serial offline BORIS.BIN (fetch pinned inputs first)");
+    const boris_guest = b.addSystemCommand(&.{ "python3", "-B", "tools/zig/boris/build.py", "guest", "--output" });
+    const boris_bin = boris_guest.addOutputFileArg("BORIS.BIN");
+    boris_guest.has_side_effects = true;
+    boris_guest.stdio = .inherit;
+    const boris_install = b.addInstallFileWithDir(boris_bin, .bin, "BORIS.BIN");
+    boris_guest_step.dependOn(&boris_install.step);
+    const boris_check_step = b.step("boris-check", "Check pinned compiler bytes, tests and two offline no-libc builds");
+    const boris_check = b.addSystemCommand(&.{ "python3", "-B", "tools/zig/boris/check.py" });
+    boris_check.has_side_effects = true;
+    boris_check.stdio = .inherit;
+    boris_check_step.dependOn(&boris_check.step);
+
     const core_test_sources = [_][]const u8{
         "user/zig/runtime.zig",
         "boot/src/efi_time.zig",

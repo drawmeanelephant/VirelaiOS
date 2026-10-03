@@ -143,6 +143,8 @@ const ReadDriver = struct {
     var opens: usize = 0;
     var closes: usize = 0;
     var read_error = false;
+    var replaced = false;
+    var changed_during_read = false;
     pub const filesystem_b2 = true;
     pub fn instance() *anyopaque {
         @panic("missing test backend");
@@ -154,10 +156,26 @@ const ReadDriver = struct {
     pub fn call(number: u64, args: [6]u64) i64 {
         switch (number) {
             79 => {
-                std.debug.assert(args[0] == 2); // Contained open, never old path stat.
-                opens += 1;
-                at = 0;
-                return 0;
+                switch (args[0]) {
+                    1 => {
+                        const identity: *fs.Identity = @ptrFromInt(args[5]);
+                        identity.* = .{ .filesystem = 1, .inode = 1 };
+                        return 0;
+                    },
+                    2 => {
+                        opens += 1;
+                        at = 0;
+                        return 0;
+                    },
+                    10 => {
+                        const value: *fs.Metadata = @ptrFromInt(args[5]);
+                        value.* = meta(.file, 1, if (replaced) 3 else 2);
+                        value.size = input.len;
+                        if (changed_during_read and at != 0) value.mtime.seconds = 1;
+                        return 0;
+                    },
+                    else => @panic("forbidden path-stat or mutation"),
+                }
             },
             24 => {
                 if (read_error) return -1;
@@ -180,6 +198,8 @@ const ReadDriver = struct {
         opens = 0;
         closes = 0;
         read_error = false;
+        replaced = false;
+        changed_during_read = false;
     }
 };
 const ReadBackend = @import("sdk").io_helpers.Backend(ReadDriver);
@@ -200,6 +220,7 @@ test "contained capture probes file/aggregate limits and propagates native read 
     var backend: ReadBackend = .{};
     for ([_]usize{ 131072, 131073 }) |length| {
         ReadDriver.reset(bytes[0..length]);
+        entries[0].metadata.size = length;
         const inventory = inventoryFor(entries[0..1]);
         if (length == 131072) {
             var captured = try discovery.capture(&backend, t.allocator, "/host/content", &inventory);
@@ -212,6 +233,7 @@ test "contained capture probes file/aggregate limits and propagates native read 
         try t.expectEqual(@as(usize, 0), backend.liveFiles());
     }
     ReadDriver.reset(bytes[0..131072]);
+    for (&entries) |*entry| entry.metadata.size = 131072;
     var exact = inventoryFor(entries[0..8]);
     var captured = try discovery.capture(&backend, t.allocator, "/host/content", &exact);
     captured.deinit();
@@ -226,6 +248,7 @@ test "contained capture probes file/aggregate limits and propagates native read 
 fn allocatingCapture(allocator: std.mem.Allocator) !void {
     ReadDriver.reset("native input");
     var entries = [_]discovery.Entry{.{ .path = "page.md", .metadata = meta(.file, 1, 2) }};
+    entries[0].metadata.size = ReadDriver.input.len;
     const inventory = inventoryFor(&entries);
     var backend: ReadBackend = .{};
     defer std.debug.assert(ReadDriver.opens == ReadDriver.closes and backend.liveFiles() == 0);
@@ -234,4 +257,20 @@ fn allocatingCapture(allocator: std.mem.Allocator) !void {
 }
 test "every capture allocation failure releases contained file and retained input" {
     try t.checkAllAllocationFailures(t.allocator, allocatingCapture, .{});
+}
+
+test "actual file identity replacement and in-read attribute changes refuse before retaining input" {
+    ReadDriver.reset("native input");
+    var entries = [_]discovery.Entry{.{ .path = "page.md", .metadata = meta(.file, 1, 2) }};
+    entries[0].metadata.size = ReadDriver.input.len;
+    const inventory = inventoryFor(&entries);
+    var backend: ReadBackend = .{};
+    ReadDriver.replaced = true;
+    try t.expectError(error.SourceChanged, discovery.capture(&backend, t.allocator, "/host/content", &inventory));
+    try t.expectEqual(@as(usize, 0), ReadDriver.at);
+    ReadDriver.replaced = false;
+    ReadDriver.changed_during_read = true;
+    try t.expectError(error.SourceChanged, discovery.capture(&backend, t.allocator, "/host/content", &inventory));
+    try t.expectEqual(ReadDriver.opens, ReadDriver.closes);
+    try t.expectEqual(@as(usize, 0), backend.liveFiles());
 }

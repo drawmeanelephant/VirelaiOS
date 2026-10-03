@@ -64,8 +64,8 @@ def check(work, cache=build.sdk.DEFAULT_CACHE):
     if candidates[0].read_bytes() != candidates[1].read_bytes():
         raise ValueError("offline compiler candidates are not byte-identical")
     receipt = json.loads(candidates[0].with_suffix(".BIN.json").read_text())
-    if not receipt["no_libc"] or receipt["release_ready"] or not receipt["stack_budget_verified"]:
-        raise ValueError("diagnostic must prove stack safety, not full publication acceptance")
+    if not receipt["no_libc"] or not receipt["release_ready"] or not receipt["stack_budget_verified"]:
+        raise ValueError("guest closure must prove stack safety and publication readiness")
     if receipt["reserved_platform_register"] != "x18" or receipt["arena_bytes"] != 12582912:
         raise ValueError("native register/arena contract mismatch")
     bounds = receipt["stack_proof"]
@@ -78,8 +78,8 @@ def check(work, cache=build.sdk.DEFAULT_CACHE):
         "blockers": receipt["blockers"],
     }, indent=2, sort_keys=True) + "\n")
     print(f"Class A: {len(records)} golden artifacts byte-stable, {len(long_names)} long nested names; "
-          f"patched/untouched oracle bytes equal; two identical guarded no-libc native-input diagnostics; "
-          f"worst-case stack <= {bounds['guarded_stack_bytes']} B; publication acceptance blocked")
+          f"patched/untouched oracle bytes equal; two identical guarded no-libc serial offline artifacts; "
+          f"worst-case stack <= {bounds['guarded_stack_bytes']} B; native publication verified separately by live-boris")
 
 
 def main():

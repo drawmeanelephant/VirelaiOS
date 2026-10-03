@@ -1,6 +1,5 @@
-//! Bounded native input capture, not a coherent-tree or fd-stat substitute.
-//! Each snapshot/open is contained by B3. Identities describe snapshot rows,
-//! not an earlier/later open file. Full Boris build stays blocked on that gap.
+//! Bounded B3 discovery and B5 identity-checked, no-follow source capture.
+//! Membership snapshots are not an all-files atomic content snapshot.
 const std = @import("std");
 const sdk = @import("sdk");
 pub const fs = sdk.fs;
@@ -94,9 +93,17 @@ pub const Capture = struct {
     }
 };
 
-/// Diagnostic compiler input: real contained existing-file opens and bounded
-/// EOF reads. No stat-then-legacy-open, old-path fd-stat, or metadata-sized read.
-/// NOT proof that the open identities equal the inventory identities.
+fn unchanged(expected: fs.Metadata, actual: fs.Metadata) bool {
+    return expected.kind == actual.kind and expected.identity.eql(actual.identity) and
+        expected.size == actual.size and
+        expected.mtime.seconds == actual.mtime.seconds and expected.mtime.nanoseconds == actual.mtime.nanoseconds and
+        expected.ctime.seconds == actual.ctime.seconds and expected.ctime.nanoseconds == actual.ctime.nanoseconds;
+}
+
+/// Bind each read to its discovered identity and fresh attributes on the
+/// actual open object. Read through EOF, probe limits, and revalidate that
+/// same handle before retaining bytes. Inputs must be quiescent; no claim of
+/// a coherent tree against concurrent host namespace mutation is made.
 pub fn capture(backend: anytype, allocator: std.mem.Allocator, root: []const u8, inventory: *const Inventory) !Capture {
     var result = Capture{ .allocator = allocator };
     errdefer result.deinit();
@@ -105,11 +112,24 @@ pub fn capture(backend: anytype, allocator: std.mem.Allocator, root: []const u8,
     for (inventory.entries.items) |entry| {
         if (entry.metadata.kind != .file) continue;
         const file = try backend.openContained(root, entry.path, .read);
+        const before = backend.fileMetadata(file) catch |err| {
+            try backend.closeChecked(file);
+            return err;
+        };
+        if (!unchanged(entry.metadata, before)) {
+            try backend.closeChecked(file);
+            return error.SourceChanged;
+        }
         const bytes = helpers.readBounded(file, backend.io(), buffer[0..@min(policy.file_limit, policy.input_limit - result.bytes)]) catch |err| {
             try backend.closeChecked(file);
             return err;
         };
+        const after = backend.fileMetadata(file) catch |err| {
+            try backend.closeChecked(file);
+            return err;
+        };
         try backend.closeChecked(file);
+        if (!unchanged(before, after) or bytes.len != after.size) return error.SourceChanged;
         const path = try allocator.dupe(u8, entry.path);
         errdefer allocator.free(path);
         const retained = try allocator.dupe(u8, bytes);
@@ -117,5 +137,6 @@ pub fn capture(backend: anytype, allocator: std.mem.Allocator, root: []const u8,
         try result.files.append(allocator, .{ .path = path, .bytes = retained });
         result.bytes += bytes.len;
     }
+    if (!(try backend.identity(root, "")).eql(inventory.root_identity)) return error.TreeChanged;
     return result;
 }
