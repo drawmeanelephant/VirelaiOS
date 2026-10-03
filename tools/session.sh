@@ -41,8 +41,9 @@
 #                                    (the rc then falls back to `tabwm start`)
 #   VIRELAI_SESSION_SKIP_BUILD=1     skip the build step (reuse the last build)
 #
-# Controls: the GUI window takes real keyboard + mouse. Ctrl-C in this
-# terminal ends the session. Guest serial output is written to
+# Controls: close the VM window, choose Quit VirelaiOS (Cmd-Q), or press
+# Ctrl-C in this terminal to stop the VM. Rerun the command to relaunch.
+# Guest serial output is written to
 # artifacts/session-serial.log.
 
 set -euo pipefail
@@ -200,6 +201,30 @@ RUN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/virelai-session.XXXXXX")"
 cleanup() { rm -rf "$RUN_DIR"; }
 trap cleanup EXIT
 
+# Package only this invocation's runner, not the share. Launch its executable
+# directly so the terminal owns/waits for the VM process (not `open`'s helper).
+# The raw VMRunner remains the CLI gate entrypoint.
+SESSION_APP="$RUN_DIR/VirelaiOS.app"
+mkdir -p "$SESSION_APP/Contents/MacOS"
+cp "$ROOT/host/vm-runner/Resources/Session-Info.plist" "$SESSION_APP/Contents/Info.plist"
+cp "$RUNNER" "$SESSION_APP/Contents/MacOS/VirelaiOS"
+codesign --force --sign - --entitlements "$ROOT/host/vm-runner/entitlements.plist" "$SESSION_APP"
+
+RUNNER_PID=""
+end_session() {
+    local sig="$1" code="$2"
+    trap '' INT TERM HUP
+    if [ -n "$RUNNER_PID" ]; then
+        kill -"$sig" "$RUNNER_PID" 2>/dev/null || true
+        # Never remove the bundle/vars while the child still owns a VM.
+        wait "$RUNNER_PID" || true
+    fi
+    exit "$code"
+}
+trap 'end_session INT 130' INT
+trap 'end_session TERM 143' TERM
+trap 'end_session HUP 129' HUP
+
 # The Go seat's startup probe waits for a focus-loss event after opening its
 # own window. In an automated gate the harness focuses the monitor window;
 # provide the same one-shot handoff here so a fresh desktop reaches its shell
@@ -219,14 +244,26 @@ seat remains available with \`settings set wm tabwm\`.
 
 The guest serial log is written to artifacts/session-serial.log.
 Your files persist in: $SHARE
-Press Ctrl-C here to end the session.
+Close the VM window, choose Quit VirelaiOS (Cmd-Q), or press Ctrl-C here
+to stop the VM. Rerun this command to relaunch; VM RAM is not persisted.
 
 EOF
 
-"$RUNNER" \
+# A GUI parent's bundle identity belongs to that app, not this CLI runner.
+# Do not let macOS associate the independent VM window with Factory/Terminal.
+env -u __CFBundleIdentifier "$SESSION_APP/Contents/MacOS/VirelaiOS" \
     --overlay-base "$ROOT/artifacts/disk.img" --vars "$RUN_DIR/efi-vars.bin" \
     --serial "$SERIAL_LOG" \
     --cvc-file "$SHARE" \
     --script "$RUN_DIR/session-start.txt" --script-after 'gotabwm: win focus' \
-    --display --input \
-    --timeout 0
+    --display --input --host-session \
+    --timeout 0 &
+RUNNER_PID=$!
+echo "session: owned VM pid=$RUNNER_PID app=$SESSION_APP"
+if wait "$RUNNER_PID"; then
+    exit 0
+else
+    code=$?
+    echo "session: VM runner exited with status $code; see the terminal diagnostics and $SERIAL_LOG" >&2
+    exit "$code"
+fi

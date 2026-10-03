@@ -54,14 +54,18 @@ let package = Package(
             name: "VMPostmortem",
             path: "Sources/VMPostmortem"
         ),
+        .target(
+            name: "VMAppKit",
+            path: "Sources/VMAppKit"
+        ),
         .executableTarget(
             name: "VMRunner",
-            dependencies: ["VFWire", "VSSH", "VSNTP", "VMPostmortem"],
+            dependencies: ["VFWire", "VSSH", "VSNTP", "VMPostmortem", "VMAppKit"],
             path: "Sources/VMRunner"
         ),
         .testTarget(
             name: "VMRunnerTests",
-            dependencies: ["VFWire", "VSSH", "VSNTP", "VMPostmortem"]
+            dependencies: ["VFWire", "VSSH", "VSNTP", "VMPostmortem", "VMAppKit"]
         )
     ],
     swiftLanguageModes: [.v5]
