@@ -763,6 +763,8 @@ var netTcpStreamEOF = false // the probe exited 0: FIN once its bytes are ACKed
 // holds the guest's one connection. The guest's answer (or silence) is the
 // over-cap receipt.
 var netTcpConnectIntruder = false
+var nativeSocketProbeMode: String?
+var nativeSocketProbe: NativeSocketProbe?
 var netTcpIntruderSent = false
 var netTcpIntruderAnswered = false
 let netTcpIntruderIsn: UInt32 = 0x0badf00d
@@ -1339,6 +1341,12 @@ while idx < arguments.count {
     } else if arg == "--net-tcp-connect-stream-arg", idx + 1 < arguments.count {
         netTcpConnectStreamArgs.append(arguments[idx + 1])
         idx += 2
+    } else if arg == "--net-native-preview", idx + 1 < arguments.count {
+        let mode = arguments[idx + 1]
+        guard mode == "reset" || mode == "timeout" else { fail("--net-native-preview requires reset|timeout") }
+        nativeSocketProbeMode = mode
+        nativeSocketProbe = NativeSocketProbe(mode: mode)
+        idx += 2
     } else if arg == "--net-tcp-connect-intruder" {
         netTcpConnectIntruder = true
         idx += 1
@@ -1802,6 +1810,9 @@ if netTcpRespondRelayMode, netTcpRespondRelayPort == nil {
 if netTcpConnectGuestIP != nil, netCapturePath == nil {
     fail("--net-tcp-connect requires --net (the client frames are written into the SAME attachment's socket).")
 }
+if nativeSocketProbeMode != nil && (netCapturePath == nil || netNatEnabled || netTcpConnectGuestIP != nil) {
+    fail("--net-native-preview requires hermetic --net, no NAT or other connecting peer")
+}
 if netTcpConnectStreamExec != nil && (netTcpConnectGuestIP == nil || netTcpConnectSSHMode || !netTcpConnectPayload.isEmpty || netNatEnabled) {
     fail("--net-tcp-connect-stream requires --net-tcp-connect <ip>:<port> with --net; no SSH, payload, or NAT")
 }
@@ -2174,6 +2185,7 @@ if let netCapturePath {
                     }
                 }
             }
+            nativeSocketProbe?.receive(buf, n)
             if netTcpIntruderSent, !netTcpIntruderAnswered,
                let guestIP = netTcpConnectGuestIP, let guestPort = netTcpConnectPort,
                isTcpSegmentFromGuest(buf, n, guestIP, guestPort, netTcpCliPort &+ 1) {
@@ -4894,6 +4906,21 @@ func startNetTcpConnect() {
     }
 }
 
+func startNativeSocketProbe() {
+    guard let probe = nativeSocketProbe, let socket = netCaptureReadSocket else { return }
+    DispatchQueue(label: "virelaios.native-preview").async {
+        while Date() < deadline {
+            if let text = try? String(contentsOf: serialURL, encoding: .utf8),
+               text.contains("native-socket: listening two-client limit") {
+                probe.start(socket: socket)
+                return
+            }
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        print("NATIVE-PROBE: FAIL listener marker missing")
+    }
+}
+
 // Card N3 (claim 7293): is the datagram an ARP request (Ethernet II
 // ethertype 0x0806, ARP htype 1 / ptype 0x0800 / hlen 6 / plen 4, op 1)?
 // The guest's request frames are raw Ethernet — dst ff*6 (broadcast),
@@ -6072,6 +6099,7 @@ if vzRestore {
     startScript3Input()
     startNetInject()
     startNetTcpConnect()
+    startNativeSocketProbe()
     startKeyInject()
     startKeyStringInject()
     startChordInject()

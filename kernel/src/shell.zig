@@ -3864,6 +3864,7 @@ fn park_body(mon: *monitor.Monitor) callconv(.c) void {
             // wall-clock seconds).
             virtio_net.tcp.now_ticks = timer.ticks;
             virtio_net.net_rx_drain();
+            virtio_net.net_socket_poll();
             // Issue #119 (audit follow-up 3): the autonomous DHCP lease
             // lifecycle — advance T1/T2/expiry from the idle loop (the
             // polled-drain time engine, the same seam as tcp.poll_rto)

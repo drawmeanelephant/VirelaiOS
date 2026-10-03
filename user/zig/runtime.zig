@@ -159,4 +159,5 @@ test {
     _ = console;
     _ = io_helpers;
     _ = @import("fs_test.zig");
+    _ = @import("network_test.zig");
 }

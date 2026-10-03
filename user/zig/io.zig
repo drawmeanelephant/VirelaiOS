@@ -6,18 +6,20 @@ const Dir = Io.Dir;
 const platform = @import("platform.zig");
 const refusals = @import("refusals.zig");
 const fs = @import("fs.zig");
+const network = @import("network.zig");
 
 pub fn Backend(comptime Driver: type) type {
     return struct {
         const Self = @This();
         const NativeFs = fs.Native(Driver);
+        const Net = network.Native(Driver);
         const wide_paths = if (@hasDecl(Driver, "filesystem_b2")) Driver.filesystem_b2 else false;
         const path_bytes = if (wide_paths) fs.path_max else 64;
         const Record = struct {
             token: i64,
             fd: u64,
             writable: bool = false,
-            kind: enum { file, snapshot, directory } = .file,
+            kind: enum { file, snapshot, directory, listener, stream } = .file,
         };
         // Three reserved streams + borrowed cwd + FOUR files/cursors/pins combined.
         records: [4]?Record = @splat(null),
@@ -286,10 +288,23 @@ pub fn Backend(comptime Driver: type) type {
             return error.CloseFailed;
         }
         pub fn closeAll(self: *Self) error{CloseFailed}!void {
+            // Children first: closing the listener revokes their native handles.
+            for (&self.records) |*entry| if (entry.*) |record| {
+                if (record.kind == .stream) {
+                    Net.close(record.fd) catch return error.CloseFailed;
+                    entry.* = null;
+                }
+            };
             for (self.records) |entry| if (entry) |record| switch (record.kind) {
                 .snapshot => self.closeSnapshot(.{ .token = record.token }) catch return error.CloseFailed,
                 .directory => self.closeDirectory(.{ .token = record.token }) catch return error.CloseFailed,
                 .file => try self.closeChecked(.{ .handle = @intCast(record.token), .flags = .{ .nonblocking = false } }),
+                .listener, .stream => {
+                    Net.close(record.fd) catch return error.CloseFailed;
+                    for (&self.records) |*r| if (r.*) |value| {
+                        if (value.token == record.token) r.* = null;
+                    };
+                },
             };
         }
         /// A full std `File.Stat` would need invented fields; use fileMetadata.
@@ -435,6 +450,164 @@ pub fn Backend(comptime Driver: type) type {
         fn netSend(_: ?*anyopaque, _: Io.net.Socket.Handle, _: []Io.net.OutgoingMessage, _: Io.net.SendFlags) struct { ?Io.net.Socket.SendError, usize } {
             Driver.diagnostic("Unsupported:netSend\n");
             return .{ error.Unexpected, 0 };
+        }
+        fn socketRecord(self: *Self, handle: Io.net.Socket.Handle) ?*Record {
+            for (&self.records) |*entry| if (entry.*) |*r| {
+                if (r.token == handle and (r.kind == .listener or r.kind == .stream)) return r;
+            };
+            return null;
+        }
+        fn netListenIp(ptr: ?*anyopaque, address: *const Io.net.IpAddress, options: Io.net.IpAddress.ListenOptions) Io.net.IpAddress.ListenError!Io.net.Socket {
+            try checkCancel(ptr);
+            if (address.* != .ip4) return error.AddressFamilyUnsupported;
+            if (options.mode != .stream) return error.SocketModeUnsupported;
+            if (options.protocol != .tcp) return error.ProtocolUnsupportedBySystem;
+            if (options.reuse_address or options.kernel_backlog > 2 or options.kernel_backlog == 0) return error.OptionUnsupported;
+            const self = state(ptr);
+            const entry = self.reserve() catch return error.ProcessFdQuotaExceeded;
+            const h = Net.call(0, network.word(address.ip4.bytes), address.ip4.port, 0) catch |err| return switch (err) {
+                error.Capacity => error.SystemResources,
+                error.NetworkDown => error.NetworkDown,
+                error.InvalidArgument => error.AddressUnavailable,
+                else => error.Unexpected,
+            };
+            return .{ .handle = @intCast(self.track(entry, h, .listener, false)), .address = address.* };
+        }
+        fn netAccept(ptr: ?*anyopaque, handle: Io.net.Socket.Handle, _: Io.net.Server.AcceptOptions) Io.net.Server.AcceptError!Io.net.Socket {
+            const self = state(ptr);
+            const listener = self.socketRecord(handle) orelse return error.SocketNotListening;
+            if (listener.kind != .listener) return error.SocketNotListening;
+            const fd = listener.fd;
+            const entry = self.reserve() catch return error.ProcessFdQuotaExceeded;
+            const deadline = Net.now() +| network.budget_ns;
+            while (true) {
+                try checkCancel(ptr);
+                const child = Net.call(1, fd, 0, 0) catch |err| switch (err) {
+                    error.WouldBlock => {
+                        _ = Net.wait(fd, 4, deadline) catch |failure| return switch (failure) {
+                            error.TimedOut => error.WouldBlock,
+                            else => error.SocketNotListening,
+                        };
+                        continue;
+                    },
+                    else => return error.SocketNotListening,
+                };
+                const peer = Net.call(7, child, 0, 0) catch {
+                    Net.close(child) catch Driver.fatal("SocketCloseFailed");
+                    return error.ConnectionAborted;
+                };
+                return .{ .handle = @intCast(self.track(entry, child, .stream, true)), .address = .{ .ip4 = .{
+                    .bytes = .{ @truncate(peer >> 40), @truncate(peer >> 32), @truncate(peer >> 24), @truncate(peer >> 16) },
+                    .port = @truncate(peer),
+                } } };
+            }
+        }
+        fn netRead(ptr: ?*anyopaque, handle: Io.net.Socket.Handle, data: [][]u8) Io.net.Stream.Reader.Error!usize {
+            const r = state(ptr).socketRecord(handle) orelse return error.SocketUnconnected;
+            if (r.kind != .stream) return error.SocketUnconnected;
+            const deadline = Net.now() +| network.budget_ns;
+            for (data) |bytes| {
+                if (bytes.len == 0) continue;
+                while (true) {
+                    try checkCancel(ptr);
+                    return Net.read(r.fd, bytes) catch |err| switch (err) {
+                        error.WouldBlock => {
+                            _ = Net.wait(r.fd, 1, deadline) catch |failure| return readError(failure);
+                            continue;
+                        },
+                        else => return readError(err),
+                    };
+                }
+            }
+            return 0;
+        }
+        fn readError(err: network.Error) Io.net.Stream.Reader.Error {
+            return switch (err) {
+                error.PeerReset => error.ConnectionResetByPeer,
+                error.TimedOut => error.Timeout,
+                error.AccessDenied => error.AccessDenied,
+                error.Closed, error.InvalidHandle => error.SocketUnconnected,
+                error.NetworkDown => error.NetworkDown,
+                else => named: {
+                    Driver.diagnostic("Network:Read:");
+                    Driver.diagnostic(@errorName(err));
+                    Driver.diagnostic("\n");
+                    break :named error.Unexpected;
+                },
+            };
+        }
+        fn netWrite(ptr: ?*anyopaque, handle: Io.net.Socket.Handle, header: []const u8, data: []const []const u8, splat: usize) Io.net.Stream.Writer.Error!usize {
+            const r = state(ptr).socketRecord(handle) orelse return error.SocketUnconnected;
+            if (r.kind != .stream) return error.SocketUnconnected;
+            const deadline = Net.now() +| network.budget_ns;
+            const bytes = if (header.len != 0) header else select: {
+                for (data, 0..) |part, i| {
+                    if (i + 1 == data.len and splat == 0) break;
+                    if (part.len != 0) break :select part;
+                }
+                return 0;
+            };
+            while (true) {
+                try checkCancel(ptr);
+                return Net.send(r.fd, bytes) catch |err| switch (err) {
+                    error.WouldBlock => {
+                        _ = Net.wait(r.fd, 2 | 8, deadline) catch return error.Unexpected;
+                        continue;
+                    },
+                    error.PeerReset => error.ConnectionResetByPeer,
+                    error.Closed, error.InvalidHandle => error.SocketUnconnected,
+                    error.NetworkDown => error.NetworkDown,
+                    // std's Writer.Error has no Timeout: name it, never call it EOF.
+                    error.TimedOut => named: {
+                        Driver.diagnostic("Network:TimedOut\n");
+                        break :named error.Unexpected;
+                    },
+                    else => error.Unexpected,
+                };
+            }
+        }
+        fn netClose(ptr: ?*anyopaque, handles: []const Io.net.Socket.Handle) void {
+            const self = state(ptr);
+            for (handles) |handle| {
+                const record = self.socketRecord(handle) orelse Driver.fatal("Unsupported:netClose:InvalidSocket");
+                const fd = record.fd;
+                const listener = record.kind == .listener;
+                Net.close(fd) catch Driver.fatal("SocketCloseFailed");
+                for (&self.records) |*entry| if (entry.*) |r| {
+                    // Closing a listener revokes all of this backend's children.
+                    if (r.token == handle or (listener and r.kind == .stream)) entry.* = null;
+                };
+            }
+        }
+        fn netLookup(ptr: ?*anyopaque, name: Io.net.HostName, queue: *Io.Queue(Io.net.HostName.LookupResult), options: Io.net.HostName.LookupOptions) Io.net.HostName.LookupError!void {
+            const self = state(ptr);
+            const io_value = self.io();
+            defer queue.close(io_value);
+            try checkCancel(ptr);
+            if (options.family == .ip6) return error.AddressFamilyUnsupported;
+            const entry = self.reserve() catch return error.ProcessFdQuotaExceeded;
+            // Reserve one of the SAME four slots for the transaction's lifetime.
+            entry.* = .{ .token = 0, .fd = 0 };
+            defer entry.* = null;
+            const ip = Net.resolve(name.bytes, network.default_dns) catch |err| return switch (err) {
+                error.NameNotFound => error.UnknownHostName,
+                error.NetworkDown => error.NetworkDown,
+                error.Capacity => error.SystemResources,
+                else => refused: {
+                    Driver.diagnostic("DNS:");
+                    Driver.diagnostic(@errorName(err));
+                    Driver.diagnostic("\n");
+                    break :refused error.NameServerFailure;
+                },
+            };
+            queue.putOne(io_value, .{ .address = .{ .ip4 = .{ .bytes = ip, .port = options.port } } }) catch |err| return switch (err) {
+                error.Canceled => error.Canceled,
+                error.Closed => error.Unexpected,
+            };
+            if (options.canonical_name_buffer) |buffer| {
+                @memcpy(buffer[0..name.bytes.len], name.bytes);
+                queue.putOne(io_value, .{ .canonical_name = .{ .bytes = buffer[0..name.bytes.len] } }) catch return error.Unexpected;
+            }
         }
         fn fileReadPositional(_: ?*anyopaque, _: File, _: []const []u8, _: u64) File.ReadPositionalError!usize {
             return error.Unseekable;

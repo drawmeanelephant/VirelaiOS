@@ -80,6 +80,7 @@ pub const ipv4 = @import("ipv4.zig");
 pub const udp = @import("udp.zig");
 pub const dhcp = @import("dhcp.zig"); // N8 (claim 0351): the bounded RFC 2131 client (port 68)
 pub const tcp = @import("tcp.zig"); // N10 (claim 7026): the bounded RFC 793 client
+pub const native_socket = @import("socket_native.zig");
 pub const net_log = @import("net_log.zig"); // M26 N15 (issue #442): network event ring buffer
 
 // ---------------------------------------------------------------------------
@@ -1321,6 +1322,29 @@ pub fn net_tcp_send(segment: []const u8, out_len: *usize) SendResult {
     @memset(tx_staging[0..tx_hdr_len], 0);
     const n = tcp.build_frame(tx_staging[tx_hdr_len .. tx_hdr_len + tcp.frame_max], &net_mac, arp.own_ip, tcp.peer_mac, tcp.peer_ip, segment);
     out_len.* = n;
+    return net_send(&net_ops, &net_dev, tx_staging[0 .. tx_hdr_len + n]);
+}
+
+fn socket_transmit(_: ?*anyopaque, outbound: native_socket.core.Outbound) bool {
+    if (!net_ready or !arp.ip_set()) return false;
+    @memset(tx_staging[0..tx_hdr_len], 0);
+    const n = tcp.build_frame(tx_staging[tx_hdr_len .. tx_hdr_len + tcp.frame_max], &net_mac, outbound.local.ip, outbound.remote_mac, outbound.remote.ip, outbound.bytes);
+    return net_send(&net_ops, &net_dev, tx_staging[0 .. tx_hdr_len + n]) == .ok;
+}
+
+/// NET lock held. Bounded maintenance even with no application traffic.
+pub fn net_socket_poll() void {
+    native_socket.poll();
+    for (0..native_socket.core.child_limit * 2 + 1) |_| {
+        if (native_socket.sockets.flush(null, socket_transmit) != .sent) break;
+    }
+}
+
+pub fn net_socket_dns_send(server: [4]u8, query: []const u8) SendResult {
+    if (!net_ready or !arp.ip_set()) return .not_ready;
+    const mac = arp.lookup(server) orelse return .no_peer;
+    @memset(tx_staging[0..tx_hdr_len], 0);
+    const n = udp.build_frame_ex(tx_staging[tx_hdr_len..], mac, &net_mac, arp.own_ip, server, native_socket.dns_port, 53, query);
     return net_send(&net_ops, &net_dev, tx_staging[0 .. tx_hdr_len + n]);
 }
 

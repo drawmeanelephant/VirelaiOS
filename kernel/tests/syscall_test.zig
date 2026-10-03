@@ -153,7 +153,7 @@ fn capture_marshaled_args(args: Args, _: *exceptions.VectorFrame) u64 {
     return 0xcafe;
 }
 
-test "syscall: runtime table has 128 slots and eighty unique implemented rows" {
+test "syscall: runtime table has 128 slots and eighty-one unique implemented rows" {
     init(test_writer);
     const table = ensure_table();
     try std.testing.expectEqual(@as(usize, 128), table.len);
@@ -166,7 +166,8 @@ test "syscall: runtime table has 128 slots and eighty unique implemented rows" {
             implemented += 1;
         }
     }
-    try std.testing.expectEqual(@as(usize, 80), implemented);
+    try std.testing.expectEqual(@as(usize, 81), implemented);
+    try std.testing.expectEqualStrings("sys_socket", entry_info(80).?.name);
     try std.testing.expectEqualStrings("sys_fs_metadata", entry_info(79).?.name);
     try std.testing.expectEqualStrings("sys_pipe_read", entry_info(sys_pipe_read).?.name);
     try std.testing.expectEqualStrings("sys_pipe_write", entry_info(sys_pipe_write).?.name);
@@ -256,13 +257,13 @@ test "syscall: adapter decodes x8 and x0-x5 and unknown numbers return ENOSYS" {
     // registered rows; 73/74 are ADR 0027's sys_thread/sys_futex; 75 is
     // issue #1228's sys_exnotify; 76 is issue #1163 phase 2's
     // sys_sock_ready; 77 is M66a's sys_file_sync and 78 is M83b's
-    // sys_time_set; 79 is B3 metadata — use 80/81, still unregistered).
-    try std.testing.expect(exceptions.frame_write(&frame, 8, 80));
+    // sys_time_set; 79 is B3 metadata; 80 is B6 — use 81/82).
+    try std.testing.expect(exceptions.frame_write(&frame, 8, 81));
     try std.testing.expect(handle_svc(&frame, svc_immediate));
     try std.testing.expectEqual(error_result(.enosys), exceptions.frame_read(&frame, 0));
-    try std.testing.expectEqual(@as(u64, 1), call_count(80));
+    try std.testing.expectEqual(@as(u64, 1), call_count(81));
 
-    try std.testing.expect(exceptions.frame_write(&frame, 8, 81));
+    try std.testing.expect(exceptions.frame_write(&frame, 8, 82));
     try std.testing.expect(handle_svc(&frame, svc_immediate));
     try std.testing.expectEqual(error_result(.enosys), exceptions.frame_read(&frame, 0));
 }
@@ -454,9 +455,12 @@ test "syscall: sleep blocks the current task and returns zero on wake" {
     scheduler.start();
     var frame = fresh_frame();
     // The shell (slot 0) sleeps 2 ticks: it is blocked and the worker is
-    // staged; the SVC frame is untouched (the caller's x0 stays 0xdead until
-    // it resumes — then the handler's 0 is written, as handle_svc does).
+    // staged. Publish the result before the caller can wake on another
+    // core, rather than returning the original argument through that race.
+    exceptions.resume_frame[0] = @intFromPtr(&frame);
     try std.testing.expectEqual(@as(u64, 0), dispatch(sys_sleep, .{ 2, 0, 0, 0, 0, 0 }, &frame));
+    try std.testing.expectEqual(@as(u64, 0), exceptions.frame_read(&frame, 0));
+    try std.testing.expectEqual(@intFromPtr(&frame), scheduler.tasks[0].sp);
     try std.testing.expectEqual(@as(usize, 1), scheduler.current_id());
     try std.testing.expect(scheduler.is_blocked(0));
     // A blocked task is skipped by the round-robin ring.
@@ -476,6 +480,17 @@ test "syscall: sleep blocks the current task and returns zero on wake" {
     try std.testing.expect(scheduler.yield_current()); // user -> idle
     try std.testing.expect(scheduler.yield_current()); // idle -> shell
     try std.testing.expectEqual(@as(usize, 0), scheduler.current_id());
+    try std.testing.expectEqual(@as(u64, 0), exceptions.frame_read(&frame, 0));
+}
+
+test "B6 wait: refused sleep retains its error through SVC dispatch" {
+    init(test_writer);
+    _ = scheduler.init(); // not started, so the sleep cannot park
+    var frame = fresh_frame();
+    _ = exceptions.frame_write(&frame, 0, 1);
+    _ = exceptions.frame_write(&frame, 8, sys_sleep);
+    try std.testing.expect(syscall.handle_svc(&frame, syscall.svc_immediate));
+    try std.testing.expectEqual(error_result(.einval), exceptions.frame_read(&frame, 0));
 }
 
 test "syscall: handle_svc writes yield result into the suspended caller frame" {
@@ -1349,7 +1364,7 @@ test "syscall: counters are monotonic and report is deterministic" {
     var con = mock.console();
     report(&con);
     try std.testing.expectEqualStrings(
-        "syscalls: slots=64 implemented=80\n" ++
+        "syscalls: slots=64 implemented=81\n" ++
             "  0 sys_ping calls=2\n" ++
             "  1 sys_write calls=0\n" ++
             "  2 sys_yield calls=0\n" ++
@@ -1429,7 +1444,8 @@ test "syscall: counters are monotonic and report is deterministic" {
             "  76 sys_sock_ready calls=0\n" ++
             "  77 sys_file_sync calls=0\n" ++
             "  78 sys_time_set calls=0\n" ++
-            "  79 sys_fs_metadata calls=0\n",
+            "  79 sys_fs_metadata calls=0\n" ++
+            "  80 sys_socket calls=0\n",
         mock.contents(),
     );
 }
@@ -3162,6 +3178,179 @@ fn test_net_ops() virtio_net.Ops {
     };
 }
 
+fn native_inject(port: u16, flags: u8, seq: u32, ack: u32, payload: []const u8) void {
+    var segment: [tcp.segment_max]u8 = undefined;
+    const len = tcp.build_segment(&segment, .{ 10, 0, 0, 2 }, .{ 10, 0, 0, 1 }, port, 8090, seq, ack, flags, payload);
+    var frame: [tcp.frame_max]u8 = undefined;
+    const n = tcp.build_frame(&frame, &.{ 2, 0, 0, 0, 0, 2 }, .{ 10, 0, 0, 2 }, .{ 2, 0, 0, 0, 0, 1 }, .{ 10, 0, 0, 1 }, segment[0..len]);
+    var scratch: [128]u8 = undefined;
+    _ = virtio_net.ipv4.handle_rx(frame[0..n], &.{ 2, 0, 0, 0, 0, 1 }, &scratch);
+}
+
+test "B6 syscall: native routing two handles ownership EFAULT partial reads reset timeout cleanup" {
+    const ns = syscall.native_socket;
+    ns.sockets = .{};
+    ns.dns = null;
+    ns.test_now = 0;
+    defer {
+        ns.sockets = .{};
+        ns.dns = null;
+        ns.test_now = 0;
+    }
+    userspace.init();
+    init(test_writer);
+    _ = scheduler.init();
+    _ = scheduler.register_worker(0x2000);
+    _ = scheduler.register_user(0x3000, 0);
+    scheduler.start();
+    try std.testing.expect(scheduler.yield_current());
+    try std.testing.expect(scheduler.yield_current());
+    const pid = process.find_by_task(scheduler.current_id()).?;
+    const saved = virtio_net.net_ops;
+    virtio_net.net_ops = test_net_ops();
+    defer virtio_net.net_ops = saved;
+    virtio_net.net_ready = true;
+    virtio_net.arp.own_ip = .{ 10, 0, 0, 1 };
+    tcp.reset();
+    defer {
+        virtio_net.net_ready = false;
+        virtio_net.arp.own_ip = .{ 0, 0, 0, 0 };
+        tcp.reset();
+    }
+    var output: [32]u8 = undefined;
+    set_user_regions(.{ .base = 0, .len = 0 }, .{ .base = @intFromPtr(&output), .len = output.len });
+    var frame = fresh_frame();
+    const listen = dispatch(80, .{ 0, 0, 8090, 0, 0, 0 }, &frame);
+    try std.testing.expect(@as(i64, @bitCast(listen)) > 0);
+    try std.testing.expectEqual(@as(u64, 0), dispatch(80, .{ 5, listen, 0, 0, 0, 0 }, &frame));
+    try std.testing.expectEqual(error_result(.enospc), dispatch(80, .{ 0, 0, 8091, 0, 0, 0 }, &frame));
+    for (0..2) |i| {
+        const port: u16 = @intCast(5000 + i);
+        native_inject(port, tcp.flag_syn, 10, 0, "");
+        _ = dispatch(80, .{ 5, listen, 0, 0, 0, 0 }, &frame);
+        const c = ns.sockets.children[i].?;
+        try std.testing.expect(c.tx_started);
+        native_inject(port, tcp.flag_ack, 11, c.snd_nxt, "abcdef");
+    }
+    const a = dispatch(80, .{ 1, listen, 0, 0, 0, 0 }, &frame);
+    const b = dispatch(80, .{ 1, listen, 0, 0, 0, 0 }, &frame);
+    try std.testing.expect(a != b);
+    try std.testing.expectEqual(@as(u64, 3), dispatch(80, .{ 11, 0, 0, 0, 0, 0 }, &frame));
+    native_inject(6000, tcp.flag_syn, 30, 0, "");
+    try std.testing.expectEqual(@as(u64, 1), ns.sockets.counters.capacity_refused);
+    try std.testing.expectError(error.AccessDenied, ns.ready(pid + 1, .{ .value = a }));
+    try std.testing.expectEqual(error_result(.efault), dispatch(80, .{ 2, a, 0, 2, 0, 0 }, &frame));
+    try std.testing.expectEqual(@as(usize, 6), ns.sockets.children[0].?.rx_len);
+    try std.testing.expectEqual(@as(u64, 0), dispatch(80, .{ 2, a, 0, 0, 0, 0 }, &frame));
+    try std.testing.expectEqual(error_result(.ebadf), dispatch(80, .{ 2, 0, 0, 0, 0, 0 }, &frame));
+    {
+        const previous = uaccess.resolve_write_pages;
+        defer uaccess.resolve_write_pages = previous;
+        uaccess.resolve_write_pages = &struct {
+            fn refuse(_: u64, _: usize) bool {
+                return false;
+            }
+        }.refuse;
+        try std.testing.expectEqual(error_result(.efault), dispatch(80, .{ 2, a, @intFromPtr(&output), 2, 0, 0 }, &frame));
+        try std.testing.expectEqual(@as(usize, 6), ns.sockets.children[0].?.rx_len);
+    }
+    try std.testing.expectEqual(@as(u64, 2), dispatch(80, .{ 2, a, @intFromPtr(&output), 2, 0, 0 }, &frame));
+    try std.testing.expectEqualStrings("ab", output[0..2]);
+    native_inject(5000, tcp.flag_rst | tcp.flag_ack, 17, ns.sockets.children[0].?.snd_nxt, "");
+    try std.testing.expectEqual(@as(u64, @bitCast(@as(i64, -13))), dispatch(80, .{ 2, a, @intFromPtr(&output), 1, 0, 0 }, &frame));
+    try std.testing.expectEqual(@as(u64, 0), dispatch(80, .{ 4, a, 0, 0, 0, 0 }, &frame));
+    ns.test_now = ns.core.deadline_ns;
+    try std.testing.expectEqual(error_result(.etimedout), dispatch(80, .{ 2, b, @intFromPtr(&output), 1, 0, 0 }, &frame));
+    try std.testing.expectEqual(@as(u64, 9), dispatch(80, .{ 5, b, 0, 0, 0, 0 }, &frame));
+    try std.testing.expectEqual(@as(u64, 0), dispatch(80, .{ 4, b, 0, 0, 0, 0 }, &frame));
+    try std.testing.expectEqual(error_result(.ebadf), dispatch(80, .{ 5, b, 0, 0, 0, 0 }, &frame));
+    try std.testing.expectEqual(@as(u64, 0), dispatch(80, .{ 4, listen, 0, 0, 0, 0 }, &frame));
+    try std.testing.expectEqual(@as(u64, 0), ns.ownedCount(pid));
+}
+
+test "B6 DNS service: ownership source ID exclusive UDP seat timeout and release" {
+    const ns = syscall.native_socket;
+    ns.sockets = .{};
+    ns.dns = null;
+    ns.test_now = 0;
+    udp.reset();
+    defer {
+        ns.sockets = .{};
+        ns.dns = null;
+        ns.test_now = 0;
+        udp.reset();
+    }
+    var query: [17]u8 = @splat(0);
+    query[0] = 1;
+    query[1] = 2;
+    const h = try ns.beginDns(7, .{ 10, 0, 0, 2 }, &query);
+    try std.testing.expect(!udp.listen_port(ns.dns_port));
+    try std.testing.expectError(error.Capacity, ns.beginDns(8, .{ 10, 0, 0, 2 }, &query));
+    var output: [64]u8 = undefined;
+    try std.testing.expectError(error.AccessDenied, ns.readDns(8, h, &output));
+    var reply: [12]u8 = @splat(0);
+    reply[0] = 1;
+    reply[1] = 2;
+    reply[2] = 0x81;
+    var packet: [128]u8 = undefined;
+    reply[1] = 3;
+    const wrong_id_len = udp.build_frame_ex(&packet, .{ 2, 0, 0, 0, 0, 1 }, &.{ 2, 0, 0, 0, 0, 2 }, .{ 10, 0, 0, 2 }, .{ 10, 0, 0, 1 }, 53, ns.dns_port, &reply);
+    try std.testing.expect(ns.receiveDns(packet[0..wrong_id_len]));
+    try std.testing.expectError(error.WouldBlock, ns.readDns(7, h, &output));
+    reply[1] = 2;
+    for ([_][4]u8{ .{ 10, 0, 0, 3 }, .{ 10, 0, 0, 2 } }) |source| {
+        const n = udp.build_frame_ex(&packet, .{ 2, 0, 0, 0, 0, 1 }, &.{ 2, 0, 0, 0, 0, 2 }, source, .{ 10, 0, 0, 1 }, 53, ns.dns_port, &reply);
+        try std.testing.expect(ns.receiveDns(packet[0..n]));
+        if (source[3] == 3) try std.testing.expectError(error.WouldBlock, ns.readDns(7, h, &output));
+    }
+    try std.testing.expectEqual(@as(usize, 12), try ns.readDns(7, h, &output));
+    try ns.close(7, h);
+    try std.testing.expect(!udp.is_listening(ns.dns_port));
+    try std.testing.expect(udp.listen_port(ns.dns_port));
+    try std.testing.expectError(error.Capacity, ns.beginDns(7, .{ 10, 0, 0, 2 }, &query));
+    try std.testing.expect(udp.close_port(ns.dns_port));
+    const next = try ns.beginDns(7, .{ 10, 0, 0, 2 }, &query);
+    try std.testing.expect(next.value != h.value);
+    try std.testing.expectError(error.InvalidHandle, ns.close(7, h));
+    ns.test_now = ns.core.deadline_ns;
+    ns.poll();
+    try std.testing.expectEqual(@as(u64, 1), try ns.ready(7, next));
+    try std.testing.expectError(error.TimedOut, ns.readDns(7, next, &output));
+    ns.closeOwner(7);
+    try std.testing.expect(!udp.is_listening(ns.dns_port));
+    try std.testing.expectEqual(@as(u64, 0), ns.ownedCount(7));
+}
+
+test "B6 scheduler: real process exit releases listener half-open children and DNS transaction" {
+    const ns = syscall.native_socket;
+    ns.sockets = .{};
+    ns.dns = null;
+    ns.test_now = 0;
+    udp.reset();
+    defer udp.reset();
+    defer {
+        ns.sockets = .{};
+        ns.dns = null;
+    }
+    init(test_writer);
+    _ = scheduler.init();
+    _ = scheduler.register_worker(0x2000);
+    _ = scheduler.register_user(0x3000, 0);
+    scheduler.start();
+    try std.testing.expect(scheduler.yield_current());
+    try std.testing.expect(scheduler.yield_current());
+    const pid = process.find_by_task(scheduler.current_id()).?;
+    _ = try ns.sockets.listen(pid, .{ .ip = .{ 10, 0, 0, 1 }, .port = 8090 }, 0);
+    virtio_net.arp.own_ip = .{ 10, 0, 0, 1 };
+    defer virtio_net.arp.own_ip = .{ 0, 0, 0, 0 };
+    native_inject(5000, tcp.flag_syn, 10, 0, "");
+    _ = try ns.beginDns(pid, .{ 10, 0, 0, 2 }, "x" ** 17);
+    try std.testing.expectEqual(@as(u64, 3), ns.ownedCount(pid));
+    try std.testing.expect(scheduler.exit_current(0));
+    try std.testing.expectEqual(@as(u64, 0), ns.ownedCount(pid));
+    try std.testing.expect(ns.sockets.listener == null and ns.dns == null);
+}
+
 test "syscall: sys_tcp_connect timeout aborts cleanly and increments timed_out" {
     userspace.init();
     init(test_writer);
@@ -4577,7 +4766,7 @@ test "syscall: SYS_TIME (slot 66, #1058) returns the firmware wall-clock epoch" 
     // TS5 slot 70 (sys_secret_get), TS4 slot 71 (sys_tty_net_auth);
     // M51 SSH-P1 (#1166) slot 72 (sys_getrandom); issue #1228 slot 75;
     // issue #1163 phase 2 slot 76 (sys_sock_ready).
-    try std.testing.expectEqual(@as(usize, 80), syscall.implemented_count);
+    try std.testing.expectEqual(@as(usize, 81), syscall.implemented_count);
 
     const saved_epoch = timer.boot_epoch_secs;
     const saved_ticks = timer.ticks;
@@ -4731,7 +4920,7 @@ test "syscall: M50 TS3 gate table is explicit, bounded, and exactly the ADR 0024
         try std.testing.expect(gate.number < syscall.implemented_count);
         try std.testing.expect(entry_info(gate.number) != null);
     }
-    try std.testing.expectEqual(@as(usize, 80), syscall.implemented_count);
+    try std.testing.expectEqual(@as(usize, 81), syscall.implemented_count);
 }
 
 test "syscall: no slot can raise uid/caps (TS3 consumes caps, adds no setter)" {
