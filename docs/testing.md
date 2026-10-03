@@ -64,6 +64,11 @@ Remote Login/key authorization yourself, verify the fingerprint through a
 trusted channel, and ensure SSH reachability. Do not disable host-key checks.
 Neither script enables Remote Login, uses sudo, or changes network rules.
 
+The authorized key must permit the attach command and PTY allocation.
+A forward-only key with `restrict`/`no-pty` correctly fails `ssh -tt` with
+`PTY allocation request failed`; use an operator-authorized key with the
+needed permissions, not weaker host-key verification.
+
 On the Apple-silicon/macOS 27+ VM host:
 
 ```bash
@@ -89,6 +94,12 @@ Evidence lives under `artifacts/remote-terminal/<UTC timestamp>/` on the
 connecting machine. Use a clean fixture share: the driver writes
 `REMOTE.RECEIPT` and checks absence of `CANCEL.RECEIPT`/`PARTIAL.RECEIPT`.
 It does not copy owner documents or history into the transcript.
+
+Different identity digests alone do not prove physical separation, especially
+when comparing Linux `/etc/machine-id` with macOS `IOPlatformUUID`. Record the
+operator's physical-machine provenance as well as the fixture artifacts.
+A container on the VM host remains SSH smoke evidence, even if the driver
+prints `PASS class C`; it does not satisfy the physical-machine requirement.
 
 Controls: attach Ctrl-C goes to GOSH; Ctrl-] disconnects without stopping
 the VM. Serve Ctrl-C stops its own runner. Ctrl-D on an empty line, `exit`,
