@@ -1,162 +1,118 @@
-# C3: guarded native Boris input integration, publication blocked
+# C3: serial-offline Boris guest artifact
 
-Boris stays at `08969742f85238443ce5cd1cd53ceab1b1f3f85a`, with its own
-unchanged Oliver dependency `80d53b2118005b314d4c551d18a023f293eecc75`,
-not C1's revision. Only `fetch` uses the network. Source SHA-256 inventories
-and patch anchors fail closed; builds use private materializations/caches.
+Boris is pinned at `08969742f85238443ce5cd1cd53ceab1b1f3f85a`, with its
+own Oliver dependency `80d53b2118005b314d4c551d18a023f293eecc75`. Only
+`fetch` uses the network. SHA-256 source inventories and patch anchors fail
+closed; builds use private materializations and caches.
 
 ```sh
+source tools/env-check.sh
 python3 tools/zig/boris/build.py fetch
-python3 tools/zig/boris/build.py guest
-python3 tools/zig/boris/build.py patched-test
+zig build boris-guest                 # zig-out/bin/BORIS.BIN
+zig build boris-check
 python3 tools/zig/boris/build.py patched-upstream-test
-python3 -m unittest discover -s tools/zig/boris -p 'test_*.py'
-python3 tools/zig/boris/check.py
+zig build test
 bash tools/gate/vgate.sh tools/gate/specs/live-boris.spec
 ```
 
-`guest` emits a guarded **native input/compiler diagnostic**, not an accepted native site
-compiler. `audit` retains an unguarded diagnostic candidate: do not boot it.
-Both validate the static ELF SDK profile and record pinned inputs.
-Only the guarded object is linked, with implicit compiler-rt disabled.
-The three required memory helpers are inside that same guarded object.
-Build/check commands accept `--cache PATH`; `BORIS_SDK_CACHE=PATH` selects
-the live gate's cache. Use an isolated cache if Finder writes `.DS_Store`
-into the default materialization. Additional files still fail closed; never
-delete user-created files or loosen the archive inventory to make it pass.
-`guest-oom`, `guest-resources` and `gate` are acceptance-only artifacts,
-not installed apps.
-The former uses a 4 KiB arena to exercise allocation refusal; the shipping
-diagnostic retains the single 12 MiB arena.
-The resource fixture fills all four combined file/cursor slots, verifies the
-eight-resource ceiling including streams/cwd, then checks refusal and cleanup.
+The shipping artifact is a static AArch64 VirelaiOS SDK ELF, not WASI,
+Linux, or Boris's hosted executable. Its build selects the existing Zig
+`embed.compileBundle` entry instead of the hosted `build.zig` that
+unconditionally links libc-enabled secp256k1. Compiler/Oliver semantics
+remain pinned. No C code, libc, signing library or replacement renderer is
+linked. The closure, ELF check, input hashes and universal stack proof
+accompany the binary as `BORIS.BIN.json` in the compiler work directory.
+`audit` retains an **unguarded** candidate; do not boot it.
 
-The image and launcher reserve platform register `x18` with
-`baseline+reserve_x18`, without adding an ISA feature. The native exception
-frame deliberately omits it. The first integrated VZ run exposed truncated
-bundles when LLVM kept live loop bounds in that register across SVC.
-The builder now rejects any emitted `x18`/`w18` instruction. No shared
-SDK/kernel or native register-preservation guarantee was changed.
+## Supported subset
 
-## Stack bound, independent of fixture size
+```text
+BORIS.BIN build /host/content /host/site
+BORIS.BIN compile /host/content
+BORIS.BIN inspect /host/content
+BORIS.BIN probe
+BORIS.BIN version
+BORIS.BIN help
+```
 
-Boris's stable block sorts formerly allocated large fixed arrays on the
-stack. `workspace-patches.json` selects an iterative, stable merge sort with
-scratch allocated from the existing guest arena and freed after each sort.
-Equal keys retain input order. Allocation failure falls back to stable
-insertion sort, never an unaccounted allocator. The parser keeps its public
-return-value API, but failure sites write the caller's result directly,
-avoiding repeated large return temporaries. Grammar, metadata, diagnostics
-and Oliver code stay intact.
+`build` requires existing, normalized, disjoint source and output directories
+under `/host` on VirtioFS. It produces HTML and the compiler's IR,
+manifest/graph/completion, report, assets and target-local evidence chain.
+The actual IR pipeline, graph validation, include/wiki resolution, layout
+assembly and Oliver run unchanged through the memory-source/sink seam.
+The HTML entry is sequential and rejects `jobs != 1`; the parallel compiler
+entry is not reachable. Hosted main, secp256k1, signing/authentication,
+network publishing, watch/preview, editor hosting and child-process capture
+are excluded. CLI requests for these surfaces or jobs options refuse
+explicitly. The artifact's driver additionally refuses B6 networking.
 
-`stack.py` inventories every emitted body, resolves aliases and direct call
-targets, rejects unknown/dynamic SP changes and backward control-flow edges
-crossing frame allocations, and verifies live stack at non-tail calls.
-Every non-exempt entry checks **prospective** SP (current SP minus its whole
-frame) against initial SP minus 122,880 bytes **before allocating anything**.
-Thus, inductively, every activation, including recursive and indirect
-calls, remains within 122,880 bytes, below the unchanged 131,072-byte ADR
-budget. Too-deep calls refuse through a naked, zero-stack terminal path.
-Only the zero-stack entry trampoline and terminal refusal are exempt.
+`compile` emits the compiler's length-framed diagnostic bundle on stdout;
+`inspect` reports the bounded native inventory. Neither publishes files.
+This subset is not the whole Boris product.
 
-The current image's largest frame is 30,144 bytes; its smallest nonzero
-frame and live non-tail call charge are 16 bytes. Consequently at most
-7,680 stack-consuming/non-tail callers can be active, plus a zero-frame
-leaf. Tail calls do not add non-tail depth. This bounds every input,
-including rejected input, not just measured fixtures. `stack-proof.json`
-records the full call inventory and numeric bounds.
+## Source and publication contracts
 
-Guard tests check aligned admission boundaries, recursive/indirect calls,
-repeated allocations, unknown call targets and memory-helper aliases.
-Compiler tests exercise real includes at depth 32 and refusal at depth 33.
-`check.py` compares the patched and untouched compiler's entire 29-artifact
-bundle byte-for-byte and builds two identical guarded no-libc probes with
-independent compilation caches. `patched-upstream-test` checks the
-materialized compiler, not only unchanged upstream.
+Inputs must be **quiescent during a build**. B3 snapshots are immutable
+directory membership/metadata, not a coherent all-files snapshot under
+concurrent host mutation. Capture uses contained no-follow opens, compares
+the actual handle's identity, size and mtime/ctime to the discovered row,
+reads through EOF with an extra-byte limit probe, and revalidates the same
+handle. Changed inputs refuse. Directory identities use `(filesystem,
+inode)`, not inode alone or path hashes. Traversal counts ignored entries,
+assets, includes and empty directories against the aggregate 256 limit;
+one cursor is closed before entering the next directory.
 
-## Compiler subset
+Compilation and all output bounds complete **before mutation**. Publication:
 
-The existing `embed.compileBundle` calls Boris's actual IR pipeline,
-`compileHtmlToSink`, Oliver, graph validation, include/wiki resolution,
-layout assembly, memory assets and target-local artifacts/checks/claims/
-touches evidence. This HTML entry is explicitly sequential and rejects
-`jobs != 1`; `compileHtmlSiteMulti` and its `Thread.spawn` branch are absent.
-The compiler is not rewritten and Oliver is not replaced.
+1. Pin the existing output root. Obtain sixteen secure bytes from slot 72
+   before the first mutation, handling short fills and refusing unavailable
+   entropy. Exclusively create `.boris-stage-<32 hex digits>` under that pin.
+   An occupied name refuses; it is never opened, truncated or removed.
+2. Exclusively create each artifact under identity-checked staging pins,
+   write it completely, file-sync and verify its actual handle's size.
+3. Create missing output parents via pinned name operations and replace
+   each artifact through one B5 contained rename. No delete/copy fallback.
+4. Remove only the now-empty staging directories owned by this invocation,
+   checking their identities. Unrelated prior output files remain untouched.
 
-The normal hosted build/main, secp256k1, signing/authentication, network
-publishing, preview/watch, editor hosting and child-process capture are
-excluded. CLI policy refuses these features and jobs options explicitly.
-`patches.json` excludes unavailable filesystem branches from the memory
-entry, not parser/render semantics. No shared SDK, std, dependency cache,
-allowlist, kernel, boot default, WASI or Linux changes are made.
+This honors the supported **per-entry** publication contract, not a site
+transaction. Before the first rename, failure preserves prior artifacts.
+Afterwards, earlier successful replacements remain. A submitted rename
+failure may have an unknown outcome. The guest reports the retained stage
+and completed replacement count; it does not claim rollback. Failed stages
+remain for inspection, never recursive deletion through old paths. File sync
+does not promise directory-fsync or power-loss durability. Output roots and
+names must not be concurrently changed by another writer during publication.
 
-## Native input diagnostic
+## Bounds and evidence
 
-PR #1892's compiler/stack work and PR #1901's shared SDK bridge are merged.
-The Boris driver explicitly opts into `filesystem_b2`. Commands:
+The single arena is 12 MiB; total input is ≤1 MiB, each file ≤128 KiB,
+output ≤2 MiB and ≤128 artifacts. Native paths/names keep B3/B5's existing
+512/255-byte and depth bounds; staging adds one component and 46 bytes.
+Three streams + borrowed cwd + four combined files/cursors/pins is the
+eight-resource ceiling. The publisher walks parents with rolling pins,
+not one retained resource per directory depth.
 
-- `inspect ROOT`: native rich snapshot traversal, including empty directories,
-  ignored entries, includes and asset trees. Directory cycle detection uses
-  `(filesystem, inode)`, never inode alone or a pathname hash.
-- `compile ROOT`: the same discovery, then B3 contained existing-file opens
-  and sequential EOF reads with an extra-byte limit probe. The captured inputs
-  enter the unchanged pinned compiler. All 29 artifacts are emitted as a
-  length-framed **diagnostic bundle on stdout**, not installed as a site.
-- `probe`: the retained compiler-only in-memory fixture.
-- `build ROOT OUT`: refuses `NativePublicationUnavailable` before allocation,
-  filesystem work, entropy or output mutation.
+`workspace-patches.json` moves stable-sort scratch into that arena and
+avoids large parser return temporaries without changing semantics.
+`stack.py` inventories every emitted body and live non-tail call, rejects
+unknown/dynamic SP changes, and guards prospective SP before any frame
+allocation. Recursive/indirect calls therefore remain within 122,880 bytes,
+below the unchanged 131,072-byte SDK stack budget. Entry and terminal
+refusal are the only zero-stack exemptions. Guarded memory helpers are in
+the same object; final linking disables implicit compiler-rt.
+The complete image reserves `x18`; emitted use fails the build.
 
-One cursor is materialized/closed before another directory is entered.
-All traversal state, input and output use the same arena. Three streams plus
-borrowed cwd plus one cursor/file peak at five SDK resources; the shared
-backend still refuses a fifth combined file/cursor record (eight total).
-Visited directories and ignored entries count toward the aggregate 256 limit,
-including empty directories not represented in the compiler's file list.
-Native relative paths use B3's eight-component ceiling, not the memory-only
-fixture's implicit-directory counting as a replacement for native limits.
-
-`live-boris` boots the guarded image on real VirtioFS/VZ and independently
-compares every compiler artifact to the untouched pinned host compiler. Its
-24-file fixture has 20 pages, 29 visited entries, eighteen >31-byte colliding
-names, nested parents, include/wiki resolution and an asset. It compiles twice;
-this is **not two publications**. The gate also checks boundary refusals,
-symlinks, OOM, prior-site/input preservation and post-reap resources. The two
-256-entry cases boot separately: B3's shared mount-lifetime 512-identity
-ledger is not a per-process resource and closing cursors cannot clear it.
-Its exact two-page retained charge is distinguished from leaked guest pages.
-All receipts/captures stay under `artifacts/boris-native/`.
-
-## Native audit and required amendment
-
-This table identifies required operations, not approved new semantics.
-Shared edits require coordinated ownership and ADR 0007 approval first.
-Frozen ADR 0038 and Boris's compiler/publication contracts are untouched.
-
-| Blocked operation | Why the bridge is insufficient | Smallest necessary native addition |
-|---|---|---|
-| Bind source reads to discovered identity and obtain size/fresh attributes from the actual open object | Fresh path metadata is not fd-stat. Snapshot rows and a later contained open are individually safe but can name different objects after replacement. Boris `source_io.readPageAlloc` requires `file.stat`. | Fallible metadata on a live pinned file handle, with `(filesystem,inode)`; compare the actual open identity to the discovered identity and revalidate after reading. Never query the old path. |
-| Keep traversal/publication anchored to the originally supplied directory | Each current B3 operation resolves its supplied root afresh; a fresh directory-identity query before opening a snapshot is not an atomic expected-identity check. | A bounded no-follow root/directory token (charged to the existing eight records), usable by snapshot/open and contained mutation; expected-identity validation before use. |
-| Create a new entropy-named staging file without truncating an existing entry or escaping a replaced parent | Legacy create is path-based/truncating; random names do not make creation exclusive. | Exclusive existing-parent-relative create under the pinned root, with `PathAlreadyExists` and no mutation on refusal. |
-| Create nested staging directories, clean only owned staging entries, and publish to the validated parent | No contained mkdir/delete or pinned-parent rename exists. B4 is explicitly path-based. | Bounded mkdir/unlink and replace/preserve-existing rename using pinned parent tokens, same-share only, both-end authorization, no copy/delete fallback. |
-
-No generic std stat, stat-then-open, old-path fd-stat, random-name-only
-staging, destructive `Dir.commit(false)`, cross-device copy or rollback
-emulation fills these gaps. The diagnostic deliberately does **not** claim
-snapshot/open identity continuity or a coherent tree under replacement.
-`TreeChanged` detects some directory replacements by fresh path identity,
-but that check is supplementary, not a substitute for the missing token.
-
-After approved additions, publication must obtain slot-72 entropy before the
-first mutation, exclusively create/write/sync the owned stage, and commit
-through contained rename. Short fills, errors and unavailable entropy must
-be tested through that real naming/publication path, not an isolated RNG call.
-Until then those acceptance steps, second publication, injected publication
-failure and native file-identity replacement checks are **blocked**.
-
-B4 promises per-entry replacement preservation, not a multi-file transaction.
-An eventual serial publisher must document earlier successful replacements
-and unknown transport-loss outcomes honestly; it cannot claim batch rollback.
-If acceptance requires an all-files atomic site switch, that additionally
-needs a native generation-switch contract, not copy/delete restoration.
-#1877 remains open; local/native evidence and exact remaining acceptance live
-on that card and the focused follow-up PR, not in a duplicated status log.
+`boris-check` compares all 29 artifacts to the untouched pinned compiler
+and rebuilds two byte-identical guarded no-libc artifacts in independent
+caches. `live-boris` compiles/publishes the 24-file, 20-page nested fixture
+with eighteen >31-byte colliding names, then verifies byte-identical
+republish against the first publication and that independent oracle.
+It also checks real short-entropy publication, entropy refusal without
+mutation, failed compilation/publication preservation, source bounds,
+symlinks, unsupported features, OOM, resource limits and post-reap cleanup.
+Acceptance-only binaries are not installed apps. Build/check commands accept
+`--cache PATH`; `BORIS_SDK_CACHE=PATH` selects the gate cache. Never delete
+unexpected files from a compiler materialization to make its inventory pass.
+Receipts, captures and exact kernel-size evidence stay under `artifacts/`.
+`docs/status.md` and the generated gate inventory are intentionally untouched.

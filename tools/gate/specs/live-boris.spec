@@ -1,8 +1,7 @@
-# live-boris: real contained discovery/capture and independent pinned compiler bytes.
-# Diagnostic compilation is not a published site: native staging contracts lack
-# fd metadata, contained exclusive creation and pinned-parent mutation.
+# live-boris: serial offline compiler, contained publication and exact republish.
+# Independent untouched pinned compiler oracle, real entropy and failure refusal.
 # exec-order: assert-proven -- launcher waits every child; post-reap pool/page checks.
-vgate_name live-boris "Boris native input diagnostic, limits and publication refusal"
+vgate_name live-boris "Boris serial offline publication, deterministic republish and limits"
 vgate_share arm-virtiofs
 vgate_runner_flags -Xswiftc -DSPIKE
 vgate_fmt user/zig/boris.zig user/zig/boris/*.zig
@@ -13,7 +12,7 @@ rd = pathlib.Path(os.environ["RUN_DIR"])
 cache = os.environ.get("BORIS_SDK_CACHE", str(pathlib.Path(".build/zig-guest").resolve()))
 subprocess.run(["python3", "tools/zig/boris/native.py", "stage", "--share", str(rd / "share"),
                 "--expected", str(rd / "expected"), "--cache", cache], check=True)
-for batch in range(4):
+for batch in range(5):
     (rd / f"start-{batch}.txt").write_text(f"tasks\npages\nexec BORISGATE.BIN {batch}\n")
 PY
 vgate_file after.txt <<'EOF'
@@ -48,6 +47,11 @@ runpy.run_path(os.path.join(os.environ["RUN_DIR"], "compare.py"))
 PY
 vgate_run b3 -- --script '$RUN_DIR/start-3.txt' --script-after 'tasks user-el0 reaped' --script2 '$RUN_DIR/after.txt' --script2-after 'boris-gate: done cases=' --script2-delay 1 --script-expect 'done-boris' --timeout 120
 vgate_assert b3 python <<'PY'
+import os, runpy
+runpy.run_path(os.path.join(os.environ["RUN_DIR"], "compare.py"))
+PY
+vgate_run b4 -- --script '$RUN_DIR/start-4.txt' --script-after 'tasks user-el0 reaped' --script2 '$RUN_DIR/after.txt' --script2-after 'boris-gate: done cases=' --script2-delay 1 --script-expect 'done-boris' --timeout 120
+vgate_assert b4 python <<'PY'
 import os, runpy
 runpy.run_path(os.path.join(os.environ["RUN_DIR"], "compare.py"))
 PY

@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -277,6 +278,7 @@ def main():
     parser.add_argument("command", choices=("fetch", "audit", "guest", "guest-oom", "guest-resources", "guest-no-entropy", "guest-short-entropy", "gate", "host", "test", "upstream-test",
                                           "patched-host", "patched-test", "patched-upstream-test"))
     parser.add_argument("--work", type=Path)
+    parser.add_argument("--output", type=Path, help="copy the guarded guest artifact to this build output")
     parser.add_argument("--cache", type=Path, default=sdk.DEFAULT_CACHE)
     args = parser.parse_args()
     try:
@@ -285,7 +287,15 @@ def main():
         elif args.command == "gate":
             print(gate((args.work or ROOT / ".build/boris/gate").resolve(), args.cache.resolve()))
         else:
-            print(build(args.command, (args.work or ROOT / ".build/boris" / args.command).resolve(), args.cache.resolve()) or "tests passed")
+            output = build(args.command, (args.work or ROOT / ".build/boris" / args.command).resolve(), args.cache.resolve())
+            if args.output:
+                if args.command != "guest":
+                    raise ValueError("--output is supported only for the shipping guest artifact")
+                destination = args.output.resolve()
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(output, destination)
+                shutil.copyfile(output.with_suffix(".BIN.json"), destination.with_suffix(".BIN.json"))
+            print(output or "tests passed")
     except (ValueError, OSError, subprocess.CalledProcessError) as error:
         parser.exit(1, f"boris-build: {error}\n")
 

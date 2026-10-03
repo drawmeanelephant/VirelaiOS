@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 import build
 import check
+import native
 import stack
 
 ASM = """
@@ -149,6 +150,30 @@ class BuildTests(unittest.TestCase):
                           b"boris-closure-probe 1 -1\n", b"boris-closure-probe 1 129\n"):
             with self.assertRaises(ValueError):
                 check.unpack(malformed)
+
+    def test_published_tree_requires_all_oracle_bytes_and_no_staging_residue(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            site = root / "site"
+            (site / "nested").mkdir(parents=True)
+            oracle = {"index.html": ("text/html", b"home\n"),
+                      "nested/long-name.html": ("text/html", b"nested\n")}
+            for path, (_, data) in oracle.items():
+                (site / path).write_bytes(data)
+            (site / "prior.html").write_bytes(b"keep\n")
+            first = native.published_tree(root, "site", oracle)
+            self.assertEqual(first, native.published_tree(root, "site", oracle))
+            (site / ".boris-stage-orphan").mkdir()
+            with self.assertRaises(AssertionError):
+                native.published_tree(root, "site", oracle)
+            (site / ".boris-stage-orphan").rmdir()
+            (site / "index.html").write_bytes(b"wrong\n")
+            with self.assertRaises(AssertionError):
+                native.published_tree(root, "site", oracle)
+
+    def test_fixture_parent_inventory_keeps_every_nested_component(self):
+        self.assertEqual(native.parents("a/b/c.html"), ["a/b", "a"])
+        self.assertEqual(native.parents("index.html"), [])
 
 
 if __name__ == "__main__":

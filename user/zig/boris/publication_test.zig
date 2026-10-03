@@ -23,6 +23,7 @@ const Tree = struct {
     rename_error: ?usize = null,
     renames: usize = 0,
     mutations: usize = 0,
+    creation_lost: bool = false,
 
     fn deinit(self: *Tree) void {
         for (self.nodes.items) |entry| {
@@ -110,6 +111,7 @@ const Tree = struct {
         if (self.live() == 4) return error.ResourceLimit;
         try self.add(full, true, "");
         self.mutations += 1;
+        if (self.creation_lost) return error.TransportFailure;
         return self.pin(full);
     }
     const Io = struct {
@@ -263,5 +265,51 @@ test "root collisions and invalid artifact trees refuse before entropy and mutat
     const conflict = [_]Record{ .{ .path = "a", .bytes = "a" }, .{ .path = "a/b", .bytes = "b" } };
     try t.expectError(error.InvalidArtifactTree, publication.publish(&tree, t.allocator, "/host/content", "/host/site", &conflict, &state));
     try t.expectEqual(@as(usize, 0), tree.entropy);
+    try t.expectEqual(@as(usize, 0), tree.mutations);
+}
+
+test "occupied stage names never truncate and unknown creation never pretends no mutation" {
+    for ([_]bool{ false, true }) |unknown| {
+        var tree = try setup();
+        defer tree.deinit();
+        const stage_path = "/host/site/.boris-stage-" ++ "a7" ** 16;
+        if (unknown) {
+            tree.creation_lost = true;
+        } else {
+            try tree.add(stage_path, false, "not our stage\n");
+        }
+        var state: publication.State = .{};
+        try t.expectError(if (unknown) error.TransportFailure else error.PathAlreadyExists, publication.publish(&tree, t.allocator, "/host/content", "/host/site", &records, &state));
+        try t.expectEqual(unknown, state.stage_uncertain);
+        try t.expect(!state.staged and state.published == 0);
+        try t.expectEqual(@as(usize, 0), tree.live());
+        if (!unknown) try t.expectEqualStrings("not our stage\n", tree.nodes.items[tree.node(stage_path).?].bytes);
+    }
+}
+
+fn allocatingPublish(allocator: std.mem.Allocator) !void {
+    var tree = try setup();
+    defer tree.deinit();
+    defer std.debug.assert(tree.live() == 0);
+    var state: publication.State = .{};
+    try publication.publish(&tree, allocator, "/host/content", "/host/site", &records, &state);
+}
+test "every publisher arena allocation failure closes rolling pins and files" {
+    try t.checkAllAllocationFailures(t.allocator, allocatingPublish, .{});
+}
+
+test "staging full path exact and one over refuse before mutation" {
+    var tree = try setup();
+    defer tree.deinit();
+    var state: publication.State = .{};
+    const exact = [_]Record{.{ .path = "x" ** 255 ++ "/" ++ "y" ** 199, .bytes = "bounded\n" }};
+    try publication.publish(&tree, t.allocator, "/host/content", "/host/site", &exact, &state);
+    try t.expectEqual(@as(usize, 1), state.published);
+    tree.mutations = 0;
+    const entropy_before = tree.entropy;
+    const over = [_]Record{.{ .path = "x" ** 255 ++ "/" ++ "y" ** 200, .bytes = "bounded\n" }};
+    state = .{};
+    try t.expectError(error.NameTooLong, publication.publish(&tree, t.allocator, "/host/content", "/host/site", &over, &state));
+    try t.expectEqual(entropy_before, tree.entropy);
     try t.expectEqual(@as(usize, 0), tree.mutations);
 }

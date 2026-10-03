@@ -53,11 +53,13 @@ fn emit(bytes: []const u8) void {
     diagnostics.emit(stderr, bytes) catch sdk.native.exit(70);
 }
 fn fail(name: []const u8, status: u8) noreturn {
-    if (publication_state.staged) {
+    if (publication_state.staged or publication_state.stage_uncertain) {
         var receipt: [192]u8 = undefined;
-        emit(std.fmt.bufPrint(&receipt, "boris-publication: retained_stage={s} published={d} outcome={s}\n", .{
-            publication_state.stage_name,                                               publication_state.published,
-            if (publication_state.submitted) "partial_or_unknown" else "not_published",
+        emit(std.fmt.bufPrint(&receipt, "boris-publication: {s}={s} published={d} outcome={s}\n", .{
+            if (publication_state.stage_uncertain) "stage_candidate" else "retained_stage",
+            publication_state.stage_name,
+            publication_state.published,
+            if (publication_state.stage_uncertain) "creation_unknown" else if (publication_state.submitted) "partial_or_unknown" else "not_published",
         }) catch "boris-publication: retained stage\n");
     }
     if (backend) |state| state.closeAll() catch emit("boris-guest: CloseFailed\n");

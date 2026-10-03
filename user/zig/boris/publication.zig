@@ -6,6 +6,7 @@ const policy = @import("policy.zig");
 pub const State = struct {
     stage_name: [45]u8 = undefined,
     staged: bool = false,
+    stage_uncertain: bool = false,
     submitted: bool = false,
     published: usize = 0,
 };
@@ -86,7 +87,7 @@ pub fn publish(backend: anytype, allocator: std.mem.Allocator, content: []const 
     try validateRoots(content, output);
     try policy.outputs(records);
     // Stage prefix adds a component and 46 bytes to each native full path.
-    for (records) |record| {
+    for (records, 0..) |record, i| {
         if (output.len + 1 + state.stage_name.len + 1 + record.path.len > fs.path_max)
             return error.NameTooLong;
         var depth: usize = 1;
@@ -99,8 +100,8 @@ pub fn publish(backend: anytype, allocator: std.mem.Allocator, content: []const 
         };
         if (root_depth + 1 + depth > fs.pinned_depth_max) return error.ResourceLimit;
         // File/directory collisions must refuse before any output mutation.
-        for (records) |other| {
-            if (record.path.ptr == other.path.ptr) continue;
+        for (records, 0..) |other, j| {
+            if (i == j) continue;
             if (overlaps(record.path, other.path)) return error.InvalidArtifactTree;
         }
     }
@@ -127,7 +128,12 @@ pub fn publish(backend: anytype, allocator: std.mem.Allocator, content: []const 
         state.stage_name[14 + i * 2] = hex[byte & 15];
     }
     @memcpy(stage_path, &state.stage_name);
-    const stage = try backend.makeDirectory(out, &state.stage_name);
+    const stage = backend.makeDirectory(out, &state.stage_name) catch |err| {
+        // Native transport loss can hide a successful creation. An occupied
+        // name is certainly not ours; never delete it or retry destructively.
+        state.stage_uncertain = err != error.PathAlreadyExists;
+        return err;
+    };
     state.staged = true;
     const stage_metadata = backend.directoryMetadata(stage) catch |err| {
         allocator.free(stage_path);
