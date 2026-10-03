@@ -58,6 +58,11 @@ const mmio = @import("mmio.zig");
 const mmu = @import("mmu.zig");
 const pci = @import("pci.zig");
 const evidence = @import("evidence.zig");
+const timer = @import("timer.zig");
+const spinlock = @import("spinlock.zig");
+const alloc = @import("alloc.zig");
+pub const playback = @import("pcm_playback.zig");
+const pcm = playback.pcm;
 
 const VirtqDesc = extern struct {
     addr: u64,
@@ -68,7 +73,8 @@ const VirtqDesc = extern struct {
 const VirtqAvail = extern struct {
     flags: u16,
     idx: u16,
-    ring: [4]u16,
+    ring: [pcm.tx_descriptors]u16,
+    padding: [60]u8 = @splat(0),
 };
 const VirtqUsedElem = extern struct {
     id: u32,
@@ -77,7 +83,8 @@ const VirtqUsedElem = extern struct {
 const VirtqUsed = extern struct {
     flags: u16,
     idx: u16,
-    ring: [4]VirtqUsedElem,
+    ring: [pcm.tx_descriptors]VirtqUsedElem,
+    padding: [60]u8 = @splat(0),
 };
 
 const VIRTQ_DESC_F_NEXT: u16 = 1;
@@ -85,6 +92,7 @@ const VIRTQ_DESC_F_WRITE: u16 = 2;
 
 /// Split-ring size: 4 (power of two, Virtio 1.3 §4.1.4.3).
 pub const queue_size: u16 = 4;
+pub const tx_queue_size: u16 = pcm.tx_descriptors;
 
 /// virtio-snd device config layout (virtio-snd §5.14.4): three le32
 /// counts at offsets 0/4/8. Offsets + width are the spec shape — pinned
@@ -180,15 +188,15 @@ const PcmStatus = extern struct {
 // (A2). Each queue has its own descriptor table + avail + used rings (BSS).
 // ---------------------------------------------------------------------------
 
-pub var ctrl_desc: [4]VirtqDesc align(16) = undefined;
-pub var ctrl_avail: VirtqAvail align(2) = undefined;
-pub var ctrl_used: VirtqUsed align(4) = undefined;
+pub var ctrl_desc: [pcm.tx_descriptors]VirtqDesc align(64) = undefined;
+pub var ctrl_avail: VirtqAvail align(64) = undefined;
+pub var ctrl_used: VirtqUsed align(64) = undefined;
 var ctrl_last_used: u16 = 0;
 pub var ctrl_armed: bool = false;
 
-pub var tx_desc: [4]VirtqDesc align(16) = undefined;
-pub var tx_avail: VirtqAvail align(2) = undefined;
-pub var tx_used: VirtqUsed align(4) = undefined;
+pub var tx_desc: [pcm.tx_descriptors]VirtqDesc align(64) = undefined;
+pub var tx_avail: VirtqAvail align(64) = undefined;
+pub var tx_used: VirtqUsed align(64) = undefined;
 var tx_last_used: u16 = 0;
 pub var tx_armed: bool = false;
 pub var tx_queue_notify_off: u16 = 0; // queue 2 notify offset (observed)
@@ -261,12 +269,16 @@ pub var stream_muted: bool = false;
 /// learns the bound, nothing is clamped silently).
 pub fn snd_set_volume(vol: u8) u32 {
     if (vol > 100) return 0xffffffff;
+    const saved = audio_lock.lock();
+    defer audio_lock.unlock(saved);
     stream_volume = vol;
     return vol;
 }
 
 /// Set the stream mute state (true = silent). Returns 0.
 pub fn snd_set_mute(muted: bool) u32 {
+    const saved = audio_lock.lock();
+    defer audio_lock.unlock(saved);
     stream_muted = muted;
     return 0;
 }
@@ -307,6 +319,10 @@ pub fn snd_cfg() ?struct { jacks: u32, streams: u32, chmaps: u32 } {
 /// reads must stay pre-exit (claim 0013). Unconditional and idempotent.
 /// Arms queue 0 (control) and queue 2 (stream-0 TX / playback — A2).
 pub fn snd_rearm() bool {
+    snd_ready = false;
+    ctrl_armed = false;
+    tx_armed = false;
+    beep_format = 0xff;
     if (snd_common == 0) return false;
     vp_write8(0x14, 0); // reset
     var spins: usize = 0;
@@ -324,7 +340,7 @@ pub fn snd_rearm() bool {
 
     vp_write8(0x14, 1 | 2 | 8 | 4); // DRIVER_OK
     if ((vp_read8(0x14) & 4) == 0) return false;
-    snd_ready = true;
+    snd_ready = ctrl_armed and tx_armed;
     evidence.dump_str("VS rearm st=");
     evidence.dump_hex(vp_read8(0x14));
     evidence.dump_str(" ctrl=");
@@ -332,7 +348,7 @@ pub fn snd_rearm() bool {
     evidence.dump_str(" tx=");
     evidence.dump_hex(if (tx_armed) 1 else 0);
     evidence.dump_str("\n");
-    return true;
+    return snd_ready;
 }
 
 /// Arm one split-ring queue: select it, size it, point the three rings,
@@ -342,7 +358,7 @@ pub fn snd_rearm() bool {
 /// claim-0013 lesson).
 fn arm_queue(
     qsel: u16,
-    desc: *[4]VirtqDesc,
+    desc: *[pcm.tx_descriptors]VirtqDesc,
     avail: *VirtqAvail,
     used: *VirtqUsed,
     last_used: *u16,
@@ -350,11 +366,14 @@ fn arm_queue(
 ) bool {
     vp_write16(0x16, qsel); // queue_select
     const qsz = vp_read16(0x18);
-    if (qsz < queue_size) return false;
-    vp_write16(0x18, queue_size); // queue_size = 4 (power of 2, §4.1.4.3)
-    desc.* = .{ .{ .addr = 0, .len = 0, .flags = 0, .next = 0 }, .{ .addr = 0, .len = 0, .flags = 0, .next = 0 }, .{ .addr = 0, .len = 0, .flags = 0, .next = 0 }, .{ .addr = 0, .len = 0, .flags = 0, .next = 0 } };
-    avail.* = .{ .flags = 0, .idx = 0, .ring = .{ 0, 0, 0, 0 } };
-    used.* = .{ .flags = 0, .idx = 0, .ring = .{ .{ .id = 0, .len = 0 }, .{ .id = 0, .len = 0 }, .{ .id = 0, .len = 0 }, .{ .id = 0, .len = 0 } } };
+    const size = if (qsel == 2) tx_queue_size else queue_size;
+    if (qsz < size) return false;
+    vp_write16(0x18, size);
+    desc.* = @splat(.{ .addr = 0, .len = 0, .flags = 0, .next = 0 });
+    avail.* = .{ .flags = 0, .idx = 0, .ring = @splat(0) };
+    used.* = .{ .flags = 0, .idx = 0, .ring = @splat(.{ .id = 0, .len = 0 }) };
+    mmu.clean_dcache_range(@intFromPtr(desc), @sizeOf(@TypeOf(desc.*)));
+    mmu.clean_dcache_range(@intFromPtr(avail), @sizeOf(VirtqAvail));
     mmu.clean_dcache_range(@intFromPtr(used), @sizeOf(VirtqUsed));
     last_used.* = 0;
     // Claim 5804: queue GPAs are guest PHYSICAL addresses — translate the
@@ -610,8 +629,8 @@ pub fn virtio_snd_init() bool {
 /// Control request + reply staging (BSS — the driver's other transports use
 /// global staging too; the stack is not trusted for DMA). Sized for the
 /// largest exchange: PCM_INFO = 32 B info + 4 B status.
-var ctl_req_buf: [24]u8 align(8) = undefined;
-pub var ctl_reply_buf: [64]u8 align(8) = undefined;
+var ctl_req_buf: [64]u8 align(64) = undefined;
+pub var ctl_reply_buf: [64]u8 align(64) = undefined;
 
 /// Exchange diagnostics (the honest failure record — which stage bailed).
 /// 0 = ok; 1 = queue not armed; 2 = request too large; 3 = drain timeout;
@@ -638,6 +657,8 @@ fn ctl_exchange(request: []const u8, reply_len: usize) u32 {
         return 0xffffffff;
     }
     @memcpy(ctl_req_buf[0..request.len], request);
+    @memset(&ctl_reply_buf, 0xff);
+    mmu.clean_dcache_range(@intFromPtr(&ctl_reply_buf), ctl_reply_buf.len);
 
     // desc 0: the request (device-readable, NEXT)
     ctrl_desc[0] = .{ .addr = mmu.to_phys(@intFromPtr(&ctl_req_buf)), .len = @intCast(request.len), .flags = VIRTQ_DESC_F_NEXT, .next = 1 };
@@ -689,6 +710,7 @@ fn ctl_exchange(request: []const u8, reply_len: usize) u32 {
         ctl_fail_stage = 5;
         return 0xffffffff;
     }
+    mmu.invalidate_dcache_range(@intFromPtr(&ctl_reply_buf), ctl_reply_buf.len);
     return std.mem.readInt(u32, ctl_reply_buf[0..4], .little);
 }
 
@@ -707,6 +729,7 @@ pub fn snd_pcm_probe() u32 {
     const st = ctl_exchange(std.mem.asBytes(&req), @sizeOf(PcmInfo) + 4);
     beep_info_status = st;
     if (st != S_OK) return st;
+    if (ctl_used_len < @sizeOf(PcmInfo) + 4) return 0xffffffff;
     // OBSERVED reply layout (live on VZ): [status hdr][info entries] — the
     // status is the FIRST word, then the entries (the live reply bytes were
     // 0x8000 0x00000000 0x000a0020 ... — status first; the Linux driver
@@ -714,12 +737,13 @@ pub fn snd_pcm_probe() u32 {
     // by observation, recorded).
     const status = std.mem.readInt(u32, ctl_reply_buf[0..4], .little);
     if (status != S_OK) return status;
-    const info: *const PcmInfo = @ptrCast(@alignCast(&ctl_reply_buf[4]));
-    beep_obs_formats = info.formats;
-    beep_obs_rates = info.rates;
-    beep_obs_ch_min = info.channels_min;
-    beep_obs_ch_max = info.channels_max;
-    beep_obs_dir = info.direction;
+    // The 4-byte status prefix does not align the u64 fields of PcmInfo.
+    // Decode the wire rather than promising an impossible 8-byte alignment.
+    beep_obs_formats = std.mem.readInt(u64, ctl_reply_buf[12..20], .little);
+    beep_obs_rates = std.mem.readInt(u64, ctl_reply_buf[20..28], .little);
+    beep_obs_dir = ctl_reply_buf[28];
+    beep_obs_ch_min = ctl_reply_buf[29];
+    beep_obs_ch_max = ctl_reply_buf[30];
     return S_OK;
 }
 
@@ -744,7 +768,9 @@ fn pick_params() struct { format: u8, rate: u8, channels: u8 } {
             break;
         }
     }
-    const channels: u8 = if (beep_obs_ch_max >= 2) 2 else @max(beep_obs_ch_min, 1);
+    const channels: u8 = if (beep_obs_ch_min == 0 or beep_obs_ch_min > beep_obs_ch_max or beep_obs_ch_min > 2)
+        0
+    else if (beep_obs_ch_max >= 2) 2 else 1;
     return .{ .format = format, .rate = rate, .channels = channels };
 }
 
@@ -823,6 +849,11 @@ pub const audio_max_len: u32 = 64 * 1024;
 /// state. Returns `.ready = 1` only when the transport AND the
 /// negotiation succeeded.
 pub fn snd_audio_info() AudioInfo {
+    if (stream) |current| {
+        if (current.model.state == .quarantined) {
+            return .{ .ready = 0, .format = 0xff, .rate = 0xff, .channels = 0, .padding = 0, .period_bytes = beep_period_bytes, .max_len = audio_max_len };
+        }
+    }
     if (beep_format == 0xff) {
         if (snd_audio_negotiate() != S_OK) {
             return .{
@@ -868,6 +899,10 @@ pub fn snd_audio_negotiate() u32 {
         return info_st;
     }
     const p = pick_params();
+    if (beep_obs_dir != D_OUTPUT or p.channels == 0) {
+        beep_fail = "no supported output channel tuple";
+        return 0xffffffff;
+    }
     if (p.format == 0xff) {
         beep_fail = "no supported sample format advertised";
         return 0xffffffff;
@@ -920,35 +955,39 @@ pub fn snd_audio_start() u32 {
 /// channel count — the same math the synth uses — so any caller's staging
 /// (synth or uaccess copy-in) is scaled uniformly.
 fn apply_stream_gain(chunk_len: u32) void {
+    snd_apply_gain(beep_buf[4..][0..chunk_len], beep_format, beep_channels);
+}
+
+pub fn snd_apply_gain(samples: []u8, format: u8, channels: u8) void {
     const vol: u32 = if (stream_muted) 0 else stream_volume;
     if (vol == 100) return;
     const gain: f32 = @as(f32, @floatFromInt(vol)) / 100.0;
-    const fmt_b = snd_fmt_bytes(beep_format);
-    if (fmt_b == 0 or beep_channels == 0) return;
-    const frame_bytes = fmt_b * beep_channels;
-    const frames = chunk_len / frame_bytes;
+    const fmt_b = snd_fmt_bytes(format);
+    if (fmt_b == 0 or channels == 0) return;
+    const frame_bytes = fmt_b * channels;
+    const frames = samples.len / frame_bytes;
     var i: u32 = 0;
     var f: u32 = 0;
     while (f < frames) : (f += 1) {
         var ch: u8 = 0;
-        while (ch < beep_channels) : (ch += 1) {
-            switch (beep_format) {
+        while (ch < channels) : (ch += 1) {
+            switch (format) {
                 FMT_FLOAT => {
-                    const v: f32 = @bitCast(std.mem.readInt(u32, beep_buf[4 + i ..][0..4], .little));
-                    std.mem.writeInt(u32, beep_buf[4 + i ..][0..4], @bitCast(v * gain), .little);
+                    const v: f32 = @bitCast(std.mem.readInt(u32, samples[i..][0..4], .little));
+                    std.mem.writeInt(u32, samples[i..][0..4], @bitCast(v * gain), .little);
                 },
                 FMT_S16 => {
-                    const s: i16 = std.mem.readInt(i16, beep_buf[4 + i ..][0..2], .little);
+                    const s: i16 = std.mem.readInt(i16, samples[i..][0..2], .little);
                     // gain <= 1.0, so the scaled value always fits i16
                     // (scaling down never overflows) — the existing
                     // synth's @intFromFloat pattern.
                     const scaled: i16 = @intFromFloat(@as(f32, @floatFromInt(s)) * gain);
-                    std.mem.writeInt(i16, beep_buf[4 + i ..][0..2], scaled, .little);
+                    std.mem.writeInt(i16, samples[i..][0..2], scaled, .little);
                 },
                 FMT_S32 => {
-                    const s: i32 = std.mem.readInt(i32, beep_buf[4 + i ..][0..4], .little);
-                    const scaled: i32 = @intFromFloat(@as(f32, @floatFromInt(s)) * gain);
-                    std.mem.writeInt(i32, beep_buf[4 + i ..][0..4], scaled, .little);
+                    const s: i32 = std.mem.readInt(i32, samples[i..][0..4], .little);
+                    const scaled: i32 = @intCast(@divTrunc(@as(i64, s) * vol, 100));
+                    std.mem.writeInt(i32, samples[i..][0..4], scaled, .little);
                 },
                 else => {},
             }
@@ -974,12 +1013,14 @@ pub fn snd_audio_submit(chunk_len: u32) u32 {
     // boot chime, and `sys_audio_play`; scaling down never overflows, and
     // the submitted/drained accounting below counts bytes unchanged.
     apply_stream_gain(chunk_len);
+    beep_status_staging = .{ .status = 0xffffffff, .latency_bytes = 0 };
+    mmu.clean_dcache_range(@intFromPtr(&beep_status_staging), @sizeOf(@TypeOf(beep_status_staging)));
     // Submit the chain [pcm_xfer][data][pcm_status] to queue 2.
     tx_desc[0] = .{ .addr = mmu.to_phys(@intFromPtr(&beep_buf)), .len = @sizeOf(PcmXfer), .flags = VIRTQ_DESC_F_NEXT, .next = 1 };
     tx_desc[1] = .{ .addr = mmu.to_phys(@intFromPtr(&beep_buf)) + @sizeOf(PcmXfer), .len = chunk_len, .flags = VIRTQ_DESC_F_NEXT, .next = 2 };
     tx_desc[2] = .{ .addr = mmu.to_phys(@intFromPtr(&beep_status_staging)), .len = @sizeOf(PcmStatus), .flags = VIRTQ_DESC_F_WRITE, .next = 0 };
     const tx_avail_idx = tx_avail.idx;
-    tx_avail.ring[tx_avail_idx % queue_size] = 0;
+    tx_avail.ring[tx_avail_idx % tx_queue_size] = 0;
     tx_avail.idx = tx_avail_idx +% 1;
     mmu.clean_dcache_range(@intFromPtr(&tx_desc), @sizeOf(VirtqDesc) * 3);
     mmu.clean_dcache_range(@intFromPtr(&tx_avail), @sizeOf(VirtqAvail));
@@ -998,15 +1039,24 @@ pub fn snd_audio_submit(chunk_len: u32) u32 {
             return 0xffffffff;
         }
     }
-    const used_elem = tx_used.ring[tx_last_used % queue_size];
+    const used_elem = tx_used.ring[tx_last_used % tx_queue_size];
     tx_last_used +%= 1;
     if (used_elem.id != 0) {
         beep_fail = "TX used entry id mismatch";
         return 0xffffffff;
     }
-    beep_drained += chunk_len;
+    if (used_elem.len != @sizeOf(PcmStatus)) {
+        beep_fail = "TX short status";
+        return 0xffffffff;
+    }
+    mmu.invalidate_dcache_range(@intFromPtr(&beep_status_staging), @sizeOf(@TypeOf(beep_status_staging)));
     beep_last_status = std.mem.readInt(u32, std.mem.asBytes(&beep_status_staging)[0..4], .little);
     beep_last_latency = std.mem.readInt(u32, std.mem.asBytes(&beep_status_staging)[4..8], .little);
+    if (beep_last_status != S_OK) {
+        beep_fail = "TX device refused";
+        return 0xffffffff;
+    }
+    beep_drained += chunk_len;
     return S_OK;
 }
 
@@ -1032,6 +1082,12 @@ pub fn snd_audio_stop() u32 {
 /// snd_audio_submit per period → snd_audio_stop. Returns S_OK (or the
 /// failing status / 0xffffffff); every step's status is recorded.
 pub fn snd_beep(freq: u32, ms: u32) u32 {
+    const saved = audio_lock.lock();
+    defer audio_lock.unlock(saved);
+    if (!snd_legacy_available()) {
+        beep_fail = "continuous PCM owns device";
+        return 0xffffffff;
+    }
     beep_submitted = 0;
     beep_drained = 0;
     beep_frames = 0;
@@ -1064,7 +1120,10 @@ pub fn snd_beep(freq: u32, ms: u32) u32 {
         const period_bytes = period_frames * frame_bytes;
         synth_sine(freq, period_frames, beep_format, beep_channels, beep_rate, start_frame);
         const st = snd_audio_submit(period_bytes);
-        if (st != S_OK) return st;
+        if (st != S_OK) {
+            _ = snd_audio_stop();
+            return st;
+        }
         remaining -= period_frames;
     }
     beep_frames = frames;
@@ -1088,7 +1147,273 @@ pub fn snd_chime() u32 {
     return snd_beep(880, 220);
 }
 
-var beep_status_staging: PcmStatus align(8) = undefined;
+const StatusLine = extern struct {
+    status: u32 = 0xffffffff,
+    latency_bytes: u32 = 0,
+    padding: [56]u8 = @splat(0),
+};
+var beep_status_staging: StatusLine align(64) = .{};
+
+// B7 opt-in stream ABI. The flag is in x1 so legacy callers' unused x2
+// register never changes their behavior. Operations use x2; x3 is generation.
+pub const audio_stream_flag: u64 = @as(u64, 1) << 63;
+pub const StreamOp = enum(u64) { open = 1, submit = 2, start = 3, end = 4, abort = 5, status = 6 };
+pub const StreamParams = extern struct {
+    format: u8,
+    rate: u8,
+    channels: u8,
+    reserved: u8 = 0,
+    version: u32 = 1,
+};
+pub const StreamStatus = extern struct {
+    generation: u64,
+    accepted: u64,
+    submitted: u64,
+    completed: u64,
+    canceled: u64,
+    state: u32,
+    reason: u32,
+    outstanding: u32,
+    slots: u32,
+    starts: u32,
+    stops: u32,
+    releases: u32,
+    resets: u32,
+};
+pub var audio_lock = spinlock.IrqSaveSpinlock{};
+// One fixed pool charge on first open, retained for reuse/quarantine. Keeping
+// 32 KiB of PCM out of the flat kernel preserves its 16 MiB loader ceiling.
+pub const stream_pages = (@sizeOf(playback.Playback) + 4095) / 4096;
+pub var stream: ?*playback.Playback = null;
+var stream_last_owner: ?u64 = null;
+const HeaderLine = extern struct { stream_id: u32 = 0, padding: [60]u8 = @splat(0) };
+var stream_headers: [pcm.slot_count]HeaderLine align(64) = @splat(.{});
+var stream_statuses: [pcm.slot_count]StatusLine align(64) = @splat(.{});
+var io_context: u8 = 0;
+// Host tests inject the same pump boundary; production always uses PCI DMA.
+pub var test_stream_io: ?playback.Io = null;
+pub var test_stream_caps: ?pcm.Capabilities = null;
+
+pub fn snd_stream_now() u64 {
+    if (timer.freq == 0) return 0;
+    return @intCast(@as(u128, timer.cntpct()) * 1_000_000_000 / timer.freq);
+}
+
+fn stream_io() playback.Io {
+    if (@import("builtin").is_test) {
+        if (test_stream_io) |io| return io;
+    }
+    return .{ .context = &io_context, .params = stream_set_params, .control = stream_control, .publish = stream_publish, .poll = stream_completion, .clock = stream_clock };
+}
+
+fn stream_clock(_: *anyopaque) u64 {
+    return snd_stream_now();
+}
+
+fn stream_set_params(_: *anyopaque, params: pcm.Params) bool {
+    beep_format = switch (params.format) {
+        .s16 => FMT_S16,
+        .s32 => FMT_S32,
+        .float32 => FMT_FLOAT,
+    };
+    const rates = [_]u8{ RATE_48000, RATE_44100, RATE_32000, RATE_22050, RATE_16000, RATE_8000 };
+    beep_rate = 0xff;
+    for (rates) |rate| {
+        if (snd_rate_hz(rate) == params.rate_hz) beep_rate = rate;
+    }
+    beep_channels = params.channels;
+    const req = PcmSetParams{
+        .hdr = .{ .hdr = .{ .code = R_PCM_SET_PARAMS }, .stream_id = 0 },
+        .buffer_bytes = pcm.pcm_bytes,
+        .period_bytes = pcm.period_bytes,
+        .features = 0,
+        .channels = beep_channels,
+        .format = beep_format,
+        .rate = beep_rate,
+        .padding = 0,
+    };
+    return ctl_exchange(std.mem.asBytes(&req), 4) == S_OK;
+}
+
+fn stream_control(_: *anyopaque, kind: pcm.Control) bool {
+    if (kind == .reset) return snd_rearm();
+    return ctl_pcm_simple(switch (kind) {
+        .prepare => R_PCM_PREPARE,
+        .start => R_PCM_START,
+        .stop => R_PCM_STOP,
+        .release => R_PCM_RELEASE,
+        .reset => unreachable,
+    }) == S_OK;
+}
+
+fn stream_publish(_: *anyopaque, transfer: pcm.Transfer, payload: []const u8) void {
+    const slot = transfer.head / pcm.descriptors_per_period;
+    const head: u16 = @intCast(transfer.head);
+    stream_headers[slot] = .{};
+    stream_statuses[slot] = .{};
+    tx_desc[head] = .{ .addr = mmu.to_phys(@intFromPtr(&stream_headers[slot])), .len = 4, .flags = VIRTQ_DESC_F_NEXT, .next = head + 1 };
+    tx_desc[head + 1] = .{ .addr = mmu.to_phys(@intFromPtr(payload.ptr)), .len = @intCast(payload.len), .flags = VIRTQ_DESC_F_NEXT, .next = head + 2 };
+    tx_desc[head + 2] = .{ .addr = mmu.to_phys(@intFromPtr(&stream_statuses[slot])), .len = 8, .flags = VIRTQ_DESC_F_WRITE, .next = 0 };
+    mmu.clean_dcache_range(@intFromPtr(payload.ptr), payload.len);
+    mmu.clean_dcache_range(@intFromPtr(&stream_headers[slot]), @sizeOf(HeaderLine));
+    mmu.clean_dcache_range(@intFromPtr(&stream_statuses[slot]), @sizeOf(StatusLine));
+    mmu.clean_dcache_range(@intFromPtr(&tx_desc[head]), @sizeOf(VirtqDesc) * 3);
+    const index = tx_avail.idx;
+    tx_avail.ring[index % tx_queue_size] = head;
+    tx_avail.idx = index +% 1;
+    mmu.clean_dcache_range(@intFromPtr(&tx_avail), @sizeOf(VirtqAvail));
+    kick(tx_queue_notify_off, 2);
+}
+
+fn stream_completion(_: *anyopaque) ?playback.RawCompletion {
+    if (!tx_armed) return null;
+    mmu.invalidate_dcache_range(@intFromPtr(&tx_used), @sizeOf(VirtqUsed));
+    if (tx_used.idx == tx_last_used) return null;
+    const used = tx_used.ring[tx_last_used % tx_queue_size];
+    tx_last_used +%= 1;
+    if (used.id % pcm.descriptors_per_period != 0 or used.id / pcm.descriptors_per_period >= pcm.slot_count)
+        return .{ .head = used.id, .written = used.len, .ok = false };
+    const slot = used.id / pcm.descriptors_per_period;
+    mmu.invalidate_dcache_range(@intFromPtr(&stream_statuses[slot]), @sizeOf(StatusLine));
+    return .{ .head = used.id, .written = used.len, .ok = stream_statuses[slot].status == S_OK };
+}
+
+/// Callers hold audio_lock, including reserve/copy/commit as one transaction.
+pub fn snd_stream_open(owner: u64, request: StreamParams) pcm.Error!pcm.StreamToken {
+    if (stream) |current| {
+        if (current.model.state == .quarantined) return error.Quarantined;
+    }
+    if (!snd_legacy_available()) return error.Busy;
+    if (!snd_ready or !ctrl_armed or !tx_armed) {
+        beep_fail = "NO AUDIO DEVICE: continuous PCM refused";
+        return error.NoDevice;
+    }
+    if (request.version != 1 or request.reserved != 0) return error.UnsupportedFormat;
+    const format: pcm.Format = switch (request.format) {
+        FMT_S16 => .s16,
+        FMT_S32 => .s32,
+        FMT_FLOAT => .float32,
+        else => return error.UnsupportedFormat,
+    };
+    const params = pcm.Params{ .format = format, .rate_hz = snd_rate_hz(request.rate), .channels = request.channels };
+    var formats: [3]pcm.Format = undefined;
+    var rates: [6]u32 = undefined;
+    var nf: usize = 0;
+    var nr: usize = 0;
+    var caps: pcm.Capabilities = undefined;
+    if (@import("builtin").is_test and test_stream_caps != null) {
+        caps = test_stream_caps.?;
+    } else {
+        if (snd_pcm_probe() != S_OK) return error.DeviceFailed;
+        for ([_]u8{ FMT_S16, FMT_S32, FMT_FLOAT }, [_]pcm.Format{ .s16, .s32, .float32 }) |bit, fmt| {
+            if (beep_obs_formats & (@as(u64, 1) << @intCast(bit)) != 0) {
+                formats[nf] = fmt;
+                nf += 1;
+            }
+        }
+        for ([_]u8{ RATE_48000, RATE_44100, RATE_32000, RATE_22050, RATE_16000, RATE_8000 }) |bit| {
+            if (beep_obs_rates & (@as(u64, 1) << @intCast(bit)) != 0) {
+                rates[nr] = snd_rate_hz(bit);
+                nr += 1;
+            }
+        }
+        caps = .{ .present = true, .output = beep_obs_dir == D_OUTPUT, .queue_descriptors = tx_queue_size, .formats = formats[0..nf], .rates_hz = rates[0..nr], .channels_min = beep_obs_ch_min, .channels_max = @min(beep_obs_ch_max, 2) };
+    }
+    if (stream == null) {
+        if (@import("builtin").is_test) return error.InsufficientCapacity;
+        const physical = alloc.alloc_pages(stream_pages) orelse return error.InsufficientCapacity;
+        stream = @ptrFromInt(mmu.to_kva(physical));
+        stream.?.* = std.mem.zeroes(playback.Playback);
+    }
+    const token = try stream.?.open(owner, caps, params, snd_stream_now(), stream_io());
+    stream_last_owner = owner;
+    return token;
+}
+
+pub fn snd_stream_drive() void {
+    const current = stream orelse return;
+    if (current.model.state != .closed) current.drive(snd_stream_now(), stream_io());
+}
+
+pub fn snd_stream_status(owner: u64, generation: u64) pcm.Error!StreamStatus {
+    const current = stream orelse return error.InvalidToken;
+    if (stream_last_owner != owner or generation != current.model.generation) return error.InvalidToken;
+    const m = &current.model;
+    return .{
+        .generation = m.generation,
+        .accepted = m.counts.accepted,
+        .submitted = m.counts.submitted,
+        .completed = m.counts.completed,
+        .canceled = m.counts.canceled,
+        .state = @intFromEnum(m.state),
+        .reason = @intFromEnum(m.reason),
+        .outstanding = @intCast(m.counts.outstanding),
+        .slots = pcm.slot_count,
+        .starts = @intCast(current.starts),
+        .stops = @intCast(current.stops),
+        .releases = @intCast(current.releases),
+        .resets = @intCast(current.resets),
+    };
+}
+
+pub fn snd_legacy_available() bool {
+    return if (stream) |current| current.model.state == .closed else true;
+}
+
+/// Exit context only changes ownership. STOP/RELEASE/reset run in the next
+/// main-context pump; kernel-owned DMA storage outlives process mappings.
+pub fn snd_stream_owner_death(owner: u64) void {
+    const saved = audio_lock.lock();
+    defer audio_lock.unlock(saved);
+    const current = stream orelse return;
+    if (stream_last_owner == owner) stream_last_owner = null;
+    current.model.owner_death(owner, snd_stream_now()) catch {};
+}
+
+pub fn snd_stream_poll() void {
+    const saved = audio_lock.lock();
+    defer audio_lock.unlock(saved);
+    snd_stream_drive();
+}
+
+test "virtio_snd: continuous DMA layout and ABI are bounded and cache isolated" {
+    try std.testing.expectEqual(@as(usize, 512), @sizeOf(@TypeOf(tx_desc)));
+    try std.testing.expectEqual(@as(usize, 128), @sizeOf(VirtqAvail));
+    try std.testing.expectEqual(@as(usize, 320), @sizeOf(VirtqUsed));
+    try std.testing.expectEqual(@as(usize, 64), @sizeOf(HeaderLine));
+    try std.testing.expectEqual(@as(usize, 64), @sizeOf(StatusLine));
+    try std.testing.expectEqual(@as(usize, 1984), @sizeOf(@TypeOf(tx_desc)) + @sizeOf(VirtqAvail) + @sizeOf(VirtqUsed) + @sizeOf(@TypeOf(stream_headers)) + @sizeOf(@TypeOf(stream_statuses)));
+    try std.testing.expectEqual(@as(usize, 8), @sizeOf(StreamParams));
+    try std.testing.expectEqual(@as(usize, 72), @sizeOf(StreamStatus));
+    try std.testing.expectEqual(@as(u16, 32), tx_queue_size);
+    try std.testing.expectEqual(@as(usize, 9), stream_pages);
+}
+
+test "virtio_snd: S32 gain handles both signed endpoints exactly" {
+    var samples: [8]u8 = undefined;
+    std.mem.writeInt(i32, samples[0..4], std.math.maxInt(i32), .little);
+    std.mem.writeInt(i32, samples[4..8], std.math.minInt(i32), .little);
+    stream_volume = 50;
+    stream_muted = false;
+    defer {
+        stream_volume = 100;
+    }
+    snd_apply_gain(&samples, FMT_S32, 1);
+    try std.testing.expectEqual(@as(i32, 1073741823), std.mem.readInt(i32, samples[0..4], .little));
+    try std.testing.expectEqual(@as(i32, -1073741824), std.mem.readInt(i32, samples[4..8], .little));
+}
+
+test "virtio_snd: quarantined storage refuses open and reports not ready" {
+    var current = playback.Playback{};
+    current.model.state = .quarantined;
+    stream = &current;
+    defer {
+        stream = null;
+    }
+    try std.testing.expectError(error.Quarantined, snd_stream_open(42, .{ .format = FMT_FLOAT, .rate = RATE_48000, .channels = 2 }));
+    try std.testing.expectEqual(@as(u32, 0), snd_audio_info().ready);
+    try std.testing.expect(!snd_legacy_available());
+}
 
 /// Fill `beep_buf` (after the 4-byte pcm_xfer header) with a sine at
 /// `freq` Hz, `frames` sample frames starting at absolute frame
@@ -1122,7 +1447,7 @@ fn synth_sine(freq: u32, frames: u32, format: u8, channels: u8, rate: u8, start_
                 },
                 else => {},
             }
-            i += 4;
+            i += snd_fmt_bytes(format);
         }
     }
 }

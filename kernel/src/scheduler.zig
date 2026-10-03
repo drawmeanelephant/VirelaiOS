@@ -77,6 +77,7 @@ const app_timers = @import("app_timers.zig");
 const file_table = @import("file_table.zig");
 // Milestone 12 (claim 7483): per-process TCP connection cleanup
 const tcp = @import("tcp.zig");
+const virtio_snd = @import("virtio_snd.zig");
 // Card G6 teardown follow-on (per-process window ownership): the exit path
 // auto-closes the exiting process's user windows via `close_owner`. Pure
 // BSS writes, safe in the exception context `exit_current` runs in.
@@ -2491,6 +2492,7 @@ fn exit_current_locked(status: u64, process_exit: bool) bool {
         _ = shared_mmap.revoke_peer_role(pid);
         file_table.reset_process(pid);
         tcp.close_owner(pid);
+        virtio_snd.snd_stream_owner_death(pid);
         // Milestone 14 (claim 7323): a dead process's app timer is disarmed
         // now — no stale fire can ever reach a recycled pid.
         app_timers.reset(pid);
@@ -3082,6 +3084,9 @@ pub fn request_report() void {
 /// Shell-side (main context, next to timer.maybe_heartbeat): print every
 /// pending report line, then the exit/reap reports.
 pub fn maybe_report(con: *console.Console) void {
+    // B7: bounded PCM completions/deadlines and deferred owner-death cleanup.
+    // No audio control exchange runs from the IRQ scheduler.
+    virtio_snd.snd_stream_poll();
     // Claim 9094 (#810): the idle-loop drain point for the task-ring/
     // process audit — main context, console-safe (claim 9187). Nothing
     // prints on healthy boots beyond the one-per-boot armed line.
