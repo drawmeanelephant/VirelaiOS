@@ -6,6 +6,7 @@
 - Amended: 2026-09-21 (M71k / #1570 — the EL0 HTTPS consumer is Go; `FETCHS.BIN` deleted, `lib/tls` is host-side interop)
 - Amended: 2026-09-21 (M71j / #1569 — the EL0 SSH-2 client is Go; `SSH.BIN` deleted, `lib/ssh` wire/packet/stream stay for SSHPACKET.BIN)
 - Amended: 2026-10-01 (A1 / #1865 — bounded native Zig portfolio exception)
+- Amendment proposed: 2026-10-03 (A2 / #1921 — bounded standalone QuickJS; owner approval pending)
 - Zig Guest Target/Backend Owner (A1 / #1865): **drawmeanelephant**,
   explicitly appointed by the project owner on 2026-10-01
 - Issue: #1293 (this document), umbrella #1292, M60 #1297
@@ -364,3 +365,105 @@ Record observed versus inferred behavior and the still-unsupported
 features. An unmaintained or failing workload can be suspended without
 changing Go ownership, the boot default or existing ABI consumers.
 Adding another program requires another owner-approved ADR amendment.
+
+## Proposed amendment (A2 / #1921) — standalone bounded QuickJS
+
+**Not accepted or implementation permission.** This amendment and
+[ADR 0039](0039-quickjs-runtime.md) require explicit approval from
+**drawmeanelephant**, the appointed Zig Guest Target/Backend Owner,
+before merge. The approval date/link must be recorded when received.
+The R1 card is not complete without that approval; A1's four-program
+list remains closed while A2 is proposed.
+
+### A2.1 — One additional program, not another app platform
+
+Permit **QJS.BIN only**, a standalone host-built native AArch64 EL0
+interpreter for explicitly supplied JS files and a bounded serial
+line-eval loop. Its adapter lives in `user/src/quickjs.zig`, uses the
+existing `user/zig/` SDK, and links the exact Bellard QuickJS C tree
+`04be246001599f5995fa2f2d8c91a0f198d3f34c` (MIT, version 2026-06-04).
+Private pinned C inputs/headers/bridges and supporting runtime fixtures
+live under `user/zig/quickjs/`; isolated build tooling lives under
+`tools/quickjs-runtime/` and `tools/js-client/`.
+
+This narrowly qualifies D2/D4/M60 for that program and its verification
+fixtures. D3 is unchanged: **Go never links C/Zig, imports a C ABI or
+gains cgo/FFI**. No C-to-Go transpile carrying an emulated libc, general
+libc/POSIX compatibility layer, new Zig GUI/toolkit, kernel expansion
+or boot-default change. Go owns the desktop, WM, apps and shell.
+
+### A2.2 — A1.2-shaped, finite limits
+
+QJS is single-threaded, offline and capability-limited, with one live
+runtime/context. JS sees only `print` and `console.log`; explicit script
+loading, tty commands and optional receipt writing are adapter authority,
+not JS file handles. No DOM/web APIs, fetch/sockets, timers, npm, JIT,
+upstream std/os library, workers, native modules or ambient host commands.
+ADR 0028 D2 permanently excludes JS from WEB.ELF, and its negative
+JS-in-WASM decision is not reopened.
+
+ADR 0039 defines enforcement, named failures and exact measurements owed:
+
+- Source/eval ≤1,048,576 B; logical output/eval ≤65,536 B; diagnostics/
+  session ≤16,384 B; receipt/session ≤1,114,112 B.
+- One aggregate **4,194,304 B** arena includes engine, SDK, source,
+  buffers and allocation overhead; no second allocator or mapping.
+- Native stack use ≤131,072 B inside the existing 196,608 B mapping,
+  QuickJS's own C-stack limit 98,304 B; no worker threads.
+- At most two open native file handles: script or tty plus receipt.
+  `/host` paths ≤64 B full/31 B component; only the literal adapter-owned
+  `/dev/tty` is a device exception. Preserve existing trust/containment.
+  At most seven SDK resources including reserved stream/cwd identities
+  and one transient directory pin. Receipts use contained exclusive
+  creation; existing files are refused, never truncated or replaced.
+- Seven user argv entries ≤255 B each; sixteen env entries ≤127 B each,
+  no JS env API, clipping or ABI increase.
+- File/mapped image ≤4,194,304 B each; data/BSS ≤1,048,576 B; engine+
+  bridge binary delta ≤1,572,864 B against the identical empty adapter.
+- Cold first successful eval ≤5,000 ms (maximum of five fresh launches);
+  interruption completion ≤5,000 ms with a 4,000 ms internal deadline,
+  monotonic-counter polling and bounded C slow paths, not coarse sleep.
+- Interactive input ≤4,096 B/line, ≤256 evals, ≤60,000 ms idle,
+  ≤4,194,304 B aggregate source and ≤1,048,576 B aggregate output/session.
+- Exact canonical platform inventory/caps: **51 provided, 5 bounded-error
+  stubs, 134 refused symbols plus 12 refused features (146 refusal entries)**.
+  Compiler/header primitives and normalized aliases follow ADR 0039's
+  explicit counting rule, not extra hidden allowance.
+
+These are chosen ceilings, not claimed native measurements. A within-size
+script may still refuse OutOfMemory. Unsupported operations are excluded
+or explicitly fail; success-shaped stubs, silent truncation, host fallback
+and continuing a poisoned context are forbidden. Resource interruption
+resets the context; ordinary JS exceptions do not roll back prior state.
+Host scheduling is not a hard-real-time guarantee, and harness timeouts
+never establish a guest refusal.
+
+### A2.3 — Native C recipe, ownership and acceptance
+
+ADR 0038 still owns the pinned Zig 0.16.0 target, private std overlay,
+entry, single arena and two-segment static gap ELF. QJS adds an isolated
+recipe compiling C11 with that distribution's `zig cc` for
+`aarch64-freestanding-none`, baseline CPU, `-Os`, freestanding/private
+headers, x18 reserved, no libc/sysroot/fast-math/hosted startup or dynamic
+linking. Link C objects and private native Zig bridges into the SDK's
+ReleaseSafe single-threaded artifact; retain its ELF/parser checks.
+The five core units are quickjs/dtoa/regexp/Unicode/cutils, never
+quickjs-libc or the upstream shell/compiler. ADR 0039 carries complete
+flags, source hashes, patches, platform dispositions and update rules.
+No shared SDK/root-build change is implied.
+
+Subject to explicit approval, **drawmeanelephant** owns this program's
+pin/security monitoring, private C boundary, numeric limits, upgrades
+and suspension on regression, alongside the existing target-owner role.
+Owner-approved landing precedes M88b's complete offline runtime and
+M88c's independently closable product/guest acceptance. Their disjoint
+Touches and named file-eval, interactive-eval, refusal, bound, cold-start
+and cleanup proofs are in ADR 0039; no implementation card is filed here.
+
+Require no-libc reproducible builds and complete symbol closure, then
+real VZ file/interactive execution, independent output comparisons,
+all resource/refusal tests and reclamation evidence. A hosted object,
+library compile or marker is not guest acceptance. Suspend a failing or
+unmaintained QJS without changing the Go desktop or existing consumers.
+Any additional program or authority requires another owner-approved
+amendment; this is not an open-ended C/Zig userland exception.
