@@ -368,7 +368,8 @@ The host/guest golden harness must distinguish those semantics.
 4. B2 #1869, B3 #1870, B4 #1871: coordinate shared kernel/backend files
    in sequence, then C3 #1877. C4 #1878 can run alongside filesystem
    work after A2/A3; CLI standard-stream adoption also consumes B1.
-5. B5 #1872, B6 #1873 and B7 #1874 are **not activated**. Parallel
+5. B5 #1872 is activated only for the explicit-context subset below.
+   B6 #1873 and B7 #1874 remain conditional. Parallel
    Boris, preview/watch/network, NINJAM and continuous audio require a
    later owner-approved scope and design amendment.
 
@@ -530,7 +531,7 @@ Using the installed stdlib instead of this recipe is **not** this target.
 |---|---|
 | Default page allocator, including the configured-page variant | Supported through `root.os.heap.page_allocator`; both page sizes are 4,096. Resize/remap refuse and allocations remain in A2's single arena |
 | `File.stdout()` and incomplete handles | Supported typed SDK tokens; stdin/stdout/stderr are distinct negative identities, not kernel handles 0–7. Actual unbound stream I/O returns `Unexpected` plus `Unsupported:UnboundOrClosedInput/Output`, never EOF or discarded writes |
-| `Thread.spawn` | Compile-time single-threaded refusal; B5 is not activated |
+| `Thread.spawn` | Compile-time single-threaded refusal; B5 uses a separate explicit native API, not a std backend |
 | Default `Io.Threaded` (`getrandom` / `IOV_MAX`) | Named `VirelaiUnsupportedThreaded`; use `sdk.io`, not invented constants to make a hosted backend compile |
 | Default `debug.print` | Supported by the explicit debug Io hook, allocation-free chunked slot-1 console diagnostics **after initialize**, not a claim of stderr separation |
 | Direct POSIX `PROT`, `MREMAP`, errno or `getrandom` | Named `VirelaiUnsupportedPosix`; the allocator/entropy paths do not instantiate POSIX primitives or import Linux errno values |
@@ -595,3 +596,75 @@ Re-run affected workload goldens and gates when those workloads exist.
 Clean patch application alone is never upgrade acceptance. Test counts,
 measurements and observed versus blocked native steps belong in the landing
 PR and local gate artifacts, not a duplicated status log here.
+
+## B5 amendment — explicit native threads (#1872)
+
+The owner's B5 implementation prompt activates this bounded subset, not
+parallel Boris or a new worker budget. `user/zig/threads.zig` supplies
+allocation-free `Thread.spawn/join`, `attach`, `wait/wake` and an optional
+caller-owned mutex. Keep A2/A3's SDK, allocator, std.Thread, Io.Threaded
+and concurrency refusals unchanged. Native children run on core 0, sharing
+its preemptive/cooperative scheduler; no multicore speedup is promised.
+This keeps exit-stack reclamation serialized with the core-0 idle reaper.
+Workers must not call the SDK's
+single-threaded allocator/backend. No detach, cancellation, nested join
+dependencies, hosted startup or automatic ELF TLS loading is supported.
+
+**TLS/context:** the pinned compiler probes establish AArch64 variant-I
+static local-exec: TPIDR_EL0 plus a 16-byte prefix rounded to TLS alignment.
+The #1907 planner initializes an explicit caller-supplied template, zeros
+its remaining memory and padding, and refuses alignment/capacity/overlap.
+B5 installs this real TP register before a child starts and saves/restores
+it on IRQ, yield and parked-wait switches, including park
+back to kernel tasks. General registers, SP, PC and SIMD registers use the
+existing exception frame. Reserve x18 in the native compiler recipe because
+the exception frame does not preserve that platform register. Changing
+FPCR/FPSR is outside this subset.
+
+The caller provides disjoint mapped writable stacks (at least 4 KiB,
+16-byte aligned top), TLS buffers and a read-only template. These remain
+owned and alive until successful join. The explicit API reserves the
+prefix for its entry/argument; the body uses the planner's returned
+`tls_offset`, not a hard-coded offset for alignments above 16. Initialized
+and zero-only bytes are independent per task. Primary-task `attach` must
+precede TP-relative access. Raw `threadlocal` in production artifacts still
+refuses through the unchanged SDK ELF checker/linker: compiler-emitted
+PT_TLS, PIC/TLSDESC and dynamic TLS are **not** implicitly loaded by B5.
+This is an explicit native context API, not a std.Thread port.
+
+**Lifetime/capacity:** six extra threads per process, the existing 16-task
+global pool (shell/worker/idle included), and one existing 192 KiB kernel
+exception stack per child. Caller-owned stack/TLS bytes charge the existing
+mapped-image or mmap limits. Allocation or pool exhaustion refuses with
+`Capacity`; no budget grows. An exited native child retains its task seat
+and exception stack until its single-use process-bound join token is
+consumed. Retained children count against the six-thread cap. Join can
+park or observe an already exited child, returns its u8 status, orders its
+writes and permits caller-storage reuse; idle reap frees the exception
+stack. Self/foreign/stale/double joins and dependency chains refuse.
+Process exit/kill/fault abandons retained tokens and uses existing sibling
+kill/reap teardown. Go's zero-TLS create/exit remains detached and returns
+the original kernel task ID.
+
+**Futex/deadlines:** shared aligned u32 words use acquire/release atomics.
+Compare-after-seat and wake use the same scheduler lock; seat allocation
+is also under that lock. Wake is advisory and waiters recheck their
+condition. The strict native wait accepts zero (indefinite) or positive
+whole-second relative durations. Other durations return
+`UnsupportedPrecision` before parking, and the raw syscall returns EINVAL.
+An extra phase-guard tick prevents early expiry on the one-second timer.
+Expiry makes the task runnable with ETIMEDOUT; wake returns 0 and a changed
+word EAGAIN. Scheduling, skipped ticks and contention can delay resumption:
+there is no wall-time upper bound or fine deadline guarantee. Callers with
+an absolute budget must stop/recompute it themselves, never restart a full
+relative timeout after a spurious wake. Overflow refuses explicitly.
+Legacy Go futex op 0 keeps its existing coarse rounding contract.
+
+**Evidence:** `zig build test` covers context selection, blocking/late join,
+status, retention/reap, stale token and capacity refusal, futex contention
+and both lost-wake comparisons. `zig build zig-guest-check` also builds the
+x18-reserved explicit-context fixture and repeats the pinned TLS compiler
+probes. Extended `live-el0-exec` runs six real EL0 contexts, contends on a
+futex mutex, joins all children, refuses the seventh and fine timeouts,
+checks a coarse timeout against CNTPCT, and requires independent exact
+post-reap page recovery. No boot-default or app activation changes.

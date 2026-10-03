@@ -2159,7 +2159,7 @@ fn handle_getrandom(args: Args, _: *exceptions.VectorFrame) u64 {
 /// 0007 amendment. `timeout_ns == 0` waits forever (Go's semasleep(-1)).
 fn futex_deadline_tick(timeout_ns: u64) u64 {
     if (timeout_ns == 0) return 0;
-    const ticks = (timeout_ns + timer.period_ns - 1) / timer.period_ns;
+    const ticks = timeout_ns / timer.period_ns + @intFromBool(timeout_ns % timer.period_ns != 0);
     return scheduler.current_tick() +| @max(ticks, 1);
 }
 
@@ -2172,7 +2172,7 @@ fn futex_deadline_tick(timeout_ns: u64) u64 {
 /// its LAST task exits — `sys_exit` slot 3 stays process-exit). Errors:
 /// EINVAL for an unknown op, a non-process caller, a bad entry (outside
 /// the process's executable aperture), a null/misaligned stack_hi, a
-/// nonzero tls (reserved), or an exhausted task pool / thread bound
+/// invalid TLS prefix, or an exhausted task pool / thread bound
 /// (EAGAIN — a transient capacity refusal, the caller may retry).
 fn handle_thread(args: Args, _: *exceptions.VectorFrame) u64 {
     const op = args[0];
@@ -2184,20 +2184,38 @@ fn handle_thread(args: Args, _: *exceptions.VectorFrame) u64 {
             const stack_hi = args[2];
             const arg = args[3];
             const tls = args[4];
-            if (tls != 0) return error_result(.einval); // reserved: pure-Go arm64 keeps g in R28
+            if ((tls & 0xf) != 0) return error_result(.einval);
+            if (tls != 0 and (!uaccess.read_region_covers(tls, 16) or !uaccess.write_region_covers(tls, 16)))
+                return error_result(.efault);
             if (stack_hi == 0 or (stack_hi & 0xf) != 0) return error_result(.einval);
             // Entry validation "like exec": the PC must sit inside the
             // process's executable text aperture.
             const pinfo = process.info(pid) orelse return error_result(.einval);
             const text_base = pinfo.text_va;
             const text_end = text_base + pinfo.text_len;
-            if (entry < text_base or entry >= text_end) return error_result(.einval);
+            if ((entry & 3) != 0 or entry < text_base or entry >= text_end) return error_result(.einval);
+            if (tls != 0) {
+                if (stack_hi < 16 or !uaccess.write_region_covers(stack_hi - 16, 16))
+                    return error_result(.efault);
+                return scheduler.spawn_tls_thread(caller, entry, stack_hi, arg, tls) orelse error_result(.eagain);
+            }
             return scheduler.spawn_thread(caller, entry, stack_hi, arg) orelse error_result(.eagain);
         },
         1 => {
             // Thread-only exit: the task tears down; the process lives on
             // unless this was its last task.
-            if (!scheduler.exit_thread_current()) return error_result(.einval);
+            const status: u64 = if (scheduler.tasks[caller].join_token != 0) args[1] else 0;
+            if (status > 255) return error_result(.einval);
+            if (!scheduler.exit_thread_status(status)) return error_result(.einval);
+            return 0;
+        },
+        2 => return scheduler.join_thread(pid, args[1]) orelse error_result(.einval),
+        3 => {
+            const tls = args[1];
+            if ((tls & 0xf) != 0) return error_result(.einval);
+            if (tls != 0 and (!uaccess.read_region_covers(tls, 16) or !uaccess.write_region_covers(tls, 16)))
+                return error_result(.efault);
+            scheduler.set_current_tls(tls);
             return 0;
         },
         else => return error_result(.einval),
@@ -2222,17 +2240,21 @@ fn handle_futex(args: Args, frame: *exceptions.VectorFrame) u64 {
     const pid = process.find_by_task(caller) orelse return error_result(.einval);
     if ((uaddr & 3) != 0) return error_result(.einval); // the wait word is 4-byte aligned
     switch (op) {
-        0 => {
+        0, 2 => {
             // Fast path: verify the word and validate the pointer through
             // the caller's own uaccess window. The authoritative re-check
             // runs inside futex_wait_current AFTER the seat is visible
             // (review finding 1) — this first read alone has a
             // store-then-wake lost-wake window.
-            var word: [4]u8 = undefined;
-            if (uaccess.copy_in(&word, uaddr, 4) != .ok) return error_result(.efault);
+            const strict_deadline = if (op == 2)
+                @import("thread_tls.zig").coarse_deadline(scheduler.current_tick(), timeout_ns) catch
+                    return error_result(.einval)
+            else
+                0;
+            const word = uaccess.load_u32(uaddr) orelse return error_result(.efault);
             const expected: u32 = @truncate(val);
-            if (std.mem.readInt(u32, &word, .little) != expected) return error_result(.eagain);
-            const deadline = futex_deadline_tick(timeout_ns);
+            if (word != expected) return error_result(.eagain);
+            const deadline = if (op == 2) strict_deadline else futex_deadline_tick(timeout_ns);
             return switch (scheduler.futex_wait_current(pid, uaddr, expected, deadline, futex_word_matches)) {
                 // The task blocked and has been re-selected: the wake/timeout
                 // patched x0 in THIS saved frame (0 = woken, -ETIMEDOUT on
@@ -2315,9 +2337,7 @@ fn handle_exnotify(args: Args, _: *exceptions.VectorFrame) u64 {
 /// import). False means a peer's store landed in the compare-to-seat
 /// window — the caller returns EAGAIN and re-reads.
 fn futex_word_matches(uaddr: u64, val: u32) bool {
-    var word: [4]u8 = undefined;
-    if (uaccess.copy_in(&word, uaddr, 4) != .ok) return false;
-    return std.mem.readInt(u32, &word, .little) == val;
+    return (uaccess.load_u32(uaddr) orelse return false) == val;
 }
 
 /// Milestone 14 (claim 0169): slot 38 — sys_clipboard_set(buf_ptr, len)

@@ -300,6 +300,22 @@ pub fn read_region_covers(address: u64, len: usize) bool {
     return range_ok(read_regions[c][0..read_region_count[c]], address, @intCast(len));
 }
 
+/// Futex words must be ONE acquire load, not four potentially torn byte
+/// loads. Keep the same validation and synchronous-abort recovery window.
+pub fn load_u32(address: u64) ?u32 {
+    if ((address & 3) != 0 or !read_region_covers(address, 4)) return null;
+    open_window();
+    const value = @atomicLoad(u32, @as(*const u32, @ptrFromInt(address)), .acquire);
+    const fault = latch_read();
+    close_window();
+    return if (fault) null else value;
+}
+
+pub fn write_region_covers(address: u64, len: usize) bool {
+    const c = core_index();
+    return range_ok(write_regions[c][0..write_region_count[c]], address, @intCast(len));
+}
+
 pub fn copy_in(dst: []u8, address: u64, len: usize) Outcome {
     if (len == 0) return .ok;
     if (len > dst.len) return .fault; // caller bug: bounded by the buffer

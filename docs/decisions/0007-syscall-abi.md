@@ -1905,3 +1905,35 @@ Verification: the existing PCM model suite, production pump and syscall
 tests, and `live-sound-playback`'s real-device 128 KiB / single START,
 backpressure, copy rollback, sticky XRUN, abort, owner-death/reopen and
 soundless-refusal runs. Legacy audio specs remain regression gates.
+
+## B5 amendment — explicit TLS threads and strict coarse waits (#1872)
+
+Slots 73/74 gain additive operations; no new slot or task budget.
+
+| Slot / op | Arguments after op | Result |
+|-----------|--------------------|--------|
+| 73 / 0 | entry, stack_hi, arg, tls, 0 | tls=0: legacy detached task ID; nonzero tls: positive non-recycled process-bound join token |
+| 73 / 1 | status, 0, 0, 0, 0 | exit this task; native status 0–255; legacy zero-TLS exit still status 0 |
+| 73 / 2 | token, 0, 0, 0, 0 | join exactly once, block if necessary, return u8 exit status |
+| 73 / 3 | tls, 0, 0, 0, 0 | attach/detach calling task's TPIDR_EL0, return 0 |
+| 74 / 2 | uaddr, expected, timeout_ns, 0, 0 | strict native wait: 0 wake, EAGAIN changed/unavailable, ETIMEDOUT expiry |
+
+Nonzero TLS is 16-byte aligned with a readable/writable 16-byte prefix;
+the caller owns the entire planned template/body extent. A native child
+also needs a writable 16-byte stack-top aperture and an aligned executable
+entry. Bad apertures return EFAULT, alignment/op/status/token errors EINVAL,
+and task/process-thread/page capacity EAGAIN. Native children stay on core 0;
+legacy detached Go children retain any-core placement. Join tokens never
+alias reused task IDs, accept one same-process joiner and retain unjoined
+zombies inside the existing six-extra-thread and global 16-task limits.
+Completion is published after teardown. Process death releases abandoned
+tokens.
+
+Op 74/2 accepts zero (indefinite) or whole-second relative durations,
+refusing unsupported precision and deadline overflow with EINVAL. Its
+deadline is `current_tick + timeout_ns / 1_000_000_000 + 1`; the extra
+tick guards against the current period's phase and prevents early expiry.
+It promises no upper resumption latency. Wait/wake atomically compare one
+aligned u32 and serialize seating, recheck and wake under the scheduler
+lock. Op 74/0 remains the legacy coarse Go wait. The supported context
+model and caller lifetime obligations are in [ADR 0038](0038-zig-guest-target.md).

@@ -275,7 +275,10 @@ test "pure TLS core matches the pinned linker's emitted offsets" {
                   accepted=False, diagnostic="VirelaiUnsupportedThreaded")
     provenance["probes"] = records
     (work / "receipt.json").write_text(json.dumps(provenance, indent=2, sort_keys=True) + "\n")
-    print(f"static-TLS preparation: {len(records)} pinned compile probes passed; no guest execution")
+    subprocess.run([sys.executable, "-B", str(ROOT / "tools/zig/threads.py"),
+                    "--cache", str(cache), "--work", str(work / "runtime"),
+                    "--output", str(work / "ZTHREAD.BIN")], cwd=ROOT, check=True)
+    print(f"static-TLS preparation: {len(records)} pinned compile probes passed; native runtime fixture built (guest evidence belongs to the gate)")
 
 
 if __name__ == "__main__":
