@@ -1,5 +1,7 @@
 # M90c — Prove guest SVG pixels and the independent PDF-facing consumer contract
 
+> **Held, not filed (grounding 2026-10-03, `7ead82ee`).** #1917 says M90b+ come from the R1; corpus, comparison, paths and gate are M90a outputs. `live-web.spec` does not cover SVG raster (its image rung lives in `live-web-ttf`, `live-web.spec:49`), so M90a names an existing spec that does or one new declarative spec. `user/render/` and `tests/consumers/` are outside both ADR-legal homes. File after M90a lands.
+
 - **Parent index:** M90, [#1917](https://github.com/drawmeanelephant/VirelaiOS/issues/1917).
 - **Owner:** Sol 6.1, vector acceptance implementer; owner review before merge.
 - **Depends on:** merged M90a/b. Does not wait for M89 implementation.
@@ -14,10 +16,10 @@ Land the minimal guest raster invocation/output proof, an independently checked 
 
 Proposed reservations, finalized by M90a:
 
-- `user/render/svg-proof/**`: guest invocation/output adapter and tests.
-- `tests/consumers/vector/**`: independent consumer fixture and tests against the published contract.
-- `tools/svg-proof/**`: isolated proof build and independent output comparator/tests.
-- `tests/fixtures/svg/acceptance/**`: declared corpus, provenance and small pinned references.
+- `user/render/svg-proof/*`: guest invocation/output adapter and tests.
+- `tests/consumers/vector/*`: independent consumer fixture and tests against the published contract.
+- `tools/svg-proof/*`: isolated proof build and independent output comparator/tests.
+- `tests/fixtures/svg/acceptance/*`: declared corpus, provenance and small pinned references.
 - `tools/gate/specs/live-web.spec`: sole editor for this breakdown.
 - SVG/vector engine, WEB application, PDF and shared image/font/SDK files remain read-only.
 
@@ -31,7 +33,7 @@ Proposed reservations, finalized by M90a:
 
 ## Closes
 
-The PR merging the complete on-guest corpus and independent consumer acceptance closes this issue. That **same final acceptance PR** also closes **M90's index (#1917)** after all prior M90 cards close. M89 may still be open; the consumer contract is proved independently, so there is no circular index dependency.
+The PR merging the complete on-guest corpus and independent consumer acceptance closes this issue, and its body says `leaves #1917 open`. AGENTS.md reserves `Closes #N` for the claimed card's own landing PR. The owner then closes M90's index (#1917) with a final evidence comment once every M90 card is closed, the way #1807, #1808, #1816 and #1880 were closed. M89 may still be open; the consumer contract is proved independently, so there is no circular index dependency.
 
 ## Sources read
 

@@ -2,20 +2,22 @@
 
 - **Parent index:** M91, [#1914](https://github.com/drawmeanelephant/VirelaiOS/issues/1914).
 - **Owner:** Sol 6.1, host implementer; owner review before merge.
-- **Depends on:** M91-R1 and approved #1857 claim-path handoff.
-- **Scope finalized by R1:** final scope set by R1 output. Packaging and launch behavior are chosen in R1, not by this draft.
-- **Size / scheduling:** 12–16 agent hours, deferred beyond week one.
+- **Depends on:** none. The host launch contract (drafted separately as M91-R1, now folded in) is this card's first deliverable.
+- **Starting material:** the coach slice for this card's six files: `host/vm-runner/Package.swift`, `host/vm-runner/Sources/VMRunner/main.swift`, new `host/vm-runner/Sources/VMAppKit/NativeInput.swift`, new `host/vm-runner/Tests/VMRunnerTests/NativeInputTests.swift`, `tools/session.sh`, `tools/tests/test_session_apps.py`. It comes from the uncommitted `droid/coach-through-ios-app` work on `fc21e531`, preserved by the owner as the local, unpushed branch `droid/m91-coach-handoff` (commit `1f083d23`; patch sha256 `767ca34384a9ca4a3842362d764cf48b3c121cbbb2cf814f47eeba70f3446c32`), which every worktree of the repository can read. It applies cleanly to `7ead82ee`. Take this card's files with `git diff fc21e531 droid/m91-coach-handoff -- <paths> | git apply`; checking the paths out from the branch would revert later main changes. It is an unreviewed draft (#1914): reproduce each failure, review, and land it with its own regression. #1914 reports that typing needed both this slice's host event-loop change and M91b's USB completion change; test each on its own seam.
+- **Size / scheduling:** 16–20 agent hours (12–16 plus the folded host-contract choice), deferred beyond week one.
 
 ## Deliverable
 
-Land the entire selected macOS host front door: distinct app/window identity, native event dispatch, activation/first responder, clear startup/failure state and predictable close/quit/relaunch with VM cleanup. Retain the CLI gate entrypoint and the already-landed source-fresh manifest staging, preserving fixture documents/settings. Do not reimplement M87's launcher/staging or declare inherited Factory/Terminal identity fixed from API return values. The complete host lifecycle is this card's acceptance; the physical guest journey remains exclusively human #1857.
+First, choose and record one supported host packaging/launch and identity contract: activation/first responder, startup/error display, close/quit/relaunch and cleanup. Preserve the CLI gate entrypoint. No installer, updater, notarization service or system-permission change. Record the choice in the launch instructions this card owns; if it proves ABI/security/cross-cutting enough for an ADR, declare that file before claiming.
+
+Then land the entire selected macOS host front door: distinct app/window identity, native event dispatch, activation/first responder, clear startup/failure state and predictable close/quit/relaunch with VM cleanup. Retain the already-landed source-fresh manifest staging, preserving fixture documents/settings. Do not reimplement M87's launcher/staging or declare inherited Factory/Terminal identity fixed from API return values. The complete host lifecycle is this card's acceptance; the physical guest journey is #1914's human milestone acceptance.
 
 ## Exclusive ownership
 
-- `host/vm-runner/**`, excluding generated `.build/`: host modules, package, app resources and Swift tests. Any new `Sources/VMAppKit/` is proposed, not present at baseline.
+- `host/vm-runner/*`, excluding generated `.build/`: host modules, package, app resources and Swift tests. `Sources/VMAppKit/` is new in the coach slice, not present on main.
 - `tools/session.sh`, `tools/tests/test_session_apps.py`.
 - `README.md`, `docs/testing.md`: supported local launch instructions only; preserve accepted remote material.
-- No kernel, guest seat/app, hardware/status, R1 ADR or gate-spec edits.
+- No kernel, guest seat/app, hardware/status or gate-spec edits.
 
 ## Verification
 
@@ -28,8 +30,8 @@ Land the entire selected macOS host front door: distinct app/window identity, na
 
 ## Closes
 
-The PR merging the complete supported host behavior and passing host/lifecycle verification closes this issue. A packaging-only or event-loop-only slice does not qualify. It leaves human #1857 and M91 open; no automated host test substitutes for physical guest interaction.
+The PR merging the complete supported host behavior and passing host/lifecycle verification closes this issue. A packaging-only or event-loop-only slice does not qualify. It leaves #1914 open; no automated host test substitutes for the human session.
 
 ## Sources read
 
-#1914, M91a and host acceptance; `host/vm-runner/Sources/VMRunner/main.swift:2763-2824`; `host/vm-runner/Package.swift:19-67`; `tools/session.sh:57-65,108-175,196-232`; `tools/tests/test_session_apps.py:19-99`.
+#1914, M91a and host acceptance; `host/vm-runner/Sources/VMRunner/main.swift:2763-2824,4384-4391`; `host/vm-runner/Package.swift:29-65`; `tools/session.sh:57-65,108-175,196-232`; `tools/tests/test_session_apps.py:19-99`; the coach snapshot's file list and hunk headers.
