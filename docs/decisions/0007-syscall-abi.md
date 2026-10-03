@@ -1937,3 +1937,103 @@ It promises no upper resumption latency. Wait/wake atomically compare one
 aligned u32 and serialize seating, recheck and wake under the scheduler
 lock. Op 74/0 remains the legacy coarse Go wait. The supported context
 model and caller lifetime obligations are in [ADR 0038](0038-zig-guest-target.md).
+
+## Amendment (2026-10-03, B6 #1873): native socket handles, slot 80
+
+Slot **80 `sys_socket(op, handle_or_ip, pointer_or_port, length)`** is a
+separate native family. Existing slots 30–33 and 76 retain their legacy
+singleton ABI. Slot 76's two operations are probes, never parks; the stale
+park comment is corrected. `implemented_count` is 81.
+
+### Capacity and ownership
+
+One passive IPv4/TCP listener and **two simultaneous children system-wide**,
+including unaccepted half-opens and terminal children, reuse the landed
+`socket_core`. The core plus its frame scratch remains bounded by 16 KiB.
+Each process-owned generation-tagged handle is distinct from a file handle
+and from the legacy socket. No transfer, duplication, unbounded backlog,
+IPv6, TCP options/reassembly, active connect, TLS or public listener policy
+is provided. Listen binds the configured guest address; zero selects that
+address, not a loopback or public-exposure promise.
+
+Accepted children inherit the listener's owner. Closing a child immediately
+releases its charge; closing the listener revokes all its children.
+Process exit, kill and fault teardown release the listener, children and
+DNS transaction before the PID is reusable. FIN preserves queued bytes
+before EOF; reset/timeout discard them and return distinct errors.
+Terminal handles remain charged until explicit close or process death.
+An over-cap SYN gets independently addressed RST+ACK. The one refusal
+queue preserves its existing counted-overflow contract.
+
+The Zig `std.Io` adapter uses opaque SDK tokens and shares the existing
+**four dynamic resources** with files/cursors/pins. A listener and its two
+streams consume three; DNS consumes one during lookup. No resource/thread
+budget expansion. SDK close and shutdown are separate: close is local
+reclamation, not a promise that FIN/RST was delivered. `netShutdown`,
+active connect and unsupported socket options continue to refuse.
+
+### Operations and results
+
+| op | x1 | x2 | x3 | result |
+|---|---|---|---|---|
+| 0 listen | IPv4 network-order word, or 0 | nonzero local port | unused | listener handle |
+| 1 accept | listener handle | unused | unused | child handle, or `-11` |
+| 2 read | child handle | writable buffer | byte capacity | bytes, 0 EOF, or error |
+| 3 send | child handle | readable bytes | byte length | confirmed queued count, at most 1460 |
+| 4 close | listener/child/DNS handle | unused | unused | 0 |
+| 5 ready | any owned handle | unused | unused | level mask |
+| 6 shutdown | child handle | unused | unused | initiate bounded FIN, or `-11` |
+| 7 peer | child handle | unused | unused | `(IPv4_word << 16) \| port` |
+| 8 DNS begin | resolver IPv4 word | query bytes | 17–64 bytes | DNS handle |
+| 9 DNS reply | DNS handle | writable buffer | byte capacity | complete DNS message, or error |
+| 11 owned-count | unused | unused | unused | caller's charged native handles |
+
+Op 10 and unknown operations refuse `EINVAL`. x4/x5 must be zero.
+Ready bits: 1 readable (including EOF/error), 2 writable, 4 accept,
+8 terminal; DNS uses bit 1. All calls probe, perform bounded RX/TX work
+under the NET lock, and return without entering the scheduler. The idle
+network pump also advances the core, so deadlines/retries do not depend
+on application polling. Kernel deadlines are 30 s; RTO is 3 s with ten
+retries. Deadline equality wins before RX or retransmission.
+
+Errors: `-1` invalid argument, `-2` stale/wrong-kind handle, `-3` bad
+user buffer, `-4` unsupported, `-5` capacity, `-7` wrong owner, `-9`
+network unavailable/unresolved resolver MAC, `-11` would-block, `-12`
+timeout, **`-13` peer reset**, **`-14` closed**. The last two are native
+socket-domain results, not POSIX errno. Reads validate the writable
+aperture before consuming bytes. Zero-length reads validate the handle
+and are no-ops, not EOF. `std.Io` maps reset and read timeout to their
+named errors; its writer lacks Timeout, so it reports `Unexpected` with
+`Network:TimedOut`, never fabricated progress.
+
+### Names and DNS
+
+Numeric addresses are required for listen. `std.Io.net.HostName.lookup`
+and `user/zig/network.zig`'s explicit `resolve` accept ASCII RFC 1123
+names (case-insensitive, optional final dot), with no search domains,
+implicit host files, cache or TLS. IPv4 literals in `resolve` bypass DNS.
+The default resolver is 10.0.0.2; the explicit resolver API can choose
+another. Its ARP entry must already exist, as with the existing Go DNS
+contract; a refusal never retries an implicit ARP operation.
+
+One DNS transaction system-wide pins source port **7001** in the existing
+four-entry UDP listen table, not legacy UDP's shared source port 7000.
+A second transaction, a full UDP table or an existing bind of 7001 returns
+capacity. The temporary seat is released with the DNS handle; existing
+legacy binds remain usable when no native transaction is active.
+Replies must match resolver IP, source port 53 and randomized transaction
+ID, with valid UDP checksum when supplied. Messages over 64 bytes refuse
+whole, never clamp into a purported answer. The SDK checks the echoed
+question, every declared section, compression bounds, IN/A type, opcode,
+rcode and truncation before returning one IPv4 address. NXDOMAIN is named;
+CNAME-only, AAAA, malformed/no-A and truncated answers fail closed.
+The encoded query must fit 64 bytes (at most 46 name bytes). Success,
+timeout and parse failure all close the transaction; process death does
+too. Duplicate legacy binds while the native seat is pinned refuse normally.
+
+Native acceptance extends `live-net-tcp-syscall`: two independent
+Ethernet peers complete std.Io preview requests, a third at another IP
+gets RST, FIN/reset/timeout report and close, a process dies with a
+listener and its replacement binds it, and DNS success/silence both
+release resources. These boots are separate from the injected-core
+fixture. This is not Boris publication/authentication or a TLS stack.

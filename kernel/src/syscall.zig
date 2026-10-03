@@ -117,7 +117,7 @@ pub const slot_count: usize = 128;
 /// is sys_file_sync; M83b (#1775): slot 78 is sys_time_set.
 /// `implemented_count` is the number of
 /// registered rows (rows 0..implemented_count-1).
-pub const implemented_count: usize = 80;
+pub const implemented_count: usize = 81;
 /// Card G6 (claim 0487) follow-on (slot 18): the fixed `sys_win_get` shape —
 /// four u32 LE words (x, y, w, h), 16 bytes, marshaled per call and copy_out'd
 /// through uaccess (the procs snapshot pattern).
@@ -388,6 +388,9 @@ pub const sys_file_sync: u64 = 77;
 pub const sys_time_set: u64 = 78;
 /// B3: one bounded native metadata/contained-filesystem operation family.
 pub const sys_fs_metadata: u64 = 79;
+pub const sys_socket: u64 = 80;
+pub const native_socket = @import("socket_native.zig");
+var socket_scratch: [tcp.payload_max]u8 = undefined;
 /// The fixed per-call fill cap of slot 72 (ADR 0025 D5: "capped at a bounded
 /// maximum"). 256 matches `write_cap` — enough for an ephemeral X25519
 /// secret (32 B), a KEXINIT cookie (16 B), or a burst of per-packet padding,
@@ -574,6 +577,7 @@ pub fn ensure_table() *const [slot_count]Entry {
         // M83b (#1775): slot 78 — the bounded wall-clock write (timer.set_wall_epoch).
         table_storage[sys_time_set] = .{ .name = "sys_time_set", .handler = handle_time_set };
         table_storage[sys_fs_metadata] = .{ .name = "sys_fs_metadata", .handler = handle_fs_metadata };
+        table_storage[sys_socket] = .{ .name = "sys_socket", .handler = handle_socket };
         table_storage[sys_clipboard_set] = .{ .name = "sys_clipboard_set", .handler = handle_clipboard_set };
         table_storage[sys_clipboard_get] = .{ .name = "sys_clipboard_get", .handler = handle_clipboard_get };
         table_storage[sys_timer_set] = .{ .name = "sys_timer_set", .handler = handle_timer_set };
@@ -666,7 +670,7 @@ fn doms_of(number: u64) u5 {
     const e: u5 = svclock.dom_bit(.ev);
     const k: u5 = svclock.dom_bit(.kernel);
     return switch (number) {
-        sys_udp_listen, sys_udp_send, sys_udp_recv, sys_tcp_connect, sys_tcp_send, sys_tcp_recv, sys_tcp_close, sys_sock_ready, sys_ping_send, sys_ping_poll, sys_net_stats => n,
+        sys_udp_listen, sys_udp_send, sys_udp_recv, sys_tcp_connect, sys_tcp_send, sys_tcp_recv, sys_tcp_close, sys_sock_ready, sys_socket, sys_ping_send, sys_ping_poll, sys_net_stats => n,
         sys_file_open, sys_file_read, sys_file_write, sys_file_close, sys_dir_list, sys_file_delete, sys_file_rename, sys_file_truncate, sys_file_free, sys_file_sync, sys_fs_metadata => f,
         sys_exec => f | k,
         sys_write => f,
@@ -865,7 +869,10 @@ pub fn handle_svc(frame: *exceptions.VectorFrame, immediate: u16) bool {
         dispatch(number, args, frame)
     else
         error_result(.enosys);
-    _ = exceptions.frame_write(frame, 0, result);
+    // Successful sleep publishes x0 before parking. Its saved frame may
+    // already be executing on another core, so do not touch it again.
+    if (!(immediate == svc_immediate and number == sys_sleep and result == 0))
+        _ = exceptions.frame_write(frame, 0, result);
     return true;
 }
 
@@ -939,13 +946,17 @@ fn handle_yield(_: Args, _: *exceptions.VectorFrame) u64 {
     return 0;
 }
 
-fn handle_sleep(args: Args, _: *exceptions.VectorFrame) u64 {
+fn handle_sleep(args: Args, frame: *exceptions.VectorFrame) u64 {
     // Claim 0635: block the calling task for `args[0]` scheduler ticks. On
     // success the scheduler has parked this task (state=blocked) and staged
     // another task's frame, so the SVC exception return resumes the NEXT
     // task; the caller's own frame stays on its kernel stack and the
     // syscall return (0) lands when `wake_expired` moves it back to ready
     // and the ring resumes it — the same resume path as sys_yield.
+    // A different core may wake and steal the parked caller before this
+    // handler unwinds. Publish its success result before exposing the frame
+    // to the scheduler, not after it could already have returned to EL0.
+    _ = exceptions.frame_write(frame, 0, 0);
     if (!scheduler.sleep_current(args[0])) return error_result(.einval);
     return 0;
 }
@@ -2279,8 +2290,8 @@ fn handle_futex(args: Args, frame: *exceptions.VectorFrame) u64 {
 /// the GOOS=virelai netpoll readiness seam (ADR 0007 append-only amendment).
 ///
 /// op 0 probes: return the readiness mask of the CALLING PROCESS's TCP
-/// socket (bit 0 = readable, bit 1 = writable; 0 = nothing yet). op 1 parks
-/// the caller until a wanted bit is set or the deadline elapses. The caller
+/// socket (bit 0 = readable, bit 1 = writable; 0 = nothing yet). op 1 also
+/// probes. EL0 owns waiting/deadlines; this handler never parks. The caller
 /// must own the socket, and `want` must name at least one bit.
 ///
 /// Deliberately NOT an ADR 0009 event: the per-process event queue is the
@@ -2303,6 +2314,89 @@ fn handle_sock_ready(args: Args, _: *exceptions.VectorFrame) u64 {
     // path`) — a syscall handler must not re-enter the scheduler.
     _ = op;
     return @intCast(tcp.ready_mask());
+}
+
+fn socket_error(err: native_socket.core.Error) u64 {
+    return @bitCast(@as(i64, switch (err) {
+        error.InvalidArgument, error.ClockWentBackwards => -1,
+        error.InvalidHandle => -2,
+        error.Unsupported => -4,
+        error.Capacity => -5,
+        error.AccessDenied => -7,
+        error.WouldBlock => -11,
+        error.TimedOut => -12,
+        error.PeerReset => -13,
+        error.Closed => -14,
+    }));
+}
+
+/// Slot 80, append-only native handle family. Every operation is bounded
+/// and nonblocking, under NET. No legacy singleton state is switched.
+fn handle_socket(args: Args, _: *exceptions.VectorFrame) u64 {
+    const pid = process.find_by_task(scheduler.current_id()) orelse return error_result(.einval);
+    const op = args[0];
+    const handle: native_socket.core.Handle = .{ .value = args[1] };
+    if (args[4] != 0 or args[5] != 0) return error_result(.einval);
+    virtio_net.net_socket_poll(); // deadlines win at equality, before RX
+    virtio_net.net_rx_drain();
+    defer virtio_net.net_socket_poll();
+    switch (op) {
+        0 => {
+            if (!virtio_net.net_ready or !virtio_net.arp.ip_set()) return error_result(.enxio);
+            if (args[1] > 0xffffffff or args[2] == 0 or args[2] > 65535) return error_result(.einval);
+            if (native_socket.sockets.next_generation > std.math.maxInt(i64) >> 2) return error_result(.enospc);
+            const ip = if (args[1] == 0) virtio_net.arp.own_ip else native_socket.ipBytes(args[1]);
+            if (!std.mem.eql(u8, &ip, &virtio_net.arp.own_ip)) return error_result(.einval);
+            if (tcp.state != .idle and tcp.state != .closed and
+                (tcp.listen_port == args[2] or (!tcp.is_server and args[2] == tcp.default_src_port)))
+                return error_result(.enospc);
+            const h = native_socket.sockets.listen(pid, .{ .ip = ip, .port = @intCast(args[2]) }, native_socket.now()) catch |err| return socket_error(err);
+            return h.value;
+        },
+        1 => return (native_socket.sockets.accept(pid, handle) catch |err| return socket_error(err)).value,
+        2, 3, 9 => {
+            const take: usize = @intCast(@min(args[3], if (op == 9) native_socket.dns_max else socket_scratch.len));
+            if (op == 3) {
+                if (uaccess.copy_in(&socket_scratch, args[2], take) != .ok) return error_result(.efault);
+                return native_socket.sockets.send(pid, handle, socket_scratch[0..take], native_socket.now()) catch |err| return socket_error(err);
+            }
+            if (!uaccess.write_region_covers(args[2], take)) return error_result(.efault);
+            if (take != 0) if (uaccess.resolve_write_pages) |resolve| {
+                if (!resolve(args[2], take)) return error_result(.efault);
+            };
+            const n = if (op == 9)
+                native_socket.readDns(pid, handle, socket_scratch[0..take]) catch |err| return socket_error(err)
+            else
+                native_socket.sockets.read(pid, handle, socket_scratch[0..take], native_socket.now()) catch |err| return socket_error(err);
+            if (uaccess.copy_out(args[2], socket_scratch[0..n], n) != .ok) return error_result(.efault);
+            return n;
+        },
+        4 => {
+            native_socket.close(pid, handle) catch |err| return socket_error(err);
+            return 0;
+        },
+        5 => return native_socket.ready(pid, handle) catch |err| return socket_error(err),
+        6 => {
+            native_socket.sockets.shutdown(pid, handle, native_socket.now()) catch |err| return socket_error(err);
+            return 0;
+        },
+        7 => return native_socket.peer(pid, handle) catch |err| return socket_error(err),
+        8 => {
+            if (!virtio_net.net_ready or !virtio_net.arp.ip_set()) return error_result(.enxio);
+            if (args[1] > 0xffffffff or args[3] < 17 or args[3] > native_socket.dns_max) return error_result(.einval);
+            const len: usize = @intCast(args[3]);
+            if (uaccess.copy_in(&socket_scratch, args[2], len) != .ok) return error_result(.efault);
+            const server = native_socket.ipBytes(args[1]);
+            const h = native_socket.beginDns(pid, server, socket_scratch[0..len]) catch |err| return socket_error(err);
+            if (virtio_net.net_socket_dns_send(server, socket_scratch[0..len]) != .ok) {
+                native_socket.close(pid, h) catch unreachable;
+                return error_result(.enxio);
+            }
+            return h.value;
+        },
+        11 => return native_socket.ownedCount(pid),
+        else => return error_result(.einval),
+    }
 }
 
 /// `sys_exnotify(handler)` — slot 75 (issue #1228, phase 0c). A single
@@ -2875,6 +2969,7 @@ fn handle_tcp_connect(args: Args, _: *exceptions.VectorFrame) u64 {
 
     // Passive open (Listen mode) when ip == 0
     if (ip_raw == 0) {
+        if (native_socket.sockets.listener) |l| if (l.local.port == dst_port) return error_result(.enospc);
         if (tcp.state == .closed) {
             tcp.reset();
         }

@@ -2632,6 +2632,7 @@ fn exit_current_locked(status: u64, process_exit: bool) bool {
         _ = shared_mmap.revoke_peer_role(pid);
         file_table.reset_process(pid);
         tcp.close_owner(pid);
+        @import("socket_native.zig").closeOwner(pid);
         virtio_snd.snd_stream_owner_death(pid);
         // Milestone 14 (claim 7323): a dead process's app timer is disarmed
         // now — no stale fire can ever reach a recycled pid.

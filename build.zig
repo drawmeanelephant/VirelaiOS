@@ -1958,6 +1958,11 @@ pub fn build(b: *std.Build) void {
     // Share the checked compiler only after the existing SDK materializer finishes.
     thread_tls_integration.step.dependOn(&zig_guest_integration.step);
     zig_guest_step.dependOn(&thread_tls_integration.step);
+    const native_network_integration = b.addSystemCommand(&.{ "python3", "-B", "tools/zig/network.py" });
+    native_network_integration.has_side_effects = true;
+    native_network_integration.stdio = .inherit;
+    native_network_integration.step.dependOn(&thread_tls_integration.step);
+    zig_guest_step.dependOn(&native_network_integration.step);
 
     const core_test_sources = [_][]const u8{
         "user/zig/runtime.zig",

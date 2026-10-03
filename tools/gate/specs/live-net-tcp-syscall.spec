@@ -10,6 +10,7 @@ vgate_name live-net-tcp-syscall "TCP.BIN drives slots 30-33 from EL0 on VZ"
 vgate_share seed
 vgate_runner_flags -Xswiftc -DSPIKE
 vgate_note "B6 injected-core execution is not native socket integration or Boris preview"
+vgate_note "B6 native boots separately exercise slot 80, std.Io preview clients, and owned DNS"
 
 vgate_setup_python <<'PY'
 import json, os, pathlib, subprocess
@@ -28,6 +29,14 @@ assert images[0] == images[1], "socket-core fixture is not reproducible"
 receipt = json.loads((rd / "core-1.BIN.json").read_text())
 assert receipt["evidence"] == "injected-core-only"
 print("socket-core: two identical offline builds sha256=" + receipt["artifact_sha256"])
+native_images = []
+for n in (1, 2):
+    work = rd / ("native-build-%d" % n)
+    subprocess.run(["python3", "tools/zig/network.py", "--work", str(work)], check=True)
+    native_images.append((work / "ZNET.BIN").read_bytes())
+assert native_images[0] == native_images[1], "native fixture is not reproducible"
+(share / "ZNET.BIN").write_bytes(native_images[0])
+print("native-socket: two identical offline native builds")
 PY
 
 vgate_file script-1.txt <<'EOF'
@@ -137,3 +146,88 @@ for slot, name in ((30, "sys_tcp_connect"), (31, "sys_tcp_send"), (32, "sys_tcp_
     assert re.search(r"^\s+%d %s calls=0$" % (slot, name), ser, re.M), "unexpected networking syscall"
 print("injected core: independent packet/seed checks, bounds, and zero net syscall counts")
 PY
+
+vgate_file native-reset.txt <<'EOF'
+net ip 10.0.0.1
+net arp 10.0.0.2
+exec ZNET.BIN preview
+EOF
+
+vgate_file native-timeout.txt <<'EOF'
+net ip 10.0.0.1
+net arp 10.0.0.2
+exec ZNET.BIN timeout
+EOF
+
+vgate_file native-dns.txt <<'EOF'
+net ip 10.0.0.1
+net arp 10.0.0.2
+exec ZNET.BIN dns
+EOF
+
+vgate_file native-dns-timeout.txt <<'EOF'
+net ip 10.0.0.1
+net arp 10.0.0.2
+exec ZNET.BIN dns-timeout
+EOF
+
+vgate_file native-death.txt <<'EOF'
+net ip 10.0.0.1
+net arp 10.0.0.2
+exec ZNET.BIN death
+EOF
+
+vgate_file native-death-after.txt <<'EOF'
+exec ZNET.BIN preview
+EOF
+
+vgate_run native-reset -- --net '$RUN_DIR/native-reset.bin' --net-arp-respond 10.0.0.2 \
+    --net-native-preview reset --script '$RUN_DIR/native-reset.txt' \
+    --script-expect 'tasks user-exec reaped' --timeout 90
+vgate_run native-timeout -- --net '$RUN_DIR/native-timeout.bin' --net-arp-respond 10.0.0.2 \
+    --net-native-preview timeout --script '$RUN_DIR/native-timeout.txt' \
+    --script-expect 'tasks user-exec reaped' --timeout 120
+vgate_run native-dns -- --net '$RUN_DIR/native-dns.bin' --net-arp-respond 10.0.0.2 \
+    --net-dns-respond 10.0.0.2:53 --script '$RUN_DIR/native-dns.txt' \
+    --script-expect 'tasks user-exec reaped' --timeout 90
+vgate_run native-dns-timeout -- --net '$RUN_DIR/native-dns-timeout.bin' --net-arp-respond 10.0.0.2 \
+    --script '$RUN_DIR/native-dns-timeout.txt' --script-expect 'tasks user-exec reaped' --timeout 120
+vgate_run native-death -- --net '$RUN_DIR/native-death.bin' --net-arp-respond 10.0.0.2 \
+    --net-native-preview reset --script '$RUN_DIR/native-death.txt' \
+    --script2 '$RUN_DIR/native-death-after.txt' --script2-after 'tasks user-exec reaped' \
+    --script-expect 'native-socket: disconnect capacity cleanup ok' --timeout 120
+
+vgate_assert native-reset serial-contains 'native-socket: two clients accepted'
+vgate_assert native-reset serial-contains 'native-socket: peer reset reported'
+vgate_assert native-reset serial-contains 'native-socket: disconnect capacity cleanup ok'
+vgate_assert native-reset serial-contains 'procs ZNET.BIN exited status=0'
+vgate_assert native-reset output-contains 'NATIVE-PROBE: third client refused at its own IP'
+vgate_assert native-reset output-contains 'NATIVE-PROBE: exact preview response port=5001'
+vgate_assert native-reset output-contains 'NATIVE-PROBE: exact preview response port=5002'
+vgate_assert native-reset python <<'PY'
+import os, pathlib
+out = (pathlib.Path(os.environ["RUN_DIR"]) / ("run-" + os.environ["VG_TAG"] + ".out")).read_text()
+assert "NATIVE-PROBE: FAIL" not in out
+PY
+vgate_assert native-reset serial-absent '[EXC] parking:'
+vgate_assert native-timeout serial-contains 'native-socket: two clients accepted'
+vgate_assert native-timeout serial-contains 'native-socket: peer timeout reported'
+vgate_assert native-timeout serial-contains 'native-socket: disconnect capacity cleanup ok'
+vgate_assert native-timeout serial-contains 'procs ZNET.BIN exited status=0'
+vgate_assert native-timeout output-contains 'NATIVE-PROBE: third client refused at its own IP'
+vgate_assert native-timeout output-contains 'NATIVE-PROBE: second peer silent after ACK'
+vgate_assert native-timeout serial-absent '[EXC] parking:'
+vgate_assert native-timeout python <<'PY'
+import os, pathlib
+out = (pathlib.Path(os.environ["RUN_DIR"]) / ("run-" + os.environ["VG_TAG"] + ".out")).read_text()
+assert "NATIVE-PROBE: FAIL" not in out
+PY
+vgate_assert native-dns serial-contains 'native-socket: DNS std.Io lookup cleanup ok'
+vgate_assert native-dns serial-contains 'procs ZNET.BIN exited status=0'
+vgate_assert native-dns output-contains "NET-DNS: answered the guest's DNS query for 'myhost.local'"
+vgate_assert native-dns output-contains 'reply to guest src port 7001'
+vgate_assert native-dns-timeout serial-contains 'native-socket: DNS timeout cleanup ok'
+vgate_assert native-dns-timeout serial-contains 'procs ZNET.BIN exited status=0'
+vgate_assert native-death serial-contains 'native-socket: death listener owned'
+vgate_assert native-death serial-contains 'native-socket: disconnect capacity cleanup ok'
+vgate_assert native-death serial-absent 'NativeSocketAcceptance'

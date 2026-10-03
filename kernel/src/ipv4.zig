@@ -17,6 +17,7 @@ const std = @import("std");
 const arp = @import("arp.zig"); // N3: our static IP (`arp.own_ip` — the ONE copy) + the peer table
 const udp = @import("udp.zig"); // N5 (claim 8552): UDP datagrams over the validated IPv4 seam
 const tcp = @import("tcp.zig"); // N10 (claim 7026): the bounded TCP client over the validated IPv4 seam
+const native_socket = @import("socket_native.zig");
 
 pub const ethertype_ipv4: u16 = 0x0800; // Ethernet II ethertype
 pub const eth_hdr_len: usize = 14; // dst MAC (6) + src MAC (6) + ethertype (2)
@@ -260,7 +261,7 @@ pub fn handle_rx(frame: []const u8, own_mac: *const [6]u8, reply_buf: []u8) ?usi
         // ALREADY VALIDATED (checksum/fragment/dst checks stayed above —
         // never duplicated). The N5 guest receives + sends; it does not
         // answer UDP (the host answers, --net-udp-respond).
-        udp.handle_rx(frame);
+        if (!native_socket.receiveDns(frame)) udp.handle_rx(frame);
         return null;
     }
     if (protocol(frame) == tcp.protocol_tcp) {
@@ -269,6 +270,12 @@ pub fn handle_rx(frame: []const u8, own_mac: *const [6]u8, reply_buf: []u8) ?usi
         // stayed above — never duplicated). The client's RX processing
         // builds its ACKs into its own buffer; nothing is transmitted
         // from the drain context.
+        if (native_socket.sockets.listener) |listener| {
+            if (frame.len >= tcp.frame_min and std.mem.readInt(u16, frame[36..38], .big) == listener.local.port) {
+                native_socket.sockets.receive(frame, native_socket.now(), @truncate(@import("csprng.zig").random_u64())) catch unreachable;
+                return null;
+            }
+        }
         _ = tcp.handle_rx(frame);
         return null;
     }
