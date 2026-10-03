@@ -12,6 +12,7 @@ vgate_name live-xhci "claim 4272 (milestone seven, card I1) class-B"
 
 vgate_file script.txt <<'EOF'
 usb
+usb devices
 echo xhci-obs-done
 EOF
 
@@ -30,3 +31,17 @@ vgate_assert 01 serial-contains 'usb: port1='
 vgate_assert 01 serial-contains 'usb: port16=0x00000000000202a0 ccs=0 ped=0 pp=1'
 vgate_assert 01 serial-contains 'xhci-obs-done'
 vgate_assert 01 serial-absent '[EXC] parking:'
+vgate_assert 01 serial-contains 'xhci: HID descriptor slot=0x0000000000000002 bytes='
+vgate_assert 01 python <<'PY'
+import os, re
+from pathlib import Path
+serial = Path(os.environ["VG_SER"]).read_text(errors="replace")
+for slot, name in ((1, "native-keyboard-descriptor.hex"), (2, "native-descriptor.hex")):
+    marker = f"HID descriptor slot=0x{slot:016x} bytes="
+    line = next((s for s in serial.splitlines() if marker in s), "")
+    raw = bytes(int(h, 16) for h in re.findall(r"0x[0-9a-f]{16}", line.split("bytes=")[-1]))
+    fixture = bytes.fromhex(Path("tests/fixtures/input/m91", name).read_text())
+    if raw != fixture:
+        raise SystemExit(f"native VZ slot {slot} descriptor differs from its genuine pinned capture")
+print("native VZ keyboard and report-ID/button/absolute-axis descriptors re-observed byte-exact")
+PY

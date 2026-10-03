@@ -7,9 +7,9 @@
 //! interrupt-IN endpoints, decodes keyboard HID boot reports (modifier +
 //! 6-key rollover) into UTF-8 console bytes / Unicode app codepoints through a
 //! pure keymap, and records
-//! pointer reports (buttons + absolute X/Y, best-effort — raw bytes are
-//! the ground truth). The decoded bytes sit in a bounded pure-BSS FIFO that
-//! the Road Pops tee's read path (`pop_byte`) hands to the shell's line
+//! transport-specific pointer reports (native VZ report-ID 1 or canonical
+//! custom-virtio buttons + absolute X/Y). The decoded bytes sit in a bounded
+//! pure-BSS FIFO that the Road Pops tee's read path (`pop_byte`) hands to the shell's line
 //! editor — the FIRST screen-side keystrokes reach the terminal.
 //!
 //! The keymap covers the usable printable subset: letters (shift → caps,
@@ -551,7 +551,7 @@ pub fn compose_list(con: anytype) void {
 }
 
 // ---------------------------------------------------------------------------
-// Report decode (keyboard boot report + best-effort absolute pointer)
+// Report decode (keyboard boot report + transport-specific absolute pointer)
 // ---------------------------------------------------------------------------
 
 /// Map raw HID keyboard boot report modifier byte to ADR 0009 modifier flags.
@@ -571,7 +571,10 @@ pub fn hid_modifiers_to_flags(mods: u8) u16 {
 /// Card E2 (claim 7206): when a user window is focused, KEY_DOWN / KEY_UP
 /// events are pushed to the owning process's event queue.
 pub fn decode_keyboard_report(rep: []const u8) void {
-    if (rep.len < 8) return;
+    if (rep.len != 8 or rep[1] != 0) return;
+    // Boot rollover/error usages are not keys or an all-up report. Preserve
+    // the last valid held set until a valid report supplies the release.
+    for (rep[2..8]) |k| if (k >= 1 and k <= 3) return;
     // Per-domain locks (claim 9498 follow-on): the decode interleaves WIN
     // state (driving_award focus/wm-ownership reads, the wm_key_hook) with
     // EV pushes (app_events) — take win+ev in canonical order for the whole
@@ -588,7 +591,13 @@ pub fn decode_keyboard_report(rep: []const u8) void {
     const alt = (flags & app_events.MOD_ALT) != 0;
     kb_mods = mods;
     var keys: [6]u8 = [_]u8{0} ** 6;
-    for (rep[2..8], 0..) |k, i| keys[i] = k;
+    for (rep[2..8], 0..) |k, i| {
+        var duplicate = false;
+        for (keys[0..i]) |h| {
+            if (h == k) duplicate = true;
+        }
+        keys[i] = if (duplicate) 0 else k;
+    }
     // Card U5 (ADR 0008 D4): Alt+Tab cycles window focus — the
     // chord is consumed as a window-manager signal across all windows.
     // C2 (M15): capture Shift for reverse cycling.
@@ -1061,25 +1070,17 @@ pub fn decode_keyboard_report(rep: []const u8) void {
     kb_held = keys;
 }
 
-/// Decode one absolute-pointer report (best-effort: buttons + little-
-/// endian X/Y). The raw bytes are the ground truth; the absolute report's
-/// exact word order is a claim-time observation, recorded honestly.
-///
-/// Public since claim 9367: the custom-virtio INPUT channel's kind-2
-/// pointer messages are handed here verbatim — the exact path an XHCI
-/// pointer report takes — so injected pointers are ordinary pointers
-/// downstream (cursor, `dui` click-to-focus, `input` ptr-* counters).
+/// Canonical custom-virtio kind-2 payload only: buttons, LE16 X, LE16 Y.
+/// Native USB has its own explicit decoder, never a length-based fallback.
 pub fn decode_pointer_report(rep: []const u8) void {
-    if (rep.len < 3) return;
+    if (rep.len != 5) return;
     const prev_buttons = ptr_buttons;
     ptr_buttons = rep[0];
     ptr_x = @as(u16, rep[1]) | (@as(u16, rep[2]) << 8);
-    if (rep.len >= 5) {
-        ptr_y = @as(u16, rep[3]) | (@as(u16, rep[4]) << 8);
-    }
+    ptr_y = @as(u16, rep[3]) | (@as(u16, rep[4]) << 8);
     ptr_reports += 1;
     ptr_valid = true;
-    if (prev_buttons == 0 and (ptr_buttons & 0x01) != 0) {
+    if ((prev_buttons & 0x01) == 0 and (ptr_buttons & 0x01) != 0) {
         ptr_click_pending = true;
         ptr_press_pending = true;
         ptr_press_x = ptr_x;
@@ -1087,36 +1088,47 @@ pub fn decode_pointer_report(rep: []const u8) void {
     }
 }
 
-/// The shell-idle-loop drain: poll each enumerated device's interrupt-IN
-/// endpoint for a completed report, decode it, and (for the keyboard) push
-/// the decoded bytes. No-op when unarmed (default VM / host tests).
-/// U4 (M43 card U4, issue #1035): the `!d.present` skip is the detach half
-/// of the lifecycle contract — a quiesced HID device contributes no reports,
-/// no FIFO bytes, and no pointer motion, while the surviving devices drain
-/// exactly as before. No new code: the guard predates lifecycle and already
-/// reads the registry every pass, so a mid-run detach takes effect on the
-/// next idle loop without disturbing armed state.
+fn usb_pointer_payload(d: xhci.EnumDevice, rep: []const u8) ?[]const u8 {
+    // VZ's non-boot tablet prefixes report ID 1. Normalize only this
+    // device; the canonical custom-virtio pointer ABI has no report ID.
+    if (d.vid != 0x05ac or d.pid != 0x8106 or d.hid_boot) return null;
+    if (rep.len < 6 or rep.len > xhci.max_report_bytes or rep[0] != 1) return null;
+    const x = @as(u16, rep[2]) | (@as(u16, rep[3]) << 8);
+    const y = @as(u16, rep[4]) | (@as(u16, rep[5]) << 8);
+    if (x > 32767 or y > 32767) return null;
+    return rep[1..6];
+}
+
+fn decode_usb_pointer_report(d: xhci.EnumDevice, rep: []const u8) void {
+    const payload = usb_pointer_payload(d, rep) orelse return;
+    var canonical: [5]u8 = undefined;
+    @memcpy(&canonical, payload);
+    canonical[0] &= 7; // descriptor: three button bits, five padding bits
+    decode_pointer_report(&canonical);
+}
+
+/// Decode the next globally ordered native report. The transport discards
+/// detached devices' queued snapshots before handing them to this seam.
+/// No-op when unarmed (default VM / host tests).
 pub fn drain() void {
     if (!armed_global) return;
-    var i: usize = 0;
-    while (i < xhci.EnumMax) : (i += 1) {
-        const d = xhci.enum_devs[i];
-        if (!d.present or d.ep_in_num == 0) continue;
-        // Non-blocking: a no-pending-event poll is one cheap event-ring
-        // read, so the idle loop is not slowed by the blocking budget
-        // (`usb report` keeps the blocking path).
-        if (xhci.xhci_poll_intr_nb(d.slot_id)) {
-            const rep = xhci.xhci_report(d.slot_id);
-            const bytes = rep.bytes[0..rep.len];
-            switch (xhci.hid_kind[i]) {
-                .keyboard => decode_keyboard_report(bytes),
-                // The absolute pointer enumerates with bInterfaceProtocol 0
-                // (not a boot mouse), so hid_kind is .unknown — the raw
-                // report is still recorded best-effort.
-                .mouse, .unknown => decode_pointer_report(bytes),
-            }
-        }
+    // One report per idle pass: downstream samples pointer state once per
+    // pass, so batching a press and release here would hide the button edge.
+    // The shared FIFO supplies global completion order, not slot order.
+    const rep = xhci.xhci_next_hid_report() orelse return;
+    const i: usize = rep.slot_id - 1;
+    const d = xhci.enum_devs[i];
+    const bytes = rep.bytes[0..rep.len];
+    switch (xhci.hid_kind[i]) {
+        .keyboard => decode_keyboard_report(bytes),
+        .mouse, .unknown => decode_usb_pointer_report(d, bytes),
     }
+    // USB-only consumption evidence, not a keystroke log.
+    dbg("input: usb consumed slot=");
+    dbg_hex(rep.slot_id);
+    dbg(" len=");
+    dbg_hex(rep.len);
+    dbg("\n");
 }
 
 pub fn report() Report {
@@ -1526,6 +1538,23 @@ test "input: pointer report is recorded best-effort (buttons + LE X/Y)" {
     try std.testing.expectEqual(@as(usize, 1), ptr_reports);
 }
 
+test "input: VZ USB pointer report ID is not a held button or coordinate byte" {
+    const d: xhci.EnumDevice = .{ .vid = 0x05ac, .pid = 0x8106 };
+    // Genuine motion capture, also pinned in native-motion.hex.
+    const wire = [_]u8{ 1, 0, 0x44, 0x24, 0x2f, 0x67, 0, 0, 0, 0 };
+    try std.testing.expectEqualSlices(u8, &.{ 0, 0x44, 0x24, 0x2f, 0x67 }, usb_pointer_payload(d, &wire).?);
+    // Synthetic button-down derivative, not a captured physical press.
+    const press = [_]u8{ 1, 1, 0x44, 0x24, 0x2f, 0x67, 0, 0, 0, 0 };
+    try std.testing.expectEqualSlices(u8, &.{ 1, 0x44, 0x24, 0x2f, 0x67 }, usb_pointer_payload(d, &press).?);
+    // Canonical reports are not accepted by any USB fallback.
+    const canonical = [_]u8{ 1, 0x44, 0x24, 0x2f, 0x67 };
+    try std.testing.expect(usb_pointer_payload(.{}, &canonical) == null);
+    try std.testing.expect(usb_pointer_payload(d, &canonical) == null);
+    var other = wire;
+    other[0] = 2;
+    try std.testing.expect(usb_pointer_payload(d, &other) == null);
+}
+
 test "input: drain is a no-op when unarmed" {
     armed_global = false;
     const before = fifo_count;
@@ -1535,6 +1564,216 @@ test "input: drain is a no-op when unarmed" {
     armed_global = true;
     try std.testing.expect(report().armed);
     armed_global = false;
+}
+
+test "input: M91 short canonical pointer cannot partially mutate state" {
+    ptr_buttons = 0;
+    decode_pointer_report(&.{ 0, 0x44, 0x24, 0x2f, 0x67 });
+    const before = pointer_state();
+    decode_pointer_report(&.{ 1, 0xff, 0x7f });
+    try std.testing.expectEqual(before, pointer_state());
+}
+
+test "input: M91 native wire is not canonical pointer bytes" {
+    ptr_buttons = 0;
+    decode_usb_pointer_report(.{ .vid = 0x05ac, .pid = 0x8106 }, &.{ 1, 0, 0x44, 0x24, 0x2f, 0x67, 0, 0, 0, 0 });
+    try std.testing.expectEqual(@as(u8, 0), ptr_buttons);
+    try std.testing.expectEqual(@as(u16, 0x2444), ptr_x);
+    try std.testing.expectEqual(@as(u16, 0x672f), ptr_y);
+}
+
+fn m91_fixture_hex(path: []const u8, out: []u8) !usize {
+    const text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, std.testing.allocator, .limited(2048));
+    defer std.testing.allocator.free(text);
+    var tokens = std.mem.tokenizeAny(u8, text, " \r\n\t");
+    var n: usize = 0;
+    while (tokens.next()) |token| {
+        if (n == out.len) return error.FixtureTooLarge;
+        out[n] = try std.fmt.parseInt(u8, token, 16);
+        n += 1;
+    }
+    return n;
+}
+
+test "input: M91 genuine descriptor and motion vectors pin native VZ layout" {
+    var bytes: [256]u8 = undefined;
+    const kb_len = try m91_fixture_hex("tests/fixtures/input/m91/native-keyboard-descriptor.hex", &bytes);
+    const kb = bytes[0..kb_len];
+    try std.testing.expectEqual(@as(usize, 60), kb_len);
+    try std.testing.expectEqualSlices(u8, &.{ 5, 1, 9, 6, 0xa1, 1 }, kb[0..6]);
+    // E0..E7 modifier bits, one reserved byte, six key-array entries.
+    try std.testing.expect(std.mem.indexOf(u8, kb, &.{ 0x19, 0xe0, 0x29, 0xe7 }) != null);
+    try std.testing.expect(std.mem.indexOf(u8, kb, &.{ 0x75, 1, 0x95, 8, 0x81, 2, 0x75, 8, 0x95, 1, 0x81, 1 }) != null);
+    try std.testing.expect(std.mem.indexOf(u8, kb, &.{ 0x95, 6, 0x81, 0 }) != null);
+    const desc_len = try m91_fixture_hex("tests/fixtures/input/m91/native-descriptor.hex", &bytes);
+    const desc = bytes[0..desc_len];
+    try std.testing.expectEqualSlices(u8, &.{ 5, 1, 9, 2, 0xa1, 1, 0x85, 1 }, desc[0..8]);
+    // Three one-bit buttons; two absolute 16-bit axes, logical max 32767.
+    try std.testing.expect(std.mem.indexOf(u8, desc, &.{ 0x95, 3, 0x75, 1, 0x81, 2 }) != null);
+    try std.testing.expect(std.mem.indexOf(u8, desc, &.{ 0x26, 0xff, 0x7f, 0x75, 0x10, 0x95, 2, 0x81, 2 }) != null);
+    const n = try m91_fixture_hex("tests/fixtures/input/m91/native-motion.hex", &bytes);
+    try std.testing.expectEqual(@as(usize, 30), n);
+    const coords = [_][2]u16{ .{ 0x2444, 0x672f }, .{ 0x2359, 0x6632 }, .{ 0x22b5, 0x6545 } };
+    ptr_click_pending = false;
+    ptr_press_pending = false;
+    for (coords, 0..) |xy, i| {
+        decode_usb_pointer_report(.{ .vid = 0x05ac, .pid = 0x8106 }, bytes[i * 10 ..][0..10]);
+        try std.testing.expectEqual(PointerState{ .x = xy[0], .y = xy[1], .buttons = 0, .valid = true }, pointer_state());
+        try std.testing.expect(take_press() == null);
+        try std.testing.expect(take_click() == null);
+    }
+}
+
+test "input: M91 each pointer transport has explicit boundaries and button edges" {
+    const d: xhci.EnumDevice = .{ .vid = 0x05ac, .pid = 0x8106 };
+    var bytes: [20]u8 = undefined;
+    const n = try m91_fixture_hex("tests/fixtures/input/m91/canonical-abi.hex", &bytes);
+    try std.testing.expectEqual(@as(usize, 20), n);
+    // These are synthetic ABI endpoint/edge cases, not captured gestures.
+    for ([_]bool{ false, true }) |native| {
+        ptr_buttons = 0;
+        ptr_click_pending = false;
+        ptr_press_pending = false;
+        for (0..4) |i| {
+            const canonical = bytes[i * 5 ..][0..5];
+            var wire = [_]u8{0} ** 10;
+            wire[0] = 1;
+            @memcpy(wire[1..6], canonical);
+            if (native) decode_usb_pointer_report(d, &wire) else decode_pointer_report(canonical);
+            const want_x: u16 = if (i == 0) 0 else 32767;
+            const want_y: u16 = if (i == 0 or i == 2) 0 else 32767;
+            try std.testing.expectEqual(want_x, ptr_x);
+            try std.testing.expectEqual(want_y, ptr_y);
+            try std.testing.expectEqual(canonical[0], ptr_buttons);
+            if (i == 1) {
+                try std.testing.expectEqual(Click{ .x = 32767, .y = 32767 }, take_press().?);
+                try std.testing.expect(take_click() != null);
+            } else {
+                try std.testing.expect(take_press() == null);
+                try std.testing.expect(take_click() == null);
+            }
+        }
+        // Right held -> left down must still be a left-button edge.
+        const right = [_]u8{ 2, 0, 0, 0, 0 };
+        const both = [_]u8{ 3, 0, 0, 0, 0 };
+        if (native) {
+            decode_usb_pointer_report(d, &.{ 1, 2, 0, 0, 0, 0, 0, 0, 0, 0 });
+            decode_usb_pointer_report(d, &.{ 1, 3, 0, 0, 0, 0, 0, 0, 0, 0 });
+        } else {
+            decode_pointer_report(&right);
+            decode_pointer_report(&both);
+        }
+        try std.testing.expect(take_press() != null);
+    }
+}
+
+test "input: M91 malformed native and canonical reports are refused whole" {
+    const d: xhci.EnumDevice = .{ .vid = 0x05ac, .pid = 0x8106 };
+    const native = [_]u8{ 1, 1, 0xff, 0x7f, 0xff, 0x7f, 0, 0, 0, 0 };
+    const canonical = native[1..6];
+    decode_pointer_report(canonical);
+    const before = pointer_state();
+    const count = ptr_reports;
+    for (0..6) |len| decode_usb_pointer_report(d, native[0..len]);
+    for (0..5) |len| decode_pointer_report(canonical[0..len]);
+    // Report IDs 0, 2 (feature), 3 (feature), and 255 are not pointer input.
+    for ([_]u8{ 0, 2, 3, 255 }) |id| {
+        var bad = native;
+        bad[0] = id;
+        decode_usb_pointer_report(d, &bad);
+    }
+    for ([_]usize{ 3, 5 }) |axis_hi| {
+        var bad = native;
+        bad[axis_hi] = 0x80;
+        decode_usb_pointer_report(d, &bad);
+    }
+    decode_pointer_report(&native); // never infer transport from length
+    decode_usb_pointer_report(d, &.{ 1, 1, 0xff, 0x7f, 0xff, 0x7f, 0, 0, 0, 0, 0 });
+    decode_usb_pointer_report(d, canonical);
+    decode_usb_pointer_report(.{}, &native);
+    decode_usb_pointer_report(.{ .vid = 0x05ac, .pid = 0x8106, .hid_boot = true }, &native);
+    try std.testing.expectEqual(before, pointer_state());
+    try std.testing.expectEqual(count, ptr_reports);
+}
+
+test "input: M91 native drain preserves cross-device and press held release order" {
+    var hw: xhci.HidTest = .{};
+    hw.init();
+    defer hw.deinit();
+    armed_global = true;
+    defer armed_global = false;
+    _ = driving_award.focus(0);
+    fifo_head = 0;
+    fifo_count = 0;
+    kb_held = [_]u8{0} ** 6;
+    ptr_buttons = 0;
+    ptr_press_pending = false;
+    hw.report(1, &.{ 1, 1, 0x44, 0x24, 0x2f, 0x67, 0, 0, 0, 0 });
+    hw.report(0, &.{ 2, 0, 4, 0, 0, 0, 0, 0 });
+    hw.report(1, &.{ 1, 1, 0x59, 0x23, 0x32, 0x66, 0, 0, 0, 0 });
+    hw.report(1, &.{ 1, 0, 0x59, 0x23, 0x32, 0x66, 0, 0, 0, 0 });
+    hw.report(0, &.{ 0, 0, 0, 0, 0, 0, 0, 0 });
+    drain();
+    try std.testing.expectEqual(@as(u8, 1), ptr_buttons);
+    try std.testing.expectEqual(@as(usize, 0), fifo_count);
+    try std.testing.expectEqual(Click{ .x = 0x2444, .y = 0x672f }, take_press().?);
+    drain();
+    try std.testing.expectEqual(@as(u8, 'A'), pop_byte().?);
+    drain();
+    try std.testing.expectEqual(@as(u16, 0x2359), ptr_x);
+    try std.testing.expectEqual(@as(u8, 1), ptr_buttons);
+    try std.testing.expect(take_press() == null);
+    drain();
+    try std.testing.expectEqual(@as(u8, 0), ptr_buttons);
+    drain();
+    try std.testing.expectEqual(@as(u8, 0), kb_mods);
+    try std.testing.expectEqualSlices(u8, &([_]u8{0} ** 6), &kb_held);
+}
+
+test "input: M91 keyboard release repeat modifiers rollover and malformed policy" {
+    settings.init();
+    driving_award.arm();
+    app_events.init();
+    const opened = driving_award.user_open(40, 40, 100, 100, 9);
+    const id = switch (opened) {
+        .opened => |i| i,
+        else => return error.TestUnexpectedResult,
+    };
+    defer _ = driving_award.user_close(id);
+    try std.testing.expect(driving_award.focus(id));
+    app_events.reset(9);
+    kb_held = [_]u8{0} ** 6;
+    compose_reset();
+    const down = [_]u8{ 0x22, 0, 4, 4, 0, 0, 0, 0 }; // duplicate usage, both shifts
+    decode_keyboard_report(&down);
+    const press = app_events.pop(9).?;
+    try std.testing.expectEqual(app_events.KEY_DOWN, press.kind);
+    try std.testing.expectEqual(app_events.MOD_SHIFT, press.flags);
+    try std.testing.expectEqual(@as(u32, 'A'), press.arg1);
+    decode_keyboard_report(&down); // unchanged held report: no auto-repeat
+    for (0..8) |n| decode_keyboard_report(down[0..n]);
+    decode_keyboard_report(&.{ 0, 0, 0, 0, 0, 0, 0, 0, 0 });
+    decode_keyboard_report(&.{ 0, 1, 0, 0, 0, 0, 0, 0 }); // reserved byte
+    decode_keyboard_report(&.{ 0, 0, 1, 1, 1, 1, 1, 1 }); // rollover
+    decode_keyboard_report(&.{ 0, 0, 2, 0, 0, 0, 0, 0 }); // POST failure
+    decode_keyboard_report(&.{ 0, 0, 3, 0, 0, 0, 0, 0 }); // error undefined
+    try std.testing.expect(app_events.pop(9) == null);
+    try std.testing.expectEqual(@as(u8, 0x22), kb_mods);
+    decode_keyboard_report(&.{ 0, 0, 0, 0, 0, 0, 0, 0 });
+    const up = app_events.pop(9).?;
+    try std.testing.expectEqual(app_events.KEY_UP, up.kind);
+    try std.testing.expectEqual(@as(u32, 4), up.arg0);
+    try std.testing.expectEqual(@as(u16, 0), up.flags);
+    decode_keyboard_report(&down); // release + press is a new key edge
+    try std.testing.expectEqual(app_events.KEY_DOWN, app_events.pop(9).?.kind);
+    for (0..8) |bit| {
+        const mod: u8 = @as(u8, 1) << @as(u3, @intCast(bit));
+        decode_keyboard_report(&.{ mod, 0, 0, 0, 0, 0, 0, 0 });
+        try std.testing.expectEqual(mod, kb_mods);
+        const want = [_]u16{ app_events.MOD_CTRL, app_events.MOD_SHIFT, app_events.MOD_ALT, app_events.MOD_CMD };
+        try std.testing.expectEqual(want[bit % 4], hid_modifiers_to_flags(mod));
+    }
+    decode_keyboard_report(&.{ 0, 0, 0, 0, 0, 0, 0, 0 });
 }
 
 test "input: hid_modifiers_to_flags maps modifiers to ADR 0009 bitmasks" {

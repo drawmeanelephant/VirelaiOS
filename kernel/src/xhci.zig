@@ -35,8 +35,14 @@
 //! No libc, no POSIX, no allocation, no interrupts.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const mmio = @import("mmio.zig");
-const mmu = @import("mmu.zig");
+const mmu = if (builtin.is_test) struct {
+    // Host tests supply ordinary memory for DMA rings and MMIO registers.
+    pub const to_phys = @import("mmu.zig").to_phys;
+    pub fn clean_dcache_range(_: u64, _: u64) void {}
+    pub fn invalidate_dcache_range(_: u64, _: u64) void {}
+} else @import("mmu.zig");
 const pci = @import("pci.zig");
 const evidence = @import("evidence.zig");
 
@@ -303,6 +309,7 @@ var ep0_cycle: [max_enumerated]u1 = [_]u1{1} ** max_enumerated;
 var intr_ring: [max_enumerated][tr_ring_len]Trb align(64) = undefined;
 var intr_enq: [max_enumerated]usize = [_]usize{0} ** max_enumerated;
 var intr_deq: [max_enumerated]usize = [_]usize{0} ** max_enumerated;
+var intr_deq_cycle: [max_enumerated]u1 = [_]u1{1} ** max_enumerated;
 var intr_cycle: [max_enumerated]u1 = [_]u1{1} ** max_enumerated;
 /// The largest interrupt-IN packet any enumerated device reports (the
 /// absolute pointer's maxpkt 10; the keyboard's 8). The report buffers and
@@ -345,6 +352,31 @@ var intr_armed: [max_enumerated]usize = [_]usize{0} ** max_enumerated;
 
 /// Per-slot interrupt endpoint max packet (the TRB length the arm uses).
 var intr_maxpkt: [max_enumerated]u16 = [_]u16{0} ** max_enumerated;
+
+/// Snapshots own their bytes before a completed DMA slot is rearmed.
+/// One FIFO for both devices preserves event-ring order, including reports
+/// intercepted during control/bulk/command waits. Full means backpressure:
+/// leave the next HID event on the hardware ring, never overwrite a snapshot.
+pub const HidReport = struct {
+    slot_id: u8,
+    len: u8,
+    bytes: [max_report_bytes]u8,
+};
+const hid_pending_max = evt_ring_len;
+var hid_pending: [hid_pending_max]HidReport = undefined;
+var hid_head: usize = 0;
+var hid_count: usize = 0;
+
+fn discard_hid_reports(slot_id: u8) void {
+    var kept: usize = 0;
+    for (0..hid_count) |n| {
+        const rep = hid_pending[(hid_head + n) % hid_pending_max];
+        if (rep.slot_id == slot_id) continue;
+        hid_pending[(hid_head + kept) % hid_pending_max] = rep;
+        kept += 1;
+    }
+    hid_count = kept;
+}
 
 /// The enumerated device table: slot id, port, speed, VID/PID/class, the
 /// interrupt endpoint's number/max-packet/interval, and the HID protocol.
@@ -510,6 +542,7 @@ pub fn xhci_detach_slot(slot_id: u8) bool {
     const idx: usize = slot_id - 1;
     if (!enum_devs[idx].present or enum_devs[idx].slot_id != slot_id) return false;
     enum_devs[idx].present = false;
+    discard_hid_reports(slot_id);
     if (enum_count > 0) enum_count -= 1;
     return true;
 }
@@ -900,9 +933,11 @@ pub fn xhci_run_noop() bool {
             xhci_noop_done = cc == cc_success;
             return cc == cc_success;
         }
-        // Some other event (a port status change, say) — consume it and
-        // keep waiting for OUR completion.
-        evt_advance();
+        switch (intr_complete_from_event(trb)) {
+            .consumed => continue,
+            .blocked => return false,
+            .unrelated => evt_advance(),
+        }
     }
     return false;
 }
@@ -950,12 +985,15 @@ fn xhci_init_transfer_rings() void {
         };
         intr_enq[i] = 0;
         intr_deq[i] = 0;
+        intr_deq_cycle[i] = 1;
         intr_cycle[i] = 1;
         intr_armed[i] = 0;
         intr_report[i] = [_]u8{0} ** max_report_bytes;
         intr_slots[i] = [_][max_report_bytes]u8{[_]u8{0} ** max_report_bytes} ** tr_usable;
         mmu.clean_dcache_range(@intFromPtr(ring), @sizeOf(@TypeOf(ring.*)));
     }
+    hid_head = 0;
+    hid_count = 0;
     // U1: reset the per-slot bulk rings + state (fresh Link TRB at the wrap
     // boundary, empty armed/dequeue state).
     xhci_init_bulk_rings();
@@ -978,6 +1016,7 @@ fn tr_enqueue_ep0(slot_idx: usize, trb_in: Trb) void {
             .status = 0,
             .control = (trb_link << 10) | trb_link_toggle | @as(u32, cyc.*),
         };
+        mmu.clean_dcache_range(@intFromPtr(&ring[tr_usable]), @sizeOf(Trb));
         enq.* = 0;
         cyc.* ^= 1;
     }
@@ -999,6 +1038,7 @@ fn tr_enqueue_intr(dev_idx: usize, trb_in: Trb) void {
             .status = 0,
             .control = (trb_link << 10) | trb_link_toggle | @as(u32, cyc.*),
         };
+        mmu.clean_dcache_range(@intFromPtr(&ring[tr_usable]), @sizeOf(Trb));
         enq.* = 0;
         cyc.* ^= 1;
     }
@@ -1032,44 +1072,88 @@ fn wait_command(cmd_trb_phys: u64) CmdResult {
             evt_advance();
             return .{ .cc = cc, .status = trb.status, .control = trb.control };
         }
-        evt_advance(); // consume any other event (port change, transfer, ...)
+        switch (intr_complete_from_event(trb)) {
+            .consumed => continue,
+            .blocked => return .{ .cc = 0, .status = 0, .control = 0 },
+            .unrelated => evt_advance(),
+        }
     }
     return .{ .cc = 0, .status = 0, .control = 0 };
 }
 
 const TransferResult = struct { cc: u32, remaining: u32 };
+const cc_short_packet: u32 = 13;
 
-/// U1: true when `trb` is a fresh Transfer Event completing the OLDEST
-/// armed interrupt-IN TRB of some present device; performs that device's
-/// full report-completion bookkeeping (the poll_nb logic: payload into the
-/// report buffer, seq bump, dequeue advance, re-arm) inline. The bulk
-/// engine's wait_transfer calls this so a HID report completing mid-wait is
-/// DELIVERED rather than silently consumed — eating it would desynchronize
-/// the input FIFO's armed ring (the completion the FIFO waits for would
-/// never be seen again). The caller has already matched the cycle bit.
-fn intr_complete_from_event(trb: Trb) bool {
+/// Match the oldest armed TRB of either device on the shared event ring.
+fn intr_event_owner(trb: Trb) ?usize {
+    if (((trb.control >> 10) & 0x3f) != trb_transfer_event) return null;
     for (0..max_enumerated) |i| {
-        const d = &enum_devs[i];
-        if (!d.present or d.ep_in_num == 0) continue;
-        if (intr_armed[i] == 0) continue;
-        if (trb.param != ring_phys(&intr_ring[i][intr_deq[i]])) continue;
-        const cc = (trb.status >> 24) & 0xff;
-        const remaining = trb.status & 0xffffff;
-        evt_advance();
-        if (cc != cc_success) return true;
-        const dq = intr_deq[i];
-        mmu.invalidate_dcache_range(@intFromPtr(&intr_slots[i][dq]), max_report_bytes);
-        const total: u32 = intr_trb_len(intr_maxpkt[i]);
-        const got: u32 = if (remaining <= total) total - remaining else 0;
-        intr_report[i] = intr_slots[i][dq];
-        d.last_report_len = @intCast(got);
-        d.report_seq += 1;
-        intr_deq_advance(i);
-        if (intr_armed[i] > 0) intr_armed[i] -= 1;
-        xhci_arm_intr(d.slot_id);
-        return true;
+        const d = enum_devs[i];
+        if (!d.present or d.ep_in_num == 0 or intr_armed[i] == 0) continue;
+        if (trb.param == ring_phys(&intr_ring[i][intr_deq[i]])) return i;
     }
-    return false;
+    return null;
+}
+
+const IntrDispatch = enum { unrelated, consumed, blocked };
+
+/// Every shared-ring consumer uses this completion/rearm path. The caller
+/// has checked freshness; only success/short-packet payloads are delivered.
+fn intr_complete_from_event(trb: Trb) IntrDispatch {
+    const i = intr_event_owner(trb) orelse return .unrelated;
+    const cc = (trb.status >> 24) & 0xff;
+    const remaining = trb.status & 0xffffff;
+    const total = intr_trb_len(intr_maxpkt[i]);
+    const deliver = (cc == cc_success or cc == cc_short_packet) and remaining <= total;
+    if (deliver and hid_count == hid_pending_max) return .blocked;
+    const dq = intr_deq[i];
+    if (deliver) {
+        mmu.invalidate_dcache_range(@intFromPtr(&intr_slots[i][dq]), max_report_bytes);
+        hid_pending[(hid_head + hid_count) % hid_pending_max] = .{
+            .slot_id = enum_devs[i].slot_id,
+            .len = @intCast(total - remaining),
+            .bytes = intr_slots[i][dq],
+        };
+        hid_count += 1;
+        enum_devs[i].report_seq +%= 1;
+    }
+    evt_advance();
+    // Even an error completes a TRB. Leaving its dequeue/armed count stale
+    // makes every subsequent event foreign and silently loses the endpoint.
+    intr_deq_advance(i);
+    intr_armed[i] -= 1;
+    xhci_arm_intr(enum_devs[i].slot_id);
+    return .consumed;
+}
+
+fn take_hid_report() ?HidReport {
+    while (hid_count != 0) {
+        const rep = hid_pending[hid_head];
+        hid_head = (hid_head + 1) % hid_pending_max;
+        hid_count -= 1;
+        const i: usize = rep.slot_id - 1;
+        if (!enum_devs[i].present) continue; // administrative detach
+        intr_report[i] = rep.bytes;
+        enum_devs[i].last_report_len = rep.len;
+        return rep;
+    }
+    return null;
+}
+
+/// Return the next native report in global completion order, not slot order.
+pub fn xhci_next_hid_report() ?HidReport {
+    if (take_hid_report()) |rep| return rep;
+    for (0..evt_ring_len) |_| {
+        mmu.invalidate_dcache_range(@intFromPtr(&evt_ring[evt_deq]), @sizeOf(Trb));
+        const trb = evt_ring[evt_deq];
+        if ((trb.control & trb_cycle) != evt_cycle) return null;
+        switch (intr_complete_from_event(trb)) {
+            .consumed => if (take_hid_report()) |rep| return rep,
+            .blocked => return null,
+            .unrelated => evt_advance(),
+        }
+    }
+    return null;
 }
 
 /// Poll the event ring for the Transfer Event whose `param` (the completed
@@ -1090,8 +1174,11 @@ fn wait_transfer(trb_phys: u64) TransferResult {
         // U1: a foreign TRANSFER event for an armed interrupt-IN endpoint is
         // a live HID report — complete it inline (intr_complete_from_event
         // already advanced the ring) and keep waiting for OUR completion.
-        if (ty == trb_transfer_event and intr_complete_from_event(trb)) continue;
-        evt_advance();
+        switch (intr_complete_from_event(trb)) {
+            .consumed => continue,
+            .blocked => return .{ .cc = 0, .remaining = 0 },
+            .unrelated => evt_advance(),
+        }
     }
     return .{ .cc = 0, .remaining = 0 };
 }
@@ -1295,7 +1382,8 @@ fn xhci_control_transfer(
     // Status Stage TRB (direction opposite the data stage; IOC).
     var sctl: u32 = (trb_status_stage << 10) | trb_ioc;
     if (data_len == 0 or !dir_in) sctl |= trb_dir_in;
-    const status_phys = ring_phys(&ep0_ring[slot_idx]) + ep0_enq[slot_idx] * @sizeOf(Trb);
+    const status_idx = if (ep0_enq[slot_idx] == tr_usable) 0 else ep0_enq[slot_idx];
+    const status_phys = ring_phys(&ep0_ring[slot_idx][status_idx]);
     tr_enqueue_ep0(slot_idx, .{ .param = 0, .status = 0, .control = sctl });
 
     // The data buffer is written by software for OUT transfers.
@@ -1326,7 +1414,7 @@ fn xhci_set_configuration(slot_id: u8, config: u16) bool {
 
 /// HID SET_PROTOCOL(boot) (class request to the interface, no data stage).
 fn xhci_set_protocol_boot(slot_id: u8, iface: u16) bool {
-    const r = xhci_control_transfer(slot_id, 0x21, 0x0b, 1, iface, @ptrCast(&intr_report[0]), 0, false);
+    const r = xhci_control_transfer(slot_id, 0x21, 0x0b, 0, iface, @ptrCast(&intr_report[0]), 0, false);
     return r.cc == cc_success;
 }
 
@@ -1347,7 +1435,10 @@ pub fn hid_interval(speed: u8, b_interval: u8) u8 {
 fn intr_deq_advance(dev: usize) void {
     const deq = &intr_deq[dev];
     deq.* += 1;
-    if (deq.* == tr_usable) deq.* = 0;
+    if (deq.* == tr_usable) {
+        deq.* = 0;
+        intr_deq_cycle[dev] ^= 1;
+    }
 }
 
 /// The report-buffer slot a TRB enqueued at ring position `enq` occupies.
@@ -1401,7 +1492,7 @@ fn xhci_arm_intr(slot_id: u8) void {
     // Pointer (it re-reads the context from memory on each doorbell, rather
     // than tracking the dequeue in internal state). Advance the context's
     // TRDP to the oldest still-armed TRB so the re-armed ring is visible.
-    dev_ctx[slot_idx].ep1_in.deq = ring_phys(&intr_ring[slot_idx][intr_deq[slot_idx]]) | 1; // DCS = 1
+    dev_ctx[slot_idx].ep1_in.deq = ring_phys(&intr_ring[slot_idx][intr_deq[slot_idx]]) | @as(u64, intr_deq_cycle[slot_idx]);
     mmu.clean_dcache_range(@intFromPtr(&dev_ctx[slot_idx].ep1_in.deq), @sizeOf(u64));
     ring_ep_doorbell(slot_id, 2); // EP1 IN
 }
@@ -1409,15 +1500,17 @@ fn xhci_arm_intr(slot_id: u8) void {
 /// Non-blocking variant of `xhci_poll_intr` for the polled keyboard drain
 /// (card I3): returns immediately when no fresh transfer event is pending,
 /// so the shell idle loop is not slowed by the full bounded poll (the
-/// blocking `xhci_poll_intr` stays the `usb report` path). Consumes any
-/// other fresh events (port change, command completion) along the way.
+/// blocking `xhci_poll_intr` stays the `usb report` path). Foreign HID
+/// completions stay queued; unrelated events can be consumed along the way.
 pub fn xhci_poll_intr_nb(slot_id: u8) bool {
     if (slot_id == 0 or slot_id > max_enumerated) return false;
     const slot_idx = slot_id - 1;
     if (!enum_devs[slot_idx].present or enum_devs[slot_idx].ep_in_num == 0) return false;
-    if (intr_armed[slot_idx] == 0) return false; // no armed TRB
-    const ring = &intr_ring[slot_idx];
-    const trb_phys = ring_phys(&ring[intr_deq[slot_idx]]);
+    if (hid_count != 0) {
+        if (hid_pending[hid_head].slot_id != slot_id) return false;
+        return take_hid_report() != null;
+    }
+    if (intr_armed[slot_idx] == 0) return false;
     // Scan only FRESH events (the cycle bit matches); a no-event poll is
     // one cheap invalidate + read. Bounded by the ring length.
     var steps: usize = 0;
@@ -1425,23 +1518,13 @@ pub fn xhci_poll_intr_nb(slot_id: u8) bool {
         mmu.invalidate_dcache_range(@intFromPtr(&evt_ring[evt_deq]), @sizeOf(Trb));
         const trb = evt_ring[evt_deq];
         if ((trb.control & trb_cycle) != evt_cycle) return false; // no fresh event
-        const ty = (trb.control >> 10) & 0x3f;
-        if (ty == trb_transfer_event and trb.param == trb_phys) {
-            const cc = (trb.status >> 24) & 0xff;
-            const remaining = trb.status & 0xffffff;
-            evt_advance();
-            if (cc != cc_success) return false;
-            const dq = intr_deq[slot_idx];
-            mmu.invalidate_dcache_range(@intFromPtr(&intr_slots[slot_idx][dq]), max_report_bytes);
-            const total: u32 = intr_trb_len(intr_maxpkt[slot_idx]);
-            const got = if (remaining <= total) total - remaining else 0;
-            intr_report[slot_idx] = intr_slots[slot_idx][dq];
-            enum_devs[slot_idx].last_report_len = @intCast(got);
-            enum_devs[slot_idx].report_seq += 1;
-            intr_deq_advance(slot_idx);
-            if (intr_armed[slot_idx] > 0) intr_armed[slot_idx] -= 1;
-            xhci_arm_intr(slot_id); // top up (depth stays constant)
-            return true;
+        if (intr_event_owner(trb)) |owner| {
+            if (owner != slot_idx) return false;
+            switch (intr_complete_from_event(trb)) {
+                .consumed => return take_hid_report() != null,
+                .blocked => return false,
+                .unrelated => unreachable,
+            }
         }
         evt_advance(); // consume any other fresh event (port change, etc.)
     }
@@ -1455,22 +1538,16 @@ pub fn xhci_poll_intr(slot_id: u8) bool {
     if (slot_id == 0 or slot_id > max_enumerated) return false;
     const slot_idx = slot_id - 1;
     if (!enum_devs[slot_idx].present or enum_devs[slot_idx].ep_in_num == 0) return false;
-    if (intr_armed[slot_idx] == 0) return false; // no armed TRB
-    const ring = &intr_ring[slot_idx];
-    const trb_phys = ring_phys(&ring[intr_deq[slot_idx]]);
-    const r = wait_transfer(trb_phys);
-    if (r.cc == cc_success) {
-        const dq = intr_deq[slot_idx];
-        mmu.invalidate_dcache_range(@intFromPtr(&intr_slots[slot_idx][dq]), max_report_bytes);
-        const total: u32 = intr_trb_len(intr_maxpkt[slot_idx]);
-        const got = if (r.remaining <= total) total - r.remaining else 0;
-        intr_report[slot_idx] = intr_slots[slot_idx][dq];
-        enum_devs[slot_idx].last_report_len = @intCast(got);
-        enum_devs[slot_idx].report_seq += 1;
-        intr_deq_advance(slot_idx);
-        if (intr_armed[slot_idx] > 0) intr_armed[slot_idx] -= 1;
-        xhci_arm_intr(slot_id);
-        return true;
+    for (0..poll_budget) |_| {
+        if (hid_count != 0 and hid_pending[hid_head].slot_id != slot_id) return false;
+        if (xhci_poll_intr_nb(slot_id)) return true;
+        mmu.invalidate_dcache_range(@intFromPtr(&evt_ring[evt_deq]), @sizeOf(Trb));
+        const trb = evt_ring[evt_deq];
+        if ((trb.control & trb_cycle) == evt_cycle) {
+            if (intr_event_owner(trb)) |owner| {
+                if (owner != slot_idx) return false;
+            }
+        }
     }
     return false;
 }
@@ -1577,6 +1654,7 @@ fn xhci_enumerate_port(port: u8) bool {
     var ep_in_maxpkt: u16 = 0;
     var ep_in_interval: u8 = 0;
     var iface_protocol: u8 = 0; // bInterfaceProtocol (1=kbd, 2=mouse)
+    var hid_descriptor_len: u16 = 0;
     // U1: bulk endpoint capture (attributes 2 = bulk; direction from the
     // address bit 7). Set only on non-HID devices (mass storage).
     var bulk_out_num: u8 = 0;
@@ -1592,6 +1670,8 @@ fn xhci_enumerate_port(port: u8) bool {
             if (dtype == 4 and dlen >= 9) {
                 // Interface descriptor: bInterfaceProtocol at offset 7.
                 iface_protocol = cfg[i + 7];
+            } else if (dtype == 0x21 and dlen >= 9 and cfg[i + 6] == 0x22) {
+                hid_descriptor_len = @as(u16, cfg[i + 7]) | (@as(u16, cfg[i + 8]) << 8);
             } else if (dtype == 5 and dlen >= 7) {
                 const epaddr = cfg[i + 2];
                 const attrs = cfg[i + 3];
@@ -1636,7 +1716,28 @@ fn xhci_enumerate_port(port: u8) bool {
     var kind: HidKind = .unknown;
     var hid_boot_ok = false;
     if (ep_in_num != 0) {
-        hid_boot_ok = xhci_set_protocol_boot(slot_id, 0);
+        // Descriptor evidence is device metadata, not a keystroke capture.
+        // Read the advertised length, bounded by our fixed scratch buffer.
+        if (debug != null and hid_descriptor_len != 0 and hid_descriptor_len <= 256) {
+            var hid_desc: [256]u8 align(64) = undefined;
+            const hr = xhci_control_transfer(slot_id, 0x81, 6, 0x2200, 0, @ptrCast(&hid_desc), hid_descriptor_len, true);
+            if (hr.cc == cc_success and hr.remaining <= hid_descriptor_len) {
+                const len = hid_descriptor_len - hr.remaining;
+                dbg("xhci: HID descriptor slot=");
+                dbg_hex(slot_id);
+                dbg(" bytes=");
+                for (hid_desc[0..len]) |byte| {
+                    dbg_hex(byte);
+                    dbg(" ");
+                }
+                dbg("\n");
+            }
+        }
+        // Only boot interfaces define SET_PROTOCOL. The native VZ tablet
+        // advertises protocol 0 and stays in its descriptor-defined format.
+        if (iface_protocol == 1 or iface_protocol == 2) {
+            hid_boot_ok = xhci_set_protocol_boot(slot_id, 0);
+        }
         if (iface_protocol == 1) {
             kind = .keyboard;
         } else if (iface_protocol == 2) {
@@ -1859,6 +1960,54 @@ test "xhci: intr report-buffer slot wraps at the Link TRB boundary" {
     try std.testing.expectEqual(@as(usize, 14), intr_slot_index(14));
 }
 
+test "xhci: nonblocking keyboard and pointer polls preserve each other's completions" {
+    const saved_devs = enum_devs;
+    const saved_armed = intr_armed;
+    const saved_deq = intr_deq;
+    defer {
+        enum_devs = saved_devs;
+        intr_armed = saved_armed;
+        intr_deq = saved_deq;
+    }
+    enum_devs = [_]EnumDevice{.{}} ** EnumMax;
+    intr_armed = [_]usize{0} ** max_enumerated;
+    intr_deq = [_]usize{0} ** max_enumerated;
+    for (0..2) |i| {
+        enum_devs[i] = .{ .present = true, .slot_id = @intCast(i + 1), .ep_in_num = 1 };
+        intr_armed[i] = intr_depth;
+    }
+
+    // Interleaved completions stay at the shared queue head until the poll
+    // for their owner runs, including both sides of a transfer-ring wrap.
+    for ([_]usize{ 0, tr_usable - 1, 0 }) |dq| {
+        intr_deq[0] = dq;
+        intr_deq[1] = dq;
+        for (0..2) |owner| {
+            const completion = Trb{
+                .param = ring_phys(&intr_ring[owner][dq]),
+                .status = cc_success << 24,
+                .control = trb_transfer_event << 10,
+            };
+            try std.testing.expectEqual(@as(?usize, owner), intr_event_owner(completion));
+        }
+    }
+
+    const keyboard = Trb{
+        .param = ring_phys(&intr_ring[0][0]),
+        .control = trb_transfer_event << 10,
+    };
+    intr_armed[0] = 0;
+    try std.testing.expectEqual(@as(?usize, null), intr_event_owner(keyboard));
+    intr_armed[0] = intr_depth;
+    enum_devs[0].present = false;
+    try std.testing.expectEqual(@as(?usize, null), intr_event_owner(keyboard));
+    enum_devs[0].present = true;
+    try std.testing.expectEqual(@as(?usize, null), intr_event_owner(.{
+        .param = keyboard.param,
+        .control = trb_command_completion_event << 10,
+    }));
+}
+
 test "xhci: issue #118 — the armed TRB length is the device maxpkt, never clamped to 8" {
     // The absolute pointer enumerates with maxpkt 10; the report buffers are
     // sized to max_report_bytes (10), so a 10-byte report survives the arm/
@@ -2036,4 +2185,248 @@ test "xhci: U4 rescan without a controller is a counted no-op" {
     try std.testing.expectEqual(@as(usize, 0), r.reattached);
     try std.testing.expectEqual(save_count, r.count);
     try std.testing.expectEqual(save_n +% 1, rescan_count);
+}
+
+test "xhci: M91 polling keyboard must not eat pointer completion" {
+    const saved_devs = enum_devs;
+    const saved_armed = intr_armed;
+    const saved_deq = intr_deq;
+    const saved_evt_deq = evt_deq;
+    const saved_evt_cycle = evt_cycle;
+    const saved_rt_base = xhci_rt_base;
+    var registers: [32]u32 = [_]u32{0} ** 32;
+    xhci_rt_base = @intFromPtr(&registers);
+    defer {
+        enum_devs = saved_devs;
+        intr_armed = saved_armed;
+        intr_deq = saved_deq;
+        evt_deq = saved_evt_deq;
+        evt_cycle = saved_evt_cycle;
+        xhci_rt_base = saved_rt_base;
+    }
+    enum_devs = .{
+        .{ .present = true, .slot_id = 1, .ep_in_num = 1 },
+        .{ .present = true, .slot_id = 2, .ep_in_num = 1 },
+    };
+    intr_armed = .{ intr_depth, intr_depth };
+    intr_deq = .{ 0, 0 };
+    evt_deq = 0;
+    evt_cycle = 1;
+    evt_ring = [_]Trb{.{}} ** evt_ring_len;
+    evt_ring[0] = .{
+        .param = ring_phys(&intr_ring[1][0]),
+        .status = cc_success << 24,
+        .control = (trb_transfer_event << 10) | trb_cycle,
+    };
+    // With a foreign HID at the head this must not access ERDP/MMIO.
+    try std.testing.expect(!xhci_poll_intr_nb(1));
+    try std.testing.expectEqual(@as(usize, 0), evt_deq);
+}
+
+/// In-memory controller seam, host tests only. The real dispatch, DMA-slot
+/// ownership, queue, Link TRBs, rearm and dequeue cycles all run unchanged.
+pub const HidTest = if (builtin.is_test) struct {
+    registers: [32]u32 = [_]u32{0} ** 32,
+    doorbells: [4]u32 = [_]u32{0} ** 4,
+    tail: usize = 0,
+    cycle: u1 = 1,
+    completed: [EnumMax]usize = .{ 0, 0 },
+
+    pub fn init(self: *@This()) void {
+        self.* = .{};
+        xhci_rt_base = @intFromPtr(&self.registers);
+        xhci_doorbell_base = @intFromPtr(&self.doorbells);
+        xhci_init_transfer_rings();
+        evt_ring = [_]Trb{.{}} ** evt_ring_len;
+        evt_deq = 0;
+        evt_cycle = 1;
+        enum_devs = .{
+            .{ .present = true, .slot_id = 1, .ep_in_num = 1, .hid_boot = true, .vid = 0x05ac, .pid = 0x8105 },
+            .{ .present = true, .slot_id = 2, .ep_in_num = 1, .vid = 0x05ac, .pid = 0x8106 },
+        };
+        enum_count = 2;
+        hid_kind = .{ .keyboard, .unknown };
+        intr_maxpkt = .{ 8, 10 };
+        xhci_arm_intr(1);
+        xhci_arm_intr(2);
+    }
+
+    pub fn deinit(_: *@This()) void {
+        enum_devs = [_]EnumDevice{.{}} ** EnumMax;
+        enum_count = 0;
+        intr_armed = .{ 0, 0 };
+        hid_count = 0;
+        hid_head = 0;
+        evt_ring = [_]Trb{.{}} ** evt_ring_len;
+        evt_deq = 0;
+        evt_cycle = 1;
+        xhci_rt_base = 0;
+        xhci_doorbell_base = 0;
+    }
+
+    pub fn event(self: *@This(), trb: Trb) void {
+        var t = trb;
+        t.control = (t.control & ~trb_cycle) | @as(u32, self.cycle);
+        evt_ring[self.tail] = t;
+        self.tail += 1;
+        if (self.tail == evt_ring_len) {
+            self.tail = 0;
+            self.cycle ^= 1;
+        }
+    }
+
+    pub fn report(self: *@This(), i: usize, bytes: []const u8) void {
+        const dq = self.completed[i];
+        intr_slots[i][dq] = [_]u8{0} ** max_report_bytes;
+        @memcpy(intr_slots[i][dq][0..bytes.len], bytes);
+        self.event(.{
+            .param = ring_phys(&intr_ring[i][dq]),
+            .status = (cc_success << 24) | (intr_trb_len(intr_maxpkt[i]) - @as(u32, @intCast(bytes.len))),
+            .control = (trb_transfer_event << 10) | (3 << 16) | (@as(u32, @intCast(i + 1)) << 24),
+        });
+        self.completed[i] = (dq + 1) % tr_usable;
+    }
+} else void;
+
+test "xhci: M91 interleaved completions survive command and transfer waits in global order" {
+    var hw: HidTest = .{};
+    hw.init();
+    defer hw.deinit();
+    const key = [_]u8{ 2, 0, 4, 0, 0, 0, 0, 0 };
+    const release = [_]u8{0} ** 8;
+    const ptr = [_]u8{ 1, 1, 0x44, 0x24, 0x2f, 0x67, 0, 0, 0, 0 };
+    hw.report(1, &ptr);
+    hw.report(0, &key);
+    hw.report(1, &ptr);
+    hw.report(0, &release);
+    hw.event(.{ .param = 0x1234, .status = cc_success << 24, .control = trb_command_completion_event << 10 });
+    try std.testing.expectEqual(cc_success, wait_command(0x1234).cc);
+    hw.report(0, &key);
+    hw.report(1, &ptr);
+    hw.event(.{ .param = 0x5678, .status = cc_success << 24, .control = trb_transfer_event << 10 });
+    try std.testing.expectEqual(cc_success, wait_transfer(0x5678).cc);
+    // Overwrite the DMA buffers: queued payloads must already own snapshots.
+    intr_slots = [_][tr_usable][max_report_bytes]u8{[_][max_report_bytes]u8{[_]u8{0xff} ** max_report_bytes} ** tr_usable} ** EnumMax;
+    for ([_]usize{ 1, 0, 1, 0, 0, 1 }, 0..) |i, n| {
+        const rep = xhci_next_hid_report().?;
+        try std.testing.expectEqual(@as(u8, @intCast(i + 1)), rep.slot_id);
+        const want: []const u8 = if (i == 1) &ptr else if (n == 3) &release else &key;
+        try std.testing.expectEqualSlices(u8, want, rep.bytes[0..rep.len]);
+        try std.testing.expectEqual(intr_depth, intr_armed[i]);
+    }
+    try std.testing.expect(xhci_next_hid_report() == null);
+}
+
+test "xhci: M91 NO-OP wait preserves HID snapshots too" {
+    var hw: HidTest = .{};
+    hw.init();
+    defer hw.deinit();
+    const saved_op = xhci_op_base;
+    defer xhci_op_base = saved_op;
+    xhci_op_base = @intFromPtr(&hw.registers);
+    cmd_enq = 0;
+    cmd_cycle = 1;
+    cmd_ring = [_]Trb{.{}} ** cmd_ring_len;
+    hw.report(0, &.{ 0, 0, 4, 0, 0, 0, 0, 0 });
+    hw.report(1, &.{ 1, 0, 0x44, 0x24, 0x2f, 0x67, 0, 0, 0, 0 });
+    hw.event(.{ .param = ring_phys(&cmd_ring[0]), .status = cc_success << 24, .control = trb_command_completion_event << 10 });
+    try std.testing.expect(xhci_run_noop());
+    try std.testing.expectEqual(@as(u8, 1), xhci_next_hid_report().?.slot_id);
+    try std.testing.expectEqual(@as(u8, 2), xhci_next_hid_report().?.slot_id);
+    try std.testing.expect(xhci_next_hid_report() == null);
+}
+
+test "xhci: M91 EP0 status completion uses the post-Link slot" {
+    var hw: HidTest = .{};
+    hw.init();
+    defer hw.deinit();
+    ep0_enq[0] = tr_usable - 1;
+    hw.event(.{ .param = ring_phys(&ep0_ring[0][0]), .status = cc_success << 24, .control = trb_transfer_event << 10 });
+    var buf: [1]u8 = .{0};
+    const result = xhci_control_transfer(1, 0x21, 0x0b, 0, 0, &buf, 0, false);
+    try std.testing.expectEqual(cc_success, result.cc);
+    try std.testing.expectEqual(@as(usize, 1), ep0_enq[0]);
+    try std.testing.expectEqual(@as(u32, 0), ep0_ring[0][0].control & trb_cycle);
+}
+
+test "xhci: M91 SET_PROTOCOL boot requests zero not report protocol" {
+    var hw: HidTest = .{};
+    hw.init();
+    defer hw.deinit();
+    hw.event(.{ .param = ring_phys(&ep0_ring[0][1]), .status = cc_success << 24, .control = trb_transfer_event << 10 });
+    try std.testing.expect(xhci_set_protocol_boot(1, 0));
+    const setup = ep0_ring[0][0].param;
+    try std.testing.expectEqual(@as(u16, 0), @as(u16, @truncate(setup >> 16)));
+}
+
+test "xhci: M91 shared ring wraps and rearm cycles track each device independently" {
+    var hw: HidTest = .{};
+    hw.init();
+    defer hw.deinit();
+    for (0..1000) |n| {
+        // Deliberately uneven device cadence; both orders, both event cycles.
+        const i: usize = if (n % 3 == 0) 1 else 0;
+        const before = intr_deq[i];
+        var bytes = [_]u8{0} ** max_report_bytes;
+        bytes[0] = @truncate(n);
+        const len: usize = if (i == 0) 8 else 10;
+        hw.report(i, bytes[0..len]);
+        const rep = xhci_next_hid_report().?;
+        try std.testing.expectEqual(@as(u8, @intCast(i + 1)), rep.slot_id);
+        try std.testing.expectEqualSlices(u8, bytes[0..len], rep.bytes[0..rep.len]);
+        try std.testing.expectEqual((before + 1) % tr_usable, intr_deq[i]);
+        try std.testing.expectEqual(intr_depth, intr_armed[i]);
+        try std.testing.expectEqual(@as(u64, intr_deq_cycle[i]), dev_ctx[i].ep1_in.deq & 1);
+        try std.testing.expectEqual(@as(u32, intr_deq_cycle[i]), intr_ring[i][intr_deq[i]].control & 1);
+        try std.testing.expectEqual(@as(u32, 3), hw.doorbells[i + 1]);
+    }
+}
+
+test "xhci: M91 short error and malformed completions retire exactly one TRB" {
+    var hw: HidTest = .{};
+    hw.init();
+    defer hw.deinit();
+    hw.report(0, &.{ 0, 0, 4 });
+    evt_ring[0].status = (cc_short_packet << 24) | 5;
+    const short = xhci_next_hid_report().?;
+    try std.testing.expectEqual(@as(u8, 3), short.len);
+    for ([_]u32{ (6 << 24), (cc_success << 24) | 9 }) |status| {
+        hw.report(0, &.{ 0, 0, 4, 0, 0, 0, 0, 0 });
+        const idx = if (hw.tail == 0) evt_ring_len - 1 else hw.tail - 1;
+        evt_ring[idx].status = status;
+        try std.testing.expect(xhci_next_hid_report() == null);
+        try std.testing.expectEqual(intr_depth, intr_armed[0]);
+    }
+    hw.report(0, &.{ 0, 0, 5, 0, 0, 0, 0, 0 });
+    try std.testing.expectEqual(@as(u8, 5), xhci_next_hid_report().?.bytes[2]);
+    try std.testing.expectEqual(@as(usize, 4), intr_deq[0]);
+}
+
+test "xhci: M91 full snapshot FIFO backpressures without loss then detach preserves survivor order" {
+    var hw: HidTest = .{};
+    hw.init();
+    defer hw.deinit();
+    for (0..hid_pending_max) |n| {
+        const i = n % 2;
+        var wire = [_]u8{0} ** 8;
+        wire[2] = @intCast(n);
+        hw.report(i, &wire);
+        try std.testing.expectEqual(IntrDispatch.consumed, intr_complete_from_event(evt_ring[evt_deq]));
+    }
+    hw.report(0, &.{ 0, 0, 99, 0, 0, 0, 0, 0 });
+    const old_deq = evt_deq;
+    const old_intr = intr_deq[0];
+    try std.testing.expectEqual(IntrDispatch.blocked, intr_complete_from_event(evt_ring[evt_deq]));
+    try std.testing.expectEqual(old_deq, evt_deq);
+    try std.testing.expectEqual(old_intr, intr_deq[0]);
+    try std.testing.expectEqual(@as(u8, 0), take_hid_report().?.bytes[2]);
+    try std.testing.expectEqual(IntrDispatch.consumed, intr_complete_from_event(evt_ring[evt_deq]));
+    try std.testing.expect(xhci_detach_slot(2));
+    for (1..hid_pending_max / 2) |n| {
+        const rep = take_hid_report().?;
+        try std.testing.expectEqual(@as(u8, 1), rep.slot_id);
+        try std.testing.expectEqual(@as(u8, @intCast(n * 2)), rep.bytes[2]);
+    }
+    try std.testing.expectEqual(@as(u8, 99), take_hid_report().?.bytes[2]);
+    try std.testing.expect(take_hid_report() == null);
 }
