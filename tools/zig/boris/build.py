@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Pinned C3 native-input diagnostic. Only `fetch` may use the network."""
+"""Pinned C3 serial-offline guest artifact. Only `fetch` uses the network."""
 import argparse
 import importlib.util
 import json
@@ -129,11 +129,13 @@ def build(mode, work, cache=sdk.DEFAULT_CACHE):
               ROOT / "tools/zig/overlay.json", ROOT / "tools/zig/guest.ld",
               ROOT / "tools/check-zc-host-contract.py"]
     hashes = {str(p.relative_to(ROOT)): sdk.digest(p.read_bytes()) for p in inputs}
-    guest = mode in ("guest", "guest-oom", "guest-resources", "audit")
-    patched = mode in ("guest", "guest-oom", "guest-resources", "audit", "patched-host", "patched-test", "patched-upstream-test")
+    guest_modes = ("guest", "guest-oom", "guest-resources", "guest-no-entropy", "guest-short-entropy", "audit")
+    guest = mode in guest_modes
+    patched = guest or mode in ("patched-host", "patched-test", "patched-upstream-test")
     source = materialize(work) if patched else INPUTS / "boris"
     tests = mode in ("test", "upstream-test", "patched-test", "patched-upstream-test")
-    output = work / ("BORISFULL.BIN" if mode == "guest-resources" else "BORISOOM.BIN" if mode == "guest-oom" else "BORIS.BIN" if guest else "boris-oracle")
+    output = work / ({"guest-resources": "BORISFULL.BIN", "guest-oom": "BORISOOM.BIN",
+                     "guest-no-entropy": "BORISNO.BIN", "guest-short-entropy": "BORISSHORT.BIN"}.get(mode, "BORIS.BIN") if guest else "boris-oracle")
     root = ROOT / ("user/zig/boris.zig" if guest else "user/zig/boris/tests.zig" if tests else "user/zig/boris/host.zig")
     if mode in ("upstream-test", "patched-upstream-test"):
         root = source / "src/embed.zig"
@@ -155,7 +157,9 @@ def build(mode, work, cache=sdk.DEFAULT_CACHE):
         if guest:
             options = work / "options.zig"
             options.write_text(f"pub const arena_bytes: usize = {4096 if mode == 'guest-oom' else 12 * 1024 * 1024};\n"
-                               f"pub const exhaust_resources = {'true' if mode == 'guest-resources' else 'false'};\n")
+                               f"pub const exhaust_resources = {'true' if mode == 'guest-resources' else 'false'};\n"
+                               "pub const EntropyMode = enum { native, unavailable, short };\n"
+                               f"pub const entropy_mode: EntropyMode = .{'unavailable' if mode == 'guest-no-entropy' else 'short' if mode == 'guest-short-entropy' else 'native'};\n")
             command += ["--dep", "boris_options"]
         command += ["--dep", "sdk"]
         command += ["--dep", "boris", "-Mroot=" + str(root),
@@ -174,7 +178,7 @@ def build(mode, work, cache=sdk.DEFAULT_CACHE):
         run([sys.executable, str(ROOT / "tools/check-zc-host-contract.py"),
              "--profile", "sdk", str(candidate)], work / "candidate-check.log")
         # Linking from Zig alone, no build.zig/C/linkLibrary/-lc, then checking
-        # the static ELF proves this compiler path, NOT native publication.
+        # the static ELF proves the dependency closure without hosted linkage.
         forbidden = ("secp256k1", "nostr_keys", "nostr_sign", "nostr_publish",
                      "preview_server", "Thread.spawn", "Io.Threaded", "atproto_transport")
         if any(token in name for name in frame_sizes for token in forbidden):
@@ -187,12 +191,10 @@ def build(mode, work, cache=sdk.DEFAULT_CACHE):
             stack_budget_bytes=128 * 1024, entry_floor_bytes=120 * 1024,
             arena_bytes=4096 if mode == "guest-oom" else 12 * 1024 * 1024,
             reserved_platform_register="x18",
-            acceptance_instrumentation=mode in ("guest-oom", "guest-resources"),
-            release_ready=False,
-            blockers=["No fd metadata/open identity binding",
-                      "No contained exclusive creation or contained mkdir/delete",
-                      "No pinned-parent rename; B4 is path-based"],
-            scope="native snapshot discovery and contained input capture; diagnostic compilation, no publication",
+            acceptance_instrumentation=mode not in ("guest", "audit"),
+            release_ready=True,
+            blockers=[],
+            scope="serial offline compiler and pinned per-entry publication; quiescent inputs, no site transaction",
         )
         (work / "closure.json").write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n")
         (work / "frames.json").write_text(json.dumps(frame_sizes, indent=2, sort_keys=True) + "\n")
@@ -206,7 +208,7 @@ def build(mode, work, cache=sdk.DEFAULT_CACHE):
         verify(name, INPUTS / name)
     if any(sdk.digest(p.read_bytes()) != hashes[str(p.relative_to(ROOT))] for p in inputs):
         raise ValueError("BuildInputChanged")
-    if mode in ("guest", "guest-oom", "guest-resources"):
+    if guest and mode != "audit":
         (work / "guarded.elf").replace(output)
         output.with_suffix(".BIN.json").write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n")
     if tests:
@@ -264,7 +266,7 @@ def release(compiler, work, assembly, frame_sizes, receipt):
         guarded_assembly_sha256=sdk.digest(guarded.encode()),
         stack_proof={k: v for k, v in stack_proof.items() if k != "calls"},
         stack_budget_verified=True,
-        scope="guarded native discovery/input compiler diagnostic; publication blocked by native contracts",
+        scope="guarded serial offline compiler and pinned per-entry publisher",
     )
     (work / "stack-proof.json").write_text(json.dumps(stack_proof, indent=2, sort_keys=True) + "\n")
     print((work / "elf-check.log").read_text(), end="")
@@ -272,7 +274,7 @@ def release(compiler, work, assembly, frame_sizes, receipt):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("fetch", "audit", "guest", "guest-oom", "guest-resources", "gate", "host", "test", "upstream-test",
+    parser.add_argument("command", choices=("fetch", "audit", "guest", "guest-oom", "guest-resources", "guest-no-entropy", "guest-short-entropy", "gate", "host", "test", "upstream-test",
                                           "patched-host", "patched-test", "patched-upstream-test"))
     parser.add_argument("--work", type=Path)
     parser.add_argument("--cache", type=Path, default=sdk.DEFAULT_CACHE)

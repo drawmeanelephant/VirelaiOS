@@ -8,6 +8,7 @@ comptime {
     _ = @import("workspace.zig");
     _ = @import("memory.zig");
     _ = @import("discovery_test.zig");
+    _ = @import("publication_test.zig");
 }
 
 test "compiler corpus retains Oliver, nested identities, includes, assets and offline evidence" {
