@@ -26,7 +26,6 @@ SECTIONS {
     }
     .rodata : ALIGN(16) { *(.rodata .rodata.*) }
     .data.rel.ro : ALIGN(16) { *(.data.rel.ro .data.rel.ro.*) }
-    .eh_frame : ALIGN(16) { *(.eh_frame .eh_frame_hdr) }
     .data : ALIGN(16) { *(.data .data.*) }
     /* Dedicated EL0 RW stack pages; kept separate from privileged BSS. */
     .userbss (NOLOAD) : ALIGN(4096) {
@@ -37,5 +36,9 @@ SECTIONS {
     }
     .bss : ALIGN(16) { *(.bss .bss.*) }
     .ARM.exidx : ALIGN(16) { *(.ARM.exidx*) }
-    /DISCARD/ : { *(.note.*) }
+    /* The kernel has no DWARF unwinder or language exceptions. B7 removes
+     * unused unwind metadata, not the 16 MiB KRN2 loader bound; current main
+     * had only 1368 bytes left under that bound. Frame-pointer diagnostics
+     * and host-test ELF unwind tables are unaffected. */
+    /DISCARD/ : { *(.note.*) *(.eh_frame .eh_frame_hdr) }
 }

@@ -28,6 +28,16 @@ assumption comes from documentation or reasoning only.
 | Sound (virtio-snd) | `0x1af4/0x1059` cls `0x040100` | **NO** (`st=0f`) | Device config counts read **0/0/0** (jacks/streams/chmaps) — enumerate topology via CONTROL-queue JACK_INFO/PCM_INFO queries. VZ speaks the **virtio-1.3 control renumbering** (OK=`0x8000`; PCM_INFO `0x0100` … STOP `0x0105`). Control replies are `[status hdr][entries]` (status FIRST — Linux reads the reverse). Playback TX queue = **queue 2**. Formats S16\|S32\|FLOAT, rates 48k\|96k, 1–2 ch, OUTPUT. **[observed]** claims 6140/5877/7636/3206. **M70f2 [observed]** (issue #1476, `go-fart` 2/2 + `live-sound-control` 2/2 + `live-sound-playback` 1/1 + `live-sound-app` 1/1 on macOS 27.2 build 26B5086k, 28–45 s a run): the stream-state rows are reachable from GOOS=virelai with these results. Slot 44's bound is **0..100**; 101 is REFUSED with `EINVAL` (no silent clamping) and an in-range value is accepted and echoed (`vol set=40 echo=40`), with the kernel's stored gain readable through a different path (`sound` then prints `vol=40`). The kernel's own defaults are **volume 100 / mute off**, observed as `sound: vol=100 mute=0` on a boot that sets neither. Slot 45's mute does **not** shorten a drain: one 250 ms / 96000-byte buffer submitted unmuted and then muted confirmed **96000 bytes both times** (the muted-drain identity), and a soundless VM leaves both rows at zero calls. The accounting identity holds on the monitor path too: `beep 440 300` reports `submitted=115200 drained=115200 frames=14400`, i.e. every submitted byte drained (FLOAT/stereo, 8 B a frame at 48 kHz). **Stated limit:** the samples the device actually receives are not observable anywhere in this project — there is no capture path — so muted playback is evidenced as accounting plus kernel state, never as measured silence. |
 | Custom virtio | `0x1af4/0x1082` (vendor-defined) | n/a | Firmware boots it with the PCI command register **disabled** (`0x10`) — write `command=0x16` in init before any BAR access. Used-buffer IRQ is a real SPI (69) but **coalesced per burst** — drain the whole used ring. **[observed]** claims 5844/0828/9737 |
 
+**B7 continuous PCM [observed]** (#1874, `live-sound-playback`, macOS
+27.2/arm64): the real VZ output device accepts FLOAT32/48 kHz/stereo,
+32 TX descriptors and eight 4096-byte periods. A 131072-byte stream
+returns every period with one START and one STOP/RELEASE, no reset.
+Full prefill refuses with EAGAIN/zero acceptance; empty running supply
+enters sticky XRUN; explicit abort and owner-death/reopen are verified.
+Without `--sound`, open and legacy playback refuse ENXIO loudly.
+Ownership/completion accounting is not captured audio, an audible
+continuity measurement, capture support, or a low-latency guarantee.
+
 Custom-virtio identity rationale (claim 3141): the device keeps the
 virtio-pci transitional scheme — vendor `0x1af4` is REQUIRED so the
 transport is discoverable as virtio (a private vendor ID would make it a
