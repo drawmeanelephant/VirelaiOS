@@ -11,6 +11,12 @@
 vgate_name live-sb4-damage-tracking "M33 SB4: rect-granular damage tracking on VZ"
 vgate_share seed
 vgate_runner_flags -Xswiftc -DSPIKE
+vgate_setup_python <<'PY'
+import os
+share = os.path.join(os.environ["RUN_DIR"], "share")
+with open(os.path.join(share, "M91-PRESENTATION.TRACE"), "w") as f:
+    f.write("v1\n")
+PY
 
 vgate_file script.txt <<'EOF'
 exec SB4DAM.BIN
@@ -27,3 +33,10 @@ vgate_assert 01 serial-contains 'last=8,8,108,68'
 vgate_assert 01 serial-absent 'sb4: open-fail'
 vgate_assert 01 serial-absent 'sb4: fill-fail'
 vgate_assert 01 serial-absent '[EXC] parking:'
+vgate_assert 01 serial-contains 'm91: trace armed guest-only'
+vgate_assert 01 serial-contains 'owner=shim seat=0 phase=transfer captured=1'
+vgate_assert 01 serial-absent 'owner=shim seat=1'
+vgate_assert 01 serial-absent 'captured=0'
+vgate_assert 01 serial-absent 'm91: trace ERROR'
+vgate_assert 01 serial-absent 'result=timeout'
+vgate_assert 01 serial-absent 'result=not_ready'

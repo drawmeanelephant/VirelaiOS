@@ -437,7 +437,7 @@ pub fn register(pid: usize) bool {
 /// (not-the-WM / already granted elsewhere / no framebuffer / map failure).
 pub fn scanout_bind(pid: usize, pinfo: process.ProcessInfo) u64 {
     if (wm_pid == null or wm_pid.? != pid) return 0; // the WM seat is the privilege
-    if (scanout_pid != 0) {
+    if (scanout_va != 0) {
         // Idempotent keep: the same WM re-binding its scanout is a no-op
         // (mirrors the D2 creator-retains-its-surface rule).
         return if (scanout_pid == @as(u64, pid)) scanout_va else 0;
@@ -466,6 +466,8 @@ pub fn scanout_bind(pid: usize, pinfo: process.ProcessInfo) u64 {
     // The WM now owns the migrated user layer: paint_scene skips
     // surface-backed windows (their bytes land here via compose-N).
     driving_award.wm_owns_user_layer = true;
+    driving_award.splash_hold = false;
+    driving_award.presentation_trace_arm();
     return va;
 }
 
@@ -485,6 +487,7 @@ pub fn scanout_va_get() ?u64 {
 /// Called from WM unregister/exit, a full-frame munmap, and init().
 pub fn scanout_teardown() void {
     if (scanout_va == 0) return;
+    driving_award.cursor_restore();
     const pid: usize = @intCast(scanout_pid);
     if (process.info(pid)) |pinfo| {
         var i: u32 = 0;
@@ -497,6 +500,9 @@ pub fn scanout_teardown() void {
     scanout_va = 0;
     scanout_pages = 0;
     driving_award.wm_owns_user_layer = false;
+    // Tick-side rendering consumed fixed-layer damage while the seat owned
+    // scanout. Recovery must repaint that layer, not retain the dead seat.
+    for (driving_award.windows[0..driving_award.win_count]) |*w| w.dirty = true;
 }
 
 /// WM-death teardown: unregister `pid`. Returns true only when `pid` WAS the
@@ -595,29 +601,31 @@ pub fn on_tick() void {
 /// seam and advance the present-sequence counter (the parity-cards'
 /// observability primitive) + the present count. Returns false when no WM is
 /// registered (the handler refuses the caller EACCES BEFORE this). The
-/// transfer+flush is a no-op-safe attempt when the transport is unarmed; the
-/// counters reflect what the WM requested, which is the observable present.
+/// Sequence/count/rate advance only after a successful transfer AND flush.
+/// Host tests inject transport results without executing device maintenance.
 pub fn request_present() bool {
-    _ = wm_pid orelse return false;
-    present_seq +%= 1;
-    present_count +%= 1;
+    const pid = wm_pid orelse return false;
+    if (seat_dead(pid)) return false;
     // The G1 transfer+flush is real-hardware work: exec_cmd runs `dc ivac`
     // cache-maintenance asm, which is illegal at EL0 in host test binaries
     // (and other tests in an aggregated binary may have armed the transport).
-    // Gate it the established way (the handle_mmap `!builtin.is_test`
-    // pattern): on a host test the counters still advance — the present was
-    // SCHEDULED, which is the observable contract — and the live gate runs
-    // the real transfer+flush on the kernel image.
+    // present_completed injects transport results in host tests; the live
+    // gate runs the real transfer+flush on the kernel image.
     //
     // M53 card 1 (#1247): the present is timed on both edges. `t0..t1` is the
     // kernel+GPU half of the latency (on a host test the work is skipped, so
     // that figure is the clock's resolution, not a GPU cost — the live gate is
     // the one that measures hardware).
     const t0 = now_ns();
-    if (!builtin.is_test) {
-        _ = virtio_gpu.gpu_transfer();
-        _ = virtio_gpu.gpu_flush();
-    }
+    driving_award.cursor_draw();
+    const result = driving_award.present_completed("seat");
+    // The GPU resource has the completed frame; the compose target must not
+    // retain the cursor for the next seat paint/upload.
+    driving_award.cursor_restore();
+    if (result != .ok) return false;
+    driving_award.cursor_damage_clear();
+    present_seq +%= 1;
+    present_count +%= 1;
     const t1 = now_ns();
     record_flush(t1 -% t0);
     // The present is the right edge of the rate window, and it ANSWERS the
@@ -1113,6 +1121,121 @@ test "wm_server: REQUEST_PRESENT advances the present sequence and count" {
     // Tear down so the aggregated test binary does not leak input ownership.
     try std.testing.expect(unregister(3));
     try std.testing.expect(!driving_award.wm_owns_input);
+}
+
+var m91_transfer_result: virtio_gpu.CmdResult = .ok;
+var m91_flush_result: virtio_gpu.CmdResult = .ok;
+var m91_transfer_n: usize = 0;
+var m91_flush_n: usize = 0;
+var m91_frame_valid: bool = false;
+fn m91_transfer() virtio_gpu.CmdResult {
+    m91_transfer_n += 1;
+    const c = driving_award.cursor_pos().?;
+    const off = (c.y * virtio_gpu.fb_width + c.x) * 4;
+    m91_frame_valid = std.mem.readInt(u32, virtio_gpu.gpu_fb[off..][0..4], .little) ==
+        (driving_award.cursor_outline_rgb | 0xff000000) and
+        std.mem.readInt(u32, virtio_gpu.gpu_fb[0..4], .little) == 0x42424242;
+    return m91_transfer_result;
+}
+fn m91_flush() virtio_gpu.CmdResult {
+    m91_flush_n += 1;
+    return m91_flush_result;
+}
+
+test "wm_server: M91 presents completed seat stores and cursor exactly once; failed frames do not advance" {
+    events.init();
+    process.init();
+    init();
+    driving_award.arm();
+    try std.testing.expect(register(3));
+    driving_award.wm_owns_user_layer = true;
+    driving_award.transfer_hook = m91_transfer;
+    driving_award.flush_hook = m91_flush;
+    defer {
+        driving_award.transfer_hook = null;
+        driving_award.flush_hook = null;
+        _ = unregister(3);
+        driving_award.wm_owns_user_layer = false;
+    }
+    m91_transfer_n = 0;
+    m91_flush_n = 0;
+    m91_transfer_result = .ok;
+    m91_flush_result = .ok;
+    _ = driving_award.pointer_tick(.{ .x = 16384, .y = 16384, .buttons = 0, .valid = true }, null);
+    on_tick(); // kernel layer preparation is NOT a present
+    @memset(&virtio_gpu.gpu_fb, 0x42); // the seat's completed chrome/client stores
+    try std.testing.expectEqual(virtio_gpu.CmdResult.ok, driving_award.composite());
+    try std.testing.expectEqual(@as(usize, 0), m91_transfer_n);
+    try std.testing.expect(request_present());
+    try std.testing.expect(m91_frame_valid);
+    try std.testing.expectEqual(@as(usize, 1), m91_transfer_n);
+    try std.testing.expectEqual(@as(usize, 1), m91_flush_n);
+    try std.testing.expectEqual(@as(u32, 1), info().present_seq);
+    for (virtio_gpu.gpu_fb) |byte| try std.testing.expectEqual(@as(u8, 0x42), byte);
+
+    // The next tick carries the COMPLETED sequence, not an attempted frame.
+    _ = events.pop(3); // pointer fan
+    _ = events.pop(3); // first tick
+    on_tick();
+    const tick = events.pop(3).?;
+    try std.testing.expectEqual(events.COMPOSITE_TICK, tick.kind);
+    try std.testing.expectEqual(@as(u32, 1), tick.arg0);
+    @memset(&virtio_gpu.gpu_fb, 0x42);
+    m91_transfer_result = .timeout;
+    try std.testing.expect(!request_present());
+    try std.testing.expectEqual(@as(usize, 1), m91_flush_n); // failed transfer never flushes
+    m91_transfer_result = .ok;
+    m91_flush_result = .not_ready;
+    try std.testing.expect(!request_present());
+    try std.testing.expectEqual(@as(u32, 1), info().present_seq);
+    try std.testing.expectEqual(@as(u64, 1), info().present_count);
+    try std.testing.expectEqual(@as(u64, 1), info().flush_count);
+    for (virtio_gpu.gpu_fb) |byte| try std.testing.expectEqual(@as(u8, 0x42), byte);
+    m91_flush_result = .ok;
+    try std.testing.expect(request_present());
+    try std.testing.expectEqual(@as(u32, 2), info().present_seq);
+}
+
+test "wm_server: M91 bind/unbind/rebind and seat death return damaged scanout to shim" {
+    init();
+    process.init();
+    mmu.reset();
+    driving_award.arm();
+    const root = mmu.build_user_root(0x400000, 0x3000, 64, 0x70000000, 0x4000, 8192).?;
+    const seat = process.create("WM.BIN", .{ .entry_va = 0x400000, .content_len = 64 }, .{ .root_phys = root }, .{}).?;
+    _ = process.bind(seat, 9);
+    const old_phys = virtio_gpu.gpu_fb_phys;
+    virtio_gpu.gpu_fb_phys = 0x90000000;
+    defer {
+        _ = unregister(seat);
+        virtio_gpu.gpu_fb_phys = old_phys;
+        process.init();
+        mmu.reset();
+    }
+    try std.testing.expect(register(seat));
+    const va = scanout_bind(seat, process.info(seat).?);
+    try std.testing.expect(va != 0);
+    try std.testing.expectEqual(va, scanout_bind(seat, process.info(seat).?));
+    try std.testing.expect(driving_award.wm_owns_user_layer);
+    _ = driving_award.paint_scene(); // fixed-layer damage consumed under the seat
+    scanout_teardown();
+    try std.testing.expect(!driving_award.wm_owns_user_layer);
+    try std.testing.expect(!mmu.leaf_el0_visible(root, va));
+    try std.testing.expect(driving_award.windows[0].dirty);
+    _ = driving_award.paint_scene();
+    try std.testing.expect(driving_award.scene_dirty); // shim recovery actually paints
+    const next = scanout_bind(seat, process.info(seat).?);
+    try std.testing.expect(next != 0 and next != va);
+    _ = process.on_task_exit(9, 0);
+    const before = info().present_seq;
+    try std.testing.expect(!request_present());
+    try std.testing.expectEqual(before, info().present_seq);
+    try std.testing.expect(unregister(seat));
+    try std.testing.expect(!driving_award.wm_owns_user_layer);
+    try std.testing.expect(!driving_award.wm_owns_input);
+    try std.testing.expect(driving_award.windows[0].dirty);
+    try std.testing.expect(take_fallback_report());
+    try std.testing.expect(!take_fallback_report());
 }
 
 /// M53 card 1 (#1247): the injected clock. `step` lets a test advance time per

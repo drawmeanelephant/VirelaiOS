@@ -1,56 +1,10 @@
-# go-wm-console-ink.spec -- M71b (#1561) class-B gate: while the default Go
-# seat owns the scanout, the region no window covers is the SEAT's chrome --
-# not kernel console ink.
-#
-# docs/testing.md has carried this as an explicitly unasserted observation
-# since M69b (#1529): "kernel console text (`ks worker advances=…`) is on the
-# scanout wherever no window covers it, growing with how long the boot has run
-# (~2.8% of sampled pixels at 3 s, ~5.8% at 20 s in the web boot; none in the
-# hero boot). The M69a beat asserts serial markers, so neither is visible to
-# it."  M71a (#1560) proved the first half of that paragraph stale; this spec
-# closes the gap for the second half, in the direction the card's D1 states:
-# **seat paint is the source of truth for uncovered pixels**.
-#
-# MEASUREMENT (2026-09-21, first run of this spec on current main, macOS 27.2
-# / arm64, VZ): in a default-Go-seat boot with a GOSH tab OPEN (so the seat is
-# in its rail-only paint mode, user/go/gotabwm/seat.go: only `tab.Count() == 0`
-# paints the full scanout) and the kernel printing its own console output while
-# the seat was registered (`tasks worker advances=1600` reaches the serial log
-# AFTER `gotabwm: registered`), the captured frame's uncovered region held
-#
-#     sampled=614400  ink=6702 (1.091%)  green-family=0 (0.000%)
-#
-# and every one of those 6702 "ink" pixels was the capture's own 6-pixel edge
-# border (x 0..5 and 2554..2559, full height) -- the interior was uniform
-# background.  So the M69b console-leak observation does NOT reproduce here;
-# the kernel console's ink (kernel/src/text.zig `fg_rgb = 0x00ff00`) does not
-# reach the seat's pixels today.  This spec asserts that invariant so a
-# regression -- or a configuration where it does not hold -- fails loudly.
-#
-# What this gate therefore holds, and what it does not:
-#   * HOLDS: with the default seat live and a tab hosted, every pixel the seat
-#     does not cover is the seat's own background fill, and the kernel's
-#     terminal-family ink is absent from it.  The rail band is asserted
-#     NON-empty first, so a blank/failed capture cannot pass by being empty.
-#   * DOES NOT (yet) hold: the same question in the WEB boot, which is where
-#     the M69b numbers (3 s / 20 s, ~2.8% / ~5.8%) were measured.  That boot
-#     is live-web.spec (12 runs) and was not re-measured here; the card names
-#     it as the remaining configuration, and this probe is the instrument for
-#     it.
-#   * The kernel-side paths that *could* put ink there are still ungated --
-#     shell.zig:3894 `road_pops.drain()` and main.zig:77 `rp_text_present`
-#     both call driving_award.composite() with no `wm_server.registered()`
-#     check, unlike the clock composite two lines later (shell.zig:3904).
-#     Today the seat's own paint wins anyway; that is what this gate pins.
-#
-# One boot, one capture: seat the DEFAULT Go WM (no `wm` setting), host
-# GOSH.ELF in a tab, drive kernel console output through the monitor (`tasks`
-# prints the per-task advances= report on mon.console -> the Road Pops tee),
-# and capture right after the script's own closing marker.
-#
-# HOST PREREQUISITE (fails the gate honestly when missing):
-#   bash tools/go/build-gotabwm.sh   ->  .build/go/GOTABWM.ELF
-#   bash tools/go/build-gosh.sh      ->  .build/go/GOSH.ELF
+# M71b/M91c: the default seat owns uncovered pixels AND every completed present.
+# Run 01 retains the console-ink pixel probe. Run 02 records every transfer/
+# flush boundary and lossless guest scanout during 60 seconds of pointer,
+# typing, launcher and focus fixtures. Still screenshots are not flash evidence.
+# The exact M91-PRESENTATION.TRACE fixture opts in to guest-only capture.
+# No host desktop capture, native-input disabling, cadence changes or sleeps.
+# Prerequisites: build-gotabwm.sh and build-gosh.sh (source-fresh GOSH).
 
 vgate_name go-wm-console-ink "M71b (#1561): a seated scanout carries the seat's chrome, not kernel console ink"
 vgate_share seed
@@ -72,6 +26,8 @@ for name in ("GOTABWM.ELF", "GOSH.ELF"):
 if os.path.exists(os.path.join(share, "SETTINGS.TXT")):
     sys.exit("SETTINGS.TXT present in the seed share; this boot must run on "
              "the compiled default seat")
+with open(os.path.join(share, "M91-PRESENTATION.TRACE"), "w") as f:
+    f.write("v1\n")
 PY
 
 # Stage 1: seat the default Go desktop and host GOSH.ELF in a tab.
@@ -79,10 +35,9 @@ vgate_file script.txt <<'EOF'
 exec GOSH.ELF
 EOF
 
-# Stage 2: the tab is open (GOSH's own prompt is up), so the seat is in its
-# rail-only paint mode. Now make the KERNEL print console output through the
-# tee -- `tasks` is the monitor's per-task advances= report -- and close with a
-# script-owned marker that both ends the run and triggers the capture.
+# Stage 2: wait for the first completed seat present, not GOSH's pre-paint
+# prompt. Make the KERNEL print through the tee while scanout belongs to the
+# seat. The script-owned marker ends the run and triggers the capture.
 vgate_file script2.txt <<'EOF'
 tasks
 echo rx-console-ink-probe
@@ -93,7 +48,7 @@ vgate_run 01 -- \
     --script '$RUN_DIR/script.txt' \
     --script-after 'gotabwm: holding seat' \
     --script2 '$RUN_DIR/script2.txt' \
-    --script2-after 'gosh: prompt' \
+    --script2-after 'gotabwm: present' \
     --script-expect 'rx-console-ink-probe' \
     --screenshot-after 'rx-console-ink-probe' --timeout 240
 
@@ -103,7 +58,7 @@ vgate_assert 01 serial-contains 'gotabwm: registered'
 vgate_assert 01 serial-contains 'gotabwm: scanout'
 vgate_assert 01 serial-contains 'gotabwm: draw'
 vgate_assert 01 serial-contains 'gotabwm: present'
-# A tab is hosted, so the seat paints only its rail band.
+# A tab is hosted, with the seat's rail and reserved bottom chrome.
 vgate_assert 01 serial-contains 'gotabwm: tab open id='
 vgate_assert 01 serial-contains 'gosh: prompt'
 # The kernel printed its OWN console output while the seat owned the scanout:
@@ -112,6 +67,9 @@ vgate_assert 01 serial-contains 'tasks '
 vgate_assert 01 serial-contains 'advances='
 vgate_assert 01 serial-contains 'rx-console-ink-probe'
 vgate_assert 01 serial-absent '[EXC] parking:'
+vgate_assert 01 serial-absent 'owner=shim seat=1'
+vgate_assert 01 serial-absent 'captured=0'
+vgate_assert 01 serial-absent 'm91: trace ERROR'
 
 # The measurement, asserted.  The capture is a 2x-scaled window capture, so
 # the scanout's own edge is not the window's edge: sample the interior only
@@ -184,14 +142,28 @@ if rail_ink == 0:
     sys.exit("FAIL: the rail band is empty -- the seat painted nothing, so an "
              "empty uncovered region would prove nothing")
 
-# 2. The uncovered region: no window covers it, so it is the seat's chrome.
+# 2. The uncovered region must stay dark, except for the seat's two known
+# bottom controls. Pin their exact guest rectangles (chrome.go); do NOT
+# exempt the whole footer, and reject console-green even inside the controls.
+def bottom_control(x, y):
+    gx, gy = x * 1280 // w, y * 720 // h
+    if 692 <= gy < 712:
+        if 224 <= gx < 320: return "apps"
+        if 1124 <= gx < 1272: return "clock"
+    return None
+
 tot = interior = green = 0
+controls = {"apps": 0, "clock": 0}
 for y in range(h // 3, h - MARGIN, STEP):
     for x in range(MARGIN, w - MARGIN, STEP):
         rgb = px(x, y)
         tot += 1
         if ink(rgb):
-            interior += 1
+            control = bottom_control(x, y)
+            if control:
+                controls[control] += 1
+            else:
+                interior += 1
             if console_ink(rgb):
                 green += 1
 print("uncovered region: sampled=%d ink=%d (%.3f%%) console-green=%d (%.3f%%)"
@@ -204,5 +176,107 @@ if interior:
     sys.exit("FAIL: %d non-background pixels in the region no window covers -- "
              "expected the seat's own blank-desktop fill to own every pixel "
              "there (M71b #1561 D1)" % interior)
+assert all(controls.values()), "seat's reserved bottom controls missing"
+print("reserved seat chrome:", controls)
 print("PASS: the seat owns every uncovered pixel and no kernel console ink is on the scanout")
+PY
+
+vgate_file presentation-end.txt <<'EOF'
+tasks
+wm
+echo m91-fixture-done
+EOF
+
+vgate_run 02 -- --screen '$RUN_DIR/presentation' --input --via-virtio \
+    --script '$RUN_DIR/script.txt' --script-after 'gotabwm: holding seat' \
+    --pointer-virtio '180,180;340,180;500,180;660,180;820,180;180,360;340,360;500,360;272,702,d;272,702,u;800,400;960,10;800,650;270,115;400,400;800,400;960,10;180,180;340,360;500,180;660,360;820,180;180,360;340,180;500,360' \
+    --pointer-virtio-after 'gosh: prompt' \
+    --input-chords 'm,9,1,ctrl-space,escape,alt-tab' --input-chords-after 'gosh: prompt' \
+    --script2 '$RUN_DIR/presentation-end.txt' --script2-after 'gosh: prompt' --script2-delay 60 \
+    --script-expect m91-fixture-done --timeout 240
+
+vgate_assert 02 serial-contains 'gotabwm: present'
+vgate_assert 02 serial-contains 'gotabwm: launcher open n='
+vgate_assert 02 serial-contains 'gotabwm: launcher restore id='
+vgate_assert 02 serial-contains 'gotabwm: launcher dismiss'
+vgate_assert 02 serial-contains 'm91-fixture-done'
+vgate_assert 02 serial-absent 'owner=shim seat=1'
+vgate_assert 02 serial-absent 'captured=0'
+vgate_assert 02 serial-absent 'm91: trace ERROR'
+vgate_assert 02 serial-absent '[EXC] parking:'
+vgate_assert 02 python <<'PY'
+import os, re, struct, shutil, json
+from pathlib import Path
+ser = Path(os.environ["VG_SER"]).read_text(errors="replace")
+out = Path("artifacts/m91-presentation") / ("gate-" + os.environ["VG_TAG"] + os.environ.get("VIRELAI_GATE_SUFFIX", ""))
+out.mkdir(parents=True, exist_ok=True)
+shutil.copy(os.environ["VG_SER"], out / "serial.log")
+share = Path(os.environ["VG_SHARE"])
+# Preserve the entire sequence even when an ownership/completion check fails:
+# the harness removes its temporary share at the end of the gate.
+for src in share.glob("M91-FRAME-*.rle"):
+    shutil.copy(src, out / src.name)
+rows = re.findall(r"m91: frame=(\d+) owner=(\w+) seat=(\d+) phase=transfer captured=(\d+) ns=(\d+) cursor=(\d+),(\d+),(\d+)", ser)
+done = re.findall(r"m91: frame=(\d+) phase=complete result=(\w+)", ser)
+assert rows and len(rows) == len(done), "missing transfer/completion evidence"
+assert [int(r[0]) for r in rows] == list(range(1, len(rows)+1)), "missing/duplicate frame"
+assert [(r[0], "ok") for r in rows] == done, "failed or unordered completion"
+seated = [r for r in rows if r[2] == "1"]
+assert len(seated) >= 30, "fixture did not present"
+assert int(seated[-1][4]) - int(seated[0][4]) >= 58_000_000_000, "short fixture interval"
+assert all(r[1] == "seat" and r[3] == "1" for r in seated), "competing/intermediate presenter"
+fan = re.findall(r"wm: ptr_fan=(\d+).*key_fan=(\d+)", ser)
+assert fan and int(fan[-1][0]) >= 20 and int(fan[-1][1]) >= 6, "pointer/typing fixture did not land"
+# Independent arrow fixture: the hotspot is bitmap (1,1), not its origin.
+mask = [
+ "................", ".#..............", ".##.............", ".#o#............",
+ ".#oo#...........", ".#ooo#..........", ".#oooo#.........", ".#ooooo#........",
+ ".#oooooo#.......", ".#ooooooo#......", ".#oooooooo#.....", ".#ooooooooo#....",
+ ".#oooooooooo#...", ".#ooooooooooo#..", ".#oooooooooooo#.", ".#oooooo#######.",
+ ".#oooo#o#.......", ".#ooo#.o#.......", ".#oo#..#o#......", ".#o#...#o#......",
+ ".##.....#o#.....", ".#......#o#.....", ".........##.....", "................",
+]
+cursor_frames = 0
+cursor_positions = set()
+rail_rows = re.findall(r"gotabwm: rail n=(\d+)", ser)
+assert rail_rows and int(rail_rows[-1]) in (1, 2), "unexpected fixture tab count"
+rail_n = int(rail_rows[-1])
+for seq, owner, seat, captured, ns, cx, cy, shown in rows:
+    src = share / ("M91-FRAME-" + seq + ".rle")
+    data = src.read_bytes()
+    assert data[:4] == b"M91F" and struct.unpack("<III", data[4:16]) == (1280,720,int(seq)), "bad frame header"
+    pixels = []
+    for count, color in struct.iter_unpack("<II", data[16:]):
+        assert 0 < count <= 1280*720 - len(pixels), "bad run"
+        pixels.extend([color & 0xffffff] * count)
+    assert len(pixels) == 1280*720, "truncated scanout"
+    if seat != "1":
+        continue
+    # The rail must stay a composed rail; a full blue/chrome-only intermediate
+    # frame or blank capture cannot pass because it lacks the dark client body.
+    # Run 01's session survives into run 02: one restored GOSH plus the explicit
+    # GOSH give two tabs. Only the focused cell is Accent, not the entire rail.
+    assert sum(pixels[y*1280+x] == 0x3b82f6 for y in range(1,20) for x in range(12,1260)) >= (1280//rail_n - 40)*18, "rail missing"
+    assert sum(max((p>>16)&255,(p>>8)&255,p&255) < 100 for p in pixels) >= 1280*720//2, "blue/chrome-only frame"
+    if shown == "1":
+        cursor_frames += 1
+        cursor_positions.add((int(cx), int(cy)))
+        outline = 0
+        for my, row in enumerate(mask):
+            for mx, cell in enumerate(row):
+                if cell == ".": continue
+                x, y = int(cx)-1+mx, int(cy)-1+my
+                if 0 <= x < 1280 and 0 <= y < 720:
+                    assert pixels[y*1280+x] == (0x101018 if cell == "#" else 0xffffff), "cursor erased or wrong hotspot"
+                    outline += cell == "#"
+        # This fixture's chrome/client never uses the cursor outline color:
+        # matching the entire scanout count rejects trails at ANY old position.
+        assert pixels.count(0x101018) == outline, "old cursor position not restored"
+assert cursor_frames >= 20, "cursor never exercised"
+assert len(cursor_positions) >= 10, "cursor motion never exercised"
+summary = dict(frames=len(rows), seated=len(seated), cursor_frames=cursor_frames,
+               cursor_positions=len(cursor_positions), competing=0, intermediate=0, fixture_seconds=60,
+               span_seconds=(int(seated[-1][4])-int(seated[0][4]))/1e9)
+(out / "summary.json").write_text(json.dumps(summary, indent=2)+"\n")
+print("M91 OBSERVED:", summary, "guest scanouts:", out)
 PY
