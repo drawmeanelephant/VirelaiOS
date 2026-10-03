@@ -5231,10 +5231,176 @@ fn futex_init_thread_ram(ram: *[64 * 4096]u8) !void {
 
 fn futex_yield_until(id: usize) !void {
     var spins: usize = 0;
-    while (scheduler.current_id() != id and spins < 8) : (spins += 1) {
+    while (scheduler.current_id() != id and spins < scheduler.max_tasks) : (spins += 1) {
         try std.testing.expect(scheduler.yield_current());
     }
     try std.testing.expectEqual(id, scheduler.current_id());
+}
+
+fn tls_task(token: u64) !usize {
+    for (scheduler.tasks, 0..) |task, id| {
+        if (task.join_token == token) return id;
+    }
+    return error.MissingThread;
+}
+
+test "syscall B5: independent TP contexts, blocking join, status and exact kstack recovery" {
+    futex_boot_user();
+    var ram: [128 * 4096]u8 align(4096) = undefined;
+    const desc = [_]memmap.MemoryDescriptor{.{ .type = .conventional_memory, .physical_start = @intFromPtr(&ram), .virtual_start = 0, .number_of_pages = 128, .attribute = 0 }};
+    try std.testing.expect(alloc.init(memmap.MapView.init(std.mem.asBytes(&desc), @sizeOf(memmap.MemoryDescriptor), 1), &.{}));
+    try futex_drive_to_user();
+    const pid = process.find_by_task(2).?;
+    var contexts: [3][64]u8 align(16) = @splat(@splat(0));
+    var stacks: [2][4096]u8 align(16) = undefined;
+    _ = scheduler.add_task_read_region(2, .{ .base = @intFromPtr(&contexts), .len = @sizeOf(@TypeOf(contexts)) });
+    _ = scheduler.add_task_write_region(2, .{ .base = @intFromPtr(&contexts), .len = @sizeOf(@TypeOf(contexts)) });
+    _ = scheduler.add_task_write_region(2, .{ .base = @intFromPtr(&stacks), .len = @sizeOf(@TypeOf(stacks)) });
+    var frame = fresh_frame();
+    const before = alloc.stats().free_pages;
+    syscall.arm_task_regions();
+    try std.testing.expectEqual(@as(u64, 0), dispatch(sys_thread, .{ 3, @intFromPtr(&contexts[0]), 0, 0, 0, 0 }, &frame));
+    var tokens: [2]u64 = undefined;
+    var ids: [2]usize = undefined;
+    for (&tokens, &ids, 0..) |*token, *id, i| {
+        token.* = dispatch(sys_thread, .{ 0, userspace.text_va + 4, @intFromPtr(&stacks[i]) + 4096, 80 + i, @intFromPtr(&contexts[i + 1]), 0 }, &frame);
+        id.* = try tls_task(token.*);
+        try std.testing.expectEqual(@as(u64, @intFromPtr(&contexts[i + 1])), scheduler.tasks[id.*].tls);
+        try std.testing.expectEqual(@as(u64, 80 + i), exceptions.frame_read(@ptrFromInt(scheduler.tasks[id.*].sp), 0));
+    }
+    try std.testing.expect(scheduler.join_thread(pid + 1, tokens[0]) == null);
+    exceptions.resume_frame[0] = @intFromPtr(&frame);
+    _ = dispatch(sys_thread, .{ 2, tokens[0], 0, 0, 0, 0 }, &frame);
+    try std.testing.expect(scheduler.tasks[2].wait_thread);
+    scheduler.on_tick();
+    try std.testing.expect(scheduler.is_blocked(2)); // join is not a timed sleep
+    try futex_yield_until(ids[0]);
+    try std.testing.expectEqual(scheduler.tasks[ids[0]].tls, scheduler.pending_tls[0]);
+    var child_frame = fresh_frame();
+    try std.testing.expectEqual(error_result(.einval), dispatch(sys_thread, .{ 2, tokens[0], 0, 0, 0, 0 }, &child_frame));
+    try std.testing.expectEqual(error_result(.einval), dispatch(sys_thread, .{ 1, 256, 0, 0, 0, 0 }, &child_frame));
+    _ = dispatch(sys_thread, .{ 1, 7, 0, 0, 0, 0 }, &child_frame);
+    try std.testing.expectEqual(@as(u64, 7), exceptions.frame_read(&frame, 0));
+    try std.testing.expect(!scheduler.tasks[2].wait_thread);
+    try std.testing.expect(scheduler.reap(ids[0]));
+    try futex_yield_until(ids[1]);
+    _ = dispatch(sys_thread, .{ 1, 9, 0, 0, 0, 0 }, &child_frame);
+    try std.testing.expect(!scheduler.reap(ids[1])); // retain before late join
+    try futex_yield_until(2);
+    try std.testing.expectEqual(@as(u64, @intFromPtr(&contexts[0])), scheduler.pending_tls[0]);
+    try std.testing.expectEqual(@as(u64, 9), dispatch(sys_thread, .{ 2, tokens[1], 0, 0, 0, 0 }, &frame));
+    try std.testing.expectEqual(error_result(.einval), dispatch(sys_thread, .{ 2, tokens[1], 0, 0, 0, 0 }, &frame));
+    try std.testing.expect(scheduler.reap(ids[1]));
+    try std.testing.expectEqual(before, alloc.stats().free_pages);
+    const new_token = dispatch(sys_thread, .{ 0, userspace.text_va + 4, @intFromPtr(&stacks[0]) + 4096, 0, @intFromPtr(&contexts[1]), 0 }, &frame);
+    try std.testing.expect(new_token > tokens[1]);
+    try std.testing.expectEqual(error_result(.einval), dispatch(sys_thread, .{ 2, tokens[0], 0, 0, 0, 0 }, &frame));
+}
+
+test "syscall B5: native live and retained threads share the existing six-thread capacity" {
+    futex_boot_user();
+    var ram: [512 * 4096]u8 align(4096) = undefined;
+    const desc = [_]memmap.MemoryDescriptor{.{ .type = .conventional_memory, .physical_start = @intFromPtr(&ram), .virtual_start = 0, .number_of_pages = 512, .attribute = 0 }};
+    try std.testing.expect(alloc.init(memmap.MapView.init(std.mem.asBytes(&desc), @sizeOf(memmap.MemoryDescriptor), 1), &.{}));
+    try futex_drive_to_user();
+    var contexts: [7][64]u8 align(16) = undefined;
+    var stacks: [7][4096]u8 align(16) = undefined;
+    _ = scheduler.add_task_read_region(2, .{ .base = @intFromPtr(&contexts), .len = @sizeOf(@TypeOf(contexts)) });
+    _ = scheduler.add_task_write_region(2, .{ .base = @intFromPtr(&contexts), .len = @sizeOf(@TypeOf(contexts)) });
+    _ = scheduler.add_task_write_region(2, .{ .base = @intFromPtr(&stacks), .len = @sizeOf(@TypeOf(stacks)) });
+    var frame = fresh_frame();
+    var tokens: [6]u64 = undefined;
+    syscall.arm_task_regions();
+    for (&tokens, 0..) |*token, i| {
+        token.* = dispatch(sys_thread, .{ 0, userspace.text_va + 4, @intFromPtr(&stacks[i]) + 4096, i, @intFromPtr(&contexts[i]), 0 }, &frame);
+        _ = try tls_task(token.*);
+    }
+    const before = alloc.stats().free_pages;
+    const seventh: Args = .{ 0, userspace.text_va + 4, @intFromPtr(&stacks[6]) + 4096, 0, @intFromPtr(&contexts[6]), 0 };
+    try std.testing.expectEqual(error_result(.eagain), dispatch(sys_thread, seventh, &frame));
+    try std.testing.expectEqual(before, alloc.stats().free_pages);
+    const first = try tls_task(tokens[0]);
+    try futex_yield_until(first);
+    var death = fresh_frame();
+    _ = dispatch(sys_thread, .{ 1, 0, 0, 0, 0, 0 }, &death);
+    try futex_yield_until(2);
+    try std.testing.expectEqual(error_result(.eagain), dispatch(sys_thread, seventh, &frame));
+    _ = dispatch(sys_thread, .{ 2, tokens[0], 0, 0, 0, 0 }, &frame);
+    try std.testing.expect(scheduler.reap(first));
+    const replacement = dispatch(sys_thread, seventh, &frame);
+    _ = try tls_task(replacement);
+    try std.testing.expect(replacement > tokens[5]);
+}
+
+test "syscall B5: TLS and stack prefix validation refuse without seating a thread" {
+    futex_boot_user();
+    try futex_drive_to_user();
+    var frame = fresh_frame();
+    try std.testing.expectEqual(error_result(.einval), dispatch(sys_thread, .{ 0, userspace.text_va + 4, 0x70000000, 0, 1, 0 }, &frame));
+    try std.testing.expectEqual(error_result(.efault), dispatch(sys_thread, .{ 0, userspace.text_va + 4, 0x70000000, 0, 0x60000000, 0 }, &frame));
+    try std.testing.expectEqual(error_result(.efault), dispatch(sys_thread, .{ 3, 0x60000000, 0, 0, 0, 0 }, &frame));
+    var prefix: [16]u8 align(16) = undefined;
+    _ = scheduler.add_task_read_region(2, .{ .base = @intFromPtr(&prefix), .len = 16 });
+    _ = scheduler.add_task_write_region(2, .{ .base = @intFromPtr(&prefix), .len = 16 });
+    syscall.arm_task_regions();
+    try std.testing.expectEqual(error_result(.efault), dispatch(sys_thread, .{ 0, userspace.text_va + 4, 0x70000000, 0, @intFromPtr(&prefix), 0 }, &frame));
+    try std.testing.expectEqual(@as(u64, 0), dispatch(sys_thread, .{ 3, 0, 0, 0, 0, 0 }, &frame));
+}
+
+test "syscall B5: strict futex precision refusal, phase guard and no stale timeout seat" {
+    futex_boot_user();
+    try futex_drive_to_user();
+    var word: u32 = 0;
+    futex_arm_word(2, @intFromPtr(&word));
+    var frame = fresh_frame();
+    syscall.arm_task_regions();
+    exceptions.resume_frame[0] = @intFromPtr(&frame);
+    for ([_]u64{ 1, timer.period_ns - 1, timer.period_ns + 1, std.math.maxInt(u64) }) |ns| {
+        try std.testing.expectEqual(error_result(.einval), dispatch(sys_futex, .{ 2, @intFromPtr(&word), 0, ns, 0, 0 }, &frame));
+        try std.testing.expect(!scheduler.is_blocked(2));
+    }
+    _ = dispatch(sys_futex, .{ 2, @intFromPtr(&word), 0, timer.period_ns, 0, 0 }, &frame);
+    scheduler.on_tick();
+    try std.testing.expect(scheduler.is_blocked(2));
+    scheduler.on_tick();
+    try std.testing.expect(!scheduler.is_blocked(2));
+    try std.testing.expectEqual(error_result(.etimedout), exceptions.frame_read(&frame, 0));
+    try std.testing.expectEqual(@as(usize, 0), scheduler.futex_wake(process.find_by_task(2).?, @intFromPtr(&word), 6));
+}
+
+test "syscall B5: two contended futex seats wake exactly n, never another process" {
+    futex_boot_user();
+    var ram: [128 * 4096]u8 align(4096) = undefined;
+    const desc = [_]memmap.MemoryDescriptor{.{ .type = .conventional_memory, .physical_start = @intFromPtr(&ram), .virtual_start = 0, .number_of_pages = 128, .attribute = 0 }};
+    try std.testing.expect(alloc.init(memmap.MapView.init(std.mem.asBytes(&desc), @sizeOf(memmap.MemoryDescriptor), 1), &.{}));
+    try futex_drive_to_user();
+    const pid = process.find_by_task(2).?;
+    var word: u32 = 1;
+    futex_arm_word(2, @intFromPtr(&word));
+    var frame = fresh_frame();
+    syscall.arm_task_regions();
+    exceptions.resume_frame[0] = @intFromPtr(&frame);
+    const tid = dispatch(sys_thread, .{ 0, userspace.text_va + 4, 0x70000000, 0, 0, 0 }, &frame);
+    _ = dispatch(sys_futex, .{ 0, @intFromPtr(&word), 1, 0, 0, 0 }, &frame);
+    try futex_yield_until(@intCast(tid));
+    var peer = fresh_frame();
+    syscall.arm_task_regions();
+    exceptions.resume_frame[0] = @intFromPtr(&peer);
+    _ = dispatch(sys_futex, .{ 0, @intFromPtr(&word), 1, 0, 0, 0 }, &peer);
+    try std.testing.expectEqual(@as(usize, 0), scheduler.futex_wake(pid + 1, @intFromPtr(&word), 2));
+    try std.testing.expectEqual(@as(usize, 0), scheduler.futex_wake(pid, @intFromPtr(&word), 0));
+    try std.testing.expectEqual(@as(usize, 1), scheduler.futex_wake(pid, @intFromPtr(&word), 1));
+    try std.testing.expectEqual(@as(usize, 1), scheduler.futex_wake(pid, @intFromPtr(&word), 2));
+    try std.testing.expectEqual(@as(usize, 0), scheduler.futex_wake(pid, @intFromPtr(&word), 2));
+    try futex_yield_until(2);
+    @atomicStore(u32, &word, 0, .release);
+    syscall.arm_task_regions();
+    try std.testing.expectEqual(@as(usize, 0), scheduler.futex_wake(pid, @intFromPtr(&word), 1));
+    try std.testing.expectEqual(error_result(.eagain), dispatch(sys_futex, .{ 0, @intFromPtr(&word), 1, 0, 0, 0 }, &frame));
+    // Simulate a store in the fast-compare -> seat window. The authoritative
+    // compare after seating refuses and removes the seat, not a lost wake.
+    try std.testing.expectEqual(scheduler.FutexWaitOutcome.word_changed, scheduler.futex_wait_current(pid, @intFromPtr(&word), 1, 0, futex_never_matches));
+    try std.testing.expectEqual(@as(usize, 0), scheduler.futex_wake(pid, @intFromPtr(&word), 1));
 }
 
 test "syscall: sys_futex wait-equals parks while the user word matches (ADR 0027 D4)" {

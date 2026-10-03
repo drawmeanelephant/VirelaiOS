@@ -1,10 +1,22 @@
 //! Static AArch64 local-exec TLS preparation, not a loader or thread runtime.
 //! The caller supplies a validated template and real accessible buffers.
-//! No allocation, ELF acceptance, TP register writes, or production activation.
+//! No allocation or ELF acceptance. B5's explicit-context runtime supplies
+//! owned buffers; the kernel, not this planner, switches TPIDR_EL0.
 const std = @import("std");
 
 pub const prefix_bytes: usize = 16;
 pub const max_alignment: usize = 4096;
+pub const wait_period_ns: u64 = 1_000_000_000;
+
+/// Strict coarse relative waits: whole seconds only; an extra tick covers
+/// the unknown phase of the current period, so expiry cannot be early.
+/// Zero means indefinite. Overflow refuses, never wraps or saturates.
+pub fn coarse_deadline(now: u64, timeout_ns: u64) error{ UnsupportedPrecision, Overflow }!u64 {
+    if (timeout_ns == 0) return 0;
+    if (timeout_ns % wait_period_ns != 0) return error.UnsupportedPrecision;
+    const ticks = timeout_ns / wait_period_ns + 1;
+    return std.math.add(u64, now, ticks) catch error.Overflow;
+}
 pub const Error = error{
     InvalidAlignment,
     InvalidSize,
@@ -165,4 +177,13 @@ test "thread TLS: address extent overflow refuses before touching memory" {
     try std.testing.expectEqualSlices(u8, &before, &buffer);
     const destination: [*]u8 = @ptrFromInt(std.math.maxInt(usize) - 15);
     try std.testing.expectError(error.Overflow, initialize(&.{}, 0, 16, destination[0..32]));
+}
+
+test "thread waits: strict precision, phase guard and overflow refusal" {
+    try std.testing.expectEqual(@as(u64, 0), try coarse_deadline(17, 0));
+    try std.testing.expectEqual(@as(u64, 19), try coarse_deadline(17, wait_period_ns));
+    try std.testing.expectEqual(@as(u64, 21), try coarse_deadline(17, 3 * wait_period_ns));
+    for ([_]u64{ 1, wait_period_ns - 1, wait_period_ns + 1, std.math.maxInt(u64) }) |ns|
+        try std.testing.expectError(error.UnsupportedPrecision, coarse_deadline(0, ns));
+    try std.testing.expectError(error.Overflow, coarse_deadline(std.math.maxInt(u64) - 1, wait_period_ns));
 }

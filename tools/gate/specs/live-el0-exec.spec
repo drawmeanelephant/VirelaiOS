@@ -20,6 +20,9 @@ rd = pathlib.Path(os.environ["RUN_DIR"])
 output = rd / "share/ZGUEST.BIN"
 subprocess.run(["python3", "tools/zig/sdk.py", "build", "--output", str(output),
                 "--work", str(rd / "sdk-build")], check=True)
+subprocess.run(["python3", "-B", "tools/zig/threads.py",
+                "--output", str(rd / "share/ZTHREAD.BIN"),
+                "--work", str(rd / "thread-build")], check=True)
 shutil.copyfile(output, rd / "share/ZLAUNCH.BIN")
 (rd / "share/ZIO.INPUT").write_bytes(bytes(i % 251 for i in range(5000)))
 # The monitor has a narrower 64-byte VALUE limit than the ABI's 127-byte
@@ -223,4 +226,31 @@ PY
 vgate_assert sdk-unsupported python <<'PY'
 import os, runpy
 runpy.run_path(os.path.join(os.environ["RUN_DIR"], "sdk-cleanup.py"))
+PY
+
+vgate_file threads.txt <<'EOF'
+pages
+exec ZTHREAD.BIN
+EOF
+vgate_file threads-after.txt <<'EOF'
+pages
+syscalls
+echo rx-zig-threads-ok
+EOF
+vgate_run threads -- --script '$RUN_DIR/threads.txt' --script-after 'tasks user-el0 reaped' --script2 '$RUN_DIR/threads-after.txt' --script2-after 'procs ZTHREAD.BIN exited status=0' --script2-delay 1 --script-expect 'rx-zig-threads-ok' --timeout 180
+vgate_assert threads serial-exact 'zig-threads: independent=6 joined=6 count=96 capacity=refused' 1
+vgate_assert threads serial-exact 'zig-threads: lost-wake=changed fine=refused coarse=not-early' 1
+vgate_assert threads serial-exact 'zig-threads: done' 1
+vgate_assert threads serial-absent '[EXC]'
+vgate_assert threads serial-absent 'zig-threads: FAIL'
+vgate_assert threads python <<'PY'
+import os, pathlib, re
+ser = pathlib.Path(os.environ["VG_SER"]).read_text()
+pages = re.findall(r"^pages: armed=1 total=(0x[0-9a-f]+) free=(0x[0-9a-f]+)", ser, re.M)
+assert len(pages) == 2 and pages[0] == pages[1], pages
+assert ser.count("tasks ZTHREAD.BIN reaped") == 6, "every child kstack reclaimed"
+assert ser.count("tasks user-exec reaped") == 1, "primary/address space reclaimed"
+assert int(re.search(r"73 sys_thread calls=(\d+)", ser)[1]) >= 20
+assert int(re.search(r"74 sys_futex calls=(\d+)", ser)[1]) > 96, "actual contention required"
+print("B5: six independent contexts, joins, native capacity, futex contention and exact page recovery")
 PY

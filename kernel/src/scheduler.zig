@@ -235,6 +235,8 @@ const Task = struct {
     /// Stack selected by EL0t (and EL1t, which this scheduler does not
     /// create). EL1h tasks ignore this value.
     sp_el0: u64 = 0,
+    /// B5: real AArch64 local-exec thread pointer, zero for legacy tasks.
+    tls: u64 = 0,
     /// Physical TTBR0 root for this task's user space (claim 5804). The
     /// EL1h tasks point at the EL1-only kernel root; the EL0 task points at
     /// its text+stack-only user root. Written to TTBR0 on every switch.
@@ -308,12 +310,34 @@ const Task = struct {
     is_thread: bool = false,
     thread_kstack_phys: u64 = 0,
     thread_kstack_pages: u64 = 0,
+    /// Non-recycled join token. An unjoined zombie retains its task seat.
+    join_token: u64 = 0,
+    join_pid: usize = 0,
+    joiner: ?usize = null,
+    wait_thread: bool = false,
     /// ADR 0027 D4: this blocked task is parked in `sys_futex` wait — the
     /// wake path patches its saved frame x0 (0 = real wake, the ETIMEDOUT
     /// errno on expiry) and clears its futex-table seat.
     futex_waiting: bool = false,
 };
 pub var tasks: [max_tasks]Task = [_]Task{.{}} ** max_tasks;
+var next_join_token: u64 = max_tasks;
+
+fn save_tls(id: usize) void {
+    if (comptime builtin.is_test or builtin.cpu.arch != .aarch64) return;
+    tasks[id].tls = asm volatile ("mrs %[v], tpidr_el0"
+        : [v] "=r" (-> u64),
+    );
+}
+
+pub fn set_current_tls(value: u64) void {
+    tasks[current_id()].tls = value;
+    if (comptime builtin.is_test or builtin.cpu.arch != .aarch64) return;
+    asm volatile ("msr tpidr_el0, %[v]"
+        :
+        : [v] "r" (value),
+        : .{ .memory = true });
+}
 
 // ---------------------------------------------------------------------------
 // Futex wait table (ADR 0027 D4, issue #1214 round 2)
@@ -826,6 +850,7 @@ pub var pending_sp: [smp.max_cores]u64 = [_]u64{0} ** smp.max_cores;
 pub var pending_elr: [smp.max_cores]u64 = [_]u64{0} ** smp.max_cores;
 pub var pending_spsr: [smp.max_cores]u64 = [_]u64{0} ** smp.max_cores;
 pub var pending_sp_el0: [smp.max_cores]u64 = [_]u64{0} ** smp.max_cores;
+pub var pending_tls: [smp.max_cores]u64 = [_]u64{0} ** smp.max_cores;
 var pending_ttbr0: [smp.max_cores]u64 = [_]u64{0} ** smp.max_cores;
 
 /// Task reports (main-context console discipline, claim 9187): a task
@@ -1060,6 +1085,8 @@ pub fn init() usize {
     steal_run_names_count = 0;
     user_timer_preemptions = 0;
     tick_count = 0;
+    next_join_token = max_tasks;
+    pending_tls = @splat(0);
     for (&tasks) |*task| task.* = .{};
     for (&futex_table) |*e| e.* = .{};
     // Claim 3848: every pool reset also clears the process layer (the
@@ -1670,6 +1697,7 @@ fn stage_selected(c: usize, next: usize) void {
     pending_elr[c] = tasks[next].elr;
     pending_spsr[c] = tasks[next].spsr;
     pending_sp_el0[c] = tasks[next].sp_el0;
+    pending_tls[c] = tasks[next].tls;
     pending_ttbr0[c] = tasks[next].ttbr0;
     // Claim 6729: the selected task is now the one that will execute.
     tasks[next].state = .running;
@@ -1762,6 +1790,7 @@ pub fn switch_context(frame_sp: u64, elr: u64, spsr: u64, sp_el0: u64) void {
     tasks[current[c]].elr = elr;
     tasks[current[c]].spsr = spsr;
     tasks[current[c]].sp_el0 = sp_el0;
+    save_tls(current[c]);
     tasks[current[c]].saves += 1;
     // Claim 881 slice 2: the preempted task returns to its own core's
     // ring. Executing tasks are off-ring; joining here is the transition
@@ -1804,6 +1833,10 @@ fn apply_pending() void {
     // invalidation) before restoring its ELR/SPSR, so the eret to EL0 (or
     // the resumed EL1h instruction stream) sees the task's own user space.
     mmu.set_ttbr0(pending_ttbr0[c]);
+    asm volatile ("msr tpidr_el0, %[v]"
+        :
+        : [v] "r" (pending_tls[c]),
+        : .{ .memory = true });
     asm volatile ("msr elr_el1, %[v]"
         :
         : [v] "r" (pending_elr[c]),
@@ -1877,6 +1910,7 @@ pub fn sleep_current(ticks: u64) bool {
     tasks[sleeping].elr = pc.elr;
     tasks[sleeping].spsr = pc.spsr;
     tasks[sleeping].sp_el0 = exceptions.resume_sp_el0[c];
+    save_tls(sleeping);
     tasks[sleeping].saves += 1;
     // Claim 881 slice 2: blocking drops the task's ring membership (it is
     // current and off-ring by construction — the remove is defensive for
@@ -1934,6 +1968,7 @@ pub fn wait_current(target_pid: usize) bool {
     tasks[waiting].elr = pc.elr;
     tasks[waiting].spsr = pc.spsr;
     tasks[waiting].sp_el0 = exceptions.resume_sp_el0[c];
+    save_tls(waiting);
     tasks[waiting].saves += 1;
     _ = ring_remove_anywhere(waiting); // defensive (current is off-ring)
     tasks[waiting].state = .blocked;
@@ -1973,6 +2008,15 @@ pub fn spawn_thread(
     stack_hi: u64,
     arg: u64,
 ) ?usize {
+    return spawn_thread_context(caller_task, entry, stack_hi, arg, 0);
+}
+
+pub fn spawn_tls_thread(caller: usize, entry: u64, stack: u64, arg: u64, tls: u64) ?u64 {
+    const id = spawn_thread_context(caller, entry, stack, arg, tls) orelse return null;
+    return tasks[id].join_token;
+}
+
+fn spawn_thread_context(caller_task: usize, entry: u64, stack_hi: u64, arg: u64, tls: u64) ?usize {
     if (caller_task >= max_tasks) return null;
     const pid = process.find_by_task(caller_task) orelse return null;
     const pinfo = process.info(pid) orelse return null;
@@ -1988,16 +2032,30 @@ pub fn spawn_thread(
     // process bind are all in place — no core can select a half-built
     // thread, and the undo path mutates the pool under the same lock.
     sched_lock_acquire();
+    var charged: usize = 0;
+    for (tasks, 0..) |task, tid| {
+        if ((task.join_token != 0 and task.join_pid == pid) or
+            (task.is_thread and process.find_by_task(tid) == pid)) charged += 1;
+    }
+    if (charged >= process.max_threads or (tls != 0 and next_join_token == std.math.maxInt(i64))) {
+        sched_lock_release();
+        _ = alloc.free_pages(kstack_phys, kstack_pages);
+        return null;
+    }
     const id = alloc_task_locked(name, entry, spsr_el0t_irqs, kstack, pinfo.root_phys, stack_hi) orelse {
         sched_lock_release();
         _ = alloc.free_pages(kstack_phys, kstack_pages);
         return null;
     };
     _ = exceptions.frame_write(@ptrFromInt(tasks[id].sp), 0, arg);
-    tasks[id].secondary_ok = true; // unpinned: any core may take it
+    // Native join/reap runs on core 0: its idle reaper cannot reclaim a
+    // child's exception stack while that child's exit stub still uses it.
+    // Legacy detached Go threads keep their existing any-core placement.
+    tasks[id].secondary_ok = tls == 0;
     tasks[id].is_thread = true;
     tasks[id].thread_kstack_phys = kstack_phys;
     tasks[id].thread_kstack_pages = kstack_pages;
+    tasks[id].tls = tls;
     // Exec shapes only; process-scope mmap regions are merged at arm time
     // (ADR 0027 review finding 2).
     tasks[id].regions = tasks[caller_task].regions;
@@ -2009,10 +2067,69 @@ pub fn spawn_thread(
         _ = alloc.free_pages(kstack_phys, kstack_pages);
         return null;
     }
+    if (tls != 0) {
+        tasks[id].join_pid = pid;
+        tasks[id].join_token = next_join_token;
+        next_join_token += 1;
+    }
     tasks[id].state = .ready;
     push_home_locked(id);
     sched_lock_release();
     return id;
+}
+
+/// One joiner, same process, no detach or cycles. Completion is published
+/// only after exit teardown. The token is consumed exactly once.
+pub fn join_thread(pid: usize, token: u64) ?u64 {
+    const c = smp.core_id();
+    const caller = current[c];
+    if (!scheduling_active() or caller == idle_id) return null;
+    sched_lock_acquire();
+    var target: ?usize = null;
+    for (tasks, 0..) |task, id| {
+        if (token >= max_tasks and task.join_token == token and task.join_pid == pid) target = id;
+    }
+    const id = target orelse {
+        sched_lock_release();
+        return null;
+    };
+    if (id == caller or tasks[id].joiner != null or tasks[caller].wait_thread or tasks[caller].joiner != null) {
+        sched_lock_release();
+        return null;
+    }
+    if (tasks[id].state == .zombie and !tasks[id].teardown_pending) {
+        const status = tasks[id].exit_status;
+        tasks[id].join_token = 0;
+        sched_lock_release();
+        return status;
+    }
+    // Joining a joiner would create an unsupported dependency chain.
+    if (tasks[id].wait_thread) {
+        sched_lock_release();
+        return null;
+    }
+    const pc = current_exception_pc();
+    tasks[caller].sp = exceptions.resume_frame[c];
+    tasks[caller].elr = pc.elr;
+    tasks[caller].spsr = pc.spsr;
+    tasks[caller].sp_el0 = exceptions.resume_sp_el0[c];
+    save_tls(caller);
+    tasks[caller].wait_thread = true;
+    tasks[caller].state = .blocked;
+    tasks[id].joiner = caller;
+    _ = ring_remove_anywhere(caller);
+    sched_lock_release();
+    if (!claim_and_stage(c, caller)) {
+        if (stage_secondary_park(c)) return 0;
+        sched_lock_acquire();
+        tasks[id].joiner = null;
+        tasks[caller].wait_thread = false;
+        tasks[caller].state = .running;
+        sched_lock_release();
+        return null;
+    }
+    apply_pending();
+    return exceptions.frame_read(@ptrFromInt(tasks[caller].sp), 0);
 }
 
 /// ADR 0027 D4 + review finding 1: block the calling task in `sys_futex`
@@ -2042,6 +2159,7 @@ pub fn futex_wait_current(
     const waiting = current[c];
     // Seat the (pid, uaddr) entry BEFORE blocking — a waker on another core
     // (or the tick, for a deadline already in the past) must find it.
+    sched_lock_acquire();
     var seat: ?*FutexEntry = null;
     for (&futex_table) |*e| {
         if (!e.used) {
@@ -2049,8 +2167,10 @@ pub fn futex_wait_current(
             break;
         }
     }
-    const entry = seat orelse return .unavailable;
-    sched_lock_acquire();
+    const entry = seat orelse {
+        sched_lock_release();
+        return .unavailable;
+    };
     if (tasks[waiting].state != .ready and tasks[waiting].state != .running) {
         sched_lock_release();
         return .unavailable;
@@ -2071,6 +2191,7 @@ pub fn futex_wait_current(
     tasks[waiting].elr = pc.elr;
     tasks[waiting].spsr = pc.spsr;
     tasks[waiting].sp_el0 = exceptions.resume_sp_el0[c];
+    save_tls(waiting);
     tasks[waiting].saves += 1;
     _ = ring_remove_anywhere(waiting);
     tasks[waiting].state = .blocked;
@@ -2085,8 +2206,8 @@ pub fn futex_wait_current(
         tasks[waiting].futex_waiting = false;
         tasks[waiting].wakeup_tick = 0;
         tasks[waiting].saves -%= 1;
-        sched_lock_release();
         futex_entry_clear(entry);
+        sched_lock_release();
         return .unavailable;
     }
     apply_pending();
@@ -2122,6 +2243,7 @@ pub fn wait_event_current(pid: usize) bool {
     tasks[waiting].spsr = pc.spsr;
     tasks[waiting].sp_el0 = exceptions.resume_sp_el0[c];
     tasks[waiting].saves += 1;
+    save_tls(waiting);
     _ = ring_remove_anywhere(waiting); // defensive (current is off-ring)
     tasks[waiting].state = .blocked;
     tasks[waiting].wait_event_pid = pid;
@@ -2214,7 +2336,7 @@ fn wake_expired() void {
         if (tasks[i].state != .blocked) continue;
         // Card 4c / Card E5: event-blocked tasks (`sys_wait` / `sys_wait_event` —
         // no deadline) are woken by their event hooks, never by the tick clock.
-        if (tasks[i].wait_pid != null or tasks[i].wait_event_pid != null) continue;
+        if (tasks[i].wait_pid != null or tasks[i].wait_event_pid != null or tasks[i].wait_thread) continue;
         if (tasks[i].futex_waiting and tasks[i].wakeup_tick == 0) continue; // wait forever
         if (tick_count < tasks[i].wakeup_tick) continue;
         // ADR 0027 D4: an expired FUTEX deadline is a TIMED-OUT wait — the
@@ -2312,9 +2434,13 @@ pub fn exit_current(status: u64) bool {
 /// every OTHER exit shape (sys_exit, fault, kill) requests the whole
 /// process. Futex wake-on-thread-death applies to both shapes (D4).
 pub fn exit_thread_current() bool {
+    return exit_thread_status(0);
+}
+
+pub fn exit_thread_status(status: u64) bool {
     const taken = svclock.acquire_missing(svclock.all_bits);
     defer svclock.release_set(taken);
-    return exit_current_locked(0, false);
+    return exit_current_locked(status, false);
 }
 
 /// Arm the kill conversion on every LIVE sibling task of `pid` (the
@@ -2324,6 +2450,10 @@ pub fn exit_thread_current() bool {
 fn arm_sibling_kills_locked(pid: usize, except_task: usize) void {
     var i: usize = 0;
     while (i < max_tasks) : (i += 1) {
+        if (tasks[i].join_token != 0 and tasks[i].join_pid == pid) {
+            tasks[i].join_token = 0;
+            tasks[i].joiner = null;
+        }
         if (i == except_task or i == idle_id) continue;
         if (process.find_by_task(i) != pid) continue;
         switch (tasks[i].state) {
@@ -2340,6 +2470,7 @@ fn arm_sibling_kills_locked(pid: usize, except_task: usize) void {
                 tasks[i].state = .ready;
                 tasks[i].wait_pid = null;
                 tasks[i].wait_event_pid = null;
+                tasks[i].wait_thread = false;
                 push_home_locked(i);
             },
             else => {},
@@ -2403,7 +2534,7 @@ fn exit_current_locked(status: u64, process_exit: bool) bool {
     // Arc5 issue #243: record a tombstone for fault exits (status 139)
     // or any non-zero unexpected exit. The tombstone is written to /data/crash/
     // on the DATA partition. Pure BSS writes, safe in this exception context.
-    if (status == reserved_fault_status or (status != 0 and status != reserved_kill_status)) {
+    if (process_exit and (status == reserved_fault_status or (status != 0 and status != reserved_kill_status))) {
         // Get fault address + PC from the most recent fault report if
         // status is 139. M22 D3 (issue #326): the PC rides along so the
         // tombstone can resolve CODE symbols for BRK-style faults whose
@@ -2442,6 +2573,15 @@ fn exit_current_locked(status: u64, process_exit: bool) bool {
     // on this process — their saved frames get the observed status patched
     // into x0, so the syscall return lands when the ring resumes them.
     if (process.on_task_exit(exiting, status)) |pid| {
+        // No live process remains to join retained completions.
+        sched_lock_acquire();
+        for (&tasks) |*task| {
+            if (task.join_token != 0 and task.join_pid == pid) {
+                task.join_token = 0;
+                task.joiner = null;
+            }
+        }
+        sched_lock_release();
         // M52 card 1 (#1238): EXIT-PATH INVENTORY — the pinned client-death
         // teardown order. This comment IS the inventory; the seam-level host
         // tests in kernel/tests/syscall_test.zig drive `exit_current` and pin
@@ -2505,6 +2645,16 @@ fn exit_current_locked(status: u64, process_exit: bool) bool {
     // free the zombie — the code below never touches the slot again).
     sched_lock_acquire();
     tasks[exiting].teardown_pending = false;
+    if (tasks[exiting].joiner) |joiner| {
+        if (tasks[joiner].state == .blocked and tasks[joiner].wait_thread) {
+            tasks[joiner].wait_thread = false;
+            tasks[joiner].state = .ready;
+            _ = exceptions.frame_write(@ptrFromInt(tasks[joiner].sp), 0, status);
+            push_home_locked(joiner);
+            tasks[exiting].join_token = 0;
+        }
+        tasks[exiting].joiner = null;
+    }
     sched_lock_release();
     // Successor rotation under the ring locks only (claim 881 slice 3);
     // a kill_pending successor converts inside claim_and_stage. The
@@ -2548,6 +2698,7 @@ fn stage_secondary_park(c: usize) bool {
     pending_elr[c] = park_elr[c];
     pending_spsr[c] = park_spsr[c];
     pending_sp_el0[c] = 0;
+    pending_tls[c] = 0;
     pending_ttbr0[c] = mmu.kernel_root_phys();
     apply_pending();
     return true;
@@ -2582,7 +2733,7 @@ pub fn reap(id: usize) bool {
     // page release runs AFTER, under the kernel gate only (claim 881
     // slice 3: a long reap must not stall another core's rotation).
     sched_lock_acquire();
-    if (id >= max_tasks or tasks[id].state != .zombie or tasks[id].teardown_pending) {
+    if (id >= max_tasks or tasks[id].state != .zombie or tasks[id].teardown_pending or tasks[id].join_token != 0) {
         sched_lock_release();
         return false;
     }
@@ -2618,7 +2769,7 @@ pub fn reap_one_zombie() void {
         audit.slot(i, .reap);
         if (tasks[i].state != .zombie) continue;
         const name = tasks[i].name;
-        if (!reap(i)) return;
+        if (!reap(i)) continue;
         // Card 3d (claim 1014): EVERY reap is queued (a full ring drops
         // the oldest) — two reaps in one idle-loop window print two lines
         // in order instead of collapsing.
