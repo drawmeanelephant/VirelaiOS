@@ -85,9 +85,7 @@ pub const clock_accent_rgb: u32 = 0xffaa00; // amber accent (mascot line)
 
 /// Card U5 (claim 0935, ADR 0008 D4): the HIG chrome palette. The focus
 /// ring is white (distinct from every window fill); the user title bar
-/// reuses the window-manager's dark blue with white text. The U4 cursor
-/// is magenta — a color nothing else renders, so the pixel gates can find
-/// it unambiguously.
+/// reuses the window-manager's dark blue with white text.
 pub const focus_ring_rgb: u32 = 0xffffff;
 pub const focus_ring_w: usize = 3;
 /// M32 WMS5: the title-bar band height — single source is wnd_core (the
@@ -96,9 +94,38 @@ pub const focus_ring_w: usize = 3;
 pub const user_title_h: usize = geom.title_bar_h;
 pub const user_title_bg_rgb: u32 = 0x1a2b3c;
 pub const user_title_fg_rgb: u32 = 0xffffff;
-pub const cursor_rgb: u32 = 0xff00ff;
-pub const cursor_w: usize = 8;
-pub const cursor_h: usize = 8;
+pub const cursor_rgb: u32 = 0xffffff;
+pub const cursor_outline_rgb: u32 = 0x101018;
+pub const cursor_w: usize = 16;
+pub const cursor_h: usize = 24;
+/// Pointer coordinates and hit tests name the arrow tip, not its bitmap origin.
+pub const cursor_hotspot = struct { x: u32, y: u32 }{ .x = 1, .y = 1 };
+pub const cursor_mask = [_][]const u8{
+    "................",
+    ".#..............",
+    ".##.............",
+    ".#o#............",
+    ".#oo#...........",
+    ".#ooo#..........",
+    ".#oooo#.........",
+    ".#ooooo#........",
+    ".#oooooo#.......",
+    ".#ooooooo#......",
+    ".#oooooooo#.....",
+    ".#ooooooooo#....",
+    ".#oooooooooo#...",
+    ".#ooooooooooo#..",
+    ".#oooooooooooo#.",
+    ".#oooooo#######.",
+    ".#oooo#o#.......",
+    ".#ooo#.o#.......",
+    ".#oo#..#o#......",
+    ".#o#...#o#......",
+    ".##.....#o#.....",
+    ".#......#o#.....",
+    ".........##.....",
+    "................",
+};
 
 /// Card G6 (claim 0487) + WM1 (#707, claim 919): user windows — the
 /// draw/window syscall seam. EIGHT user windows (ids 2..9,
@@ -419,6 +446,14 @@ pub var clock_has_tick: bool = false;
 pub var cursor_x: u32 = 0;
 pub var cursor_y: u32 = 0;
 pub var cursor_shown: bool = false;
+pub const CursorRect = struct { x: u32, y: u32, w: u32, h: u32 };
+pub var cursor_old_damage: ?CursorRect = null;
+pub var cursor_new_damage: ?CursorRect = null;
+var cursor_saved: [cursor_w * cursor_h]u32 = undefined;
+var cursor_drawn: bool = false;
+var cursor_drawn_x: u32 = 0;
+var cursor_drawn_y: u32 = 0;
+var cursor_drawn_resize: bool = false;
 pub var prev_ptr_buttons: u8 = 0;
 /// M49 SD5 (#1132): a terminal selection drag is in progress (pointer held
 /// inside a terminal window's client area).
@@ -1189,6 +1224,9 @@ pub fn arm() void {
     wm_tray_theme_set = false;
     wm_tray_clip_set = false;
     cursor_shown = false;
+    cursor_drawn = false;
+    cursor_old_damage = null;
+    cursor_new_damage = null;
     prev_ptr_buttons = 0;
     resize_id = null;
     // M52 card 3 (#1240): a fresh registry holds no drag — the Arc4 #237
@@ -1204,6 +1242,7 @@ pub fn arm() void {
     // WM2: the overview grid never survives a registry reset.
     overview_open = false;
     overview_n = 0;
+    presentation_trace_arm();
 }
 
 pub fn armed() bool {
@@ -3502,9 +3541,12 @@ pub fn pointer_tick(st: input.PointerState, click: ?input.Click) ?u8 {
         const ny = map_pointer_axis(st.y, virtio_gpu.fb_height);
         const moved = (!cursor_shown or nx != cursor_x or ny != cursor_y);
         if (moved) {
+            if (cursor_shown and cursor_old_damage == null)
+                cursor_old_damage = cursor_rect(cursor_x, cursor_y, virtio_gpu.fb_width, virtio_gpu.fb_height);
             cursor_x = nx;
             cursor_y = ny;
             cursor_shown = true;
+            cursor_new_damage = cursor_rect(nx, ny, virtio_gpu.fb_width, virtio_gpu.fb_height);
             // M27 G6: clear tooltip on mouse move. M32 WMS6 Gate D (issue
             // #626): while a WM owns input the tooltip policy lives in the WM
             // — it receives the move (kind 19) and decides when to hide
@@ -3882,6 +3924,74 @@ pub fn map_pointer_axis(v: u16, span: u32) u32 {
 pub fn cursor_pos() ?struct { x: u32, y: u32 } {
     if (!cursor_shown) return null;
     return .{ .x = cursor_x, .y = cursor_y };
+}
+
+pub fn cursor_rect(x: u32, y: u32, width: u32, height: u32) ?CursorRect {
+    if (width == 0 or height == 0) return null;
+    const left: i64 = @as(i64, x) - cursor_hotspot.x;
+    const top: i64 = @as(i64, y) - cursor_hotspot.y;
+    const x0 = @max(left, 0);
+    const y0 = @max(top, 0);
+    const x1 = @min(left + cursor_w, width);
+    const y1 = @min(top + cursor_h, height);
+    if (x1 <= x0 or y1 <= y0) return null;
+    return .{ .x = @intCast(x0), .y = @intCast(y0), .w = @intCast(x1 - x0), .h = @intCast(y1 - y0) };
+}
+
+pub fn cursor_pixel(x: usize, y: usize, resizing: bool) ?u32 {
+    if (y >= cursor_mask.len or x >= cursor_w) return null;
+    return switch (cursor_mask[y][x]) {
+        '#' => cursor_outline_rgb,
+        'o' => if (resizing) 0xffaa00 else cursor_rgb,
+        else => null,
+    };
+}
+
+/// Save only opaque mask pixels. A seat frame gets the cursor LAST, and its
+/// shared compose target is restored immediately after transfer/flush so the
+/// seat never reads the cursor into its own chrome/back buffers.
+pub fn cursor_draw() void {
+    if (!cursor_shown) return;
+    cursor_restore();
+    const fb = &virtio_gpu.gpu_fb;
+    for (0..cursor_h) |my| {
+        for (0..cursor_w) |mx| {
+            const rgb = cursor_pixel(mx, my, resize_id != null) orelse continue;
+            const x = @as(i64, cursor_x) - cursor_hotspot.x + @as(i64, @intCast(mx));
+            const y = @as(i64, cursor_y) - cursor_hotspot.y + @as(i64, @intCast(my));
+            if (x < 0 or y < 0 or x >= virtio_gpu.fb_width or y >= virtio_gpu.fb_height) continue;
+            const at: usize = @intCast((y * virtio_gpu.fb_width + x) * 4);
+            cursor_saved[my * cursor_w + mx] = std.mem.readInt(u32, fb[at..][0..4], .little);
+            put_px(fb, virtio_gpu.fb_width * 4, @intCast(x), @intCast(y), rgb);
+        }
+    }
+    cursor_drawn_x = cursor_x;
+    cursor_drawn_y = cursor_y;
+    cursor_drawn_resize = resize_id != null;
+    cursor_drawn = true;
+}
+
+pub fn cursor_restore() void {
+    if (!cursor_drawn) return;
+    const fb = &virtio_gpu.gpu_fb;
+    for (0..cursor_h) |my| {
+        for (0..cursor_w) |mx| {
+            const rgb = cursor_pixel(mx, my, cursor_drawn_resize) orelse continue;
+            const x = @as(i64, cursor_drawn_x) - cursor_hotspot.x + @as(i64, @intCast(mx));
+            const y = @as(i64, cursor_drawn_y) - cursor_hotspot.y + @as(i64, @intCast(my));
+            if (x < 0 or y < 0 or x >= virtio_gpu.fb_width or y >= virtio_gpu.fb_height) continue;
+            const at: usize = @intCast((y * virtio_gpu.fb_width + x) * 4);
+            // Do not restore stale underlay over a newer seat/application store.
+            if (std.mem.readInt(u32, fb[at..][0..4], .little) == (rgb | 0xff000000))
+                std.mem.writeInt(u32, fb[at..][0..4], cursor_saved[my * cursor_w + mx], .little);
+        }
+    }
+    cursor_drawn = false;
+}
+
+pub fn cursor_damage_clear() void {
+    cursor_old_damage = null;
+    cursor_new_damage = null;
 }
 
 // ---------------------------------------------------------------------------
@@ -4609,6 +4719,7 @@ pub fn repaint_start() ?usize {
 /// on the flush half).
 pub fn paint_scene() virtio_gpu.CmdResult {
     if (!armed_global) return .not_ready;
+    cursor_restore();
     // Arc2 W3: tray clock ticks on composite() without timer — detect theme/
     // clipboard changes that happened since last composite and mark taskbar
     // dirty so the tray repaints even without a tick. Tick-driven dirty is
@@ -4643,11 +4754,8 @@ pub fn paint_scene() virtio_gpu.CmdResult {
     // line keeps it permanently dirty), which is why the kernel terminal
     // used to land ON TOP of the seat: measured 2026-09-21 (#1562), the
     // captured frame held the kernel's console-green text and none of the
-    // seat's pixels. This gate does NOT skip composite()'s transfer+flush
-    // (scene_dirty stays true), so the tee's present still PUBLISHES
-    // whatever is already in the framebuffer — the seat's compose-N stores.
-    // The damage is consumed; the backlog composites once the seat
-    // unregisters and wm_owns_user_layer clears.
+    // seat's pixels. In WM mode this layer is painted at COMPOSITE_TICK;
+    // only the seat's REQUEST_PRESENT publishes the completed frame.
     const seat_owns_layer = wm_owns_user_layer;
     // Step 9: render the wallpaper gradient BEFORE windows so it is the background.
     if (start <= 1 and !seat_owns_layer) {
@@ -4744,12 +4852,120 @@ pub fn paint_scene() virtio_gpu.CmdResult {
     // M21 W16: advance transient window timeouts.
     _ = transient_advance_tick();
     draw_chrome();
+    if (!wm_owns_user_layer) cursor_draw();
     return .ok;
 }
 
 /// Whether the last paint_scene() actually repainted anything (drives the
 /// clean-scene no-flush decision in composite()). Read by composite() only.
 pub var scene_dirty: bool = false;
+
+/// Opt-in, guest-only presentation evidence. The exact fixture consent is
+/// required; ordinary boots neither record scanouts nor perform capture IO.
+pub var presentation_trace: bool = false;
+var trace_seq: u32 = 0;
+var trace_busy: bool = false;
+const trace_file = @import("virtio_file.zig");
+
+pub fn presentation_trace_arm() void {
+    if (builtin.is_test) return;
+    presentation_trace = false;
+    var consent: [4]u8 = undefined;
+    const n = trace_file.read_whole("M91-PRESENTATION.TRACE", &consent) orelse return;
+    presentation_trace = std.mem.eql(u8, consent[0..n], "v1\n");
+    if (presentation_trace) klog.line("m91: trace armed guest-only\n");
+}
+
+fn trace_write(handle: u16, bytes: []const u8) bool {
+    var off: usize = 0;
+    while (off < bytes.len) {
+        var written: u64 = 0;
+        const n = @min(bytes.len - off, trace_file.write_chunk_limit());
+        if (trace_file.write(handle, bytes[off..][0..n], &written) != trace_file.st_ok or
+            written == 0 or written > n) return false;
+        off += @intCast(written);
+    }
+    return true;
+}
+
+/// Lossless runs of (u32 count, u32 BGRX), prefixed with M91F/width/height/seq.
+/// Each file is the framebuffer at a transfer boundary, not a delayed sample
+/// requested by the host. Capture errors are reported, never treated as frames.
+pub fn presentation_begin(owner: []const u8) u32 {
+    if (!presentation_trace or builtin.is_test) return 0;
+    if (trace_busy) {
+        klog.line("m91: trace ERROR reentrant\n");
+        return 0;
+    }
+    trace_busy = true;
+    defer trace_busy = false;
+    trace_seq +%= 1;
+    var name_buf: [48]u8 = undefined;
+    const path = std.fmt.bufPrint(&name_buf, "M91-FRAME-{d}.rle", .{trace_seq}) catch unreachable;
+    var handle: u16 = 0;
+    var captured = trace_file.open(path, trace_file.open_flag_create, &handle) == trace_file.st_ok;
+    if (captured) {
+        defer _ = trace_file.close(handle);
+        captured = trace_file.truncate(handle, 0) == trace_file.st_ok;
+        const buf = &trace_file.chunk_staging;
+        @memcpy(buf[0..4], "M91F");
+        std.mem.writeInt(u32, buf[4..8], virtio_gpu.fb_width, .little);
+        std.mem.writeInt(u32, buf[8..12], virtio_gpu.fb_height, .little);
+        std.mem.writeInt(u32, buf[12..16], trace_seq, .little);
+        var used: usize = 16;
+        var at: usize = 0;
+        const pixels = virtio_gpu.fb_size / 4;
+        while (captured and at < pixels) {
+            const color = std.mem.readInt(u32, virtio_gpu.gpu_fb[at * 4 ..][0..4], .little);
+            var end = at + 1;
+            while (end < pixels and std.mem.readInt(u32, virtio_gpu.gpu_fb[end * 4 ..][0..4], .little) == color) : (end += 1) {}
+            std.mem.writeInt(u32, buf[used..][0..4], @intCast(end - at), .little);
+            std.mem.writeInt(u32, buf[used + 4 ..][0..4], color, .little);
+            used += 8;
+            if (used + 8 > buf.len) {
+                captured = trace_write(handle, buf[0..used]);
+                used = 0;
+            }
+            at = end;
+        }
+        if (captured) captured = trace_write(handle, buf[0..used]);
+    }
+    var line_buf: [192]u8 = undefined;
+    const t = @import("timer.zig");
+    const ns: u64 = if (t.freq == 0) 0 else @intCast(@as(u128, t.cntpct()) * 1_000_000_000 / t.freq);
+    const line = std.fmt.bufPrint(&line_buf, "m91: frame={d} owner={s} seat={d} phase=transfer captured={d} ns={d} cursor={d},{d},{d}\n", .{
+        trace_seq, owner,    @intFromBool(wm_owns_user_layer), @intFromBool(captured), ns,
+        cursor_x,  cursor_y, @intFromBool(cursor_shown),
+    }) catch unreachable;
+    klog.line(line);
+    return trace_seq;
+}
+
+pub fn presentation_end(seq: u32, result: virtio_gpu.CmdResult) void {
+    if (seq == 0) return;
+    var buf: [96]u8 = undefined;
+    klog.line(std.fmt.bufPrint(&buf, "m91: frame={d} phase=complete result={s}\n", .{ seq, @tagName(result) }) catch unreachable);
+}
+
+/// One transport seam for completed shim/seat frames, with injectable hardware
+/// results in host tests. Success means BOTH transfer and flush completed.
+pub var transfer_hook: ?*const fn () virtio_gpu.CmdResult = null;
+pub var flush_hook: ?*const fn () virtio_gpu.CmdResult = null;
+pub fn present_completed(owner: []const u8) virtio_gpu.CmdResult {
+    const seq = presentation_begin(owner);
+    const transfer = if (builtin.is_test)
+        (if (transfer_hook) |h| h() else virtio_gpu.CmdResult.ok)
+    else
+        virtio_gpu.gpu_transfer();
+    const result = if (transfer != .ok)
+        transfer
+    else if (builtin.is_test)
+        (if (flush_hook) |h| h() else virtio_gpu.CmdResult.ok)
+    else
+        virtio_gpu.gpu_flush();
+    presentation_end(seq, result);
+    return result;
+}
 
 /// The shim composite: paint the scene, then transfer+flush the scanout
 /// (the G1 seam). When the scene is clean, nothing is flushed (pre-SB5
@@ -4763,18 +4979,24 @@ pub fn composite() virtio_gpu.CmdResult {
     // stays on the scanout while boot continues underneath. A seat that
     // binds the scanout paints through its OWN present path (never
     // suppressed); the first kernel present after the bind releases the
-    // hold and FALLS THROUGH, so the #1592 flush (the pre-seat console
-    // frame under the seat) still lands on the same call.
+    // hold. Once bound, only the seat may publish a completed frame.
     if (splash_hold) {
         if (!wm_owns_user_layer) return .ok;
         splash_hold = false;
     }
+    // A console batch or pointer move must not repaint/flush between the
+    // kernel's tick-side layer and the seat's chrome stores. Otherwise the
+    // intermediate kernel frame flashes over the desktop.
+    if (wm_owns_user_layer) return .ok;
     if (paint_scene() != .ok) return .not_ready;
     if (!scene_dirty) return .ok; // clean scene: no flush
     if (!virtio_gpu.gpu_ready) return .not_ready;
-    presents += 1;
-    if (virtio_gpu.gpu_transfer() != .ok) return .timeout;
-    return virtio_gpu.gpu_flush();
+    const result = present_completed("shim");
+    if (result == .ok) {
+        presents += 1;
+        cursor_damage_clear();
+    }
+    return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -5275,19 +5497,6 @@ pub fn draw_chrome() void {
             break;
         }
     }
-    // The pointer cursor (card U4) — topmost, only once a report arrived.
-    if (cursor_shown) {
-        const cx: usize = cursor_x;
-        const cy: usize = cursor_y;
-        const cw = if (cx + cursor_w > wspan) wspan - cx else cursor_w;
-        const ch = if (cy + cursor_h > hspan) hspan - cy else cursor_h;
-        if (resize_id != null) {
-            // M27 G12: resize glyph
-            fill_rect(fb, stride, cx, cy, cw, ch, 0xffaa00);
-        } else {
-            fill_rect(fb, stride, cx, cy, cw, ch, cursor_rgb);
-        }
-    }
     // M15 C2 (Alt+Tab overlay, #225): centered window previews while Alt held.
     // Topmost below notification (D7 ordering), above user chrome. Dim the
     // backdrop by filling a translucent dark rect over the whole scanout, then
@@ -5649,6 +5858,32 @@ test "splash hold: composite refuses kernel presents while held" {
     // before paint_scene, so this is host-test safe with no device).
     try std.testing.expect(composite() == .ok);
     try std.testing.expect(presents == before);
+}
+
+test "compositor: a bound WM keeps exclusive paint and present ownership" {
+    const saved_armed = armed_global;
+    const saved_owned = wm_owns_user_layer;
+    const saved_hold = splash_hold;
+    const saved_dirty = scene_dirty;
+    defer {
+        armed_global = saved_armed;
+        wm_owns_user_layer = saved_owned;
+        splash_hold = saved_hold;
+        scene_dirty = saved_dirty;
+    }
+    armed_global = false; // unowned path is .not_ready, with no hardware work
+    splash_hold = false;
+    wm_owns_user_layer = true;
+    scene_dirty = true;
+    const before = presents;
+    try std.testing.expectEqual(virtio_gpu.CmdResult.ok, composite());
+    try std.testing.expect(scene_dirty); // do not consume the WM's pending paint
+    try std.testing.expectEqual(before, presents);
+    splash_hold = true;
+    try std.testing.expectEqual(virtio_gpu.CmdResult.ok, composite());
+    try std.testing.expect(!splash_hold); // the scanout bind still ends the hold
+    wm_owns_user_layer = false;
+    try std.testing.expectEqual(virtio_gpu.CmdResult.not_ready, composite());
 }
 
 /// Step 13 (Issue #213): boot splash screen. Renders once into the framebuffer

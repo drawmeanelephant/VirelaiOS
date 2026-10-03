@@ -21,6 +21,12 @@ vgate_share seed
 # The custom-virtio INPUT queue (the headless-safe pointer transport) is
 # SPIKE-gated, exactly like live-wnd-server run 02.
 vgate_runner_flags -Xswiftc -DSPIKE
+vgate_setup_python <<'PY'
+import os
+share = os.path.join(os.environ["RUN_DIR"], "share")
+with open(os.path.join(share, "M91-PRESENTATION.TRACE"), "w") as f:
+    f.write("v1\n")
+PY
 
 vgate_file script.txt <<'EOF'
 wm
@@ -57,6 +63,9 @@ vgate_assert 01 serial-contains 'wm: registered pid='
 vgate_assert 01 serial-contains 'wm: rate window_ms='
 vgate_assert 01 serial-contains 'pacing-done'
 vgate_assert 01 serial-absent '[EXC] parking:'
+vgate_assert 01 serial-absent 'owner=shim seat=1'
+vgate_assert 01 serial-absent 'captured=0'
+vgate_assert 01 serial-absent 'm91: trace ERROR'
 
 # The instrument is live, tied to a real input burst, and physically sane.
 # Deliberately loose: the observed VALUES are the finding (reported on #1247),
@@ -64,6 +73,8 @@ vgate_assert 01 serial-absent '[EXC] parking:'
 vgate_assert 01 python <<'PY'
 import os, re
 ser = open(os.environ["VG_SER"]).read()
+completed = re.findall(r"m91: frame=\d+ phase=complete result=(\w+)", ser)
+assert completed and all(r == "ok" for r in completed), "failed presentation"
 
 # The LAST rate row is the one after the burst; an earlier `wm` (the script's
 # first command, before `wnd start`) has no registered WM at all.
