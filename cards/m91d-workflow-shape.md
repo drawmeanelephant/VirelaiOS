@@ -3,7 +3,7 @@
 - **Parent index:** M91, [#1914](https://github.com/drawmeanelephant/VirelaiOS/issues/1914).
 - **Owner:** Sol 6.1, Go desktop/workflow implementer; owner review before merge.
 - **Depends on:** M91a/b/c must be ready before integrated acceptance. Go-only tests can run earlier against existing contracts.
-- **Starting material:** the coach slice for `tools/gate/specs/go-wm-hid.spec`. It comes from the uncommitted `droid/coach-through-ios-app` work on `fc21e531`, preserved by the owner as a local patch snapshot (`artifacts/m91-coach-handoff/`, sha256 `767ca34384a9ca4a3842362d764cf48b3c121cbbb2cf814f47eeba70f3446c32`), and applies cleanly to `7ead82ee`. It is an unreviewed draft (#1914). #1914 reports the full current gate at 10/13 **on that draft**, with runs 01, 02 and 09 failing; that is not a main baseline.
+- **Starting material:** the coach slice for `tools/gate/specs/go-wm-hid.spec`. It comes from the uncommitted `droid/coach-through-ios-app` work on `fc21e531`, preserved by the owner as the local, unpushed branch `droid/m91-coach-handoff` (commit `1f083d23`; patch sha256 `767ca34384a9ca4a3842362d764cf48b3c121cbbb2cf814f47eeba70f3446c32`), which every worktree of the repository can read. It applies cleanly to `7ead82ee`. Take this card's files with `git diff fc21e531 droid/m91-coach-handoff -- <paths> | git apply`; checking the paths out from the branch would revert later main changes. It is an unreviewed draft (#1914). #1914 reports the full current gate at 10/13 **on that draft**, with runs 01, 02 and 09 failing; that is not a main baseline.
 - **Size / scheduling:** 8–12 agent hours, deferred beyond week one.
 
 ## Deliverable
