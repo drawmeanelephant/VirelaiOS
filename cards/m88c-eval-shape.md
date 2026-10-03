@@ -1,5 +1,7 @@
 # M88c — Execute JS files and bounded interactive eval on the guest
 
+> **Held, not filed (grounding 2026-10-03, `7ead82ee`).** #1915 says M88b+ come from the R1; this shape's interactive mechanism, artifact shape, paths and gate are M88a outputs. `user/runtimes/` is outside the ADR-legal native home unless M88a's amendment names it. `live-el0-exec.spec` is the generic EL0 exec gate; M88a decides whether it covers JS. File after M88a lands.
+
 - **Parent index:** M88, [#1915](https://github.com/drawmeanelephant/VirelaiOS/issues/1915).
 - **Owner:** Sol 6.1, runtime-product and acceptance implementer; owner review before merge.
 - **Depends on:** merged M88a and M88b.
@@ -14,9 +16,9 @@ Land the R1-approved guest-facing script runner and REPL or equivalent interacti
 
 Proposed reservations, finalized by M88a:
 
-- `user/runtimes/js-client/**`: guest-facing adapter and its tests.
-- `tools/js-client/**`: isolated product build/inspection recipe and tests.
-- `tests/fixtures/js/**`: small pinned accepted/denied scripts and expected results.
+- `user/runtimes/js-client/*`: guest-facing adapter and its tests.
+- `tools/js-client/*`: isolated product build/inspection recipe and tests.
+- `tests/fixtures/js/*`: small pinned accepted/denied scripts and expected results.
 - `tools/gate/specs/live-el0-exec.spec`: sole editor for this breakdown.
 - Engine/shim files from M88b and shared SDK/shell files are read-only. No root build, manifest or boot-default edit.
 
@@ -30,7 +32,7 @@ Proposed reservations, finalized by M88a:
 
 ## Closes
 
-The PR merging the complete runner/interactive loop and passing R1 acceptance closes this card's issue. That **same final acceptance PR** also closes **M88's index (#1915)**, only after M88a/b issues are closed and every index condition is evidenced. No standalone umbrella-closing action or prerequisite slice.
+The PR merging the complete runner/interactive loop and passing R1 acceptance closes this card's issue, and its body says `leaves #1915 open`. AGENTS.md reserves `Closes #N` for the claimed card's own landing PR. The owner then closes M88's index (#1915) with a final evidence comment once M88a/b/c are closed and every index condition is evidenced, the way #1807, #1808, #1816 and #1880 were closed. No prerequisite slice.
 
 ## Sources read
 

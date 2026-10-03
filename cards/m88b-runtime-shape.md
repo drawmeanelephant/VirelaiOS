@@ -1,5 +1,7 @@
 # M88b — Land the offline QuickJS port and bounded runtime contract
 
+> **Held, not filed (grounding 2026-10-03, `7ead82ee`).** #1915 says M88b+ come from the R1 and are "not pre-committed here"; this shape's language, scope and paths are M88a outputs. Its `user/runtimes/` and `third_party/` reservations sit outside the ADR-legal native home (`user/src/` adapter plus `user/zig/` SDK, ADR 0038 §2) unless M88a's ADR 0030 amendment names them. File after M88a lands.
+
 - **Parent index:** M88, [#1915](https://github.com/drawmeanelephant/VirelaiOS/issues/1915).
 - **Owner:** Sol 6.1, runtime implementer; owner review before merge.
 - **Depends on:** merged M88a.
@@ -14,10 +16,10 @@ Land the pinned, offline-buildable QuickJS engine port and its complete R1-defin
 
 Proposed reservations, absent today and ratified/replaced by M88a before claims:
 
-- `third_party/quickjs/**`: pinned source, license, hashes and narrow patch metadata.
-- `user/runtimes/quickjs/**`: engine adapter, shims and runtime tests.
-- `tools/quickjs-runtime/**`: isolated offline build/inspection recipe and its tests.
-- No root `build.zig`, shared `user/zig/**` SDK files, app manifest, CLI, status, ADR or gate-spec ownership. R1 must prove the isolated build can reuse the existing SDK without modifying it; a required shared-file change forces a reviewed ownership revision before claiming.
+- `third_party/quickjs/*`: pinned source, license, hashes and narrow patch metadata.
+- `user/runtimes/quickjs/*`: engine adapter, shims and runtime tests.
+- `tools/quickjs-runtime/*`: isolated offline build/inspection recipe and its tests.
+- No root `build.zig`, shared `user/zig/*` SDK files, app manifest, CLI, status, ADR or gate-spec ownership. R1 must prove the isolated build can reuse the existing SDK without modifying it; a required shared-file change forces a reviewed ownership revision before claiming.
 
 ## Verification
 

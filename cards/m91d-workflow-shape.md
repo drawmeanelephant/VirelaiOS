@@ -1,5 +1,7 @@
 # M91d â€” Land default-desktop workflow readiness and the acceptance fixture
 
+> **Held, not filed (grounding 2026-10-03, `7ead82ee`).** `tools/gate/specs/go-wm-hid.spec` overlaps the active #1857 claim (`droid/coach-through-ios-app`), and #1914 reports uncommitted corrections to it on that branch. The scope waits on held M91-R1. #1914 assigns `docs/status.md` to M91d; this draft moves it to #1857, which needs the owner's agreement. File after #1857's claim is narrowed.
+
 - **Parent index:** M91, [#1914](https://github.com/drawmeanelephant/VirelaiOS/issues/1914).
 - **Owner:** Sol 6.1, Go desktop/workflow implementer; owner review before merge.
 - **Depends on:** M91-R1; M91a/b/c must be ready before integrated acceptance. Go-only tests can run earlier against existing contracts.
@@ -12,10 +14,10 @@ Land complete **automated readiness** for the default first workspace and Apps â
 
 ## Exclusive ownership
 
-- `user/go/gotabwm/**`.
-- `user/go/term/**`, `user/go/edit/**`, `user/go/note/**`: reserve representative apps; edit only the app(s) with an observed workflow defect.
+- `user/go/gotabwm/*`.
+- `user/go/term/*`, `user/go/edit/*`, `user/go/note/*`: reserve representative apps; edit only the app(s) with an observed workflow defect.
 - `tools/gate/specs/go-wm-hid.spec`, `tools/gate/specs/go-wm-default.spec`.
-- Small pinned workflow fixtures under proposed `tests/fixtures/desktop/m91/**`.
+- Small pinned workflow fixtures under proposed `tests/fixtures/desktop/m91/*`.
 - No session/host, input, compositor, app-manifest, shared SDK, README/testing/hardware/status or R1 ADR edits. In particular, **only human #1857 owns `docs/status.md`**.
 
 ## Verification

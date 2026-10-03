@@ -1,5 +1,7 @@
 # M91b — Preserve HID completions and decode native keyboard/pointer reports correctly
 
+> **Held, not filed (grounding 2026-10-03, `7ead82ee`).** `kernel/src/xhci.zig`, `kernel/src/input.zig`, `tools/gate/specs/live-input.spec` and `docs/hardware-contract.md` overlap the active #1857 claim (`droid/coach-through-ios-app`), and #1914 reports uncommitted corrections to them on that branch. The scope ("including reviewed wire captures and dirty-tree corrections") waits on held M91-R1. File after #1857's claim is narrowed.
+
 - **Parent index:** M91, [#1914](https://github.com/drawmeanelephant/VirelaiOS/issues/1914).
 - **Owner:** Sol 6.1, input implementer; owner review before merge.
 - **Depends on:** M91-R1 and approved #1857 claim-path handoff. Can land independently of M91a/c/d once its tests can exercise the selected input seam.
@@ -15,7 +17,7 @@ Land complete shared HID-completion preservation/rearming/order correctness and 
 - `kernel/src/xhci.zig`, `kernel/src/input.zig`, including their embedded unit tests.
 - `tools/gate/specs/live-input.spec`, `tools/gate/specs/live-xhci.spec`, `tools/gate/specs/live-usb-lifecycle.spec`.
 - `docs/hardware-contract.md`: input rows/wire distinction only; sole file editor in this breakdown.
-- Small pinned native/canonical vectors under proposed `tests/fixtures/input/m91/**`.
+- Small pinned native/canonical vectors under proposed `tests/fixtures/input/m91/*`.
 - No host, compositor, WM/Go, `go-wm-hid.spec`, status or R1 ADR edits.
 
 ## Verification
@@ -33,4 +35,4 @@ The PR merging **all input corrections and passing the input contract/gates** cl
 
 ## Sources read
 
-#1914, native wire observation and M91b; `kernel/src/xhci.zig:1409-1448,1852-1924`; `kernel/src/input.zig:1064-1117,1444-1527`; `tools/gate/specs/live-input.spec:14-37`; `docs/hardware-contract.md:21-23,204-218`.
+#1914, native wire observation and M91b; `kernel/src/xhci.zig:1042-1070,1409-1448,1852-1924` (the in-order test at `:1875-1921` models one ring; cross-device order is untested at baseline); `kernel/src/input.zig:1064-1117,1444-1527` (the decoder accepts reports of three or more bytes; the five-byte canonical payload is specified in `docs/hardware-contract.md:204-218`); `tools/gate/specs/live-input.spec:14-37`; `docs/hardware-contract.md:21-23,204-218`.

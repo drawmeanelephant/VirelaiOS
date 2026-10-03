@@ -1,5 +1,7 @@
 # M91c — Make the cursor recognizable and enforce completed-frame presentation ownership
 
+> **Held, not filed (grounding 2026-10-03, `7ead82ee`).** `kernel/src/driving_award.zig` and `kernel/tests/driving_award_test.zig` overlap the active #1857 claim (`droid/coach-through-ios-app`), and #1914 reports uncommitted corrections to them on that branch. The scope waits on held M91-R1. File after #1857's claim is narrowed.
+
 - **Parent index:** M91, [#1914](https://github.com/drawmeanelephant/VirelaiOS/issues/1914).
 - **Owner:** Sol 6.1, compositor implementer; owner review before merge.
 - **Depends on:** M91-R1 and approved #1857 claim-path handoff. Existing canonical pointer fixtures permit independent implementation from M91b.
@@ -32,4 +34,4 @@ The PR merging **cursor and exclusive completed-frame ownership with all regress
 
 ## Sources read
 
-#1914, cursor/flash reports and M91c; `kernel/src/driving_award.zig:99-101,3497-3525,4636-4649,4754-4777`; `kernel/src/wm_server.zig:867-913,1089-1129`; `tools/gate/specs/go-wm-console-ink.spec:30-44`; `tools/gate/specs/live-wm-pacing.spec:10-17,95-120`.
+#1914, cursor/flash reports and M91c; `kernel/src/driving_award.zig:99-101,3497-3525,4636-4649,4754-4777,5278-5289` (the cursor is an 8×8 block with no hotspot field); `kernel/src/wm_server.zig:438-469,482-500,600-620,867-913,1089-1129`; `tools/gate/specs/go-wm-console-ink.spec:30-44,101-114,175-207`; `tools/gate/specs/live-wm-pacing.spec:10-17,95-120`.

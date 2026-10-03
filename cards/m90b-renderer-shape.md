@@ -1,5 +1,7 @@
 # M90b — Land the declared SVG renderer and owned vector raster library
 
+> **Held, not filed (grounding 2026-10-03, `7ead82ee`).** #1917 says M90b+ come from the R1; engine, language, subset, text and vector representation are M90a outputs. `user/render/` is neither the Go home (`user/go/`) nor the native home (`user/src/` plus `user/zig/`), and a native renderer needs an ADR 0030 amendment first. File after M90a lands.
+
 - **Parent index:** M90, [#1917](https://github.com/drawmeanelephant/VirelaiOS/issues/1917).
 - **Owner:** Sol 6.1, vector-engine implementer; owner review before merge.
 - **Depends on:** merged M90a. No M89 dependency.
@@ -14,11 +16,11 @@ Land the full R1-declared SVG byte-to-bitmap renderer and its separately callabl
 
 Proposed reservations, finalized by M90a:
 
-- `user/render/svg/**`: SVG front end, renderer adapter and contract tests.
-- `user/render/vector/**`: shared vector raster implementation and tests; M89 consumers read/call it only.
-- `third_party/svg/**`: selected dependency/license/lock/patches, only if needed.
-- `tools/svg-engine/**`: isolated offline build/inspection recipe and tests.
-- `tests/fixtures/svg/engine/**`: small engine-level feature and boundary vectors.
+- `user/render/svg/*`: SVG front end, renderer adapter and contract tests.
+- `user/render/vector/*`: shared vector raster implementation and tests; M89 consumers read/call it only.
+- `third_party/svg/*`: selected dependency/license/lock/patches, only if needed.
+- `tools/svg-engine/*`: isolated offline build/inspection recipe and tests.
+- `tests/fixtures/svg/engine/*`: small engine-level feature and boundary vectors.
 - No shared Go draw/font/SDK files, PDF files, root build, manifests, status, ADR or gate-spec edits. Any unavoidable shared-file change needs an R1 ownership revision before claims.
 
 ## Verification

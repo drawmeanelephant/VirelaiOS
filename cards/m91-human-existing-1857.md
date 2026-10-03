@@ -1,5 +1,7 @@
 # M87a — Complete human desktop launcher acceptance (implementation landed)
 
+> **Not filed, by design (grounding 2026-10-03, `7ead82ee`).** #1857 is the card; no duplicate exists. Its human-only bar and fixture commands below match the live issue. The index-closing keywords were replaced per AGENTS.md. Narrowing #1857's claim to `docs/status.md`, and adding M91's observations to its session, both need #1857's claimant and the owner; this draft changes neither.
+
 - **Parent index:** M91, [#1914](https://github.com/drawmeanelephant/VirelaiOS/issues/1914), as its existing final human acceptance dependency; original parent M87, [#1856](https://github.com/drawmeanelephant/VirelaiOS/issues/1856).
 - **Existing issue:** [#1857](https://github.com/drawmeanelephant/VirelaiOS/issues/1857). **Do not file a duplicate or renumber it.** This file is a placement/closure proposal, not a replacement for its live human requirements.
 - **Owner:** real human acceptance operator, currently unassigned. **Not agent work.**
@@ -51,7 +53,7 @@ printf 'm87-desktop-owner-ok\n' | cmp - "$fixture/share/M87-DESKTOP.RECEIPT"
 
 ## Closes
 
-The **human acceptance landing PR**, after the whole observed journey and compact status reconciliation, closes existing human card #1857. If M91's child issues are already closed and all its outcomes are observed, that **same PR** also closes **M91's index (#1914)**; accepted remote #1860 plus the now-observed original desktop journey lets that same PR complete **M87's index (#1856)** last. Its future PR body names each intended closure once. No separate orphan-closing action and no index or implementation PR passes the human card. If any prerequisite or step is blocked, acceptance and the umbrellas stay open.
+The **human acceptance landing PR**, after the whole observed journey and compact status reconciliation, closes existing human card #1857 (`Closes #1857`). Its body says `leaves #1914 open` and `leaves #1856 open`: AGENTS.md reserves `Closes #N` for the claimed card's own landing PR, and recent indexes (#1807, #1808, #1816, #1880) were closed by hand. After that merge, the owner closes **M91's index (#1914)** once its children are closed and its outcomes observed. Then the owner closes **M87's index (#1856)** on accepted remote #1860 plus the observed desktop journey. Each closure gets one evidence comment. No index or implementation PR passes the human card. If any prerequisite or step is blocked, acceptance and the umbrellas stay open.
 
 ## Sources read
 

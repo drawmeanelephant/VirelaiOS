@@ -1,5 +1,7 @@
 # M91a — Land the supported macOS host front door and VM lifecycle
 
+> **Held, not filed (grounding 2026-10-03, `7ead82ee`).** Every code path here overlaps the active #1857 claim (`droid/coach-through-ios-app`): `host/vm-runner/Package.swift`, `Sources/VMRunner/main.swift`, `Sources/VMAppKit/NativeInput.swift`, `Tests/VMRunnerTests/NativeInputTests.swift`, `tools/session.sh` and `tools/tests/test_session_apps.py`. #1914 reports uncommitted corrections to them on that branch. The scope also waits on held M91-R1. File after #1857's claim is narrowed, with the host-contract choice restored as this card's first deliverable, as #1914 specifies.
+
 - **Parent index:** M91, [#1914](https://github.com/drawmeanelephant/VirelaiOS/issues/1914).
 - **Owner:** Sol 6.1, host implementer; owner review before merge.
 - **Depends on:** M91-R1 and approved #1857 claim-path handoff.
@@ -12,7 +14,7 @@ Land the entire selected macOS host front door: distinct app/window identity, na
 
 ## Exclusive ownership
 
-- `host/vm-runner/**`, excluding generated `.build/`: host modules, package, app resources and Swift tests. Any new `Sources/VMAppKit/` is proposed, not present at baseline.
+- `host/vm-runner/*`, excluding generated `.build/`: host modules, package, app resources and Swift tests. Any new `Sources/VMAppKit/` is proposed, not present at baseline.
 - `tools/session.sh`, `tools/tests/test_session_apps.py`.
 - `README.md`, `docs/testing.md`: supported local launch instructions only; preserve accepted remote material.
 - No kernel, guest seat/app, hardware/status, R1 ADR or gate-spec edits.
@@ -32,4 +34,4 @@ The PR merging the complete supported host behavior and passing host/lifecycle v
 
 ## Sources read
 
-#1914, M91a and host acceptance; `host/vm-runner/Sources/VMRunner/main.swift:2763-2824`; `host/vm-runner/Package.swift:19-67`; `tools/session.sh:57-65,108-175,196-232`; `tools/tests/test_session_apps.py:19-99`.
+#1914, M91a and host acceptance; `host/vm-runner/Sources/VMRunner/main.swift:2763-2824,4384-4391`; `host/vm-runner/Package.swift:29-65`; `tools/session.sh:57-65,108-175,196-232`; `tools/tests/test_session_apps.py:19-99`.

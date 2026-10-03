@@ -1,5 +1,7 @@
 # M89c — Prove guest PDF bitmaps and bounded corpus refusals
 
+> **Held, not filed (grounding 2026-10-03, `7ead82ee`).** #1916 says M89b+ come from the R1; artifact contract, corpus, paths and gate are M89a outputs. `live-image-viewer.spec` is GOVIEW's viewer gate and may not cover a bitmap producer; M89a decides. `user/render/` is outside both ADR-legal homes. File after M89a lands.
+
 - **Parent index:** M89, [#1916](https://github.com/drawmeanelephant/VirelaiOS/issues/1916).
 - **Owner:** Sol 6.1, document acceptance implementer; owner review before merge.
 - **Depends on:** merged M89a/b and any M90 dependency explicitly selected by R1.
@@ -14,9 +16,9 @@ Land a minimal guest invocation/output adapter and independent acceptance corpus
 
 Proposed reservations, finalized by M89a:
 
-- `user/render/pdf-proof/**`: guest invocation/output adapter and tests.
-- `tools/pdf-proof/**`: product build and independent artifact comparison tests.
-- `tests/fixtures/pdf/acceptance/**`: full declared corpus, provenance and small pinned reference bitmaps.
+- `user/render/pdf-proof/*`: guest invocation/output adapter and tests.
+- `tools/pdf-proof/*`: product build and independent artifact comparison tests.
+- `tests/fixtures/pdf/acceptance/*`: full declared corpus, provenance and small pinned reference bitmaps.
 - `tools/gate/specs/live-image-viewer.spec`: sole editor for this breakdown.
 - PDF engine, M90, existing GOVIEW and shared image/SDK files remain read-only.
 
@@ -30,7 +32,7 @@ Proposed reservations, finalized by M89a:
 
 ## Closes
 
-The PR merging the complete guest proof and green declared corpus closes this issue. That **same final acceptance PR** also closes **M89's index (#1916)** after all earlier M89 cards are closed and every index criterion is satisfied. Neither engine-host tests alone nor a demonstration page closes the index.
+The PR merging the complete guest proof and green declared corpus closes this issue, and its body says `leaves #1916 open`. AGENTS.md reserves `Closes #N` for the claimed card's own landing PR. The owner then closes M89's index (#1916) with a final evidence comment once every M89 card is closed and every index criterion is satisfied, the way #1807, #1808, #1816 and #1880 were closed. Neither engine-host tests alone nor a demonstration page satisfies the index.
 
 ## Sources read
 

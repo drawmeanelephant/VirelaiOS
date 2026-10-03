@@ -1,5 +1,7 @@
 # M89b — Land the bounded PDF parser and page-bitmap engine
 
+> **Held, not filed (grounding 2026-10-03, `7ead82ee`).** #1916 says M89b+ come from the R1; engine, language, subset and M90 coupling are M89a outputs. `user/render/` is neither the Go home (`user/go/`) nor the native home (`user/src/` plus `user/zig/`), and a native engine needs an ADR 0030 amendment first. File after M89a lands.
+
 - **Parent index:** M89, [#1916](https://github.com/drawmeanelephant/VirelaiOS/issues/1916).
 - **Owner:** Sol 6.1, document-engine implementer; owner review before merge.
 - **Depends on:** merged M89a; M90 vector implementation only if R1 explicitly selects that dependency.
@@ -14,10 +16,10 @@ Land the whole R1-defined PDF engine interface from input bytes and page selecti
 
 Proposed reservations, finalized by M89a:
 
-- `user/render/pdf/**`: PDF engine, adapters and engine-contract tests.
-- `third_party/pdf/**`: selected dependency source/license/lock/patches, only if R1 selects one.
-- `tools/pdf-engine/**`: isolated offline build/inspection recipe and tests.
-- `tests/fixtures/pdf/engine/**`: small engine boundary vectors and fixtures.
+- `user/render/pdf/*`: PDF engine, adapters and engine-contract tests.
+- `third_party/pdf/*`: selected dependency source/license/lock/patches, only if R1 selects one.
+- `tools/pdf-engine/*`: isolated offline build/inspection recipe and tests.
+- `tests/fixtures/pdf/engine/*`: small engine boundary vectors and fixtures.
 - No M90/vector files, shared SDK, root build, app catalog, ADR, status or gate-spec edits. R1 must revise ownership explicitly if a shared-file change is necessary.
 
 ## Verification
