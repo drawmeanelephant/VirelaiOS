@@ -34,6 +34,43 @@ Every verification command belongs to exactly one class (canonical inventory:
   platform capability is unavailable, everything else still runs and the
   blocked step is reported precisely.
 
+## Local host front door (M91a)
+
+The supported launch is `source tools/env-check.sh && just session` on
+Apple silicon/macOS 27+. The session command generates and directly runs
+an ad-hoc-signed `VirelaiOS.app` (`org.virelaios.host`), not an installer or
+a standalone Finder app. The raw `VMRunner` CLI remains available for gates.
+Build/staging failures belong to the terminal. Runner preflight failures
+use the same error window. It shows Starting VM, the running VZ display, or a
+startup/runtime failure with the serial-log path. Close/Quit/Ctrl-C stop
+the owned VM; rerun the command to relaunch with persistent share files,
+fresh RAM, EFI vars and a throwaway writable overlay.
+
+Class A:
+
+```bash
+swift test --package-path host/vm-runner
+swift build --package-path host/vm-runner --configuration release -Xswiftc -DSPIKE
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tools/tests -p test_session_apps.py
+bash -n tools/session.sh
+```
+
+Compatibility (class B): `just gate live-input` and
+`just gate go-wm-default`. A failed guest-input assertion is not a host
+pass, and belongs to M91b (#1923); do not change its specs here.
+
+Host observation uses a fresh isolated fixture share, never personal
+documents. Set `VIRELAI_SESSION_SHARE` before launch. Record only the owned
+runner PID/window: app/bundle/title identity, an on-screen window, actual
+key/first-responder state, native host-view event receipts, close and Quit,
+and two launch/relaunch cycles. Verify that each PID is gone and its
+temporary app/vars/overlay are removed after exit. Capture only that VM
+window, not the desktop or other apps; evidence lives under
+`artifacts/m91-host/`. Activation API success or a hidden window is
+insufficient. If visibility/activation is unavailable, mark that exact
+step blocked. Host observations and injected host-seam events do not
+replace M91's later human guest Apps/Terminal/editor acceptance.
+
 ## Remote terminal (M87)
 
 Class A uses isolated build/runner/client stand-ins, never a VM:

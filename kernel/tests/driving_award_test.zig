@@ -1237,7 +1237,7 @@ test "driving_award: SB5 paint_scene skips migrated windows when the WM owns the
     defer driving_award.wm_owns_user_layer = false;
     try std.testing.expect(mark_damage(2, 20, 20, 30, 30));
     try std.testing.expect(user_damage(2) != null);
-    _ = composite();
+    _ = driving_award.paint_scene(); // tick-side layer, not a shim present
     try std.testing.expect(user_damage(2) == null); // damage consumed by the skip
     {
         var li: usize = 0;
@@ -1274,7 +1274,7 @@ test "driving_award: SB6 user_blits vs migrated_skips move on the blit vs skip p
     driving_award.wm_owns_user_layer = true;
     defer driving_award.wm_owns_user_layer = false;
     try std.testing.expect(mark_damage(2, 0, 0, 16, 16));
-    _ = composite();
+    _ = driving_award.paint_scene(); // tick-side layer, not a shim present
     try std.testing.expectEqual(@as(u64, 1), driving_award.user_blits); // still 1 (no new blit)
     try std.testing.expectEqual(@as(u64, 1), driving_award.migrated_skips); // skipped once
 }
@@ -2121,7 +2121,7 @@ test "driving_award: card U4 — pointer motion moves the cursor; a click focuse
     // Move to the terminal area and click: focus remains window 0.
     const st_term: input.PointerState = .{ .x = 4000, .y = 30000, .buttons = 0, .valid = true };
     try std.testing.expectEqual(@as(?u8, 0), pointer_tick(st_term, .{ .x = 4000, .y = 30000 }));
-    // The cursor renders magenta at its cell after a composite.
+    // The hotspot stays at the pointer coordinate; the arrow tip is outlined.
     _ = composite();
     const stride = virtio_gpu.fb_width * 4;
     const fb: [*]u8 = @ptrCast(&virtio_gpu.gpu_fb);
@@ -2129,9 +2129,152 @@ test "driving_award: card U4 — pointer motion moves the cursor; a click focuse
     _ = o;
     const cc = cursor_pos().?;
     const off = cc.y * stride + cc.x * 4;
-    try std.testing.expectEqual(@as(u8, 0xff), fb[off + 2]); // R (0xff00ff)
-    try std.testing.expectEqual(@as(u8, 0x00), fb[off + 1]); // G
-    try std.testing.expectEqual(@as(u8, 0xff), fb[off]); // B
+    try std.testing.expectEqual(@as(u8, 0x10), fb[off + 2]);
+    try std.testing.expectEqual(@as(u8, 0x10), fb[off + 1]);
+    try std.testing.expectEqual(@as(u8, 0x18), fb[off]);
+}
+
+test "driving_award: M91 cursor is an outlined arrow, not a solid block" {
+    const px = struct {
+        fn at(f: [*]u8, st: usize, x: usize, y: usize) u32 {
+            const o = y * st + x * 4;
+            return @as(u32, f[o + 2]) << 16 | @as(u32, f[o + 1]) << 8 | f[o];
+        }
+    };
+    arm();
+    driving_award.wm_owns_user_layer = false;
+    _ = pointer_tick(.{ .x = 16384, .y = 16384, .buttons = 0, .valid = true }, null);
+    _ = driving_award.paint_scene();
+    const fb: [*]u8 = @ptrCast(&virtio_gpu.gpu_fb);
+    const c = cursor_pos().?;
+    var white: usize = 0;
+    var dark: usize = 0;
+    var transparent: usize = 0;
+    for (0..cursor_h) |y| {
+        for (0..cursor_w) |x| {
+            const rgb = px.at(fb, virtio_gpu.fb_width * 4, c.x + x, c.y + y);
+            if (rgb == 0xffffff) white += 1 else if (rgb == 0x101018) dark += 1 else transparent += 1;
+        }
+    }
+    try std.testing.expect(white > 0 and dark > 0 and transparent > 0);
+}
+
+test "driving_award: M91 bound scanout rejects a competing kernel composite" {
+    arm();
+    driving_award.wm_owns_user_layer = true;
+    defer driving_award.wm_owns_user_layer = false;
+    const dirty = driving_award.windows[0].dirty;
+    _ = composite();
+    try std.testing.expectEqual(dirty, driving_award.windows[0].dirty);
+}
+
+test "driving_award: M91 cursor mask, hotspot, four-edge clipping and restoration" {
+    arm();
+    driving_award.wm_owns_user_layer = false;
+    try std.testing.expectEqual(cursor_h, driving_award.cursor_mask.len);
+    for (driving_award.cursor_mask) |row| try std.testing.expectEqual(cursor_w, row.len);
+    const hot = driving_award.cursor_hotspot;
+    try std.testing.expectEqual(@as(?u32, driving_award.cursor_outline_rgb), driving_award.cursor_pixel(hot.x, hot.y, false));
+    try std.testing.expectEqual(@as(?u32, null), driving_award.cursor_pixel(0, 0, false));
+    try std.testing.expectEqual(@as(?u32, 0xffaa00), driving_award.cursor_pixel(2, 3, true));
+    try std.testing.expectEqual(@as(?u32, null), driving_award.cursor_pixel(cursor_w, cursor_h, false));
+    try std.testing.expect(driving_award.cursor_rect(0, 0, 0, 1) == null);
+    try std.testing.expect(driving_award.cursor_rect(500, 500, 10, 10) == null);
+
+    const fb = &virtio_gpu.gpu_fb;
+    const corners = [_]struct { x: u32, y: u32 }{
+        .{ .x = 0, .y = 0 },
+        .{ .x = virtio_gpu.fb_width - 1, .y = 0 },
+        .{ .x = 0, .y = virtio_gpu.fb_height - 1 },
+        .{ .x = virtio_gpu.fb_width - 1, .y = virtio_gpu.fb_height - 1 },
+    };
+    for (corners) |c| {
+        @memset(fb, 0x32);
+        driving_award.cursor_x = c.x;
+        driving_award.cursor_y = c.y;
+        driving_award.cursor_shown = true;
+        driving_award.cursor_draw();
+        const rect = driving_award.cursor_rect(c.x, c.y, virtio_gpu.fb_width, virtio_gpu.fb_height).?;
+        try std.testing.expect(rect.x + rect.w <= virtio_gpu.fb_width);
+        try std.testing.expect(rect.y + rect.h <= virtio_gpu.fb_height);
+        // The entire framebuffer, not just its rectangle, matches the clipped mask.
+        for (0..virtio_gpu.fb_height) |y| {
+            for (0..virtio_gpu.fb_width) |x| {
+                const mx: i64 = @as(i64, @intCast(x)) - c.x + hot.x;
+                const my: i64 = @as(i64, @intCast(y)) - c.y + hot.y;
+                const color = if (mx >= 0 and my >= 0)
+                    driving_award.cursor_pixel(@intCast(mx), @intCast(my), false)
+                else
+                    null;
+                const expected = if (color) |rgb| rgb | 0xff000000 else 0x32323232;
+                try std.testing.expectEqual(expected, std.mem.readInt(u32, fb[(y * virtio_gpu.fb_width + x) * 4 ..][0..4], .little));
+            }
+        }
+        driving_award.cursor_restore();
+        for (fb) |byte| try std.testing.expectEqual(@as(u8, 0x32), byte);
+    }
+}
+
+test "driving_award: M91 cursor old/new damage coalesces and restores without stale stores" {
+    arm();
+    driving_award.wm_owns_user_layer = false;
+    @memset(&virtio_gpu.gpu_fb, 0x32);
+    _ = pointer_tick(.{ .x = 4096, .y = 4096, .buttons = 0, .valid = true }, null);
+    const old = cursor_pos().?;
+    driving_award.cursor_draw();
+    driving_award.cursor_damage_clear();
+    _ = pointer_tick(.{ .x = 8192, .y = 8192, .buttons = 0, .valid = true }, null);
+    _ = pointer_tick(.{ .x = 16384, .y = 16384, .buttons = 0, .valid = true }, null);
+    const new = cursor_pos().?;
+    try std.testing.expectEqual(driving_award.cursor_rect(old.x, old.y, 1280, 720), driving_award.cursor_old_damage);
+    try std.testing.expectEqual(driving_award.cursor_rect(new.x, new.y, 1280, 720), driving_award.cursor_new_damage);
+    driving_award.cursor_restore();
+    for (virtio_gpu.gpu_fb) |byte| try std.testing.expectEqual(@as(u8, 0x32), byte);
+    driving_award.cursor_draw();
+    const off = (new.y * virtio_gpu.fb_width + new.x) * 4;
+    std.mem.writeInt(u32, virtio_gpu.gpu_fb[off..][0..4], 0xffabcdef, .little);
+    driving_award.cursor_restore();
+    try std.testing.expectEqual(@as(u32, 0xffabcdef), std.mem.readInt(u32, virtio_gpu.gpu_fb[off..][0..4], .little));
+    driving_award.cursor_damage_clear();
+    _ = pointer_tick(.{ .x = 16384, .y = 16384, .buttons = 0, .valid = true }, null);
+    try std.testing.expect(driving_award.cursor_old_damage == null);
+    try std.testing.expect(driving_award.cursor_new_damage == null);
+}
+
+var m91_transfers: usize = 0;
+var m91_flushes: usize = 0;
+fn m91_transfer() virtio_gpu.CmdResult {
+    m91_transfers += 1;
+    return .ok;
+}
+fn m91_flush() virtio_gpu.CmdResult {
+    m91_flushes += 1;
+    return .ok;
+}
+test "driving_award: M91 clean scene does not transfer or flush; shim still presents damage" {
+    arm();
+    driving_award.wm_owns_user_layer = false;
+    driving_award.splash_hold = false;
+    const ready = virtio_gpu.gpu_ready;
+    virtio_gpu.gpu_ready = true;
+    driving_award.transfer_hook = m91_transfer;
+    driving_award.flush_hook = m91_flush;
+    defer {
+        virtio_gpu.gpu_ready = ready;
+        driving_award.transfer_hook = null;
+        driving_award.flush_hook = null;
+    }
+    m91_transfers = 0;
+    m91_flushes = 0;
+    try std.testing.expectEqual(virtio_gpu.CmdResult.ok, composite());
+    const before = m91_transfers;
+    try std.testing.expectEqual(virtio_gpu.CmdResult.ok, composite());
+    try std.testing.expectEqual(before, m91_transfers);
+    try std.testing.expectEqual(before, m91_flushes);
+    try std.testing.expect(mark_dirty(0));
+    try std.testing.expectEqual(virtio_gpu.CmdResult.ok, composite());
+    try std.testing.expectEqual(before + 1, m91_transfers);
+    try std.testing.expectEqual(before + 1, m91_flushes);
 }
 
 test "driving_award: card E3 — mouse_buttons_to_flags maps button bits" {

@@ -84,10 +84,26 @@ source tools/env-check.sh
 just session
 ```
 
-`just session` builds the guest, disk image, and windowed VM runner, seeds the
-persistent share at `artifacts/session-share`, and opens the desktop. The VM
-window takes keyboard and mouse input; press Ctrl-C in the launching terminal
-to end the session. Guest serial output is saved to
+`just session` is the supported local host launch. It builds the guest, disk
+image and runner, seeds the persistent share at `artifacts/session-share`,
+and launches a per-run, ad-hoc-signed `VirelaiOS.app` with bundle identity
+`org.virelaios.host`. No installation or permission change is performed.
+The app requests activation and makes its VM view the first responder when
+the window becomes key. Click its **VirelaiOS** window if macOS keeps another
+app active. Native AppKit dispatch handles keyboard and mouse events.
+
+The title/status shows **Starting VM**, then **VirelaiOS** once VZ starts.
+A runner preflight/startup/runtime error stays visible until dismissed;
+build/staging errors appear in the launching terminal.
+Close the window, choose **Quit VirelaiOS** (Cmd-Q), or press Ctrl-C in the
+launching terminal to stop the owned VM and drain its serial output. The
+command waits for the runner before removing its temporary app/EFI vars;
+the runner discards its writable disk overlay. Rerun the same command to
+relaunch: VM RAM does not survive, but share documents/settings do.
+The generated app is not a standalone Finder launch/install artifact.
+The unbundled `VMRunner` CLI remains the gate entrypoint.
+
+Guest serial output is saved to
 `artifacts/session-serial.log`. This is an interactive class-C session, so it
 does not run in CI.
 

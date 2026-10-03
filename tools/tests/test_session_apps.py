@@ -1,5 +1,6 @@
 """Human-session staging with fake per-app builders and no VM."""
 import os
+import plistlib
 from pathlib import Path
 import shutil
 import subprocess
@@ -22,10 +23,18 @@ class SessionAppsTest(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         for d in ("tools/go", "artifacts", "image", ".build/go", "zig-out/bin",
-                  "host/vm-runner/.build/release"):
+                  "host/vm-runner/.build/release", "host/vm-runner/Resources", "fake-bin",
+                  "run-temp"):
             (self.root / d).mkdir(parents=True, exist_ok=True)
         shutil.copy(ROOT / "tools/session.sh", self.root / "tools/session.sh")
         shutil.copy(ROOT / "image/apps.txt", self.root / "image/apps.txt")
+        shutil.copy(ROOT / "host/vm-runner/Resources/Session-Info.plist",
+                    self.root / "host/vm-runner/Resources/Session-Info.plist")
+        (self.root / "host/vm-runner/entitlements.plist").write_text("fixture entitlements")
+        # No host signing/service changes during unit tests.
+        signer = self.root / "fake-bin/codesign"
+        signer.write_text("#!/bin/sh\nprintf 'fixture codesign\\n'\n")
+        signer.chmod(0o755)
         (self.root / "artifacts/disk.img").write_bytes(b"fake image")
         runner = self.root / "host/vm-runner/.build/release/VMRunner"
         runner.write_text("#!/bin/sh\nprintf 'fake runner: staging test only\\n'\n")
@@ -36,7 +45,9 @@ class SessionAppsTest(unittest.TestCase):
                 f"printf '{name} built\\n' > .build/go/{name}.ELF\n")
         self.share = self.root / "isolated-share"
         self.env = dict(os.environ, VIRELAI_SESSION_SHARE=str(self.share),
-                        VIRELAI_SESSION_SKIP_BUILD="1")
+                        VIRELAI_SESSION_SKIP_BUILD="1",
+                        TMPDIR=str(self.root / "run-temp"),
+                        PATH=str(self.root / "fake-bin") + os.pathsep + os.environ["PATH"])
         self.env.pop("VIRELAI_SESSION_NO_GOTABWM", None)
         self.env.pop("VIRELAI_SESSION_NO_TABWM", None)
 
@@ -98,6 +109,77 @@ class SessionAppsTest(unittest.TestCase):
         self.assertIn("GOTABWM.ELF unavailable: builder failed", output)
         self.assertIn("tabwm start", (self.share / ".virelairc").read_text())
         self.assertFalse((self.share / "GOTABWM.ELF").exists())
+
+    def test_runner_does_not_inherit_parent_bundle_identity(self):
+        self.env["__CFBundleIdentifier"] = "com.electron.factory"
+        runner = self.root / "host/vm-runner/.build/release/VMRunner"
+        runner.write_text(
+            "#!/bin/sh\n"
+            "printf 'runner bundle=%s\\n' \"${__CFBundleIdentifier-unset}\"\n"
+            "printf 'runner share=%s\\n' \"$VIRELAI_SESSION_SHARE\"\n")
+        output = self.run_session()
+        self.assertIn("runner bundle=unset", output)
+        self.assertIn(f"runner share={self.share}", output)
+        self.assertEqual(self.env["__CFBundleIdentifier"], "com.electron.factory")
+
+    def test_distinct_bundle_and_host_mode_keep_cli_entrypoint(self):
+        runner = self.root / "host/vm-runner/.build/release/VMRunner"
+        original = (
+            "#!/bin/sh\n"
+            "printf 'bundle exec=%s\\n' \"$0\"\n"
+            "printf 'flags=%s\\n' \"$*\"\n"
+            "cp \"$(dirname \"$0\")/../Info.plist\" \"$VIRELAI_SESSION_SHARE/fixture.plist\"\n")
+        runner.write_text(original)
+        output = self.run_session()
+        self.assertIn("VirelaiOS.app/Contents/MacOS/VirelaiOS", output)
+        self.assertIn("--display --input --host-session --timeout 0", output)
+        info = plistlib.loads((self.share / "fixture.plist").read_bytes())
+        self.assertEqual(info["CFBundleIdentifier"], "org.virelaios.host")
+        self.assertEqual(info["CFBundleName"], "VirelaiOS")
+        self.assertEqual(info["CFBundleExecutable"], "VirelaiOS")
+        self.assertEqual(runner.read_text(), original)
+        self.assertEqual(list((self.root / "run-temp").iterdir()), [])
+
+    def test_runner_failure_is_reported_and_run_directory_removed(self):
+        runner = self.root / "host/vm-runner/.build/release/VMRunner"
+        runner.write_text("#!/bin/sh\necho 'fixture startup error' >&2\nexit 7\n")
+        result = subprocess.run(
+            ["bash", str(self.root / "tools/session.sh")], env=self.env,
+            capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 7)
+        self.assertIn("fixture startup error", result.stderr)
+        self.assertIn("VM runner exited with status 7", result.stderr)
+        self.assertEqual(list((self.root / "run-temp").iterdir()), [])
+
+    def test_terminal_stop_waits_for_owned_runner_before_cleanup(self):
+        import signal
+        import time
+        runner = self.root / "host/vm-runner/.build/release/VMRunner"
+        runner.write_text(
+            "#!/bin/bash\n"
+            "trap 'test -f \"$0\" && echo stopped > \"$VIRELAI_SESSION_SHARE/stopped\"; exit 143' TERM\n"
+            "echo $$ > \"$VIRELAI_SESSION_SHARE/owned-pid\"\n"
+            "while :; do sleep 0.05; done\n")
+        with tempfile.TemporaryFile(mode="w+") as log:
+            process = subprocess.Popen(
+                ["bash", str(self.root / "tools/session.sh")], env=self.env,
+                stdout=log, stderr=log)
+            try:
+                deadline = time.monotonic() + 10
+                while not (self.share / "owned-pid").exists() and time.monotonic() < deadline:
+                    time.sleep(0.02)
+                self.assertTrue((self.share / "owned-pid").exists())
+                pid = int((self.share / "owned-pid").read_text())
+                process.send_signal(signal.SIGTERM)
+                self.assertEqual(process.wait(timeout=10), 143)
+                self.assertEqual((self.share / "stopped").read_text(), "stopped\n")
+                with self.assertRaises(ProcessLookupError):
+                    os.kill(pid, 0)
+                self.assertEqual(list((self.root / "run-temp").iterdir()), [])
+            finally:
+                if process.poll() is None:
+                    process.terminate()
+                    process.wait(timeout=10)
 
 
 if __name__ == "__main__":

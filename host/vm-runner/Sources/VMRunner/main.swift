@@ -20,6 +20,8 @@
 //          + the full cycle); a refusal is printed as `VZ-RESTORE:
 //          validateSaveRestoreSupport REFUSED ...` before the error exit.
 //         [--timeout <s|0>] (0 = run until Ctrl-C) [--expect <line>] [--terminal-marker <line>]
+//         [--host-session] (tools/session.sh's bundled local front door;
+//          close/Quit stop the VM, failures stay visible until dismissed)
 //         [--cpus <n>] (claim 907: VCPU count, default 2 — the four-core
 //          four-domain stress gate boots 4)
 //         [--console] [--console-tcp [host:]port[:secret]] [--console-tcp-secret-file <path>]
@@ -267,6 +269,7 @@ import Foundation
 import ScreenCaptureKit
 import Virtualization
 import VFWire
+import VMAppKit
 import VMPostmortem
 import VSNTP
 import VSSH
@@ -307,6 +310,8 @@ var hostWriteFired = false
 // `--screenshot <path>` remains the evidence capture (the two combine:
 // `--display --screenshot`).
 var displayMode = false
+let hostSessionMode = CommandLine.arguments.contains("--host-session")
+var hostApplication: HostApplication?
 // Milestone seven card I1 (claim 4272; premise corrected by claim 3868):
 // `--input` attaches the keyboard + pointing devices
 // (VZUSBKeyboardConfiguration +
@@ -858,6 +863,8 @@ while idx < arguments.count {
         idx += 1
     } else if arg == "--input" {
         inputMode = true
+        idx += 1
+    } else if arg == "--host-session" {
         idx += 1
     } else if arg == "--sound" {
         soundMode = true
@@ -1463,6 +1470,9 @@ atexit {
 func fail(_ message: String) -> Never {
     restoreTerminal()
     FileHandle.standardError.write(Data("ERROR: \(message)\n".utf8))
+    if hostSessionMode {
+        HostApplication.presentLaunchFailure(message)
+    }
     exit(1)
 }
 
@@ -1488,6 +1498,11 @@ let osVersion = ProcessInfo.processInfo.operatingSystemVersion
 // (VZCustomVirtioDevice) and the project's SDK/toolchain target assume it.
 guard osVersion.majorVersion >= 27 else {
     fail("macOS \(osVersion.majorVersion) is too old — this project requires macOS 27 or newer (Apple silicon + Virtualization.framework).")
+}
+if hostSessionMode {
+    guard displayMode && inputMode && !consoleMode && !vzRestore else {
+        fail("--host-session requires --display --input and cannot be used with --console or --vz-restore.")
+    }
 }
 
 if vzRestore, !timeout.isFinite || timeout <= 0 || timeout > 600 {
@@ -2547,6 +2562,10 @@ let vmDelegate = VMRunnerDelegate()
 
 let runner = Runner(configuration: config)
 runner.vm.delegate = vmDelegate
+if hostSessionMode {
+    hostApplication = HostApplication(serialLog: serialLogPath)
+    hostApplication?.onStop = { reason, code in stopHostSession(reason, code: code) }
+}
 // Set when vm.start completes successfully; consolePoll only treats a
 // .stopped/.error state as "session over" after the VM has actually started
 // (a fresh VZVirtualMachine is .stopped until boot begins).
@@ -2735,11 +2754,21 @@ runner.queue.async {
     }
     runner.vm.start { result in
         if case .failure(let error) = result {
+            if hostSessionMode {
+                FileHandle.standardError.write(Data("ERROR: VM failed to start: \(error)\n".utf8))
+                DispatchQueue.main.async {
+                    hostApplication?.showFailure("VM failed to start: \(error)")
+                }
+                return
+            }
             restoreTerminal()
             FileHandle.standardError.write(Data("ERROR: VM failed to start: \(error)\n".utf8))
             exit(1)
         }
         vmDidStart = true
+        if hostSessionMode {
+            DispatchQueue.main.async { hostApplication?.didStart() }
+        }
         if vzRestore {
             let mode: VZRestoreProbe.Mode = vzRestoreSaveDir.map { .save(URL(fileURLWithPath: $0, isDirectory: true)) } ?? .sameProcess
             let probe = VZRestoreProbe(vm: runner.vm, queue: runner.queue, serialURL: serialURL,
@@ -2763,13 +2792,14 @@ var captureTimes: [TimeInterval] = [5, 10, 15]
 func setupDisplayWindow() {
     guard screenshotPath != nil || displayMode else { return }
     let app = NSApplication.shared
-    // Non-pointer runs must stay BYTE-IDENTICAL to the historical runner
-    // (every existing gate pins the .accessory policy + activate call).
-    // Pointer runs switch to .regular and attempt the full activation
-    // ladder — see claim 4769 for why even that cannot make the window
-    // key while the machine is busy.
+    // Screenshot/headless gates keep the historical accessory policy.
+    // Human display+input sessions must finish launching as an AppKit app
+    // and dispatch native events, not just run Foundation's VM timers.
     let wantPointer = pointerScript != nil
-    if wantPointer {
+    let nativeInput = NativeInput.enabled(display: displayMode, input: inputMode)
+    if hostSessionMode {
+        // The bundled front door already finished launching.
+    } else if wantPointer || nativeInput {
         app.setActivationPolicy(.regular)
         // A CLI process must finishLaunching before the window server
         // will grant it activation/key status (unbundled executables skip
@@ -2778,12 +2808,21 @@ func setupDisplayWindow() {
     } else {
         app.setActivationPolicy(.accessory)
     }
-    let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 480), styleMask: [.titled], backing: .buffered, defer: false)
+    let window = hostApplication?.window ?? NSWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 480), styleMask: [.titled], backing: .buffered, defer: false)
     let view = TraceView(frame: NSRect(x: 0, y: 0, width: 1280, height: 720))
     view.trace = ["direct", "diag", "pid", "drag", "warp", "cg"].contains(pointerRoute)
+    view.nativeInput = nativeInput
     view.virtualMachine = runner.vm
     window.setContentSize(NSSize(width: 1280, height: 720))
-    window.contentView = view
+    if let hostApplication {
+        hostApplication.attach(view)
+    } else {
+        window.contentView = view
+    }
+    if nativeInput && !hostSessionMode {
+        window.title = "VirelaiOS"
+        window.makeFirstResponder(view)
+    }
     window.center()
     window.acceptsMouseMovedEvents = true
     // AppKit only dispatches mouseMoved to views inside a tracking area;
@@ -2798,7 +2837,9 @@ func setupDisplayWindow() {
     view.addTrackingArea(tracking)
     window.orderFrontRegardless()
     window.makeKeyAndOrderFront(nil)
-    if wantPointer {
+    if hostSessionMode {
+        // HostApplication owns activation, focus and close/quit.
+    } else if wantPointer {
         window.level = .normal
         // macOS 14+: the deprecated ignoringOtherApps form is a no-op for
         // unbundled CLI processes; the modern no-arg activate() is the
@@ -2816,6 +2857,8 @@ func setupDisplayWindow() {
             NSRunningApplication.current.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
             pmo("diag key-after-activate=\(window.isKeyWindow) main=\(window.isMainWindow) active=\(NSApp.isActive) visible=\(window.isVisible) onscreen=\(window.isOnActiveSpace)")
         }
+    } else if nativeInput {
+        app.activate()
     } else {
         app.activate(ignoringOtherApps: true)
     }
@@ -4283,6 +4326,24 @@ func startChordInject() {
 // tell "the event never reached the view" from "VZ dropped it internally".
 final class TraceView: VZVirtualMachineView {
     var trace = false
+    var nativeInput = false
+    private var nativeKeyLogged = false
+    private var nativeClickLogged = false
+
+    private func reportNativeInput(_ kind: String) {
+        // Bounded receipts, never key characters or document contents.
+        print("input: host-view \(kind) key=\(window?.isKeyWindow ?? false) responder=\(window?.firstResponder === self) active=\(NSApp.isActive)")
+        fflush(stdout)
+    }
+
+    override func keyDown(with event: NSEvent) {
+        if nativeInput && !nativeKeyLogged {
+            nativeKeyLogged = true
+            reportNativeInput("keyDown")
+        }
+        super.keyDown(with: event)
+    }
+
     // macOS click-through: the first click on an INACTIVE app's window is
     // swallowed to activate the app and never reaches the view. Synthesized
     // posts hit exactly this wall (the app can never become active from a
@@ -4299,6 +4360,10 @@ final class TraceView: VZVirtualMachineView {
         super.mouseDragged(with: event)
     }
     override func mouseDown(with event: NSEvent) {
+        if nativeInput && !nativeClickLogged {
+            nativeClickLogged = true
+            reportNativeInput("mouseDown")
+        }
         if trace { pmo("TRACE mouseDown inW=(\(event.locationInWindow)) key=\(event.window?.isKeyWindow ?? false)") }
         super.mouseDown(with: event)
     }
@@ -6001,6 +6066,67 @@ func scriptPoll(matchedAt: Date? = nil) {
 
 var signalSources: [DispatchSourceSignal] = []
 
+// All host exit sources funnel through HostLifecycle on the main queue.
+// VZ state/stop remain on the VM queue; a close during start waits for its
+// completion instead of racing a second VZ operation.
+func stopHostSession(_ reason: String, code: Int32) {
+    print("host-session: stopping reason=\(reason) pid=\(getpid())")
+    fflush(stdout)
+    let stopDeadline = Date().addingTimeInterval(15)
+    runner.queue.async {
+        @Sendable func complete(_ exitCode: Int32) {
+            drainTeeBeforeExit("host-session \(reason)")
+            restoreTerminal()
+            print("host-session: stopped pid=\(getpid()) state=\(runner.vm.state.rawValue) code=\(exitCode)\(vmDelegate.verdict())")
+            fflush(stdout)
+            exit(exitCode)
+        }
+        // Also bounds a stop() whose completion never arrives. This is a
+        // failure exit, not evidence that VZ stopped successfully.
+        runner.queue.asyncAfter(deadline: .now() + 15) {
+            FileHandle.standardError.write(Data("host-session: VM stop timed out, terminating owning process\n".utf8))
+            complete(1)
+        }
+        @Sendable func step() {
+            if runner.vm.state == .stopped || runner.vm.state == .error {
+                complete(code)
+            } else if runner.vm.canStop {
+                runner.vm.stop { error in
+                    if let error {
+                        FileHandle.standardError.write(Data("host-session: VM stop failed: \(error)\n".utf8))
+                        complete(1)
+                    } else {
+                        complete(code)
+                    }
+                }
+            } else if Date() < stopDeadline {
+                runner.queue.asyncAfter(deadline: .now() + 0.05) { step() }
+            } else {
+                FileHandle.standardError.write(Data("host-session: VM stop timed out, terminating owning process\n".utf8))
+                complete(1)
+            }
+        }
+        step()
+    }
+}
+
+func hostSessionPoll() {
+    guard let hostApplication,
+          hostApplication.lifecycle.state != .stopping else { return }
+    runner.queue.async {
+        let state = runner.vm.state
+        DispatchQueue.main.async {
+            if vmDidStart && (state == .stopped || state == .error) {
+                hostApplication.showFailure("VM ended (state=\(state.rawValue)).\(vmDelegate.verdict())")
+            } else if timeout > 0 && Date() > deadline {
+                hostApplication.stop("session-timeout")
+                return
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { hostSessionPoll() }
+        }
+    }
+}
+
 // Claim 2188: single-teardown guard for the console exit paths. All of
 // them run on the main queue (the poll recursion and the signal sources
 // both dispatch there), so a plain flag serializes them: the first path
@@ -6036,11 +6162,15 @@ func beginConsoleExit(_ context: String, code: Int32, restore: Bool = false) {
 }
 
 func installSignalHandlers() {
-    guard consoleMode else { return }
+    guard consoleMode || hostSessionMode else { return }
     for sig: Int32 in [SIGINT, SIGTERM, SIGHUP] {
         signal(sig, SIG_IGN) // suppress default termination; the source below handles it
         let src = DispatchSource.makeSignalSource(signal: sig, queue: .main)
         src.setEventHandler {
+            if hostSessionMode {
+                hostApplication?.stop("signal-\(sig)", code: 128 + sig)
+                return
+            }
             // Claim 2188: stop the VM (closes the serial pipe) and wait for
             // the tee to flush, instead of the old fixed 0.4 s sleep that
             // could still race the tee thread's final write. `restore:` is
@@ -6075,7 +6205,13 @@ func exitWithTerminalRestore(_ code: Int32) -> Never {
     exit(code)
 }
 
-if vzRestore {
+if hostSessionMode {
+    installSignalHandlers()
+    setupDisplayWindow()
+    startGuestOutputTee()
+    if scriptMode { startScriptInput() }
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { hostSessionPoll() }
+} else if vzRestore {
     runner.queue.asyncAfter(deadline: .now() + timeout) {
         fail("--vz-restore timed out; no successful restore verdict.")
     }
@@ -6110,7 +6246,15 @@ if vzRestore {
     setupDisplayWindow()
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { poll() }
 }
-RunLoop.main.run()
+NativeInput.run(
+    display: displayMode,
+    input: inputMode,
+    applicationLoop: {
+        print("input: native AppKit event loop")
+        NSApplication.shared.run()
+    },
+    headlessLoop: { RunLoop.main.run() }
+)
 
 // ---------------------------------------------------------------------------
 // macOS 27 spike (capability-audit step 3): one default-off custom virtio
