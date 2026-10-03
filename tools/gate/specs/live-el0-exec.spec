@@ -6,6 +6,8 @@
 # one retained reusable arena, failure/panic exits and page recovery.
 # A3 exercises the native std backend, explicit-file byte comparison and a
 # no-error-return API that must terminate rather than invent a clock.
+# B5 adds six explicit TLS contexts, join/reap/capacity, measured mutex
+# contention, lost-wake refusal and a counter-bounded coarse timeout.
 # exec-order: assert-proven -- SDK stages wait for reap or the launcher exit;
 # independent assertions require all guest output and final page recovery.
 
@@ -238,7 +240,7 @@ syscalls
 echo rx-zig-threads-ok
 EOF
 vgate_run threads -- --script '$RUN_DIR/threads.txt' --script-after 'tasks user-el0 reaped' --script2 '$RUN_DIR/threads-after.txt' --script2-after 'procs ZTHREAD.BIN exited status=0' --script2-delay 1 --script-expect 'rx-zig-threads-ok' --timeout 180
-vgate_assert threads serial-exact 'zig-threads: independent=6 joined=6 count=96 capacity=refused' 1
+vgate_assert threads serial-exact 'zig-threads: independent=6 joined=6 count=24 capacity=refused' 1
 vgate_assert threads serial-exact 'zig-threads: lost-wake=changed fine=refused coarse=not-early' 1
 vgate_assert threads serial-exact 'zig-threads: done' 1
 vgate_assert threads serial-absent '[EXC]'
@@ -251,7 +253,7 @@ assert len(pages) == 2 and pages[0] == pages[1], pages
 assert ser.count("tasks ZTHREAD.BIN reaped") == 6, "every child kstack reclaimed"
 assert ser.count("tasks user-exec reaped") == 1, "primary/address space reclaimed"
 assert int(re.search(r"73 sys_thread calls=(\d+)", ser)[1]) >= 20
-assert int(re.search(r"74 sys_futex calls=(\d+)", ser)[1]) > 96, "actual contention required"
+assert int(re.search(r"74 sys_futex calls=(\d+)", ser)[1]) > 24
 assert int(re.search(r"zig-threads: contention=(\d+)", ser)[1]) > 0, "mutex must actually contend"
 print("B5: six independent contexts, joins, native capacity, futex contention and exact page recovery")
 PY

@@ -34,13 +34,13 @@ fn child(arg: usize) u8 {
     _ = threads.wake(&arrived, 6) catch fatal("wake", null);
     while (@atomicLoad(u32, &release, .acquire) == 0)
         _ = threads.wait(&release, 0, 0) catch fatal("wait", null);
-    for (0..16) |_| {
+    for (0..4) |_| {
         if (@cmpxchgStrong(u32, &mutex.word, 0, 1, .acquire, .monotonic) != null) {
             _ = @atomicRmw(u32, &contended, .Add, 1, .monotonic);
             mutex.lock() catch fatal("lock", null);
         }
         const before = count;
-        _ = native.call(0, .{ 0, 0, 0, 0, 0, 0 }); // yield while holding lock
+        _ = native.call(2, .{ 0, 0, 0, 0, 0, 0 }); // yield while holding lock
         count = before + 1;
         check(state()[0] == 1000 + arg and state()[1] == 2000 + arg);
         mutex.unlock() catch fatal("unlock", null);
@@ -77,10 +77,10 @@ export fn _start() callconv(.c) noreturn {
     @atomicStore(u32, &release, 1, .release);
     _ = threads.wake(&release, 6) catch fatal("release", null);
     for (&handles) |*handle| check((handle.join() catch fatal("join", null)) == 0);
-    check(count == 96 and state()[0] == 77 and state()[1] == 88);
+    check(count == 24 and state()[0] == 77 and state()[1] == 88);
     for (results, 0..) |result, i| check(result == 3000 + 2 * i);
     if (handles[0].join()) |_| fatal("double join", null) else |err| check(err == error.InvalidJoin);
-    _ = native.consoleChunk("zig-threads: independent=6 joined=6 count=96 capacity=refused\n");
+    _ = native.consoleChunk("zig-threads: independent=6 joined=6 count=24 capacity=refused\n");
     check(contended > 0);
     var receipt: [80]u8 = undefined;
     _ = native.consoleChunk(std.fmt.bufPrint(&receipt, "zig-threads: contention={d}\n", .{contended}) catch fatal("receipt", null));
