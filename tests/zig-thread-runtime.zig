@@ -21,6 +21,7 @@ var arrived: u32 = 0;
 var release: u32 = 0;
 var mutex: threads.Mutex = .{};
 var count: usize = 0;
+var contended: u32 = 0;
 var results: [6]usize = @splat(0);
 
 fn state() *[2]usize {
@@ -34,7 +35,10 @@ fn child(arg: usize) u8 {
     while (@atomicLoad(u32, &release, .acquire) == 0)
         _ = threads.wait(&release, 0, 0) catch fatal("wait", null);
     for (0..16) |_| {
-        mutex.lock() catch fatal("lock", null);
+        if (@cmpxchgStrong(u32, &mutex.word, 0, 1, .acquire, .monotonic) != null) {
+            _ = @atomicRmw(u32, &contended, .Add, 1, .monotonic);
+            mutex.lock() catch fatal("lock", null);
+        }
         const before = count;
         _ = native.call(0, .{ 0, 0, 0, 0, 0, 0 }); // yield while holding lock
         count = before + 1;
@@ -77,6 +81,9 @@ export fn _start() callconv(.c) noreturn {
     for (results, 0..) |result, i| check(result == 3000 + 2 * i);
     if (handles[0].join()) |_| fatal("double join", null) else |err| check(err == error.InvalidJoin);
     _ = native.consoleChunk("zig-threads: independent=6 joined=6 count=96 capacity=refused\n");
+    check(contended > 0);
+    var receipt: [80]u8 = undefined;
+    _ = native.consoleChunk(std.fmt.bufPrint(&receipt, "zig-threads: contention={d}\n", .{contended}) catch fatal("receipt", null));
     // Store+wake before seating: no waiter exists; the next compare refuses
     // instead of sleeping forever. Deterministic kernel race tests cover
     // the second compare after seating as well.

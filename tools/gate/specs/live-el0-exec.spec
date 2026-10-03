@@ -162,7 +162,7 @@ vgate_assert sdk-panic serial-exact 'zig-guest: panic: requested fixture panic' 
 vgate_assert sdk-panic serial-exact 'tasks user-exec exited status=71' 1
 vgate_assert sdk-io serial-exact 'zig-io: debug 1867' 1
 vgate_assert sdk-io serial-exact 'zig-io: done' 1
-vgate_assert sdk-io serial-exact 'Unsupported:fileStat' 1
+vgate_assert sdk-io serial-exact 'Unsupported:FdMetadataUnavailable' 1
 vgate_assert sdk-io serial-exact 'Unsupported:UnboundOrClosedOutput' 1
 vgate_assert sdk-io serial-absent 'must not reach console'
 vgate_assert sdk-io serial-exact 'tasks user-exec exited status=0' 1
@@ -252,5 +252,6 @@ assert ser.count("tasks ZTHREAD.BIN reaped") == 6, "every child kstack reclaimed
 assert ser.count("tasks user-exec reaped") == 1, "primary/address space reclaimed"
 assert int(re.search(r"73 sys_thread calls=(\d+)", ser)[1]) >= 20
 assert int(re.search(r"74 sys_futex calls=(\d+)", ser)[1]) > 96, "actual contention required"
+assert int(re.search(r"zig-threads: contention=(\d+)", ser)[1]) > 0, "mutex must actually contend"
 print("B5: six independent contexts, joins, native capacity, futex contention and exact page recovery")
 PY

@@ -5419,6 +5419,51 @@ test "syscall B5: TLS and stack prefix validation refuse without seating a threa
     try std.testing.expectEqual(@as(u64, 0), dispatch(sys_thread, .{ 3, 0, 0, 0, 0, 0 }, &frame));
 }
 
+test "syscall B5: process exit releases retained completions and a blocked joiner" {
+    futex_boot_user();
+    var ram: [128 * 4096]u8 align(4096) = undefined;
+    const desc = [_]memmap.MemoryDescriptor{.{ .type = .conventional_memory, .physical_start = @intFromPtr(&ram), .virtual_start = 0, .number_of_pages = 128, .attribute = 0 }};
+    try std.testing.expect(alloc.init(memmap.MapView.init(std.mem.asBytes(&desc), @sizeOf(memmap.MemoryDescriptor), 1), &.{}));
+    try futex_drive_to_user();
+    const pid = process.find_by_task(2).?;
+    var contexts: [2][64]u8 align(16) = undefined;
+    var stacks: [2][4096]u8 align(16) = undefined;
+    _ = scheduler.add_task_read_region(2, .{ .base = @intFromPtr(&contexts), .len = @sizeOf(@TypeOf(contexts)) });
+    _ = scheduler.add_task_write_region(2, .{ .base = @intFromPtr(&contexts), .len = @sizeOf(@TypeOf(contexts)) });
+    _ = scheduler.add_task_write_region(2, .{ .base = @intFromPtr(&stacks), .len = @sizeOf(@TypeOf(stacks)) });
+    syscall.arm_task_regions();
+    const before = alloc.stats().free_pages;
+    var frame = fresh_frame();
+    var tokens: [2]u64 = undefined;
+    var ids: [2]usize = undefined;
+    for (&tokens, &ids, 0..) |*token, *id, i| {
+        token.* = dispatch(sys_thread, .{ 0, userspace.text_va + 4, @intFromPtr(&stacks[i]) + 4096, 0, @intFromPtr(&contexts[i]), 0 }, &frame);
+        id.* = try tls_task(token.*);
+        try std.testing.expect(!scheduler.tasks[id.*].secondary_ok);
+    }
+    try futex_yield_until(ids[0]);
+    _ = dispatch(sys_thread, .{ 1, 0, 0, 0, 0, 0 }, &frame);
+    try std.testing.expect(!scheduler.reap(ids[0]));
+    try futex_yield_until(2);
+    exceptions.resume_frame[0] = @intFromPtr(&frame);
+    _ = dispatch(sys_thread, .{ 2, tokens[1], 0, 0, 0, 0 }, &frame);
+    try std.testing.expect(scheduler.tasks[2].wait_thread);
+    try futex_yield_until(ids[1]);
+    _ = dispatch(sys_exit, .{ 0, 0, 0, 0, 0, 0 }, &frame);
+    var turns: usize = 0;
+    while (process.info(pid).?.state != .exited and turns < scheduler.max_tasks) : (turns += 1)
+        try std.testing.expect(scheduler.yield_current());
+    try std.testing.expectEqual(process.State.exited, process.info(pid).?.state);
+    try std.testing.expect(!scheduler.tasks[2].wait_thread);
+    for (ids) |id| {
+        try std.testing.expectEqual(@as(u64, 0), scheduler.tasks[id].join_token);
+        try std.testing.expect(scheduler.tasks[id].joiner == null);
+        try std.testing.expect(scheduler.reap(id));
+    }
+    try std.testing.expect(scheduler.reap(2));
+    try std.testing.expectEqual(before, alloc.stats().free_pages);
+}
+
 test "syscall B5: strict futex precision refusal, phase guard and no stale timeout seat" {
     futex_boot_user();
     try futex_drive_to_user();
