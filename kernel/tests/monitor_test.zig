@@ -1446,6 +1446,45 @@ test "monitor: procs reports the process table with lifecycle and exit status" {
     );
 }
 
+test "monitor: opt-in runtime receipts retain identity and caps after resource release" {
+    var env = TestEnv.init();
+    var mon = env.monitor();
+    process.init();
+    const pid = process.create("GOSTRESS.ELF", .{}, .{ .text_len = 4097, .data_len = 1 }, .{}).?;
+    try std.testing.expect(process.bind(pid, 2));
+    try std.testing.expect(process.record_dynamic_page(pid, 0));
+    try std.testing.expect(process.record_dynamic_page(pid, 0));
+    try std.testing.expect(process.add_mmap_region(pid, 0x10000000, 4096, 3, 0));
+    try std.testing.expect(process.add_mmap_region(pid, 0x10001000, 4096, 3, 0));
+    try std.testing.expect(process.remove_mmap_region(pid, 0x10000000, 4096));
+    try std.testing.expectEqual(ExecError.none, exec(&mon, &.{ "procs", "receipt" }));
+    try std.testing.expectEqualStrings("runtime-receipt: none\n", env.mock.contents());
+    _ = process.on_task_exit(2, 0);
+    try std.testing.expect(process.release_pages_on_reap(2));
+    const expected = "runtime-receipt: pid=0 name=GOSTRESS.ELF peak_pages=2 page_cap=4096 peak_regions=2 region_cap=16 static_pages=3\n";
+    env.mock.reset();
+    try std.testing.expectEqual(ExecError.none, exec(&mon, &.{ "procs", "receipt", "GOSTRESS.ELF" }));
+    try std.testing.expectEqualStrings(expected, env.mock.contents());
+    env.mock.reset();
+    try std.testing.expectEqual(ExecError.none, exec(&mon, &.{ "procs", "receipt", "0" }));
+    try std.testing.expectEqualStrings(expected, env.mock.contents());
+    env.mock.reset();
+    try std.testing.expectEqual(ExecError.none, exec(&mon, &.{"procs"}));
+    try std.testing.expect(std.mem.indexOf(u8, env.mock.contents(), "runtime-receipt:") == null);
+    try std.testing.expectEqualStrings("procs", lookup("procs").?.usage);
+    try std.testing.expectEqualStrings("process registry: image, address space, lifecycle, exit status", lookup("procs").?.help);
+    try std.testing.expect(process.reap(pid));
+    env.mock.reset();
+    try std.testing.expectEqual(ExecError.none, exec(&mon, &.{ "procs", "receipt" }));
+    try std.testing.expectEqualStrings("runtime-receipt: none\n", env.mock.contents());
+    env.mock.reset();
+    try std.testing.expectEqual(ExecError.none, exec(&mon, &.{ "procs", "receipt", "GOSTRESS.ELF" }));
+    try std.testing.expectEqualStrings("runtime-receipt: none\n", env.mock.contents());
+    env.mock.reset();
+    try std.testing.expectEqual(ExecError.usage, exec(&mon, &.{ "procs", "bogus" }));
+    try std.testing.expectEqualStrings("usage: procs\nprocess registry: image, address space, lifecycle, exit status\n", env.mock.contents());
+}
+
 test "monitor: kill is registered and arms a running process by id and by name" {
     // Card 3c (claim 7786): `kill <pid|name>` resolves the process and
     // ARMS its executor task; the ring converts the next selection into

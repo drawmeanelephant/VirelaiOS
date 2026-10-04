@@ -30,7 +30,8 @@
 # `just go-toolchain` must have produced .build/go/GOSTRESS.ELF.
 #
 # exec-order: assert-proven -- runs 01/02 are a single exec whose script2
-# waits on the program's `go-stress done` line; run 03 (bad argv) ends on
+# waits on the kernel's final process-exit report to read its retained
+# peak page/region receipt; run 03 (bad argv) ends on
 # the program's own FAIL marker. All asserts read the program's lines, so
 # a green run always proves it ran.
 
@@ -51,6 +52,7 @@ exec GOSTRESS.ELF bogus
 EOF
 
 vgate_file script2.txt <<'EOF'
+procs receipt GOSTRESS.ELF
 syscalls
 echo gostress-held-window
 EOF
@@ -132,7 +134,7 @@ go-stress seed=0xc0ffee ok
 EOF
 
 vgate_setup_python <<'PY'
-import os, shutil, sys
+import os, shutil, struct, sys
 share = os.path.join(os.environ["RUN_DIR"], "share")
 src = os.path.join(".build", "go", "GOSTRESS.ELF")
 if not os.path.exists(src):
@@ -140,11 +142,22 @@ if not os.path.exists(src):
              "build the fork binaries first: just go-toolchain "
              "(fork prerequisites in tools/go/README.md)")
 shutil.copy(src, os.path.join(share, "GOSTRESS.ELF"))
+elf = open(src, "rb").read()
+phoff = struct.unpack_from("<Q", elf, 32)[0]
+phsize, phnum = struct.unpack_from("<HH", elf, 54)
+pages = 0
+for i in range(phnum):
+    kind, flags, off, va, pa, filesz, memsz, align = struct.unpack_from(
+        "<IIQQQQQQ", elf, phoff + i * phsize)
+    if kind == 1:
+        pages += (memsz + 4095) // 4096
+with open(os.path.join(os.environ["RUN_DIR"], "static-pages.txt"), "w") as f:
+    f.write(str(pages))
 print("staged GOSTRESS.ELF into share (%d bytes)" %
       os.path.getsize(os.path.join(share, "GOSTRESS.ELF")))
 PY
 
-vgate_run 01 -- --script '$RUN_DIR/script.txt' --script2 '$RUN_DIR/script2.txt' --script2-after 'go-stress done' --script-expect 'gostress-held-window' --timeout 120
+vgate_run 01 -- --script '$RUN_DIR/script.txt' --script2 '$RUN_DIR/script2.txt' --script2-after 'procs GOSTRESS.ELF exited status=0' --script-expect 'gostress-held-window' --timeout 120
 
 vgate_assert 01 serial-contains 'exec: loaded GOSTRESS.ELF'
 vgate_assert 01 serial-contains 'go-stress procs=2'
@@ -169,7 +182,7 @@ for i, want in enumerate(pins):
 print("go-stress run 01: pinned corpus matched in order (%d lines)" % len(pins))
 PY
 
-vgate_assert 01 python <<'PY'
+vgate_file check-receipt.py <<'PY'
 import os, re, sys
 lines = open(os.environ["VG_SER"], errors="replace").read().splitlines()
 def calls(slot):
@@ -196,9 +209,35 @@ if n_mmap > 16:
              "max_mmap_regions budget (16)" % n_mmap)
 print("go-stress python asserts OK: sys_thread=%d sys_futex=%d sys_mmap=%d"
       % (n_thread, n_futex, n_mmap))
+receipts = re.findall(
+    r"runtime-receipt: pid=(\d+) name=GOSTRESS\.ELF peak_pages=(\d+) "
+    r"page_cap=(\d+) peak_regions=(\d+) region_cap=(\d+) static_pages=(\d+)",
+    "\n".join(lines))
+if len(receipts) != 1:
+    sys.exit("FAIL: expected one final GOSTRESS.ELF runtime receipt")
+pid, pages, page_cap, regions, region_cap, static_pages = map(int, receipts[0])
+if not (0 < pages <= 4096 and page_cap == 4096):
+    sys.exit("FAIL: peak demand pages %d / cap %d" % (pages, page_cap))
+if not (0 < regions <= 16 and region_cap == 16 and regions <= n_mmap):
+    sys.exit("FAIL: peak regions %d / cap %d inconsistent with sys_mmap=%d"
+             % (regions, region_cap, n_mmap))
+expected_static = int(open(os.path.join(os.environ["RUN_DIR"], "static-pages.txt")).read())
+if static_pages != expected_static:
+    sys.exit("FAIL: static segment pages %d != ELF page-rounded PT_LOAD %d"
+             % (static_pages, expected_static))
+serial = "\n".join(lines)
+if serial.index("procs GOSTRESS.ELF exited status=0") >= serial.index("runtime-receipt:"):
+    sys.exit("FAIL: receipt did not follow the final process exit")
+print("go-stress runtime receipt OK: pid=%d peak_pages=%d/4096 "
+      "peak_regions=%d/16 static_pages=%d" % (pid, pages, regions, static_pages))
 PY
 
-vgate_run 02 -- --script '$RUN_DIR/script-seed.txt' --script2 '$RUN_DIR/script2.txt' --script2-after 'go-stress done' --script-expect 'gostress-held-window' --timeout 120
+vgate_assert 01 python <<'PY'
+import os, runpy
+runpy.run_path(os.path.join(os.environ["RUN_DIR"], "check-receipt.py"))
+PY
+
+vgate_run 02 -- --script '$RUN_DIR/script-seed.txt' --script2 '$RUN_DIR/script2.txt' --script2-after 'procs GOSTRESS.ELF exited status=0' --script-expect 'gostress-held-window' --timeout 120
 
 vgate_assert 02 serial-contains 'exec: loaded GOSTRESS.ELF'
 vgate_assert 02 serial-contains 'go-stress procs=2'
@@ -224,6 +263,11 @@ for i, want in enumerate(pins[:17]):
                  % (i + 1, want))
     pos = idx + len(want)
 print("go-stress run 02: argv replay reproduced the pinned seed sequence")
+PY
+
+vgate_assert 02 python <<'PY'
+import os, runpy
+runpy.run_path(os.path.join(os.environ["RUN_DIR"], "check-receipt.py"))
 PY
 
 # Bad-argv path (card-explicit contract): an unparseable seed prints the

@@ -255,6 +255,17 @@ pub const KernelStack = struct {
     pages: u64 = 0,
 };
 
+/// Kernel-only exit diagnostic (M90d): recorded demand backing and occupied
+/// mmap slots, not virtual reservation sizes or Go heap statistics. Static
+/// segment pages are rounded individually; stacks, argv headroom, interpreter
+/// and library backing are excluded. Kept through task resource release,
+/// cleared only with the descriptor at reap/recycle. No syscall row changes.
+pub const RuntimeReceipt = struct {
+    peak_pages: usize = 0,
+    peak_regions: usize = 0,
+    static_pages: u64 = 0,
+};
+
 const Process = struct {
     /// Owned copy of the program's name (the FAT file name for exec'd
     /// programs, "user-el0" for the boot static payload) — the caller's
@@ -264,6 +275,7 @@ const Process = struct {
     state: State = .free,
     image: Image = .{},
     addr_space: AddrSpace = .{},
+    runtime_usage: RuntimeReceipt = .{},
     /// M50 TS1 (#1135, ADR 0024 D2): the process principal — assigned at
     /// create, preserved by exec, never persisted, never settable by a
     /// syscall. The `sys_procs` snapshot row deliberately omits it.
@@ -448,6 +460,7 @@ pub fn add_mmap_region(pid: usize, va: u64, len: u64, prot: u64, flags: u64) boo
         if (r.len == 0) {
             r.* = .{ .base_va = va, .len = len, .prot = prot, .flags = flags };
             space.mmap_region_count += 1;
+            processes[pid].runtime_usage.peak_regions = @max(processes[pid].runtime_usage.peak_regions, space.mmap_region_count);
             return true;
         }
     }
@@ -545,6 +558,7 @@ pub fn record_dynamic_page(pid: usize, pa: u64) bool {
     if (space.dynamic_page_count >= max_dynamic_pages) return false;
     space.dynamic_pages[space.dynamic_page_count] = pa;
     space.dynamic_page_count += 1;
+    processes[pid].runtime_usage.peak_pages = @max(processes[pid].runtime_usage.peak_pages, space.dynamic_page_count);
     return true;
 }
 
@@ -605,6 +619,10 @@ pub fn create_as(
     processes[id].name_len = take;
     processes[id].image = image;
     apply_spec(&processes[id].addr_space, addr_space);
+    // RW backing may include an extra argv page. Count the segment's memsz,
+    // not that loader headroom; ro_pages is already the rounded R segment.
+    processes[id].runtime_usage.static_pages = segment_pages(addr_space.text_len) +
+        addr_space.ro_pages + segment_pages(addr_space.data_len);
     processes[id].kernel_stack = kernel_stack;
     processes[id].uid = actor.uid;
     processes[id].caps = actor.caps;
@@ -615,6 +633,19 @@ pub fn create_as(
     registry_count +%= 1;
     current_id = id;
     return id;
+}
+
+fn segment_pages(byte_len: u64) u64 {
+    return byte_len / 4096 + @intFromBool(byte_len % 4096 != 0);
+}
+
+/// An exited process's receipt, readable repeatedly even after the scheduler
+/// releases its backing. Name/pid come from the same retained `info` row.
+/// Live/invalid/free descriptors have no final receipt. Registry reap/recycle
+/// discards it just like the existing exit status, never delaying page release.
+pub fn runtime_receipt(id: usize) ?RuntimeReceipt {
+    if (id >= max_processes or processes[id].state != .exited) return null;
+    return processes[id].runtime_usage;
 }
 
 /// The principal a process was created with (ADR 0024 D2). Returns null for
@@ -1596,4 +1627,108 @@ test "process: three GOMAXPROCS=2 runtimes bind 4 tasks each (M65d, #1442)" {
         try std.testing.expectEqual(State.running, info(id).?.state);
         try std.testing.expect(has_thread_capacity(id));
     }
+}
+
+test "process: runtime receipt records page high-water and preserves refusal" {
+    init();
+    const id = create("PAGES.ELF", .{}, .{}, .{}).?;
+    try std.testing.expect(bind(id, 2));
+    try std.testing.expect(bind_thread(id, 3));
+    try std.testing.expect(runtime_receipt(id) == null);
+    for (0..max_dynamic_pages) |i| {
+        // Zero backing is a recorder-only fixture, not an allocator page.
+        try std.testing.expect(record_dynamic_page(id, 0));
+        try std.testing.expectEqual(i + 1, processes[id].runtime_usage.peak_pages);
+    }
+    try std.testing.expect(!record_dynamic_page(id, 0));
+    try std.testing.expectEqual(max_dynamic_pages, processes[id].addr_space.dynamic_page_count);
+    // A primary exit is not a final receipt while a sibling still runs.
+    try std.testing.expect(on_task_exit(2, 0) == null);
+    try std.testing.expect(runtime_receipt(id) == null);
+    try std.testing.expectEqual(@as(?usize, id), on_task_exit(3, 0));
+    try std.testing.expectEqual(max_dynamic_pages, runtime_receipt(id).?.peak_pages);
+    try std.testing.expectEqual(max_dynamic_pages, processes[id].addr_space.dynamic_page_count);
+    try std.testing.expect(release_pages_on_reap(3));
+    try std.testing.expectEqual(@as(usize, 0), processes[id].addr_space.dynamic_page_count);
+    try std.testing.expectEqual(max_dynamic_pages, runtime_receipt(id).?.peak_pages);
+    try std.testing.expectEqual(max_dynamic_pages, runtime_receipt(id).?.peak_pages); // non-consuming
+    try std.testing.expect(reap(id));
+    try std.testing.expect(runtime_receipt(id) == null);
+    const fresh = create("FRESH.ELF", .{}, .{}, .{}).?;
+    try std.testing.expectEqual(id, fresh);
+    try std.testing.expectEqualDeep(RuntimeReceipt{}, processes[fresh].runtime_usage);
+    try std.testing.expect(runtime_receipt(max_processes) == null);
+    try std.testing.expect(!record_dynamic_page(max_processes, 0));
+}
+
+test "process: region high-water counts occupied slots across map unmap remap" {
+    init();
+    const id = create("REGIONS.ELF", .{}, .{}, .{}).?;
+    try std.testing.expect(bind(id, 2));
+    for (0..3) |i| try std.testing.expect(add_mmap_region(id, mmap_default_va + i * 4096, 4096, 3, 0));
+    try std.testing.expectEqual(@as(usize, 3), processes[id].runtime_usage.peak_regions);
+    try std.testing.expect(remove_mmap_region(id, mmap_default_va + 4096, 4096));
+    try std.testing.expectEqual(@as(usize, 2), processes[id].addr_space.mmap_region_count);
+    try std.testing.expectEqual(@as(usize, 3), processes[id].runtime_usage.peak_regions);
+    try std.testing.expect(!remove_mmap_region(id, mmap_default_va + 4096, 4096));
+    try std.testing.expect(add_mmap_region(id, mmap_default_va + 3 * 4096, 4096, 3, 0));
+    try std.testing.expectEqual(@as(usize, 3), processes[id].runtime_usage.peak_regions);
+    for (4..max_mmap_regions + 1) |i| try std.testing.expect(add_mmap_region(id, mmap_default_va + i * 4096, 4096, 3, 0));
+    try std.testing.expect(!add_mmap_region(id, mmap_default_va + 100 * 4096, 4096, 3, 0));
+    try std.testing.expectEqual(max_mmap_regions, processes[id].runtime_usage.peak_regions);
+    for (0..max_mmap_regions + 1) |i| {
+        if (i == 1) continue;
+        try std.testing.expect(remove_mmap_region(id, mmap_default_va + i * 4096, 4096));
+    }
+    try std.testing.expectEqual(@as(usize, 0), processes[id].addr_space.mmap_region_count);
+    _ = on_task_exit(2, 0);
+    try std.testing.expectEqual(max_mmap_regions, runtime_receipt(id).?.peak_regions);
+    try std.testing.expect(release_pages_on_reap(2));
+    try std.testing.expectEqual(max_mmap_regions, runtime_receipt(id).?.peak_regions);
+    try std.testing.expect(reap(id));
+    try std.testing.expectEqualDeep(RuntimeReceipt{}, processes[id].runtime_usage);
+}
+
+test "process: static segment receipt survives real backing release and recycle" {
+    const descriptors = [_]memmap.MemoryDescriptor{
+        .{ .type = .conventional_memory, .physical_start = 0x100000, .virtual_start = 0, .number_of_pages = 512, .attribute = 0 },
+    };
+    const view = memmap.MapView.init(std.mem.asBytes(&descriptors), @sizeOf(memmap.MemoryDescriptor), descriptors.len);
+    try std.testing.expect(alloc.init(view, &.{}));
+    const free_before = alloc.stats().free_pages;
+    init();
+    const id = create("STATIC.ELF", .{}, .{
+        .text_len = 4097,
+        .text_phys = alloc.alloc_pages(2).?,
+        .text_pages = 2,
+        .ro_phys = alloc.alloc_pages(3).?,
+        .ro_pages = 3,
+        .data_len = 4096,
+        .data_phys = alloc.alloc_pages(2).?,
+        .data_pages = 2, // one segment page plus argv headroom
+        .stack_phys = alloc.alloc_pages(2).?,
+        .stack_pages = 2,
+        .interp_phys = alloc.alloc_pages(1).?,
+        .interp_pages = 1,
+        .lib_phys = alloc.alloc_pages(1).?,
+        .lib_pages = 1,
+    }, .{ .phys = alloc.alloc_pages(2).?, .pages = 2 }).?;
+    try std.testing.expect(bind(id, 2));
+    try std.testing.expect(record_dynamic_page(id, alloc.alloc_pages(1).?));
+    try std.testing.expect(record_dynamic_page(id, alloc.alloc_pages(1).?));
+    _ = on_task_exit(2, 0);
+    const receipt = runtime_receipt(id).?;
+    try std.testing.expectEqual(@as(u64, 6), receipt.static_pages); // ceil(text) + R + ceil(RW)
+    try std.testing.expectEqual(@as(usize, 2), receipt.peak_pages);
+    try std.testing.expectEqual(free_before - 15, alloc.stats().free_pages);
+    try std.testing.expect(release_pages_on_reap(2));
+    try std.testing.expectEqual(free_before, alloc.stats().free_pages);
+    try std.testing.expectEqualDeep(receipt, runtime_receipt(id).?);
+    try std.testing.expectEqual(@as(u64, 0), info(id).?.text_pages);
+    try std.testing.expectEqual(@as(u64, 0), info(id).?.data_pages);
+    for (1..max_processes) |_| _ = create("LIVE.ELF", .{}, .{}, .{}).?;
+    const recycled = create("NEW.ELF", .{}, .{}, .{}).?;
+    try std.testing.expectEqual(id, recycled);
+    try std.testing.expectEqualDeep(RuntimeReceipt{}, processes[recycled].runtime_usage);
+    try std.testing.expect(runtime_receipt(recycled) == null);
 }
