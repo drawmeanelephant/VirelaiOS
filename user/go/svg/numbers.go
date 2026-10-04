@@ -6,9 +6,10 @@ import (
 )
 
 type lexer struct {
-	r  reader
-	c  rune
-	ok bool
+	r     reader
+	c     rune
+	ok    bool
+	start int
 }
 
 func (p *parser) lex(s span) lexer {
@@ -16,7 +17,10 @@ func (p *parser) lex(s span) lexer {
 	l.advance()
 	return l
 }
-func (l *lexer) advance() { l.c, l.ok = l.r.next() }
+func (l *lexer) advance() {
+	l.start = l.r.i
+	l.c, l.ok = l.r.next()
+}
 func (l *lexer) spaces() bool {
 	had := false
 	for l.ok && l.c < 128 && white(byte(l.c)) {
@@ -30,6 +34,7 @@ func numStart(c rune) bool { return digit(c) || c == '.' || c == '+' || c == '-'
 
 func (l *lexer) number() float64 {
 	p, offset := l.r.p, l.r.i
+	start := l.start
 	var token [32]byte
 	n := 0
 	push := func() {
@@ -66,6 +71,11 @@ func (l *lexer) number() float64 {
 	}
 	if l.ok && (l.c == 'e' || l.c == 'E') {
 		push()
+		// em/ex are excluded units, not incomplete scientific notation.
+		if l.ok && (l.c == 'm' || l.c == 'M' || l.c == 'x' || l.c == 'X') {
+			p.fail(vector.UnsupportedFeature, start)
+			return 0
+		}
 		if l.ok && (l.c == '+' || l.c == '-') {
 			push()
 		}
@@ -211,9 +221,10 @@ func (p *parser) transform(s span) vector.Affine {
 		}
 		var name [10]byte
 		n := 0
-		for l.ok && l.c >= 'a' && l.c <= 'z' {
+		start := l.start
+		for l.ok && (l.c >= 'a' && l.c <= 'z' || l.c >= 'A' && l.c <= 'Z') {
 			if n == len(name) {
-				p.fail(vector.UnsupportedFeature, l.r.i-1)
+				p.fail(vector.UnsupportedFeature, start)
 				break
 			}
 			if !p.take(byteWork, 1) {
@@ -277,7 +288,7 @@ func (p *parser) transform(s span) vector.Affine {
 			}
 			t.A, t.D = args[0], args[1]
 		default:
-			p.fail(vector.UnsupportedFeature, s.lo)
+			p.fail(vector.UnsupportedFeature, start)
 		}
 		if !matrixOK(t) {
 			p.fail(vector.CoordinateLimit, s.lo)

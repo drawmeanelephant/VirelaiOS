@@ -557,7 +557,8 @@ func (p *parser) element(n span) string {
 			return s
 		}
 	}
-	for _, s := range [...]string{"text", "tspan", "textPath", "font", "font-face", "font-face-src", "font-face-uri", "glyph", "missing-glyph"} {
+	for _, s := range [...]string{"text", "tspan", "textPath", "font", "font-face", "font-face-src", "font-face-uri",
+		"font-face-name", "font-face-format", "glyph", "missing-glyph", "hkern", "vkern"} {
 		if p.equal(n, s) {
 			p.fail(vector.UnsupportedText, n.lo)
 			return ""
