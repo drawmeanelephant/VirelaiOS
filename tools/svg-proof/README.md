@@ -70,6 +70,8 @@ including alignment padding and L2 metadata not present in MemStats. The 4,096-p
 inline record capacity, not a working-set ceiling. Require extensible tracking,
 zero record failures/unrecorded pages and `reaped=1`. Runtime remains limited
 to 1,536 pages/11 regions, arena plus runtime to 3,584 pages/12 regions.
+The pinned source audit must prove fresh zero padding skips the byte sweep;
+free-list header writes still touch pages, so guest high-water receipts remain required.
 Static ELF pages are checked and reported separately, never subtracted.
 Physical pages before exec and after final reap must match exactly. Failed
 memory ledgers retain all raw counters and free-pool samples before failing.

@@ -17,7 +17,8 @@ class ReceiptTests(unittest.TestCase):
             "fork_runtime_sha256": {"src/runtime/"+name: "pinned" for name in
                                    ("mem_sbrk.go", "malloc.go", "mstats.go", "os_virelai.go")},
             "mapping_touch_audit": {"renderer_arena": {"populated_pages": 2048},
-                                   "alignment_hazard": {"padding_is_touched": True}},
+                                   "alignment_hazard": {"padding_is_touched": True,
+                                                        "fresh_padding_is_cleared": False}},
         }
         verify = patch.object(ledger, "verify", return_value=self.report)
         verify.start()
@@ -97,6 +98,17 @@ class ReceiptTests(unittest.TestCase):
                     ledger.pair("icons", changed, Path(tmp))
             with self.assertRaisesRegex(ValueError, "tracking or final reap"):
                 ledger.pair("icons", text.replace("page_saturated=0", "page_saturated=1"), Path(tmp))
+
+    def test_fresh_padding_audit_is_required(self):
+        padding = self.report["mapping_touch_audit"]["alignment_hazard"]
+        with tempfile.TemporaryDirectory() as tmp:
+            for value in (True, None, 0):
+                padding["fresh_padding_is_cleared"] = value
+                with self.subTest(value=value), self.assertRaisesRegex(ValueError, "mapping/touch source audit"):
+                    ledger.pair("icons", self.serial(), Path(tmp))
+            del padding["fresh_padding_is_cleared"]
+            with self.assertRaisesRegex(ValueError, "mapping/touch source audit"):
+                ledger.pair("icons", self.serial(), Path(tmp))
 
     def test_exact_free_pool_restoration_after_reap(self):
         with tempfile.TemporaryDirectory() as tmp:

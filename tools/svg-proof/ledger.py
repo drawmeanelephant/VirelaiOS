@@ -50,7 +50,10 @@ def pair(mode, serial, evidence):
     if not all("src/runtime/"+source_name in runtime_pins for source_name in ("mem_sbrk.go", "malloc.go", "mstats.go", "os_virelai.go")):
         raise ValueError("missing pinned runtime mapping/touch audit")
     audit = report["mapping_touch_audit"]
-    if audit["renderer_arena"]["populated_pages"] != 2048 or not audit["alignment_hazard"]["padding_is_touched"]:
+    padding = audit["alignment_hazard"]
+    if (audit["renderer_arena"]["populated_pages"] != 2048 or
+            not padding["padding_is_touched"] or
+            padding.get("fresh_padding_is_cleared") is not False):
         raise ValueError("missing conservative mapping/touch source audit")
     # Populated arena is retained until process exit. sbrk mappings/free
     # spans stay recorded (sysUnusedOS no-op; no runtime munmap), so startup
@@ -92,7 +95,7 @@ def pair(mode, serial, evidence):
               "mapping_touch_audit": audit,
               "physical_pages_before_after": [{"total": count[0], "free": count[1]} for count in counts],
               "audit": ["sysAllocOS/sysReserveOS -> memAlloc/sbrk -> virMmap slot 63",
-                        "sysReserveAlignedSbrk alignment padding is touched by byte zeroing",
+                        "sysReserveAlignedSbrk fresh padding touches memHdr records, not a byte sweep",
                         "heap L2 metadata sysAllocOS is included by kernel, not HeapAlloc",
                         "runtime sysUnusedOS retains backing; occupied sbrk regions retained",
                         "one retained MAP_POPULATE arena; all remaining dynamic backing charged to runtime"]}
