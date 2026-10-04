@@ -13,7 +13,6 @@ const mmu = @import("mmu.zig");
 const pci = @import("pci.zig");
 const spinlock = @import("spinlock.zig");
 const directory = @import("directory.zig");
-const alloc = @import("alloc.zig");
 pub const metadata = @import("fs_metadata.zig");
 
 pub const st_ok: u8 = 0;
@@ -152,9 +151,11 @@ var next_unique: u64 = 1;
 var mount_identity: u64 = 0;
 pub const identity_pin_max: usize = 512;
 const IdentityPin = extern struct { node: u64, pending: u64 };
-var identity_nodes: ?*[identity_pin_max]IdentityPin = null;
+// Mount setup precedes allocator init. Kernel-owned storage puts the entire
+// 8,192-byte ledger in the cold baseline, with no first-lookup allocation.
+// Reset ends the references' lifetime, never the backing storage's lifetime.
+var identity_nodes: [identity_pin_max]IdentityPin = undefined;
 pub var identity_pin_count: usize = 0;
-var test_identity_nodes: [identity_pin_max]IdentityPin = undefined;
 pub var test_exchange: ?*const fn (u32, u64, []const u8) ?[]const u8 = null;
 var nodes: [node_cache_count]Node = [_]Node{.{}} ** node_cache_count;
 var handles: [file_handle_count]FileHandle = [_]FileHandle{.{}} ** file_handle_count;
@@ -502,7 +503,6 @@ pub fn init() bool {
     if (fs_max_write == 0) fs_max_write = @intCast(max_io);
     fs_request_queue_size = request_queue.size;
     fs_initialized = true;
-    mount_identity += 1;
     fs_init_stage = 11; // initialized
     nodes[0] = .{
         .path_len = 0,
@@ -650,36 +650,28 @@ fn adopt_entry_locked(reply: []const u8) metadata.Error!metadata.Object {
 
 fn retain_identity_locked(node: u64) metadata.Error!void {
     if (node == root_nodeid) return;
-    if (identity_nodes) |entries| {
-        for (entries[0..identity_pin_count]) |pinned| if (pinned.node == node) return;
-    }
+    for (identity_nodes[0..identity_pin_count]) |pinned| if (pinned.node == node) return;
     if (identity_pin_count == identity_pin_max) return error.TreeLimit;
-    if (identity_nodes == null) {
-        identity_nodes = if (builtin.is_test) &test_identity_nodes else @ptrFromInt(alloc.alloc_pages(2) orelse return error.HandleLimit);
-    }
     // Retain the existing reference; unpin skips exactly its first release.
-    identity_nodes.?[identity_pin_count] = .{ .node = node, .pending = 1 };
+    identity_nodes[identity_pin_count] = .{ .node = node, .pending = 1 };
     identity_pin_count += 1;
 }
 
 fn release_lookup_locked(node: u64) void {
-    if (identity_nodes) |entries| {
-        for (entries[0..identity_pin_count]) |*pinned| {
-            if (pinned.node == node and pinned.pending != 0) {
-                pinned.pending = 0;
-                return;
-            }
+    for (identity_nodes[0..identity_pin_count]) |*pinned| {
+        if (pinned.node == node and pinned.pending != 0) {
+            pinned.pending = 0;
+            return;
         }
     }
     forget_locked(node);
 }
 
 fn reset_identity_nodes() void {
-    if (!builtin.is_test) {
-        if (identity_nodes) |entries| _ = alloc.free_pages(@intFromPtr(entries), 2);
-    }
-    identity_nodes = null;
+    // A failed rearm must invalidate old pins too, before any new requests.
+    mount_identity += 1;
     identity_pin_count = 0;
+    @memset(&identity_nodes, .{ .node = 0, .pending = 0 });
 }
 
 fn forget_locked(node: u64) void {
@@ -746,13 +738,10 @@ fn free_handle_locked() metadata.Error!usize {
     return slot;
 }
 
-/// A new object always needs a new ledger row. Check (and allocate) it
+/// A new object always needs a new ledger row. Check its capacity
 /// before the server mutates anything, so a full ledger creates nothing.
 fn ledger_room_locked() metadata.Error!void {
     if (identity_pin_count == identity_pin_max) return error.TreeLimit;
-    if (identity_nodes == null) {
-        identity_nodes = if (builtin.is_test) &test_identity_nodes else @ptrFromInt(alloc.alloc_pages(2) orelse return error.HandleLimit);
-    }
 }
 
 fn name_request(header: usize, name: []const u8, out: []u8) metadata.Error![]const u8 {
@@ -1050,7 +1039,6 @@ pub const TestMetadataServer = struct {
         mtime = 1_790_897_123;
         bytes = .{ 's', 'a', 'f', 'e' };
         handles = [_]FileHandle{.{}} ** file_handle_count;
-        mount_identity = 7;
         fs_ready = true;
         fs_initialized = true;
         test_exchange = exchange;
@@ -1058,9 +1046,7 @@ pub const TestMetadataServer = struct {
 
     pub fn stop() void {
         fail_opcode = 0;
-        if (identity_nodes) |entries| {
-            for (entries[0..identity_pin_count]) |pinned| forget_locked(pinned.node);
-        }
+        for (identity_nodes[0..identity_pin_count]) |pinned| forget_locked(pinned.node);
         std.debug.assert(pins == 0);
         reset_identity_nodes();
         test_exchange = null;
@@ -1360,14 +1346,78 @@ test "B3 backend: identity pins are bounded, reused and released at mount end" {
     try std.testing.expect(first.identity.eql(again.identity));
     try std.testing.expectEqual(@as(usize, 4), S.pins);
     try std.testing.expectEqual(@as(usize, 0), S.transient_pins());
-    for (test_identity_nodes[identity_pin_count..], 0..) |*pin, i| {
+    for (0..16) |_| {
+        var file = try metadata.open(contained_backend(&root), auth, "a/b/page.md", .read);
+        try file.close();
+        try std.testing.expectEqual(@as(usize, 4), identity_pin_count);
+        try std.testing.expectEqual(@as(usize, 4), S.pins);
+        for (identity_nodes[0..identity_pin_count]) |pin| try std.testing.expectEqual(@as(u64, 0), pin.pending);
+    }
+    try std.testing.expectEqual(S.opens, S.releases);
+    for (identity_nodes[identity_pin_count..], 0..) |*pin, i| {
         pin.* = .{ .node = 100 + i, .pending = 0 };
         S.pins += 1;
     }
     identity_pin_count = identity_pin_max;
+    const at_capacity = try metadata.stat(contained_backend(&root), auth, "a/b/page.md");
+    try std.testing.expect(first.identity.eql(at_capacity.identity));
+    try std.testing.expectEqual(identity_pin_max, S.pins);
     S.symlink_node = 0;
     try std.testing.expectError(error.TreeLimit, metadata.stat(contained_backend(&root), auth, "link"));
     try std.testing.expectEqual(identity_pin_max, S.pins);
+}
+
+test "virtio_fs: mount storage exists before lookup and failed setup resets it" {
+    const S = TestMetadataServer;
+    S.start();
+    defer S.stop();
+    const storage = @intFromPtr(&identity_nodes);
+    try std.testing.expectEqual(@as(usize, 8192), @sizeOf(@TypeOf(identity_nodes)));
+    try std.testing.expectEqual(@as(usize, 0), identity_pin_count);
+    for (identity_nodes) |pin| try std.testing.expectEqual(IdentityPin{ .node = 0, .pending = 0 }, pin);
+    try ledger_room_locked();
+    try retain_identity_locked(root_nodeid);
+    try std.testing.expectEqual(@as(usize, 0), identity_pin_count);
+    // Poison both ends to check clearing even unused rows, without a server.
+    try retain_identity_locked(42);
+    identity_nodes[identity_pin_max - 1] = .{ .node = 43, .pending = 1 };
+    const lifetime = mount_identity;
+    const dev = fs_dev;
+    defer fs_dev = dev;
+    fs_dev = 32;
+    try std.testing.expect(!init());
+    try std.testing.expect(!available());
+    try std.testing.expect(mount_identity != lifetime);
+    try std.testing.expectEqual(@as(usize, 0), identity_pin_count);
+    for (identity_nodes) |pin| try std.testing.expectEqual(IdentityPin{ .node = 0, .pending = 0 }, pin);
+    try std.testing.expect(!init()); // No page storage to double-release.
+    try std.testing.expectEqual(storage, @intFromPtr(&identity_nodes));
+    try std.testing.expectEqual(@as(usize, 0), identity_pin_count);
+}
+
+test "virtio_fs: reset keeps backing storage and old pins cannot release reused nodes" {
+    const S = TestMetadataServer;
+    S.start();
+    var c = B5Backend{};
+    const old = try c.pin("a");
+    const storage = @intFromPtr(&identity_nodes);
+    S.stop();
+    S.stop();
+    try std.testing.expectEqual(@as(usize, 0), S.pins);
+    try std.testing.expectEqual(@as(usize, 0), identity_pin_count);
+    S.start();
+    defer S.stop();
+    const fresh = try c.pin("a");
+    try std.testing.expectEqual(old.object.token, fresh.object.token);
+    try std.testing.expect(!old.object.metadata.identity.eql(fresh.object.metadata.identity));
+    const pins = S.pins;
+    c.release(old);
+    try std.testing.expectError(error.StaleIdentity, metadata.directoryMetadata(c.backend(), c.auth(), old));
+    try std.testing.expectEqual(pins, S.pins);
+    try std.testing.expectEqual(storage, @intFromPtr(&identity_nodes));
+    c.release(fresh);
+    try std.testing.expectEqual(@as(usize, 0), S.transient_pins());
+    for (identity_nodes[0..identity_pin_count]) |pin| try std.testing.expectEqual(@as(u64, 0), pin.pending);
 }
 
 test "B3 backend: DMA invalidation ranges are cache-line isolated" {
@@ -1479,7 +1529,7 @@ test "B5 backend: full handle table or identity ledger refuses before any mutati
     for (&handles) |*h| h.valid = true;
     try std.testing.expectError(error.HandleLimit, metadata.createFile(c.backend(), c.auth(), dir, "x"));
     handles = [_]FileHandle{.{}} ** file_handle_count;
-    for (test_identity_nodes[identity_pin_count..], 0..) |*entry, i| {
+    for (identity_nodes[identity_pin_count..], 0..) |*entry, i| {
         entry.* = .{ .node = 1000 + i, .pending = 0 };
         S.pins += 1;
     }
@@ -1497,7 +1547,8 @@ test "B5 backend: pins from an earlier mount are refused and never forgotten" {
     var c = B5Backend{};
     const dir = try c.pin("a");
     const created = try metadata.createFile(c.backend(), c.auth(), dir, "x");
-    mount_identity = 8;
+    const lifetime = mount_identity;
+    mount_identity += 1;
     const pins = S.pins;
     try std.testing.expectError(error.StaleIdentity, metadata.createFile(c.backend(), c.auth(), dir, "y"));
     try std.testing.expectError(error.StaleIdentity, metadata.makeDirectory(c.backend(), c.auth(), dir, "y"));
@@ -1509,7 +1560,7 @@ test "B5 backend: pins from an earlier mount are refused and never forgotten" {
     c.release(dir);
     try std.testing.expectEqual(pins, S.pins);
     try std.testing.expectEqual(@as(usize, 1), S.mutations);
-    mount_identity = 7;
+    mount_identity = lifetime;
     c.release(dir);
     try contained_close(@intCast(created.handle));
 }
