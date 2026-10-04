@@ -4532,7 +4532,19 @@ fn cmd_smp(m: *Monitor, args: []const []const u8) ExecError {
     while (c < smp.max_cores) : (c += 1) {
         if (c >= smp.num_cores and !smp.core_online[c]) continue;
         const cur_tid = scheduler.current_task_for_core(c);
-        const task_name = if (scheduler.task_info(cur_tid)) |info| info.name else "none";
+        // The primary exec task has the generic TCB name "user-exec";
+        // threads already carry the process name. Report the same identity
+        // for either executor, independently of the scheduler report drain.
+        const process_name: ?[]const u8 = if (process.find_by_task(cur_tid)) |pid|
+            if (process.info(pid)) |info| info.name else null
+        else
+            null;
+        const task_name = if (process_name) |name|
+            name
+        else if (scheduler.task_info(cur_tid)) |info|
+            info.name
+        else
+            "none";
         const line = std.fmt.bufPrint(&buf, "  core {d}: {s} mpidr=0x{x:0>16} state={s} ticks={d} task={s}\n", .{
             c,
             if (c == 0) @as([]const u8, "bsp ") else @as([]const u8, "ap  "),
@@ -4569,44 +4581,30 @@ fn cmd_smp(m: *Monitor, args: []const []const u8) ExecError {
 fn cmd_procs(m: *Monitor, args: []const []const u8) ExecError {
     // Opt-in diagnostic: leave the catalog, help and ordinary table byte-exact.
     if (args.len > 0) return cmd_runtime_receipt(m, args);
-    m.console.puts("procs: count=");
-    m.console.print_u64(@intCast(process.count()));
-    m.console.puts("\n");
+    var buf: [256]u8 = undefined;
+    m.console.puts(std.fmt.bufPrint(&buf, "procs: count={d}\n", .{process.count()}) catch return .not_implemented);
     var id: usize = 0;
     while (id < process.max_processes) : (id += 1) {
         const info = process.info(id) orelse continue;
-        m.console.puts("procs: id=");
-        m.console.print_u64(@intCast(info.id));
-        m.console.puts(" name=");
-        m.console.puts(info.name);
-        // M50 TS1 (#1135, ADR 0024 D2): the process principal. The kernel
-        // and the EL0 `sys_principal` seam read the SAME descriptor field.
-        m.console.puts(" uid=");
-        m.console.print_u64(@intCast(info.uid));
-        m.console.puts(" caps=");
-        m.console.print_u64(@intCast(info.caps));
-        m.console.puts(" state=");
-        m.console.puts(process.state_name(info.state));
-        m.console.puts(" task=");
+        var task_buf: [20]u8 = undefined;
+        var exit_buf: [20]u8 = undefined;
         // Claim 4613: an exited process keeps its executor slot until the
         // lifecycle reap frees its pages — the row still reads `reaped`
         // (the slot is a zombie, no longer executing the program).
-        if (info.state == .exited) {
-            m.console.puts("reaped");
-        } else if (info.task_id) |task_id| {
-            m.console.print_u64(@intCast(task_id));
-        } else {
-            m.console.puts("-");
-        }
-        m.console.puts(" stack=");
-        m.console.print_hex(info.stack_va);
-        m.console.puts(" exit=");
-        if (info.state == .exited) {
-            m.console.print_u64(info.exit_status);
-        } else {
-            m.console.puts("-");
-        }
-        m.console.puts("\n");
+        const task_text = if (info.state == .exited)
+            @as([]const u8, "reaped")
+        else if (info.task_id) |task_id|
+            std.fmt.bufPrint(&task_buf, "{d}", .{task_id}) catch return .not_implemented
+        else
+            "-";
+        const exit_text = if (info.state == .exited)
+            std.fmt.bufPrint(&exit_buf, "{d}", .{info.exit_status}) catch return .not_implemented
+        else
+            "-";
+        m.console.puts(std.fmt.bufPrint(&buf, "procs: id={d} name={s} uid={d} caps={d} state={s} task={s} stack=0x{x:0>16} exit={s}\n", .{
+            info.id,   info.name,     info.uid,  info.caps, process.state_name(info.state),
+            task_text, info.stack_va, exit_text,
+        }) catch return .not_implemented);
     }
     return .none;
 }
@@ -7507,8 +7505,7 @@ fn cmd_exec(m: *Monitor, args: []const []const u8) ExecError {
             return .machine_failed;
         },
         .pool_full => {
-            err_prefix(m);
-            m.console.print_line("no free scheduler pool slot");
+            m.console.puts("error: no free scheduler pool slot\n");
             return .machine_failed;
         },
         .table_full => {
@@ -8115,62 +8112,24 @@ fn cmd_addrspaces(m: *Monitor, args: []const []const u8) ExecError {
 fn cmd_resources(m: *Monitor, args: []const []const u8) ExecError {
     _ = args;
     const s = scheduler.stats();
-    m.console.puts("resources: tasks=");
-    m.console.print_u64(@intCast(s.count));
-    m.console.puts("/");
-    m.console.print_u64(@intCast(scheduler.max_tasks));
-    m.console.puts(" zombies=");
-    m.console.print_u64(@intCast(s.zombies));
-    m.console.puts("\n");
-    m.console.puts("resources: procs=");
-    m.console.print_u64(@intCast(process.count()));
-    m.console.puts("/");
-    m.console.print_u64(@intCast(process.max_processes));
-    m.console.puts("\n");
-    m.console.puts("resources: windows=");
-    m.console.print_u64(@intCast(driving_award.count()));
-    m.console.puts("/");
-    m.console.print_u64(@intCast(driving_award.max_windows));
-    m.console.puts("\n");
-    m.console.puts("resources: tables=");
-    m.console.print_u64(@intCast(mmu.tables_used()));
-    m.console.puts("/");
-    m.console.print_u64(@intCast(mmu.tables_capacity()));
-    m.console.puts("\n");
-    m.console.puts("resources: events=");
-    m.console.print_u64(@intCast(events.max_events));
-    m.console.puts(" mbox=");
-    m.console.print_u64(@intCast(mailbox.max_messages));
-    m.console.puts(" fds=");
-    m.console.print_u64(@intCast(file_table.max_handles_per_process));
-    m.console.puts(" timers=1 tcp=1\n");
+    var buf: [256]u8 = undefined;
+    m.console.puts(std.fmt.bufPrint(&buf, "resources: tasks={d}/{d} zombies={d}\n", .{ s.count, scheduler.max_tasks, s.zombies }) catch return .not_implemented);
+    m.console.puts(std.fmt.bufPrint(&buf, "resources: procs={d}/{d}\n", .{ process.count(), process.max_processes }) catch return .not_implemented);
+    m.console.puts(std.fmt.bufPrint(&buf, "resources: windows={d}/{d}\n", .{ driving_award.count(), driving_award.max_windows }) catch return .not_implemented);
+    m.console.puts(std.fmt.bufPrint(&buf, "resources: tables={d}/{d}\n", .{ mmu.tables_used(), mmu.tables_capacity() }) catch return .not_implemented);
+    m.console.puts(std.fmt.bufPrint(&buf, "resources: events={d} mbox={d} fds={d} timers=1 tcp=1\n", .{ events.max_events, mailbox.max_messages, file_table.max_handles_per_process }) catch return .not_implemented);
     // Arc5 issue #246: per-process resource usage vs limits
     var id: usize = 0;
     while (id < process.max_processes) : (id += 1) {
         if (process.getrusage(id)) |ru| {
             if (ru.mem_limit != 0 or ru.cpu_limit != 0 or ru.mem_usage != 0 or ru.cpu_usage != 0) {
-                m.console.puts("resources: pid=");
-                m.console.print_u64(@intCast(id));
                 const info = process.info(id).?;
-                m.console.puts(" ");
-                m.console.print_line(info.name);
-                m.console.puts("  mem=");
-                m.console.print_u64(ru.mem_usage);
-                m.console.puts("/");
-                if (ru.mem_limit != 0) {
-                    m.console.print_u64(ru.mem_limit);
-                } else {
-                    m.console.puts("unlimited");
-                }
-                m.console.puts(" cpu=");
-                m.console.print_u64(ru.cpu_usage);
-                m.console.puts("/");
-                if (ru.cpu_limit != 0) {
-                    m.console.print_u64(ru.cpu_limit);
-                } else {
-                    m.console.puts("unlimited");
-                }
-                m.console.puts("\n");
+                m.console.puts(std.fmt.bufPrint(&buf, "resources: pid={d} {s}\n", .{ id, info.name }) catch return .not_implemented);
+                var mem_buf: [20]u8 = undefined;
+                var cpu_buf: [20]u8 = undefined;
+                const mem_limit = if (ru.mem_limit == 0) "unlimited" else std.fmt.bufPrint(&mem_buf, "{d}", .{ru.mem_limit}) catch return .not_implemented;
+                const cpu_limit = if (ru.cpu_limit == 0) "unlimited" else std.fmt.bufPrint(&cpu_buf, "{d}", .{ru.cpu_limit}) catch return .not_implemented;
+                m.console.puts(std.fmt.bufPrint(&buf, "  mem={d}/{s} cpu={d}/{s}\n", .{ ru.mem_usage, mem_limit, ru.cpu_usage, cpu_limit }) catch return .not_implemented);
             }
         }
     }
