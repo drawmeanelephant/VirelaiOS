@@ -1,0 +1,739 @@
+{
+  "version": 1,
+  "generator_sha256": "d5b46e295178fa76063e2f9261e6e864536bba3e999e9037de5ee51a8ebd43cb",
+  "zlib": "1.2.12",
+  "maxima": [
+    {
+      "id": "time-1024x1448",
+      "sha256": "70a79b5d6101f5ebf4e20d8b7c66951c415503f0f7c6114cd24f811896dc7229",
+      "bytes": 1089,
+      "dimensions": [
+        1024,
+        1448
+      ],
+      "comparison": "edges",
+      "analytic": {
+        "box": [
+          0,
+          0,
+          768.0,
+          1086.0
+        ],
+        "operations": [
+          {
+            "kind": "fill",
+            "path": [
+              [
+                "M",
+                0,
+                0
+              ],
+              [
+                "L",
+                768,
+                0
+              ],
+              [
+                "L",
+                768,
+                1086
+              ],
+              [
+                "L",
+                0,
+                1086
+              ],
+              [
+                "Z"
+              ]
+            ],
+            "ctm": [
+              1,
+              0,
+              0,
+              1,
+              0,
+              0
+            ],
+            "color": [
+              128,
+              128,
+              128
+            ],
+            "rule": "nonzero"
+          },
+          {
+            "kind": "text",
+            "ctm": [
+              1,
+              0,
+              0,
+              1,
+              0,
+              0
+            ],
+            "color": [
+              128,
+              128,
+              128
+            ],
+            "font": {
+              "matrix": [
+                1,
+                0,
+                0,
+                1,
+                0,
+                0
+              ],
+              "bbox": [
+                0,
+                0,
+                1,
+                1
+              ],
+              "glyphs": {
+                "A": {
+                  "advance": 1,
+                  "d1": [
+                    1,
+                    0,
+                    0,
+                    0,
+                    1,
+                    1
+                  ],
+                  "path": [
+                    [
+                      "M",
+                      0,
+                      0
+                    ],
+                    [
+                      "L",
+                      1,
+                      0
+                    ],
+                    [
+                      "L",
+                      1,
+                      1
+                    ],
+                    [
+                      "L",
+                      0,
+                      1
+                    ],
+                    [
+                      "Z"
+                    ]
+                  ]
+                },
+                " ": {
+                  "advance": 1,
+                  "d1": [
+                    1,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0
+                  ],
+                  "path": []
+                }
+              }
+            },
+            "state": {
+              "size": 24,
+              "spacing": 0,
+              "word_spacing": 0,
+              "scale": 100,
+              "leading": 0,
+              "rise": 0,
+              "text_matrix": [
+                1,
+                0,
+                0,
+                1,
+                0,
+                0
+              ],
+              "line_matrix": [
+                1,
+                0,
+                0,
+                1,
+                0,
+                0
+              ]
+            },
+            "actions": [
+              [
+                "Tm",
+                1,
+                0,
+                0,
+                1,
+                96,
+                96
+              ],
+              [
+                "show",
+                "A"
+              ]
+            ]
+          },
+          {
+            "kind": "image",
+            "ctm": [
+              96,
+              0,
+              0,
+              96,
+              0,
+              0
+            ],
+            "width": 2,
+            "height": 2,
+            "channels": 3,
+            "samples": [
+              17,
+              34,
+              51,
+              17,
+              34,
+              51,
+              17,
+              34,
+              51,
+              17,
+              34,
+              51
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "bottom-1024x1536",
+      "sha256": "c672b7cafd7398e41f63769bf92fa44d29f98c2d7ded54ef4a7bf8945026a6e6",
+      "bytes": 450,
+      "dimensions": [
+        1024,
+        1536
+      ],
+      "comparison": "exact",
+      "analytic": {
+        "box": [
+          0,
+          0,
+          768.0,
+          1152.0
+        ],
+        "operations": [
+          {
+            "kind": "fill",
+            "path": [
+              [
+                "M",
+                0,
+                0
+              ],
+              [
+                "L",
+                768,
+                0
+              ],
+              [
+                "L",
+                768,
+                0.75
+              ],
+              [
+                "L",
+                0,
+                0.75
+              ],
+              [
+                "Z"
+              ]
+            ],
+            "ctm": [
+              1,
+              0,
+              0,
+              1,
+              0,
+              0
+            ],
+            "color": [
+              0,
+              0,
+              255
+            ],
+            "rule": "nonzero"
+          }
+        ]
+      }
+    },
+    {
+      "id": "full-rgb",
+      "sha256": "04d68ae0a4810f9017bc26a88ddf99ee03d5f9d20f927995f078d0e726943904",
+      "bytes": 5335,
+      "dimensions": [
+        1024,
+        1536
+      ],
+      "comparison": "exact",
+      "analytic": {
+        "box": [
+          0,
+          0,
+          768.0,
+          1152.0
+        ],
+        "operations": [
+          {
+            "kind": "image",
+            "ctm": [
+              768,
+              0,
+              0,
+              1152,
+              0,
+              0
+            ],
+            "width": 1024,
+            "height": 1536,
+            "channels": 3,
+            "solid": [
+              31,
+              95,
+              159
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "source-4mib",
+      "sha256": "9b023ef5625b0407b2f9edc047ac3c7318ff7fdbf4d6bddb191980d9c0fb437c",
+      "bytes": 4194304,
+      "dimensions": [
+        64,
+        64
+      ],
+      "comparison": "exact",
+      "analytic": {
+        "box": [
+          0,
+          0,
+          48.0,
+          48.0
+        ],
+        "operations": []
+      }
+    }
+  ],
+  "capacities": [
+    {
+      "id": "graphics-limit",
+      "sha256": "37f4d673c769835a9fde181745d3fa255e7ea103bf98dc2ea5427dc87f8eac0d",
+      "bytes": 486,
+      "expected": "OK",
+      "analytic": {
+        "box": [
+          0,
+          0,
+          48.0,
+          48.0
+        ],
+        "operations": []
+      }
+    },
+    {
+      "id": "graphics-plus1",
+      "sha256": "cb80ce5ce4784098491d449fe6dfae93d32f2645c89e99bb8980d9c95a648227",
+      "bytes": 490,
+      "expected": "GraphicsDepthLimit"
+    },
+    {
+      "id": "commands-limit",
+      "sha256": "ee998c7fbd8c67df212cfc9c13056ba8acacb3833fa6f68219c30e5d2641b8b5",
+      "bytes": 25004,
+      "expected": "OK",
+      "analytic": {
+        "box": [
+          0,
+          0,
+          48.0,
+          48.0
+        ],
+        "operations": []
+      }
+    },
+    {
+      "id": "commands-plus1",
+      "sha256": "99ffc39953b3c0b0581418ea7009552d347da2bd7c2e1137e7ccbe7238a9549c",
+      "bytes": 25010,
+      "expected": "SceneLimit"
+    },
+    {
+      "id": "paints-contours-limit",
+      "sha256": "c16da1ed8ff12b86f26cef6fbf5cbfcec1deedd0a86f1b2c81b947b0da141937",
+      "bytes": 7593,
+      "expected": "OK",
+      "analytic": {
+        "box": [
+          0,
+          0,
+          48.0,
+          48.0
+        ],
+        "operations": []
+      }
+    },
+    {
+      "id": "paints-contours-plus1",
+      "sha256": "e7021269584490d526b027fce764b721eda16096d857cf7230ee3d1de87516f2",
+      "bytes": 7607,
+      "expected": "SceneLimit"
+    },
+    {
+      "id": "canvas-width-limit",
+      "sha256": "b3785cc9ecece64f5dd43ce3e2441a772004c01a4634f909c1897590e7ed0bbd",
+      "bytes": 422,
+      "expected": "OK",
+      "analytic": {
+        "box": [
+          0,
+          0,
+          768.0,
+          48.0
+        ],
+        "operations": []
+      }
+    },
+    {
+      "id": "canvas-width-plus1",
+      "sha256": "60c6fade7a1f46b3550c1d0be6360d1c9b73dcdd4f79acb0e90e30183b0dac5d",
+      "bytes": 425,
+      "expected": "CanvasLimit"
+    },
+    {
+      "id": "canvas-height-limit",
+      "sha256": "ed4b6b6bf4a3d21d81068d46c3c169d02c7c84abfa1fd541ac4f1770af73b2ea",
+      "bytes": 423,
+      "expected": "OK",
+      "analytic": {
+        "box": [
+          0,
+          0,
+          48.0,
+          1152.0
+        ],
+        "operations": []
+      }
+    },
+    {
+      "id": "canvas-height-plus1",
+      "sha256": "2c33342072c54176df49edc0ca7b24ac0c5fabd200644b4db31388821c0eeb5d",
+      "bytes": 426,
+      "expected": "CanvasLimit"
+    },
+    {
+      "id": "coordinate-limit",
+      "sha256": "6fb0d08adf77769c4d9b766d16769be3d07a904320083e4b464cc05b10eb7457",
+      "bytes": 450,
+      "expected": "OK",
+      "analytic": {
+        "box": [
+          0,
+          0,
+          48.0,
+          48.0
+        ],
+        "operations": []
+      }
+    },
+    {
+      "id": "coordinate-plus1",
+      "sha256": "272d5a75e1add20be1f367026b08f3b8c1a486e258dd90f3f01ac536bb326ccd",
+      "bytes": 440,
+      "expected": "CoordinateLimit"
+    },
+    {
+      "id": "name-limit",
+      "sha256": "9a97fb03f0bfaaeacda12831e0e43111502b694e5313bab065e8306d0f19ac10",
+      "bytes": 793,
+      "expected": "OK",
+      "analytic": {
+        "box": [
+          0,
+          0,
+          48.0,
+          48.0
+        ],
+        "operations": []
+      }
+    },
+    {
+      "id": "name-plus1",
+      "sha256": "60a206e57112d08124a525161d2c5809d59c5aa7184ba710167e390b10801c8d",
+      "bytes": 493,
+      "expected": "TokenLimit"
+    },
+    {
+      "id": "number-limit",
+      "sha256": "b892f86be63b7a66a21f4492b25e88dab4b057db44affb35470a5d1fb288f2d6",
+      "bytes": 456,
+      "expected": "OK",
+      "analytic": {
+        "box": [
+          0,
+          0,
+          48.0,
+          48.0
+        ],
+        "operations": []
+      }
+    },
+    {
+      "id": "number-plus1",
+      "sha256": "5fa143ddc943e09d2d73154fe44fca6bf71796245b7c5a00d812d140c917376c",
+      "bytes": 457,
+      "expected": "TokenLimit"
+    },
+    {
+      "id": "string-limit",
+      "sha256": "f4f1a2b996e9f18f2f58d6802f233c5743ceede3a37c65073f9f7c1844747270",
+      "bytes": 4581,
+      "expected": "OK",
+      "analytic": {
+        "box": [
+          0,
+          0,
+          48.0,
+          48.0
+        ],
+        "operations": []
+      }
+    },
+    {
+      "id": "string-plus1",
+      "sha256": "f52e2ad3c810d370fc369c4bf983d5cb6d0c9c0532631257e11d5d86987f94d9",
+      "bytes": 4582,
+      "expected": "TokenLimit"
+    },
+    {
+      "id": "font-size-limit",
+      "sha256": "3cf9c33d6b2bcb7b3eb6d825617dd2bda51557762d1dd918f93505b290a3dadc",
+      "bytes": 1026,
+      "expected": "OK",
+      "analytic": {
+        "box": [
+          0,
+          0,
+          48.0,
+          48.0
+        ],
+        "operations": []
+      }
+    },
+    {
+      "id": "font-size-plus1",
+      "sha256": "1cb819026ad4ed0c80595ef057c03e6e2ef0bd0685bd208872dddca9c645dc7b",
+      "bytes": 1033,
+      "expected": "UnsupportedText"
+    },
+    {
+      "id": "text-scale-limit",
+      "sha256": "9675fb5dc0ba9d1b7398416eacd3a125eefd9c0c75e26851d4ebc9e089239c93",
+      "bytes": 427,
+      "expected": "OK",
+      "analytic": {
+        "box": [
+          0,
+          0,
+          48.0,
+          48.0
+        ],
+        "operations": []
+      }
+    },
+    {
+      "id": "text-scale-plus1",
+      "sha256": "78847f909f7be276a6e91da50e7089c26d583965071f4b1e446334f2411ace58",
+      "bytes": 435,
+      "expected": "UnsupportedText"
+    },
+    {
+      "id": "tj-limit",
+      "sha256": "139987dd9696334d613e09ea7914385f14e590615b7c07b14b10200070aba5af",
+      "bytes": 2057,
+      "expected": "OK",
+      "analytic": {
+        "box": [
+          0,
+          0,
+          48.0,
+          48.0
+        ],
+        "operations": []
+      }
+    },
+    {
+      "id": "tj-plus1",
+      "sha256": "1c8260f1b71ee08db6273ab8fc46e26dfb78c464641aac89b9d6d7b24f884533",
+      "bytes": 2059,
+      "expected": "ContainerLimit"
+    },
+    {
+      "id": "contents-limit",
+      "sha256": "1bdf613b54ae0d9a3c039f9b091c97385b0d8b1c65b77c0cbcc5b18492fc988e",
+      "bytes": 1586,
+      "expected": "OK",
+      "analytic": {
+        "box": [
+          0,
+          0,
+          48.0,
+          48.0
+        ],
+        "operations": []
+      }
+    },
+    {
+      "id": "contents-plus1",
+      "sha256": "e72a24160129610cdb334bc8d96f14b847ddc919c4976e96bb8a763601500d90",
+      "bytes": 1664,
+      "expected": "ContainerLimit"
+    },
+    {
+      "id": "image-width-limit",
+      "sha256": "b09933f9016b05b3abca8f1046e6d909e02a91117d9c42911836bb4f3b12741f",
+      "bytes": 1657,
+      "expected": "OK",
+      "analytic": {
+        "box": [
+          0,
+          0,
+          48.0,
+          48.0
+        ],
+        "operations": []
+      }
+    },
+    {
+      "id": "image-width-plus1",
+      "sha256": "882dd9962d75abb05412d6710533733fa5ce61a517bfb7378692a0777df9a01a",
+      "bytes": 1658,
+      "expected": "CanvasLimit"
+    },
+    {
+      "id": "image-height-limit",
+      "sha256": "cefa138dd3b1bcacf9c96778ca3d521162e501ddaa5ef97fe5e40ddd02c9f2af",
+      "bytes": 2169,
+      "expected": "OK",
+      "analytic": {
+        "box": [
+          0,
+          0,
+          48.0,
+          48.0
+        ],
+        "operations": []
+      }
+    },
+    {
+      "id": "image-height-plus1",
+      "sha256": "eb353af025da676ff89e040248e5f55979ef1109e0c0cd1051f08638cfa30b2d",
+      "bytes": 2170,
+      "expected": "CanvasLimit"
+    },
+    {
+      "id": "pages-limit",
+      "sha256": "382803cb75073e5bc7915c22b5313249ff6240926adcd731b4dabb03c8242a7e",
+      "bytes": 25576,
+      "expected": "OK",
+      "analytic": {
+        "box": [
+          0,
+          0,
+          48.0,
+          48.0
+        ],
+        "operations": []
+      }
+    },
+    {
+      "id": "pages-plus1",
+      "sha256": "76ab7fa7e3bc532293446fd4b0e5634c2c4ea10b7544cb77345fd56942348d8a",
+      "bytes": 25675,
+      "expected": "PageLimit"
+    },
+    {
+      "id": "depth-limit",
+      "sha256": "4fe05963f831bbe2ccc0a21f0e173cbffeafeaae93566528329647f805f2403e",
+      "bytes": 3043,
+      "expected": "OK",
+      "analytic": {
+        "box": [
+          0,
+          0,
+          48.0,
+          48.0
+        ],
+        "operations": []
+      }
+    },
+    {
+      "id": "depth-plus1",
+      "sha256": "42f0633a9b92f851cb68fb848cfe177713e9454c5bb9254c823a9e38a569e538",
+      "bytes": 3137,
+      "expected": "DepthLimit"
+    },
+    {
+      "id": "objects-limit",
+      "sha256": "e49a39bcaaa9e7b6fb1160a8bf0141b71a2a2fc7ae0b73225ed2f93a158e5761",
+      "bytes": 620528,
+      "expected": "OK",
+      "analytic": {
+        "box": [
+          0,
+          0,
+          48.0,
+          48.0
+        ],
+        "operations": []
+      }
+    },
+    {
+      "id": "objects-plus1",
+      "sha256": "120f548a12cd46c809bdbbd1558e00e760fd01b178368148e1444ca492989402",
+      "bytes": 620571,
+      "expected": "ObjectLimit"
+    },
+    {
+      "id": "source-limit",
+      "sha256": "9b023ef5625b0407b2f9edc047ac3c7318ff7fdbf4d6bddb191980d9c0fb437c",
+      "bytes": 4194304,
+      "expected": "OK",
+      "analytic": {
+        "box": [
+          0,
+          0,
+          48.0,
+          48.0
+        ],
+        "operations": []
+      }
+    },
+    {
+      "id": "source-plus1",
+      "sha256": "e1e54b2c825bb7c5225dd13ec1ad378432057d19cbbfa4ab2e28c13f86f2568f",
+      "bytes": 4194305,
+      "expected": "SourceLimit"
+    }
+  ]
+}
