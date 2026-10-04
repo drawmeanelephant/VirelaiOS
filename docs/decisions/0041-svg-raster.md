@@ -1,6 +1,6 @@
 # ADR 0041: Bounded SVG fills and a Go vector-raster contract
 
-- Status: **PROPOSED for owner review**; acceptance takes effect on landing.
+- Status: **ACCEPTED**; took effect on landing (#1927, 2026-10-03).
 - Date: 2026-10-03 · Design card: M90a / #1919 · Index: #1917
 - Related: [ADR 0030](0030-go-is-el0.md), [ADR 0038](0038-zig-guest-target.md),
   [UI primitives](../ui-primitives.md); downstream M89a / #1920.

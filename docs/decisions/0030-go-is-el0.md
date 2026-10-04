@@ -6,7 +6,7 @@
 - Amended: 2026-09-21 (M71k / #1570 — the EL0 HTTPS consumer is Go; `FETCHS.BIN` deleted, `lib/tls` is host-side interop)
 - Amended: 2026-09-21 (M71j / #1569 — the EL0 SSH-2 client is Go; `SSH.BIN` deleted, `lib/ssh` wire/packet/stream stay for SSHPACKET.BIN)
 - Amended: 2026-10-01 (A1 / #1865 — bounded native Zig portfolio exception)
-- Amendment proposed: 2026-10-03 (A2 / #1921 — bounded standalone QuickJS; owner approval pending)
+- Amended: 2026-10-04 (A2 / #1921 — bounded standalone QuickJS; owner approval [recorded](https://github.com/drawmeanelephant/VirelaiOS/issues/1915#issuecomment-5974889264))
 - Zig Guest Target/Backend Owner (A1 / #1865): **drawmeanelephant**,
   explicitly appointed by the project owner on 2026-10-01
 - Issue: #1293 (this document), umbrella #1292, M60 #1297
@@ -366,14 +366,13 @@ features. An unmaintained or failing workload can be suspended without
 changing Go ownership, the boot default or existing ABI consumers.
 Adding another program requires another owner-approved ADR amendment.
 
-## Proposed amendment (A2 / #1921) — standalone bounded QuickJS
+## Amendment (A2 / #1921, 2026-10-04) — standalone bounded QuickJS
 
-**Not accepted or implementation permission.** This amendment and
-[ADR 0039](0039-quickjs-runtime.md) require explicit approval from
-**drawmeanelephant**, the appointed Zig Guest Target/Backend Owner,
-before merge. The approval date/link must be recorded when received.
-The R1 card is not complete without that approval; A1's four-program
-list remains closed while A2 is proposed.
+**Accepted.** **drawmeanelephant**, the appointed Zig Guest Target/Backend
+Owner, approved this amendment and [ADR 0039](0039-quickjs-runtime.md)
+on 2026-10-04, after #1928 merged
+([record](https://github.com/drawmeanelephant/VirelaiOS/issues/1915#issuecomment-5974889264)).
+A1's four-program list stays closed; A2 admits QJS.BIN only.
 
 ### A2.1 — One additional program, not another app platform
 
@@ -452,7 +451,7 @@ quickjs-libc or the upstream shell/compiler. ADR 0039 carries complete
 flags, source hashes, patches, platform dispositions and update rules.
 No shared SDK/root-build change is implied.
 
-Subject to explicit approval, **drawmeanelephant** owns this program's
+As approved, **drawmeanelephant** owns this program's
 pin/security monitoring, private C boundary, numeric limits, upgrades
 and suspension on regression, alongside the existing target-owner role.
 Owner-approved landing precedes M88b's complete offline runtime and

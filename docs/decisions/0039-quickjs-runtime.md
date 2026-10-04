@@ -1,12 +1,13 @@
 # ADR 0039: Standalone, bounded QuickJS at native EL0
 
-- Status: **PROPOSED; not implementation permission**
+- Status: **ACCEPTED** (owner approval recorded 2026-10-04)
 - Date: 2026-10-03 · Design card: #1921 (M88a/R1) · Index: #1915
-- Required approver and proposed accountable maintainer: **drawmeanelephant**,
+- Approver and accountable maintainer: **drawmeanelephant**,
   ADR 0030's Zig Guest Target/Backend Owner.
-- Approval: **pending**. The owner must explicitly approve this design,
-  its numeric budgets and ADR 0030's A2 amendment before merge. Filing the
-  card, claiming it or opening a PR is not that approval.
+- Approval: **approved 2026-10-04**, after #1928 merged
+  ([record](https://github.com/drawmeanelephant/VirelaiOS/issues/1915#issuecomment-5974889264)):
+  this design, the native C recipe, the inventory dispositions, every
+  numeric budget, the M88b/M88c split and ADR 0030's A2 amendment.
 - Related: [ADR 0028](0028-html-renderer.md) D2/Amendment A,
   [ADR 0030](0030-go-is-el0.md) D3/A1/A2,
   [ADR 0038](0038-zig-guest-target.md), ADRs 0007/0020/0024.
@@ -17,7 +18,7 @@ Admit exactly one additional native program, **QJS.BIN**, a host-built
 static AArch64 ELF with a Zig adapter and the pinned QuickJS C interpreter.
 Go cannot link C: no cgo/FFI, and ADR 0030 D3 remains unchanged.
 The closed four-workload A1 exception does not already admit QuickJS;
-the proposed A2 amendment is necessary. No implementation starts until
+the A2 amendment is necessary. No implementation starts until
 owner approval and the design's landing.
 
 This is not a browser or another shell. **WEB.ELF never executes JS.**
