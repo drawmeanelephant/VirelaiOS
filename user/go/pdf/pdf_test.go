@@ -205,9 +205,15 @@ func TestFlateAndSplitContent(t *testing.T) {
 	for cut := 0; cut <= len(program); cut++ {
 		src := document("<< /Type /Catalog /Pages 2 0 R >>", "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
 			"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 48 48] /Contents [4 0 R 5 0 R] >>", stream([]byte(program[:cut]), ""), stream([]byte(program[cut:]), ""))
+		if cut > 0 && cut < len(program) && boundaryRegular(program[cut-1]) && boundaryRegular(program[cut]) {
+			refusal(t, src, MalformedContent)
+			continue
+		}
 		p, _, _ := rendered(t, src)
-		if p.Pix[0] != 0xffff0000 {
-			t.Fatal(cut)
+		for _, pixel := range p.Pix {
+			if pixel != 0xffff0000 {
+				t.Fatal(cut)
+			}
 		}
 	}
 }
