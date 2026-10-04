@@ -3276,13 +3276,17 @@ pub fn maybe_report(con: *console.Console) void {
     // prints on healthy boots beyond the one-per-boot armed line.
     audit.drain(con);
     // SMP lift evidence (claim 8477 follow-up): one line per secondary
-    // RUN (not per drain check), printed from the shell idle loop (main
-    // context). The ring preserves the per-run name, so a user run
-    // sandwiched between worker runs still gets its own line.
-    while (secondary_runs_printed < secondary_runs) {
+    // RUN retained in the bounded name buffer, from main context. #1965:
+    // self-rotations can run at yield cadence, not tick cadence. Snapshot
+    // once and skip overwritten names rather than reconstructing millions
+    // of discarded reports and starving monitor handback forever.
+    const secondary_end = secondary_runs;
+    const secondary_first = secondary_end - @min(secondary_end, secondary_run_names_count);
+    secondary_runs_printed = @max(secondary_runs_printed, secondary_first);
+    while (secondary_runs_printed < secondary_end) {
+        const index = secondary_runs_printed - secondary_first;
         secondary_runs_printed += 1;
-        const index = secondary_runs_printed - 1;
-        const name = if (index < secondary_run_names_count) secondary_run_names[index] else secondary_last_task;
+        const name = secondary_run_names[index];
         // ONE write per line (claim 881 slice 4): a secondary-core
         // sys_write can land between the vtable writes of a multi-put
         // line, splitting it (observed: `smp: secondary runs=` / `111` /
@@ -3293,13 +3297,15 @@ pub fn maybe_report(con: *console.Console) void {
         const line = std.fmt.bufPrint(&buf, "smp: secondary runs={d} task={s}\n", .{ secondary_runs_printed, name }) catch continue;
         con.puts(line);
     }
-    // Issue #857 evidence: one line per cross-core migration (not per
-    // drain check). Same one-buffer single-write rule as above.
-    while (steal_runs_printed < steal_runs) {
+    // The migration buffer has the same drop-oldest, bounded-drain rule.
+    const steal_end = steal_runs;
+    const steal_first = steal_end - @min(steal_end, steal_run_names_count);
+    steal_runs_printed = @max(steal_runs_printed, steal_first);
+    while (steal_runs_printed < steal_end) {
+        const index = steal_runs_printed - steal_first;
         steal_runs_printed += 1;
-        const index = steal_runs_printed - 1;
-        const sname = if (index < steal_run_names_count) steal_run_names[index] else steal_last_task;
-        const sfrom = if (index < steal_run_names_count) steal_run_froms[index] else steal_last_from;
+        const sname = steal_run_names[index];
+        const sfrom = steal_run_froms[index];
         var buf: [160]u8 = undefined;
         const line = std.fmt.bufPrint(&buf, "smp: steal runs={d} task={s} from={d}\n", .{ steal_runs_printed, sname, sfrom }) catch continue;
         con.puts(line);
@@ -3373,6 +3379,37 @@ pub fn maybe_report(con: *console.Console) void {
         const line = std.fmt.bufPrint(&buf, "tasks {s} sleeping {d} ticks\n", .{ sleep_report_name, sleep_report_ticks }) catch return;
         con.puts(line);
     }
+}
+
+test "scheduler: self-rotation report backlogs drain only retained names (#1965)" {
+    _ = init();
+    secondary_runs = 1_000_000;
+    secondary_runs_printed = 0;
+    secondary_run_names_count = secondary_run_name_cap;
+    secondary_run_names = @splat("user-el0");
+    steal_runs = 1_000_000;
+    steal_runs_printed = 0;
+    steal_run_names_count = steal_run_name_cap;
+    steal_run_names = @splat("user-el0");
+    steal_run_froms = @splat(1);
+    defer {
+        secondary_runs = 0;
+        secondary_runs_printed = 0;
+        secondary_run_names_count = 0;
+        steal_runs = 0;
+        steal_runs_printed = 0;
+        steal_run_names_count = 0;
+    }
+    var mock = console.MockConsole(8192){};
+    var con = mock.console();
+    maybe_report(&con);
+    try std.testing.expectEqual(secondary_run_name_cap, std.mem.count(u8, mock.contents(), "smp: secondary runs="));
+    try std.testing.expectEqual(steal_run_name_cap, std.mem.count(u8, mock.contents(), "smp: steal runs="));
+    try std.testing.expectEqual(secondary_runs, secondary_runs_printed);
+    try std.testing.expectEqual(steal_runs, steal_runs_printed);
+    mock.reset();
+    maybe_report(&con);
+    try std.testing.expectEqual(@as(usize, 0), mock.contents().len);
 }
 
 // ---------------------------------------------------------------------------
