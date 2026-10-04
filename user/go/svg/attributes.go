@@ -236,6 +236,10 @@ func (p *parser) validateAttribute(kind string, a attr) {
 		}
 	}
 	name := p.attrName(a.name)
+	if name == "" && p.equal(a.name, "font") {
+		p.fail(vector.UnsupportedText, a.name.lo)
+		return
+	}
 	if name != "xmlns" && p.resource(a) {
 		p.fail(vector.ExternalResource, a.name.lo)
 		return
