@@ -108,18 +108,6 @@ func TestBoundaryNumbersAndStringSpellings(t *testing.T) {
 	for _, text := range []string{"(A)", "<41>", "<4 1>", "(\\101)", "(\\A)", "(\\\nA)", "(\\\r\nA)"} {
 		rendered(t, fontDocument("/F1 0 Tf BT "+text+" Tj ET", glyph, ""))
 	}
-	// Content current path and text state cross streams, including splits
-	// inside strings, escape triples, names and numeric TJ entries.
-	program := "BT /F1 0 Tf [(\\101) 0 <41>] TJ ET"
-	for cut := 0; cut <= len(program); cut++ {
-		src := fontDocument(program, glyph, "")
-		// Re-author object offsets instead of modifying a stream in-place.
-		src = document("<< /Type /Catalog /Pages 2 0 R >>", "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-			"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 48 48] /Resources << /Font << /F1 6 0 R >> >> /Contents [4 0 R 5 0 R] >>",
-			stream([]byte(program[:cut]), ""), stream([]byte(program[cut:]), ""),
-			"<< /Type /Font /Subtype /Type3 /FontBBox [0 0 1 1] /FontMatrix [1 0 0 1 0 0] /CharProcs << /A 7 0 R >> /Encoding << /Differences [65 /A] >> /FirstChar 65 /LastChar 65 /Widths [1] >>", stream([]byte(glyph), ""))
-		rendered(t, src)
-	}
 }
 func TestMasksClipOrderingAndState(t *testing.T) {
 	p, _, _ := rendered(t, simple("1 0 0 rg 0 0 24 48 re W f 0 0 1 rg 0 0 48 48 re f", ""))

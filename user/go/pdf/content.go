@@ -43,16 +43,19 @@ type contentState struct {
 }
 
 // A page program suspends slot zero while an image or glyph uses slot one.
-// Streams concatenate without separators: lookahead, names and strings can
-// cross all 16 boundaries, including empty streams.
+// A1.1 checks decoded stream boundaries without resetting operands or state.
+// Empty streams do not separate neighbors; comments end with their stream.
 type program struct {
-	e               *engine
-	objects         [16]int
-	n, at, slot     int
-	open, have, eof bool
-	b               byte
-	offset          int
+	e                                               *engine
+	objects                                         [16]int
+	n, at, slot                                     int
+	open, have, eof, first, seen, inString, comment bool
+	b, last                                         byte
+	offset, streamStart                             int
 }
+
+// ISO 32000-1 §7.2.2 includes braces among the delimiters.
+func regular(b byte) bool { return !delimiter(b) && b != '{' && b != '}' }
 
 func (p *program) peek() (byte, bool) {
 	if p.have {
@@ -69,9 +72,24 @@ func (p *program) peek() (byte, bool) {
 				break
 			}
 			p.open = true
+			p.first = true
+			p.streamStart = int(p.e.dec[p.slot].pos)
+			if !p.e.dec[p.slot].raw {
+				// openDecoder has consumed the two-byte zlib header.
+				p.streamStart -= 2
+			}
 		}
 		b, ok := p.e.decoded(p.slot)
 		if ok {
+			if p.first && p.seen && (p.inString || regular(p.last) && regular(b)) {
+				p.e.set(MalformedContent)
+				p.e.f.Offset = p.streamStart
+				p.e.f.Object = p.objects[p.at]
+				return 0, false
+			}
+			p.first = false
+			p.seen = true
+			p.last = b
 			p.b = b
 			p.have = true
 			p.offset++
@@ -80,6 +98,7 @@ func (p *program) peek() (byte, bool) {
 		}
 		p.e.closeDecoder(p.slot)
 		p.open = false
+		p.comment = false
 		p.at++
 	}
 	return 0, false
@@ -104,12 +123,18 @@ func (p *program) space() {
 		if b != '%' {
 			return
 		}
+		p.comment = true
 		for p.e.f.Code == OK {
-			b, ok = p.get()
-			if !ok || b == 10 || b == 13 {
+			b, ok = p.peek()
+			if !ok || !p.comment {
+				break
+			}
+			p.have = false
+			if b == 10 || b == 13 {
 				break
 			}
 		}
+		p.comment = false
 	}
 }
 func (p *program) text() operand {
@@ -117,6 +142,8 @@ func (p *program) text() operand {
 	s := e.state
 	o := operand{k: kString, start: s.charN}
 	b, _ := p.get()
+	p.inString = true
+	defer func() { p.inString = false }()
 	literal := b == '('
 	depth := 1
 	hi := -1

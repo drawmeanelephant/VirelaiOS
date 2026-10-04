@@ -37,10 +37,15 @@ func TestAnalyticAcceptanceGeometry(t *testing.T) {
 		p, _, _ := rendered(t, simple(row.content, ""))
 		checkAnalyticPage(t, p, row.pixel)
 	}
-	// The operator's r/g split is concatenation, not an implicit separator.
+	// A1.1 refuses the former operator r/g split at the later stream.
 	src := document("<< /Type /Catalog /Pages 2 0 R >>", "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
 		"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 48 48] /Contents [4 0 R 5 0 R 6 0 R] >>",
 		stream([]byte("1 0 0 r"), ""), stream([]byte("g 3 3 24 24 re q 0 "), ""), stream([]byte("1 0 rg Q f"), ""))
+	refusal(t, src, MalformedContent)
+	// Operands, the path and saved graphics state still cross legal cuts.
+	src = document("<< /Type /Catalog /Pages 2 0 R >>", "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+		"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 48 48] /Contents [4 0 R 5 0 R 6 0 R] >>",
+		stream([]byte("1 0 0 "), ""), stream([]byte("rg 3 3 24 24 re q 0 "), ""), stream([]byte("1 0 rg Q f"), ""))
 	p, _, _ := rendered(t, src)
 	checkAnalyticPage(t, p, func(x, y int) uint32 {
 		if x >= 4 && x < 36 && y >= 28 && y < 60 {
