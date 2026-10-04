@@ -74,6 +74,16 @@ vgate_name go-wm-default "issue #1298 M59 / M71f #1565: a DEFAULT boot seats the
 vgate_share seed
 vgate_runner_flags -Xswiftc -DSPIKE
 
+vgate_setup_python <<'PY'
+import runpy
+runpy.run_path("tests/fixtures/desktop/m91/fresh.py")["stage"]({
+    "GOTABWM": "build-gotabwm.sh", "GOSH": "build-gosh.sh",
+    "GOCALC": "build-gocalc.sh", "GOSET": "build-goset.sh",
+    "GOTERM": "build-goterm.sh", "GOEDIT": "build-goedit.sh",
+    "NOTE": "build-note.sh",
+})
+PY
+
 # Boot 01, stage 1: forwarded once the seat holds its window and is WAITING for
 # the blur, so `dui focus 0` (the fixed terminal window) hands focus away and
 # the kernel routes WIN_BLUR to the seat. No `wm` key anywhere: the autostart
@@ -1248,3 +1258,126 @@ vgate_assert 18 share-contains SETTINGS.TXT 'timezone=UTC+05:30'
 vgate_assert 18 serial-contains 'rx-m83c-tz-persisted'
 vgate_assert 18 serial-absent '[EXC] parking:'
 vgate_assert 18 serial-absent 'exited status=139'
+
+# M91: a fresh first workspace on the compiled default, in live mode.
+# Only gate-owned settings/session/demo/history state from boots 01-18 is
+# removed. No script drives startup focus, no explicit seat exec, no wm key.
+vgate_assert 18 python <<'PY'
+import os, pathlib, shutil
+share = pathlib.Path(os.environ["VG_SHARE"])
+fixture = pathlib.Path("tests/fixtures/desktop/m91")
+for name in ("SETTINGS.TXT", "SESSION.TABS", "GOTABWM.DEMO", "NOTIFY.HIST",
+             "HISTORY", "STARTUP.SH", "PROFILE.SH", "M91-1925.RECEIPT"):
+    (share / name).unlink(missing_ok=True)
+shutil.copyfile(fixture / "terminal.sh", share / "M91-WORKFLOW.SH")
+(share / "EDIT").mkdir(exist_ok=True)
+shutil.copyfile(fixture / "editor.txt", share / "EDIT/SEED.TXT")
+assert not (share / "SETTINGS.TXT").exists()
+assert not (share / "SESSION.TABS").exists()
+assert not (share / "GOTABWM.DEMO").exists()
+print("M91: absent settings/session/demo; only fixture inputs staged, no receipt")
+PY
+
+# VMRunner enables its injected-input watchers in script mode. This
+# observation-only echo starts AFTER the first workspace, never unblocks it.
+vgate_file script-m91-observe.txt <<'EOF'
+echo m91-fixture-ready
+EOF
+vgate_run 19 -- \
+    --screen '$RUN_DIR/screen-19' --via-virtio --cvc-snap \
+    --script '$RUN_DIR/script-m91-observe.txt' --script-after 'gosh: prompt' \
+    --snapshot-after 'gotabwm: launcher presented' \
+    --snapshot-out '$RUN_DIR/menu-19' \
+    --pointer-virtio '272,702,d;272,702,u;270,222,d;960,10;800,400,u' \
+    --pointer-virtio-after 'gosh: prompt' \
+    --input-string $'source /host/M91-WORKFLOW.SH\n' \
+    --input-string-after 'goterm: prompt' \
+    --script-expect 'goterm: done status=0' --script-expect-tail 4 --timeout 180
+vgate_assert 19 serial-contains 'wm: autostart gotabwm (settings wm=gotabwm)'
+vgate_assert 19 serial-contains 'gotabwm: mode live'
+vgate_assert 19 serial-contains 'gotabwm: first-boot workspace'
+vgate_assert 19 serial-contains 'gosh: declare accepted'
+vgate_assert 19 serial-contains 'gosh: prompt'
+vgate_assert 19 serial-exact 'gotabwm: launcher exec GOTERM.ELF' 1
+vgate_assert 19 serial-contains 'goterm: declare accepted'
+vgate_assert 19 serial-contains 'goterm: attached'
+vgate_assert 19 serial-contains 'goterm: line source /host/M91-WORKFLOW.SH'
+vgate_assert 19 serial-contains 'goterm: done status=0'
+vgate_assert 19 serial-absent 'gotabwm: launcher exec GOEDIT.ELF'
+vgate_assert 19 serial-absent 'gotabwm: reorder '
+vgate_assert 19 serial-absent 'dui: term sel '
+vgate_assert 19 serial-absent '[EXC] parking:'
+vgate_assert 19 serial-absent 'exited status=139'
+vgate_assert 19 python <<'PY'
+import os, pathlib, re, shutil
+share = pathlib.Path(os.environ["VG_SHARE"])
+s = pathlib.Path(os.environ["VG_SER"]).read_text(errors="replace")
+assert "exec GOTABWM.ELF" not in s and "dui focus" not in s, "hidden startup workaround"
+opened = re.search(r"goterm: open id=(\d+)", s)
+assert opened and "gotabwm: host focus id=" + opened[1] in s, "Terminal not focused"
+assert s.count("gotabwm: launcher exec ") == 1, "double launch"
+expected = pathlib.Path("tests/fixtures/desktop/m91/receipt.expected").read_bytes()
+got = (share / "M91-1925.RECEIPT").read_bytes()
+assert got == expected, (got, expected)
+out = pathlib.Path("artifacts/m91-workflow")
+suffix = os.environ.get("VIRELAI_GATE_SUFFIX", "")
+(out / ("receipt-after-stop" + suffix)).write_bytes(got)
+(out / ("receipt.expected" + suffix)).write_bytes(expected)
+shutil.copyfile(os.environ["VG_SER"], out / ("terminal" + suffix + ".log"))
+print("independent host byte comparison after VM stop: receipt matches")
+PY
+vgate_assert 19 snapshot 'menu-19-*.raw' <<'PY'
+import os, runpy, sys
+runpy.run_path("tests/fixtures/desktop/m91/menu.py")["check"](
+    sys.argv[1], "artifacts/m91-workflow/default-menu" +
+    os.environ.get("VIRELAI_GATE_SUFFIX", "") + ".png")
+PY
+
+# Relaunch on the SAME share, without touching the receipt or changing wm.
+# Restored tabs are honest placeholders, not restarted programs (M79g).
+# Launch a real Terminal to read the receipt, then pointer-launch Code Editor,
+# type/save actual text, and switch focus back to Terminal by the rail chord.
+vgate_file script-m91-relaunch.txt <<'EOF'
+set GOMAXPROCS=1
+exec GOTERM.ELF
+EOF
+vgate_run 20 -- \
+    --screen '$RUN_DIR/screen-20' --via-virtio \
+    --script '$RUN_DIR/script-m91-relaunch.txt' \
+    --script-after 'gotabwm: present' \
+    --input-string $'cat /host/M91-1925.RECEIPT\n' \
+    --input-string-after 'goterm: prompt' \
+    --pointer-virtio '272,702,d;272,702,u;270,174,d;960,10;800,400,u' \
+    --pointer-virtio-after 'goterm: done status=0' \
+    --input-chords 'w,o,r,k,e,d,return,ctrl-s,ctrl-3' \
+    --input-chords-after 'goedit: present' \
+    --script-expect 'gotabwm: alt-tab id=' --script-expect-tail 4 --timeout 180
+vgate_assert 20 serial-contains 'wm: autostart gotabwm (settings wm=gotabwm)'
+vgate_assert 20 serial-contains 'gotabwm: mode live'
+vgate_assert 20 serial-contains 'gotabwm: session load n=2 mode=restore'
+vgate_assert 20 serial-contains 'goterm: line cat /host/M91-1925.RECEIPT'
+vgate_assert 20 serial-contains 'goterm: done status=0'
+vgate_assert 20 serial-exact 'gotabwm: launcher exec GOEDIT.ELF' 1
+vgate_assert 20 serial-contains 'goedit: dirty'
+vgate_assert 20 serial-contains 'goedit: saved /host/EDIT/SEED.TXT n=23'
+vgate_assert 20 serial-absent '[EXC] parking:'
+vgate_assert 20 serial-absent 'exited status=139'
+vgate_assert 20 python <<'PY'
+import os, pathlib, re, shutil
+share = pathlib.Path(os.environ["VG_SHARE"])
+fixture = pathlib.Path("tests/fixtures/desktop/m91")
+got = (share / "M91-1925.RECEIPT").read_bytes()
+assert got == (fixture / "receipt.expected").read_bytes(), "receipt changed across relaunch"
+edited = (share / "EDIT/SEED.TXT").read_bytes()
+assert edited == (fixture / "editor.expected").read_bytes(), edited
+s = pathlib.Path(os.environ["VG_SER"]).read_text(errors="replace")
+term = re.search(r"goterm: open id=(\d+)", s)
+assert term and "gotabwm: alt-tab id=" + term[1] in s, "focus did not return to real Terminal"
+assert s.index("goedit: dirty") < s.index("goedit: saved") < s.index("gotabwm: alt-tab id=")
+out = pathlib.Path("artifacts/m91-workflow")
+suffix = os.environ.get("VIRELAI_GATE_SUFFIX", "")
+(out / ("receipt-after-relaunch" + suffix)).write_bytes(got)
+(out / ("editor-saved" + suffix)).write_bytes(edited)
+shutil.copyfile(os.environ["VG_SER"], out / ("editor" + suffix + ".log"))
+print("guest read on relaunch; independent host receipt and editor comparisons match")
+PY

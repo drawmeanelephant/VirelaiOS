@@ -1,0 +1,34 @@
+M91 class-C fixture, performed by the human on #1914, not by #1925.
+
+From the repository, source tools/env-check.sh. Create a fresh isolated share:
+  mkdir -p artifacts/m91-workflow
+  fixture=$(mktemp -d "$PWD/artifacts/m91-workflow/human.XXXXXX")
+  mkdir -p "$fixture/share/EDIT"
+  cp tests/fixtures/desktop/m91/editor.txt "$fixture/share/EDIT/SEED.TXT"
+  VIRELAI_SESSION_SHARE="$fixture/share" bash tools/session.sh
+Do not override wm, seed GOTABWM.DEMO, or skip builds. Use no personal share.
+
+Activate the VM window. With the initial GOSH tab open, click Apps. Observe
+readable names and available/unavailable states. Click Terminal, without a
+keyboard launcher shortcut. In the guest Terminal, type:
+  echo m91-desktop-workflow-ok > /host/M91-1925.RECEIPT
+  cat /host/M91-1925.RECEIPT
+Open Apps and click Code Editor. At the empty line after "M91 editor seed",
+type "worked" and Enter, then save with Ctrl-S.
+Switch tabs normally. With the editor focused, open Apps, filter, Escape,
+then open and dismiss outside. Its text must remain unchanged. Click header
+and padding: neither launches. One normal click must never launch twice or
+select/drag content under the menu. A missing fixture-owned binary must show
+an honest unavailable state; never remove an operator-owned binary.
+
+Save guest scanouts and the session serial log inside the fixture. Stop only
+this VM, then independently compare on the host:
+  cmp tests/fixtures/desktop/m91/receipt.expected "$fixture/share/M91-1925.RECEIPT"
+  cmp tests/fixtures/desktop/m91/editor.expected "$fixture/share/EDIT/SEED.TXT"
+  cp artifacts/session-serial.log "$fixture/boot-1.log"
+Relaunch using the SAME VIRELAI_SESSION_SHARE, without build-skip flags. Read
+the receipt through a real Terminal opened from Apps, stop, and run both
+host cmp commands again. Restored tabs are placeholders, not running apps.
+Record real native input, activation, close/relaunch and pixels on #1914.
+Injected gates
+and successful byte comparisons alone are not human desktop acceptance.

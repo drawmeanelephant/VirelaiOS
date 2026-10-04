@@ -7,6 +7,34 @@ import (
 	"virelai/vi"
 )
 
+func TestLiveWindowPhaseSuppliesOwnBlur(t *testing.T) {
+	oldDemo, oldOpen := demoMode, openBlurProbe
+	defer func() { demoMode, openBlurProbe = oldDemo, oldOpen }()
+	calls := 0
+	openBlurProbe = func(x, y, w, h uint32) (int, int64) {
+		calls++
+		if x != 0 || y != 0 || w != 1 || h != 1 {
+			t.Fatal("blur probe must be minimal and owned")
+		}
+		return 7, 0
+	}
+	demoMode = false
+	if id, ok := beginProbeBlur(); !ok || id != 7 || calls != 1 {
+		t.Fatal("normal boot still depends on external focus")
+	}
+	demoMode = true
+	if id, ok := beginProbeBlur(); !ok || id != -1 || calls != 1 {
+		t.Fatal("demo no longer tests the harness-driven blur")
+	}
+	demoMode = false
+	openBlurProbe = func(uint32, uint32, uint32, uint32) (int, int64) {
+		return -1, -vi.ErrENOMEM
+	}
+	if _, ok := beginProbeBlur(); ok {
+		t.Fatal("failed blur window must not claim success")
+	}
+}
+
 func TestSeatChromeBackBufferMatchesPaintAndCaches(t *testing.T) {
 	scan := launcherScan()
 	paintGodMenuButton(scan, vi.ScanoutWidth, vi.ScanoutHeight)

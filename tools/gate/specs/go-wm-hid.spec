@@ -93,6 +93,15 @@ vgate_name go-wm-hid "issues #1419–#1423 M63a-e + #1563 M71d + #1717 M79f: GOT
 vgate_share seed
 vgate_runner_flags -Xswiftc -DSPIKE
 
+vgate_setup_python <<'PY'
+import runpy
+runpy.run_path("tests/fixtures/desktop/m91/fresh.py")["stage"]({
+    "GOTABWM": "build-gotabwm.sh", "GOEDIT": "build-goedit.sh",
+    "GOTERM": "build-goterm.sh", "GOCALC": "build-gocalc.sh",
+    "GOSET": "build-goset.sh", "GOSH": "build-gosh.sh",
+})
+PY
+
 vgate_file script.txt <<'EOF'
 set GOMAXPROCS=1
 vf rm SESSION.TABS
@@ -102,8 +111,12 @@ EOF
 
 vgate_file script2.txt <<'EOF'
 dui focus 0
+echo m87-seat-flush-before
+dui
 exec GOEDIT.ELF
 exec GOTERM.ELF
+echo m87-seat-flush-after
+dui
 EOF
 
 vgate_file script3.txt <<'EOF'
@@ -230,6 +243,24 @@ vgate_assert 01 serial-contains 'rx-gotabwm-hid-ok'
 vgate_assert 01 serial-absent 'goterm: line '
 vgate_assert 01 serial-absent '[EXC] parking:'
 vgate_assert 01 serial-absent 'exited status=139'
+vgate_assert 01 python <<'PY'
+import os, re
+
+serial = open(os.environ["VG_SER"], errors="replace").read()
+def kernel_presents(marker):
+    match = re.search(
+        re.escape(marker) + r".*?dui: windows=\d+ focused=\d+ presents=(\d+)",
+        serial, re.S)
+    if not match:
+        raise SystemExit("missing seat-owned kernel-present checkpoint: " + marker)
+    return int(match.group(1))
+
+before = kernel_presents("m87-seat-flush-before")
+after = kernel_presents("m87-seat-flush-after")
+if before != after:
+    raise SystemExit(f"kernel flushed over the owning seat: {before} -> {after}")
+print(f"console/app-load batches preserve exclusive seat presentation: kernel presents={after}")
+PY
 vgate_assert 01 python <<'PY'
 import os, re, sys
 ser = open(os.environ["VG_SER"], errors="replace").read().splitlines()
@@ -1322,4 +1353,78 @@ if not (sink.start() < s.index('gotabwm: launcher filter q=calc') < restore.star
         < s.index('goedit: saved /host/EDIT/M87.TXT n=10')):
     sys.exit("sink/filter/restore/save order wrong")
 print("real-focus dual-path negative: filtered while editor unfocused, restored, saved unchanged")
+PY
+
+# M91: Escape is independently exercised on the real dual-path input seam.
+vgate_run 14 -- \
+    --screen '$RUN_DIR/screen-14' --via-virtio \
+    --script '$RUN_DIR/script-m87.txt' \
+    --script2 '$RUN_DIR/script2-m87-edit.txt' \
+    --script2-after 'gotabwm: win focus' \
+    --pointer-virtio '272,702,d;272,702,u' \
+    --pointer-virtio-after 'goedit: present' \
+    --input-string 'calc' --input-string-after 'gotabwm: launcher open n=' \
+    --input-chords 'escape' \
+    --input-chords-after 'gotabwm: launcher filter q=calc n=1' \
+    --script-expect 'gotabwm: launcher restore id=' --script-expect-tail 4 --timeout 120
+vgate_assert 14 serial-contains 'gotabwm: launcher restore id='
+vgate_assert 14 serial-contains 'gotabwm: launcher dismiss'
+vgate_assert 14 share-equals EDIT/M87.TXT $'seed-line\n'
+vgate_assert 14 serial-absent 'goedit: dirty'
+vgate_assert 14 serial-absent 'gotabwm: launcher exec '
+vgate_assert 14 serial-absent 'dui: term sel '
+vgate_assert 14 serial-absent '[EXC] parking:'
+vgate_assert 14 serial-absent 'exited status=139'
+vgate_assert 14 python <<'PY'
+import os, pathlib, re
+s = pathlib.Path(os.environ["VG_SER"]).read_text(errors="replace")
+edit = re.search(r"goedit: open id=(\d+)", s)
+sink = re.search(r"gotabwm: launcher focus sink=(\d+)", s)
+restore = re.search(r"gotabwm: launcher restore id=(\d+)", s)
+assert edit and sink and restore and edit[1] == restore[1] and sink[1] != edit[1]
+assert sink.start() < s.index("gotabwm: launcher filter q=calc n=1") < restore.start()
+assert restore.start() < s.index("gotabwm: launcher dismiss")
+print("Escape restored the former live editor after filtering, without app input")
+PY
+
+# NOTE is deliberately unstaged in this spec. Both it and the non-app
+# fallback seat must remain visible and refuse clicks; padding is not a row.
+vgate_file script-m91-unavailable.txt <<'EOF'
+dui
+echo rx-m91-unavailable-ok
+EOF
+vgate_run 15 -- \
+    --screen '$RUN_DIR/screen-15' --via-virtio --cvc-snap \
+    --snapshot-after 'gotabwm: launcher presented' \
+    --snapshot-out '$RUN_DIR/menu-15' \
+    --script '$RUN_DIR/script-m87.txt' \
+    --script2 '$RUN_DIR/script2-m87-edit.txt' \
+    --script2-after 'gotabwm: win focus' \
+    --pointer-virtio '272,702,d;272,702,u;241,150,d;241,150,u;270,150,d;270,150,u;270,438,d;270,438,u;800,650,d;800,650,u' \
+    --pointer-virtio-after 'goedit: present' \
+    --script3 '$RUN_DIR/script-m91-unavailable.txt' \
+    --script3-after 'gotabwm: launcher restore id=' \
+    --script-expect 'rx-m91-unavailable-ok' --timeout 150
+vgate_assert 15 serial-absent 'gotabwm: launcher exec '
+vgate_assert 15 serial-absent 'goedit: dirty'
+vgate_assert 15 share-equals EDIT/M87.TXT $'seed-line\n'
+vgate_assert 15 serial-absent 'dui: term sel '
+vgate_assert 15 serial-absent 'gotabwm: reorder '
+vgate_assert 15 serial-absent '[EXC] parking:'
+vgate_assert 15 serial-absent 'exited status=139'
+vgate_assert 15 snapshot 'menu-15-*.raw' <<'PY'
+import pathlib, sys
+exec((pathlib.Path(sys.argv[1]).parent / "menu-glyphs.py").read_text())
+# Exact unavailable text, not just a gray rectangle: B in Binary not staged.
+rows = [0x3f, 0x66, 0x66, 0x3e, 0x66, 0x66, 0x3f, 0]
+x, y = 648, 146
+def px(dx, dy):
+    p = ((y + dy) * W + x + dx) * 4
+    return raw[p:p+3]
+bg, ink = px(7, 7), px(0, 0)
+assert min(abs(a-b) for a, b in zip(ink, bg)) >= 32, "unavailable reason unreadable"
+for dy, bits in enumerate(rows):
+    for dx in range(8):
+        assert px(dx, dy) == (ink if bits & (1 << dx) else bg), "unavailable glyph mismatch"
+print("missing NOTE binary has readable unavailable reason pixels")
 PY
