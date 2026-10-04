@@ -9,9 +9,9 @@ func TestPipelineCategoryCounters(t *testing.T) {
 		imageDocument("48 0 0 48 0 0 cm /I1 Do", []byte{255, 0, 0}, "/Width 1 /Height 1 /BitsPerComponent 8 /ColorSpace /DeviceRGB"),
 	}
 	want := [][WorkKinds]uint64{
-		{13723, 3855, 32800, 0, 505, 28, 16, 83, 121, 111, 16, 0, 0, 0, 0, 46, 46, 0, 0, 16384, 1, 242816},
-		{58576, 178655, 130928, 0, 2123, 112, 33, 169, 700, 514, 60, 5, 0, 0, 0, 181, 181, 0, 0, 16384, 1, 90936},
-		{65776, 13701, 49304, 0, 1277, 28, 24, 116, 221, 364, 8, 0, 0, 0, 0, 55, 55, 8320, 8192, 16384, 1, 0},
+		{13325, 3691, 32800, 209, 505, 28, 16, 83, 121, 111, 16, 0, 0, 0, 0, 46, 46, 0, 0, 16384, 1, 121464},
+		{54957, 177085, 130928, 1154, 2118, 112, 33, 169, 700, 525, 60, 5, 0, 0, 0, 181, 181, 0, 0, 16384, 1, 45608},
+		{50536, 12440, 49304, 809, 1277, 28, 24, 116, 221, 364, 8, 0, 0, 0, 0, 55, 55, 4160, 4096, 16384, 1, 0},
 	}
 	for i, src := range cases {
 		_, _, l := rendered(t, src)
@@ -33,13 +33,20 @@ func TestPipelineCategoryCounters(t *testing.T) {
 func TestLedgerSurvivesEngineAndSourceRecheck(t *testing.T) {
 	a := make([]byte, ArenaBytes)
 	src := memorySource{data: simple("", "")}
+	baseline := Ledger{Max: MaxWork}
+	if _, _, f := Render(&src, 0, a, &baseline); f.Code != OK {
+		t.Fatal(f)
+	}
 	l := Ledger{Max: MaxWork, Used: 17, Counts: [WorkKinds]uint64{Hash: 17}}
 	_, st, f := Render(&src, 0, a, &l)
-	if f.Code != OK || l.Counts[Hash] != 17 || st.Work != l.Used {
+	if f.Code != OK || l.Counts[Hash] != baseline.Counts[Hash]+17 ||
+		l.Used != baseline.Used+17 || st.Work != l.Used {
 		t.Fatal(f, st, l)
 	}
 	before := l.Used
-	if l.Charge(Hash, uint64(len(src.data))) != OK || l.Used != before+uint64(len(src.data)) {
+	hashBefore := l.Counts[Hash]
+	if l.Charge(Hash, uint64(len(src.data))) != OK || l.Used != before+uint64(len(src.data)) ||
+		l.Counts[Hash] != hashBefore+uint64(len(src.data)) {
 		t.Fatal("source recheck did not share ledger")
 	}
 }

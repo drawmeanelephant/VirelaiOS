@@ -426,6 +426,11 @@ func (e *engine) program(p *program) {
 }
 func (e *engine) renderPage(p pageDesc, background bool) {
 	e.initPage(p)
+	if !background {
+		// Validate the same mapped geometry and image placement without
+		// rasterizing an unpublished copy of every page.
+		e.state.g.clip = vector.Rect{}
+	}
 	if background {
 		for i := 0; i < int(p.width)*int(p.height) && e.f.Code == OK; i++ {
 			if e.charge(Background, 4) {

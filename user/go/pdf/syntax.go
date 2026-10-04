@@ -28,7 +28,7 @@ type value struct {
 	f          float64
 }
 type parseFrame struct {
-	keys      [256]int32
+	keys      [256]uint32
 	count     uint16
 	dict, key bool
 }
@@ -46,9 +46,24 @@ func (e *engine) byteAt(pos int) byte {
 		return 0
 	}
 	if pos < e.winStart || pos >= e.winStart+e.winN {
-		start := pos / len(e.window) * len(e.window)
+		// Keep an overlapping suffix on a forward miss. Dictionary key
+		// checks and semantic span rescans must not reopen the native source
+		// just because a small object straddles an aligned window boundary.
+		start := pos
+		kept := 0
+		if e.winStart >= 0 && pos >= e.winStart+e.winN {
+			start = max(e.winStart, pos-len(e.window)/2)
+			kept = max(0, e.winStart+e.winN-start)
+			if !e.charge(Copy, uint64(kept)) {
+				return 0
+			}
+			if kept > 0 {
+				copy(e.window[:kept], e.window[start-e.winStart:e.winN])
+			}
+		}
 		n := min(len(e.window), int(e.src.Length())-start)
-		got, c := e.src.ReadAt(e.window[:n], int64(start), e.l)
+		got, c := e.src.ReadAt(e.window[kept:n], int64(start+kept), e.l)
+		got += kept
 		e.set(c)
 		if got != n {
 			e.set(ReadFailed)
@@ -480,17 +495,31 @@ func (c *cursor) value() value {
 			pos := c.pos
 			var key [64]byte
 			n := c.name(&key)
+			// A 10-bit fingerprint shares the existing 32-bit record with
+			// its 22-bit source offset. Compare decoded names on every hash
+			// collision, so this only avoids redundant source rescans.
+			if !e.charge(Hash, uint64(n)) {
+				break
+			}
+			hash := uint32(2166136261)
+			for _, b := range key[:n] {
+				hash = (hash ^ uint32(b)) * 16777619
+			}
+			const offsetMask = uint32(MaxSource - 1)
+			fingerprint := hash << 22
 			for i := 0; i < int(f.count) && e.f.Code == OK; i++ {
-				prior := cursor{e, int(f.keys[i]), c.end}
-				var other [64]byte
-				m := prior.name(&other)
 				e.charge(Record, 1)
-				if n == m && key == other {
-					e.set(Malformed)
+				if f.keys[i]&^offsetMask == fingerprint {
+					prior := cursor{e, int(f.keys[i] & offsetMask), c.end}
+					var other [64]byte
+					m := prior.name(&other)
+					if n == m && key == other {
+						e.set(Malformed)
+					}
 				}
 			}
 			e.charge(Record, 1)
-			f.keys[f.count] = int32(pos)
+			f.keys[f.count] = uint32(pos) | fingerprint
 			f.count++
 			f.key = false
 			continue
