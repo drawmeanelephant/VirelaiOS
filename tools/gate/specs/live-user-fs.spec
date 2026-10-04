@@ -632,7 +632,7 @@ serial = pathlib.Path(os.environ["VG_SER"]).read_text()
 assert "secret fixture" not in serial and "outside must stay untouched" not in serial
 pages = re.findall(r"^pages: armed=1 total=(0x[0-9a-f]+) free=(0x[0-9a-f]+)", serial, re.M)
 assert len(pages) >= 2 and pages[0][0] == pages[-1][0], pages
-assert int(pages[0][1], 16) - int(pages[-1][1], 16) == 2, ("B3 transient leak beyond the two-page mount identity ledger", pages)
+assert pages[0] == pages[-1], ("B3 pages not reclaimed after reap", pages)
 checks = re.search(r"b3: PASS checks=(\d+) death-cursors=4 death-pins=4", serial)
 assert checks and int(checks[1]) >= 400, checks
 # B5: only the published tree remains; refused names and policy entries are untouched.
@@ -791,7 +791,7 @@ print("SDK: native uid/gid=%s; macOS uid/gid=%s (backend mapping, not guest ACL)
 usage = re.search(r"zig-fs: PASS checks=(\d+) arena_peak=(\d+) stack_high_water=(\d+)", serial)
 assert usage and int(usage[1]) >= 80 and int(usage[2]) <= 1024*1024 and int(usage[3]) <= 128*1024, usage
 pages = re.findall(r"^pages: armed=1 total=(0x[0-9a-f]+) free=(0x[0-9a-f]+)", serial, re.M)
-assert len(pages) >= 2 and int(pages[0][1], 16) - int(pages[-1][1], 16) == 2, pages
+assert len(pages) >= 2 and pages[0] == pages[-1], pages
 shutil.copyfile(root / "names", rd / "sdk-actual-names")
 print("SDK: independent names, bytes, metadata and cleanup verified")
 PY

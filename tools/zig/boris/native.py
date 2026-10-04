@@ -229,14 +229,9 @@ def compare(share, expected, serial, batch):
             n = int(c["output"].split(":")[1])
             assert stdout == f"boris-inventory: visited={n} resources_peak=5\n".encode(), (c["id"], stdout)
     pages = re.findall(r"^pages: armed=1 total=(0x[0-9a-f]+) free=(0x[0-9a-f]+)", text, re.M)
-    # B3's mount-lifetime filesystem identity ledger allocates two pages on
-    # first use. Existing live-user-fs pins this exact retained native charge.
-    assert len(pages) == 2 and pages[0][0] == pages[1][0], pages
-    charge = int(pages[0][1], 16) - int(pages[1][1], 16)
-    reaches_identity = any(c["args"][0] in ("compile", "inspect", "build") and
-                           c["id"] not in ("missing", "bad-root", "symlink-root", "parallel", "root-collision", "nested-output")
-                           for c in cases)
-    assert charge == (2 if reaches_identity else 0), pages
+    # Mount setup establishes the identity ledger before the cold baseline.
+    # Every batch must recover all free pages after reap.
+    assert len(pages) == 2 and pages[0] == pages[1], pages
     pools = re.findall(r"^tasks: enabled=1 current=\d+ switches=\d+ pool=(\d+)/(\d+) zombies=(\d+)$", text, re.M)
     assert len(pools) == 2 and pools[0] == pools[1] and pools[0][2] == "0", pools
     entropy = re.search(r"72 sys_getrandom calls=(\d+)", text)
