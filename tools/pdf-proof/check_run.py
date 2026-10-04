@@ -11,6 +11,48 @@ from compare import compare_files
 from corpus import ROOT
 
 
+def parse_receipts(serial, expected_static, runtime=False):
+    """M90f page_cap is inline storage, not a ceiling on true backing."""
+    rows = re.findall(r"runtime-receipt: pid=(\d+) name=PDFPROOF\.ELF ([^\r\n]+)", serial)
+    if len(rows) != (2 if runtime else 1):
+        raise ValueError("missing high-water receipts")
+    peaks = []
+    required = ("peak_pages", "peak_regions", "static_pages", "page_cap", "region_cap",
+                "page_saturated", "total_pages", "record_failures", "unrecorded_pages", "reaped")
+    for i, (pid, fields) in enumerate(rows):
+        values = {k: int(v) for k, v in re.findall(r"(\w+)=(\d+)", fields)}
+        if any(key not in values for key in required) or "page_tracking=extensible" not in fields:
+            raise ValueError("missing extensible kernel counters")
+        if values["page_cap"] != 4096 or values["region_cap"] != 16:
+            raise ValueError("kernel receipt contract drift")
+        if not 0 < values["peak_pages"] <= values["total_pages"]:
+            raise ValueError("inconsistent true backing counters")
+        if values["page_saturated"] != int(values["peak_pages"] >= values["page_cap"]):
+            raise ValueError("inconsistent saturation counter")
+        if values["record_failures"] or values["unrecorded_pages"]:
+            raise ValueError("unprovable backing records")
+        if values["static_pages"] != expected_static:
+            raise ValueError("static ELF pages mismatch (never subtracted)")
+        if values["reaped"] != int(i == len(rows)-1):
+            raise ValueError("receipt did not bracket final reap")
+        values["pid"] = int(pid)
+        peaks.append(values)
+    if runtime and peaks[0]["pid"] != peaks[-1]["pid"]:
+        raise ValueError("reuse receipts describe different processes")
+    return peaks
+
+
+def check_memory(peaks):
+    for values in peaks:
+        pages, regions = values["peak_pages"], values["peak_regions"]
+        if not (2304 <= pages <= 3072 and 1 <= regions <= 12):
+            raise ValueError(f"MemoryLimit: kernel peak_pages={pages}/3072 peak_regions={regions}/12")
+        if pages-2304 > 768 or regions-1 > 11:
+            raise ValueError("MemoryLimit: runtime partition")
+    if any(peaks[0][key] != peaks[-1][key] for key in ("peak_pages", "peak_regions")):
+        raise ValueError("100-cycle retained backing/region growth")
+
+
 def check(run, serial_path, tag, share):
     context = json.loads((run/"pdf-context.json").read_text())
     if context.get("mode") != "final-acceptance" or not context.get("M90f_merge"):
@@ -39,27 +81,12 @@ def check(run, serial_path, tag, share):
     cycles = 100 if tag == "runtime" else 1
     if lines[-1] != f"cycles\t{cycles}" or len(lines) != len(rows)+1:
         raise ValueError("receipt count/cycles")
-    receipts = re.findall(r"runtime-receipt: pid=(\d+) name=PDFPROOF\.ELF ([^\r\n]+)", serial)
-    if len(receipts) != (2 if tag == "runtime" else 1):
-        raise ValueError("missing high-water receipts")
-    peaks = []
-    for pid, fields in receipts:
-        values = {k: int(v) for k, v in re.findall(r"(\w+)=(\d+)", fields)}
-        for key in ("peak_pages", "peak_regions", "static_pages", "page_cap", "region_cap"):
-            if key not in values:
-                raise ValueError("missing kernel counter: "+key)
-        if not (2304 <= values["peak_pages"] <= 3072 and 1 <= values["peak_regions"] <= 12):
-            raise ValueError("MemoryLimit: kernel high-water pages/regions")
-        if values["peak_pages"]-2304 > 768 or values["peak_regions"]-1 > 11:
-            raise ValueError("MemoryLimit: runtime partition")
-        if values["static_pages"] != context["elf"]["static_pages"]:
-            raise ValueError("static ELF pages mismatch (never subtracted)")
-        if values.get("record_failures", 0) or values.get("unrecorded_pages", 0):
-            raise ValueError("unprovable saturated recording")
-        peaks.append(values)
-    if tag == "runtime":
-        if any(peaks[0][key] != peaks[-1][key] for key in ("peak_pages", "peak_regions")):
-            raise ValueError("100-cycle retained backing/region growth")
+    peaks = parse_receipts(serial, context["elf"]["static_pages"], tag == "runtime")
+    (evidence/"runtime-receipts.json").write_text(json.dumps(peaks, indent=2)+"\n")
+    for row in rows:
+        if row["output"] != "-" and (share/row["output"]).is_file():
+            shutil.copyfile(share/row["output"], evidence/(row["id"]+".bgra"))
+    check_memory(peaks)
     free = re.findall(r"pages: armed=1 total=0x[0-9a-f]+ free=(0x[0-9a-f]+)", serial)
     if len(free) != 2 or free[0] != free[1]:
         raise ValueError("post-exit free pool did not return to pre-run level")

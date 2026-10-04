@@ -7,6 +7,7 @@ from pathlib import Path
 import compare
 import corpus
 import oracle
+from check_run import check_memory, parse_receipts
 
 
 def bitmap(w, h, pixels):
@@ -112,6 +113,35 @@ class ManifestTests(unittest.TestCase):
         for row in frozen["references"]:
             self.assertNotIn(row["id"], corpus.negatives())
             self.assertEqual(row["invocation"], oracle.FLAGS)
+
+
+class RuntimeReceiptTests(unittest.TestCase):
+    def receipt(self, pages=3072, regions=12, reaped=1):
+        return (f"runtime-receipt: pid=7 name=PDFPROOF.ELF peak_pages={pages} page_cap=4096 "
+                f"peak_regions={regions} region_cap=16 static_pages=8617 page_tracking=extensible "
+                f"page_saturated={int(pages >= 4096)} total_pages={pages} "
+                f"record_failures=0 unrecorded_pages=0 reaped={reaped}\n")
+
+    def test_inclusive_memory_and_true_overflow(self):
+        check_memory(parse_receipts(self.receipt(), 8617))
+        for pages, regions in ((3073, 12), (3072, 13), (15000, 8)):
+            with self.assertRaisesRegex(ValueError, "MemoryLimit"):
+                check_memory(parse_receipts(self.receipt(pages, regions), 8617))
+
+    def test_missing_false_or_unreaped_counters_fail(self):
+        for old, new in (("page_tracking=extensible ", ""), ("record_failures=0", "record_failures=1"),
+                         ("unrecorded_pages=0", "unrecorded_pages=1"), ("page_saturated=0", "page_saturated=1"),
+                         ("reaped=1", "reaped=0"), ("static_pages=8617", "static_pages=1")):
+            with self.assertRaises(ValueError):
+                parse_receipts(self.receipt().replace(old, new), 8617)
+
+    def test_reuse_brackets_one_process_without_growth(self):
+        serial = self.receipt(reaped=0)+self.receipt()
+        check_memory(parse_receipts(serial, 8617, runtime=True))
+        with self.assertRaisesRegex(ValueError, "growth"):
+            check_memory(parse_receipts(self.receipt(pages=3071, reaped=0)+self.receipt(), 8617, runtime=True))
+        with self.assertRaisesRegex(ValueError, "different processes"):
+            parse_receipts(serial.replace("pid=7", "pid=8", 1), 8617, runtime=True)
 
 
 if __name__ == "__main__":
