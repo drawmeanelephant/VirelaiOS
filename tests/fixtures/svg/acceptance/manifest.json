@@ -1,0 +1,274 @@
+{
+  "affine": {
+    "bgra_sha256": "be9ea1277d975547ee285c70a1cd48cfd20a1dee515b33d3f405e684dd615cdb",
+    "height": 64,
+    "invocation": {
+      "background": "transparent",
+      "conversion": "PNG -> Pillow RGBA -> bytes B,G,R,A; top-down straight-alpha",
+      "dpi": 96,
+      "fonts": "forbidden",
+      "oracle": "CairoSVG 2.8.2",
+      "scale": 1,
+      "unsafe": false,
+      "url_fetcher": "deny-all"
+    },
+    "png_sha256": "75a999809ba6417d32190ecf1ff3e9e0fc913c2345769fe177b87d16ab61b8f6",
+    "source_sha256": "01e091acc2161f65b87ecd42e480ab16a9feb50e6251a3b91feb6cd14b10fd8e",
+    "width": 64
+  },
+  "alpha": {
+    "bgra_sha256": "95e61732f397c0a33db5639c3260f15b30408604ba578af8a8f6cb44afd0f289",
+    "height": 64,
+    "invocation": {
+      "background": "transparent",
+      "conversion": "PNG -> Pillow RGBA -> bytes B,G,R,A; top-down straight-alpha",
+      "dpi": 96,
+      "fonts": "forbidden",
+      "oracle": "CairoSVG 2.8.2",
+      "scale": 1,
+      "unsafe": false,
+      "url_fetcher": "deny-all"
+    },
+    "png_sha256": "93027d75275793046ae4067dce34d238f1c186f788f420ddb1e8b0dceaf8851a",
+    "source_sha256": "93992063ad4aa3e290995e601a9135b6159777bb4368eaecd41a17a74551afb1",
+    "width": 64
+  },
+  "consumer-curves": {
+    "bgra_sha256": "1220da778418f1a6be5ce939f4cc62c680a3c81d17340bc26e9bc1e2026b5529",
+    "height": 64,
+    "invocation": {
+      "background": "transparent",
+      "conversion": "PNG -> Pillow RGBA -> bytes B,G,R,A; top-down straight-alpha",
+      "dpi": 96,
+      "fonts": "forbidden",
+      "oracle": "CairoSVG 2.8.2",
+      "scale": 1,
+      "unsafe": false,
+      "url_fetcher": "deny-all"
+    },
+    "png_sha256": "f9ef48f7c3110a581d0f2b3614d52a2ea8f88a7f0e6bdbcc7595caf00fde5efa",
+    "source_sha256": "88154aa10481bb6332ab558e68e03cabeafaf22da67936afb7102351c8430ee5",
+    "width": 64
+  },
+  "cubic": {
+    "bgra_sha256": "0754e1374bcd8b24128d8c99ad0d3f0e4a4dd0ae3bb0a8b8888cadcf5a10659f",
+    "height": 64,
+    "invocation": {
+      "background": "transparent",
+      "conversion": "PNG -> Pillow RGBA -> bytes B,G,R,A; top-down straight-alpha",
+      "dpi": 96,
+      "fonts": "forbidden",
+      "oracle": "CairoSVG 2.8.2",
+      "scale": 1,
+      "unsafe": false,
+      "url_fetcher": "deny-all"
+    },
+    "png_sha256": "bdbe5cdc1809d52049ec08ba74e1c07655390571e0b532c84f7e202036d67aac",
+    "source_sha256": "511e8f62a30567674285d76f41ee602f568b071d0feb52e012df828d9947127f",
+    "width": 64
+  },
+  "ellipse": {
+    "bgra_sha256": "4269fd49f500718a0d1d52923b82a6c5c74113dba6bfb944e92c0974b5f1afcd",
+    "height": 64,
+    "invocation": {
+      "background": "transparent",
+      "conversion": "PNG -> Pillow RGBA -> bytes B,G,R,A; top-down straight-alpha",
+      "dpi": 96,
+      "fonts": "forbidden",
+      "oracle": "CairoSVG 2.8.2",
+      "scale": 1,
+      "unsafe": false,
+      "url_fetcher": "deny-all"
+    },
+    "png_sha256": "fabaac1d64d34071330f5fc6d09b5619b41fefaf97b9cbb2e9f0c5fd58ab063d",
+    "source_sha256": "747c6979b5c4be8bd9ac5ce7aae9eadabfb0d3ba4bdc9cf3c738fa0d642caa9a",
+    "width": 64
+  },
+  "evenodd": {
+    "bgra_sha256": "d3627318390056bf07bf29f9753d7cde36ff0bc72714863e7e4a0d452709af3c",
+    "height": 64,
+    "invocation": {
+      "background": "transparent",
+      "conversion": "PNG -> Pillow RGBA -> bytes B,G,R,A; top-down straight-alpha",
+      "dpi": 96,
+      "fonts": "forbidden",
+      "oracle": "CairoSVG 2.8.2",
+      "scale": 1,
+      "unsafe": false,
+      "url_fetcher": "deny-all"
+    },
+    "png_sha256": "b90b2f4ce84caf1cfd1ee3b9d5aec3d41937c697290d49da0b7789213a156b13",
+    "source_sha256": "46d762beaf04068d20e75edfa6965985cadf0cc50a5ebe4dae7a41cfeba87797",
+    "width": 64
+  },
+  "group": {
+    "bgra_sha256": "3ca0a290ab650f540fe4e1446af9642df16175d27c0736d4e2a93c3e6a7d8019",
+    "height": 64,
+    "invocation": {
+      "background": "transparent",
+      "conversion": "PNG -> Pillow RGBA -> bytes B,G,R,A; top-down straight-alpha",
+      "dpi": 96,
+      "fonts": "forbidden",
+      "oracle": "CairoSVG 2.8.2",
+      "scale": 1,
+      "unsafe": false,
+      "url_fetcher": "deny-all"
+    },
+    "png_sha256": "e80f1613e863b71d2d7ad7373af853fdb064d57efc8fcbabbdac11d3f9463de8",
+    "source_sha256": "e60a574718cb10ce202be42ba63a7de5f1dab7ac74d61a11355ae1f969064000",
+    "width": 64
+  },
+  "lines": {
+    "bgra_sha256": "d951f430e7769cb2fb26b67783bdd978734cce5679959131a8619c4b70282425",
+    "height": 64,
+    "invocation": {
+      "background": "transparent",
+      "conversion": "PNG -> Pillow RGBA -> bytes B,G,R,A; top-down straight-alpha",
+      "dpi": 96,
+      "fonts": "forbidden",
+      "oracle": "CairoSVG 2.8.2",
+      "scale": 1,
+      "unsafe": false,
+      "url_fetcher": "deny-all"
+    },
+    "png_sha256": "6088d652d84d26eb9f3198d2a887c4ac90d121db633544859f65c31c5986369c",
+    "source_sha256": "0b748750dcaab5708662ef3ce8bb20a33a93145a100b70015ab0bac0f60cfef9",
+    "width": 64
+  },
+  "max-curves": {
+    "bgra_sha256": "3986bf1c6a93bfbbb69ff74557a68534acdcc232c02feccd6adaa4db1a5daecd",
+    "height": 1024,
+    "invocation": {
+      "background": "transparent",
+      "conversion": "PNG -> Pillow RGBA -> bytes B,G,R,A; top-down straight-alpha",
+      "dpi": 96,
+      "fonts": "forbidden",
+      "oracle": "CairoSVG 2.8.2",
+      "scale": 1,
+      "unsafe": false,
+      "url_fetcher": "deny-all"
+    },
+    "png_sha256": "d1ab8e9e97897d1ae8907216de3d3d506a20289fcde2f0e4c9d2877e1b4f049f",
+    "source_sha256": "4d7f0376a0cc78967d80af8c4cd5f3ba430c38ac8b551ead4f1bb77739dd14e9",
+    "width": 1024
+  },
+  "max-fill": {
+    "bgra_sha256": "829e0283f75b859433b07bf812f2afae08c6b9c4df9cc4ff74b1723f14df6688",
+    "height": 1024,
+    "invocation": {
+      "background": "transparent",
+      "conversion": "PNG -> Pillow RGBA -> bytes B,G,R,A; top-down straight-alpha",
+      "dpi": 96,
+      "fonts": "forbidden",
+      "oracle": "CairoSVG 2.8.2",
+      "scale": 1,
+      "unsafe": false,
+      "url_fetcher": "deny-all"
+    },
+    "png_sha256": "a926ffdabdc7d8c7af08548a1ff85b5d8eabcdaf54555c2d4f7ca7c917f880b0",
+    "source_sha256": "0a8879c784cffb90e53de1674b013ed547a336c6f5dd25ef3f4df31b835eeb53",
+    "width": 1024
+  },
+  "nonzero": {
+    "bgra_sha256": "e3253d11864ff640476ed57187d10323f3f7536372ee55311ec094e907b46624",
+    "height": 64,
+    "invocation": {
+      "background": "transparent",
+      "conversion": "PNG -> Pillow RGBA -> bytes B,G,R,A; top-down straight-alpha",
+      "dpi": 96,
+      "fonts": "forbidden",
+      "oracle": "CairoSVG 2.8.2",
+      "scale": 1,
+      "unsafe": false,
+      "url_fetcher": "deny-all"
+    },
+    "png_sha256": "99f79f4ba37936620966c41be0a9325035cc67797e68921c0f32fefa53521ce5",
+    "source_sha256": "1403038c2ac80cb61f4467ee89e1a093104e182458e9f2c17caa556c65c58a3f",
+    "width": 64
+  },
+  "polygon": {
+    "bgra_sha256": "52d44aa7c31e6b19422208b62fa4251a7f950953cd99ff6bca5e24420c225279",
+    "height": 64,
+    "invocation": {
+      "background": "transparent",
+      "conversion": "PNG -> Pillow RGBA -> bytes B,G,R,A; top-down straight-alpha",
+      "dpi": 96,
+      "fonts": "forbidden",
+      "oracle": "CairoSVG 2.8.2",
+      "scale": 1,
+      "unsafe": false,
+      "url_fetcher": "deny-all"
+    },
+    "png_sha256": "409ef01d71e015aa20e868a97ba0bf4b95ea354f9be2bd61be6901af8b29c912",
+    "source_sha256": "428c507e32f713039f4d7049a2e642ae6f335f3bb528d2095ef46ada1ce5bfb5",
+    "width": 64
+  },
+  "quadratic": {
+    "bgra_sha256": "fd66af79706c345f23fa91ea47743ccf901e136202e1af7b55529dece5642e77",
+    "height": 64,
+    "invocation": {
+      "background": "transparent",
+      "conversion": "PNG -> Pillow RGBA -> bytes B,G,R,A; top-down straight-alpha",
+      "dpi": 96,
+      "fonts": "forbidden",
+      "oracle": "CairoSVG 2.8.2",
+      "scale": 1,
+      "unsafe": false,
+      "url_fetcher": "deny-all"
+    },
+    "png_sha256": "08f4393395dd4241c948a9dae1151cd87704de5d2b286cfc50aa057a0455ad46",
+    "source_sha256": "a6ffa9fe6330ce4354a37c0b50b342cc58b70dc74f9a11f5d1c164407c6ede69",
+    "width": 64
+  },
+  "rect": {
+    "bgra_sha256": "9a60cad2ecb050e85c35a2541b7dff35e7d70d1a230a73e302d7aa44a2f602b2",
+    "height": 64,
+    "invocation": {
+      "background": "transparent",
+      "conversion": "PNG -> Pillow RGBA -> bytes B,G,R,A; top-down straight-alpha",
+      "dpi": 96,
+      "fonts": "forbidden",
+      "oracle": "CairoSVG 2.8.2",
+      "scale": 1,
+      "unsafe": false,
+      "url_fetcher": "deny-all"
+    },
+    "png_sha256": "d63ed21a140dbf1602b8007c939e2adc36af7ad1c4c4acadbd816716077cd1d6",
+    "source_sha256": "5321dc32c7a69f1b291f49b7d2175a082d95101af1d7e47b87f3a554ae360831",
+    "width": 64
+  },
+  "viewport": {
+    "bgra_sha256": "1bb73bb73d724f1feda7463d7785729d346657e8c728cfeb07526192e553e5d7",
+    "height": 64,
+    "invocation": {
+      "background": "transparent",
+      "conversion": "PNG -> Pillow RGBA -> bytes B,G,R,A; top-down straight-alpha",
+      "dpi": 96,
+      "fonts": "forbidden",
+      "oracle": "CairoSVG 2.8.2",
+      "scale": 1,
+      "unsafe": false,
+      "url_fetcher": "deny-all"
+    },
+    "png_sha256": "00b76a5c66d1d1e14aa2fe4d0e034b0fe94573f867d807e64fd296dff537c866",
+    "source_sha256": "709b5442730ce4e36ab6abc1439b80527c55d3487edb7afa987b812a4bb13871",
+    "width": 64
+  },
+  "viewport-meet": {
+    "bgra_sha256": "81671812ddf8fcccc99f1f528923a8b850674564b98fd282ba5c0ab5ad3d5294",
+    "height": 64,
+    "invocation": {
+      "background": "transparent",
+      "conversion": "PNG -> Pillow RGBA -> bytes B,G,R,A; top-down straight-alpha",
+      "dpi": 96,
+      "fonts": "forbidden",
+      "oracle": "CairoSVG 2.8.2",
+      "scale": 1,
+      "unsafe": false,
+      "url_fetcher": "deny-all"
+    },
+    "png_sha256": "fe79d2720a8f6ac614bae21bf2e78fc1b9569853a7355bf82b76514832af91d7",
+    "source_sha256": "e6cc9a2f131ad514b792b95d63622073875d5c6fff3af3bb5a78c4d36977edd8",
+    "width": 64
+  }
+}
