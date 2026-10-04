@@ -349,7 +349,7 @@ pub fn ensure_registry() []const Command {
             .{ .name = "netsend", .dom = svclock.dom_bit(.net), .help = "send a known Ethernet frame (bounded staging, TX + used-ring drain)", .usage = "netsend <bytes>", .category = .networking, .min_args = 1, .max_args = 1, .handler = cmd_netsend },
             .{ .name = "pages", .help = "physical page allocator pool", .usage = "pages [selftest]", .category = .memory_state, .max_args = 1, .handler = cmd_pages },
             .{ .name = "pci", .help = "enumerate PCI devices on the bus", .usage = "pci", .category = .memory_state, .handler = cmd_pci },
-            .{ .name = "procs", .help = "process registry: image, address space, lifecycle, exit status", .usage = "procs", .category = .tasks_processes, .handler = cmd_procs },
+            .{ .name = "procs", .help = "process registry: image, address space, lifecycle, exit status", .usage = "procs", .category = .tasks_processes, .max_args = 2, .handler = cmd_procs },
             .{ .name = "random", .help = "print n random bytes from the seeded CSPRNG (hex)", .usage = "random [n]", .category = .system, .max_args = 1, .handler = cmd_random },
             .{ .name = "resources", .help = "fixed-pool audit: scheduler tasks, process registry, windows, page-table carve-out, and per-process ring bounds", .usage = "resources", .category = .memory_state, .handler = cmd_resources },
             .{ .name = "reboot", .help = "restart the machine", .usage = "reboot", .category = .system, .handler = cmd_reboot },
@@ -4567,7 +4567,8 @@ fn cmd_smp(m: *Monitor, args: []const []const u8) ExecError {
 /// information the task lifecycle alone throws away. Deterministic and
 /// grep-able.
 fn cmd_procs(m: *Monitor, args: []const []const u8) ExecError {
-    _ = args;
+    // Opt-in diagnostic: leave the catalog, help and ordinary table byte-exact.
+    if (args.len > 0) return cmd_runtime_receipt(m, args);
     m.console.puts("procs: count=");
     m.console.print_u64(@intCast(process.count()));
     m.console.puts("\n");
@@ -4607,6 +4608,38 @@ fn cmd_procs(m: *Monitor, args: []const []const u8) ExecError {
         }
         m.console.puts("\n");
     }
+    return .none;
+}
+
+/// `procs receipt [pid|name]` reads only final exit receipts. Retention has
+/// the same bounded lifetime as procs history, not a new event/serial stream.
+fn cmd_runtime_receipt(m: *Monitor, args: []const []const u8) ExecError {
+    if (!std.mem.eql(u8, args[0], "receipt")) {
+        print_usage(m, lookup("procs").?);
+        return .usage;
+    }
+    var found = false;
+    var id: usize = 0;
+    while (id < process.max_processes) : (id += 1) {
+        const info = process.info(id) orelse continue;
+        if (args.len == 2) {
+            const matches = if (parseInt(args[1])) |pid|
+                pid == id
+            else |_|
+                std.mem.eql(u8, args[1], info.name);
+            if (!matches) continue;
+        }
+        const receipt = process.runtime_receipt(id) orelse continue;
+        var buf: [256]u8 = undefined;
+        m.console.puts(std.fmt.bufPrint(&buf, "runtime-receipt: pid={d} name={s} peak_pages={d} page_cap={d} peak_regions={d} region_cap={d} static_pages={d}\n", .{
+            id,                   info.name,
+            receipt.peak_pages,   process.max_dynamic_pages,
+            receipt.peak_regions, process.max_mmap_regions,
+            receipt.static_pages,
+        }) catch return .not_implemented);
+        found = true;
+    }
+    if (!found) m.console.print_line("runtime-receipt: none");
     return .none;
 }
 
