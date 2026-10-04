@@ -5,8 +5,8 @@
 - Amended: 2026-10-04 (A1 / #1916 — oracle rulings and stream-boundary
   tokens; owner approval [recorded](https://github.com/drawmeanelephant/VirelaiOS/issues/1916#issuecomment-5981057608))
 - Amended: 2026-10-04 (A2 / #1916 — no GPL-family tools; CoreGraphics
-  replaces Poppler as the outside reference; owner decision recorded in
-  the landing PR)
+  replaces Poppler as the outside reference; owner decision
+  [recorded](https://github.com/drawmeanelephant/VirelaiOS/pull/1970))
 - Related: [ADR 0030](0030-go-is-el0.md) D2/D3,
   [ADR 0041](0041-svg-raster.md) §§4–7, ADRs 0007/0024/0026.
 
