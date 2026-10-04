@@ -4,6 +4,9 @@
 - Date: 2026-10-03 · Design card: M89a / #1920 · Index: #1916
 - Amended: 2026-10-04 (A1 / #1916 — oracle rulings and stream-boundary
   tokens; owner approval [recorded](https://github.com/drawmeanelephant/VirelaiOS/issues/1916#issuecomment-5981057608))
+- Amended: 2026-10-04 (A2 / #1916 — no GPL-family tools; CoreGraphics
+  replaces Poppler as the outside reference; owner decision
+  [recorded](https://github.com/drawmeanelephant/VirelaiOS/pull/1970))
 - Related: [ADR 0030](0030-go-is-el0.md) D2/D3,
   [ADR 0041](0041-svg-raster.md) §§4–7, ADRs 0007/0024/0026.
 
@@ -765,3 +768,67 @@ A1.1 engine rule and its engine tests; M89c owns the re-authored corpus,
 recipes, analytic references, comparator and `oracle.json` records.
 Neither card edits this ADR. §8's acceptance condition for #1916 is
 unchanged, with "independently correct" judged by A1.2 and A1.3.
+
+## Amendment (A2 / #1916, 2026-10-04) — CoreGraphics replaces Poppler
+
+The owner ruled that VirelaiOS never contains GPL-family code, and that
+new host tools and test references are not GPL-family either (AGENTS.md
+scope rules). Poppler is GPL-2.0-only OR GPL-3.0-only, so A2 removes it
+from M89's verification chain. A2 replaces only the outside reference.
+Every §3 and §5 rule, every §6 rule other than the outside reference
+itself, A1.1–A1.3's comparison rules, and every limit, budget, threshold
+and analytic reference are unchanged.
+
+### A2.1 — The outside reference is Apple CoreGraphics
+
+Replaces §6's "Independent oracle: host-only Poppler `pdftoppm` 26.09.0"
+paragraph and its invocation. The outside reference is the macOS
+CoreGraphics PDF renderer (`CGPDFDocument` and `CGContext.drawPDFPage`),
+driven by a small host-only Swift tool under `tools/pdf-proof/`. It is
+part of the operating system on every supported host (`AGENTS.md`): there
+is nothing to download, vendor, link into the guest or ship. The tool
+renders:
+
+- the §3.1 effective page box at 96/72 scale, so a 48 pt page is 64 px;
+- into an 8-bit DeviceRGB bitmap context, filled opaque white first;
+- with antialiasing on and image interpolation off;
+- to the comparator's packed opaque BGRA, rows top to bottom.
+
+`oracle.json` provenance pins the macOS product and build versions, the
+Swift compiler version and the tool source's SHA-256, plus the existing
+PDF, recipe and invocation hashes. An OS update counts as reference drift:
+references are re-frozen only after review, never silently. Negatives
+still never go through the outside reference.
+
+### A2.2 — Comparison rules are unchanged
+
+A1.2 and A1.3 apply as written, with "Poppler" read as "the outside
+reference": the same edge masks, one-pixel Chebyshev dilations,
+exact-match regions, diagnostics-only edge values, and the frozen per-case
+disagreement count and coordinate SHA-256 in `oracle.json`. A failed
+cross-check is still an oracle disagreement for owner review.
+
+The `affine` disagreement in #1950 was a Poppler observation and does not
+carry over. CoreGraphics output is judged afresh.
+
+### A2.3 — Diagnostic evidence (observed, not acceptance)
+
+A host spike on macOS 27.2 (build 26B5091g) with Swift 6.4 and the
+A2.1 contract cross-checked all 39 accepted rows (the 16 authored pages
+plus the generated maxima and capacity cases) against the current
+analytic references, using the existing comparator. It found no geometry
+failure and no disagreement outside the edge bands. Flat colors and
+nearest-neighbor image samples matched exactly, and `affine`'s singular
+square painted nothing. Five blank capacity pages omit the optional
+`/Contents` key: CoreGraphics logs a diagnostic for them and renders the
+correct blank page. The spike's tool and outputs are not committed; the
+owning card re-derives and freezes them.
+
+### A2.4 — Ownership
+
+A follow-up M89 card under #1916 owns the swap within M89c's former
+paths (`tools/pdf-proof/*`, `tests/fixtures/pdf/acceptance/*`,
+`tools/gate/specs/live-pdf-raster.spec`). It removes every Poppler
+invocation, pin and record, freezes the CoreGraphics references, and
+runs the full gate. No engine file changes. Earlier Poppler records stay
+in git history only. §8's acceptance condition for #1916 is unchanged.
