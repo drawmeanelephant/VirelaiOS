@@ -154,7 +154,7 @@ const InterleavingConsole = struct {
     }
 };
 
-test "monitor: procs and resource rows survive a foreign write at every boundary (#1965)" {
+test "monitor: accounting rows survive a foreign write at every boundary (#1965)" {
     var env = TestEnv.init();
     var mon = env.monitor();
     _ = scheduler.init();
@@ -164,6 +164,7 @@ test "monitor: procs and resource rows survive a foreign write at every boundary
     try std.testing.expect(process.setrlimit(pid, 0, 64));
     try std.testing.expectEqual(ExecError.none, exec(&mon, &.{"procs"}));
     try std.testing.expectEqual(ExecError.none, exec(&mon, &.{"resources"}));
+    try std.testing.expectEqual(ExecError.none, exec(&mon, &.{"addrspaces"}));
     const expected = env.mock.contents();
     try std.testing.expect(std.mem.indexOf(u8, expected, "resources: pid=0 COUNTER.BIN\n  mem=0/64 cpu=0/unlimited\n") != null);
 
@@ -171,6 +172,7 @@ test "monitor: procs and resource rows survive a foreign write at every boundary
     mon.console = interleaved.handle();
     try std.testing.expectEqual(ExecError.none, exec(&mon, &.{"procs"}));
     try std.testing.expectEqual(ExecError.none, exec(&mon, &.{"resources"}));
+    try std.testing.expectEqual(ExecError.none, exec(&mon, &.{"addrspaces"}));
     try std.testing.expectEqual(@as(usize, 0), interleaved.fragments);
     try std.testing.expect(!interleaved.mock.overflowed);
     var restored: [12288]u8 = undefined;

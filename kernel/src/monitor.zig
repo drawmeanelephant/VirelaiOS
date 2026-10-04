@@ -8046,54 +8046,31 @@ fn cmd_tabwm(m: *Monitor, args: []const []const u8) ExecError {
 /// honestly prints zeros for the register/root values and 0 leaves.
 fn cmd_addrspaces(m: *Monitor, args: []const []const u8) ExecError {
     _ = args;
-    m.console.puts("addrspaces: ttbr1=");
-    m.console.print_hex(mmu.read_ttbr1());
-    m.console.puts(" root=");
-    m.console.print_hex(mmu.kernel_root_phys());
-    m.console.puts(" tcr=");
-    m.console.print_hex(mmu.read_tcr());
-    m.console.puts(" t0sz=16\n");
+    var buf: [256]u8 = undefined;
+    m.console.puts(std.fmt.bufPrint(&buf, "addrspaces: ttbr1=0x{x:0>16} root=0x{x:0>16} tcr=0x{x:0>16} t0sz=16\n", .{
+        mmu.read_ttbr1(), mmu.kernel_root_phys(), mmu.read_tcr(),
+    }) catch return .not_implemented);
     var i: usize = 0;
     while (i < scheduler.max_tasks) : (i += 1) {
         const info = scheduler.task_info(i) orelse continue;
-        m.console.puts("addrspaces: task ");
-        m.console.puts(info.name);
-        m.console.puts(" ttbr0=");
-        m.console.print_hex(scheduler.task_ttbr0(i));
-        m.console.puts("\n");
+        m.console.puts(std.fmt.bufPrint(&buf, "addrspaces: task {s} ttbr0=0x{x:0>16}\n", .{ info.name, scheduler.task_ttbr0(i) }) catch return .not_implemented);
     }
     // Claim 6729: the user task's root is a fixed MMU fact (built at boot),
     // not a task-table fact — the lifecycle's idle task reaps the exited
     // user task, so the `task user-el0` row above may legitimately be gone
     // by the time this command runs. Report the root directly so the
     // ownership assertion (user root != kernel root) survives the reap.
-    m.console.puts("addrspaces: user root=");
-    m.console.print_hex(mmu.user_root_phys());
-    m.console.puts("\n");
+    m.console.puts(std.fmt.bufPrint(&buf, "addrspaces: user root=0x{x:0>16}\n", .{mmu.user_root_phys()}) catch return .not_implemented);
     // Claim 0826: the per-process-root budget — table pages consumed out of
     // the fixed 512-page carve-out (grown by claim 2714 for the M16
     // composition). Card 3g (claim 5795): FOUR live user roots (~15 each +
     // leaf tables) stay well inside it; the scale live gate reads this line
     // for the headroom assertion.
-    m.console.puts("addrspaces: tables=");
-    m.console.print_u64(@intCast(mmu.tables_used()));
-    m.console.puts("/");
-    m.console.print_u64(@intCast(mmu.tables_capacity()));
-    m.console.puts("\n");
+    m.console.puts(std.fmt.bufPrint(&buf, "addrspaces: tables={d}/{d}\n", .{ mmu.tables_used(), mmu.tables_capacity() }) catch return .not_implemented);
     const leaves = mmu.walk_leaves(mmu.user_root_phys());
-    m.console.puts("addrspaces: user text=");
-    m.console.print_hex(userspace.text_va);
-    m.console.puts(" stack=");
-    m.console.print_hex(userspace.user_stack_va());
-    m.console.puts(" leaves=");
-    m.console.print_u64(leaves.leaves);
-    m.console.puts(" device=");
-    m.console.print_u64(leaves.device_leaves);
-    m.console.puts(" el0=");
-    m.console.print_u64(leaves.el0_leaves);
-    m.console.puts(" el0_device=");
-    m.console.print_u64(leaves.el0_device_leaves);
-    m.console.puts("\n");
+    m.console.puts(std.fmt.bufPrint(&buf, "addrspaces: user text=0x{x:0>16} stack=0x{x:0>16} leaves={d} device={d} el0={d} el0_device={d}\n", .{
+        userspace.text_va, userspace.user_stack_va(), leaves.leaves, leaves.device_leaves, leaves.el0_leaves, leaves.el0_device_leaves,
+    }) catch return .not_implemented);
     return .none;
 }
 
