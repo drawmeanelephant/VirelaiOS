@@ -162,7 +162,9 @@ vgate_assert 01 serial-absent '[EXC] parking:'
 
 # Run 02: HID-only boot (no --usb-msd). Rescan disturbs nothing: the two HID
 # devices enumerate, the rescan reports no delta, the input FIFO stays armed.
-vgate_run 02 -- --input --script '$RUN_DIR/script2.txt' --script-after "virelai>" --timeout 90
+vgate_run 02 -- --input --display --script '$RUN_DIR/script2.txt' --script-after "virelai>" \
+    --input-chords "i,n,p,u,t,return" --input-chords-after "rx-usb-lifecycle-hid" --chords-view \
+    --script-expect "input: armed=" --timeout 90
 
 vgate_assert 02 serial-contains 'usb: enumerated='
 vgate_assert 02 serial-contains 'input: armed'
@@ -170,3 +172,8 @@ vgate_assert 02 serial-contains 'usb rescan: added=0 removed=0 reattached=0 coun
 vgate_assert 02 serial-contains 'rx-usb-lifecycle-hid'
 vgate_assert 02 serial-absent 'bulk=yes'
 vgate_assert 02 serial-absent '[EXC] parking:'
+vgate_assert 02 serial-contains 'events=6'
+vgate_assert 02 serial-count 'input: usb consumed slot=0x0000000000000001 len=0x0000000000000008' 6
+# The seeded share attaches custom virtio too; --chords-view explicitly
+# forces these keystrokes through USB rather than that available INPUT queue.
+vgate_assert 02 output-contains '--chords-view forces the view path'
