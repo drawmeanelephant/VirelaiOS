@@ -65,13 +65,17 @@ if not pt or not ct or pt.group(1) == ct.group(1):
 if not ps or not cs or ps.group(1) == cs.group(1):
     sys.exit("FAIL: stack VAs not distinct")
 # Flow semantic: live both ways (>= 2 distinct each), echoes >= 90%
-# of sends (M28 SMP split-marker note), no echo beyond the last send.
+# of sends; each program writes its complete marker in one sys_write
+# so SMP scheduler output cannot split the prefix from the payload.
+# No echo beyond the last send.
 sends = sorted({int(m.group(1)) for m in
                 (re.search(r"ipc: ping ([0-9]+)", l) for l in lines) if m})
 echoes = sorted({int(m.group(1)) for m in
                  (re.search(r"peer: got ping ([0-9]+)", l) for l in lines) if m})
 if not sends or not echoes or len(echoes) < 2:
     sys.exit("FAIL: flow too thin sends=%d echoes=%d" % (len(sends), len(echoes)))
+print("procs-syscall flow: sends=%d echoes=%d ratio=%.2f%% (min 90%%)" %
+      (len(sends), len(echoes), 100 * len(echoes) / len(sends)))
 if len(echoes) * 10 < len(sends) * 9:
     sys.exit("FAIL: echo ratio off echoes=%d sends=%d" % (len(echoes), len(sends)))
 if echoes[-1] > sends[-1]:

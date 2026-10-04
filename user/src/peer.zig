@@ -206,21 +206,25 @@ export fn _start() callconv(.naked) noreturn {
         \\svc #0
         \\b 20b
         \\0:
-        \\// sys_ipc_recv(buf=sp, max=64) — the caller's OWN mailbox, one
-        \\// message per pass (the kernel copies it out and consumes it).
+        \\// sys_ipc_recv(buf=sp+10, max=64) — leave room for the echo
+        \\// prefix in the same 96-byte stack buffer.
         \\sub sp, sp, #96
-        \\mov x0, sp
+        \\add x0, sp, #10
         \\mov x1, #64
         \\mov x8, #6
         \\svc #0
         \\cbz x0, 1f // empty mailbox: nothing to echo
-        \\// Echo: "peer: got " (10 bytes) + the received bytes verbatim.
-        \\mov x9, x0 // got (the recv result survives the writes below)
-        \\mov x0, #1
-        \\adr x1, 2f
-        \\mov x2, #10
-        \\mov x8, #1
-        \\svc #0
+        \\// Echo prefix + received bytes verbatim in ONE sys_write:
+        \\// SMP scheduler output must not split the serial marker.
+        \\add x9, x0, #10 // total length (at most 74 bytes)
+        \\adr x10, 2f
+        \\mov x11, sp
+        \\mov x12, #10
+        \\53:
+        \\ldrb w13, [x10], #1
+        \\strb w13, [x11], #1
+        \\subs x12, x12, #1
+        \\b.ne 53b
         \\mov x0, #1
         \\mov x1, sp
         \\mov x2, x9
@@ -257,8 +261,8 @@ test "user peer module compiles and exports the EL0 entry" {
 }
 
 test "user peer: the marker shapes are pinned (live-gate grep targets)" {
-    // The exact bytes the payload writes (the `#10` / `#11` lengths in
-    // the asm and the `2:` / `28:` `.ascii` must match these consts — a
+    // The exact bytes the payload writes (the `#10` echo copy/offset and
+    // `#11` snapshot length must match the `2:` / `28:` `.ascii` consts — a
     // drift breaks the live gates' `peer: got` / `peer: sees` assertions,
     // never silently).
     try std.testing.expectEqualStrings("peer: got ", echo_prefix);
