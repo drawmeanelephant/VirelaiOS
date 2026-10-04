@@ -3,7 +3,7 @@
 # Four isolated boots: icons, exclusions/reuse, maximum SVG, direct page.
 # Missing pixels, receipts, M90d bounds or oracle pins always fail.
 # exec-order: assert-proven -- one invocation per boot; script2 waits for
-# final task reap, after the program closes outputs and requests exit.
+# process exit plus one reaper turn; receipts prove final task reap.
 vgate_name live-svg-raster "ADR 0041: independent SVG pixels, budgets, vector consumer and runtime reclamation"
 vgate_share seed
 vgate_runner_flags -Xswiftc -DSPIKE
@@ -60,7 +60,7 @@ pages
 echo svg-raster-held
 EOF
 
-vgate_run icons -- --script '$RUN_DIR/icons.txt' --script2 '$RUN_DIR/svg-exit.txt' --script2-after 'tasks user-exec reaped' --script-expect 'svg-raster-held' --timeout 180
+vgate_run icons -- --script '$RUN_DIR/icons.txt' --script2 '$RUN_DIR/svg-exit.txt' --script2-after 'procs SVG.ELF exited status=0' --script2-delay 1 --script-expect 'svg-raster-held' --timeout 180
 vgate_assert icons serial-contains 'svg-proof: outputs closed'
 vgate_assert icons serial-contains 'procs SVG.ELF exited status=0'
 vgate_assert icons serial-absent 'svg-proof: FAIL'
@@ -75,7 +75,7 @@ from receipts import gate
 gate("icons")
 PY
 
-vgate_run reuse -- --script '$RUN_DIR/reuse.txt' --script2 '$RUN_DIR/svg-exit.txt' --script2-after 'tasks user-exec reaped' --script-expect 'svg-raster-held' --timeout 180
+vgate_run reuse -- --script '$RUN_DIR/reuse.txt' --script2 '$RUN_DIR/svg-exit.txt' --script2-after 'procs SVG.ELF exited status=0' --script2-delay 1 --script-expect 'svg-raster-held' --timeout 180
 vgate_assert reuse serial-contains 'svg-proof: outputs closed'
 vgate_assert reuse serial-contains 'procs SVG.ELF exited status=0'
 vgate_assert reuse serial-absent 'svg-proof: FAIL'
@@ -89,7 +89,7 @@ from receipts import gate
 gate("reuse")
 PY
 
-vgate_run maximum -- --script '$RUN_DIR/maximum.txt' --script2 '$RUN_DIR/svg-exit.txt' --script2-after 'tasks user-exec reaped' --script-expect 'svg-raster-held' --timeout 180
+vgate_run maximum -- --script '$RUN_DIR/maximum.txt' --script2 '$RUN_DIR/svg-exit.txt' --script2-after 'procs SVG.ELF exited status=0' --script2-delay 1 --script-expect 'svg-raster-held' --timeout 180
 vgate_assert maximum serial-contains 'svg-proof: outputs closed'
 vgate_assert maximum serial-contains 'procs SVG.ELF exited status=0'
 vgate_assert maximum serial-absent 'svg-proof: FAIL'
@@ -103,7 +103,7 @@ from receipts import gate
 gate("maximum")
 PY
 
-vgate_run consumer -- --script '$RUN_DIR/consumer.txt' --script2 '$RUN_DIR/consumer-exit.txt' --script2-after 'tasks user-exec reaped' --script-expect 'svg-raster-held' --timeout 180
+vgate_run consumer -- --script '$RUN_DIR/consumer.txt' --script2 '$RUN_DIR/consumer-exit.txt' --script2-after 'procs CONSUMER.ELF exited status=0' --script2-delay 1 --script-expect 'svg-raster-held' --timeout 180
 vgate_assert consumer serial-contains 'svg-proof: outputs closed'
 vgate_assert consumer serial-contains 'procs CONSUMER.ELF exited status=0'
 vgate_assert consumer serial-absent 'svg-proof: FAIL'

@@ -64,10 +64,15 @@ belong to the SVG suite; MemoryLimit/TimeLimit are adapter admission errors.
 CurveLimit and scanner-only unreachable attribute totals remain M90b's
 parameterized counter tests, not invented successful public fixtures.
 
-`ledger.py` pairs the M90d `procs receipt` high-water with the retained
-populated 8 MiB arena and pinned sbrk mapping/touch paths, including alignment
-padding and L2 metadata not present in MemStats. Static ELF pages are checked
-separately. Physical pages before exec and after final reap must match
-exactly. Missing M90d diagnostics or unproved source drift fails, not skips.
-The final run requires M90d on main. Details live only under ignored
+`ledger.py` pairs the M90d/M90f `procs receipt` true live-page high-water
+with the retained populated 8 MiB arena and pinned sbrk mapping/touch paths,
+including alignment padding and L2 metadata not present in MemStats. The 4,096-page field is an
+inline record capacity, not a working-set ceiling. Require extensible tracking,
+zero record failures/unrecorded pages and `reaped=1`. Runtime remains limited
+to 1,536 pages/11 regions, arena plus runtime to 3,584 pages/12 regions.
+Static ELF pages are checked and reported separately, never subtracted.
+Physical pages before exec and after final reap must match exactly. Failed
+memory ledgers retain all raw counters and free-pool samples before failing.
+Missing diagnostics or unproved source drift fails, not skips.
+The final run requires M90d and M90f on main. Details live only under ignored
 `artifacts/m90-acceptance/`; gate logs use `artifacts/live-svg-raster-*`.
