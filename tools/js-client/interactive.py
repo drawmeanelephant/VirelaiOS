@@ -7,6 +7,25 @@ import socket
 import time
 
 
+def receipt_batch(evals):
+    if not 0 <= evals < 256:
+        raise ValueError("ReceiptBatchEvalLimit")
+    count = min(16, 256 - evals)
+    return evals + count, b"undefined\n" * count
+
+
+def observed_marker(observed, marker, count=1, alternative=None):
+    if b"fault: QJS.BIN" in observed:
+        raise RuntimeError("guest QJS.BIN fault before marker: " + marker)
+    if alternative and alternative.encode() in observed:
+        return alternative
+    if observed.count(marker.encode()) >= count:
+        return marker
+    if marker.startswith("qjs: ready eval=") and b"qjs: clean" in observed:
+        raise RuntimeError("guest exited before marker: " + marker)
+    return None
+
+
 def drive(directory, tag, port, mode):
     serial = directory / ("vm-serial-" + tag + ".log")
     deadline = time.monotonic() + 1200
@@ -20,7 +39,7 @@ def drive(directory, tag, port, mode):
         except FileNotFoundError:
             return b""
 
-    def wait(marker, count=1):
+    def wait(marker, count=1, alternative=None):
         while time.monotonic() < deadline:
             if not directory.is_dir():
                 raise RuntimeError("gate ended before guest marker: " + marker)
@@ -34,10 +53,9 @@ def drive(directory, tag, port, mode):
                 except socket.timeout:
                     pass
             observed = text()
-            if b"fault: QJS.BIN" in observed:
-                raise RuntimeError("guest QJS.BIN fault before marker: " + marker)
-            if observed.count(marker.encode()) >= count:
-                return
+            seen = observed_marker(observed, marker, count, alternative)
+            if seen:
+                return seen
             time.sleep(0.005)
         raise TimeoutError("guest marker missing: " + marker)
 
@@ -128,9 +146,16 @@ def drive(directory, tag, port, mode):
     elif mode == "receipt":
         for _ in range(16):
             send("'x'.repeat(65535)")
-        # The prior guest ready=16 anchors this bounded 2400-byte burst.
-        sock.sendall(b"undefined\n" * 240)
-        wait("qjs: ReceiptLimit")
+        # Stay below the native tty queue's 1024-byte capacity. Each batch
+        # starts only after the preceding guest readiness acknowledgement.
+        while evals < 256:
+            evals, payload = receipt_batch(evals)
+            sock.sendall(payload)
+            seen = wait(f"qjs: ready eval={evals}\n", alternative="qjs: ReceiptLimit")
+            if seen == "qjs: ReceiptLimit":
+                break
+        else:
+            raise RuntimeError("receipt ceiling not reached before the eval ceiling")
     elif mode == "eof":
         sock.sendall(b"\x04")
     elif mode == "diagnostics":
