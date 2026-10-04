@@ -8,10 +8,11 @@ import (
 func contentStateBytes() int { return int(unsafe.Sizeof(contentState{})) }
 
 type fontDesc struct {
-	box                        [4]float64
-	matrix                     vector.Affine
-	procs, differences, widths value
-	first, last                int
+	box                [4]float64
+	matrix             vector.Affine
+	procs, differences value
+	widths             [256]float64
+	first, last        int
 }
 
 func (e *engine) numbers(v value, n int, out []float64) {
@@ -51,21 +52,9 @@ func (e *engine) font(n int) fontDesc {
 	if f.first < 0 || f.last > 255 || f.first > f.last {
 		e.set(Malformed)
 	}
-	f.widths = e.resolve(e.get(v, "Widths"))
-	if f.widths.k != kArray || int(f.widths.count) != f.last-f.first+1 {
+	widths := e.resolve(e.get(v, "Widths"))
+	if widths.k != kArray || int(widths.count) != f.last-f.first+1 {
 		e.set(Malformed)
-	}
-	if f.widths.k == kArray {
-		i := e.iter(f.widths)
-		for i.remaining > 0 && e.f.Code == OK {
-			v := e.number(i.next().val)
-			if v < 0 {
-				e.set(Malformed)
-			}
-			if !finite(v) {
-				e.set(CoordinateLimit)
-			}
-		}
 	}
 	enc := e.resolve(e.get(v, "Encoding"))
 	e.allowed(enc, "Type Differences", UnsupportedFont)
@@ -95,6 +84,31 @@ func (e *engine) font(n int) fontDesc {
 		} else if e.x[n].generation&1 == 0 {
 			e.ignoreMetadata(name.count)
 			e.x[n].generation |= 1
+		}
+	}
+	// Collect the bounded array before following indirect scalar widths.
+	// Interleaving those reads with the font iterator would reopen a native
+	// forward source for every entry when the values lie beyond its window.
+	if widths.k == kArray && e.f.Code == OK {
+		var values [256]value
+		i := e.iter(widths)
+		for j := 0; j < int(widths.count) && e.f.Code == OK; j++ {
+			if !e.charge(Record, 1) {
+				return f
+			}
+			values[j] = i.next().val
+		}
+		for j := 0; j < int(widths.count) && e.f.Code == OK; j++ {
+			w := e.number(e.resolve(values[j]))
+			if w < 0 {
+				e.set(Malformed)
+			}
+			if !finite(w) {
+				e.set(CoordinateLimit)
+			}
+			if e.charge(Record, 1) {
+				f.widths[j] = w
+			}
 		}
 	}
 	return f
@@ -144,12 +158,8 @@ func (e *engine) width(f fontDesc, code int) float64 {
 		e.set(MissingGlyph)
 		return 0
 	}
-	i := e.iter(f.widths)
-	var v value
-	for j := f.first; j <= code && e.f.Code == OK; j++ {
-		v = i.next().val
-	}
-	return e.number(v)
+	e.charge(Record, 1)
+	return f.widths[code-f.first]
 }
 func (e *engine) validateFont(n int) {
 	f := e.font(n)
