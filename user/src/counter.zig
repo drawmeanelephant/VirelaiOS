@@ -316,16 +316,20 @@ export fn _start() callconv(.naked) noreturn {
         \\strb w12, [x15, #3]
         \\mov x12, #32 // ' '
         \\strb w12, [x15, #4]
-        \\// Print the send marker: "ipc: ping " + "<d>\n" (the tail at
-        \\// x15+5 carries the digits and the newline).
+        \\// Prepend the send marker in the same stack buffer. One
+        \\// sys_write keeps SMP scheduler output from splitting the
+        \\// prefix from "<d>\n"; the IPC payload at x15 is unchanged.
+        \\sub x17, x15, #5
+        \\adr x13, 5f // "ipc: ping " overlaps the existing "ping "
+        \\mov x12, #10
+        \\53:
+        \\ldrb w11, [x13], #1
+        \\strb w11, [x17], #1
+        \\subs x12, x12, #1
+        \\b.ne 53b
         \\mov x0, #1
-        \\adr x1, 5f
-        \\mov x2, #10
-        \\mov x8, #1
-        \\svc #0
-        \\mov x0, #1
-        \\add x1, x15, #5
-        \\mov x2, x16
+        \\sub x1, x15, #5
+        \\add x2, x16, #10
         \\mov x8, #1
         \\svc #0
         \\// Send the payload "ping <d>\n": sys_ipc_send(pid, buf, len) —
@@ -384,8 +388,8 @@ test "user counter: the marker shape is pinned (live-gate grep target)" {
     // gate's `counter: alive` assertions, never silently).
     try std.testing.expectEqualStrings("counter: alive\n", marker);
     try std.testing.expectEqual(@as(usize, 15), marker.len);
-    // The send marker's prefix (the `#10` length in the asm and the `5:`
-    // `.ascii` must match this const).
+    // The send marker's prefix (the `#10` copy/length in the asm and the
+    // `5:` `.ascii` must match this const).
     try std.testing.expectEqualStrings("ipc: ping ", ipc_prefix);
     try std.testing.expectEqual(@as(usize, 10), ipc_prefix.len);
     // The sent payload's prefix (the five `strb` immediates in the asm
