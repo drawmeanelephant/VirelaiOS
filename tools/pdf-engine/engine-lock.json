@@ -11,7 +11,7 @@
   "fork_source_sha256": "b0e0d05e85df3315ecd7aebefee3fbc84f366aa4c5c1e1785ad039b8198d290d",
   "overlay_sha256": "9ac927d381d05147e1d360b39af331e27bc3b7c542d9b301abf01371ef49a8b8",
   "guest_source_sha256": {
-    "user/go/pdf": "d0e9ec7aceb9813e12048b7a5c0d0560c947bbce90d03e6229db3fe86f618493",
+    "user/go/pdf": "0303d1fd94e2c040ce928803131f6e7aef05e02996e131c3d4a4054ebb80cfae",
     "user/go/vector": "deac3edcb133999446289ff400c2d469aeab6d4f7c61a872b1ce159aec835f94",
     "user/go/vi": "59aa50bb927887ad81adfeaf67f189dc832817e0e0bdeac7ab433421fedfeff9",
     "user/go/vsys": "048353e7f3bb3a7ed5ce4204e7a89504090834e7e8f5d8d9a190b503e38ccddf"
