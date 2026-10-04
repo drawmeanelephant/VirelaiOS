@@ -115,6 +115,14 @@ pub fn run(arena: memory.Arena) !void {
     try success(runtime, harness, "JSON.stringify([2n**80n+'', [3,1,2].sort((a,b)=>a-b), Math.round(-0.5)])", "[\"1208925819614629174706176\",[1,2,3],0]\n");
     try success(runtime, harness, "Math.sin(Math.PI/2)+Math.cos(0)+Math.log(Math.E)+Math.log2(8)+Math.log10(100)+Math.exp(0)+Math.tan(0)", "9\n");
     try success(runtime, harness, "Math.random()", "0.28083505005035936\n");
+    // Growth past malloc_usable_size slack: fast arrays, sort slots and
+    // string buffers must keep every element across each realloc. Results
+    // were checked independently with Node.js.
+    try success(runtime, harness, "new Array(32768).fill(1).sort((a,b)=>a-b).length", "32768\n");
+    try success(runtime, harness, "let a=new Array(1000).fill(7); a.every(x=>x===7)", "true\n");
+    try success(runtime, harness, "let b=[]; for(let i=0;i<5000;i++) b.push((i*7919)%5000); b.sort((x,y)=>x-y); b.every((v,i)=>v===i)", "true\n");
+    try success(runtime, harness, "let p=[]; for(let i=0;i<20000;i++) p.push(String.fromCharCode(97+i%26)); let s=p.join(''); let ok=s.length===20000; for(let i=0;i<s.length;i++) if(s.charCodeAt(i)!==97+i%26) ok=false; ok", "true\n");
+    try success(runtime, harness, "let j=JSON.stringify(new Array(2000).fill([1,2,3])); j.length===16001 && j.split('[1,2,3]').length===2001", "true\n");
     try runtime.reset();
     try success(runtime, harness, "Math.random()", "0.28083505005035936\n");
     try success(runtime, harness, "typeof n", "undefined\n");

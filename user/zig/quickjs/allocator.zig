@@ -11,7 +11,6 @@ const Header = struct {
     previous: ?*Header,
     next: ?*Header,
     reserved: usize,
-    requested: usize,
     charged: usize,
     owner: *Bridge,
     tag: usize,
@@ -74,7 +73,6 @@ pub const Bridge = struct {
             .previous = null,
             .next = self.head,
             .reserved = reserved,
-            .requested = requested,
             .charged = charged,
             .owner = self,
             .tag = magic,
@@ -132,9 +130,11 @@ pub const Bridge = struct {
             return null;
         }
         const old = ptr orelse return self.allocate(requested);
-        const old_requested = self.header(old).requested;
+        // QuickJS sizes arrays and string buffers from malloc_usable_size and
+        // fills that slack, so the old contents extend past the last request.
+        const old_usable = self.usable(old);
         const next = self.allocate(requested) orelse return null;
-        const count = @min(old_requested, requested);
+        const count = @min(old_usable, requested);
         var offset: usize = 0;
         while (offset < count) {
             if (!self.poll.ready()) {
@@ -256,6 +256,25 @@ test "resize charges both blocks and cancellation preserves the original" {
     try std.testing.expect(bridge.resize(next, 7000) == null);
     try std.testing.expectEqual(@as(usize, 1), bridge.blocks);
     try std.testing.expectEqualSlices(u8, &([_]u8{0x5a} ** 3000), next[0..3000]);
+    bridge.releaseAll();
+    try std.testing.expectEqual(base, arena.used());
+}
+
+test "resize preserves the usable slack a caller may have filled" {
+    var backing: [8 * granule]u8 align(granule) = undefined;
+    const arena = try memory.Arena.init(&backing);
+    const base = arena.used();
+    var poll: TestPoll = .{};
+    var bridge = Bridge.init(arena, poll.get());
+    const first = bridge.allocate(1000).?;
+    const usable = bridge.usable(first);
+    try std.testing.expect(usable > 1000);
+    for (first[0..usable], 0..) |*byte, i| byte.* = @truncate(i *% 7 +% 1);
+    const grown = bridge.resize(first, usable + 1).?;
+    try std.testing.expect(bridge.usable(grown) >= usable + 1);
+    for (grown[0..usable], 0..) |byte, i| try std.testing.expectEqual(@as(u8, @truncate(i *% 7 +% 1)), byte);
+    const shrunk = bridge.resize(grown, 100).?;
+    for (shrunk[0..100], 0..) |byte, i| try std.testing.expectEqual(@as(u8, @truncate(i *% 7 +% 1)), byte);
     bridge.releaseAll();
     try std.testing.expectEqual(base, arena.used());
 }
