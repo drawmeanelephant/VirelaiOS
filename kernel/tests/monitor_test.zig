@@ -161,9 +161,11 @@ test "monitor: procs and resource rows survive a foreign write at every boundary
     mmu.reset();
     const pid = process.create("COUNTER.BIN", .{ .entry_va = 0x400000, .content_len = 64 }, .{ .stack_va = 0x1a400000, .stack_len = 8192 }, .{}).?;
     try std.testing.expect(process.bind(pid, 2));
+    try std.testing.expect(process.setrlimit(pid, 0, 64));
     try std.testing.expectEqual(ExecError.none, exec(&mon, &.{"procs"}));
     try std.testing.expectEqual(ExecError.none, exec(&mon, &.{"resources"}));
     const expected = env.mock.contents();
+    try std.testing.expect(std.mem.indexOf(u8, expected, "resources: pid=0 COUNTER.BIN\n  mem=0/64 cpu=0/unlimited\n") != null);
 
     var interleaved = InterleavingConsole{};
     mon.console = interleaved.handle();

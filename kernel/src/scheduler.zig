@@ -229,6 +229,10 @@ const Task = struct {
     /// #1965: only the registered demo worker yields its place to ready EL0
     /// work. Shell, idle reaper and spawn-demo keep their existing rotation.
     demo_worker: bool = false,
+    /// The source exception still owns this kernel stack. Publishing a
+    /// ready task must not let another core restore its frame before the
+    /// source handler has finished using the stack.
+    exception_guard: u64 = 0,
     /// Saved vector-frame pointer (the SP to restore); 0 until the task
     /// has been preempted once (the shell task's context is captured on
     /// its first preemption; the worker's frame is built at registration).
@@ -326,7 +330,48 @@ const Task = struct {
     futex_waiting: bool = false,
 };
 pub var tasks: [max_tasks]Task = [_]Task{.{}} ** max_tasks;
+var exception_owner: [smp.max_cores]?usize = @splat(null);
 var next_join_token: u64 = max_tasks;
+
+/// IRQs are masked and no scheduler lock is held at vector-dispatch entry.
+pub fn begin_exception(c: usize) void {
+    exception_owner[c] = null;
+    if (task_count == 0 or (c != 0 and current[c] == idle_id)) return;
+    const lk = rotation_lock(c);
+    const id = current[c];
+    @atomicStore(u64, &tasks[id].exception_guard, 1, .release);
+    exception_owner[c] = id;
+    rotation_unlock(lk);
+}
+
+/// Address consumed by the vector restore after it has switched SP away from
+/// the source stack. Bit 0 protects the frame; bits 1..4 retain wake nudges
+/// that arrived while another core was still finishing the source exception.
+pub fn exception_handoff(c: usize) ?*u64 {
+    const id = exception_owner[c] orelse return null;
+    return &tasks[id].exception_guard;
+}
+
+/// Host simulation of the assembly handoff. Never release a live source
+/// frame from C: even the dispatcher's epilogue still uses its source stack.
+pub fn end_exception(c: usize) void {
+    if (comptime !builtin.is_test) @compileError("live exception handoff belongs in the vector restore");
+    const id = exception_owner[c] orelse return;
+    const lk = rotation_lock(c);
+    _ = @atomicRmw(u64, &tasks[id].exception_guard, .Xchg, 0, .acq_rel);
+    exception_owner[c] = null;
+    rotation_unlock(lk);
+}
+
+fn defer_frame_nudge(id: usize, home: usize) void {
+    var guard = @atomicLoad(u64, &tasks[id].exception_guard, .acquire);
+    while (guard & 1 != 0) {
+        const nudged = guard | (@as(u64, 1) << @intCast(home + 1));
+        if (@cmpxchgStrong(u64, &tasks[id].exception_guard, guard, nudged, .acq_rel, .acquire)) |changed| {
+            guard = changed;
+        } else return;
+    }
+}
 
 fn save_tls(id: usize) void {
     if (comptime builtin.is_test or builtin.cpu.arch != .aarch64) return;
@@ -634,6 +679,7 @@ pub fn push_home_locked(id: usize) void {
     const home = home_ring_of(id);
     const daif = ring_locks[home].lock();
     ready_rings[home].push(id);
+    defer_frame_nudge(id, home);
     ring_locks[home].unlock(daif);
     // This is the blocked->ready funnel, not the preempted task's direct
     // push in switch_context. Publish after the ring unlock and before the
@@ -1101,6 +1147,7 @@ pub fn init() usize {
     next_join_token = max_tasks;
     pending_tls = @splat(0);
     for (&tasks) |*task| task.* = .{};
+    exception_owner = @splat(null);
     for (&futex_table) |*e| e.* = .{};
     // Claim 3848: every pool reset also clears the process layer (the
     // boot path initializes both here; host tests get isolation). Card 3f
@@ -1610,6 +1657,10 @@ fn steal_eligible(c: usize, cand: usize) bool {
     return true;
 }
 
+fn frame_claimable(c: usize, id: usize) bool {
+    return (@atomicLoad(u64, &tasks[id].exception_guard, .acquire) & 1) == 0 or exception_owner[c] == id;
+}
+
 const MergedPick = struct { id: usize, from: usize };
 
 /// Caller holds all rotation locks. Eligibility is exactly the existing
@@ -1619,6 +1670,7 @@ fn ready_user_for(c: usize) bool {
     for (&ready_rings, 0..) |*ring, r| {
         for (ring.members[0..ring.count]) |id| {
             if (r != c and !steal_eligible(c, id)) continue;
+            if (!frame_claimable(c, id)) continue;
             if ((tasks[id].spsr & 0xf) == spsr_el0t_irqs) return true;
         }
     }
@@ -1670,6 +1722,7 @@ fn merged_next(c: usize, after: usize) ?MergedPick {
     while (s < n) : (s += 1) {
         const cand = merged[(begin + s) % n];
         if (cand.from != c and !steal_eligible(c, cand.id)) continue;
+        if (!frame_claimable(c, cand.id)) continue;
         if (user_ready and tasks[cand.id].demo_worker) continue;
         return cand;
     }
@@ -2768,7 +2821,7 @@ pub fn reap(id: usize) bool {
     // page release runs AFTER, under the kernel gate only (claim 881
     // slice 3: a long reap must not stall another core's rotation).
     sched_lock_acquire();
-    if (id >= max_tasks or tasks[id].state != .zombie or tasks[id].teardown_pending or tasks[id].join_token != 0) {
+    if (id >= max_tasks or tasks[id].state != .zombie or tasks[id].teardown_pending or (@atomicLoad(u64, &tasks[id].exception_guard, .acquire) & 1) != 0 or tasks[id].join_token != 0) {
         sched_lock_release();
         return false;
     }

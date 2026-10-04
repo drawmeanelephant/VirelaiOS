@@ -234,29 +234,18 @@ pub fn wm_autostart_once(m: *monitor.Monitor) void {
     settings.ensure_init();
     const seat = settings.wm_seat_kind();
     const program = seat.program() orelse return;
+    var buf: [192]u8 = undefined;
     switch (exec_mod.exec_file(program, &.{})) {
         .ok => {
-            m.console.puts("wm: autostart ");
-            m.console.puts(seat.name());
-            m.console.puts(" (settings wm=");
-            m.console.puts(settings.wm_seat());
-            m.console.puts(")\n");
+            m.console.puts(std.fmt.bufPrint(&buf, "wm: autostart {s} (settings wm={s})\n", .{ seat.name(), settings.wm_seat() }) catch return);
         },
         // No share, or the seat's program is not on it: shim compositing is
         // the outcome and it is reported as such.
         .no_disk, .not_found => {
-            m.console.puts("wm: autostart ");
-            m.console.puts(seat.name());
-            m.console.puts(": ");
-            m.console.puts(program);
-            m.console.print_line(" not on the share (shim compositing)");
+            m.console.puts(std.fmt.bufPrint(&buf, "wm: autostart {s}: {s} not on the share (shim compositing)\n", .{ seat.name(), program }) catch return);
         },
         else => {
-            m.console.puts("wm: autostart ");
-            m.console.puts(seat.name());
-            m.console.puts(" failed: ");
-            m.console.puts(program);
-            m.console.print_line(" did not load (see `exec` for the diagnosis)");
+            m.console.puts(std.fmt.bufPrint(&buf, "wm: autostart {s} failed: {s} did not load (see `exec` for the diagnosis)\n", .{ seat.name(), program }) catch return);
         },
     }
 }

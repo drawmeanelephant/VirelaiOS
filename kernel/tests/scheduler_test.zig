@@ -443,6 +443,59 @@ test "scheduler: register_user separates EL1 exception and EL0 stacks" {
     try std.testing.expectEqual(@intFromPtr(&scheduler.user_timer_preemptions), exceptions.frame_read(frame, 9));
 }
 
+test "scheduler: a foreign core cannot claim or reap a frame still owned by an exception (#1965)" {
+    _ = init();
+    _ = register_worker(0x1111).?;
+    const user = register_user(0x2222, 0).?;
+    start();
+    try std.testing.expect(yield_current()); // shell -> user
+    scheduler.begin_exception(0);
+    // The source publishes its saved frame during a cooperative switch.
+    try std.testing.expect(yield_current()); // user -> idle
+    try std.testing.expect(scheduler.ready_rings[0].contains(user));
+    try std.testing.expect((scheduler.tasks[user].exception_guard & 1) != 0);
+    try std.testing.expect(next_runnable_for(0, 1).? != user);
+    // Same-core self-selection is safe: it restores only after this handler
+    // returns. The foreign-core exclusion ends with the dispatcher's handoff.
+    try std.testing.expectEqual(@as(?usize, user), next_runnable_for(1, 0));
+    scheduler.end_exception(0);
+    try std.testing.expectEqual(@as(?usize, user), next_runnable_for(0, 1));
+    scheduler.tasks[user].state = .zombie;
+    try std.testing.expect(scheduler.ready_rings[0].remove(user));
+    scheduler.tasks[user].exception_guard = 1;
+    try std.testing.expect(!reap(user));
+    scheduler.tasks[user].exception_guard = 0;
+    try std.testing.expect(reap(user));
+}
+
+test "scheduler: a wake retains its nudge until the protected frame is handed off (#1965)" {
+    _ = init();
+    const user = register_user(0x2222, 0).?;
+    try std.testing.expect(pin_task(user, 1));
+    try std.testing.expect(scheduler.ready_rings[1].remove(user));
+    scheduler.tasks[user].state = .blocked;
+    scheduler.tasks[user].exception_guard = 1;
+    start();
+    scheduler.tasks[user].state = .ready;
+    scheduler.push_home_locked(user);
+    try std.testing.expectEqual(@as(u64, 1 | (1 << 2)), scheduler.tasks[user].exception_guard);
+    try std.testing.expect(next_runnable_for(0, 1) == null);
+    // Stand in for the vector's atomic release, which runs on the selected
+    // stack and consumes the retained core-1 SGI target bit.
+    const guard = @atomicRmw(u64, &scheduler.tasks[user].exception_guard, .Xchg, 0, .acq_rel);
+    try std.testing.expectEqual(@as(u64, 1 << 1), guard >> 1);
+    try std.testing.expectEqual(@as(?usize, user), next_runnable_for(0, 1));
+    // A parked secondary must not inherit a previous source owner.
+    const old_current = scheduler.current[1];
+    scheduler.current[1] = user;
+    scheduler.begin_exception(1);
+    scheduler.end_exception(1);
+    scheduler.current[1] = idle_id;
+    scheduler.begin_exception(1);
+    try std.testing.expect(scheduler.exception_handoff(1) == null);
+    scheduler.current[1] = old_current;
+}
+
 test "scheduler: register_exec_user passes argc and argv VA through the x0/x1 frame slots" {
     // Card 3e (claim 4636): the entry-contract extension — the exec'd
     // program's `_start` receives argc in x0 and the argv block VA in x1.

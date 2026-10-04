@@ -285,6 +285,9 @@ pub var resume_frame: [max_resume_cores]u64 = [_]u64{0} ** max_resume_cores;
 /// userspace stack when scheduled after an EL1 task. Per-core like
 /// `resume_frame`.
 pub var resume_sp_el0: [max_resume_cores]u64 = [_]u64{0} ** max_resume_cores;
+/// Source-frame guard released only after the vector has changed SP. The
+/// pointer array is per-core; restore scratch registers are still saved.
+pub export var exc_scheduler_handoff: [max_resume_cores]?*u64 = @splat(null);
 
 /// Unmask IRQs (clear DAIF.I). The caller arms the GIC + timer first so no
 /// interrupt can arrive before the chain is ready. No-op on non-aarch64
@@ -993,6 +996,10 @@ pub export fn exc_dispatch(
     kind: u64,
 ) callconv(.c) Resume {
     const cid = resume_core(); // per-core resume handoff (issue #810)
+    const schedulable = kind == kind_irq or is_from_el0(spsr);
+    if (schedulable) scheduler.begin_exception(cid);
+    exc_scheduler_handoff[cid] = if (schedulable) scheduler.exception_handoff(cid) else null;
+    defer if (builtin.is_test and schedulable) scheduler.end_exception(cid);
     handled_count_value[cid] += 1; // per-core: secondary-core IRQs fire in parallel
     // #1261: record exception ENTRY, before any GIC state is consumed. The
     // post-ack `irq` probe cannot distinguish "the interrupt stopped being
@@ -1191,6 +1198,30 @@ fn exception_vectors() align(2048) callconv(.naked) void {
         \\ldp q2, q3, [sp], #32
         \\ldp q0, q1, [sp], #32
         \\msr sp_el0, x1
+        \\// SP now belongs to the selected frame, not the source handler.
+        \\// Releasing before this point lets another core overwrite the
+        \\// source C epilogue. Release and deferred SGIs need no C call.
+        \\adrp x9, exc_scheduler_handoff
+        \\add x9, x9, :lo12:exc_scheduler_handoff
+        \\mrs x10, mpidr_el1
+        \\and x10, x10, #0xff
+        \\cmp x10, #4
+        \\csel x10, x10, xzr, lo
+        \\ldr x11, [x9, x10, lsl #3]
+        \\cbz x11, exc_handoff_done
+        \\str xzr, [x9, x10, lsl #3]
+        \\exc_handoff_release:
+        \\ldaxr x12, [x11]
+        \\stlxr w13, xzr, [x11]
+        \\cbnz w13, exc_handoff_release
+        \\lsr x12, x12, #1
+        \\cbz x12, exc_handoff_done
+        \\// RESCHEDULE is SGI 0; bits 0..3 are its target list.
+        \\dsb ishst
+        \\msr icc_sgi1r_el1, x12
+        \\dsb ish
+        \\isb
+        \\exc_handoff_done:
         \\b exc_restore_tail
         \\.endm
         \\// Entry 0x000: EL1t synchronous (kind 0)
