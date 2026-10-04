@@ -865,13 +865,22 @@ pub fn try_handle_page_fault(esr: u64, far: u64) bool {
                 } else {
                     const new_pa = alloc.alloc_pages(1) orelse return false;
                     copy_phys_page(new_pa, old_pa);
+                    const owned_old = process.owns_dynamic_page(pid, old_pa);
+                    if (!process.replace_dynamic_page(pid, old_pa, new_pa)) {
+                        _ = alloc.free_pages(new_pa, 1);
+                        return false;
+                    }
                     const page_va = far & ~@as(u64, 0xfff);
                     if (!mmu.map_user_page(root, page_va, new_pa, true, false)) {
+                        if (owned_old) {
+                            _ = process.replace_dynamic_page(pid, new_pa, old_pa);
+                        } else {
+                            _ = process.forget_dynamic_page(pid, new_pa);
+                        }
                         _ = alloc.free_pages(new_pa, 1);
                         return false;
                     }
                     _ = alloc.unref_page(old_pa);
-                    _ = process.record_dynamic_page(pid, new_pa);
                     cow_fault_count += 1;
                     return true;
                 }
@@ -917,11 +926,15 @@ pub fn populate_user_page(pid: usize, root: u64, va: u64) bool {
     if (!demand) return false;
     const pa = alloc.alloc_pages(1) orelse return false;
     zero_phys_page(pa);
-    if (!mmu.map_user_page(root, page, pa, writable, executable)) {
+    if (!process.record_dynamic_page(pid, pa)) {
         _ = alloc.free_pages(pa, 1);
         return false;
     }
-    _ = process.record_dynamic_page(pid, pa);
+    if (!mmu.map_user_page(root, page, pa, writable, executable)) {
+        _ = process.forget_dynamic_page(pid, pa);
+        _ = alloc.free_pages(pa, 1);
+        return false;
+    }
     demand_fault_count += 1;
     return true;
 }

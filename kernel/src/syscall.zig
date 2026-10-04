@@ -3291,12 +3291,24 @@ fn handle_mmap(args: Args, _: *exceptions.VectorFrame) u64 {
         const pages = aligned_len / 4096;
         var i: u64 = 0;
         while (i < pages) : (i += 1) {
-            const pa = alloc.alloc_pages(1) orelse return error_result(.enomem);
+            const pa = alloc.alloc_pages(1) orelse break;
             if (!builtin.is_test) {
                 @memset(@as([*]u8, @ptrFromInt(pa))[0..4096], 0);
             }
-            _ = mmu.map_user_page(pinfo.root_phys, va + i * 4096, pa, (prot & 2) != 0, (prot & 4) != 0);
-            _ = process.record_dynamic_page(pid, pa);
+            if (!process.record_dynamic_page(pid, pa)) {
+                _ = alloc.free_pages(pa, 1);
+                break;
+            }
+            if (!mmu.map_user_page(pinfo.root_phys, va + i * 4096, pa, (prot & 2) != 0, (prot & 4) != 0)) {
+                _ = process.forget_dynamic_page(pid, pa);
+                _ = alloc.free_pages(pa, 1);
+                break;
+            }
+        }
+        if (i != pages) {
+            unmap_dynamic_pages(pid, pinfo.root_phys, va, i);
+            _ = process.remove_mmap_region(pid, va, aligned_len);
+            return error_result(.enomem);
         }
     }
 
@@ -3495,7 +3507,18 @@ fn owner_create_shared_surface(
     }
     var di: u64 = 0;
     while (di < pages) : (di += 1) {
-        _ = process.record_dynamic_page(pid, pa_base + di * 4096);
+        if (!process.record_dynamic_page(pid, pa_base + di * 4096)) {
+            for (0..@intCast(di)) |ri| {
+                _ = process.forget_dynamic_page(pid, pa_base + ri * 4096);
+            }
+            for (0..page_count) |ui| {
+                _ = mmu.unmap_user_page(pinfo.root_phys, va + ui * 4096);
+            }
+            _ = alloc.free_pages(pa_base, pages);
+            _ = shared_region.drop_owner(handle);
+            _ = process.remove_mmap_region(pid, va, aligned_len);
+            return .enomem;
+        }
     }
     _ = shared_region.set_mapping(handle, va, page_count, pa_base);
     return .{ .ok = .{ .va = va, .handle = handle, .pa_base = pa_base, .page_count = page_count } };
@@ -3640,17 +3663,24 @@ fn handle_munmap(args: Args, _: *exceptions.VectorFrame) u64 {
         } else return error_result(.einval); // partial unmap of a shared surface
     }
 
-    var i: u64 = 0;
-    while (i < pages) : (i += 1) {
-        const page_va = addr + i * 4096;
-        if (mmu.unmap_user_page(pinfo.root_phys, page_va)) |pa| {
-            _ = alloc.unref_page(pa);
-        }
-    }
+    unmap_dynamic_pages(pid, pinfo.root_phys, addr, pages);
 
     _ = process.remove_mmap_region(pid, addr, aligned_len);
     uaccess.remove_region(addr, aligned_len);
     return 0;
+}
+
+fn unmap_dynamic_pages(pid: usize, root: u64, addr: u64, pages: u64) void {
+    for (0..@intCast(pages)) |i| {
+        const va = addr + i * 4096;
+        // The identity overlay and static apertures are not mmap backing.
+        if (!mmu.leaf_el0_visible(root, va)) continue;
+        const leaf = mmu.get_user_leaf(root, va) orelse continue;
+        const pa = leaf.* & 0x0000_ffff_ffff_f000;
+        if (!process.forget_dynamic_page(pid, pa)) continue;
+        _ = mmu.unmap_user_page(root, va);
+        _ = alloc.unref_page(pa);
+    }
 }
 
 // ---------------------------------------------------------------------------

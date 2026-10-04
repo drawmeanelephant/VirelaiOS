@@ -3627,6 +3627,163 @@ test "syscall: B7 device binding, atomic copy rollback, bounds, tokens and exit 
     try std.testing.expectEqual(@as(u64, 1), current.resets);
 }
 
+var reclaim_pool: [4100 * 4096]u8 align(4096) = undefined;
+var reclaim_stack: [scheduler.task_stack_size]u8 align(16) = undefined;
+
+fn reclaimFixture(pages: u64) !struct { pid: usize, task: usize, root: u64 } {
+    mmu.reset();
+    alloc.reset_refcounts();
+    shared_region.reset();
+    process.init();
+    userspace.init();
+    init(test_writer);
+    _ = scheduler.init();
+    _ = scheduler.register_worker(0x2000);
+    const descriptors = [_]memmap.MemoryDescriptor{
+        .{ .type = .conventional_memory, .physical_start = @intFromPtr(&reclaim_pool), .virtual_start = 0, .number_of_pages = pages, .attribute = 0 },
+    };
+    const view = memmap.MapView.init(std.mem.asBytes(&descriptors), @sizeOf(memmap.MemoryDescriptor), descriptors.len);
+    try std.testing.expect(alloc.init(view, &.{}));
+    const root = mmu.build_user_root(userspace.text_va, 0x1000, 64, userspace.stack_va, 0x2000, 8192).?;
+    const pid = process.create("RECLAIM", .{}, .{ .root_phys = root }, .{}).?;
+    const task = scheduler.register_exec_user(userspace.text_va, 0x40000000, 64, 0x80000000, 8192, &reclaim_stack, 0, 0).?;
+    try std.testing.expect(process.bind(pid, task));
+    scheduler.start();
+    while (scheduler.current_id() != task) try std.testing.expect(scheduler.yield_current());
+    return .{ .pid = pid, .task = task, .root = root };
+}
+
+test "syscall: reclaim munmap remap and reap never frees a reallocated page" {
+    const f = try reclaimFixture(8);
+    var frame = fresh_frame();
+    const va: u64 = 0x60000000;
+    try std.testing.expectEqual(va, dispatch(sys_mmap, .{ va, 4096, 3, 0x8022, 0, 0 }, &frame));
+    const pa = mmu.get_user_leaf(f.root, va).?.* & 0x0000_ffff_ffff_f000;
+    try std.testing.expectEqual(@as(u64, 0), dispatch(sys_munmap, .{ va, 4096, 0, 0, 0, 0 }, &frame));
+    // A different live owner acquires exactly the physical page just unmapped.
+    const other_pa = alloc.alloc_pages(1).?;
+    try std.testing.expectEqual(pa, other_pa);
+    const other = process.create("OTHER", .{}, .{}, .{}).?;
+    try std.testing.expect(process.record_dynamic_page(other, other_pa));
+    // Remapping the same VA must own a different PA and release only that PA.
+    try std.testing.expectEqual(va, dispatch(sys_mmap, .{ va, 4096, 3, 0x8022, 0, 0 }, &frame));
+    try std.testing.expect((mmu.get_user_leaf(f.root, va).?.* & 0x0000_ffff_ffff_f000) != other_pa);
+    try std.testing.expectEqual(@as(?usize, f.pid), process.on_task_exit(f.task, 0));
+    try std.testing.expectEqual(@as(usize, 1), process.runtime_receipt(f.pid).?.peak_pages);
+    try std.testing.expectEqual(@as(usize, 2), process.runtime_receipt(f.pid).?.total_pages);
+    try std.testing.expect(process.release_pages_on_reap(f.task));
+    try std.testing.expectEqual(@as(u64, 7), alloc.stats().free_pages);
+    try std.testing.expect(!alloc.reserve(other_pa, 1)); // still allocated
+    try std.testing.expect(process.reap(f.pid));
+    try std.testing.expect(!alloc.reserve(other_pa, 1)); // descriptor reap is also safe
+    try std.testing.expect(process.reap(other));
+    try std.testing.expectEqual(@as(u64, 8), alloc.stats().free_pages);
+}
+
+test "syscall: reclaim populated mmap overflow returns every backing and record page" {
+    const f = try reclaimFixture(4100);
+    var frame = fresh_frame();
+    const va: u64 = 0x60000000;
+    try std.testing.expectEqual(va, dispatch(sys_mmap, .{ va, 4097 * 4096, 3, 0x8022, 0, 0 }, &frame));
+    try std.testing.expectEqual(@as(u64, 2), alloc.stats().free_pages); // 4097 backing + one metadata
+    // Remove an inline record, compacting from overflow and returning metadata.
+    try std.testing.expectEqual(@as(u64, 0), dispatch(sys_munmap, .{ va, 4096, 0, 0, 0, 0 }, &frame));
+    try std.testing.expectEqual(@as(u64, 4), alloc.stats().free_pages);
+    const held = alloc.alloc_pages(1).?;
+    _ = process.on_task_exit(f.task, 0);
+    try std.testing.expectEqual(@as(usize, 4097), process.runtime_receipt(f.pid).?.peak_pages);
+    try std.testing.expect(process.release_pages_on_reap(f.task));
+    try std.testing.expectEqual(@as(u64, 4099), alloc.stats().free_pages);
+    try std.testing.expect(!alloc.reserve(held, 1));
+    try std.testing.expect(alloc.free_pages(held, 1));
+}
+
+test "syscall: reclaim all four allocation paths unwind record storage exhaustion" {
+    const f = try reclaimFixture(1);
+    var frame = fresh_frame();
+    for (0..process.max_dynamic_pages) |_| try std.testing.expect(process.record_dynamic_page(f.pid, 0));
+    const va: u64 = 0x60000000;
+    try std.testing.expectEqual(error_result(.enomem), dispatch(sys_mmap, .{ va, 4096, 3, 0x8022, 0, 0 }, &frame));
+    try std.testing.expect(process.find_mmap_region(f.pid, va) == null);
+    try std.testing.expect(!mmu.leaf_el0_visible(f.root, va));
+    try std.testing.expectEqual(@as(u64, 1), alloc.stats().free_pages);
+    try std.testing.expectEqual(error_result(.enomem), dispatch(sys_mmap, .{ va, 4096, 3, 0x10020, 0, 0 }, &frame));
+    try std.testing.expect(shared_region.find_owner(f.pid, va) == null);
+    try std.testing.expect(process.find_mmap_region(f.pid, va) == null);
+    try std.testing.expect(!mmu.leaf_el0_visible(f.root, va));
+    try std.testing.expectEqual(@as(u64, 1), alloc.stats().free_pages);
+    try std.testing.expect(process.add_mmap_region(f.pid, va, 4096, 3, 0x22));
+    try std.testing.expect(!exceptions.populate_user_page(f.pid, f.root, va));
+    try std.testing.expect(!mmu.leaf_el0_visible(f.root, va));
+    try std.testing.expectEqual(@as(u64, 1), alloc.stats().free_pages);
+    // A borrowed COW page is outside the pool; its private copy can allocate,
+    // but no second page remains for the overflow record.
+    const borrowed: u64 = 0x200000;
+    try std.testing.expect(mmu.map_user_cow_page(f.root, va, borrowed));
+    alloc.ref_page(borrowed);
+    try std.testing.expect(!exceptions.try_handle_page_fault((0x24 << 26) | (1 << 6) | 0xf, va));
+    try std.testing.expectEqual(borrowed, mmu.get_user_leaf(f.root, va).?.* & 0x0000_ffff_ffff_f000);
+    try std.testing.expectEqual(@as(u16, 2), alloc.page_refcount(borrowed));
+    try std.testing.expectEqual(@as(u64, 1), alloc.stats().free_pages);
+    _ = process.on_task_exit(f.task, 0);
+    try std.testing.expectEqual(@as(usize, 4), process.runtime_receipt(f.pid).?.record_failures);
+    try std.testing.expect(process.release_pages_on_reap(f.task));
+    try std.testing.expectEqual(@as(u64, 1), alloc.stats().free_pages);
+}
+
+test "syscall: reclaim COW replacement followed by reap keeps the old owner's page" {
+    const f = try reclaimFixture(8);
+    var frame = fresh_frame();
+    const va: u64 = 0x60000000;
+    try std.testing.expectEqual(va, dispatch(sys_mmap, .{ va, 4096, 3, 0x8022, 0, 0 }, &frame));
+    const old_pa = mmu.get_user_leaf(f.root, va).?.* & 0x0000_ffff_ffff_f000;
+    const other = process.create("OTHER", .{}, .{}, .{}).?;
+    try std.testing.expect(process.record_dynamic_page(other, old_pa));
+    alloc.ref_page(old_pa);
+    try std.testing.expect(mmu.map_user_cow_page(f.root, va, old_pa));
+    try std.testing.expect(exceptions.try_handle_page_fault((0x24 << 26) | (1 << 6) | 0xf, va));
+    try std.testing.expect(!process.owns_dynamic_page(f.pid, old_pa));
+    try std.testing.expectEqual(@as(u16, 1), alloc.page_refcount(old_pa));
+    _ = process.on_task_exit(f.task, 0);
+    try std.testing.expect(process.release_pages_on_reap(f.task));
+    try std.testing.expectEqual(@as(u64, 7), alloc.stats().free_pages);
+    try std.testing.expect(!alloc.reserve(old_pa, 1));
+    try std.testing.expect(process.reap(other));
+    try std.testing.expectEqual(@as(u64, 8), alloc.stats().free_pages);
+}
+
+test "syscall: reclaim borrowed COW copy leaves no stale record after peer detach" {
+    const f = try reclaimFixture(8);
+    const va: u64 = 0x60000000;
+    const old_pa = alloc.alloc_pages(1).?;
+    try std.testing.expect(mmu.map_user_cow_page(f.root, va, old_pa));
+    alloc.ref_page(old_pa);
+    try std.testing.expect(exceptions.try_handle_page_fault((0x24 << 26) | (1 << 6) | 0xf, va));
+    const copy = mmu.get_user_leaf(f.root, va).?.* & 0x0000_ffff_ffff_f000;
+    try std.testing.expect(process.owns_dynamic_page(f.pid, copy));
+    shared_mmap.unmap_peer_leaves(f.root, va, 1, old_pa);
+    const held = alloc.alloc_pages(1).?;
+    try std.testing.expectEqual(copy, held);
+    _ = process.on_task_exit(f.task, 0);
+    try std.testing.expect(process.release_pages_on_reap(f.task));
+    try std.testing.expect(!alloc.reserve(held, 1));
+    try std.testing.expectEqual(@as(u64, 6), alloc.stats().free_pages);
+    try std.testing.expect(alloc.free_pages(held, 1));
+    try std.testing.expect(alloc.unref_page(old_pa));
+}
+
+test "syscall: reclaim populated mmap mapping failure unwinds the region" {
+    const f = try reclaimFixture(8);
+    var frame = fresh_frame();
+    const va: u64 = 0x60000000;
+    try std.testing.expectEqual(error_result(.enomem), dispatch(sys_mmap, .{ va, 4096, 7, 0x8022, 0, 0 }, &frame)); // W^X refusal
+    try std.testing.expect(process.find_mmap_region(f.pid, va) == null);
+    try std.testing.expectEqual(@as(u64, 8), alloc.stats().free_pages);
+    _ = process.on_task_exit(f.task, 0);
+    try std.testing.expect(process.release_pages_on_reap(f.task));
+    try std.testing.expectEqual(@as(u64, 8), alloc.stats().free_pages);
+}
+
 test "syscall: sys_mmap and sys_munmap anonymous allocation and teardown" {
     mmu.reset();
     alloc.reset_refcounts();

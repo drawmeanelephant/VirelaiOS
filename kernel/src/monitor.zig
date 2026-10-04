@@ -4630,12 +4630,14 @@ fn cmd_runtime_receipt(m: *Monitor, args: []const []const u8) ExecError {
             if (!matches) continue;
         }
         const receipt = process.runtime_receipt(id) orelse continue;
-        var buf: [256]u8 = undefined;
-        m.console.puts(std.fmt.bufPrint(&buf, "runtime-receipt: pid={d} name={s} peak_pages={d} page_cap={d} peak_regions={d} region_cap={d} static_pages={d}\n", .{
-            id,                   info.name,
-            receipt.peak_pages,   process.max_dynamic_pages,
-            receipt.peak_regions, process.max_mmap_regions,
-            receipt.static_pages,
+        var buf: [384]u8 = undefined;
+        m.console.puts(std.fmt.bufPrint(&buf, "runtime-receipt: pid={d} name={s} peak_pages={d} page_cap={d} peak_regions={d} region_cap={d} static_pages={d} page_tracking=extensible page_saturated={d} total_pages={d} record_failures={d} unrecorded_pages=0 reaped={d}\n", .{
+            id,                                 info.name,
+            receipt.peak_pages,                 process.max_dynamic_pages,
+            receipt.peak_regions,               process.max_mmap_regions,
+            receipt.static_pages,               @intFromBool(receipt.peak_pages >= process.max_dynamic_pages),
+            receipt.total_pages,                receipt.record_failures,
+            @intFromBool(info.task_id == null),
         }) catch return .not_implemented);
         found = true;
     }
