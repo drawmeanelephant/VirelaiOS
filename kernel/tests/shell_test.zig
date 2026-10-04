@@ -2815,6 +2815,34 @@ test "shell: wm autostart once — the Go seat by default, TABWM the fallback (M
     try std.testing.expectEqual(@as(usize, 0), mock.contents().len);
 }
 
+test "shell: wm autostart diagnostic is one byte-exact write (#1965)" {
+    const Writer = struct {
+        output: console.MockConsole(4096) = .{},
+        writes: usize = 0,
+        const vtable = console.Console.VTable{ .write = write, .flush = flush, .readByte = read };
+        fn write(ctx: *anyopaque, bytes: []const u8) void {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            self.writes += 1;
+            self.output.console().puts(bytes);
+            self.output.console().puts("counter: alive\n");
+        }
+        fn flush(_: *anyopaque) void {}
+        fn read(_: *anyopaque) ?u8 {
+            return null;
+        }
+    };
+    var mock = console.MockConsole(4096){};
+    var shell = make_shell(&mock, make_view());
+    shell.boot();
+    defer settings.reset();
+    var writer = Writer{};
+    shell.mon.console = .{ .ctx = &writer, .vtable = &Writer.vtable };
+    shell_mod.wm_autostart_attempted = false;
+    shell_mod.wm_autostart_once(&shell.mon);
+    try std.testing.expectEqual(@as(usize, 1), writer.writes);
+    try std.testing.expectEqualStrings("wm: autostart gotabwm: GOTABWM.ELF not on the share (shim compositing)\ncounter: alive\n", writer.output.contents());
+}
+
 test "shell: login ownerless-console fallback decision (M49 SD1)" {
     // Attached: the shell owns the console, the monitor never resumes.
     try std.testing.expect(!shell_mod.login_should_resume(true, false, true));

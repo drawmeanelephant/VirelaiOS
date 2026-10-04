@@ -125,6 +125,94 @@ const TestEnv = struct {
     }
 };
 
+// A concurrent writer may acquire the transport between any two writes.
+// Inject one complete foreign line at exactly those boundaries.
+const InterleavingConsole = struct {
+    mock: console.MockConsole(16384) = .{},
+    fragments: usize = 0,
+
+    const vtable = console.Console.VTable{
+        .write = write,
+        .flush = flush,
+        .readByte = read,
+    };
+
+    fn handle(self: *InterleavingConsole) console.Console {
+        return .{ .ctx = self, .vtable = &vtable };
+    }
+
+    fn write(ctx: *anyopaque, bytes: []const u8) void {
+        const self: *InterleavingConsole = @ptrCast(@alignCast(ctx));
+        if (!std.mem.endsWith(u8, bytes, "\n")) self.fragments += 1;
+        self.mock.console().puts(bytes);
+        self.mock.console().puts("counter: alive\n");
+    }
+
+    fn flush(_: *anyopaque) void {}
+    fn read(_: *anyopaque) ?u8 {
+        return null;
+    }
+};
+
+test "monitor: accounting rows survive a foreign write at every boundary (#1965)" {
+    var env = TestEnv.init();
+    var mon = env.monitor();
+    _ = scheduler.init();
+    mmu.reset();
+    const pid = process.create("COUNTER.BIN", .{ .entry_va = 0x400000, .content_len = 64 }, .{ .stack_va = 0x1a400000, .stack_len = 8192 }, .{}).?;
+    try std.testing.expect(process.bind(pid, 2));
+    try std.testing.expect(process.setrlimit(pid, 0, 64));
+    try std.testing.expectEqual(ExecError.none, exec(&mon, &.{"procs"}));
+    try std.testing.expectEqual(ExecError.none, exec(&mon, &.{"resources"}));
+    try std.testing.expectEqual(ExecError.none, exec(&mon, &.{"addrspaces"}));
+    const expected = env.mock.contents();
+    try std.testing.expect(std.mem.indexOf(u8, expected, "resources: pid=0 COUNTER.BIN\n  mem=0/64 cpu=0/unlimited\n") != null);
+
+    var interleaved = InterleavingConsole{};
+    mon.console = interleaved.handle();
+    try std.testing.expectEqual(ExecError.none, exec(&mon, &.{"procs"}));
+    try std.testing.expectEqual(ExecError.none, exec(&mon, &.{"resources"}));
+    try std.testing.expectEqual(ExecError.none, exec(&mon, &.{"addrspaces"}));
+    try std.testing.expectEqual(@as(usize, 0), interleaved.fragments);
+    try std.testing.expect(!interleaved.mock.overflowed);
+    var restored: [12288]u8 = undefined;
+    var used: usize = 0;
+    var lines = std.mem.splitScalar(u8, interleaved.mock.contents(), '\n');
+    while (lines.next()) |line| {
+        if (line.len == 0 or std.mem.eql(u8, line, "counter: alive")) continue;
+        @memcpy(restored[used..][0..line.len], line);
+        used += line.len;
+        restored[used] = '\n';
+        used += 1;
+    }
+    try std.testing.expectEqualStrings(expected, restored[0..used]);
+}
+
+test "monitor: smp names a primary exec task by its process, not its generic TCB (#1965)" {
+    var env = TestEnv.init();
+    var mon = env.monitor();
+    _ = scheduler.init();
+    const task = scheduler.spawn("user-exec", 0x2000, scheduler.spsr_el0t_irqs, &scheduler.worker_stack, 0, 0).?;
+    const pid = process.create("GOSCALE.ELF", .{ .entry_va = 0x400000, .content_len = 64 }, .{}, .{}).?;
+    try std.testing.expect(process.bind(pid, task));
+    try std.testing.expect(scheduler.pin_task(task, 1));
+    try std.testing.expectEqual(@as(?usize, task), scheduler.ring_claim(1, scheduler.idle_id));
+    scheduler.tasks[task].state = .running;
+    const old_current = scheduler.current[1];
+    const old_online = scheduler.smp.core_online[1];
+    const old_cores = scheduler.smp.num_cores;
+    scheduler.current[1] = task;
+    scheduler.smp.core_online[1] = true;
+    scheduler.smp.num_cores = 2;
+    defer scheduler.current[1] = old_current;
+    defer scheduler.smp.core_online[1] = old_online;
+    defer scheduler.smp.num_cores = old_cores;
+    try std.testing.expectEqual(ExecError.none, exec(&mon, &.{"smp"}));
+    try std.testing.expect(std.mem.indexOf(u8, env.mock.contents(), "task=GOSCALE.ELF\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, env.mock.contents(), "task=user-exec") == null);
+    try std.testing.expect(std.mem.indexOf(u8, env.mock.contents(), "task=shell\n") != null);
+}
+
 fn test_syscall_writer(_: []const u8) void {}
 
 test "monitor: command lookup" {
@@ -1513,8 +1601,7 @@ test "monitor: kill is registered and arms a running process by id and by name" 
     // The armed kill flows through the REAL lifecycle at the next ring
     // selection: user-el0 (task 2) exits with the reserved status 137.
     scheduler.start();
-    try std.testing.expect(scheduler.yield_current()); // shell -> worker
-    try std.testing.expect(scheduler.yield_current()); // worker -> user -> killed -> spawn-demo
+    try std.testing.expect(scheduler.yield_current()); // shell -> user -> killed -> spawn-demo
     try std.testing.expectEqual(@as(?u64, scheduler.reserved_kill_status), scheduler.terminated_status(2));
 }
 

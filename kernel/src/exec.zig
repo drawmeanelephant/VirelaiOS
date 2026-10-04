@@ -1793,8 +1793,7 @@ test "exec: ok path loads, validates, builds the root, and spawns the task" {
     scheduler.start();
     // Retire the static user task (a normal boot's payload exits early),
     // freeing its pool slot for the exec'd program.
-    try std.testing.expect(scheduler.yield_current()); // shell -> worker
-    try std.testing.expect(scheduler.yield_current()); // worker -> user
+    try std.testing.expect(scheduler.yield_current()); // shell -> user
     try std.testing.expectEqual(@as(usize, 2), scheduler.current_id());
     try std.testing.expect(scheduler.exit_current(7)); // user -> idle
     try std.testing.expect(scheduler.reap(2));
@@ -1865,8 +1864,7 @@ test "exec: exec_file_as assigns an explicit principal (M50 TS1)" {
     _ = scheduler.register_worker(0x2000);
     _ = scheduler.register_user(0x3000, 0);
     scheduler.start();
-    try std.testing.expect(scheduler.yield_current()); // shell -> worker
-    try std.testing.expect(scheduler.yield_current()); // worker -> user
+    try std.testing.expect(scheduler.yield_current()); // shell -> user
     try std.testing.expectEqual(@as(usize, 2), scheduler.current_id());
     try std.testing.expect(scheduler.exit_current(7)); // user -> idle
     try std.testing.expect(scheduler.reap(2));
@@ -1906,7 +1904,6 @@ test "exec: pinned exec routes the spawned task to exactly one core" {
     _ = scheduler.register_worker(0x2000);
     _ = scheduler.register_user(0x3000, 0);
     scheduler.start();
-    try std.testing.expect(scheduler.yield_current());
     try std.testing.expect(scheduler.yield_current());
     try std.testing.expect(scheduler.exit_current(7));
     try std.testing.expect(scheduler.reap(2));
@@ -1950,7 +1947,6 @@ test "exec: a second program loads and runs while the first is alive" {
     scheduler.start();
     // Retire the boot payload (exit + reap) so BOTH exec'd programs fit
     // the fixed pool (shell + worker + exec A + exec B + idle).
-    try std.testing.expect(scheduler.yield_current());
     try std.testing.expect(scheduler.yield_current());
     try std.testing.expectEqual(@as(usize, 2), scheduler.current_id());
     try std.testing.expect(scheduler.exit_current(7));
@@ -2048,7 +2044,6 @@ test "exec: COUNTER.BIN loads by name with its own marker and process" {
     scheduler.start();
     // Retire the boot payload so its slot is free for the counter.
     try std.testing.expect(scheduler.yield_current());
-    try std.testing.expect(scheduler.yield_current());
     try std.testing.expectEqual(@as(usize, 2), scheduler.current_id());
     try std.testing.expect(scheduler.exit_current(7));
     try std.testing.expect(scheduler.reap(2));
@@ -2125,7 +2120,6 @@ test "exec: a valid AArch64 ELF32 loads through the magic-sniff path" {
     _ = scheduler.register_user(0x3000, 0);
     scheduler.start();
     try std.testing.expect(scheduler.yield_current());
-    try std.testing.expect(scheduler.yield_current());
     try std.testing.expectEqual(@as(usize, 2), scheduler.current_id());
     try std.testing.expect(scheduler.exit_current(7));
     try std.testing.expect(scheduler.reap(2));
@@ -2172,7 +2166,6 @@ test "exec: PEER.BIN loads by name — counter + peer fill the task pool" {
     _ = scheduler.register_user(0x3000, 0);
     scheduler.start();
     // Retire the boot payload so BOTH exec'd programs fit the pool.
-    try std.testing.expect(scheduler.yield_current());
     try std.testing.expect(scheduler.yield_current());
     try std.testing.expectEqual(@as(usize, 2), scheduler.current_id());
     try std.testing.expect(scheduler.exit_current(7));
@@ -2227,7 +2220,6 @@ test "exec: permanent occupant + recycle — one spare slot, pool_full, then the
     scheduler.start();
     // Retire the boot payload: shell + idle + worker leave the user slots free.
     try std.testing.expect(scheduler.yield_current());
-    try std.testing.expect(scheduler.yield_current());
     try std.testing.expectEqual(@as(usize, 2), scheduler.current_id());
     try std.testing.expect(scheduler.exit_current(7));
     try std.testing.expect(scheduler.reap(2));
@@ -2261,8 +2253,7 @@ test "exec: permanent occupant + recycle — one spare slot, pool_full, then the
     // executor slot becomes spawnable again — while the counter stays
     // running.
     try std.testing.expect(scheduler.yield_current()); // idle -> shell
-    try std.testing.expect(scheduler.yield_current()); // shell -> worker
-    try std.testing.expect(scheduler.yield_current()); // worker -> counter
+    try std.testing.expect(scheduler.yield_current()); // shell -> counter
     try std.testing.expect(scheduler.yield_current()); // counter -> user (slot 3)
     try std.testing.expectEqual(@as(usize, 3), scheduler.current_id());
     try std.testing.expect(scheduler.exit_current(43)); // user -> idle
@@ -2312,7 +2303,6 @@ test "exec: kill reaps a permanent occupant — pages return, the slot is re-exe
     scheduler.start();
     // Retire the boot payload: shell + idle + worker leave two free slots.
     try std.testing.expect(scheduler.yield_current());
-    try std.testing.expect(scheduler.yield_current());
     try std.testing.expectEqual(@as(usize, 2), scheduler.current_id());
     try std.testing.expect(scheduler.exit_current(7));
     try std.testing.expect(scheduler.reap(2));
@@ -2339,8 +2329,7 @@ test "exec: kill reaps a permanent occupant — pages return, the slot is re-exe
     // The ring's next selection of the counter converts it to the exit
     // path with the RESERVED status 137 (not a cooperative sys_exit).
     try std.testing.expect(scheduler.yield_current()); // idle -> shell
-    try std.testing.expect(scheduler.yield_current()); // shell -> worker
-    try std.testing.expect(scheduler.yield_current()); // worker -> counter -> killed -> idle
+    try std.testing.expect(scheduler.yield_current()); // shell -> counter -> killed -> idle
     try std.testing.expectEqual(@as(usize, scheduler.idle_id), scheduler.current_id());
     try std.testing.expect(scheduler.is_terminated(2));
     try std.testing.expectEqual(@as(?u64, scheduler.reserved_kill_status), scheduler.terminated_status(2));
@@ -2461,7 +2450,6 @@ test "exec: argv block is a read-only leaf — uaccess reads it, writes fault, p
     _ = scheduler.register_user(0x3000, 0);
     scheduler.start();
     // Retire the boot payload so BOTH exec'd programs fit the pool.
-    try std.testing.expect(scheduler.yield_current());
     try std.testing.expect(scheduler.yield_current());
     try std.testing.expectEqual(@as(usize, 2), scheduler.current_id());
     try std.testing.expect(scheduler.exit_current(7));

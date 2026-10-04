@@ -152,8 +152,8 @@ test "scheduler: user scheduler.tasks are any-core and the shell/idle stay on co
     try std.testing.expectEqual(@as(usize, 2), user);
     try std.testing.expect(scheduler.tasks[user].secondary_ok); // any-core default
     try std.testing.expectEqual(@as(usize, 0), scheduler.tasks[user].pin_core);
-    // Core 1 walking from the shell finds the worker first (slot order).
-    try std.testing.expectEqual(@as(?usize, worker), next_runnable_for(0, 1));
+    // Ready EL0 work suppresses the demo worker on either core.
+    try std.testing.expectEqual(@as(?usize, user), next_runnable_for(0, 1));
     // Core 1 from the worker finds the user task (now eligible) ahead of
     // the wrap.
     try std.testing.expectEqual(@as(?usize, user), next_runnable_for(worker, 1));
@@ -178,8 +178,8 @@ test "scheduler: pin_task restricts a user task to exactly one core" {
     // Core 0 skips the pinned task entirely — from the worker it wraps
     // straight to the idle fallback, never to the user task.
     try std.testing.expectEqual(@as(?usize, idle_id), next_runnable_for(worker, 0));
-    // Core 1 may also still pick the worker (any-core, secondary_ok).
-    try std.testing.expectEqual(@as(?usize, worker), next_runnable_for(user, 1));
+    // The ready pinned user suppresses the worker even at the wrap.
+    try std.testing.expectEqual(@as(?usize, user), next_runnable_for(user, 1));
     // Pinning to core 0 (the WM registration) makes the task core-0-ONLY:
     // core 1 skips it again and core 0 picks it again.
     try std.testing.expect(pin_task(user, 0));
@@ -218,10 +218,10 @@ test "scheduler: core-0 yield steals ring-1 work synchronously (#857)" {
     // success criterion on two cores.
     _ = init();
     _ = register_worker(0x2000).?; // slot 1
-    _ = register_user(0x3000, 0).?; // slot 2
     start();
     try std.testing.expect(yield_current()); // shell -> worker
     try std.testing.expectEqual(@as(usize, 1), scheduler.current[0]);
+    _ = register_user(0x3000, 0).?; // slot 2, published while worker runs
     // The user is preempted on core 1: parked on ring 1 while core 1 is
     // busy elsewhere.
     try std.testing.expect(scheduler.ready_rings[0].remove(2));
@@ -249,13 +249,13 @@ test "scheduler: secondaries steal from each other's rings; pins stay home (#857
     scheduler.ready_rings[2].push(worker);
     scheduler.ready_rings[2].push(user);
     check_ready_membership();
-    // Core 1 steals across in slot order: worker, then user. The
+    // Core 1 steals the EL0 user before the idle-class worker. The
     // core-2-pinned task is skipped, and with everything eligible gone
     // the scan finds nothing (idle is never stealable).
-    try std.testing.expectEqual(@as(?usize, worker), next_runnable_for(0, 1));
-    try std.testing.expectEqual(@as(?usize, worker), ring_claim(1, 0));
-    try std.testing.expectEqual(@as(?usize, user), next_runnable_for(worker, 1));
-    try std.testing.expectEqual(@as(?usize, user), ring_claim(1, worker));
+    try std.testing.expectEqual(@as(?usize, user), next_runnable_for(0, 1));
+    try std.testing.expectEqual(@as(?usize, user), ring_claim(1, 0));
+    try std.testing.expectEqual(@as(?usize, worker), next_runnable_for(user, 1));
+    try std.testing.expectEqual(@as(?usize, worker), ring_claim(1, user));
     try std.testing.expect(next_runnable_for(user, 1) == null);
     // Core 0 steals from ring 2 the same way, then falls back to idle.
     _ = init();
@@ -263,8 +263,168 @@ test "scheduler: secondaries steal from each other's rings; pins stay home (#857
     const u_two = register_user(0x2222, 0).?;
     try std.testing.expect(scheduler.ready_rings[0].remove(u_two));
     scheduler.ready_rings[2].push(u_two);
-    try std.testing.expectEqual(@as(?usize, w2), next_runnable_for(0, 0));
+    try std.testing.expectEqual(@as(?usize, u_two), next_runnable_for(0, 0));
     try std.testing.expectEqual(@as(?usize, u_two), next_runnable_for(w2, 0));
+}
+
+test "scheduler: the worker yields to eligible EL0 work on own and foreign rings (#1965)" {
+    _ = init();
+    const worker = register_worker(0x1111).?;
+    const user = register_user(0x2222, 0).?;
+    for ([_]usize{ 0, 1, 2 }) |ring| {
+        for (&scheduler.ready_rings) |*r| _ = r.remove(user);
+        scheduler.ready_rings[ring].push(user);
+        // At the wrap and before slot 1, on core 0 and a secondary.
+        for ([_]usize{ 0, 1 }) |core| {
+            try std.testing.expectEqual(@as(?usize, user), next_runnable_for(0, core));
+            try std.testing.expect(next_runnable_for(idle_id, core).? != worker);
+        }
+    }
+    // Foreign work pinned elsewhere is not runnable here.
+    try std.testing.expect(pin_task(user, 1));
+    try std.testing.expectEqual(@as(?usize, worker), next_runnable_for(0, 0));
+    try std.testing.expectEqual(@as(?usize, user), next_runnable_for(0, 1));
+    try std.testing.expect(pin_task(user, 0));
+    try std.testing.expectEqual(@as(?usize, worker), next_runnable_for(0, 1));
+    // spawn-demo is not idle-class: it retains its place even with EL0 ready.
+    const demo = spawn_demo().?;
+    try std.testing.expectEqual(@as(?usize, demo), next_runnable_for(user, 0));
+    check_ready_membership();
+}
+
+test "scheduler: without ready EL0 the worker still rotates with shell and idle (#1965)" {
+    _ = init();
+    const worker = register_worker(0x1111).?;
+    const user = register_user(0x2222, 0).?;
+    start();
+    try std.testing.expect(yield_current()); // shell -> user
+    try std.testing.expect(sleep_current(2)); // user -> idle
+    try std.testing.expectEqual(@as(usize, idle_id), current_id());
+    try std.testing.expect(yield_current()); // idle -> shell
+    try std.testing.expectEqual(@as(usize, 0), current_id());
+    try std.testing.expect(yield_current()); // shell -> worker
+    try std.testing.expectEqual(worker, current_id());
+    try std.testing.expect(yield_current()); // worker -> idle
+    try std.testing.expectEqual(@as(usize, idle_id), current_id());
+    try std.testing.expect(is_blocked(user));
+    check_ready_membership();
+}
+
+test "scheduler: a lone EL0 with only the worker ready self-rotates and counts a timer preemption (#1965)" {
+    _ = init();
+    const worker = register_worker(0x1111).?;
+    const user = register_user(0x2222, 0).?;
+    // A secondary's ring-only shape: shell and the reaper cannot run there.
+    try std.testing.expect(pin_task(user, 1));
+    try std.testing.expectEqual(@as(?usize, user), ring_claim(1, 0));
+    scheduler.ready_rings[1].push(user); // preempted EL0 rejoins its ring
+    try std.testing.expectEqual(@as(?usize, user), ring_claim(1, user));
+    // The timer wrapper uses the same save/claim/stage on the host's core 0.
+    // Remove core-0-only peers to exercise that lone-user path end to end.
+    scheduler.tasks[0].state = .blocked;
+    scheduler.tasks[idle_id].state = .blocked;
+    try std.testing.expect(scheduler.ready_rings[0].remove(idle_id));
+    scheduler.current[0] = user;
+    scheduler.tasks[user].state = .running;
+    start();
+    timer_switch_context(scheduler.tasks[user].sp, 0x2224, spsr_el0t_irqs, scheduler.tasks[user].sp_el0);
+    try std.testing.expectEqual(user, current_id());
+    try std.testing.expectEqual(@as(u64, 1), user_timer_preemption_count());
+    try std.testing.expectEqual(@as(u64, 1), scheduler.tasks[user].saves);
+    try std.testing.expectEqual(@as(u64, 1), scheduler.tasks[user].resumes);
+    try std.testing.expectEqual(@as(u64, 0), scheduler.tasks[worker].resumes);
+    check_ready_membership();
+}
+
+test "scheduler: EL0 wakes preempt the worker at local IRQ exit and nudge a remote worker (#1965)" {
+    _ = init();
+    const worker = register_worker(0x1111).?;
+    start();
+    try std.testing.expect(yield_current()); // shell -> worker, no EL0 yet
+    const user = register_user(0x2222, 0).?;
+    var irq_frame: exceptions.VectorFrame align(16) = @splat(0x12345678);
+    const worker_pc: u64 = 0x1114;
+    const worker_pstate = spsr_el1h_irqs | (1 << 30);
+    scheduler.tasks[worker].elr = worker_pc;
+    scheduler.tasks[worker].spsr = worker_pstate;
+    const user_frame = scheduler.tasks[user].sp;
+    const user_sp = scheduler.tasks[user].sp_el0;
+    exceptions.resume_frame[0] = @intFromPtr(&irq_frame);
+    exceptions.resume_sp_el0[0] = 0xabcdef00;
+    const ticks = scheduler.tick_count;
+    try std.testing.expect(scheduler.resched_requested[0]);
+    try std.testing.expect(scheduler.irq_exit_reschedule());
+    try std.testing.expectEqual(user, current_id());
+    try std.testing.expectEqual(@intFromPtr(&irq_frame), scheduler.tasks[worker].sp);
+    try std.testing.expectEqual(worker_pc, scheduler.tasks[worker].elr);
+    try std.testing.expectEqual(worker_pstate, scheduler.tasks[worker].spsr);
+    try std.testing.expectEqual(@as(u64, 0xabcdef00), scheduler.tasks[worker].sp_el0);
+    try std.testing.expectEqual(user_frame, exceptions.resume_frame[0]);
+    try std.testing.expectEqual(user_sp, exceptions.resume_sp_el0[0]);
+    try std.testing.expectEqual(@as(u64, 0x2222), scheduler.pending_elr[0]);
+    try std.testing.expectEqual(spsr_el0t_irqs, scheduler.pending_spsr[0]);
+    for (irq_frame) |reg| try std.testing.expectEqual(@as(u64, 0x12345678), reg);
+    try std.testing.expectEqual(scheduler.pending_sp[0], exceptions.resume_frame[0]);
+    try std.testing.expect(!scheduler.resched_requested[0]);
+    try std.testing.expectEqual(ticks, scheduler.tick_count);
+    try std.testing.expectEqual(@as(u64, 0), user_timer_preemption_count());
+    try std.testing.expect(!scheduler.irq_exit_reschedule()); // never preempt EL0
+    check_ready_membership();
+
+    _ = init();
+    const remote_worker = register_worker(0x1111).?;
+    const remote_user = register_user(0x2222, 0).?;
+    try std.testing.expect(pin_task(remote_user, 1));
+    try std.testing.expect(scheduler.ready_rings[1].remove(remote_user));
+    scheduler.tasks[remote_user].state = .blocked;
+    try std.testing.expect(scheduler.ready_rings[0].remove(remote_worker));
+    scheduler.tasks[remote_worker].state = .running;
+    scheduler.current[1] = remote_worker;
+    scheduler.smp.core_online[1] = true;
+    defer scheduler.smp.core_online[1] = false;
+    defer scheduler.current[1] = idle_id;
+    start();
+    const nudges = scheduler.wake_nudges;
+    scheduler.tasks[remote_user].state = .ready;
+    scheduler.push_home_locked(remote_user);
+    try std.testing.expect(scheduler.resched_requested[1]);
+    try std.testing.expectEqual(nudges + 1, scheduler.wake_nudges);
+    try std.testing.expect(scheduler.ready_rings[1].contains(remote_user));
+    check_ready_membership();
+    // A non-EL0 wake does not add a worker-preemption nudge.
+    try std.testing.expect(scheduler.ready_rings[1].remove(remote_user));
+    scheduler.tasks[remote_user].spsr = spsr_el1h_irqs;
+    scheduler.push_home_locked(remote_user);
+    try std.testing.expectEqual(nudges + 1, scheduler.wake_nudges);
+
+    // Exercise the SGI handler's worker branch using the host's core 0.
+    scheduler.smp.core_online[1] = false;
+    scheduler.current[1] = idle_id;
+    _ = init();
+    _ = register_worker(0x1111).?;
+    start();
+    try std.testing.expect(yield_current());
+    const sgi_user = register_user(0x2222, 0).?;
+    var sgi_frame: exceptions.VectorFrame align(16) = @splat(0x87654321);
+    scheduler.tasks[1].elr = 0x1118;
+    scheduler.tasks[1].spsr = worker_pstate;
+    const sgi_user_frame = scheduler.tasks[sgi_user].sp;
+    const sgi_user_sp = scheduler.tasks[sgi_user].sp_el0;
+    exceptions.resume_frame[0] = @intFromPtr(&sgi_frame);
+    exceptions.resume_sp_el0[0] = 0xabcdef08;
+    scheduler.ipi_reschedule();
+    try std.testing.expectEqual(sgi_user, current_id());
+    try std.testing.expectEqual(@intFromPtr(&sgi_frame), scheduler.tasks[1].sp);
+    try std.testing.expectEqual(@as(u64, 0x1118), scheduler.tasks[1].elr);
+    try std.testing.expectEqual(worker_pstate, scheduler.tasks[1].spsr);
+    try std.testing.expectEqual(@as(u64, 0xabcdef08), scheduler.tasks[1].sp_el0);
+    try std.testing.expectEqual(sgi_user_frame, exceptions.resume_frame[0]);
+    try std.testing.expectEqual(sgi_user_sp, exceptions.resume_sp_el0[0]);
+    try std.testing.expectEqual(@as(u64, 0x2222), scheduler.pending_elr[0]);
+    try std.testing.expectEqual(spsr_el0t_irqs, scheduler.pending_spsr[0]);
+    for (sgi_frame) |reg| try std.testing.expectEqual(@as(u64, 0x87654321), reg);
+    try std.testing.expect(!scheduler.resched_requested[0]);
+    check_ready_membership();
 }
 
 test "scheduler: register_user separates EL1 exception and EL0 stacks" {
@@ -281,6 +441,59 @@ test "scheduler: register_user separates EL1 exception and EL0 stacks" {
     try std.testing.expect(task.sp + frame_bytes != task.sp_el0);
     const frame: *exceptions.VectorFrame = @ptrFromInt(task.sp);
     try std.testing.expectEqual(@intFromPtr(&scheduler.user_timer_preemptions), exceptions.frame_read(frame, 9));
+}
+
+test "scheduler: a foreign core cannot claim or reap a frame still owned by an exception (#1965)" {
+    _ = init();
+    _ = register_worker(0x1111).?;
+    const user = register_user(0x2222, 0).?;
+    start();
+    try std.testing.expect(yield_current()); // shell -> user
+    scheduler.begin_exception(0);
+    // The source publishes its saved frame during a cooperative switch.
+    try std.testing.expect(yield_current()); // user -> idle
+    try std.testing.expect(scheduler.ready_rings[0].contains(user));
+    try std.testing.expect((scheduler.tasks[user].exception_guard & 1) != 0);
+    try std.testing.expect(next_runnable_for(0, 1).? != user);
+    // Same-core self-selection is safe: it restores only after this handler
+    // returns. The foreign-core exclusion ends with the dispatcher's handoff.
+    try std.testing.expectEqual(@as(?usize, user), next_runnable_for(1, 0));
+    scheduler.end_exception(0);
+    try std.testing.expectEqual(@as(?usize, user), next_runnable_for(0, 1));
+    scheduler.tasks[user].state = .zombie;
+    try std.testing.expect(scheduler.ready_rings[0].remove(user));
+    scheduler.tasks[user].exception_guard = 1;
+    try std.testing.expect(!reap(user));
+    scheduler.tasks[user].exception_guard = 0;
+    try std.testing.expect(reap(user));
+}
+
+test "scheduler: a wake retains its nudge until the protected frame is handed off (#1965)" {
+    _ = init();
+    const user = register_user(0x2222, 0).?;
+    try std.testing.expect(pin_task(user, 1));
+    try std.testing.expect(scheduler.ready_rings[1].remove(user));
+    scheduler.tasks[user].state = .blocked;
+    scheduler.tasks[user].exception_guard = 1;
+    start();
+    scheduler.tasks[user].state = .ready;
+    scheduler.push_home_locked(user);
+    try std.testing.expectEqual(@as(u64, 1 | (1 << 2)), scheduler.tasks[user].exception_guard);
+    try std.testing.expect(next_runnable_for(0, 1) == null);
+    // Stand in for the vector's atomic release, which runs on the selected
+    // stack and consumes the retained core-1 SGI target bit.
+    const guard = @atomicRmw(u64, &scheduler.tasks[user].exception_guard, .Xchg, 0, .acq_rel);
+    try std.testing.expectEqual(@as(u64, 1 << 1), guard >> 1);
+    try std.testing.expectEqual(@as(?usize, user), next_runnable_for(0, 1));
+    // A parked secondary must not inherit a previous source owner.
+    const old_current = scheduler.current[1];
+    scheduler.current[1] = user;
+    scheduler.begin_exception(1);
+    scheduler.end_exception(1);
+    scheduler.current[1] = idle_id;
+    scheduler.begin_exception(1);
+    try std.testing.expect(scheduler.exception_handoff(1) == null);
+    scheduler.current[1] = old_current;
 }
 
 test "scheduler: register_exec_user passes argc and argv VA through the x0/x1 frame slots" {
@@ -335,7 +548,6 @@ test "scheduler: round-robin alternates and round-trips saved context" {
     _ = init();
     const worker_entry: u64 = 0x2000;
     _ = register_worker(worker_entry).?;
-    _ = register_user(0x3000, 0).?;
     start();
     // First switch: the shell is preempted at pc 0x1000; the worker is
     // restored to its synthetic frame.
@@ -349,38 +561,29 @@ test "scheduler: round-robin alternates and round-trips saved context" {
     try std.testing.expectEqual(scheduler.tasks[1].sp, scheduler.pending_sp[0]);
     try std.testing.expectEqual(worker_entry, scheduler.pending_elr[0]);
     try std.testing.expectEqual(spsr_el1h_irqs, scheduler.pending_spsr[0]);
-    // Second switch: the worker is preempted; the user task is restored to
-    // its synthetic EL0t frame.
+    // Second switch: with no EL0 ready, worker -> idle is unchanged.
     switch_context(0x2000, 0x2000, 0x5, 0xbbbb);
-    try std.testing.expectEqual(@as(usize, 2), scheduler.current[0]);
+    try std.testing.expectEqual(@as(usize, idle_id), scheduler.current[0]);
     try std.testing.expectEqual(@as(u64, 2), scheduler.switches);
     try std.testing.expectEqual(@as(u64, 1), scheduler.tasks[1].saves);
     try std.testing.expectEqual(@as(u64, 1), scheduler.tasks[1].resumes);
-    try std.testing.expectEqual(scheduler.tasks[2].sp, scheduler.pending_sp[0]);
-    try std.testing.expectEqual(@as(u64, 0x3000), scheduler.pending_elr[0]);
-    try std.testing.expectEqual(spsr_el0t_irqs, scheduler.pending_spsr[0]);
-    // Third switch: the user is preempted; the idle task is restored.
-    switch_context(0x3000, 0x3000, 0x0, 0xcccc);
-    try std.testing.expectEqual(@as(usize, idle_id), scheduler.current[0]);
-    try std.testing.expectEqual(@as(u64, 3), scheduler.switches);
-    try std.testing.expectEqual(@as(u64, 1), scheduler.tasks[2].saves);
     try std.testing.expectEqual(@as(u64, 1), scheduler.tasks[idle_id].resumes);
     try std.testing.expectEqual(scheduler.tasks[idle_id].sp, scheduler.pending_sp[0]);
-    // Fourth switch: the idle task is preempted; the shell is restored to
+    // Third switch: the idle task is preempted; the shell is restored to
     // its exact saved context (the round-trip).
     switch_context(0x4000, 0x4000, 0x5, 0xdddd);
     try std.testing.expectEqual(@as(usize, 0), scheduler.current[0]);
-    try std.testing.expectEqual(@as(u64, 4), scheduler.switches);
+    try std.testing.expectEqual(@as(u64, 3), scheduler.switches);
     try std.testing.expectEqual(@as(u64, 1), scheduler.tasks[idle_id].saves);
     try std.testing.expectEqual(@as(u64, 1), scheduler.tasks[0].resumes);
     try std.testing.expectEqual(@as(u64, 0x1000), scheduler.pending_sp[0]);
     try std.testing.expectEqual(@as(u64, 0x1000), scheduler.pending_elr[0]);
     try std.testing.expectEqual(@as(u64, 0x5), scheduler.pending_spsr[0]);
     try std.testing.expectEqual(@as(u64, 0xaaaa), scheduler.pending_sp_el0[0]);
-    // Fifth switch returns to the worker's saved context (the round-trip).
+    // Fourth switch returns to the worker's saved context (the round-trip).
     switch_context(0x1000, 0x1001, 0x5, 0xaaaa);
     try std.testing.expectEqual(@as(usize, 1), scheduler.current[0]);
-    try std.testing.expectEqual(@as(u64, 5), scheduler.switches);
+    try std.testing.expectEqual(@as(u64, 4), scheduler.switches);
     try std.testing.expectEqual(@as(u64, 2), scheduler.tasks[0].saves);
     try std.testing.expectEqual(@as(u64, 1), scheduler.tasks[0].resumes);
     try std.testing.expectEqual(@as(u64, 1), scheduler.tasks[1].saves);
@@ -394,9 +597,7 @@ test "scheduler: mixed EL1h and EL0t round-robin restores SP_EL0" {
     start();
     const initial_user_sp = scheduler.tasks[2].sp_el0;
 
-    switch_context(0x1000, 0x1000, spsr_el1h_irqs, 0xaaaa); // shell -> worker
-    try std.testing.expectEqual(@as(usize, 1), scheduler.current[0]);
-    switch_context(0x2000, 0x2000, spsr_el1h_irqs, 0xbbbb); // worker -> user
+    switch_context(0x1000, 0x1000, spsr_el1h_irqs, 0xaaaa); // shell -> user
     try std.testing.expectEqual(@as(usize, 2), scheduler.current[0]);
     try std.testing.expectEqual(spsr_el0t_irqs, scheduler.pending_spsr[0]);
     try std.testing.expectEqual(initial_user_sp, scheduler.pending_sp_el0[0]);
@@ -413,7 +614,6 @@ test "scheduler: mixed EL1h and EL0t round-robin restores SP_EL0" {
     try std.testing.expectEqual(@as(u64, 0xaaaa), scheduler.pending_sp_el0[0]);
 
     switch_context(0x1000, 0x1004, spsr_el1h_irqs, 0xaaaa);
-    switch_context(0x2000, 0x2004, spsr_el1h_irqs, 0xbbbb);
     try std.testing.expectEqual(@as(usize, 2), scheduler.current[0]);
     try std.testing.expectEqual(preempted_user_sp, scheduler.pending_sp_el0[0]);
     try std.testing.expectEqual(@as(u64, 0x3004), scheduler.pending_elr[0]);
@@ -424,16 +624,14 @@ test "scheduler: only a tick preemption publishes the EL0 witness" {
     _ = register_worker(0x2000).?;
     _ = register_user(0x3000, 0).?;
     start();
-    switch_context(0x1000, 0x1000, spsr_el1h_irqs, 0xaaaa); // shell -> worker
-    switch_context(0x2000, 0x2000, spsr_el1h_irqs, 0xbbbb); // worker -> user
+    switch_context(0x1000, 0x1000, spsr_el1h_irqs, 0xaaaa); // shell -> user
     try std.testing.expectEqual(@as(u64, 0), user_timer_preemption_count());
     // Cooperative switching cannot satisfy the claim-8215 witness. The
     // user's successor is the idle task (claim 6729), then the shell.
     try std.testing.expect(yield_current()); // user -> idle
     try std.testing.expectEqual(@as(u64, 0), user_timer_preemption_count());
     switch_context(0x4000, 0x4000, spsr_el1h_irqs, 0xcccc); // idle -> shell
-    switch_context(0x1004, 0x1004, spsr_el1h_irqs, 0xaaaa); // shell -> worker
-    switch_context(0x2004, 0x2004, spsr_el1h_irqs, 0xbbbb); // worker -> user
+    switch_context(0x1004, 0x1004, spsr_el1h_irqs, 0xaaaa); // shell -> user
     timer_switch_context(0x3000, 0x3004, spsr_el0t_irqs, scheduler.tasks[2].sp_el0);
     try std.testing.expectEqual(@as(u64, 1), user_timer_preemption_count());
 }
@@ -495,8 +693,7 @@ test "scheduler: cooperative exit is non-runnable and reports from shell" {
     _ = register_worker(0x2000).?;
     _ = register_user(0x3000, 0).?;
     start();
-    try std.testing.expect(yield_current()); // shell -> worker
-    try std.testing.expect(yield_current()); // worker -> user
+    try std.testing.expect(yield_current()); // shell -> user
     try std.testing.expectEqual(@as(usize, 2), current_id());
     try std.testing.expect(exit_current(7)); // user -> idle (the ring's fallback)
     try std.testing.expectEqual(@as(usize, idle_id), current_id());
@@ -522,18 +719,16 @@ test "scheduler: sleep_current blocks, wakes on the deadline tick, and rolls bac
     _ = register_worker(0x2000).?;
     _ = register_user(0x3000, 0).?;
     start();
-    // scheduler.current is shell (0). Sleep 2 ticks: shell -> blocked, worker next.
+    // Shell sleeps 2 ticks; ready EL0 runs before the worker.
     try std.testing.expect(sleep_current(2));
     try std.testing.expect(is_blocked(0));
     try std.testing.expectEqual(@as(u64, 2), scheduler.tasks[0].wakeup_tick);
-    try std.testing.expectEqual(@as(usize, 1), scheduler.current[0]);
-    // The blocked task drops out of the ring: worker -> user -> idle -> worker.
-    try std.testing.expect(yield_current());
     try std.testing.expectEqual(@as(usize, 2), scheduler.current[0]);
+    // The blocked shell drops out: user -> idle -> user (worker suppressed).
     try std.testing.expect(yield_current());
     try std.testing.expectEqual(@as(usize, idle_id), scheduler.current[0]);
     try std.testing.expect(yield_current());
-    try std.testing.expectEqual(@as(usize, 1), scheduler.current[0]);
+    try std.testing.expectEqual(@as(usize, 2), scheduler.current[0]);
     // Tick 1: deadline (scheduler.tick_count 0 + 2) not reached yet.
     on_tick();
     try std.testing.expect(is_blocked(0));
@@ -544,8 +739,6 @@ test "scheduler: sleep_current blocks, wakes on the deadline tick, and rolls bac
     try std.testing.expectEqual(State.ready, scheduler.tasks[0].state);
     try std.testing.expectEqual(@as(u64, 0), scheduler.tasks[0].wakeup_tick);
     // The ring reaches the woken shell again.
-    try std.testing.expect(yield_current()); // worker -> user
-    try std.testing.expectEqual(@as(usize, 2), scheduler.current[0]);
     try std.testing.expect(yield_current()); // user -> idle
     try std.testing.expect(yield_current()); // idle -> shell
     try std.testing.expectEqual(@as(usize, 0), scheduler.current[0]);
@@ -626,8 +819,7 @@ test "scheduler: two live user scheduler.tasks coexist with their own roots and 
     scheduler.current[0] = 0;
     // Both run in the ring (round-robin reaches each).
     start();
-    try std.testing.expect(yield_current()); // shell -> worker
-    try std.testing.expect(yield_current()); // worker -> user A
+    try std.testing.expect(yield_current()); // shell -> user A
     try std.testing.expectEqual(@as(usize, user_a), current_id());
     try std.testing.expect(yield_current()); // A -> B
     try std.testing.expectEqual(@as(usize, user_b), current_id());
@@ -649,8 +841,7 @@ test "scheduler: lifecycle — spawn, exit to zombie, idle reaps back to free" {
     try std.testing.expectEqual(State.ready, task_info(3).?.state);
     // user scheduler.exits -> zombie at slot 2; the ring's next ready task is the
     // spawn-demo task (slot 3).
-    try std.testing.expect(yield_current()); // shell -> worker
-    try std.testing.expect(yield_current()); // worker -> user
+    try std.testing.expect(yield_current()); // shell -> user
     try std.testing.expectEqual(@as(usize, 2), current_id());
     try std.testing.expect(exit_current(7)); // user -> spawn-demo
     try std.testing.expectEqual(@as(usize, 3), current_id());
@@ -710,8 +901,7 @@ test "scheduler: the idle pass runs the console-free hook and still reaps" {
 
     // The reap half is unchanged: drive the user to a zombie, then confirm
     // ONE pass both ran the hook and freed the slot.
-    try std.testing.expect(yield_current()); // shell -> worker
-    try std.testing.expect(yield_current()); // worker -> user
+    try std.testing.expect(yield_current()); // shell -> user
     try std.testing.expectEqual(@as(usize, 2), current_id());
     try std.testing.expect(exit_current(7)); // user -> idle
     try std.testing.expectEqual(@as(usize, 1), stats().zombies);
@@ -732,8 +922,7 @@ test "scheduler: two exits in one window report BOTH lines in order" {
     start();
     // Exit the user (slot 2, status 43), then the worker (slot 1, status
     // 9), WITHOUT draining between them.
-    try std.testing.expect(yield_current()); // shell -> worker
-    try std.testing.expect(yield_current()); // worker -> user
+    try std.testing.expect(yield_current()); // shell -> user
     try std.testing.expectEqual(@as(usize, 2), current_id());
     try std.testing.expect(exit_current(43)); // user -> idle
     try std.testing.expectEqual(@as(usize, idle_id), current_id());
@@ -767,8 +956,7 @@ test "scheduler: two reaps in one window report BOTH reap lines in order" {
     _ = register_worker(0x2000).?;
     _ = register_user(0x3000, 0).?;
     start();
-    try std.testing.expect(yield_current()); // shell -> worker
-    try std.testing.expect(yield_current()); // worker -> user
+    try std.testing.expect(yield_current()); // shell -> user
     try std.testing.expect(exit_current(43)); // user -> idle
     try std.testing.expect(yield_current()); // idle -> shell
     try std.testing.expect(yield_current()); // shell -> worker
@@ -807,8 +995,7 @@ test "scheduler: request_kill refuses unknown, exited, and scheduler-owned targe
     try std.testing.expectEqual(KillResult.not_found, request_kill(max_tasks));
     // Drive the user to a zombie: an exited task is already_exited.
     start();
-    try std.testing.expect(yield_current()); // shell -> worker
-    try std.testing.expect(yield_current()); // worker -> user
+    try std.testing.expect(yield_current()); // shell -> user
     try std.testing.expectEqual(@as(usize, 2), current_id());
     try std.testing.expect(exit_current(43)); // user -> idle
     try std.testing.expectEqual(KillResult.already_exited, request_kill(2));
@@ -827,9 +1014,7 @@ test "scheduler: a killed task exits with the reserved status at its next select
     try std.testing.expectEqual(KillResult.ok, request_kill(2));
     // The next scheduler.switches walk the ring; when the ring SELECTS the user, the
     // kill branch converts the selection into exit_current(137).
-    try std.testing.expect(yield_current()); // shell -> worker
-    try std.testing.expectEqual(@as(usize, 1), current_id());
-    try std.testing.expect(yield_current()); // worker -> user -> killed -> idle
+    try std.testing.expect(yield_current()); // shell -> user -> killed -> idle
     try std.testing.expectEqual(@as(usize, idle_id), current_id());
     try std.testing.expect(is_terminated(2));
     try std.testing.expectEqual(@as(?u64, reserved_kill_status), terminated_status(2));
@@ -861,8 +1046,7 @@ test "scheduler: an EL0 fault reaps the task with status 139 and reports it" {
     _ = register_worker(0x2000).?;
     _ = register_user(0x3000, 0).?;
     start();
-    try std.testing.expect(yield_current()); // shell -> worker
-    try std.testing.expect(yield_current()); // worker -> user
+    try std.testing.expect(yield_current()); // shell -> user
     try std.testing.expectEqual(@as(usize, 2), current_id());
     fault_current(0x24 << 26, 0x7fff_f000, 0x4000); // user -> idle
     try std.testing.expectEqual(@as(usize, idle_id), current_id());
@@ -890,10 +1074,10 @@ test "scheduler: a killed sleeping task is terminated at its wake-selection" {
     // the ring selects it — the same stage_current kill branch.
     _ = init();
     _ = register_worker(0x2000).?;
-    _ = register_user(0x3000, 0).?;
     start();
     // The worker sleeps 4 ticks (scheduler.current = worker, slot 1).
     try std.testing.expect(yield_current()); // shell -> worker
+    _ = register_user(0x3000, 0).?;
     try std.testing.expect(sleep_current(4)); // worker -> user
     try std.testing.expectEqual(@as(usize, 2), current_id());
     // Arm the kill on the sleeping worker.
@@ -908,7 +1092,15 @@ test "scheduler: a killed sleeping task is terminated at its wake-selection" {
     try std.testing.expect(!is_blocked(1));
     // The ring reaches the woken worker's selection: killed -> 137.
     try std.testing.expect(yield_current()); // idle -> shell
-    try std.testing.expect(yield_current()); // shell -> worker -> killed -> user
+    // Ready EL0 suppresses the worker, so block it before the worker's
+    // pending kill is selected.
+    try std.testing.expect(yield_current()); // shell -> user
+    try std.testing.expect(sleep_current(1)); // user -> idle
+    try std.testing.expect(yield_current()); // idle -> shell
+    try std.testing.expect(yield_current()); // shell -> worker -> killed -> idle
+    on_tick(); // user wakes
+    try std.testing.expect(yield_current()); // idle -> shell
+    try std.testing.expect(yield_current()); // shell -> user
     try std.testing.expectEqual(@as(usize, 2), current_id());
     try std.testing.expect(is_terminated(1));
     try std.testing.expectEqual(@as(?u64, reserved_kill_status), terminated_status(1));
@@ -1023,17 +1215,11 @@ test "scheduler: ready rings — rotation, block, wake, exit keep the invariant"
     start();
     check_ready_membership();
 
-    // shell -> worker: the shell joins ring 0 on its first real
-    // preemption; the worker is claimed off it.
-    try std.testing.expect(yield_current());
-    try std.testing.expectEqual(@as(usize, 1), scheduler.current[0]);
-    try std.testing.expect(scheduler.ready_rings[0].contains(0));
-    try std.testing.expect(!scheduler.ready_rings[0].contains(1));
-    check_ready_membership();
-
-    // worker -> user.
+    // shell -> user: the shell joins ring 0; the worker stays ready.
     try std.testing.expect(yield_current());
     try std.testing.expectEqual(@as(usize, 2), scheduler.current[0]);
+    try std.testing.expect(scheduler.ready_rings[0].contains(0));
+    try std.testing.expect(scheduler.ready_rings[0].contains(1));
     check_ready_membership();
 
     // The user sleeps: blocked, off-ring; the successor is the idle
@@ -1049,10 +1235,9 @@ test "scheduler: ready rings — rotation, block, wake, exit keep the invariant"
     try std.testing.expect(scheduler.ready_rings[0].contains(2));
     check_ready_membership();
 
-    // idle -> shell -> worker -> user: the woken user runs again.
+    // idle -> shell -> user: the woken user runs again.
     try std.testing.expect(yield_current());
     try std.testing.expectEqual(@as(usize, 0), scheduler.current[0]);
-    try std.testing.expect(yield_current());
     try std.testing.expect(yield_current());
     try std.testing.expectEqual(@as(usize, 2), scheduler.current[0]);
     check_ready_membership();
@@ -1093,9 +1278,7 @@ test "scheduler: rotation paths release every ring lock" {
         }
     }.all_clear;
     try std.testing.expect(rings_clear());
-    try std.testing.expect(yield_current()); // shell -> worker
-    try std.testing.expect(rings_clear());
-    try std.testing.expect(yield_current()); // worker -> user
+    try std.testing.expect(yield_current()); // shell -> user
     try std.testing.expect(rings_clear());
     try std.testing.expect(sleep_current(3)); // user -> idle (its successor)
     try std.testing.expect(rings_clear());
@@ -1141,8 +1324,7 @@ test "scheduler: teardown_pending gates the reaper off a mid-teardown zombie" {
     _ = register_worker(0x2000).?; // slot 1 — the user then lands at slot 2
     _ = register_user(0x3000, 0).?;
     start();
-    try std.testing.expect(yield_current()); // shell -> worker
-    try std.testing.expect(yield_current()); // worker -> user
+    try std.testing.expect(yield_current()); // shell -> user
     try std.testing.expect(exit_current(43)); // user -> shell (zombie)
     try std.testing.expect(is_terminated(2));
     // Mid-teardown: the slot is a zombie but the reaper must not touch it.
@@ -1190,8 +1372,7 @@ test "scheduler: a wake through the ready-ring funnel raises a reschedule reques
     try std.testing.expect(!scheduler.resched_requested[0]);
     try std.testing.expectEqual(@as(u64, 0), scheduler.resched_requests);
 
-    try std.testing.expect(yield_current()); // shell -> worker
-    try std.testing.expect(yield_current()); // worker -> user (slot 2)
+    try std.testing.expect(yield_current()); // shell -> user (slot 2)
 
     // The running user sleeps. Blocking stages a successor and takes the user
     // off the rings — NO task became runnable, so nothing is owed. A user- or
@@ -1244,8 +1425,7 @@ test "scheduler: a wake through the ready-ring funnel raises a reschedule reques
     // owes a fresh rotation. Without this, one discharge would silence every
     // later wake and the demand would silently read as zero forever.
     try std.testing.expect(yield_current()); // idle -> shell
-    try std.testing.expect(yield_current()); // shell -> worker
-    try std.testing.expect(yield_current()); // worker -> user
+    try std.testing.expect(yield_current()); // shell -> user
     try std.testing.expectEqual(@as(usize, 2), scheduler.current[0]);
     try std.testing.expect(sleep_current(1));
     try std.testing.expect(!scheduler.resched_requested[0]);

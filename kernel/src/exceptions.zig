@@ -285,6 +285,10 @@ pub var resume_frame: [max_resume_cores]u64 = [_]u64{0} ** max_resume_cores;
 /// userspace stack when scheduled after an EL1 task. Per-core like
 /// `resume_frame`.
 pub var resume_sp_el0: [max_resume_cores]u64 = [_]u64{0} ** max_resume_cores;
+/// Source-frame guard released only after the vector has changed SP. The
+/// pointer array is per-core; restore scratch registers are still saved.
+pub export var exc_scheduler_handoff: [max_resume_cores]?*u64 = @splat(null);
+pub export var exc_scheduler_depth: [max_resume_cores]u64 = @splat(0);
 
 /// Unmask IRQs (clear DAIF.I). The caller arms the GIC + timer first so no
 /// interrupt can arrive before the chain is ready. No-op on non-aarch64
@@ -993,6 +997,16 @@ pub export fn exc_dispatch(
     kind: u64,
 ) callconv(.c) Resume {
     const cid = resume_core(); // per-core resume handoff (issue #810)
+    exc_scheduler_depth[cid] += 1;
+    const schedulable = exc_scheduler_depth[cid] == 1 and (kind == kind_irq or is_from_el0(spsr));
+    if (schedulable) scheduler.begin_exception(cid);
+    if (exc_scheduler_depth[cid] == 1)
+        exc_scheduler_handoff[cid] = if (schedulable) scheduler.exception_handoff(cid) else null;
+    defer if (builtin.is_test and schedulable) scheduler.end_exception(cid);
+    defer if (builtin.is_test) {
+        exc_scheduler_depth[cid] -= 1;
+        if (exc_scheduler_depth[cid] == 0) exc_scheduler_handoff[cid] = null;
+    };
     handled_count_value[cid] += 1; // per-core: secondary-core IRQs fire in parallel
     // #1261: record exception ENTRY, before any GIC state is consumed. The
     // post-ack `irq` probe cannot distinguish "the interrupt stopped being
@@ -1191,6 +1205,36 @@ fn exception_vectors() align(2048) callconv(.naked) void {
         \\ldp q2, q3, [sp], #32
         \\ldp q0, q1, [sp], #32
         \\msr sp_el0, x1
+        \\// SP now belongs to the selected frame, not the source handler.
+        \\// Releasing before this point lets another core overwrite the
+        \\// source C epilogue. Release and deferred SGIs need no C call.
+        \\adrp x9, exc_scheduler_handoff
+        \\add x9, x9, :lo12:exc_scheduler_handoff
+        \\mrs x10, mpidr_el1
+        \\and x10, x10, #0xff
+        \\cmp x10, #4
+        \\csel x10, x10, xzr, lo
+        \\adrp x11, exc_scheduler_depth
+        \\add x11, x11, :lo12:exc_scheduler_depth
+        \\ldr x12, [x11, x10, lsl #3]
+        \\sub x12, x12, #1
+        \\str x12, [x11, x10, lsl #3]
+        \\cbnz x12, exc_handoff_done
+        \\ldr x11, [x9, x10, lsl #3]
+        \\cbz x11, exc_handoff_done
+        \\str xzr, [x9, x10, lsl #3]
+        \\exc_handoff_release:
+        \\ldaxr x12, [x11]
+        \\stlxr w13, xzr, [x11]
+        \\cbnz w13, exc_handoff_release
+        \\lsr x12, x12, #1
+        \\cbz x12, exc_handoff_done
+        \\// RESCHEDULE is SGI 0; bits 0..3 are its target list.
+        \\dsb ishst
+        \\msr icc_sgi1r_el1, x12
+        \\dsb ish
+        \\isb
+        \\exc_handoff_done:
         \\b exc_restore_tail
         \\.endm
         \\// Entry 0x000: EL1t synchronous (kind 0)
@@ -1580,6 +1624,45 @@ fn exception_vectors() align(2048) callconv(.naked) void {
 
 var test_svc_immediate: u16 = 0;
 var test_svc_resume_frame: ?*VectorFrame = null;
+var test_nested_handoff_preserved = false;
+
+fn test_nested_irq() void {}
+
+fn test_nested_svc(_: *VectorFrame, _: u16) bool {
+    const guard = exc_scheduler_handoff[0];
+    const saved_frame = resume_frame[0];
+    const saved_sp = resume_sp_el0[0];
+    var nested: VectorFrame = @splat(0);
+    _ = exc_dispatch(&nested, 0, 0, 0, 0x4, kind_irq);
+    test_nested_handoff_preserved = exc_scheduler_depth[0] == 1 and
+        exc_scheduler_handoff[0] == guard and guard != null and
+        (@atomicLoad(u64, guard.?, .acquire) & 1) != 0;
+    resume_frame[0] = saved_frame;
+    resume_sp_el0[0] = saved_sp;
+    return true;
+}
+
+test "exceptions: nested dispatch preserves the outer source-stack handoff (#1965)" {
+    _ = scheduler.init();
+    _ = scheduler.register_worker(0x1111).?;
+    const user = scheduler.register_user(0x2222, 0).?;
+    scheduler.start();
+    try std.testing.expect(scheduler.yield_current());
+    const old_irq = irq_dispatcher;
+    const old_svc = svc_dispatcher;
+    defer irq_dispatcher = old_irq;
+    defer svc_dispatcher = old_svc;
+    set_irq_dispatcher(test_nested_irq);
+    set_svc_dispatcher(test_nested_svc);
+    test_nested_handoff_preserved = false;
+    var frame: VectorFrame = @splat(0);
+    const resumed = exc_dispatch(&frame, 0x15 << 26, 0, 0x2222, 0, kind_sync);
+    try std.testing.expect(test_nested_handoff_preserved);
+    try std.testing.expectEqual(@intFromPtr(&frame), resumed.frame);
+    try std.testing.expectEqual(@as(u64, 0), exc_scheduler_depth[0]);
+    try std.testing.expect(exc_scheduler_handoff[0] == null);
+    try std.testing.expectEqual(@as(u64, 0), scheduler.tasks[user].exception_guard);
+}
 
 fn test_svc_handler(frame: *VectorFrame, immediate: u16) bool {
     test_svc_immediate = immediate;

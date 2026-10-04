@@ -1,7 +1,8 @@
 //! VirelaiOS tick-driven round-robin kernel task scheduler (claim 5275 —
 //! the first milestone-three "tasks" card).
 //!
-//! Preemptive at the tick only: the claim-9187 timer PPI enters the
+//! Preemptive at the tick, or on an EL0 wake interrupting the demo worker:
+//! the claim-9187 timer PPI enters the
 //! claim-9746 EL1 IRQ vector, the GIC/timer chain runs (ack -> timer
 //! handle/re-arm -> scheduler tick -> EOI), and the scheduler preempts the
 //! current task for the next one. Claim 8215 extends the same fixed pool
@@ -225,6 +226,13 @@ pub const UserRegions = struct {
 const Task = struct {
     name: []const u8 = "",
     state: State = .free,
+    /// #1965: only the registered demo worker yields its place to ready EL0
+    /// work. Shell, idle reaper and spawn-demo keep their existing rotation.
+    demo_worker: bool = false,
+    /// The source exception still owns this kernel stack. Publishing a
+    /// ready task must not let another core restore its frame before the
+    /// source handler has finished using the stack.
+    exception_guard: u64 = 0,
     /// Saved vector-frame pointer (the SP to restore); 0 until the task
     /// has been preempted once (the shell task's context is captured on
     /// its first preemption; the worker's frame is built at registration).
@@ -322,7 +330,48 @@ const Task = struct {
     futex_waiting: bool = false,
 };
 pub var tasks: [max_tasks]Task = [_]Task{.{}} ** max_tasks;
+var exception_owner: [smp.max_cores]?usize = @splat(null);
 var next_join_token: u64 = max_tasks;
+
+/// IRQs are masked and no scheduler lock is held at vector-dispatch entry.
+pub fn begin_exception(c: usize) void {
+    exception_owner[c] = null;
+    if (task_count == 0 or (c != 0 and current[c] == idle_id)) return;
+    const lk = rotation_lock(c);
+    const id = current[c];
+    @atomicStore(u64, &tasks[id].exception_guard, 1, .release);
+    exception_owner[c] = id;
+    rotation_unlock(lk);
+}
+
+/// Address consumed by the vector restore after it has switched SP away from
+/// the source stack. Bit 0 protects the frame; bits 1..4 retain wake nudges
+/// that arrived while another core was still finishing the source exception.
+pub fn exception_handoff(c: usize) ?*u64 {
+    const id = exception_owner[c] orelse return null;
+    return &tasks[id].exception_guard;
+}
+
+/// Host simulation of the assembly handoff. Never release a live source
+/// frame from C: even the dispatcher's epilogue still uses its source stack.
+pub fn end_exception(c: usize) void {
+    if (comptime !builtin.is_test) @compileError("live exception handoff belongs in the vector restore");
+    const id = exception_owner[c] orelse return;
+    const lk = rotation_lock(c);
+    _ = @atomicRmw(u64, &tasks[id].exception_guard, .Xchg, 0, .acq_rel);
+    exception_owner[c] = null;
+    rotation_unlock(lk);
+}
+
+fn defer_frame_nudge(id: usize, home: usize) void {
+    var guard = @atomicLoad(u64, &tasks[id].exception_guard, .acquire);
+    while (guard & 1 != 0) {
+        const nudged = guard | (@as(u64, 1) << @intCast(home + 1));
+        if (@cmpxchgStrong(u64, &tasks[id].exception_guard, guard, nudged, .acq_rel, .acquire)) |changed| {
+            guard = changed;
+        } else return;
+    }
+}
 
 fn save_tls(id: usize) void {
     if (comptime builtin.is_test or builtin.cpu.arch != .aarch64) return;
@@ -630,35 +679,33 @@ pub fn push_home_locked(id: usize) void {
     const home = home_ring_of(id);
     const daif = ring_locks[home].lock();
     ready_rings[home].push(id);
+    defer_frame_nudge(id, home);
     ring_locks[home].unlock(daif);
+    // This is the blocked->ready funnel, not the preempted task's direct
+    // push in switch_context. Publish after the ring unlock and before the
+    // SGI: the target must not discharge a request we have yet to set.
+    request_resched_on(home);
     // M70b #1454: the wake lands on the least-loaded online core. A
     // remote PARKED target is nudged with the RESCHEDULE SGI — its
     // handler runs the same seam as tick's parked branch (capture the
     // WFE frame, claim, apply), so the woken task starts immediately
-    // instead of waiting up to the 1 Hz PPI. A busy target needs no
-    // nudge: its own next rotation picks the task up in slot order,
-    // exactly the pre-targeting cadence. send_ipi is a no-op on the
+    // instead of waiting up to the 1 Hz PPI. #1965 also nudges a demo
+    // worker when EL0 work becomes ready; other busy tasks keep their
+    // pre-targeting cadence. send_ipi is a no-op on the
     // host and pre-SMP boots; the counters feed the `smp:` report as
     // observed data.
     if (home != caller) {
         wake_remote +%= 1;
-        if (home != 0 and smp.core_online[home] and current[home] == idle_id) {
+        const parked = home != 0 and current[home] == idle_id;
+        const worker_wake = tasks[current[home]].demo_worker and
+            (tasks[id].spsr & 0xf) == spsr_el0t_irqs;
+        if (smp.core_online[home] and (parked or worker_wake)) {
             wake_nudges +%= 1;
             smp.send_ipi(@intCast(home), smp.SGI_IPI_RESCHEDULE);
         }
     } else {
         wake_local +%= 1;
     }
-    // This is the single blocked->ready funnel, so it is also the single place a
-    // rotation can become owed. Placed AFTER the ring unlock so nothing can
-    // observe a half-pushed ring; the task is already runnable and visible to
-    // the rotation by then.
-    //
-    // NOTE: the ROTATION does not come through here — `switch_context` pushes
-    // the preempted task back with a direct `ready_rings[c].push`. Routing it
-    // through here would make every rotation request the next one, which is
-    // exactly the unbounded feedback the nudge was parked for.
-    request_resched_on(home);
     // #1278: this is the wake funnel, so it is where a dying boot's trace shows
     // whether the task that matters ever became runnable. `note` is a per-core
     // counter and one BSS slot when recording is off it returns on its first
@@ -1012,30 +1059,41 @@ pub fn discharge_resched(c: usize) void {
 /// branch runs: capture the WFE frame, claim a successor over the rings, and
 /// apply it — the vector stub then erets straight into the woken task, which
 /// is the whole point of the nudge (sub-tick wake latency instead of up to
-/// the 1 Hz PPI). A core already running a task — and core 0, which parks in
-/// its bounded-spin idle loop, never WFE — only records the request; its own
-/// next rotation picks the new work up in slot order as before. No console,
+/// the 1 Hz PPI). #1965 also preempts a demo worker with eligible ready EL0
+/// work, on any core. Other running tasks only record the request. No console,
 /// no allocation, no unbounded spinning.
 pub fn ipi_reschedule() void {
-    if (comptime builtin.cpu.arch != .aarch64) return;
     if (!scheduling_active()) return;
     const c = smp.core_id();
+    request_resched_on(c);
+    if (irq_exit_reschedule()) return;
     if (c == 0 or current[c] != idle_id) {
-        request_resched_on(c);
         return;
     }
-    var elr: u64 = 0;
-    var spsr: u64 = 0;
-    asm volatile ("mrs %[v], elr_el1"
-        : [v] "=r" (elr),
-    );
-    asm volatile ("mrs %[v], spsr_el1"
-        : [v] "=r" (spsr),
-    );
+    const pc = current_exception_pc();
     park_sp[c] = exceptions.resume_frame[c];
-    park_elr[c] = elr;
-    park_spsr[c] = spsr;
+    park_elr[c] = pc.elr;
+    park_spsr[c] = pc.spsr;
     if (claim_and_stage(c, idle_id)) apply_pending();
+}
+
+/// #1965: serve a wake at IRQ exit without changing the tick or preempting
+/// any other EL1 task. Called after device handling and from the RESCHEDULE
+/// SGI. The interrupted worker owns the vector frame; all handler locks must
+/// be released before this seam. Host tests exercise the same save/restore.
+pub fn irq_exit_reschedule() bool {
+    if (!scheduling_active()) return false;
+    const c = smp.core_id();
+    if (!resched_requested[c] or !tasks[current[c]].demo_worker) return false;
+    const lk = rotation_lock(c);
+    const user_ready = ready_user_for(c);
+    rotation_unlock(lk);
+    if (!user_ready) return false;
+    const pc = current_exception_pc();
+    switch_context(exceptions.resume_frame[c], pc.elr, pc.spsr, exceptions.resume_sp_el0[c]);
+    apply_pending();
+    discharge_resched(c);
+    return true;
 }
 /// The idle task's static stack (BSS, like every other kernel global).
 var idle_stack: [task_stack_size]u8 align(16) = undefined;
@@ -1089,6 +1147,7 @@ pub fn init() usize {
     next_join_token = max_tasks;
     pending_tls = @splat(0);
     for (&tasks) |*task| task.* = .{};
+    exception_owner = @splat(null);
     for (&futex_table) |*e| e.* = .{};
     // Claim 3848: every pool reset also clears the process layer (the
     // boot path initializes both here; host tests get isolation). Card 3f
@@ -1100,7 +1159,7 @@ pub fn init() usize {
     events.on_event_pushed = wake_event_waiters;
     app_timers.init();
     wm_server.init();
-    tasks[0] = .{ .name = "shell", .state = .ready, .ttbr0 = mmu.kernel_root_phys() };
+    tasks[0] = .{ .name = "shell", .state = .ready, .spsr = spsr_el1h_irqs, .ttbr0 = mmu.kernel_root_phys() };
     tasks[idle_id] = .{
         .name = "idle",
         .state = .ready,
@@ -1168,7 +1227,9 @@ fn alloc_task_locked(name: []const u8, entry: u64, spsr: u64, stack: []u8, ttbr0
 /// counter each quantum). `entry` is a runtime-computed function address
 /// (the caller takes `@intFromPtr(&task_fn)`).
 pub fn register_worker(entry: u64) ?usize {
-    const id = spawn("worker", entry, spsr_el1h_irqs, &worker_stack, mmu.kernel_root_phys(), 0) orelse return null;
+    sched_lock_acquire();
+    defer sched_lock_release();
+    const id = alloc_task_locked("worker", entry, spsr_el1h_irqs, &worker_stack, mmu.kernel_root_phys(), 0) orelse return null;
     // The worker is console-free (note_advance + request_report + spin),
     // so it is the one task safe on a secondary core (the polled virtio
     // TX has no lock — anything that prints must stay on core 0). Claim
@@ -1181,6 +1242,9 @@ pub fn register_worker(entry: u64) ?usize {
     // the next tick (successor exists), so the claim-907 starve hazard
     // does not materialize.
     tasks[id].secondary_ok = true;
+    tasks[id].demo_worker = true;
+    tasks[id].state = .ready;
+    push_home_locked(id);
     return id;
 }
 
@@ -1593,7 +1657,25 @@ fn steal_eligible(c: usize, cand: usize) bool {
     return true;
 }
 
+fn frame_claimable(c: usize, id: usize) bool {
+    return (@atomicLoad(u64, &tasks[id].exception_guard, .acquire) & 1) == 0 or exception_owner[c] == id;
+}
+
 const MergedPick = struct { id: usize, from: usize };
+
+/// Caller holds all rotation locks. Eligibility is exactly the existing
+/// own-ring/steal rule; a pinned or running foreign task cannot suppress the
+/// worker on this core.
+fn ready_user_for(c: usize) bool {
+    for (&ready_rings, 0..) |*ring, r| {
+        for (ring.members[0..ring.count]) |id| {
+            if (r != c and !steal_eligible(c, id)) continue;
+            if (!frame_claimable(c, id)) continue;
+            if ((tasks[id].spsr & 0xf) == spsr_el0t_irqs) return true;
+        }
+    }
+    return false;
+}
 
 /// The successor after slot `after` on core `c`, over the SLOT-MERGED
 /// view of EVERY core's ring. Every `.ready` task the old shared scan
@@ -1611,6 +1693,7 @@ const MergedPick = struct { id: usize, from: usize };
 /// or before `after` are reached only at the wrap (the old scan's
 /// re-pick of the preempted task itself).
 fn merged_next(c: usize, after: usize) ?MergedPick {
+    const user_ready = ready_user_for(c);
     // All rings, n <= max_cores * max_tasks: collect + insertion sort by
     // slot. Rings of offline cores are always empty, so they contribute
     // nothing — no online-gating needed.
@@ -1639,6 +1722,8 @@ fn merged_next(c: usize, after: usize) ?MergedPick {
     while (s < n) : (s += 1) {
         const cand = merged[(begin + s) % n];
         if (cand.from != c and !steal_eligible(c, cand.id)) continue;
+        if (!frame_claimable(c, cand.id)) continue;
+        if (user_ready and tasks[cand.id].demo_worker) continue;
         return cand;
     }
     return null;
@@ -2736,7 +2821,7 @@ pub fn reap(id: usize) bool {
     // page release runs AFTER, under the kernel gate only (claim 881
     // slice 3: a long reap must not stall another core's rotation).
     sched_lock_acquire();
-    if (id >= max_tasks or tasks[id].state != .zombie or tasks[id].teardown_pending or tasks[id].join_token != 0) {
+    if (id >= max_tasks or tasks[id].state != .zombie or tasks[id].teardown_pending or (@atomicLoad(u64, &tasks[id].exception_guard, .acquire) & 1) != 0 or tasks[id].join_token != 0) {
         sched_lock_release();
         return false;
     }
@@ -3244,13 +3329,17 @@ pub fn maybe_report(con: *console.Console) void {
     // prints on healthy boots beyond the one-per-boot armed line.
     audit.drain(con);
     // SMP lift evidence (claim 8477 follow-up): one line per secondary
-    // RUN (not per drain check), printed from the shell idle loop (main
-    // context). The ring preserves the per-run name, so a user run
-    // sandwiched between worker runs still gets its own line.
-    while (secondary_runs_printed < secondary_runs) {
+    // RUN retained in the bounded name buffer, from main context. #1965:
+    // self-rotations can run at yield cadence, not tick cadence. Snapshot
+    // once and skip overwritten names rather than reconstructing millions
+    // of discarded reports and starving monitor handback forever.
+    const secondary_end = secondary_runs;
+    const secondary_first = secondary_end - @min(secondary_end, secondary_run_names_count);
+    secondary_runs_printed = @max(secondary_runs_printed, secondary_first);
+    while (secondary_runs_printed < secondary_end) {
+        const index = secondary_runs_printed - secondary_first;
         secondary_runs_printed += 1;
-        const index = secondary_runs_printed - 1;
-        const name = if (index < secondary_run_names_count) secondary_run_names[index] else secondary_last_task;
+        const name = secondary_run_names[index];
         // ONE write per line (claim 881 slice 4): a secondary-core
         // sys_write can land between the vtable writes of a multi-put
         // line, splitting it (observed: `smp: secondary runs=` / `111` /
@@ -3261,13 +3350,15 @@ pub fn maybe_report(con: *console.Console) void {
         const line = std.fmt.bufPrint(&buf, "smp: secondary runs={d} task={s}\n", .{ secondary_runs_printed, name }) catch continue;
         con.puts(line);
     }
-    // Issue #857 evidence: one line per cross-core migration (not per
-    // drain check). Same one-buffer single-write rule as above.
-    while (steal_runs_printed < steal_runs) {
+    // The migration buffer has the same drop-oldest, bounded-drain rule.
+    const steal_end = steal_runs;
+    const steal_first = steal_end - @min(steal_end, steal_run_names_count);
+    steal_runs_printed = @max(steal_runs_printed, steal_first);
+    while (steal_runs_printed < steal_end) {
+        const index = steal_runs_printed - steal_first;
         steal_runs_printed += 1;
-        const index = steal_runs_printed - 1;
-        const sname = if (index < steal_run_names_count) steal_run_names[index] else steal_last_task;
-        const sfrom = if (index < steal_run_names_count) steal_run_froms[index] else steal_last_from;
+        const sname = steal_run_names[index];
+        const sfrom = steal_run_froms[index];
         var buf: [160]u8 = undefined;
         const line = std.fmt.bufPrint(&buf, "smp: steal runs={d} task={s} from={d}\n", .{ steal_runs_printed, sname, sfrom }) catch continue;
         con.puts(line);
@@ -3341,6 +3432,37 @@ pub fn maybe_report(con: *console.Console) void {
         const line = std.fmt.bufPrint(&buf, "tasks {s} sleeping {d} ticks\n", .{ sleep_report_name, sleep_report_ticks }) catch return;
         con.puts(line);
     }
+}
+
+test "scheduler: self-rotation report backlogs drain only retained names (#1965)" {
+    _ = init();
+    secondary_runs = 1_000_000;
+    secondary_runs_printed = 0;
+    secondary_run_names_count = secondary_run_name_cap;
+    secondary_run_names = @splat("user-el0");
+    steal_runs = 1_000_000;
+    steal_runs_printed = 0;
+    steal_run_names_count = steal_run_name_cap;
+    steal_run_names = @splat("user-el0");
+    steal_run_froms = @splat(1);
+    defer {
+        secondary_runs = 0;
+        secondary_runs_printed = 0;
+        secondary_run_names_count = 0;
+        steal_runs = 0;
+        steal_runs_printed = 0;
+        steal_run_names_count = 0;
+    }
+    var mock = console.MockConsole(8192){};
+    var con = mock.console();
+    maybe_report(&con);
+    try std.testing.expectEqual(secondary_run_name_cap, std.mem.count(u8, mock.contents(), "smp: secondary runs="));
+    try std.testing.expectEqual(steal_run_name_cap, std.mem.count(u8, mock.contents(), "smp: steal runs="));
+    try std.testing.expectEqual(secondary_runs, secondary_runs_printed);
+    try std.testing.expectEqual(steal_runs, steal_runs_printed);
+    mock.reset();
+    maybe_report(&con);
+    try std.testing.expectEqual(@as(usize, 0), mock.contents().len);
 }
 
 // ---------------------------------------------------------------------------
