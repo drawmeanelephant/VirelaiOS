@@ -1,5 +1,5 @@
 import unittest
-from receipt import parse, output
+from receipt import parse, output, require_failure_tail
 
 
 class ReceiptTests(unittest.TestCase):
@@ -19,6 +19,14 @@ class ReceiptTests(unittest.TestCase):
         self.assertEqual(output(parse(data, require_complete=False)), b"x\n")
         with self.assertRaises(ValueError):
             parse(b"H 6\nQJS/1\nO 3\nx", require_complete=False)
+
+    def test_failed_receipt_may_fit_a_non_success_terminal_frame(self):
+        complete = parse(b"H 6\nQJS/1\nZ 10\nstatus=70\n")
+        require_failure_tail(complete)
+        partial = parse(b"H 6\nQJS/1\nO 2\nx\n", require_complete=False)
+        require_failure_tail(partial)
+        with self.assertRaisesRegex(ValueError, "FailureReceiptStatus"):
+            require_failure_tail(parse(b"H 6\nQJS/1\nZ 9\nstatus=0\n"))
 
 
 if __name__ == "__main__":

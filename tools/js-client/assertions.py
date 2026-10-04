@@ -6,7 +6,7 @@ import re
 import shutil
 import sys
 
-from receipt import parse, output, results, fields
+from receipt import parse, output, results, fields, require_failure_tail
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -156,7 +156,8 @@ def check():
         assert len(rs) == 17 and all(r["failure"] == "none" and r["output"] == "65536" for r in rs[:16])
         assert rs[16]["failure"] == "SessionLimit" and len(output(frames)) == 1_048_576
     if tag == "receipt":
-        assert len(output(frames)) == 1_048_576 and frames[-1][0] != "Z"
+        assert len(output(frames)) == 1_048_576
+        require_failure_tail(frames)
         assert "qjs: ReceiptLimit" in text
     if tag == "eof":
         assert not results(frames) and output(frames) == b"" and "qjs: quit" in text

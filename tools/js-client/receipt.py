@@ -24,6 +24,13 @@ def fields(row):
     return dict(item.split("=", 1) for item in row.decode().strip().split(" "))
 
 
+def require_failure_tail(frames):
+    # A large eval frame can exhaust the remaining budget while a smaller
+    # terminal status frame still fits. Failure need not imply truncation.
+    if frames[-1][0] == "Z" and fields(frames[-1][1]).get("status") != "70":
+        raise ValueError("FailureReceiptStatus")
+
+
 def output(frames):
     return b"".join(data for kind, data in frames if kind == "O")
 
