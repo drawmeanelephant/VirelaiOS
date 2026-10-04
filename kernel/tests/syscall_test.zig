@@ -362,7 +362,6 @@ test "B1: stream syscall identities EOF EFAULT closure and legacy file zero do n
     _ = scheduler.register_user(0x3000, 0);
     scheduler.start();
     try std.testing.expect(scheduler.yield_current());
-    try std.testing.expect(scheduler.yield_current());
     const files = [_]virtio_file.TestFile{.{ .name = "INPUT", .data = "bytes" }};
     virtio_file.set_test_share(&files);
     defer virtio_file.set_test_share(null);
@@ -397,7 +396,6 @@ test "B1: versioned spawn marshalling and loader failures preserve source owners
     _ = scheduler.register_worker(0x2000);
     _ = scheduler.register_user(0x3000, 0);
     scheduler.start();
-    try std.testing.expect(scheduler.yield_current());
     try std.testing.expect(scheduler.yield_current());
     const files = [_]virtio_file.TestFile{.{ .name = "INPUT", .data = "bytes" }};
     virtio_file.set_test_share(&files);
@@ -436,9 +434,8 @@ test "syscall: yield returns zero and exit removes the current task" {
     var frame = fresh_frame();
     try std.testing.expectEqual(@as(u64, 0), dispatch(sys_yield, .{ 0, 0, 0, 0, 0, 0 }, &frame));
     try std.testing.expectEqual(@as(u64, 1), scheduler.cooperative_yield_count());
-    // worker -> user, then exit the EL0 task. It is reaped from the runnable
+    // The first yield selected EL0 directly; now exit it. It is off the
     // ring, so the selected frame belongs to shell and can never be `frame`.
-    try std.testing.expect(scheduler.yield_current());
     try std.testing.expectEqual(@as(usize, 2), scheduler.current_id());
     try std.testing.expectEqual(@as(u64, 0), dispatch(sys_exit, .{ 7, 0, 0, 0, 0, 0 }, &frame));
     try std.testing.expect(scheduler.is_terminated(2));
@@ -454,29 +451,26 @@ test "syscall: sleep blocks the current task and returns zero on wake" {
     _ = scheduler.register_user(0x3000, 0);
     scheduler.start();
     var frame = fresh_frame();
-    // The shell (slot 0) sleeps 2 ticks: it is blocked and the worker is
+    // The shell (slot 0) sleeps 2 ticks: it is blocked and EL0 is
     // staged. Publish the result before the caller can wake on another
     // core, rather than returning the original argument through that race.
     exceptions.resume_frame[0] = @intFromPtr(&frame);
     try std.testing.expectEqual(@as(u64, 0), dispatch(sys_sleep, .{ 2, 0, 0, 0, 0, 0 }, &frame));
     try std.testing.expectEqual(@as(u64, 0), exceptions.frame_read(&frame, 0));
     try std.testing.expectEqual(@intFromPtr(&frame), scheduler.tasks[0].sp);
-    try std.testing.expectEqual(@as(usize, 1), scheduler.current_id());
+    try std.testing.expectEqual(@as(usize, 2), scheduler.current_id());
     try std.testing.expect(scheduler.is_blocked(0));
     // A blocked task is skipped by the round-robin ring.
-    try std.testing.expect(scheduler.yield_current()); // worker -> user
-    try std.testing.expectEqual(@as(usize, 2), scheduler.current_id());
     try std.testing.expect(scheduler.yield_current()); // user -> idle
     try std.testing.expectEqual(@as(usize, scheduler.idle_id), scheduler.current_id());
-    try std.testing.expect(scheduler.yield_current()); // idle -> worker (shell still blocked)
-    try std.testing.expectEqual(@as(usize, 1), scheduler.current_id());
+    try std.testing.expect(scheduler.yield_current()); // idle -> user (worker suppressed)
+    try std.testing.expectEqual(@as(usize, 2), scheduler.current_id());
     // One tick is not enough for a 2-tick sleep; the second tick wakes it.
     scheduler.on_tick();
     try std.testing.expect(scheduler.is_blocked(0));
     scheduler.on_tick();
     try std.testing.expect(!scheduler.is_blocked(0));
     // The ring reaches the woken shell again.
-    try std.testing.expect(scheduler.yield_current()); // worker -> user
     try std.testing.expect(scheduler.yield_current()); // user -> idle
     try std.testing.expect(scheduler.yield_current()); // idle -> shell
     try std.testing.expectEqual(@as(usize, 0), scheduler.current_id());
@@ -506,7 +500,7 @@ test "syscall: handle_svc writes yield result into the suspended caller frame" {
     try std.testing.expect(handle_svc(&caller, svc_immediate));
     try std.testing.expectEqual(@as(u64, 0), exceptions.frame_read(&caller, 0));
     try std.testing.expect(exceptions.resume_frame[0] != @intFromPtr(&caller));
-    try std.testing.expectEqual(@as(usize, 1), scheduler.current_id());
+    try std.testing.expectEqual(@as(usize, 2), scheduler.current_id());
 }
 
 test "syscall: ipc send/recv round-trip moves bytes between two processes" {
@@ -529,8 +523,7 @@ test "syscall: ipc send/recv round-trip moves bytes between two processes" {
     );
     var frame = fresh_frame();
     // Drive the ring to the boot payload's task (process 0).
-    try std.testing.expect(scheduler.yield_current()); // shell -> worker
-    try std.testing.expect(scheduler.yield_current()); // worker -> user (task 2)
+    try std.testing.expect(scheduler.yield_current()); // shell -> user (task 2)
     try std.testing.expectEqual(@as(usize, 2), scheduler.current_id());
     // Process 0 sends "ping 1\n" to the peer (pid 1).
     try std.testing.expectEqual(@as(u64, send_bytes.len), dispatch(sys_ipc_send, .{ peer_pid, @intFromPtr(send_bytes.ptr), send_bytes.len, 0, 0, 0 }, &frame));
@@ -611,8 +604,7 @@ test "syscall: ipc recv returns empty, clamps, truncates, and EFAULT keeps the m
     // An EL1h task (the shell here) is never a process: EINVAL.
     try std.testing.expectEqual(error_result(.einval), dispatch(sys_ipc_recv, .{ @intFromPtr(&recv_buf), mailbox.message_max, 0, 0, 0, 0 }, &frame));
     // Drive to the boot payload's task (process 0).
-    try std.testing.expect(scheduler.yield_current()); // shell -> worker
-    try std.testing.expect(scheduler.yield_current()); // worker -> user
+    try std.testing.expect(scheduler.yield_current()); // shell -> user
     try std.testing.expectEqual(@as(usize, 2), scheduler.current_id());
     set_user_regions(
         .{ .base = 0, .len = 0 },
@@ -708,8 +700,7 @@ test "syscall: procs snapshot reflects live registry state and marshals fixed ro
     // The name field is NUL-padded to the full 16-byte slot.
     for (buf[24 + 8 .. 40]) |byte| try std.testing.expectEqual(@as(u8, 0), byte);
     // Exit the payload: process 0 becomes exited with the status kept.
-    try std.testing.expect(scheduler.yield_current()); // shell -> worker
-    try std.testing.expect(scheduler.yield_current()); // worker -> user
+    try std.testing.expect(scheduler.yield_current()); // shell -> user
     try std.testing.expectEqual(@as(usize, 2), scheduler.current_id());
     try std.testing.expect(scheduler.exit_current(7));
     try std.testing.expectEqual(@as(u64, 1), dispatch(sys_procs, .{ @intFromPtr(&buf), buf.len, 0, 0, 0, 0 }, &frame));
@@ -854,8 +845,7 @@ test "syscall: wait returns an already-exited target's status and refuses invali
     try std.testing.expectEqual(error_result(.einval), dispatch(sys_wait, .{ 7, 0, 0, 0, 0, 0 }, &frame));
     // Drive to the boot payload (process 0, task 2): it may not wait on
     // itself (the deadlock the kernel refuses).
-    try std.testing.expect(scheduler.yield_current()); // shell -> worker
-    try std.testing.expect(scheduler.yield_current()); // worker -> user
+    try std.testing.expect(scheduler.yield_current()); // shell -> user
     try std.testing.expectEqual(@as(usize, 2), scheduler.current_id());
     try std.testing.expectEqual(error_result(.einval), dispatch(sys_wait, .{ 0, 0, 0, 0, 0, 0 }, &frame));
     try std.testing.expect(!scheduler.is_blocked(2));
@@ -867,8 +857,7 @@ test "syscall: wait returns an already-exited target's status and refuses invali
     // Drive back to the caller: its wait on the now-exited target returns
     // the stored status IMMEDIATELY (no block — the already-exited path).
     try std.testing.expect(scheduler.yield_current()); // idle
-    try std.testing.expect(scheduler.yield_current()); // shell
-    try std.testing.expect(scheduler.yield_current()); // worker -> user
+    try std.testing.expect(scheduler.yield_current()); // shell -> user
     try std.testing.expectEqual(@as(usize, 2), scheduler.current_id());
     try std.testing.expectEqual(@as(u64, 43), dispatch(sys_wait, .{ target_pid, 0, 0, 0, 0, 0 }, &frame));
     try std.testing.expect(!scheduler.is_blocked(2));
@@ -888,8 +877,7 @@ test "syscall: wait blocks the caller and the target's exit wakes it with the st
     _ = process.bind(target_pid, target_task);
     scheduler.start();
     // Drive to the caller (process 0, task 2).
-    try std.testing.expect(scheduler.yield_current()); // shell -> worker
-    try std.testing.expect(scheduler.yield_current()); // worker -> user
+    try std.testing.expect(scheduler.yield_current()); // shell -> user
     try std.testing.expectEqual(@as(usize, 2), scheduler.current_id());
     var frame = fresh_frame();
     // Stand in for the caller's SVC frame (the yield-test seam): the
@@ -912,8 +900,7 @@ test "syscall: wait blocks the caller and the target's exit wakes it with the st
     try std.testing.expectEqual(@as(u64, 43), process.info(target_pid).?.exit_status);
     // The ring can reach the woken caller again (3 is a zombie, skipped).
     try std.testing.expect(scheduler.yield_current()); // idle
-    try std.testing.expect(scheduler.yield_current()); // shell
-    try std.testing.expect(scheduler.yield_current()); // worker -> user
+    try std.testing.expect(scheduler.yield_current()); // shell -> user
     try std.testing.expectEqual(@as(usize, 2), scheduler.current_id());
     // The process-level exit report carries the status (TARGET.BIN, 43).
     const r = process.take_exit_report().?;
@@ -1099,8 +1086,7 @@ test "syscall: win open/fill/present/close round-trips with per-process ownershi
     scheduler.start();
     var frame = fresh_frame();
     // Drive to the exec'd WIN.BIN (task 3).
-    try std.testing.expect(scheduler.yield_current()); // shell -> worker
-    try std.testing.expect(scheduler.yield_current()); // worker -> user (boot payload, 2)
+    try std.testing.expect(scheduler.yield_current()); // shell -> user (boot payload, 2)
     try std.testing.expect(scheduler.yield_current()); // user -> WIN.BIN (3)
     try std.testing.expectEqual(@as(usize, 3), scheduler.current_id());
     // Open window 2 as WIN.BIN: the caller's pid is recorded as the owner.
@@ -1159,8 +1145,7 @@ test "syscall: win open/fill/present/close round-trips with per-process ownershi
     // WIN.BIN's windows, so fill/present/close are EINVAL.
     try std.testing.expect(scheduler.yield_current()); // WIN.BIN -> idle
     try std.testing.expect(scheduler.yield_current()); // idle -> shell
-    try std.testing.expect(scheduler.yield_current()); // shell -> worker
-    try std.testing.expect(scheduler.yield_current()); // worker -> user (2)
+    try std.testing.expect(scheduler.yield_current()); // shell -> user (2)
     try std.testing.expectEqual(@as(usize, 2), scheduler.current_id());
     try std.testing.expectEqual(error_result(.einval), dispatch(sys_win_fill, .{ 2, 0, 0, 10, 10, 0 }, &frame));
     try std.testing.expectEqual(error_result(.einval), dispatch(sys_win_present, .{ 2, 0, 0, 0, 0, 0 }, &frame));
@@ -1197,8 +1182,7 @@ test "syscall: win open maps pool exhaustion to ENOMEM (WM1, claim 919)" {
     scheduler.start();
     var frame = fresh_frame();
     // Drive to the exec'd WIN.BIN (task 3).
-    try std.testing.expect(scheduler.yield_current()); // shell -> worker
-    try std.testing.expect(scheduler.yield_current()); // worker -> user (2)
+    try std.testing.expect(scheduler.yield_current()); // shell -> user (2)
     try std.testing.expect(scheduler.yield_current()); // user -> WIN.BIN (3)
     // Shrink the pool to a single page: a 256×192 window needs 12.
     var desc = [_]memmap.MemoryDescriptor{
@@ -1228,8 +1212,7 @@ test "syscall: win get copies the clamped rect back through uaccess and enforces
         .{ .base = @intFromPtr(&rect_buf), .len = rect_buf.len },
     );
     // Drive to WIN.BIN (task 3).
-    try std.testing.expect(scheduler.yield_current()); // shell -> worker
-    try std.testing.expect(scheduler.yield_current()); // worker -> user (2)
+    try std.testing.expect(scheduler.yield_current()); // shell -> user (2)
     try std.testing.expect(scheduler.yield_current()); // user -> WIN.BIN (3)
     try std.testing.expectEqual(@as(usize, 3), scheduler.current_id());
     try std.testing.expectEqual(@as(u64, 2), dispatch(sys_win_open, .{ 64, 64, 256, 192, 0, 0 }, &frame));
@@ -1256,8 +1239,7 @@ test "syscall: win get copies the clamped rect back through uaccess and enforces
     // WIN.BIN's window, so win_get is EINVAL.
     try std.testing.expect(scheduler.yield_current()); // WIN.BIN -> idle
     try std.testing.expect(scheduler.yield_current()); // idle -> shell
-    try std.testing.expect(scheduler.yield_current()); // shell -> worker
-    try std.testing.expect(scheduler.yield_current()); // worker -> user (2)
+    try std.testing.expect(scheduler.yield_current()); // shell -> user (2)
     try std.testing.expectEqual(@as(usize, 2), scheduler.current_id());
     try std.testing.expectEqual(error_result(.einval), dispatch(sys_win_get, .{ 2, @intFromPtr(&rect_buf), 0, 0, 0, 0 }, &frame));
     try std.testing.expectEqual(@as(u64, 6), call_count(sys_win_get));
@@ -1281,8 +1263,7 @@ test "syscall: win query copies the full window state back and enforces ownershi
         .{ .base = @intFromPtr(&qbuf), .len = qbuf.len },
     );
     // Drive to WIN.BIN (task 3).
-    try std.testing.expect(scheduler.yield_current()); // shell -> worker
-    try std.testing.expect(scheduler.yield_current()); // worker -> user (2)
+    try std.testing.expect(scheduler.yield_current()); // shell -> user (2)
     try std.testing.expect(scheduler.yield_current()); // user -> WIN.BIN (3)
     try std.testing.expectEqual(@as(usize, 3), scheduler.current_id());
     try std.testing.expectEqual(@as(u64, 2), dispatch(sys_win_open, .{ 64, 64, 256, 192, 0, 0 }, &frame));
@@ -1306,8 +1287,7 @@ test "syscall: win query copies the full window state back and enforces ownershi
     // WIN.BIN's window, so win_query is EINVAL.
     try std.testing.expect(scheduler.yield_current()); // WIN.BIN -> idle
     try std.testing.expect(scheduler.yield_current()); // idle -> shell
-    try std.testing.expect(scheduler.yield_current()); // shell -> worker
-    try std.testing.expect(scheduler.yield_current()); // worker -> user (2)
+    try std.testing.expect(scheduler.yield_current()); // shell -> user (2)
     try std.testing.expectEqual(@as(usize, 2), scheduler.current_id());
     try std.testing.expectEqual(error_result(.einval), dispatch(sys_win_query, .{ 2, @intFromPtr(&qbuf), 0, 0, 0, 0 }, &frame));
     try std.testing.expectEqual(@as(u64, 5), call_count(sys_win_query));
@@ -1326,8 +1306,7 @@ test "syscall: win set_visible hides/shows the caller's window and enforces owne
     scheduler.start();
     var frame = fresh_frame();
     // Drive to WIN.BIN (task 3).
-    try std.testing.expect(scheduler.yield_current()); // shell -> worker
-    try std.testing.expect(scheduler.yield_current()); // worker -> user (2)
+    try std.testing.expect(scheduler.yield_current()); // shell -> user (2)
     try std.testing.expect(scheduler.yield_current()); // user -> WIN.BIN (3)
     try std.testing.expectEqual(@as(usize, 3), scheduler.current_id());
     try std.testing.expectEqual(@as(u64, 2), dispatch(sys_win_open, .{ 64, 64, 256, 192, 0, 0 }, &frame));
@@ -1346,8 +1325,7 @@ test "syscall: win set_visible hides/shows the caller's window and enforces owne
     // WIN.BIN's window, so set_visible is EINVAL.
     try std.testing.expect(scheduler.yield_current()); // WIN.BIN -> idle
     try std.testing.expect(scheduler.yield_current()); // idle -> shell
-    try std.testing.expect(scheduler.yield_current()); // shell -> worker
-    try std.testing.expect(scheduler.yield_current()); // worker -> user (2)
+    try std.testing.expect(scheduler.yield_current()); // shell -> user (2)
     try std.testing.expectEqual(@as(usize, 2), scheduler.current_id());
     try std.testing.expectEqual(error_result(.einval), dispatch(sys_win_set_visible, .{ 2, 0, 0, 0, 0, 0 }, &frame));
     try std.testing.expectEqual(@as(u64, 6), call_count(sys_win_set_visible));
@@ -1468,8 +1446,7 @@ test "syscall: file storage slots 23..27 dispatch and fault safety" {
     try std.testing.expectEqual(error_result(.einval), dispatch(sys_dir_list, .{ 0x1000, 0, 0x2000, 10, 0, 0 }, &frame));
 
     // Yield to user task (task 2, pid 0)
-    try std.testing.expect(scheduler.yield_current()); // shell -> worker
-    try std.testing.expect(scheduler.yield_current()); // worker -> user (2)
+    try std.testing.expect(scheduler.yield_current()); // shell -> user (2)
     try std.testing.expectEqual(@as(usize, 2), scheduler.current_id());
 
     var test_buf: [64]u8 = undefined;
@@ -1510,8 +1487,7 @@ test "syscall: mutating file slots 34..37 dispatch and fault safety (claim 5801)
     try std.testing.expectEqual(error_result(.einval), dispatch(sys_file_free, .{ 0, 0, 0, 0, 0, 0 }, &frame));
 
     // Yield to user task (task 2, pid 0)
-    try std.testing.expect(scheduler.yield_current()); // shell -> worker
-    try std.testing.expect(scheduler.yield_current()); // worker -> user (2)
+    try std.testing.expect(scheduler.yield_current()); // shell -> user (2)
     try std.testing.expectEqual(@as(usize, 2), scheduler.current_id());
 
     var test_buf: [64]u8 = undefined;
@@ -1541,7 +1517,6 @@ test "B2: slot 27 versioned marshaling, fault retry, EOF and legacy compatibilit
     scheduler.start();
     file_table.init();
     var frame = fresh_frame();
-    try std.testing.expect(scheduler.yield_current());
     try std.testing.expect(scheduler.yield_current());
     const dir = file_table.directory;
     var files: [40]syscall.virtio_file.TestFile = undefined;
@@ -1599,7 +1574,6 @@ fn start_metadata_case(frame: *exceptions.VectorFrame, base: usize, len: usize) 
     file_table.init();
     syscall.trust.init();
     frame.* = fresh_frame();
-    std.debug.assert(scheduler.yield_current());
     std.debug.assert(scheduler.yield_current());
     B3Case.Server.start();
     set_user_regions(.{ .base = 0, .len = 0 }, .{ .base = base, .len = len });
@@ -2117,7 +2091,6 @@ test "syscall: slot 35 replacement selector preserves legacy register behavior" 
     _ = scheduler.register_user(0x3000, 0);
     scheduler.start();
     _ = scheduler.yield_current();
-    _ = scheduler.yield_current();
     syscall.trust.init();
     defer syscall.trust.init();
     vf.set_test_rename(Probe.rename_probe);
@@ -2164,8 +2137,7 @@ test "syscall: clipboard slots 38..39 dispatch and fault safety (claim 0169)" {
     try std.testing.expectEqual(error_result(.einval), dispatch(sys_clipboard_get, .{ 0x1000, 4, 0, 0, 0, 0 }, &frame));
 
     // Yield to the user task (task 2, pid 0).
-    try std.testing.expect(scheduler.yield_current()); // shell -> worker
-    try std.testing.expect(scheduler.yield_current()); // worker -> user (2)
+    try std.testing.expect(scheduler.yield_current()); // shell -> user (2)
     try std.testing.expectEqual(@as(usize, 2), scheduler.current_id());
 
     var test_buf: [64]u8 = undefined;
@@ -2224,8 +2196,7 @@ test "syscall: app timer slots 40..41 dispatch, fire through the tick, and clamp
     try std.testing.expectEqual(error_result(.einval), dispatch(sys_timer_cancel, .{ 0, 0, 0, 0, 0, 0 }, &frame));
 
     // Yield to the user task (task 2, pid 0).
-    try std.testing.expect(scheduler.yield_current()); // shell -> worker
-    try std.testing.expect(scheduler.yield_current()); // worker -> user (2)
+    try std.testing.expect(scheduler.yield_current()); // shell -> user (2)
     try std.testing.expectEqual(@as(usize, 2), scheduler.current_id());
 
     // Cancel with nothing armed -> 0.
@@ -2289,8 +2260,7 @@ test "syscall: slot 28 sys_exec marshals the path and maps loader errors" {
     try std.testing.expectEqual(error_result(.einval), dispatch(sys_exec, .{ 0x1000, virtio_file.path_max + 1, 0, 0, 0, 0 }, &frame));
 
     // Yield to the user task (task 2, pid 0)
-    try std.testing.expect(scheduler.yield_current()); // shell -> worker
-    try std.testing.expect(scheduler.yield_current()); // worker -> user (2)
+    try std.testing.expect(scheduler.yield_current()); // shell -> user (2)
     try std.testing.expectEqual(@as(usize, 2), scheduler.current_id());
     try std.testing.expect(process.find_by_task(2) != null);
 
@@ -2324,7 +2294,6 @@ test "syscall: slot 28 sys_exec argc>8 is EINVAL and ENOENT leaves the caller (i
     defer virtio_file.set_test_share(null);
     var frame = fresh_frame();
 
-    try std.testing.expect(scheduler.yield_current());
     try std.testing.expect(scheduler.yield_current());
     try std.testing.expectEqual(@as(usize, 2), scheduler.current_id());
     try std.testing.expectEqual(@as(?usize, 0), process.find_by_task(2));
@@ -2388,7 +2357,6 @@ test "syscall: slot 28 sys_exec success preserves the caller task (issue #1333)"
     defer virtio_file.set_test_share(null);
 
     try std.testing.expect(scheduler.yield_current());
-    try std.testing.expect(scheduler.yield_current());
     try std.testing.expectEqual(@as(usize, 2), scheduler.current_id());
     try std.testing.expectEqual(@as(?usize, 0), process.find_by_task(2));
 
@@ -2433,8 +2401,7 @@ test "syscall: slot 29 sys_kill arms a process target and maps refusals" {
     try std.testing.expectEqual(error_result(.einval), dispatch(sys_kill, .{ 7, 0, 0, 0, 0, 0 }, &frame));
 
     // Drive to the caller (task 2, pid 0).
-    try std.testing.expect(scheduler.yield_current()); // shell -> worker
-    try std.testing.expect(scheduler.yield_current()); // worker -> user (2)
+    try std.testing.expect(scheduler.yield_current()); // shell -> user (2)
     try std.testing.expectEqual(@as(usize, 2), scheduler.current_id());
 
     // Arm the target: returns 0.
@@ -2455,8 +2422,7 @@ test "syscall: slot 29 sys_kill arms a process target and maps refusals" {
     // The exited target is refused on the next call (back in a process
     // context — the ring returns to the caller).
     try std.testing.expect(scheduler.yield_current()); // idle
-    try std.testing.expect(scheduler.yield_current()); // shell
-    try std.testing.expect(scheduler.yield_current()); // worker -> user
+    try std.testing.expect(scheduler.yield_current()); // shell -> user
     try std.testing.expectEqual(@as(usize, 2), scheduler.current_id());
     try std.testing.expectEqual(error_result(.einval), dispatch(sys_kill, .{ target_pid, 0, 0, 0, 0, 0 }, &frame));
     // The slot is counted like every other implemented row.
@@ -2479,8 +2445,7 @@ test "syscall: sys_poll_event and sys_wait_event handle events, blocking, and ua
     try std.testing.expectEqual(error_result(.einval), dispatch(sys_wait_event, .{ 0x1000, 0, 0, 0, 0, 0 }, &frame));
 
     // Yield to user task (task 2, pid 0)
-    try std.testing.expect(scheduler.yield_current()); // shell -> worker
-    try std.testing.expect(scheduler.yield_current()); // worker -> user (2)
+    try std.testing.expect(scheduler.yield_current()); // shell -> user (2)
     try std.testing.expectEqual(@as(usize, 2), scheduler.current_id());
     const pid = process.find_by_task(2).?;
     try std.testing.expectEqual(@as(usize, 0), pid);
@@ -2565,8 +2530,7 @@ test "syscall: sys_wmctl (slot 65) enforces the render-server register contract"
     try std.testing.expectEqual(error_result(.einval), dispatch(sys_wmctl, .{ wm_server.wmctl_register, 0, 0, 0, 0, 0 }, &frame));
 
     // Drive to the caller (task 2, pid 0).
-    try std.testing.expect(scheduler.yield_current()); // shell -> worker
-    try std.testing.expect(scheduler.yield_current()); // worker -> user (2)
+    try std.testing.expect(scheduler.yield_current()); // shell -> user (2)
     try std.testing.expectEqual(@as(usize, 2), scheduler.current_id());
     try std.testing.expectEqual(@as(usize, 0), process.find_by_task(2).?);
 
@@ -2643,8 +2607,7 @@ test "syscall: SET_STATE (cmd 4, claim 4278) applies visibility/workspace/ws-swi
     _ = scheduler.register_user(0x3000, 0); // task 2 = process 0 (boot payload)
     scheduler.start();
     var frame = fresh_frame();
-    try std.testing.expect(scheduler.yield_current()); // shell -> worker
-    try std.testing.expect(scheduler.yield_current()); // worker -> user (2)
+    try std.testing.expect(scheduler.yield_current()); // shell -> user (2)
 
     // No WM registered: SET_STATE -> ENOSYS (the ADR 0007 "no WM" case).
     try std.testing.expectEqual(error_result(.enosys), dispatch(sys_wmctl, .{ wm_server.wmctl_set_state, 2, 0, 0, 0, 0 }, &frame));
@@ -2698,8 +2661,7 @@ test "syscall: ALT_TAB (cmd 5, claim 4510) drives the overlay from the WM's chos
     _ = scheduler.register_user(0x3000, 0); // task 2 = process 0 (boot payload)
     scheduler.start();
     var frame = fresh_frame();
-    try std.testing.expect(scheduler.yield_current()); // shell -> worker
-    try std.testing.expect(scheduler.yield_current()); // worker -> user (2)
+    try std.testing.expect(scheduler.yield_current()); // shell -> user (2)
 
     // No WM registered: ALT_TAB -> ENOSYS (the ADR 0007 "no WM" case).
     try std.testing.expectEqual(error_result(.enosys), dispatch(sys_wmctl, .{ wm_server.wmctl_alt_tab, 2, wm_server.alt_tab_commit, 0, 0, 0 }, &frame));
@@ -2746,8 +2708,7 @@ test "syscall: NOTIF_CENTER / NOTIF_DISMISS (cmd 6/7, claim 7557) drive the cent
     _ = scheduler.register_user(0x3000, 0); // task 2 = process 0 (boot payload)
     scheduler.start();
     var frame = fresh_frame();
-    try std.testing.expect(scheduler.yield_current()); // shell -> worker
-    try std.testing.expect(scheduler.yield_current()); // worker -> user (2)
+    try std.testing.expect(scheduler.yield_current()); // shell -> user (2)
 
     // No WM registered: NOTIF_CENTER -> ENOSYS (the ADR 0007 "no WM" case).
     try std.testing.expectEqual(error_result(.enosys), dispatch(sys_wmctl, .{ wm_server.wmctl_notif_center, 1, 0, 0, 0, 0 }, &frame));
@@ -2784,8 +2745,7 @@ test "syscall: TOOLTIP (cmd 8, claim 6154) shows/hides the tooltip from the WM's
     _ = scheduler.register_user(0x3000, 0); // task 2 = process 0 (boot payload)
     scheduler.start();
     var frame = fresh_frame();
-    try std.testing.expect(scheduler.yield_current()); // shell -> worker
-    try std.testing.expect(scheduler.yield_current()); // worker -> user (2)
+    try std.testing.expect(scheduler.yield_current()); // shell -> user (2)
 
     // No WM registered: TOOLTIP -> ENOSYS (the ADR 0007 "no WM" case).
     try std.testing.expectEqual(error_result(.enosys), dispatch(sys_wmctl, .{ wm_server.wmctl_tooltip, 1, 0, 0, 0, 3 }, &frame));
@@ -2830,8 +2790,7 @@ test "syscall: DOCK (cmd 9, claim 9197) restores/focuses through the WM's icon d
     _ = scheduler.register_user(0x3000, 0); // task 2 = process 0 (boot payload)
     scheduler.start();
     var frame = fresh_frame();
-    try std.testing.expect(scheduler.yield_current()); // shell -> worker
-    try std.testing.expect(scheduler.yield_current()); // worker -> user (2)
+    try std.testing.expect(scheduler.yield_current()); // shell -> user (2)
 
     // No WM registered: DOCK -> ENOSYS (the ADR 0007 "no WM" case).
     try std.testing.expectEqual(error_result(.enosys), dispatch(sys_wmctl, .{ wm_server.wmctl_dock, 0, 0, 0, 0, 0 }, &frame));
@@ -2869,8 +2828,7 @@ test "syscall: TRAY (cmd 10, claim 3744) stores the WM's tray widget content" {
     _ = scheduler.register_user(0x3000, 0); // task 2 = process 0 (boot payload)
     scheduler.start();
     var frame = fresh_frame();
-    try std.testing.expect(scheduler.yield_current()); // shell -> worker
-    try std.testing.expect(scheduler.yield_current()); // worker -> user (2)
+    try std.testing.expect(scheduler.yield_current()); // shell -> user (2)
 
     // No WM registered: TRAY -> ENOSYS (the ADR 0007 "no WM" case).
     try std.testing.expectEqual(error_result(.enosys), dispatch(sys_wmctl, .{ wm_server.wmctl_tray, 0b111, 0, 0, 0, 0 }, &frame));
@@ -2920,8 +2878,7 @@ test "syscall: DIALOG (cmd 11, claim 9980) applies the WM's about-dialog decisio
     _ = scheduler.register_user(0x3000, 0); // task 2 = process 0 (boot payload)
     scheduler.start();
     var frame = fresh_frame();
-    try std.testing.expect(scheduler.yield_current()); // shell -> worker
-    try std.testing.expect(scheduler.yield_current()); // worker -> user (2)
+    try std.testing.expect(scheduler.yield_current()); // shell -> user (2)
 
     // No WM registered: DIALOG -> ENOSYS (the ADR 0007 "no WM" case).
     try std.testing.expectEqual(error_result(.enosys), dispatch(sys_wmctl, .{ wm_server.wmctl_dialog, 2, 0, 0, 0, 0 }, &frame));
@@ -2959,8 +2916,7 @@ test "syscall: DIALOG (cmd 11, claim 6155) applies the WM's unsaved-dialog decis
     _ = scheduler.register_user(0x3000, 0); // task 2 = process 0 (boot payload)
     scheduler.start();
     var frame = fresh_frame();
-    try std.testing.expect(scheduler.yield_current()); // shell -> worker
-    try std.testing.expect(scheduler.yield_current()); // worker -> user (2)
+    try std.testing.expect(scheduler.yield_current()); // shell -> user (2)
 
     // Seed the WM as pid 0, arm the compositor seam, and open a real user
     // window (id 2) — arm() makes this test standalone (the dock test relies
@@ -3016,8 +2972,7 @@ test "syscall: sys_wmctl tab subcommands (cmd 18/19/20, issue #782) validate IDs
     _ = scheduler.register_user(0x3000, 0); // task 2 = process 0 (boot payload)
     scheduler.start();
     var frame = fresh_frame();
-    try std.testing.expect(scheduler.yield_current()); // shell -> worker
-    try std.testing.expect(scheduler.yield_current()); // worker -> user (2)
+    try std.testing.expect(scheduler.yield_current()); // shell -> user (2)
 
     // No WM registered: returns ENOSYS
     try std.testing.expectEqual(error_result(.enosys), dispatch(sys_wmctl, .{ wm_server.wmctl_attach_tab, 2, 3, 0, 0, 0 }, &frame));
@@ -3069,8 +3024,7 @@ test "syscall: wait_event block+wake preserves the event buffer across the svc r
     events.init();
     events.on_event_pushed = scheduler.wake_event_waiters;
     // Drive to the caller (task 3).
-    try std.testing.expect(scheduler.yield_current()); // shell -> worker
-    try std.testing.expect(scheduler.yield_current()); // worker -> boot payload
+    try std.testing.expect(scheduler.yield_current()); // shell -> boot payload
     try std.testing.expect(scheduler.yield_current()); // boot -> caller
     try std.testing.expectEqual(caller_task, scheduler.current_id());
 
@@ -3106,7 +3060,6 @@ test "syscall: wait_event block+wake preserves the event buffer across the svc r
     // and the event copies out (the re-executed handler returns 1).
     try std.testing.expect(scheduler.yield_current()); // idle
     try std.testing.expect(scheduler.yield_current()); // shell
-    try std.testing.expect(scheduler.yield_current()); // worker
     try std.testing.expect(scheduler.yield_current()); // boot -> caller
     try std.testing.expectEqual(caller_task, scheduler.current_id());
     try std.testing.expect(handle_svc(&caller, svc_immediate));
@@ -3203,7 +3156,6 @@ test "B6 syscall: native routing two handles ownership EFAULT partial reads rese
     _ = scheduler.register_worker(0x2000);
     _ = scheduler.register_user(0x3000, 0);
     scheduler.start();
-    try std.testing.expect(scheduler.yield_current());
     try std.testing.expect(scheduler.yield_current());
     const pid = process.find_by_task(scheduler.current_id()).?;
     const saved = virtio_net.net_ops;
@@ -3338,7 +3290,6 @@ test "B6 scheduler: real process exit releases listener half-open children and D
     _ = scheduler.register_user(0x3000, 0);
     scheduler.start();
     try std.testing.expect(scheduler.yield_current());
-    try std.testing.expect(scheduler.yield_current());
     const pid = process.find_by_task(scheduler.current_id()).?;
     _ = try ns.sockets.listen(pid, .{ .ip = .{ 10, 0, 0, 1 }, .port = 8090 }, 0);
     virtio_net.arp.own_ip = .{ 10, 0, 0, 1 };
@@ -3408,8 +3359,7 @@ test "syscall: TCP connection is process-owned — non-owner send/recv/close/con
     virtio_net.arp.own_ip = .{ 10, 0, 0, 1 };
 
     // Drive the ring to the non-owner (task 3 = process 1).
-    try std.testing.expect(scheduler.yield_current()); // shell -> worker
-    try std.testing.expect(scheduler.yield_current()); // worker -> user (task 2)
+    try std.testing.expect(scheduler.yield_current()); // shell -> user (task 2)
     try std.testing.expectEqual(@as(usize, 2), scheduler.current_id());
     try std.testing.expect(scheduler.yield_current()); // user -> peer (task 3)
     try std.testing.expectEqual(@as(usize, 3), scheduler.current_id());
@@ -3429,8 +3379,7 @@ test "syscall: TCP connection is process-owned — non-owner send/recv/close/con
     // succeeds (returns 0, no transmit) — the ownership check passes.
     try std.testing.expect(scheduler.yield_current()); // peer -> idle
     try std.testing.expect(scheduler.yield_current()); // idle -> shell
-    try std.testing.expect(scheduler.yield_current()); // shell -> worker
-    try std.testing.expect(scheduler.yield_current()); // worker -> user (task 2)
+    try std.testing.expect(scheduler.yield_current()); // shell -> user (task 2)
     try std.testing.expectEqual(@as(usize, 2), scheduler.current_id());
     try std.testing.expectEqual(@as(u64, 0), dispatch(sys_tcp_connect, .{ 0x0a000002, 9999, 0, 0, 0, 0 }, &frame));
 
@@ -3475,8 +3424,7 @@ test "syscall: slot 42 sys_audio_info marshals; slot 43 sys_audio_play refuses w
     try std.testing.expectEqual(error_result(.einval), dispatch(sys_audio_play, .{ 0x1000, 8, 0, 0, 0, 0 }, &frame));
 
     // Yield to the user task (task 2, pid 0).
-    try std.testing.expect(scheduler.yield_current()); // shell -> worker
-    try std.testing.expect(scheduler.yield_current()); // worker -> user (2)
+    try std.testing.expect(scheduler.yield_current()); // shell -> user (2)
     try std.testing.expectEqual(@as(usize, 2), scheduler.current_id());
     try std.testing.expect(process.find_by_task(2) != null);
 
@@ -3530,8 +3478,7 @@ test "syscall: slots 44/45 — sys_audio_volume/sys_audio_mute are bounded and p
     try std.testing.expect(!virtio_snd.stream_muted);
 
     // Yield to the user task (task 2, pid 0).
-    try std.testing.expect(scheduler.yield_current()); // shell -> worker
-    try std.testing.expect(scheduler.yield_current()); // worker -> user (2)
+    try std.testing.expect(scheduler.yield_current()); // shell -> user (2)
     try std.testing.expectEqual(@as(usize, 2), scheduler.current_id());
     try std.testing.expect(process.find_by_task(2) != null);
 
@@ -3563,7 +3510,6 @@ test "syscall: B7 device binding, atomic copy rollback, bounds, tokens and exit 
     _ = scheduler.register_worker(0x2000);
     _ = scheduler.register_user(0x3000, 0);
     scheduler.start();
-    try std.testing.expect(scheduler.yield_current());
     try std.testing.expect(scheduler.yield_current());
     var device = virtio_snd.playback.Fixture{};
     var current = virtio_snd.playback.Playback{};
@@ -3801,8 +3747,7 @@ test "syscall: sys_mmap and sys_munmap anonymous allocation and teardown" {
     try std.testing.expectEqual(error_result(.einval), dispatch(sys_mmap, .{ 0, 4096, 3, 0x22, 0, 0 }, &frame));
 
     // Yield to user task (task 2, pid 0)
-    try std.testing.expect(scheduler.yield_current()); // shell -> worker
-    try std.testing.expect(scheduler.yield_current()); // worker -> user (2)
+    try std.testing.expect(scheduler.yield_current()); // shell -> user (2)
     try std.testing.expectEqual(@as(usize, 2), scheduler.current_id());
 
     // mmap 8192 bytes
@@ -3831,8 +3776,7 @@ test "syscall: mmap visibility survives past the old 6-slot TCB cap (issue #1163
     scheduler.start();
 
     var frame = fresh_frame();
-    try std.testing.expect(scheduler.yield_current()); // shell -> worker
-    try std.testing.expect(scheduler.yield_current()); // worker -> user (2)
+    try std.testing.expect(scheduler.yield_current()); // shell -> user (2)
     try std.testing.expectEqual(@as(usize, 2), scheduler.current_id());
 
     // Eight prot-RW mappings: the OLD extra capacity (6) silently dropped
@@ -3867,7 +3811,6 @@ test "syscall: mmap capacity is PROCESS-scope, not the calling task's TCB (ADR 0
 
     var frame = fresh_frame();
     try std.testing.expect(scheduler.yield_current());
-    try std.testing.expect(scheduler.yield_current());
     try std.testing.expectEqual(@as(usize, 2), scheduler.current_id());
 
     // The task TCB extras are full (the old pre-check refused here). Since
@@ -3895,7 +3838,6 @@ test "syscall: mmap at process region capacity fails LOUDLY with ENOMEM (issue #
     scheduler.start();
 
     var frame = fresh_frame();
-    try std.testing.expect(scheduler.yield_current());
     try std.testing.expect(scheduler.yield_current());
     try std.testing.expectEqual(@as(usize, 2), scheduler.current_id());
 
@@ -3932,8 +3874,7 @@ test "syscall: sys_mmap refuses hints that alias the caller's own apertures/regi
     scheduler.start();
 
     var frame = fresh_frame();
-    try std.testing.expect(scheduler.yield_current()); // shell -> worker
-    try std.testing.expect(scheduler.yield_current()); // worker -> user (2)
+    try std.testing.expect(scheduler.yield_current()); // shell -> user (2)
     try std.testing.expectEqual(@as(usize, 2), scheduler.current_id());
 
     const stack = userspace.stack_va_region();
@@ -4883,8 +4824,7 @@ test "syscall: WMCTL WINDOW_NAME (cmd 14, #1056) resolves a window's display nam
     _ = scheduler.register_user(0x3000, 0); // task 2 = process 0 (the WM seat)
     scheduler.start();
     var frame = fresh_frame();
-    try std.testing.expect(scheduler.yield_current()); // shell -> worker
-    try std.testing.expect(scheduler.yield_current()); // worker -> user (2)
+    try std.testing.expect(scheduler.yield_current()); // shell -> user (2)
 
     // No WM registered -> ENOSYS (the ADR 0007 "no WM" case).
     try std.testing.expectEqual(error_result(.enosys), dispatch(sys_wmctl, .{ wm_server.wmctl_window_name, 2, 0, 0, 0, 0 }, &frame));
@@ -4968,8 +4908,7 @@ test "syscall: SYS_TIME_SET (slot 78, M83b #1775) re-anchors the wall clock insi
     try std.testing.expectEqual(error_result(.einval), dispatch(sys_time_set, .{ synced, 0, 0, 0, 0, 0 }, &frame));
     try std.testing.expectEqual(error_result(.enosys), dispatch(sys_time, .{ 0, 0, 0, 0, 0, 0 }, &frame));
 
-    try std.testing.expect(scheduler.yield_current()); // shell -> worker
-    try std.testing.expect(scheduler.yield_current()); // worker -> user (2)
+    try std.testing.expect(scheduler.yield_current()); // shell -> user (2)
     try std.testing.expectEqual(@as(usize, 2), scheduler.current_id());
 
     // A process gives a no-firmware-epoch boot a clock; slot 66 reads it back.
@@ -5002,8 +4941,7 @@ test "syscall: SYS_PRINCIPAL (slot 68, #1135) reports uid_user and is read-only"
     set_user_regions(.{ .base = 0, .len = 0 }, .{ .base = @intFromPtr(&buf), .len = buf.len });
     // An EL1h caller (the shell) is not a process: EINVAL.
     try std.testing.expectEqual(error_result(.einval), dispatch(sys_principal, .{ @intFromPtr(&buf), 0, 0, 0, 0, 0 }, &frame));
-    try std.testing.expect(scheduler.yield_current()); // shell -> worker
-    try std.testing.expect(scheduler.yield_current()); // worker -> user (2)
+    try std.testing.expect(scheduler.yield_current()); // shell -> user (2)
     try std.testing.expectEqual(@as(usize, 2), scheduler.current_id());
     try std.testing.expectEqual(@as(u64, principal_bytes), dispatch(sys_principal, .{ @intFromPtr(&buf), 0, 0, 0, 0, 0 }, &frame));
     try std.testing.expectEqual(process.uid_user, std.mem.readInt(u32, buf[0..4], .little));
@@ -5026,7 +4964,6 @@ test "syscall: SYS_PRINCIPAL reports an explicit uid_system principal" {
     var frame = fresh_frame();
     var buf: [principal_bytes]u8 = undefined;
     set_user_regions(.{ .base = 0, .len = 0 }, .{ .base = @intFromPtr(&buf), .len = buf.len });
-    try std.testing.expect(scheduler.yield_current());
     try std.testing.expect(scheduler.yield_current());
     try std.testing.expect(scheduler.yield_current());
     try std.testing.expectEqual(sys_task, scheduler.current_id());
@@ -5134,8 +5071,7 @@ test "syscall: SYS_GETRANDOM (slot 72, #1166) is registered, capped, capability-
 
     // Drive to the boot payload's task (process 0) and arm its stack as the
     // destination region so uaccess copy_out can validate it.
-    try std.testing.expect(scheduler.yield_current()); // shell -> worker
-    try std.testing.expect(scheduler.yield_current()); // worker -> user (2)
+    try std.testing.expect(scheduler.yield_current()); // shell -> user (2)
     try std.testing.expectEqual(@as(usize, 2), scheduler.current_id());
     set_user_regions(.{ .base = 0, .len = 0 }, .{ .base = @intFromPtr(&buf), .len = buf.len });
 
@@ -5194,8 +5130,7 @@ test "syscall: M50 TS3 kill gate — same-uid/self allowed, cross-principal EACC
     try std.testing.expectEqual(error_result(.einval), dispatch(sys_kill, .{ peer_pid, 0, 0, 0, 0, 0 }, &frame));
 
     // Drive to the uid_user caller (task 2, process 0).
-    try std.testing.expect(scheduler.yield_current()); // shell -> worker
-    try std.testing.expect(scheduler.yield_current()); // worker -> user (2)
+    try std.testing.expect(scheduler.yield_current()); // shell -> user (2)
     try std.testing.expectEqual(@as(usize, 2), scheduler.current_id());
 
     // Cross-principal -> EACCES, never armed (targets stay running).
@@ -5240,8 +5175,7 @@ test "syscall: M50 TS3 — uid_system + CAP_PROC_ADMIN kills across principals" 
     scheduler.start();
     var frame = fresh_frame();
 
-    // shell -> worker -> user (2) -> admin (3).
-    try std.testing.expect(scheduler.yield_current());
+    // shell -> user (2) -> admin (3).
     try std.testing.expect(scheduler.yield_current());
     try std.testing.expect(scheduler.yield_current());
     try std.testing.expectEqual(admin_task, scheduler.current_id());
@@ -5269,8 +5203,7 @@ test "syscall: SYS_FILE_MODE (slot 69, #1136) is process-gated with the frozen e
 
     // An EL1h caller is not a process: EINVAL, never a silent chmod.
     try std.testing.expectEqual(error_result(.einval), dispatch(sys_file_mode, .{ 0x1000, 5, 0o600, 0, 0, 0 }, &frame));
-    try std.testing.expect(scheduler.yield_current()); // shell -> worker
-    try std.testing.expect(scheduler.yield_current()); // worker -> user (2)
+    try std.testing.expect(scheduler.yield_current()); // shell -> user (2)
     try std.testing.expectEqual(@as(usize, 2), scheduler.current_id());
 
     const bad = "../x.txt";
@@ -5306,8 +5239,7 @@ test "syscall: SYS_SECRET_GET (slot 70, #1139) serves only the caller's principa
     // An EL1h caller is not a process: EINVAL, never a read.
     var buf: [secret.max_secret_entries * secret.record_bytes]u8 = undefined;
     try std.testing.expectEqual(error_result(.einval), dispatch(sys_secret_get, .{ @intFromPtr(&buf), buf.len, 0, 0, 0, 0 }, &frame));
-    try std.testing.expect(scheduler.yield_current()); // shell -> worker
-    try std.testing.expect(scheduler.yield_current()); // worker -> user (2)
+    try std.testing.expect(scheduler.yield_current()); // shell -> user (2)
     try std.testing.expectEqual(@as(usize, 2), scheduler.current_id());
 
     set_user_regions(.{ .base = 0, .len = 0 }, .{ .base = @intFromPtr(&buf), .len = buf.len });
@@ -5346,7 +5278,6 @@ test "syscall: SYS_SECRET_GET serves a uid_system principal its own entries" {
     ));
     var buf: [secret.max_secret_entries * secret.record_bytes]u8 = undefined;
     set_user_regions(.{ .base = 0, .len = 0 }, .{ .base = @intFromPtr(&buf), .len = buf.len });
-    try std.testing.expect(scheduler.yield_current());
     try std.testing.expect(scheduler.yield_current());
     try std.testing.expect(scheduler.yield_current());
     try std.testing.expectEqual(sys_task, scheduler.current_id());
@@ -5390,7 +5321,6 @@ test "syscall: sys_secret_get is excluded from strace (never-logged contract, D8
     var buf: [secret.max_secret_entries * secret.record_bytes]u8 = undefined;
     set_user_regions(.{ .base = 0, .len = 0 }, .{ .base = @intFromPtr(&buf), .len = buf.len });
     try std.testing.expect(scheduler.yield_current());
-    try std.testing.expect(scheduler.yield_current());
     try std.testing.expectEqual(@as(usize, 2), scheduler.current_id());
 
     // Arm the tracer on the user process (pid 0).
@@ -5425,7 +5355,6 @@ test "syscall: SYS_TTY_ATTACH (slot 67, #1072) attaches the caller's terminal" {
     _ = scheduler.register_user(0x3000, 0); // task 2 = process 0
     scheduler.start();
     var frame = fresh_frame();
-    try std.testing.expect(scheduler.yield_current());
     try std.testing.expect(scheduler.yield_current());
 
     for (&terminal.terminals) |*t| t.reset();
@@ -5486,7 +5415,6 @@ test "syscall: SYS_TTY_NET_AUTH (slot 71, #1138) serves the owner and never trac
 
     // An EL1h caller is not a process: EINVAL, never a read.
     try std.testing.expectEqual(error_result(.einval), dispatch(sys_tty_net_auth, .{ 0, 0, 0, 0, 0, 0 }, &frame));
-    try std.testing.expect(scheduler.yield_current());
     try std.testing.expect(scheduler.yield_current());
 
     const fd = file_table.open(0, "/dev/tty", file_table.MODE_READ | file_table.MODE_WRITE);
@@ -5564,8 +5492,7 @@ test "syscall: sys_futex wait re-checks the user word, sleeps, wakes, and times 
     _ = scheduler.register_user(0x3000, 0); // task 2 = process 0
     scheduler.start();
     var frame = fresh_frame();
-    try std.testing.expect(scheduler.yield_current()); // shell -> worker
-    try std.testing.expect(scheduler.yield_current()); // worker -> user (2)
+    try std.testing.expect(scheduler.yield_current()); // shell -> user (2)
     try std.testing.expectEqual(@as(usize, 2), scheduler.current_id());
     const pid = process.find_by_task(2).?;
 
@@ -5629,8 +5556,7 @@ fn futex_boot_user() void {
 }
 
 fn futex_drive_to_user() !void {
-    try std.testing.expect(scheduler.yield_current()); // shell -> worker
-    try std.testing.expect(scheduler.yield_current()); // worker -> user (2)
+    try std.testing.expect(scheduler.yield_current()); // shell -> user (2)
     try std.testing.expectEqual(@as(usize, 2), scheduler.current_id());
 }
 
@@ -6018,7 +5944,6 @@ test "syscall: sys_thread creates a same-process task and op 1 exits only the th
 
     var frame = fresh_frame();
     try std.testing.expect(scheduler.yield_current());
-    try std.testing.expect(scheduler.yield_current());
     try std.testing.expectEqual(@as(usize, 2), scheduler.current_id());
     const pid = process.find_by_task(2).?;
 
@@ -6093,7 +6018,6 @@ test "syscall: sys_thread last remaining task dies the process (ADR 0027 D2/D3)"
 
     var frame = fresh_frame();
     try std.testing.expect(scheduler.yield_current());
-    try std.testing.expect(scheduler.yield_current());
     try std.testing.expectEqual(@as(usize, 2), scheduler.current_id());
     const pid = process.find_by_task(2).?;
 
@@ -6144,7 +6068,6 @@ test "syscall: sys_thread op 1 reap frees the thread EL1 kstack (ADR 0027 D3)" {
 
     var frame = fresh_frame();
     try std.testing.expect(scheduler.yield_current());
-    try std.testing.expect(scheduler.yield_current());
     try std.testing.expectEqual(@as(usize, 2), scheduler.current_id());
     const pid = process.find_by_task(2).?;
     const free_before = alloc.stats().free_pages;
@@ -6191,7 +6114,6 @@ test "syscall: mmap is process-scope — a post-spawn mapping reaches a thread (
 
     var frame = fresh_frame();
     try std.testing.expect(scheduler.yield_current());
-    try std.testing.expect(scheduler.yield_current());
     try std.testing.expectEqual(@as(usize, 2), scheduler.current_id());
 
     // Thread FIRST: its TCB region snapshot predates the mapping below —
@@ -6228,7 +6150,6 @@ test "syscall: sys_exnotify registers the handler and EL0 faults deliver to it" 
     _ = scheduler.register_user(0x3000, 0); // task 2 = process 0 (primary)
     scheduler.start();
     var frame = fresh_frame();
-    try std.testing.expect(scheduler.yield_current());
     try std.testing.expect(scheduler.yield_current());
     try std.testing.expectEqual(@as(usize, 2), scheduler.current_id());
     const pid = process.find_by_task(2).?;

@@ -2042,6 +2042,9 @@ fn irq_dispatch() void {
         virtio_custom.note_irq(intid);
     }
     gic.eoi(intid);
+    // #1965: a device wake on the worker's own core uses this IRQ's frame
+    // immediately. Other tasks and the timer cadence are unchanged.
+    _ = scheduler.irq_exit_reschedule();
 }
 
 fn print_pre_exit_error(st: *const SystemTable, msg: []const u8) void {

@@ -1,7 +1,8 @@
 //! VirelaiOS tick-driven round-robin kernel task scheduler (claim 5275 —
 //! the first milestone-three "tasks" card).
 //!
-//! Preemptive at the tick only: the claim-9187 timer PPI enters the
+//! Preemptive at the tick, or on an EL0 wake interrupting the demo worker:
+//! the claim-9187 timer PPI enters the
 //! claim-9746 EL1 IRQ vector, the GIC/timer chain runs (ack -> timer
 //! handle/re-arm -> scheduler tick -> EOI), and the scheduler preempts the
 //! current task for the next one. Claim 8215 extends the same fixed pool
@@ -225,6 +226,9 @@ pub const UserRegions = struct {
 const Task = struct {
     name: []const u8 = "",
     state: State = .free,
+    /// #1965: only the registered demo worker yields its place to ready EL0
+    /// work. Shell, idle reaper and spawn-demo keep their existing rotation.
+    demo_worker: bool = false,
     /// Saved vector-frame pointer (the SP to restore); 0 until the task
     /// has been preempted once (the shell task's context is captured on
     /// its first preemption; the worker's frame is built at registration).
@@ -631,34 +635,31 @@ pub fn push_home_locked(id: usize) void {
     const daif = ring_locks[home].lock();
     ready_rings[home].push(id);
     ring_locks[home].unlock(daif);
+    // This is the blocked->ready funnel, not the preempted task's direct
+    // push in switch_context. Publish after the ring unlock and before the
+    // SGI: the target must not discharge a request we have yet to set.
+    request_resched_on(home);
     // M70b #1454: the wake lands on the least-loaded online core. A
     // remote PARKED target is nudged with the RESCHEDULE SGI — its
     // handler runs the same seam as tick's parked branch (capture the
     // WFE frame, claim, apply), so the woken task starts immediately
-    // instead of waiting up to the 1 Hz PPI. A busy target needs no
-    // nudge: its own next rotation picks the task up in slot order,
-    // exactly the pre-targeting cadence. send_ipi is a no-op on the
+    // instead of waiting up to the 1 Hz PPI. #1965 also nudges a demo
+    // worker when EL0 work becomes ready; other busy tasks keep their
+    // pre-targeting cadence. send_ipi is a no-op on the
     // host and pre-SMP boots; the counters feed the `smp:` report as
     // observed data.
     if (home != caller) {
         wake_remote +%= 1;
-        if (home != 0 and smp.core_online[home] and current[home] == idle_id) {
+        const parked = home != 0 and current[home] == idle_id;
+        const worker_wake = tasks[current[home]].demo_worker and
+            (tasks[id].spsr & 0xf) == spsr_el0t_irqs;
+        if (smp.core_online[home] and (parked or worker_wake)) {
             wake_nudges +%= 1;
             smp.send_ipi(@intCast(home), smp.SGI_IPI_RESCHEDULE);
         }
     } else {
         wake_local +%= 1;
     }
-    // This is the single blocked->ready funnel, so it is also the single place a
-    // rotation can become owed. Placed AFTER the ring unlock so nothing can
-    // observe a half-pushed ring; the task is already runnable and visible to
-    // the rotation by then.
-    //
-    // NOTE: the ROTATION does not come through here — `switch_context` pushes
-    // the preempted task back with a direct `ready_rings[c].push`. Routing it
-    // through here would make every rotation request the next one, which is
-    // exactly the unbounded feedback the nudge was parked for.
-    request_resched_on(home);
     // #1278: this is the wake funnel, so it is where a dying boot's trace shows
     // whether the task that matters ever became runnable. `note` is a per-core
     // counter and one BSS slot when recording is off it returns on its first
@@ -1012,30 +1013,41 @@ pub fn discharge_resched(c: usize) void {
 /// branch runs: capture the WFE frame, claim a successor over the rings, and
 /// apply it — the vector stub then erets straight into the woken task, which
 /// is the whole point of the nudge (sub-tick wake latency instead of up to
-/// the 1 Hz PPI). A core already running a task — and core 0, which parks in
-/// its bounded-spin idle loop, never WFE — only records the request; its own
-/// next rotation picks the new work up in slot order as before. No console,
+/// the 1 Hz PPI). #1965 also preempts a demo worker with eligible ready EL0
+/// work, on any core. Other running tasks only record the request. No console,
 /// no allocation, no unbounded spinning.
 pub fn ipi_reschedule() void {
-    if (comptime builtin.cpu.arch != .aarch64) return;
     if (!scheduling_active()) return;
     const c = smp.core_id();
+    request_resched_on(c);
+    if (irq_exit_reschedule()) return;
     if (c == 0 or current[c] != idle_id) {
-        request_resched_on(c);
         return;
     }
-    var elr: u64 = 0;
-    var spsr: u64 = 0;
-    asm volatile ("mrs %[v], elr_el1"
-        : [v] "=r" (elr),
-    );
-    asm volatile ("mrs %[v], spsr_el1"
-        : [v] "=r" (spsr),
-    );
+    const pc = current_exception_pc();
     park_sp[c] = exceptions.resume_frame[c];
-    park_elr[c] = elr;
-    park_spsr[c] = spsr;
+    park_elr[c] = pc.elr;
+    park_spsr[c] = pc.spsr;
     if (claim_and_stage(c, idle_id)) apply_pending();
+}
+
+/// #1965: serve a wake at IRQ exit without changing the tick or preempting
+/// any other EL1 task. Called after device handling and from the RESCHEDULE
+/// SGI. The interrupted worker owns the vector frame; all handler locks must
+/// be released before this seam. Host tests exercise the same save/restore.
+pub fn irq_exit_reschedule() bool {
+    if (!scheduling_active()) return false;
+    const c = smp.core_id();
+    if (!resched_requested[c] or !tasks[current[c]].demo_worker) return false;
+    const lk = rotation_lock(c);
+    const user_ready = ready_user_for(c);
+    rotation_unlock(lk);
+    if (!user_ready) return false;
+    const pc = current_exception_pc();
+    switch_context(exceptions.resume_frame[c], pc.elr, pc.spsr, exceptions.resume_sp_el0[c]);
+    apply_pending();
+    discharge_resched(c);
+    return true;
 }
 /// The idle task's static stack (BSS, like every other kernel global).
 var idle_stack: [task_stack_size]u8 align(16) = undefined;
@@ -1100,7 +1112,7 @@ pub fn init() usize {
     events.on_event_pushed = wake_event_waiters;
     app_timers.init();
     wm_server.init();
-    tasks[0] = .{ .name = "shell", .state = .ready, .ttbr0 = mmu.kernel_root_phys() };
+    tasks[0] = .{ .name = "shell", .state = .ready, .spsr = spsr_el1h_irqs, .ttbr0 = mmu.kernel_root_phys() };
     tasks[idle_id] = .{
         .name = "idle",
         .state = .ready,
@@ -1168,7 +1180,9 @@ fn alloc_task_locked(name: []const u8, entry: u64, spsr: u64, stack: []u8, ttbr0
 /// counter each quantum). `entry` is a runtime-computed function address
 /// (the caller takes `@intFromPtr(&task_fn)`).
 pub fn register_worker(entry: u64) ?usize {
-    const id = spawn("worker", entry, spsr_el1h_irqs, &worker_stack, mmu.kernel_root_phys(), 0) orelse return null;
+    sched_lock_acquire();
+    defer sched_lock_release();
+    const id = alloc_task_locked("worker", entry, spsr_el1h_irqs, &worker_stack, mmu.kernel_root_phys(), 0) orelse return null;
     // The worker is console-free (note_advance + request_report + spin),
     // so it is the one task safe on a secondary core (the polled virtio
     // TX has no lock — anything that prints must stay on core 0). Claim
@@ -1181,6 +1195,9 @@ pub fn register_worker(entry: u64) ?usize {
     // the next tick (successor exists), so the claim-907 starve hazard
     // does not materialize.
     tasks[id].secondary_ok = true;
+    tasks[id].demo_worker = true;
+    tasks[id].state = .ready;
+    push_home_locked(id);
     return id;
 }
 
@@ -1595,6 +1612,19 @@ fn steal_eligible(c: usize, cand: usize) bool {
 
 const MergedPick = struct { id: usize, from: usize };
 
+/// Caller holds all rotation locks. Eligibility is exactly the existing
+/// own-ring/steal rule; a pinned or running foreign task cannot suppress the
+/// worker on this core.
+fn ready_user_for(c: usize) bool {
+    for (&ready_rings, 0..) |*ring, r| {
+        for (ring.members[0..ring.count]) |id| {
+            if (r != c and !steal_eligible(c, id)) continue;
+            if ((tasks[id].spsr & 0xf) == spsr_el0t_irqs) return true;
+        }
+    }
+    return false;
+}
+
 /// The successor after slot `after` on core `c`, over the SLOT-MERGED
 /// view of EVERY core's ring. Every `.ready` task the old shared scan
 /// could see lives on exactly one ring, so merging all rings in slot
@@ -1611,6 +1641,7 @@ const MergedPick = struct { id: usize, from: usize };
 /// or before `after` are reached only at the wrap (the old scan's
 /// re-pick of the preempted task itself).
 fn merged_next(c: usize, after: usize) ?MergedPick {
+    const user_ready = ready_user_for(c);
     // All rings, n <= max_cores * max_tasks: collect + insertion sort by
     // slot. Rings of offline cores are always empty, so they contribute
     // nothing — no online-gating needed.
@@ -1639,6 +1670,7 @@ fn merged_next(c: usize, after: usize) ?MergedPick {
     while (s < n) : (s += 1) {
         const cand = merged[(begin + s) % n];
         if (cand.from != c and !steal_eligible(c, cand.id)) continue;
+        if (user_ready and tasks[cand.id].demo_worker) continue;
         return cand;
     }
     return null;

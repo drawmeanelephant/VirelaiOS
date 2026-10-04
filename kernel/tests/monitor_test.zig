@@ -1513,8 +1513,7 @@ test "monitor: kill is registered and arms a running process by id and by name" 
     // The armed kill flows through the REAL lifecycle at the next ring
     // selection: user-el0 (task 2) exits with the reserved status 137.
     scheduler.start();
-    try std.testing.expect(scheduler.yield_current()); // shell -> worker
-    try std.testing.expect(scheduler.yield_current()); // worker -> user -> killed -> spawn-demo
+    try std.testing.expect(scheduler.yield_current()); // shell -> user -> killed -> spawn-demo
     try std.testing.expectEqual(@as(?u64, scheduler.reserved_kill_status), scheduler.terminated_status(2));
 }
 
