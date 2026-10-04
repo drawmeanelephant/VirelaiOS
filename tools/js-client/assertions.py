@@ -10,6 +10,10 @@ from receipt import parse, output, results, fields
 
 ROOT = Path(__file__).resolve().parents[2]
 
+def last_scheduler_reap(text):
+    matches = list(re.finditer(r"(?m)^tasks [^\r\n]+ reaped\r?$", text))
+    return matches[-1].start() if matches else -1
+
 
 def check():
     rd = Path(os.environ["RUN_DIR"])
@@ -36,7 +40,8 @@ def check():
         assert final and 0 < int(final[1]) <= 131_072 and int(final[2]) <= 4_194_304, (tag, "full teardown measurement")
     pages = re.findall(r"^pages: armed=1 total=(0x[0-9a-f]+) free=(0x[0-9a-f]+)", text, re.M)
     assert len(pages) == 2, (tag, pages)
-    assert text.rfind("reaped") < text.rfind("pages: armed=1"), tag
+    reap = last_scheduler_reap(text)
+    assert 0 <= reap < text.rfind("pages: armed=1"), tag
     receipt_name = {"file": "FILE.R", "refused": "REFUSED.R", "exact": "EXACT.R", "over": "OVER.R",
                     "invalid": "INVALID.R", "dense": "DENSE.R", "missing": "MISSING.R", "denied": "DENIED.R",
                     "string": "STRING.R", "conversion": "CONVERT.R",
