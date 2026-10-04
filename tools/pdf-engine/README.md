@@ -48,3 +48,13 @@ memory receipt. M89c must supply M90d high-water dynamic-page/region receipts,
 including startup, GC, stacks, retained spans, 100-cycle failed-input reuse
 and process-exit reclamation. Runtime must remain <=768 pages/11 regions;
 arena+runtime <=3072 pages/12 regions. HeapAlloc or ELF memsz cannot prove it.
+
+The padding audit requires step 3d's virelai-only fresh-sbrk no-clear branch,
+the still-clearing ordinary/trim/shrink paths, header clearing on allocation,
+the page-rounded ELF/argv break floor, demand-zero faults and mmap collision
+checks. Fresh padding writes only free-list `memHdr` records; it is not wholly
+untouched or a proved runtime fit. Restoring the old sweep or losing any
+audited zero-invariant term fails closed. Re-provision the fork after #1958;
+review and explicitly re-record the shared engine lock, never during builds.
+M90f's 4,096-page field is inline tracking capacity, not a working-set cap;
+the PDF page/region budgets above are unchanged.

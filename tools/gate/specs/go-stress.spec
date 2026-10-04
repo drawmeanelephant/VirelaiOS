@@ -225,6 +225,13 @@ if len(receipts) != 1:
 pid, pages, page_cap, regions, region_cap, static_pages, saturated, total, failures, unrecorded, reaped = map(int, receipts[0])
 if not (0 < pages <= total and page_cap == 4096):
     sys.exit("FAIL: peak demand pages %d / total %d / inline cap %d" % (pages, total, page_cap))
+# #1958: three patched full-roster boots peaked at 1534/1618/1638 pages;
+# replay at 1295/1308/1327, versus 15370/14784 before the padding fix.
+# Keep scheduling headroom while refusing a restored alignment-gap sweep.
+# This fixture regression bound is not a kernel cap or an engine budget.
+if pages > 2048:
+    sys.exit("FAIL: GOSTRESS peak demand pages %d exceeds fresh-padding "
+             "regression bound 2048 (total allocations %d)" % (pages, total))
 if saturated != int(pages >= page_cap) or failures or unrecorded or reaped != 1:
     sys.exit("FAIL: saturation=%d failures=%d unrecorded=%d reaped=%d"
              % (saturated, failures, unrecorded, reaped))
@@ -248,7 +255,8 @@ if serial.rindex("pages: armed=1") <= serial.index("procs GOSTRESS.ELF exited st
     sys.exit("FAIL: final page sample did not follow final process exit")
 print("go-stress free pages restored: %d -> %d" % tuple(counts))
 print("go-stress runtime receipt OK: pid=%d peak_pages=%d (inline 4096) "
-      "peak_regions=%d/16 static_pages=%d" % (pid, pages, regions, static_pages))
+      "peak_regions=%d/16 static_pages=%d total_pages=%d"
+      % (pid, pages, regions, static_pages, total))
 PY
 
 vgate_assert 01 python <<'PY'

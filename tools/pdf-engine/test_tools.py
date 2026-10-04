@@ -1,5 +1,9 @@
+import ast
 import os
+import subprocess
 import struct
+import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -51,9 +55,43 @@ class ToolsTests(unittest.TestCase):
         self.assertEqual(r["runtime_upper_bound_required"]["pages"], 768)
         self.assertFalse(r["observed_guest_run"])
         self.assertEqual(r["status"], "guest_receipts_required")
+        self.assertFalse(r["alignment_padding"]["fresh_padding_is_cleared"])
+        self.assertTrue(r["alignment_padding"]["padding_is_touched"])
+        self.assertEqual(r["kernel_tracking"]["inline_page_capacity"], 4096)
+        self.assertNotIn("kernel_hard_cap", r)
         with patch.object(Path, "read_text", return_value="different runtime"):
             with self.assertRaisesRegex(ValueError, "SourceDrift"):
                 recipe(root, fork)
+
+    def test_padding_zero_invariant_drift_refused(self):
+        root = Path(__file__).resolve().parents[2]
+        fork = Path(os.environ.get("GO_FORK_DIR", root.parent/"go-virelai"))
+        read = Path.read_text
+        mutations = (
+            ("mem_sbrk.go", 'GOOS == "virelai"', 'GOOS != "virelai"'),
+            ("mem_sbrk.go", "memFreeWithClear(r, l, false)", "memFree(r, l)"),
+            ("mem_sbrk.go", "memFree(r, l)", "memFreeWithClear(r, l, false)"),
+            ("mem_sbrk.go", "memFreeWithClear(ap, n, true)", "memFreeWithClear(ap, n, false)"),
+            ("mem_sbrk.go", "memFree(base, startLen)", "memFreeWithClear(base, startLen, false)"),
+            ("mem_sbrk.go", "memclrNoHeapPointers(v, n)", "// removed shrink clear"),
+            ("mem_sbrk.go", "*p = memHdr{}", "// retained header"),
+            ("os_virelai.go", "initBlocFloor()", "lostBlocFloor()"),
+            ("os_virelai.go", "virArgBlockBytes = 8 * 256", "virArgBlockBytes = 256"),
+            ("sys_virelai_arm64.s", "#define VIR_MAP_ANON      0x20", "#define VIR_MAP_ANON      0x8020"),
+            ("exceptions.zig", "zero_phys_page(pa);", "// removed demand zero"),
+            ("syscall.zig", "if (process.mmap_collides(pid, va, aligned_len))", "if (false)"),
+        )
+        for name, old, new in mutations:
+            with self.subTest(path=name, term=old):
+                def changed(path, *args, **kwargs):
+                    text = read(path, *args, **kwargs)
+                    if path.name == name:
+                        self.assertIn(old, text)
+                        return text.replace(old, new)
+                    return text
+                with patch.object(Path, "read_text", changed):
+                    with self.assertRaisesRegex(ValueError, "SourceDrift"):
+                        recipe(root, fork)
 
     def test_missing_toolchain_never_acquires(self):
         with self.assertRaisesRegex(ValueError, "MissingToolchain"):
@@ -66,6 +104,43 @@ class ToolsTests(unittest.TestCase):
         for symbol in ("os.(*File).ReadAt", "syscall.virKeep", "syscall.virPull", "net.Dial"):
             with self.assertRaises(ValueError):
                 reachable(symbol)
+
+class PaddingEditTests(unittest.TestCase):
+    def test_edit_is_atomic_idempotent_and_rejects_drift(self):
+        root = Path(__file__).resolve().parents[2]
+        fork = Path(os.environ.get("GO_FORK_DIR", root.parent/"go-virelai"))
+        script = (root/"tools/go/apply.sh").read_text()
+        code = script.split('padding="$(python3 - "$F/runtime/mem_sbrk.go" <<\'PYEOF\'\n', 1)[1].split("\nPYEOF\n", 1)[0]
+        changes = next(ast.literal_eval(node.value) for node in ast.parse(code).body
+                       if isinstance(node, ast.Assign) and any(
+                           isinstance(target, ast.Name) and target.id == "changes"
+                           for target in node.targets))
+        original = (fork/"src/runtime/mem_sbrk.go").read_text()
+        for before, after in changes:
+            original = original.replace(after, before)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)/"mem_sbrk.go"
+            path.write_text(original)
+            def apply():
+                return subprocess.run(
+                    [sys.executable, "-c", code, str(path)],
+                    capture_output=True, text=True)
+            self.assertEqual(apply().stdout.strip(), "patched")
+            patched = path.read_text()
+            self.assertEqual(apply().stdout.strip(), "clean")
+            self.assertEqual(path.read_text(), patched)
+            # A half edit, changed upstream anchor and duplicate must never
+            # leave the first replacement behind when the second refuses.
+            for drift in (
+                original.replace(*changes[0]),
+                original.replace("memFree(r, l)", "unknownFree(r, l)"),
+                original + changes[0][0],
+            ):
+                path.write_text(drift)
+                result = apply()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("SourceDrift", result.stderr)
+                self.assertEqual(path.read_text(), drift)
 
 
 if __name__ == "__main__":

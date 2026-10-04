@@ -34,7 +34,16 @@ Both passes and validation count against the same caller Budget.
 
 `ledger.py` is a fail-closed **source audit**, not a guest memory receipt.
 It exits 2 while §5.1 lacks a proved runtime upper bound. In the pinned
-sbrk runtime, aligned heap growth may zero large padding; free/unneeded
+sbrk runtime, virelai's fresh aligned growth links already-zero padding
+with only `memHdr` writes. The audit still requires the literal
+`memFree(r, l)` in the unchanged plan9/wasm branch. Ordinary frees,
+free-list alignment trims and shrinking still clear; removed headers
+are cleared on allocation. It checks the page-rounded ELF/argv floor,
+demand-zero faults and mmap collision checks as well. Restoring the old
+sweep or losing an audited zero-invariant term fails closed. Padding is
+still header-touched, not wholly untouched or a measured runtime bound.
+M90f's 4,096-page field is inline tracking capacity, not a working-set cap;
+no renderer budget changes. Re-provision the fork after #1958. Free/unneeded
 mappings remain retained, each growth consumes another region, and the
 L2 heap index mapping is explicitly absent from MemStats accounting.
 Neither `HeapAlloc`, virtual heap reservation, nor ELF `memsz` proves

@@ -497,6 +497,17 @@ func preemptM(mp *m) {
 // mapping CONTIGUOUSLY at the current mapped end (sys_mmap honors
 // page-aligned address hints), demand-backed — untouched pages cost
 // nothing physical.
+//
+// Under memlock, every returned byte is zero: [bloc, blocMax) was cleared
+// by sysFreeOS before lowering bloc; bytes beyond blocMax are demand-zero
+// anonymous pages. initBloc rounds past the ELF end, and initBlocFloor
+// rounds past the entire argv/envp block, excluding its partially filled
+// tail page (the loader does NOT zero that page's slack). A successful
+// virMmap cannot overlap an image/argv aperture (process.mmap_collides).
+// Neither live allocations nor free-list headers are above bloc. Thus
+// apply.sh can link ONLY this path's alignment padding without clearing
+// it again. Ordinary frees, free-list trims and shrinking keep their clear;
+// memAllocNoGrow clears each removed header before returning reused bytes.
 func sbrk(n uintptr) unsafe.Pointer {
 	bl := bloc
 	n = memRound(n)
