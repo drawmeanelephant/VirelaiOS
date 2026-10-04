@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "engine_lock_sha256": "53e04ad9118eedb781290b9f5f590b0cf82816e189770fcfec4fe2e787f0f8f7",
+  "engine_lock_sha256": "14a81abdb932cbeec3673bbd038f1a5621721d733c4a792ca6106a351c408677",
   "inputs_sha256": {
     "tests/fixtures/pdf/acceptance/affine.pdf": "c6f07a181f6f3d176ca8cc972d8fabc3bea0f15dfd3d7ce76ad629711607c335",
     "tests/fixtures/pdf/acceptance/coverage.json": "9ef4fde1bb95bcd160731840e139ad53d5edadb2b10f8b335cf0af2bad204d94",
