@@ -1,0 +1,3 @@
+Analytic ADR 0041 §4.1 reference, authored without an image renderer.
+Transparent background, top-down straight-alpha AARRGGBB words:
+80ff0000 c05500aa 800000ff 00000000
