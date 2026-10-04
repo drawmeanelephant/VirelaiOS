@@ -2,6 +2,8 @@
 
 - Status: **PROPOSED for owner review; acceptance takes effect on landing.**
 - Date: 2026-10-03 · Design card: M89a / #1920 · Index: #1916
+- Amended: 2026-10-04 (A1 / #1916 — oracle rulings and stream-boundary
+  tokens; owner approval [recorded](https://github.com/drawmeanelephant/VirelaiOS/issues/1916#issuecomment-5981057608))
 - Related: [ADR 0030](0030-go-is-el0.md) D2/D3,
   [ADR 0041](0041-svg-raster.md) §§4–7, ADRs 0007/0024/0026.
 
@@ -152,9 +154,10 @@ No fit-to-window scaling, rotation, tiling or lower-resolution success.
 ### 3.2 Content operators and graphics state
 
 Concatenate a page's decoded Contents logically in array order **without
-inventing separators**; tokenizer/current path/text/graphics state may
-cross a stream boundary. Reject wrong operand type/count, trailing unused
-operands, unterminated BT or unbalanced q/Q as `MalformedContent`.
+inventing separators**. Operands and current path/text/graphics state may
+cross a stream boundary; a token may not (A1.1). Reject wrong operand
+type/count, trailing unused operands, unterminated BT or unbalanced q/Q
+as `MalformedContent`.
 An empty stream is legal. All operators below have standard PDF operand
 order; no implicit repair or unknown-operator skipping.
 
@@ -540,7 +543,7 @@ The finite accepted corpus has **16 authored pages**, each ≤16,384 B:
 |---|---|
 | `empty`, `gray-rect`, `rgb-order`, `open-lines` | White/empty, g/re/f/F, rg paint order, m/l/h/open closure/n |
 | `cubic`, `nonzero`, `evenodd`, `affine` | c/v/y, compound/reversed holes, f* intersection, cm/reflection/singular no-paint |
-| `save-restore`, `rect-clip`, `split-streams`, `flate-content` | q/Q incl. text state, W/W* and old-clip paint order, token/state across Contents, stored/fixed/dynamic Flate |
+| `save-restore`, `rect-clip`, `split-streams`, `flate-content` | q/Q incl. text state, W/W* and old-clip paint order, operands/state across Contents (A1.1), stored/fixed/dynamic Flate |
 | `type3-position`, `type3-spacing`, `gray-image`, `rgb-image` | All text position/state/show operators, explicit glyph/space/d1 metrics, both colorspaces, raw/Flate, clipping/scaling/reflections and fill/image order |
 
 Parameterized engine/acceptance cases cover **every** allowlisted key,
@@ -592,6 +595,8 @@ missing glyphs, wrong color/order/spacing/clip/image orientation.
 For image fixtures choose unambiguous integer sample geometry and assert
 analytic nearest-neighbor pixels; mismatched oracle sampling must be
 resolved explicitly, not granted a broad image tolerance.
+A1.2 and A1.3 define those analytic references, move the vector/glyph
+edge mask and tolerances onto them, and fix the oracle's remaining role.
 Identical input/toolchain algorithm host/guest Go pages are bit-identical.
 A renderer checksum compared with itself is not independent evidence.
 
@@ -672,3 +677,91 @@ This design leaves **#1916 open**. The owner accepts that index only
 after every declared corpus PDF produces independently correct guest
 bitmaps within all budgets, every malformed/out-of-subset case refuses
 boundedly, and both implementation cards land with their complete evidence.
+
+## Amendment (A1 / #1916, 2026-10-04) — oracle rulings and stream-boundary tokens
+
+The M89c and M89d evidence (#1950, #1959; draft PRs #1954, #1960) left
+eight accepted cases where the engine matches an analytic expectation
+but not pinned Poppler: vector/glyph edges in `nonzero`, `evenodd` and
+`type3-spacing`; integer clip/image edges in `rect-clip`, `gray-image`,
+`rgb-image` and the time page's image column; and `split-streams`, whose
+`rg` token is cut across two Contents streams. The owner ruled on all
+three classes. A1 replaces only the rules named below; every other §3,
+§5 and §6 rule, limit, tolerance value and pin is unchanged.
+
+### A1.1 — A Contents stream boundary is a token boundary
+
+Replaces §3.2's former "tokenizer ... may cross a stream boundary".
+Operands, the current path, an open text object and graphics state still
+carry across streams in array order; a token does not. Refuse
+`MalformedContent`, located at the later stream's first byte, when:
+
+- a literal or hexadecimal string is still open at a stream's end; or
+- the last byte of one non-empty stream and the first byte of the next
+  non-empty stream are both regular characters (neither white-space nor
+  a delimiter, ISO 32000-1 §7.2.2).
+
+Empty streams are skipped when finding neighbors, and a comment ends at
+its stream's end. ISO 32000-1 §7.8.2 already allows a split only between
+tokens. The subset is deliberately stricter: it also refuses an abutting
+pair such as `Q`|`q`, so it never chooses between one token and two.
+
+- **M89d (#1959)** implements the rule under `user/go/pdf/*` and
+  `tests/fixtures/pdf/engine/*`. §6's stream-boundary cuts now mean: a
+  cut inside a string refuses; a cut between two regular characters
+  refuses; a cut inside a comment ends the comment there; every other
+  cut renders identically to the uncut stream.
+- **M89c (#1950)** re-authors `split-streams` so every boundary falls
+  between tokens while operands, path, text and graphics state still
+  cross, and keeps the current token-cut bytes as a named negative that
+  expects `MalformedContent`. Negatives still never go through the oracle.
+
+### A1.2 — Integer clip and image edges: the analytic reference wins
+
+Refines §6's exact clip/image rule. For W/W* clips (§3.2) and image
+placement (§3.4) the comparator computes an analytic reference from the
+fixture's authored recipe: half-open integral device extents, clip
+intersection and old-clip paint order, reflections, and nearest-neighbor
+pixel-center sampling with ties toward the higher source index, using
+the image's own samples. The engine must match it on every pixel.
+Poppler must match it on every pixel more than one pixel (Chebyshev)
+from an analytic clip or image boundary. Inside that band the analytic
+reference wins: `tests/fixtures/pdf/acceptance/oracle.json` records each
+case's Poppler disagreement count and the SHA-256 of its sorted
+coordinate list, and any change to either fails until reviewed. No clip
+or image tolerance is introduced.
+
+### A1.3 — Vector and glyph edges: an analytic coverage reference
+
+Refines §6's vector/glyph edge rule. The comparator (`tools/pdf-proof/*`)
+derives device-space geometry from each fixture's authored recipe
+(paths, CTM, text and line matrices, spacing, Type 3 metrics and
+outlines, curves flattened to at most 1/64 px error) and rasterizes it
+with ADR 0041 §3.2's specified sampler: four vertical samples at
+y+1/8, 3/8, 5/8 and 7/8, exact horizontal span overlap, nonzero or
+even-odd winding and 8-bit rounding, composing paints in document order.
+It imports no `user/go/pdf` or `user/go/vector` code and never reads
+tested output.
+
+- **Engine against the analytic reference:** flat interiors are exact.
+  Edge pixels keep the §6 values: maximum channel difference 64/255,
+  whole-image mean channel difference 1/255, and no discrepancy outside
+  a one-pixel Chebyshev dilation of the analytic edge mask
+  (partial-coverage pixels plus adjacent pixels whose analytic color
+  differs).
+- **Poppler as the independent geometry check:** it must match the
+  analytic reference exactly outside a one-pixel Chebyshev dilation of
+  the union of both edge masks, and its edge mask (§6 derivation) and
+  the analytic edge mask must each lie within the other's one-pixel
+  Chebyshev dilation. Its edge-pixel values are recorded as diagnostics,
+  not held to the 64/255 or mean bounds.
+- A failed cross-check is an oracle disagreement for owner review, never
+  a pass, a widened tolerance or a re-derived mask.
+
+### A1.4 — Ownership and acceptance
+
+A1 changes no limit, budget, threshold, pin or card split. M89d owns the
+A1.1 engine rule and its engine tests; M89c owns the re-authored corpus,
+recipes, analytic references, comparator and `oracle.json` records.
+Neither card edits this ADR. §8's acceptance condition for #1916 is
+unchanged, with "independently correct" judged by A1.2 and A1.3.
