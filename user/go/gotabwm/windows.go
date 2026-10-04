@@ -87,7 +87,19 @@ const maxWinEvents = 200
 var (
 	openInputSink = vi.WinOpen
 	queryWindow   = vi.WinQuery
+	openBlurProbe = vi.WinOpen
 )
+
+// The demo deliberately waits for the harness to move focus. A normal boot
+// has no harness: opening a temporary owned window supplies the real blur
+// event, without a monitor command or a boot-default override.
+func beginProbeBlur() (int, bool) {
+	if demoMode {
+		return -1, true
+	}
+	id, r := openBlurProbe(0, 0, 1, 1)
+	return id, r >= 0
+}
 
 func acquireLauncherFocus() bool {
 	id, r := openInputSink(launchX, launchY, launchW, uint32(launch.panelH()))
@@ -358,8 +370,16 @@ func runWindowPhase() bool {
 	}
 	vi.ConsoleLine(MarkerWinFocus)
 
-	// 5. Focus loss: the harness focuses another window; the kernel routes
-	//    WIN_BLUR to the seat.
+	// 5. Focus loss: the demo harness or a live boot's temporary owned
+	//    window moves focus; the kernel routes the real WIN_BLUR.
+	blurID, blurOK := beginProbeBlur()
+	if !blurOK {
+		vi.ConsoleLine("gotabwm: win blur open failed")
+		return false
+	}
+	if blurID >= 0 {
+		defer vi.WinClose(blurID)
+	}
 	if !waitKind(vi.EvWinBlur) {
 		vi.ConsoleLine("gotabwm: win blur timeout")
 		return false

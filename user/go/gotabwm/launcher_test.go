@@ -329,3 +329,51 @@ func TestLauncherFocusFailureNeverClaimsModalOwnership(t *testing.T) {
 		t.Fatal("failed open not visible on the button")
 	}
 }
+
+func TestLauncherLaunchCloseRetryNeverExecutesTwice(t *testing.T) {
+	defer saveSeatState()()
+	stubLauncherWindows(t)
+	tabs = TabStrip{}
+	tabs.OpenTab(3, "Edit")
+	launch = launcherState{}
+	openLauncher()
+	oldExec := execApp
+	defer func() { execApp = oldExec }()
+	calls := 0
+	execApp = func(string, ...string) (int64, error) { calls++; return 42, nil }
+	closeWin = func(uint32) int64 { return -vi.ErrEINVAL }
+	execSelected()
+	if calls != 1 || !launch.open || !launch.launching || launch.sink == 0 {
+		t.Fatal("failed sink close must retain ownership after the successful exec")
+	}
+	execSelected()
+	handleLauncherKey(vi.Event{Arg0: uint32(hidUsageEnter)})
+	if calls != 1 {
+		t.Fatal("retry launched a second app")
+	}
+	closeWin = func(uint32) int64 { return 0 }
+	execSelected()
+	if launch.open || launch.sink != 0 || calls != 1 {
+		t.Fatal("close retry leaked the sink or exec'd again")
+	}
+}
+
+func TestLauncherEscapeRestoresFocusWithoutInterpretingSinkCopies(t *testing.T) {
+	defer saveSeatState()()
+	raises, closes, _ := stubLauncherWindows(t)
+	tabs = TabStrip{}
+	tabs.OpenTab(3, "Edit")
+	launch = launcherState{}
+	openLauncher()
+	for _, usage := range []uint32{0x06, 0x04, 0x0f, 0x06} {
+		handleWmKey(vi.Event{Kind: vi.EvWmKey, Arg0: usage})
+		consumeSeatEvent(vi.Event{Kind: vi.EvKeyDown, Arg0: usage, Arg1: 'x'})
+	}
+	if launch.filter != "calc" {
+		t.Fatal("modal filter interpreted the app-side copy")
+	}
+	handleWmKey(vi.Event{Kind: vi.EvWmKey, Arg0: uint32(hidUsageEscape)})
+	if launch.open || launch.sink != 0 || len(*closes) != 1 || (*raises)[len(*raises)-1] != 3 {
+		t.Fatal("Escape did not release the sink and restore the old app")
+	}
+}
