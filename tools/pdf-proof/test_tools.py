@@ -7,6 +7,7 @@ from pathlib import Path
 import compare
 import corpus
 import oracle
+import analytic
 from check_run import check_memory, parse_receipts
 
 
@@ -15,6 +16,65 @@ def bitmap(w, h, pixels):
 
 
 class ComparatorTests(unittest.TestCase):
+    def test_glyph_shift_two_pixels_fails(self):
+        recipe = corpus.geometry("type3-position")
+        reference, partial, strict, _ = analytic.render(recipe)
+        shifted = json.loads(json.dumps(recipe))
+        shifted["operations"][0]["actions"][0][5] += 1.5  # 96 dpi: two pixels.
+        actual, _, _, _ = analytic.render(shifted)
+        with self.assertRaises(ValueError):
+            compare.compare(reference, actual, partial=partial, strict=strict)
+
+    def test_one_changed_interior_pixel_fails(self):
+        reference, partial, strict, _ = analytic.reference("gray-rect")
+        actual = bytearray(reference)
+        actual[16+4*(50*64+10)] ^= 1
+        with self.assertRaisesRegex(ValueError, "non-edge/exact"):
+            compare.compare(reference, actual, partial=partial, strict=strict)
+
+    def test_changed_disagreement_count_or_coordinates_fails(self):
+        reference, partial, _, band = analytic.reference("nonzero")
+        actual = bytearray(reference)
+        actual[16+4*(16*64+16)] = 181
+        record = compare.crosscheck(reference, actual, partial=partial, boundary_band=band)
+        for field, value in (("count", 2), ("coordinates_sha256", "0"*64)):
+            changed = json.loads(json.dumps(record))
+            changed["disagreements"][field] = value
+            with self.assertRaisesRegex(ValueError, "disagreement count/coordinates"):
+                compare.crosscheck(reference, actual, partial=partial, boundary_band=band, expected=changed)
+
+    def test_poppler_geometry_checks_fail_not_tolerate(self):
+        reference, partial, _, band = analytic.reference("gray-rect")
+        actual = bytearray(reference)
+        actual[16+4*(50*64+10)] ^= 1
+        with self.assertRaises(ValueError):
+            compare.crosscheck(reference, actual, partial=partial, boundary_band=band)
+        empty, partial, _, band = analytic.reference("empty")
+        actual = bytearray(empty)
+        actual[16+4*(10*64+10)] = 254
+        with self.assertRaisesRegex(ValueError, "edge outside"):
+            compare.crosscheck(empty, actual, partial=partial, boundary_band=band)
+        glyphs, partial, _, band = analytic.reference("type3-position")
+        with self.assertRaisesRegex(ValueError, "analytic edge outside"):
+            compare.crosscheck(glyphs, empty, partial=partial, boundary_band=band)
+
+    def test_poppler_clip_image_interior_cannot_use_edge_tolerance(self):
+        reference, _, strict, band = analytic.reference("gray-image")
+        actual = bytearray(reference)
+        i = 30*64+10
+        self.assertFalse(band[i])
+        actual[16+4*i] ^= 1
+        with self.assertRaisesRegex(ValueError, "outside boundary band"):
+            compare.check_clip_image(reference, actual, strict, band)
+
+    def test_clip_image_pixels_are_exact_even_inside_edge_band(self):
+        for name, x, y in (("rect-clip", 16, 0), ("gray-image", 36, 28), ("rgb-image", 20, 28)):
+            reference, partial, strict, _ = analytic.reference(name)
+            actual = bytearray(reference)
+            actual[16+4*(y*64+x)] ^= 1
+            with self.assertRaisesRegex(ValueError, "exact discrepancy"):
+                compare.compare(reference, actual, partial=partial, strict=strict)
+
     def test_ppm_bytes_are_not_whitespace_tokens(self):
         b = compare.ppm(b"P6\n# pinned\n1 1\n255\n"+bytes([10, 32, 13]))
         self.assertEqual(b, bitmap(1, 1, [13, 32, 10, 255]))
@@ -70,6 +130,8 @@ class ManifestTests(unittest.TestCase):
         self.assertEqual(manifest["corpus"], "M89-PDF1")
         self.assertEqual({r["id"] for r in manifest["accepted"]}, set(corpus.anchors()))
         self.assertEqual(len(manifest["accepted"]), 16)
+        for row in manifest["accepted"]:
+            self.assertEqual(row["analytic"], json.loads(json.dumps(corpus.geometry(row["id"]))))
         for row in manifest["accepted"]+manifest["negatives"]:
             data = (corpus.FIXTURES/row["file"]).read_bytes()
             self.assertLessEqual(len(data), 16384)
@@ -86,7 +148,25 @@ class ManifestTests(unittest.TestCase):
             for row in recipe[group]:
                 self.assertEqual(row["sha256"], corpus.sha(products[row["id"]][0]))
                 self.assertEqual(row["bytes"], len(products[row["id"]][0]))
+                if group == "maxima" or row["expected"] == "OK":
+                    name = row["id"] if group == "maxima" else "capacity-"+row["id"]
+                    self.assertEqual(row["analytic"], json.loads(json.dumps(corpus.geometry(name))))
         self.assertEqual(len(corpus.maxima()["source-4mib"][0]), 4194304)
+
+    def test_split_boundaries_and_preserved_negative_bytes(self):
+        data = corpus.anchors()["split-streams"]
+        streams = re.findall(rb"\nstream\n(.*?)\nendstream", data, re.S)[:4]
+        self.assertEqual(len(streams), 4)
+        whitespace_delimiters = b"\0\t\n\f\r ()<>[]{}/%"
+        for left, right in zip(streams, streams[1:]):
+            self.assertTrue(left[-1] in whitespace_delimiters or right[0] in whitespace_delimiters)
+        self.assertTrue(streams[0].endswith(b"1 0 "))  # operands
+        self.assertTrue(streams[1].endswith(b"q 0 1 0 rg "))  # path and q frame
+        self.assertTrue(streams[2].endswith(b"(A) "))  # open BT and pending Tj
+        original = corpus.simple(streams=[corpus.stream(b"1 0 0 r"),
+                                         corpus.stream(b"g 3 3 24 24 re q 0 "),
+                                         corpus.stream(b"1 0 rg Q f")])
+        self.assertEqual(corpus.negatives()["split-token"], (original, "MalformedContent"))
 
     def test_coverage_and_exclusion_rows(self):
         coverage = json.loads((corpus.FIXTURES/"coverage.json").read_text())
@@ -113,6 +193,53 @@ class ManifestTests(unittest.TestCase):
         for row in frozen["references"]:
             self.assertNotIn(row["id"], corpus.negatives())
             self.assertEqual(row["invocation"], oracle.FLAGS)
+            self.assertRegex(row["analytic_sha256"], r"^[0-9a-f]{64}$")
+            for key in ("disagreements", "clip_image_disagreements", "outside_band_disagreements"):
+                self.assertGreaterEqual(row["poppler_crosscheck"][key]["count"], 0)
+                self.assertRegex(row["poppler_crosscheck"][key]["coordinates_sha256"], r"^[0-9a-f]{64}$")
+
+
+class AnalyticTests(unittest.TestCase):
+    def test_winding_holes_and_document_order(self):
+        for name, xy, color in (("nonzero", (16, 16), [255]*3),
+                                ("evenodd", (20, 20), [255]*3),
+                                ("rgb-order", (30, 40), [255, 0, 0])):
+            ref, _, _, _ = analytic.reference(name)
+            w, _, p = compare.page(ref)
+            i = xy[1]*w+xy[0]
+            self.assertEqual(list(p[4*i:4*i+3]), color)
+
+    def test_sampler_subrows_and_rounding(self):
+        recipe = {"box": [0, 0, 3, 3], "operations": [
+            corpus.fill(corpus.rect(0, 2.625, .375, .375))]}
+        ref, partial, _, _ = analytic.render(recipe)
+        _, _, pixels = compare.page(ref)
+        # Two subrows, exactly half a horizontal pixel: coverage 1/4.
+        self.assertEqual(list(pixels[:4]), [191, 191, 191, 255])
+        self.assertEqual(partial[0], 1)
+
+    def test_image_center_tie_chooses_higher_source_index_under_reflection(self):
+        for ctm in ([.75, 0, 0, .75, 0, 0], [-.75, 0, 0, .75, .75, 0]):
+            ref, _, strict, _ = analytic.render({"box": [0, 0, .75, .75], "operations": [
+                corpus.placed_image([17, 99], ctm, width=2, height=1)]})
+            self.assertEqual(compare.page(ref)[2], bytes([99, 99, 99, 255]))
+            self.assertEqual(strict, b"\1")
+
+    def test_independent_text_and_line_matrices(self):
+        op = corpus.type3([("Tm", 1, 0, 0, 1, 3, 36), ("show", "AA"),
+                           ("Td", 9, -9), ("show", "A")])
+        fills = list(analytic.text_fills(op))
+        self.assertEqual([f[1][4:6] for f in fills], [(3, 36), (9, 36), (12, 27)])
+
+    def test_cubic_bound_including_backtracking(self):
+        points = [(0, 0), (100, 0), (-100, 0), (1, 0)]
+        flattened = [points[0]]+analytic.cubic(points)
+        self.assertGreater(len(flattened), 2)
+        for t in (i/1000 for i in range(1001)):
+            p = tuple((1-t)**3*points[0][c]+3*(1-t)**2*t*points[1][c]+
+                      3*(1-t)*t*t*points[2][c]+t**3*points[3][c] for c in (0, 1))
+            self.assertLessEqual(min(analytic.distance(p, a, b)
+                                     for a, b in zip(flattened, flattened[1:])), 1/64)
 
 
 class RuntimeReceiptTests(unittest.TestCase):
@@ -142,6 +269,10 @@ class RuntimeReceiptTests(unittest.TestCase):
             check_memory(parse_receipts(self.receipt(pages=3071, reaped=0)+self.receipt(), 8617, runtime=True))
         with self.assertRaisesRegex(ValueError, "different processes"):
             parse_receipts(serial.replace("pid=7", "pid=8", 1), 8617, runtime=True)
+
+    def test_final_only_receipt_never_substitutes_for_live_baseline(self):
+        with self.assertRaisesRegex(ValueError, "RuntimeBaselineUnavailable"):
+            parse_receipts("runtime-receipt: none\n"+self.receipt(), 8617, runtime=True)
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "generator_sha256": "31cc5db24eece3b53175ac41090861e4f9adc24da2a39d215f4c6fe2224ceeb1",
+  "generator_sha256": "d5b46e295178fa76063e2f9261e6e864536bba3e999e9037de5ee51a8ebd43cb",
   "zlib": "1.2.12",
   "maxima": [
     {
@@ -11,7 +11,208 @@
         1024,
         1448
       ],
-      "comparison": "edges"
+      "comparison": "edges",
+      "analytic": {
+        "box": [
+          0,
+          0,
+          768.0,
+          1086.0
+        ],
+        "operations": [
+          {
+            "kind": "fill",
+            "path": [
+              [
+                "M",
+                0,
+                0
+              ],
+              [
+                "L",
+                768,
+                0
+              ],
+              [
+                "L",
+                768,
+                1086
+              ],
+              [
+                "L",
+                0,
+                1086
+              ],
+              [
+                "Z"
+              ]
+            ],
+            "ctm": [
+              1,
+              0,
+              0,
+              1,
+              0,
+              0
+            ],
+            "color": [
+              128,
+              128,
+              128
+            ],
+            "rule": "nonzero"
+          },
+          {
+            "kind": "text",
+            "ctm": [
+              1,
+              0,
+              0,
+              1,
+              0,
+              0
+            ],
+            "color": [
+              128,
+              128,
+              128
+            ],
+            "font": {
+              "matrix": [
+                1,
+                0,
+                0,
+                1,
+                0,
+                0
+              ],
+              "bbox": [
+                0,
+                0,
+                1,
+                1
+              ],
+              "glyphs": {
+                "A": {
+                  "advance": 1,
+                  "d1": [
+                    1,
+                    0,
+                    0,
+                    0,
+                    1,
+                    1
+                  ],
+                  "path": [
+                    [
+                      "M",
+                      0,
+                      0
+                    ],
+                    [
+                      "L",
+                      1,
+                      0
+                    ],
+                    [
+                      "L",
+                      1,
+                      1
+                    ],
+                    [
+                      "L",
+                      0,
+                      1
+                    ],
+                    [
+                      "Z"
+                    ]
+                  ]
+                },
+                " ": {
+                  "advance": 1,
+                  "d1": [
+                    1,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0
+                  ],
+                  "path": []
+                }
+              }
+            },
+            "state": {
+              "size": 24,
+              "spacing": 0,
+              "word_spacing": 0,
+              "scale": 100,
+              "leading": 0,
+              "rise": 0,
+              "text_matrix": [
+                1,
+                0,
+                0,
+                1,
+                0,
+                0
+              ],
+              "line_matrix": [
+                1,
+                0,
+                0,
+                1,
+                0,
+                0
+              ]
+            },
+            "actions": [
+              [
+                "Tm",
+                1,
+                0,
+                0,
+                1,
+                96,
+                96
+              ],
+              [
+                "show",
+                "A"
+              ]
+            ]
+          },
+          {
+            "kind": "image",
+            "ctm": [
+              96,
+              0,
+              0,
+              96,
+              0,
+              0
+            ],
+            "width": 2,
+            "height": 2,
+            "channels": 3,
+            "samples": [
+              17,
+              34,
+              51,
+              17,
+              34,
+              51,
+              17,
+              34,
+              51,
+              17,
+              34,
+              51
+            ]
+          }
+        ]
+      }
     },
     {
       "id": "bottom-1024x1536",
@@ -21,7 +222,59 @@
         1024,
         1536
       ],
-      "comparison": "exact"
+      "comparison": "exact",
+      "analytic": {
+        "box": [
+          0,
+          0,
+          768.0,
+          1152.0
+        ],
+        "operations": [
+          {
+            "kind": "fill",
+            "path": [
+              [
+                "M",
+                0,
+                0
+              ],
+              [
+                "L",
+                768,
+                0
+              ],
+              [
+                "L",
+                768,
+                0.75
+              ],
+              [
+                "L",
+                0,
+                0.75
+              ],
+              [
+                "Z"
+              ]
+            ],
+            "ctm": [
+              1,
+              0,
+              0,
+              1,
+              0,
+              0
+            ],
+            "color": [
+              0,
+              0,
+              255
+            ],
+            "rule": "nonzero"
+          }
+        ]
+      }
     },
     {
       "id": "full-rgb",
@@ -31,7 +284,36 @@
         1024,
         1536
       ],
-      "comparison": "exact"
+      "comparison": "exact",
+      "analytic": {
+        "box": [
+          0,
+          0,
+          768.0,
+          1152.0
+        ],
+        "operations": [
+          {
+            "kind": "image",
+            "ctm": [
+              768,
+              0,
+              0,
+              1152,
+              0,
+              0
+            ],
+            "width": 1024,
+            "height": 1536,
+            "channels": 3,
+            "solid": [
+              31,
+              95,
+              159
+            ]
+          }
+        ]
+      }
     },
     {
       "id": "source-4mib",
@@ -41,7 +323,16 @@
         64,
         64
       ],
-      "comparison": "exact"
+      "comparison": "exact",
+      "analytic": {
+        "box": [
+          0,
+          0,
+          48.0,
+          48.0
+        ],
+        "operations": []
+      }
     }
   ],
   "capacities": [
@@ -49,7 +340,16 @@
       "id": "graphics-limit",
       "sha256": "37f4d673c769835a9fde181745d3fa255e7ea103bf98dc2ea5427dc87f8eac0d",
       "bytes": 486,
-      "expected": "OK"
+      "expected": "OK",
+      "analytic": {
+        "box": [
+          0,
+          0,
+          48.0,
+          48.0
+        ],
+        "operations": []
+      }
     },
     {
       "id": "graphics-plus1",
@@ -61,7 +361,16 @@
       "id": "commands-limit",
       "sha256": "ee998c7fbd8c67df212cfc9c13056ba8acacb3833fa6f68219c30e5d2641b8b5",
       "bytes": 25004,
-      "expected": "OK"
+      "expected": "OK",
+      "analytic": {
+        "box": [
+          0,
+          0,
+          48.0,
+          48.0
+        ],
+        "operations": []
+      }
     },
     {
       "id": "commands-plus1",
@@ -73,7 +382,16 @@
       "id": "paints-contours-limit",
       "sha256": "c16da1ed8ff12b86f26cef6fbf5cbfcec1deedd0a86f1b2c81b947b0da141937",
       "bytes": 7593,
-      "expected": "OK"
+      "expected": "OK",
+      "analytic": {
+        "box": [
+          0,
+          0,
+          48.0,
+          48.0
+        ],
+        "operations": []
+      }
     },
     {
       "id": "paints-contours-plus1",
@@ -85,7 +403,16 @@
       "id": "canvas-width-limit",
       "sha256": "b3785cc9ecece64f5dd43ce3e2441a772004c01a4634f909c1897590e7ed0bbd",
       "bytes": 422,
-      "expected": "OK"
+      "expected": "OK",
+      "analytic": {
+        "box": [
+          0,
+          0,
+          768.0,
+          48.0
+        ],
+        "operations": []
+      }
     },
     {
       "id": "canvas-width-plus1",
@@ -97,7 +424,16 @@
       "id": "canvas-height-limit",
       "sha256": "ed4b6b6bf4a3d21d81068d46c3c169d02c7c84abfa1fd541ac4f1770af73b2ea",
       "bytes": 423,
-      "expected": "OK"
+      "expected": "OK",
+      "analytic": {
+        "box": [
+          0,
+          0,
+          48.0,
+          1152.0
+        ],
+        "operations": []
+      }
     },
     {
       "id": "canvas-height-plus1",
@@ -109,7 +445,16 @@
       "id": "coordinate-limit",
       "sha256": "6fb0d08adf77769c4d9b766d16769be3d07a904320083e4b464cc05b10eb7457",
       "bytes": 450,
-      "expected": "OK"
+      "expected": "OK",
+      "analytic": {
+        "box": [
+          0,
+          0,
+          48.0,
+          48.0
+        ],
+        "operations": []
+      }
     },
     {
       "id": "coordinate-plus1",
@@ -121,7 +466,16 @@
       "id": "name-limit",
       "sha256": "9a97fb03f0bfaaeacda12831e0e43111502b694e5313bab065e8306d0f19ac10",
       "bytes": 793,
-      "expected": "OK"
+      "expected": "OK",
+      "analytic": {
+        "box": [
+          0,
+          0,
+          48.0,
+          48.0
+        ],
+        "operations": []
+      }
     },
     {
       "id": "name-plus1",
@@ -133,7 +487,16 @@
       "id": "number-limit",
       "sha256": "b892f86be63b7a66a21f4492b25e88dab4b057db44affb35470a5d1fb288f2d6",
       "bytes": 456,
-      "expected": "OK"
+      "expected": "OK",
+      "analytic": {
+        "box": [
+          0,
+          0,
+          48.0,
+          48.0
+        ],
+        "operations": []
+      }
     },
     {
       "id": "number-plus1",
@@ -145,7 +508,16 @@
       "id": "string-limit",
       "sha256": "f4f1a2b996e9f18f2f58d6802f233c5743ceede3a37c65073f9f7c1844747270",
       "bytes": 4581,
-      "expected": "OK"
+      "expected": "OK",
+      "analytic": {
+        "box": [
+          0,
+          0,
+          48.0,
+          48.0
+        ],
+        "operations": []
+      }
     },
     {
       "id": "string-plus1",
@@ -157,7 +529,16 @@
       "id": "font-size-limit",
       "sha256": "3cf9c33d6b2bcb7b3eb6d825617dd2bda51557762d1dd918f93505b290a3dadc",
       "bytes": 1026,
-      "expected": "OK"
+      "expected": "OK",
+      "analytic": {
+        "box": [
+          0,
+          0,
+          48.0,
+          48.0
+        ],
+        "operations": []
+      }
     },
     {
       "id": "font-size-plus1",
@@ -169,7 +550,16 @@
       "id": "text-scale-limit",
       "sha256": "9675fb5dc0ba9d1b7398416eacd3a125eefd9c0c75e26851d4ebc9e089239c93",
       "bytes": 427,
-      "expected": "OK"
+      "expected": "OK",
+      "analytic": {
+        "box": [
+          0,
+          0,
+          48.0,
+          48.0
+        ],
+        "operations": []
+      }
     },
     {
       "id": "text-scale-plus1",
@@ -181,7 +571,16 @@
       "id": "tj-limit",
       "sha256": "139987dd9696334d613e09ea7914385f14e590615b7c07b14b10200070aba5af",
       "bytes": 2057,
-      "expected": "OK"
+      "expected": "OK",
+      "analytic": {
+        "box": [
+          0,
+          0,
+          48.0,
+          48.0
+        ],
+        "operations": []
+      }
     },
     {
       "id": "tj-plus1",
@@ -193,7 +592,16 @@
       "id": "contents-limit",
       "sha256": "1bdf613b54ae0d9a3c039f9b091c97385b0d8b1c65b77c0cbcc5b18492fc988e",
       "bytes": 1586,
-      "expected": "OK"
+      "expected": "OK",
+      "analytic": {
+        "box": [
+          0,
+          0,
+          48.0,
+          48.0
+        ],
+        "operations": []
+      }
     },
     {
       "id": "contents-plus1",
@@ -205,7 +613,16 @@
       "id": "image-width-limit",
       "sha256": "b09933f9016b05b3abca8f1046e6d909e02a91117d9c42911836bb4f3b12741f",
       "bytes": 1657,
-      "expected": "OK"
+      "expected": "OK",
+      "analytic": {
+        "box": [
+          0,
+          0,
+          48.0,
+          48.0
+        ],
+        "operations": []
+      }
     },
     {
       "id": "image-width-plus1",
@@ -217,7 +634,16 @@
       "id": "image-height-limit",
       "sha256": "cefa138dd3b1bcacf9c96778ca3d521162e501ddaa5ef97fe5e40ddd02c9f2af",
       "bytes": 2169,
-      "expected": "OK"
+      "expected": "OK",
+      "analytic": {
+        "box": [
+          0,
+          0,
+          48.0,
+          48.0
+        ],
+        "operations": []
+      }
     },
     {
       "id": "image-height-plus1",
@@ -229,7 +655,16 @@
       "id": "pages-limit",
       "sha256": "382803cb75073e5bc7915c22b5313249ff6240926adcd731b4dabb03c8242a7e",
       "bytes": 25576,
-      "expected": "OK"
+      "expected": "OK",
+      "analytic": {
+        "box": [
+          0,
+          0,
+          48.0,
+          48.0
+        ],
+        "operations": []
+      }
     },
     {
       "id": "pages-plus1",
@@ -241,7 +676,16 @@
       "id": "depth-limit",
       "sha256": "4fe05963f831bbe2ccc0a21f0e173cbffeafeaae93566528329647f805f2403e",
       "bytes": 3043,
-      "expected": "OK"
+      "expected": "OK",
+      "analytic": {
+        "box": [
+          0,
+          0,
+          48.0,
+          48.0
+        ],
+        "operations": []
+      }
     },
     {
       "id": "depth-plus1",
@@ -253,7 +697,16 @@
       "id": "objects-limit",
       "sha256": "e49a39bcaaa9e7b6fb1160a8bf0141b71a2a2fc7ae0b73225ed2f93a158e5761",
       "bytes": 620528,
-      "expected": "OK"
+      "expected": "OK",
+      "analytic": {
+        "box": [
+          0,
+          0,
+          48.0,
+          48.0
+        ],
+        "operations": []
+      }
     },
     {
       "id": "objects-plus1",
@@ -265,7 +718,16 @@
       "id": "source-limit",
       "sha256": "9b023ef5625b0407b2f9edc047ac3c7318ff7fdbf4d6bddb191980d9c0fb437c",
       "bytes": 4194304,
-      "expected": "OK"
+      "expected": "OK",
+      "analytic": {
+        "box": [
+          0,
+          0,
+          48.0,
+          48.0
+        ],
+        "operations": []
+      }
     },
     {
       "id": "source-plus1",

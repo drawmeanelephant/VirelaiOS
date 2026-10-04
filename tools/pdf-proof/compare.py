@@ -1,4 +1,5 @@
-"""ADR 0040 §6 comparison. All masks come only from the frozen oracle."""
+"""ADR 0040 A1 comparison. Tested output never supplies a reference or mask."""
+import hashlib
 import struct
 from pathlib import Path
 
@@ -48,8 +49,8 @@ def page(data):
     return w, h, pixels
 
 
-def oracle_edges(pixels, w, h):
-    mask = bytearray(w*h)
+def edge_mask(pixels, w, h, partial=None):
+    mask = bytearray(partial) if partial is not None else bytearray(w*h)
     for y in range(h):
         for x in range(w):
             i = y*w+x
@@ -59,6 +60,10 @@ def oracle_edges(pixels, w, h):
                     j = i+dx+dy*w
                     if color != pixels[4*j:4*j+3]:
                         mask[i] = mask[j] = 1
+    return mask
+
+
+def dilate(mask, w, h):
     dilated = bytearray(w*h)
     for i, edge in enumerate(mask):
         if edge:
@@ -69,14 +74,24 @@ def oracle_edges(pixels, w, h):
     return dilated
 
 
-def compare(reference, actual, *, mode="edges", strict_rectangles=()):
+def oracle_edges(pixels, w, h):
+    return dilate(edge_mask(pixels, w, h), w, h)
+
+
+def compare(reference, actual, *, mode="edges", strict_rectangles=(), partial=None, strict=None):
     w, h, oracle = page(reference)
     aw, ah, tested = page(actual)
     if (aw, ah) != (w, h):
         raise ValueError("dimension mismatch")
     if mode not in ("exact", "edges"):
         raise ValueError("unrecognized comparison policy")
-    mask = oracle_edges(oracle, w, h) if mode == "edges" else bytearray(w*h)
+    mask = dilate(edge_mask(oracle, w, h, partial), w, h) if mode == "edges" else bytearray(w*h)
+    if strict is not None:
+        if len(strict) != w*h:
+            raise ValueError("invalid analytic exact mask")
+        for i, exact in enumerate(strict):
+            if exact:
+                mask[i] = 0
     for rect in strict_rectangles:
         x0, y0, x1, y1 = rect
         if not (0 <= x0 <= x1 <= w and 0 <= y0 <= y1 <= h):
@@ -89,9 +104,11 @@ def compare(reference, actual, *, mode="edges", strict_rectangles=()):
         if any(delta):
             changed += 1
             if not mask[i]:
-                raise ValueError(f"non-edge/exact discrepancy at {i%w},{i//w}")
+                raise ValueError(f"non-edge/exact discrepancy at {i%w},{i//w}: "
+                                 f"analytic={list(oracle[4*i:4*i+4])} actual={list(tested[4*i:4*i+4])}")
             if max(delta) > 64:
-                raise ValueError(f"edge channel difference >64 at {i%w},{i//w}")
+                raise ValueError(f"edge channel difference >64 at {i%w},{i//w}: "
+                                 f"analytic={list(oracle[4*i:4*i+4])} actual={list(tested[4*i:4*i+4])}")
         total += sum(delta)
         maximum = max(maximum, *delta)
     if total > w*h*3:
@@ -101,6 +118,74 @@ def compare(reference, actual, *, mode="edges", strict_rectangles=()):
             "mean_denominator": w*h*3}
 
 
+def coordinates_record(coordinates):
+    # Lexicographically sorted (x,y), encoded as ASCII x,y\\n, including empty.
+    encoded = "".join(f"{x},{y}\n" for x, y in sorted(coordinates)).encode("ascii")
+    return {"count": len(coordinates), "coordinates_sha256": hashlib.sha256(encoded).hexdigest()}
+
+
+def crosscheck(reference, poppler, *, partial, boundary_band, expected=None, validate=True):
+    w, h, analytic = page(reference)
+    pw, ph, oracle = page(poppler)
+    if (pw, ph) != (w, h) or len(partial) != w*h or len(boundary_band) != w*h:
+        raise ValueError("oracle/analytic dimensions mismatch")
+    analytic_mask, poppler_mask = edge_mask(analytic, w, h, partial), edge_mask(oracle, w, h)
+    analytic_dilation, poppler_dilation = dilate(analytic_mask, w, h), dilate(poppler_mask, w, h)
+    disagreements, clip_image, outside = [], [], []
+    failure = None
+    for i in range(w*h):
+        xy = (i % w, i // w)
+        if analytic_mask[i] and not poppler_dilation[i]:
+            failure = failure or (f"analytic edge outside Poppler dilation at {xy}: "
+                                  f"analytic={list(analytic[4*i:4*i+4])} Poppler={list(oracle[4*i:4*i+4])}")
+        if poppler_mask[i] and not analytic_dilation[i]:
+            failure = failure or (f"Poppler edge outside analytic dilation at {xy}: "
+                                  f"analytic={list(analytic[4*i:4*i+4])} Poppler={list(oracle[4*i:4*i+4])}")
+        if analytic[4*i:4*i+3] != oracle[4*i:4*i+3]:
+            if not (analytic_dilation[i] or poppler_dilation[i]):
+                failure = failure or (f"Poppler non-edge discrepancy at {xy}: "
+                                      f"analytic={list(analytic[4*i:4*i+4])} Poppler={list(oracle[4*i:4*i+4])}")
+                outside.append(xy)
+            else:
+                disagreements.append(xy)
+            if boundary_band[i]:
+                clip_image.append(xy)
+    # Clip/image cases have exact analytic semantics away from their own
+    # boundary band, even when a differing image sample creates an edge mask.
+    # Callers supply the independent strict mask for this second constraint.
+    record = {"disagreements": coordinates_record(disagreements),
+              "clip_image_disagreements": coordinates_record(clip_image),
+              "outside_band_disagreements": coordinates_record(outside),
+              "geometry_failure": failure}
+    if expected is not None and record != expected:
+        raise ValueError("pinned Poppler disagreement count/coordinates changed")
+    if validate and failure:
+        raise ValueError(failure)
+    return record
+
+
+def check_clip_image(reference, poppler, strict, band):
+    w, h, analytic = page(reference)
+    pw, ph, oracle = page(poppler)
+    if (pw, ph) != (w, h):
+        raise ValueError("oracle/analytic dimensions mismatch")
+    for i, exact in enumerate(strict):
+        if exact and not band[i] and analytic[4*i:4*i+3] != oracle[4*i:4*i+3]:
+            raise ValueError(f"Poppler clip/image discrepancy outside boundary band at {i%w},{i//w}: "
+                             f"analytic={list(analytic[4*i:4*i+4])} Poppler={list(oracle[4*i:4*i+4])}")
+
+
 def compare_files(reference, actual, row):
-    return compare(Path(reference).read_bytes(), Path(actual).read_bytes(),
-                   mode=row["comparison"], strict_rectangles=row.get("strict_rectangles", []))
+    from analytic import reference as authored_reference
+    analytic, partial, strict, band = authored_reference(row["id"])
+    poppler = Path(reference).read_bytes()
+    if hashlib.sha256(poppler).hexdigest() != row["bgra_sha256"]:
+        raise ValueError("SourceDrift: frozen Poppler pixels")
+    if hashlib.sha256(analytic).hexdigest() != row["analytic_sha256"]:
+        raise ValueError("SourceDrift: analytic reference")
+    check_clip_image(analytic, poppler, strict, band)
+    diagnostic = crosscheck(analytic, poppler, partial=partial, boundary_band=band,
+                            expected=row["poppler_crosscheck"])
+    result = compare(analytic, Path(actual).read_bytes(), mode=row["comparison"],
+                     partial=partial, strict=strict)
+    return result | {"poppler_crosscheck": diagnostic}

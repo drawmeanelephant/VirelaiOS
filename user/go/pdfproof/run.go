@@ -21,6 +21,25 @@ type receipt struct {
 	c pdf.Code
 }
 
+type maxima struct {
+	ns, work, reads, rewinds, expanded, vector uint64
+}
+
+func (m *maxima) observe(ns uint64, l *pdf.Ledger) {
+	m.ns, m.work = max(m.ns, ns), max(m.work, l.Used)
+	m.reads, m.rewinds = max(m.reads, l.ReadBytes), max(m.rewinds, l.Rewinds)
+	m.expanded, m.vector = max(m.expanded, l.Expanded), max(m.vector, l.VectorBudget.Used)
+}
+
+func progress(prefix string, ns uint64) {
+	var b [96]byte
+	r := receipt{b: b[:]}
+	r.text(prefix)
+	r.number(ns)
+	r.text("\n")
+	vi.Console(unsafe.String(&b[0], r.n))
+}
+
 func (r *receipt) text(s string) {
 	if r.c != pdf.OK {
 		return
@@ -173,10 +192,12 @@ func Run(render Renderer) pdf.Code {
 	s := NewSource("", stage)
 	// Warm GC is part of the runtime proof; it never removes charged backing.
 	runtime.GC()
+	var measurements [128]maxima
+	suiteStart := now()
 	for round := 0; round < rounds; round++ {
 		for i := 0; i < count; i++ {
 			row := rows[i]
-			var maxNs, maxWork, maxReads, maxRewinds, maxExpanded, maxVector uint64
+			measured := &measurements[i]
 			for repeat := 0; repeat < row.repeats; repeat++ {
 				l = pdf.Ledger{Max: pdf.MaxWork}
 				if code = s.SetPath(row.source); code != pdf.OK {
@@ -221,9 +242,7 @@ func Run(render Renderer) pdf.Code {
 						return code
 					}
 				}
-				maxNs, maxWork = max(maxNs, elapsed), max(maxWork, l.Used)
-				maxReads, maxRewinds = max(maxReads, l.ReadBytes), max(maxRewinds, l.Rewinds)
-				maxExpanded, maxVector = max(maxExpanded, l.Expanded), max(maxVector, l.VectorBudget.Used)
+				measured.observe(elapsed, &l)
 				if stats.ArenaBytes != pdf.ArenaBytes && row.expected == pdf.OK {
 					return pdf.MemoryLimit
 				}
@@ -235,24 +254,32 @@ func Run(render Renderer) pdf.Code {
 				out.text("\t")
 				out.number(uint64(row.repeats))
 				out.text("\t")
-				out.number(maxNs)
+				out.number(measured.ns)
 				out.text("\t")
-				out.number(maxWork)
+				out.number(measured.work)
 				out.text("\t")
-				out.number(maxReads)
+				out.number(measured.reads)
 				out.text("\t")
-				out.number(maxRewinds)
+				out.number(measured.rewinds)
 				out.text("\t")
-				out.number(maxExpanded)
+				out.number(measured.expanded)
 				out.text("\t")
-				out.number(maxVector)
+				out.number(measured.vector)
 				out.text("\t2304\t1\t0\t0\n")
 			}
 		}
 		runtime.GC()
 		if rounds == 100 && round == 0 {
-			vi.Console("pdf-proof: baseline\n")
+			progress("pdf-proof: baseline ns=", now()-suiteStart)
 			vi.Sleep(2)
+			vi.Console("pdf-proof: resumed\n")
+		}
+		if rounds == 100 && (round == 49 || round == 99) {
+			prefix := "pdf-proof: cycles=50 ns="
+			if round == 99 {
+				prefix = "pdf-proof: cycles=100 ns="
+			}
+			progress(prefix, now()-suiteStart)
 		}
 	}
 	if out.c != pdf.OK {

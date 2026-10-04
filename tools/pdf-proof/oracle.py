@@ -7,7 +7,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-from compare import ppm
+from analytic import reference
+from compare import check_clip_image, crosscheck, ppm
 from corpus import FIXTURES, ROOT, generate, sha
 
 PIN = "9a44364d0fa42a43c3efdb2cbab47d275973c4a5856c1109f6bf4513def6bb54"
@@ -106,7 +107,7 @@ def references(out, *, freeze=False):
         rows.append({"id": "capacity-"+name, "file": str(out/"sources/capacity"/(name+".pdf")),
                      "sha256": capacity["sha256"], "dimensions": dims, "box": box,
                      "page": 1, "background": "ffffffff", "comparison": "exact"})
-    products = []
+    products, failures = [], []
     env = {k: v for k, v in os.environ.items() if k not in ("DYLD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES", "DYLD_FALLBACK_LIBRARY_PATH")}
     for row in rows:
         src = Path(row["file"]) if row["id"] in maxima or row["id"].startswith("capacity-") else FIXTURES/row["file"]
@@ -123,13 +124,25 @@ def references(out, *, freeze=False):
         dest.with_suffix(".bgra").write_bytes(bgra)
         if list(__import__("struct").unpack_from("<II", bgra, 4)) != row["dimensions"]:
             raise ValueError("oracle dimension mismatch")
+        analytic, partial, strict, band = reference(row["id"])
+        dest.with_suffix(".analytic.bgra").write_bytes(analytic)
+        diagnostic = crosscheck(analytic, bgra, partial=partial, boundary_band=band, validate=False)
+        try:
+            check_clip_image(analytic, bgra, strict, band)
+        except ValueError as exc:
+            diagnostic["geometry_failure"] = diagnostic["geometry_failure"] or str(exc)
+        if diagnostic["geometry_failure"]:
+            failures.append(row["id"]+": "+diagnostic["geometry_failure"])
         products.append({k: row[k] for k in ("id", "sha256", "page", "box", "dimensions", "background", "comparison")}
-                        | {"ppm_sha256": sha(pp), "bgra_sha256": sha(bgra), "invocation": flags})
-    actual = {"version": 1, "corpus": "M89-PDF1", "provenance": prov, "references": products}
+                        | {"ppm_sha256": sha(pp), "bgra_sha256": sha(bgra), "invocation": flags,
+                           "analytic_sha256": sha(analytic), "poppler_crosscheck": diagnostic})
+    actual = {"version": 2, "corpus": "M89-PDF1", "provenance": prov, "references": products}
     if freeze:
         MANIFEST.write_text(json.dumps(actual, indent=2)+"\n")
     elif actual != json.loads(MANIFEST.read_text()):
         raise ValueError("BLOCKED: reference drift")
+    if failures:
+        raise ValueError("OracleGeometryMismatch (references retained, not acceptance): "+"; ".join(failures))
     return actual
 
 

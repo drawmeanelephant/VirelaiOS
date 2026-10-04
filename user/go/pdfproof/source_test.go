@@ -284,6 +284,18 @@ func saveHostPage(t *testing.T, name string, p pdf.Page) {
 	}
 }
 
+func TestMaximaRetainEarlierCycles(t *testing.T) {
+	var m maxima
+	l := ledger()
+	l.Used, l.ReadBytes, l.Rewinds, l.Expanded, l.VectorBudget.Used = 9, 8, 7, 6, 5
+	m.observe(10, &l)
+	l.Used, l.ReadBytes, l.Rewinds, l.Expanded, l.VectorBudget.Used = 1, 1, 1, 1, 1
+	m.observe(1, &l)
+	if m != (maxima{10, 9, 8, 7, 6, 5}) {
+		t.Fatal("earlier cycle maxima lost", m)
+	}
+}
+
 func TestNegativeCorpusAndRecovery(t *testing.T) {
 	b, err := os.ReadFile("../../../tests/fixtures/pdf/acceptance/manifest.json")
 	if err != nil {

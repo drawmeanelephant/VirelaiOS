@@ -3,6 +3,7 @@ import hashlib
 import json
 import sys
 import zlib
+from functools import lru_cache
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -55,13 +56,16 @@ def simple(content=b"", *, page=b"", resources=b"", box=b"0 0 48 48", streams=No
     return document(objs, trailer=trailer, version=version, comment=comment)
 
 
-def text(content, *, glyph=None, font_extra=b"", glyph_extra=b""):
+def text(content, *, glyph=None, font_extra=b"", glyph_extra=b"", streams=None):
     glyph = glyph or b"1 0 0 0 1 1 d1 0 0 m 1 0 l .5 1 l h f"
+    font_id = 4 + (len(streams) if streams is not None else 1)
     font = (b"<< /Type /Font /Subtype /Type3 /FontBBox [0 0 1 1] /FontMatrix [1 0 0 1 0 0] "
-            b"/CharProcs << /A 6 0 R /Space 7 0 R >> /Encoding << /Type /Encoding "
+            + f"/CharProcs << /A {font_id+1} 0 R /Space {font_id+2} 0 R >> ".encode()
+            + b"/Encoding << /Type /Encoding "
             b"/Differences [32 /Space 65 /A] >> /FirstChar 32 /LastChar 65 /Widths ["
             + b"1 " * 34 + b"] /Resources << >> /Name /Authored " + font_extra + b" >>")
-    return simple(content, resources=b"/Resources << /Font << /F1 5 0 R >> >>",
+    return simple(content, streams=streams,
+                  resources=f"/Resources << /Font << /F1 {font_id} 0 R >> >>".encode(),
                   extras=[font, stream(glyph + glyph_extra), stream(b"1 0 0 0 0 0 d1")])
 
 
@@ -77,32 +81,119 @@ def image(content, data, *, keys=b"", rgb=False, compressed=False, width=2, heig
                   extras=[stream(data, ikeys)], box=box)
 
 
-def anchors():
+IDENTITY = [1, 0, 0, 1, 0, 0]
+BLACK, WHITE = [0, 0, 0], [255, 255, 255]
+RED, GREEN, BLUE = [255, 0, 0], [0, 255, 0], [0, 0, 255]
+
+
+def rect(x, y, w, h):
+    return [("M", x, y), ("L", x+w, y), ("L", x+w, y+h),
+            ("L", x, y+h), ("Z",)]
+
+
+def fill(path, color=BLACK, *, ctm=IDENTITY, rule="nonzero"):
+    return {"kind": "fill", "path": path, "ctm": ctm, "color": color, "rule": rule}
+
+
+def type3(actions, *, size=6, spacing=0, word_spacing=0, scale=100,
+          leading=0, rise=0, color=BLACK, outline=None):
+    # Authored font metrics and both matrices, not parsed from the tested PDF.
+    return {"kind": "text", "ctm": IDENTITY, "color": color,
+            "font": {"matrix": IDENTITY, "bbox": [0, 0, 1, 1],
+                     "glyphs": {"A": {"advance": 1, "d1": [1, 0, 0, 0, 1, 1],
+                                     "path": outline or [("M", 0, 0), ("L", 1, 0),
+                                                        ("L", .5, 1), ("Z",)]},
+                                " ": {"advance": 1, "d1": [1, 0, 0, 0, 0, 0], "path": []}}},
+            "state": {"size": size, "spacing": spacing, "word_spacing": word_spacing,
+                      "scale": scale, "leading": leading, "rise": rise,
+                      "text_matrix": IDENTITY, "line_matrix": IDENTITY},
+            "actions": actions}
+
+
+def placed_image(samples, ctm, *, width=2, height=2, channels=1):
+    return {"kind": "image", "ctm": ctm, "width": width, "height": height,
+            "channels": channels, "samples": list(samples)}
+
+
+@lru_cache(maxsize=1)
+def anchor_recipes():
+    # Each byte recipe has a separate, explicit analytic geometry declaration.
+    # The analytic consumer reads these declarations, never PDF/engine output.
     p = {
-        "empty": simple(),
-        "gray-rect": simple(b"0 g 3 3 12 12 re f .5 g 18 3 12 12 re F 1 g 3 3 3 3 re f"),
-        "rgb-order": simple(b"1 0 0 rg 3 3 30 30 re f 0 1 0 rg 12 12 30 30 re f 0 0 1 rg 21 3 12 30 re f"),
-        "open-lines": simple(b"3 3 m 30 3 l 15 30 l f 33 3 m 42 3 l 42 30 l 33 30 l h F 0 0 m 48 48 l n"),
-        "cubic": simple(b"3 3 m 3 36 36 36 36 3 c h f 3 42 m 12 48 21 42 v 30 36 39 42 y h f"),
-        "nonzero": simple(b"3 3 42 42 re 12 12 m 12 36 l 36 36 l 36 12 l h f"),
-        "evenodd": simple(b"3 3 30 30 re 15 15 30 30 re f*"),
-        "affine": simple(b"q 1 .25 .125 1 6 6 cm 0 0 18 18 re f Q q -1 0 0 1 45 3 cm 0 0 9 9 re f Q q 0 0 0 1 0 0 cm 3 3 9 9 re f Q"),
-        "save-restore": text(b"0 0 1 rg q 1 0 0 rg 3 3 12 12 re f Q 21 3 12 12 re f 3 Tc q 9 Tc Q BT /F1 6 Tf 1 0 0 1 3 30 Tm (AA) Tj ET"),
-        "rect-clip": simple(b"q 1 0 0 rg 0 0 24 48 re W f 0 0 1 rg 0 0 48 48 re f 0 0 12 48 re W* n 0 1 0 rg 0 0 48 48 re f Q"),
-        "split-streams": simple(streams=[stream(b"1 0 0 r"), stream(b"g 3 3 24 24 re q 0 "), stream(b"1 0 rg Q f")]),
-        "flate-content": simple(streams=[
+        "empty": (simple(), []),
+        "gray-rect": (simple(b"0 g 3 3 12 12 re f .5 g 18 3 12 12 re F 1 g 3 3 3 3 re f"),
+                      [fill(rect(3, 3, 12, 12)), fill(rect(18, 3, 12, 12), [128]*3),
+                       fill(rect(3, 3, 3, 3), WHITE)]),
+        "rgb-order": (simple(b"1 0 0 rg 3 3 30 30 re f 0 1 0 rg 12 12 30 30 re f 0 0 1 rg 21 3 12 30 re f"),
+                      [fill(rect(3, 3, 30, 30), RED), fill(rect(12, 12, 30, 30), GREEN),
+                       fill(rect(21, 3, 12, 30), BLUE)]),
+        "open-lines": (simple(b"3 3 m 30 3 l 15 30 l f 33 3 m 42 3 l 42 30 l 33 30 l h F 0 0 m 48 48 l n"),
+                       [fill([("M", 3, 3), ("L", 30, 3), ("L", 15, 30)]),
+                        fill(rect(33, 3, 9, 27))]),
+        "cubic": (simple(b"3 3 m 3 36 36 36 36 3 c h f 3 42 m 12 48 21 42 v 30 36 39 42 y h f"),
+                  [fill([("M", 3, 3), ("C", 3, 36, 36, 36, 36, 3), ("Z",)]),
+                   fill([("M", 3, 42), ("C", 3, 42, 12, 48, 21, 42),
+                         ("C", 30, 36, 39, 42, 39, 42), ("Z",)])]),
+        "nonzero": (simple(b"3 3 42 42 re 12 12 m 12 36 l 36 36 l 36 12 l h f"),
+                    [fill(rect(3, 3, 42, 42)+[("M", 12, 12), ("L", 12, 36),
+                                             ("L", 36, 36), ("L", 36, 12), ("Z",)])]),
+        "evenodd": (simple(b"3 3 30 30 re 15 15 30 30 re f*"),
+                    [fill(rect(3, 3, 30, 30)+rect(15, 15, 30, 30), rule="evenodd")]),
+        "affine": (simple(b"q 1 .25 .125 1 6 6 cm 0 0 18 18 re f Q q -1 0 0 1 45 3 cm 0 0 9 9 re f Q q 0 0 0 1 0 0 cm 3 3 9 9 re f Q"),
+                   [fill(rect(0, 0, 18, 18), ctm=[1, .25, .125, 1, 6, 6]),
+                    fill(rect(0, 0, 9, 9), ctm=[-1, 0, 0, 1, 45, 3]),
+                    fill(rect(3, 3, 9, 9), ctm=[0, 0, 0, 1, 0, 0])]),
+        "save-restore": (text(b"0 0 1 rg q 1 0 0 rg 3 3 12 12 re f Q 21 3 12 12 re f 3 Tc q 9 Tc Q BT /F1 6 Tf 1 0 0 1 3 30 Tm (AA) Tj ET"),
+                         [fill(rect(3, 3, 12, 12), RED), fill(rect(21, 3, 12, 12), BLUE),
+                          type3([("Tm", 1, 0, 0, 1, 3, 30), ("show", "AA")],
+                                spacing=3, color=BLUE)]),
+        "rect-clip": (simple(b"q 1 0 0 rg 0 0 24 48 re W f 0 0 1 rg 0 0 48 48 re f 0 0 12 48 re W* n 0 1 0 rg 0 0 48 48 re f Q"),
+                      [fill(rect(0, 0, 24, 48), RED),
+                       {"kind": "clip", "path": rect(0, 0, 24, 48), "ctm": IDENTITY},
+                       fill(rect(0, 0, 48, 48), BLUE),
+                       {"kind": "clip", "path": rect(0, 0, 12, 48), "ctm": IDENTITY},
+                       fill(rect(0, 0, 48, 48), GREEN)]),
+        "split-streams": (text(b"", streams=[
+            stream(b"1 0 "), stream(b"0 rg 3 3 m 27 3 l q 0 1 0 rg "),
+            stream(b"27 27 l 3 27 l h Q f BT /F1 6 Tf 1 0 0 1 30 30 Tm (A) "),
+            stream(b"Tj 0 -9 Td (A) Tj ET")]),
+            [fill(rect(3, 3, 24, 24), RED),
+             type3([("Tm", 1, 0, 0, 1, 30, 30), ("show", "A"),
+                    ("Td", 0, -9), ("show", "A")], color=RED)]),
+        "flate-content": (simple(streams=[
             stream(flate(b"0 g 3 3 9 9 re f ", "stored"), b"/Filter /FlateDecode"),
             stream(flate(b".5 g 15 3 9 9 re f ", "fixed"), b"/Filter [/FlateDecode] /DecodeParms [null]"),
             stream(flate(b"% authored dynamic coding\n" + b"% alpha alpha beta gamma delta " * 50 + b"\n1 0 0 rg 27 3 9 9 re f"),
                    b"/Filter /FlateDecode /DecodeParms << /Predictor 1 >>")]),
-        "type3-position": text(b"BT /F1 6 Tf 1 0 0 1 3 36 Tm (A) Tj 9 -9 Td (A) Tj 0 -9 TD (A) Tj T* (A) Tj ET"),
-        "type3-spacing": text(b"BT /F1 4.5 Tf 1 Tc 2 Tw 100 Tz 6 TL 1.5 Ts 0 Tr 1 0 0 1 3 36 Tm (A A) Tj [(A) -250 <41>] TJ (A) ' 1 1 (AA) \" ET"),
-        "gray-image": image(b"q 24 0 0 24 3 3 cm /I1 Do Q q -12 0 0 12 45 3 cm /I1 Do Q", bytes([0, 85, 170, 255]), keys=b"/Decode [0 1] /Interpolate false /ImageMask false"),
-        "rgb-image": image(b"1 0 1 rg 0 0 48 48 re f q 3 3 36 36 re W n 24 0 0 -24 3 39 cm /I1 Do Q 0 0 0 rg 30 30 6 6 re f",
+            [fill(rect(3, 3, 9, 9)), fill(rect(15, 3, 9, 9), [128]*3),
+             fill(rect(27, 3, 9, 9), RED)]),
+        "type3-position": (text(b"BT /F1 6 Tf 1 0 0 1 3 36 Tm (A) Tj 9 -9 Td (A) Tj 0 -9 TD (A) Tj T* (A) Tj ET"),
+                           [type3([("Tm", 1, 0, 0, 1, 3, 36), ("show", "A"),
+                                   ("Td", 9, -9), ("show", "A"), ("TD", 0, -9),
+                                   ("show", "A"), ("next",), ("show", "A")])]),
+        "type3-spacing": (text(b"BT /F1 4.5 Tf 1 Tc 2 Tw 100 Tz 6 TL 1.5 Ts 0 Tr 1 0 0 1 3 36 Tm (A A) Tj [(A) -250 <41>] TJ (A) ' 1 1 (AA) \" ET"),
+                          [type3([("Tm", 1, 0, 0, 1, 3, 36), ("show", "A A"),
+                                  ("show", "A"), ("adjust", -250), ("show", "A"),
+                                  ("next",), ("show", "A"), ("spacing", 1, 1),
+                                  ("next",), ("show", "AA")],
+                                 size=4.5, spacing=1, word_spacing=2, leading=6, rise=1.5)]),
+        "gray-image": (image(b"q 24 0 0 24 3 3 cm /I1 Do Q q -12 0 0 12 45 3 cm /I1 Do Q", bytes([0, 85, 170, 255]), keys=b"/Decode [0 1] /Interpolate false /ImageMask false"),
+                       [placed_image([0, 85, 170, 255], [24, 0, 0, 24, 3, 3]),
+                        placed_image([0, 85, 170, 255], [-12, 0, 0, 12, 45, 3])]),
+        "rgb-image": (image(b"1 0 1 rg 0 0 48 48 re f q 3 3 36 36 re W n 24 0 0 -24 3 39 cm /I1 Do Q 0 0 0 rg 30 30 6 6 re f",
                            bytes([255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 0]), rgb=True, compressed=True,
                            keys=b"/Decode [0 1 0 1 0 1]"),
+                      [fill(rect(0, 0, 48, 48), [255, 0, 255]),
+                       {"kind": "clip", "path": rect(3, 3, 36, 36), "ctm": IDENTITY},
+                       placed_image([255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 0],
+                                    [24, 0, 0, -24, 3, 39], channels=3),
+                       {"kind": "reset_clip"}, fill(rect(30, 30, 6, 6))]),
     }
     return p
+
+
+def anchors():
+    return {name: data for name, (data, _) in anchor_recipes().items()}
 
 
 def negatives():
@@ -128,12 +219,15 @@ def negatives():
         "unknown": (simple(page=b"/Unlisted null"), "UnsupportedFeature"),
         "metadata-invalid": (simple(extras=[b"<< /Title 42 >>"], trailer=b"/Info 5 0 R "), "Malformed"),
         "malformed": (simple(page=b"/Rotate 0 /Rotate 0"), "Malformed"),
+        "split-token": (simple(streams=[stream(b"1 0 0 r"), stream(b"g 3 3 24 24 re q 0 "),
+                                       stream(b"1 0 rg Q f")]), "MalformedContent"),
         "malformed-stream": (simple(streams=[stream(b"x\x9c\x00", b"/Filter /FlateDecode")]), "MalformedStream"),
         "limit": (simple(b"q " * 17 + b"Q " * 17), "GraphicsDepthLimit"),
     }
 
 
-def maxima():
+@lru_cache(maxsize=1)
+def maximum_recipes():
     # Large products live only under ignored artifacts.
     rgb = bytes([31, 95, 159]) * (1024 * 1536)
     base = document([b"<< /Type /Catalog /Pages 2 0 R >>",
@@ -156,13 +250,43 @@ def maxima():
         stream(flate(bytes([17, 34, 51]) * 4), b"/Type /XObject /Subtype /Image /Width 2 /Height 2 /BitsPerComponent 8 /ColorSpace /DeviceRGB /Filter /FlateDecode"),
     ]
     return {
-        "time-1024x1448": (document(objects), (1024, 1448), "edges"),
-        "bottom-1024x1536": (simple(b"0 0 1 rg 0 0 768 .75 re f", box=b"0 0 768 1152"), (1024, 1536), "exact"),
+        "time-1024x1448": (document(objects), (1024, 1448), "edges",
+                          [fill(rect(0, 0, 768, 1086), [128]*3),
+                           type3([("Tm", 1, 0, 0, 1, 96, 96), ("show", "A")],
+                                 size=24, color=[128]*3, outline=rect(0, 0, 1, 1)),
+                           placed_image([17, 34, 51]*4, [96, 0, 0, 96, 0, 0], channels=3)]),
+        "bottom-1024x1536": (simple(b"0 0 1 rg 0 0 768 .75 re f", box=b"0 0 768 1152"), (1024, 1536), "exact",
+                            [fill(rect(0, 0, 768, .75), BLUE)]),
         "full-rgb": (image(b"768 0 0 1152 0 0 cm /I1 Do", rgb, rgb=True, compressed=True,
-                           width=1024, height=1536, box=b"0 0 768 1152"), (1024, 1536), "exact"),
-        "source-4mib": (padded, (64, 64), "exact"),
+                           width=1024, height=1536, box=b"0 0 768 1152"), (1024, 1536), "exact",
+                     [{"kind": "image", "ctm": [768, 0, 0, 1152, 0, 0], "width": 1024,
+                       "height": 1536, "channels": 3, "solid": [31, 95, 159]}]),
+        "source-4mib": (padded, (64, 64), "exact", []),
     }
 
+
+def maxima():
+    return {name: recipe[:3] for name, recipe in maximum_recipes().items()}
+
+
+def geometry(name):
+    if name in anchor_recipes():
+        return {"box": [0, 0, 48, 48], "operations": anchor_recipes()[name][1]}
+    if name in maximum_recipes():
+        _, (w, h), _, operations = maximum_recipes()[name]
+        return {"box": [0, 0, w*3/4, h*3/4], "operations": operations}
+    if name.startswith("capacity-"):
+        capacity = name[len("capacity-"):]
+        if capacity not in capacities() or capacities()[capacity][1] != "OK":
+            raise ValueError("no analytic reference for a negative")
+        w, h = (1024, 64) if capacity == "canvas-width-limit" else (
+            (64, 1536) if capacity == "canvas-height-limit" else (64, 64))
+        # These capacities intentionally have no visible paints/glyphs/images.
+        return {"box": [0, 0, w*3/4, h*3/4], "operations": []}
+    raise ValueError("missing analytic recipe: "+name)
+
+
+@lru_cache(maxsize=1)
 def capacities():
     products = {}
     def pair(name, low, high, code):
@@ -253,15 +377,18 @@ def write_authored():
         accepted.append({"id": name, "file": name + ".pdf", "sha256": sha(data),
                          "bytes": len(data), "page": 1, "box": [0, 0, 48, 48],
                          "dimensions": [64, 64], "background": "ffffffff",
-                         "comparison": "exact" if name in {"empty", "gray-rect", "rgb-order", "rect-clip", "split-streams", "flate-content", "gray-image", "rgb-image"} else "edges"})
+                         "analytic": geometry(name),
+                         "comparison": "exact" if name in {"empty", "gray-rect", "rgb-order", "rect-clip", "flate-content", "gray-image", "rgb-image"} else "edges"})
     negative = []
     for name, (data, code) in negatives().items():
         (FIXTURES / ("negative-" + name + ".pdf")).write_bytes(data)
         negative.append({"id": name, "file": "negative-" + name + ".pdf",
                          "sha256": sha(data), "expected": code})
-    recipes = [{"id": name, "sha256": sha(data), "bytes": len(data), "dimensions": list(dims), "comparison": comparison}
+    recipes = [{"id": name, "sha256": sha(data), "bytes": len(data), "dimensions": list(dims),
+                "comparison": comparison, "analytic": geometry(name)}
                for name, (data, dims, comparison) in maxima().items()]
-    boundaries = [{"id": name, "sha256": sha(data), "bytes": len(data), "expected": code}
+    boundaries = [{"id": name, "sha256": sha(data), "bytes": len(data), "expected": code,
+                   **({"analytic": geometry("capacity-"+name)} if code == "OK" else {})}
                   for name, (data, code) in capacities().items()]
     (FIXTURES / "recipes.json").write_text(json.dumps({"version": 1, "generator_sha256": sha(Path(__file__).read_bytes()),
                                                      "zlib": zlib.ZLIB_VERSION, "maxima": recipes,

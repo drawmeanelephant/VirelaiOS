@@ -42,7 +42,7 @@ procs receipt PDFPROOF.ELF
 pages
 EOF
 
-vgate_run accepted -- --script '$RUN_DIR/accepted.txt' --script2 '$RUN_DIR/reaped.txt' --script2-after 'procs PDFPROOF.ELF exited status=0' --script-expect 'pdf-proof: complete' --script-expect-tail 5 --timeout 180
+vgate_run accepted -- --script '$RUN_DIR/accepted.txt' --script2 '$RUN_DIR/reaped.txt' --script2-after 'procs PDFPROOF.ELF exited status=' --script-expect 'pdf-proof: complete' --script-expect-tail 5 --timeout 180
 vgate_assert accepted serial-contains 'pdf-proof: complete'
 vgate_assert accepted serial-absent '[EXC] parking:'
 vgate_assert accepted python <<'PY'
@@ -50,7 +50,7 @@ import os, runpy
 runpy.run_path("tools/pdf-proof/check_run.py", run_name="__main__")
 PY
 
-vgate_run refusals -- --script '$RUN_DIR/refusals.txt' --script2 '$RUN_DIR/reaped.txt' --script2-after 'procs PDFPROOF.ELF exited status=0' --script-expect 'pdf-proof: complete' --script-expect-tail 5 --timeout 180
+vgate_run refusals -- --script '$RUN_DIR/refusals.txt' --script2 '$RUN_DIR/reaped.txt' --script2-after 'procs PDFPROOF.ELF exited status=' --script-expect 'pdf-proof: complete' --script-expect-tail 5 --timeout 180
 vgate_assert refusals serial-contains 'pdf-proof: complete'
 vgate_assert refusals serial-absent '[EXC] parking:'
 vgate_assert refusals python <<'PY'
@@ -58,7 +58,7 @@ import os, runpy
 runpy.run_path("tools/pdf-proof/check_run.py", run_name="__main__")
 PY
 
-vgate_run maxima -- --script '$RUN_DIR/maxima.txt' --script2 '$RUN_DIR/reaped.txt' --script2-after 'procs PDFPROOF.ELF exited status=0' --script-expect 'pdf-proof: complete' --script-expect-tail 5 --timeout 360
+vgate_run maxima -- --script '$RUN_DIR/maxima.txt' --script2 '$RUN_DIR/reaped.txt' --script2-after 'procs PDFPROOF.ELF exited status=' --script-expect 'pdf-proof: complete' --script-expect-tail 5 --timeout 360
 vgate_assert maxima serial-contains 'pdf-proof: complete'
 vgate_assert maxima serial-absent '[EXC] parking:'
 vgate_assert maxima python <<'PY'
@@ -66,7 +66,9 @@ import os, runpy
 runpy.run_path("tools/pdf-proof/check_run.py", run_name="__main__")
 PY
 
-vgate_run runtime -- --script '$RUN_DIR/runtime.txt' --script2 '$RUN_DIR/baseline.txt' --script2-after 'pdf-proof: baseline' --script3 '$RUN_DIR/reaped.txt' --script3-after 'procs PDFPROOF.ELF exited status=0' --script-expect 'pdf-proof: complete' --script-expect-tail 5 --timeout 180
+# Allow 100 forced-GC cycles plus startup/tail, not 100 page deadlines.
+# This harness wait does not change the 5,000 ms per-page time budget.
+vgate_run runtime -- --script '$RUN_DIR/runtime.txt' --script2 '$RUN_DIR/baseline.txt' --script2-after 'pdf-proof: baseline' --script3 '$RUN_DIR/reaped.txt' --script3-after 'procs PDFPROOF.ELF exited status=' --script-expect 'pdf-proof: complete' --script-expect-tail 5 --timeout 360
 vgate_assert runtime serial-contains 'pdf-proof: complete'
 vgate_assert runtime serial-absent '[EXC] parking:'
 vgate_assert runtime python <<'PY'

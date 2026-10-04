@@ -19,9 +19,30 @@ just gate live-pdf-raster
 colour library closure and system build. `generate` verifies frozen reference
 hashes. Only an intentional provenance review uses `freeze`; another Poppler
 build is never a fallback. Negatives and limit+1 sources never enter the oracle.
+Under ADR 0040 A1, `corpus.py` declares independent geometry beside the byte
+recipes. `analytic.py` maps CTM/font/text/line matrices, expands Type 3 outlines,
+flattens cubic curves to 1/64 pixel, and uses four subrows with horizontal span
+overlap, winding/parity and 8-bit rounding. It never parses PDF or reads Go or
+tested output. Half-open clip/image extents and nearest-neighbor center samples
+(ties to the higher source index, including reflection) remain exact.
+
+Engine edge tolerances apply only to the analytic reference: 64/255 maximum,
+1/255 whole-image mean and one-pixel analytic edge dilation. Poppler independently
+cross-checks geometry with mutual edge-mask dilation and exact pixels outside
+the union dilation. Clip/image pixels more than one pixel from an extent or
+source-cell boundary must match Poppler too. `oracle.json` pins disagreement
+counts and SHA-256 of lexicographically sorted `(x,y)` coordinates, encoded as
+ASCII `x,y\n`. Frozen PPM/BGRA hashes still pin the actual edge values.
+Reference preparation retains every product and records a `geometry_failure`
+when a cross-check fails, then returns nonzero. Pinning that diagnostic never
+makes it acceptance: `generate`, host comparisons and VZ assertions still fail.
+
 `corpus.py generate OUTPUT` checks small pinned recipes and writes large
 sources only to the requested ignored artifact directory. `author` is the
 explicit fixture/recipe update operation, not a build step.
+`split-streams` carries operands, a path/q frame and open BT across token-safe
+boundaries. `negative-split-token` retains the original PDF bytes and expects
+`MalformedContent`; it never enters Poppler.
 
 The proof ELF takes a bounded TSV plan, a fresh receipt path and a cycle count
 (1 or 100). Plan fields are ID, native source path, fresh output path (or `-`),
@@ -45,6 +66,14 @@ free-page pool, never HeapAlloc or ELF memsz as dynamic-memory proof. Kernel
 peaks conservatively bound every page in the boot. First-cycle and final peaks
 must agree across 100 success/refusal/recovery cycles. Completion is printed
 after writes/sync/close; a bounded runner tail captures the reap diagnostics.
+The monitor currently exposes only final exit receipts, so its live baseline
+request cannot establish the required no-growth bracket. Missing baseline
+counters fail rather than substituting a final peak or HeapAlloc estimate.
+Runtime progress prints first-cycle and 50/100-cycle elapsed nanoseconds and
+whether the baseline pause returned. Receipts retain maxima across all cycles,
+not only the last cycle. The 360-second runtime harness wait covers the full
+100-cycle/forced-GC suite, not a single page. The 5,000 ms page deadline and
+every work/memory limit remain unchanged.
 
 All large sources, reference PPM/BGRA, host products and detailed checks stay
 under ignored `artifacts/m89-acceptance/`. Standard gate evidence uses ignored
