@@ -40,10 +40,12 @@ vgate_share seed
 vgate_runner_flags -Xswiftc -DSPIKE
 
 vgate_file script.txt <<'EOF'
+pages
 exec GOSTRESS.ELF
 EOF
 
 vgate_file script-seed.txt <<'EOF'
+pages
 exec GOSTRESS.ELF 0x9e3779b97f4a7c15
 EOF
 
@@ -52,6 +54,7 @@ exec GOSTRESS.ELF bogus
 EOF
 
 vgate_file script2.txt <<'EOF'
+pages
 procs receipt GOSTRESS.ELF
 syscalls
 echo gostress-held-window
@@ -157,7 +160,9 @@ print("staged GOSTRESS.ELF into share (%d bytes)" %
       os.path.getsize(os.path.join(share, "GOSTRESS.ELF")))
 PY
 
-vgate_run 01 -- --script '$RUN_DIR/script.txt' --script2 '$RUN_DIR/script2.txt' --script2-after 'procs GOSTRESS.ELF exited status=0' --script-expect 'gostress-held-window' --timeout 120
+# Process exit can precede the last task's reap. Give the idle reaper a turn,
+# then require reaped=1 AND exact restoration, never treating exit as reap.
+vgate_run 01 -- --script '$RUN_DIR/script.txt' --script2 '$RUN_DIR/script2.txt' --script2-after 'procs GOSTRESS.ELF exited status=0' --script2-delay 1 --script-expect 'gostress-held-window' --timeout 120
 
 vgate_assert 01 serial-contains 'exec: loaded GOSTRESS.ELF'
 vgate_assert 01 serial-contains 'go-stress procs=2'
@@ -211,13 +216,18 @@ print("go-stress python asserts OK: sys_thread=%d sys_futex=%d sys_mmap=%d"
       % (n_thread, n_futex, n_mmap))
 receipts = re.findall(
     r"runtime-receipt: pid=(\d+) name=GOSTRESS\.ELF peak_pages=(\d+) "
-    r"page_cap=(\d+) peak_regions=(\d+) region_cap=(\d+) static_pages=(\d+)",
+    r"page_cap=(\d+) peak_regions=(\d+) region_cap=(\d+) static_pages=(\d+) "
+    r"page_tracking=extensible page_saturated=(\d+) total_pages=(\d+) "
+    r"record_failures=(\d+) unrecorded_pages=(\d+) reaped=(\d+)",
     "\n".join(lines))
 if len(receipts) != 1:
     sys.exit("FAIL: expected one final GOSTRESS.ELF runtime receipt")
-pid, pages, page_cap, regions, region_cap, static_pages = map(int, receipts[0])
-if not (0 < pages <= 4096 and page_cap == 4096):
-    sys.exit("FAIL: peak demand pages %d / cap %d" % (pages, page_cap))
+pid, pages, page_cap, regions, region_cap, static_pages, saturated, total, failures, unrecorded, reaped = map(int, receipts[0])
+if not (0 < pages <= total and page_cap == 4096):
+    sys.exit("FAIL: peak demand pages %d / total %d / inline cap %d" % (pages, total, page_cap))
+if saturated != int(pages >= page_cap) or failures or unrecorded or reaped != 1:
+    sys.exit("FAIL: saturation=%d failures=%d unrecorded=%d reaped=%d"
+             % (saturated, failures, unrecorded, reaped))
 if not (0 < regions <= 16 and region_cap == 16 and regions <= n_mmap):
     sys.exit("FAIL: peak regions %d / cap %d inconsistent with sys_mmap=%d"
              % (regions, region_cap, n_mmap))
@@ -228,7 +238,16 @@ if static_pages != expected_static:
 serial = "\n".join(lines)
 if serial.index("procs GOSTRESS.ELF exited status=0") >= serial.index("runtime-receipt:"):
     sys.exit("FAIL: receipt did not follow the final process exit")
-print("go-stress runtime receipt OK: pid=%d peak_pages=%d/4096 "
+counts = [int(n, 16) for n in re.findall(
+    r"pages: armed=1 total=0x[0-9a-f]+ free=0x([0-9a-f]+)", serial)]
+if len(counts) != 2 or counts[0] != counts[1]:
+    sys.exit("FAIL: free pages before exec/after reap must match: %s" % counts)
+if serial.index("pages: armed=1") >= serial.index("exec: loaded GOSTRESS.ELF"):
+    sys.exit("FAIL: initial page sample did not precede exec")
+if serial.rindex("pages: armed=1") <= serial.index("procs GOSTRESS.ELF exited status=0"):
+    sys.exit("FAIL: final page sample did not follow final process exit")
+print("go-stress free pages restored: %d -> %d" % tuple(counts))
+print("go-stress runtime receipt OK: pid=%d peak_pages=%d (inline 4096) "
       "peak_regions=%d/16 static_pages=%d" % (pid, pages, regions, static_pages))
 PY
 
@@ -237,7 +256,7 @@ import os, runpy
 runpy.run_path(os.path.join(os.environ["RUN_DIR"], "check-receipt.py"))
 PY
 
-vgate_run 02 -- --script '$RUN_DIR/script-seed.txt' --script2 '$RUN_DIR/script2.txt' --script2-after 'procs GOSTRESS.ELF exited status=0' --script-expect 'gostress-held-window' --timeout 120
+vgate_run 02 -- --script '$RUN_DIR/script-seed.txt' --script2 '$RUN_DIR/script2.txt' --script2-after 'procs GOSTRESS.ELF exited status=0' --script2-delay 1 --script-expect 'gostress-held-window' --timeout 120
 
 vgate_assert 02 serial-contains 'exec: loaded GOSTRESS.ELF'
 vgate_assert 02 serial-contains 'go-stress procs=2'

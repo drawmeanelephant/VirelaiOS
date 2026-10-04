@@ -3,7 +3,7 @@
 //! The task pool (scheduler.zig) is the EXECUTOR: context, TTBR0 switch,
 //! quantum bookkeeping, zombie/reap. This module is the unit that owns the
 //! PROGRAM — the loaded image, the address space it runs in, its lifecycle
-//! state, and its exit status. A fixed BSS registry, no allocation:
+//! state, and its exit status. A fixed BSS registry:
 //! `max_processes` descriptors recycle like the pool slots do.
 //!
 //! What the process adds over the task:
@@ -27,7 +27,7 @@
 //! exit report); the shell idle loop drains the report via
 //! `take_exit_report`.
 //!
-//! No libc, no POSIX, no allocation, no scheduler import (the dependency
+//! No libc, no POSIX, no scheduler import (the dependency
 //! is one-way: scheduler -> process).
 
 const std = @import("std");
@@ -128,6 +128,20 @@ pub const Image = struct {
 /// of mallocinit.
 pub const max_mmap_regions: usize = 16;
 pub const max_dynamic_pages: usize = 4096;
+
+/// The inline record capacity is not a working-set limit. Overflow records
+/// use allocator pages, each holding 509 backing addresses, until physical
+/// memory runs out. Callers must unwind a false record result before mapping.
+const DynamicPageBlock = struct {
+    next: ?*DynamicPageBlock,
+    prev: ?*DynamicPageBlock,
+    count: usize,
+    pages: [509]u64,
+};
+
+comptime {
+    std.debug.assert(@sizeOf(DynamicPageBlock) == alloc.page_size);
+}
 /// Default anonymous-mmap bump pointer (issue #1163). Restored explicitly
 /// after an in-place BSS zero — `@memset` would leave this 0.
 pub const mmap_default_va: u64 = 0x0000_0000_1000_0000;
@@ -205,6 +219,8 @@ pub const AddrSpace = struct {
     mmap_next_va: u64 = mmap_default_va,
     dynamic_pages: [max_dynamic_pages]u64 = [_]u64{0} ** max_dynamic_pages,
     dynamic_page_count: usize = 0,
+    dynamic_head: ?*DynamicPageBlock = null,
+    dynamic_tail: ?*DynamicPageBlock = null,
 };
 
 /// Scalar snapshot of an address space at create time (issue #1333).
@@ -261,9 +277,15 @@ pub const KernelStack = struct {
 /// and library backing are excluded. Kept through task resource release,
 /// cleared only with the descriptor at reap/recycle. No syscall row changes.
 pub const RuntimeReceipt = struct {
+    /// High-water of live ownership records, including overflow storage.
     peak_pages: usize = 0,
     peak_regions: usize = 0,
     static_pages: u64 = 0,
+    /// Cumulative accepted backing allocations; unmap does not lower this.
+    total_pages: usize = 0,
+    /// Overflow storage exhaustion. Callers roll back, never keep an
+    /// unrecorded mapping. The printed page_cap is the INLINE capacity.
+    record_failures: usize = 0,
 };
 
 const Process = struct {
@@ -443,10 +465,20 @@ fn release_resources(p: *Process) void {
     if (p.kernel_stack.pages > 0) _ = alloc.free_pages(p.kernel_stack.phys, p.kernel_stack.pages);
     // M29 VM Depth: unref/free all dynamically faulted and mmap'd pages
     var i: usize = 0;
-    while (i < p.addr_space.dynamic_page_count) : (i += 1) {
+    while (i < @min(p.addr_space.dynamic_page_count, max_dynamic_pages)) : (i += 1) {
         const pa = p.addr_space.dynamic_pages[i];
         if (pa != 0) _ = alloc.unref_page(pa);
     }
+    var block = p.addr_space.dynamic_head;
+    while (block) |b| {
+        for (b.pages[0..b.count]) |pa| {
+            if (pa != 0) _ = alloc.unref_page(pa);
+        }
+        block = b.next;
+        _ = alloc.free_pages(@intFromPtr(b), 1);
+    }
+    p.addr_space.dynamic_head = null;
+    p.addr_space.dynamic_tail = null;
     p.addr_space.dynamic_page_count = 0;
     p.addr_space.mmap_region_count = 0;
     @memset(&p.addr_space.mmap_regions, MmapRegion{});
@@ -555,11 +587,91 @@ pub fn mmap_collides(pid: usize, va: u64, len: u64) bool {
 pub fn record_dynamic_page(pid: usize, pa: u64) bool {
     if (pid >= max_processes or processes[pid].state == .free) return false;
     var space = &processes[pid].addr_space;
-    if (space.dynamic_page_count >= max_dynamic_pages) return false;
-    space.dynamic_pages[space.dynamic_page_count] = pa;
+    if (space.dynamic_page_count < max_dynamic_pages) {
+        space.dynamic_pages[space.dynamic_page_count] = pa;
+    } else {
+        if (space.dynamic_tail == null or space.dynamic_tail.?.count == space.dynamic_tail.?.pages.len) {
+            const block_pa = alloc.alloc_pages(1) orelse {
+                processes[pid].runtime_usage.record_failures += 1;
+                return false;
+            };
+            const block: *DynamicPageBlock = @ptrFromInt(block_pa);
+            block.next = null;
+            block.prev = space.dynamic_tail;
+            block.count = 0;
+            if (space.dynamic_tail) |tail| tail.next = block else space.dynamic_head = block;
+            space.dynamic_tail = block;
+        }
+        const tail = space.dynamic_tail.?;
+        tail.pages[tail.count] = pa;
+        tail.count += 1;
+    }
     space.dynamic_page_count += 1;
+    processes[pid].runtime_usage.total_pages += 1;
     processes[pid].runtime_usage.peak_pages = @max(processes[pid].runtime_usage.peak_pages, space.dynamic_page_count);
     return true;
+}
+
+fn dynamic_page_entry(pid: usize, pa: u64) ?*u64 {
+    if (pid >= max_processes or processes[pid].state == .free) return null;
+    const space = &processes[pid].addr_space;
+    for (space.dynamic_pages[0..@min(space.dynamic_page_count, max_dynamic_pages)]) |*entry| {
+        if (entry.* == pa) return entry;
+    }
+    var block = space.dynamic_head;
+    while (block) |b| {
+        for (b.pages[0..b.count]) |*entry| {
+            if (entry.* == pa) return entry;
+        }
+        block = b.next;
+    }
+    return null;
+}
+
+/// Remove ownership BEFORE unref/reallocation. Compact with the last record,
+/// returning empty overflow blocks immediately; no stale address survives.
+pub fn forget_dynamic_page(pid: usize, pa: u64) bool {
+    const entry = dynamic_page_entry(pid, pa) orelse return false;
+    const space = &processes[pid].addr_space;
+    if (space.dynamic_tail) |tail| {
+        entry.* = tail.pages[tail.count - 1];
+        tail.count -= 1;
+        if (tail.count == 0) {
+            space.dynamic_tail = tail.prev;
+            if (tail.prev) |prev| prev.next = null else space.dynamic_head = null;
+            _ = alloc.free_pages(@intFromPtr(tail), 1);
+        }
+    } else {
+        entry.* = space.dynamic_pages[space.dynamic_page_count - 1];
+        space.dynamic_pages[space.dynamic_page_count - 1] = 0;
+    }
+    space.dynamic_page_count -= 1;
+    return true;
+}
+
+/// COW replaces an owned record in place, without requiring an extra slot.
+/// A borrowed peer page has no record: its new private copy needs one.
+pub fn replace_dynamic_page(pid: usize, old_pa: u64, new_pa: u64) bool {
+    if (dynamic_page_entry(pid, old_pa)) |entry| {
+        entry.* = new_pa;
+        processes[pid].runtime_usage.total_pages += 1;
+        return true;
+    }
+    return record_dynamic_page(pid, new_pa);
+}
+
+pub fn owns_dynamic_page(pid: usize, pa: u64) bool {
+    return dynamic_page_entry(pid, pa) != null;
+}
+
+/// Shared peer teardown is keyed by its root, not the currently running task.
+pub fn forget_dynamic_page_in_root(root: u64, pa: u64) void {
+    for (&processes, 0..) |*p, pid| {
+        if (p.state != .free and p.addr_space.root_phys == root) {
+            _ = forget_dynamic_page(pid, pa);
+            return;
+        }
+    }
 }
 
 pub fn next_mmap_va(pid: usize, len: u64) u64 {
@@ -1630,6 +1742,14 @@ test "process: three GOMAXPROCS=2 runtimes bind 4 tasks each (M65d, #1442)" {
 }
 
 test "process: runtime receipt records page high-water and preserves refusal" {
+    var backing: [4096]u8 align(4096) = undefined;
+    const descriptors = [_]memmap.MemoryDescriptor{
+        .{ .type = .conventional_memory, .physical_start = @intFromPtr(&backing), .virtual_start = 0, .number_of_pages = 1, .attribute = 0 },
+    };
+    const view = memmap.MapView.init(std.mem.asBytes(&descriptors), @sizeOf(memmap.MemoryDescriptor), descriptors.len);
+    try std.testing.expect(alloc.init(view, &.{}));
+    const metadata = alloc.alloc_pages(1).?; // no overflow storage available
+    defer _ = alloc.free_pages(metadata, 1);
     init();
     const id = create("PAGES.ELF", .{}, .{}, .{}).?;
     try std.testing.expect(bind(id, 2));
@@ -1641,6 +1761,7 @@ test "process: runtime receipt records page high-water and preserves refusal" {
         try std.testing.expectEqual(i + 1, processes[id].runtime_usage.peak_pages);
     }
     try std.testing.expect(!record_dynamic_page(id, 0));
+    try std.testing.expectEqual(@as(usize, 1), processes[id].runtime_usage.record_failures);
     try std.testing.expectEqual(max_dynamic_pages, processes[id].addr_space.dynamic_page_count);
     // A primary exit is not a final receipt while a sibling still runs.
     try std.testing.expect(on_task_exit(2, 0) == null);
@@ -1659,6 +1780,38 @@ test "process: runtime receipt records page high-water and preserves refusal" {
     try std.testing.expectEqualDeep(RuntimeReceipt{}, processes[fresh].runtime_usage);
     try std.testing.expect(runtime_receipt(max_processes) == null);
     try std.testing.expect(!record_dynamic_page(max_processes, 0));
+}
+
+test "process: overflow records compact and free metadata through repeated reap" {
+    var backing: [3 * 4096]u8 align(4096) = undefined;
+    const descriptors = [_]memmap.MemoryDescriptor{
+        .{ .type = .conventional_memory, .physical_start = @intFromPtr(&backing), .virtual_start = 0, .number_of_pages = 3, .attribute = 0 },
+    };
+    const view = memmap.MapView.init(std.mem.asBytes(&descriptors), @sizeOf(memmap.MemoryDescriptor), descriptors.len);
+    try std.testing.expect(alloc.init(view, &.{}));
+    init();
+    const id = create("OVERFLOW", .{}, .{}, .{}).?;
+    try std.testing.expect(bind(id, 2));
+    // Synthetic addresses exercise the record shape without a huge fixture.
+    for (0..max_dynamic_pages + 510) |i| try std.testing.expect(record_dynamic_page(id, 0x100000 + i * 4096));
+    try std.testing.expectEqual(@as(u64, 1), alloc.stats().free_pages);
+    try std.testing.expect(forget_dynamic_page(id, 0x100000)); // inline <- tail; last block freed
+    try std.testing.expectEqual(@as(u64, 2), alloc.stats().free_pages);
+    try std.testing.expect(!owns_dynamic_page(id, 0x100000));
+    try std.testing.expect(owns_dynamic_page(id, 0x100000 + (max_dynamic_pages + 509) * 4096));
+    try std.testing.expect(forget_dynamic_page(id, 0x100000 + max_dynamic_pages * 4096));
+    try std.testing.expect(replace_dynamic_page(id, 0x101000, 0x90000000));
+    try std.testing.expect(!owns_dynamic_page(id, 0x101000));
+    try std.testing.expect(owns_dynamic_page(id, 0x90000000));
+    _ = on_task_exit(2, 0);
+    try std.testing.expectEqual(max_dynamic_pages + 510, runtime_receipt(id).?.peak_pages);
+    try std.testing.expect(release_pages_on_reap(2));
+    try std.testing.expectEqual(@as(u64, 3), alloc.stats().free_pages);
+    const other = alloc.alloc_pages(3).?;
+    try std.testing.expect(!release_pages_on_reap(2));
+    try std.testing.expect(reap(id));
+    try std.testing.expectEqual(@as(u64, 0), alloc.stats().free_pages);
+    try std.testing.expect(alloc.free_pages(other, 3));
 }
 
 test "process: region high-water counts occupied slots across map unmap remap" {

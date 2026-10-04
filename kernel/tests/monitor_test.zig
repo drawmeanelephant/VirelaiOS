@@ -1461,7 +1461,7 @@ test "monitor: opt-in runtime receipts retain identity and caps after resource r
     try std.testing.expectEqualStrings("runtime-receipt: none\n", env.mock.contents());
     _ = process.on_task_exit(2, 0);
     try std.testing.expect(process.release_pages_on_reap(2));
-    const expected = "runtime-receipt: pid=0 name=GOSTRESS.ELF peak_pages=2 page_cap=4096 peak_regions=2 region_cap=16 static_pages=3\n";
+    const expected = "runtime-receipt: pid=0 name=GOSTRESS.ELF peak_pages=2 page_cap=4096 peak_regions=2 region_cap=16 static_pages=3 page_tracking=extensible page_saturated=0 total_pages=2 record_failures=0 unrecorded_pages=0 reaped=1\n";
     env.mock.reset();
     try std.testing.expectEqual(ExecError.none, exec(&mon, &.{ "procs", "receipt", "GOSTRESS.ELF" }));
     try std.testing.expectEqualStrings(expected, env.mock.contents());

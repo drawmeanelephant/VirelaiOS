@@ -71,6 +71,7 @@ pub fn unmap_peer_leaves(peer_root: u64, peer_va: u64, page_count: u32, pa_base:
     while (i < page_count) : (i += 1) {
         const va = peer_va + @as(u64, i) * 4096;
         if (mmu.unmap_user_page(peer_root, va)) |mapped_pa| {
+            process.forget_dynamic_page_in_root(peer_root, mapped_pa);
             _ = alloc.unref_page(mapped_pa);
         } else {
             // Leaf already gone (defensive): unref the ref we hold anyway so
