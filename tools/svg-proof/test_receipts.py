@@ -1,4 +1,5 @@
 import json
+import shlex
 import tempfile
 import unittest
 from pathlib import Path
@@ -109,6 +110,15 @@ class ReceiptTests(unittest.TestCase):
             del padding["fresh_padding_is_cleared"]
             with self.assertRaisesRegex(ValueError, "mapping/touch source audit"):
                 ledger.pair("icons", self.serial(), Path(tmp))
+
+    def test_each_boot_waits_for_reap_diagnostics(self):
+        spec = (artifacts.ROOT / "tools/gate/specs/live-svg-raster.spec").read_text()
+        runs = [shlex.split(line) for line in spec.splitlines() if line.startswith("vgate_run ")]
+        self.assertEqual([run[1] for run in runs], ["icons", "reuse", "maximum", "consumer"])
+        for run in runs:
+            with self.subTest(mode=run[1]):
+                self.assertEqual(run[run.index("--script2-after")+1], "tasks user-exec reaped")
+                self.assertEqual(run[run.index("--script2-delay")+1], "1")
 
     def test_exact_free_pool_restoration_after_reap(self):
         with tempfile.TemporaryDirectory() as tmp:

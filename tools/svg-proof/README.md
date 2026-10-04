@@ -41,7 +41,10 @@ fixtures in `negatives.json`, including malformed UTF-8; large numerical
 boundaries are generated from recipes and checked against `boundaries.json`.
 No large bitmap or source-cap fixture is committed.
 
-Each boot invokes one program and reads receipts only after final task reap.
+Each boot invokes one program and holds its diagnostics script until the
+primary-task reap line is observed. Process exit alone does not order the
+kernel's deferred reap diagnostics. The final receipt must still prove all
+tasks reaped, and the free-pool sample must follow those diagnostics.
 Arena admission first uses `vi.MmapAnon`. If its unhinted placement returns
 EINVAL, the adapter makes one bounded request through the existing
 `vi.MmapHint` SDK at `0x80000000`, with the same private anonymous/populated
