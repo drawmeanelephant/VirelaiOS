@@ -1,0 +1,12 @@
+{
+  "engine": "Node.js v26.10.0",
+  "host_context": "ADR 0039 refused globals explicitly absent",
+  "sha256": {
+    "file.js": "e35649cf3ffe5e03d03cef1049708285200b91ebd0f7408e315df10c6e5eae8c",
+    "file.stdout": "dd016828b30249cce3f75f7ae021444e4c049682702974447fa8d52799d9a9fd",
+    "refused.js": "4faa62211ce4c887c09403da92dcea58d23b371895565e475b12c2f471edba35",
+    "refused.stdout": "9c1c7ab9126ab8fe1e90c4591497d77f1c66f97bc62ed3e8a4e69fcee1e63090"
+  },
+  "v8": "14.6.202.34-node.35",
+  "wrapper": "const fs=require('fs'),vm=require('vm');let s={print:console.log,console};for(let n of ['Date','Atomics','SharedArrayBuffer','Worker','std','os','require','Promise','WeakRef','FinalizationRegistry','fs','read','write','fetch','WebSocket','setTimeout','performance','document','window'])s[n]=undefined;vm.runInNewContext(fs.readFileSync(process.argv[1],'utf8'),s)"
+}
