@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "compiler": "go version go1.27.1 darwin/arm64",
+  "fork_revision": "e89f659b4582c738ff096eb9c74937a1942abecd",
+  "compiler_sha256": "16ca97e8f7dbc8e3ae6053b53c3b506889efb7dd72b94bfcaf1b55a3980b786d",
+  "tool_sha256": {
+    "compile": "fd4d3b96609c38533c02874f9f5bb97b5715f2599ecb39c95575fdf1b28900f0",
+    "link": "baaa198fc973937d2fa990304e6e588723a3c028af2f885cf610ca0a0445adb4",
+    "asm": "38c0e9c8170ecf975441df911117c65caf773a64b40521e71610e04862fa9b9d"
+  },
+  "fork_source_sha256": "4083b2d77b68db9fd7f6b86e52c107efa74297611f68a5974a95e581d50a0809",
+  "overlay_sha256": "3b02fcda7c412d14e111e874930d23f9c34e28078ec04eb4b7a4487015e9d2de",
+  "guest_source_sha256": {
+    "user/go/pdf": "d0e9ec7aceb9813e12048b7a5c0d0560c947bbce90d03e6229db3fe86f618493",
+    "user/go/vector": "deac3edcb133999446289ff400c2d469aeab6d4f7c61a872b1ce159aec835f94",
+    "user/go/vi": "59aa50bb927887ad81adfeaf67f189dc832817e0e0bdeac7ab433421fedfeff9",
+    "user/go/vsys": "048353e7f3bb3a7ed5ce4204e7a89504090834e7e8f5d8d9a190b503e38ccddf"
+  },
+  "adapter_and_build_sha256": {
+    "adapter.go": "498163ee1e385a0b215df53048115b96b21f4b65456e5246ea384187534fc4d1",
+    "full.go": "7eef35a53044cf825b8aee975de0330e5107c74fdafac1e87b0e56eb2cb96cc4",
+    "empty.go": "07f25ebba9df53ec140db56ddf65d6d3915460e99b5127ecd6477c81708b7168",
+    "build.sh": "1e7e33d6662ec0a7c2ff4fd5a2adcb9b2698b870d5044d382494120af4c7b158",
+    "elf.py": "2f4034db262a48146bbdb64a9c47f4323a5bb05ee9b87e6c934c7eac740161ad",
+    "runtime_ledger.py": "b1b55ab3a7cba556bd4b7e5925115936dea81d289c7f1306caee4e347aa4a75b"
+  },
+  "flags": [
+    "GOOS=virelai",
+    "GOARCH=arm64",
+    "CGO_ENABLED=0",
+    "GOTOOLCHAIN=local",
+    "GOPROXY=off",
+    "GOSUMDB=off",
+    "-trimpath",
+    "-ldflags=-s -w"
+  ],
+  "new_third_party_guest_dependencies": []
+}
