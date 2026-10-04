@@ -69,6 +69,35 @@ or `GO_FORK_DIR` to move it) — it is a build artifact; this directory is
 the reviewable patch series. `GOTOOLCHAIN=local` is exported by
 `build-go.sh` so cmd/go can never silently swap back to a stock toolchain.
 
+### Fresh sbrk alignment padding
+
+Step 3d also applies an exact, idempotent edit to `runtime/mem_sbrk.go`.
+Only `GOOS=virelai`'s successful `sbrk` branch of
+`sysReserveAlignedSbrk` calls `memFreeWithClear(r, l, false)`. It links
+already-zero padding with the existing free-list algorithm, writing only
+`memHdr` records, not sweeping the 64 MiB alignment gap. Plan9/wasm still
+call `memFree(r, l)`; ordinary frees and both free-list alignment trims
+still clear. Unknown or partially edited source refuses provisioning.
+
+The zero invariant is over bytes, not just newly mapped pages:
+
+- `virMmap` requests anonymous RW memory without POPULATE. The kernel's
+  demand-fault path zeroes each physical page before installing its leaf.
+- Retained `[bloc, blocMax)` bytes were cleared by `sysFreeOS` **before**
+  lowering `bloc`. Growth reuses those bytes without skipping that clear.
+- `initBloc` rounds past the ELF end. `initBlocFloor` rounds past the
+  complete argv/envp block. Neither the ELF tail nor the block's page slack
+  enters this interval: the loader does not promise zero slack.
+  Successful mmap also excludes the protected image/argv apertures.
+- `memlock` serializes break/free-list changes. Live allocations and
+  free-list headers lie below the old break. `memAllocNoGrow` clears the
+  header it removes, preserving zero-filled allocations after reuse,
+  splitting and coalescing.
+
+No arena-size, alignment, `sysUnusedOS`, ABI, cap or budget changes follow
+from this edit. The engine ledgers remain source audits; kernel receipts,
+not this invariant or MemStats, establish physical-memory use.
+
 ## Daily loop (M69e, issue #1532)
 
 Everything above is a build manual. This is the product loop it serves, and it

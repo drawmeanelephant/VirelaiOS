@@ -123,6 +123,59 @@ if ! tag_has "$F/runtime/mem_sbrk.go" virelai; then
     edits=$((edits+1)); log "patched runtime/mem_sbrk.go (build tag)"
 fi
 
+# Only the successful sbrk branch owns fresh zero padding. Keep the ordinary
+# free/trim and sysFreeOS shrink clears; see os_virelai.go's zero invariant.
+# Match both edits before writing, refusing unknown/partially patched source.
+padding="$(python3 - "$F/runtime/mem_sbrk.go" <<'PYEOF'
+import sys
+from pathlib import Path
+
+p = Path(sys.argv[1])
+s = p.read_text()
+changes = [
+    ("""func memFree(ap unsafe.Pointer, n uintptr) {
+	n = memRound(n)
+	memclrNoHeapPointers(ap, n)""",
+     """func memFree(ap unsafe.Pointer, n uintptr) {
+	memFreeWithClear(ap, n, true)
+}
+
+// memFreeWithClear links a block whose non-header bytes must be zero.
+// Only virelai's fresh sbrk alignment padding may skip the clear.
+//
+//go:systemstack
+func memFreeWithClear(ap unsafe.Pointer, n uintptr, clear bool) {
+	n = memRound(n)
+	if clear {
+		memclrNoHeapPointers(ap, n)
+	}"""),
+    ("""			// Free the area we skipped over for alignment.
+			memFree(r, l)
+			memCheck()""",
+     """			// Free the area we skipped over for alignment.
+			if GOOS == "virelai" {
+				// sbrk returns zero bytes, including a cleared shrink.
+				memFreeWithClear(r, l, false)
+			} else {
+				memFree(r, l)
+			}
+			memCheck()"""),
+]
+old = all(s.count(before) == 1 and after not in s for before, after in changes)
+new = all(s.count(after) == 1 and before not in s for before, after in changes)
+if not (old or new):
+    sys.exit("apply: SourceDrift: runtime/mem_sbrk.go alignment padding")
+if old:
+    for before, after in changes:
+        s = s.replace(before, after, 1)
+    p.write_text(s)
+print("patched" if old else "clean")
+PYEOF
+)"
+if [ "$padding" = "patched" ]; then
+    edits=$((edits+1)); log "patched runtime/mem_sbrk.go (virelai fresh alignment padding)"
+fi
+
 # --- 3e. runtime/lock_sema.go: spinning semaphores (no OS primitives) --
 if ! tag_has "$F/runtime/lock_sema.go" virelai; then
     gsed -i 's#^//go:build aix || darwin || netbsd || openbsd || plan9 || solaris || windows$#//go:build aix || darwin || netbsd || openbsd || plan9 || solaris || windows || virelai#' "$F/runtime/lock_sema.go"
