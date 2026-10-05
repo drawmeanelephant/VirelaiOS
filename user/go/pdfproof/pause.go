@@ -5,6 +5,10 @@ import (
 	"virelai/vi"
 )
 
+// Yield between polls instead of sleeping a full scheduler tick: an
+// acknowledgment near the deadline must not wait for another coarse tick.
+func pauseYield(uint64) { vi.Yield() }
+
 // The host publishes a one-byte acknowledgment only after the complete live
 // receipt is visible in the serial log. Pause I/O is outside every page
 // transaction; it uses the existing staging buffer and a separate bounded

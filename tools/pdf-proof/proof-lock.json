@@ -60,10 +60,10 @@
     "tools/pdf-proof/product.py": "b87ac09f55f67eb04a778e809a5a76e10fa241f1776563e56f07ce96643efd28",
     "tools/pdf-proof/stage.py": "a07300bd1772d20e5203cbea45c46cbe01eb7bb103fcc8fcc9dc4ad374b18524",
     "tools/pdf-proof/test_tools.py": "72269ca3eb338a2dacec258a4574972fede523d842180bffd093bc228a8e0dbe",
-    "user/go/pdfproof/pause.go": "db63c56a2efb1b34edfed28d35bf4978cdd10b5d83b19f16d513c184961459ea",
+    "user/go/pdfproof/pause.go": "5638d52999d8351a92f25352b03ee8ea3e711d1826d0dc81220f7cc9dad6dd3a",
     "user/go/pdfproof/pause_test.go": "c097f2a270f5e1d022863107d3231ec370441e3b36e569091aa3d75e0932c9eb",
     "user/go/pdfproof/publish.go": "6079d2d416c909e582785c0b0b93735760a2e1856a0b7798c5ffb252d8691491",
-    "user/go/pdfproof/run.go": "b9ec39e96bdbc8e94a2ceeba3082c7fb93ff141c3b11bdf923315e860f694fd1",
+    "user/go/pdfproof/run.go": "db5f11b58d9930fb9a929b77f1b27fc2aa5c3c1d5cb5a0b3436ee6bbf463c106",
     "user/go/pdfproof/source.go": "2091934f140def143a35ec306268d5a8ae2cc8d73645140fbba65a8eea73539a",
     "user/go/pdfproof/source_test.go": "866e08e8b91f018ac98fb38086ae0e20d88fb05f40c88bdab337becbb7c4d51c"
   }
