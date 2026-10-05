@@ -3,6 +3,7 @@ import re
 import struct
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import compare
 import corpus
@@ -43,7 +44,7 @@ class ComparatorTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "disagreement count/coordinates"):
                 compare.crosscheck(reference, actual, partial=partial, boundary_band=band, expected=changed)
 
-    def test_poppler_geometry_checks_fail_not_tolerate(self):
+    def test_outside_reference_geometry_checks_fail_not_tolerate(self):
         reference, partial, _, band = analytic.reference("gray-rect")
         actual = bytearray(reference)
         actual[16+4*(50*64+10)] ^= 1
@@ -58,7 +59,7 @@ class ComparatorTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "analytic edge outside"):
             compare.crosscheck(glyphs, empty, partial=partial, boundary_band=band)
 
-    def test_poppler_clip_image_interior_cannot_use_edge_tolerance(self):
+    def test_outside_reference_clip_image_interior_cannot_use_edge_tolerance(self):
         reference, _, strict, band = analytic.reference("gray-image")
         actual = bytearray(reference)
         i = 30*64+10
@@ -184,19 +185,91 @@ class ManifestTests(unittest.TestCase):
 
     def test_oracle_closed_to_negatives_and_fixed_thresholds(self):
         frozen = json.loads((corpus.FIXTURES/"oracle.json").read_text())
-        self.assertEqual(frozen["provenance"]["binary_sha256"], oracle.PIN)
-        self.assertEqual(frozen["provenance"]["invocation"], oracle.FLAGS)
+        self.assertEqual(frozen["provenance"]["tool_source_sha256"], corpus.sha(oracle.SOURCE.read_bytes()))
+        self.assertEqual(frozen["provenance"]["invocation"], oracle.INVOCATION)
+        self.assertEqual(frozen["provenance"]["render_contract"], oracle.CONTRACT)
+        self.assertEqual(frozen["provenance"]["recipe_sha256"],
+                         corpus.sha((corpus.FIXTURES/"recipes.json").read_bytes()))
         self.assertFalse(frozen["provenance"]["negatives_sent_to_oracle"])
         ids = {row["id"] for row in frozen["references"]}
         self.assertEqual(ids, set(corpus.anchors()) | set(corpus.maxima()) |
                          {"capacity-"+name for name, (_, c) in corpus.capacities().items() if c == "OK"})
         for row in frozen["references"]:
             self.assertNotIn(row["id"], corpus.negatives())
-            self.assertEqual(row["invocation"], oracle.FLAGS)
+            self.assertEqual(row["invocation"], oracle.INVOCATION[:-1]+[str(row["page"])])
+            self.assertEqual(row["invocation_sha256"], corpus.sha(json.dumps(row["invocation"]).encode()))
+            self.assertEqual(oracle.diagnostics(row["id"], "\n".join(row["diagnostics"])), row["diagnostics"])
             self.assertRegex(row["analytic_sha256"], r"^[0-9a-f]{64}$")
             for key in ("disagreements", "clip_image_disagreements", "outside_band_disagreements"):
-                self.assertGreaterEqual(row["poppler_crosscheck"][key]["count"], 0)
-                self.assertRegex(row["poppler_crosscheck"][key]["coordinates_sha256"], r"^[0-9a-f]{64}$")
+                self.assertGreaterEqual(row["outside_reference_crosscheck"][key]["count"], 0)
+                self.assertRegex(row["outside_reference_crosscheck"][key]["coordinates_sha256"], r"^[0-9a-f]{64}$")
+
+
+class CoreGraphicsTests(unittest.TestCase):
+    def test_provenance_drift_never_repins(self):
+        frozen = json.loads(oracle.MANIFEST.read_text())
+        before = oracle.MANIFEST.read_bytes()
+        for key in ("macos_product", "macos_build", "swift_version", "tool_source_sha256", "recipe_sha256",
+                    "invocation", "invocation_sha256", "render_contract"):
+            with self.subTest(key=key):
+                changed = frozen["provenance"] | {key: "drift"}
+                with patch.object(oracle, "provenance", return_value=changed):
+                    with self.assertRaisesRegex(ValueError, "OracleDrift"):
+                        oracle.check()
+                self.assertEqual(oracle.MANIFEST.read_bytes(), before)
+        with patch.object(oracle, "provenance", return_value=frozen["provenance"]):
+            self.assertEqual(oracle.check(), frozen)
+
+    def test_provenance_records_system_identities_and_source(self):
+        identities = {"-productVersion": "27.2\n", "-buildVersion": "26B5091g\n",
+                      "--version": "system Swift identity\n"}
+        with patch.object(oracle.subprocess, "check_output",
+                          side_effect=lambda args, **kw: identities[args[1]]) as command:
+            prov = oracle.provenance()
+        self.assertEqual(prov["macos_product"], "27.2")
+        self.assertEqual(prov["macos_build"], "26B5091g")
+        self.assertEqual(prov["swift_version"], "system Swift identity")
+        self.assertEqual(prov["tool_source_sha256"], corpus.sha(oracle.SOURCE.read_bytes()))
+        self.assertEqual(prov["invocation_sha256"], corpus.sha(json.dumps(oracle.INVOCATION).encode()))
+        self.assertEqual([c.args[0] for c in command.call_args_list], [
+            ["/usr/bin/sw_vers", "-productVersion"], ["/usr/bin/sw_vers", "-buildVersion"],
+            ["/usr/bin/swift", "--version"],
+        ])
+
+    def test_only_absent_contents_rows_may_have_one_known_diagnostic(self):
+        self.assertEqual(len(oracle.BLANK_DIAGNOSTICS), 5)
+        rows = corpus.maxima() | {"capacity-"+k: v for k, v in corpus.capacities().items() if v[1] == "OK"}
+        for name, product in rows.items():
+            self.assertEqual(b"/Contents" not in product[0], name in oracle.BLANK_DIAGNOSTICS)
+            self.assertEqual(oracle.diagnostics(name, ""), [])
+            if name in oracle.BLANK_DIAGNOSTICS:
+                self.assertEqual(oracle.diagnostics(name, oracle.CONTENTS_DIAGNOSTIC),
+                                 [oracle.CONTENTS_DIAGNOSTIC])
+            else:
+                with self.assertRaisesRegex(ValueError, "UnexpectedReferenceDiagnostic"):
+                    oracle.diagnostics(name, oracle.CONTENTS_DIAGNOSTIC)
+        for name in oracle.BLANK_DIAGNOSTICS | set(corpus.anchors()):
+            for message in ("unexpected error", "[!] unexpected warning",
+                            oracle.CONTENTS_DIAGNOSTIC+"\n"+oracle.CONTENTS_DIAGNOSTIC):
+                with self.assertRaisesRegex(ValueError, "UnexpectedReferenceDiagnostic"):
+                    oracle.diagnostics(name, message)
+        for name in corpus.anchors():
+            with self.assertRaisesRegex(ValueError, "UnexpectedReferenceDiagnostic"):
+                oracle.diagnostics(name, oracle.CONTENTS_DIAGNOSTIC)
+
+    def test_verbose_lifecycle_trace_is_not_a_diagnostic(self):
+        trace = ("[+] Creating CGPDFDocument\n"
+                 "    [+] PDFDocumentCore created.\n"
+                 "[-] Finalizing CGPDFDocument 0x1234abcd\n"
+                 "  [!] Page 1: Dying document being invalidated\n")
+        self.assertEqual(oracle.diagnostics("empty", trace), [])
+        self.assertEqual(oracle.diagnostics("source-4mib", trace+oracle.CONTENTS_DIAGNOSTIC),
+                         [oracle.CONTENTS_DIAGNOSTIC])
+
+    def test_renderer_source_is_in_proof_lock(self):
+        import lock
+        self.assertEqual(lock.snapshot(corpus.ROOT)["tools/pdf-proof/cgrender.swift"],
+                         corpus.sha(oracle.SOURCE.read_bytes()))
 
 
 class AnalyticTests(unittest.TestCase):

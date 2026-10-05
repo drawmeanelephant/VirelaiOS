@@ -1,81 +1,36 @@
 {
-  "version": 2,
+  "version": 3,
   "corpus": "M89-PDF1",
   "provenance": {
-    "binary": "/opt/homebrew/Cellar/poppler/26.09.0/bin/pdftoppm",
-    "binary_sha256": "9a44364d0fa42a43c3efdb2cbab47d275973c4a5856c1109f6bf4513def6bb54",
-    "version": "pdftoppm version 26.09.0",
-    "libraries_sha256": {
-      "/opt/homebrew/Cellar/poppler/26.09.0/bin/pdftoppm": "9a44364d0fa42a43c3efdb2cbab47d275973c4a5856c1109f6bf4513def6bb54",
-      "/opt/homebrew/Cellar/poppler/26.09.0/lib/libpoppler.164.0.0.dylib": "9ab29594027975ab334880fd99c2cdd11465c3df34f6476a29430ceb59462f93",
-      "/opt/homebrew/Cellar/harfbuzz/14.5.0/lib/libharfbuzz.0.dylib": "5894ad09e43e8805edd1f97b2823bca44ab87e26a59472f8e6cc87f8dffbd596",
-      "/opt/homebrew/Cellar/graphite2/1.3.15/lib/libgraphite2.3.3.1.dylib": "fc59eeb61994433d7dcd349848db14951be1fac332349872ad03f86361473153",
-      "/opt/homebrew/Cellar/glib/2.90.0/lib/libglib-2.0.0.dylib": "934e63c138b92bb530478bc5d17abc694e99ee98ecd6252e583a6f612fc3c860",
-      "/opt/homebrew/Cellar/pcre2/10.49/lib/libpcre2-8.0.dylib": "1c0890a01bd446b5174e4ce7c35e1e14f39d2e88b7b5160572198ec26647d2da",
-      "/opt/homebrew/Cellar/gettext/1.0/lib/libintl.8.dylib": "0c6d618e75fea85cc3d631e164a71766fba9341d19ce1f723300c52e63037c51",
-      "/opt/homebrew/Cellar/freetype/2.14.3/lib/libfreetype.6.dylib": "3e85a7f40549dc2d42d68fcd5b18eefd5a41079d1b5a5933888c585b8e1fed9e",
-      "/opt/homebrew/Cellar/libpng/1.6.58/lib/libpng16.16.dylib": "ed50e7c1582d94c40489a37097cbb2fcea81e5450173ee9bbe2871cbfdea27eb",
-      "/opt/homebrew/Cellar/gpgme/2.2.0/lib/libgpgme.45.dylib": "a496318cbd29d558c1b7670e7f3336e1d597c2a6d57d99e004b878c5fdd88977",
-      "/opt/homebrew/Cellar/libgpg-error/1.61/lib/libgpg-error.0.dylib": "bff87750b336d72fd4ba3db1f174979e662043b56f1e659c6f2c2a9b5500fa85",
-      "/opt/homebrew/Cellar/libassuan/3.0.2/lib/libassuan.9.dylib": "730832a33d2acc2b7c9c6b3e50ba4415001ec27baa9bcaa3ec6820177d5b3e2a",
-      "/opt/homebrew/Cellar/nspr/4.40/lib/libnspr4.dylib": "49586fab5e60aacac5066eec415e3528c89d95c9426e240d2e6e152136f14bf8",
-      "/opt/homebrew/Cellar/nspr/4.40/lib/libplc4.dylib": "a7b2e94d119be571d130b759f4c977187fa05705846013942efe2889094f791b",
-      "/opt/homebrew/Cellar/nspr/4.40/lib/libplds4.dylib": "f81d9f488d6dc34e640136f31b2c7cacbaaeec12135c5bed7cfbbf4f6df4e2fc",
-      "/opt/homebrew/Cellar/nss/3.130/lib/libssl3.dylib": "285bfff0181019af4856e5187388acdc4489645eeda2921e2ea8f87c5f6950d0",
-      "/opt/homebrew/Cellar/nss/3.130/lib/libnssutil3.dylib": "503f07c7271606e00138234a353701e3c2ca19b7a6ca52841728afdfb5e63396",
-      "/opt/homebrew/Cellar/nss/3.130/lib/libnss3.dylib": "c38e3461327d4b85b35025c31d9635c772bd8477fe49a75d5e988541a27b1a58",
-      "/opt/homebrew/Cellar/nss/3.130/lib/libsmime3.dylib": "b9d4de8a8c988c4881ab5f98c75f3240ccfed09b75e520f699623484c08f90d4",
-      "/opt/homebrew/Cellar/harfbuzz/14.5.0/lib/libharfbuzz-subset.0.dylib": "8f147ba1fbf84c94002b0625086b3c35422e43b7308724f16444a6759bba0d94",
-      "/opt/homebrew/Cellar/libtiff/4.7.2/lib/libtiff.6.dylib": "ed5a54e3e8a621ba58f51ce632debb3f8d0ef068faf5bee887672581698e4cc1",
-      "/opt/homebrew/Cellar/jpeg-turbo/3.2.0/lib/libjpeg.8.3.2.dylib": "e6585d0aee1969a63f288f97bbe3ef100ac787bc25ebcc4e6487b82b96cdbcae",
-      "/opt/homebrew/Cellar/xz/5.8.4/lib/liblzma.5.dylib": "1b2e12cc1b920264f3dd15eeba22e85b8afd589595d8945d1d12a52afa694b09",
-      "/opt/homebrew/Cellar/zstd/1.5.7_1/lib/libzstd.1.5.7.dylib": "e2847c4613b386683c234913ae3b7b04299254096caf7616e3b3cd9bb97a39ab",
-      "/opt/homebrew/Cellar/webp/1.6.0/lib/libwebp.7.2.0.dylib": "d052b4517bb0183a40165f41d9b0d29a90cea9709bd586d477ca1f35fa557a9e",
-      "/opt/homebrew/Cellar/webp/1.6.0/lib/libsharpyuv.0.1.2.dylib": "0de28035c9e770feee00c84fbb023b96c572ef06e86b52aa4a009a9c87462c1f",
-      "/opt/homebrew/Cellar/little-cms2/2.19.1/lib/liblcms2.2.dylib": "faf9c8f2322a2bb47d04d3077a79cc7103fba68a186697cf91e5f6ef467d1b77",
-      "/opt/homebrew/Cellar/openjpeg/2.5.4/lib/libopenjp2.2.5.4.dylib": "3b46324a48881d5ef030a096a5c242d0641299f85576895611ff0deb1505cbca",
-      "/opt/homebrew/Cellar/gpgmepp/2.2.0/lib/libgpgmepp.7.2.0.dylib": "de87ae41d77dd3de2e3a4b32c486434e0b346c49960bdcddf65b172ff8b3afd0",
-      "/opt/homebrew/Cellar/fontconfig/2.18.3/lib/libfontconfig.1.dylib": "e1f5e06e8339b42f0e1af11cc77979ef6a8f48ffa7588e4dc243e4bd69ea656d"
-    },
-    "system_dyld_dependencies": [
-      "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation (compatibility version 150.0.0, current version 4201.0.0)",
-      "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation (compatibility version 150.0.0, current version 4424.1.255)",
-      "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation (compatibility version 150.0.0, current version 5027.0.69)",
-      "/System/Library/Frameworks/CoreGraphics.framework/Versions/A/CoreGraphics (compatibility version 64.0.0, current version 2050.0.0)",
-      "/System/Library/Frameworks/CoreServices.framework/Versions/A/CoreServices (compatibility version 1.0.0, current version 1226.0.0)",
-      "/System/Library/Frameworks/CoreText.framework/Versions/A/CoreText (compatibility version 1.0.0, current version 904.0.0)",
-      "/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation (compatibility version 300.0.0, current version 5027.0.69)",
-      "/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1351.0.0)",
-      "/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1356.0.0)",
-      "/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1359.0.0)",
-      "/usr/lib/libbz2.1.0.dylib (compatibility version 1.0.0, current version 1.0.8)",
-      "/usr/lib/libc++.1.dylib (compatibility version 1.0.0, current version 2100.43.0)",
-      "/usr/lib/libcurl.4.dylib (compatibility version 7.0.0, current version 9.0.0)",
-      "/usr/lib/libexpat.1.dylib (compatibility version 7.0.0, current version 8.0.0)",
-      "/usr/lib/libiconv.2.dylib (compatibility version 7.0.0, current version 7.0.0)",
-      "/usr/lib/libobjc.A.dylib (compatibility version 1.0.0, current version 228.0.0)",
-      "/usr/lib/libz.1.dylib (compatibility version 1.0.0, current version 1.2.12)"
-    ],
-    "system_build": "26B5091g",
-    "license_sha256": {
-      "/opt/homebrew/Cellar/poppler/26.09.0/COPYING": "ab15fd526bd8dd18a9e77ebc139656bf4d33e97fc7238cd11bf60e2b9b8666c6",
-      "/opt/homebrew/Cellar/poppler/26.09.0/COPYING3": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903"
-    },
+    "renderer": "Apple CoreGraphics (host OS only)",
+    "macos_product": "27.2",
+    "macos_build": "26B5091g",
+    "swift_version": "swift-driver version: 1.168.6 Apple Swift version 6.4 (swiftlang-6.4.0.34.1 clang-2100.3.34.1)\nTarget: arm64-apple-macosx27.2.0",
+    "tool_source": "tools/pdf-proof/cgrender.swift",
+    "tool_source_sha256": "55908e8b0b7ecb05a2199aa1c26a8683a63ae25dd3326700f5e272aadc62f9ab",
+    "recipe_sha256": "adc78288bf4c22339c07d960eec068c9c94a86e8afc58841f1001aa298d30625",
     "font_policy": "document Type 3 outlines only; no named/system fonts",
     "colour_policy": "DeviceGray/DeviceRGB default Decode; no ICC profiles",
     "invocation": [
-      "-r",
-      "96",
-      "-f",
-      "1",
-      "-l",
-      "1",
-      "-singlefile",
-      "-aa",
-      "yes",
-      "-aaVector",
-      "yes"
+      "cgrender",
+      "INPUT.pdf",
+      "OUTPUT.bgra",
+      "PAGE"
     ],
+    "invocation_sha256": "1148631aaad3bedd2fae2f0f41734153fd3f6cef34eb4ec4df8b76ca3c3c539a",
+    "render_contract": {
+      "page": "one-based; Rotate=0",
+      "box": "CropBox intersect MediaBox",
+      "scale": "96/72",
+      "context": "8-bit DeviceRGB; little-endian premultiplied-first",
+      "background": "opaque white",
+      "antialiasing": true,
+      "image_interpolation": "none",
+      "output": "PDF1 header; packed opaque BGRA; top-down rows",
+      "environment": {
+        "CG_PDF_VERBOSE": "1"
+      }
+    },
     "negatives_sent_to_oracle": false
   },
   "references": [
@@ -98,20 +53,15 @@
       "ppm_sha256": "d2f6d1ef302851a667adde508208fded2aea933d1c0b62941b9d0882a3461523",
       "bgra_sha256": "bf05aaac8154b40d0d6c2fdb23df9d576af03d14ee654924f5b75730b5950f85",
       "invocation": [
-        "-r",
-        "96",
-        "-f",
-        "1",
-        "-l",
-        "1",
-        "-singlefile",
-        "-aa",
-        "yes",
-        "-aaVector",
-        "yes"
+        "cgrender",
+        "INPUT.pdf",
+        "OUTPUT.bgra",
+        "1"
       ],
+      "invocation_sha256": "0e95c968b924cb416a6b37d3c2e6b02f40228b75ab720e84289299875fd1f005",
+      "diagnostics": [],
       "analytic_sha256": "bf05aaac8154b40d0d6c2fdb23df9d576af03d14ee654924f5b75730b5950f85",
-      "poppler_crosscheck": {
+      "outside_reference_crosscheck": {
         "disagreements": {
           "count": 0,
           "coordinates_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -146,20 +96,15 @@
       "ppm_sha256": "4397d6c0dca5a492abb1b56aa8eab5943b1f5516946b8e54a51d75a7791c6fac",
       "bgra_sha256": "a1a3b872659ef0928b5719a02b1e16e05f6a69741ed7e7f3397f92b7976309f5",
       "invocation": [
-        "-r",
-        "96",
-        "-f",
-        "1",
-        "-l",
-        "1",
-        "-singlefile",
-        "-aa",
-        "yes",
-        "-aaVector",
-        "yes"
+        "cgrender",
+        "INPUT.pdf",
+        "OUTPUT.bgra",
+        "1"
       ],
+      "invocation_sha256": "0e95c968b924cb416a6b37d3c2e6b02f40228b75ab720e84289299875fd1f005",
+      "diagnostics": [],
       "analytic_sha256": "a1a3b872659ef0928b5719a02b1e16e05f6a69741ed7e7f3397f92b7976309f5",
-      "poppler_crosscheck": {
+      "outside_reference_crosscheck": {
         "disagreements": {
           "count": 0,
           "coordinates_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -194,20 +139,15 @@
       "ppm_sha256": "92a5c8d714e56cb4adb7e21d77fd64cdd74cad7e2c697aca1cb6788e32d0aeab",
       "bgra_sha256": "09ce476585f61996790d5a9217d705ed9d4f4541683bd5a443a55ff55bd83f8f",
       "invocation": [
-        "-r",
-        "96",
-        "-f",
-        "1",
-        "-l",
-        "1",
-        "-singlefile",
-        "-aa",
-        "yes",
-        "-aaVector",
-        "yes"
+        "cgrender",
+        "INPUT.pdf",
+        "OUTPUT.bgra",
+        "1"
       ],
+      "invocation_sha256": "0e95c968b924cb416a6b37d3c2e6b02f40228b75ab720e84289299875fd1f005",
+      "diagnostics": [],
       "analytic_sha256": "09ce476585f61996790d5a9217d705ed9d4f4541683bd5a443a55ff55bd83f8f",
-      "poppler_crosscheck": {
+      "outside_reference_crosscheck": {
         "disagreements": {
           "count": 0,
           "coordinates_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -239,26 +179,21 @@
       ],
       "background": "ffffffff",
       "comparison": "edges",
-      "ppm_sha256": "9010d3c9c587d7752856d9e0c72c44241c2dbcb323b2e58be81ed312f4e60c0b",
-      "bgra_sha256": "1f5245bcf38f793affcd7af52fe61940670adf10408bb4015e4c05139c3fffa9",
+      "ppm_sha256": "f356a71a320ebf5946aeb197bed59ebedf38c02dc6af8018b53c4713291c9c9a",
+      "bgra_sha256": "eaa3d8f0b03943e802789877cb8dd215793aa2de435a020ceb636fab64d4de53",
       "invocation": [
-        "-r",
-        "96",
-        "-f",
-        "1",
-        "-l",
-        "1",
-        "-singlefile",
-        "-aa",
-        "yes",
-        "-aaVector",
-        "yes"
+        "cgrender",
+        "INPUT.pdf",
+        "OUTPUT.bgra",
+        "1"
       ],
+      "invocation_sha256": "0e95c968b924cb416a6b37d3c2e6b02f40228b75ab720e84289299875fd1f005",
+      "diagnostics": [],
       "analytic_sha256": "d3d8ca87b34b8a072a6174e23c3c000101830b18687509c05189cedd3f4295b0",
-      "poppler_crosscheck": {
+      "outside_reference_crosscheck": {
         "disagreements": {
-          "count": 138,
-          "coordinates_sha256": "6b90556cdf952edf2571afa6f80b69acce04f0f00fe62f34d59ed9b8559f8b03"
+          "count": 43,
+          "coordinates_sha256": "9f5c2550fa458cfce9299b17fdab6f0b1d337c888e312761812a455df888034b"
         },
         "clip_image_disagreements": {
           "count": 0,
@@ -287,26 +222,21 @@
       ],
       "background": "ffffffff",
       "comparison": "edges",
-      "ppm_sha256": "c3cec72498b3aa17c2b0984629c4c5cf0091e7ff0ba78c12d17c71f9b8833d96",
-      "bgra_sha256": "cc114df2c252ed8cae66799d0b747a444e4b6a6bdab8ea959117e5c39bc5eb50",
+      "ppm_sha256": "4fae6948a177410d6204391be5f8128a3775ab9e88d9a62e617d291357ea4833",
+      "bgra_sha256": "3916e6c418d67e46ff63e4db5c7272f49e20148029bd3f6ebb867d77221d2621",
       "invocation": [
-        "-r",
-        "96",
-        "-f",
-        "1",
-        "-l",
-        "1",
-        "-singlefile",
-        "-aa",
-        "yes",
-        "-aaVector",
-        "yes"
+        "cgrender",
+        "INPUT.pdf",
+        "OUTPUT.bgra",
+        "1"
       ],
+      "invocation_sha256": "0e95c968b924cb416a6b37d3c2e6b02f40228b75ab720e84289299875fd1f005",
+      "diagnostics": [],
       "analytic_sha256": "476d1f876e124bbfcc9fd372d7db3eb4f2ada01c56bd3d00cff745c9907a3600",
-      "poppler_crosscheck": {
+      "outside_reference_crosscheck": {
         "disagreements": {
-          "count": 168,
-          "coordinates_sha256": "ca2aa5563bf64da4f37b8f9375f1198e0f868c4049e92d4096f9eebb0ac8c54d"
+          "count": 148,
+          "coordinates_sha256": "3cf7d357eeb8179c6f26da7661b39f01fa57db1af25ae0814005408298666a77"
         },
         "clip_image_disagreements": {
           "count": 0,
@@ -335,26 +265,21 @@
       ],
       "background": "ffffffff",
       "comparison": "edges",
-      "ppm_sha256": "74ccc1b003a9e9922133dc4bee2f79df4c2d9455daaa1dfaae0306f06ba52d5b",
-      "bgra_sha256": "1dafdae53d0bc2b14162a08f419b345a1695c07e7d32ccd11092ed2abdf9aeeb",
+      "ppm_sha256": "a131333d23f97f40d34874d5afd0b761068845ab22f942f2cf4cc28a7170f96d",
+      "bgra_sha256": "c1dddda6e99f983d605f6173f4196e0f2bc18d21e8862b6dc606558428b567b0",
       "invocation": [
-        "-r",
-        "96",
-        "-f",
-        "1",
-        "-l",
-        "1",
-        "-singlefile",
-        "-aa",
-        "yes",
-        "-aaVector",
-        "yes"
+        "cgrender",
+        "INPUT.pdf",
+        "OUTPUT.bgra",
+        "1"
       ],
+      "invocation_sha256": "0e95c968b924cb416a6b37d3c2e6b02f40228b75ab720e84289299875fd1f005",
+      "diagnostics": [],
       "analytic_sha256": "c1dddda6e99f983d605f6173f4196e0f2bc18d21e8862b6dc606558428b567b0",
-      "poppler_crosscheck": {
+      "outside_reference_crosscheck": {
         "disagreements": {
-          "count": 176,
-          "coordinates_sha256": "c96d7abef655262090ed56660e8b7538b42551ccdb4f6cf82eedb9904df0e1f2"
+          "count": 0,
+          "coordinates_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         },
         "clip_image_disagreements": {
           "count": 0,
@@ -383,26 +308,21 @@
       ],
       "background": "ffffffff",
       "comparison": "edges",
-      "ppm_sha256": "487e9e0a8ef1dd4f6404db90abf454fee447c5fcec5fd8a902a63a13bf8b8323",
-      "bgra_sha256": "b4d093b0272da1b9e0241cc98d7a60b121e893885e92e7811e95f165b893bed0",
+      "ppm_sha256": "240743657a2fd8a618827d5a607798764d6dc1285ab41fa99fce88eea2a4eb23",
+      "bgra_sha256": "264fed819c598ad813ef4eee18044ca813afb8e0fc64937ba6db6ddfbeb59833",
       "invocation": [
-        "-r",
-        "96",
-        "-f",
-        "1",
-        "-l",
-        "1",
-        "-singlefile",
-        "-aa",
-        "yes",
-        "-aaVector",
-        "yes"
+        "cgrender",
+        "INPUT.pdf",
+        "OUTPUT.bgra",
+        "1"
       ],
+      "invocation_sha256": "0e95c968b924cb416a6b37d3c2e6b02f40228b75ab720e84289299875fd1f005",
+      "diagnostics": [],
       "analytic_sha256": "264fed819c598ad813ef4eee18044ca813afb8e0fc64937ba6db6ddfbeb59833",
-      "poppler_crosscheck": {
+      "outside_reference_crosscheck": {
         "disagreements": {
-          "count": 160,
-          "coordinates_sha256": "bc04336557bfdb4f0b4d6e5222f3c432e014a0b31a0675a14b338c0a2366d194"
+          "count": 0,
+          "coordinates_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         },
         "clip_image_disagreements": {
           "count": 0,
@@ -431,26 +351,21 @@
       ],
       "background": "ffffffff",
       "comparison": "edges",
-      "ppm_sha256": "699ca9654affd3375893c1964f5137c6186815cb44ac7b57c55e267190116b24",
-      "bgra_sha256": "affc441acc70ce41f9117e43e21f04b7d47c064571013c543d9e9260d3d43e0e",
+      "ppm_sha256": "4d7b6dd517fde00b74c5daf3848b9e20e2f912bef62fc8b9bd60a0af601224d4",
+      "bgra_sha256": "081eba98cb6759ae6fd2cc175a3b9a80a1e89d1af7a8ef2598836ada7ba915df",
       "invocation": [
-        "-r",
-        "96",
-        "-f",
-        "1",
-        "-l",
-        "1",
-        "-singlefile",
-        "-aa",
-        "yes",
-        "-aaVector",
-        "yes"
+        "cgrender",
+        "INPUT.pdf",
+        "OUTPUT.bgra",
+        "1"
       ],
+      "invocation_sha256": "0e95c968b924cb416a6b37d3c2e6b02f40228b75ab720e84289299875fd1f005",
+      "diagnostics": [],
       "analytic_sha256": "eb39f6765a2a201ff97e99f24f07ba85411bb7a66990c94ff6204b699c717260",
-      "poppler_crosscheck": {
+      "outside_reference_crosscheck": {
         "disagreements": {
-          "count": 111,
-          "coordinates_sha256": "9fee75bb993e9dd9967553a08776da2b7207a33e53f5ff2b4887188e80605d10"
+          "count": 46,
+          "coordinates_sha256": "0c684f658c818a00638a23186ba3b0ba6d56f402aa3cbee583b60692b20a6781"
         },
         "clip_image_disagreements": {
           "count": 0,
@@ -460,7 +375,7 @@
           "count": 0,
           "coordinates_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         },
-        "geometry_failure": "Poppler edge outside analytic dilation at (0, 47): analytic=[255, 255, 255, 255] Poppler=[255, 255, 255, 255]"
+        "geometry_failure": null
       }
     },
     {
@@ -479,26 +394,21 @@
       ],
       "background": "ffffffff",
       "comparison": "edges",
-      "ppm_sha256": "44b41845a7432ac86fdc2b9ee5c727669670e09b9199c75f2b98c1f310155751",
-      "bgra_sha256": "cbe7355e76f6f6d77020270be426080be15a484c5c12224ae4814a33f42d92b7",
+      "ppm_sha256": "aff1dcd8a415a90cb1668e51cf3de564b8d597a3cbe317b48d8d8109c06628ba",
+      "bgra_sha256": "0d5f063fbe52ad445878ed091bf311aa8b12a6414b3b69b95020b5230780736a",
       "invocation": [
-        "-r",
-        "96",
-        "-f",
-        "1",
-        "-l",
-        "1",
-        "-singlefile",
-        "-aa",
-        "yes",
-        "-aaVector",
-        "yes"
+        "cgrender",
+        "INPUT.pdf",
+        "OUTPUT.bgra",
+        "1"
       ],
+      "invocation_sha256": "0e95c968b924cb416a6b37d3c2e6b02f40228b75ab720e84289299875fd1f005",
+      "diagnostics": [],
       "analytic_sha256": "2d54e5c52e94e7e884f46466565c47749fa1e3ba463d28f03b3d6dd6d800497b",
-      "poppler_crosscheck": {
+      "outside_reference_crosscheck": {
         "disagreements": {
-          "count": 58,
-          "coordinates_sha256": "9a7c88dde1774f38c6c4ec9dd84ebc0664818cc0c2d3666344e062ec0c230465"
+          "count": 16,
+          "coordinates_sha256": "9388811880a0adba8ff12795b917097361639d825c2e877547cd859306197d65"
         },
         "clip_image_disagreements": {
           "count": 0,
@@ -527,30 +437,25 @@
       ],
       "background": "ffffffff",
       "comparison": "exact",
-      "ppm_sha256": "232f22c517c133a04d2d18848d117e4ba2893e2a0771085b81ba865496045c69",
-      "bgra_sha256": "69b8a7bc3c37a80d65a288048dfd68cc41c01b4107cbe9b9075e2d51d0aadde5",
+      "ppm_sha256": "c611eacac924a2e74d2ea1da8807f1e0f100ee72da8fcfa0778755fef0341bc1",
+      "bgra_sha256": "99e485a6a471f7024d63e0a85723334ee54718b6ac290fad7b8e68349dff215b",
       "invocation": [
-        "-r",
-        "96",
-        "-f",
-        "1",
-        "-l",
-        "1",
-        "-singlefile",
-        "-aa",
-        "yes",
-        "-aaVector",
-        "yes"
+        "cgrender",
+        "INPUT.pdf",
+        "OUTPUT.bgra",
+        "1"
       ],
+      "invocation_sha256": "0e95c968b924cb416a6b37d3c2e6b02f40228b75ab720e84289299875fd1f005",
+      "diagnostics": [],
       "analytic_sha256": "99e485a6a471f7024d63e0a85723334ee54718b6ac290fad7b8e68349dff215b",
-      "poppler_crosscheck": {
+      "outside_reference_crosscheck": {
         "disagreements": {
-          "count": 128,
-          "coordinates_sha256": "2d9ce62e016a3686a6b2b993c8d1769fd3f302b7b08df2ee314cc7a974b7e901"
+          "count": 0,
+          "coordinates_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         },
         "clip_image_disagreements": {
-          "count": 128,
-          "coordinates_sha256": "2d9ce62e016a3686a6b2b993c8d1769fd3f302b7b08df2ee314cc7a974b7e901"
+          "count": 0,
+          "coordinates_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         },
         "outside_band_disagreements": {
           "count": 0,
@@ -575,26 +480,21 @@
       ],
       "background": "ffffffff",
       "comparison": "edges",
-      "ppm_sha256": "6b3d9f8c999bfe99deca54ecaf8f2866369b5be707841e4d0b1f3fb5ce204a91",
-      "bgra_sha256": "cbda0fcd31df25885debab3a78b657ddc1d15c78bd6f57181f3dae584ac5ed5a",
+      "ppm_sha256": "599b611ef09075cc983f012c79f0b3e5a8ea65881586c7455a9a56ca9ae9f5d4",
+      "bgra_sha256": "95d710c5b7ff0c8f3a848cc7db3813ac318dbac70cd65d46ea8121d94d7202a6",
       "invocation": [
-        "-r",
-        "96",
-        "-f",
-        "1",
-        "-l",
-        "1",
-        "-singlefile",
-        "-aa",
-        "yes",
-        "-aaVector",
-        "yes"
+        "cgrender",
+        "INPUT.pdf",
+        "OUTPUT.bgra",
+        "1"
       ],
+      "invocation_sha256": "0e95c968b924cb416a6b37d3c2e6b02f40228b75ab720e84289299875fd1f005",
+      "diagnostics": [],
       "analytic_sha256": "49725f943a4f198144c1598316eaec877dc10a9128c90fb1ede13a9f70e564d3",
-      "poppler_crosscheck": {
+      "outside_reference_crosscheck": {
         "disagreements": {
-          "count": 58,
-          "coordinates_sha256": "d9973c7525fe2c61d58d9eee897c2550459578ca4666d638e557983a7dfc65f4"
+          "count": 16,
+          "coordinates_sha256": "1053897cf59692e1b6135e4ef44e901b570ef856b8d472c07c7c3d6a77846f7f"
         },
         "clip_image_disagreements": {
           "count": 0,
@@ -626,20 +526,15 @@
       "ppm_sha256": "3aa7cd3ecb4d8e9e78a232e83642cb93508b09ae907fd3d4dd2b49589d2c0691",
       "bgra_sha256": "c3f00a9a013e9db37d2a35634ad0835d86b2aa91add90927219a741b61563d9e",
       "invocation": [
-        "-r",
-        "96",
-        "-f",
-        "1",
-        "-l",
-        "1",
-        "-singlefile",
-        "-aa",
-        "yes",
-        "-aaVector",
-        "yes"
+        "cgrender",
+        "INPUT.pdf",
+        "OUTPUT.bgra",
+        "1"
       ],
+      "invocation_sha256": "0e95c968b924cb416a6b37d3c2e6b02f40228b75ab720e84289299875fd1f005",
+      "diagnostics": [],
       "analytic_sha256": "c3f00a9a013e9db37d2a35634ad0835d86b2aa91add90927219a741b61563d9e",
-      "poppler_crosscheck": {
+      "outside_reference_crosscheck": {
         "disagreements": {
           "count": 0,
           "coordinates_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -671,26 +566,21 @@
       ],
       "background": "ffffffff",
       "comparison": "edges",
-      "ppm_sha256": "370e0c02a80d2f769348284a36aad4aaddf54d13b29b9af753c972ff64d6d7f8",
-      "bgra_sha256": "162b7f13d0090e1b855b60bd3015d84854414a89141f16c3c6ecec40923c3fb0",
+      "ppm_sha256": "74203c93f0b966e22ca1c18517cc86e9a8c10873c7490bbce270a9eef3dbfe22",
+      "bgra_sha256": "cb95b92f4fac3aaf461b93b3024c968ed1f212c29b0f119e17dd0dd749992050",
       "invocation": [
-        "-r",
-        "96",
-        "-f",
-        "1",
-        "-l",
-        "1",
-        "-singlefile",
-        "-aa",
-        "yes",
-        "-aaVector",
-        "yes"
+        "cgrender",
+        "INPUT.pdf",
+        "OUTPUT.bgra",
+        "1"
       ],
+      "invocation_sha256": "0e95c968b924cb416a6b37d3c2e6b02f40228b75ab720e84289299875fd1f005",
+      "diagnostics": [],
       "analytic_sha256": "deef2b04d5ffd4b62c2e7e427336952bae4837791977e6ceac0bee62286107cc",
-      "poppler_crosscheck": {
+      "outside_reference_crosscheck": {
         "disagreements": {
-          "count": 116,
-          "coordinates_sha256": "f9d03a5369c392a38c1b406b3a067984e4b2c993d248e0924f37bae89a58a6c0"
+          "count": 32,
+          "coordinates_sha256": "82c7d391fdf43521bd38f3c4c4535e7d1ed38afc59c57e59ea53230f8c6254e9"
         },
         "clip_image_disagreements": {
           "count": 0,
@@ -719,26 +609,21 @@
       ],
       "background": "ffffffff",
       "comparison": "edges",
-      "ppm_sha256": "ece8dace5a97e37c8e6d1ab53f4a12098ebbd90e9b1d2f06680c30176089371a",
-      "bgra_sha256": "bb230d705be739735ae42fb60b49b41b2c61c085b5c2ce5c496dfed8ad097998",
+      "ppm_sha256": "38e7b13939a039e8db8ba3c54ea824a3381ec4ce34bbedee878cb41729bf8277",
+      "bgra_sha256": "8b9c3d036f80c2494100e6cf3d33f6392b26da84d971f481394322b08d6719ac",
       "invocation": [
-        "-r",
-        "96",
-        "-f",
-        "1",
-        "-l",
-        "1",
-        "-singlefile",
-        "-aa",
-        "yes",
-        "-aaVector",
-        "yes"
+        "cgrender",
+        "INPUT.pdf",
+        "OUTPUT.bgra",
+        "1"
       ],
+      "invocation_sha256": "0e95c968b924cb416a6b37d3c2e6b02f40228b75ab720e84289299875fd1f005",
+      "diagnostics": [],
       "analytic_sha256": "4f802989782835bb75b45522fb4a0e63631ddd4c81641ba7f16bd40673367d80",
-      "poppler_crosscheck": {
+      "outside_reference_crosscheck": {
         "disagreements": {
-          "count": 167,
-          "coordinates_sha256": "9238530bd7f52f19c506dc4d2a2a243ec65f2c6c15060eda5e5db72caa4d504c"
+          "count": 25,
+          "coordinates_sha256": "2b958c581cef3141687ec61b1ecb002002e6ed98d4779dc5e15599c043f3b845"
         },
         "clip_image_disagreements": {
           "count": 0,
@@ -767,30 +652,25 @@
       ],
       "background": "ffffffff",
       "comparison": "exact",
-      "ppm_sha256": "abfeb95c3de6faeb0703fc69b2c8376837698f50122b610079b9398f5edcc2ec",
-      "bgra_sha256": "6287f503313d72986f2adc06b89f3bbbca0b6ec06985ca61fba9d58484216610",
+      "ppm_sha256": "5c303270d7cdc9e150884fb441c8ca8bcfd359f0e0e8d2a85772bdccf3a60157",
+      "bgra_sha256": "15ecbeb3a9c3b293d036e9763df7d2c0731583eccaf6dc75f00e1365d1e72fa7",
       "invocation": [
-        "-r",
-        "96",
-        "-f",
-        "1",
-        "-l",
-        "1",
-        "-singlefile",
-        "-aa",
-        "yes",
-        "-aaVector",
-        "yes"
+        "cgrender",
+        "INPUT.pdf",
+        "OUTPUT.bgra",
+        "1"
       ],
+      "invocation_sha256": "0e95c968b924cb416a6b37d3c2e6b02f40228b75ab720e84289299875fd1f005",
+      "diagnostics": [],
       "analytic_sha256": "15ecbeb3a9c3b293d036e9763df7d2c0731583eccaf6dc75f00e1365d1e72fa7",
-      "poppler_crosscheck": {
+      "outside_reference_crosscheck": {
         "disagreements": {
-          "count": 57,
-          "coordinates_sha256": "c16c29c72835464b31dbec325a5e17e59f3ecd767501f91cf3f2f32c9768689a"
+          "count": 0,
+          "coordinates_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         },
         "clip_image_disagreements": {
-          "count": 57,
-          "coordinates_sha256": "c16c29c72835464b31dbec325a5e17e59f3ecd767501f91cf3f2f32c9768689a"
+          "count": 0,
+          "coordinates_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         },
         "outside_band_disagreements": {
           "count": 0,
@@ -815,30 +695,25 @@
       ],
       "background": "ffffffff",
       "comparison": "exact",
-      "ppm_sha256": "2f1adc908e1a9cecab908fafb18abfc1093a0c38407762e521e34e932f70aeb0",
-      "bgra_sha256": "12b4be32d5e72d14681aae06bb7c6fed5f7967b1b9c10446bb675eb103155d3a",
+      "ppm_sha256": "2b01b0549c78dece2de5882057c0cba2fc4b86ea52ec163dc67c172ff9f03e27",
+      "bgra_sha256": "07034ad21673da965b7216ca4699e143076af904b172f9c0ea79003da869121a",
       "invocation": [
-        "-r",
-        "96",
-        "-f",
-        "1",
-        "-l",
-        "1",
-        "-singlefile",
-        "-aa",
-        "yes",
-        "-aaVector",
-        "yes"
+        "cgrender",
+        "INPUT.pdf",
+        "OUTPUT.bgra",
+        "1"
       ],
+      "invocation_sha256": "0e95c968b924cb416a6b37d3c2e6b02f40228b75ab720e84289299875fd1f005",
+      "diagnostics": [],
       "analytic_sha256": "07034ad21673da965b7216ca4699e143076af904b172f9c0ea79003da869121a",
-      "poppler_crosscheck": {
+      "outside_reference_crosscheck": {
         "disagreements": {
-          "count": 97,
-          "coordinates_sha256": "9647b395a67e79d63271ced55ed4345ddd0c1aa955dd3494aa6567cbe6e0fddb"
+          "count": 0,
+          "coordinates_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         },
         "clip_image_disagreements": {
-          "count": 97,
-          "coordinates_sha256": "9647b395a67e79d63271ced55ed4345ddd0c1aa955dd3494aa6567cbe6e0fddb"
+          "count": 0,
+          "coordinates_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         },
         "outside_band_disagreements": {
           "count": 0,
@@ -863,30 +738,25 @@
       ],
       "background": "ffffffff",
       "comparison": "edges",
-      "ppm_sha256": "771edc6fcf3665605f8b6ae3d71da476640be6afb38b38351280e8d6a0b63cd2",
-      "bgra_sha256": "3aadd7597c60432bedf0f28e827a21b329b98d1557c4f25eda4b57e9af5ec8d8",
+      "ppm_sha256": "2e34aaa6bdf62b70a0230e91f337a314d05298ab0c681c0e1c4a80eef4d47520",
+      "bgra_sha256": "d71068b190cb23a1854103fd09b11e678050737aaf56c98e54f959677941a09e",
       "invocation": [
-        "-r",
-        "96",
-        "-f",
-        "1",
-        "-l",
-        "1",
-        "-singlefile",
-        "-aa",
-        "yes",
-        "-aaVector",
-        "yes"
+        "cgrender",
+        "INPUT.pdf",
+        "OUTPUT.bgra",
+        "1"
       ],
+      "invocation_sha256": "0e95c968b924cb416a6b37d3c2e6b02f40228b75ab720e84289299875fd1f005",
+      "diagnostics": [],
       "analytic_sha256": "d71068b190cb23a1854103fd09b11e678050737aaf56c98e54f959677941a09e",
-      "poppler_crosscheck": {
+      "outside_reference_crosscheck": {
         "disagreements": {
-          "count": 128,
-          "coordinates_sha256": "0748ad4f637966454f6ddb84e9bbfff654f087d81a7bbd19addec23bb525fc4d"
+          "count": 0,
+          "coordinates_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         },
         "clip_image_disagreements": {
-          "count": 128,
-          "coordinates_sha256": "0748ad4f637966454f6ddb84e9bbfff654f087d81a7bbd19addec23bb525fc4d"
+          "count": 0,
+          "coordinates_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         },
         "outside_band_disagreements": {
           "count": 0,
@@ -914,20 +784,15 @@
       "ppm_sha256": "9172489a77dd69db803c695574103f8d5ed7b5fa792b296c8822aa38b783d194",
       "bgra_sha256": "08b23a1c7abd624fee58f5aa5ec255115f7d8ab988f8f8846c57d6e82aa2cce6",
       "invocation": [
-        "-r",
-        "96",
-        "-f",
-        "1",
-        "-l",
-        "1",
-        "-singlefile",
-        "-aa",
-        "yes",
-        "-aaVector",
-        "yes"
+        "cgrender",
+        "INPUT.pdf",
+        "OUTPUT.bgra",
+        "1"
       ],
+      "invocation_sha256": "0e95c968b924cb416a6b37d3c2e6b02f40228b75ab720e84289299875fd1f005",
+      "diagnostics": [],
       "analytic_sha256": "08b23a1c7abd624fee58f5aa5ec255115f7d8ab988f8f8846c57d6e82aa2cce6",
-      "poppler_crosscheck": {
+      "outside_reference_crosscheck": {
         "disagreements": {
           "count": 0,
           "coordinates_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -962,20 +827,15 @@
       "ppm_sha256": "bbce6836c55ae645a0d31d8903979f68799919ad8a9300fd49596aa094270f01",
       "bgra_sha256": "5d935f7a17ead871bfcd94948de32c7e32038bd442f3521109b87dfeb317527e",
       "invocation": [
-        "-r",
-        "96",
-        "-f",
-        "1",
-        "-l",
-        "1",
-        "-singlefile",
-        "-aa",
-        "yes",
-        "-aaVector",
-        "yes"
+        "cgrender",
+        "INPUT.pdf",
+        "OUTPUT.bgra",
+        "1"
       ],
+      "invocation_sha256": "0e95c968b924cb416a6b37d3c2e6b02f40228b75ab720e84289299875fd1f005",
+      "diagnostics": [],
       "analytic_sha256": "5d935f7a17ead871bfcd94948de32c7e32038bd442f3521109b87dfeb317527e",
-      "poppler_crosscheck": {
+      "outside_reference_crosscheck": {
         "disagreements": {
           "count": 0,
           "coordinates_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -1010,20 +870,17 @@
       "ppm_sha256": "d2f6d1ef302851a667adde508208fded2aea933d1c0b62941b9d0882a3461523",
       "bgra_sha256": "bf05aaac8154b40d0d6c2fdb23df9d576af03d14ee654924f5b75730b5950f85",
       "invocation": [
-        "-r",
-        "96",
-        "-f",
-        "1",
-        "-l",
-        "1",
-        "-singlefile",
-        "-aa",
-        "yes",
-        "-aaVector",
-        "yes"
+        "cgrender",
+        "INPUT.pdf",
+        "OUTPUT.bgra",
+        "1"
+      ],
+      "invocation_sha256": "0e95c968b924cb416a6b37d3c2e6b02f40228b75ab720e84289299875fd1f005",
+      "diagnostics": [
+        "CGPDFContentStreamCreate caught exception: invalid `Contents': not a stream or array."
       ],
       "analytic_sha256": "bf05aaac8154b40d0d6c2fdb23df9d576af03d14ee654924f5b75730b5950f85",
-      "poppler_crosscheck": {
+      "outside_reference_crosscheck": {
         "disagreements": {
           "count": 0,
           "coordinates_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -1058,20 +915,15 @@
       "ppm_sha256": "d2f6d1ef302851a667adde508208fded2aea933d1c0b62941b9d0882a3461523",
       "bgra_sha256": "bf05aaac8154b40d0d6c2fdb23df9d576af03d14ee654924f5b75730b5950f85",
       "invocation": [
-        "-r",
-        "96",
-        "-f",
-        "1",
-        "-l",
-        "1",
-        "-singlefile",
-        "-aa",
-        "yes",
-        "-aaVector",
-        "yes"
+        "cgrender",
+        "INPUT.pdf",
+        "OUTPUT.bgra",
+        "1"
       ],
+      "invocation_sha256": "0e95c968b924cb416a6b37d3c2e6b02f40228b75ab720e84289299875fd1f005",
+      "diagnostics": [],
       "analytic_sha256": "bf05aaac8154b40d0d6c2fdb23df9d576af03d14ee654924f5b75730b5950f85",
-      "poppler_crosscheck": {
+      "outside_reference_crosscheck": {
         "disagreements": {
           "count": 0,
           "coordinates_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -1106,20 +958,15 @@
       "ppm_sha256": "d2f6d1ef302851a667adde508208fded2aea933d1c0b62941b9d0882a3461523",
       "bgra_sha256": "bf05aaac8154b40d0d6c2fdb23df9d576af03d14ee654924f5b75730b5950f85",
       "invocation": [
-        "-r",
-        "96",
-        "-f",
-        "1",
-        "-l",
-        "1",
-        "-singlefile",
-        "-aa",
-        "yes",
-        "-aaVector",
-        "yes"
+        "cgrender",
+        "INPUT.pdf",
+        "OUTPUT.bgra",
+        "1"
       ],
+      "invocation_sha256": "0e95c968b924cb416a6b37d3c2e6b02f40228b75ab720e84289299875fd1f005",
+      "diagnostics": [],
       "analytic_sha256": "bf05aaac8154b40d0d6c2fdb23df9d576af03d14ee654924f5b75730b5950f85",
-      "poppler_crosscheck": {
+      "outside_reference_crosscheck": {
         "disagreements": {
           "count": 0,
           "coordinates_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -1154,20 +1001,15 @@
       "ppm_sha256": "d2f6d1ef302851a667adde508208fded2aea933d1c0b62941b9d0882a3461523",
       "bgra_sha256": "bf05aaac8154b40d0d6c2fdb23df9d576af03d14ee654924f5b75730b5950f85",
       "invocation": [
-        "-r",
-        "96",
-        "-f",
-        "1",
-        "-l",
-        "1",
-        "-singlefile",
-        "-aa",
-        "yes",
-        "-aaVector",
-        "yes"
+        "cgrender",
+        "INPUT.pdf",
+        "OUTPUT.bgra",
+        "1"
       ],
+      "invocation_sha256": "0e95c968b924cb416a6b37d3c2e6b02f40228b75ab720e84289299875fd1f005",
+      "diagnostics": [],
       "analytic_sha256": "bf05aaac8154b40d0d6c2fdb23df9d576af03d14ee654924f5b75730b5950f85",
-      "poppler_crosscheck": {
+      "outside_reference_crosscheck": {
         "disagreements": {
           "count": 0,
           "coordinates_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -1202,20 +1044,15 @@
       "ppm_sha256": "d317e58d555316e22714a45e1807b4c1b5dc76690b03f981444f6b427925d096",
       "bgra_sha256": "e8eb683216a6f5817f078b77d59b2dafcbbc958e200b51ba772527792e8f8b09",
       "invocation": [
-        "-r",
-        "96",
-        "-f",
-        "1",
-        "-l",
-        "1",
-        "-singlefile",
-        "-aa",
-        "yes",
-        "-aaVector",
-        "yes"
+        "cgrender",
+        "INPUT.pdf",
+        "OUTPUT.bgra",
+        "1"
       ],
+      "invocation_sha256": "0e95c968b924cb416a6b37d3c2e6b02f40228b75ab720e84289299875fd1f005",
+      "diagnostics": [],
       "analytic_sha256": "e8eb683216a6f5817f078b77d59b2dafcbbc958e200b51ba772527792e8f8b09",
-      "poppler_crosscheck": {
+      "outside_reference_crosscheck": {
         "disagreements": {
           "count": 0,
           "coordinates_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -1250,20 +1087,15 @@
       "ppm_sha256": "0f987f871d764803e4439c13e849d0944c980dcfec4f710b2902e63a23c2d4e8",
       "bgra_sha256": "1946fa8c40e492dfbc5add4c8e9affa41a88b4495322cf83826b50f4521bf6a0",
       "invocation": [
-        "-r",
-        "96",
-        "-f",
-        "1",
-        "-l",
-        "1",
-        "-singlefile",
-        "-aa",
-        "yes",
-        "-aaVector",
-        "yes"
+        "cgrender",
+        "INPUT.pdf",
+        "OUTPUT.bgra",
+        "1"
       ],
+      "invocation_sha256": "0e95c968b924cb416a6b37d3c2e6b02f40228b75ab720e84289299875fd1f005",
+      "diagnostics": [],
       "analytic_sha256": "1946fa8c40e492dfbc5add4c8e9affa41a88b4495322cf83826b50f4521bf6a0",
-      "poppler_crosscheck": {
+      "outside_reference_crosscheck": {
         "disagreements": {
           "count": 0,
           "coordinates_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -1298,20 +1130,15 @@
       "ppm_sha256": "d2f6d1ef302851a667adde508208fded2aea933d1c0b62941b9d0882a3461523",
       "bgra_sha256": "bf05aaac8154b40d0d6c2fdb23df9d576af03d14ee654924f5b75730b5950f85",
       "invocation": [
-        "-r",
-        "96",
-        "-f",
-        "1",
-        "-l",
-        "1",
-        "-singlefile",
-        "-aa",
-        "yes",
-        "-aaVector",
-        "yes"
+        "cgrender",
+        "INPUT.pdf",
+        "OUTPUT.bgra",
+        "1"
       ],
+      "invocation_sha256": "0e95c968b924cb416a6b37d3c2e6b02f40228b75ab720e84289299875fd1f005",
+      "diagnostics": [],
       "analytic_sha256": "bf05aaac8154b40d0d6c2fdb23df9d576af03d14ee654924f5b75730b5950f85",
-      "poppler_crosscheck": {
+      "outside_reference_crosscheck": {
         "disagreements": {
           "count": 0,
           "coordinates_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -1346,20 +1173,15 @@
       "ppm_sha256": "d2f6d1ef302851a667adde508208fded2aea933d1c0b62941b9d0882a3461523",
       "bgra_sha256": "bf05aaac8154b40d0d6c2fdb23df9d576af03d14ee654924f5b75730b5950f85",
       "invocation": [
-        "-r",
-        "96",
-        "-f",
-        "1",
-        "-l",
-        "1",
-        "-singlefile",
-        "-aa",
-        "yes",
-        "-aaVector",
-        "yes"
+        "cgrender",
+        "INPUT.pdf",
+        "OUTPUT.bgra",
+        "1"
       ],
+      "invocation_sha256": "0e95c968b924cb416a6b37d3c2e6b02f40228b75ab720e84289299875fd1f005",
+      "diagnostics": [],
       "analytic_sha256": "bf05aaac8154b40d0d6c2fdb23df9d576af03d14ee654924f5b75730b5950f85",
-      "poppler_crosscheck": {
+      "outside_reference_crosscheck": {
         "disagreements": {
           "count": 0,
           "coordinates_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -1394,20 +1216,15 @@
       "ppm_sha256": "d2f6d1ef302851a667adde508208fded2aea933d1c0b62941b9d0882a3461523",
       "bgra_sha256": "bf05aaac8154b40d0d6c2fdb23df9d576af03d14ee654924f5b75730b5950f85",
       "invocation": [
-        "-r",
-        "96",
-        "-f",
-        "1",
-        "-l",
-        "1",
-        "-singlefile",
-        "-aa",
-        "yes",
-        "-aaVector",
-        "yes"
+        "cgrender",
+        "INPUT.pdf",
+        "OUTPUT.bgra",
+        "1"
       ],
+      "invocation_sha256": "0e95c968b924cb416a6b37d3c2e6b02f40228b75ab720e84289299875fd1f005",
+      "diagnostics": [],
       "analytic_sha256": "bf05aaac8154b40d0d6c2fdb23df9d576af03d14ee654924f5b75730b5950f85",
-      "poppler_crosscheck": {
+      "outside_reference_crosscheck": {
         "disagreements": {
           "count": 0,
           "coordinates_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -1442,20 +1259,15 @@
       "ppm_sha256": "d2f6d1ef302851a667adde508208fded2aea933d1c0b62941b9d0882a3461523",
       "bgra_sha256": "bf05aaac8154b40d0d6c2fdb23df9d576af03d14ee654924f5b75730b5950f85",
       "invocation": [
-        "-r",
-        "96",
-        "-f",
-        "1",
-        "-l",
-        "1",
-        "-singlefile",
-        "-aa",
-        "yes",
-        "-aaVector",
-        "yes"
+        "cgrender",
+        "INPUT.pdf",
+        "OUTPUT.bgra",
+        "1"
       ],
+      "invocation_sha256": "0e95c968b924cb416a6b37d3c2e6b02f40228b75ab720e84289299875fd1f005",
+      "diagnostics": [],
       "analytic_sha256": "bf05aaac8154b40d0d6c2fdb23df9d576af03d14ee654924f5b75730b5950f85",
-      "poppler_crosscheck": {
+      "outside_reference_crosscheck": {
         "disagreements": {
           "count": 0,
           "coordinates_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -1490,20 +1302,15 @@
       "ppm_sha256": "d2f6d1ef302851a667adde508208fded2aea933d1c0b62941b9d0882a3461523",
       "bgra_sha256": "bf05aaac8154b40d0d6c2fdb23df9d576af03d14ee654924f5b75730b5950f85",
       "invocation": [
-        "-r",
-        "96",
-        "-f",
-        "1",
-        "-l",
-        "1",
-        "-singlefile",
-        "-aa",
-        "yes",
-        "-aaVector",
-        "yes"
+        "cgrender",
+        "INPUT.pdf",
+        "OUTPUT.bgra",
+        "1"
       ],
+      "invocation_sha256": "0e95c968b924cb416a6b37d3c2e6b02f40228b75ab720e84289299875fd1f005",
+      "diagnostics": [],
       "analytic_sha256": "bf05aaac8154b40d0d6c2fdb23df9d576af03d14ee654924f5b75730b5950f85",
-      "poppler_crosscheck": {
+      "outside_reference_crosscheck": {
         "disagreements": {
           "count": 0,
           "coordinates_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -1538,20 +1345,15 @@
       "ppm_sha256": "d2f6d1ef302851a667adde508208fded2aea933d1c0b62941b9d0882a3461523",
       "bgra_sha256": "bf05aaac8154b40d0d6c2fdb23df9d576af03d14ee654924f5b75730b5950f85",
       "invocation": [
-        "-r",
-        "96",
-        "-f",
-        "1",
-        "-l",
-        "1",
-        "-singlefile",
-        "-aa",
-        "yes",
-        "-aaVector",
-        "yes"
+        "cgrender",
+        "INPUT.pdf",
+        "OUTPUT.bgra",
+        "1"
       ],
+      "invocation_sha256": "0e95c968b924cb416a6b37d3c2e6b02f40228b75ab720e84289299875fd1f005",
+      "diagnostics": [],
       "analytic_sha256": "bf05aaac8154b40d0d6c2fdb23df9d576af03d14ee654924f5b75730b5950f85",
-      "poppler_crosscheck": {
+      "outside_reference_crosscheck": {
         "disagreements": {
           "count": 0,
           "coordinates_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -1586,20 +1388,15 @@
       "ppm_sha256": "d2f6d1ef302851a667adde508208fded2aea933d1c0b62941b9d0882a3461523",
       "bgra_sha256": "bf05aaac8154b40d0d6c2fdb23df9d576af03d14ee654924f5b75730b5950f85",
       "invocation": [
-        "-r",
-        "96",
-        "-f",
-        "1",
-        "-l",
-        "1",
-        "-singlefile",
-        "-aa",
-        "yes",
-        "-aaVector",
-        "yes"
+        "cgrender",
+        "INPUT.pdf",
+        "OUTPUT.bgra",
+        "1"
       ],
+      "invocation_sha256": "0e95c968b924cb416a6b37d3c2e6b02f40228b75ab720e84289299875fd1f005",
+      "diagnostics": [],
       "analytic_sha256": "bf05aaac8154b40d0d6c2fdb23df9d576af03d14ee654924f5b75730b5950f85",
-      "poppler_crosscheck": {
+      "outside_reference_crosscheck": {
         "disagreements": {
           "count": 0,
           "coordinates_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -1634,20 +1431,15 @@
       "ppm_sha256": "d2f6d1ef302851a667adde508208fded2aea933d1c0b62941b9d0882a3461523",
       "bgra_sha256": "bf05aaac8154b40d0d6c2fdb23df9d576af03d14ee654924f5b75730b5950f85",
       "invocation": [
-        "-r",
-        "96",
-        "-f",
-        "1",
-        "-l",
-        "1",
-        "-singlefile",
-        "-aa",
-        "yes",
-        "-aaVector",
-        "yes"
+        "cgrender",
+        "INPUT.pdf",
+        "OUTPUT.bgra",
+        "1"
       ],
+      "invocation_sha256": "0e95c968b924cb416a6b37d3c2e6b02f40228b75ab720e84289299875fd1f005",
+      "diagnostics": [],
       "analytic_sha256": "bf05aaac8154b40d0d6c2fdb23df9d576af03d14ee654924f5b75730b5950f85",
-      "poppler_crosscheck": {
+      "outside_reference_crosscheck": {
         "disagreements": {
           "count": 0,
           "coordinates_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -1682,20 +1474,15 @@
       "ppm_sha256": "d2f6d1ef302851a667adde508208fded2aea933d1c0b62941b9d0882a3461523",
       "bgra_sha256": "bf05aaac8154b40d0d6c2fdb23df9d576af03d14ee654924f5b75730b5950f85",
       "invocation": [
-        "-r",
-        "96",
-        "-f",
-        "1",
-        "-l",
-        "1",
-        "-singlefile",
-        "-aa",
-        "yes",
-        "-aaVector",
-        "yes"
+        "cgrender",
+        "INPUT.pdf",
+        "OUTPUT.bgra",
+        "1"
       ],
+      "invocation_sha256": "0e95c968b924cb416a6b37d3c2e6b02f40228b75ab720e84289299875fd1f005",
+      "diagnostics": [],
       "analytic_sha256": "bf05aaac8154b40d0d6c2fdb23df9d576af03d14ee654924f5b75730b5950f85",
-      "poppler_crosscheck": {
+      "outside_reference_crosscheck": {
         "disagreements": {
           "count": 0,
           "coordinates_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -1730,20 +1517,15 @@
       "ppm_sha256": "d2f6d1ef302851a667adde508208fded2aea933d1c0b62941b9d0882a3461523",
       "bgra_sha256": "bf05aaac8154b40d0d6c2fdb23df9d576af03d14ee654924f5b75730b5950f85",
       "invocation": [
-        "-r",
-        "96",
-        "-f",
-        "1",
-        "-l",
-        "1",
-        "-singlefile",
-        "-aa",
-        "yes",
-        "-aaVector",
-        "yes"
+        "cgrender",
+        "INPUT.pdf",
+        "OUTPUT.bgra",
+        "1"
       ],
+      "invocation_sha256": "0e95c968b924cb416a6b37d3c2e6b02f40228b75ab720e84289299875fd1f005",
+      "diagnostics": [],
       "analytic_sha256": "bf05aaac8154b40d0d6c2fdb23df9d576af03d14ee654924f5b75730b5950f85",
-      "poppler_crosscheck": {
+      "outside_reference_crosscheck": {
         "disagreements": {
           "count": 0,
           "coordinates_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -1778,20 +1560,17 @@
       "ppm_sha256": "d2f6d1ef302851a667adde508208fded2aea933d1c0b62941b9d0882a3461523",
       "bgra_sha256": "bf05aaac8154b40d0d6c2fdb23df9d576af03d14ee654924f5b75730b5950f85",
       "invocation": [
-        "-r",
-        "96",
-        "-f",
-        "1",
-        "-l",
-        "1",
-        "-singlefile",
-        "-aa",
-        "yes",
-        "-aaVector",
-        "yes"
+        "cgrender",
+        "INPUT.pdf",
+        "OUTPUT.bgra",
+        "1"
+      ],
+      "invocation_sha256": "0e95c968b924cb416a6b37d3c2e6b02f40228b75ab720e84289299875fd1f005",
+      "diagnostics": [
+        "CGPDFContentStreamCreate caught exception: invalid `Contents': not a stream or array."
       ],
       "analytic_sha256": "bf05aaac8154b40d0d6c2fdb23df9d576af03d14ee654924f5b75730b5950f85",
-      "poppler_crosscheck": {
+      "outside_reference_crosscheck": {
         "disagreements": {
           "count": 0,
           "coordinates_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -1826,20 +1605,17 @@
       "ppm_sha256": "d2f6d1ef302851a667adde508208fded2aea933d1c0b62941b9d0882a3461523",
       "bgra_sha256": "bf05aaac8154b40d0d6c2fdb23df9d576af03d14ee654924f5b75730b5950f85",
       "invocation": [
-        "-r",
-        "96",
-        "-f",
-        "1",
-        "-l",
-        "1",
-        "-singlefile",
-        "-aa",
-        "yes",
-        "-aaVector",
-        "yes"
+        "cgrender",
+        "INPUT.pdf",
+        "OUTPUT.bgra",
+        "1"
+      ],
+      "invocation_sha256": "0e95c968b924cb416a6b37d3c2e6b02f40228b75ab720e84289299875fd1f005",
+      "diagnostics": [
+        "CGPDFContentStreamCreate caught exception: invalid `Contents': not a stream or array."
       ],
       "analytic_sha256": "bf05aaac8154b40d0d6c2fdb23df9d576af03d14ee654924f5b75730b5950f85",
-      "poppler_crosscheck": {
+      "outside_reference_crosscheck": {
         "disagreements": {
           "count": 0,
           "coordinates_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -1874,20 +1650,17 @@
       "ppm_sha256": "d2f6d1ef302851a667adde508208fded2aea933d1c0b62941b9d0882a3461523",
       "bgra_sha256": "bf05aaac8154b40d0d6c2fdb23df9d576af03d14ee654924f5b75730b5950f85",
       "invocation": [
-        "-r",
-        "96",
-        "-f",
-        "1",
-        "-l",
-        "1",
-        "-singlefile",
-        "-aa",
-        "yes",
-        "-aaVector",
-        "yes"
+        "cgrender",
+        "INPUT.pdf",
+        "OUTPUT.bgra",
+        "1"
+      ],
+      "invocation_sha256": "0e95c968b924cb416a6b37d3c2e6b02f40228b75ab720e84289299875fd1f005",
+      "diagnostics": [
+        "CGPDFContentStreamCreate caught exception: invalid `Contents': not a stream or array."
       ],
       "analytic_sha256": "bf05aaac8154b40d0d6c2fdb23df9d576af03d14ee654924f5b75730b5950f85",
-      "poppler_crosscheck": {
+      "outside_reference_crosscheck": {
         "disagreements": {
           "count": 0,
           "coordinates_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -1922,20 +1695,17 @@
       "ppm_sha256": "d2f6d1ef302851a667adde508208fded2aea933d1c0b62941b9d0882a3461523",
       "bgra_sha256": "bf05aaac8154b40d0d6c2fdb23df9d576af03d14ee654924f5b75730b5950f85",
       "invocation": [
-        "-r",
-        "96",
-        "-f",
-        "1",
-        "-l",
-        "1",
-        "-singlefile",
-        "-aa",
-        "yes",
-        "-aaVector",
-        "yes"
+        "cgrender",
+        "INPUT.pdf",
+        "OUTPUT.bgra",
+        "1"
+      ],
+      "invocation_sha256": "0e95c968b924cb416a6b37d3c2e6b02f40228b75ab720e84289299875fd1f005",
+      "diagnostics": [
+        "CGPDFContentStreamCreate caught exception: invalid `Contents': not a stream or array."
       ],
       "analytic_sha256": "bf05aaac8154b40d0d6c2fdb23df9d576af03d14ee654924f5b75730b5950f85",
-      "poppler_crosscheck": {
+      "outside_reference_crosscheck": {
         "disagreements": {
           "count": 0,
           "coordinates_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"

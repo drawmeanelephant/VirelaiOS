@@ -9,7 +9,7 @@ def snapshot(root):
     paths = []
     for directory in ("user/go/pdfproof", "tools/pdf-proof", "tests/fixtures/pdf/acceptance"):
         for p in (root/directory).rglob("*"):
-            if p.is_file() and p.suffix in (".go", ".py", ".sh", ".json", ".pdf") and p.name != "proof-lock.json":
+            if p.is_file() and p.suffix in (".go", ".py", ".sh", ".swift", ".json", ".pdf") and p.name != "proof-lock.json":
                 paths.append(p)
     return {p.relative_to(root).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
             for p in sorted(paths)}

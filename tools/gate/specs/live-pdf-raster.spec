@@ -1,4 +1,4 @@
-# Bounded PDF source-to-bitmap acceptance, with independent pinned Poppler pages.
+# Bounded PDF source-to-bitmap acceptance, with pinned CoreGraphics outside references.
 # One invocation per boot. Every boot ends on the producer's own marker.
 # The runner's bounded tail captures the final reap and kernel receipts.
 # Missing inputs, pins, counters or M90f are failures, never skips.

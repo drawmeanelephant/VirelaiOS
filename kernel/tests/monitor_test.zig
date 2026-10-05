@@ -1534,7 +1534,7 @@ test "monitor: procs reports the process table with lifecycle and exit status" {
     );
 }
 
-test "monitor: opt-in runtime receipts retain identity and caps after resource release" {
+test "monitor: live runtime receipts retain identity and peaks across exit and resource release" {
     var env = TestEnv.init();
     var mon = env.monitor();
     process.init();
@@ -1545,10 +1545,16 @@ test "monitor: opt-in runtime receipts retain identity and caps after resource r
     try std.testing.expect(process.add_mmap_region(pid, 0x10000000, 4096, 3, 0));
     try std.testing.expect(process.add_mmap_region(pid, 0x10001000, 4096, 3, 0));
     try std.testing.expect(process.remove_mmap_region(pid, 0x10000000, 4096));
+    const live = "runtime-receipt: pid=0 name=GOSTRESS.ELF peak_pages=2 page_cap=4096 peak_regions=2 region_cap=16 static_pages=3 page_tracking=extensible page_saturated=0 total_pages=2 record_failures=0 unrecorded_pages=0 reaped=0\n";
     try std.testing.expectEqual(ExecError.none, exec(&mon, &.{ "procs", "receipt" }));
-    try std.testing.expectEqualStrings("runtime-receipt: none\n", env.mock.contents());
+    try std.testing.expectEqualStrings(live, env.mock.contents());
+    const before = process.runtime_receipt(pid).?;
     _ = process.on_task_exit(2, 0);
+    env.mock.reset();
+    try std.testing.expectEqual(ExecError.none, exec(&mon, &.{ "procs", "receipt", "0" }));
+    try std.testing.expectEqualStrings(live, env.mock.contents()); // exited, not yet task-reaped
     try std.testing.expect(process.release_pages_on_reap(2));
+    try std.testing.expectEqualDeep(before, process.runtime_receipt(pid).?);
     const expected = "runtime-receipt: pid=0 name=GOSTRESS.ELF peak_pages=2 page_cap=4096 peak_regions=2 region_cap=16 static_pages=3 page_tracking=extensible page_saturated=0 total_pages=2 record_failures=0 unrecorded_pages=0 reaped=1\n";
     env.mock.reset();
     try std.testing.expectEqual(ExecError.none, exec(&mon, &.{ "procs", "receipt", "GOSTRESS.ELF" }));
@@ -1571,6 +1577,72 @@ test "monitor: opt-in runtime receipts retain identity and caps after resource r
     env.mock.reset();
     try std.testing.expectEqual(ExecError.usage, exec(&mon, &.{ "procs", "bogus" }));
     try std.testing.expectEqualStrings("usage: procs\nprocess registry: image, address space, lifecycle, exit status\n", env.mock.contents());
+}
+
+test "monitor: sibling exits keep saturated live receipts unreaped until the last task is reaped" {
+    const Capture = struct {
+        mock: console.MockConsole(4096) = .{},
+        all_locked: bool = true,
+        const vtable = console.Console.VTable{ .write = write, .flush = flush, .readByte = read };
+        fn write(ctx: *anyopaque, bytes: []const u8) void {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            self.all_locked = self.all_locked and monitor.svclock.kernel.held();
+            self.mock.console().puts(bytes);
+        }
+        fn flush(_: *anyopaque) void {}
+        fn read(_: *anyopaque) ?u8 {
+            return null;
+        }
+    };
+    var env = TestEnv.init();
+    var mon = env.monitor();
+    var capture = Capture{};
+    mon.console = .{ .ctx = &capture, .vtable = &Capture.vtable };
+    process.init();
+    const pid = process.create("PDFPROOF.ELF", .{}, .{}, .{}).?;
+    try std.testing.expectEqual(ExecError.none, exec(&mon, &.{ "procs", "receipt", "PDFPROOF.ELF" }));
+    try std.testing.expectEqualStrings("runtime-receipt: none\n", capture.mock.contents()); // created
+    capture.mock.reset();
+    try std.testing.expect(process.bind(pid, 2));
+    try std.testing.expect(process.bind_thread(pid, 3));
+    for (0..process.max_dynamic_pages) |_| try std.testing.expect(process.record_dynamic_page(pid, 0));
+    try std.testing.expect(process.add_mmap_region(pid, 0x10000000, 4096, 3, 0));
+    const before = process.runtime_receipt(pid).?;
+    const live = "runtime-receipt: pid=0 name=PDFPROOF.ELF peak_pages=4096 page_cap=4096 peak_regions=1 region_cap=16 static_pages=0 page_tracking=extensible page_saturated=1 total_pages=4096 record_failures=0 unrecorded_pages=0 reaped=0\n";
+    try std.testing.expectEqual(ExecError.none, exec(&mon, &.{ "procs", "receipt", "0" }));
+    try std.testing.expectEqualStrings(live, capture.mock.contents());
+    // A sibling exit does not exit or reap the process.
+    try std.testing.expect(process.on_task_exit(3, 7) == null);
+    try std.testing.expect(!process.release_pages_on_reap(3));
+    capture.mock.reset();
+    try std.testing.expectEqual(ExecError.none, exec(&mon, &.{ "procs", "receipt", "PDFPROOF.ELF" }));
+    try std.testing.expectEqualStrings(live, capture.mock.contents());
+    // Nor does a primary exit while a sibling still runs, even though its
+    // task_id becomes null. The receipt must remain reaped=0.
+    try std.testing.expect(process.bind_thread(pid, 3));
+    try std.testing.expect(process.on_task_exit(2, 0) == null);
+    try std.testing.expectEqual(process.State.running, process.info(pid).?.state);
+    try std.testing.expect(process.info(pid).?.task_id == null);
+    try std.testing.expect(!process.release_pages_on_reap(2));
+    try std.testing.expect(process.forget_dynamic_page(pid, 0));
+    try std.testing.expect(process.remove_mmap_region(pid, 0x10000000, 4096));
+    capture.mock.reset();
+    try std.testing.expectEqual(ExecError.none, exec(&mon, &.{ "procs", "receipt", "0" }));
+    try std.testing.expectEqualStrings(live, capture.mock.contents()); // high-water, not live count
+    try std.testing.expectEqual(@as(?usize, pid), process.on_task_exit(3, 0));
+    capture.mock.reset();
+    try std.testing.expectEqual(ExecError.none, exec(&mon, &.{ "procs", "receipt", "0" }));
+    try std.testing.expectEqualStrings(live, capture.mock.contents()); // final, before reap
+    try std.testing.expect(process.release_pages_on_reap(3));
+    try std.testing.expectEqualDeep(before, process.runtime_receipt(pid).?);
+    capture.mock.reset();
+    try std.testing.expectEqual(ExecError.none, exec(&mon, &.{ "procs", "receipt", "0" }));
+    try std.testing.expectEqualStrings(
+        "runtime-receipt: pid=0 name=PDFPROOF.ELF peak_pages=4096 page_cap=4096 peak_regions=1 region_cap=16 static_pages=0 page_tracking=extensible page_saturated=1 total_pages=4096 record_failures=0 unrecorded_pages=0 reaped=1\n",
+        capture.mock.contents(),
+    );
+    try std.testing.expect(capture.all_locked); // handler, not dispatch's shorter scope
+    try std.testing.expect(!monitor.svclock.kernel.held());
 }
 
 test "monitor: kill is registered and arms a running process by id and by name" {

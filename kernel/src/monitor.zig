@@ -4609,13 +4609,17 @@ fn cmd_procs(m: *Monitor, args: []const []const u8) ExecError {
     return .none;
 }
 
-/// `procs receipt [pid|name]` reads only final exit receipts. Retention has
-/// the same bounded lifetime as procs history, not a new event/serial stream.
+/// `procs receipt [pid|name]` reads live or retained final counters. One
+/// kernel-domain hold covers identity, counters and reap state, matching the
+/// update paths. Live rows always have reaped=0, even if the primary task
+/// exited before its siblings. Retention is bounded by procs history.
 fn cmd_runtime_receipt(m: *Monitor, args: []const []const u8) ExecError {
     if (!std.mem.eql(u8, args[0], "receipt")) {
         print_usage(m, lookup("procs").?);
         return .usage;
     }
+    const taken = svclock.acquire_missing(svclock.dom_bit(.kernel));
+    defer svclock.release_set(taken);
     var found = false;
     var id: usize = 0;
     while (id < process.max_processes) : (id += 1) {
@@ -4630,12 +4634,12 @@ fn cmd_runtime_receipt(m: *Monitor, args: []const []const u8) ExecError {
         const receipt = process.runtime_receipt(id) orelse continue;
         var buf: [384]u8 = undefined;
         m.console.puts(std.fmt.bufPrint(&buf, "runtime-receipt: pid={d} name={s} peak_pages={d} page_cap={d} peak_regions={d} region_cap={d} static_pages={d} page_tracking=extensible page_saturated={d} total_pages={d} record_failures={d} unrecorded_pages=0 reaped={d}\n", .{
-            id,                                 info.name,
-            receipt.peak_pages,                 process.max_dynamic_pages,
-            receipt.peak_regions,               process.max_mmap_regions,
-            receipt.static_pages,               @intFromBool(receipt.peak_pages >= process.max_dynamic_pages),
-            receipt.total_pages,                receipt.record_failures,
-            @intFromBool(info.task_id == null),
+            id,                                                           info.name,
+            receipt.peak_pages,                                           process.max_dynamic_pages,
+            receipt.peak_regions,                                         process.max_mmap_regions,
+            receipt.static_pages,                                         @intFromBool(receipt.peak_pages >= process.max_dynamic_pages),
+            receipt.total_pages,                                          receipt.record_failures,
+            @intFromBool(info.state == .exited and info.task_id == null),
         }) catch return .not_implemented);
         found = true;
     }
