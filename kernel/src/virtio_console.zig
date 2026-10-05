@@ -112,7 +112,14 @@ const VirtqUsed = extern struct {
 pub var virtio_desc: [1]VirtqDesc align(64) = undefined;
 pub var virtio_avail: VirtqAvail align(64) = undefined;
 pub var virtio_used: VirtqUsed align(64) = undefined;
+/// CPU-owned staging: `uart_putc` appends here at any time, so the device
+/// never reads it (#1972). A flush copies the staged unit into
+/// `virtio_tx_dma`.
 pub var virtio_tx: [128]u8 align(64) = undefined;
+/// The only buffer the TX descriptor names. Written only while no
+/// descriptor is outstanding, so bytes the device may still read are never
+/// rewritten.
+var virtio_tx_dma: [128]u8 align(64) = undefined;
 var virtio_last_used: u16 = 0;
 // Split-ring size (must be a power of 2, Virtio 1.3 §4.1.4.3): one
 // descriptor, no chaining. The number of outstanding buffers
@@ -131,7 +138,7 @@ pub var vp_queue_notify_off: u16 = 0; // queue 1 notify offset
 pub var vp_common_off: u32 = 0; // common cfg offset within the BAR
 pub var vp_notify_off: u32 = 0; // notify cfg offset within the BAR
 pub var vp_bar0: u64 = 0; // console BAR0 base (the SEL record)
-pub var vp_tx_len: usize = 0; // bytes buffered in virtio_tx
+pub var vp_tx_len: usize = 0; // bytes staged in virtio_tx
 pub var st_tx: ?*const SystemTable = null; // for post-exit flush stage markers
 
 // Claim 6684: virtio-console receive queue (queue 0) + polled RX. The
@@ -477,12 +484,13 @@ pub fn virtio_pci_init(st: *const SystemTable) bool {
     return true;
 }
 
-/// Transmit the buffered TX bytes through queue 1: post the buffer in the
-/// desc/avail rings, clean the D-cache (the device reads guest RAM
-/// directly), kick via the notify region, and wait for the used ring.
-/// Runs POST-EXIT on the pre-exit-captured VAs. A stuck device times out
-/// and drops the line instead of hanging the kernel (TX remains honest: the
-/// serial log is the gate, and M2_TXOK! records that the path returned).
+/// Transmit the staged TX bytes through queue 1: copy them into the DMA
+/// buffer, post it in the desc/avail rings, clean the D-cache (the device
+/// reads guest RAM directly), kick via the notify region, and wait for the
+/// used ring. Runs POST-EXIT on the pre-exit-captured VAs. A stuck device
+/// times out and costs dropped lines instead of a hung kernel (TX remains
+/// honest: the serial log is the gate, and M2_TXOK! records that the path
+/// returned); `tx_unit` below says what a drop is.
 /// Claim 3475: the coarse TXST!/TXNT!/TXPL! stage markers (and the post-exit
 /// probe tail) are written only for the FIRST flush. They exist to name the
 /// hang site of the historically fatal first post-exit TX (claim 0013/0018
@@ -502,15 +510,14 @@ var vp_first_flush: bool = true;
 /// console writes intermittently never reached the serial (the WM2 gate
 /// keys its script phases on the demo's prints and lost ~50% of WM-mode
 /// boots to it). Serialize flushes with an IRQ-save spinlock, and give the
-/// full-guard a bounded retry (8 re-polls of the used ring) before the
-/// honest drop — a truly stuck device still drops, a contended one now
-/// gets through. Default-build byte-difference: only lines that were
+/// full-guard a bounded retry (`tx_reap_polls` re-polls of the used ring)
+/// before the honest drop — a truly stuck device still drops, a contended
+/// one now gets through. Default-build byte-difference: only lines that were
 /// previously DROPPED can now appear; no existing line changes shape.
 var vp_tx_lock = spinlock.IrqSaveSpinlock{};
 
 pub fn virtio_pci_flush() void {
     if (!vp_ready or vp_tx_len == 0) return;
-    const st = st_tx;
     // WM2 (claim #980): serialize concurrent flushers (see vp_tx_lock above).
     const daif = vp_tx_lock.lock();
     defer vp_tx_lock.unlock(daif);
@@ -523,35 +530,168 @@ pub fn virtio_pci_flush() void {
     // itself stays, bracketed by TXBR!/TXAR!. Default builds are
     // byte-identical (coarse TXST!/TXNT!/TXPL! evidence path unchanged).
     if (comptime build_options.tx_diag) {
-        if (st != null) evidence.write_marker_var(st.?, marker_txfl); // 1 entered virtio flush
+        if (st_tx != null) evidence.write_marker_var(st_tx.?, marker_txfl); // 1 entered virtio flush
     }
-    // Split-ring invariant (Virtio 1.3 §2.7): the number of outstanding
-    // buffers (avail.idx - used.idx) must never exceed the queue size, or a
-    // new entry would overwrite a ring slot the device has not yet consumed.
-    // Re-read used.idx fresh (the device writes it; invalidate its line
-    // first). If the ring is still full — the previous buffer was never
-    // consumed (e.g. the notify or the used-poll timed out) — retry a
-    // bounded number of times (the used-ring poll below normally frees the
-    // slot within microseconds; the old instant drop lost concurrent
-    // cores' lines), then drop without touching the rings: a stuck device
-    // still drops, and dropping stays honest without corrupting the ring.
-    var full_polls: usize = 0;
-    while (full_polls < 8) : (full_polls += 1) {
+    var hw: HwTx = .{};
+    tx_unit(&hw, &tx_state, virtio_tx[0..vp_tx_len]);
+    vp_tx_len = 0;
+}
+
+// ---------------------------------------------------------------------------
+// #1972: TX buffer ownership. The unit of transfer is one flush: a line, or
+// a newline-less piece of one (a full staging buffer, a prompt). A post
+// whose completion outlived the poll bound used to be forgotten: the next
+// line was staged into the buffer the device still had to read, and the
+// device later sent the earlier line with its first bytes replaced (the M91
+// splice signature). Now:
+//   - The device reads only `virtio_tx_dma`, which is written only while the
+//     used ring shows no outstanding descriptor.
+//   - A flush that finds the descriptor still outstanding (an earlier post
+//     timed out) re-polls `tx_reap_polls` times, then drops its unit whole.
+//     It does not wait again, so a device that never completes costs one
+//     bounded wait in total, not one per line.
+//   - A line that loses a unit loses the rest of it too, through its
+//     newline, and counts once. Once the device returns the buffer, one
+//     `virtio-console: tx-dropped lines=<boot total>` line precedes the next
+//     unit, on a fresh line if the host was left mid-line. A boot without
+//     drops prints nothing new.
+// Lines are those of the transmitted stream. Writers on different cores
+// interleave at `uart_puts` granularity, so the newline that ends a dropped
+// run can belong to another writer's line.
+// The logic is generic over the transport: `HwTx` here, a simulated device
+// in the host tests.
+// ---------------------------------------------------------------------------
+
+/// How long one post waits for the device to return the buffer.
+const tx_complete_wait_ms: u64 = 1000;
+/// Completion-wait bound in used-ring looks when CNTFRQ_EL0 reads zero (the
+/// pre-#1972 bound).
+const tx_complete_wait_polls: usize = 2_000_000;
+/// Used-ring looks before a flush drops a unit because the device still
+/// owns the DMA buffer.
+const tx_reap_polls: usize = 8;
+
+pub const tx_drop_notice = "virtio-console: tx-dropped lines=";
+const tx_notice_max = 64;
+
+const TxState = struct {
+    /// The line in progress lost a unit: drop its remaining units through
+    /// the newline.
+    dropping: bool = false,
+    /// The last unit handed to the device ended a line.
+    host_at_bol: bool = true,
+    /// Lines that lost at least one unit this boot, and the total the last
+    /// notice announced.
+    dropped: u32 = 0,
+    reported: u32 = 0,
+};
+var tx_state: TxState = .{};
+
+fn tx_unit(hw: anytype, s: *TxState, unit: []const u8) void {
+    std.debug.assert(unit.len > 0 and unit.len <= virtio_tx_dma.len);
+    const ends_line = unit[unit.len - 1] == '\n';
+    if (s.dropping) {
+        s.dropping = !ends_line;
+        return;
+    }
+    if (!tx_reap(hw)) return tx_drop(s, ends_line);
+    if (s.dropped != s.reported) {
+        var buf: [tx_notice_max]u8 = undefined;
+        tx_send(hw, s, tx_notice(&buf, s.dropped, s.host_at_bol));
+        s.reported = s.dropped;
+        if (!tx_reap(hw)) return tx_drop(s, ends_line);
+    }
+    tx_send(hw, s, unit);
+}
+
+fn tx_drop(s: *TxState, ends_line: bool) void {
+    s.dropped +|= 1;
+    s.dropping = !ends_line;
+}
+
+/// True when no descriptor is outstanding, so `hw.dma()` may be written.
+/// Split-ring invariant (Virtio 1.3 §2.7): outstanding buffers
+/// (avail.idx - used.idx) never exceed the queue size, or a new entry would
+/// overwrite a ring slot the device has not consumed.
+fn tx_reap(hw: anytype) bool {
+    var looks: usize = 1;
+    while (hw.outstanding() != 0) : (looks += 1) {
+        if (looks >= tx_reap_polls) return false;
+    }
+    hw.reaped();
+    return true;
+}
+
+fn tx_send(hw: anytype, s: *TxState, bytes: []const u8) void {
+    @memcpy(hw.dma()[0..bytes.len], bytes);
+    hw.post(bytes.len);
+    hw.finish(tx_wait(hw));
+    s.host_at_bol = bytes[bytes.len - 1] == '\n';
+}
+
+/// Bounded completion wait: `tx_complete_wait_ms` of the counter, or
+/// `tx_complete_wait_polls` looks when the counter frequency is unknown.
+fn tx_wait(hw: anytype) bool {
+    const bound = hw.wait_ticks();
+    const start = hw.now();
+    var looks: usize = 1;
+    while (hw.outstanding() != 0) : (looks += 1) {
+        if (bound == 0) {
+            if (looks >= tx_complete_wait_polls) return false;
+        } else if (hw.now() -% start >= bound) return false;
+    }
+    return true;
+}
+
+fn tx_notice(buf: *[tx_notice_max]u8, total: u32, at_bol: bool) []const u8 {
+    const lead: []const u8 = if (at_bol) "" else "\n";
+    return std.fmt.bufPrint(buf, "{s}" ++ tx_drop_notice ++ "{d}\n", .{ lead, total }) catch unreachable;
+}
+
+/// Queue 1 behind `tx_unit`, with the claim 0013/0018/3475 evidence ladder
+/// at its pre-#1972 points.
+const HwTx = struct {
+    fn dma(_: *HwTx) *[128]u8 {
+        return &virtio_tx_dma;
+    }
+
+    /// Descriptors the device has not returned. The used ring is
+    /// device-written: invalidate its line before reading it.
+    fn outstanding(_: *HwTx) u16 {
         mmu.invalidate_dcache_range(@intFromPtr(&virtio_used), @sizeOf(VirtqUsed));
         asm volatile ("dmb ishld" ::: .{ .memory = true });
-        const outstanding = virtio_avail.idx -% virtio_used.idx;
-        if (outstanding < virtio_queue_size) break;
+        return virtio_avail.idx -% virtio_used.idx;
     }
-    {
-        mmu.invalidate_dcache_range(@intFromPtr(&virtio_used), @sizeOf(VirtqUsed));
-        asm volatile ("dmb ishld" ::: .{ .memory = true });
-        const outstanding = virtio_avail.idx -% virtio_used.idx;
-        if (outstanding >= virtio_queue_size) {
-            vp_tx_len = 0;
-            return;
-        }
+
+    fn reaped(_: *HwTx) void {
+        virtio_last_used = virtio_used.idx;
     }
-    virtio_desc[0] = .{ .addr = mmu.to_phys(@intFromPtr(&virtio_tx)), .len = @intCast(vp_tx_len), .flags = 0, .next = 0 };
+
+    fn now(_: *HwTx) u64 {
+        return asm volatile ("mrs %[v], cntvct_el0"
+            : [v] "=r" (-> u64),
+        );
+    }
+
+    fn wait_ticks(_: *HwTx) u64 {
+        const freq = asm volatile ("mrs %[v], cntfrq_el0"
+            : [v] "=r" (-> u64),
+        );
+        return freq * tx_complete_wait_ms / 1000;
+    }
+
+    fn post(_: *HwTx, len: usize) void {
+        vp_tx_post(len);
+    }
+
+    fn finish(_: *HwTx, completed: bool) void {
+        vp_tx_finish(completed);
+    }
+};
+
+fn vp_tx_post(len: usize) void {
+    const st = st_tx;
+    virtio_desc[0] = .{ .addr = mmu.to_phys(@intFromPtr(&virtio_tx_dma)), .len = @intCast(len), .flags = 0, .next = 0 };
     virtio_avail.ring[0] = 0; // descriptor index 0
     asm volatile ("dmb ishst" ::: .{ .memory = true });
     virtio_avail.idx +%= 1;
@@ -560,7 +700,7 @@ pub fn virtio_pci_flush() void {
     }
     mmu.clean_dcache_range(@intFromPtr(&virtio_desc), @sizeOf(VirtqDesc));
     mmu.clean_dcache_range(@intFromPtr(&virtio_avail), @sizeOf(VirtqAvail));
-    mmu.clean_dcache_range(@intFromPtr(&virtio_tx), vp_tx_len);
+    mmu.clean_dcache_range(@intFromPtr(&virtio_tx_dma), len);
     if (comptime build_options.tx_diag) {
         if (st != null) evidence.write_marker_var(st.?, marker_txcc); // 3 DMA cache clean completed
     }
@@ -610,16 +750,12 @@ pub fn virtio_pci_flush() void {
     if (comptime build_options.tx_diag) {
         if (st != null) evidence.write_marker_var(st.?, marker_txup); // 8 entered used-ring poll
     }
-    var spins: usize = 0;
-    while (spins < 2_000_000) : (spins += 1) {
-        mmu.invalidate_dcache_range(@intFromPtr(&virtio_used), @sizeOf(VirtqUsed));
-        if (virtio_used.idx != virtio_last_used) {
-            asm volatile ("dmb ishld" ::: .{ .memory = true });
-            if (comptime build_options.tx_diag) {
-                if (st != null) evidence.write_marker_var(st.?, marker_txuc); // 9 device changed used.idx
-            }
-            break;
-        }
+}
+
+fn vp_tx_finish(completed: bool) void {
+    const st = st_tx;
+    if (comptime build_options.tx_diag) {
+        if (completed and st != null) evidence.write_marker_var(st.?, marker_txuc); // 9 device changed used.idx
     }
     virtio_last_used = virtio_used.idx;
     if (comptime build_options.tx_diag) {
@@ -628,7 +764,6 @@ pub fn virtio_pci_flush() void {
         if (st_tx != null and vp_first_flush) evidence.write_marker_var(st_tx.?, marker_txpl);
     }
     vp_first_flush = false;
-    vp_tx_len = 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -818,4 +953,267 @@ fn virtio_init(base: u64) bool {
     mmio.mmio_write32(base + 0x44, 1);
     mmio.mmio_write32(base + 0x70, 1 | 2 | 8 | 4); // DRIVER_OK
     return (mmio.mmio_read32(base + 0x70) & 4) != 0;
+}
+
+// ---------------------------------------------------------------------------
+// Host tests (#1972): `tx_unit` over a simulated device that completes late
+// or never. Each used-ring look is one tick of the simulated clock; the
+// device reads the DMA buffer when it completes, not when it is posted.
+// ---------------------------------------------------------------------------
+
+const SimTx = struct {
+    /// Ticks from each post to its completion, in post order (the last
+    /// entry repeats); null never completes.
+    latency: []const ?u64,
+    bound: u64 = 1000,
+    dma_buf: [128]u8 = undefined,
+    clock: u64 = 0,
+    avail: u16 = 0,
+    used: u16 = 0,
+    posts: usize = 0,
+    due: ?u64 = null,
+    posted: [128]u8 = undefined,
+    posted_len: usize = 0,
+    host: [16384]u8 = undefined,
+    host_len: usize = 0,
+    /// Completions whose bytes differ from what was posted: a splice.
+    rewrites: usize = 0,
+    /// Posts made while a descriptor was outstanding (queue size 1).
+    overruns: usize = 0,
+    timeouts: usize = 0,
+
+    fn dma(self: *SimTx) *[128]u8 {
+        return &self.dma_buf;
+    }
+
+    fn now(self: *SimTx) u64 {
+        return self.clock;
+    }
+
+    fn wait_ticks(self: *SimTx) u64 {
+        return self.bound;
+    }
+
+    fn reaped(_: *SimTx) void {}
+
+    fn outstanding(self: *SimTx) u16 {
+        self.idle(1);
+        return self.avail -% self.used;
+    }
+
+    fn post(self: *SimTx, len: usize) void {
+        if (self.avail != self.used) self.overruns += 1;
+        @memcpy(self.posted[0..len], self.dma_buf[0..len]);
+        self.posted_len = len;
+        self.avail +%= 1;
+        const lat = self.latency[@min(self.posts, self.latency.len - 1)];
+        self.posts += 1;
+        self.due = if (lat) |l| self.clock + l else null;
+    }
+
+    fn finish(self: *SimTx, completed: bool) void {
+        if (!completed) self.timeouts += 1;
+    }
+
+    /// Time passes (one look, or the CPU working between flushes).
+    fn idle(self: *SimTx, ticks: u64) void {
+        self.clock += ticks;
+        const due = self.due orelse return;
+        if (self.clock < due) return;
+        const got = self.dma_buf[0..self.posted_len];
+        if (!std.mem.eql(u8, got, self.posted[0..self.posted_len])) self.rewrites += 1;
+        @memcpy(self.host[self.host_len..][0..got.len], got);
+        self.host_len += got.len;
+        self.used +%= 1;
+        self.due = null;
+    }
+
+    fn received(self: *SimTx) []const u8 {
+        return self.host[0..self.host_len];
+    }
+};
+
+fn sim_flush(sim: *SimTx, s: *TxState, text: []const u8) void {
+    // Stage through a separate buffer, as uart_putc stages into virtio_tx.
+    var staging: [128]u8 = undefined;
+    @memcpy(staging[0..text.len], text);
+    tx_unit(sim, s, staging[0..text.len]);
+    @memset(&staging, '#');
+}
+
+test "virtio_console: the simulated device sees a buffer rewritten under it (the #1972 splice)" {
+    var sim: SimTx = .{ .latency = &.{2000} };
+    var s: TxState = .{};
+    sim_flush(&sim, &s, "gotabwm: launcher presented\n");
+    try std.testing.expectEqual(@as(usize, 1), sim.timeouts);
+    // Pre-#1972: the next line was staged into the buffer still posted.
+    @memcpy(sim.dma_buf[0..14], "gotabwm: tick\n");
+    sim.idle(2000);
+    try std.testing.expectEqualStrings("gotabwm: tick\nher presented\n", sim.received());
+    try std.testing.expectEqual(@as(usize, 1), sim.rewrites);
+}
+
+test "virtio_console: a prompt device gets every unit whole and no notice" {
+    var sim: SimTx = .{ .latency = &.{3} };
+    var s: TxState = .{};
+    sim_flush(&sim, &s, "m91: frame=13 phase=complete result=ok\n");
+    sim_flush(&sim, &s, "gotabwm: tick\n");
+    sim_flush(&sim, &s, "virelai> ");
+    sim_flush(&sim, &s, "ls\n");
+    try std.testing.expectEqualStrings("m91: frame=13 phase=complete result=ok\ngotabwm: tick\nvirelai> ls\n", sim.received());
+    try std.testing.expectEqual(@as(u32, 0), s.dropped);
+    try std.testing.expectEqual(@as(usize, 4), sim.posts);
+    try std.testing.expectEqual(@as(usize, 0), sim.timeouts);
+    try std.testing.expectEqual(@as(usize, 0), sim.rewrites);
+}
+
+test "virtio_console: a late completion keeps its bytes and the next line drops whole" {
+    var sim: SimTx = .{ .latency = &.{ 1050, 1 } };
+    var s: TxState = .{};
+    sim_flush(&sim, &s, "gotabwm: launcher presented\n");
+    try std.testing.expectEqual(@as(usize, 1), sim.timeouts);
+    sim_flush(&sim, &s, "gotabwm: tick\n"); // the device still owns the buffer
+    try std.testing.expectEqual(@as(u32, 1), s.dropped);
+    try std.testing.expectEqual(@as(usize, 1), sim.posts);
+    sim.idle(100);
+    sim_flush(&sim, &s, "m91: frame=13 phase=complete result=ok\n");
+    try std.testing.expectEqualStrings("gotabwm: launcher presented\n" ++
+        tx_drop_notice ++ "1\n" ++
+        "m91: frame=13 phase=complete result=ok\n", sim.received());
+    try std.testing.expectEqual(@as(usize, 0), sim.rewrites);
+    try std.testing.expectEqual(@as(usize, 0), sim.overruns);
+    try std.testing.expectEqual(s.dropped, s.reported);
+}
+
+test "virtio_console: a completion inside the reap looks loses nothing" {
+    var sim: SimTx = .{ .latency = &.{ 1003, 1 } };
+    var s: TxState = .{};
+    sim_flush(&sim, &s, "gotabwm: notify dnd=on via=seat persisted=1\n");
+    try std.testing.expectEqual(@as(usize, 1), sim.timeouts);
+    sim_flush(&sim, &s, "gotabwm: tick\n");
+    try std.testing.expectEqualStrings("gotabwm: notify dnd=on via=seat persisted=1\ngotabwm: tick\n", sim.received());
+    try std.testing.expectEqual(@as(u32, 0), s.dropped);
+    try std.testing.expectEqual(@as(usize, 0), sim.rewrites);
+}
+
+test "virtio_console: a device that never completes costs one bounded wait" {
+    var sim: SimTx = .{ .latency = &.{null} };
+    var s: TxState = .{};
+    sim_flush(&sim, &s, "exec NOTE.ELF\n");
+    try std.testing.expectEqual(@as(u64, 1 + sim.bound), sim.clock);
+    sim_flush(&sim, &s, "a\n");
+    sim_flush(&sim, &s, "b\n");
+    sim_flush(&sim, &s, "c\n");
+    try std.testing.expectEqual(@as(u64, 1 + sim.bound + 3 * tx_reap_polls), sim.clock);
+    try std.testing.expectEqual(@as(u32, 3), s.dropped);
+    try std.testing.expectEqual(@as(u32, 0), s.reported); // never recovered: no notice
+    try std.testing.expectEqual(@as(usize, 1), sim.posts);
+    try std.testing.expectEqualStrings("", sim.received());
+    try std.testing.expectEqualStrings("exec NOTE.ELF\n", sim.dma_buf[0..14]);
+}
+
+test "virtio_console: the completion wait falls back to a look bound without a counter frequency" {
+    var sim: SimTx = .{ .latency = &.{null}, .bound = 0 };
+    var s: TxState = .{};
+    sim_flush(&sim, &s, "x\n");
+    try std.testing.expectEqual(@as(u64, 1 + tx_complete_wait_polls), sim.clock);
+    try std.testing.expectEqual(@as(usize, 1), sim.timeouts);
+}
+
+test "virtio_console: a line that loses a unit loses the rest of it" {
+    var sim: SimTx = .{ .latency = &.{ 1050, 1 } };
+    var s: TxState = .{};
+    sim_flush(&sim, &s, "first\n");
+    sim_flush(&sim, &s, "abc"); // a full-buffer or prompt flush: no newline
+    sim_flush(&sim, &s, "def\n"); // the rest of the same line
+    try std.testing.expectEqual(@as(u32, 1), s.dropped);
+    sim.idle(100);
+    sim_flush(&sim, &s, "next\n");
+    try std.testing.expectEqualStrings("first\n" ++ tx_drop_notice ++ "1\nnext\n", sim.received());
+}
+
+test "virtio_console: a notice after a mid-line stall starts on a fresh line" {
+    var sim: SimTx = .{ .latency = &.{ 1050, 1 } };
+    var s: TxState = .{};
+    sim_flush(&sim, &s, "virelai> ");
+    sim_flush(&sim, &s, "ls\n");
+    sim.idle(100);
+    sim_flush(&sim, &s, "x\n");
+    try std.testing.expectEqualStrings("virelai> \n" ++ tx_drop_notice ++ "1\nx\n", sim.received());
+}
+
+test "virtio_console: drops count per boot across stalls, including a notice that times out" {
+    // Posts: A, notice 1, C, D, notice 2, (E is dropped), notice 3, G.
+    var sim: SimTx = .{ .latency = &.{ 1050, 1, 1, 1050, 1050, 1, 1 } };
+    var s: TxState = .{};
+    sim_flush(&sim, &s, "A\n");
+    sim_flush(&sim, &s, "B\n"); // dropped: 1
+    sim.idle(100);
+    sim_flush(&sim, &s, "C\n"); // notice lines=1, then C
+    sim_flush(&sim, &s, "D\n"); // times out
+    sim_flush(&sim, &s, "E\n"); // dropped: 2
+    sim.idle(100);
+    sim_flush(&sim, &s, "F\n"); // notice lines=2 times out, so F drops: 3
+    sim.idle(1100);
+    sim_flush(&sim, &s, "G\n"); // notice lines=3, then G
+    try std.testing.expectEqualStrings("A\n" ++
+        tx_drop_notice ++ "1\nC\nD\n" ++
+        tx_drop_notice ++ "2\n" ++
+        tx_drop_notice ++ "3\nG\n", sim.received());
+    try std.testing.expectEqual(@as(u32, 3), s.dropped);
+    try std.testing.expectEqual(@as(usize, 0), sim.rewrites);
+    try std.testing.expectEqual(@as(usize, 0), sim.overruns);
+}
+
+test "virtio_console: random device latency never splices and accounts for every line" {
+    var prng = std.Random.DefaultPrng.init(0x1972);
+    const r = prng.random();
+    var lat: [4096]?u64 = undefined;
+    for (&lat) |*l| {
+        l.* = switch (r.uintLessThan(u8, 16)) {
+            0 => 1000 + r.uintLessThan(u64, 3000), // later than the wait
+            1 => 990 + r.uintLessThan(u64, 20), // straddles the wait + reap looks
+            else => 1 + r.uintLessThan(u64, 50),
+        };
+    }
+    var sim: SimTx = .{ .latency = &lat };
+    var s: TxState = .{};
+    const lines = 1500;
+    var i: usize = 0;
+    while (i < lines) : (i += 1) {
+        var buf: [32]u8 = undefined;
+        sim_flush(&sim, &s, std.fmt.bufPrint(&buf, "line-{d}\n", .{i}) catch unreachable);
+        sim.idle(r.uintLessThan(u64, 200));
+    }
+    sim.idle(10_000);
+    try std.testing.expectEqual(@as(usize, 0), sim.rewrites);
+    try std.testing.expectEqual(@as(usize, 0), sim.overruns);
+    try std.testing.expect(s.dropped > 0); // the seed exercises drops
+    // Every received line is whole: an original line in order, or a notice
+    // whose growing total covers at least the lines already missing.
+    var next: usize = 0;
+    var missing: u32 = 0;
+    var notices: usize = 0;
+    var last_total: u32 = 0;
+    var it = std.mem.splitScalar(u8, sim.received(), '\n');
+    while (it.next()) |line| {
+        if (line.len == 0) continue;
+        if (std.mem.startsWith(u8, line, tx_drop_notice)) {
+            const total = try std.fmt.parseInt(u32, line[tx_drop_notice.len..], 10);
+            try std.testing.expect(total > last_total and total >= missing);
+            last_total = total;
+            notices += 1;
+            continue;
+        }
+        try std.testing.expect(std.mem.startsWith(u8, line, "line-"));
+        const n = try std.fmt.parseInt(usize, line["line-".len..], 10);
+        try std.testing.expect(n >= next);
+        missing += @intCast(n - next);
+        next = n + 1;
+    }
+    missing += @intCast(lines - next);
+    try std.testing.expectEqual(s.dropped, missing);
+    try std.testing.expect(notices > 0);
+    try std.testing.expectEqual(s.reported, last_total);
+    try std.testing.expect(std.mem.endsWith(u8, sim.received(), "\n"));
 }

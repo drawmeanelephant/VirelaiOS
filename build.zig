@@ -2034,6 +2034,7 @@ pub fn build(b: *std.Build) void {
         "kernel/src/uaccess.zig",
         "kernel/src/udp.zig",
         "kernel/src/userspace.zig",
+        "kernel/src/virtio_console.zig",
         "kernel/src/virtio_custom.zig",
         "kernel/src/virtio_entropy.zig",
         "kernel/src/virtio_file.zig",
