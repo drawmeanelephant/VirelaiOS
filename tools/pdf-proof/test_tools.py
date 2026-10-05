@@ -1,6 +1,7 @@
 import json
 import re
 import struct
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -9,7 +10,8 @@ import compare
 import corpus
 import oracle
 import analytic
-from check_run import check_memory, parse_receipts
+import pause
+from check_run import check_memory, check_pause_order, parse_receipts
 
 
 def bitmap(w, h, pixels):
@@ -336,12 +338,80 @@ class RuntimeReceiptTests(unittest.TestCase):
                 parse_receipts(self.receipt().replace(old, new), 8617)
 
     def test_reuse_brackets_one_process_without_growth(self):
-        serial = self.receipt(reaped=0)+self.receipt()
+        serial = self.receipt(reaped=0)*2+self.receipt()
         check_memory(parse_receipts(serial, 8617, runtime=True))
         with self.assertRaisesRegex(ValueError, "growth"):
-            check_memory(parse_receipts(self.receipt(pages=3071, reaped=0)+self.receipt(), 8617, runtime=True))
+            check_memory(parse_receipts(self.receipt(pages=3071, reaped=0)+
+                                        self.receipt(reaped=0)+self.receipt(), 8617, runtime=True))
         with self.assertRaisesRegex(ValueError, "different processes"):
             parse_receipts(serial.replace("pid=7", "pid=8", 1), 8617, runtime=True)
+
+    def test_cycle_50_must_match_baseline_and_final(self):
+        for middle in (self.receipt(pages=3071, reaped=0),
+                       self.receipt(regions=11, reaped=0),
+                       self.receipt(reaped=0).replace("total_pages=3072", "total_pages=3073")):
+            with self.assertRaisesRegex(ValueError, "growth"):
+                check_memory(parse_receipts(self.receipt(reaped=0)+middle+self.receipt(), 8617, runtime=True))
+        for middle in (self.receipt(reaped=0).replace("pid=7", "pid=8"), self.receipt()):
+            with self.assertRaises(ValueError):
+                parse_receipts(self.receipt(reaped=0)+middle+self.receipt(), 8617, runtime=True)
+        with self.assertRaisesRegex(ValueError, "missing high-water"):
+            parse_receipts(self.receipt(reaped=0)+self.receipt(), 8617, runtime=True)
+
+    def paused_serial(self):
+        return ("pdf-proof: baseline ns=1\n"+self.receipt(reaped=0)+
+                "pdf-proof: resumed\npdf-proof: cycles=50 ns=50\n"+self.receipt(reaped=0)+
+                "pdf-proof: resumed cycle=50\npdf-proof: cycles=100 ns=100\n"+
+                "pdf-proof: complete\nprocs PDFPROOF.ELF exited status=0\n"+self.receipt())
+
+    def test_live_rows_precede_resume_markers(self):
+        serial = self.paused_serial()
+        check_pause_order(serial)
+        for resume in ("pdf-proof: resumed\n", "pdf-proof: resumed cycle=50\n"):
+            changed = serial.replace(self.receipt(reaped=0)+resume,
+                                     resume+self.receipt(reaped=0), 1)
+            with self.assertRaisesRegex(ValueError, "ReceiptPauseOrder"):
+                check_pause_order(changed)
+        for marker in ("pdf-proof: baseline ns=1\n", "pdf-proof: cycles=50 ns=50\n",
+                       "pdf-proof: resumed\n", "pdf-proof: resumed cycle=50\n"):
+            for changed in (serial.replace(marker, "", 1), serial.replace(marker, marker*2, 1)):
+                with self.assertRaisesRegex(ValueError, "ReceiptPauseOrder"):
+                    check_pause_order(changed)
+
+    def test_host_acknowledges_only_complete_paused_live_rows(self):
+        with tempfile.TemporaryDirectory(dir=corpus.ROOT/"artifacts/m89-acceptance") as directory:
+            share = Path(directory)
+            (share/"PDF").mkdir()
+            acknowledged = []
+            baseline = "pdf-proof: baseline ns=1\n"
+            pause.acknowledge(baseline+"procs receipt PDFPROOF.ELF\n", share, acknowledged)
+            pause.acknowledge(baseline+self.receipt(reaped=0).rstrip("\n"), share, acknowledged)
+            pause.acknowledge(baseline+self.receipt(), share, acknowledged) # reaped is not live
+            self.assertEqual(acknowledged, [])
+            self.assertFalse((share/"PDF/baseline.resume").exists())
+            baseline += self.receipt(reaped=0)
+            pause.acknowledge(baseline, share, acknowledged)
+            self.assertEqual(acknowledged, ["baseline"])
+            self.assertEqual((share/"PDF/baseline.resume").read_bytes(), b"1")
+            middle = baseline+"pdf-proof: resumed\npdf-proof: cycles=50 ns=50\n"
+            pause.acknowledge(middle, share, acknowledged)
+            self.assertFalse((share/"PDF/cycle-50.resume").exists())
+            middle += self.receipt(reaped=0)
+            pause.acknowledge(middle, share, acknowledged)
+            pause.acknowledge(middle, share, acknowledged) # non-consuming; no duplicate writes
+            self.assertEqual(acknowledged, ["baseline", "cycle-50"])
+            self.assertEqual((share/"PDF/cycle-50.resume").read_bytes(), b"1")
+
+    def test_host_ack_refuses_early_resume_and_stale_ack(self):
+        with tempfile.TemporaryDirectory(dir=corpus.ROOT/"artifacts/m89-acceptance") as directory:
+            share = Path(directory)
+            (share/"PDF").mkdir()
+            serial = "pdf-proof: baseline ns=1\n"+self.receipt(reaped=0)
+            with self.assertRaisesRegex(ValueError, "ReceiptPauseOrder"):
+                pause.acknowledge(serial+"pdf-proof: resumed\n", share, [])
+            (share/"PDF/baseline.resume").write_bytes(b"1")
+            with self.assertRaisesRegex(ValueError, "ReceiptPauseDrift"):
+                pause.acknowledge(serial, share, [])
 
     def test_final_only_receipt_never_substitutes_for_live_baseline(self):
         with self.assertRaisesRegex(ValueError, "RuntimeBaselineUnavailable"):

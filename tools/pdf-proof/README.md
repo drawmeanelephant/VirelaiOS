@@ -83,8 +83,15 @@ reap state are read under the existing kernel-domain lock used by backing/
 region updates. A primary-thread exit does not mark a live sibling as reaped.
 Missing baseline counters still fail rather than substituting a final peak
 or HeapAlloc estimate.
-Runtime progress prints first-cycle and 50/100-cycle elapsed nanoseconds and
-whether the baseline pause returned. Receipts retain maxima across all cycles,
+Runtime progress prints first-cycle and 50/100-cycle elapsed nanoseconds.
+Baseline and cycle 50 wait for a one-byte host acknowledgment, bounded by the
+existing 5,000 ms ceiling. The host publishes each acknowledgment only after
+the complete live receipt is present in the serial log; order assertions
+require each receipt before its resume marker. A loopback console client
+requests the final reaped receipt. All three readings must agree on page peaks,
+cumulative allocations and region peaks; no warm-up reading replaces baseline.
+Pause I/O reuses existing staging outside the timed page transactions.
+Receipts retain maxima across all cycles,
 not only the last cycle. The 360-second runtime harness wait covers the full
 100-cycle/forced-GC suite, not a single page. The 5,000 ms page deadline and
 every work/memory limit remain unchanged.

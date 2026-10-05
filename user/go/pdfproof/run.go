@@ -271,7 +271,9 @@ func Run(render Renderer) pdf.Code {
 		runtime.GC()
 		if rounds == 100 && round == 0 {
 			progress("pdf-proof: baseline ns=", now()-suiteStart)
-			vi.Sleep(2)
+			if code = waitReceipt(native, "/host/PDF/baseline.resume", stage, now, vi.Sleep); code != pdf.OK {
+				return code
+			}
 			vi.Console("pdf-proof: resumed\n")
 		}
 		if rounds == 100 && (round == 49 || round == 99) {
@@ -280,6 +282,12 @@ func Run(render Renderer) pdf.Code {
 				prefix = "pdf-proof: cycles=100 ns="
 			}
 			progress(prefix, now()-suiteStart)
+			if round == 49 {
+				if code = waitReceipt(native, "/host/PDF/cycle-50.resume", stage, now, vi.Sleep); code != pdf.OK {
+					return code
+				}
+				vi.Console("pdf-proof: resumed cycle=50\n")
+			}
 		}
 	}
 	if out.c != pdf.OK {

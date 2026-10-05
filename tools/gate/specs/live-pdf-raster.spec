@@ -11,7 +11,10 @@ import os, sys
 from pathlib import Path
 sys.path.insert(0, str(Path.cwd()/"tools/pdf-proof"))
 from stage import stage
-stage(Path(os.environ["RUN_DIR"]))
+from pause import start_observer
+run = Path(os.environ["RUN_DIR"])
+stage(run)
+start_observer(run)
 PY
 
 vgate_file accepted.txt <<'EOF'
@@ -35,6 +38,9 @@ pages
 exec PDFPROOF.ELF /host/runtime.plan /host/PDF/runtime.receipt 100
 EOF
 vgate_file baseline.txt <<'EOF'
+procs receipt PDFPROOF.ELF
+EOF
+vgate_file cycle-50.txt <<'EOF'
 procs receipt PDFPROOF.ELF
 EOF
 vgate_file reaped.txt <<'EOF'
@@ -68,10 +74,18 @@ PY
 
 # Allow 100 forced-GC cycles plus startup/tail, not 100 page deadlines.
 # This harness wait does not change the 5,000 ms per-page time budget.
-vgate_run runtime -- --script '$RUN_DIR/runtime.txt' --script2 '$RUN_DIR/baseline.txt' --script2-after 'pdf-proof: baseline' --script3 '$RUN_DIR/reaped.txt' --script3-after 'procs PDFPROOF.ELF exited status=' --script-expect 'pdf-proof: complete' --script-expect-tail 5 --timeout 360
+vgate_run runtime -- --script '$RUN_DIR/runtime.txt' --script2 '$RUN_DIR/baseline.txt' --script2-after 'pdf-proof: baseline' --script3 '$RUN_DIR/cycle-50.txt' --script3-after 'pdf-proof: cycles=50' --console-tcp '127.0.0.1:24891' --script-expect 'pdf-proof: complete' --script-expect-tail 5 --timeout 360
+vgate_client runtime -- --addr '127.0.0.1:24891' --after 'procs PDFPROOF.ELF exited status=' --after-timeout 360 --send-file reaped.txt --expect 'unrecorded_pages=0 reaped=1' --connect-timeout 5 --timeout 5
 vgate_assert runtime serial-contains 'pdf-proof: complete'
 vgate_assert runtime serial-absent '[EXC] parking:'
 vgate_assert runtime python <<'PY'
-import os, runpy
+import json, os, runpy, sys
+from pathlib import Path
+sys.path.insert(0, str(Path.cwd()/"tools/pdf-proof"))
+from check_run import check_pause_order
+check_pause_order(Path(os.environ["VG_SER"]).read_text(errors="replace"))
+observed = json.loads((Path(os.environ["RUN_DIR"])/"receipt-pause-result.json").read_text())
+if observed != {"acknowledged": ["baseline", "cycle-50"]}:
+    raise ValueError("ReceiptPauseTimeout: missing host-observed acknowledgments")
 runpy.run_path("tools/pdf-proof/check_run.py", run_name="__main__")
 PY
