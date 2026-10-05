@@ -273,9 +273,6 @@ pub const Window = struct {
     /// rules — the two paths coexist behind the presence of WM chrome.
     chrome_valid: bool = false,
     chrome: geom.ChromeDesc = undefined,
-    /// A scanout-owning WM accepted this client into its full viewport.
-    /// Subsequent split layouts keep the handoff; explicit WM chrome wins.
-    wm_viewport: bool = false,
     /// M33 SB3 (claim 9361): when a `.user` window is SURFACE-BACKED, its
     /// rendering lives in a shared-anonymous region (M33_MAP_SHARED) instead
     /// of the kernel `user_bufs[id]` copy. The kernel records the region's
@@ -2093,11 +2090,10 @@ pub fn wm_apply_rect(id: u8, x: u32, y: u32, w: u32, h: u32) bool {
     // WM1: the pool buffer follows the layout size (content overlap
     // preserved); on pool exhaustion the window keeps its old rect.
     if (!reflow(win, nx, ny, cw, ch)) return false;
-    if (wm_owns_user_layer and nx == 0 and ny == 0 and cw == virtio_gpu.fb_width and ch == virtio_gpu.fb_height) {
+    if (wm_owns_user_layer and win.chrome_valid and win.chrome.kind == 0) {
         // The WM now owns this client's surrounding pixels. Finish the
         // native opening fade and replace the old scanout contents BEFORE
         // the seat can present: blending over them preserves the old frame.
-        win.wm_viewport = true;
         win.fade_phase = 0;
         win.fade_tick = 0;
         win.damaged = false;
@@ -5024,9 +5020,8 @@ pub fn composite() virtio_gpu.CmdResult {
 
 /// Store a chrome descriptor for `id`, or the broadcast policy when `id`
 /// is `geom.chrome_window_all`. Returns false for an unknown per-window
-/// id (the broadcast always succeeds). The kernel does NOT validate the
-/// descriptor here — the syscall layer ran `geom.chrome_valid` before
-/// this.
+/// id or invalid descriptor (including a zero-kind broadcast). The syscall
+/// validates the wire before this store applies the same pure rule.
 /// Drop every WM chrome decision (the broadcast policy + per-window
 /// overrides). Called on WM teardown (unregister) so the shim fallback
 /// restores its own chrome rules — a dead WM must not leave its look
@@ -5036,7 +5031,6 @@ pub fn clear_wm_chrome() void {
     var i: usize = 0;
     while (i < win_count) : (i += 1) {
         windows[i].chrome_valid = false;
-        windows[i].wm_viewport = false;
     }
     // M32 WMS6 Gate E (issue #626): the WM's tray widget content dies with
     // it — the shim fallback re-derives clock/theme/clipboard from its own
@@ -5047,6 +5041,7 @@ pub fn clear_wm_chrome() void {
 }
 
 pub fn set_window_chrome(id_in: u64, desc: geom.ChromeDesc) bool {
+    if (!geom.chrome_valid_for_window(id_in, desc)) return false;
     if (id_in == geom.chrome_window_all) {
         // WM4 (issue #707 card 4): a policy change can flip the effective
         // rest alpha of windows already painted under the old policy —
@@ -5366,14 +5361,6 @@ fn chrome_occluded(i: usize) bool {
     return false;
 }
 
-/// Once the WM owns a client surface/viewport, default shim chrome is not
-/// another compositor layer. Explicit WM descriptors still apply, including
-/// the seat's own button/menu windows and a broadcast chrome policy.
-fn wm_owns_default_chrome(w: *const Window) bool {
-    return wm_owns_user_layer and w.kind == .user and !w.chrome_valid and wm_chrome_policy == null and
-        (w.wm_viewport or w.surface_handle != 0);
-}
-
 /// Card U5/U4: the chrome pass, drawn on the framebuffer AFTER the window
 /// paints and BEFORE the transfer — user title bars, the focus ring on the
 /// focused window, and the pointer cursor. Chrome never touches a window's
@@ -5395,13 +5382,14 @@ pub fn draw_chrome() void {
         if (w.kind != .user or !w.visible) continue;
         // Arc4 #241: skip chrome for windows not in the current workspace.
         if (!workspace_visible(w)) continue;
-        if (wm_owns_default_chrome(w)) continue;
         // M69g (#1558): a fully covered window is not visible, so its chrome
         // must not be painted over the covering window's content.
         if (chrome_occluded(i)) continue;
         // M32 WMS4: the chrome LOOK (elements + colors) is the WM's
         // descriptor; the shim's own rules are just the default descriptor.
         const ch = effective_chrome(w);
+        // Kind zero disables every chrome element, including shadow bands.
+        if (ch.kind == 0) continue;
         const focus_accent = (ch.flags & geom.chrome_flag_focus_accent) != 0;
         // M20-U9: 2px border around the whole window first (paint order:
         // background → border → title bar → buttons → title → content).
@@ -5504,7 +5492,6 @@ pub fn draw_chrome() void {
             if (windows[idx].id != focused_id) continue;
             const w = &windows[idx];
             if (w.kind == .terminal) break;
-            if (wm_owns_default_chrome(w)) break;
             // Arc4 #241: don't draw focus ring on off-workspace windows.
             if (!workspace_visible(w)) break;
             // M32 WMS4: the ring is drawn only when the WM's descriptor
@@ -5924,6 +5911,9 @@ test "hosted chrome: full viewport replaces the native frame before the first pr
     try std.testing.expectEqual(virtio_gpu.CmdResult.ok, paint_scene());
     const old_border = (415 * virtio_gpu.fb_width + 300) * 4;
     try std.testing.expectEqual(@as(u8, 0xf6), virtio_gpu.gpu_fb[old_border]);
+    var desc = geom.chrome_parity_policy();
+    desc.kind = 0;
+    try std.testing.expect(set_window_chrome(id, desc));
     try std.testing.expect(wm_apply_rect(id, 0, 0, virtio_gpu.fb_width, virtio_gpu.fb_height));
     const win = find_user_window(id).?;
     // No tick or present has occurred since the handoff. Neither the old
@@ -5951,10 +5941,35 @@ test "hosted chrome: migrated clients skip frame title and focus ring" {
         else => return error.TestUnexpectedResult,
     };
     try std.testing.expect(user_bind_surface(id, .{ .handle = 1, .pa_base = 0x1000_0000, .page_count = 192 }));
+    var desc = geom.chrome_parity_policy();
+    desc.kind = 0;
+    try std.testing.expect(set_window_chrome(id, desc));
     virtio_gpu.fill_framebuffer(0x182026);
     try std.testing.expectEqual(virtio_gpu.CmdResult.ok, paint_scene());
     const at = (32 * virtio_gpu.fb_width + 32) * 4;
     try std.testing.expectEqualSlices(u8, &.{ 0x26, 0x20, 0x18, 0xff }, virtio_gpu.gpu_fb[at..][0..4]);
+}
+
+test "hosted chrome: no-chrome descriptor also suppresses shadows" {
+    arm();
+    clear_wm_chrome();
+    const shadow = settings.get_shadow();
+    defer {
+        _ = settings.set("shadow", if (shadow) "on" else "off");
+    }
+    _ = settings.set("shadow", "on");
+    const id = switch (user_open(32, 32, 512, 384, 7)) {
+        .opened => |opened| opened,
+        else => return error.TestUnexpectedResult,
+    };
+    var desc = geom.chrome_parity_policy();
+    desc.kind = 0;
+    try std.testing.expect(set_window_chrome(id, desc));
+    virtio_gpu.fill_framebuffer(0x182026);
+    draw_chrome();
+    for (0..virtio_gpu.fb_size / 4) |i| {
+        try std.testing.expectEqualSlices(u8, &.{ 0x26, 0x20, 0x18, 0xff }, virtio_gpu.gpu_fb[i * 4 ..][0..4]);
+    }
 }
 
 test "hosted chrome: explicit seat chrome and the unbound shim retain their look" {
@@ -5991,6 +6006,18 @@ test "hosted chrome: explicit seat chrome and the unbound shim retain their look
     virtio_gpu.fill_framebuffer(0x182026);
     draw_chrome();
     try std.testing.expectEqual(@as(u8, 0xf6), virtio_gpu.gpu_fb[0]);
+}
+
+test "hosted chrome: zero broadcast is refused without changing existing policy" {
+    arm();
+    clear_wm_chrome();
+    const policy = geom.chrome_parity_policy();
+    try std.testing.expect(set_window_chrome(geom.chrome_window_all, policy));
+    var none = policy;
+    none.kind = 0;
+    try std.testing.expect(!set_window_chrome(geom.chrome_window_all, none));
+    try std.testing.expectEqual(policy.kind, wm_chrome_policy.?.kind);
+    clear_wm_chrome();
 }
 
 /// Step 13 (Issue #213): boot splash screen. Renders once into the framebuffer

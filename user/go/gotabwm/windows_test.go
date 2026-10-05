@@ -164,6 +164,39 @@ func TestFillBorderChromeIsValid(t *testing.T) {
 	}
 }
 
+func TestHostedWindowGetsZeroChromeAndSeatKeepsBorder(t *testing.T) {
+	savedScratch, savedWrite := chromeScratch, writeWindowChrome
+	defer func() { chromeScratch, writeWindowChrome = savedScratch, savedWrite }()
+	chromeScratch = make([]byte, vi.PageSize)
+	hosted := true
+	writeWindowChrome = func(id uint32, desc []byte) int64 {
+		if id != 7 || len(desc) != vi.ChromeDescBytes {
+			t.Fatal("wrong descriptor destination or length")
+		}
+		if hosted {
+			for _, b := range desc {
+				if b != 0 {
+					t.Fatal("hosted descriptor is not explicit no-chrome")
+				}
+			}
+		} else if getU32LE(desc) != 1 {
+			t.Fatal("seat-owned window lost its border descriptor")
+		}
+		return 0
+	}
+	if !setHostedWindowChrome(7) {
+		t.Fatal("hosted chrome failed")
+	}
+	hosted = false
+	if !setSeatWindowChrome(7) {
+		t.Fatal("seat chrome failed")
+	}
+	writeWindowChrome = func(uint32, []byte) int64 { return -vi.ErrEINVAL }
+	if setHostedWindowChrome(7) {
+		t.Fatal("refused descriptor claimed success")
+	}
+}
+
 // putU32LE must be little-endian and must not disturb neighbouring bytes.
 func TestPutU32LE(t *testing.T) {
 	b := make([]byte, 8)

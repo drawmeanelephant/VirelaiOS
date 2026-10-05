@@ -514,10 +514,10 @@ pub const chrome_flag_focus_accent: u32 = 0x01;
 /// Every flag bit that exists.
 pub const chrome_flags_all: u32 = 0x01;
 
-/// True when every set kind bit is a known element (zero is refused: a
-/// descriptor that wants no chrome is a bug, not a decision). Pure.
+/// True when every set kind bit is known. Zero selects no per-window chrome;
+/// the broadcast policy still requires at least one element.
 pub fn chrome_kind_valid(kind: u32) bool {
-    return kind != 0 and (kind & ~chrome_kind_all) == 0;
+    return (kind & ~chrome_kind_all) == 0;
 }
 
 /// True when every set flag bit is a known flag. Pure.
@@ -530,6 +530,10 @@ pub fn chrome_flags_valid(flags: u32) bool {
 /// share this one rule.
 pub fn chrome_valid(d: ChromeDesc) bool {
     return chrome_kind_valid(d.kind) and chrome_flags_valid(d.flags) and d.rest_alpha <= 256;
+}
+
+pub fn chrome_valid_for_window(id: u64, d: ChromeDesc) bool {
+    return chrome_valid(d) and (id != chrome_window_all or d.kind != 0);
 }
 
 /// WM4: the normalized rest alpha (0 = "none" → 256, the v1 default;
@@ -911,13 +915,17 @@ test "wnd_core: z_rank reports registry order (0 = bottom)" {
     try std.testing.expectEqual(@as(?usize, null), z_rank(&geoms, 99));
 }
 
-test "wnd_core: chrome descriptor validity refuses unknown kind/flags and zero kind" {
+test "wnd_core: chrome descriptor accepts zero per window but refuses zero broadcast" {
     const p = chrome_parity_policy();
     try std.testing.expect(chrome_valid(p));
-    // Zero kind is a bug, not a decision.
+    // No-chrome is an explicit per-window decision, never a broadcast.
     var d = p;
     d.kind = 0;
-    try std.testing.expect(!chrome_valid(d));
+    try std.testing.expect(chrome_kind_valid(0));
+    try std.testing.expect(chrome_valid(d));
+    try std.testing.expect(chrome_valid_for_window(2, d));
+    try std.testing.expect(!chrome_valid_for_window(chrome_window_all, d));
+    try std.testing.expect(chrome_valid_for_window(chrome_window_all, p));
     // Reserved kind bit (0x80) is refused (0x40 is the DQ2 tab bar).
     d = p;
     d.kind = chrome_kind_all | 0x80;

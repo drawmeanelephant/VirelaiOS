@@ -60,6 +60,9 @@ func TestInteropMarkerShapes(t *testing.T) {
 // record left that this boot hosted anything. A request the seat refuses must
 // not latch it, or a boot that hosted nothing could still claim the beat.
 func TestDogfoodHostedLatch(t *testing.T) {
+	savedChrome := configureHostedChrome
+	configureHostedChrome = func(uint32) bool { return true }
+	defer func() { configureHostedChrome = savedChrome }()
 	savedTabs, savedHosted, savedLatch := tabs, hostedApp, dogfoodHosted
 	savedHostTicks, savedStep, savedHold := hostTicksLeft, stripStep, stripHoldLeft
 	savedSawTwo, savedClosed, savedDone := stripSawTwo, stripClosedOne, stripDone
@@ -87,6 +90,40 @@ func TestDogfoodHostedLatch(t *testing.T) {
 	}
 	if !dogfoodHosted {
 		t.Fatal("declare did not latch dogfoodHosted: `dogfood: ok` could never print")
+	}
+}
+
+func TestHostedChromePrecedesTabPublication(t *testing.T) {
+	savedChrome, savedTabs := configureHostedChrome, tabs
+	savedHosted, savedLatch, savedTicks := hostedApp, dogfoodHosted, hostTicksLeft
+	savedStep, savedHold := stripStep, stripHoldLeft
+	savedSawTwo, savedClosed, savedDone := stripSawTwo, stripClosedOne, stripDone
+	defer func() {
+		configureHostedChrome, tabs = savedChrome, savedTabs
+		hostedApp, dogfoodHosted, hostTicksLeft = savedHosted, savedLatch, savedTicks
+		stripStep, stripHoldLeft = savedStep, savedHold
+		stripSawTwo, stripClosedOne, stripDone = savedSawTwo, savedClosed, savedDone
+	}()
+	for _, kind := range []uint8{vi.WmRpcKindDeclareFullscreen, vi.WmRpcKindAttachTab} {
+		tabs, hostedApp, dogfoodHosted = TabStrip{}, 0, false
+		calls := 0
+		configureHostedChrome = func(id uint32) bool {
+			calls++
+			if id != 7 || tabs.index(id) >= 0 || dogfoodHosted {
+				t.Fatal("tab published before its no-chrome descriptor")
+			}
+			return true
+		}
+		req := vi.WmRpc{Kind: kind, ID: 7}
+		req.SetTitle("Gosh")
+		if !applyRPC(req) || calls != 1 || tabs.index(7) < 0 {
+			t.Fatal("successful chrome setup did not publish the hosted tab")
+		}
+		tabs, hostedApp, dogfoodHosted = TabStrip{}, 0, false
+		configureHostedChrome = func(uint32) bool { return false }
+		if applyRPC(req) || tabs.Count() != 0 || dogfoodHosted || hostedApp != 0 {
+			t.Fatal("failed chrome setup published a hosted tab")
+		}
 	}
 }
 

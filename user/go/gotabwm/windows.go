@@ -196,8 +196,17 @@ type windowPixels struct {
 
 var buttonPixels, menuPixels windowPixels
 var chromeScratch []byte
+var writeWindowChrome = vi.WmctlSetWindowChrome
 
 func setSeatWindowChrome(id int) bool {
+	return setWindowChrome(id, false)
+}
+
+func setHostedWindowChrome(id uint32) bool {
+	return setWindowChrome(int(id), true)
+}
+
+func setWindowChrome(id int, hosted bool) bool {
 	if chromeScratch == nil {
 		var err error
 		chromeScratch, err = vi.MmapHint(scratchVA+vi.PageSize, vi.PageSize,
@@ -207,8 +216,14 @@ func setSeatWindowChrome(id int) bool {
 		}
 	}
 	desc := chromeScratch[:vi.ChromeDescBytes]
-	fillBorderChrome(desc)
-	return vi.WmctlSetWindowChrome(uint32(id), desc) == 0
+	if hosted {
+		for i := range desc {
+			desc[i] = 0
+		}
+	} else {
+		fillBorderChrome(desc)
+	}
+	return writeWindowChrome(uint32(id), desc) == 0
 }
 
 // upload emits only changed, same-color horizontal runs, in batched fills.
@@ -442,7 +457,7 @@ func fillBorderChrome(desc []byte) {
 		desc[i] = 0
 	}
 	tok := theme.Current
-	putU32LE(desc[0:], 0x01)        // kind: chrome_border (zero is refused)
+	putU32LE(desc[0:], 0x01)        // kind: chrome_border for seat-owned windows
 	putU32LE(desc[4:], 0x00)        // flags: no reserved bits set
 	putU32LE(desc[8:], tok.Accent)  // border_rgb
 	putU32LE(desc[12:], tok.Border) // border_unfocus_rgb
