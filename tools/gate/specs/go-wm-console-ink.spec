@@ -251,7 +251,7 @@ mask = [
 cursor_frames = 0
 cursor_positions = set()
 rail_rows = re.findall(r"gotabwm: rail n=(\d+)", ser)
-assert rail_rows and int(rail_rows[-1]) in (1, 2), "unexpected fixture tab count"
+assert rail_rows and int(rail_rows[-1]) == 2, "unexpected fixture tab count"
 rail_n = int(rail_rows[-1])
 for seq, owner, seat, captured, ns, cx, cy, shown in rows:
     src = share / ("M91-FRAME-" + seq + ".rle")
