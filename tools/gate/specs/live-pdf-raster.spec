@@ -34,6 +34,7 @@ exec PDFPROOF.ELF /host/maxima.plan /host/PDF/maxima.receipt 1
 EOF
 vgate_file runtime.txt <<'EOF'
 settings set wm none
+clip procs receipt PDFPROOF.ELF
 pages
 exec PDFPROOF.ELF /host/runtime.plan /host/PDF/runtime.receipt 100
 EOF
@@ -71,9 +72,10 @@ PY
 
 # Allow 100 forced-GC cycles plus startup/tail, not 100 page deadlines.
 # This harness wait does not change the 5,000 ms per-page time budget.
-# Input-string's fixed 40 s marker wait is suitable for baseline, not cycle 50.
+# Paste the prepared command with two chords, not quarter-second key strokes
+# for every letter, so the existing bounded pause need not be extended.
 # Keep scripted mode: console-tcp implies console mode and suppresses scripts.
-vgate_run runtime -- --script '$RUN_DIR/runtime.txt' --via-virtio --input-string $'procs receipt PDFPROOF.ELF\n' --input-string-after 'pdf-proof: baseline' --script2 '$RUN_DIR/cycle-50.txt' --script2-after 'pdf-proof: cycles=50' --script3 '$RUN_DIR/reaped.txt' --script3-after 'procs PDFPROOF.ELF exited status=' --script-expect 'pdf-proof: complete' --script-expect-tail 5 --timeout 360
+vgate_run runtime -- --script '$RUN_DIR/runtime.txt' --via-virtio --input-chords 'ctrl-v,return' --input-chords-after 'pdf-proof: baseline' --script2 '$RUN_DIR/cycle-50.txt' --script2-after 'pdf-proof: cycles=50' --script3 '$RUN_DIR/reaped.txt' --script3-after 'procs PDFPROOF.ELF exited status=' --script-expect 'pdf-proof: complete' --script-expect-tail 5 --timeout 360
 vgate_assert runtime serial-contains 'pdf-proof: complete'
 vgate_assert runtime serial-absent '[EXC] parking:'
 vgate_assert runtime python <<'PY'

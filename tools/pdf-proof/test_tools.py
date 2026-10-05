@@ -382,7 +382,9 @@ class RuntimeReceiptTests(unittest.TestCase):
         spec = (corpus.ROOT/"tools/gate/specs/live-pdf-raster.spec").read_text()
         runtime = next(line for line in spec.splitlines() if line.startswith("vgate_run runtime "))
         self.assertNotIn("--console-tcp", runtime) # console mode suppresses scripted input
-        self.assertIn("--input-string-after 'pdf-proof: baseline'", runtime)
+        self.assertIn("--input-chords 'ctrl-v,return'", runtime)
+        self.assertIn("--input-chords-after 'pdf-proof: baseline'", runtime)
+        self.assertIn("clip procs receipt PDFPROOF.ELF\n", spec)
         self.assertIn("--script2-after 'pdf-proof: cycles=50'", runtime)
         self.assertIn("--script3-after 'procs PDFPROOF.ELF exited status='", runtime)
         self.assertTrue(runtime.endswith("--timeout 360"))

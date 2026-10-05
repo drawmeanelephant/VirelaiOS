@@ -59,7 +59,7 @@
     "tools/pdf-proof/pause.py": "7c9594a2ca6f89fb9b9ec547dda650bcbfeb6a4d8f14ee0896eecf637b831b4c",
     "tools/pdf-proof/product.py": "b87ac09f55f67eb04a778e809a5a76e10fa241f1776563e56f07ce96643efd28",
     "tools/pdf-proof/stage.py": "a07300bd1772d20e5203cbea45c46cbe01eb7bb103fcc8fcc9dc4ad374b18524",
-    "tools/pdf-proof/test_tools.py": "14ee6c609748654ec9da5240e1ecc381139840b0e90f7ea83fce0037d784f98d",
+    "tools/pdf-proof/test_tools.py": "2369f91d3fc8788c2106080d60619f76d451b7f3d1ad743324e33b64a5eed3da",
     "user/go/pdfproof/pause.go": "db63c56a2efb1b34edfed28d35bf4978cdd10b5d83b19f16d513c184961459ea",
     "user/go/pdfproof/pause_test.go": "c097f2a270f5e1d022863107d3231ec370441e3b36e569091aa3d75e0932c9eb",
     "user/go/pdfproof/publish.go": "6079d2d416c909e582785c0b0b93735760a2e1856a0b7798c5ffb252d8691491",
