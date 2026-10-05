@@ -1,4 +1,5 @@
 import json
+import os
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -49,11 +50,38 @@ class ManifestTests(unittest.TestCase):
             self.assertEqual(entry["bgra_sha256"], oracle.sha((oracle.OUT / "references" / (name+".bgra")).read_bytes()))
             self.assertEqual(entry["invocation"]["unsafe"], False)
         lock = json.loads((oracle.FIXTURES / "oracle-lock.json").read_text())
-        self.assertEqual(lock, oracle.environment())
+        oracle.check_environment()
         self.assertEqual(lock["source_commit"], oracle.COMMIT)
         requirements = (oracle.ROOT / "tools/svg-proof/requirements.txt").read_text()
         for digest in lock["distribution_sha256"].values():
             self.assertIn("--hash=sha256:"+digest, requirements)
+
+    def test_external_wheel_mode_keeps_all_executable_pins(self):
+        frozen = json.loads((oracle.FIXTURES / "oracle-lock.json").read_text())
+        wheel = dict(frozen)
+        wheel["native_payload"] = dict(frozen["native_payload"])
+        del wheel["source_commit"], wheel["source_setup_sha256"]
+        overlay = json.loads((oracle.FIXTURES / "oracle-wheel-overlay.json").read_text())
+        wheel["native_payload"].update(overlay["native_payload"])
+        with patch.dict(os.environ, {"SVG_ORACLE_PROVENANCE": "wheel"}):
+            self.assertEqual(oracle.check_environment(wheel), wheel)
+            for key in wheel:
+                with self.subTest(key=key):
+                    with self.assertRaisesRegex(ValueError, "environment drift"):
+                        oracle.check_environment(wheel | {key: "drift"})
+            with self.assertRaisesRegex(ValueError, "environment drift"):
+                oracle.check_environment(frozen) # do not claim unobserved source identity
+        with patch.dict(os.environ, {"SVG_ORACLE_PROVENANCE": ""}):
+            self.assertEqual(oracle.check_environment(frozen), frozen)
+            with self.assertRaisesRegex(ValueError, "environment drift"):
+                oracle.check_environment(wheel)
+
+    def test_wheel_overlay_binds_original_lock_and_reference_bytes(self):
+        frozen = json.loads((oracle.FIXTURES / "oracle-lock.json").read_text())
+        with patch.dict(os.environ, {"SVG_ORACLE_PROVENANCE": "wheel"}):
+            with patch.object(oracle, "sha", return_value="drift"):
+                with self.assertRaisesRegex(ValueError, "overlay drift"):
+                    oracle.check_environment(frozen)
 
     def test_fetch_and_font_refused(self):
         with self.assertRaises(ValueError):
