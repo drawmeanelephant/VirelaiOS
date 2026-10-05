@@ -1,5 +1,9 @@
 # Chronicle authoring prompt
 
+This is the current prompt for new chronicle batches. It supersedes the
+earlier grokbot packaging request; do not carry forward that delivery step
+from the historical conversation or batch files.
+
 Read the PRs in the requested batch. Write one Markdown chronicle entry per
 PR, with honest flaw-finding: separate observed results from inference, and
 check claims against the changes and their evidence. Skip issue numbers that
@@ -12,6 +16,10 @@ for the project's M-series.
 Keep the chronicle in the repository's PR/issue comments. Entries are
 Markdown; banners are inline images. Do not package or deliver archives,
 PDFs, or local download bundles. Do not use `<picture>`.
+
+Original backlog inputs are read-only. Use the matching PR's entry title as
+the banner caption, upload its original image, and leave the supplied prose
+and other batches untouched. Do not commit the input collection or images.
 
 For each image, use the repo-local publisher:
 
