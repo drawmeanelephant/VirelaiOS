@@ -30,12 +30,8 @@ with open(os.path.join(share, "M91-PRESENTATION.TRACE"), "w") as f:
     f.write("v1\n")
 PY
 
-# Stage 1: seat the default Go desktop and host GOSH.ELF in a tab.
-vgate_file script.txt <<'EOF'
-exec GOSH.ELF
-EOF
-
-# Stage 2: wait for the first completed seat present, not GOSH's pre-paint
+# Run 01 hosts only the default seat's own first-boot GOSH, with no extra exec.
+# Wait for the first completed seat present, not GOSH's pre-paint
 # prompt. Make the KERNEL print through the tee while scanout belongs to the
 # seat. The script-owned marker ends the run and triggers the capture.
 vgate_file script2.txt <<'EOF'
@@ -45,10 +41,8 @@ EOF
 
 vgate_run 01 -- \
     --screen '$RUN_DIR/screen' \
-    --script '$RUN_DIR/script.txt' \
-    --script-after 'gotabwm: holding seat' \
-    --script2 '$RUN_DIR/script2.txt' \
-    --script2-after 'gotabwm: present' \
+    --script '$RUN_DIR/script2.txt' \
+    --script-after 'gotabwm: present' \
     --script-expect 'rx-console-ink-probe' \
     --screenshot-after 'rx-console-ink-probe' --timeout 240
 
@@ -59,8 +53,20 @@ vgate_assert 01 serial-contains 'gotabwm: scanout'
 vgate_assert 01 serial-contains 'gotabwm: draw'
 vgate_assert 01 serial-contains 'gotabwm: present'
 # A tab is hosted, with the seat's rail and reserved bottom chrome.
+vgate_assert 01 serial-contains 'gotabwm: first-boot workspace'
 vgate_assert 01 serial-contains 'gotabwm: tab open id='
 vgate_assert 01 serial-contains 'gosh: prompt'
+vgate_assert 01 python <<'PY'
+import os, re
+from pathlib import Path
+ser = Path(os.environ["VG_SER"]).read_text(errors="replace")
+assert ser.count("gotabwm: tab open id=") == 1, "expected exactly one first-boot tab"
+before_probe, marker, _ = ser.partition("rx-console-ink-probe")
+assert marker, "missing console-ink probe"
+rail_rows = re.findall(r"gotabwm: rail n=(\d+)", before_probe)
+assert rail_rows and int(rail_rows[-1]) == 1, "expected rail n=1 before the probe"
+print("first-boot workspace: one tab; last rail before probe n=1")
+PY
 # The kernel printed its OWN console output while the seat owned the scanout:
 # the per-task advances report comes from the monitor, i.e. through the tee.
 vgate_assert 01 serial-contains 'tasks '
@@ -74,7 +80,7 @@ vgate_assert 01 serial-absent 'm91: trace ERROR'
 # The measurement, asserted.  The capture is a 2x-scaled window capture, so
 # the scanout's own edge is not the window's edge: sample the interior only
 # (a 12-pixel margin) and ignore the capture's own border.
-vgate_assert 01 snapshot 'screen-*' <<'PY'
+vgate_assert 01 snapshot 'screen-after' <<'PY'
 import sys, zlib, struct
 path = sys.argv[1]
 d = open(path, 'rb').read()
@@ -181,6 +187,11 @@ print("reserved seat chrome:", controls)
 print("PASS: the seat owns every uncovered pixel and no kernel console ink is on the scanout")
 PY
 
+# Run 02 restores run 01's single-tab session and explicitly starts one GOSH.
+vgate_file script.txt <<'EOF'
+exec GOSH.ELF
+EOF
+
 vgate_file presentation-end.txt <<'EOF'
 tasks
 wm
@@ -196,6 +207,7 @@ vgate_run 02 -- --screen '$RUN_DIR/presentation' --input --via-virtio \
     --script-expect m91-fixture-done --timeout 240
 
 vgate_assert 02 serial-contains 'gotabwm: present'
+vgate_assert 02 serial-contains 'gotabwm: session load n=1 mode=restore'
 vgate_assert 02 serial-contains 'gotabwm: launcher open n='
 vgate_assert 02 serial-contains 'gotabwm: launcher restore id='
 vgate_assert 02 serial-contains 'gotabwm: launcher dismiss'
@@ -254,8 +266,8 @@ for seq, owner, seat, captured, ns, cx, cy, shown in rows:
         continue
     # The rail must stay a composed rail; a full blue/chrome-only intermediate
     # frame or blank capture cannot pass because it lacks the dark client body.
-    # Run 01's session survives into run 02: one restored GOSH plus the explicit
-    # GOSH give two tabs. Only the focused cell is Accent, not the entire rail.
+    # Run 01 saves only its first-boot GOSH; run 02 restores it and execs one
+    # more GOSH, for two tabs. Only the focused cell is Accent, not the whole rail.
     assert sum(pixels[y*1280+x] == 0x3b82f6 for y in range(1,20) for x in range(12,1260)) >= (1280//rail_n - 40)*18, "rail missing"
     assert sum(max((p>>16)&255,(p>>8)&255,p&255) < 100 for p in pixels) >= 1280*720//2, "blue/chrome-only frame"
     if shown == "1":
