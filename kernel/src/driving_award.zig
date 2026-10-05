@@ -273,6 +273,9 @@ pub const Window = struct {
     /// rules — the two paths coexist behind the presence of WM chrome.
     chrome_valid: bool = false,
     chrome: geom.ChromeDesc = undefined,
+    /// A scanout-owning WM accepted this client into its full viewport.
+    /// Subsequent split layouts keep the handoff; explicit WM chrome wins.
+    wm_viewport: bool = false,
     /// M33 SB3 (claim 9361): when a `.user` window is SURFACE-BACKED, its
     /// rendering lives in a shared-anonymous region (M33_MAP_SHARED) instead
     /// of the kernel `user_bufs[id]` copy. The kernel records the region's
@@ -2090,6 +2093,17 @@ pub fn wm_apply_rect(id: u8, x: u32, y: u32, w: u32, h: u32) bool {
     // WM1: the pool buffer follows the layout size (content overlap
     // preserved); on pool exhaustion the window keeps its old rect.
     if (!reflow(win, nx, ny, cw, ch)) return false;
+    if (wm_owns_user_layer and nx == 0 and ny == 0 and cw == virtio_gpu.fb_width and ch == virtio_gpu.fb_height) {
+        // The WM now owns this client's surrounding pixels. Finish the
+        // native opening fade and replace the old scanout contents BEFORE
+        // the seat can present: blending over them preserves the old frame.
+        win.wm_viewport = true;
+        win.fade_phase = 0;
+        win.fade_tick = 0;
+        win.damaged = false;
+        // Migrated clients are composed by the WM, not by this legacy blit.
+        if (win.surface_handle == 0) paint(win);
+    }
     win.dirty = true;
     _ = mark_dirty(0);
     _ = mark_dirty(1);
@@ -5022,6 +5036,7 @@ pub fn clear_wm_chrome() void {
     var i: usize = 0;
     while (i < win_count) : (i += 1) {
         windows[i].chrome_valid = false;
+        windows[i].wm_viewport = false;
     }
     // M32 WMS6 Gate E (issue #626): the WM's tray widget content dies with
     // it — the shim fallback re-derives clock/theme/clipboard from its own
@@ -5351,6 +5366,14 @@ fn chrome_occluded(i: usize) bool {
     return false;
 }
 
+/// Once the WM owns a client surface/viewport, default shim chrome is not
+/// another compositor layer. Explicit WM descriptors still apply, including
+/// the seat's own button/menu windows and a broadcast chrome policy.
+fn wm_owns_default_chrome(w: *const Window) bool {
+    return wm_owns_user_layer and w.kind == .user and !w.chrome_valid and wm_chrome_policy == null and
+        (w.wm_viewport or w.surface_handle != 0);
+}
+
 /// Card U5/U4: the chrome pass, drawn on the framebuffer AFTER the window
 /// paints and BEFORE the transfer — user title bars, the focus ring on the
 /// focused window, and the pointer cursor. Chrome never touches a window's
@@ -5372,6 +5395,7 @@ pub fn draw_chrome() void {
         if (w.kind != .user or !w.visible) continue;
         // Arc4 #241: skip chrome for windows not in the current workspace.
         if (!workspace_visible(w)) continue;
+        if (wm_owns_default_chrome(w)) continue;
         // M69g (#1558): a fully covered window is not visible, so its chrome
         // must not be painted over the covering window's content.
         if (chrome_occluded(i)) continue;
@@ -5480,6 +5504,7 @@ pub fn draw_chrome() void {
             if (windows[idx].id != focused_id) continue;
             const w = &windows[idx];
             if (w.kind == .terminal) break;
+            if (wm_owns_default_chrome(w)) break;
             // Arc4 #241: don't draw focus ring on off-workspace windows.
             if (!workspace_visible(w)) break;
             // M32 WMS4: the ring is drawn only when the WM's descriptor
@@ -5884,6 +5909,88 @@ test "compositor: a bound WM keeps exclusive paint and present ownership" {
     try std.testing.expect(!splash_hold); // the scanout bind still ends the hold
     wm_owns_user_layer = false;
     try std.testing.expectEqual(virtio_gpu.CmdResult.not_ready, composite());
+}
+
+test "hosted chrome: full viewport replaces the native frame before the first present" {
+    arm();
+    clear_wm_chrome();
+    wm_owns_user_layer = true;
+    defer wm_owns_user_layer = false;
+    const id = switch (user_open(32, 32, 512, 384, 7)) {
+        .opened => |opened| opened,
+        else => return error.TestUnexpectedResult,
+    };
+    virtio_gpu.fill_framebuffer(0x182026);
+    try std.testing.expectEqual(virtio_gpu.CmdResult.ok, paint_scene());
+    const old_border = (415 * virtio_gpu.fb_width + 300) * 4;
+    try std.testing.expectEqual(@as(u8, 0xf6), virtio_gpu.gpu_fb[old_border]);
+    try std.testing.expect(wm_apply_rect(id, 0, 0, virtio_gpu.fb_width, virtio_gpu.fb_height));
+    const win = find_user_window(id).?;
+    // No tick or present has occurred since the handoff. Neither the old
+    // body/title/frame nor a new screen-edge ring may survive it.
+    draw_chrome();
+    try std.testing.expectEqualSlices(u8, kbuf_ptr(win)[0..virtio_gpu.fb_size], &virtio_gpu.gpu_fb);
+    try std.testing.expectEqual(@as(u16, 256), client_alpha(win));
+    // A later split remains hosted; focus changes cannot reintroduce chrome.
+    try std.testing.expect(wm_apply_rect(id, 0, 0, 640, 720));
+    virtio_gpu.fill_framebuffer(0x182026);
+    draw_chrome();
+    try std.testing.expectEqual(@as(u8, 0x26), virtio_gpu.gpu_fb[0]);
+    focused_id = 0xff;
+    draw_chrome();
+    try std.testing.expectEqual(@as(u8, 0x26), virtio_gpu.gpu_fb[0]);
+}
+
+test "hosted chrome: migrated clients skip frame title and focus ring" {
+    arm();
+    clear_wm_chrome();
+    wm_owns_user_layer = true;
+    defer wm_owns_user_layer = false;
+    const id = switch (user_open(32, 32, 512, 384, 7)) {
+        .opened => |opened| opened,
+        else => return error.TestUnexpectedResult,
+    };
+    try std.testing.expect(user_bind_surface(id, .{ .handle = 1, .pa_base = 0x1000_0000, .page_count = 192 }));
+    virtio_gpu.fill_framebuffer(0x182026);
+    try std.testing.expectEqual(virtio_gpu.CmdResult.ok, paint_scene());
+    const at = (32 * virtio_gpu.fb_width + 32) * 4;
+    try std.testing.expectEqualSlices(u8, &.{ 0x26, 0x20, 0x18, 0xff }, virtio_gpu.gpu_fb[at..][0..4]);
+}
+
+test "hosted chrome: explicit seat chrome and the unbound shim retain their look" {
+    arm();
+    clear_wm_chrome();
+    wm_owns_user_layer = true;
+    defer wm_owns_user_layer = false;
+    const id = switch (user_open(32, 32, 512, 384, 7)) {
+        .opened => |opened| opened,
+        else => return error.TestUnexpectedResult,
+    };
+    try std.testing.expect(wm_apply_rect(id, 0, 0, virtio_gpu.fb_width, virtio_gpu.fb_height));
+    const menu = switch (user_open(224, 692, 96, 20, 1)) {
+        .opened => |opened| opened,
+        else => return error.TestUnexpectedResult,
+    };
+    var desc = effective_chrome(find_user_window(menu).?);
+    desc.kind = geom.chrome_border;
+    desc.border_rgb = 0x123456;
+    try std.testing.expect(set_window_chrome(menu, desc));
+    virtio_gpu.fill_framebuffer(0x182026);
+    draw_chrome();
+    const at = (692 * virtio_gpu.fb_width + 224) * 4;
+    try std.testing.expectEqualSlices(u8, &.{ 0x56, 0x34, 0x12, 0xff }, virtio_gpu.gpu_fb[at..][0..4]);
+    try std.testing.expect(user_close(menu));
+    try std.testing.expect(focus(id));
+    // The descriptor remains authoritative even for a full-viewport client.
+    try std.testing.expect(set_window_chrome(id, desc));
+    virtio_gpu.fill_framebuffer(0x182026);
+    draw_chrome();
+    try std.testing.expectEqual(@as(u8, 0x56), virtio_gpu.gpu_fb[0]);
+    clear_wm_chrome();
+    wm_owns_user_layer = false;
+    virtio_gpu.fill_framebuffer(0x182026);
+    draw_chrome();
+    try std.testing.expectEqual(@as(u8, 0xf6), virtio_gpu.gpu_fb[0]);
 }
 
 /// Step 13 (Issue #213): boot splash screen. Renders once into the framebuffer
