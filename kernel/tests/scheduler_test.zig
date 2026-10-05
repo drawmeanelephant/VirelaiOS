@@ -87,6 +87,315 @@ const yield_current = scheduler.yield_current;
 // class B gate tools/verify-live-scheduler.tasks.sh)
 // ---------------------------------------------------------------------------
 
+// #1978: reconstructed from the card's four probe scenarios. Each task
+// owns a distinct saved frame; synthetic second-core ownership is explicit.
+const ExitKillCase = struct {
+    pid: usize,
+    primary: usize,
+    sibling: usize,
+
+    fn boot() !ExitKillCase {
+        _ = init();
+        scheduler.current[1] = idle_id;
+        scheduler.current[2] = idle_id;
+        scheduler.current[3] = idle_id;
+        const primary = spawn("user-exec", 0x3000, spsr_el0t_irqs, &exec_kstack_pool[0], 0, 0).?;
+        const sibling = spawn("GOTABWM.ELF", 0x4000, spsr_el0t_irqs, &exec_kstack_pool[1], 0, 0).?;
+        scheduler.tasks[sibling].is_thread = true;
+        const pid = process.create("GOTABWM.ELF", .{}, .{}, .{}).?;
+        try std.testing.expect(process.bind(pid, primary));
+        try std.testing.expect(process.bind_thread(pid, sibling));
+        start();
+        return .{ .pid = pid, .primary = primary, .sibling = sibling };
+    }
+
+    fn select(id: usize) !void {
+        for (0..max_tasks * 2) |_| {
+            if (current_id() == id) {
+                exceptions.resume_frame[0] = scheduler.tasks[id].sp;
+                exceptions.resume_sp_el0[0] = scheduler.tasks[id].sp_el0;
+                return;
+            }
+            try std.testing.expect(yield_current());
+        }
+        return error.TestUnexpectedResult;
+    }
+
+    fn word_matches(_: u64, _: u32) bool {
+        return true;
+    }
+
+    fn futex(self: ExitKillCase) !void {
+        try std.testing.expectEqual(scheduler.FutexWaitOutcome.blocked, scheduler.futex_wait_current(self.pid, 0x1000, 0, 0, word_matches));
+    }
+
+    fn arm_running(self: ExitKillCase) !void {
+        // A foreign-core sibling is already running, off every ring,
+        // when the primary's process exit performs the arming scan.
+        try select(self.sibling);
+        scheduler.current[1] = self.sibling;
+        scheduler.current[0] = self.primary;
+        try std.testing.expect(scheduler.ready_rings[0].remove(self.primary));
+        exceptions.resume_frame[0] = scheduler.tasks[self.primary].sp;
+        try std.testing.expect(exit_current(7));
+        try std.testing.expect(scheduler.tasks[self.sibling].kill_pending);
+        scheduler.current[1] = idle_id;
+        // Resume that already-running sibling's syscall on the host core.
+        const previous = current_id();
+        scheduler.tasks[previous].state = .ready;
+        scheduler.ready_rings[0].push(previous);
+        scheduler.current[0] = self.sibling;
+        exceptions.resume_frame[0] = scheduler.tasks[self.sibling].sp;
+        check_ready_membership();
+    }
+
+    fn defer_conversion(self: ExitKillCase) !void {
+        const svc = scheduler.svclock;
+        svc.file.gate.lock();
+        defer svc.file.gate.unlock();
+        try std.testing.expect(yield_current());
+        try select(self.sibling);
+        try std.testing.expectEqual(State.running, scheduler.tasks[self.sibling].state);
+        try std.testing.expect(scheduler.tasks[self.sibling].kill_pending);
+        check_ready_membership();
+    }
+
+    fn finish(self: ExitKillCase, beats: usize) !void {
+        try self.finish_status(beats, 7);
+    }
+
+    fn finish_status(self: ExitKillCase, beats: usize, status: u64) !void {
+        for (0..beats) |_| {
+            on_tick();
+            try std.testing.expect(yield_current());
+            check_ready_membership();
+        }
+        try std.testing.expectEqual(process.State.exited, process.info(self.pid).?.state);
+        try std.testing.expectEqual(status, process.info(self.pid).?.exit_status);
+        try std.testing.expect(is_terminated(self.sibling));
+        try std.testing.expect(!scheduler.tasks[self.sibling].kill_pending);
+    }
+};
+
+test "scheduler: exit-kill control wakes an already futex-blocked sibling (#1978)" {
+    const c = try ExitKillCase.boot();
+    try ExitKillCase.select(c.sibling);
+    try c.futex();
+    try std.testing.expect(is_blocked(c.sibling));
+    try ExitKillCase.select(c.primary);
+    try std.testing.expect(exit_current(7));
+    try c.finish(max_tasks);
+}
+
+test "scheduler: exit-kill control retries a deferred kill on selection (#1978)" {
+    const c = try ExitKillCase.boot();
+    try c.arm_running();
+    try c.defer_conversion();
+    try c.finish(max_tasks);
+}
+
+test "scheduler: exit-kill repro deferred conversion then infinite futex (#1978)" {
+    const c = try ExitKillCase.boot();
+    try c.arm_running();
+    try c.defer_conversion();
+    try c.futex();
+    try std.testing.expect(is_blocked(c.sibling));
+    try c.finish(200);
+}
+
+test "scheduler: exit-kill repro already-running sibling then infinite futex (#1978)" {
+    const c = try ExitKillCase.boot();
+    try c.arm_running();
+    try c.futex();
+    try std.testing.expect(is_blocked(c.sibling));
+    try c.finish(200);
+}
+
+test "scheduler: exit-kill rescues every deadline and event wait within one sweep (#1978)" {
+    const Wait = enum { sleep, process_wait, event_wait };
+    for ([_]Wait{ .sleep, .process_wait, .event_wait }) |wait| {
+        for ([_]bool{ false, true }) |deferred| {
+            const c = try ExitKillCase.boot();
+            try c.arm_running();
+            if (deferred) try c.defer_conversion();
+            switch (wait) {
+                .sleep => try std.testing.expect(sleep_current(10_000)),
+                .process_wait => try std.testing.expect(scheduler.wait_current(process.max_processes - 1)),
+                .event_wait => try std.testing.expect(scheduler.wait_event_current(c.pid)),
+            }
+            try std.testing.expect(is_blocked(c.sibling));
+            on_tick();
+            try std.testing.expectEqual(State.ready, scheduler.tasks[c.sibling].state);
+            try std.testing.expectEqual(@as(u64, 0), scheduler.tasks[c.sibling].wakeup_tick);
+            try std.testing.expect(scheduler.tasks[c.sibling].wait_pid == null);
+            try std.testing.expect(scheduler.tasks[c.sibling].wait_event_pid == null);
+            try std.testing.expectEqual(@as(u64, 0), scheduler.tasks[c.sibling].wait_event_buf);
+            check_ready_membership();
+            try c.finish(max_tasks);
+        }
+    }
+}
+
+test "scheduler: exit-kill rescues a pending-kill joiner and detaches its seat (#1978)" {
+    const c = try ExitKillCase.boot();
+    try ExitKillCase.select(c.sibling);
+    // A single-task kill does not invalidate the target token until its
+    // conversion requests process exit. Model a native primary as target.
+    const token = max_tasks + 1;
+    scheduler.tasks[c.primary].join_token = token;
+    scheduler.tasks[c.primary].join_pid = c.pid;
+    try std.testing.expectEqual(KillResult.ok, request_kill(c.sibling));
+    {
+        scheduler.svclock.file.gate.lock();
+        defer scheduler.svclock.file.gate.unlock();
+        try std.testing.expectEqual(@as(?u64, 0), scheduler.join_thread(c.pid, token));
+    }
+    try std.testing.expect(is_blocked(c.sibling));
+    try std.testing.expectEqual(@as(?usize, c.sibling), scheduler.tasks[c.primary].joiner);
+    on_tick();
+    try std.testing.expect(!scheduler.tasks[c.sibling].wait_thread);
+    try std.testing.expect(scheduler.tasks[c.primary].joiner == null);
+    check_ready_membership();
+    try c.finish_status(max_tasks, reserved_kill_status);
+}
+
+test "scheduler: exit-kill rescues a join that blocked before the arming scan (#1978)" {
+    const c = try ExitKillCase.boot();
+    const token = max_tasks + 1;
+    scheduler.tasks[c.primary].join_token = token;
+    scheduler.tasks[c.primary].join_pid = c.pid;
+    try ExitKillCase.select(c.sibling);
+    try std.testing.expectEqual(@as(?u64, 0), scheduler.join_thread(c.pid, token));
+    try std.testing.expect(is_blocked(c.sibling));
+    try ExitKillCase.select(c.primary);
+    try std.testing.expect(exit_current(7));
+    try c.finish(max_tasks);
+}
+
+test "scheduler: exit-kill retains the request and status when conversion refuses (#1978)" {
+    const c = try ExitKillCase.boot();
+    try ExitKillCase.select(c.sibling);
+    try c.futex();
+    // Replay the shared secondary-tick seam against a non-runnable task.
+    // exit_current_locked must refuse without consuming the pending status.
+    const previous = current_id();
+    scheduler.current[0] = c.sibling;
+    scheduler.tasks[c.sibling].kill_pending = true;
+    scheduler.tasks[c.sibling].kill_pending_status = scheduler.reserved_cpu_limit_status;
+    try std.testing.expect(!scheduler.convert_pending_kill());
+    try std.testing.expect(scheduler.tasks[c.sibling].kill_pending);
+    try std.testing.expectEqual(scheduler.reserved_cpu_limit_status, scheduler.tasks[c.sibling].kill_pending_status);
+    scheduler.current[0] = previous;
+    try c.finish_status(max_tasks, scheduler.reserved_cpu_limit_status);
+    for (&scheduler.ring_locks) |*lock| try std.testing.expect(!lock.lock_impl.is_locked());
+    try std.testing.expect(!scheduler.sched_lock.is_locked());
+    try std.testing.expect(!scheduler.svclock.held_set(scheduler.svclock.all_bits));
+}
+
+test "scheduler: exit-kill conversion defers under a non-prefix service hold (#1978)" {
+    const c = try ExitKillCase.boot();
+    try c.arm_running();
+    scheduler.svclock.kernel.acquire();
+    try std.testing.expect(!scheduler.convert_pending_kill());
+    try std.testing.expect(scheduler.tasks[c.sibling].kill_pending);
+    try std.testing.expect(!scheduler.svclock.file.held());
+    try std.testing.expect(scheduler.svclock.kernel.held());
+    scheduler.svclock.kernel.release();
+    try std.testing.expect(scheduler.convert_pending_kill());
+    try c.finish(max_tasks);
+}
+
+var exit_kill_ram: [192 * 4096]u8 align(4096) = undefined;
+
+fn exit_kill_allocator() !void {
+    const allocator = scheduler.alloc;
+    const desc = [_]allocator.memmap.MemoryDescriptor{.{
+        .type = .conventional_memory,
+        .physical_start = @intFromPtr(&exit_kill_ram),
+        .virtual_start = 0,
+        .number_of_pages = 192,
+        .attribute = 0,
+    }};
+    try std.testing.expect(allocator.init(allocator.memmap.MapView.init(std.mem.asBytes(&desc), @sizeOf(allocator.memmap.MemoryDescriptor), 1), &.{}));
+}
+
+test "scheduler: exit-kill rejects late detached and native threads after requester reap (#1978)" {
+    const c = try ExitKillCase.boot();
+    try exit_kill_allocator();
+    try c.arm_running();
+    try std.testing.expect(reap(c.primary));
+    const before = scheduler.alloc.stats().free_pages;
+    const count = scheduler.task_count;
+    try std.testing.expect(scheduler.spawn_thread(c.sibling, 0x5000, 0x70000000, 0) == null);
+    try std.testing.expect(scheduler.spawn_tls_thread(c.sibling, 0x5000, 0x70000000, 0, 0x60000000) == null);
+    try std.testing.expectEqual(before, scheduler.alloc.stats().free_pages);
+    try std.testing.expectEqual(count, scheduler.task_count);
+    try c.finish(max_tasks);
+}
+
+test "scheduler: exit-kill publication guard clears for a recycled process (#1978)" {
+    const c = try ExitKillCase.boot();
+    try exit_kill_allocator();
+    try c.arm_running();
+    try c.finish(max_tasks);
+    try std.testing.expect(reap(c.primary));
+    try std.testing.expect(reap(c.sibling));
+    // create prefers unused descriptors, recycling an exited row only
+    // once the fixed registry is full.
+    for (1..process.max_processes) |_| {
+        _ = process.create("occupied", .{}, .{}, .{}).?;
+    }
+    const primary = spawn("fresh", 0x3000, spsr_el0t_irqs, &exec_kstack_pool[0], 0, 0).?;
+    const pid = process.create("fresh", .{}, .{}, .{}).?;
+    try std.testing.expectEqual(c.pid, pid);
+    try std.testing.expect(process.bind(pid, primary));
+    const child = scheduler.spawn_thread(primary, 0x5000, 0x70000000, 0) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(?usize, pid), process.find_by_task(child));
+    try std.testing.expect(!scheduler.tasks[child].kill_pending);
+    try ExitKillCase.select(primary);
+    try std.testing.expect(exit_current(0));
+    for (0..max_tasks) |_| try std.testing.expect(yield_current());
+    try std.testing.expect(reap(primary));
+    try std.testing.expect(reap(child));
+}
+
+test "scheduler: exit-kill finishes WM teardown without a healthy diagnostic (#1978)" {
+    const c = try ExitKillCase.boot();
+    try std.testing.expect(scheduler.wm_server.register(c.pid));
+    try c.arm_running();
+    try std.testing.expectEqual(@as(?usize, c.pid), scheduler.wm_server.registered_pid());
+    try c.defer_conversion();
+    try c.futex();
+    try c.finish(max_tasks);
+    try std.testing.expect(!scheduler.wm_server.registered());
+    var mock = console.MockConsole(4096){};
+    var con = mock.console();
+    maybe_report(&con);
+    try std.testing.expect(std.mem.indexOf(u8, mock.contents(), "tasks exit-kill outstanding") == null);
+}
+
+test "scheduler: exit-kill diagnostic is strictly after 64 ticks and prints once (#1978)" {
+    const c = try ExitKillCase.boot();
+    try c.arm_running();
+    try c.futex();
+    // No rotations: deliberately leave the exit request outstanding.
+    for (0..scheduler.exit_kill_diagnostic_ticks) |_| on_tick();
+    var mock = console.MockConsole(4096){};
+    var con = mock.console();
+    maybe_report(&con);
+    try std.testing.expect(std.mem.indexOf(u8, mock.contents(), "tasks exit-kill outstanding") == null);
+    mock.reset();
+    on_tick();
+    maybe_report(&con);
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, mock.contents(), "tasks exit-kill outstanding"));
+    try std.testing.expect(std.mem.indexOf(u8, mock.contents(), "state=ready kill_pending=true futex_waiting=false wakeup_tick=0 rings=0x1 age=65") != null);
+    for (0..100) |_| on_tick();
+    mock.reset();
+    maybe_report(&con);
+    try std.testing.expect(std.mem.indexOf(u8, mock.contents(), "tasks exit-kill outstanding") == null);
+    try c.finish(max_tasks);
+}
+
 test "scheduler: init registers the shell and idle scheduler.tasks; start flips enabled" {
     try std.testing.expectEqual(@as(usize, 0), init());
     // Claim 6729: the pool starts as shell + the scheduler-owned idle task

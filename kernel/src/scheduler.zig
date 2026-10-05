@@ -65,7 +65,7 @@ const shared_mmap = @import("shared_mmap.zig"); // M33 SB2 (claim 8878): shared-
 // + exit status). One-way import: process.zig knows nothing about this
 // module.
 pub const process = @import("process.zig");
-const svclock = @import("svclock.zig"); // claim 9498 follow-on: per-service-domain locks — canonical file < net < win < ev < kernel, then sched_lock (brief), ring locks innermost (claim 881 slice 3)
+pub const svclock = @import("svclock.zig"); // claim 9498 follow-on: per-service-domain locks — canonical file < net < win < ev < kernel, then sched_lock (brief), ring locks innermost (claim 881 slice 3)
 // Card 3f (claim 5965): the per-process IPC mailbox — the pool reset
 // clears it and the boot payload's process registration resets its ring.
 const mailbox = @import("mailbox.zig");
@@ -86,11 +86,11 @@ const driving_award = @import("driving_award.zig");
 // M32 WMS2 (issue #622): the render-server register. Fired from the SAME
 // host-testable tick seam as app_timers; the exit path unregisters a dying
 // WM so pacing falls back to the shell idle shim automatically.
-const wm_server = @import("wm_server.zig");
+pub const wm_server = @import("wm_server.zig");
 // Arc5 issue #243: crash tombstone recording — written in the exit path
 // when status is 139 (fault) or non-zero unexpected exits. Pure BSS
 // writes, safe in the exception context `exit_current` runs in.
-const alloc = @import("alloc.zig");
+pub const alloc = @import("alloc.zig");
 const tombstone = @import("tombstone.zig");
 const symbol = @import("symbol.zig");
 const serial_ring = @import("serial_ring.zig"); // Arc5 #243: serial snapshot for tombstones
@@ -302,6 +302,8 @@ const Task = struct {
     /// default by the conversion and by the slot's reap (`.{ }` clears
     /// it).
     kill_pending_status: u64 = reserved_kill_status,
+    /// #1978: at most one outstanding-exit diagnostic per task lifetime.
+    exit_kill_reported: bool = false,
     /// SMP lift (claim 8477 follow-up): may this task run on a secondary
     /// core? Only console-free kernel tasks (the worker) and explicitly
     /// pinned user tasks today — ordinary user tasks print through the
@@ -332,6 +334,27 @@ const Task = struct {
 pub var tasks: [max_tasks]Task = [_]Task{.{}} ** max_tasks;
 var exception_owner: [smp.max_cores]?usize = @splat(null);
 var next_join_token: u64 = max_tasks;
+
+/// #1978: first process-exit beat, also the late-thread publication guard.
+/// sched_lock protects this scheduler-owned state; process.zig stays unchanged.
+var process_exit_tick: [process.max_processes]?u64 = @splat(null);
+
+/// Four full fixed-pool sweeps at the 1 s scheduler cadence. A diagnostic
+/// fires only AFTER 64 ticks, never as a timeout or a change to wait semantics.
+pub const exit_kill_diagnostic_ticks: u64 = 64;
+const ExitKillReport = struct {
+    pid: usize,
+    task: usize,
+    state: State,
+    kill_pending: bool,
+    futex_waiting: bool,
+    wakeup_tick: u64,
+    rings: u8,
+    age: u64,
+};
+var exit_kill_reports: [max_tasks]ExitKillReport = undefined;
+var exit_kill_report_head: usize = 0;
+var exit_kill_report_count: usize = 0;
 
 /// IRQs are masked and no scheduler lock is held at vector-dispatch entry.
 pub fn begin_exception(c: usize) void {
@@ -1144,6 +1167,9 @@ pub fn init() usize {
     steal_run_names_count = 0;
     user_timer_preemptions = 0;
     tick_count = 0;
+    process_exit_tick = @splat(null);
+    exit_kill_report_head = 0;
+    exit_kill_report_count = 0;
     next_join_token = max_tasks;
     pending_tls = @splat(0);
     for (&tasks) |*task| task.* = .{};
@@ -1849,18 +1875,27 @@ fn convert_kill(c: usize, lk: RingLockPair, next: usize) void {
     // Ring locks come off FIRST (the frozen order: never a ring lock
     // across a svclock/sched_lock take).
     rotation_unlock(lk);
-    const taken = svclock.try_take(svclock.all_bits);
-    if (taken == null) {
+    if (!convert_pending_kill()) {
         // One more quantum: stage the task (it resumes with kill_pending
         // still set; the next selection converts).
         stage_selected(c, next);
-        return;
     }
-    defer svclock.release_set(taken.?);
-    tasks[next].kill_pending = false;
-    const status = tasks[next].kill_pending_status;
-    tasks[next].kill_pending_status = reserved_kill_status; // back to the request_kill default
-    _ = exit_current_locked(status, true);
+}
+
+/// Shared selection/secondary-tick seam. No ring or scheduler lock may be
+/// held. A non-prefix outer syscall hold defers rather than taking an earlier
+/// service domain out of order; the next IRQ runs after that hold is released.
+/// exit_current_locked consumes the request only at its validated zombie mark.
+pub fn convert_pending_kill() bool {
+    const id = current[smp.core_id()];
+    if (!tasks[id].kill_pending) return false;
+    if (!svclock.file.held() and (svclock.net.held() or svclock.win.held() or svclock.ev.held() or svclock.kernel.held())) return false;
+    if (!svclock.net.held() and (svclock.win.held() or svclock.ev.held() or svclock.kernel.held())) return false;
+    if (!svclock.win.held() and (svclock.ev.held() or svclock.kernel.held())) return false;
+    if (!svclock.ev.held() and svclock.kernel.held()) return false;
+    const taken = svclock.try_take(svclock.all_bits) orelse return false;
+    defer svclock.release_set(taken);
+    return exit_current_locked(tasks[id].kill_pending_status, true);
 }
 
 pub fn switch_context(frame_sp: u64, elr: u64, spsr: u64, sp_el0: u64) void {
@@ -2118,6 +2153,15 @@ fn spawn_thread_context(caller_task: usize, entry: u64, stack_hi: u64, arg: u64,
     // process bind are all in place — no core can select a half-built
     // thread, and the undo path mutates the pool under the same lock.
     sched_lock_acquire();
+    // The allocation can race an arming scan. Check at publication, under
+    // that same lock, even when the original requesting task was reaped.
+    if (process_exit_tick[pid] != null or process.find_by_task(caller_task) != pid or
+        (tasks[caller_task].state != .ready and tasks[caller_task].state != .running))
+    {
+        sched_lock_release();
+        _ = alloc.free_pages(kstack_phys, kstack_pages);
+        return null;
+    }
     var charged: usize = 0;
     for (tasks, 0..) |task, tid| {
         if ((task.join_token != 0 and task.join_pid == pid) or
@@ -2420,6 +2464,16 @@ fn wake_expired() void {
     var i: usize = 0;
     while (i < max_tasks) : (i += 1) {
         if (tasks[i].state != .blocked) continue;
+        // #1978: an armed task can block after the sibling scan, including
+        // after a contended conversion resumed it. Kill takes precedence
+        // over EVERY wait shape, not just deadlines. One timekeeping beat
+        // restores ring eligibility; selection converts before EL0 resumes
+        // when service locks are free. Never return an error to an infinite
+        // waiter and leave it executing/re-blocking off-ring.
+        if (tasks[i].kill_pending) {
+            wake_killed_task_locked(i);
+            continue;
+        }
         // Card 4c / Card E5: event-blocked tasks (`sys_wait` / `sys_wait_event` —
         // no deadline) are woken by their event hooks, never by the tick clock.
         if (tasks[i].wait_pid != null or tasks[i].wait_event_pid != null or tasks[i].wait_thread) continue;
@@ -2454,6 +2508,57 @@ fn wake_expired() void {
     }
 }
 
+fn wake_killed_task_locked(id: usize) void {
+    _ = futex_clear_for(id);
+    tasks[id].futex_waiting = false;
+    tasks[id].wakeup_tick = 0;
+    tasks[id].wait_pid = null;
+    tasks[id].wait_event_pid = null;
+    tasks[id].wait_event_buf = 0;
+    tasks[id].wait_thread = false;
+    for (&tasks) |*task| {
+        if (task.joiner == id) task.joiner = null;
+    }
+    tasks[id].state = .ready;
+    push_home_locked(id);
+}
+
+/// Snapshot under sched_lock; ring locks are innermost and released before
+/// any service work. IRQ code only queues, maybe_report prints in main context.
+fn diagnose_exit_requests_locked() void {
+    for (&tasks, 0..) |*task, id| {
+        if (task.state != .ready and task.state != .running and task.state != .blocked) continue;
+        if (task.exit_kill_reported) continue;
+        const pid = process.find_by_task(id) orelse continue;
+        const since = process_exit_tick[pid] orelse continue;
+        const age = tick_count -% since;
+        if (age <= exit_kill_diagnostic_ticks) continue;
+        var rings: u8 = 0;
+        const lk = rotation_lock(smp.core_id());
+        for (&ready_rings, 0..) |*ring, c| {
+            if (ring.contains(id)) rings |= @as(u8, 1) << @intCast(c);
+        }
+        rotation_unlock(lk);
+        if (exit_kill_report_count == max_tasks) {
+            exit_kill_report_head = (exit_kill_report_head + 1) % max_tasks;
+            exit_kill_report_count -= 1;
+        }
+        const tail = (exit_kill_report_head + exit_kill_report_count) % max_tasks;
+        exit_kill_reports[tail] = .{
+            .pid = pid,
+            .task = id,
+            .state = task.state,
+            .kill_pending = task.kill_pending,
+            .futex_waiting = task.futex_waiting,
+            .wakeup_tick = task.wakeup_tick,
+            .rings = rings,
+            .age = age,
+        };
+        exit_kill_report_count += 1;
+        task.exit_kill_reported = true;
+    }
+}
+
 /// The ETIMEDOUT errno (ADR 0007 amendment) a futex wait reports on expiry —
 /// the D4 contract: a timed-out wait is distinct from a real wake.
 pub const futex_timed_out_result: u64 = @bitCast(@as(i64, -12));
@@ -2464,6 +2569,7 @@ pub const futex_timed_out_result: u64 = @bitCast(@as(i64, -12));
 pub fn on_tick() void {
     const c = smp.core_id(); // per-core current
     tick_count +%= 1;
+    diagnose_exit_requests_locked();
     wake_expired();
     // Milestone 14 (claim 7323): count every armed app timer down and fire
     // the due ones (one TIMER event per process into its ADR 0009 queue,
@@ -2534,6 +2640,7 @@ pub fn exit_thread_status(status: u64) bool {
 /// the conversion can happen at their next selection instead of parking
 /// forever on a dead process. Caller holds `sched_lock`.
 fn arm_sibling_kills_locked(pid: usize, except_task: usize) void {
+    if (process_exit_tick[pid] == null) process_exit_tick[pid] = tick_count;
     var i: usize = 0;
     while (i < max_tasks) : (i += 1) {
         if (tasks[i].join_token != 0 and tasks[i].join_pid == pid) {
@@ -2551,13 +2658,8 @@ fn arm_sibling_kills_locked(pid: usize, except_task: usize) void {
                 // a leaked seat can fill the bounded table across several
                 // sibling deaths and fail a later wait. No wake: every
                 // same-process peer is being killed here anyway.
-                _ = futex_clear_for(i);
                 tasks[i].kill_pending = true;
-                tasks[i].state = .ready;
-                tasks[i].wait_pid = null;
-                tasks[i].wait_event_pid = null;
-                tasks[i].wait_thread = false;
-                push_home_locked(i);
+                wake_killed_task_locked(i);
             },
             else => {},
         }
@@ -2592,12 +2694,16 @@ fn exit_current_locked(status: u64, process_exit: bool) bool {
     }
     const exiting = current[c];
     const name = tasks[exiting].name;
+    const pending_kill = tasks[exiting].kill_pending;
+    const pending_status = tasks[exiting].kill_pending_status;
     // Claim 881 slice 2: the exiting task leaves its ring (it is current
     // and off-ring by construction — the remove is defensive for the
     // manual-`current` host-test paths; the pre-ring world left a zombie
     // sitting in the pool until the reap).
     _ = ring_remove_anywhere(exiting);
     tasks[exiting].state = .zombie;
+    tasks[exiting].kill_pending = false;
+    tasks[exiting].kill_pending_status = reserved_kill_status;
     tasks[exiting].exit_status = status;
     tasks[exiting].teardown_pending = true;
     queue_exit_report(name, status);
@@ -2661,6 +2767,7 @@ fn exit_current_locked(status: u64, process_exit: bool) bool {
     if (process.on_task_exit(exiting, status)) |pid| {
         // No live process remains to join retained completions.
         sched_lock_acquire();
+        process_exit_tick[pid] = null;
         for (&tasks) |*task| {
             if (task.join_token != 0 and task.join_pid == pid) {
                 task.join_token = 0;
@@ -2765,6 +2872,9 @@ fn exit_current_locked(status: u64, process_exit: bool) bool {
     sched_lock_acquire();
     tasks[exiting].state = .ready;
     tasks[exiting].exit_status = 0;
+    tasks[exiting].kill_pending = pending_kill;
+    tasks[exiting].kill_pending_status = pending_status;
+    push_home_locked(exiting);
     sched_lock_release();
     return false;
 }
@@ -2968,7 +3078,6 @@ pub fn tick() void {
     // no tick can ever preempt a same-core hold.
     const evk = svclock.dom_bit(.ev) | svclock.dom_bit(.kernel);
     const evk_taken = svclock.try_take(evk);
-    defer if (evk_taken) |t| svclock.release_set(t);
     // Core-0 timekeeping authority (tick_count, wake_expired, app timers,
     // WM pacing, CPU limits) under a brief sched_lock TRY: the idle
     // reaper / monitor may hold sched_lock from main context with IRQs
@@ -2989,6 +3098,9 @@ pub fn tick() void {
             sched_lock_contended +%= 1;
         }
     }
+    // Conversion needs FILE first. Drop the timekeeping subset before
+    // any selection/secondary conversion, preserving canonical lock order.
+    if (evk_taken) |t| svclock.release_set(t);
     var elr: u64 = 0;
     var spsr: u64 = 0;
     asm volatile ("mrs %[v], elr_el1"
@@ -3022,20 +3134,11 @@ pub fn tick() void {
     // A kill_pending must still convert even without a successor to
     // switch to — request_kill on a lone core-1 task would otherwise
     // stall until it blocks (claim 9498). The conversion runs the exit
-    // teardown — EVERY service domain — so it try-takes the missing
-    // file/net/win bits now (ev+kernel already held above). When any is
+    // teardown — EVERY service domain — so it try-takes the full set
+    // in canonical order. When any is
     // contended the task runs one more quantum and the next beat
-    // converts it (the outer defer releases ev+kernel).
-    if (c != 0 and current[c] != idle_id and tasks[current[c]].kill_pending and evk_taken != null) {
-        if (svclock.try_take(svclock.all_bits)) |more| {
-            defer svclock.release_set(more);
-            tasks[current[c]].kill_pending = false;
-            const status = tasks[current[c]].kill_pending_status;
-            tasks[current[c]].kill_pending_status = reserved_kill_status; // back to the request_kill default
-            _ = exit_current_locked(status, true); // tick holds all five; exit takes sched_lock itself
-            return;
-        }
-    }
+    // converts it.
+    if (c != 0 and current[c] != idle_id and convert_pending_kill()) return;
     // A lone task on a secondary core keeps running with no successor
     // (claim 9498: no always-ready idle fallback there, so parking would
     // stall it). But an EL0 USER task must still witness each timer
@@ -3321,6 +3424,23 @@ pub fn request_report() void {
 /// Shell-side (main context, next to timer.maybe_heartbeat): print every
 /// pending report line, then the exit/reap reports.
 pub fn maybe_report(con: *console.Console) void {
+    // One bounded pass even if other cores enqueue new process exits.
+    for (0..max_tasks) |_| {
+        sched_lock_acquire();
+        if (exit_kill_report_count == 0) {
+            sched_lock_release();
+            break;
+        }
+        const entry = exit_kill_reports[exit_kill_report_head];
+        exit_kill_report_head = (exit_kill_report_head + 1) % max_tasks;
+        exit_kill_report_count -= 1;
+        sched_lock_release();
+        var buf: [256]u8 = undefined;
+        const line = std.fmt.bufPrint(&buf, "tasks exit-kill outstanding pid={d} task={d} state={s} kill_pending={} futex_waiting={} wakeup_tick={d} rings=0x{x} age={d}\n", .{
+            entry.pid, entry.task, state_name(entry.state), entry.kill_pending, entry.futex_waiting, entry.wakeup_tick, entry.rings, entry.age,
+        }) catch continue;
+        con.puts(line);
+    }
     // B7: bounded PCM completions/deadlines and deferred owner-death cleanup.
     // No audio control exchange runs from the IRQ scheduler.
     virtio_snd.snd_stream_poll();
