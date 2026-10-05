@@ -3,6 +3,7 @@ import hashlib
 import importlib.metadata
 import io
 import json
+import os
 import platform
 import subprocess
 import sys
@@ -13,6 +14,7 @@ from corpus import ICONS, MAXIMUM
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURES = ROOT / "tests/fixtures/svg/acceptance"
 OUT = ROOT / "artifacts/m90-acceptance"
+ORACLE = Path(os.environ.get("SVG_ORACLE_DIR", OUT / "oracle")).resolve()
 COMMIT = "9e8c6ede00dd1c4495fca4809b4cabd628a85eb9"
 INVOCATION = {"oracle": "CairoSVG 2.8.2", "unsafe": False,
               "url_fetcher": "deny-all", "dpi": 96, "scale": 1,
@@ -31,18 +33,38 @@ def deny(*args, **kwargs):
 def environment():
     import cairocffi
     import cairosvg
-    source = OUT / "oracle/source"
+    source = ORACLE / "source"
+    mode = os.environ.get("SVG_ORACLE_PROVENANCE", "")
+    if mode not in ("", "wheel"):
+        raise ValueError("unrecognized oracle provenance mode")
     if cairosvg.__version__ != "2.8.2":
         raise ValueError("wrong oracle version")
-    if subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD"], text=True).strip() != COMMIT:
-        raise ValueError("wrong oracle source commit")
     payload = {}
-    for p in (source / "cairosvg").rglob("*"):
-        if p.suffix == ".py" or p.name == "VERSION":
-            installed = Path(cairosvg.__file__).parent / p.relative_to(source / "cairosvg")
-            if installed.read_bytes() != p.read_bytes():
-                raise ValueError("oracle wheel/source mismatch")
-            payload[str(p.relative_to(source))] = sha(p.read_bytes())
+    if mode == "wheel":
+        # Exact wheel and installed payload hashes remain mandatory. A missing
+        # source checkout is not a verified commit/build recipe: omit those
+        # two observations explicitly instead of manufacturing their identity.
+        package = Path(cairosvg.__file__).parent
+        for p in package.rglob("*"):
+            if p.suffix == ".py" or p.name == "VERSION":
+                payload["cairosvg/"+p.relative_to(package).as_posix()] = sha(p.read_bytes())
+        source_license = importlib.metadata.distribution("CairoSVG").locate_file(
+            "cairosvg-2.8.2.dist-info/licenses/LICENSE")
+        source_provenance = {"source_license_sha256": sha(source_license.read_bytes())}
+    else:
+        if subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD"], text=True).strip() != COMMIT:
+            raise ValueError("wrong oracle source commit")
+        for p in (source / "cairosvg").rglob("*"):
+            if p.suffix == ".py" or p.name == "VERSION":
+                installed = Path(cairosvg.__file__).parent / p.relative_to(source / "cairosvg")
+                if installed.read_bytes() != p.read_bytes():
+                    raise ValueError("oracle wheel/source mismatch")
+                payload[str(p.relative_to(source))] = sha(p.read_bytes())
+        source_provenance = {
+            "source_commit": COMMIT,
+            "source_license_sha256": sha((source / "LICENSE").read_bytes()),
+            "source_setup_sha256": sha((source / "setup.cfg").read_bytes()),
+        }
     packages = {}
     for name in ("CairoSVG", "cairocffi", "cffi", "cssselect2", "defusedxml",
                  "Pillow", "tinycss2", "pycparser", "webencodings"):
@@ -69,15 +91,35 @@ def environment():
                 raise ValueError("unresolved oracle native dependency")
             elif not dep.startswith(("/usr/lib/", "/System/Library/")):
                 raise ValueError("unaccounted oracle native dependency")
-    return {"source_commit": COMMIT, "source_payload": payload,
-            "source_license_sha256": sha((source / "LICENSE").read_bytes()),
-            "source_setup_sha256": sha((source / "setup.cfg").read_bytes()),
+    return {**source_provenance, "source_payload": payload,
             "python": platform.python_version(), "platform": platform.platform(),
             "python_executable_sha256": sha(Path(sys.executable).resolve().read_bytes()),
             "cairo_version": cairocffi.cairo_version_string(), "native_payload": dylibs,
             "distribution_sha256": {p.name: sha(p.read_bytes())
-                                    for p in sorted((OUT / "oracle/packages").glob("*.whl"))},
+                                    for p in sorted((ORACLE / "packages").glob("*.whl"))},
             "packages": packages}
+
+
+def check_environment(actual=None):
+    actual = environment() if actual is None else actual
+    locked = (FIXTURES / "oracle-lock.json").read_bytes()
+    expected = json.loads(locked)
+    mode = os.environ.get("SVG_ORACLE_PROVENANCE", "")
+    if mode == "wheel":
+        overlay = json.loads((FIXTURES / "oracle-wheel-overlay.json").read_text())
+        if (overlay["version"] != 1 or overlay["base_lock_sha256"] != sha(locked) or
+                overlay["references_manifest_sha256"] != sha((FIXTURES / "manifest.json").read_bytes()) or
+                overlay["unobserved_source_fields"] != ["source_commit", "source_setup_sha256"] or
+                set(overlay["native_payload"]) != {"libpng16.16.dylib"}):
+            raise ValueError("oracle wheel overlay drift")
+        for key in overlay["unobserved_source_fields"]:
+            expected.pop(key)
+        expected["native_payload"].update(overlay["native_payload"])
+    elif mode:
+        raise ValueError("unrecognized oracle provenance mode")
+    if actual != expected:
+        raise ValueError("oracle environment drift, reference preparation blocked")
+    return actual
 
 
 def render(source, width, height):
@@ -107,8 +149,10 @@ def render(source, width, height):
 def references(pin=False):
     env = environment()
     lock_path = FIXTURES / "oracle-lock.json"
-    if not pin and env != json.loads(lock_path.read_text()):
-        raise ValueError("oracle environment drift, reference preparation blocked")
+    if not pin:
+        check_environment(env)
+    elif os.environ.get("SVG_ORACLE_PROVENANCE"):
+        raise ValueError("wheel provenance is verification-only; cannot repin")
     refs = OUT / "references"
     refs.mkdir(parents=True, exist_ok=True)
     entries = {}

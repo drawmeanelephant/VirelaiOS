@@ -1,14 +1,17 @@
 import json
 import re
 import struct
+import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import compare
 import corpus
 import oracle
 import analytic
-from check_run import check_memory, parse_receipts
+import pause
+from check_run import check_memory, check_pause_order, parse_receipts, warmup_delta
 
 
 def bitmap(w, h, pixels):
@@ -43,7 +46,7 @@ class ComparatorTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "disagreement count/coordinates"):
                 compare.crosscheck(reference, actual, partial=partial, boundary_band=band, expected=changed)
 
-    def test_poppler_geometry_checks_fail_not_tolerate(self):
+    def test_outside_reference_geometry_checks_fail_not_tolerate(self):
         reference, partial, _, band = analytic.reference("gray-rect")
         actual = bytearray(reference)
         actual[16+4*(50*64+10)] ^= 1
@@ -58,7 +61,7 @@ class ComparatorTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "analytic edge outside"):
             compare.crosscheck(glyphs, empty, partial=partial, boundary_band=band)
 
-    def test_poppler_clip_image_interior_cannot_use_edge_tolerance(self):
+    def test_outside_reference_clip_image_interior_cannot_use_edge_tolerance(self):
         reference, _, strict, band = analytic.reference("gray-image")
         actual = bytearray(reference)
         i = 30*64+10
@@ -184,19 +187,91 @@ class ManifestTests(unittest.TestCase):
 
     def test_oracle_closed_to_negatives_and_fixed_thresholds(self):
         frozen = json.loads((corpus.FIXTURES/"oracle.json").read_text())
-        self.assertEqual(frozen["provenance"]["binary_sha256"], oracle.PIN)
-        self.assertEqual(frozen["provenance"]["invocation"], oracle.FLAGS)
+        self.assertEqual(frozen["provenance"]["tool_source_sha256"], corpus.sha(oracle.SOURCE.read_bytes()))
+        self.assertEqual(frozen["provenance"]["invocation"], oracle.INVOCATION)
+        self.assertEqual(frozen["provenance"]["render_contract"], oracle.CONTRACT)
+        self.assertEqual(frozen["provenance"]["recipe_sha256"],
+                         corpus.sha((corpus.FIXTURES/"recipes.json").read_bytes()))
         self.assertFalse(frozen["provenance"]["negatives_sent_to_oracle"])
         ids = {row["id"] for row in frozen["references"]}
         self.assertEqual(ids, set(corpus.anchors()) | set(corpus.maxima()) |
                          {"capacity-"+name for name, (_, c) in corpus.capacities().items() if c == "OK"})
         for row in frozen["references"]:
             self.assertNotIn(row["id"], corpus.negatives())
-            self.assertEqual(row["invocation"], oracle.FLAGS)
+            self.assertEqual(row["invocation"], oracle.INVOCATION[:-1]+[str(row["page"])])
+            self.assertEqual(row["invocation_sha256"], corpus.sha(json.dumps(row["invocation"]).encode()))
+            self.assertEqual(oracle.diagnostics(row["id"], "\n".join(row["diagnostics"])), row["diagnostics"])
             self.assertRegex(row["analytic_sha256"], r"^[0-9a-f]{64}$")
             for key in ("disagreements", "clip_image_disagreements", "outside_band_disagreements"):
-                self.assertGreaterEqual(row["poppler_crosscheck"][key]["count"], 0)
-                self.assertRegex(row["poppler_crosscheck"][key]["coordinates_sha256"], r"^[0-9a-f]{64}$")
+                self.assertGreaterEqual(row["outside_reference_crosscheck"][key]["count"], 0)
+                self.assertRegex(row["outside_reference_crosscheck"][key]["coordinates_sha256"], r"^[0-9a-f]{64}$")
+
+
+class CoreGraphicsTests(unittest.TestCase):
+    def test_provenance_drift_never_repins(self):
+        frozen = json.loads(oracle.MANIFEST.read_text())
+        before = oracle.MANIFEST.read_bytes()
+        for key in ("macos_product", "macos_build", "swift_version", "tool_source_sha256", "recipe_sha256",
+                    "invocation", "invocation_sha256", "render_contract"):
+            with self.subTest(key=key):
+                changed = frozen["provenance"] | {key: "drift"}
+                with patch.object(oracle, "provenance", return_value=changed):
+                    with self.assertRaisesRegex(ValueError, "OracleDrift"):
+                        oracle.check()
+                self.assertEqual(oracle.MANIFEST.read_bytes(), before)
+        with patch.object(oracle, "provenance", return_value=frozen["provenance"]):
+            self.assertEqual(oracle.check(), frozen)
+
+    def test_provenance_records_system_identities_and_source(self):
+        identities = {"-productVersion": "27.2\n", "-buildVersion": "26B5091g\n",
+                      "--version": "system Swift identity\n"}
+        with patch.object(oracle.subprocess, "check_output",
+                          side_effect=lambda args, **kw: identities[args[1]]) as command:
+            prov = oracle.provenance()
+        self.assertEqual(prov["macos_product"], "27.2")
+        self.assertEqual(prov["macos_build"], "26B5091g")
+        self.assertEqual(prov["swift_version"], "system Swift identity")
+        self.assertEqual(prov["tool_source_sha256"], corpus.sha(oracle.SOURCE.read_bytes()))
+        self.assertEqual(prov["invocation_sha256"], corpus.sha(json.dumps(oracle.INVOCATION).encode()))
+        self.assertEqual([c.args[0] for c in command.call_args_list], [
+            ["/usr/bin/sw_vers", "-productVersion"], ["/usr/bin/sw_vers", "-buildVersion"],
+            ["/usr/bin/swift", "--version"],
+        ])
+
+    def test_only_absent_contents_rows_may_have_one_known_diagnostic(self):
+        self.assertEqual(len(oracle.BLANK_DIAGNOSTICS), 5)
+        rows = corpus.maxima() | {"capacity-"+k: v for k, v in corpus.capacities().items() if v[1] == "OK"}
+        for name, product in rows.items():
+            self.assertEqual(b"/Contents" not in product[0], name in oracle.BLANK_DIAGNOSTICS)
+            self.assertEqual(oracle.diagnostics(name, ""), [])
+            if name in oracle.BLANK_DIAGNOSTICS:
+                self.assertEqual(oracle.diagnostics(name, oracle.CONTENTS_DIAGNOSTIC),
+                                 [oracle.CONTENTS_DIAGNOSTIC])
+            else:
+                with self.assertRaisesRegex(ValueError, "UnexpectedReferenceDiagnostic"):
+                    oracle.diagnostics(name, oracle.CONTENTS_DIAGNOSTIC)
+        for name in oracle.BLANK_DIAGNOSTICS | set(corpus.anchors()):
+            for message in ("unexpected error", "[!] unexpected warning",
+                            oracle.CONTENTS_DIAGNOSTIC+"\n"+oracle.CONTENTS_DIAGNOSTIC):
+                with self.assertRaisesRegex(ValueError, "UnexpectedReferenceDiagnostic"):
+                    oracle.diagnostics(name, message)
+        for name in corpus.anchors():
+            with self.assertRaisesRegex(ValueError, "UnexpectedReferenceDiagnostic"):
+                oracle.diagnostics(name, oracle.CONTENTS_DIAGNOSTIC)
+
+    def test_verbose_lifecycle_trace_is_not_a_diagnostic(self):
+        trace = ("[+] Creating CGPDFDocument\n"
+                 "    [+] PDFDocumentCore created.\n"
+                 "[-] Finalizing CGPDFDocument 0x1234abcd\n"
+                 "  [!] Page 1: Dying document being invalidated\n")
+        self.assertEqual(oracle.diagnostics("empty", trace), [])
+        self.assertEqual(oracle.diagnostics("source-4mib", trace+oracle.CONTENTS_DIAGNOSTIC),
+                         [oracle.CONTENTS_DIAGNOSTIC])
+
+    def test_renderer_source_is_in_proof_lock(self):
+        import lock
+        self.assertEqual(lock.snapshot(corpus.ROOT)["tools/pdf-proof/cgrender.swift"],
+                         corpus.sha(oracle.SOURCE.read_bytes()))
 
 
 class AnalyticTests(unittest.TestCase):
@@ -263,12 +338,105 @@ class RuntimeReceiptTests(unittest.TestCase):
                 parse_receipts(self.receipt().replace(old, new), 8617)
 
     def test_reuse_brackets_one_process_without_growth(self):
-        serial = self.receipt(reaped=0)+self.receipt()
+        serial = self.receipt(reaped=0)*2+self.receipt()
         check_memory(parse_receipts(serial, 8617, runtime=True))
-        with self.assertRaisesRegex(ValueError, "growth"):
-            check_memory(parse_receipts(self.receipt(pages=3071, reaped=0)+self.receipt(), 8617, runtime=True))
+        warmed = parse_receipts(self.receipt(pages=2570, regions=10, reaped=0)+
+                                self.receipt(pages=2706, regions=10, reaped=0)+
+                                self.receipt(pages=2706, regions=10), 8617, runtime=True)
+        check_memory(warmed)
+        self.assertEqual(warmup_delta(warmed),
+                         {"peak_pages": 136, "total_pages": 136, "peak_regions": 0})
         with self.assertRaisesRegex(ValueError, "different processes"):
             parse_receipts(serial.replace("pid=7", "pid=8", 1), 8617, runtime=True)
+
+    def test_cycle_50_must_match_final_exactly(self):
+        for final in (self.receipt(pages=3071), self.receipt(regions=11),
+                      self.receipt().replace("total_pages=3072", "total_pages=3073")):
+            with self.assertRaisesRegex(ValueError, "growth"):
+                check_memory(parse_receipts(self.receipt(reaped=0)*2+final, 8617, runtime=True))
+        for middle in (self.receipt(reaped=0).replace("pid=7", "pid=8"), self.receipt()):
+            with self.assertRaises(ValueError):
+                parse_receipts(self.receipt(reaped=0)+middle+self.receipt(), 8617, runtime=True)
+        with self.assertRaisesRegex(ValueError, "missing high-water"):
+            parse_receipts(self.receipt(reaped=0)+self.receipt(), 8617, runtime=True)
+
+    def test_baseline_is_bounded_and_cannot_exceed_cycle_50(self):
+        for baseline in (self.receipt(pages=3071, reaped=0), self.receipt(regions=11, reaped=0),
+                         self.receipt(pages=3070, reaped=0).replace("total_pages=3070", "total_pages=3071")):
+            with self.assertRaisesRegex(ValueError, "baseline exceeds"):
+                check_memory(parse_receipts(baseline+self.receipt(pages=3070, regions=10, reaped=0)+
+                                            self.receipt(pages=3070, regions=10), 8617, runtime=True))
+        for pages, regions in ((3073, 10), (3070, 13)):
+            with self.assertRaisesRegex(ValueError, "MemoryLimit"):
+                check_memory(parse_receipts(self.receipt(pages=pages, regions=regions, reaped=0)+
+                                            self.receipt(reaped=0)+self.receipt(), 8617, runtime=True))
+        self.assertIsNone(warmup_delta(parse_receipts(self.receipt(), 8617)))
+
+    def paused_serial(self):
+        return ("pdf-proof: baseline ns=1\n"+self.receipt(reaped=0)+
+                "pdf-proof: resumed\npdf-proof: cycles=50 ns=50\n"+self.receipt(reaped=0)+
+                "pdf-proof: resumed cycle=50\npdf-proof: cycles=100 ns=100\n"+
+                "pdf-proof: complete\nprocs PDFPROOF.ELF exited status=0\n"+self.receipt())
+
+    def test_live_rows_precede_resume_markers(self):
+        serial = self.paused_serial()
+        check_pause_order(serial)
+        for resume in ("pdf-proof: resumed\n", "pdf-proof: resumed cycle=50\n"):
+            changed = serial.replace(self.receipt(reaped=0)+resume,
+                                     resume+self.receipt(reaped=0), 1)
+            with self.assertRaisesRegex(ValueError, "ReceiptPauseOrder"):
+                check_pause_order(changed)
+        for marker in ("pdf-proof: baseline ns=1\n", "pdf-proof: cycles=50 ns=50\n",
+                       "pdf-proof: resumed\n", "pdf-proof: resumed cycle=50\n"):
+            for changed in (serial.replace(marker, "", 1), serial.replace(marker, marker*2, 1)):
+                with self.assertRaisesRegex(ValueError, "ReceiptPauseOrder"):
+                    check_pause_order(changed)
+
+    def test_runtime_diagnostic_preserves_scripted_mode_and_timeout(self):
+        spec = (corpus.ROOT/"tools/gate/specs/live-pdf-raster.spec").read_text()
+        runtime = next(line for line in spec.splitlines() if line.startswith("vgate_run runtime "))
+        self.assertNotIn("--console-tcp", runtime) # console mode suppresses scripted input
+        self.assertIn("--input-chords 'ctrl-v,return'", runtime)
+        self.assertIn("--input-chords-after 'pdf-proof: baseline'", runtime)
+        self.assertIn("clip procs receipt PDFPROOF.ELF\n", spec)
+        self.assertIn("--script2-after 'pdf-proof: cycles=50'", runtime)
+        self.assertIn("--script3-after 'procs PDFPROOF.ELF exited status='", runtime)
+        self.assertTrue(runtime.endswith("--timeout 360"))
+
+    def test_host_acknowledges_only_complete_paused_live_rows(self):
+        with tempfile.TemporaryDirectory(dir=corpus.ROOT/"artifacts/m89-acceptance") as directory:
+            share = Path(directory)
+            (share/"PDF").mkdir()
+            acknowledged = []
+            baseline = "pdf-proof: baseline ns=1\n"
+            pause.acknowledge(baseline+"procs receipt PDFPROOF.ELF\n", share, acknowledged)
+            pause.acknowledge(baseline+self.receipt(reaped=0).rstrip("\n"), share, acknowledged)
+            pause.acknowledge(baseline+self.receipt(), share, acknowledged) # reaped is not live
+            self.assertEqual(acknowledged, [])
+            self.assertFalse((share/"PDF/baseline.resume").exists())
+            baseline += self.receipt(reaped=0)
+            pause.acknowledge(baseline, share, acknowledged)
+            self.assertEqual(acknowledged, ["baseline"])
+            self.assertEqual((share/"PDF/baseline.resume").read_bytes(), b"1")
+            middle = baseline+"pdf-proof: resumed\npdf-proof: cycles=50 ns=50\n"
+            pause.acknowledge(middle, share, acknowledged)
+            self.assertFalse((share/"PDF/cycle-50.resume").exists())
+            middle += self.receipt(reaped=0)
+            pause.acknowledge(middle, share, acknowledged)
+            pause.acknowledge(middle, share, acknowledged) # non-consuming; no duplicate writes
+            self.assertEqual(acknowledged, ["baseline", "cycle-50"])
+            self.assertEqual((share/"PDF/cycle-50.resume").read_bytes(), b"1")
+
+    def test_host_ack_refuses_early_resume_and_stale_ack(self):
+        with tempfile.TemporaryDirectory(dir=corpus.ROOT/"artifacts/m89-acceptance") as directory:
+            share = Path(directory)
+            (share/"PDF").mkdir()
+            serial = "pdf-proof: baseline ns=1\n"+self.receipt(reaped=0)
+            with self.assertRaisesRegex(ValueError, "ReceiptPauseOrder"):
+                pause.acknowledge(serial+"pdf-proof: resumed\n", share, [])
+            (share/"PDF/baseline.resume").write_bytes(b"1")
+            with self.assertRaisesRegex(ValueError, "ReceiptPauseDrift"):
+                pause.acknowledge(serial, share, [])
 
     def test_final_only_receipt_never_substitutes_for_live_baseline(self):
         with self.assertRaisesRegex(ValueError, "RuntimeBaselineUnavailable"):

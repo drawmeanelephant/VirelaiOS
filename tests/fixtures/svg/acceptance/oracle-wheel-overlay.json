@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "base_lock_sha256": "27a336c3a937557b4abcbef64247370e8794845abb896397c26a1a3d8a8a1930",
+  "references_manifest_sha256": "0823184c3cd877dd7329c25d3d2039b9f22451fe630deed4e6458cc821f7f64d",
+  "unobserved_source_fields": [
+    "source_commit",
+    "source_setup_sha256"
+  ],
+  "native_payload": {
+    "libpng16.16.dylib": "90d0355e32b2a6bda0d9556b7f93b7c0cadc99815944ba83145c901b4787ae73"
+  }
+}

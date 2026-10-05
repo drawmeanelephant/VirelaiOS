@@ -124,27 +124,27 @@ def coordinates_record(coordinates):
     return {"count": len(coordinates), "coordinates_sha256": hashlib.sha256(encoded).hexdigest()}
 
 
-def crosscheck(reference, poppler, *, partial, boundary_band, expected=None, validate=True):
+def crosscheck(reference, outside_reference, *, partial, boundary_band, expected=None, validate=True):
     w, h, analytic = page(reference)
-    pw, ph, oracle = page(poppler)
+    pw, ph, oracle = page(outside_reference)
     if (pw, ph) != (w, h) or len(partial) != w*h or len(boundary_band) != w*h:
         raise ValueError("oracle/analytic dimensions mismatch")
-    analytic_mask, poppler_mask = edge_mask(analytic, w, h, partial), edge_mask(oracle, w, h)
-    analytic_dilation, poppler_dilation = dilate(analytic_mask, w, h), dilate(poppler_mask, w, h)
+    analytic_mask, outside_mask = edge_mask(analytic, w, h, partial), edge_mask(oracle, w, h)
+    analytic_dilation, outside_dilation = dilate(analytic_mask, w, h), dilate(outside_mask, w, h)
     disagreements, clip_image, outside = [], [], []
     failure = None
     for i in range(w*h):
         xy = (i % w, i // w)
-        if analytic_mask[i] and not poppler_dilation[i]:
-            failure = failure or (f"analytic edge outside Poppler dilation at {xy}: "
-                                  f"analytic={list(analytic[4*i:4*i+4])} Poppler={list(oracle[4*i:4*i+4])}")
-        if poppler_mask[i] and not analytic_dilation[i]:
-            failure = failure or (f"Poppler edge outside analytic dilation at {xy}: "
-                                  f"analytic={list(analytic[4*i:4*i+4])} Poppler={list(oracle[4*i:4*i+4])}")
+        if analytic_mask[i] and not outside_dilation[i]:
+            failure = failure or (f"analytic edge outside outside reference dilation at {xy}: "
+                                  f"analytic={list(analytic[4*i:4*i+4])} outside reference={list(oracle[4*i:4*i+4])}")
+        if outside_mask[i] and not analytic_dilation[i]:
+            failure = failure or (f"outside reference edge outside analytic dilation at {xy}: "
+                                  f"analytic={list(analytic[4*i:4*i+4])} outside reference={list(oracle[4*i:4*i+4])}")
         if analytic[4*i:4*i+3] != oracle[4*i:4*i+3]:
-            if not (analytic_dilation[i] or poppler_dilation[i]):
-                failure = failure or (f"Poppler non-edge discrepancy at {xy}: "
-                                      f"analytic={list(analytic[4*i:4*i+4])} Poppler={list(oracle[4*i:4*i+4])}")
+            if not (analytic_dilation[i] or outside_dilation[i]):
+                failure = failure or (f"outside reference non-edge discrepancy at {xy}: "
+                                      f"analytic={list(analytic[4*i:4*i+4])} outside reference={list(oracle[4*i:4*i+4])}")
                 outside.append(xy)
             else:
                 disagreements.append(xy)
@@ -158,34 +158,34 @@ def crosscheck(reference, poppler, *, partial, boundary_band, expected=None, val
               "outside_band_disagreements": coordinates_record(outside),
               "geometry_failure": failure}
     if expected is not None and record != expected:
-        raise ValueError("pinned Poppler disagreement count/coordinates changed")
+        raise ValueError("pinned outside reference disagreement count/coordinates changed")
     if validate and failure:
         raise ValueError(failure)
     return record
 
 
-def check_clip_image(reference, poppler, strict, band):
+def check_clip_image(reference, outside_reference, strict, band):
     w, h, analytic = page(reference)
-    pw, ph, oracle = page(poppler)
+    pw, ph, oracle = page(outside_reference)
     if (pw, ph) != (w, h):
         raise ValueError("oracle/analytic dimensions mismatch")
     for i, exact in enumerate(strict):
         if exact and not band[i] and analytic[4*i:4*i+3] != oracle[4*i:4*i+3]:
-            raise ValueError(f"Poppler clip/image discrepancy outside boundary band at {i%w},{i//w}: "
-                             f"analytic={list(analytic[4*i:4*i+4])} Poppler={list(oracle[4*i:4*i+4])}")
+            raise ValueError(f"outside reference clip/image discrepancy outside boundary band at {i%w},{i//w}: "
+                             f"analytic={list(analytic[4*i:4*i+4])} outside reference={list(oracle[4*i:4*i+4])}")
 
 
 def compare_files(reference, actual, row):
     from analytic import reference as authored_reference
     analytic, partial, strict, band = authored_reference(row["id"])
-    poppler = Path(reference).read_bytes()
-    if hashlib.sha256(poppler).hexdigest() != row["bgra_sha256"]:
-        raise ValueError("SourceDrift: frozen Poppler pixels")
+    outside_reference = Path(reference).read_bytes()
+    if hashlib.sha256(outside_reference).hexdigest() != row["bgra_sha256"]:
+        raise ValueError("SourceDrift: frozen outside reference pixels")
     if hashlib.sha256(analytic).hexdigest() != row["analytic_sha256"]:
         raise ValueError("SourceDrift: analytic reference")
-    check_clip_image(analytic, poppler, strict, band)
-    diagnostic = crosscheck(analytic, poppler, partial=partial, boundary_band=band,
-                            expected=row["poppler_crosscheck"])
+    check_clip_image(analytic, outside_reference, strict, band)
+    diagnostic = crosscheck(analytic, outside_reference, partial=partial, boundary_band=band,
+                            expected=row["outside_reference_crosscheck"])
     result = compare(analytic, Path(actual).read_bytes(), mode=row["comparison"],
                      partial=partial, strict=strict)
-    return result | {"poppler_crosscheck": diagnostic}
+    return result | {"outside_reference_crosscheck": diagnostic}

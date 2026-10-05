@@ -33,6 +33,7 @@
 const std = @import("std");
 const alloc = @import("alloc.zig"); // claim 0826: the process owns its pages (text/stack/kernel-stack) from the physical allocator
 const memmap = @import("memmap.zig"); // host-test fixture view (page-ownership tests arm the allocator)
+const svclock = @import("svclock.zig");
 
 /// Bounded process registry size (fixed BSS array). Milestone sixteen C3
 /// (claim 0339): grew 8 -> 16 — at the new 8-program concurrency the
@@ -271,7 +272,7 @@ pub const KernelStack = struct {
     pages: u64 = 0,
 };
 
-/// Kernel-only exit diagnostic (M90d): recorded demand backing and occupied
+/// Kernel-only live/final diagnostic (M90d/M89e): recorded demand backing and occupied
 /// mmap slots, not virtual reservation sizes or Go heap statistics. Static
 /// segment pages are rounded individually; stacks, argv headroom, interpreter
 /// and library backing are excluded. Kept through task resource release,
@@ -485,6 +486,8 @@ fn release_resources(p: *Process) void {
 }
 
 pub fn add_mmap_region(pid: usize, va: u64, len: u64, prot: u64, flags: u64) bool {
+    const taken = svclock.acquire_missing(svclock.dom_bit(.kernel));
+    defer svclock.release_set(taken);
     if (pid >= max_processes or processes[pid].state == .free) return false;
     var space = &processes[pid].addr_space;
     if (space.mmap_region_count >= max_mmap_regions) return false;
@@ -500,6 +503,8 @@ pub fn add_mmap_region(pid: usize, va: u64, len: u64, prot: u64, flags: u64) boo
 }
 
 pub fn remove_mmap_region(pid: usize, va: u64, len: u64) bool {
+    const taken = svclock.acquire_missing(svclock.dom_bit(.kernel));
+    defer svclock.release_set(taken);
     if (pid >= max_processes or processes[pid].state == .free) return false;
     var space = &processes[pid].addr_space;
     for (&space.mmap_regions) |*r| {
@@ -584,7 +589,12 @@ pub fn mmap_collides(pid: usize, va: u64, len: u64) bool {
     return false;
 }
 
+/// Counter/ownership mutations share the existing kernel-domain lock with
+/// live receipt reads. The fault/populate path already holds it: nested
+/// helpers take/release nothing, so there is no new fault-path lock.
 pub fn record_dynamic_page(pid: usize, pa: u64) bool {
+    const taken = svclock.acquire_missing(svclock.dom_bit(.kernel));
+    defer svclock.release_set(taken);
     if (pid >= max_processes or processes[pid].state == .free) return false;
     var space = &processes[pid].addr_space;
     if (space.dynamic_page_count < max_dynamic_pages) {
@@ -631,6 +641,8 @@ fn dynamic_page_entry(pid: usize, pa: u64) ?*u64 {
 /// Remove ownership BEFORE unref/reallocation. Compact with the last record,
 /// returning empty overflow blocks immediately; no stale address survives.
 pub fn forget_dynamic_page(pid: usize, pa: u64) bool {
+    const taken = svclock.acquire_missing(svclock.dom_bit(.kernel));
+    defer svclock.release_set(taken);
     const entry = dynamic_page_entry(pid, pa) orelse return false;
     const space = &processes[pid].addr_space;
     if (space.dynamic_tail) |tail| {
@@ -652,6 +664,8 @@ pub fn forget_dynamic_page(pid: usize, pa: u64) bool {
 /// COW replaces an owned record in place, without requiring an extra slot.
 /// A borrowed peer page has no record: its new private copy needs one.
 pub fn replace_dynamic_page(pid: usize, old_pa: u64, new_pa: u64) bool {
+    const taken = svclock.acquire_missing(svclock.dom_bit(.kernel));
+    defer svclock.release_set(taken);
     if (dynamic_page_entry(pid, old_pa)) |entry| {
         entry.* = new_pa;
         processes[pid].runtime_usage.total_pages += 1;
@@ -710,6 +724,8 @@ pub fn create_as(
     kernel_stack: KernelStack,
     actor: Principal,
 ) ?usize {
+    const taken = svclock.acquire_missing(svclock.dom_bit(.kernel));
+    defer svclock.release_set(taken);
     var id: usize = 0;
     var oldest_exited: ?usize = null;
     while (id < max_processes) : (id += 1) {
@@ -751,12 +767,18 @@ fn segment_pages(byte_len: u64) u64 {
     return byte_len / 4096 + @intFromBool(byte_len % 4096 != 0);
 }
 
-/// An exited process's receipt, readable repeatedly even after the scheduler
-/// releases its backing. Name/pid come from the same retained `info` row.
-/// Live/invalid/free descriptors have no final receipt. Registry reap/recycle
-/// discards it just like the existing exit status, never delaying page release.
+/// A running or exited process's non-consuming receipt. Copy under the same
+/// kernel-domain lock as backing/region updates, exit and resource release:
+/// total_pages and peak_pages cannot come from different updates. Saturation
+/// is derived from that copied peak, never from the current ownership count.
+/// Callers reading identity/reaped state also hold the lock across `info` and
+/// this copy. Created/invalid/free rows have no receipt. Task reap preserves
+/// the counters; registry reap/recycle discards them without delaying release.
 pub fn runtime_receipt(id: usize) ?RuntimeReceipt {
-    if (id >= max_processes or processes[id].state != .exited) return null;
+    const taken = svclock.acquire_missing(svclock.dom_bit(.kernel));
+    defer svclock.release_set(taken);
+    if (id >= max_processes) return null;
+    if (processes[id].state != .running and processes[id].state != .exited) return null;
     return processes[id].runtime_usage;
 }
 
@@ -841,6 +863,8 @@ pub fn set_exnotify_handler(id: usize, handler: u64) bool {
 /// invalid id or a live (running) process. The process's allocator-backed
 /// pages (text/stack/kernel-stack) are freed with it.
 pub fn reap(id: usize) bool {
+    const taken = svclock.acquire_missing(svclock.dom_bit(.kernel));
+    defer svclock.release_set(taken);
     if (id >= max_processes) return false;
     if (processes[id].state == .free or processes[id].state == .running) return false;
     if (current_id == id) current_id = null;
@@ -864,6 +888,8 @@ pub fn reap(id: usize) bool {
 /// scheduler wakes `sys_wait` waiters), null otherwise. No-op for a task
 /// bound to no live process.
 pub fn on_task_exit(task_id: usize, status: u64) ?usize {
+    const taken = svclock.acquire_missing(svclock.dom_bit(.kernel));
+    defer svclock.release_set(taken);
     var id: usize = 0;
     while (id < max_processes) : (id += 1) {
         if (processes[id].state != .running) continue;
@@ -934,6 +960,8 @@ pub fn request_process_exit(task_id: usize, status: u64) ?usize {
 /// is bound to that slot (already reaped, or the descriptor was recycled
 /// by `create`).
 pub fn release_pages_on_reap(task_id: usize) bool {
+    const taken = svclock.acquire_missing(svclock.dom_bit(.kernel));
+    defer svclock.release_set(taken);
     var id: usize = 0;
     while (id < max_processes) : (id += 1) {
         if (processes[id].state != .exited) continue;
@@ -1754,7 +1782,7 @@ test "process: runtime receipt records page high-water and preserves refusal" {
     const id = create("PAGES.ELF", .{}, .{}, .{}).?;
     try std.testing.expect(bind(id, 2));
     try std.testing.expect(bind_thread(id, 3));
-    try std.testing.expect(runtime_receipt(id) == null);
+    try std.testing.expectEqualDeep(RuntimeReceipt{}, runtime_receipt(id).?);
     for (0..max_dynamic_pages) |i| {
         // Zero backing is a recorder-only fixture, not an allocator page.
         try std.testing.expect(record_dynamic_page(id, 0));
@@ -1763,9 +1791,13 @@ test "process: runtime receipt records page high-water and preserves refusal" {
     try std.testing.expect(!record_dynamic_page(id, 0));
     try std.testing.expectEqual(@as(usize, 1), processes[id].runtime_usage.record_failures);
     try std.testing.expectEqual(max_dynamic_pages, processes[id].addr_space.dynamic_page_count);
-    // A primary exit is not a final receipt while a sibling still runs.
+    const live = runtime_receipt(id).?;
+    try std.testing.expectEqual(max_dynamic_pages, live.peak_pages);
+    try std.testing.expectEqual(max_dynamic_pages, live.total_pages);
+    // A primary exit leaves a live receipt while a sibling still runs.
     try std.testing.expect(on_task_exit(2, 0) == null);
-    try std.testing.expect(runtime_receipt(id) == null);
+    try std.testing.expectEqual(State.running, info(id).?.state);
+    try std.testing.expectEqualDeep(live, runtime_receipt(id).?);
     try std.testing.expectEqual(@as(?usize, id), on_task_exit(3, 0));
     try std.testing.expectEqual(max_dynamic_pages, runtime_receipt(id).?.peak_pages);
     try std.testing.expectEqual(max_dynamic_pages, processes[id].addr_space.dynamic_page_count);
@@ -1780,6 +1812,36 @@ test "process: runtime receipt records page high-water and preserves refusal" {
     try std.testing.expectEqualDeep(RuntimeReceipt{}, processes[fresh].runtime_usage);
     try std.testing.expect(runtime_receipt(max_processes) == null);
     try std.testing.expect(!record_dynamic_page(max_processes, 0));
+}
+
+test "process: live receipt mutations preserve an outer kernel lock and monotonic peaks" {
+    init();
+    const id = create("LIVE.ELF", .{}, .{}, .{}).?;
+    try std.testing.expect(runtime_receipt(id) == null); // created, not running
+    try std.testing.expect(bind(id, 2));
+    svclock.kernel.acquire();
+    defer svclock.kernel.release();
+    try std.testing.expect(record_dynamic_page(id, 0));
+    try std.testing.expect(record_dynamic_page(id, 0));
+    try std.testing.expect(add_mmap_region(id, mmap_default_va, 4096, 3, 0));
+    const live = runtime_receipt(id).?;
+    try std.testing.expect(svclock.kernel.held());
+    try std.testing.expect(live.peak_pages > 0 and live.peak_pages <= live.total_pages);
+    try std.testing.expect(forget_dynamic_page(id, 0));
+    try std.testing.expect(replace_dynamic_page(id, 0, 0)); // COW raises total, not peak
+    try std.testing.expect(remove_mmap_region(id, mmap_default_va, 4096));
+    try std.testing.expect(add_mmap_region(id, mmap_default_va + 4096, 4096, 3, 0));
+    const after = runtime_receipt(id).?;
+    try std.testing.expectEqual(live.peak_pages, after.peak_pages);
+    try std.testing.expectEqual(live.peak_regions, after.peak_regions);
+    try std.testing.expectEqual(live.total_pages + 1, after.total_pages);
+    try std.testing.expectEqual(@as(?usize, id), on_task_exit(2, 0));
+    try std.testing.expectEqualDeep(after, runtime_receipt(id).?);
+    try std.testing.expect(release_pages_on_reap(2));
+    try std.testing.expectEqualDeep(after, runtime_receipt(id).?);
+    try std.testing.expect(reap(id));
+    try std.testing.expect(runtime_receipt(id) == null);
+    try std.testing.expect(svclock.kernel.held()); // no nested helper released it
 }
 
 test "process: overflow records compact and free metadata through repeated reap" {

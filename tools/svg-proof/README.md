@@ -16,6 +16,18 @@ resources, the tested renderer, or out-of-subset inputs. The denying fetcher
 and `unsafe=False` are mandatory. Exact RGBA-to-BGRA conversion and each
 source/reference hash live in `manifest.json`.
 
+For an owner-authorized external test environment, set `SVG_ORACLE_DIR` to
+an absolute directory outside the repository containing `venv/` and `packages/`.
+`SVG_ORACLE_PROVENANCE=wheel` verifies every frozen wheel, installed executable
+payload, license, Python identity and native-library hash without a source
+checkout. It explicitly omits the unobserved source commit and `setup.cfg`;
+it never invents either, changes reference pixels or repins the original lock.
+The small `oracle-wheel-overlay.json` binds that lock and the unchanged
+reference manifest, and pins the locally upgraded libpng whose output was
+revalidated byte for byte on all 16 frozen PNG/BGRA rows. All other executable
+pins remain exact. This mode is verification-only. Cairo code and packages
+stay outside the repository.
+
 Use `pip download --require-hashes -r tools/svg-proof/requirements.txt`
 for the wheel directory and install those wheels in the isolated venv with
 the same `--require-hashes` requirements. CPython 3.14.7, Cairo 1.18.6 and

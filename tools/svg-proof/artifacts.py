@@ -2,6 +2,7 @@
 import hashlib
 import importlib.util
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -82,10 +83,11 @@ def stage(destination):
     verify()
     # Verify the installed oracle as well as the already-prepared reference
     # bytes. No reference generation or package installation occurs in gates.
-    subprocess.run([str(OUT / "oracle/venv/bin/python"), "-c",
+    oracle_dir = Path(os.environ.get("SVG_ORACLE_DIR", OUT / "oracle")).resolve()
+    subprocess.run([str(oracle_dir / "venv/bin/python"), "-c",
                     "import sys,json; sys.path.insert(0,'tools/svg-proof'); "
                     "import oracle; "
-                    "assert oracle.environment()==json.loads((oracle.FIXTURES/'oracle-lock.json').read_text()), 'oracle drift'"],
+                    "oracle.check_environment()"],
                    cwd=ROOT, check=True)
     destination = Path(destination)
     for name in ("svg", "consumer"):

@@ -1,4 +1,8 @@
-"""Fixture/build setup for the declarative live-quickjs gate."""
+"""Fixture/build setup for the declarative live-quickjs gate.
+
+QJS_COMPILER_CACHE optionally selects an isolated, already-provisioned SDK
+cache. The builder still verifies every compiler/stdlib byte and extra file.
+"""
 import hashlib
 import json
 import os
@@ -16,9 +20,12 @@ def prepare(rd):
     share = rd / "share"
     evidence = ROOT / "artifacts/m88-acceptance"
     evidence.mkdir(parents=True, exist_ok=True)
+    cache = os.environ.get("QJS_COMPILER_CACHE")
+    cache_args = ["--cache", str(Path(cache).resolve())] if cache else []
     for command, name in (("build", "QJS.BIN"), ("launcher", "QLAUNCH.BIN"), ("bounds", "QBOUNDS.BIN")):
         subprocess.run([sys.executable, "-B", str(HERE / "build.py"), command,
-                        "--work", str(rd / ("build-" + command)), "--output", str(share / name)], check=True)
+                        "--work", str(rd / ("build-" + command)), "--output", str(share / name),
+                        *cache_args], check=True)
         shutil.copyfile(share / (name + ".json"), evidence / (name + ".json"))
     lock = json.loads((FIXTURES / "goldens.json").read_text())
     for filename, digest in lock["sha256"].items():

@@ -1,4 +1,4 @@
-# Bounded PDF source-to-bitmap acceptance, with independent pinned Poppler pages.
+# Bounded PDF source-to-bitmap acceptance, with pinned CoreGraphics outside references.
 # One invocation per boot. Every boot ends on the producer's own marker.
 # The runner's bounded tail captures the final reap and kernel receipts.
 # Missing inputs, pins, counters or M90f are failures, never skips.
@@ -11,7 +11,10 @@ import os, sys
 from pathlib import Path
 sys.path.insert(0, str(Path.cwd()/"tools/pdf-proof"))
 from stage import stage
-stage(Path(os.environ["RUN_DIR"]))
+from pause import start_observer
+run = Path(os.environ["RUN_DIR"])
+stage(run)
+start_observer(run)
 PY
 
 vgate_file accepted.txt <<'EOF'
@@ -31,10 +34,11 @@ exec PDFPROOF.ELF /host/maxima.plan /host/PDF/maxima.receipt 1
 EOF
 vgate_file runtime.txt <<'EOF'
 settings set wm none
+clip procs receipt PDFPROOF.ELF
 pages
 exec PDFPROOF.ELF /host/runtime.plan /host/PDF/runtime.receipt 100
 EOF
-vgate_file baseline.txt <<'EOF'
+vgate_file cycle-50.txt <<'EOF'
 procs receipt PDFPROOF.ELF
 EOF
 vgate_file reaped.txt <<'EOF'
@@ -42,7 +46,7 @@ procs receipt PDFPROOF.ELF
 pages
 EOF
 
-vgate_run accepted -- --script '$RUN_DIR/accepted.txt' --script2 '$RUN_DIR/reaped.txt' --script2-after 'procs PDFPROOF.ELF exited status=' --script-expect 'pdf-proof: complete' --script-expect-tail 5 --timeout 180
+vgate_run accepted -- --script '$RUN_DIR/accepted.txt' --script2 '$RUN_DIR/reaped.txt' --script2-after 'procs PDFPROOF.ELF exited status=' --script2-delay 1 --script-expect 'pdf-proof: complete' --script-expect-tail 5 --timeout 180
 vgate_assert accepted serial-contains 'pdf-proof: complete'
 vgate_assert accepted serial-absent '[EXC] parking:'
 vgate_assert accepted python <<'PY'
@@ -50,7 +54,7 @@ import os, runpy
 runpy.run_path("tools/pdf-proof/check_run.py", run_name="__main__")
 PY
 
-vgate_run refusals -- --script '$RUN_DIR/refusals.txt' --script2 '$RUN_DIR/reaped.txt' --script2-after 'procs PDFPROOF.ELF exited status=' --script-expect 'pdf-proof: complete' --script-expect-tail 5 --timeout 180
+vgate_run refusals -- --script '$RUN_DIR/refusals.txt' --script2 '$RUN_DIR/reaped.txt' --script2-after 'procs PDFPROOF.ELF exited status=' --script2-delay 1 --script-expect 'pdf-proof: complete' --script-expect-tail 5 --timeout 180
 vgate_assert refusals serial-contains 'pdf-proof: complete'
 vgate_assert refusals serial-absent '[EXC] parking:'
 vgate_assert refusals python <<'PY'
@@ -58,7 +62,7 @@ import os, runpy
 runpy.run_path("tools/pdf-proof/check_run.py", run_name="__main__")
 PY
 
-vgate_run maxima -- --script '$RUN_DIR/maxima.txt' --script2 '$RUN_DIR/reaped.txt' --script2-after 'procs PDFPROOF.ELF exited status=' --script-expect 'pdf-proof: complete' --script-expect-tail 5 --timeout 360
+vgate_run maxima -- --script '$RUN_DIR/maxima.txt' --script2 '$RUN_DIR/reaped.txt' --script2-after 'procs PDFPROOF.ELF exited status=' --script2-delay 1 --script-expect 'pdf-proof: complete' --script-expect-tail 5 --timeout 360
 vgate_assert maxima serial-contains 'pdf-proof: complete'
 vgate_assert maxima serial-absent '[EXC] parking:'
 vgate_assert maxima python <<'PY'
@@ -68,10 +72,22 @@ PY
 
 # Allow 100 forced-GC cycles plus startup/tail, not 100 page deadlines.
 # This harness wait does not change the 5,000 ms per-page time budget.
-vgate_run runtime -- --script '$RUN_DIR/runtime.txt' --script2 '$RUN_DIR/baseline.txt' --script2-after 'pdf-proof: baseline' --script3 '$RUN_DIR/reaped.txt' --script3-after 'procs PDFPROOF.ELF exited status=' --script-expect 'pdf-proof: complete' --script-expect-tail 5 --timeout 360
+# Paste the prepared command with two chords, not quarter-second key strokes
+# for every letter, so the existing bounded pause need not be extended.
+# Keep scripted mode: console-tcp implies console mode and suppresses scripts.
+# Exit precedes deferred task reap. Match the regression gates' one-second
+# final-snapshot settle; still require reaped=1 and exact pool restoration.
+vgate_run runtime -- --script '$RUN_DIR/runtime.txt' --via-virtio --input-chords 'ctrl-v,return' --input-chords-after 'pdf-proof: baseline' --script2 '$RUN_DIR/cycle-50.txt' --script2-after 'pdf-proof: cycles=50' --script3 '$RUN_DIR/reaped.txt' --script3-after 'procs PDFPROOF.ELF exited status=' --script3-delay 1 --script-expect 'pdf-proof: complete' --script-expect-tail 5 --timeout 360
 vgate_assert runtime serial-contains 'pdf-proof: complete'
 vgate_assert runtime serial-absent '[EXC] parking:'
 vgate_assert runtime python <<'PY'
-import os, runpy
+import json, os, runpy, sys
+from pathlib import Path
+sys.path.insert(0, str(Path.cwd()/"tools/pdf-proof"))
+from check_run import check_pause_order
+check_pause_order(Path(os.environ["VG_SER"]).read_text(errors="replace"))
+observed = json.loads((Path(os.environ["RUN_DIR"])/"receipt-pause-result.json").read_text())
+if observed != {"acknowledged": ["baseline", "cycle-50"]}:
+    raise ValueError("ReceiptPauseTimeout: missing host-observed acknowledgments")
 runpy.run_path("tools/pdf-proof/check_run.py", run_name="__main__")
 PY

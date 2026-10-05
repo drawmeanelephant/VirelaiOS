@@ -17,7 +17,7 @@ def parse_receipts(serial, expected_static, runtime=False):
     if runtime and len(rows) == 1 and "runtime-receipt: none" in serial:
         raise ValueError("RuntimeBaselineUnavailable: monitor exposes only final exit receipts; "
                          "100-cycle no-growth bracket remains unproved")
-    if len(rows) != (2 if runtime else 1):
+    if len(rows) != (3 if runtime else 1):
         raise ValueError("missing high-water receipts")
     peaks = []
     required = ("peak_pages", "peak_regions", "static_pages", "page_cap", "region_cap",
@@ -40,20 +40,59 @@ def parse_receipts(serial, expected_static, runtime=False):
             raise ValueError("receipt did not bracket final reap")
         values["pid"] = int(pid)
         peaks.append(values)
-    if runtime and peaks[0]["pid"] != peaks[-1]["pid"]:
+    if runtime and any(row["pid"] != peaks[0]["pid"] for row in peaks):
         raise ValueError("reuse receipts describe different processes")
     return peaks
 
 
+def check_pause_order(serial):
+    """Both complete live receipt lines must land inside their matching pause."""
+    phases = (
+        r"^pdf-proof: baseline ns=\d+\r?$",
+        r"^runtime-receipt: pid=\d+ name=PDFPROOF\.ELF [^\r\n]+ reaped=0\r?$",
+        r"^pdf-proof: resumed\r?$",
+        r"^pdf-proof: cycles=50 ns=\d+\r?$",
+        r"^runtime-receipt: pid=\d+ name=PDFPROOF\.ELF [^\r\n]+ reaped=0\r?$",
+        r"^pdf-proof: resumed cycle=50\r?$",
+        r"^pdf-proof: complete\r?$",
+        r"^procs PDFPROOF\.ELF exited status=0\r?$",
+        r"^runtime-receipt: pid=\d+ name=PDFPROOF\.ELF [^\r\n]+ reaped=1\r?$",
+    )
+    # Validate exact marker multiplicity separately from the two live rows.
+    for pattern in (phases[i] for i in (0, 2, 3, 5, 6, 7, 8)):
+        if len(re.findall(pattern, serial, re.M)) != 1:
+            raise ValueError("ReceiptPauseOrder: missing/duplicate pause or exit marker")
+    position = 0
+    for pattern in phases:
+        match = re.search(pattern, serial[position:], re.M)
+        if match is None:
+            raise ValueError("ReceiptPauseOrder: live receipt did not precede resume")
+        position += match.end()
+
+
 def check_memory(peaks):
+    if len(peaks) not in (1, 3):
+        raise ValueError("missing high-water receipts")
     for values in peaks:
         pages, regions = values["peak_pages"], values["peak_regions"]
         if not (2304 <= pages <= 3072 and 1 <= regions <= 12):
             raise ValueError(f"MemoryLimit: kernel peak_pages={pages}/3072 peak_regions={regions}/12")
         if pages-2304 > 768 or regions-1 > 11:
             raise ValueError("MemoryLimit: runtime partition")
-    if any(peaks[0][key] != peaks[-1][key] for key in ("peak_pages", "peak_regions")):
-        raise ValueError("100-cycle retained backing/region growth")
+    keys = ("peak_pages", "peak_regions", "total_pages")
+    if len(peaks) == 3:
+        baseline, warmed, final = peaks
+        if any(baseline[key] > warmed[key] for key in keys):
+            raise ValueError("baseline exceeds cycle-50 high-water counters")
+        if any(warmed[key] != final[key] for key in keys):
+            raise ValueError("cycle-50-to-final retained backing/region growth")
+
+
+def warmup_delta(peaks):
+    if len(peaks) != 3:
+        return None
+    return {key: peaks[1][key]-peaks[0][key]
+            for key in ("peak_pages", "total_pages", "peak_regions")}
 
 
 def check(run, serial_path, tag, share):
@@ -66,6 +105,10 @@ def check(run, serial_path, tag, share):
     shutil.copyfile(run/"pdf-context.json", evidence.parent/"context.json")
     serial = serial_path.read_text(errors="replace")
     shutil.copyfile(serial_path, evidence/"serial.log")
+    if tag == "runtime":
+        for name in ("receipt-pause-result.json", "receipt-pause-observer.log"):
+            if (run/name).is_file():
+                shutil.copyfile(run/name, evidence/name)
     # Preserve observed counters and products even when completion, baseline,
     # memory or comparison validation fails. This is diagnostic, not a pass.
     observed = re.findall(r"runtime-receipt: pid=(\d+) name=PDFPROOF\.ELF ([^\r\n]+)", serial)
@@ -97,6 +140,9 @@ def check(run, serial_path, tag, share):
         raise ValueError("receipt count/cycles")
     peaks = parse_receipts(serial, context["elf"]["static_pages"], tag == "runtime")
     (evidence/"runtime-receipts.json").write_text(json.dumps(peaks, indent=2)+"\n")
+    (evidence/"warmup-delta.json").write_text(json.dumps(warmup_delta(peaks), indent=2)+"\n")
+    if tag == "runtime":
+        check_pause_order(serial)
     check_memory(peaks)
     free = re.findall(r"pages: armed=1 total=0x[0-9a-f]+ free=(0x[0-9a-f]+)", serial)
     if len(free) != 2 or free[0] != free[1]:
@@ -130,11 +176,17 @@ def check(run, serial_path, tag, share):
                 failures.append(row["id"]+": "+str(exc))
         checked.append(measured)
     (evidence/"checked.json").write_text(json.dumps({"pages": checked, "peaks": peaks,
+                                                   "warmup_delta": warmup_delta(peaks),
                                                    "free_before": free[0], "free_after": free[1],
                                                    "counter_frequency_hz": frequency_hz,
                                                    "counter_resolution_ns": {"numerator": 1000000000, "denominator": frequency_hz}}, indent=2)+"\n")
     if failures:
         raise ValueError("independent comparison failed: "+"; ".join(failures))
+    if tag == "runtime":
+        print("runtime: baseline/cycle-50/final "+
+              " ".join(f"{key}="+"/".join(str(row[key]) for row in peaks)
+                       for key in ("peak_pages", "total_pages", "peak_regions"))+
+              " warmup_delta="+json.dumps(warmup_delta(peaks), sort_keys=True))
     print(tag+": pixels, named refusals, maxima, runtime bounds and reclamation verified")
 
 
