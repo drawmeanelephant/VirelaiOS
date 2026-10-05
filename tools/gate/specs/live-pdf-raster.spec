@@ -37,9 +37,6 @@ settings set wm none
 pages
 exec PDFPROOF.ELF /host/runtime.plan /host/PDF/runtime.receipt 100
 EOF
-vgate_file baseline.txt <<'EOF'
-procs receipt PDFPROOF.ELF
-EOF
 vgate_file cycle-50.txt <<'EOF'
 procs receipt PDFPROOF.ELF
 EOF
@@ -74,8 +71,9 @@ PY
 
 # Allow 100 forced-GC cycles plus startup/tail, not 100 page deadlines.
 # This harness wait does not change the 5,000 ms per-page time budget.
-vgate_run runtime -- --script '$RUN_DIR/runtime.txt' --script2 '$RUN_DIR/baseline.txt' --script2-after 'pdf-proof: baseline' --script3 '$RUN_DIR/cycle-50.txt' --script3-after 'pdf-proof: cycles=50' --console-tcp '127.0.0.1:24891' --script-expect 'pdf-proof: complete' --script-expect-tail 5 --timeout 360
-vgate_client runtime -- --addr '127.0.0.1:24891' --after 'procs PDFPROOF.ELF exited status=' --after-timeout 360 --send-file reaped.txt --expect 'unrecorded_pages=0 reaped=1' --connect-timeout 5 --timeout 5
+# Input-string's fixed 40 s marker wait is suitable for baseline, not cycle 50.
+# Keep scripted mode: console-tcp implies console mode and suppresses scripts.
+vgate_run runtime -- --script '$RUN_DIR/runtime.txt' --via-virtio --input-string $'procs receipt PDFPROOF.ELF\n' --input-string-after 'pdf-proof: baseline' --script2 '$RUN_DIR/cycle-50.txt' --script2-after 'pdf-proof: cycles=50' --script3 '$RUN_DIR/reaped.txt' --script3-after 'procs PDFPROOF.ELF exited status=' --script-expect 'pdf-proof: complete' --script-expect-tail 5 --timeout 360
 vgate_assert runtime serial-contains 'pdf-proof: complete'
 vgate_assert runtime serial-absent '[EXC] parking:'
 vgate_assert runtime python <<'PY'

@@ -87,8 +87,9 @@ Runtime progress prints first-cycle and 50/100-cycle elapsed nanoseconds.
 Baseline and cycle 50 wait for a one-byte host acknowledgment, bounded by the
 existing 5,000 ms ceiling. The host publishes each acknowledgment only after
 the complete live receipt is present in the serial log; order assertions
-require each receipt before its resume marker. A loopback console client
-requests the final reaped receipt. All three readings must agree on page peaks,
+require each receipt before its resume marker. Baseline uses marker-anchored
+custom-virtio key input; cycle 50 and final reap use the serial script phases.
+All three readings must agree on page peaks,
 cumulative allocations and region peaks; no warm-up reading replaces baseline.
 Pause I/O reuses existing staging outside the timed page transactions.
 Receipts retain maxima across all cycles,

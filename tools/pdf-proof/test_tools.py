@@ -378,6 +378,15 @@ class RuntimeReceiptTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "ReceiptPauseOrder"):
                     check_pause_order(changed)
 
+    def test_runtime_diagnostic_preserves_scripted_mode_and_timeout(self):
+        spec = (corpus.ROOT/"tools/gate/specs/live-pdf-raster.spec").read_text()
+        runtime = next(line for line in spec.splitlines() if line.startswith("vgate_run runtime "))
+        self.assertNotIn("--console-tcp", runtime) # console mode suppresses scripted input
+        self.assertIn("--input-string-after 'pdf-proof: baseline'", runtime)
+        self.assertIn("--script2-after 'pdf-proof: cycles=50'", runtime)
+        self.assertIn("--script3-after 'procs PDFPROOF.ELF exited status='", runtime)
+        self.assertTrue(runtime.endswith("--timeout 360"))
+
     def test_host_acknowledges_only_complete_paused_live_rows(self):
         with tempfile.TemporaryDirectory(dir=corpus.ROOT/"artifacts/m89-acceptance") as directory:
             share = Path(directory)
