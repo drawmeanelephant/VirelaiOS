@@ -74,8 +74,10 @@ The gate stages only verified offline products. It requires M90f's merge commit
 in checkout ancestry before any final runtime/reclamation boot. Its independent
 checks use `procs receipt` peaks, separately checked static ELF pages and the
 free-page pool, never HeapAlloc or ELF memsz as dynamic-memory proof. Kernel
-peaks conservatively bound every page in the boot. First-cycle and final peaks
-must agree across 100 success/refusal/recovery cycles. Completion is printed
+peaks conservatively bound every page in the boot. Under the
+[owner warm-up ruling](https://github.com/drawmeanelephant/VirelaiOS/issues/1971#issuecomment-5994413589),
+the no-growth bracket runs from paused cycle 50 to final across the same
+100 success/refusal/recovery cycles. Completion is printed
 after writes/sync/close; a bounded runner tail captures the reap diagnostics.
 `procs receipt` exposes running-process counters with `reaped=0` and retains
 the same peaks after exit and task reap (`reaped=1`). Identity, counters and
@@ -90,8 +92,11 @@ the complete live receipt is present in the serial log; order assertions
 require each receipt before its resume marker. Baseline uses marker-anchored
 custom-virtio clipboard-paste/Enter chords; cycle 50 and final reap use the serial
 script phases.
-All three readings must agree on page peaks,
-cumulative allocations and region peaks; no warm-up reading replaces baseline.
+Cycle-50 and final readings must agree exactly on page peaks, cumulative
+allocations and region peaks. Baseline remains recorded, within the unchanged
+ADR 0040 budgets and no greater than cycle 50 on those counters. Every runtime
+evidence record includes the baseline-to-cycle-50 warm-up delta; warm-up
+backing remains charged to the runtime allowance.
 Pause I/O reuses existing staging outside the timed page transactions.
 Receipts retain maxima across all cycles,
 not only the last cycle. The 360-second runtime harness wait covers the full

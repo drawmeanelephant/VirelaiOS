@@ -71,15 +71,28 @@ def check_pause_order(serial):
 
 
 def check_memory(peaks):
+    if len(peaks) not in (1, 3):
+        raise ValueError("missing high-water receipts")
     for values in peaks:
         pages, regions = values["peak_pages"], values["peak_regions"]
         if not (2304 <= pages <= 3072 and 1 <= regions <= 12):
             raise ValueError(f"MemoryLimit: kernel peak_pages={pages}/3072 peak_regions={regions}/12")
         if pages-2304 > 768 or regions-1 > 11:
             raise ValueError("MemoryLimit: runtime partition")
-    if any(values[key] != peaks[0][key] for values in peaks
-           for key in ("peak_pages", "peak_regions", "total_pages")):
-        raise ValueError("100-cycle retained backing/region growth")
+    keys = ("peak_pages", "peak_regions", "total_pages")
+    if len(peaks) == 3:
+        baseline, warmed, final = peaks
+        if any(baseline[key] > warmed[key] for key in keys):
+            raise ValueError("baseline exceeds cycle-50 high-water counters")
+        if any(warmed[key] != final[key] for key in keys):
+            raise ValueError("cycle-50-to-final retained backing/region growth")
+
+
+def warmup_delta(peaks):
+    if len(peaks) != 3:
+        return None
+    return {key: peaks[1][key]-peaks[0][key]
+            for key in ("peak_pages", "total_pages", "peak_regions")}
 
 
 def check(run, serial_path, tag, share):
@@ -127,6 +140,7 @@ def check(run, serial_path, tag, share):
         raise ValueError("receipt count/cycles")
     peaks = parse_receipts(serial, context["elf"]["static_pages"], tag == "runtime")
     (evidence/"runtime-receipts.json").write_text(json.dumps(peaks, indent=2)+"\n")
+    (evidence/"warmup-delta.json").write_text(json.dumps(warmup_delta(peaks), indent=2)+"\n")
     if tag == "runtime":
         check_pause_order(serial)
     check_memory(peaks)
@@ -162,11 +176,17 @@ def check(run, serial_path, tag, share):
                 failures.append(row["id"]+": "+str(exc))
         checked.append(measured)
     (evidence/"checked.json").write_text(json.dumps({"pages": checked, "peaks": peaks,
+                                                   "warmup_delta": warmup_delta(peaks),
                                                    "free_before": free[0], "free_after": free[1],
                                                    "counter_frequency_hz": frequency_hz,
                                                    "counter_resolution_ns": {"numerator": 1000000000, "denominator": frequency_hz}}, indent=2)+"\n")
     if failures:
         raise ValueError("independent comparison failed: "+"; ".join(failures))
+    if tag == "runtime":
+        print("runtime: baseline/cycle-50/final "+
+              " ".join(f"{key}="+"/".join(str(row[key]) for row in peaks)
+                       for key in ("peak_pages", "total_pages", "peak_regions"))+
+              " warmup_delta="+json.dumps(warmup_delta(peaks), sort_keys=True))
     print(tag+": pixels, named refusals, maxima, runtime bounds and reclamation verified")
 
 

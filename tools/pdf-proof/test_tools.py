@@ -11,7 +11,7 @@ import corpus
 import oracle
 import analytic
 import pause
-from check_run import check_memory, check_pause_order, parse_receipts
+from check_run import check_memory, check_pause_order, parse_receipts, warmup_delta
 
 
 def bitmap(w, h, pixels):
@@ -340,23 +340,37 @@ class RuntimeReceiptTests(unittest.TestCase):
     def test_reuse_brackets_one_process_without_growth(self):
         serial = self.receipt(reaped=0)*2+self.receipt()
         check_memory(parse_receipts(serial, 8617, runtime=True))
-        with self.assertRaisesRegex(ValueError, "growth"):
-            check_memory(parse_receipts(self.receipt(pages=3071, reaped=0)+
-                                        self.receipt(reaped=0)+self.receipt(), 8617, runtime=True))
+        warmed = parse_receipts(self.receipt(pages=2570, regions=10, reaped=0)+
+                                self.receipt(pages=2706, regions=10, reaped=0)+
+                                self.receipt(pages=2706, regions=10), 8617, runtime=True)
+        check_memory(warmed)
+        self.assertEqual(warmup_delta(warmed),
+                         {"peak_pages": 136, "total_pages": 136, "peak_regions": 0})
         with self.assertRaisesRegex(ValueError, "different processes"):
             parse_receipts(serial.replace("pid=7", "pid=8", 1), 8617, runtime=True)
 
-    def test_cycle_50_must_match_baseline_and_final(self):
-        for middle in (self.receipt(pages=3071, reaped=0),
-                       self.receipt(regions=11, reaped=0),
-                       self.receipt(reaped=0).replace("total_pages=3072", "total_pages=3073")):
+    def test_cycle_50_must_match_final_exactly(self):
+        for final in (self.receipt(pages=3071), self.receipt(regions=11),
+                      self.receipt().replace("total_pages=3072", "total_pages=3073")):
             with self.assertRaisesRegex(ValueError, "growth"):
-                check_memory(parse_receipts(self.receipt(reaped=0)+middle+self.receipt(), 8617, runtime=True))
+                check_memory(parse_receipts(self.receipt(reaped=0)*2+final, 8617, runtime=True))
         for middle in (self.receipt(reaped=0).replace("pid=7", "pid=8"), self.receipt()):
             with self.assertRaises(ValueError):
                 parse_receipts(self.receipt(reaped=0)+middle+self.receipt(), 8617, runtime=True)
         with self.assertRaisesRegex(ValueError, "missing high-water"):
             parse_receipts(self.receipt(reaped=0)+self.receipt(), 8617, runtime=True)
+
+    def test_baseline_is_bounded_and_cannot_exceed_cycle_50(self):
+        for baseline in (self.receipt(pages=3071, reaped=0), self.receipt(regions=11, reaped=0),
+                         self.receipt(pages=3070, reaped=0).replace("total_pages=3070", "total_pages=3071")):
+            with self.assertRaisesRegex(ValueError, "baseline exceeds"):
+                check_memory(parse_receipts(baseline+self.receipt(pages=3070, regions=10, reaped=0)+
+                                            self.receipt(pages=3070, regions=10), 8617, runtime=True))
+        for pages, regions in ((3073, 10), (3070, 13)):
+            with self.assertRaisesRegex(ValueError, "MemoryLimit"):
+                check_memory(parse_receipts(self.receipt(pages=pages, regions=regions, reaped=0)+
+                                            self.receipt(reaped=0)+self.receipt(), 8617, runtime=True))
+        self.assertIsNone(warmup_delta(parse_receipts(self.receipt(), 8617)))
 
     def paused_serial(self):
         return ("pdf-proof: baseline ns=1\n"+self.receipt(reaped=0)+
