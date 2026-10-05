@@ -746,6 +746,17 @@ composites with `draw_chrome` painting from descriptors; with no WM, the
 shim's own rules paint byte-identically to pre-M32 (one
 registration-flag branch in driving_award).
 
+#### M91f amendment (2026-10-05, #1976): per-window no chrome
+
+A per-window descriptor with `kind_mask = 0` disables all kernel chrome,
+including borders, title, buttons, shadows and the focus ring. The
+`a0 = 0xFFFFFFFF` broadcast still refuses zero with `EINVAL`. Nonzero
+kinds, command numbers, descriptor fields and lengths are unchanged.
+GOTABWM installs this override before publishing a hosted tab; its first
+hosted layout paints the legacy client opaque so native-frame pixels
+cannot survive through the opening fade. Seat-owned windows keep their
+own nonzero descriptors. Owner approval: #1976 comment 5994413955.
+
 ### Amendment (2026-08-29, claim 9849 — the WMS5 rect activation)
 
 The `a1`/`a2` geometry encoding reserved in the row above ACTIVATES: the

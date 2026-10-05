@@ -3791,9 +3791,10 @@ fn handle_wmctl(args: Args, _: *exceptions.VectorFrame) u64 {
                     return error_result(.efault); // bad descriptor pointer
                 }
                 // The one validation rule (single source in wnd_core): unknown
-                // kind/flag bits, a zero kind, and an out-of-range rest alpha
-                // are refused with EINVAL.
-                if (!wnd_core.chrome_valid(desc)) return error_result(.einval);
+                // kind/flag bits and out-of-range rest alpha are EINVAL.
+                // Zero kind disables per-window chrome; zero broadcast is
+                // still refused (M91f, ADR 0007 amendment).
+                if (!wnd_core.chrome_valid_for_window(window_id, desc)) return error_result(.einval);
                 if (!driving_award.set_window_chrome(window_id, desc)) return error_result(.einval); // bad id
             }
             wm_server.note_set_window();

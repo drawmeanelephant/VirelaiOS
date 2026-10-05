@@ -177,6 +177,8 @@ func serviceRPC() int {
 	return served
 }
 
+var configureHostedChrome = setHostedWindowChrome
+
 // applyRPC performs one WM_RPC request with the kernel's own primitives and
 // returns whether it was applied. Only the paths a tab-aware Zig app exercises
 // are implemented; everything else is refused (applied=0) rather than faked.
@@ -184,6 +186,11 @@ func applyRPC(req vi.WmRpc) bool {
 	id := uint32(req.ID)
 	switch req.Kind & 0x7f {
 	case vi.WmRpcKindDeclareFullscreen: // 8, the path lib/tabapp.zig uses
+		// Publish no hosted tab until its explicit no-chrome decision is in
+		// the kernel. This also precedes the resize and the next seat present.
+		if !configureHostedChrome(id) {
+			return false
+		}
 		if tabs.OpenTab(id, req.TitleString()) {
 			noteStripOpen()
 			dogfoodHosted = true
@@ -220,6 +227,9 @@ func applyRPC(req vi.WmRpc) bool {
 		}
 		return false
 	case vi.WmRpcKindAttachTab: // 5
+		if !configureHostedChrome(id) {
+			return false
+		}
 		if tabs.OpenTab(id, req.TitleString()) {
 			noteStripOpen()
 			dogfoodHosted = true
