@@ -1,0 +1,3 @@
+app=worker
+outcome=restart=5/5 status=137 backoff_s=0
+last-log:
