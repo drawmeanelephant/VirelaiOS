@@ -13,6 +13,12 @@ import (
 // constructs in the authored reference corpus. It does not call the CSS parser
 // to decide which bytes to delete.
 func deleteExcluded(src string) string {
+	clean, _ := excludedOracle(src)
+	return clean
+}
+
+func excludedOracle(src string) (string, int) {
+	count := 0
 	for {
 		at := strings.Index(src, "@")
 		if at < 0 {
@@ -38,23 +44,49 @@ func deleteExcluded(src string) string {
 		}
 	removed:
 		src = src[:at] + src[end:]
+		count++
 	}
-	src = regexp.MustCompile(`[^{}]*[:>\[+~][^{}]*\{[^{}]*\}`).ReplaceAllString(src, "")
-	src = regexp.MustCompile(`(?i)(float|position|top|z-index|grid-template-columns|transform|animation|background-image|opacity|content)\s*:[^;{}]*;`).ReplaceAllString(src, "")
-	return src
+	selectors := regexp.MustCompile(`[^{}]*[:>\[+~][^{}]*\{[^{}]*\}`)
+	count += len(selectors.FindAllStringIndex(src, -1))
+	src = selectors.ReplaceAllString(src, "")
+	excluded := regexp.MustCompile(`(?im)(^|[;{])(\s*)(float|position|top|z-index|grid-template-columns|transform|animation|background-image|opacity|content)\s*:[^;{}]*;?`)
+	for {
+		next := excluded.ReplaceAllString(src, "$1$2")
+		if next == src {
+			break
+		}
+		count += len(excluded.FindAllStringIndex(src, -1))
+		src = next
+	}
+	// Exact excluded values in degradation.html, independently pinned to the
+	// authored reference, not inferred by calling the product's value parser.
+	values := regexp.MustCompile(`(?im)(^|[;{])(\s*)(width\s*:\s*calc\([^;{}]*\)|border\s*:\s*dashed[^;{}]*|display\s*:\s*grid|font-size\s*:\s*2em)\s*;?`)
+	for {
+		next := values.ReplaceAllString(src, "$1$2")
+		if next == src {
+			break
+		}
+		count += len(values.FindAllStringIndex(src, -1))
+		src = next
+	}
+	return src, count
 }
 
 func assertEquivalent(t *testing.T, html, source string) {
 	t.Helper()
 	doc := webrender.ParseHTML([]byte(html))
-	mixed, _ := Parse([]byte(source))
-	clean, _ := Parse([]byte(deleteExcluded(source)))
-	a, _ := Cascade(doc, []*Stylesheet{mixed})
-	b, _ := Cascade(doc, []*Stylesheet{clean})
+	deleted, excludedCount := excludedOracle(source)
+	mixed, parsed := Parse([]byte(source))
+	clean, cleaned := Parse([]byte(deleted))
+	a, page := Cascade(doc, []*Stylesheet{mixed})
+	b, cleanPage := Cascade(doc, []*Stylesheet{clean})
+	if len(parsed) != excludedCount || len(page) != excludedCount || len(cleaned) != 0 || len(cleanPage) != 0 {
+		t.Errorf("one diagnostic per excluded construct (%d): parsed=%+v page=%+v clean=%+v", excludedCount, parsed, page, cleanPage)
+	}
 	var walk func(*webrender.Node)
 	walk = func(n *webrender.Node) {
 		if a.ForNode(n) != b.ForNode(n) {
-			t.Errorf("unsupported CSS changed node %s: mixed=%+v deleted=%+v", n.Tag, a.ForNode(n), b.ForNode(n))
+			t.Errorf("unsupported CSS changed node %s", n.Tag)
 		}
 		for _, child := range n.Children {
 			walk(child)
