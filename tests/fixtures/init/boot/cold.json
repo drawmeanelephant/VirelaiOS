@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "services": [
+    {"name": "seat", "argv": ["GOTABWM.ELF"], "requires": ["a-dep"], "restart": {"restart": "never"}, "class": "boot"},
+    {"name": "a-dep", "argv": ["INITDEP.BIN"], "requires": ["z-pre"], "restart": {"restart": "never"}, "class": "boot"},
+    {"name": "z-pre", "argv": ["INITPRE.BIN"], "restart": {"restart": "never"}, "class": "boot"}
+  ]
+}

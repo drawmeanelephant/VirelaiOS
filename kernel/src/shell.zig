@@ -40,6 +40,7 @@ const road_pops = @import("road_pops.zig"); // claim 1574 (milestone six G3): Ro
 pub const input = @import("input.zig"); // claim 6050 (milestone seven I3): keyboard/pointer event FIFO drain in the idle loop
 const driving_award = @import("driving_award.zig"); // claim 1543 (milestone six G5): Driving Award window-manager drain (clock refresh + composite)
 const wm_server = @import("wm_server.zig"); // M32 WMS2 (issue #622): when a WM registers, pacing moves off this idle drain to the tick path
+const mailbox = @import("mailbox.zig");
 const scrollback_mod = @import("scrollback.zig"); // M18 T1 (issue #404): terminal scrollback ring
 pub const clipboard = @import("clipboard.zig"); // M18 T2 (issue #405): shared clipboard for copy/paste
 // M34 HF5 (issue #739): shell history + env persist to the HOST SHARE
@@ -212,6 +213,82 @@ pub fn bg_job_free(n: usize) void {
 /// M42 SX5 (issue #986): the default-manager seam state — the shell idle
 /// attempts the settings-driven WM boot at most ONCE per session.
 pub var wm_autostart_attempted: bool = false;
+pub var init_boot_pid: ?usize = null;
+var init_boot_owned = false;
+var init_boot_deadline: u64 = 0;
+var init_boot_seat: settings.WmSeat = .none;
+var init_boot_preexisting: [process.max_processes]bool = [_]bool{false} ** process.max_processes;
+
+pub const InitBootAction = enum { wait, seated, stop_seat, fallback };
+
+/// Registration, not exec success, commits the handoff. Even after init dies,
+/// a pending seat must relinquish its tasks before another seat may start.
+pub fn init_boot_action(init_alive: bool, registered: bool, pending_seat: bool) InitBootAction {
+    if (registered) return .seated;
+    if (init_alive) return .wait;
+    if (pending_seat) return .stop_seat;
+    return .fallback;
+}
+
+fn init_boot_poll(m: *monitor.Monitor) void {
+    const pid = init_boot_pid orelse return;
+    if (init_boot_owned) return;
+    const domains = svclock.dom_bit(.win) | svclock.dom_bit(.ev) | svclock.dom_bit(.kernel);
+    svclock.acquire_set(domains);
+    const owner = process.info(pid);
+    const alive = if (owner) |info|
+        std.mem.eql(u8, info.name, "INIT.ELF") and (info.state == .running or info.state == .created)
+    else
+        false;
+    const registered = wm_server.registered();
+    var pending_tasks: [3]?usize = .{ null, null, null };
+    var pending_count: usize = 0;
+    if (!registered) {
+        const program = init_boot_seat.program();
+        for (0..process.max_processes) |candidate| {
+            if (init_boot_preexisting[candidate]) continue;
+            const info = process.info(candidate) orelse continue;
+            if (info.state != .running) continue;
+            var owned_name = std.mem.eql(u8, info.name, "INITPRE.BIN") or
+                std.mem.eql(u8, info.name, "INITDEP.BIN");
+            if (program) |name| {
+                owned_name = owned_name or std.mem.eql(u8, info.name, name);
+            }
+            if (owned_name and pending_count < pending_tasks.len) {
+                pending_tasks[pending_count] = info.task_id;
+                pending_count += 1;
+            }
+        }
+    }
+    const action = init_boot_action(alive, registered, pending_count != 0);
+    if (action == .seated) {
+        // The existing mailbox is boot-local and reset on pid creation.
+        // The guest owns its own ring; no new syscall or persisted marker.
+        if (mailbox.send(pid, "M92E:seated") == .ok) init_boot_owned = true;
+    }
+    const owner_task = if (alive) owner.?.task_id else null;
+    svclock.release_set(domains);
+    switch (action) {
+        .seated => {},
+        .wait => {
+            if (init_boot_deadline != 0 and timer.ticks >= init_boot_deadline) {
+                init_boot_deadline = 0;
+                m.console.puts("init: refuse init-timeout\n");
+                if (owner_task) |task| _ = scheduler.request_kill(task);
+            }
+        },
+        .stop_seat => {
+            for (pending_tasks) |pending| {
+                if (pending) |task| _ = scheduler.request_kill(task);
+            }
+        },
+        .fallback => {
+            init_boot_pid = null;
+            m.console.puts("init: fallback direct (init exited)\n");
+            wm_autostart_direct(m);
+        },
+    }
+}
 
 /// The persisted-default WM boot. M59 (issue #1298) flipped what "no
 /// explicit choice" means: `settings wm` now defaults to `gotabwm`, so a
@@ -228,10 +305,47 @@ pub var wm_autostart_attempted: bool = false;
 /// (M42 SX5): the fleet that never staged a Go seat is unchanged but is
 /// now TOLD why it is shim-only.
 pub fn wm_autostart_once(m: *monitor.Monitor) void {
-    if (wm_autostart_attempted) return;
+    if (wm_autostart_attempted) {
+        init_boot_poll(m);
+        return;
+    }
     wm_autostart_attempted = true;
     if (wm_server.registered()) return;
     settings.ensure_init();
+    // wm=none remains the explicit shim-only boot, including serial-shell
+    // gates. It never allocates init merely to discover there is no seat.
+    const program = settings.wm_seat_kind().program() orelse return;
+    if (settings.init_enabled()) {
+        init_boot_seat = settings.wm_seat_kind();
+        svclock.kernel.acquire();
+        for (0..process.max_processes) |candidate| {
+            const info = process.info(candidate);
+            init_boot_preexisting[candidate] = if (info) |p| p.state == .running or p.state == .created else false;
+        }
+        svclock.kernel.release();
+        var init_env: [1][]const u8 = undefined;
+        init_env[0] = "GOMAXPROCS=1";
+        exec_mod.set_envp(&init_env);
+        var init_args: [2][]const u8 = undefined;
+        init_args[0] = program;
+        init_args[1] = settings.login_shell();
+        switch (exec_mod.exec_file("INIT.ELF", &init_args)) {
+            .ok => {
+                init_boot_pid = exec_mod.last_exec_pid();
+                init_boot_owned = false;
+                init_boot_deadline = timer.ticks + 90;
+                m.console.puts("init: autostart INIT.ELF (settings init=on)\n");
+                return;
+            },
+            .no_disk, .not_found => m.console.puts("init: refuse missing-init\n"),
+            else => m.console.puts("init: refuse init-load\n"),
+        }
+    }
+    wm_autostart_direct(m);
+}
+
+/// Keep the direct path's markers byte-for-byte for init=off and fallback.
+fn wm_autostart_direct(m: *monitor.Monitor) void {
     const seat = settings.wm_seat_kind();
     const program = seat.program() orelse return;
     var buf: [192]u8 = undefined;

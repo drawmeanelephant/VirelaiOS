@@ -394,6 +394,9 @@ func TestHasLiveGuestELF(t *testing.T) {
 		want bool
 	}{
 		{name: "no other program", rows: []vi.ProcRow{row(vi.ProcRunning, "GOTABWM.ELF")}},
+		{name: "init owns boot", rows: []vi.ProcRow{row(vi.ProcRunning, "INIT.ELF")}},
+		{name: "init with existing shell", rows: []vi.ProcRow{
+			row(vi.ProcRunning, "INIT.ELF"), row(vi.ProcRunning, "GOSH.ELF")}, want: true},
 		{name: "running client", rows: []vi.ProcRow{row(vi.ProcRunning, "GOSH.ELF")}, want: true},
 		{name: "created client", rows: []vi.ProcRow{row(vi.ProcCreated, "GOCALC.ELF")}, want: true},
 		{name: "exited client", rows: []vi.ProcRow{row(vi.ProcExited, "GOSH.ELF")}},
