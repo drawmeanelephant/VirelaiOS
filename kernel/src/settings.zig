@@ -20,6 +20,7 @@
 //!     seeded default table)
 //!   - `wm`: boot window-manager seat, "gotabwm"|"tabwm"|"none"
 //!     (default: "gotabwm" — M59 issue #1298 flipped it from TABWM)
+//!   - `init`: declarative boot handoff, "on"|"off" (default: "on", M92e)
 //!
 //! Boot contract:
 //!   On kernel boot, after the file channel is armed, `init_from_share()`
@@ -108,9 +109,9 @@ pub const wm_default: []const u8 = "gotabwm";
 
 pub const max_key_len: usize = 32;
 pub const max_val_len: usize = 64;
-// Eight seeded rows, eight optional/extension rows, and the optional
+// Nine seeded rows, eight optional/extension rows, and the optional
 // keyboard_layout selector can coexist in a persisted table.
-pub const max_entries: usize = 17;
+pub const max_entries: usize = 18;
 
 pub const Entry = struct {
     key: [max_key_len]u8 = [_]u8{0} ** max_key_len,
@@ -141,6 +142,7 @@ pub fn init() void {
     _ = set_internal("focus_follows_mouse", "off");
     _ = set_internal("shell", "monitor"); // M45 SH8 (#1084): boot login shell (monitor|sh)
     _ = set_internal("wm", wm_default); // M59 (#1298): the boot WM seat (gotabwm|tabwm|none)
+    _ = set_internal("init", "on"); // M92e: off preserves direct WM autostart
     initialized = true;
 }
 
@@ -256,6 +258,10 @@ pub const WmSeat = enum {
 /// M59 (issue #1298): the persisted seat resolved to its kind (see `WmSeat`).
 pub fn wm_seat_kind() WmSeat {
     return WmSeat.of(wm_seat());
+}
+
+pub fn init_enabled() bool {
+    return std.mem.eql(u8, get("init") orelse "on", "on");
 }
 
 /// M18 T5: whether ANSI terminal colors are enabled.
@@ -921,13 +927,13 @@ test "settings: a valid v2 file still loads (M66b #1444)" {
 test "settings: a full legacy table can gain the persisted layout" {
     init();
     defer init();
-    try std.testing.expectEqual(@as(usize, 8), count());
+    try std.testing.expectEqual(@as(usize, 9), count());
     for (0..8) |i| {
         var key: [16]u8 = undefined;
         const name = try std.fmt.bufPrint(&key, "extension{d}", .{i});
         try std.testing.expectEqual(SetResult.ok, set(name, "v"));
     }
-    try std.testing.expectEqual(@as(usize, 16), count());
+    try std.testing.expectEqual(max_entries - 1, count());
     try std.testing.expectEqual(SetResult.ok, set("keyboard_layout", "de"));
     try std.testing.expectEqual(max_entries, count());
     try std.testing.expectEqual(SetResult.table_full, set("overflow", "v"));

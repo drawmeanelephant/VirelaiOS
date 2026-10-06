@@ -65,7 +65,7 @@ func TestPanelStartsWithTheTableInForce(t *testing.T) {
 	if a.mode() != "rw" {
 		t.Fatalf("mode = %q, want rw", a.mode())
 	}
-	if got := a.summary(); got != "keys=12 wm=gotabwm theme=dark" {
+	if got := a.summary(); got != "keys=13 wm=gotabwm theme=dark" {
 		t.Fatalf("summary = %q", got)
 	}
 	if v, ok := settings.Get(a.disp, "keyboard_layout"); !ok || v != "us" {
@@ -134,7 +134,7 @@ func TestPanelAppliesATypedRowOnlyForKnownKeys(t *testing.T) {
 	if v, _ := settings.Get(a.disp, "wm"); v != "tabwm" {
 		t.Fatalf("wm = %q, want tabwm", v)
 	}
-	if got := a.summary(); got != "keys=12 wm=tabwm theme=dark" {
+	if got := a.summary(); got != "keys=13 wm=tabwm theme=dark" {
 		t.Fatalf("summary = %q", got)
 	}
 
@@ -293,7 +293,7 @@ func TestPaletteSurfaceRevealsTheColoursOnCustom(t *testing.T) {
 			t.Fatalf("%s row = %q ok=%v, want the default %q", k.Name, v, ok, k.Default)
 		}
 	}
-	if got := a.summary(); got != "keys=15 wm=gotabwm theme=custom" {
+	if got := a.summary(); got != "keys=16 wm=gotabwm theme=custom" {
 		t.Fatalf("summary = %q", got)
 	}
 	// The palette rows are first-class: never the "(kept)" marker (that is
@@ -352,7 +352,7 @@ func TestFontSurfaceCyclesWithoutMovingKeys(t *testing.T) {
 	if v, _ := settings.Get(a.disp, "font_size"); v != "large" {
 		t.Fatalf("font_size = %q, want large", v)
 	}
-	if got := a.summary(); got != "keys=13 wm=gotabwm theme=dark" {
+	if got := a.summary(); got != "keys=14 wm=gotabwm theme=dark" {
 		t.Fatalf("summary = %q (the typed row is real, so the count grew)", got)
 	}
 	// ...the row is first-class (no "(kept)") and cyclable.

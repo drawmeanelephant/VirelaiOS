@@ -61,6 +61,51 @@ const test_reset_share = shell_mod.test_reset_share;
 const test_seed_dir = shell_mod.test_seed_dir;
 const test_seed_share = shell_mod.test_seed_share;
 
+test "M92e: only actual registration commits init boot ownership" {
+    const action = shell_mod.init_boot_action;
+    try std.testing.expectEqual(shell_mod.InitBootAction.wait, action(true, false, false));
+    try std.testing.expectEqual(shell_mod.InitBootAction.wait, action(true, false, true));
+    try std.testing.expectEqual(shell_mod.InitBootAction.seated, action(true, true, true));
+    try std.testing.expectEqual(shell_mod.InitBootAction.seated, action(false, true, false));
+    try std.testing.expectEqual(shell_mod.InitBootAction.stop_seat, action(false, false, true));
+    try std.testing.expectEqual(shell_mod.InitBootAction.fallback, action(false, false, false));
+}
+
+test "M92e: init on by default, one-line off and wm none remain reachable" {
+    settings.init();
+    defer settings.init();
+    try std.testing.expect(settings.init_enabled());
+    try std.testing.expect(settings.parse_line("init=off"));
+    try std.testing.expect(!settings.init_enabled());
+    try std.testing.expectEqual(settings.WmSeat.gotabwm, settings.wm_seat_kind());
+    settings.init();
+    try std.testing.expect(settings.parse_line("wm=none"));
+    try std.testing.expect(settings.init_enabled());
+    try std.testing.expectEqual(settings.WmSeat.none, settings.wm_seat_kind());
+}
+
+test "M92e: missing init names refusal and retains direct seat diagnostic" {
+    var boot_output = console.MockConsole(4096){};
+    var shell = make_shell(&boot_output, make_view());
+    shell.boot();
+    defer settings.reset();
+    defer {
+        shell_mod.wm_autostart_attempted = false;
+        shell_mod.init_boot_pid = null;
+    }
+    var output = console.MockConsole(4096){};
+    shell.mon.console = output.console();
+    shell_mod.wm_autostart_attempted = false;
+    shell_mod.init_boot_pid = null;
+    shell_mod.wm_autostart_once(&shell.mon);
+    try std.testing.expectEqualStrings(
+        "init: refuse missing-init\nwm: autostart gotabwm: GOTABWM.ELF not on the share (shim compositing)\n",
+        output.contents(),
+    );
+    shell_mod.wm_autostart_once(&shell.mon);
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, output.contents(), "init: refuse"));
+}
+
 fn reset_idle_reports() void {
     for (0..terminal.max_terminals) |i| terminal.release(i);
     _ = scheduler.init();
@@ -2835,6 +2880,7 @@ test "shell: wm autostart diagnostic is one byte-exact write (#1965)" {
     var shell = make_shell(&mock, make_view());
     shell.boot();
     defer settings.reset();
+    _ = settings.set("init", "off");
     var writer = Writer{};
     shell.mon.console = .{ .ctx = &writer, .vtable = &Writer.vtable };
     shell_mod.wm_autostart_attempted = false;

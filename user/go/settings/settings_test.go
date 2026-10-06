@@ -547,7 +547,7 @@ func TestKeyboardLayoutSettingVocabulary(t *testing.T) {
 }
 
 func TestOptionalRowsRespectFullTable(t *testing.T) {
-	rows := make([]Setting, 0, 15)
+	rows := make([]Setting, 0, MaxKeys-2)
 	for _, k := range KnownKeys {
 		rows = append(rows, Setting{Key: k.Name, Val: k.Default})
 	}
@@ -555,8 +555,8 @@ func TestOptionalRowsRespectFullTable(t *testing.T) {
 		rows = append(rows, Setting{Key: "extension" + string(rune('a'+i)), Val: "v"})
 	}
 	display := (File{Rows: rows, State: StateOK}).Display()
-	if len(rows) != 15 || len(display) != MaxKeys {
-		t.Fatalf("rows = %d, want 15 pre-optional and 17 with layout+idle", len(rows))
+	if len(rows) != MaxKeys-2 || len(display) != MaxKeys {
+		t.Fatalf("rows = %d, want %d pre-optional and %d with layout+idle", len(rows), MaxKeys-2, MaxKeys)
 	}
 	Set(display, "keyboard_layout", "de")
 	Set(display, "idle_minutes", "7")
@@ -574,13 +574,13 @@ func TestOptionalRowsRespectFullTable(t *testing.T) {
 		t.Fatalf("over-cap panel save = %d, want SaveFull", rc)
 	}
 
-	// Before idle_minutes existed, a 16-row table could still be saved
-	// from GOSET after materializing keyboard_layout. Keep that contract:
+	// A table with one free slot can still be saved from GOSET after
+	// materializing keyboard_layout. Keep that contract:
 	// the idle default is implicit when there is no free kernel slot.
 	legacy := append(append([]Setting(nil), rows...), Setting{Key: "extensionh", Val: "v"})
 	full := (File{Rows: legacy, State: StateOK}).Display()
-	if len(legacy) != 16 || len(full) != MaxKeys {
-		t.Fatalf("legacy table rows = %d, display = %d, want 16 and 17", len(legacy), len(full))
+	if len(legacy) != MaxKeys-1 || len(full) != MaxKeys {
+		t.Fatalf("legacy table rows = %d, display = %d, want %d and %d", len(legacy), len(full), MaxKeys-1, MaxKeys)
 	}
 	if _, found := Get(full, "idle_minutes"); found {
 		t.Fatal("full table materialized idle_minutes beyond the kernel cap")

@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "services": [
+    {
+      "name": "seat",
+      "argv": ["GOTABWM.ELF"],
+      "restart": {"restart": "never"},
+      "class": "boot"
+    }
+  ]
+}

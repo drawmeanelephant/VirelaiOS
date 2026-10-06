@@ -214,7 +214,8 @@ func hasLiveGuestELF(rows []vi.ProcRow) bool {
 			continue
 		}
 		name := row.Name()
-		if name != "GOTABWM.ELF" && len(name) > 4 && name[len(name)-4:] == ".ELF" {
+		// Init supervises the seat; it is not a competing workspace client.
+		if name != "GOTABWM.ELF" && name != "INIT.ELF" && len(name) > 4 && name[len(name)-4:] == ".ELF" {
 			return true
 		}
 	}

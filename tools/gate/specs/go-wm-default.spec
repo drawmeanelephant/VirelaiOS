@@ -206,6 +206,7 @@ shadow=off
 focus_follows_mouse=off
 shell=monitor
 wm=tabwm
+init=on
 keyboard_layout=de
 EOF
 
@@ -254,6 +255,7 @@ shadow=off
 focus_follows_mouse=off
 shell=monitor
 wm=gotabwm
+init=on
 keyboard_layout=de
 EOF
 
@@ -317,10 +319,10 @@ vgate_assert 01 serial-contains 'gotabwm: win gone'
 # takes the typed command line, and publishes.
 vgate_assert 01 serial-contains 'exec: loaded GOSET.ELF'
 vgate_assert 01 serial-contains 'goset: open id='
-vgate_assert 01 serial-contains 'goset: ready keys=12 wm=gotabwm theme=dark mode=rw'
+vgate_assert 01 serial-contains 'goset: ready keys=13 wm=gotabwm theme=dark mode=rw'
 vgate_assert 01 serial-contains 'goset: set keyboard_layout=de'
 vgate_assert 01 serial-contains 'goset: set wm=tabwm'
-vgate_assert 01 serial-contains 'goset: saved keys=12 wm=tabwm theme=dark'
+vgate_assert 01 serial-contains 'goset: saved keys=13 wm=tabwm theme=dark'
 vgate_assert 01 serial-contains 'goset OK'
 # The panel's publish is a real file on the share, including idle_minutes and
 # the M82d2 do-not-disturb default.
@@ -961,12 +963,12 @@ vgate_run 11 -- \
     --script2-after 'gotabwm: win gone' \
     --input-string $'idle_minutes=7\n' \
     --input-string-after 'goset: ready ' \
-    --script-expect 'goset: saved keys=12 wm=gotabwm theme=light' \
+    --script-expect 'goset: saved keys=13 wm=gotabwm theme=light' \
     --script-expect-tail 10 --timeout 300
 
-vgate_assert 11 serial-contains 'goset: ready keys=12 wm=gotabwm theme=light mode=rw'
+vgate_assert 11 serial-contains 'goset: ready keys=13 wm=gotabwm theme=light mode=rw'
 vgate_assert 11 serial-contains 'goset: set idle_minutes=7'
-vgate_assert 11 serial-contains 'goset: saved keys=12 wm=gotabwm theme=light'
+vgate_assert 11 serial-contains 'goset: saved keys=13 wm=gotabwm theme=light'
 vgate_assert 11 share-contains SETTINGS.TXT 'idle_minutes=7'
 vgate_assert 11 serial-absent '[EXC] parking:'
 vgate_assert 11 serial-absent 'exited status=139'
@@ -1045,9 +1047,9 @@ vgate_run 13 -- \
     --script-expect 'gotabwm: notify dnd=on via=settings' \
     --script-expect-tail 10 --timeout 300
 
-vgate_assert 13 serial-contains 'goset: ready keys=12 wm=gotabwm theme=light mode=rw'
+vgate_assert 13 serial-contains 'goset: ready keys=13 wm=gotabwm theme=light mode=rw'
 vgate_assert 13 serial-contains 'goset: set notify_dnd=on'
-vgate_assert 13 serial-contains 'goset: saved keys=12 wm=gotabwm theme=light'
+vgate_assert 13 serial-contains 'goset: saved keys=13 wm=gotabwm theme=light'
 vgate_assert 13 share-contains SETTINGS.TXT 'notify_dnd=on'
 # The seat applied the published value live, and told any subscriber.
 vgate_assert 13 serial-contains 'gotabwm: notify dnd=on via=settings'
@@ -1233,12 +1235,12 @@ vgate_run 17 -- \
     --script2-after 'gotabwm: win gone' \
     --input-string $'timezone=UTC+05:30\n' \
     --input-string-after 'goset: ready ' \
-    --script-expect 'goset: saved keys=12 wm=gotabwm theme=light' \
+    --script-expect 'goset: saved keys=13 wm=gotabwm theme=light' \
     --script-expect-tail 10 --timeout 300
 
-vgate_assert 17 serial-contains 'goset: ready keys=12 wm=gotabwm theme=light mode=rw'
+vgate_assert 17 serial-contains 'goset: ready keys=13 wm=gotabwm theme=light mode=rw'
 vgate_assert 17 serial-contains 'goset: set timezone=UTC+05:30'
-vgate_assert 17 serial-contains 'goset: saved keys=12 wm=gotabwm theme=light'
+vgate_assert 17 serial-contains 'goset: saved keys=13 wm=gotabwm theme=light'
 vgate_assert 17 share-contains SETTINGS.TXT 'timezone=UTC+05:30'
 vgate_assert 17 serial-absent '[EXC] parking:'
 vgate_assert 17 serial-absent 'exited status=139'

@@ -39,7 +39,7 @@ const (
 	Path = "/host/SETTINGS.TXT"
 	// Caps mirror the kernel's table (max_entries / max_key_len / max_val_len)
 	// and its bounded load buffer.
-	MaxKeys = 17
+	MaxKeys = 18
 	MaxKey  = 32
 	MaxVal  = 64
 	MaxBody = 2048
@@ -86,7 +86,7 @@ type Key struct {
 	Vocab   []string
 }
 
-// KnownKeys mirrors kernel/src/settings.zig init(): the eight keys the kernel
+// KnownKeys mirrors kernel/src/settings.zig init(): the keys the kernel
 // seeds before it loads the file. Order is the kernel's, so a diff against the
 // kernel source reads straight down.
 var KnownKeys = []Key{
@@ -98,6 +98,7 @@ var KnownKeys = []Key{
 	{Name: "focus_follows_mouse", Default: "off", Vocab: []string{"on", "off"}},
 	{Name: "shell", Default: "monitor", Vocab: []string{"monitor", "sh"}},
 	{Name: "wm", Default: "gotabwm", Vocab: []string{"gotabwm", "tabwm", "none"}},
+	{Name: "init", Default: "on", Vocab: []string{"on", "off"}},
 }
 
 // PaletteKeys are the M73m (#1662) custom-palette rows: the colours
