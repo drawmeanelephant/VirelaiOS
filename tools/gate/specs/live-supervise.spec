@@ -61,7 +61,7 @@ vgate_client 01 -- --addr '127.0.0.1:24788' --after 'svfixture: ready mode=never
     --send-text 'kill 8' --expect 'svfixture: complete' \
     --after-timeout 170 --timeout 30 --out '$RUN_DIR/client-never.out'
 
-vgate_assert 01 serial-exact 'svfixture: complete' 1
+vgate_assert 01 serial-contains 'svfixture: complete'
 vgate_assert 01 serial-contains 'svfixture: fifth receipt saved'
 vgate_assert 01 serial-absent 'svfixture: FAIL'
 vgate_assert 01 serial-absent '[EXC] parking:'
@@ -74,8 +74,12 @@ import os, re, shutil
 from pathlib import Path
 run = Path(os.environ["RUN_DIR"])
 serial = Path(os.environ["VG_SER"]).read_text(errors="replace")
+# A kernel line printed in several parts can be split by an EL0 write, which
+# glues its tail ("10", "irq_ticks=") in front of our one-write marker. Match
+# the marker and its line end, not the line start.
 def matches(pattern):
-    return list(re.finditer("^" + pattern + r"\r?$", serial, re.M))
+    return list(re.finditer(pattern + r"\r?$", serial, re.M))
+assert serial.count("svfixture: complete") == 1, "complete marker count"
 starts = matches(r"svc: start name=SVFIX-RESTART pid=(\d+) t_ns=(\d+)")
 exits = matches(r"svc: exit name=SVFIX-RESTART status=137 t_ns=(\d+)")
 backoffs = matches(r"svc: backoff name=SVFIX-RESTART k=(\d+) delay_s=(\d+) t_ns=(\d+)")
@@ -102,12 +106,14 @@ for i, (backoff, base_delay) in enumerate(zip(backoffs, (2, 4, 8, 8, 8))):
 assert starts[5].start() < exits[5].start() < failed[0].start(), "give-up ordering"
 for i in range(1, 7):
     marker = "svfixture: ready mode=restart n=%d" % i
-    kill = "kill: SVFIXCH.ELF armed"
+    # The monitor prints "kill: <name> armed" in parts, so match its prefix; a
+    # refused kill prints "error: <name> already exited" and never this prefix.
+    kill = "kill: SVFIXCH.ELF"
     ready = serial.index(marker)
     armed = serial.index(kill, ready)
     assert starts[i-1].start() < ready < armed < exits[i-1].start(), ("external kill", i)
-assert serial.count("kill: SVFIXCH.ELF armed") == 6
-assert serial.count("kill: SVFIXNV.ELF armed") == 1
+assert serial.count("kill: SVFIXCH.ELF") == 6
+assert serial.count("kill: SVFIXNV.ELF") == 1
 for name, expected in [
     ("launch", "svfixture: ready mode=restart n=1"),
     *[("kill%d" % i, "svc: backoff name=SVFIX-RESTART k=%d " % i) for i in range(1, 6)],
