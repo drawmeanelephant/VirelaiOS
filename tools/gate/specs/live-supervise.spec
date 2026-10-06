@@ -2,6 +2,11 @@
 # pin jittered intervals and latest-only receipts, then prove never stays down.
 # wm=none keeps supervisor + one multi-M child inside the existing task budget.
 # The spec builds/stages its own fixture, without shared staging-tool changes.
+# Kills go by pid: the monitor's `kill <name>` takes the LOWEST-id process of
+# that name even when exited, so a name only ever reaches the first incarnation
+# (second kill answers "already exited"). The registry hands out the first free
+# slot and keeps exited rows, so the pids are boot-deterministic (0 demo, 1
+# supervisor, 2-7 restart child, 8 never child); the python assert pins that.
 # exec-order: assert-proven -- external monitor clients wait on supervisor
 # readiness markers; program completion and receipts, not echoes, grade the run.
 vgate_name live-supervise "M92c: external kills, five jittered retries, receipts and terminal policies"
@@ -35,25 +40,25 @@ vgate_client 01 -- --addr '127.0.0.1:24788' --after 'virelai>' \
     --send-text 'exec SVFIX.ELF' --expect 'svfixture: ready mode=restart n=1' \
     --timeout 30 --out '$RUN_DIR/client-launch.out'
 vgate_client 01 -- --addr '127.0.0.1:24788' --after 'svfixture: ready mode=restart n=1' --retry-busy \
-    --send-text 'kill SVFIXCH.ELF' --expect 'svc: backoff name=SVFIX-RESTART k=1 ' \
+    --send-text 'kill 2' --expect 'svc: backoff name=SVFIX-RESTART k=1 ' \
     --after-timeout 170 --timeout 30 --out '$RUN_DIR/client-kill1.out'
 vgate_client 01 -- --addr '127.0.0.1:24788' --after 'svfixture: ready mode=restart n=2' --retry-busy \
-    --send-text 'kill SVFIXCH.ELF' --expect 'svc: backoff name=SVFIX-RESTART k=2 ' \
+    --send-text 'kill 3' --expect 'svc: backoff name=SVFIX-RESTART k=2 ' \
     --after-timeout 170 --timeout 30 --out '$RUN_DIR/client-kill2.out'
 vgate_client 01 -- --addr '127.0.0.1:24788' --after 'svfixture: ready mode=restart n=3' --retry-busy \
-    --send-text 'kill SVFIXCH.ELF' --expect 'svc: backoff name=SVFIX-RESTART k=3 ' \
+    --send-text 'kill 4' --expect 'svc: backoff name=SVFIX-RESTART k=3 ' \
     --after-timeout 170 --timeout 30 --out '$RUN_DIR/client-kill3.out'
 vgate_client 01 -- --addr '127.0.0.1:24788' --after 'svfixture: ready mode=restart n=4' --retry-busy \
-    --send-text 'kill SVFIXCH.ELF' --expect 'svc: backoff name=SVFIX-RESTART k=4 ' \
+    --send-text 'kill 5' --expect 'svc: backoff name=SVFIX-RESTART k=4 ' \
     --after-timeout 170 --timeout 30 --out '$RUN_DIR/client-kill4.out'
 vgate_client 01 -- --addr '127.0.0.1:24788' --after 'svfixture: ready mode=restart n=5' --retry-busy \
-    --send-text 'kill SVFIXCH.ELF' --expect 'svc: backoff name=SVFIX-RESTART k=5 ' \
+    --send-text 'kill 6' --expect 'svc: backoff name=SVFIX-RESTART k=5 ' \
     --after-timeout 170 --timeout 30 --out '$RUN_DIR/client-kill5.out'
 vgate_client 01 -- --addr '127.0.0.1:24788' --after 'svfixture: ready mode=restart n=6' --retry-busy \
-    --send-text 'kill SVFIXCH.ELF' --expect 'svc: failed name=SVFIX-RESTART reason=restart-limit ' \
+    --send-text 'kill 7' --expect 'svc: failed name=SVFIX-RESTART reason=restart-limit ' \
     --after-timeout 170 --timeout 30 --out '$RUN_DIR/client-kill6.out'
 vgate_client 01 -- --addr '127.0.0.1:24788' --after 'svfixture: ready mode=never n=1' --retry-busy \
-    --send-text 'kill SVFIXNV.ELF' --expect 'svfixture: complete' \
+    --send-text 'kill 8' --expect 'svfixture: complete' \
     --after-timeout 170 --timeout 30 --out '$RUN_DIR/client-never.out'
 
 vgate_assert 01 serial-exact 'svfixture: complete' 1
@@ -78,7 +83,12 @@ failed = matches(r"svc: failed name=SVFIX-RESTART reason=restart-limit t_ns=(\d+
 assert len(starts) == 6 and len(exits) == 6 and len(backoffs) == 5 and len(failed) == 1, \
     ("restart counts", len(starts), len(exits), len(backoffs), len(failed))
 assert len({m[1] for m in starts}) == 6, "pid reused instead of a new child"
-assert len(matches(r"svc: start name=SVFIX-NEVER pid=\d+ t_ns=\d+")) == 1, "never respawned"
+# The client commands above kill these pids; a moved sequence must fail closed.
+assert [int(m[1]) for m in starts] == [2, 3, 4, 5, 6, 7], \
+    ("pid sequence moved: update the kill targets", [m[1] for m in starts])
+never_starts = matches(r"svc: start name=SVFIX-NEVER pid=(\d+) t_ns=\d+")
+assert len(never_starts) == 1, "never respawned"
+assert int(never_starts[0][1]) == 8, ("never pid moved", never_starts[0][1])
 assert len(matches(r"svc: exit name=SVFIX-NEVER status=137 t_ns=\d+")) == 1, "never not killed"
 assert "svc: backoff name=SVFIX-NEVER" not in serial
 intervals = []
