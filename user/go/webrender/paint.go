@@ -41,12 +41,20 @@ func Paint(l *Layout, s Surface, ox, oy, vw, vh, scroll int) {
 		}
 		switch it.Kind {
 		case ItemRect:
+			rgb := it.Bg
+			if it.Box != nil && it.Box.Node != nil && FormControl(it.Box.Node.Tag) {
+				var visible bool
+				rgb, visible = paintColor(it.Box.Style.BackgroundColor, it.Box.Style.Color, false)
+				if !visible {
+					continue
+				}
+			}
 			if it.Box != nil && it.X == it.Box.Border.X && it.Y == it.Box.Border.Y &&
 				it.W == it.Box.Border.W && it.H == it.Box.Border.H &&
 				it.Box.Style.BackgroundColor.Kind != webstyle.ColorInitial {
 				continue // native box background/borders were painted together
 			}
-			fillClipped(s, clip, ox+it.X, y, it.W, it.H, it.Bg)
+			fillClipped(s, clip, ox+it.X, y, it.W, it.H, rgb)
 		case ItemRule:
 			if transparentText(it.Box) {
 				continue

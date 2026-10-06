@@ -401,6 +401,41 @@ func TestPaintCSSBorders(t *testing.T) {
 	}
 }
 
+func TestCSSControlUsesComputedBackground(t *testing.T) {
+	for _, color := range []webstyle.Color{
+		{Kind: webstyle.ColorRGBA, RGBA: 0xff117f33},
+		{Kind: webstyle.ColorRGBA},
+	} {
+		doc := ParseHTML([]byte(`<button></button>`))
+		tree, _ := BuildBoxTree(doc, func(*Node) webstyle.ComputedStyle {
+			return webstyle.ComputedStyle{Display: webstyle.DisplayBlock,
+				BackgroundColor: color, Color: webstyle.Color{Kind: webstyle.ColorRGBA}}
+		})
+		l, ds := LayoutBoxes(tree, webstyle.Viewport{Width: 300, Height: 60}, Bitmap{})
+		if len(ds) != 0 {
+			t.Fatal(ds)
+		}
+		f := newFB(300, 60, 0xabcdef)
+		Paint(l, f, 0, 0, 300, 60, 0)
+		controlRects := 0
+		for _, it := range l.Items {
+			if it.Kind == ItemRect && it.Box != nil && it.Box.Node.Tag == "button" {
+				controlRects++
+				want := uint32(0x117f33)
+				if color.RGBA == 0 {
+					want = 0xabcdef
+				}
+				if got := f.at(it.X+it.W/2, it.Y+it.H/2); got != want {
+					t.Fatalf("computed background=%08x, pixel=%06x, want %06x", color.RGBA, got, want)
+				}
+			}
+		}
+		if controlRects < 1 {
+			t.Fatal("button control rectangle was not exercised")
+		}
+	}
+}
+
 func TestCSSPaintCurrentTransparentNoneAndClipping(t *testing.T) {
 	const bg = 0xabcdef
 	for _, tc := range []struct {
