@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("<noscript>fallback <b>text</b></noscript><object>x</object><frame>y</frame>")

@@ -118,7 +118,7 @@ func TestEveryLonghandValidInvalidAndEdge(t *testing.T) {
 			bad, _ := Parse([]byte("span{" + name + ":" + valid + ";" + name + ":" + invalid + "}"))
 			a, _ := Cascade(doc, []*Stylesheet{clean})
 			b, _ := Cascade(doc, []*Stylesheet{bad})
-			if a.ForNode(doc.Root.Children[0]) != b.ForNode(doc.Root.Children[0]) {
+			if a.ForNode(find(doc, "target")) != b.ForNode(find(doc, "target")) {
 				t.Fatal("invalid value overwrote lower valid value")
 			}
 		})
@@ -165,10 +165,10 @@ func TestShorthandsAtomicAndReset(t *testing.T) {
 			t.Fatalf("non-atomic rejection %s: %+v", invalid, ds)
 		}
 	}
-	doc := webrender.ParseHTML([]byte(`<span>text</span>`))
+	doc := webrender.ParseHTML([]byte(`<span id="target">text</span>`))
 	sheet, _ := Parse([]byte(`span{color:red; border:4px solid blue; border:none}`))
 	styles, _ := Cascade(doc, []*Stylesheet{sheet})
-	b := styles.ForNode(doc.Root.Children[0]).Border.Top
+	b := styles.ForNode(find(doc, "target")).Border.Top
 	if b.Width.Kind != webstyle.LengthInitial || b.Style != webstyle.BorderNone || b.Color != rgba(0xffff0000) {
 		t.Fatal("border omission did not reset", b)
 	}

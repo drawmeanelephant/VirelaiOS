@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("<style>p>a{content:\x22<b>&amp;\x22}</STYLE ><p>after</p>")

@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("<p><em>one<div>two<table><td>a<th>b<tr><td>c<tbody><td>d</table><select><option>a<optgroup><option>b</select>")

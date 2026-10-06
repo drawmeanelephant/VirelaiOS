@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("<script>x</scripted>y</script data-x=\x22>\x22><p>after</p>")

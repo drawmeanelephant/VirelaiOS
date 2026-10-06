@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("<title>x<y &amp;</title><textarea><b>x</b>&lt;</textarea>")
