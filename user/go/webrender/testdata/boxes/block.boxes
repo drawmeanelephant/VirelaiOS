@@ -1,0 +1,8 @@
+# Original project arithmetic, repository LICENSE.
+# boxes-block.html: 200+16+4=220; 40+16+4=60.
+# Next y=10+60+max(10,6)=80. LTR overconstraint resolves right margin.
+outer content 20 20 200 40
+outer padding 12 12 216 56
+outer border 10 10 220 60
+outer margin 0 0 1280 80
+next content 0 80 100 20

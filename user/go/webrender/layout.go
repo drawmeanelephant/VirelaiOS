@@ -1,6 +1,9 @@
 package webrender
 
-import "strings"
+import (
+	"strings"
+	"virelai/webstyle"
+)
 
 // ItemKind is the kind of painted primitive.
 type ItemKind uint8
@@ -19,18 +22,20 @@ const (
 // Item is one positioned paint primitive in content coordinates (0,0 = top
 // left of the document, scrolling is applied at paint time).
 type Item struct {
-	Kind   ItemKind
-	X, Y   int
-	W, H   int
-	Text   string
-	Size   int // font scale (logical; the engine maps it to a pixel size)
-	Mono   bool
-	Bold   bool
-	Italic bool
-	Color  uint32
-	Bg     uint32
-	Target string // link target, when the run is inside an <a href>
-	Img    *Image // decoded pixels, when this is a real <img>
+	Box                  *Box // CSS style source; nil for logical-size legacy items
+	Kind                 ItemKind
+	X, Y                 int
+	W, H                 int
+	Text                 string
+	Size                 int // font scale (logical; the engine maps it to a pixel size)
+	FontPx, LineHeightPx int // positive CSS used sizes; zero is the legacy path
+	Mono                 bool
+	Bold                 bool
+	Italic               bool
+	Color                uint32
+	Bg                   uint32
+	Target               string // link target, when the run is inside an <a href>
+	Img                  *Image // decoded pixels, when this is a real <img>
 }
 
 // Link is a hit-testable link rectangle in content coordinates.
@@ -45,6 +50,7 @@ type Link struct {
 // wrapped and drawn with identical metrics — measuring with one face and
 // painting with another silently mis-wraps every line.
 type Layout struct {
+	BoxTree   *BoxTree // retained style copies and border geometry for M93e
 	Text      TextEngine
 	Items     []Item
 	Links     []Link
@@ -87,24 +93,34 @@ func LayoutDocument(doc *Document, width int, t TextEngine, images ...ImageResol
 	if width < 32 {
 		width = 32
 	}
-	if t == nil {
-		t = Bitmap{}
-	}
+	tree, _ := BuildBoxTree(doc, compatibilityStyles(doc))
+	tree.compatibility = true
+	l, _ := LayoutBoxes(tree, webstyle.Viewport{Width: width, Height: 384}, t, images...)
+	return l
+}
+
+// layoutCompatibility is the legacy formatting policy inside LayoutBoxes.
+// It consumes the box tree, not the DOM; its shared inline/replaced helpers
+// preserve existing pixels and logical font metrics until M93f's handoff.
+func layoutCompatibility(tree *BoxTree, width int, t TextEngine, images ...ImageResolver) *Layout {
 	b := &builder{t: t, right: width}
 	if len(images) > 0 && images[0] != nil {
 		b.images = images[0]
 	}
-	b.walkChildren(doc.Root, StyleFor("body"), 0)
+	if tree.Root != nil {
+		b.walkChildren(tree.Root, StyleFor("body"), 0)
+	}
 	b.flushInline()
 	return &Layout{
 		Text:      t,
+		BoxTree:   tree,
 		Items:     b.items,
 		Links:     b.links,
 		Width:     width,
 		Height:    b.y,
 		Lines:     b.lines,
 		Blocks:    b.blocks,
-		Truncated: b.truncated || doc.Truncated,
+		Truncated: b.truncated || tree.Truncated,
 	}
 }
 
@@ -126,17 +142,22 @@ func (b *builder) cap() bool {
 
 // walkChildren walks a node's children, sending text and inline elements to
 // the inline buffer and block elements to block().
-func (b *builder) walkChildren(n *Node, st Style, indent int) {
-	for _, c := range n.Children {
+func (b *builder) walkChildren(n *Box, st Style, indent int) {
+	for _, box := range n.Children {
 		if b.truncated {
 			return
 		}
+		if box.Anonymous {
+			b.walkChildren(box, st, indent)
+			continue
+		}
+		c := box.Node
 		if c.Kind == KindText {
 			b.pushText(c.Text, st, "")
 			continue
 		}
 		es := StyleFor(c.Tag)
-		if es.Skip {
+		if es.Skip && c.Tag != "noscript" {
 			continue
 		}
 		if c.Tag == "br" {
@@ -148,27 +169,33 @@ func (b *builder) walkChildren(n *Node, st Style, indent int) {
 			continue
 		}
 		if BlockElement(c.Tag) {
-			b.block(c, es, indent)
+			b.block(box, es, indent)
 			continue
 		}
-		b.inlineElement(c, mergeInline(st, es), indent, "")
+		b.inlineElement(box, mergeInline(st, es), indent, "")
 	}
 }
 
-func (b *builder) inlineElement(e *Node, st Style, indent int, inherited string) {
+func (b *builder) inlineElement(box *Box, st Style, indent int, inherited string) {
+	e := box.Node
 	target := inherited
 	if e.Tag == "a" {
 		if href := e.Attr("href"); href != "" {
 			target = href
 		}
 	}
-	for _, c := range e.Children {
+	for _, childBox := range box.Children {
+		if childBox.Anonymous {
+			b.walkChildren(childBox, st, indent)
+			continue
+		}
+		c := childBox.Node
 		if c.Kind == KindText {
 			b.pushText(c.Text, st, target)
 			continue
 		}
 		es := StyleFor(c.Tag)
-		if es.Skip {
+		if es.Skip && c.Tag != "noscript" {
 			continue
 		}
 		if c.Tag == "br" {
@@ -180,7 +207,7 @@ func (b *builder) inlineElement(e *Node, st Style, indent int, inherited string)
 			continue
 		}
 		if BlockElement(c.Tag) {
-			b.block(c, es, indent)
+			b.block(childBox, es, indent)
 			continue
 		}
 		child := mergeInline(st, es)
@@ -188,11 +215,12 @@ func (b *builder) inlineElement(e *Node, st Style, indent int, inherited string)
 		if c.Tag == "a" {
 			ct = c.Attr("href")
 		}
-		b.inlineElement(c, child, indent, ct)
+		b.inlineElement(childBox, child, indent, ct)
 	}
 }
 
-func (b *builder) block(e *Node, st Style, indent int) {
+func (b *builder) block(box *Box, st Style, indent int) {
+	e := box.Node
 	b.flushInline()
 	if b.cap() {
 		return
@@ -207,6 +235,7 @@ func (b *builder) block(e *Node, st Style, indent int) {
 		}
 	}
 	inner := b.right - left
+	top := b.y
 
 	switch e.Tag {
 	case "hr":
@@ -219,7 +248,7 @@ func (b *builder) block(e *Node, st Style, indent int) {
 		b.items = append(b.items, Item{Kind: ItemRect, X: left, Y: b.y, W: 3, H: 1, Bg: ColorAccent})
 		contentLeft := left + 6
 		b.lineX = contentLeft
-		b.walkChildren(e, st, contentLeft)
+		b.walkChildren(box, st, contentLeft)
 		b.flushInline()
 		b.lineX = 0
 		if h := b.y - b.items[barIdx].Y; h > 1 {
@@ -228,23 +257,26 @@ func (b *builder) block(e *Node, st Style, indent int) {
 	case "li":
 		b.pushText("* ", Style{Size: st.Size, Color: ColorMuted}, "")
 		b.lineX = left
-		b.walkChildren(e, st, left)
+		b.walkChildren(box, st, left)
 		b.flushInline()
 		b.lineX = 0
 	case "img":
 		b.emitImage(e, left, inner)
 	case "table":
-		b.emitTable(e, left, inner)
+		b.emitTable(box, left, inner)
 	case "input", "textarea", "select", "button":
 		b.lineX = left
 		b.emitControl(e)
 		b.lineX = 0
 	default:
 		b.lineX = left
-		b.walkChildren(e, st, left)
+		b.walkChildren(box, st, left)
 		b.flushInline()
 		b.lineX = 0
 	}
+	box.Content = BoxRect{X: left, Y: top, W: inner, H: b.y - top}
+	box.Padding, box.Border = box.Content, box.Content
+	box.Margin = BoxRect{X: left, Y: top - st.MarginTop, W: inner, H: b.y - top + st.MarginTop + st.MarginBottom}
 	b.y += st.MarginBottom
 }
 
@@ -570,12 +602,13 @@ func attrPx(e *Node, name string) int {
 	return n
 }
 
-func (b *builder) emitTable(e *Node, left, inner int) {
+func (b *builder) emitTable(box *Box, left, inner int) {
+	e := box.Node
 	rows := collectRows(e)
 	if len(rows) == 0 {
 		// A malformed table still renders its text (ADR 0028 D5).
 		b.lineX = left
-		b.walkChildren(e, Style{Size: 1, Color: ColorText}, left)
+		b.walkChildren(box, Style{Size: 1, Color: ColorText}, left)
 		b.flushInline()
 		b.lineX = 0
 		return
@@ -846,7 +879,7 @@ func rawText(n *Node) string {
 			b.WriteByte('\n')
 			return
 		}
-		if SkipSubtree(x.Tag) {
+		if metadataTag(x.Tag) {
 			return
 		}
 		for _, c := range x.Children {
