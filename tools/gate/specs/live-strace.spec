@@ -1,6 +1,7 @@
-# live-strace.spec -- M22 D5: per-syscall tracing.
-# Traces syscalls for exec'd HELLO.ELF, prints named lines with args and results,
-# and verifies clean disarm with 'strace off'.
+# live-strace.spec -- legacy monitor tracing and ADR 0043 ring observation.
+# STRACE's importable arm-before-exec path traces a real GOSH file/pipe script.
+# TRACEFIX proves exact wrap, redaction, pid exclusion and foreign-uid refusal.
+# Overhead is an explicit opt-in on a quiet host, never a fabricated number.
 
 vgate_name live-strace "M22 D5: per-syscall tracing"
 vgate_share seed
@@ -30,3 +31,132 @@ vgate_assert 01 serial-exact 'tasks user-exec exited status=42' 1
 vgate_assert 01 serial-exact 'strace: off' 1
 vgate_assert 01 serial-exact 'rx-strace-ok' 1
 vgate_assert 01 serial-absent '[EXC] parking:'
+
+vgate_setup_python <<'PY'
+import os, shutil
+rd = os.environ["RUN_DIR"]
+share = os.path.join(rd, "share")
+for name in ("STRACE", "TRACEFIX", "GOSH"):
+    src = os.path.join(".build", "go", name + ".ELF")
+    if not os.path.exists(src):
+        raise SystemExit(src + " missing; provision the Go fork and build-strace/build-gosh")
+    shutil.copy(src, os.path.join(share, name + ".ELF"))
+with open(os.path.join(share, "TRACE.IN"), "wb") as f:
+    f.write(b"trace-input\n")
+# Isolate headless fixture boots from the default Go seat without changing
+# the boot default. This settings file belongs only to this temporary share.
+with open(os.path.join(share, "SETTINGS.TXT"), "w") as f:
+    f.write("#v2\nwm=none\n")
+with open(os.path.join(rd, "overhead.txt"), "w") as f:
+    if os.environ.get("TRACE_MEASURE") == "1":
+        f.write("exec TRACEFIX.ELF overhead\n")
+    else:
+        f.write("echo trace-overhead-not-requested\necho trace-overhead-done\n")
+PY
+
+vgate_file gosh.txt <<'EOF'
+exec STRACE.ELF -e 23,24,25,26,56,57,3 exec GOSH.ELF -c 'cat /host/TRACE.IN; echo trace-output > /host/TRACE.OUT; echo alpha-beta | grep alpha'
+EOF
+
+vgate_file self.txt <<'EOF'
+exec TRACEFIX.ELF self
+EOF
+
+vgate_file deny.txt <<'EOF'
+set GOMAXPROCS=1
+exec -u0 GOSH.ELF -c "sleep 30"
+EOF
+
+vgate_file deny2.txt <<'EOF'
+exec TRACEFIX.ELF deny
+EOF
+
+vgate_run 02 -- --script '$RUN_DIR/gosh.txt' --script-expect 'strace: done' --timeout 120
+vgate_assert 02 serial-contains 'sys_file_open(path="/host/TRACE.IN", len=14, flags=READ) = 0'
+vgate_assert 02 serial-contains 'sys_file_read(fd='
+vgate_assert 02 serial-contains 'sys_file_write(fd='
+vgate_assert 02 serial-contains 'alpha-beta'
+vgate_assert 02 serial-contains 'strace: done dropped=0'
+vgate_assert 02 serial-absent '[EXC] parking:'
+vgate_assert 02 share-equals TRACE.OUT $'trace-output\n'
+vgate_assert 02 python <<'PY'
+import os, re
+serial = open(os.environ["VG_SER"], errors="replace").read()
+lines = re.findall(r"\[strace (\d+)\] (sys_[^(]+)\(([^\n]*)", serial)
+if not lines:
+    raise SystemExit("no decoded records")
+allowed = {"sys_file_open", "sys_file_read", "sys_file_write", "sys_file_close",
+           "sys_pipe_read", "sys_pipe_write", "sys_exit"}
+if any(name not in allowed for _, name, _ in lines):
+    raise SystemExit("slot filter leaked an excluded slot")
+if len({pid for pid, _, _ in lines}) != 1:
+    raise SystemExit("pid filter leaked another process")
+opens = [(pid, args) for pid, name, args in lines if name == "sys_file_open"
+         and 'path="/host/TRACE.IN", len=14, flags=READ)' in args]
+if len(opens) != 1:
+    raise SystemExit("expected exactly one TRACE.IN open")
+m = re.fullmatch(r'path="/host/TRACE.IN", len=14, flags=READ\) = (0)', opens[0][1])
+if not m:
+    raise SystemExit("TRACE.IN open is not a decoded successful fd")
+fd = m.group(1)
+if not any(name == "sys_file_read" and re.fullmatch(
+        r"fd=" + fd + r", buf=0x[0-9a-f]+, len=4096\) = 12", args)
+        for _, name, args in lines):
+    raise SystemExit("expected exact 12-byte read from the opened fd")
+if not any(name == "sys_file_write" and re.fullmatch(
+        r"fd=0, buf=0x[0-9a-f]+, len=13\) = 13", args)
+        for _, name, args in lines):
+    raise SystemExit("expected exact 13-byte TRACE.OUT write")
+for name in ("sys_pipe_read", "sys_pipe_write"):
+    if not any(record_name == name and args.endswith(") = 11")
+               for _, record_name, args in lines):
+        raise SystemExit("missing exact 11-byte pipe " + name)
+print("decoded GOSH input open + 12-byte read, output write, pid/slot exclusion: PASS")
+PY
+
+vgate_run 03 -- --script '$RUN_DIR/self.txt' --script-expect 'trace: peer excluded' --timeout 120
+vgate_assert 03 serial-contains 'trace: wrap records=256 dropped=44'
+vgate_assert 03 serial-contains 'sys_secret_get(<redacted>)'
+vgate_assert 03 serial-contains 'sys_tty_net_auth(<redacted>)'
+vgate_assert 03 serial-contains 'trace: decoded/redacted done dropped=0'
+vgate_assert 03 serial-contains 'trace: untraced peer done'
+vgate_assert 03 serial-contains 'trace: peer excluded records=1 dropped=0'
+vgate_assert 03 serial-absent 'trace: fixture failed'
+vgate_assert 03 serial-absent '[EXC] parking:'
+vgate_assert 03 python <<'PY'
+import os, re
+serial = open(os.environ["VG_SER"], errors="replace").read()
+records = re.findall(r"\[strace (\d+)\] (sys_[^(]+)\(([^\n]*)", serial)
+if len(records) != 260:
+    raise SystemExit("expected exactly 256 wrap + 3 decoded/redacted + 1 pid-filter records")
+if len({pid for pid, _, _ in records}) != 1:
+    raise SystemExit("untraced process produced a ring record")
+if sum(name == "sys_ping_poll" for _, name, _ in records) != 257:
+    raise SystemExit("wrong wrapped/pid-filter record count")
+for _, name, args in records:
+    if name in {"sys_secret_get", "sys_tty_net_auth"} and args != "<redacted>)":
+        raise SystemExit("redacted slot exposed args or result")
+print("exact wrap, uid-independent pid exclusion and whole-record redaction: PASS")
+PY
+
+vgate_run 04 -- --script '$RUN_DIR/deny.txt' --script2 '$RUN_DIR/deny2.txt' --script2-after 'exec: loaded GOSH.ELF' --script-expect 'trace: cross-uid ARM' --timeout 120
+vgate_assert 04 serial-contains 'trace: cross-uid ARM = -EACCES'
+vgate_assert 04 serial-absent 'trace: fixture failed'
+vgate_assert 04 serial-absent '[EXC] parking:'
+
+vgate_run 05 -- --script '$RUN_DIR/overhead.txt' --script-expect 'trace-overhead-done' --timeout 120
+vgate_assert 05 python <<'PY'
+import os, re
+serial = open(os.environ["VG_SER"], errors="replace").read()
+if os.environ.get("TRACE_MEASURE") != "1":
+    if "trace-overhead-not-requested" not in serial:
+        raise SystemExit("explicit overhead opt-out marker missing")
+    print("Overhead NOT MEASURED: rerun TRACE_MEASURE=1 on a quiet host")
+else:
+    m = re.search(r"trace: overhead calls=10000 runs=5 untraced=(\d+) filtered=(\d+) traced=(\d+) ns/call freq=(\d+)", serial)
+    if not m or any(int(v) <= 0 for v in m.groups()):
+        raise SystemExit("missing/non-positive counter-timed overhead medians/frequency")
+    if not re.search(r"trace: filtered-overhead calls=100000 runs=5 untraced=\d+ filtered=\d+ ns/call", serial):
+        raise SystemExit("100,000-call filtered measurement missing")
+    print("Counter-timed overhead medians present and sane; no threshold asserted")
+PY

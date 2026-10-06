@@ -1,11 +1,22 @@
-//! M94a: unchanged monitor tracer, plus ADR 0043 wire types and ENOSYS stub.
+//! ADR 0043: bounded uid-owned tracing. Service locks precede trace_lock;
+//! capture and copy-out happen outside trace_lock. The legacy monitor path
+//! remains synchronous and suppresses the two never-logged slots entirely.
+const std = @import("std");
+const builtin = @import("builtin");
 const abi = @import("syscall_abi.zig");
+const alloc = @import("alloc.zig");
+const exec = @import("exec.zig");
 const exceptions = @import("exceptions.zig");
 const process = @import("process.zig");
 const scheduler = @import("scheduler.zig");
+const spinlock = @import("spinlock.zig");
+const svclock = @import("svclock.zig");
+const timer = @import("timer.zig");
+const uaccess = @import("uaccess.zig");
+const virtio_file = @import("virtio_file.zig");
 
 pub const slot = abi.number("sys_trace");
-pub const implemented = false;
+pub const implemented = true;
 pub const version = 1;
 pub const max_pids = 8;
 pub const ring_records = 256;
@@ -57,8 +68,311 @@ pub const Record = extern struct {
     strings: [6][string_bytes]u8,
 };
 
-pub fn handle(_: [6]u64, _: *exceptions.VectorFrame) u64 {
-    return @bitCast(@as(i64, -4));
+const Backing = extern struct {
+    records: [ring_records]Record,
+    uids: [ring_records]u32,
+    unused: [3072]u8,
+};
+pub const backing_pages = 57;
+comptime {
+    if (@sizeOf(Backing) != backing_pages * 4096) @compileError("trace backing exceeds ADR 0043");
+}
+
+/// Sequence numbers are private, wrapping counters. At most 256 entries are
+/// live, so wrapping subtraction remains unambiguous across counter rollover.
+pub const Ring = struct {
+    backing: *Backing,
+    first: u64 = 0,
+    next: u64 = 0,
+    dropped: u64 = 0,
+
+    pub fn count(self: *const Ring) usize {
+        return @intCast(self.next -% self.first);
+    }
+
+    pub fn publish(self: *Ring, record: Record, uid: u32) void {
+        if (self.count() == ring_records) {
+            self.first +%= 1;
+            self.dropped +|= 1;
+        }
+        const index: usize = @intCast(self.next % ring_records);
+        self.backing.records[index] = record;
+        self.backing.uids[index] = uid;
+        self.next +%= 1;
+    }
+
+    /// Commit only the staged prefix still present. Concurrent overwrite has
+    /// already advanced first; never consume records published after staging.
+    pub fn consume(self: *Ring, staged_first: u64, staged_count: usize) void {
+        const advanced = self.first -% staged_first;
+        if (advanced < staged_count) self.first +%= staged_count - advanced;
+    }
+};
+
+var trace_lock = spinlock.IrqSaveSpinlock{};
+var ring: ?Ring = null;
+var session_token: u64 = 0;
+var last_token: u64 = 0;
+var owner_uid: u32 = 0;
+var owner_admin: bool = false;
+var active = false;
+var filter: Config = std.mem.zeroes(Config);
+// Only this fast rejection is consulted before touching the trace lock or
+// reading CNTPCT/user strings. Publish changes after updating the locked state.
+var fast_slots = [_]std.atomic.Value(u64){
+    std.atomic.Value(u64).init(0), std.atomic.Value(u64).init(0),
+};
+
+fn fail(code: i64) u64 {
+    return @bitCast(-code);
+}
+
+pub fn authorized(caller: process.Principal, uid: u32) bool {
+    return caller.uid == uid or caller.has(process.cap_proc_admin);
+}
+
+pub fn selected(config: *const Config, pid: u64, number: u64) bool {
+    if (number >= abi.slot_count or config.pid_count > max_pids) return false;
+    const word: usize = @intCast(number / 64);
+    const bit: u6 = @intCast(number % 64);
+    if (config.slots[word] & (@as(u64, 1) << bit) == 0) return false;
+    for (config.pids[0..config.pid_count]) |target| if (target == pid) return true;
+    return false;
+}
+
+fn validate_config(config: *const Config, caller: process.Principal) u64 {
+    if (config.version != version or config.pid_count > max_pids) return fail(1);
+    for (config.pids, 0..) |pid, index| {
+        if (index >= config.pid_count) {
+            if (pid != 0) return fail(1);
+            continue;
+        }
+        if (pid >= process.max_processes) return fail(1);
+        const principal = process.principal(@intCast(pid)) orelse return fail(1);
+        if (!authorized(caller, principal.uid)) return fail(7);
+        for (config.pids[0..index]) |previous| if (previous == pid) return fail(1);
+    }
+    return 0;
+}
+
+fn allocate_backing() ?*Backing {
+    if (comptime builtin.is_test) return std.heap.page_allocator.create(Backing) catch null;
+    const address = alloc.alloc_pages(backing_pages) orelse return null;
+    return @ptrFromInt(address);
+}
+
+fn release_backing(backing: *Backing) void {
+    if (comptime builtin.is_test) {
+        std.heap.page_allocator.destroy(backing);
+    } else {
+        _ = alloc.free_pages(@intFromPtr(backing), backing_pages);
+    }
+}
+
+fn publish_fast_slots() void {
+    for (&fast_slots, 0..) |*word, index| word.store(if (active) filter.slots[index] else 0, .release);
+}
+
+fn check_session(token: u64, caller: process.Principal) u64 {
+    if (session_token == 0 or token != session_token) return fail(2);
+    if (!authorized(caller, owner_uid)) return fail(7);
+    return 0;
+}
+
+pub fn handle(args: [6]u64, _: *exceptions.VectorFrame) u64 {
+    // Dispatch already holds FILE + KERNEL for this entire handler, including
+    // copy-out and the pinned spawn. No service lock is acquired under ours.
+    const pid = process.find_by_task(scheduler.current_id()) orelse return fail(1);
+    const caller = process.principal(pid) orelse return fail(1);
+    const op = args[0];
+    if (op > op_arm_exec) return fail(1);
+    if (op == op_arm or op == op_filter) {
+        if (args[3] != @sizeOf(Config) or (op == op_arm and args[1] != 0)) return fail(1);
+        var replacement: Config = undefined;
+        // Reject an unauthorized replacement before copying its user input.
+        {
+            const saved = trace_lock.lock();
+            defer trace_lock.unlock(saved);
+            if (op == op_filter) {
+                const checked = check_session(args[1], caller);
+                if (checked != 0) return checked;
+            } else if (session_token != 0 and !authorized(caller, owner_uid)) return fail(7);
+        }
+        if (uaccess.copy_in(std.mem.asBytes(&replacement), args[2], @sizeOf(Config)) != .ok) return fail(3);
+        const checked = validate_config(&replacement, caller);
+        if (checked != 0) return checked;
+        const saved = trace_lock.lock();
+        defer trace_lock.unlock(saved);
+        if (op == op_filter) {
+            const session_checked = check_session(args[1], caller);
+            if (session_checked != 0) return session_checked;
+            filter = replacement;
+            publish_fast_slots();
+            return 0;
+        }
+        if (session_token != 0 and !authorized(caller, owner_uid)) return fail(7);
+        if (last_token == std.math.maxInt(i64)) return fail(5);
+        // Reuse the fixed reservation on replacement. There is never a second
+        // 57-page allocation transiently exceeding the frozen ring budget.
+        const backing = if (ring) |existing| existing.backing else allocate_backing() orelse return fail(10);
+        @memset(std.mem.asBytes(backing), 0);
+        ring = .{ .backing = backing };
+        last_token += 1;
+        session_token = last_token;
+        owner_uid = caller.uid;
+        owner_admin = caller.has(process.cap_proc_admin);
+        filter = replacement;
+        active = true;
+        publish_fast_slots();
+        return session_token;
+    }
+    {
+        const saved = trace_lock.lock();
+        defer trace_lock.unlock(saved);
+        const checked = check_session(args[1], caller);
+        if (checked != 0) return checked;
+        if (op == op_disarm) {
+            if (args[2] != 0 or args[3] != 0) return fail(1);
+            active = false;
+            publish_fast_slots();
+            return 0;
+        }
+        if (op == op_arm_exec and (!active or filter.pid_count == max_pids)) return fail(if (active) 5 else 1);
+    }
+    if (op == op_arm_exec) return arm_exec(args, caller);
+    return read_records(args, caller, op == op_status);
+}
+
+fn arm_exec(args: [6]u64, caller: process.Principal) u64 {
+    if (args[3] != @sizeOf(ExecRequest)) return fail(1);
+    var request: ExecRequest = undefined;
+    if (uaccess.copy_in(std.mem.asBytes(&request), args[2], @sizeOf(ExecRequest)) != .ok) return fail(3);
+    if (request.path_len == 0 or request.path_len > virtio_file.path_max or request.argc > exec.max_exec_args) return fail(1);
+    var path: [virtio_file.path_max]u8 = undefined;
+    if (uaccess.copy_in(&path, request.path_ptr, @intCast(request.path_len)) != .ok) return fail(3);
+    var argv: [exec.arg_block_bytes]u8 = undefined;
+    var slices: [exec.max_exec_args][]const u8 = undefined;
+    const argc: usize = @intCast(request.argc);
+    if (argc != 0 and uaccess.copy_in(&argv, request.argv_ptr, argc * exec.arg_slot_bytes) != .ok) return fail(3);
+    for (slices[0..argc], 0..) |*slice, i| {
+        const word = argv[i * exec.arg_slot_bytes ..][0..exec.arg_slot_bytes];
+        const end = std.mem.indexOfScalar(u8, word, 0) orelse return fail(1);
+        slice.* = word[0..end];
+    }
+    // FILE/KERNEL are held with local IRQs masked. Pinned primary cannot run
+    // on another core, and cannot create sibling threads until after arming.
+    const result = exec.exec_file_pinned_as(path[0..request.path_len], slices[0..argc], svclock.core_id(), caller);
+    if (result != .ok) return switch (result) {
+        .not_found => fail(6),
+        .out_of_memory => fail(10),
+        .pool_full, .table_full, .process_full => fail(5),
+        else => fail(1),
+    };
+    const child = exec.last_exec_pid() orelse return fail(1);
+    const saved = trace_lock.lock();
+    defer trace_lock.unlock(saved);
+    // Control calls cannot interleave: their common FILE/KERNEL locks are
+    // still held. No failure point is allowed after successfully spawning.
+    filter.pids[filter.pid_count] = child;
+    filter.pid_count += 1;
+    return child;
+}
+
+fn read_records(args: [6]u64, caller: process.Principal, status_only: bool) u64 {
+    if (args[3] < @sizeOf(ReadHeader) or (status_only and args[3] != @sizeOf(ReadHeader))) return fail(1);
+    var staged: [@sizeOf(ReadHeader) + max_read_records * @sizeOf(Record)]u8 align(8) = undefined;
+    var header = ReadHeader{ .version = version, .record_bytes = @sizeOf(Record), .count = 0, .reserved = 0, .dropped = 0 };
+    var first: u64 = 0;
+    {
+        const saved = trace_lock.lock();
+        defer trace_lock.unlock(saved);
+        const checked = check_session(args[1], caller);
+        if (checked != 0) return checked;
+        const source = &ring.?;
+        first = source.first;
+        const available = source.count();
+        // STATUS also checks all sidecars, so the unread count does not expose
+        // a foreign target's state to a same-uid but non-admin observer.
+        const take = if (status_only) available else @min(available, @min(max_read_records, (args[3] - @sizeOf(ReadHeader)) / @sizeOf(Record)));
+        for (0..take) |i| {
+            const index: usize = @intCast((first +% i) % ring_records);
+            if (!authorized(caller, source.backing.uids[index])) return fail(7);
+            if (!status_only) {
+                const offset = @sizeOf(ReadHeader) + i * @sizeOf(Record);
+                @memcpy(staged[offset..][0..@sizeOf(Record)], std.mem.asBytes(&source.backing.records[index]));
+            }
+        }
+        header.count = @intCast(take);
+        header.dropped = source.dropped;
+    }
+    @memcpy(staged[0..@sizeOf(ReadHeader)], std.mem.asBytes(&header));
+    const size = @sizeOf(ReadHeader) + if (status_only) @as(usize, 0) else @as(usize, header.count) * @sizeOf(Record);
+    if (uaccess.copy_out(args[2], staged[0..size], size) != .ok) return fail(3);
+    if (status_only) return 0;
+    {
+        const saved = trace_lock.lock();
+        defer trace_lock.unlock(saved);
+        // Session replacement cannot interleave under dispatch's FILE/KERNEL,
+        // but producers may overwrite. Commit only the still-present prefix.
+        if (session_token == args[1]) ring.?.consume(first, header.count);
+    }
+    return header.count;
+}
+
+/// Capture every wire field from the entering task, not a staged successor.
+/// The caller has already authorized the target. No binary/output pointer
+/// enters uaccess, and redaction precedes even the argument assignment.
+pub fn capture(number: u64, args: [6]u64, pid: u64, tid: u64, counter: u64) Record {
+    var record = std.mem.zeroes(Record);
+    record.version = version;
+    record.pid = pid;
+    record.tid = tid;
+    record.cntpct = counter;
+    record.number = number;
+    if (abi.redacted(number)) {
+        record.flags = flag_redacted;
+        return record;
+    }
+    record.args = args;
+    if (number == abi.number("sys_exit") or (number == abi.number("sys_thread") and args[0] == 1)) record.flags = flag_no_return;
+    const shape = abi.shape(number, args) orelse return record;
+    for (shape.args[0..shape.arg_count], 0..) |arg, i| {
+        if (arg.kind != .string) continue;
+        const bit = @as(u32, 1) << @as(u5, @intCast(i));
+        record.string_mask |= bit;
+        const length = args[arg.length_arg] & arg.length_mask;
+        const take: usize = @intCast(@min(length, string_bytes));
+        if (uaccess.copy_in(&record.strings[i], args[i], take) != .ok) {
+            record.fault_mask |= bit;
+            @memset(&record.strings[i], 0);
+            continue;
+        }
+        record.string_lengths[i] = @intCast(take);
+        if (length > string_bytes) record.truncated_mask |= bit;
+    }
+    return record;
+}
+
+pub fn complete(record: *Record, result: u64) void {
+    if (record.flags & (flag_redacted | flag_no_return) != 0) return;
+    record.result = @bitCast(result);
+    if (record.result < 0) {
+        const magnitude = @as(u64, 0) -% result;
+        record.errno = @intCast(@min(magnitude, std.math.maxInt(u32)));
+    }
+}
+
+/// Host tests alone may release the session. Production replacement retains
+/// the one fixed reservation, even after its observer dies.
+pub fn reset_for_test() void {
+    if (!builtin.is_test) @compileError("test-only trace reset");
+    if (ring) |existing| release_backing(existing.backing);
+    ring = null;
+    session_token = 0;
+    last_token = 0;
+    active = false;
+    filter = std.mem.zeroes(Config);
+    publish_fast_slots();
 }
 
 const Writer = *const fn ([]const u8) void;
@@ -80,7 +394,11 @@ fn target_pid() ?usize {
 // M94b may extend this per-call value without editing dispatch. Its before
 // hook receives all six arguments and the original vector frame; after gets
 // the same value even when a scheduling handler stages a different task.
-pub const Call = struct {};
+pub const Call = struct {
+    token: u64 = 0,
+    uid: u32 = 0,
+    record: Record = undefined,
+};
 
 pub fn before(number: u64, args: [6]u64, _: *exceptions.VectorFrame) Call {
     // The legacy exit line precedes the handler, byte-for-byte.
@@ -95,11 +413,46 @@ pub fn before(number: u64, args: [6]u64, _: *exceptions.VectorFrame) Call {
             if (write_fn) |wp| wp(buf[0..pos]);
         }
     }
-    return .{};
+    if (number >= abi.slot_count or fast_slots[@intCast(number / 64)].load(.acquire) & (@as(u64, 1) << @as(u6, @intCast(number % 64))) == 0) return .{};
+    const taken = svclock.acquire_missing(svclock.dom_bit(.kernel));
+    defer svclock.release_set(taken);
+    const tid = scheduler.current_id();
+    const pid = process.find_by_task(tid) orelse return .{};
+    const principal = process.principal(pid) orelse return .{};
+    var token: u64 = 0;
+    {
+        const saved = trace_lock.lock();
+        defer trace_lock.unlock(saved);
+        if (!active or !selected(&filter, pid, number)) return .{};
+        if (principal.uid != owner_uid and !owner_admin) return .{};
+        token = session_token;
+    }
+    var call = Call{ .token = token, .uid = principal.uid, .record = capture(number, args, pid, tid, timer.cntpct()) };
+    if (call.record.flags & flag_no_return != 0) {
+        publish_call(call);
+        call.token = 0;
+    }
+    return call;
 }
 
-pub fn after(_: Call, number: u64, args: [6]u64, result: u64) void {
+pub fn after(call: Call, number: u64, args: [6]u64, result: u64) void {
     if (!trace_excluded(number)) maybe_trace(number, args, result);
+    if (call.token == 0) return;
+    var finished = call;
+    complete(&finished.record, result);
+    publish_call(finished);
+}
+
+fn publish_call(call: Call) void {
+    const taken = svclock.acquire_missing(svclock.dom_bit(.kernel));
+    defer svclock.release_set(taken);
+    const principal = process.principal(@intCast(call.record.pid)) orelse return;
+    if (principal.uid != call.uid) return;
+    const saved = trace_lock.lock();
+    defer trace_lock.unlock(saved);
+    if (!active or session_token != call.token or !selected(&filter, call.record.pid, call.record.number)) return;
+    if (call.uid != owner_uid and !owner_admin) return;
+    ring.?.publish(call.record, call.uid);
 }
 
 fn trace_excluded(number: u64) bool {
