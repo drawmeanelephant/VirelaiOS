@@ -55,6 +55,10 @@
 //! them directly — no allocation.
 
 const std = @import("std");
+pub const abi = @import("syscall_abi.zig");
+pub const trace = @import("trace.zig");
+pub const sampler = @import("sampler.zig");
+pub const memstat = @import("memstat.zig");
 pub const console = @import("console.zig");
 pub const exceptions = @import("exceptions.zig");
 pub const mailbox = @import("mailbox.zig"); // claim 5965: per-process rings
@@ -99,7 +103,7 @@ pub const mmu = @import("mmu.zig");
 pub const alloc = @import("alloc.zig");
 pub const memmap = @import("memmap.zig"); // host tests: arm the physical allocator for eager shared-anon create
 
-pub const slot_count: usize = 128;
+pub const slot_count: usize = abi.slot_count;
 /// 56 through M18 + slot 58 `sys_font_size` (M20-U1); 56/57 are Lane A's
 /// reserved pipe slots (M19) — the gap is intentional, see
 /// docs/archive/agent-concurrency-plan.md §8.
@@ -117,7 +121,7 @@ pub const slot_count: usize = 128;
 /// is sys_file_sync; M83b (#1775): slot 78 is sys_time_set.
 /// `implemented_count` is the number of
 /// registered rows (rows 0..implemented_count-1).
-pub const implemented_count: usize = 81;
+pub const implemented_count: usize = abi.slots.len;
 /// Card G6 (claim 0487) follow-on (slot 18): the fixed `sys_win_get` shape —
 /// four u32 LE words (x, y, w, h), 16 bytes, marshaled per call and copy_out'd
 /// through uaccess (the procs snapshot pattern).
@@ -389,6 +393,9 @@ pub const sys_time_set: u64 = 78;
 /// B3: one bounded native metadata/contained-filesystem operation family.
 pub const sys_fs_metadata: u64 = 79;
 pub const sys_socket: u64 = 80;
+pub const sys_trace: u64 = abi.number("sys_trace");
+pub const sys_profile: u64 = abi.number("sys_profile");
+pub const sys_memstat: u64 = abi.number("sys_memstat");
 pub const native_socket = @import("socket_native.zig");
 var socket_scratch: [tcp.payload_max]u8 = undefined;
 /// The fixed per-call fill cap of slot 72 (ADR 0025 D5: "capped at a bounded
@@ -465,6 +472,7 @@ const Handler = *const fn (Args, *exceptions.VectorFrame) u64;
 const Entry = struct {
     name: []const u8 = "",
     handler: ?Handler = null,
+    reportable: bool = true,
 };
 
 pub const EntryInfo = struct {
@@ -515,6 +523,7 @@ var clipboard_staging: [clipboard.capacity]u8 = undefined;
 /// base.
 pub fn init(writer: Writer) void {
     write_fn = writer;
+    trace.init(writer, &strace_pid);
     for (0..svclock.cores) |c| @memset(&call_counts[c], 0);
     uaccess.init();
     clipboard.init();
@@ -534,109 +543,113 @@ pub fn set_user_regions(text: userspace.Region, stack: userspace.Region) void {
 pub fn ensure_table() *const [slot_count]Entry {
     if (!table_ready) {
         for (&table_storage) |*entry| entry.* = .{};
-        table_storage[sys_ping] = .{ .name = "sys_ping", .handler = handle_ping };
-        table_storage[sys_write] = .{ .name = "sys_write", .handler = handle_write };
-        table_storage[sys_yield] = .{ .name = "sys_yield", .handler = handle_yield };
-        table_storage[sys_exit] = .{ .name = "sys_exit", .handler = handle_exit };
-        table_storage[sys_sleep] = .{ .name = "sys_sleep", .handler = handle_sleep };
-        table_storage[sys_ipc_send] = .{ .name = "sys_ipc_send", .handler = handle_ipc_send };
-        table_storage[sys_ipc_recv] = .{ .name = "sys_ipc_recv", .handler = handle_ipc_recv };
-        table_storage[sys_procs] = .{ .name = "sys_procs", .handler = handle_procs };
-        table_storage[sys_wait] = .{ .name = "sys_wait", .handler = handle_wait };
-        table_storage[sys_udp_listen] = .{ .name = "sys_udp_listen", .handler = handle_udp_listen };
-        table_storage[sys_udp_send] = .{ .name = "sys_udp_send", .handler = handle_udp_send };
-        table_storage[sys_udp_recv] = .{ .name = "sys_udp_recv", .handler = handle_udp_recv };
-        table_storage[sys_win_open] = .{ .name = "sys_win_open", .handler = handle_win_open };
-        table_storage[sys_win_fill] = .{ .name = "sys_win_fill", .handler = handle_win_fill };
-        table_storage[sys_win_present] = .{ .name = "sys_win_present", .handler = handle_win_present };
-        table_storage[sys_win_close] = .{ .name = "sys_win_close", .handler = handle_win_close };
-        table_storage[sys_win_move] = .{ .name = "sys_win_move", .handler = handle_win_move };
-        table_storage[sys_win_raise] = .{ .name = "sys_win_raise", .handler = handle_win_raise };
-        table_storage[sys_win_get] = .{ .name = "sys_win_get", .handler = handle_win_get };
-        table_storage[sys_win_query] = .{ .name = "sys_win_query", .handler = handle_win_query };
-        table_storage[sys_win_set_visible] = .{ .name = "sys_win_set_visible", .handler = handle_win_set_visible };
-        table_storage[sys_poll_event] = .{ .name = "sys_poll_event", .handler = handle_poll_event };
-        table_storage[sys_wait_event] = .{ .name = "sys_wait_event", .handler = handle_wait_event };
-        table_storage[sys_file_open] = .{ .name = "sys_file_open", .handler = handle_file_open };
-        table_storage[sys_file_read] = .{ .name = "sys_file_read", .handler = handle_file_read };
-        table_storage[sys_file_write] = .{ .name = "sys_file_write", .handler = handle_file_write };
-        table_storage[sys_file_close] = .{ .name = "sys_file_close", .handler = handle_file_close };
-        table_storage[sys_dir_list] = .{ .name = "sys_dir_list", .handler = handle_dir_list };
-        table_storage[sys_exec] = .{ .name = "sys_exec", .handler = handle_exec };
-        table_storage[sys_kill] = .{ .name = "sys_kill", .handler = handle_kill };
-        table_storage[sys_tcp_connect] = .{ .name = "sys_tcp_connect", .handler = handle_tcp_connect };
-        table_storage[sys_tcp_send] = .{ .name = "sys_tcp_send", .handler = handle_tcp_send };
-        table_storage[sys_tcp_recv] = .{ .name = "sys_tcp_recv", .handler = handle_tcp_recv };
-        table_storage[sys_tcp_close] = .{ .name = "sys_tcp_close", .handler = handle_tcp_close };
-        table_storage[sys_file_delete] = .{ .name = "sys_file_delete", .handler = handle_file_delete };
-        table_storage[sys_file_rename] = .{ .name = "sys_file_rename", .handler = handle_file_rename };
-        table_storage[sys_file_truncate] = .{ .name = "sys_file_truncate", .handler = handle_file_truncate };
-        table_storage[sys_file_free] = .{ .name = "sys_file_free", .handler = handle_file_free };
-        // M66a (#1443): slot 77 — the EL0 durability verb (file_table.sync).
-        table_storage[sys_file_sync] = .{ .name = "sys_file_sync", .handler = handle_file_sync };
-        // M83b (#1775): slot 78 — the bounded wall-clock write (timer.set_wall_epoch).
-        table_storage[sys_time_set] = .{ .name = "sys_time_set", .handler = handle_time_set };
-        table_storage[sys_fs_metadata] = .{ .name = "sys_fs_metadata", .handler = handle_fs_metadata };
-        table_storage[sys_socket] = .{ .name = "sys_socket", .handler = handle_socket };
-        table_storage[sys_clipboard_set] = .{ .name = "sys_clipboard_set", .handler = handle_clipboard_set };
-        table_storage[sys_clipboard_get] = .{ .name = "sys_clipboard_get", .handler = handle_clipboard_get };
-        table_storage[sys_timer_set] = .{ .name = "sys_timer_set", .handler = handle_timer_set };
-        table_storage[sys_timer_cancel] = .{ .name = "sys_timer_cancel", .handler = handle_timer_cancel };
-        table_storage[sys_audio_info] = .{ .name = "sys_audio_info", .handler = handle_audio_info };
-        table_storage[sys_audio_play] = .{ .name = "sys_audio_play", .handler = handle_audio_play };
-        table_storage[sys_audio_volume] = .{ .name = "sys_audio_volume", .handler = handle_audio_volume };
-        table_storage[sys_audio_mute] = .{ .name = "sys_audio_mute", .handler = handle_audio_mute };
-        table_storage[sys_win_fill_batch] = .{ .name = "sys_win_fill_batch", .handler = handle_win_fill_batch };
-        table_storage[sys_win_resize] = .{ .name = "sys_win_resize", .handler = handle_win_resize };
-        // Arc4 #237: slot 48 — sys_drag_start.
-        table_storage[48] = .{ .name = "sys_drag_start", .handler = handle_drag_start };
-        table_storage[sys_win_raise_front] = .{ .name = "sys_win_raise_front", .handler = handle_win_raise_front };
-        table_storage[sys_win_lower_back] = .{ .name = "sys_win_lower_back", .handler = handle_win_lower_back };
-        table_storage[sys_notify] = .{ .name = "sys_notify", .handler = handle_notify };
-        table_storage[sys_drag_read] = .{ .name = "sys_drag_read", .handler = handle_drag_read };
-        // ADR 0013 reserved slots 52–54 (not yet implemented). Stubs.
-        table_storage[sys_pipe_read] = .{ .name = "sys_pipe_read", .handler = handle_pipe_read };
-        table_storage[sys_pipe_write] = .{ .name = "sys_pipe_write", .handler = handle_pipe_write };
-        table_storage[52] = .{ .name = "sys_win_move_to_workspace", .handler = handle_win_move_to_workspace };
-        table_storage[sys_win_set_unsaved] = .{ .name = "sys_win_set_unsaved", .handler = handle_win_set_unsaved };
-        table_storage[sys_win_set_title] = .{ .name = "sys_win_set_title", .handler = handle_win_set_title };
-        table_storage[54] = .{ .name = "sys_setrlimit", .handler = handle_setrlimit };
-        // M20-U1 (claim 5127): slot 58 — sys_font_size.
-        table_storage[sys_font_size] = .{ .name = "sys_font_size", .handler = handle_font_size };
-        // M26 N1 (issue #399): slots 59/60 — ping send/poll.
-        table_storage[sys_ping_send] = .{ .name = "sys_ping_send", .handler = handle_ping_send };
-        table_storage[sys_ping_poll] = .{ .name = "sys_ping_poll", .handler = handle_ping_poll };
-        // M26 N2 (issue #400): slot 62 — net-stats snapshot.
-        table_storage[sys_net_stats] = .{ .name = "sys_net_stats", .handler = handle_net_stats };
-        // M29 (issue #598): slots 63/64 — sys_mmap / sys_munmap.
-        table_storage[sys_mmap] = .{ .name = "sys_mmap", .handler = handle_mmap };
-        table_storage[sys_munmap] = .{ .name = "sys_munmap", .handler = handle_munmap };
-        // M32 WMS2 (issue #622): slot 65 — sys_wmctl (the render-server register).
-        table_storage[sys_wmctl] = .{ .name = "sys_wmctl", .handler = handle_wmctl };
-        // #1058: slot 66 — sys_time (the boot EFI GetTime wall clock).
-        table_storage[sys_time] = .{ .name = "sys_time", .handler = handle_time };
-        // #1072 (ADR 0020): slot 67 — sys_tty_attach (terminal front-end).
-        table_storage[sys_tty_attach] = .{ .name = "sys_tty_attach", .handler = handle_tty_attach };
-        // M50 TS1 (#1135, ADR 0024 D10): slot 68 — sys_principal.
-        table_storage[sys_principal] = .{ .name = "sys_principal", .handler = handle_principal };
-        // M50 TS2 (#1136, ADR 0024 D3/D4/D10): slot 69 — sys_file_mode.
-        table_storage[sys_file_mode] = .{ .name = "sys_file_mode", .handler = handle_file_mode };
-        // M50 TS5 (#1139, ADR 0024 D8/D10): slot 70 — sys_secret_get.
-        table_storage[sys_secret_get] = .{ .name = "sys_secret_get", .handler = handle_secret_get };
-        // M50 TS4 (#1138, ADR 0024 D6/D10): slot 71 — sys_tty_net_auth.
-        table_storage[sys_tty_net_auth] = .{ .name = "sys_tty_net_auth", .handler = handle_tty_net_auth };
-        // M51 SSH-P1 (#1166, ADR 0025 D5): slot 72 — sys_getrandom.
-        table_storage[sys_getrandom] = .{ .name = "sys_getrandom", .handler = handle_getrandom };
-        // ADR 0027 (issue #1214 round 2): slots 73/74 — sys_thread / sys_futex.
-        table_storage[sys_thread] = .{ .name = "sys_thread", .handler = handle_thread };
-        table_storage[sys_futex] = .{ .name = "sys_futex", .handler = handle_futex };
-        // Issue #1228 (phase 0c): slot 75 — sys_exnotify.
-        table_storage[sys_exnotify] = .{ .name = "sys_exnotify", .handler = handle_exnotify };
-        // Issue #1163 (phase 2): slot 76 — sys_sock_ready.
-        table_storage[sys_sock_ready] = .{ .name = "sys_sock_ready", .handler = handle_sock_ready };
+        inline for (abi.slots, 0..) |slot, index| {
+            table_storage[slot.number] = .{
+                .name = abi.slots[index].name(),
+                .handler = handler_for(slot.number),
+                .reportable = switch (slot.number) {
+                    sys_trace => trace.implemented,
+                    sys_profile => sampler.implemented,
+                    sys_memstat => memstat.implemented,
+                    else => true,
+                },
+            };
+        }
         table_ready = true;
     }
     return &table_storage;
+}
+
+// Compile-time selection, runtime pointer materialization: never a const
+// handler-pointer table in the flat kernel image.
+fn handler_for(comptime number: u64) Handler {
+    return switch (number) {
+        sys_ping => handle_ping,
+        sys_write => handle_write,
+        sys_yield => handle_yield,
+        sys_exit => handle_exit,
+        sys_sleep => handle_sleep,
+        sys_ipc_send => handle_ipc_send,
+        sys_ipc_recv => handle_ipc_recv,
+        sys_procs => handle_procs,
+        sys_wait => handle_wait,
+        sys_udp_listen => handle_udp_listen,
+        sys_udp_send => handle_udp_send,
+        sys_udp_recv => handle_udp_recv,
+        sys_win_open => handle_win_open,
+        sys_win_fill => handle_win_fill,
+        sys_win_present => handle_win_present,
+        sys_win_close => handle_win_close,
+        sys_win_move => handle_win_move,
+        sys_win_raise => handle_win_raise,
+        sys_win_get => handle_win_get,
+        sys_win_query => handle_win_query,
+        sys_win_set_visible => handle_win_set_visible,
+        sys_poll_event => handle_poll_event,
+        sys_wait_event => handle_wait_event,
+        sys_file_open => handle_file_open,
+        sys_file_read => handle_file_read,
+        sys_file_write => handle_file_write,
+        sys_file_close => handle_file_close,
+        sys_dir_list => handle_dir_list,
+        sys_exec => handle_exec,
+        sys_kill => handle_kill,
+        sys_tcp_connect => handle_tcp_connect,
+        sys_tcp_send => handle_tcp_send,
+        sys_tcp_recv => handle_tcp_recv,
+        sys_tcp_close => handle_tcp_close,
+        sys_file_delete => handle_file_delete,
+        sys_file_rename => handle_file_rename,
+        sys_file_truncate => handle_file_truncate,
+        sys_file_free => handle_file_free,
+        sys_clipboard_set => handle_clipboard_set,
+        sys_clipboard_get => handle_clipboard_get,
+        sys_timer_set => handle_timer_set,
+        sys_timer_cancel => handle_timer_cancel,
+        sys_audio_info => handle_audio_info,
+        sys_audio_play => handle_audio_play,
+        sys_audio_volume => handle_audio_volume,
+        sys_audio_mute => handle_audio_mute,
+        sys_win_fill_batch => handle_win_fill_batch,
+        sys_win_resize => handle_win_resize,
+        48 => handle_drag_start,
+        sys_win_raise_front => handle_win_raise_front,
+        sys_win_lower_back => handle_win_lower_back,
+        sys_notify => handle_notify,
+        52 => handle_win_move_to_workspace,
+        sys_win_set_unsaved => handle_win_set_unsaved,
+        54 => handle_setrlimit,
+        sys_drag_read => handle_drag_read,
+        sys_pipe_read => handle_pipe_read,
+        sys_pipe_write => handle_pipe_write,
+        sys_font_size => handle_font_size,
+        sys_ping_send => handle_ping_send,
+        sys_ping_poll => handle_ping_poll,
+        sys_win_set_title => handle_win_set_title,
+        sys_net_stats => handle_net_stats,
+        sys_mmap => handle_mmap,
+        sys_munmap => handle_munmap,
+        sys_wmctl => handle_wmctl,
+        sys_time => handle_time,
+        sys_tty_attach => handle_tty_attach,
+        sys_principal => handle_principal,
+        sys_file_mode => handle_file_mode,
+        sys_secret_get => handle_secret_get,
+        sys_tty_net_auth => handle_tty_net_auth,
+        sys_getrandom => handle_getrandom,
+        sys_thread => handle_thread,
+        sys_futex => handle_futex,
+        sys_exnotify => handle_exnotify,
+        sys_sock_ready => handle_sock_ready,
+        sys_file_sync => handle_file_sync,
+        sys_time_set => handle_time_set,
+        sys_fs_metadata => handle_fs_metadata,
+        sys_socket => handle_socket,
+        sys_trace => trace.handle,
+        sys_profile => sampler.handle,
+        sys_memstat => memstat.handle,
+        else => @compileError("ABI row has no handler"),
+    };
 }
 
 pub fn entry_info(number: u64) ?EntryInfo {
@@ -673,10 +686,11 @@ fn doms_of(number: u64) u5 {
         sys_udp_listen, sys_udp_send, sys_udp_recv, sys_tcp_connect, sys_tcp_send, sys_tcp_recv, sys_tcp_close, sys_sock_ready, sys_socket, sys_ping_send, sys_ping_poll, sys_net_stats => n,
         sys_file_open, sys_file_read, sys_file_write, sys_file_close, sys_dir_list, sys_file_delete, sys_file_rename, sys_file_truncate, sys_file_free, sys_file_sync, sys_fs_metadata => f,
         sys_exec => f | k,
+        sys_trace => f | k, // M94b's atomic arm-and-exec needs both domains.
         sys_write => f,
         sys_win_open, sys_win_fill, sys_win_present, sys_win_close, sys_win_move, sys_win_raise, sys_win_get, sys_win_query, sys_win_set_visible, sys_win_fill_batch, sys_win_resize, 48, sys_win_raise_front, sys_win_lower_back, 52, sys_win_set_unsaved, sys_win_set_title, sys_drag_read, sys_font_size => w,
         sys_ipc_send, sys_ipc_recv, sys_poll_event, sys_wait_event, sys_timer_set, sys_timer_cancel, sys_notify, sys_wmctl => e,
-        sys_procs, sys_wait, sys_kill, sys_clipboard_set, sys_clipboard_get, sys_audio_info, sys_audio_play, sys_audio_volume, sys_audio_mute, sys_pipe_read, sys_pipe_write, 54, sys_mmap, sys_munmap, sys_time, sys_time_set, sys_tty_attach, sys_principal, sys_secret_get, sys_tty_net_auth, sys_getrandom, sys_thread, sys_futex, sys_exnotify => k,
+        sys_procs, sys_wait, sys_kill, sys_clipboard_set, sys_clipboard_get, sys_audio_info, sys_audio_play, sys_audio_volume, sys_audio_mute, sys_pipe_read, sys_pipe_write, 54, sys_mmap, sys_munmap, sys_time, sys_time_set, sys_tty_attach, sys_principal, sys_secret_get, sys_tty_net_auth, sys_getrandom, sys_thread, sys_futex, sys_exnotify, sys_profile, sys_memstat => k,
         sys_exit => svclock.all_bits,
         else => 0,
     };
@@ -702,120 +716,10 @@ pub fn dispatch(number: u64, args: Args, frame: *exceptions.VectorFrame) u64 {
     }
     call_counts[svclock.core_id()][number] +%= 1;
     const handler = ensure_table()[number].handler orelse return error_result(.enosys);
-    // M22 D5: sys_exit never returns from its handler (the scheduler
-    // stages another task), so its trace line must be printed BEFORE the
-    // call — with an em-dash result, the convention for "no return value".
-    if (tracing_current() and !trace_excluded(number)) {
-        if (number == sys_exit) {
-            var buf: [96]u8 = undefined;
-            var pos: usize = append_trace_str(buf[0..], "[strace ");
-            pos += append_trace_dec(buf[pos..], @intCast(traced_pid_for_current()));
-            pos += append_trace_str(buf[pos..], "] sys_exit(");
-            pos += append_trace_hex(buf[pos..], args[0]);
-            pos += append_trace_str(buf[pos..], ") = \xe2\x80\x94\n");
-            if (write_fn) |wp| wp(buf[0..pos]);
-        }
-    }
+    const traced_call = trace.before(number, args, frame);
     const result = handler(args, frame);
-    if (!trace_excluded(number)) maybe_trace(number, args, result);
+    trace.after(traced_call, number, args, result);
     return result;
-}
-
-/// M50 TS5 (#1139, ADR 0024 D8): syscalls whose arguments and results are
-/// never traced. `sys_secret_get` moves secret VALUES between the store and
-/// caller memory; a strace line would name the buffer pointers and byte
-/// counts of the only in-guest secret reader. `sys_tty_net_auth` (slot 71,
-/// M50 TS4 #1138) carries the delegated-auth challenge/reply/verdict buffers
-/// across the same redaction — TS5 reserved it here so TS4 cannot accidentally
-/// trace a credential.
-fn trace_excluded(number: u64) bool {
-    return switch (number) {
-        sys_secret_get, sys_tty_net_auth => true,
-        else => false,
-    };
-}
-
-fn tracing_current() bool {
-    const target = strace_pid orelse return false;
-    const pid = process.find_by_task(scheduler.current_id()) orelse return false;
-    return pid == target;
-}
-
-fn traced_pid_for_current() usize {
-    return process.find_by_task(scheduler.current_id()) orelse 0;
-}
-
-/// M22 D5 (issue #328): synchronous per-syscall trace line for the traced
-/// pid — `[strace 3] sys_write(0x1, 0x400100, 0xc) = 0xc`. Runs in SVC
-/// context; the kernel is single-threaded so a direct console write is
-/// safe (the same path tombstones use).
-fn maybe_trace(number: u64, args: Args, result: u64) void {
-    const target = strace_pid orelse return;
-    const w = write_fn orelse return;
-    const pid = process.find_by_task(scheduler.current_id()) orelse return;
-    if (pid != target) return;
-    var buf: [112]u8 = undefined;
-    var pos: usize = 0;
-    pos += append_trace_str(buf[pos..], "[strace ");
-    pos += append_trace_dec(buf[pos..], @intCast(pid));
-    pos += append_trace_str(buf[pos..], "] ");
-    pos += append_trace_str(buf[pos..], ensure_table()[number].name);
-    pos += append_trace_str(buf[pos..], "(");
-    pos += append_trace_hex(buf[pos..], args[0]);
-    pos += append_trace_str(buf[pos..], ", ");
-    pos += append_trace_hex(buf[pos..], args[1]);
-    pos += append_trace_str(buf[pos..], ", ");
-    pos += append_trace_hex(buf[pos..], args[2]);
-    pos += append_trace_str(buf[pos..], ") = ");
-    pos += append_trace_hex(buf[pos..], result);
-    if (pos < buf.len) {
-        buf[pos] = '\n';
-        pos += 1;
-    }
-    w(buf[0..pos]);
-}
-
-fn append_trace_str(buf: []u8, s: []const u8) usize {
-    const take = @min(s.len, buf.len);
-    @memcpy(buf[0..take], s[0..take]);
-    return take;
-}
-
-fn append_trace_dec(buf: []u8, v_in: u64) usize {
-    var v = v_in;
-    var tmp: [20]u8 = undefined;
-    var n: usize = 0;
-    if (v == 0) {
-        tmp[0] = '0';
-        n = 1;
-    }
-    while (v > 0) : (v /= 10) {
-        tmp[n] = @intCast('0' + v % 10);
-        n += 1;
-    }
-    var i: usize = 0;
-    while (i < n) : (i += 1) buf[i] = tmp[n - 1 - i];
-    return n;
-}
-
-fn append_trace_hex(buf: []u8, v: u64) usize {
-    const digits = "0123456789abcdef";
-    buf[0] = '0';
-    buf[1] = 'x';
-    if (v == 0) {
-        buf[2] = '0';
-        return 3;
-    }
-    var tmp: [16]u8 = undefined;
-    var n: usize = 0;
-    var vv = v;
-    while (vv > 0) : (vv /= 16) {
-        tmp[n] = digits[@intCast(vv % 16)];
-        n += 1;
-    }
-    var i: usize = 0;
-    while (i < n) : (i += 1) buf[2 + i] = tmp[n - 1 - i];
-    return 2 + n;
 }
 
 /// Adapter registered through claim 8215's `set_svc_dispatcher` seam.
@@ -4184,11 +4088,13 @@ fn handle_wmctl(args: Args, _: *exceptions.VectorFrame) u64 {
     }
 }
 
-/// Deterministic monitor output for the implemented rows and their counters.
+/// Deterministic monitor output for implemented (not reservation-stub) rows.
+/// M94a preserves the existing bytes; each shard exposes its row by changing
+/// its own module's `implemented` constant, without touching this file.
 pub fn report(con: *console.Console) void {
     var live: usize = 0;
     for (ensure_table()) |e| {
-        if (e.handler != null) live += 1;
+        if (e.handler != null and e.reportable) live += 1;
     }
     con.puts("syscalls: slots=64 implemented=");
     con.print_u64(live);
@@ -4197,6 +4103,7 @@ pub fn report(con: *console.Console) void {
     // reservations), so walk the whole namespace and skip holes.
     var number: u64 = 0;
     while (number < slot_count) : (number += 1) {
+        if (!ensure_table()[number].reportable) continue;
         const info = entry_info(number) orelse continue;
         con.puts("  ");
         con.print_u64(info.number);

@@ -136,6 +136,50 @@ const wm_server = syscall.wm_server;
 const wnd_core = syscall.wnd_core;
 const write_cap = syscall.write_cap;
 
+test "syscall: M94 observability slots are registered ENOSYS stubs" {
+    init(test_writer);
+    var frame = fresh_frame();
+    const names = [_][]const u8{ "sys_trace", "sys_profile", "sys_memstat" };
+    for (names, 81..) |name, number| {
+        const info = entry_info(number);
+        try std.testing.expect(info != null);
+        try std.testing.expectEqualStrings(name, info.?.name);
+        try std.testing.expectEqual(error_result(.enosys), dispatch(number, .{ 0, 0, 0, 0, 0, 0 }, &frame));
+        try std.testing.expectEqual(error_result(.enosys), dispatch(number, .{ 99, 99, 99, 99, 99, 99 }, &frame));
+        try std.testing.expectEqual(@as(u64, 2), call_count(number));
+    }
+}
+
+test "syscall: ABI metadata covers every registered row without pointers" {
+    const abi = syscall.abi;
+    try std.testing.expectEqual(@as(usize, 84), abi.slots.len);
+    for (&abi.slots, 0..) |slot, index| {
+        try std.testing.expectEqual(index, slot.number);
+        try std.testing.expectEqualStrings(slot.name(), entry_info(index).?.name);
+        try std.testing.expect(slot.arg_count <= 6);
+        for (slot.args[0..slot.arg_count], 0..) |arg, arg_index| {
+            if (arg.kind == .string) {
+                try std.testing.expect(arg.length_arg < slot.arg_count);
+                try std.testing.expect(arg.length_arg != arg_index);
+                try std.testing.expect(arg.length_mask != 0);
+            }
+        }
+        try std.testing.expectEqual(index == 70 or index == 71, abi.redacted(index));
+    }
+    for (abi.variants, 0..) |item, index| {
+        try std.testing.expect(item.number < abi.slots.len);
+        try std.testing.expect(item.selector < 6);
+        try std.testing.expect(!abi.redacted(item.number));
+        for (abi.variants[0..index]) |earlier| {
+            try std.testing.expect(earlier.number != item.number or earlier.selector != item.selector or earlier.op != item.op);
+        }
+    }
+    try std.testing.expect(abi.lookup(84) == null);
+    try std.testing.expectEqual(abi.ArgKind.string, abi.shape(79, .{ 0, 0, 0, 0, 0, 0 }).?.args[1].kind);
+    try std.testing.expectEqual(abi.ArgKind.fd, abi.shape(80, .{ 2, 0, 0, 0, 0, 0 }).?.args[1].kind);
+    try std.testing.expectEqual(abi.ArgKind.int, abi.shape(27, .{ 0, 0, 0, 0x8000000000000002, 0, 0 }).?.args[0].kind);
+}
+
 // Shared test helper from helpers.task_mock
 const fresh_frame = task_mock.fresh_frame;
 
@@ -153,7 +197,7 @@ fn capture_marshaled_args(args: Args, _: *exceptions.VectorFrame) u64 {
     return 0xcafe;
 }
 
-test "syscall: runtime table has 128 slots and eighty-one unique implemented rows" {
+test "syscall: runtime table has 128 slots and eighty-four registered rows" {
     init(test_writer);
     const table = ensure_table();
     try std.testing.expectEqual(@as(usize, 128), table.len);
@@ -166,7 +210,7 @@ test "syscall: runtime table has 128 slots and eighty-one unique implemented row
             implemented += 1;
         }
     }
-    try std.testing.expectEqual(@as(usize, 81), implemented);
+    try std.testing.expectEqual(@as(usize, 84), implemented);
     try std.testing.expectEqualStrings("sys_socket", entry_info(80).?.name);
     try std.testing.expectEqualStrings("sys_fs_metadata", entry_info(79).?.name);
     try std.testing.expectEqualStrings("sys_pipe_read", entry_info(sys_pipe_read).?.name);
@@ -253,17 +297,13 @@ test "syscall: adapter decodes x8 and x0-x5 and unknown numbers return ENOSYS" {
     try std.testing.expectEqual(@as(u64, 41), exceptions.frame_read(&frame, 0));
     try std.testing.expectEqual(@as(u64, 1), call_count(sys_ping));
 
-    // Unimplemented in-range slots still return ENOSYS (65..72 are now
-    // registered rows; 73/74 are ADR 0027's sys_thread/sys_futex; 75 is
-    // issue #1228's sys_exnotify; 76 is issue #1163 phase 2's
-    // sys_sock_ready; 77 is M66a's sys_file_sync and 78 is M83b's
-    // sys_time_set; 79 is B3 metadata; 80 is B6 — use 81/82).
-    try std.testing.expect(exceptions.frame_write(&frame, 8, 81));
+    // Unregistered in-range slots still return ENOSYS. M94 reserves 81–83.
+    try std.testing.expect(exceptions.frame_write(&frame, 8, 84));
     try std.testing.expect(handle_svc(&frame, svc_immediate));
     try std.testing.expectEqual(error_result(.enosys), exceptions.frame_read(&frame, 0));
-    try std.testing.expectEqual(@as(u64, 1), call_count(81));
+    try std.testing.expectEqual(@as(u64, 1), call_count(84));
 
-    try std.testing.expect(exceptions.frame_write(&frame, 8, 82));
+    try std.testing.expect(exceptions.frame_write(&frame, 8, 85));
     try std.testing.expect(handle_svc(&frame, svc_immediate));
     try std.testing.expectEqual(error_result(.enosys), exceptions.frame_read(&frame, 0));
 }
@@ -4863,7 +4903,7 @@ test "syscall: SYS_TIME (slot 66, #1058) returns the firmware wall-clock epoch" 
     // TS5 slot 70 (sys_secret_get), TS4 slot 71 (sys_tty_net_auth);
     // M51 SSH-P1 (#1166) slot 72 (sys_getrandom); issue #1228 slot 75;
     // issue #1163 phase 2 slot 76 (sys_sock_ready).
-    try std.testing.expectEqual(@as(usize, 81), syscall.implemented_count);
+    try std.testing.expectEqual(@as(usize, 84), syscall.implemented_count);
 
     const saved_epoch = timer.boot_epoch_secs;
     const saved_ticks = timer.ticks;
@@ -5014,7 +5054,7 @@ test "syscall: M50 TS3 gate table is explicit, bounded, and exactly the ADR 0024
         try std.testing.expect(gate.number < syscall.implemented_count);
         try std.testing.expect(entry_info(gate.number) != null);
     }
-    try std.testing.expectEqual(@as(usize, 81), syscall.implemented_count);
+    try std.testing.expectEqual(@as(usize, 84), syscall.implemented_count);
 }
 
 test "syscall: no slot can raise uid/caps (TS3 consumes caps, adds no setter)" {
