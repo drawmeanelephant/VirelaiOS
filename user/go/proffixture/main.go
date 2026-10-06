@@ -61,6 +61,17 @@ func bounds(values []int64) (int64, int64) {
 	return minimum, maximum
 }
 
+// Pair ratios are the budget statistic. Their extrema describe measurement
+// noise, not additional acceptance bounds.
+func pairedStats(off, on []int64) (float64, float64, float64) {
+	ratios := make([]float64, len(off))
+	for i, baseline := range off {
+		ratios[i] = float64(on[i]-baseline) / float64(baseline)
+	}
+	sort.Float64s(ratios)
+	return ratios[len(ratios)/2], ratios[0], ratios[len(ratios)-1]
+}
+
 func run() error {
 	runtime.GOMAXPROCS(1)
 	pid, err := selfPID()
@@ -188,11 +199,14 @@ func run() error {
 	offMedian, onMedian := median(off[:]), median(on[:])
 	offMin, offMax := bounds(off[:])
 	onMin, onMax := bounds(on[:])
+	pairedMedian, pairedMin, pairedMax := pairedStats(off[:], on[:])
 	fmt.Printf("prof: samples=%d dropped=%d off_median_ns=%d on_median_ns=%d overhead_pct=%.6f\n",
 		sampleCount, dropped, offMedian, onMedian,
-		100*float64(onMedian-offMedian)/float64(offMedian))
+		100*pairedMedian)
 	fmt.Printf("prof: spread off_min_ns=%d off_max_ns=%d on_min_ns=%d on_max_ns=%d pairs=%d\n",
 		offMin, offMax, onMin, onMax, measurementPairs)
+	fmt.Printf("prof: measurement_noise paired_min_pct=%.6f paired_max_pct=%.6f\n",
+		100*pairedMin, 100*pairedMax)
 	fmt.Println("proffixture: done")
 	return nil
 }

@@ -144,3 +144,44 @@ test "sampler: virtual deadline skips missed periods without a catch-up IRQ floo
     try std.testing.expectEqual(@as(u64, 100), timer.profile_next_deadline(100, 90, 10));
     try std.testing.expectEqual(@as(u64, 0), timer.profile_next_deadline(100, 137, 0));
 }
+
+var copy_domain_held: bool = false;
+
+fn inspect_copy_domain(_: u64, _: usize) bool {
+    copy_domain_held = syscall.svclock.kernel.held();
+    return true;
+}
+
+test "sampler: control holds kernel domain through copy and preserves an outer hold" {
+    const process = syscall.process;
+    const domain = &syscall.svclock.kernel;
+    const uaccess = syscall.uaccess;
+    try std.testing.expect(!domain.held());
+    process.init();
+    defer process.init();
+    const pid = process.create_as("profile", .{}, .{}, .{}, .{ .uid = 42 }).?;
+    try std.testing.expect(process.bind(pid, syscall.scheduler.current_id()));
+    var records: [sampler.ring_records]sampler.Record = undefined;
+    var uids: [sampler.ring_records]u32 = undefined;
+    sampler.test_session(&records, &uids, .{ .uid = 42 });
+    defer sampler.test_session(null, null, .{});
+    var output: [@sizeOf(sampler.ReadHeader)]u8 = undefined;
+    uaccess.init();
+    uaccess.set_regions(.{ .base = 0, .len = 0 }, .{ .base = @intFromPtr(&output), .len = output.len });
+    const old_resolver = uaccess.resolve_write_pages;
+    uaccess.resolve_write_pages = inspect_copy_domain;
+    defer uaccess.resolve_write_pages = old_resolver;
+    defer uaccess.init();
+    var frame = helpers.task.fresh_frame();
+    copy_domain_held = false;
+    const args: [6]u64 = .{ sampler.op_status, 1, @intFromPtr(&output), output.len, 0, 0 };
+    try std.testing.expectEqual(@as(u64, 0), sampler.handle(args, &frame));
+    try std.testing.expect(copy_domain_held);
+    try std.testing.expect(!domain.held());
+    domain.acquire();
+    defer domain.release();
+    copy_domain_held = false;
+    try std.testing.expectEqual(@as(u64, 0), sampler.handle(args, &frame));
+    try std.testing.expect(copy_domain_held);
+    try std.testing.expect(domain.held());
+}

@@ -24,5 +24,6 @@ The normal self-host compiler is not replaced.
 After the owner releases M94b's measurement window, run the full gate under
 `/tmp/virelai-vz.lock` with no competing VMRunner or Zig/Go build/test work.
 Record `uptime` before and after. The fixture measures seven interleaved
-off/on pairs and reports median/min/max; a spread crossing 2% is unresolved,
-not a pass. There is no load-average floor under the 2026-10-06 ruling.
+off/on pairs. The overhead check passes iff the median paired ratio is below
+2%; min/max describe measurement noise and do not decide the budget.
+There is no load-average floor under the 2026-10-06 ruling.

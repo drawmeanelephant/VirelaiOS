@@ -10,6 +10,7 @@ const mmu = @import("mmu.zig");
 const alloc = @import("alloc.zig");
 const spinlock = @import("spinlock.zig");
 const timer = @import("timer.zig");
+const svclock = @import("svclock.zig");
 
 pub const slot = abi.number("sys_profile");
 pub const implemented = true;
@@ -59,6 +60,16 @@ var owner = process.Principal{};
 var config = std.mem.zeroes(Config);
 var active = false;
 var backing: u64 = 0;
+
+/// Host tests borrow backing to exercise control copies without hardware or
+/// pool allocation. This seam cannot be called in a guest build.
+pub fn test_session(records: ?*[ring_records]Record, uids: ?*[ring_records]u32, principal: process.Principal) void {
+    if (comptime !builtin.is_test) @compileError("host-only sampler session");
+    ring = .{ .records = records, .uids = uids };
+    owner = principal;
+    session_token = if (records == null) 0 else 1;
+    active = false;
+}
 
 fn err(value: i64) u64 {
     return @bitCast(value);
@@ -189,6 +200,12 @@ fn header(count_: usize) ReadHeader {
 }
 
 pub fn handle(args: [6]u64, _: *exceptions.VectorFrame) u64 {
+    // The frozen dispatcher's block-scoped defer releases its domain before
+    // the handler call. Protect control-side registry reads and copy-out for
+    // the entire operation, acquiring the service domain BEFORE our ring.
+    // IRQ producers never acquire this service lock.
+    const taken = svclock.acquire_missing(svclock.dom_bit(.kernel));
+    defer svclock.release_set(taken);
     const pid = process.find_by_task(scheduler.current_id()) orelse return err(-1);
     const actor = process.principal(pid) orelse return err(-1);
     const op = args[0];
@@ -250,7 +267,7 @@ pub fn handle(args: [6]u64, _: *exceptions.VectorFrame) u64 {
         batch.records[offset] = ring.records.?[index];
     }
     // Copy with the sampler lock released. A producer never waits behind
-    // user-copy faults. The syscall already holds its own kernel domain.
+    // user-copy faults. This control call still holds its kernel domain.
     lock.unlock(saved);
     const bytes = std.mem.asBytes(&batch)[0 .. @sizeOf(ReadHeader) + count_ * @sizeOf(Record)];
     const copied = uaccess.copy_out(args[2], bytes, bytes.len) == .ok;
