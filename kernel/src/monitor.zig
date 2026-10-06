@@ -7996,10 +7996,9 @@ fn cmd_tabwm(m: *Monitor, args: []const []const u8) ExecError {
     if (args.len >= 1 and std.mem.eql(u8, args[0], "start")) {
         switch (esp_exec.exec_file("TABWM.BIN", &.{})) {
             .ok => {
-                m.console.puts("tabwm: starting ");
                 const info = esp_exec.loaded().?;
-                m.console.puts(info.name);
-                m.console.puts("\n");
+                var line: ["tabwm: starting ".len + process.name_max + 1]u8 = undefined;
+                m.console.puts(std.fmt.bufPrint(&line, "tabwm: starting {s}\n", .{info.name}) catch return .not_implemented);
                 return .none;
             },
             .no_disk => {

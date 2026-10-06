@@ -154,6 +154,50 @@ const InterleavingConsole = struct {
     }
 };
 
+const RecordingConsole = struct {
+    mock: console.MockConsole(256) = .{},
+    writes: usize = 0,
+
+    const vtable = console.Console.VTable{
+        .write = write,
+        .flush = flush,
+        .readByte = read,
+    };
+
+    fn handle(self: *RecordingConsole) console.Console {
+        return .{ .ctx = self, .vtable = &vtable };
+    }
+
+    fn write(ctx: *anyopaque, bytes: []const u8) void {
+        const self: *RecordingConsole = @ptrCast(@alignCast(ctx));
+        self.writes += 1;
+        self.mock.console().write(bytes);
+    }
+
+    fn flush(_: *anyopaque) void {}
+    fn read(_: *anyopaque) ?u8 {
+        return null;
+    }
+};
+
+test "monitor: tabwm startup is exactly one complete console write" {
+    try arm_allocator(&gap_test_ram);
+    mmu.reset();
+    _ = scheduler.init();
+    defer uaccess.init();
+    const image = one_segment_gap_elf(0x30_0000);
+    test_reset_share();
+    defer virtio_file.set_test_share(null);
+    test_seed_share("TABWM.BIN", &image);
+    var env = TestEnv.init();
+    var mon = env.monitor();
+    var recorded = RecordingConsole{};
+    mon.console = recorded.handle();
+    try std.testing.expectEqual(ExecError.none, exec(&mon, &.{ "tabwm", "start" }));
+    try std.testing.expectEqualStrings("tabwm: starting TABWM.BIN\n", recorded.mock.contents());
+    try std.testing.expectEqual(@as(usize, 1), recorded.writes);
+}
+
 test "monitor: accounting rows survive a foreign write at every boundary (#1965)" {
     var env = TestEnv.init();
     var mon = env.monitor();
@@ -1728,7 +1772,7 @@ test "monitor: syscalls is registered and reports deterministic rows" {
     try std.testing.expectEqualStrings("numbered syscall table and counters", lookup("syscalls").?.help);
     try std.testing.expectEqual(ExecError.none, exec(&mon, &.{"syscalls"}));
     try std.testing.expectEqualStrings(
-        "syscalls: slots=64 implemented=81\n" ++
+        "syscalls: slots=64 implemented=82\n" ++
             "  0 sys_ping calls=0\n" ++
             "  1 sys_write calls=0\n" ++
             "  2 sys_yield calls=0\n" ++
@@ -1809,7 +1853,8 @@ test "monitor: syscalls is registered and reports deterministic rows" {
             "  77 sys_file_sync calls=0\n" ++
             "  78 sys_time_set calls=0\n" ++
             "  79 sys_fs_metadata calls=0\n" ++
-            "  80 sys_socket calls=0\n",
+            "  80 sys_socket calls=0\n" ++
+            "  81 sys_trace calls=0\n",
         env.mock.contents(),
     );
 }
