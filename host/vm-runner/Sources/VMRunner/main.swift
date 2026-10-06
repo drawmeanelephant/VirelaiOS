@@ -3940,6 +3940,12 @@ func startTCPConsoleBridge(port: UInt16, bindHost: String) {
             var clen = socklen_t(MemoryLayout<sockaddr>.size)
             let c = accept(s, &caddr, &clen)
             if c < 0 { if errno == EINTR { continue }; break }
+            // A peer that closes while guest output is streaming makes the
+            // tee's next write() raise SIGPIPE, which kills the whole runner
+            // (exit 141) before the serving loop reads the EOF. Fail the write
+            // with EPIPE instead, so the existing drop path handles it.
+            var noSigPipe: Int32 = 1
+            _ = setsockopt(c, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout<Int32>.size))
             tcpClientLock.lock()
             let busy = tcpClientServing
             if !busy { tcpClientServing = true }
