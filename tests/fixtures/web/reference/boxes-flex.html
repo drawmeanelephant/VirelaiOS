@@ -1,0 +1,30 @@
+<!doctype html>
+<!-- Authored for VirelaiOS, 2026-10-05; repository LICENSE; no copied site bytes.
+Flexbox section 9; body margin=0; containers stack, no margins or borders.
+row=(0,0,300,40), gap=10, bases=50 each, free=130, grow=1:2:0.
+Floors 43/86/0, residual 1 to first eligible item in DOM order:
+r1=(0,0,94,40), r2=(104,0,136,40), r3=(250,0,50,40).
+shrink=(0,40,180,20), bases=120,60,60, shrink=1:
+s1=(0,40,90,20), s2=(90,40,45,20), s3=(135,40,45,20).
+wrap=(0,60,130,50), basis=60, gap=10, item height=20:
+w1=(0,60,60,20), w2=(70,60,60,20), w3=(0,90,60,20).
+column=(0,110,40,100), basis=20, gap=10, grow=1 each:
+c1=(0,110,40,45), c2=(0,165,40,45).
+-->
+<html><head><title>Flex arithmetic</title><style>
+body { margin:0; }
+.row { display:flex; width:300px; height:40px; gap:10px; }
+.row div { flex-basis:50px; }
+#r1 { flex-grow:1; } #r2 { flex-grow:2; }
+.shrink { display:flex; width:180px; height:20px; }
+.shrink div { flex-basis:60px; } #s1 { flex-basis:120px; }
+.wrap { display:flex; flex-wrap:wrap; width:130px; height:50px; gap:10px; align-items:flex-start; }
+.wrap div { flex-basis:60px; height:20px; }
+.column { display:flex; flex-direction:column; width:40px; height:100px; gap:10px; }
+.column div { flex-basis:20px; flex-grow:1; }
+</style></head><body>
+<div class="row"><div id="r1"></div><div id="r2"></div><div id="r3"></div></div>
+<div class="shrink"><div id="s1"></div><div id="s2"></div><div id="s3"></div></div>
+<div class="wrap"><div id="w1"></div><div id="w2"></div><div id="w3"></div></div>
+<div class="column"><div id="c1"></div><div id="c2"></div></div>
+</body></html>

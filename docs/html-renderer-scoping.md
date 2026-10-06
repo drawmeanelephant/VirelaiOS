@@ -7,6 +7,10 @@
   consumer is `WEB.ELF` over `user/go/webrender`. Read the design decisions
   here; read ADR 0028 Amendment C for what shipped and where each rung's
   probe lives now. The paths named below are the record, not the tree.
+- **M93a #1993 (2026-10-05):** [ADR 0028 Amendment D](decisions/0028-html-renderer.md#amendment-d--m93a-1993-declared-css-subset-and-frozen-contract)
+  proposes a declared CSS subset and block/flex layout for WEB.ELF.
+  It awaits owner approval. The metrics, paths and UA-only restrictions
+  below describe the historical slices, not an additional current contract.
 - Claim: #1200 · Umbrella: #1201 · Slices: #1202 / #1203 / #1204 / #1205 / #1206 / #1207
 - Related: ADR 0010 (userland storage), ADR 0011 (desktop platform),
   ADR 0016 (pixel ownership), ADR 0009 (app events), `tools/gate/SPEC.md`
@@ -30,8 +34,10 @@ and every later slice (images, links, fetch) has a place to land.
 ## Non-goals for the whole arc (hard lines)
 
 - **No JavaScript.** Not an interpreter, not a subset, not "later".
-- **No CSS cascade.** One fixed UA stylesheet compiled into the binary — a
-  table of per-tag metrics, not a parser. A page cannot change the styling.
+- **CSS policy:** historically one fixed UA table with no author styling.
+  M93's proposed UA < author cascade is limited to Amendment D's closed
+  subset, diagnostics and budgets. It takes effect only after owner approval;
+  no unrestricted CSS engine is authorized.
 - **No network until S5.** Fetching is S5 over the existing FETCH/HTTP
   seam, and only after the local render path is honest.
 - **No kernel changes, no new syscalls.** The renderer is a userland app; the

@@ -1,0 +1,12 @@
+<!doctype html>
+<!-- Authored for VirelaiOS, 2026-10-05; repository LICENSE; no copied site bytes.
+CSS 2.1 sections 8/10, content-box arithmetic, no font metric involved:
+outer border=(10,10,220,60), content=(20,20,200,40).
+220=200+2*8+2*2; 60=40+2*8+2*2.
+next border/content=(0,80,100,20): 70+max(10,6)=80.
+-->
+<html><head><title>Block arithmetic</title><style>
+body { margin:0; }
+#outer { width:200px; height:40px; margin:10px; padding:8px; border:2px solid #123456; }
+#next { width:100px; height:20px; margin-top:6px; }
+</style></head><body><div id="outer"></div><div id="next"></div></body></html>

@@ -1,0 +1,10 @@
+<!doctype html>
+<!-- Authored for VirelaiOS, 2026-10-05; repository LICENSE; no copied site bytes. -->
+<html><head><title>GET form controls</title><style>
+form { display:flex; flex-wrap:wrap; gap:8px; padding:8px; }
+input,select,button { border:1px solid gray; }
+</style></head><body>
+<form action="/search" method="get"><input name="q" value="Zig"><input name="disabled" value="skip" disabled><input name="hidden" type="hidden" value="yes">
+<select name="section"><optgroup label="Docs"><option value="api" selected>API</option><option value="guide">Guide</option></optgroup></select>
+<input type="checkbox" name="exact" value="1" checked><button type="submit" name="go" value="search">Search</button></form>
+<form action="/post" method="post"><button type="submit">POST is not supported</button></form></body></html>
