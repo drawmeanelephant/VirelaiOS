@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("<p>ok <<<< <em>unclosed <b>bold text that must remain readable</b>\x0a<div><p>implicit close<p>second\x0a<td>orphan cell text\x0a")

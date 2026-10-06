@@ -79,7 +79,7 @@ func VoidElement(tag string) bool {
 // SkipSubtree reports whether the element's content is never rendered.
 func SkipSubtree(tag string) bool {
 	switch tag {
-	case "script", "style", "head", "title", "meta", "link", "template", "noscript":
+	case "script", "style", "head", "title", "meta", "link", "template":
 		return true
 	}
 	return false
@@ -110,11 +110,13 @@ func FormControl(tag string) bool {
 }
 
 type parser struct {
-	src       []byte
-	pos       int
-	doc       *Document
-	stack     []*Node
-	textBytes int
+	src   []byte
+	pos   int
+	doc   *Document
+	stack []*Node
+	html  *Node
+	head  *Node
+	body  *Node
 }
 
 // ParseHTML parses src into a Document. It never panics and never drops text:
@@ -123,70 +125,147 @@ func ParseHTML(src []byte) *Document {
 	doc := &Document{Root: &Node{Kind: KindElement, Tag: "document"}}
 	p := &parser{src: src, doc: doc}
 	p.stack = []*Node{doc.Root}
+	p.html = &Node{Kind: KindElement, Tag: "html"}
+	p.push(p.html)
+	p.head = &Node{Kind: KindElement, Tag: "head"}
+	p.addChild(p.html, p.head)
 
 	for p.pos < len(p.src) {
 		if doc.Nodes >= MaxNodes {
 			doc.Truncated = true
 			break
 		}
-		c := p.src[p.pos]
-		if c != '<' {
-			p.appendText()
-			continue
-		}
-		if !p.consumeMarkup() {
-			// A stray '<' that starts no markup: keep it as text.
-			p.appendTextByte('<')
-			if len(p.src) > 0 {
-				p.pos++
+		if p.src[p.pos] == '<' {
+			if !p.consumeMarkup() {
+				p.appendStrayText()
 			}
+		} else {
+			p.appendText()
 		}
 	}
+	p.ensureBody()
+	p.unwrapNoScript(doc.Root)
 	return doc
 }
 
 func (p *parser) top() *Node { return p.stack[len(p.stack)-1] }
 
-func (p *parser) push(n *Node) {
-	p.top().Children = append(p.top().Children, n)
+func (p *parser) addChild(parent, n *Node) bool {
+	if p.doc.Nodes >= MaxNodes {
+		p.doc.Truncated = true
+		return false
+	}
+	parent.Children = append(parent.Children, n)
 	p.doc.Nodes++
+	if n.Kind == KindText {
+		p.doc.TextBytes += len(n.Text)
+	}
+	return true
+}
+
+func (p *parser) push(n *Node) bool {
+	if !p.addChild(p.top(), n) {
+		return false
+	}
 	p.stack = append(p.stack, n)
+	return true
 }
 
 func (p *parser) appendTextNode(s string) {
 	if s == "" {
 		return
 	}
-	n := &Node{Kind: KindText, Text: s}
-	p.top().Children = append(p.top().Children, n)
-	p.doc.Nodes++
-	p.textBytes += len(s)
-	p.doc.TextBytes = p.textBytes
+	if p.top() == p.html && (p.body != nil || strings.TrimSpace(s) != "") {
+		p.ensureBody()
+	}
+	if p.top() == p.head && strings.TrimSpace(s) != "" {
+		p.ensureBody()
+	}
+	p.addChild(p.top(), &Node{Kind: KindText, Text: s})
 }
 
-// appendText consumes text up to the next '<' and appends it decoded.
+// appendText preserves the tokenizer's existing text-run boundaries.
 func (p *parser) appendText() {
 	start := p.pos
 	for p.pos < len(p.src) && p.src[p.pos] != '<' {
 		p.pos++
 	}
-	if p.pos == start {
-		return
-	}
 	p.appendTextNode(DecodeEntities(string(p.src[start:p.pos])))
 }
 
-func (p *parser) appendTextByte(b byte) {
-	if p.top().Kind == KindElement {
-		// Coalesce with a trailing text sibling so stray '<' does not create
-		// a node per byte on adversarial input.
-		kids := p.top().Children
-		if n := len(kids); n > 0 && kids[n-1].Kind == KindText {
-			kids[n-1].Text += string(b)
+// Batch adjacent stray '<' bytes, but retain their existing coalescing with
+// the previous run. Copying once avoids quadratic work on '<<<<'.
+func (p *parser) appendStrayText() {
+	start := p.pos
+	p.pos++
+	for p.pos < len(p.src) && p.src[p.pos] == '<' {
+		if p.pos+1 < len(p.src) {
+			next := p.src[p.pos+1]
+			if isNameStart(next) || next == '!' || next == '?' || next == '/' {
+				break
+			}
+		}
+		p.pos++
+	}
+	text := string(p.src[start:p.pos])
+	kids := p.top().Children
+	if len(kids) > 0 && kids[len(kids)-1].Kind == KindText {
+		kids[len(kids)-1].Text += text
+		p.doc.TextBytes += len(text)
+	} else {
+		p.appendTextNode(text)
+	}
+}
+
+func (p *parser) ensureBody() {
+	if p.body == nil {
+		body := &Node{Kind: KindElement, Tag: "body"}
+		if !p.addChild(p.html, body) {
 			return
 		}
+		p.body = body
 	}
-	p.appendTextNode(string(b))
+	if len(p.stack) <= 2 || p.stack[2] == p.head {
+		p.stack = []*Node{p.doc.Root, p.html, p.body}
+	}
+}
+
+// Keep the original fallback descendants, but remove the noscript wrapper:
+// the frozen UA style table still skips that tag. No style/layout change is
+// needed, and script/style descendants remain inert.
+func (p *parser) unwrapNoScript(n *Node) {
+	var children []*Node
+	for i, c := range n.Children {
+		p.unwrapNoScript(c)
+		if c.Tag == "noscript" {
+			if children == nil {
+				children = append(make([]*Node, 0, len(n.Children)), n.Children[:i]...)
+			}
+			children = append(children, c.Children...)
+			p.doc.Nodes--
+		} else if children != nil {
+			children = append(children, c)
+		}
+	}
+	if children != nil {
+		n.Children = children
+	}
+}
+
+func headElement(tag string) bool {
+	switch tag {
+	case "base", "link", "meta", "title", "style", "script", "template":
+		return true
+	}
+	return false
+}
+
+func mergeAttrs(dst, src *Node) {
+	for _, a := range src.Attrs {
+		if !dst.HasAttr(a.Name) && len(dst.Attrs) < MaxAttrCount {
+			dst.Attrs = append(dst.Attrs, a)
+		}
+	}
 }
 
 // consumeMarkup parses one '<...>' construct. Returns false when the byte
@@ -247,8 +326,21 @@ func (p *parser) closeTag() bool {
 		return true
 	}
 	p.pos = end + 1
+	// The document skeleton is unique. Later content resumes in its body,
+	// not beside html, and a stray head close cannot close body descendants.
+	switch name {
+	case "html", "body":
+		p.ensureBody()
+		p.stack = []*Node{p.doc.Root, p.html, p.body}
+		return true
+	case "head":
+		if len(p.stack) > 2 && p.stack[2] == p.head {
+			p.stack = p.stack[:2]
+		}
+		return true
+	}
 	// Pop to the nearest matching open element; unknown closes are ignored.
-	for j := len(p.stack) - 1; j > 0; j-- {
+	for j := len(p.stack) - 1; j > 2; j-- {
 		if p.stack[j].Tag == name {
 			p.stack = p.stack[:j]
 			return true
@@ -329,6 +421,7 @@ func (p *parser) openTag() bool {
 		if attrCount < MaxAttrCount && len(name) <= 64 {
 			if len(val) > MaxAttrLen {
 				val = val[:MaxAttrLen]
+				p.doc.Truncated = true
 			}
 			node.Attrs = append(node.Attrs, Attr{Name: name, Value: val})
 			attrCount++
@@ -338,50 +431,175 @@ func (p *parser) openTag() bool {
 	}
 	p.pos = i
 
-	// Implicit closes (the HTML "auto-close" rules that matter here). A new
-	// sibling of a cell/item/entry closes the previous one, and a block-level
-	// start tag closes an open <p>. Only the top of stack is inspected, so
-	// real nesting (tr > th) is never destroyed.
-	if len(p.stack) > 1 {
-		top := p.stack[len(p.stack)-1].Tag
-		closeTop := false
-		switch tag {
-		case "li":
-			closeTop = top == "li"
-		case "td", "th":
-			closeTop = top == "td" || top == "th"
-		case "tr":
-			closeTop = top == "tr"
-		case "dt", "dd":
-			closeTop = top == "dt" || top == "dd"
-		case "html", "body":
-			closeTop = top == tag
-		default:
-			if BlockElement(tag) && top == "p" {
-				closeTop = true
-			}
+	switch tag {
+	case "html":
+		mergeAttrs(p.html, node)
+		return true
+	case "head":
+		if p.body == nil {
+			mergeAttrs(p.head, node)
+			p.stack = []*Node{p.doc.Root, p.html, p.head}
 		}
-		if closeTop {
-			p.stack = p.stack[:len(p.stack)-1]
+		return true
+	case "body":
+		p.ensureBody()
+		if p.body != nil {
+			mergeAttrs(p.body, node)
 		}
-	}
-
-	if VoidElement(tag) {
-		p.top().Children = append(p.top().Children, node)
-		p.doc.Nodes++
 		return true
 	}
-	if len(p.stack) >= MaxDepth {
+	if p.body == nil && headElement(tag) {
+		if p.top() == p.html {
+			p.stack = append(p.stack, p.head)
+		}
+	} else {
+		p.ensureBody()
+	}
+
+	p.implicitClose(tag)
+	p.implyTableParents(tag)
+	if !p.addChild(p.top(), node) {
+		return true
+	}
+	atDepthCap := len(p.stack) >= MaxDepth
+	if atDepthCap && !VoidElement(tag) {
 		// Depth cap: the element's content still lands in the enclosing
 		// block in document order (text is never dropped), and the
 		// truncation is visible on the Document.
-		p.top().Children = append(p.top().Children, node)
-		p.doc.Nodes++
 		p.doc.Truncated = true
+	}
+	if rawTextElement(tag) || tag == "title" || tag == "textarea" {
+		// Text states consume their own end tag even at a cap. Otherwise
+		// script bytes could become visible markup in the enclosing block.
+		p.consumeTextElement(node, !atDepthCap)
 		return true
 	}
-	p.push(node)
+	if VoidElement(tag) || atDepthCap {
+		return true
+	}
+	p.stack = append(p.stack, node)
 	return true
+}
+
+func rawTextElement(tag string) bool { return tag == "script" || tag == "style" }
+
+// Raw text/RCDATA recognize only an ASCII-case-insensitive, delimited end
+// tag for the current element. A quoted '>' in a malformed end tag is not
+// its terminator. Everything else, including '<' and fake end-tag prefixes,
+// belongs to the one text node. EOF without a complete end tag is text too.
+func (p *parser) consumeTextElement(n *Node, keep bool) {
+	start, textEnd, end := p.pos, len(p.src), len(p.src)
+	for i := start; i+2+len(n.Tag) <= len(p.src); i++ {
+		if p.src[i] != '<' || p.src[i+1] != '/' {
+			continue
+		}
+		j := i + 2
+		match := true
+		for k := range n.Tag {
+			c := p.src[j+k]
+			if c >= 'A' && c <= 'Z' {
+				c += 'a' - 'A'
+			}
+			if c != n.Tag[k] {
+				match = false
+				break
+			}
+		}
+		j += len(n.Tag)
+		if !match || j >= len(p.src) || (!isSpace(p.src[j]) && p.src[j] != '/' && p.src[j] != '>') {
+			continue
+		}
+		quote := byte(0)
+		for ; j < len(p.src); j++ {
+			c := p.src[j]
+			if quote != 0 {
+				if c == quote {
+					quote = 0
+				}
+			} else if c == '"' || c == '\'' {
+				quote = c
+			} else if c == '>' {
+				textEnd, end = i, j+1
+				break
+			}
+		}
+		// If the candidate ends at EOF, no later complete end tag exists
+		// outside its unterminated quote. Do not scan its suffix again.
+		break
+	}
+	p.pos = end
+	if keep && textEnd > start {
+		text := string(p.src[start:textEnd])
+		if !rawTextElement(n.Tag) {
+			text = DecodeEntities(text)
+		}
+		p.addChild(n, &Node{Kind: KindText, Text: text})
+	} else if !keep && textEnd > start {
+		p.doc.Truncated = true
+	}
+}
+
+// popInScope closes the nearest target through inline descendants, without
+// crossing a nested list/table/select (or the document skeleton).
+func (p *parser) popInScope(targets, barriers string) {
+	for i := len(p.stack) - 1; i > 2; i-- {
+		tag := "|" + p.stack[i].Tag + "|"
+		if strings.Contains(targets, tag) {
+			p.stack = p.stack[:i]
+			return
+		}
+		if strings.Contains(barriers, tag) {
+			return
+		}
+	}
+}
+
+func (p *parser) implicitClose(tag string) {
+	switch tag {
+	case "li":
+		p.popInScope("|li|", "|ul|ol|")
+	case "dt", "dd":
+		p.popInScope("|dt|dd|", "|dl|")
+	case "td", "th":
+		p.popInScope("|td|th|", "|tr|table|")
+	case "tr":
+		p.popInScope("|tr|", "|table|thead|tbody|tfoot|")
+	case "thead", "tbody", "tfoot":
+		p.popInScope("|thead|tbody|tfoot|", "|table|")
+	case "option":
+		p.popInScope("|option|", "|select|optgroup|")
+	case "optgroup":
+		p.popInScope("|option|", "|select|optgroup|")
+		p.popInScope("|optgroup|", "|select|")
+	default:
+		if BlockElement(tag) || strings.Contains("|details|dialog|hgroup|menu|search|summary|", "|"+tag+"|") {
+			if p.top().Tag == "p" {
+				p.stack = p.stack[:len(p.stack)-1]
+			} else if tag != "img" && !FormControl(tag) {
+				p.popInScope("|p|", "|table|td|th|select|")
+			}
+		}
+	}
+}
+
+func (p *parser) implyTableParents(tag string) {
+	if tag != "tr" && tag != "td" && tag != "th" {
+		return
+	}
+	if p.top().Tag == "table" {
+		p.pushImplied("tbody")
+	}
+	if (tag == "td" || tag == "th") && (p.top().Tag == "thead" || p.top().Tag == "tbody" || p.top().Tag == "tfoot") {
+		p.pushImplied("tr")
+	}
+}
+
+func (p *parser) pushImplied(tag string) {
+	if len(p.stack) >= MaxDepth {
+		p.doc.Truncated = true
+		return
+	}
+	p.push(&Node{Kind: KindElement, Tag: tag})
 }
 
 func isSpace(c byte) bool { return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' }

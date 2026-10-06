@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("<html><body>\x0a<h3>Support</h3>\x0a<table>\x0a<thead><tr><th>Feature</th><th>State</th></tr></thead>\x0a<tbody>\x0a<tr><td>headings</td><td>yes</td></tr>\x0a<tr><td>tables</td><td>equal width columns</td></tr>\x0a</tbody>\x0a</table>\x0a<dl><dt>HTML</dt><dd>a documented subset</dd><dt>CSS</dt><dd>one compiled-in table</dd></dl>\x0a</body></html>\x0a")
