@@ -2048,3 +2048,41 @@ gets RST, FIN/reset/timeout report and close, a process dies with a
 listener and its replacement binds it, and DNS success/silence both
 release resources. These boots are separate from the injected-core
 fixture. This is not Boris publication/authentication or a TLS stack.
+
+## Proposed amendment (2026-10-05, M94a #2001): observability reservations
+
+**R1, awaiting owner approval with ADR 0043.** Slots 0–80 and the 128-slot
+namespace remain unchanged. Three additional rows are registered as
+**ENOSYS (-4) stubs for every input**. They allocate no ring, copy no user
+memory and arm no timer. They are reservations, so the existing monitor
+`syscalls` report remains byte-identical (81 implemented rows); each feature
+module exposes its row when implemented by its own follow-on card.
+
+| Slot | Name | x0–x3 | Implemented result conventions |
+|---:|---|---|---|
+| 81 | `sys_trace` | `op, token, ptr, bytes` | ARM=0 returns positive token; DISARM=1/FILTER=2 return 0; READ=3 returns whole-record count; STATUS=4 returns 0; ARM_EXEC=5 returns an already-traced child pid |
+| 82 | `sys_profile` | `op, token, ptr, bytes` | ARM=0 returns positive token; DISARM=1 returns 0; READ=3 returns whole-record count; STATUS=4 returns 0; op 2 and unknown ops refuse EINVAL |
+| 83 | `sys_memstat` | `pid, ptr, bytes` (x3 ignored) | 240 bytes on success; exactly 240 output bytes required |
+
+Trace/profile ignore x4/x5, and memstat ignores x3–x5. The register/result
+convention remains x8 number, x0–x5 arguments, signed negative native errors
+in x0. No new errno or principal-elevation surface. Unknown/reserved slots
+84–127 continue answering ENOSYS.
+
+ADR 0043 D1 freezes ops/configs/session ownership and the arm-before-exec
+ordering. D2 freezes the **896-byte trace** (all six args, result, errno,
+pid/tid/CNTPCT), **176-byte sample** (pid/tid/PC plus 16 bounded caller
+frames), **240-byte memstat** (five receipt fields plus live counts and
+region sizes) and **24-byte read header**. D3 freezes ring and loss bounds.
+Records are version-1, little-endian, reserved/unused bytes zero. Same-uid
+observation is allowed without a capability; cross-uid requires
+`cap_proc_admin`. Slots 70/71 remain redacted, including args/results and
+all user-string copies. The legacy serial tracer continues suppressing
+their whole lines.
+
+`kernel/src/syscall_abi.zig` is the machine-readable name/arg-kind table for
+0–83, including op-specific shapes and whole-slot redaction. The generated
+Go metadata mirror is `user/go/vi/slots_gen.go`; `go generate ./vi` from
+`user/go` regenerates it and the host mirror test refuses drift.
+After M94a merges, **M94b–d do not edit this amendment or any frozen layout**.
+A contract change requires stopping for owner review.

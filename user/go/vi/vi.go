@@ -5,6 +5,8 @@
 // logic remains unit-testable.
 package vi
 
+//go:generate go test -run ^TestSyscallSlotsMirrorKernel$ -args -update-syscall-slots
+
 import (
 	"bytes"
 	"encoding/hex"
