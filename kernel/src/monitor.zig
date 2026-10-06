@@ -4699,9 +4699,11 @@ fn cmd_kill(m: *Monitor, args: []const []const u8) ExecError {
     };
     switch (scheduler.request_kill(task_id)) {
         .ok => {
-            m.console.puts("kill: ");
-            m.console.puts(info.name);
-            m.console.puts(" armed\n");
+            // The transport locks each write, not the whole command.
+            // Process names are bounded by name_max; include the newline
+            // in the same write so another core cannot split this receipt.
+            var buf: ["kill: ".len + process.name_max + " armed\n".len]u8 = undefined;
+            m.console.puts(std.fmt.bufPrint(&buf, "kill: {s} armed\n", .{info.name}) catch return .not_implemented);
             return .none;
         },
         .not_found => {
