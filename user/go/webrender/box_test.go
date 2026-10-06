@@ -108,7 +108,7 @@ func TestBoxCompatibilityAndStyleCopies(t *testing.T) {
 		t.Fatal(l)
 	}
 	for _, it := range l.Items {
-		if it.Kind == ItemText && (it.FontPx != 0 || it.LineHeightPx != 0) {
+		if it.Kind == ItemText && (it.FontPx != 0 || it.LineHeightPx != 0 || it.Box != nil) {
 			t.Fatal("legacy size seam changed", it)
 		}
 	}
@@ -123,6 +123,16 @@ func TestBoxCompatibilityAndStyleCopies(t *testing.T) {
 	st.Width = px(100)
 	if boxID(t, tree, "a").Style.Width != px(25) {
 		t.Fatal("box style is not an owned copy")
+	}
+	_, native := exactLayout(t, "<p>transparent</p>", func(n *Node) webstyle.ComputedStyle {
+		s := blockStyle(n)
+		s.Color = webstyle.Color{Kind: webstyle.ColorRGBA}
+		return s
+	})
+	for _, it := range native.Items {
+		if it.Kind == ItemText && (it.Box == nil || it.Box.Style.Color.Kind != webstyle.ColorRGBA || it.Box.Style.Color.RGBA != 0) {
+			t.Fatal("M93e lost the explicit transparent foreground source", it)
+		}
 	}
 }
 
@@ -280,6 +290,24 @@ func TestBoxParentBottomAndEmptyCollapse(t *testing.T) {
 	}
 	if got := boxID(t, tree, "b").Content; got != (BoxRect{Y: 56, W: 100, H: 10}) {
 		t.Fatal(got)
+	}
+}
+
+func TestFlexUnsetFactorsIgnoreStoredValue(t *testing.T) {
+	tree, _ := exactLayout(t, `<div id="r"><div id="a"></div><div id="b"></div></div>`, func(n *Node) webstyle.ComputedStyle {
+		s := blockStyle(n)
+		if n.Attr("id") == "r" {
+			s.Display, s.Width, s.Height = webstyle.DisplayFlex, px(100), px(20)
+		}
+		if n.Attr("id") == "a" || n.Attr("id") == "b" {
+			s.Width, s.FlexGrow = px(20), webstyle.FlexFactor{Value: 16}
+		}
+		return s
+	})
+	for _, id := range []string{"a", "b"} {
+		if w := boxID(t, tree, id).Content.W; w != 20 {
+			t.Fatal(id, w)
+		}
 	}
 }
 

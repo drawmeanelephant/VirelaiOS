@@ -22,6 +22,7 @@ const (
 // Item is one positioned paint primitive in content coordinates (0,0 = top
 // left of the document, scrolling is applied at paint time).
 type Item struct {
+	Box                  *Box // CSS style source; nil for logical-size legacy items
 	Kind                 ItemKind
 	X, Y                 int
 	W, H                 int

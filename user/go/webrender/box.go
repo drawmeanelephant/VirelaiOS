@@ -456,7 +456,7 @@ func (b *boxLayout) layout(box *Box, containing, forcedW, forcedH int, boundary 
 			color = textStyle(s).Color
 		}
 		bgIndex = len(b.out.Items)
-		b.emit(Item{Kind: ItemRect, W: box.Border.W, Bg: color})
+		b.emit(Item{Box: box, Kind: ItemRect, W: box.Border.W, Bg: color})
 	}
 	h := dimension(s.Height, 0)
 	if forcedH >= 0 {
@@ -477,7 +477,7 @@ func (b *boxLayout) layout(box *Box, containing, forcedW, forcedH int, boundary 
 	case box.Node != nil && FormControl(box.Node.Tag):
 		natural = b.control(box, w)
 	case box.Node != nil && box.Node.Tag == "hr":
-		b.emit(Item{Kind: ItemRule, X: box.Content.X, Y: box.Content.Y + 3, W: w, H: 1, Color: textStyle(s).Color})
+		b.emit(Item{Box: box, Kind: ItemRule, X: box.Content.X, Y: box.Content.Y + 3, W: w, H: 1, Color: textStyle(s).Color})
 		natural = 4
 	case s.Display == webstyle.DisplayFlex:
 		natural = b.flex(box, w, h, depth)
@@ -774,13 +774,17 @@ func (b *boxLayout) inline(parent *Box) int {
 			lineWidth, started = x, true
 			continue
 		}
-		it := Item{Kind: ItemText, X: parent.Content.X + x, Y: parent.Content.Y + y, W: token.w, H: token.st.LineHeightPx,
+		source := token.box
+		if source == nil {
+			source = parent
+		}
+		it := Item{Box: source, Kind: ItemText, X: parent.Content.X + x, Y: parent.Content.Y + y, W: token.w, H: token.st.LineHeightPx,
 			Text: token.text, Size: 1, FontPx: token.st.FontPx, LineHeightPx: token.st.LineHeightPx, Mono: token.st.Mono,
 			Bold: token.st.Bold, Italic: token.st.Italic, Color: token.st.Color, Target: token.target}
 		b.emit(it)
 		if token.target != "" && !b.stopped {
 			b.out.Links = append(b.out.Links, Link{X: it.X, Y: it.Y, W: it.W, H: it.H, Target: token.target})
-			b.emit(Item{Kind: ItemRule, X: it.X, Y: it.Y + it.H - 1, W: it.W, H: 1, Color: it.Color})
+			b.emit(Item{Box: source, Kind: ItemRule, X: it.X, Y: it.Y + it.H - 1, W: it.W, H: 1, Color: it.Color})
 		}
 		geometry = append(geometry, runGeometry{token.box, BoxRect{X: it.X, Y: it.Y, W: it.W, H: it.H}})
 		x += token.w
@@ -974,11 +978,14 @@ func (b *boxLayout) flex(parent *Box, w, h, depth int) int {
 	for _, c := range parent.Children {
 		cs := c.Style
 		p, border, m := lengths(cs.Padding, w), borderWidths(cs.Border), lengths(cs.Margin, w)
-		it := flexItem{box: c, grow: int(cs.FlexGrow.Value), shrink: 1, minimum: usedLength(cs.MinWidth, w, 0), maximum: usedLength(cs.MaxWidth, w, maxLayoutCoordinate),
+		it := flexItem{box: c, shrink: 1, minimum: usedLength(cs.MinWidth, w, 0), maximum: usedLength(cs.MaxWidth, w, maxLayoutCoordinate),
 			before: m.left, after: m.right, crossBefore: m.top, crossAfter: m.bottom, extra: p.left + p.right + border.left + border.right + m.left + m.right,
 			autoBefore: cs.Margin.Left.Kind == webstyle.LengthAuto, autoAfter: cs.Margin.Right.Kind == webstyle.LengthAuto,
 			crossAutoBefore: cs.Margin.Top.Kind == webstyle.LengthAuto, crossAutoAfter: cs.Margin.Bottom.Kind == webstyle.LengthAuto,
 			crossStretch: dimension(cs.Height, 0) < 0}
+		if cs.FlexGrow.Set {
+			it.grow = int(cs.FlexGrow.Value)
+		}
 		if cs.FlexShrink.Set {
 			it.shrink = int(cs.FlexShrink.Value)
 		}
@@ -1240,7 +1247,7 @@ func (b *boxLayout) image(box *Box, w, h int) int {
 		}
 		iw = w
 	}
-	b.emit(Item{Kind: ItemImage, X: box.Content.X, Y: box.Content.Y, W: max(1, iw), H: max(1, ih), Text: label, Img: image, Color: ColorMuted})
+	b.emit(Item{Box: box, Kind: ItemImage, X: box.Content.X, Y: box.Content.Y, W: max(1, iw), H: max(1, ih), Text: label, Img: image, Color: ColorMuted})
 	return max(1, ih)
 }
 
@@ -1260,8 +1267,8 @@ func (b *boxLayout) control(box *Box, w int) int {
 		cw = min(w, max(32, b.out.Text.Measure(label, st)+16))
 	}
 	x, y := box.Content.X, box.Content.Y
-	b.emit(Item{Kind: ItemRect, X: x, Y: y, W: cw, H: h, Bg: ColorSurface})
-	b.emit(Item{Kind: ItemText, X: x + 4, Y: y + 3, W: b.out.Text.Measure(label, st), H: st.LineHeightPx, Text: label, Size: 1,
+	b.emit(Item{Box: box, Kind: ItemRect, X: x, Y: y, W: cw, H: h, Bg: ColorSurface})
+	b.emit(Item{Box: box, Kind: ItemText, X: x + 4, Y: y + 3, W: b.out.Text.Measure(label, st), H: st.LineHeightPx, Text: label, Size: 1,
 		FontPx: st.FontPx, LineHeightPx: st.LineHeightPx, Color: st.Color})
 	return h
 }
