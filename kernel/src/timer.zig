@@ -424,17 +424,15 @@ pub fn maybe_heartbeat(con: *console.Console) void {
     for (&profile_pending, 0..) |*pending, c| {
         if (!pending.load(.acquire)) continue;
         const report = profile_reports[c];
-        con.puts("prof: timer core=");
-        con.print_u64(c);
-        con.puts(" irq=");
-        con.print_u64(report.irqs);
-        con.puts(" poll=0 elapsed_cntpct=");
-        con.print_u64(report.elapsed);
-        con.puts(" freq=");
-        con.print_u64(freq);
-        con.puts(" physical_ticks=");
-        con.print_u64(report.ticks);
-        con.puts("\n");
+        // One transport slice: a guest's stdout must not tear this row
+        // between its field writes. Formatting remains outside IRQ context.
+        var line: [192]u8 = undefined;
+        const text = std.fmt.bufPrint(
+            &line,
+            "prof: timer core={d} irq={d} poll=0 elapsed_cntpct={d} freq={d} physical_ticks={d}\n",
+            .{ c, report.irqs, report.elapsed, freq, report.ticks },
+        ) catch unreachable;
+        con.puts(text);
         pending.store(false, .release);
     }
     if (pending_irq_report) {
@@ -524,6 +522,55 @@ test "timer: first IRQ is reported separately from heartbeat cadence" {
         "timer irq delivered ppi=0x1e irq_ticks=1\n",
         mock.contents(),
     );
+}
+
+test "timer: sampling delivery report uses one complete transport write" {
+    const Capture = struct {
+        mock: console.MockConsole(1024) = .{},
+        writes: usize = 0,
+
+        fn write(ctx: *anyopaque, bytes: []const u8) void {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            self.writes += 1;
+            self.mock.console().puts(bytes);
+        }
+        fn flush(_: *anyopaque) void {}
+        fn read(_: *anyopaque) ?u8 {
+            return null;
+        }
+        const vtable = console.Console.VTable{ .write = write, .flush = flush, .readByte = read };
+    };
+    const saved_freq = freq;
+    const saved_heartbeat = pending_heartbeat;
+    const saved_irq = pending_irq_report;
+    const saved_reports = profile_reports;
+    var saved_pending: [4]bool = undefined;
+    for (&profile_pending, 0..) |*pending, c| {
+        saved_pending[c] = pending.load(.acquire);
+        pending.store(false, .release);
+    }
+    defer {
+        freq = saved_freq;
+        pending_heartbeat = saved_heartbeat;
+        pending_irq_report = saved_irq;
+        profile_reports = saved_reports;
+        for (&profile_pending, saved_pending) |*pending, saved| pending.store(saved, .release);
+    }
+    freq = 24_000_000;
+    pending_heartbeat = false;
+    pending_irq_report = false;
+    profile_reports[0] = .{ .irqs = 1000, .elapsed = 240_000_000, .ticks = 10 };
+    profile_pending[0].store(true, .release);
+    var capture = Capture{};
+    var con = console.Console{ .ctx = &capture, .vtable = &Capture.vtable };
+    maybe_heartbeat(&con);
+    try std.testing.expectEqual(@as(usize, 1), capture.writes);
+    try std.testing.expectEqualStrings(
+        "prof: timer core=0 irq=1000 poll=0 elapsed_cntpct=240000000 freq=24000000 physical_ticks=10\n",
+        capture.mock.contents(),
+    );
+    maybe_heartbeat(&con);
+    try std.testing.expectEqual(@as(usize, 1), capture.writes);
 }
 
 test "timer: ppi matching is exact" {
