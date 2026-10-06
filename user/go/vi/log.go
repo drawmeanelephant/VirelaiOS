@@ -2,6 +2,7 @@ package vi
 
 import (
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -95,6 +96,83 @@ func trimLogRing(body []byte, maxLines, maxBytes int) []byte {
 // normalized to one line and capped before it enters the ring. The returned
 // value is the underlying file error (zero on success).
 func Log(app, message string) int64 {
+	return appendAppLog(app, 0, "", message)
+}
+
+// LogLine is a parsed log row. Legacy rows have Level='I', an empty Tag and
+// Sequenced=false; Message and Raw preserve their original bytes.
+type LogLine struct {
+	Seq       uint64
+	Sequenced bool
+	Level     byte
+	Tag       string
+	Message   string
+	Raw       string
+}
+
+// LogLevel appends "<seq> <D|I|W|E> <tag> <message>". Tags are printable ASCII
+// tokens of at most 32 bytes (empty is allowed). The entire row, excluding LF,
+// stays within AppLogMaxLine. One producer owns an app's read/modify/write ring,
+// just as for Log; this is not an atomic cross-process append.
+func LogLevel(app string, level byte, tag, message string) int64 {
+	if !validLogLevel(level) || !validLogTag(tag) {
+		return -ErrEINVAL
+	}
+	return appendAppLog(app, level, tag, message)
+}
+
+func validLogLevel(level byte) bool {
+	return level == 'D' || level == 'I' || level == 'W' || level == 'E'
+}
+
+func validLogTag(tag string) bool {
+	if len(tag) > 32 {
+		return false
+	}
+	for i := range tag {
+		if tag[i] < '!' || tag[i] > '~' {
+			return false
+		}
+	}
+	return true
+}
+
+// ParseLogLine recognizes the additive format without reinterpreting malformed
+// or ordinary legacy rows. An empty tag is represented by two spaces.
+func ParseLogLine(raw string) LogLine {
+	plain := LogLine{Level: 'I', Message: raw, Raw: raw}
+	fields := strings.SplitN(raw, " ", 4)
+	if len(fields) != 4 || len(fields[1]) != 1 ||
+		!validLogLevel(fields[1][0]) || !validLogTag(fields[2]) {
+		return plain
+	}
+	seq, err := strconv.ParseUint(fields[0], 10, 64)
+	if err != nil || seq == 0 || strconv.FormatUint(seq, 10) != fields[0] {
+		return plain
+	}
+	return LogLine{Seq: seq, Sequenced: true, Level: fields[1][0],
+		Tag: fields[2], Message: fields[3], Raw: raw}
+}
+
+func levelLogRow(old []byte, level byte, tag, message string) (string, int64) {
+	var seq uint64
+	for _, raw := range strings.Split(string(old), "\n") {
+		if line := ParseLogLine(raw); line.Sequenced {
+			seq = line.Seq
+		}
+	}
+	if seq == ^uint64(0) {
+		return "", -ErrEINVAL // refuse wrap rather than repeat a sequence
+	}
+	prefix := strconv.FormatUint(seq+1, 10) + " " + string(level) + " " + tag + " "
+	message = oneLogLine(message)
+	if len(message) > AppLogMaxLine-len(prefix) {
+		message = message[:AppLogMaxLine-len(prefix)]
+	}
+	return prefix + message, 0
+}
+
+func appendAppLog(app string, level byte, tag, message string) int64 {
 	path := AppLogPath(app)
 	if path == "" {
 		return -ErrEINVAL
@@ -123,7 +201,15 @@ func Log(app, message string) int64 {
 	if len(old) > appLogMaxBytes {
 		old = old[len(old)-appLogMaxBytes:]
 	}
-	row := []byte(oneLogLine(message) + "\n")
+	line := oneLogLine(message)
+	if level != 0 {
+		var rc int64
+		line, rc = levelLogRow(old, level, tag, message)
+		if rc < 0 {
+			return rc
+		}
+	}
+	row := []byte(line + "\n")
 	next := append(append([]byte(nil), old...), row...)
 	next = trimLogRing(next, AppLogMaxLines, appLogMaxBytes)
 	return WriteFileSafe(path, next)

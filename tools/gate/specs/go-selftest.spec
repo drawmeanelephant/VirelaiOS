@@ -357,6 +357,252 @@ vgate_run 01 -- \
     --script2-after 'tabwm: sidebar-rendered' \
     --script-expect 'selftest: FAIL n=' --timeout 240
 
+# M94f: preserve run 01 and its pinned receipts above. Later boots use isolated
+# A/B rings; only after run 01's original asserts do we stage the new apps and
+# select wm=none. The producer stage waits for the viewer's first completed
+# poll, and the run ends on its own completion marker.
+vgate_file log-tail.txt <<'EOF'
+exec LOGVIEW.ELF -text -polls 10 -follow export
+EOF
+vgate_file log-level.txt <<'EOF'
+exec LOGVIEW.ELF -text -level W -polls 6 -follow export
+EOF
+vgate_file log-tag.txt <<'EOF'
+exec LOGVIEW.ELF -text -tag net -polls 6 -follow export
+EOF
+vgate_file log-app.txt <<'EOF'
+exec LOGVIEW.ELF -text -app A -polls 6 -follow export
+EOF
+vgate_file log-grep.txt <<'EOF'
+exec LOGVIEW.ELF -text -grep line=000003 -polls 6 -follow export
+EOF
+vgate_file log-producers.txt <<'EOF'
+exec LOGFIX.ELF A 1 12
+exec LOGFIX.ELF B 1 12
+EOF
+vgate_file log-filter-producers.txt <<'EOF'
+exec LOGFIX.ELF A 4 4
+exec LOGFIX.ELF B 4 4
+EOF
+vgate_file log-reset.py <<'PY'
+import os, shutil
+share = os.environ["VG_SHARE"]
+for name in ("APPLOG", "LOGEXPORT"):
+    shutil.rmtree(os.path.join(share, name), ignore_errors=True)
+os.mkdir(os.path.join(share, "APPLOG"))
+PY
+vgate_file log-tasks.txt <<'EOF'
+tasks
+EOF
+
+vgate_run tail -- --script '$RUN_DIR/log-tail.txt' \
+    --script2 '$RUN_DIR/log-producers.txt' --script2-after 'logview: ready text' \
+    --script3 '$RUN_DIR/log-tasks.txt' --script3-after 'logfix: active app=B' \
+    --script-expect 'logview: done' --timeout 45
+vgate_assert tail serial-contains 'exec: loaded LOGVIEW.ELF'
+vgate_assert tail serial-count 'exec: loaded LOGFIX.ELF' 2
+vgate_assert tail serial-contains 'logview: A 1 D net line=000001'
+vgate_assert tail serial-contains 'logview: B 1 D net line=000001'
+vgate_assert tail serial-absent 'gap app='
+vgate_assert tail serial-absent 'logview: error'
+vgate_assert tail serial-absent 'logfix: error'
+vgate_assert tail serial-absent '[EXC] parking:'
+vgate_assert tail python <<'PY'
+import os, re, shutil
+serial = open(os.environ["VG_SER"]).read()
+rows = re.findall(r"^logview: ([AB]) ([0-9]+) ([DIWE]) (net|ui) line=([0-9]{6})$", serial, re.M)
+assert {r[0] for r in rows} == {"A", "B"}, "both concurrent rings must arrive"
+for app in ("A", "B"):
+    seqs = [int(r[1]) for r in rows if r[0] == app]
+    assert seqs == list(range(1, len(seqs)+1)) and len(seqs) >= 6, (app, seqs)
+for app, seq, level, tag, msg in rows:
+    i = int(seq)
+    assert level == "DIWE"[(i-1)%4] and tag == ("net" if i%2 else "ui") and int(msg) == i
+apps = "".join(r[0] for r in rows)
+assert "ABA" in apps or "BAB" in apps, ("not a live interleave", apps)
+tasks = re.findall(r"tasks: enabled=.*?pool=(\d+)/(\d+)", serial)
+assert tasks and all(int(n) <= 16 and int(cap) == 16 for n, cap in tasks), tasks
+assert any(int(n) == 15 for n, cap in tasks), ("three live Go runtimes expected", tasks)
+print("concurrent arrival tail and tasks observed:", apps, tasks)
+share = os.environ["VG_SHARE"]
+for app in ("A", "B"):
+    path = os.path.join(share, "LOGEXPORT", app + "-1.TXT")
+    got = open(path).read()
+    want = "".join("%s %s %s %s line=%s\n" % r for r in rows if r[0] == app)
+    assert got == want, ("export differs from observed view", app, got, want)
+    shutil.copy(path, "artifacts/go-selftest-log-tail-" + app + os.environ.get("VIRELAI_GATE_SUFFIX", "") + ".txt")
+PY
+
+vgate_run level -- --script '$RUN_DIR/log-level.txt' \
+    --script2 '$RUN_DIR/log-filter-producers.txt' --script2-after 'logview: ready text' \
+    --script-expect 'logview: done' --timeout 45
+vgate_assert level serial-contains 'logview: A 3 W net line=000003'
+vgate_assert level serial-contains 'logview: B 4 E ui line=000004'
+vgate_assert level serial-absent 'gap app='
+vgate_assert level python <<'PY'
+import os, re, shutil
+serial = open(os.environ["VG_SER"]).read()
+rows = re.findall(r"^logview: ([AB]) ([0-9]+) ([DIWE]) (net|ui) line=([0-9]{6})$", serial, re.M)
+assert {r[2] for r in rows} == {"W", "E"} and {r[0] for r in rows} == {"A", "B"}, rows
+share = os.environ["VG_SHARE"]
+for app in ("A", "B"):
+    path = os.path.join(share, "LOGEXPORT", app + "-1.TXT")
+    got = open(path).read()
+    want = "".join("%s %s %s %s line=%s\n" % r for r in rows if r[0] == app)
+    assert got == want, ("level export", got, want)
+    shutil.copy(path, "artifacts/go-selftest-log-level-" + app + os.environ.get("VIRELAI_GATE_SUFFIX", "") + ".txt")
+print("level >= W and exported bytes observed")
+PY
+
+vgate_run tag -- --script '$RUN_DIR/log-tag.txt' \
+    --script2 '$RUN_DIR/log-filter-producers.txt' --script2-after 'logview: ready text' \
+    --script-expect 'logview: done' --timeout 45
+vgate_assert tag serial-contains 'logview: A 1 D net line=000001'
+vgate_assert tag serial-contains 'logview: B 3 W net line=000003'
+vgate_assert tag serial-absent 'gap app='
+vgate_assert tag python <<'PY'
+import os, re, shutil
+rows = re.findall(r"^logview: ([AB]) ([0-9]+) ([DIWE]) (\w+) line=([0-9]{6})$", open(os.environ["VG_SER"]).read(), re.M)
+assert {r[3] for r in rows} == {"net"} and {r[2] for r in rows} == {"D", "W"}, rows
+share = os.environ["VG_SHARE"]
+for app in ("A", "B"):
+    path = os.path.join(share, "LOGEXPORT", app + "-1.TXT")
+    got = open(path).read()
+    want = "".join("%s %s %s %s line=%s\n" % r for r in rows if r[0] == app)
+    assert got == want, ("tag export", got, want)
+    shutil.copy(path, "artifacts/go-selftest-log-tag-" + app + os.environ.get("VIRELAI_GATE_SUFFIX", "") + ".txt")
+print("tag=net and exported bytes observed")
+PY
+
+vgate_run app -- --script '$RUN_DIR/log-app.txt' \
+    --script2 '$RUN_DIR/log-filter-producers.txt' --script2-after 'logview: ready text' \
+    --script-expect 'logview: done' --timeout 45
+vgate_assert app serial-contains 'logview: A 1 D net line=000001'
+vgate_assert app serial-absent 'logview: B '
+vgate_assert app serial-absent 'gap app='
+vgate_assert app python <<'PY'
+import os, re, shutil
+rows = re.findall(r"^logview: ([AB]) ([0-9]+) ([DIWE]) (\w+) line=([0-9]{6})$", open(os.environ["VG_SER"]).read(), re.M)
+assert rows and {r[0] for r in rows} == {"A"} and {r[2] for r in rows} == set("DIWE"), rows
+share = os.environ["VG_SHARE"]
+path = os.path.join(share, "LOGEXPORT", "A-1.TXT")
+assert open(path).read() == "".join("%s %s %s %s line=%s\n" % r for r in rows)
+assert os.listdir(os.path.join(share, "LOGEXPORT")) == ["A-1.TXT"], "app filter exported B"
+shutil.copy(path, "artifacts/go-selftest-log-app" + os.environ.get("VIRELAI_GATE_SUFFIX", "") + ".txt")
+print("app=A only and exported bytes observed")
+PY
+
+vgate_run grep -- --script '$RUN_DIR/log-grep.txt' \
+    --script2 '$RUN_DIR/log-filter-producers.txt' --script2-after 'logview: ready text' \
+    --script-expect 'logview: done' --timeout 45
+vgate_assert grep serial-contains 'logview: A 3 W net line=000003'
+vgate_assert grep serial-contains 'logview: B 3 W net line=000003'
+vgate_assert grep serial-absent 'gap app='
+vgate_assert grep python <<'PY'
+import os, re, shutil
+rows = re.findall(r"^logview: ([AB]) ([0-9]+) ([DIWE]) (\w+) line=([0-9]{6})$", open(os.environ["VG_SER"]).read(), re.M)
+assert rows == [("A", "3", "W", "net", "000003"), ("B", "3", "W", "net", "000003")], rows
+share = os.environ["VG_SHARE"]
+for app in ("A", "B"):
+    path = os.path.join(share, "LOGEXPORT", app + "-1.TXT")
+    assert open(path).read() == "%s 3 W net line=000003\n" % app
+    shutil.copy(path, "artifacts/go-selftest-log-grep-" + app + os.environ.get("VIRELAI_GATE_SUFFIX", "") + ".txt")
+print("substring filter and exported bytes observed")
+PY
+
+vgate_file log-gap.txt <<'EOF'
+exec LOGVIEW.ELF -text -app A -polls 6 -follow export
+EOF
+vgate_file log-burst.txt <<'EOF'
+exec LOGFIX.ELF A 64 64
+EOF
+vgate_run gap -- --script '$RUN_DIR/log-gap.txt' \
+    --script2 '$RUN_DIR/log-burst.txt' --script2-after 'logview: ready text' \
+    --script-expect 'logview: done' --timeout 45
+vgate_assert gap serial-contains 'gap app=A lost=32'
+vgate_assert gap serial-contains 'logview: A 100096 E ui line=000064'
+vgate_assert gap serial-absent 'logview: error'
+vgate_assert gap serial-absent 'logfix: error'
+vgate_assert gap python <<'PY'
+import os, re, shutil
+share = os.environ["VG_SHARE"]
+serial = open(os.environ["VG_SER"]).read()
+gaps = re.findall(r"^gap app=A lost=(\d+)$", serial, re.M)
+assert gaps == ["100000", "32"], ("exact gap", gaps)
+rows = re.findall(r"^logview: A (\d+) [DIWE] (?:net|ui) line=\d{6}$", serial, re.M)
+assert [int(n) for n in rows] == list(range(100001, 100033)) + list(range(100065, 100097)), rows
+path = os.path.join(share, "LOGEXPORT", "A-1.TXT")
+got = open(path).read()
+want = "".join((l.removeprefix("logview: ") + "\n") for l in serial.splitlines()
+               if l.startswith("logview: A ") or l.startswith("gap app=A "))
+assert got == want, ("gap export", got, want)
+shutil.copy(path, "artifacts/go-selftest-log-gap" + os.environ.get("VIRELAI_GATE_SUFFIX", "") + ".txt")
+ring = open(os.path.join(share, "APPLOG", "A.LOG")).read()
+initial_size = sum(len("%d %s %s line=%06d\n" % (100000+i, "DIWE"[(i-1)%4], "net" if i%2 else "ui", i))
+                   for i in range(1, 33))
+assert len(ring) == initial_size, ("must defeat size-only follow", len(ring), initial_size)
+print("same-size content follow observed: exactly 32 new rows lost")
+PY
+
+vgate_file log-window.txt <<'EOF'
+exec LOGVIEW.ELF -app A
+EOF
+vgate_file log-window-producer.txt <<'EOF'
+exec LOGFIX.ELF A 1 12
+EOF
+vgate_file log-window-close.txt <<'EOF'
+tasks
+EOF
+vgate_run window -- --screen '$RUN_DIR/log-screen' --via-virtio \
+    --script '$RUN_DIR/log-window.txt' --script-after 'gotabwm: present' \
+    --script2 '$RUN_DIR/log-window-producer.txt' --script2-after 'logview: present' \
+    --script3 '$RUN_DIR/log-window-close.txt' --script3-after 'logview: A 3 W net line=000003' \
+    --input-chords 'escape' --input-chords-after 'logview: A 3 W net line=000003' \
+    --script-expect 'logview: close' --timeout 60
+vgate_assert window serial-contains 'logview: declare accepted'
+vgate_assert window serial-count 'logview: present' 2
+vgate_assert window serial-contains 'logview: A 3 W net line=000003'
+vgate_assert window serial-absent 'logview: error'
+vgate_assert window serial-absent '[EXC] parking:'
+
+# Keep boot preparation independent of the preceding verdict. A red test must
+# not turn all later boots into stale-ring failures.
+vgate_assert tail python <<'PY'
+import os
+exec(open(os.path.join(os.environ["RUN_DIR"], "log-reset.py")).read())
+PY
+vgate_assert level python <<'PY'
+import os
+exec(open(os.path.join(os.environ["RUN_DIR"], "log-reset.py")).read())
+PY
+vgate_assert tag python <<'PY'
+import os
+exec(open(os.path.join(os.environ["RUN_DIR"], "log-reset.py")).read())
+PY
+vgate_assert app python <<'PY'
+import os
+exec(open(os.path.join(os.environ["RUN_DIR"], "log-reset.py")).read())
+PY
+vgate_assert grep python <<'PY'
+import os
+exec(open(os.path.join(os.environ["RUN_DIR"], "log-reset.py")).read())
+# Both snapshots are full rings with six-digit sequences and equal-length
+# messages. The last observed seq is 100032; a 64-row burst retains 100065
+# through 100096 and loses exactly 32 NEW rows without changing file size.
+with open(os.path.join(share, "APPLOG", "A.LOG"), "w") as f:
+    f.write("".join("%d %s %s line=%06d\n" % (100000+i, "DIWE"[(i-1)%4], "net" if i%2 else "ui", i)
+                    for i in range(1, 33)))
+PY
+vgate_assert gap python <<'PY'
+import os, shutil
+exec(open(os.path.join(os.environ["RUN_DIR"], "log-reset.py")).read())
+src = ".build/go/GOTABWM.ELF"
+assert os.path.isfile(src), "build the seat fixture first: bash tools/go/build-gotabwm.sh"
+shutil.copy(src, os.path.join(share, "GOTABWM.ELF"))
+with open(os.path.join(share, "SETTINGS.TXT"), "w") as f:
+    f.write("#v2\nwm=gotabwm\n")
+PY
+
 vgate_assert 01 serial-contains 'VirelaiOS kernel has seized control.'
 vgate_assert 01 serial-contains 'tabwm: starting TABWM.BIN'
 vgate_assert 01 serial-contains 'tabwm: registered'
@@ -855,4 +1101,21 @@ print("window receipt agreed with the kernel and the WM: win=%d (kernel `open:`,
       "app `goself: open`, WM `tab-switch`); kernel open rect %r; read-back "
       "geometry %dx%d (the tab-aware viewport, not the open rect)"
       % (win_id, kern_rect, win_w, win_h))
+PY
+
+vgate_assert 01 python <<'PY'
+import os, shutil
+share = os.environ["VG_SHARE"]
+for name in ("LOGVIEW", "LOGFIX"):
+    src = ".build/go/" + name + ".ELF"
+    if os.path.isfile(src):
+        shutil.copy(src, os.path.join(share, name + ".ELF"))
+    else:
+        # Fail-before on main: still boot and prove the filter/gap asserts red,
+        # rather than replacing their missing-program failure with setup exit.
+        print("M94f prerequisite absent: %s; exec and viewer asserts must fail" % src)
+shutil.rmtree(os.path.join(share, "APPLOG"), ignore_errors=True)
+os.mkdir(os.path.join(share, "APPLOG"))
+with open(os.path.join(share, "SETTINGS.TXT"), "w") as f:
+    f.write("#v2\nwm=none\n")
 PY
