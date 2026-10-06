@@ -1,0 +1,7 @@
+# Original project arithmetic, repository LICENSE; boxes-collapse.html.
+# b:30+max(20,30)=60; c:70+10-5=75; parent:85+max(20,30)=115.
+a border 10 10 100 20
+b border 10 60 100 10
+c border 10 75 100 10
+parent border 10 115 100 20
+child border 10 115 100 20

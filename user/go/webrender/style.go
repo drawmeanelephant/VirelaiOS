@@ -1,6 +1,9 @@
 package webrender
 
-import "virelai/theme"
+import (
+	"virelai/theme"
+	"virelai/webstyle"
+)
 
 // Theme colors — imported from virelai/theme (M69c #1530) so WEB chrome and
 // the page default share the same table GOTABWM/NOTE/widgets draw from.
@@ -18,12 +21,13 @@ var (
 	ColorOK        = theme.Dark.Ok
 )
 
-// Style is the resolved presentation of one element. There is exactly one
-// source of style in this renderer: the compiled-in table below. A page
-// cannot change its own presentation (ADR 0028 D2) — there is no CSS parser
-// and no cascade, by design and permanently.
+// Style is the text/paint seam. StyleFor remains the legacy UA-width adapter;
+// the CSS pipeline supplies frozen webstyle values to BuildBoxTree instead.
+// No CSS parser or cascade is imported by the renderer.
 type Style struct {
 	Size         int    // font scale: 1 => 8px, 2 => 16px
+	FontPx       int    // positive CSS px; zero retains logical-size compatibility
+	LineHeightPx int    // positive used CSS line height; zero selects engine metrics
 	Mono         bool   // fixed-width face
 	Bold         bool   // Inter Bold when loaded; else a 1-px synthetic strike
 	Italic       bool   // Inter Italic when loaded; else the UI face
@@ -35,6 +39,59 @@ type Style struct {
 	Bg           uint32 // 0 => no background
 	Decoration   uint8  // decRule draws an underline, decBar a left accent bar
 	Skip         bool   // never rendered (head/script/style/...)
+}
+
+// compatibilityStyles derives value copies from the existing UA tag table,
+// preserving its inline inheritance and logical font metrics. M93f replaces
+// this adapter with styles.ForNode, not a second concurrent cascade.
+func compatibilityStyles(doc *Document) func(*Node) webstyle.ComputedStyle {
+	values := make(map[*Node]webstyle.ComputedStyle)
+	var visit func(*Node, Style, int)
+	visit = func(n *Node, parent Style, depth int) {
+		if n == nil || depth > webstyle.MaxDepth || len(values) >= webstyle.MaxBoxes {
+			return
+		}
+		ua := parent
+		if n.Kind != KindText {
+			ua = StyleFor(n.Tag)
+			if !BlockElement(n.Tag) {
+				ua = mergeInline(parent, ua)
+			}
+		}
+		s := webstyle.ComputedStyle{
+			Color:    webstyle.Color{Kind: webstyle.ColorRGBA, RGBA: 0xff000000 | ua.Color},
+			FontSize: webstyle.Length{Kind: webstyle.LengthPx, Value: int32(13 * max(1, ua.Size))},
+		}
+		if n.Kind != KindText && BlockElement(n.Tag) {
+			s.Display = webstyle.DisplayBlock
+		}
+		if ua.Skip && n.Tag != "noscript" {
+			s.Display = webstyle.DisplayNone
+		}
+		if ua.Mono {
+			s.FontFamily = webstyle.FontMono
+		}
+		if ua.Bold {
+			s.FontWeight = webstyle.WeightBold
+		}
+		if ua.Italic {
+			s.FontStyle = webstyle.StyleItalic
+		}
+		s.Margin.Top = webstyle.Length{Kind: webstyle.LengthPx, Value: int32(ua.MarginTop)}
+		s.Margin.Bottom = webstyle.Length{Kind: webstyle.LengthPx, Value: int32(ua.MarginBottom)}
+		s.Padding.Left = webstyle.Length{Kind: webstyle.LengthPx, Value: int32(ua.Indent)}
+		if ua.Bg != 0 {
+			s.BackgroundColor = webstyle.Color{Kind: webstyle.ColorRGBA, RGBA: 0xff000000 | ua.Bg}
+		}
+		values[n] = s
+		for _, c := range n.Children {
+			visit(c, ua, depth+1)
+		}
+	}
+	if doc != nil {
+		visit(doc.Root, StyleFor("body"), 0)
+	}
+	return func(n *Node) webstyle.ComputedStyle { return values[n] }
 }
 
 // Decoration kinds.
@@ -118,7 +175,7 @@ func StyleFor(tag string) Style {
 		return Style{Size: 1, Color: ColorText, Bg: ColorSurface, MarginBottom: 4}
 	case "address":
 		return Style{Size: 1, Color: ColorMuted, MarginTop: 4, MarginBottom: 8}
-	case "script", "style", "head", "title", "meta", "link", "template", "noscript":
+	case "script", "style", "head", "title", "meta", "link", "template":
 		return Style{Skip: true}
 	}
 	return Style{Size: 1, Color: ColorText}

@@ -1,0 +1,16 @@
+# Original project arithmetic, repository LICENSE; boxes-flex.html.
+# Row free=300-3*50-2*10=130, factors 1:2:0.
+# Floor 43/86; residual pixel to first eligible item => 94/136/50.
+# Shrink free=-60, weights 120:60:60 => 90/45/45.
+# Wrap two items per line; column free=100-40-10=50.
+r1 content 0 0 94 40
+r2 content 104 0 136 40
+r3 content 250 0 50 40
+s1 content 0 40 90 20
+s2 content 90 40 45 20
+s3 content 135 40 45 20
+w1 content 0 60 60 20
+w2 content 70 60 60 20
+w3 content 0 90 60 20
+c1 content 0 110 40 45
+c2 content 0 165 40 45
