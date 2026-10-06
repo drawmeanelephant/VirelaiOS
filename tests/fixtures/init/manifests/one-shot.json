@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "services": [{
+    "name": "hello",
+    "argv": ["USER.BIN"],
+    "class": "boot",
+    "restart": {"restart": "never"}
+  }]
+}

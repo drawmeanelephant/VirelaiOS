@@ -1,0 +1,1 @@
+{"version":1,"services":[{"name":"a","argv":["USER.BIN"],"class":"foreground","restart":{"restart":"never"}}]}
