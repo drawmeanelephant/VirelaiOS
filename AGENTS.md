@@ -2,6 +2,30 @@
 
 These rules bind any AI agent or human contributor working in this project.
 
+## Standing Authority
+
+You are authorized to act without asking on:
+
+- **Missing toolchain / worktree / build files.** If a prepared fork, worktree,
+  or build artifact is absent, rebuild it from stock sources and report what you
+  rebuilt. Rebuilding the *same* fixture from scratch is expected, not a decision.
+  Never silently substitute a *different* fixture or toolchain and present its
+  results as the original's.
+- **Environment recovery.** Re-clone, re-fetch, re-install anything the task needs
+  that isn't present. The task description is the authority; a missing file is
+  not a question.
+- **Routine git operations.** Branch, commit, push to the session branch, open PRs.
+  Never merge without the owner's review.
+
+Ask the owner only when:
+
+- Recovery requires choosing between *different* approaches with different
+  correctness implications (e.g. substituting a different Go version for a
+  pinned one).
+- Credentials, payments, or external accounts are involved.
+- The action is irreversible or destructive (deleting data, force-pushing,
+  closing issues/PRs).
+
 ## Project identity
 
 - This is a from-scratch AArch64 operating system project.
