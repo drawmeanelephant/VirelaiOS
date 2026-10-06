@@ -8,7 +8,157 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"virelai/ttf"
+	"virelai/webstyle"
 )
+
+// maskFB represents the optional Surface capability without changing the
+// legacy Fill-only framebuffer used by the existing approved goldens.
+type maskFB struct{ *fb }
+
+func TestCSSShortLineHeightDoesNotCullGlyphInk(t *testing.T) {
+	fonts := loadFonts(t)
+	for _, sink := range []bool{false, true} {
+		f := newFB(200, 80, ColorPageBg)
+		var surface Surface = f
+		if sink {
+			surface = &maskFB{f}
+		}
+		item := Item{Kind: ItemText, X: 4, Y: -8, W: 160, H: 1,
+			Text: "MMMM", FontPx: 48, LineHeightPx: 1, Color: ColorText}
+		Paint(&Layout{Text: fonts, Items: []Item{item}}, surface, 0, 0, 200, 80, 0)
+		want := newFB(200, 80, ColorPageBg)
+		var expected Surface = want
+		if sink {
+			expected = &maskFB{want}
+		}
+		fonts.Paint(expected, 4, -8, "MMMM", Style{FontPx: 48, LineHeightPx: 1}, ColorText, Clip{W: 200, H: 80})
+		for i := range f.px {
+			if f.px[i] != want.px[i] {
+				t.Fatalf("mask capability=%v: ink outside the short line box was culled at pixel %d", sink, i)
+			}
+		}
+	}
+}
+
+// Kept in the internal test package while image/reference integration tests
+// use the external package, avoiding a renderer -> CSS import cycle.
+func TestQOIHashStaysInTheIndexTable(t *testing.T) {
+	for _, px := range []uint32{0xff117f33, 0xffd03399, 0xff2266dd, 0xffeecc00,
+		0xffffffff, 0xff000000, 0xff7f7f7f, 0xff010203} {
+		if h := qoiHash(px); h >= 64 {
+			t.Errorf("qoiHash(%#08x) = %d, outside the 64-entry index table", px, h)
+		}
+	}
+}
+
+func (f *maskFB) BlitMask(x, y int, m *ttf.Mask, rgb uint32) {
+	for row := 0; row < m.Height; row++ {
+		for col := 0; col < m.Width; col++ {
+			px, py := x+col, y+row
+			if px < 0 || py < 0 || px >= f.w || py >= f.h {
+				continue
+			}
+			a := uint32(m.Alpha[row*m.Width+col])
+			old := f.at(px, py)
+			var blended uint32
+			for _, shift := range []uint{0, 8, 16} {
+				n := ((rgb>>shift&255)*a + (old>>shift&255)*(255-a) + 127) / 255
+				blended |= n << shift
+			}
+			f.px[py*f.w+px] = blended
+		}
+	}
+}
+
+func TestCSSFontSizes(t *testing.T) {
+	f := loadFonts(t)
+	for _, px := range []int{8, 13, 21, 48} {
+		for _, flags := range []Style{{}, {Bold: true}, {Italic: true}, {Bold: true, Italic: true}, {Mono: true}} {
+			st := flags
+			st.FontPx = px
+			face := f.face(st)
+			if got, want := f.Measure("Mi W", st), face.Measure("Mi W", px); got != want {
+				t.Errorf("%+v measure=%d, face=%d", st, got, want)
+			}
+			if got, want := f.Advance(st), face.AdvancePx('M', px); got != want {
+				t.Errorf("%+v advance=%d, face=%d", st, got, want)
+			}
+			if got, want := f.LineHeight(st), (px*18+12)/13; got != want {
+				t.Errorf("%+v line height=%d, want %d", st, got, want)
+			}
+			st.LineHeightPx = 7
+			if f.LineHeight(st) != 7 || (Bitmap{}).LineHeight(st) != 7 {
+				t.Fatal("declared line height ignored")
+			}
+		}
+		t.Logf("CSS metrics verified at %d px for Inter, Bold, Italic, Bold+Italic and Fira Code", px)
+	}
+	if f.face(Style{Bold: true, Italic: true}) != f.Bold {
+		t.Fatal("Bold must win without a Bold-Italic face")
+	}
+	// These are the existing guest metric markers, not CSS normal line height.
+	if f.LineHeight(Style{Size: 1}) != 18 || f.LineHeight(Style{Size: 2}) != 33 ||
+		f.LineHeight(Style{Size: 1, Mono: true}) != 17 ||
+		f.Measure("i", Style{Size: 1}) != 3 || f.Measure("W", Style{Size: 1}) != 13 {
+		t.Fatal("legacy typography marker changed")
+	}
+}
+
+func TestOptionalMaskSinkClipsToPage(t *testing.T) {
+	const bg = 0x123456
+	for _, sink := range []Surface{newFB(16, 16, bg), &maskFB{newFB(16, 16, bg)}} {
+		c := Clip{X: 4, Y: 4, W: 3, H: 3}
+		m := &ttf.Mask{Width: 5, Height: 5, Alpha: bytes.Repeat([]byte{127}, 25)}
+		blitMask(sink, c, 2, 2, m, 0xffffff)
+		var pixels *fb
+		if f, ok := sink.(*fb); ok {
+			pixels = f
+		} else {
+			pixels = sink.(*maskFB).fb
+		}
+		for y := 0; y < 16; y++ {
+			for x := 0; x < 16; x++ {
+				changed := pixels.at(x, y) != bg
+				if changed != c.Contains(x, y) {
+					t.Fatalf("%T: changed=%v at (%d,%d), clip=%+v", sink, changed, x, y, c)
+				}
+			}
+		}
+	}
+}
+
+func TestCSSLayoutAndPaintUseSameSize(t *testing.T) {
+	fonts := loadFonts(t)
+	for _, px := range []int{8, 19, 48} {
+		doc := ParseHTML([]byte("<p>MMMM</p>"))
+		tree, _ := BuildBoxTree(doc, func(*Node) webstyle.ComputedStyle {
+			return webstyle.ComputedStyle{Display: webstyle.DisplayBlock,
+				FontSize: webstyle.Length{Kind: webstyle.LengthPx, Value: int32(px)}}
+		})
+		l, ds := LayoutBoxes(tree, webstyle.Viewport{Width: 300, Height: 100}, fonts)
+		if len(ds) != 0 {
+			t.Fatal(ds)
+		}
+		got := newFB(300, 100, ColorPageBg)
+		Paint(l, got, 0, 0, 300, 100, 0)
+		want := newFB(300, 100, ColorPageBg)
+		for _, it := range l.Items {
+			if it.Kind == ItemText {
+				st := Style{FontPx: px, LineHeightPx: (px*18 + 12) / 13}
+				if it.W != fonts.Measure(it.Text, st) {
+					t.Fatal("CSS layout measurement disagrees with font")
+				}
+				fonts.Paint(want, it.X, it.Y, it.Text, st, it.Color, Clip{W: 300, H: 100})
+			}
+		}
+		for i := range got.px {
+			if got.px[i] != want.px[i] {
+				t.Fatalf("CSS %d px paint mismatch at pixel %d", px, i)
+			}
+		}
+	}
+}
 
 // The two faces the desktop loads. Both are committed fixtures; a missing one
 // fails the test rather than skipping it.

@@ -3,12 +3,13 @@ package webrender
 import (
 	"bytes"
 	"errors"
+	"virelai/svg"
+	"virelai/vector"
+	"virelai/webstyle"
 )
 
-// In-guest image decoding (ADR 0028 S3): <img> becomes real pixels, in two
-// formats the project owns. PNG uses the standard library's pure-Go decoder
-// (no cgo, no x/image); QOI is decoded here, because a 60-line decoder beats a
-// dependency for a format whose whole point is being 60 lines.
+// In-guest image decoding: bounded, owned PNG/QOI and ADR 0041 SVG.
+// There are no external decoder dependencies or filesystem/network calls.
 
 // Image is a decoded raster in the same 32-bpp word layout the surfaces use:
 // one 0xAARRGGBB word per pixel, row-major.
@@ -16,6 +17,7 @@ type Image struct {
 	Width  int
 	Height int
 	Pix    []uint32
+	png    bool // preserves premultiplied RGB on the legacy Fill-only PNG path
 }
 
 // At returns the pixel at (x, y), or 0 outside the image.
@@ -33,27 +35,67 @@ type ImageResolver func(src string) ([]byte, bool)
 
 // Image caps. A page cannot make the renderer allocate an unbounded raster.
 const (
-	maxImagePixels = 512 * 512
-	maxImageBytes  = 4 << 20
+	maxImagePixels = webstyle.MaxImagePixels
+	maxImageBytes  = webstyle.MaxImageBytes
 )
 
 // ErrImageUnsupported is returned for a format this decoder does not handle.
-var ErrImageUnsupported = errors.New("webrender: unsupported image format")
+var ErrImageUnsupported = errors.New("image-unsupported")
 
-// DecodeImage decodes a PNG or QOI image. Any other format, a truncated file,
+// DecodeImage decodes a PNG, QOI or ADR 0041 SVG. Any other format, a truncated file,
 // or an image past the caps returns an error — the caller then falls back to
 // the placeholder box rather than rendering nothing.
 func DecodeImage(data []byte) (*Image, error) {
 	if len(data) > maxImageBytes {
-		return nil, errors.New("webrender: image past the byte cap")
+		return nil, imageError("image-limit: source bytes")
+	}
+	xml := bytes.TrimSpace(data)
+	if bytes.HasPrefix(xml, []byte{0xef, 0xbb, 0xbf}) {
+		xml = xml[3:]
 	}
 	switch {
 	case len(data) >= 8 && bytes.Equal(data[:8], pngMagic):
 		return decodePNG(data)
 	case len(data) >= 4 && string(data[:4]) == "qoif":
 		return decodeQOI(data)
+	case len(xml) > 0 && xml[0] == '<':
+		return decodeSVG(data)
 	}
 	return nil, ErrImageUnsupported
+}
+
+func decodeSVG(data []byte) (*Image, error) {
+	budget := vector.Budget{Max: vector.MaxWork}
+	scene, canvas, failure := svg.Parse(data, vector.Storage{
+		Commands: make([]vector.Command, vector.MaxCommands),
+		Paints:   make([]vector.Paint, vector.MaxPaints),
+	}, &budget)
+	if failure.Code != vector.OK {
+		return nil, svgImageError(failure.Code)
+	}
+	if canvas.Width <= 0 || canvas.Height <= 0 || canvas.Width > webstyle.MaxImageDimension ||
+		canvas.Height > webstyle.MaxImageDimension || canvas.Width*canvas.Height > maxImagePixels {
+		return nil, imageError("image-limit: svg raster")
+	}
+	out := &Image{Width: canvas.Width, Height: canvas.Height, Pix: make([]uint32, canvas.Width*canvas.Height)}
+	_, failure = vector.Rasterize(scene, vector.Target{
+		Pix: out.Pix, Width: out.Width, Height: out.Height, Stride: out.Width,
+	}, vector.Workspace{Bytes: make([]byte, vector.WorkspaceSize)}, &budget)
+	if failure.Code != vector.OK {
+		return nil, svgImageError(failure.Code)
+	}
+	return out, nil
+}
+
+func svgImageError(code vector.Code) error {
+	kinds := [...]string{"ok", "malformed", "unsupported-feature", "unsupported-text", "external-resource", "unsupported-xml",
+		"source-limit", "depth-limit", "node-limit", "attribute-limit", "token-limit", "command-limit", "contour-limit",
+		"segment-limit", "curve-limit", "coordinate-limit", "canvas-limit", "scene-limit", "scratch-limit", "work-limit",
+		"memory-limit", "time-limit", "invalid-buffer"}
+	if int(code) >= len(kinds) {
+		return imageError("image-svg-invalid-buffer")
+	}
+	return imageError("image-svg-" + kinds[code])
 }
 
 var pngMagic = []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}
@@ -66,7 +108,7 @@ func decodeQOI(data []byte) (*Image, error) {
 	}
 	w := int(be32b(data[4:8]))
 	h := int(be32b(data[8:12]))
-	if w <= 0 || h <= 0 || w*h > maxImagePixels {
+	if w <= 0 || h <= 0 || w > webstyle.MaxImageDimension || h > webstyle.MaxImageDimension || w*h > maxImagePixels {
 		return nil, errors.New("webrender: qoi geometry rejected")
 	}
 	out := &Image{Width: w, Height: h, Pix: make([]uint32, w*h)}
