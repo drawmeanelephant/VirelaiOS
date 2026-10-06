@@ -136,47 +136,65 @@ func self() {
 	vi.ConsoleLine("trace: peer excluded records=1 dropped=0")
 }
 
-func measure(calls int) int64 {
-	start := vi.Nanos()
+const overheadPairs = 7
+
+func cheapCalls(calls int) {
 	for i := 0; i < calls; i++ {
 		vi.PingPoll()
 	}
+}
+
+func measure(calls int) int64 {
+	start := vi.Nanos()
+	cheapCalls(calls)
 	duration := vi.Nanos() - start
 	if duration <= 0 {
 		check(fmt.Errorf("non-positive counter duration"))
 	}
-	return duration / int64(calls)
+	return duration
 }
 
-func median(calls int) int64 {
-	var runs [5]int64
-	for i := range runs {
-		runs[i] = measure(calls)
+func median(values []int64) int64 {
+	copyValues := append([]int64(nil), values...)
+	sort.Slice(copyValues, func(i, j int) bool { return copyValues[i] < copyValues[j] })
+	return copyValues[len(copyValues)/2]
+}
+
+// Pair complete identical loops, alternating off then on. All arm/disarm,
+// warmup and serial output are outside the measured interval. Report raw
+// aggregate nanoseconds too, without claiming individual sub-counter-tick
+// timings from an average.
+func paired(pid uint64, name string, calls int, slots []uint64) (int64, int64) {
+	var off, on, added [overheadPairs]int64
+	var session *strace.Session
+	for i := range off {
+		if session != nil {
+			check(session.Disarm())
+		}
+		cheapCalls(1000)
+		off[i] = measure(calls)
+		var err error
+		session, err = strace.Arm([]uint64{pid}, slots)
+		check(err)
+		cheapCalls(1000)
+		on[i] = measure(calls)
+		added[i] = on[i] - off[i]
+		vi.ConsoleLine(fmt.Sprintf("trace: pair path=%s index=%d calls=%d off_ns=%d on_ns=%d", name, i+1, calls, off[i], on[i]))
 	}
-	sort.Slice(runs[:], func(i, j int) bool { return runs[i] < runs[j] })
-	return runs[2]
+	check(session.Disarm())
+	sort.Slice(added[:], func(i, j int) bool { return added[i] < added[j] })
+	vi.ConsoleLine(fmt.Sprintf("trace: paired-overhead path=%s pairs=%d calls=%d median_added_ns=%d min_added_ns=%d max_added_ns=%d",
+		name, overheadPairs, calls, added[overheadPairs/2], added[0], added[overheadPairs-1]))
+	return median(off[:]) / int64(calls), median(on[:]) / int64(calls)
 }
 
 func overhead() {
 	pid := selfPID()
-	baseline := median(10000)
-	s, err := strace.Arm([]uint64{pid}, []uint64{})
-	check(err)
-	filtered := median(10000)
-	// ADR 0043 also asks for >=100,000 filtered-out calls against a baseline.
-	check(s.Disarm())
-	baseline100k := median(100000)
-	check(s.Filter([]uint64{pid}, []uint64{}))
-	// FILTER preserves disarmed state; opening is the explicit activation.
-	s, err = strace.Arm([]uint64{pid}, []uint64{})
-	check(err)
-	filtered100k := median(100000)
-	check(s.Disarm())
-	s, err = strace.Arm([]uint64{pid}, []uint64{60})
-	check(err)
-	traced := median(10000)
-	check(s.Disarm())
-	vi.ConsoleLine(fmt.Sprintf("trace: overhead calls=10000 runs=5 untraced=%d filtered=%d traced=%d ns/call freq=%d", baseline, filtered, traced, counterFrequency()))
-	vi.ConsoleLine(fmt.Sprintf("trace: filtered-overhead calls=100000 runs=5 untraced=%d filtered=%d ns/call", baseline100k, filtered100k))
+	baseline, filtered := paired(pid, "filtered", 10000, []uint64{})
+	baseline100k, filtered100k := paired(pid, "filtered100k", 100000, []uint64{})
+	tracedBaseline, traced := paired(pid, "traced", 10000, []uint64{60})
+	vi.ConsoleLine(fmt.Sprintf("trace: overhead calls=10000 pairs=%d untraced=%d filtered=%d traced_untraced=%d traced=%d ns/call freq=%d",
+		overheadPairs, baseline, filtered, tracedBaseline, traced, counterFrequency()))
+	vi.ConsoleLine(fmt.Sprintf("trace: filtered-overhead calls=100000 pairs=%d untraced=%d filtered=%d ns/call", overheadPairs, baseline100k, filtered100k))
 	vi.ConsoleLine("trace-overhead-done")
 }

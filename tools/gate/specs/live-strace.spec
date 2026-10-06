@@ -144,7 +144,7 @@ vgate_assert 04 serial-contains 'trace: cross-uid ARM = -EACCES'
 vgate_assert 04 serial-absent 'trace: fixture failed'
 vgate_assert 04 serial-absent '[EXC] parking:'
 
-vgate_run 05 -- --script '$RUN_DIR/overhead.txt' --script-expect 'trace-overhead-done' --timeout 120
+vgate_run 05 -- --script '$RUN_DIR/overhead.txt' --script-after 'tasks user-el0 exited status=7' --script-expect 'trace-overhead-done' --timeout 120
 vgate_assert 05 python <<'PY'
 import os, re
 serial = open(os.environ["VG_SER"], errors="replace").read()
@@ -153,10 +153,14 @@ if os.environ.get("TRACE_MEASURE") != "1":
         raise SystemExit("explicit overhead opt-out marker missing")
     print("Overhead NOT MEASURED: rerun TRACE_MEASURE=1 on a quiet host")
 else:
-    m = re.search(r"trace: overhead calls=10000 runs=5 untraced=(\d+) filtered=(\d+) traced=(\d+) ns/call freq=(\d+)", serial)
+    m = re.search(r"trace: overhead calls=10000 pairs=7 untraced=(\d+) filtered=(\d+) traced_untraced=(\d+) traced=(\d+) ns/call freq=(\d+)", serial)
     if not m or any(int(v) <= 0 for v in m.groups()):
         raise SystemExit("missing/non-positive counter-timed overhead medians/frequency")
-    if not re.search(r"trace: filtered-overhead calls=100000 runs=5 untraced=\d+ filtered=\d+ ns/call", serial):
+    if not re.search(r"trace: filtered-overhead calls=100000 pairs=7 untraced=\d+ filtered=\d+ ns/call", serial):
         raise SystemExit("100,000-call filtered measurement missing")
+    for path, calls in (("filtered", 10000), ("filtered100k", 100000), ("traced", 10000)):
+        pairs = re.findall(r"trace: pair path=" + path + r" index=(\d+) calls=" + str(calls) + r" off_ns=(\d+) on_ns=(\d+)", serial)
+        if [int(p[0]) for p in pairs] != list(range(1, 8)) or any(int(v) <= 0 for p in pairs for v in p[1:]):
+            raise SystemExit("missing/non-positive interleaved pairs for " + path)
     print("Counter-timed overhead medians present and sane; no threshold asserted")
 PY

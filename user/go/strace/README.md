@@ -52,5 +52,10 @@ also refuses to reveal them even if given a malformed record.
 `live-strace` tests the legacy monitor path and the ring. Its measurement
 boot is explicitly opt-in with `TRACE_MEASURE=1`: run it only while holding
 the VZ lock on a quiet host. Without that opt-in, the report says overhead
-was not measured. The fixture reports five-run medians for 10,000 calls and
-a separate 100,000-call baseline/filtered comparison, plus CNTFRQ.
+was not measured. The fixture reports seven interleaved off/on pairs for
+10,000 calls, a separate 100,000-call baseline/filtered comparison, and CNTFRQ.
+Each pair reports raw aggregate durations; summaries retain median/min/max
+added cost. Confirm no other VMRunner or worktree build/test process before
+the set, hold the VZ lock throughout, and record `uptime` before and after.
+The owner's 2026-10-06 ruling withdraws the former load-average cutoff. A
+spread wider than the ADR budget is unresolved evidence, not a pass.

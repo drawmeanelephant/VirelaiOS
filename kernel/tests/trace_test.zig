@@ -5,6 +5,14 @@ const helpers = @import("helpers");
 
 var output: [512]u8 = undefined;
 var output_len: usize = 0;
+var copy_had_control_locks = false;
+
+fn observe_copy_locks(_: u64, _: usize) bool {
+    copy_had_control_locks = syscall.svclock.held_set(
+        syscall.svclock.dom_bit(.file) | syscall.svclock.dom_bit(.kernel),
+    );
+    return true;
+}
 
 fn writer(bytes: []const u8) void {
     @memcpy(output[output_len..][0..bytes.len], bytes);
@@ -146,6 +154,9 @@ test "trace: pid and slot filters, same uid and administrative privilege" {
 test "trace: atomic configuration, token replacement, whole reads and copy-out rollback" {
     trace.reset_for_test();
     defer trace.reset_for_test();
+    syscall.init(writer);
+    syscall.strace_pid = null;
+    output_len = 0;
     syscall.userspace.init();
     _ = syscall.scheduler.init();
     _ = syscall.scheduler.register_worker(0x2000);
@@ -185,7 +196,13 @@ test "trace: atomic configuration, token replacement, whole reads and copy-out r
     try std.testing.expectEqual(syscall.error_result(.einval), trace.handle(.{ trace.op_filter, token, @intFromPtr(&config), 88, 0, 0 }, &frame));
     config.pid_count = 1;
     try std.testing.expectEqual(syscall.error_result(.efault), trace.handle(.{ trace.op_read, token, 8, output_bytes.len, 0, 0 }, &frame));
+    const previous_resolver = syscall.uaccess.resolve_write_pages;
+    syscall.uaccess.resolve_write_pages = observe_copy_locks;
+    defer syscall.uaccess.resolve_write_pages = previous_resolver;
+    copy_had_control_locks = false;
     try std.testing.expectEqual(@as(u64, 0), trace.handle(.{ trace.op_status, token, @intFromPtr(&output_bytes), 24, 0, 0 }, &frame));
+    try std.testing.expect(copy_had_control_locks);
+    try std.testing.expect(!syscall.svclock.file.held() and !syscall.svclock.kernel.held());
     const header: *const trace.ReadHeader = @ptrCast(&output_bytes);
     try std.testing.expectEqual(@as(u32, 1), header.count);
     // Header-only READ does not consume a partial record.
@@ -203,6 +220,8 @@ test "trace: atomic configuration, token replacement, whole reads and copy-out r
     try std.testing.expectEqual(@as(u64, 0), trace.handle(.{ trace.op_disarm, replacement, 0, 0, 99, 99 }, &frame));
     trace.after(pending, 0, .{ 99, 0, 0, 0, 0, 0 }, 99);
     try std.testing.expectEqual(@as(u64, 0), trace.handle(.{ trace.op_read, replacement, @intFromPtr(&output_bytes), output_bytes.len, 0, 0 }, &frame));
+    // Init, ring arm/control and disabled hooks never use the serial writer.
+    try std.testing.expectEqual(@as(usize, 0), output_len);
 }
 
 test "trace: monitor compatibility output is byte-for-byte unchanged" {

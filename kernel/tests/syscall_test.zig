@@ -136,7 +136,7 @@ const wm_server = syscall.wm_server;
 const wnd_core = syscall.wnd_core;
 const write_cap = syscall.write_cap;
 
-test "syscall: M94 observability slots are registered ENOSYS stubs" {
+test "syscall: M94 trace control and remaining observability stubs are registered" {
     init(test_writer);
     var frame = fresh_frame();
     const names = [_][]const u8{ "sys_trace", "sys_profile", "sys_memstat" };
@@ -144,8 +144,9 @@ test "syscall: M94 observability slots are registered ENOSYS stubs" {
         const info = entry_info(number);
         try std.testing.expect(info != null);
         try std.testing.expectEqualStrings(name, info.?.name);
-        try std.testing.expectEqual(error_result(.enosys), dispatch(number, .{ 0, 0, 0, 0, 0, 0 }, &frame));
-        try std.testing.expectEqual(error_result(.enosys), dispatch(number, .{ 99, 99, 99, 99, 99, 99 }, &frame));
+        const refused = error_result(if (number == syscall.sys_trace) .einval else .enosys);
+        try std.testing.expectEqual(refused, dispatch(number, .{ 0, 0, 0, 0, 0, 0 }, &frame));
+        try std.testing.expectEqual(refused, dispatch(number, .{ 99, 99, 99, 99, 99, 99 }, &frame));
         try std.testing.expectEqual(@as(u64, 2), call_count(number));
     }
 }
@@ -1382,7 +1383,7 @@ test "syscall: counters are monotonic and report is deterministic" {
     var con = mock.console();
     report(&con);
     try std.testing.expectEqualStrings(
-        "syscalls: slots=64 implemented=81\n" ++
+        "syscalls: slots=64 implemented=82\n" ++
             "  0 sys_ping calls=2\n" ++
             "  1 sys_write calls=0\n" ++
             "  2 sys_yield calls=0\n" ++
@@ -1463,7 +1464,8 @@ test "syscall: counters are monotonic and report is deterministic" {
             "  77 sys_file_sync calls=0\n" ++
             "  78 sys_time_set calls=0\n" ++
             "  79 sys_fs_metadata calls=0\n" ++
-            "  80 sys_socket calls=0\n",
+            "  80 sys_socket calls=0\n" ++
+            "  81 sys_trace calls=0\n",
         mock.contents(),
     );
 }

@@ -180,8 +180,11 @@ fn check_session(token: u64, caller: process.Principal) u64 {
 }
 
 pub fn handle(args: [6]u64, _: *exceptions.VectorFrame) u64 {
-    // Dispatch already holds FILE + KERNEL for this entire handler, including
-    // copy-out and the pinned spawn. No service lock is acquired under ours.
+    // Hold FILE + KERNEL for the entire control operation, including
+    // copy-out and the pinned spawn. Do not rely on the dispatch wrapper's
+    // lock lifetime; direct callers must receive the same guarantee.
+    const taken = svclock.acquire_missing(svclock.dom_bit(.file) | svclock.dom_bit(.kernel));
+    defer svclock.release_set(taken);
     const pid = process.find_by_task(scheduler.current_id()) orelse return fail(1);
     const caller = process.principal(pid) orelse return fail(1);
     const op = args[0];
