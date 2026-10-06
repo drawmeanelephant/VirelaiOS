@@ -1,0 +1,17 @@
+<!doctype html>
+<!-- Authored for VirelaiOS, 2026-10-05; repository LICENSE; no copied site bytes.
+CSS 2.1 section 8.3.1; body padding prevents collapse across the root:
+a=(10,10,100,20); b=(10,60,100,10), since 30+max(20,30)=60.
+c=(10,75,100,10), since 70+max(10,0)+min(0,-5)=75.
+parent and child=(10,115,100,20): 85+max(20,30)=115.
+Parent has no border/padding; child's top margin collapses through it.
+-->
+<html><head><title>Margin arithmetic</title><style>
+body { margin:0; padding:10px; }
+div { width:100px; }
+#a { height:20px; margin-bottom:20px; }
+#b { height:10px; margin-top:30px; margin-bottom:10px; }
+#c { height:10px; margin-top:-5px; }
+#parent { margin-top:20px; }
+#child { height:20px; margin-top:30px; }
+</style></head><body><div id="a"></div><div id="b"></div><div id="c"></div><div id="parent"><div id="child"></div></div></body></html>

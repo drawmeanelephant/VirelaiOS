@@ -1,0 +1,16 @@
+<!doctype html>
+<!-- Authored for VirelaiOS, 2026-10-05; repository LICENSE; no copied site bytes. -->
+<html><head><title>Display and table subset</title><style>
+.block { display:block; }
+.inline { display:inline; }
+.gone { display:none; }
+li { display:list-item; }
+table { display:table; width:300px; }
+caption { display:table-caption; }
+thead { display:table-header-group; }
+tbody { display:table-row-group; }
+tfoot { display:table-footer-group; }
+tr { display:table-row; }
+td,th { display:table-cell; padding:4px; border:1px solid gray; }
+</style></head><body><span class="block">Block span.</span><div class="inline">Inline div.</div><p class="gone">Not painted.</p><ul><li>List marker.</li></ul>
+<table><caption>Equal columns; separate borders</caption><thead><tr><th>Name</th><th>Value</th></tr></thead><tbody><tr><td>One</td><td>1</td></tr></tbody><tfoot><tr><td>Total</td><td>1</td></tr></tfoot></table></body></html>

@@ -1,0 +1,21 @@
+<!doctype html>
+<!-- Authored for VirelaiOS, 2026-10-05; repository LICENSE; no copied site bytes. -->
+<html><head><title>Selectors and cascade</title><style>
+* { color:black; }
+p, span { color:blue; }
+.note { color:green; }
+main .note { color:red; }
+#winner { color:#123456; }
+#winner { color:#654321; }
+.strong { color:red !important; }
+#priority { color:blue; }
+main { font-family:monospace; font-size:16px; }
+.inherit { color:inherit; }
+</style></head><body><main>
+<p class="note">Descendant beats class.</p>
+<p id="winner" class="note">Later id wins: 654321.</p>
+<p id="priority" class="strong" style="color:green">Important red beats normal inline.</p>
+<p class="strong" style="color:blue !important">Important inline blue wins.</p>
+<p style="color:#112233">Inline color; inherited mono size.</p>
+<p class="inherit">Inherited black, not an invented value.</p>
+</main></body></html>

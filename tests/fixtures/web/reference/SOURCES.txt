@@ -1,0 +1,33 @@
+M93 reference set, authored 2026-10-05 for drawmeanelephant/VirelaiOS.
+Every file here is original project-authored material under the VirelaiOS
+Proprietary Source-Available License v1.0 at ../../../../LICENSE.
+No HTML, CSS, JS, logo, screenshot or prose was copied from a public site.
+The filenames wikipedia/github/mdn identify structural test roles only.
+No third-party bytes, browser engine, downloaded asset or new dependency.
+
+Inventory (each file, including this one, is capped at 16,384 bytes):
+boxes-block.html       CSS 2.1 sections 8/10 arithmetic; M93d exact rectangles.
+boxes-collapse.html    CSS 2.1 section 8.3.1 arithmetic; M93d exact rectangles.
+boxes-flex.html        Flexbox section 9 arithmetic; M93d exact rectangles.
+selectors.html         selector/origin/order/important/inheritance; M93c.
+box-model.html         dimensions, constraints, physical edges; M93c/d.
+borders.html           solid/none, shorthand and physical sides; M93c/e.
+fonts.html             family/size/weight/style/line-height/white-space; M93c/e.
+colors.html            hex/rgb/named/current/transparent; M93c/e.
+display-tables.html    display, lists, existing equal-column tables; M93c/d.
+flex.html              flex direction/wrap/alignment/factors/basis/gaps; M93c/d.
+degradation.html       ignored constructs and fallback text/images; M93b/c/e.
+forms.html             successful GET controls, POST refusal; M93b/f.
+wikipedia.html         original article/sidebar/stacking infobox/search; M93f/g.
+github.html            original flex repo header/file table/sidebar/code; M93f/g.
+mdn.html               original documentation/sidebar/code/notice; M93f/g.
+SOURCES.txt            this original provenance and license inventory.
+
+Specification references are consulted for arithmetic, never executable oracles:
+https://www.w3.org/TR/CSS21/box.html
+https://www.w3.org/TR/CSS21/visudet.html
+https://www.w3.org/TR/css-flexbox-1/#layout-algorithm
+Expected rectangles are in the three boxes-*.html comments. Pixel expectations
+are NOT supplied by this R1. M93e supplies owner-approved 1280x720 renders;
+M93g compares their fixed presentation crops exactly (ADR 0028 D sections 4/9).
+All pages are intentionally below caps and must parse without Truncated.

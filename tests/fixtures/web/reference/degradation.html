@@ -1,0 +1,16 @@
+<!doctype html>
+<!-- Authored for VirelaiOS, 2026-10-05; repository LICENSE; no copied site bytes.
+Deleting ignored constructs must leave the same computed styles and boxes.
+-->
+<html><head><title>Named degradations</title><style>
+@import "never-fetch.css";
+@font-face { font-family:Remote; src:url(never-fetch.ttf); }
+@media print { p { display:none; } }
+@media screen { p { color:blue; } }
+@keyframes wobble { from { color:red; } to { color:green; } }
+p { float:right; position:absolute; top:10px; z-index:99; grid-template-columns:1fr 1fr; transform:rotate(45deg); animation:wobble 1s; background-image:url(never-fetch.png); opacity:0; color:black; }
+p:hover, p::before { color:red; }
+p > a { color:green; }
+.bad { width:calc(100% - 1px); border:dashed 2px red; display:grid; font-size:2em; }
+</style></head><body><p>Float stacks in normal flow; all at-rules ignored, including screen. <a href="mdn.html">Link</a></p>
+<p class="bad">Bad values do not apply.</p><noscript>No scripting; this text renders.</noscript><object>Object fallback text.</object><iframe>Frame fallback text.</iframe><img src="absent.jpg" alt="JPEG placeholder"><img src="absent.svg" alt="SVG refusal placeholder"></body></html>
