@@ -66,6 +66,32 @@ func TestRenderStringsRedactionAndAllMetadata(t *testing.T) {
 	}
 }
 
+func TestNamedFlagsAndUnknownBits(t *testing.T) {
+	for _, test := range []struct {
+		slot  uint64
+		arg   int
+		value uint64
+		want  string
+	}{
+		{20, 1, 0, "HIDE"}, {20, 1, 1, "SHOW"},
+		{23, 2, 31, "READ|WRITE|CREATE|APPEND|DIR"},
+		{27, 3, uint64(1)<<63 | 2, "CURSOR_READ"},
+		{28, 3, uint64(1)<<63 | 2, "STREAMS|0x2"},
+		{35, 1, uint64(1)<<63 | 14, "REPLACE|0xe"},
+		{43, 1, uint64(1)<<63 | 8, "AUDIO_STREAM|0x8"},
+		{45, 0, 1, "MUTED"}, {53, 1, 1, "UNSAVED"},
+		{63, 2, 3, "READ|WRITE"},
+		{63, 3, 0x18022, "PRIVATE|ANON|POPULATE|SHARED"},
+		{69, 2, 0600, "OWNER_READ|OWNER_WRITE"},
+		{76, 1, 3, "READ|WRITE"}, {76, 1, 7, "READ|WRITE|0x4"},
+	} {
+		if got := flags(test.slot, test.arg, test.value); got != test.want {
+			t.Fatalf("slot=%d arg=%d value=%x: %s, want %s",
+				test.slot, test.arg, test.value, got, test.want)
+		}
+	}
+}
+
 func TestArmExecWireOrderingAndFailureDisarm(t *testing.T) {
 	var ops []uintptr
 	previous := vi.SetSyscallHookForTest(func(slot, op, token, ptr, size uintptr) int64 {

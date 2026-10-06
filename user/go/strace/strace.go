@@ -137,6 +137,12 @@ func flags(slot uint64, index int, value uint64) string {
 		}
 	}
 	switch {
+	case slot == 20 && index == 1 && value <= 1:
+		return [...]string{"HIDE", "SHOW"}[value]
+	case slot == 45 && index == 0 && value <= 1:
+		return [...]string{"UNMUTED", "MUTED"}[value]
+	case slot == 53 && index == 1 && value <= 1:
+		return [...]string{"SAVED", "UNSAVED"}[value]
 	case slot == 23 && index == 2:
 		take(1, "READ")
 		take(2, "WRITE")
@@ -147,6 +153,17 @@ func flags(slot uint64, index int, value uint64) string {
 		take(uint64(1)<<63, "REPLACE")
 	case slot == 28 && index == 3:
 		take(uint64(1)<<63, "STREAMS")
+	case slot == 27 && index == 3:
+		switch value {
+		case uint64(1)<<63 | 1:
+			return "CURSOR_OPEN"
+		case uint64(1)<<63 | 2:
+			return "CURSOR_READ"
+		case uint64(1)<<63 | 3:
+			return "CURSOR_CLOSE"
+		}
+	case slot == 43 && index == 1:
+		take(uint64(1)<<63, "AUDIO_STREAM")
 	case slot == 63 && index == 2:
 		take(1, "READ")
 		take(2, "WRITE")
@@ -167,6 +184,9 @@ func flags(slot uint64, index int, value uint64) string {
 		} {
 			take(entry.bit, entry.name)
 		}
+	case slot == 76 && index == 1:
+		take(1, "READ")
+		take(2, "WRITE")
 	}
 	if value != 0 || len(names) == 0 {
 		names = append(names, "0x"+strconv.FormatUint(value, 16))
