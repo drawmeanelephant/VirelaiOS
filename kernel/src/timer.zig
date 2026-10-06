@@ -29,6 +29,7 @@ const builtin = @import("builtin");
 const mmio = @import("mmio.zig");
 const console = @import("console.zig");
 const forensics = @import("forensics.zig"); // #1261: comparator re-arm probe (inert unless `forensics on`)
+const gic = @import("gic.zig");
 
 /// Conventional EL1 physical-timer PPI when the GTDT is absent or silent.
 pub const ppi_default: u32 = 30;
@@ -241,6 +242,113 @@ pub fn init_secondary() void {
     allow_el0_counter();
     allow_el0_fpu();
     arm();
+    profile_sync_local();
+}
+
+// The virtual timer is independent of CNTP and scheduler.tick. Only an
+// active profiling session enables it. There is deliberately no poll path.
+var profile_enabled = std.atomic.Value(bool).init(false);
+var profile_deadline: [4]u64 = [_]u64{0} ** 4;
+var profile_window_start: [4]u64 = [_]u64{0} ** 4;
+var profile_window_irqs: [4]u64 = [_]u64{0} ** 4;
+var profile_window_ticks: [4]u64 = [_]u64{0} ** 4;
+pub var profile_irqs: [4]u64 = [_]u64{0} ** 4;
+pub const profile_polls: [4]u64 = [_]u64{0} ** 4;
+const ProfileReport = struct { irqs: u64 = 0, elapsed: u64 = 0, ticks: u64 = 0 };
+var profile_reports: [4]ProfileReport = [_]ProfileReport{.{}} ** 4;
+var profile_pending: [4]std.atomic.Value(bool) = [_]std.atomic.Value(bool){std.atomic.Value(bool).init(false)} ** 4;
+
+fn profile_core() usize {
+    if (comptime builtin.is_test or builtin.cpu.arch != .aarch64) return 0;
+    const mpidr = asm volatile ("mrs %[v], mpidr_el1"
+        : [v] "=r" (-> u64),
+    );
+    return @intCast(mpidr & 3);
+}
+
+pub fn profile_available() bool {
+    return freq >= 100 and gic.armed() and gic.kind == .v3;
+}
+
+pub fn profile_set_active(enabled: bool) void {
+    profile_enabled.store(enabled, .release);
+    profile_sync_local();
+    gic.send_profile_update();
+}
+
+pub fn profile_sync_local() void {
+    if (comptime builtin.is_test or builtin.cpu.arch != .aarch64) return;
+    const c = profile_core();
+    asm volatile ("msr cntv_ctl_el0, %[v]"
+        :
+        : [v] "r" (@as(u64, 0)),
+    );
+    gic.configure_local_interrupt(gic.profile_ppi, false);
+    profile_deadline[c] = 0;
+    if (!profile_enabled.load(.acquire) or !profile_available()) return;
+    const now = cntpct();
+    profile_window_start[c] = now;
+    profile_window_irqs[c] = 0;
+    profile_window_ticks[c] = ticks;
+    profile_deadline[c] = cntvct() + freq / 100;
+    gic.configure_local_interrupt(gic.profile_ppi, true);
+    profile_arm_local(c);
+}
+
+fn profile_arm_local(c: usize) void {
+    if (comptime builtin.is_test or builtin.cpu.arch != .aarch64) return;
+    asm volatile ("msr cntv_cval_el0, %[v]"
+        :
+        : [v] "r" (profile_deadline[c]),
+    );
+    asm volatile ("msr cntv_ctl_el0, %[v]"
+        :
+        : [v] "r" (@as(u64, 1)),
+    );
+    asm volatile ("isb");
+}
+
+fn cntvct() u64 {
+    if (comptime builtin.is_test or builtin.cpu.arch != .aarch64) return 0;
+    return asm volatile ("mrs %[v], cntvct_el0"
+        : [v] "=r" (-> u64),
+    );
+}
+
+/// Skip missed periods, never flood the interrupt path with catch-up work.
+pub fn profile_next_deadline(previous: u64, now: u64, period: u64) u64 {
+    if (period == 0) return 0;
+    if (previous > now) return previous;
+    return previous + ((now - previous) / period + 1) * period;
+}
+
+pub fn profile_handle() bool {
+    if (comptime builtin.is_test or builtin.cpu.arch != .aarch64) return false;
+    const c = profile_core();
+    if (!profile_enabled.load(.acquire) or profile_deadline[c] == 0) {
+        profile_sync_local();
+        return false;
+    }
+    const now = cntpct();
+    profile_irqs[c] += 1;
+    profile_window_irqs[c] += 1;
+    profile_deadline[c] = profile_next_deadline(profile_deadline[c], cntvct(), freq / 100);
+    profile_arm_local(c);
+    if (now - profile_window_start[c] >= freq * 10) {
+        // One pending report per core: never rewrite bytes being printed.
+        if (!profile_pending[c].load(.acquire)) {
+            profile_reports[c] = .{
+                .irqs = profile_window_irqs[c],
+                .elapsed = now - profile_window_start[c],
+                .ticks = ticks - profile_window_ticks[c],
+            };
+            profile_pending[c].store(true, .release);
+        }
+        profile_window_start[c] = now;
+        profile_window_irqs[c] = 0;
+        profile_window_ticks[c] = ticks;
+    }
+    return true;
 }
 
 const TickSource = enum { test_only, irq, poll };
@@ -313,6 +421,22 @@ pub fn poll() void {
 /// Print the periodic heartbeat line if one is pending. Safe to call from
 /// the main context; never from an IRQ handler.
 pub fn maybe_heartbeat(con: *console.Console) void {
+    for (&profile_pending, 0..) |*pending, c| {
+        if (!pending.load(.acquire)) continue;
+        const report = profile_reports[c];
+        con.puts("prof: timer core=");
+        con.print_u64(c);
+        con.puts(" irq=");
+        con.print_u64(report.irqs);
+        con.puts(" poll=0 elapsed_cntpct=");
+        con.print_u64(report.elapsed);
+        con.puts(" freq=");
+        con.print_u64(freq);
+        con.puts(" physical_ticks=");
+        con.print_u64(report.ticks);
+        con.puts("\n");
+        pending.store(false, .release);
+    }
     if (pending_irq_report) {
         pending_irq_report = false;
         con.puts("timer irq delivered ppi=");

@@ -208,6 +208,7 @@ pub fn init(private_intid: u32, edge_triggered: bool) void {
         .none => {},
     }
     programmed = true;
+    configure_local_interrupt(profile_update_sgi, true);
 }
 
 /// Program the GIC CPU interface and local redistributor for a secondary CPU core.
@@ -275,6 +276,61 @@ pub fn init_secondary(private_intid: u32, edge_triggered: bool) void {
     );
     asm volatile ("dsb sy");
     asm volatile ("isb");
+    configure_local_interrupt(profile_update_sgi, true);
+}
+
+/// Private to the sampler: an SGI applies an enable/disable on every PE.
+/// It never schedules, acquires a service lock, or modifies the physical PPI.
+pub const profile_update_sgi: u32 = 3;
+pub const profile_ppi: u32 = 27;
+var prefetched: [4]?u32 = [_]?u32{null} ** 4;
+
+pub fn configure_local_interrupt(intid: u32, enabled: bool) void {
+    if (comptime builtin.is_test or builtin.cpu.arch != .aarch64) return;
+    if (kind != .v3 or intid > 31) return;
+    const rbase = select_redist_frame();
+    const bit = @as(u32, 1) << @as(u5, @intCast(intid));
+    mmio.mmio_write32(rbase + gicr_icenabler0, bit);
+    if (!enabled) {
+        wait_rwp(rbase);
+        return;
+    }
+    mmio.mmio_write32(rbase + gicr_igroup0, mmio.mmio_read32(rbase + gicr_igroup0) | bit);
+    const addr = rbase + gicr_ipriority0 + @as(u64, intid / 4) * 4;
+    const shift: u5 = @intCast((intid % 4) * 8);
+    var priority = mmio.mmio_read32(addr);
+    priority = (priority & ~(@as(u32, 255) << shift)) | (@as(u32, 0x80) << shift);
+    mmio.mmio_write32(addr, priority);
+    if (intid >= 16) {
+        const cfg = rbase + gicr_icfgr0 + @as(u64, intid / 16) * 4;
+        mmio.mmio_write32(cfg, private_icfgr(mmio.mmio_read32(cfg), intid, false));
+    }
+    mmio.mmio_write32(rbase + gicr_icpendr0, bit);
+    wait_rwp(rbase);
+    mmio.mmio_write32(rbase + gicr_isenabler0, bit);
+    wait_rwp(rbase);
+}
+
+pub fn send_profile_update() void {
+    if (comptime builtin.is_test or builtin.cpu.arch != .aarch64) return;
+    if (kind != .v3) return;
+    asm volatile ("dsb ishst");
+    asm volatile ("msr icc_sgi1r_el1, %[v]"
+        :
+        : [v] "r" (@as(u64, profile_update_sgi) << 24 | @as(u64, 1) << 40),
+    );
+    asm volatile ("isb");
+}
+
+/// The vector needs the original frame for PPI 27. An ordinary interrupt
+/// is handed to the existing zero-argument dispatcher without a second ack.
+pub fn take_profile_interrupt() ?u32 {
+    if (comptime builtin.is_test or builtin.cpu.arch != .aarch64) return null;
+    if (!programmed) return null;
+    const intid = ack();
+    if (intid == profile_ppi or intid == profile_update_sgi) return intid;
+    prefetched[core_index()] = intid;
+    return null;
 }
 
 fn current_affinity() u32 {
@@ -544,6 +600,11 @@ pub fn acked_total() u64 {
 /// v3, GICC_IAR for v2). 1023 = spurious (the same value in both).
 pub fn ack() u32 {
     if (comptime builtin.cpu.arch != .aarch64) return 1023;
+    const c = core_index();
+    if (prefetched[c]) |intid| {
+        prefetched[c] = null;
+        return intid;
+    }
     return switch (kind) {
         .v3 => blk: {
             var iar: u64 = 1023;
