@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "services": [{
+    "name": "probe",
+    "argv": ["CRASH.BIN"],
+    "class": "on-demand",
+    "wants": ["optional-not-installed"],
+    "restart": {"restart": "on-failure", "backoff_base_s": 2, "backoff_cap_s": 16, "max_restarts": 5, "window": 60},
+    "caps": ["debug"]
+  }]
+}

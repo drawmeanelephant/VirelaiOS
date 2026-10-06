@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "services": [{
+    "name": "seat",
+    "argv": ["GOTABWM.ELF"],
+    "class": "boot",
+    "restart": {"restart": "always", "backoff_base_s": 1, "backoff_cap_s": 8, "max_restarts": 5, "window": 60},
+    "caps": ["file", "window", "process"]
+  }]
+}
