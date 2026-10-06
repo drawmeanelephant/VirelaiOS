@@ -1,4 +1,4 @@
-# Profiler-only boots: fixed-work 5 off + 5 on, real CNTV delivery on both
+# Profiler-only boots: 7 interleaved fixed-work off/on pairs, CNTV on both
 # cores, and the guest's cmd/compile profiled by a monitor-launched PROF.
 # Existing fork/selfhost inputs only; tools/go/build-prof.sh keeps .symtab.
 # Compile the same pinned hello with SSA/GC invariant checks enabled, so this
@@ -6,7 +6,8 @@
 # GOCMDPROFILE is the named compiler variant, SSA built with -N -l only.
 # Its two existing read-only SSA check sites run 256 checks each, explicitly
 # amplifying this pinned tiny build; never presented as normal build timing.
-# Measurement runs require a quiet host and /tmp/virelai-vz.lock externally.
+# Owner must release M94b's window first. No competing VM/build/test work;
+# hold /tmp/virelai-vz.lock and record uptime before/after (no load floor).
 # exec-order: assert-proven -- all end markers are emitted by the guest tool.
 vgate_name live-observe "M94c: 100 Hz IRQ sampler, fixed-work overhead <2%, symbolized Go compile"
 vgate_share seed
@@ -70,23 +71,41 @@ vgate_assert overhead python <<'PY'
 import os, re, statistics
 serial = open(os.environ["VG_SER"], errors="replace").read()
 runs = re.findall(r"prof: work mode=(off|on) run=(\d+) ns=(\d+) checksum=([0-9a-f]+)", serial)
-assert len(runs) == 10, "need exactly 5 off + 5 on timings"
+assert len(runs) == 14, "need exactly 7 interleaved off/on pairs"
+assert [(mode, int(n)) for mode, n, _, _ in runs] == [
+    (mode, pair) for pair in range(1, 8) for mode in ("off", "on")
+], "off/on runs are not paired and interleaved"
 durations = {}
 for mode in ("off", "on"):
     rows = [(int(n), int(ns)) for m, n, ns, _ in runs if m == mode]
-    assert [n for n, _ in rows] == [1, 2, 3, 4, 5]
+    assert [n for n, _ in rows] == list(range(1, 8))
     durations[mode] = [ns for _, ns in rows]
     assert all(ns > 0 for ns in durations[mode]), "nonpositive timing"
 assert len({checksum for _, _, _, checksum in runs}) == 1, "work differs"
 off = statistics.median(durations["off"])
 on = statistics.median(durations["on"])
 overhead = (on - off) / off
-print("OBSERVED fixed-work ns:", durations, "medians:", off, on, "overhead_pct:", 100*overhead)
-assert overhead < 0.02, "profiler overhead >= 2%"
+off_min, off_max = min(durations["off"]), max(durations["off"])
+on_min, on_max = min(durations["on"]), max(durations["on"])
+paired = [(enabled - baseline) / baseline for baseline, enabled in
+          zip(durations["off"], durations["on"])]
+# Conservative observed range, not a statistical confidence interval.
+# If it straddles the 2% bar, the set is unresolved even with a low median.
+low = (on_min - off_max) / off_max
+high = (on_max - off_min) / off_min
+print("OBSERVED fixed-work ns:", durations, "medians:", off, on,
+      "off_min/max:", off_min, off_max, "on_min/max:", on_min, on_max,
+      "overhead_pct:", 100*overhead, "paired median/min/max pct:",
+      100*statistics.median(paired), 100*min(paired), 100*max(paired),
+      "range_envelope_pct:", 100*low, 100*high)
+assert not low <= 0.02 <= high, "UNRESOLVED: observed spread cannot resolve the 2% budget"
+assert overhead < 0.02 and high < 0.02, "profiler overhead >= 2%"
 summary = re.search(r"prof: samples=(\d+) dropped=(\d+) off_median_ns=(\d+) on_median_ns=(\d+)", serial)
 assert summary, "no guest summary"
 samples, dropped, guest_off, guest_on = map(int, summary.groups())
 assert (guest_off, guest_on) == (off, on), "median arithmetic differs"
+spread = re.search(r"prof: spread off_min_ns=(\d+) off_max_ns=(\d+) on_min_ns=(\d+) on_max_ns=(\d+) pairs=(\d+)", serial)
+assert spread and tuple(map(int, spread.groups())) == (off_min, off_max, on_min, on_max, 7), "guest spread arithmetic differs"
 assert dropped == 0, "normal session lost records"
 # The worker runs immediately after Sleep wakes and finishes within one
 # physical quantum. At 100 Hz it has many samples; a 1 Hz mutation cannot

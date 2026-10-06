@@ -46,6 +46,21 @@ func median(values []int64) int64 {
 	return copy_[len(copy_)/2]
 }
 
+const measurementPairs = 7
+
+func bounds(values []int64) (int64, int64) {
+	minimum, maximum := values[0], values[0]
+	for _, value := range values[1:] {
+		if value < minimum {
+			minimum = value
+		}
+		if value > maximum {
+			maximum = value
+		}
+	}
+	return minimum, maximum
+}
+
 func run() error {
 	runtime.GOMAXPROCS(1)
 	pid, err := selfPID()
@@ -103,49 +118,65 @@ func run() error {
 	sink = fixedWork(1)
 	argvEnvpGuard[0] = byte(sink)
 	runtime.KeepAlive(&argvEnvpGuard)
-	var off, on [5]int64
+	var off, on [measurementPairs]int64
 	var sampleCount uint64
 	var dropped uint64
-	measure := func(values *[5]int64, token uint64, label string) error {
-		for i := range values {
-			vi.Sleep(1)
-			start := vi.Nanos()
-			value := fixedWork(1)
-			elapsed := vi.Nanos() - start
-			if value != sink || elapsed <= 0 {
-				return fmt.Errorf("invalid fixed-work result or clock")
-			}
-			values[i] = elapsed
-			if token != 0 {
-				for batch := 0; batch < vi.ProfileRingRecords/16; batch++ {
-					samples, loss, err := vi.ProfileSamples(token)
-					if err != nil {
-						return err
-					}
-					sampleCount += uint64(len(samples))
-					dropped = loss
-					if len(samples) < 16 {
-						break
-					}
-				}
-			}
-			fmt.Printf("prof: work mode=%s run=%d ns=%d checksum=%x\n", label, i+1, elapsed, value)
-		}
-		return nil
-	}
-	if err := measure(&off, 0, "off"); err != nil {
-		return err
-	}
+	// Reserve backing before either mode; the interleaved set pays no first
+	// allocation cost and uses identical work in every on arm.
 	token, err := vi.ProfileStart([]uint64{pid})
 	if err != nil {
 		return err
 	}
-	defer vi.ProfileStop(token)
-	if err := measure(&on, token, "on"); err != nil {
+	defer func() { _ = vi.ProfileStop(token) }()
+	if err := vi.ProfileStop(token); err != nil {
 		return err
+	}
+	measure := func(i int, values *[measurementPairs]int64, label string) error {
+		vi.Sleep(1)
+		start := vi.Nanos()
+		value := fixedWork(1)
+		elapsed := vi.Nanos() - start
+		if value != sink || elapsed <= 0 {
+			return fmt.Errorf("invalid fixed-work result or clock")
+		}
+		values[i] = elapsed
+		fmt.Printf("prof: work mode=%s run=%d ns=%d checksum=%x\n", label, i+1, elapsed, value)
+		return nil
+	}
+	for pair := 0; pair < measurementPairs; pair++ {
+		if err := measure(pair, &off, "off"); err != nil {
+			return err
+		}
+		token, err = vi.ProfileStart([]uint64{pid})
+		if err != nil {
+			return err
+		}
+		if err := measure(pair, &on, "on"); err != nil {
+			return err
+		}
+		if err := vi.ProfileStop(token); err != nil {
+			return err
+		}
+		var pairDropped uint64
+		for batch := 0; batch < vi.ProfileRingRecords/16; batch++ {
+			samples, loss, err := vi.ProfileSamples(token)
+			if err != nil {
+				return err
+			}
+			sampleCount += uint64(len(samples))
+			pairDropped = loss
+			if len(samples) < 16 {
+				break
+			}
+		}
+		dropped += pairDropped
 	}
 	// A full counter-timed delivery window on BOTH cores. Sleeping here
 	// explicitly distinguishes hardware IRQ delivery from fixture polling.
+	token, err = vi.ProfileStart([]uint64{pid})
+	if err != nil {
+		return err
+	}
 	start := vi.Nanos()
 	vi.Sleep(12)
 	if vi.Nanos()-start < 10_000_000_000 {
@@ -155,9 +186,13 @@ func run() error {
 		return err
 	}
 	offMedian, onMedian := median(off[:]), median(on[:])
+	offMin, offMax := bounds(off[:])
+	onMin, onMax := bounds(on[:])
 	fmt.Printf("prof: samples=%d dropped=%d off_median_ns=%d on_median_ns=%d overhead_pct=%.6f\n",
 		sampleCount, dropped, offMedian, onMedian,
 		100*float64(onMedian-offMedian)/float64(offMedian))
+	fmt.Printf("prof: spread off_min_ns=%d off_max_ns=%d on_min_ns=%d on_max_ns=%d pairs=%d\n",
+		offMin, offMax, onMin, onMax, measurementPairs)
 	fmt.Println("proffixture: done")
 	return nil
 }

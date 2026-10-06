@@ -21,4 +21,8 @@ Its separately named `GOCMDPROFILE.ELF` has only the SSA package built with
 Its two existing read-only SSA invariant checks repeat 256 times. This is an
 explicit sampling fixture, not a normal-compiler timing measurement.
 The normal self-host compiler is not replaced.
-Run the full gate only on a quiet host while holding `/tmp/virelai-vz.lock`.
+After the owner releases M94b's measurement window, run the full gate under
+`/tmp/virelai-vz.lock` with no competing VMRunner or Zig/Go build/test work.
+Record `uptime` before and after. The fixture measures seven interleaved
+off/on pairs and reports median/min/max; a spread crossing 2% is unresolved,
+not a pass. There is no load-average floor under the 2026-10-06 ruling.
