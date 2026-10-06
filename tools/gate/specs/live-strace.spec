@@ -164,3 +164,66 @@ else:
             raise SystemExit("missing/non-positive interleaved pairs for " + path)
     print("Counter-timed overhead medians present and sane; no threshold asserted")
 PY
+
+vgate_setup_python <<'PY'
+import os
+rd = os.environ["RUN_DIR"]
+with open(os.path.join(rd, "capture-overhead.txt"), "w") as f:
+    if os.environ.get("TRACE_CAPTURE_MEASURE") == "1":
+        f.write("exec TRACEFIX.ELF capture-overhead\n")
+    else:
+        f.write("echo trace-capture-not-requested\necho trace-capture-overhead-done\n")
+PY
+
+vgate_run 06 -- --script '$RUN_DIR/capture-overhead.txt' --script-after 'tasks user-el0 exited status=7' --script-expect 'trace-capture-overhead-done' --timeout 120
+vgate_assert 06 serial-absent 'trace: fixture failed'
+vgate_assert 06 serial-absent '[EXC] parking:'
+vgate_assert 06 python <<'PY'
+import json, math, os, re, shutil, struct
+from pathlib import Path
+serial = Path(os.environ["VG_SER"]).read_text(errors="replace")
+if os.environ.get("TRACE_CAPTURE_MEASURE") != "1":
+    assert "trace-capture-not-requested" in serial, "explicit capture-measure opt-out missing"
+    print("128-byte capture mean/p95 NOT MEASURED in this invocation")
+else:
+    summary = re.search(r"trace: capture-overhead pairs=7 calls=10000 bytes=128 freq=(\d+) off_ticks=(\d+) on_ticks=(\d+) added_p95_ticks=(-?\d+)", serial)
+    assert summary, "per-call capture summary missing"
+    frequency, reported_off, reported_on, reported_added_p95 = map(int, summary.groups())
+    assert frequency > 0
+    pairs = re.findall(r"trace: capture-pair index=(\d+) calls=10000 off_ticks=(\d+) on_ticks=(\d+) off_p95_ticks=(\d+) on_p95_ticks=(\d+) added_p95_ticks=(-?\d+)", serial)
+    assert [int(p[0]) for p in pairs] == list(range(1, 8)), "seven off/on capture pairs missing"
+    raw = Path(os.environ["VG_SHARE"], "TRACE-CAPTURE.TICKS")
+    data = raw.read_bytes()
+    assert len(data) == 7 * 2 * 10000 * 8, "raw counter sample count mismatch"
+    values = struct.unpack("<140000Q", data)
+    assert min(values) > 0, "zero counter sample"
+    def p95(samples):
+        return sorted(samples)[math.ceil(len(samples)*.95)-1]
+    records, all_off, all_on, all_added = [], [], [], []
+    for i, row in enumerate(pairs):
+        off = values[2*i*10000:(2*i+1)*10000]
+        on = values[(2*i+1)*10000:(2*i+2)*10000]
+        added = [b-a for a, b in zip(off, on)]
+        assert tuple(map(int, row[1:])) == (sum(off), sum(on), p95(off), p95(on), p95(added)), "serial/raw counter mismatch"
+        records.append({"pair": i+1, "off_mean_ns": sum(off)*1e9/frequency/10000,
+                        "on_mean_ns": sum(on)*1e9/frequency/10000,
+                        "added_mean_ns": (sum(on)-sum(off))*1e9/frequency/10000,
+                        "off_p95_ns": p95(off)*1e9/frequency,
+                        "on_p95_ns": p95(on)*1e9/frequency,
+                        "paired_added_p95_ns": p95(added)*1e9/frequency})
+        all_off.extend(off); all_on.extend(on); all_added.extend(added)
+    assert (sum(all_off), sum(all_on), p95(all_added)) == (reported_off, reported_on, reported_added_p95)
+    result = {"frequency": frequency, "pairs": records,
+              "added_mean_ns": (sum(all_on)-sum(all_off))*1e9/frequency/70000,
+              "on_p95_ns": p95(all_on)*1e9/frequency,
+              "paired_added_p95_ns": p95(all_added)*1e9/frequency}
+    suffix = os.environ.get("VIRELAI_GATE_SUFFIX", "")
+    shutil.copyfile(raw, "artifacts/live-strace-capture-ticks.bin"+suffix)
+    Path("artifacts/live-strace-capture-results.json"+suffix).write_text(json.dumps(result, indent=2)+"\n")
+    print(json.dumps(result, indent=2))
+    # Baseline durations are nonnegative, so absolute traced p95 is a
+    # conservative upper bound on added p95, not a difference of quantiles.
+    assert result["added_mean_ns"] <= 10000, "128-byte capture added mean exceeds 10 us"
+    assert result["on_p95_ns"] <= 25000, "conservative 128-byte added p95 bound exceeds 25 us"
+    print("128-byte capture added mean and conservative p95 bound: PASS")
+PY

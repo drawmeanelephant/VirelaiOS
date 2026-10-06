@@ -1,8 +1,11 @@
 package main
 
 import (
+	"encoding/binary"
 	"fmt"
+	"runtime"
 	"sort"
+	"unsafe"
 
 	"virelai/strace"
 	"virelai/vi"
@@ -58,7 +61,7 @@ func drain(s *strace.Session) (int, uint64) {
 func main() {
 	args := vi.Args()
 	if len(args) != 2 {
-		check(fmt.Errorf("usage: TRACEFIX self|deny|overhead|peer"))
+		check(fmt.Errorf("usage: TRACEFIX self|deny|overhead|capture-overhead|peer"))
 	}
 	switch args[1] {
 	case "peer":
@@ -84,6 +87,8 @@ func main() {
 		check(fmt.Errorf("no foreign live target"))
 	case "overhead":
 		overhead()
+	case "capture-overhead":
+		captureOverhead()
 	default:
 		check(fmt.Errorf("unknown fixture"))
 	}
@@ -197,4 +202,124 @@ func overhead() {
 		overheadPairs, baseline, filtered, tracedBaseline, traced, counterFrequency()))
 	vi.ConsoleLine(fmt.Sprintf("trace: filtered-overhead calls=100000 pairs=%d untraced=%d filtered=%d ns/call", overheadPairs, baseline100k, filtered100k))
 	vi.ConsoleLine("trace-overhead-done")
+}
+
+const captureCalls = 10000
+
+func captureBatch(samples []uint64, path uintptr) {
+	for i := range samples {
+		ticks, result := captureCallTicks(path, vi.TraceStringBytes)
+		if ticks == 0 || result != -vi.ErrEINVAL {
+			check(fmt.Errorf("capture timing/refusal ticks=%d result=%d", ticks, result))
+		}
+		samples[i] = ticks
+	}
+}
+
+func p95Ticks(samples []uint64) uint64 {
+	values := append([]uint64(nil), samples...)
+	sort.Slice(values, func(i, j int) bool { return values[i] < values[j] })
+	return values[(95*len(values)+99)/100-1]
+}
+
+func p95AddedTicks(samples []int64) int64 {
+	values := append([]int64(nil), samples...)
+	sort.Slice(values, func(i, j int) bool { return values[i] < values[j] })
+	return values[(95*len(values)+99)/100-1]
+}
+
+func totalTicks(samples []uint64) uint64 {
+	var total uint64
+	for _, ticks := range samples {
+		total += ticks
+	}
+	return total
+}
+
+// Binary samples are written only after all timed pairs. Each little-endian
+// u64 is one serialized CNTPCT duration, off array then on array for each pair.
+func writeCaptureSamples(samples []uint64) {
+	buffer := make([]byte, len(samples)*8)
+	for i, ticks := range samples {
+		binary.LittleEndian.PutUint64(buffer[i*8:], ticks)
+	}
+	if rc := vi.WriteFileSafe("/host/TRACE-CAPTURE.TICKS", buffer); rc < 0 {
+		check(strace.Error{Code: -rc})
+	}
+}
+
+func captureOverhead() {
+	pid := selfPID()
+	frequency := counterFrequency()
+	if frequency == 0 {
+		check(fmt.Errorf("guest counter unavailable"))
+	}
+	var path [vi.TraceStringBytes]byte
+	for i := range path {
+		path[i] = 'x'
+	}
+	copy(path[:], "/host/TRACE-CAPTURE-")
+	var pin runtime.Pinner
+	pin.Pin(&path[0])
+	defer pin.Unpin()
+	address := uintptr(unsafe.Pointer(&path[0]))
+	// Allocate and touch every sample page before any timing interval.
+	samples := make([]uint64, overheadPairs*2*captureCalls)
+	for i := range samples {
+		samples[i] = 1
+	}
+	added := make([]int64, overheadPairs*captureCalls)
+	var warmup [1000]uint64
+	var session *strace.Session
+	var sumOff, sumOn uint64
+	for pair := 0; pair < overheadPairs; pair++ {
+		if session != nil {
+			check(session.Disarm())
+		}
+		off := samples[pair*2*captureCalls : (pair*2+1)*captureCalls]
+		on := samples[(pair*2+1)*captureCalls : (pair*2+2)*captureCalls]
+		captureBatch(warmup[:], address)
+		captureBatch(off, address)
+		var err error
+		session, err = strace.Arm([]uint64{pid}, []uint64{23})
+		check(err)
+		captureBatch(warmup[:], address)
+		captureBatch(on, address)
+		check(session.Disarm())
+		status, err := session.Status()
+		check(err)
+		if status.Count != vi.TraceRingRecords ||
+			status.Dropped != uint64(len(warmup)+captureCalls-vi.TraceRingRecords) {
+			check(fmt.Errorf("capture count=%d dropped=%d", status.Count, status.Dropped))
+		}
+		records, _, err := session.Read()
+		check(err)
+		if len(records) != vi.ObserveMaxReadRecords {
+			check(fmt.Errorf("missing measured capture records"))
+		}
+		for _, record := range records {
+			if record.Number != 23 || record.PID != pid || record.Args[0] != uint64(address) ||
+				record.Args[1] != vi.TraceStringBytes || record.Args[2] != 0 ||
+				record.StringMask != 1 || record.FaultMask != 0 || record.TruncatedMask != 0 ||
+				record.StringLengths[0] != vi.TraceStringBytes || record.Strings[0] != path ||
+				record.Result != -vi.ErrEINVAL || record.Errno != uint32(vi.ErrEINVAL) {
+				check(fmt.Errorf("measured call did not capture all 128 bytes"))
+			}
+		}
+		for i := range off {
+			added[pair*captureCalls+i] = int64(on[i]) - int64(off[i])
+		}
+		offTotal, onTotal := totalTicks(off), totalTicks(on)
+		sumOff += offTotal
+		sumOn += onTotal
+		vi.ConsoleLine(fmt.Sprintf("trace: capture-pair index=%d calls=%d off_ticks=%d on_ticks=%d off_p95_ticks=%d on_p95_ticks=%d added_p95_ticks=%d",
+			pair+1, captureCalls, offTotal, onTotal, p95Ticks(off), p95Ticks(on), p95AddedTicks(added[pair*captureCalls:(pair+1)*captureCalls])))
+		// Already disarmed; leave the next off half completely untraced.
+		session = nil
+	}
+	vi.ConsoleLine(fmt.Sprintf("trace: capture-overhead pairs=%d calls=%d bytes=128 freq=%d off_ticks=%d on_ticks=%d added_p95_ticks=%d",
+		overheadPairs, captureCalls, frequency, sumOff, sumOn, p95AddedTicks(added)))
+	writeCaptureSamples(samples)
+	vi.ConsoleLine("trace-capture-overhead-done")
+	runtime.KeepAlive(path)
 }

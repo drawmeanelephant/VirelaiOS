@@ -57,5 +57,16 @@ was not measured. The fixture reports seven interleaved off/on pairs for
 Each pair reports raw aggregate durations; summaries retain median/min/max
 added cost. Confirm no other VMRunner or worktree build/test process before
 the set, hold the VZ lock throughout, and record `uptime` before and after.
-The owner's 2026-10-06 ruling withdraws the former load-average cutoff. A
-spread wider than the ADR budget is unresolved evidence, not a pass.
+The owner's 2026-10-06 rulings withdraw the former load-average cutoff and
+clarify that ADR budgets apply to added mean, not paired spread. Disclose
+spread as measurement noise.
+
+`TRACE_CAPTURE_MEASURE=1` opts into seven 10,000-call off/on pairs with
+128-byte input strings. A guest ARM64 assembly seam brackets each slot-23
+SVC with serialized CNTPCT reads; invalid flags return EINVAL before file
+allocation or host I/O. The ring is checked for complete, unfaulted 128-byte
+copies. Sample arrays are touched beforehand and published afterwards.
+Raw little-endian tick arrays retain each off/on duration in pair order.
+The gate independently recomputes added mean and nearest-rank p95. Absolute
+traced p95 is also reported as a conservative upper bound on added p95;
+do not subtract two quantiles and call that a per-call percentile.

@@ -55,3 +55,42 @@ func TestPairedWorkloadAlternatesEqualOffOnLoops(t *testing.T) {
 			off, on, active, opens, closes, offCalls, onCalls)
 	}
 }
+
+func TestCaptureBatchUsesReadable128BytesAndRefusesOpen(t *testing.T) {
+	var path [128]byte
+	for i := range path {
+		path[i] = 'x'
+	}
+	calls := 0
+	previous := vi.SetSyscallHookForTest(func(slot, ptr, length, flags, unused uintptr) int64 {
+		if slot != vi.SlotFileOpen || length != 128 || flags != 0 {
+			t.Fatalf("wrong capture syscall shape slot=%d length=%d flags=%d", slot, length, flags)
+		}
+		if got := unsafe.Slice((*byte)(unsafe.Pointer(ptr)), length); string(got) != string(path[:]) {
+			t.Fatal("wrong capture bytes")
+		}
+		calls++
+		return -vi.ErrEINVAL
+	})
+	defer vi.SetSyscallHookForTest(previous)
+	var samples [20]uint64
+	captureBatch(samples[:], uintptr(unsafe.Pointer(&path[0])))
+	if calls != len(samples) {
+		t.Fatal("workload count", calls)
+	}
+}
+
+func TestCapturePercentilesRetainRawOrder(t *testing.T) {
+	var samples [20]uint64
+	var added [20]int64
+	for i := range samples {
+		samples[i] = uint64(20 - i)
+		added[i] = int64(10 - i)
+	}
+	if p95Ticks(samples[:]) != 19 || p95AddedTicks(added[:]) != 9 || totalTicks(samples[:]) != 210 {
+		t.Fatal("nearest-rank percentile or total")
+	}
+	if samples[0] != 20 || added[0] != 10 {
+		t.Fatal("percentile calculation mutated raw sample order")
+	}
+}
