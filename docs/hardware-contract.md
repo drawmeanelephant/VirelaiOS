@@ -613,6 +613,12 @@ Non-PCI platform facts:
   **[observed]** claim 9187.
 - The one-second timer PPI is the kernel's preemption clock (tick-driven
   round-robin scheduler). **[observed]** claim 5275.
+- **EL1 virtual sampling timer (CNTV, PPI 27)**: an active slot-82 session
+  arms CNTV at 100 Hz on both vCPUs, independently of the 1 Hz CNTP clock.
+  **[observed]** #2004's counter-timed 10 s IRQ-only probe:
+  core 0 **99.499907 Hz**, core 1 **99.499983 Hz** (995 acknowledged/EOI'd
+  IRQs each, zero polls, 24 MHz counter, 10 physical ticks each).
+  Evidence: `artifacts/live-observe-*-timer-probe`; no poll fallback.
 - Xcode 27's public Virtualization.framework SDK exposes no
   `VZGICConfiguration` or host interrupt-injection API (Hypervisor.framework
   separately exposes `hv_gic_create`/`hv_gic_set_spi`/`hv_gic_send_msi`);

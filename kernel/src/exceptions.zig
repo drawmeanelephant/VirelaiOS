@@ -46,6 +46,9 @@ const svclock = @import("svclock.zig"); // claim 9498 follow-on: demand-paging f
 const memmap = @import("memmap.zig");
 const userspace = @import("userspace.zig");
 const forensics = @import("forensics.zig"); // #1261: exception-entry probe (inert unless `forensics on`)
+const sampler = @import("sampler.zig");
+const timer = @import("timer.zig");
+const gic = @import("gic.zig");
 
 // ---------------------------------------------------------------------------
 // Exception kinds (the x5 value each stub passes; also the vector offset's
@@ -93,6 +96,42 @@ pub fn frame_read(frame: *const VectorFrame, reg: u5) u64 {
 pub fn frame_write(frame: *VectorFrame, reg: u5, value: u64) bool {
     const index = frame_index(reg) orelse return false;
     frame[index] = value;
+    return true;
+}
+
+var sample_read_active: [4]bool = [_]bool{false} ** 4;
+var sample_read_fault: [4]bool = [_]bool{false} ** 4;
+
+/// IRQ-only, fault-safe user read with EL0 permissions. LDTR refuses the
+/// identity overlay even if another thread unmaps a page after validation.
+/// Two loads total; no demand paging, service lock, allocation or console.
+pub fn read_sample_frame(address: u64, bytes: *[16]u8) bool {
+    if (comptime builtin.is_test or builtin.cpu.arch != .aarch64)
+        return uaccess.copy_in(bytes, address, bytes.len) == .ok;
+    const c = resume_core();
+    const active: *volatile bool = &sample_read_active[c];
+    const fault: *volatile bool = &sample_read_fault[c];
+    fault.* = false;
+    active.* = true;
+    asm volatile ("" ::: .{ .memory = true });
+    defer {
+        asm volatile ("" ::: .{ .memory = true });
+        active.* = false;
+    }
+    var previous: u64 = 0;
+    asm volatile ("ldtr %[v], [%[address]]"
+        : [v] "=r" (previous),
+        : [address] "r" (address),
+        : .{ .memory = true });
+    if (fault.*) return false;
+    var lr: u64 = 0;
+    asm volatile ("ldtr %[v], [%[address]]"
+        : [v] "=r" (lr),
+        : [address] "r" (address + 8),
+        : .{ .memory = true });
+    if (fault.*) return false;
+    std.mem.writeInt(u64, bytes[0..8], previous, .little);
+    std.mem.writeInt(u64, bytes[8..16], lr, .little);
     return true;
 }
 
@@ -1026,6 +1065,33 @@ pub export fn exc_dispatch(
     // the stub's `mov sp, x0` restores from whatever frame is left staged.
     if (kind == kind_irq) {
         if (irq_dispatcher) |d| {
+            if (gic.take_profile_interrupt()) |intid| {
+                gic.note_irq(intid);
+                const interrupted_sp = resume_sp_el0[cid];
+                if (intid == gic.profile_update_sgi) {
+                    timer.profile_sync_local();
+                } else if (timer.profile_handle()) {
+                    sampler.on_irq(frame, elr, spsr);
+                }
+                // A fault-safe FP read may take a nested synchronous abort.
+                // Restore the outer IRQ's architectural and staging state,
+                // not the copy loop's ELR/SPSR or its kernel stack frame.
+                resume_frame[cid] = @intFromPtr(frame);
+                resume_sp_el0[cid] = interrupted_sp;
+                if (comptime !builtin.is_test and builtin.cpu.arch == .aarch64) {
+                    asm volatile ("msr elr_el1, %[v]"
+                        :
+                        : [v] "r" (elr),
+                    );
+                    asm volatile ("msr spsr_el1, %[v]"
+                        :
+                        : [v] "r" (spsr),
+                    );
+                    asm volatile ("isb");
+                }
+                gic.eoi(intid);
+                return .{ .frame = @intFromPtr(frame), .sp_el0 = interrupted_sp };
+            }
             d();
             return .{ .frame = resume_frame[cid], .sp_el0 = resume_sp_el0[cid] };
         }
@@ -1048,6 +1114,17 @@ pub export fn exc_dispatch(
     // faulting instruction; the copy loop observes the latch and returns
     // EFAULT, so the shell/user task survives. Any other synchronous
     // exception falls through to the normal report/park path.
+    if (kind == kind_sync and sample_read_active[cid] and (((esr >> 26) & 0x3f) == 0x25)) {
+        @as(*volatile bool, &sample_read_fault[cid]).* = true;
+        if (comptime !builtin.is_test and builtin.cpu.arch == .aarch64) {
+            asm volatile ("msr elr_el1, %[v]"
+                :
+                : [v] "r" (elr + 4),
+            );
+            asm volatile ("isb");
+        }
+        return .{ .frame = @intFromPtr(frame), .sp_el0 = resume_sp_el0[cid] };
+    }
     if (kind == kind_sync and uaccess.try_recover(esr, elr)) {
         return .{ .frame = @intFromPtr(frame), .sp_el0 = resume_sp_el0[cid] };
     }
