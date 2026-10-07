@@ -447,10 +447,8 @@ pub fn exec(m: *Monitor, argv: []const []const u8) ExecError {
     // (a command can never be preempted mid-hold). Nested commands
     // (`time`/`sh` re-enter exec) skip re-acquisition via `held_set`.
     const doms = svclock.dom_bit(.kernel) | cmd.dom;
-    if (!svclock.held_set(doms)) {
-        const taken = svclock.acquire_missing(doms);
-        defer svclock.release_set(taken);
-    }
+    const taken = if (!svclock.held_set(doms)) svclock.acquire_missing(doms) else 0;
+    defer if (taken != 0) svclock.release_set(taken);
     return cmd.handler(m, args);
 }
 
