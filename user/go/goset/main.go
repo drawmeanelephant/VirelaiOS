@@ -19,6 +19,8 @@
 //	key=value ⏎  apply and save (the typed line the gate drives)
 //	⏎ alone      save the table as shown
 //	Esc          quit without saving
+//	services ⏎   open Services; name=on|off ⏎ safely publishes its config
+//	settings ⏎   return from Services without writing SETTINGS.TXT
 //
 // M73m (#1662) adds the PALETTE surface: `theme` cycles the three built-in
 // presets plus `custom`, and choosing `custom` reveals the three colour rows
@@ -43,9 +45,9 @@ package main
 import (
 	"strings"
 
-	"virelai/appkit"
 	"virelai/chords"
 	"virelai/settings"
+	"virelai/svcmanifest"
 	"virelai/tabapp"
 	"virelai/theme"
 	"virelai/vi"
@@ -83,20 +85,22 @@ type panel struct {
 	file settings.File
 	disp []settings.Setting
 	sel  int
-	// input is the typed command line ("wm=tabwm"). appkit owns the
-	// normalized key handling and shlib.LineBuffer owns the bounded bytes.
-	input         appkit.TextField
+	// The bounded field avoids linking the shell builtin table into GOSET.
+	input         textField
 	status        string
 	exitRequested bool
 	// showChords is the M82c (#1770) shortcuts registry view: the same
 	// list surface rendering the global chord table instead of the
 	// settings rows. Toggled by the panel's registered chord.
-	showChords bool
+	showChords   bool
+	showServices bool
+	services     servicesView
+	servicePoll  int64
 
-	listCtl     *appkit.ListController
-	focus       *appkit.FocusRing
-	saveCtl     *appkit.ActionButton
-	quitCtl     *appkit.ActionButton
+	listCtl     *listController
+	focus       *focusRing
+	saveCtl     *actionButton
+	quitCtl     *actionButton
 	rowsTxt     widgets.Text
 	headTxt     widgets.Text
 	statusT     widgets.Text
@@ -121,37 +125,64 @@ func main() {
 	}
 
 	a := newPanel(ta)
-	loop := appkit.NewLoop(a.ta, a.draw, a.handle)
-	loop.OnInitialPresent = func() { vi.ConsoleLine(markerPresent) }
-	loop.OnExit = func(status int) {
-		vi.ConsoleLine(markerClose)
-		vi.ConsoleLine(markerOK)
-		a.ta.CloseAndExit(status)
-	}
-	loop.ShouldQuit = func() (int, bool) {
-		if a.exitRequested {
-			return 0, true
+	a.present()
+	vi.ConsoleLine(markerPresent)
+	for {
+		dirty := false
+		now := vi.Nanos()
+		if a.showServices && now-a.servicePoll >= 1e9 {
+			a.servicePoll = now
+			if a.services.Refresh() {
+				a.serviceStatus()
+				dirty = true
+			}
 		}
-		return 0, false
+		ev, rc, ok := vi.PollEventRaw()
+		if ok {
+			switch a.ta.Dispatch(ev) {
+			case tabapp.ActionClosed:
+				a.exitRequested = true
+			case tabapp.ActionResized:
+				dirty = true
+			case tabapp.ActionNone:
+				dirty = a.handle(ev) || dirty
+			}
+		} else if rc < 0 {
+			return
+		}
+		if a.exitRequested {
+			vi.ConsoleLine(markerClose)
+			vi.ConsoleLine(markerOK)
+			a.ta.CloseAndExit(0)
+			return
+		}
+		if dirty {
+			a.present()
+		}
+		if !ok {
+			vi.Sleep(1)
+		}
 	}
-	loop.Run()
 }
+
+func (a *panel) present() { a.draw(); a.ta.Present() }
 
 // newPanel decodes the file, names its verdict, and builds the display table.
 // A corrupt file is read-only: the compiled defaults are in force (that is what
 // the kernel's refusal means) and every write is refused.
 func newPanel(ta *tabapp.TabApp) *panel {
 	a := &panel{ta: ta}
-	a.input = appkit.NewTextField(widgets.Rect{}, inputMax)
+	a.services.store = serviceStore{read: vi.ReadFileAll, write: vi.WriteFileSafe}
+	a.input = textField{Max: inputMax}
 	a.input.Prefix = "> "
 	a.input.Placeholder = "<key=value>"
 	a.input.Fg = 0xe0e8f0
 	a.input.Bg = 0x161c24
 	a.input.Caret = theme.Current.Caret
-	a.listCtl = appkit.NewListController(&a.list)
-	a.saveCtl = &appkit.ActionButton{Button: &a.saveBtn, OnActivate: func() bool { a.save(); return true }}
-	a.quitCtl = &appkit.ActionButton{Button: &a.quitBtn, OnActivate: func() bool { a.exitRequested = true; return true }}
-	a.focus = appkit.NewFocusRing(a.listCtl, &a.input, a.saveCtl, a.quitCtl)
+	a.listCtl = &listController{List: &a.list}
+	a.saveCtl = &actionButton{Button: &a.saveBtn, OnActivate: func() bool { a.save(); return true }}
+	a.quitCtl = &actionButton{Button: &a.quitBtn, OnActivate: func() bool { a.exitRequested = true; return true }}
+	a.focus = &focusRing{items: []control{a.listCtl, &a.input, a.saveCtl, a.quitCtl}, index: -1}
 	a.focus.Focus(1)
 	a.file = settings.Load()
 	switch a.file.State {
@@ -163,7 +194,7 @@ func newPanel(ta *tabapp.TabApp) *panel {
 		a.status = "corrupt file: read-only — ctrl+shift+h for shortcuts"
 	default:
 		a.disp = a.file.Display()
-		a.status = "key=value + Enter — idle curtain is visual, not authentication"
+		a.status = "key=value + Enter; services opens Services — idle curtain is visual"
 	}
 	vi.ConsoleLine(markerReady + a.summary() + " mode=" + a.mode())
 	// M73m: a file that already chose `custom` shows its colours as rows.
@@ -300,6 +331,10 @@ func (a *panel) applyInput() bool {
 // line, nothing written); any other negative return is the kernel code of the
 // step that failed, and the temp is gone either way.
 func (a *panel) save() {
+	if a.showServices {
+		a.saveServices()
+		return
+	}
 	if a.showChords {
 		// The registry view is read-only: the compiled table has nothing
 		// to publish, and the settings rows underneath must not be
@@ -369,6 +404,15 @@ func changedSettingKeys(before, after settings.File) []string {
 // alone: the panel does not guess a value space the kernel never declared —
 // type those as key=value, exactly like the kernel's own reader.
 func (a *panel) cycle(dir int) bool {
+	if a.showServices {
+		if a.sel >= 0 && a.sel < len(a.services.manifest.Services) {
+			s := a.services.manifest.Services[a.sel]
+			if err := a.services.Set(s.Name, !s.Enabled); err != nil {
+				a.status = "services refused: " + serviceReason(err)
+			}
+		}
+		return true
+	}
 	if a.sel < 0 || a.sel >= len(a.disp) {
 		return false
 	}
@@ -436,15 +480,24 @@ func (a *panel) key(ev vi.Event) bool {
 	if isShortcutsChord(ev) {
 		return a.toggleShortcuts()
 	}
-	k, ok := appkit.NormalizeKey(ev)
+	k, ok := normalizeKey(ev)
 	if !ok {
 		return false
 	}
 	switch k.Named() {
-	case appkit.NamedEscape:
+	case keyEscape:
 		a.exitRequested = true
 		return true
-	case appkit.NamedEnter:
+	case keyEnter:
+		if strings.TrimSpace(a.input.Value()) == "services" {
+			a.input.Clear()
+			a.openServices()
+			return true
+		}
+		if a.showServices {
+			a.serviceInput()
+			return true
+		}
 		if a.showChords {
 			// The registry view is read-only: nothing to apply, nothing
 			// to save. Named in the status line, never a silent no-op.
@@ -454,11 +507,11 @@ func (a *panel) key(ev vi.Event) bool {
 		a.applyInput()
 		a.save()
 		return true
-	case appkit.NamedUp, appkit.NamedDown, appkit.NamedHome, appkit.NamedEnd:
+	case keyUp, keyDown, keyHome, keyEnd:
 		changed := a.listCtl.HandleKey(k)
 		a.sel = a.list.Sel
 		return changed
-	case appkit.NamedLeft, appkit.NamedRight:
+	case keyLeft, keyRight:
 		if a.showChords {
 			a.status = "the shortcuts registry is compiled in — no values to cycle"
 			return true
@@ -468,7 +521,7 @@ func (a *panel) key(ev vi.Event) bool {
 		}
 		// Preserve GOSET's row vocabulary cycling when the list owns focus;
 		// the text field gets the same normalized arrows for caret movement.
-		if k.Named() == appkit.NamedLeft {
+		if k.Named() == keyLeft {
 			return a.cycle(-1)
 		}
 		return a.cycle(1)
@@ -496,6 +549,7 @@ func isShortcutsChord(ev vi.Event) bool {
 // shortcuts registry view. Opening the view prints its marker (after the
 // table it renders is in hand), so a gate can grep the registry's size.
 func (a *panel) toggleShortcuts() bool {
+	a.showServices = false
 	a.showChords = !a.showChords
 	if a.showChords {
 		vi.ConsoleLine(markerShortcuts + vi.Itoa64(int64(len(chords.Global))))
@@ -570,6 +624,9 @@ func (a *panel) layout() {
 // headLabel names the surface the list is showing: the settings file's
 // table, or the M82c shortcuts registry.
 func (a *panel) headLabel() string {
+	if a.showServices {
+		return "Services  " + svcmanifest.Path
+	}
 	if a.showChords {
 		return "Shortcuts  n=" + vi.Itoa64(int64(len(chords.Global))) + "  (one owner per chord)"
 	}
@@ -585,6 +642,9 @@ func (a *panel) headLabel() string {
 // chord registry instead — chord, owner, description — one owner per chord
 // per dispatch point.
 func (a *panel) labels() []string {
+	if a.showServices {
+		return a.services.Labels()
+	}
 	if a.showChords {
 		return chordLabels()
 	}

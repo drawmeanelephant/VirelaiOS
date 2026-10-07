@@ -30,18 +30,23 @@ type bootService struct {
 }
 
 type Boot struct {
-	plan     svcgraph.Plan
-	services map[string]*bootService
-	seat     string
-	hooks    supervise.Hooks
-	rows     []supervise.Process
-	seated   bool
-	stopping bool
+	plan       svcgraph.Plan
+	services   map[string]*bootService
+	seat       string
+	hooks      supervise.Hooks
+	rows       []supervise.Process
+	seated     bool
+	stopping   bool
+	manifest   svcmanifest.Manifest
+	seatBinary string
+	loginShell bool
+	retired    []*bootService
+	reloadHold bool
 }
 
-func NewBoot(m svcmanifest.Manifest, seatBinary string, loginShell bool, hooks supervise.Hooks) (*Boot, error) {
+func admit(m svcmanifest.Manifest, seatBinary string, loginShell, needSeat bool) (svcgraph.Plan, []svcgraph.Diagnostic, string, error) {
 	if err := svcmanifest.Validate(m); err != nil {
-		return nil, err
+		return svcgraph.Plan{}, nil, "", err
 	}
 	var nodes []svcgraph.Node
 	for _, service := range m.Services {
@@ -52,9 +57,9 @@ func NewBoot(m svcmanifest.Manifest, seatBinary string, loginShell bool, hooks s
 	}
 	plan, diagnostics, err := svcgraph.Resolve(nodes)
 	if err != nil {
-		return nil, err
+		return svcgraph.Plan{}, nil, "", err
 	}
-	b := &Boot{plan: plan, services: make(map[string]*bootService), hooks: hooks}
+	seat := ""
 	tasks := 3 + 3 + 4 // kernel, init, seat-owned GOSH
 	if loginShell {
 		tasks += 4
@@ -65,46 +70,58 @@ func NewBoot(m svcmanifest.Manifest, seatBinary string, loginShell bool, hooks s
 		}
 		cost := 4 // conservative even for the retained native fallback seat
 		if service.Argv[0] == seatBinary {
-			if b.seat != "" || service.Class != "boot" {
-				return nil, errors.New("seat")
+			if seat != "" || service.Class != "boot" {
+				return svcgraph.Plan{}, nil, "", errors.New("seat")
 			}
-			b.seat = service.Name
+			seat = service.Name
 		} else {
 			cost, err = taskCost(service.Argv[0])
 			if err != nil {
-				return nil, err
+				return svcgraph.Plan{}, nil, "", err
 			}
 		}
 		tasks += cost
 	}
-	if b.seat == "" {
-		return nil, errors.New("seat")
+	if needSeat && seat == "" {
+		return svcgraph.Plan{}, nil, "", errors.New("seat")
 	}
 	if tasks > 16 {
-		return nil, errors.New("task-budget")
+		return svcgraph.Plan{}, nil, "", errors.New("task-budget")
 	}
+	return plan, diagnostics, seat, nil
+}
+
+func NewBoot(m svcmanifest.Manifest, seatBinary string, loginShell bool, hooks supervise.Hooks) (*Boot, error) {
+	plan, diagnostics, seat, err := admit(m, seatBinary, loginShell, true)
+	if err != nil {
+		return nil, err
+	}
+	b := &Boot{plan: plan, services: make(map[string]*bootService), hooks: hooks,
+		seat: seat, seatBinary: seatBinary, loginShell: loginShell, manifest: cloneManifest(m)}
 	for _, service := range m.Services {
-		if !service.Enabled {
-			continue
-		}
-		p := service.Restart
-		childHooks := hooks
-		childHooks.Table = func() ([]supervise.Process, error) { return b.rows, nil }
-		child, err := supervise.New([]supervise.Service{{
-			Name: service.Name, Binary: service.Argv[0], Args: service.Argv[1:],
-			Policy: supervise.Policy{Restart: p.Restart, BackoffBaseS: p.BackoffBaseS,
-				BackoffCapS: p.BackoffCapS, MaxRestarts: p.MaxRestarts, Window: p.Window},
-		}}, childHooks)
+		child, err := b.newService(service)
 		if err != nil {
 			return nil, err
 		}
-		b.services[service.Name] = &bootService{config: service, child: child}
+		b.services[service.Name] = child
 	}
 	for _, diagnostic := range diagnostics {
 		hooks.Serial("init: " + diagnostic.Reason + " from=" + diagnostic.From + " to=" + diagnostic.To)
 	}
-	hooks.Serial("init: manifest ok n=" + strconv.Itoa(len(nodes)))
+	hooks.Serial("init: manifest ok n=" + strconv.Itoa(len(plan.Order)))
 	return b, nil
+}
+
+func (b *Boot) newService(service svcmanifest.Service) (*bootService, error) {
+	p := service.Restart
+	hooks := b.hooks
+	hooks.Table = func() ([]supervise.Process, error) { return b.rows, nil }
+	child, err := supervise.New([]supervise.Service{{
+		Name: service.Name, Binary: service.Argv[0], Args: service.Argv[1:],
+		Policy: supervise.Policy{Restart: p.Restart, BackoffBaseS: p.BackoffBaseS,
+			BackoffCapS: p.BackoffCapS, MaxRestarts: p.MaxRestarts, Window: p.Window},
+	}}, hooks)
+	return &bootService{config: cloneService(service), child: child}, err
 }
 
 func (b *Boot) satisfied(name string) bool {
@@ -132,17 +149,40 @@ func (b *Boot) Tick() error {
 		return err
 	}
 	b.rows = rows
+	// Disabled and replaced children still own tasks until a subsequent
+	// table poll sees their exit. Drain them before admitting new spawns.
+	draining := b.reloadHold
+	var retired []*bootService
+	for _, service := range b.retired {
+		if err := service.child.Tick(); err != nil {
+			return err
+		}
+		if ownsProcess(service) {
+			retired = append(retired, service)
+			draining = true
+		}
+	}
+	b.retired = retired
+	for _, service := range b.services {
+		if !service.config.Enabled {
+			if err := service.child.Tick(); err != nil {
+				return err
+			}
+		}
+		view, _ := service.child.Snapshot(service.config.Name)
+		draining = draining || view.State == supervise.Stopping
+	}
 	for order, name := range b.plan.Order {
 		service := b.services[name]
 		view, _ := service.child.Snapshot(name)
 		allowed := b.prerequisites(name)
-		if !b.stopping && view.State == supervise.Stopped && allowed {
+		if !b.stopping && !draining && view.State == supervise.Stopped && allowed {
 			if err := service.child.Start(name); err != nil {
 				return err
 			}
 			view, _ = service.child.Snapshot(name)
 		}
-		if (view.State == supervise.Ready || view.State == supervise.Backoff) && !allowed {
+		if (view.State == supervise.Ready || view.State == supervise.Backoff) && (!allowed || draining) {
 			continue
 		}
 		// Supply one consistent table to all children. A newly exec'd pid
@@ -187,15 +227,29 @@ func (b *Boot) Stop() error {
 			return err
 		}
 	}
+	for _, service := range b.retired {
+		if err := service.child.Stop(service.config.Name); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
 func (b *Boot) Stopped() bool {
-	for _, name := range b.plan.Order {
-		view, _ := b.services[name].child.Snapshot(name)
-		if view.State == supervise.Running || view.State == supervise.Stopping {
+	for _, service := range b.services {
+		if ownsProcess(service) {
+			return false
+		}
+	}
+	for _, service := range b.retired {
+		if ownsProcess(service) {
 			return false
 		}
 	}
 	return true
+}
+
+func ownsProcess(service *bootService) bool {
+	view, _ := service.child.Snapshot(service.config.Name)
+	return view.State == supervise.Running || view.State == supervise.Stopping
 }
