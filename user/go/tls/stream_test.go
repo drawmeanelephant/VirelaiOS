@@ -1,6 +1,10 @@
 package tls
 
-import "testing"
+import (
+	"testing"
+
+	"virelai/vi"
+)
 
 type fakeSeam struct {
 	stream    []byte
@@ -11,6 +15,33 @@ type fakeSeam struct {
 	sent      []byte
 	maxSend   int
 	closed    bool
+}
+
+func TestExplicitDeadlinePollingDoesNotParkForASchedulerTick(t *testing.T) {
+	prev := vi.SyscallHookForTest()
+	defer vi.SetSyscallHookForTest(prev)
+	sleeps, clocks := 0, 0
+	vi.SetSyscallHookForTest(func(slot, x0, x1, x2, x3 uintptr) int64 {
+		if slot == vi.SlotSleep {
+			sleeps++
+		}
+		return 0
+	})
+	calls := 0
+	s := &tcpStream{buf: make([]byte, streamStashCap), deadlineAt: 2_000_000_000,
+		now: func() int64 { clocks++; return 0 }}
+	s.recv = func(out []byte) (int, error) {
+		calls++
+		if calls == 1 {
+			return 0, nil
+		}
+		out[0] = 'x'
+		return 1, nil
+	}
+	out := make([]byte, 1)
+	if n, err := s.read(out); n != 1 || err != nil || out[0] != 'x' || sleeps != 0 || clocks < 1024 {
+		t.Fatalf("deadline polling used tick sleep or unbounded clock wait: n=%d err=%v sleeps=%d clocks=%d", n, err, sleeps, clocks)
+	}
 }
 
 func (f *fakeSeam) recv(out []byte) (int, error) {
@@ -203,5 +234,43 @@ func TestChainValidationErrorUnwraps(t *testing.T) {
 	}
 	if IsHostnameMismatch(errStreamTimeout) {
 		t.Fatal("timeout is not a name mismatch")
+	}
+}
+
+func TestStreamAbsoluteDeadlineWinsDuringProgress(t *testing.T) {
+	f := &fakeSeam{stream: make([]byte, 900), chunk: 1}
+	s := streamOf(f)
+	clock := int64(1)
+	s.now = func() int64 { clock++; return clock }
+	s.deadlineAt = 12
+	n, err := s.read(make([]byte, 900))
+	if err != errStreamTimeout || n >= 900 || f.pos >= 900 {
+		t.Fatalf("progress bypassed absolute deadline: n=%d pos=%d err=%v", n, f.pos, err)
+	}
+}
+
+func TestStreamExpiredDeadlinePreventsReadAndWrite(t *testing.T) {
+	f := &fakeSeam{stream: []byte("queued"), chunk: 6}
+	s := streamOf(f)
+	s.now = func() int64 { return 10 }
+	s.deadlineAt = 10
+	s.n = 1
+	s.buf[0] = 'x'
+	if n, err := s.read(make([]byte, 1)); n != 0 || err != errStreamTimeout {
+		t.Fatalf("buffered expired read=%d,%v", n, err)
+	}
+	if n, err := s.write([]byte("not sent")); n != 0 || err != errStreamTimeout || len(f.sent) != 0 {
+		t.Fatalf("expired write=%d,%v sent=%d", n, err, len(f.sent))
+	}
+}
+
+func TestStreamCallerDeadlineBoundsIdlePolls(t *testing.T) {
+	f := &fakeSeam{chunk: 1}
+	s := streamOf(f)
+	clock := int64(0)
+	s.now = func() int64 { clock++; return clock }
+	s.deadlineAt = 8
+	if _, err := s.read(make([]byte, 1)); err != errStreamTimeout || f.polls > 8 {
+		t.Fatalf("idle deadline err=%v polls=%d", err, f.polls)
 	}
 }

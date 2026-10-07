@@ -46,10 +46,10 @@ run = os.environ["RUN_DIR"]
 share = os.environ.get("VG_SHARE") or os.path.join(run, "share")
 os.makedirs(share, exist_ok=True)
 
-gofetch = os.path.join(".build", "go", "GOFETCH.ELF")
+gofetch = os.path.join(".build", "go", "GOFETCH-GATE.ELF")
 if not os.path.exists(gofetch):
     sys.exit("GOFETCH.ELF missing (expected " + gofetch + ") - build it first: "
-             "bash tools/go/build-web.sh fetch GOFETCH")
+             "bash tools/go/build-web.sh fetch GOFETCH --gate")
 shutil.copy(gofetch, os.path.join(share, "GOFETCH.ELF"))
 # M71k (#1570): the Zig TLS helper is deleted outright, so there is no
 # FETCHS.BIN left to un-stage. Nothing was ever staged for the Go apps.

@@ -8,18 +8,18 @@ import (
 	"virelai/webrender"
 )
 
-// The security-critical decision: an https hostname is refused as dns
-// (public internet is out of scope); an https IP literal is a TLS fetch,
-// never a cleartext GET.
+// HTTPS, including a DNS hostname, always uses TLS, never a cleartext GET.
 func TestClassifyTargetHTTPS(t *testing.T) {
 	cases := []struct{ in, want string }{
-		{"https://example.com/", "dns"},
+		{"https://example.com/", "https"},
 		{"HTTPS://10.0.0.2/x", "https"},
 		{"https://10.0.0.2:24533/", "https"},
-		{"http://example.com/", "dns"},
+		{"http://example.com/", "http"},
 		{"http://10.0.0.2/", "http"},
 		{"http://10.0.0.2:8080/x", "http"},
 		{"http://", "url"},
+		{"http:broken", "url"},
+		{"https:broken", "url"},
 		{"http://h:99999/", "url"},
 		{"/host/A.HTML", "file"},
 		{"A.HTML", "file"},
@@ -247,8 +247,8 @@ func TestLoadStepRefusesChunked(t *testing.T) {
 	if a.loading {
 		t.Fatal("an unsupported transfer coding must end the load")
 	}
-	if a.errKind != "truncated" {
-		t.Fatalf("errKind = %q want truncated", a.errKind)
+	if a.errKind != "http-framing-unsupported" {
+		t.Fatalf("errKind = %q want http-framing-unsupported", a.errKind)
 	}
 }
 

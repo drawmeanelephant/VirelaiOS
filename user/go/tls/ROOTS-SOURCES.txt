@@ -1,0 +1,52 @@
+M93f production trust inputs
+Source: Mozilla NSS lib/ckfw/builtins/certdata.txt
+Revision: 940706e6f85676f9d3e65b02d297b16edd788506
+URL: https://raw.githubusercontent.com/nss-dev/nss/940706e6f85676f9d3e65b02d297b16edd788506/lib/ckfw/builtins/certdata.txt
+Complete source bytes: 1375050
+Complete source SHA-256: beb7e6dfe6499926e52c075c27bcfbe4c957f8609c575b3860273ae2806f63eb
+License: MPL-2.0, primary certdata header; no NSS executable code adopted.
+Notice URL: https://www.mozilla.org/media/MPL/2.0/index.txt
+Notice SHA-256: 3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04
+
+Owner ruling on #1998, 2026-10-07, verbatim:
+"Approve the 15-root set, excluding R2"
+The original 16-anchor allowlist loses GTS Root R2 without replacement.
+R2 DER SHA-256: 8d25cd97229dbf70356bda4eb3cc734031e24cf00fafcfd32dc76eb5841c7ea8
+R2 server auth: CKT_NSS_MUST_VERIFY_TRUST; email: CKT_NSS_TRUSTED_DELEGATOR.
+R2 is not a server-auth anchor. CK_FALSE distrust-after does not confer trust.
+All included anchors have positive delegated server-auth trust and no server
+distrust-after date. Never discard distrust metadata when updating this set.
+Capacity remains 64; approved DER bytes total 12901.
+
+Name | DER bytes | DER SHA-256 | server-auth flag | server-distrust-after
+ISRG Root X1 | 1391 | 96bcec06264976f37460779acf28c5a7cfe8a3c0aae11a8ffcee05c0bddf08c6 | CKT_NSS_TRUSTED_DELEGATOR | CK_FALSE
+ISRG Root X2 | 543 | 69729b8e15a86efc177a57afb7171dfc64add28c2fca8cf1507e34453ccb1470 | CKT_NSS_TRUSTED_DELEGATOR | CK_FALSE
+GTS Root R1 | 1371 | d947432abde7b7fa90fc2e6b59101b1280e0e1c7e4e40fa3c6887fff57a7f4cf | CKT_NSS_TRUSTED_DELEGATOR | CK_FALSE
+GTS Root R3 | 525 | 34d8a73ee208d9bcdb0d956520934b4e40e69482596e8b6f73c8426b010a6f48 | CKT_NSS_TRUSTED_DELEGATOR | CK_FALSE
+GTS Root R4 | 525 | 349dfa4058c5e263123b398ae795573c4e1313c83fe68f93556cd5e8031b3c7d | CKT_NSS_TRUSTED_DELEGATOR | CK_FALSE
+DigiCert Global Root G2 | 914 | cb3ccbb76031e5e0138f8dd39a23f9de47ffc35e43c1144cea27d46a5ab1cb5f | CKT_NSS_TRUSTED_DELEGATOR | CK_FALSE
+DigiCert Global Root G3 | 579 | 31ad6648f8104138c738f39ea4320133393e3a18cc02296ef97c2ac9ef6731d0 | CKT_NSS_TRUSTED_DELEGATOR | CK_FALSE
+DigiCert TLS RSA4096 Root G5 | 1386 | 371a00dc0533b3721a7eeb40e8419e70799d2b0a0f2c1d80693165f7cec4ad75 | CKT_NSS_TRUSTED_DELEGATOR | CK_FALSE
+DigiCert TLS ECC P384 Root G5 | 541 | 018e13f0772532cf809bd1b17281867283fc48c6e13be9c69812854a490c1b05 | CKT_NSS_TRUSTED_DELEGATOR | CK_FALSE
+Sectigo Public Server Authentication Root R46 | 1422 | 7bb647a62aeeac88bf257aa522d01ffea395e0ab45c73f93f65654ec38f25a06 | CKT_NSS_TRUSTED_DELEGATOR | CK_FALSE
+Sectigo Public Server Authentication Root E46 | 574 | c90f26f0fb1b4018b22227519b5ca2b53e2ca5b3be5cf18efe1bef47380c5383 | CKT_NSS_TRUSTED_DELEGATOR | CK_FALSE
+Amazon Root CA 1 | 837 | 8ecde6884f3d87b1125ba31ac3fcb13d7016de7f57cc904fe1cb97c6ae98196e | CKT_NSS_TRUSTED_DELEGATOR | CK_FALSE
+Amazon Root CA 2 | 1349 | 1ba5b2aa8c65401a82960118f80bec4f62304d83cec4713a19c39c011ea46db4 | CKT_NSS_TRUSTED_DELEGATOR | CK_FALSE
+Amazon Root CA 3 | 442 | 18ce6cfe7bf14e60b2e347b8dfe868cb31d02ebb3ada271569f50343b46db3a4 | CKT_NSS_TRUSTED_DELEGATOR | CK_FALSE
+Amazon Root CA 4 | 502 | e35d28419ed02025cfa69038cd623962458da5c695fbdea3c22b0bfb25897092 | CKT_NSS_TRUSTED_DELEGATOR | CK_FALSE
+
+Extraction: host-only browser/gen_roots.py, Python standard library.
+Decode each MULTILINE_OCTAL attribute as octets, select exact CKA_LABEL/class,
+join trust records by SHA-1 certificate identity, check delegated server-auth
+and CK_FALSE server distrust-after, then emit original DER without conversion.
+SHA-1 is NSS's record join, not certificate validation or a trust decision.
+All inputs are hash-checked before any generated file is written.
+Reproduce from the two pinned inputs kept OUTSIDE this repository:
+  python3 user/go/browser/gen_roots.py /outside/certdata.txt /outside/MPL-2.0.txt
+  gofmt -w user/go/tls/trust_root_gen.go user/go/tls/trust_gate_gen.go
+
+Default !virelai_gate_roots: only the fifteen production anchors above.
+Tag virelai_gate_roots: only AutoClaw, never any production anchor.
+Fixture source: user/src/lib/tls/vectors/fx/root.der, repository LICENSE.
+Fixture DER SHA-256: c781a1356c42e3c8ab6e5f4f4381b70215fb7e8ac24b68302e00ee5f8f2948f2
+No runtime anchor injection, test-name exemption, trust override or downgrade.

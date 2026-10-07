@@ -44,18 +44,37 @@ type tcpStream struct {
 	n       int
 	// idleLimit > 0: busy-poll this many empty recvs (host tests). 0: guest
 	// wait — drain, then Sleep(1) until the budget or a FIN.
-	idleLimit int
+	idleLimit  int
+	deadlineAt int64        // absolute caller deadline; zero selects legacy bounds
+	now        func() int64 // injected clock in host tests; nil uses vi.Nanos
+}
+
+func (s *tcpStream) nanos() int64 {
+	if s.now != nil {
+		return s.now()
+	}
+	return vi.Nanos()
+}
+
+func (s *tcpStream) checkDeadline() error {
+	if s.deadlineAt > 0 && s.nanos() >= s.deadlineAt {
+		return errStreamTimeout
+	}
+	return nil
 }
 
 func (s *tcpStream) read(out []byte) (int, error) {
 	got := 0
 	for got < len(out) {
+		if err := s.checkDeadline(); err != nil {
+			return got, err
+		}
 		if s.n == 0 {
 			if err := s.pumpOnce(); err != nil {
 				// A short read is success when some bytes were already
 				// delivered (stream.zig: pumpOnce failure after got>0
 				// returns the prefix, not the error).
-				if got > 0 {
+				if got > 0 && !(s.deadlineAt > 0 && err == errStreamTimeout) {
 					return got, nil
 				}
 				return 0, err
@@ -76,6 +95,9 @@ func (s *tcpStream) read(out []byte) (int, error) {
 func (s *tcpStream) write(data []byte) (int, error) {
 	off := 0
 	for off < len(data) {
+		if err := s.checkDeadline(); err != nil {
+			return off, err
+		}
 		take := len(data) - off
 		if take > tcpChunkMax {
 			take = tcpChunkMax
@@ -101,8 +123,14 @@ func (s *tcpStream) write(data []byte) (int, error) {
 func (s *tcpStream) pumpOnce() error {
 	var chunk [tcpChunkMax]byte
 	idle := 0
-	deadline := vi.Nanos() + streamRecvNs
+	deadline := s.nanos() + streamRecvNs
+	if s.deadlineAt > 0 && s.deadlineAt < deadline {
+		deadline = s.deadlineAt
+	}
 	for polls := 0; ; polls++ {
+		if s.nanos() >= deadline {
+			return errStreamTimeout
+		}
 		n, err := s.recv(chunk[:])
 		if err != nil {
 			return err
@@ -128,14 +156,32 @@ func (s *tcpStream) pumpOnce() error {
 		if s.peekEOF != nil && s.peekEOF() {
 			return errStreamClosed
 		}
-		if vi.Nanos() >= deadline || polls >= streamMaxPolls {
+		if s.nanos() >= deadline || polls >= streamMaxPolls {
 			return errStreamTimeout
 		}
-		vi.Sleep(1)
+		if s.deadlineAt > 0 {
+			// A scheduler tick is much coarser than the browser's stall
+			// deadline. Yield briefly so ACK-paced records can be drained
+			// without turning every empty poll into a whole-tick delay.
+			// Two milliseconds also keeps the unchanged 3600-poll guard
+			// from expiring ahead of a five-second caller deadline.
+			until := s.nanos() + 2_000_000
+			if deadline < until {
+				until = deadline
+			}
+			for yields := 0; yields < 1024 && s.nanos() < until; yields++ {
+				vi.Yield()
+			}
+		} else {
+			vi.Sleep(1)
+		}
 	}
 }
 
 func (s *tcpStream) drainOnce() error {
+	if err := s.checkDeadline(); err != nil {
+		return err
+	}
 	var chunk [tcpChunkMax]byte
 	n, err := s.recv(chunk[:])
 	if err != nil {

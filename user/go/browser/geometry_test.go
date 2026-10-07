@@ -17,8 +17,9 @@ func TestGateClickHitsTheFixtureLink(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fixture: %v", err)
 	}
-	doc := webrender.ParseHTML(src)
-	lay := webrender.LayoutDocument(doc, contentW, nil)
+	a := &app{hist: newHistory(), text: browserFonts(t), target: "/host/PAGE.HTML"}
+	a.loadBody(src, a.target)
+	lay := a.lay
 	if len(lay.Links) == 0 {
 		t.Fatal("fixture has no links")
 	}
@@ -26,19 +27,15 @@ func TestGateClickHitsTheFixtureLink(t *testing.T) {
 	if link.Target != "NEXT.HTML" {
 		t.Fatalf("first link target = %q", link.Target)
 	}
-	// Gate injection (scanout 53,82) minus the window origin (40,28) = the
-	// window-local point the kernel delivers. The point must land inside a
-	// WORD rect, not the space between words (the first live run clicked
-	// content x=22, which is the gap between "go" and "to").
-	gateScanoutX, gateScanoutY := 53, 82
+	// Pixel-center inverse mapping must hit a word, not its inter-word gap.
+	gateScanoutX, gateScanoutY := 42, 95
 	localX := gateScanoutX - winX
 	localY := gateScanoutY - winY
 	// The chrome geometry maps a window-local point into content space.
-	if localY < contentY {
-		t.Fatalf("gate click y=%d lands in the chrome (content starts at %d)", localY, contentY)
+	contentXPoint, contentYPoint, hit := documentPresentation(winW, winH).inverse(localX, localY, 0)
+	if !hit {
+		t.Fatal("gate point outside the declared presentation")
 	}
-	contentXPoint := localX - contentX
-	contentYPoint := localY - contentY
 	if target := webrender.HitTest(lay, contentXPoint, contentYPoint); target != "NEXT.HTML" {
 		t.Fatalf("gate click (local %d,%d -> content %d,%d) missed the link; links=%v",
 			localX, localY, contentXPoint, contentYPoint, lay.Links)

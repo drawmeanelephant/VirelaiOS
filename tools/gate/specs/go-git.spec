@@ -46,10 +46,10 @@ subprocess.run(["sh", "-c", "lsof -ti tcp:24541 | xargs kill -9"],
                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 time.sleep(0.2)
 
-gogit = os.path.join(".build", "go", "GOTGIT.ELF")
+gogit = os.path.join(".build", "go", "GOTGIT-GATE.ELF")
 if not os.path.exists(gogit):
     sys.exit("GOTGIT.ELF missing (expected " + gogit + ") - build it first: "
-             "bash tools/go/build-gogit.sh")
+             "bash tools/go/build-git.sh --gate")
 shutil.copy(gogit, os.path.join(share, "GOTGIT.ELF"))
 
 git = shutil.which("git")

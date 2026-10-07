@@ -2,8 +2,8 @@
 //
 // The app shell (window, chrome, navigation, history, HTTP fetch) is Go, and
 // the page renderer is the project's own Go library (virelai/webrender):
-// parse -> UA style table -> block/inline layout -> span paint. There is no
-// JavaScript and no CSS cascade by design; the UI says so out loud.
+// parse -> bounded CSS cascade -> box layout -> native paint/presentation.
+// No JavaScript or POST.
 //
 // Usage:  exec WEB.ELF /host/PAGE.HTML     (file channel)
 //
@@ -19,13 +19,12 @@ package main
 import (
 	"strings"
 
-	"virelai/tls"
 	"virelai/vi"
 	"virelai/webrender"
+	"virelai/webstyle"
 )
 
-// Window geometry matches the in-guest Zig renderer's window (DOC.BIN) so the
-// same scanout probes apply.
+// Raw shim geometry; the actual resized canvas controls presentation.
 const (
 	winX = 40
 	winY = 28
@@ -49,19 +48,17 @@ const (
 	titleY     = kernelBand
 	titleH     = 16
 	urlRowY    = titleY + titleH // 32
-	urlRowH    = 18
-	contentY   = urlRowY + urlRowH // 50
-	statusH    = 12
-	contentX   = 8
-	contentW   = winW - 2*contentX
-	contentH   = winH - contentY - statusH
+	urlRowH    = 16
+	contentY   = 64 // raw fallback letterbox origin, not the layout origin
+	statusH    = 16
+	contentW   = webstyle.ViewportWidth
+	contentH   = webstyle.ViewportHeight
 
 	backX, backY, chipW, chipH = 6, urlRowY + 2, 14, 14
 	fwdX                       = 22
 	reloadX                    = 38
 	urlX                       = 56
 	urlY, urlH                 = urlRowY + 2, 14
-	urlW                       = winW - urlX - 8
 )
 
 // Serial markers. These exact bytes are the live gate's grep targets and are
@@ -111,11 +108,6 @@ const (
 const (
 	maxRedirects   = 5
 	readDeadlineMs = 30000
-
-	// fixtureSNI is the AutoClaw test-leaf name the runner TLS responder
-	// serves. IP-literal https uses this SNI; production roots are a later
-	// card. Public-internet hostnames stay a dns refuse.
-	fixtureSNI = "leaf.example.com"
 )
 
 // HistoryPersistence is where visits are appended (inspectable text, one
@@ -206,22 +198,60 @@ type app struct {
 	// arrives: loadNeed >= 0 is the Content-Length body size, -1 means
 	// close-delimited (the peer's FIN ends the body), -2 means unsupported
 	// framing (chunked, duplicate/bogus Content-Length, over the byte cap).
-	loadFramed bool
-	loadNeed   int
-	chunk      [1024]byte
+	loadFramed       bool
+	loadNeed         int
+	chunk            [1024]byte
+	loadConn         *vi.Conn
+	pageEnd          int64
+	loadIdle         int64
+	requests         int
+	frameInfo        responseFrame
+	htmlTruncated    bool
+	historyMove      bool
+	diagnostics      []webstyle.Diagnostic
+	imageSources     map[string][]byte
+	imageBytes       int
+	resourceWait     int64
+	canvasW, canvasH int
+	canvasConfigured bool
+	nativePix        []uint32
+	urlEditing       bool
+	urlEdit          textEditor
+	controls         []*formControl
+	focusControl     *formControl
+	controlEdit      textEditor
+	formOverflow     bool
+	showDiagnostics  bool
+	diagnosticScroll int
+	resourceForTest  func(string, int) ([]byte, string)
+	memoryRemaining  int64
+	pageCancelled    bool
+	pendingEvents    []vi.Event
 }
 
 // virender adapts the kernel fill batcher to the renderer's Surface.
 type virender struct {
-	f   *vi.Filler
-	win int
+	f    *vi.Filler
+	win  int
+	pix  []uint32
+	w, h int
 }
 
 func (v virender) Fill(x, y, w, h int, rgb uint32) {
-	if w <= 0 || h <= 0 || x < 0 || y < 0 {
+	if w <= 0 || h <= 0 {
 		return
 	}
-	v.f.Rect(v.win, uint32(x), uint32(y), uint32(w), uint32(h), rgb)
+	if v.pix != nil {
+		for yy := max(0, y); yy < min(v.h, y+h); yy++ {
+			for xx := max(0, x); xx < min(v.w, x+w); xx++ {
+				v.pix[yy*v.w+xx] = rgb & 0xffffff
+			}
+		}
+		return
+	}
+	if v.f != nil && x >= 0 && y >= 0 {
+		v.f.Rect(v.win, uint32(x), uint32(y), uint32(w), uint32(h), rgb)
+	}
 }
 
 // Budgets for this machine (Apple silicon host, VZ, software raster, one
@@ -281,7 +311,15 @@ func urlFromHandoff(body []byte) string {
 
 func main() {
 	t0 := vi.Nanos()
-	args := vi.Args()
+	args, dns, validArgs := browserArgs(vi.Args())
+	if !validArgs {
+		vi.ConsoleLine("web: error dns-config")
+		vi.Exit(2)
+		return
+	}
+	if dns != "" {
+		vi.DefaultDNSServer, _ = webrender.ParseIPv4(dns)
+	}
 	target, fromFile := argvTarget(args)
 	if fromFile {
 		b, rc := vi.ReadFileAll(target, 8192)
@@ -298,21 +336,16 @@ func main() {
 		vi.Exit(2)
 	}
 	a := &app{win: id, hist: newHistory(), tStart: t0}
+	a.bindCanvas(winW, winH)
 	engine, uiState, monoState := loadTextEngine()
 	a.text = engine
 	vi.ConsoleLine(markerFonts + engine.Name() + " ui=" + uiState + " mono=" + monoState)
 	vi.ConsoleLine(markerText + textProbeString(engine))
 	vi.ConsoleLine(markerOpen + itoa(id))
-	// M69a (#1528): the dogfood beat's browser TAB. Best-effort ATTACH (kind 5)
-	// rather than declare_fullscreen (kind 8): attach lands the page on the
-	// seat's strip WITHOUT proposing the full viewport, so the page keeps the
-	// 512x384 geometry the live-web gates pin while the seat stops blanking the
-	// scanout (it paints the blank desktop only while its strip is empty, and
-	// that fill sits ABOVE user windows). With no seat -- the shell shim, WND
-	// desktop, or no WM at all -- nothing answers and this app is unchanged.
-	// The client allocates the request sequence; the browser sends exactly this
-	// one WM request, so it does not share a request id with another operation.
+	// Fullscreen eligibility uses the existing seat RPC. With no responding
+	// seat, retain the raw shim; resize events determine the presentation.
 	vi.WmMailRequest(vi.WmRpcKindAttachTab, uint32(id), 0, 0, 0, 0, appTitle, appName)
+	vi.WmMailRequest(vi.WmRpcKindDeclareFullscreen, uint32(id), 0, 0, 0, 0, appTitle, appName)
 	// The store inventory is read from disk at boot: it is how the gate sees
 	// that a previous run's rows persisted.
 	vi.ConsoleLine(a.storeSummary())
@@ -357,7 +390,15 @@ func (a *app) settleIfNeeded() {
 	a.tSettled = vi.Nanos() // absolute; reportBudget takes the deltas
 	vi.ConsoleLine(markerSettled)
 	a.reportBudget()
-	a.settleRepaint()
+	if a.target == "" {
+		// The start surface owns no blocking fetch. Do not spend the
+		// load-settle sleeps before accepting the first URL keystrokes.
+		a.render()
+		vi.ConsoleLine(markerRepaint + itoa(itemsOf(a)) + " fills=" + itoa(a.lastFills))
+		vi.ConsoleLine(markerReady)
+	} else {
+		a.settleRepaint()
+	}
 	a.settled = true
 }
 
@@ -420,13 +461,28 @@ func (a *app) reportBudget() {
 func (a *app) loop() {
 	for !a.quit {
 		if a.loading {
-			a.loadStep()
+			for burst := 0; burst < 16 && a.loading; burst++ {
+				before := len(a.loadBuf)
+				a.loadStep()
+				if len(a.loadBuf) == before {
+					break
+				}
+			}
 		}
 		a.polls++
 		if a.polls%250 == 0 {
 			vi.ConsoleLine(markerLoop + itoa(a.polls) + " ev=" + itoa(a.events) + " loading=" + boolStr(a.loading))
 		}
-		ev, raw, ok := vi.PollEventRaw()
+		ev, raw, ok := vi.Event{}, int64(0), false
+		if len(a.pendingEvents) > 0 {
+			ev, ok = a.pendingEvents[0], true
+			a.pendingEvents = a.pendingEvents[1:]
+			if len(a.pendingEvents) == 0 {
+				a.pendingEvents = nil
+			}
+		} else {
+			ev, raw, ok = vi.PollEventRaw()
+		}
 		if !ok {
 			if raw < 0 && !a.loggedPoll {
 				// A negative poll is a kernel refusal (not an empty queue):
@@ -438,7 +494,11 @@ func (a *app) loop() {
 			// latency, and quiet tasks leave the shell's idle loop (which
 			// paces the composite and services the scanout snapshot) room
 			// to run on this single-user machine.
-			vi.Sleep(10)
+			if a.loading || a.urlEditing || a.target == "" {
+				vi.Sleep(1)
+			} else {
+				vi.Sleep(10)
+			}
 			continue
 		}
 		a.events++
@@ -448,12 +508,23 @@ func (a *app) loop() {
 		switch ev.Kind {
 		case vi.EvWinClose:
 			a.quit = true
+		case vi.EvWinResize:
+			a.bindCanvas(int(ev.Arg0), int(ev.Arg1))
+			a.dirty = true
 		case vi.EvKeyDown:
-			a.key(ev.Arg0, ev.Flags)
+			a.keyEvent(ev)
 		case vi.EvMouseDown:
 			a.click(int(ev.Arg0), int(ev.Arg1))
 		case vi.EvMouseMove:
 			a.move(int(ev.Arg0), int(ev.Arg1))
+		case 12: // Existing ADR 0009 MOUSE_SCROLL; SDK has no named alias.
+			if ev.Arg0&0x4000 == 0 {
+				step := int(ev.Arg0&0x3fff) * 40
+				if ev.Arg0&0x8000 == 0 {
+					step = -step
+				}
+				a.scrollBy(step)
+			}
 		}
 		if a.dirty {
 			a.render()
@@ -470,17 +541,37 @@ func (a *app) loop() {
 // showStartSurface renders the "nothing loaded" page (still a real page: the
 // same pipeline, no special-casing of the viewport).
 func (a *app) showStartSurface() {
+	a.tNav0 = vi.Nanos()
+	a.pageEnd = a.tNav0 + readDeadlineMs*1_000_000
 	body := []byte("<h1>VirelaiOS Browser</h1><p>No target. Pass a path or an HTTP URL on the command line:</p>" +
 		"<pre>exec WEB.ELF /host/PAGE.HTML\nexec WEB.ELF http://10.0.0.2/</pre>" +
-		"<p>This browser has no JavaScript and no CSS cascade: pages render with a fixed built-in style table.</p>")
+		"<p>Ctrl+L edits the URL. Enter loads it. Escape cancels. F1 shows bounded diagnostics.</p>" +
+		"<p>This browser supports a declared CSS subset and GET forms. No JavaScript or POST.</p>")
 	a.target = ""
 	a.title = "Start"
 	a.loadBody(body, "/")
 }
 
 func (a *app) navigate(target, from string) {
+	if from != "history-back" && from != "history-forward" {
+		a.historyMove = false // a replacement navigation is a fresh visit
+	}
+	if a.anchor(target) {
+		return
+	}
+	a.closeLoad()
+	a.loading = false
 	a.tNav0 = vi.Nanos()
+	a.tBody = 0
+	a.pageEnd = a.tNav0 + readDeadlineMs*1_000_000
+	a.requests = 0
+	a.pageCancelled = false
+	a.htmlTruncated = false
+	a.diagnostics = nil
+	a.showDiagnostics, a.diagnosticScroll = false, 0
+	a.focusControl = nil
 	resolved, kind := resolveInput(target)
+	a.target = resolved
 	switch kind {
 	case "empty":
 		a.finishError("url", target, from)
@@ -498,28 +589,27 @@ func (a *app) navigate(target, from string) {
 
 	switch kind := classifyTarget(resolved); kind {
 	case "https":
-		u, ok := webrender.ParseURL(resolved)
-		if !ok || !u.IsIP {
+		u, ok := parseBrowserURL(resolved)
+		if !ok {
 			a.finishError("url", resolved, from)
 			return
 		}
 		a.startHTTPS(u)
-	case "dns":
-		// No resolver in this slice: refuse rather than hang or guess.
-		a.finishError("dns", resolved, from)
 	case "url":
 		a.finishError("url", resolved, from)
 	case "http":
-		u, _ := webrender.ParseHTTPURL(resolved)
+		u, _ := parseBrowserURL(resolved)
 		a.startHTTP(u)
 	default:
-		body, rc := vi.ReadFileAll(resolved, vi.MaxFileBytes)
+		body := readWholeFile(strings.SplitN(resolved, "#", 2)[0], webstyle.MaxHTMLBytes+1)
 		switch {
-		case rc < 0:
-			a.finishError("file", resolved, from)
 		case len(body) == 0:
-			a.finishError("empty", resolved, from)
+			a.finishError("file", resolved, from)
 		default:
+			if len(body) > webstyle.MaxHTMLBytes {
+				body = body[:webstyle.MaxHTMLBytes]
+				a.htmlTruncated = true
+			}
 			a.loadBody(body, resolved)
 			a.afterLoad(from)
 		}
@@ -530,27 +620,21 @@ func (a *app) navigate(target, from string) {
 // pure function: the "never send an https request in the clear" decision is
 // the one thing here that must be unit-testable without a socket.
 //
-//	kinds: "https" (TLS fetch, IP literal), "dns" (hostname), "url" (malformed),
+//	kinds: "https" (TLS fetch), "url" (malformed),
 //	       "http" (cleartext fetch), "file" (file channel)
 func classifyTarget(resolved string) string {
 	low := strings.ToLower(resolved)
 	switch {
-	case strings.HasPrefix(low, "https://"):
-		u, ok := webrender.ParseURL(resolved)
+	case strings.HasPrefix(low, "https:"):
+		_, ok := parseBrowserURL(resolved)
 		if !ok {
 			return "url"
-		}
-		if !u.IsIP {
-			return "dns"
 		}
 		return "https"
-	case strings.HasPrefix(low, "http://"):
-		u, ok := webrender.ParseHTTPURL(resolved)
+	case strings.HasPrefix(low, "http:"):
+		_, ok := parseBrowserURL(resolved)
 		if !ok {
 			return "url"
-		}
-		if !u.IsIP {
-			return "dns"
 		}
 		return "http"
 	}
@@ -572,13 +656,15 @@ func sendAll(b []byte) bool {
 
 // startHTTP connects, sends the GET, and arms the stepped read.
 func (a *app) startHTTP(u webrender.URL) {
-	if rc := vi.TCPConnect(u.IPv4, u.Port); rc < 0 {
-		a.offlineOr("tcp")
+	conn, kind := a.connectPage(u)
+	if kind != "" {
+		a.offlineOr(kind)
 		return
 	}
-	req := webrender.FormatGetRequestWithCookies(u.Host, u.Path, a.cookieHeaderFor(u.Host, u.Path))
+	a.loadConn = conn
+	req := formatPageRequest(u, a.cookieHeaderFor(u.Host, u.Path))
 	if !sendAll([]byte(req)) {
-		vi.TCPClose()
+		a.closeLoad()
 		a.offlineOr("tcp")
 		return
 	}
@@ -587,7 +673,8 @@ func (a *app) startHTTP(u webrender.URL) {
 	a.loadFramed = false
 	a.loadNeed = 0
 	a.loading = true
-	a.loadEnd = vi.Nanos() + readDeadlineMs*1_000_000
+	a.loadEnd = a.stageEnd(5_000_000_000)
+	a.loadIdle = a.loadEnd
 	vi.ConsoleLine(markerFetch + u.Host + u.Path)
 }
 
@@ -596,96 +683,16 @@ func (a *app) startHTTP(u webrender.URL) {
 // follow-up. Concurrent fetch would need one — vi.Conn is one-owner and the
 // kernel allows one TCP socket per process.
 func (a *app) startHTTPS(u webrender.URL) {
-	sni := fixtureSNI
-	if !u.IsIP {
-		sni = u.Host
-	}
-	conn, err := tls.Dial(u.Host, u.Port, sni)
-	if err != nil {
-		a.finishError("tls", a.target, a.loadFrom)
-		return
-	}
-	req := webrender.FormatGetRequestWithCookies(sni, u.Path, a.cookieHeaderFor(u.Host, u.Path))
-	if _, err := conn.Write([]byte(req)); err != nil {
-		_ = conn.Close()
-		a.offlineOr("tls")
-		return
-	}
-	vi.ConsoleLine(markerFetch + u.Host + u.Path)
-	buf, err := readTLSConn(conn, vi.MaxFileBytes)
-	_ = conn.Close()
-	if err != nil && len(buf) == 0 {
-		a.offlineOr("tls")
-		return
-	}
 	a.loadURL = u
-	a.loadBuf = buf
+	raw, truncated, kind := a.fetchNetwork(u, webstyle.MaxHTMLBytes, true)
+	if kind != "" {
+		a.finishError(kind, a.target, a.loadFrom)
+		return
+	}
+	a.htmlTruncated = truncated
+	a.loadBuf = raw
 	a.loading = false
 	a.finishResponse(true)
-}
-
-func readTLSConn(c *tls.TLSConn, capn int) ([]byte, error) {
-	tmp := make([]byte, 16384)
-	var out []byte
-	for len(out) < capn {
-		n, err := c.Read(tmp)
-		if n > 0 {
-			out = append(out, tmp[:n]...)
-		}
-		if err != nil || n == 0 {
-			if len(out) > 0 {
-				return out, nil
-			}
-			return out, err
-		}
-	}
-	return out, nil
-}
-
-// responseNeed returns the response framing of a buffer:
-//
-//	>= 0  the body is exactly n bytes (Content-Length)
-//	-1    close-delimited: no Content-Length, the peer's FIN ends the body
-//	-2    unsupported or invalid framing (chunked transfer coding, a
-//	      duplicate or non-numeric Content-Length, or a declared body
-//	      over vi.MaxFileBytes)
-//
-// ok is false while the header block has not fully arrived (keep loading).
-func responseNeed(raw []byte) (need int, ok bool) {
-	head, _, complete := webrender.SplitHTTPResponse(raw)
-	if !complete {
-		return 0, false
-	}
-	need = -1
-	for _, line := range strings.Split(head, "\n")[1:] {
-		i := strings.IndexByte(line, ':')
-		if i < 0 {
-			continue
-		}
-		name := strings.TrimSpace(line[:i])
-		value := strings.TrimSpace(line[i+1:])
-		if strings.EqualFold(name, "Transfer-Encoding") {
-			return -2, true // this browser does not decode transfer codings
-		}
-		if !strings.EqualFold(name, "Content-Length") {
-			continue
-		}
-		if need >= 0 || value == "" {
-			return -2, true // duplicate or empty length
-		}
-		n := 0
-		for _, c := range value {
-			if c < '0' || c > '9' {
-				return -2, true
-			}
-			if n > (vi.MaxFileBytes-int(c-'0'))/10 {
-				return -2, true // the declared body cannot fit the cap
-			}
-			n = n*10 + int(c-'0')
-		}
-		need = n
-	}
-	return need, true
 }
 
 // bodyLen is the response body bytes buffered so far (0 before the header
@@ -703,21 +710,26 @@ func (a *app) frame() {
 	if a.loadFramed {
 		return
 	}
-	if need, ok := responseNeed(a.loadBuf); ok {
-		a.loadFramed, a.loadNeed = true, need
+	frame := parseResponseFrame(a.loadBuf)
+	if frame.complete {
+		a.loadFramed, a.frameInfo = true, frame
+		a.loadNeed = frame.need
+		if frame.err != "" {
+			a.loadNeed = -2
+		}
 	}
 }
 
 // endFail closes the socket and raises a load error.
 func (a *app) endFail(kind string) {
-	vi.TCPClose()
+	a.closeLoad()
 	a.loading = false
 	a.finishError(kind, a.target, a.loadFrom)
 }
 
 // endOffline closes the socket and takes the offline fallback.
 func (a *app) endOffline(kind string) {
-	vi.TCPClose()
+	a.closeLoad()
 	a.loading = false
 	a.offlineOr(kind)
 }
@@ -728,10 +740,14 @@ func (a *app) endOffline(kind string) {
 // close-delimited body: readiness bit 0 with a drained recv), by the byte
 // cap, or by the wall-clock deadline. An empty recv alone is NOT completion —
 // the kernel returns 0 while the next segment may still be a poll away — so
-// only an explicit framing or the FIN ends the read. The deadline is
-// consulted only when a step makes no progress: it bounds waiting, never
-// discards queued bytes.
+// only an explicit framing or the FIN ends the read. Deadlines apply before
+// every read, including progress, so queued bytes cannot extend the total.
 func (a *app) loadStep() {
+	if a.pageEnd > 0 && vi.Nanos() >= a.pageEnd || a.loadEnd > 0 && vi.Nanos() >= a.loadEnd ||
+		a.loadIdle > 0 && vi.Nanos() >= a.loadIdle {
+		a.endOffline("timeout")
+		return
+	}
 	mask, rc := vi.TCPReady()
 	if rc < 0 {
 		a.endOffline("tcp")
@@ -743,8 +759,12 @@ func (a *app) loadStep() {
 		return
 	}
 	if n > 0 {
+		if len(a.loadBuf)+n > webstyle.MaxHTMLBytes+maxHTTPHeaders {
+			a.endFail("http-body-limit")
+			return
+		}
 		a.loadBuf = append(a.loadBuf, a.chunk[:n]...)
-		a.loadEnd = vi.Nanos() + readDeadlineMs*1_000_000
+		a.loadIdle = a.stageEnd(5_000_000_000)
 	} else if mask&1 == 0 {
 		// No bytes and no FIN: the read is idle, so the deadline applies.
 		if vi.Nanos() >= a.loadEnd {
@@ -753,16 +773,24 @@ func (a *app) loadStep() {
 		return
 	}
 	a.frame()
+	if a.loadFramed {
+		a.loadEnd = a.pageEnd // headers are complete; stall/overall bounds remain
+	}
 	switch {
-	case a.loadFramed && a.loadNeed == -2:
-		a.endFail("truncated")
+	case a.loadFramed && a.frameInfo.err != "":
+		a.endFail(a.frameInfo.err)
 	case a.loadFramed && a.loadNeed >= 0:
+		if a.bodyLen() >= webstyle.MaxHTMLBytes && a.loadNeed > webstyle.MaxHTMLBytes {
+			a.htmlTruncated = true
+			a.completeLoad()
+			return
+		}
 		if a.bodyLen() >= a.loadNeed {
 			a.completeLoad()
 			return
 		}
 		if n == 0 { // the peer closed before the declared body arrived
-			a.endFail("truncated")
+			a.endFail("http-premature-eof")
 		}
 	case n == 0:
 		if len(a.loadBuf) == 0 {
@@ -773,7 +801,8 @@ func (a *app) loadStep() {
 		}
 		a.completeLoad() // close-delimited: the FIN ended the body
 	default:
-		if len(a.loadBuf) >= vi.MaxFileBytes {
+		if a.bodyLen() > webstyle.MaxHTMLBytes {
+			a.htmlTruncated = true
 			a.completeLoad()
 		}
 	}
@@ -782,25 +811,28 @@ func (a *app) loadStep() {
 // completeLoad turns a finished response into a page, a redirect step, or an
 // error page.
 func (a *app) completeLoad() {
-	vi.TCPClose()
+	a.closeLoad()
 	a.finishResponse(false)
 }
 
 func (a *app) finishResponse(viaTLS bool) {
 	a.loading = false
-	head, body, ok := webrender.SplitHTTPResponse(a.loadBuf)
-	if !ok {
-		a.finishError("truncated", a.target, a.loadFrom)
+	frame := parseResponseFrame(a.loadBuf)
+	body, truncated, failure := responseBody(frame, a.loadBuf, webstyle.MaxHTMLBytes, true)
+	if failure != "" {
+		a.finishError(failure, a.target, a.loadFrom)
 		return
 	}
+	head := frame.head
+	a.htmlTruncated = a.htmlTruncated || truncated
 	code := webrender.HTTPStatus(head)
-	if webrender.RedirectStatus(code) {
-		next, ok := webrender.ResolveRedirect(a.loadURL, webrender.LocationHeader(head))
-		if !ok || next.Host == "" {
-			a.finishError("redirect", a.target, a.loadFrom)
+	if isPageRedirect(code) {
+		next, kind := redirectTarget(a.loadURL, webrender.LocationHeader(head))
+		if kind != "" {
+			a.finishError(kind, a.target, a.loadFrom)
 			return
 		}
-		key := next.Host + next.Path
+		key := formatNavURL(next)
 		if a.loadSeen == nil {
 			a.loadSeen = map[string]bool{}
 		}
@@ -812,10 +844,6 @@ func (a *app) finishResponse(viaTLS bool) {
 		a.loadHops++
 		a.target = formatNavURL(next)
 		vi.ConsoleLine(markerRedirect + itoa(a.loadHops) + " " + a.target)
-		if !next.IsIP {
-			a.finishError("dns", a.target, a.loadFrom)
-			return
-		}
 		if next.Scheme == "https" || (viaTLS && next.Scheme != "http") {
 			a.startHTTPS(next)
 			return
@@ -831,6 +859,10 @@ func (a *app) finishResponse(viaTLS bool) {
 	if len(body) == 0 {
 		a.finishError("empty", a.target, a.loadFrom)
 		return
+	}
+	if len(body) > webstyle.MaxHTMLBytes {
+		body = body[:webstyle.MaxHTMLBytes]
+		a.htmlTruncated = true
 	}
 	a.loadBody(body, a.target)
 	if n := a.persistCookies(head); n > 0 {
@@ -862,7 +894,7 @@ func (a *app) cancelLoad() {
 		a.dirty = true
 		return
 	}
-	vi.TCPClose()
+	a.closeLoad()
 	a.loading = false
 	a.finishError("cancelled", a.target, a.loadFrom)
 }
@@ -886,7 +918,12 @@ func (a *app) offlineOr(kind string) {
 // afterLoad records the visit and announces the navigation once the frame is
 // up (see announceNavigation).
 func (a *app) afterLoad(from string) {
-	a.hist.push(entry{Target: a.target, Title: a.title})
+	if a.historyMove {
+		a.hist.replace(entry{Target: a.target, Title: a.title})
+		a.historyMove = false
+	} else {
+		a.hist.push(entry{Target: a.target, Title: a.title})
+	}
 	a.persistHistory(a.target)
 	if from != "" {
 		a.announceNavigation()
@@ -904,7 +941,12 @@ func (a *app) finishError(kind, target, from string) {
 		a.tBody = vi.Nanos()
 	}
 	a.setError(kind, target)
-	a.hist.push(entry{Target: target, Title: a.title})
+	if a.historyMove {
+		a.hist.replace(entry{Target: target, Title: a.title})
+		a.historyMove = false
+	} else {
+		a.hist.push(entry{Target: target, Title: a.title})
+	}
 	a.persistHistory(target)
 	if from != "" {
 		a.announceNavigation()
@@ -918,23 +960,50 @@ func (a *app) loadBody(body []byte, target string) {
 	a.errKind, a.errMsg = "", ""
 	a.lastBody = body
 	a.tBody = vi.Nanos()
+	if !a.preflightPage(body) {
+		a.tParse, a.tLayout = 0, 0
+		a.setError("page-memory-limit", target)
+		a.diagnostic(webstyle.DiagnosticLimit, "page-memory-limit")
+		return
+	}
 	t0 := vi.Nanos()
 	a.doc = webrender.ParseHTML(body)
+	if a.htmlTruncated {
+		a.doc.Truncated = true
+	}
 	t1 := vi.Nanos()
 	// The engine this page is measured with is stored on the Layout, so Paint
 	// draws it with identical metrics; a.resolveImage lets <img> decode without
 	// layout ever opening a file itself (ADR 0028 D1/D3).
-	a.lay = webrender.LayoutDocument(a.doc, contentW, a.text, a.resolveImage)
+	a.imageSources = nil
+	a.imageBytes = 0
+	a.resourceWait = 0
+	a.layoutPage()
+	if a.pageCancelled || a.quit {
+		a.tParse, a.tLayout = t1-t0, vi.Nanos()-t1-a.resourceWait
+		a.setError("cancelled", target)
+		return
+	}
+	a.initForms()
+	if a.htmlTruncated {
+		a.doc.Truncated = true
+		a.diagnostic(webstyle.DiagnosticLimit, "html-byte-limit")
+	}
 	t2 := vi.Nanos()
 	a.tParse = t1 - t0
-	a.tLayout = t2 - t1
+	a.tLayout = t2 - t1 - a.resourceWait
 	a.scroll = 0
+	a.applyFragment(target)
 	vi.ConsoleLine(markerParse + itoa(a.doc.Nodes) + " text=" + itoa(a.doc.TextBytes) + " truncated=" + boolStr(a.doc.Truncated))
 	vi.ConsoleLine(markerLayout + itoa(a.lay.Blocks) + " lines=" + itoa(a.lay.Lines) + " h=" + itoa(a.lay.Height))
 	a.title = pageTitle(a.doc, target)
 	a.status = ""
 	a.logPaint = true
 	a.dirty = true
+	vi.ConsoleLine("web: diagnostics n=" + itoa(len(a.diagnostics)))
+	for _, d := range a.diagnostics {
+		vi.ConsoleLine("web: diagnostic " + d.Text)
+	}
 }
 
 func (a *app) setError(kind, target string) {
@@ -942,6 +1011,7 @@ func (a *app) setError(kind, target string) {
 	a.errMsg = errorMessage(kind, target)
 	a.lay = nil
 	a.doc = nil
+	a.controls, a.focusControl = nil, nil
 	a.scroll = 0
 	a.title = "Error"
 	a.logPaint = true
@@ -954,7 +1024,7 @@ func (a *app) setError(kind, target string) {
 func (a *app) key(usage uint32, flags uint16) {
 	alt := flags&vi.ModAlt != 0
 	ctrl := flags&vi.ModCtrl != 0
-	page := contentH - 16
+	page := 680
 	if page < 16 {
 		page = 16
 	}
@@ -993,9 +1063,9 @@ func (a *app) key(usage uint32, flags uint16) {
 	case keyR, keyF5:
 		a.reload()
 	case keyUp:
-		a.scrollBy(-16)
+		a.scrollBy(-40)
 	case keyDown:
-		a.scrollBy(16)
+		a.scrollBy(40)
 	case keyPageUp:
 		a.scrollBy(-page)
 	case keyPageDown:
@@ -1004,7 +1074,7 @@ func (a *app) key(usage uint32, flags uint16) {
 		a.scroll = 0
 		a.dirty = true
 	case keyEnd:
-		a.scroll = webrender.ScrollMax(a.lay, contentH)
+		a.scroll = webrenderScrollMax(a)
 		a.dirty = true
 	case keyBacksp, keyLeft:
 		if usage == keyLeft && !alt {
@@ -1031,11 +1101,22 @@ func (a *app) click(x, y int) {
 		a.reload()
 		return
 	}
-	if y < contentY || y >= contentY+contentH || a.lay == nil {
+	w, h := a.canvasSize()
+	if inRect(x, y, urlX, urlY, max(0, w-urlX-8), urlH) {
+		a.focusURL()
 		return
 	}
-	cx := x - contentX
-	cy := y - contentY + a.scroll
+	a.urlEditing = false
+	if a.lay == nil {
+		return
+	}
+	cx, cy, hit := documentPresentation(w, h).inverse(x, y, a.scroll)
+	if !hit {
+		return
+	}
+	if a.clickControl(cx, cy) {
+		return
+	}
 	if target := webrender.HitTest(a.lay, cx, cy); target != "" {
 		from := a.target
 		resolved, kind := resolveInput(relativeTo(from, target))
@@ -1043,22 +1124,26 @@ func (a *app) click(x, y int) {
 			return
 		}
 		a.navigate(resolved, from)
-		if from != "" {
-			a.announceNavigation()
-		}
 	}
 }
 
 func (a *app) move(x, y int) {
-	if a.lay == nil || y < contentY {
+	if a.lay == nil {
 		if a.hover != "" {
 			a.hover = ""
 			a.dirty = true
 		}
 		return
 	}
-	cx := x - contentX
-	cy := y - contentY + a.scroll
+	w, h := a.canvasSize()
+	cx, cy, hit := documentPresentation(w, h).inverse(x, y, a.scroll)
+	if !hit {
+		if a.hover != "" {
+			a.hover = ""
+			a.dirty = true
+		}
+		return
+	}
 	if target := webrender.HitTest(a.lay, cx, cy); target != a.hover {
 		a.hover = target
 		a.dirty = true
@@ -1067,17 +1152,17 @@ func (a *app) move(x, y int) {
 
 func (a *app) goBack() {
 	if e, ok := a.hist.back(); ok {
-		a.navigate(e.Target, "")
-		a.hist.replace(e)
-		a.announceNavigation()
+		a.historyMove = true
+		vi.ConsoleLine("web: history back")
+		a.navigate(e.Target, "history-back")
 	}
 }
 
 func (a *app) goForward() {
 	if e, ok := a.hist.forward(); ok {
-		a.navigate(e.Target, "")
-		a.hist.replace(e)
-		a.announceNavigation()
+		a.historyMove = true
+		vi.ConsoleLine("web: history forward")
+		a.navigate(e.Target, "history-forward")
 	}
 }
 
@@ -1101,7 +1186,7 @@ func (a *app) announceNavigation() {
 	// `web: navigated` and exits on this line, so the framebuffer stream is
 	// never cut off by the run ending (same reason as markerReady).
 	vi.Sleep(5)
-	vi.ConsoleLine(markerNavReady)
+	vi.ConsoleLine(markerNavReady + " n=" + itoa(a.navCount))
 }
 
 func (a *app) reload() {
@@ -1130,17 +1215,21 @@ func (a *app) scrollBy(d int) {
 // --- painting -------------------------------------------------------------
 
 func (a *app) render() {
+	start := vi.Nanos()
 	f := &a.filler
-	vs := virender{f: f, win: a.win}
-	clip := webrender.Clip{X: 0, Y: 0, W: winW, H: winH}
+	width, height := a.canvasSize()
+	vs := virender{f: f, win: a.win, w: width, h: height}
+	clip := webrender.Clip{X: 0, Y: 0, W: width, H: height}
+	rect := func(x, y, w, h int, rgb uint32) { vs.Fill(x, y, w, h, rgb) }
+	present := documentPresentation(width, height)
 
 	// Title band.
-	f.Rect(a.win, 0, titleY, winW, titleH, webrender.ColorChromeBg)
-	webrender.DrawText(vs, 6, titleY+4, fit("WEB.ELF  "+a.title, (winW-72)/8), 1, false, webrender.ColorChromeInk, clip)
-	webrender.DrawText(vs, winW-58, titleY+4, "JS: off", 1, false, webrender.ColorError, clip)
+	rect(0, titleY, width, titleH, webrender.ColorChromeBg)
+	webrender.DrawText(vs, 6, titleY+4, fit("WEB.ELF  "+a.title, (width-72)/8), 1, false, webrender.ColorChromeInk, clip)
+	webrender.DrawText(vs, width-58, titleY+4, "JS: off", 1, false, webrender.ColorError, clip)
 
 	// URL row.
-	f.Rect(a.win, 0, urlRowY, winW, urlRowH, webrender.ColorChromeBg)
+	rect(0, urlRowY, width, urlRowH, webrender.ColorChromeBg)
 	chevBack := webrender.ColorMuted
 	if a.hist.canBack() {
 		chevBack = webrender.ColorChromeInk
@@ -1153,32 +1242,49 @@ func (a *app) render() {
 	webrender.DrawText(vs, fwdX+3, backY+3, ">", 1, false, chevFwd, clip)
 	webrender.DrawText(vs, reloadX+3, backY+3, "R", 1, false, webrender.ColorChromeInk, clip)
 
-	f.Rect(a.win, urlX, urlY, urlW, urlH, webrender.ColorSurface)
-	f.Rect(a.win, urlX, urlY, urlW, 1, webrender.ColorRule)
+	addressWidth := max(0, width-urlX-8)
+	rect(urlX, urlY, addressWidth, urlH, webrender.ColorSurface)
+	rect(urlX, urlY, addressWidth, 1, webrender.ColorRule)
 	shown := a.target
+	if a.urlEditing {
+		shown = a.urlEdit.text
+		rect(urlX, urlY, addressWidth, 1, webrender.ColorAccent)
+	}
 	if shown == "" {
 		shown = "(no target)"
 	}
-	webrender.DrawText(vs, urlX+4, urlY+3, fit(shown, (urlW-8)/8), 1, false, webrender.ColorChromeInk, clip)
+	webrender.DrawText(vs, urlX+4, urlY+3, fit(shown, (addressWidth-8)/8), 1, false, webrender.ColorChromeInk, clip)
 
 	// Content.
-	f.Rect(a.win, 0, contentY, winW, contentH, webrender.ColorPageBg)
+	rect(0, kernelBand+32, width, height-kernelBand-32-statusH, webrender.ColorChromeBg)
+	native := a.nativeSurface()
+	native.Fill(0, 0, contentW, contentH, webrender.ColorPageBg)
 	if a.lay != nil {
-		webrender.Paint(a.lay, vs, contentX, contentY, contentW, contentH, a.scroll)
+		a.updateControlPaint()
+		webrender.Paint(a.lay, native, 0, 0, contentW, contentH, a.scroll)
 		a.painted = len(a.lay.Items)
 	} else {
-		a.paintErrorPage(vs)
+		a.paintErrorPage(native)
 	}
+	if a.showDiagnostics {
+		native.Fill(0, 0, contentW, contentH, webrender.ColorPageBg)
+		for i := a.diagnosticScroll; i < min(len(a.diagnostics), a.diagnosticScroll+38); i++ {
+			webrender.DrawText(native, 8, 8+(i-a.diagnosticScroll)*18, fit(a.diagnostics[i].Text, contentW/8-2),
+				1, false, webrender.ColorText, webrender.Clip{W: contentW, H: contentH})
+		}
+	}
+	a.sampleFrame(vs, present)
+	vi.ConsoleLine("web: viewport css=1280x720 x=" + itoa(present.X) +
+		" y=" + itoa(present.Y) + " w=" + itoa(present.W) + " h=" + itoa(present.H) + " s=" + itoa(a.scroll))
 
 	// Status line (drawn last so nothing can cover it).
-	f.Rect(a.win, 0, winH-statusH, winW, statusH, webrender.ColorChromeBg)
-	webrender.DrawText(vs, 6, winH-statusH+2, fit(a.statusText(), winW/8-2), 1, false, webrender.ColorMuted, clip)
+	rect(0, height-statusH, width, statusH, webrender.ColorChromeBg)
+	webrender.DrawText(vs, 6, height-statusH+2, fit(a.statusText(), width/8-2), 1, false, webrender.ColorMuted, clip)
 
-	t0 := vi.Nanos()
 	processed := f.Flush()
 	a.lastFills = processed
 	vi.WinPresent(a.win)
-	a.tPaint = vi.Nanos() - t0
+	a.tPaint = vi.Nanos() - start
 	// M69a (#1528): the page is on the wire. Once only, and only for a real
 	// laid-out page (the error page paints with a.lay == nil).
 	if !a.dogfoodPage && a.lay != nil {
@@ -1199,11 +1305,17 @@ func itemsOf(a *app) int {
 }
 
 func (a *app) statusText() string {
+	if c := a.focusControl; c != nil {
+		return "form " + c.kind + " " + c.name + " checked=" + boolStr(c.checked)
+	}
 	if a.hover != "" {
 		return "link: " + a.hover
 	}
 	if a.status != "" {
 		return a.status
+	}
+	if len(a.diagnostics) > 0 {
+		return "diagnostics=" + itoa(len(a.diagnostics)) + " (F1 list) " + a.diagnostics[0].Text
 	}
 	if a.lay == nil {
 		return "error"
@@ -1215,17 +1327,17 @@ func (a *app) statusText() string {
 }
 
 func (a *app) paintErrorPage(vs virender) {
-	clip := webrender.Clip{X: contentX, Y: contentY, W: contentW, H: contentH}
-	y := contentY + 12
-	webrender.DrawText(vs, contentX, y, "This page could not be loaded", 2, true, webrender.ColorText, clip)
+	clip := webrender.Clip{X: 8, Y: 8, W: contentW - 16, H: contentH - 16}
+	y := 12
+	webrender.DrawText(vs, 12, y, "This page could not be loaded", 2, true, webrender.ColorText, clip)
 	y += 26
-	webrender.DrawText(vs, contentX, y, fit(a.errMsg, contentW/8), 1, false, webrender.ColorError, clip)
+	webrender.DrawText(vs, 12, y, fit(a.errMsg, contentW/8-2), 1, false, webrender.ColorError, clip)
 	y += 18
-	webrender.DrawText(vs, contentX, y, fit("target: "+a.describeTarget(), contentW/8), 1, false, webrender.ColorMuted, clip)
+	webrender.DrawText(vs, 12, y, fit("target: "+a.describeTarget(), contentW/8-2), 1, false, webrender.ColorMuted, clip)
 	y += 18
-	webrender.DrawText(vs, contentX, y, "kind: "+a.errKind, 1, false, webrender.ColorMuted, clip)
+	webrender.DrawText(vs, 12, y, "kind: "+a.errKind, 1, false, webrender.ColorMuted, clip)
 	y += 24
-	webrender.DrawText(vs, contentX, y, "R reloads  < back  > forward  Esc stop  Q quit", 1, false, webrender.ColorMuted, clip)
+	webrender.DrawText(vs, 12, y, "Ctrl+L URL  R reload  < back  > forward  Esc stop  Q quit", 1, false, webrender.ColorMuted, clip)
 }
 
 func (a *app) describeTarget() string {
@@ -1293,39 +1405,7 @@ func isSchemeAlpha(s string) bool {
 
 // relativeTo resolves an href found on a page against the page's own target.
 func relativeTo(base, href string) string {
-	low := strings.ToLower(href)
-	if strings.HasPrefix(low, "http://") || strings.HasPrefix(low, "https://") {
-		return href
-	}
-	if strings.HasPrefix(strings.ToLower(base), "https://") {
-		if strings.HasPrefix(href, "/") {
-			if u, ok := webrender.ParseURL(base); ok {
-				return "https://" + u.Host + href
-			}
-		}
-		if resolved, ok := webrender.ResolveHref(base, href); ok {
-			return resolved
-		}
-		return href
-	}
-	if strings.HasPrefix(strings.ToLower(base), "http://") {
-		if strings.HasPrefix(href, "/") {
-			if u, ok := webrender.ParseHTTPURL(base); ok {
-				return "http://" + u.Host + href
-			}
-		}
-		if resolved, ok := webrender.ResolveHref(base, href); ok {
-			return resolved
-		}
-		return href
-	}
-	if base == "" {
-		return href
-	}
-	if resolved, ok := webrender.ResolveHref(base, href); ok {
-		return resolved
-	}
-	return href
+	return resolveReference(base, href)
 }
 
 func pageTitle(doc *webrender.Document, target string) string {
@@ -1394,7 +1474,7 @@ func errorMessage(kind, target string) string {
 	case "file":
 		return "No such file on the share (expected " + target + ")."
 	case "dns":
-		return "This slice resolves IP literals only; use http://10.0.0.2/ style URLs."
+		return "DNS lookup failed within its bounded budget."
 	case "tcp":
 		return "TCP connect, send, or receive failed."
 	case "timeout":
@@ -1408,9 +1488,33 @@ func errorMessage(kind, target string) string {
 	case "scheme":
 		return "Only http://, https://, and the local file channel are supported."
 	case "https":
-		return "https:// refused: hostname is not an IP literal. Nothing was sent in the clear."
+		return "HTTPS could not establish a verified connection."
 	case "tls":
 		return "TLS handshake failed (fail closed). Nothing was sent in the clear."
+	case "tls-hostname-mismatch":
+		return "The certificate does not match the requested hostname."
+	case "tls-expired":
+		return "The certificate is expired or not yet valid."
+	case "tls-unknown-root":
+		return "The certificate chain has no trusted root."
+	case "http-framing-unsupported":
+		return "Transfer or content coding is not supported; identity framing is required."
+	case "http-framing-invalid", "http-premature-eof":
+		return "The response framing is invalid or ended prematurely."
+	case "http-header-limit", "http-body-limit", "network-request-limit":
+		return "The response or request count exceeded the declared page budget."
+	case "redirect-downgrade":
+		return "An HTTPS to HTTP redirect was refused."
+	case "redirect-location":
+		return "The redirect Location is missing or unsupported."
+	case "form-method-unsupported":
+		return "Only GET form submission is supported. No POST was sent."
+	case "form-control-unsupported":
+		return "This form contains a control outside the supported GET subset."
+	case "form-control-limit", "form-url-limit":
+		return "The form exceeds the declared control or URL budget."
+	case "page-memory-limit":
+		return "This page cannot fit inside the declared browser memory budget."
 	case "cancelled":
 		return "Load stopped before the server answered."
 	case "redirect":

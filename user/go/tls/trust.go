@@ -4,7 +4,14 @@
 
 package tls
 
+import "virelai/vi"
+
 const trustStoreMax = 64
+
+type rootAnchor struct {
+	name, sha256 string
+	der          []byte
+}
 
 // trustStore holds up to trustStoreMax anchors. findIssuer matches on the
 // exact raw DER of the issuer Name.
@@ -62,18 +69,17 @@ func (s *trustStore) findIssuer(issuerRaw []byte) *cert {
 	return nil
 }
 
-// The vendored root: the same AutoClaw fixture root the live-tls13 gate
-// serves, generated from user/src/lib/tls/vectors/fx/root.der into
-// trust_root_gen.go. Byte-for-byte the blob's origin the Zig client vendored,
-// so the Go client validates against its own pinned root rather than a
-// test-only bypass (ADR 0029 D5).
-const vendoredRootVersion = "virelai-gate-roots-2026-09-14"
-
 // defaultStore is the process-wide guest store.
 var defaultStore = newTrustStore(vendoredRootVersion)
 
 func init() {
-	if err := defaultStore.addRoot(vendoredRootDER); err != nil {
-		panic("tls: vendored root rejected: " + err.Error())
+	for _, anchor := range vendoredRoots {
+		if err := defaultStore.addRoot(anchor.der); err != nil {
+			panic("tls: vendored root rejected: " + anchor.name + ": " + err.Error())
+		}
 	}
+	vi.ConsoleLine("tls: roots " + vendoredRootVersion)
 }
+
+// TrustVersion identifies the compiled trust set. It cannot change at runtime.
+func TrustVersion() string { return vendoredRootVersion }

@@ -397,8 +397,9 @@ func (c *client) buildClientHello(random, sessionID, x25519Pub [32]byte) []byte 
 
 	extAt := w.reserve16()
 
-	// server_name (SNI)
-	{
+	// RFC 6066 prohibits literal IP addresses in host_name. Verification
+	// still uses c.host, including exact iPAddress SAN checks.
+	if _, literal := parseIPLiteral([]byte(c.host)); !literal {
 		w.u16(extServerName)
 		at := w.reserve16()
 		inner := w.reserve16()
@@ -1052,6 +1053,9 @@ func (c *client) read(out []byte) (int, error) {
 		case ctHandshake:
 			continue
 		case ctAlert:
+			if n == 2 && c.plainBuf[1] == 0 {
+				return 0, errStreamClosed // authenticated close_notify
+			}
 			return 0, ErrAlertReceived
 		}
 	}
