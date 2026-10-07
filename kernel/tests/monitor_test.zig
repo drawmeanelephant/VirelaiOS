@@ -1721,6 +1721,28 @@ test "monitor: kill is registered and arms a running process by id and by name" 
     try std.testing.expectEqual(@as(?u64, scheduler.reserved_kill_status), scheduler.terminated_status(2));
 }
 
+test "monitor: kill receipt survives a foreign write at every boundary" {
+    for ([_][]const u8{ "INIT.ELF", "0123456789abcdef-extra" }) |name| {
+        var env = TestEnv.init();
+        var mon = env.monitor();
+        _ = scheduler.init();
+        _ = scheduler.register_worker(0);
+        const task = scheduler.spawn("user-exec", 0x2000, scheduler.spsr_el0t_irqs, &scheduler.worker_stack, 0, 0).?;
+        const pid = process.create(name, .{}, .{}, .{}).?;
+        try std.testing.expect(process.bind(pid, task));
+        const stored_name = process.info(pid).?.name;
+        // The longest stored name fits the exact production buffer bound.
+        try std.testing.expect(stored_name.len <= process.name_max);
+        var interleaved = InterleavingConsole{};
+        mon.console = interleaved.handle();
+        try std.testing.expectEqual(ExecError.none, exec(&mon, &.{ "kill", stored_name }));
+        var expected_buf: [64]u8 = undefined;
+        const expected = try std.fmt.bufPrint(&expected_buf, "kill: {s} armed\ncounter: alive\n", .{stored_name});
+        try std.testing.expectEqualStrings(expected, interleaved.mock.contents());
+        try std.testing.expectEqual(@as(usize, 0), interleaved.fragments);
+    }
+}
+
 test "monitor: kill refuses unknown, already-exited, and not-running targets exactly" {
     var env = TestEnv.init();
     var mon = env.monitor();

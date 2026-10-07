@@ -254,8 +254,6 @@ pub const ExecResult = enum {
 /// The loaded program image (BSS, page-aligned so the user root can map the
 /// whole page at `userspace.text_va`).
 var program: [exec_program_max]u8 align(4096) = undefined;
-/// Staging buffer for dynamic ELF interpreter (PT_INTERP / LD.SO, claim 7921).
-var interp_program: [exec_program_max]u8 align(4096) = undefined;
 
 pub const LoadedInfo = struct {
     name: []const u8,
@@ -1178,7 +1176,15 @@ fn exec_dynamic_elf(
 ) ExecResult {
     if (!scheduler.has_free_slot()) return .pool_full;
 
-    const interp_got = read_host_file(interp_name, &interp_program) orelse return .not_found;
+    // Interpreter and library bytes are copied into process-owned pages
+    // below; their scratch need not occupy 2 MiB of the flat kernel image.
+    // Keep the staging bound unchanged and return the pages on EVERY exit.
+    const scratch_pages = (exec_program_max + alloc.page_size - 1) / alloc.page_size;
+    const scratch_phys = alloc.alloc_pages(scratch_pages) orelse return .out_of_memory;
+    defer _ = alloc.free_pages(scratch_phys, scratch_pages);
+    const interp_program: *align(4096) [exec_program_max]u8 = @ptrFromInt(scratch_phys);
+
+    const interp_got = read_host_file(interp_name, interp_program) orelse return .not_found;
     const interp_image = elf_mod.parse_at(interp_program[0..interp_got], null) catch |err| return elf_exec_error(err);
 
     const seg0 = image.segments[0];
@@ -1269,11 +1275,11 @@ fn exec_dynamic_elf(
     const lib_dst: [*]u8 = @ptrFromInt(lib_phys);
     @memset(lib_dst[0 .. lib_pages * alloc.page_size], 0);
     var lib_offset: usize = 0;
-    if (read_host_file("LIBUI.SO", &interp_program)) |got| {
+    if (read_host_file("LIBUI.SO", interp_program)) |got| {
         @memcpy(lib_dst[lib_offset..][0..got], interp_program[0..got]);
         lib_offset += 0x10000;
     }
-    if (read_host_file("LIBFONT.SO", &interp_program)) |got| {
+    if (read_host_file("LIBFONT.SO", interp_program)) |got| {
         @memcpy(lib_dst[lib_offset..][0..got], interp_program[0..got]);
         lib_offset += 0x10000;
     }
@@ -1703,6 +1709,104 @@ fn arm_allocator() void {
 fn dsk1_exec_pages() u64 {
     const stack_pages: u64 = (scheduler.task_stack_size + 4095) / 4096;
     return 1 + 2 * stack_pages;
+}
+
+/// One RX segment, optionally naming LD.SO, for the dynamic-exec tests.
+fn test_dynamic_image(base: u64, interpreter: bool) [512]u8 {
+    var img = [_]u8{0} ** 512;
+    @memcpy(img[0..4], "\x7fELF");
+    img[4] = 2; // ELF64
+    img[5] = 1; // little endian
+    img[6] = 1;
+    std.mem.writeInt(u16, img[16..18], 2, .little); // ET_EXEC
+    std.mem.writeInt(u16, img[18..20], 183, .little); // AArch64
+    std.mem.writeInt(u32, img[20..24], 1, .little);
+    std.mem.writeInt(u64, img[24..32], base + 256, .little);
+    std.mem.writeInt(u64, img[32..40], 64, .little);
+    std.mem.writeInt(u16, img[52..54], 64, .little);
+    std.mem.writeInt(u16, img[54..56], 56, .little);
+    std.mem.writeInt(u16, img[56..58], if (interpreter) 2 else 1, .little);
+    std.mem.writeInt(u32, img[64..68], 1, .little); // PT_LOAD
+    std.mem.writeInt(u32, img[68..72], 5, .little); // R+X
+    std.mem.writeInt(u64, img[80..88], base, .little);
+    std.mem.writeInt(u64, img[96..104], img.len, .little);
+    std.mem.writeInt(u64, img[104..112], 4096, .little);
+    std.mem.writeInt(u64, img[112..120], 4096, .little);
+    if (interpreter) {
+        std.mem.writeInt(u32, img[120..124], 3, .little); // PT_INTERP
+        std.mem.writeInt(u64, img[128..136], 232, .little);
+        std.mem.writeInt(u64, img[152..160], 6, .little);
+        @memcpy(img[232..238], "LD.SO\x00");
+    }
+    return img;
+}
+
+test "exec: dynamic scratch is released on read, parse, and allocation failures" {
+    defer virtio_file.set_test_share(null);
+    defer test_share_n = 0;
+    arm_allocator();
+    _ = scheduler.init();
+    test_share_n = 0;
+    const image = test_dynamic_image(userspace.text_va, true);
+    test_seed("DYNAMIC.ELF", &image);
+    const free_before = alloc.stats().free_pages;
+    try std.testing.expectEqual(ExecResult.not_found, exec_file("DYNAMIC.ELF", &.{}));
+    try std.testing.expectEqual(free_before, alloc.stats().free_pages);
+
+    test_seed("LD.SO", "not an ELF");
+    try std.testing.expectEqual(ExecResult.bad_elf, exec_file("DYNAMIC.ELF", &.{}));
+    try std.testing.expectEqual(free_before, alloc.stats().free_pages);
+
+    const interpreter = test_dynamic_image(0x0080_0000, false);
+    test_seed("LD.SO", &interpreter);
+    const scratch_pages = exec_program_max / alloc.page_size;
+    const held_pages = free_before - scratch_pages;
+    const held = alloc.alloc_pages(held_pages).?;
+    defer _ = alloc.free_pages(held, held_pages);
+    // Scratch fits exactly, but no page remains for the process text.
+    try std.testing.expectEqual(ExecResult.out_of_memory, exec_file("DYNAMIC.ELF", &.{}));
+    try std.testing.expectEqual(scratch_pages, alloc.stats().free_pages);
+    const extra = alloc.alloc_pages(1).?;
+    defer _ = alloc.free_pages(extra, 1);
+    // Scratch itself cannot fit; no partial allocation may be retained.
+    try std.testing.expectEqual(ExecResult.out_of_memory, exec_file("DYNAMIC.ELF", &.{}));
+    try std.testing.expectEqual(scratch_pages - 1, alloc.stats().free_pages);
+}
+
+test "exec: dynamic scratch is released after copying interpreter and libraries" {
+    defer virtio_file.set_test_share(null);
+    defer test_share_n = 0;
+    defer mmu.reset();
+    arm_allocator();
+    _ = scheduler.init();
+    test_share_n = 0;
+    const image = test_dynamic_image(userspace.text_va, true);
+    const interpreter = test_dynamic_image(0x0080_0000, false);
+    test_seed("DYNAMIC.ELF", &image);
+    test_seed("LD.SO", &interpreter);
+    test_seed("LIBUI.SO", "ui library");
+    test_seed("LIBFONT.SO", "font library");
+    const free_before = alloc.stats().free_pages;
+    try std.testing.expectEqual(ExecResult.ok, exec_file("DYNAMIC.ELF", &.{}));
+    const info = process.info(last_exec_pid().?).?;
+    // The fixture maps one interpreter page and the unchanged 64-page
+    // library aperture, in addition to the ordinary process pages.
+    const owned_pages = info.text_pages + info.data_pages + 1 + 64 +
+        info.stack_pages + info.kernel_stack_pages;
+    try std.testing.expectEqual(free_before - owned_pages, alloc.stats().free_pages);
+    // Reuse the released scratch and poison it: no process mapping owns it.
+    const scratch_pages = exec_program_max / alloc.page_size;
+    const scratch = alloc.alloc_pages(scratch_pages).?;
+    defer _ = alloc.free_pages(scratch, scratch_pages);
+    const scratch_bytes: [*]u8 = @ptrFromInt(scratch);
+    @memset(scratch_bytes[0..exec_program_max], 0xa5);
+    const interp_leaf = mmu.get_user_leaf(info.root_phys, 0x0080_0000).?.*;
+    const interp_bytes: [*]const u8 = @ptrFromInt(interp_leaf & 0x0000_ffff_ffff_f000);
+    try std.testing.expectEqualSlices(u8, &interpreter, interp_bytes[0..interpreter.len]);
+    const lib_leaf = mmu.get_user_leaf(info.root_phys, 0x0100_0000).?.*;
+    const lib_bytes: [*]const u8 = @ptrFromInt(lib_leaf & 0x0000_ffff_ffff_f000);
+    try std.testing.expectEqualStrings("ui library", lib_bytes[0..10]);
+    try std.testing.expectEqualStrings("font library", lib_bytes[0x10000..][0..12]);
 }
 
 test "exec: DSK1 header parse rejects bad magic, entry, and oversize images" {
