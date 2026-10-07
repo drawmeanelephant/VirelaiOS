@@ -37,8 +37,8 @@ fn err(value: i64) u64 {
 }
 
 pub fn handle(args: [6]u64, _: *exceptions.VectorFrame) u64 {
-    // The frozen dispatcher releases its service domain before calling us.
-    // Hold it through caller identity, snapshot authorization and user copy.
+    // The dispatcher retains the kernel domain through this handler. Direct
+    // host-test entry also acquires it; preserve any caller's existing hold.
     const taken = svclock.acquire_missing(svclock.dom_bit(.kernel));
     defer svclock.release_set(taken);
     const caller = process.find_by_task(scheduler.current_id()) orelse return err(-1);
