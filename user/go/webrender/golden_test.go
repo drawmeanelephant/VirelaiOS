@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"virelai/webstyle"
 )
 
 // fb is a host-side framebuffer implementing Surface, used for golden-image
@@ -337,4 +338,136 @@ func trunc(s string, n int) string {
 		return s
 	}
 	return s[:n] + "…"
+}
+
+func TestPaintCSSBorders(t *testing.T) {
+	doc := ParseHTML([]byte("<div></div>"))
+	px := func(n int32) webstyle.Length { return webstyle.Length{Kind: webstyle.LengthPx, Value: n} }
+	color := func(n uint32) webstyle.Color { return webstyle.Color{Kind: webstyle.ColorRGBA, RGBA: 0xff000000 | n} }
+	side := func(n int32, rgb uint32) webstyle.Border {
+		return webstyle.Border{Style: webstyle.BorderSolid, Width: px(n), Color: color(rgb)}
+	}
+	tree, ds := BuildBoxTree(doc, func(n *Node) webstyle.ComputedStyle {
+		s := webstyle.ComputedStyle{Display: webstyle.DisplayBlock}
+		if n.Tag == "div" {
+			s.Width, s.Height = px(20), px(12)
+			s.BackgroundColor = color(0x00ffff)
+			s.Border = webstyle.Borders{Top: side(1, 0xff0000), Right: side(2, 0x00ff00),
+				Bottom: side(3, 0x0000ff), Left: side(4, 0xffff00)}
+		}
+		return s
+	})
+	if len(ds) != 0 {
+		t.Fatal(ds)
+	}
+	l, ds := LayoutBoxes(tree, webstyle.Viewport{Width: 40, Height: 30}, Bitmap{})
+	if len(ds) != 0 {
+		t.Fatal(ds)
+	}
+	f := newFB(50, 40, 0x123456)
+	Paint(l, f, 5, 6, 40, 30, 0)
+	for row := 0; row < 16; row++ {
+		left, right, middle := 4, 2, uint32(0x00ffff)
+		switch row {
+		case 0:
+			left, right, middle = 2, 1, 0xff0000
+		case 13:
+			left, right, middle = 3, 2, 0x0000ff
+		case 14:
+			left, right, middle = 2, 1, 0x0000ff
+		case 15:
+			left, right, middle = 1, 0, 0x0000ff
+		}
+		for col := 0; col < 26; col++ {
+			want := middle
+			if col < left {
+				want = 0xffff00
+			} else if col >= 26-right {
+				want = 0x00ff00
+			}
+			if got := f.at(5+col, 6+row); got != want {
+				t.Fatalf("exact border pixel (%d,%d)=%06x, want %06x", col, row, got, want)
+			}
+		}
+	}
+	for _, p := range []struct {
+		x, y int
+		want uint32
+	}{{15, 6, 0xff0000}, {30, 12, 0x00ff00}, {15, 21, 0x0000ff},
+		{5, 12, 0xffff00}, {15, 12, 0x00ffff}, {4, 12, 0x123456}} {
+		if got := f.at(p.x, p.y); got != p.want {
+			t.Errorf("pixel (%d,%d)=%06x, want %06x", p.x, p.y, got, p.want)
+		}
+	}
+}
+
+func TestCSSControlUsesComputedBackground(t *testing.T) {
+	for _, color := range []webstyle.Color{
+		{Kind: webstyle.ColorRGBA, RGBA: 0xff117f33},
+		{Kind: webstyle.ColorRGBA},
+	} {
+		doc := ParseHTML([]byte(`<button></button>`))
+		tree, _ := BuildBoxTree(doc, func(*Node) webstyle.ComputedStyle {
+			return webstyle.ComputedStyle{Display: webstyle.DisplayBlock,
+				BackgroundColor: color, Color: webstyle.Color{Kind: webstyle.ColorRGBA}}
+		})
+		l, ds := LayoutBoxes(tree, webstyle.Viewport{Width: 300, Height: 60}, Bitmap{})
+		if len(ds) != 0 {
+			t.Fatal(ds)
+		}
+		f := newFB(300, 60, 0xabcdef)
+		Paint(l, f, 0, 0, 300, 60, 0)
+		controlRects := 0
+		for _, it := range l.Items {
+			if it.Kind == ItemRect && it.Box != nil && it.Box.Node.Tag == "button" {
+				controlRects++
+				want := uint32(0x117f33)
+				if color.RGBA == 0 {
+					want = 0xabcdef
+				}
+				if got := f.at(it.X+it.W/2, it.Y+it.H/2); got != want {
+					t.Fatalf("computed background=%08x, pixel=%06x, want %06x", color.RGBA, got, want)
+				}
+			}
+		}
+		if controlRects < 1 {
+			t.Fatal("button control rectangle was not exercised")
+		}
+	}
+}
+
+func TestCSSPaintCurrentTransparentNoneAndClipping(t *testing.T) {
+	const bg = 0xabcdef
+	for _, tc := range []struct {
+		name     string
+		fg, fill webstyle.Color
+		border   webstyle.Border
+		want     uint32
+	}{
+		{"current-initial-black", webstyle.Color{}, webstyle.Color{Kind: webstyle.ColorCurrent}, webstyle.Border{}, 0},
+		{"transparent", webstyle.Color{Kind: webstyle.ColorRGBA}, webstyle.Color{Kind: webstyle.ColorCurrent},
+			webstyle.Border{Style: webstyle.BorderSolid}, bg},
+		{"none-width-ignored", webstyle.Color{}, webstyle.Color{Kind: webstyle.ColorRGBA, RGBA: 0xff117f33},
+			webstyle.Border{Width: webstyle.Length{Kind: webstyle.LengthPx, Value: 32}}, 0x117f33},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			box := &Box{Border: BoxRect{X: -2, Y: -2, W: 8, H: 8},
+				Style: webstyle.ComputedStyle{Color: tc.fg, BackgroundColor: tc.fill,
+					Border: webstyle.Borders{Top: tc.border, Right: tc.border, Bottom: tc.border, Left: tc.border}}}
+			f := newFB(10, 10, bg)
+			clip := Clip{X: 2, Y: 2, W: 3, H: 3}
+			paintBox(f, clip, box, 3, 3)
+			for y := 0; y < 10; y++ {
+				for x := 0; x < 10; x++ {
+					want := uint32(bg)
+					if clip.Contains(x, y) {
+						want = tc.want
+					}
+					if f.at(x, y) != want {
+						t.Fatalf("pixel (%d,%d)=%06x, want %06x", x, y, f.at(x, y), want)
+					}
+				}
+			}
+		})
+	}
 }

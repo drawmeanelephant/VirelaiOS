@@ -167,6 +167,9 @@ func (f Fonts) face(st Style) *ttf.Face {
 
 // px is the pixel size for a style. Style.Size is a logical scale (1 = body).
 func (f Fonts) px(st Style) int {
+	if st.FontPx > 0 {
+		return st.FontPx
+	}
 	n := st.Size
 	if n < 1 {
 		n = 1
@@ -199,6 +202,12 @@ func (f Fonts) Advance(st Style) int {
 // LineHeight implements TextEngine: the face's own ascent+descent+gap, plus a
 // pixel of leading so adjacent lines do not touch.
 func (f Fonts) LineHeight(st Style) int {
+	if st.LineHeightPx > 0 {
+		return st.LineHeightPx
+	}
+	if st.FontPx > 0 {
+		return (st.FontPx*18 + 12) / 13
+	}
 	face := f.face(st)
 	if face == nil {
 		return Bitmap{}.LineHeight(st)
@@ -251,7 +260,20 @@ func blitMask(s Surface, c Clip, x, y int, m *ttf.Mask, rgb uint32) {
 		return
 	}
 	if ms, ok := s.(MaskSink); ok {
-		ms.BlitMask(x, y, m, rgb)
+		r := c.Intersect(Clip{X: x, Y: y, W: m.Width, H: m.Height})
+		if r.W <= 0 || r.H <= 0 {
+			return
+		}
+		if r.X == x && r.Y == y && r.W == m.Width && r.H == m.Height {
+			ms.BlitMask(x, y, m, rgb)
+			return
+		}
+		cropped := &ttf.Mask{Width: r.W, Height: r.H, Alpha: make([]byte, r.W*r.H)}
+		for row := 0; row < r.H; row++ {
+			from := (r.Y-y+row)*m.Width + r.X - x
+			copy(cropped.Alpha[row*r.W:(row+1)*r.W], m.Alpha[from:from+r.W])
+		}
+		ms.BlitMask(r.X, r.Y, cropped, rgb)
 		return
 	}
 	BlitMaskSpans(s, c, x, y, m, rgb)
@@ -308,6 +330,9 @@ func BlitMaskSpans(s Surface, c Clip, x, y int, m *ttf.Mask, rgb uint32) {
 type Bitmap struct{}
 
 func bitmapScale(st Style) int {
+	if st.FontPx > 0 {
+		return max(1, (st.FontPx+4)/bitmapPx)
+	}
 	s := st.Size
 	if s < 1 {
 		s = 1
@@ -328,7 +353,15 @@ func (Bitmap) Measure(text string, st Style) int {
 func (Bitmap) Advance(st Style) int { return bitmapPx * bitmapScale(st) }
 
 // LineHeight implements TextEngine.
-func (Bitmap) LineHeight(st Style) int { return bitmapPx*bitmapScale(st) + 2 }
+func (Bitmap) LineHeight(st Style) int {
+	if st.LineHeightPx > 0 {
+		return st.LineHeightPx
+	}
+	if st.FontPx > 0 {
+		return (st.FontPx*18 + 12) / 13
+	}
+	return bitmapPx*bitmapScale(st) + 2
+}
 
 // Paint implements TextEngine, emitting glyph rows as spans.
 func (Bitmap) Paint(s Surface, x, top int, text string, st Style, rgb uint32, c Clip) int {

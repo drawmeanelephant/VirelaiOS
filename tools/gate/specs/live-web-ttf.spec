@@ -80,6 +80,37 @@ vgate_file script-lists.txt <<'EOF'
 exec WEB.ELF /host/LISTS.HTML
 EOF
 
+vgate_file script-png.txt <<'EOF'
+exec WEB.ELF /host/PNG.HTML
+EOF
+
+# M93e: original PNG bytes, built by the host fixture generator but decoded
+# and painted by WEB in the guest. No host-decoded raster is staged.
+vgate_setup_python <<'PY'
+import binascii, os, struct, zlib
+share = os.environ.get("VG_SHARE") or os.path.join(os.environ["RUN_DIR"], "share")
+W = H = 32
+colors = [(0x11, 0x7f, 0x33), (0xd0, 0x33, 0x99),
+          (0x22, 0x66, 0xdd), (0xee, 0xcc, 0x00)]
+def chunk(kind, body):
+    return (struct.pack(">I", len(body)) + kind + body +
+            struct.pack(">I", binascii.crc32(kind + body) & 0xffffffff))
+rows = bytearray()
+for y in range(H):
+    rows.append(0)
+    for x in range(W):
+        rows.extend(colors[(y * 2 // H) * 2 + x * 2 // W])
+        rows.append(255)
+png = (b"\x89PNG\r\n\x1a\n" +
+       chunk(b"IHDR", struct.pack(">IIBBBBB", W, H, 8, 6, 0, 0, 0)) +
+       chunk(b"IDAT", zlib.compress(bytes(rows))) + chunk(b"IEND", b""))
+with open(os.path.join(share, "SWATCH.PNG"), "wb") as f:
+    f.write(png)
+with open(os.path.join(share, "PNG.HTML"), "wb") as f:
+    f.write(b'<img src="SWATCH.PNG" width="32" height="32" alt="guest PNG">')
+print("M93e PNG fixture: %d source bytes, 32x32, RGBA8 non-interlaced" % len(png))
+PY
+
 vgate_setup_python <<'PY'
 # Boot 02's page and its image. The swatch carries four colours that appear
 # nowhere else on the page, so the pixel probe can assert the DECODE rather
@@ -608,3 +639,43 @@ assert not fails, "WEB-TTF-LISTS-FAILS: " + "; ".join(fails)
 print("live-web-ttf 04 ok: dl indents its definition, missing img still paints a box")
 PY
 
+# --- boot 05: guest PNG decode, not a placeholder -----------------------
+# Boot 03 removed the fonts. This image-only probe intentionally requires no
+# typography: its four colors can only come from the decoded PNG pixels.
+vgate_run 05 -- \
+    --screen '$RUN_DIR/screen' \
+    --via-virtio --cvc-snap \
+    --snapshot-out '$RUN_DIR/snap-05' \
+    --script '$RUN_DIR/script-png.txt' \
+    --snapshot-after "web: repaint" \
+    --script-expect "web: ready" --timeout 120
+
+vgate_assert 05 serial-contains 'web: url /host/PNG.HTML'
+vgate_assert 05 serial-contains 'web: parse nodes='
+vgate_assert 05 serial-contains 'web: layout blocks='
+vgate_assert 05 serial-contains 'web: paint items='
+vgate_assert 05 serial-contains 'web: repaint items='
+vgate_assert 05 serial-contains 'web: ready'
+vgate_assert 05 serial-absent 'web: error'
+vgate_assert 05 serial-absent 'web: budget over'
+vgate_assert 05 serial-absent '[EXC] parking:'
+vgate_assert 05 snapshot 'snap-05-*.raw' <<'PY'
+import sys
+data = open(sys.argv[1], "rb").read()
+W = 1280
+X, Y, CW, CH = 48, 78, 496, 322
+colors = [(0x11, 0x7f, 0x33), (0xd0, 0x33, 0x99),
+          (0x22, 0x66, 0xdd), (0xee, 0xcc, 0x00)]
+counts = [0] * 4
+for y in range(Y, Y + CH):
+    for x in range(X, X + CW):
+        k = (y * W + x) * 4
+        rgb = (data[k+2], data[k+1], data[k])
+        for i, color in enumerate(colors):
+            if rgb == color:
+                counts[i] += 1
+print("live-web-ttf 05: decoded PNG exact quadrant pixels=%s" % counts)
+assert counts == [256, 256, 256, 256], \
+    "PNG did not decode to the four exact 16x16 quadrants: %s" % counts
+print("live-web-ttf 05 ok: guest PNG decoded and painted, not an alt box")
+PY

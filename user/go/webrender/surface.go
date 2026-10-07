@@ -4,8 +4,10 @@ import "virelai/webrender/font"
 
 // Surface is the pixel sink the renderer paints into. The guest browser
 // implements it over the kernel's fill-batch syscall (slot 46); host tests
-// implement it over a memory framebuffer. It is deliberately rect-only:
-// that is the primitive VirelaiOS userland actually has.
+// implement it over a memory framebuffer. Fill is the required primitive;
+// surfaces may also implement MaskSink.BlitMask for anti-aliased text and
+// straight-alpha image coverage. The renderer applies its page clip before
+// calling that optional capability. Fill-only surfaces remain supported.
 type Surface interface {
 	Fill(x, y, w, h int, rgb uint32)
 }
@@ -52,7 +54,7 @@ func bitmapGlyph(ch rune) [8]byte { return font.Glyph8(ch) }
 func bitmapGlyphRows(s Surface, x, y int, rows [8]byte, size int, rgb uint32, c Clip) {
 	for r := 0; r < 8; r++ {
 		py := y + r*size
-		if py >= c.Y+c.H || py < c.Y {
+		if py >= c.Y+c.H || py+size <= c.Y {
 			continue
 		}
 		row := rows[r]
@@ -76,7 +78,7 @@ func bitmapGlyphRows(s Surface, x, y int, rows [8]byte, size int, rgb uint32, c 
 				pw = c.X + c.W - px
 			}
 			if pw > 0 {
-				s.Fill(px, py, pw, size, rgb)
+				fillClipped(s, c, px, py, pw, size, rgb)
 			}
 		}
 	}
