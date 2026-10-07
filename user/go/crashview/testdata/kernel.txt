@@ -1,0 +1,28 @@
+VirelaiOS Crash Tombstone
+========================
+Process: CRASH.ELF
+PID: 1
+Exit Status: 139
+Fault Address: 0x0
+Tick: 4
+Symbol: (in crasher+0x4)
+
+--- Last Serial Output ---
+ worker advances=4608
+tasks worker advances=4672
+tasks worker advances=4736
+tasks worker advances=4800
+tasks worker advances=4864
+exec CRASH.ELF
+exec: loaded CRASH.ELF size=0x0000000000000014 entry=0x0000000000400000 stack=0x00000001352c0000 head=0x1f2003d5000020d4
+[32mvirelai> [0mecho cv-mid
+cv-mid
+[32mvirelai> [0mtasks worker advances=4928
+tasks worker advances=4992
+tasks worker advances=5056
+tasks worker advances=5120
+tasks worker advances=5184
+tasks worker advances=5248
+tasks worker advances=5312
+
+--- End Serial Output ---
