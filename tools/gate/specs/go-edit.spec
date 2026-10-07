@@ -283,7 +283,7 @@ vgate_file script2-heap.txt <<'EOF'
 exec GOEDIT.ELF /host/EDIT/HEAP.TXT -heap
 EOF
 vgate_file script3-heap.txt <<'EOF'
-exec HEAP.ELF -p GOEDIT.ELF --polls 32
+exec HEAP.ELF -p GOEDIT.ELF --polls 120 --samples 5
 EOF
 
 vgate_run 04 -- \

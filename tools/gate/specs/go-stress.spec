@@ -330,12 +330,12 @@ vgate_file script-heap-clean.txt <<'EOF'
 exec HEAPFIX.ELF clean
 EOF
 vgate_file script-heap-view.txt <<'EOF'
-exec HEAP.ELF -p HEAPFIX.ELF --polls 32
+exec HEAP.ELF -p HEAPFIX.ELF --polls 120 --samples 5
 EOF
 
 vgate_run 04 -- --script '$RUN_DIR/script-heap-leak.txt' \
     --script2 '$RUN_DIR/script-heap-view.txt' --script2-after 'heapfixture: ready mode=leak' \
-    --script-expect 'heap: done app=HEAPFIX.ELF' --timeout 120
+    --script-expect 'heap: done app=HEAPFIX.ELF' --timeout 180
 vgate_assert 04 serial-contains 'heap: memstats ok'
 vgate_assert 04 serial-contains 'heap: leak suspected app=HEAPFIX.ELF'
 vgate_assert 04 serial-contains 'heap: done app=HEAPFIX.ELF'
@@ -385,7 +385,7 @@ PY
 
 vgate_run 05 -- --script '$RUN_DIR/script-heap-clean.txt' \
     --script2 '$RUN_DIR/script-heap-view.txt' --script2-after 'heapfixture: ready mode=clean' \
-    --script-expect 'heap: done app=HEAPFIX.ELF' --timeout 120
+    --script-expect 'heap: done app=HEAPFIX.ELF' --timeout 180
 vgate_assert 05 serial-contains 'heap: memstats ok'
 vgate_assert 05 serial-contains 'heap: done app=HEAPFIX.ELF'
 vgate_assert 05 serial-absent 'heap: leak suspected'

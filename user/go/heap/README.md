@@ -10,12 +10,20 @@ The session identifies this publisher; a new publisher replaces old rows.
 An `EBADF` publication is logged and retried from a fresh open at most twice,
 with a timer sleep between attempts. Other file errors stop the publisher.
 
-`HEAP.ELF -p <pid|name> [--polls 1..32]` polls at most once per second
+`HEAP.ELF -p <pid|name> [--polls 1..120] [--samples 1..32]` polls at most once per second
 (16 polls by default). It prints the kernel's dynamic ownership count,
 receipt peaks/totals, image aperture byte lengths and compacted mmap sizes.
 When a matching publisher exists, it joins each new post-GC sample to the
 current kernel snapshot. Missing samples, process identity or GC continuity
 reset the trend; duplicate samples do not extend it.
+`--samples` ends only after that many joined post-GC samples; failure to reach
+the count by the finite poll deadline is an error. Acceptance requests N+2,
+not a fixed wall interval that may finish before a slow GC returns.
+
+A read crossing safe publication's delete/rename gap may see successful empty
+or partial bytes through the stateless file API. The viewer reopens at most
+three times with sleeps, and never accepts malformed rows. Persistent
+corruption or permission failure is still an error, not a passing sample.
 
 `heap.Suspected` requires three consecutive strict rises, at least 512 KiB
 growth over that run, and rising kernel live pages. It ignores `HeapSys`,
