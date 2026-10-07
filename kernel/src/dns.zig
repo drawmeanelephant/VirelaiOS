@@ -185,6 +185,11 @@ pub fn parse_response(packet: []const u8, expected_id: u16) DnsError![4]u8 {
 }
 
 /// Resolve `hostname` against `server_ip` using the kernel virtio-net transport.
+/// The server is explicit — a resolver on a different subnet rides the
+/// ARP layer's next-hop rule (the datagram's Ethernet dst is the default
+/// gateway's MAC, its IPv4 dst stays `server_ip`); the gateway's own ARP
+/// entry must be learned first (`net arp <server|gateway>`), exactly as
+/// any other send.
 pub fn resolve(hostname: []const u8, server_ip: [4]u8) DnsError![4]u8 {
     if (!virtio_net.net_ready) return DnsError.TransportNotReady;
     if (!virtio_net.arp.ip_set()) return DnsError.TransportNotReady;

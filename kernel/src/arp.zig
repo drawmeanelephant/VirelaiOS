@@ -4,12 +4,24 @@
 //! it to the transport (the RX drain dispatches ARP frames here, and the
 //! N1 `net_send` TX path transmits the replies/requests it builds).
 //!
-//! Honest bounds: IPv4 ONLY (ptype 0x0800) — no IPv6/other; static IP
-//! only (`net ip <a.b.c.d>` — no DHCP, a later card); ONE bounded 4-slot
+//! Honest bounds: IPv4 ONLY (ptype 0x0800) — no IPv6/other; ONE bounded 4-slot
 //! table (fixed BSS, no heap, no allocation); no cache expiry (an entry
 //! lives until it is replaced — documented, not assumed); a request for
 //! an address we do not own is dropped with a counter (we only answer for
 //! our own protocol address).
+//!
+//! Next-hop (the off-subnet card): `lookup` answers the MAC of the NEXT
+//! HOP toward the queried address, not only the peer itself. A peer that
+//! shares our subnet (`on_link` under `own_mask`) resolves directly —
+//! the ARP-exact-peer behaviour every caller already relied on. An
+//! off-subnet destination resolves through the default gateway
+//! (`default_gateway`: the explicit `gateway`, else the contract's
+//! first-host-of-the-subnet derivation — the observed VZ NAT puts the
+//! router at .1 of a /24). With no usable gateway the answer stays the
+//! literal peer, so a gateway-less guest keeps the old exact-peer
+//! semantics and honestly fails to resolve off-subnet (the NAT does no
+//! proxy-ARP). Broadcast/multicast/loopback-shaped destinations never
+//! route.
 
 pub const ethertype_arp: u16 = 0x0806; // Ethernet II ethertype
 pub const eth_hdr_len: usize = 14; // dst MAC (6) + src MAC (6) + ethertype (2)
@@ -34,8 +46,24 @@ pub const ArpEntry = struct {
 };
 
 /// Our static protocol (IPv4) address — fixed BSS, zero = unset. Set by
-/// `net ip <a.b.c.d>`; DHCP is a later card (honest bound).
+/// `net ip <a.b.c.d>` or overwritten by the DHCP lease on BOUND (THE one
+/// copy — dhcp.zig writes it, never a second source).
 pub var own_ip: [4]u8 = .{ 0, 0, 0, 0 };
+
+/// Our subnet mask — fixed BSS. The static default is /24: every net the
+/// guest has ever observed is a /24 (the VZ NAT 192.168.64.0/24, the
+/// --net test net 10.0.0.x, and there is no prefix API to learn another
+/// shape). The DHCP lease's option-1 mask overwrites it on BOUND;
+/// expire() restores the default. A different static prefix has no
+/// source yet — an honest bound, documented not assumed.
+pub var own_mask: [4]u8 = .{ 255, 255, 255, 0 };
+
+/// The configured default gateway — fixed BSS, zero = none configured.
+/// The DHCP ACK's router option (option 3) lands here on BOUND and is
+/// cleared on expiry. A `net gw` command is a later card; until then a
+/// static config leaves this zero and `default_gateway` derives the
+/// contract's first-host address instead.
+pub var gateway: [4]u8 = .{ 0, 0, 0, 0 };
 
 /// The bounded peer table (protocol address -> hardware address).
 pub var table: [table_slots]ArpEntry = [_]ArpEntry{.{}} ** table_slots;
@@ -118,11 +146,74 @@ pub fn format_ip(ip: [4]u8, out: *[15]u8) usize {
     return n;
 }
 
-/// Look up a protocol address in the bounded table. Returns the hardware
-/// address or null.
+/// Whether `ip` is all zeros (unset).
+fn ip_zero(ip: [4]u8) bool {
+    for (ip) |b| {
+        if (b != 0) return false;
+    }
+    return true;
+}
+
+/// Whether `ip` shares our subnet under `own_mask` — requires a
+/// configured address (with none there is no link to be on).
+pub fn on_link(ip: [4]u8) bool {
+    if (!ip_set()) return false;
+    for (0..4) |i| {
+        if ((ip[i] & own_mask[i]) != (own_ip[i] & own_mask[i])) return false;
+    }
+    return true;
+}
+
+/// The contract's gateway derivation for a static config: the first host
+/// of our subnet — `own_ip & own_mask` with 1 in the host bits (the
+/// observed VZ NAT puts the router at .1 of a /24; see
+/// docs/hardware-contract.md's NAT row). Zero when no IP is set.
+pub fn derived_gateway() [4]u8 {
+    if (!ip_set()) return .{ 0, 0, 0, 0 };
+    var gw: [4]u8 = .{ 0, 0, 0, 0 };
+    for (0..4) |i| {
+        gw[i] = (own_ip[i] & own_mask[i]) | (~own_mask[i] & @as(u8, if (i == 3) 1 else 0));
+    }
+    return gw;
+}
+
+/// The effective default gateway: the explicit `gateway` when one is
+/// configured (the DHCP lease's router option), else the contract
+/// derivation — unless the derivation lands on our own address (a host
+/// cannot route through itself; the 10.0.0.1 test-net fixture is exactly
+/// that case). Zero = no gateway; routing falls back to exact-peer ARP.
+pub fn default_gateway() [4]u8 {
+    if (!ip_zero(gateway)) return gateway;
+    const gw = derived_gateway();
+    if (std.mem.eql(u8, &gw, &own_ip)) return .{ 0, 0, 0, 0 };
+    return gw;
+}
+
+/// The L2 resolution target for a packet addressed to `dst`: an on-link
+/// or unroutable destination resolves itself (broadcast 255.255.255.255,
+/// multicast 224.0.0.0/4, loopback 127.0.0.0/8 and the 0.0.0.0/8 "this
+/// host" block never route); an off-link destination resolves the
+/// default gateway — and with no usable gateway it resolves itself, the
+/// pre-next-hop exact-peer behaviour (the honest refusal path: no
+/// proxy-ARP upstream means the miss stands).
+pub fn next_hop(dst: [4]u8) [4]u8 {
+    if (dst[0] == 0 or dst[0] == 127 or dst[0] >= 224) return dst;
+    if (on_link(dst)) return dst;
+    const gw = default_gateway();
+    if (ip_zero(gw)) return dst;
+    return gw;
+}
+
+/// The next-hop hardware address for a protocol address: on-link peers
+/// (and every destination when no gateway exists) resolve their own
+/// table entry — the original exact-peer semantics; off-link
+/// destinations resolve the GATEWAY's entry — the frame's Ethernet dst
+/// is the router's MAC while its IPv4 dst stays the remote address.
+/// Returns null when the next hop is not learned.
 pub fn lookup(ip: [4]u8) ?[6]u8 {
+    const target = next_hop(ip);
     for (&table) |*e| {
-        if (e.valid and std.mem.eql(u8, &e.ip, &ip)) return e.mac;
+        if (e.valid and std.mem.eql(u8, &e.ip, &target)) return e.mac;
     }
     return null;
 }
@@ -486,4 +577,137 @@ test "arp: handle_rx — answer for us, learn a reply, drop the rest" {
     own_ip = .{ 0, 0, 0, 0 };
     try std.testing.expect(handle_rx(&req, &test_mac, &reply_buf) == null);
     try std.testing.expectEqual(@as(u64, 3), dropped);
+}
+
+// ---------------------------------------------------------------------------
+// Next-hop routing tests (the off-subnet card)
+// ---------------------------------------------------------------------------
+
+fn reset_route_state() void {
+    own_ip = .{ 0, 0, 0, 0 };
+    own_mask = .{ 255, 255, 255, 0 };
+    gateway = .{ 0, 0, 0, 0 };
+    table = [_]ArpEntry{.{}} ** table_slots;
+    table_cursor = 0;
+}
+
+test "arp: on_link — subnet membership under the /24 bound and a wider mask" {
+    reset_route_state();
+    defer reset_route_state();
+
+    // No IP configured: nothing is on-link.
+    try std.testing.expect(!on_link(.{ 192, 168, 64, 1 }));
+
+    own_ip = .{ 192, 168, 64, 5 };
+    try std.testing.expect(on_link(.{ 192, 168, 64, 1 }));
+    try std.testing.expect(on_link(.{ 192, 168, 64, 254 }));
+    try std.testing.expect(!on_link(.{ 192, 168, 65, 1 }));
+    try std.testing.expect(!on_link(.{ 10, 0, 0, 2 }));
+    try std.testing.expect(!on_link(.{ 1, 1, 1, 1 }));
+
+    // A DHCP-offered /16 widens the link honestly.
+    own_mask = .{ 255, 255, 0, 0 };
+    own_ip = .{ 192, 168, 64, 5 };
+    try std.testing.expect(on_link(.{ 192, 168, 65, 1 }));
+    try std.testing.expect(!on_link(.{ 192, 169, 0, 1 }));
+}
+
+test "arp: default_gateway — explicit wins, .1 derives, self is refused" {
+    reset_route_state();
+    defer reset_route_state();
+
+    // No IP: no gateway at all.
+    try std.testing.expectEqualSlices(u8, &.{ 0, 0, 0, 0 }, &default_gateway());
+
+    // Static config on the observed VZ NAT shape: the contract's router
+    // sits at .1 of the /24 — derived, no configuration needed.
+    own_ip = .{ 192, 168, 64, 5 };
+    try std.testing.expectEqualSlices(u8, &.{ 192, 168, 64, 1 }, &derived_gateway());
+    try std.testing.expectEqualSlices(u8, &.{ 192, 168, 64, 1 }, &default_gateway());
+
+    // The test-net fixture: own address IS the derived first host — a
+    // host cannot route through itself, so there is no gateway.
+    own_ip = .{ 10, 0, 0, 1 };
+    try std.testing.expectEqualSlices(u8, &.{ 10, 0, 0, 1 }, &derived_gateway());
+    try std.testing.expectEqualSlices(u8, &.{ 0, 0, 0, 0 }, &default_gateway());
+
+    // An explicit gateway (the DHCP lease's router option) wins over the
+    // derivation — and even over the self-derivation case (the lease is
+    // the authority).
+    own_ip = .{ 192, 168, 64, 5 };
+    gateway = .{ 192, 168, 64, 254 };
+    try std.testing.expectEqualSlices(u8, &.{ 192, 168, 64, 254 }, &default_gateway());
+    own_ip = .{ 10, 0, 0, 1 };
+    try std.testing.expectEqualSlices(u8, &.{ 192, 168, 64, 254 }, &default_gateway());
+}
+
+test "arp: next_hop — on-link resolves itself, off-link the gateway, unroutable itself" {
+    reset_route_state();
+    defer reset_route_state();
+
+    own_ip = .{ 192, 168, 64, 5 };
+
+    // On-link: the peer itself is the resolution target.
+    try std.testing.expectEqualSlices(u8, &.{ 192, 168, 64, 7 }, &next_hop(.{ 192, 168, 64, 7 }));
+    // Off-link: the derived gateway.
+    try std.testing.expectEqualSlices(u8, &.{ 192, 168, 64, 1 }, &next_hop(.{ 1, 1, 1, 1 }));
+    try std.testing.expectEqualSlices(u8, &.{ 192, 168, 64, 1 }, &next_hop(.{ 93, 184, 216, 34 }));
+
+    // Unroutable shapes never take the gateway: broadcast, multicast,
+    // loopback, the 0/8 this-host block.
+    try std.testing.expectEqualSlices(u8, &.{ 255, 255, 255, 255 }, &next_hop(.{ 255, 255, 255, 255 }));
+    try std.testing.expectEqualSlices(u8, &.{ 224, 0, 0, 1 }, &next_hop(.{ 224, 0, 0, 1 }));
+    try std.testing.expectEqualSlices(u8, &.{ 127, 0, 0, 1 }, &next_hop(.{ 127, 0, 0, 1 }));
+    try std.testing.expectEqualSlices(u8, &.{ 0, 0, 0, 0 }, &next_hop(.{ 0, 0, 0, 0 }));
+
+    // No gateway (the derived .1 is our own address — the test-net case):
+    // an off-link destination resolves itself — the pre-next-hop
+    // exact-peer behaviour, honestly unresolved without proxy-ARP.
+    own_ip = .{ 10, 0, 0, 1 };
+    try std.testing.expectEqualSlices(u8, &.{ 8, 8, 8, 8 }, &next_hop(.{ 8, 8, 8, 8 }));
+
+    // No IP at all: literal always.
+    own_ip = .{ 0, 0, 0, 0 };
+    try std.testing.expectEqualSlices(u8, &.{ 8, 8, 8, 8 }, &next_hop(.{ 8, 8, 8, 8 }));
+}
+
+test "arp: lookup — off-subnet returns the gateway's MAC, on-subnet stays exact" {
+    reset_route_state();
+    defer reset_route_state();
+
+    const gw_mac = [6]u8{ 0x02, 0x00, 0x00, 0x00, 0x64, 0x01 };
+    const peer_mac = [6]u8{ 0x02, 0x00, 0x00, 0x00, 0x64, 0x07 };
+    own_ip = .{ 192, 168, 64, 5 };
+
+    // Learn the gateway (an ARP reply for 192.168.64.1) and one on-link
+    // peer — the off-subnet destination now resolves to the router's MAC.
+    upsert(.{ 192, 168, 64, 1 }, gw_mac);
+    upsert(.{ 192, 168, 64, 7 }, peer_mac);
+    try std.testing.expectEqualSlices(u8, &gw_mac, &lookup(.{ 1, 1, 1, 1 }).?);
+    try std.testing.expectEqualSlices(u8, &peer_mac, &lookup(.{ 192, 168, 64, 7 }).?);
+
+    // An explicit gateway re-points the next hop honestly.
+    const gw2_mac = [6]u8{ 0x02, 0x00, 0x00, 0x00, 0x64, 0xfe };
+    gateway = .{ 192, 168, 64, 254 };
+    upsert(.{ 192, 168, 64, 254 }, gw2_mac);
+    try std.testing.expectEqualSlices(u8, &gw2_mac, &lookup(.{ 1, 1, 1, 1 }).?);
+    gateway = .{ 0, 0, 0, 0 };
+
+    // The gateway's own address still resolves exactly (it IS on-link).
+    try std.testing.expectEqualSlices(u8, &gw_mac, &lookup(.{ 192, 168, 64, 1 }).?);
+}
+
+test "arp: no gateway — lookup keeps the exact-peer behaviour" {
+    reset_route_state();
+    defer reset_route_state();
+
+    // The test-net shape: our address is the derived first host, so no
+    // gateway exists — an off-subnet lookup misses exactly as before.
+    own_ip = .{ 10, 0, 0, 1 };
+    try std.testing.expect(lookup(.{ 8, 8, 8, 8 }) == null);
+
+    // On-link lookups are unaffected either way.
+    const host_mac2 = [6]u8{ 0x02, 0x00, 0x00, 0x00, 0x00, 0x02 };
+    upsert(.{ 10, 0, 0, 2 }, host_mac2);
+    try std.testing.expectEqualSlices(u8, &host_mac2, &lookup(.{ 10, 0, 0, 2 }).?);
 }

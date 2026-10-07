@@ -1213,12 +1213,15 @@ fn rx_ipv4(frame: []const u8) void {
 /// the fixed staging buffer, on the N1 TX path. Refuses honestly when the
 /// transport is unready or no static IP is set (`net ip <a.b.c.d>`
 /// first). The reply is learned asynchronously by the RX drain. The frame
-/// length lands in `out_len` (42).
+/// length lands in `out_len` (42). The wire request asks for the NEXT
+/// HOP toward `target_ip` (`arp.next_hop`): on-link peers resolve
+/// themselves; an off-subnet target resolves the default gateway — the
+/// learned reply then answers `arp.lookup(target_ip)`'s next-hop query.
 pub fn net_arp_request(target_ip: [4]u8, out_len: *usize) SendResult {
     if (!net_ready) return .not_ready;
     if (!arp.ip_set()) return .not_ready;
     @memset(tx_staging[0..tx_hdr_len], 0);
-    const n = arp.build_request(tx_staging[tx_hdr_len .. tx_hdr_len + arp.arp_frame_len], &net_mac, arp.own_ip, target_ip);
+    const n = arp.build_request(tx_staging[tx_hdr_len .. tx_hdr_len + arp.arp_frame_len], &net_mac, arp.own_ip, arp.next_hop(target_ip));
     out_len.* = n;
     return net_send(&net_ops, &net_dev, tx_staging[0 .. tx_hdr_len + n]);
 }
@@ -1867,6 +1870,55 @@ test "virtio_net: RX ARP reply is learned into the bounded table" {
     try std.testing.expectEqual(@as(u64, 0), arp.dropped);
     try std.testing.expectEqual(@as(u64, 0), net_dev.tx_frames);
     try std.testing.expectEqualSlices(u8, &host_mac, &arp.lookup(host_ip).?);
+}
+
+test "virtio_net: net_arp_request resolves the NEXT HOP for an off-subnet target" {
+    const saved_ops = net_ops;
+    net_ops = mock_ops();
+    net_ready = true;
+    defer {
+        net_ops = saved_ops;
+        net_ready = false;
+    }
+    net_dev = .{};
+    net_mac = [6]u8{ 0x02, 0x00, 0x00, 0x00, 0x00, 0x01 };
+    arp.own_ip = .{ 192, 168, 64, 5 }; // the observed VZ NAT subnet
+    arp.own_mask = .{ 255, 255, 255, 0 };
+    arp.gateway = .{ 0, 0, 0, 0 };
+    defer {
+        arp.own_ip = .{ 0, 0, 0, 0 };
+        arp.own_mask = .{ 255, 255, 255, 0 };
+        arp.gateway = .{ 0, 0, 0, 0 };
+    }
+    mock_used_idx = 0;
+    mock_tx_used_idx = 0;
+    mock_used_len = 0;
+    mock_kicks = 0;
+
+    // An off-subnet resolve (a public resolver): the wire request asks
+    // who-has-the-GATEWAY (the derived .1), not the remote itself —
+    // upstream does no proxy-ARP, so asking for the literal peer would
+    // go unanswered forever.
+    var out_len: usize = 0;
+    try std.testing.expectEqual(SendResult.ok, net_arp_request(.{ 1, 1, 1, 1 }, &out_len));
+    try std.testing.expectEqual(@as(usize, arp.arp_frame_len), out_len);
+    var expected: [arp.arp_frame_len]u8 = undefined;
+    _ = arp.build_request(&expected, &net_mac, arp.own_ip, .{ 192, 168, 64, 1 });
+    try std.testing.expectEqualSlices(u8, &expected, tx_staging[tx_hdr_len .. tx_hdr_len + arp.arp_frame_len]);
+    try std.testing.expectEqualSlices(u8, &.{ 192, 168, 64, 1 }, tx_staging[tx_hdr_len + 38 .. tx_hdr_len + 42]); // tpa = the gateway
+
+    // An on-link resolve is byte-for-byte the old exact-peer request.
+    try std.testing.expectEqual(SendResult.ok, net_arp_request(.{ 192, 168, 64, 7 }, &out_len));
+    _ = arp.build_request(&expected, &net_mac, arp.own_ip, .{ 192, 168, 64, 7 });
+    try std.testing.expectEqualSlices(u8, &expected, tx_staging[tx_hdr_len .. tx_hdr_len + arp.arp_frame_len]);
+
+    // No gateway (own address IS the derived first host — the test-net
+    // fixture): the request asks for the literal peer, exactly as before
+    // this card.
+    arp.own_ip = .{ 10, 0, 0, 1 };
+    try std.testing.expectEqual(SendResult.ok, net_arp_request(.{ 8, 8, 8, 8 }, &out_len));
+    _ = arp.build_request(&expected, &net_mac, arp.own_ip, .{ 8, 8, 8, 8 });
+    try std.testing.expectEqualSlices(u8, &expected, tx_staging[tx_hdr_len .. tx_hdr_len + arp.arp_frame_len]);
 }
 
 /// Test helper: pop the oldest FIFO frame into `out` (the real path peeks
