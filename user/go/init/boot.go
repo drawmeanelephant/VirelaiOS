@@ -199,8 +199,11 @@ func (b *Boot) Tick() error {
 			service.ready = view.Starts
 			b.hooks.Serial("init: ready name=" + name)
 		}
+		// A failed first exec is unstartable; a previously live on-failure
+		// child may recover before seating without stopping its dependents.
 		if !b.seated && !b.stopping && (view.State == supervise.Failed ||
-			view.State == supervise.Backoff ||
+			view.State == supervise.Backoff && (view.Starts == 0 ||
+				service.config.Restart.Restart != supervise.OnFailure) ||
 			view.State == supervise.Exited && !b.satisfied(name)) {
 			return errors.New("unstartable")
 		}
