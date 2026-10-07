@@ -172,7 +172,7 @@ func (a *panel) present() { a.draw(); a.ta.Present() }
 // the kernel's refusal means) and every write is refused.
 func newPanel(ta *tabapp.TabApp) *panel {
 	a := &panel{ta: ta}
-	a.services.store = serviceStore{read: vi.ReadFileAll, write: vi.WriteFileSafe}
+	a.services.store = serviceStore{read: vi.ReadFileAll, stage: stageFile, publish: publishFile}
 	a.input = textField{Max: inputMax}
 	a.input.Prefix = "> "
 	a.input.Placeholder = "<key=value>"
