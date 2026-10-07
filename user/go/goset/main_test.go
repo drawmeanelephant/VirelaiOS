@@ -162,7 +162,7 @@ func TestPanelAppliesATypedRowOnlyForKnownKeys(t *testing.T) {
 
 // Left/Right cycle the vocabularies the kernel declares; a free-text key is
 // left alone rather than guessed at.
-func TestPanelKeyboardUsesAppkitTextField(t *testing.T) {
+func TestPanelKeyboardUsesBoundedTextField(t *testing.T) {
 	a := newPanel(nil)
 	a.focus.Focus(1)
 	for _, r := range []rune{'w', 'm', '=', 't'} {

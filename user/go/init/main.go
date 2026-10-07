@@ -42,8 +42,12 @@ func main() {
 		return
 	}
 	deadline := vi.Nanos() + 60e9
+	reload := newReloader(body, vi.ReadFileAll)
 	acknowledged := false
 	for {
+		if boot.seated {
+			reload.Poll(boot)
+		}
 		if err = boot.Tick(); err != nil {
 			break
 		}
