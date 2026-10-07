@@ -164,6 +164,129 @@ func TestInitialFailureAndReverseCleanup(t *testing.T) {
 	}
 }
 
+func TestPreSeatOnFailureRetryRetainsDependentAndHoldsSeat(t *testing.T) {
+	m, f := manifest(), &fakeBoot{}
+	m.Services[0].Requires = []string{"a-dep", "z-pre"}
+	m.Services[2].Restart = svcmanifest.Policy{Restart: "on-failure", BackoffBaseS: 2,
+		BackoffCapS: 8, MaxRestarts: 5, Window: 1000}
+	hooks := f.hooks()
+	var receipts []string
+	hooks.Receipt = func(name, outcome string) int64 {
+		receipts = append(receipts, name+" "+outcome)
+		return 0
+	}
+	b, err := NewBoot(m, "GOTABWM.ELF", false, hooks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tick(t, b, f)
+	tick(t, b, f)
+	f.rows[0].Running, f.rows[0].Exited, f.rows[0].Status = false, true, 137
+	tick(t, b, f)
+	view, _ := b.services["z-pre"].child.Snapshot("z-pre")
+	if view.State != supervise.Backoff || view.Starts != 1 || view.Restart != 1 ||
+		view.DelayS != 2 || b.SeatReady() || b.seated {
+		t.Fatal("retryable pre-seat failure", view)
+	}
+	if !reflect.DeepEqual(receipts, []string{"z-pre restart=1/5 status=137 backoff_s=2"}) {
+		t.Fatal(receipts)
+	}
+	tick(t, b, f) // still inside backoff
+	if len(f.launches) != 2 || len(f.kills) != 0 || !f.rows[1].Running {
+		t.Fatal("backoff stopped dependent or spawned early", f.launches, f.kills)
+	}
+	tick(t, b, f) // restart is not readiness in the same poll
+	view, _ = b.services["z-pre"].child.Snapshot("z-pre")
+	if view.Starts != 2 || view.Restart != 1 || view.Observed || len(f.launches) != 3 {
+		t.Fatal("seat started before fresh prerequisite observation", view, f.launches)
+	}
+	tick(t, b, f)
+	if !reflect.DeepEqual(f.launches, []string{"INITPRE.BIN", "INITDEP.BIN", "INITPRE.BIN", "GOTABWM.ELF"}) ||
+		len(f.kills) != 0 || !f.rows[1].Running || b.SeatReady() {
+		t.Fatal("dependent restarted or seat readiness inferred", f.launches, f.kills)
+	}
+	tick(t, b, f)
+	b.Seated()
+	if !b.seated {
+		t.Fatal("recovered boot did not seat")
+	}
+	var markers []string
+	for _, line := range f.markers {
+		if strings.HasPrefix(line, "init:") {
+			markers = append(markers, line)
+		}
+	}
+	want := []string{"init: manifest ok n=3", "init: start name=z-pre order=1",
+		"init: ready name=z-pre", "init: start name=a-dep order=2", "init: ready name=a-dep",
+		"init: start name=z-pre order=1", "init: ready name=z-pre",
+		"init: start name=seat order=3", "init: ready name=seat", "init: seated"}
+	if !reflect.DeepEqual(markers, want) {
+		t.Fatal("fresh readiness/order", markers)
+	}
+}
+
+func TestInitialRestartingSpawnFailureRemainsUnstartable(t *testing.T) {
+	for _, policy := range []string{"on-failure", "always"} {
+		t.Run(policy, func(t *testing.T) {
+			m, f := manifest(), &fakeBoot{}
+			m.Services[0].Restart = svcmanifest.Policy{Restart: policy, BackoffBaseS: 2,
+				BackoffCapS: 8, MaxRestarts: 5, Window: 1000}
+			b, err := NewBoot(m, "GOTABWM.ELF", false, f.hooks())
+			if err != nil {
+				t.Fatal(err)
+			}
+			tick(t, b, f)
+			tick(t, b, f)
+			f.failExec = true
+			if err := b.Tick(); err == nil || err.Error() != "unstartable" {
+				t.Fatal(err)
+			}
+			view, _ := b.services["seat"].child.Snapshot("seat")
+			if view.Starts != 0 || view.State != supervise.Backoff {
+				t.Fatal(view)
+			}
+			if err := b.Stop(); err != nil {
+				t.Fatal(err)
+			}
+			tick(t, b, f)
+			if !b.Stopped() || !reflect.DeepEqual(f.kills, []uint64{2, 1}) {
+				t.Fatal(f.kills)
+			}
+		})
+	}
+}
+
+func TestPreSeatOnFailureExhaustionRemainsUnstartable(t *testing.T) {
+	m, f := manifest(), &fakeBoot{}
+	m.Services[0].Requires = []string{"a-dep", "z-pre"}
+	m.Services[2].Restart = svcmanifest.Policy{Restart: "on-failure", BackoffBaseS: 1,
+		BackoffCapS: 1, MaxRestarts: 1, Window: 10}
+	b, err := NewBoot(m, "GOTABWM.ELF", false, f.hooks())
+	if err != nil {
+		t.Fatal(err)
+	}
+	tick(t, b, f)
+	tick(t, b, f)
+	f.rows[0].Running, f.rows[0].Exited, f.rows[0].Status = false, true, 137
+	tick(t, b, f)
+	tick(t, b, f)
+	f.rows[2].Running, f.rows[2].Exited, f.rows[2].Status = false, true, 137
+	if err := b.Tick(); err == nil || err.Error() != "unstartable" {
+		t.Fatal(err)
+	}
+	view, _ := b.services["z-pre"].child.Snapshot("z-pre")
+	if view.State != supervise.Failed || view.Starts != 2 || view.Restart != 1 || b.SeatReady() {
+		t.Fatal("exhausted boot retried or seated", view)
+	}
+	if err := b.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	tick(t, b, f)
+	if !b.Stopped() || !reflect.DeepEqual(f.kills, []uint64{2}) {
+		t.Fatal(f.kills)
+	}
+}
+
 func TestRetryWaitsForPrerequisiteWithoutStoppingDependent(t *testing.T) {
 	m := manifest()
 	for i := range m.Services {
