@@ -2119,7 +2119,19 @@ fn handle_thread(args: Args, _: *exceptions.VectorFrame) u64 {
             // unless this was its last task.
             const status: u64 = if (scheduler.tasks[caller].join_token != 0) args[1] else 0;
             if (status > 255) return error_result(.einval);
-            if (!scheduler.exit_thread_status(status)) return error_result(.einval);
+            // Canonical lock order (svclock.zig): the exit teardown takes
+            // every domain lock, but KERNEL is LAST in that order and this
+            // dispatch already holds it — taking FILE/NET/WIN/EV under the
+            // hold would invert the order and close a cycle with the
+            // domain->KERNEL takes (uaccess write-page resolution inside
+            // socket/file syscalls). Drop this dispatch's hold, let the
+            // teardown acquire canonically, then re-take so the
+            // dispatcher's paired release stays balanced.
+            const outer = svclock.held_bits();
+            svclock.release_set(outer);
+            const exited = scheduler.exit_thread_status(status);
+            svclock.acquire_set(outer);
+            if (!exited) return error_result(.einval);
             return 0;
         },
         2 => return scheduler.join_thread(pid, args[1]) orelse error_result(.einval),
