@@ -70,6 +70,7 @@ python3 - "$OUT_DIR/GOCMDCOMPILE.ELF" "$OUT_DIR/GOCMDLINK.ELF" <<'PY'
 import struct, sys
 
 MAX_BYTES = 33554432   # exec_image_max / load_max
+MAP_MAX   = 67108864   # elf.map_max (M72a #1579: the MAPPED bound)
 GAP_MAX   = 0x1000_0000  # elf.gap_base_max
 MAX_SEG   = 3            # elf.max_segments
 NEED_SLACK = 0x908       # argv+envp block (0x900) + 8-byte alignment step

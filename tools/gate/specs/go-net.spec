@@ -370,3 +370,159 @@ while i < len(data):
 assert len(syns) == 10 and all(s == syns[0] for s in syns), "legacy SYN/retransmit sequence changed"
 print("legacy connect: guest counters %.6f s; unchanged EINVAL; reconnect/GET/close" % (elapsed / 1e9))
 PY
+
+# --- M95 prerequisite #2029: stdlib `net` on GOOS=virelai ---------------
+# The package compiles for in-process IPC only: net.Pipe is a real Conn
+# pair (channel plumbing, no netFD), while every path that would need a
+# kernel socket — dial, listen, DNS, interface enumeration — refuses with
+# a named error. GOPIPE.ELF is pure stdlib: no `virelai/vi` socket seam,
+# so a pass proves the std `net` port itself, not the SDK. The run arms
+# no network attachment on purpose: in-process IPC needs no peer.
+
+vgate_file gonetpipe.go <<'EOF'
+package main
+
+import (
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"os"
+	"strings"
+	"time"
+)
+
+var failed bool
+
+func fail(s string) {
+	fmt.Println("gonetpipe: FAIL " + s)
+	failed = true
+}
+
+// expectRefusal pins the contract this port sells: every path that would
+// need a kernel socket refuses with a named error (ENOSYS renders as
+// "function not implemented"), never a silent success and never a lie.
+func expectRefusal(what string, err error) {
+	switch {
+	case err == nil:
+		fail(what + " succeeded")
+	case !strings.Contains(err.Error(), "not implemented"):
+		fail(what + " refused with an unnamed error: " + err.Error())
+	default:
+		fmt.Println("gonetpipe: refused " + what + ": " + err.Error())
+	}
+}
+
+func main() {
+	fmt.Println("gonetpipe: start")
+
+	// The in-process proof: net.Pipe is a synchronous Conn pair over
+	// channels — no netFD, no socket — so it is the one std transport
+	// this port can run.
+	c1, c2 := net.Pipe()
+	go func() {
+		buf := make([]byte, 64)
+		for {
+			n, err := c1.Read(buf)
+			if err != nil {
+				return
+			}
+			if _, err := c1.Write(buf[:n]); err != nil {
+				return
+			}
+		}
+	}()
+
+	msg := []byte("net29-pipe-echo")
+	if n, err := c2.Write(msg); err != nil || n != len(msg) {
+		fail(fmt.Sprintf("pipe write n=%d err=%v", n, err))
+	}
+	buf := make([]byte, 64)
+	c2.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if n, err := c2.Read(buf); err != nil || string(buf[:n]) != string(msg) {
+		fail(fmt.Sprintf("pipe echo n=%d err=%v got=%q", n, err, buf[:n]))
+	} else {
+		fmt.Println("gonetpipe: pipe roundtrip ok")
+	}
+
+	// Deadline honesty: a read with nothing to read must expire, and the
+	// error must report Timeout() — not a socket refusal.
+	c2.SetReadDeadline(time.Now().Add(50 * time.Millisecond))
+	if _, err := c2.Read(buf); err == nil {
+		fail("pipe deadline read succeeded")
+	} else if te, ok := err.(net.Error); !ok || !te.Timeout() {
+		fail("pipe deadline error is not a timeout: " + err.Error())
+	} else {
+		fmt.Println("gonetpipe: deadline ok")
+	}
+	c2.SetReadDeadline(time.Time{})
+
+	// Close honesty: after c1.Close the peer sees ErrClosedPipe on write
+	// and io.EOF on read — the stock pipe semantics, unmodified.
+	if err := c1.Close(); err != nil {
+		fail("pipe close: " + err.Error())
+	}
+	if _, err := c2.Write([]byte("x")); !errors.Is(err, io.ErrClosedPipe) {
+		fail(fmt.Sprintf("pipe write after peer close err=%v", err))
+	} else {
+		fmt.Println("gonetpipe: close ok")
+	}
+	c2.Close()
+
+	// The refusal half of the port: external operations refuse with a
+	// named error. Nothing below touches a device — there is none armed.
+	_, err := net.Dial("tcp", "127.0.0.1:1")
+	expectRefusal("dial-tcp", err)
+	_, err = net.Listen("tcp", "127.0.0.1:0")
+	expectRefusal("listen-tcp", err)
+	_, err = net.Listen("unix", "/tmp/gonetpipe.sock")
+	expectRefusal("listen-unix", err)
+	_, err = net.ListenPacket("udp", "127.0.0.1:0")
+	expectRefusal("listen-udp", err)
+	_, err = net.Dial("unix", "/tmp/gonetpipe.sock")
+	expectRefusal("dial-unix", err)
+	_, err = net.LookupHost("gonetpipe.invalid")
+	expectRefusal("lookup", err)
+	_, err = net.Interfaces()
+	expectRefusal("interfaces", err)
+	_, err = net.InterfaceAddrs()
+	expectRefusal("interface-addrs", err)
+
+	if failed {
+		fmt.Println("gonetpipe: FAILED")
+		os.Exit(1)
+	}
+	fmt.Println("gonetpipe: done")
+	os.Exit(0)
+}
+EOF
+
+vgate_file script-pipe.txt <<'EOF'
+exec GOPIPE.ELF
+EOF
+
+vgate_setup_python <<'PY'
+import os, pathlib, subprocess
+rd = pathlib.Path(os.environ["RUN_DIR"])
+share = pathlib.Path(os.environ.get("VG_SHARE") or rd / "share")
+env = dict(os.environ, GO_BUILD_OUT=str(share),
+           GO_BUILD_NAME="GOPIPE", GO_LDFLAGS_VALUE="-s -w")
+subprocess.run(["bash", "tools/go/build-go.sh", str(rd / "gonetpipe.go")], env=env, check=True)
+PY
+
+vgate_run pipe -- --script '$RUN_DIR/script-pipe.txt' --script-expect 'gonetpipe: done' --timeout 120
+
+vgate_assert pipe serial-contains 'gonetpipe: start'
+vgate_assert pipe serial-contains 'gonetpipe: pipe roundtrip ok'
+vgate_assert pipe serial-contains 'gonetpipe: deadline ok'
+vgate_assert pipe serial-contains 'gonetpipe: close ok'
+vgate_assert pipe serial-contains 'gonetpipe: refused dial-tcp'
+vgate_assert pipe serial-contains 'gonetpipe: refused listen-tcp'
+vgate_assert pipe serial-contains 'gonetpipe: refused listen-unix'
+vgate_assert pipe serial-contains 'gonetpipe: refused listen-udp'
+vgate_assert pipe serial-contains 'gonetpipe: refused dial-unix'
+vgate_assert pipe serial-contains 'gonetpipe: refused lookup'
+vgate_assert pipe serial-contains 'gonetpipe: refused interfaces'
+vgate_assert pipe serial-contains 'gonetpipe: refused interface-addrs'
+vgate_assert pipe serial-absent 'gonetpipe: FAIL'
+vgate_assert pipe serial-absent '[EXC] parking:'

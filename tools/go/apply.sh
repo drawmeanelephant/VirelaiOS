@@ -512,6 +512,37 @@ vir_include crypto/internal/sysrand/rand_getrandom.go "read() over unix.GetRando
 # the stock Linux file, which reaches for a raw SYS_GETRANDOM trap number.
 vir_exclude internal/syscall/unix/getrandom.go "Linux trap numbers; port supplies GetRandom"
 
+# --- 3g6b. net for virelai (issue #2029, M95 prerequisite) ---------------
+# `net` needs a platform surface: netFD, the dial/listen hooks the shared
+# dial.go names, resolver methods, and the sockopt/file/interface leaves.
+# This port compiles the stock POSIX *plumbing* — the same files js and
+# wasip1 select — and supplies the leaves itself in overlay/net/, where
+# every one refuses: there are no socket slots to call. The js/wasip1 fake
+# fabric (net_fake.go/fd_fake.go) was evaluated and rejected: it implements
+# a WORKING in-memory loopback, and the card requires TCP loopback,
+# listeners and unix sockets to refuse. So the dial/listen plumbing below
+# is stock — argument validation, OpError/AddrError wrapping, resolver
+# ordering — and the refusal lives at socket(), the leaf all of it reaches.
+vir_include net/ipsock_posix.go     "family pick, sockaddr<->Addr, probe (sysSocket refuses)"
+vir_include net/tcpsock_posix.go    "TCP dial/listen/conn plumbing; refuses at socket()"
+vir_include net/udpsock_posix.go    "UDP plumbing; refuses at socket()"
+vir_include net/iprawsock_posix.go  "raw-IP plumbing; refuses at socket()"
+vir_include net/unixsock_posix.go   "unix-socket plumbing; refuses at socket()"
+vir_include net/sockaddr_posix.go   "the sockaddr interface + addrFunc"
+vir_include net/port_unix.go        "service-name port table (goLookupPort)"
+vir_include net/lookup_unix.go      "resolver methods; every lookup ends at a refused dial"
+vir_include net/error_posix.go      "wrapSyscallError"
+vir_include net/error_unix.go       "isConnError errno classification"
+vir_include net/sock_stub.go        "maxListenerBacklog (advisory; listen refuses anyway)"
+vir_include net/unixsock_readmsg_other.go "no cmsghdr here: readMsgFlags=0"
+vir_include net/cgo_stub.go         "cgoAvailable=false; the cgo resolver never runs"
+# socktest is `net`'s test helper — the second of the two std holdouts the
+# 3g6 comment names. Its switch/sys pair wrap the same socket syscalls the
+# overlay now refuses, so it compiles the honest way too (test-only code;
+# nothing it wraps can run).
+vir_include net/internal/socktest/switch_unix.go "Sockets switch; wraps refusing syscalls"
+vir_include net/internal/socktest/sys_unix.go    "socket wrappers over the ENOSYS surface"
+
 # --- 3g7. os/dir_unix.go's zero-inode skip (issue #1525) ---------------
 # dir_unix.go drops a directory row whose inode is 0 unless the GOOS is
 # linux or wasip1, because some filesystems report 0 for real files. This
