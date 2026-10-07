@@ -2077,6 +2077,7 @@ pub fn build(b: *std.Build) void {
         "user/tests/ui/ui_test.zig",
         "kernel/tests/scheduler_test.zig",
         "kernel/tests/syscall_test.zig",
+        "kernel/tests/service_lock_test.zig",
         "kernel/tests/trace_test.zig",
         "kernel/tests/sampler_test.zig",
         "kernel/tests/memstat_test.zig",
