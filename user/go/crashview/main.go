@@ -263,18 +263,26 @@ func (a *application) reopen() {
 	vi.ConsoleLine("crashview: reopened app=" + r.app + " pid=" + strconv.FormatUint(pid, 10))
 }
 
-func (a *application) drainTrace() (uint64, error) {
+func (a *application) drainTrace() (uint64, int64, bool, error) {
 	var dropped uint64
 	for batch := 0; batch < 16; batch++ {
 		records, loss, err := a.trace.Read()
 		if err != nil {
-			return loss, err
+			return loss, 0, false, err
 		}
 		dropped = loss
 		for _, r := range records {
 			line := strace.Render(r)
 			vi.ConsoleLine(line)
 			a.traceRows = append(a.traceRows, line)
+			if r.PID == a.tracePID && r.Number == uint64(vi.SlotExit) && r.Flags&vi.TraceNoReturn != 0 {
+				// The registry can reuse this PID before our next poll. The
+				// captured exit is authoritative; do not show a successor's calls.
+				if len(a.traceRows) > 64 {
+					a.traceRows = a.traceRows[len(a.traceRows)-64:]
+				}
+				return dropped, int64(r.Args[0]), true, nil
+			}
 		}
 		if len(a.traceRows) > 64 {
 			a.traceRows = a.traceRows[len(a.traceRows)-64:]
@@ -283,20 +291,27 @@ func (a *application) drainTrace() (uint64, error) {
 			break
 		}
 	}
-	return dropped, nil
+	return dropped, 0, false, nil
 }
 
 func (a *application) pollTrace() bool {
 	if a.trace == nil {
 		return false
 	}
-	dropped, err := a.drainTrace()
-	status, state := vi.Probe(int64(a.tracePID))
+	dropped, status, recordedExit, err := a.drainTrace()
+	state := vi.ProbeRunning
+	if !recordedExit {
+		status, state = vi.Probe(int64(a.tracePID))
+	}
 	timedOut := vi.Nanos()-a.traceStart >= 120_000_000_000
-	if err != nil || state == vi.ProbeExited || timedOut {
+	if err != nil || recordedExit || state == vi.ProbeExited || timedOut {
 		disarmErr := a.trace.Disarm()
-		if err == nil {
-			dropped, err = a.drainTrace()
+		if err == nil && !recordedExit {
+			var exitStatus int64
+			dropped, exitStatus, recordedExit, err = a.drainTrace()
+			if recordedExit {
+				status = exitStatus
+			}
 		}
 		a.trace = nil
 		a.status = "Trace ended, dropped=" + strconv.FormatUint(dropped, 10)
