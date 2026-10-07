@@ -266,3 +266,79 @@ if os.path.exists(lp):
     raise SystemExit(1)
 print("lease record released at the contract path: %s" % lp)
 PY
+
+# M94d: opt-in publisher only. Original boots and default argv are unchanged.
+vgate_setup_python <<'PY'
+import os, shutil, sys
+share = os.environ.get("VG_SHARE") or os.path.join(os.environ["RUN_DIR"], "share")
+src = os.path.join(".build", "go", "HEAP.ELF")
+if not os.path.exists(src):
+    sys.exit("HEAP.ELF missing: bash tools/go/build-heap.sh")
+shutil.copy(src, os.path.join(share, "HEAP.ELF"))
+with open(os.path.join(share, "EDIT", "HEAP.TXT"), "wb") as f:
+    f.write(b"heap-seed\n")
+PY
+
+vgate_file script2-heap.txt <<'EOF'
+exec GOEDIT.ELF /host/EDIT/HEAP.TXT -heap
+EOF
+vgate_file script3-heap.txt <<'EOF'
+exec HEAP.ELF -p GOEDIT.ELF --polls 120 --samples 5
+EOF
+
+vgate_run 04 -- \
+    --screen '$RUN_DIR/screen-heap' --via-virtio \
+    --script '$RUN_DIR/script.txt' \
+    --script2 '$RUN_DIR/script2-heap.txt' --script2-after 'tabwm: sidebar-rendered' \
+    --script3 '$RUN_DIR/script3-heap.txt' --script3-after 'goedit: present' \
+    --input-chords 'A,ctrl-s,B,ctrl-s,C,ctrl-s,D,ctrl-s,E,ctrl-s' \
+    --input-chords-after 'heap: sample app=GOEDIT.ELF' \
+    --script-expect 'heap: done app=GOEDIT.ELF' --timeout 180
+
+vgate_assert 04 serial-contains 'heap: memstats ok'
+vgate_assert 04 serial-contains 'heap: sample app=GOEDIT.ELF'
+vgate_assert 04 serial-contains 'heap: done app=GOEDIT.ELF'
+vgate_assert 04 serial-count 'goedit: saved /host/EDIT/HEAP.TXT' 5
+vgate_assert 04 serial-absent 'heap: leak suspected'
+vgate_assert 04 serial-absent 'heap: publisher error'
+vgate_assert 04 serial-absent 'fatal error:'
+vgate_assert 04 serial-absent '[EXC] parking:'
+vgate_assert 04 share-contains 'EDIT/HEAP.TXT' 'ABCDE'
+vgate_assert 04 share-contains 'HEAP/GOEDIT.ELF.TXT' 'H1 '
+
+vgate_assert 04 python <<'PY'
+import math, os, re, shutil, statistics
+ser = open(os.environ["VG_SER"], errors="replace").read()
+assert open(os.path.join(os.environ["VG_SHARE"], "EDIT", "HEAP.TXT"), "rb").read() == b"heap-seed\nABCDE"
+samples = list(re.finditer(
+    r"heap: sample app=GOEDIT\.ELF pid=(\d+) seq=(\d+) live=(\d+) "
+    r"objects=(\d+) mallocs=(\d+) frees=(\d+) num_gc=(\d+) pages=(\d+) peak_pages=(\d+)", ser))
+assert len(samples) >= 5, "need at least N+2 joined post-GC samples"
+saves = list(re.finditer(r"goedit: saved /host/EDIT/HEAP\.TXT n=(\d+)", ser))
+assert [int(m[1]) for m in saves] == [11, 12, 13, 14, 15], "five exact edit/save cycles"
+assert samples[0].start() < saves[0].start(), "no pre-edit joined sample"
+after = [m for m in samples if m.start() > saves[-1].start()]
+assert after and int(samples[0][3]) > 0 and any(m[3] != samples[0][3] for m in after), "live bytes unchanged after editing"
+for m in samples:
+    pid, seq, live, objects, mallocs, frees, gc, pages, peak = map(int, m.groups())
+    assert objects == mallocs-frees and gc > 0 and 0 < live
+    assert 0 <= pages <= peak <= 4096, (pages, peak)
+print("GOEDIT post-GC series:", [(int(m[2]), int(m[3]), int(m[8])) for m in samples])
+frequency = int(re.search(r"freq=0x([0-9a-f]+)", ser)[1], 16)
+counters = [int(n) for n in re.findall(r"cntpct=(\d+) snapshot_ns=", ser)]
+assert frequency > 0 and counters and all(b-a >= frequency for a, b in zip(counters, counters[1:]))
+costs = [int(n) for n in re.findall(r"snapshot_ns=(\d+)", ser)]
+assert costs and all(cost > 0 for cost in costs), costs
+mean = statistics.mean(costs)
+p95 = sorted(costs)[math.ceil(len(costs)*0.95)-1]
+# Editing/forced GC is not the >=100-poll quiet acceptance window.
+# Keep every timing visible; go-stress boot 06 enforces mean/p95 <= 100 us.
+publishes = [tuple(map(int, row)) for row in re.findall(r"gc_ns=(\d+) publish_ns=(\d+)", ser)]
+assert publishes and all(0 < gc <= total for gc, total in publishes)
+print("GOEDIT snapshot/GC/publish ns:", costs, publishes, "counter Hz:", frequency,
+      "mean:", mean, "p95:", p95, "max:", max(costs))
+source = os.path.join(os.environ["VG_SHARE"], "HEAP", "GOEDIT.ELF.TXT")
+rows = open(source).read().splitlines()
+assert 5 <= len(rows) <= 32 and all(len(row) <= 256 for row in rows)
+shutil.copy(source, os.path.join("artifacts", "m94d-goedit-series-" + os.environ["VG_TAG"] + ".txt"))
+PY

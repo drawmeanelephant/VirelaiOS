@@ -72,6 +72,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"virelai/heap"
 	"virelai/layout"
 	"virelai/settings"
 	"virelai/tabapp"
@@ -304,6 +305,9 @@ func main() {
 	}
 	if len(args) > 2 {
 		for _, a := range args[2:] {
+			if a == "-heap" {
+				heap.Publish(appName, 1)
+			}
 			if strings.HasPrefix(a, "--lease-fixture=") {
 				leaseFixture(path, strings.TrimPrefix(a, "--lease-fixture="))
 			}

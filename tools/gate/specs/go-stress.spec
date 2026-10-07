@@ -311,3 +311,121 @@ vgate_assert 03 serial-absent 'go-stress done'
 vgate_assert 03 serial-absent 'fatal error:'
 vgate_assert 03 serial-absent '[EXC] parking:'
 vgate_assert 03 serial-absent 'exited status=139'
+
+# M94d: independent boots; the GOSTRESS corpus and assertions above are frozen.
+vgate_setup_python <<'PY'
+import os, shutil, sys
+share = os.environ.get("VG_SHARE") or os.path.join(os.environ["RUN_DIR"], "share")
+for name in ("HEAP.ELF", "HEAPFIX.ELF", "HEAPBUDG.ELF"):
+    src = os.path.join(".build", "go", name)
+    if not os.path.exists(src):
+        sys.exit(name + " missing: bash tools/go/build-heap.sh")
+    shutil.copy(src, os.path.join(share, name))
+PY
+
+vgate_file script-heap-leak.txt <<'EOF'
+exec HEAPFIX.ELF leak
+EOF
+vgate_file script-heap-clean.txt <<'EOF'
+exec HEAPFIX.ELF clean
+EOF
+vgate_file script-heap-view.txt <<'EOF'
+exec HEAP.ELF -p HEAPFIX.ELF --polls 120 --samples 5
+EOF
+
+vgate_run 04 -- --script '$RUN_DIR/script-heap-leak.txt' \
+    --script2 '$RUN_DIR/script-heap-view.txt' --script2-after 'heapfixture: ready mode=leak' \
+    --script-expect 'heap: done app=HEAPFIX.ELF' --timeout 180
+vgate_assert 04 serial-contains 'heap: memstats ok'
+vgate_assert 04 serial-contains 'heap: leak suspected app=HEAPFIX.ELF'
+vgate_assert 04 serial-contains 'heap: done app=HEAPFIX.ELF'
+vgate_assert 04 serial-absent 'heap: publisher error'
+vgate_assert 04 serial-absent 'fatal error:'
+vgate_assert 04 serial-absent '[EXC] parking:'
+vgate_assert 04 serial-absent 'exited status=139'
+vgate_assert 04 share-contains 'HEAP/HEAPFIX.ELF.TXT' 'H1 '
+
+vgate_file check-heap.py <<'PY'
+import math, os, re, shutil, statistics, sys
+ser = open(os.environ["VG_SER"], errors="replace").read()
+samples = re.findall(
+    r"heap: sample app=HEAPFIX\.ELF pid=(\d+) seq=(\d+) live=(\d+) "
+    r"objects=(\d+) mallocs=(\d+) frees=(\d+) num_gc=(\d+) pages=(\d+) peak_pages=(\d+)", ser)
+assert len(samples) >= 5, "need samples >= N+2 (5), got " + str(len(samples))
+samples = [tuple(map(int, row)) for row in samples]
+for pid, seq, live, objects, mallocs, frees, gc, pages, peak in samples:
+    assert 0 <= pages <= peak <= 4096, (pages, peak)
+    assert live > 0 and objects == mallocs-frees and gc > 0
+for before, after in zip(samples, samples[1:]):
+    assert after[0] == before[0] and after[1] > before[1] and after[6] > before[6]
+costs = [int(n) for n in re.findall(r"snapshot_ns=(\d+)", ser)]
+assert costs and all(cost > 0 for cost in costs), "invalid snapshot duration: " + repr(costs)
+mean = statistics.mean(costs)
+p95 = sorted(costs)[math.ceil(len(costs)*0.95)-1]
+# Workload samples are reported, not the owner's >=100-poll quiet window.
+# Boot 06 enforces the unchanged 100 us mean/p95 acceptance bound.
+print("heap joined series (seq, live bytes, kernel pages):", [(row[1], row[2], row[7]) for row in samples])
+print("heap kernel snapshot ns:", costs, "mean:", mean, "p95:", p95, "max:", max(costs))
+frequency = int(re.search(r"freq=0x([0-9a-f]+)", ser)[1], 16)
+counters = [int(n) for n in re.findall(r"cntpct=(\d+) snapshot_ns=", ser)]
+assert frequency > 0 and len(counters) == len(costs)
+assert all(b-a >= frequency for a, b in zip(counters, counters[1:])), "more than one poll per second"
+publishes = [tuple(map(int, row)) for row in re.findall(r"gc_ns=(\d+) publish_ns=(\d+)", ser)]
+assert publishes and all(0 < gc <= total for gc, total in publishes)
+print("heap forced-GC/publish ns:", publishes, "counter Hz:", frequency)
+path = os.path.join(os.environ["VG_SHARE"], "HEAP", "HEAPFIX.ELF.TXT")
+rows = open(path).read().splitlines()
+assert 5 <= len(rows) <= 32 and all(len(row) <= 256 for row in rows)
+shutil.copy(path, os.path.join("artifacts", "m94d-heapfix-series-" + os.environ["VG_TAG"] + ".txt"))
+PY
+
+vgate_assert 04 python <<'PY'
+import os, runpy
+runpy.run_path(os.path.join(os.environ["RUN_DIR"], "check-heap.py"))
+PY
+
+vgate_run 05 -- --script '$RUN_DIR/script-heap-clean.txt' \
+    --script2 '$RUN_DIR/script-heap-view.txt' --script2-after 'heapfixture: ready mode=clean' \
+    --script-expect 'heap: done app=HEAPFIX.ELF' --timeout 180
+vgate_assert 05 serial-contains 'heap: memstats ok'
+vgate_assert 05 serial-contains 'heap: done app=HEAPFIX.ELF'
+vgate_assert 05 serial-absent 'heap: leak suspected'
+vgate_assert 05 serial-absent 'heap: publisher error'
+vgate_assert 05 serial-absent 'fatal error:'
+vgate_assert 05 serial-absent '[EXC] parking:'
+vgate_assert 05 serial-absent 'exited status=139'
+vgate_assert 05 share-contains 'HEAP/HEAPFIX.ELF.TXT' 'H1 '
+vgate_assert 05 python <<'PY'
+import os, runpy
+runpy.run_path(os.path.join(os.environ["RUN_DIR"], "check-heap.py"))
+PY
+
+# Owner D6 ruling: mean and nearest-rank p95 <= 100 us; max is always reported.
+# Run this gate on a quiet host when recording the 100-poll acceptance row.
+vgate_file script-heap-budget.txt <<'EOF'
+exec HEAPBUDG.ELF
+EOF
+vgate_run 06 -- --script '$RUN_DIR/script-heap-budget.txt' \
+    --script-expect 'heap: budget done polls=100' --timeout 240
+vgate_assert 06 serial-contains 'heap: budget done polls=100'
+vgate_assert 06 serial-absent 'fatal error:'
+vgate_assert 06 serial-absent '[EXC] parking:'
+vgate_assert 06 python <<'PY'
+import json, math, os, re, statistics
+ser = open(os.environ["VG_SER"], errors="replace").read()
+rows = [tuple(map(int, row)) for row in re.findall(
+    r"heap: budget seq=(\d+) ns=(\d+) cntpct=(\d+) pages=(\d+) peak=(\d+)", ser)]
+assert len(rows) == 100 and [row[0] for row in rows] == list(range(1,101)), "need all 100 polls"
+costs = [row[1] for row in rows]
+assert all(cost > 0 for cost in costs), "no zero/negative or sub-counter-tick claim"
+frequency = int(re.search(r"freq=0x([0-9a-f]+)", ser)[1], 16)
+assert frequency > 0 and all(b[2]-a[2] >= frequency for a,b in zip(rows, rows[1:]))
+assert all(0 <= row[3] <= row[4] for row in rows)
+summary = dict(polls=len(rows), mean_ns=statistics.mean(costs),
+               p95_ns=sorted(costs)[math.ceil(len(costs)*0.95)-1],
+               max_ns=max(costs), counter_hz=frequency)
+print("heap 100-poll budget:", summary)
+with open(os.path.join("artifacts", "m94d-budget-" + os.environ["VG_TAG"] + ".json"), "w") as f:
+    json.dump(summary, f)
+assert summary["mean_ns"] <= 100000 and summary["p95_ns"] <= 100000, summary
+PY

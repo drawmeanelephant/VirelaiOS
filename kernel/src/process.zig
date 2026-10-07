@@ -782,6 +782,47 @@ pub fn runtime_receipt(id: usize) ?RuntimeReceipt {
     return processes[id].runtime_usage;
 }
 
+/// One small, coherent read-only memory/identity snapshot. Never copy the
+/// ownership array or clamp its extensible count to the inline capacity.
+pub fn memory_snapshot(id: usize) ?struct {
+    actor: Principal,
+    exited: bool,
+    receipt: RuntimeReceipt,
+    live_pages: u64 = 0,
+    live_regions: u64 = 0,
+    text_bytes: u64 = 0,
+    ro_bytes: u64 = 0,
+    data_bytes: u64 = 0,
+    stack_bytes: u64 = 0,
+    region_sizes: [max_mmap_regions]u64 = [_]u64{0} ** max_mmap_regions,
+} {
+    const taken = svclock.acquire_missing(svclock.dom_bit(.kernel));
+    defer svclock.release_set(taken);
+    if (id >= max_processes or processes[id].state == .free) return null;
+    const p = &processes[id];
+    var result: @typeInfo(@typeInfo(@TypeOf(memory_snapshot)).@"fn".return_type.?).optional.child = .{
+        .actor = .{ .uid = p.uid, .caps = p.caps },
+        .exited = p.state == .exited,
+        .receipt = p.runtime_usage,
+    };
+    if (result.exited) return result;
+    const space = &p.addr_space;
+    result.live_pages = space.dynamic_page_count;
+    result.live_regions = space.mmap_region_count;
+    result.text_bytes = aperture_span(space.text_va, space.text_len);
+    result.ro_bytes = space.ro_pages * 4096;
+    result.data_bytes = aperture_span(space.data_va, space.data_len);
+    if (space.argv_end_va > space.data_va) result.data_bytes = @max(result.data_bytes, space.argv_end_va - space.data_va);
+    result.stack_bytes = aperture_span(space.stack_va, space.stack_len);
+    var index: usize = 0;
+    for (space.mmap_regions) |region| {
+        if (region.len == 0) continue;
+        result.region_sizes[index] = region.len;
+        index += 1;
+    }
+    return result;
+}
+
 /// The principal a process was created with (ADR 0024 D2). Returns null for
 /// an invalid or free id. This is the ONLY principal accessor — there is no
 /// setter, because no syscall may change uid/caps.
@@ -1767,6 +1808,38 @@ test "process: three GOMAXPROCS=2 runtimes bind 4 tasks each (M65d, #1442)" {
         try std.testing.expectEqual(State.running, info(id).?.state);
         try std.testing.expect(has_thread_capacity(id));
     }
+}
+
+test "process: memory snapshot is a read-only coherent live/exited value" {
+    init();
+    defer init();
+    try std.testing.expect(memory_snapshot(0) == null);
+    const id = create("heap", .{}, .{}, .{}).?;
+    try std.testing.expect(bind(id, 2));
+    try std.testing.expect(add_mmap_region(id, mmap_default_va, 8192, 3, 0));
+    try std.testing.expect(record_dynamic_page(id, 0));
+    const before = runtime_receipt(id).?;
+    const value = memory_snapshot(id).?;
+    try std.testing.expectEqual(@as(u64, 1), value.live_pages);
+    try std.testing.expectEqual(@as(u64, 1), value.live_regions);
+    try std.testing.expectEqual(@as(u64, 8192), value.region_sizes[0]);
+    try std.testing.expectEqualDeep(before, value.receipt);
+    try std.testing.expectEqualDeep(value, memory_snapshot(id).?);
+    svclock.kernel.acquire();
+    const locked = memory_snapshot(id).?;
+    try std.testing.expect(svclock.kernel.held());
+    svclock.kernel.release();
+    try std.testing.expectEqualDeep(value, locked);
+    try std.testing.expect(forget_dynamic_page(id, 0));
+    try std.testing.expect(remove_mmap_region(id, mmap_default_va, 8192));
+    try std.testing.expectEqual(@as(u64, 0), memory_snapshot(id).?.live_pages);
+    _ = on_task_exit(2, 0);
+    const exited = memory_snapshot(id).?;
+    try std.testing.expect(exited.exited);
+    try std.testing.expectEqual(@as(u64, 0), exited.live_regions);
+    try std.testing.expectEqualDeep(before, exited.receipt);
+    try std.testing.expect(reap(id));
+    try std.testing.expect(memory_snapshot(id) == null);
 }
 
 test "process: runtime receipt records page high-water and preserves refusal" {
