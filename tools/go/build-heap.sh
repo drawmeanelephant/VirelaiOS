@@ -9,7 +9,7 @@ mkdir -p "$GOPATH_DIR/src" "$REPO/.build/go"
 ln -s "$REPO/user/go" "$GOPATH_DIR/src/virelai"
 export GOROOT="$FORK_DIR" PATH="$FORK_DIR/bin:$PATH" GOTOOLCHAIN=local
 export GO111MODULE=off GOFLAGS= GOPATH="$GOPATH_DIR" CGO_ENABLED=0
-for pair in HEAP:heap/cmd HEAPFIX:heapfixture; do
+for pair in HEAP:heap/cmd HEAPFIX:heapfixture HEAPBUDG:heapfixture/budget; do
     name="${pair%%:*}"
     dir="${pair#*:}"
     out="$REPO/.build/go/$name.ELF"

@@ -2,6 +2,7 @@ package heap
 
 import (
 	"encoding/binary"
+	"runtime"
 	"testing"
 	"unsafe"
 
@@ -14,6 +15,45 @@ import (
 //go:nocheckptr
 func hookBuffer(pointer, size uintptr) []byte {
 	return unsafe.Slice((*byte)(unsafe.Pointer(pointer)), size)
+}
+
+// Force a stack copy after the gateway has turned the buffer into uintptr.
+//
+//go:noinline
+func growGatewayStack(depth int) byte {
+	var scratch [4096]byte
+	for i := range scratch {
+		scratch[i] = byte(i + depth)
+	}
+	var result byte
+	if depth > 0 {
+		result = growGatewayStack(depth - 1)
+	}
+	for _, value := range scratch {
+		result ^= value
+	}
+	runtime.KeepAlive(&scratch)
+	return result
+}
+
+func TestMemstatBufferSurvivesGatewayStackGrowth(t *testing.T) {
+	var wire [vi.MemstatRecordBytes]byte
+	binary.LittleEndian.PutUint32(wire[:], 1)
+	binary.LittleEndian.PutUint64(wire[8:], 7)
+	prior := vi.SetSyscallHookForTest(func(_, _, pointer, size, _ uintptr) int64 {
+		_ = growGatewayStack(64)
+		copy(hookBuffer(pointer, size), wire[:])
+		return vi.MemstatRecordBytes
+	})
+	defer vi.SetSyscallHookForTest(prior)
+	result := make(chan error, 1)
+	go func() {
+		_, err := vi.HeapStat(7)
+		result <- err
+	}()
+	if err := <-result; err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestMemstatFrozenDecodeAndNativeErrors(t *testing.T) {

@@ -24,6 +24,17 @@ type MemstatRecord struct {
 
 // Memstat is the frozen three-register slot-83 gateway.
 func Memstat(pid uint64, buffer []byte) int64 {
+	var pin runtime.Pinner
+	if len(buffer) != 0 {
+		// KeepAlive preserves liveness, not a stack address. svc3 may grow
+		// the Go stack after conversion to uintptr, so use pinned backing.
+		pin.Pin(&buffer[0])
+		defer pin.Unpin()
+	}
+	return memstatPinned(pid, buffer)
+}
+
+func memstatPinned(pid uint64, buffer []byte) int64 {
 	var ptr uintptr
 	if len(buffer) != 0 {
 		ptr = uintptr(unsafe.Pointer(&buffer[0]))
@@ -78,8 +89,11 @@ func HeapStat(pid uint64) (MemstatRecord, error) {
 // are outside the kernel snapshot budget, as is an opt-in publisher's GC.
 func HeapStatTimed(pid uint64) (MemstatRecord, int64, error) {
 	var buffer [MemstatRecordBytes]byte
+	var pin runtime.Pinner
+	pin.Pin(&buffer[0])
+	defer pin.Unpin()
 	start := Nanos()
-	rc := Memstat(pid, buffer[:])
+	rc := memstatPinned(pid, buffer[:])
 	elapsed := Nanos() - start
 	if rc != MemstatRecordBytes {
 		return MemstatRecord{}, elapsed, fmt.Errorf("memstat: native result %d", rc)

@@ -316,7 +316,7 @@ vgate_assert 03 serial-absent 'exited status=139'
 vgate_setup_python <<'PY'
 import os, shutil, sys
 share = os.environ.get("VG_SHARE") or os.path.join(os.environ["RUN_DIR"], "share")
-for name in ("HEAP.ELF", "HEAPFIX.ELF"):
+for name in ("HEAP.ELF", "HEAPFIX.ELF", "HEAPBUDG.ELF"):
     src = os.path.join(".build", "go", name)
     if not os.path.exists(src):
         sys.exit(name + " missing: bash tools/go/build-heap.sh")
@@ -346,7 +346,7 @@ vgate_assert 04 serial-absent 'exited status=139'
 vgate_assert 04 share-contains 'HEAP/HEAPFIX.ELF.TXT' 'H1 '
 
 vgate_file check-heap.py <<'PY'
-import os, re, shutil, sys
+import math, os, re, shutil, statistics, sys
 ser = open(os.environ["VG_SER"], errors="replace").read()
 samples = re.findall(
     r"heap: sample app=HEAPFIX\.ELF pid=(\d+) seq=(\d+) live=(\d+) "
@@ -359,9 +359,12 @@ for pid, seq, live, objects, mallocs, frees, gc, pages, peak in samples:
 for before, after in zip(samples, samples[1:]):
     assert after[0] == before[0] and after[1] > before[1] and after[6] > before[6]
 costs = [int(n) for n in re.findall(r"snapshot_ns=(\d+)", ser)]
-assert costs and all(0 < cost <= 100000 for cost in costs), "snapshot budget (100 us): " + repr(costs)
+assert costs and all(cost > 0 for cost in costs), "invalid snapshot duration: " + repr(costs)
+mean = statistics.mean(costs)
+p95 = sorted(costs)[math.ceil(len(costs)*0.95)-1]
+assert mean <= 100000 and p95 <= 100000, "snapshot mean/p95 budget (100 us): " + repr(costs)
 print("heap joined series (seq, live bytes, kernel pages):", [(row[1], row[2], row[7]) for row in samples])
-print("heap kernel snapshot ns:", costs)
+print("heap kernel snapshot ns:", costs, "mean:", mean, "p95:", p95, "max:", max(costs))
 frequency = int(re.search(r"freq=0x([0-9a-f]+)", ser)[1], 16)
 counters = [int(n) for n in re.findall(r"cntpct=(\d+) snapshot_ns=", ser)]
 assert frequency > 0 and len(counters) == len(costs)
@@ -394,4 +397,34 @@ vgate_assert 05 share-contains 'HEAP/HEAPFIX.ELF.TXT' 'H1 '
 vgate_assert 05 python <<'PY'
 import os, runpy
 runpy.run_path(os.path.join(os.environ["RUN_DIR"], "check-heap.py"))
+PY
+
+# Owner D6 ruling: mean and nearest-rank p95 <= 100 us; max is always reported.
+# Run this gate on a quiet host when recording the 100-poll acceptance row.
+vgate_file script-heap-budget.txt <<'EOF'
+exec HEAPBUDG.ELF
+EOF
+vgate_run 06 -- --script '$RUN_DIR/script-heap-budget.txt' \
+    --script-expect 'heap: budget done polls=100' --timeout 240
+vgate_assert 06 serial-contains 'heap: budget done polls=100'
+vgate_assert 06 serial-absent 'fatal error:'
+vgate_assert 06 serial-absent '[EXC] parking:'
+vgate_assert 06 python <<'PY'
+import json, math, os, re, statistics
+ser = open(os.environ["VG_SER"], errors="replace").read()
+rows = [tuple(map(int, row)) for row in re.findall(
+    r"heap: budget seq=(\d+) ns=(\d+) cntpct=(\d+) pages=(\d+) peak=(\d+)", ser)]
+assert len(rows) == 100 and [row[0] for row in rows] == list(range(1,101)), "need all 100 polls"
+costs = [row[1] for row in rows]
+assert all(cost > 0 for cost in costs), "no zero/negative or sub-counter-tick claim"
+frequency = int(re.search(r"freq=0x([0-9a-f]+)", ser)[1], 16)
+assert frequency > 0 and all(b[2]-a[2] >= frequency for a,b in zip(rows, rows[1:]))
+assert all(0 <= row[3] <= row[4] for row in rows)
+summary = dict(polls=len(rows), mean_ns=statistics.mean(costs),
+               p95_ns=sorted(costs)[math.ceil(len(costs)*0.95)-1],
+               max_ns=max(costs), counter_hz=frequency)
+print("heap 100-poll budget:", summary)
+with open(os.path.join("artifacts", "m94d-budget-" + os.environ["VG_TAG"] + ".json"), "w") as f:
+    json.dump(summary, f)
+assert summary["mean_ns"] <= 100000 and summary["p95_ns"] <= 100000, summary
 PY

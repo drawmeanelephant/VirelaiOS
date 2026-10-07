@@ -307,7 +307,7 @@ vgate_assert 04 share-contains 'EDIT/HEAP.TXT' 'ABCDE'
 vgate_assert 04 share-contains 'HEAP/GOEDIT.ELF.TXT' 'H1 '
 
 vgate_assert 04 python <<'PY'
-import os, re, shutil
+import math, os, re, shutil, statistics
 ser = open(os.environ["VG_SER"], errors="replace").read()
 assert open(os.path.join(os.environ["VG_SHARE"], "EDIT", "HEAP.TXT"), "rb").read() == b"heap-seed\nABCDE"
 samples = list(re.finditer(
@@ -328,10 +328,14 @@ frequency = int(re.search(r"freq=0x([0-9a-f]+)", ser)[1], 16)
 counters = [int(n) for n in re.findall(r"cntpct=(\d+) snapshot_ns=", ser)]
 assert frequency > 0 and counters and all(b-a >= frequency for a, b in zip(counters, counters[1:]))
 costs = [int(n) for n in re.findall(r"snapshot_ns=(\d+)", ser)]
-assert costs and all(0 < cost <= 100000 for cost in costs), costs
+assert costs and all(cost > 0 for cost in costs), costs
+mean = statistics.mean(costs)
+p95 = sorted(costs)[math.ceil(len(costs)*0.95)-1]
+assert mean <= 100000 and p95 <= 100000, costs
 publishes = [tuple(map(int, row)) for row in re.findall(r"gc_ns=(\d+) publish_ns=(\d+)", ser)]
 assert publishes and all(0 < gc <= total for gc, total in publishes)
-print("GOEDIT snapshot/GC/publish ns:", costs, publishes, "counter Hz:", frequency)
+print("GOEDIT snapshot/GC/publish ns:", costs, publishes, "counter Hz:", frequency,
+      "mean:", mean, "p95:", p95, "max:", max(costs))
 source = os.path.join(os.environ["VG_SHARE"], "HEAP", "GOEDIT.ELF.TXT")
 rows = open(source).read().splitlines()
 assert 5 <= len(rows) <= 32 and all(len(row) <= 256 for row in rows)

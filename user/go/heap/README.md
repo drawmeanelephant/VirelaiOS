@@ -1,8 +1,9 @@
 # Bounded heap diagnostics
 
-`heap.Publish("GOEDIT.ELF", 1)` starts an opt-in goroutine. Each second it
+`heap.Publish("GOEDIT.ELF", 1)` starts an opt-in goroutine. Each iteration
 forces GC, proves `ReadMemStats` with `heap: memstats ok`, and publishes the
 newest 32 rows (at most 256 bytes per row) to `/host/HEAP/GOEDIT.ELF.TXT`.
+It sleeps at least one second after publishing; GC can extend the interval.
 One publisher owns each app label. The share is diagnostic, not an isolation
 boundary. Rows are `H1 pid session seq live_bytes objects mallocs frees num_gc`.
 The session identifies this publisher; a new publisher replaces old rows.
@@ -25,6 +26,12 @@ detecting `HEAPFIX.ELF leak`'s retained 512 KiB blocks.
 
 `heap.View` is reusable by the combined OBSERVE tool. Publisher markers
 report GC/ReadMemStats and complete publish durations separately from the
-kernel snapshot, whose ADR 0043 budget is 100 us. Both periodic loops use
+kernel snapshot, whose owner-approved budget is mean and p95 at most 100 us.
+The maximum is always reported, including outliers. Both periodic loops use
 Go's monotonic timer sleep, not a potentially fractional raw scheduler
 tick that would also park an entire Go execution slot.
+
+Memstat buffers are pinned before conversion to a syscall `uintptr`, because
+Go stack growth can relocate an unpinned buffer even while it remains live.
+`HEAPBUDG.ELF`, built by `build-heap.sh`, records 100 polls without a publisher
+or allocation workload for the quiet-host budget boot in `go-stress`.
