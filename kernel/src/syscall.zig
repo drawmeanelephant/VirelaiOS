@@ -458,7 +458,7 @@ pub const ErrorCode = enum(i64) {
     enomem = -10, // "out of memory"
     // ADR 0007 amendment (2026-09-12, issue #1214 round 2 — slots 73/74):
     eagain = -11, // futex wait: the user word no longer holds the expected value
-    etimedout = -12, // futex wait: the ns deadline expired without a wake
+    etimedout = -12, // futex wait or explicit outbound connect deadline expired
 };
 
 pub fn error_result(code: ErrorCode) u64 {
@@ -710,10 +710,8 @@ pub fn dispatch(number: u64, args: Args, frame: *exceptions.VectorFrame) u64 {
     // Reentrancy (a handler that internally re-dispatches) never happens
     // — handle_svc is the only production caller.
     const doms = doms_of(number);
-    if (doms != 0) {
-        svclock.acquire_set(doms);
-        defer svclock.release_set(doms);
-    }
+    if (doms != 0) svclock.acquire_set(doms);
+    defer if (doms != 0) svclock.release_set(doms);
     call_counts[svclock.core_id()][number] +%= 1;
     const handler = ensure_table()[number].handler orelse return error_result(.enosys);
     const traced_call = trace.before(number, args, frame);
@@ -2863,11 +2861,16 @@ fn tcp_owned_by_caller() bool {
     return owner == current;
 }
 
-/// Slot 30: `sys_tcp_connect(ip, port)`: Connect to target IPv4:port (or listen on port if ip==0).
+/// Slot 30: outbound x1 = port | timeout_ms<<16 (bits 48..63 reserved).
+/// Zero timeout keeps the legacy 30 s/EINVAL refusal. Passive open (ip==0)
+/// keeps its plain port word and rejects timeout bits.
 fn handle_tcp_connect(args: Args, _: *exceptions.VectorFrame) u64 {
     const ip_raw = args[0];
-    const dst_port = args[1];
-    if (dst_port == 0 or dst_port > 0xffff) return error_result(.einval);
+    const port_word = args[1];
+    const dst_port: u16 = @truncate(port_word);
+    const timeout_ms: u32 = @truncate(port_word >> 16);
+    if (dst_port == 0 or port_word >> 48 != 0) return error_result(.einval);
+    if (ip_raw == 0 and timeout_ms != 0) return error_result(.einval);
     if (!virtio_net.net_ready) return error_result(.einval);
     if (!virtio_net.arp.ip_set()) return error_result(.einval);
 
@@ -2910,6 +2913,12 @@ fn handle_tcp_connect(args: Args, _: *exceptions.VectorFrame) u64 {
 
     virtio_net.net_rx_drain();
     const peer_mac = virtio_net.arp.lookup(ip) orelse return error_result(.einval);
+    const start_pct = timer.cntpct();
+    const start_ticks = timer.ticks;
+    const deadline = tcp.ConnectDeadline.init(start_pct, timer.freq, timeout_ms);
+    if (!builtin.is_test and deadline == null) return error_result(.einval);
+    const timeout_result = error_result(if (timeout_ms == 0) .einval else .etimedout);
+    tcp.now_ticks = start_ticks;
     const isn: u32 = @truncate(csprng.random_u64());
     tcp.start(ip, @truncate(dst_port), isn, peer_mac);
     if (process.find_by_task(scheduler.current_id())) |pid| {
@@ -2924,18 +2933,31 @@ fn handle_tcp_connect(args: Args, _: *exceptions.VectorFrame) u64 {
             tcp.record_pending();
         },
         else => {
-            tcp.state = .idle;
+            tcp.reset_connection();
             return error_result(.einval);
         },
     }
 
-    const start_pct = timer.cntpct();
-    const start_ticks = timer.ticks;
-    tcp.now_ticks = start_ticks;
     var test_iterations: usize = 0;
 
     while (tcp.state == .syn_sent) {
+        if (deadline) |d| {
+            const now_pct = timer.cntpct();
+            if (d.expired(now_pct)) {
+                tcp.abort_timeout();
+                return timeout_result;
+            }
+            tcp.now_ticks = start_ticks +| ((now_pct -% start_pct) / timer.freq);
+        }
         virtio_net.net_rx_drain();
+        // A SYN-ACK drained after the deadline must not turn expiry into
+        // success (or leave its ACK/owner/RTO state behind).
+        if (deadline) |d| {
+            if (d.expired(timer.cntpct())) {
+                tcp.abort_timeout();
+                return timeout_result;
+            }
+        }
         tcp_flush_rst(); // M84f: an over-cap SYN during our connect is refused too
         if (tcp.ack_pending) {
             var ack_len: usize = 0;
@@ -2946,14 +2968,8 @@ fn handle_tcp_connect(args: Args, _: *exceptions.VectorFrame) u64 {
         }
         if (tcp.state == .established) return 0;
         if (tcp.state == .closed) {
-            tcp.release_conn();
+            tcp.reset_connection();
             return error_result(.einval);
-        }
-
-        if (timer.freq != 0) {
-            const now_pct = timer.cntpct();
-            const elapsed_s = (now_pct -| start_pct) / timer.freq;
-            tcp.now_ticks = start_ticks + elapsed_s;
         }
 
         switch (tcp.poll_rto()) {
@@ -2962,19 +2978,17 @@ fn handle_tcp_connect(args: Args, _: *exceptions.VectorFrame) u64 {
                 var retx_len: usize = 0;
                 _ = virtio_net.net_tcp_send(tcp.msg[0..tcp.msg_len], &retx_len);
             },
-            .abort => return error_result(.einval),
-        }
-
-        if (tcp.connect_timed_out()) {
-            tcp.abort_timeout();
-            return error_result(.einval);
+            .abort => {
+                tcp.reset_connection();
+                return timeout_result;
+            },
         }
 
         if (timer.freq == 0 or comptime builtin.is_test) {
             test_iterations += 1;
             if (test_iterations > 1000) {
                 tcp.abort_timeout();
-                return error_result(.einval);
+                return timeout_result;
             }
         }
 
@@ -2985,7 +2999,7 @@ fn handle_tcp_connect(args: Args, _: *exceptions.VectorFrame) u64 {
     }
 
     if (tcp.state == .established) return 0;
-    tcp.release_conn();
+    tcp.reset_connection();
     return error_result(.einval);
 }
 

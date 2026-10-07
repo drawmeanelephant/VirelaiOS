@@ -80,6 +80,25 @@ pub const window: u16 = 4096;
 /// fires at (retx_max + 1) * rto = 33 s > 30 s, so the N10 refusal is
 /// byte-exact.
 pub const connect_timeout: u64 = 30;
+/// Slot 30's optional millisecond budget, measured by the physical counter
+/// even while the network service lock masks timer IRQs. Round UP to a
+/// counter tick; reject an unavailable clock or an unrepresentable interval.
+pub const ConnectDeadline = struct {
+    start: u64,
+    duration: u64,
+
+    pub fn init(counter: u64, freq: u64, timeout_ms: u32) ?ConnectDeadline {
+        if (freq == 0) return null;
+        const ms: u64 = if (timeout_ms == 0) connect_timeout * 1000 else timeout_ms;
+        const ticks = (@as(u128, freq) * ms + 999) / 1000;
+        if (ticks > std.math.maxInt(u64)) return null;
+        return .{ .start = counter, .duration = @intCast(ticks) };
+    }
+
+    pub fn expired(self: ConnectDeadline, counter: u64) bool {
+        return counter -% self.start >= self.duration;
+    }
+};
 /// The fixed retransmission timeout in guest seconds (card N11, claim
 /// 5357). A SYN/data/FIN with no ACK is retransmitted when its RTO
 /// expires — a fixed timer (no adaptive estimation, no Karn's
@@ -375,8 +394,8 @@ pub fn close_owner(pid: u64) void {
     }
 }
 
-/// Reset the client (tests only — the live kernel never re-initializes).
-pub fn reset() void {
+/// Reset socket state without erasing diagnostic counters.
+pub fn reset_connection() void {
     state = .idle;
     is_server = false;
     listen_port = 0;
@@ -397,13 +416,20 @@ pub fn reset() void {
     peer_fin = false;
     allow_ip = .{ 0, 0, 0, 0 };
     allow_ip_set = false;
-    auth_rejected = 0;
     accept_aborted = false;
     accept_ticks = 0;
     tx_pending = false;
     retx_len = 0;
     tx_ticks = 0;
     retx_count = 0;
+    now_ticks = 0;
+    syn_ticks = 0;
+}
+
+/// Reset socket state and counters (host-test/boot initialization).
+pub fn reset() void {
+    reset_connection();
+    auth_rejected = 0;
     syn_sent = 0;
     synack_recv = 0;
     ack_sent = 0;
@@ -418,8 +444,6 @@ pub fn reset() void {
     retx_aborted = 0;
     dropped_badsum = 0;
     dropped_malformed = 0;
-    now_ticks = 0;
-    syn_ticks = 0;
 }
 
 /// Enter LISTEN state on a local port (passive open).
@@ -484,7 +508,7 @@ pub fn connect_timed_out() bool {
 /// to IDLE, counted `timed_out`. The caller (the monitor) prints the
 /// refusal; the next `net tcp connect` is a fresh attempt.
 pub fn abort_timeout() void {
-    release_conn();
+    if (is_server) release_conn() else reset_connection();
     timed_out += 1;
 }
 

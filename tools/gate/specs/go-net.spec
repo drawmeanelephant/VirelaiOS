@@ -1,50 +1,18 @@
-# go-net.spec -- issue #1163 (phase 2) class-B gate: GONET.ELF proves a
-# GOOS=virelai program can use File and Conn without driving TCP by hand.
-#
-# GONET.ELF (tools/go/gonet.go) uses the fresh virelai binding
-# (user/go/vsys): os.File-shaped ReadFile of a host-share file, then
-# net.Conn-shaped Dial -> Write(short GET) -> Read(pinned body) over slots
-# 30-33, while a SECOND goroutine keeps a serial heartbeat running. The
-# Read pays for its wait through the phase-2 readiness seam (slot 76), i.e.
-# the goroutine PARKS; it does not spin in the window loop.
-#
-#   run 01 (the peer answers): the deterministic TCP responder replies to the
-#   GET with its pinned 200 OK body. The read completes and the heartbeat is
-#   running on both sides of it.
-#   run 02 (the peer goes dark): `:handshake` answers the SYN with a SYN-ACK
-#   and then goes SILENT on data — the "peer died mid-read" edge. The Read
-#   must FAIL CLOSED (the bounded read expires) while the heartbeat KEEPS
-#   printing. The python assert below pins that ORDER, which is the whole
-#   point: a fail-closed read must not stop the other goroutine.
-#
-# M67a (#1446) added three runs for the vi socket surface (user/go/vi) —
-# the N5 bar: loopback + host round trip + closed-port drop. They exec a
-# SEPARATE fixture, GOVINET.ELF (tools/go/govinet.go), because GONET sits
-# within a few KiB of the kernel's fixed text gap and the vi import
-# overflows it:
-#
-#   run 03 (vidns): resolve a NAME against the host DNS responder over the
-#   UDP seam (slots 9/10/11), then Dial the resolved literal, Send, Recv —
-#   the live DNS + TCP round trip through user/go/vi, heartbeat intact.
-#   run 04 (viloop): the loopback bar — a datagram to the guest's OWN
-#   address returns to its own listen ring with NO --net armed at all.
-#   run 05 (viclosed): the closed-port drop — a connect to a port nobody
-#   answers refuses with the kernel's 30 s connect-timeout EINVAL while the
-#   heartbeat keeps printing (the order proof, for a BLOCKING Dial).
-#
-# The expect string is a marker the PROGRAM prints ('gonet OK'), never a shell
-# echo: an echoed marker is satisfied before the Go runtime has finished
-# booting, so the runner tears the VM down mid-startup and the gate fails with
-# a silent guest (go-hello.spec's pattern).
-#
-# HOST PREREQUISITE (fails the gate honestly when missing):
-#   just go-gonet + just go-govinet
-#     -> .build/go/GONET.ELF, .build/go/GOVINET.ELF, .build/go/GOVIDNS.ELF
-#
-# WEB.ELF is NOT touched by this change (a follow-up may switch it to
-# net.Conn); this gate never execs it.
+# go-net.spec -- live File/Conn, DNS, loopback and fail-closed TCP waits.
+# Runs 01/02 prove GET/read refusal with a surviving goroutine heartbeat.
+# Runs 03/04/05 prove vi DNS+TCP, UDP loopback and legacy connect refusal.
+# The two connect rows measure guest physical-counter-derived nanoseconds:
+# explicit 5 s ETIMEDOUT and legacy 30 s EINVAL, followed by a successful
+# connect/GET/close in the SAME process, proving lock and slot cleanup.
+# --net is an isolated datagram attachment, NOT NAT or a host TCP socket.
+# Only port 8080 has a responder; SYN to 8081 cannot receive any reply.
+# Captured guest TX proves SYN/retransmit bytes reached that fixture.
+# GOVINET's heartbeat is counter-paced here, not scheduler-tick sleeping:
+# connect masks its core's IRQs, but must not stop a runnable peer goroutine.
+# Prerequisite binaries: just go-gonet + just go-govinet.
+# exec-order: assert-proven -- observation waits for the fixture's done marker.
 
-vgate_name go-net "issue #1163 phase 2 + M67a: GONET.ELF reads a share file, Dials an IP literal, GETs, keeps its heartbeat through a peer that goes dark; the vi surface resolves DNS, loopbacks, and drops on a closed port"
+vgate_name go-net "Live File/Conn, vi DNS/loopback, fail-closed reads, and bounded outbound connect with legacy 30 s regression"
 vgate_share seed
 vgate_runner_flags -Xswiftc -DSPIKE
 
@@ -71,6 +39,91 @@ net arp 10.0.0.2
 exec GOVINET.ELF viclosed
 EOF
 
+vgate_file script-connect.txt <<'EOF'
+net ip 10.0.0.1
+net arp 10.0.0.2
+exec GOCONNECT.ELF
+EOF
+
+vgate_file script-connect-legacy.txt <<'EOF'
+net ip 10.0.0.1
+net arp 10.0.0.2
+exec GOCONNECT.ELF legacy
+EOF
+
+vgate_file script-connect-after.txt <<'EOF'
+syscalls
+net
+echo netconnect-observed
+EOF
+
+vgate_file connect.go <<'EOF'
+package main
+
+import (
+    "time"
+    "virelai/vi"
+    "virelai/vsys"
+)
+
+func fail(s string) {
+    vsys.Println("netconnect: FAIL " + s)
+    vsys.Exit(1)
+}
+
+func main() {
+    legacy := false
+    for _, arg := range vi.Args() {
+        if arg == "legacy" { legacy = true }
+    }
+    mode := "bounded"
+    if legacy { mode = "legacy" }
+    vsys.Println("netconnect: dialing " + mode)
+    begin := vi.Nanos()
+    var c *vi.Conn
+    var err error
+    if legacy {
+        c, err = vi.Dial("10.0.0.2", 8081)
+    } else {
+        c, err = vi.DialTimeout("10.0.0.2", 8081, 5*time.Second)
+    }
+    end := vi.Nanos()
+    if c != nil || err == nil { fail("silent peer connected") }
+    vsys.Println("netconnect: elapsed mode=" + mode + " begin_ns=" + vsys.Itoa64(begin) + " end_ns=" + vsys.Itoa64(end) + " err=" + err.Error())
+    _, rc := vi.TCPReady()
+    if rc != -vi.ErrEAGAIN { fail("socket owner remains") }
+    vsys.Println("netconnect: no owner")
+    if rc = vi.TCPClose(); rc != 0 { fail("close after timeout") }
+    if legacy {
+        c, err = vi.Dial("10.0.0.2", 8080)
+    } else {
+        c, err = vi.DialTimeout("10.0.0.2", 8080, 5*time.Second)
+    }
+    if err != nil { fail("reconnect " + err.Error()) }
+    vsys.Println("netconnect: reconnected")
+    if _, err = c.Send([]byte("GET / HTTP/1.0\r\n\r\n")); err != nil { fail("send") }
+    c.SetRecvDeadline(5_000_000_000)
+    buf := make([]byte, vi.TCPPayloadMax)
+    n, err := c.Recv(buf)
+    if err != nil || n < 15 || string(buf[:15]) != "HTTP/1.0 200 OK" { fail("GET response") }
+    if err = c.Close(); err != nil { fail("close reconnect") }
+    vsys.Println("netconnect: GET and close ok")
+    vsys.Println("netconnect: done")
+    vsys.Exit(0)
+}
+EOF
+
+vgate_setup_python <<'PY'
+import os, pathlib, subprocess
+rd = pathlib.Path(os.environ["RUN_DIR"])
+share = pathlib.Path(os.environ.get("VG_SHARE") or rd / "share")
+tmp = rd / "connect-build"
+tmp.mkdir()
+env = dict(os.environ, TMPDIR=str(tmp), GO_BUILD_OUT=str(share),
+           GO_BUILD_NAME="GOCONNECT", GO_LDFLAGS_VALUE="-s -w")
+subprocess.run(["bash", "tools/go/build-go.sh", str(rd / "connect.go")], env=env, check=True)
+PY
+
 vgate_setup_python <<'PY'
 import os, shutil, sys
 rd = os.environ["RUN_DIR"]
@@ -92,6 +145,30 @@ print("staged GONET.ELF (%d bytes), GOVINET.ELF (%d bytes), GOVIDNS.ELF (%d byte
          os.path.getsize(os.path.join(share, "GOVINET.ELF")),
          os.path.getsize(os.path.join(share, "GOVIDNS.ELF")),
          os.path.getsize(share_file)))
+PY
+
+vgate_setup_python <<'PY'
+import os, pathlib, subprocess
+rd = pathlib.Path(os.environ["RUN_DIR"])
+share = pathlib.Path(os.environ.get("VG_SHARE") or rd / "share")
+# Keep the original fixture's phases and assertions. Only its heartbeat
+# pacing changes: a sleeping peer depends on timer IRQs on the dialing
+# core, which slot 30 masks. A runnable peer on the other Go M instead
+# samples the physical counter and cooperatively yields its kernel task.
+source = pathlib.Path("tools/go/govinet.go").read_text()
+needle = "\t\tvsys.Sleep(2)\n"
+assert source.count(needle) == 1, "GOVINET heartbeat pacing anchor changed"
+source = source.replace(needle, """\t\tdeadline := vsys.Nanotime() + 2_000_000_000
+\t\tfor vsys.Nanotime() < deadline && !*stop {
+\t\t\tvi.Yield()
+\t\t}
+""")
+fixture = rd / "govinet-counter.go"
+fixture.write_text(source)
+env = dict(os.environ, TMPDIR=str(rd / "connect-build"), GO_BUILD_OUT=str(share),
+           GO_BUILD_NAME="GOVINET", GO_LDFLAGS_VALUE="-s -w")
+subprocess.run(["bash", "tools/go/build-go.sh", str(fixture)], env=env, check=True)
+print("GOVINET heartbeat rebuilt with physical-counter pacing; original phases and assertions unchanged")
 PY
 
 # Run 01 -- the peer answers: the full N10 responder on 8080.
@@ -182,7 +259,7 @@ vgate_assert 04 serial-absent 'govinet: viloop no echo'
 vgate_assert 04 serial-absent 'govinet: FAIL'
 
 # Run 05 -- the closed-port drop: 8081 has no responder, so the connect
-# parks in the kernel for its 30 s window and then refuses (rc = -1, the
+# waits in the kernel for its 30 s window and then refuses (rc = -1, the
 # kernel's einval on connect timeout) while the heartbeat keeps printing.
 vgate_run 05 -- --net '$RUN_DIR/cap5.bin' --net-arp-respond 10.0.0.2 \
     --net-tcp-respond 10.0.0.2:8080 \
@@ -215,4 +292,81 @@ if not after:
     sys.exit("FAIL: the heartbeat did NOT continue after the refusal")
 print("go-net viclosed order ok: %d beats before, %d during, %d after the refused dial"
       % (len(before), len(during), len(after)))
+PY
+
+# No injection, NAT, relay, or other TCP responder is armed. Port 8081
+# goes unanswered by construction; the responder matches ONLY port 8080.
+vgate_run connect -- --net '$RUN_DIR/connect.bin' --net-arp-respond 10.0.0.2 \
+    --net-tcp-respond 10.0.0.2:8080 --script '$RUN_DIR/script-connect.txt' \
+    --script2 '$RUN_DIR/script-connect-after.txt' --script2-after 'netconnect: done' \
+    --script-expect 'netconnect-observed' --timeout 120
+
+vgate_run connect-legacy -- --net '$RUN_DIR/connect-legacy.bin' --net-arp-respond 10.0.0.2 \
+    --net-tcp-respond 10.0.0.2:8080 --script '$RUN_DIR/script-connect-legacy.txt' \
+    --script2 '$RUN_DIR/script-connect-after.txt' --script2-after 'netconnect: done' \
+    --script-expect 'netconnect-observed' --timeout 120
+
+vgate_assert connect serial-contains 'netconnect: no owner'
+vgate_assert connect serial-contains 'netconnect: reconnected'
+vgate_assert connect serial-contains 'netconnect: GET and close ok'
+vgate_assert connect serial-absent 'netconnect: FAIL'
+vgate_assert connect serial-absent '[EXC] parking:'
+vgate_assert connect output-contains "NET-TCP: answered the guest's HTTP request with 200 OK"
+vgate_assert connect python <<'PY'
+import os, pathlib, re, struct
+rd = pathlib.Path(os.environ["RUN_DIR"])
+ser = pathlib.Path(os.environ["VG_SER"]).read_text()
+m = re.search(r"netconnect: elapsed mode=bounded begin_ns=(\d+) end_ns=(\d+) err=ETIMEDOUT", ser)
+assert m, "missing guest counter samples or wrong timeout error"
+elapsed = int(m[2]) - int(m[1])
+assert 5_000_000_000 <= elapsed < 6_000_000_000, elapsed
+assert re.search(r"tcp=idle,[^\n]*,timedout=1,", ser), "timeout singleton/counter not observed"
+assert "  30 sys_tcp_connect calls=2" in ser and "  33 sys_tcp_close calls=2" in ser
+data = (rd / "connect.bin").read_bytes()
+suffix = os.environ.get("VIRELAI_GATE_SUFFIX", "")
+pathlib.Path("artifacts", "go-net-connect-wire" + suffix + ".bin").write_bytes(data)
+syns = []
+i = 0
+while i < len(data):
+    assert data[i+12:i+14] in (b"\x08\x06", b"\x08\x00"), "unexpected capture frame"
+    size = 42 if data[i+12:i+14] == b"\x08\x06" else 14 + struct.unpack_from("!H", data, i+16)[0]
+    f = data[i:i+size]
+    if f[12:14] == b"\x08\x00" and f[23] == 6 and f[37:38] == b"\x91" and f[36] == 0x1f:
+        assert f[30:34] == bytes([10,0,0,2]) and f[47] == 2, "silent port transmitted something other than SYN"
+        syns.append(f)
+    i += size
+assert len(syns) == 2 and syns[0] == syns[1], "expected initial SYN and one byte-identical 3 s retransmit"
+print("bounded connect: guest counters %.6f s; two unanswered SYNs; clean owner/lock/GET/close" % (elapsed / 1e9))
+PY
+
+vgate_assert connect-legacy serial-contains 'netconnect: no owner'
+vgate_assert connect-legacy serial-contains 'netconnect: GET and close ok'
+vgate_assert connect-legacy serial-absent 'netconnect: FAIL'
+vgate_assert connect-legacy serial-absent '[EXC] parking:'
+vgate_assert connect-legacy output-contains "NET-TCP: answered the guest's HTTP request with 200 OK"
+vgate_assert connect-legacy python <<'PY'
+import os, pathlib, re, struct
+rd = pathlib.Path(os.environ["RUN_DIR"])
+ser = pathlib.Path(os.environ["VG_SER"]).read_text()
+m = re.search(r"netconnect: elapsed mode=legacy begin_ns=(\d+) end_ns=(\d+) err=EINVAL", ser)
+assert m, "missing guest counter samples or changed legacy timeout error"
+elapsed = int(m[2]) - int(m[1])
+assert 30_000_000_000 <= elapsed < 31_000_000_000, elapsed
+assert re.search(r"tcp=idle,[^\n]*,timedout=1,", ser), "legacy timeout singleton/counter not observed"
+assert "  30 sys_tcp_connect calls=2" in ser and "  33 sys_tcp_close calls=2" in ser
+data = (rd / "connect-legacy.bin").read_bytes()
+suffix = os.environ.get("VIRELAI_GATE_SUFFIX", "")
+pathlib.Path("artifacts", "go-net-connect-legacy-wire" + suffix + ".bin").write_bytes(data)
+syns = []
+i = 0
+while i < len(data):
+    assert data[i+12:i+14] in (b"\x08\x06", b"\x08\x00"), "unexpected capture frame"
+    size = 42 if data[i+12:i+14] == b"\x08\x06" else 14 + struct.unpack_from("!H", data, i+16)[0]
+    f = data[i:i+size]
+    if f[12:14] == b"\x08\x00" and f[23] == 6 and f[36:38] == b"\x1f\x91":
+        assert f[30:34] == bytes([10,0,0,2]) and f[47] == 2
+        syns.append(f)
+    i += size
+assert len(syns) == 10 and all(s == syns[0] for s in syns), "legacy SYN/retransmit sequence changed"
+print("legacy connect: guest counters %.6f s; unchanged EINVAL; reconnect/GET/close" % (elapsed / 1e9))
 PY

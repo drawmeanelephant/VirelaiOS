@@ -12,6 +12,7 @@ type connFake struct {
 	connectCalls int
 	connectIP    uint32
 	connectPort  uintptr
+	connectRC    int64
 	sendCalls    int
 	sentSizes    []int
 	sentBytes    []byte
@@ -35,7 +36,7 @@ func (f *connFake) hook(num uintptr, a0, a1, a2, a3 uintptr) int64 {
 		f.connectCalls++
 		f.connectIP = uint32(a0)
 		f.connectPort = a1
-		return 0
+		return f.connectRC
 	case SlotTCPSend:
 		f.sendCalls++
 		b := hookBytes(a0, a1)
@@ -96,6 +97,77 @@ func TestDial_LiteralConnects(t *testing.T) {
 	}
 }
 
+func TestDialTimeout_EncodesMilliseconds(t *testing.T) {
+	for _, d := range []time.Duration{time.Nanosecond, time.Millisecond, 5 * time.Second, 5*time.Second + time.Nanosecond, 0xffffffff * time.Millisecond} {
+		t.Run(d.String(), func(t *testing.T) {
+			f := startConnFake(t)
+			c, err := DialTimeout("10.0.0.2", 8080, d)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ms := uint64((d + time.Millisecond - 1) / time.Millisecond)
+			if f.connectCalls != 1 || f.connectIP != 0x0a000002 || uint64(f.connectPort) != 8080|ms<<16 {
+				t.Fatalf("connect = %d %08x %x", f.connectCalls, f.connectIP, f.connectPort)
+			}
+			if c.Port() != 8080 || c.IP() != [4]byte{10, 0, 0, 2} {
+				t.Fatalf("peer = %v:%d", c.IP(), c.Port())
+			}
+		})
+	}
+}
+
+func TestDialTimeout_InvalidDurationDoesNotConnect(t *testing.T) {
+	for _, d := range []time.Duration{-1, 0, 0xffffffff*time.Millisecond + 1, time.Duration(1<<63 - 1)} {
+		f := startConnFake(t)
+		if c, err := DialTimeout("10.0.0.2", 8080, d); c != nil || !errors.Is(err, errno(ErrEINVAL)) {
+			t.Fatalf("DialTimeout(%v) = %v, %v", d, c, err)
+		}
+		if f.connectCalls != 0 {
+			t.Fatal("invalid duration reached slot 30")
+		}
+	}
+}
+
+func TestDialTimeout_RefusalReleasesSlot(t *testing.T) {
+	f := startConnFake(t)
+	f.connectRC = -ErrETIMEDOUT
+	if c, err := DialTimeout("10.0.0.2", 8081, 5*time.Second); c != nil || !errors.Is(err, errno(ErrETIMEDOUT)) {
+		t.Fatalf("timeout = %v, %v", c, err)
+	}
+	if f.closeCalls != 0 || slotHeld.Load() {
+		t.Fatal("failed connect retained its slot or called Close")
+	}
+	f.connectRC = 0
+	if _, err := Dial("10.0.0.2", 8080); err != nil {
+		t.Fatal(err)
+	}
+	if f.connectCalls != 2 || f.connectPort != 8080 {
+		t.Fatal("legacy reconnect did not use its unchanged port word")
+	}
+}
+
+func TestDialTimeout_UsesDialGuards(t *testing.T) {
+	f := startConnFake(t)
+	if _, err := DialTimeout("10.0.0.2", 0, time.Second); !errors.Is(err, errno(ErrEINVAL)) {
+		t.Fatal(err)
+	}
+	if _, err := DialTimeout("0.0.0.0", 8080, time.Second); !errors.Is(err, ErrServerDial) {
+		t.Fatal(err)
+	}
+	if f.connectCalls != 0 {
+		t.Fatal("invalid peer reached slot 30")
+	}
+	if _, err := Dial("10.0.0.2", 8080); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := DialTimeout("10.0.0.2", 8080, time.Second); !errors.Is(err, ErrConnBusy) {
+		t.Fatal(err)
+	}
+	if f.connectCalls != 1 {
+		t.Fatal("busy dial reached slot 30")
+	}
+}
+
 func TestDial_NameResolvesThenConnects(t *testing.T) {
 	// A name dials the RESOLVED address: the DNS seam runs first (the fake
 	// answers myhost.local -> 10.0.0.2), then connect carries the octets.
@@ -123,6 +195,29 @@ func TestDial_NameResolvesThenConnects(t *testing.T) {
 	}
 	if c.IP() != [4]byte{10, 0, 0, 2} {
 		t.Fatalf("peer IP = %v, want the resolved address", c.IP())
+	}
+}
+
+func TestDialTimeout_NameResolvesThenConnects(t *testing.T) {
+	dns := &dnsFake{}
+	dns.recvScript = func(int) []byte {
+		return udpDgram(DNSPort, dnsReplyFor(dns.sentQuery, [4]byte{10, 0, 0, 2}))
+	}
+	f := &connFake{}
+	prev := SetSyscallHookForTest(func(num uintptr, a0, a1, a2, a3 uintptr) int64 {
+		if num == SlotUDPListen || num == SlotUDPSend || num == SlotUDPRecv {
+			return dns.hook(num, a0, a1, a2, a3)
+		}
+		return f.hook(num, a0, a1, a2, a3)
+	})
+	defer SetSyscallHookForTest(prev)
+	t.Cleanup(func() { dnsPortBound = false; slotHeld.Store(false) })
+	c, err := DialTimeout("myhost.local", 8080, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.IP() != [4]byte{10, 0, 0, 2} || f.connectCalls != 1 || f.connectPort != 8080|5000<<16 {
+		t.Fatalf("resolved connect = %v, %d calls, word=%x", c.IP(), f.connectCalls, f.connectPort)
 	}
 }
 

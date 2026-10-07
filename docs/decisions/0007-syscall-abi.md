@@ -596,6 +596,47 @@ through the ADR 0007 syscall seam (slots 30–33, following slot 28 `sys_exec` a
 These handlers marshal arguments and user buffers through the claim-6120 `uaccess` window and invoke `kernel/src/tcp.zig`.
 Proof program: `TCP.BIN` (`user/src/tcp_client.zig`, Issue #148).
 
+### Amendment (2026-10-07, #2040 — bounded outbound connect)
+
+Slot 30 retains its two-argument, singleton ABI; no new slot. For `ip != 0`,
+x1 bits 0–15 are the nonzero destination port, bits 16–47 are an optional
+unsigned **millisecond** timeout, and bits 48–63 must be zero (`EINVAL`
+otherwise). A zero timeout retains the observed legacy **30-second** bound
+and timeout result `EINVAL` (-1). Previously every word above `0xffff`
+refused, so no formerly valid outbound argument changes meaning.
+For `ip == 0`, x1 remains a plain port: timeout bits still refuse `EINVAL`.
+Same-peer, owner-only idempotent reconnect and slots 31–33/76 are unchanged.
+
+An explicit timeout expires with the existing `ETIMEDOUT` **-12**, not -7:
+the original TCP table's -7 timeout label was never implemented; the modern
+ABI assigns -7 to `EACCES` and -12 to `ETIMEDOUT`. Owner ruling on this card
+preserves legacy -1 while giving explicit timeouts a distinct result.
+RST/transport/argument refusals retain their existing errors. The fixed
+retransmission ceiling still applies; if it aborts before a longer explicit
+budget, the result is also -12.
+
+The handshake budget starts before sending SYN and uses physical-counter
+elapsed time, rounding the millisecond interval up to a counter tick. It
+does not depend on scheduler IRQs, which the network service lock masks.
+An unavailable/unrepresentable clock refuses `EINVAL` before SYN. A reply
+drained after expiry cannot turn it into success. Expiry resets outbound
+socket state (including owner, peer, ACK/RX and retransmission state),
+preserves diagnostic counters, increments `timed_out`, and returns through
+dispatch's network-lock release. No half-open singleton remains. This
+does not make connect asynchronous or release the lock during the wait.
+Dispatch's unlock defer now has function scope: its previous block scope
+released service locks before the handler. The host connect test pins both
+the held-in-handler and released-on-return sides of this existing contract.
+
+`vi.DialTimeout(host, port, d time.Duration)` opts in. Positive durations
+round up to milliseconds; nonpositive or more than `UINT32_MAX`
+milliseconds refuse `EINVAL` before connecting. DNS keeps its separate
+existing budget. `vi.Dial` and `vi.Listen` keep their old wire words.
+Host TCP/syscall/SDK tests and `go-net` cover deadline boundaries, cleanup,
+an isolated port that never answers SYN in **[5, 6) seconds**, immediate
+successful reconnect, and the unchanged 30-second legacy default.
+This prerequisite leaves #1998 open.
+
 ## Amendment (2026-08-16, claim 5801 — the mutating filesystem seam)
 
 Milestone 13 card B1 turns the read-only M10 file ABI mutating — slots

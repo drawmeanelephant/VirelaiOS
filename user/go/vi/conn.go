@@ -2,6 +2,7 @@ package vi
 
 import (
 	"sync/atomic"
+	"time"
 	"unsafe"
 
 	"virelai/vsys"
@@ -10,13 +11,14 @@ import (
 // The M67a/M70g socket surface (#1446, #1491): dial/send/recv over the
 // kernel's TCP slots 30-33, with DNS name resolution in front of the dial
 // (dns.go), plus Listen over the same slot-30 passive-open (ip==0) that
-// httpd.zig already uses. Zero kernel work — every call lands on an
-// existing ADR 0007 row; the kernel keeps its ONE-TCP-socket-per-process
+// httpd.zig already uses. Every call lands on an existing ADR 0007 row;
+// DialTimeout opts into slot 30's packed budget. The kernel keeps its
+// ONE-TCP-socket-per-process
 // law (kernel/src/tcp.zig is a process-wide singleton keyed by
 // tcp.owner_pid) and this type mirrors it so a second live Dial or Listen
 // fails in userland before the kernel has to.
 //
-// Blocking semantics: Dial's connect waits IN the kernel (slot 30 parks the
+// Blocking semantics: Dial's connect waits IN the kernel (slot 30 spins the
 // caller until ESTABLISHED or the kernel's 30 s connect timeout); Recv is
 // blocking-with-poll — probe the readiness mask (slot 76), take the bytes
 // when readable, otherwise check the deadline and PARK one scheduler tick
@@ -103,6 +105,28 @@ type Conn struct {
 // before the claim; the CAS guards only the seam, so a racing Dial can
 // never slip a second connect past it.
 func Dial(host string, port uint16) (*Conn, error) {
+	return dial(host, port, 0)
+}
+
+// DialTimeout connects like Dial, but bounds the outbound handshake in the
+// kernel by d. DNS resolution keeps its separate DefaultDNSBudgetNs budget.
+// d must be positive and fit in uint32 milliseconds, rounded up to the next
+// millisecond. Expiry returns Errno(ErrETIMEDOUT) and releases the socket.
+func DialTimeout(host string, port uint16, d time.Duration) (*Conn, error) {
+	if d <= 0 {
+		return nil, errno(ErrEINVAL)
+	}
+	ms := uint64(d / time.Millisecond)
+	if d%time.Millisecond != 0 {
+		ms++
+	}
+	if ms > 0xffffffff {
+		return nil, errno(ErrEINVAL)
+	}
+	return dial(host, port, uint32(ms))
+}
+
+func dial(host string, port uint16, timeoutMs uint32) (*Conn, error) {
 	if port == 0 {
 		return nil, errno(ErrEINVAL)
 	}
@@ -120,7 +144,7 @@ func Dial(host string, port uint16) (*Conn, error) {
 	if !slotHeld.CompareAndSwap(false, true) {
 		return nil, ErrConnBusy
 	}
-	rc := svc2(SlotTCPConnect, ipv4Word(ip), uintptr(port))
+	rc := svc2(SlotTCPConnect, ipv4Word(ip), uintptr(port)|uintptr(timeoutMs)<<16)
 	if rc < 0 {
 		slotHeld.Store(false)
 		return nil, errno(-rc)

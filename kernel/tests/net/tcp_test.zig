@@ -3,7 +3,8 @@
 //! Extracted from kernel/src/tcp.zig.
 
 const std = @import("std");
-const tcp = @import("tcp");
+const syscall = @import("syscall");
+const tcp = syscall.tcp;
 const arp = tcp.arp;
 
 // Symbols from tcp
@@ -59,6 +60,139 @@ const test_mac = [6]u8{ 0x02, 0x00, 0x00, 0x00, 0x00, 0x01 }; // the host-set gu
 const host_mac = [6]u8{ 0x02, 0x00, 0x00, 0x00, 0x00, 0x02 }; // the host-side MAC
 const ip_guest = [4]u8{ 10, 0, 0, 1 };
 const ip_host = [4]u8{ 10, 0, 0, 2 };
+
+test "tcp: counter deadline keeps legacy 30 seconds and bounds explicit milliseconds" {
+    for ([_]u32{ 0, 1, 5, 5000, 5001, std.math.maxInt(u32) }) |ms| {
+        const freq: u64 = 24_000_000;
+        const d = tcp.ConnectDeadline.init(123, freq, ms).?;
+        const duration = @as(u64, if (ms == 0) 30_000 else ms) * (freq / 1000);
+        try std.testing.expectEqual(duration, d.duration);
+        try std.testing.expect(!d.expired(123 + duration - 1));
+        try std.testing.expect(d.expired(123 + duration));
+        try std.testing.expect(d.expired(123 + duration + 1));
+    }
+}
+
+test "tcp: counter deadline rounds up, survives counter wrap, refuses bad clocks" {
+    const d = tcp.ConnectDeadline.init(std.math.maxInt(u64) - 2, 1001, 5).?;
+    try std.testing.expectEqual(@as(u64, 6), d.duration);
+    try std.testing.expect(!d.expired(2));
+    try std.testing.expect(d.expired(3));
+    try std.testing.expect(tcp.ConnectDeadline.init(0, 0, 5000) == null);
+    try std.testing.expect(tcp.ConnectDeadline.init(0, std.math.maxInt(u64), std.math.maxInt(u32)) == null);
+    const wide = tcp.ConnectDeadline.init(0, std.math.maxInt(u64), 1).?;
+    try std.testing.expectEqual(@as(u64, 18_446_744_073_709_552), wide.duration);
+}
+
+test "tcp: outbound expiry clears singleton state without erasing counters" {
+    reset();
+    defer reset();
+    tcp.now_ticks = 91;
+    start(ip_host, 8081, 1234, host_mac);
+    tcp.owner_pid = 7;
+    advance_snd(1);
+    record_pending();
+    tcp.syn_sent = 1;
+    tcp.retransmitted = 1;
+    tcp.rx_pending = true;
+    tcp.rx_len = 3;
+    tcp.ack_pending = true;
+    tcp.rst_pending = true;
+    abort_timeout();
+    try std.testing.expectEqual(State.idle, tcp.state);
+    try std.testing.expect(tcp.owner_pid == null);
+    try std.testing.expectEqual([4]u8{ 0, 0, 0, 0 }, tcp.peer_ip);
+    try std.testing.expectEqual(@as(u16, 0), tcp.peer_port);
+    try std.testing.expectEqual(@as(usize, 0), tcp.msg_len);
+    try std.testing.expectEqual(@as(usize, 0), tcp.rx_len);
+    try std.testing.expectEqual(@as(usize, 0), tcp.retx_len);
+    try std.testing.expectEqual(@as(u32, 0), tcp.snd_una);
+    try std.testing.expectEqual(@as(u64, 0), tcp.syn_ticks);
+    try std.testing.expect(!tcp.tx_pending and !tcp.rx_pending and !tcp.ack_pending and !tcp.rst_pending);
+    try std.testing.expectEqual(@as(u64, 1), tcp.timed_out);
+    try std.testing.expectEqual(@as(u64, 1), tcp.syn_sent);
+    try std.testing.expectEqual(@as(u64, 1), tcp.retransmitted);
+    try std.testing.expectEqual(@as(u64, 0), ready_mask());
+    start(ip_host, 8080, 5678, host_mac);
+    try std.testing.expectEqual(State.syn_sent, tcp.state);
+    try std.testing.expectEqual(@as(u32, 5678), tcp.isn);
+}
+
+const net = syscall.virtio_net;
+fn connect_read8(_: u32) u8 {
+    return 0;
+}
+fn connect_read16(_: u32) u16 {
+    return 0;
+}
+fn connect_read32(_: u32) u32 {
+    return 0;
+}
+fn connect_write8(_: u32, _: u8) void {}
+fn connect_write16(_: u32, _: u16) void {}
+fn connect_write32(_: u32, _: u32) void {}
+var connect_saw_net_lock: bool = false;
+fn connect_notify(_: u16) void {
+    connect_saw_net_lock = syscall.svclock.net.held();
+    net.net_dev.tx_used.idx = net.net_dev.tx_avail.idx;
+}
+fn connect_phys(va: usize) u64 {
+    return va;
+}
+fn connect_cache(_: usize, _: usize) void {}
+fn connect_writer(_: []const u8) void {}
+
+test "syscall: slot 30 packed timeout validation and failure release the network lock" {
+    syscall.userspace.init();
+    syscall.init(connect_writer);
+    var frame = std.mem.zeroes(syscall.exceptions.VectorFrame);
+    const saved_ops = net.net_ops;
+    net.net_ops = .{
+        .dev_read32 = connect_read32,
+        .cfg_read8 = connect_read8,
+        .cfg_read16 = connect_read16,
+        .cfg_read32 = connect_read32,
+        .cfg_write8 = connect_write8,
+        .cfg_write16 = connect_write16,
+        .cfg_write32 = connect_write32,
+        .notify = connect_notify,
+        .to_phys = connect_phys,
+        .clean = connect_cache,
+        .invalidate = connect_cache,
+    };
+    net.net_ready = true;
+    arp.own_ip = ip_guest;
+    arp.upsert(ip_host, host_mac);
+    reset();
+    defer {
+        net.net_ops = saved_ops;
+        net.net_ready = false;
+        arp.own_ip = .{ 0, 0, 0, 0 };
+        reset();
+    }
+    for ([_]u64{ 0, 0x10000, @as(u64, 1) << 48 | 8081, @as(u64, 1) << 63 | 8081 }) |word| {
+        try std.testing.expectEqual(syscall.error_result(.einval), syscall.dispatch(30, .{ 0x0a000002, word, 0, 0, 0, 0 }, &frame));
+        try std.testing.expectEqual(@as(u64, 0), tcp.syn_sent);
+    }
+    try std.testing.expectEqual(syscall.error_result(.einval), syscall.dispatch(30, .{ 0, @as(u64, 5000) << 16 | 8081, 0, 0, 0, 0 }, &frame));
+    // Host transport only acknowledges TX completion, never supplies SYN-ACK.
+    // Deadline arithmetic is tested above; the host iteration guard tests
+    // this handler's error/cleanup/lock return path, not elapsed wall time.
+    connect_saw_net_lock = false;
+    try std.testing.expectEqual(syscall.error_result(.etimedout), syscall.dispatch(30, .{ 0x0a000002, @as(u64, 5000) << 16 | 8081, 0, 0, 0, 0 }, &frame));
+    try std.testing.expect(connect_saw_net_lock);
+    try std.testing.expectEqual(State.idle, tcp.state);
+    try std.testing.expectEqual(@as(u64, 1), tcp.timed_out);
+    try std.testing.expect(tcp.owner_pid == null and !tcp.tx_pending);
+    try std.testing.expect(!syscall.svclock.net.held());
+    try std.testing.expect(syscall.svclock.net.try_acquire());
+    syscall.svclock.net.release();
+    try std.testing.expectEqual(@as(u64, 0), syscall.dispatch(33, .{ 0, 0, 0, 0, 0, 0 }, &frame));
+    try std.testing.expectEqual(syscall.error_result(.einval), syscall.dispatch(30, .{ 0x0a000002, 8081, 0, 0, 0, 0 }, &frame));
+    try std.testing.expectEqual(@as(u64, 2), tcp.timed_out);
+    try std.testing.expectEqual(@as(u64, 0), syscall.dispatch(30, .{ 0, 8080, 0, 0, 0, 0 }, &frame));
+    try std.testing.expectEqual(State.listen, tcp.state);
+}
 
 /// Craft a full TCP frame the way the host responder does (the guest's
 /// `build_frame` with a pre-built segment — the fixture shape).
