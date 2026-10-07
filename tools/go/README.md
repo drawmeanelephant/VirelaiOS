@@ -12,7 +12,7 @@ Upstream Go has no third-party-GOOS mechanism (golang/go#35956 declined
 `GOOS=none`; golang/go#73608's `GOOSPKG` overlay proposal is still open).
 Every non-POSIX port (Fuchsia, TamaGo, IBM z/OS) is a maintained fork
 tracking each release. The maintenance surface here is deliberately tiny:
-**6 file edits + 7 new GOOS-gated files** (proc.go's phase-0a thread gates retired in 0b round 2, ADR 0027; signal_virelai.go is phase 0c, #1228; the phase-2 edit is `apply.sh` step 3h, which widens `runtime/netpoll.go`'s build tag so the platform-independent poller core compiles for virelai); everything else is stock.
+**6 file edits + 8 new GOOS-gated files** (proc.go's phase-0a thread gates retired in 0b round 2, ADR 0027; signal_virelai.go is phase 0c, #1228; the phase-2 edit is `apply.sh` step 3h, which widens `runtime/netpoll.go`'s build tag so the platform-independent poller core compiles for virelai; the M95-prerequisite edit is step 3g6b, which widens the stock `net` POSIX-plumbing tags so `net` compiles — every external operation still refuses at `socket()`, #2029); everything else is stock.
 
 ## Layout
 
@@ -24,6 +24,7 @@ tracking each release. The maintenance surface here is deliberately tiny:
 | `overlay/runtime/rt0_virelai_arm64.s` | entry (`_rt0_virelai_arm64`): argc/argv block → SysV argv array + envp (issue #1226) |
 | `overlay/runtime/netpoll_virelai.go` | phase 2 (#1163): the REAL integrated poller (netpollinit/open/close/arm/poll/break) driving slot 76 `sys_sock_ready`; the parked G comes back through stock `netpollready -> netpollunblock -> goready` |
 | `overlay/internal/goos/zgoos_virelai.go` | generated GOOS consts (gengoos shape, hand-applied) |
+| `overlay/net/net_virelai.go` | #2029: the `net` platform leaf layer — `netFD` + every socket-shaped hook refuses `ENOSYS` (there is no socket slot to fill), so `net.Pipe`/`net.Conn`/`net.Listener` compile and in-process IPC works while dial/listen/DNS/interfaces refuse with named errors |
 | `apply.sh` | copies a stock distribution + applies everything, idempotently, committing a git delta in the fork |
 | `build-go.sh` | runs the host make.bash pass on first use (the cross-std pass is `GOVIRELAI_STD=1` opt-in for phase 2), then links programs with `-ldflags "-s -w"` at the Go default base (the gap loader maps at declared vaddrs; stripped to fit the 2 MiB exec staging bound) |
 | `goread.go` | M70c (#1455): reads a multi-MB file out of the host share end to end at the EL0 read cap (2048 B/call) and reports the rate — `go-hello` run 04 asserts the byte count, the call arithmetic and the FNV hash of the bytes READ against the file on macOS, and ADR 0035 amendment 2 records the measured transfer (~30 MB/s, ~15,300 calls/s) |

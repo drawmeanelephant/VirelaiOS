@@ -36,6 +36,66 @@ type SockaddrInet6 struct {
 
 func (sa *SockaddrInet6) sockaddr() {}
 
+// SockaddrUnix is storage for unix-domain addresses this GOOS cannot
+// produce either. net's unixsock plumbing names the type whether or not a
+// unix socket can exist, so the shape exists and the ops refuse.
+type SockaddrUnix struct {
+	Name string
+}
+
+func (sa *SockaddrUnix) sockaddr() {}
+
+// The address-family, socket-type and protocol constants net's *_posix.go
+// plumbing names (issue #2029). No slot consumes them — a socket() call
+// refuses before any of these are delivered to a kernel that does not have
+// the concept — but they must exist as constants for the port to compile,
+// and a caller that spells AF_INET6 must get back the refusal its family
+// asked for, not a missing symbol.
+const (
+	AF_UNSPEC = iota
+	AF_UNIX
+	AF_INET
+	AF_INET6
+)
+
+const (
+	SOCK_STREAM = 1 + iota
+	SOCK_DGRAM
+	SOCK_RAW
+	SOCK_SEQPACKET
+)
+
+const (
+	IPPROTO_IP   = 0
+	IPPROTO_TCP  = 6
+	IPPROTO_UDP  = 0x11
+	IPPROTO_IPV6 = 0x29
+)
+
+const (
+	IPV6_V6ONLY = 1
+	SO_ERROR    = 2
+)
+
+// SOMAXCONN is the backlog bound sock_stub.go's maxListenerBacklog reports.
+// The number is advisory on every GOOS; here it is also unreachable, since
+// listen() refuses before a backlog is ever requested.
+const SOMAXCONN = 0x80
+
+// Bind and SetsockoptInt are compile-time leaves of net's capability probe
+// (ipsock_posix.go's probe()): it calls sysSocket first, which refuses, so
+// neither is ever reached at run time — but both are named in its body and
+// must exist for the package to compile. Same story for Socket, Connect,
+// Listen and GetsockoptInt: nothing that runs selects them (hook_unix.go's
+// test-hook assignments are not part of this port), so they exist as the
+// same refusal the rest of this file gives.
+func Socket(domain, stype, proto int) (fd int, err error)     { return -1, ENOSYS }
+func Bind(fd int, sa Sockaddr) error                          { return ENOSYS }
+func Connect(fd int, sa Sockaddr) error                       { return ENOSYS }
+func Listen(fd int, backlog int) error                        { return ENOSYS }
+func GetsockoptInt(fd, level, opt int) (value int, err error) { return -1, ENOSYS }
+func SetsockoptInt(fd, level, opt int, value int) error       { return ENOSYS }
+
 // The socket operations. Each is ENOSYS rather than a zero result: a caller
 // that reads a byte count of 0 believes it hit EOF, and there is no socket to
 // hit EOF on.
