@@ -1,6 +1,9 @@
 package vi
 
 import (
+	"fmt"
+	"hash/fnv"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -12,11 +15,13 @@ import (
 const (
 	AppLogDir       = "/host/APPLOG"
 	CrashReceiptDir = "/host/CRASH"
-	AppLogMaxLines  = 32
-	AppLogMaxLine   = 256
-	appLogMaxBytes  = AppLogMaxLines * (AppLogMaxLine + 1)
-	appLogMaxApps   = MaxDirEntries
-	crashLogLines   = 8
+	// CrashStackMaxBytes bounds the entire additive .STK file, header included.
+	CrashStackMaxBytes = 16 * 1024
+	AppLogMaxLines     = 32
+	AppLogMaxLine      = 256
+	appLogMaxBytes     = AppLogMaxLines * (AppLogMaxLine + 1)
+	appLogMaxApps      = MaxDirEntries
+	crashLogLines      = 8
 )
 
 // appFileName validates an app label before it is used as a share path
@@ -51,6 +56,51 @@ func CrashReceiptPath(app string) string {
 		return ""
 	}
 	return CrashReceiptDir + "/" + app + ".TXT"
+}
+
+// CrashStackPath names the stack sibling without changing the receipt format.
+func CrashStackPath(app string) string {
+	if !appFileName(app) {
+		return ""
+	}
+	return CrashReceiptDir + "/" + app + ".STK"
+}
+
+func captureCrashStack(receipt []byte, nanos int64, capture func([]byte, bool) int) []byte {
+	stack := make([]byte, CrashStackMaxBytes-128)
+	n := capture(stack, false) // only the panicking goroutine, not unrelated tasks
+	truncated := n == len(stack)
+	hash := fnv.New64a()
+	_, _ = hash.Write(receipt)
+	header := "VCRASH1 receipt=" + strconv.FormatUint(hash.Sum64(), 16) +
+		" nanos=" + strconv.FormatInt(nanos, 10) +
+		" truncated=" + strconv.FormatBool(truncated) + "\n"
+	return append([]byte(header), stack[:n]...)
+}
+
+// CrashGuard must be deferred directly in the goroutine being guarded:
+//
+//	defer vi.CrashGuard("APP.ELF")
+//
+// A panic publishes the frozen receipt and a bounded current-goroutine stack
+// in its sibling, then exits 2 even if either diagnostic write fails. Other
+// goroutines need their own guard. A normal return does nothing.
+func CrashGuard(app string) {
+	if value := recover(); value != nil {
+		rc := WriteCrashReceipt(app, "panic: "+fmt.Sprint(value))
+		if rc >= 0 {
+			receipt, readRC := ReadFileAll(CrashReceiptPath(app), 4096)
+			rc = readRC
+			if rc >= 0 {
+				rc = WriteFileSafe(CrashStackPath(app),
+					captureCrashStack(receipt, Nanos(), runtime.Stack))
+			}
+		}
+		if rc < 0 {
+			ConsoleLine("crashguard: diagnostic write failed rc=" + Itoa64(rc))
+		}
+		Exit(2)
+	}
 }
 
 func ensureLogDir(path string) int64 {

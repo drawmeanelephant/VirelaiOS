@@ -26,3 +26,191 @@ vgate_assert 01 serial-contains '(in crasher+0x4)'
 vgate_assert 01 serial-contains '--- Last Serial Output ---'
 vgate_assert 01 serial-exact 'rx-crashview-ok' 1
 vgate_assert 01 serial-absent '[EXC] parking:'
+
+# M94e: guest-owned polling, real Go stacks, honest one-PC kernel faults,
+# same-size replacement and an in-process arm-before-exec tracer.
+vgate_setup_python <<'PY'
+import os, shutil
+from pathlib import Path
+share = Path(os.environ["RUN_DIR"], "share")
+for name in ("CRASHVIEW", "CRASHFIX", "GOTABWM"):
+    src = Path(".build/go", name + ".ELF")
+    assert src.is_file(), str(src) + " missing; build-crashview/build-gotabwm first"
+    shutil.copyfile(src, share / (name + ".ELF"))
+(share / "SETTINGS.TXT").write_text("#v2\nwm=none\n")
+PY
+
+vgate_file check-crash.py <<'PY'
+import json, os, re, shutil
+from pathlib import Path
+serial = Path(os.environ["VG_SER"]).read_text(errors="replace")
+share = Path(os.environ["VG_SHARE"])
+tag = os.environ["VG_TAG"]
+suffix = os.environ.get("VIRELAI_GATE_SUFFIX", "")
+assert "crashview: error" not in serial
+assert "crashguard: diagnostic write failed" not in serial
+assert re.search(r"crashview: directories=(same|distinct)", serial), "directory observation absent"
+shown = re.findall(r"^crashview: shown app=(\S+) kind=(go|kernel|exit) frames=(\d+) t1=(\d+) generation=(\d+)$", serial, re.M)
+def go_crashes(count):
+    starts = re.findall(r"^crashfix: t0=(\d+) token=(first|other)$", serial, re.M)
+    rows = [row for row in shown if row[0] == "CRASHFIX.ELF" and row[1] == "go" and int(row[2]) >= 3]
+    # A receipt may appear before its stack sibling; count only genuine stacks.
+    unique = {}
+    for row in rows:
+        unique.setdefault(row[4], row)
+    rows = list(unique.values())
+    assert len(rows) >= count and len(starts) >= count, (starts, rows)
+    delays = []
+    for (t0, token), row in zip(starts[:count], rows[:count]):
+        t0, t1, generation = int(t0), int(row[3]), int(row[4])
+        assert 0 <= t1-t0 <= 5_000_000_000, ("latency", token, t1-t0)
+        assert t0 <= generation <= t1, ("shared monotonic clock", t0, generation, t1)
+        delays.append(t1-t0)
+    assert "crashview: frame main." in serial, "real main frame absent"
+    return delays
+def capture(app="CRASHFIX.ELF"):
+    for ext in ("TXT", "STK"):
+        path = share / "CRASH" / (app + "." + ext)
+        if path.exists():
+            shutil.copyfile(path, "artifacts/live-crash-viewer-" + tag + "-" + app + "." + ext + suffix)
+def report(delays):
+    result = {"boot": tag, "directory": re.search(r"directories=(same|distinct)", serial)[1],
+              "latency_ns": delays}
+    print(json.dumps(result))
+    with open("artifacts/live-crash-viewer-latencies" + suffix + ".jsonl", "a") as f:
+        f.write(json.dumps(result) + "\n")
+PY
+
+vgate_file reset-crash.py <<'PY'
+# Independent cleanup keeps a deliberately red boot from cascading into others.
+# Only this gate's disposable share is affected. Never remove artifacts.
+import os, shutil
+from pathlib import Path
+share = Path(os.environ["VG_SHARE"])
+for name in ("CRASH", "crash"):
+    if (share / name).exists():
+        shutil.rmtree(share / name)
+for name in ("FIRST.TXT", "FIRST.STK"):
+    (share / name).unlink(missing_ok=True)
+PY
+
+vgate_assert 01 python <<'PY'
+import os
+exec(open(os.path.join(os.environ["RUN_DIR"], "reset-crash.py")).read())
+PY
+
+vgate_file go.txt <<'EOF'
+exec CRASHVIEW.ELF -text -exercise go
+EOF
+vgate_file kernel.txt <<'EOF'
+exec CRASHVIEW.ELF -text -exercise kernel
+EOF
+vgate_file twice.txt <<'EOF'
+exec CRASHVIEW.ELF -text -exercise twice
+EOF
+vgate_file reopen.txt <<'EOF'
+exec CRASHVIEW.ELF -text -exercise reopen
+EOF
+vgate_file window.txt <<'EOF'
+exec CRASHVIEW.ELF -exercise go
+EOF
+
+vgate_run 02 -- --script '$RUN_DIR/go.txt' --script-after 'tasks user-el0 exited status=7' --script-expect 'crashview: done shown=1' --timeout 60
+vgate_assert 02 serial-contains 'crashview: shown app=CRASHFIX.ELF kind=go frames='
+vgate_assert 02 serial-contains 'crashview: frame main.'
+vgate_assert 02 serial-contains 'exited status=2'
+vgate_assert 02 python <<'PY'
+import os
+exec(open(os.path.join(os.environ["RUN_DIR"], "check-crash.py")).read())
+delays = go_crashes(1)
+spawn = re.search(r"crashview: spawn app=CRASHFIX.ELF t0=(\d+)", serial)
+child = re.search(r"crashfix: t0=(\d+)", serial)
+assert spawn and child and 0 <= int(child[1])-int(spawn[1]) <= 5_000_000_000, "cross-process Nanos ordering failed"
+capture()
+report(delays)
+PY
+vgate_assert 02 python <<'PY'
+import os
+exec(open(os.path.join(os.environ["RUN_DIR"], "reset-crash.py")).read())
+PY
+
+vgate_run 03 -- --script '$RUN_DIR/kernel.txt' --script-after 'tasks user-el0 exited status=7' --script-expect 'crashview: done shown=1' --timeout 60
+vgate_assert 03 serial-contains 'crashview: shown app=CRASH.ELF kind=kernel frames=1'
+vgate_assert 03 serial-contains 'crashview: frame (in crasher+0x4)'
+vgate_assert 03 serial-contains 'stack: one recorded PC (not an unwound stack)'
+vgate_assert 03 python <<'PY'
+import os
+exec(open(os.path.join(os.environ["RUN_DIR"], "check-crash.py")).read())
+spawn = re.search(r"crashview: spawn app=CRASH.ELF t0=(\d+)", serial)
+row = next((row for row in shown if row[:3] == ("CRASH.ELF", "kernel", "1")), None)
+assert spawn and row, "kernel receipt missing"
+delay = int(row[3])-int(spawn[1])
+assert 0 <= delay <= 5_000_000_000, ("kernel latency", delay)
+paths = {(p.stat().st_dev, p.stat().st_ino): p for directory in ("CRASH", "crash")
+         for p in (share / directory).glob("*-CRASH.ELF.txt")}
+assert len(paths) == 1
+shutil.copyfile(next(iter(paths.values())), "artifacts/live-crash-viewer-03-kernel.txt" + suffix)
+report([delay])
+PY
+vgate_assert 03 python <<'PY'
+import os
+exec(open(os.path.join(os.environ["RUN_DIR"], "reset-crash.py")).read())
+PY
+
+vgate_run 04 -- --script '$RUN_DIR/twice.txt' --script-after 'tasks user-el0 exited status=7' --script-expect 'crashview: done shown=' --timeout 60
+vgate_assert 04 serial-count 'crashview: shown app=CRASHFIX.ELF kind=go frames=' 2
+vgate_assert 04 serial-contains 'crashview: done shown=2'
+vgate_assert 04 python <<'PY'
+import os
+exec(open(os.path.join(os.environ["RUN_DIR"], "check-crash.py")).read())
+delays = go_crashes(2)
+for ext in ("TXT", "STK"):
+    first = (share / ("FIRST." + ext)).read_bytes()
+    second = (share / "CRASH" / ("CRASHFIX.ELF." + ext)).read_bytes()
+    assert len(first) == len(second) and first != second, ("same-size replacement", ext, len(first), len(second))
+    shutil.copyfile(share / ("FIRST." + ext), "artifacts/live-crash-viewer-04-first." + ext + suffix)
+capture()
+report(delays)
+PY
+vgate_assert 04 python <<'PY'
+import os
+exec(open(os.path.join(os.environ["RUN_DIR"], "reset-crash.py")).read())
+PY
+
+vgate_run 05 -- --script '$RUN_DIR/reopen.txt' --script-after 'tasks user-el0 exited status=7' --script-expect 'crashview: done shown=' --timeout 60
+vgate_assert 05 serial-contains 'crashview: reopened app=CRASHFIX.ELF pid='
+vgate_assert 05 serial-contains 'sys_file_open(path="/host/CRASH/CRASHFIX.ELF.TXT~"'
+vgate_assert 05 serial-contains 'sys_exit(status=2) = <no-return>'
+vgate_assert 05 serial-contains 'crashview: trace done status=2 dropped=0'
+vgate_assert 05 python <<'PY'
+import os
+exec(open(os.path.join(os.environ["RUN_DIR"], "check-crash.py")).read())
+delays = go_crashes(1)
+pid = re.search(r"crashview: reopened app=CRASHFIX.ELF pid=(\d+)", serial)
+lines = re.findall(r"\[strace (\d+)\] (sys_[^\n]+)", serial)
+assert pid and lines and all(p == pid[1] for p, _ in lines), "trace target leaked"
+assert lines[0][1].startswith("sys_write("), "child's first console syscall not captured"
+assert lines[-1][1] == "sys_exit(status=2) = <no-return>", "trace did not end at crash exit"
+capture()
+report(delays)
+PY
+vgate_assert 05 python <<'PY'
+import os
+exec(open(os.path.join(os.environ["RUN_DIR"], "reset-crash.py")).read())
+(share / "SETTINGS.TXT").write_text("#v2\nwm=gotabwm\n")
+PY
+
+# Exercise the same R action through the window's appkit event route, not a
+# second tracer process or a gate-only reopening implementation.
+vgate_run 06 -- --screen '$RUN_DIR/crash-screen' --via-virtio --script '$RUN_DIR/window.txt' --script-after 'gotabwm: present' --input-chords r --input-chords-after 'crashview: frame main.' --script-expect 'crashview: trace done status=2 dropped=0' --timeout 90
+vgate_assert 06 serial-contains 'crashview: ready window'
+vgate_assert 06 serial-contains 'crashview: present'
+vgate_assert 06 serial-contains 'crashview: reopened app=CRASHFIX.ELF pid='
+vgate_assert 06 serial-contains 'sys_exit(status=2) = <no-return>'
+vgate_assert 06 python <<'PY'
+import os
+exec(open(os.path.join(os.environ["RUN_DIR"], "check-crash.py")).read())
+report(go_crashes(1))
+assert "STRACE.ELF" not in serial, "separate tracer process is forbidden"
+capture()
+PY

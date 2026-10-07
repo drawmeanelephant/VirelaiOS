@@ -1,0 +1,6 @@
+app=GOSELF.ELF
+outcome=panic: M82e fixture panic
+last-log:
+started
+fixture: before panic
+panic: M82e fixture panic
