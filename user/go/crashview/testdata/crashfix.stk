@@ -1,0 +1,16 @@
+VCRASH1 receipt=d4d8f22f58d1a7fb nanos=5214349874 truncated=false
+goroutine 1 [running]:
+virelai/vi.captureCrashStack({0x480a2000, 0x30, 0x48056c40?}, 0x136ccaa32, 0x156af8)
+	/var/folders/p_/h710w89x7b16x249r_061lkw0000gn/T/virelai-crashview-gopath.5OmYon/src/virelai/vi/log.go:71 +0x60
+virelai/vi.CrashGuard({0xa0d31, 0xc})
+	/var/folders/p_/h710w89x7b16x249r_061lkw0000gn/T/virelai-crashview-gopath.5OmYon/src/virelai/vi/log.go:96 +0x140
+panic({0x149180?, 0x48086010?})
+	/Users/tbuddy/factory/go-virelai/src/runtime/panic.go:859 +0x120
+main.third({0x48010008?, 0xa?})
+	/var/folders/p_/h710w89x7b16x249r_061lkw0000gn/T/virelai-crashview-gopath.5OmYon/src/virelai/crashfixture/main.go:26 +0x30
+main.second({0x48010008?, 0x5?})
+	/var/folders/p_/h710w89x7b16x249r_061lkw0000gn/T/virelai-crashview-gopath.5OmYon/src/virelai/crashfixture/main.go:23 +0x20
+main.first({0x48010008?, 0xa100d?})
+	/var/folders/p_/h710w89x7b16x249r_061lkw0000gn/T/virelai-crashview-gopath.5OmYon/src/virelai/crashfixture/main.go:20 +0x20
+main.main()
+	/var/folders/p_/h710w89x7b16x249r_061lkw0000gn/T/virelai-crashview-gopath.5OmYon/src/virelai/crashfixture/main.go:14 +0xdc

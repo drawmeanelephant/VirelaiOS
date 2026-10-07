@@ -1,0 +1,3 @@
+app=CRASHFIX.ELF
+outcome=panic: first
+last-log:
