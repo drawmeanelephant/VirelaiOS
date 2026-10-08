@@ -140,7 +140,18 @@ func running(pid uint64) bool {
 // writes the combined summary when the evidence floor is met, the target
 // exits, or the deadline refuses it.
 func session(target, sym, watch string) error {
-	row, err := prof.FindTarget(target)
+	// The spec attaches OBSERVE as early as the target's first own marker;
+	// a freshly exec'd process may need a tick before procs reports it
+	// running, so retry rather than refuse the first sighting.
+	var row vi.ProcRow
+	var err error
+	for attempt := 0; attempt < 10; attempt++ {
+		row, err = prof.FindTarget(target)
+		if err == nil {
+			break
+		}
+		vi.Sleep(pollTicks)
+	}
 	if err != nil {
 		return fail(err)
 	}

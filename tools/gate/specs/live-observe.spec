@@ -216,7 +216,7 @@ vgate_run session -- \
     --screen '$RUN_DIR/screen-session' --via-virtio \
     --script '$RUN_DIR/observe-script.txt' \
     --script2 '$RUN_DIR/observe-script2.txt' --script2-after 'tabwm: sidebar-rendered' \
-    --script3 '$RUN_DIR/observe-script3.txt' --script3-after 'goedit: present' \
+    --script3 '$RUN_DIR/observe-script3.txt' --script3-after 'goedit: open id=' \
     --input-chords 'A,ctrl-s,B,ctrl-s,C,ctrl-s,D,ctrl-s,E,ctrl-s' \
     --input-chords-after 'observe: armed' \
     --script-expect 'observe: done' --timeout 240
