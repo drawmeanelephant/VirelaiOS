@@ -302,8 +302,8 @@ print("OBSERVED summary:", m.group(0))
 # resolves the stripped image; a Go main package symbolizes as main.*).
 top = re.findall(r"prof: top \d+ samples=\d+ (.+)", ser)
 assert top and len(top) <= 10
-assert any(name.startswith("main.") or "virelai/edit" in name or
-           name.startswith("runtime.") for name in top), top
+assert any(name.startswith("main.") or name.startswith("virelai/")
+           for name in top), top
 print("OBSERVED top:", top)
 
 # Heap leg: joined samples are the publisher's own series (pre-edit sample
