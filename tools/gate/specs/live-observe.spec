@@ -324,14 +324,20 @@ print("OBSERVED heap live-bytes series:", [int(x[3]) for x in samples])
 # Task budget: the mid-session `tasks` table in the serial log — the
 # four-task combiner must be ONE process, and the whole pool stays <=16.
 # Only the monitor's own table rows (two-space indent) count: the periodic
-# 'tasks <name> advances=N' reports are not the table.
-m = re.search(r"tasks: enabled=1 current=\d+ switches=\d+ pool=(\d+)/(\d+) "
-              r"zombies=(\d+)", ser)
+# 'tasks <name> advances=N' reports are not the table. Serial writes from
+# the heap publisher can interleave MID-LINE, splitting 'pool=N' from
+# '/16 zombies=0' — parse each field separately and stitch.
+m = re.search(r"tasks: enabled=1 current=\d+ switches=\d+ pool=(\d+)", ser)
 assert m, "no tasks header in serial"
-pool, maximum = int(m[1]), int(m[2])
+pool = int(m[1])
+z = re.search(r"/(\d+) zombies=(\d+)", ser[m.start():m.start()+600])
+assert z, "no tasks capacity/zombies tail in serial"
+maximum = int(z[1])
 assert maximum == 16, maximum
 assert pool <= maximum, "pool %d exceeds %d" % (pool, maximum)
-table = ser[m.end():]
+# Rows start after the header tail (wherever the interleave put it);
+# z.end() is relative to the 600-byte window, so re-anchor on m.start().
+table = ser[m.start()+z.end():m.start()+z.end()+4000]
 rows = re.findall(r"^  (\S+)\s+saves=\d+", table, re.M)
 obs = sum(1 for name in rows if "OBSERVE" in name)
 gedit = sum(1 for name in rows if "GOEDIT" in name)
