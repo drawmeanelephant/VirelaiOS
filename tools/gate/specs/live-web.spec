@@ -1,63 +1,18 @@
-# live-web.spec -- WEB.ELF: the in-guest Go browser (Go app shell + the
-# project's own Go HTML renderer, virelai/webrender), plus M67b (#1447)
-# GOFETCH.ELF HTTPS in-process (vi.Dial + tls.Dial, ADR 0029).
-#
-# Boots, one exec each, each ending on a marker the PROGRAM prints
-# (never a script echo), plus boot 13 which holds the VM for the M69b
-# console-ink re-measure (#1592):
-#   01 local page renders (parse/layout markers + scanout pixel probes)
-#   02 a pointer click on an in-page link navigates (history + second page)
-#   03 http:// fetch over the host TCP responder (no public internet)
-#   04 a missing target renders a distinct error page and still settles
-#   05 WEB.ELF https to the cleartext :80 responder fails closed (TLS
-#      handshake, never a GET; no silent downgrade)
-#   12 GOFETCH.ELF https in-process against the runner TLS responder
-#      (IP/port/SNI = 10.0.0.2:24533 leaf.example.com). FETCHS.BIN is not
-#      exec'd. This boot INHERITS the live-tls13 probe, retired in M71k
-#      (#1570): same responder script, same port, same fixture identity.
-#      The retired spec grew the probe from "GOFETCH works" to "a guest
-#      process reached a real TLS 1.3 peer"; here that is the same act.
-#      It also asserted the negotiated suite as a serial marker. On the Go
-#      path that is enforced in code rather than echoed: user/go/tls
-#      offers exactly one suite (client.go `suiteOffered = 0x1301`) and
-#      rejects any other ServerHello choice (client.go:574), pinned by
-#      client_test.go -- so a green `gofetch: handshake ok` cannot hide a
-#      different suite. No new marker is owed.
-#   13 M69b (#1529) claimed kernel console ink in the uncovered scanout
-#      of THIS boot (~2.8% at 3 s, ~5.8% at 20 s). M71b measured the
-#      default-seat GOSH boot and did not reproduce. Re-measured here
-#      (shim; GOTABWM.ELF is not staged): ~5.8% console-green at +3 s
-#      and +20 s after web: settled. Two host delays fire kind-4
-#      snapshots; the sampler pins that shim band. Seated = go-wm-console-ink.
-#
-#  14 M71i (#1568) INHERITS the M70d (#1456) fidelity-corpus rung from the
-#      retired live-doc-web boot 05: CERN's first-website hub, the corpus's
-#      own pinned bytes, laid out from the UA table. No new renderer
-#      capability -- the point is that the rung survives its consumer.
-#
-# M71i (#1568): DOC.BIN and its three specs (live-doc, live-doc-tables,
-# live-doc-web) are RETIRED into WEB.ELF, because two HTML painters is the
-# dual toolkit ADR 0030 forbids. Nothing was dropped silently: every rung
-# those specs pinned is pinned here or in live-web-ttf, by the probe named
-# below. Rows marked "vacant at HEAD" are the ones the retired specs held
-# alone, so this card is where they move.
-#   S1 page render + pixels       boot 01 here; live-web-ttf boot 01
-#   S1 typography / faces         live-web-ttf 01 (real faces) vs 03 (grid)
-#   S1 missing / malformed page   boot 04 + boot 06/07 here (missing, dns,url)
-#   S2 tables + header rule       live-web-ttf boot 02
-#   S2 dl/dt/dd                   live-web-ttf boot 04 (vacant at HEAD)
-#   S3 <img> decode               live-web-ttf boot 02 (SWATCH quadrants)
-#   S3 missing-src placeholder    live-web-ttf boot 04 (vacant at HEAD)
-#   S4 click-nav                  boot 02 here
-#   S5 http fetch                 boot 03 here
-#   S6 oliver-publish page        boot 01 here + go-dogfood boot 02
-#   corpus (M70d #1456)           boot 14 here
-#
-# HOST PREREQUISITE (fails honestly when missing):
-#   .build/go/WEB.ELF     -- `bash tools/go/build-web.sh browser WEB`
-#   .build/go/GOFETCH.ELF -- `bash tools/go/build-web.sh fetch GOFETCH`
+# WEB.ELF bounded HTML/CSS/GET browser, plus GOFETCH TLS regression.
+# One exec per boot, ended by program markers or an anchored kernel receipt.
+# 01-11 retain render/link/fetch/error/cancel/store/offline/hostile behaviors.
+# 12 proves in-process GOFETCH TLS; 13 retains shim console-ink evidence.
+# 14 retains the pinned corpus on the surviving consumer.
+# 15-17 type real hostnames against original hermetic site stand-ins.
+# 18-20 prove wrong-host/expired/production-unknown-root refusal before GET.
+# 21 measures the largest reference with actual kernel ownership counters.
+# No public-internet fleet access, scripts or POST.
+# Native font markers and approved exact presentation expectations are separate.
+# Owner authorized the fixed three-pixel shim-border scanout composition.
+# Prerequisites: build-web.sh browser WEB, browser WEB --gate,
+# fetch GOFETCH --gate. Gate artifacts retain WEB.ELF/GOFETCH.ELF guest names.
 
-vgate_name live-web "WEB.ELF: the in-guest Go browser renders, navigates, fetches, and reports errors; GOFETCH.ELF https in-process"
+vgate_name live-web "WEB: bounded CSS browser, exact M93 presentation, DNS/SNI/GET navigation and fail-closed TLS"
 vgate_share seed
 vgate_runner_flags -Xswiftc -DSPIKE
 
@@ -127,6 +82,33 @@ vgate_file script-corpus.txt <<'EOF'
 exec WEB.ELF /host/CORPUS.HTML
 EOF
 
+vgate_file script-m93-start.txt <<'EOF'
+net ip 10.0.0.1
+net arp 93.184.216.34
+exec WEB.ELF --dns=93.184.216.34
+EOF
+vgate_file script-m93-name.txt <<'EOF'
+net ip 10.0.0.1
+net arp 93.184.216.34
+exec WEB.ELF --dns=93.184.216.34 https://wrong.example.com:24561/
+EOF
+vgate_file script-m93-expired.txt <<'EOF'
+net ip 10.0.0.1
+net arp 93.184.216.34
+exec WEB.ELF --dns=93.184.216.34 https://en.wikipedia.org:24562/
+EOF
+vgate_file script-m93-production.txt <<'EOF'
+net ip 10.0.0.1
+net arp 93.184.216.34
+exec WEB-PROD.ELF --dns=93.184.216.34 https://en.wikipedia.org:24560/
+EOF
+vgate_file script-m93-largest.txt <<'EOF'
+exec WEB.ELF /host/M93-LARGEST.HTML
+EOF
+vgate_file script-m93-receipt.txt <<'EOF'
+procs receipt WEB.ELF
+EOF
+
 vgate_setup_python <<'PY'
 # Boot 08 needs a peer that ACCEPTS the connection and never answers: the
 # browser must sit in its waiting state so the injected cancel key has a load
@@ -141,6 +123,7 @@ except OSError as exc:
     sys.exit("boot 08: cannot bind the silent peer on 127.0.0.1:45871: %s" % exc)
 srv.listen(4)
 srv.settimeout(1.0)
+owner = os.getppid()
 pid = os.fork()
 if pid == 0:
     # The peer must not inherit the gate's stdio pipes: holding them open
@@ -152,6 +135,10 @@ if pid == 0:
     conns = []
     deadline = time.time() + 300
     while time.time() < deadline:
+        try:
+            os.kill(owner, 0)
+        except ProcessLookupError:
+            break
         try:
             conn, _ = srv.accept()
             conns.append(conn)   # held open, never written to
@@ -165,10 +152,10 @@ vgate_setup_python <<'PY'
 import os, shutil, sys
 rd = os.environ["RUN_DIR"]
 share = os.environ.get("VG_SHARE") or os.path.join(rd, "share")
-src = os.path.join(".build", "go", "WEB.ELF")
+src = os.path.join(".build", "go", "WEB-GATE.ELF")
 if not os.path.exists(src):
     sys.exit("WEB.ELF missing (expected " + src + ") - build it first: "
-             "bash tools/go/build-web.sh browser WEB")
+             "bash tools/go/build-web.sh browser WEB --gate")
 shutil.copy(src, os.path.join(share, "WEB.ELF"))
 for src_name, dst_name in (("gate-page.html", "PAGE.HTML"), ("gate-next.html", "NEXT.HTML"),
                            ("hostile.html", "HOSTILE.HTML")):
@@ -187,10 +174,10 @@ if not os.path.exists(corpus):
 shutil.copy(corpus, os.path.join(share, "CORPUS.HTML"))
 print("staged WEB.ELF (%d bytes) + PAGE.HTML/NEXT.HTML" %
       os.path.getsize(os.path.join(share, "WEB.ELF")))
-gofetch = os.path.join(".build", "go", "GOFETCH.ELF")
+gofetch = os.path.join(".build", "go", "GOFETCH-GATE.ELF")
 if not os.path.exists(gofetch):
     sys.exit("GOFETCH.ELF missing (expected " + gofetch + ") - build it first: "
-             "bash tools/go/build-web.sh fetch GOFETCH")
+             "bash tools/go/build-web.sh fetch GOFETCH --gate")
 shutil.copy(gofetch, os.path.join(share, "GOFETCH.ELF"))
 print("staged GOFETCH.ELF (%d bytes)" % os.path.getsize(os.path.join(share, "GOFETCH.ELF")))
 PY
@@ -215,8 +202,71 @@ cmd = [
     "--body", "live-web-https-ok\n", "--accept", "2", "--timeout", "3600",
 ]
 log = open(os.path.join(rd, "tlsresponder.log"), "wb")
-proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+watch = os.path.join("user", "go", "browser", "peer_watch.py")
+proc = subprocess.Popen([sys.executable, watch, str(os.getppid())] + cmd,
+                        stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
 print("live-web 12: tlsresponder pid=%d on 127.0.0.1:24533" % proc.pid)
+PY
+
+vgate_setup_python <<'PY'
+# Original stand-ins, real DNS names, separate loopback TLS peers. The runner's
+# fixed A answer is 93.184.216.34; using it as the DNS peer too needs one ARP
+# identity, not a host/SDK change. No public internet is reached.
+import os, shutil, subprocess, sys
+run = os.environ["RUN_DIR"]
+share = os.environ.get("VG_SHARE") or os.path.join(run, "share")
+production = os.path.join(".build", "go", "WEB.ELF")
+if not os.path.exists(production):
+    sys.exit("build production first: bash tools/go/build-web.sh browser WEB")
+shutil.copy(production, os.path.join(share, "WEB-PROD.ELF"))
+reference = os.path.join("tests", "fixtures", "web", "reference")
+references = [os.path.join(reference, name) for name in os.listdir(reference) if name.endswith(".html")]
+largest_source = max(references, key=lambda path: os.path.getsize(path))
+# reference_work_test.go inventories retained nodes + boxes + paint items.
+# Wikipedia is the largest render-work reference, not the slightly larger
+# source-only flex fixture whose layout emits a single paint item.
+largest = os.path.join(reference, "wikipedia.html")
+shutil.copy(largest, os.path.join(share, "M93-LARGEST.HTML"))
+print("M93 largest retained-work reference:", largest, os.path.getsize(largest))
+print("M93 largest source-only reference:", largest_source, os.path.getsize(largest_source))
+fx = os.path.join(run, "m93-fx")
+os.makedirs(fx, exist_ok=True)
+base = os.path.join("user", "src", "lib", "tls", "vectors", "fx")
+key = os.path.join(base, "leaf-ec.key")
+csr, leaf, expired = (os.path.join(fx, n) for n in ("stand.csr", "stand.pem", "expired.pem"))
+ext = os.path.join(fx, "stand.ext")
+open(ext, "w").write(
+    "basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\n"
+    "extendedKeyUsage=serverAuth\n"
+    "subjectAltName=DNS:en.wikipedia.org,DNS:github.com,DNS:developer.mozilla.org\n")
+subprocess.check_call(["openssl", "req", "-new", "-key", key,
+                      "-subj", "/CN=en.wikipedia.org", "-out", csr])
+common = ["openssl", "x509", "-req", "-in", csr, "-CA", os.path.join(base, "inter.pem"),
+          "-CAkey", os.path.join(base, "inter.key"), "-CAserial", os.path.join(fx, "serial"),
+          "-CAcreateserial", "-extfile", ext]
+subprocess.check_call(common + ["-days", "30", "-out", leaf])
+subprocess.check_call(common + ["-not_before", "20200101000000Z",
+                                "-not_after", "20200102000000Z", "-out", expired])
+def chain(source, name):
+    path = os.path.join(fx, name)
+    open(path, "wb").write(open(source, "rb").read() +
+                          open(os.path.join(base, "inter.pem"), "rb").read())
+    return path
+cert = chain(leaf, "stand-chain.pem")
+expired_cert = chain(expired, "expired-chain.pem")
+peer = os.path.join("user", "go", "browser", "standin_responder.py")
+watch = os.path.join("user", "go", "browser", "peer_watch.py")
+for port, certificate, negative in (
+        (24560, cert, False), (24561, os.path.join(base, "chain-ec.pem"), True),
+        (24562, expired_cert, True)):
+    log = open(os.path.join(run, "m93-peer-%d.log" % port), "wb")
+    command = [sys.executable, peer, "--port", str(port), "--cert", certificate,
+               "--key", key, "--timeout", "3600"]
+    if negative:
+        command.append("--negative")
+    proc = subprocess.Popen([sys.executable, watch, str(os.getppid())] + command,
+                            stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+    print("M93 original peer pid=%d port=%d" % (proc.pid, port))
 PY
 
 # --- boot 01: a local page renders (markers + pixels) --------------------
@@ -245,40 +295,8 @@ vgate_assert 01 serial-contains 'web: ready'
 vgate_assert 01 serial-absent 'web: error'
 vgate_assert 01 serial-absent '[EXC] parking:'
 vgate_assert 01 snapshot 'snap-01-*.raw' <<'PY'
-import sys
-data = open(sys.argv[1], "rb").read()
-w = 1280
-X, Y = 40, 28          # the browser window origin on the scanout
-def px(x, y):
-    k = (y * w + x) * 4
-    return (data[k + 2], data[k + 1], data[k])
-def near(c, want, tol=6):
-    return all(abs(a - b) <= tol for a, b in zip(c, want))
-PAGE_BG = (0x18, 0x20, 0x26)
-INK = (0xe6, 0xed, 0xf3)
-ACCENT = (0x3b, 0x82, 0xf6)
-SURFACE = (0x22, 0x2d, 0x35)
-CHROME = (0x11, 0x17, 0x1c)
-fails = []
-content = [(xx, yy) for yy in range(Y + 52, Y + 368, 2) for xx in range(X + 10, X + 500, 3)]
-bg = sum(1 for xx, yy in content if near(px(xx, yy), PAGE_BG))
-if bg < 3000:
-    fails.append(f"page bg {bg}")
-ink = sum(1 for xx, yy in content if near(px(xx, yy), INK, 2))
-if ink < 200:
-    fails.append(f"text ink {ink}")
-accent = sum(1 for xx, yy in content if near(px(xx, yy), ACCENT, 8))
-if accent < 20:
-    fails.append(f"link accent {accent}")
-surf = sum(1 for xx, yy in content if near(px(xx, yy), SURFACE, 6))
-if surf < 100:
-    fails.append(f"pre surface {surf}")
-chrome = sum(1 for yy in range(Y + 18, Y + 30) for xx in range(X + 6, X + 500, 4)
-             if near(px(xx, yy), CHROME))
-if chrome < 100:
-    fails.append(f"chrome band {chrome}")
-assert not fails, "WEB-FAILS: " + "; ".join(fails)
-print("live-web 01 pixels ok")
+import subprocess, sys
+subprocess.check_call([sys.executable, 'user/go/browser/pixel_probe.py', sys.argv[1], 'page'])
 PY
 
 # --- boot 02: a pointer click on the in-page link replaces the page ------
@@ -287,7 +305,7 @@ vgate_run 02 -- \
     --via-virtio --cvc-snap \
     --snapshot-out '$RUN_DIR/snap-02' \
     --script '$RUN_DIR/script-nav.txt' \
-    --pointer-virtio "53,82,c" --pointer-virtio-after "web: settled" \
+    --pointer-virtio "42,95,c" --pointer-virtio-after "web: settled" \
     --snapshot-after "web: settled" \
     --snapshot-after "web: navigated" \
     --script-expect "web: nav-ready" --timeout 120
@@ -308,35 +326,10 @@ vgate_assert 02 serial-contains 'web: nav /host/NEXT.HTML'
 vgate_assert 02 serial-contains 'web: navigated'
 vgate_assert 02 serial-contains 'web: nav-ready'
 vgate_assert 02 serial-absent '[EXC] parking:'
-vgate_assert 02 snapshot 'snap-02-*.raw' <<'SNAPEOF'
-import sys
-data = open(sys.argv[1], "rb").read()
-w = 1280
-X, Y = 40, 28
-def px(x, y):
-    k = (y * w + x) * 4
-    return (data[k + 2], data[k + 1], data[k])
-def ink(c):
-    return c[0] > 200 and c[1] > 200 and c[2] > 200
-SURFACE = (0x22, 0x2d, 0x35)
-# NEXT.HTML is a heading plus one short paragraph: it must show ink near the
-# top of the content box ...
-n = sum(1 for yy in range(Y + 52, Y + 110)
-        for xx in range(X + 10, X + 300)
-        if ink(px(xx, yy)))
-# ... and it must NOT still show PAGE.HTML's monospace block, whose surface
-# fill is the discriminator between "navigated" and "old page still on screen".
-surf = sum(1 for yy in range(Y + 52, Y + 372, 2)
-           for xx in range(X + 10, X + 500, 3)
-           if all(abs(a - b) <= 6 for a, b in zip(px(xx, yy), SURFACE)))
-fails = []
-if n < 20:
-    fails.append(f"next-page ink {n}")
-if surf != 0:
-    fails.append(f"old page's pre block still visible ({surf} surface px)")
-assert not fails, "WEB-NAV-FAILS: " + "; ".join(fails)
-print(f"live-web 02 nav pixels ok (ink={n}, stale surface={surf})")
-SNAPEOF
+vgate_assert 02 snapshot 'snap-02-*.raw' <<'PY'
+import subprocess, sys
+subprocess.check_call([sys.executable, 'user/go/browser/pixel_probe.py', sys.argv[1], 'next'])
+PY
 
 # --- boot 03: HTTP fetch over the host TCP responder --------------------
 vgate_run 03 -- \
@@ -362,20 +355,8 @@ vgate_assert 03 serial-absent 'web: poll err='
 vgate_assert 03 serial-absent '[EXC] parking:'
 vgate_assert 03 output-contains "NET-TCP: answered the guest's HTTP request with 200 OK"
 vgate_assert 03 snapshot 'snap-03-*.raw' <<'PY'
-import sys
-data = open(sys.argv[1], "rb").read()
-w = 1280
-X, Y = 40, 28
-def px(x, y):
-    k = (y * w + x) * 4
-    return (data[k + 2], data[k + 1], data[k])
-def ink(c):
-    return c[0] > 200 and c[1] > 200 and c[2] > 200
-n = sum(1 for yy in range(Y + 52, Y + 130)
-        for xx in range(X + 10, X + 400)
-        if ink(px(xx, yy)))
-assert n >= 40, f"fetched body ink {n}"
-print("live-web 03 fetch pixels ok")
+import subprocess, sys
+subprocess.check_call([sys.executable, 'user/go/browser/pixel_probe.py', sys.argv[1], 'fetch'])
 PY
 
 # --- boot 04: a missing target renders an error page, still settles -----
@@ -581,20 +562,8 @@ assert int(fields.get("downloads", 0)) >= 1, "downloads did not survive the rest
 print("live-web 10 restart-persistence ok (%s)" % line.strip())
 PY
 vgate_assert 10 snapshot 'snap-10-*.raw' <<'PY'
-import sys
-data = open(sys.argv[1], "rb").read()
-w = 1280
-X, Y = 40, 28
-def px(x, y):
-    k = (y * w + x) * 4
-    return (data[k + 2], data[k + 1], data[k])
-def ink(c):
-    return c[0] > 200 and c[1] > 200 and c[2] > 200
-n = sum(1 for yy in range(Y + 52, Y + 130)
-        for xx in range(X + 10, X + 400)
-        if ink(px(xx, yy)))
-assert n >= 40, f"offline copy body ink {n}"
-print(f"live-web 10 offline pixels ok (ink={n})")
+import subprocess, sys
+subprocess.check_call([sys.executable, 'user/go/browser/pixel_probe.py', sys.argv[1], 'fetch'])
 PY
 
 # --- boot 11: a hostile page is inert ------------------------------------
@@ -624,20 +593,8 @@ vgate_assert 11 serial-absent 'web: download'
 vgate_assert 11 serial-absent 'web: budget over'
 vgate_assert 11 serial-absent '[EXC] parking:'
 vgate_assert 11 snapshot 'snap-11-*.raw' <<'PY'
-import sys
-data = open(sys.argv[1], "rb").read()
-w = 1280
-X, Y = 40, 28
-def px(x, y):
-    k = (y * w + x) * 4
-    return (data[k + 2], data[k + 1], data[k])
-def ink(c):
-    return c[0] > 200 and c[1] > 200 and c[2] > 200
-n = sum(1 for yy in range(Y + 52, Y + 200)
-        for xx in range(X + 10, X + 480)
-        if ink(px(xx, yy)))
-assert n >= 80, f"hostile page ink {n}"
-print(f"live-web 11 hostile-page pixels ok (ink={n})")
+import subprocess, sys
+subprocess.check_call([sys.executable, 'user/go/browser/pixel_probe.py', sys.argv[1], 'hostile'])
 PY
 
 # --- boot 12: GOFETCH.ELF https in-process (issue #1447) ------------------
@@ -834,48 +791,216 @@ vgate_assert 14 serial-contains 'web: settled'
 vgate_assert 14 serial-contains 'web: ready'
 vgate_assert 14 serial-absent 'web: error'
 vgate_assert 14 serial-absent '[EXC] parking:'
-vgate_assert 14 snapshot 'snap-14-0.raw' <<'PY'
+vgate_assert 14 snapshot 'snap-14-*.raw' <<'PY'
+import subprocess, sys
+subprocess.check_call([sys.executable, 'user/go/browser/pixel_probe.py', sys.argv[1], 'corpus'])
+PY
+
+# 15: type Wikipedia, click its internal link, back/forward/back, then GET.
+# The fixed 2.5 s pointer transport pacing includes inert toolbar moves while
+# the translated URL strokes arrive; every transition is independently pinned
+# by program nav markers, real peer GET lines and final pixels.
+vgate_run 15 -- \
+    --screen '$RUN_DIR/screen' --via-virtio --cvc-snap \
+    --snapshot-out '$RUN_DIR/snap-15' \
+    --net '$RUN_DIR/cap15.bin' --net-arp-respond 93.184.216.34 \
+    --net-dns-respond 93.184.216.34 \
+    --net-tcp-respond 93.184.216.34:24560:relay --net-tcp-respond-relay 127.0.0.1:24560 \
+    --script '$RUN_DIR/script-m93-start.txt' \
+    --input-string $'https://en.wikipedia.org:24560/wiki/Harbor\n' --input-string-after 'web: url-focus' \
+    --pointer-virtio '100,68,c;100,68;100,68;100,68;100,68;100,68;100,68;100,68;100,68;100,68;100,68;100,68;100,68;100,68;100,68;100,68;100,68;100,68;100,68;100,68;42,95,c;50,67,c;66,67,c;50,67,c;515,123,c' \
+    --pointer-virtio-after 'web: ready' \
+    --snapshot-after 'web: nav https://en.wikipedia.org:24560/wiki/Harbor' \
+    --snapshot-after 'web: nav https://en.wikipedia.org:24560/w/index.php?search=Zig' \
+    --script-expect 'web: nav-ready n=6' --timeout 240
+
+vgate_assert 15 serial-contains 'web: url-focus'
+vgate_assert 15 serial-contains 'web: dns en.wikipedia.org 93.184.216.34'
+vgate_assert 15 serial-contains 'web: tls en.wikipedia.org virelai-gate-roots-2026-09-14'
+vgate_assert 15 serial-contains 'web: nav https://en.wikipedia.org:24560/m93-next'
+vgate_assert 15 serial-contains 'web: history back'
+vgate_assert 15 serial-contains 'web: history forward'
+vgate_assert 15 serial-contains 'web: form-get'
+vgate_assert 15 serial-contains 'web: nav https://en.wikipedia.org:24560/w/index.php?search=Zig'
+vgate_assert 15 serial-contains 'web: nav-ready n=6'
+vgate_assert 15 serial-absent 'web: error'
+vgate_assert 15 serial-absent 'web: budget over'
+vgate_assert 15 serial-absent '[EXC] parking:'
+vgate_assert 15 python <<'PY'
+import os, shutil
+path = os.path.join(os.environ["RUN_DIR"], "m93-peer-24560.log")
+peer = open(path).read()
+assert "SNI en.wikipedia.org" in peer
+assert "request GET /wiki/Harbor HTTP/1.0" in peer
+assert "request GET /m93.css HTTP/1.0" in peer
+assert peer.count("request GET /m93-next HTTP/1.0") >= 2, "forward did not refetch the internal link"
+assert peer.count("request GET /wiki/Harbor HTTP/1.0") >= 3, "back navigation did not restore the article"
+assert "request GET /w/index.php?search=Zig HTTP/1.0" in peer, "successful controls were not sent exactly"
+assert "request POST " not in peer
+shutil.copyfile(path, os.path.join("artifacts", "m93f", "runs", "wiki-peer-evidence.log"))
+print("M93f Wikipedia: DNS/SNI, typed URL, click, back/forward/back and exact GET proved")
+PY
+vgate_assert 15 snapshot 'snap-15-*.raw' <<'PY'
 import sys
 data = open(sys.argv[1], "rb").read()
-w = 1280
-X, Y = 40, 28
-CX, CY, CW, CH = 8, 50, 496, 322
-def px(x, y):
-    k = (y * w + x) * 4
-    return (data[k + 2], data[k + 1], data[k])
-def near(c, want, tol=6):
-    return all(abs(a - b) <= tol for a, b in zip(c, want))
-PAGE_BG = (0x18, 0x20, 0x26)
-INK = (0xe6, 0xed, 0xf3)
-ink = text = 0
-rows = []
-for yy in range(CY, CY + CH):
-    n = 0
-    for xx in range(CX, CX + CW):
-        c = px(X + xx, Y + yy)
-        if not near(c, PAGE_BG, 12):
-            n += 1
-            ink += 1
-        if near(c, INK, 12):
-            text += 1
-    rows.append(n)
-bands = 0
-i = 0
-while i < len(rows):
-    if rows[i] == 0:
-        i += 1
-        continue
-    bands += 1
-    while i < len(rows) and rows[i] > 0:
-        i += 1
-print("live-web 14 corpus: ink=%d text-ink=%d bands=%d" % (ink, text, bands))
-fails = []
-if ink < 1500:
-    fails.append("the corpus page painted only %d px" % ink)
-if text < 100:
-    fails.append("only %d px of text ink: the page did not lay out as prose" % text)
-if bands < 4:
-    fails.append("the corpus page produced %d ink bands: a multi-paragraph page was expected" % bands)
-assert not fails, "WEB-CORPUS-FAILS: " + "; ".join(fails)
-print("live-web 14 ok: the M70d corpus page opens on WEB.ELF")
+assert len(data) == 1280*720*4
+pixels = [tuple(data[(y*1280+x)*4+i] for i in (2,1,0))
+          for y in range(92,380) for x in range(40,552)]
+assert sum(c == (0x18,0x20,0x26) for c in pixels) > 10000
+assert sum(min(c) > 150 for c in pixels) > 20, "GET result page has no text"
+print("M93f GET result scanout has page fill and text")
+PY
+
+# 16/17: independently type GitHub/MDN and follow one original internal link.
+vgate_run 16 -- \
+    --screen '$RUN_DIR/screen' --via-virtio --cvc-snap \
+    --snapshot-out '$RUN_DIR/snap-16' \
+    --net '$RUN_DIR/cap16.bin' --net-arp-respond 93.184.216.34 --net-dns-respond 93.184.216.34 \
+    --net-tcp-respond 93.184.216.34:24560:relay --net-tcp-respond-relay 127.0.0.1:24560 \
+    --script '$RUN_DIR/script-m93-start.txt' \
+    --input-chords ctrl-l --input-chords-after 'web: ready' \
+    --input-string $'https://github.com:24560/mattn/go-runewidth\n' --input-string-after 'web: url-focus' \
+    --pointer-virtio '42,95,c' --pointer-virtio-after 'web: nav https://github.com:24560/mattn/go-runewidth' \
+    --snapshot-after 'web: nav https://github.com:24560/m93-next' \
+    --script-expect 'web: nav-ready n=2' --timeout 240
+
+vgate_assert 16 serial-contains 'web: dns github.com 93.184.216.34'
+vgate_assert 16 serial-contains 'web: tls github.com virelai-gate-roots-2026-09-14'
+vgate_assert 16 serial-contains 'web: nav https://github.com:24560/m93-next'
+vgate_assert 16 serial-contains 'web: nav-ready n=2'
+vgate_assert 16 serial-absent 'web: error'
+vgate_assert 16 serial-absent 'web: budget over'
+vgate_assert 16 serial-absent '[EXC] parking:'
+vgate_assert 16 python <<'PY'
+import os
+peer = open(os.path.join(os.environ["RUN_DIR"], "m93-peer-24560.log")).read()
+assert "SNI github.com" in peer
+assert "request GET /mattn/go-runewidth HTTP/1.0" in peer
+assert "request GET /m93-next HTTP/1.0" in peer
+print("M93f GitHub stand-in GET/SNI and internal link proved")
+PY
+vgate_assert 16 snapshot 'snap-16-*.raw' <<'PY'
+import sys
+data = open(sys.argv[1], "rb").read()
+pixels = [tuple(data[(y*1280+x)*4+i] for i in (2,1,0))
+          for y in range(92,160) for x in range(40,552)]
+assert sum(min(c) > 150 for c in pixels) > 20, "internal page has no text"
+print("M93f GitHub internal page scanout has text")
+PY
+
+vgate_run 17 -- \
+    --screen '$RUN_DIR/screen' --via-virtio --cvc-snap \
+    --snapshot-out '$RUN_DIR/snap-17' \
+    --net '$RUN_DIR/cap17.bin' --net-arp-respond 93.184.216.34 --net-dns-respond 93.184.216.34 \
+    --net-tcp-respond 93.184.216.34:24560:relay --net-tcp-respond-relay 127.0.0.1:24560 \
+    --script '$RUN_DIR/script-m93-start.txt' \
+    --input-chords ctrl-l --input-chords-after 'web: ready' \
+    --input-string $'https://developer.mozilla.org:24560/en-US/docs/Web/CSS/display\n' --input-string-after 'web: url-focus' \
+    --pointer-virtio '42,95,c' --pointer-virtio-after 'web: nav https://developer.mozilla.org:24560/en-US/docs/Web/CSS/display' \
+    --snapshot-after 'web: nav https://developer.mozilla.org:24560/m93-next' \
+    --script-expect 'web: nav-ready n=2' --timeout 240
+
+vgate_assert 17 serial-contains 'web: dns developer.mozilla.org 93.184.216.34'
+vgate_assert 17 serial-contains 'web: tls developer.mozilla.org virelai-gate-roots-2026-09-14'
+vgate_assert 17 serial-contains 'web: nav https://developer.mozilla.org:24560/m93-next'
+vgate_assert 17 serial-contains 'web: nav-ready n=2'
+vgate_assert 17 serial-absent 'web: error'
+vgate_assert 17 serial-absent 'web: budget over'
+vgate_assert 17 serial-absent '[EXC] parking:'
+vgate_assert 17 python <<'PY'
+import os
+peer = open(os.path.join(os.environ["RUN_DIR"], "m93-peer-24560.log")).read()
+assert "SNI developer.mozilla.org" in peer
+assert "request GET /en-US/docs/Web/CSS/display HTTP/1.0" in peer
+assert "request GET /m93-next HTTP/1.0" in peer
+print("M93f MDN stand-in GET/SNI and internal link proved")
+PY
+vgate_assert 17 snapshot 'snap-17-*.raw' <<'PY'
+import sys
+data = open(sys.argv[1], "rb").read()
+pixels = [tuple(data[(y*1280+x)*4+i] for i in (2,1,0))
+          for y in range(92,160) for x in range(40,552)]
+assert sum(min(c) > 150 for c in pixels) > 20, "internal page has no text"
+print("M93f MDN internal page scanout has text")
+PY
+
+# 18: name mismatch. Reverting the browser verification/SNI name to the old
+# leaf.example.com incorrectly passes this peer and makes this negative red.
+vgate_run 18 -- \
+    --screen '$RUN_DIR/screen' --via-virtio --cvc-snap \
+    --net '$RUN_DIR/cap18.bin' --net-arp-respond 93.184.216.34 --net-dns-respond 93.184.216.34 \
+    --net-tcp-respond 93.184.216.34:24561:relay --net-tcp-respond-relay 127.0.0.1:24561 \
+    --script '$RUN_DIR/script-m93-name.txt' --script-expect 'web: ready' --timeout 180
+
+vgate_assert 18 serial-contains 'web: error tls-hostname-mismatch'
+vgate_assert 18 serial-contains 'web: ready'
+vgate_assert 18 serial-absent 'web: fetch '
+vgate_assert 18 serial-absent 'web: tls '
+vgate_assert 18 serial-absent 'web: budget over'
+vgate_assert 18 serial-absent '[EXC] parking:'
+vgate_assert 18 python <<'PY'
+import os
+peer = open(os.path.join(os.environ["RUN_DIR"], "m93-peer-24561.log")).read()
+assert "SNI wrong.example.com" in peer
+assert "m93f-peer: request " not in peer, "wrong-host request escaped validation"
+print("M93f wrong-host browser refuses before GET")
+PY
+
+vgate_run 19 -- \
+    --screen '$RUN_DIR/screen' --via-virtio --cvc-snap \
+    --net '$RUN_DIR/cap19.bin' --net-arp-respond 93.184.216.34 --net-dns-respond 93.184.216.34 \
+    --net-tcp-respond 93.184.216.34:24562:relay --net-tcp-respond-relay 127.0.0.1:24562 \
+    --script '$RUN_DIR/script-m93-expired.txt' --script-expect 'web: ready' --timeout 180
+
+vgate_assert 19 serial-contains 'web: error tls-expired'
+vgate_assert 19 serial-absent 'web: fetch '
+vgate_assert 19 serial-absent 'web: tls '
+vgate_assert 19 serial-absent 'web: budget over'
+vgate_assert 19 serial-absent '[EXC] parking:'
+
+# 20: the real production build must reject the very CA that gate builds trust.
+vgate_run 20 -- \
+    --screen '$RUN_DIR/screen' --via-virtio --cvc-snap \
+    --net '$RUN_DIR/cap20.bin' --net-arp-respond 93.184.216.34 --net-dns-respond 93.184.216.34 \
+    --net-tcp-respond 93.184.216.34:24560:relay --net-tcp-respond-relay 127.0.0.1:24560 \
+    --script '$RUN_DIR/script-m93-production.txt' --script-expect 'web: ready' --timeout 180
+
+vgate_assert 20 serial-contains 'tls: roots virelai-nss-15-940706e6f856'
+vgate_assert 20 serial-contains 'web: error tls-unknown-root'
+vgate_assert 20 serial-absent 'web: fetch '
+vgate_assert 20 serial-absent 'web: tls '
+vgate_assert 20 serial-absent 'web: budget over'
+vgate_assert 20 serial-absent '[EXC] parking:'
+
+# 21: cold largest retained-work reference and actual kernel ownership receipt.
+# Receipt sampling is anchored after the program's published frame, not an
+# estimated heap counter. The script's receipt text is independently asserted.
+vgate_run 21 -- \
+    --screen '$RUN_DIR/screen' --via-virtio --cvc-snap \
+    --script '$RUN_DIR/script-m93-largest.txt' \
+    --script2 '$RUN_DIR/script-m93-receipt.txt' --script2-after 'web: ready' \
+    --script-expect 'record_failures=0 unrecorded_pages=0 reaped=0' --timeout 180
+
+vgate_assert 21 serial-contains 'web: url /host/M93-LARGEST.HTML'
+vgate_assert 21 serial-contains 'web: settled'
+vgate_assert 21 serial-contains 'web: ready'
+vgate_assert 21 serial-contains 'runtime-receipt: pid='
+vgate_assert 21 serial-absent 'web: budget over'
+vgate_assert 21 serial-absent 'web: error'
+vgate_assert 21 serial-absent '[EXC] parking:'
+vgate_assert 21 python <<'PY'
+import os, re
+serial = open(os.environ["VG_SER"], errors="replace").read()
+receipts = [line for line in serial.splitlines()
+            if line.startswith("runtime-receipt: pid=") and " name=WEB.ELF " in line]
+assert receipts, "no intact WEB ownership receipt"
+fields = dict(re.findall(r"(\w+)=([^\s]+)", receipts[-1]))
+assert int(fields["peak_pages"]) <= 3072, receipts[-1]
+assert int(fields["peak_regions"]) <= 12, receipts[-1]
+assert int(fields["record_failures"]) == 0, receipts[-1]
+budgets = [line for line in serial.splitlines() if line.startswith("web: budget ")]
+assert budgets
+times = dict(re.findall(r"([\w-]+)=(\d+)", budgets[-1]))
+assert int(times["layout-ms"])+int(times["paint-ms"]) <= 500, budgets[-1]
+print("M93 largest reference actual demand/region/render ceilings proved:", receipts[-1])
 PY

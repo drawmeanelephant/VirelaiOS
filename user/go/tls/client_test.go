@@ -101,6 +101,85 @@ func TestClientHelloShape(t *testing.T) {
 	}
 }
 
+func TestLiteralIPOmitsSNIWithoutChangingVerificationName(t *testing.T) {
+	for _, host := range []string{"10.0.0.2", "127.0.0.1", "::1"} {
+		c := &client{host: host, verify: true}
+		var empty [32]byte
+		ch := c.buildClientHello(empty, empty, empty)
+		r := newWireReader(ch[4:])
+		_, _ = r.u16()
+		_, _ = r.take(32)
+		_, _ = r.vec8()
+		_, _ = r.vec16()
+		_, _ = r.vec8()
+		exts, err := r.vec16()
+		if err != nil {
+			t.Fatal(err)
+		}
+		er := newWireReader(exts)
+		for !er.atEnd() {
+			kind, err := er.u16()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := er.vec16(); err != nil {
+				t.Fatal(err)
+			}
+			if kind == extServerName {
+				t.Fatalf("IP literal emitted SNI: %s", host)
+			}
+		}
+		if c.host != host || !c.verify {
+			t.Fatal("IP identity verification changed")
+		}
+	}
+}
+
+type recordInput struct{ data []byte }
+
+func (r *recordInput) read(p []byte) (int, error) {
+	n := copy(p, r.data)
+	r.data = r.data[n:]
+	if n == 0 {
+		return 0, errStreamClosed
+	}
+	return n, nil
+}
+func (r *recordInput) write([]byte) (int, error) { return 0, errTransport }
+func (r *recordInput) close() error              { return nil }
+
+func TestAuthenticatedCloseNotifyIsEOF(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		payload []byte
+		tamper  bool
+		eof     bool
+	}{
+		{"close", []byte{1, 0}, false, true},
+		{"fatal", []byte{2, 40}, false, false},
+		{"malformed", []byte{0}, false, false},
+		{"tampered", []byte{1, 0}, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cipher, _ := newAES128(make([]byte, 16))
+			out := &loopbackTransport{}
+			w := &client{t: out, state: stateConnected, writeKeysReady: true, writeCipher: cipher}
+			if err := w.sendRecord(tc.payload, ctAlert); err != nil {
+				t.Fatal(err)
+			}
+			if tc.tamper {
+				out.written[6] ^= 1
+			}
+			r := &client{t: &recordInput{data: out.written}, state: stateConnected,
+				readEncrypted: true, readCipher: cipher}
+			_, err := r.read(make([]byte, 1))
+			if (err == errStreamClosed) != tc.eof || err == nil {
+				t.Fatalf("alert err=%v wantEOF=%v", err, tc.eof)
+			}
+		})
+	}
+}
+
 func TestServerHelloRFC8448(t *testing.T) {
 	shBytes := mustHex(t, rfc8448Flight[1].bytes) // ServerHello, header included
 	suite, peer, ok, err := parseServerHello(shBytes[4:])

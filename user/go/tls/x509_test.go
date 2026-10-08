@@ -316,17 +316,19 @@ func TestValidateNameConstraints(t *testing.T) {
 	}
 }
 
-// The vendored root must be the exact fixture root the live gate serves.
-func TestVendoredRootIsTheFixtureRoot(t *testing.T) {
+// Only the separately tagged gate build trusts the fixture root.
+func TestVendoredRootMatchesBuildPolicy(t *testing.T) {
 	want := fixtureDER(t, "root")
-	if !bytes.Equal(vendoredRootDER, want) {
-		t.Fatal("vendored root != live-gate fixture root")
-	}
 	if string(defaultStore.version) != vendoredRootVersion {
 		t.Fatal("store version mismatch")
 	}
-	if defaultStore.findIssuer(mustIssuer(t, "inter")) == nil {
-		t.Fatal("vendored root does not issue the fixture intermediate")
+	issuer := defaultStore.findIssuer(mustIssuer(t, "inter"))
+	if gateRoots {
+		if len(vendoredRoots) != 1 || !bytes.Equal(vendoredRoots[0].der, want) || issuer == nil {
+			t.Fatal("gate store must contain only the exact fixture root")
+		}
+	} else if len(vendoredRoots) != 15 || issuer != nil {
+		t.Fatal("production store must contain fifteen roots and reject the fixture")
 	}
 }
 

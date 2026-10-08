@@ -70,6 +70,7 @@ func (t *viTransport) close() error { return t.conn.Close() }
 type TLSConn struct {
 	cl   *client
 	conn *vi.Conn
+	t    *viTransport
 }
 
 // Dial connects to addr:port and handshakes. serverName is what goes into
@@ -86,8 +87,30 @@ func Dial(addr string, port uint16, serverName string) (*TLSConn, error) {
 	if serverName == "" {
 		serverName = addr
 	}
-	c := &TLSConn{conn: conn}
-	c.cl = newClient(newVITransport(conn), serverName, vi.Time(), viRandom, true)
+	return Handshake(conn, serverName, 0)
+}
+
+// Handshake takes ownership of a connected socket, including every failure
+// path. serverName is always verified; literal IPs omit SNI, not validation.
+// deadline is an absolute vi.Nanos instant. Zero keeps the legacy stream
+// bounds. Browser callers resolve/connect separately, then pass the earlier
+// of their handshake and whole-page deadlines.
+func Handshake(conn *vi.Conn, serverName string, deadline int64) (*TLSConn, error) {
+	if conn == nil {
+		return nil, errTransport
+	}
+	if serverName == "" {
+		_ = conn.Close()
+		return nil, errBadServerName
+	}
+	t := newVITransport(conn)
+	t.st.deadlineAt = deadline
+	c := &TLSConn{conn: conn, t: t}
+	c.cl = newClient(t, serverName, vi.Time(), viRandom, true)
+	if err := t.st.checkDeadline(); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
 	if err := c.cl.handshake(); err != nil {
 		_ = conn.Close()
 		return nil, err
@@ -118,6 +141,11 @@ func viRandom(p []byte) error {
 // Write sends data as one or more AEAD records (chunked to the 2^14 record
 // limit), advancing only by confirmed sends.
 func (c *TLSConn) Write(p []byte) (int, error) {
+	if c.t != nil {
+		if err := c.t.st.checkDeadline(); err != nil {
+			return 0, err
+		}
+	}
 	sent := 0
 	for sent < len(p) {
 		take := len(p) - sent
@@ -134,8 +162,27 @@ func (c *TLSConn) Write(p []byte) (int, error) {
 
 // Read returns application data.
 func (c *TLSConn) Read(p []byte) (int, error) {
+	if c.t != nil {
+		if err := c.t.st.checkDeadline(); err != nil {
+			return 0, err
+		}
+	}
 	return c.cl.read(p)
 }
+
+// SetDeadline bounds all subsequent stream reads/writes, including buffered
+// plaintext and progress. It never changes certificate validity or trust.
+func (c *TLSConn) SetDeadline(deadline int64) {
+	if c != nil && c.t != nil {
+		c.t.st.deadlineAt = deadline
+	}
+}
+
+// IsTimeout distinguishes a stream deadline from certificate/record errors.
+func IsTimeout(err error) bool { return err == errStreamTimeout }
+
+// IsPeerClosed reports orderly TLS close_notify or a drained TCP FIN.
+func IsPeerClosed(err error) bool { return err == errStreamClosed }
 
 // Close sends close_notify and tears the TCP connection down.
 func (c *TLSConn) Close() error { return c.cl.close() }

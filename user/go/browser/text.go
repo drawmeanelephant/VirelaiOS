@@ -1,10 +1,9 @@
 package main
 
 import (
-	"strings"
-
 	"virelai/vi"
 	"virelai/webrender"
+	"virelai/webstyle"
 )
 
 // Text plumbing for the browser: load the faces the share stages, pick a text
@@ -30,7 +29,7 @@ const (
 const maxFontBytes = 512 * 1024
 
 // maxImageBytes bounds one <img> read from the share.
-const maxImageBytes = 1024 * 1024
+const maxImageBytes = webstyle.MaxImageBytes
 
 // readWholeFile reads up to max bytes of a share file. It is the browser's own
 // reader rather than vi.ReadFileAll because that helper clamps every request to
@@ -121,25 +120,22 @@ func textProbeString(t webrender.TextEngine) string {
 		" italic-face=" + italicFace
 }
 
-// resolveImage supplies <img> bytes to the renderer. Layout never reads a file
-// itself; this is the app's side of that seam (ADR 0028 D1/D3). Remote sources
-// are refused outright — an <img> is not a reason to open a socket, and this
-// browser has no image-over-network path.
+// resolveImage returns only preflighted sources during layout. Resource reads
+// and decoded-pixel accounting happen before building boxes.
 func (a *app) resolveImage(src string) ([]byte, bool) {
 	if src == "" {
 		return nil, false
 	}
-	low := strings.ToLower(src)
-	if strings.HasPrefix(low, "http://") || strings.HasPrefix(low, "https://") {
+	if a.imageSources != nil {
+		data := a.imageSources[src]
+		return data, len(data) > 0
+	}
+	// Host-test/direct callers retain a bounded resource refusal path.
+	target := relativeTo(a.target, src)
+	resolved, kind := resolveInput(target)
+	if kind != "file" {
 		return nil, false
 	}
-	path := src
-	if !strings.HasPrefix(path, "/") {
-		path = relativeTo(a.target, src)
-	}
-	data := readWholeFile(path, maxImageBytes)
-	if len(data) == 0 {
-		return nil, false
-	}
-	return data, true
+	data := readWholeFile(resolved, maxImageBytes+1)
+	return data, len(data) > 0 && len(data) <= maxImageBytes
 }
