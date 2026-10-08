@@ -8,6 +8,14 @@
 # amplifying this pinned tiny build; never presented as normal build timing.
 # Owner must release M94b's window first. No competing VM/build/test work;
 # hold /tmp/virelai-vz.lock and record uptime before/after (no load floor).
+#
+# M94g (#2007) appends two boots. `session` runs ONE combined OBSERVE
+# process over a real GOEDIT -heap session: ADR 0043 D7 budgets 16 tasks
+# and three separate viewers would need 23, so OBSERVE is one four-task
+# process carrying the M94b filtered tracer, the M94c 100 Hz sampler, and
+# the M94d kernel-memstat/in-process-series join. `combined` re-runs the
+# M94c fixed-work fixture under all three at once against the D6 <3%
+# combined-overhead bound (the <2% profiler-only boot above is unchanged).
 # exec-order: assert-proven -- all end markers are emitted by the guest tool.
 vgate_name live-observe "M94c: 100 Hz IRQ sampler, fixed-work overhead <2%, symbolized Go compile"
 vgate_share seed
@@ -160,4 +168,226 @@ for rank, count, name in rows:
         rank, html.escape(name), count, largest, count)
 out = os.path.join("artifacts", "live-observe-compile-top.html")
 open(out, "w").write(page)
+PY
+
+# --- M94g (#2007) session: one OBSERVE over a real GOEDIT -heap session ---
+# OBSERVE attaches (-p) after GOEDIT presents, so the editor's own markers
+# stay ahead of the armed window; the chords are gated on 'observe: armed'
+# so all five edit/save cycles are traced, profiled and heap-observed.
+# GOEDIT.ELF is stripped (-s -w); GOEDITSYM.ELF is the identical source
+# linked with -w only — the symbol donor for the profiler leg. The -watch
+# path is the WriteFileSafe publish target: a save is the rename landing
+# on it. 'observe: done' is emitted only after saves>=5 AND the heap leg's
+# own 'heap: done', so a missing leg cannot satisfy the end marker.
+vgate_setup_python <<'PY'
+import os, shutil, sys
+share = os.environ.get("VG_SHARE") or os.path.join(os.environ["RUN_DIR"], "share")
+for name, builder in (("GOEDIT", "tools/go/build-goedit.sh"),
+                      ("GOEDITSYM", "tools/go/build-observe.sh"),
+                      ("OBSERVE", "tools/go/build-observe.sh")):
+    src = os.path.join(".build", "go", name + ".ELF")
+    if not os.path.exists(src):
+        sys.exit(name + ".ELF missing: bash " + builder)
+    shutil.copy(src, os.path.join(share, name + ".ELF"))
+ed = os.path.join(share, "EDIT")
+os.makedirs(ed, exist_ok=True)
+with open(os.path.join(ed, "OBSERVE.TXT"), "wb") as f:
+    f.write(b"observe-seed\n")
+PY
+
+vgate_file observe-script.txt <<'EOF'
+tabwm
+tabwm start
+EOF
+vgate_file observe-script2.txt <<'EOF'
+exec GOEDIT.ELF /host/EDIT/OBSERVE.TXT -heap
+EOF
+vgate_file observe-script3.txt <<'EOF'
+exec OBSERVE.ELF -p GOEDIT.ELF -sym GOEDITSYM.ELF -watch /host/EDIT/OBSERVE.TXT
+EOF
+
+vgate_run session -- \
+    --screen '$RUN_DIR/screen-session' --via-virtio \
+    --console-tcp '127.0.0.1:24842' \
+    --script '$RUN_DIR/observe-script.txt' \
+    --script2 '$RUN_DIR/observe-script2.txt' --script2-after 'tabwm: sidebar-rendered' \
+    --script3 '$RUN_DIR/observe-script3.txt' --script3-after 'goedit: present' \
+    --input-chords 'A,ctrl-s,B,ctrl-s,C,ctrl-s,D,ctrl-s,E,ctrl-s' \
+    --input-chords-after 'observe: armed' \
+    --script-expect 'observe: done' --timeout 240
+
+# While the session is armed, a TCP console client asks the monitor for the
+# task table: the D7 budget is kernel 3 + seat 4 + GOEDIT 4 + OBSERVE 4 =
+# 15/16. The capture is asserted below; serial carries the same table.
+vgate_client session -- --addr '127.0.0.1:24842' --after 'observe: armed' \
+    --send-text 'tasks' --expect 'zombies=' --timeout 60
+
+vgate_assert session serial-contains 'tabwm: sidebar-rendered'
+vgate_assert session serial-contains 'exec: loaded GOEDIT.ELF'
+vgate_assert session serial-contains 'exec: loaded OBSERVE.ELF'
+vgate_assert session serial-contains 'goedit: present'
+vgate_assert session serial-contains 'observe: armed pid='
+vgate_assert session serial-contains 'observe: summary'
+vgate_assert session serial-contains 'observe: done'
+vgate_assert session serial-absent 'observe: deadline'
+vgate_assert session serial-absent 'observe: memstat'
+vgate_assert session serial-absent '[EXC] parking:'
+vgate_assert session serial-absent 'fatal error:'
+vgate_assert session serial-absent 'exited status=139'
+
+# Trace leg: the save path is decoded, not just recorded — each Ctrl-S is
+# open(~tmp,WRITE|CREATE) -> write(len=n)=n -> fsync -> close -> delete ->
+# rename(~tmp -> OBSERVE.TXT); five cycles.
+vgate_assert session serial-count 'sys_file_open(path="/host/EDIT/OBSERVE.TXT~"' 5
+vgate_assert session serial-count 'sys_file_rename(arg0="/host/EDIT/OBSERVE.TXT~"' 5
+vgate_assert session serial-contains 'sys_file_write(fd='
+vgate_assert session serial-count 'goedit: saved /host/EDIT/OBSERVE.TXT' 5
+
+# Heap leg: GOEDIT's in-process publisher is joined with kernel memstats by
+# the SAME OBSERVE process (not a second viewer); no false leak call.
+vgate_assert session serial-contains 'heap: kernel app=GOEDIT.ELF'
+vgate_assert session serial-contains 'heap: sample app=GOEDIT.ELF'
+vgate_assert session serial-contains 'heap: done app=GOEDIT.ELF'
+vgate_assert session serial-absent 'heap: leak suspected'
+vgate_assert session serial-absent 'heap: publisher error'
+
+# Profile leg: symbolized GOEDIT hotspots land in the folded/top reports
+# the combiner writes via prof.Save.
+vgate_assert session serial-contains 'prof: samples='
+vgate_assert session serial-contains 'prof: top '
+vgate_assert session share-contains 'PROF/GOEDIT.folded' ' '
+vgate_assert session share-contains 'HEAP/GOEDIT.ELF.TXT' 'H1 '
+
+# The live task table, captured through the console TCP bridge mid-session.
+vgate_assert session client-contains 'pool='
+vgate_assert session client-contains 'zombies='
+
+vgate_assert session python <<'PY'
+import os, re
+ser = open(os.environ["VG_SER"], errors="replace").read()
+share = os.environ["VG_SHARE"]
+
+# Correctness: the observed save is byte-exact on the host — the seed plus
+# the five injected characters, five times over (n grows 13..17).
+path = os.path.join(share, "EDIT", "OBSERVE.TXT")
+got = open(path, "rb").read()
+assert got == b"observe-seed\nABCDE", "saved bytes mismatch: %r" % got
+saves = [int(n) for n in re.findall(
+    r"goedit: saved /host/EDIT/OBSERVE\.TXT n=(\d+)", ser)]
+assert saves == [13, 14, 15, 16, 17], saves
+print("OBSERVED save sizes:", saves, "final bytes:", got)
+
+# Trace leg, quantitative: every save publishes n bytes; at least one
+# decoded write carries exactly the final length with that same result.
+writes = re.findall(
+    r"sys_file_write\(fd=\d+, buf=0x[0-9a-f]+, len=(\d+)\) = (\d+)", ser)
+assert writes, "no decoded sys_file_write"
+assert any(int(n) == 17 and int(n) == int(rc) for n, rc in writes), writes
+print("OBSERVED decoded write lengths:", sorted({int(n) for n, _ in writes}))
+
+# Summary: the one line the combiner owes — saves, drops, profile, heap.
+m = re.search(r"observe: summary app=GOEDIT\.ELF saves=(\d+) "
+              r"trace_dropped=(\d+) profile_samples=(\d+) "
+              r"profile_dropped=(\d+) symbolized_pct=([0-9.]+) "
+              r"heap_samples=(\d+) heap_live=(\d+)", ser)
+assert m, "no observe summary"
+saves_n, trace_d, prof_n, prof_d, sym, heap_n, live = m.groups()
+assert int(saves_n) == 5, saves_n
+assert int(trace_d) == 0 and int(prof_d) == 0, "observer lost records"
+assert int(prof_n) > 0 and float(sym) >= 90, (prof_n, sym)
+assert int(heap_n) >= 5 and int(live) > 0, (heap_n, live)
+print("OBSERVED summary:", m.group(0))
+
+# Profile leg: top is non-empty and names a real GOEDIT frame (the donor
+# resolves the stripped image; a Go main package symbolizes as main.*).
+top = re.findall(r"prof: top \d+ samples=\d+ (.+)", ser)
+assert top and len(top) <= 10
+assert any(name.startswith("main.") or "virelai/edit" in name or
+           name.startswith("runtime.") for name in top), top
+print("OBSERVED top:", top)
+
+# Heap leg: joined samples are the publisher's own series (pre-edit sample
+# before the first save, live bytes moving across edits).
+samples = list(re.finditer(
+    r"heap: sample app=GOEDIT\.ELF pid=(\d+) seq=(\d+) live=(\d+)", ser))
+assert len(samples) >= 5
+first_save = re.search(r"goedit: saved /host/EDIT/OBSERVE\.TXT", ser)
+assert samples[0].start() < first_save.start(), "no pre-edit joined sample"
+assert any(int(x[3]) != int(samples[0][3]) for x in samples[1:]), \
+    "live bytes never moved across five edits"
+print("OBSERVED heap live-bytes series:", [int(x[3]) for x in samples])
+
+# Task budget: the mid-session `tasks` table on the client capture — the
+# four-task combiner must be ONE process, and the whole pool stays <=16.
+cap_path = os.path.join(os.environ["RUN_DIR"], "client-session.out")
+cap = open(cap_path, errors="replace").read()
+m = re.search(r"tasks: enabled=1 current=\d+ switches=\d+ pool=(\d+)/(\d+) "
+              r"zombies=(\d+)", cap)
+assert m, "no tasks header in client capture"
+pool, maximum = int(m[1]), int(m[2])
+assert maximum == 16, maximum
+assert pool <= maximum, "pool %d exceeds %d" % (pool, maximum)
+rows = re.findall(r"^  (\S+)\s+saves=\d+", cap, re.M)
+obs = sum(1 for name in rows if "OBSERVE" in name)
+gedit = sum(1 for name in rows if "GOEDIT" in name)
+assert obs == 4, "combined observer must be one four-task process: %r" % rows
+assert gedit == 4, rows
+assert len(rows) == pool, (len(rows), pool, rows)
+print("OBSERVED tasks pool=%d/16 rows=%r" % (pool, rows))
+PY
+
+# --- M94g (#2007) combined: fixed-work under tracer+sampler+heap poll ----
+# The same xorshift kernel and interleaved off/on pairs as the M94c boot
+# above, but "on" arms all three observers on OBSERVE itself: the tracer
+# with an empty slot mask (every call is a filtered check), the 100 Hz
+# sampler, and the 1/s heap memstat poll. ADR 0043 D6's last row: median
+# paired overhead <3%.
+vgate_file observe-combined.txt <<'EOF'
+set GOMAXPROCS=1
+exec -c1 OBSERVE.ELF overhead
+EOF
+
+vgate_run combined -- --script '$RUN_DIR/observe-combined.txt' \
+    --script-expect 'observe: overhead done' --timeout 180
+
+vgate_assert combined serial-contains 'observe: overhead'
+vgate_assert combined serial-contains 'observe: drops'
+vgate_assert combined serial-absent '[EXC] parking:'
+vgate_assert combined serial-absent 'fatal error:'
+vgate_assert combined python <<'PY'
+import os, re, statistics
+ser = open(os.environ["VG_SER"], errors="replace").read()
+runs = re.findall(
+    r"observe: work mode=(off|on) run=(\d+) ns=(\d+) checksum=([0-9a-f]+)", ser)
+assert len(runs) == 10, "need exactly 5 interleaved off/on pairs"
+assert [(mode, int(n)) for mode, n, _, _ in runs] == [
+    (mode, pair) for pair in range(1, 6) for mode in ("off", "on")
+], "off/on runs are not paired and interleaved"
+assert len({c for _, _, _, c in runs}) == 1, "work differs"
+durations = {}
+for mode in ("off", "on"):
+    durations[mode] = [int(ns) for m, _, ns, _ in runs if m == mode]
+    assert all(ns > 0 for ns in durations[mode]), "nonpositive timing"
+paired = [(enabled - baseline) / baseline for baseline, enabled in
+          zip(durations["off"], durations["on"])]
+overhead = statistics.median(paired)
+print("OBSERVED combined fixed-work ns:", durations,
+      "paired_median_overhead_pct:", 100 * overhead,
+      "paired_min/max_pct:", 100 * min(paired), 100 * max(paired))
+assert overhead < 0.03, "combined median paired overhead >= 3%"
+summary = re.search(
+    r"observe: overhead pairs=5 off_median_ns=(\d+) on_median_ns=(\d+) "
+    r"overhead_pct=(-?[0-9.]+)", ser)
+assert summary, "no guest overhead summary"
+assert (int(summary[1]), int(summary[2])) == (
+    int(statistics.median(durations["off"])),
+    int(statistics.median(durations["on"]))), "median arithmetic differs"
+assert abs(float(summary[3]) - 100 * overhead) <= 0.000001
+drops = re.search(
+    r"observe: drops sample_dropped=(\d+) trace_dropped=(\d+) "
+    r"heap_polls=(\d+)", ser)
+assert drops, "no drop report"
+assert int(drops[1]) == 0 and int(drops[2]) == 0, "observer lost records"
+assert int(drops[3]) >= 1, "heap poll never ran while armed"
+print("OBSERVED drops:", drops.groups())
 PY
