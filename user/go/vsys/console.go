@@ -1,5 +1,10 @@
 package vsys
 
+import (
+	"runtime"
+	"sync/atomic"
+)
+
 // SlotWrite is sys_write(fd, buf, len) (ADR 0007). Virelai has ONE console,
 // so both runtime descriptors alias to it and fd is accepted then ignored.
 const (
@@ -18,6 +23,7 @@ const (
 // the image's own RW data), so every chunk is staged here first — the same
 // reason the runtime's write1 stages into virWriteStaging.
 var virConsoleStaging [256]byte
+var virConsoleHeld uint32
 
 // Print writes s to the process console. It is the fixture-facing output
 // path (os.Stdout's stand-in until the std os port lands). The kernel caps a
@@ -28,9 +34,15 @@ func Print(s string) {
 	if len(s) > 256 {
 		s = s[:256]
 	}
+	// Hold the global uaccess buffer until sys_write has consumed it.
+	// Cooperative scheduling must let its owner run even with only one P.
+	for !atomic.CompareAndSwapUint32(&virConsoleHeld, 0, 1) {
+		runtime.Gosched()
+	}
 	copy(virConsoleStaging[:], s)
 	r := syscallFn(SlotWrite, 1, strPtr(virConsoleStaging[:len(s)]), uintptr(len(s)), 0)
 	_ = r
+	atomic.StoreUint32(&virConsoleHeld, 0)
 }
 
 // Println writes s followed by a newline.
