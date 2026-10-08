@@ -29,8 +29,6 @@ import (
 	"fmt"
 	"os"
 	"runtime"
-	"sync/atomic"
-	"time"
 
 	"virelai/heap"
 	"virelai/prof"
@@ -268,38 +266,28 @@ func fixedWork(seed uint64) uint64 {
 	return seed
 }
 
-// observer runs the heap memstat poll — at most once a second (the ADR
-// 0043 poll budget) — while the observer set is armed. It sleeps between
-// rounds; making it spin is the spec's red/green-revert knob.
-func observer(pid uint64, armed *atomic.Bool, done <-chan struct{}, polls *uint64) {
-	lastHeap := int64(0)
-	for {
-		select {
-		case <-done:
-			return
-		default:
-		}
-		if armed.Load() {
-			if now := vi.Nanos(); now-lastHeap >= 1_000_000_000 {
-				if kernel, elapsed, err := vi.HeapStatTimed(pid); err == nil {
-					vi.ConsoleLine(fmt.Sprintf("heap: kernel app=OBSERVE.ELF pid=%d pages=%d peak_pages=%d regions=%d static_pages=%d total_pages=%d record_failures=%d cntpct=%d snapshot_ns=%d",
-						kernel.PID, kernel.LivePages, kernel.PeakPages, kernel.LiveRegions,
-						kernel.StaticPages, kernel.TotalPages, kernel.RecordFailures, kernel.CNTPCT, elapsed))
-					atomic.AddUint64(polls, 1)
-					lastHeap = now
-				}
-			}
-		}
-		// A short tick, not the memstat budget: the 1 s spacing above is
-		// what keeps the poll inside ADR 0043; this only decides how soon
-		// the goroutine notices the armed edge inside a ~0.3 s run window.
-		time.Sleep(50 * time.Millisecond)
+// heapPoll is one kernel-memstat poll — the same timed syscall the
+// session leg drives at 1 Hz. In overhead mode it runs inline inside the
+// measured window: under GOMAXPROCS=1 (which the fixture pins so the work
+// stays single-core) a polling goroutine cannot interleave with a
+// CPU-bound loop — the virelai runtime has no signal preemption — so the
+// poll's own cost lands inside the on window instead, which is the
+// conservative accounting: the full snapshot cost is charged to the
+// measured run.
+func heapPoll(pid uint64) error {
+	kernel, elapsed, err := vi.HeapStatTimed(pid)
+	if err != nil {
+		return err
 	}
+	vi.ConsoleLine(fmt.Sprintf("heap: kernel app=OBSERVE.ELF pid=%d pages=%d peak_pages=%d regions=%d static_pages=%d total_pages=%d record_failures=%d cntpct=%d snapshot_ns=%d",
+		kernel.PID, kernel.LivePages, kernel.PeakPages, kernel.LiveRegions,
+		kernel.StaticPages, kernel.TotalPages, kernel.RecordFailures, kernel.CNTPCT, elapsed))
+	return nil
 }
 
 // overhead measures M94c's fixed-work kernel with the combined load: 5
 // pairs of off/on runs where "on" arms the filtered tracer (empty slot
-// mask), the 100 Hz sampler and the heap poll on OBSERVE itself.
+// mask), the 100 Hz sampler and the heap memstat poll on OBSERVE itself.
 func overhead() error {
 	runtime.GOMAXPROCS(1)
 	row, err := prof.FindTarget("OBSERVE.ELF")
@@ -307,11 +295,7 @@ func overhead() error {
 		return fail(err)
 	}
 	pid := row.PID
-	armed := &atomic.Bool{}
-	done := make(chan struct{})
 	var polls uint64
-	defer close(done)
-	go observer(pid, armed, done, &polls)
 
 	sink = fixedWork(1)
 	const pairs = 5
@@ -336,11 +320,15 @@ func overhead() error {
 			_ = traceSess.Disarm()
 			return fail(perr)
 		}
-		armed.Store(true)
 		t0 = vi.Nanos()
+		// The heap leg inside the measured window: one memstat poll whose
+		// syscalls are themselves filtered trace checks, then the work.
+		if e := heapPoll(pid); e != nil {
+			return fail(e)
+		}
+		polls++
 		v = fixedWork(1)
 		on[i] = vi.Nanos() - t0
-		armed.Store(false)
 		if v != sink || on[i] <= 0 {
 			return fail(fmt.Errorf("invalid fixed-work result or clock"))
 		}
@@ -385,7 +373,7 @@ func overhead() error {
 	vi.ConsoleLine(fmt.Sprintf("observe: overhead pairs=%d off_median_ns=%d on_median_ns=%d overhead_pct=%.6f",
 		pairs, sortInts(&off), sortInts(&on), 100*ratios[pairs/2]))
 	vi.ConsoleLine(fmt.Sprintf("observe: drops sample_dropped=%d trace_dropped=%d heap_polls=%d",
-		droppedSamples, droppedRecords, atomic.LoadUint64(&polls)))
+		droppedSamples, droppedRecords, polls))
 	vi.ConsoleLine("observe: overhead done")
 	return nil
 }
