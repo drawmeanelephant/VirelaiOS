@@ -21,7 +21,27 @@
 //! - Multi-lock paths acquire their domains in canonical order and may
 //!   end with `kernel`: the exit/fault teardown takes all five; exec
 //!   takes FILE then KERNEL; the IRQ tick's protected work takes EV
-//!   then KERNEL (try-only, rotation never waits).
+//!   then KERNEL (try-only, rotation never waits). A nested path may
+//!   also take `kernel` while holding an EARLIER domain — uaccess
+//!   write-page resolution inside a socket/file syscall takes KERNEL
+//!   under NET/FILE — because `kernel` is last, that is still the
+//!   canonical direction.
+//! - `kernel` is the LAST service-domain lock, and the scheduler's own
+//!   locks nest under all five (scheduler.zig: `sched_lock` is brief,
+//!   ring locks innermost). The total order is therefore
+//!
+//!     file < net < win < ev < kernel < sched_lock < ring locks
+//!
+//! - A path that would take a LOWER-ranked lock while holding a higher
+//!   one may NOT: it releases its held bits, takes the needed set
+//!   canonically, and re-acquires its bits so the outer caller's paired
+//!   release stays balanced (`sys_thread`'s exit op inside a
+//!   KERNEL-holding dispatch, monitor `time`'s nested exec — both do
+//!   release_set(held_bits()) / acquire_set(...) around the nested
+//!   path), or it defers the work to a lock-free beat (the exit-kill
+//!   conversion's non-prefix guard). kernel/tests/lock_order_test.zig
+//!   drives the real dispatchers through the acquire-order witness
+//!   below to keep this rule enforced.
 //!
 //! Why IRQ-masking matters (the claim-2369/9498 lesson): a holder whose
 //! IRQs stay enabled can be preempted mid-critical-section, and a masked
@@ -93,12 +113,16 @@ pub const SvcLock = struct {
     holder: usize = cores,
     /// The pre-acquire DAIF per core, restored by the matching release.
     saved_daif: [cores]u64 = [_]u64{0} ** cores,
+    /// This lock's canonical-order bit, so the host-test order witness
+    /// can record which domain each acquisition took (0 = untagged).
+    tag: u5 = 0,
 
     /// Enter (spinning). IRQs are masked for the whole hold so the holder
     /// can never be preempted mid-critical-section. Callers that may
     /// already hold this lock on the same core must check `held()` first.
     pub fn acquire(self: *SvcLock) void {
         const c = core_id();
+        order_witness.note(held_bits(), self.tag);
         self.saved_daif[c] = mask_irq_save();
         self.gate.lock();
         self.holder = c;
@@ -127,8 +151,10 @@ pub const SvcLock = struct {
     /// paused holder is mid-way through. Callers skip their work.
     pub fn try_acquire(self: *SvcLock) bool {
         const c = core_id();
+        const held_before = held_bits();
         if (self.holder == c) return false;
         if (!self.gate.try_lock()) return false;
+        order_witness.note(held_before, self.tag);
         self.saved_daif[c] = mask_irq_save(); // already masked in IRQ context; the restore is a no-op
         self.holder = c;
         return true;
@@ -148,11 +174,11 @@ pub fn dom_bit(d: Dom) u5 {
 
 pub const all_bits: u5 = dom_bit(.file) | dom_bit(.net) | dom_bit(.win) | dom_bit(.ev) | dom_bit(.kernel);
 
-pub var file = SvcLock{};
-pub var net = SvcLock{};
-pub var win = SvcLock{};
-pub var ev = SvcLock{};
-pub var kernel = SvcLock{};
+pub var file = SvcLock{ .tag = dom_bit(.file) };
+pub var net = SvcLock{ .tag = dom_bit(.net) };
+pub var win = SvcLock{ .tag = dom_bit(.win) };
+pub var ev = SvcLock{ .tag = dom_bit(.ev) };
+pub var kernel = SvcLock{ .tag = dom_bit(.kernel) };
 
 /// NOTE: every multi-lock helper below is UNROLLED per domain on purpose.
 /// A runtime switch over the domain enum (a `lock_for(d)` helper) makes
@@ -175,6 +201,66 @@ pub fn held_set(bits: u5) bool {
     if (take_bit(.kernel, bits) and !kernel.held()) return false;
     return true;
 }
+
+/// The domain bits the calling core currently holds. Sites that must
+/// take a lower-ranked domain under a higher hold use this to drop
+/// their entire hold before the nested acquisition and to re-acquire
+/// it afterwards (see the module header's total-order rule).
+pub fn held_bits() u5 {
+    const c = core_id();
+    var out: u5 = 0;
+    if (file.holder == c) out |= dom_bit(.file);
+    if (net.holder == c) out |= dom_bit(.net);
+    if (win.holder == c) out |= dom_bit(.win);
+    if (ev.holder == c) out |= dom_bit(.ev);
+    if (kernel.holder == c) out |= dom_bit(.kernel);
+    return out;
+}
+
+// ---------------------------------------------------------------------------
+// Host-test acquire-order witness. A single-core host cannot observe the
+// two-core deadlock the canonical order prevents, so every svclock
+// acquisition records its held-mask-before and taken-bit in these bounded
+// parallel rings; kernel/tests/lock_order_test.zig drives the REAL
+// dispatchers and flags any entry whose taken bit does not exceed every
+// bit already held — a held-while-acquiring inversion is then a failing
+// assertion, not a hang. Outside test builds `note` is a no-op and the
+// rings are never emitted.
+// ---------------------------------------------------------------------------
+pub const order_witness = struct {
+    const cap: usize = 64;
+    var held_ring: [cap]u5 = undefined;
+    var taken_ring: [cap]u5 = undefined;
+    var len: usize = 0;
+
+    fn note(held: u5, taken: u5) void {
+        if (comptime !builtin.is_test) return;
+        if (len >= cap) return;
+        held_ring[len] = held;
+        taken_ring[len] = taken;
+        len += 1;
+    }
+
+    /// Forget every recorded acquisition (call before driving a probe).
+    pub fn reset() void {
+        len = 0;
+    }
+
+    /// Acquisitions recorded since `reset`.
+    pub fn count() usize {
+        return len;
+    }
+
+    /// The held mask acquisition `i` observed just before taking.
+    pub fn held_at(i: usize) u5 {
+        return held_ring[i];
+    }
+
+    /// The domain bit acquisition `i` took.
+    pub fn taken_at(i: usize) u5 {
+        return taken_ring[i];
+    }
+};
 
 /// The bits in `bits` the calling core does NOT already hold.
 fn missing(bits: u5) u5 {

@@ -1937,7 +1937,17 @@ fn cmd_dmesg(m: *Monitor, args: []const []const u8) ExecError {
 /// ticks and wall-clock time for any command.
 fn cmd_time(m: *Monitor, args: []const []const u8) ExecError {
     const start_ticks = timer.ticks;
+    // Canonical lock order (svclock.zig): the nested exec acquires
+    // KERNEL|dom, and this command already runs under exec's KERNEL hold —
+    // KERNEL is LAST in the order, so taking a lower-ranked domain under
+    // it would invert the order and close a cycle with the domain->KERNEL
+    // takes (uaccess write-page resolution inside socket/file syscalls).
+    // Drop the outer hold, let the nested exec acquire canonically, then
+    // re-take so exec's paired release stays balanced.
+    const outer = svclock.held_bits();
+    svclock.release_set(outer);
     const result = exec(m, args);
+    svclock.acquire_set(outer);
     const end_ticks = timer.ticks;
     const elapsed = end_ticks - start_ticks;
     // Convert ticks to seconds: the GIC timer fires at 24 MHz, but the
