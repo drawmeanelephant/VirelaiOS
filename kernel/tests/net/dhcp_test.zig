@@ -227,6 +227,10 @@ test "dhcp: the four-message handshake — INIT -> SELECTING -> REQUESTING -> BO
     try std.testing.expectEqualSlices(u8, &.{ 10, 0, 0, 5 }, &dhcp.lease_server);
     try std.testing.expectEqual(@as(u32, 3600), dhcp.lease_time);
     try std.testing.expectEqualSlices(u8, &.{ 10, 0, 0, 5 }, &arp.own_ip);
+    // The off-subnet card: the lease's mask/router land in the ARP layer
+    // — the routing input the default gateway + on-link checks read.
+    try std.testing.expectEqualSlices(u8, &.{ 255, 255, 255, 0 }, &arp.own_mask);
+    try std.testing.expectEqualSlices(u8, &.{ 10, 0, 0, 1 }, &arp.gateway);
 }
 
 test "dhcp: out-of-sequence + malformed replies are counted, never assumed away" {
@@ -411,13 +415,19 @@ test "dhcp: expire releases the address and falls back to INIT (attempts reset)"
     dhcp.lease_ip = .{ 10, 0, 0, 2 };
     dhcp.state = .bound;
     arp.own_ip = dhcp.lease_ip;
+    arp.own_mask = .{ 255, 255, 0, 0 };
+    arp.gateway = dhcp.lease_ip;
     dhcp.attempts = 2;
 
     expire();
     try std.testing.expectEqual(State.idle, dhcp.state);
     try std.testing.expectEqual(@as(u64, 1), dhcp.expired);
     // The address is released honestly — the client no longer owns it.
+    // The lease-sourced routing inputs go with it: the default /24 mask
+    // returns and the explicit gateway is withdrawn.
     try std.testing.expectEqualSlices(u8, &.{ 0, 0, 0, 0 }, &arp.own_ip);
+    try std.testing.expectEqualSlices(u8, &.{ 255, 255, 255, 0 }, &arp.own_mask);
+    try std.testing.expectEqualSlices(u8, &.{ 0, 0, 0, 0 }, &arp.gateway);
     try std.testing.expectEqual(@as(usize, 0), dhcp.attempts); // a fresh INIT
     try std.testing.expect(!dhcp.request_transmitted);
 }

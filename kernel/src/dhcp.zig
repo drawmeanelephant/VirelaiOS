@@ -292,6 +292,8 @@ pub fn reset() void {
     lease_gw = .{ 0, 0, 0, 0 };
     lease_server = .{ 0, 0, 0, 0 };
     lease_time = 0;
+    arp.own_mask = .{ 255, 255, 255, 0 };
+    arp.gateway = .{ 0, 0, 0, 0 };
     discover_sent = 0;
     offer_recv = 0;
     request_sent = 0;
@@ -404,12 +406,16 @@ pub fn step_lifecycle() Step {
 }
 
 /// The lease expired: release the address honestly (arp.own_ip cleared
-/// — the client no longer owns it), zero the lease record (the report
-/// shows zeros when unbound), fall back to INIT, and reset the
+/// — the client no longer owns it; the lease-sourced mask/gateway go
+/// with it — the default /24 mask returns and the off-subnet card's
+/// explicit-gateway input is withdrawn), zero the lease record (the
+/// report shows zeros when unbound), fall back to INIT, and reset the
 /// bounded-retry attempts (a fresh lease attempt). The next `net dhcp`
 /// re-DISCOVERs.
 pub fn expire() void {
     arp.own_ip = .{ 0, 0, 0, 0 };
+    arp.own_mask = .{ 255, 255, 255, 0 };
+    arp.gateway = .{ 0, 0, 0, 0 };
     lease_ip = .{ 0, 0, 0, 0 };
     lease_mask = .{ 0, 0, 0, 0 };
     lease_gw = .{ 0, 0, 0, 0 };
@@ -470,8 +476,13 @@ pub fn handle_rx(datagram: []const u8) Event {
             lease_server = p.server_id orelse p.yiaddr;
             lease_time = p.lease_time orelse 0;
             // THE one copy — DHCP overwrites the static address honestly
-            // (the report shows the old -> new).
+            // (the report shows the old -> new). The lease's mask/router
+            // land beside it (the off-subnet card's routing input: an
+            // absent mask keeps the /24 bound, an absent router leaves
+            // the .1 derivation as the default route).
             arp.own_ip = lease_ip;
+            if (p.mask != null) arp.own_mask = lease_mask;
+            arp.gateway = lease_gw;
             state = .bound;
             bound_ticks = now_ticks; // the lease (re)started now
             if (was_renewal) {
