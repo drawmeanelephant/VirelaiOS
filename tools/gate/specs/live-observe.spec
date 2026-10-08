@@ -216,8 +216,8 @@ vgate_run session -- \
     --screen '$RUN_DIR/screen-session' --via-virtio \
     --script '$RUN_DIR/observe-script.txt' \
     --script2 '$RUN_DIR/observe-script2.txt' --script2-after 'tabwm: sidebar-rendered' \
-    --script3 '$RUN_DIR/observe-script3.txt' --script3-after 'goedit: open id=' \
-    --input-chords 'A,ctrl-s,B,ctrl-s,C,ctrl-s,D,ctrl-s,E,ctrl-s' \
+    --script3 '$RUN_DIR/observe-script3.txt' --script3-after 'exec: loaded GOEDIT.ELF' \
+    --input-chords 'A,B,C,D,E,F,G,H,I,J,ctrl-s,K,L,M,N,O,P,Q,R,S,T,ctrl-s,U,V,W,X,Y,Z,1,2,3,4,ctrl-s,5,6,7,8,9,a,b,c,d,e,ctrl-s,f,g,h,i,j,k,l,m,n,o,ctrl-s' \
     --input-chords-after 'observe: armed' \
     --script-expect 'observe: done' --timeout 240
 
@@ -268,13 +268,17 @@ ser = open(os.environ["VG_SER"], errors="replace").read()
 share = os.environ["VG_SHARE"]
 
 # Correctness: the observed save is byte-exact on the host — the 13-byte
-# seed plus the five injected characters (n grows 14..18).
+# seed plus the fifty injected characters (n grows 23..63). The chords
+# type ten characters per save — five saves, but fifty keystroke->render
+# bursts so the sampler sees real main./virelai/ work, not only the
+# idle event loop's runtime.* leaves.
+typed = "ABCDEFGHIJ" + "KLMNOPQRST" + "UVWXYZ1234" + "56789abcde" + "fghijklmno"
 path = os.path.join(share, "EDIT", "OBSERVE.TXT")
 got = open(path, "rb").read()
-assert got == b"observe-seed\nABCDE", "saved bytes mismatch: %r" % got
+assert got == b"observe-seed\n" + typed.encode(), "saved bytes mismatch: %r" % got
 saves = [int(n) for n in re.findall(
     r"goedit: saved /host/EDIT/OBSERVE\.TXT n=(\d+)", ser)]
-assert saves == [14, 15, 16, 17, 18], saves
+assert saves == [23, 33, 43, 53, 63], saves
 print("OBSERVED save sizes:", saves, "final bytes:", got)
 
 # Trace leg, quantitative: every save publishes n bytes; at least one
@@ -282,7 +286,7 @@ print("OBSERVED save sizes:", saves, "final bytes:", got)
 writes = re.findall(
     r"sys_file_write\(fd=\d+, buf=0x[0-9a-f]+, len=(\d+)\) = (\d+)", ser)
 assert writes, "no decoded sys_file_write"
-assert any(int(n) == 18 and int(n) == int(rc) for n, rc in writes), writes
+assert any(int(n) == 63 and int(n) == int(rc) for n, rc in writes), writes
 print("OBSERVED decoded write lengths:", sorted({int(n) for n, _ in writes}))
 
 # Summary: the one line the combiner owes — saves, drops, profile, heap.
