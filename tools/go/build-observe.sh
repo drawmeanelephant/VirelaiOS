@@ -42,9 +42,9 @@ GOOS=virelai GOARCH=arm64 go build -o "$REPO/.build/go/GOEDITSYM.ELF" \
     -ldflags "-w" "virelai/edit"
 log "wrote GOEDITSYM.ELF"
 
-python3 - "$REPO" <<'PY'
+python3 - "$REPO" "$MAX_BYTES" <<'PY'
 import os, sys
-root = sys.argv[1]
+root, max_bytes = sys.argv[1], int(sys.argv[2])
 sys.path.insert(0, os.path.join(root, "tools/lib"))
 import elf_rules
 # OBSERVE is exec'd with arguments, so the full rule set (including the
@@ -54,7 +54,7 @@ receipt, errors = elf_rules.check_file(path, "OBSERVE.ELF")
 print("build-observe: " + receipt)
 if errors:
     sys.exit("\n".join(errors))
-if os.path.getsize(path) > 2097152:
+if os.path.getsize(path) > max_bytes:
     sys.exit("OBSERVE.ELF exceeds exec_program_max")
 # GOEDITSYM is never exec'd — it is a symbol donor read over HF — so its
 # own page slack is irrelevant (stripped GOEDIT.ELF fails that rule too,
