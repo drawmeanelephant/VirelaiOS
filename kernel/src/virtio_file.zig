@@ -439,6 +439,15 @@ fn exchange_raw(req: []const u8, reply_buf: []u8) ?u32 {
     return n;
 }
 
+/// M97d-F1 (#2087): the used-ring `writtenByteCount` is host-controlled.
+/// `wait` returns it raw (the VF-PROBE contract asserts the full 32768 via
+/// `probe_reply_len`), but every caller slices the reply buffer with it —
+/// cap it at the posted reply descriptor, the same bound the VirtioFS
+/// transport enforces (`used.len > reply_buf.len → null` there).
+fn clamped_len(n: u32, reply_buf: []u8) u32 {
+    return @intCast(@min(@as(usize, n), reply_buf.len));
+}
+
 fn exchange_raw_inner(req: []const u8, reply_buf: []u8) ?u32 {
     vf_scatter[0] = req;
     const handle = virtio_custom.submit_ex(virtio_custom.file_qidx, &vf_scatter, reply_buf, false) orelse return null;
@@ -458,7 +467,7 @@ fn exchange_raw_inner(req: []const u8, reply_buf: []u8) ?u32 {
         if (virtio_custom.wait(virtio_custom.file_qidx, handle, exchange_budget, reply_buf)) |n2| {
             virtio_custom.reap_parked();
             virtio_custom.free_chain_q(virtio_custom.file_qidx, handle);
-            return n2;
+            return clamped_len(n2, reply_buf);
         }
         virtio_custom.park_chain(handle);
         virtio_custom.reap_parked();
@@ -466,7 +475,7 @@ fn exchange_raw_inner(req: []const u8, reply_buf: []u8) ?u32 {
     };
     virtio_custom.reap_parked();
     virtio_custom.free_chain_q(virtio_custom.file_qidx, handle);
-    return n;
+    return clamped_len(n, reply_buf);
 }
 
 /// One bounded exchange on queue 5: encode the request into the shared
@@ -517,7 +526,10 @@ pub fn probe_spike() ProbeResult {
         // The transport-only probe reply is the RAW 32,768-byte pattern
         // (no [status][dlen] frame): the used ring must report the FULL
         // writtenByteCount and every byte must match the generator.
-        if (n != probe_reply_len) {
+        // #2087: `n` is the clamped length — the probe's contract is the
+        // RAW report, so assert `used_len` too; an over-reporting host
+        // must not silently pass through the clamp.
+        if (n != probe_reply_len or virtio_custom.used_len != probe_reply_len) {
             ok = false;
             break;
         }
@@ -1079,6 +1091,10 @@ pub fn write_whole(path: []const u8, data: []const u8) u8 {
         // confirmed zero can never advance the stream, so refuse honestly
         // instead of spinning.
         if (written == 0) return st_host_error;
+        // M97d-F2 (#2088): a host-confirmed count beyond the requested
+        // chunk would overshoot `data.len` and return st_ok for a SHORT
+        // file (silent integrity loss) — refuse like `write_handle` does.
+        if (written > take) return st_host_error;
         off += @intCast(written);
     }
     // M66b (#1444): every write_whole caller is a persistence consumer —
@@ -1127,7 +1143,9 @@ pub fn write_pattern(handle: u16, n: u64) WritePatternResult {
             return res;
         }
         // M66a: confirmed-zero cannot advance the pattern — refuse, don't spin.
-        if (written == 0) {
+        // M97d-F3 (#2088): an over-reported count would wrap `remaining`
+        // (ReleaseSmall: unchecked sub) into a never-ending stream — refuse.
+        if (written == 0 or written > take) {
             res.status = st_host_error;
             return res;
         }
@@ -1681,4 +1699,141 @@ test "virtio_file: live-wire STAT path via test_share" {
     try testing.expect(r.stat_ok);
     try testing.expectEqual(@as(u64, 2), r.stat_size);
     try testing.expectEqual(@as(usize, 0), r.decoded);
+}
+
+// ---------------------------------------------------------------------------
+// M97d transport-level tests (#2087 F1, #2088 F2/F3): drive the REAL
+// queue-5 exchange path (submit_ex -> wait -> decode) against an in-memory
+// used ring — not the `test_share` override. The test plays the hostile
+// host: it stages used-ring entries and fills vf_reply_buf, exactly what a
+// malicious --cvc-file server produces.
+// ---------------------------------------------------------------------------
+
+/// Scratch MMIO target for the test transport's kicks: `cv_notify` must be
+/// a real writable address on host (to_kva/to_phys are the identity).
+var test_notify_slot: u16 align(4) = 0;
+
+/// Arm queue 5 so `exchange_raw` runs the real submit/wait path against
+/// the in-memory used ring the test fills. Returns the chain head every
+/// sequential exchange reuses (a freed chain recycles tail-first, so its
+/// head pops first again) — staged used entries must carry this id.
+fn arm_test_transport() u16 {
+    const r = &virtio_custom.cv_rings[virtio_custom.file_qidx];
+    virtio_custom.ring_init(r);
+    r.notify_off = 0;
+    r.armed = true;
+    virtio_custom.cv_ready = true;
+    virtio_custom.has_file_queue = true;
+    virtio_custom.armed_queues = virtio_custom.file_qidx + 1;
+    virtio_custom.has_notification_data = false;
+    virtio_custom.cv_notify = @intFromPtr(&test_notify_slot);
+    virtio_custom.cv_notify_mult = 0;
+    virtio_custom.used_len = 0;
+    virtio_custom.parked_count = 0;
+    virtio_fs.fs_ready = false;
+    virtio_fs.fs_initialized = false;
+    return r.free[r.free_count - 1];
+}
+
+fn disarm_test_transport() void {
+    virtio_custom.cv_ready = false;
+    virtio_custom.has_file_queue = false;
+    virtio_custom.armed_queues = 0;
+    virtio_custom.cv_notify = 0;
+    virtio_custom.cv_rings[virtio_custom.file_qidx].armed = false;
+    virtio_custom.used_len = 0;
+}
+
+test "virtio_file: M97d-F1 (#2087) — a lying used-ring reply length is clamped at the exchange" {
+    // The host completes the READ with a used-ring length of 65536 —
+    // twice the posted 32 KiB reply descriptor — and a framed
+    // [ok][dlen=0xfffd] reply. Before the fix the exchange handed the raw
+    // host u32 to `vf_reply_buf[0..n]`: a ~32 KiB read past the BSS buffer
+    // (Debug: index-out-of-bounds panic; ReleaseSmall: silent over-read).
+    // Now the exchange caps n at the buffer, decode sees a truncated
+    // frame, and `read` reports st_truncated — never st_ok.
+    const head = arm_test_transport();
+    defer disarm_test_transport();
+    const r = &virtio_custom.cv_rings[virtio_custom.file_qidx];
+    r.used.ring[0] = .{ .id = head, .len = 65536 };
+    r.used.idx = 1;
+    vf_reply_buf[0] = st_ok;
+    write_le_u16(&vf_reply_buf, 1, 0xfffd); // frame claims 65533 data bytes
+    @memset(vf_reply_buf[3..], 0x42);
+    const res = read("F.TXT", 0);
+    try testing.expectEqual(st_truncated, res.status);
+    try testing.expectEqual(@as(usize, 0), res.data.len);
+    // The transport still records the RAW host report (VF-PROBE's
+    // contract) while reply_len() bounds it to the posted descriptor.
+    try testing.expectEqual(@as(u32, 65536), virtio_custom.used_len);
+    try testing.expectEqual(reply_cap, virtio_custom.reply_len());
+
+    // Positive control through the same path: an honest reply passes.
+    r.used.ring[1] = .{ .id = head, .len = reply_hdr_len + 4 };
+    r.used.idx = 2;
+    vf_reply_buf[0] = st_ok;
+    write_le_u16(&vf_reply_buf, 1, 4);
+    @memcpy(vf_reply_buf[3..7], "data");
+    const res2 = read("F.TXT", 0);
+    try testing.expectEqual(st_ok, res2.status);
+    try testing.expectEqualStrings("data", res2.data);
+}
+
+test "virtio_file: M97d-F2 (#2088) — a host write count beyond the chunk refuses, never st_ok" {
+    // write_whole's loop must advance by the host-CONFIRMED count only
+    // within the requested chunk. The staged WRITE reply reports
+    // written = u64 max against a 10-byte chunk: before the fix `off`
+    // overshot data.len, the loop "finished", and the caller saw st_ok
+    // for a file that was never written (silent integrity loss).
+    const head = arm_test_transport();
+    defer disarm_test_transport();
+    const r = &virtio_custom.cv_rings[virtio_custom.file_qidx];
+    // Exchanges consumed in order: OPEN, TRUNCATE, WRITE, FSYNC, CLOSE
+    // (the deferred close). One shared reply frame serves them all:
+    // [ok][dlen=8][8 bytes]. OPEN takes its handle from the first two
+    // data bytes; WRITE reads the 8-byte confirmed count.
+    const frame_len: u32 = reply_hdr_len + written_len;
+    var i: usize = 0;
+    while (i < 5) : (i += 1) r.used.ring[i] = .{ .id = head, .len = frame_len };
+    r.used.idx = 5;
+    vf_reply_buf[0] = st_ok;
+    write_le_u16(&vf_reply_buf, 1, written_len);
+    write_le_u64(&vf_reply_buf, reply_hdr_len, std.math.maxInt(u64));
+    try testing.expectEqual(st_host_error, write_whole("F.TXT", "0123456789"));
+
+    // Positive control: an honest in-chunk count completes the write.
+    virtio_custom.ring_init(r);
+    r.armed = true;
+    i = 0;
+    while (i < 5) : (i += 1) r.used.ring[i] = .{ .id = head, .len = frame_len };
+    r.used.idx = 5;
+    write_le_u64(&vf_reply_buf, reply_hdr_len, 10);
+    try testing.expectEqual(st_ok, write_whole("F.TXT", "0123456789"));
+}
+
+test "virtio_file: M97d-F3 (#2088) — an over-reported pattern write refuses instead of wrapping" {
+    // Same hostile count through write_pattern: written = u64 max vs a
+    // 10-byte request. Pre-fix `remaining -= written` underflowed (Debug:
+    // panic; ReleaseSmall: wraps to ~2^64 — a never-ending stream).
+    const head = arm_test_transport();
+    defer disarm_test_transport();
+    const r = &virtio_custom.cv_rings[virtio_custom.file_qidx];
+    r.used.ring[0] = .{ .id = head, .len = reply_hdr_len + written_len };
+    r.used.idx = 1;
+    vf_reply_buf[0] = st_ok;
+    write_le_u16(&vf_reply_buf, 1, written_len);
+    write_le_u64(&vf_reply_buf, reply_hdr_len, std.math.maxInt(u64));
+    const res = write_pattern(7, 10);
+    try testing.expectEqual(st_host_error, res.status);
+    try testing.expectEqual(@as(u64, 0), res.total);
+    try testing.expectEqual(@as(usize, 0), res.chunks);
+
+    // Positive control: an honest in-chunk count still streams.
+    r.used.ring[1] = .{ .id = head, .len = reply_hdr_len + written_len };
+    r.used.idx = 2;
+    write_le_u64(&vf_reply_buf, reply_hdr_len, 10);
+    const ok = write_pattern(7, 10);
+    try testing.expectEqual(st_ok, ok.status);
+    try testing.expectEqual(@as(u64, 10), ok.total);
+    try testing.expectEqual(@as(usize, 1), ok.chunks);
 }

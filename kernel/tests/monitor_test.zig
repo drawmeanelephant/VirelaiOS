@@ -2499,6 +2499,42 @@ test "monitor: write joins arguments and honestly reports no channel in a test p
     try std.testing.expect(std.mem.indexOf(u8, env.mock.contents(), "not persisted") != null);
 }
 
+test "monitor: M97d-F4 (#2089) — vf handle arguments beyond u16 are usage errors, never truncated casts" {
+    // The share override makes the channel "available" so `vf` dispatches
+    // to the subcommand handlers; the queue itself stays unarmed, so any
+    // op that reaches the transport fails honestly.
+    test_reset_share();
+    defer virtio_file.set_test_share(null);
+    test_seed_share("F.TXT", "x");
+    var env = TestEnv.init();
+    var mon = env.monitor();
+    // The console's handle argument parses as u64 then casts to the u16
+    // wire handle. Pre-fix, `vf close 65537` silently truncated to handle
+    // 1 under ReleaseSmall and acted on another process's slot in the
+    // host's GLOBAL handle table. Now every handler prints usage and
+    // returns before the cast — nothing reaches virtio_file.
+    for ([_][]const []const u8{
+        &.{ "vf", "close", "65537" },
+        &.{ "vf", "fsync", "65537" },
+        &.{ "vf", "truncate", "65537", "0" },
+        &.{ "vf", "write", "65537", "1" },
+        &.{ "vf", "close", "0x10001" }, // same truncation via the hex form
+    }) |argv| {
+        try std.testing.expectEqual(ExecError.invalid_argument, exec(&mon, argv));
+    }
+    const out = env.mock.contents();
+    try std.testing.expectEqual(@as(usize, 5), std.mem.count(u8, out, "vf usage:"));
+    try std.testing.expect(std.mem.indexOf(u8, out, "vf close: 65537") == null);
+
+    // An in-range handle still reaches the transport (which reports the
+    // honest unarmed-queue error here): the check gates out-of-range
+    // values only, it does not shadow real handles.
+    env.mock.reset();
+    try std.testing.expectEqual(ExecError.invalid_argument, exec(&mon, &.{ "vf", "close", "1" }));
+    try std.testing.expect(std.mem.indexOf(u8, env.mock.contents(), "vf close: 1:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, env.mock.contents(), "vf usage:") == null);
+}
+
 test "monitor: exec is registered and refuses honestly without a channel" {
     virtio_file.set_test_share(null); // no channel
     defer virtio_file.set_test_share(null);
