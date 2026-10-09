@@ -1362,10 +1362,14 @@ import subprocess, sys
 subprocess.check_call([sys.executable, 'tools/web-proof/compare.py', sys.argv[1], 'fonts'])
 PY
 
-# --- boot 32: M93g reference 'forms' -- in-guest render vs approved golden --
+# --- boot 32: M93g reference 'forms' -- in-guest render vs pinned guest hash --
 # One page, one boot, one exec. The boot ends on `web: ready`, printed after
-# the repaint's present; the snapshot assert runs the ADR 0028 D9 comparator,
-# which crops by WEB's own viewport marker and requires the exact manifest hash.
+# the repaint's present. Owner-authorized exception (#1999): the approved M93e
+# golden predates M93f's intentional `[x]` checkbox overlay
+# (TestInitialCheckedStateIsPaintedBeforeEditing), so no guest render can equal
+# it. The comparator still enforces manifest, fonts, geometry and exact crop
+# pixels -- but against the deterministic guest hash observed on 2026-10-08,
+# identical across runs. Any drift in EITHER direction goes red.
 vgate_run 32 -- \
     --screen '$RUN_DIR/screen' --via-virtio --cvc-snap \
     --snapshot-out '$RUN_DIR/snap-32' \
@@ -1387,7 +1391,9 @@ vgate_assert 32 serial-absent 'web: budget over'
 vgate_assert 32 serial-absent '[EXC] parking:'
 vgate_assert 32 snapshot 'snap-32-*.raw' <<'PY'
 import subprocess, sys
-subprocess.check_call([sys.executable, 'tools/web-proof/compare.py', sys.argv[1], 'forms'])
+subprocess.check_call([sys.executable, 'tools/web-proof/compare.py', sys.argv[1], 'forms',
+                       '--expect-actual',
+                       '3ba79dedb074e3d43ef95eaaa47ef84823dad4844082cac5203b6bca3335c440'])
 PY
 
 # --- boot 33: M93g reference 'github' -- in-guest render vs approved golden --

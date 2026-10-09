@@ -63,14 +63,15 @@ def burn(raw, rgb, x0=40, y0=92, w=512, h=288):
 
 class CompareTests(unittest.TestCase):
     def run_compare(self, raw, serial, manifest_path, goldens, fonts,
-                    artifacts, name="widget"):
+                    artifacts, name="widget", expect_actual=None):
         with tempfile.TemporaryDirectory() as tmp:
             scanout = Path(tmp) / "snap.raw"
             Path(scanout).write_bytes(raw)
             return compare.compare(str(scanout), serial, name,
                                    manifest_path=manifest_path,
                                    golden_dir=goldens, font_dir=fonts,
-                                   artifact_dir=artifacts)
+                                   artifact_dir=artifacts,
+                                   expect_actual=expect_actual)
 
     def test_identity(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -125,6 +126,28 @@ class CompareTests(unittest.TestCase):
             with self.assertRaises(compare.CompareError) as ctx:
                 self.run_compare(raw, serial, manifest, goldens, fonts, Path(tmp) / "d")
             self.assertIn("does not match manifest", str(ctx.exception))
+
+    def test_expect_actual_pins_guest_render(self):
+        # The owner-authorized exception path: the crop must equal a pinned
+        # hash even when it differs from the composited golden, and a wrong
+        # pin must still go red.
+        with tempfile.TemporaryDirectory() as tmp:
+            (_, golden, manifest, goldens, fonts, serial, raw, _, w, h) = make_fixture(tmp)
+            burn(raw, golden)
+            raw[(92 * compare.SCAN_W + 40) * 4 + 2] ^= 1  # diverge from golden
+            actual_hash = hashlib.sha256(
+                compare.crop_bgrx(bytes(raw), 40, 92, w, h)).hexdigest()
+            out = self.run_compare(raw, serial, manifest, goldens, fonts,
+                                   Path(tmp) / "d1", expect_actual=actual_hash)
+            self.assertEqual(out["sha256"], actual_hash)
+            with self.assertRaises(compare.CompareError) as ctx:
+                self.run_compare(raw, serial, manifest, goldens, fonts,
+                                 Path(tmp) / "d2", expect_actual="f" * 64)
+            self.assertIn("mismatch", str(ctx.exception))
+            with self.assertRaises(compare.CompareError) as ctx:
+                self.run_compare(raw, serial, manifest, goldens, fonts,
+                                 Path(tmp) / "d3", expect_actual="nothex")
+            self.assertIn("SHA-256", str(ctx.exception))
 
     def test_no_verdict(self):
         with tempfile.TemporaryDirectory() as tmp:

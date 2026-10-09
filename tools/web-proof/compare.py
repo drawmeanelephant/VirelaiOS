@@ -7,11 +7,18 @@ owner-approved presentation hash in the M93 reference manifest. Geometry comes
 from the marker and must match the manifest's recorded size and scroll; the
 crop is never re-blessed from a guest capture.
 
-Usage: compare.py SCANOUT.RAW NAME
+Usage: compare.py SCANOUT.RAW NAME [--expect-actual HASH]
   NAME is a reference page key in the manifest (e.g. wikipedia). The serial
   log is read from $VG_SER, falling back to a sibling vm-serial-<tag>.log the
   way pixel_probe.py does. On mismatch, the actual PNG, a red diff PNG and the
   mismatched-pixel count are written under artifacts/m93g/diffs/.
+
+  --expect-actual HASH is the owner-authorized exception path: instead of the
+  composited golden, the crop must equal HASH, a previously observed guest
+  render pinned by the gate spec. Every manifest, geometry and font check
+  still runs; only the expected-pixel source changes. Used for `forms`, whose
+  approved M93e golden predates M93f's intentional `[x]` checkbox overlay —
+  see #1999 and live-web.spec boot 32.
 """
 import hashlib
 import json
@@ -146,7 +153,9 @@ def composite_border(rgb, w, h):
 
 def compare(scanout_path, serial, name, manifest_path=MANIFEST,
             golden_dir=GOLDEN_DIR, font_dir=FONT_DIR,
-            artifact_dir=ARTIFACT_DIR):
+            artifact_dir=ARTIFACT_DIR, expect_actual=None):
+    if expect_actual is not None and not re.fullmatch(r"[0-9a-fA-F]{64}", expect_actual):
+        raise CompareError("--expect-actual must be a SHA-256 hex digest")
     raw = Path(scanout_path).read_bytes()
     if len(raw) != SCAN_W * SCAN_H * 4:
         raise CompareError("scanout size %d, want %d"
@@ -178,6 +187,8 @@ def compare(scanout_path, serial, name, manifest_path=MANIFEST,
     expected = composite_border(golden_rgb, w, h)
     actual = crop_bgrx(raw, x, y, w, h)
     actual_hash, want_hash = sha256(actual), sha256(expected)
+    if expect_actual is not None:
+        want_hash = expect_actual.lower()
     print("M93g reference %s: crop=%d,%d %dx%d s=%d actual=%s want=%s"
           % (name, x, y, w, h, scroll, actual_hash, want_hash))
     if actual_hash == want_hash:
@@ -197,9 +208,13 @@ def compare(scanout_path, serial, name, manifest_path=MANIFEST,
 
 
 def main():
-    if len(sys.argv) != 3:
-        raise SystemExit("usage: compare.py SCANOUT.RAW NAME")
-    scanout = sys.argv[1]
+    args = sys.argv[1:]
+    expect_actual = None
+    if len(args) == 4 and args[2] == "--expect-actual":
+        expect_actual, args = args[3], args[:2]
+    if len(args) != 2:
+        raise SystemExit("usage: compare.py SCANOUT.RAW NAME [--expect-actual HASH]")
+    scanout = args[0]
     serial_path = os.environ.get("VG_SER")
     if not serial_path:
         tag = re.search(r"-(\d+)-", Path(scanout).name)
@@ -208,7 +223,8 @@ def main():
     if not serial_path or not Path(serial_path).exists():
         raise SystemExit("cannot locate the run's serial log (set VG_SER)")
     try:
-        compare(scanout, Path(serial_path).read_text(errors="replace"), sys.argv[2])
+        compare(scanout, Path(serial_path).read_text(errors="replace"), args[1],
+                expect_actual=expect_actual)
     except CompareError as exc:
         raise SystemExit(str(exc))
 
