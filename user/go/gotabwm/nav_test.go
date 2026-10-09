@@ -402,3 +402,32 @@ func TestNavBoundsMatchTheWire(t *testing.T) {
 		t.Fatalf("navHistMax = %d, want Zig's hist_max of 8", navHistMax)
 	}
 }
+
+// The demo close countdown counts composite ticks from the LAST arm; a
+// nav-declare and a nav chord are the same class of hosted-app activity as
+// the declare/attach that armed it, so both re-arm. Without this the close
+// lands mid round trip: observed go-wm-tabs run 08 lost the queued target
+// when the countdown fired four ticks after the chord.
+func TestNavActivityReArmsDemoClose(t *testing.T) {
+	resetNav()
+	defer func() { hostTicksLeft = 0 }()
+	tabs.OpenTab(5, "Files")
+	tabs.FocusTab(5)
+
+	hostTicksLeft = 3 // mid-countdown
+	if !applyRPC(navRPC(vi.WmRpcKindNavDeclare, 5, "/host/a")) {
+		t.Fatal("nav-declare arm refused a known tab")
+	}
+	if hostTicksLeft != hostTicks {
+		t.Fatalf("hostTicksLeft = %d after nav-declare, want %d", hostTicksLeft, hostTicks)
+	}
+
+	declare(t, 5, "/host/b")
+	hostTicksLeft = 2
+	if !applyNavStep(true) {
+		t.Fatal("the back chord refused with two entries recorded")
+	}
+	if hostTicksLeft != hostTicks {
+		t.Fatalf("hostTicksLeft = %d after nav chord, want %d", hostTicksLeft, hostTicks)
+	}
+}

@@ -355,6 +355,10 @@ func applyNavStep(back bool) bool {
 		return false
 	}
 	setPendingNav(id, path)
+	// The user just acted on the hosted tab: the demo close countdown
+	// restarts, or the close can land between the queued target and the
+	// client's next poll (go-wm-tabs run 08).
+	hostTicksLeft = hostTicks
 	marker := MarkerNavForward
 	if back {
 		marker = MarkerNavBack

@@ -414,6 +414,12 @@ func applyRPC(req vi.WmRpc) bool {
 		if !known {
 			return false
 		}
+		// An app still declaring navigation is still being hosted: reset
+		// the demo close countdown the same way a declare/attach does,
+		// or the close lands in the middle of a nav round trip (observed
+		// go-wm-tabs run 08: chord at arm+12, close at arm+16 raced the
+		// client's poll for the queued target).
+		hostTicksLeft = hostTicks
 		if !changed {
 			return true
 		}
