@@ -48,6 +48,11 @@ func (p *Program) listenForResize(done chan struct{}) {
 			tty.NotifyClose()
 			p.Send(QuitMsg{})
 			return
+		default:
+			// KEY_DOWN landing here is the misbound-tty signature: the
+			// kernel's E2 fallback delivers focused keys to this queue
+			// only when the window has no terminal binding. Dropping is
+			// correct — the bound tty owns keyboard bytes.
 		}
 	}
 }

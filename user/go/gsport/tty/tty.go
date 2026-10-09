@@ -30,7 +30,9 @@ package tty
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"sync"
 
@@ -46,8 +48,9 @@ const devTTY = "/dev/tty"
 var (
 	mu     sync.Mutex
 	tab    *tabapp.TabApp
-	file   *os.File
+	ttyFd  = -1
 	in     *File
+	out    *File
 	ctl    = sig.New()
 	cols   = 0
 	rows   = 0
@@ -75,11 +78,59 @@ const (
 // bytes not yet handed to the caller; tail holds a trailing partial
 // paste marker while its end is undecided.
 type File struct {
+	// f is the host-test handle only (os.Pipe). On virelai the File
+	// carries the raw kernel fd and does I/O through abi slots: the
+	// fork's os.File layer treats an O_RDWR handle as a positional file
+	// (virPos/virCursor/virShadow bookkeeping) whose virPull drains the
+	// tty input queue internally — observed eating every injected key —
+	// and whose deferred write path would starve the window's output
+	// ring. The kernel's tty read is a position-free queue drain, so
+	// the raw syscall is the honest primitive.
+	fd      int
 	f       *os.File
 	out     []byte
 	tail    []byte
 	inPaste bool
 	scratch [512]byte
+}
+
+// readRaw is one device read: the queue drain on virelai, the pipe read
+// on host.
+func (f *File) readRaw(buf []byte) (int, error) {
+	if f.f != nil {
+		return f.f.Read(buf)
+	}
+	n, r := abi.FileRead(uint32(f.fd), buf)
+	if r < 0 {
+		return 0, abi.Check("tty_read", devTTY, r)
+	}
+	return n, nil
+}
+
+// writeRaw is one device write: the raw out-ring append on virelai, the
+// pipe write on host.
+func (f *File) writeRaw(p []byte) (int, error) {
+	if f.f != nil {
+		return f.f.Write(p)
+	}
+	n, r := abi.FileWriteAll(uint32(f.fd), p)
+	if r < 0 {
+		return n, abi.Check("tty_write", devTTY, r)
+	}
+	return n, nil
+}
+
+// inputSeen is the one-shot serial marker the gate reads as proof the
+// kernel's key push reached the bound terminal (and this File drained
+// it): 'tty: input n=<batch>' on the first non-empty read.
+var inputSeen bool
+
+func markFirstInput(n int) {
+	if inputSeen {
+		return
+	}
+	inputSeen = true
+	fmt.Printf("tty: input n=%d\n", n)
 }
 
 // Read fills p from the terminal input queue, pacing empty polls.
@@ -90,7 +141,18 @@ func (f *File) Read(p []byte) (int, error) {
 			f.out = f.out[n:]
 			return n, nil
 		}
-		n, err := f.f.Read(f.scratch[:])
+		n, err := f.readRaw(f.scratch[:])
+		// The port's os.File.Read maps the kernel's "0 bytes this pass"
+		// answer to io.EOF — on the level-triggered tty queue that is
+		// "queue empty now", not end-of-file: /dev/tty has no EOF.
+		// Propagating it ends Bubble Tea's readLoop on the first empty
+		// poll, so the byte never has a reader. Keep polling instead.
+		if errors.Is(err, io.EOF) {
+			err = nil
+		}
+		if n > 0 {
+			markFirstInput(n)
+		}
 		src := make([]byte, 0, len(f.tail)+n)
 		src = append(src, f.tail...)
 		src = append(src, f.scratch[:n]...)
@@ -167,29 +229,40 @@ func translateEnter(src []byte, paste bool) (out, tail []byte, pasteOut bool) {
 	return out, nil, paste
 }
 
-// Write delegates; Bubble Tea writes on the output file, not this one.
-func (f *File) Write(p []byte) (int, error) { return f.f.Write(p) }
+// Write appends to the terminal output ring through the raw slot —
+// never os.File, whose fork shadow layer defers write-open handles.
+func (f *File) Write(p []byte) (int, error) {
+	return f.writeRaw(p)
+}
 
 // Close is a no-op: the terminal's lifecycle belongs to Close.
 func (f *File) Close() error { return nil }
 
 // Fd is the kernel file handle — the term.File contract.
-func (f *File) Fd() uintptr { return f.f.Fd() }
+func (f *File) Fd() uintptr {
+	if f.f != nil {
+		return f.f.Fd()
+	}
+	return uintptr(f.fd)
+}
 
 // Open hosts the app's window under the seat and binds the controlling
 // terminal to it: win_open + declare_fullscreen (tabapp), open /dev/tty
-// (slot 23 through the ordinary os path — the kernel names the handle
-// .tty the moment it is opened), then sys_tty_attach(TtyWindow, win)
-// (slot 67). The kernel orders it the same way charmhello does: the
-// attach fails EINVAL unless /dev/tty is already open. The last-known
-// cell size seeds at the declared rect's grid; the seat's host-canvas
-// grant arrives as the first WIN_RESIZE the Program's event goroutine
-// consumes. On the host the open fails inside tabapp.Init with ENOSYS.
-func Open() (input *File, output *os.File, err error) {
+// (slot 23 through abi.FileOpen — raw, so the fork records no positional
+// state for the handle), then sys_tty_attach(TtyWindow, win) (slot 67).
+// The kernel orders it the same way charmhello does: the attach fails
+// EINVAL unless /dev/tty is already open. The last-known cell size seeds
+// at the declared rect's grid; the seat's host-canvas grant arrives as
+// the first WIN_RESIZE the Program's event goroutine consumes. Input and
+// output share the one kernel handle — .tty reads drain the input ring,
+// .tty writes append to the output ring — on separate File wrappers so
+// the caller's io.Reader/io.Writer seams stay distinct. On the host the
+// open fails inside tabapp.Init with ENOSYS.
+func Open() (input *File, output *File, err error) {
 	mu.Lock()
 	defer mu.Unlock()
 	if in != nil {
-		return in, file, nil
+		return in, out, nil
 	}
 	ta := tabapp.Init(tabapp.Config{
 		Name:  "GOSTALGIA.ELF",
@@ -202,21 +275,22 @@ func Open() (input *File, output *os.File, err error) {
 	if ta == nil {
 		return nil, nil, fmt.Errorf("tty: win_open refused (no seat on this platform)")
 	}
-	f, err := os.OpenFile(devTTY, os.O_RDWR, 0)
-	if err != nil {
+	h, r := abi.FileOpen(devTTY, abi.ModeRead|abi.ModeWrite)
+	if r < 0 {
 		ta.Close()
-		return nil, nil, fmt.Errorf("tty: open %s: %w", devTTY, err)
+		return nil, nil, abi.Check("tty_open", devTTY, r)
 	}
 	if r := abi.TtyAttachWindow(ta.Win); r < 0 {
-		_ = f.Close()
+		abi.FileClose(uint32(h))
 		ta.Close()
 		return nil, nil, abi.Check("tty_attach", devTTY, r)
 	}
-	tab, file = ta, f
-	in = &File{f: f}
+	tab, ttyFd = ta, int(h)
+	in = &File{fd: ttyFd}
+	out = &File{fd: ttyFd}
 	cw, ch := abi.TerminalCell()
 	cols, rows = tabapp.CellGrid(ta.W, ta.H, cw, ch)
-	return in, f, nil
+	return in, out, nil
 }
 
 // Shutdown is the process's in-band shutdown seam (gsport/sig). The cmd
@@ -236,7 +310,7 @@ func OnSize(fn func(cols, rows int)) {
 func Bound() bool {
 	mu.Lock()
 	defer mu.Unlock()
-	return file != nil
+	return ttyFd >= 0
 }
 
 // IsBoundFd reports whether fd is the bound controlling terminal — the
@@ -244,7 +318,7 @@ func Bound() bool {
 func IsBoundFd(fd uintptr) bool {
 	mu.Lock()
 	defer mu.Unlock()
-	return file != nil && file.Fd() == fd
+	return ttyFd >= 0 && uintptr(ttyFd) == fd
 }
 
 // Size is the last-known terminal size in CELLS — term.GetSize's answer.
@@ -291,10 +365,11 @@ func WindowID() int {
 func Close() {
 	mu.Lock()
 	defer mu.Unlock()
-	if file != nil {
+	if ttyFd >= 0 {
 		_ = abi.TtyAttach(abi.TtyDetach)
-		_ = file.Close()
-		file, in = nil, nil
+		abi.FileClose(uint32(ttyFd))
+		ttyFd = -1
+		in, out = nil, nil
 	}
 	if tab != nil {
 		tab.Close()

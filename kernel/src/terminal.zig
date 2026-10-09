@@ -1223,19 +1223,21 @@ pub const Screen = struct {
         self.pending_wrap = false;
         if (self.cur < self.scroll_bottom) {
             self.cur += 1;
-            const grew = self.cur >= self.used;
-            if (grew) self.used = self.cur + 1;
-            self.clearLine(self.cur);
-            if (grew) self.noteTailGrowth();
+            if (self.cur >= self.used) {
+                self.clearLine(self.cur);
+                self.used = self.cur + 1;
+                self.noteTailGrowth();
+            }
         } else if (self.cur == self.scroll_bottom) {
             self.scrollRegionUp(1);
             if (self.used <= self.cur) self.used = self.cur + 1;
         } else if (self.cur + 1 < grid_lines) {
             self.cur += 1;
-            const grew = self.cur >= self.used;
-            if (grew) self.used = self.cur + 1;
-            self.clearLine(self.cur);
-            if (grew) self.noteTailGrowth();
+            if (self.cur >= self.used) {
+                self.clearLine(self.cur);
+                self.used = self.cur + 1;
+                self.noteTailGrowth();
+            }
         } else {
             self.scrollFullUp(1);
         }

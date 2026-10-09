@@ -221,11 +221,18 @@ PY
 #                        seat's syncSeatChrome path, but the `dui focus:
 #                        focused=3` marker is what proves it held before a
 #                        single key is typed.
-#   focused=3           -> --input-string types `echo m95c tty echo ok`:
+#   call app/list ok    -> --input-string types `echo m95c tty echo ok`:
 #                        real HID key reports -> bound-tty bytes (the
 #                        adapter maps the kernel's LF Enter to the CR the
 #                        Charm key table names `enter`) -> the shell's IPC
-#                        round trip to the echo app.
+#                        round trip to the echo app. The gate is the
+#                        Init discovery call, not the focus marker: the
+#                        model's `busy` flag drops every key until
+#                        `app/list` returns (observed r2: focus held,
+#                        keys fanned out to the seat AND the bound tty,
+#                        no `call ...echo ok` — typed inside the busy
+#                        window). Focus still held: nothing re-opens a
+#                        window between `dui focus` and this marker.
 #   call ...echo ok     -> --screenshot-after captures the repainted frame.
 #   call ...echo ok +2s -> script-02c `dui`: registry dump (geometry
 #                        evidence) and the `dui[` marker that the
@@ -242,8 +249,8 @@ vgate_run 02 -- \
     --script '$RUN_DIR/script-02.txt' \
     --script2 '$RUN_DIR/script-02b.txt' \
     --script2-after 'gostalgia: ready endpoint=' --script2-delay 1 \
-    --input-string 'echo m95c tty echo ok\n' \
-    --input-string-after 'dui focus: focused=3' \
+    --input-string $'echo m95c tty echo ok\n' \
+    --input-string-after 'gostalgia: call app/list ok' \
     --screenshot-after 'gostalgia: call app/com.gostalgia.echo/echo ok' \
     --script3 '$RUN_DIR/script-02c.txt' \
     --script3-after 'gostalgia: call app/com.gostalgia.echo/echo ok' --script3-delay 2 \
@@ -253,10 +260,16 @@ vgate_run 02 -- \
     --script-expect 'procs GOSTALGIA.ELF exited status=0' --timeout 240
 
 vgate_assert 02 serial-contains 'gostalgia: tty attached window=3'
+# The marker-gated refocus — typed keys depend on it (the seat's clock
+# window steals kernel focus right after the declare).
+vgate_assert 02 serial-contains 'dui focus: focused=3'
 # The two size markers pin the declared rect's cells and the seat's
 # full-viewport grant (the font-zoom rung change lives on run 05).
 vgate_assert 02 serial-contains 'gostalgia: size 80x24'
 vgate_assert 02 serial-contains 'gostalgia: size 80x44'
+# gsport/tty's one-shot marker on the first non-empty tty read — the
+# kernel's key push reached the bound terminal and the app drained it.
+vgate_assert 02 serial-contains 'tty: input n='
 vgate_assert 02 serial-contains 'gostalgia: call app/list ok'
 vgate_assert 02 serial-contains 'gostalgia: call app/com.gostalgia.echo/echo ok'
 vgate_assert 02 serial-contains 'gostalgia: shutdown reason='
@@ -283,18 +296,21 @@ import os, sys
 share = os.environ.get("VG_SHARE")
 if not share:
     sys.exit("no armed share exported to the assert")
+st = os.path.join(share, "SESSION.TABS")
+# The delete runs BEFORE the diagnostics below: a failed run 02 is
+# exactly when the stale tab must not leak into boot 03 (observed gate4:
+# the done-check exited first, the file survived, and `session load
+# n=1 mode=restore` put the dead-id ghost on boot 03's strip).
+if os.path.exists(st):
+    os.remove(st)
+    print("between-run cleanup: SESSION.TABS removed (boot 03's strip "
+          "starts empty)")
 ser = open(os.environ["VG_SER"], "rb").read()
 if b"gostalgia: done" not in ser:
     sys.exit("boot 02 did not reach the shell teardown marker")
 with open(os.path.join(share, "SETTINGS.TXT"), "w") as f:
     f.write("#v2\n")
-st = os.path.join(share, "SESSION.TABS")
-if os.path.exists(st):
-    os.remove(st)
-    print("between-run restore: font_size reset + SESSION.TABS removed "
-          "(boot 03's strip starts empty)")
-else:
-    print("between-run restore: font_size reset (no SESSION.TABS to remove)")
+print("between-run restore: font_size reset to the medium rung")
 PY
 
 # The render frame at the medium rung: lipgloss' rounded border in ANSI 62
@@ -545,10 +561,13 @@ PY
 #   is interactive.
 #   ready endpoint=    -> script-04b `dui focus 3` (the same clock-window
 #   focus steal as run 02) -> `dui focus: focused=3`.
-#   focused=3          -> --input-string types `echo m95c readback echo`.
+#   call app/list ok   -> --input-string types `echo m95c readback echo`
+#   (the Init-discovery marker — the model drops keys while `busy`, same
+#   as run 02).
 #   call ...echo ok    -> --pointer-virtio drags over the transcript rows
-#   (content top = the kernel's 16 px title band; the drag spans rows ~1-19
-#   at the 8x16 rung) -> `dui: term sel begin/end`.
+#   (content top = the kernel's ~24 px title band; the drag spans rows ~6-8
+#   at the 8x16 rung — the command + reply rows — sized to fit inside the
+#   512 B clipboard with the reply intact) -> `dui: term sel begin/end`.
 #   sel end            -> --input-chords ctrl-shift-c copies the focused
 #   window's selection (`tty: copy N bytes`), then ctrl-c lands 0x03 in
 #   the bound tty -> gsport/tty's seam + the model's ctrl+c key -> clean
@@ -563,9 +582,9 @@ vgate_run 04 -- \
     --script '$RUN_DIR/script-04.txt' \
     --script2 '$RUN_DIR/script-04b.txt' \
     --script2-after 'gostalgia: ready endpoint=' --script2-delay 1 \
-    --input-string 'echo m95c readback echo\n' \
-    --input-string-after 'dui focus: focused=3' \
-    --pointer-virtio '24,40,d;1100,320;1100,320,u' \
+    --input-string $'echo m95c readback echo\n' \
+    --input-string-after 'gostalgia: call app/list ok' \
+    --pointer-virtio '24,120,d;1100,168;1100,168,u' \
     --pointer-virtio-after 'gostalgia: call app/com.gostalgia.echo/echo ok' \
     --input-chords 'ctrl-shift-c,ctrl-c' \
     --input-chords-after 'dui: term sel end' \
@@ -575,6 +594,7 @@ vgate_run 04 -- \
     --script-expect 'procs GOSTALGIA.ELF exited status=0' --timeout 240
 
 vgate_assert 04 serial-contains 'gostalgia: tty attached window=3'
+vgate_assert 04 serial-contains 'dui focus: focused=3'
 vgate_assert 04 serial-contains 'gostalgia: call app/com.gostalgia.echo/echo ok'
 vgate_assert 04 serial-contains 'dui: term sel begin'
 vgate_assert 04 serial-contains 'dui: term sel end'
@@ -585,11 +605,12 @@ vgate_assert 04 serial-absent '[EXC] parking:'
 vgate_assert 04 serial-absent 'exited status=139'
 vgate_assert 04 serial-absent 'panic:'
 
-# The readback: `clip` echoes the clipboard to the console, one `clip: `
-# line per copied row. The typed command's reply — `m95c readback echo
-# [echo #1]` — must appear inside a selected row, which proves the full
-# round trip in grid cells: HID bytes -> shell -> IPC -> paint -> cells ->
-# selection -> clipboard. `tty: copy` reports a nonzero byte count.
+# The readback: `clip` prints the whole clipboard after one `clip: ` prefix,
+# so a multi-row copy lands as the `clip:` line plus continuation rows. The
+# typed command's reply — `m95c readback echo [echo #1]` — must appear
+# inside the copied span, which proves the full round trip in grid cells:
+# HID bytes -> shell -> IPC -> paint -> cells -> selection -> clipboard.
+# `tty: copy` reports a nonzero byte count.
 vgate_assert 04 python <<'PY'
 import os, re, sys
 ser = open(os.environ["VG_SER"], errors="replace").read()
@@ -598,14 +619,17 @@ if not m:
     sys.exit("no `tty: copy` marker — the selection never reached the clipboard")
 if int(m.group(1)) < 40:
     sys.exit("tty: copy %s bytes — the drag selected almost nothing" % m.group(1))
-clip_lines = [ln for ln in ser.splitlines() if ln.startswith("clip:")]
-if not clip_lines:
+# The clip dump runs from its `clip: ` prefix to the next console prompt;
+# continuation rows carry no prefix of their own.
+i = ser.find("clip: ", m.end())
+if i < 0:
     sys.exit("the `clip` command printed nothing — clipboard readback failed")
-hit = [ln for ln in clip_lines if "m95c readback echo" in ln]
-if not hit:
-    sys.exit("no clip line carries the echo reply; lines=%r" % clip_lines[:8])
-print("readback: %d clip lines, %d bytes copied, reply text present: %r"
-      % (len(clip_lines), int(m.group(1)), hit[0].strip()))
+j = ser.find("virelai>", i)
+block = ser[i:] if j < 0 else ser[i:j]
+if "m95c readback echo" not in block:
+    sys.exit("the clip dump lacks the echo reply; block=%r" % block[:400])
+print("readback: %d bytes copied, reply text present in the clip dump"
+      % int(m.group(1)))
 PY
 
 # Same between-run delete as tags 02/03 before boot 05.
@@ -648,6 +672,7 @@ vgate_run 05 -- \
     --script-expect 'procs GOSTALGIA.ELF exited status=0' --timeout 240
 
 vgate_assert 05 serial-contains 'gostalgia: tty attached window=3'
+vgate_assert 05 serial-contains 'dui focus: focused=3'
 vgate_assert 05 serial-contains 'gostalgia: size 80x44'
 # The font-zoom leg: NoteResize re-read TerminalCell and reported the
 # 10x21 rung's cells — the resize path the seat's pixel payload cannot
