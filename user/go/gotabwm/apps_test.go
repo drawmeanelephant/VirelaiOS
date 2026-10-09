@@ -232,19 +232,19 @@ func TestSummarizeAppsCountsRowsAndTheHighestVersion(t *testing.T) {
 		t.Fatalf("read image/apps.txt: %v", err)
 	}
 	s := SummarizeApps(parseAppsTXT(string(b)))
-	if s.Rows != 14 {
-		t.Fatalf("rows = %d want 14 (the honest catalog)", s.Rows)
+	if s.Rows != 15 {
+		t.Fatalf("rows = %d want 15 (the honest catalog)", s.Rows)
 	}
 	// The receipt's headline: the manifest declares v2 rows, so a reader that
 	// ignored the tail would report v=0 and fail here.
 	if s.Schema != appsSchemaVersion {
 		t.Fatalf("schema = %d want %d", s.Schema, appsSchemaVersion)
 	}
-	// Every trailing key is either used by a row or reported as unused. No
-	// shipping row declares a fixed command line yet (`argv=` is a seam for
-	// the cards that add an app with one), so a zero here is the truth and
-	// is pinned so a row appearing later is a deliberate edit to this test.
-	if s.Argv != 0 {
+	// Every trailing key is either used by a row or reported as unused.
+	// GOSTALGIA is the one shipping row that declares a fixed command line
+	// (`argv=shell --root /host/GS`), so a one here is the truth and is
+	// pinned so a row appearing later is a deliberate edit to this test.
+	if s.Argv != 1 {
 		t.Fatalf("argv rows = %d: a row now declares a fixed command line; "+
 			"the marker and this test must both learn about it", s.Argv)
 	}
