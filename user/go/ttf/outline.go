@@ -30,14 +30,22 @@ const (
 // is cyclic (a hostile one can be) hits this and yields what it has so far.
 const maxComponentDepth = 8
 
-// maxGlyphPoints bounds one glyph's point count. Far above any real glyph
-// (Inter's largest is a few hundred) and small enough that a corrupted count
-// cannot ask for a huge allocation.
+// maxGlyphPoints bounds one glyph's point count — and, as of M97f F5
+// (#2108), the TOTAL a glyph may resolve to across composite expansion.
+// The simple-glyph check alone bounded each component, not the fan-out: a
+// hostile composite multiplies it by fan^depth (the audit's 440-byte probe
+// reached 8.4M points / ~96 MiB). The budget is a single ledger shared by
+// every resolution under glyphContours, so a glyph resolves to at most
+// maxGlyphPoints however it was composed. Far above any real glyph
+// (Inter's largest is a few hundred) and small enough that a corrupted
+// count cannot ask for a huge allocation.
 const maxGlyphPoints = 4096
 
 // glyphContours decodes a glyph into contours of raw font-unit points.
 // Composite glyphs are resolved into their components' points with the
-// component transform applied. An empty glyph returns (nil, nil).
+// component transform applied. An empty glyph returns (nil, nil). A glyph
+// whose resolved total exceeds maxGlyphPoints is refused wholesale —
+// ErrMalformed, no partial outline.
 func (f *Face) glyphContours(gid uint16) ([][]rawPoint, error) {
 	data, err := f.GlyphData(gid)
 	if err != nil {
@@ -46,10 +54,11 @@ func (f *Face) glyphContours(gid uint16) ([][]rawPoint, error) {
 	if len(data) == 0 {
 		return nil, nil
 	}
-	return f.contoursFrom(data, 0)
+	budget := maxGlyphPoints
+	return f.contoursFrom(data, 0, &budget)
 }
 
-func (f *Face) contoursFrom(data []byte, depth int) ([][]rawPoint, error) {
+func (f *Face) contoursFrom(data []byte, depth int, budget *int) ([][]rawPoint, error) {
 	if len(data) < 10 {
 		return nil, ErrMalformed
 	}
@@ -61,7 +70,7 @@ func (f *Face) contoursFrom(data []byte, depth int) ([][]rawPoint, error) {
 		if depth >= maxComponentDepth {
 			return nil, ErrMalformed
 		}
-		return f.compositeContours(data, depth)
+		return f.compositeContours(data, depth, budget)
 	default:
 		return nil, ErrMalformed
 	}
@@ -192,7 +201,9 @@ func (f *Face) simpleContours(data []byte, nc int) ([][]rawPoint, error) {
 
 // compositeContours resolves a composite glyph: each component names another
 // glyph whose points are transformed (2x2 F2Dot14 plus an offset) and merged.
-func (f *Face) compositeContours(data []byte, depth int) ([][]rawPoint, error) {
+// budget is the shared resolved-points ledger (M97f F5, #2108): every merged
+// contour debits it, and overspend refuses the whole glyph.
+func (f *Face) compositeContours(data []byte, depth int, budget *int) ([][]rawPoint, error) {
 	p := 10
 	var out [][]rawPoint
 	for {
@@ -262,11 +273,15 @@ func (f *Face) compositeContours(data []byte, depth int) ([][]rawPoint, error) {
 			continue
 		}
 		if len(subData) != 0 {
-			subs, err := f.contoursFrom(subData, depth+1)
+			subs, err := f.contoursFrom(subData, depth+1, budget)
 			if err != nil {
 				return nil, err
 			}
 			for _, ct := range subs {
+				*budget -= len(ct)
+				if *budget < 0 {
+					return nil, ErrMalformed
+				}
 				moved := make([]rawPoint, len(ct))
 				for i, pt := range ct {
 					fx, fy := float64(pt.x), float64(pt.y)

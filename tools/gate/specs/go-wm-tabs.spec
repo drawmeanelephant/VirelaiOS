@@ -45,6 +45,11 @@
 #       seat restores the file run 09 wrote and must report the ORDER, the
 #       pin bit and the frozen badge the user actually left — `session load
 #       n=2 mode=restore` plus the order/titles lines that carry them.
+#   11  M97g-F2 (#2080): NOTE.ELF as the bound victim, WMRPCPROBE.ELF as the
+#       in-guest attacker. The probe binds its own window honestly, then
+#       sprays forged SetTitle frames (bare and guessed-token) at every other
+#       user window id plus an unproven challenge echo — zero may apply while
+#       its own bound requests still land.
 #
 # Seed wm=none and exec GOTABWM.ELF like go-wm-seat. No HID. No framebuffer
 # golden. Do not overload go-wm-seat or go-wm-default. Boot 01 `reorder 0->1`
@@ -79,6 +84,7 @@
 # visible rename cannot corrupt reopen identity.
 #
 # HOST PREREQUISITE: bash tools/go/build-note.sh -> .build/go/NOTE.ELF
+# HOST PREREQUISITE: bash tools/go/build-web.sh wmrpcprobe WMRPCPROBE -> .build/go/WMRPCPROBE.ELF (run 11)
 
 vgate_name go-wm-tabs "issues #1400–#1405/#1426 + #1564 + #1707 + #1718: GOTABWM tabs, session, LAYOUT.txt, frozen badge, start surface, live titles, and a session file that records what the user did on VZ"
 vgate_share seed
@@ -239,6 +245,19 @@ with open(os.path.join(sub, "INNER.TXT"), "w") as f:
     f.write("inner\n")
 print("staged GOFILES.ELF (%d bytes) + %s/INNER.TXT" %
       (os.path.getsize(os.path.join(share, "GOFILES.ELF")), sub))
+PY
+
+vgate_setup_python <<'PY'
+import os, shutil, sys
+rd = os.environ["RUN_DIR"]
+share = os.environ.get("VG_SHARE") or os.path.join(rd, "share")
+src = os.path.join(".build", "go", "WMRPCPROBE.ELF")
+if not os.path.exists(src):
+    sys.exit("WMRPCPROBE.ELF missing (expected " + src + ") - build it first: "
+             "bash tools/go/build-web.sh wmrpcprobe WMRPCPROBE")
+shutil.copy(src, os.path.join(share, "WMRPCPROBE.ELF"))
+print("staged WMRPCPROBE.ELF into share (%d bytes)" %
+      os.path.getsize(os.path.join(share, "WMRPCPROBE.ELF")))
 PY
 
 vgate_run 01 -- \
@@ -1521,3 +1540,65 @@ if any(row[8] != "none" for row in parsed):
     sys.exit("restore dump must be unsplit")
 print("LAYOUT.txt restore n=2 ids=256,257 bins=NOTE.ELF,GOCALC.ELF in the restored order")
 PY
+
+# --- M97g-F2 (#2080): WM_RPC sender authentication --------------------------
+#
+# The mailbox is any-to-any and carries no sender identity, so a raw frame
+# proves nothing about who sent it. The Go seat binds each window to a
+# session token the window's kernel-registered owner alone can obtain (the
+# challenge rides the window title — slot 61 is owner-restricted — and the
+# seat reads it back with wmctl cmd 14). WMRPCPROBE.ELF is the in-guest
+# attacker: it binds its OWN window honestly (proving the owner path works
+# end to end on the real wire), then sprays forged SetTitle frames at every
+# other user window id — bare frames, guessed-token frames, and an echo of a
+# challenge it was issued but cannot prove. Zero forged frames may apply,
+# and the seat's `rpc refuse`/`rpc bind` markers record both halves.
+#
+# Ordering: the probe execs only after `note: tab-aware`, so NOTE's own bind
+# has already landed and the spray hits at least one genuinely bound foreign
+# window.
+vgate_file script-11.txt <<'EOF'
+set GOMAXPROCS=1
+vf rm GOTABWM.DEMO
+vf rm SESSION.TABS
+wm
+exec GOTABWM.ELF
+EOF
+
+vgate_file script2-11.txt <<'EOF'
+dui focus 0
+exec NOTE.ELF
+EOF
+
+vgate_file script3-11.txt <<'EOF'
+exec WMRPCPROBE.ELF
+EOF
+
+vgate_run 11 -- \
+    --screen '$RUN_DIR/screen-11' \
+    --script '$RUN_DIR/script-11.txt' \
+    --script2 '$RUN_DIR/script2-11.txt' \
+    --script2-after 'gotabwm: win focus' \
+    --script3 '$RUN_DIR/script3-11.txt' \
+    --script3-after 'note: tab-aware (full-viewport)' \
+    --script-expect 'wmrpcprobe: auth probe ok' --timeout 300
+
+vgate_assert 11 serial-contains 'exec: loaded GOTABWM.ELF'
+vgate_assert 11 serial-contains 'gotabwm: registered'
+vgate_assert 11 serial-contains 'exec: loaded NOTE.ELF'
+vgate_assert 11 serial-contains 'note: tab-aware (full-viewport)'
+vgate_assert 11 serial-contains 'exec: loaded WMRPCPROBE.ELF'
+# Both honest clients bound (NOTE's declare, then the probe's): two binds.
+vgate_assert 11 serial-count 'gotabwm: rpc bind id=' 2
+# The honest legs still work under the authenticated protocol.
+vgate_assert 11 serial-contains 'wmrpcprobe: bound id='
+vgate_assert 11 serial-contains 'wmrpcprobe: title ok'
+# The attack legs: every forged frame refused, none applied.
+vgate_assert 11 serial-contains 'wmrpcprobe: foreign applied=0 refused='
+vgate_assert 11 serial-contains 'wmrpcprobe: echo refused id='
+vgate_assert 11 serial-contains 'wmrpcprobe: bad-token refused'
+vgate_assert 11 serial-contains 'wmrpcprobe: auth probe ok'
+vgate_assert 11 serial-contains 'gotabwm: rpc refuse id='
+vgate_assert 11 serial-absent 'wmrpcprobe: FAIL'
+vgate_assert 11 serial-absent '[EXC] parking:'
+vgate_assert 11 serial-absent 'exited status=139'

@@ -149,11 +149,13 @@ func TestSetCookieHeaders(t *testing.T) {
 
 func TestCookieHeaderMatching(t *testing.T) {
 	rows := []string{
-		"1\tsid\tabc\t\t/\tHttpOnly",    // host-only, path /
-		"2\tid\t7\t.example.com\t/\t",   // domain suffix
-		"3\tscoped\tx\t\t/app\t",        // path /app
-		"4\tother\t9\t.other.test\t/\t", // unrelated domain
-		"broken",                        // malformed row ignored
+		"1\tsid\tabc\texample.com\t/\tHttpOnly", // host-only, path /
+		"2\tid\t7\t.example.com\t/\t",           // domain suffix row reads host-only
+		"3\tscoped\tx\texample.com\t/app\t",     // path /app
+		"4\tother\t9\t.other.test\t/\t",         // unrelated domain
+		"5\ttoss\t1\t\t/\t",                     // scope-blanked row: inert
+		"6\twide\ta\tcom\t/\t",                  // broad suffix: refused
+		"broken",                                // malformed row ignored
 	}
 	got := CookieHeader(rows, "example.com", "/app/page")
 	for _, want := range []string{"sid=abc", "id=7", "scoped=x"} {
@@ -161,14 +163,89 @@ func TestCookieHeaderMatching(t *testing.T) {
 			t.Fatalf("missing %s in %q", want, got)
 		}
 	}
-	if strings.Contains(got, "other=9") {
-		t.Fatalf("unrelated domain cookie leaked: %q", got)
+	for _, bad := range []string{"other=9", "toss=1", "wide=a"} {
+		if strings.Contains(got, bad) {
+			t.Fatalf("%s leaked: %q", bad, got)
+		}
 	}
 	if got := CookieHeader(rows, "example.com", "/other"); strings.Contains(got, "scoped=x") {
 		t.Fatalf("path-scoped cookie leaked: %q", got)
 	}
+	// Host-only means host-only: a row stored for example.com does not ride
+	// requests to a subdomain or a sibling.
+	if got := CookieHeader(rows, "sub.example.com", "/"); got != "" {
+		t.Fatalf("subdomain received parent cookie: %q", got)
+	}
+	if got := CookieHeader(rows, "bank.example", "/"); got != "" {
+		t.Fatalf("cross-origin cookie tossed: %q", got)
+	}
 	if got := CookieHeader(nil, "example.com", "/"); got != "" {
 		t.Fatalf("empty store produced %q", got)
+	}
+}
+
+// M97f F1+F2 (#2105): the bounded accept policy. A Domain attribute must
+// name the request host exactly; suffixes, parent domains and IP suffixes
+// are refused outright, and a missing Domain stores host-only.
+func TestAcceptCookiesPolicy(t *testing.T) {
+	head := "HTTP/1.0 200 OK\r\n" +
+		"Set-Cookie: broad=1; Domain=com\r\n" +
+		"Set-Cookie: ip=2; Domain=0.0.2\r\n" +
+		"Set-Cookie: parent=3; Domain=example.com\r\n" +
+		"Set-Cookie: exact=4; Domain=shop.com; Path=/app\r\n" +
+		"Set-Cookie: dotted=6; Domain=.shop.com\r\n" +
+		"Set-Cookie: plain=5\r\n\r\n"
+	cs := AcceptCookies(SetCookieHeaders(head), "shop.com")
+	var names []string
+	for _, c := range cs {
+		names = append(names, c.Name)
+		if c.Domain != "shop.com" {
+			t.Fatalf("accepted cookie %s stored domain %q want shop.com", c.Name, c.Domain)
+		}
+	}
+	want := []string{"exact", "dotted", "plain"}
+	if len(names) != len(want) {
+		t.Fatalf("accepted %v want %v", names, want)
+	}
+	for i := range want {
+		if names[i] != want[i] {
+			t.Fatalf("accepted %v want %v", names, want)
+		}
+	}
+	// A foreign host accepts only the Domain-less cookie — and that one
+	// binds to ITS host, never to shop.com.
+	cs = AcceptCookies(SetCookieHeaders(head), "other.test")
+	if len(cs) != 1 || cs[0].Name != "plain" || cs[0].Domain != "other.test" {
+		t.Fatalf("foreign host accepted %+v", cs)
+	}
+	// A non-"/" path attribute normalizes to "/" rather than shifting scope.
+	cs = AcceptCookies(SetCookieHeaders("HTTP/1.0 200 OK\r\nSet-Cookie: p=1; Path=relative\r\n\r\n"), "h.test")
+	if len(cs) != 1 || cs[0].Path != "/" {
+		t.Fatalf("relative path stored %+v", cs)
+	}
+}
+
+// M97f F1+F2 (#2105): remote bytes that would shift a ledger field (a tab
+// inside name/value/domain/path) refuse the cookie at the parser — they are
+// never normalized into something else.
+func TestSetCookieHeadersRefusesFieldInjection(t *testing.T) {
+	head := "HTTP/1.0 200 OK\r\n" +
+		"Set-Cookie: evil\t=1\r\n" +
+		"Set-Cookie: v=a\tb\r\n" +
+		"Set-Cookie: d=1; Domain=x\ty.test\r\n" +
+		"Set-Cookie: ok=1\r\n\r\n"
+	cs := SetCookieHeaders(head)
+	// The edge-tab name trims clean ("evil\t" -> "evil"); the interior tabs
+	// in value and domain are the real field-shift vectors and are refused.
+	if len(cs) != 2 || cs[0].Name != "evil" || cs[1].Name != "ok" {
+		t.Fatalf("field-injection cookies parsed %+v", cs)
+	}
+	for _, c := range cs {
+		for _, f := range []string{c.Name, c.Value, c.Domain, c.Path, c.Flags} {
+			if strings.ContainsAny(f, "\t\r\n") {
+				t.Fatalf("parsed field %q kept a control byte", f)
+			}
+		}
 	}
 }
 

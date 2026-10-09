@@ -131,12 +131,21 @@ func Procs(dst []ProcRow) (int, int64) {
 type WmSeat struct {
 	WM   uint32
 	Self uint32
+	// Go is true when the resolved seat is the Go WM (GOTABWM.ELF): the seat
+	// that speaks the M97g-F2 authenticated bind protocol, where requests
+	// carry a session token and acks arrive Pad-marked. The Zig seats answer
+	// bare applied acks and are served by the legacy path.
+	Go bool
 }
+
+// wmGoSeatName is the seat process name that runs the authenticated WM_RPC
+// protocol (M97g-F2 #2080).
+const wmGoSeatName = "GOTABWM.ELF"
 
 // WMProcNames are the two seats an app's WM_RPC client resolves: the floating
 // WND.BIN desktop and the tabbed TABWM.BIN desktop. At most ONE is registered
 // at a time (sys_wmctl REGISTER is one-seat), so matching either is safe.
-var WMProcNames = [...]string{"WND.BIN", "TABWM.BIN", "GOTABWM.ELF"}
+var WMProcNames = [...]string{"WND.BIN", "TABWM.BIN", wmGoSeatName}
 
 // wmPeersScanAttempts bounds the `sys_procs` re-reads (M56d #1315). It is
 // kept at the historical 8, but only a persistently suspect scan can spend
@@ -193,6 +202,7 @@ func WmPeers(selfName string) WmSeat {
 					for _, w := range WMProcNames {
 						if name == w {
 							out.WM = uint32(rows[i].PID)
+							out.Go = name == wmGoSeatName
 							break
 						}
 					}

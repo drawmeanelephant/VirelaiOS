@@ -680,8 +680,17 @@ redirect, cross-origin redirect allowed only after fresh DNS/SNI/validation.
 At most **25 network requests** per page (1 initial + 8 sheets + 16 images),
 including redirects; redirects consume this common count. Failed sheets
 leave UA/other author styles with `css-resource`, failed images use alt boxes.
-No @import resources, scripts, cookies expansion, data/javascript/file URLs,
+No @import resources, scripts, data/javascript/file URLs,
 POST, authentication dialog, IPv6 or new network slot.
+Cookies are a bounded subset (M97f F1+F2, #2105 — amends the earlier
+"cookies expansion" exclusion, which the M53 store never conformed to):
+host-only persistence — a `Domain` attribute must name the request host
+exactly (one leading dot ignored) and is refused otherwise; `Path` scopes
+the row, defaulting to `/`; every field is size-capped and must be
+ledger-field-safe (no tab/CR/LF bytes) or the cookie is refused at the
+parser; the ledger holds at most 512 rows with oldest-first eviction; sends
+match the stored host exactly — no suffix matching, so a stored row can
+never attach to a different origin, and a scope-blanked row is inert.
 Local `/host` resources remain on existing normalized file-open semantics.
 
 **Production trust source:** Mozilla NSS `lib/ckfw/builtins/certdata.txt`,

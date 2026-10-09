@@ -23,6 +23,10 @@ type fakeShare struct {
 	next    uint32
 	slots   []int
 	dead    bool // crash simulation: every call returns ENOSYS
+	// deny models the ADR 0024 D8 class check: a listed path denies every
+	// file-ABI open, keyed on the exact path (a "<path>~" sibling is a
+	// different key and carries the default policy — the F6 gap).
+	deny map[string]bool
 }
 
 type fakeHandle struct {
@@ -53,6 +57,9 @@ func (k *fakeShare) hook(num uintptr, a0, a1, a2, a3 uintptr) int64 {
 	case vi.SlotFileOpen: // 23
 		path := strArg(a0, a1)
 		flags := uint32(a2)
+		if k.deny[path] {
+			return -vi.ErrEACCES
+		}
 		if len(k.handles) >= 8 {
 			return -vi.ErrENOSPC
 		}
@@ -626,5 +633,53 @@ func TestNewHostRequiresExistingDir(t *testing.T) {
 	k.files["/host/afile"] = []byte("x")
 	if _, err := NewHost("/host/afile"); err == nil {
 		t.Fatal("file as root accepted")
+	}
+}
+
+// --- M97d F6 (#2091): residue reads inherit the target's verdict ----------
+
+// TestResidueInheritsTargetClass: a publish temp is a different path key,
+// so the kernel's exact-path class check never covers "<target>~" — the
+// residue carries default policy while its target may be secret-class.
+// The adapter's rule: residue reads answer only while the target itself
+// opens for read.
+func TestResidueInheritsTargetClass(t *testing.T) {
+	k := newFakeShare()
+	k.install(t)
+	k.deny = map[string]bool{"/host/GS/vfs/secret.txt": true}
+	h := mustHost(t, k)
+
+	// Crash residue of a secret-class save: bytes real, target denied.
+	k.files["/host/GS/vfs/secret.txt"] = []byte("S3CR3T")
+	k.files["/host/GS/vfs/secret.txt~"] = []byte("S3CR3T")
+
+	if _, err := h.ReadFile("secret.txt~"); !errors.Is(err, fs.ErrPermission) {
+		t.Fatalf("ReadFile secret.txt~: %v, want fs.ErrPermission", err)
+	}
+	if _, err := h.Open("secret.txt~"); !errors.Is(err, fs.ErrPermission) {
+		t.Fatalf("Open secret.txt~: %v, want fs.ErrPermission", err)
+	}
+	if _, err := ReadFile("/host/GS/vfs/secret.txt~"); !errors.Is(err, fs.ErrPermission) {
+		t.Fatalf("raw ReadFile secret.txt~: %v, want fs.ErrPermission", err)
+	}
+	// Names stay legal (D8 denies bytes, not names): the residue still
+	// lists, and Stat still answers metadata.
+	if _, err := h.Stat("secret.txt~"); err != nil {
+		t.Fatalf("Stat secret.txt~: %v (metadata must stay legal)", err)
+	}
+
+	// Inert residue beside a READABLE live target keeps the documented
+	// contract — the bytes are real and the target's verdict allows it.
+	k.files["/host/GS/vfs/other.txt"] = []byte("live")
+	k.files["/host/GS/vfs/other.txt~"] = []byte("orphan")
+	if b, err := h.ReadFile("other.txt~"); err != nil || string(b) != "orphan" {
+		t.Fatalf("readable-target residue: %q %v", b, err)
+	}
+
+	// Residue with an absent target is publish state, not a read
+	// contract: staged bytes never serve under the sibling name.
+	k.files["/host/GS/vfs/only.txt~"] = []byte("staged")
+	if _, err := h.ReadFile("only.txt~"); !errors.Is(err, fs.ErrPermission) {
+		t.Fatalf("absent-target residue: %v, want fs.ErrPermission", err)
 	}
 }

@@ -289,7 +289,7 @@ func TestNavPollArmCarriesTargetInAckTitle(t *testing.T) {
 	if !applyRPC(navRPC(vi.WmRpcKindNavPoll, 5, "")) {
 		t.Fatal("nav-poll arm refused a queued target")
 	}
-	rep := buildReply(navRPC(vi.WmRpcKindNavPoll, 5, ""), true, takeReplyPayload())
+	rep := buildReply(navRPC(vi.WmRpcKindNavPoll, 5, ""), true, takeReplyPayload(), vi.WmRpcPadPlain, 0)
 	if rep.Applied != 1 {
 		t.Fatalf("ack applied = %d want 1", rep.Applied)
 	}

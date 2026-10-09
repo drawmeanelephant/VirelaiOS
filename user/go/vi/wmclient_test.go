@@ -230,6 +230,15 @@ type wmMailFake struct {
 	replies [][]byte
 	// autoReply builds each ack from the most recently sent request.
 	autoReply bool
+	// replyFn, when set, is the seat's reply logic: it sees the most
+	// recently sent request and returns the reply frame (nil = silent).
+	// It takes precedence over autoReply/replies so a test can model the
+	// Go seat's challenge→bind handshake with the real seq mirrored.
+	replyFn func(WmRpc) []byte
+	// wmName is the process-table name of the fake WM seat. It defaults to
+	// the legacy Zig seat: bare applied acks are honest there. Go-seat tests
+	// set it to GOTABWM.ELF, where the authenticated protocol applies.
+	wmName string
 }
 
 func namedProc(pid uint64, name string) ProcRow {
@@ -247,8 +256,12 @@ func (f *wmMailFake) hook(num uintptr, a0, a1, a2, a3 uintptr) int64 {
 		if selfPID == 0 {
 			selfPID = 9
 		}
+		wmName := f.wmName
+		if wmName == "" {
+			wmName = "TABWM.BIN"
+		}
 		rows := []ProcRow{
-			namedProc(3, "GOTABWM.ELF"),
+			namedProc(3, wmName),
 			namedProc(selfPID, "NOTE.ELF"),
 		}
 		n := 0
@@ -274,7 +287,9 @@ func (f *wmMailFake) hook(num uintptr, a0, a1, a2, a3 uintptr) int64 {
 	case SlotIPCRecv:
 		f.recvCalls++
 		var reply []byte
-		if f.autoReply && len(f.sent) > 0 {
+		if f.replyFn != nil && len(f.sent) > 0 {
+			reply = f.replyFn(f.sent[len(f.sent)-1])
+		} else if f.autoReply && len(f.sent) > 0 {
 			req := f.sent[len(f.sent)-1]
 			ack := WmRpc{
 				Kind:    req.Kind | WmRpcReplyFlag,
@@ -309,9 +324,11 @@ func startWmMailFake(t *testing.T) *wmMailFake {
 	t.Helper()
 	wmSeq.Store(0)
 	resetSettingChangeQueue()
+	resetWmAuth()
 	t.Cleanup(func() {
 		wmSeq.Store(0)
 		resetSettingChangeQueue()
+		resetWmAuth()
 	})
 	f := &wmMailFake{}
 	prev := SetSyscallHookForTest(f.hook)
@@ -428,7 +445,7 @@ func TestWaitWmRpcAckDropsForeignReplies(t *testing.T) {
 	f.replies = [][]byte{foreign.Encode(), wrongRequester.Encode(), matching.Encode()}
 	f.replyAt = 1
 
-	rep, ok := waitWmRpcAck(2, 9)
+	rep, ok := waitWmRpcAck(2, 9, func(WmRpc) bool { return true })
 	if !ok || rep.Seq != 2 || rep.ReplyTo != 9 {
 		t.Fatalf("matched reply = (%+v, %v) want seq=2 reply_to=9", rep, ok)
 	}
@@ -579,5 +596,103 @@ func TestSettingsBusRefusesInvalidKeysBeforeSending(t *testing.T) {
 	if f.procsCalls != 0 || f.sendCalls != 0 || f.recvCalls != 0 {
 		t.Fatalf("invalid key touched the wire: procs=%d send=%d recv=%d",
 			f.procsCalls, f.sendCalls, f.recvCalls)
+	}
+}
+
+// M97g-F2 (#2080): under the Go seat a bare applied=1 ack is FORGED — the
+// authenticated protocol answers every request with a Pad-marked auth ack,
+// never a plain one. Before the bind protocol the client accepted any ack
+// matching seq+reply_to, so a forged frame satisfied the wait.
+func TestForgedAckUnderGoSeatIsIgnored(t *testing.T) {
+	f := startWmMailFake(t)
+	f.wmName = "GOTABWM.ELF"
+	f.autoReply = true // bare applied=1 acks: exactly the forgery shape
+	if WmMailRequest(WmRpcKindRaise, 4, 0, 0, 0, 0, "", "NOTE.ELF") {
+		t.Fatal("a tokenless ack satisfied a request under the Go seat")
+	}
+}
+
+// The honest Go-seat exchange end to end: an unbound request draws the
+// challenge, the client proves ownership through the window title, the echo
+// completes the bind, and the applied ack delivers the session token that
+// every later request must quote.
+func TestGoSeatBindHandshake(t *testing.T) {
+	f := startWmMailFake(t)
+	f.wmName = "GOTABWM.ELF"
+	const challenge = uint64(0x00deadbeef00cafe)
+	const token = uint64(0x0123456789abcdef)
+	f.replyFn = func(req WmRpc) []byte {
+		rep := WmRpc{Kind: req.Kind | WmRpcReplyFlag, ID: req.ID, Seq: req.Seq, ReplyTo: req.ReplyTo}
+		switch WmAuth(req) {
+		case 0:
+			rep.Pad = WmRpcPadChallenge
+			SetWmAuth(&rep, challenge)
+		case challenge:
+			rep.Pad = WmRpcPadBound
+			SetWmAuth(&rep, token)
+			rep.Applied = 1
+		case token:
+			rep.Pad = WmRpcPadBound
+			SetWmAuth(&rep, token)
+			rep.Applied = 1
+		default:
+			return nil
+		}
+		return rep.Encode()
+	}
+	var titles []string
+	prev := bindSetTitle
+	bindSetTitle = func(id int, s string) int64 {
+		titles = append(titles, s)
+		return 0
+	}
+	t.Cleanup(func() { bindSetTitle = prev })
+
+	if !WmMailRequest(WmRpcKindSetTitle, 4, 0, 0, 0, 0, "Mine", "NOTE.ELF") {
+		t.Fatal("the bind handshake did not complete")
+	}
+	if len(f.sent) != 2 {
+		t.Fatalf("sent %d frames want challenge+echo", len(f.sent))
+	}
+	if f.sent[0].Pad != WmRpcPadPlain || WmAuth(f.sent[0]) != 0 {
+		t.Fatalf("first frame pad=%d union=%#x want unbound", f.sent[0].Pad, WmAuth(f.sent[0]))
+	}
+	if f.sent[1].Pad != WmRpcPadBound || WmAuth(f.sent[1]) != challenge {
+		t.Fatalf("echo frame pad=%d union=%#x want challenge %#x",
+			f.sent[1].Pad, WmAuth(f.sent[1]), challenge)
+	}
+	// The ownership proof title, then the title the request meant to wear.
+	if len(titles) != 2 || titles[0] != WmBindChallengeTitle(challenge) || titles[1] != "Mine" {
+		t.Fatalf("title sets = %v want [%q %q]", titles, WmBindChallengeTitle(challenge), "Mine")
+	}
+	if wmToken(4) != token {
+		t.Fatalf("session token = %#x want %#x", wmToken(4), token)
+	}
+
+	// A later request rides the token and answers without a handshake.
+	if !WmMailRequest(WmRpcKindRaise, 4, 0, 0, 0, 0, "", "NOTE.ELF") {
+		t.Fatal("bound request refused")
+	}
+	last := f.sent[len(f.sent)-1]
+	if last.Pad != WmRpcPadBound || WmAuth(last) != token {
+		t.Fatalf("bound frame pad=%d union=%#x want token %#x", last.Pad, WmAuth(last), token)
+	}
+}
+
+// The forged-ack boundary at protocol level: an ack that quotes the WRONG
+// token must not satisfy a bound request, even though seq and reply_to match.
+func TestGoSeatBoundAckNeedsTheToken(t *testing.T) {
+	f := startWmMailFake(t)
+	f.wmName = "GOTABWM.ELF"
+	const token = uint64(0x1111222233334444)
+	setWmToken(4, token)
+	f.replyFn = func(req WmRpc) []byte {
+		rep := WmRpc{Kind: req.Kind | WmRpcReplyFlag, ID: req.ID, Seq: req.Seq,
+			ReplyTo: req.ReplyTo, Applied: 1, Pad: WmRpcPadBound}
+		SetWmAuth(&rep, 0x9999) // the attacker's token guess
+		return rep.Encode()
+	}
+	if WmMailRequest(WmRpcKindRaise, 4, 0, 0, 0, 0, "", "NOTE.ELF") {
+		t.Fatal("an ack quoting a wrong token satisfied a bound request")
 	}
 }

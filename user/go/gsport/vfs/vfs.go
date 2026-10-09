@@ -175,6 +175,43 @@ func callHook(stage string) {
 	}
 }
 
+// residueReadOK enforces the M97d F6 (#2091) invariant: a publish temp is
+// a DIFFERENT path key, so it always carries the kernel's default class
+// policy — never its target's (ADR 0024 D8 keys the secret class on the
+// exact normalized path). Reading "<target>~" would therefore bypass the
+// target's class — a secret-class or otherwise read-denied target's
+// plaintext served back under the sibling name, during the publish
+// window and as crash residue. The residue's read verdict is its
+// target's own: open the target for read and let the kernel's class
+// check answer. A target that does not open fails closed — absent means
+// mid-publish (staged bytes are not a read contract; recovery already
+// committed every legitimate state) and denied means the class covers
+// the bytes under every name.
+func residueReadOK(joined string) bool {
+	target := strings.TrimSuffix(joined, TempSuffix)
+	f, err := fsys.Open(target)
+	if err != nil {
+		return false
+	}
+	f.Close()
+	return true
+}
+
+// refuseResidueRead denies a byte-read of "<name>~" when residueReadOK
+// fails; it is the read-side twin of refuseReserved (which covers
+// mutations). Names and directory listings stay legal — ADR 0024 D8
+// denies secret BYTES, not names.
+func refuseResidueRead(op, name, joined string) error {
+	if !strings.HasSuffix(baseOf(joined), TempSuffix) {
+		return nil
+	}
+	if residueReadOK(joined) {
+		return nil
+	}
+	return &fs.PathError{Op: op, Path: name,
+		Err: fmt.Errorf("vfs: publish residue inherits its target's read verdict: %w", fs.ErrPermission)}
+}
+
 // Publish is the recoverable save on raw host-share paths (the shape the
 // internal/config overlay needs — config lives outside the VFS root):
 // stage b into tmp, fsync, close, delete path, rename tmp -> path.
@@ -254,8 +291,12 @@ func MkdirAll(path string) error {
 }
 
 // ReadFile reads the whole host-share file at path (path-level helper);
-// no cap beyond memory — the share round-trips real bytes.
+// no cap beyond memory — the share round-trips real bytes. A "~"-suffixed
+// path answers only while its publish target is itself readable.
 func ReadFile(path string) ([]byte, error) {
+	if err := refuseResidueRead("read", path, path); err != nil {
+		return nil, err
+	}
 	f, err := fsys.Open(path)
 	if err != nil {
 		return nil, named("read", path, err)
@@ -370,6 +411,9 @@ func (h *HostFS) Open(name string) (fs.File, error) {
 		}
 		return &dirFile{info: fileInfo{name: baseOf(name), dir: true}, entries: list}, nil
 	}
+	if err := refuseResidueRead("open", name, joined); err != nil {
+		return nil, err
+	}
 	f, err := fsys.Open(joined)
 	if err != nil {
 		return nil, named("open", name, err)
@@ -404,6 +448,9 @@ func (h *HostFS) ReadFile(name string) ([]byte, error) {
 		return nil, err
 	}
 	if err := h.recover("read", name, joined); err != nil {
+		return nil, err
+	}
+	if err := refuseResidueRead("read", name, joined); err != nil {
 		return nil, err
 	}
 	f, err := fsys.Open(joined)

@@ -158,7 +158,7 @@ func TestApplySetTitlePreservesTabState(t *testing.T) {
 func TestBuildReplyWire(t *testing.T) {
 	req := vi.WmRpc{Kind: vi.WmRpcKindDeclareFullscreen, ID: 7, Seq: 5, ReplyTo: 3}
 	req.SetTitle("Calc")
-	rep := buildReply(req, true, "")
+	rep := buildReply(req, true, "", vi.WmRpcPadBound, 0x1122334455667788)
 	if rep.Kind&vi.WmRpcReplyFlag == 0 {
 		t.Fatalf("ack kind %#x lacks the reply bit", rep.Kind)
 	}
@@ -179,12 +179,15 @@ func TestBuildReplyWire(t *testing.T) {
 	if !ok || got.Kind != rep.Kind || got.ID != rep.ID || got.Seq != rep.Seq || got.Applied != 1 {
 		t.Fatalf("ack round-trip = %+v ok=%v", got, ok)
 	}
-	if rep2 := buildReply(req, false, ""); rep2.Applied != 0 {
+	if rep.Pad != vi.WmRpcPadBound || vi.WmAuth(rep) != 0x1122334455667788 {
+		t.Fatalf("ack auth = pad %d union %#x", rep.Pad, vi.WmAuth(rep))
+	}
+	if rep2 := buildReply(req, false, "", vi.WmRpcPadPlain, 0); rep2.Applied != 0 {
 		t.Fatalf("refused ack applied = %d want 0", rep2.Applied)
 	}
 	// M79e (#1708): a refused ack must NOT carry a nav payload even if one
 	// is offered — a poll the seat refused has no target to hand over.
-	if rep3 := buildReply(req, false, "/host/docs"); rep3.TitleString() != "" {
+	if rep3 := buildReply(req, false, "/host/docs", vi.WmRpcPadPlain, 0); rep3.TitleString() != "" {
 		t.Fatalf("refused ack carried a nav payload %q", rep3.TitleString())
 	}
 }

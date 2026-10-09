@@ -49,11 +49,146 @@ const (
 	MarkerRpcCycle   = "gotabwm: rpc cycle"
 	MarkerTitle      = "gotabwm: title id="
 	MarkerRpcOther   = "gotabwm: rpc other kind="
+	MarkerRpcBind    = "gotabwm: rpc bind id="
+	MarkerRpcRefuse  = "gotabwm: rpc refuse id="
 	MarkerHostFocus  = "gotabwm: host focus id="
 	MarkerHostView   = "gotabwm: host view id="
 	MarkerHostClose  = "gotabwm: host close id="
 	MarkerHostDone   = "gotabwm: host done"
 )
+
+// M97g-F2 (#2080): WM_RPC sender authentication. The mailbox is any-to-any
+// and carries no sender identity (ADR 0007 slots 5/6), so the frame alone
+// can never prove who sent it. The seat binds each window to a session
+// token only the window's kernel-registered owner can obtain:
+//
+//  1. a request for an UNBOUND window draws a challenge ack — Pad=Challenge
+//     with an 8-byte value in the frame's x/y/w/h union;
+//  2. the owner proves itself by setting the window's kernel title to the
+//     challenge string — slot 61 (sys_win_set_title) refuses non-owners —
+//     and resends the request with the challenge echoed in the union;
+//  3. the seat reads the title back (wmctl cmd 14), mints the session
+//     token, and binds the window to the request's reply_to pid + token;
+//  4. every later frame for the window must carry the token and the bound
+//     reply_to; every bound-window ack carries Pad=Bound + the token, so a
+//     forged ack cannot satisfy the client's wait.
+//
+// The 38-byte wire is unchanged: x/y/w/h are zero in every request kind the
+// client sends, so the auth value rides existing fields.
+
+// rpcBinding is one bound session: the window id indexes the table, the pid
+// is the reply_to that proved ownership, the token is the shared secret.
+type rpcBinding struct {
+	pid   uint8
+	token uint64
+}
+
+// rpcBindings is the bound-session table, indexed directly by window id:
+// rpcBindings[id].token == 0 means "no binding". rpcChallenges holds the
+// pending ownership challenge per window id (0 = none outstanding).
+var (
+	rpcBindings   [256]rpcBinding
+	rpcChallenges [256]uint64
+)
+
+// readWindowName / mintAuthValue are the kernel seams the bind proof needs
+// — wmctl cmd 14 (the seat's window-name read-back) and slot 72 (the
+// CSPRNG). Wrapped so host tests can drive the handshake off-guest.
+var (
+	readWindowName = func(id uint8) (string, bool) {
+		var buf [64]byte
+		n, r := vi.WmctlWindowName(uint32(id), buf[:])
+		if r < 0 || n <= 0 {
+			return "", false
+		}
+		return string(buf[:n]), true
+	}
+	mintAuthValue = func() uint64 {
+		var b [8]byte
+		if n, err := vi.Random(b[:]); err != nil || n != len(b) {
+			return 0
+		}
+		return uint64(b[0]) | uint64(b[1])<<8 | uint64(b[2])<<16 | uint64(b[3])<<24 |
+			uint64(b[4])<<32 | uint64(b[5])<<40 | uint64(b[6])<<48 | uint64(b[7])<<56
+	}
+)
+
+// challengeFor returns the outstanding ownership challenge for id, minting
+// a fresh nonzero one when none is pending. The challenge is not secret —
+// the proof is the owner-restricted title set, not knowledge of the value.
+func challengeFor(id uint8) uint64 {
+	if rpcChallenges[id] != 0 {
+		return rpcChallenges[id]
+	}
+	if v := mintAuthValue(); v != 0 {
+		rpcChallenges[id] = v
+		return v
+	}
+	return 0
+}
+
+// completeBind finishes the ownership handshake: the echoed challenge must
+// match the pending one and the window's kernel title must read as the
+// challenge string — a state only the kernel-registered owner can produce.
+// On success the window binds to the request's reply_to pid under a fresh
+// session token.
+func completeBind(req vi.WmRpc) bool {
+	pending := rpcChallenges[req.ID]
+	if pending == 0 || vi.WmAuth(req) != pending || req.ReplyTo == 0 {
+		return false
+	}
+	name, ok := readWindowName(req.ID)
+	if !ok || name != vi.WmBindChallengeTitle(pending) {
+		return false
+	}
+	token := mintAuthValue()
+	if token == 0 || token == pending {
+		return false
+	}
+	rpcBindings[req.ID] = rpcBinding{pid: req.ReplyTo, token: token}
+	rpcChallenges[req.ID] = 0
+	vi.ConsoleLine(MarkerRpcBind + vi.Itoa64(int64(req.ID)) + " pid=" + vi.Itoa64(int64(req.ReplyTo)))
+	return true
+}
+
+// dropRpcBinding forgets the session token and any pending challenge for a
+// window. Called wherever a window leaves the registry (tab close and the
+// released-window mirror): an id reused by a later window must bind fresh,
+// and a stale token must die with the window it authenticated.
+func dropRpcBinding(id uint32) {
+	if id > 255 {
+		return
+	}
+	rpcBindings[id] = rpcBinding{}
+	rpcChallenges[id] = 0
+}
+
+func dropAllRpcBindings() {
+	rpcBindings = [256]rpcBinding{}
+	rpcChallenges = [256]uint64{}
+}
+
+// gateRPC is the sender-authentication check ahead of applyRPC. It returns
+// the Pad and auth union the ack must carry plus whether the request may
+// apply. A frame that fails authentication never reaches the WM state, and
+// a bound window answers bad credentials with a bare refusal — the token
+// never rides a frame that failed the check.
+func gateRPC(req vi.WmRpc) (pad uint8, auth uint64, apply bool) {
+	b := rpcBindings[req.ID]
+	if b.token != 0 {
+		if req.ReplyTo == b.pid && vi.WmAuth(req) == b.token {
+			return vi.WmRpcPadBound, b.token, true
+		}
+		return vi.WmRpcPadPlain, 0, false
+	}
+	if vi.WmAuth(req) == 0 {
+		return vi.WmRpcPadChallenge, challengeFor(req.ID), false
+	}
+	if completeBind(req) {
+		return vi.WmRpcPadBound, rpcBindings[req.ID].token, true
+	}
+	return vi.WmRpcPadChallenge, challengeFor(req.ID), false
+}
 
 // M79e (#1708): the pending navigation target. ONE slot, keyed by the window
 // id it belongs to and drained poll-once — Zig tabwm's pending_nav_id /
@@ -170,8 +305,14 @@ func serviceRPC() int {
 		if req.Kind&vi.WmRpcReplyFlag != 0 {
 			continue
 		}
-		applied := applyRPC(req)
-		replyRPC(req, applied)
+		pad, auth, apply := gateRPC(req)
+		applied := false
+		if apply {
+			applied = applyRPC(req)
+		} else if pad == vi.WmRpcPadPlain {
+			vi.ConsoleLine(MarkerRpcRefuse + vi.Itoa64(int64(req.ID)))
+		}
+		replyRPC(req, applied, pad, auth)
 		served++
 	}
 	return served
@@ -345,26 +486,30 @@ func applyRPC(req vi.WmRpc) bool {
 
 // replyRPC acks one request to its requester. The frame mirrors the request's
 // id/seq and carries the applied flag plus the reply bit, exactly like TABWM's
-// wnd_mail_reply, so an unmodified app accepts it.
-func replyRPC(req vi.WmRpc, applied bool) {
+// wnd_mail_reply, so an unmodified app accepts it. The Pad/auth arguments are
+// gateRPC's verdict: a bound window's acks always carry Pad=Bound + the
+// session token, so a forged ack cannot satisfy the client's wait.
+func replyRPC(req vi.WmRpc, applied bool, pad uint8, auth uint64) {
 	// M79e (#1708): the title carries the nav-poll payload, the same
 	// channel TABWM uses (Zig's rpc_reply_payload). takeReplyPayload is
 	// consume-on-use, so only the nav-poll reply carries a path and the
 	// next ack is zeroed again.
 	if req.ReplyTo != 0 {
-		_ = vi.IpcSend(uint32(req.ReplyTo), buildReply(req, applied, takeReplyPayload()).Encode())
+		_ = vi.IpcSend(uint32(req.ReplyTo), buildReply(req, applied, takeReplyPayload(), pad, auth).Encode())
 	}
 }
 
 // buildReply is the pure half of replyRPC: the ack frame for one request. Split
 // out so the host test pins the wire (reply bit, mirrored id/seq, applied flag,
-// and the nav-poll title payload) without a guest.
-func buildReply(req vi.WmRpc, applied bool, payload string) vi.WmRpc {
+// the auth Pad/union, and the nav-poll title payload) without a guest.
+func buildReply(req vi.WmRpc, applied bool, payload string, pad uint8, auth uint64) vi.WmRpc {
 	var rep vi.WmRpc
 	rep.Kind = req.Kind | vi.WmRpcReplyFlag
 	rep.ID = req.ID
 	rep.Seq = req.Seq
 	rep.ReplyTo = req.ReplyTo
+	rep.Pad = pad
+	vi.SetWmAuth(&rep, auth)
 	if applied {
 		rep.Applied = 1
 		// Only an applied ack carries a payload: a refused poll must not
