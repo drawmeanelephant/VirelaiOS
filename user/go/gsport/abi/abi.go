@@ -103,7 +103,34 @@ var (
 	Sleep = vi.Sleep // slot 4 sys_sleep
 	Yield = vi.Yield // slot 2 sys_yield
 	Exit  = vi.Exit  // slot 3 sys_exit
+
+	// M95c (#2011): the terminal/window entries gsport/tty speaks — the
+	// bound window tty, the ADR 0009 event queue and the zoom rung.
+	PollEventRaw = vi.PollEventRaw // slot 21 sys_poll_event
+	TtyAttach    = vi.TtyAttach    // slot 67 sys_tty_attach (detach/serial/window/net by arg)
+	// TerminalCell issues no event/window slot of its own: it re-derives the
+	// font_size rung from /host/SETTINGS.TXT (slots 23+24+26 inside
+	// vi.ReadFileAll) — the same read the kernel's own reflow used.
+	TerminalCell = vi.TerminalCell
 )
+
+// TtyAttachWindow binds the caller's own .user window as its controlling
+// terminal — slot 67 with the TtyWindow (2) front-end selector.
+func TtyAttachWindow(windowID int) int64 {
+	return vi.TtyAttachWindow(windowID)
+}
+
+// Event is the ADR 0009 queue row.
+type Event = vi.Event
+
+// Event kinds the terminal adapter consumes (ADR 0009).
+const (
+	EvWinClose  = vi.EvWinClose  // kind 8
+	EvWinResize = vi.EvWinResize // kind 10
+)
+
+// TtyDetach is the slot-67 selector that releases the controlling terminal.
+const TtyDetach = vi.TtyDetach
 
 // Error is a kernel refusal surfaced as a Go error: Op and Path name the
 // operation, Code is the positive ADR 0007 errno magnitude (vi.Err*).

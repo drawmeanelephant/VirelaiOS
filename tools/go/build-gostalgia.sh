@@ -11,6 +11,10 @@
 #   - a file at a new path ADDS it and must carry `//go:build virelai`;
 #   - paths must not escape the stage (no .., no absolute, .go only;
 #     README.md documents the surface and is never applied).
+# Module overlays (tools/go/overlay/gostalgia-mods/<module>@<version>/)
+# apply the same rules to a COPY of a dependency module from the cache
+# (.build/gostalgia-mods/), wired by `replace` in the transient modfile —
+# the pinned platform files no source overlay can reach live there.
 # Raw runs, failing targets and the sorted, deduplicated breaks.tsv live in
 # artifacts/gostalgia-audit/. Runtime assumptions still need a source audit.
 
@@ -84,6 +88,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 
@@ -184,18 +189,17 @@ if snapshot() != expected:
 
 # Transient modfile: the pin's go.mod plus the virelai module (gsport, vi),
 # resolved by replace to the worktree — never written into the stage, so
-# the staged tree stays byte-identical to the pin + named overlays.
+# the staged tree stays byte-identical to the pin + named overlays. The
+# gostalgia-mods replaces are appended once staging below knows them.
 modsrc = (stage / "go.mod").read_text()
 # The main module's replaces apply transitively: virelai's own go.mod
 # requires virelai/tools/go/tabcodec (a dot-less path valid only under its
 # own replace), so pin that too — `go list -m all` otherwise refuses the
 # whole graph.
-modfile.write_text(modsrc + (
+modbase = modsrc + (
     "\nrequire virelai v0.0.0\nreplace virelai => %s\n"
     "replace virelai/tools/go/tabcodec => %s\n"
-    % (repo / "user" / "go", repo / "tools" / "go" / "tabcodec")))
-sumfile = modfile.with_suffix(".sum")
-sumfile.write_bytes((stage / "go.sum").read_bytes())
+    % (repo / "user" / "go", repo / "tools" / "go" / "tabcodec"))
 
 # Download only versions explicitly named by the archived go.sum. Run outside
 # the module so even historical go.mod-only entries cannot alter its sums.
@@ -208,6 +212,102 @@ download = command(["mod", "download", "-json",
 if download.returncode:
     print(download.stderr or download.stdout, end="")
     sys.exit("build-gostalgia: module download failed (see raw evidence)")
+
+# --- Module overlays (gostalgia-mods) ------------------------------------
+#
+# M95c (#2011): tools/go/overlay/gostalgia-mods/<module>@<version>/ maps
+# onto a COPY of that module from the cache — the source overlay cannot
+# reach third-party platform files, and the module cache must never be
+# written. Same rules as the source overlay: a file at an existing path
+# replaces it and must carry a pinned-sha256 marker for the cache
+# original; a new path needs //go:build virelai; non-.go files and
+# README.md are never applied. Each staged copy is re-verified against
+# the cache snapshot (every unnamed path byte-identical), then the
+# transient modfile replaces the module with the copy.
+mod_replaces = []
+mods_dir = repo / "tools" / "go" / "overlay" / "gostalgia-mods"
+if mods_dir.is_dir() and not no_overlay:
+    downloaded = {}
+    for obj in objects(download.stdout):
+        if obj.get("Path") and obj.get("Version") and obj.get("Dir"):
+            downloaded[obj["Path"] + "@" + obj["Version"]] = Path(obj["Dir"])
+    for mod_dir in sorted(d for d in mods_dir.rglob("*") if d.is_dir() and "@" in d.name):
+        rel = mod_dir.relative_to(mods_dir)
+        leaf = rel.name.split("@", 1)
+        mod_path = str(rel.parent / leaf[0]) if str(rel.parent) != "." else leaf[0]
+        mod_key = mod_path + "@" + leaf[1]
+        cache_dir = downloaded.get(mod_key)
+        if cache_dir is None:
+            sys.exit("build-gostalgia: gostalgia-mods names %s, not in the pin's go.sum"
+                     % mod_key)
+        dst_root = repo / ".build" / "gostalgia-mods" / rel
+        if dst_root.exists():
+            # A prior stage may hold cache-style read-only bits; restore
+            # writability before removing or rmtree fails closed.
+            for p in [dst_root, *dst_root.rglob("*")]:
+                try:
+                    p.chmod(0o755 if p.is_dir() else 0o644)
+                except OSError:
+                    pass
+            shutil.rmtree(dst_root)
+        shutil.copytree(cache_dir, dst_root)
+        pristine = {str(p.relative_to(dst_root)): hashlib.sha256(p.read_bytes()).hexdigest()
+                    for p in dst_root.rglob("*") if p.is_file()}
+        # The cache copy is read-only; the stage must be writable
+        # (rglob does not yield dst_root itself, so chmod it explicitly).
+        dst_root.chmod(0o755)
+        for p in dst_root.rglob("*"):
+            if p.is_file():
+                p.chmod(0o644)
+            else:
+                p.chmod(0o755)
+        named = {}
+        for src in sorted(mod_dir.rglob("*")):
+            if not src.is_file() or src.name == "README.md":
+                continue
+            srel = src.relative_to(mod_dir)
+            if src.suffix != ".go" or any(p in ("..", "") or p.startswith(".")
+                                          for p in srel.parts) or srel.is_absolute():
+                sys.exit("build-gostalgia: invalid gostalgia-mods path %s" % srel)
+            dst = dst_root / srel
+            head = src.read_text().splitlines()[:6]
+            marker = next((m.group(1) for line in head
+                           if (m := pin_re.search(line))), None)
+            tagged = any(line.startswith("//go:build") and "virelai" in line
+                         for line in head)
+            if dst.exists():
+                if not marker:
+                    sys.exit("build-gostalgia: gostalgia-mods %s replaces %s without "
+                             "a pinned-sha256 marker" % (src, srel))
+                got = pristine.get(str(srel))
+                if got != marker:
+                    sys.exit("build-gostalgia: gostalgia-mods %s pins sha256 %s but the "
+                             "%s file has %s — the dependency moved; re-pin the overlay"
+                             % (src, marker, mod_key, got))
+            elif not tagged:
+                sys.exit("build-gostalgia: gostalgia-mods %s adds %s without "
+                         "//go:build virelai" % (src, srel))
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            dst.write_bytes(src.read_bytes())
+            named[str(srel)] = hashlib.sha256(src.read_bytes()).hexdigest()
+        mod_expected = dict(pristine)
+        mod_expected.update(named)
+        after = {str(p.relative_to(dst_root)): hashlib.sha256(p.read_bytes()).hexdigest()
+                 for p in dst_root.rglob("*") if p.is_file()}
+        if after != mod_expected:
+            sys.exit("build-gostalgia: gostalgia-mods integrity check failed for %s "
+                     "(stage differs from cache at a non-overlay path)" % mod_key)
+        mod_replaces.append((mod_path, dst_root))
+        (run / ("mods-" + leaf[0] + ".json")).write_text(json.dumps(
+            {"module": mod_key, "cache": str(cache_dir), "staged": str(dst_root),
+             "applied": sorted(named)}, indent=1) + "\n")
+
+# The modfile materializes only now: download ran outside a module, and the
+# gostalgia-mods replaces must already be known before `go list -m all`.
+modfile.write_text(modbase + "".join(
+    "replace %s => %s\n" % (path, dst) for path, dst in mod_replaces))
+sumfile = modfile.with_suffix(".sum")
+sumfile.write_bytes((stage / "go.sum").read_bytes())
 
 # No implicit latest-version queries or downloads during discovery/builds.
 # Graph-only module metadata must already be cached; do not fetch their source.
