@@ -89,6 +89,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import struct
 import subprocess
 import sys
 
@@ -321,6 +322,66 @@ if not audit:
     print(build.stdout + build.stderr, end="")
     if build.returncode:
         sys.exit(build.returncode)
+
+    # M95f (#2014): the shipped ELF must be a static image the kernel's
+    # loader accepts. Assert exactly what kernel/src/elf.zig measures —
+    # no PT_INTERP/PT_DYNAMIC program headers (no interpreter, no dynamic
+    # section), initialized bytes (Σ PT_LOAD.p_filesz) under load_max, and
+    # mapped bytes (Σ PT_LOAD.p_memsz) under map_max. Both bounds are
+    # env-tunable so the red leg can lower them and watch the refusal
+    # name the bound.
+    PT_LOAD, PT_DYNAMIC, PT_INTERP = 1, 2, 3
+    load_max = int(os.environ.get("GOSTALGIA_LOAD_MAX", 32 * 1024 * 1024))
+    map_max = int(os.environ.get("GOSTALGIA_MAP_MAX", 64 * 1024 * 1024))
+    elf = out.read_bytes()
+    if elf[:4] != b"\x7fELF" or elf[4] != 2 or elf[5] != 1:
+        sys.exit("build-gostalgia: %s is not an ELF64 little-endian image" % out)
+    phoff, = struct.unpack_from("<Q", elf, 0x20)
+    phentsize, phnum = struct.unpack_from("<HH", elf, 0x36)
+    init_bytes = map_bytes = 0
+    for i in range(phnum):
+        p_type, p_flags, p_offset, p_vaddr, p_paddr, p_filesz, p_memsz = \
+            struct.unpack_from("<IIQQQQQ", elf, phoff + i * phentsize)
+        if p_type == PT_INTERP:
+            sys.exit("build-gostalgia: %s carries PT_INTERP — not a static image" % out)
+        if p_type == PT_DYNAMIC:
+            sys.exit("build-gostalgia: %s carries PT_DYNAMIC — not a static image" % out)
+        if p_type == PT_LOAD:
+            init_bytes += p_filesz
+            map_bytes += p_memsz
+    print("build-gostalgia: %s static: initialized=%d B mapped=%d B "
+          "(load_max=%d map_max=%d)" % (out.name, init_bytes, map_bytes,
+                                        load_max, map_max))
+    if init_bytes > load_max:
+        sys.exit("build-gostalgia: %s initialized bytes %d exceed load_max=%d — "
+                 "the kernel refuses an image this large" % (out.name, init_bytes, load_max))
+    if map_bytes > map_max:
+        sys.exit("build-gostalgia: %s mapped bytes %d exceed map_max=%d — "
+                 "the kernel refuses an image this large" % (out.name, map_bytes, map_max))
+
+    # Every third-party module linked into the ELF must carry a versioned
+    # line in user/go/gsport/THIRD-PARTY.txt. First-party modules (the
+    # gostalgia pin itself and this repository's virelai/gsport) are the
+    # owner's code and are excluded by name.
+    notices = (repo / "user" / "go" / "gsport" / "THIRD-PARTY.txt")
+    if not notices.is_file():
+        sys.exit("build-gostalgia: missing %s — the notices file must list "
+                 "every linked third-party module" % notices)
+    first_party = {"gostalgia", "virelai", "virelai/tools/go/tabcodec"}
+    deps = command(["list", "-mod=mod", "-modfile", str(modfile), "-deps",
+                    "-f", "{{with .Module}}{{.Path}} {{.Version}}{{end}}",
+                    "./cmd/" + target], "deps", env=offline)
+    if deps.returncode:
+        sys.exit("build-gostalgia: go list -deps failed (see raw evidence)")
+    linked = sorted({line.strip() for line in deps.stdout.splitlines()
+                     if line.strip() and line.split()[0] not in first_party})
+    notice_text = notices.read_text()
+    missing = [m for m in linked if m not in notice_text]
+    if missing:
+        sys.exit("build-gostalgia: THIRD-PARTY.txt is missing linked modules: "
+                 "%s — re-resolve `go list -deps` and update it" % ", ".join(missing))
+    print("build-gostalgia: THIRD-PARTY.txt covers %d linked module(s)"
+          % len(linked))
     print(f"build-gostalgia: wrote {out} ({out.stat().st_size} bytes)")
     sys.exit(0)
 

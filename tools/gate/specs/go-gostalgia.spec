@@ -1,9 +1,13 @@
-# go-gostalgia.spec -- M95b (#2010) + M95c (#2011): the pinned Gostalgia
-# tree built as a GOOS=virelai guest through the overlay mechanism. Run 01
-# is the M95b adapter gate (mem:// IPC, file primitives, sys_exec'd child,
-# in-band shutdown) and is unchanged. Runs 02-04 are the M95c terminal
-# backend gate: GOSTALGIA.ELF's Bubble Tea v1 shell on a GOTABWM-hosted
-# window tty, driven by real HID keystrokes — never synthetic app input.
+# go-gostalgia.spec -- M95b (#2010) + M95c (#2011) + M95f (#2014): the
+# pinned Gostalgia tree built as a GOOS=virelai guest through the overlay
+# mechanism. Run 01 is the M95b adapter gate (mem:// IPC, file primitives,
+# sys_exec'd child, in-band shutdown) and is unchanged. Runs 02-04 are the
+# M95c terminal backend gate: GOSTALGIA.ELF's Bubble Tea v1 shell on a
+# GOTABWM-hosted window tty, driven by real HID keystrokes — never
+# synthetic app input. Runs 06-07 are the M95f packaging gate: the
+# APPS.TXT v2 row launched from the seat's own launcher over real HID,
+# the hosted window on the strip + kernel registry with its title, and
+# clean exit back to the desktop.
 #
 #   run 02: render + echo + typed `exit` -> status 0. `dui focus` is the
 #           marker-gated refocus: the seat's own chrome windows (the Apps
@@ -18,6 +22,13 @@
 #   run 05: font-zoom resize — `font large` is the kernel's own WIN_RESIZE
 #           delivery (M80i): the bound grid re-flows to the 10x21 rung and
 #           the app re-reads TerminalCell — 80x44 -> 80x33.
+#   run 06: launcher exec — ctrl-space + typed filter `gostalgia` + Return
+#           over real HID runs the APPS.TXT v2 row's argv; `exit` typed on
+#           the bound tty exits 0; a post-exit Enter on the emptied strip
+#           re-opens the launcher (desktop took the keyboard back).
+#   run 07: same launch, then the rail close-x click (rightmost 16 px of
+#           the single cell, y<22) drives closeTabByID -> WmctlWinClose ->
+#           WIN_CLOSE -> the same in-band shutdown seam -> status 0.
 #
 # HOST PREREQUISITE: `.build/go/GSSMOKE.ELF` and `.build/go/GOSTALGIA.ELF`
 # via `bash tools/go/build-gostalgia.sh` (overlay leg; --no-overlay is the
@@ -100,6 +111,30 @@ EOF
 vgate_file script-04c.txt <<'EOF'
 clip
 dui close 3
+EOF
+
+# --- M95f run-06/07 inputs ---------------------------------------------------
+# Baseline process snapshot before the launcher runs anything: its
+# `procs: count=` line doubles as the chords anchor, since script delivery
+# is already gated on the seat's first present.
+vgate_file script-06.txt <<'EOF'
+procs
+EOF
+
+# The kernel registry dump while GOSTALGIA is hosted — the dui[ row set is
+# what the post-exit dump is diffed against.
+vgate_file script-06b.txt <<'EOF'
+dui
+EOF
+
+# Post-exit snapshot. `procs` proves the registry returned to its
+# pre-launch rows; `dui` proves the window is gone and kernel focus fell
+# back to the desktop (`focused=0`); `procs receipt` emits the one-shot
+# `runtime-receipt` line that anchors the post-exit Enter keystroke.
+vgate_file script-06c.txt <<'EOF'
+procs
+dui
+procs receipt GOSTALGIA.ELF
 EOF
 
 vgate_setup_python <<'PY'
@@ -760,6 +795,326 @@ PY
 # Repeat-cycle hygiene: on BOOTS>1 the next cycle's boot 02 would restore
 # this boot's Gostalgia tab as a dead-id placeholder otherwise.
 vgate_assert 05 python <<'PY'
+import os
+share = os.environ.get("VG_SHARE")
+st = os.path.join(share, "SESSION.TABS") if share else None
+if st and os.path.exists(st):
+    os.remove(st)
+    print("between-run cleanup: SESSION.TABS removed (repeat hygiene)")
+else:
+    print("between-run cleanup: no SESSION.TABS (nothing to remove)")
+PY
+
+# --- boot 06: launcher exec + typed `exit` (M95f) ----------------------------
+# The chain, each step gated on a marker only the guest produces:
+#   gotabwm: present   -> script-06 `procs`: the pre-launch process rows;
+#                        `procs: count=` is the chords anchor.
+#   procs: count=      -> --input-chords types ctrl-space, the filter
+#                        `gostalgia`, Return: the seat's own launcher
+#                        decodes APPS.TXT (decode receipt reports the v2
+#                        field counts), filters to one row, and execs
+#                        `GOSTALGIA.ELF shell --root /host/GS`.
+#   launcher exec      -> the app declares a fullscreen hosted window
+#                        (`gotabwm: tab open id=`, `gotabwm: session
+#                        write n=`), gsport/tty binds it, Bubble Tea runs.
+#   call app/list ok   -> script-06b `dui` (kernel window registry while
+#                        hosted) AND --input-string types `exit` — the
+#                        Init-discovery marker means the model's busy
+#                        window is past and the declare's focus handoff
+#                        settled.
+#   exited status=0 +3s-> script-06c `procs` + `dui` + `procs receipt`:
+#                        post-exit registry, focus, and process dumps.
+#   runtime-receipt    -> --input-key Return on the emptied strip: the
+#                        start surface's keyboard affordance re-opens the
+#                        launcher — the desktop took the keyboard back.
+vgate_run 06 -- \
+    --screen '$RUN_DIR/gos-06' \
+    --input --via-virtio \
+    --script '$RUN_DIR/script-06.txt' \
+    --script-after 'gotabwm: present' \
+    --input-chords 'ctrl-space,g,o,s,t,a,l,g,i,a,return' \
+    --input-chords-after 'procs: count=' \
+    --script2 '$RUN_DIR/script-06b.txt' \
+    --script2-after 'gostalgia: call app/list ok' \
+    --input-string $'exit\n' \
+    --input-string-after 'gostalgia: call app/list ok' \
+    --script3 '$RUN_DIR/script-06c.txt' \
+    --script3-after 'procs GOSTALGIA.ELF exited status=0' --script3-delay 3 \
+    --input-key 36 \
+    --input-key-after 'runtime-receipt' \
+    --script-expect 'procs GOSTALGIA.ELF exited status=0' \
+    --script-expect-tail 8 --timeout 240
+
+# Launcher path: the seat opened its launcher, decoded the manifest's v2
+# fields (a v2 row with argv/caps bumps those counts), filtered to exactly
+# the Gostalgia row, and exec'd it with the row's fixed argv.
+vgate_assert 06 serial-contains 'gotabwm: launcher open n='
+vgate_assert 06 serial-contains 'gotabwm: launcher filter q=gostalgia n=1'
+vgate_assert 06 serial-contains 'gotabwm: launcher exec GOSTALGIA.ELF argv=shell --root /host/GS'
+vgate_assert 06 serial-absent 'gotabwm: launcher missing'
+# Window-list evidence: the seat's strip gained a tab and persisted the
+# session; SESSION.TABS carries the declared title in its fixed-width
+# field.
+vgate_assert 06 serial-contains 'gotabwm: tab open id='
+vgate_assert 06 serial-contains 'gotabwm: session write n='
+vgate_assert 06 serial-contains 'gostalgia: tty attached window='
+vgate_assert 06 serial-contains 'gostalgia: ready endpoint='
+vgate_assert 06 serial-contains 'gostalgia: call app/list ok'
+# Clean exit through the in-band seam.
+vgate_assert 06 serial-contains 'gostalgia: shutdown reason='
+vgate_assert 06 serial-contains 'gostalgia: done'
+vgate_assert 06 serial-contains 'procs GOSTALGIA.ELF exited status=0'
+vgate_assert 06 serial-absent '[EXC] parking:'
+vgate_assert 06 serial-absent 'exited status=139'
+vgate_assert 06 serial-absent 'panic:'
+# The persisted window list names the tab by title.
+vgate_assert 06 share-contains SESSION.TABS 'Gostalgia'
+
+# Registry/geometry diff, both sides of the exit: the dui[ dump while
+# hosted carries a row owned by the Gostalgia pid (correlated from the
+# kernel's per-name records — runtime-receipt / zombie procs row — not a
+# guessed pid); the post-exit dump has no row for that owner, reports
+# focused=0 (kernel focus fell back to the terminal/desktop), `procs:
+# count=` returned to its pre-launch value with no GOSTALGIA row left,
+# and the seat opened its launcher a second time on the post-exit Enter.
+vgate_assert 06 python <<'PY'
+import os, re, sys
+
+ser = open(os.environ["VG_SER"], errors="replace").read()
+
+exit_i = ser.find("procs GOSTALGIA.ELF exited status=0")
+if exit_i < 0:
+    sys.exit("no clean-exit marker")
+pre = ser[:exit_i]
+post = ser[exit_i:]
+
+# The app's pid comes from the kernel's own per-name records, not `open:`
+# ordering: the kernel's open print and the app's attach marker interleave
+# nondeterministically, and window ids are recycled (seat chrome held
+# id 4 at boot, the app's declare re-used it, the post-exit launcher
+# reopen re-uses it again — a last-open-before-attach heuristic picked
+# the seat's pid 1 on 2026-10-09). The runtime-receipt names the pid that
+# ran GOSTALGIA.ELF; the retained zombie procs row is the same record;
+# the first `open:` for the bound window after the exec marker is the
+# fallback.
+m = (re.search(r"runtime-receipt: pid=(\d+) name=GOSTALGIA\.ELF", post)
+     or re.search(r"^procs: id=(\d+)\b[^\n]*name=GOSTALGIA\.ELF",
+                  post, re.M))
+if m:
+    pid = m.group(1)
+else:
+    w = re.search(r"gostalgia: tty attached window=(\d+)", ser)
+    exec_i = ser.find("gotabwm: launcher exec GOSTALGIA.ELF")
+    if not w or exec_i < 0:
+        sys.exit("no pid in receipt/procs and no attach/exec markers")
+    opens_for_id = re.findall(
+        r"open: id=%s owner=(\d+)" % re.escape(w.group(1)),
+        ser[exec_i:])
+    if not opens_for_id:
+        sys.exit("no `open: id=%s owner=` row after the exec marker"
+                 % w.group(1))
+    pid = opens_for_id[0]
+print("gostalgia owner pid=%s" % pid)
+
+pre_rows = [l for l in pre.splitlines() if l.startswith("dui[")]
+post_rows = [l for l in post.splitlines() if l.startswith("dui[")]
+if not any(("owner=%s" % pid) in l for l in pre_rows):
+    sys.exit("no dui[] row owned by pid %s while hosted" % pid)
+if any(("owner=%s" % pid) in l for l in post_rows):
+    sys.exit("dui[] still lists a pid-%s window after exit" % pid)
+heads = [l for l in post.splitlines() if l.startswith("dui: windows=")]
+if not heads or " focused=0 " not in heads[-1]:
+    sys.exit("post-exit dui header missing or focus did not fall back: %r"
+             % (heads[-1] if heads else None))
+
+counts = re.findall(r"^procs: count=(\d+)$", ser, re.M)
+if len(counts) < 2:
+    sys.exit("expected baseline and post-exit procs dumps, got %s" % counts)
+base, last = int(counts[0]), int(counts[-1])
+# The registry RETAINS exited rows by design (`state=exited task=reaped`
+# — a zombie is history, not a live process; the baseline dump already
+# carries one). So `count` may sit at baseline+1 while the zombie lingers.
+# What must not exist is a LIVE GOSTALGIA row, and a retained zombie must
+# read exit=0.
+gs_rows_post = [l for l in post.splitlines()
+                if l.startswith("procs: id=") and "name=GOSTALGIA.ELF" in l]
+bad = [l for l in gs_rows_post
+       if "state=exited" not in l or " exit=0" not in l]
+if bad:
+    sys.exit("post-exit GOSTALGIA rows are not clean zombies: %s" % bad)
+if last - base > 1:
+    sys.exit("procs count grew by more than one retained zombie: %s -> %s"
+             % (base, last))
+if "runtime-receipt" not in post:
+    sys.exit("the post-exit `procs receipt` query printed nothing")
+
+opens = ser.count("gotabwm: launcher open n=")
+if opens != 2:
+    sys.exit("expected launcher open x2 (HID summon + post-exit Enter), got %d" % opens)
+print("window gone, focused=0, procs %d->%d (zombie retained), launcher reopened"
+      % (base, last))
+PY
+
+# No crash receipt: the supervisor writes CRASH/*.TXT only for failed
+# children; a clean shell exit must leave both plausible roots empty.
+vgate_assert 06 python <<'PY'
+import os, sys
+share = os.environ.get("VG_SHARE")
+if not share:
+    sys.exit("no armed share exported to the assert")
+for rel in ("GS/CRASH", "CRASH"):
+    d = os.path.join(share, rel)
+    if os.path.isdir(d) and os.listdir(d):
+        sys.exit("crash receipt(s) under %s: %s" % (rel, os.listdir(d)))
+print("no crash receipts on the share")
+PY
+
+# Between-run cleanup so boot 07 does not restore boot 06's dead-id tab.
+vgate_assert 06 python <<'PY'
+import os
+share = os.environ.get("VG_SHARE")
+st = os.path.join(share, "SESSION.TABS") if share else None
+if st and os.path.exists(st):
+    os.remove(st)
+    print("between-run cleanup: SESSION.TABS removed before boot 07")
+else:
+    print("between-run cleanup: no SESSION.TABS (nothing to remove)")
+PY
+
+# --- boot 07: launcher exec + rail close-x (M95f) ----------------------------
+# Same launcher chain as run 06; the exit leg is the seat's real close
+# affordance instead of a typed command:
+#   call app/list ok -> --pointer-virtio clicks 1272,10: with one tab the
+#                      cell paints [0,1280) and railCloseZoneAt puts the
+#                      close-x in the rightmost 16 px -> applyRailClose ->
+#                      closeTabByID -> WmctlWinClose -> WIN_CLOSE -> the
+#                      same in-band shutdown seam -> status 0.
+vgate_run 07 -- \
+    --screen '$RUN_DIR/gos-07' \
+    --input --via-virtio \
+    --script '$RUN_DIR/script-06.txt' \
+    --script-after 'gotabwm: present' \
+    --input-chords 'ctrl-space,g,o,s,t,a,l,g,i,a,return' \
+    --input-chords-after 'procs: count=' \
+    --script2 '$RUN_DIR/script-06b.txt' \
+    --script2-after 'gostalgia: call app/list ok' \
+    --pointer-virtio '1272,10,c' \
+    --pointer-virtio-after 'gostalgia: call app/list ok' \
+    --script3 '$RUN_DIR/script-06c.txt' \
+    --script3-after 'procs GOSTALGIA.ELF exited status=0' --script3-delay 3 \
+    --input-key 36 \
+    --input-key-after 'runtime-receipt' \
+    --script-expect 'procs GOSTALGIA.ELF exited status=0' \
+    --script-expect-tail 8 --timeout 240
+
+vgate_assert 07 serial-contains 'gotabwm: launcher open n='
+vgate_assert 07 serial-contains 'gotabwm: launcher filter q=gostalgia n=1'
+vgate_assert 07 serial-contains 'gotabwm: launcher exec GOSTALGIA.ELF argv=shell --root /host/GS'
+vgate_assert 07 serial-absent 'gotabwm: launcher missing'
+vgate_assert 07 serial-contains 'gotabwm: tab open id='
+vgate_assert 07 serial-contains 'gotabwm: session write n='
+vgate_assert 07 serial-contains 'gostalgia: tty attached window='
+vgate_assert 07 serial-contains 'gostalgia: ready endpoint='
+vgate_assert 07 serial-contains 'gostalgia: call app/list ok'
+# The close affordance markers: the seat issued the close through the WM
+# seam and the strip went empty.
+vgate_assert 07 serial-contains 'gotabwm: host close id='
+vgate_assert 07 serial-contains 'gotabwm: tab close id='
+vgate_assert 07 serial-contains 'gotabwm: tabs empty'
+vgate_assert 07 serial-contains 'gostalgia: shutdown reason='
+vgate_assert 07 serial-contains 'gostalgia: done'
+vgate_assert 07 serial-contains 'procs GOSTALGIA.ELF exited status=0'
+vgate_assert 07 serial-absent '[EXC] parking:'
+vgate_assert 07 serial-absent 'exited status=139'
+vgate_assert 07 serial-absent 'panic:'
+vgate_assert 07 share-contains SESSION.TABS 'Gostalgia'
+
+# Same registry/focus/process diff as run 06 — the WIN_CLOSE path must
+# leave the desktop in the same state the typed `exit` did.
+vgate_assert 07 python <<'PY'
+import os, re, sys
+
+ser = open(os.environ["VG_SER"], errors="replace").read()
+
+exit_i = ser.find("procs GOSTALGIA.ELF exited status=0")
+if exit_i < 0:
+    sys.exit("no clean-exit marker")
+pre = ser[:exit_i]
+post = ser[exit_i:]
+
+# Same pid derivation as run 06: per-name kernel records first
+# (runtime-receipt, retained zombie procs row), never `open:` ordering —
+# the open print and the attach marker interleave nondeterministically
+# and window ids are recycled across the boot.
+m = (re.search(r"runtime-receipt: pid=(\d+) name=GOSTALGIA\.ELF", post)
+     or re.search(r"^procs: id=(\d+)\b[^\n]*name=GOSTALGIA\.ELF",
+                  post, re.M))
+if m:
+    pid = m.group(1)
+else:
+    w = re.search(r"gostalgia: tty attached window=(\d+)", ser)
+    exec_i = ser.find("gotabwm: launcher exec GOSTALGIA.ELF")
+    if not w or exec_i < 0:
+        sys.exit("no pid in receipt/procs and no attach/exec markers")
+    opens_for_id = re.findall(
+        r"open: id=%s owner=(\d+)" % re.escape(w.group(1)),
+        ser[exec_i:])
+    if not opens_for_id:
+        sys.exit("no `open: id=%s owner=` row after the exec marker"
+                 % w.group(1))
+    pid = opens_for_id[0]
+print("gostalgia owner pid=%s" % pid)
+
+pre_rows = [l for l in pre.splitlines() if l.startswith("dui[")]
+post_rows = [l for l in post.splitlines() if l.startswith("dui[")]
+if not any(("owner=%s" % pid) in l for l in pre_rows):
+    sys.exit("no dui[] row owned by pid %s while hosted" % pid)
+if any(("owner=%s" % pid) in l for l in post_rows):
+    sys.exit("dui[] still lists a pid-%s window after exit" % pid)
+heads = [l for l in post.splitlines() if l.startswith("dui: windows=")]
+if not heads or " focused=0 " not in heads[-1]:
+    sys.exit("post-exit dui header missing or focus did not fall back: %r"
+             % (heads[-1] if heads else None))
+
+counts = re.findall(r"^procs: count=(\d+)$", ser, re.M)
+if len(counts) < 2:
+    sys.exit("expected baseline and post-exit procs dumps, got %s" % counts)
+base, last = int(counts[0]), int(counts[-1])
+# Same zombie-retention semantics as run 06: a retained row must read
+# state=exited exit=0 and count may sit at baseline+1, never higher.
+gs_rows_post = [l for l in post.splitlines()
+                if l.startswith("procs: id=") and "name=GOSTALGIA.ELF" in l]
+bad = [l for l in gs_rows_post
+       if "state=exited" not in l or " exit=0" not in l]
+if bad:
+    sys.exit("post-exit GOSTALGIA rows are not clean zombies: %s" % bad)
+if last - base > 1:
+    sys.exit("procs count grew by more than one retained zombie: %s -> %s"
+             % (base, last))
+if "runtime-receipt" not in post:
+    sys.exit("the post-exit `procs receipt` query printed nothing")
+
+opens = ser.count("gotabwm: launcher open n=")
+if opens != 2:
+    sys.exit("expected launcher open x2 (HID summon + post-exit Enter), got %d" % opens)
+print("window gone, focused=0, procs %d->%d (zombie retained), launcher reopened"
+      % (base, last))
+PY
+
+vgate_assert 07 python <<'PY'
+import os, sys
+share = os.environ.get("VG_SHARE")
+if not share:
+    sys.exit("no armed share exported to the assert")
+for rel in ("GS/CRASH", "CRASH"):
+    d = os.path.join(share, rel)
+    if os.path.isdir(d) and os.listdir(d):
+        sys.exit("crash receipt(s) under %s: %s" % (rel, os.listdir(d)))
+print("no crash receipts on the share")
+PY
+
+# Repeat-cycle hygiene, same as tag 05.
+vgate_assert 07 python <<'PY'
 import os
 share = os.environ.get("VG_SHARE")
 st = os.path.join(share, "SESSION.TABS") if share else None
