@@ -6,9 +6,11 @@
 # 15-17 type real hostnames against original hermetic site stand-ins.
 # 18-20 prove wrong-host/expired/production-unknown-root refusal before GET.
 # 21 measures the largest reference with actual kernel ownership counters.
-# No public-internet fleet access, scripts or POST.
-# Native font markers and approved exact presentation expectations are separate.
-# Owner authorized the fixed three-pixel shim-border scanout composition.
+# 22-36 (M93g #1999): each frozen reference renders in-guest; the marker-
+# geometry crop SHA-256-matches its approved M93e golden (web-proof/compare.py,
+# ADR 0028 D9 exact RGB8, zero tolerance; the comparator self-test runs in setup).
+# No public-internet fleet access, scripts or POST. Owner authorized the fixed
+# three-pixel shim-border scanout composition; font markers are live-web-ttf's.
 # Prerequisites: build-web.sh browser WEB, browser WEB --gate,
 # fetch GOFETCH --gate. Gate artifacts retain WEB.ELF/GOFETCH.ELF guest names.
 
@@ -107,6 +109,55 @@ exec WEB.ELF /host/M93-LARGEST.HTML
 EOF
 vgate_file script-m93-receipt.txt <<'EOF'
 procs receipt WEB.ELF
+EOF
+
+# M93g #1999: one boot per frozen reference page (boots 22-36). The script
+# bodies differ only in the share name, kept literal so the exec-order guard
+# can read every one of them.
+vgate_file script-ref-borders.txt <<'EOF'
+exec WEB.ELF /host/BORDERS.HTML
+EOF
+vgate_file script-ref-box-model.txt <<'EOF'
+exec WEB.ELF /host/BOX-MODEL.HTML
+EOF
+vgate_file script-ref-boxes-block.txt <<'EOF'
+exec WEB.ELF /host/BOXES-BLOCK.HTML
+EOF
+vgate_file script-ref-boxes-collapse.txt <<'EOF'
+exec WEB.ELF /host/BOXES-COLLAPSE.HTML
+EOF
+vgate_file script-ref-boxes-flex.txt <<'EOF'
+exec WEB.ELF /host/BOXES-FLEX.HTML
+EOF
+vgate_file script-ref-colors.txt <<'EOF'
+exec WEB.ELF /host/COLORS.HTML
+EOF
+vgate_file script-ref-degradation.txt <<'EOF'
+exec WEB.ELF /host/DEGRADATION.HTML
+EOF
+vgate_file script-ref-display-tables.txt <<'EOF'
+exec WEB.ELF /host/DISPLAY-TABLES.HTML
+EOF
+vgate_file script-ref-flex.txt <<'EOF'
+exec WEB.ELF /host/FLEX.HTML
+EOF
+vgate_file script-ref-fonts.txt <<'EOF'
+exec WEB.ELF /host/FONTS.HTML
+EOF
+vgate_file script-ref-forms.txt <<'EOF'
+exec WEB.ELF /host/FORMS.HTML
+EOF
+vgate_file script-ref-github.txt <<'EOF'
+exec WEB.ELF /host/GITHUB.HTML
+EOF
+vgate_file script-ref-mdn.txt <<'EOF'
+exec WEB.ELF /host/MDN.HTML
+EOF
+vgate_file script-ref-selectors.txt <<'EOF'
+exec WEB.ELF /host/SELECTORS.HTML
+EOF
+vgate_file script-ref-wikipedia.txt <<'EOF'
+exec WEB.ELF /host/WIKIPEDIA.HTML
 EOF
 
 vgate_setup_python <<'PY'
@@ -267,6 +318,31 @@ for port, certificate, negative in (
     proc = subprocess.Popen([sys.executable, watch, str(os.getppid())] + command,
                             stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
     print("M93 original peer pid=%d port=%d" % (proc.pid, port))
+PY
+
+vgate_setup_python <<'PY'
+# M93g #1999: stage every frozen reference page under its uppercased share
+# name for boots 22-36, and run the comparator's own self-test before a single
+# guest pixel is graded -- a comparator that cannot fail is not evidence.
+import json, os, shutil, subprocess, sys
+share = os.environ.get("VG_SHARE") or os.path.join(os.environ["RUN_DIR"], "share")
+ref = os.path.join("tests", "fixtures", "web", "reference")
+manifest = json.loads(open(os.path.join("user", "go", "webrender", "testdata",
+                                        "golden", "m93-reference.json")).read())
+if manifest.get("Version") != 1:
+    sys.exit("m93-reference.json version is not 1")
+pages = sorted(n for n in os.listdir(ref) if n.endswith(".html"))
+names = sorted(os.path.splitext(n)[0] for n in pages)
+if sorted(manifest.get("Images", {})) != names:
+    sys.exit("reference dir and approved manifest disagree: " + repr(names))
+missing = [n for n in names if not manifest.get("Verdicts", {}).get(n)]
+if missing:
+    sys.exit("reference pages without an owner verdict: " + repr(missing))
+for page in pages:
+    shutil.copy(os.path.join(ref, page),
+                os.path.join(share, os.path.splitext(page)[0].upper() + ".HTML"))
+subprocess.check_call([sys.executable, "test_compare.py"], cwd="tools/web-proof")
+print("M93g: staged %d reference pages; comparator self-test green" % len(pages))
 PY
 
 # --- boot 01: a local page renders (markers + pixels) --------------------
@@ -837,6 +913,7 @@ assert peer.count("request GET /m93-next HTTP/1.0") >= 2, "forward did not refet
 assert peer.count("request GET /wiki/Harbor HTTP/1.0") >= 3, "back navigation did not restore the article"
 assert "request GET /w/index.php?search=Zig HTTP/1.0" in peer, "successful controls were not sent exactly"
 assert "request POST " not in peer
+os.makedirs(os.path.join("artifacts", "m93f", "runs"), exist_ok=True)
 shutil.copyfile(path, os.path.join("artifacts", "m93f", "runs", "wiki-peer-evidence.log"))
 print("M93f Wikipedia: DNS/SNI, typed URL, click, back/forward/back and exact GET proved")
 PY
@@ -1003,4 +1080,430 @@ assert budgets
 times = dict(re.findall(r"([\w-]+)=(\d+)", budgets[-1]))
 assert int(times["layout-ms"])+int(times["paint-ms"]) <= 500, budgets[-1]
 print("M93 largest reference actual demand/region/render ceilings proved:", receipts[-1])
+PY
+
+# --- boot 22: M93g reference 'borders' -- in-guest render vs approved golden --
+# One page, one boot, one exec. The boot ends on `web: ready`, printed after
+# the repaint's present; the snapshot assert runs the ADR 0028 D9 comparator,
+# which crops by WEB's own viewport marker and requires the exact manifest hash.
+vgate_run 22 -- \
+    --screen '$RUN_DIR/screen' --via-virtio --cvc-snap \
+    --snapshot-out '$RUN_DIR/snap-22' \
+    --script '$RUN_DIR/script-ref-borders.txt' \
+    --snapshot-after 'web: repaint' \
+    --script-expect 'web: ready' --timeout 120
+
+vgate_assert 22 serial-contains 'web: url /host/BORDERS.HTML'
+vgate_assert 22 serial-contains 'web: parse nodes='
+vgate_assert 22 serial-contains 'web: layout blocks='
+vgate_assert 22 serial-contains 'web: paint items='
+vgate_assert 22 serial-contains 'web: fonts truetype(inter+firacode) ui=truetype mono=truetype'
+vgate_assert 22 serial-contains 'web: viewport css=1280x720 x=0 y=64 w=512 h=288 s=0'
+vgate_assert 22 serial-contains 'web: settled'
+vgate_assert 22 serial-contains 'web: repaint items='
+vgate_assert 22 serial-contains 'web: ready'
+vgate_assert 22 serial-absent 'web: error'
+vgate_assert 22 serial-absent 'web: budget over'
+vgate_assert 22 serial-absent '[EXC] parking:'
+vgate_assert 22 snapshot 'snap-22-*.raw' <<'PY'
+import subprocess, sys
+subprocess.check_call([sys.executable, 'tools/web-proof/compare.py', sys.argv[1], 'borders'])
+PY
+
+# --- boot 23: M93g reference 'box-model' -- in-guest render vs approved golden --
+# One page, one boot, one exec. The boot ends on `web: ready`, printed after
+# the repaint's present; the snapshot assert runs the ADR 0028 D9 comparator,
+# which crops by WEB's own viewport marker and requires the exact manifest hash.
+vgate_run 23 -- \
+    --screen '$RUN_DIR/screen' --via-virtio --cvc-snap \
+    --snapshot-out '$RUN_DIR/snap-23' \
+    --script '$RUN_DIR/script-ref-box-model.txt' \
+    --snapshot-after 'web: repaint' \
+    --script-expect 'web: ready' --timeout 120
+
+vgate_assert 23 serial-contains 'web: url /host/BOX-MODEL.HTML'
+vgate_assert 23 serial-contains 'web: parse nodes='
+vgate_assert 23 serial-contains 'web: layout blocks='
+vgate_assert 23 serial-contains 'web: paint items='
+vgate_assert 23 serial-contains 'web: fonts truetype(inter+firacode) ui=truetype mono=truetype'
+vgate_assert 23 serial-contains 'web: viewport css=1280x720 x=0 y=64 w=512 h=288 s=0'
+vgate_assert 23 serial-contains 'web: settled'
+vgate_assert 23 serial-contains 'web: repaint items='
+vgate_assert 23 serial-contains 'web: ready'
+vgate_assert 23 serial-absent 'web: error'
+vgate_assert 23 serial-absent 'web: budget over'
+vgate_assert 23 serial-absent '[EXC] parking:'
+vgate_assert 23 snapshot 'snap-23-*.raw' <<'PY'
+import subprocess, sys
+subprocess.check_call([sys.executable, 'tools/web-proof/compare.py', sys.argv[1], 'box-model'])
+PY
+
+# --- boot 24: M93g reference 'boxes-block' -- in-guest render vs approved golden --
+# One page, one boot, one exec. The boot ends on `web: ready`, printed after
+# the repaint's present; the snapshot assert runs the ADR 0028 D9 comparator,
+# which crops by WEB's own viewport marker and requires the exact manifest hash.
+vgate_run 24 -- \
+    --screen '$RUN_DIR/screen' --via-virtio --cvc-snap \
+    --snapshot-out '$RUN_DIR/snap-24' \
+    --script '$RUN_DIR/script-ref-boxes-block.txt' \
+    --snapshot-after 'web: repaint' \
+    --script-expect 'web: ready' --timeout 120
+
+vgate_assert 24 serial-contains 'web: url /host/BOXES-BLOCK.HTML'
+vgate_assert 24 serial-contains 'web: parse nodes='
+vgate_assert 24 serial-contains 'web: layout blocks='
+vgate_assert 24 serial-contains 'web: paint items='
+vgate_assert 24 serial-contains 'web: fonts truetype(inter+firacode) ui=truetype mono=truetype'
+vgate_assert 24 serial-contains 'web: viewport css=1280x720 x=0 y=64 w=512 h=288 s=0'
+vgate_assert 24 serial-contains 'web: settled'
+vgate_assert 24 serial-contains 'web: repaint items='
+vgate_assert 24 serial-contains 'web: ready'
+vgate_assert 24 serial-absent 'web: error'
+vgate_assert 24 serial-absent 'web: budget over'
+vgate_assert 24 serial-absent '[EXC] parking:'
+vgate_assert 24 snapshot 'snap-24-*.raw' <<'PY'
+import subprocess, sys
+subprocess.check_call([sys.executable, 'tools/web-proof/compare.py', sys.argv[1], 'boxes-block'])
+PY
+
+# --- boot 25: M93g reference 'boxes-collapse' -- in-guest render vs approved golden --
+# One page, one boot, one exec. The boot ends on `web: ready`, printed after
+# the repaint's present; the snapshot assert runs the ADR 0028 D9 comparator,
+# which crops by WEB's own viewport marker and requires the exact manifest hash.
+vgate_run 25 -- \
+    --screen '$RUN_DIR/screen' --via-virtio --cvc-snap \
+    --snapshot-out '$RUN_DIR/snap-25' \
+    --script '$RUN_DIR/script-ref-boxes-collapse.txt' \
+    --snapshot-after 'web: repaint' \
+    --script-expect 'web: ready' --timeout 120
+
+vgate_assert 25 serial-contains 'web: url /host/BOXES-COLLAPSE.HTML'
+vgate_assert 25 serial-contains 'web: parse nodes='
+vgate_assert 25 serial-contains 'web: layout blocks='
+vgate_assert 25 serial-contains 'web: paint items='
+vgate_assert 25 serial-contains 'web: fonts truetype(inter+firacode) ui=truetype mono=truetype'
+vgate_assert 25 serial-contains 'web: viewport css=1280x720 x=0 y=64 w=512 h=288 s=0'
+vgate_assert 25 serial-contains 'web: settled'
+vgate_assert 25 serial-contains 'web: repaint items='
+vgate_assert 25 serial-contains 'web: ready'
+vgate_assert 25 serial-absent 'web: error'
+vgate_assert 25 serial-absent 'web: budget over'
+vgate_assert 25 serial-absent '[EXC] parking:'
+vgate_assert 25 snapshot 'snap-25-*.raw' <<'PY'
+import subprocess, sys
+subprocess.check_call([sys.executable, 'tools/web-proof/compare.py', sys.argv[1], 'boxes-collapse'])
+PY
+
+# --- boot 26: M93g reference 'boxes-flex' -- in-guest render vs approved golden --
+# One page, one boot, one exec. The boot ends on `web: ready`, printed after
+# the repaint's present; the snapshot assert runs the ADR 0028 D9 comparator,
+# which crops by WEB's own viewport marker and requires the exact manifest hash.
+vgate_run 26 -- \
+    --screen '$RUN_DIR/screen' --via-virtio --cvc-snap \
+    --snapshot-out '$RUN_DIR/snap-26' \
+    --script '$RUN_DIR/script-ref-boxes-flex.txt' \
+    --snapshot-after 'web: repaint' \
+    --script-expect 'web: ready' --timeout 120
+
+vgate_assert 26 serial-contains 'web: url /host/BOXES-FLEX.HTML'
+vgate_assert 26 serial-contains 'web: parse nodes='
+vgate_assert 26 serial-contains 'web: layout blocks='
+vgate_assert 26 serial-contains 'web: paint items='
+vgate_assert 26 serial-contains 'web: fonts truetype(inter+firacode) ui=truetype mono=truetype'
+vgate_assert 26 serial-contains 'web: viewport css=1280x720 x=0 y=64 w=512 h=288 s=0'
+vgate_assert 26 serial-contains 'web: settled'
+vgate_assert 26 serial-contains 'web: repaint items='
+vgate_assert 26 serial-contains 'web: ready'
+vgate_assert 26 serial-absent 'web: error'
+vgate_assert 26 serial-absent 'web: budget over'
+vgate_assert 26 serial-absent '[EXC] parking:'
+vgate_assert 26 snapshot 'snap-26-*.raw' <<'PY'
+import subprocess, sys
+subprocess.check_call([sys.executable, 'tools/web-proof/compare.py', sys.argv[1], 'boxes-flex'])
+PY
+
+# --- boot 27: M93g reference 'colors' -- in-guest render vs approved golden --
+# One page, one boot, one exec. The boot ends on `web: ready`, printed after
+# the repaint's present; the snapshot assert runs the ADR 0028 D9 comparator,
+# which crops by WEB's own viewport marker and requires the exact manifest hash.
+vgate_run 27 -- \
+    --screen '$RUN_DIR/screen' --via-virtio --cvc-snap \
+    --snapshot-out '$RUN_DIR/snap-27' \
+    --script '$RUN_DIR/script-ref-colors.txt' \
+    --snapshot-after 'web: repaint' \
+    --script-expect 'web: ready' --timeout 120
+
+vgate_assert 27 serial-contains 'web: url /host/COLORS.HTML'
+vgate_assert 27 serial-contains 'web: parse nodes='
+vgate_assert 27 serial-contains 'web: layout blocks='
+vgate_assert 27 serial-contains 'web: paint items='
+vgate_assert 27 serial-contains 'web: fonts truetype(inter+firacode) ui=truetype mono=truetype'
+vgate_assert 27 serial-contains 'web: viewport css=1280x720 x=0 y=64 w=512 h=288 s=0'
+vgate_assert 27 serial-contains 'web: settled'
+vgate_assert 27 serial-contains 'web: repaint items='
+vgate_assert 27 serial-contains 'web: ready'
+vgate_assert 27 serial-absent 'web: error'
+vgate_assert 27 serial-absent 'web: budget over'
+vgate_assert 27 serial-absent '[EXC] parking:'
+vgate_assert 27 snapshot 'snap-27-*.raw' <<'PY'
+import subprocess, sys
+subprocess.check_call([sys.executable, 'tools/web-proof/compare.py', sys.argv[1], 'colors'])
+PY
+
+# --- boot 28: M93g reference 'degradation' -- in-guest render vs approved golden --
+# One page, one boot, one exec. The boot ends on `web: ready`, printed after
+# the repaint's present; the snapshot assert runs the ADR 0028 D9 comparator,
+# which crops by WEB's own viewport marker and requires the exact manifest hash.
+vgate_run 28 -- \
+    --screen '$RUN_DIR/screen' --via-virtio --cvc-snap \
+    --snapshot-out '$RUN_DIR/snap-28' \
+    --script '$RUN_DIR/script-ref-degradation.txt' \
+    --snapshot-after 'web: repaint' \
+    --script-expect 'web: ready' --timeout 120
+
+vgate_assert 28 serial-contains 'web: url /host/DEGRADATION.HTML'
+vgate_assert 28 serial-contains 'web: parse nodes='
+vgate_assert 28 serial-contains 'web: layout blocks='
+vgate_assert 28 serial-contains 'web: paint items='
+vgate_assert 28 serial-contains 'web: fonts truetype(inter+firacode) ui=truetype mono=truetype'
+vgate_assert 28 serial-contains 'web: viewport css=1280x720 x=0 y=64 w=512 h=288 s=0'
+vgate_assert 28 serial-contains 'web: settled'
+vgate_assert 28 serial-contains 'web: repaint items='
+vgate_assert 28 serial-contains 'web: ready'
+vgate_assert 28 serial-absent 'web: error'
+vgate_assert 28 serial-absent 'web: budget over'
+vgate_assert 28 serial-absent '[EXC] parking:'
+vgate_assert 28 snapshot 'snap-28-*.raw' <<'PY'
+import subprocess, sys
+subprocess.check_call([sys.executable, 'tools/web-proof/compare.py', sys.argv[1], 'degradation'])
+PY
+
+# --- boot 29: M93g reference 'display-tables' -- in-guest render vs approved golden --
+# One page, one boot, one exec. The boot ends on `web: ready`, printed after
+# the repaint's present; the snapshot assert runs the ADR 0028 D9 comparator,
+# which crops by WEB's own viewport marker and requires the exact manifest hash.
+vgate_run 29 -- \
+    --screen '$RUN_DIR/screen' --via-virtio --cvc-snap \
+    --snapshot-out '$RUN_DIR/snap-29' \
+    --script '$RUN_DIR/script-ref-display-tables.txt' \
+    --snapshot-after 'web: repaint' \
+    --script-expect 'web: ready' --timeout 120
+
+vgate_assert 29 serial-contains 'web: url /host/DISPLAY-TABLES.HTML'
+vgate_assert 29 serial-contains 'web: parse nodes='
+vgate_assert 29 serial-contains 'web: layout blocks='
+vgate_assert 29 serial-contains 'web: paint items='
+vgate_assert 29 serial-contains 'web: fonts truetype(inter+firacode) ui=truetype mono=truetype'
+vgate_assert 29 serial-contains 'web: viewport css=1280x720 x=0 y=64 w=512 h=288 s=0'
+vgate_assert 29 serial-contains 'web: settled'
+vgate_assert 29 serial-contains 'web: repaint items='
+vgate_assert 29 serial-contains 'web: ready'
+vgate_assert 29 serial-absent 'web: error'
+vgate_assert 29 serial-absent 'web: budget over'
+vgate_assert 29 serial-absent '[EXC] parking:'
+vgate_assert 29 snapshot 'snap-29-*.raw' <<'PY'
+import subprocess, sys
+subprocess.check_call([sys.executable, 'tools/web-proof/compare.py', sys.argv[1], 'display-tables'])
+PY
+
+# --- boot 30: M93g reference 'flex' -- in-guest render vs approved golden --
+# One page, one boot, one exec. The boot ends on `web: ready`, printed after
+# the repaint's present; the snapshot assert runs the ADR 0028 D9 comparator,
+# which crops by WEB's own viewport marker and requires the exact manifest hash.
+vgate_run 30 -- \
+    --screen '$RUN_DIR/screen' --via-virtio --cvc-snap \
+    --snapshot-out '$RUN_DIR/snap-30' \
+    --script '$RUN_DIR/script-ref-flex.txt' \
+    --snapshot-after 'web: repaint' \
+    --script-expect 'web: ready' --timeout 120
+
+vgate_assert 30 serial-contains 'web: url /host/FLEX.HTML'
+vgate_assert 30 serial-contains 'web: parse nodes='
+vgate_assert 30 serial-contains 'web: layout blocks='
+vgate_assert 30 serial-contains 'web: paint items='
+vgate_assert 30 serial-contains 'web: fonts truetype(inter+firacode) ui=truetype mono=truetype'
+vgate_assert 30 serial-contains 'web: viewport css=1280x720 x=0 y=64 w=512 h=288 s=0'
+vgate_assert 30 serial-contains 'web: settled'
+vgate_assert 30 serial-contains 'web: repaint items='
+vgate_assert 30 serial-contains 'web: ready'
+vgate_assert 30 serial-absent 'web: error'
+vgate_assert 30 serial-absent 'web: budget over'
+vgate_assert 30 serial-absent '[EXC] parking:'
+vgate_assert 30 snapshot 'snap-30-*.raw' <<'PY'
+import subprocess, sys
+subprocess.check_call([sys.executable, 'tools/web-proof/compare.py', sys.argv[1], 'flex'])
+PY
+
+# --- boot 31: M93g reference 'fonts' -- in-guest render vs approved golden --
+# One page, one boot, one exec. The boot ends on `web: ready`, printed after
+# the repaint's present; the snapshot assert runs the ADR 0028 D9 comparator,
+# which crops by WEB's own viewport marker and requires the exact manifest hash.
+vgate_run 31 -- \
+    --screen '$RUN_DIR/screen' --via-virtio --cvc-snap \
+    --snapshot-out '$RUN_DIR/snap-31' \
+    --script '$RUN_DIR/script-ref-fonts.txt' \
+    --snapshot-after 'web: repaint' \
+    --script-expect 'web: ready' --timeout 120
+
+vgate_assert 31 serial-contains 'web: url /host/FONTS.HTML'
+vgate_assert 31 serial-contains 'web: parse nodes='
+vgate_assert 31 serial-contains 'web: layout blocks='
+vgate_assert 31 serial-contains 'web: paint items='
+vgate_assert 31 serial-contains 'web: fonts truetype(inter+firacode) ui=truetype mono=truetype'
+vgate_assert 31 serial-contains 'web: viewport css=1280x720 x=0 y=64 w=512 h=288 s=0'
+vgate_assert 31 serial-contains 'web: settled'
+vgate_assert 31 serial-contains 'web: repaint items='
+vgate_assert 31 serial-contains 'web: ready'
+vgate_assert 31 serial-absent 'web: error'
+vgate_assert 31 serial-absent 'web: budget over'
+vgate_assert 31 serial-absent '[EXC] parking:'
+vgate_assert 31 snapshot 'snap-31-*.raw' <<'PY'
+import subprocess, sys
+subprocess.check_call([sys.executable, 'tools/web-proof/compare.py', sys.argv[1], 'fonts'])
+PY
+
+# --- boot 32: M93g reference 'forms' -- in-guest render vs pinned guest hash --
+# One page, one boot, one exec. The boot ends on `web: ready`, printed after
+# the repaint's present. Owner-authorized exception (#1999): the approved M93e
+# golden predates M93f's intentional `[x]` checkbox overlay
+# (TestInitialCheckedStateIsPaintedBeforeEditing), so no guest render can equal
+# it. The comparator still enforces manifest, fonts, geometry and exact crop
+# pixels -- but against the deterministic guest hash observed on 2026-10-08,
+# identical across runs. Any drift in EITHER direction goes red.
+vgate_run 32 -- \
+    --screen '$RUN_DIR/screen' --via-virtio --cvc-snap \
+    --snapshot-out '$RUN_DIR/snap-32' \
+    --script '$RUN_DIR/script-ref-forms.txt' \
+    --snapshot-after 'web: repaint' \
+    --script-expect 'web: ready' --timeout 120
+
+vgate_assert 32 serial-contains 'web: url /host/FORMS.HTML'
+vgate_assert 32 serial-contains 'web: parse nodes='
+vgate_assert 32 serial-contains 'web: layout blocks='
+vgate_assert 32 serial-contains 'web: paint items='
+vgate_assert 32 serial-contains 'web: fonts truetype(inter+firacode) ui=truetype mono=truetype'
+vgate_assert 32 serial-contains 'web: viewport css=1280x720 x=0 y=64 w=512 h=288 s=0'
+vgate_assert 32 serial-contains 'web: settled'
+vgate_assert 32 serial-contains 'web: repaint items='
+vgate_assert 32 serial-contains 'web: ready'
+vgate_assert 32 serial-absent 'web: error'
+vgate_assert 32 serial-absent 'web: budget over'
+vgate_assert 32 serial-absent '[EXC] parking:'
+vgate_assert 32 snapshot 'snap-32-*.raw' <<'PY'
+import subprocess, sys
+subprocess.check_call([sys.executable, 'tools/web-proof/compare.py', sys.argv[1], 'forms',
+                       '--expect-actual',
+                       '3ba79dedb074e3d43ef95eaaa47ef84823dad4844082cac5203b6bca3335c440'])
+PY
+
+# --- boot 33: M93g reference 'github' -- in-guest render vs approved golden --
+# One page, one boot, one exec. The boot ends on `web: ready`, printed after
+# the repaint's present; the snapshot assert runs the ADR 0028 D9 comparator,
+# which crops by WEB's own viewport marker and requires the exact manifest hash.
+vgate_run 33 -- \
+    --screen '$RUN_DIR/screen' --via-virtio --cvc-snap \
+    --snapshot-out '$RUN_DIR/snap-33' \
+    --script '$RUN_DIR/script-ref-github.txt' \
+    --snapshot-after 'web: repaint' \
+    --script-expect 'web: ready' --timeout 120
+
+vgate_assert 33 serial-contains 'web: url /host/GITHUB.HTML'
+vgate_assert 33 serial-contains 'web: parse nodes='
+vgate_assert 33 serial-contains 'web: layout blocks='
+vgate_assert 33 serial-contains 'web: paint items='
+vgate_assert 33 serial-contains 'web: fonts truetype(inter+firacode) ui=truetype mono=truetype'
+vgate_assert 33 serial-contains 'web: viewport css=1280x720 x=0 y=64 w=512 h=288 s=0'
+vgate_assert 33 serial-contains 'web: settled'
+vgate_assert 33 serial-contains 'web: repaint items='
+vgate_assert 33 serial-contains 'web: ready'
+vgate_assert 33 serial-absent 'web: error'
+vgate_assert 33 serial-absent 'web: budget over'
+vgate_assert 33 serial-absent '[EXC] parking:'
+vgate_assert 33 snapshot 'snap-33-*.raw' <<'PY'
+import subprocess, sys
+subprocess.check_call([sys.executable, 'tools/web-proof/compare.py', sys.argv[1], 'github'])
+PY
+
+# --- boot 34: M93g reference 'mdn' -- in-guest render vs approved golden --
+# One page, one boot, one exec. The boot ends on `web: ready`, printed after
+# the repaint's present; the snapshot assert runs the ADR 0028 D9 comparator,
+# which crops by WEB's own viewport marker and requires the exact manifest hash.
+vgate_run 34 -- \
+    --screen '$RUN_DIR/screen' --via-virtio --cvc-snap \
+    --snapshot-out '$RUN_DIR/snap-34' \
+    --script '$RUN_DIR/script-ref-mdn.txt' \
+    --snapshot-after 'web: repaint' \
+    --script-expect 'web: ready' --timeout 120
+
+vgate_assert 34 serial-contains 'web: url /host/MDN.HTML'
+vgate_assert 34 serial-contains 'web: parse nodes='
+vgate_assert 34 serial-contains 'web: layout blocks='
+vgate_assert 34 serial-contains 'web: paint items='
+vgate_assert 34 serial-contains 'web: fonts truetype(inter+firacode) ui=truetype mono=truetype'
+vgate_assert 34 serial-contains 'web: viewport css=1280x720 x=0 y=64 w=512 h=288 s=0'
+vgate_assert 34 serial-contains 'web: settled'
+vgate_assert 34 serial-contains 'web: repaint items='
+vgate_assert 34 serial-contains 'web: ready'
+vgate_assert 34 serial-absent 'web: error'
+vgate_assert 34 serial-absent 'web: budget over'
+vgate_assert 34 serial-absent '[EXC] parking:'
+vgate_assert 34 snapshot 'snap-34-*.raw' <<'PY'
+import subprocess, sys
+subprocess.check_call([sys.executable, 'tools/web-proof/compare.py', sys.argv[1], 'mdn'])
+PY
+
+# --- boot 35: M93g reference 'selectors' -- in-guest render vs approved golden --
+# One page, one boot, one exec. The boot ends on `web: ready`, printed after
+# the repaint's present; the snapshot assert runs the ADR 0028 D9 comparator,
+# which crops by WEB's own viewport marker and requires the exact manifest hash.
+vgate_run 35 -- \
+    --screen '$RUN_DIR/screen' --via-virtio --cvc-snap \
+    --snapshot-out '$RUN_DIR/snap-35' \
+    --script '$RUN_DIR/script-ref-selectors.txt' \
+    --snapshot-after 'web: repaint' \
+    --script-expect 'web: ready' --timeout 120
+
+vgate_assert 35 serial-contains 'web: url /host/SELECTORS.HTML'
+vgate_assert 35 serial-contains 'web: parse nodes='
+vgate_assert 35 serial-contains 'web: layout blocks='
+vgate_assert 35 serial-contains 'web: paint items='
+vgate_assert 35 serial-contains 'web: fonts truetype(inter+firacode) ui=truetype mono=truetype'
+vgate_assert 35 serial-contains 'web: viewport css=1280x720 x=0 y=64 w=512 h=288 s=0'
+vgate_assert 35 serial-contains 'web: settled'
+vgate_assert 35 serial-contains 'web: repaint items='
+vgate_assert 35 serial-contains 'web: ready'
+vgate_assert 35 serial-absent 'web: error'
+vgate_assert 35 serial-absent 'web: budget over'
+vgate_assert 35 serial-absent '[EXC] parking:'
+vgate_assert 35 snapshot 'snap-35-*.raw' <<'PY'
+import subprocess, sys
+subprocess.check_call([sys.executable, 'tools/web-proof/compare.py', sys.argv[1], 'selectors'])
+PY
+
+# --- boot 36: M93g reference 'wikipedia' -- in-guest render vs approved golden --
+# One page, one boot, one exec. The boot ends on `web: ready`, printed after
+# the repaint's present; the snapshot assert runs the ADR 0028 D9 comparator,
+# which crops by WEB's own viewport marker and requires the exact manifest hash.
+vgate_run 36 -- \
+    --screen '$RUN_DIR/screen' --via-virtio --cvc-snap \
+    --snapshot-out '$RUN_DIR/snap-36' \
+    --script '$RUN_DIR/script-ref-wikipedia.txt' \
+    --snapshot-after 'web: repaint' \
+    --script-expect 'web: ready' --timeout 120
+
+vgate_assert 36 serial-contains 'web: url /host/WIKIPEDIA.HTML'
+vgate_assert 36 serial-contains 'web: parse nodes='
+vgate_assert 36 serial-contains 'web: layout blocks='
+vgate_assert 36 serial-contains 'web: paint items='
+vgate_assert 36 serial-contains 'web: fonts truetype(inter+firacode) ui=truetype mono=truetype'
+vgate_assert 36 serial-contains 'web: viewport css=1280x720 x=0 y=64 w=512 h=288 s=0'
+vgate_assert 36 serial-contains 'web: settled'
+vgate_assert 36 serial-contains 'web: repaint items='
+vgate_assert 36 serial-contains 'web: ready'
+vgate_assert 36 serial-absent 'web: error'
+vgate_assert 36 serial-absent 'web: budget over'
+vgate_assert 36 serial-absent '[EXC] parking:'
+vgate_assert 36 snapshot 'snap-36-*.raw' <<'PY'
+import subprocess, sys
+subprocess.check_call([sys.executable, 'tools/web-proof/compare.py', sys.argv[1], 'wikipedia'])
 PY
