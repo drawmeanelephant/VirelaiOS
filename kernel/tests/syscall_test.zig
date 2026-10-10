@@ -3861,11 +3861,12 @@ test "syscall: reclaim all four allocation paths unwind record storage exhaustio
     try std.testing.expect(!exceptions.populate_user_page(f.pid, f.root, va, true));
     try std.testing.expect(!mmu.leaf_el0_visible(f.root, va));
     try std.testing.expectEqual(@as(u64, 1), alloc.stats().free_pages);
-    // A borrowed COW page is outside the pool; its private copy can allocate,
-    // but no second page remains for the overflow record.
-    const borrowed: u64 = 0x200000;
+    // A borrowed COW page is outside the pool (in the refcount span, but
+    // never a page the pool hands out); its private copy can allocate, but
+    // no second page remains for the overflow record.
+    const borrowed: u64 = @intFromPtr(&reclaim_pool) + 4096;
     try std.testing.expect(mmu.map_user_cow_page(f.root, va, borrowed));
-    alloc.ref_page(borrowed);
+    try std.testing.expect(alloc.ref_page(borrowed));
     try std.testing.expect(!exceptions.try_handle_page_fault((0x24 << 26) | (1 << 6) | 0xf, va));
     try std.testing.expectEqual(borrowed, mmu.get_user_leaf(f.root, va).?.* & 0x0000_ffff_ffff_f000);
     try std.testing.expectEqual(@as(u16, 2), alloc.page_refcount(borrowed));
@@ -3884,7 +3885,7 @@ test "syscall: reclaim COW replacement followed by reap keeps the old owner's pa
     const old_pa = mmu.get_user_leaf(f.root, va).?.* & 0x0000_ffff_ffff_f000;
     const other = process.create("OTHER", .{}, .{}, .{}).?;
     try std.testing.expect(process.record_dynamic_page(other, old_pa));
-    alloc.ref_page(old_pa);
+    try std.testing.expect(alloc.ref_page(old_pa));
     try std.testing.expect(mmu.map_user_cow_page(f.root, va, old_pa));
     try std.testing.expect(exceptions.try_handle_page_fault((0x24 << 26) | (1 << 6) | 0xf, va));
     try std.testing.expect(!process.owns_dynamic_page(f.pid, old_pa));
@@ -3902,7 +3903,7 @@ test "syscall: reclaim borrowed COW copy leaves no stale record after peer detac
     const va: u64 = 0x60000000;
     const old_pa = alloc.alloc_pages(1).?;
     try std.testing.expect(mmu.map_user_cow_page(f.root, va, old_pa));
-    alloc.ref_page(old_pa);
+    try std.testing.expect(alloc.ref_page(old_pa));
     try std.testing.expect(exceptions.try_handle_page_fault((0x24 << 26) | (1 << 6) | 0xf, va));
     const copy = mmu.get_user_leaf(f.root, va).?.* & 0x0000_ffff_ffff_f000;
     try std.testing.expect(process.owns_dynamic_page(f.pid, copy));
@@ -5111,6 +5112,96 @@ test "syscall: M52 card 3 — an owner-side revoke ends the bound window and dro
     }
 
     // Cleanup: unregister the WM seat.
+    _ = wm_server.unregister(wm_pid);
+}
+
+test "syscall: a >256-page shared surface records every peer ref and frees each page exactly once (issue #2110)" {
+    mmu.reset();
+    alloc.reset_refcounts();
+    shared_region.reset();
+    process.init();
+    userspace.init();
+    init(test_writer);
+    _ = scheduler.init();
+    _ = scheduler.register_worker(0x2000);
+    _ = scheduler.register_user(0x3000, 0);
+    events.init();
+
+    const map_desc = [_]memmap.MemoryDescriptor{
+        .{ .type = .conventional_memory, .physical_start = 0x100000, .virtual_start = 0, .number_of_pages = 1024, .attribute = 0 },
+    };
+    const view = memmap.MapView.init(std.mem.asBytes(&map_desc), @sizeOf(memmap.MemoryDescriptor), map_desc.len);
+    try std.testing.expect(alloc.init(view, &.{}));
+
+    const owner_root = mmu.build_user_root(userspace.text_va, 0x1000, 64, userspace.stack_va, 0x2000, 8192).?;
+    const wm_root = mmu.build_user_root(userspace.text_va, 0x3000, 64, userspace.stack_va, 0x4000, 8192).?;
+    var kstack1: [scheduler.task_stack_size]u8 align(16) = undefined;
+    var kstack2: [scheduler.task_stack_size]u8 align(16) = undefined;
+    const owner_pid = process.create("APP.BIN", .{ .entry_va = 0x400000, .content_len = 64 }, .{
+        .root_phys = owner_root,
+        .text_va = userspace.text_va,
+        .text_len = 64,
+        .stack_va = userspace.stack_va,
+        .stack_len = 8192,
+    }, .{}).?;
+    const wm_pid = process.create("WM.BIN", .{ .entry_va = 0x400000, .content_len = 64 }, .{
+        .root_phys = wm_root,
+        .text_va = userspace.text_va,
+        .text_len = 64,
+        .stack_va = userspace.stack_va,
+        .stack_len = 8192,
+    }, .{}).?;
+    const owner_task = scheduler.register_exec_user(userspace.text_va, 0x4000_0000, 100, 0x8000_0000, 8192, &kstack1, 0, 0).?;
+    const wm_task = scheduler.register_exec_user(userspace.text_va, 0x5000_0000, 100, 0x9000_0000, 8192, &kstack2, 0, 0).?;
+    _ = process.bind(owner_pid, owner_task);
+    _ = process.bind(wm_pid, wm_task);
+    scheduler.start();
+    _ = wm_server.register(wm_pid);
+
+    var frame = fresh_frame();
+    var guard: usize = 0;
+    while (scheduler.current_id() != owner_task and guard < scheduler.max_tasks) : (guard += 1) {
+        try std.testing.expect(scheduler.yield_current());
+    }
+    // 1280x720x4 — the audit's concrete example — is 900 pages: pre-fix the
+    // 256-entry table silently dropped refs 257..900, so the peer's mirror
+    // share of those pages was unrecorded.
+    const surf_pages: u64 = 900;
+    const surf_len: u64 = surf_pages * 4096;
+    const owner_va = dispatch(sys_mmap, .{ 0, surf_len, 3, 0x20 | 0x10000, 0, 0 }, &frame);
+    try std.testing.expect(owner_va >= 0x1000_0000);
+    const handle = shared_region.find_owner(owner_pid, owner_va).?;
+    const pa_base = shared_region.info(handle).?.pa_base;
+
+    // The WM attaches by handle — every leaf, not just the first 256, gets
+    // its peer ref recorded.
+    guard = 0;
+    while (scheduler.current_id() != wm_task and guard < scheduler.max_tasks) : (guard += 1) {
+        try std.testing.expect(scheduler.yield_current());
+    }
+    const peer_va = dispatch(sys_mmap, .{ handle, surf_len, 1, 0x20 | 0x10000, 0, 0 }, &frame);
+    try std.testing.expect(peer_va != error_result(.enomem));
+    try std.testing.expect(peer_va >= 0x1000_0000 and peer_va < 0x0001_0000_0000_0000);
+
+    // Every page — including the ones past the old table's 256-entry bound —
+    // carries a RECORDED count of 2 (owner leaf + peer RO leaf).
+    try std.testing.expectEqual(@as(?u16, 2), alloc.page_refcount_recorded(pa_base));
+    try std.testing.expectEqual(@as(?u16, 2), alloc.page_refcount_recorded(pa_base + 256 * 4096));
+    try std.testing.expectEqual(@as(?u16, 2), alloc.page_refcount_recorded(pa_base + (surf_pages - 1) * 4096));
+
+    // Owner munmaps: the revoke unrefs the peer seat first, then the owner's
+    // leaves unref to zero and free — each of the 900 pages exactly once.
+    guard = 0;
+    while (scheduler.current_id() != owner_task and guard < scheduler.max_tasks) : (guard += 1) {
+        try std.testing.expect(scheduler.yield_current());
+    }
+    try std.testing.expectEqual(@as(u64, 0), dispatch(sys_munmap, .{ owner_va, surf_len, 0, 0, 0, 0 }, &frame));
+    try std.testing.expect(shared_region.info(handle) == null);
+    try std.testing.expect(mmu.unmap_user_page(wm_root, peer_va) == null);
+    // If any of the 900 ref/unref pairs had been lost, the pool would not be
+    // whole (leak) or a still-mapped page would have been freed early.
+    try std.testing.expectEqual(@as(u64, 1024), alloc.stats().free_pages);
+
     _ = wm_server.unregister(wm_pid);
 }
 
@@ -6907,4 +6998,47 @@ test "pipe: EL0 slots bind per-process — no cross-pid read, write or steal (#2
         try std.testing.expectEqual(@as(u64, 5), dispatch(sys_pipe_write, .{ @intFromPtr(&wbuf), 5, 0, 0, 0, 0 }, &frame));
     }
     for (holders[0..held]) |hp| _ = process.reap(hp);
+}
+
+test "syscall: copy_in/load_u32 consult the read resolver — a refused source faults without reading (issue #2109)" {
+    userspace.init();
+    init(test_writer);
+    _ = scheduler.init();
+    _ = scheduler.register_worker(0x2000);
+    _ = scheduler.register_user(0x3000, 0); // task 2 -> pid 0
+    scheduler.start();
+    var frame = fresh_frame();
+    var hops: usize = 0;
+    while (scheduler.current_id() != 2 and hops < 8) : (hops += 1) _ = scheduler.yield_current();
+    try std.testing.expectEqual(@as(usize, 2), scheduler.current_id());
+
+    var src: [16]u8 align(4) = [_]u8{0} ** 16;
+    set_user_regions(.{ .base = @intFromPtr(&src), .len = src.len }, .{ .base = @intFromPtr(&src), .len = src.len });
+
+    // Drain anything an earlier test left in this pid's pipe so the staged
+    // byte count below is exact.
+    while (dispatch(sys_pipe_read, .{ @intFromPtr(&src), src.len, 0, 0, 0, 0 }, &frame) != 0) {}
+    @memcpy(src[0..4], "data");
+
+    // Baseline: the pipe write lands and the futex word loads.
+    try std.testing.expectEqual(@as(u64, 4), dispatch(sys_pipe_write, .{ @intFromPtr(&src), 4, 0, 0, 0, 0 }, &frame));
+    try std.testing.expectEqual(@as(?u32, std.mem.readInt(u32, src[0..4], .little)), uaccess.load_u32(@intFromPtr(&src)));
+
+    // A refusing resolver (the "not this process's page" verdict the kernel
+    // returns for a registered-but-unpopulated mmap page it cannot populate)
+    // turns the copy into EFAULT and the word load into null — the read-side
+    // twin of the #1391 write-resolver refusal pinned above.
+    const previous = uaccess.resolve_read_pages;
+    defer uaccess.resolve_read_pages = previous;
+    uaccess.resolve_read_pages = &struct {
+        fn refuse(_: u64, _: usize) bool {
+            return false;
+        }
+    }.refuse;
+    try std.testing.expectEqual(error_result(.efault), dispatch(sys_pipe_write, .{ @intFromPtr(&src), 4, 0, 0, 0, 0 }, &frame));
+    try std.testing.expectEqual(@as(?u32, null), uaccess.load_u32(@intFromPtr(&src)));
+    // The staged pipe bytes are unchanged: the refused copy read nothing and
+    // appended nothing.
+    try std.testing.expectEqual(@as(u64, 4), dispatch(sys_pipe_read, .{ @intFromPtr(&src) + 4, 8, 0, 0, 0, 0 }, &frame));
+    try std.testing.expectEqual(@as(u64, 0), dispatch(sys_pipe_read, .{ @intFromPtr(&src) + 8, 8, 0, 0, 0, 0 }, &frame));
 }

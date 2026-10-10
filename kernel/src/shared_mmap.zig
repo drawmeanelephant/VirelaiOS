@@ -48,27 +48,27 @@ pub fn map_owner_leaves(root_phys: u64, va: u64, page_count: u32, pa_base: u64, 
 
 /// Map a peer's EL0-RO `sw_cow` leaves (SB2 peer-attach path). Each page is
 /// ref'd BEFORE its leaf is installed (so an owner teardown can never free a
-/// page while the peer leaf maps it); a failed map unwinds its ref. #2114:
-/// false means NOTHING survives — the call unwinds the leaves+refs it already
-/// installed, so the caller only drops its bookkeeping (the mmap region row).
+/// page while the peer leaf maps it); a failed ref (M97b #2110: the ref is
+/// now RECORDED or the call fails loudly) or a failed map unwinds everything
+/// this call installed — the leaves [0, i) are unmapped and their refs
+/// dropped, so a partial attach leaves no unrecorded mapping behind. #2114:
+/// false means NOTHING survives, so the caller only drops its bookkeeping
+/// (the mmap region row).
 pub fn map_peer_leaves(peer_root: u64, peer_va: u64, page_count: u32, pa_base: u64) bool {
     var i: u32 = 0;
     while (i < page_count) : (i += 1) {
         const pa = pa_base + @as(u64, i) * 4096;
-        alloc.ref_page(pa); // owner ref 1 -> 2
+        if (!alloc.ref_page(pa)) { // owner ref 1 -> 2, or the attach fails
+            unmap_peer_leaves(peer_root, peer_va, i, pa_base);
+            return false;
+        }
         if (!mmu.map_user_cow_page(peer_root, peer_va + @as(u64, i) * 4096, pa)) {
             _ = alloc.unref_page(pa); // back to 1; nothing was mapped
             // #2114: the call self-unwinds — a caller cannot know how far
-            // the loop got, and unmap_peer_leaves over the full range would
+            // the loop got. Unwind only [0, i): the full range would
             // double-unref THIS page (its ref was just backed out above),
             // freeing a page the owner still maps.
-            var j: u32 = 0;
-            while (j < i) : (j += 1) {
-                const jva = peer_va + @as(u64, j) * 4096;
-                if (mmu.unmap_user_page(peer_root, jva)) |mapped_pa| {
-                    _ = alloc.unref_page(mapped_pa);
-                }
-            }
+            unmap_peer_leaves(peer_root, peer_va, i, pa_base);
             return false;
         }
     }
