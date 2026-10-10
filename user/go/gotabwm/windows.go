@@ -323,6 +323,9 @@ func launcherWindowEvent(e vi.Event) {
 		_ = tabs.CloseTab(id)
 		syncHostedFromStrip()
 	}
+	// M97g-F2 (#2080): the released window's binding and pending challenge
+	// die with it, tab or not — a reused id must not inherit a dead token.
+	dropRpcBinding(id)
 	// A delayed mirror can name a reused id. Only a failed query proves
 	// the current sink is gone; ordinary sink KEY_DOWN/BLUR events drain
 	// on the same seat queue and are intentionally ignored.

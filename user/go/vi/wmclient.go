@@ -26,6 +26,65 @@ const (
 	WmRpcReplyFlag uint8 = 0x80
 )
 
+// M97g-F2 (#2080): the authenticated WM_RPC exchange between a client and
+// the Go seat. The mailbox is any-to-any and carries no sender identity
+// (ADR 0007 slots 5/6), so the frame alone can never prove who sent it. The
+// seat instead binds each hosted window to a session token only the window's
+// kernel-registered owner can obtain:
+//
+//  1. a request for an UNBOUND window draws a challenge ack — Pad=Challenge
+//     with an 8-byte value in the x/y/w/h union;
+//  2. the owner proves itself by setting the window's kernel title to the
+//     challenge string — slot 61 (sys_win_set_title) refuses non-owners —
+//     and resends the request with the challenge echoed in the union;
+//  3. the seat reads the title back (wmctl cmd 14), mints the session token,
+//     and binds the window to the request's reply_to pid + token;
+//  4. every later frame for the window must carry the token in the union,
+//     and every ack for a bound window carries Pad=Bound + the token — a
+//     forged ack cannot satisfy the client's wait because it cannot quote
+//     the token.
+//
+// The 38-byte wire is unchanged: x/y/w/h are zero in every request kind the
+// client sends today, so the auth value rides existing fields.
+const (
+	// WmRpcPadPlain marks a request with no auth union, or a bare refusal /
+	// legacy (Zig-seat) ack.
+	WmRpcPadPlain uint8 = 0
+	// WmRpcPadChallenge marks a seat challenge ack: the x/y/w/h union holds
+	// the bind challenge.
+	WmRpcPadChallenge uint8 = 1
+	// WmRpcPadBound marks a bound-session frame: the x/y/w/h union holds
+	// the window's session token.
+	WmRpcPadBound uint8 = 2
+)
+
+// WmAuth reads the auth union (challenge echo or session token) out of the
+// frame's x/y/w/h fields — the one 8-byte span every request leaves zero.
+func WmAuth(m WmRpc) uint64 {
+	return uint64(m.X) | uint64(m.Y)<<16 | uint64(m.W)<<32 | uint64(m.H)<<48
+}
+
+// SetWmAuth writes the auth union into the frame's x/y/w/h fields.
+func SetWmAuth(m *WmRpc, v uint64) {
+	m.X = uint16(v)
+	m.Y = uint16(v >> 16)
+	m.W = uint16(v >> 32)
+	m.H = uint16(v >> 48)
+}
+
+// WmBindChallengeTitle is the window title a window's owner sets to prove
+// ownership for challenge c: fixed 21 bytes, inside the kernel's 64-byte
+// title bound and the seat's name read-back.
+func WmBindChallengeTitle(c uint64) string {
+	const hexd = "0123456789abcdef"
+	var b [21]byte
+	copy(b[:], "wrpc:")
+	for i := 0; i < 16; i++ {
+		b[5+i] = hexd[(c>>(60-4*i))&0xf]
+	}
+	return string(b[:])
+}
+
 // The frozen request kinds (wnd_core / abi.zig). Do not renumber.
 const (
 	WmRpcKindRaise             uint8 = 1
@@ -158,6 +217,40 @@ const wmMailWaitTicks = 8
 // keeps two goroutines making requests from receiving the same sequence.
 var wmSeq atomic.Uint32
 
+// wmTokens is the session-token table the Go-seat handshake fills, indexed
+// directly by window id (u8). A zero entry means "not bound under this
+// seat" — tokens are minted nonzero.
+var (
+	wmTokensMu sync.Mutex
+	wmTokens   [256]uint64
+)
+
+func wmToken(id uint8) uint64 {
+	wmTokensMu.Lock()
+	defer wmTokensMu.Unlock()
+	return wmTokens[id]
+}
+
+func setWmToken(id uint8, token uint64) {
+	wmTokensMu.Lock()
+	wmTokens[id] = token
+	wmTokensMu.Unlock()
+}
+
+// resetWmAuth clears the bind state. Tests use it for isolation; a lost
+// binding is otherwise re-established by the challenge round.
+func resetWmAuth() {
+	wmTokensMu.Lock()
+	wmTokens = [256]uint64{}
+	wmTokensMu.Unlock()
+}
+
+// bindSetTitle is the ownership-proof seam: slot 61 (sys_win_set_title) is
+// owner-restricted, so only the kernel-registered owner can make a window's
+// title read as the challenge string. The raw gateway is -ENOSYS off-guest,
+// so host tests stub this var.
+var bindSetTitle = WinSetTitle
+
 // A blocking WM_RPC request can receive another request's ack or a
 // settings-change frame while it waits. Preserve both for the rightful
 // consumer; the shared mailbox remains safe when an app has concurrent RPC
@@ -228,20 +321,33 @@ func fitsWire8(v uint32) bool {
 	return v <= 0xff
 }
 
-// waitWmRpcAck polls the caller's inbox for a matching WM_RPC ack. A silent
+// waitWmRpcAck polls the caller's inbox for the request's ack. A silent
 // mailbox parks between probes and returns (_, false) when the tick budget
 // runs out; it never yield-spins. Replies with another sequence or requester
-// are foreign and are discarded rather than accepted as this request's ack.
-func waitWmRpcAck(seq, replyTo uint8) (WmRpc, bool) {
+// are foreign and are queued for their own consumer; a reply that matches
+// seq+reply_to but fails accept is consumed and dropped — under the Go seat
+// that is what a forged ack looks like, and it must neither satisfy the wait
+// nor linger for a later caller.
+func waitWmRpcAck(seq, replyTo uint8, accept func(WmRpc) bool) (WmRpc, bool) {
+	matches := func(m WmRpc) bool {
+		return m.Kind&WmRpcReplyFlag != 0 && m.Seq == seq && m.ReplyTo == replyTo
+	}
 	for tick := uint64(0); tick < wmMailWaitTicks; tick++ {
-		if rep, ok := takePendingWmMessage(func(m WmRpc) bool {
-			return m.Kind&WmRpcReplyFlag != 0 && m.Seq == seq && m.ReplyTo == replyTo
-		}); ok {
-			return rep, true
+		for {
+			m, ok := takePendingWmMessage(matches)
+			if !ok {
+				break
+			}
+			if accept(m) {
+				return m, true
+			}
 		}
 		if m, ok := receiveWmMessage(); ok {
-			if m.Kind&WmRpcReplyFlag != 0 && m.Seq == seq && m.ReplyTo == replyTo {
-				return m, true
+			if matches(m) {
+				if accept(m) {
+					return m, true
+				}
+				continue
 			}
 			enqueueWmMessage(m)
 		}
@@ -253,6 +359,108 @@ func waitWmRpcAck(seq, replyTo uint8) (WmRpc, bool) {
 	return WmRpc{}, false
 }
 
+// wmBindMaxRounds bounds the challenge-handshake retries: one fresh
+// challenge arrives per refused echo, and a forged challenge only costs a
+// round-trip.
+const wmBindMaxRounds = 3
+
+// wmRequest sends one WM_RPC request to the resolved seat and returns its
+// genuine ack (or ok=false on refusal/timeout/no seat). The Zig seats keep
+// the bare legacy exchange; the Go seat adds the ownership handshake: an
+// unbound window's first request draws a challenge, the caller proves
+// ownership by setting the window's kernel title to the challenge string,
+// the echo completes the bind, and every later request rides the session
+// token in the x/y/w/h union.
+func wmRequest(kind uint8, id uint32, x, y, w, h uint16, title, selfName string) (WmRpc, bool) {
+	if !fitsWire8(id) {
+		return WmRpc{}, false
+	}
+	peers := WmPeers(selfName)
+	if peers.WM == 0 || peers.Self == 0 || !fitsWire8(peers.Self) {
+		return WmRpc{}, false
+	}
+	if !peers.Go {
+		// Legacy seat: the single bare exchange, exactly as before the bind
+		// protocol. The Zig seats never emit an auth Pad.
+		req := WmRpc{Kind: kind, ID: uint8(id), Seq: nextWmSeq(), ReplyTo: uint8(peers.Self), X: x, Y: y, W: w, H: h}
+		req.SetTitle(title)
+		if IpcSend(peers.WM, req.Encode()) < 0 {
+			return WmRpc{}, false
+		}
+		return waitWmRpcAck(req.Seq, req.ReplyTo, func(WmRpc) bool { return true })
+	}
+	return wmRequestGo(kind, uint8(id), title, peers)
+}
+
+// wmRequestGo is the authenticated exchange with the Go seat. A bound
+// request carries the session token; an unbound one walks the ownership
+// challenge first. The Go seat never sends a plain (Pad=0) ack, so anything
+// in that shape matching seq+reply_to is a forgery and is dropped inside
+// waitWmRpcAck rather than satisfying it.
+func wmRequestGo(kind uint8, id uint8, title string, peers WmSeat) (WmRpc, bool) {
+	for round := 0; round < wmBindMaxRounds; round++ {
+		token := wmToken(id)
+		req := WmRpc{Kind: kind, ID: id, Seq: nextWmSeq(), ReplyTo: uint8(peers.Self)}
+		req.SetTitle(title)
+		// The accept predicate is strict per send shape: a bound request
+		// accepts only an ack quoting the same token, an unbound request
+		// accepts only a challenge — a plain ack is the forgery shape, and
+		// a Bound ack for a request that carried no credentials could only
+		// install an attacker-chosen token.
+		var accept func(WmRpc) bool
+		if token != 0 {
+			req.Pad = WmRpcPadBound
+			SetWmAuth(&req, token)
+			accept = func(m WmRpc) bool { return m.Pad == WmRpcPadBound && WmAuth(m) == token }
+		} else {
+			accept = func(m WmRpc) bool { return m.Pad == WmRpcPadChallenge }
+		}
+		if IpcSend(peers.WM, req.Encode()) < 0 {
+			return WmRpc{}, false
+		}
+		rep, ok := waitWmRpcAck(req.Seq, req.ReplyTo, accept)
+		if !ok {
+			if token != 0 {
+				// The seat lost the binding (it restarted and forgot the
+				// token): drop the stale entry and rebind next round.
+				setWmToken(id, 0)
+				continue
+			}
+			return WmRpc{}, false
+		}
+		if rep.Pad == WmRpcPadBound {
+			return rep, true // bound-window answer
+		}
+		// Challenge: prove ownership through the window title, then resend
+		// the request with the challenge echoed as the auth union.
+		challenge := WmAuth(rep)
+		if challenge == 0 || bindSetTitle(int(id), WmBindChallengeTitle(challenge)) != 0 {
+			return WmRpc{}, false
+		}
+		req.Seq = nextWmSeq()
+		req.Pad = WmRpcPadBound
+		SetWmAuth(&req, challenge)
+		if IpcSend(peers.WM, req.Encode()) < 0 {
+			return WmRpc{}, false
+		}
+		rep, ok = waitWmRpcAck(req.Seq, req.ReplyTo,
+			func(m WmRpc) bool { return m.Pad != WmRpcPadPlain })
+		if !ok || rep.Pad != WmRpcPadBound {
+			continue // silent or re-challenged: another round
+		}
+		newToken := WmAuth(rep)
+		if newToken == 0 {
+			return WmRpc{}, false
+		}
+		setWmToken(id, newToken)
+		// The challenge string is the window's kernel title right now;
+		// restore the title the request meant it to wear.
+		_ = bindSetTitle(int(id), title)
+		return rep, true
+	}
+	return WmRpc{}, false
+}
+
 // WmMailRequest sends one WM_RPC request to the registered WM and polls the
 // CALLER's own inbox for the matching ack. It returns whether the WM applied
 // it. A missing WM seat, an id or requester pid that does not fit the frozen
@@ -260,33 +468,8 @@ func waitWmRpcAck(seq, replyTo uint8) (WmRpc, bool) {
 // caller then falls back to the frozen syscall); recv reads the caller's own
 // ring, while the seat uses reply_to to route the ack.
 func WmMailRequest(kind uint8, id uint32, x, y, w, h uint16, title, selfName string) bool {
-	if !fitsWire8(id) {
-		return false
-	}
-	peers := WmPeers(selfName)
-	if peers.WM == 0 || peers.Self == 0 || !fitsWire8(peers.Self) {
-		return false
-	}
-	req := WmRpc{
-		Kind:    kind,
-		ID:      uint8(id),
-		Seq:     nextWmSeq(),
-		ReplyTo: uint8(peers.Self),
-		X:       x,
-		Y:       y,
-		W:       w,
-		H:       h,
-	}
-	req.SetTitle(title)
-	frame := req.Encode()
-	if IpcSend(peers.WM, frame) < 0 {
-		return false
-	}
-	rep, ok := waitWmRpcAck(req.Seq, req.ReplyTo)
-	if !ok {
-		return false
-	}
-	return rep.Applied != 0
+	rep, ok := wmRequest(kind, id, x, y, w, h, title, selfName)
+	return ok && rep.Applied != 0
 }
 
 // DeclareFullscreen asks the WM to make this tab full-viewport eligible (kind
@@ -309,24 +492,7 @@ func DeclareNav(winID uint32, path, selfName string) bool {
 // (kind 10), returning the path when one is queued. Best-effort: a missing WM
 // seat or no pending target returns ("", false).
 func PollNav(winID uint32, selfName string) (string, bool) {
-	if !fitsWire8(winID) {
-		return "", false
-	}
-	peers := WmPeers(selfName)
-	if peers.WM == 0 || peers.Self == 0 || !fitsWire8(peers.Self) {
-		return "", false
-	}
-	req := WmRpc{
-		Kind:    WmRpcKindNavPoll,
-		ID:      uint8(winID),
-		Seq:     nextWmSeq(),
-		ReplyTo: uint8(peers.Self),
-	}
-	frame := req.Encode()
-	if IpcSend(peers.WM, frame) < 0 {
-		return "", false
-	}
-	rep, ok := waitWmRpcAck(req.Seq, req.ReplyTo)
+	rep, ok := wmRequest(WmRpcKindNavPoll, winID, 0, 0, 0, 0, "", selfName)
 	if !ok || rep.Applied == 0 {
 		return "", false
 	}
@@ -377,14 +543,24 @@ func PublishSettingChange(winID uint32, key, selfName string) bool {
 
 // PollSettingChanged returns the next asynchronous key notice for winID.
 // It never waits; ordinary appkit polling remains paced by the event loop.
+// A bound window accepts only notices carrying its session token — a forged
+// kind-15 frame cannot quote it. Unbound windows keep the legacy match so
+// the Zig seats still deliver.
 func PollSettingChanged(winID uint32) (string, bool) {
 	if !fitsWire8(winID) {
 		return "", false
 	}
-	if m, ok := takePendingWmMessage(func(m WmRpc) bool {
-		return m.Kind == WmRpcKindSettingsChanged && m.ReplyTo == 0 &&
-			m.ID == uint8(winID) && m.TitleString() != ""
-	}); ok {
+	matches := func(m WmRpc) bool {
+		if m.Kind != WmRpcKindSettingsChanged || m.ReplyTo != 0 ||
+			m.ID != uint8(winID) || m.TitleString() == "" {
+			return false
+		}
+		if tok := wmToken(uint8(winID)); tok != 0 {
+			return m.Pad == WmRpcPadBound && WmAuth(m) == tok
+		}
+		return true
+	}
+	if m, ok := takePendingWmMessage(matches); ok {
 		return m.TitleString(), true
 	}
 	for i := 0; i < MailboxMaxMessages; i++ {
@@ -392,7 +568,7 @@ func PollSettingChanged(winID uint32) (string, bool) {
 		if !ok {
 			return "", false
 		}
-		if m.Kind == WmRpcKindSettingsChanged && m.ReplyTo == 0 && m.TitleString() != "" && m.ID == uint8(winID) {
+		if matches(m) {
 			return m.TitleString(), true
 		}
 		enqueueWmMessage(m)

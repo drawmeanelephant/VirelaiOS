@@ -85,6 +85,7 @@ func requestString(host string, port uint16, path string) string {
 	return "GET " + path + " HTTP/1.0\r\n" +
 		"Host: " + hostHeader + "\r\n" +
 		"User-Agent: VirelaiOS/1.0\r\n" +
+		"Accept-Encoding: identity\r\n" +
 		"Connection: close\r\n\r\n"
 }
 
@@ -167,22 +168,37 @@ func parseResponseHead(head []byte) (status int, length int, err error) {
 	}
 	for _, h := range strings.Split(string(head), "\r\n")[1:] {
 		i := strings.IndexByte(h, ':')
-		if i < 0 || !strings.EqualFold(strings.TrimSpace(h[:i]), "content-length") {
+		if i < 0 {
 			continue
 		}
+		name := strings.TrimSpace(h[:i])
 		v := strings.TrimSpace(h[i+1:])
-		if v == "" {
-			return 0, 0, errStr("malformed content-length")
-		}
-		n := 0
-		for j := 0; j < len(v); j++ {
-			c := v[j]
-			if c < '0' || c > '9' || n > (1<<31-1)/10 {
-				return 0, 0, errStr("malformed content-length")
+		switch {
+		// M97f (#2106): the cleartext path enforces the same framing
+		// contract browser/framing.go declares — a peer insisting on
+		// chunked or compressed transfer is refused, never misparsed.
+		case strings.EqualFold(name, "transfer-encoding"):
+			return 0, 0, errStr("http-framing-unsupported")
+		case strings.EqualFold(name, "content-encoding"):
+			if !strings.EqualFold(v, "identity") {
+				return 0, 0, errStr("http-framing-unsupported")
 			}
-			n = n*10 + int(c-'0')
+		case strings.EqualFold(name, "content-length"):
+			// A second Content-Length — matching or not — is a framing
+			// desync; there is no "last wins" rule here.
+			if length >= 0 || v == "" {
+				return 0, 0, errStr("http-framing-invalid")
+			}
+			n := 0
+			for j := 0; j < len(v); j++ {
+				c := v[j]
+				if c < '0' || c > '9' || n > (1<<31-1)/10 {
+					return 0, 0, errStr("malformed content-length")
+				}
+				n = n*10 + int(c-'0')
+			}
+			length = n
 		}
-		length = n
 	}
 	return status, length, nil
 }

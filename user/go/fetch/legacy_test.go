@@ -179,7 +179,7 @@ func TestResponseStreamRejectsOversizedAndMalformedHeads(t *testing.T) {
 
 func TestRequestString(t *testing.T) {
 	got := requestString("10.0.0.2", 80, "/file.bin")
-	want := "GET /file.bin HTTP/1.0\r\nHost: 10.0.0.2\r\nUser-Agent: VirelaiOS/1.0\r\nConnection: close\r\n\r\n"
+	want := "GET /file.bin HTTP/1.0\r\nHost: 10.0.0.2\r\nUser-Agent: VirelaiOS/1.0\r\nAccept-Encoding: identity\r\nConnection: close\r\n\r\n"
 	if got != want {
 		t.Fatalf("requestString =\n%q\nwant\n%q", got, want)
 	}
@@ -490,4 +490,28 @@ func cstringAt(ptr, length uintptr) string {
 		}
 	}
 	return string(b)
+}
+
+// M97f (#2106): cleartext framing must refuse the vectors the browser's
+// framing.go already refuses — Transfer-Encoding written verbatim as
+// "body", duplicate or conflicting Content-Length (last-wins desync), and a
+// non-identity Content-Encoding (gzip) passed through undecoded.
+func TestParseResponseHeadRefusesUnsupportedFraming(t *testing.T) {
+	for _, bad := range []string{
+		"HTTP/1.0 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n",
+		"HTTP/1.1 200 OK\r\nTransfer-Encoding: identity\r\n\r\n",
+		"HTTP/1.0 200 OK\r\nContent-Length: 5\r\nContent-Length: 9\r\n\r\n",
+		"HTTP/1.0 200 OK\r\nContent-Length: 5\r\nContent-Length: 5\r\n\r\n",
+		"HTTP/1.0 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: 5\r\n\r\n",
+		"HTTP/1.0 200 OK\r\ncontent-encoding: br\r\n\r\n",
+	} {
+		if _, _, err := parseResponseHead([]byte(bad)); err == nil {
+			t.Errorf("parseResponseHead(%q) accepted unsupported framing", bad)
+		}
+	}
+	// Identity encoding and a single Content-Length still pass.
+	if _, _, err := parseResponseHead([]byte(
+		"HTTP/1.0 200 OK\r\nContent-Encoding: identity\r\nContent-Length: 5\r\n\r\n")); err != nil {
+		t.Fatalf("identity encoding refused: %v", err)
+	}
 }

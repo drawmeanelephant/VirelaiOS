@@ -274,3 +274,64 @@ func TestStreamCallerDeadlineBoundsIdlePolls(t *testing.T) {
 		t.Fatalf("idle deadline err=%v polls=%d", err, f.polls)
 	}
 }
+
+// --- M97f F4 (#2107): a total handshake deadline -------------------------
+
+func TestHandshakeDeadlineResolution(t *testing.T) {
+	const now = 1_000_000_000
+	if d := handshakeDeadline(0, now); d != now+DefaultHandshakeNs {
+		t.Fatalf("zero deadline = %d, want %d", d, now+DefaultHandshakeNs)
+	}
+	if d := handshakeDeadline(-7, now); d != now+DefaultHandshakeNs {
+		t.Fatalf("negative deadline = %d, want the default bound", d)
+	}
+	if d := handshakeDeadline(42, now); d != 42 {
+		t.Fatalf("caller deadline = %d, want 42 (the override honored)", d)
+	}
+}
+
+// streamTransport adapts tcpStream to the client's transport interface in
+// host tests (viTransport does this over *vi.Conn on the guest).
+type streamTransport struct{ st *tcpStream }
+
+func (s streamTransport) read(p []byte) (int, error)  { return s.st.read(p) }
+func (s streamTransport) write(p []byte) (int, error) { return s.st.write(p) }
+func (s streamTransport) close() error                { return nil }
+
+// TestHandshakeDribbleHitsTotalDeadline replays the M97f F4 probe: a peer
+// that answers ClientHello with an unbounded drip of ChangeCipherSpec
+// records. The stream's per-pump budget resets on every byte, so only the
+// armed total deadline ends the loop — with it, the handshake fails
+// errStreamTimeout instead of consuming the peer's drip forever.
+func TestHandshakeDribbleHitsTotalDeadline(t *testing.T) {
+	// A well-formed CCS record, repeated forever: content type 20,
+	// version 0303, length 1, payload 01.
+	var ccs = []byte{0x14, 0x03, 0x03, 0x00, 0x01, 0x01}
+	pos := 0
+	clock := int64(0)
+	s := &tcpStream{buf: make([]byte, streamStashCap),
+		now: func() int64 { clock += 10_000_000; return clock }}
+	s.deadlineAt = handshakeDeadline(0, clock)
+	s.recv = func(out []byte) (int, error) {
+		for i := range out {
+			out[i] = ccs[pos%len(ccs)]
+			pos++
+		}
+		return len(out), nil
+	}
+	s.send = func(p []byte) (int, error) { return len(p), nil }
+	cl := newClient(streamTransport{s}, "x.example", clock,
+		func(p []byte) error {
+			for i := range p {
+				p[i] = byte(i)
+			}
+			return nil
+		}, false)
+	err := cl.handshake()
+	if err != errStreamTimeout {
+		t.Fatalf("CCS dribble handshake = %v, want errStreamTimeout", err)
+	}
+	if clock < s.deadlineAt {
+		t.Fatalf("handshake returned before its deadline: clock=%d deadline=%d", clock, s.deadlineAt)
+	}
+}

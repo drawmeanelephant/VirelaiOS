@@ -451,6 +451,9 @@ func (s *TabStrip) CloseTab(id uint32) bool {
 	// gone would focus nothing. clearNotify prints the dismiss markers.
 	clearNotify(id)
 	clearSettingsSubscriptions(id)
+	// M97g-F2 (#2080): the window's WM_RPC session token dies with the tab —
+	// a later window reusing the id must bind fresh.
+	dropRpcBinding(id)
 	for j := i; j+1 < s.count; j++ {
 		s.tabs[j] = s.tabs[j+1]
 	}

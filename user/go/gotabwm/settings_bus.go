@@ -151,6 +151,12 @@ func broadcastSettingsChange(key string) int {
 		event.Kind = vi.WmRpcKindSettingsChanged
 		event.ID = s.id
 		event.SetTitle(key)
+		// M97g-F2 (#2080): a bound window accepts only notices quoting its
+		// session token — carry it so the client's own auth check passes.
+		if b := rpcBindings[s.id]; b.token != 0 {
+			event.Pad = vi.WmRpcPadBound
+			vi.SetWmAuth(&event, b.token)
+		}
 		if sendSettingsNotice(uint32(s.pid), event.Encode()) >= 0 {
 			listeners++
 		}

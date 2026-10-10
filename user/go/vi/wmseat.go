@@ -189,3 +189,26 @@ const WmctlTaskbarClickCmd uint64 = 12
 func WmctlTaskbarClick(id uint32) int64 {
 	return syscall2(SlotWmctl, uintptr(WmctlTaskbarClickCmd), uintptr(id))
 }
+
+// WmctlWindowNameCmd is slot-65 subcommand 14 (#1056 item 2): the WM reads a
+// user window's display name — the app-set title when one exists, else the
+// OWNING process's executable name (driving_award.user_display_name). a1 =
+// window id, a2 = destination buffer, a3 = length; the kernel returns the
+// copied byte count. Seat-gated like every WMCTL command.
+const WmctlWindowNameCmd uint64 = 14
+
+// WmctlWindowName reads window id's display name into buf (slot 65 cmd 14).
+// Returns (n, raw): the copied byte count on success, or (0, negative) —
+// -ENOSYS off-guest / no registered seat, -EACCES from a non-seat caller,
+// -EINVAL for an unknown or non-user window, -EFAULT for a bad buffer.
+func WmctlWindowName(id uint32, buf []byte) (int, int64) {
+	if len(buf) == 0 {
+		return 0, 0
+	}
+	r := syscall4(SlotWmctl, uintptr(WmctlWindowNameCmd), uintptr(id),
+		uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)))
+	if r < 0 {
+		return 0, r
+	}
+	return int(r), r
+}

@@ -8,6 +8,30 @@ package tls
 
 import "virelai/vi"
 
+const (
+	// DefaultHandshakeNs is the total bound a caller-less handshake gets
+	// (M97f F4, #2107): 30 s, the browser's declared-budget class. It caps
+	// the whole record loop — a peer dribbling ChangeCipherSpec or
+	// fragmenting its flight indefinitely hits it, where the legacy path
+	// had only pumpOnce's per-pump 5 s (reset by every received byte).
+	DefaultHandshakeNs = 30_000_000_000
+	// DefaultResponseNs is the total bound Dial arms on the established
+	// connection for the caller's request/response phase. A server that
+	// completes the handshake then stalls the body is cut here.
+	DefaultResponseNs = 30_000_000_000
+)
+
+// handshakeDeadline resolves the caller's absolute deadline: zero or
+// negative means "no declared bound", which maps to the package default
+// total deadline measured from now. A positive value is the caller's
+// override and is honored verbatim.
+func handshakeDeadline(d, now int64) int64 {
+	if d > 0 {
+		return d
+	}
+	return now + DefaultHandshakeNs
+}
+
 // viTransport bridges the kernel TCP seam to the client's byte-stream
 // transport. It does not use vi.Conn.Recv/Send: Recv waits on slot 76
 // without draining virtio, and Send does not drain between 192-byte
@@ -87,14 +111,29 @@ func Dial(addr string, port uint16, serverName string) (*TLSConn, error) {
 	if serverName == "" {
 		serverName = addr
 	}
-	return Handshake(conn, serverName, 0)
+	c, err := Handshake(conn, serverName, 0)
+	if err != nil {
+		return nil, err
+	}
+	// M97f F4 (#2107): the established connection keeps a total bound for
+	// the caller's request/response phase — a peer that answers the
+	// handshake then dribbles or stalls the body is cut at the declared
+	// budget instead of parking the tool. Callers re-arm with SetDeadline.
+	c.SetDeadline(vi.Nanos() + DefaultResponseNs)
+	return c, nil
 }
 
 // Handshake takes ownership of a connected socket, including every failure
 // path. serverName is always verified; literal IPs omit SNI, not validation.
-// deadline is an absolute vi.Nanos instant. Zero keeps the legacy stream
-// bounds. Browser callers resolve/connect separately, then pass the earlier
-// of their handshake and whole-page deadlines.
+// deadline is an absolute vi.Nanos instant bounding the WHOLE handshake —
+// ClientHello through the server Finished — not any single record pump.
+// A non-positive deadline selects DefaultHandshakeNs from now; there is no
+// "unbounded" spelling left (M97f F4, #2107: a dribbling peer held the
+// legacy path forever). On success the stream returns to its per-pump
+// bounds — the handshake bound was the handshake's, and the caller arms
+// the response phase through SetDeadline (Dial arms DefaultResponseNs).
+// Browser callers resolve/connect separately, then pass the earlier of
+// their handshake and whole-page deadlines.
 func Handshake(conn *vi.Conn, serverName string, deadline int64) (*TLSConn, error) {
 	if conn == nil {
 		return nil, errTransport
@@ -104,7 +143,7 @@ func Handshake(conn *vi.Conn, serverName string, deadline int64) (*TLSConn, erro
 		return nil, errBadServerName
 	}
 	t := newVITransport(conn)
-	t.st.deadlineAt = deadline
+	t.st.deadlineAt = handshakeDeadline(deadline, vi.Nanos())
 	c := &TLSConn{conn: conn, t: t}
 	c.cl = newClient(t, serverName, vi.Time(), viRandom, true)
 	if err := t.st.checkDeadline(); err != nil {
@@ -115,6 +154,7 @@ func Handshake(conn *vi.Conn, serverName string, deadline int64) (*TLSConn, erro
 		_ = conn.Close()
 		return nil, err
 	}
+	t.st.deadlineAt = 0
 	return c, nil
 }
 
