@@ -1999,6 +1999,48 @@ test "driving_award: M52 card 3 — a revoked surface closes exactly its bound w
     _ = close_owner(8);
 }
 
+test "driving_award: a surface-backed window cannot outgrow its bound surface (issue #2111)" {
+    arm();
+    try std.testing.expectEqual(UserOpenResult{ .opened = 2 }, user_open(64, 64, 128, 64, 7));
+    // Bind a surface with headroom: 16 pages (64 KiB) holds up to 128x128 /
+    // 256x64 at 4 Bpp — the bind-time check only asks len >= win bytes.
+    try std.testing.expect(user_bind_surface(2, .{ .handle = 1, .pa_base = 0x1000_0000, .page_count = 16 }));
+
+    // Growing past the bound surface is REFUSED on the app path — the
+    // window keeps its old rect (the pool-exhaustion contract). Pre-fix,
+    // reflow grew win.w/h and the next sys_win_fill wrote ~3.5 MiB past the
+    // surface's physical pages.
+    try std.testing.expect(!user_resize(2, 1280, 720));
+    try std.testing.expectEqual(WinRect{ .x = 64, .y = 64, .w = 128, .h = 64 }, user_rect(2).?);
+
+    // ...and on the WM path (wm_apply_rect skips the back-buffer clamp but
+    // the surface bound is a memory-safety invariant, not a layout policy).
+    try std.testing.expect(!wm_apply_rect(2, 0, 0, 1280, 720));
+    try std.testing.expectEqual(WinRect{ .x = 64, .y = 64, .w = 128, .h = 64 }, user_rect(2).?);
+
+    // A same-size move still lands (position only, no surface pressure).
+    try std.testing.expect(user_move(2, 32, 32));
+    try std.testing.expectEqual(WinRect{ .x = 32, .y = 32, .w = 128, .h = 64 }, user_rect(2).?);
+
+    // A resize that still fits the surface is honored (256x64 = 64 KiB).
+    // (The fill itself is not re-asserted here: it writes through the real
+    // surface pa, which a host test cannot dereference — the guard below
+    // proves the refusal happens BEFORE any surface write.)
+    try std.testing.expect(user_resize(2, 256, 64));
+    try std.testing.expectEqual(WinRect{ .x = 32, .y = 32, .w = 256, .h = 64 }, user_rect(2).?);
+    // One page further is refused again (256x128 = 128 KiB > 64 KiB).
+    try std.testing.expect(!user_resize(2, 256, 128));
+    try std.testing.expectEqual(WinRect{ .x = 32, .y = 32, .w = 256, .h = 64 }, user_rect(2).?);
+
+    // The defensive guard: a hand-desynced rect (surface_pages smaller than
+    // w*h*4 — reflow now prevents this) refuses the fill rather than writing
+    // past the region.
+    const win = find_user_window(2).?;
+    win.surface_pages = 8; // 32 KiB < 256*64*4 — impossible post-fix
+    try std.testing.expect(!user_fill(2, 0, 0, 1, 1, 0xff0000));
+    _ = user_close(2);
+}
+
 test "driving_award: M52 card 3 — a dead drag source leaves no capture; another process's death does not cancel it" {
     arm();
     try std.testing.expect(!drag_is_active());

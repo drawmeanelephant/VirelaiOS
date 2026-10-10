@@ -62,6 +62,19 @@ pub const ResolveWritePages = *const fn (address: u64, len: usize) bool;
 /// (which have no user roots, so there is nothing to resolve).
 pub var resolve_write_pages: ?ResolveWritePages = null;
 
+/// Issue #2109: the read-direction twin. The identity overlay swallows a
+/// store silently, but it answers a LOAD just the same — a copy_in whose
+/// source page is only the EL1-only twin (PA == VA) reads kernel physical
+/// memory inside the blanket and hands the bytes to the syscall result.
+/// The resolver proves every source page is the process's own EL0-visible
+/// page (demand-populating a registered-but-unpopulated one, so the copy
+/// reads the zero page EL0 itself would fault in) or the copy is refused.
+pub const ResolveReadPages = *const fn (address: u64, len: usize) bool;
+
+/// Armed by `exceptions.init`; null pre-boot and on host test binaries
+/// (same contract as `resolve_write_pages`).
+pub var resolve_read_pages: ?ResolveReadPages = null;
+
 /// CPU count (matches smp.max_cores / svclock.cores); literal to dodge
 /// import cycles — uaccess is imported by exceptions.
 const cores: usize = 4;
@@ -304,6 +317,14 @@ pub fn read_region_covers(address: u64, len: usize) bool {
 /// loads. Keep the same validation and synchronous-abort recovery window.
 pub fn load_u32(address: u64) ?u32 {
     if ((address & 3) != 0 or !read_region_covers(address, 4)) return null;
+    // Issue #2109: the word must come from a page the process owns, not the
+    // identity twin (an armed-but-unpopulated mmap page resolves to PA==VA).
+    if (resolve_read_pages) |resolve| {
+        if (!resolve(address, 4)) {
+            unbacked_value[core_index()] +%= 1;
+            return null;
+        }
+    }
     open_window();
     const value = @atomicLoad(u32, @as(*const u32, @ptrFromInt(address)), .acquire);
     const fault = latch_read();
@@ -323,6 +344,16 @@ pub fn copy_in(dst: []u8, address: u64, len: usize) Outcome {
     if (!range_ok(read_regions[c][0..read_region_count[c]], address, @intCast(len))) {
         validation_faults_value[c] +%= 1;
         return .fault;
+    }
+    // Issue #2109: never read through the EL1-only identity overlay. The
+    // check is per 4 KiB page of the source and runs before the window
+    // opens, so a refusal reads no memory (the mirror of #1391's copy_out
+    // destination guard).
+    if (resolve_read_pages) |resolve| {
+        if (!resolve(address, len)) {
+            unbacked_value[c] +%= 1;
+            return .fault;
+        }
     }
     open_window();
     const result = copy_in_window(dst[0..len], address, len);
@@ -643,6 +674,45 @@ test "uaccess: copy_out consults the destination resolver and refuses with EFAUL
     try std.testing.expectEqual(Outcome.ok, copy_out(@intFromPtr(&user), text, text.len));
     try std.testing.expectEqualStrings(text, user[0..text.len]);
     try std.testing.expectEqual(after.copies + 1, stats().copies);
+}
+
+test "uaccess: copy_in and load_u32 consult the source resolver and refuse when it says no (issue #2109)" {
+    init();
+    var src: [16]u8 align(4) = undefined;
+    @memcpy(src[0..15], "kernel reads me");
+    const text = src[0..15];
+    var dst: [16]u8 = undefined;
+    set_regions(
+        .{ .base = @intFromPtr(text.ptr), .len = text.len },
+        .{ .base = 0, .len = 0 },
+    );
+    // Unarmed (host tests, pre-boot host: the pre-#2109 contract — the range
+    // check alone) copies as before.
+    try std.testing.expectEqual(Outcome.ok, copy_in(dst[0..text.len], @intFromPtr(text.ptr), text.len));
+    try std.testing.expectEqualStrings(text, dst[0..text.len]);
+
+    // Armed and refusing: nothing is read at all, and the refusal is
+    // countable (the observable form of "this load would have read the
+    // EL1-only identity twin — kernel RAM at PA == VA").
+    @memset(dst[0..], 0);
+    resolve_read_pages = &testResolveRefuse;
+    defer resolve_read_pages = null;
+    const before = stats();
+    try std.testing.expectEqual(Outcome.fault, copy_in(dst[0..text.len], @intFromPtr(text.ptr), text.len));
+    try std.testing.expectEqualStrings("\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00", dst[0..text.len]);
+    var after = stats();
+    try std.testing.expectEqual(before.unbacked + 1, after.unbacked);
+    try std.testing.expectEqual(before.copies, after.copies); // a refused copy never opens the window
+    // load_u32 refuses the same way (the futex-word oracle).
+    try std.testing.expectEqual(@as(?u32, null), load_u32(@intFromPtr(text.ptr)));
+
+    // Armed and accepting: the same copy lands byte-exactly.
+    resolve_read_pages = &testResolveAccept;
+    try std.testing.expectEqual(Outcome.ok, copy_in(dst[0..text.len], @intFromPtr(text.ptr), text.len));
+    try std.testing.expectEqualStrings(text, dst[0..text.len]);
+    try std.testing.expectEqual(@as(?u32, std.mem.readInt(u32, src[0..4], .little)), load_u32(@intFromPtr(text.ptr)));
+    after = stats();
+    try std.testing.expectEqual(before.copies + 1, after.copies);
 }
 
 test "uaccess: copy_out to the read-only text aperture is a permission fault" {
