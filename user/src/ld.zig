@@ -4,6 +4,7 @@
 //! executables and shared libraries (LIBUI.SO, LIBFONT.SO) on Apple Silicon AArch64.
 
 const std = @import("std");
+const builtin = @import("builtin");
 
 // Syscall numbers (ADR 0007 / ADR 0010)
 const sys_write_num: u64 = 1;
@@ -107,6 +108,7 @@ pub const LoadedLib = struct {
     name_len: usize = 0,
     base_va: u64 = 0,
     strtab: ?[*]const u8 = null,
+    strsz: usize = 0,
     symtab: ?[*]const Elf64Sym = null,
     sym_count: usize = 0,
 };
@@ -115,14 +117,109 @@ pub const max_loaded_libs = 8;
 var loaded_libs: [max_loaded_libs]LoadedLib = [_]LoadedLib{.{}} ** max_loaded_libs;
 var loaded_lib_count: usize = 0;
 
-// Shared library placement heap
-var next_lib_va: u64 = 0x0100_0000;
+// M97c #2099: the shared-library window contract, mirrored from the
+// kernel side (`exec.zig`'s lib_slot_bytes/lib_slot_count). The kernel
+// maps exactly this pool at lib_heap_base; the bump pointer and the
+// table bound share the count so a library's bytes can never run past
+// the mapped aperture.
+pub const lib_heap_base: u64 = 0x0100_0000;
+pub const lib_slot_bytes: u64 = 0x10000;
+pub const lib_slot_count: usize = max_loaded_libs;
+pub const lib_heap_end: u64 = lib_heap_base + lib_slot_bytes * lib_slot_count;
+
+// Shared library placement heap — one slot per loaded library.
+var next_lib_va: u64 = lib_heap_base;
+
+// ELF64 fixed fields (all image reads go through bounds-checked helpers).
+const elf_class_64: u8 = 2;
+const elf_data_lsb: u8 = 1;
+const elf_version_current: u8 = 1;
+const elf_machine_aarch64: u16 = 183;
+const elf_et_dyn: u16 = 3;
+const elf_phentsize: usize = @sizeOf(Elf64Phdr);
+const max_phnum: usize = 32;
+
+/// M97c #2099: a PT_LOAD window of an image under relocation — every
+/// dynamic-table pointer and every relocation WRITE target must resolve
+/// inside one of these. Writable windows are the only legal relocation
+/// destinations.
+const LoadWindow = struct {
+    start: u64,
+    end: u64,
+    writable: bool,
+};
+const max_load_windows: usize = 4;
+
+fn lib_u16(buf: [*]const u8, off: usize) u16 {
+    return std.mem.readInt(u16, buf[off..][0..2], .little);
+}
+
+fn lib_u32(buf: [*]const u8, off: usize) u32 {
+    return std.mem.readInt(u32, buf[off..][0..4], .little);
+}
+
+fn lib_u64(buf: [*]const u8, off: usize) u64 {
+    return std.mem.readInt(u64, buf[off..][0..8], .little);
+}
+
+/// #2099: a counted-string fetch against a BOUNDED string table — the
+/// untrusted `st_name`/DT_* offsets are never allowed to produce an
+/// unbounded `sliceTo` scan past the table.
+fn dyn_str(strtab: [*]const u8, strsz: usize, off: u64) ?[]const u8 {
+    if (off >= strsz or off > std.math.maxInt(usize)) return null;
+    const start: usize = @intCast(off);
+    const window = strtab[start..strsz];
+    const nul = std.mem.indexOfScalar(u8, window, 0) orelse return null;
+    return window[0..nul];
+}
+
+/// #2099: bounded string compare — `name` must equal the table entry at
+/// `st_name` AND terminate inside the table.
+fn dyn_name_eq(strtab: [*]const u8, strsz: usize, st_name: u32, name: []const u8) bool {
+    if (st_name >= strsz) return false;
+    const start: usize = st_name;
+    const avail = strsz - start;
+    if (name.len + 1 > avail) return false;
+    var i: usize = 0;
+    while (i < name.len) : (i += 1) {
+        if (strtab[start + i] != name[i]) return false;
+    }
+    return strtab[start + name.len] == 0;
+}
+
+/// #2099: does `[va, va+size)` sit inside one of the image's PT_LOAD
+/// windows (writable when `need_write`)? Wrap-safe.
+fn window_contains(windows: []const LoadWindow, va: u64, size: u64, need_write: bool) bool {
+    if (size > std.math.maxInt(u64) - va) return false;
+    const end = va + size;
+    for (windows) |w| {
+        if (va >= w.start and end <= w.end and (!need_write or w.writable)) return true;
+    }
+    return false;
+}
+
+/// Collect the image's PT_LOAD windows from its (mapped) phdr table.
+fn collect_load_windows(phdr_base: u64, phent: usize, phnum: usize, out: *[max_load_windows]LoadWindow) usize {
+    var n: usize = 0;
+    if (phent != elf_phentsize or (phdr_base & 7) != 0 or phnum > max_phnum) return 0;
+    var i: usize = 0;
+    while (i < phnum and n < max_load_windows) : (i += 1) {
+        const ph: *const Elf64Phdr = @ptrFromInt(phdr_base + i * phent);
+        if (ph.p_type != pt_load) continue;
+        // Refuse degenerate or wrapping windows outright.
+        if (ph.p_memsz == 0 or ph.p_memsz > std.math.maxInt(u64) - ph.p_vaddr) continue;
+        out[n] = .{ .start = ph.p_vaddr, .end = ph.p_vaddr + ph.p_memsz, .writable = (ph.p_flags & 2) != 0 };
+        n += 1;
+    }
+    return n;
+}
 
 // ---------------------------------------------------------------------------
 // Syscall helpers
 // ---------------------------------------------------------------------------
 
 fn sys_write(fd: u64, msg: []const u8) void {
+    if (builtin.is_test) return; // host tests have no kernel to call
     if (msg.len == 0) return;
     _ = asm volatile ("svc #0"
         : [ret] "={x0}" (-> i64),
@@ -134,6 +231,7 @@ fn sys_write(fd: u64, msg: []const u8) void {
 }
 
 fn sys_file_open(path: []const u8, mode: u32) i64 {
+    if (builtin.is_test) return -1;
     return asm volatile ("svc #0"
         : [ret] "={x0}" (-> i64),
         : [num] "{x8}" (@as(u64, 23)),
@@ -144,6 +242,7 @@ fn sys_file_open(path: []const u8, mode: u32) i64 {
 }
 
 fn sys_file_read(fd: u64, buf: [*]u8, len: usize) i64 {
+    if (builtin.is_test) return -1;
     return asm volatile ("svc #0"
         : [ret] "={x0}" (-> i64),
         : [num] "{x8}" (@as(u64, 24)),
@@ -154,6 +253,7 @@ fn sys_file_read(fd: u64, buf: [*]u8, len: usize) i64 {
 }
 
 fn sys_file_close(fd: u64) void {
+    if (builtin.is_test) return;
     _ = asm volatile ("svc #0"
         : [ret] "={x0}" (-> i64),
         : [num] "{x8}" (@as(u64, 26)),
@@ -162,6 +262,7 @@ fn sys_file_close(fd: u64) void {
 }
 
 fn sys_exit(code: u64) noreturn {
+    if (builtin.is_test) unreachable;
     asm volatile ("svc #0"
         :
         : [num] "{x8}" (@as(u64, 3)),
@@ -177,7 +278,9 @@ fn sys_exit(code: u64) noreturn {
 pub fn parse_auxv(auxv_ptr: [*]const u64) Auxv {
     var av = Auxv{};
     var i: usize = 0;
-    while (true) : (i += 2) {
+    // #2099: bound the scan — an auxv with no AT_NULL must not walk off
+    // the stack.
+    while (i < 128) : (i += 2) {
         const a_type = auxv_ptr[i];
         const a_val = auxv_ptr[i + 1];
         if (a_type == at_null) break;
@@ -195,6 +298,10 @@ pub fn parse_auxv(auxv_ptr: [*]const u64) Auxv {
 }
 
 pub fn find_phdr_dynamic(phdr_base: u64, phent: usize, phnum: usize) ?*const Elf64Phdr {
+    // #2099: the phdr table must be the real, aligned layout — a hostile
+    // phent/phnum pair must not turn the walk into unaligned or runaway
+    // pointer arithmetic.
+    if (phent != elf_phentsize or (phdr_base & 7) != 0 or phnum == 0 or phnum > max_phnum) return null;
     var i: usize = 0;
     while (i < phnum) : (i += 1) {
         const phdr: *const Elf64Phdr = @ptrFromInt(phdr_base + i * phent);
@@ -209,14 +316,53 @@ pub fn lookup_symbol_in_libs(sym_name: []const u8) ?u64 {
         var i: usize = 0;
         while (i < lib.sym_count) : (i += 1) {
             const sym = lib.symtab.?[i];
-            const name_ptr = lib.strtab.? + sym.st_name;
-            const name_slice = std.mem.sliceTo(name_ptr, 0);
-            if (std.mem.eql(u8, name_slice, sym_name)) {
-                return lib.base_va + sym.st_value;
-            }
+            if (!dyn_name_eq(lib.strtab.?, lib.strsz, sym.st_name, sym_name)) continue;
+            // #2099: a resolved address must name a VA inside the
+            // library's own slot — a crafted st_value must not escape it.
+            if (sym.st_value >= lib_slot_bytes) continue;
+            return lib.base_va + sym.st_value;
         }
     }
     return null;
+}
+
+/// M97c #2099: validate a staged library image in its 64 KiB slot. Every
+/// field comes from the share — untrusted bytes. All reads are bounded by
+/// `lib_slot_bytes`; a malformed image is refused, never partially
+/// trusted.
+fn valid_lib_image(lib_buf: [*]const u8) bool {
+    if (lib_buf[0] != 0x7f or lib_buf[1] != 'E' or lib_buf[2] != 'L' or lib_buf[3] != 'F') return false;
+    if (lib_buf[4] != elf_class_64 or lib_buf[5] != elf_data_lsb or lib_buf[6] != elf_version_current) return false;
+    if (lib_u16(lib_buf, 16) != elf_et_dyn) return false; // a library is ET_DYN
+    if (lib_u16(lib_buf, 18) != elf_machine_aarch64) return false;
+    if (lib_u32(lib_buf, 20) != 1) return false; // e_version == EV_CURRENT
+    const e_phoff = lib_u64(lib_buf, 32);
+    const e_phentsize = lib_u16(lib_buf, 54);
+    const e_phnum = lib_u16(lib_buf, 56);
+    if (e_phentsize != elf_phentsize or e_phnum == 0 or e_phnum > max_phnum) return false;
+    if (e_phoff >= lib_slot_bytes or @as(u64, e_phnum) * elf_phentsize > lib_slot_bytes - e_phoff) return false;
+    return true;
+}
+
+/// #2099: bounded phdr read inside the staged slot. `ph_off` is trusted
+/// only so far — the caller validated `e_phoff + phnum*phentsize` against
+/// the slot end before any field is touched.
+fn lib_phdr(lib_buf: [*]const u8, ph_off: usize) Elf64Phdr {
+    return .{
+        .p_type = lib_u32(lib_buf, ph_off),
+        .p_flags = lib_u32(lib_buf, ph_off + 4),
+        .p_offset = lib_u64(lib_buf, ph_off + 8),
+        .p_vaddr = lib_u64(lib_buf, ph_off + 16),
+        .p_paddr = lib_u64(lib_buf, ph_off + 24),
+        .p_filesz = lib_u64(lib_buf, ph_off + 32),
+        .p_memsz = lib_u64(lib_buf, ph_off + 40),
+        .p_align = lib_u64(lib_buf, ph_off + 48),
+    };
+}
+
+/// #2099: `[off, off+len)` inside the staged slot, wrap-safe.
+fn slot_contains(off: u64, len: u64) bool {
+    return off <= lib_slot_bytes and len <= lib_slot_bytes - off;
 }
 
 pub fn load_shared_library(name: []const u8) ?*LoadedLib {
@@ -224,7 +370,15 @@ pub fn load_shared_library(name: []const u8) ?*LoadedLib {
     for (loaded_libs[0..loaded_lib_count]) |*lib| {
         if (std.mem.eql(u8, lib.name[0..lib.name_len], name)) return lib;
     }
-    if (loaded_lib_count >= max_loaded_libs) return null;
+    // #2099: the count bound IS the aperture bound — `next_lib_va` starts
+    // at lib_heap_base and advances exactly one lib_slot_bytes per
+    // successful load, so `loaded_lib_count == lib_slot_count` means the
+    // bump pointer sits at lib_heap_end and another library would land
+    // outside the kernel-mapped pool.
+    if (loaded_lib_count >= lib_slot_count) return null;
+    // #2099: the name lands in a fixed 32-byte field — a longer name is
+    // refused, not truncated-or-overflowed.
+    if (name.len == 0 or name.len > 32) return null;
 
     sys_write(1, "ld.so: loading shared library: ");
     sys_write(1, name);
@@ -232,180 +386,271 @@ pub fn load_shared_library(name: []const u8) ?*LoadedLib {
 
     const lib_dest_va = next_lib_va;
     const lib_buf: [*]const u8 = @ptrFromInt(lib_dest_va);
-    var valid = false;
+    var present = false;
 
     if (lib_buf[0] == 0x7f and lib_buf[1] == 'E' and lib_buf[2] == 'L' and lib_buf[3] == 'F') {
-        valid = true;
+        present = true;
     } else {
         const fd = sys_file_open(name, mode_read);
         if (fd >= 0) {
             defer sys_file_close(@intCast(fd));
-            const max_lib_bytes: usize = 64 * 1024;
             const mut_lib_buf: [*]u8 = @ptrFromInt(lib_dest_va);
-            const read_bytes = sys_file_read(@intCast(fd), mut_lib_buf, max_lib_bytes);
+            const read_bytes = sys_file_read(@intCast(fd), mut_lib_buf, lib_slot_bytes);
             if (read_bytes > 64) {
-                valid = true;
+                present = true;
             }
         }
     }
 
-    if (!valid) {
+    if (!present) {
         sys_write(1, "ld.so: file not found: ");
         sys_write(1, name);
         sys_write(1, "\n");
         return null;
     }
 
-    // Advance heap for next library (aligned to 64 KiB)
-    next_lib_va += 0x10000;
+    // #2099: validate the staged bytes before a single field is trusted.
+    if (!valid_lib_image(lib_buf)) {
+        sys_write(1, "ld.so: malformed library image: ");
+        sys_write(1, name);
+        sys_write(1, "\n");
+        return null;
+    }
+
+    const e_phoff: usize = @intCast(lib_u64(lib_buf, 32));
+    const e_phnum: usize = lib_u16(lib_buf, 56);
+
+    // Walk the phdrs: every PT_LOAD must map inside the slot; PT_DYNAMIC's
+    // byte range must sit inside it too.
+    var dyn_phdr: ?Elf64Phdr = null;
+    var p: usize = 0;
+    while (p < e_phnum) : (p += 1) {
+        const ph = lib_phdr(lib_buf, e_phoff + p * elf_phentsize);
+        switch (ph.p_type) {
+            pt_load => {
+                if (!slot_contains(ph.p_offset, ph.p_filesz)) return null;
+                if (ph.p_memsz < ph.p_filesz) return null;
+                // The library's declared vaddrs are slot-relative: its
+                // mapped span must fit inside the slot.
+                if (!slot_contains(ph.p_vaddr, ph.p_memsz)) return null;
+            },
+            pt_dynamic => {
+                if (!slot_contains(ph.p_offset, ph.p_filesz)) return null;
+                if (ph.p_filesz == 0 or ph.p_filesz % @sizeOf(Elf64Dyn) != 0) return null;
+                if (!slot_contains(ph.p_vaddr, ph.p_filesz)) return null;
+                dyn_phdr = ph;
+            },
+            else => {},
+        }
+    }
+
+    // Scan PT_DYNAMIC into LOCALS first — nothing is committed to the
+    // loaded-table or the bump pointer until every untrusted field has
+    // been checked. A table without DT_NULL is refused, not truncated.
+    var strtab_off: ?u64 = null;
+    var symtab_off: ?u64 = null;
+    var strsz: u64 = 0;
+    if (dyn_phdr) |dph| {
+        const dyn_off: usize = @intCast(dph.p_offset);
+        const dyn_entries: usize = @intCast(dph.p_filesz / @sizeOf(Elf64Dyn));
+        var terminated = false;
+        var d: usize = 0;
+        while (d < dyn_entries) : (d += 1) {
+            const tag = lib_u64(lib_buf, dyn_off + d * 16);
+            const val = lib_u64(lib_buf, dyn_off + d * 16 + 8);
+            if (tag == dt_null) {
+                terminated = true;
+                break;
+            }
+            switch (tag) {
+                dt_strtab => strtab_off = val,
+                dt_symtab => symtab_off = val,
+                dt_strsz => strsz = val,
+                else => {},
+            }
+        }
+        if (!terminated) return null;
+        // Both tables must live inside the slot, and strsz must not run
+        // past the slot end — a malformed table leaves the lib slot empty
+        // but the load still refuses rather than half-trusting it.
+        if (strtab_off != null and !slot_contains(strtab_off.?, strsz)) return null;
+        if (strsz > 0 and strtab_off == null) return null;
+        if (symtab_off != null and !slot_contains(symtab_off.?, @sizeOf(Elf64Sym))) return null;
+    }
+
+    // Advance heap for next library (one slot each)
+    next_lib_va += lib_slot_bytes;
 
     const lib_slot = &loaded_libs[loaded_lib_count];
+    lib_slot.* = .{};
     @memcpy(lib_slot.name[0..name.len], name);
     lib_slot.name_len = name.len;
     lib_slot.base_va = lib_dest_va;
 
-    // Parse ELF header & program headers of .SO
-    const e_phoff = std.mem.readInt(u64, lib_buf[32..40], .little);
-    const e_phentsize = std.mem.readInt(u16, lib_buf[54..56], .little);
-    const e_phnum = std.mem.readInt(u16, lib_buf[56..58], .little);
-
-    // Look for PT_DYNAMIC in .SO
-    var dyn_phdr: ?Elf64Phdr = null;
-    var p: usize = 0;
-    while (p < e_phnum) : (p += 1) {
-        const ph_off = e_phoff + p * e_phentsize;
-        const p_type = std.mem.readInt(u32, lib_buf[ph_off..][0..4], .little);
-        if (p_type == pt_dynamic) {
-            dyn_phdr = Elf64Phdr{
-                .p_type = p_type,
-                .p_flags = std.mem.readInt(u32, lib_buf[ph_off + 4 ..][0..4], .little),
-                .p_offset = std.mem.readInt(u64, lib_buf[ph_off + 8 ..][0..8], .little),
-                .p_vaddr = std.mem.readInt(u64, lib_buf[ph_off + 16 ..][0..8], .little),
-                .p_paddr = std.mem.readInt(u64, lib_buf[ph_off + 24 ..][0..8], .little),
-                .p_filesz = std.mem.readInt(u64, lib_buf[ph_off + 32 ..][0..8], .little),
-                .p_memsz = std.mem.readInt(u64, lib_buf[ph_off + 40 ..][0..8], .little),
-                .p_align = std.mem.readInt(u64, lib_buf[ph_off + 48 ..][0..8], .little),
-            };
-            break;
+    if (strtab_off != null and symtab_off != null and strsz > 0) {
+        const so = strtab_off.?;
+        const yo = symtab_off.?;
+        lib_slot.strtab = @ptrFromInt(lib_dest_va + so);
+        lib_slot.strsz = @intCast(strsz);
+        lib_slot.symtab = @ptrFromInt(lib_dest_va + yo);
+        // Symbol count is bounded by the slot bytes after symtab — never
+        // by the untrusted table's own contents alone.
+        const sym_cap: usize = @intCast((lib_slot_bytes - yo) / @sizeOf(Elf64Sym));
+        var sc: usize = 1;
+        while (sc < sym_cap) : (sc += 1) {
+            const s = lib_slot.symtab.?[sc];
+            if (s.st_name >= strsz) break;
+            if (s.st_name == 0 and s.st_value == 0 and s.st_size == 0) break;
         }
-    }
-
-    if (dyn_phdr) |dph| {
-        const dyn_ptr: [*]const Elf64Dyn = @ptrFromInt(lib_dest_va + dph.p_offset);
-        var strtab: ?[*]const u8 = null;
-        var symtab: ?[*]const Elf64Sym = null;
-        var sym_count: usize = 0;
-        var strsz: usize = 0;
-
-        var d: usize = 0;
-        while (dyn_ptr[d].d_tag != dt_null) : (d += 1) {
-            const tag = dyn_ptr[d].d_tag;
-            const val = dyn_ptr[d].d_val;
-            switch (tag) {
-                dt_strtab => strtab = @ptrFromInt(lib_dest_va + val),
-                dt_symtab => symtab = @ptrFromInt(lib_dest_va + val),
-                dt_strsz => strsz = @intCast(val),
-                else => {},
-            }
-        }
-
-        if (symtab != null and strtab != null) {
-            // Count symbols
-            var sc: usize = 1;
-            while (sc < 1024) : (sc += 1) {
-                const s = symtab.?[sc];
-                if (s.st_name >= strsz) break;
-                if (s.st_name == 0 and s.st_value == 0 and s.st_size == 0) break;
-            }
-            sym_count = sc;
-        }
-
-        lib_slot.strtab = strtab;
-        lib_slot.symtab = symtab;
-        lib_slot.sym_count = sym_count;
+        lib_slot.sym_count = sc;
     }
 
     loaded_lib_count += 1;
     return lib_slot;
 }
 
-pub fn relocate_main(dyn_phdr: *const Elf64Phdr, base_va: u64) void {
+/// M97c #2099: apply the main image's relocations. `phdr_base`/`phent`/
+/// `phnum` come from the auxv so the image's PT_LOAD windows — the only
+/// legal span for every dynamic-table pointer and every relocation write
+/// — are known. A dynamic table or relocation outside the image's own
+/// segments is ignored, never chased into another window.
+pub fn relocate_main(dyn_phdr: *const Elf64Phdr, base_va: u64, phdr_base: u64, phent: usize, phnum: usize) void {
+    var wins: [max_load_windows]LoadWindow = undefined;
+    const win_count = collect_load_windows(phdr_base, phent, phnum, &wins);
+    const windows = wins[0..win_count];
+    if (win_count == 0) return;
+
+    // PT_DYNAMIC must itself sit inside a PT_LOAD window.
+    if (dyn_phdr.p_filesz == 0 or dyn_phdr.p_filesz % @sizeOf(Elf64Dyn) != 0) return;
+    if (!window_contains(windows, dyn_phdr.p_vaddr, dyn_phdr.p_filesz, false)) return;
+
     const dyn_ptr: [*]const Elf64Dyn = @ptrFromInt(dyn_phdr.p_vaddr);
+    const dyn_count: usize = @intCast(dyn_phdr.p_filesz / @sizeOf(Elf64Dyn));
 
     var strtab: ?[*]const u8 = null;
+    var strsz: usize = 0;
     var symtab: ?[*]const Elf64Sym = null;
-    var rela_ptr: ?[*]const Elf64Rela = null;
-    var rela_sz: usize = 0;
-    var jmprel_ptr: ?[*]const Elf64Rela = null;
-    var jmprel_sz: usize = 0;
+    var sym_cap: usize = 0;
+    var rela_va: u64 = 0;
+    var rela_sz: u64 = 0;
+    var jmprel_va: u64 = 0;
+    var jmprel_sz: u64 = 0;
 
-    // Collect dynamic info
+    // Collect dynamic info — bounded scan, must find DT_NULL.
+    var terminated = false;
     var d: usize = 0;
-    while (dyn_ptr[d].d_tag != dt_null) : (d += 1) {
+    while (d < dyn_count) : (d += 1) {
         const tag = dyn_ptr[d].d_tag;
         const val = dyn_ptr[d].d_val;
+        if (tag == dt_null) {
+            terminated = true;
+            break;
+        }
         switch (tag) {
-            dt_needed => {
-                // val is offset in strtab, but strtab might be discovered later
+            dt_strtab => {
+                strtab = @ptrFromInt(val);
             },
-            dt_strtab => strtab = @ptrFromInt(val),
+            dt_strsz => strsz = @intCast(val),
             dt_symtab => symtab = @ptrFromInt(val),
-            dt_rela => rela_ptr = @ptrFromInt(val),
-            dt_relasz => rela_sz = @intCast(val),
-            dt_jmprel => jmprel_ptr = @ptrFromInt(val),
-            dt_pltrelsz => jmprel_sz = @intCast(val),
+            dt_rela => rela_va = val,
+            dt_relasz => rela_sz = val,
+            dt_jmprel => jmprel_va = val,
+            dt_pltrelsz => jmprel_sz = val,
             else => {},
         }
     }
+    if (!terminated) return;
 
-    // Now load all DT_NEEDED libraries
+    // Validate the collected tables against the image's windows. A table
+    // outside them is dropped — a wrong pointer is worse than a missing
+    // one.
+    if (strtab != null and strsz > 0) {
+        const st_va = @intFromPtr(strtab.?);
+        if (!window_contains(windows, st_va, strsz, false)) {
+            strtab = null;
+            strsz = 0;
+        }
+    } else {
+        strtab = null;
+        strsz = 0;
+    }
+    if (symtab) |st| {
+        const st_va = @intFromPtr(st);
+        // symtab must sit inside a window; the symbol count cap is the
+        // window's remaining bytes, so a crafted index can never read past it.
+        var cap: usize = 0;
+        for (windows) |w| {
+            if (st_va >= w.start and st_va < w.end) {
+                cap = @intCast((w.end - st_va) / @sizeOf(Elf64Sym));
+                break;
+            }
+        }
+        if (cap == 0) {
+            symtab = null;
+        } else {
+            sym_cap = cap;
+        }
+    }
+
+    // Now load all DT_NEEDED libraries — names are bounded string-table
+    // fetches, never unbounded scans.
     if (strtab) |st| {
         d = 0;
-        while (dyn_ptr[d].d_tag != dt_null) : (d += 1) {
+        while (d < dyn_count) : (d += 1) {
+            if (dyn_ptr[d].d_tag == dt_null) break;
             if (dyn_ptr[d].d_tag == dt_needed) {
-                const lib_name = std.mem.sliceTo(st + dyn_ptr[d].d_val, 0);
-                _ = load_shared_library(lib_name);
+                if (dyn_str(st, strsz, dyn_ptr[d].d_val)) |lib_name| {
+                    _ = load_shared_library(lib_name);
+                }
             }
         }
     }
 
-    // Process DT_RELA relocations
-    if (rela_ptr) |relas| {
-        const count = rela_sz / @sizeOf(Elf64Rela);
+    // Process DT_RELA / DT_JMPREL relocations — each table must sit inside
+    // a PT_LOAD window and each entry is applied only when its WRITE
+    // target lands in a WRITABLE one.
+    if (rela_sz > 0 and window_contains(windows, rela_va, rela_sz, false)) {
+        const relas: [*]const Elf64Rela = @ptrFromInt(rela_va);
+        const count: usize = @intCast(rela_sz / @sizeOf(Elf64Rela));
         for (relas[0..count]) |rel| {
-            apply_relocation(rel, base_va, strtab, symtab);
+            apply_relocation(rel, base_va, strtab, strsz, symtab, sym_cap, windows);
         }
     }
-
-    // Process DT_JMPREL (PLT) relocations
-    if (jmprel_ptr) |jmprels| {
-        const count = jmprel_sz / @sizeOf(Elf64Rela);
+    if (jmprel_sz > 0 and window_contains(windows, jmprel_va, jmprel_sz, false)) {
+        const jmprels: [*]const Elf64Rela = @ptrFromInt(jmprel_va);
+        const count: usize = @intCast(jmprel_sz / @sizeOf(Elf64Rela));
         for (jmprels[0..count]) |rel| {
-            apply_relocation(rel, base_va, strtab, symtab);
+            apply_relocation(rel, base_va, strtab, strsz, symtab, sym_cap, windows);
         }
     }
 }
 
-fn apply_relocation(rel: Elf64Rela, base_va: u64, strtab: ?[*]const u8, symtab: ?[*]const Elf64Sym) void {
+fn apply_relocation(rel: Elf64Rela, base_va: u64, strtab: ?[*]const u8, strsz: usize, symtab: ?[*]const Elf64Sym, sym_cap: usize, windows: []const LoadWindow) void {
     const rtype = rel.r_type();
-    const r_sym = rel.sym();
+    if (rtype == r_aarch64_none) return;
+    // #2099: the relocation WRITE target must land inside a writable
+    // PT_LOAD window — an untrusted r_offset otherwise picks any VA in the
+    // address space (ld.so's own pages, the lib slots, unmapped ground).
+    if (!window_contains(windows, rel.r_offset, @sizeOf(u64), true)) return;
     const target: *u64 = @ptrFromInt(rel.r_offset);
 
     switch (rtype) {
         r_aarch64_relative => {
-            target.* = @as(u64, @bitCast(@as(i64, @intCast(base_va)) +% rel.r_addend));
+            target.* = base_va +% @as(u64, @bitCast(rel.r_addend));
         },
         r_aarch64_glob_dat, r_aarch64_jump_slot, r_aarch64_abs64 => {
-            if (symtab != null and strtab != null) {
-                const sym = symtab.?[r_sym];
-                const sym_name = std.mem.sliceTo(strtab.? + sym.st_name, 0);
-                if (lookup_symbol_in_libs(sym_name)) |sym_addr| {
-                    target.* = @as(u64, @bitCast(@as(i64, @intCast(sym_addr)) +% rel.r_addend));
-                } else {
-                    sys_write(1, "ld.so: warning unresolved symbol: ");
-                    sys_write(1, sym_name);
-                    sys_write(1, "\n");
-                }
+            if (strtab == null or symtab == null) return;
+            // #2099: the symbol index is untrusted — bound it by the
+            // window-derived cap, and fetch the name bounded by strsz.
+            if (rel.sym() >= sym_cap) return;
+            const sym = symtab.?[rel.sym()];
+            const sym_name = dyn_str(strtab.?, strsz, sym.st_name) orelse return;
+            if (lookup_symbol_in_libs(sym_name)) |sym_addr| {
+                target.* = sym_addr +% @as(u64, @bitCast(rel.r_addend));
+            } else {
+                sys_write(1, "ld.so: warning unresolved symbol: ");
+                sys_write(1, sym_name);
+                sys_write(1, "\n");
             }
         },
         else => {},
@@ -461,7 +706,10 @@ export fn ld_main(auxv_ptr: [*]const u64) u64 {
     }
 
     if (find_phdr_dynamic(av.phdr, @intCast(av.phent), @intCast(av.phnum))) |dyn_phdr| {
-        relocate_main(dyn_phdr, 0x0040_0000);
+        // #2099: the phdr table rides along so relocation targets and
+        // dynamic-table pointers are confined to the image's PT_LOAD
+        // windows.
+        relocate_main(dyn_phdr, 0x0040_0000, av.phdr, @intCast(av.phent), @intCast(av.phnum));
     }
 
     sys_write(1, "ld.so: relocations resolved successfully, entering main application\n");
@@ -472,26 +720,35 @@ export fn ld_main(auxv_ptr: [*]const u64) u64 {
 // Runtime Dynamic Plugin API (dlopen / dlsym / dlclose)
 // ---------------------------------------------------------------------------
 
+/// #2099: cap on a NUL-terminated caller-supplied name — the scan is
+/// bounded even if the terminator never comes.
+const max_sym_name: usize = 256;
+
+fn bounded_cstr(ptr: [*:0]const u8) ?[]const u8 {
+    const span = ptr[0..max_sym_name];
+    const nul = std.mem.indexOfScalar(u8, span, 0) orelse return null;
+    return span[0..nul];
+}
+
 pub export fn dlopen(filename: [*:0]const u8, flags: i32) ?*anyopaque {
     _ = flags;
-    const name = std.mem.sliceTo(filename, 0);
+    const name = bounded_cstr(filename) orelse return null;
     const lib = load_shared_library(name) orelse return null;
     return @ptrCast(lib);
 }
 
 pub export fn dlsym(handle: ?*anyopaque, symbol: [*:0]const u8) ?*anyopaque {
-    const sym_name = std.mem.sliceTo(symbol, 0);
+    const sym_name = bounded_cstr(symbol) orelse return null;
     if (handle) |h| {
         const lib: *LoadedLib = @ptrCast(@alignCast(h));
         if (lib.strtab == null or lib.symtab == null) return null;
         var i: usize = 0;
         while (i < lib.sym_count) : (i += 1) {
             const sym = lib.symtab.?[i];
-            const name_ptr = lib.strtab.? + sym.st_name;
-            const name_slice = std.mem.sliceTo(name_ptr, 0);
-            if (std.mem.eql(u8, name_slice, sym_name)) {
-                return @ptrFromInt(lib.base_va + sym.st_value);
-            }
+            if (!dyn_name_eq(lib.strtab.?, lib.strsz, sym.st_name, sym_name)) continue;
+            // #2099: resolved addresses stay inside the library's slot.
+            if (sym.st_value >= lib_slot_bytes) return null;
+            return @ptrFromInt(lib.base_va + sym.st_value);
         }
         return null;
     } else {
@@ -548,6 +805,7 @@ test "ld: symbol lookup across loaded libraries" {
     lib.name_len = name.len;
     lib.base_va = 0x0100_0000;
     lib.strtab = sym_names.ptr;
+    lib.strsz = sym_names.len;
     lib.symtab = &syms;
     lib.sym_count = 3;
     loaded_lib_count = 1;
@@ -566,3 +824,151 @@ test "ld: symbol lookup across loaded libraries" {
 
     try testing.expect(dlsym(null, "missing") == null);
 }
+
+// ---------------------------------------------------------------------------
+// M97c #2099: malformed-input suite. A fabricated slot buffer stands in for
+// the kernel-mapped library window (`next_lib_va` is redirected at it), so
+// the whole staged-load path runs without a kernel.
+// ---------------------------------------------------------------------------
+
+var test_lib_image: [lib_slot_bytes]u8 align(4096) = [_]u8{0} ** lib_slot_bytes;
+
+fn seed_lib_image() void {
+    @memset(&test_lib_image, 0);
+    const img = &test_lib_image;
+    img[0] = 0x7f;
+    img[1] = 'E';
+    img[2] = 'L';
+    img[3] = 'F';
+    img[4] = elf_class_64;
+    img[5] = elf_data_lsb;
+    img[6] = elf_version_current;
+    std.mem.writeInt(u16, img[16..18], elf_et_dyn, .little);
+    std.mem.writeInt(u16, img[18..20], elf_machine_aarch64, .little);
+    std.mem.writeInt(u32, img[20..24], 1, .little); // e_version = EV_CURRENT
+    std.mem.writeInt(u64, img[32..40], 0x40, .little); // e_phoff
+    std.mem.writeInt(u16, img[54..56], elf_phentsize, .little);
+    std.mem.writeInt(u16, img[56..58], 2, .little); // e_phnum
+    // phdr0: PT_LOAD covering the staged bytes.
+    const ph0: *Elf64Phdr = @ptrCast(@alignCast(img[0x40..].ptr));
+    ph0.* = .{ .p_type = pt_load, .p_flags = 5, .p_offset = 0, .p_vaddr = 0, .p_paddr = 0, .p_filesz = 0x800, .p_memsz = 0x800, .p_align = 0x1000 };
+    // phdr1: PT_DYNAMIC at file offset 0x200, four entries.
+    const ph1: *Elf64Phdr = @ptrCast(@alignCast(img[0x40 + 56 ..].ptr));
+    ph1.* = .{ .p_type = pt_dynamic, .p_flags = 6, .p_offset = 0x200, .p_vaddr = 0x200, .p_paddr = 0, .p_filesz = 4 * @sizeOf(Elf64Dyn), .p_memsz = 4 * @sizeOf(Elf64Dyn), .p_align = 8 };
+    // dynamic table: STRTAB/STRSZ/SYMTAB/NULL
+    const dyn: [*]Elf64Dyn = @ptrCast(@alignCast(img[0x200..].ptr));
+    dyn[0] = .{ .d_tag = dt_strtab, .d_val = 0x300 };
+    dyn[1] = .{ .d_tag = dt_strsz, .d_val = 0x20 };
+    dyn[2] = .{ .d_tag = dt_symtab, .d_val = 0x340 };
+    dyn[3] = .{ .d_tag = dt_null, .d_val = 0 };
+    // strtab + symtab
+    @memcpy(img[0x300..][0..9], "\x00testfn\x00\x00");
+    const syms: [*]Elf64Sym = @ptrCast(@alignCast(img[0x340..].ptr));
+    syms[0] = .{ .st_name = 0, .st_info = 0, .st_other = 0, .st_shndx = 0, .st_value = 0, .st_size = 0 };
+    syms[1] = .{ .st_name = 1, .st_info = 0x12, .st_other = 0, .st_shndx = 1, .st_value = 0x80, .st_size = 8 };
+}
+
+fn reset_lib_state() void {
+    loaded_lib_count = 0;
+    next_lib_va = lib_heap_base;
+}
+
+test "ld: #2099 — a well-formed staged library loads and resolves" {
+    reset_lib_state();
+    seed_lib_image();
+    next_lib_va = @intFromPtr(&test_lib_image);
+    const lib = load_shared_library("T.SO").?;
+    try std.testing.expectEqual(@as(u64, @intFromPtr(&test_lib_image)), lib.base_va);
+    try std.testing.expectEqual(@as(usize, 2), lib.sym_count);
+    try std.testing.expectEqual(@as(?u64, @intFromPtr(&test_lib_image) + 0x80), lookup_symbol_in_libs("testfn"));
+    try std.testing.expectEqual(@as(?u64, null), lookup_symbol_in_libs("absent"));
+    reset_lib_state();
+}
+
+test "ld: #2099 — malformed staged images are refused" {
+    reset_lib_state();
+    const img = &test_lib_image;
+    // Wrong machine.
+    seed_lib_image();
+    next_lib_va = @intFromPtr(img);
+    std.mem.writeInt(u16, img[18..20], 62, .little); // x86-64
+    try std.testing.expectEqual(@as(?*LoadedLib, null), load_shared_library("T.SO"));
+    try std.testing.expectEqual(@as(usize, 0), loaded_lib_count);
+    // phnum past the bound.
+    seed_lib_image();
+    next_lib_va = @intFromPtr(img);
+    std.mem.writeInt(u16, img[56..58], 0xffff, .little);
+    try std.testing.expectEqual(@as(?*LoadedLib, null), load_shared_library("T.SO"));
+    // PT_LOAD whose mapped span escapes the slot.
+    seed_lib_image();
+    next_lib_va = @intFromPtr(img);
+    const ph0: *Elf64Phdr = @ptrCast(@alignCast(img[0x40..].ptr));
+    ph0.p_vaddr = lib_slot_bytes - 0x100;
+    ph0.p_memsz = 0x200;
+    try std.testing.expectEqual(@as(?*LoadedLib, null), load_shared_library("T.SO"));
+    // PT_DYNAMIC without a DT_NULL terminator.
+    seed_lib_image();
+    next_lib_va = @intFromPtr(img);
+    const dyn: [*]Elf64Dyn = @ptrCast(@alignCast(img[0x200..].ptr));
+    dyn[3] = .{ .d_tag = dt_strtab, .d_val = 0x300 };
+    try std.testing.expectEqual(@as(?*LoadedLib, null), load_shared_library("T.SO"));
+    // strsz running past the slot end.
+    seed_lib_image();
+    next_lib_va = @intFromPtr(img);
+    dyn[1] = .{ .d_tag = dt_strsz, .d_val = lib_slot_bytes };
+    try std.testing.expectEqual(@as(?*LoadedLib, null), load_shared_library("T.SO"));
+    // A name longer than the slot's 32-byte field is refused before any
+    // copy — no partial-name truncation.
+    seed_lib_image();
+    next_lib_va = @intFromPtr(img);
+    try std.testing.expectEqual(@as(?*LoadedLib, null), load_shared_library("THIS_LIBRARY_NAME_IS_FAR_TOO_LONG.SO"));
+    reset_lib_state();
+}
+
+test "ld: #2099 — the library heap cannot run past the aperture" {
+    reset_lib_state();
+    // Slot count == aperture slot count: with all slots consumed the bump
+    // pointer sits exactly at lib_heap_end and a further load refuses
+    // before touching memory.
+    loaded_lib_count = lib_slot_count;
+    try std.testing.expectEqual(@as(?*LoadedLib, null), load_shared_library("X.SO"));
+    try std.testing.expectEqual(lib_heap_base + lib_slot_bytes * lib_slot_count, lib_heap_end);
+    reset_lib_state();
+}
+
+test "ld: #2099 — relocations only write inside writable image windows" {
+    var target: u64 = 0;
+    var outside: u64 = 0;
+    const base_va: u64 = 0x0040_0000;
+
+    // Fabricate the image's phdr table: an RX window holding the dynamic
+    // table + RELA, and an RW window holding `target`.
+    var phdrs = [3]Elf64Phdr{
+        .{ .p_type = pt_load, .p_flags = 5, .p_offset = 0, .p_vaddr = @intFromPtr(&rela_fixture_buf), .p_paddr = 0, .p_filesz = 0x200, .p_memsz = 0x200, .p_align = 0x1000 },
+        .{ .p_type = pt_load, .p_flags = 6, .p_offset = 0, .p_vaddr = @intFromPtr(&target), .p_paddr = 0, .p_filesz = 8, .p_memsz = 8, .p_align = 8 },
+        .{ .p_type = pt_dynamic, .p_flags = 6, .p_offset = 0, .p_vaddr = @intFromPtr(&dyn_fixture_buf), .p_paddr = 0, .p_filesz = 3 * @sizeOf(Elf64Dyn), .p_memsz = 0, .p_align = 8 },
+    };
+    // RX window must cover BOTH the dyn table and the rela table.
+    phdrs[0].p_vaddr = @min(@intFromPtr(&rela_fixture_buf), @intFromPtr(&dyn_fixture_buf));
+    phdrs[0].p_memsz = @max(@intFromPtr(&rela_fixture_buf), @intFromPtr(&dyn_fixture_buf)) + 0x100 - phdrs[0].p_vaddr;
+
+    const dyn: [*]Elf64Dyn = @ptrCast(&dyn_fixture_buf);
+    dyn[0] = .{ .d_tag = dt_rela, .d_val = @intFromPtr(&rela_fixture_buf) };
+    dyn[1] = .{ .d_tag = dt_relasz, .d_val = 2 * @sizeOf(Elf64Rela) };
+    dyn[2] = .{ .d_tag = dt_null, .d_val = 0 };
+
+    const rela: [*]Elf64Rela = @ptrCast(&rela_fixture_buf);
+    // Legal: writable window.
+    rela[0] = .{ .r_offset = @intFromPtr(&target), .r_info = @as(u64, r_aarch64_relative), .r_addend = 0x2000 };
+    // Illegal: `outside` is inside no window — and `target`'s window is
+    // the only writable one.
+    rela[1] = .{ .r_offset = @intFromPtr(&outside), .r_info = @as(u64, r_aarch64_relative), .r_addend = 0x7fff };
+
+    relocate_main(&phdrs[2], base_va, @intFromPtr(&phdrs), elf_phentsize, phdrs.len);
+
+    try std.testing.expectEqual(base_va + 0x2000, target);
+    try std.testing.expectEqual(@as(u64, 0), outside);
+}
+
+var rela_fixture_buf: [2 * @sizeOf(Elf64Rela)]u8 align(8) = [_]u8{0} ** (2 * @sizeOf(Elf64Rela));
+var dyn_fixture_buf: [4 * @sizeOf(Elf64Dyn)]u8 align(8) = [_]u8{0} ** (4 * @sizeOf(Elf64Dyn));

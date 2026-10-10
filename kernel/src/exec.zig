@@ -113,6 +113,14 @@ const symbol = @import("symbol.zig");
 /// `exec_image_max` below, plus the parser's own `elf.map_max` on what the
 /// image MAPS (M72a, issue #1579).
 pub const exec_program_max: usize = 2 * 1024 * 1024;
+
+/// M97c #2097/#2099: the shared-library aperture contract, shared with
+/// `user/src/ld.zig` — one 64 KiB slot per loaded library, `lib_slot_count`
+/// slots total. The kernel sizes the aperture by these; ld.so advances its
+/// bump pointer by the same slot and refuses at the same count, so the two
+/// halves can never disagree about where a library's window ends.
+pub const lib_slot_bytes: usize = 0x10000;
+pub const lib_slot_count: usize = 8;
 /// M70c-K (issue #1504): the acceptance bound — the largest image file the
 /// loader will take, whatever its format. A file past it is refused
 /// `image_too_large` up front, by name, so the caller sees "bigger than the
@@ -1185,7 +1193,23 @@ fn exec_dynamic_elf(
     const interp_program: *align(4096) [exec_program_max]u8 = @ptrFromInt(scratch_phys);
 
     const interp_got = read_host_file(interp_name, interp_program) orelse return .not_found;
-    const interp_image = elf_mod.parse_at(interp_program[0..interp_got], null) catch |err| return elf_exec_error(err);
+    // M97c #2095: the interpreter declares its own base — confine every
+    // segment to the user VA window (aligned, below gap_base_max) before
+    // its vaddrs become apertures. `parse_at(..., null)` alone would
+    // accept a contiguous image at any address, including identity-mapped
+    // kernel RAM.
+    const interp_image = elf_mod.parse_declared(interp_program[0..interp_got]) catch |err| return elf_exec_error(err);
+
+    // M97c #2097: the shared-library aperture is a fixed pool of
+    // lib_slot_bytes slots (ld.so reads one slot per library). A library
+    // that does not fit its slot is an honest refusal — never a partial
+    // copy that overflows the pool into the neighbour pages.
+    if (host_file_size("LIBUI.SO")) |sz| {
+        if (sz > lib_slot_bytes) return .staging_too_large;
+    }
+    if (host_file_size("LIBFONT.SO")) |sz| {
+        if (sz > lib_slot_bytes) return .staging_too_large;
+    }
 
     const seg0 = image.segments[0];
     const text_len: usize = seg0.mem_size;
@@ -1219,7 +1243,11 @@ fn exec_dynamic_elf(
         return .out_of_memory;
     }) else 0;
 
-    const lib_pages: u64 = 64; // 256 KiB shared library heap aperture
+    // M97c/#2099: the shared-library pool is 8 × 64 KiB slots — one per
+    // `ld.zig` max_loaded_libs entry — so the linker heap bound and the
+    // kernel aperture describe the same window (was 256 KiB / 4 slots:
+    // libraries 5-8 staged past the mapped end).
+    const lib_pages: u64 = lib_slot_count * lib_slot_bytes / alloc.page_size; // 512 KiB
     const lib_phys = alloc.alloc_pages(lib_pages) orelse {
         _ = alloc.free_pages(text_phys, text_pages);
         if (data_pages > 0) _ = alloc.free_pages(data_phys, data_pages);
@@ -1271,17 +1299,35 @@ fn exec_dynamic_elf(
         @memset(interp_data_dst[interp_data_file_size..interp_data_mem_size], 0);
     }
 
-    // Pre-stage shared libraries into lib_phys (R-X shared library aperture at 0x01000000)
+    // Pre-stage shared libraries into lib_phys (R-X shared library aperture
+    // at 0x01000000). #2097: every copy is bounded by its 64 KiB slot and by
+    // the pool end — the stat preflight above already refused oversized
+    // files, this is the last-line check against a file that grew between
+    // the stat and the read.
     const lib_dst: [*]u8 = @ptrFromInt(lib_phys);
-    @memset(lib_dst[0 .. lib_pages * alloc.page_size], 0);
+    const lib_bytes: usize = @intCast(lib_pages * alloc.page_size);
+    @memset(lib_dst[0..lib_bytes], 0);
     var lib_offset: usize = 0;
+    var lib_overflow = false;
     if (read_host_file("LIBUI.SO", interp_program)) |got| {
-        @memcpy(lib_dst[lib_offset..][0..got], interp_program[0..got]);
-        lib_offset += 0x10000;
+        lib_overflow = got > lib_slot_bytes or lib_offset + lib_slot_bytes > lib_bytes;
+        if (!lib_overflow) @memcpy(lib_dst[lib_offset..][0..got], interp_program[0..got]);
+        lib_offset += lib_slot_bytes;
     }
     if (read_host_file("LIBFONT.SO", interp_program)) |got| {
-        @memcpy(lib_dst[lib_offset..][0..got], interp_program[0..got]);
-        lib_offset += 0x10000;
+        lib_overflow = lib_overflow or got > lib_slot_bytes or lib_offset + lib_slot_bytes > lib_bytes;
+        if (!lib_overflow) @memcpy(lib_dst[lib_offset..][0..got], interp_program[0..got]);
+        lib_offset += lib_slot_bytes;
+    }
+    if (lib_overflow) {
+        _ = alloc.free_pages(text_phys, text_pages);
+        if (data_pages > 0) _ = alloc.free_pages(data_phys, data_pages);
+        _ = alloc.free_pages(interp_text_phys, interp_text_pages);
+        if (interp_data_pages > 0) _ = alloc.free_pages(interp_data_phys, interp_data_pages);
+        _ = alloc.free_pages(lib_phys, lib_pages);
+        _ = alloc.free_pages(stack_phys, stack_pages);
+        _ = alloc.free_pages(kstack_phys, kstack_pages);
+        return .staging_too_large;
     }
 
     // Initial stack frame & Auxv setup
@@ -1644,6 +1690,20 @@ fn read_host_file(name: []const u8, buf: []u8) ?usize {
     return virtio_file.read_into(name, st.size, buf);
 }
 
+/// M97c #2097: a staged library's on-share size — the stat half of
+/// `read_host_file`, so the exec path can refuse an oversized library
+/// BEFORE the aperture pages are allocated. Null = absent/unreadable,
+/// same as `read_host_file` (an absent library is fine; ld.so falls back
+/// to a runtime `sys_file_open`).
+fn host_file_size(name: []const u8) ?u64 {
+    if (!virtio_file.available()) return null;
+    if (name.len == 0 or name.len > virtio_file.path_max) return null;
+    if (trust.check(trust.kernel_actor(), .host, name, .read) != .allow) return null;
+    var st = virtio_file.StatResult{};
+    if (virtio_file.stat(name, &st) != virtio_file.st_ok or st.is_dir) return null;
+    return st.size;
+}
+
 /// Build a minimal DSK1 flat image: header (entry at offset 24 = content
 /// start) + `content`.
 fn dsk1(content: []const u8, entry_off: u64, image_size: u64) [dsk1_header_size + 64]u8 {
@@ -1789,9 +1849,10 @@ test "exec: dynamic scratch is released after copying interpreter and libraries"
     const free_before = alloc.stats().free_pages;
     try std.testing.expectEqual(ExecResult.ok, exec_file("DYNAMIC.ELF", &.{}));
     const info = process.info(last_exec_pid().?).?;
-    // The fixture maps one interpreter page and the unchanged 64-page
-    // library aperture, in addition to the ordinary process pages.
-    const owned_pages = info.text_pages + info.data_pages + 1 + 64 +
+    // The fixture maps one interpreter page and the 128-page (8 × 64 KiB
+    // slot) library aperture, in addition to the ordinary process pages.
+    const owned_pages = info.text_pages + info.data_pages + 1 +
+        lib_slot_count * lib_slot_bytes / alloc.page_size +
         info.stack_pages + info.kernel_stack_pages;
     try std.testing.expectEqual(free_before - owned_pages, alloc.stats().free_pages);
     // Reuse the released scratch and poison it: no process mapping owns it.
@@ -1807,6 +1868,30 @@ test "exec: dynamic scratch is released after copying interpreter and libraries"
     const lib_bytes: [*]const u8 = @ptrFromInt(lib_leaf & 0x0000_ffff_ffff_f000);
     try std.testing.expectEqualStrings("ui library", lib_bytes[0..10]);
     try std.testing.expectEqualStrings("font library", lib_bytes[0x10000..][0..12]);
+}
+
+test "exec: #2097 — a shared library past its 64 KiB slot is refused" {
+    defer virtio_file.set_test_share(null);
+    defer test_share_n = 0;
+    defer mmu.reset();
+    arm_allocator();
+    _ = scheduler.init();
+    test_share_n = 0;
+    const image = test_dynamic_image(userspace.text_va, true);
+    const interpreter = test_dynamic_image(0x0080_0000, false);
+    test_seed("DYNAMIC.ELF", &image);
+    test_seed("LD.SO", &interpreter);
+    // One byte past the slot bound — the stat preflight refuses before a
+    // single aperture page is allocated or copied.
+    const fat = [_]u8{0} ** (lib_slot_bytes + 1);
+    test_seed("LIBUI.SO", &fat);
+    const free_before = alloc.stats().free_pages;
+    try std.testing.expectEqual(ExecResult.staging_too_large, exec_file("DYNAMIC.ELF", &.{}));
+    try std.testing.expectEqual(free_before, alloc.stats().free_pages);
+    // Exactly the bound still stages — the bound is a ceiling, not a fence.
+    const exact = [_]u8{0} ** lib_slot_bytes;
+    test_seed("LIBUI.SO", &exact);
+    try std.testing.expectEqual(ExecResult.ok, exec_file("DYNAMIC.ELF", &.{}));
 }
 
 test "exec: DSK1 header parse rejects bad magic, entry, and oversize images" {
