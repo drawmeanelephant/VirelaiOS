@@ -1685,6 +1685,19 @@ pub fn user_open(x: u32, y: u32, w: u32, h: u32, owner: usize) UserOpenResult {
     return .full;
 }
 
+/// M97b-F3 (#2111): the bind-time invariant "a surface-backed window's rect
+/// never exceeds its bound surface", re-validated on every resize. `reflow`
+/// is the single writer of `win.w`/`win.h` post-open, so one check there
+/// covers `user_resize`, `wm_apply_rect`, and the tile/maximize/fullscreen
+/// paths — `user_fill`/`composite`/overview/`render_preview` all stride the
+/// surface's `pa_base` by win.w×win.h×4, so letting the rect grow past
+/// `surface_pages` is a kernel OOB write/read past the region. Refusal
+/// keeps the window's old rect (the pool-exhaustion contract); an app that
+/// wants a bigger canvas re-binds a bigger surface.
+fn surface_covers(page_count: u32, w: u32, h: u32) bool {
+    return @as(usize, page_count) * alloc.page_size >= kbuf_bytes(w, h);
+}
+
 /// WM1 (#707, claim 919): set a user window's rect, reallocating the
 /// pool back-buffer when the size changes (the overlap is preserved row
 /// by row — the static-buffer semantic that a resize reframes bytes
@@ -1701,6 +1714,7 @@ pub fn reflow(win: *Window, x: u32, y: u32, w: u32, h: u32) bool {
         win.y = y;
         return true;
     }
+    if (win.surface_handle != 0 and !surface_covers(win.surface_pages, w, h)) return false;
     const nbytes = kbuf_bytes(w, h);
     const npages = kbuf_pages_for(nbytes);
     const pa = alloc.alloc_pages(npages) orelse return false;
@@ -1752,6 +1766,9 @@ pub fn user_fill(id: u8, x: u32, y: u32, w: u32, h: u32, rgb: u32) bool {
     // is exact (identical pixel encoding). An unmigrated window is unchanged.
     const surface = user_surface(id);
     if (surface) |sf| {
+        // #2111: a desynced rect would write past the surface's physical
+        // pages — refuse the fill rather than corrupt adjacent memory.
+        if (!surface_covers(sf.page_count, win.w, win.h)) return false;
         fill_rect(@as([*]u8, @ptrFromInt(sf.pa_base)), win.w * 4, x, y, w, h, rgb);
     } else {
         fill_rect(kbuf_ptr(win), win.w * 4, x, y, w, h, rgb);
@@ -2653,11 +2670,15 @@ pub fn paint_overview(fb: [*]u8, stride: usize, wspan: usize, hspan: usize) void
                 var src_h: usize = 0;
                 var src_stride: usize = 0;
                 if (user_surface(id)) |sf| {
-                    src = @as([*]const u8, @ptrFromInt(sf.pa_base));
-                    src_w = win.w;
-                    src_h = win.h;
-                    src_stride = @as(usize, win.w) * 4;
-                } else if (win.kbuf_pa != 0) {
+                    // #2111: read the surface only while the rect fits it.
+                    if (surface_covers(sf.page_count, win.w, win.h)) {
+                        src = @as([*]const u8, @ptrFromInt(sf.pa_base));
+                        src_w = win.w;
+                        src_h = win.h;
+                        src_stride = @as(usize, win.w) * 4;
+                    }
+                }
+                if (src == null and win.kbuf_pa != 0) {
                     src = kbuf_ptr(win);
                     src_w = win.w;
                     src_h = win.h;
@@ -3341,8 +3362,13 @@ pub fn render_preview(id: u8) void {
     if (id >= user_window_id_base) {
         const win = find_user_window(id) orelse return;
         if (win.kbuf_pa == 0 and user_surface(id) == null) return;
+        // #2111: read the surface only while the rect still fits its pages;
+        // a desync falls back to the pool back-buffer (always exactly w×h).
         if (user_surface(id)) |sf| {
-            src = @as([*]const u8, @ptrFromInt(sf.pa_base));
+            src = if (surface_covers(sf.page_count, win.w, win.h))
+                @as([*]const u8, @ptrFromInt(sf.pa_base))
+            else
+                kbuf_ptr(win);
         } else {
             src = kbuf_ptr(win);
         }
@@ -4503,8 +4529,14 @@ pub fn paint(w: *Window) void {
             // what the old fill path produced (parity). An unmigrated window
             // blits from its pool back-buffer (WM1), sized exactly win.w×h.
             const surface = user_surface(w.id);
+            // #2111: blit from the surface only while the rect still fits
+            // inside its pages; a desync falls back to the pool back-buffer
+            // (always exactly w×h) rather than reading past the region.
             const src_ptr: [*]const u8 = if (surface) |sf|
-                @as([*]const u8, @ptrFromInt(sf.pa_base))
+                if (surface_covers(sf.page_count, w.w, w.h))
+                    @as([*]const u8, @ptrFromInt(sf.pa_base))
+                else
+                    kbuf_ptr(w)
             else
                 kbuf_ptr(w);
             // #1082 (A4): a WINDOW-bound terminal repaints its whole grid

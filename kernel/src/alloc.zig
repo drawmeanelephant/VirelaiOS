@@ -390,37 +390,50 @@ pub fn largest_free_run() u64 {
 // ---------------------------------------------------------------------------
 // M29: Physical page reference counting for Copy-on-Write (COW) page sharing
 // ---------------------------------------------------------------------------
-
-pub const PageRef = struct {
-    pa: u64 = 0,
-    count: u16 = 0,
-};
-
-pub const max_shared_pages: usize = 256;
-var shared_pages: [max_shared_pages]PageRef = [_]PageRef{.{}} ** max_shared_pages;
+//
+// M97b (#2110): the counts live in per-page metadata indexed by physical
+// frame, not a bounded side table. The old 256-entry PageRef table silently
+// dropped the 257th ref: a >256-page shared surface then had pages whose
+// peer ref was never recorded, so revoke/unmap freed pages a peer still
+// mapped (two processes, one physical page) and `page_refcount` answered 1
+// for an untracked shared page — the COW handler's cue to promote the WM's
+// RO `sw_cow` mirror writable in place. One byte per 4 KiB frame of the
+// bitmap's span (every page the allocator can hand out, anchored at
+// `bitmap_base` like the bitmap itself) makes every pooled page trackable;
+// the only failure `ref_page` can still report is a PA outside that span,
+// which it now does loudly instead of dropping the ref and letting the
+// caller install an unaccounted leaf.
+var shared_counts: [max_span_pages]u8 = [_]u8{0} ** max_span_pages;
 
 pub fn reset_refcounts() void {
-    @memset(&shared_pages, PageRef{});
+    @memset(&shared_counts, 0);
 }
 
-/// Increment reference count for a physical page.
-pub fn ref_page(pa: u64) void {
+/// Index of `pa`'s refcount slot, or null when the page-aligned PA sits
+/// outside the tracked span — the same `bitmap_base`-anchored 4 GiB window
+/// the bitmap pools, so a page the allocator can never hand out is also a
+/// page this table cannot record.
+fn shared_slot(pa: u64) ?usize {
+    if ((pa & (page_size - 1)) != 0) return null;
+    if (pa < state.bitmap_base) return null;
+    const idx = (pa - state.bitmap_base) / page_size;
+    if (idx >= max_span_pages) return null;
+    return @intCast(idx);
+}
+
+/// Increment reference count for a physical page. Returns false — the loud
+/// failure the old table hid — when the PA is not trackable (unaligned,
+/// zero, or outside the blanket) or the count would overflow; a caller
+/// that cannot record the ref must NOT install the leaf that needed it.
+pub fn ref_page(pa: u64) bool {
     const page_pa = pa & ~@as(u64, 0xfff);
-    if (page_pa == 0) return;
-    for (&shared_pages) |*entry| {
-        if (entry.pa == page_pa and entry.count > 0) {
-            entry.count += 1;
-            return;
-        }
-    }
-    // New entry in shared table: was 1 owner, now 2
-    for (&shared_pages) |*entry| {
-        if (entry.count == 0) {
-            entry.pa = page_pa;
-            entry.count = 2;
-            return;
-        }
-    }
+    if (page_pa == 0) return false;
+    const idx = shared_slot(page_pa) orelse return false;
+    const entry = &shared_counts[idx];
+    if (entry.* == std.math.maxInt(u8)) return false;
+    // An untracked page going shared was 1 owner; the ref makes it 2.
+    entry.* += if (entry.* == 0) 2 else 1;
+    return true;
 }
 
 /// Decrement reference count for a physical page. Returns true if the page
@@ -428,13 +441,11 @@ pub fn ref_page(pa: u64) void {
 pub fn unref_page(pa: u64) bool {
     const page_pa = pa & ~@as(u64, 0xfff);
     if (page_pa == 0) return false;
-    for (&shared_pages) |*entry| {
-        if (entry.pa == page_pa and entry.count > 0) {
-            entry.count -= 1;
-            if (entry.count == 0) {
-                entry.* = .{};
-                return free_pages(page_pa, 1);
-            }
+    if (shared_slot(page_pa)) |idx| {
+        const entry = &shared_counts[idx];
+        if (entry.* > 0) {
+            entry.* -= 1;
+            if (entry.* == 0) return free_pages(page_pa, 1);
             return false;
         }
     }
@@ -446,10 +457,17 @@ pub fn unref_page(pa: u64) bool {
 pub fn page_refcount(pa: u64) u16 {
     const page_pa = pa & ~@as(u64, 0xfff);
     if (page_pa == 0) return 0;
-    for (&shared_pages) |*entry| {
-        if (entry.pa == page_pa and entry.count > 0) {
-            return entry.count;
-        }
-    }
-    return 1;
+    return page_refcount_recorded(page_pa) orelse 1;
+}
+
+/// M97b (#2110): the refcount only when one is RECORDED — null for an
+/// untracked page. `page_refcount` answering 1 for a page that was never
+/// recorded is what told the COW promote branch a shared page was sole
+/// property; callers that must distinguish "recorded count 1" from
+/// "never tracked" use this.
+pub fn page_refcount_recorded(pa: u64) ?u16 {
+    const page_pa = pa & ~@as(u64, 0xfff);
+    const idx = shared_slot(page_pa) orelse return null;
+    const count = shared_counts[idx];
+    return if (count == 0) null else count;
 }

@@ -588,11 +588,11 @@ test "alloc: ref_page and unref_page lifecycle" {
     try std.testing.expectEqual(@as(u16, 1), page_refcount(pa));
 
     // Share page (2 owners)
-    ref_page(pa);
+    try std.testing.expect(ref_page(pa));
     try std.testing.expectEqual(@as(u16, 2), page_refcount(pa));
 
     // Share again (3 owners)
-    ref_page(pa);
+    try std.testing.expect(ref_page(pa));
     try std.testing.expectEqual(@as(u16, 3), page_refcount(pa));
 
     // First unref (down to 2, not freed)

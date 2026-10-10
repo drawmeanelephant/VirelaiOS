@@ -155,6 +155,12 @@ pub fn init(writer: *const fn ([]const u8) void) void {
     // resolver demand-populates the page in the process's own root or
     // refuses the copy; see `ensure_user_write_pages`.
     uaccess.resolve_write_pages = ensure_user_write_pages;
+    // Issue #2109: arm the read-direction twin — every `uaccess.copy_in` and
+    // `load_u32` asks it before it loads, because a source page with no EL0
+    // leaf still resolves for EL1 into the identity overlay and the load
+    // returns kernel physical memory at PA == VA. The resolver is the same
+    // proof: the process's own page or refusal.
+    uaccess.resolve_read_pages = ensure_user_read_pages;
 }
 
 // ---------------------------------------------------------------------------
@@ -901,7 +907,16 @@ pub fn try_handle_page_fault(esr: u64, far: u64) bool {
         if (mmu.get_user_leaf(root, far)) |leaf_ptr| {
             if ((leaf_ptr.* & mmu.sw_cow) != 0) {
                 const old_pa = leaf_ptr.* & 0x0000_ffff_ffff_f000;
-                if (alloc.page_refcount(old_pa) <= 1) {
+                // M97b (#2110): trust only a RECORDED refcount. `page_refcount`
+                // reports 1 for an untracked page, which is exactly what a
+                // shared page looked like once the side table filled — the
+                // promote-in-place below then flipped the WM's RO `sw_cow`
+                // mirror writable on the OWNER's page. An unrecorded leaf's
+                // provenance is unproven: the fault is delivered, never
+                // promoted and never split-and-unref'd (the untracked unref
+                // would free a page the owner still maps).
+                const refcount = alloc.page_refcount_recorded(old_pa) orelse return false;
+                if (refcount <= 1) {
                     mmu.set_user_leaf_writable(leaf_ptr, true);
                     mmu.invalidate_tlb_va(far);
                     cow_fault_count += 1;
@@ -1026,6 +1041,21 @@ pub fn ensure_user_write_pages(address: u64, len: usize) bool {
         }
     }
     return true;
+}
+
+/// Issue #2109: the source resolver armed into `uaccess.resolve_read_pages`.
+/// A user -> kernel load may only read a page the CURRENT process's own root
+/// exposes to EL0; anything else loads through the EL1-only identity overlay
+/// and returns kernel physical memory at PA == VA — an information-disclosure
+/// primitive into every copy_in result (file_write, tcp/udp/ipc send,
+/// clipboard, pipe_write, the futex word). The proof is the same one
+/// `ensure_user_write_pages` runs: a registered-but-unpopulated demand page
+/// is populated in the process's own root (the copy reads the zero page EL0
+/// itself would fault in — never the twin), and a page that is not the
+/// process's to map refuses the copy with EFAULT having read nothing.
+/// Host test binaries keep the off-guest no-op contract.
+pub fn ensure_user_read_pages(address: u64, len: usize) bool {
+    return ensure_user_write_pages(address, len);
 }
 
 pub export fn exc_dispatch(
@@ -2032,7 +2062,7 @@ test "exceptions: try_handle_page_fault demand zero-fill and COW splitting" {
     const cow_va: u64 = 0x0000_0000_1000_4000;
     const shared_pa = alloc.alloc_pages(1).?;
     _ = mmu.map_user_cow_page(root, cow_va, shared_pa);
-    alloc.ref_page(shared_pa); // refcount = 2
+    try std.testing.expect(alloc.ref_page(shared_pa)); // refcount = 2
 
     // Permission fault on write (DFSC=0xf permission fault L3, WnR=1 (bit 6))
     const esr_perm_write: u64 = (0x24 << 26) | (1 << 6) | 0xf;
@@ -2049,6 +2079,62 @@ test "exceptions: try_handle_page_fault demand zero-fill and COW splitting" {
     try std.testing.expectEqual(@as(u64, 1), (new_leaf.* >> 6) & 3); // RW
     try std.testing.expect((new_leaf.* & mmu.sw_cow) == 0);
     try std.testing.expect((new_leaf.* & 0x0000_ffff_ffff_f000) != shared_pa);
+}
+
+test "exceptions: a COW fault on an unrecorded page is delivered, not promoted (issue #2110)" {
+    mmu.reset();
+    alloc.reset_refcounts();
+    process.init();
+
+    const map_desc = [_]memmap.MemoryDescriptor{
+        .{ .type = .conventional_memory, .physical_start = 0x100000, .virtual_start = 0, .number_of_pages = 20, .attribute = 0 },
+    };
+    const view = memmap.MapView.init(std.mem.asBytes(&map_desc), @sizeOf(memmap.MemoryDescriptor), map_desc.len);
+    try std.testing.expect(alloc.init(view, &.{}));
+
+    const root = mmu.build_user_root(userspace.text_va, 0x1000, 64, userspace.stack_va, 0x2000, 8192).?;
+    const pid = process.create("TEST_2110", .{}, .{
+        .root_phys = root,
+        .text_va = userspace.text_va,
+        .text_len = 64,
+        .stack_va = userspace.stack_va,
+        .stack_len = 8192,
+    }, .{}).?;
+    _ = process.bind(pid, 2);
+
+    const esr_perm_write: u64 = (0x24 << 26) | (1 << 6) | 0xf;
+
+    // 1. The audit's case: an sw_cow leaf whose page was NEVER recorded —
+    //    `page_refcount` still answers 1, and pre-fix that promoted the
+    //    mirror writable in place on a page another root may map. Now the
+    //    fault is delivered (not handled): the leaf keeps sw_cow and stays
+    //    RO, and the page is neither promoted nor split-and-unref'd.
+    const cow_va: u64 = 0x0000_0000_1000_0000;
+    const untracked_pa = alloc.alloc_pages(1).?;
+    _ = mmu.map_user_cow_page(root, cow_va, untracked_pa);
+    try std.testing.expect(alloc.page_refcount_recorded(untracked_pa) == null);
+    const cows_before = cow_fault_count;
+    try std.testing.expect(!try_handle_page_fault(esr_perm_write, cow_va + 12));
+    try std.testing.expectEqual(cows_before, cow_fault_count); // not handled
+    const leaf = mmu.get_user_leaf(root, cow_va).?;
+    try std.testing.expect((leaf.* & mmu.sw_cow) != 0); // still a COW leaf
+    try std.testing.expectEqual(@as(u64, 3), (leaf.* >> 6) & 3); // still EL0-RO
+    try std.testing.expectEqual(untracked_pa, leaf.* & 0x0000_ffff_ffff_f000);
+    try std.testing.expect(alloc.page_refcount_recorded(untracked_pa) == null); // no phantom unref
+
+    // 2. The legitimate sole-owner case is unchanged: a RECORDED count of 1
+    //    (peer seat dropped) still promotes in place — no copy, no new page.
+    const sole_va: u64 = 0x0000_0000_1000_4000;
+    const sole_pa = alloc.alloc_pages(1).?;
+    _ = mmu.map_user_cow_page(root, sole_va, sole_pa);
+    try std.testing.expect(alloc.ref_page(sole_pa)); // 0 -> 2
+    try std.testing.expect(!alloc.unref_page(sole_pa)); // 2 -> 1 (peer seat gone)
+    try std.testing.expectEqual(@as(?u16, 1), alloc.page_refcount_recorded(sole_pa));
+    try std.testing.expect(try_handle_page_fault(esr_perm_write, sole_va + 12));
+    const sole_leaf = mmu.get_user_leaf(root, sole_va).?;
+    try std.testing.expect((sole_leaf.* & mmu.sw_cow) == 0);
+    try std.testing.expectEqual(@as(u64, 1), (sole_leaf.* >> 6) & 3); // EL0 RW
+    try std.testing.expectEqual(sole_pa, sole_leaf.* & 0x0000_ffff_ffff_f000); // same page
 }
 
 test "exceptions: populate_user_page maps the process's own demand regions and refuses the rest (issue #1391)" {
