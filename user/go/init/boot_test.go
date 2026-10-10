@@ -188,7 +188,7 @@ func TestPreSeatOnFailureRetryRetainsDependentAndHoldsSeat(t *testing.T) {
 		view.DelayS != 2 || b.SeatReady() || b.seated {
 		t.Fatal("retryable pre-seat failure", view)
 	}
-	if !reflect.DeepEqual(receipts, []string{"z-pre restart=1/5 status=137 backoff_s=2"}) {
+	if !reflect.DeepEqual(receipts, []string{"INITPRE.BIN restart=1/5 status=137 backoff_s=2"}) {
 		t.Fatal(receipts)
 	}
 	tick(t, b, f) // still inside backoff

@@ -290,7 +290,8 @@ func (m *Manager) LogTail(label string, n int) ([]string, bool, error) {
 // AppendLog writes one line to a label's APPLOG ring under the M82e
 // bounds (256 B per line, newest 32 lines kept). It is the cooperating
 // child's side of the capture contract — a childfix-style ELF writes its
-// own ring; nothing captures an arbitrary ELF's stdout.
+// own ring; nothing captures an arbitrary ELF's stdout. The label must
+// bind to the child's own image name (#2085) — a foreign label fails.
 func AppendLog(label, message string) error {
 	path := appLogPath(label)
 	if path == "" {

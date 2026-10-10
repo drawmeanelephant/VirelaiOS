@@ -30,6 +30,7 @@ vgate_runner_flags -Xswiftc -DSPIKE
 vgate_file script.txt <<'EOF'
 clip hello world
 exec GOCOMP.ELF
+exec -u0 GOCOMP.ELF
 EOF
 
 vgate_file script2.txt <<'EOF'
@@ -51,6 +52,12 @@ PY
 
 vgate_run 01 -- --display --script '$RUN_DIR/script.txt' --script-after "tasks user-el0 exited status=7" --script2 '$RUN_DIR/script2.txt' --script2-after "compose: done" --script-expect "procs GOCOMP.ELF exited status=43" --timeout 90
 
+# M97g (#2082): the first exec runs uid_user + no caps, so slot 39 refuses
+# with EACCES (-7) even though `clip` loaded the buffer — the unprivileged
+# app cannot read the clipboard. The `-u0` re-exec then proves the capable
+# path still performs the full paste/copy/blink composition.
+vgate_assert 01 serial-contains 'compose: paste refused rc=-7'
+vgate_assert 01 serial-contains 'tasks user-exec exited status=2'
 vgate_assert 01 serial-contains 'compose: pasted n=11'
 vgate_assert 01 serial-contains 'compose: copied n=11'
 vgate_assert 01 serial-contains 'compose: armed blink'
@@ -59,8 +66,11 @@ vgate_assert 01 serial-contains 'compose: done'
 vgate_assert 01 serial-contains 'compose: exiting 43'
 vgate_assert 01 serial-contains 'tasks user-exec exited status=43'
 vgate_assert 01 serial-contains 'syscalls: slots=64 implemented='
+# M97g (#2082): the slot-39 counter counts both probes — the refused
+# unprivileged call and the admin one — while slot 38 fires only in the
+# capable run (the refused run exits before copy).
 vgate_assert 01 serial-contains '38 sys_clipboard_set calls=1'
-vgate_assert 01 serial-contains '39 sys_clipboard_get calls=1'
+vgate_assert 01 serial-contains '39 sys_clipboard_get calls=2'
 vgate_assert 01 serial-contains '40 sys_timer_set calls=7'
 vgate_assert 01 serial-contains 'composition-live-ok'
 vgate_assert 01 serial-absent '[EXC] parking:'

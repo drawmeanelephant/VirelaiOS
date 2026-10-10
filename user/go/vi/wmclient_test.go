@@ -264,6 +264,14 @@ func (f *wmMailFake) hook(num uintptr, a0, a1, a2, a3 uintptr) int64 {
 			n++
 		}
 		return int64(n)
+	case SlotWmctl:
+		// #2079: the seat id is the kernel's register (cmd 16), not a
+		// name match — the fake answers pid 3, the pid its proc table
+		// assigns to GOTABWM.ELF.
+		if a0 == uintptr(WmctlSeatPidCmd) {
+			return 3
+		}
+		return -ErrENOSYS
 	case SlotIPCSend:
 		f.sendCalls++
 		f.sendTarget = uint32(a0)

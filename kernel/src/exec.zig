@@ -822,6 +822,7 @@ fn exec_file_impl(name: []const u8, args: []const []const u8, pin: ?usize, princ
             if (!scheduler.add_task_write_region(task_id, .{ .base = data_va, .len = data_mem_size })) return .pool_full;
         }
         _ = process.bind(proc_id, task_id);
+        process.set_spawner(proc_id, scheduler.spawn_provenance(task_id).parent);
         // M70b (#1454): the pin is part of the registration (set while the
         // task is still `.blocked`) and the task only becomes visible to
         // the cores at publish — a parked remote core can claim it the
@@ -1153,6 +1154,7 @@ fn exec_static_elf_gap(
         // Go linker places headers one page below -T), so re-point it.
         scheduler.set_task_text_region(task_id, seg0.vaddr, text_len_pages);
         _ = process.bind(proc_id, task_id);
+        process.set_spawner(proc_id, scheduler.spawn_provenance(task_id).parent);
         // M70b (#1454): pin-before-publish — see the flat-image path above.
         if (streams) |plan| file_table.commit_streams(proc_id, plan);
         scheduler.publish_task(task_id);
@@ -1467,6 +1469,7 @@ fn exec_dynamic_elf(
         }
         if (!scheduler.add_task_read_region(task_id, .{ .base = lib_va, .len = lib_pages * alloc.page_size })) return .pool_full;
         _ = process.bind(proc_id, task_id);
+        process.set_spawner(proc_id, scheduler.spawn_provenance(task_id).parent);
         // M70b (#1454): pin-before-publish — see the flat-image path above.
         if (streams) |plan| file_table.commit_streams(proc_id, plan);
         scheduler.publish_task(task_id);

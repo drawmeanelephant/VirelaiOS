@@ -2,11 +2,13 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const abi = @import("syscall_abi.zig");
+const csprng = @import("csprng.zig"); // M97g (#2086): the session-token mint
 const exceptions = @import("exceptions.zig");
 const process = @import("process.zig");
 const scheduler = @import("scheduler.zig");
 const uaccess = @import("uaccess.zig");
 const mmu = @import("mmu.zig");
+const virtio_entropy = @import("virtio_entropy.zig"); // M97g (#2086): lazy reseed behind an unseeded mint
 const alloc = @import("alloc.zig");
 const spinlock = @import("spinlock.zig");
 const timer = @import("timer.zig");
@@ -55,7 +57,7 @@ const Lock = spinlock.IrqSaveSpinlock;
 var lock: Lock = .{};
 var ring = Ring{};
 var session_token: u64 = 0;
-var last_token: u64 = 0;
+var owner_pid: usize = 0;
 var owner = process.Principal{};
 var config = std.mem.zeroes(Config);
 var active = false;
@@ -63,10 +65,13 @@ var backing: u64 = 0;
 
 /// Host tests borrow backing to exercise control copies without hardware or
 /// pool allocation. This seam cannot be called in a guest build.
-pub fn test_session(records: ?*[ring_records]Record, uids: ?*[ring_records]u32, principal: process.Principal) void {
+/// M97g (#2086): `pid` records the owning process — session ops are
+/// owner-pid-bound, not uid-bound.
+pub fn test_session(records: ?*[ring_records]Record, uids: ?*[ring_records]u32, principal: process.Principal, pid: usize) void {
     if (comptime !builtin.is_test) @compileError("host-only sampler session");
     ring = .{ .records = records, .uids = uids };
     owner = principal;
+    owner_pid = pid;
     session_token = if (records == null) 0 else 1;
     active = false;
 }
@@ -189,6 +194,23 @@ pub fn validate_config(value: Config, actor: process.Principal) i64 {
     return 0;
 }
 
+/// M97g (#2086): mint the session token from the CSPRNG, not a counter —
+/// a token must not be derivable from previously observed tokens. An
+/// unseeded stream is the deterministic boot fallback, which IS derivable,
+/// so the mint fails closed after attempting the shared lazy reseed. The
+/// mint masks bit 63: the slot ABI reports errors as negative results, so
+/// a token with the high bit set would read as an errno to every caller.
+fn mint_token() ?u64 {
+    if (!csprng.seeded()) {
+        var seed_buf: [csprng.seed_len]u8 align(16) = undefined;
+        if (!virtio_entropy.read_seed(&seed_buf)) return null;
+        csprng.seed(&seed_buf);
+    }
+    var token = csprng.random_u64() & 0x7fff_ffff_ffff_ffff;
+    while (token == 0 or token == session_token) token = csprng.random_u64() & 0x7fff_ffff_ffff_ffff;
+    return token;
+}
+
 fn header(count_: usize) ReadHeader {
     return .{
         .version = version,
@@ -212,7 +234,14 @@ pub fn handle(args: [6]u64, _: *exceptions.VectorFrame) u64 {
     if (op != op_arm and op != op_disarm and op != op_read and op != op_status) return err(-1);
     const saved = lock.lock();
     defer lock.unlock(saved);
-    if (session_token != 0 and !may_observe(actor, owner.uid)) return err(-7);
+    // M97g (#2086): session control binds to the OWNER PID (or
+    // CAP_PROC_ADMIN), never uid — every EL0 process is uid_user, so the
+    // uid check passed for every app and the sequential tokens were
+    // enumerable besides. A session whose owner exited is releasable
+    // (a null principal means the pid slot was cleared): a stale token
+    // must not brick profiling for every other app.
+    if (session_token != 0 and pid != owner_pid and !actor.has(process.cap_proc_admin) and
+        process.principal(owner_pid) != null) return err(-7);
     if (op == op_arm) {
         if (args[1] != 0 or args[3] != @sizeOf(Config)) return err(-1);
         var value: Config = undefined;
@@ -220,7 +249,7 @@ pub fn handle(args: [6]u64, _: *exceptions.VectorFrame) u64 {
         const valid = validate_config(value, actor);
         if (valid != 0) return err(valid);
         if (!timer.profile_available()) return err(-4);
-        if (last_token == std.math.maxInt(i64)) return err(-5);
+        const token = mint_token() orelse return err(-11); // EAGAIN: no real entropy
         // Reservation never exceeds 45 pages, including session replacement.
         // Reuse the fixed backing only after every fallible check succeeds.
         if (backing == 0) backing = alloc.alloc_pages(backing_pages) orelse return err(-10); // native ENOMEM
@@ -230,8 +259,8 @@ pub fn handle(args: [6]u64, _: *exceptions.VectorFrame) u64 {
         };
         config = value;
         owner = actor;
-        last_token += 1;
-        session_token = last_token;
+        owner_pid = pid;
+        session_token = token;
         active = true;
         timer.profile_set_active(true);
         return session_token;

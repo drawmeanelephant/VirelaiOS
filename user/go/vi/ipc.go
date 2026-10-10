@@ -133,9 +133,10 @@ type WmSeat struct {
 	Self uint32
 }
 
-// WMProcNames are the two seats an app's WM_RPC client resolves: the floating
-// WND.BIN desktop and the tabbed TABWM.BIN desktop. At most ONE is registered
-// at a time (sys_wmctl REGISTER is one-seat), so matching either is safe.
+// WMProcNames are the historical seat names, kept for DISPLAY-side use
+// (top marks which proc-table row is the WM). They are no longer an
+// authority: since #2079 the seat id is the kernel's own register
+// (WmctlSeatPid), which a forged process name cannot impersonate.
 var WMProcNames = [...]string{"WND.BIN", "TABWM.BIN", "GOTABWM.ELF"}
 
 // wmPeersScanAttempts bounds the `sys_procs` re-reads (M56d #1315). It is
@@ -143,65 +144,48 @@ var WMProcNames = [...]string{"WND.BIN", "TABWM.BIN", "GOTABWM.ELF"}
 // them now: an intact scan returns on the spot.
 const wmPeersScanAttempts = 8
 
-// WmPeers finds the WM pid and this process's pid in a single `sys_procs`
-// scan (the M56a `wm_peers` helper). A zero field means "not found". Only
-// RUNNING rows with a non-empty name match.
+// WmPeers resolves the WM seat and this process's pid (the M56a
+// `wm_peers` helper). A zero field means "not found".
 //
-// A scan that reads back INTACT (no RUNNING row whose name bytes came back
-// zeroed) and knows this process is TRUSTED: a missing WM then means there is
-// genuinely no seat, and the answer stands. Only a SUSPECT scan is retried --
-// on the guest `sys_procs` intermittently returns its row count while the name
-// bytes read back zeroed (observed on VZ, alternating scans; M56d #1315), and
-// the row that got zeroed may be the WM's own, so a suspect scan cannot answer
-// "no seat" at all.
+// #2079 (M97g seat gate): the WM half is ONE unforgeable read — slot 65
+// cmd 16 returns the kernel-registered pid, or -ENOENT when no seat is
+// held. Before this, the seat was resolved by matching proc-table names
+// (`WND.BIN`/`TABWM.BIN`/`GOTABWM.ELF`), so any rogue process that took a
+// seat name captured every app's WM_RPC traffic; and on the guest a name
+// match said nothing about which pid the kernel had actually armed. The
+// name scan survives only for SELF: the caller's own pid still comes from
+// `sys_procs`, so the M56d flake discipline below is unchanged — a RUNNING
+// row whose name bytes read back zeroed may be this process's row, and a
+// missing self keeps retrying exactly as before.
 //
 // That distinction is not cosmetic. Between attempts the loop yields, and on
 // VZ a yield parks the caller until the next scheduler tick, which is a full
-// second (kernel/src/timer.zig `period_ns` = 1e9). Retrying the no-seat answer
-// therefore cost ~7 s per call (#1586) -- twice per browser boot, which is
-// most of the 10 s that put WEB over its startup budget on EVERY boot while
-// only three boots asserted it. A suspect scan gets one immediate re-read
-// first, because the flake alternates per scan; only a persistent one pays a
-// tick. On the host (every syscall -ENOSYS) the loop is a cheap no-op that
-// still returns the zero seat.
+// second (kernel/src/timer.zig `period_ns` = 1e9). The no-seat answer no
+// longer depends on the scan at all (the kernel answers it), so the retry
+// loop exists only while SELF is unresolved. On the host (every syscall
+// -ENOSYS) the loop is a cheap no-op that still returns the zero seat.
 func WmPeers(selfName string) WmSeat {
 	var out WmSeat
 	if selfName == "" {
 		return out
 	}
+	// The seat id is the kernel's register, not a name scan.
+	if seat := WmctlSeatPid(); seat > 0 {
+		out.WM = uint32(seat)
+	}
 	rows := make([]ProcRow, 64)
 	for attempt := 0; attempt < wmPeersScanAttempts; attempt++ {
-		out = WmSeat{}
-		suspect := false
 		if n, r := Procs(rows); r > 0 && n > 0 {
 			for i := 0; i < n; i++ {
 				if rows[i].State != ProcRunning {
 					continue
 				}
-				name := rows[i].Name()
-				if name == "" {
-					// A RUNNING row with no readable name: the M56d flake.
-					// This row could BE the WM seat, so this scan cannot
-					// answer "no seat".
-					suspect = true
-					continue
-				}
-				if out.Self == 0 && name == selfName {
+				if out.Self == 0 && rows[i].Name() == selfName {
 					out.Self = uint32(rows[i].PID)
-				}
-				if out.WM == 0 {
-					for _, w := range WMProcNames {
-						if name == w {
-							out.WM = uint32(rows[i].PID)
-							break
-						}
-					}
 				}
 			}
 		}
-		// Both peers resolved (the seat answered for itself), or an intact
-		// scan that knows this process (so the seat answer is the truth).
-		if out.Self != 0 && (out.WM != 0 || !suspect) {
+		if out.Self != 0 {
 			return out
 		}
 		if attempt == 0 {

@@ -238,7 +238,7 @@ func TestBackoffScheduleAndGiveUp(t *testing.T) {
 		t.Fatal(v)
 	}
 	if f.execs != 6 || len(f.receipts) != 6 ||
-		f.receipts[5] != "worker:restart=5/5 status=137 backoff_s=0" {
+		f.receipts[5] != "WORKER:restart=5/5 status=137 backoff_s=0" {
 		t.Fatal(f.execs, f.receipts)
 	}
 	f.now += 2000 * second
@@ -459,9 +459,11 @@ func TestValidation(t *testing.T) {
 		}
 	}
 	f := &fake{}
-	for _, name := range []string{"", ".", "..", "bad/name", "space name", strings.Repeat("a", 29)} {
-		if _, err := New([]Service{{Name: name, Binary: "A.ELF", Policy: policy(Never)}}, f.hooks()); err == nil {
-			t.Fatal("accepted invalid label", name)
+	// The receipt path derives from the BINARY's stem (#2085), so the
+	// label grammar is exercised through Binary, not the service name.
+	for _, binary := range []string{"", ".", "..", "space name", strings.Repeat("a", 29)} {
+		if _, err := New([]Service{{Name: "ok", Binary: binary, Policy: policy(Never)}}, f.hooks()); err == nil {
+			t.Fatal("accepted invalid label", binary)
 		}
 	}
 	service := Service{Name: "ok", Binary: "A.ELF", Policy: policy(Never)}
@@ -551,7 +553,7 @@ func TestPinnedReceiptThroughGuestHook(t *testing.T) {
 			return vi.ErrFileNotFound
 		case vi.SlotFileRename:
 			path := string(hookBytes(a2, a3))
-			renamed = path == "/host/CRASH/worker.TXT"
+			renamed = path == "/host/CRASH/WORKER.TXT"
 			return 0
 		case vi.SlotFileSync, vi.SlotFileClose:
 			return 0

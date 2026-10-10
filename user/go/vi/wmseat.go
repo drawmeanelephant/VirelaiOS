@@ -31,6 +31,12 @@ const (
 	// seat-serialized stream itself. Chrome the seat consumed (start
 	// surface, rail, launcher) is never forwarded.
 	WmctlContentPtrCmd uint64 = 15
+	// WmctlSeatPidCmd is slot-65 subcommand 16 (#2079, M97g seat gate):
+	// return the kernel-registered WM pid, or -ENOENT when no seat is
+	// held. Unprivileged and read-only — the seat pid was always
+	// observable; the fix is that clients now read the kernel's own
+	// register instead of resolving a forgeable process name.
+	WmctlSeatPidCmd uint64 = 16
 
 	// M33MapShared is the frozen seam-B flag (ADR 0016, bit 16 of the mmap
 	// flags word): a shared-anonymous mapping. The scanout bind is one.
@@ -80,6 +86,15 @@ func WmctlRegister() int64 { return syscall1(SlotWmctl, uintptr(WmctlRegisterCmd
 // Returns 0 on success; -ENOSYS when no seat is registered; -EACCES from any
 // process other than the seat.
 func WmctlRequestPresent() int64 { return syscall1(SlotWmctl, uintptr(WmctlRequestPresentCmd)) }
+
+// WmctlSeatPid returns the kernel-registered WM pid (slot 65 cmd 16), or a
+// negative errno: -ENOENT when no seat is held, -ENOSYS off the guest. It
+// is the #2079 seat-resolution primitive — the answer is the kernel's
+// register, so a rogue process named like a WM cannot capture the seat id
+// another app's WM_RPC traffic routes to. It routes through svc1 so the
+// host-test hook sees it (unlike the seat-side wrappers above, which only
+// a live seat ever calls).
+func WmctlSeatPid() int64 { return svc1(SlotWmctl, uintptr(WmctlSeatPidCmd)) }
 
 // WmctlContentPtr forwards one pointer sample for the kernel's local content
 // path — terminal text selection (M49 SD5) and mouse-tracking reports — the

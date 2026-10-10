@@ -47,14 +47,22 @@ explicit input addresses in the arm-exec request. Version is **1**.
 | Profile 4 STATUS | token | output pointer/24 | 0, header only |
 | Memstat | pid | output pointer/**240** | **240** |
 
-Each feature has **one session system-wide**, scoped to the opening
-principal's **uid**, not to a reusable pid. Same-uid or `cap_proc_admin`
-callers may control it; a foreign uid without that capability gets
-`EACCES`. Authorized ARM replaces the previous session with a new token.
-Tokens are positive, monotonic, never recycled in a boot; exhaustion
-refuses `ENOSPC`. Every control/read rechecks current caller privilege.
-This deliberately permits another same-uid tool to recover a dead
-observer's bounded session without adding process-lifecycle hooks.
+Each feature has **one session system-wide**. As originally built it was
+scoped to the opening principal's **uid**; the M97g audit (#2086) showed
+that bound nothing — every ordinary EL0 process is `uid_user`, so any app
+could enumerate the sequential tokens and filter, read, replace or disarm
+a peer's session. Session control is now scoped to the **arming pid**:
+only that pid or a `cap_proc_admin` principal may filter, read, disarm or
+replace it (`EACCES` otherwise). Authorized ARM still replaces the
+previous session with a new token, and an ARM is additionally permitted
+when the owner process has exited — a stale token must not brick the
+feature for every other app (pid slots are cleared, never silently
+rebound). Tokens are **CSPRNG mints**, not counters: nonzero, never equal
+to the still-live token, and not derivable from observed tokens. ARM
+refuses `EAGAIN` when only the deterministic boot fallback is keyed — the
+shared lazy-reseed (`virtio_entropy.read_seed`, the `sys_getrandom`
+primitive) is attempted first; no entropy means no session. Every
+control/read rechecks current caller privilege.
 DISARM retains unread records; replacement frees prior backing and
 invalidates its token. There is no per-pid lifetime claim or nested session.
 
@@ -78,7 +86,8 @@ monitor's existing exec path do not change.
 
 Native errors: `EINVAL` invalid request/target/version/size/op; `EBADF`
 stale token; `EFAULT` failed uaccess; `ENOSPC` pid/token capacity;
-`ENOMEM` ring backing refusal; `EACCES` ownership/privilege refusal.
+`ENOMEM` ring backing refusal; `EAGAIN` no real entropy for the token
+mint (M97g #2086); `EACCES` ownership/privilege refusal.
 Profile ARM additionally returns `ENOSYS` if
 the selected timer cannot be delivered. Failed ARM/FILTER/copy-out leaves
 prior state and unread records unchanged. Readers never park in a syscall.
@@ -208,7 +217,10 @@ receipt; recheck at capture and read, not only at ARM. Readers authorize
 each buffered record against its capture-time uid sidecar, never against
 the present occupant of a reused pid. Numeric pid reuse
 must not turn an authorized session into cross-uid observation. Session
-control follows the opening uid / `cap_proc_admin` rule above.
+control follows the arming-pid / `cap_proc_admin` rule above (M97g
+#2086 — the row "different processes, same uid" still holds for which
+TARGETS a session may observe, but no longer authorizes driving a
+session another process armed).
 This does not create a capability-elevation syscall.
 
 Slots **70 `sys_secret_get` and 71 `sys_tty_net_auth`** have six redacted

@@ -27,6 +27,7 @@
 //! No libc, no POSIX, no allocation, no interrupts.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const build_options = @import("build_options");
 const mmio = @import("mmio.zig");
 const mmu = @import("mmu.zig");
@@ -381,6 +382,22 @@ fn wait_completion() bool {
     return false;
 }
 
+/// Host-test seam (issue #2084): an injectable device read so the
+/// getrandom lazy-reseed path can be driven unseeded → seeded without a
+/// real virtio transport. Never armed in production (test-only builds).
+pub var test_read_hook: ?*const fn (out: []u8) bool = null;
+
+/// M97g (#2084/#2086): the shared lazy-reseed primitive — read `out.len`
+/// real entropy bytes, re-arming the transport once if VZ reset the
+/// device at ExitBootServices (claim 6420's lesson). Returns false when
+/// no seed could be obtained; callers then fail closed. The getrandom
+/// handler and the trace/profile session mints both consume this.
+pub fn read_seed(out: []u8) bool {
+    if (entropy_read(out)) return true;
+    if (!entropy_rearm()) return false;
+    return entropy_read(out);
+}
+
 /// Read up to `out.len` real random bytes into `out` (bounded by
 /// `entropy_read_max`). The device may return fewer bytes than the
 /// descriptor asked for (short read); `entropy_read` reassembles with a
@@ -388,6 +405,9 @@ fn wait_completion() bool {
 /// A stuck device (completion timeout) fails honestly without touching the
 /// rings again.
 pub fn entropy_read(out: []u8) bool {
+    if (comptime builtin.is_test) {
+        if (test_read_hook) |hook| return hook(out);
+    }
     if (out.len == 0 or out.len > entropy_read_max) return false;
     if (!ent_ready) return false;
     var got: usize = 0;

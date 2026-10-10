@@ -2465,8 +2465,11 @@ fn main() noreturn {
                 // kernel's drain is gated off); now the WM drives it.
                 if (ticks % tray_refresh_every == 0) {
                     var clip_buf: [tray_clip_probe]u8 = undefined;
+                    // M97g (#2082): slot 39 admits CAP_CLIPBOARD or the
+                    // registered seat — a refused probe is rc < 0 and must
+                    // not fake "filled".
                     const clip_len = syscall3(sys_clipboard_get, @intFromPtr(&clip_buf), clip_buf.len, 0);
-                    _ = tray_tick_policy(ticks, clip_len != 0, &tray_state);
+                    _ = tray_tick_policy(ticks, clip_len > 0, &tray_state);
                 }
                 // WMS7 Gate A (issue #627): the app↔WM mailbox service loop —
                 // serve any WM_RPC requests an app queued in the WM's inbox

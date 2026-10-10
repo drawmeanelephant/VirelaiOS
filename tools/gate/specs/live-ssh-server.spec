@@ -33,10 +33,16 @@ for name, cmd in (("GOSSHD.ELF", "bash tools/go/build-sshd.sh"),
         sys.exit(name + " missing (expected " + src + ") - build it first: " + cmd)
     shutil.copy(src, os.path.join(share, name))
 os.makedirs(os.path.join(share, "SSH"), exist_ok=True)
-# RFC 8032 §7.1 TEST 1 seed: the guest host key (uid_user).
+# RFC 8032 §7.1 TEST 1 seed: the guest host key (uid_user), app-bound to
+# GOSSHD.ELF (M97g #2083); OWNERS.TXT pins the image uid_system.
 open(os.path.join(share, "SECRETS.TXT"), "w").write(
     "#v1\n"
-    "ssh-host-ed25519\t1000\t9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60\n"
+    "ssh-host-ed25519\t1000\t9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60\tGOSSHD.ELF\n"
+)
+open(os.path.join(share, "OWNERS.TXT"), "w").write(
+    "#v1\n"
+    "GOSSHD.ELF\t644\t0\t-\n"
+    "GOSH.ELF\t644\t0\t-\n"
 )
 # RFC 8032 §7.1 TEST 2 public key: the runner client's identity.
 open(os.path.join(share, "SSH", "AUTHORIZED_KEYS"), "w").write(

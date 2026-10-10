@@ -131,7 +131,7 @@ table, persistence, and a single pure predicate:
 
 ```
 check(actor, partition, path, want) -> allow | eacces | enoent
-// actor = { uid, caps, is_kernel }, want = read | write | create | delete | list | admin
+// actor = { uid, caps, is_kernel, pid, name }, want = read | write | create | delete | list | admin
 ```
 
 - **Syscall seam:** every `file_table` entry point (`open` `:279`, `read`
@@ -165,6 +165,32 @@ check(actor, partition, path, want) -> allow | eacces | enoent
   case-sensitive host the rule may over-apply to a distinct same-lowercase
   file, which is fail-closed, never a bypass. The group triplet is reserved
   and normalized to zero. See `kernel/src/trust.zig`.
+
+**M97g amendment (2026-10-15, #2085 — diagnostic-label binding).** Before
+this change `APPLOG/<label>.LOG` and `CRASH/<label>.{TXT,STK}` were
+ordinary `uid_user` files: any process could append to, read, or receipt
+another app's diagnostic records, and a forged receipt could carry another
+app's last log lines. `check` now applies a label overlay for
+non-privileged actors (`is_kernel`/`CAP_FS_ANY` unchanged): a direct child
+of `APPLOG/` or `CRASH/` on the host share is allowed only when the file's
+stem binds to the caller's kernel-recorded image name (a `.ELF` suffix is
+normalized on both sides — `GSCHK` and `GSCHK.ELF` are the same label), or
+to a registry row the caller spawned. The spawned rule is what keeps the
+supervisor contract honest: `init`, `gosh` and `gsproc`-style managers
+write a dead child's receipt, and the child's `spawner` pid (recorded at
+`exec` bind from task provenance) survives on the exited descriptor. The
+chosen read policy is the same binding — `ReadLog` of another app's ring
+is EACCES unless the caller spawned it or is privileged; `APPLOG`/`CRASH`
+directory listing stays open (names are enumerable; contents are bound).
+Supervise now labels receipts by the spawned binary's stem — service names
+bind to nothing the kernel can verify — so `CRASH/z-pre.TXT` becomes
+`CRASH/INITPRE.BIN.TXT` and the receipt's `app=` names the real image.
+Residual, recorded honestly: an EL0 process can still `exec` a staged
+image named `VICTIM.ELF` and thereby own the `VICTIM` label (image-name
+squatting — closing it needs pinned/signed images, out of scope), and a
+recycled pid slot inherits a stale exited row's spawner number (bounded
+registry, no generations). The overlay denies, never widens: entry `deny`
+and the secret class still win first.
 
 ### D5. Process privilege is `uid_system` plus two capabilities; there is no elevation
 `caps` is a small bitmask, spawn-time only:
@@ -317,6 +343,27 @@ principal's secrets; the store still refuses a non-`#v1` schema entirely.
 (c) The guest glue zeroes its `sys_secret_get` staging buffer after copying
 out key names (key-material hygiene; TS4 follows the same discipline).
 
+**M97g amendment (2026-10-15, #2083 — per-entry app binding).** The D8 uid
+scope was observed vacuous for cross-app isolation: every ordinary EL0
+process is `uid_user`, so `net-hmac`/`ssh-user-ed25519`/`ssh-host-ed25519`
+were readable by any app. A `SECRETS.TXT` line now carries an OPTIONAL
+fourth field — `key<TAB>uid<TAB>value<TAB>apps` — a comma-separated
+allowlist of image names. An app-bound entry is served only when (a) the
+caller uid matches, (b) the caller's recorded image name matches a listed
+name, and (c) that image path is `uid_system`-owned in `OWNERS.TXT` with
+no non-owner write bit (`trust.system_owned_key`). The name alone is
+forgeable (EL0 can `exec` any path string it authors), and ownership alone
+names no app; together they are honest because EL0 cannot author a
+`uid_system` row (runtime `set_mode` mints `uid_user` rows only) and
+cannot edit `OWNERS.TXT` to forge one — the metadata file is now
+self-protected **by construction** (`trust.ensure_meta_file`, applied at
+every load and at boot even when the file is absent, so an EL0 process can
+never write the table that would be trusted next boot). Entries without
+the field keep the legacy uid-scope behavior; the `SecretRecord` wire
+shape and never-logged contract are unchanged. The provisioned bindings:
+`net-hmac`/`net-ed25519` → `GOSH.ELF`, `ssh-user-ed25519` → `GOSSH.ELF`,
+`ssh-host-ed25519` → `GOSSHD.ELF`.
+
 ### D9. Settings (non-secret) keep their existing contract
 `SETTINGS.TXT` and `kernel/src/settings.zig` are unchanged in format and
 semantics; they gain no secret keys. The "store" is one engine with two
@@ -334,7 +381,7 @@ implementation cards update ADR 0007's table and `implemented_count`
 |---|---|---|
 | 68 | `sys_principal` | always; returns the caller's `{ uid, caps }` |
 | 69 | `sys_file_mode` | owner-only `chmod` on an existing path, or `CAP_FS_ANY`; `chown` is **not** in scope |
-| 70 | `sys_secret_get` | caller's own principal entries only; redacted from strace |
+| 70 | `sys_secret_get` | caller's own principal entries; app-bound entries additionally require the caller's recorded image to be allowlisted AND `uid_system`-owned (#2083); redacted from strace |
 | 71 | `sys_tty_net_auth(op, buf, len)` | caller must own the attached terminal; op = challenge / response / verdict |
 
 Gated existing syscalls:

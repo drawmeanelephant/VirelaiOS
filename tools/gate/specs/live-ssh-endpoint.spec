@@ -41,7 +41,12 @@ os.makedirs(os.path.join(share, "SSH"), exist_ok=True)
 # RFC 8032 §7.1 TEST 2 seed: the client identity (the responder pins TEST 2).
 open(os.path.join(share, "SECRETS.TXT"), "w").write(
     "#v1\n"
-    "ssh-user-ed25519\t1000\t4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb\n"
+    "ssh-user-ed25519\t1000\t4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb\tGOSSH.ELF\n"
+)
+# M97g (#2083): the app binding needs GOSSH.ELF pinned uid_system.
+open(os.path.join(share, "OWNERS.TXT"), "w").write(
+    "#v1\n"
+    "GOSSH.ELF\t644\t0\t-\n"
 )
 # RFC 8032 §7.1 TEST 1 public key: the responder's pinned host key.
 open(os.path.join(share, "SSH", "KNOWN_HOSTS"), "w").write(

@@ -78,7 +78,7 @@ func TestGateAssertionRejectsBrokenEvidence(t *testing.T) {
 			}
 			write("serial.log", body)
 			if mode != "no-receipt" {
-				write("share/SVFIX5.TXT", "app=SVFIX-RESTART\noutcome=restart=5/5 status=137 backoff_s=8\nlast-log:\n")
+				write("share/SVFIX5.TXT", "app=SVFIXCH\noutcome=restart=5/5 status=137 backoff_s=8\nlast-log:\n")
 			}
 			cmd := exec.Command("python3", "-c", script)
 			cmd.Dir = run

@@ -129,7 +129,7 @@ nodes["z-pre"]["restart"] = {
 # a-dep is already running when z-pre dies; seat directly requires both.
 nodes["seat"]["requires"] = ["a-dep", "z-pre"]
 (share / "INIT/SERVICES.JSON").write_text(json.dumps(m))
-assert not (share / "CRASH/z-pre.TXT").exists(), "stale kill receipt"
+assert not (share / "CRASH/INITPRE.BIN.TXT").exists(), "stale kill receipt"
 PY
 vgate_file kill-service.txt <<'EOF'
 kill INITPRE.BIN
@@ -146,8 +146,8 @@ vgate_assert killed serial-absent 'init: refuse'
 vgate_assert killed serial-absent 'init: fallback direct'
 vgate_assert killed serial-absent 'wm: autostart gotabwm'
 vgate_assert killed serial-absent '[EXC] parking:'
-vgate_assert killed share-contains CRASH/z-pre.TXT 'restart=1/5'
-vgate_assert killed share-contains CRASH/z-pre.TXT 'status=137'
+vgate_assert killed share-contains CRASH/INITPRE.BIN.TXT 'restart=1/5'
+vgate_assert killed share-contains CRASH/INITPRE.BIN.TXT 'status=137'
 vgate_assert killed python <<'PY'
 import os, pathlib, runpy
 runpy.run_path(str(pathlib.Path(os.environ["RUN_DIR"], "prerequisites.py")))
@@ -190,8 +190,8 @@ assert serial.count("gosh: prompt") == 1
 assert re.search(r"tasks: [^\n]*pool=16/16 zombies=0", serial), "kill-boot task budget not observed"
 for binary in ("INIT.ELF", "INITPRE.BIN", "INITDEP.BIN", "GOTABWM.ELF", "GOSH.ELF"):
     assert re.search(r"procs: [^\n]*name=" + re.escape(binary) + r" [^\n]*state=running", serial), binary
-receipt = pathlib.Path(os.environ["VG_SHARE"], "CRASH/z-pre.TXT").read_text()
-assert receipt == "app=z-pre\noutcome=restart=1/5 status=137 backoff_s=%d\nlast-log:\n" % delay
+receipt = pathlib.Path(os.environ["VG_SHARE"], "CRASH/INITPRE.BIN.TXT").read_text()
+assert receipt == "app=INITPRE.BIN\noutcome=restart=1/5 status=137 backoff_s=%d\nlast-log:\n" % delay
 print("mid-boot kill: dependent retained, seat held, restart=1/5 delay_s=%d observed_interval_s=%.9f" %
       (delay, interval))
 PY

@@ -163,8 +163,8 @@ test "sampler: control holds kernel domain through copy and preserves an outer h
     try std.testing.expect(process.bind(pid, syscall.scheduler.current_id()));
     var records: [sampler.ring_records]sampler.Record = undefined;
     var uids: [sampler.ring_records]u32 = undefined;
-    sampler.test_session(&records, &uids, .{ .uid = 42 });
-    defer sampler.test_session(null, null, .{});
+    sampler.test_session(&records, &uids, .{ .uid = 42 }, pid);
+    defer sampler.test_session(null, null, .{}, 0);
     var output: [@sizeOf(sampler.ReadHeader)]u8 = undefined;
     uaccess.init();
     uaccess.set_regions(.{ .base = 0, .len = 0 }, .{ .base = @intFromPtr(&output), .len = output.len });
@@ -184,4 +184,61 @@ test "sampler: control holds kernel domain through copy and preserves an outer h
     try std.testing.expectEqual(@as(u64, 0), sampler.handle(args, &frame));
     try std.testing.expect(copy_domain_held);
     try std.testing.expect(domain.held());
+}
+
+test "sampler: session ops bind to the owner pid, not the uid (#2086)" {
+    const process = syscall.process;
+    process.init();
+    defer process.init();
+    syscall.userspace.init();
+    _ = syscall.scheduler.init();
+    _ = syscall.scheduler.register_worker(0x2000);
+    _ = syscall.scheduler.register_user(0x3000, 0); // task 2 -> pid 0
+    var kstack: [syscall.scheduler.task_stack_size]u8 align(16) = undefined;
+    var kstack2: [syscall.scheduler.task_stack_size]u8 align(16) = undefined;
+    // A second uid_user process — same uid as the owner, different pid.
+    const other = process.create_as("other", .{ .entry_va = 0x400000, .content_len = 64 }, .{}, .{}, process.default_principal).?;
+    const other_task = syscall.scheduler.register_exec_user(syscall.userspace.text_va, 0x4000_0000, 100, 0x8000_0000, 8192, &kstack, 0, 0).?;
+    _ = process.bind(other, other_task);
+    // And a CAP_PROC_ADMIN observer.
+    const admin = process.create_as("admin", .{ .entry_va = 0x400000, .content_len = 64 }, .{}, .{}, .{ .uid = 0, .caps = process.cap_proc_admin }).?;
+    const admin_task = syscall.scheduler.register_exec_user(syscall.userspace.text_va, 0x4000_0000, 100, 0x8000_0000, 8192, &kstack2, 0, 0).?;
+    _ = process.bind(admin, admin_task);
+    syscall.scheduler.start();
+
+    var records: [sampler.ring_records]sampler.Record = undefined;
+    var uids: [sampler.ring_records]u32 = undefined;
+    // Session owned by pid 0 (task 2) under the fixed test token.
+    const owner_pid = process.find_by_task(2).?;
+    sampler.test_session(&records, &uids, .{ .uid = 1000 }, owner_pid);
+    defer sampler.test_session(null, null, .{}, 0);
+
+    var output: [@sizeOf(sampler.ReadHeader)]u8 = undefined;
+    syscall.uaccess.init();
+    defer syscall.uaccess.init();
+    syscall.uaccess.set_regions(.{ .base = 0, .len = 0 }, .{ .base = @intFromPtr(&output), .len = output.len });
+    var frame = helpers.task.fresh_frame();
+    const status: [6]u64 = .{ sampler.op_status, 1, @intFromPtr(&output), output.len, 0, 0 };
+
+    var hops: usize = 0;
+    while (syscall.scheduler.current_id() != 2 and hops < 8) : (hops += 1)
+        _ = syscall.scheduler.yield_current();
+    try std.testing.expectEqual(@as(usize, 2), syscall.scheduler.current_id());
+    try std.testing.expectEqual(@as(u64, 0), sampler.handle(status, &frame)); // owner
+
+    hops = 0;
+    while (syscall.scheduler.current_id() != other_task and hops < 8) : (hops += 1)
+        _ = syscall.scheduler.yield_current();
+    try std.testing.expectEqual(other_task, syscall.scheduler.current_id());
+    // Same uid, different pid: even holding the token, every op refuses.
+    try std.testing.expectEqual(syscall.error_result(.eacces), sampler.handle(status, &frame));
+    try std.testing.expectEqual(syscall.error_result(.eacces), sampler.handle(.{ sampler.op_disarm, 1, 0, 0, 0, 0 }, &frame));
+    try std.testing.expectEqual(syscall.error_result(.eacces), sampler.handle(.{ sampler.op_read, 1, @intFromPtr(&output), output.len, 0, 0 }, &frame));
+
+    hops = 0;
+    while (syscall.scheduler.current_id() != admin_task and hops < 8) : (hops += 1)
+        _ = syscall.scheduler.yield_current();
+    try std.testing.expectEqual(admin_task, syscall.scheduler.current_id());
+    // CAP_PROC_ADMIN crosses the binding.
+    try std.testing.expectEqual(@as(u64, 0), sampler.handle(status, &frame));
 }

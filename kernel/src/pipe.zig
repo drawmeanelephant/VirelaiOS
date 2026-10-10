@@ -1,23 +1,26 @@
 //! M19 P1 (issue #290): the kernel pipe — a bounded, single-buffer conduit
 //! between two commands.
 //!
-//! Two consumers share this module:
+//! Two consumer classes, now separated (M97g #2081):
 //!   * The shell's `|` operator (M19 P1) uses the console adapters below:
 //!     the LEFT command runs with `sink_console()` (its writes land in the
-//!     pipe), then the RIGHT command runs with `source_console(real)` (its
-//!     reads pull from the pipe, its writes pass through to the real
-//!     console). Sequential model — cmd1 runs to completion, then cmd2.
+//!     private kernel pipe), then the RIGHT command runs with
+//!     `source_console(real)` (its reads pull from the pipe, its writes
+//!     pass through to the real console). Sequential model — cmd1 runs to
+//!     completion, then cmd2.
 //!   * EL0 processes use `sys_pipe_read` (slot 56) / `sys_pipe_write`
-//!     (slot 57) through the uaccess layer; `append_slice`/`advance_write`
-//!     and `unread_slice`/`advance_read` expose the buffer to those
-//!     handlers without a staging copy.
+//!     (slot 57) through the uaccess layer. These operate on a PER-PROCESS
+//!     slot from the bounded `el0` table — before #2081 one global buffer
+//!     let any app read or poison another app's staged pipeline bytes.
 //!
-//! Bounded and heap-free: one 4 KiB BSS buffer, no allocation, no
-//! synchronization (single-core, IRQ-masked command execution). Overflow is
-//! dropped (the writer's `write` returns the bytes actually stored).
+//! Bounded and heap-free: a 4 KiB BSS buffer per pipe, no allocation, no
+//! synchronization (single-core, IRQ-masked command execution; the syscall
+//! handlers run under the service locks). Overflow is dropped (the writer's
+//! `write` returns the bytes actually stored).
 
 const std = @import("std");
 const console = @import("console.zig");
+const process = @import("process.zig");
 
 /// The pipe buffer size (march-m19.md P1: max 4 KiB).
 pub const pipe_capacity: usize = 4096;
@@ -26,50 +29,107 @@ var buf: [pipe_capacity]u8 = undefined;
 var len: usize = 0; // total bytes written
 var read_pos: usize = 0; // consumed prefix
 
-/// Clear the pipe before a new `a | b` (or a fresh EL0 session).
+/// M97g (#2081): the EL0 side is a small fixed table of per-process pipes.
+/// A slot binds to the pid that first wrote (or read-allocated) it and is
+/// released as soon as it drains or its owner exits — the sequential
+/// `a | b` staging model only ever needs a slot for one hand-off, so four
+/// concurrent pipelines is ample and a full table refuses ENOSPC honestly
+/// instead of letting one app starve the machine.
+pub const max_el0_pipes: usize = 4;
+
+const El0Pipe = struct {
+    owner: usize = 0,
+    used: bool = false,
+    len: usize = 0,
+    read_pos: usize = 0,
+};
+var el0_bufs: [max_el0_pipes][pipe_capacity]u8 = undefined;
+var el0: [max_el0_pipes]El0Pipe = [_]El0Pipe{.{}} ** max_el0_pipes;
+
+fn freeable(i: usize) bool {
+    const p = &el0[i];
+    if (!p.used) return true;
+    if (p.read_pos == p.len) {
+        p.* = .{};
+        return true;
+    }
+    if (process.principal(p.owner) == null) {
+        // The owner exited mid-hand-off; its staged bytes die with it.
+        p.* = .{};
+        return true;
+    }
+    return false;
+}
+
+/// The slot index `pid` may use: its own live slot, else a free/reclaimable
+/// one. `allocate=false` never takes a slot — reads of an unbound pid are
+/// simply empty. Null means every slot is live-owned by another process.
+fn slot_for(pid: usize, allocate: bool) ?usize {
+    var free_slot: ?usize = null;
+    for (&el0, 0..) |*p, i| {
+        if (p.used and p.owner == pid) return i;
+        if (free_slot == null and freeable(i)) free_slot = i;
+    }
+    if (!allocate) return null;
+    const i = free_slot orelse return null;
+    el0[i] = .{ .owner = pid, .used = true };
+    return i;
+}
+
+/// `sys_pipe_read`: the caller's unread slice, or null when the pid holds
+/// no slot (an empty pipe — the handler returns 0 bytes).
+pub fn el0_unread(pid: usize) ?[]const u8 {
+    const i = slot_for(pid, false) orelse return null;
+    const p = &el0[i];
+    return el0_bufs[i][p.read_pos..p.len];
+}
+
+/// `sys_pipe_read` post-copy: consume `n` bytes; a drained slot releases.
+pub fn el0_advance_read(pid: usize, n: usize) void {
+    const i = slot_for(pid, false) orelse return;
+    const p = &el0[i];
+    p.read_pos += n;
+    if (p.read_pos == p.len) p.* = .{};
+}
+
+/// `sys_pipe_write`: the caller's append region, or null when the pid
+/// cannot hold a slot (ENOSPC) — either its own pipe is full or the table
+/// is exhausted by other live processes.
+pub fn el0_append(pid: usize) ?[]u8 {
+    const i = slot_for(pid, true) orelse return null;
+    const p = &el0[i];
+    return el0_bufs[i][p.len..];
+}
+
+/// `sys_pipe_write` post-copy: publish `n` bytes appended to `el0_append`.
+pub fn el0_advance_write(pid: usize, n: usize) void {
+    const i = slot_for(pid, false) orelse return;
+    el0[i].len += n;
+}
+
+/// Clear the kernel pipe before a new `a | b`.
 pub fn reset() void {
     len = 0;
     read_pos = 0;
 }
 
-/// Unread bytes still in the pipe.
+/// Unread bytes still in the kernel pipe.
 pub fn available() usize {
     return len - read_pos;
 }
 
-/// Free write space left in the pipe.
+/// Free write space left in the kernel pipe.
 pub fn capacity_left() usize {
     return pipe_capacity - len;
 }
 
-/// Append `bytes` to the pipe; returns the number stored (drops overflow).
+/// Append `bytes` to the kernel pipe; returns the number stored (drops
+/// overflow).
 pub fn write(bytes: []const u8) usize {
     const n = @min(bytes.len, capacity_left());
     @memcpy(buf[len..][0..n], bytes[0..n]);
     len += n;
     return n;
-}
-
-/// The append region for a uaccess copy-in (`sys_pipe_write`). The caller
-/// validates room first, then `advance_write(n)` on success.
-pub fn append_slice() []u8 {
-    return buf[len..];
-}
-
-/// Advance the write cursor after a successful copy-in.
-pub fn advance_write(n: usize) void {
-    len += n;
-}
-
-/// The unread region for a uaccess copy-out (`sys_pipe_read`). The caller
-/// copies out then `advance_read(n)` on success.
-pub fn unread_slice() []const u8 {
-    return buf[read_pos..len];
-}
-
-/// Consume `n` unread bytes after a successful copy-out.
-pub fn advance_read(n: usize) void {
-    read_pos += n;
 }
 
 // ---------------------------------------------------------------------------
@@ -194,11 +254,11 @@ test "pipe: sink console captures writes, source console feeds reads" {
     try std.testing.expectEqualStrings("right-out", mock.contents());
 }
 
-/// Host-test helper mirroring the syscall read path (copy unread bytes out).
+/// Host-test helper mirroring the kernel-pipe read path (copy unread out).
 fn read_into_for_test(out: []u8) usize {
     const avail = available();
     const take = @min(avail, out.len);
-    @memcpy(out[0..take], unread_slice()[0..take]);
-    advance_read(take);
+    @memcpy(out[0..take], buf[read_pos..][0..take]);
+    read_pos += take;
     return take;
 }

@@ -1,10 +1,12 @@
 // The kernel pipe rows (M19 P1, ADR 0007 slots 56/57): the bounded
-// single-buffer conduit GOSH's `|` uses to hand a left command's capture to
-// the right command's stdin, exactly as SH.BIN's engine does at EL0. The
-// buffer is one 4 KiB kernel-side BSS area (kernel/src/pipe.zig): a read is
-// NON-BLOCKING (0 when empty) and a write that does not fit is refused
-// -ENOSPC — the sequential shell never hits either edge, but the wrappers
-// surface them honestly anyway. On the host every call degrades to -ENOSYS.
+// per-process conduit GOSH's `|` uses to hand a left command's capture to
+// the right command's stdin, exactly as SH.BIN's engine does at EL0. Since
+// M97g #2081 each process holds its OWN 4 KiB pipe slot (kernel/src/pipe.zig
+// el0 table) — a read/write never touches another process's staged bytes,
+// and a full table refuses -ENOSPC. A read is NON-BLOCKING (0 when empty)
+// and a write that does not fit is refused -ENOSPC — the sequential shell
+// never hits either edge, but the wrappers surface them honestly anyway.
+// On the host every call degrades to -ENOSYS.
 package vi
 
 import "unsafe"

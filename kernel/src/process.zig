@@ -66,8 +66,14 @@ pub const uid_user: u32 = 1000;
 /// acting on another principal's processes (`sys_kill`, future admin).
 pub const cap_fs_any: u32 = 1 << 0;
 pub const cap_proc_admin: u32 = 1 << 1;
-/// Kernel-internal actors (including the EL1h monitor) hold both caps.
-pub const kernel_caps: u32 = cap_fs_any | cap_proc_admin;
+/// M97g (#2082): `CAP_CLIPBOARD` permits the programmatic clipboard slots
+/// (38/39). The machine-global buffer is otherwise an unmediated
+/// read/write channel every `uid_user` app could silently harvest or
+/// swap; the user-gesture paths (the chrome copy/paste chords and the
+/// monitor `clip` command) are kernel-internal and need no cap.
+pub const cap_clipboard: u32 = 1 << 2;
+/// Kernel-internal actors (including the EL1h monitor) hold all caps.
+pub const kernel_caps: u32 = cap_fs_any | cap_proc_admin | cap_clipboard;
 
 /// A process principal: a single uid plus the capability mask, assigned at
 /// `process.create`. `exec` preserves it; there is no setuid bit and no
@@ -331,6 +337,13 @@ const Process = struct {
     exit_status_snapshot: u64 = 0,
     /// Exit status, snapshotted at exit so it survives the task reap.
     exit_status: u64 = 0,
+    /// M97g (#2085): the pid of the process that spawned this one, recorded
+    /// at bind from the task's spawn provenance (null = kernel-context
+    /// spawn: boot, monitor `exec`, autostart). Kept after exit — the
+    /// APPLOG/CRASH label binding lets a supervisor maintain a dead
+    /// child's diagnostics, and the receipt lands post-mortem. Never set
+    /// from EL0.
+    spawner: ?usize = null,
     /// Issue #1228 (phase 0c): the EL0 fault-handler PC a process
     /// registered via slot 75 `sys_exnotify` op 0. 0 = none (the reap path).
     /// Process-scope like the text aperture: inherited by every
@@ -843,6 +856,42 @@ pub fn bind(id: usize, task_id: usize) bool {
     processes[id].state = .running;
     processes[id].live_tasks = 1;
     return true;
+}
+
+/// M97g (#2085): record the spawning pid on a fresh process descriptor.
+/// The caller (exec) derives it from the task's spawn provenance; null
+/// marks a kernel-context spawn. Called once, at bind — before publish.
+pub fn set_spawner(id: usize, pid: ?usize) void {
+    if (id >= max_processes or processes[id].state == .free) return;
+    processes[id].spawner = pid;
+}
+
+/// M97g (#2085): an APPLOG/CRASH label binds to a process name modulo a
+/// trailing ".ELF" — the receipt/log label is the service name while the
+/// recorded process name is the image's file name ("GSCHK" vs
+/// "GSCHK.ELF"; selftest uses the full "GOSELF.ELF" either way).
+pub fn label_stem(name_or_label: []const u8) []const u8 {
+    const suffix = ".ELF";
+    if (name_or_label.len > suffix.len and
+        std.ascii.eqlIgnoreCase(name_or_label[name_or_label.len - suffix.len ..], suffix))
+        return name_or_label[0 .. name_or_label.len - suffix.len];
+    return name_or_label;
+}
+
+/// M97g (#2085): does the registry hold a process row whose name binds to
+/// `label` AND which `pid` spawned? Exited rows count — a supervisor
+/// writes the child's receipt after the child died. The kernel-spawned
+/// class (spawner null) can never match an EL0 caller.
+pub fn spawned_label(label: []const u8, pid: usize) bool {
+    if (label.len == 0) return false;
+    const stem = label_stem(label);
+    var id: usize = 0;
+    while (id < max_processes) : (id += 1) {
+        const p = &processes[id];
+        if (p.state == .free or p.spawner != pid) continue;
+        if (std.ascii.eqlIgnoreCase(label_stem(p.name_buf[0..p.name_len]), stem)) return true;
+    }
+    return false;
 }
 
 /// ADR 0027 D3: bind ONE MORE task to a RUNNING process (a thread created

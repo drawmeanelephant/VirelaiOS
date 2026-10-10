@@ -330,6 +330,17 @@ const Task = struct {
     /// wake path patches its saved frame x0 (0 = real wake, the ETIMEDOUT
     /// errno on expiry) and clears its futex-table seat.
     futex_waiting: bool = false,
+    /// M97g (#2079): spawn provenance for the WM seat gate. `spawned_by` is
+    /// the pid of the process whose task allocated this task; `null` means
+    /// the spawn ran on a kernel task (boot autostart, monitor `exec`,
+    /// kernel-internal `exec_file_as`), which is the only provenance an EL0
+    /// caller cannot forge. `launcher_spawned` marks a direct child of a
+    /// KERNEL-SPAWNED process (INIT's service spawn is the desktop case):
+    /// its own task's `spawned_by` was null. Neither field is writable from
+    /// EL0; both are recomputed at task allocation, never inherited across
+    /// a re-exec except through the same rule.
+    spawned_by: ?usize = null,
+    launcher_spawned: bool = false,
 };
 pub var tasks: [max_tasks]Task = [_]Task{.{}} ** max_tasks;
 var exception_owner: [smp.max_cores]?usize = @splat(null);
@@ -1236,6 +1247,13 @@ fn alloc_task_locked(name: []const u8, entry: u64, spsr: u64, stack: []u8, ttbr0
         if (tasks[id].state == .free) break;
     }
     if (id >= max_tasks) return null;
+    // #2079: record spawn provenance while the spawner is still observable.
+    // `find_by_task` answers null when the allocation runs on a kernel task
+    // (boot, monitor exec, autostart) — that is the kernel-spawned class the
+    // WM seat gate trusts unconditionally. A bound process task whose OWN
+    // `spawned_by` is null is a kernel-spawned process (INIT): its direct
+    // children form the launcher class the seat gate name-checks.
+    const spawner = process.find_by_task(current[smp.core_id()]);
     tasks[id] = .{
         .name = name,
         .sp = build_initial_frame(stack, entry),
@@ -1244,6 +1262,8 @@ fn alloc_task_locked(name: []const u8, entry: u64, spsr: u64, stack: []u8, ttbr0
         .sp_el0 = sp_el0,
         .ttbr0 = ttbr0,
         .state = .blocked,
+        .spawned_by = spawner,
+        .launcher_spawned = spawner != null and tasks[current[smp.core_id()]].spawned_by == null,
     };
     task_count += 1;
     return id;
@@ -3660,6 +3680,23 @@ pub fn current_task_for_core(cid: usize) usize {
 pub fn task_ttbr0(id: usize) u64 {
     if (id >= max_tasks or tasks[id].state == .free) return 0;
     return tasks[id].ttbr0;
+}
+
+/// #2079 (M97g seat gate): the spawn provenance recorded at task
+/// allocation. `parent` is the pid of the process whose task built this
+/// task — null for a kernel-context spawn (boot, monitor `exec`,
+/// autostart). `launcher` is true when that parent process was itself
+/// kernel-spawned (the INIT service-spawn shape). A freed/out-of-range
+/// slot reports `valid = false` so callers can fail closed.
+pub const SpawnProvenance = struct {
+    valid: bool,
+    parent: ?usize,
+    launcher: bool,
+};
+
+pub fn spawn_provenance(id: usize) SpawnProvenance {
+    if (id >= max_tasks or tasks[id].state == .free) return .{ .valid = false, .parent = null, .launcher = false };
+    return .{ .valid = true, .parent = tasks[id].spawned_by, .launcher = tasks[id].launcher_spawned };
 }
 
 pub fn cooperative_yield_count() u64 {

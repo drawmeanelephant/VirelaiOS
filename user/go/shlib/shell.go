@@ -21,8 +21,9 @@ import (
 	"virelai/vsys"
 )
 
-// MaxPipeBytes mirrors the kernel's single 4 KiB pipe buffer: a pipeline
-// hand-off carries at most that much (kernel/src/pipe.zig pipe_capacity).
+// MaxPipeBytes mirrors the kernel's per-process 4 KiB pipe buffer: a
+// pipeline hand-off carries at most that much (kernel/src/pipe.zig
+// pipe_capacity; slots are per-process since M97g #2081).
 const MaxPipeBytes = 4096
 
 // maxJobs is the background-job table bound (the EL1 monitor's bg_jobs

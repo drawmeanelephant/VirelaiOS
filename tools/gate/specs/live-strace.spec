@@ -144,6 +144,24 @@ vgate_assert 04 serial-contains 'trace: cross-uid ARM = -EACCES'
 vgate_assert 04 serial-absent 'trace: fixture failed'
 vgate_assert 04 serial-absent '[EXC] parking:'
 
+# M97g #2086: the session binds to the arming PID, not the uid. Two uid_user
+# processes: while TRACEFIX `hold` keeps its session live, TRACEFIX `grab`'s
+# ARM must refuse EACCES — the legacy same-uid takeover is gone. (The token
+# itself is a CSPRNG mint, so `grab` cannot guess it either.)
+vgate_file hold.txt <<'EOF'
+exec TRACEFIX.ELF hold
+EOF
+
+vgate_file grab.txt <<'EOF'
+exec TRACEFIX.ELF grab
+EOF
+
+vgate_run 07 -- --script '$RUN_DIR/hold.txt' --script2 '$RUN_DIR/grab.txt' --script2-after 'trace: holding session' --script-expect 'trace: same-uid arm refused' --timeout 120
+vgate_assert 07 serial-contains 'trace: holding session'
+vgate_assert 07 serial-exact 'trace: same-uid arm refused' 1
+vgate_assert 07 serial-absent 'trace: fixture failed'
+vgate_assert 07 serial-absent '[EXC] parking:'
+
 vgate_run 05 -- --script '$RUN_DIR/overhead.txt' --script-after 'tasks user-el0 exited status=7' --script-expect 'trace-overhead-done' --timeout 120
 vgate_assert 05 python <<'PY'
 import os, re

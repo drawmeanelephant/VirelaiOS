@@ -149,7 +149,7 @@ func TestFailureStatuses(t *testing.T) {
 		if snap.State != supervise.Exited || snap.Status != status {
 			t.Fatalf("status %d -> %+v", status, snap)
 		}
-		want := fmt.Sprintf("%s|restart=0/0 status=%d backoff_s=0", spec.Name, status)
+		want := fmt.Sprintf("X|restart=0/0 status=%d backoff_s=0", status)
 		if got := f.lastReceipt(); got != want {
 			t.Fatalf("status %d receipt %q, want %q", status, got, want)
 		}
@@ -271,7 +271,7 @@ func TestCrashLoopGiveUp(t *testing.T) {
 		t.Fatalf("post-give-up start err=%v, want ErrFailed", err)
 	}
 	// Every crash wrote a receipt; the last shows the spent budget.
-	if len(f.receipts) != 6 || f.lastReceipt() != "LOOP|restart=5/5 status=9 backoff_s=0" {
+	if len(f.receipts) != 6 || f.lastReceipt() != "L|restart=5/5 status=9 backoff_s=0" {
 		t.Fatalf("receipts %v", f.receipts)
 	}
 }

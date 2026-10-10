@@ -43,9 +43,15 @@ if not os.path.exists(src):
 shutil.copy(src, os.path.join(share, "GOSH.ELF"))
 print("staged GOSH.ELF (%d bytes) into share" % os.path.getsize(src))
 # The TS5 store: net-hmac = the HMAC-SHA256 pre-shared key (byte-for-byte).
+# M97g (#2083): the key is app-bound to GOSH.ELF, and OWNERS.TXT pins the
+# image uid_system — the binding is operator-provisioned, not name-forgeable.
 open(os.path.join(share, "SECRETS.TXT"), "w").write(
     "#v1\n"
-    "net-hmac\t1000\ts3cret\n"
+    "net-hmac\t1000\ts3cret\tGOSH.ELF\n"
+)
+open(os.path.join(share, "OWNERS.TXT"), "w").write(
+    "#v1\n"
+    "GOSH.ELF\t644\t0\t-\n"
 )
 PY
 

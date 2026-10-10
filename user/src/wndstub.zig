@@ -24,20 +24,28 @@ pub const registered_marker: []const u8 = "wndstub: registered\n";
 pub const tick_marker: []const u8 = "wndstub: tick\n";
 /// Written after REQUEST_PRESENT returns 0 (the present counter advanced).
 pub const present_marker: []const u8 = "wndstub: present ok\n";
+/// M97g (#2079): written when REGISTER refuses (EACCES from the seat
+/// provenance gate when spawned by an ordinary EL0 shell) — the live
+/// proof an EL0-spawned process cannot claim the seat.
+pub const refused_marker: []const u8 = "wndstub: register refused\n";
 /// The exit status (0 — the stub ends cleanly; the fallback report + the
 /// `wm` row are the teardown evidence).
 pub const exit_status: u64 = 0;
+/// The refusal exit status (1 — a refused REGISTER is an honest failure).
+pub const refused_status: u64 = 1;
 
 export fn _start() callconv(.naked) noreturn {
     asm volatile (
         \\// 1. sys_wmctl(REGISTER) — slot 65, cmd 1. Only succeeds when the
         \\// compositor is armed (the gate boots with --screen); ENXIO
-        \\// otherwise. A failed register parks here (fail-safe).
+        \\// otherwise. A refused REGISTER prints the refusal marker and
+        \\// exits nonzero (M97g #2079: an EL0-spawned caller must be seen
+        \\// refused, not silently parked — the seat gate needs the proof).
         \\mov x0, #1
         \\mov x8, #65
         \\svc #0
         \\cmp x0, #0
-        \\b.ne 9f
+        \\b.ne 8f
         \\mov x0, #1
         \\adr x1, 1f
         \\mov x2, #20 // "wndstub: registered\n"
@@ -77,6 +85,16 @@ export fn _start() callconv(.naked) noreturn {
         \\mov x0, #0
         \\mov x8, #3
         \\svc #0
+        \\8:
+        \\// REGISTER refused: report it, then sys_exit(1).
+        \\mov x0, #1
+        \\adr x1, 4f
+        \\mov x2, #26 // "wndstub: register refused\n"
+        \\mov x8, #1
+        \\svc #0
+        \\mov x0, #1
+        \\mov x8, #3
+        \\svc #0
         \\9:
         \\b 9b
         \\1:
@@ -85,6 +103,8 @@ export fn _start() callconv(.naked) noreturn {
         \\.ascii "wndstub: tick\n"
         \\3:
         \\.ascii "wndstub: present ok\n"
+        \\4:
+        \\.ascii "wndstub: register refused\n"
     );
 }
 
@@ -99,4 +119,7 @@ test "user wndstub: the marker shapes are pinned (live-gate grep targets)" {
     try std.testing.expectEqual(@as(usize, 14), tick_marker.len);
     try std.testing.expectEqualStrings("wndstub: present ok\n", present_marker);
     try std.testing.expectEqual(@as(usize, 20), present_marker.len);
+    try std.testing.expectEqualStrings("wndstub: register refused\n", refused_marker);
+    try std.testing.expectEqual(@as(usize, 26), refused_marker.len);
+    try std.testing.expectEqual(@as(u64, 1), refused_status);
 }
