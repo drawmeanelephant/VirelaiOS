@@ -30,12 +30,12 @@ subprocess.run(["python3", "tests/fixtures/init/boot/native.py", str(share)], ch
 PY
 
 vgate_file final-receipt.expected <<'EOF'
-app=SVFIX-RESTART
+app=SVFIXCH
 outcome=restart=5/5 status=137 backoff_s=0
 last-log:
 EOF
 vgate_file never-receipt.expected <<'EOF'
-app=SVFIX-NEVER
+app=SVFIXNV
 outcome=restart=0/0 status=137 backoff_s=0
 last-log:
 EOF
@@ -71,8 +71,8 @@ vgate_assert 01 serial-contains 'svfixture: fifth receipt saved'
 vgate_assert 01 serial-absent 'svfixture: FAIL'
 vgate_assert 01 serial-absent '[EXC] parking:'
 vgate_assert 01 serial-absent 'fatal error:'
-vgate_assert 01 share-equals CRASH/SVFIX-RESTART.TXT final-receipt.expected
-vgate_assert 01 share-equals CRASH/SVFIX-NEVER.TXT never-receipt.expected
+vgate_assert 01 share-equals CRASH/SVFIXCH.TXT final-receipt.expected
+vgate_assert 01 share-equals CRASH/SVFIXNV.TXT never-receipt.expected
 
 vgate_assert 01 python <<'PY'
 import os, re, shutil
@@ -128,7 +128,7 @@ for name, expected in [
     assert expected in (run / ("client-%s.out" % name)).read_text(errors="replace"), \
         "external client failed: " + name
 receipt5 = Path(os.environ["VG_SHARE"]) / "SVFIX5.TXT"
-expected = ("app=SVFIX-RESTART\noutcome=restart=5/5 status=137 backoff_s=%d\nlast-log:\n" %
+expected = ("app=SVFIXCH\noutcome=restart=5/5 status=137 backoff_s=%d\nlast-log:\n" %
             int(backoffs[4][2])).encode()
 assert receipt5.read_bytes() == expected, "fifth receipt bytes"
 # Preserve the checkpoint and measured intervals before the private share dies.
@@ -199,7 +199,7 @@ assert serial.index("goset: service saved name=probe enabled=on") < serial.index
 assert serial.index("svc: start name=probe ") < serial.index("init: stop name=probe reason=config")
 assert serial.index("init: stop name=probe reason=config") < serial.index("svc: exit name=probe ")
 assert "svc: backoff name=probe" not in serial
-assert not (share / "CRASH/probe.TXT").exists(), "explicit stop made a crash receipt"
+assert not (share / "CRASH/INITDEP.BIN.TXT").exists(), "explicit stop made a crash receipt"
 assert "init: stop name=boot" not in serial, "boot toggle stopped live service"
 assert len(re.findall(r"svc: start name=(?:boot|seat) ", serial)) == 2
 assert re.search(r"procs: [^\n]*name=INITPRE.BIN [^\n]*state=running", serial)

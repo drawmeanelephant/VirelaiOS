@@ -10,8 +10,12 @@ import (
 )
 
 // Per-app logs are deliberately small share files so the owner can inspect
-// them after an app exits. They are diagnostic records, not an isolation or
-// authorization mechanism (ADR 0024).
+// them after an app exits. The M97g (#2085) binding makes the label a
+// security boundary: the kernel ties an APPLOG/CRASH label to the
+// caller's own recorded image name (or to a registry row the caller
+// spawned — the supervisor case), and every other label fails EACCES for
+// a uid_user actor. Privileged actors keep the bypass (the operator's
+// `-u0` viewer channel); ADR 0024 records the policy.
 const (
 	AppLogDir       = "/host/APPLOG"
 	CrashReceiptDir = "/host/CRASH"
@@ -144,7 +148,9 @@ func trimLogRing(body []byte, maxLines, maxBytes int) []byte {
 
 // Log appends one line to app's bounded persistent ring. A message is
 // normalized to one line and capped before it enters the ring. The returned
-// value is the underlying file error (zero on success).
+// value is the underlying file error (zero on success). `app` must bind to
+// the caller's own image name (modulo a ".ELF" suffix) or to a process the
+// caller spawned — a foreign label returns EACCES (#2085).
 func Log(app, message string) int64 {
 	return appendAppLog(app, 0, "", message)
 }
@@ -265,7 +271,9 @@ func appendAppLog(app string, level byte, tag, message string) int64 {
 	return WriteFileSafe(path, next)
 }
 
-// ReadLog reads one app's ring. A missing log is returned as ENOENT.
+// ReadLog reads one app's ring. A missing log is returned as ENOENT. A
+// label the caller does not own returns EACCES — reads are bound, not open
+// (#2085); a privileged caller keeps the view-everything channel.
 func ReadLog(app string) ([]byte, int64) {
 	path := AppLogPath(app)
 	if path == "" {
@@ -276,7 +284,8 @@ func ReadLog(app string) ([]byte, int64) {
 
 // AppLogNames lists the app labels with log rings, sorted for deterministic
 // display. The directory ABI is bounded to MaxDirEntries, so rings are
-// intentionally bounded to the same number of distinct app files.
+// intentionally bounded to the same number of distinct app files. Listing
+// stays open — names are enumerable; the ring CONTENTS are bound (#2085).
 func AppLogNames() ([]string, int64) {
 	var entries [appLogMaxApps]DirEntry
 	n, rc := DirList(AppLogDir, entries[:])
@@ -313,8 +322,10 @@ func lastLogLines(body []byte, count int) []byte {
 }
 
 // WriteCrashReceipt publishes the latest exit or panic record for app,
-// including only its last eight log lines. Receipts record failures; they do
-// not enforce policy or change the ADR 0024 isolation boundary.
+// including only its last eight log lines. The label binding applies to the
+// receipt AND to the embedded log tail: a foreign label fails EACCES before
+// any bytes move, so one app cannot forge another's receipt or smuggle its
+// log lines (#2085).
 func WriteCrashReceipt(app, outcome string) int64 {
 	path := CrashReceiptPath(app)
 	if path == "" {

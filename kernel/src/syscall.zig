@@ -73,6 +73,7 @@ pub const arp = @import("arp.zig"); // M26 N2 (issue #400): the ARP table for th
 pub const dhcp = @import("dhcp.zig"); // M26 N2 (issue #400): DHCP lease state for the net-stats snapshot
 pub const udp = @import("udp.zig"); // claim 1384 (card N6): the milestone-five UDP layer
 pub const virtio_net = @import("virtio_net.zig"); // claim 1384 (card N6): net_udp_send (TX + loopback)
+pub const virtio_entropy = @import("virtio_entropy.zig"); // M97g (#2084): the getrandom lazy reseed
 pub const uaccess = @import("uaccess.zig"); // claim 6120: fault-safe copy-in
 pub const userspace = @import("userspace.zig");
 pub const driving_award = @import("driving_award.zig"); // claim 1543/0487 (cards G5/G6): the window manager this seam renders into
@@ -429,10 +430,15 @@ pub const CapabilityGate = struct {
 /// The D10 gated set. `sys_kill` needs `CAP_PROC_ADMIN` only for a
 /// CROSS-principal target: self and same-uid kills are allowed for every
 /// principal, so `handle_kill` consumes `gated(sys_kill)` after its
-/// same-principal test, when the rule applies. Gated rows are
+/// same-principal test, when the rule applies. M97g (#2082) gates the two
+/// programmatic clipboard slots unconditionally — the kernel-internal
+/// paths (chrome chords, the monitor `clip` command) never reach the
+/// handlers, so the cap cannot shadow a legitimate gesture. Gated rows are
 /// unconditional capabilities; the handler owns the conditional shape.
 pub const capability_gates = [_]CapabilityGate{
     .{ .number = sys_kill, .cap = process.cap_proc_admin },
+    .{ .number = sys_clipboard_set, .cap = process.cap_clipboard },
+    .{ .number = sys_clipboard_get, .cap = process.cap_clipboard },
 };
 
 /// The capability `number` requires for its gated use, or null when the
@@ -764,6 +770,11 @@ pub fn arm_task_regions() void {
 
 pub fn handle_svc(frame: *exceptions.VectorFrame, immediate: u16) bool {
     arm_task_regions();
+    // exc_dispatch already staged this frame into resume_frame; pinning it
+    // again here keeps host tests that call handle_svc directly honest, and
+    // lets the trailing-write check below observe the caller's frame
+    // pointer before a parking handler may publish it to the waker paths.
+    exceptions.resume_frame[svclock.core_id()] = @intFromPtr(frame);
     var args: Args = undefined;
     for (&args, 0..) |*arg, reg| arg.* = exceptions.frame_read(frame, @intCast(reg));
     const number = exceptions.frame_read(frame, 8);
@@ -771,9 +782,15 @@ pub fn handle_svc(frame: *exceptions.VectorFrame, immediate: u16) bool {
         dispatch(number, args, frame)
     else
         error_result(.enosys);
-    // Successful sleep publishes x0 before parking. Its saved frame may
-    // already be executing on another core, so do not touch it again.
-    if (!(immediate == svc_immediate and number == sys_sleep and result == 0))
+    // M97a F2 (issue #2093): when the handler parked the caller (sleep,
+    // wait, wait_event, futex wait, thread join, yield, exit), the
+    // rotation staged a SUCCESSOR's frame and resume_frame no longer
+    // names this one. The handler pre-published the placeholder into x0
+    // before the task became waker-visible; a wake/timeout patch may
+    // already have landed — or the frame may already be executing again
+    // on another core. The waker's patch must be the last write, so a
+    // parked frame is never touched here.
+    if (exceptions.resume_frame[svclock.core_id()] == @intFromPtr(frame))
         _ = exceptions.frame_write(frame, 0, result);
     return true;
 }
@@ -843,7 +860,11 @@ fn write_stream(pid: usize, fd: u64, address: u64, count: u64) u64 {
     return @bitCast(file_table.stream_write(pid, fd, staging[0..@intCast(take)]));
 }
 
-fn handle_yield(_: Args, _: *exceptions.VectorFrame) u64 {
+fn handle_yield(_: Args, frame: *exceptions.VectorFrame) u64 {
+    // #2093: yield saves this frame and may be re-selected on another
+    // core before the dispatch unwinds; publish the result before the
+    // park (same contract as sleep), never after.
+    _ = exceptions.frame_write(frame, 0, 0);
     _ = scheduler.yield_current();
     return 0;
 }
@@ -996,7 +1017,7 @@ fn handle_principal(args: Args, _: *exceptions.VectorFrame) u64 {
 /// forever), so the wait contract is live-or-already-exited only — never
 /// a hang. Bounded, kernel-owned: no zombies, no fds, no POSIX wait
 /// semantics; the status is a plain kernel-recorded number.
-fn handle_wait(args: Args, _: *exceptions.VectorFrame) u64 {
+fn handle_wait(args: Args, frame: *exceptions.VectorFrame) u64 {
     const target = args[0];
     if (target >= process.max_processes) return error_result(.einval);
     const target_info = process.info(@intCast(target)) orelse return error_result(.einval);
@@ -1004,6 +1025,11 @@ fn handle_wait(args: Args, _: *exceptions.VectorFrame) u64 {
     if (caller == target) return error_result(.einval);
     if (target_info.state == .exited) return target_info.exit_status;
     if (target_info.state == .created) return error_result(.einval);
+    // #2093: the park publishes this frame to `wake_waiters` — stage the
+    // placeholder BEFORE it can be patched so the waker's exit-status
+    // write is the last one (handle_svc skips its trailing write once
+    // resume_frame names the successor).
+    _ = exceptions.frame_write(frame, 0, 0);
     if (!scheduler.wait_current(@intCast(target))) return error_result(.einval);
     // Placeholder: the caller's frame is saved and the next task staged;
     // `wake_waiters` overwrites this slot with the real status at exit.
@@ -1312,29 +1338,35 @@ fn handle_drag_start(args: Args, _: *exceptions.VectorFrame) u64 {
 
 /// M19 P1 (slot 56): sys_pipe_read — copy unread pipe bytes OUT through
 /// uaccess. max_len clamped to capacity; empty pipe → 0; bad buffer → EFAULT.
+/// M97g (#2081): reads touch only the CALLER'S per-process pipe — the shared
+/// buffer let any app drain another's staged pipeline bytes.
 fn handle_pipe_read(args: Args, _: *exceptions.VectorFrame) u64 {
+    const pid = process.find_by_task(scheduler.current_id()) orelse return error_result(.einval);
     const buf_addr = args[0];
     const max_len: usize = @min(args[1], pipe.pipe_capacity);
     if (max_len == 0) return 0;
-    const avail = pipe.available();
-    if (avail == 0) return 0;
-    const take = @min(avail, max_len);
-    if (uaccess.copy_out(buf_addr, pipe.unread_slice()[0..take], take) != .ok) return error_result(.efault);
-    pipe.advance_read(take);
+    const unread = pipe.el0_unread(pid) orelse return 0;
+    if (unread.len == 0) return 0;
+    const take = @min(unread.len, max_len);
+    if (uaccess.copy_out(buf_addr, unread[0..take], take) != .ok) return error_result(.efault);
+    pipe.el0_advance_read(pid, take);
     return @intCast(take);
 }
 
 /// M19 P1 (slot 57): sys_pipe_write — copy bytes into pipe through uaccess.
 /// ENOSPC when full; EFAULT for bad buffer; EINVAL for oversized write.
+/// M97g (#2081): writes land in the caller's own per-process pipe; a full
+/// per-pid table refuses ENOSPC rather than sharing a stranger's buffer.
 fn handle_pipe_write(args: Args, _: *exceptions.VectorFrame) u64 {
+    const pid = process.find_by_task(scheduler.current_id()) orelse return error_result(.einval);
     const buf_addr = args[0];
     const len = args[1];
     if (len == 0) return 0;
     if (len > pipe.pipe_capacity) return error_result(.einval);
-    const room = pipe.capacity_left();
-    if (len > room) return error_result(.enospc);
-    if (uaccess.copy_in(pipe.append_slice()[0..@intCast(len)], buf_addr, @intCast(len)) != .ok) return error_result(.efault);
-    pipe.advance_write(@intCast(len));
+    const room = pipe.el0_append(pid) orelse return error_result(.enospc);
+    if (len > room.len) return error_result(.enospc);
+    if (uaccess.copy_in(room[0..@intCast(len)], buf_addr, @intCast(len)) != .ok) return error_result(.efault);
+    pipe.el0_advance_write(pid, @intCast(len));
     return len;
 }
 
@@ -2006,10 +2038,13 @@ fn handle_file_mode(args: Args, _: *exceptions.VectorFrame) u64 {
 // M50 TS5 (issue #1139, ADR 0024 D8/D10): sys_secret_get — slot 70
 // ---------------------------------------------------------------------------
 
-/// `sys_secret_get(buf, len)`: copy the CALLING principal's entries from
-/// the `SECRETS.TXT` store into caller memory as fixed `SecretRecord`s
-/// (ADR 0007 slot 70 wire shape). Returns the byte length written (a
-/// multiple of `secret.record_bytes`); 0 when the principal owns nothing;
+/// `sys_secret_get(buf, len)`: copy the CALLING principal's VISIBLE
+/// entries from the `SECRETS.TXT` store into caller memory as fixed
+/// `SecretRecord`s (ADR 0007 slot 70 wire shape). An entry's optional
+/// fourth field binds it to an app allowlist (M97g #2083): the caller's
+/// recorded image must be listed AND `uid_system`-owned. Returns the byte
+/// length written (a multiple of `secret.record_bytes`); 0 when the
+/// principal owns nothing it may read;
 /// `EINVAL` for a non-process caller or a `len` too small to hold every
 /// caller entry; `EFAULT` for a bad buffer. The ONLY in-guest reader of the
 /// secret store; there is NO `sys_secret_set` (provisioning is host-side,
@@ -2019,12 +2054,17 @@ fn handle_secret_get(args: Args, _: *exceptions.VectorFrame) u64 {
     const address = args[0];
     const buf_len = args[1];
     const pid = process.find_by_task(scheduler.current_id()) orelse return error_result(.einval);
-    const pr = process.principal(pid) orelse return error_result(.einval);
-    const needed = secret.count_for_uid(pr.uid) * secret.record_bytes;
+    const info = process.info(pid) orelse return error_result(.einval);
+    // M97g (#2083): app-bound entries are served only when the caller's
+    // recorded image is on the entry's allowlist AND that image is an
+    // operator-provisioned (`uid_system`-owned) file — a bare uid match is
+    // vacuous across EL0 apps and a bare name is forgeable.
+    const reader = secret.Reader{ .uid = info.uid, .image = info.name };
+    const needed = secret.count_for(reader) * secret.record_bytes;
     if (buf_len < needed) return error_result(.einval);
     if (needed == 0) return 0;
     var recs: [secret.max_secret_entries]secret.SecretRecord = undefined;
-    const n = secret.records_for_uid(pr.uid, &recs);
+    const n = secret.records_for(reader, &recs);
     const take = n * secret.record_bytes;
     // Marshal the fixed records into BSS scratch, then copy out through
     // uaccess only — the caller's memory is the sole destination of values.
@@ -2047,11 +2087,20 @@ fn handle_secret_get(args: Args, _: *exceptions.VectorFrame) u64 {
 /// This is the single shared entropy contract (ADR 0025 D5); the
 /// GOOS=virelai runtime (#1163) consumes the same slot. Registered but never
 /// called on the boot path (ADR 0025 D9).
+///
+/// M97g (issue #2084): the slot FAILS CLOSED while the CSPRNG holds only
+/// the deterministic boot fallback — a lying or absent host entropy device
+/// must never yield bytes that look like real entropy (the fallback tag is
+/// source-visible, so every consumer — TCP ISN, DNS ids, auth tokens —
+/// would be reproducible). An unseeded call first attempts the lazy
+/// reseed; `EAGAIN` (-11) is the honest transient refusal and nothing is
+/// written to the buffer.
 fn handle_getrandom(args: Args, _: *exceptions.VectorFrame) u64 {
     _ = process.find_by_task(scheduler.current_id()) orelse return error_result(.einval);
     const address = args[0];
     const raw_len = args[1];
     if (raw_len == 0) return 0;
+    if (!csprng.seeded() and !getrandom_reseed()) return error_result(.eagain);
     const take: usize = @intCast(@min(raw_len, @as(u64, getrandom_max)));
     // Generate into bounded kernel BSS, then copy out through uaccess only —
     // caller memory is the sole destination and can never be written to
@@ -2059,6 +2108,19 @@ fn handle_getrandom(args: Args, _: *exceptions.VectorFrame) u64 {
     csprng.random_bytes(getrandom_scratch[0..take]);
     if (uaccess.copy_out(address, getrandom_scratch[0..take], take) != .ok) return error_result(.efault);
     return @intCast(take);
+}
+
+/// M97g (issue #2084): the lazy reseed. The boot seeds once; a failed read
+/// (or a device the host attached late / reset at ExitBootServices) would
+/// otherwise leave slot 72 refusing forever. Each unseeded call re-reads
+/// the device — a bounded poll — re-arming the transport once if VZ
+/// dropped it. Returns true only when REAL device entropy keyed the
+/// stream; a deterministic fallback is never a seed.
+fn getrandom_reseed() bool {
+    var seed_buf: [csprng.seed_len]u8 align(16) = undefined;
+    if (!virtio_entropy.read_seed(&seed_buf)) return false;
+    csprng.seed(&seed_buf);
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -2087,7 +2149,7 @@ fn futex_deadline_tick(timeout_ns: u64) u64 {
 /// the process's executable aperture), a null/misaligned stack_hi, a
 /// invalid TLS prefix, or an exhausted task pool / thread bound
 /// (EAGAIN — a transient capacity refusal, the caller may retry).
-fn handle_thread(args: Args, _: *exceptions.VectorFrame) u64 {
+fn handle_thread(args: Args, frame: *exceptions.VectorFrame) u64 {
     const op = args[0];
     const caller = scheduler.current_id();
     const pid = process.find_by_task(caller) orelse return error_result(.einval);
@@ -2134,7 +2196,15 @@ fn handle_thread(args: Args, _: *exceptions.VectorFrame) u64 {
             if (!exited) return error_result(.einval);
             return 0;
         },
-        2 => return scheduler.join_thread(pid, args[1]) orelse error_result(.einval),
+        2 => {
+            // #2093: a blocking join publishes this frame to the joinee's
+            // exit path — stage the placeholder before the park so the
+            // exit-status patch is the last write. A refused or
+            // already-zombie join returns through the normal path and
+            // overwrites the placeholder with the real result.
+            _ = exceptions.frame_write(frame, 0, 0);
+            return scheduler.join_thread(pid, args[1]) orelse error_result(.einval);
+        },
         3 => {
             const tls = args[1];
             if ((tls & 0xf) != 0) return error_result(.einval);
@@ -2180,6 +2250,11 @@ fn handle_futex(args: Args, frame: *exceptions.VectorFrame) u64 {
             const expected: u32 = @truncate(val);
             if (word != expected) return error_result(.eagain);
             const deadline = if (op == 2) strict_deadline else futex_deadline_tick(timeout_ns);
+            // #2093: stage the wake result slot (0) BEFORE the (pid,uaddr)
+            // seat and the parked frame become visible — the wake/timeout
+            // patch is the last write; handle_svc never writes a parked
+            // frame.
+            _ = exceptions.frame_write(frame, 0, 0);
             return switch (scheduler.futex_wait_current(pid, uaddr, expected, deadline, futex_word_matches)) {
                 // The task blocked and has been re-selected: the wake/timeout
                 // patched x0 in THIS saved frame (0 = woken, -ETIMEDOUT on
@@ -2348,11 +2423,27 @@ fn futex_word_matches(uaddr: u64, val: u32) bool {
     return (uaccess.load_u32(uaddr) orelse return false) == val;
 }
 
+/// M97g (#2082): slots 38/39 admit a caller holding CAP_CLIPBOARD or the
+/// registered WM seat. The seat is the user's gesture mediator — it owns
+/// the raw input fan-out and renders the clipboard tray indicator — so
+/// its probe is user-mediated by construction; every other unprivileged
+/// caller gets EACCES before any argument is validated.
+fn clipboard_authorized(pid: usize) bool {
+    const caller = process.principal(pid) orelse return false;
+    if (caller.has(gated(sys_clipboard_get) orelse process.cap_clipboard)) return true;
+    if (wm_server.registered_pid()) |seat| return seat == pid;
+    return false;
+}
+
 /// Milestone 14 (claim 0169): slot 38 — sys_clipboard_set(buf_ptr, len)
+/// M97g (#2082): CAP_CLIPBOARD or the registered seat — the buffer is
+/// machine-global, so an unprivileged caller could silently overwrite
+/// what the user pastes.
 fn handle_clipboard_set(args: Args, _: *exceptions.VectorFrame) u64 {
     const buf_ptr = args[0];
     const raw_len = args[1];
-    _ = process.find_by_task(scheduler.current_id()) orelse return error_result(.einval);
+    const pid = process.find_by_task(scheduler.current_id()) orelse return error_result(.einval);
+    if (!clipboard_authorized(pid)) return error_result(.eacces);
     if (raw_len == 0) {
         _ = clipboard.set("");
         return 0;
@@ -2363,10 +2454,14 @@ fn handle_clipboard_set(args: Args, _: *exceptions.VectorFrame) u64 {
 }
 
 /// Milestone 14 (claim 0169): slot 39 — sys_clipboard_get(buf_ptr, max)
+/// M97g (#2082): CAP_CLIPBOARD or the registered seat — silent reads are
+/// the keylogger half of the audit finding; the user's paste path is the
+/// kernel chrome chord, which never enters this handler.
 fn handle_clipboard_get(args: Args, _: *exceptions.VectorFrame) u64 {
     const buf_ptr = args[0];
     const raw_max = args[1];
-    _ = process.find_by_task(scheduler.current_id()) orelse return error_result(.einval);
+    const pid = process.find_by_task(scheduler.current_id()) orelse return error_result(.einval);
+    if (!clipboard_authorized(pid)) return error_result(.eacces);
     if (raw_max == 0) return 0;
     const take: usize = @min(@as(usize, @intCast(raw_max)), clipboard.capacity);
     const n = clipboard.get(clipboard_staging[0..take]);
@@ -3650,6 +3745,14 @@ fn handle_wmctl(args: Args, _: *exceptions.VectorFrame) u64 {
             // scanout) and is deterministically false in host tests and in
             // the headless default VM.
             if (!virtio_gpu.gpu_setup_ok) return error_result(.enxio);
+            // #2079 (M97g seat gate): registering arms the raw key/pointer
+            // fan-out and the writable scanout, so the caller must hold a
+            // kernel-recorded spawn provenance (kernel-spawned, or a
+            // launcher child bearing the configured seat program name) or
+            // cap_proc_admin. A process an arbitrary EL0 app can spawn —
+            // including one whose file is named like the seat — is refused
+            // BEFORE the fan-out hooks arm.
+            if (!wm_server.seat_authorized(pid, scheduler.current_id())) return error_result(.eacces);
             _ = wm_server.register(pid);
             // Claim 9498: the registered WM stays on CORE 0 — its
             // COMPOSITE_TICK pacing is delivered from core 0's tick, so
@@ -3658,6 +3761,12 @@ fn handle_wmctl(args: Args, _: *exceptions.VectorFrame) u64 {
             // core; this pins the one tick-coupled process back.)
             _ = scheduler.pin_task(scheduler.current_id(), 0);
             return 0;
+        },
+        wm_server.wmctl_seat_pid => {
+            // #2079: pid-based seat discovery — WM clients resolve the seat
+            // from the kernel's register, not from a forgeable name.
+            // Unprivileged read-only query; ENOENT when no seat is held.
+            return if (wm_server.registered_pid()) |seat| @as(u64, seat) else error_result(.enoent);
         },
         wm_server.wmctl_content_ptr => {
             // #1688: the registered seat forwards one content pointer

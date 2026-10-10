@@ -11,14 +11,30 @@
 //!
 //! ## Line format
 //!
-//! One entry per line: `key<TAB>uid<TAB>value`. The `uid` scopes each entry
-//! to a principal (ADR 0024 D1); `sys_secret_get` returns only the caller's
-//! entries (today every EL0 process is `uid_user`; `uid_system` is the
-//! kernel's authority and is served to system-principal processes only).
-//! Malformed lines are SKIPPED (the file is host-provisioned and the file
-//! ABI cannot read it; a bad host line is a provisioning error, not guest
-//! reachable). A table at the 8-entry cap refuses further entries (never
-//! eviction).
+//! One entry per line: `key<TAB>uid<TAB>value[<TAB>apps]`. The `uid`
+//! scopes each entry to a principal (ADR 0024 D1); `sys_secret_get`
+//! returns only the caller's entries (today every EL0 process is
+//! `uid_user`; `uid_system` is the kernel's authority and is served to
+//! system-principal processes only). Malformed lines are SKIPPED (the file
+//! is host-provisioned and the file ABI cannot read it; a bad host line is
+//! a provisioning error, not guest reachable). A table at the 8-entry cap
+//! refuses further entries (never eviction).
+//!
+//! ## App binding (M97g, issue #2083)
+//!
+//! uid scoping alone is vacuous — every ordinary EL0 app is `uid_user`.
+//! The optional fourth field is a comma-separated allowlist of image
+//! names (`GOSH.ELF,GOSSHD.ELF`): an entry carrying one is served only to
+//! a caller whose recorded image name matches a listed name AND whose
+//! image file is `uid_system`-owned in `OWNERS.TXT` with no non-owner
+//! write bit (`trust.system_owned_key`). Both halves are needed: the name
+//! alone is forgeable (EL0 can `exec` any string it names), and ownership
+//! alone names no app — but an EL0 process can neither create a
+//! `uid_system` row (runtime `set_mode` mints `uid_user` rows only) nor
+//! write `OWNERS.TXT` to forge one (the metadata file is self-protected
+//! by construction, `trust.ensure_meta_file`), so a matching name against
+//! a protected file means the operator provisioned that binary. An entry
+//! without the field keeps the legacy uid-scope behavior.
 //!
 //! ## Secret class BY CONSTRUCTION (not only hand-seeded OWNERS.TXT)
 //!
@@ -49,6 +65,7 @@ const std = @import("std");
 const virtio_file = @import("virtio_file.zig");
 const trust = @import("trust.zig");
 const process = @import("process.zig");
+const file_table = @import("file_table.zig");
 
 pub const filename = "SECRETS.TXT";
 
@@ -57,10 +74,13 @@ pub const filename = "SECRETS.TXT";
 pub const max_key_len: usize = 32;
 pub const max_val_len: usize = 64;
 pub const max_secret_entries: usize = 8;
+/// M97g (#2083): the optional fourth field — a comma-separated allowlist
+/// of image names — is kernel-side policy only, never on the wire.
+pub const max_apps_len: usize = 64;
 
-/// The share payload bound: 8 entries × (1 + 32 + 1 + 10 + 1 + 64 + 1)
-/// plus the `#v1\n` header, with headroom.
-pub const file_max: usize = 1024;
+/// The share payload bound: 8 entries × (32-key + uid + 64-value +
+/// 64-apps + separators) plus the `#v1\n` header, with headroom.
+pub const file_max: usize = 8 * (max_key_len + 10 + max_val_len + max_apps_len + 4) + 8;
 
 pub const Entry = struct {
     uid: u32 = process.uid_user,
@@ -68,6 +88,10 @@ pub const Entry = struct {
     key_len: u8 = 0,
     val: [max_val_len]u8 = [_]u8{0} ** max_val_len,
     val_len: u8 = 0,
+    /// M97g (#2083): comma-separated image-name allowlist. Empty = the
+    /// legacy uid-scope-only entry.
+    apps: [max_apps_len]u8 = [_]u8{0} ** max_apps_len,
+    apps_len: u8 = 0,
 };
 
 /// `load` outcome. `full` means the file carried more valid entries than
@@ -124,34 +148,65 @@ pub fn entry_at(i: usize) ?struct { key: []const u8, uid: u32 } {
     return .{ .key = e.key[0..e.key_len], .uid = e.uid };
 }
 
-/// The number of entries owned by `uid` (the `sys_secret_get` filter).
-pub fn count_for_uid(uid: u32) usize {
+/// M97g (#2083): the `sys_secret_get` caller, as the kernel recorded it —
+/// the principal's uid plus the exec'd image name (the process registry's
+/// verbatim copy of the path handed to exec).
+pub const Reader = struct {
+    uid: u32,
+    image: []const u8 = "",
+};
+
+/// M97g (#2083): an entry is visible to `r` when the uid scopes match and,
+/// for an app-bound entry, the caller's recorded image is on the entry's
+/// allowlist AND names an operator-provisioned file. The ownership half is
+/// what makes the name honest: EL0 cannot manufacture a `uid_system` row.
+fn visible(e: *const Entry, r: Reader) bool {
+    if (e.uid != r.uid) return false;
+    if (e.apps_len == 0) return true;
+    const parsed = file_table.parse_path(r.image) orelse return false;
+    if (parsed.partition != .host) return false;
+    const key = parsed.path[0..parsed.parsed_len()];
+    var matched = false;
+    var it = std.mem.splitScalar(u8, e.apps[0..e.apps_len], ',');
+    while (it.next()) |app| {
+        if (app.len == 0) return false; // malformed list: fail closed
+        if (std.ascii.eqlIgnoreCase(app, key)) matched = true;
+    }
+    return matched and trust.system_owned_key(key);
+}
+
+/// The number of entries `r` may read (the `sys_secret_get` filter).
+pub fn count_for(r: Reader) usize {
     ensure_init();
     var n: usize = 0;
     for (entries[0..entry_count]) |*e| {
-        if (e.uid == uid) n += 1;
+        if (visible(e, r)) n += 1;
     }
     return n;
 }
 
-fn set_internal(uid: u32, key: []const u8, val: []const u8) SetResult {
+fn set_internal(uid: u32, key: []const u8, val: []const u8, apps: []const u8) SetResult {
     if (key.len == 0 or key.len > max_key_len) return .invalid_key;
     if (val.len == 0 or val.len > max_val_len) return .invalid_value;
-    for (entries[0..entry_count]) |*e| {
-        if (e.uid == uid and std.mem.eql(u8, e.key[0..e.key_len], key)) {
-            @memcpy(e.val[0..val.len], val);
-            e.val_len = @intCast(val.len);
-            return .ok;
+    if (apps.len > max_apps_len) return .invalid_value;
+    var e: *Entry = undefined;
+    for (entries[0..entry_count]) |*x| {
+        if (x.uid == uid and std.mem.eql(u8, x.key[0..x.key_len], key)) {
+            e = x;
+            break;
         }
+    } else {
+        if (entry_count >= max_secret_entries) return .table_full;
+        e = &entries[entry_count];
+        e.uid = uid;
+        @memcpy(e.key[0..key.len], key);
+        e.key_len = @intCast(key.len);
+        entry_count += 1;
     }
-    if (entry_count >= max_secret_entries) return .table_full;
-    var e = &entries[entry_count];
-    e.uid = uid;
-    @memcpy(e.key[0..key.len], key);
-    e.key_len = @intCast(key.len);
     @memcpy(e.val[0..val.len], val);
     e.val_len = @intCast(val.len);
-    entry_count += 1;
+    e.apps_len = @intCast(apps.len);
+    @memcpy(e.apps[0..apps.len], apps);
     return .ok;
 }
 
@@ -182,21 +237,31 @@ pub fn parse(text: []const u8) LoadResult {
 }
 
 fn parseLine(line: []const u8) SetResult {
-    var fields: [3][]const u8 = .{ "", "", "" };
+    var fields: [4][]const u8 = .{ "", "", "", "" };
     var nfields: usize = 0;
     var it = std.mem.splitScalar(u8, line, '\t');
     while (it.next()) |f| {
-        if (nfields < 3) fields[nfields] = f;
+        if (nfields < 4) fields[nfields] = f;
         nfields += 1;
     }
-    if (nfields != 3) return .invalid_value;
+    if (nfields != 3 and nfields != 4) return .invalid_value;
     if (fields[1].len == 0) return .invalid_value;
     var uid: u32 = 0;
     for (fields[1]) |c| {
         if (c < '0' or c > '9') return .invalid_value;
         uid = uid * 10 + @as(u32, c - '0');
     }
-    return set_internal(uid, fields[0], fields[2]);
+    // M97g (#2083): the optional apps allowlist is a comma-separated set of
+    // image names; an empty member makes the whole line invalid (fail
+    // closed — a half-parsed policy is worse than a skipped one).
+    if (nfields == 4) {
+        if (fields[3].len == 0) return .invalid_value;
+        var ait = std.mem.splitScalar(u8, fields[3], ',');
+        while (ait.next()) |app| {
+            if (app.len == 0) return .invalid_value;
+        }
+    }
+    return set_internal(uid, fields[0], fields[2], if (nfields == 4) fields[3] else "");
 }
 
 /// Serialize the store as `#v1\n` + one `key<TAB>uid<TAB>value` line per
@@ -209,7 +274,8 @@ pub fn serialize(out: []u8) usize {
     @memcpy(out[0..header.len], header);
     var pos: usize = header.len;
     for (entries[0..entry_count]) |*e| {
-        const line_len = e.key_len + 1 + digitsOf(e.uid) + 1 + e.val_len + 1;
+        const line_len = e.key_len + 1 + digitsOf(e.uid) + 1 + e.val_len + 1 +
+            (if (e.apps_len != 0) e.apps_len + 1 else 0);
         if (pos + line_len > out.len) break;
         @memcpy(out[pos .. pos + e.key_len], e.key[0..e.key_len]);
         pos += e.key_len;
@@ -223,6 +289,16 @@ pub fn serialize(out: []u8) usize {
         pos += 1;
         @memcpy(out[pos .. pos + e.val_len], e.val[0..e.val_len]);
         pos += e.val_len;
+        // M97g (#2083): an app-bound entry serializes its allowlist so a
+        // host provisioning round-trip preserves the gate.
+        if (e.apps_len != 0) {
+            if (pos + e.apps_len + 2 > out.len) break;
+            out[pos] = '\t';
+            pos += 1;
+            @memcpy(out[pos .. pos + e.apps_len], e.apps[0..e.apps_len]);
+            pos += e.apps_len;
+        }
+        if (pos + 1 > out.len) break;
         out[pos] = '\n';
         pos += 1;
     }
@@ -236,15 +312,15 @@ fn digitsOf(v: u32) usize {
     return n;
 }
 
-/// Marshal the CALLING principal's entries into a fixed `SecretRecord`
-/// array (the `sys_secret_get` wire shape). Returns the number of records
-/// filled; 0 when the principal owns nothing. Values travel ONLY through
-/// caller memory; nothing here is ever logged.
-pub fn records_for_uid(uid: u32, out: *[max_secret_entries]SecretRecord) usize {
+/// Marshal the CALLING principal's VISIBLE entries into a fixed
+/// `SecretRecord` array (the `sys_secret_get` wire shape). Returns the
+/// number of records filled; 0 when the caller owns nothing it may read.
+/// Values travel ONLY through caller memory; nothing here is ever logged.
+pub fn records_for(r: Reader, out: *[max_secret_entries]SecretRecord) usize {
     ensure_init();
     var n: usize = 0;
     for (entries[0..entry_count]) |*e| {
-        if (e.uid != uid) continue;
+        if (!visible(e, r)) continue;
         if (n >= max_secret_entries) break;
         out[n].uid = e.uid;
         out[n].key_len = e.key_len;
@@ -268,6 +344,10 @@ pub fn init_from_share() bool {
     init();
     if (!virtio_file.available()) return false;
     if (!trust.ensure_secret_file()) return false; // class must hold first
+    // M97g (#2083): the app-binding trust check needs the metadata file
+    // self-protected too — an EL0-writable OWNERS.TXT could mint the
+    // uid_system row `system_owned_key` looks for.
+    _ = trust.ensure_meta_file();
     const n = virtio_file.read_whole(filename, &scratch) orelse return false;
     _ = parse(scratch[0..n]);
     return true;
@@ -293,32 +373,32 @@ test "secret: defaults and the two principals" {
     init();
     try std.testing.expect(empty());
     try std.testing.expectEqual(@as(usize, 0), count());
-    try std.testing.expectEqual(@as(usize, 0), count_for_uid(process.uid_user));
-    try std.testing.expectEqual(@as(usize, 0), count_for_uid(process.uid_system));
+    try std.testing.expectEqual(@as(usize, 0), count_for(.{ .uid = process.uid_user }));
+    try std.testing.expectEqual(@as(usize, 0), count_for(.{ .uid = process.uid_system }));
 }
 
 test "secret: set/parse bounds — 32/64 field caps and 8-entry store cap" {
     init();
     var key: [max_key_len + 1]u8 = [_]u8{'k'} ** (max_key_len + 1);
     var val: [max_val_len + 1]u8 = [_]u8{'v'} ** (max_val_len + 1);
-    try std.testing.expectEqual(SetResult.invalid_key, set_internal(process.uid_user, key[0..], "v"));
-    try std.testing.expectEqual(SetResult.invalid_value, set_internal(process.uid_user, "k", val[0..]));
+    try std.testing.expectEqual(SetResult.invalid_key, set_internal(process.uid_user, key[0..], "v", ""));
+    try std.testing.expectEqual(SetResult.invalid_value, set_internal(process.uid_user, "k", val[0..], ""));
     // A 64-char value (a 32-byte Ed25519 seed in hex exactly) is accepted.
     const seed = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-    try std.testing.expectEqual(SetResult.ok, set_internal(process.uid_user, "netkey", seed));
+    try std.testing.expectEqual(SetResult.ok, set_internal(process.uid_user, "netkey", seed, ""));
     // The 8-entry cap: 7 more distinct entries fill the table, the 9th is
     // refused, never evicts.
     var i: usize = 0;
     while (i < max_secret_entries - 1) : (i += 1) {
         var nb: [16]u8 = undefined;
         const name = std.fmt.bufPrint(&nb, "key{d}", .{i}) catch unreachable;
-        try std.testing.expectEqual(SetResult.ok, set_internal(process.uid_user, name, "v"));
+        try std.testing.expectEqual(SetResult.ok, set_internal(process.uid_user, name, "v", ""));
     }
-    try std.testing.expectEqual(SetResult.table_full, set_internal(process.uid_user, "overflow", "v"));
+    try std.testing.expectEqual(SetResult.table_full, set_internal(process.uid_user, "overflow", "v", ""));
     try std.testing.expectEqual(@as(usize, max_secret_entries), count());
     // The pre-existing entries were NOT evicted.
     var recs: [max_secret_entries]SecretRecord = undefined;
-    try std.testing.expectEqual(@as(usize, max_secret_entries), records_for_uid(process.uid_user, &recs));
+    try std.testing.expectEqual(@as(usize, max_secret_entries), records_for(.{ .uid = process.uid_user }, &recs));
 }
 
 test "secret: round-trip parse/serialize preserves values per uid" {
@@ -335,21 +415,21 @@ test "secret: round-trip parse/serialize preserves values per uid" {
     // Re-loading the serialized form reproduces the same per-uid filter.
     try std.testing.expectEqual(LoadResult.ok, parse(out));
     var recs: [max_secret_entries]SecretRecord = undefined;
-    try std.testing.expectEqual(@as(usize, 1), records_for_uid(process.uid_user, &recs));
+    try std.testing.expectEqual(@as(usize, 1), records_for(.{ .uid = process.uid_user }, &recs));
     try std.testing.expectEqualStrings("netkey", recs[0].key[0..recs[0].key_len]);
     try std.testing.expectEqualStrings("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", recs[0].val[0..recs[0].val_len]);
-    try std.testing.expectEqual(@as(usize, 1), records_for_uid(process.uid_system, &recs));
+    try std.testing.expectEqual(@as(usize, 1), records_for(.{ .uid = process.uid_system }, &recs));
     try std.testing.expectEqualStrings("audkey", recs[0].key[0..recs[0].key_len]);
     // A third principal owns nothing.
-    try std.testing.expectEqual(@as(usize, 0), records_for_uid(2000, &recs));
+    try std.testing.expectEqual(@as(usize, 0), records_for(.{ .uid = 2000 }, &recs));
 }
 
 test "secret: sys_secret_get wire records are fixed-size and value-carrying" {
     init();
     const seed = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
-    try std.testing.expectEqual(SetResult.ok, set_internal(process.uid_user, "seed", seed));
+    try std.testing.expectEqual(SetResult.ok, set_internal(process.uid_user, "seed", seed, ""));
     var recs: [max_secret_entries]SecretRecord = undefined;
-    try std.testing.expectEqual(@as(usize, 1), records_for_uid(process.uid_user, &recs));
+    try std.testing.expectEqual(@as(usize, 1), records_for(.{ .uid = process.uid_user }, &recs));
     try std.testing.expectEqual(@as(u32, 4), recs[0].key_len);
     try std.testing.expectEqual(@as(u32, 64), recs[0].val_len);
     try std.testing.expectEqual(process.uid_user, recs[0].uid);
@@ -365,7 +445,7 @@ test "secret: malformed lines are skipped; unknown schema refuses the file" {
     try std.testing.expectEqual(LoadResult.ok, parse(src));
     try std.testing.expectEqual(@as(usize, 1), count());
     var recs: [max_secret_entries]SecretRecord = undefined;
-    try std.testing.expectEqual(@as(usize, 1), records_for_uid(process.uid_user, &recs));
+    try std.testing.expectEqual(@as(usize, 1), records_for(.{ .uid = process.uid_user }, &recs));
     try std.testing.expectEqualStrings("good", recs[0].key[0..recs[0].key_len]);
 
     // A 9th VALID entry is the cap refusal: `.full`, never eviction.
@@ -389,6 +469,62 @@ test "secret: malformed lines are skipped; unknown schema refuses the file" {
     try std.testing.expect(empty());
 }
 
+test "secret: app-bound entries (#2083) need name match AND system-owned image" {
+    trust.init();
+    init();
+    // Operator provisioning: GOSSHD.ELF is pinned to uid_system with no
+    // non-owner write bit; EVIL.ELF is an ordinary uid_user file.
+    try std.testing.expectEqual(trust.LoadResult.ok, trust.load(
+        "#v1\nGOSSHD.ELF\t644\t0\t-\nEVIL.ELF\t644\t1000\t-\n",
+    ));
+    try std.testing.expectEqual(SetResult.ok, set_internal(process.uid_user, "ssh-host", "hv", "GOSSHD.ELF"));
+    try std.testing.expectEqual(SetResult.ok, set_internal(process.uid_user, "open-key", "ov", ""));
+    var recs: [max_secret_entries]SecretRecord = undefined;
+
+    // The authorized app reads both its bound key and the unbound one.
+    try std.testing.expectEqual(@as(usize, 2), records_for(.{ .uid = process.uid_user, .image = "GOSSHD.ELF" }, &recs));
+    // A name-matching process whose image is NOT system-owned is refused.
+    trust.init();
+    try std.testing.expectEqual(trust.LoadResult.ok, trust.load("#v1\n"));
+    try std.testing.expectEqual(@as(usize, 1), records_for(.{ .uid = process.uid_user, .image = "GOSSHD.ELF" }, &recs));
+    try std.testing.expectEqualStrings("open-key", recs[0].key[0..recs[0].key_len]);
+    // Restore the provisioning and prove the wrong app is refused.
+    try std.testing.expectEqual(trust.LoadResult.ok, trust.load(
+        "#v1\nGOSSHD.ELF\t644\t0\t-\nEVIL.ELF\t644\t1000\t-\n",
+    ));
+    try std.testing.expectEqual(@as(usize, 1), records_for(.{ .uid = process.uid_user, .image = "EVIL.ELF" }, &recs));
+    try std.testing.expectEqualStrings("open-key", recs[0].key[0..recs[0].key_len]);
+    // A uid mismatch is refused even for the authorized image.
+    try std.testing.expectEqual(@as(usize, 0), records_for(.{ .uid = process.uid_system, .image = "GOSSHD.ELF" }, &recs));
+    // The bound name compares case-insensitively (the APFS share does).
+    try std.testing.expectEqual(@as(usize, 2), records_for(.{ .uid = process.uid_user, .image = "gosshd.elf" }, &recs));
+    // A uid_user-WRITABLE image is never authoritative, even name-matched.
+    try std.testing.expectEqual(@as(usize, 1), records_for(.{ .uid = process.uid_user, .image = "EVIL.ELF" }, &recs));
+}
+
+test "secret: app allowlist parse + serialize round-trip (#2083)" {
+    trust.init();
+    init();
+    const src = "#v1\nhostkey\t1000\tdeadbeef\tGOSSHD.ELF,TOOL.ELF\nplain\t1000\tcafe\n";
+    try std.testing.expectEqual(LoadResult.ok, parse(src));
+    try std.testing.expectEqual(@as(usize, 2), count());
+    var buf: [file_max]u8 = undefined;
+    const n = serialize(&buf);
+    try std.testing.expect(std.mem.indexOf(u8, buf[0..n], "hostkey\t1000\tdeadbeef\tGOSSHD.ELF,TOOL.ELF\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf[0..n], "plain\t1000\tcafe\n") != null);
+    // The round-trip keeps the allowlist, so the gate survives a re-load.
+    try std.testing.expectEqual(LoadResult.ok, parse(buf[0..n]));
+    var recs: [max_secret_entries]SecretRecord = undefined;
+    try std.testing.expectEqual(@as(usize, 1), records_for(.{ .uid = process.uid_user, .image = "TOOL.ELF" }, &recs));
+    // TOOL.ELF has no OWNERS.TXT row, so the bound key is refused even for
+    // a listed name — the ownership half is mandatory.
+    try std.testing.expectEqualStrings("plain", recs[0].key[0..recs[0].key_len]);
+    // Malformed allowlists (empty member) are provisioning errors: skipped.
+    init();
+    try std.testing.expectEqual(LoadResult.ok, parse("#v1\nbad\t1000\tv\tGOSH.ELF,\n"));
+    try std.testing.expectEqual(@as(usize, 0), count());
+}
+
 test "secret: the 8-entry cap counts the table, not one principal" {
     init();
     var i: usize = 0;
@@ -397,10 +533,10 @@ test "secret: the 8-entry cap counts the table, not one principal" {
         const name = std.fmt.bufPrint(&nb, "k{d}", .{i}) catch unreachable;
         // Alternate owners; the cap is on the table, not per uid.
         const owner: u32 = if (i % 2 == 0) process.uid_user else process.uid_system;
-        try std.testing.expectEqual(SetResult.ok, set_internal(owner, name, "v"));
+        try std.testing.expectEqual(SetResult.ok, set_internal(owner, name, "v", ""));
     }
     try std.testing.expectEqual(@as(usize, max_secret_entries), count());
     var recs: [max_secret_entries]SecretRecord = undefined;
-    try std.testing.expectEqual(@as(usize, 4), records_for_uid(process.uid_user, &recs));
-    try std.testing.expectEqual(@as(usize, 4), records_for_uid(process.uid_system, &recs));
+    try std.testing.expectEqual(@as(usize, 4), records_for(.{ .uid = process.uid_user }, &recs));
+    try std.testing.expectEqual(@as(usize, 4), records_for(.{ .uid = process.uid_system }, &recs));
 }

@@ -66,9 +66,14 @@ are unchanged. A3 owns the SDK/std adapter and C1 owns Oliver's actual CLI.
   Writes are synchronous and unbuffered here; an SDK buffered flush must
   still surface its own failures.
 
-The shell's slots 56/57 remain one global 4 KiB sequential buffer. This
-amendment supplies file redirection and inherited streams, **not general
-concurrent pipes**, POSIX descriptors or a shell redirection integration.
+The shell's slots 56/57 remain bounded 4 KiB sequential buffers — as of
+M97g (#2081) **one per process** (a fixed 4-slot table), never one shared
+global buffer: an EL0 read/write reaches only the caller's own slot, a
+full table refuses `ENOSPC`, a drained or dead-owner slot releases. The
+kernel shell's `|` staging keeps its own private pipe behind the console
+adapters. This amendment supplies file redirection and inherited streams,
+**not general concurrent pipes**, POSIX descriptors or a shell
+redirection integration.
 Class-A ownership/error tests and `live-user-fs`'s native probe verify the
 facility. Their HTML/JSON fixture is not Oliver CLI acceptance; that needs
 A3+C1 and an independent pinned-engine comparison.
@@ -673,6 +678,22 @@ NOTEPAD gains Copy/Cut/Paste (Ctrl+C/X/V over the whole buffer) and the
 monitor gains the `clip` command (`clip <text...>` sets it, `clip` prints
 it) as the EL1h half of the same buffer.
 
+**M97g amendment (2026-10-15, #2082 — programmatic clipboard requires
+`CAP_CLIPBOARD` or the registered seat).** The audit observed slots 38/39
+were process-gated only: any EL0 app could silently harvest or overwrite
+the machine-global buffer the user pastes from. Both slots now return
+`EACCES` unless the caller's principal holds `CAP_CLIPBOARD`
+(`process.cap_clipboard`, bit 2 of the spawn-time mask, bundled into
+`kernel_caps`; there is no EL0 elevation path, so only monitor `-u0`
+spawns qualify) OR the caller is the kernel-registered WM seat — the seat
+owns the raw input fan-out and renders the tray's clipboard indicator, so
+its probe is user-mediated by construction. The refusal precedes argument
+validation (no EFAULT/empty probes). The user-gesture paths are unchanged:
+the chrome copy/paste chords (`terminal.copySelectionToClipboard`
+/`pasteFromClipboard`) and the monitor `clip` command are kernel-internal
+callers that never enter these handlers, so paste remains user-mediated
+for every app.
+
 ## Amendment (2026-08-18, claim 7323 — the application-timer card)
 
 Milestone 14 card S2 freezes slots 40/41 in the dispatch table (following
@@ -824,6 +845,32 @@ x8 number, x0–x5 arguments, x0 result, reserved 66–127 (later 67–127 after
 otherwise unchanged. (`slot_count` is already 128, so "reserved 66–127" is
 the true remaining space — the 128-wide table has been live since M16; this
 amendment writes the honest bound.)
+
+#### M97g amendment (#2079): REGISTER eligibility + SEAT_PID (cmd 16)
+
+`REGISTER` is a privilege: it arms the raw key/pointer fan-out and the
+writable scanout bind. It is therefore gated on kernel-recorded spawn
+provenance — never on a caller-chosen process name, which any EL0 exec
+can forge. A caller may register iff:
+
+* it holds `cap_proc_admin` (the operator's `exec -u0` channel), or
+* its task was allocated in kernel context (`spawned_by == null` — boot
+  autostart, monitor `exec`), or
+* it is a launcher child — a direct `sys_exec` child of a kernel-spawned
+  process (INIT's service spawn) — AND its process name is the configured
+  seat program (`wm` setting: `GOTABWM.ELF` or `TABWM.BIN`).
+
+Every other caller is refused `EACCES` before the fan-out hooks arm; the
+existing `EACCES` (seat taken) / `ENXIO` (no GPU) / `EINVAL` (non-process)
+refusals are unchanged and checked first.
+
+| SEAT_PID | `WMCTL_SEAT_PID` | 16 | all reserved (0) | the registered WM pid | `ENOENT` no seat held |
+
+`SEAT_PID` is the seat's pid-discovery query: unlike every other
+subcommand it is NOT seat-gated — it answers the kernel's register so
+WM_RPC clients bind to the kernel's record instead of resolving a
+forgeable name through `sys_procs`. With no WM registered it returns
+`ENOENT` (not `ENOSYS`): the query itself is implemented either way.
 
 ### Amendment (2026-08-29, claim 4278 — the WMS5 Gate-2 SET_STATE channel)
 
@@ -1128,6 +1175,15 @@ listed by NAME in the guest `secrets` and never appears in the serial
 capture, and `cat SECRETS.TXT` / `vf cat SECRETS.TXT` are denied at both
 seams).
 
+**M97g amendment (2026-10-15, #2083):** uid scoping alone was vacuous —
+every EL0 app is `uid_user`. A `SECRETS.TXT` line may now carry a fourth
+field, an image-name allowlist (`key<TAB>uid<TAB>value<TAB>apps`); an
+app-bound entry is served only to a caller whose recorded image is both
+listed and `uid_system`-owned in `OWNERS.TXT` (`OWNERS.TXT` itself is now
+self-protected by construction, so EL0 cannot author the row it would need
+to forge). The wire shape, error codes, and strace redaction are unchanged;
+a caller with no visible entry still sees 0.
+
 ### Amendment (2026-09-11, #1138 — slot 71 `sys_tty_net_auth`, the delegated net-auth seam)
 
 M50 TS4 (ADR 0024 D6/D10) adds the trust milestone's fourth slot: **71** =
@@ -1249,6 +1305,15 @@ contract, the no-capability gate, the table/count pin at 73, the boot-path
 call-counter-still-zero check, and the extended `syscalls` report rows) and
 the existing class-B fleet stays green; the EL0 entropy end-to-end proof
 rides SSH2's fresh-KEX-key proof (no new spec, per `docs/ssh-scoping.md`).
+
+**M97g amendment (issue #2084):** while `!csprng.seeded()` the slot fails
+closed — `EAGAIN` (-11), nothing written — because the deterministic
+boot fallback must never be served as real entropy. An unseeded call first
+attempts a lazy reseed (one transport re-arm + device read, bounded poll),
+so a late-attached or ExitBootServices-reset device restores service
+without a reboot. Host tests pin the refusal and the reseed; the
+`live-entropy-refusal` spec boots the runner with `--no-entropy` and
+observes ENTPROBE.BIN exiting 11.
 
 ### Amendment (2026-09-12, #1214 round 2 — slots 73/74 `sys_thread` / `sys_futex`, ADR 0027 D3/D4)
 
@@ -2101,8 +2166,8 @@ module exposes its row when implemented by its own follow-on card.
 
 | Slot | Name | x0–x3 | Implemented result conventions |
 |---:|---|---|---|
-| 81 | `sys_trace` | `op, token, ptr, bytes` | ARM=0 returns positive token; DISARM=1/FILTER=2 return 0; READ=3 returns whole-record count; STATUS=4 returns 0; ARM_EXEC=5 returns an already-traced child pid |
-| 82 | `sys_profile` | `op, token, ptr, bytes` | ARM=0 returns positive token; DISARM=1 returns 0; READ=3 returns whole-record count; STATUS=4 returns 0; op 2 and unknown ops refuse EINVAL |
+| 81 | `sys_trace` | `op, token, ptr, bytes` | ARM=0 returns a positive CSPRNG-minted token (EAGAIN when only the deterministic fallback is keyed); DISARM=1/FILTER=2 return 0; READ=3 returns whole-record count; STATUS=4 returns 0; ARM_EXEC=5 returns an already-traced child pid. Session ops bind to the arming pid or `cap_proc_admin`, not the uid (M97g #2086, ADR 0043) |
+| 82 | `sys_profile` | `op, token, ptr, bytes` | ARM=0 returns a positive CSPRNG-minted token (EAGAIN when unseeded); DISARM=1 returns 0; READ=3 returns whole-record count; STATUS=4 returns 0; op 2 and unknown ops refuse EINVAL. Same arming-pid binding as slot 81 |
 | 83 | `sys_memstat` | `pid, ptr, bytes` (x3 ignored) | 240 bytes on success; exactly 240 output bytes required |
 
 Trace/profile ignore x4/x5, and memstat ignores x3–x5. The register/result

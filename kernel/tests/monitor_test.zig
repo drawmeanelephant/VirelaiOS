@@ -1162,7 +1162,7 @@ test "monitor: secrets lists NAMES only and never mutates (M50 TS5 #1139)" {
 
     // The command never mutates the store: it is still intact after a call.
     var recs: [secret.max_secret_entries]secret.SecretRecord = undefined;
-    try std.testing.expectEqual(@as(usize, 1), secret.records_for_uid(process.uid_user, &recs));
+    try std.testing.expectEqual(@as(usize, 1), secret.records_for(.{ .uid = process.uid_user }, &recs));
     try std.testing.expectEqualStrings("netkey", recs[0].key[0..recs[0].key_len]);
 
     // Empty store: an honest `(none)`, and an argument is a usage error.

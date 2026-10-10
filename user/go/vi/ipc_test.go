@@ -147,8 +147,11 @@ func emitNamed(a0, a1 uintptr, rows []ProcRow) int {
 
 // scanHook serves one proc table per SlotProcs call (the last table repeats)
 // and counts those calls: the scan count IS the cost, since every retry beyond
-// the first is preceded by a tick-costing yield.
-func scanHook(t *testing.T, tables ...[]ProcRow) *int {
+// the first is preceded by a tick-costing yield. `seat` is the answer to the
+// slot-65 SEAT_PID query (#2079) — the kernel's registered WM pid, or a
+// negative errno (-ENOENT) when no seat is held. The proc-table rows may
+// carry any names at all: the seat answer is the kernel's, not the name's.
+func scanHook(t *testing.T, seat int64, tables ...[]ProcRow) *int {
 	t.Helper()
 	if len(tables) == 0 {
 		t.Fatal("scanHook needs at least one table")
@@ -156,16 +159,22 @@ func scanHook(t *testing.T, tables ...[]ProcRow) *int {
 	scans := new(int)
 	call := 0
 	installHook(t, func(num uintptr, a0, a1, a2, a3 uintptr) int64 {
-		if num != SlotProcs {
+		switch num {
+		case SlotProcs:
+			tbl := tables[len(tables)-1]
+			if call < len(tables) {
+				tbl = tables[call]
+			}
+			call++
+			*scans++
+			return int64(emitNamed(a0, a1, tbl))
+		case SlotWmctl:
+			if a0 == uintptr(WmctlSeatPidCmd) {
+				return seat
+			}
 			return -ErrENOSYS
 		}
-		tbl := tables[len(tables)-1]
-		if call < len(tables) {
-			tbl = tables[call]
-		}
-		call++
-		*scans++
-		return int64(emitNamed(a0, a1, tbl))
+		return -ErrENOSYS
 	})
 	return scans
 }
@@ -175,7 +184,7 @@ func scanHook(t *testing.T, tables ...[]ProcRow) *int {
 // every attempt. The honest answer "no seat" is available on the first scan, so
 // it must not cost a single yield.
 func TestWmPeersNoSeatAnswersImmediately(t *testing.T) {
-	scans := scanHook(t, []ProcRow{namedRow(1, "WEB.ELF"), namedRow(2, "GOSH.ELF")})
+	scans := scanHook(t, -ErrENOENT, []ProcRow{namedRow(1, "WEB.ELF"), namedRow(2, "GOSH.ELF")})
 	p := WmPeers("WEB.ELF")
 	if p.Self != 1 || p.WM != 0 {
 		t.Fatalf("WmPeers = %+v want self=1 wm=0", p)
@@ -188,7 +197,7 @@ func TestWmPeersNoSeatAnswersImmediately(t *testing.T) {
 // TestWmPeersSeatResolvesOnFirstScan is the seat-present path every tab gate
 // rides: intact table, both peers found, no tick spent.
 func TestWmPeersSeatResolvesOnFirstScan(t *testing.T) {
-	scans := scanHook(t, []ProcRow{namedRow(1, "WEB.ELF"), namedRow(5, "GOTABWM.ELF")})
+	scans := scanHook(t, 5, []ProcRow{namedRow(1, "WEB.ELF"), namedRow(5, "GOTABWM.ELF")})
 	p := WmPeers("WEB.ELF")
 	if p.Self != 1 || p.WM != 5 {
 		t.Fatalf("WmPeers = %+v want self=1 wm=5", p)
@@ -198,13 +207,25 @@ func TestWmPeersSeatResolvesOnFirstScan(t *testing.T) {
 	}
 }
 
+// TestWmPeersForgedNameCannotStealSeat is the #2079 regression: a rogue
+// process exec'ing a file it named GOTABWM.ELF shows up in the table at
+// pid 9, but the seat answer is the kernel's register (pid 5), so the
+// forged row cannot redirect this app's WM_RPC traffic.
+func TestWmPeersForgedNameCannotStealSeat(t *testing.T) {
+	scanHook(t, 5, []ProcRow{namedRow(1, "WEB.ELF"), namedRow(5, "TABWM.BIN"), namedRow(9, "GOTABWM.ELF")})
+	p := WmPeers("WEB.ELF")
+	if p.Self != 1 || p.WM != 5 {
+		t.Fatalf("WmPeers = %+v want self=1 wm=5 (forged row must not win)", p)
+	}
+}
+
 // TestWmPeersZeroedScanRetriesWithoutTick keeps M56d's protection: the scan
 // whose name bytes read back zeroed still retries, and because the flake
 // alternates per scan the re-read is immediate -- no tick.
 func TestWmPeersZeroedScanRetriesWithoutTick(t *testing.T) {
 	zeroed := []ProcRow{{PID: 1, State: ProcRunning}, {PID: 3, State: ProcRunning}}
 	intact := []ProcRow{namedRow(1, "WEB.ELF"), namedRow(3, "TABWM.BIN")}
-	scans := scanHook(t, zeroed, intact)
+	scans := scanHook(t, 3, zeroed, intact)
 	p := WmPeers("WEB.ELF")
 	if p.Self != 1 || p.WM != 3 {
 		t.Fatalf("WmPeers = %+v want self=1 wm=3", p)
@@ -220,7 +241,7 @@ func TestWmPeersZeroedScanRetriesWithoutTick(t *testing.T) {
 // invalidate the two peers already read, so the answer still lands at once.
 func TestWmPeersSuspectScanWithBothPeersAnswers(t *testing.T) {
 	rows := []ProcRow{namedRow(1, "WEB.ELF"), namedRow(5, "WND.BIN"), {PID: 9, State: ProcRunning}}
-	scans := scanHook(t, rows)
+	scans := scanHook(t, 5, rows)
 	p := WmPeers("WEB.ELF")
 	if p.Self != 1 || p.WM != 5 {
 		t.Fatalf("WmPeers = %+v want self=1 wm=5", p)
@@ -233,7 +254,7 @@ func TestWmPeersSuspectScanWithBothPeersAnswers(t *testing.T) {
 // TestWmPeersPersistentlySuspectIsBounded: a scan that never reads back stays
 // bounded (the M56d ceiling) instead of spinning forever.
 func TestWmPeersPersistentlySuspectIsBounded(t *testing.T) {
-	scans := scanHook(t, []ProcRow{{PID: 1, State: ProcRunning}})
+	scans := scanHook(t, -ErrENOENT, []ProcRow{{PID: 1, State: ProcRunning}})
 	p := WmPeers("WEB.ELF")
 	if p.Self != 0 || p.WM != 0 {
 		t.Fatalf("WmPeers = %+v want zero seat", p)

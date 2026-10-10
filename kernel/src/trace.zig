@@ -7,12 +7,14 @@ const abi = @import("syscall_abi.zig");
 const alloc = @import("alloc.zig");
 const exec = @import("exec.zig");
 const exceptions = @import("exceptions.zig");
+const csprng = @import("csprng.zig"); // M97g (#2086): the session-token mint
 const process = @import("process.zig");
 const scheduler = @import("scheduler.zig");
 const spinlock = @import("spinlock.zig");
 const svclock = @import("svclock.zig");
 const timer = @import("timer.zig");
 const uaccess = @import("uaccess.zig");
+const virtio_entropy = @import("virtio_entropy.zig"); // M97g (#2086): lazy reseed behind an unseeded mint
 const virtio_file = @import("virtio_file.zig");
 
 pub const slot = abi.number("sys_trace");
@@ -112,7 +114,7 @@ pub const Ring = struct {
 var trace_lock = spinlock.IrqSaveSpinlock{};
 var ring: ?Ring = null;
 var session_token: u64 = 0;
-var last_token: u64 = 0;
+var owner_pid: usize = 0;
 var owner_uid: u32 = 0;
 var owner_admin: bool = false;
 var active = false;
@@ -129,6 +131,41 @@ fn fail(code: i64) u64 {
 
 pub fn authorized(caller: process.Principal, uid: u32) bool {
     return caller.uid == uid or caller.has(process.cap_proc_admin);
+}
+
+/// M97g (#2086): session-CONTROL ownership. Only the arming pid (or a
+/// CAP_PROC_ADMIN holder) may filter/read/disarm/replace the session —
+/// uid equality is deliberately insufficient because every ordinary EL0
+/// process is `uid_user`, so a uid check let any app enumerate the
+/// sequential tokens and read or kill a peer's session.
+fn session_owner(pid: usize, caller: process.Principal) bool {
+    return pid == owner_pid or caller.has(process.cap_proc_admin);
+}
+
+/// A session whose arming process has exited is releasable: pids are
+/// recycled only after the slot is cleared, so a null principal means the
+/// owner is gone — otherwise a stale session would brick tracing for every
+/// other uid_user app (there is no exit hook to run a cleanup under).
+fn owner_retained() bool {
+    return process.principal(owner_pid) != null;
+}
+
+/// M97g (#2086): mint the session token from the CSPRNG, not a counter —
+/// a token must not be derivable from previously observed tokens. An
+/// unseeded stream means the bytes are the deterministic boot fallback,
+/// which IS derivable, so the mint fails closed after attempting the
+/// shared lazy reseed. The mint masks bit 63: the slot ABI reports errors
+/// as negative results, so a token with the high bit set would read as an
+/// errno to every caller. Returns null on failure.
+fn mint_token() ?u64 {
+    if (!csprng.seeded()) {
+        var seed_buf: [csprng.seed_len]u8 align(16) = undefined;
+        if (!virtio_entropy.read_seed(&seed_buf)) return null;
+        csprng.seed(&seed_buf);
+    }
+    var token = csprng.random_u64() & 0x7fff_ffff_ffff_ffff;
+    while (token == 0 or token == session_token) token = csprng.random_u64() & 0x7fff_ffff_ffff_ffff;
+    return token;
 }
 
 pub fn selected(config: *const Config, pid: u64, number: u64) bool {
@@ -173,9 +210,9 @@ fn publish_fast_slots() void {
     for (&fast_slots, 0..) |*word, index| word.store(if (active) filter.slots[index] else 0, .release);
 }
 
-fn check_session(token: u64, caller: process.Principal) u64 {
+fn check_session(token: u64, pid: usize, caller: process.Principal) u64 {
     if (session_token == 0 or token != session_token) return fail(2);
-    if (!authorized(caller, owner_uid)) return fail(7);
+    if (!session_owner(pid, caller)) return fail(7);
     return 0;
 }
 
@@ -197,9 +234,9 @@ pub fn handle(args: [6]u64, _: *exceptions.VectorFrame) u64 {
             const saved = trace_lock.lock();
             defer trace_lock.unlock(saved);
             if (op == op_filter) {
-                const checked = check_session(args[1], caller);
+                const checked = check_session(args[1], pid, caller);
                 if (checked != 0) return checked;
-            } else if (session_token != 0 and !authorized(caller, owner_uid)) return fail(7);
+            } else if (session_token != 0 and !session_owner(pid, caller) and owner_retained()) return fail(7);
         }
         if (uaccess.copy_in(std.mem.asBytes(&replacement), args[2], @sizeOf(Config)) != .ok) return fail(3);
         const checked = validate_config(&replacement, caller);
@@ -207,21 +244,23 @@ pub fn handle(args: [6]u64, _: *exceptions.VectorFrame) u64 {
         const saved = trace_lock.lock();
         defer trace_lock.unlock(saved);
         if (op == op_filter) {
-            const session_checked = check_session(args[1], caller);
+            const session_checked = check_session(args[1], pid, caller);
             if (session_checked != 0) return session_checked;
             filter = replacement;
             publish_fast_slots();
             return 0;
         }
-        if (session_token != 0 and !authorized(caller, owner_uid)) return fail(7);
-        if (last_token == std.math.maxInt(i64)) return fail(5);
+        if (session_token != 0 and !session_owner(pid, caller) and owner_retained()) return fail(7);
+        // M97g (#2086): the token is a CSPRNG mint — EAGAIN when no real
+        // entropy is available rather than a derivable session handle.
+        const token = mint_token() orelse return fail(11);
         // Reuse the fixed reservation on replacement. There is never a second
         // 57-page allocation transiently exceeding the frozen ring budget.
         const backing = if (ring) |existing| existing.backing else allocate_backing() orelse return fail(10);
         @memset(std.mem.asBytes(backing), 0);
         ring = .{ .backing = backing };
-        last_token += 1;
-        session_token = last_token;
+        session_token = token;
+        owner_pid = pid;
         owner_uid = caller.uid;
         owner_admin = caller.has(process.cap_proc_admin);
         filter = replacement;
@@ -232,7 +271,7 @@ pub fn handle(args: [6]u64, _: *exceptions.VectorFrame) u64 {
     {
         const saved = trace_lock.lock();
         defer trace_lock.unlock(saved);
-        const checked = check_session(args[1], caller);
+        const checked = check_session(args[1], pid, caller);
         if (checked != 0) return checked;
         if (op == op_disarm) {
             if (args[2] != 0 or args[3] != 0) return fail(1);
@@ -243,7 +282,7 @@ pub fn handle(args: [6]u64, _: *exceptions.VectorFrame) u64 {
         if (op == op_arm_exec and (!active or filter.pid_count == max_pids)) return fail(if (active) 5 else 1);
     }
     if (op == op_arm_exec) return arm_exec(args, caller);
-    return read_records(args, caller, op == op_status);
+    return read_records(args, pid, caller, op == op_status);
 }
 
 fn arm_exec(args: [6]u64, caller: process.Principal) u64 {
@@ -281,7 +320,7 @@ fn arm_exec(args: [6]u64, caller: process.Principal) u64 {
     return child;
 }
 
-fn read_records(args: [6]u64, caller: process.Principal, status_only: bool) u64 {
+fn read_records(args: [6]u64, pid: usize, caller: process.Principal, status_only: bool) u64 {
     if (args[3] < @sizeOf(ReadHeader) or (status_only and args[3] != @sizeOf(ReadHeader))) return fail(1);
     var staged: [@sizeOf(ReadHeader) + max_read_records * @sizeOf(Record)]u8 align(8) = undefined;
     var header = ReadHeader{ .version = version, .record_bytes = @sizeOf(Record), .count = 0, .reserved = 0, .dropped = 0 };
@@ -289,7 +328,7 @@ fn read_records(args: [6]u64, caller: process.Principal, status_only: bool) u64 
     {
         const saved = trace_lock.lock();
         defer trace_lock.unlock(saved);
-        const checked = check_session(args[1], caller);
+        const checked = check_session(args[1], pid, caller);
         if (checked != 0) return checked;
         const source = &ring.?;
         first = source.first;
@@ -372,7 +411,9 @@ pub fn reset_for_test() void {
     if (ring) |existing| release_backing(existing.backing);
     ring = null;
     session_token = 0;
-    last_token = 0;
+    owner_pid = 0;
+    owner_uid = 0;
+    owner_admin = false;
     active = false;
     filter = std.mem.zeroes(Config);
     publish_fast_slots();

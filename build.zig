@@ -1384,6 +1384,32 @@ pub fn build(b: *std.Build) void {
     b.getInstallStep().dependOn(&install_wndstub.step);
 
     // ------------------------------------------------------------------
+    // Guest: ESP user program (M97g, issue #2084) ENTPROBE.BIN — the
+    // minimal sys_getrandom (slot 72) caller behind the entropy-absent
+    // fail-closed gate: one 16-byte fill, a serial marker, and an exit
+    // status carrying the verdict (-errno when refused). Same freestanding
+    // target/linker/elf2bin/ESP-embedding as the others.
+    // ------------------------------------------------------------------
+    const entprobe_prog = b.addExecutable(.{
+        .name = "user-entprobe",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("user/src/entprobe.zig"),
+            .target = kernel_target,
+            .optimize = .ReleaseSmall,
+        }),
+    });
+    entprobe_prog.linker_script = b.path("user/linker.ld");
+    const entprobe_step = b.step("entprobe", "Build the slot-72 fail-closed probe (zig-out/bin/ENTPROBE.BIN)");
+    const entprobe_elf2bin = b.addSystemCommand(&.{ "python3", "tools/elf2bin.py" });
+    entprobe_elf2bin.addFileArg(entprobe_prog.getEmittedBin());
+    const entprobe_bin = entprobe_elf2bin.addOutputFileArg("ENTPROBE.BIN");
+    entprobe_elf2bin.has_side_effects = true;
+    entprobe_elf2bin.stdio = .inherit;
+    entprobe_step.dependOn(&entprobe_elf2bin.step);
+    const install_entprobe = b.addInstallFileWithDir(entprobe_bin, .bin, "ENTPROBE.BIN");
+    b.getInstallStep().dependOn(&install_entprobe.step);
+
+    // ------------------------------------------------------------------
     // Guest: forty-eighth ESP user program (M32 WMS3, issue #623)
     // WND.BIN — the long-lived EL0 WM server: REGISTERs (slot 65), then
     // loops on sys_wait_event servicing kind-18 COMPOSITE_TICK and

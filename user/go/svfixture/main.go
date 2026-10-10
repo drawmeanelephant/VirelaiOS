@@ -55,7 +55,7 @@ func main() {
 		}
 		r, _ := s.Snapshot(restartLabel)
 		if !fifthSaved && r.State == supervise.Backoff && r.Restart == 5 {
-			body, rc := vi.ReadFileAll(vi.CrashReceiptPath(restartLabel), 1024)
+			body, rc := vi.ReadFileAll(vi.CrashReceiptPath("SVFIXCH"), 1024)
 			if rc < 0 || vi.WriteFileSafe(receipt5Path, body) < 0 {
 				fail("fifth receipt copy")
 				return

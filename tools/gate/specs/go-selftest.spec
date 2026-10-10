@@ -278,7 +278,7 @@ line-34
 line-35
 EOF
 vgate_file app-log-receipt.expected <<'EOF'
-app=M82E.TEST
+app=GOSELF.ELF
 outcome=panic: fixture failure
 last-log:
 line-28
@@ -362,27 +362,27 @@ vgate_run 01 -- \
 # select wm=none. The producer stage waits for the viewer's first completed
 # poll, and the run ends on its own completion marker.
 vgate_file log-tail.txt <<'EOF'
-exec LOGVIEW.ELF -text -polls 10 -follow export
+exec -u0 LOGVIEW.ELF -text -polls 10 -follow export
 EOF
 vgate_file log-level.txt <<'EOF'
-exec LOGVIEW.ELF -text -level W -polls 6 -follow export
+exec -u0 LOGVIEW.ELF -text -level W -polls 6 -follow export
 EOF
 vgate_file log-tag.txt <<'EOF'
-exec LOGVIEW.ELF -text -tag net -polls 6 -follow export
+exec -u0 LOGVIEW.ELF -text -tag net -polls 6 -follow export
 EOF
 vgate_file log-app.txt <<'EOF'
-exec LOGVIEW.ELF -text -app A -polls 6 -follow export
+exec -u0 LOGVIEW.ELF -text -app A -polls 6 -follow export
 EOF
 vgate_file log-grep.txt <<'EOF'
-exec LOGVIEW.ELF -text -grep line=000003 -polls 6 -follow export
+exec -u0 LOGVIEW.ELF -text -grep line=000003 -polls 6 -follow export
 EOF
 vgate_file log-producers.txt <<'EOF'
-exec LOGFIX.ELF A 1 12
-exec LOGFIX.ELF B 1 12
+exec -u0 LOGFIX.ELF A 1 12
+exec -u0 LOGFIX.ELF B 1 12
 EOF
 vgate_file log-filter-producers.txt <<'EOF'
-exec LOGFIX.ELF A 4 4
-exec LOGFIX.ELF B 4 4
+exec -u0 LOGFIX.ELF A 4 4
+exec -u0 LOGFIX.ELF B 4 4
 EOF
 vgate_file log-reset.py <<'PY'
 import os, shutil
@@ -513,10 +513,10 @@ print("substring filter and exported bytes observed")
 PY
 
 vgate_file log-gap.txt <<'EOF'
-exec LOGVIEW.ELF -text -app A -polls 6 -follow export
+exec -u0 LOGVIEW.ELF -text -app A -polls 6 -follow export
 EOF
 vgate_file log-burst.txt <<'EOF'
-exec LOGFIX.ELF A 64 64
+exec -u0 LOGFIX.ELF A 64 64
 EOF
 vgate_run gap -- --script '$RUN_DIR/log-gap.txt' \
     --script2 '$RUN_DIR/log-burst.txt' --script2-after 'logview: ready text' \
@@ -547,10 +547,10 @@ print("same-size content follow observed: exactly 32 new rows lost")
 PY
 
 vgate_file log-window.txt <<'EOF'
-exec LOGVIEW.ELF -app A
+exec -u0 LOGVIEW.ELF -app A
 EOF
 vgate_file log-window-producer.txt <<'EOF'
-exec LOGFIX.ELF A 1 12
+exec -u0 LOGFIX.ELF A 1 12
 EOF
 vgate_file log-window-close.txt <<'EOF'
 tasks
@@ -566,6 +566,42 @@ vgate_assert window serial-count 'logview: present' 2
 vgate_assert window serial-contains 'logview: A 3 W net line=000003'
 vgate_assert window serial-absent 'logview: error'
 vgate_assert window serial-absent '[EXC] parking:'
+
+# M97g (#2085): the diagnostic-label binding, proven live. A privileged
+# producer mints ring C; the unprivileged legs then fail closed — a
+# foreign-label append is EACCES (no FORGED ring appears) and a foreign
+# ring read is EACCES. The viewer's own render is covered by every leg
+# above running the same -u0 path.
+# The legs are serialized (one run per exec): three concurrent Go apps
+# plus the desktop would overrun the global task table (max_tasks=16) and
+# the fixture would die in runtime startup before it could print.
+vgate_file log-bound-seed.txt <<'EOF'
+exec -u0 LOGFIX.ELF C 1 2
+EOF
+vgate_run bound-seed -- --script '$RUN_DIR/log-bound-seed.txt' \
+    --script-expect 'logfix: done app=C' --timeout 45
+vgate_file log-bound-forge.txt <<'EOF'
+exec LOGFIX.ELF FORGED 1 1
+EOF
+vgate_run bound-forge -- --script '$RUN_DIR/log-bound-forge.txt' \
+    --script-expect 'logfix: error app=FORGED rc=-7' --timeout 45
+vgate_file log-bound-view.txt <<'EOF'
+exec LOGVIEW.ELF -text -polls 2
+EOF
+vgate_run bound-view -- --script '$RUN_DIR/log-bound-view.txt' \
+    --script-expect 'logview: error rc=-7' --timeout 45
+vgate_assert bound-seed serial-contains 'logfix: done app=C'
+vgate_assert bound-forge serial-contains 'logfix: error app=FORGED rc=-7'
+vgate_assert bound-forge serial-absent 'logfix: done app=FORGED'
+vgate_assert bound-view serial-contains 'logview: error rc=-7'
+vgate_assert bound-view python <<'PY'
+import os
+share = os.environ["VG_SHARE"]
+ring = open(os.path.join(share, "APPLOG", "C.LOG")).read()
+assert ring == "1 D net line=000001\n2 I ui line=000002\n", ring
+assert not os.path.exists(os.path.join(share, "APPLOG", "FORGED.LOG")), "forged ring published"
+print("label binding observed: own/privileged C ring intact, FORGED refused")
+PY
 
 # Keep boot preparation independent of the preceding verdict. A red test must
 # not turn all later boots into stale-ring failures.
@@ -667,7 +703,7 @@ vgate_assert 01 share-equals SELFTEST/OUT/clock-set.ok clock-set.expected
 # past the expiry), not GOSELF's own — the copy is of the pre-takeover text.
 vgate_assert 01 share-contains SELFTEST/OUT/file-lease.copy 'token=0123456789abcdef'
 vgate_assert 01 share-contains SELFTEST/OUT/file-lease.copy 'path=/host/SELFTEST/LEASE/TARGET.TXT'
-vgate_assert 01 share-equals CRASH/M82E.TEST.TXT app-log-receipt.expected
+vgate_assert 01 share-equals CRASH/GOSELF.ELF.TXT app-log-receipt.expected
 vgate_assert 01 share-contains SELFTEST/OUT/summary.txt 'summary cases=23 failed=0'
 
 # The load-bearing assert: the copies and the receipts on the host's own

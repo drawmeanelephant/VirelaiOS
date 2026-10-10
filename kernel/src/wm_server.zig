@@ -44,6 +44,8 @@ const timer = @import("timer.zig"); // M53 card 1 (#1247): the counter clock beh
 const virtio_gpu = @import("virtio_gpu.zig");
 const mmu = @import("mmu.zig");
 const driving_award = @import("driving_award.zig"); // M32 WMS4: the renderer owns the chrome state the seam's teardown clears
+const scheduler = @import("scheduler.zig"); // M97g (#2079): the spawn provenance behind the seat gate
+const settings = @import("settings.zig"); // M97g (#2079): the configured seat program for the launcher class
 
 /// Slot-65 subcommand encoding — frozen by WMS1 (claim 1484) in the ADR 0007
 /// amendment. Do NOT renumber these; WMS4+ implement `SET_WINDOW` against
@@ -150,6 +152,13 @@ pub const wmctl_window_name: u64 = 14;
 /// the seat-serialized sample stream itself. Seat-gated like every other
 /// subcommand; no existing opcode or arg layout changes.
 pub const wmctl_content_ptr: u64 = 15;
+/// #2079 (M97g seat gate): SEAT_PID (cmd 16) — the pid-discovery query.
+/// Returns the kernel-registered WM pid (ENOENT when no seat is held) so
+/// WM_RPC clients bind to the kernel's own record instead of resolving a
+/// forgeable process name through `sys_procs`. Unprivileged and
+/// read-only: the seat pid was always observable; the fix is that the
+/// answer can no longer be impersonated.
+pub const wmctl_seat_pid: u64 = 16;
 /// OVERVIEW actions (a0).
 pub const overview_enter_action: u64 = 0;
 pub const overview_exit_action: u64 = 1;
@@ -403,6 +412,33 @@ pub fn registered() bool {
 /// The registered WM's process id, if any.
 pub fn registered_pid() ?usize {
     return wm_pid;
+}
+
+/// #2079 (M97g seat gate): may `pid` claim the WM seat? REGISTER arms the
+/// raw key/pointer fan-out and the writable scanout bind, so eligibility is
+/// bound to kernel-recorded spawn provenance, never to a caller-chosen
+/// name:
+///   * `cap_proc_admin` holders (the operator's `exec -u0` channel);
+///   * kernel-spawned tasks — `spawned_by == null` (boot autostart and
+///     monitor `exec` are the desktop/test-seat launchers);
+///   * launcher children — a direct `sys_exec` child of a kernel-spawned
+///     process (INIT's service spawn) — ONLY when the image name is the
+///     configured seat program (`wm` setting). The name check narrows the
+///     launcher class; it is never the sole credential, so an arbitrary
+///     EL0 process exec'ing a file it named `GOTABWM.ELF` still fails —
+///     its task is not launcher-spawned.
+/// Everything else (any process an EL0 app can spawn) is refused. `task_id`
+/// is the caller's task slot; a stale/freed provenance fails closed.
+pub fn seat_authorized(pid: usize, task_id: usize) bool {
+    const principal = process.principal(pid) orelse return false;
+    if (principal.has(process.cap_proc_admin)) return true;
+    const prov = scheduler.spawn_provenance(task_id);
+    if (!prov.valid) return false;
+    if (prov.parent == null) return true;
+    if (!prov.launcher) return false;
+    const seat_prog = settings.wm_seat_kind().program() orelse return false;
+    const pinfo = process.info(pid) orelse return false;
+    return std.ascii.eqlIgnoreCase(pinfo.name, seat_prog);
 }
 
 /// Accept the registering process as the active compositor. One seat: a

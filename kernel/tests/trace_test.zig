@@ -170,12 +170,17 @@ test "trace: atomic configuration, token replacement, whole reads and copy-out r
     config.pids[0] = 0;
     config.slots[0] = 1;
     var output_bytes: [24 + 2 * 896 + 17]u8 align(8) = [_]u8{0xaa} ** (24 + 2 * 896 + 17);
+    // M97g (#2086): the session token is a CSPRNG mint — the arm fails
+    // closed while unseeded, so tests key the stream explicitly.
+    var seed_bytes: [syscall.csprng.seed_len]u8 = undefined;
+    for (&seed_bytes, 0..) |*b, i| b.* = @truncate(i *% 31 +% 7);
+    syscall.csprng.seed(&seed_bytes);
     syscall.uaccess.set_regions(
         .{ .base = @intFromPtr(&config), .len = @sizeOf(trace.Config) },
         .{ .base = @intFromPtr(&output_bytes), .len = output_bytes.len },
     );
     const token = trace.handle(.{ trace.op_arm, 0, @intFromPtr(&config), 88, 99, 99 }, &frame);
-    try std.testing.expectEqual(@as(u64, 1), token);
+    try std.testing.expect(token != 0);
     const call = trace.before(0, .{ 7, 2, 3, 4, 5, 6 }, &frame);
     trace.after(call, 0, .{ 7, 2, 3, 4, 5, 6 }, 7);
     config.version = 2;
@@ -214,7 +219,7 @@ test "trace: atomic configuration, token replacement, whole reads and copy-out r
     try std.testing.expectEqual(@as(i64, 7), record.result);
     for (output_bytes[24 + 896 ..]) |byte| try std.testing.expectEqual(@as(u8, 0xaa), byte);
     const replacement = trace.handle(.{ trace.op_arm, 0, @intFromPtr(&config), 88, 0, 0 }, &frame);
-    try std.testing.expectEqual(@as(u64, 2), replacement);
+    try std.testing.expect(replacement != 0 and replacement != token);
     try std.testing.expectEqual(syscall.error_result(.ebadf), trace.handle(.{ trace.op_read, token, @intFromPtr(&output_bytes), output_bytes.len, 0, 0 }, &frame));
     const pending = trace.before(0, .{ 99, 0, 0, 0, 0, 0 }, &frame);
     try std.testing.expectEqual(@as(u64, 0), trace.handle(.{ trace.op_disarm, replacement, 0, 0, 99, 99 }, &frame));
@@ -222,6 +227,78 @@ test "trace: atomic configuration, token replacement, whole reads and copy-out r
     try std.testing.expectEqual(@as(u64, 0), trace.handle(.{ trace.op_read, replacement, @intFromPtr(&output_bytes), output_bytes.len, 0, 0 }, &frame));
     // Init, ring arm/control and disabled hooks never use the serial writer.
     try std.testing.expectEqual(@as(usize, 0), output_len);
+}
+
+test "trace: session tokens are CSPRNG mints bound to the owner pid (#2086)" {
+    trace.reset_for_test();
+    defer trace.reset_for_test();
+    syscall.init(writer);
+    syscall.userspace.init();
+    _ = syscall.scheduler.init();
+    _ = syscall.scheduler.register_worker(0x2000);
+    _ = syscall.scheduler.register_user(0x3000, 0); // task 2 = pid 0, uid_user
+    // A second uid_user process — same uid, different pid: the class the
+    // audit could cross-read/disarm under uid equality.
+    var kstack: [syscall.scheduler.task_stack_size]u8 align(16) = undefined;
+    const other_pid = syscall.process.create_as("OTHER.BIN", .{ .entry_va = 0x400000, .content_len = 64 }, .{}, .{}, syscall.process.default_principal).?;
+    const other_task = syscall.scheduler.register_exec_user(syscall.userspace.text_va, 0x4000_0000, 100, 0x8000_0000, 8192, &kstack, 0, 0).?;
+    _ = syscall.process.bind(other_pid, other_task);
+    syscall.scheduler.start();
+
+    var config = std.mem.zeroes(trace.Config);
+    config.version = trace.version;
+    config.pid_count = 1;
+    config.pids[0] = 0;
+    config.slots[0] = 1;
+    var out: [@sizeOf(trace.ReadHeader)]u8 align(8) = undefined;
+    syscall.uaccess.set_regions(
+        .{ .base = @intFromPtr(&config), .len = @sizeOf(trace.Config) },
+        .{ .base = @intFromPtr(&out), .len = out.len },
+    );
+    var frame = helpers.task.fresh_frame();
+
+    var hops: usize = 0;
+    while (syscall.scheduler.current_id() != 2 and hops < 8) : (hops += 1)
+        _ = syscall.scheduler.yield_current();
+    try std.testing.expectEqual(@as(usize, 2), syscall.scheduler.current_id());
+
+    // Unseeded: the arm fails closed — a deterministic fallback token is
+    // derivable, so EAGAIN (-11) is the honest answer.
+    syscall.csprng.seed_fallback();
+    try std.testing.expectEqual(syscall.error_result(.eagain), trace.handle(.{ trace.op_arm, 0, @intFromPtr(&config), 88, 0, 0 }, &frame));
+
+    var seed_bytes: [syscall.csprng.seed_len]u8 = undefined;
+    for (&seed_bytes, 0..) |*b, i| b.* = @truncate(i *% 31 +% 7);
+    syscall.csprng.seed(&seed_bytes);
+
+    const token = trace.handle(.{ trace.op_arm, 0, @intFromPtr(&config), 88, 0, 0 }, &frame);
+    try std.testing.expect(token != 0);
+
+    // A second session for the same owner gets a fresh, non-sequential
+    // mint — not derivable from the observed token.
+    const token2 = trace.handle(.{ trace.op_arm, 0, @intFromPtr(&config), 88, 0, 0 }, &frame);
+    try std.testing.expect(token2 != 0 and token2 != token and token2 != token +% 1);
+
+    // The other same-uid pid cannot read, filter, replace or disarm the
+    // session even while holding the (leaked) token.
+    hops = 0;
+    while (syscall.scheduler.current_id() != other_task and hops < 8) : (hops += 1)
+        _ = syscall.scheduler.yield_current();
+    try std.testing.expectEqual(other_task, syscall.scheduler.current_id());
+    try std.testing.expectEqual(syscall.error_result(.eacces), trace.handle(.{ trace.op_status, token2, @intFromPtr(&out), out.len, 0, 0 }, &frame));
+    try std.testing.expectEqual(syscall.error_result(.eacces), trace.handle(.{ trace.op_disarm, token2, 0, 0, 0, 0 }, &frame));
+    try std.testing.expectEqual(syscall.error_result(.eacces), trace.handle(.{ trace.op_read, token2, @intFromPtr(&out), out.len, 0, 0 }, &frame));
+    try std.testing.expectEqual(syscall.error_result(.eacces), trace.handle(.{ trace.op_filter, token2, @intFromPtr(&config), 88, 0, 0 }, &frame));
+    // Nor can it replace the session with its own arm.
+    try std.testing.expectEqual(syscall.error_result(.eacces), trace.handle(.{ trace.op_arm, 0, @intFromPtr(&config), 88, 0, 0 }, &frame));
+
+    // The owner still controls its session.
+    hops = 0;
+    while (syscall.scheduler.current_id() != 2 and hops < 8) : (hops += 1)
+        _ = syscall.scheduler.yield_current();
+    try std.testing.expectEqual(@as(usize, 2), syscall.scheduler.current_id());
+    try std.testing.expectEqual(@as(u64, 0), trace.handle(.{ trace.op_status, token2, @intFromPtr(&out), out.len, 0, 0 }, &frame));
+    try std.testing.expectEqual(@as(u64, 0), trace.handle(.{ trace.op_disarm, token2, 0, 0, 0, 0 }, &frame));
 }
 
 test "trace: monitor compatibility output is byte-for-byte unchanged" {

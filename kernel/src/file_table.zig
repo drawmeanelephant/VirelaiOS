@@ -535,14 +535,22 @@ fn free_owners_buffer(buffer: []u8) void {
     if (!builtin.is_test) _ = alloc.free_pages(@intFromPtr(buffer.ptr), owners_pages);
 }
 
-/// The actor for a `file_table` caller: the process principal (ADR 0024 D2).
+/// The actor for a `file_table` caller: the process principal (ADR 0024 D2)
+/// plus the kernel-recorded identity the APPLOG/CRASH label binding needs
+/// (#2085 — name and pid come from the registry, never the call's args).
 /// An unknown pid (host tests, a non-process caller) defaults to
 /// `uid_user`/no caps — the same principal every EL0 process has today.
 pub fn actorFor(pid: u64) trust.Actor {
+    var actor = trust.Actor{ .uid = process.uid_user, .caps = 0 };
     if (pid < process.max_processes) {
-        if (process.principal(@intCast(pid))) |p| return .{ .uid = p.uid, .caps = p.caps };
+        actor.pid = @intCast(pid);
+        if (process.principal(@intCast(pid))) |p| {
+            actor.uid = p.uid;
+            actor.caps = p.caps;
+        }
+        if (process.info(@intCast(pid))) |pinfo| actor.name = pinfo.name;
     }
-    return .{ .uid = process.uid_user, .caps = 0 };
+    return actor;
 }
 
 fn trustWant(flags: u32) trust.Want {
@@ -969,7 +977,11 @@ fn persist_trust() bool {
 
 /// Load `OWNERS.TXT` from the host share at boot (no-op without a channel or
 /// when the file is absent — the empty table is today's behavior).
+/// M97g (#2083): `OWNERS.TXT` is self-protected BY CONSTRUCTION first — an
+/// EL0 process must never write the metadata that other gates trust, even
+/// on a share where the file does not exist yet.
 pub fn load_trust_from_share() bool {
+    _ = trust.ensure_meta_file();
     if (!virtio_file.available()) return false;
     var st = virtio_file.StatResult{};
     if (virtio_file.stat(trust.filename, &st) != virtio_file.st_ok or
@@ -2227,7 +2239,8 @@ test "B2: boot ownership load streams wide keys and poisons overlong records" {
     virtio_file.set_test_share(&.{.{ .name = trust.filename, .data = text }});
     defer virtio_file.set_test_share(null);
     try std.testing.expect(load_trust_from_share());
-    try std.testing.expectEqual(@as(usize, 2), trust.count());
+    // 2 seeded keys + the #2083 OWNERS.TXT self-protection row.
+    try std.testing.expectEqual(@as(usize, 3), trust.count());
     const user = trust.Actor{ .uid = process.uid_user, .caps = 0 };
     try std.testing.expectEqual(trust.Verdict.eacces, trust.check(user, .host, &key, .list));
     try std.testing.expectEqual(trust.Verdict.eacces, trust.check(user, .host, &second, .read));
@@ -2417,7 +2430,8 @@ test "B2: access denial at capture and page, including persisted wide keys" {
     try std.testing.expectEqual(trust.Verdict.eacces, trust.check(.{ .uid = process.uid_user, .caps = 0 }, .host, key, .list));
     var saved: [trust.save_max]u8 = undefined;
     const n = trust.save(&saved);
-    try std.testing.expectEqualStrings(owners, saved[0..n]);
+    // The persisted form now carries the #2083 OWNERS.TXT self row too.
+    try std.testing.expectEqualStrings(owners ++ "OWNERS.TXT\t604\t0\t-\n", saved[0..n]);
     trust.init();
 }
 
@@ -2668,7 +2682,8 @@ test "file_table: rejected replacement keeps both trust entries" {
         try std.testing.expectEqual(case.errno, rename_mode(process.max_processes - 1, "stage", "output", .replace));
         var saved: [trust.save_max]u8 = undefined;
         const n = trust.save(&saved);
-        try std.testing.expectEqualStrings(policy, saved[0..n]);
+        // #2083: a loaded table always persists its OWNERS.TXT self row.
+        try std.testing.expectEqualStrings(policy ++ "OWNERS.TXT\t604\t0\t-\n", saved[0..n]);
     }
 }
 

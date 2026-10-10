@@ -334,6 +334,9 @@ var inputMode = false
 // device, negotiates, and arms the control queue; the PCM playback path
 // (the audible beep) is card A2.
 var soundMode = false
+// M97g (#2084): --no-entropy detaches the virtio-entropy device so a gate
+// can prove the guest's slot-72 fail-closed behavior while unseeded.
+var noEntropy = false
 // M43 card U6 (issue #1037, claim #1040): `--usb-msd <disk.img>` attaches a
 // USB mass storage device (VZUSBMassStorageDeviceConfiguration wrapping a
 // VZDiskImageStorageDeviceAttachment) on an EXPLICIT VZXHCIControllerConfiguration
@@ -868,6 +871,11 @@ while idx < arguments.count {
         idx += 1
     } else if arg == "--sound" {
         soundMode = true
+        idx += 1
+    } else if arg == "--no-entropy" {
+        // M97g (#2084): detach the virtio-entropy device so a gate can
+        // prove slot 72 fails closed while the CSPRNG is unseeded.
+        noEntropy = true
         idx += 1
     } else if arg == "--usb-msd", idx + 1 < arguments.count {
         usbMsdPath = arguments[idx + 1]
@@ -1710,7 +1718,9 @@ if consoleMode || scriptMode {
     )
 }
 config.serialPorts = [serialConfig]
-config.entropyDevices = [VZVirtioEntropyDeviceConfiguration()]
+// M97g (#2084): --no-entropy leaves entropyDevices empty — the guest sees
+// no DID 0x1044 device, the boot seed fails, and slot 72 must refuse.
+config.entropyDevices = noEntropy ? [] : [VZVirtioEntropyDeviceConfiguration()]
 
 var machineView: VZVirtualMachineView?
 var machineWindow: NSWindow?

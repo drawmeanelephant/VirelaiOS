@@ -61,7 +61,7 @@ func drain(s *strace.Session) (int, uint64) {
 func main() {
 	args := vi.Args()
 	if len(args) != 2 {
-		check(fmt.Errorf("usage: TRACEFIX self|deny|overhead|capture-overhead|peer"))
+		check(fmt.Errorf("usage: TRACEFIX self|deny|hold|grab|overhead|capture-overhead|peer"))
 	}
 	switch args[1] {
 	case "peer":
@@ -85,6 +85,24 @@ func main() {
 			}
 		}
 		check(fmt.Errorf("no foreign live target"))
+	case "hold":
+		// M97g (#2086): keep a uid_user session live while a second uid_user
+		// process attempts to seize it. The session must stay bound to THIS
+		// pid — exit would make the stale token releasable.
+		sess, herr := strace.Arm([]uint64{selfPID()}, nil)
+		check(herr)
+		_ = sess
+		vi.ConsoleLine("trace: holding session")
+		vi.Sleep(60)
+	case "grab":
+		// Same uid, different pid, live owner: ARM must refuse EACCES even
+		// though the old uid rule would have allowed the takeover.
+		_, gerr := strace.Arm([]uint64{selfPID()}, nil)
+		if native, ok := gerr.(strace.Error); ok && native.Code == vi.ErrEACCES {
+			vi.ConsoleLine("trace: same-uid arm refused")
+			return
+		}
+		check(fmt.Errorf("same-uid arm returned %v", gerr))
 	case "overhead":
 		overhead()
 	case "capture-overhead":

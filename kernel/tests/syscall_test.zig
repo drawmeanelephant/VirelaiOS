@@ -117,6 +117,7 @@ const sys_secret_get = syscall.sys_secret_get;
 const sys_getrandom = syscall.sys_getrandom;
 const getrandom_max = syscall.getrandom_max;
 const secret = syscall.secret;
+const trust = syscall.trust;
 const principal_bytes = syscall.principal_bytes;
 const terminal = syscall.terminal;
 const sys_write = syscall.sys_write;
@@ -931,6 +932,11 @@ test "syscall: wait blocks the caller and the target's exit wakes it with the st
     try std.testing.expectEqual(@as(u64, 1), call_count(sys_wait));
     try std.testing.expect(scheduler.is_blocked(2));
     try std.testing.expectEqual(@as(usize, 3), scheduler.current_id());
+    // #2093: the placeholder is staged in the saved frame BEFORE the park
+    // made it waker-visible — the exit-status patch below must be the
+    // last write, and handle_svc's trailing write never runs on a parked
+    // frame.
+    try std.testing.expectEqual(@as(u64, 0), exceptions.frame_read(&caller, 0));
     // The target (task 3) exits with status 43: the exit path wakes the
     // waiter and patches the status into its SAVED frame's x0 — the value
     // the caller's sys_wait return will carry when the ring resumes it.
@@ -1892,7 +1898,6 @@ test "B5 EL0: pinned directories create stat rename and remove by name" {
     defer c.stop();
     const meta = file_table.metadata;
     const S = B5Case.Server;
-    const trust = syscall.trust;
     const a = c.pin("a");
     try std.testing.expect(a > 0);
     try std.testing.expectEqual(@as(i64, 0), c.stat(a, meta.handle_directory));
@@ -2173,6 +2178,11 @@ test "syscall: clipboard slots 38..39 dispatch and fault safety (claim 0169)" {
     _ = scheduler.init();
     _ = scheduler.register_worker(0x2000);
     _ = scheduler.register_user(0x3000, 0); // task 2 = process 0 (boot payload)
+    // M97g (#2082): slots 38/39 require CAP_CLIPBOARD — bind an admin caller.
+    var kstack: [scheduler.task_stack_size]u8 align(16) = undefined;
+    const adm_pid = process.create_as("CLIPADM.BIN", .{ .entry_va = 0x400000, .content_len = 64 }, .{}, .{}, .{ .uid = process.uid_system, .caps = process.kernel_caps }).?;
+    const adm_task = scheduler.register_exec_user(userspace.text_va, 0x4000_0000, 100, 0x8000_0000, 8192, &kstack, 0, 0).?;
+    _ = process.bind(adm_pid, adm_task);
     scheduler.start();
     var frame = fresh_frame();
 
@@ -2180,9 +2190,10 @@ test "syscall: clipboard slots 38..39 dispatch and fault safety (claim 0169)" {
     try std.testing.expectEqual(error_result(.einval), dispatch(sys_clipboard_set, .{ 0x1000, 4, 0, 0, 0, 0 }, &frame));
     try std.testing.expectEqual(error_result(.einval), dispatch(sys_clipboard_get, .{ 0x1000, 4, 0, 0, 0, 0 }, &frame));
 
-    // Yield to the user task (task 2, pid 0).
+    // Yield to the admin task.
     try std.testing.expect(scheduler.yield_current()); // shell -> user (2)
-    try std.testing.expectEqual(@as(usize, 2), scheduler.current_id());
+    try std.testing.expect(scheduler.yield_current()); // user (2) -> admin
+    try std.testing.expectEqual(adm_task, scheduler.current_id());
 
     var test_buf: [64]u8 = undefined;
     const test_buf_addr = @intFromPtr(&test_buf);
@@ -2224,6 +2235,54 @@ test "syscall: clipboard slots 38..39 dispatch and fault safety (claim 0169)" {
     // An empty set clears the shared buffer.
     try std.testing.expectEqual(@as(u64, 0), dispatch(sys_clipboard_set, .{ test_buf_addr, 0, 0, 0, 0, 0 }, &frame));
     try std.testing.expectEqual(@as(u64, 0), dispatch(sys_clipboard_get, .{ test_buf_addr, 64, 0, 0, 0, 0 }, &frame));
+}
+
+test "syscall: clipboard slots refuse a caller without CAP_CLIPBOARD (#2082)" {
+    userspace.init();
+    init(test_writer);
+    _ = scheduler.init();
+    _ = scheduler.register_worker(0x2000);
+    _ = scheduler.register_user(0x3000, 0); // task 2 = process 0: uid_user, no caps
+    scheduler.start();
+    var frame = fresh_frame();
+
+    // Seed the buffer through the kernel-internal path (what the monitor
+    // `clip` command and the chrome copy chord do — they never enter the
+    // syscall handlers).
+    try std.testing.expectEqual(@as(usize, 5), clipboard.set("hello"));
+
+    try std.testing.expect(scheduler.yield_current()); // shell -> user (2)
+    try std.testing.expectEqual(@as(usize, 2), scheduler.current_id());
+
+    var test_buf: [64]u8 = undefined;
+    const test_buf_addr = @intFromPtr(&test_buf);
+    set_user_regions(
+        .{ .base = test_buf_addr, .len = test_buf.len },
+        .{ .base = test_buf_addr, .len = test_buf.len },
+    );
+
+    // Both slots refuse EACCES — and the refusal precedes argument
+    // validation, so even a wild pointer or a clear-set cannot probe.
+    try std.testing.expectEqual(error_result(.eacces), dispatch(sys_clipboard_get, .{ test_buf_addr, 64, 0, 0, 0, 0 }, &frame));
+    try std.testing.expectEqual(error_result(.eacces), dispatch(sys_clipboard_set, .{ test_buf_addr, 5, 0, 0, 0, 0 }, &frame));
+    try std.testing.expectEqual(error_result(.eacces), dispatch(sys_clipboard_set, .{ uaccess.diagnostic_unmapped, 4, 0, 0, 0, 0 }, &frame));
+    try std.testing.expectEqual(error_result(.eacces), dispatch(sys_clipboard_set, .{ test_buf_addr, 0, 0, 0, 0, 0 }, &frame));
+    try std.testing.expectEqual(error_result(.eacces), dispatch(sys_clipboard_get, .{ uaccess.diagnostic_unmapped, 4, 0, 0, 0, 0 }, &frame));
+
+    // Nothing was read and nothing was written: the buffer is unchanged
+    // and the caller's region was never touched.
+    try std.testing.expectEqual(@as(usize, 5), clipboard.current_len());
+    var out: [clipboard.capacity]u8 = undefined;
+    try std.testing.expectEqual(@as(usize, 5), clipboard.get(&out));
+    try std.testing.expectEqualStrings("hello", out[0..5]);
+
+    // The seat carve-out: the same uncapped caller, once it IS the
+    // kernel-registered WM (the user's gesture mediator), reads the
+    // buffer again — WND.BIN's tray probe stays honest.
+    wm_server.init();
+    try std.testing.expect(wm_server.register(0));
+    try std.testing.expectEqual(@as(u64, 5), dispatch(sys_clipboard_get, .{ test_buf_addr, 64, 0, 0, 0, 0 }, &frame));
+    try std.testing.expectEqualStrings("hello", test_buf[0..5]);
 }
 
 test "syscall: app timer slots 40..41 dispatch, fire through the tick, and clamp (claim 7323)" {
@@ -2640,6 +2699,101 @@ test "syscall: sys_wmctl (slot 65) enforces the render-server register contract"
     try std.testing.expect(driving_award.wm_owns_input);
     try std.testing.expect(wm_server.unregister(1));
     try std.testing.expect(!driving_award.wm_owns_input);
+}
+
+test "syscall: #2079 wmctl REGISTER is provenance-gated; SEAT_PID answers the kernel register" {
+    userspace.init();
+    init(test_writer);
+    wm_server.init();
+    _ = scheduler.init();
+    _ = scheduler.register_worker(0x2000);
+    _ = scheduler.register_user(0x3000, 0); // task 2 = pid 0, kernel-spawned
+    scheduler.start();
+    // Arm the compositor check so REGISTER reaches the seat gate; restore
+    // on exit and never leak a held seat into the next test.
+    const saved_gpu_ok = virtio_gpu.gpu_setup_ok;
+    virtio_gpu.gpu_setup_ok = true;
+    defer virtio_gpu.gpu_setup_ok = saved_gpu_ok;
+    defer wm_server.init();
+    var frame = fresh_frame();
+
+    // Drive to pid 0's task (kernel-spawned: allocated while a kernel task
+    // was current, so spawned_by == null).
+    try std.testing.expect(scheduler.yield_current()); // shell -> user (2)
+    try std.testing.expectEqual(@as(usize, 2), scheduler.current_id());
+    try std.testing.expectEqual(@as(?usize, 0), process.find_by_task(2));
+
+    // SEAT_PID (cmd 16) with no seat held -> ENOENT; it is an ordinary
+    // unprivileged read — the seat pid was always observable.
+    try std.testing.expectEqual(error_result(.enoent), dispatch(sys_wmctl, .{ wm_server.wmctl_seat_pid, 0, 0, 0, 0, 0 }, &frame));
+
+    // Kernel-spawned caller may register (monitor `exec`, boot autostart).
+    try std.testing.expectEqual(@as(u64, 0), dispatch(sys_wmctl, .{ wm_server.wmctl_register, 0, 0, 0, 0, 0 }, &frame));
+    try std.testing.expectEqual(@as(?usize, 0), wm_server.registered_pid());
+    // SEAT_PID answers the kernel's register — a pid, not a name.
+    try std.testing.expectEqual(@as(u64, 0), dispatch(sys_wmctl, .{ wm_server.wmctl_seat_pid, 0, 0, 0, 0, 0 }, &frame));
+    // Seat taken: even a privileged caller is refused (one-seat rule).
+    try std.testing.expectEqual(error_result(.eacces), dispatch(sys_wmctl, .{ wm_server.wmctl_register, 0, 0, 0, 0, 0 }, &frame));
+    try std.testing.expect(wm_server.unregister(0));
+
+    // Build the launcher hierarchy with `current` pointing at the
+    // would-be spawner: children of pid 0 (kernel-spawned) are the
+    // launcher class; children of a launcher child are ordinary EL0.
+    var kstack1: [scheduler.task_stack_size]u8 align(16) = undefined;
+    var kstack2: [scheduler.task_stack_size]u8 align(16) = undefined;
+    var kstack3: [scheduler.task_stack_size]u8 align(16) = undefined;
+    var kstack4: [scheduler.task_stack_size]u8 align(16) = undefined;
+
+    const seat_pid = process.create("GOTABWM.ELF", .{ .entry_va = 0x400000, .content_len = 64 }, .{}, .{}).?;
+    const seat_task = scheduler.register_exec_user(userspace.text_va, 0x4000_0000, 100, 0x8000_0000, 8192, &kstack1, 0, 0).?;
+    _ = process.bind(seat_pid, seat_task);
+    const gosh_pid = process.create("GOSH.ELF", .{ .entry_va = 0x400000, .content_len = 64 }, .{}, .{}).?;
+    const gosh_task = scheduler.register_exec_user(userspace.text_va, 0x4000_0000, 100, 0x8000_0000, 8192, &kstack2, 0, 0).?;
+    _ = process.bind(gosh_pid, gosh_task);
+    // Both spawned while task 2 (pid 0, kernel-spawned) was current:
+    // spawned_by = 0, launcher_spawned = true.
+    try std.testing.expectEqual(@as(?usize, 0), scheduler.spawn_provenance(seat_task).parent);
+    try std.testing.expect(scheduler.spawn_provenance(seat_task).launcher);
+
+    // Now spawn while GOSH's task is current: an ordinary EL0 child —
+    // spawned_by = gosh_pid, launcher_spawned = false — NAMED like the
+    // seat. The forged name must not help it.
+    scheduler.current[0] = gosh_task;
+    const rogue_pid = process.create("GOTABWM.ELF", .{ .entry_va = 0x400000, .content_len = 64 }, .{}, .{}).?;
+    const rogue_task = scheduler.register_exec_user(userspace.text_va, 0x4000_0000, 100, 0x8000_0000, 8192, &kstack3, 0, 0).?;
+    _ = process.bind(rogue_pid, rogue_task);
+    try std.testing.expectEqual(@as(?usize, gosh_pid), scheduler.spawn_provenance(rogue_task).parent);
+    try std.testing.expect(!scheduler.spawn_provenance(rogue_task).launcher);
+    // An admin-capability child of the same ordinary parent: the cap is
+    // the credential, not the provenance.
+    const admin_pid = process.create_as("ADMIN.BIN", .{ .entry_va = 0x400000, .content_len = 64 }, .{}, .{}, .{ .caps = process.cap_proc_admin }).?;
+    const admin_task = scheduler.register_exec_user(userspace.text_va, 0x4000_0000, 100, 0x8000_0000, 8192, &kstack4, 0, 0).?;
+    _ = process.bind(admin_pid, admin_task);
+
+    // The launcher child bearing the configured seat program registers.
+    scheduler.current[0] = seat_task;
+    try std.testing.expectEqual(@as(u64, 0), dispatch(sys_wmctl, .{ wm_server.wmctl_register, 0, 0, 0, 0, 0 }, &frame));
+    try std.testing.expectEqual(@as(?usize, seat_pid), wm_server.registered_pid());
+    try std.testing.expectEqual(@as(u64, seat_pid), dispatch(sys_wmctl, .{ wm_server.wmctl_seat_pid, 0, 0, 0, 0, 0 }, &frame));
+    try std.testing.expect(wm_server.unregister(seat_pid));
+
+    // The launcher child with a non-seat name is refused (GOSH -> EACCES).
+    scheduler.current[0] = gosh_task;
+    try std.testing.expectEqual(error_result(.eacces), dispatch(sys_wmctl, .{ wm_server.wmctl_register, 0, 0, 0, 0, 0 }, &frame));
+    try std.testing.expect(!wm_server.registered());
+
+    // The forged-name grandchild (ordinary EL0 spawn) is refused — the
+    // name alone is never the credential.
+    scheduler.current[0] = rogue_task;
+    try std.testing.expectEqual(error_result(.eacces), dispatch(sys_wmctl, .{ wm_server.wmctl_register, 0, 0, 0, 0, 0 }, &frame));
+    try std.testing.expect(!wm_server.registered());
+
+    // cap_proc_admin crosses the gate from ANY provenance class.
+    scheduler.current[0] = admin_task;
+    try std.testing.expectEqual(@as(u64, 0), dispatch(sys_wmctl, .{ wm_server.wmctl_register, 0, 0, 0, 0, 0 }, &frame));
+    try std.testing.expectEqual(@as(?usize, admin_pid), wm_server.registered_pid());
+    try std.testing.expect(wm_server.unregister(admin_pid));
+    scheduler.current[0] = 0;
 }
 
 test "syscall: SET_STATE (cmd 4, claim 4278) applies visibility/workspace/ws-switch with the seam refusals" {
@@ -3079,13 +3233,13 @@ test "syscall: wait_event block+wake preserves the event buffer across the svc r
     try std.testing.expect(exceptions.frame_write(&caller, 0, buf_addr));
     exceptions.resume_frame[0] = @intFromPtr(&caller);
 
-    // 1. Empty queue: handle_svc blocks the caller. The blocking result
-    // (0) is written into the SAVED frame's x0, clobbering the buffer
-    // address — the pre-fix failure mode: a re-executed svc would copy the
-    // event out to address 0 and EFAULT, killing every blocking GUI event
-    // loop (observed live: DESKTOP.BIN `desktop: wait err=-3`).
+    // 1. Empty queue: handle_svc blocks the caller. With the #2093 fix
+    // the dispatch's trailing write is SKIPPED for a parked frame —
+    // x0 keeps the event-buffer address the re-executed svc needs (the
+    // historical handle_svc write had already been neutralised by the
+    // claim-6359 stash/restore; now no post-park write exists at all).
     try std.testing.expect(handle_svc(&caller, svc_immediate));
-    try std.testing.expectEqual(@as(u64, 0), exceptions.frame_read(&caller, 0));
+    try std.testing.expectEqual(@as(u64, buf_addr), exceptions.frame_read(&caller, 0));
     try std.testing.expect(scheduler.is_blocked(caller_task));
 
     // 2. An event arrives: the push hook wakes the waiter and patches the
@@ -5022,11 +5176,18 @@ test "syscall: SYS_PRINCIPAL reports an explicit uid_system principal" {
 
 test "syscall: M50 TS3 gate table is explicit, bounded, and exactly the ADR 0024 D10 set" {
     init(test_writer);
-    // One auditable row: the whole dangerous-syscall capability surface.
-    try std.testing.expectEqual(@as(usize, 1), syscall.capability_gates.len);
+    // The auditable rows: the whole dangerous-syscall capability surface —
+    // M50's kill row plus M97g (#2082)'s two clipboard rows.
+    try std.testing.expectEqual(@as(usize, 3), syscall.capability_gates.len);
     try std.testing.expectEqual(sys_kill, syscall.capability_gates[0].number);
     try std.testing.expectEqual(process.cap_proc_admin, syscall.capability_gates[0].cap);
     try std.testing.expectEqual(@as(?u32, process.cap_proc_admin), syscall.gated(sys_kill));
+    try std.testing.expectEqual(sys_clipboard_set, syscall.capability_gates[1].number);
+    try std.testing.expectEqual(process.cap_clipboard, syscall.capability_gates[1].cap);
+    try std.testing.expectEqual(sys_clipboard_get, syscall.capability_gates[2].number);
+    try std.testing.expectEqual(process.cap_clipboard, syscall.capability_gates[2].cap);
+    try std.testing.expectEqual(@as(?u32, process.cap_clipboard), syscall.gated(sys_clipboard_set));
+    try std.testing.expectEqual(@as(?u32, process.cap_clipboard), syscall.gated(sys_clipboard_get));
     // ADR 0024 D10's OTHER existing syscalls are deliberately NOT in the
     // capability table: exec inherits (TS1), the file family enforces D3/D4
     // inside trust.check (TS2), tty_attach keeps its owner checks (TS4),
@@ -5098,6 +5259,10 @@ test "syscall: SYS_GETRANDOM (slot 72, #1166) is registered, capped, capability-
     _ = scheduler.register_user(0x3000, 0); // task 2 = process 0 (boot payload)
     scheduler.start();
     var frame = fresh_frame();
+    // Seed explicitly: module state is shared across the test binary, so
+    // the seeded/unseeded default is not order-dependent. (#2084)
+    const test_seed: [syscall.csprng.seed_len]u8 = @splat(0xA5);
+    syscall.csprng.seed(&test_seed);
 
     // Registered under its name; the table test pins the count at 73.
     try std.testing.expectEqualStrings("sys_getrandom", entry_info(sys_getrandom).?.name);
@@ -5143,6 +5308,61 @@ test "syscall: SYS_GETRANDOM (slot 72, #1166) is registered, capped, capability-
     // The slot was dispatched exactly the times the checks above issued it
     // (EINVAL + zero + normal + cap + EFAULT) — proving no boot-path call.
     try std.testing.expectEqual(@as(u64, 5), call_count(sys_getrandom));
+}
+
+fn entropy_fill_5c(out: []u8) bool {
+    @memset(out, 0x5c);
+    return true;
+}
+
+fn entropy_fill_fail(_: []u8) bool {
+    return false;
+}
+
+test "syscall: getrandom fails closed while unseeded and the lazy reseed keys on device reappearance (#2084)" {
+    userspace.init();
+    init(test_writer);
+    _ = scheduler.init();
+    _ = scheduler.register_worker(0x2000);
+    _ = scheduler.register_user(0x3000, 0); // task 2 = process 0 (boot payload)
+    scheduler.start();
+    var frame = fresh_frame();
+    var buf: [32]u8 = undefined;
+
+    try std.testing.expect(scheduler.yield_current()); // shell -> user (2)
+    try std.testing.expectEqual(@as(usize, 2), scheduler.current_id());
+    set_user_regions(.{ .base = 0, .len = 0 }, .{ .base = @intFromPtr(&buf), .len = buf.len });
+
+    // Unseeded (the deterministic fallback is armed): the slot refuses
+    // honestly — EAGAIN — and writes NOTHING to the caller's buffer.
+    syscall.csprng.seed_fallback();
+    @memset(buf[0..16], 0xAA);
+    try std.testing.expectEqual(error_result(.eagain), dispatch(sys_getrandom, .{ @intFromPtr(&buf), 16, 0, 0, 0, 0 }, &frame));
+    try std.testing.expect(!syscall.csprng.seeded());
+    try std.testing.expectEqual(@as(u8, 0xAA), buf[0]);
+    try std.testing.expectEqual(@as(u8, 0xAA), buf[15]);
+    // len == 0 stays a no-op (0, not an error) — no entropy was requested.
+    try std.testing.expectEqual(@as(u64, 0), dispatch(sys_getrandom, .{ @intFromPtr(&buf), 0, 0, 0, 0, 0 }, &frame));
+
+    // The device (re)appears: the same call drives the lazy reseed —
+    // the injected read keys the CSPRNG and the request is served on
+    // the spot (the contract: unseeded refusal is transient).
+    syscall.virtio_entropy.test_read_hook = entropy_fill_5c;
+    defer syscall.virtio_entropy.test_read_hook = null;
+    @memset(buf[0..16], 0xAA);
+    try std.testing.expectEqual(@as(u64, 16), dispatch(sys_getrandom, .{ @intFromPtr(&buf), 16, 0, 0, 0, 0 }, &frame));
+    try std.testing.expect(syscall.csprng.seeded());
+    var filled = false;
+    for (buf[0..16]) |b| {
+        if (b != 0xAA) filled = true;
+    }
+    try std.testing.expect(filled);
+    // A device read that fails (wedged transport) keeps the refusal
+    // honest — the fallback stream is still never served.
+    syscall.csprng.seed_fallback();
+    syscall.virtio_entropy.test_read_hook = entropy_fill_fail;
+    try std.testing.expectEqual(error_result(.eagain), dispatch(sys_getrandom, .{ @intFromPtr(&buf), 16, 0, 0, 0, 0 }, &frame));
+    try std.testing.expect(!syscall.csprng.seeded());
 }
 
 test "syscall: M50 TS3 kill gate — same-uid/self allowed, cross-principal EACCES" {
@@ -5331,6 +5551,50 @@ test "syscall: SYS_SECRET_GET serves a uid_system principal its own entries" {
     try std.testing.expectEqual(process.uid_system, rec.uid);
     try std.testing.expectEqualStrings("audkey", rec.key[0..rec.key_len]);
     try std.testing.expectEqualStrings("systemsecretvalue", rec.val[0..rec.val_len]);
+}
+
+test "syscall: SYS_SECRET_GET app-bound entries gate on the caller's image (#2083)" {
+    userspace.init();
+    init(test_writer);
+    _ = scheduler.init();
+    _ = scheduler.register_worker(0x2000);
+    // task 2 = process 0: a uid_user caller whose image NAME claims the
+    // authorized binary but whose file carries no uid_system row.
+    _ = scheduler.register_user(0x3000, 0);
+    var kstack: [scheduler.task_stack_size]u8 align(16) = undefined;
+    const sshd_pid = process.create_as("GOSSHD.ELF", .{ .entry_va = 0x400000, .content_len = 64 }, .{}, .{}, process.default_principal).?;
+    const sshd_task = scheduler.register_exec_user(userspace.text_va, 0x4000_0000, 100, 0x8000_0000, 8192, &kstack, 0, 0).?;
+    _ = process.bind(sshd_pid, sshd_task);
+    scheduler.start();
+    var frame = fresh_frame();
+    trust.init();
+    try std.testing.expectEqual(secret.LoadResult.ok, secret.parse(
+        "#v1\n" ++
+            "hostkey\t1000\tsshprivatevalue\tGOSSHD.ELF\n" ++
+            "openkey\t1000\tpublicvalue\n",
+    ));
+    var buf: [secret.max_secret_entries * secret.record_bytes]u8 = undefined;
+    set_user_regions(.{ .base = 0, .len = 0 }, .{ .base = @intFromPtr(&buf), .len = buf.len });
+
+    // The name-matched caller is still refused while no OWNERS.TXT row
+    // proves the image is operator-provisioned: only the unbound key shows.
+    try std.testing.expect(scheduler.yield_current());
+    try std.testing.expect(scheduler.yield_current());
+    try std.testing.expectEqual(sshd_task, scheduler.current_id());
+    var rc = dispatch(sys_secret_get, .{ @intFromPtr(&buf), buf.len, 0, 0, 0, 0 }, &frame);
+    try std.testing.expectEqual(@as(u64, secret.record_bytes), rc);
+    var rec = @as(*align(1) const secret.SecretRecord, @ptrCast(&buf));
+    try std.testing.expectEqualStrings("openkey", rec.key[0..rec.key_len]);
+    try std.testing.expect(std.mem.indexOf(u8, &buf, "sshprivatevalue") == null);
+
+    // Once the operator pins GOSSHD.ELF to uid_system, the same caller
+    // reads its bound entry.
+    try std.testing.expectEqual(trust.LoadResult.ok, trust.load(
+        "#v1\nGOSSHD.ELF\t644\t0\t-\n",
+    ));
+    rc = dispatch(sys_secret_get, .{ @intFromPtr(&buf), buf.len, 0, 0, 0, 0 }, &frame);
+    try std.testing.expectEqual(@as(u64, 2 * secret.record_bytes), rc);
+    try std.testing.expect(std.mem.indexOf(u8, &buf, "sshprivatevalue") != null);
 }
 
 test "syscall: secret VALUES never reach the sys_procs snapshot (D8 redaction)" {
@@ -5660,6 +5924,9 @@ test "syscall B5: independent TP contexts, blocking join, status and exact kstac
     exceptions.resume_frame[0] = @intFromPtr(&frame);
     _ = dispatch(sys_thread, .{ 2, tokens[0], 0, 0, 0, 0 }, &frame);
     try std.testing.expect(scheduler.tasks[2].wait_thread);
+    // #2093: the joiner parked with the placeholder staged in its saved
+    // frame — never the op/argument values the frame held on SVC entry.
+    try std.testing.expectEqual(@as(u64, 0), exceptions.frame_read(&frame, 0));
     scheduler.on_tick();
     try std.testing.expect(scheduler.is_blocked(2)); // join is not a timed sleep
     try futex_yield_until(ids[0]);
@@ -6236,4 +6503,77 @@ test "syscall: sys_exnotify registers the handler and EL0 faults deliver to it" 
     // Unregister (zero): the process is reap-shaped again.
     try std.testing.expectEqual(@as(u64, 0), dispatch(sys_exnotify, .{ 0, 0, 0, 0, 0, 0 }, &frame));
     try std.testing.expectEqual(@as(u64, 0), process.exnotify_handler(pid).?);
+}
+
+test "pipe: EL0 slots bind per-process — no cross-pid read, write or steal (#2081)" {
+    userspace.init();
+    init(test_writer);
+    _ = scheduler.init();
+    _ = scheduler.register_worker(0x2000);
+    _ = scheduler.register_user(0x3000, 0); // task 2 -> pid 0
+    var kstack: [scheduler.task_stack_size]u8 align(16) = undefined;
+    const other = process.create_as("OTHER.BIN", .{ .entry_va = 0x400000, .content_len = 64 }, .{}, .{}, process.default_principal).?;
+    const other_task = scheduler.register_exec_user(userspace.text_va, 0x4000_0000, 100, 0x8000_0000, 8192, &kstack, 0, 0).?;
+    _ = process.bind(other, other_task);
+    scheduler.start();
+
+    var frame = fresh_frame();
+    var wbuf: [64]u8 = [_]u8{0} ** 64;
+    var rbuf: [64]u8 = [_]u8{0} ** 64;
+    set_user_regions(.{ .base = @intFromPtr(&wbuf), .len = wbuf.len }, .{ .base = @intFromPtr(&rbuf), .len = rbuf.len });
+
+    var hops: usize = 0;
+    while (scheduler.current_id() != 2 and hops < 8) : (hops += 1) _ = scheduler.yield_current();
+    try std.testing.expectEqual(@as(usize, 2), scheduler.current_id());
+
+    // pid 0 stages pipeline bytes, then drains five of them.
+    @memcpy(wbuf[0..11], "staged-one!");
+    try std.testing.expectEqual(@as(u64, 11), dispatch(sys_pipe_write, .{ @intFromPtr(&wbuf), 11, 0, 0, 0, 0 }, &frame));
+    try std.testing.expectEqual(@as(u64, 5), dispatch(sys_pipe_read, .{ @intFromPtr(&rbuf), 5, 0, 0, 0, 0 }, &frame));
+    try std.testing.expectEqualStrings("stage", rbuf[0..5]);
+
+    // A second same-uid pid cannot snoop the staged remainder ...
+    hops = 0;
+    while (scheduler.current_id() != other_task and hops < 8) : (hops += 1) _ = scheduler.yield_current();
+    try std.testing.expectEqual(other_task, scheduler.current_id());
+    try std.testing.expectEqual(@as(u64, 0), dispatch(sys_pipe_read, .{ @intFromPtr(&rbuf) + 5, 32, 0, 0, 0, 0 }, &frame));
+    // ... and its own writes land in ITS pipe, invisible to the victim.
+    @memcpy(wbuf[0..5], "attkr");
+    try std.testing.expectEqual(@as(u64, 5), dispatch(sys_pipe_write, .{ @intFromPtr(&wbuf), 5, 0, 0, 0, 0 }, &frame));
+    try std.testing.expectEqual(@as(u64, 5), dispatch(sys_pipe_read, .{ @intFromPtr(&rbuf) + 5, 32, 0, 0, 0, 0 }, &frame));
+    try std.testing.expectEqualStrings("attkr", rbuf[5..10]);
+
+    // The owner's remaining staged bytes are intact and private.
+    hops = 0;
+    while (scheduler.current_id() != 2 and hops < 8) : (hops += 1) _ = scheduler.yield_current();
+    try std.testing.expectEqual(@as(u64, 11 - 5), dispatch(sys_pipe_read, .{ @intFromPtr(&rbuf) + 10, 32, 0, 0, 0, 0 }, &frame));
+    try std.testing.expectEqualStrings("d-one!", rbuf[10..16]);
+
+    // Table exhaustion is an honest ENOSPC, not a cross-pipe leak: hold a
+    // byte in every other slot, then the next pid's write refuses.
+    var holders: [syscall.pipe.max_el0_pipes]usize = undefined;
+    var held: usize = 0;
+    for (0..syscall.pipe.max_el0_pipes) |_| {
+        const hp = process.create_as("HOLD.BIN", .{ .entry_va = 0x400000, .content_len = 64 }, .{}, .{}, process.default_principal) orelse break;
+        if (syscall.pipe.el0_append(hp)) |_| {
+            syscall.pipe.el0_advance_write(hp, 1);
+            holders[held] = hp;
+            held += 1;
+        }
+    }
+    // pid 0 already holds a drained-free... its pipe is empty (drained), so
+    // every table slot is either held or free; if the table is full the
+    // write must refuse rather than share.
+    const wr = dispatch(sys_pipe_write, .{ @intFromPtr(&wbuf), 5, 0, 0, 0, 0 }, &frame);
+    if (held == syscall.pipe.max_el0_pipes) {
+        try std.testing.expectEqual(error_result(.enospc), wr);
+    } else {
+        try std.testing.expectEqual(@as(u64, 5), wr);
+    }
+    // Releasing a held slot (drain) makes room again.
+    if (held > 0) {
+        syscall.pipe.el0_advance_read(holders[0], 1);
+        try std.testing.expectEqual(@as(u64, 5), dispatch(sys_pipe_write, .{ @intFromPtr(&wbuf), 5, 0, 0, 0, 0 }, &frame));
+    }
+    for (holders[0..held]) |hp| _ = process.reap(hp);
 }

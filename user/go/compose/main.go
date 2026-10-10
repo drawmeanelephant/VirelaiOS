@@ -55,9 +55,13 @@ const (
 	markerExiting = "compose: exiting "
 	// Failure rows: each names the service it failed on and carries the kernel's
 	// raw result, so a red boot says WHERE it failed instead of only that it did.
-	markerPasteFail = "compose: paste failed (clipboard empty)"
-	markerCopyFail  = "compose: copy failed rc="
-	markerArmFail   = "compose: timer arm failed rc="
+	// M97g (#2082): a negative rc is the CAP_CLIPBOARD refusal — the gate runs
+	// one unprivileged exec to prove it, so the marker is distinct from empty.
+	markerPasteRefused = "compose: paste refused rc="
+	markerCopyRefused  = "compose: copy refused rc="
+	markerPasteFail    = "compose: paste failed (clipboard empty)"
+	markerCopyFail     = "compose: copy failed rc="
+	markerArmFail      = "compose: timer arm failed rc="
 )
 
 // The M14 S3 cadence, the Zig probe's values verbatim: one toggle per
@@ -81,7 +85,11 @@ const (
 func main() {
 	// S1 read path: the clipboard body the gate pre-loaded with `clip`.
 	body, rc := vsys.ClipboardGet(vsys.ClipboardMax)
-	if rc < 0 || len(body) == 0 {
+	if rc < 0 {
+		vi.ConsoleLine(markerPasteRefused + vi.Itoa64(rc))
+		vi.Exit(exitPasteFail)
+	}
+	if len(body) == 0 {
 		vi.ConsoleLine(markerPasteFail)
 		vi.Exit(exitPasteFail)
 	}
@@ -90,7 +98,7 @@ func main() {
 	// S1 write path: publish exactly those bytes back through slot 38.
 	n, rc := vsys.ClipboardSet(body)
 	if rc < 0 {
-		vi.ConsoleLine(markerCopyFail + vi.Itoa64(rc))
+		vi.ConsoleLine(markerCopyRefused + vi.Itoa64(rc))
 		vi.Exit(exitCopyFail)
 	}
 	vi.ConsoleLine(markerCopied + vi.Itoa64(int64(n)))

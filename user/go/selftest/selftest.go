@@ -482,9 +482,11 @@ func cases() []testCase {
 }
 
 const (
-	appLogFixture = "M82E.TEST"
+	// #2085: the label must bind to this process's own image name — the
+	// kernel refuses foreign APPLOG/CRASH labels for uid_user actors.
+	appLogFixture = "GOSELF.ELF"
 	appLogCopy    = outDir + "/app-log.copy"
-	appLogReceipt = "/host/CRASH/M82E.TEST.TXT"
+	appLogReceipt = "/host/CRASH/GOSELF.ELF.TXT"
 )
 
 // M81d (#1764): the lease drill's paths and the foreign holder's identity.

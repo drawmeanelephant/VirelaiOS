@@ -22,7 +22,9 @@ func resultError(result int64) error {
 	return nil
 }
 
-// Session is a uid-owned, system-wide session token, not a pid-owned handle.
+// Session is bound to the arming pid (M97g #2086), not merely the uid:
+// a same-uid app cannot drive it even with a leaked token, and only
+// CAP_PROC_ADMIN crosses the binding. The token is a CSPRNG mint.
 // Opening another session invalidates it. Disarm retains unread records.
 type Session struct{ Token uint64 }
 

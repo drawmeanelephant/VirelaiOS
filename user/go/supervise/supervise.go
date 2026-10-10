@@ -60,7 +60,11 @@ const (
 )
 
 type Service struct {
-	Name   string // receipt label, not necessarily the ELF basename
+	// Name is the supervisor-facing service identity (svc: lines, lookups).
+	// Receipts are labelled by the BINARY's stem instead — the #2085 label
+	// binding ties a CRASH label to a kernel-recorded process name, and the
+	// spawned child is the only row the supervisor can prove.
+	Name   string
 	Binary string
 	Args   []string
 	Policy Policy
@@ -118,7 +122,7 @@ func New(services []Service, hooks Hooks) (*Supervisor, error) {
 	}
 	s := &Supervisor{hooks: hooks}
 	for _, service := range services {
-		if vi.CrashReceiptPath(service.Name) == "" || service.Binary == "" || strings.IndexByte(service.Binary, 0) >= 0 ||
+		if vi.CrashReceiptPath(receiptLabel(service.Binary)) == "" || service.Binary == "" || strings.IndexByte(service.Binary, 0) >= 0 ||
 			len(service.Binary) > 255 || len(service.Args) > vi.ExecMaxArgs {
 			return nil, errors.New("supervise: invalid service " + service.Name)
 		}
@@ -302,7 +306,7 @@ func (s *Supervisor) finish(c *child, status, now int64) {
 		}
 	}
 	if failure {
-		if rc := s.hooks.Receipt(c.service.Name, Outcome(c.view.Restart, p.MaxRestarts, status, c.view.DelayS)); rc < 0 {
+		if rc := s.hooks.Receipt(receiptLabel(c.service.Binary), Outcome(c.view.Restart, p.MaxRestarts, status, c.view.DelayS)); rc < 0 {
 			s.fail(c, "receipt")
 			return
 		}
@@ -319,6 +323,19 @@ func (s *Supervisor) finish(c *child, status, now int64) {
 	} else {
 		c.view.State = Exited
 	}
+}
+
+// receiptLabel names the crash receipt after the spawned binary rather than
+// the service name: the M97g (#2085) APPLOG/CRASH binding ties a label to a
+// kernel-recorded process name, so only the child's image stem can be
+// authorized — the service's display name is supervisor-chosen and binds to
+// nothing the kernel can verify.
+func receiptLabel(binary string) string {
+	base := binary
+	if i := strings.LastIndexByte(base, '/'); i >= 0 {
+		base = base[i+1:]
+	}
+	return strings.TrimSuffix(base, ".ELF")
 }
 
 func (s *Supervisor) fail(c *child, reason string) {

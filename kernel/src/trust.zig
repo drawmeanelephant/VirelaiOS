@@ -80,11 +80,16 @@ pub const default_dir_mode: u16 = 0o755;
 pub const usb_mode: u16 = 0o444;
 
 /// The actor whose request is being authorized. `is_kernel` is informational;
-/// the capability bit is what bypasses ordinary mode checks.
+/// the capability bit is what bypasses ordinary mode checks. `pid` and `name`
+/// are the kernel-recorded process identity (the registry row, never a
+/// caller-supplied string): the M97g APPLOG/CRASH label binding consults them
+/// for non-privileged actors.
 pub const Actor = struct {
     uid: u32,
     caps: u32,
     is_kernel: bool = false,
+    pid: ?usize = null,
+    name: []const u8 = "",
 };
 
 /// The operation class (ADR 0024 D4). `admin` is the chmod surface (owner or
@@ -175,6 +180,36 @@ fn isPrivileged(actor: Actor) bool {
     return actor.is_kernel or (actor.caps & process.cap_fs_any) != 0;
 }
 
+/// M97g (#2085): the diagnostic-label overlay. A direct child of `APPLOG/`
+/// or `CRASH/` on the host share carries an app label in its stem
+/// ("APPLOG/GOSH.LOG" -> "GOSH", "CRASH/GSCHK.STK" -> "GSCHK"). A
+/// non-privileged actor may touch a labeled file only when the label binds
+/// to the CALLER'S OWN kernel-recorded image name (modulo a ".ELF"
+/// suffix) or to a registry row the caller spawned — the supervisor case:
+/// INIT, `gosh` and a service manager write a crashed child's receipt,
+/// and the row survives the child's exit. Anything else is EACCES: one
+/// app can no longer append to, read or receipt another's diagnostic
+/// records. Privileged actors (`CAP_FS_ANY`, kernel) keep the bypass —
+/// the `-u0` viewer/producer channel.
+fn labelOwned(actor: Actor, partition: file_table.Partition, path: []const u8) bool {
+    if (partition != .host) return true;
+    const rest = stripPrefixFold(path, "APPLOG/") orelse
+        stripPrefixFold(path, "CRASH/") orelse return true;
+    if (rest.len == 0 or std.mem.indexOfScalar(u8, rest, '/') != null) return true;
+    const stem = if (std.mem.lastIndexOfScalar(u8, rest, '.')) |dot| rest[0..dot] else rest;
+    if (stem.len == 0) return false;
+    const own = process.label_stem(actor.name);
+    if (own.len != 0 and std.ascii.eqlIgnoreCase(own, process.label_stem(stem))) return true;
+    if (actor.pid) |pid| return process.spawned_label(stem, pid);
+    return false;
+}
+
+fn stripPrefixFold(path: []const u8, prefix: []const u8) ?[]const u8 {
+    if (path.len < prefix.len) return null;
+    if (!std.ascii.eqlIgnoreCase(path[0..prefix.len], prefix)) return null;
+    return path[prefix.len..];
+}
+
 /// The secret class (D8) denies these operation classes for every actor: the
 /// file ABI can never read a secret, and rename/delete cannot strip the class.
 fn secretDenies(want: Want) bool {
@@ -208,17 +243,20 @@ fn modeVerdict(actor: Actor, mode: u16, owner: u32, want: Want) Verdict {
 /// the caller's `parse_path`-normalized key (share-relative for `.host`).
 pub fn check(actor: Actor, partition: file_table.Partition, path: []const u8, want: Want) Verdict {
     if (partition == .tty) return .allow; // device semantics, not mode-governed
+    const privileged = isPrivileged(actor);
 
     if (path.len <= max_path_len) {
         if (find(partition, path)) |e| {
             if (e.deny) return .eacces; // malformed entry: fail closed
             if (e.secret and secretDenies(want)) return .eacces; // D8
-            if (isPrivileged(actor)) return .allow;
+            if (privileged) return .allow;
+            if (!labelOwned(actor, partition, path)) return .eacces; // #2085
             return modeVerdict(actor, e.mode, e.uid, want);
         }
     }
     // No explicit entry (or a path too long to carry one): default policy.
-    if (isPrivileged(actor)) return .allow;
+    if (privileged) return .allow;
+    if (!labelOwned(actor, partition, path)) return .eacces; // #2085
     return modeVerdict(actor, defaultMode(partition, want), process.uid_user, want);
 }
 
@@ -235,6 +273,9 @@ pub fn set_mode(actor: Actor, partition: file_table.Partition, path: []const u8,
     if (find(partition, path)) |e| {
         if (e.deny) return .eacces; // never heal a poisoned path via chmod
         if (!isPrivileged(actor) and actor.uid != e.uid) return .eacces;
+        // #2085: without this an app could chmod a foreign diagnostic label
+        // (all uid_user files) to 000 and revoke the owner's ring access.
+        if (!isPrivileged(actor) and !labelOwned(actor, partition, path)) return .eacces;
         e.mode = normalizeMode(mode);
         return .ok;
     }
@@ -259,6 +300,43 @@ pub fn remove(partition: file_table.Partition, path: []const u8) bool {
         return true;
     }
     return false;
+}
+
+/// M97g (#2083): `OWNERS.TXT` itself is operator-only BY CONSTRUCTION. An
+/// EL0 process that could write the metadata file could author a
+/// `uid_system` ownership row for an image it controls and launder it into
+/// `system_owned_key` — forging the identity the secret-store app binding
+/// trusts. The self entry is therefore forced to `uid_system` `0644` on
+/// every load and at boot: an EL0 writer/renamer/deleter is refused, and a
+/// hand-seeded self line can never loosen it (fail closed). The guest may
+/// still READ it (0644 other-read — names and modes are not secrets).
+pub fn ensure_meta_file() bool {
+    if (find(.host, filename)) |e| {
+        e.used = true;
+        e.deny = false;
+        e.secret = false;
+        e.uid = process.uid_system;
+        e.mode = 0o644;
+        return true;
+    }
+    const slot = freeSlot() orelse return false;
+    slot.used = true;
+    slot.deny = false;
+    slot.secret = false;
+    setEntry(slot, .host, filename, 0o644, process.uid_system, false);
+    entry_count += 1;
+    return true;
+}
+
+/// M97g (#2083): true when `key` (a `parse_path`-normalized `.host` path)
+/// names a file the operator pinned to `uid_system` with no non-owner write
+/// bit — i.e. an EL0 process can neither modify the file's bytes nor have
+/// authored the metadata that claims it. Used by the secret store's app
+/// binding: a process's recorded image name is only meaningful when the
+/// image itself is operator-provisioned.
+pub fn system_owned_key(key: []const u8) bool {
+    const e = find(.host, key) orelse return false;
+    return !e.deny and e.uid == process.uid_system and (e.mode & 0o002) == 0;
 }
 
 /// M50 TS5 (issue #1139, ADR 0024 D8): register the secret store's file as
@@ -489,6 +567,12 @@ pub const LoadState = struct {
     }
 
     pub fn result(self: LoadState) LoadResult {
+        // M97g (#2083): a loaded table always carries the self-protection
+        // row — a hand-seeded `OWNERS.TXT` self line can tighten (it is
+        // overwritten here) but never loosen the metadata file's own
+        // ownership. A table too full to hold the row cannot protect the
+        // metadata; report that as full rather than silently unprotected.
+        if (!ensure_meta_file()) return .full;
         return if (self.overflow) .full else .ok;
     }
 };
@@ -693,9 +777,10 @@ test "trust: remove and rename_meta keep the table consistent" {
     try std.testing.expect(rename_meta(.host, "a.txt", .host, "c.txt"));
     try std.testing.expectEqual(Verdict.eacces, check(actor_other, .host, "c.txt", .read));
     try std.testing.expectEqual(Verdict.allow, check(actor_other, .host, "a.txt", .read)); // default now
-    // Delete b drops its entry.
+    // Delete b drops its entry. (+1: the #2083 OWNERS.TXT self row every
+    // loaded table carries.)
     try std.testing.expect(remove(.host, "b.txt"));
-    try std.testing.expectEqual(@as(usize, 1), count());
+    try std.testing.expectEqual(@as(usize, 2), count());
 }
 
 test "trust: replacement adopts explicit or implicit source metadata" {
@@ -703,17 +788,86 @@ test "trust: replacement adopts explicit or implicit source metadata" {
     defer init();
     _ = load("#v1\nstage\t600\t1000\t-\noutput\t606\t0\t-\n");
     try std.testing.expect(rename_meta(.host, "stage", .host, "output"));
-    try std.testing.expectEqual(@as(usize, 1), count());
+    try std.testing.expectEqual(@as(usize, 2), count()); // output + OWNERS.TXT self row
     try std.testing.expectEqual(Verdict.eacces, check(actor_other, .host, "output", .read));
     var buf: [save_max]u8 = undefined;
     const n = save(&buf);
-    try std.testing.expectEqualStrings("#v1\noutput\t600\t1000\t-\n", buf[0..n]);
+    try std.testing.expectEqualStrings("#v1\noutput\t600\t1000\t-\nOWNERS.TXT\t604\t0\t-\n", buf[0..n]);
 
     _ = load("#v1\noutput\t600\t1000\t-\n");
     try std.testing.expect(rename_meta(.host, "implicit-stage", .host, "output"));
-    try std.testing.expectEqual(@as(usize, 0), count());
+    try std.testing.expectEqual(@as(usize, 1), count()); // the self row remains
     try std.testing.expectEqual(Verdict.allow, check(actor_other, .host, "output", .read));
     try std.testing.expect(!rename_meta(.host, "implicit-stage", .host, "output"));
+}
+
+test "trust: OWNERS.TXT self-protection by construction (#2083)" {
+    init();
+    // An absent file: the registration still lands — an EL0 process can
+    // never author the metadata it would need to forge `system_owned_key`.
+    try std.testing.expect(ensure_meta_file());
+    try std.testing.expectEqual(Verdict.allow, check(actor_user, .host, filename, .read));
+    try std.testing.expectEqual(Verdict.eacces, check(actor_user, .host, filename, .write));
+    try std.testing.expectEqual(Verdict.eacces, check(actor_user, .host, filename, .delete));
+    try std.testing.expectEqual(Verdict.eacces, check(actor_user, .host, filename, .admin));
+    // A hand-seeded row naming OWNERS.TXT cannot loosen the self entry:
+    // load force-normalizes it (uid_system, no non-owner write).
+    try std.testing.expectEqual(LoadResult.ok, load("#v1\nOWNERS.TXT\t666\t1000\t-\n"));
+    try std.testing.expectEqual(Verdict.eacces, check(actor_user, .host, filename, .write));
+    try std.testing.expect(system_owned_key(filename));
+    // system_owned_key: absent rows and uid_user rows are never trusted;
+    // a uid_system row with an other-write bit is not either.
+    init();
+    try std.testing.expect(!system_owned_key("NOPE.ELF"));
+    _ = load("#v1\nMINE.ELF\t644\t1000\t-\nSYS.ELF\t644\t0\t-\nLOOSE.ELF\t666\t0\t-\n");
+    try std.testing.expect(!system_owned_key("MINE.ELF"));
+    try std.testing.expect(system_owned_key("SYS.ELF"));
+    try std.testing.expect(!system_owned_key("LOOSE.ELF"));
+}
+
+test "trust: APPLOG/CRASH labels bind to process identity (#2085)" {
+    init();
+    process.init();
+    const gosh = process.create("GOSH.ELF", .{ .entry_va = 0x400000, .content_len = 64 }, .{}, .{}).?;
+    const gosh_actor = Actor{ .uid = process.uid_user, .caps = 0, .pid = gosh, .name = "GOSH.ELF" };
+    // The caller's own ring and receipt — name or its ".ELF" stem both bind.
+    try std.testing.expectEqual(Verdict.allow, check(gosh_actor, .host, "APPLOG/GOSH.ELF.LOG", .write));
+    try std.testing.expectEqual(Verdict.allow, check(gosh_actor, .host, "APPLOG/GOSH.LOG", .write));
+    try std.testing.expectEqual(Verdict.allow, check(gosh_actor, .host, "CRASH/GOSH.ELF.TXT", .write));
+    try std.testing.expectEqual(Verdict.allow, check(gosh_actor, .host, "APPLOG/GOSH.ELF.LOG", .read));
+    // A foreign label is refused for every operation class.
+    try std.testing.expectEqual(Verdict.eacces, check(gosh_actor, .host, "APPLOG/VICTIM.ELF.LOG", .write));
+    try std.testing.expectEqual(Verdict.eacces, check(gosh_actor, .host, "APPLOG/VICTIM.ELF.LOG", .read));
+    try std.testing.expectEqual(Verdict.eacces, check(gosh_actor, .host, "APPLOG/VICTIM.ELF.LOG", .create));
+    try std.testing.expectEqual(Verdict.eacces, check(gosh_actor, .host, "APPLOG/VICTIM.ELF.LOG", .delete));
+    try std.testing.expectEqual(Verdict.eacces, check(gosh_actor, .host, "CRASH/VICTIM.ELF.TXT", .write));
+    try std.testing.expectEqual(Verdict.eacces, check(gosh_actor, .host, "CRASH/VICTIM.ELF.STK", .write));
+    // The supervisor carve-out: a row the caller spawned keeps its label
+    // authority while the row exists — the spawner field lives on the
+    // descriptor and outlives the child's exit by construction.
+    const child = process.create("GSCHK.ELF", .{ .entry_va = 0x400000, .content_len = 64 }, .{}, .{}).?;
+    process.set_spawner(child, gosh);
+    try std.testing.expectEqual(Verdict.allow, check(gosh_actor, .host, "CRASH/GSCHK.TXT", .write));
+    try std.testing.expectEqual(Verdict.allow, check(gosh_actor, .host, "APPLOG/GSCHK.LOG", .read));
+    // A same-uid peer that did not spawn the child is still refused.
+    const peer = process.create("PEER.ELF", .{ .entry_va = 0x400000, .content_len = 64 }, .{}, .{}).?;
+    const peer_actor = Actor{ .uid = process.uid_user, .caps = 0, .pid = peer, .name = "PEER.ELF" };
+    try std.testing.expectEqual(Verdict.eacces, check(peer_actor, .host, "CRASH/GSCHK.TXT", .write));
+    try std.testing.expectEqual(Verdict.eacces, check(peer_actor, .host, "APPLOG/GSCHK.LOG", .read));
+    // Privileged actors (the -u0 viewer channel) bypass the binding.
+    try std.testing.expectEqual(Verdict.allow, check(kernel_actor(), .host, "APPLOG/VICTIM.ELF.LOG", .read));
+    try std.testing.expectEqual(Verdict.allow, check(kernel_actor(), .host, "CRASH/VICTIM.ELF.TXT", .write));
+    // The directory itself is not a labeled file: names stay enumerable.
+    try std.testing.expectEqual(Verdict.allow, check(gosh_actor, .host, "APPLOG", .list));
+    // chmod on a foreign labelled file is refused too: every diagnostic
+    // file is uid_user-owned, so the uid check alone would allow any app
+    // to revoke a victim's access to its own ring.
+    _ = load("#v1\nAPPLOG/VICTIM.LOG\t664\t1000\t-\n");
+    try std.testing.expectEqual(SetResult.eacces, set_mode(gosh_actor, .host, "APPLOG/VICTIM.LOG", 0o000));
+    try std.testing.expectEqual(SetResult.ok, set_mode(gosh_actor, .host, "APPLOG/GOSH.LOG", 0o600));
+    // Nested paths are not labelled files: the overlay stays out of them.
+    try std.testing.expectEqual(Verdict.allow, check(gosh_actor, .host, "APPLOG/SUB/VICTIM.LOG", .write));
+    process.init();
 }
 
 test "trust: over-long paths never falsely match a short entry" {

@@ -80,3 +80,36 @@ vgate_assert 01 serial-contains 'TOOLS-END'
 vgate_assert 01 serial-absent 'CASE-X'
 vgate_assert 01 serial-absent '\[EXC\]'
 vgate_assert 01 serial-absent '[EXC] parking:'
+
+# M97g #2081: the EL0 pipe is bound per-process, not one global buffer.
+# A victim GOSH runs eight staged pipelines appending PIPE-OK rows;
+# meanwhile eight FRESH TOOL.BIN readers hammer slot 56 (`grep PIPE-OK`
+# on their own — empty — pipe). Under the old shared buffer a reader
+# landing in the victim's stage window could steal a staged line (status
+# 0 + the row printed); per-pid every read sees only its own slot, so
+# grep reports no match (status 1) every time, and the victim's file
+# stays byte-exact. `-c` allows at most four `;` segments and expands the
+# body once before runFor binds the loop variable, so the loop emits
+# identical rows — byte-exactness is still the observable.
+vgate_file pipevictim.txt <<'EOF'
+exec GOSH.ELF -c "for i in a b c d e f g h; do echo PIPE-OK | grep PIPE-OK >> /host/PIPED.TXT; done; sleep 25; echo VICTIM-DONE"
+EOF
+
+vgate_file pipehammer.txt <<'EOF'
+exec TOOL.BIN grep PIPE-OK
+exec TOOL.BIN grep PIPE-OK
+exec TOOL.BIN grep PIPE-OK
+exec TOOL.BIN grep PIPE-OK
+exec TOOL.BIN grep PIPE-OK
+exec TOOL.BIN grep PIPE-OK
+exec TOOL.BIN grep PIPE-OK
+exec TOOL.BIN grep PIPE-OK
+EOF
+
+vgate_run 02 -- --script '$RUN_DIR/pipevictim.txt' --script2 '$RUN_DIR/pipehammer.txt' --script2-after 'exec: loaded GOSH.ELF' --script-expect 'VICTIM-DONE' --timeout 120
+
+vgate_assert 02 serial-contains 'VICTIM-DONE'
+vgate_assert 02 serial-count 'tool: done status=1' 8
+vgate_assert 02 serial-absent 'tool: done status=0'
+vgate_assert 02 share-equals PIPED.TXT $'PIPE-OK\nPIPE-OK\nPIPE-OK\nPIPE-OK\nPIPE-OK\nPIPE-OK\nPIPE-OK\nPIPE-OK\n'
+vgate_assert 02 serial-absent '[EXC] parking:'
