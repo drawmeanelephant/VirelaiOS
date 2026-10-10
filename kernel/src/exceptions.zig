@@ -46,6 +46,7 @@ const svclock = @import("svclock.zig"); // claim 9498 follow-on: demand-paging f
 const memmap = @import("memmap.zig");
 const userspace = @import("userspace.zig");
 const forensics = @import("forensics.zig"); // #1261: exception-entry probe (inert unless `forensics on`)
+const tombstone = @import("tombstone.zig"); // M97c #2098: pid-bound fault evidence for crash receipts
 const sampler = @import("sampler.zig");
 const timer = @import("timer.zig");
 const gic = @import("gic.zig");
@@ -1146,6 +1147,16 @@ pub export fn exc_dispatch(
         if (fault_dispatcher) |d| {
             // M22 D3 (issue #326): ELR rides along — BRK faults carry a
             // meaningless FAR but their PC names the crashing function.
+            // M97c #2098: pin the fault to THIS task's pid before the
+            // dispatcher reaps it — a fault-status tombstone is minted
+            // only from evidence bound to the exiting pid, which is what
+            // stops a forged `sys_exit(139)` from stamping a receipt with
+            // another task's far/pc.
+            const fault_pid: u64 = if (process.find_by_task(scheduler.current[cid])) |fpid|
+                @intCast(fpid)
+            else
+                0;
+            tombstone.note_fault(fault_pid, far, elr);
             d(esr, far, elr);
             return .{ .frame = resume_frame[cid], .sp_el0 = resume_sp_el0[cid] };
         }

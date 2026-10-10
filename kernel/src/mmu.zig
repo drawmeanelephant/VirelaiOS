@@ -91,6 +91,30 @@ pub const plan_t0sz: u64 = if (build_options.t0sz25) 25 else 16;
 /// are explicit device/user windows and are not a general syscall aperture.
 pub const identity_blanket_end: u64 = 4 * 1024 * 1024 * 1024;
 
+/// Ceiling for any VA a user leaf may occupy: the built hierarchy is
+/// L0-rooted (T0SZ=16, 48-bit TTBR0 space), so a VA at or above 2^48 wraps
+/// `indices()` and would silently land on a different address.
+pub const user_va_limit: u64 = 1 << 48;
+
+/// M97a #2092 / M97c #2095-#2096: an existing leaf may NOT be overlaid by an
+/// EL0 leaf when it is kernel-live. EL1-only leaves (AP=0b00) over pooled
+/// RAM (AttrIndex 1, Normal) are kernel text/heap/objects — overlaying them
+/// gives EL0 a page the kernel itself dereferences under the task's root.
+/// Every leaf ABOVE the blanket is a declared descriptor or an explicit
+/// device window (the virtio BARs the kernel MMIOs under task roots), so
+/// those are refused wholesale. Below the blanket a Device leaf stays
+/// overlayable BY DESIGN: the mmap bump window opens at 0x1000_0000 (the
+/// GIC hole — the GIC is driven through ICC system registers at runtime,
+/// never MMIO, under user roots) and the LD.SO library aperture sits on the
+/// declared-but-dead EFI varstore window at 0x0100_0000. An EL0 leaf (AP!=0)
+/// is the caller's own page — remap/COW churn is legal.
+fn kernel_live_leaf(desc: u64, va: u64) bool {
+    if (desc == 0) return false;
+    if (((desc >> 6) & 3) != 0) return false; // EL0 leaf — user-owned slot
+    if (((desc >> 2) & 7) == 1) return true; // EL1-only Normal = pooled RAM
+    return va >= identity_blanket_end;
+}
+
 /// Translate a PHYSICAL address to its kernel VA. Claim 5804 (VZ fallback):
 /// the kernel has NO TTBR1 KVA alias — it runs identity-mapped in TTBR0 —
 /// so this is the identity. Kept so the mmio accessors and the device-
@@ -563,6 +587,41 @@ fn split_block_view(desc: u64) ?*align(4096) [512]u64 {
 /// the walk to the page level or the aperture is silently unmapped.
 const empty_table: [512]u64 = [_]u64{0} ** 512;
 
+/// Bound on a single aperture's page-rounded span (256 MiB — every
+/// production aperture is ≤ 64 MiB: `elf.map_max` for image segments, the
+/// stack, and the 512 KiB shared-library pool). A larger request is a bad
+/// caller, not a big image — refuse it before the clone burns the whole
+/// table carve-out descending empty space.
+const max_aperture_bytes: u64 = 256 * 1024 * 1024;
+
+/// M97c #2095/#2096: a user aperture must be a well-formed, non-wrapping
+/// window BEFORE the clone walks it — the L3 leaf math is
+/// `phys + (slot_va - va_start)`, which silently underflows to the page
+/// BELOW the allocation when `va_start` sits mid-page past the slot base
+/// (and would have mapped that page EL0). `va_end` is deliberately NOT
+/// required to be page-aligned: segment `memsz` is byte-granular and the
+/// final page carries the `.bss` tail.
+fn aperture_form_ok(ap: UserAperture) bool {
+    if (ap.va_start == 0 or (ap.va_start & (page_size - 1)) != 0) return false;
+    if ((ap.phys & (page_size - 1)) != 0) return false;
+    if (ap.va_end <= ap.va_start) return false;
+    if (ap.va_end > user_va_limit) return false;
+    const span = ap.va_end - ap.va_start;
+    if (span > max_aperture_bytes) return false;
+    const page_span = (span + page_size - 1) & ~(page_size - 1);
+    if (ap.phys > std.math.maxInt(u64) - page_span) return false;
+    return true;
+}
+
+/// #2095: two apertures may not share a PAGE — the clone resolves the first
+/// match per slot, so a page claimed by two apertures would silently bind
+/// the wrong physical page to one of them.
+fn apertures_overlap(a: UserAperture, b: UserAperture) bool {
+    const a_hi = (a.va_end + page_size - 1) & ~(page_size - 1);
+    const b_hi = (b.va_end + page_size - 1) & ~(page_size - 1);
+    return a.va_start < b_hi and b.va_start < a_hi;
+}
+
 /// Recursively clone the identity tree (rooted at `src`, covering
 /// [va_base, va_base + 512 << shift(level))) into a fresh per-task root,
 /// overriding the user apertures' pages with EL0 leaves. Every other leaf
@@ -615,7 +674,17 @@ fn clone_into_user_root_apertures(
             // Page leaf inside a user aperture: the ONLY place EL0
             // permission is granted in the whole root.
             const ap = matching_ap.?;
-            const pa = ap.phys + (slot_va - ap.va_start);
+            // #2092/#2095: never bind a kernel-live twin (pooled RAM or an
+            // above-blanket device window) into an EL0 leaf — a bad
+            // aperture stops the whole root build, not just this page.
+            if (kernel_live_leaf(desc, slot_va)) return null;
+            // #2096: `aperture_form_ok` guarantees a page-aligned
+            // `va_start`, so an intersecting slot never sits below it —
+            // keep the check anyway because ReleaseSmall arithmetic wraps
+            // silently and `phys + (slot_va - va_start)` underflowing is
+            // precisely the page-below-the-allocation bug.
+            if (slot_va < ap.va_start) return null;
+            const pa = std.math.add(u64, ap.phys, slot_va - ap.va_start) catch return null;
             const normal = (pa & ~@as(u64, 0xfff)) | attr_bits(.normal, true);
             dst[i] = user_leaf(normal, ap.writable, ap.executable) orelse return null;
         } else if (desc == 0) {
@@ -631,7 +700,20 @@ fn clone_into_user_root_apertures(
 }
 
 /// Build a per-process TTBR0 user root with arbitrary user apertures.
+/// M97c #2095/#2096: every aperture is validated BEFORE a single table is
+/// consumed — page-aligned `va_start`/`phys`, non-empty non-wrapping range
+/// inside the 48-bit VA space, bounded span, and no page shared with
+/// another aperture — so a malformed window is an honest null return, not
+/// a silently corrupted root.
 pub fn build_user_root_apertures(apertures: []const UserAperture) ?u64 {
+    for (apertures) |ap| {
+        if (!aperture_form_ok(ap)) return null;
+    }
+    for (apertures, 0..) |a, i| {
+        for (apertures[i + 1 ..]) |b| {
+            if (apertures_overlap(a, b)) return null;
+        }
+    }
     const root = clone_into_user_root_apertures(&table_storage[0], 0, 0, apertures) orelse return null;
     const root_phys = @intFromPtr(root);
     user_root_value = root_phys;
@@ -730,10 +812,50 @@ pub fn invalidate_tlb_va(va: u64) void {
     );
 }
 
+/// M97a #2092: does the VA's existing leaf (block or page) under `root`
+/// forbid an EL0 overlay? Refusing is what stops a user-supplied mmap hint
+/// — or any bad region-table entry — from silently shadowing pooled kernel
+/// RAM or a live device window: the kernel dereferences those VAs under
+/// the task's root, so an EL0 twin would hand a userspace page to the
+/// kernel. Device holes and the declared-but-dead MMIO windows BELOW the
+/// blanket stay overlayable (the mmap band and the LD.SO library window
+/// live on them by design — see `kernel_live_leaf`).
+pub fn user_slot_free(root_phys: u64, va: u64) bool {
+    if (root_phys == 0 or va >= user_va_limit) return false;
+    const root: *align(4096) [512]u64 = @ptrFromInt(root_phys);
+    const ix = indices(va);
+    const l1 = table_entry(&root[ix.l0]) orelse return true;
+    const l2e = l1[ix.l1];
+    if (l2e == 0) return true;
+    if ((l2e & 3) == 1) return !kernel_live_leaf(l2e, va); // 1 GiB block leaf
+    const l2 = table_entry(&l2e) orelse return true;
+    const l3e = l2[ix.l2];
+    if (l3e == 0) return true;
+    if ((l3e & 3) == 1) return !kernel_live_leaf(l3e, va); // 2 MiB block leaf
+    const l3 = table_entry(&l3e) orelse return true;
+    return !kernel_live_leaf(l3[ix.l3], va);
+}
+
+/// #2092: [va, va+len) is a committable EL0 range under `root` when it is
+/// non-empty, non-wrapping, page-aligned, inside the VA space, and every
+/// page's slot is free. The mmap-hint check in the syscall layer turns a
+/// refusal into EINVAL before a region is registered.
+pub fn user_range_free(root_phys: u64, va: u64, len: u64) bool {
+    if (len == 0 or (va & (page_size - 1)) != 0 or (len & (page_size - 1)) != 0) return false;
+    if (va >= user_va_limit or len > user_va_limit - va) return false;
+    var pos = va;
+    while (pos < va + len) : (pos += page_size) {
+        if (!user_slot_free(root_phys, pos)) return false;
+    }
+    return true;
+}
+
 /// Dynamically map a 4 KiB user page at `va` -> `pa` under the given user root.
 /// Intermediate level tables are allocated from table_storage as needed.
+/// #2092: refuses to overwrite a kernel-live leaf (see `kernel_live_leaf`)
+/// — the LAST-line guard if a hint/region check upstream is bypassed.
 pub fn map_user_page(root_phys: u64, va: u64, pa: u64, writable: bool, executable: bool) bool {
-    if (root_phys == 0) return false;
+    if (root_phys == 0 or va >= user_va_limit or (va & (page_size - 1)) != 0 or (pa & (page_size - 1)) != 0) return false;
     const root: *align(4096) [512]u64 = @ptrFromInt(root_phys);
     const ix = indices(va);
     const l1 = ensure_table(&root[ix.l0]) orelse return false;
@@ -745,6 +867,7 @@ pub fn map_user_page(root_phys: u64, va: u64, pa: u64, writable: bool, executabl
     }
     const l3 = ensure_table(&l2[ix.l2]) orelse return false;
     clean_dcache_range(@intFromPtr(&l2[ix.l2]), 8);
+    if (kernel_live_leaf(l3[ix.l3], va)) return false;
     const normal = (pa & ~@as(u64, 0xfff)) | attr_bits(.normal, true);
     const leaf = user_leaf(normal, writable, executable) orelse return false;
     l3[ix.l3] = leaf;
@@ -754,8 +877,9 @@ pub fn map_user_page(root_phys: u64, va: u64, pa: u64, writable: bool, executabl
 }
 
 /// Map a Copy-on-Write 4 KiB user page (EL0-RO + sw_cow bit) under user root.
+/// #2092: same kernel-live-twin refusal as `map_user_page`.
 pub fn map_user_cow_page(root_phys: u64, va: u64, pa: u64) bool {
-    if (root_phys == 0) return false;
+    if (root_phys == 0 or va >= user_va_limit or (va & (page_size - 1)) != 0 or (pa & (page_size - 1)) != 0) return false;
     const root: *align(4096) [512]u64 = @ptrFromInt(root_phys);
     const ix = indices(va);
     const l1 = ensure_table(&root[ix.l0]) orelse return false;
@@ -767,6 +891,7 @@ pub fn map_user_cow_page(root_phys: u64, va: u64, pa: u64) bool {
     }
     const l3 = ensure_table(&l2[ix.l2]) orelse return false;
     clean_dcache_range(@intFromPtr(&l2[ix.l2]), 8);
+    if (kernel_live_leaf(l3[ix.l3], va)) return false;
     const normal = (pa & ~@as(u64, 0xfff)) | attr_bits(.normal, true);
     const leaf = user_leaf(normal, false, false) orelse return false;
     l3[ix.l3] = leaf | sw_cow;
@@ -801,9 +926,12 @@ pub fn leaf_el0_visible(root_phys: u64, va: u64) bool {
 }
 
 /// Unmap a 4 KiB user page at `va`, returning the physical address previously mapped.
+/// #2092: refuses to strip an EL1-only leaf — only genuine user pages may
+/// be torn down, never a cloned kernel-identity twin.
 pub fn unmap_user_page(root_phys: u64, va: u64) ?u64 {
     const leaf = get_user_leaf(root_phys, va) orelse return null;
     if ((leaf.* & 3) != 3) return null;
+    if (((leaf.* >> 6) & 3) == 0) return null;
     const pa = leaf.* & 0x0000_ffff_ffff_f000;
     leaf.* = 0;
     clean_dcache_range(@intFromPtr(leaf), 8);
@@ -904,6 +1032,93 @@ test "mmu: user leaves are page-local W^X and reject Device mappings" {
     const device = pa | attr_bits(.device, true);
     try std.testing.expect(user_leaf(device, false, true) == null);
     try std.testing.expect(user_leaf(normal, true, true) == null);
+}
+
+test "mmu: #2096 — malformed apertures fail the build before any leaf is made" {
+    reset();
+    const phys: u64 = 0x7000_0000;
+    // The M97c underflow trigger: va_start mid-page. The L3 leaf math is
+    // `phys + (slot_va - va_start)`; with an unaligned start the first
+    // intersecting slot sits BELOW va_start, the subtraction wraps, and
+    // ReleaseSmall arithmetic silently binds the page UNDER the
+    // allocation — EL0 RW. Refused at the door now.
+    const unaligned_start = [1]UserAperture{.{ .va_start = 0x40_1001, .va_end = 0x40_3000, .phys = phys, .writable = true, .executable = false }};
+    try std.testing.expect(build_user_root_apertures(&unaligned_start) == null);
+    // An unaligned physical base fails the same door.
+    const unaligned_phys = [1]UserAperture{.{ .va_start = 0x40_0000, .va_end = 0x40_1000, .phys = phys + 1, .writable = true, .executable = false }};
+    try std.testing.expect(build_user_root_apertures(&unaligned_phys) == null);
+    // Empty and inverted ranges are refused.
+    const empty = [1]UserAperture{.{ .va_start = 0x40_0000, .va_end = 0x40_0000, .phys = phys, .writable = false, .executable = true }};
+    try std.testing.expect(build_user_root_apertures(&empty) == null);
+    const inverted = [1]UserAperture{.{ .va_start = 0x40_1000, .va_end = 0x40_0000, .phys = phys, .writable = false, .executable = true }};
+    try std.testing.expect(build_user_root_apertures(&inverted) == null);
+    // VA zero (the nil page) is never an aperture.
+    const null_page = [1]UserAperture{.{ .va_start = 0, .va_end = 0x1000, .phys = phys, .writable = true, .executable = false }};
+    try std.testing.expect(build_user_root_apertures(&null_page) == null);
+    // Past the 48-bit TTBR0 space.
+    const past_limit = [1]UserAperture{.{ .va_start = user_va_limit - page_size, .va_end = user_va_limit + page_size, .phys = phys, .writable = true, .executable = false }};
+    try std.testing.expect(build_user_root_apertures(&past_limit) == null);
+    // Two apertures sharing a page — the clone's first-match rule would
+    // bind the page to one physical window and corrupt the other.
+    const overlap = [2]UserAperture{
+        .{ .va_start = 0x40_0000, .va_end = 0x40_0800, .phys = phys, .writable = false, .executable = true },
+        .{ .va_start = 0x40_0000, .va_end = 0x40_1000, .phys = phys + 0x10_0000, .writable = true, .executable = false },
+    };
+    try std.testing.expect(build_user_root_apertures(&overlap) == null);
+    // The aligned production shape still builds: text + stack apertures.
+    const good = [2]UserAperture{
+        .{ .va_start = userspace.text_va, .va_end = userspace.text_va + 0xa52, .phys = phys, .writable = false, .executable = true },
+        .{ .va_start = 0x8000_0000, .va_end = 0x8000_0000 + 8192, .phys = phys + 0x10_0000, .writable = true, .executable = false },
+    };
+    try std.testing.expect(build_user_root_apertures(&good) != null);
+}
+
+test "mmu: #2092 — user leaves may not shadow kernel-live identity twins" {
+    reset();
+    // Fabricate identity leaves the way map_low_identity does: a pooled-RAM
+    // page at the VZ pool base (0x7000_0000), a Device hole page at the GIC
+    // VA (the mmap band opens here — it MUST stay overlayable), and an
+    // above-blanket Device window (a virtio BAR shape).
+    _ = new_table(); // identity root at table index 0
+    try std.testing.expect(map_page(0x7000_0000, .normal));
+    try std.testing.expect(map_page(0x1000_0000, .device));
+    const bar_va: u64 = identity_blanket_end + 0x8000_0000;
+    try std.testing.expect(map_page(bar_va, .device));
+
+    const user_root = build_user_root(userspace.text_va, 0x1000, 64, 0x1a40_0000, 0x7800_0000, 8192).?;
+
+    // A mmap-hint VA over pooled kernel RAM: refused at the last line, the
+    // slot checker, AND the aperture builder — the EL1-only twin survives.
+    try std.testing.expect(!map_user_page(user_root, 0x7000_0000, 0x7400_0000, true, false));
+    try std.testing.expect(!map_user_cow_page(user_root, 0x7000_0000, 0x7400_0000));
+    try std.testing.expect(!user_slot_free(user_root, 0x7000_0000));
+    const evil = [1]UserAperture{.{ .va_start = 0x7000_0000, .va_end = 0x7000_1000, .phys = 0x7500_0000, .writable = true, .executable = false }};
+    try std.testing.expect(build_user_root_apertures(&evil) == null);
+    // The twin leaf is still the EL1-only identity leaf.
+    const twin = get_user_leaf(user_root, 0x7000_0000).?;
+    try std.testing.expectEqual(@as(u64, 0), (twin.* >> 6) & 3);
+    // Unmapping never strips an identity twin either.
+    try std.testing.expect(unmap_user_page(user_root, 0x7000_0000) == null);
+
+    // The mmap band's first page (a Device hole below the blanket) is the
+    // intended user window — allowed.
+    try std.testing.expect(user_slot_free(user_root, 0x1000_0000));
+    try std.testing.expect(map_user_page(user_root, 0x1000_0000, 0x7600_0000, true, false));
+    // A fresh EL0 leaf is the caller's own page — teardown works.
+    try std.testing.expect(unmap_user_page(user_root, 0x1000_0000) != null);
+
+    // An above-blanket device window is kernel-live: refused both ways.
+    try std.testing.expect(!user_slot_free(user_root, bar_va));
+    try std.testing.expect(!map_user_page(user_root, bar_va, 0x7700_0000, true, false));
+    // A VA above the blanket with NO leaf is free — the stack band's shape.
+    try std.testing.expect(user_slot_free(user_root, identity_blanket_end + 0x1000_0000));
+
+    // Range check: a clean span passes, a wrapped or oversized span refuses.
+    try std.testing.expect(user_range_free(user_root, 0x1a40_0000, 0x2000));
+    try std.testing.expect(!user_range_free(user_root, 0x6fff_f000, 0x2000)); // spans into RAM
+    try std.testing.expect(!user_range_free(user_root, std.math.maxInt(u64) - 0xfff, 0x2000)); // wraps
+    try std.testing.expect(!user_range_free(user_root, 0x1a40_0000, user_va_limit)); // past the VA space
+    try std.testing.expect(!user_range_free(user_root, 0x1a40_0800, 0x1000)); // unaligned hint
 }
 
 pub fn read_mmfr0() u64 {

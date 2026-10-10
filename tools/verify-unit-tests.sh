@@ -34,5 +34,12 @@ zig test user/src/lib/tabapp.zig
 zig test --dep wnd_core -Mroot=user/src/tabwm.zig -Mwnd_core=kernel/src/wnd_core.zig
 zig test user/src/sexiburger.zig
 
+# M97c (#2098/#2099): the tombstone engine and ld.so test blocks (incl. the
+# pid-bound fault-evidence and malformed-staged-image suites) have no
+# build.zig test root — both modules are only reached as guest-binary
+# dependencies. Direct runs keep the coverage without claiming build.zig.
+zig test kernel/src/tombstone.zig
+zig test user/src/ld.zig
+
 echo "verify-unit-tests: all unit tests passed"
 exit 0

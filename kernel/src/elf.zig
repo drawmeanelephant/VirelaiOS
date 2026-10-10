@@ -462,8 +462,38 @@ pub fn parse(buf: []const u8) Error!Image {
 
 /// Parse + validate an ELF image with an optional expected base address.
 /// If `expected_base` is null, segment 0's declared vaddr is accepted.
+/// Callers passing null — the interpreter load path — should prefer
+/// `parse_declared`, which additionally confines every declared vaddr to
+/// the user VA window (#2095).
 pub fn parse_at(buf: []const u8, expected_base: ?u64) Error!Image {
     return parse_impl(buf, buf.len, expected_base);
+}
+
+/// M97c #2095: parse + validate an image that declares its OWN base — the
+/// PT_INTERP interpreter (LD.SO). Same `parse_impl` contract, plus the
+/// window confinement the fixed-base contract gets for free: segment 0's
+/// declared base is page-aligned and clear of page zero, EVERY segment's
+/// vaddr is page-aligned and ordered above the previous segment's end (the
+/// exec path maps each segment at its declared vaddr), and every segment's
+/// end sits strictly below `gap_base_max` — the mmap bump window and the
+/// reserved windows above it stay kernel-side territory. Without this a
+/// crafted interpreter could place a segment anywhere — including over the
+/// identity map's pooled RAM — and the aperture builder would have been
+/// handed an attacker-chosen EL0 window.
+pub fn parse_declared(buf: []const u8) Error!Image {
+    const image = try parse_impl(buf, buf.len, null);
+    const segs = image.segments[0..image.segment_count];
+    if (image.base_vaddr & (page_alignment - 1) != 0) return error.unaligned_gap;
+    if (image.base_vaddr < page_alignment) return error.bad_text_base;
+    var prev_end: u64 = 0;
+    for (segs) |seg| {
+        if (seg.vaddr & (page_alignment - 1) != 0) return error.unaligned_gap;
+        if (seg.vaddr < prev_end) return error.bad_data_base;
+        if (seg.vaddr >= gap_base_max) return error.gap_too_high;
+        if (@as(u64, seg.mem_size) > gap_base_max - seg.vaddr) return error.gap_too_high;
+        prev_end = seg.vaddr + seg.mem_size;
+    }
+    return image;
 }
 
 /// M70c-K (issue #1504): parse from a HEADER WINDOW.

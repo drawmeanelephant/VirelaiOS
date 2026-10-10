@@ -53,10 +53,66 @@ var tombstones: [max_tombstones]Tombstone = undefined;
 var tombstone_head: usize = 0;
 var tombstone_count: usize = 0;
 
+/// M97c #2098: bound fault evidence. A fault-status receipt must carry the
+/// EXITING task's own far/pc — never the newest entry of the shared fault
+/// ring (which may be another process's crash). The exception layer drops
+/// a note here right before the fault dispatcher reaps the task;
+/// `record` consumes the note keyed on the exiting pid, and a fault-status
+/// receipt with no bound note records ZERO fault fields — `sys_exit(139)`
+/// from EL0 can no longer stamp a crash receipt with a sibling's far/pc.
+const max_fault_evidence: usize = 8;
+
+const FaultEvidence = struct {
+    pid: u64,
+    far: u64,
+    pc: u64,
+};
+
+var evidence: [max_fault_evidence]FaultEvidence = undefined;
+var evidence_used: [max_fault_evidence]bool = [_]bool{false} ** max_fault_evidence;
+var evidence_cursor: usize = 0;
+
+/// Exception-context note: task `pid` just took an EL0 fault at far/pc.
+/// Called from the exception dispatch path right before the fault
+/// dispatcher reaps the task — pure BSS, no allocation.
+pub fn note_fault(pid: u64, far: u64, pc: u64) void {
+    // A re-fault on the same pid refreshes its note in place.
+    for (&evidence, 0..) |*e, i| {
+        if (evidence_used[i] and e.pid == pid) {
+            e.* = .{ .pid = pid, .far = far, .pc = pc };
+            return;
+        }
+    }
+    for (&evidence, 0..) |*e, i| {
+        if (!evidence_used[i]) {
+            e.* = .{ .pid = pid, .far = far, .pc = pc };
+            evidence_used[i] = true;
+            return;
+        }
+    }
+    // Full: drop the slot the cursor names — the table is a bound, never a
+    // block.
+    evidence[evidence_cursor] = .{ .pid = pid, .far = far, .pc = pc };
+    evidence_cursor = (evidence_cursor + 1) % max_fault_evidence;
+}
+
+/// Consume the note bound to `pid`, if any.
+fn take_evidence(pid: u64) ?FaultEvidence {
+    for (&evidence, 0..) |*e, i| {
+        if (evidence_used[i] and e.pid == pid) {
+            evidence_used[i] = false;
+            return e.*;
+        }
+    }
+    return null;
+}
+
 /// Initialize the tombstone subsystem.
 pub fn init() void {
     tombstone_head = 0;
     tombstone_count = 0;
+    evidence_used = [_]bool{false} ** max_fault_evidence;
+    evidence_cursor = 0;
 }
 
 /// Record a tombstone for a crashed process.
@@ -75,6 +131,28 @@ pub fn record(
     serial_snapshot: []const u8,
     serial_len: usize,
 ) void {
+    // M97c #2098: bind the fault fields to THIS pid's evidence note, which
+    // the exception layer drops right before the dispatcher reaps a fault.
+    // The kernel-reserved fault statuses (139 = fault, 140 = memory-limit —
+    // literals: scheduler owns the names) take their far/pc ONLY from that
+    // note: a forged `sys_exit(139)` reaches here with whatever the shared
+    // fault ring held — possibly another process's crash — and without a
+    // bound note the receipt's fault fields stay zero. The receipt itself
+    // still records: the caller persists `get(count() - 1)` unconditionally
+    // and the status-forge refusal is the syscall-side half of #2098.
+    var bound_fault_addr = fault_addr;
+    var bound_pc = pc;
+    const evidence_note = take_evidence(pid);
+    if (status == 139 or status == 140) {
+        if (evidence_note) |e| {
+            bound_fault_addr = e.far;
+            bound_pc = e.pc;
+        } else {
+            bound_fault_addr = 0;
+            bound_pc = 0;
+        }
+    }
+
     // Drop oldest if full
     if (tombstone_count == max_tombstones) {
         tombstone_head = (tombstone_head + 1) % max_tombstones;
@@ -86,8 +164,8 @@ pub fn record(
     t.* = .{
         .pid = pid,
         .exit_status = status,
-        .fault_addr = fault_addr,
-        .pc = pc,
+        .fault_addr = bound_fault_addr,
+        .pc = bound_pc,
         .tick = timer.ticks,
     };
 
@@ -95,8 +173,8 @@ pub fn record(
     // symbols (BRK faults carry far=0); fall back to the fault address for
     // data aborts whose PC sits outside every known range.
     if (status == 139) { // reserved_fault_status (kept literal: scheduler owns the name)
-        const m = if (pc != 0) symbol.lookup(pc) else null;
-        const chosen = m orelse symbol.lookup(fault_addr);
+        const m = if (bound_pc != 0) symbol.lookup(bound_pc) else null;
+        const chosen = m orelse symbol.lookup(bound_fault_addr);
         if (chosen) |hit| {
             const note = "(in ";
             @memcpy(t.sym_note[0..note.len], note);
@@ -346,6 +424,7 @@ test "tombstone: record and retrieve" {
     init();
     try std.testing.expectEqual(@as(usize, 0), count());
 
+    note_fault(1, 0x12345, 0); // #2098: fault evidence binds to the pid
     record("TEST.BIN", 1, 139, 0x12345, 0, "", 0);
     try std.testing.expectEqual(@as(usize, 1), count());
 
@@ -370,6 +449,7 @@ test "tombstone: drop-oldest overflow" {
 
 test "tombstone: format includes header" {
     init();
+    note_fault(42, 0xDEAD, 0x400010);
     record("CRASH.BIN", 42, 139, 0xDEAD, 0x400010, "hello", 5);
 
     var buf: [tombstone_max_bytes]u8 = undefined;
@@ -391,6 +471,7 @@ test "tombstone: crash inside a known symbol carries the note" {
     _ = sym.add("crasher", 0x40000c, 20);
 
     // BRK-style fault: far=0 but PC lands inside "crasher".
+    note_fault(3, 0, 0x400010);
     record("CRASH.ELF", 3, 139, 0, 0x400010, "", 0);
     const t = get(0).?;
     try std.testing.expect(t.sym_note_len > 0);
@@ -405,7 +486,60 @@ test "tombstone: crash inside a known symbol carries the note" {
     // Data-abort style: pc outside any range falls back to fault_addr.
     sym.reset();
     _ = sym.add("guard_zone", 0x500000, 64);
+    note_fault(4, 0x500010, 0x400abc);
     record("GUARD.BIN", 4, 139, 0x500010, 0x400abc, "", 0);
     const t2 = get(count() - 1).?;
     try std.testing.expectEqualStrings("(in guard_zone+0x10)", t2.sym_note[0..t2.sym_note_len]);
+}
+
+test "tombstone: #2098 — a forged fault-status exit carries no fault evidence" {
+    init();
+    // `sys_exit(139)` from EL0, no real fault behind it — the exception
+    // layer never bound evidence to pid 9. The receipt still records (the
+    // caller persists it unconditionally; the status-forge refusal is the
+    // syscall-side half) but its fault fields are zero, not whatever the
+    // shared ring held.
+    record("FORGED.BIN", 9, 139, 0xdead0000, 0x4000f0, "", 0);
+    try std.testing.expectEqual(@as(usize, 1), count());
+    const forged = get(0).?;
+    try std.testing.expectEqual(@as(u64, 139), forged.exit_status);
+    try std.testing.expectEqual(@as(u64, 0), forged.fault_addr);
+    try std.testing.expectEqual(@as(u64, 0), forged.pc);
+    // Same for the memory-limit receipt.
+    record("FORGED.BIN", 9, 140, 0xbeef, 0xcafe, "", 0);
+    const forged140 = get(1).?;
+    try std.testing.expectEqual(@as(u64, 0), forged140.fault_addr);
+    try std.testing.expectEqual(@as(u64, 0), forged140.pc);
+    // Ordinary non-zero exits keep the caller's fields.
+    record("CLEAN.BIN", 9, 1, 0x55, 0x66, "", 0);
+    const clean = get(2).?;
+    try std.testing.expectEqual(@as(u64, 0x55), clean.fault_addr);
+}
+
+test "tombstone: #2098 — fault fields bind to the crashing pid, never a sibling" {
+    init();
+    // Process B (pid 7) takes the fault; process A (pid 8) exits with a
+    // forged 139 hoping to stamp B's far/pc on its own receipt. B's note
+    // is keyed on pid 7 — A's receipt gets zeros.
+    note_fault(7, 0xdead0000, 0x4000f0);
+    record("A.BIN", 8, 139, 0xdead0000, 0x4000f0, "", 0);
+    const forged = get(0).?;
+    try std.testing.expectEqual(@as(u64, 8), forged.pid);
+    try std.testing.expectEqual(@as(u64, 0), forged.fault_addr);
+    try std.testing.expectEqual(@as(u64, 0), forged.pc);
+
+    // B's own exit carries B's fields — the bound note wins over whatever
+    // the caller's ring-sourced arguments held.
+    record("B.BIN", 7, 139, 0x1111, 0x2222, "", 0);
+    const t = get(1).?;
+    try std.testing.expectEqual(@as(u64, 7), t.pid);
+    try std.testing.expectEqual(@as(u64, 0xdead0000), t.fault_addr);
+    try std.testing.expectEqual(@as(u64, 0x4000f0), t.pc);
+
+    // The note was consumed: a second 139 record for the same pid has no
+    // evidence and zeroes its fault fields.
+    record("B.BIN", 7, 139, 0x9999, 0x8888, "", 0);
+    const stale = get(2).?;
+    try std.testing.expectEqual(@as(u64, 0), stale.fault_addr);
+    try std.testing.expectEqual(@as(u64, 0), stale.pc);
 }
