@@ -559,8 +559,34 @@ fn trustWant(flags: u32) trust.Want {
     return .read;
 }
 
+/// M97d-F5 (#2090): the operation classes a non-privileged actor may never
+/// take on `trust.filename` — the policy file is kernel-writable only.
+/// Without this pin the 0644/`uid_user` default makes every EL0 app the
+/// OWNER of the policy that governs it (a rewrite persists to the next
+/// boot and bypasses slot-69 validation). Reads and listings stay
+/// mode-governed: the file is policy, not a secret (D8).
+fn policyFileDenies(want: trust.Want) bool {
+    return switch (want) {
+        .write, .create, .delete, .admin => true,
+        .read, .list => false,
+    };
+}
+
+/// The kernel-only pin: checked BEFORE `trust.check`/`trust.set_mode` so a
+/// permissive authored or attacker-written table entry cannot reopen the
+/// file for a non-privileged actor. The comparison is case-insensitive to
+/// match the host-share keying. Kernel paths (`persist_trust`, the
+/// monitor's `vf write` via `kernel_actor`, the boot-time load/save) never
+/// carry an EL0 principal, so the kernel is never locked out.
+fn policyPinned(actor: trust.Actor, path: []const u8, want: trust.Want) bool {
+    if (actor.is_kernel or (actor.caps & process.cap_fs_any) != 0) return false;
+    return policyFileDenies(want) and std.ascii.eqlIgnoreCase(path, trust.filename);
+}
+
 fn hostAllowed(pid: u64, path: []const u8, want: trust.Want) bool {
-    return trust.check(actorFor(pid), .host, path, want) == .allow;
+    const actor = actorFor(pid);
+    if (policyPinned(actor, path, want)) return false;
+    return trust.check(actor, .host, path, want) == .allow;
 }
 
 pub fn metadata_errno(err: metadata.Error) i64 {
@@ -1002,6 +1028,11 @@ pub fn set_mode(pid: u64, path_bytes: []const u8, mode: u16) i64 {
     if (parsed.partition == .usb or parsed.partition == .usb_fat) return -7;
     if (!virtio_file.available()) return -6;
     const subpath = parsed.path[0..parsed.parsed_len()];
+    // M97d-F5 (#2090): the policy file is kernel-writable only — chmod on
+    // it is denied even though stat resolves and the default entry would
+    // name the caller its owner. Before `stat` so a non-privileged attempt
+    // is a gate denial, never a persistence outcome.
+    if (parsed.partition == .host and policyPinned(actorFor(pid), subpath, .admin)) return -7;
     var st = virtio_file.StatResult{};
     if (virtio_file.stat(subpath, &st) != virtio_file.st_ok) return -6; // existing path only
     switch (trust.set_mode(actorFor(pid), .host, subpath, mode)) {
@@ -2402,6 +2433,45 @@ test "B2: access denial at capture and page, including persisted wide keys" {
     // The persisted form now carries the #2083 OWNERS.TXT self row too.
     try std.testing.expectEqualStrings(owners ++ "OWNERS.TXT\t604\t0\t-\n", saved[0..n]);
     trust.init();
+}
+
+test "file_table: M97d-F5 (#2090) — OWNERS.TXT is kernel-writable only at the file ABI" {
+    init();
+    trust.init();
+    virtio_file.set_test_share(&.{
+        .{ .name = "OWNERS.TXT", .data = "#v1\n" },
+        .{ .name = "OTHER.TXT", .data = "x" },
+    });
+    defer virtio_file.set_test_share(null);
+
+    // Every EL0 mutation class on the policy file is EACCES at the gate —
+    // the 0644/uid_user default no longer makes the app its owner.
+    try std.testing.expectEqual(@as(i64, -7), open(0, "OWNERS.TXT", MODE_WRITE));
+    try std.testing.expectEqual(@as(i64, -7), open(0, "OWNERS.TXT", MODE_WRITE | MODE_CREATE));
+    try std.testing.expectEqual(@as(i64, -7), open(0, "OWNERS.TXT", MODE_DIR | MODE_CREATE | MODE_WRITE));
+    try std.testing.expectEqual(@as(i64, -7), delete(0, "OWNERS.TXT"));
+    try std.testing.expectEqual(@as(i64, -7), rename(0, "OWNERS.TXT", "X.TXT"));
+    try std.testing.expectEqual(@as(i64, -7), rename(0, "OTHER.TXT", "OWNERS.TXT"));
+    // Case-insensitive, like the table's keying.
+    try std.testing.expectEqual(@as(i64, -7), open(0, "owners.txt", MODE_WRITE));
+    // chmod on it is denied even though stat resolves and the app is the
+    // default owner.
+    try std.testing.expectEqual(@as(i64, -7), set_mode(0, "OWNERS.TXT", 0o600));
+
+    // Reads stay allowed: policy, not secret.
+    const fd = open(0, "OWNERS.TXT", MODE_READ);
+    try std.testing.expect(fd >= 0);
+    try std.testing.expectEqual(@as(i64, 0), close(0, @intCast(fd)));
+
+    // chmod on OTHER paths still reaches persist_trust (which writes
+    // OWNERS.TXT itself — kernel-only never locks the kernel out). With no
+    // real channel the persist is an honest -5, proving the gate passed:
+    // the OWNERS.TXT attempt above is a -7 at the gate, never a -5.
+    try std.testing.expectEqual(@as(i64, -5), set_mode(0, "OTHER.TXT", 0o600));
+    try std.testing.expectEqual(@as(usize, 1), trust.count());
+    var saved: [trust.save_max]u8 = undefined;
+    const n = trust.save(&saved);
+    try std.testing.expect(std.mem.indexOf(u8, saved[0..n], "OTHER.TXT\t600\t") != null);
 }
 
 test "file_table: path parsing and volume routing" {

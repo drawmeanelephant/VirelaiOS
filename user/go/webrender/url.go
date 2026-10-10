@@ -346,6 +346,30 @@ type Cookie struct {
 	Flags  string // raw attribute tail, kept for the ledger only
 }
 
+// M97f F1+F2 (#2105): the bounded cookie subset ADR 0028 D §7 declares.
+// Individual fields are size-capped, and any remote byte that could shift a
+// tab-separated ledger row (tab, newline, carriage return, other controls)
+// refuses the whole cookie — the parser never normalizes hostile bytes into
+// something else.
+const (
+	cookieSpecMax  = 1024
+	cookieNameMax  = 64
+	cookieValueMax = 256
+	cookieScopeMax = 128
+)
+
+// cookieFieldOK reports whether s is safe as one stored field: printable
+// ASCII only. A tab would shift the ledger column layout; a CR/LF would
+// inject a whole row.
+func cookieFieldOK(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if b := s[i]; b < 0x20 || b == 0x7f {
+			return false
+		}
+	}
+	return true
+}
+
 // SetCookieHeaders parses every Set-Cookie header in a response head. Only the
 // name=value pair and the Domain/Path attributes are interpreted (there is no
 // JS to read the rest); the remaining attributes are kept verbatim in Flags so
@@ -362,7 +386,7 @@ func SetCookieHeaders(head string) []Cookie {
 			continue
 		}
 		spec := strings.TrimSpace(ln[i+1:])
-		if spec == "" {
+		if spec == "" || len(spec) > cookieSpecMax {
 			continue
 		}
 		parts := strings.Split(spec, ";")
@@ -389,15 +413,49 @@ func SetCookieHeaders(head string) []Cookie {
 			}
 		}
 		c.Flags = strings.Join(tail, "; ")
+		if len(c.Name) > cookieNameMax || len(c.Value) > cookieValueMax ||
+			len(c.Domain) > cookieScopeMax || len(c.Path) > cookieScopeMax ||
+			len(c.Flags) > cookieScopeMax ||
+			!cookieFieldOK(c.Name) || !cookieFieldOK(c.Value) ||
+			!cookieFieldOK(c.Domain) || !cookieFieldOK(c.Path) || !cookieFieldOK(c.Flags) {
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
+// AcceptCookies applies the bounded accept policy of ADR 0028 D §7 to parsed
+// Set-Cookie rows for a response from host: the Domain attribute must name
+// the request host exactly (one leading dot is ignored) — a suffix, parent
+// domain, or IP suffix is refused outright, never broadened or stored. A
+// missing Domain stores host-only. Every returned cookie carries the request
+// host in Domain, so the ledger can only ever hold origin-exact rows, and a
+// non-"/" Path normalizes to "/" rather than shifting scope.
+func AcceptCookies(cs []Cookie, host string) []Cookie {
+	var out []Cookie
+	for _, c := range cs {
+		if c.Name == "" || host == "" {
+			continue
+		}
+		if c.Domain != "" && !strings.EqualFold(strings.TrimPrefix(c.Domain, "."), host) {
+			continue
+		}
+		c.Domain = host
+		if !strings.HasPrefix(c.Path, "/") {
+			c.Path = "/"
+		}
 		out = append(out, c)
 	}
 	return out
 }
 
 // CookieHeader builds a request Cookie header for host+path from stored rows
-// ("name=value" fields, as written to the ledger). Host matching is
-// domain-suffix (a leading dot is ignored); an empty Domain matches the
-// request's own host; an empty Path matches everything.
+// ("name=value" fields, as written to the ledger). Host matching is EXACT:
+// the stored domain must equal the request host (one leading dot ignored) —
+// there is no suffix matching, so a row can never ride a request to a
+// different origin, and a scope-blanked row matches nothing. An empty Path
+// matches everything.
 func CookieHeader(rows []string, host, path string) string {
 	var pairs []string
 	for _, row := range rows {
@@ -406,14 +464,14 @@ func CookieHeader(rows []string, host, path string) string {
 			continue
 		}
 		name, value, domain, cpath := f[1], f[2], f[3], f[4]
-		if name == "" {
+		if name == "" || domain == "" {
 			continue
 		}
-		if domain != "" && domain != "." {
-			d := strings.TrimPrefix(domain, ".")
-			if !strings.EqualFold(host, d) && !strings.HasSuffix(strings.ToLower(host), "."+strings.ToLower(d)) {
-				continue
-			}
+		if !strings.EqualFold(host, strings.TrimPrefix(domain, ".")) {
+			continue
+		}
+		if !cookieFieldOK(name) || !cookieFieldOK(value) {
+			continue
 		}
 		if cpath != "" && !strings.HasPrefix(path, cpath) {
 			continue

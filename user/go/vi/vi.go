@@ -665,6 +665,17 @@ func FileRename(oldPath, newPath string) int64 {
 // publish is simply replaced by the next safe write — nothing removes it
 // at boot. Returns 0, or the negative kernel code of the step that failed;
 // every failure removes the temp.
+//
+// Secret-class invariant (M97d F6, #2091): the temp is a DIFFERENT path
+// key, so it always carries the kernel's default class policy — never the
+// target's. The secret class (ADR 0024 D8) keys on the exact normalized
+// path, so a secret-class save through this primitive would expose the
+// plaintext at path~ to every EL0 reader during the publish window and as
+// crash residue. No secret-class file is saved here today (the kernel's
+// own SECRETS.TXT write is write_whole, no temp); a caller that needs one
+// must not publish through WriteFileSafe until the kernel grows a
+// class-query or class-preserving temp seam. gsport/vfs enforces the
+// mirror rule on its reads: "<name>~" answers only while its target does.
 func WriteFileSafe(path string, b []byte) int64 {
 	if path == "" {
 		return -ErrEINVAL

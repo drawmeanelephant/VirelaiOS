@@ -1419,6 +1419,10 @@ fn cmd_vf_open(m: *Monitor, args: []const []const u8) ExecError {
 fn cmd_vf_close(m: *Monitor, args: []const []const u8) ExecError {
     if (args.len == 0) return cmd_vf_usage(m);
     const handle = parseInt(args[0]) catch return cmd_vf_usage(m);
+    // M97d-F4 (#2089): the host handle is a u16 — a wider console argument
+    // is a usage error, never a silent ReleaseSmall truncation onto another
+    // process's slot in the host's GLOBAL handle table.
+    if (handle > std.math.maxInt(u16)) return cmd_vf_usage(m);
     const st = virtio_file.close(@intCast(handle));
     if (st != virtio_file.st_ok) return vf_err(m, "close", args[0], st);
     m.console.puts("vf: close ");
@@ -1433,6 +1437,7 @@ fn cmd_vf_write(m: *Monitor, args: []const []const u8) ExecError {
     const handle = parseInt(args[0]) catch return cmd_vf_usage(m);
     const n = parseInt(args[1]) catch return cmd_vf_usage(m);
     if (n == 0) return cmd_vf_usage(m);
+    if (handle > std.math.maxInt(u16)) return cmd_vf_usage(m); // #2089
     const res = virtio_file.write_pattern(@intCast(handle), n);
     if (res.status != virtio_file.st_ok) return vf_err(m, "write", args[0], res.status);
     m.console.puts("vf: write ");
@@ -1452,6 +1457,7 @@ fn cmd_vf_truncate(m: *Monitor, args: []const []const u8) ExecError {
     if (args.len < 2) return cmd_vf_usage(m);
     const handle = parseInt(args[0]) catch return cmd_vf_usage(m);
     const size = parseInt(args[1]) catch return cmd_vf_usage(m);
+    if (handle > std.math.maxInt(u16)) return cmd_vf_usage(m); // #2089
     const st = virtio_file.truncate(@intCast(handle), size);
     if (st != virtio_file.st_ok) return vf_err(m, "truncate", args[0], st);
     m.console.puts("vf: truncate ");
@@ -1466,6 +1472,7 @@ fn cmd_vf_truncate(m: *Monitor, args: []const []const u8) ExecError {
 fn cmd_vf_fsync(m: *Monitor, args: []const []const u8) ExecError {
     if (args.len == 0) return cmd_vf_usage(m);
     const handle = parseInt(args[0]) catch return cmd_vf_usage(m);
+    if (handle > std.math.maxInt(u16)) return cmd_vf_usage(m); // #2089
     const st = virtio_file.fsync(@intCast(handle));
     if (st != virtio_file.st_ok) return vf_err(m, "fsync", args[0], st);
     m.console.puts("vf: fsync ");

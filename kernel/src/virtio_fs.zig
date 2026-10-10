@@ -2150,31 +2150,37 @@ pub fn list(raw_path: []const u8, out: []DirectoryEntry, out_count: *usize) u8 {
     const opened = transact(fuse_opendir, node.nodeid, &open_in) orelse return status_from_error();
     if (opened.len < 8) return st_host_error;
     const fh = read64(opened, 0);
+    var release: [24]u8 = [_]u8{0} ** 24;
+    write64(&release, 0, fh);
+    var released = false;
+    defer if (!released) {
+        _ = transact(fuse_releasedir, node.nodeid, &release);
+    };
     var offset: u64 = 0;
     while (out_count.* < out.len) {
         var input: [40]u8 = [_]u8{0} ** 40;
         write64(&input, 0, fh);
         write64(&input, 8, offset);
         write32(&input, 16, @intCast(max_io));
-        const reply = transact(fuse_readdir, node.nodeid, &input) orelse {
-            const status = status_from_error();
-            var release: [24]u8 = [_]u8{0} ** 24;
-            write64(&release, 0, fh);
-            _ = transact(fuse_releasedir, node.nodeid, &release);
-            return status;
-        };
+        const reply = transact(fuse_readdir, node.nodeid, &input) orelse return status_from_error();
         if (reply.len == 0) break;
+        // M97e-A1 (#2100): the transport accepts a readdir body up to
+        // max_message - 16 = 2160 bytes — beyond the max_io page. Refuse
+        // like `snapshot`/`contained_read` do; never memcpy host bytes
+        // past this stack buffer.
+        if (reply.len > max_io) return st_host_error;
         var page: [max_io]u8 = [_]u8{0} ** max_io;
         @memcpy(page[0..reply.len], reply);
+        const body = page[0..reply.len];
         var at: usize = 0;
         var page_next: u64 = offset;
-        while (at + 24 <= reply.len and out_count.* < out.len) {
+        while (at + 24 <= body.len and out_count.* < out.len) {
             const next_offset = read64(&page, at + 8);
             const name_len = read32(&page, at + 16);
             const kind = read32(&page, at + 20);
             const entry_len = (@as(usize, 24) + name_len + 7) & ~@as(usize, 7);
-            if (name_len == 0 or entry_len > reply.len - at or name_len > max_path) break;
-            const name = page[at + 24 ..][0..name_len];
+            if (name_len == 0 or entry_len > body.len - at or name_len > max_path) break;
+            const name = body[at + 24 ..][0..name_len];
             if (!std.mem.eql(u8, name, ".") and !std.mem.eql(u8, name, "..")) {
                 var full: [max_path]u8 = undefined;
                 var full_len: usize = 0;
@@ -2206,9 +2212,8 @@ pub fn list(raw_path: []const u8, out: []DirectoryEntry, out_count: *usize) u8 {
         if (at == 0 or page_next == offset) break;
         offset = page_next;
     }
-    var release: [24]u8 = [_]u8{0} ** 24;
-    write64(&release, 0, fh);
     _ = transact(fuse_releasedir, node.nodeid, &release);
+    released = true;
     return st_ok;
 }
 
@@ -2487,6 +2492,41 @@ test "virtio_fs: FUSE request and reply framing" {
     const failed = decode_fuse_reply(&reply, 0x1122334455667788) orelse return error.DecodeFailed;
     try std.testing.expectEqual(@as(i32, -2), failed.errno);
     try std.testing.expectEqual(@as(usize, 0), failed.body.len);
+}
+
+/// M97e-A1 (#2100) fixture: a hostile server whose READDIR body fills the
+/// transport's whole reply frame — max_message - fuse_out_header_len =
+/// 2160 bytes, 112 past the max_io page `list()` copies onto the stack.
+/// Every other op defers to the honest server.
+const OversizeReaddirServer = struct {
+    var body: [max_message - fuse_out_header_len]u8 = undefined;
+    fn exchange(opcode: u32, nodeid: u64, input: []const u8) ?[]const u8 {
+        if (opcode == fuse_readdir) {
+            @memset(&body, 0);
+            return &body;
+        }
+        return TestMetadataServer.exchange(opcode, nodeid, input);
+    }
+};
+
+test "virtio_fs: M97e-A1 (#2100) — an oversized readdir body is refused before the page copy" {
+    // The transport accepts a reply up to reply_buf.len (headers +
+    // max_payload), so `transact` can hand list() a 2160-byte body — 112
+    // bytes beyond the [max_io]u8 page. Before the fix the @memcpy
+    // overflowed the stack page (Debug: index-out-of-bounds panic). Now
+    // the reply is refused like snapshot()/contained_read already do.
+    const S = TestMetadataServer;
+    S.start();
+    defer S.stop();
+    test_exchange = OversizeReaddirServer.exchange;
+    var entries: [8]DirectoryEntry = undefined;
+    var count: usize = 0;
+    try std.testing.expectEqual(st_host_error, list("content", &entries, &count));
+    try std.testing.expectEqual(@as(usize, 0), count);
+    // Unmount honestly: drop the cached "content" lookup reference so the
+    // server's pin accounting balances like a real teardown.
+    cache_clear();
+    forget_locked(2);
 }
 
 test "virtio_fs: paths refuse traversal and keep host-relative names" {

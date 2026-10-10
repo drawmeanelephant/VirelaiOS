@@ -9,8 +9,26 @@ import (
 
 func webrenderSetCookies(head string) []webrender.Cookie { return webrender.SetCookieHeaders(head) }
 
+func webrenderAcceptCookies(cs []webrender.Cookie, host string) []webrender.Cookie {
+	return webrender.AcceptCookies(cs, host)
+}
+
 func webrenderCookieHeader(rows []string, host, path string) string {
 	return webrender.CookieHeader(rows, host, path)
+}
+
+// ledgerFieldOK reports whether s is safe to store as one tab-separated
+// ledger field (M97f F8, #2105): printable bytes only — a tab shifts the
+// column layout, a CR or LF injects a whole row. This is the one field check
+// every ledger write passes through (history, bookmarks, cookies, cache
+// index, downloads): a remote-derived value is refused, never rewritten.
+func ledgerFieldOK(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if b := s[i]; b < 0x20 || b == 0x7f {
+			return false
+		}
+	}
+	return true
 }
 
 // The browser's persistent stores. All of them are plain text on the host
@@ -117,6 +135,9 @@ func ledgerRewrite(path, schema string, rows []string) bool {
 
 // cacheStore records a fetched page body and its index row.
 func (a *app) cacheStore(url string, body []byte) bool {
+	if !ledgerFieldOK(url) {
+		return false
+	}
 	path := cacheBodyPath(url)
 	if !writeFileAll(path, body) {
 		return false
@@ -152,12 +173,11 @@ func (a *app) clearCache() int {
 	n := 0
 	for _, row := range rows {
 		f := strings.Split(row, "\t")
-		if len(f) >= 2 {
-			path := cacheBodyPath(f[1])
-			if len(f) >= 5 {
-				path = f[4]
-			}
-			if vi.FileDelete(path) >= 0 {
+		if len(f) >= 2 && ledgerFieldOK(f[1]) {
+			// The body path is DERIVED from the row's URL, never read from
+			// the row: a shifted or injected row must not point the delete
+			// at a file it did not store (M97f F8, #2105).
+			if vi.FileDelete(cacheBodyPath(f[1])) >= 0 {
 				n++
 			}
 		}
@@ -198,15 +218,50 @@ func (a *app) bookmarkToggle() (bool, bool) {
 		ledgerRewrite(bookmarkPath, bookmarkSchema, kept)
 		return true, false
 	}
+	if !ledgerFieldOK(a.target) || !ledgerFieldOK(a.title) {
+		return false, false
+	}
 	row := itoa64(vi.Time()) + "\t" + a.target + "\t" + a.title
 	ledgerAppend(bookmarkPath, bookmarkSchema, row)
 	return true, true
 }
 
-// persistCookies records any Set-Cookie rows from a response head.
-func (a *app) persistCookies(head string) int {
-	cs := webrenderSetCookies(head)
+// cookieMaxRows bounds the cookie ledger (M97f F2, #2105): a store is a
+// bounded jar, not a bottomless one — new rows past the cap evict the
+// oldest first.
+const cookieMaxRows = 512
+
+// boundCookieRows drops the oldest rows so appending `add` more keeps the
+// ledger within cookieMaxRows.
+func boundCookieRows(rows []string, add int) []string {
+	if len(rows)+add <= cookieMaxRows {
+		return rows
+	}
+	drop := len(rows) + add - cookieMaxRows
+	if drop > len(rows) {
+		drop = len(rows)
+	}
+	return rows[drop:]
+}
+
+// persistCookies records the Set-Cookie rows a response from host carried,
+// under the bounded subset ADR 0028 D §7 declares (M97f F1+F2, #2105):
+// AcceptCookies already refused every Domain that does not name the request
+// host exactly, so only origin-exact rows are ever stored, and every field
+// passes the ledger-field check before it is appended.
+func (a *app) persistCookies(head, host string) int {
+	cs := webrenderAcceptCookies(webrenderSetCookies(head), host)
+	if len(cs) == 0 {
+		return 0
+	}
+	if rows := ledgerRows(cookiePath); len(rows)+len(cs) > cookieMaxRows {
+		ledgerRewrite(cookiePath, cookieSchema, boundCookieRows(rows, len(cs)))
+	}
 	for _, c := range cs {
+		if !ledgerFieldOK(c.Name) || !ledgerFieldOK(c.Value) ||
+			!ledgerFieldOK(c.Domain) || !ledgerFieldOK(c.Path) || !ledgerFieldOK(c.Flags) {
+			continue
+		}
 		row := itoa64(vi.Time()) + "\t" + c.Name + "\t" + c.Value + "\t" + c.Domain + "\t" + c.Path + "\t" + c.Flags
 		ledgerAppend(cookiePath, cookieSchema, row)
 	}
@@ -228,7 +283,7 @@ func (a *app) clearCookies() int {
 
 // saveDownload writes the current page body to the share and records it.
 func (a *app) saveDownload() bool {
-	if len(a.lastBody) == 0 || a.target == "" {
+	if len(a.lastBody) == 0 || a.target == "" || !ledgerFieldOK(a.target) {
 		return false
 	}
 	name := downloadName(a.target)

@@ -131,13 +131,24 @@ func Procs(dst []ProcRow) (int, int64) {
 type WmSeat struct {
 	WM   uint32
 	Self uint32
+	// Go is true when the resolved seat is the Go WM (GOTABWM.ELF): the seat
+	// that speaks the M97g-F2 authenticated bind protocol, where requests
+	// carry a session token and acks arrive Pad-marked. The Zig seats answer
+	// bare applied acks and are served by the legacy path.
+	Go bool
 }
 
+// wmGoSeatName is the seat process name that runs the authenticated WM_RPC
+// protocol (M97g-F2 #2080).
+const wmGoSeatName = "GOTABWM.ELF"
+
 // WMProcNames are the historical seat names, kept for DISPLAY-side use
-// (top marks which proc-table row is the WM). They are no longer an
+// (top marks which proc-table row is the WM). They are no longer the routing
 // authority: since #2079 the seat id is the kernel's own register
-// (WmctlSeatPid), which a forged process name cannot impersonate.
-var WMProcNames = [...]string{"WND.BIN", "TABWM.BIN", "GOTABWM.ELF"}
+// (WmctlSeatPid), which a forged process name cannot impersonate. The Go
+// seat name is still matched — by PID on the seat row — to pick the
+// authenticated protocol (M97g-F2 #2080).
+var WMProcNames = [...]string{"WND.BIN", "TABWM.BIN", wmGoSeatName}
 
 // wmPeersScanAttempts bounds the `sys_procs` re-reads (M56d #1315). It is
 // kept at the historical 8, but only a persistently suspect scan can spend
@@ -162,7 +173,9 @@ const wmPeersScanAttempts = 8
 // VZ a yield parks the caller until the next scheduler tick, which is a full
 // second (kernel/src/timer.zig `period_ns` = 1e9). The no-seat answer no
 // longer depends on the scan at all (the kernel answers it), so the retry
-// loop exists only while SELF is unresolved. On the host (every syscall
+// loop waits only while SELF is unresolved or a registered seat's row is
+// still unreadable — its name picks the #2080 protocol, so a zeroed seat
+// row counts as a suspect scan. On the host (every syscall
 // -ENOSYS) the loop is a cheap no-op that still returns the zero seat.
 func WmPeers(selfName string) WmSeat {
 	var out WmSeat
@@ -175,17 +188,30 @@ func WmPeers(selfName string) WmSeat {
 	}
 	rows := make([]ProcRow, 64)
 	for attempt := 0; attempt < wmPeersScanAttempts; attempt++ {
+		// With no registered seat there is nothing to classify; with one,
+		// the scan must read its row before the protocol answer stands.
+		seatSeen := out.WM == 0
 		if n, r := Procs(rows); r > 0 && n > 0 {
 			for i := 0; i < n; i++ {
 				if rows[i].State != ProcRunning {
 					continue
 				}
-				if out.Self == 0 && rows[i].Name() == selfName {
+				name := rows[i].Name()
+				if out.Self == 0 && name == selfName {
 					out.Self = uint32(rows[i].PID)
+				}
+				// The seat row's name picks the protocol: GOTABWM.ELF
+				// speaks authenticated WM_RPC (#2080), the Zig seats the
+				// legacy bind. A seat row whose name reads back zeroed is
+				// the M56d flake — this scan cannot classify the seat, so
+				// seatSeen stays false and the loop retries.
+				if out.WM != 0 && rows[i].PID == uint64(out.WM) && name != "" {
+					out.Go = name == wmGoSeatName
+					seatSeen = true
 				}
 			}
 		}
-		if out.Self != 0 {
+		if out.Self != 0 && seatSeen {
 			return out
 		}
 		if attempt == 0 {

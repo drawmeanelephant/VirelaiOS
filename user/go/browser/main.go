@@ -865,7 +865,7 @@ func (a *app) finishResponse(viaTLS bool) {
 		a.htmlTruncated = true
 	}
 	a.loadBody(body, a.target)
-	if n := a.persistCookies(head); n > 0 {
+	if n := a.persistCookies(head, a.loadURL.Host); n > 0 {
 		vi.ConsoleLine(markerStores + "cookies+" + itoa(n))
 	}
 	a.cacheStore(a.target, body)
@@ -1348,6 +1348,9 @@ func (a *app) describeTarget() string {
 }
 
 func (a *app) persistHistory(target string) {
+	if !ledgerFieldOK(target) {
+		return
+	}
 	if !vi.FileExists(historyPath) {
 		vi.FileAppend(historyPath, []byte(historySchema+"\n"))
 	}

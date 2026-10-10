@@ -29,6 +29,13 @@
 #   run 07: same launch, then the rail close-x click (rightmost 16 px of
 #           the single cell, y<22) drives closeTabByID -> WmctlWinClose ->
 #           WIN_CLOSE -> the same in-band shutdown seam -> status 0.
+#   run 08: M95g acceptance (#2015) — the full guest journey in one cold
+#           boot: seat -> launcher exec -> the marker-paced shell session
+#           (launch + echo, dir + type on the seeded manifest, apps
+#           LIVE/READY, a clipboard-pasted `call fs/read` byte channel)
+#           -> a marker-triggered raw-framebuffer snapshot whose glyph
+#           decode proves the seeded document byte-exact -> typed `exit`
+#           -> status 0, window gone, focus on the desktop.
 #
 # HOST PREREQUISITE: `.build/go/GSSMOKE.ELF` and `.build/go/GOSTALGIA.ELF`
 # via `bash tools/go/build-gostalgia.sh` (overlay leg; --no-overlay is the
@@ -1113,8 +1120,531 @@ for rel in ("GS/CRASH", "CRASH"):
 print("no crash receipts on the share")
 PY
 
-# Repeat-cycle hygiene, same as tag 05.
+# Repeat-cycle hygiene, same as tag 05. Run 05's `font large` persists in
+# SETTINGS.TXT across boots (the same hazard the boot-03 restore guards
+# against); boot 08's cell math (8x16 medium rung, `size 80x44`, the
+# raw-snap glyph decode) assumes medium, so restore the defaults here.
 vgate_assert 07 python <<'PY'
+import os
+share = os.environ.get("VG_SHARE")
+st = os.path.join(share, "SESSION.TABS") if share else None
+if st and os.path.exists(st):
+    os.remove(st)
+    print("between-run cleanup: SESSION.TABS removed (repeat hygiene)")
+else:
+    print("between-run cleanup: no SESSION.TABS (nothing to remove)")
+with open(os.path.join(share, "SETTINGS.TXT"), "w") as f:
+    f.write("#v2\n")
+print("between-run restore: font_size reset to the medium rung")
+PY
+
+
+# --- boot 08: M95g acceptance journey --------------------------------------
+# The card's end-to-end journey in ONE cold boot on the default seat, every
+# step marker-gated (issue #2015):
+#   gotabwm: present   -> script-08 `procs` prints the pre-launch process
+#                        rows; `procs: count=` anchors the summon chord.
+#   procs: count=      -> --input-key Return on the empty strip: the start
+#                        surface's keyboard affordance opens the launcher
+#                        (same empty-strip path run 06's post-exit Enter
+#                        uses) — real HID, never a script line.
+#   launcher open      -> --input-string types the `gostalgia` filter +
+#                        Return; the seat decodes the v2 row and execs
+#                        `GOSTALGIA.ELF shell --root /host/GS`.
+#   call app/list ok   -> the Init-discovery refresh: the model's busy
+#                        window is past, the declare's focus handoff has
+#                        settled. script-08b seeds the kernel clipboard
+#                        with the raw-IPC command line — `clip <text>` is
+#                        the only channel that carries `"`/`{`/`}` (the
+#                        HID chord table has no such glyphs, and the
+#                        tokenizer's single-quote arm keeps the JSON
+#                        byte-exact) — and dumps the hosted registry;
+#                        --screenshot-after `dui[` captures the shell at
+#                        its prompt for the pixel assert. --input-chords
+#                        begins the session at the fixed 0.25 s/stroke
+#                        cv-input pace. The model drops keys while busy
+#                        and one command's busy window covers its own IPC
+#                        call plus the trailing app/list refresh — ~1.4 s
+#                        measured — so every command carries a `space`x12
+#                        settle tail (a dropped space is free, an
+#                        accepted one pads an empty line the next
+#                        submit's TrimSpace eats):
+#     stop com.gostalgia.echo      normalize the auto-started app -> READY
+#     launch com.gostalgia.echo    the card's `launch` leg (app/launch)
+#     echo m95g-token              the card's `echo` leg (the in-process
+#                                  echo app reflects the token — the call
+#                                  marker is contract; the reply row is
+#                                  on-screen)
+#     dir /                        root of the seeded env VFS (fs/list)
+#     type /apps/manifests/com.gostalgia.echo.json
+#                                  the host-seeded document (fs/read —
+#                                  the runtime writes the echo manifest
+#                                  into /apps/manifests at compose time;
+#                                  deterministic bytes asserted exactly
+#                                  below)
+#     apps                         registry lists echo LIVE · PID (app/list)
+#     stop com.gostalgia.echo      the card's `stop` leg (app/stop)
+#     apps                         registry lists echo READY again
+#     cls                          wipes the transcript synchronously so
+#                                  the reply block that follows paints
+#                                  top-anchored inside the frame
+#     <ctrl-shift-v>               pastes `call fs/read {"path":...}` —
+#                                  the raw IPC call returns the seeded
+#                                  document as base64 inside the grid:
+#                                  the byte-exact readback channel
+#     call sys/ping                UNIQUE terminal marker — every other
+#                                  method fires earlier in the session,
+#                                  so `call sys/ping ok` is the only
+#                                  gate that proves ALL content rows are
+#                                  painted. --snapshot-after fires the
+#                                  kind-4 scanout request on it; the
+#                                  guest streams the real 1280x720 BGRX
+#                                  framebuffer back over queue 4 and the
+#                                  snapshot assert glyph-decodes the
+#                                  `data_base64` block straight off the
+#                                  pixels — the byte proof never touches
+#                                  pointer input, so the seat's
+#                                  drop-oldest event queue cannot eat it
+#                                  under the keystroke flood the way the
+#                                  earlier drag-based proof could
+#     exit <return>                `e,x,i,t` waits behind a `space`x12
+#                                  busy-cover after ping's own call+refresh
+#                                  window (an `e` inside it left `xit` on
+#                                  the line — observed: the session hung
+#                                  to the timeout) — then Return submits
+#                                  the quit. `exit` -> tea.Quit -> the
+#                                  seam: shutdown reason=shell exited ->
+#                                  done -> status 0.
+#   exited status=0 +3s-> script-08c: `procs` + `dui` (post-exit registry,
+#                        focus) + `procs receipt` (clean-exit record) +
+#                        `clip` (the clipboard still holds the seeded
+#                        paste line) + `tty` (the binding list is empty
+#                        post-exit: `tty: none`) + `input` (HID counters).
+#
+# The medium-atlas glyph table the snapshot assert decodes against is
+# lifted out of kernel/src/font_atlas_data.zig at setup time (setup
+# python runs at the repo root) — the gate tests the font the kernel
+# actually renders, not a stale copy.
+vgate_setup_python <<'PY'
+import os, re, sys
+src = open("kernel/src/font_atlas_data.zig").read()
+m = re.search(
+    r'pub const medium = struct \{.*?pub const blob: \*const \[(\d+):0\]u8'
+    r' =\s*"(.*?)";', src, re.S)
+if not m:
+    sys.exit("no medium atlas blob in font_atlas_data.zig")
+want, lit = int(m.group(1)), m.group(2)
+out = bytearray()
+i = 0
+while i < len(lit):
+    if lit[i] == "\\" and lit[i + 1] == "x":
+        out.append(int(lit[i + 2:i + 4], 16))
+        i += 4
+    else:
+        out.append(ord(lit[i]))
+        i += 1
+if len(out) != want:
+    sys.exit("medium atlas decoded %d bytes, want %d" % (len(out), want))
+with open(os.path.join(os.environ["RUN_DIR"], "font-med.bin"), "wb") as f:
+    f.write(out)
+print("font-med.bin staged: %d bytes (95 glyphs x 64 B)" % len(out))
+PY
+
+vgate_file script-08.txt <<'EOF'
+procs
+EOF
+
+# `clip <text>` seeds the clipboard with the raw-IPC command line for the
+# ctrl-shift-v paste leg (single-quoted: the JSON survives the tokenizer
+# byte-exact); `dui` is the hosted-registry dump AND the screenshot
+# marker (`dui[` fires once the shell is painted and idle).
+vgate_file script-08b.txt <<'EOF'
+clip call fs/read '{"path":"/apps/manifests/com.gostalgia.echo.json"}'
+dui
+EOF
+
+vgate_file script-08c.txt <<'EOF'
+procs
+dui
+procs receipt GOSTALGIA.ELF
+clip
+tty
+input
+EOF
+
+vgate_run 08 -- \
+    --screen '$RUN_DIR/gos-08' \
+    --input --via-virtio \
+    --script '$RUN_DIR/script-08.txt' \
+    --script-after 'gotabwm: present' \
+    --input-key 36 \
+    --input-key-after 'procs: count=' \
+    --input-string $'gostalgia\n' \
+    --input-string-after 'gotabwm: launcher open n=' \
+    --script2 '$RUN_DIR/script-08b.txt' \
+    --script2-after 'gostalgia: call app/list ok' --script2-delay 2 \
+    --screenshot-after 'dui[' \
+    --input-chords 'space,space,space,space,space,space,space,space,s,t,o,p,space,c,o,m,.,g,o,s,t,a,l,g,i,a,.,e,c,h,o,return,space,space,space,space,space,space,space,space,space,space,space,space,l,a,u,n,c,h,space,c,o,m,.,g,o,s,t,a,l,g,i,a,.,e,c,h,o,return,space,space,space,space,space,space,space,space,space,space,space,space,e,c,h,o,space,m,9,5,g,-,t,o,k,e,n,return,space,space,space,space,space,space,space,space,space,space,space,space,d,i,r,space,/,return,space,space,space,space,space,space,space,space,space,space,space,space,t,y,p,e,space,/,a,p,p,s,/,m,a,n,i,f,e,s,t,s,/,c,o,m,.,g,o,s,t,a,l,g,i,a,.,e,c,h,o,.,j,s,o,n,return,space,space,space,space,space,space,space,space,space,space,space,space,a,p,p,s,return,space,space,space,space,space,space,space,space,space,space,space,space,s,t,o,p,space,c,o,m,.,g,o,s,t,a,l,g,i,a,.,e,c,h,o,return,space,space,space,space,space,space,space,space,space,space,space,space,a,p,p,s,return,space,space,space,space,space,space,space,space,space,space,space,space,c,l,s,return,space,space,space,space,ctrl-shift-v,return,space,space,space,space,space,space,space,space,space,space,space,space,c,a,l,l,space,s,y,s,/,p,i,n,g,return,space,space,space,space,space,space,space,space,space,space,space,space,e,x,i,t,space,space,space,space,space,space,space,space,return' \
+    --input-chords-after 'gostalgia: call app/list ok' \
+    --cvc-snap \
+    --snapshot-after 'gostalgia: call sys/ping ok' \
+    --snapshot-out '$RUN_DIR/snap-08' \
+    --script3 '$RUN_DIR/script-08c.txt' \
+    --script3-after 'procs GOSTALGIA.ELF exited status=0' --script3-delay 3 \
+    --script-expect 'procs GOSTALGIA.ELF exited status=0' \
+    --script-expect-tail 10 --timeout 300
+
+# The seat presented itself and the launcher walked the v2 row over HID.
+vgate_assert 08 serial-contains 'gotabwm: present'
+vgate_assert 08 serial-contains 'procs: count='
+vgate_assert 08 serial-contains 'gotabwm: launcher open n='
+vgate_assert 08 serial-contains 'gotabwm: launcher filter q=gostalgia n=1'
+vgate_assert 08 serial-contains 'gotabwm: launcher exec GOSTALGIA.ELF argv=shell --root /host/GS'
+vgate_assert 08 serial-absent 'gotabwm: launcher missing'
+# The hosted window landed on the strip and in the session file.
+vgate_assert 08 serial-contains 'gotabwm: tab open id='
+vgate_assert 08 serial-contains 'gotabwm: session write n='
+vgate_assert 08 serial-contains 'gostalgia: tty attached window='
+vgate_assert 08 serial-contains 'gostalgia: size 80x44'
+vgate_assert 08 serial-contains 'gostalgia: ready endpoint='
+vgate_assert 08 serial-contains 'tty: input n='
+# The journey's call legs, each through loggedCaller's receipt.
+vgate_assert 08 serial-contains 'gostalgia: call app/list ok'
+vgate_assert 08 serial-count 'gostalgia: call app/stop ok' 2
+vgate_assert 08 serial-contains 'gostalgia: call app/launch ok'
+vgate_assert 08 serial-contains 'gostalgia: call app/com.gostalgia.echo/echo ok'
+vgate_assert 08 serial-contains 'gostalgia: call fs/list ok'
+vgate_assert 08 serial-count 'gostalgia: call fs/read ok' 2
+vgate_assert 08 serial-contains 'gostalgia: call sys/ping ok'
+# The paste delivered the raw-IPC line into the bound tty.
+vgate_assert 08 serial-contains 'tty: paste '
+# Clean shutdown through the in-band seam.
+vgate_assert 08 serial-contains 'gostalgia: shutdown reason=shell exited'
+vgate_assert 08 serial-contains 'gostalgia: done'
+vgate_assert 08 serial-contains 'procs GOSTALGIA.ELF exited status=0'
+vgate_assert 08 serial-absent '[EXC] parking:'
+vgate_assert 08 serial-absent 'exited status=139'
+vgate_assert 08 serial-absent 'panic:'
+vgate_assert 08 serial-absent ' err='
+vgate_assert 08 share-contains SESSION.TABS 'Gostalgia'
+
+# Step order: every leg's receipt must land after the one before it —
+# presence alone does not prove the journey ran in sequence.
+vgate_assert 08 python <<'PY'
+import os, re, sys
+ser = open(os.environ["VG_SER"], errors="replace").read()
+order = [
+    ("seat presented",        "gotabwm: present"),
+    ("baseline procs",        "procs: count="),
+    ("launcher open",         "gotabwm: launcher open n="),
+    ("launcher filter",       "gotabwm: launcher filter q=gostalgia n=1"),
+    ("launcher exec",         "gotabwm: launcher exec GOSTALGIA.ELF"),
+    ("tty attached",          "gostalgia: tty attached window="),
+    ("runtime ready",         "gostalgia: ready endpoint="),
+    ("init app/list",         "gostalgia: call app/list ok"),
+    ("normalize stop",        "gostalgia: call app/stop ok"),
+    ("launch echo",           "gostalgia: call app/launch ok"),
+    ("echo token",            "gostalgia: call app/com.gostalgia.echo/echo ok"),
+    ("dir /",                 "gostalgia: call fs/list ok"),
+    ("type document",         "gostalgia: call fs/read ok"),
+    ("stop echo",             "gostalgia: call app/stop ok"),
+    ("raw fs/read (b64)",     "gostalgia: call fs/read ok"),
+    ("sys/ping (paint gate)", "gostalgia: call sys/ping ok"),
+    ("shutdown",              "gostalgia: shutdown reason="),
+    ("done",                  "gostalgia: done"),
+    ("exit status 0",         "procs GOSTALGIA.ELF exited status=0"),
+]
+at = 0
+prev = ""
+for name, marker in order:
+    i = ser.find(marker, at)
+    if i < 0:
+        sys.exit("step %r missing after %r (marker %r)" % (name, prev, marker))
+    at = i + 1
+    prev = name
+# The refresh discipline: every non-quit command triggers a follow-up
+# app/list, the two explicit `apps` calls add one each, and the init
+# discovery adds one more — thirteen minimum when no leg was garbled.
+lists = ser.count("gostalgia: call app/list ok")
+if lists < 13:
+    sys.exit("expected the per-command app/list refreshes, saw %d" % lists)
+print("step order verified: %d legs, %d app/list receipts" % (len(order), lists))
+PY
+
+# Window/focus/process diff — same pid-correlated contract as run 06:
+# hosted while running, gone after exit, focus fell back, and `procs`
+# returned to baseline modulo one clean zombie.
+vgate_assert 08 python <<'PY'
+import os, re, sys
+
+ser = open(os.environ["VG_SER"], errors="replace").read()
+
+exit_i = ser.find("procs GOSTALGIA.ELF exited status=0")
+if exit_i < 0:
+    sys.exit("no clean-exit marker")
+pre = ser[:exit_i]
+post = ser[exit_i:]
+
+m = (re.search(r"runtime-receipt: pid=(\d+) name=GOSTALGIA\.ELF", post)
+     or re.search(r"^procs: id=(\d+)\b[^\n]*name=GOSTALGIA\.ELF",
+                  post, re.M))
+if m:
+    pid = m.group(1)
+else:
+    w = re.search(r"gostalgia: tty attached window=(\d+)", ser)
+    exec_i = ser.find("gotabwm: launcher exec GOSTALGIA.ELF")
+    if not w or exec_i < 0:
+        sys.exit("no pid in receipt/procs and no attach/exec markers")
+    opens_for_id = re.findall(
+        r"open: id=%s owner=(\d+)" % re.escape(w.group(1)),
+        ser[exec_i:])
+    if not opens_for_id:
+        sys.exit("no `open: id=%s owner=` row after the exec marker"
+                 % w.group(1))
+    pid = opens_for_id[0]
+print("gostalgia owner pid=%s" % pid)
+
+pre_rows = [l for l in pre.splitlines() if l.startswith("dui[")]
+post_rows = [l for l in post.splitlines() if l.startswith("dui[")]
+if not any(("owner=%s" % pid) in l for l in pre_rows):
+    sys.exit("no dui[] row owned by pid %s while hosted" % pid)
+if any(("owner=%s" % pid) in l for l in post_rows):
+    sys.exit("dui[] still lists a pid-%s window after exit" % pid)
+heads = [l for l in post.splitlines() if l.startswith("dui: windows=")]
+if not heads or " focused=0 " not in heads[-1]:
+    sys.exit("post-exit dui header missing or focus did not fall back: %r"
+             % (heads[-1] if heads else None))
+
+counts = re.findall(r"^procs: count=(\d+)$", ser, re.M)
+if len(counts) < 2:
+    sys.exit("expected baseline and post-exit procs dumps, got %s" % counts)
+base, last = int(counts[0]), int(counts[-1])
+gs_rows_post = [l for l in post.splitlines()
+                if l.startswith("procs: id=") and "name=GOSTALGIA.ELF" in l]
+bad = [l for l in gs_rows_post
+       if "state=exited" not in l or " exit=0" not in l]
+if bad:
+    sys.exit("post-exit GOSTALGIA rows are not clean zombies: %s" % bad)
+if last - base > 1:
+    sys.exit("procs count grew by more than one retained zombie: %s -> %s"
+             % (base, last))
+if "runtime-receipt" not in post:
+    sys.exit("the post-exit `procs receipt` query printed nothing")
+print("window gone, focused=0, procs %d->%d (zombie retained)"
+      % (base, last))
+PY
+
+# Byte-exact document proof off the real framebuffer: the snapshot
+# trigger fired on `call sys/ping ok` — after `cls` re-anchored the
+# transcript, the pasted `call fs/read` reply, and every earlier leg —
+# so the streamed 1280x720 BGRX frame shows the whole reply block.
+# Each of the 42x76 content cells is glyph-decoded against the medium
+# atlas staged at setup (binary ink mask, argmin Hamming over cp 32..126 —
+# calibrated on a captured session: ~0.1 s, lossless on this palette).
+# Row content only (cols 1..76): the lipgloss `│`/`─` frame cells are
+# skipped structurally so their non-ASCII fallbacks cannot inject noise.
+# Squashing every decoded row to the base64 alphabet rejoins the
+# hard-wrapped payload seamlessly — the expected 296-char payload must be
+# a literal substring, then its decode must equal the exact manifest
+# bytes apps.SeedManifests writes at compose time
+# (json.MarshalIndent(echo.Manifest()) + '\n', computed on the host).
+vgate_assert 08 snapshot 'snap-08-*.raw' <<'PY'
+import base64, os, re, sys
+
+rd = os.path.dirname(os.path.abspath(sys.argv[1]))
+blob = open(os.path.join(rd, "font-med.bin"), "rb").read()
+if len(blob) != 6080:
+    sys.exit("font-med.bin is %d bytes, want 6080" % len(blob))
+GB = {}
+for cp in range(32, 127):
+    g = blob[(cp - 32) * 64:(cp - 32) * 64 + 64]
+    mask = 0
+    for y in range(16):
+        for b in range(4):
+            byte = g[y * 4 + b]
+            hi = ((byte >> 4) & 0xF) >= 8
+            lo = (byte & 0xF) >= 8
+            mask = (mask << 2) | (hi << 1) | lo
+    GB[cp] = mask
+
+W, H = 1280, 720
+raw = open(sys.argv[1], "rb").read()
+if len(raw) < W * H * 4:
+    sys.exit("snapshot is %d bytes, want at least %d (1280x720 BGRX)"
+             % (len(raw), W * H * 4))
+
+def px(x, y):
+    o = (y * W + x) * 4
+    return (raw[o + 2], raw[o + 1], raw[o])
+
+def lum(p):
+    return p[0] * 0.30 + p[1] * 0.55 + p[2] * 0.15
+
+# The gostalgia window paints fullscreen under the seat rail: grid row 0
+# sits at y=16 (top half hidden behind the 22 px rail), 8x16 medium
+# cells, frame borders in cols 0 and 77.
+Y0 = 16
+lines = []
+for r in range(42):
+    line = []
+    for c in range(1, 77):
+        x0, y0 = c * 8, Y0 + r * 16
+        lums = [lum(px(x0 + k % 8, y0 + k // 8)) for k in range(128)]
+        lo, hi = min(lums), max(lums)
+        if hi - lo < 20:
+            line.append(" ")
+            continue
+        mid = (lo + hi) / 2
+        mask = 0
+        for v in lums:
+            mask = (mask << 1) | (v >= mid)
+        best, bs = 32, 999
+        for cp, gm in GB.items():
+            d = bin(mask ^ gm).count("1")
+            if d < bs:
+                bs, best = d, cp
+        line.append(chr(best))
+    lines.append("".join(line))
+text = "\n".join(lines)
+squash = re.sub(r"[^A-Za-z0-9+/=]", "", text)
+
+expected = (
+    b'{\n'
+    b'  "id": "com.gostalgia.echo",\n'
+    b'  "name": "Echo",\n'
+    b'  "version": "0.1.0",\n'
+    b'  "entrypoint": "echo",\n'
+    b'  "permissions": [\n'
+    b'    "ipc"\n'
+    b'  ],\n'
+    b'  "description": "Your words, reflected back. A tiny app with a tiny'
+    b' permission grant."\n'
+    b'}\n')
+want_b64 = base64.b64encode(expected).decode()
+
+if "callfs/read" not in squash:
+    sys.exit("the pasted `call fs/read` command line is not on the frame:\n%s"
+             % text)
+if "database64" not in squash:
+    sys.exit("no `data_base64` key on the frame:\n%s" % text)
+if "comgostalgiaechojson" not in squash:
+    sys.exit("the reply's path row is missing or misrendered:\n%s" % text)
+if "size220" not in squash:
+    sys.exit("the reply's size row is missing or misrendered:\n%s" % text)
+i = squash.find(want_b64)
+if i < 0:
+    k = squash.find("database64") + 10
+    sys.exit("the rendered payload does not match the seeded document "
+             "(frame holds %r...):\n%s" % (squash[k:k + 60], text))
+data = base64.b64decode(squash[i:i + len(want_b64)])
+if data != expected:
+    sys.exit("seeded document bytes differ after decode: %r" % data[:120])
+print("scanout readback: %d-cell grid decoded, %d-char payload byte-exact "
+      "(%d B manifest)" % (76 * 42, len(want_b64), len(data)))
+PY
+
+# No crash receipt, and none may name GOSTALGIA* — the supervisor writes
+# CRASH/*.TXT only for failed children; a clean shell exit leaves both
+# plausible roots empty of Gostalgia-named files.
+vgate_assert 08 python <<'PY'
+import os, sys
+share = os.environ.get("VG_SHARE")
+if not share:
+    sys.exit("no armed share exported to the assert")
+found = []
+for rel in ("GS/CRASH", "CRASH"):
+    d = os.path.join(share, rel)
+    if not os.path.isdir(d):
+        continue
+    for name in os.listdir(d):
+        found.append(os.path.join(rel, name))
+        if name.upper().startswith("GOSTALGIA"):
+            sys.exit("CRASH receipt names the guest: %s" % os.path.join(rel, name))
+if found:
+    sys.exit("crash receipt(s) on the share: %s" % found)
+print("no crash receipts on the share")
+PY
+
+# The real-scanout pixel assert at the prompt: script-08b's `dui[` fires
+# while the shell sits idle at `C:\users\guest>` — the lipgloss border
+# (ANSI 62), the accent header (117), and the gold prompt/badge (221)
+# must all be on the framebuffer.
+vgate_assert 08 snapshot 'gos-08-after' <<'PY'
+import struct, sys, zlib
+
+d = open(sys.argv[1], "rb").read()
+assert d[:8] == b"\x89PNG\r\n\x1a\n", "not a PNG scanout"
+pos = 8
+idat = b""
+w = h = ct = 0
+while pos < len(d):
+    n, typ = struct.unpack(">I4s", d[pos:pos + 8])
+    chunk = d[pos + 8:pos + 8 + n]
+    if typ == b"IHDR":
+        w, h, depth, ct = struct.unpack(">IIBB", chunk[:10])
+        assert depth == 8, "unexpected PNG depth"
+    elif typ == b"IDAT":
+        idat += chunk
+    pos += 12 + n
+assert (w, h) == (2560, 1440), "wanted 2560x1440 scanout, got %dx%d" % (w, h)
+bpp = 4 if ct == 6 else 3
+raw = zlib.decompress(idat)
+stride = w * bpp
+out = bytearray()
+prev = bytearray(stride)
+i = 0
+for _ in range(h):
+    filt = raw[i]
+    i += 1
+    row = bytearray(raw[i:i + stride])
+    i += stride
+    if filt == 1:
+        for x in range(bpp, stride):
+            row[x] = (row[x] + row[x - bpp]) & 0xff
+    elif filt == 2:
+        for x in range(stride):
+            row[x] = (row[x] + prev[x]) & 0xff
+    elif filt == 3:
+        for x in range(stride):
+            a = row[x-bpp] if x >= bpp else 0
+            row[x] = (row[x] + ((a + prev[x]) >> 1)) & 0xff
+    elif filt == 4:
+        for x in range(stride):
+            a = row[x-bpp] if x >= bpp else 0
+            b = prev[x]; c = prev[x-bpp]
+            p = a + b - c
+            pa, pb, pc = abs(p-a), abs(p-b), abs(p-c)
+            pr = a if (pa <= pb and pa <= pc) else (b if pb <= pc else c)
+            row[x] = (row[x] + pr) & 0xff
+    out += row
+    prev = row
+
+def px(x, y):
+    k = (y * w + x) * bpp
+    return out[k], out[k+1], out[k+2]
+
+border = accent = gold = 0
+for y in range(30, 1440):
+    for x in range(0, 1700):
+        r, g, b = px(x, y)
+        if abs(r - 95) < 40 and abs(g - 95) < 40 and b > 175:
+            border += 1
+        if r > 100 and r < 170 and g > 180 and b > 220:
+            accent += 1
+        if r > 220 and g > 175 and b < 140:
+            gold += 1
+print("prompt frame: border-62 px=%d accent-117 px=%d gold-221 px=%d"
+      % (border, accent, gold))
+assert border >= 300, ("no lipgloss border on the prompt scanout (%d px): "
+                       "the shell never painted its frame" % border)
+assert accent >= 10, ("no accent-colour header on the prompt scanout "
+                      "(%d px)" % accent)
+assert gold >= 20, ("no gold prompt/badge on the scanout (%d px): the "
+                    "frame is not at the shell prompt" % gold)
+PY
+
+# Repeat-cycle hygiene, same as tags 05-07.
+vgate_assert 08 python <<'PY'
 import os
 share = os.environ.get("VG_SHARE")
 st = os.path.join(share, "SESSION.TABS") if share else None
