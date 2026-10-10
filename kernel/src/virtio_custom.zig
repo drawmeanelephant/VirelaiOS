@@ -837,15 +837,25 @@ pub fn wait_any_push(budget: usize) ?PushRx {
     if (!r.armed) return null;
     var i: usize = 0;
     while (i < budget) : (i += 1) {
-        mmu.invalidate_dcache_range(@intFromPtr(&r.used), @sizeOf(VirtqUsed));
+        // Host tests stage the used ring directly; `dc ivac` is EL0-illegal
+        // there (the reap_parked idiom) and a coherent host never needs it.
+        if (comptime !builtin.is_test) {
+            mmu.invalidate_dcache_range(@intFromPtr(&r.used), @sizeOf(VirtqUsed));
+        }
         if (r.used.idx != r.last_used) {
             const elem = r.used.ring[r.last_used % queue_size];
             r.last_used +%= 1;
             if (elem.len == 0) continue; // drained spare — keep waiting
             used_len = elem.len;
+            // M97e-D2 (#2100): the used-ring length is host-controlled —
+            // return it CLAMPED to the armed receive buffer so the next
+            // caller cannot repeat the unclamped-len mistake (the A1/A2
+            // class). `used_len` still records the raw report.
             const n: usize = @min(@as(usize, elem.len), push_buf_len);
-            mmu.invalidate_dcache_range(@intFromPtr(&push_rx_buf), n);
-            return .{ .handle = @intCast(elem.id), .len = elem.len };
+            if (comptime !builtin.is_test) {
+                mmu.invalidate_dcache_range(@intFromPtr(&push_rx_buf), n);
+            }
+            return .{ .handle = @intCast(elem.id), .len = @intCast(n) };
         }
     }
     return null;
@@ -1141,7 +1151,11 @@ pub fn wait(qidx: u16, handle: u16, budget: usize, reply_buf: []u8) ?u32 {
     if (!r.armed) return null;
     var i: usize = 0;
     while (i < budget) : (i += 1) {
-        mmu.invalidate_dcache_range(@intFromPtr(&r.used), @sizeOf(VirtqUsed));
+        // Host tests stage the used ring directly; `dc ivac` is EL0-illegal
+        // there (the reap_parked idiom) and a coherent host never needs it.
+        if (comptime !builtin.is_test) {
+            mmu.invalidate_dcache_range(@intFromPtr(&r.used), @sizeOf(VirtqUsed));
+        }
         const used_idx = r.used.idx;
         if (used_idx != r.last_used) {
             const elem = r.used.ring[r.last_used % queue_size];
@@ -1154,7 +1168,9 @@ pub fn wait(qidx: u16, handle: u16, budget: usize, reply_buf: []u8) ?u32 {
                 // published, so the used advance is the memory-ordering
                 // point. Invalidate only the reported length (defensive on
                 // VZ's coherent emulation).
-                mmu.invalidate_dcache_range(@intFromPtr(reply_buf.ptr), reply_len());
+                if (comptime !builtin.is_test) {
+                    mmu.invalidate_dcache_range(@intFromPtr(reply_buf.ptr), reply_len());
+                }
                 return elem.len;
             }
         }
@@ -2021,4 +2037,29 @@ test "virtio_custom: console tee accumulator buffers, splits, and drops (claim 0
     try std.testing.expectEqual(@as(usize, 0), tee_line_len);
     try std.testing.expectEqual(@as(u32, 0), tee_drop_count);
     tee_enabled = false;
+}
+
+test "virtio_custom: M97e-D2 (#2100) — wait_any_push returns the used length clamped to the rx buffer" {
+    // The used-ring length is host-controlled. A hostile completion that
+    // over-reports (0xffffffff on a 16-byte armed buffer) must surface as
+    // push_buf_len — not the raw count — so no caller can copy or parse
+    // past push_rx_buf. `used_len` keeps the RAW report for diagnostics.
+    cv_ready = true;
+    has_push_queue = true;
+    const r = &cv_rings[push_qidx];
+    ring_init(r);
+    r.armed = true;
+    push_rx_handle = 9;
+    defer {
+        cv_ready = false;
+        has_push_queue = false;
+        r.armed = false;
+    }
+    r.used.ring[0] = .{ .id = push_rx_handle, .len = std.math.maxInt(u32) };
+    r.used.idx = 1;
+    const rx = wait_any_push(4).?;
+    try std.testing.expectEqual(push_rx_handle, rx.handle);
+    try std.testing.expect(rx.len <= push_buf_len);
+    try std.testing.expectEqual(@as(u32, push_buf_len), rx.len);
+    try std.testing.expectEqual(std.math.maxInt(u32), used_len); // raw report kept
 }
