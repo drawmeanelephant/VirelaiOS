@@ -5,7 +5,7 @@ SECTIONS {
         *(.text .text.*)
         *(.rodata .rodata.*)
     }
-    . = 0x00801000;
+    . = ALIGN(4096);
     .data : ALIGN(4096) {
         *(.data .data.*)
         *(.bss .bss.*)
