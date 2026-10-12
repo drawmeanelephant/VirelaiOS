@@ -146,10 +146,11 @@ pub fn probe() bool {
         if ((id & 0xffff) == 0xffff) continue;
         const did = id >> 16;
         if (did != g3_did) continue;
-        // The custom-virtio family identity (the 0x42 channel's class).
+        // The custom-virtio family identity (the 0x42 channel's class)
+        // or the contract's display-class 0x03/0x00 render device.
         const cls = pci.pci_read32(pci.pci_ecam, 0, dev, 0, 8) >> 8;
         g3_class = cls;
-        if (cls != 0x000000) continue;
+        if (cls != 0x000000 and cls != 0x030000) continue;
         found_dev = dev;
         break;
     }
@@ -651,6 +652,17 @@ pub const Error = error{
     StaleHandle,
 };
 
+fn dbg_err(what: []const u8, req_type: u32) void {
+    const main = @import("main.zig");
+    main.uart_puts("G3ERR ");
+    main.uart_puts(what);
+    main.uart_puts(" req=");
+    var buf: [24]u8 = undefined;
+    const s = std.fmt.bufPrint(&buf, "{d}", .{req_type}) catch return;
+    main.uart_puts(s);
+    main.uart_puts("\n");
+}
+
 /// Post one control-queue element and validate its completion end to
 /// end: used descriptor id + length, response type, echoed ctx_id, full
 /// fence id. `req` is copied into pinned staging before submit; `resp_cap`
@@ -668,12 +680,16 @@ pub fn exchange(req: []const u8, want_type: u32, resp_cap: usize) Error!Completi
 
     @memcpy(g3_req_staging[0..req.len], req);
     const resp = g3_resp_buf[0..resp_cap];
-    const handle = transport.submit(g3_req_staging[0..req.len], resp) orelse return error.SubmitFailed;
+    const handle = transport.submit(g3_req_staging[0..req.len], resp) orelse {
+        dbg_err("submit", req_hdr.type);
+        return error.SubmitFailed;
+    };
     pending = .{ .handle = handle, .fence_id = req_hdr.fence_id, .ctx_id = req_hdr.ctx_id };
     const used_len = transport.wait(handle, exchange_budget) orelse {
         transport.release(handle, false); // park — the head is never reused
         pending = null;
         g3_timeouts += 1;
+        dbg_err("timeout", req_hdr.type);
         return error.Timeout;
     };
     transport.release(handle, true);
@@ -681,18 +697,25 @@ pub fn exchange(req: []const u8, want_type: u32, resp_cap: usize) Error!Completi
     g3_cmds += 1;
     if (used_len > resp_cap) {
         g3_errors += 1;
+        dbg_err("oversized", req_hdr.type);
         return error.ResponseOversized;
     }
     if (used_len < wire.hdr_len) {
         g3_errors += 1;
+        dbg_err("truncated", req_hdr.type);
         return error.ResponseTruncated;
     }
     const resp_hdr = wire.parse_hdr(resp[0..used_len]) orelse {
         g3_errors += 1;
+        dbg_err("parse", req_hdr.type);
         return error.ResponseTruncated;
     };
     if (resp_hdr.type != want_type or resp_hdr.ctx_id != req_hdr.ctx_id or resp_hdr.fence_id != req_hdr.fence_id) {
         g3_errors += 1;
+        const main = @import("main.zig");
+        var buf: [160]u8 = undefined;
+        const s = std.fmt.bufPrint(&buf, "G3ERR badresp req={d} got={d} ctx {d}>{d} fence {d}>{d}\n", .{ req_hdr.type, resp_hdr.type, req_hdr.ctx_id, resp_hdr.ctx_id, req_hdr.fence_id, resp_hdr.fence_id }) catch return error.BadResponse;
+        main.uart_puts(s);
         return error.BadResponse;
     }
     return .{ .used_len = used_len, .resp_type = resp_hdr.type, .ctx_id = resp_hdr.ctx_id, .fence_id = resp_hdr.fence_id };

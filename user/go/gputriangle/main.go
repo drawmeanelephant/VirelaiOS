@@ -320,6 +320,9 @@ func (a *app) exportSurface(name string, ew, eh uint32) error {
 		uint64(eh)*uint64(a.surfW)*4 > uint64(len(a.surf)) {
 		return errors.New("export geometry")
 	}
+	if err := a.h.MkdirShare(receiptDir); err != nil {
+		return err
+	}
 	out := make([]byte, 0, int(ew*eh)*4)
 	for y := uint32(0); y < eh; y++ {
 		row := a.surf[y*a.surfW*4 : (y*a.surfW+ew)*4]
@@ -407,14 +410,14 @@ func (a *app) openWindow(w, h uint32) error {
 		return err
 	}
 	a.win, a.wgen = win, a.wgen+1
-	if a.h.DeclareTab(win, appTitle) {
-		a.h.ConsoleLine("gputri: declare accepted")
-	}
 	surf, err := a.h.BindSurface(win, w, h)
 	if err != nil {
 		return err
 	}
 	a.surf, a.surfW = surf, w
+	if a.h.DeclareTab(win, appTitle) {
+		a.h.ConsoleLine("gputri: declare accepted")
+	}
 	a.rec.row("window", is(a.wgen), is(win), u32s(w)+"x"+u32s(h))
 	a.h.ConsoleLine("gputri: open id=" + is(win) + " surface")
 	return nil
@@ -693,7 +696,7 @@ func (guestHost) DeclareTab(win int, title string) bool {
 
 func (guestHost) BindSurface(win int, w, h uint32) ([]byte, error) {
 	n := int(w*h) * 4
-	surf, err := vi.MmapHint(uintptr(surfWinTag)|uintptr(win), n, protRW, mapAnon|mapShared)
+	surf, err := vi.MmapWindowSurface(win, n)
 	if err != nil {
 		return nil, err
 	}

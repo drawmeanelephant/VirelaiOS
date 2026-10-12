@@ -509,7 +509,6 @@ public enum GPU3DWire {
         case cmdResourceUnref, cmdResourceDetachBacking:
             if case .failure(let f) = fixed(unrefLen) { return .failure(f) }
             guard let resourceID = r.u32() else { return .failure(.truncatedRequest) }
-            guard padWord(24) else { return .failure(.reservedBits) }
             guard resourceID != 0 else { return .failure(.invalidResource) }
             cmd = hdr.type == cmdResourceUnref
                 ? .resourceUnref(resourceID: resourceID)

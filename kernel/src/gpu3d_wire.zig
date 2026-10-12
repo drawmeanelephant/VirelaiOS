@@ -52,13 +52,13 @@ pub const hdr_len: usize = 24;
 /// Command types on the control queue (the subset this channel uses).
 pub const cmd_get_capset_info: u32 = 0x0108;
 pub const cmd_get_capset: u32 = 0x0109;
-pub const cmd_ctx_create: u32 = 0x0206;
-pub const cmd_ctx_destroy: u32 = 0x0207;
+pub const cmd_ctx_create: u32 = 0x0200;
+pub const cmd_ctx_destroy: u32 = 0x0201;
 
 /// Response types. 0x1100–0x11ff are OK responses; 0x1200+ are errors.
 pub const resp_ok_nodata: u32 = 0x1100;
-pub const resp_ok_capset_info: u32 = 0x1106;
-pub const resp_ok_capset: u32 = 0x1107;
+pub const resp_ok_capset_info: u32 = 0x1102;
+pub const resp_ok_capset: u32 = 0x1103;
 pub const resp_err_unspec: u32 = 0x1200;
 
 /// virtio_gpu_ctrl_hdr.flags: the request carries a fence the device must

@@ -91,6 +91,14 @@ public final class GPU3DDevice {
     public var liveContextIDs: [UInt32] { contexts.keys.sorted() }
     public func generation(of ctxID: UInt32) -> UInt64? { contexts[ctxID]?.generation }
 
+    /// Drain any completed backend fences without a queue notification —
+    /// a deferred element's completion lands between guest posts.
+    public func pumpFences() {
+        for fence in backend?.gpu3dPoll() ?? [] {
+            noteFenceCompleted(fence)
+        }
+    }
+
     // MARK: - Queue drain
 
     /// Service every element on the queue until it is empty — the same
@@ -489,6 +497,20 @@ public final class GPU3DHostDevice: NSObject {
     public fileprivate(set) var device: VZCustomVirtioDevice?
     /// Set when the guest finishes feature negotiation (DRIVER_OK).
     public fileprivate(set) var driverOK = false
+    private var pumpScheduled = false
+
+    /// While a deferred element holds its fence, re-poll the backend on
+    /// this serial queue — completions land between guest notifications.
+    func scheduleFencePump() {
+        guard !pumpScheduled, core.pendingFenceID != nil else { return }
+        pumpScheduled = true
+        deviceQueue.asyncAfter(deadline: .now() + 0.005) { [weak self] in
+            guard let self else { return }
+            self.pumpScheduled = false
+            self.core.pumpFences()
+            self.scheduleFencePump()
+        }
+    }
 
     public init(backend: GPU3DBackend? = nil) {
         core = GPU3DDevice(backend: backend)
@@ -536,6 +558,7 @@ private final class GPU3DDeviceDelegate: NSObject, VZCustomVirtioDeviceDelegate 
     func customVirtioDevice(_ device: VZCustomVirtioDevice,
                             didReceiveNotificationFor queue: VZVirtioQueue) {
         owner?.core.handleQueueNotification(GPU3DVZQueue(underlying: queue))
+        owner?.scheduleFencePump()
     }
 
     func customVirtioDeviceDidAcceptDriverOk(_ device: VZCustomVirtioDevice) {

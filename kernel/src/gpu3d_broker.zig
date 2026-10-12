@@ -302,6 +302,10 @@ fn alloc_slot() ?usize {
 /// Map every device/submit-layer error onto the broker's frozen set — the
 /// one place device vocabulary becomes the syscall's named errors.
 fn map(e: anyerror) Error {
+    const main = @import("main.zig");
+    main.uart_puts("G3ERR map ");
+    main.uart_puts(@errorName(e));
+    main.uart_puts("\n");
     return switch (e) {
         error.Unsupported, error.CapsNotReady, error.NotReady, error.CapsetProfile, error.CapsetVersion, error.CapsetSize, error.CapsetBounds => error.Unsupported,
         error.BadRequest, error.BadGeometry, error.BadStream, error.OutTooSmall => error.Invalid,
