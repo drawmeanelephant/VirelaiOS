@@ -830,6 +830,39 @@ Named limits, so a green run is not read as more than it is:
 - These are class-B gates (VZ + Metal on Apple silicon): they run where
   the class-B fleet runs, not on every push.
 
+## FLINT source control (M103, issue #2253)
+
+`go-flint` is the ADR 0049 class-B gate for the M103 chain; M103a lands
+run 01: `FLINT.ELF parse-corpus /host/FLINTC` on a seeded virtiofs share
+(the corpus rides `/host/FLINTC/{go,zig}` — the custom-virtio share is
+refused by the paged metadata ABI `vi.ListDirAt` uses). The boot runs
+`go/parser` and the Go-native Zig declaration scanner in-guest: the
+serial marker `flint: parse files=100 atoms=245 parse_errors=0` proves
+every corpus file parsed, and `share-equals` requires the guest's
+`FLINTC.OUT` to be byte-equal to the host rendering of `MANIFEST.json`.
+
+| run | proves |
+|-----|--------|
+| 01 | in-guest `go/parser` + Zig scanner over the 100-file corpus: exact atom count, byte-exact `FLINTC.OUT` receipt vs `MANIFEST.json`, no `[EXC] parking:` |
+
+Class-A coverage is `cd user/go && go test ./flint/... && go vet
+./flint/...`: TestCorpus replays all 100 files against `MANIFEST.json`
+atom-for-atom, TestPairs pins the §3 hash relations (rename and
+whitespace move nothing, a body edit moves `hash` only, a parameter or
+field-order edit moves both), TestRefusals pins the `parse_unsupported` /
+`syntax` codes, TestCanon byte-checks the `testdata/canon` streams, and
+TestZigOracle runs `tools/flint/zigdecls.zig` (`std.zig.Ast`, host-only)
+against every `.zig` file — a missing `zig` binary fails, it is not a
+skip. Regenerate `MANIFEST.json` and the canon fixtures after a corpus
+edit with `go test ./flint/parser -update`.
+
+Host prerequisite:
+
+```bash
+bash tools/go/build-flint.sh   # FLINT.ELF (8 MiB card budget)
+just gate go-flint
+```
+
 ## Verification sequence
 
 Every `zig` command below must resolve to the pinned compiler: the version +

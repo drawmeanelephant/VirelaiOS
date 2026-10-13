@@ -1,0 +1,4 @@
+# zig/containers.zig union containers.U
+pub const _ = union ( enum ) { none , int : i32 , text : [ ] const u8 , } ;
+==SIG==
+pub const _ = union ( enum ) { none , int : i32 , text : [ ] const u8 , } ;

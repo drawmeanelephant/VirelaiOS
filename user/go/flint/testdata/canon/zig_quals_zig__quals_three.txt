@@ -1,0 +1,4 @@
+# zig/quals.zig fn quals.three
+extern fn _ ( ) void ;
+==SIG==
+extern fn _ ( ) void ;

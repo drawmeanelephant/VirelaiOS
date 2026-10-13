@@ -1,0 +1,4 @@
+# zig/sample.zig struct sample.Point
+pub const _ = struct { x : i32 , y : i32 , } ;
+==SIG==
+pub const _ = struct { x : i32 , y : i32 , } ;

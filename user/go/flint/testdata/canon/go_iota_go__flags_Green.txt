@@ -1,0 +1,4 @@
+# go/iota.go const flags.Green
+_ iota=1
+==SIG==
+iota=1

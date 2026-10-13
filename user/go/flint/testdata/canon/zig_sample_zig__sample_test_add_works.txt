@@ -1,0 +1,4 @@
+# zig/sample.zig test sample.test:add works
+test _ { const r = add ( 1 , 2 ) ; _ = r ; }
+==SIG==
+test _

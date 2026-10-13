@@ -1,0 +1,4 @@
+# go/methods.go method shapes.Circle.Area
+func ( c Circle ) _ ( ) float64 { return 3.14159 * c . Radius * c . Radius ; }
+==SIG==
+func ( c Circle ) _ ( ) float64
