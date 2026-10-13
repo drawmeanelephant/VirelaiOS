@@ -225,6 +225,8 @@ sig       = sshlib.EdSign(sig_msg, seed)
   `sig_msg` from the stored fields and runs `sshlib.EdVerify` against the
   Change's own `author`. It proves **integrity and which key signed**, not
   that the key is trusted. Trust roots and policy are M104+.
+  `verify --file=<log>` checks every line of a given log without loading
+  the store; that is how the pinned vectors are checked in-guest.
 - **UUIDv7** follows RFC 9562: a 48-bit ms timestamp (`vi.Now()*1000`),
   version 7, a 12-bit `rand_a` monotonic counter (§6.2 method 1, so ids
   minted within one second still sort), variant `10`, and 62 bits from
@@ -242,6 +244,11 @@ sig       = sshlib.EdSign(sig_msg, seed)
   - a match whose `hash` is unchanged → nothing (the span refreshes);
   - an existing Atom with no match → `delete`;
   - a new declaration → `add` with a fresh id.
+- **Staging folds.** A new Op on an Atom that already has a staged Op
+  composes with it under §2 step 2's fold rules (add + modify → add with
+  the new hash; add + delete → nothing staged). So the stage is always one
+  net Op per Atom (or a rename + modify pair, once M104 can produce
+  renames).
 - **Why not content hashes?** Identity would change on every body edit.
 - **Why not names?** Names change, collide, and are only unique per
   package.
@@ -391,21 +398,28 @@ The cards form a chain: each card's `Touches` overlap the next card's
 
 ## Gate: `go-flint` (class B, grown one card at a time)
 
-The spec stages `FLINT.ELF`, `GOSH.ELF`, the corpus, the journey scripts
-(`/host/FLINTJ/NN.SH`), `SECRETS.TXT` (`agent-sign`, a pinned test seed)
-and `OWNERS.TXT`. Each run is one boot. Runs 05–10 rely on the share
-persisting across boots. Runs 08–10 use an alternate share
-(`--cvc-file $RUN_DIR/conflict-share`). Because the journeys are
-stateful, the spec is not `vgate_repeat`-safe and says so.
+The spec stages `FLINT.ELF`, `GOSH.ELF`, the corpus (`/host/FLINTC`, read
+only) and a working copy of it (`/host/FLINTW`), the journey scripts
+(`/host/FLINTJ/NN.SH`), the pinned signature vectors (`/host/FLINTV`),
+`SECRETS.TXT` (`agent-sign`, a pinned test seed) and `OWNERS.TXT`.
 
-| Run | Card | Boot does | Key asserts |
-|---|---|---|---|
-| 01 | a | `FLINT.ELF parse-corpus /host/FLINTC` | `flint: parse files=100 atoms=<M> parse_errors=0`; `share-equals FLINTC.OUT` (byte-equal to the host rendering of `MANIFEST.json`) |
-| 02 | b | init → add corpus → add again → edit body / delete decl / whitespace-only → add → status | second add `new=0 modified=0 deleted=0`; the edit pass is exactly `modified=1 deleted=1`; `status atoms=<M-1> duplicates=0` |
-| 03 | c | commit → log → verify own → verify pinned good/bad vectors | `commit ok`, `sig: verified` ×2, `sig_invalid` on the bad vector |
-| 04 | c | commit on a share with no `agent-sign` row | `refuse secret_not_found`; python: no `streams/*.jsonl` written |
-| 05–07 | d | **A:** base commit + fork. **B:** `init --stream=feature`, edit fn X, commit. **A:** edit disjoint fn Y, commit, `merge feature` | `merge: ok conflicts=0`; main log ends with a Change whose `merged` = feature head |
-| 08–10 | d | same three boots, both sides edit fn X differently | `merge: conflict atom=<X> type=concurrent_modify`, exit 2; python: main record head unchanged, `MERGE.json` present |
+- Each run is one boot.
+- Runs 01–03 share the primary share, so each builds on the last.
+- Run 04 and each merge journey get their own alternate share
+  (`--cvc-file $RUN_DIR/<x>-share`, staged by the setup hook). Run 02
+  already created stream `main` on the primary share, and a journey must
+  start from an empty store.
+- Because the journeys are stateful, the spec is not
+  `vgate_repeat`-safe and says so in its header.
+
+| Run | Card | Share | Boot does | Key asserts |
+|---|---|---|---|---|
+| 01 | a | primary | `FLINT.ELF parse-corpus /host/FLINTC` | `flint: parse files=100 atoms=<M> parse_errors=0`; `share-equals FLINTC.OUT` (byte-equal to the host's rendering of `MANIFEST.json`) |
+| 02 | b | primary | in `/host/FLINTW`: init → add → add again → body edit + decl removal + whitespace-only edit → add → status | second add `new=0 modified=0 deleted=0`; edit pass exactly `modified=1 deleted=1`; `status atoms=<M-1> staged=<M-1> duplicates=0` |
+| 03 | c | primary | commit → log → `verify --all` → `verify --file` on the pinned good and bad vectors | `commit ok … ops=<M-1>`; `sig: verified` ×2; `sig_invalid` ×1 |
+| 04 | c | `nosign` | init → add → commit, with no `agent-sign` row | `refuse secret_not_found`; python: no `streams/*.jsonl`, `STAGE.jsonl` intact |
+| 05–07 | d | `clean` | **A:** base commit + fork. **B:** `init --stream=feature`, edit fn X, commit. **A:** edit disjoint fn Y, commit, `merge feature`, merge again | `merge: ok conflicts=0`; then `merge: up to date`; the last Change on main has `merged` = feature head |
+| 08–10 | d | `conflict` | same three boots; both sides edit fn X differently | `merge: conflict atom=<X> type=concurrent_modify` (exit 2); python: main head unchanged, `MERGE.json` holds one conflict |
 
 "Two VMs" in the draft means **separate boots sharing one `/host`**. That
 is honest for M103, because two machines only meet through the shared
