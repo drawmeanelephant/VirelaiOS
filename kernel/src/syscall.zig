@@ -168,6 +168,11 @@ pub const sys_udp_recv: u64 = 11;
 pub const sys_udp_send_from: u64 = 84;
 pub const sys_udp_recv_from: u64 = 85;
 pub const sys_udp_close: u64 = 86;
+/// #2158 (ADR 0048): the unforgeable self-pid answer — the kernel resolves
+/// the CALLING process from the task registry, so a same-named sibling can
+/// never be mistaken for the caller (the sys_procs first-name-match that
+/// misrouted a second instance's WM_RPC acks).
+pub const sys_getpid: u64 = 87;
 /// Card G6 (claim 0487): the draw/window syscall seam — slots 12/13/14, the
 /// card's ONE ABI change (the ipc slots-5/6, slots-7/8, and udp slots-9/10/11
 /// precedents; every existing syscall number 0–11 stays frozen).
@@ -511,6 +516,9 @@ pub var strace_pid: ?usize = null;
 /// Card 4a (claim 5799): fixed BSS scratch for the process snapshot —
 /// `max_processes` rows × 40 bytes, marshaled per call, no allocation.
 var procs_scratch: [process.max_processes * process.snapshot_row_bytes]u8 = undefined;
+/// ADR 0047 (#2198): BSS scratch for the size-tagged v2 rows — a second
+/// buffer, because the v1 scratch's frozen geometry must not change.
+var procs_scratch_v2: [process.max_processes * process.snapshot_row_bytes_v2]u8 = undefined;
 /// M50 TS1 (#1135): fixed BSS scratch for the `sys_principal` reply — two
 /// u32 LE words (uid, caps), marshaled per call, no allocation.
 var principal_scratch: [principal_bytes]u8 = undefined;
@@ -600,6 +608,7 @@ fn handler_for(comptime number: u64) Handler {
         sys_udp_send_from => handle_udp_send_from,
         sys_udp_recv_from => handle_udp_recv_from,
         sys_udp_close => handle_udp_close,
+        sys_getpid => handle_getpid,
         sys_win_open => handle_win_open,
         sys_win_fill => handle_win_fill,
         sys_win_present => handle_win_present,
@@ -714,7 +723,7 @@ fn doms_of(number: u64) u5 {
         sys_write => f,
         sys_win_open, sys_win_fill, sys_win_present, sys_win_close, sys_win_move, sys_win_raise, sys_win_get, sys_win_query, sys_win_set_visible, sys_win_fill_batch, sys_win_resize, 48, sys_win_raise_front, sys_win_lower_back, 52, sys_win_set_unsaved, sys_win_set_title, sys_drag_read, sys_font_size => w,
         sys_ipc_send, sys_ipc_recv, sys_poll_event, sys_wait_event, sys_timer_set, sys_timer_cancel, sys_notify, sys_wmctl => e,
-        sys_procs, sys_wait, sys_kill, sys_clipboard_set, sys_clipboard_get, sys_audio_info, sys_audio_play, sys_audio_volume, sys_audio_mute, sys_pipe_read, sys_pipe_write, 54, sys_mmap, sys_munmap, sys_time, sys_time_set, sys_tty_attach, sys_principal, sys_secret_get, sys_tty_net_auth, sys_getrandom, sys_thread, sys_futex, sys_exnotify, sys_profile, sys_memstat => k,
+        sys_procs, sys_wait, sys_kill, sys_clipboard_set, sys_clipboard_get, sys_audio_info, sys_audio_play, sys_audio_volume, sys_audio_mute, sys_pipe_read, sys_pipe_write, 54, sys_mmap, sys_munmap, sys_time, sys_time_set, sys_tty_attach, sys_principal, sys_secret_get, sys_tty_net_auth, sys_getrandom, sys_thread, sys_futex, sys_exnotify, sys_profile, sys_memstat, sys_getpid => k,
         sys_exit => svclock.all_bits,
         else => 0,
     };
@@ -991,11 +1000,33 @@ fn handle_ipc_recv(args: Args, _: *exceptions.VectorFrame) u64 {
 /// claim-6120 contract — the copy is validated before any state is
 /// touched). The snapshot is marshaled into a fixed BSS scratch, so no
 /// allocation and no caller-identity requirement (any EL0 task may read
-/// the table).
+/// the table). ADR 0047 (#2198) adds the negotiated v2 row described
+/// below: `max`'s top byte selects the row format; the 40-byte v1 shape
+/// is untouched for untagged requests.
+///
+/// ADR 0047 (#2198): `max`'s top byte is the requested row version —
+/// `sys_procs(buf, max | ver<<56)`. Every legacy caller passes a real
+/// buffer length (< 2^56), so the tag can never appear by accident, and an
+/// old kernel's `@min` simply saturates on the tagged length. 0 and 1 are
+/// the frozen v1 path; >= 2 asks for the newest row format the kernel
+/// knows (v2 today — the rows self-describe, so the reader reconciles
+/// what actually arrived rather than trusting the request it made).
+const procs_ver_tag_shift: u6 = 56;
+
 fn handle_procs(args: Args, _: *exceptions.VectorFrame) u64 {
     const address = args[0];
-    const max = args[1];
+    const ver_req = args[1] >> procs_ver_tag_shift;
+    const max = args[1] & ((@as(u64, 1) << procs_ver_tag_shift) - 1);
     if (max == 0) return 0;
+    if (ver_req >= 2) {
+        const rows = process.snapshot_v2(&procs_scratch_v2, scheduler.machine_ticks(), scheduler.online_cores(), @intCast(@min(alloc.stats().total_pages, std.math.maxInt(u32))));
+        if (rows == 0) return 0;
+        const full_bytes = rows * process.snapshot_row_bytes_v2;
+        const take_bytes = @min(full_bytes, @as(usize, @intCast(max))) / process.snapshot_row_bytes_v2 * process.snapshot_row_bytes_v2;
+        if (take_bytes == 0) return 0;
+        if (uaccess.copy_out(address, procs_scratch_v2[0..take_bytes], take_bytes) != .ok) return error_result(.efault);
+        return take_bytes / process.snapshot_row_bytes_v2;
+    }
     const rows = process.snapshot(&procs_scratch);
     if (rows == 0) return 0;
     const full_bytes = rows * process.snapshot_row_bytes;
@@ -1004,6 +1035,19 @@ fn handle_procs(args: Args, _: *exceptions.VectorFrame) u64 {
     if (take_bytes == 0) return 0;
     if (uaccess.copy_out(address, procs_scratch[0..take_bytes], take_bytes) != .ok) return error_result(.efault);
     return take_bytes / process.snapshot_row_bytes;
+}
+
+// ---------------------------------------------------------------------------
+// #2158 (ADR 0048): sys_getpid — slot 87
+// ---------------------------------------------------------------------------
+
+/// `sys_getpid()`: the CALLING process's pid, resolved from the task
+/// registry — the only self-pid answer a same-named sibling cannot spoof
+/// (the `sys_procs` name scan resolves the FIRST matching row, so a second
+/// instance of any app would misroute every reply-addressed message). A
+/// non-process caller (an EL1h task) is EINVAL, matching sys_principal.
+fn handle_getpid(_: Args, _: *exceptions.VectorFrame) u64 {
+    return process.find_by_task(scheduler.current_id()) orelse error_result(.einval);
 }
 
 // ---------------------------------------------------------------------------

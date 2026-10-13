@@ -35,6 +35,11 @@ const (
 	ProcRowSize = 40
 	// ProcNameBytes is the NUL-padded name field width inside a row.
 	ProcNameBytes = 16
+	// ProcRowVersion2 is the wire row_version written by kernels that
+	// implement ADR 0047's negotiated v2 snapshot.
+	ProcRowVersion2 = 2
+	// ProcRowBytesV2 is the stride of the version-2 wire row (ADR 0047).
+	ProcRowBytesV2 = 80
 )
 
 // Process state codes as marshalled by the kernel snapshot (process.zig
@@ -46,12 +51,32 @@ const (
 )
 
 // ProcRow is one decoded `sys_procs` row: u64 pid@0, u64 state@8, u64
-// exit_status@16, name[16] NUL-padded@24 (all little-endian).
+// exit_status@16, name[16] NUL-padded@24 (all little-endian). The frozen
+// wire shape ends at NameBuf; the fields after it are Go-side decode
+// targets for the negotiated v2 row (procs.go, ADR 0047) — zero on a v1
+// stream or over any truncated/unknown field range, never garbage.
 type ProcRow struct {
 	PID        uint64
 	State      uint64
 	ExitStatus uint64
 	NameBuf    [ProcNameBytes]byte
+	// RowVer is the wire row_version the snapshot carried (0/1 = v1).
+	RowVer uint32
+	// NCores is the online-core count at snapshot time (v2@72).
+	NCores uint32
+	// TotalPages is the allocator pool page count (v2@76); ×4096 = the
+	// machine memory denominator in bytes.
+	TotalPages uint64
+	// CpuTicks is the cumulative scheduler ticks attributed to this pid
+	// (v2@48). It is a counter, not a percentage — pair consecutive
+	// snapshots' deltas against TotalTicks and NCores for a utilization.
+	CpuTicks uint64
+	// MemBytes is the owned resident footprint in bytes (v2@56): static
+	// spans + dynamic pages + kernel stack.
+	MemBytes uint64
+	// TotalTicks is Σ per-core scheduler ticks (v2@64) — the CPU-share
+	// denominator, identical on every row of one snapshot.
+	TotalTicks uint64
 }
 
 // Name returns the row's process name with the NUL padding trimmed.
@@ -126,6 +151,18 @@ func Procs(dst []ProcRow) (int, int64) {
 	return rows, r
 }
 
+// SelfPid returns the caller's own process id from the kernel's task
+// registry (slot 87, ADR 0048) — the only self-pid answer a same-named
+// sibling cannot spoof. ok is false off-guest or on a kernel without the
+// slot (-ENOSYS), where callers fall back to the sys_procs name scan.
+func SelfPid() (uint32, bool) {
+	r := svc0(SlotGetpid)
+	if r <= 0 || r > 0xffffffff {
+		return 0, false
+	}
+	return uint32(r), true
+}
+
 // WmSeat is a resolved WM seat: the registered WM process id and THIS
 // process's own id, both found in one `sys_procs` scan (acks route by pid).
 type WmSeat struct {
@@ -163,11 +200,18 @@ const wmPeersScanAttempts = 8
 // held. Before this, the seat was resolved by matching proc-table names
 // (`WND.BIN`/`TABWM.BIN`/`GOTABWM.ELF`), so any rogue process that took a
 // seat name captured every app's WM_RPC traffic; and on the guest a name
-// match said nothing about which pid the kernel had actually armed. The
-// name scan survives only for SELF: the caller's own pid still comes from
-// `sys_procs`, so the M56d flake discipline below is unchanged — a RUNNING
-// row whose name bytes read back zeroed may be this process's row, and a
-// missing self keeps retrying exactly as before.
+// match said nothing about which pid the kernel had actually armed.
+//
+// #2158 (ADR 0048): SELF is now also ONE unforgeable read — slot 87
+// (sys_getpid) returns the caller's pid from the task registry. The name
+// scan it replaces resolved the FIRST RUNNING row with the binary's name,
+// so a second instance of any app (duplicate-tab chord, launcher re-exec)
+// stamped the first instance's pid into reply_to and every ack — the Go
+// seat's bind challenge included — misrouted to the first instance's
+// mailbox. The name scan survives only where no kernel register answers
+// (host tests, -ENOSYS): a RUNNING row whose name bytes read back zeroed
+// may be this process's row, and a missing self keeps retrying exactly as
+// before — that M56d flake discipline is unchanged.
 //
 // That distinction is not cosmetic. Between attempts the loop yields, and on
 // VZ a yield parks the caller until the next scheduler tick, which is a full
@@ -185,6 +229,13 @@ func WmPeers(selfName string) WmSeat {
 	// The seat id is the kernel's register, not a name scan.
 	if seat := WmctlSeatPid(); seat > 0 {
 		out.WM = uint32(seat)
+	}
+	// #2158: self-pid is the kernel's register too — a name match would
+	// resolve the FIRST same-named row, sending this process's acks to a
+	// sibling's mailbox. Where the register answers it is authoritative;
+	// where it does not (host, -ENOSYS) the scan below is the fallback.
+	if pid, ok := SelfPid(); ok {
+		out.Self = pid
 	}
 	rows := make([]ProcRow, 64)
 	for attempt := 0; attempt < wmPeersScanAttempts; attempt++ {
