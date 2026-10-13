@@ -1,10 +1,11 @@
 # ADR 0049: FLINT — agent-native source control for VirelaiOS
 
 - Date: 2026-10-13
-- Status: **Accepted (design)** — no code yet. Cards #2251–#2254 are
-  unclaimed; claim them with `just claim-card`.
-- Milestone: **M103** (FLINT-local name "FLINT M0"). FLINT M1 → M104,
-  M2 → M105, M3 → M106; each later arc gets its own ADR.
+- Status: **Accepted (design)**. Cards #2251–#2254; claim them in order
+  with `just claim-card`.
+- Milestone: **M103** (FLINT-local name "FLINT M0"). Later arcs are named
+  FLINT M1–M3 here. Each gets a VirelaiOS milestone number and its own ADR
+  when it is scheduled.
 
 > FLINT is source control **for VirelaiOS**, not a general-purpose VCS. It is
 > designed to work with INIT (ADR 0042), the agent channel (ADR 0044), GOSELF
@@ -150,13 +151,13 @@ Workspace {                    // /host/FLINT/ws/<name>/
 **Rules on Ops.** Within one Change an Atom has at most one Op of each type.
 `add` and `delete` never share a Change with any other Op on the same Atom.
 A **refactor** is `rename` + `modify` on one Atom in one Change. That is
-legal and clean. M103 has no `policy_ref` and no `Policy` (M104).
+legal and clean. M103 has no `policy_ref` and no `Policy` (FLINT M1).
 
 **Ops M103 produces.** Diffing the working tree produces only
 `add`/`modify`/`delete`. `rename` and `move` (a move means the Atom's
 *file* changed) are part of the data model, the canonical bytes and the
 merge algorithm, and the merge fixtures exercise them. The verbs that
-produce them, `flint rename` and `flint mv`, are M104. Until then, a
+produce them, `flint rename` and `flint mv`, are FLINT M1. Until then, a
 renamed or moved declaration shows up as `delete` + `add`. A byte-offset
 shift inside the same file is not an Op: the working table updates the
 span silently.
@@ -175,7 +176,7 @@ span silently.
 
 - **Index.** Every invocation scans `streams/` and its own workspace into
   Go maps: Changes by id, Streams by id and by name, Atoms by id and by
-  `(file, kind, name)`. There is no query engine; M104 builds one on these
+  `(file, kind, name)`. There is no query engine; FLINT M1 builds one on these
   files if it is needed.
 - **Bounds, refused by name.** Each file read is capped at 4 MiB
   (`vi.ReadFileAll` max; 4096 Atoms at ~300 B per JSON line need ~1.2 MiB).
@@ -193,7 +194,7 @@ span silently.
 - **Single writer.** M103 assumes one `flint` process per workspace and
   sequential writers per Stream. Before appending, commit re-reads the
   Stream record and refuses `stale_head` if the head moved under it.
-  Advisory leases (M81d `vi` lease) are M104.
+  Advisory leases (M81d `vi` lease) are FLINT M1.
 
 ## Canonical bytes
 
@@ -224,7 +225,7 @@ sig       = sshlib.EdSign(sig_msg, seed)
 - **Verify (M103 scope).** `flint verify` recomputes `ops_hash` and
   `sig_msg` from the stored fields and runs `sshlib.EdVerify` against the
   Change's own `author`. It proves **integrity and which key signed**, not
-  that the key is trusted. Trust roots and policy are M104+.
+  that the key is trusted. Trust roots and policy are FLINT M1+.
   `verify --file=<log>` checks every line of a given log without loading
   the store; that is how the pinned vectors are checked in-guest.
 - **UUIDv7** follows RFC 9562: a 48-bit ms timestamp (`vi.Now()*1000`),
@@ -247,13 +248,13 @@ sig       = sshlib.EdSign(sig_msg, seed)
 - **Staging folds.** A new Op on an Atom that already has a staged Op
   composes with it under §2 step 2's fold rules (add + modify → add with
   the new hash; add + delete → nothing staged). So the stage is always one
-  net Op per Atom (or a rename + modify pair, once M104 can produce
+  net Op per Atom (or a rename + modify pair, once FLINT M1 can produce
   renames).
 - **Why not content hashes?** Identity would change on every body edit.
 - **Why not names?** Names change, collide, and are only unique per
   package.
 - **Trade-off.** Renames are not detected heuristically. Intent is captured
-  explicitly (M104 verbs). Until then, a rename is a delete plus an add,
+  explicitly (FLINT M1 verbs). Until then, a rename is a delete plus an add,
   which is honest but noisy.
 
 ### 2. Semantic merge on Ops
@@ -309,7 +310,7 @@ and marks the merged Atoms `origin: merge` in `ATOMS.jsonl`. If a later
 `flint add` finds such an Atom missing or different on disk, it refuses
 `src_behind <file>` rather than staging a silent revert. The mark clears
 once disk matches. A content store (blobs keyed by hash), checkout and
-materialization are **M104**.
+materialization are **FLINT M1**.
 
 ### 3. Parsing: what becomes an Atom, and the canonical forms
 
@@ -371,14 +372,14 @@ Go scanner to agree with it on every `.zig` file in the corpus.
 
 | Non-goal | Where it goes |
 |---|---|
-| SQL, any query engine, any new dependency | M104 query layer over the flat files, only if needed |
-| Content store, checkout, materializing merged source | M104 |
-| `flint rename` / `flint mv`; heuristic rename detection (never) | M104 verbs |
-| Push/pull over the agent channel (ADR 0044) | M104 |
-| Policy (WASM), `policy_ref`, trust roots for `author` | M104 |
-| `FLINTD.ELF` daemon under INIT; GOSELF test runs per commit; RFB review | M104+ |
-| Concurrent writers, leases | M104 |
-| Nested Atoms (Zig container members), cross-file references, dep graph | M105 |
+| SQL, any query engine, any new dependency | FLINT M1 query layer over the flat files, only if needed |
+| Content store, checkout, materializing merged source | FLINT M1 |
+| `flint rename` / `flint mv`; heuristic rename detection (never) | FLINT M1 verbs |
+| Push/pull over the agent channel (ADR 0044) | FLINT M1 |
+| Policy (WASM), `policy_ref`, trust roots for `author` | FLINT M1 |
+| `FLINTD.ELF` daemon under INIT; GOSELF test runs per commit; RFB review | FLINT M1+ |
+| Concurrent writers, leases | FLINT M1 |
+| Nested Atoms (Zig container members), cross-file references, dep graph | FLINT M2 |
 | Git import/export, web UI, LFS, partial clone, multi-repo | not planned |
 | Conflict-resolution UI, auto-resolve, rebase, cherry-pick, octopus merge | not planned |
 | Key rotation, amend, history rewriting | Streams are immutable; amend = a new Change |
@@ -423,7 +424,7 @@ only) and a working copy of it (`/host/FLINTW`), the journey scripts
 
 "Two VMs" in the draft means **separate boots sharing one `/host`**. That
 is honest for M103, because two machines only meet through the shared
-store until push/pull lands in M104.
+store until push/pull lands in FLINT M1.
 
 ## Touches (union across the four cards)
 
@@ -443,7 +444,7 @@ docs/status.md                   (the M103 row)
 - SQLite → flat files + in-memory index (owner ruling). CBOR → JSONL.
 - `/home/.flint/` → `/host/FLINT/ws/`.
 - `zig ast` → a Go-native scanner with a `std.zig.Ast` oracle.
-- `FLINTD.ELF` daemon → `FLINT.ELF` CLI (the daemon is M104).
+- `FLINTD.ELF` daemon → `FLINT.ELF` CLI (the daemon is FLINT M1).
 - Hash split into `hash` (body included) and `sig_hash` (signature only).
   The draft hashed signatures only, yet also said a body change yields a
   `modify` Op, which cannot both be true.
@@ -473,9 +474,9 @@ docs/status.md                   (the M103 row)
 
 ## Future arcs
 
-- **M104 (FLINT M1):** content store + checkout; `rename`/`mv` verbs;
+- **FLINT M1:** content store + checkout; `rename`/`mv` verbs;
   push/pull over ADR 0044; WASM policy and trust roots; `FLINTD.ELF` under
   INIT; leases; a query layer if the flat files are too slow.
-- **M105 (FLINT M2):** nested Atoms, dep graph, lazy materialization,
+- **FLINT M2:** nested Atoms, dep graph, lazy materialization,
   chunked storage.
-- **M106 (FLINT M3):** federated identity, signed policy distribution.
+- **FLINT M3:** federated identity, signed policy distribution.
