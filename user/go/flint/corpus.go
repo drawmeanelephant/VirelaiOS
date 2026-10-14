@@ -77,7 +77,7 @@ func listSourceFiles(dir string) ([]string, bool) {
 	}
 	var entries [vi.MaxDirEntries]vi.DirEntry
 	n, rc := vi.DirList(dir, entries[:])
-	if rc < 0 {
+	if rc < 0 || n >= vi.MaxDirEntries {
 		return nil, false
 	}
 	names := make([]string, 0, n)

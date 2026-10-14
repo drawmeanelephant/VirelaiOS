@@ -20,18 +20,20 @@ type ctok struct {
 	text       string
 }
 
-var canonSink map[string]string
-
 // CanonMap parses (file, src) and returns each Atom's canonical token stream
-// keyed by its qualified Name.
+// keyed by its qualified Name. It uses a parser-local map (no package-level
+// mutable state) so concurrent callers cannot race.
 func CanonMap(file string, src []byte) (map[string]string, error) {
-	p, ok := ForPath(file)
-	if !ok {
+	m := make(map[string]string)
+	var p Parser
+	switch {
+	case strings.HasSuffix(file, ".go"):
+		p = goParser{sink: m}
+	case strings.HasSuffix(file, ".zig"):
+		p = zigParser{sink: m}
+	default:
 		return nil, &ParseError{File: file, Offset: 0, Code: "parse_unsupported"}
 	}
-	m := make(map[string]string)
-	canonSink = m
-	defer func() { canonSink = nil }()
 	if _, err := p.Parse(file, src); err != nil {
 		return nil, err
 	}
@@ -44,10 +46,10 @@ func CanonMap(file string, src []byte) (map[string]string, error) {
 // iota repeat appends " iota=<index>" (iota >= 0 only). Tokens whose
 // start is < sigCut also form the signature stream. The two SHA-256 sums
 // are returned as (hash, sig_hash).
-func canonize(kind, qname string, toks []ctok, blankPos, sigCut, iota int) ([32]byte, [32]byte) {
+func canonize(kind, qname string, toks []ctok, blankPos, sigCut, iota int, sink map[string]string) ([32]byte, [32]byte) {
 	allStr, sigStr := canonText(toks, blankPos, sigCut, iota)
-	if canonSink != nil {
-		canonSink[qname] = allStr
+	if sink != nil {
+		sink[qname] = allStr
 	}
 	var sh, ss [32]byte
 	sh = sshlib.SHA256Sum(hashInput(atomDomain, kind, allStr))

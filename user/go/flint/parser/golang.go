@@ -11,11 +11,13 @@ import (
 // (parser.SkipObjectResolution — FLINT does not resolve identifiers, and
 // the guest build keeps go/types out of the ELF). The qualified prefix is
 // the package clause (ADR 0049 §3).
-type goParser struct{}
+type goParser struct {
+	sink map[string]string
+}
 
 func (goParser) Language() string { return "go" }
 
-func (goParser) Parse(file string, src []byte) ([]Atom, error) {
+func (gp goParser) Parse(file string, src []byte) ([]Atom, error) {
 	fset := token.NewFileSet()
 	f, err := goparser.ParseFile(fset, file, src, goparser.SkipObjectResolution)
 	if err != nil {
@@ -49,7 +51,7 @@ func (goParser) Parse(file string, src []byte) ([]Atom, error) {
 					}
 					atoms = append(atoms, goAtom(fset, file, src, kind,
 						pkg+"."+sp.Name.Name,
-						sp.Pos(), sp.End(), sp.Name.Pos(), -1, -1))
+						sp.Pos(), sp.End(), sp.Name.Pos(), -1, -1, gp.sink))
 				case *ast.ValueSpec:
 					kind := "var"
 					if d.Tok == token.CONST {
@@ -65,7 +67,7 @@ func (goParser) Parse(file string, src []byte) ([]Atom, error) {
 						}
 						atoms = append(atoms, goAtom(fset, file, src, kind,
 							pkg+"."+n.Name,
-							sp.Pos(), sp.End(), n.Pos(), -1, iota))
+							sp.Pos(), sp.End(), n.Pos(), -1, iota, gp.sink))
 					}
 				}
 			}
@@ -83,13 +85,13 @@ func (goParser) Parse(file string, src []byte) ([]Atom, error) {
 					kind, qname = "test", pkg+".test:"+d.Name.Name
 				}
 				atoms = append(atoms, goAtom(fset, file, src, kind, qname,
-					d.Pos(), d.End(), d.Name.Pos(), body, -1))
+					d.Pos(), d.End(), d.Name.Pos(), body, -1, gp.sink))
 				continue
 			}
 			recvText, recvBase := goRecv(d.Recv.List[0].Type)
 			a := goAtom(fset, file, src, "method",
 				pkg+"."+recvBase+"."+d.Name.Name,
-				d.Pos(), d.End(), d.Name.Pos(), body, -1)
+				d.Pos(), d.End(), d.Name.Pos(), body, -1, gp.sink)
 			a.Meta = map[string]string{"receiver": recvText}
 			atoms = append(atoms, a)
 		}
@@ -184,7 +186,7 @@ func goExprText(e ast.Expr) string {
 // namePos, applies the signature cut (sigOff >= 0: tokens before it) and
 // the implicit-iota suffix, and hashes.
 func goAtom(fset *token.FileSet, file string, src []byte, kind, qname string,
-	pos, end, namePos token.Pos, sigOff, iota int) Atom {
+	pos, end, namePos token.Pos, sigOff, iota int, sink map[string]string) Atom {
 	start := int(fset.Position(pos).Offset)
 	stop := int(fset.Position(end).Offset)
 	toks := goScan(src)
@@ -207,7 +209,7 @@ func goAtom(fset *token.FileSet, file string, src []byte, kind, qname string,
 			}
 		}
 	}
-	sh, ss := canonize(kind, qname, in, blank, sigCut, iota)
+	sh, ss := canonize(kind, qname, in, blank, sigCut, iota, sink)
 	return Atom{
 		Kind: kind, Name: qname, File: file,
 		Start: uint32(start), End: uint32(stop),

@@ -9,16 +9,18 @@ import "strings"
 // and `test "label" {}`; it skips @import consts, anonymous test {},
 // comptime {} and usingnamespace, and refuses anything it cannot place
 // as parse_unsupported — it never guesses.
-type zigParser struct{}
+type zigParser struct {
+	sink map[string]string
+}
 
 func (zigParser) Language() string { return "zig" }
 
-func (zigParser) Parse(file string, src []byte) ([]Atom, error) {
+func (zp zigParser) Parse(file string, src []byte) ([]Atom, error) {
 	toks, err := zigTokens(file, src)
 	if err != nil {
 		return nil, err
 	}
-	s := &zscan{file: file, src: src, toks: toks, stem: zigStem(file)}
+	s := &zscan{file: file, src: src, toks: toks, stem: zigStem(file), sink: zp.sink}
 	return s.decls()
 }
 
@@ -35,6 +37,7 @@ type zscan struct {
 	src  []byte
 	toks []ctok
 	stem string
+	sink map[string]string
 	i    int
 }
 
@@ -215,7 +218,7 @@ func (s *zscan) emit(kind, name string, start, end, namePos, sigCut int) Atom {
 			in = append(in, t)
 		}
 	}
-	sh, ss := canonize(kind, name, in, blankPos(namePos), sigCut, -1)
+	sh, ss := canonize(kind, name, in, blankPos(namePos), sigCut, -1, s.sink)
 	return Atom{
 		Kind: kind, Name: name, File: s.file,
 		Start: uint32(start), End: uint32(end),

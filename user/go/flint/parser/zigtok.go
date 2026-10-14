@@ -106,6 +106,7 @@ func zigTokens(file string, src []byte) ([]ctok, error) {
 			out = append(out, ctok{start: start, end: i, text: string(src[start:i])})
 		case isZDigit(c):
 			start := i
+			hexLit := c == '0' && i+1 < len(src) && (src[i+1] == 'x' || src[i+1] == 'X')
 			i++
 			for i < len(src) {
 				d := src[i]
@@ -116,6 +117,13 @@ func zigTokens(file string, src []byte) ([]ctok, error) {
 				if d == '.' && i+1 < len(src) && isZDigit(src[i+1]) {
 					i++
 					continue
+				}
+				if (d == '+' || d == '-') && i+1 < len(src) && isZDigit(src[i+1]) {
+					prev := src[i-1]
+					if (!hexLit && (prev == 'e' || prev == 'E')) || (hexLit && (prev == 'p' || prev == 'P')) {
+						i++
+						continue
+					}
 				}
 				break
 			}

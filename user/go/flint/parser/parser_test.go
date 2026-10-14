@@ -391,6 +391,15 @@ func TestCanon(t *testing.T) {
 			t.Fatalf("canon %s hash mismatch: atom=%x recomputed=%x", cc.fixture, found.Hash, expectHash)
 		}
 	}
+
+	// Verify Zig scientific notation literals stay a single token in CanonMap.
+	m, err := CanonMap("sci.zig", []byte("const eps: f64 = 1e-5;\nconst hexp: f64 = 0x1p-4;\n"))
+	if err != nil {
+		t.Fatalf("CanonMap sci.zig: %v", err)
+	}
+	if m["sci.eps"] != "const _ : f64 = 1e-5 ;" || m["sci.hexp"] != "const _ : f64 = 0x1p-4 ;" {
+		t.Fatalf("scientific notation canon = %v", m)
+	}
 }
 
 func TestZigOracle(t *testing.T) {
