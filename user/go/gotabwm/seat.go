@@ -570,6 +570,13 @@ func main() {
 				}
 			}
 			ticks++
+			// seatTick follows the last CONSUMED heartbeat, not the last
+			// painted one: notifyPush anchors a toast's born/expiry to it
+			// at RPC time, and a mid-drain service can now run while a
+			// paint is still owed — anchoring to the stale painted tick
+			// let a deep batch expire a fresh toast on its first
+			// notifyTick (observed boot 05: dismiss without paint).
+			seatTick = uint64(ticks)
 			// One marker per consumed heartbeat, at its arrival position:
 			// the gate's serial-count pins heartbeats, not composites —
 			// a deferred batch still names each of them. The marker now
