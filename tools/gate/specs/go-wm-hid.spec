@@ -202,6 +202,15 @@ src = os.path.join(".build", "go", "GOSH.ELF")
 if not os.path.exists(src):
     sys.exit("GOSH.ELF missing - build it first: bash tools/go/build-gosh.sh")
 shutil.copy(src, os.path.join(share, "GOSH.ELF"))
+# M121e (#2568): run 17's GOFILES trash leg — one file so 'd' selects it.
+src = os.path.join(".build", "go", "GOFILES.ELF")
+if not os.path.exists(src):
+    sys.exit("GOFILES.ELF missing - build it first: bash tools/go/build-gofiles.sh")
+shutil.copy(src, os.path.join(share, "GOFILES.ELF"))
+fmu = os.path.join(share, "FMUNDO")
+os.makedirs(fmu, exist_ok=True)
+with open(os.path.join(fmu, "NOTE.TXT"), "w") as f:
+    f.write("m121e trash-restore\n")
 ed = os.path.join(share, "EDIT")
 os.makedirs(ed, exist_ok=True)
 seed = os.path.join(ed, "SEED.TXT")
@@ -1585,4 +1594,149 @@ if not (rail_i < left_i < right_i < pin_i < close_i < rail2_i):
         rail_i, left_i, right_i, pin_i, close_i, rail2_i))
 print("M121b: cell %d move %s->%s then %s->%s, pin fronted %s, close dropped to n=2" % (
     i, left_m.group(1), left_m.group(2), right_m.group(1), right_m.group(2), focus_id))
+PY
+
+# ---------------------------------------------------------------------------
+# Runs 17/18 (M121e / #2568): the seat-owned ctrl+z undo chord.
+#
+# The seat row owns the chord's dispatch: a focused tab answers through its
+# own app-scope binding — the seat routes, the KEY_DOWN (or the tty byte for
+# a bound front-end) still reaches the app — and the strip-focused press is
+# the seat's own undo, the reopen LIFO. GOSH/child-tty keeps the bare
+# keystroke's meaning: the seat never swallows it.
+#
+# Run 17: GOEDIT + GOFILES on the strip. A rail click focuses GOEDIT (cell
+# 0), X,Y,Z types a run, ctrl-z pops it (the buffer's own op ring — the
+# ActionUndo dispatch kind on the app's own KEY_DOWN); alt-tab hands focus
+# to GOFILES, whose 'd,y' trashes NOTE.TXT and ctrl-z restores it — the
+# chord rides the tty byte (0x1a), the front-end's only input. Two route
+# markers (`gotabwm: undo id=`), one per surface.
+vgate_file script2-m121e.txt <<'EOF'
+dui focus 0
+exec GOEDIT.ELF &
+fg
+exec GOFILES.ELF /host/FMUNDO
+EOF
+
+vgate_run 17 -- \
+    --screen '$RUN_DIR/screen-17' \
+    --via-virtio \
+    --script '$RUN_DIR/script-m79f.txt' \
+    --script2 '$RUN_DIR/script2-m121e.txt' \
+    --script2-after 'gotabwm: win focus' \
+    --pointer-virtio '320,10,c' \
+    --pointer-virtio-after 'gofiles: ready' \
+    --input-chords 'X,Y,Z,ctrl-z,alt-tab,d,y,ctrl-z' \
+    --input-chords-after 'gotabwm: rail-click id=' \
+    --script3 '$RUN_DIR/script3.txt' \
+    --script3-after 'wm: unregistered, shim resumed' \
+    --script-expect 'rx-gotabwm-hid-ok' --timeout 300
+
+vgate_assert 17 serial-contains 'VirelaiOS kernel has seized control.'
+vgate_assert 17 serial-contains 'exec: loaded GOTABWM.ELF'
+vgate_assert 17 serial-contains 'exec: loaded GOEDIT.ELF'
+vgate_assert 17 serial-contains 'exec: loaded GOFILES.ELF'
+vgate_assert 17 serial-contains 'gotabwm: registered'
+vgate_assert 17 serial-contains 'gotabwm: rail n=2'
+vgate_assert 17 serial-contains 'gofiles: ready'
+vgate_assert 17 serial-contains 'gotabwm: rail-click id='
+vgate_assert 17 serial-contains 'goedit: dirty'
+# M121e: the GOEDIT leg — the chord routed (undo id=) and the buffer's own
+# op ring reverted the typed run.
+vgate_assert 17 serial-contains 'gotabwm: undo id='
+vgate_assert 17 serial-contains 'goedit: undo n='
+# M121e: the GOFILES leg — 'd,y' trashes, ctrl-z restores the newest trashed
+# entry through the app's HandleUndo hook.
+vgate_assert 17 serial-contains 'gofiles: deleted NOTE.TXT trash='
+vgate_assert 17 serial-contains 'gofiles: restored NOTE.TXT trash='
+vgate_assert 17 serial-count 'gotabwm: undo id=' 2
+vgate_assert 17 serial-contains 'gotabwm OK'
+vgate_assert 17 serial-contains 'wm: unregistered, shim resumed'
+vgate_assert 17 serial-contains 'rx-gotabwm-hid-ok'
+vgate_assert 17 serial-absent '[EXC] parking:'
+vgate_assert 17 serial-absent 'exited status=139'
+vgate_assert 17 python <<'PY'
+import os, re, sys
+ser = open(os.environ["VG_SER"], errors="replace").read().splitlines()
+
+def first_after(prefix, start=0):
+    for i in range(start, len(ser)):
+        if ser[i].startswith(prefix):
+            return i
+    sys.exit("missing %s after %d" % (prefix, start))
+
+# The route marker precedes each surface's own revert marker: the seat
+# names the dispatch, the app names the revert.
+edit_dirty = first_after("goedit: dirty")
+edit_route = first_after("gotabwm: undo id=", edit_dirty)
+edit_undo = first_after("goedit: undo n=", edit_route)
+if not (edit_dirty < edit_route < edit_undo):
+    sys.exit("GOEDIT leg out of order: dirty@%d route@%d undo@%d" % (
+        edit_dirty, edit_route, edit_undo))
+files_del = first_after("gofiles: deleted NOTE.TXT trash=", edit_undo)
+files_route = first_after("gotabwm: undo id=", files_del)
+files_undo = first_after("gofiles: restored NOTE.TXT trash=", files_route)
+if not (files_del < files_route < files_undo):
+    sys.exit("GOFILES leg out of order: del@%d route@%d undo@%d" % (
+        files_del, files_route, files_undo))
+print("M121e app legs: GOEDIT undo at %d, GOFILES restore at %d" % (
+    edit_undo, files_undo))
+PY
+
+# Run 18 (M121e): the strip-focused press is the seat's own undo — the
+# reopen LIFO. Run 04's exact boot shape (single GOCALC the demo
+# choreography auto-closes), but the chord is ctrl-z: the strip owns undo
+# with nothing focused, so the seat's answer is applyReopen — same LIFO,
+# different chord.
+vgate_run 18 -- \
+    --screen '$RUN_DIR/screen-18' \
+    --via-virtio \
+    --script '$RUN_DIR/script-bt1.txt' \
+    --script2 '$RUN_DIR/script2-bt1.txt' \
+    --script2-after 'gotabwm: win focus' \
+    --input-chords 'ctrl-z' \
+    --input-chords-after 'gotabwm: tab close id=' \
+    --script3 '$RUN_DIR/script3-bt1.txt' \
+    --script3-after 'wm: unregistered, shim resumed' \
+    --script-expect 'rx-gotabwm-bt1-ok' --timeout 300
+
+vgate_assert 18 serial-contains 'VirelaiOS kernel has seized control.'
+vgate_assert 18 serial-contains 'exec: loaded GOTABWM.ELF'
+vgate_assert 18 serial-contains 'gotabwm: registered'
+vgate_assert 18 serial-contains 'exec: loaded GOCALC.ELF'
+vgate_assert 18 serial-contains 'gotabwm: tab open id='
+vgate_assert 18 serial-contains 'gotabwm: tab close id='
+# M121e: the strip-focused chord names the seat surface, then the LIFO
+# supplies the tab — run 04's reopen outcome through the undo chord.
+vgate_assert 18 serial-contains 'gotabwm: undo seat'
+vgate_assert 18 serial-contains 'gotabwm: reopen GOCALC.ELF'
+vgate_assert 18 serial-absent 'gotabwm: reopen missing '
+vgate_assert 18 serial-contains 'gotabwm: close'
+vgate_assert 18 serial-contains 'gotabwm OK'
+vgate_assert 18 serial-contains 'wm: unregistered, shim resumed'
+vgate_assert 18 serial-contains 'rx-gotabwm-bt1-ok'
+vgate_assert 18 serial-absent '[EXC] parking:'
+vgate_assert 18 serial-absent 'exited status=139'
+vgate_assert 18 python <<'PY'
+import os, sys
+ser = open(os.environ["VG_SER"], errors="replace").read().splitlines()
+
+def first_after(prefix, start=0):
+    for i in range(start, len(ser)):
+        if ser[i].startswith(prefix):
+            return i
+    sys.exit("missing %s after %d" % (prefix, start))
+
+close_i = first_after("gotabwm: tab close id=")
+seat_i = first_after("gotabwm: undo seat", close_i)
+reopen_i = first_after("gotabwm: reopen GOCALC.ELF", seat_i)
+opens = [i for i, l in enumerate(ser) if l.startswith("gotabwm: tab open id=")]
+if len([i for i in opens if i > reopen_i]) < 1:
+    sys.exit("want a tab open after the undo reopen (reopen@%d opens=%s)" % (
+        reopen_i, opens))
+if not (close_i < seat_i < reopen_i):
+    sys.exit("strip leg out of order: close@%d seat@%d reopen@%d" % (
+        close_i, seat_i, reopen_i))
+print("M121e strip leg: close@%d undo-seat@%d reopen@%d, %d tab opens" % (
+    close_i, seat_i, reopen_i, len(opens)))
 PY

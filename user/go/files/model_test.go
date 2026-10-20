@@ -501,3 +501,18 @@ func TestNotifyToastIsConsumeOnUse(t *testing.T) {
 		t.Fatalf("the adopter's message %q exceeds the 24-byte notify budget", "copied KNOWN.TXT")
 	}
 }
+
+// M121e (#2568): in the listing the seat's ctrl+z chord lands on the
+// tabapp undo hook — the trash restore — while a nil hook (this bare
+// model) is an honest no-op.
+func TestCtrlZRunsUndoHook(t *testing.T) {
+	var m model
+	// Bare model: the chord is inert, no panic.
+	m.handleKey(keys.Event{Key: keys.KeyCtrlZ})
+	ran := 0
+	m.undoHook = func() bool { ran++; return true }
+	m.handleKey(keys.Event{Key: keys.KeyCtrlZ})
+	if ran != 1 {
+		t.Fatalf("ctrl+z must run the undo hook once, ran=%d", ran)
+	}
+}
