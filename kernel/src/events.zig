@@ -178,23 +178,24 @@ pub fn reset(pid: usize) void {
 /// If `event.seq` is 0, stamps with the process's monotonic `next_seq`.
 /// If full, applies drop-oldest discipline and increments dropped counter.
 ///
-/// COMPOSITE_TICK coalesces under backlog: while the queue is at least
-/// half full AND already holds an unconsumed tick, another heartbeat adds
-/// no information — merge its damage mask (arg1) into the pending tick and
-/// refresh its present sequence (arg0) instead of enqueuing. Below the
-/// floor every tick queues normally (the pinned wm_server behavior — the
-/// seat expects one pending event per push when it is keeping up). Without
-/// this a stalled consumer accrues a tick per second until the queue is
-/// all heartbeats and drop-oldest evicts the real input behind them —
-/// observed on go-dogfood boot 08: the seat's stall let ticks evict the
-/// pointer burst's head (the press that armed the drag never arrived).
-const tick_merge_floor: usize = max_events / 2;
-
+/// COMPOSITE_TICK always coalesces into a pending tick: a queued
+/// heartbeat's whole payload is "repaint", so a second one adds no
+/// information — merge its damage mask (arg1) into the pending tick and
+/// refresh its present sequence (arg0) instead of enqueuing. The queue
+/// therefore never holds more than one heartbeat. #2729 merged only once
+/// the queue was half full; #2730 (go-dogfood boots 08/09) observed that
+/// even a sub-floor tick backlog stalls the consumer — every queued
+/// heartbeat used to cost the seat a whole composite+present while the
+/// input behind it waited. Without the merge a stalled consumer still
+/// accrues a tick per second until the queue is all heartbeats and
+/// drop-oldest evicts the real input behind them (observed on boot 08:
+/// the stall let ticks evict the pointer burst's head — the press that
+/// armed the drag never arrived).
 pub fn push(pid: usize, ev_in: Event) void {
     if (!in_range(pid) or ev_in.kind == 0) return;
 
     var ev = ev_in;
-    if (ev.kind == COMPOSITE_TICK and count[pid] >= tick_merge_floor) {
+    if (ev.kind == COMPOSITE_TICK) {
         var i: usize = 0;
         while (i < count[pid]) : (i += 1) {
             const s = (head[pid] + i) % max_events;
