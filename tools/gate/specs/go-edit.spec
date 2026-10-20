@@ -40,6 +40,9 @@
 #   08 replace -- Ctrl-R's two-field bar: Return replaces the match find
 #      lands on (hit=N/M), a find after it reports the remaining total, and
 #      Ctrl-A replaces all in one op whose n= equals that total.
+#   M138b (#2776) adds run 13: bracket matching — caret on `{`, the `}`
+#      match under-painted teal (pixel probe on the captured frame), and
+#      Ctrl-B jumping caret->match->caret->`match none` on a non-bracket.
 #
 # HOST PREREQUISITE (fails the gate honestly when missing):
 #   bash tools/go/build-goedit.sh   ->  .build/go/GOEDIT.ELF
@@ -89,9 +92,11 @@ with open(lease_seed, "wb") as f:
     f.write(b"lease-seed\n")
 # #2199: the second-pass runs' own targets — an undo/redo drill, a clipboard
 # drill, and a three-match replace document, each seeded so the saved-bytes
-# assert is an exact host-side compare.
+# assert is an exact host-side compare. M138b adds the bracket-match
+# drill's one-liner: `{` at offset 0, its `}` at offset 7.
 for name, body in [("UNDO.TXT", b"ab\n"), ("CLIP.TXT", b"clipthis"),
-                   ("REPL.TXT", b"one two one\ntwo one\n")]:
+                   ("REPL.TXT", b"one two one\ntwo one\n"),
+                   ("BKT.TXT", b"{abcdef}")]:
     with open(os.path.join(ed, name), "wb") as f:
         f.write(body)
 print("staged GOEDIT.ELF into share (%d bytes) and %s (%d bytes)" %
@@ -866,3 +871,116 @@ vgate_assert 12 serial-contains 'goedit: close'
 vgate_assert 12 serial-contains 'rx-goedit-hints-ok'
 vgate_assert 12 serial-absent '[EXC] parking:'
 vgate_assert 12 serial-absent 'exited status=139'
+
+# --- M138b (#2776) run 13: bracket match highlight + jump ------------------
+# On "{abcdef}": `home` parks the caret on the `{` at offset 0 — the frame
+# that status line stamps carries the `}` at offset 7 under-painted teal
+# (colMatch, the pixel probe below). Ctrl-B jumps to it (`match jump
+# off=7`, status col=8), a second Ctrl-B jumps back (off=0), and a caret
+# parked on 'a' answers the `match none` refusal — the run's tail, since
+# it is the last marker the last chord produces.
+vgate_file script2-13.txt <<'EOF'
+exec GOEDIT.ELF /host/EDIT/BKT.TXT
+EOF
+
+vgate_file script3-13.txt <<'EOF'
+dui close 2
+echo rx-goedit-match-ok
+EOF
+
+vgate_run 13 -- \
+    --screen '$RUN_DIR/screen-13' \
+    --via-virtio \
+    --script '$RUN_DIR/script.txt' \
+    --script2 '$RUN_DIR/script2-13.txt' \
+    --script2-after 'tabwm: sidebar-rendered' \
+    --input-chords 'home,ctrl-b,ctrl-b,right,ctrl-b' \
+    --input-chords-after 'goedit: present' \
+    --screenshot-after 'goedit: status line=1/1 col=1' \
+    --script3 '$RUN_DIR/script3-13.txt' \
+    --script3-after 'goedit: match none' \
+    --script-expect 'rx-goedit-match-ok' --timeout 240
+
+vgate_assert 13 serial-contains 'exec: loaded GOEDIT.ELF'
+vgate_assert 13 serial-contains 'goedit: read /host/EDIT/BKT.TXT n=8'
+vgate_assert 13 serial-contains 'goedit: present'
+vgate_assert 13 serial-contains 'goedit: match jump off=7'
+vgate_assert 13 serial-contains 'goedit: status line=1/1 col=8'
+vgate_assert 13 serial-contains 'goedit: match jump off=0'
+vgate_assert 13 serial-contains 'goedit: match none'
+vgate_assert 13 serial-contains 'rx-goedit-match-ok'
+vgate_assert 13 serial-absent '[EXC] parking:'
+vgate_assert 13 serial-absent 'exited status=139'
+
+# The pixel probe: the captured frame is the post-`home` one — caret on
+# `{` (col 1) and the `}` at col 8 under-painted colMatch teal. Window
+# geometry is run 10's: client x=64..1088 y=96..832 at 2x; the match cell
+# is text col 8 -> window-internal x 62, y 28 -> png x 188..204, y 152..168.
+# The `}` glyph's lit pixels overwrite some of the 256-px cell, so the
+# threshold is ~half. The `{` cell under the caret (x 76..92) is the
+# control — amber caret + plain text, never teal.
+vgate_assert 13 snapshot 'screen-13-after' <<'PY'
+import struct, sys, zlib
+
+d = open(sys.argv[1], "rb").read()
+assert d[:8] == b"\x89PNG\r\n\x1a\n", "not a PNG scanout"
+pos = 8
+idat = b""
+w = h = ct = 0
+while pos < len(d):
+    n, typ = struct.unpack(">I4s", d[pos:pos + 8])
+    chunk = d[pos + 8:pos + 8 + n]
+    if typ == b"IHDR":
+        w, h, depth, ct = struct.unpack(">IIBB", chunk[:10])
+        assert depth == 8
+    elif typ == b"IDAT":
+        idat += chunk
+    pos += 12 + n
+bpp = 4 if ct == 6 else 3
+raw = zlib.decompress(idat)
+stride = w * bpp
+out = bytearray()
+prev = bytearray(stride)
+i = 0
+for _ in range(h):
+    filt = raw[i]
+    i += 1
+    row = bytearray(raw[i:i + stride])
+    i += stride
+    if filt == 1:
+        for x in range(bpp, stride):
+            row[x] = (row[x] + row[x - bpp]) & 0xff
+    elif filt == 2:
+        for x in range(stride):
+            row[x] = (row[x] + prev[x]) & 0xff
+    elif filt == 3:
+        for x in range(stride):
+            left = row[x - bpp] if x >= bpp else 0
+            row[x] = (row[x] + ((left + prev[x]) >> 1)) & 0xff
+    elif filt == 4:
+        for x in range(stride):
+            left = row[x - bpp] if x >= bpp else 0
+            up = prev[x]
+            up_left = prev[x - bpp] if x >= bpp else 0
+            p = left + up - up_left
+            pa, pb, pc = abs(p - left), abs(p - up), abs(p - up_left)
+            pred = (left if pa <= pb and pa <= pc else up if pb <= pc else up_left)
+            row[x] = (row[x] + pred) & 0xff
+    out += row
+    prev = row
+
+def teal_count(x0, x1, y0, y1):
+    n = 0
+    for y in range(y0, y1):
+        for x in range(x0, x1):
+            k = (y * w + x) * bpp
+            if max(abs(out[k] - 0x3f), abs(out[k+1] - 0xbf), abs(out[k+2] - 0x9f)) <= 12:
+                n += 1
+    return n
+
+match = teal_count(184, 208, 148, 172)
+caret = teal_count(72, 96, 148, 172)
+print("goedit bracket leg: match-cell teal px=%d, caret-cell teal px=%d" % (match, caret))
+assert match >= 120, "the match's cell is not teal under-text"
+assert caret < 40, "teal leaked onto the caret cell — the match cell is the wrong one"
+PY
