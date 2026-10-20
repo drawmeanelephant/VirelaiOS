@@ -88,7 +88,7 @@ two small exported helpers in `shlib`, one gate spec, docs rows.
 
 - ~~**No remote desktop or input injection.** No pointer or key events, no
   focus or raise, no pixels or screenshots. `ui.windows` is read-only. RFB
-  (ADR 0037) remains the pixel path.~~ **Amended (M139b, #2780):** an
+  (ADR 0037) remains the pixel path.~~ **Amended (card #2780, #2780):** an
   authenticated session holding the `input` cap may inject key and
   pointer events into the focused pane through `ui.input` (D3/D5b), and
   `ui.screenshot` (added in M109b) reads the framebuffer. Still absent:
@@ -251,7 +251,7 @@ the first byte is alphanumeric, and it is never `.` or `..`. It resolves to
 | `fs.read` | `path`: NAME | `{"path":S,"size":N,"data_b64":S}`. The whole file, ≤ 4096 bytes. |
 | `fs.write` | `path`: NAME, `data_b64`: base64 of ≤ 4096 bytes | `{"path":S,"size":N}`. Create or replace, atomic through `vi.WriteFileSafe`. |
 | `ui.windows` | none | `{"seat":"gotabwm"\|"none","focused":I\|null,"windows":[{"index":I,"id":N,"title":S,"focused":B,"pinned":B,"frozen":B}]}` |
-| `ui.input` | `win`: int ≥ 0; `events`: array of ≤ 64 flat objects | `{"sent":N}` (M139b; requires the `input` cap, D5b) |
+| `ui.input` | `win`: int ≥ 0; `events`: array of ≤ 64 flat objects | `{"sent":N}` (card #2780; requires the `input` cap, D5b) |
 | `gosh.run` | `cmd`: string; `timeout_ms`: int 1..30000, default 10000 | `{"exit_status":N,"stdout_b64":S,"truncated":B}` |
 
 Verb semantics that are binding:
@@ -271,7 +271,7 @@ Verb semantics that are binding:
   strip's focus. The first call against a registered seat opens the
   daemon's bind window and walks the ownership challenge, so it costs two
   extra round trips once per daemon lifetime.
-- **`ui.input`** (M139b, #2780; ADR 0007 R2's kind 29) injects HID events
+- **`ui.input`** (card #2780, #2780; ADR 0007 R2's kind 29) injects HID events
   into the focused pane — see D5b for the wire. `win` is the strip index
   the request believes is focused, the same integer `ui.windows` reports
   as `focused`; a mismatch — or no focus at all — refuses
@@ -341,7 +341,7 @@ Only codes marked *fatal* close it.
 | `spawn_failed` | `vi.Exec` of `GOSH.ELF` failed | no |
 | `timed_out` | `gosh.run` budget exhausted; the child was killed | no |
 | `seat_unsupported` / `seat_timeout` | see `ui.windows` | no |
-| `agent_input_denied` / `agent_input_no_focus` | kind-29 ack refused, name quoted verbatim (M139b) | no |
+| `agent_input_denied` / `agent_input_no_focus` | kind-29 ack refused, name quoted verbatim (card #2780) | no |
 | `io_error` | any other negative kernel result (`message` carries `vi.ErrnoName`) | no |
 | `auth_required` / `auth_failed` / `auth_timeout` | D2 | **yes** |
 | `line_too_long` | a line exceeds its limit (bytes discarded unparsed) | **yes** |
@@ -388,7 +388,7 @@ first, and that is the contract).
   kinds `applied=0`, which becomes `seat_unsupported`. The 38-byte frame
   layout and the bind invariants are untouched.
 
-## D5b. Agent input: WM_RPC kind 29 `agent_input` (M139b, #2780)
+## D5b. Agent input: WM_RPC kind 29 `agent_input` (card #2780, #2780)
 
 `ui.input` rides ADR 0007 R2's reserved kind through the same M97g-F2
 bind `ui.windows` uses — `id` is the daemon's own (hidden) bind window,
@@ -640,7 +640,7 @@ The harness prints one `AGENTCTL: ok <step>` or `AGENTCTL: FAIL <step>
   reads, streaming output, stdin, stderr capture, a cwd, concurrent jobs.
 - **E5 — UI depth.** Full window geometry and z-order for non-tab windows,
   and focus/raise verbs (that is the remote-desktop line, and it needs
-  its own threat model). The focused-pane input half landed in M139b
+  its own threat model). The focused-pane input half landed in card #2780
   (#2780, D5b) — geometry and focus control stay here.
 - **E6 — Transport hardening.** Session encryption (ChaCha20-Poly1305,
   M47), Ed25519 client keys, multiple clients (needs multi-connection TCP),
