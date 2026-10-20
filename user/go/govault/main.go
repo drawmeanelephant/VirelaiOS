@@ -412,6 +412,11 @@ func (a *app) save() bool {
 		vi.ConsoleLine(markerSaveErr + vi.Itoa64(rc))
 		return false
 	}
+	// The published frame is also the bytes a same-session unlock opens:
+	// on the create path nothing ever read the file off disk, so without
+	// this a lock->unlock pair meets parseHeader(nil) -> bad file. It is
+	// the sealed text — ciphertext is not secret material to shed.
+	a.file = append(a.file[:0], file...)
 	vi.ConsoleLine(markerSaved)
 	return true
 }
