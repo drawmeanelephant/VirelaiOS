@@ -502,17 +502,23 @@ func TestNotifyToastIsConsumeOnUse(t *testing.T) {
 	}
 }
 
-// M121e (#2568): in the listing the seat's ctrl+z chord lands on the
-// tabapp undo hook — the trash restore — while a nil hook (this bare
-// model) is an honest no-op.
-func TestCtrlZRunsUndoHook(t *testing.T) {
+// M121e (#2568): in the listing the seat's ctrl+z chord arrives as the
+// 0x1a control byte and lands on the same trash restore as the `u` key.
+// On the host the restore is honestly refused (no trash log), but the
+// refusal marker proves the chord ran the undo path rather than no-op'ing.
+func TestCtrlZRunsTrashRestore(t *testing.T) {
 	var m model
-	// Bare model: the chord is inert, no panic.
 	m.handleKey(keys.Event{Key: keys.KeyCtrlZ})
-	ran := 0
-	m.undoHook = func() bool { ran++; return true }
-	m.handleKey(keys.Event{Key: keys.KeyCtrlZ})
-	if ran != 1 {
-		t.Fatalf("ctrl+z must run the undo hook once, ran=%d", ran)
+	if m.status != "restore refused" {
+		t.Fatalf("ctrl+z status = %q, want the trash restore's honest refusal", m.status)
+	}
+	found := false
+	for _, l := range m.drain() {
+		if strings.HasPrefix(l, markerRestoreNo) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("ctrl+z emitted no %q marker", markerRestoreNo)
 	}
 }
