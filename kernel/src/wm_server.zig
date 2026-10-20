@@ -1144,13 +1144,10 @@ test "wm_server: COMPOSITE_TICK is delivered only to the registered WM with the 
     }
 
     // Register pid 3; the next tick delivers kind 18 with arg0 = present seq.
-    // Two heartbeats leave ONE pending event — #2730's unconditional merge:
-    // a queued tick's payload is "repaint", so the second refreshes the
-    // pending tick's arg0/arg1 instead of enqueuing.
     try std.testing.expect(register(3));
     on_tick();
     on_tick();
-    try std.testing.expectEqual(@as(usize, 1), events.pending(3));
+    try std.testing.expectEqual(@as(usize, 2), events.pending(3));
     const ev = events.pop(3).?;
     try std.testing.expectEqual(events.COMPOSITE_TICK, ev.kind);
     try std.testing.expectEqual(@as(u32, present_seq), ev.arg0);

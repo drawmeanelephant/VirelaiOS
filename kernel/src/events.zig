@@ -178,24 +178,25 @@ pub fn reset(pid: usize) void {
 /// If `event.seq` is 0, stamps with the process's monotonic `next_seq`.
 /// If full, applies drop-oldest discipline and increments dropped counter.
 ///
-/// COMPOSITE_TICK always coalesces into a pending tick: a queued
-/// heartbeat's whole payload is "repaint", so a second one adds no
-/// information — merge its damage mask (arg1) into the pending tick and
-/// refresh its present sequence (arg0) instead of enqueuing. The queue
-/// therefore never holds more than one heartbeat. #2729 merged only once
-/// the queue was half full; #2730 (go-dogfood boots 08/09) observed that
-/// even a sub-floor tick backlog stalls the consumer — every queued
-/// heartbeat used to cost the seat a whole composite+present while the
-/// input behind it waited. Without the merge a stalled consumer still
-/// accrues a tick per second until the queue is all heartbeats and
-/// drop-oldest evicts the real input behind them (observed on boot 08:
-/// the stall let ticks evict the pointer burst's head — the press that
-/// armed the drag never arrived).
+/// COMPOSITE_TICK coalesces under backlog: while the queue is at least
+/// half full AND already holds an unconsumed tick, another heartbeat adds
+/// no information — merge its damage mask (arg1) into the pending tick and
+/// refresh its present sequence (arg0) instead of enqueuing. Below the
+/// floor every tick still queues as its own event: the seat's consumed-tick
+/// count is its heartbeat clock (demo budgets, idle timing), and the seat
+/// now coalesces the PAINTS drain-side (#2730) without losing the count —
+/// merging here would under-report heartbeats to any consumer that fell
+/// behind. Without the floor merge a stalled consumer accrues a tick per
+/// second until the queue is all heartbeats and drop-oldest evicts the
+/// real input behind them (observed on go-dogfood boot 08: the stall let
+/// ticks evict the pointer burst's head).
+const tick_merge_floor: usize = max_events / 2;
+
 pub fn push(pid: usize, ev_in: Event) void {
     if (!in_range(pid) or ev_in.kind == 0) return;
 
     var ev = ev_in;
-    if (ev.kind == COMPOSITE_TICK) {
+    if (ev.kind == COMPOSITE_TICK and count[pid] >= tick_merge_floor) {
         var i: usize = 0;
         while (i < count[pid]) : (i += 1) {
             const s = (head[pid] + i) % max_events;
@@ -395,7 +396,7 @@ test "events: process isolation and lifecycle reset" {
     try std.testing.expectEqual(@as(u32, 1), e0.seq);
 }
 
-test "events: COMPOSITE_TICK always merges into a pending tick and still wakes" {
+test "events: COMPOSITE_TICK merges only past the half-full floor and still wakes" {
     init();
     var wakes: usize = 0;
     const Hook = struct {
@@ -408,27 +409,35 @@ test "events: COMPOSITE_TICK always merges into a pending tick and still wakes" 
     on_event_pushed = Hook.fired;
     defer on_event_pushed = null;
 
-    // A tick behind real input: the next heartbeat folds into it instead
-    // of queuing — damage OR-ed, present sequence refreshed — and the push
-    // still wakes a blocked sys_wait_event caller (a parked task that lost
-    // the wake-scan race is owed every push; merged ones included).
-    push(0, .{ .kind = KEY_DOWN, .flags = 0, .seq = 0, .arg0 = 0x04, .arg1 = 'a' });
+    // Below the floor every tick queues as its own event — the seat's
+    // consumed-tick count is its heartbeat clock, so sub-floor heartbeats
+    // must stay countable one-for-one.
+    push(0, .{ .kind = COMPOSITE_TICK, .flags = 0, .seq = 0, .arg0 = 9, .arg1 = 0 });
+    push(0, .{ .kind = COMPOSITE_TICK, .flags = 0, .seq = 0, .arg0 = 10, .arg1 = 0 });
+    try std.testing.expectEqual(@as(usize, 2), pending(0));
+    _ = pop(0).?;
+    _ = pop(0).?;
+
+    // At the floor a pending tick absorbs the push: damage OR-ed, present
+    // sequence refreshed — and the push still fires the wake hook (a
+    // parked task that lost the wake-scan race is owed every push,
+    // merged or not).
+    var i: u32 = 0;
+    while (i < tick_merge_floor) : (i += 1) {
+        push(0, .{ .kind = KEY_DOWN, .flags = 0, .seq = 0, .arg0 = i, .arg1 = 'a' });
+    }
     push(0, .{ .kind = COMPOSITE_TICK, .flags = 0, .seq = 0, .arg0 = 10, .arg1 = 0x2 });
     push(0, .{ .kind = COMPOSITE_TICK, .flags = 0, .seq = 0, .arg0 = 11, .arg1 = 0x5 });
-    try std.testing.expectEqual(@as(usize, 2), pending(0));
-    try std.testing.expectEqual(@as(usize, 3), wakes);
-    _ = pop(0).?;
+    try std.testing.expectEqual(tick_merge_floor + 1, pending(0));
+    try std.testing.expectEqual(@as(usize, tick_merge_floor + 4), wakes);
+    while (pending(0) > 1) {
+        _ = pop(0).?;
+    }
     const tick = pop(0).?;
     try std.testing.expectEqual(COMPOSITE_TICK, tick.kind);
     try std.testing.expectEqual(@as(u32, 11), tick.arg0);
     try std.testing.expectEqual(@as(u32, 0x7), tick.arg1);
     try std.testing.expect(pop(0) == null);
-
-    // A tick to an empty queue always enqueues — the merge is into a
-    // PENDING tick only.
-    push(0, .{ .kind = COMPOSITE_TICK, .flags = 0, .seq = 0, .arg0 = 12, .arg1 = 0 });
-    push(0, .{ .kind = COMPOSITE_TICK, .flags = 0, .seq = 0, .arg0 = 13, .arg1 = 0 });
-    try std.testing.expectEqual(@as(usize, 1), pending(0));
 }
 
 test "events: out-of-range PIDs and invalid kinds are defensive no-ops" {
