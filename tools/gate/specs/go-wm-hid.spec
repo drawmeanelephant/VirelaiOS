@@ -76,6 +76,16 @@
 # Run 16 (M121b / #2565): run 07's three-client boot driving the tab chords —
 # ctrl+shift+pageup/pagedown move the focused cell, ctrl+shift+n pins it to
 # the front, ctrl+shift+w closes it. Reopen/duplicate keep runs 04/05.
+#
+# Runs 17/18 (M121e / #2568): the undo chord on every surface it routes.
+# Run 17 hosts GOEDIT + GOFILES on a one-file share: XYZ into the editor,
+# ctrl-z routes `undo id=` to the focused tab and the op ring reverts
+# (`goedit: undo`); alt-tab hands focus to GOFILES, d,y trashes the file,
+# and the same chord reaches the tty-bound tab as the 0x1a byte — the
+# model's own restore path answers (`gofiles: restored`). Run 18 is run
+# 04's single-tab boot: after the auto-close leaves an empty strip the
+# same chord is the seat's own undo — `gotabwm: undo seat` pops the
+# reopen LIFO.
 
 # Two equal-width cells on a 1280 rail: tab 0 [0,640)=(320,10), tab 1
 # [640,1280)=(960,10). Zig's left-rail (158,70) is the wrong target.
@@ -87,6 +97,7 @@
 #   bash tools/go/build-goterm.sh    ->  .build/go/GOTERM.ELF
 #   bash tools/go/build-gocalc.sh    ->  .build/go/GOCALC.ELF
 #   bash tools/go/build-goset.sh     ->  .build/go/GOSET.ELF   (run 08)
+#   bash tools/go/build-files.sh     ->  .build/go/GOFILES.ELF (run 18)
 #
 # exec-order: assert-proven -- each run ends on a script-only marker
 # (`rx-gotabwm-hid-ok` / `rx-gotabwm-hid-drag-ok`), and every stage gate
@@ -205,7 +216,7 @@ shutil.copy(src, os.path.join(share, "GOSH.ELF"))
 # M121e (#2568): run 17's GOFILES trash leg — one file so 'd' selects it.
 src = os.path.join(".build", "go", "GOFILES.ELF")
 if not os.path.exists(src):
-    sys.exit("GOFILES.ELF missing - build it first: bash tools/go/build-gofiles.sh")
+    sys.exit("GOFILES.ELF missing - build it first: bash tools/go/build-files.sh")
 shutil.copy(src, os.path.join(share, "GOFILES.ELF"))
 fmu = os.path.join(share, "FMUNDO")
 os.makedirs(fmu, exist_ok=True)
