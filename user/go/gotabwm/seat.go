@@ -662,19 +662,23 @@ func demoTickLimit(tickLimit, cap int) int {
 	return tickLimit
 }
 
-// seatTick is the composite tick count the last paint pass ran at, in the
-// same units compositeTick's `ticks`. The main loop keeps its own counter as
-// a local; this is the package-visible copy the WM_RPC arms need, because
-// applyRPC runs between ticks (serviceRPC is called before the event poll)
-// and a toast born "now" has to know which tick now is. Set only by
-// compositeTick, so it always names a tick that actually painted.
+// seatTick is the last consumed heartbeat — #2730: a composite pass is
+// deferred behind the input that queued with it, so consumers anchoring to
+// "now" (activity re-arm, idle) need the consumed count, not the painted
+// one. compositeClock counts actual compositeTick passes and is the clock
+// toast TTL/notify sweep anchor to: a toast lives NotifyTicks-1 PAINTS, and
+// under a coalesced drain heartbeats no longer equal paints (observed boot
+// 05: a fresh toast born on a stale painted tick expired on its first
+// notifyTick — dismiss without paint).
 var seatTick uint64
+var compositeClock uint64
 
 // compositeTick performs one bounded compositor pass after a COMPOSITE_TICK
 // event. Keeping it separate lets the event drain preserve each tick's paint,
 // present, and host-lifecycle ordering while still consuming a complete input
 // burst in one queue pass.
 func compositeTick(scan []byte, ticks uint64, presents *int) {
+	compositeClock++
 	seatTick = ticks
 	// MarkerTick is printed by the drain's onTick accounting (#2730): one
 	// marker per consumed heartbeat, whether or not this pass runs.
@@ -724,11 +728,11 @@ func compositeTick(scan []byte, ticks uint64, presents *int) {
 	// reason a toast exists. Expiry runs first so a toast that has run out
 	// is never painted for one more frame, and so the dismiss marker lands
 	// in the same tick the pixels stop changing.
-	notifyTick(ticks)
+	notifyTick(compositeClock)
 	// M125f (#2591): a crash receipt's deferred re-exec runs here — off
 	// the teardown event and clear of crashSave's whole-VM save.
 	crashRestartTick()
-	painted := paintNotify(scan, vi.ScanoutWidth, vi.ScanoutHeight, ticks)
+	painted := paintNotify(scan, vi.ScanoutWidth, vi.ScanoutHeight, compositeClock)
 	centerPainted := paintNotifyCenter(scan, vi.ScanoutWidth, vi.ScanoutHeight)
 	// M124a (#2580): the drag ghost paints over every other chrome layer
 	// — the gesture owns the frame while the button is held — and under
