@@ -155,7 +155,7 @@ import os, re
 ser = open(os.environ["VG_SER"], "rb").read().decode("utf-8", "replace")
 for m in re.finditer(r"gotabwm: sel pub id=\d+ len=(\d+)", ser):
     if int(m.group(1)) == 6:
-        print("selection publish len=6 (s3cr3t) confirmed by the seat")
+        print("selection publish len=6 confirmed by the seat")
         break
 else:
     raise SystemExit("no len=6 selection publish in serial")
