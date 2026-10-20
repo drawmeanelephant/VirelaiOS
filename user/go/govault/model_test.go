@@ -3,7 +3,11 @@ package main
 // The class-A model legs the card names: the expiry compare-before-clear
 // rule, the shared-timer deadline math, and zeroing on lock. All pure —
 // nanotime is a parameter, the clipboard is a byte slice the test owns.
-import "testing"
+import (
+	"testing"
+
+	"virelai/vi"
+)
 
 // The compare rule: the expiry clears ONLY when the clipboard still holds
 // exactly our secret — a different body (longer, shorter, different bytes)
@@ -196,6 +200,35 @@ func TestFieldWipesItsBytes(t *testing.T) {
 	}
 	if got := f.shown(); got != "" {
 		t.Fatalf("cleared field shows %q", got)
+	}
+}
+
+// ensureDirs never offers the mount root the mkdir triple — "/host" answers
+// it with EINVAL, not EEXIST (observed on the run-01 gate leg: `save refused
+// rc=-1 /host`, and the whole vault chain died behind it). Only components
+// BELOW the root are created; EEXIST is a pass and a real refusal propagates.
+func TestEnsureDirsSkipsMountRoot(t *testing.T) {
+	oldOpen, oldClose := fileOpen, fileClose
+	defer func() { fileOpen, fileClose = oldOpen, oldClose }()
+
+	var opened []string
+	fileOpen = func(path string, flags uint32) (int64, int64) {
+		opened = append(opened, path)
+		return 0, int64(vi.ErrFileExists)
+	}
+	fileClose = func(h int64) {}
+	if !ensureDirs("/host/GOVAULT/VAULT.BIN") {
+		t.Fatal("ensureDirs refused an all-EEXIST chain")
+	}
+	if len(opened) != 1 || opened[0] != "/host/GOVAULT" {
+		t.Fatalf("opened %v, want exactly [/host/GOVAULT] — the mount root is never created", opened)
+	}
+
+	fileOpen = func(path string, flags uint32) (int64, int64) {
+		return -1, -int64(vi.ErrEACCES)
+	}
+	if ensureDirs("/host/GOVAULT/VAULT.BIN") {
+		t.Fatal("a refused mkdir below the root must propagate")
 	}
 }
 

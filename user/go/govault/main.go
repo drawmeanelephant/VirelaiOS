@@ -27,6 +27,7 @@
 package main
 
 import (
+	"strings"
 	"unicode/utf8"
 
 	"virelai/appkit"
@@ -562,22 +563,17 @@ func (a *app) create() {
 }
 
 // ensureDirs creates the /host/<APP> directory chain — the same EEXIST-is-a-
-// pass triple the recorder uses. The file-cap app's WriteFileSafe reports
-// the open error on the write either way; this only makes the common case
-// land.
+// pass triple the recorder uses, and the same mount-root skip: segs[1] is
+// the mount itself ("/host"), which answers the mkdir triple with EINVAL,
+// not EEXIST — it is never "created". The file-cap app's WriteFileSafe
+// reports the open error on the write either way; this only makes the
+// common case land.
 func ensureDirs(filePath string) bool {
-	cur := ""
-	start := -1
-	for i := 0; i < len(filePath); i++ {
-		if filePath[i] != '/' {
-			continue
-		}
-		if start < 0 {
-			start = i
-			continue
-		}
-		dir := filePath[:i]
-		if dir == cur || len(dir) <= 1 {
+	segs := strings.Split(filePath, "/")
+	dir := ""
+	for i := 1; i < len(segs)-1; i++ {
+		dir += "/" + segs[i]
+		if i == 1 {
 			continue
 		}
 		h, rc := fileOpen(dir, vi.ModeWrite|vi.ModeCreate|vi.ModeDir)
@@ -587,7 +583,6 @@ func ensureDirs(filePath string) bool {
 			vi.ConsoleLine(markerSaveErr + vi.Itoa64(rc) + " " + dir)
 			return false
 		}
-		cur = dir
 	}
 	return true
 }
