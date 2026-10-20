@@ -228,4 +228,4 @@ destination to re-tile.
 row): a hosted emoji tab focuses wherever it lives — dormant spaces
 switch to it — and an absent target execs `GOEMOJI.ELF`, whose ENOENT
 lands in the seat's ordinary named-refusal lane (`refusal ENOENT exec
-GOEMOJI.ELF`) until M146a ships the picker.
+GOEMOJI.ELF`) until card #2799 ships the picker.
