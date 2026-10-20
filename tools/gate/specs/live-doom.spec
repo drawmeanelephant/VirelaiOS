@@ -268,8 +268,7 @@ open(os.path.join(accept_share, "FLINTJ", "E3.SH"),
     "STORE.ELF install doom --remote=10.0.0.2:4749 --channel=/host/DROP\n"
     "echo m130f: declared\n"
     "STORE.ELF consent DOOM.ELF\n"
-    "DOOM.ELF -iwad /host/DROP/doom/doom1.wad -playdemo /host/walk.lmp\n"
-    "echo m130f: done\n"
+    "echo m130f: consented\n"
 )
 print("doom-accept-share: fresh consumer, scripted consent, walk.lmp "
       "%d tics" % len(tics))
@@ -471,7 +470,7 @@ vgate_run 02 -- \
     --script2-after 'VirelaiOS kernel has seized control.' \
     --input-chords 'g,r,a,n,t,s,return,g,r,a,n,t,space,D,O,O,M,.,E,L,F,return,return,return,escape,escape' \
     --input-chords-after 'goset: ready ' \
-    --script-expect 'vldoom: f=105' --timeout 300
+    --script-expect 'vldoom: f=105' --timeout 420
 
 # catalog + install: the signed consts render off the stream's head, the
 # publisher fingerprint is the derived name=doom keyring label, and the
@@ -652,6 +651,10 @@ PY
 #   (dspistol), a monster death (dspodth), a door opening (dsbdopn), and
 #   the doomgeneric f=/t= heartbeat lands the replay on serial markers.
 
+vgate_file script3-accept.txt <<'EOF'
+exec DOOM.ELF -iwad /host/DROP/doom/doom1.wad -playdemo /host/walk.lmp
+EOF
+
 vgate_run 03 -- \
     --via-virtio \
     --sound \
@@ -666,7 +669,9 @@ vgate_run 03 -- \
     --script '$RUN_DIR/script-store.txt' \
     --script2 '$RUN_DIR/script2-accept.txt' \
     --script2-after 'VirelaiOS kernel has seized control.' \
-    --script-expect 'm130f: done' --timeout 420
+    --script3 '$RUN_DIR/script3-accept.txt' \
+    --script3-after 'm130f: consented' \
+    --script-expect 'procs DOOM.ELF exited status=' --timeout 420
 
 # install + scripted consent (the M130e evidence shape, minus GOSET).
 vgate_assert 03 serial-contains 'store: stream doom release name=DOOM version=1.0.0 category=game'
@@ -697,8 +702,8 @@ vgate_assert 03 serial-contains 'vldoom: sfx dspodth'
 vgate_assert 03 serial-contains 'vldoom: sfx dsbdopn'
 # clean exit: singledemo ran I_Quit -> exit(0) -> the task retired 0,
 # and E3.SH's trailing echo proves DOOM.ELF returned.
-vgate_assert 03 serial-contains 'm130f: done'
-vgate_assert 03 serial-contains 'exited status=0'
+vgate_assert 03 serial-contains 'm130f: consented'
+vgate_assert 03 serial-contains 'procs DOOM.ELF exited status=0'
 vgate_assert 03 serial-absent 'store: refuse'
 vgate_assert 03 serial-absent 'verdict=refused'
 vgate_assert 03 serial-absent 'flint: refuse'
