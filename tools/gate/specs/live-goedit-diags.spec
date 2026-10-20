@@ -379,7 +379,9 @@ vgate_assert 05 serial-contains 'goedit: read /host/EDFMT/main.go n=42'
 vgate_assert 05 serial-contains 'goedit: errors n=1'
 # The jump lands on the diagnostic's exact column: ')' at 2:13.
 vgate_assert 05 serial-contains 'goedit: errors jump line=2 col=13'
-vgate_assert 05 serial-contains 'goedit: status line=2/2 col=13 err=1/1'
+# The buffer counts the trailing newline's empty tail as a third line, so
+# the landing status reads 2/3, not 2/2.
+vgate_assert 05 serial-contains 'goedit: status line=2/3 col=13 err=1/1'
 # The shipped probe verdict: go/format is not guest-safe on image size, so
 # Ctrl-S names the refusal and still publishes.
 vgate_assert 05 serial-contains 'edit: format unavailable (go/format not guest-safe)'
