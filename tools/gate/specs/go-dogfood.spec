@@ -2447,7 +2447,7 @@ vgate_run 09 -- \
     --via-virtio --cvc-snap \
     --screen '$RUN_DIR/screen-09' \
     --snapshot-out '$RUN_DIR/snap-09' \
-    --snapshot-after 'gotabwm: palette open n=' \
+    --snapshot-after 'gotabwm: launcher presented' \
     --snapshot-after 'goedit: state restored' \
     --script '$RUN_DIR/script-09a.txt' \
     --script-after 'dogfood: seat' \
@@ -2457,7 +2457,7 @@ vgate_run 09 -- \
     --input-chords-after 'goedit: present' \
     --script3 '$RUN_DIR/script-09c.txt' \
     --script3-after 'goedit: state restored' \
-    --script-expect 'rx-m121f-ok' --timeout 420
+    --script-expect 'rx-m121f-ok' --script-expect-tail 90 --timeout 420
 
 # The LIVE default seat, restored-empty: no starter GOSH, no demo
 # choreography, no persisted wm row (the whole point of this spec).
@@ -2502,7 +2502,12 @@ vgate_assert 09 serial-count 'gotabwm: reorder ' 2
 vgate_assert 09 serial-contains 'gotabwm: pin id='
 vgate_assert 09 serial-contains 'gotabwm: host close id='
 vgate_assert 09 serial-contains 'gotabwm: tab close id='
-vgate_assert 09 serial-contains 'gotabwm: close'
+# The app-side half of the same close: the WIN_CLOSE the seam delivers is
+# observed and the editor exits by its own receipt. `gotabwm: close` is
+# NOT pinnable here -- that marker is the seat's bounded-loop exit line,
+# and this boot's seat is live mode (mode demo absent above), whose loop
+# never ends before the runner's hard vm.stop.
+vgate_assert 09 serial-contains 'goedit: close'
 vgate_assert 09 serial-contains 'gotabwm: reopen GOEDIT.ELF'
 vgate_assert 09 serial-absent 'gotabwm: reopen missing '
 
@@ -2511,6 +2516,10 @@ vgate_assert 09 serial-contains 'gotabwm: palette open n='
 vgate_assert 09 serial-contains 'gotabwm: palette filter q=sett n='
 vgate_assert 09 serial-contains 'gotabwm: palette exec GOSET.ELF'
 vgate_assert 09 serial-contains 'gotabwm: palette dismiss'
+# The plate's presented-frame receipt — the snapshot arm above keys on
+# this line, never on the open marker: a frame carrying the plate exists
+# on the scanout only after a composite actually presented it.
+vgate_assert 09 serial-contains 'gotabwm: launcher presented'
 vgate_assert 09 serial-absent 'gotabwm: palette missing '
 vgate_assert 09 serial-absent 'gotabwm: palette empty'
 # A seat-spawned exec prints no `exec: loaded` (that is the monitor
@@ -2530,6 +2539,9 @@ vgate_assert 09 serial-count 'goedit: declare accepted' 2
 # Four tab opens over the boot: GOTERM, GOEDIT, the palette's GOSET, and
 # the re-exec'd GOEDIT the reopen raised.
 vgate_assert 09 serial-count 'gotabwm: tab open id=' 4
+# The live-persistence proof needs >120 consumed heartbeats; a fast
+# journey can reach rx-m121f-ok in ~70, so the 90 s expect tail holds the
+# boot long enough to cross the demo bound deterministically.
 vgate_assert 09 serial-contains 'gotabwm: live steady tabs='
 vgate_assert 09 serial-contains 'rx-m121f-ok'
 
@@ -2606,8 +2618,9 @@ PY
 # are legal -- GOTERM's retitle can re-report, and the two trailing
 # declares race): boot seat -> GOTERM's declare (term) -> GOEDIT's
 # declare (app) -> the palette's seat-modal sink -> back to Edit on
-# dismiss -> the close landing on term -> both exec'd apps reach the
-# badge, in either order.
+# dismiss -> the close landing on term -> the reopened Edit. GOSET's
+# Settings badge is pinned only after the palette exec -- a declare's
+# arrival against seat-processed chords is a race both directions.
 vgate_assert 09 python <<'PY'
 import os, re, sys
 ser = open(os.environ["VG_SER"], errors="replace").read()
@@ -2630,15 +2643,23 @@ def match(chain, seq, label):
 
 # The whole-run walk, as an ordered subsequence: boot seat -> TERM's
 # declare -> Edit's declare -> palette's seat modal -> dismiss back to
-# Edit -> the exec'd Settings declare -> a term landing (the close's
-# fallback) -> the reopened Edit. GOTERM's retitle may re-report and the
-# trailing declares race, so extras are tolerated, not listed.
+# Edit -> the close's term landing -> the reopened Edit. Settings is NOT
+# in the spine: GOSET's exec is in flight while the seat chews the
+# close+reopen chords, and its declare badge lands wherever its boot
+# finishes -- before the close's term under a starved seat (the authored
+# order), after the reopen's Edit on a fast drain (both observed). What
+# IS pinned: the exec cannot declare before the seat fired it.
 match([("seat", ""), ("term", "Term"), ("app", "Edit"),
-       ("seat", ""), ("app", "Edit"), ("app", "Settings"),
-       ("term", "Term"), ("app", "Edit")],
+       ("seat", ""), ("app", "Edit"), ("term", "Term"),
+       ("app", "Edit")],
       lines, "journey")
+pexec = ser.index("gotabwm: palette exec GOSET.ELF")
+if not any(s == "app" and t.startswith("Settings") and p > pexec
+           for p, s, t in lines):
+    sys.exit("badge walk: no app/Settings badge after the palette exec "
+             "(lines seen: %r)" % lines)
 print("M121d badge walk OK: seat -> Term -> Edit -> seat(palette) -> "
-      "Edit -> Settings -> Term -> Edit")
+      "Edit -> Term(close) -> Edit(reopen); Settings badge unpinned")
 PY
 
 # ---------------------------------------------------------------------------
