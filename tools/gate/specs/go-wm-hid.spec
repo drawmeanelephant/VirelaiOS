@@ -77,15 +77,20 @@
 # ctrl+shift+pageup/pagedown move the focused cell, ctrl+shift+n pins it to
 # the front, ctrl+shift+w closes it. Reopen/duplicate keep runs 04/05.
 #
-# Runs 17/18 (M121e / #2568): the undo chord on every surface it routes.
-# Run 17 hosts GOEDIT + GOFILES on a one-file share: XYZ into the editor,
-# ctrl-z routes `undo id=` to the focused tab and the op ring reverts
-# (`goedit: undo`); alt-tab hands focus to GOFILES, d,y trashes the file,
-# and the same chord reaches the tty-bound tab as the 0x1a byte — the
-# model's own restore path answers (`gofiles: restored`). Run 18 is run
-# 04's single-tab boot: after the auto-close leaves an empty strip the
-# same chord is the seat's own undo — `gotabwm: undo seat` pops the
-# reopen LIFO.
+# Runs 17–19 (M121e / #2568): the undo chord on every surface it routes.
+# One boot per surface — a focus switch cannot ride inside a chord batch:
+# the seat's WM_KEY mirror lags the app's own KEY_DOWN delivery (measured
+# 2026-10-19: ~90k serial lines on this boot shape), so a batch that
+# alt-tabs and keeps typing lands its tail on the OLD focus. Run 17 is
+# run 01's GOEDIT+GOTERM pair: XYZ into the editor, ctrl-z routes
+# `undo id=` to the focused tab and the op ring reverts (`goedit: undo`),
+# and the follow-up save writes the seed bytes exactly — the revert, not
+# a repaint fib. Run 18 is run 04's single-tab boot: after the auto-close
+# leaves an empty strip the same chord is the seat's own undo —
+# `gotabwm: undo seat` pops the reopen LIFO. Run 19 hosts GOFILES alone on
+# a one-file share: d,y trashes NOTE.TXT, and ctrl-z reaches the tty-bound
+# tab as the 0x1a byte — the model's own restore path answers
+# (`gofiles: restored`).
 
 # Two equal-width cells on a 1280 rail: tab 0 [0,640)=(320,10), tab 1
 # [640,1280)=(960,10). Zig's left-rail (158,70) is the wrong target.
@@ -1608,7 +1613,7 @@ print("M121b: cell %d move %s->%s then %s->%s, pin fronted %s, close dropped to 
 PY
 
 # ---------------------------------------------------------------------------
-# Runs 17/18 (M121e / #2568): the seat-owned ctrl+z undo chord.
+# Runs 17–19 (M121e / #2568): the seat-owned ctrl+z undo chord.
 #
 # The seat row owns the chord's dispatch: a focused tab answers through its
 # own app-scope binding — the seat routes, the KEY_DOWN (or the tty byte for
@@ -1616,29 +1621,36 @@ PY
 # the seat's own undo, the reopen LIFO. GOSH/child-tty keeps the bare
 # keystroke's meaning: the seat never swallows it.
 #
-# Run 17: GOEDIT + GOFILES on the strip. A rail click focuses GOEDIT (cell
-# 0), X,Y,Z types a run, ctrl-z pops it (the buffer's own op ring — the
-# ActionUndo dispatch kind on the app's own KEY_DOWN); alt-tab hands focus
-# to GOFILES, whose 'd,y' trashes NOTE.TXT and ctrl-z restores it — the
-# chord rides the tty byte (0x1a), the front-end's only input. Two route
-# markers (`gotabwm: undo id=`), one per surface.
+# One boot per surface, never a focus switch inside a chord batch: the
+# seat's WM_KEY mirror lags the app's own KEY_DOWN delivery (measured
+# 2026-10-19 on the two-app variant: the alt-tab's mirror processed ~44k
+# serial lines after the batch's tail strokes had all delivered to the
+# still-focused first app — the trailing d,y,ctrl-z undid text in GOEDIT
+# instead of touching GOFILES). The route marker is also emitted at
+# seat-processing time, so it can print AFTER the app's own revert marker:
+# the asserts pin the route's id, never its relative order.
+#
+# Run 17 (GOEDIT leg): run 01's pair boot. A rail click focuses GOEDIT
+# (cell 0), XYZ types one merged run, ctrl-z pops it on the buffer's own
+# op ring (the ActionUndo dispatch on the app's own KEY_DOWN), and the
+# follow-up save must write the seed bytes exactly.
 vgate_file script2-m121e.txt <<'EOF'
 dui focus 0
-exec GOEDIT.ELF &
-fg
 exec GOFILES.ELF /host/FMUNDO
 EOF
 
 vgate_run 17 -- \
     --screen '$RUN_DIR/screen-17' \
     --via-virtio \
-    --script '$RUN_DIR/script-m79f.txt' \
-    --script2 '$RUN_DIR/script2-m121e.txt' \
+    --script '$RUN_DIR/script.txt' \
+    --script2 '$RUN_DIR/script2.txt' \
     --script2-after 'gotabwm: win focus' \
     --pointer-virtio '320,10,c' \
-    --pointer-virtio-after 'gofiles: ready' \
-    --input-chords 'X,Y,Z,ctrl-z,alt-tab,d,y,ctrl-z' \
-    --input-chords-after 'gotabwm: rail-click id=' \
+    --pointer-virtio-after 'gotabwm: rail n=2' \
+    --input-string 'XYZ' \
+    --input-string-after 'gotabwm: rail-click id=' \
+    --input-chords 'ctrl-z,ctrl-s' \
+    --input-chords-after 'goedit: dirty' \
     --script3 '$RUN_DIR/script3.txt' \
     --script3-after 'wm: unregistered, shim resumed' \
     --script-expect 'rx-gotabwm-hid-ok' --timeout 300
@@ -1646,24 +1658,25 @@ vgate_run 17 -- \
 vgate_assert 17 serial-contains 'VirelaiOS kernel has seized control.'
 vgate_assert 17 serial-contains 'exec: loaded GOTABWM.ELF'
 vgate_assert 17 serial-contains 'exec: loaded GOEDIT.ELF'
-vgate_assert 17 serial-contains 'exec: loaded GOFILES.ELF'
+vgate_assert 17 serial-contains 'exec: loaded GOTERM.ELF'
 vgate_assert 17 serial-contains 'gotabwm: registered'
 vgate_assert 17 serial-contains 'gotabwm: rail n=2'
-vgate_assert 17 serial-contains 'gofiles: ready'
 vgate_assert 17 serial-contains 'gotabwm: rail-click id='
+vgate_assert 17 serial-contains 'goedit: present'
+vgate_assert 17 serial-contains 'gotabwm: key'
 vgate_assert 17 serial-contains 'goedit: dirty'
-# M121e: the GOEDIT leg — the chord routed (undo id=) and the buffer's own
-# op ring reverted the typed run.
+# M121e: the chord routed (undo id= names GOEDIT's window) and the buffer's
+# own op ring reverted the typed run — then the save writes the seed's 10
+# bytes exactly. The route marker is seat-processed, so its serial position
+# against the app's own markers is not pinned.
 vgate_assert 17 serial-contains 'gotabwm: undo id='
-vgate_assert 17 serial-contains 'goedit: undo n='
-# M121e: the GOFILES leg — 'd,y' trashes, ctrl-z restores the newest trashed
-# entry through the app's HandleUndo hook.
-vgate_assert 17 serial-contains 'gofiles: deleted NOTE.TXT trash='
-vgate_assert 17 serial-contains 'gofiles: restored NOTE.TXT trash='
-vgate_assert 17 serial-count 'gotabwm: undo id=' 2
+vgate_assert 17 serial-contains 'goedit: undo n=0'
+vgate_assert 17 serial-contains 'goedit: saved /host/EDIT/SEED.TXT n=10'
 vgate_assert 17 serial-contains 'gotabwm OK'
 vgate_assert 17 serial-contains 'wm: unregistered, shim resumed'
 vgate_assert 17 serial-contains 'rx-gotabwm-hid-ok'
+vgate_assert 17 serial-absent 'goterm: line '
+vgate_assert 17 serial-absent 'goedit: undo none'
 vgate_assert 17 serial-absent '[EXC] parking:'
 vgate_assert 17 serial-absent 'exited status=139'
 vgate_assert 17 python <<'PY'
@@ -1676,22 +1689,31 @@ def first_after(prefix, start=0):
             return i
     sys.exit("missing %s after %d" % (prefix, start))
 
-# The route marker precedes each surface's own revert marker: the seat
-# names the dispatch, the app names the revert.
-edit_dirty = first_after("goedit: dirty")
-edit_route = first_after("gotabwm: undo id=", edit_dirty)
-edit_undo = first_after("goedit: undo n=", edit_route)
-if not (edit_dirty < edit_route < edit_undo):
-    sys.exit("GOEDIT leg out of order: dirty@%d route@%d undo@%d" % (
-        edit_dirty, edit_route, edit_undo))
-files_del = first_after("gofiles: deleted NOTE.TXT trash=", edit_undo)
-files_route = first_after("gotabwm: undo id=", files_del)
-files_undo = first_after("gofiles: restored NOTE.TXT trash=", files_route)
-if not (files_del < files_route < files_undo):
-    sys.exit("GOFILES leg out of order: del@%d route@%d undo@%d" % (
-        files_del, files_route, files_undo))
-print("M121e app legs: GOEDIT undo at %d, GOFILES restore at %d" % (
-    edit_undo, files_undo))
+def first_match_after(rx, start):
+    for i in range(start, len(ser)):
+        m = rx.match(ser[i])
+        if m:
+            return i, m
+    sys.exit("missing /%s/ after %d" % (rx.pattern, start))
+
+# The route names GOEDIT's own window — the seat dispatches to the focused
+# tab, and the app's own markers tell the revert story: the typed run
+# merged to one op, the undo ring emptied (n=0), and the saved bytes are
+# the seed exactly (a partial revert would save n>10).
+open_i, open_m = first_match_after(re.compile(r"^goedit: open id=(\d+)"), 0)
+route_i, route_m = first_match_after(
+    re.compile(r"^gotabwm: undo id=(\d+)"), open_i)
+if route_m.group(1) != open_m.group(1):
+    sys.exit("undo routed to id=%s, want the focused editor %s" % (
+        route_m.group(1), open_m.group(1)))
+dirty_i = first_after("goedit: dirty")
+undo_i = first_after("goedit: undo n=0", dirty_i)
+saved_i = first_after("goedit: saved /host/EDIT/SEED.TXT n=10", undo_i)
+if not (dirty_i < undo_i < saved_i):
+    sys.exit("GOEDIT leg out of order: dirty@%d undo@%d saved@%d" % (
+        dirty_i, undo_i, saved_i))
+print("M121e GOEDIT leg: route id=%s@%d, undo@%d, saved-seed@%d" % (
+    route_m.group(1), route_i, undo_i, saved_i))
 PY
 
 # Run 18 (M121e): the strip-focused press is the seat's own undo — the
@@ -1750,4 +1772,78 @@ if not (close_i < seat_i < reopen_i):
         close_i, seat_i, reopen_i))
 print("M121e strip leg: close@%d undo-seat@%d reopen@%d, %d tab opens" % (
     close_i, seat_i, reopen_i, len(opens)))
+PY
+
+# Run 19 (M121e): the GOFILES leg — the chord's bound-tty spelling. One
+# hosted GOFILES on a one-file share: 'd,y' trashes NOTE.TXT, then ctrl-z
+# reaches the tab as the 0x1a control byte (kernel/src/input.zig's
+# ctrl+letter path — a bound front-end never sees a window KEY_DOWN) and
+# lands on the model's own restore path, the `u` key's twin. The seat
+# prints its route marker; go-fileman run 04 owns the `u` key's own
+# delete/restore round-trip, so this leg only has to prove the chord took
+# the same road.
+vgate_file fmundo.expected <<'EOF'
+m121e trash-restore
+EOF
+
+vgate_run 19 -- \
+    --screen '$RUN_DIR/screen-19' \
+    --via-virtio \
+    --script '$RUN_DIR/script-bt1.txt' \
+    --script2 '$RUN_DIR/script2-m121e.txt' \
+    --script2-after 'gotabwm: win focus' \
+    --input-chords 'd,y,ctrl-z' \
+    --input-chords-after 'gofiles: ready' \
+    --script3 '$RUN_DIR/script3-bt1.txt' \
+    --script3-after 'wm: unregistered, shim resumed' \
+    --script-expect 'rx-gotabwm-bt1-ok' --timeout 300
+
+vgate_assert 19 serial-contains 'VirelaiOS kernel has seized control.'
+vgate_assert 19 serial-contains 'exec: loaded GOTABWM.ELF'
+vgate_assert 19 serial-contains 'gotabwm: registered'
+vgate_assert 19 serial-contains 'exec: loaded GOFILES.ELF'
+vgate_assert 19 serial-contains 'gofiles: ready'
+vgate_assert 19 serial-contains 'gofiles: deleted NOTE.TXT trash='
+# M121e: the route marker names the focused tty-bound tab; the app's own
+# marker names the revert. Serial order between them is not pinned (the
+# seat's mirror is processed after delivery — see the run-17 note).
+vgate_assert 19 serial-contains 'gotabwm: undo id='
+vgate_assert 19 serial-contains 'gofiles: restored NOTE.TXT trash='
+vgate_assert 19 share-equals FMUNDO/NOTE.TXT fmundo.expected
+vgate_assert 19 share-contains RECENT/LOG.TXT '|delete|'
+vgate_assert 19 share-contains RECENT/LOG.TXT '|restore|'
+vgate_assert 19 serial-absent 'gofiles: delete refused NOTE.TXT rc='
+vgate_assert 19 serial-absent 'gofiles: restore refused rc='
+vgate_assert 19 serial-contains 'rx-gotabwm-bt1-ok'
+vgate_assert 19 serial-absent '[EXC] parking:'
+vgate_assert 19 serial-absent 'exited status=139'
+vgate_assert 19 python <<'PY'
+import os, re, sys
+ser = open(os.environ["VG_SER"], errors="replace").read().splitlines()
+
+def first_after(prefix, start=0):
+    for i in range(start, len(ser)):
+        if ser[i].startswith(prefix):
+            return i
+    sys.exit("missing %s after %d" % (prefix, start))
+
+def first_match_after(rx, start):
+    for i in range(start, len(ser)):
+        m = rx.match(ser[i])
+        if m:
+            return i, m
+    sys.exit("missing /%s/ after %d" % (rx.pattern, start))
+
+open_i, open_m = first_match_after(re.compile(r"^gofiles: open id=(\d+)"), 0)
+route_i, route_m = first_match_after(
+    re.compile(r"^gotabwm: undo id=(\d+)"), open_i)
+if route_m.group(1) != open_m.group(1):
+    sys.exit("undo routed to id=%s, want the focused files tab %s" % (
+        route_m.group(1), open_m.group(1)))
+del_i = first_after("gofiles: deleted NOTE.TXT trash=")
+restore_i = first_after("gofiles: restored NOTE.TXT trash=", del_i)
+if not (del_i < restore_i):
+    sys.exit("GOFILES leg out of order: del@%d restore@%d" % (del_i, restore_i))
+print("M121e GOFILES leg: route id=%s@%d, deleted@%d, restored@%d" % (
+    route_m.group(1), route_i, del_i, restore_i))
 PY
