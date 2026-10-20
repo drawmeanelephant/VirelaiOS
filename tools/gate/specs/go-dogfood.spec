@@ -2233,7 +2233,11 @@ vgate_assert 08 serial-absent 'gotabwm: drag cancel'
 vgate_assert 08 serial-absent 'gofiles: drag refused'
 
 # --- M124d: Open With -> GOVIEW.ELF (the 'o' handler list) -------------------
-vgate_assert 08 serial-contains 'gofiles: open with PIC.PNG type=image candidates=1'
+# candidates=2 is the registry's truth for type=image: mime.init registers
+# GOVIEW first and GOEDIT second ("Code Editor (raw bytes)", the fallback for
+# the formats GOVIEW has no decoder for) — go-fileman run 02 pins the same
+# count for PIC.QOI. A candidates=1 pin was this spec's own bug.
+vgate_assert 08 serial-contains 'gofiles: open with PIC.PNG type=image candidates=2'
 vgate_assert 08 serial-contains 'gofiles: open chose PIC.PNG type=image handler=GOVIEW.ELF'
 vgate_assert 08 serial-contains 'gofiles: open launched PIC.PNG handler=GOVIEW.ELF pid='
 vgate_assert 08 serial-absent 'gofiles: open launch refused'
@@ -2270,14 +2274,29 @@ i_seat = at("dogfood: seat")
 i_clip = at("clip: stored 8 bytes", i_seat)
 i_gf = at("gofiles: ready", i_clip)
 i_ge = at("goedit: read /host/FLOW/SEL.TXT n=17", i_gf)
-i_split = at("gotabwm: split v", i_ge)
-i_pub = at("gotabwm: sel pub id=", i_split)
-i_paste = at("goedit: paste n=8", i_pub)
+i_present = at("goedit: present", i_ge)
+i_split = at("gotabwm: split v", i_present)
+# App-vs-seat serial positions are NOT contract-pinned: each side drains
+# its own queue on its own M, so whichever is faster wins the byte race
+# (the M121e rule -- "the seat's mirror is processed after delivery";
+# on a loaded host `drag arm` was observed ahead of `saved`). What IS
+# pinned: goedit's chord answers queue in batch order (selpub -> paste ->
+# saved), the seat's `sel pub` RPC cannot predate the batch that sent it,
+# and the pointer script is phase-armed on `split v` so every drag/rail
+# marker follows it in the seat's own stream order.
+i_selpub = at("goedit: selpub n=17", i_present)
+i_paste = at("goedit: paste n=8", i_selpub)
 i_save = at("goedit: saved /host/FLOW/", i_paste)
-i_arm = at("gotabwm: drag arm id=", i_save)
-i_rcpt = at("gofiles: drag end delivered", i_arm)
-i_drop = at("goedit: drop text/plain n=8", i_rcpt)
-i_menu = at("gofiles: open with PIC.PNG", i_drop)
+i_pub = at("gotabwm: sel pub id=", i_present)
+i_arm = at("gotabwm: drag arm id=", i_split)
+i_ddrop = at("gotabwm: drag drop id=", i_arm)
+i_rclick = at("gotabwm: rail-click", i_ddrop)
+# The drop's Seq=0 notice posts BEFORE the seat's `drag drop` marker and
+# the source's Seq=1 receipt posts AFTER it (drag.go), so goedit's answer
+# anchors on the arm and gofiles' receipt anchors on the drop marker.
+i_drop = at("goedit: drop text/plain n=8", i_arm)
+i_rcpt = at("gofiles: drag end delivered", i_ddrop)
+i_menu = at("gofiles: open with PIC.PNG", i_rclick)
 i_launch = at("gofiles: open launched PIC.PNG handler=GOVIEW.ELF", i_menu)
 i_gv = at("gview: ready", i_launch)
 i_copy = at("gview: copy mime=image/png", i_gv)
@@ -2287,9 +2306,10 @@ i_echo = at("goterm: line echo sel-live-ok", i_sp)
 i_done = at("goterm: done status=0", i_echo)
 i_watch = at("gofiles: watch created ", i_save)
 print("M124f journey chain OK: seat -> clip-seed -> gofiles -> goedit -> "
-      "split -> selpub -> paste -> saved -> drag-arm -> drop -> delivered -> "
-      "openwith -> launched -> gview -> copy -> goterm -> sel-paste -> "
-      "echo -> done (watch@%d)" % i_watch)
+      "split | app lane: selpub -> paste -> saved | seat lane: sel-pub "
+      "-> drag-arm -> drop -> rail-click | goedit drop@%d gofiles "
+      "delivered@%d | openwith -> launched -> gview -> copy -> goterm -> "
+      "sel-paste -> echo -> done (watch@%d)" % (i_drop, i_rcpt, i_watch))
 PY
 
 # THE pixel proof: GOTERM's own scanout at the moment the pasted command
@@ -2553,9 +2573,18 @@ i_edit = at("goedit: present", i_term)
 i_dirty = at("goedit: dirty", i_edit)
 i_hints = at("goedit: hints n=", i_dirty)
 i_hclose = at("goedit: hints close", i_hints)
-i_uroute = at("gotabwm: undo id=", i_hclose)
-i_undo = at("goedit: undo n=0", i_uroute)
-i_move = at("gotabwm: reorder ", i_undo)
+# The undo leg pins route AND effect, never their serial order: the kernel
+# delivers the ctrl-z KEY_DOWN straight to the focused app (goedit's own
+# binding reverts the ring) while the seat's `undo id=` names the route when
+# it drains its own event queue — under an input burst that is millions of
+# scheduler-runs after the app's answer (applyUndo's own contract; go-wm-hid
+# run 17 pins the same "not pinned" rule). What IS ordered: app-side the
+# revert follows the escape that closed hints (one input queue), and
+# seat-side the route precedes the move chord (one event queue). The route
+# therefore anchors on the batch's own fire point, not on an app marker.
+i_undo = at("goedit: undo n=0", i_hclose)
+i_uroute = at("gotabwm: undo id=", i_edit)
+i_move = at("gotabwm: reorder ", i_uroute)
 i_pin = at("gotabwm: pin id=", i_move)
 i_popen = at("gotabwm: palette open n=", i_pin)
 i_pfilter = at("gotabwm: palette filter q=sett n=", i_popen)
@@ -2567,9 +2596,10 @@ i_edit2 = at("goedit: declare accepted", i_reopen)
 i_rest = at("goedit: state restored", i_edit2)
 i_ok = at("rx-m121f-ok", i_rest)
 print("M121f journey chain OK: seat -> goterm -> goedit -> dirty -> "
-      "hints -> hints-close -> undo-route -> undo -> reorder -> pin -> "
-      "palette -> filter -> exec -> close -> reopen -> state-restored "
-      "(goset declare@%d, edit redeclare@%d)" % (i_gset, i_edit2))
+      "hints -> hints-close -> undo(effect@%d) + undo-route@%d -> reorder -> "
+      "pin -> palette -> filter -> exec -> close -> reopen -> state-restored "
+      "(goset declare@%d, edit redeclare@%d)"
+      % (i_undo, i_uroute, i_gset, i_edit2))
 PY
 
 # The M121d badge's serial order, as an ordered subsequence (extra lines
