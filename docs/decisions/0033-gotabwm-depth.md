@@ -136,7 +136,7 @@ cap, so a session with blobs still loads whole and still bundles.
 like M120b's `reexecWait` — and the declaring app adopts it onto its new
 row before its `restore_state` request hands it back.
 
-## Amendment (M137a, #2771): the split is a tree
+## Amendment (card #2771): the split is a tree
 
 **D11. A tab's viewport divides recursively.** The M62c two-pane model —
 one `SplitKind` plus one sash — is the depth-1 case of a fixed-pool
