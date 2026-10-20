@@ -2729,9 +2729,9 @@ partial name. `profile-info` is the card's sole new verb — a bare,
 read-only request answered from the host's armed profile/share state —
 surfaced through GOSET's Profile tab and GOTOP's profile line.
 
-## Amendment (2026-10-20, M132a #2752 — M132 wave reservations)
+## Amendment (2026-10-20, card #2752 — card #2752 wave reservations)
 
-The M133+ wave runs ~7 parallel agents over disjoint `Touches`; the only
+The the wave's runs ~7 parallel agents over disjoint `Touches`; the only
 shared surfaces are the registries and manifests. This amendment is the
 ONE reservation table every wave card cites — a row here is the claim,
 so no consumer edits an ABI document or the chord registry while another
@@ -2742,22 +2742,22 @@ stalled lane. Rows R1–R13 are verbatim from index #2734.
 | # | Surface | Reservation | Implemented by | Consumer |
 |---|---|---|---|---|
 | R1 | Syscall slots | None. 94–97 stay unallocated, with the reason recorded | — | — |
-| R2 | WM_RPC kind 29 | `agent_input`: AGENTD → seat, one HID key or pointer event for the focused pane. The seat accepts it only from the AGENTD.ELF principal; refusals `agent_input_denied` / `agent_input_no_focus` | M137a (seat handler) | M139b (client in `user/go/vi/wminject.go` (new)) |
-| R3 | WM_RPC kind 30 | Spare for the M137 lane (a pane or space notice to apps, only if M137a/c prove it is needed); released at M137d otherwise | M137a/c | — |
-| R4 | Seat chords | `ctrl+alt+Left/Right/Up/Down` → `pane-focus-left/right/up/down` | M137a | — |
-| R5 | Seat chords | `ctrl+alt+PageUp/PageDown` → `space-prev/space-next` | M137c | — |
-| R6 | Seat chord | `ctrl+shift+E` → `summon-emoji` (launch GOEMOJI.ELF by name) | M137c | M146a (target app) |
-| R7 | Mime ID | `Document` (`"document"`), magic `%PDF-` at offset 0, extension `pdf`, default handler GOREADER.ELF | M132b | M143a |
-| R8 | Mime extension | `svg` → `Image` (GOVIEW is already the Image default) | M132b | M143b |
-| R9 | Mime handlers | GOSHEET.ELF as a second `Text` handler (Open With only); GOPAINT.ELF as a third `Image` handler | M132b | M142, M141 |
-| R10 | Clip type | `ClipCSV = "text/csv"` with the `text/plain` UTF-8 shape rule | M132b | M142b |
-| R11 | apps.txt v2 rows | 9 rows (below), all `dock=false` | M132b | app arcs |
-| R12 | fleet-grants rows | Same 9 names, **plus GOPAINT.ELF** (store-delivered; no apps.txt row — grants are name-bound, not manifest-bound); OBSERVED `-`; MASK = declared caps plus the `window,memory,process,debug` floor every current row carries; REASON `declared: M132 reservation, binary not yet shipped` | M132b | app arcs |
-| R13 | `kernel/src/syscall.zig` | No M132 edit; M133a is the only wave editor | — | M133a |
+| R2 | WM_RPC kind 29 | `agent_input`: AGENTD → seat, one HID key or pointer event for the focused pane. The seat accepts it only from the AGENTD.ELF principal; refusals `agent_input_denied` / `agent_input_no_focus` | card #2771 (seat handler) | card #2780 (client in `user/go/vi/wminject.go` (new)) |
+| R3 | WM_RPC kind 30 | Spare for the the wave card lane (a pane or space notice to apps, only if cards #2771/#2773 prove it is needed); released at card #2774 otherwise | cards #2771/#2773 | — |
+| R4 | Seat chords | `ctrl+alt+Left/Right/Up/Down` → `pane-focus-left/right/up/down` | card #2771 | — |
+| R5 | Seat chords | `ctrl+alt+PageUp/PageDown` → `space-prev/space-next` | card #2773 | — |
+| R6 | Seat chord | `ctrl+shift+E` → `summon-emoji` (launch GOEMOJI.ELF by name) | card #2773 | card #2799 (target app) |
+| R7 | Mime ID | `Document` (`"document"`), magic `%PDF-` at offset 0, extension `pdf`, default handler GOREADER.ELF | card #2753 | card #2792 |
+| R8 | Mime extension | `svg` → `Image` (GOVIEW is already the Image default) | card #2753 | card #2793 |
+| R9 | Mime handlers | GOSHEET.ELF as a second `Text` handler (Open With only); GOPAINT.ELF as a third `Image` handler | card #2753 | the wave card, the wave card |
+| R10 | Clip type | `ClipCSV = "text/csv"` with the `text/plain` UTF-8 shape rule | card #2753 | card #2790 |
+| R11 | apps.txt v2 rows | 9 rows (below), all `dock=false` | card #2753 | app arcs |
+| R12 | fleet-grants rows | Same 9 names, **plus GOPAINT.ELF** (store-delivered; no apps.txt row — grants are name-bound, not manifest-bound); OBSERVED `-`; MASK = declared caps plus the `window,memory,process,debug` floor every current row carries; REASON `declared: the wave card reservation, binary not yet shipped` | card #2753 | app arcs |
+| R13 | `kernel/src/syscall.zig` | No the wave card edit; card #2755 is the only wave editor | — | card #2755 |
 
 Draft rows for R11 (verbatim from #2734; 615 B measured — the games carry
 `audio` for the win chime, decided 2026-10-20; icon letters are proposals,
-and the free-letter check is part of M132b). **GOPAINT is deliberately
+and the free-letter check is part of card #2753). **GOPAINT is deliberately
 absent** — it ships through the store and self-registers its schema-v2 row
 at install (M101); a baked row for an absent binary is launcher clutter
 (owner decision 2026-10-20). Its mime handler registration (R9) stays:
@@ -2776,7 +2776,7 @@ GOVAULT.ELF | Vault | $ | dock=false | v=2 | caps=file,window,timer
 ```
 
 **R1's recorded reason.** Slots 94–97 stay unallocated — no number is
-frozen by this wave — because nothing in the M132 arc needs a new
+frozen by this wave — because nothing in the the wave card arc needs a new
 syscall: every reserved surface above rides an existing seam (the WM_RPC
 mailbox for the agent notice, the chord registry for the seat chords,
 `apps.txt`/`fleet-grants`/mime/clip for the app rows). A slot is claimed
@@ -2790,7 +2790,7 @@ the sender rule, not a new envelope: the seat accepts an `agent_input`
 frame only from the AGENTD.ELF principal and refuses by name
 (`agent_input_denied` for a wrong principal, `agent_input_no_focus` when
 no pane holds focus). The frame carries one HID key or pointer event
-addressed to the focused pane; M137a implements the seat handler, M139b
+addressed to the focused pane; card #2771 implements the seat handler, card #2780
 the `user/go/vi/wminject.go` client.
 
 **Swallow check — observed: the seat forwards.** A registry row whose
@@ -2799,12 +2799,12 @@ the table walk and nothing else), and kind-21 `WM_KEY` is a fan-out,
 never the delivery path — the focused app's kind-1 `KEY_DOWN` arrives
 per ADR 0009 whatever the seat does. R4–R6 therefore land NOW as seat
 rows in `user/go/chords/table.go` (the row IS the claim; the spellings
-cannot be re-bound while M137a/c are in flight), pinned by
+cannot be re-bound while cards #2771/#2773 are in flight), pinned by
 `TestReservedChordsForwardAsNoOps` in `user/go/gotabwm/hid_test.go`.
 Until the named consumer lands its handler, pressing a reserved chord
 does nothing at the seat — and no app loses a keystroke it already had,
 because the seat routes, never swallows. The swallowed variant this
 amendment does not take: had the check found hid.go eating unhandled
-actions, R4–R6 would have stayed unbound here and M137a/M137c would add
+actions, R4–R6 would have stayed unbound here and card #2771/card #2773 would add
 `user/go/chords/*` to their own `Touches`, landing each row with its
 handler, strictly in sequence.
