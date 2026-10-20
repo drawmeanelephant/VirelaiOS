@@ -250,7 +250,7 @@ vgate_run 04 -- \
     --script-expect 'govault: exiting 0' --timeout 240
 
 vgate_assert 04 serial-contains 'vf: open GOVAULT/VAULT.BIN'
-vgate_assert 04 serial-contains 'vf: truncate 0 61'
+vgate_assert 04 serial-contains 'vf: truncate 0 size=61 ok'
 vgate_assert 04 serial-contains 'exec: loaded GOVAULT.ELF'
 vgate_assert 04 serial-contains 'govault: locked'
 vgate_assert 04 serial-contains 'govault: unlock failed'
@@ -270,7 +270,7 @@ vgate_run 05 -- \
     --input-chords-after 'govault: bad file' \
     --script-expect 'govault: exiting 0' --timeout 240
 
-vgate_assert 05 serial-contains 'vf: write 0 4'
+vgate_assert 05 serial-contains 'vf: write 0 n=4 wrote=4'
 vgate_assert 05 serial-contains 'exec: loaded GOVAULT.ELF'
 vgate_assert 05 serial-contains 'govault: bad file'
 vgate_assert 05 serial-absent 'govault: unlock failed'

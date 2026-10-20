@@ -353,7 +353,7 @@ func (a *app) onTimer() bool {
 // not read, and clobbering a stranger's one stale copy is the smaller harm.
 func (a *app) expireClip() {
 	a.m.dl.stopClip()
-	buf, ok := selPull(uint32(a.ta.Win), appName)
+	buf, ok := a.pullSel()
 	kept := ok && !a.m.ctag.holds(buf)
 	zero(buf)
 	a.m.ctag.wipe()
@@ -362,7 +362,7 @@ func (a *app) expireClip() {
 		a.status = "clipboard changed hands — kept"
 		return
 	}
-	if selPublish(uint32(a.ta.Win), []byte(clearBytes), appName) {
+	if a.publishSel([]byte(clearBytes)) {
 		vi.ConsoleLine(markerExpired)
 		a.status = "clipboard cleared"
 		notifyFn(a.ta, "clipboard cleared")
@@ -370,6 +370,31 @@ func (a *app) expireClip() {
 	}
 	vi.ConsoleLine(markerClipRef)
 	a.status = "clipboard clear refused"
+}
+
+// publishSel is SelPublish with one restage-and-repost. A bound request
+// whose ack never lands (#2260's documented lost-ack/full-ring hazard —
+// observed on leg 02: the seat stored len=6, the ack never matched, the
+// challenge-resend then met a staging file the first serve had already
+// consumed and refused `missing`) is retried through the same call —
+// which restages the envelope — so the re-sent request has its payload
+// back. A stored-then-retried publish is an idempotent overwrite of the
+// same buffer with the same bytes.
+func (a *app) publishSel(text []byte) bool {
+	if selPublish(uint32(a.ta.Win), text, appName) {
+		return true
+	}
+	return selPublish(uint32(a.ta.Win), text, appName)
+}
+
+// pullSel is RequestSelPaste with one retry — the pull's ack rides the same
+// lossy ring, and a false here feeds the compare-before-clear rule's
+// clear-anyway arm, so one retry buys back the honest read.
+func (a *app) pullSel() ([]byte, bool) {
+	if buf, ok := selPull(uint32(a.ta.Win), appName); ok {
+		return buf, true
+	}
+	return selPull(uint32(a.ta.Win), appName)
 }
 
 // lockSession wipes the session and returns to the locked face. The clip
@@ -640,7 +665,7 @@ func (a *app) copy() {
 		return
 	}
 	secret := a.m.entries[a.m.sel].secret
-	if !selPublish(uint32(a.ta.Win), secret, appName) {
+	if !a.publishSel(secret) {
 		vi.ConsoleLine(markerCopyErr)
 		a.status = "copy refused"
 		return
