@@ -64,6 +64,9 @@ func (m model) render() string {
 	if m.mode == modeQuickLook {
 		return m.renderQuickLook()
 	}
+	if m.mode == modeProps {
+		return m.renderProps()
+	}
 	lines := m.renderLines()
 	frame := framePrologue + strings.Join(lines, "\n")
 	if m.mode == modeContext {
@@ -161,6 +164,32 @@ func (m model) renderQuickLook() string {
 		frame += b.String() + string(m.ql.sixel)
 	}
 	return frame
+}
+
+// renderProps is the M155a (#2929) card's frame — the QuickLook frame's
+// shape: a title row, a kind subtitle, then the fact rows in the preview
+// accent, status and hints. The card is read-only, so the whole body is
+// propsRows's ten rows (seven facts, three named not-availables).
+func (m model) renderProps() string {
+	lines := make([]string, 0, m.rows)
+	lines = append(lines,
+		colPath+"  props: "+clipVis(m.props.name, m.cols-10)+colReset)
+	lines = append(lines,
+		colHead+"  "+clipVis(m.props.kind+" properties", m.cols-4)+colReset)
+	rows := m.propsRows()
+	for i := 0; i < m.bodyRows(); i++ {
+		if i >= len(rows) {
+			lines = append(lines, strings.Repeat(" ", m.cols))
+			continue
+		}
+		row := clipVis(rows[i], m.cols-1)
+		lines = append(lines, colPrev+" "+row+colReset+
+			strings.Repeat(" ", m.cols-1-visLen(row)))
+	}
+	lines = append(lines, m.statusLine())
+	lines = append(lines, colDim+" "+
+		clipVis("esc close", m.cols-2)+colReset)
+	return framePrologue + strings.Join(lines, "\n")
 }
 
 // renderCtxMenu is the M124d (#2583) overlay: after the full grid repaint
@@ -261,7 +290,7 @@ func (m model) renderLines() []string {
 	// Status (modal prompts take it over) and the key hints.
 	lines = append(lines, m.statusLine())
 	lines = append(lines, colDim+" "+
-		clipVis("j/k move · enter open · space look · o open with · e export · v volumes · tab view · s sort · backspace up · r rename · d trash · u restore · c/x clip · p paste · q quit",
+		clipVis("j/k move · enter open · space look · i props · o open with · e export · v volumes · tab view · s sort · backspace up · r rename · d trash · u restore · c/x clip · p paste · q quit",
 			m.cols-2)+colReset)
 	return lines
 }

@@ -70,7 +70,7 @@
 # app's own marker; an app that never ran, never renamed, never settled or
 # never refused cannot pass.
 
-vgate_name go-fileman "M74a + M81a #1761 + M125c #2588 + M124b #2581 + M124d #2583 + M134b #2760 + M149a #2806: GOFILES navigates, previews, renames, trashes, restores, opens files, picks paths, resumes its session, opens with the right-click menu, lists the kernel mount table, and spacebar-QuickLooks image and text"
+vgate_name go-fileman "M74a + M81a #1761 + M125c #2588 + M124b #2581 + M124d #2583 + M134b #2760 + M149a #2806 + M155a #2929: GOFILES navigates, previews, renames, trashes, restores, opens files, picks paths, resumes its session, opens with the right-click menu, lists the kernel mount table, spacebar-QuickLooks image and text, and answers file properties"
 vgate_share seed
 vgate_runner_flags -Xswiftc -DSPIKE
 
@@ -1575,3 +1575,54 @@ for y in range(160, 736):
 print("quicklook text leg: accent pixels=%d" % accent)
 assert accent >= 100, "text-arm ink absent from the pane's body band"
 PY
+
+# --- M155a (#2929) run 18: the `i` properties card ----------------------
+# `i` on the cursor row opens the properties card: name, path, kind, size,
+# the M134a slot-79 mtime as UTC ISO-8601, the 512-byte mime sniff, and the
+# mount-table row the path's volume names. The run's whole point is the
+# marker's mtime= — the host stages FMP/PROPS.TXT at a pinned epoch and the
+# stat wire must carry that exact second through, or the marker cannot
+# match. Esc closes; the `files: props` prefix is the card's own spelling.
+vgate_file script-18.txt <<'EOFR'
+exec GOFILES.ELF /host/FMP
+EOFR
+
+vgate_file script2-18.txt <<'EOFR'
+dui close 2
+echo rx-go-fileman-props-ok
+EOFR
+
+vgate_setup_python <<'PY'
+import os
+share = os.environ.get("VG_SHARE") or os.path.join(os.environ["RUN_DIR"], "share")
+fmp = os.path.join(share, "FMP")
+os.makedirs(fmp, exist_ok=True)
+props = os.path.join(fmp, "PROPS.TXT")
+with open(props, "w") as f:
+    f.write("props-card-body\n")
+# Pinned mtime: the props marker's mtime= must equal this staged epoch —
+# asserting anything else would let the stat wire smuggle a "now" stamp.
+os.utime(props, (1700000000, 1700000000))
+print("staged FMP/PROPS.TXT mtime=1700000000")
+PY
+
+vgate_run 18 -- \
+    --screen '$RUN_DIR/fileman-props-screen' \
+    --input --via-virtio \
+    --script '$RUN_DIR/script-18.txt' \
+    --input-chords 'i,escape' \
+    --input-chords-after 'gofiles: ready' \
+    --script2 '$RUN_DIR/script2-18.txt' \
+    --script2-after 'files: props close' \
+    --script-expect 'rx-go-fileman-props-ok' --timeout 240
+
+vgate_assert 18 serial-contains 'exec: loaded GOFILES.ELF'
+vgate_assert 18 serial-contains 'gofiles: list /host/FMP n=1'
+vgate_assert 18 serial-contains 'gofiles: entry PROPS.TXT file'
+# The open receipt: the staged epoch second, the 512-byte sniff's "text",
+# and the share's mount row — the stat wire carried the host's stamp.
+vgate_assert 18 serial-contains 'files: props /host/FMP/PROPS.TXT mtime=1700000000 mime=text vol=host'
+vgate_assert 18 serial-contains 'files: props close'
+vgate_assert 18 serial-contains 'rx-go-fileman-props-ok'
+vgate_assert 18 serial-absent '[EXC] parking:'
+vgate_assert 18 serial-absent 'exited status=139'

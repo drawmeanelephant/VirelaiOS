@@ -38,6 +38,7 @@ const (
 	modeContext   // M124d (#2583): the right-click menu owns keys until dismissed
 	modeHints     // M121c (#2566): the '?' chord-hint overlay owns the frame
 	modeQuickLook // M149a (#2806): the spacebar preview pane owns the frame
+	modeProps     // M155a (#2929): the 'i' properties card owns the frame
 )
 
 // titleBarPx is the window title band the client area sits below: the
@@ -138,6 +139,10 @@ type model struct {
 	// on the selection, dismissed by space/Esc or a pointer press; the
 	// listing underneath is never touched.
 	ql quickLook
+
+	// M155a (#2929): the 'i' properties card (props.go). Armed by 'i' on
+	// the selection, dismissed by Esc/`i` or a pointer press.
+	props props
 }
 
 // hintsBin names this app's registry scope — the untagged twin of
@@ -580,6 +585,12 @@ func (m *model) handleClick(x, y int) {
 		m.closeQuickLook()
 		return
 	}
+	if m.mode == modeProps {
+		// M155a (#2929): same rule as the QuickLook pane — a press
+		// dismisses the card, never acts on the list underneath it.
+		m.closeProps()
+		return
+	}
 	if m.mode == modeConfirmDelete {
 		// #2894: a press while the confirm is armed is acting on the
 		// list, not answering — shed the prompt. The press is swallowed
@@ -696,6 +707,10 @@ func (m *model) handleKey(ev keys.Event) {
 		m.qlKey(ev)
 		return
 	}
+	if m.mode == modeProps {
+		m.propsKey(ev)
+		return
+	}
 	if m.mode == modeConfirmDelete {
 		// #2894: the prompt answers y/Y only — every other key sheds it
 		// instead of being swallowed, so a stray 'd' cannot hold the
@@ -779,6 +794,8 @@ func (m *model) handleKey(ev keys.Event) {
 			m.pasteClip()
 		case ' ':
 			m.openQuickLook()
+		case 'i':
+			m.openProps()
 		case 'o':
 			m.startOpenWith()
 		case 'e':
