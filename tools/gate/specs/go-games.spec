@@ -265,17 +265,12 @@ vgate_assert 02 serial-absent 'exited status=139'
 # waste to its full three-card spread ('draw n=1' x3); the pixel probe
 # reads the three fanned faces and a tableau card.
 #
-# The in-surface drag gesture is sent too — but the drop is UNREACHABLE
-# today (#2878): the kernel pushes MOUSE_UP with flags = buttons-at-
-# release = 0, so gosol's up() (which gates on BtnLeft) never runs and
-# neither 'move' nor 'drop bad' can print. The serial-absent lines below
-# pin that broken state honestly: when #2878 lands the gesture resolves a
-# legal move tab0->tab5 and these two asserts must flip to serial-contains
-# plus the face/'J'-ink probes at tab5's top card. The pixel probe pins
-# the same broken state: the gesture DID reach the app (press+move arm
-# the drag), so tab0's card renders mid-flight at the last pointer
-# position — canvas (368,160) = release (396,200) minus grab (28,40) —
-# and stays there because the release never resolves.
+# The in-surface drag gesture resolves for real since #2878 landed:
+# kernel MOUSE_UP now carries the released button's bits, so gosol's
+# BtnLeft-gated up() runs and the press/move/release below lands as the
+# legal tab0->tab5 move (JH onto QC on the seed-1 deal — asserted
+# verbatim). The pixel probe reads the J♥ at home on tab5's top card:
+# red rank+pip ink at the card's corner.
 vgate_file script-gosol.txt <<'EOF'
 exec GOSOL.ELF --seed=1
 EOF
@@ -301,20 +296,17 @@ vgate_assert 03 serial-contains 'gosol: not-tab-aware (shim or WND desktop)'
 vgate_assert 03 serial-contains 'gosol: deal seed=1 draw=1'
 vgate_assert 03 serial-contains 'gosol: ready'
 vgate_assert 03 serial-count 'gosol: draw n=1' 3
-# #2878: the drop cannot resolve — kernel MOUSE_UP carries flags=0 so the
-# release never reaches gosol's up(). Flip to serial-contains + the tab5
-# face/'J'-ink probes when the input card lands.
-vgate_assert 03 serial-absent 'gosol: move tab0->tab5'
+# #2878 landed: the drop resolves — the seed-1 J♥ builds on tab5's Q♣.
+vgate_assert 03 serial-contains 'gosol: move tab0->tab5 n=1'
 vgate_assert 03 serial-absent 'gosol: drop bad'
 vgate_assert 03 serial-contains 'rx-gosol-03'
 vgate_assert 03 serial-absent '[EXC] parking:'
 vgate_assert 03 serial-absent 'exited status=139'
 
 # Pixel probes, canvas->scanout +32,+32. Three waste cards fan right at
-# canvas x=88/100/112 (face interiors at y 50..60); tab0's lifted card
-# flies at canvas (368,160)-(424,240) -> interior scanout (410..450,
-# 205..245). #2878: when the drop resolves the card lands on tab5 and the
-# flying-card probe must move to tab5's top card at home.
+# canvas x=88/100/112 (face interiors at y 50..60); the dropped J♥ sits
+# at home on tab5's top — canvas (368,166)-(424,246), face interior and
+# the red corner 'J'+pip (canvas 372..381, 169..188).
 vgate_assert 03 snapshot 'snap-03-*.raw' <<'PY'
 import sys
 
@@ -338,12 +330,16 @@ def count(x0, y0, w, h, want):
     return sum(1 for y in range(y0, y0 + h) for x in range(x0, x0 + w)
                if px(x, y) == want)
 
+RED = (0xb3, 0x32, 0x2c)  # hearts ink
+
 for i, x in enumerate((124, 136, 148)):
     if count(x, 60, 8, 10, FACE) < 60:
         sys.exit("waste fan slot %d shows no card face" % i)
-if count(410, 205, 40, 40, FACE) < 1000:
-    sys.exit("the lifted card is not rendering mid-flight at the pointer")
-print("gosol: waste fanned to 3 faces, dragged card flying")
+if count(405, 205, 40, 40, FACE) < 1000:
+    sys.exit("the dropped JH is not painting at tab5's top")
+if count(404, 201, 10, 20, RED) < 6:
+    sys.exit("no red 'J'/pip ink at tab5's top card corner")
+print("gosol: waste fanned to 3 faces, JH home on tab5")
 PY
 
 
@@ -360,8 +356,15 @@ PY
 # surfaces relayout to pane size, and composeSurfaces draws each at its
 # mirrored rect — both tables in one scanout.
 #
-# Choreography: GOMINE execs first and input-string '2' reseeds the 16x16
-# intermediate board while it's the only app (focused by construction).
+# Choreography: GOMINE execs first and is PLAYED TO A WIN while it's the
+# only tab — #2878's content forward delivers pointer into the lone
+# full-viewport pane, so the same seed-1 beginner cell list as run 01
+# (re-mapped to pane coords: canvas is the whole 1280x720 surface, cells
+# 28px on a grid at (514,256) -> scanout (528+28x, 270+28y)) drives the
+# real reveal path. The win records beginner's best time; input-string
+# '2' then reseeds the 16x16 intermediate board — the record stays in
+# the process and the snapshot's blob carries it, which is what run 05's
+# restore shows surviving.
 # GOSOL execs second, steals focus on declare; ONE late chords batch on
 # 'gosol: ready' does 'd' -> draw-mode 3, 'n' -> a fresh deal, then
 # 'ctrl-shift-v' splits the FOCUSED (Solitaire's) pane — Solitaire keeps
@@ -397,14 +400,16 @@ vgate_run 04 -- \
     --via-virtio --cvc-snap --snapshot-out '$RUN_DIR/snap-04' \
     --script '$RUN_DIR/script-04.txt' \
     --script2 '$RUN_DIR/script2-04.txt' --script2-after 'gotabwm: win focus' \
+    --pointer-virtio '640,382,d;640,382,u;640,270,d;640,270,u;668,270,d;668,270,u;696,270,d;696,270,u;724,270,d;724,270,u;752,270,d;752,270,u;640,298,d;640,298,u;668,298,d;668,298,u;696,298,d;696,298,u;724,298,d;724,298,u;752,298,d;752,298,u;696,326,d;696,326,u;724,326,d;724,326,u;752,326,d;752,326,u;724,354,d;724,354,u;752,354,d;752,354,u;752,382,d;752,382,u;724,410,d;724,410,u;752,438,d;752,438,u;528,466,d;528,466,u' \
+    --pointer-virtio-after 'gomine: present' \
     --input-string '2' \
-    --input-string-after 'gomine: present' \
+    --input-string-after 'gomine: chime' \
     --script3 '$RUN_DIR/script3-04.txt' --script3-after 'size=intermediate' \
     --script3-delay 3 \
     --input-chords 'd,n,ctrl-shift-v,ctrl-shift-s' \
     --input-chords-after 'gosol: ready' \
     --snapshot-after 'gotabwm: snapshot saved bytes=' \
-    --script-expect 'gotabwm: snapshot saved bytes=' --timeout 300
+    --script-expect 'gotabwm: snapshot saved bytes=' --timeout 420
 
 vgate_assert 04 serial-contains 'exec: loaded GOTABWM.ELF'
 vgate_assert 04 serial-contains 'gotabwm: mode live'
@@ -413,6 +418,12 @@ vgate_assert 04 serial-contains 'gomine: open id='
 vgate_assert 04 serial-contains 'gomine: declare accepted'
 vgate_assert 04 serial-contains 'gomine: seed 1 size=beginner'
 vgate_assert 04 serial-contains 'gomine: present'
+# The seeded win under the seat: the content forward's clicks play the
+# board out, the record line names beginner's best, the chime reports
+# its verdict (no audio device in the gate VM -> silent no-device).
+vgate_assert 04 serial-contains 'gomine: win t='
+vgate_assert 04 serial-contains 'gomine: best beginner='
+vgate_assert 04 serial-contains 'gomine: chime'
 vgate_assert 04 serial-contains 'exec: loaded GOSOL.ELF'
 vgate_assert 04 serial-contains 'gosol: open id='
 vgate_assert 04 serial-contains 'gosol: tab-aware (full-viewport)'
@@ -514,6 +525,9 @@ vgate_assert 05 serial-contains 'gotabwm: session reexec n=2'
 # re-exec'd" without baking in which side of that fix the run saw.
 vgate_assert 05 serial-count 'gotabwm: session exec ' 2
 vgate_assert 05 serial-contains 'gomine: state restored size=intermediate'
+# M152d: the run-04 win's beginner best rides the blob — the restore
+# prints it back out of the record section.
+vgate_assert 05 serial-contains 'gomine: best beginner='
 vgate_assert 05 serial-contains 'gosol: restored moves='
 vgate_assert 05 serial-contains 'gosol: ready'
 vgate_assert 05 serial-contains 'gotabwm: session live n=2'
@@ -608,4 +622,75 @@ for want, label in (("mine", "GOMINE"), ("sol", "GOSOL")):
         sys.exit("%s pane: %d px differ pre/post restore; first at %r"
                  % (label, n, first))
 print("restore-exact: both split panes byte-identical pre/post")
+PY
 
+# --- run 06 (M152d #2918): undo-in-blob + stats + chime -----------------------
+# One boot, seat-hosted on an EMPTY strip (SESSION.TABS removed so the
+# autostart does not replay run 04's session). GOSOL.ELF --seed=59 execs
+# into the lone full-viewport pane; the 'a' key's auto-move — the
+# keyboard path the card adds for exactly this reachability — plays the
+# class-A-pinned deal to a real win (~126 presses; 150 sent, extra are
+# no-ops on a won table). The win prints the stats line and the chime
+# verdict (no audio device in the gate VM -> 'chime silent no-device').
+# Then the seat's own close+reopen round trip stands in for snapshot +
+# restore in one boot: 'ctrl-shift-w' issues the bounded save ask and
+# drops the blob (which now carries the undo stack and the record) onto
+# the reopen LIFO; 'ctrl-shift-t' re-execs "Solitaire" and the close-time
+# blob comes back down restore_state — a won table whose undo history
+# survived. '--input-key 32' sends 'u' only AFTER 'gosol: restored
+# moves=', so 'gosol: undo depth=' can only print because history rode
+# the blob.
+vgate_file script-06.txt <<'EOF'
+vf rm SESSION.TABS
+vf rm SNAPSHOT.BUNDLE
+vf rm NOTIFY.HIST
+vf rm GOTABWM.ELF
+vf mv SEATWM.ELF GOTABWM.ELF
+set GOMAXPROCS=1
+wm
+vf mv GOTABWM.ELF SEATWM.ELF
+EOF
+
+vgate_file script2-06.txt <<'EOF'
+exec GOSOL.ELF --seed=59
+EOF
+
+vgate_file script3-06.txt <<'EOF'
+echo rx-games-06
+EOF
+
+vgate_run 06 -- \
+    --screen '$RUN_DIR/screen-06' \
+    --via-virtio \
+    --script '$RUN_DIR/script-06.txt' \
+    --script2 '$RUN_DIR/script2-06.txt' --script2-after 'gotabwm: mode live' \
+    --input-string 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' \
+    --input-string-after 'gosol: ready' \
+    --input-chords 'ctrl-shift-w,ctrl-shift-t' \
+    --input-chords-after 'gosol: chime' \
+    --input-key 32 \
+    --input-key-after 'gosol: restored moves=' \
+    --script3 '$RUN_DIR/script3-06.txt' \
+    --script3-after 'gosol: undo depth=' --script3-delay 3 \
+    --script-expect 'rx-games-06' --timeout 300
+
+vgate_assert 06 serial-contains 'wm: autostart gotabwm (settings wm=gotabwm)'
+vgate_assert 06 serial-contains 'gotabwm: mode live'
+vgate_assert 06 serial-contains 'exec: loaded GOSOL.ELF'
+vgate_assert 06 serial-contains 'gosol: tab-aware (full-viewport)'
+vgate_assert 06 serial-contains 'gosol: deal seed=59 draw=1'
+vgate_assert 06 serial-contains 'gosol: ready'
+vgate_assert 06 serial-contains 'gosol: win moves='
+vgate_assert 06 serial-contains 'gosol: stats played=1 won=1 streak=1 best='
+vgate_assert 06 serial-contains 'gosol: chime'
+vgate_assert 06 serial-contains 'gotabwm: reopen '
+vgate_assert 06 serial-contains 'gosol: restored moves='
+# The stats line prints twice — once at the win, once off the restored
+# blob — proving the record survived the close/reopen round trip.
+vgate_assert 06 serial-count 'gosol: stats played=1 won=1 streak=1' 2
+# 'u' fires only after the restore marker: the undo succeeds only
+# because the undo stack rode the blob.
+vgate_assert 06 serial-contains 'gosol: undo depth='
+vgate_assert 06 serial-contains 'rx-games-06'
+vgate_assert 06 serial-absent '[EXC] parking:'
+vgate_assert 06 serial-absent 'exited status=139'
