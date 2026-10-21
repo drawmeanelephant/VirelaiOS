@@ -8,7 +8,7 @@
   replaces Poppler as the outside reference; owner decision
   [recorded](https://github.com/drawmeanelephant/VirelaiOS/pull/1970))
 - Amended: 2026-10-21 (A3 / #2921 — the bounded `user/go/pdfwrite`
-  writer; owner decision recorded on the M153 card)
+  writer; owner decision recorded on card #2921)
 - Related: [ADR 0030](0030-go-is-el0.md) D2/D3,
   [ADR 0041](0041-svg-raster.md) §§4–7, ADRs 0007/0024/0026.
 
