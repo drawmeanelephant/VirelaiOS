@@ -2427,14 +2427,21 @@ PY
 #     ctrl-shift-t   M121b reopen: `gotabwm: reopen GOEDIT.ELF` pops the
 #                    LIFO the close just pushed; the re-exec declares
 #                    asynchronously and steals focus whenever it lands
-#     ctrl-shift-p s e t t return
+#     ctrl-shift-p down x8 s e t t return
 #                    M121a palette: `palette open n=`, the seat modal's
 #                    own sink (badge -> seat), subsequence filter `q=sett`
 #                    narrows to a Settings row, return execs it ->
 #                    `palette exec GOSET.ELF` + `palette dismiss` (the
 #                    palette's catalog is tabs/recents/settings/help/
 #                    chords -- a settings pick is the deterministic exec
-#                    row, go-wm-seat run 15's exact leg)
+#                    row, go-wm-seat run 15's exact leg). The down x8 is
+#                    the hints overlay's own idiom: nav strokes the
+#                    modal consumes, dwell that holds the plate open
+#                    across seat-loop present passes so `launcher
+#                    presented` and the armed snaps have a window to
+#                    land in -- without it a caught-up seat can drain
+#                    open->exec->dismiss inside one composite gap (v5f
+#                    run 1: `launcher presented` never printed).
 #
 #   goedit: state restored  script c: the run's echo. The re-exec'd
 #                        editor's own restore receipt is the journey's
@@ -2489,11 +2496,11 @@ vgate_run 09 -- \
     --script-after 'dogfood: seat' \
     --script2 '$RUN_DIR/script-09b.txt' \
     --script2-after 'goterm: ready' \
-    --input-chords 'x,y,z,?,down,down,down,down,down,down,escape,ctrl-z,ctrl-shift-pageup,ctrl-shift-pagedown,ctrl-shift-n,ctrl-shift-w,ctrl-shift-t,ctrl-shift-p,s,e,t,t,return' \
+    --input-chords 'x,y,z,?,down,down,down,down,down,down,escape,ctrl-z,ctrl-shift-pageup,ctrl-shift-pagedown,ctrl-shift-n,ctrl-shift-w,ctrl-shift-t,ctrl-shift-p,down,down,down,down,down,down,down,down,s,e,t,t,return' \
     --input-chords-after 'goedit: present' \
     --script3 '$RUN_DIR/script-09c.txt' \
     --script3-after 'goedit: state restored' \
-    --script-expect 'rx-m121f-ok' --script-expect-tail 90 --timeout 420
+    --script-expect 'rx-m121f-ok' --script-expect-tail 90 --timeout 600
 
 # The LIVE default seat, restored-empty: no starter GOSH, no demo
 # choreography, no persisted wm row (the whole point of this spec).
@@ -2577,7 +2584,10 @@ vgate_assert 09 serial-count 'goedit: declare accepted' 2
 vgate_assert 09 serial-count 'gotabwm: tab open id=' 4
 # The live-persistence proof needs >120 consumed heartbeats; a fast
 # journey can reach rx-m121f-ok in ~70, so the 90 s expect tail holds the
-# boot long enough to cross the demo bound deterministically.
+# boot long enough to cross the demo bound deterministically. The 600 s
+# timeout (was 420) buys that tail room on a starved host: v5f run 1
+# reached rx at ~330 s and the 420 s bound killed the boot ~30 ticks
+# short of the latch.
 vgate_assert 09 serial-contains 'gotabwm: live steady tabs='
 vgate_assert 09 serial-contains 'rx-m121f-ok'
 
