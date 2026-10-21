@@ -70,7 +70,7 @@
 # app's own marker; an app that never ran, never renamed, never settled or
 # never refused cannot pass.
 
-vgate_name go-fileman "M74a + M81a #1761 + M125c #2588 + M124b #2581 + M124d #2583 + M134b #2760 + M149a #2806 + M155a #2929: GOFILES navigates, previews, renames, trashes, restores, opens files, picks paths, resumes its session, opens with the right-click menu, lists the kernel mount table, spacebar-QuickLooks image and text, and answers file properties"
+vgate_name go-fileman "M74a + M81a #1761 + M125c #2588 + M124b #2581 + M124d #2583 + M134b #2760 + M149a #2806 + M155a #2929 + M155b #2930: GOFILES navigates, previews, renames, trashes, restores, opens files, picks paths, resumes its session, opens with the right-click menu, lists the kernel mount table, spacebar-QuickLooks image and text, answers file properties, and batch-moves and batch-deletes a marked set"
 vgate_share seed
 vgate_runner_flags -Xswiftc -DSPIKE
 
@@ -1631,3 +1631,120 @@ vgate_assert 18 serial-contains 'files: props close'
 vgate_assert 18 serial-contains 'rx-go-fileman-props-ok'
 vgate_assert 18 serial-absent '[EXC] parking:'
 vgate_assert 18 serial-absent 'exited status=139'
+
+# --- M155b (#2930) run 19: marks + batch move and batch delete -----------
+# The card's gesture end to end: `m` marks three files (the gutter glyph
+# and the status count are the visible half), `x` queues the set, the app
+# descends into INTO/, and `p` runs the move one item per loop pass — the
+# `files: batch move <k>/<n>` lines are the progress receipts the seat's
+# kind-22 row mirrors (refused by name on this seatless boot, once per
+# batch). `files: batch done n=3` closes it and a share-side python check
+# finds all three bodies at the destination. The second leg marks B1/B2,
+# answers the ONE count-carrying confirm, and the delete batch removes
+# both — `files: batch done n=2`.
+vgate_file script-19.txt <<'EOFB'
+exec GOFILES.ELF /host/FMB
+EOFB
+
+vgate_file script2-19.txt <<'EOFB'
+echo rx-go-fileman-batch-ok
+EOFB
+
+vgate_setup_python <<'PY'
+import os
+share = os.environ.get("VG_SHARE") or os.path.join(os.environ["RUN_DIR"], "share")
+fmb = os.path.join(share, "FMB")
+os.makedirs(os.path.join(fmb, "INTO"), exist_ok=True)
+for name in ("A1.TXT", "A2.TXT", "A3.TXT"):
+    with open(os.path.join(fmb, name), "w") as f:
+        f.write("batch-" + name.lower() + "\n")
+for name in ("B1.TXT", "B2.TXT"):
+    with open(os.path.join(fmb, name), "w") as f:
+        f.write("delete-" + name.lower() + "\n")
+print("staged FMB: INTO/ empty, A1..A3 for the move set, B1/B2 for delete")
+PY
+
+# Chords: j onto A1 (dirs sort first so INTO is row 0), m j m j m marks
+# A1..A3, x queues the set, k k k back to INTO, return descends, p runs
+# the batch (one item per pass between strokes). backspace returns to FMB
+# where B1/B2 remain; j m j m marks them, d asks once with the count, y
+# commits, q quits. The batch steps all land inside the fixed 0.25 s
+# stroke cadence — each item is one loop pass, a few ms.
+vgate_run 19 -- \
+    --screen '$RUN_DIR/fileman-batch-screen' \
+    --input --via-virtio \
+    --script '$RUN_DIR/script-19.txt' \
+    --input-chords 'j,m,j,m,j,m,x,k,k,k,return,p,backspace,j,m,j,m,d,y,q' \
+    --input-chords-after 'gofiles: ready' \
+    --script2 '$RUN_DIR/script2-19.txt' \
+    --script2-after 'files: batch done n=2' \
+    --script-expect 'gofiles OK' --timeout 240
+
+vgate_assert 19 serial-contains 'exec: loaded GOFILES.ELF'
+vgate_assert 19 serial-contains 'gofiles: list /host/FMB n=6'
+vgate_assert 19 serial-contains 'gofiles: entry INTO dir'
+
+# The marks: one receipt per toggle, the count climbing.
+vgate_assert 19 serial-contains 'files: mark A1.TXT n=1'
+vgate_assert 19 serial-contains 'files: mark A2.TXT n=2'
+vgate_assert 19 serial-contains 'files: mark A3.TXT n=3'
+vgate_assert 19 serial-contains 'gofiles: clip cut set n=3'
+
+# The move batch: armed by p in the destination, one item per step.
+vgate_assert 19 serial-contains 'gofiles: cd /host/FMB/INTO'
+vgate_assert 19 serial-contains 'gofiles: empty /host/FMB/INTO'
+vgate_assert 19 serial-contains 'files: batch start move n=3'
+vgate_assert 19 serial-contains 'gofiles: pasted A1.TXT'
+vgate_assert 19 serial-contains 'files: batch move 1/3 A1.TXT'
+vgate_assert 19 serial-contains 'files: batch move 2/3 A2.TXT'
+vgate_assert 19 serial-contains 'files: batch move 3/3 A3.TXT'
+vgate_assert 19 serial-contains 'files: batch done n=3'
+vgate_assert 19 serial-contains 'gofiles: list /host/FMB/INTO n=3'
+
+# No Go seat on the kernel desktop: each batch named the refused progress
+# post once — the report was attempted, never assumed.
+vgate_assert 19 serial-count 'files: batch progress refused' 2
+
+# The delete batch: one confirm carrying the count, two items, done n=2.
+vgate_assert 19 serial-contains 'gofiles: list /host/FMB n=3'
+vgate_assert 19 serial-contains 'files: mark B1.TXT n=1'
+vgate_assert 19 serial-contains 'files: mark B2.TXT n=2'
+vgate_assert 19 serial-contains 'gofiles: delete arm n=2'
+vgate_assert 19 serial-contains 'files: batch start delete n=2'
+vgate_assert 19 serial-contains 'gofiles: deleted B1.TXT trash='
+vgate_assert 19 serial-contains 'gofiles: deleted B2.TXT trash='
+vgate_assert 19 serial-contains 'files: batch delete 1/2 B1.TXT'
+vgate_assert 19 serial-contains 'files: batch delete 2/2 B2.TXT'
+vgate_assert 19 serial-contains 'files: batch done n=2'
+# The post-delete re-list shows INTO alone — both B files are gone.
+vgate_assert 19 serial-contains 'gofiles: list /host/FMB n=1'
+
+vgate_assert 19 serial-contains 'gofiles: close'
+vgate_assert 19 serial-contains 'gofiles OK'
+vgate_assert 19 serial-contains 'rx-go-fileman-batch-ok'
+vgate_assert 19 serial-absent 'files: batch stop'
+vgate_assert 19 serial-absent 'files: batch refused'
+vgate_assert 19 serial-absent '[EXC] parking:'
+vgate_assert 19 serial-absent 'exited status=139'
+
+# The share-side proof the card asks for: all three moved bodies landed at
+# the destination byte-exact, their sources are gone, and the delete batch
+# removed both marked files — the filesystem saw what the markers claim.
+vgate_assert 19 python <<'PY'
+import os
+share = os.environ["VG_SHARE"]
+fmb = os.path.join(share, "FMB")
+into = os.path.join(fmb, "INTO")
+for name in ("A1.TXT", "A2.TXT", "A3.TXT"):
+    dst = os.path.join(into, name)
+    assert os.path.isfile(dst), name + " missing at the destination"
+    body = open(dst).read()
+    assert body == "batch-" + name.lower() + "\n", \
+        name + " body = " + repr(body)
+    assert not os.path.exists(os.path.join(fmb, name)), \
+        name + " still at the source after a move batch"
+for name in ("B1.TXT", "B2.TXT"):
+    assert not os.path.exists(os.path.join(fmb, name)), \
+        name + " survived the delete batch"
+print("FMB verified: A1..A3 moved into INTO byte-exact, B1/B2 trashed")
+PY

@@ -177,6 +177,30 @@ const (
 	markerProps      = "files: props "
 	markerPropsClose = "files: props close"
 
+	// M155b (#2930): marks and the batch they feed — the `files:`
+	// spelling M155a opened for the props card. `mark`/`unmark` name the
+	// row and the set's size after the toggle; `mark refused` names the
+	// row plus why (dir row, the 64 bound). `batch start` is the arm —
+	// verb and count the planner committed; each stepped item prints its
+	// single-op receipt (`gofiles: pasted`/`gofiles: deleted`) then the
+	// `batch <verb> <k>/<n>` progress line the seat's kind-22 report
+	// mirrors. `batch done n=` is the completion; `batch stop` is the
+	// first-failure halt naming what finished (done=) and what remains
+	// (left=, the failed item included); `batch refused` is a plan-time
+	// refusal of the whole gesture. `batch progress refused` fires once
+	// per batch when no Go seat takes the report — the common case on a
+	// kernel-desktop boot, named so a silent bar never lies.
+	markerMark        = "files: mark "
+	markerUnmark      = "files: unmark "
+	markerMarkNo      = "files: mark refused "
+	markerMarksClear  = "files: marks cleared "
+	markerBatchStart  = "files: batch start "
+	markerBatch       = "files: batch "
+	markerBatchDone   = "files: batch done n="
+	markerBatchStop   = "files: batch stop "
+	markerBatchNo     = "files: batch refused "
+	markerBatchProgNo = "files: batch progress refused"
+
 	// The view/sort chords' own markers.
 	markerViewMode = "gofiles: viewmode "
 	markerSort     = "gofiles: sort "
