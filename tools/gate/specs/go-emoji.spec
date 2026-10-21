@@ -349,6 +349,11 @@ vgate_assert 03 serial-absent 'exited status=139'
 # exec'd -u0 likewise. That is the only arrangement where pick->paste can
 # carry real bytes under the seat.
 #
+# script2 anchors on 'gotabwm: present' — the seat's first composite frame,
+# once per boot — not 'mode live': the window-teardown churn between 'mode
+# live' and 'serving' can drop an early declare ('goedit: declare refused'
+# observed, run 04-01), which leaves no pane for the sel-paste to target.
+#
 # Chord-batch budget (one --input-chords per run, the runner's fixed
 # surface): 'ctrl-a' selects the staged G.TXT glyph while GOEDIT is
 # focused — publishSel hands it to the seat's primary buffer ('selpub n=4'
@@ -401,7 +406,7 @@ vgate_run 04 -- \
     --cvc-snap --snapshot-out '$RUN_DIR/snap-04' \
     --script '$RUN_DIR/script-04.txt' \
     --script2 '$RUN_DIR/script2-04.txt' \
-    --script2-after 'gotabwm: mode live' \
+    --script2-after 'gotabwm: present' \
     --input-chords 'ctrl-a,ctrl-shift-e,down,down,down,down,down,down,down,down,down,down,down,down,down,down,down,down,down,down,down,down,down,down,down,down,f,i,r,e,return' \
     --input-chords-after 'goedit: present' \
     --pointer-virtio '640,400;640,400;640,400,mc' \
