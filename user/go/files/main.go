@@ -278,6 +278,7 @@ func main() {
 		fellBack = fell
 	}
 	m = newModel(start, cols, rows)
+	m.winID = uint32(ta.Win) // M155b: the batch's kind-22 progress row reports for this window
 	switch {
 	case ta.Restored && ta.RestoredVersion == stateFmtVer && restoredOK:
 		m.applyState(restored)
@@ -389,6 +390,23 @@ func main() {
 			ta.DeclareNav(m.path)
 			vi.ConsoleLine(markerNavDeclare + m.path)
 			declared = m.path
+		}
+
+		// M155b (#2930): an armed batch steps ONE item per pass — each
+		// item gets its own frame and marker flush, so the seat's
+		// progress row and the status counter visibly advance ("watch it
+		// happen"). progress=true keeps the pass out of the idle branch:
+		// a mid-batch watchStep would diff against the pre-batch baseline
+		// and misreport the batch's own writes as feed events.
+		if m.batchOn {
+			m.batchStep()
+			if !paint(fd, m) {
+				shutdown(ta, fd, 4)
+			}
+			vi.Sleep(1)
+			flush(&m, ta)
+			vi.ConsoleLine(markerRepaint)
+			progress = true
 		}
 
 		if !progress {
