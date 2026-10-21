@@ -2492,6 +2492,7 @@ vgate_run 09 -- \
     --snapshot-after 'gotabwm: palette filter q=sett n=' \
     --snapshot-after 'gotabwm: launcher presented' \
     --snapshot-after 'goedit: state restored' \
+    --snapshot-after 'rx-m121f-ok' \
     --script '$RUN_DIR/script-09a.txt' \
     --script-after 'dogfood: seat' \
     --script2 '$RUN_DIR/script-09b.txt' \
@@ -2799,38 +2800,53 @@ print("palette plate painted on the scanout in %d of %d armed frames"
       % (sum(1 for _, v, _ in verdicts if v == "painted"), len(verdicts)))
 PY
 
-# snap-09-3.raw: the M121d badge's own rect after the reopen's restore --
-# the same tokens the go-wm-seat run-20 check pins: the ChromeBg panel,
-# the Accent scope chip/rule and Ink title text, BGRX-decoded here.
-vgate_assert 09 snapshot 'snap-09-3.raw' <<'PY'
-import sys
+# snap-09-{3,4}.raw: the M121d badge's own rect -- the same tokens the
+# go-wm-seat run-20 check pins: the ChromeBg panel, the Accent scope
+# chip/rule and Ink title text, BGRX-decoded here. Armed twice -- on the
+# reopen's `state restored` and on the run's `rx-m121f-ok` -- because the
+# marker->capture latency can land the frame before the badge's own
+# composite paints the panel (v5f run 3: `state restored` arm captured
+# an all-black rect while every serial badge leg was green). The badge
+# is persistent chrome: any painted frame proves the leg; a frame that
+# predates the panel's paint is a latency miss, not a verdict.
+vgate_assert 09 python <<'PY'
+import glob, os, sys
 from collections import Counter
 W, H = 1280, 720
-raw = open(sys.argv[1], "rb").read()
-if len(raw) < W * H * 4:
-    sys.exit("snapshot is %d bytes, want %d" % (len(raw), W * H * 4))
-def px(x, y):
+files = sorted(f for i in (3, 4)
+               for f in glob.glob(os.path.join(
+                   os.environ["RUN_DIR"], "snap-09-%d.raw" % i)))
+if not files:
+    sys.exit("no badge-armed snapshots (snap-09-{3,4}.raw) captured")
+def px(raw, x, y):
     o = (y * W + x) * 4
     return (raw[o + 2], raw[o + 1], raw[o])
 x0, y0, pw, ph = 1124 - 4 - 216, 720 - 8 - 20, 216, 20
-modal = Counter(); accent = ink = total = 0
-for y in range(y0, y0 + ph):
-    for x in range(x0, x0 + pw):
-        r, g, b = px(x, y)
-        total += 1
-        modal[(r, g, b)] += 1
-        if min(r, g, b) >= 150:
-            ink += 1
-        if abs(r - 0x3b) <= 32 and abs(g - 0x82) <= 32 and abs(b - 0xf6) <= 32:
-            accent += 1
-best, best_n = modal.most_common(1)[0]
-dist = max(abs(best[0] - 0x11), abs(best[1] - 0x17), abs(best[2] - 0x1c))
-print("badge rect %dx%d (%d px): modal=#%02x%02x%02x n=%d accent=%d ink=%d"
-      % (pw, ph, total, best[0], best[1], best[2], best_n, accent, ink))
-assert dist <= 4, ("the badge rect is not the seat's ChromeBg (modal "
-    "#%02x%02x%02x) -- the panel was not painted"
-    % (best[0], best[1], best[2]))
-assert best_n >= 3000, "the badge panel does not cover its rect"
-assert accent > ph, "no scope chip / seat rule on the badge"
-assert ink >= 20, "no title text on the badge"
+painted = []
+for path in files:
+    raw = open(path, "rb").read()
+    if len(raw) < W * H * 4:
+        continue
+    modal = Counter(); accent = ink = total = 0
+    for y in range(y0, y0 + ph):
+        for x in range(x0, x0 + pw):
+            r, g, b = px(raw, x, y)
+            total += 1
+            modal[(r, g, b)] += 1
+            if min(r, g, b) >= 150:
+                ink += 1
+            if abs(r - 0x3b) <= 32 and abs(g - 0x82) <= 32 \
+               and abs(b - 0xf6) <= 32:
+                accent += 1
+    best, best_n = modal.most_common(1)[0]
+    dist = max(abs(best[0] - 0x11), abs(best[1] - 0x17), abs(best[2] - 0x1c))
+    print("%s: badge rect %dx%d (%d px): modal=#%02x%02x%02x n=%d "
+          "accent=%d ink=%d" % (os.path.basename(path), pw, ph, total,
+                                best[0], best[1], best[2], best_n,
+                                accent, ink))
+    if dist <= 4 and best_n >= 3000 and accent > ph and ink >= 20:
+        painted.append(os.path.basename(path))
+if not painted:
+    sys.exit("no armed snapshot caught the painted badge rect")
+print("badge rect painted on the scanout in %s" % (painted,))
 PY
