@@ -1373,6 +1373,10 @@ print("staged FMQ: LOOK.QOI 16x16 quadrants, WORDS.TXT 45 lines")
 PY
 
 # Run 16: space on the image (sel=0) opens the sixel arm; escape closes.
+# The run ends on `gofiles OK`, not the script echo — the app's exit
+# markers (`gofiles: close`/`gofiles OK`) trail `dui close 2` by one
+# window-close round trip, so expecting the echo raced the teardown and
+# flaked the two close asserts (M155a fixup, observed 2026-10-21).
 vgate_run 16 -- \
     --screen '$RUN_DIR/fileman-quicklook-screen' \
     --input --via-virtio \
@@ -1382,7 +1386,7 @@ vgate_run 16 -- \
     --screenshot-after 'gofiles: quicklook LOOK.QOI kind=image' \
     --script2 '$RUN_DIR/script2-16.txt' \
     --script2-after 'gofiles: quicklook close' \
-    --script-expect 'rx-go-fileman-quicklook-ok' --timeout 240
+    --script-expect 'gofiles OK' --timeout 240
 
 vgate_assert 16 serial-contains 'exec: loaded GOFILES.ELF'
 vgate_assert 16 serial-contains 'gofiles: list /host/FMQ n=2'
@@ -1485,7 +1489,8 @@ assert yellow >= 1000, "image bottom-right quadrant ink absent from the pane"
 PY
 
 # Run 17: j lands on WORDS.TXT, space opens the 40-line text arm, the
-# second space closes it — Esc's sibling binding.
+# second space closes it — Esc's sibling binding. Same `gofiles OK`
+# teardown barrier as run 16 (the echo raced the app's exit markers).
 vgate_run 17 -- \
     --screen '$RUN_DIR/fileman-quicklook-text' \
     --input --via-virtio \
@@ -1495,7 +1500,7 @@ vgate_run 17 -- \
     --screenshot-after 'gofiles: quicklook WORDS.TXT kind=text' \
     --script2 '$RUN_DIR/script2-17.txt' \
     --script2-after 'gofiles: quicklook close' \
-    --script-expect 'rx-go-fileman-quicklook-text-ok' --timeout 240
+    --script-expect 'gofiles OK' --timeout 240
 
 vgate_assert 17 serial-contains 'exec: loaded GOFILES.ELF'
 vgate_assert 17 serial-contains 'gofiles: list /host/FMQ n=2'
