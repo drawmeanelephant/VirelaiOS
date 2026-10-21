@@ -6448,6 +6448,15 @@ test "wm content forward: dormant with no seat; chrome never begins selection (#
 
 test "wm content forward: ?1000 reports the click, a drag still selects (#2869)" {
     arm();
+    // Keyboard modifiers and the forwarded-sample history are module
+    // globals — a predecessor test's leftovers (e.g. a still-held Shift)
+    // release mouse ownership to the local path before the test starts.
+    input.decode_keyboard_report(&.{ 0, 0, 0, 0, 0, 0, 0, 0 });
+    wm_fwd_prev_buttons = 0;
+    wm_fwd_prev_x = 0;
+    wm_fwd_prev_y = 0;
+    term_sel_dragging = false;
+    term_sel_pending = false;
     wm_owns_input = true;
     defer {
         wm_owns_input = false;
@@ -6503,6 +6512,12 @@ test "wm content forward: ?1000 reports the click, a drag still selects (#2869)"
 
 test "wm content forward: ?1002 keeps the whole gesture (#2869)" {
     arm();
+    input.decode_keyboard_report(&.{ 0, 0, 0, 0, 0, 0, 0, 0 });
+    wm_fwd_prev_buttons = 0;
+    wm_fwd_prev_x = 0;
+    wm_fwd_prev_y = 0;
+    term_sel_dragging = false;
+    term_sel_pending = false;
     wm_owns_input = true;
     defer {
         wm_owns_input = false;
