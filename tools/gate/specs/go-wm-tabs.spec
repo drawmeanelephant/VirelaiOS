@@ -428,17 +428,18 @@ qoi = os.path.join("tests", "fixtures", "qoi", "viewer_160x120.qoi")
 if not os.path.exists(qoi):
     sys.exit("QOI fixture missing (expected " + qoi + ")")
 shutil.copy(qoi, os.path.join(share, "PAINT.QOI"))
-# AUDIT.PDF: a minimal valid 3-page document (one stroked rect per page) —
+# AUDIT.PDF: a minimal valid 3-page document (one filled rect per page) —
 # the audit only needs GOREADER to load it and count the pages. MediaBox
-# edges must be multiples of 50 pt: the engine rejects anything whose
-# width or height is not an exact multiple of 750000 millipoints
-# (document.go's UnsupportedPageGeometry row — observed live on 200x280).
+# edges must be multiples of 0.75 pt (fixed-point x1e6, dim*4e6 mod 3e6
+# must be 0 — UnsupportedPageGeometry, observed live on 200x280/200x300)
+# and the stream op is `re f` — `re S` trips UnsupportedStroke (also
+# observed live on run 28).
 objs = ["<< /Type /Catalog /Pages 2 0 R >>",
         "<< /Type /Pages /Kids [3 0 R 5 0 R 7 0 R] /Count 3 >>"]
 for i in range(3):
-    objs.append("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 300] "
+    objs.append("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 150 300] "
                 "/Contents %d 0 R /Resources << >> >>" % (4 + i * 2))
-    stream = b"10 10 180 260 re S\n"
+    stream = b"10 10 130 280 re f\n"
     objs.append("<< /Length %d >>\nstream\n" % len(stream)
                 + stream.decode() + "endstream")
 out = b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n"
