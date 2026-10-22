@@ -14,19 +14,21 @@
 #     on the page-2 `ZOOKEEPER` hit and blends the accent band onto the
 #     page (`find 'ZOO' hit=1/1 page=2`), where the snapshot probe counts it.
 #
-# Run 02 is the refusal leg plus the M164a (#2988) DCT leg: STROKE.PDF is
-# the M89 corpus's pinned unsupported-stroke negative; the engine's
-# UnsupportedStroke must reach the console AND the window (Danger-ink
-# probe on snapshot snap-02-0). 'q' then ends that lifetime and script3
-# execs GOREADER on DCT.PDF — the committed one-page fixture
+# Run 02 is the DCT leg plus the refusal leg: M164a (#2988) opens
+# DCT.PDF — the committed one-page fixture
 # (user/go/goreader/testdata/dct.pdf, 1,184 B, license in the directory's
 # SOURCES.txt) carrying one 32x32 baseline-JPEG DCTDecode image placed
 # 1:1 at page pixels (48,32)-(80,64). 'b' produces the post-repaint
-# bookmark marker that fires snap-02-1 (the prefix matches on/off so the
+# bookmark marker that fires snap-02-0 (the prefix matches on/off so the
 # persisted pos row's restored bookmark cannot flip the trigger across
 # K iterations), and the python block compares the 128x96 page crop at
 # scanout (356,40) — window (40,24) + centered page (316,16) — with the
 # cgrender outside reference inside the spec's existing tolerance.
+# 'q' then ends that lifetime and script3 execs GOREADER on STROKE.PDF,
+# the M89 corpus's pinned unsupported-stroke negative; the engine's
+# UnsupportedStroke must reach the console AND the window (Danger-ink
+# probe on snap-02-1, fired by the terminal rx- marker 15 s after the
+# refusal lands — the run's original capture timing, restored).
 #
 # Run 04 (M153c) is the v2 leg: one boot execs GOREADER on PAGES.PDF, 'end'
 # lands page 3 (absolute — immune to a carried-over position row), 'b'
@@ -114,10 +116,6 @@ EOF
 
 vgate_file script-r.txt <<'EOF'
 exec GOREADER.ELF /host/READER/STROKE.PDF
-EOF
-
-vgate_file script2-r.txt <<'EOF'
-echo rx-reader-refuse-ok
 EOF
 
 vgate_setup_python <<'PY'
@@ -252,38 +250,45 @@ if band < 40:
 print("goreader journey: accent hit band px=%d" % band)
 PY
 
-# --- run 02: the named refusal, then the DCT page ----------------------------
+# --- run 02: the DCT page, then the named refusal ----------------------------
 vgate_file script-dct.txt <<'EOF'
 exec GOREADER.ELF /host/READER/DCT.PDF
 EOF
 
-# Snapshots fire in registration order: snap-02-0 is the refusal window
-# (goreader: ready follows the refusal repaint); 'q' ends that lifetime,
-# script3 re-execs on DCT.PDF once the quit marker lands, and 'b' after
-# `loaded DCT.PDF` yields the post-repaint bookmark marker — on or off,
-# the prefix is iteration-stable — that fires snap-02-1 and unblocks the
-# terminal rx- marker.
+vgate_file script2-rx.txt <<'EOF'
+echo rx-reader-refuse-ok
+EOF
+
+# Snapshots fire in registration order: the DCT leg runs FIRST so its
+# bookmark marker (on or off, the prefix is iteration-stable against the
+# persisted pos row) fires snap-02-0 a full composite cycle after the
+# page paints; 'q' ends that lifetime, script3 re-execs on STROKE.PDF
+# once the quit marker lands, and the refusal window gets the original
+# proven timing — the terminal rx- marker prints 15 s after `present`,
+# which both settles the composite for snap-02-1 and leaves the drain
+# the whole assert phase to finish the stream.
 vgate_run 02 -- \
     --screen '$RUN_DIR/screen-02' \
     --via-virtio --cvc-snap --snapshot-out '$RUN_DIR/snap-02' \
-    --script '$RUN_DIR/script-r.txt' \
-    --snapshot-after 'goreader: ready' \
-    --input-chords 'q' --input-chords-after 'goreader: ready' \
-    --script3 '$RUN_DIR/script-dct.txt' \
-    --script3-after 'goreader: quit' \
+    --script '$RUN_DIR/script-dct.txt' \
     --input-string 'b' --input-string-after 'goreader: loaded DCT.PDF' \
     --snapshot-after 'goreader: bookmark ' \
-    --script2 '$RUN_DIR/script2-r.txt' \
-    --script2-after 'goreader: bookmark ' \
+    --input-chords 'q' --input-chords-after 'goreader: bookmark ' \
+    --script3 '$RUN_DIR/script-r.txt' \
+    --script3-after 'goreader: quit' \
+    --script2 '$RUN_DIR/script2-rx.txt' \
+    --script2-after 'goreader: refuse UnsupportedStroke' \
+    --script2-delay 15 \
+    --snapshot-after 'rx-reader-refuse-ok' \
     --script-expect 'rx-reader-refuse-ok' --timeout 240
 
 vgate_assert 02 serial-contains 'exec: loaded GOREADER.ELF'
+vgate_assert 02 serial-contains 'goreader: loaded DCT.PDF pages=1 128x96'
+vgate_assert 02 serial-contains 'goreader: bookmark '
+vgate_assert 02 serial-contains 'goreader: quit'
 vgate_assert 02 serial-contains 'goreader: refuse UnsupportedStroke'
 vgate_assert 02 serial-absent 'goreader: loaded STROKE.PDF'
 vgate_assert 02 serial-contains 'goreader: present'
-vgate_assert 02 serial-contains 'goreader: quit'
-vgate_assert 02 serial-contains 'goreader: loaded DCT.PDF pages=1 128x96'
-vgate_assert 02 serial-contains 'goreader: bookmark '
 vgate_assert 02 serial-contains 'rx-reader-refuse-ok'
 vgate_assert 02 serial-absent '[EXC] parking:'
 vgate_assert 02 serial-absent 'exited status=139'
@@ -291,7 +296,7 @@ vgate_assert 02 serial-absent 'exited status=139'
 # The refusal names itself in the window: "REFUSED: UNSUPPORTEDSTROKE" is
 # drawn at 2x in theme.Danger (0xef4444) centered in the canvas. The probe
 # counts Danger-ink pixels inside the window (canvas 40..760 x, 24..584 y).
-vgate_assert 02 snapshot 'snap-02-0.raw' <<'PY'
+vgate_assert 02 snapshot 'snap-02-1.raw' <<'PY'
 import sys
 
 W, H = 1280, 720
@@ -344,7 +349,7 @@ cg = open(out, "rb").read()
 w, h, stride = struct.unpack_from("<III", cg, 4)
 assert (w, h, stride) == (128, 96, 128), "cgrender geometry %dx%d" % (w, h)
 pix = cg[16:]
-snaps = sorted(glob.glob(os.path.join(rd, "snap-02-1.raw")))
+snaps = sorted(glob.glob(os.path.join(rd, "snap-02-0.raw")))
 assert snaps, "no DCT scanout capture"
 raw = open(max(snaps, key=os.path.getmtime), "rb").read()
 assert len(raw) == 1280 * 720 * 4, "scanout size %d" % len(raw)
