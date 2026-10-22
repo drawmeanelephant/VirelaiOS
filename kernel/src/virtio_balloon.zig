@@ -149,8 +149,11 @@ var deflate_q: Queue = .{};
 var pfn_buf: [max_pfns_per_req]u32 align(64) = undefined;
 
 /// PFNs the host currently holds, in inflate order — deflate pops from
-/// the tail. Sized by `max_tracked_pages` (see its doc for the cap rule).
-var tracked: [max_tracked_pages]u32 = undefined;
+/// the tail. Allocated from the page pool at rearm (512 KiB of store is
+/// pool memory, not kernel .bss — the budget gate's ceiling stands);
+/// `tracked.len` is the effective cap, so a failed alloc degrades to a
+/// store that accepts nothing rather than one that lies.
+var tracked: []u32 = &.{};
 pub var tracked_count: u64 = 0;
 
 fn common_read8(offset: u32) u8 {
@@ -424,6 +427,14 @@ pub fn balloon_rearm() bool {
     const ok = drive_state_machine();
     if (!ok) return false;
     bal_fail_stage = 0;
+    if (tracked.len == 0) {
+        const store_pages = (max_tracked_pages * @sizeOf(u32) + 4095) / 4096;
+        if (alloc.alloc_pages(store_pages)) |base| {
+            tracked = @as([*]u32, @ptrFromInt(base))[0..max_tracked_pages];
+        } else {
+            klog.line("balloon: no-store\n");
+        }
+    }
     const act = devcfg_actual();
     resync_tracked(act);
     return true;
@@ -486,7 +497,7 @@ fn submit(q: *Queue, queue_index: u16, pfns: []const u32) bool {
 /// unclaimed go back to the pool.
 fn inflate_step(want: u64) u64 {
     var n = @min(want, max_pfns_per_req);
-    n = @min(n, max_tracked_pages - tracked_count);
+    n = @min(n, tracked.len - tracked_count);
     if (n == 0) return 0;
     var allocated: u64 = 0;
     while (allocated < n) : (allocated += 1) {
@@ -543,6 +554,7 @@ fn deflate_step(want: u64) u64 {
 /// nothing — the serial log stays quiet on a steady balloon.
 pub fn balloon_poll() void {
     if (!bal_ready) return;
+    if (tracked.len == 0) return; // no store armed — the rearm logged it
     const num = devcfg_num_pages();
     // OBSERVED (M183b): VZ's device does NOT maintain `actual` — it reads
     // 0 even after acknowledged inflates. The reconcile target therefore
@@ -564,7 +576,7 @@ pub fn balloon_poll() void {
             var buf: [96]u8 = undefined;
             klog.line(std.fmt.bufPrint(&buf, "balloon: inflate pages={d} target={d} tracked={d}\n", .{ moved, num, tracked_count }) catch "balloon: inflate\n");
         }
-        if (want > 0 and tracked_count >= max_tracked_pages) {
+        if (want > 0 and tracked_count >= tracked.len) {
             var buf: [96]u8 = undefined;
             klog.line(std.fmt.bufPrint(&buf, "balloon: track-cap tracked={d} target={d}\n", .{ tracked_count, num }) catch "balloon: track-cap\n");
         }
@@ -588,7 +600,10 @@ pub fn balloon_poll() void {
 // reconcile bounds) without a device.
 // ---------------------------------------------------------------------------
 
+var test_tracked: [64]u32 = undefined;
+
 test "virtio_balloon: tracked store push/pop is tail-ordered" {
+    tracked = test_tracked[0..];
     tracked_count = 0;
     var i: u32 = 0;
     while (i < 5) : (i += 1) {
@@ -604,6 +619,7 @@ test "virtio_balloon: tracked store push/pop is tail-ordered" {
 }
 
 test "virtio_balloon: resync only shrinks the store" {
+    tracked = test_tracked[0..];
     tracked_count = 0;
     var i: u32 = 0;
     while (i < 4) : (i += 1) {
