@@ -429,11 +429,14 @@ if not os.path.exists(qoi):
     sys.exit("QOI fixture missing (expected " + qoi + ")")
 shutil.copy(qoi, os.path.join(share, "PAINT.QOI"))
 # AUDIT.PDF: a minimal valid 3-page document (one stroked rect per page) —
-# the audit only needs GOREADER to load it and count the pages.
+# the audit only needs GOREADER to load it and count the pages. MediaBox
+# edges must be multiples of 50 pt: the engine rejects anything whose
+# width or height is not an exact multiple of 750000 millipoints
+# (document.go's UnsupportedPageGeometry row — observed live on 200x280).
 objs = ["<< /Type /Catalog /Pages 2 0 R >>",
         "<< /Type /Pages /Kids [3 0 R 5 0 R 7 0 R] /Count 3 >>"]
 for i in range(3):
-    objs.append("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 280] "
+    objs.append("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 300] "
                 "/Contents %d 0 R /Resources << >> >>" % (4 + i * 2))
     stream = b"10 10 180 260 re S\n"
     objs.append("<< /Length %d >>\nstream\n" % len(stream)
@@ -3594,8 +3597,8 @@ vgate_assert 28 serial-absent 'exited status=139'
 
 # ---------------------------------------------------------------------------
 # Run 29 (M151c): pair B restore — the sheet row re-execs its ELF-named
-# bin; the reader row re-execs the staged "Reader" alias (its declared
-# title has no guessBin row). Reader gets NO argv on re-exec — it can only
+# bin; the reader row re-execs GOREADER.ELF through the guessBin row for
+# its declared title. Reader gets NO argv on re-exec — it can only
 # reopen AUDIT.PDF because the blob carried the path, which is exactly the
 # round-trip this audit exists to observe.
 
@@ -3630,7 +3633,7 @@ vgate_assert 29 serial-contains 'exec: loaded GOTABWM.ELF'
 vgate_assert 29 serial-contains 'gotabwm: session load n=2 mode=restore'
 vgate_assert 29 serial-contains 'gotabwm: session reexec n=2'
 vgate_assert 29 serial-contains 'gotabwm: session exec GOSHEET.ELF'
-vgate_assert 29 serial-contains 'gotabwm: session exec Reader'
+vgate_assert 29 serial-contains 'gotabwm: session exec GOREADER.ELF'
 vgate_assert 29 serial-contains 'gotabwm: session live n=2'
 vgate_assert 29 serial-count 'gotabwm: state restore id=' 2
 vgate_assert 29 serial-contains 'goreader: loaded AUDIT.PDF'
@@ -3705,8 +3708,8 @@ vgate_assert 30 serial-absent 'exited status=139'
 # Run 31 (M151c): pair C restore — `goclock: state restored` prints only
 # when the seat actually served the blob (the .ALARM file is a second,
 # independent carrier — the marker names the wire), and the armed record
-# reports the 23:59 deadline back. Mines' row re-execs the "Mines" alias
-# (no guessBin row for the title) and reports the intermediate board.
+# reports the 23:59 deadline back. Mines' row re-execs GOMINE.ELF through
+# the guessBin row for its declared title and reports the board back.
 
 vgate_file script-31.txt <<'EOF'
 set GOMAXPROCS=1
@@ -3738,7 +3741,7 @@ vgate_run 31 -- \
 vgate_assert 31 serial-contains 'exec: loaded GOTABWM.ELF'
 vgate_assert 31 serial-contains 'gotabwm: session load n=2 mode=restore'
 vgate_assert 31 serial-contains 'gotabwm: session reexec n=2'
-vgate_assert 31 serial-contains 'gotabwm: session exec Mines'
+vgate_assert 31 serial-contains 'gotabwm: session exec GOMINE.ELF'
 vgate_assert 31 serial-contains 'gotabwm: session exec GOCLOCK.ELF'
 vgate_assert 31 serial-contains 'gotabwm: session live n=2'
 vgate_assert 31 serial-count 'gotabwm: state restore id=' 2
@@ -3815,12 +3818,12 @@ vgate_assert 32 serial-absent '[EXC] parking:'
 vgate_assert 32 serial-absent 'exited status=139'
 
 # ---------------------------------------------------------------------------
-# Run 33 (M151c): pair D restore — the Solitaire row re-execs the
-# "Solitaire" alias and reports its restored move count without a re-deal
-# (`gosol: deal seed=` is absent: the table came from the blob). GOEMOJI's
-# row still re-execs and adopts — the tab comes back — but the seat never
-# stored a blob for it, so no `state restore` line names its window and no
-# 'fire' filter reprints: the wire-level evidence of the finding.
+# Run 33 (M151c): pair D restore — the Solitaire row re-execs GOSOL.ELF
+# and reports its restored move count without a re-deal
+# (`gosol: deal seed=` is absent: the table came from the blob). GOEMOJI
+# re-execs GOEMOJI.ELF, takes its blob like the rest, and the restored
+# filter state reprints `filter q=fire` — the live pass showed the card's
+# "unserviced ask" note was stale: emoji answers and restores.
 
 vgate_file script-33.txt <<'EOF'
 set GOMAXPROCS=1
@@ -3852,13 +3855,13 @@ vgate_run 33 -- \
 vgate_assert 33 serial-contains 'exec: loaded GOTABWM.ELF'
 vgate_assert 33 serial-contains 'gotabwm: session load n=2 mode=restore'
 vgate_assert 33 serial-contains 'gotabwm: session reexec n=2'
-vgate_assert 33 serial-contains 'gotabwm: session exec Solitaire'
-vgate_assert 33 serial-contains 'gotabwm: session exec Emoji'
+vgate_assert 33 serial-contains 'gotabwm: session exec GOSOL.ELF'
+vgate_assert 33 serial-contains 'gotabwm: session exec GOEMOJI.ELF'
 vgate_assert 33 serial-contains 'gotabwm: session live n=2'
 vgate_assert 33 serial-count 'gotabwm: state restore id=' 1
 vgate_assert 33 serial-contains 'gosol: restored moves='
 vgate_assert 33 serial-contains 'goemoji: open id='
-vgate_assert 33 serial-absent 'goemoji: filter q=fire'
+vgate_assert 33 serial-contains 'goemoji: filter q=fire'
 vgate_assert 33 serial-contains 'rx-audit-d-rest-ok'
 vgate_assert 33 serial-absent 'gosol: deal seed='
 vgate_assert 33 serial-absent 'gotabwm: state drop'
