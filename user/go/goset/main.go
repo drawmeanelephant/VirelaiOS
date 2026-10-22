@@ -758,8 +758,10 @@ func (a *panel) key(ev vi.Event) bool {
 		// ~1 s stall between handler return and the loop-tail present (observed
 		// live: the keystroke's latency sample rode to the next heartbeat)
 		// leaves input→glyph latency at tick scale even though the redraw is
-		// already computed.
-		a.present()
+		// already computed. Guarded on ta: headless key() tests have no seat.
+		if a.ta != nil {
+			a.present()
+		}
 		a.save()
 		return true
 	case keyUp, keyDown, keyHome, keyEnd:
