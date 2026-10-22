@@ -45,7 +45,7 @@ re-measure commands are at the end.
 | bound | value | where |
 | --- | --- | --- |
 | exec staging | **2 MiB fixed whole-file buffer**, and there are **two** of them — `program` and `interp_program` (the PT_INTERP/LD.SO path), **4 MiB of .bss** — plus the 16 KiB header window the streamed path adds; the *staged* shapes (DSK1/DSK3/contiguous ELF/PT_INTERP) are still bounded by that buffer. Since K1 the gap-layout ELF path **streams** and is bounded instead by `exec_image_max` = 32 MiB (see the amendment) | `kernel/src/exec.zig` (`exec_program_max`, `exec_image_max`, `header_window`), `parse_dsk3` `image_size > buf.len` |
-| ELF bounds | **two, since M72a (#1579)**: `load_max` = **32 MiB of INITIALIZED bytes** (`Σ p_filesz`, what comes off the volume) and `map_max` = **64 MiB of MAPPED bytes** (`Σ p_memsz` — a RAM budget when this was written; a VIRTUAL bound since M171a/card #3032, see Amendment 12). K1 raised the single 32 MiB total from 2 MiB; the split exists because zero-initialized `.bss`/`.noptrbss` costs no file bytes, so charging it against a bound named for the file refused images the file could not even hold. ≤3 PT_LOADs | `kernel/src/elf.zig` (`load_max`, `map_max`, `max_segments`) |
+| ELF bounds | **two, since M72a (#1579)**: `load_max` = **32 MiB of INITIALIZED bytes** (`Σ p_filesz`, what comes off the volume) and `map_max` = **64 MiB of MAPPED bytes** (`Σ p_memsz` — a RAM budget when this was written; a VIRTUAL bound since card #3032, see Amendment 12). K1 raised the single 32 MiB total from 2 MiB; the split exists because zero-initialized `.bss`/`.noptrbss` costs no file bytes, so charging it against a bound named for the file refused images the file could not even hold. ≤3 PT_LOADs | `kernel/src/elf.zig` (`load_max`, `map_max`, `max_segments`) |
 | GOOS=virelai link recipe | text base 0x10000 with its end ≤0x80000 (**448 KiB** of text), rodata base 0x80000 with its end ≤0x110000, data base 0x110000 | `tools/go/build-go.sh`'s layout guard (the guard exists because a shifted layout "loads but misbehaves on target") |
 | gap vaddr bound | every gap segment's vaddr below `gap_base_max` = 0x1000_0000 | `kernel/src/elf.zig:158` |
 | page tables | fixed **512×4 KiB (2 MiB) .bss carve-out, never reclaimed** — a *total-roots* budget | `kernel/src/mmu.zig:66-71`; `tables_used()`/`tables_capacity()` at `:146` |
@@ -942,7 +942,7 @@ does not hold in this tree and the bound could therefore not simply be dropped.
 This loader *eagerly* allocates and zeroes every mapped page
 (`exec_static_elf_gap`: `alloc_pages(ceil(memsz / page_size))`, then a fill of
 `[filesz..memsz]`), so `Σ memsz` is the RAM an image takes out of the pool before
-its first instruction. *(True when written — card #3032/M171a made the
+its first instruction. *(True when written — card #3032 made the
 zero-fill tail demand-paged; see Amendment 12.)* A 1 GiB `.bss` accepted here would have become an
 `.out_of_memory` a moment later instead of a named refusal.
 
@@ -1108,7 +1108,7 @@ named bound going forward is `scheduler.max_tasks` under concurrency —
 refusals are ENOSPC at spawn or a status-2 `newosproc` death, both named,
 neither a wedge.
 
-## Amendment 12 — M171a (card #3032): `map_max` is a VIRTUAL bound, and resident pages are the honest count
+## Amendment 12 — card #3032: `map_max` is a VIRTUAL bound, and resident pages are the honest count
 
 Amendment 10's table froze `map_max` as "`Σ p_memsz` — the pages allocated
 and zeroed", a RAM budget, because the gap loader really did allocate and
