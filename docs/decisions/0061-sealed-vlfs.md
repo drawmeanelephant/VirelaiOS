@@ -2,16 +2,16 @@
 
 - Date: 2026-10-22
 - Status: **Proposed** — awaiting owner review. No code lands here;
-  this ADR is the card (#3028) and, if approved, the M172 arc
-  implements it in the filed order: M172b kernel ChaCha20-Poly1305 +
-  PBKDF2-HMAC-SHA256 (card #3030), M172c `mkfs.vlfs --seal` and the
-  v2 format (card #3031), M172d the sealed mount — boot prompt,
-  unwrap, block AEAD, lockout (card #3037), M172e the canary gate
+  this ADR is the card (#3028) and, if approved, the sealed-VLFS arc (index #3024)
+  implements it in the filed order: card #3030 kernel ChaCha20-Poly1305 +
+  PBKDF2-HMAC-SHA256 (card #3030), card #3031 `mkfs.vlfs --seal` and the
+  v2 format (card #3031), card #3037 the sealed mount — boot prompt,
+  unwrap, block AEAD, lockout (card #3037), card #3043 the canary gate
   re-run under encryption (card #3043). The D-numbers are the owner
-  decisions recorded on the M172 index (card #3024), continuing the
+  decisions recorded on the index #3024 (card #3024), continuing the
   numbering ADR 0050 closed at D7; this document is their record
   (D11).
-- Card: **#3028** (M172 index **#3024**) — card 1 of 5. This is the
+- Card: **#3028** (index #3024 **#3024**) — card 1 of 5. This is the
   one doc for the arc (AGENTS.md: one doc per arc, not four).
 - Related: ADR 0050 (VLFS v1 — the format, journal ordering, and
   mount model this seals; its status flips to Accepted in the same
@@ -26,7 +26,7 @@
 > key that exists only inside a boot that was handed a passphrase.
 > Everything else — format changes, the prompt, the crash contract —
 > is in service of that one property, and this ADR pins it on paper
-> before M172b–e write a byte of code.
+> before cards #3030, #3031, #3037, #3043 write a byte of code.
 
 ## Grounding (verified against `origin/main`, 2026-10-22)
 
@@ -55,7 +55,7 @@ only.
   (`user/src/lib/crypto/aead.zig:1-20`, RFC 8439 §2.8, class-A
   `zig test` against the §2.8.2 vector); EL0's AES cannot decrypt
   and is not constant-time (`user/src/lib/crypto/aes.zig:1-20`).
-  The kernel port is card #3030 (M172b); the EL0 AES is rejected
+  The kernel port is card #3030 (card #3030); the EL0 AES is rejected
   for this purpose on both counts.
 - **There is no non-echo input path.** `secret.zig:50-62` records
   the D8 contract: secrets are host-provisioned, there is no
@@ -270,7 +270,7 @@ deployment changes.
   only at checkpoint, post-commit, a mid-checkpoint kill replays
   the committed transaction and re-lands both payload and tag —
   the same convergence v1 proves, now authenticated.
-- **The proof is M172e's K=5 crash spec** (card #3043):
+- **The proof is card #3043's K=5 crash spec** (card #3043):
   `live-vlfs-crash` re-run under encryption — the spec already runs
   at `vgate_repeat 5` and builds `mkfs.vlfs` in setup, so the
   canary is the standing gate with the disk sealed, not a new
@@ -306,7 +306,7 @@ deployment changes.
   (ADR 0059 D3); on a boot that unsealed `/disk` it captures the
   DEK and the decrypted block cache. `vgate_checkpoint` and
   `--vz-restore` save on a sealed boot are refused by name — the
-  enforcement point is M172d's, the rule is pinned here.
+  enforcement point is card #3037's, the rule is pinned here.
 
 ## Limits (stated so no card overclaims)
 
