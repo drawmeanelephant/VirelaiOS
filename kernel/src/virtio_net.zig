@@ -66,6 +66,8 @@
 //! No libc, no POSIX, no allocation, no interrupts.
 
 const std = @import("std");
+const builtin = @import("builtin");
+const alloc = @import("alloc.zig");
 const mmio = @import("mmio.zig");
 const mmu = @import("mmu.zig");
 const pci = @import("pci.zig");
@@ -284,17 +286,27 @@ pub const rx_hdr_len: usize = 12;
 /// above the observed 1530 minimum).
 pub const rx_buf_len: usize = 4096;
 
-/// Fixed BSS RX buffers — ONE per queue-0 descriptor (M179b, #3148):
-/// every descriptor stays posted with its own page-rounded buffer (the
-/// 4096 B size honours the observed 1530 B VZ floor above). BSS price:
-/// queue_size × rx_buf_len = 16 × 4 KiB = 64 KiB. The device DMA-writes
-/// the frame into `rx_bufs[desc-id]`; the driver invalidates before
-/// reading and re-posts the descriptor once the drain consumes it.
-pub var rx_bufs: [queue_size][rx_buf_len]u8 align(16) = undefined;
+/// RX DMA targets — ONE per queue-0 descriptor (M179b, #3148): every
+/// descriptor stays posted with its own page-rounded buffer (the 4096 B
+/// size honours the observed 1530 B VZ floor). The buffers are pool
+/// pages armed by `arm_rx_storage` — 16 × 4 KiB of DMA target is pool
+/// memory, not kernel .bss (the flat array broke ADR 0013 D3.1's
+/// ceiling); scattered pages are legal since every descriptor names its
+/// own GPA. The device DMA-writes the frame into `rx_bufs[desc-id]`;
+/// the driver invalidates before reading and re-posts the descriptor
+/// once the drain consumes it. Host tests get static backing — they
+/// cannot dereference pool phys.
+var test_rx_backing: [queue_size][rx_buf_len]u8 align(16) = undefined;
+pub var rx_bufs: [queue_size]*[rx_buf_len]u8 = if (builtin.is_test) blk: {
+    var arr: [queue_size]*[rx_buf_len]u8 = undefined;
+    for (&arr, 0..) |*b, i| b.* = &test_rx_backing[i];
+    break :blk arr;
+} else undefined;
 /// Alias for `rx_bufs[0]` — kernel/tests/syscall_test.zig's
 /// `native_prime_rx` stages its injected frame in descriptor 0's buffer
 /// under the original one-buffer name.
-pub const rx_buf: *[rx_buf_len]u8 = &rx_bufs[0];
+pub var rx_buf: *[rx_buf_len]u8 = if (builtin.is_test) &test_rx_backing[0] else undefined;
+var rx_bufs_armed: bool = false;
 
 /// Bounded frame FIFO capacity (fixed slots, no heap — the card-3d
 /// push-from-context + shell-idle-drain pattern). M179b (#3148) raised
@@ -312,9 +324,38 @@ pub const FrameSlot = struct {
     data: [rx_buf_len]u8 = undefined,
 };
 
-pub var rx_fifo: [fifo_slots]FrameSlot = @as([fifo_slots]FrameSlot, @splat(@as(FrameSlot, .{})));
+/// The slot array itself is pool memory for the same reason — ~64 KiB
+/// at 16 slots armed by `arm_rx_storage`; `rx_fifo.len` is the honest
+/// bound, so a short page pool means the fifo admits nothing rather
+/// than writing out of bounds.
+var test_rx_fifo: [fifo_slots]FrameSlot = @splat(.{});
+pub var rx_fifo: []FrameSlot = if (builtin.is_test) test_rx_fifo[0..] else &.{};
+var rx_fifo_armed: bool = false;
 pub var rx_fifo_head: usize = 0; // oldest slot (next to pop)
 pub var rx_fifo_count: usize = 0;
+
+/// Arm the pool-backed RX storage once — 16 contiguous pages for the
+/// descriptor targets plus the fifo block. A short pool means no posts,
+/// not invented addresses; each half retries independently on the next
+/// `net_rx_arm` call.
+fn arm_rx_storage() void {
+    if (builtin.is_test) return; // static backing is comptime-armed
+    if (!rx_bufs_armed) {
+        if (alloc.alloc_pages(queue_size)) |pa| {
+            const base: [*][rx_buf_len]u8 = @ptrFromInt(pa);
+            for (&rx_bufs, 0..) |*b, i| b.* = &base[i];
+            rx_buf = rx_bufs[0];
+            rx_bufs_armed = true;
+        }
+    }
+    if (!rx_fifo_armed) {
+        const fifo_pages = (fifo_slots * @sizeOf(FrameSlot) + 4095) / 4096;
+        if (alloc.alloc_pages(fifo_pages)) |pa| {
+            rx_fifo = @as([*]FrameSlot, @ptrFromInt(pa))[0..fifo_slots];
+            rx_fifo_armed = true;
+        }
+    }
+}
 
 /// RX counters (the `net` report): frames accepted into the FIFO, bytes
 /// accepted (device-written length), frames dropped by the MAC filter,
@@ -1094,6 +1135,8 @@ pub fn net_send_frame(requested: usize, out_len: *usize) SendResult {
 /// transport is unarmed.
 pub fn net_rx_arm() bool {
     if (!net_ready) return false;
+    arm_rx_storage();
+    if (!rx_bufs_armed and !builtin.is_test) return false; // no targets, no posts
     const ops = &net_ops;
     const dev = &net_dev;
     var posted: u16 = 0;
@@ -1101,7 +1144,7 @@ pub fn net_rx_arm() bool {
     while (i < queue_size) : (i += 1) {
         if ((rx_posted_mask >> @intCast(i)) & 1 != 0) continue;
         dev.rx_desc[i] = .{
-            .addr = ops.to_phys(@intFromPtr(&rx_bufs[i])),
+            .addr = ops.to_phys(@intFromPtr(rx_bufs[i])),
             .len = rx_buf_len,
             .flags = virtq_f_write,
             .next = 0xffff,
@@ -1159,6 +1202,10 @@ pub fn mac_accept(off: usize, buf: []const u8, own: *const [6]u8) bool {
 /// frame exceeds a slot (should never happen — buffers are bounded).
 pub fn fifo_push(frame: []const u8) bool {
     if (frame.len > rx_buf_len) return false;
+    if (rx_fifo.len == 0) {
+        rx_overflow +%= 1; // no store armed — counted drop, never a wild write
+        return false;
+    }
     if (rx_fifo_count == fifo_slots) {
         rx_fifo_head = (rx_fifo_head + 1) % fifo_slots; // drop the oldest
         rx_fifo_count -= 1;
@@ -1222,7 +1269,7 @@ pub fn net_rx_drain() void {
         const id: usize = elem.id;
         if (id >= queue_size) continue; // non-conforming device; skip honestly
         rx_posted_mask &= ~(@as(u32, 1) << @intCast(id));
-        const buf = &rx_bufs[id];
+        const buf = rx_bufs[id];
         ops.invalidate(@intFromPtr(buf), rx_buf_len);
         // The RX used-element `len` is the DEVICE-WRITTEN length (N1's TX
         // `len` was ~0).
@@ -2579,8 +2626,10 @@ fn mock_invalidate(ptr: usize, len: usize) void {
     // The driver also invalidates an RX buffer after a device write; the
     // mock has nothing to replay there (mock_notify already copied the
     // frames in) — and must NOT treat the buffers' bytes as a used ring.
-    const bufs_base = @intFromPtr(&rx_bufs);
-    if (ptr >= bufs_base and ptr < bufs_base + @sizeOf(@TypeOf(rx_bufs))) return;
+    for (rx_bufs) |b| {
+        const p = @intFromPtr(b);
+        if (ptr >= p and ptr < p + rx_buf_len) return;
+    }
     const used = @as(*VirtqUsed, @ptrFromInt(ptr));
     // Per-queue used rings, like the real device. The RX ring (the module
     // global — the RX path only ever drains net_dev.rx_used) replays the
