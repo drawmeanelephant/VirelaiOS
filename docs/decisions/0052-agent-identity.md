@@ -5,7 +5,7 @@
   (all six cards landed; the row's caveat — reference-host K=5 and
   owner sign-off on #2402 — is gate debt, not design debt). No code
   lands here; the D7 Touches were the arc's binding file splits.
-  **Amended 2026-10-22 (M173a, card #3029):** the D6 bullet that kept
+  **Amended 2026-10-22 (card #3029, card #3029):** the D6 bullet that kept
   agent identity channel-level is superseded — the agent is the kernel
   principal `uid_agent`; see the amendment below.
 - Card: **#2397** (M109, index #2382) — card 1 of 6; gates M109b–f.
@@ -234,7 +234,7 @@ remains the escape hatch it always was (ADR 0044 D2): a cap bounds
 the *channel* surface, and a spawned GOSH still runs `uid_user`
 unconfined — caps never widen the kernel ceiling (no elevation,
 ADR 0024 D5), and they do not confine what a `gosh.run` child does.
-(M173a amendment: a `uid_agent` parent's children now inherit
+(card #3029 amendment: a `uid_agent` parent's children now inherit
 `uid_agent`, so the spawned GOSH is confined by the agent's file and
 signal rules — see the amendment below.)
 
@@ -362,7 +362,7 @@ singleton, and M99g retired the premise.
   `uid_user`, caps 0. Agent identity is channel-level; the kernel
   knows processes, not agents. Per-agent *kernel* principals (a uid
   per agent) need a principal-assignment path EL0 cannot reach — that
-  is trust-depth work, M113's territory.~~ **Superseded by the M173a
+  is trust-depth work, M113's territory.~~ **Superseded by the card #3029
   amendment below (2026-10-22, card #3029):** a single agent
   principal `uid_agent`, assigned by the kernel at exec on the
   `AGENTD.ELF` image name — the EL0-unreachable assignment path this
@@ -472,12 +472,12 @@ This card's own Touches: `docs/decisions/0052-agent-identity.md`,
   credential half moves to `SECRETS.TXT`, and the agent count becomes
   "as many as the 8-entry store can spare" — stated, not papered over.
 
-## Amendment (2026-10-22, M173a / card #3029): the agent principal
+## Amendment (2026-10-22, card #3029 / card #3029): the agent principal
 
 D6's first bullet is superseded. Its premise — that a kernel principal
 needed "a principal-assignment path EL0 cannot reach" and none existed —
 was retired by the grant table (ADR 0054 D7): exec already records the
-image name, and grants already key on it. M173 (index #3025, owner
+image name, and grants already key on it. the agent-principal arc (index #3025, owner
 decisions D12/D13/D15/D16) spends that binding on a principal: **the
 agent is `uid_agent = 2000`.** The channel identity this ADR built —
 *which* agent signed in — is unchanged and stays the receipt label; the
