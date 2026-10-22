@@ -1,11 +1,15 @@
 # ADR 0060: Time at human scale — the 1 Hz heartbeat plus a deadline overlay
 
 - Date: 2026-10-22
-- Status: **Proposed — owner review required.** No code lands here; this
-  ADR is the decision record for the wave-4 time arc (index #3021,
-  index #3022) plus its binding artefact, the tick-unit audit below.
-  If approved, the index-#3022 cards implement in their filed order: card #3033 the kernel overlay, card #3036 slots 94/95 + wrappers, card #3038 the free-file site migration, card #3034 the damage-driven
-  seat tick, card #3039 GOVIEW playback, card #3040 the bench.
+- Status: **Accepted** — shipped by the wave-4 time arc (index #3021,
+  index #3022): the ABI rows are live (ADR 0007 X1–X3 :2881-2883) and
+  the bench is pinned (`tools/gate/bench/corpus.tsv:42`); this ADR is
+  the decision record for the wave-4 time arc plus its binding artefact,
+  the tick-unit audit below. The index-#3022 cards implemented in their
+  filed order: card #3033 the kernel overlay, card #3036 slots 94/95 +
+  wrappers, card #3038 the free-file site migration, card #3034 the
+  damage-driven seat tick, card #3039 GOVIEW playback, card #3040 the
+  bench.
 - Card: **#3027** (card 2 of 2 in #3021).
 - Related: ADR 0007 (syscall ABI; the wave-4 X1–X9 reservation rows land
   in card #3026's amendment), ADR 0009 (kind-18 `COMPOSITE_TICK` — its
