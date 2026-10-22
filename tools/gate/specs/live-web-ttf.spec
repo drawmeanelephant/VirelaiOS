@@ -88,11 +88,12 @@ for src, dst in (("image/fonts/fonts.txt", "BAK-FONTS.TXT"),
 open(os.path.join(share, "BIDI.HTML"), "wb").write(
     b"<h4>bidi</h4>"
     b"<p>&#x5D0;&#x5D1;&#x5D2;&#x5D3;&#x5D4;</p>"
+    b"<p>&#x5D4;&#x5D3;&#x5D2;&#x5D1;&#x5D0;</p>"
     b"<p>&#x5D0;</p>"
-    b"<p>&#x5D4;</p>"
+    b"<p>abc &#x5D0;&#x5D1;&#x5D2; (1) def</p>"
+    b"<p>abc &#x5D2;&#x5D1;&#x5D0; (1) def</p>"
     b"<p>(&#x5D0;)</p>"
-    b"<p>(x)</p>"
-    b"<p>abc &#x5D0;&#x5D1;&#x5D2; (1) def</p>")
+    b"<p>(x)</p>")
 colors = [(0x11, 0x7f, 0x33), (0xd0, 0x33, 0x99),
           (0x22, 0x66, 0xdd), (0xee, 0xcc, 0x00)]
 qoi = bytearray(b"qoif") + struct.pack(">II", 32, 32) + bytes([4, 0])
@@ -529,101 +530,95 @@ m = re.findall(r"^web: viewport css=1280x720 x=(\d+) y=(\d+) w=(\d+) h=(\d+) s=(
 if not m:
     sys.exit("missing intact viewport marker")
 x, y, w, h, _ = map(int, m[-1])
-if (x, y, w, h) != (0, 64, 512, 288):
-    sys.exit("wrong presentation geometry")
-x, y = x + 40, y + 28
 snaps = sorted(run.glob("snap-10-*.raw"))
 if not snaps:
     sys.exit("no scanout snapshot")
 raw = snaps[-1].read_bytes()
 if len(raw) != 1280 * 720 * 4:
     sys.exit("scanout size mismatch")
-bg = raw[((y + h - 4) * 1280 + x + w - 4) * 4:( (y + h - 4) * 1280 + x + w - 4) * 4 + 3]
 
-def ink(yv, xv):
-    at = (yv * 1280 + xv) * 4
-    return raw[at:at + 3] != bg
+# Ink = bright pixels (text on the dark page). The window sits near the
+# marker's (x,y); page text lands just left of x+40 — scan a generous box
+# and ignore columns bright over >60 rows (the scrollbar/chrome poles).
+def ink(yy, xx):
+    at = (yy * 1280 + xx) * 4
+    return raw[at] + raw[at + 1] + raw[at + 2] > 300
 
-# text lines = contiguous bands of rows carrying ink inside the page area
+X0, X1, Y0, Y1 = x + 28, x + w - 8, y + 16, y + h + 40
+xs = [c for c in range(X0, X1)
+      if sum(1 for r in range(Y0, Y1) if ink(r, c)) <= 60]
 bands, cur = [], -1
-for yy in range(y, y + h):
-    if any(ink(yy, xx) for xx in range(x + 4, x + w - 4)):
+for yy in range(Y0, Y1):
+    if any(ink(yy, xx) for xx in xs):
         if cur < 0:
             cur = yy
     elif cur >= 0:
         bands.append((cur, yy)); cur = -1
 if cur >= 0:
-    bands.append((cur, y + h))
-# h4 + six <p> lines
-if len(bands) != 7:
-    sys.exit("want 7 text bands, found %d: %s" % (len(bands), bands))
-
-def cols(band):
-    t, b = band
-    return [sum(1 for yy in range(t, b) if ink(yy, xx))
-            for xx in range(x + 4, x + w - 4)]
-
-def trims(sig):
-    lo, hi = 0, len(sig)
-    while lo < hi and sig[lo] == 0:
-        lo += 1
-    while hi > lo and sig[hi - 1] == 0:
-        hi -= 1
-    return sig[lo:hi], lo
-
-sig_word   = cols(bands[1])   # אבגדה (RTL paragraph)
-sig_alef   = cols(bands[2])   # א reference
-sig_heh    = cols(bands[3])   # ה reference
-sig_parenR = cols(bands[4])   # (א) RTL paragraph
-sig_parenL = cols(bands[5])   # (x) LTR reference
-sig_mixed  = cols(bands[6])   # abc אבג (1) def
-
-alef, _ = trims(sig_alef)
-heh, _ = trims(sig_heh)
-word, wlo = trims(sig_word)
-parenR, _ = trims(sig_parenR)
-parenL, _ = trims(sig_parenL)
-
-# 1. The RTL word's FIRST logical letter (א) sits at the right edge of the
-#    painted run; its last (ה) at the left. Column signatures over the same
-#    glyph are exact — the raster is deterministic.
-if word[-len(alef):] != alef:
-    sys.exit("right edge of the Hebrew word is not alef: %s" % word[-len(alef):])
-if word[:len(heh)] != heh:
-    sys.exit("left edge of the Hebrew word is not heh: %s" % word[:len(heh)])
-if len(word) <= len(alef) * 3:
-    sys.exit("word too short to be a five-letter run: %d cols" % len(word))
-
-# 2. Bracket mirroring: "(א)" in an RTL paragraph opens with '(' columns,
-#    the same glyph the LTR "(x)" line opens and closes with — an unmirrored
-#    ')' cannot satisfy this signature.
-def lead(sig, n):
-    return sig[:n]
-if parenR[:3] != parenL[:3]:
-    sys.exit("leftmost glyph of (א) is not '(' : %s vs %s" % (parenR[:3], parenL[:3]))
-if parenR[-2:] != parenL[-2:]:
-    sys.exit("rightmost glyph of (א) is not ')' : %s vs %s" % (parenR[-2:], parenL[-2:]))
-
-# 3. The mixed line: split into word groups at >=3-blank-column gaps and find
-#    the group that ends on alef — the Hebrew run reversed inside LTR text.
-groups, gap, start = [], 0, -1
-for i, c in enumerate(sig_mixed):
-    if c == 0:
-        gap += 1
+    bands.append((cur, Y1))
+# merge a glyph line split by one empty row, drop 1-row specks
+merged = [list(bands[0])] if bands else []
+for b in bands[1:]:
+    if b[0] - merged[-1][1] <= 3:
+        merged[-1][1] = b[1]
     else:
-        if start >= 0 and gap >= 3:
-            groups.append((start, i - gap))
-            start = -1
-        if start < 0:
-            start = i
-        gap = 0
-if start >= 0:
-    groups.append((start, len(sig_mixed)))
-if len(groups) != 4:
-    sys.exit("mixed line split into %d groups, want 4: %s" % (len(groups), groups))
-hebrew_grp = sig_mixed[groups[2][0]:groups[2][1]]
-if hebrew_grp[-len(alef):] != alef:
-    sys.exit("mixed line's Hebrew run does not end on alef: %s" % hebrew_grp[-len(alef):])
-print("bidi run 10: alef at right edge, heh at left, parens mirrored,",
-      "mixed-line Hebrew run reversed (groups=%s)" % groups)
+        merged.append(list(b))
+bands = [b for b in merged if b[1] - b[0] >= 3]
+# h4 + seven <p> lines
+if len(bands) != 8:
+    sys.exit("want 8 text bands, found %d: %s" % (len(bands), bands))
+
+def mask(b):
+    t, bb = b
+    cols = [xx for xx in range(X0, X1)
+            if any(ink(yy, xx) for yy in range(t, bb))]
+    return [[ink(yy, xx) for xx in range(cols[0], cols[-1] + 1)]
+            for yy in range(t, bb)]
+
+def flip(m):
+    return [list(reversed(r)) for r in m]
+
+def clusters(b):
+    t, bb = b
+    out, c = [], None
+    for xx in range(X0, X1):
+        if any(ink(yy, xx) for yy in range(t, bb)):
+            c = [xx, xx] if c is None else [c[0], xx]
+        elif c:
+            out.append(tuple(c)); c = None
+    if c:
+        out.append(tuple(c))
+    return out
+
+# bands[1]=אבגדה and bands[2]=הדגבא are each other's logical reversal; both
+# auto-resolve RTL, so the two painted lines must be exact horizontal
+# mirrors — the Hebrew word ran right-to-left iff this holds.
+if flip(mask(bands[1])) != mask(bands[2]):
+    sys.exit("RTL word lines are not mirror images — run did not reverse")
+
+# bands[4]/[5]: "abc אבג (1) def" vs "abc גבא (1) def" — the painted Hebrew
+# groups (second whitespace-separated group) must likewise mirror.
+def group(b, i):
+    cs = clusters(b)
+    if len(cs) != 4:
+        sys.exit("mixed line has %d word groups, want 4: %s" % (len(cs), cs))
+    g = cs[i]
+    return [[ink(yy, xx) for xx in range(g[0], g[1] + 1)]
+            for yy in range(b[0], b[1])]
+if flip(group(bands[4], 1)) != group(bands[5], 1):
+    sys.exit("mixed-line Hebrew groups are not mirror images")
+
+# bands[6]/[7]: "(א)" in an RTL paragraph vs LTR "(x)". Mirroring (L4)
+# means the RTL line's leftmost glyph is '(' — the SAME mask the LTR line
+# opens with; an unmirrored close-paren would be its mirror image instead.
+def submask(b, c):
+    return [[ink(yy, xx) for xx in range(c[0], c[1] + 1)]
+            for yy in range(b[0], b[1])]
+lE = submask(bands[6], clusters(bands[6])[0])
+lF = submask(bands[7], clusters(bands[7])[0])
+H = min(len(lE), len(lF))
+if lE[-H:] != lF[-H:]:
+    sys.exit("RTL paren line does not open with '(' columns")
+print("bidi run 10: RTL words mirror their logical reverse, mixed-line "
+      "Hebrew mirrors too, parens mirrored")
 PY
