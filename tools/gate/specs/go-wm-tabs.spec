@@ -1971,6 +1971,10 @@ vgate_assert 11 serial-contains 'wmrpcprobe: agent-input refused'
 # genuine owner-made proof title stands, and the honest echo still binds.
 vgate_assert 11 serial-contains 'wmrpcprobe: forged-echo refused id='
 vgate_assert 11 serial-contains 'wmrpcprobe: rebind ok'
+# #3053: the probe's three sub-38-byte posts are counted and skipped, not
+# treated as end-of-queue — the bound request behind them is still served.
+vgate_assert 11 serial-contains 'gotabwm: rpc short n='
+vgate_assert 11 serial-contains 'wmrpcprobe: short-frame drain ok'
 vgate_assert 11 serial-contains 'wmrpcprobe: auth probe ok'
 vgate_assert 11 serial-contains 'gotabwm: rpc refuse id='
 vgate_assert 11 serial-absent 'wmrpcprobe: FAIL'
