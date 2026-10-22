@@ -174,6 +174,13 @@ pub var function_count: usize = 0;
 /// GET_ID matched nothing (no_disk territory: boot continues share-only).
 pub var vlfs_disk: ?usize = null;
 
+/// Diagnostic hook (#3128, claim #3130): when non-null, invoked on the
+/// data buffer of every req_out right before the queue notify — the last
+/// guest-side sample of the bytes the device will DMA-read. Null on host
+/// tests and unsealed mounts; the seal layer installs it for the tag-home
+/// tear bisection.
+pub var sector_probe: ?*const fn (lba: u64, data: *const [sector_len]u8) void = null;
+
 // Per-function ring storage (static BSS — no allocation). The descriptor
 // table is the full queue_size so the ring invariant is honest, not just
 // "the first three entries happened to fit".
@@ -494,6 +501,11 @@ fn submit(idx: usize, req_type: u32, lba: u64, write_data: ?*const [sector_len]u
         mmu.clean_dcache_range(@intFromPtr(desc), @sizeOf(@TypeOf(desc.*)));
         mmu.clean_dcache_range(@intFromPtr(avail), @sizeOf(VirtqAvail));
         mmu.clean_dcache_range(@intFromPtr(&req.header), 16 + @as(u64, if (req_type == req_out) sector_len else 0));
+        // #3130: the at-issue sample point — req.data is exactly what the
+        // device will DMA-read once the notify below lands.
+        if (req_type == req_out) {
+            if (sector_probe) |probe| probe(lba, &req.data);
+        }
         // Virtio 1.3 §4.1.5.2.1: without VIRTIO_F_NOTIFICATION_DATA the
         // notification is a 16-bit write of the queue index (0).
         mmio.mmio_write16(f.notify + @as(u64, f.queue_notify_off) * f.notify_mult, 0);

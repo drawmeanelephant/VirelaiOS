@@ -105,6 +105,8 @@ pub fn attach(src: vlfs.SectorSource) bool {
 /// Drop the mount (tests; a device detach in a later milestone).
 pub fn detach() void {
     active = null;
+    virtio_blk.sector_probe = null;
+    seal.probeDetach();
     seal_ctx.wipe();
     for (&contained_files) |*f| f.* = .{};
     last_replayed = 0;
@@ -309,7 +311,13 @@ pub fn attachBlk(ops: *const seal.PromptOps) bool {
     if (sb.seal) |info| {
         switch (seal.unseal(&seal_ctx, raw, sb, info, ops)) {
             .unsealed => {
+                // #3130: arm the tagshift probe before attach so mount-time
+                // replay writes are covered too.
+                seal.probeAttach(&seal_ctx);
+                virtio_blk.sector_probe = seal.probeSector;
                 if (attach(seal.source(&seal_ctx))) return true;
+                virtio_blk.sector_probe = null;
+                seal.probeDetach();
                 seal_ctx.wipe();
                 return false;
             },
