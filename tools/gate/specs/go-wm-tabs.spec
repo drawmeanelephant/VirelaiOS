@@ -120,9 +120,10 @@
 #       (Paint+Assist, Reader+Sheet, Mine+Clock, Solitaire+Emoji,
 #       Vault+IRC) each save through the kind-20 ask on ctrl-shift-s, then
 #       a fresh boot restores the table and every app's own marker
-#       reports the blob back. Run 35's report correlates all ten rows
-#       and names the two known gaps (GOEMOJI's unserviced ask, GOVAULT's
-#       missing hooks) instead of failing on them.
+#       reports the blob back. Run 35's report correlates all ten rows;
+#       all are expected to round-trip (the first live pass showed
+#       GOEMOJI and GOVAULT do answer — the card's gap notes were stale),
+#       and GOVAULT's absent `file` grant is named in the file column.
 #
 # Seed wm=none and exec GOTABWM.ELF like go-wm-seat. No HID. No framebuffer
 # golden. Do not overload go-wm-seat or go-wm-default. Boot 01 `reorder 0->1`
@@ -3980,11 +3981,12 @@ vgate_assert 35 serial-absent 'exited status=139'
 
 # The audit report: one row per app, correlated through the seat's window
 # ids (each app's own `open id=` names the window the ask/save/restore
-# markers reference). Runs 26-35's serials all live in RUN_DIR. The two
-# named gaps ride as expected rows — GOVAULT never had hooks (M156c), and
-# GOEMOJI's are wired but its loop never services the ask (M152c) — and a
-# hookless row that unexpectedly answers, or a hooked row that loses its
-# restore, fails the gate: a finding the card wants named, not a surprise.
+# markers reference). Runs 26-35's serials all live in RUN_DIR. All ten
+# apps are expected to round-trip: the first live pass corrected two
+# stale gap rows — GOEMOJI answers its ask (save=8, restored marker) and
+# GOVAULT's M156c hooks do answer (save=23); GOVAULT's remaining gap is
+# the absent `file` grant for its save stage, which the file column
+# names. A hooked row that loses its restore fails the gate.
 vgate_assert 35 python <<'PY'
 import os, re, sys
 rd = os.environ["RUN_DIR"]
@@ -4005,14 +4007,9 @@ APPS = [
     ("GOCLOCK.ELF",  "30", "31", "goclock: state restored", None, True),
     ("GOMINE.ELF",   "30", "31", "gomine: state restored size=", None, True),
     ("GOSOL.ELF",    "32", "33", "gosol: restored moves=", None, True),
-    ("GOEMOJI.ELF",  "32", "33", None,
-     "SaveState wired but the appkit loop never calls PollStateAsk "
-     "- the ask is posted and never answered, no blob stored "
-     "(M152c #2917 owns the app)", True),
+    ("GOEMOJI.ELF",  "32", "33", "goemoji: state restored", None, True),
     ("GOIRC.ELF",    "34", "35", "goirc: state restored", None, True),
-    ("GOVAULT.ELF",  "34", "35", None,
-     "no M125a hooks (shipped pre-protocol; M156c #2933 owns the app)",
-     False),
+    ("GOVAULT.ELF",  "34", "35", "govault: state restored", None, False),
 ]
 
 # Read-only grant evidence: which mask lacks `file` while the app's save
@@ -4072,5 +4069,5 @@ for bin_, stag, rtag, marker, why0, stage in APPS:
                    % (bin_, save, restore))
 if bad:
     sys.exit("audit rows off expectation: %s" % "; ".join(bad))
-print("audit: ten rows - seven round-trip; GOEMOJI + GOVAULT name their gaps")
+print("audit: ten rows - all ten round-trip; GOVAULT's file grant is absent")
 PY
