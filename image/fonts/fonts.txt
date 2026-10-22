@@ -28,9 +28,19 @@
 # from Google Fonts variable fonts and rebuilt by tools/fonts/build-faces.py
 # (pinned source URL + SHA-256 inside; fontTools is MIT). Neither engine
 # parses CFF, so the canonical CFF Noto CJK releases are unusable; these are
-# glyf builds. Excluded by name — they need complex shaping or bidi, both
-# named mountains: Arabic, Hebrew, Indic and Thai. Hangul is deferred: this
-# card ships a JP build, and Hangul syllables need a Noto Sans KR face.
+# glyf builds. Excluded by name — they need complex shaping, a named
+# mountain: Arabic, Indic and Thai. Hangul is deferred: this card ships a JP
+# build, and Hangul syllables need a Noto Sans KR face.
+#
+# M178a (#3144): NOTOHEB.TTF is the Hebrew face — OFL 1.1, instanced to
+# static glyf Regular by build-faces.py like the others, subset to the
+# Hebrew block and presentation forms. It sits at the ui cascade tail
+# (order=6): Hebrew runes fall through every earlier face to it, while the
+# UAX #9 pass in user/go/ttf/bidi.go reorders the fragment before glyph
+# lookup, so the face only ever sees Hebrew text. Combining points (niqqud)
+# paint at their default advance with no mark positioning — named
+# limitation. Arabic stays refused by name: joining and shaping it needs
+# are out of scope even though its runes now classify AL for bidi.
 #
 # NOTOSERF appears twice on purpose. The role=serif row is the face
 # font-family:serif resolves to (M99p #2193 wired the query). The
@@ -45,6 +55,9 @@
 #   INTERBI.TTF    Inter Bold Italic (4.001, the    425296  948405a16cdc62701da5f4005ed068ca5f4d27061d98f7974ccfc37831d9581d
 #                  same rsms/inter v4.1 extras/ttf
 #                  build as the pinned faces)
+#   NOTOHEB.TTF    Noto Sans Hebrew 3.001          11144   8c90e099d5ab5817a2adda0d7578410460b307f1385ca1cd1fcb2a3c16d77277
+#                  (var->Regular, Hebrew block +
+#                  presentation forms)
 #
 # M99o (#2192): INTERBI is the bold-italic face — one row carries weight=700
 # AND style=italic, so only a {bold,italic} query selects it; it sorts after
@@ -58,6 +71,7 @@ INTERB.TTF   | role=ui     | order=2 | weight=700 | style=normal
 INTERI.TTF   | role=ui     | order=3 | weight=400 | style=italic
 NOTOSERF.TTF | role=ui     | order=4 | weight=400 | style=normal
 INTERBI.TTF  | role=ui     | order=5 | weight=700 | style=italic
+NOTOHEB.TTF  | role=ui     | order=6 | weight=400 | style=normal
 FIRACODE.TTF | role=mono   | order=1 | weight=400 | style=normal
 NOTOSERF.TTF | role=serif  | order=1 | weight=400 | style=normal
 CHROME.TTF   | role=symbol | order=1 | weight=400 | style=normal

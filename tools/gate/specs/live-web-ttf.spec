@@ -12,6 +12,9 @@
 # M99o (#2192): INTERBI.TTF stages beside the other faces, the manifest pins
 # faces=9, and run 03's COVER.HTML carries a font-weight:700;font-style:italic
 # line so the gate watches it resolve to the dedicated face (bi-resolve).
+# M178a (#3144): NOTOHEB.TTF joins the manifest (faces=10) and run 10 proves
+# the bidi path on hardware. Runs 04/05 delete fonts through vf rm, so run 10
+# restores what it needs by vf clone of the BAK-* copies staged at setup.
 
 vgate_name live-web-ttf "WEB: native font metrics and exact M93 typography/table/image/fallback presentation"
 vgate_share seed
@@ -67,10 +70,29 @@ for face in ("INTER.TTF", "INTERB.TTF", "INTERI.TTF", "INTERBI.TTF", "FIRACODE.T
 for src, dst in (("image/fonts/fonts.txt", "FONTS.TXT"),
                  ("image/fonts/VirelaiChrome-Regular.ttf", "CHROME.TTF"),
                  ("image/fonts/NotoSerif-Regular.ttf", "NOTOSERF.TTF"),
-                 ("image/fonts/NotoSansJP-Regular.ttf", "NOTOCJK.TTF")):
+                 ("image/fonts/NotoSansJP-Regular.ttf", "NOTOCJK.TTF"),
+                 ("image/fonts/NotoSansHebrew-Regular.ttf", "NOTOHEB.TTF")):
     if not os.path.exists(src):
         sys.exit("missing font payload: " + src)
     shutil.copy(src, os.path.join(share, dst))
+# M178a run 10 follows the deletion runs, which leave the share fontless:
+# these BAK-* copies are never rm'd, and run 10's script vf-clones them back
+# into place before exec'ing BIDI.HTML.
+for src, dst in (("image/fonts/fonts.txt", "BAK-FONTS.TXT"),
+                 ("image/fonts/Inter-Regular.ttf", "BAK-INTER.TTF"),
+                 ("image/fonts/NotoSansHebrew-Regular.ttf", "BAK-NOTOHEB.TTF")):
+    shutil.copy(src, os.path.join(share, dst))
+# The bidi page: an RTL-paragraph word, single-letter references for the
+# probe's column signatures, a bracket-mirror check, and the card's mixed
+# line. Numeric entities keep the fixture ASCII.
+open(os.path.join(share, "BIDI.HTML"), "wb").write(
+    b"<h4>bidi</h4>"
+    b"<p>&#x5D0;&#x5D1;&#x5D2;&#x5D3;&#x5D4;</p>"
+    b"<p>&#x5D0;</p>"
+    b"<p>&#x5D4;</p>"
+    b"<p>(&#x5D0;)</p>"
+    b"<p>(x)</p>"
+    b"<p>abc &#x5D0;&#x5D1;&#x5D2; (1) def</p>")
 colors = [(0x11, 0x7f, 0x33), (0xd0, 0x33, 0x99),
           (0x22, 0x66, 0xdd), (0xee, 0xcc, 0x00)]
 qoi = bytearray(b"qoif") + struct.pack(">II", 32, 32) + bytes([4, 0])
@@ -182,7 +204,7 @@ subprocess.check_call([sys.executable, 'user/go/browser/pixel_probe.py', sys.arg
 PY
 
 # 03: M99m coverage faces, and M99o's bold-italic. The manifest is honored
-# (faces=9), the CJK line reaches NOTOCJK, the serif-only runes in the
+# (faces=10), the CJK line reaches NOTOCJK, the serif-only runes in the
 # font-family:serif block reach NOTOSERF through the ui cascade, and the
 # font-weight:700;font-style:italic line resolves the dedicated face — the
 # engine's own bi-resolve marker says so. No rune exhausts its chain, so
@@ -202,7 +224,7 @@ vgate_assert 03 serial-contains 'web: layout blocks='
 vgate_assert 03 serial-contains 'web: settled'
 vgate_assert 03 serial-contains 'web: repaint items='
 vgate_assert 03 serial-contains 'web: ready'
-vgate_assert 03 serial-contains 'fonts: manifest=ok faces=9'
+vgate_assert 03 serial-contains 'fonts: manifest=ok faces=10'
 # M99z (#2194): the probe's serif fields pin the M99p end-to-end — the serif
 # role is loaded (serif=truetype), the face resolved (serif-face=yes), and a
 # {serif} style resolves by name to the serif face, not Inter
@@ -267,7 +289,7 @@ vgate_run 04 -- \
 
 vgate_assert 04 serial-absent 'web: budget over'
 vgate_assert 04 serial-contains 'web: url /host/COVER.HTML'
-vgate_assert 04 serial-contains 'fonts: manifest=ok faces=9'
+vgate_assert 04 serial-contains 'fonts: manifest=ok faces=10'
 vgate_assert 04 serial-contains 'fonts: notdef='
 vgate_assert 04 serial-contains 'web: ready'
 vgate_assert 04 serial-absent 'web: error'
@@ -462,3 +484,146 @@ vgate_assert 09 serial-contains 'web: banner load failed: file'
 vgate_assert 09 serial-contains 'web: banner act dismiss'
 vgate_assert 09 serial-absent 'web: banner act retry'
 vgate_assert 09 serial-absent '[EXC] parking:'
+
+# --- M178a (#3144) run 10: Hebrew + bidi after the deletion runs ----------
+# The share is fontless after runs 04/05, so the script vf-clones the BAK-*
+# copies back into place first: the manifest plus just the faces the page
+# needs (INTER for Latin, NOTOHEB for Hebrew). `fonts: manifest=ok faces=10`
+# counts manifest ROWS not loads — the four absent faces simply stay
+# unloaded. `fonts: notdef` staying silent proves every painted rune —
+# Hebrew included — resolved to real coverage, and the python probe pins the
+# visual order: the RTL word's FIRST logical letter (alef) carries the
+# right-edge column signature, its last (heh) the left edge, and the
+# bracket-mirrored line starts with the same '(' columns the LTR reference
+# line does.
+vgate_file script-bidi.txt <<'EOS'
+vf clone BAK-FONTS.TXT FONTS.TXT
+vf clone BAK-INTER.TTF INTER.TTF
+vf rm NOTOHEB.TTF
+vf clone BAK-NOTOHEB.TTF NOTOHEB.TTF
+exec WEB.ELF /host/BIDI.HTML
+EOS
+
+vgate_run 10 -- \
+    --screen '$RUN_DIR/screen-10' --via-virtio --cvc-snap \
+    --snapshot-out '$RUN_DIR/snap-10' --script '$RUN_DIR/script-bidi.txt' \
+    --snapshot-after 'web: settled' --snapshot-after 'web: repaint' \
+    --script-expect 'web: ready' --timeout 120
+
+vgate_assert 10 serial-absent 'web: budget over'
+vgate_assert 10 serial-contains 'web: url /host/BIDI.HTML'
+vgate_assert 10 serial-contains 'fonts: manifest=ok faces=10'
+vgate_assert 10 serial-contains 'web: fonts truetype(inter) ui=truetype mono=missing serif=missing'
+vgate_assert 10 serial-contains 'web: text face=truetype(inter) proportional=yes'
+vgate_assert 10 serial-absent 'fonts: notdef='
+vgate_assert 10 serial-contains 'web: ready'
+vgate_assert 10 serial-absent 'web: error'
+vgate_assert 10 serial-absent '[EXC] parking:'
+vgate_assert 10 python <<'PY'
+import os, re, sys
+from pathlib import Path
+run = Path(os.environ["RUN_DIR"])
+ser = Path(os.environ["VG_SER"]).read_text(errors="replace")
+m = re.findall(r"^web: viewport css=1280x720 x=(\d+) y=(\d+) w=(\d+) h=(\d+) s=(\d+)$",
+               ser, re.MULTILINE)
+if not m:
+    sys.exit("missing intact viewport marker")
+x, y, w, h, _ = map(int, m[-1])
+if (x, y, w, h) != (0, 64, 512, 288):
+    sys.exit("wrong presentation geometry")
+x, y = x + 40, y + 28
+snaps = sorted(run.glob("snap-10-*.raw"))
+if not snaps:
+    sys.exit("no scanout snapshot")
+raw = snaps[-1].read_bytes()
+if len(raw) != 1280 * 720 * 4:
+    sys.exit("scanout size mismatch")
+bg = raw[((y + h - 4) * 1280 + x + w - 4) * 4:( (y + h - 4) * 1280 + x + w - 4) * 4 + 3]
+
+def ink(yv, xv):
+    at = (yv * 1280 + xv) * 4
+    return raw[at:at + 3] != bg
+
+# text lines = contiguous bands of rows carrying ink inside the page area
+bands, cur = [], -1
+for yy in range(y, y + h):
+    if any(ink(yy, xx) for xx in range(x + 4, x + w - 4)):
+        if cur < 0:
+            cur = yy
+    elif cur >= 0:
+        bands.append((cur, yy)); cur = -1
+if cur >= 0:
+    bands.append((cur, y + h))
+# h4 + six <p> lines
+if len(bands) != 7:
+    sys.exit("want 7 text bands, found %d: %s" % (len(bands), bands))
+
+def cols(band):
+    t, b = band
+    return [sum(1 for yy in range(t, b) if ink(yy, xx))
+            for xx in range(x + 4, x + w - 4)]
+
+def trims(sig):
+    lo, hi = 0, len(sig)
+    while lo < hi and sig[lo] == 0:
+        lo += 1
+    while hi > lo and sig[hi - 1] == 0:
+        hi -= 1
+    return sig[lo:hi], lo
+
+sig_word   = cols(bands[1])   # אבגדה (RTL paragraph)
+sig_alef   = cols(bands[2])   # א reference
+sig_heh    = cols(bands[3])   # ה reference
+sig_parenR = cols(bands[4])   # (א) RTL paragraph
+sig_parenL = cols(bands[5])   # (x) LTR reference
+sig_mixed  = cols(bands[6])   # abc אבג (1) def
+
+alef, _ = trims(sig_alef)
+heh, _ = trims(sig_heh)
+word, wlo = trims(sig_word)
+parenR, _ = trims(sig_parenR)
+parenL, _ = trims(sig_parenL)
+
+# 1. The RTL word's FIRST logical letter (א) sits at the right edge of the
+#    painted run; its last (ה) at the left. Column signatures over the same
+#    glyph are exact — the raster is deterministic.
+if word[-len(alef):] != alef:
+    sys.exit("right edge of the Hebrew word is not alef: %s" % word[-len(alef):])
+if word[:len(heh)] != heh:
+    sys.exit("left edge of the Hebrew word is not heh: %s" % word[:len(heh)])
+if len(word) <= len(alef) * 3:
+    sys.exit("word too short to be a five-letter run: %d cols" % len(word))
+
+# 2. Bracket mirroring: "(א)" in an RTL paragraph opens with '(' columns,
+#    the same glyph the LTR "(x)" line opens and closes with — an unmirrored
+#    ')' cannot satisfy this signature.
+def lead(sig, n):
+    return sig[:n]
+if parenR[:3] != parenL[:3]:
+    sys.exit("leftmost glyph of (א) is not '(' : %s vs %s" % (parenR[:3], parenL[:3]))
+if parenR[-2:] != parenL[-2:]:
+    sys.exit("rightmost glyph of (א) is not ')' : %s vs %s" % (parenR[-2:], parenL[-2:]))
+
+# 3. The mixed line: split into word groups at >=3-blank-column gaps and find
+#    the group that ends on alef — the Hebrew run reversed inside LTR text.
+groups, gap, start = [], 0, -1
+for i, c in enumerate(sig_mixed):
+    if c == 0:
+        gap += 1
+    else:
+        if start >= 0 and gap >= 3:
+            groups.append((start, i - gap))
+            start = -1
+        if start < 0:
+            start = i
+        gap = 0
+if start >= 0:
+    groups.append((start, len(sig_mixed)))
+if len(groups) != 4:
+    sys.exit("mixed line split into %d groups, want 4: %s" % (len(groups), groups))
+hebrew_grp = sig_mixed[groups[2][0]:groups[2][1]]
+if hebrew_grp[-len(alef):] != alef:
+    sys.exit("mixed line's Hebrew run does not end on alef: %s" % hebrew_grp[-len(alef):])
+print("bidi run 10: alef at right edge, heh at left, parens mirrored,",
+      "mixed-line Hebrew run reversed (groups=%s)" % groups)
+PY
