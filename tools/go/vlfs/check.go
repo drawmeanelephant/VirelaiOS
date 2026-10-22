@@ -329,20 +329,43 @@ func (c *checker) plain(b uint32) []byte {
 	if _, ok := c.overlay[b]; ok {
 		return stored
 	}
+	out, ok := c.sealOpen(b, stored)
+	if !ok && !c.authBad[b] {
+		c.authBad[b] = true
+		c.fail("bad_block_auth", "block %d", b)
+	}
+	return out
+}
+
+// plainJournal is plain() for a journal-region read: a failed AEAD open
+// truncates the journal exactly as a checksum failure does (ADR 0061;
+// the guest's journalRead names it torn, never BadBlockAuth), so it
+// reports the informational journal_torn — the expected shape after a
+// pre-commit kill tore a journal slot's ciphertext or its eager
+// tag-entry pair — never the hard bad_block_auth a sealed home earns.
+func (c *checker) plainJournal(b uint32) []byte {
+	stored := c.read(b)
+	if c.dek == nil {
+		return stored
+	}
+	out, ok := c.sealOpen(b, stored)
+	if !ok && !c.authBad[b] {
+		c.authBad[b] = true
+		c.note("journal_torn", "journal block %d fails AEAD open", b)
+	}
+	return out
+}
+
+// sealOpen AEAD-opens one sealed block's stored bytes against its
+// {nonce, tag} home entry. A failed open yields zeros and false.
+func (c *checker) sealOpen(b uint32, stored []byte) ([]byte, bool) {
 	e := c.tagSlot(b)
 	var nonce [aeadNonceLen]byte
 	var tag [aeadTagLen]byte
 	copy(nonce[:], e[:aeadNonceLen])
 	copy(tag[:], e[aeadNonceLen:])
 	out := make([]byte, BlockLen)
-	if !aeadOpen(out, stored, &tag, blockAAD(c.volID, b), &nonce, c.dek) {
-		if !c.authBad[b] {
-			c.authBad[b] = true
-			c.fail("bad_block_auth", "block %d", b)
-		}
-		return out // zeros
-	}
-	return out
+	return out, aeadOpen(out, stored, &tag, blockAAD(c.volID, b), &nonce, c.dek)
 }
 
 // tagSlot reads the {nonce, tag} slot for sealed block b through the
@@ -388,7 +411,9 @@ func unwrapDEK(sb *superblock, pass []byte) (*[KeyBytes]byte, error) {
 // ciphertext cannot be read); pass != nil unwraps the DEK — a wrong
 // passphrase is sealed_bad_passphrase — and then every read of a
 // sealed-span block authenticates first, reporting bad_block_auth with
-// the block number.
+// the block number. Journal-region reads are the exception: a failed
+// open there truncates the journal like a checksum failure, so it
+// reports the informational journal_torn.
 func checkImage(img []byte, pass []byte) []finding {
 	if len(img) < 2*BlockLen || len(img)%SectorLen != 0 {
 		return []finding{{"not_vlfs", fmt.Sprintf("image %d bytes", len(img)), false}}
@@ -477,7 +502,7 @@ func checkImage(img []byte, pass []byte) []finding {
 	var live int
 scan:
 	for pos < end {
-		desc := c.plain(pos)
+		desc := c.plainJournal(pos)
 		if binary.LittleEndian.Uint32(desc[jdMagic:]) != MagicDesc {
 			if !isZero(desc) {
 				c.note("journal_torn", "non-DESC content at journal block %d", pos)
@@ -502,14 +527,14 @@ scan:
 		var txn []byte
 		txn = append(txn, desc[:jdEntries+8*n]...)
 		for i := uint32(0); i < n; i++ {
-			payload := c.plain(pos + 1 + i)
+			payload := c.plainJournal(pos + 1 + i)
 			if binary.LittleEndian.Uint32(desc[jdEntries+i*8+4:]) != fnv1a(payload) {
 				c.note("journal_torn", "payload %d checksum at journal block %d", i, pos)
 				break scan
 			}
 			txn = append(txn, payload...)
 		}
-		commit := c.plain(pos + 1 + n)
+		commit := c.plainJournal(pos + 1 + n)
 		if binary.LittleEndian.Uint32(commit[jcMagic:]) != MagicCommit ||
 			binary.LittleEndian.Uint64(commit[jcSeq:]) != expected ||
 			binary.LittleEndian.Uint32(commit[jcTxn:]) != fnv1a(txn) ||
@@ -518,7 +543,7 @@ scan:
 			break
 		}
 		for i := uint32(0); i < n; i++ {
-			c.overlay[binary.LittleEndian.Uint32(desc[jdEntries+i*8:])] = c.plain(pos + 1 + i)
+			c.overlay[binary.LittleEndian.Uint32(desc[jdEntries+i*8:])] = c.plainJournal(pos + 1 + i)
 		}
 		expected++
 		live++
@@ -533,10 +558,16 @@ scan:
 	// (ADR 0061 — "--check verifies every tag given the passphrase").
 	// Overlaid dests hold payload plaintext already authenticated at its
 	// journal slot; their stale home pairs are dead bytes the replay owns.
-	// A failed open reports bad_block_auth by block number.
+	// A failed open reports bad_block_auth by block number — except in
+	// the journal region, where the same failure is the torn tail the
+	// guest drops (journal_torn, informational), never a home verdict.
 	if c.dek != nil {
 		for b := uint32(2); b < c.g.TagFirst; b++ {
-			c.plain(b)
+			if b < c.g.JournalFirst+c.g.JournalBlocks {
+				c.plainJournal(b)
+			} else {
+				c.plain(b)
+			}
 		}
 	}
 
