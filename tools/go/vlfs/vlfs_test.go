@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/rand"
 	"encoding/binary"
 	"encoding/hex"
 	"flag"
@@ -1170,5 +1171,119 @@ func TestSealedBadSuperblock(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("torn tag_first did not yield a structural refusal")
+	}
+}
+
+// TestSealedUnreplayedTxn pins the post-kill shape a sealed volume
+// legitimately carries (M172e): a committed-uncheckpointed transaction.
+// The kernel journals each payload's PLAINTEXT — sealed at the journal
+// slot's AAD with an eager tag-home write — and re-seals at the dest on
+// checkpoint, so a kill in the commit→checkpoint window leaves dest homes
+// with their stale (ciphertext, tag) pairs. The as-replayed view of those
+// dests is the authenticated payload, not the dead home pair: --check must
+// report journal_unreplayed and nothing hard.
+func TestSealedUnreplayedTxn(t *testing.T) {
+	pass := []byte("correct horse battery staple")
+	img, g := sealedImage(t, string(pass))
+	sb, err := parseSuperblock(img, 0)
+	if err != nil || sb == nil {
+		t.Fatalf("superblock: %v", err)
+	}
+	dek, err := unwrapDEK(sb, pass)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	open := func(b uint32) []byte {
+		out := make([]byte, BlockLen)
+		e := tagEntry(img, g, b)
+		if !aeadOpen(out, block(img, b), (*[aeadTagLen]byte)(e[aeadNonceLen:]),
+			blockAAD(sb.volumeID, b), (*[aeadNonceLen]byte)(e[:aeadNonceLen]),
+			(*[aeadKeyLen]byte)(dek)) {
+			t.Fatalf("open block %d", b)
+		}
+		return out
+	}
+	// The kernel's journal-slot write: plaintext sealed at the slot's AAD,
+	// its tag-home entry updated eagerly.
+	sealSlot := func(slot uint32, pt []byte) {
+		var nonce [aeadNonceLen]byte
+		if _, err := rand.Read(nonce[:]); err != nil {
+			t.Fatal(err)
+		}
+		var tag [aeadTagLen]byte
+		aeadSeal(block(img, slot), &tag, pt, blockAAD(sb.volumeID, slot),
+			&nonce, (*[aeadKeyLen]byte)(dek))
+		e := tagEntry(img, g, slot)
+		copy(e[:aeadNonceLen], nonce[:])
+		copy(e[aeadNonceLen:], tag[:])
+	}
+
+	// One committed txn installing a file at ino 2 (ibitmap + bbitmap +
+	// itable + root dirent + data), committed but never checkpointed.
+	const ino, dataBlk = 2, 0
+	db := g.DataFirst + 1 + dataBlk
+	content := []byte("replayed-by-vlfs-journal\n")
+	ib := open(g.IbitmapFirst)
+	ib[ino/8] |= 1 << (ino % 8)
+	bb := open(g.BbitmapFirst)
+	bb[db/8] |= 1 << (db % 8)
+	it := open(g.ItableFirst)
+	rec := it[ino*InodeBytes : (ino+1)*InodeBytes]
+	rec[inKind] = kindFile
+	binary.LittleEndian.PutUint16(rec[inNextents:], 1)
+	binary.LittleEndian.PutUint32(rec[inSize:], uint32(len(content)))
+	binary.LittleEndian.PutUint32(rec[inExtents:], db)
+	binary.LittleEndian.PutUint32(rec[inExtents+4:], 1)
+	binary.LittleEndian.PutUint32(rec[inCksum:], fnv1a(rec[:inCksum]))
+	root := open(g.DataFirst)
+	binary.LittleEndian.PutUint32(root[deInode:], ino)
+	binary.LittleEndian.PutUint16(root[deNameLen:], 10)
+	root[deKind] = kindFile
+	copy(root[deName:], "REPLAY.TXT")
+	data := make([]byte, BlockLen)
+	copy(data, content)
+
+	dests := []uint32{g.IbitmapFirst, g.BbitmapFirst, g.ItableFirst, g.DataFirst, db}
+	payloads := [][]byte{ib, bb, it, root, data}
+	pos := g.JournalFirst
+	for i, p := range payloads {
+		sealSlot(pos+1+uint32(i), p)
+	}
+	desc := make([]byte, BlockLen)
+	binary.LittleEndian.PutUint32(desc[jdMagic:], MagicDesc)
+	binary.LittleEndian.PutUint64(desc[jdSeq:], 1)
+	binary.LittleEndian.PutUint16(desc[jdCount:], uint16(len(dests)))
+	for i, d := range dests {
+		binary.LittleEndian.PutUint32(desc[jdEntries+i*8:], d)
+		binary.LittleEndian.PutUint32(desc[jdEntries+i*8+4:], fnv1a(payloads[i]))
+	}
+	binary.LittleEndian.PutUint32(desc[jdCksum:], fnv1a(desc[:jdCksum]))
+	sealSlot(pos, desc)
+	txn := append([]byte(nil), desc[:jdEntries+8*len(dests)]...)
+	for _, p := range payloads {
+		txn = append(txn, p...)
+	}
+	commit := make([]byte, BlockLen)
+	binary.LittleEndian.PutUint32(commit[jcMagic:], MagicCommit)
+	binary.LittleEndian.PutUint64(commit[jcSeq:], 1)
+	binary.LittleEndian.PutUint32(commit[jcTxn:], fnv1a(txn))
+	binary.LittleEndian.PutUint32(commit[jcCksum:], fnv1a(commit[:jcCksum]))
+	sealSlot(pos+1+uint32(len(dests)), commit)
+
+	// The killed image must check clean: the journal scan authenticates
+	// each slot, the overlay serves the authenticated payload plaintext,
+	// and no dest reports bad_block_auth.
+	var unreplayed bool
+	for _, f := range checkImage(img, pass) {
+		if !f.info {
+			t.Fatalf("killed sealed image has hard finding: %v", f)
+		}
+		if f.code == "journal_unreplayed" {
+			unreplayed = true
+		}
+	}
+	if !unreplayed {
+		t.Fatal("committed-uncheckpointed txn did not report journal_unreplayed")
 	}
 }

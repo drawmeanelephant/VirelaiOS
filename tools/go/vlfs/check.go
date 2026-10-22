@@ -300,9 +300,10 @@ func (c *checker) note(code, format string, args ...any) {
 }
 
 // read returns block b's stored bytes as the overlay reports them
-// (as-replayed view). On a sealed volume these are ciphertext for every
-// block in [2, tag_first) and plaintext elsewhere — the overlay's
-// journaled payloads are stored-form too, so the rule is uniform.
+// (as-replayed view). On a sealed volume homes are ciphertext for every
+// block in [2, tag_first) and plaintext elsewhere; the overlay's
+// journaled payloads are plaintext — each was opened (authenticated)
+// when the journal scan read its slot.
 func (c *checker) read(b uint32) []byte {
 	if o, ok := c.overlay[b]; ok {
 		return o
@@ -318,6 +319,14 @@ func (c *checker) read(b uint32) []byte {
 func (c *checker) plain(b uint32) []byte {
 	stored := c.read(b)
 	if c.dek == nil || b < 2 || b >= c.g.TagFirst {
+		return stored
+	}
+	// A journaled payload is plaintext that was already authenticated when
+	// its journal slot was AEAD-opened; the dest's stored home pair is
+	// stale ciphertext the replay owns, never an oracle for it (M172e —
+	// re-opening it here false-flagged every committed-uncheckpointed
+	// transaction's dests as bad_block_auth).
+	if _, ok := c.overlay[b]; ok {
 		return stored
 	}
 	e := c.tagSlot(b)
@@ -522,9 +531,9 @@ scan:
 	// On a sealed volume authenticate the whole sealed span against the
 	// as-replayed view: every block's tag is verified, referenced or not
 	// (ADR 0061 — "--check verifies every tag given the passphrase").
-	// Overlaid blocks authenticate their journaled payload against the
-	// journaled tag block; the stale home pair is dead bytes the replay
-	// owns. A failed open reports bad_block_auth by block number.
+	// Overlaid dests hold payload plaintext already authenticated at its
+	// journal slot; their stale home pairs are dead bytes the replay owns.
+	// A failed open reports bad_block_auth by block number.
 	if c.dek != nil {
 		for b := uint32(2); b < c.g.TagFirst; b++ {
 			c.plain(b)
