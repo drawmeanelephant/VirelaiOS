@@ -1,11 +1,12 @@
 # ADR 0054: Measurement is the trust key — verified+measured boot, measured exec, the grant table
 
 - Date: 2026-10-16
-- Status: **Proposed** — awaiting owner review. No code lands here; this
-  ADR is the card (#2417) and, if approved, the M113 arc (#2386) implements
-  it in the filed order: M113b verified+measured boot, M113c measured exec
-  + grant table + enforcement (audit), M113d `ReleaseCaps` + GOSET consent,
-  M113e trust viewer, M113f acceptance.
+- Status: **Accepted** — shipped by the M113 arc (#2386, closed):
+  handoff is live (`kernel/src/handoff.zig:39`) and the grant table
+  ships (`image/fleet-grants.txt:1`); this ADR is the card (#2417), and
+  the M113 arc implemented it in the filed order: M113b verified+measured
+  boot, M113c measured exec + grant table + enforcement (audit), M113d
+  `ReleaseCaps` + GOSET consent, M113e trust viewer, M113f acceptance.
 - Card: **#2417** (M113 index **#2386**) — card 1 of 6. This is the one doc
   for the arc (AGENTS.md: one doc per arc, not four).
 - Related: ADR 0007 (syscall ABI — the slot groups the words map to; D10's
@@ -225,6 +226,25 @@ The `apps.txt` header stays literally true: `caps=` is a request and a
 display, never the enforcement source, and `/host/APPS.TXT` remains
 guest-writable. STORE may *propose* rows from a signed `ReleaseCaps`
 (D11); `caps=` itself grants nothing.
+
+**Amended by #3186:** `caps=` is no longer purely declarative —
+it is an enforced **narrow-only ceiling** composed over the grant
+decision. At exec the kernel reads `APPS.TXT` (bounded at every reader's
+shared 4 KiB manifest budget), and when the image's row carries `caps=`
+the process's word set becomes `decide(name) ∩ (declared ∪ floor)`, where
+`floor = {memory, process, debug}` — the Go-runtime existence words the
+fleet audit convention implies (an app may not declare away its ability
+to allocate, print, or exit). A verb the grant row gave but the manifest
+stripped is denied `caps_denied` through the receipt surface (#2974 area); a verb
+neither gave is denied `<word>_denied` as before. A row with no `caps=` —
+or a `caps=` that fails to parse — resolves to no ceiling at all: the
+backwards-compatible default is the grant decision alone. The rejected
+alternative below is unaffected: it rejected `caps=` as a **grant
+source** on a guest-writable file. A ceiling grants nothing — the
+intersection can at worst restore the grant row's own words, so no EL0
+edit of the manifest can exceed what the kernel-pinned table already
+decided. The word gate, the deny seam, and the audit/enforce posture are
+unchanged; this amendment adds the ceiling input, not a second path.
 
 ### D7. Enforcement reads a kernel-owned grant table
 The table is a bounded set of rows **`(name, sha256, words)`**:

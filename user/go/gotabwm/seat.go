@@ -419,6 +419,10 @@ func main() {
 	// receipt lane. Same credential posture — the agent-hmac row served
 	// to this image is the whole flag; unserved is byte-silent.
 	agentSeatInit()
+	// M161b (#2974): the Force-quit probe — one principal read decides
+	// whether the banner's kill verb is painted at all, and the verdict
+	// line is the gate's evidence either way.
+	watchdogProbeKillGate()
 	if demoMode {
 		vi.ConsoleLine(MarkerModeDemo)
 	} else {
@@ -727,6 +731,10 @@ func compositeTick(scan []byte, ticks uint64, presents *int) {
 	if reexecN > 0 {
 		reapSessionReexec()
 	}
+	// M161b (#2974): the watchdog runs on the heartbeat — discovery asks
+	// and the busy sampler every pass, the 10 s liveness sweep measured
+	// off the consumed-tick count.
+	watchdogTick(ticks)
 	// M79k (#1720): the toast expiry sweep is heartbeat-paced — a toast
 	// lives NotifyTicks-1 composite passes of the HEARTBEAT stream, so a
 	// damage pass renders toasts but never ages them (card #3034). Expiry
@@ -845,6 +853,10 @@ func compositePaint(scan []byte, ticks uint64, presents *int) (presented bool) {
 	if powerMenuOpen {
 		_ = paintPowerMenu(scan, vi.ScanoutWidth, vi.ScanoutHeight)
 	}
+	// M161b (#2974): not-responding banners paint over their panes and
+	// under the toasts/ghost/curtain — the pointer path hit-tests them in
+	// the same order (the modal menus above already consumed the press).
+	_ = paintWatchdog(scan, vi.ScanoutWidth, vi.ScanoutHeight)
 	// M125f (#2591): a crash receipt's deferred re-exec runs here — off
 	// the teardown event and clear of crashSave's whole-VM save.
 	crashRestartTick()
@@ -914,11 +926,12 @@ func compositePaint(scan []byte, ticks uint64, presents *int) (presented bool) {
 // and no tick-counted budget moves: the idle ramp, the strip
 // choreography's holds, the toast lane's NotifyTicks expiry, and the
 // parked snapshot/focus-cycle releases all keep heartbeat cadence.
-// compositeClock still counts the frame — a paint is a real composite
-// pass, and that is what keeps a toast born mid-drain anchored to the
-// frame it actually landed on.
+// compositeClock stays heartbeat-only too: it is the toast lane's paint
+// clock (born/expires/fade all anchor on it), so a damage pass that also
+// bumped it would age every live toast one frame per repaint — a toast
+// dying after NotifyTicks damage passes, seconds early, and the scripted
+// click landing on an empty strip (observed go-wm-seat runs 06/17).
 func damageCompositeTick(scan []byte, ticks uint64, presents *int) {
-	compositeClock++
 	_ = compositePaint(scan, ticks, presents)
 }
 

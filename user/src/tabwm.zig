@@ -1,3 +1,4 @@
+//! census (M188e, #3190): TABWM.BIN — gate-referenced: 13 specs incl. live-tabwm, go-wm-hid; also the APPS.TXT Zig fallback WM (ADR 0034).
 //! VirelaiOS M39 TWM2 — TABWM.BIN, the browser-style tabbed window manager server (issue #929).
 //!
 //! Replaces the 1990s floating overlapping window model with a sleek, browser-like
@@ -3625,7 +3626,7 @@ pub fn draw_unsaved_dialog(pixels: []u32) void {
 /// artwork — an octopus holding the six-layer burger — downscaled from
 /// `assets/sexiburger.png` (534x534, the canonical emoji export) to 28x28
 /// and embedded as a QOI fixture (`mascot_28x28.qoi`; regenerate with the
-/// premultiplied-Lanczos pass documented in `docs/march-m42-sexiburger-desktop.md`).
+/// premultiplied-Lanczos pass documented in `docs/archive/march-m42-sexiburger-desktop.md`).
 /// Decoded ONCE into static BSS (the wnd.zig god-menu fixture pattern) and
 /// alpha-blended straight into the scanout via `ui.draw_image_buf`. The
 /// rect-drawn fallback emblem stays available in `lib/sexiburger.zig` for

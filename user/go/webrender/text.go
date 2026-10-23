@@ -315,16 +315,73 @@ func (f Fonts) px(st Style) int {
 	return ttfBodyPx * n
 }
 
-// Measure implements TextEngine.
+// shapedText is the per-rune presentation-form view as one string: the
+// input to face resolution so a cascade picks the face covering the glyph
+// that paints, not the one that was typed. Same rune count as the input,
+// so it stays index-aligned with the logical runes.
+func shapedText(text string, runes []rune) string {
+	return string(ttf.ShapeArabic(text).Runes(runes))
+}
+
+// runFaces maps each logical rune index of text to the face covering it: the
+// piece assignment Split already computes for a chain, or the style's face
+// for a chainless run. A nil face means the rune has no covering face; the
+// caller skips it exactly like Split's nil piece.
+func runFaces(faces []*ttf.Face, ch *ttf.Chain, text string, runes []rune) []*ttf.Face {
+	if ch == nil {
+		return faces // caller fills with the single style face
+	}
+	i := 0
+	for _, p := range ch.Split(text) {
+		for range p.Text {
+			faces[i] = p.Face
+			i++
+		}
+	}
+	return faces
+}
+
+// measureVisual sums the per-rune advances in VISUAL order — the same glyph
+// set Paint walks, including the M186b presentation forms, the L4-mirrored
+// brackets, and excluding the dropped boundary-neutrals and ligature-
+// absorbed runes, so measure and paint can never disagree about width.
+// (Advance order cannot change a sum; the substitution can.)
+func measureVisual(text string, runes []rune, faces []*ttf.Face, px int) int {
+	v := ttf.Bidi(text, ttf.BidiAuto)
+	ar := ttf.ShapeArabic(text)
+	formed := ar.Runes(runes)
+	total := 0
+	for _, i := range v.Order {
+		if ar.Skip[i] || faces[i] == nil {
+			continue
+		}
+		r := formed[i]
+		if v.Mirror[i] != 0 {
+			r = v.Mirror[i]
+		}
+		total += faces[i].AdvancePx(r, px)
+	}
+	return total
+}
+
+// Measure implements TextEngine. The width is measured in the visual order
+// the paint path uses (M178a): a mixed-direction fragment measures the same
+// glyphs in the same order it paints them. Faces resolve on the shaped text
+// (M186b), the runes that actually paint.
 func (f Fonts) Measure(text string, st Style) int {
+	runes := []rune(text)
+	faces := make([]*ttf.Face, len(runes))
 	if ch := f.chain(st); ch != nil {
-		return ch.Measure(text, f.px(st))
+		return measureVisual(text, runes, runFaces(faces, ch, shapedText(text, runes), runes), f.px(st))
 	}
 	face := f.face(st)
 	if face == nil {
 		return Bitmap{}.Measure(text, st)
 	}
-	return face.Measure(text, f.px(st))
+	for i := range faces {
+		faces[i] = face
+	}
+	return measureVisual(text, runes, faces, f.px(st))
 }
 
 // Advance implements TextEngine. The cell is the advance of a wide reference
@@ -357,7 +414,13 @@ func (f Fonts) LineHeight(st Style) int {
 }
 
 // Paint implements TextEngine. Text is anchored on the LINE BOX TOP the layout
-// produced; the engine converts that to the baseline it needs.
+// produced; the engine converts that to the baseline it needs. The run is
+// bidi-resolved (M178a) before glyph lookup, so a Hebrew run paints in UAX #9
+// visual order with its paired brackets mirrored — per fragment, so a line
+// split by an inline element reorders each fragment separately (a named
+// limitation). Arabic runes are first rewritten to their contextual
+// presentation forms (M186b), so joined Arabic reaches the face as the
+// shaped code points — the ligature-absorbed runes consume no advance.
 func (f Fonts) Paint(s Surface, x, top int, text string, st Style, rgb uint32, c Clip) int {
 	if ch := f.chain(st); ch != nil {
 		return f.paintChain(s, x, top, text, st, rgb, c, ch)
@@ -371,10 +434,21 @@ func (f Fonts) Paint(s Surface, x, top int, text string, st Style, rgb uint32, c
 	baseline := top + asc
 	pen := x
 	tabStep := face.AdvancePx('M', px) * 4
-	for _, r := range text {
+	runes := []rune(text)
+	ar := ttf.ShapeArabic(text)
+	formed := ar.Runes(runes)
+	v := ttf.Bidi(text, ttf.BidiAuto)
+	for _, i := range v.Order {
+		if ar.Skip[i] {
+			continue // absorbed into a lam-alef ligature at an earlier slot
+		}
+		r := formed[i]
 		if r == '\t' {
 			pen += tabStep
 			continue
+		}
+		if v.Mirror[i] != 0 {
+			r = v.Mirror[i]
 		}
 		m, adv, err := face.Glyph(face.GlyphIndex(r), px)
 		if err != nil {
@@ -396,11 +470,15 @@ func (f Fonts) Paint(s Surface, x, top int, text string, st Style, rgb uint32, c
 	return pen - x
 }
 
-// paintChain is Paint for a manifested engine: the chain splits the run at
-// face boundaries and each piece paints with its own face on the PRIMARY
-// face's baseline, so a fallback glyph sits in the line the primary set.
-// Measure walks the same Split, so the two can never disagree about a
-// rune's width — the rule the comparator gates on.
+// paintChain is Paint for a manifested engine: the chain resolves each rune
+// to the face that covers it and the bidi pass (M178a) reorders the fragment
+// to visual order, so a Hebrew run reaches its covering face already
+// reversed. The chain resolves the SHAPED runes (M186b): a presentation
+// form falls through the cascade to the face carrying it, and a rune
+// absorbed into a lam-alef ligature paints nothing of its own. Every glyph paints on the PRIMARY face's baseline, so a fallback
+// glyph sits in the line the primary set. Measure walks the same faces in
+// the same order, so the two can never disagree about a rune's width — the
+// rule the comparator gates on.
 func (f Fonts) paintChain(s Surface, x, top int, text string, st Style, rgb uint32, c Clip, ch *ttf.Chain) int {
 	px := f.px(st)
 	primary := ch.Primary()
@@ -411,29 +489,39 @@ func (f Fonts) paintChain(s Surface, x, top int, text string, st Style, rgb uint
 	baseline := top + asc
 	pen := x
 	tabStep := primary.AdvancePx('M', px) * 4
-	for _, piece := range ch.Split(text) {
-		face := piece.Face
+	runes := []rune(text)
+	ar := ttf.ShapeArabic(text)
+	formed := ar.Runes(runes)
+	faces := runFaces(make([]*ttf.Face, len(runes)), ch, string(formed), runes)
+	v := ttf.Bidi(text, ttf.BidiAuto)
+	for _, i := range v.Order {
+		if ar.Skip[i] {
+			continue // absorbed into a lam-alef ligature at an earlier slot
+		}
+		face := faces[i]
 		if face == nil {
 			continue
 		}
-		for _, r := range piece.Text {
-			if r == '\t' {
-				pen += tabStep
-				continue
-			}
-			m, adv, err := face.Glyph(face.GlyphIndex(r), px)
-			if err != nil {
-				pen += face.AdvancePx(r, px)
-				continue
-			}
-			if !m.Empty() {
-				blitMask(s, c, pen+m.BearingX, baseline-m.BearingY, m, rgb)
-				if f.noRealBold(st) {
-					blitMask(s, c, pen+m.BearingX+1, baseline-m.BearingY, m, rgb)
-				}
-			}
-			pen += adv
+		r := formed[i]
+		if r == '\t' {
+			pen += tabStep
+			continue
 		}
+		if v.Mirror[i] != 0 {
+			r = v.Mirror[i]
+		}
+		m, adv, err := face.Glyph(face.GlyphIndex(r), px)
+		if err != nil {
+			pen += face.AdvancePx(r, px)
+			continue
+		}
+		if !m.Empty() {
+			blitMask(s, c, pen+m.BearingX, baseline-m.BearingY, m, rgb)
+			if f.noRealBold(st) {
+				blitMask(s, c, pen+m.BearingX+1, baseline-m.BearingY, m, rgb)
+			}
+		}
+		pen += adv
 	}
 	return pen - x
 }

@@ -383,6 +383,10 @@ fi
 # M99m (#2190) coverage faces: the serif role primary and the CJK cascade tail.
 [ -f "$ROOT/image/fonts/NotoSerif-Regular.ttf" ] && cp "$ROOT/image/fonts/NotoSerif-Regular.ttf" "$SHARE/NOTOSERF.TTF"
 [ -f "$ROOT/image/fonts/NotoSansJP-Regular.ttf" ] && cp "$ROOT/image/fonts/NotoSansJP-Regular.ttf" "$SHARE/NOTOCJK.TTF"
+# M178a (#3144): the Hebrew face for the bidi arc.
+[ -f "$ROOT/image/fonts/NotoSansHebrew-Regular.ttf" ] && cp "$ROOT/image/fonts/NotoSansHebrew-Regular.ttf" "$SHARE/NOTOHEB.TTF"
+# M186b (#3179): the Arabic face for the presentation-form shaper.
+[ -f "$ROOT/image/fonts/NotoNaskhArabic-Regular.ttf" ] && cp "$ROOT/image/fonts/NotoNaskhArabic-Regular.ttf" "$SHARE/NOTOARAB.TTF"
 
 # stage_go_app <NAME.ELF> — the M122a incremental build step. The plan above
 # already knows each app's freshness: a `fresh` ELF is never rebuilt and a
