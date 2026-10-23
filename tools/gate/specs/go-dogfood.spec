@@ -2931,7 +2931,7 @@ vgate_run 10 -- \
     --input-chords 'ctrl-shift-3' \
     --input-chords-after 'gosh: prompt' \
     --script '$RUN_DIR/script-10a.txt' \
-    --script-after 'gotabwm: shot saved' \
+    --script-after 'gotabwm: notify paint' \
     --script-expect 'rx-m190b-ok' --timeout 300
 
 # The LIVE default seat on a first-boot strip: the starter GOSH is the
