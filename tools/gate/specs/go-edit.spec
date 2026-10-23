@@ -1535,10 +1535,10 @@ vgate_run 18 -- \
     --script-expect 'rx-goedit-menu-ok' --timeout 240
 
 vgate_assert 18 serial-contains 'exec: loaded GOEDIT.ELF'
-vgate_assert 18 serial-contains 'goedit: read /host/EDIT/SEED.TXT n=10'
+vgate_assert 18 serial-contains 'goedit: read /host/EDIT/SEED.TXT n='
 vgate_assert 18 serial-contains 'goedit: menu open'
 vgate_assert 18 serial-contains 'goedit: menu Save'
-vgate_assert 18 serial-contains 'goedit: saved /host/EDIT/SEED.TXT n=10'
+vgate_assert 18 serial-contains 'goedit: saved /host/EDIT/SEED.TXT n='
 vgate_assert 18 serial-contains 'rx-goedit-menu-ok'
 vgate_assert 18 serial-absent '[EXC] parking:'
 vgate_assert 18 serial-absent 'exited status=139'

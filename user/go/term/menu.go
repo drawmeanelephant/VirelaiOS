@@ -66,9 +66,10 @@ func buildTermBar(act *menuAct) appkit.MenuBar {
 // menuSession owns the tty while the menubar stands: paints the bar and
 // the open menu on the alternate screen, drives the appkit state machine
 // with the decoded byte stream, and returns the row's verb when one fires.
-// Esc/F10 disengage with actNone; a window close still shuts down inside
-// the loop like the hints face.
-func menuSession(ta *tabapp.TabApp, ts *termState, fd uint32) menuAct {
+// in0 is the read chunk's tail after the F10 sequence — the rest of the
+// gesture must not be dropped. Esc/F10 disengage with actNone; a window
+// close still shuts down inside the loop like the hints face.
+func menuSession(ta *tabapp.TabApp, ts *termState, fd uint32, in0 []byte) menuAct {
 	var act menuAct
 	bar := buildTermBar(&act)
 	bar.Activate(0)
@@ -134,11 +135,14 @@ func menuSession(ta *tabapp.TabApp, ts *termState, fd uint32) menuAct {
 	vi.ConsoleLine("goterm: menubar open")
 
 	var in [64]byte
+	n := copy(in[:], in0)
 	for act == actNone {
 		ta.PollStateAsk()
-		n, _ := vi.FileRead(fd, in[:])
+		if n == 0 {
+			n, _ = vi.FileRead(fd, in[:])
+		}
 		if n > 0 {
-			for len(in[:n]) > 0 {
+			for n > 0 && act == actNone {
 				ev, used := keys.Decode(in[:n])
 				if used <= 0 {
 					break

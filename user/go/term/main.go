@@ -416,15 +416,16 @@ func runSession(ta *tabapp.TabApp, fd uint32, ts *termState) {
 			n, _ := vi.FileRead(fd, readBuf[:])
 			if n > 0 {
 				// M190d (#3239): F10 (the kernel's ESC[21~) engages the
-				// menubar. Bytes ahead of the chord feed normally; a
-				// gesture's tail is dropped — the menu owned the stream
-				// from that keystroke.
+				// menubar. Bytes ahead of the chord feed normally; the
+				// chunk's tail rides into the menu session as its first
+				// input — the rest of the gesture is its navigation.
 				if i := bytes.Index(readBuf[:n], menuF10); i >= 0 {
 					if i > 0 {
 						feedBytes(readBuf[:i])
 					}
 					if !restart {
-						menuPerform(menuSession(ta, ts, fd), ta, ts, fd, editor, handle)
+						menuPerform(menuSession(ta, ts, fd, readBuf[i+len(menuF10):n]),
+							ta, ts, fd, editor, handle)
 					}
 				} else if n == 1 && readBuf[0] == '?' {
 					// M121c (#2566): a bare '?' keystroke at the prompt opens
