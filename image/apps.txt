@@ -11,17 +11,10 @@
 #          in every reader, so an undocked v2 row writes `dock=false`.
 #   argv=  fixed arguments after the binary, space separated, at most 8 (the
 #          kernel's exec bound). v1: none.
-#   caps=  declared capabilities, comma separated: file window audio timer
-#          memory process debug net term — the first seven are the WASM
-#          import contract's Cap names (user/src/wasm.zig). ENFORCED as a
-#          narrow-only ceiling (M188a, ADR 0054 amendment): at exec the
-#          kernel intersects the grant decision with declared ∪
-#          {memory,process,debug} — the runtime existence words are
-#          implied, everything else the app calls must be declared.
-#          caps= can only REMOVE power the grant row already gave, never
-#          add; a row without caps= is unenforced by the manifest (the
-#          transition rule) and a verb outside the declared set fails by
-#          name (`caps_denied`).
+#   caps=  declared capabilities, comma separated (WASM Cap names;
+#          user/src/wasm.zig). Enforced narrow-only at exec: grant
+#          decision ∩ (declared ∪ {memory,process,debug}); `caps_denied`
+#          names the refusal. No caps= → unenforced. (ADR 0054, #3186)
 #   opens= what the app can be handed: an M81b mime type (text image audio
 #          archive binary document), a URL scheme (http https; M81c #1763),
 #          or an M124a (#2580) type/subtype spelling (text/plain, image/png).
