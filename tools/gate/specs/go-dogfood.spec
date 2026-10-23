@@ -2423,7 +2423,7 @@ PY
 #
 #     x y z          a typed run into the scratch buffer -> `goedit: dirty`
 #     ?              M121c: the app's own '?' opens the registry-fed hint
-#                    overlay -> `goedit: hints n=43` + the `hints row` dump
+#                    overlay -> `goedit: hints n=44` + the `hints row` dump
 #     down x6        nav strokes the modal consumes -- dwell so the kind-4
 #                    snapshot armed on `hints n=` streams a frame while
 #                    the plate is still up
@@ -2542,11 +2542,10 @@ vgate_assert 09 serial-contains 'goedit: dirty'
 # --- M121c leg: '?' opens the registry-fed overlay; Esc closes it ---------
 # n= is the live registry's own row count for GOEDIT (the app's 4 rows
 # plus the seat's globals): 40 at M121d, 41 once M190a's clip-menu row
-# landed, 43 with M190b's shot pair (the pin drifted one revision
-# behind across M190a — corrected here). The two rows below are the
-# journey's own chords made visible — the palette's summon and the undo
-# dispatch.
-vgate_assert 09 serial-contains 'goedit: hints n=43'
+# landed, 43 with M190b's shot pair, 44 with M190e's lock row. The two
+# rows below are the journey's own chords made visible — the palette's
+# summon and the undo dispatch.
+vgate_assert 09 serial-contains 'goedit: hints n=44'
 vgate_assert 09 serial-contains 'goedit: hints row ctrl+shift+p summon the command palette'
 vgate_assert 09 serial-contains 'goedit: hints row ctrl+z dispatch undo'
 vgate_assert 09 serial-contains 'goedit: hints close'
