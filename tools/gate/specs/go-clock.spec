@@ -81,7 +81,7 @@
 #           VCALENDAR through WriteFileSafe — EDITOUT.ICS on the share,
 #           `export done n=1 bound=8` naming MaxAlarms ≤ ical.MaxEvents.
 #   run 13  M193b re-parse + fire leg: a fresh boot re-imports the app's
-#           own export — the `import 07:00 daily Wake up` verdict is the
+#           own export — the `import 07:00 daily Reveille` verdict is the
 #           independent-reader proof the emitted file round-trips,
 #           summary and RRULE alike. The run-06 idiom then stages an
 #           overdue gocal3 record and the reopened app restores it and
@@ -568,13 +568,13 @@ if len(b) < off + 6 + 8:
 if b[off:off+2] != b"AS" or b[off+2] != 1 or b[off+3] < 1:
     sys.exit("app_state header %r" % b[off:off+6])
 asc = b[off+3]
-pos = off + 6 + 8 * asc
+pos = off + 6
 hits = []
 for i in range(asc):
-    ent = b[off+6+8*i:off+14+8*i]
+    ent = b[pos:pos+8]
     ln = int.from_bytes(ent[4:8], "little")
-    blob = b[pos:pos+ln]
-    pos += ln
+    blob = b[pos+8:pos+8+ln]
+    pos += 8 + ln
     if re.fullmatch(rb"gocal3 1 [0-9]+ 2359 d\+ \\_", blob):
         hits.append((ent[0], ent[1], blob))
 if len(hits) != 1 or hits[0][1] != 1:
@@ -785,17 +785,19 @@ if len(b) < off + 6 + 8:
 if b[off:off+2] != b"AS" or b[off+2] != 1 or b[off+3] < 1:
     sys.exit("app_state header %r" % b[off:off+6])
 asc = b[off+3]
-pos = off + 6 + 8 * asc
+pos = off + 6
 hits = []
+entries = []
 for i in range(asc):
-    ent = b[off+6+8*i:off+14+8*i]
+    ent = b[pos:pos+8]
     ln = int.from_bytes(ent[4:8], "little")
-    blob = b[pos:pos+ln]
-    pos += ln
+    blob = b[pos+8:pos+8+ln]
+    pos += 8 + ln
+    entries.append((ent[0], ent[1], blob))
     if re.fullmatch(rb"gocal3 2 [0-9]+ 0645 d\+ \\_ [0-9]+ 1920 o\+ \\_", blob):
         hits.append((ent[0], ent[1], blob))
 if len(hits) != 1 or hits[0][1] != 1:
-    sys.exit("want exactly one appver=1 two-row gocal3 blob, found %r" % hits)
+    sys.exit("want exactly one appver=1 two-row gocal3 blob, entries=%r" % entries)
 print("SESSION.TABS app_state: idx=%d appver=%d blob=%r" % hits[0])
 PY
 
@@ -966,13 +968,13 @@ off = 6 + 69 * t[2]
 if len(t) < off + 6 + 8 or t[off:off+2] != b"AS" or t[off+2] != 1 or t[off+3] < 1:
     sys.exit("no app_state trailer: %r" % t[off:off+6])
 asc = t[off+3]
-pos = off + 6 + 8 * asc
+pos = off + 6
 hits = []
 for i in range(asc):
-    ent = t[off+6+8*i:off+14+8*i]
+    ent = t[pos:pos+8]
     ln = int.from_bytes(ent[4:8], "little")
-    blob = t[pos:pos+ln]
-    pos += ln
+    blob = t[pos+8:pos+8+ln]
+    pos += 8 + ln
     if re.fullmatch(rb"gocal3 1 [0-9]+ 2359 d\+ \\_", blob):
         hits.append((ent[0], ent[1], blob))
 if len(hits) != 1 or hits[0][1] != 1:
@@ -1325,7 +1327,7 @@ vgate_file script-12.txt <<'EOF'
 vf rm SESSION.TABS
 vf rm GOCLOCK.ALARM
 vf rm EDITOUT.ICS
-write GOCLOCK.ALARM gocal3 1 1813136400 0900 d+ Wake\sup
+write GOCLOCK.ALARM gocal3 1 1813136400 0900 d+ Reveille
 EOF
 
 vgate_file script2-12.txt <<'EOF'
@@ -1364,7 +1366,7 @@ vgate_assert 12 serial-contains 'goclock OK'
 # the reader's bound the list always fits.
 vgate_assert 12 serial-contains 'goclock: export done n=1 bound=8'
 vgate_assert 12 share-contains 'EDITOUT.ICS' 'BEGIN:VCALENDAR'
-vgate_assert 12 share-contains 'EDITOUT.ICS' 'SUMMARY:Wake up'
+vgate_assert 12 share-contains 'EDITOUT.ICS' 'SUMMARY:Reveille'
 vgate_assert 12 share-contains 'EDITOUT.ICS' 'RRULE:FREQ=DAILY'
 vgate_assert 12 serial-absent 'goclock: alarm refused'
 vgate_assert 12 serial-absent 'goclock: alarm file bad'
@@ -1384,11 +1386,11 @@ b = open(p, "rb").read()
 want = (rb"BEGIN:VCALENDAR\r\nVERSION:2\.0\r\n"
         rb"PRODID:-//VirelaiOS//ical//EN\r\n"
         rb"BEGIN:VEVENT\r\nDTSTART:\d{8}T070000Z\r\n"
-        rb"SUMMARY:Wake up\r\nRRULE:FREQ=DAILY\r\n"
+        rb"SUMMARY:Reveille\r\nRRULE:FREQ=DAILY\r\n"
         rb"END:VEVENT\r\nEND:VCALENDAR\r\n")
 if not re.fullmatch(want, b):
-    sys.exit("EDITOUT.ICS = %r, want one daily 07:00Z event 'Wake up'" % b)
-print("EDITOUT.ICS = one VEVENT, DTSTART %s, SUMMARY:Wake up, FREQ=DAILY"
+    sys.exit("EDITOUT.ICS = %r, want one daily 07:00Z event 'Reveille'" % b)
+print("EDITOUT.ICS = one VEVENT, DTSTART %s, SUMMARY:Reveille, FREQ=DAILY"
       % re.search(rb"DTSTART:(\S+)", b).group(1).decode())
 PY
 
@@ -1410,7 +1412,7 @@ exec GOCLOCK.ELF import /host/EDITOUT.ICS
 EOF
 
 vgate_file script3-13.txt <<'EOF'
-write GOCLOCK.ALARM gocal3 1 1 0700 d+ Wake\sup
+write GOCLOCK.ALARM gocal3 1 1 0700 d+ Reveille
 exec GOCLOCK.ELF
 EOF
 
@@ -1427,7 +1429,7 @@ vgate_run 13 -- \
 vgate_assert 13 serial-contains 'exec: loaded GOCLOCK.ELF'
 # The emitted file re-parsed through the independent reader — the
 # verdict names the round-tripped instant, mode and summary.
-vgate_assert 13 serial-contains 'goclock: import 07:00 daily Wake up'
+vgate_assert 13 serial-contains 'goclock: import 07:00 daily Reveille'
 vgate_assert 13 serial-contains 'goclock: import done added=1 refused=0'
 vgate_assert 13 serial-contains 'goclock: alarm saved'
 # The staged overdue record restored and fired once, marked late —
