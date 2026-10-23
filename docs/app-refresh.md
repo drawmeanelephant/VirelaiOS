@@ -1,4 +1,4 @@
-# App refresh ledger (M192a, #3246)
+# App refresh ledger (#3246, index #3234)
 
 One row per shipped app — every `image/apps.txt` row — carrying the card
 that last touched it and the ISO-8601 date. The component registry
