@@ -84,7 +84,7 @@ vgate_repeat 5 BOOTS
 vgate_file script-01.txt <<'EOF'
 net ip 10.0.0.1
 net arp 10.0.0.2
-exec AGENTD.ELF --allow-exec
+exec -u2000 AGENTD.ELF --allow-exec
 EOF
 
 vgate_file script-02.txt <<'EOF'
@@ -95,13 +95,13 @@ EOF
 vgate_file script-03.txt <<'EOF'
 net ip 10.0.0.1
 net arp 10.0.0.2
-exec AGENTD.ELF --allow-exec
+exec -u2000 AGENTD.ELF --allow-exec
 EOF
 
 vgate_file script-04.txt <<'EOF'
 net ip 10.0.0.1
 net arp 10.0.0.2
-exec AGENTD.ELF --allow-exec
+exec -u2000 AGENTD.ELF --allow-exec
 EOF
 
 vgate_file script-05.txt <<'EOF'
@@ -186,7 +186,7 @@ open(os.path.join(share, "SECRETS.TXT"), "w").write(
     "#v1\n"
     "agent-sign\t1000\t" + SIGN_SEED_HEX + "\tFLINT.ELF\n"
     "flint-remote\t1000\t" + AUTH_KEY_HEX + "\tFLINT.ELF\n"
-    "agent-hmac\t1000\t" + RECEIPT_KEY_HEX + "\tAGENTD.ELF\n")
+    "agent-hmac\t2000\t" + RECEIPT_KEY_HEX + "\tAGENTD.ELF\n")
 open(os.path.join(share, "OWNERS.TXT"), "w").write(
     "#v1\nAGENTD.ELF\t644\t0\t-\nFLINT.ELF\t644\t0\t-\nAGENTS.TXT\t444\t0\t-\n")
 
