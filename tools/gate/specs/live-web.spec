@@ -2971,7 +2971,7 @@ vgate_run 49 -- \
     --script-expect 'web: quit' --timeout 240
 
 vgate_assert 49 serial-contains 'web: ready'
-vgate_assert 49 serial-contains 'web: hints n=36'
+vgate_assert 49 serial-contains 'web: hints n=40'
 vgate_assert 49 serial-contains 'web: hints row ctrl+shift+p summon the command palette'
 vgate_assert 49 serial-absent 'web: hints row ctrl+shift+c '
 vgate_assert 49 serial-contains 'web: hints close'
@@ -4023,13 +4023,13 @@ vgate_run 61 -- \
     --script2 '$RUN_DIR/script2-menu.txt' --script2-after 'tabwm: sidebar-rendered' \
     --input-chords 'f10,right,right,right,down,down,down,down,return,escape' \
     --input-chords-after 'web: ready' \
-    --script3 '$RUN_DIR/script3-menu.txt' --script3-after 'web: hints n=36' \
+    --script3 '$RUN_DIR/script3-menu.txt' --script3-after 'web: hints n=40' \
     --script-expect 'rx-web-menu-ok' --timeout 240
 
 vgate_assert 61 serial-contains 'exec: loaded WEB.ELF'
 vgate_assert 61 serial-contains 'web: menu open'
 vgate_assert 61 serial-contains 'web: menu Chord hints'
-vgate_assert 61 serial-contains 'web: hints n=36'
+vgate_assert 61 serial-contains 'web: hints n=40'
 vgate_assert 61 serial-contains 'rx-web-menu-ok'
 vgate_assert 61 serial-absent '[EXC] parking:'
 vgate_assert 61 serial-absent 'exited status=139'

@@ -897,7 +897,7 @@ vgate_assert 12 serial-contains 'goedit: present'
 # seat row (29 in the shipped table + M132a's seven reserved rows = 36)
 # = 40; NO kernel-terminal rows — this window is not a tty front-end, so
 # those chords do not answer here.
-vgate_assert 12 serial-contains 'goedit: hints n=40'
+vgate_assert 12 serial-contains 'goedit: hints n=44'
 vgate_assert 12 serial-contains 'goedit: hints row ctrl+s publish the buffer (save)'
 vgate_assert 12 serial-contains 'goedit: hints row ctrl+f '
 vgate_assert 12 serial-contains 'goedit: hints row ctrl+g '
