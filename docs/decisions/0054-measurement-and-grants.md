@@ -227,7 +227,7 @@ display, never the enforcement source, and `/host/APPS.TXT` remains
 guest-writable. STORE may *propose* rows from a signed `ReleaseCaps`
 (D11); `caps=` itself grants nothing.
 
-**Amended by M188a (#3186):** `caps=` is no longer purely declarative —
+**Amended by #3186:** `caps=` is no longer purely declarative —
 it is an enforced **narrow-only ceiling** composed over the grant
 decision. At exec the kernel reads `APPS.TXT` (bounded at every reader's
 shared 4 KiB manifest budget), and when the image's row carries `caps=`
@@ -235,7 +235,7 @@ the process's word set becomes `decide(name) ∩ (declared ∪ floor)`, where
 `floor = {memory, process, debug}` — the Go-runtime existence words the
 fleet audit convention implies (an app may not declare away its ability
 to allocate, print, or exit). A verb the grant row gave but the manifest
-stripped is denied `caps_denied` through the M161a receipt surface; a verb
+stripped is denied `caps_denied` through the receipt surface (#2974 area); a verb
 neither gave is denied `<word>_denied` as before. A row with no `caps=` —
 or a `caps=` that fails to parse — resolves to no ceiling at all: the
 backwards-compatible default is the grant decision alone. The rejected
