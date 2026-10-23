@@ -143,6 +143,7 @@ ARABIC_BLOCKS = [
     (0x08A0, 0x08FF),  # Arabic extended-A
     (0xFB50, 0xFDFF),  # Arabic presentation forms-A
     (0xFE70, 0xFEFF),  # Arabic presentation forms-B
+    (0x200C, 0x200D),  # ZWNJ/ZWJ: join controls, must not fall to .notdef
 ]
 
 

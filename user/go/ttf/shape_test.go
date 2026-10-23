@@ -298,14 +298,14 @@ func TestShapeArabicLamAlef(t *testing.T) {
 }
 
 // TestShapeArabicGoldenGlyphs is the glyph-level golden through the real
-// face: "بحر" shapes to beh-initial + hah-medial + reh-final — gids 1026,
+// face: "بحر" shapes to beh-initial + hah-medial + reh-final — gids 1028,
 // 17, 22 in the pinned build of NotoNaskhArabic-Regular.ttf — none of
 // which is the cmap gid of a base letter. A no-op shaper would read the
 // base glyphs instead.
 func TestShapeArabicGoldenGlyphs(t *testing.T) {
 	f := loadFace(t, naskhPath)
 	got, skip := formedRunes(t, "بحر")
-	wantGids := []uint16{1026, 17, 22}
+	wantGids := []uint16{1028, 17, 22}
 	for i, want := range wantGids {
 		if skip[i] {
 			t.Fatalf("rune %d unexpectedly absorbed", i)
@@ -314,11 +314,11 @@ func TestShapeArabicGoldenGlyphs(t *testing.T) {
 			t.Errorf("shaped rune %d (%U) -> gid %d, want %d", i, got[i], g, want)
 		}
 	}
-	// The ligature's own golden: لا paints gid 1024 (uniFEFB), not the two
+	// The ligature's own golden: لا paints gid 1026 (uniFEFB), not the two
 	// letters' gids.
 	got, skip = formedRunes(t, "لا")
-	if g := f.GlyphIndex(got[0]); g != 1024 || !skip[1] {
-		t.Fatalf("لا -> gid %d skip %v, want gid 1024 + absorbed", g, skip)
+	if g := f.GlyphIndex(got[0]); g != 1026 || !skip[1] {
+		t.Fatalf("لا -> gid %d skip %v, want gid 1026 + absorbed", g, skip)
 	}
 	// The face carries every form the generated table can emit — a form
 	// that resolved to .notdef would paint tofu mid-word.

@@ -45,7 +45,7 @@
 #   INTERBI.TTF    Inter Bold Italic 4.001        425296  948405a16cdc62701da5f4005ed068ca5f4d27061d98f7974ccfc37831d9581d
 #   NOTOHEB.TTF    Noto Sans Hebrew 3.001          11144   8c90e099d5ab5817a2adda0d7578410460b307f1385ca1cd1fcb2a3c16d77277
 #                  (var->Regular, Hebrew blocks)
-#   NOTOARAB.TTF   Noto Naskh Arabic 2.021        104340   469f0fcc05b508ba7959c08a2e4bc05eb244db49cbb8d6ecfb82b35e12e93ca3
+#   NOTOARAB.TTF   Noto Naskh Arabic 2.021        104444   3fc23b2e29a74ee3b262bf0c053aaed113dceba046788a26d4bc34823c9b861f
 #                  (var->Regular, Arabic + presentation forms)
 #
 # M99o (#2192): INTERBI is the bold-italic face — weight=700 AND
