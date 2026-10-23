@@ -225,7 +225,7 @@ because the icon is per-stream anyway (one release stream = one app).
   independent, already in tree). An icon the renderer cannot decode is
   not displayed; it is not an install refusal.
 
-### D8. `ReleaseDepends` — dependency rows (M188c)
+### D8. `ReleaseDepends` — dependency rows (#3188)
 
 An optional signed const may declare the releases a release needs:
 
@@ -257,7 +257,7 @@ release's own ELF is fetched:
 - A refused dep leaves the requesting release uninstalled: deps land
   before the requester, never alongside a partial state.
 
-### D9. The pinned-head member (M188c)
+### D9. The pinned-head member (#3188)
 
 `store pin <name> [<head>]` installs the release a *prior signed head*
 carried — the stream is an append-only fold, so pinning is a verify
