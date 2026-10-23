@@ -116,6 +116,11 @@ if not os.path.exists(seat):
     sys.exit("GOTABWM.ELF missing (expected " + seat + ") - build it first: "
              "bash tools/go/build-gotabwm.sh (run 06's seat)")
 shutil.copy(seat, os.path.join(share, "GOTABWM.ELF"))
+# wm=none (the go-drag convention): the seat is exec'd explicitly in run 06.
+# Without it, a staged GOTABWM.ELF makes the boot autostart register the
+# seat and runs 04/05 lose their bare-shim world — the pad leg's MOUSE_*
+# delivery and the pixel leg's native window both require 'declare refused'.
+open(os.path.join(share, "SETTINGS.TXT"), "w").write("#v2\nwm=none\n")
 calc = os.path.join(share, "CALC")
 os.makedirs(calc, exist_ok=True)
 print("staged GOCALC.ELF into share (%d bytes) and %s" %
