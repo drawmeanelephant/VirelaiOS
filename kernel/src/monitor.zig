@@ -8616,6 +8616,15 @@ fn cmd_exec(m: *Monitor, args: []const []const u8) ExecError {
             m.console.print_line(": exec refused (grant_stale — a named grant row's sha256 does not match this image)");
             return .invalid_argument;
         },
+        // R4-F1 (#3390): the recorded agent name is reserved for the
+        // operator-provisioned image — OWNERS.TXT must pin it
+        // uid_system-owned with no non-owner write bit.
+        .name_unprovisioned => {
+            err_prefix(m);
+            m.console.puts(name);
+            m.console.print_line(": exec refused (name_unprovisioned — the recorded agent image requires a uid_system OWNERS row)");
+            return .invalid_argument;
+        },
     }
 }
 

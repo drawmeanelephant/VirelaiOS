@@ -233,8 +233,39 @@ stage_alt("noroot", secrets, agents_txt, None, audit=False)
 stage_alt("nokeyring", secrets, None, base_files, audit=True)
 stage_alt("badkeyring", secrets, "this is not a keyring\n", base_files, audit=True)
 stage_alt("noaudit", secrets, agents_txt, base_files, audit=False)
+# R4-F1 (#3390) runs 19/20 — the unprovisioned-name negatives. `unprov`
+# has NO OWNERS.TXT and NO AGENTD.ELF: a uid_user guest plants the file
+# inside the boot itself (the issue's exact path — create lands the
+# default uid_user owner because nothing mints a row). `userown` carries
+# the real image but pins it uid_user — a row that exists yet is no
+# provision. Both must refuse every exec under the recorded name.
+unprov = os.path.join(run, "unprov-share")
+os.makedirs(unprov, exist_ok=True)
+shutil.copy(os.path.join(".build", "go", "GOSH.ELF"), os.path.join(unprov, "GOSH.ELF"))
+open(os.path.join(unprov, "PLANT.SH"), "w").write(
+    "echo planted-agentd-image-by-a-uid_user-guest > /host/AGENTD.ELF\n"
+    "echo plant-done\n"
+    "exec AGENTD.ELF\n")
+userown = os.path.join(run, "userown-share")
+os.makedirs(userown, exist_ok=True)
+shutil.copy(elf, os.path.join(userown, "AGENTD.ELF"))
+open(os.path.join(userown, "OWNERS.TXT"), "w").write(
+    "#v1\nAGENTD.ELF\t644\t1000\t-\n")
 print("staged agentd share (3 agents, seed %d bytes)" % len(agentctl.SEED_BYTES))
 PY
+
+# Runs 19/20 (R4-F1 #3390): the plant runs inside the guest — GOSH
+# (-c, headless) sources PLANT.SH, which creates /host/AGENTD.ELF as
+# uid_user and then execs it; the monitor script then tries the name
+# through both the plain and the -u2000 admin spawns.
+vgate_file script-plant.txt <<'EOF'
+exec GOSH.ELF -c "source /host/PLANT.SH"
+EOF
+
+vgate_file script-refuse.txt <<'EOF'
+exec AGENTD.ELF
+exec -u2000 AGENTD.ELF
+EOF
 
 # ---- 01: the full journey on a live seat -------------------------------------
 vgate_run 01 -- \
@@ -999,3 +1030,40 @@ if len(cap_recs) != 2:
     sys.exit("FAIL: want exactly 2 cap_required:input receipts; saw %r" % sorted(seen))
 print("run-18 audit ok: %d receipts incl. the cap split" % len(names))
 PY2
+
+# ---- 19: R4-F1 #3390 — in-guest plant + exec must not bind the name --------
+# The issue's path verbatim: a boot with no provisioned AGENTD.ELF. GOSH
+# (uid_user) plants /host/AGENTD.ELF and execs it through sys_exec; the
+# kernel refuses the recorded name (no uid_system OWNERS row) before any
+# spawn — no uid_agent, no fleet-row words, no kind-29/30 admission is
+# ever possible. The monitor then retries the same planted file through
+# the plain and -u2000 spawns: admin paths refuse identically.
+vgate_run 19 -- \
+    --cvc-file '$RUN_DIR/unprov-share' \
+    --script '$RUN_DIR/script-plant.txt' \
+    --script2 '$RUN_DIR/script-refuse.txt' --script2-after 'gosh: AGENTD.ELF: not found' \
+    --script-expect 'exec refused (name_unprovisioned' --script-expect-tail 2 --timeout 120
+
+vgate_assert 19 serial-contains 'exec: loaded GOSH.ELF'
+vgate_assert 19 serial-contains 'plant-done'
+# The EL0 exec refused: GOSH's seam folds the kernel's EACCES into its
+# own not-found line, and the loader's receipt names the real verdict.
+vgate_assert 19 serial-contains 'gosh: AGENTD.ELF: not found'
+vgate_assert 19 serial-contains 'verdict=refused:name_unprovisioned name=AGENTD.ELF'
+# Both monitor-side spawns refuse the planted file by name.
+vgate_assert 19 serial-count 'exec refused (name_unprovisioned' 2
+# Nothing ever spawned under the recorded name.
+vgate_assert 19 serial-absent 'exec: loaded AGENTD.ELF'
+
+# ---- 20: R4-F1 #3390 — a uid_user OWNERS row is not a provision ------------
+# The strongest squat shape: the image is present AND OWNERS.TXT names
+# it — but owned by uid_user, not uid_system. Exec must still refuse:
+# the provision test is the owner, not the row's existence.
+vgate_run 20 -- \
+    --cvc-file '$RUN_DIR/userown-share' \
+    --script '$RUN_DIR/script-refuse.txt' \
+    --script-expect 'exec refused (name_unprovisioned' --script-expect-tail 2 --timeout 120
+
+vgate_assert 20 serial-count 'exec refused (name_unprovisioned' 2
+vgate_assert 20 serial-contains 'verdict=refused:name_unprovisioned name=AGENTD.ELF'
+vgate_assert 20 serial-absent 'exec: loaded AGENTD.ELF'
