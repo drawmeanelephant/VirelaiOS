@@ -59,7 +59,7 @@ at all, and `--stale` sorts those rows first.
 | Pulse | PULSE.ELF |  #2959 | 2026-10-21 | lipgloss v2 |
 | Shell | GOSH.ELF |  #2775 | 2026-10-20 | shlib heredocs |
 | Help | GOHELP.ELF |  #3129 | 2026-10-22 | free-file sleep sites → ns durations (tree-wide) |
-| Welcome | GOWELCOME.ELF |  #2571 | 2026-10-19 | first-boot welcome tour |
+| Welcome | GOWELCOME.ELF |  #3307 | 2026-10-24 | appver-1 envelope — tour step + done flag + first owning spec |
 | Top | GOTOP.ELF |  #3249 | 2026-10-23 | appver-1 envelope — sort + active tab persist |
 | Settings | GOSET.ELF |  #3171 | 2026-10-22 | settings table grows past 24 via bounded second bank |
 | Image Viewer | GOVIEW.ELF |  #3155 | 2026-10-22 | MOV demux + Motion-JPEG playback |

@@ -32,7 +32,7 @@ All of them additionally answer to the schema-v2 manifest grammar
 | Pulse | app | PULSE.ELF | — | tools/gate/specs/go-top.spec | shipped |
 | Shell | app | GOSH.ELF | — | tools/gate/specs/go-sh.spec | shipped |
 | Help | app | GOHELP.ELF | — | tools/gate/specs/go-help.spec | shipped |
-| Welcome | app | GOWELCOME.ELF | — | tools/gate/specs/go-wm-default.spec | shipped |
+| Welcome | app | GOWELCOME.ELF | appver 1 | tools/gate/specs/go-welcome.spec | shipped |
 | Top | app | GOTOP.ELF | appver 1 | tools/gate/specs/go-top.spec | shipped |
 | Settings | app | GOSET.ELF | — | tools/gate/specs/go-settings.spec | shipped |
 | Image Viewer | app | GOVIEW.ELF | — | tools/gate/specs/live-image-viewer.spec | shipped |
