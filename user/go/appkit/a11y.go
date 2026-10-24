@@ -8,6 +8,12 @@
 // D2 bounds what an outline may carry: control labels and the focused
 // item's label only — never field contents, never whole-table text.
 // Publication is opt-in per app (GODEMO adopts); GOVAULT never publishes.
+//
+// M197a (#3381) extends the seam to seat chrome: the seat is not a
+// kind-16 row — WINDOWS_QUERY answers "which app window holds focus" —
+// so its outline rides the fixed A11ySeatPath rendezvous instead of a
+// per-window name. The grammar is unchanged; the seat surfaces take the
+// role spellings declared here.
 package appkit
 
 import "virelai/vi"
@@ -27,13 +33,23 @@ const (
 	RoleRow
 	RoleTextField
 	RoleButton
+	// M197a (#3381): the seat surfaces. seat is the root chrome surface —
+	// not an app window; rail is the tab strip and tab one of its cells;
+	// toast is one queued notification; curtain is the full-frame veil
+	// (the lock curtain, or the idle curtain while it owns the frame).
+	RoleSeat
+	RoleRail
+	RoleTab
+	RoleToast
+	RoleCurtain
 	RoleUnknown
 )
 
 // roleName is the wire + marker spelling, indexed by Role.
 var roleName = [...]string{
 	"window", "menubar", "menu", "menuitem", "tree", "treeitem",
-	"table", "row", "textfield", "button", "unknown",
+	"table", "row", "textfield", "button",
+	"seat", "rail", "tab", "toast", "curtain", "unknown",
 }
 
 func (r Role) String() string {
@@ -152,6 +168,13 @@ const (
 func A11yPath(win uint32) string {
 	return "/host/A11Y." + vi.Itoa64(int64(win))
 }
+
+// A11ySeatPath is the seat chrome's rendezvous (M197a): the seat is the
+// outline's single producer and holds no window id, so its description
+// takes a fixed name over the same crash-safe staging rather than an
+// A11yPath spelling. A reader cannot ask kind 16 for it — the query
+// carries app tabs only — it reads the path outright.
+const A11ySeatPath = "/host/A11Y.SEAT"
 
 // a11yWrite is the publish seam — WriteFileSafe on the guest, a stub a
 // host test can observe (the wmstate.go pattern).

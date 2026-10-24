@@ -15,6 +15,7 @@
 package main
 
 import (
+	"virelai/appkit"
 	"virelai/art"
 	"virelai/draw"
 	"virelai/icons"
@@ -475,6 +476,34 @@ func (s *TabStrip) Focused() (uint32, bool) {
 		return 0, false
 	}
 	return s.tabs[s.focus].ID, true
+}
+
+// a11yRailNodes is the strip's half of the M197a (#3381) seat outline:
+// the rail container named for the live space, then one tab node per
+// cell in rail order. keyOwner is the caller's verdict that no seat
+// surface owns the keyboard — with it the focused cell carries 'f';
+// while modal chrome holds the keys the cell reads 's' instead: the
+// strip's selection, which the keys return to on dismiss.
+func (s *TabStrip) a11yRailNodes(depth int, keyOwner bool) []appkit.Node {
+	if s.count == 0 {
+		return nil
+	}
+	out := []appkit.Node{{Depth: depth, Role: appkit.RoleRail,
+		Name: "space " + spaces[spaceCur].Name}}
+	f, _ := s.Focused()
+	for i := 0; i < s.count; i++ {
+		n := appkit.Node{Depth: depth + 1, Role: appkit.RoleTab,
+			Name: s.tabs[i].Title}
+		if s.tabs[i].ID == f {
+			if keyOwner {
+				n.State = appkit.StateFocused
+			} else {
+				n.State = appkit.StateSelected
+			}
+		}
+		out = append(out, n)
+	}
+	return out
 }
 
 // OpenTab adds id to the strip. A duplicate id updates the title and is

@@ -355,3 +355,41 @@ func TestPublishOutline(t *testing.T) {
 		t.Fatal("refused write reported success")
 	}
 }
+
+// M197a (#3381): the seat-surface roles and the fixed seat rendezvous.
+// The spellings are the wire — a reader decodes them verbatim — so they
+// are pinned, not just round-tripped.
+func TestSeatRoleSpellings(t *testing.T) {
+	for r, want := range map[Role]string{
+		RoleSeat: "seat", RoleRail: "rail", RoleTab: "tab",
+		RoleToast: "toast", RoleCurtain: "curtain",
+	} {
+		if r.String() != want {
+			t.Fatalf("role %d spells %q, want %q", r, r.String(), want)
+		}
+	}
+	// unknown stays the last declared role and the out-of-range answer.
+	if RoleUnknown != Role(len(roleName)-1) || roleName[RoleUnknown] != "unknown" {
+		t.Fatal("RoleUnknown is no longer the vocabulary's tail")
+	}
+	// The seat path is the one fixed rendezvous: no window id rides it.
+	if A11ySeatPath != "/host/A11Y.SEAT" {
+		t.Fatalf("A11ySeatPath = %q", A11ySeatPath)
+	}
+	// A seat outline encodes and decodes like any v1 body.
+	nodes := []Node{
+		{Role: RoleSeat, Name: "Desktop"},
+		{Depth: 1, Role: RoleRail, Name: "space 1"},
+		{Depth: 2, Role: RoleTab, State: StateFocused, Name: "Edit"},
+		{Depth: 1, Role: RoleToast, Name: "saved"},
+	}
+	dec, ok := DecodeOutline(EncodeOutline(nodes))
+	if !ok || len(dec) != len(nodes) {
+		t.Fatalf("seat outline round-trip = %v %+v", ok, dec)
+	}
+	for i, n := range dec {
+		if n != nodes[i] {
+			t.Fatalf("node %d = %+v want %+v", i, n, nodes[i])
+		}
+	}
+}

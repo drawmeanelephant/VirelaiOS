@@ -26,6 +26,7 @@ package main
 import (
 	"errors"
 
+	"virelai/appkit"
 	"virelai/art"
 	"virelai/draw"
 	"virelai/find"
@@ -1200,4 +1201,68 @@ func launchText(s string, max int) string {
 		return s[:max-3] + "..."
 	}
 	return s
+}
+
+// a11yNodes is the strip's half of the M197a (#3381) seat outline, both
+// faces: the menu node names Launcher or Palette and carries 'e' (the
+// strip is a dropped menu while open), the filter field follows — the
+// paint's own contract says the field IS the focus while the strip is
+// up, so it is the one 'f' node — then one menuitem per filtered row in
+// rank order, selected and refused rows named by their states. The
+// filter's typed text is field contents and stays out (D2): the field's
+// name is its label.
+func (l *launcherState) a11yNodes(depth int) []appkit.Node {
+	name := "Launcher"
+	empty := "No matching apps"
+	if l.palette {
+		name, empty = "Palette", "No matching commands"
+	}
+	out := []appkit.Node{
+		{Depth: depth, Role: appkit.RoleMenu,
+			State: appkit.StateExpanded, Name: name},
+		{Depth: depth + 1, Role: appkit.RoleTextField,
+			State: appkit.StateFocused, Name: "Filter"},
+	}
+	for i, ci := range l.filtered {
+		var label string
+		disabled := false
+		switch {
+		case l.palette:
+			e, ok := l.paletteRow(ci)
+			if !ok {
+				continue
+			}
+			label = e.label
+		case ci == paletteSearchIdx || ci <= launchFileIdx0:
+			label, _ = l.hitRowText(ci)
+		case ci >= 0 && ci < len(l.catalog):
+			label = l.catalog[ci].Label
+			disabled = ci < len(l.reasons) && l.reasons[ci] != ""
+		default:
+			continue
+		}
+		n := appkit.Node{Depth: depth + 1, Role: appkit.RoleMenuItem,
+			Name: label}
+		if i == l.sel {
+			n.State |= appkit.StateSelected
+		}
+		if disabled {
+			n.State |= appkit.StateDisabled
+		}
+		out = append(out, n)
+	}
+	// The error line and the zero-match plate are painted rows too: a
+	// disabled item names them so the outline is never quieter than the
+	// strip itself.
+	if l.err != "" {
+		out = append(out, appkit.Node{Depth: depth + 1,
+			Role: appkit.RoleMenuItem, State: appkit.StateDisabled,
+			Name: l.err})
+	}
+	if len(l.filtered) == 0 {
+		out = append(out, appkit.Node{Depth: depth + 1,
+			Role: appkit.RoleMenuItem, State: appkit.StateDisabled,
+			Name: empty})
+	}
+	return out
 }
