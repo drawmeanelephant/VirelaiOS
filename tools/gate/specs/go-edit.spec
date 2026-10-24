@@ -1516,6 +1516,8 @@ vgate_assert 17 serial-absent 'exited status=139'
 # --- M190d (#3239) run 18: the menubar — F10 engages File, the menu opens
 # on down, and the Save row fires the same save path ctrl-s takes: the row
 # receipt, the menu-open receipt, and the byte-identical publish marker.
+# M192g (#3252) inserted Quick Open at File index 2 — the walk to Save is
+# one row deeper (four downs, not three).
 vgate_file script2-18.txt <<'EOFS'
 exec GOEDIT.ELF /host/EDIT/SEED.TXT
 EOFS
@@ -1530,7 +1532,7 @@ vgate_run 18 -- \
     --via-virtio \
     --script '$RUN_DIR/script.txt' \
     --script2 '$RUN_DIR/script2-18.txt' --script2-after 'tabwm: sidebar-rendered' \
-    --input-chords 'f10,down,down,down,return' \
+    --input-chords 'f10,down,down,down,down,return' \
     --input-chords-after 'goedit: present' \
     --script3 '$RUN_DIR/script3-18.txt' --script3-after 'goedit: saved ' \
     --script-expect 'rx-goedit-menu-ok' --timeout 240
