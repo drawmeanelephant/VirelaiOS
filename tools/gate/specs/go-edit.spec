@@ -893,14 +893,15 @@ vgate_run 12 -- \
     --script-expect 'rx-goedit-hints-ok' --timeout 240
 
 vgate_assert 12 serial-contains 'goedit: present'
-# The app's four rows (ctrl+s/z/f/g — the undo row is M121e's) + every
-# seat row (29 in the shipped table + M132a's seven reserved rows = 36)
-# = 40; NO kernel-terminal rows — this window is not a tty front-end, so
+# The app's five rows (ctrl+s/z/f/g + M192g's ctrl+p quick-open — the
+# undo row is M121e's) + every seat row (40 in the shipped table) = 45;
+# NO kernel-terminal rows — this window is not a tty front-end, so
 # those chords do not answer here.
-vgate_assert 12 serial-contains 'goedit: hints n=44'
+vgate_assert 12 serial-contains 'goedit: hints n=45'
 vgate_assert 12 serial-contains 'goedit: hints row ctrl+s publish the buffer (save)'
 vgate_assert 12 serial-contains 'goedit: hints row ctrl+f '
 vgate_assert 12 serial-contains 'goedit: hints row ctrl+g '
+vgate_assert 12 serial-contains 'goedit: hints row ctrl+p summon the quick-open palette'
 vgate_assert 12 serial-contains 'goedit: hints row ctrl+shift+p summon the command palette'
 vgate_assert 12 serial-absent 'goedit: hints row ctrl+shift+c '
 vgate_assert 12 serial-contains 'goedit: hints close'
@@ -1515,6 +1516,8 @@ vgate_assert 17 serial-absent 'exited status=139'
 # --- M190d (#3239) run 18: the menubar — F10 engages File, the menu opens
 # on down, and the Save row fires the same save path ctrl-s takes: the row
 # receipt, the menu-open receipt, and the byte-identical publish marker.
+# M192g (#3252) inserted Quick Open at File index 2 — the walk to Save is
+# one row deeper (four downs, not three).
 vgate_file script2-18.txt <<'EOFS'
 exec GOEDIT.ELF /host/EDIT/SEED.TXT
 EOFS
@@ -1529,7 +1532,7 @@ vgate_run 18 -- \
     --via-virtio \
     --script '$RUN_DIR/script.txt' \
     --script2 '$RUN_DIR/script2-18.txt' --script2-after 'tabwm: sidebar-rendered' \
-    --input-chords 'f10,down,down,down,return' \
+    --input-chords 'f10,down,down,down,down,return' \
     --input-chords-after 'goedit: present' \
     --script3 '$RUN_DIR/script3-18.txt' --script3-after 'goedit: saved ' \
     --script-expect 'rx-goedit-menu-ok' --timeout 240
@@ -1542,3 +1545,67 @@ vgate_assert 18 serial-contains 'goedit: saved /host/EDIT/SEED.TXT n='
 vgate_assert 18 serial-contains 'rx-goedit-menu-ok'
 vgate_assert 18 serial-absent '[EXC] parking:'
 vgate_assert 18 serial-absent 'exited status=139'
+
+# --- M192g (#3252) run 19: the ctrl+p quick-open palette -------------------
+# QO.TXT boots the editor; QO2.TXT and QO3.TXT are subtree-only
+# candidates (never opened, so the buffer/recent pools cannot satisfy
+# their stems). The leg: ctrl+p summons (`qopen open n=` counts every
+# candidate — the walk is the EDIT/ subtree's), 'QO2' narrows to one hit
+# and Enter opens it in a buffer (`buffer switch i=2/2` + the read
+# marker — opens in a tab, never replaces); a second summon's 'QO3'
+# hits the same way for i=3/3; a third's 'ZZZ' is the no-hit state
+# (`qopen 'ZZZ' n=0`) that Escape cancels. The M107c prev-diagnostic
+# chord this displaced re-homed to ctrl+comma — the live-goedit-diags
+# spec drives that spelling.
+vgate_setup_python <<'PY'
+import os
+share = os.environ.get("VG_SHARE") or os.path.join(os.environ["RUN_DIR"], "share")
+ed = os.path.join(share, "EDIT")
+os.makedirs(ed, exist_ok=True)
+for name, body in [("QO.TXT", b"qo boot\n"), ("QO2.TXT", b"qo two\n"),
+                   ("QO3.TXT", b"qo three\n")]:
+    with open(os.path.join(ed, name), "wb") as f:
+        f.write(body)
+PY
+
+vgate_file script2-19.txt <<'EOF'
+exec GOEDIT.ELF /host/EDIT/QO.TXT
+EOF
+
+vgate_file script3-19.txt <<'EOF'
+dui close 2
+echo rx-goedit-qopen-ok
+EOF
+
+vgate_run 19 -- \
+    --screen '$RUN_DIR/screen-19' \
+    --via-virtio \
+    --script '$RUN_DIR/script.txt' \
+    --script2 '$RUN_DIR/script2-19.txt' \
+    --script2-after 'tabwm: sidebar-rendered' \
+    --input-chords 'ctrl-p,Q,O,2,return,ctrl-p,Q,O,3,return,ctrl-p,Z,Z,Z,escape' \
+    --input-chords-after 'goedit: present' \
+    --script3 '$RUN_DIR/script3-19.txt' \
+    --script3-after 'goedit: qopen cancel' \
+    --script-expect 'rx-goedit-qopen-ok' --timeout 240
+
+vgate_assert 19 serial-contains 'exec: loaded GOEDIT.ELF'
+vgate_assert 19 serial-contains 'goedit: read /host/EDIT/QO.TXT n='
+vgate_assert 19 serial-contains 'goedit: present'
+# The summon receipt counts every candidate the walk + ring produced.
+vgate_assert 19 serial-contains 'goedit: qopen open n='
+# 'QO2' narrows to the one subtree file; Enter opens it in a buffer.
+vgate_assert 19 serial-contains "goedit: qopen 'QO2' n=1"
+vgate_assert 19 serial-contains 'goedit: qopen pick /host/EDIT/QO2.TXT'
+vgate_assert 19 serial-contains 'goedit: read /host/EDIT/QO2.TXT n='
+vgate_assert 19 serial-contains 'goedit: buffer switch i=2/2 path=/host/EDIT/QO2.TXT'
+# Second summon, same chain for QO3 — ring slot 3.
+vgate_assert 19 serial-contains "goedit: qopen 'QO3' n=1"
+vgate_assert 19 serial-contains 'goedit: qopen pick /host/EDIT/QO3.TXT'
+vgate_assert 19 serial-contains 'goedit: buffer switch i=3/3 path=/host/EDIT/QO3.TXT'
+# The no-hit state names zero results; Escape is the cancel receipt.
+vgate_assert 19 serial-contains "goedit: qopen 'ZZZ' n=0"
+vgate_assert 19 serial-contains 'goedit: qopen cancel'
+vgate_assert 19 serial-contains 'rx-goedit-qopen-ok'
+vgate_assert 19 serial-absent '[EXC] parking:'
+vgate_assert 19 serial-absent 'exited status=139'

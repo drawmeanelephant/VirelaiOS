@@ -316,6 +316,13 @@ const (
 	markerBufFull   = "goedit: buffer full n="
 	markerBufLast   = "goedit: buffer last"
 
+	// M192g (#3252): the quick-open palette's receipts. `qopen open n=`
+	// is the summon (candidate count, `truncated=` when a walk bound
+	// stopped it); `qopen '<q>' n=` is each keystroke's re-filter (n=0
+	// the no-hit state); `qopen pick <path>` the Enter landing, `qopen
+	// none` its empty-list refusal, `qopen cancel` the Escape.
+	markerQOpen = "goedit: qopen "
+
 	// modCtrl is the ADR 0009 Ctrl modifier bit; every chord below tests it.
 	modCtrl = uint16(0x0002)
 	// keyS/keyF/keyG are the LOWERCASE Unicode codepoints. kernel/src/input.zig
@@ -361,6 +368,11 @@ const (
 	// chords match on (the usage column survives every arg1 encoding).
 	usagePageUp   = 0x4b
 	usagePageDown = 0x4e
+	// usageComma is M192g's re-home for prev-diagnostic: M107c bound it
+	// to ctrl+p, which the card's quick-open summons on — prev-error now
+	// rides the ',<' key (HID 0x36), shift-insensitive so ctrl+< lands
+	// the same step.
+	usageComma = 0x36
 	// backspace/delete/return/escape codepoints (the kernel sends the
 	// codepoint in arg1).
 	codeBackspace = 0x08
@@ -426,7 +438,8 @@ const (
 	modeDiags
 	modePicker
 	modeDialog
-	modeHints // M121c (#2566): the '?' chord-hint overlay owns the keyboard
+	modeHints    // M121c (#2566): the '?' chord-hint overlay owns the keyboard
+	modeQuickOpen // M192g (#3252): the ctrl+p palette owns the keyboard
 )
 
 // clipWrite/clipRead are the machine-global clipboard (sys_clipboard_set/get,
@@ -587,6 +600,16 @@ type editor struct {
 	// M149c (#2808): the -minimap flag — the document's right-edge column
 	// of one pixel row per buffer line, and the press-to-jump arm.
 	minimap bool
+
+	// M192g (#3252): the quick-open palette. recents is the session MRU
+	// (envelope-seeded, open/close-fed); qo is the candidate list built
+	// at summon, qoMatch the indices matching the bar's query, qoSel the
+	// selection inside it, qoTrunc the bound that stopped the walk.
+	recents []string
+	qo      []qoItem
+	qoMatch []int
+	qoSel   int
+	qoTrunc string
 
 	// M166c (#2991): the --prof= profile — the parsed .folded capture,
 	// session-wide. Each doc's heatSpans/heatDone maps it per buffer;
@@ -982,6 +1005,11 @@ func (e *editor) commitAll(rs []rune) bool {
 			changed = e.barAppend(r) || changed
 		}
 	}
+	// M192g: a committed accent lands in the palette's query like a typed
+	// key — the incremental match re-runs for it too.
+	if changed && e.mode == modeQuickOpen {
+		e.qoFilter()
+	}
 	return changed
 }
 
@@ -1065,6 +1093,13 @@ func (e *editor) handleKey(ev vi.Event) bool {
 	if isChord(ev, keyE, keyCtrlE) {
 		return e.openErrors()
 	}
+	// M192g: Ctrl-P summons the quick-open palette — the registry's app
+	// row, free at this dispatch point; the seat's ctrl+shift+p is a
+	// different one. It took the chord from M107c's prev-diagnostic,
+	// which re-homes to the ',<' key below.
+	if isChord(ev, keyP, keyCtrlP) {
+		return e.openQuick()
+	}
 	switch e.mode {
 	case modeFind:
 		return e.barKey(ev, e.runFind)
@@ -1074,6 +1109,8 @@ func (e *editor) handleKey(ev vi.Event) bool {
 		return e.replaceBarKey(ev)
 	case modeDiags:
 		return e.diagsKey(ev)
+	case modeQuickOpen:
+		return e.qopenKey(ev)
 	}
 	// #2199 chords, all on the usage column via chord() so the shifted
 	// spellings stay distinct: ctrl-shift-z and ctrl-y redo, ctrl-x/c/v
@@ -1094,11 +1131,14 @@ func (e *editor) handleKey(ev vi.Event) bool {
 		return true
 	}
 	// M107c: next/prev diagnostic. Each step jumps straight to the row
-	// after/before the last landing; the list loads on first use.
+	// after/before the last landing; the list loads on first use. M192g
+	// re-homed prev off ctrl+p (the quick-open summon above): it now
+	// rides ctrl+comma — the ',<' key, shift-insensitive so ctrl+<
+	// lands the same step.
 	if chord(ev, 'n', false) {
 		return e.stepDiag(1)
 	}
-	if chord(ev, 'p', false) {
+	if commaChord(ev) {
 		return e.stepDiag(-1)
 	}
 	if chord(ev, 'x', false) {
@@ -1244,6 +1284,14 @@ func isChord(ev vi.Event, key, ctrlCode uint32) bool {
 // isSave reports whether the event is the Ctrl-S save chord.
 func isSave(ev vi.Event) bool { return isChord(ev, keyS, keyCtrlS) }
 
+// commaChord reports a ctrl+comma — the ',<' key. chord() matches letters
+// only, so the punctuation chord tests the usage column like the
+// buffer-paging pair; shift is ignored so ctrl+< steps the same way.
+func commaChord(ev vi.Event) bool {
+	return ev.Kind == vi.EvKeyDown && ev.Flags&modCtrl != 0 &&
+		ev.Flags&vi.ModAlt == 0 && ev.Arg0 == usageComma
+}
+
 // openBar focuses a bar with an empty entry — and, for replace, an empty
 // second field with the focus back on the pattern. Opening a bar is a mode
 // change, so it also closes an open typing run.
@@ -1351,6 +1399,7 @@ func (e *editor) pickerKey(ev vi.Event) bool {
 	e.releaseLease()
 	e.path = res
 	e.load()
+	e.pushRecent(res)
 	e.dirty = false
 	e.selSet, e.markOn = false, false
 	e.hist = history{}
@@ -2346,7 +2395,7 @@ func (e *editor) draw() {
 	// M123b (#2576): an empty buffer gets the shared empty-state plate —
 	// icon, headline and the chords that answer on a blank document — under
 	// the caret, which still paints at the text origin (type to insert).
-	if len(e.buf) == 0 && e.mode != modePicker && e.mode != modeDialog && e.mode != modeDiags && e.mode != modeHints {
+	if len(e.buf) == 0 && e.mode != modePicker && e.mode != modeDialog && e.mode != modeDiags && e.mode != modeHints && e.mode != modeQuickOpen {
 		(&widgets.EmptyState{
 			R:        widgets.Rect{X: textOrigin, Y: chromeH + 4, W: w - 2*textOrigin, H: h - chromeH - 8},
 			Icon:     "|",
@@ -2372,6 +2421,8 @@ func (e *editor) draw() {
 	}
 	if e.mode == modeDiags {
 		e.drawDiags(w, h)
+	} else if e.mode == modeQuickOpen {
+		e.drawQuick(w, h)
 	} else if e.mode != modeEdit && e.mode != modePicker && e.mode != modeDialog && e.mode != modeHints {
 		label := "Find: "
 		if e.mode == modeGoto {
@@ -2617,6 +2668,7 @@ func (e *editor) buildMenus() {
 		{Title: "&File", Items: []appkit.MenuItem{
 			mi("&Open…", "ctrl+o", func() bool { return e.startPick(false) }),
 			mi("Open in &New Buffer", "ctrl+shift+o", func() bool { return e.startPickBuf() }),
+			mi("&Quick Open…", "ctrl+p", func() bool { return e.openQuick() }),
 			mi("&Save", "ctrl+s", func() bool { e.save(); return true }),
 			mi("Save &As…", "ctrl+shift+s", func() bool { return e.startPick(true) }),
 			mi("&Close Buffer", "ctrl+w", func() bool { return e.closeBufAsk() }),
@@ -2638,7 +2690,7 @@ func (e *editor) buildMenus() {
 			mi("&Goto Line", "ctrl+g", func() bool { return e.openBar(modeGoto) }),
 			mi("&Errors", "ctrl+e", func() bool { return e.openErrors() }),
 			mi("Ne&xt Error", "ctrl+n", func() bool { return e.stepDiag(1) }),
-			mi("Pre&v Error", "ctrl+p", func() bool { return e.stepDiag(-1) }),
+			mi("Pre&v Error", "ctrl+,", func() bool { return e.stepDiag(-1) }),
 		}},
 		{Title: "&View", Items: []appkit.MenuItem{
 			mi("Match &Bracket", "ctrl+b", func() bool { return e.jumpMatch() }),
@@ -2663,9 +2715,9 @@ func (e *editor) syncMenu() {
 	}
 	f, ed, s, v := &e.mbar.Menus[0], &e.mbar.Menus[1], &e.mbar.Menus[2], &e.mbar.Menus[3]
 	oneBuf := len(e.docList()) <= 1
-	f.Items[4].Disabled = oneBuf
 	f.Items[5].Disabled = oneBuf
 	f.Items[6].Disabled = oneBuf
+	f.Items[7].Disabled = oneBuf
 	ed.Items[0].Disabled = len(e.hist.undo) == 0
 	ed.Items[1].Disabled = len(e.hist.redo) == 0
 	_, _, selOn := e.selRange()

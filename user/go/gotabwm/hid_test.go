@@ -1460,7 +1460,7 @@ func TestChordSummaryCounts(t *testing.T) {
 	// M190b (#3237): n=67→69, seat=37→39 — the shot-full/shot-window pair.
 	// M190e (#3240): n=69→70, seat=39→40 — the lock chord.
 	// M191a (#3242): n=70→71, app=18→19 — GOTERM's scrollback-find row.
-	want := "gotabwm: chords n=71 seat=40 kernel=12 app=19"
+	want := "gotabwm: chords n=72 seat=40 kernel=12 app=20"
 	if got != want {
 		t.Fatalf("chordSummary = %q want %q", got, want)
 	}

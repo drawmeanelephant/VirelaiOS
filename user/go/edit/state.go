@@ -600,6 +600,12 @@ func (e *editor) applyRestored() {
 		return
 	}
 	e.docs = e.docList()
+	// M192g (#3252): the envelope's record paths seed the quick-open
+	// MRU — the files this session had open are its recents. Pushed
+	// last-to-first so the active record's path lands at the head.
+	for i := len(sts) - 1; i >= 0; i-- {
+		e.pushRecent(sts[i].path)
+	}
 	outcome := applyRecord(&e.doc, sts[0])
 	shells := 0
 	for _, st := range sts[1:] {
