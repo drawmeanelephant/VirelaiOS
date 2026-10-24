@@ -1060,7 +1060,7 @@ vgate_run 09 -- \
 
 vgate_assert 09 serial-contains 'exec: loaded GOTERM.ELF'
 vgate_assert 09 serial-contains 'goterm: menubar open'
-vgate_assert 09 serial-contains 'goterm: hints n=52'
+vgate_assert 09 serial-contains 'goterm: hints n=53'
 vgate_assert 09 serial-contains 'goterm: close'
 vgate_assert 09 serial-contains 'rx-goterm-menu-ok'
 vgate_assert 09 serial-absent '[EXC] parking:'
