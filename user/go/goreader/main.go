@@ -19,6 +19,7 @@ import (
 	"virelai/draw"
 	"virelai/find"
 	"virelai/pdf"
+	"virelai/printq"
 	"virelai/tabapp"
 	"virelai/theme"
 	"virelai/vi"
@@ -30,33 +31,35 @@ const (
 	appName  = "GOREADER.ELF"
 	appTitle = "Reader"
 
-	markerOpen        = "goreader: open id="
-	markerTabAware    = "goreader: tab-aware (full-viewport)"
-	markerNotTabAware = "goreader: not-tab-aware (shim or WND desktop)"
-	markerOpenFailed  = "goreader: failed to open window"
-	markerEmpty       = "goreader: empty (no document)"
-	markerLoaded      = "goreader: loaded "
-	markerRefuse      = "goreader: refuse "
-	markerReadErr     = "goreader: read err"
-	markerPage        = "goreader: page "
-	markerZoom        = "goreader: zoom z="
-	markerFit         = "goreader: fit z="
-	markerFind        = "goreader: find '"
-	markerFindMiss    = "goreader: find miss '"
-	markerFindBar     = "goreader: find bar"
-	markerStateSaved  = "goreader: state saved n="
-	markerStateStale  = "goreader: state stale"
-	markerRestored    = "goreader: restored "
-	markerPos         = "goreader: pos "
-	markerPosSaved    = "goreader: pos saved n="
-	markerPosErr      = "goreader: pos rc="
-	markerBookmark    = "goreader: bookmark "
-	markerSave        = "goreader: save "
-	markerPresent     = "goreader: present"
-	markerReady       = "goreader: ready"
-	markerQuit        = "goreader: quit"
-	markerWinClose    = "goreader: win_close"
-	markerOK          = "goreader OK"
+	markerOpen         = "goreader: open id="
+	markerTabAware     = "goreader: tab-aware (full-viewport)"
+	markerNotTabAware  = "goreader: not-tab-aware (shim or WND desktop)"
+	markerOpenFailed   = "goreader: failed to open window"
+	markerEmpty        = "goreader: empty (no document)"
+	markerLoaded       = "goreader: loaded "
+	markerRefuse       = "goreader: refuse "
+	markerReadErr      = "goreader: read err"
+	markerPage         = "goreader: page "
+	markerZoom         = "goreader: zoom z="
+	markerFit          = "goreader: fit z="
+	markerFind         = "goreader: find '"
+	markerFindMiss     = "goreader: find miss '"
+	markerFindBar      = "goreader: find bar"
+	markerStateSaved   = "goreader: state saved n="
+	markerStateStale   = "goreader: state stale"
+	markerRestored     = "goreader: restored "
+	markerPos          = "goreader: pos "
+	markerPosSaved     = "goreader: pos saved n="
+	markerPosErr       = "goreader: pos rc="
+	markerBookmark     = "goreader: bookmark "
+	markerSave         = "goreader: save "
+	markerPrint        = "goreader: print "
+	markerPrintRefused = "goreader: print refused "
+	markerPresent      = "goreader: present"
+	markerReady        = "goreader: ready"
+	markerQuit         = "goreader: quit"
+	markerWinClose     = "goreader: win_close"
+	markerOK           = "goreader OK"
 )
 
 // exitQuit is this app's clean-close status, matching the GOVIEW family's
@@ -602,6 +605,28 @@ func (a *app) finishPick() {
 	vi.ConsoleLine(markerSave + res + " bytes=" + vi.Itoa64(int64(len(a.data))))
 }
 
+// printDoc is the M202c print verb: the open document's own bytes staged
+// onto the host print lane — a reader never re-renders to print, the PDF
+// it decoded IS the job. The staged name is the document's own basename
+// folded to the lane's name rule. Refusals are the lane's words — a
+// flags-off boot's PRINT/ absence answers lane_disabled.
+func (a *app) printDoc() bool {
+	if a.st != loadOkay {
+		return false
+	}
+	name, ok := printq.Name(a.name)
+	if !ok {
+		vi.ConsoleLine(markerPrintRefused + printq.RefuseNameRejected)
+		return false
+	}
+	if refusal := printq.Guest.Print(name, a.data); refusal != "" {
+		vi.ConsoleLine(markerPrintRefused + refusal)
+		return false
+	}
+	vi.ConsoleLine(markerPrint + name + " bytes=" + vi.Itoa64(int64(len(a.data))))
+	return true
+}
+
 // ---------------------------------------------------------------------------
 // Input
 // ---------------------------------------------------------------------------
@@ -741,6 +766,9 @@ func (a *app) handle(ev vi.Event) bool {
 		case keySaveAs:
 			a.openSaveCopy()
 			return true
+		case keyPrint:
+			a.printDoc()
+			return true
 		case keyQuitQ, keyEscape:
 			vi.ConsoleLine(markerQuit)
 			a.flushPos()
@@ -867,7 +895,7 @@ func (a *app) drawStatus(s *canvasSurface) {
 				text += "*"
 			}
 		}
-		text += "   ^F FIND  N/N HIT  F FIT  +/- ZOOM  B MARK  S SAVE  Q QUIT"
+		text += "   ^F FIND  N/N HIT  F FIT  +/- ZOOM  B MARK  S SAVE  P PRINT  Q QUIT"
 	case loadRefused:
 		text = "REFUSED: " + a.refuse
 	case loadFailedOpen:

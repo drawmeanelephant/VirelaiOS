@@ -26,7 +26,7 @@ import "virelai/shlib"
 //	4       tag    u8: 0=ARMED 1=CLIP_OUT 2=CLIP_IN 3=NOTIFY_OUT 4=DROP
 //	               5=OUTBOX 6=NOTIFY_FOCUS (v2) 7=CLIP_OUT_T 8=CLIP_IN_T
 //	               (M124c typed clipboard) 9=DRAGOUT (M184b) 10=SPEAK
-//	               (M186d host TTS)
+//	               (M186d host TTS) 11=PRINT (M202c print lane)
 //	5       flags  u8: bit0 TRUNCATED; bits 1-7 reserved (writer sends 0)
 //	6..7    sender_id u16le — the kernel window id the record is about;
 //	        v1 wrote reserved zeros, so v1 records carry 0 here and a v1
@@ -84,7 +84,12 @@ const (
 	// (the NOTIFY_FOCUS grammar rule mirrored: a record that is nothing
 	// but a header has no utterance to speak).
 	TagSpeak uint8 = 10 // g→h seat → runner: UTF-8 1..512
-	tagCount        = 11
+	// M202c (#3386): the print lane — the DROP payload shape ([name_len
+	// u8][name][size u64le]) naming a PREQ-marked job staged under the
+	// share's PRINT/ dir. The record names the job; the bytes ride the
+	// share like OUTBOX payloads do.
+	TagPrint uint8 = 11 // g→h seat → runner: the DROP shape
+	tagCount       = 12
 )
 
 // FlagTruncated is the record flags bit0: the producer cut the payload at
@@ -133,6 +138,7 @@ const (
 	LaneNotify uint8 = 1 << 2
 	LaneOutbox uint8 = 1 << 3
 	LaneSpeech uint8 = 1 << 4
+	LanePrint  uint8 = 1 << 5
 )
 
 // The refusal vocabulary (ADR 0051 D2): one set of names, both ends,
@@ -189,6 +195,8 @@ func tagStem(tag uint8) string {
 		return "DRAGOUT"
 	case TagSpeak:
 		return "SPEAK"
+	case TagPrint:
+		return "PRINT"
 	}
 	return ""
 }
@@ -218,6 +226,8 @@ func stemTag(stem string) (uint8, bool) {
 		return TagDragOut, true
 	case "SPEAK":
 		return TagSpeak, true
+	case "PRINT":
+		return TagPrint, true
 	}
 	return 0, false
 }
@@ -242,6 +252,8 @@ func LaneName(tag uint8) string {
 		return "dragout"
 	case TagSpeak:
 		return "speech"
+	case TagPrint:
+		return "print"
 	}
 	return ""
 }
@@ -260,6 +272,8 @@ func LaneBit(tag uint8) uint8 {
 		return LaneOutbox
 	case TagSpeak:
 		return LaneSpeech
+	case TagPrint:
+		return LanePrint
 	}
 	return 0
 }
@@ -294,6 +308,12 @@ func MaskNames(mask uint8) string {
 			out += ","
 		}
 		out += "speech"
+	}
+	if mask&LanePrint != 0 {
+		if out != "" {
+			out += ","
+		}
+		out += "print"
 	}
 	if out == "" {
 		return "-"

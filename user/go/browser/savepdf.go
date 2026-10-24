@@ -23,8 +23,14 @@ import (
 	"strings"
 
 	"virelai/pdfwrite"
+	"virelai/printq"
 	"virelai/vi"
 	"virelai/webrender"
+)
+
+const (
+	markerPrint        = "web: print "
+	markerPrintRefused = "web: print refused "
 )
 
 const (
@@ -127,6 +133,30 @@ func pdfPageSlice(lay *webrender.Layout, p int, dst []byte, band []uint32) {
 			}
 		}
 	}
+}
+
+// printPage is the M202c print verb: the laid-out document rendered
+// through the same raster leg as save-as .pdf, staged onto the host
+// print lane instead of published to a picked path. The job names the
+// download-derived name of the page (PAGE.HTML -> PAGE.HTML.PDF by the
+// lane's name rule). Refusals are the lane's words — a flags-off boot's
+// PRINT/ absence answers lane_disabled, not a generic failure.
+func (a *app) printPage() bool {
+	data, pages, why := a.renderPDF()
+	if why == "" {
+		name, ok := printq.Name(downloadName(a.target))
+		if !ok {
+			why = printq.RefuseNameRejected
+		} else if refusal := printq.Guest.Print(name, data); refusal != "" {
+			why = refusal
+		} else {
+			vi.ConsoleLine(markerPrint + name + " pages=" + itoa(pages) +
+				" bytes=" + itoa(len(data)))
+			return true
+		}
+	}
+	vi.ConsoleLine(markerPrintRefused + why)
+	return false
 }
 
 // docTitle extracts the document's <title> for the PDF Info entry —

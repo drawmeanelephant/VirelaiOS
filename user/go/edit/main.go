@@ -224,6 +224,8 @@ const (
 	// bound, the writer's own error names, `rc=` on a failed publish).
 	markerExport        = "edit: export pdf "
 	markerExportRefused = "edit: export refused "
+	markerPrint         = "edit: print "
+	markerPrintRefused  = "edit: print refused "
 
 	// M107c (#2320): the build-error list's receipts. One prefix carries
 	// every shape: `n=` (rows loaded), `sel=` (panel selection), `jump
@@ -2683,6 +2685,11 @@ func (e *editor) buildMenus() {
 			mi("&Close Buffer", "ctrl+w", func() bool { return e.closeBufAsk() }),
 			mi("N&ext Buffer", "ctrl+pagedown", func() bool { return e.switchBuf(1) }),
 			mi("&Previous Buffer", "ctrl+pageup", func() bool { return e.switchBuf(-1) }),
+			// M202c (#3386): the print verb lives on the menu — ctrl+p is
+			// the quick-open summon and the seat's ctrl+shift+p palette is
+			// a different dispatch point, so no chord spells print here.
+			// The mnemonic is 'r' because '&Previous Buffer' owns 'p'.
+			mi("P&rint…", "", func() bool { return e.printDoc() }),
 		}},
 		{Title: "&Edit", Items: []appkit.MenuItem{
 			mi("&Undo", "ctrl+z", func() bool { e.undo(); return true }),

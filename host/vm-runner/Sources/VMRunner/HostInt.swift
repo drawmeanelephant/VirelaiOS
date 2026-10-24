@@ -45,6 +45,9 @@ enum HostInt {
     /// M186d (#3181): the speech lane — signed SPEAK records carry bounded
     /// utterances to NSSpeechSynthesizer.
     static let laneSpeech: UInt8 = 1 << 4
+    /// M202c (#3386): the print lane — signed PRINT records name a
+    /// PREQ-marked PDF staged under the share's PRINT/ dir.
+    static let lanePrint: UInt8 = 1 << 5
 
     /// The lane name a mask bit names ("clip"/"drop"/"notify"/"outbox"/
     /// "speech") — the `lane=` word refusal markers carry.
@@ -55,6 +58,7 @@ enum HostInt {
         case laneNotify: return "notify"
         case laneOutbox: return "outbox"
         case laneSpeech: return "speech"
+        case lanePrint: return "print"
         default: return "?"
         }
     }
@@ -79,6 +83,10 @@ enum HostInt {
         // per record; plen MUST be 1..512 (the NOTIFY_FOCUS grammar
         // rule mirrored: a header-only record has no utterance).
         case speak = 10      // g→h seat → runner:  UTF-8 1..512
+        // M202c (#3386): the print lane — the DROP payload shape naming a
+        // PREQ-marked job under the share's PRINT/ dir (the record names
+        // the job; the PDF bytes ride the share like OUTBOX payloads).
+        case print = 11      // g→h seat → runner:  the DROP shape
 
         var stem: String {
             switch self {
@@ -93,6 +101,7 @@ enum HostInt {
             case .clipInT: return "CLIPTIN"
             case .dragOut: return "DRAGOUT"
             case .speak: return "SPEAK"
+            case .print: return "PRINT"
             }
         }
 
@@ -106,6 +115,7 @@ enum HostInt {
             case .outbox: return "outbox"
             case .dragOut: return "dragout"
             case .speak: return "speech"
+            case .print: return "print"
             case .armed: return ""
             }
         }
@@ -119,6 +129,7 @@ enum HostInt {
             case .notifyOut, .notifyFocus: return HostInt.laneNotify
             case .outbox, .dragOut: return HostInt.laneOutbox
             case .speak: return HostInt.laneSpeech
+            case .print: return HostInt.lanePrint
             case .armed: return 0
             }
         }
@@ -136,6 +147,7 @@ enum HostInt {
             case "CLIPTIN": return .clipInT
             case "DRAGOUT": return .dragOut
             case "SPEAK": return .speak
+            case "PRINT": return .print
             default: return nil
             }
         }
@@ -362,6 +374,7 @@ enum HostInt {
         if mask & laneNotify != 0 { names.append("notify") }
         if mask & laneOutbox != 0 { names.append("outbox") }
         if mask & laneSpeech != 0 { names.append("speech") }
+        if mask & lanePrint != 0 { names.append("print") }
         let lanes = names.isEmpty ? "-" : names.joined(separator: ",")
         FileHandle.standardOutput.write(Data("host-int: armed lanes=\(lanes) epoch=\(epoch)\n".utf8))
     }
