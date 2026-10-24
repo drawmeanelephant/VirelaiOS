@@ -42,6 +42,7 @@ const std = @import("std");
 const vlfs = @import("vlfs/vlfs.zig");
 const aead = @import("aead.zig");
 const kdf = @import("kdf.zig");
+const klog = @import("klog.zig");
 
 pub const dek_len: usize = aead.key_len;
 /// The sentinel block number in the DEK wrap's AAD — the same
@@ -87,7 +88,11 @@ pub fn unwrapDek(info: vlfs.SealInfo, volume_id: u64, pass: []const u8, dek: *[d
 /// A tag entry staged for a txn's sealed dest: the {nonce, tag} the
 /// checkpoint's home write must land so the journaled tag block —
 /// appended to the same transaction — verifies it (ADR 0061, #3104).
-const StagedEntry = struct { dest: u32, nonce: [aead.nonce_len]u8, tag: [aead.tag_len]u8 };
+/// `ck` is the #3130 probe's checksum over {nonce, tag} taken at stage
+/// time and re-verified wherever the entry is consumed — a staged entry
+/// stomped between stage and apply is caught here rather than propagating
+/// silently into a committed journal payload.
+const StagedEntry = struct { dest: u32, nonce: [aead.nonce_len]u8, tag: [aead.tag_len]u8, ck: u32 };
 
 pub const Seal = struct {
     inner: vlfs.SectorSource,
@@ -118,6 +123,8 @@ pub const Seal = struct {
     raw: [vlfs.block_len]u8 align(64) = undefined, // ciphertext scratch
     tagblk: [vlfs.block_len]u8 align(64) = undefined, // tag-home scratch
     blkbuf: [vlfs.block_len]u8 align(64) = undefined, // sector-view scratch
+    probebuf: [vlfs.block_len]u8 align(64) = undefined, // #3130 readback scratch
+    sweepbuf: [vlfs.block_len]u8 align(64) = undefined, // #3128 sweep scratch
 
     /// True when block `blk` lives inside the sealed span [2, tag_first).
     pub fn sealed(self: *const Seal, blk: u32) bool {
@@ -147,11 +154,330 @@ fn tagHome(slot: u32, s: *const Seal) struct { blk: u32, off: usize } {
     };
 }
 
+// ---------------------------------------------------------------------------
+// #3128 tagshift probe — the guest-vs-host bisector (diagnostic, #3130).
+//
+// The observed tear is a tag entry whose 16-byte tag lands on disk as
+// T>>8 — the true tag's leading 0x00 dropped, the tail zero-padded —
+// while the nonce and ciphertext beside it are authentic. This probe
+// samples every tag-region write at both ends of the guest I/O path:
+//
+//   at stage — the tag bytes landing in a tag-home buffer are compared
+//     with the value the seal computed (eager path, applyStaged) or the
+//     staged entry is re-verified outright (sealStageBlock re-seals; the
+//     checkpoint path's existing staged-vs-reseal compare reports here).
+//   at issue — sealInnerWriteBlock records per-sector FNV-1a hashes of
+//     every tag-home block for the synchronous duration of the inner
+//     write; the virtio driver's sector_probe hook (probeSector) then
+//     compares the bytes about to be DMA-read against them.
+//
+// A mismatch `at stage` or `at issue` means guest memory already held the
+// tear; a clean at-issue stream over a still-torn image means the host
+// persistence layer authored it; `bypass` means a tag-region write the
+// seal layer never issued — an out-of-band writer. All markers are
+// klog.line one-liners: silent until main.zig arms the hook, and no-ops
+// in host tests.
+// ---------------------------------------------------------------------------
+
+var probe_seal: ?*Seal = null;
+var probe_armed: bool = false;
+var probe_blk: u32 = 0;
+var probe_n: u64 = 0; // armed tag-home writes issued (liveness evidence)
+var probe_hash: [vlfs.sectors_per_block]u64 = undefined;
+
+// ---- phase 2 (#3128): the read half of the funnel ---------------------
+//
+// Phase 1 proved every armed tag-home write leaves guest memory
+// byte-exact (at issue) and reads back identical — yet torn entries still
+// reach committed journal payloads. The journaled tag-block payload is
+// composed of readCurrent(home) ⊕ applyStaged; staged bytes are verified,
+// so the only unauthenticated input left is the tag-home READ: tag homes
+// are plaintext by ADR 0061, the one surface where served bytes enter
+// guest memory unverified and then ride into sealed payload plaintext.
+//
+// So the probe records the verified state of every tag home (hash of the
+// issued bytes at write, or of the first observed bytes) and compares
+// every subsequent read against it:
+//
+//   baseline — first observation of a home this mount: every non-zero
+//     entry is verified against its slot's stored ciphertext (open; on
+//     failure a shifted retry — 0x00‖stored[0..15] opens iff stored is
+//     exactly T>>8 with T[0]=0x00). A home that arrives torn means the
+//     tear pre-dates this mount's observation: kill/drain-time host
+//     corruption or pre-attach state.
+//   divergence — a later read whose bytes differ from the recorded state
+//     with no intervening armed write: the device served something other
+//     than what was verifiably landed — host storage corruption caught
+//     live, with the block number.
+//
+// A run over a still-torn image with zero divergence and only baseline
+// markers means the bytes tear while unobserved — the stop/drain path.
+// Divergence markers mean the host mutates or mis-serves committed bytes
+// mid-run. Either way the authoring layer is below the guest; the marker
+// class names when.
+// -----------------------------------------------------------------------
+
+/// Bound on the tag-region size the read probe tracks (2048 homes covers
+/// a sealed span of ~300k blocks — beyond vlfs.max_volume_blocks/146).
+const probe_max_homes: usize = 2048;
+var probe_tag_hash: [probe_max_homes]u64 = undefined;
+var probe_tag_seen: [probe_max_homes / 8]u8 = undefined;
+var probe_scan_ok: u64 = 0; // verified-clean entries (liveness evidence)
+var probe_flush_n: u64 = 0; // flushes since attach (sweep cadence)
+var probe_sweeps: u64 = 0; // full-region sweeps run (liveness evidence)
+
+fn probeTagSeen(i: usize) bool {
+    return probe_tag_seen[i / 8] & (@as(u8, 1) << @intCast(i % 8)) != 0;
+}
+
+fn probeTagMark(i: usize, h: u64) void {
+    probe_tag_seen[i / 8] |= @as(u8, 1) << @intCast(i % 8);
+    probe_tag_hash[i] = h;
+}
+
+fn probeHashBlock(data: *const [vlfs.block_len]u8) u64 {
+    var h: u64 = 14695981039346656037;
+    for (data) |b| h = (h ^ b) *% 1099511628211;
+    return h;
+}
+
+/// The per-entry verdict of a tag-home scan: open fails, and the shifted
+/// retry names the canonical tear from any other divergence (a stale
+/// pair torn in time, real corruption — anything but T>>8).
+const ScanVerdict = enum { ok, torn, diverge };
+
+fn probeEntryVerdict(s: *Seal, slot: u32, entry: *const [vlfs.tag_entry_len]u8) ScanVerdict {
+    const dest = slot + 2;
+    if (dest >= s.tag_first) return .ok; // beyond the sealed span: no slot
+    for (entry.*) |b| {
+        if (b != 0) break;
+    } else return .ok; // all-zero: never written
+    if (!s.inner.readBlock(dest, &s.probebuf)) return .diverge;
+    const aad = blockAad(s.volume_id, dest);
+    const nonce: *const [aead.nonce_len]u8 = entry[0..aead.nonce_len];
+    const tag: *const [aead.tag_len]u8 = entry[aead.nonce_len..][0..aead.tag_len];
+    if (aead.open(&s.blkbuf, &s.probebuf, tag, &aad, nonce, &s.dek)) {
+        probe_scan_ok += 1;
+        return .ok;
+    }
+    var shifted: [aead.tag_len]u8 = undefined;
+    shifted[0] = 0;
+    @memcpy(shifted[1..], tag[0 .. aead.tag_len - 1]);
+    if (aead.open(&s.blkbuf, &s.probebuf, &shifted, &aad, nonce, &s.dek)) return .torn;
+    return .diverge;
+}
+
+/// Verify every non-zero entry of an observed tag-home image and name the
+/// torn ones — the baseline classification, and the same verdict applied
+/// to bytes the guest is about to write (a write carrying torn entries is
+/// propagation of an earlier torn read, named as such).
+fn probeScanTagHome(s: *Seal, home: u32, data: *const [vlfs.block_len]u8, comptime how: []const u8) void {
+    var torn: u32 = 0;
+    var diverged: u32 = 0;
+    var scanned: u32 = 0;
+    for (0..vlfs.tag_entries_per_block) |i| {
+        const entry: *const [vlfs.tag_entry_len]u8 = data[i * vlfs.tag_entry_len ..][0..vlfs.tag_entry_len];
+        const slot: u32 = (home - s.tag_first) * vlfs.tag_entries_per_block + @as(u32, @intCast(i));
+        switch (probeEntryVerdict(s, slot, entry)) {
+            .ok => continue,
+            .torn => {
+                torn += 1;
+                if (torn <= 4) probeMark("seal: tagblk-scan blk={d} slot={d} torn at " ++ how ++ "\n", .{ home, slot });
+            },
+            .diverge => {
+                diverged += 1;
+                if (diverged <= 4) probeMark("seal: tagblk-scan blk={d} slot={d} diverge at " ++ how ++ "\n", .{ home, slot });
+            },
+        }
+        scanned += 1;
+    }
+    if (torn + diverged != 0) {
+        probeMark("seal: tagblk-scan blk={d} entries={d} torn={d} diverge={d} at " ++ how ++ "\n", .{ home, scanned, torn, diverged });
+    }
+}
+
+/// First observation of a tag home this mount: classify its entries and
+/// record the observed state. `at write` means the guest's first contact
+/// with the home is a write (a replayed or propagated image) — the scan
+/// then names whether the guest's own outbound bytes already carry the
+/// tear.
+fn probeObserveTagHome(s: *Seal, blk: u32, data: *const [vlfs.block_len]u8, comptime how: []const u8) void {
+    if (blk < s.tag_first or blk >= s.volume_blocks) return;
+    const i: usize = blk - s.tag_first;
+    if (i >= probe_max_homes) return;
+    if (!probeTagSeen(i)) {
+        probeScanTagHome(s, blk, data, how);
+        probeTagMark(i, probeHashBlock(data));
+        return;
+    }
+    probeTagMark(i, probeHashBlock(data));
+}
+
+/// The funnel for every tag-region read the seal layer makes — the eager
+/// RMW tag fetch, the open-side tag fetch, and readCurrent's home read.
+/// Bytes served for an already-observed home must equal the recorded
+/// state; anything else is the device changing its answer mid-mount.
+fn sealInnerReadTagBlock(s: *Seal, blk: u32, out: *[vlfs.block_len]u8) bool {
+    if (!s.inner.readBlock(blk, out)) return false;
+    const ps = probe_seal orelse return true;
+    if (ps != s or blk < s.tag_first or blk >= s.volume_blocks) return true;
+    const i: usize = blk - s.tag_first;
+    if (i >= probe_max_homes) return true;
+    if (!probeTagSeen(i)) {
+        probeScanTagHome(s, blk, out, "baseline");
+        probeTagMark(i, probeHashBlock(out));
+        return true;
+    }
+    const h = probeHashBlock(out);
+    if (h != probe_tag_hash[i]) {
+        probeMark("seal: tagblk-read divergence blk={d}\n", .{blk});
+        probeScanTagHome(s, blk, out, "divergence");
+        probeTagMark(i, h);
+    }
+    return true;
+}
+
+/// Re-read every tag home through the verifying funnel — the whole region
+/// is swept at attach (every home baselined before replay or the
+/// workload touches it) and again every 64 flushes, so a home torn
+/// mid-run between the guest's own accesses is still caught within a
+/// commit or two rather than at the next mount. The sweep line is
+/// liveness evidence for the divergence watch.
+fn probeSweepAll(s: *Seal, comptime why: []const u8) void {
+    if (probe_seal != s or s.tag_first == 0) return;
+    var b = s.tag_first;
+    while (b < s.volume_blocks) : (b += 1) {
+        if (!sealInnerReadTagBlock(s, b, &s.sweepbuf)) break;
+    }
+    probe_sweeps += 1;
+    probeMark("seal: tagblk-sweep {s} n={d}\n", .{ why, probe_sweeps });
+}
+
+fn probeHash(data: *const [vlfs.sector_len]u8) u64 {
+    var h: u64 = 14695981039346656037; // FNV-1a 64
+    for (data) |b| h = (h ^ b) *% 1099511628211;
+    return h;
+}
+
+fn probeMark(comptime fmt: []const u8, args: anytype) void {
+    var buf: [128]u8 = undefined;
+    const line = std.fmt.bufPrint(&buf, fmt, args) catch return;
+    klog.line(line);
+}
+
+/// Arm/detach the probe for the mounted seal. disk.zig wires
+/// virtio_blk.sector_probe to probeSector at the same times. The armed
+/// line is the probe's own liveness evidence: a run that shows it and no
+/// mismatch markers over a still-torn image has positively cleared the
+/// guest write path.
+pub fn probeAttach(s: *Seal) void {
+    probe_seal = s;
+    probe_armed = false;
+    probe_n = 0;
+    probe_scan_ok = 0;
+    probe_flush_n = 0;
+    probe_sweeps = 0;
+    @memset(&probe_tag_seen, 0);
+    probeMark("seal: tagblk-probe armed tag_first={d} vol={d}\n", .{ s.tag_first, s.volume_blocks });
+    // The attach-time sweep: every home is baselined (and scanned) before
+    // replay or the workload writes a byte, so a tear inherited from the
+    // previous boot's kill is named `at baseline` rather than silently
+    // adopted into the recorded state.
+    probeSweepAll(s, "mount");
+}
+
+pub fn probeDetach() void {
+    probe_seal = null;
+    probe_armed = false;
+}
+
+/// The virtio driver's at-issue hook: an outgoing sector inside the tag
+/// region [tag_first, volume_blocks) must match the hash sealInnerWriteBlock
+/// armed — a mismatch means guest memory below the seal layer already
+/// carried the tear, and a tag-region write the seal never issued is an
+/// out-of-band writer worth naming.
+pub fn probeSector(lba: u64, data: *const [vlfs.sector_len]u8) void {
+    const s = probe_seal orelse return;
+    if (lba < @as(u64, s.tag_first) * vlfs.sectors_per_block or
+        lba >= @as(u64, s.volume_blocks) * vlfs.sectors_per_block) return;
+    const blk: u32 = @intCast(lba / vlfs.sectors_per_block);
+    const sub: usize = @intCast(lba % vlfs.sectors_per_block);
+    if (!probe_armed or blk != probe_blk) {
+        probeMark("seal: tagblk-write bypass blk={d} lba={d}\n", .{ blk, lba });
+        return;
+    }
+    if (probeHash(data) != probe_hash[sub]) {
+        probeMark("seal: tagblk-checksum mismatch blk={d} sec={d} at issue\n", .{ blk, sub });
+    }
+}
+
+/// inner.writeBlock with the at-issue probe armed while a tag-home block
+/// is in flight — the funnel every guest tag-region write passes. I/O is
+/// synchronous submit+wait, so one armed block is the whole story. The
+/// readback afterwards separates a torn write path from a torn read path
+/// (the eager tag-home RMW reads these blocks back; a host that returns
+/// shifted bytes on read shows up here, not `at issue`).
+fn sealInnerWriteBlock(s: *Seal, blk: u32, data: *const [vlfs.block_len]u8) bool {
+    if (blk < s.tag_first or blk >= s.volume_blocks) return s.inner.writeBlock(blk, data);
+    probe_blk = blk;
+    for (0..vlfs.sectors_per_block) |i|
+        probe_hash[i] = probeHash(data[i * vlfs.sector_len ..][0..vlfs.sector_len]);
+    probe_armed = true;
+    const ok = s.inner.writeBlock(blk, data);
+    probe_armed = false;
+    if (!ok) return false;
+    if (!s.inner.readBlock(blk, &s.probebuf)) {
+        s.fail = error.Io;
+        return false;
+    }
+    if (!std.mem.eql(u8, &s.probebuf, data)) {
+        probeMark("seal: tagblk-checksum mismatch blk={d} at readback\n", .{blk});
+    }
+    // Phase 2: the issued bytes become the recorded state every later
+    // read is compared against — and the first write to a home is itself
+    // scanned for already-torn propagated entries.
+    if (probe_seal == s) probeObserveTagHome(s, blk, data, "write");
+    // Liveness: the first few verified writes and then a sparse cadence,
+    // so a silent run still proves the at-issue hook fired byte-exact.
+    probe_n += 1;
+    if (probe_n <= 4 or probe_n % 256 == 0) {
+        probeMark("seal: tagblk-issue ok blk={d} n={d}\n", .{ blk, probe_n });
+    }
+    return true;
+}
+
+/// The at-stage sample: tag bytes that just landed in a tag-home buffer
+/// must equal the value the seal computed — a mismatch means the staged
+/// entry was already torn in guest memory before any write existed.
+fn probeStaged(home: u32, dest: u32, landed: *const [aead.tag_len]u8, expected: *const [aead.tag_len]u8) void {
+    if (!std.mem.eql(u8, landed, expected)) {
+        probeMark("seal: tagblk-checksum mismatch blk={d} dest={d} at stage\n", .{ home, dest });
+    }
+}
+
+/// Checksum over one staged entry's {nonce, tag} — stage-time value vs
+/// apply-time recompute separates "sealed wrong" from "stomped while
+/// staged".
+fn stagedCk(e: *const StagedEntry) u32 {
+    var bytes: [aead.nonce_len + aead.tag_len]u8 = undefined;
+    @memcpy(bytes[0..aead.nonce_len], &e.nonce);
+    @memcpy(bytes[aead.nonce_len..][0..aead.tag_len], &e.tag);
+    return vlfs.fnv32(&bytes);
+}
+
+/// Re-verify a staged entry against its stage-time checksum before it is
+/// consumed — the at-apply sample closing the staged-memory window.
+fn probeEntryCk(home: u32, e: *const StagedEntry) void {
+    if (stagedCk(e) != e.ck) {
+        probeMark("seal: tagblk-checksum mismatch blk={d} dest={d} at stage\n", .{ home, e.dest });
+    }
+}
+
 fn sealReadBlock(ctx: ?*anyopaque, blk: u32, out: *[vlfs.block_len]u8) bool {
     const s: *Seal = @ptrCast(@alignCast(ctx orelse return false));
     s.fail = error.Io;
     if (!s.sealed(blk)) {
-        if (!s.inner.readBlock(blk, out)) {
+        if (!sealInnerReadTagBlock(s, blk, out)) {
             s.fail = error.Io;
             return false;
         }
@@ -162,7 +488,7 @@ fn sealReadBlock(ctx: ?*anyopaque, blk: u32, out: *[vlfs.block_len]u8) bool {
         return false;
     }
     const t = tagHome(blk - 2, s);
-    if (!s.inner.readBlock(t.blk, &s.tagblk)) {
+    if (!sealInnerReadTagBlock(s, t.blk, &s.tagblk)) {
         s.fail = error.Io;
         return false;
     }
@@ -188,7 +514,7 @@ fn sealWriteBlock(ctx: ?*anyopaque, blk: u32, data: *const [vlfs.block_len]u8) b
     const s: *Seal = @ptrCast(@alignCast(ctx orelse return false));
     s.fail = error.Io;
     if (!s.sealed(blk)) {
-        if (!s.inner.writeBlock(blk, data)) {
+        if (!sealInnerWriteBlock(s, blk, data)) {
             s.fail = error.Io;
             return false;
         }
@@ -202,10 +528,14 @@ fn sealWriteBlock(ctx: ?*anyopaque, blk: u32, data: *const [vlfs.block_len]u8) b
         // name, never written.
         if (stagedFind(s, blk)) |idx| {
             const e = &s.staged[idx];
+            probeEntryCk(tagHome(blk - 2, s).blk, e);
             const aad = blockAad(s.volume_id, blk);
             var tag: [aead.tag_len]u8 = undefined;
             aead.seal(&s.raw, &tag, data, &aad, &e.nonce, &s.dek);
             if (!std.mem.eql(u8, &tag, &e.tag)) {
+                // #3128: the staged entry no longer matches a fresh seal —
+                // the tear was authored in guest memory at/before staging.
+                probeMark("seal: tagblk-checksum mismatch blk={d} at stage\n", .{blk});
                 s.fail = error.BadBlockAuth;
                 s.auth_failures += 1;
                 return false;
@@ -239,13 +569,14 @@ fn sealWriteBlock(ctx: ?*anyopaque, blk: u32, data: *const [vlfs.block_len]u8) b
     // without its entry or vice versa) reads back as bad_block_auth and
     // the journal replays over it — never wrong plaintext.
     const t = tagHome(blk - 2, s);
-    if (!s.inner.readBlock(t.blk, &s.tagblk)) {
+    if (!sealInnerReadTagBlock(s, t.blk, &s.tagblk)) {
         s.fail = error.Io;
         return false;
     }
     @memcpy(s.tagblk[t.off..][0..aead.nonce_len], &nonce);
     @memcpy(s.tagblk[t.off + aead.nonce_len ..][0..aead.tag_len], &tag);
-    if (!s.inner.writeBlock(t.blk, &s.tagblk)) {
+    probeStaged(t.blk, blk, s.tagblk[t.off + aead.nonce_len ..][0..aead.tag_len], &tag);
+    if (!sealInnerWriteBlock(s, t.blk, &s.tagblk)) {
         s.fail = error.Io;
         return false;
     }
@@ -255,7 +586,14 @@ fn sealWriteBlock(ctx: ?*anyopaque, blk: u32, data: *const [vlfs.block_len]u8) b
 fn sealReadSector(ctx: ?*anyopaque, lba: u64, out: *[vlfs.sector_len]u8) bool {
     const s: *Seal = @ptrCast(@alignCast(ctx orelse return false));
     const blk: u32 = @intCast(lba / vlfs.sectors_per_block);
-    if (!s.sealed(blk)) return s.inner.readSector(lba, out);
+    if (!s.sealed(blk)) {
+        // #3128: a tag-region read that skips the block funnel entirely —
+        // named so a surprising caller is evidence, not a blind spot.
+        if (probe_seal == s and blk >= s.tag_first and blk < s.volume_blocks) {
+            probeMark("seal: tagblk-read sector blk={d} lba={d}\n", .{ blk, lba });
+        }
+        return s.inner.readSector(lba, out);
+    }
     // A sector read inside the sealed span is a block open plus a slice —
     // the mount probe only exercises this on superblock sectors (blocks
     // 0–1, plaintext), but the path is correct anywhere.
@@ -282,7 +620,14 @@ fn sealWriteSector(ctx: ?*anyopaque, lba: u64, data: *const [vlfs.sector_len]u8)
 
 fn sealFlush(ctx: ?*anyopaque) bool {
     const s: *Seal = @ptrCast(@alignCast(ctx orelse return false));
-    return s.inner.flush();
+    const ok = s.inner.flush();
+    // #3128 phase 2: a full tag-region sweep every 64 flushes — the commit
+    // cadence's live divergence watch (see probeSweepAll).
+    if (ok and probe_seal == s) {
+        probe_flush_n += 1;
+        if (probe_flush_n % 64 == 0) probeSweepAll(s, "flush");
+    }
+    return ok;
 }
 
 // ---------------------------------------------------------------------------
@@ -310,6 +655,12 @@ fn sealStageBlock(ctx: ?*anyopaque, dest: u32, contents: *const [vlfs.block_len]
     s.nonceFn(s.nonceCtx, &e.nonce);
     const aad = blockAad(s.volume_id, dest);
     aead.seal(&s.raw, &e.tag, contents, &aad, &e.nonce, &s.dek);
+    // #3128: pin that the staged entry holds the true tag at stage time —
+    // a staged entry already torn here means guest-authored corruption.
+    var vfy_tag: [aead.tag_len]u8 = undefined;
+    aead.seal(&s.blkbuf, &vfy_tag, contents, &aad, &e.nonce, &s.dek);
+    probeStaged(tagHome(dest - 2, s).blk, dest, &e.tag, &vfy_tag);
+    e.ck = stagedCk(e);
     return tagHome(dest - 2, s).blk;
 }
 
@@ -319,8 +670,10 @@ fn sealApplyStaged(ctx: ?*anyopaque, home: u32, tagblk: *[vlfs.block_len]u8) u32
     for (s.staged[0..s.staged_n]) |*e| {
         const t = tagHome(e.dest - 2, s);
         if (t.blk != home) continue;
+        probeEntryCk(home, e);
         @memcpy(tagblk[t.off..][0..aead.nonce_len], &e.nonce);
         @memcpy(tagblk[t.off + aead.nonce_len ..][0..aead.tag_len], &e.tag);
+        probeStaged(home, e.dest, tagblk[t.off + aead.nonce_len ..][0..aead.tag_len], &e.tag);
         n += 1;
     }
     return n;
@@ -337,6 +690,8 @@ fn sealInjectEntry(ctx: ?*anyopaque, dest: u32, entry: *const [vlfs.tag_entry_le
     s.staged[idx].dest = dest;
     @memcpy(&s.staged[idx].nonce, entry[0..aead.nonce_len]);
     @memcpy(&s.staged[idx].tag, entry[aead.nonce_len..][0..aead.tag_len]);
+    s.staged[idx].ck = stagedCk(&s.staged[idx]);
+    probeStaged(tagHome(dest - 2, s).blk, dest, &s.staged[idx].tag, entry[aead.nonce_len..][0..aead.tag_len]);
 }
 
 fn sealClearStaged(ctx: ?*anyopaque) void {
