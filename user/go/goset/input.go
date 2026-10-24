@@ -334,7 +334,7 @@ func (a *panel) showTab(i int) bool {
 		// settings row takes.
 		a.showChords, a.showServices, a.showGrants, a.showProfile, a.showAccess = false, false, false, false, true
 		a.syncAccessRows()
-		a.status = "contrast and motion apply live; text scale is reserved"
+		a.status = "contrast, motion and text scale apply live — seat chrome, GOVIEW, WEB"
 	default:
 		a.showChords, a.showServices, a.showGrants, a.showProfile, a.showAccess = false, false, false, false, false
 		a.status = "type key=value + Enter to save"

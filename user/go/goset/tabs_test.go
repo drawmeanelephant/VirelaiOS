@@ -234,7 +234,10 @@ func TestAccessTabShowsAndEditsTheA11yRows(t *testing.T) {
 	if len(a.accessRows) != 3 || len(a.labels()) != 3 {
 		t.Fatalf("access rows = %d labels = %d, want 3", len(a.accessRows), len(a.labels()))
 	}
-	for i, want := range []string{"a11y.contrast = off", "a11y.reduce_motion = off"} {
+	for i, want := range []string{
+		"a11y.contrast = off  (honoured by seat chrome + apps)",
+		"a11y.reduce_motion = off  (honoured by GOVIEW + seat toasts)",
+	} {
 		if a.labels()[i] != want {
 			t.Fatalf("label[%d] = %q, want %q", i, a.labels()[i], want)
 		}
