@@ -252,7 +252,8 @@ func TestViewListKeysAndFocusRing(t *testing.T) {
 	if v.sel != 2 {
 		t.Fatalf("sel ran past the end: %d", v.sel)
 	}
-	// Tab walks the ring field -> save -> restore -> delete -> list.
+	// Tab walks the ring field -> save -> restore -> delete -> pin ->
+	// prune -> list.
 	v.handle(keyEvent(keyTab, 0))
 	if v.focus != fSave {
 		t.Fatalf("focus=%d", v.focus)
@@ -263,8 +264,128 @@ func TestViewListKeysAndFocusRing(t *testing.T) {
 		t.Fatalf("focus=%d", v.focus)
 	}
 	v.handle(keyEvent(keyTab, 0))
+	if v.focus != fPin {
+		t.Fatalf("focus=%d", v.focus)
+	}
+	v.handle(keyEvent(keyTab, 0))
+	if v.focus != fPrune {
+		t.Fatalf("focus=%d", v.focus)
+	}
+	v.handle(keyEvent(keyTab, 0))
 	if v.focus != fList {
 		t.Fatalf("focus=%d (ring did not wrap)", v.focus)
+	}
+}
+
+// --- #3369: pin + prune controls -------------------------------------
+
+func TestViewPinTogglesOnTheSelectedRow(t *testing.T) {
+	f := &fakeEnv{
+		items:  []vi.DirItem{dirItem("BASE.vzsave", 64)},
+		exists: map[string]bool{"/host/SNAPSHOTS/BASE.vzsave": true},
+	}
+	f.install(t)
+	v := newTestView()
+	v.refresh()
+	v.sel, v.list.Sel = 0, 0
+	// One gesture — pin is additive, never destructive.
+	v.togglePin()
+	if len(f.writes) != 1 || f.writes[0] != "/host/SNAPSHOTS/BASE.pin" {
+		t.Fatalf("writes = %v", f.writes)
+	}
+	if !f.has("gosnap: pin BASE ok") {
+		t.Fatalf("missing pin marker: %v", f.logs)
+	}
+	// A pinned row's button reads Unpin after the re-list picks the
+	// marker up — model the share: the pin file now lists and exists.
+	f.items = append(f.items, dirItem("BASE.pin", 4))
+	f.exists["/host/SNAPSHOTS/BASE.pin"] = true
+	v.refresh()
+	if v.pinBtn.Label != "Unpin" {
+		t.Fatalf("pinned row's label = %q", v.pinBtn.Label)
+	}
+	// Unpin deletes the marker — again one gesture.
+	v.togglePin()
+	if len(f.deleted) != 1 || f.deleted[0] != "/host/SNAPSHOTS/BASE.pin" {
+		t.Fatalf("deleted = %v", f.deleted)
+	}
+	if !f.has("gosnap: unpin BASE ok") {
+		t.Fatalf("missing unpin marker: %v", f.logs)
+	}
+}
+
+func TestViewPruneArmsOnTheComputedVictim(t *testing.T) {
+	f := &fakeEnv{
+		items: []vi.DirItem{
+			dirItemCT("OLD.vzsave", 64, 10),
+			dirItemCT("NEW.vzsave", 64, 20),
+		},
+		exists: map[string]bool{"/host/SNAPSHOTS/OLD.vzsave": true},
+	}
+	f.install(t)
+	// Model the delete against the listing so the post-prune refresh
+	// sees the file gone.
+	fileDelete = func(p string) int64 {
+		f.deleted = append(f.deleted, p)
+		var kept []vi.DirItem
+		for _, it := range f.items {
+			if snapsDir+"/"+it.Name != p {
+				kept = append(kept, it)
+			}
+		}
+		f.items = kept
+		return 0
+	}
+	v := newTestView()
+	v.refresh()
+	// First gesture arms on the victim the host's cap would evict — the
+	// selected row is irrelevant to prune.
+	v.sel, v.list.Sel = 1, 1
+	v.activatePrune()
+	if v.armed != "prune" || v.armedName != "OLD" {
+		t.Fatalf("armed=%q %q", v.armed, v.armedName)
+	}
+	if len(f.deleted) != 0 {
+		t.Fatalf("prune ran on the first gesture: %v", f.deleted)
+	}
+	if !f.has("gosnap: consent prune OLD") {
+		t.Fatalf("missing consent marker: %v", f.logs)
+	}
+	if v.pruneBtn.Label != "Confirm?" {
+		t.Fatalf("armed label = %q", v.pruneBtn.Label)
+	}
+	// Second gesture deletes exactly the victim.
+	v.activatePrune()
+	if len(f.deleted) != 1 || f.deleted[0] != "/host/SNAPSHOTS/OLD.vzsave" {
+		t.Fatalf("deleted = %v", f.deleted)
+	}
+	if !f.has("gosnap: prune OLD ok") {
+		t.Fatalf("missing prune marker: %v", f.logs)
+	}
+	if len(v.rows) != 1 || v.rows[0].name != "NEW" {
+		t.Fatalf("rows = %v", v.rows)
+	}
+}
+
+func TestViewPruneDisabledWithNoVictim(t *testing.T) {
+	// A store of only pins + crash slots has nothing prune may take.
+	f := &fakeEnv{items: []vi.DirItem{
+		dirItem("KEEP.vzsave", 64),
+		dirItem("KEEP.pin", 4),
+		dirItem("CRASH0.vzsave", 32),
+	}}
+	f.install(t)
+	v := newTestView()
+	v.refresh()
+	if !v.pruneBtn.Disabled {
+		t.Fatal("prune enabled with no unpinned named row")
+	}
+	v.activatePrune()
+	if v.armed != "" || len(f.deleted) != 0 {
+		t.Fatal("prune armed or deleted with no victim")
+	}
+	if !f.has("gosnap: snap name=KEEP bytes=64 pin=1") {
+		t.Fatalf("pin flag missing from the ls markers: %v", f.logs)
 	}
 }
 

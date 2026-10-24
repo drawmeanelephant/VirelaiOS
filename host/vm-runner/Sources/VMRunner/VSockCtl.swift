@@ -449,6 +449,37 @@ final class SnapshotCtl {
     static let dirName = "SNAPSHOTS"
     /// The suffix a stored snapshot carries; `ls` shows only these.
     static let fileSuffix = ".vzsave"
+    /// #3369: the pin marker — `SNAPSHOTS/<name>.pin` beside
+    /// `<name>.vzsave` exempts that snapshot from cap eviction. A file,
+    /// not a wire field: the guest's `gosnap pin` writes it with a plain
+    /// share op, and a pin survives the snapshot's own rm (a later
+    /// same-named save is still pinned).
+    static let pinSuffix = ".pin"
+    /// #3369: the named store's retention bound — at most this many
+    /// non-CRASH* `.vzsave` files. A save at the cap evicts the oldest
+    /// unpinned name; a fully pinned store refuses `store_full`.
+    static let namedCap = 8
+    /// #3369: the seat's crash rotation (CRASH0..CRASH2) is exempt from
+    /// the named cap, but the EXEMPTION itself is bounded — a caller
+    /// squatting the CRASH<digits> namespace cannot grow the store
+    /// without limit either. Generous headroom over the seat's 3 slots.
+    static let crashCap = 8
+
+    /// #3369: the crash-rotation namespace — `CRASH` followed by one or
+    /// more ASCII digits (the seat's crashSnapPrefix + slot digit shape).
+    /// `CRASH` alone, or any non-digit tail, is an ordinary named
+    /// snapshot counted by the named cap.
+    static func isCrashName(_ name: String) -> Bool {
+        guard name.hasPrefix("CRASH") else { return false }
+        let tail = name.dropFirst(5)
+        return !tail.isEmpty && tail.allSatisfy { $0 >= "0" && $0 <= "9" }
+    }
+
+    /// The on-share path of name's pin marker.
+    static func pinURL(in shareDir: URL, name: String) -> URL {
+        shareDir.appendingPathComponent(dirName, isDirectory: true)
+            .appendingPathComponent(name + pinSuffix)
+    }
 
     private let vm: VZVirtualMachine
     private let queue: DispatchQueue
@@ -482,6 +513,57 @@ final class SnapshotCtl {
             .appendingPathComponent(name + fileSuffix)
     }
 
+    /// #3369: one save's admission verdict against the capped store —
+    /// computed from the directory alone, so `swift test` drives the
+    /// whole policy (evict/refuse/exempt) without a VM.
+    enum Admission: Equatable {
+        case allow              // room exists, or a bounded CRASH* name
+        case evict(String)      // admit by evicting this oldest unpinned name
+        case refuse(String)     // a VSCtl.messages code — store_full
+    }
+
+    /// The retention bound, evaluated before any pause: a NEW name joins
+    /// the store only if the admission leaves it inside the cap. Called
+    /// only after the `exists` check, so `name` is never already stored.
+    /// An absent SNAPSHOTS/ is an empty store; a listable-directory
+    /// failure is io_error — the bound fails closed, never guesses.
+    static func admission(shareDir: URL, name: String) -> Admission {
+        let snapsDir = shareDir.appendingPathComponent(dirName, isDirectory: true)
+        var files: [(name: String, pinned: Bool, mtime: Date)] = []
+        var crashCount = 0
+        if FileManager.default.fileExists(atPath: snapsDir.path) {
+            guard let entries = try? FileManager.default.contentsOfDirectory(atPath: snapsDir.path) else {
+                return .refuse("io_error")
+            }
+            for entry in entries where entry.hasSuffix(fileSuffix) {
+                let base = String(entry.dropLast(fileSuffix.count))
+                if isCrashName(base) {
+                    crashCount += 1
+                    continue
+                }
+                let url = snapsDir.appendingPathComponent(entry)
+                let attrs = try? FileManager.default.attributesOfItem(atPath: url.path)
+                let mtime = (attrs?[.modificationDate] as? Date) ?? .distantPast
+                let pinned = FileManager.default.fileExists(
+                    atPath: pinURL(in: shareDir, name: base).path)
+                files.append((base, pinned, mtime))
+            }
+        }
+        if isCrashName(name) {
+            // The rotation's own bound: exempt from the named cap, never
+            // evictable, but the namespace itself is capped so exempt
+            // names cannot grow the store without limit either.
+            return crashCount < crashCap ? .allow : .refuse("store_full")
+        }
+        guard files.count >= namedCap else { return .allow }
+        // Oldest first: modification time, then name — the sort is total
+        // so the same store always picks the same victim.
+        let victim = files.filter { !$0.pinned }
+            .min { $0.mtime != $1.mtime ? $0.mtime < $1.mtime : $0.name < $1.name }
+        guard let victim else { return .refuse("store_full") }
+        return .evict(victim.name)
+    }
+
     /// The wire verdict for one `snapshot <name>` request. Runs the VZ
     /// calls on the VM's own queue and waits — the session's serial
     /// queue is the caller, so a semaphore hop is the honest
@@ -491,14 +573,23 @@ final class SnapshotCtl {
         if inFlight { return .refuse("busy") }
         if unsupported != nil { return .refuse("unsupported") }
         guard let shareDir else { return .refuse("no_state") }
+        inFlight = true
+        defer { inFlight = false }
         let final = Self.snapshotURL(in: shareDir, name: name)
         if FileManager.default.fileExists(atPath: final.path) {
             // A named snapshot is never silently overwritten — the
             // consent path is `gosnap rm` first.
             return .refuse("exists")
         }
-        inFlight = true
-        defer { inFlight = false }
+        // #3369: the named store's retention bound — the eviction victim
+        // (the oldest unpinned name) is named here and deleted only
+        // after the replacement lands, so a failed save loses nothing.
+        var evictVictim: String? = nil
+        switch Self.admission(shareDir: shareDir, name: name) {
+        case .allow: break
+        case .refuse(let code): return .refuse(code)
+        case .evict(let victim): evictVictim = victim
+        }
         let snapsDir = shareDir.appendingPathComponent(Self.dirName, isDirectory: true)
         let tmp = final.appendingPathExtension("part")
         do {
@@ -538,7 +629,20 @@ final class SnapshotCtl {
                         return
                     }
                     print("VSOCK-CTL: snapshot saved \(name)\(Self.fileSuffix)")
-                    verdict = .accept
+                    var v = SuspendVerdict.accept
+                    if let evictVictim {
+                        // #3369: the cap's room is paid for now that the
+                        // replacement exists — the victim's .pin (it has
+                        // none; admission only picks unpinned names) is
+                        // removed too so no orphan marker lingers.
+                        try? FileManager.default.removeItem(
+                            at: Self.snapshotURL(in: shareDir, name: evictVictim))
+                        try? FileManager.default.removeItem(
+                            at: Self.pinURL(in: shareDir, name: evictVictim))
+                        print("VSOCK-CTL: snapshot evicted \(evictVictim)\(Self.fileSuffix)")
+                        v.evicted = evictVictim
+                    }
+                    verdict = v
                     done.signal()
                 }
             }

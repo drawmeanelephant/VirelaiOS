@@ -27,6 +27,17 @@
 //	                                 later `suspend` supersedes the stage.
 //	gosnap rm <name>               — consent ask; nothing is deleted
 //	gosnap rm <name> confirm       — delete the named snapshot file
+//	gosnap pin <name>              — mark <name> immune to cap eviction
+//	                                 (#3369: a `<name>.pin` marker beside
+//	                                 the .vzsave; the pin survives `rm`
+//	                                 and applies to a later same-named
+//	                                 save)
+//	gosnap unpin <name>            — drop the pin
+//	gosnap prune                   — consent ask naming the victim the
+//	                                 host's cap would evict: the oldest
+//	                                 unpinned named snapshot (CRASH*
+//	                                 rows and pinned rows never qualify)
+//	gosnap prune confirm           — delete that snapshot file
 //
 // # Consent
 //
@@ -50,6 +61,8 @@
 package main
 
 import (
+	"strings"
+
 	"virelai/snapshot"
 	"virelai/vi"
 )
@@ -62,6 +75,10 @@ const (
 	// snapSuffix is the one name shape the host's snapshot driver writes;
 	// `ls` shows only these.
 	snapSuffix = ".vzsave"
+	// pinSuffix is the eviction-exemption marker (#3369): the host's
+	// capped store never evicts `<name>.vzsave` while `<name>.pin`
+	// exists beside it.
+	pinSuffix = ".pin"
 	// nameMax is the ctl wire's NAME bound (ADR 0056 D3: 1–31 bytes) —
 	// one byte tighter than the codec's MaxNameLen, so the check the app
 	// does locally is exactly the one the wire applies.
@@ -89,6 +106,7 @@ var (
 	listDir    = vi.ListDirAt
 	fileExists = vi.FileExists
 	fileDelete = vi.FileDelete
+	fileWrite  = vi.WriteFileSafe
 	logLine    = vi.ConsoleLine
 	exitFn     = vi.Exit
 )
@@ -103,6 +121,28 @@ func nameOK(name string) bool {
 // snapPath maps a snapshot name onto its share path — only ever called
 // with a name that passed nameOK, so the path cannot leave snapsDir.
 func snapPath(name string) string { return snapsDir + "/" + name + snapSuffix }
+
+// pinPath is the pin marker's share path — the host's SnapshotCtl reads
+// `<name>.pin` beside `<name>.vzsave` as "never evict me".
+func pinPath(name string) string { return snapsDir + "/" + name + pinSuffix }
+
+// crashName mirrors the seat's crash-snapshot rotation namespace
+// (crashSnapPrefix + a digit run, gotabwm/crashsnap.go) — CRASH0,
+// CRASH2, ... — the same rule the host's SnapshotCtl.isCrashName
+// applies. Crash slots are exempt from the named-store cap and from
+// prune; `rm` still deletes one by name when asked.
+func crashName(name string) bool {
+	const p = "CRASH"
+	if len(name) <= len(p) || name[:len(p)] != p {
+		return false
+	}
+	for i := len(p); i < len(name); i++ {
+		if name[i] < '0' || name[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
 
 // ctlVerdict runs one ctl session and returns the verdict word the
 // caller prints: "" on ok, the refusal code otherwise (the reply's D4
@@ -123,20 +163,33 @@ func ctlVerdict(verb, name string) (ok bool, code string) {
 }
 
 // snapRow is one stored snapshot: the name minus its .vzsave suffix and
-// the file's byte count.
+// the file's byte count, plus the pin flag and the listing's ctime —
+// the metadata prune's victim ordering needs, all from the one
+// directory read.
 type snapRow struct {
-	name  string
-	bytes uint64
+	name      string
+	bytes     uint64
+	pinned    bool
+	ctimeSec  int64
+	ctimeNsec uint32
 }
 
 // snapRows is the listing both faces share — cmdLS prints it, the M120d
 // window paints it. One row per `<name>.vzsave`, sorted by name so the
 // same share reports the same order twice (the host's readdir order is
-// not a contract). The error is listDir's verbatim, ENOENT included.
+// not a contract). `<name>.pin` marker files ride the same listing:
+// they never become rows, they set the matching row's pin flag. The
+// error is listDir's verbatim, ENOENT included.
 func snapRows() ([]snapRow, error) {
 	items, err := listDir(snapsCanon)
 	if err != nil {
 		return nil, err
+	}
+	pins := map[string]bool{}
+	for _, it := range items {
+		if !it.IsDir && strings.HasSuffix(it.Name, pinSuffix) {
+			pins[it.Name[:len(it.Name)-len(pinSuffix)]] = true
+		}
 	}
 	var rows []snapRow
 	for _, it := range items {
@@ -146,9 +199,16 @@ func snapRows() ([]snapRow, error) {
 		n := it.Name
 		m := len(n)
 		if m <= len(snapSuffix) || n[m-len(snapSuffix):] != snapSuffix {
-			continue // not a snapshot file (a stray .part, a marker)
+			continue // not a snapshot file (a stray .part, a marker, a pin)
 		}
-		rows = append(rows, snapRow{name: n[:m-len(snapSuffix)], bytes: it.Size})
+		base := n[:m-len(snapSuffix)]
+		rows = append(rows, snapRow{
+			name:      base,
+			bytes:     it.Size,
+			pinned:    pins[base],
+			ctimeSec:  it.CtimeSec,
+			ctimeNsec: it.CtimeNsec,
+		})
 	}
 	// Insertion sort — the listing is bounded (the dir protocol's own
 	// bound), and the guest keeps no general sort in this app.
@@ -165,7 +225,11 @@ func snapRows() ([]snapRow, error) {
 // the window's refresh so a gate reads one shape for both faces.
 func logSnapRows(rows []snapRow) {
 	for _, r := range rows {
-		logLine(markerPrefix + "snap name=" + r.name + " bytes=" + vi.Itoa64(int64(r.bytes)))
+		pin := " pin=0"
+		if r.pinned {
+			pin = " pin=1"
+		}
+		logLine(markerPrefix + "snap name=" + r.name + " bytes=" + vi.Itoa64(int64(r.bytes)) + pin)
 	}
 	logLine(markerPrefix + "ls n=" + vi.Itoa64(int64(len(rows))))
 }
@@ -190,18 +254,33 @@ func cmdLS() int {
 // cmdSave runs ctl `snapshot <name>`: the host pauses the machine, parks
 // `<name>.vzsave` on the share, answers while the guest is still frozen,
 // then resumes it — so `gosnap: save <name> ok` may print on the far
-// side of a save/restore boundary.
+// side of a save/restore boundary. #3369: a save that lands past the
+// host's named cap carries an eviction — the wire reply names it, and
+// the listing diff is the guest-side proof: any row that vanished
+// across the save reports as `evicted`.
 func cmdSave(name string) int {
 	if !nameOK(name) {
 		logLine(markerPrefix + "save " + name + " refused name_rejected")
 		return exitRefused
 	}
+	before, _ := snapRows()
 	ok, code := ctlVerdict("snapshot", name)
 	if !ok {
 		logLine(markerPrefix + "save " + name + " refused " + code)
 		return exitRefused
 	}
 	logLine(markerPrefix + "save " + name + " ok")
+	if after, err := snapRows(); err == nil {
+		live := map[string]bool{}
+		for _, r := range after {
+			live[r.name] = true
+		}
+		for _, r := range before {
+			if !live[r.name] {
+				logLine(markerPrefix + "evicted " + r.name)
+			}
+		}
+	}
 	return exitOK
 }
 
@@ -268,12 +347,128 @@ func cmdRm(name string, rest []string) int {
 	return exitOK
 }
 
+// cmdPin marks a stored snapshot immune to the host's cap eviction
+// (#3369): `<name>.pin` beside the .vzsave. Not a destructive verb, so
+// no consent — the pin is additive metadata; `rm` deletes the snapshot
+// but leaves the marker, so a later same-named save inherits the pin.
+func cmdPin(name string) int {
+	if !nameOK(name) {
+		logLine(markerPrefix + "pin " + name + " refused name_rejected")
+		return exitRefused
+	}
+	if !fileExists(snapPath(name)) {
+		logLine(markerPrefix + "pin " + name + " refused not_found")
+		return exitRefused
+	}
+	if rc := fileWrite(pinPath(name), []byte("pin\n")); rc != 0 {
+		logLine(markerPrefix + "pin " + name + " refused " + vi.ErrnoName(rc))
+		return exitRefused
+	}
+	logLine(markerPrefix + "pin " + name + " ok")
+	return exitOK
+}
+
+// cmdUnpin drops the marker. An orphan pin (its .vzsave already gone)
+// unpins cleanly — the pin is the target, not the snapshot.
+func cmdUnpin(name string) int {
+	if !nameOK(name) {
+		logLine(markerPrefix + "unpin " + name + " refused name_rejected")
+		return exitRefused
+	}
+	if !fileExists(pinPath(name)) {
+		logLine(markerPrefix + "unpin " + name + " refused not_found")
+		return exitRefused
+	}
+	if rc := fileDelete(pinPath(name)); rc != 0 {
+		logLine(markerPrefix + "unpin " + name + " refused " + vi.ErrnoName(rc))
+		return exitRefused
+	}
+	logLine(markerPrefix + "unpin " + name + " ok")
+	return exitOK
+}
+
+// pruneVictim names what the host's cap would evict next: the oldest
+// unpinned, non-CRASH* row, ordered by the listing's ctime then name —
+// a total order, so the same store always picks the same victim. The
+// bool is false when no row qualifies.
+func pruneVictim(rows []snapRow) (string, bool) {
+	victim := -1
+	for i, r := range rows {
+		if r.pinned || crashName(r.name) {
+			continue
+		}
+		if victim < 0 || lessRow(r, rows[victim]) {
+			victim = i
+		}
+	}
+	if victim < 0 {
+		return "", false
+	}
+	return rows[victim].name, true
+}
+
+func lessRow(a, b snapRow) bool {
+	if a.ctimeSec != b.ctimeSec {
+		return a.ctimeSec < b.ctimeSec
+	}
+	if a.ctimeNsec != b.ctimeNsec {
+		return a.ctimeNsec < b.ctimeNsec
+	}
+	return a.name < b.name
+}
+
+// cmdPrune is the consent-gated free-space verb: one invocation deletes
+// the ONE oldest unpinned named snapshot — the exact victim the host's
+// cap eviction would take — so every removed file is named in the ask
+// and in the verdict. A store of only pinned and CRASH* rows has no
+// victim: `all_pinned` names the pinned case, `not_found` the empty.
+func cmdPrune(rest []string) int {
+	if len(rest) > 1 {
+		return usage()
+	}
+	rows, err := snapRows()
+	if err != nil && err.Error() != "ENOENT" {
+		logLine(markerPrefix + "prune refused " + err.Error())
+		return exitRefused
+	}
+	victim, ok := pruneVictim(rows)
+	if !ok {
+		code := "not_found"
+		for _, r := range rows {
+			if !crashName(r.name) && r.pinned {
+				code = "all_pinned"
+			}
+		}
+		logLine(markerPrefix + "prune refused " + code)
+		return exitRefused
+	}
+	if len(rest) == 0 || rest[0] != confirmToken {
+		logLine(markerPrefix + "consent prune " + victim)
+		logLine(markerPrefix + "to proceed: gosnap prune " + confirmToken)
+		logLine(markerPrefix + "prune refused consent_required")
+		return exitRefused
+	}
+	path := snapPath(victim)
+	if !fileExists(path) {
+		logLine(markerPrefix + "prune " + victim + " refused not_found")
+		return exitRefused
+	}
+	if rc := fileDelete(path); rc != 0 {
+		logLine(markerPrefix + "prune " + victim + " refused " + vi.ErrnoName(rc))
+		return exitRefused
+	}
+	logLine(markerPrefix + "prune " + victim + " ok")
+	return exitOK
+}
+
 func usage() int {
 	logLine("gosnap: snapshot manager — verbs:")
 	logLine("  ls                          list stored snapshots")
 	logLine("  save <name>                 snapshot the running machine onto the share")
 	logLine("  restore <name> confirm      stage <name> as the next --resume")
 	logLine("  rm <name> confirm           delete <name>")
+	logLine("  pin <name> / unpin <name>   exempt <name> from cap eviction / drop the pin")
+	logLine("  prune confirm               delete the oldest unpinned named snapshot")
 	logLine("  (bare)                      the Snapshots window")
 	return exitUsage
 }
@@ -306,6 +501,18 @@ func run(args []string) int {
 			return usage()
 		}
 		return cmdRm(args[2], args[3:])
+	case "pin":
+		if len(args) != 3 {
+			return usage()
+		}
+		return cmdPin(args[2])
+	case "unpin":
+		if len(args) != 3 {
+			return usage()
+		}
+		return cmdUnpin(args[2])
+	case "prune":
+		return cmdPrune(args[2:])
 	}
 	return usage()
 }
