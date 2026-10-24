@@ -119,6 +119,13 @@ func (m *model) openFile() {
 		m.refuseOpen(name, openErr)
 		return
 	}
+	// M200b (#3384): the engine's dispatch is shaped — argv carries the
+	// derived --receipt, and a script the policy cannot take is refused
+	// by name before any exec (quickjs.go).
+	if req.Handler.Bin == qjsBin {
+		m.qjsOpen(name, req.Target)
+		return
+	}
 	m.emit(markerOpenFile + name + " type=" + req.Type.String() + " handler=" + req.Handler.Bin)
 	m.launch = launchReq{bin: req.Handler.Bin, path: req.Target}
 	m.status = "opening " + baseName(req.Handler.Bin)
@@ -166,9 +173,13 @@ func (m *model) chooseOpen(n int) {
 	}
 	h := m.openCands[n-1]
 	m.emit(markerOpenChose + m.openName + " type=" + m.openID.String() + " handler=" + h.Bin)
-	m.launch = launchReq{bin: h.Bin, path: m.openPath}
+	if h.Bin == qjsBin {
+		m.qjsChose(m.openName, m.openPath)
+	} else {
+		m.launch = launchReq{bin: h.Bin, path: m.openPath}
+		m.status = "opening " + baseName(h.Bin)
+	}
 	m.clearOpenWith()
-	m.status = "opening " + baseName(h.Bin)
 }
 
 // cancelOpenWith leaves the list without launching anything.
