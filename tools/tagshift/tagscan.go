@@ -120,6 +120,7 @@ func tagscan(path, passFile string) int {
 		path, sb.volumeID, sb.volumeBlocks, sb.tagFirst, sb.tagBlocks)
 
 	var ok, shift, shiftX, zeroTag, zeroE, diverge int
+	var shiftK [16]int // shift-k: stored = exp[k..15] ++ 0^k (k leading zeros of exp dropped)
 	for b := uint32(2); b < sb.tagFirst && uint64(b)*BlockLen < uint64(len(img)); b++ {
 		e := tagHomeEntry(img, sb.tagFirst, b)
 		nonce := e[:aeadNonceLen]
@@ -149,23 +150,43 @@ func tagscan(path, passFile string) int {
 			ok++
 			continue
 		}
-		// Shifted shapes: stored = exp[1..15] ++ tail.
 		slot := b - 2
 		home := sb.tagFirst + slot/TagEntriesPerBlock
 		entryOff := uint64(home)*BlockLen + uint64(slot%TagEntriesPerBlock)*TagEntryBytes
-		if bytes.Equal(stored[:15], exp[1:]) {
-			if stored[15] == 0 {
-				shift++
-				fmt.Printf("shift   b=%-6d home=%-6d slot=%-3d entry_off=%#x tag_off=%#x exp0=%02x\n      nonce=%s\n      stor=%s\n      exp =%s\n",
-					b, home, slot%TagEntriesPerBlock, entryOff, entryOff+aeadNonceLen,
-					exp[0], hex.EncodeToString(nonce),
-					hex.EncodeToString(stored), hex.EncodeToString(exp[:]))
-			} else {
-				shiftX++
-				fmt.Printf("shift-x b=%-6d home=%-6d slot=%-3d tail=%02x exp0=%02x stor=%s exp=%s\n",
-					b, home, slot%TagEntriesPerBlock, stored[15], exp[0],
-					hex.EncodeToString(stored), hex.EncodeToString(exp[:]))
+		// Minimal-length emission: stored = exp[k..15] ++ 0^k for the k
+		// leading zero bytes of exp — the #3128 leading-zero-suppression
+		// signature at any suppression depth (T>>8 was the only shape the
+		// first scanner named; T>>16 hid inside `diverge`).
+		k := -1
+		for kk := 15; kk >= 1; kk-- {
+			if !bytes.Equal(stored[:aeadTagLen-kk], exp[kk:]) {
+				continue
 			}
+			tailZero := true
+			for _, c := range stored[aeadTagLen-kk:] {
+				if c != 0 {
+					tailZero = false
+				}
+			}
+			if tailZero {
+				k = kk
+				break
+			}
+		}
+		if k >= 0 {
+			shiftK[k]++
+			shift++
+			fmt.Printf("shift-%d b=%-6d home=%-6d slot=%-3d entry_off=%#x tag_off=%#x exp0=%02x\n      nonce=%s\n      stor=%s\n      exp =%s\n",
+				k, b, home, slot%TagEntriesPerBlock, entryOff, entryOff+aeadNonceLen,
+				exp[0], hex.EncodeToString(nonce),
+				hex.EncodeToString(stored), hex.EncodeToString(exp[:]))
+			continue
+		}
+		if bytes.Equal(stored[:15], exp[1:]) {
+			shiftX++
+			fmt.Printf("shift-x b=%-6d home=%-6d slot=%-3d tail=%02x exp0=%02x stor=%s exp=%s\n",
+				b, home, slot%TagEntriesPerBlock, stored[15], exp[0],
+				hex.EncodeToString(stored), hex.EncodeToString(exp[:]))
 			continue
 		}
 		diverge++
@@ -175,8 +196,14 @@ func tagscan(path, passFile string) int {
 				hex.EncodeToString(stored), hex.EncodeToString(exp[:]))
 		}
 	}
-	fmt.Printf("tagscan: ok=%d shift=%d shift-x=%d zero-tag=%d zero-entry=%d diverge=%d\n",
-		ok, shift, shiftX, zeroTag, zeroE, diverge)
+	fmt.Printf("tagscan: ok=%d shift=%d", ok, shift)
+	for kk := 1; kk < 16; kk++ {
+		if shiftK[kk] > 0 {
+			fmt.Printf(" (>>%d:%d)", 8*kk, shiftK[kk])
+		}
+	}
+	fmt.Printf(" shift-x=%d zero-tag=%d zero-entry=%d diverge=%d\n",
+		shiftX, zeroTag, zeroE, diverge)
 	if shift+diverge+shiftX > 0 {
 		return 1
 	}

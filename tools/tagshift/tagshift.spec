@@ -12,7 +12,7 @@
 #         the run dir; BOOTS=N repeats the spec body N times)
 
 vgate_name tagshift-repro "#3128 diagnostic: repeated sealed kill legs to harvest torn tag homes"
-vgate_fmt kernel/src/vlfs/*.zig
+vgate_fmt kernel/src/vlfs/*.zig kernel/src/seal.zig kernel/src/virtio_blk.zig
 vgate_repeat 4 BOOTS
 vgate_note "Diagnostic only — asserts never fail on the tear; harvest is the point."
 
