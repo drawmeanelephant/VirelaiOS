@@ -1,13 +1,16 @@
-// mov.go is GOVIEW's MOV/MP4 demux (M180a, issue #3155): a bounded box
-// walker over 32-bit sizes, 64-bit sizes (size == 1) and to-end-of-file
-// (size == 0, top level only), reading ftyp, moov/trak/tkhd and
-// mdia/{mdhd,hdlr,minf/stbl/{stsd,stts,stsc,stsz,stco|co64}}. It takes the
-// first `vide` track and resolves a sample table of (offset, size,
-// duration); a `soun` track is skipped and named in the load receipt
-// (`audio=skipped`). Edit lists are ignored; fragmented files (moof) are
-// refused by name.
+// mov.go is GOVIEW's MOV/MP4 demux (M180a, issue #3155; M202b, issue
+// #3385): a bounded box walker over 32-bit sizes, 64-bit sizes (size ==
+// 1) and to-end-of-file (size == 0, top level only), reading ftyp,
+// moov/trak/tkhd and mdia/{mdhd,hdlr,minf/stbl/{stsd,stts,stsc,stsz,
+// stco|co64}}. It takes the first `vide` track and resolves a sample
+// table of (offset, size, duration). The first `soun` track resolves
+// the same way: the PCM-family sample entries (sowt/twos/`raw `/lpcm)
+// become a movAudio the app decodes through virelai/pcm, every other
+// fourcc is named in the load receipt (`audio=skipped codec=mp4a`),
+// and a missing or unplayable track is the honest `audio=skipped`.
+// Edit lists are ignored; fragmented files (moof) are refused by name.
 //
-// The one accepted codec is the `jpeg` sample entry — QuickTime
+// The one accepted video codec is the `jpeg` sample entry — QuickTime
 // Photo-JPEG, the common MJPEG tag — each sample decoding through
 // webrender.DecodeImage. Every other fourcc refuses AFTER the demux has
 // read it: mov-unsupported-codec-<fourcc>, an ErrImageUnsupported like
@@ -18,7 +21,12 @@
 // walker and the same hostile files the guest refuses.
 package main
 
-import "virelai/webrender"
+import (
+	"math"
+
+	"virelai/pcm"
+	"virelai/webrender"
+)
 
 // The demux bounds (the card's fixed caps): a hostile file gets a named
 // refusal, never an unbounded walk or allocation.
@@ -66,14 +74,35 @@ type movSample struct {
 
 // movVideo is a demuxed video track: the tkhd dims, the media timescale
 // and the sample table; data is the file the sample offsets slice into.
+// audio is the first soun track when it demuxed to a playable PCM-family
+// description; audioCodec names a soun codec the demux refused (mp4a and
+// friends) so the receipt can say why — "" when there is nothing to name
+// (no soun track, or a track whose tables never resolved).
 type movVideo struct {
-	w, h      int
-	timescale uint32
-	brand     string // ftyp major brand, "" on an old ftyp-less file
+	w, h       int
+	timescale  uint32
+	brand      string // ftyp major brand, "" on an old ftyp-less file
+	codec      string // stsd sample-entry fourcc
+	samples    []movSample
+	audio      *movAudio
+	audioCodec string
+	data       []byte
+}
+
+// movAudio is a demuxed soun track: the decode tuple its sound sample
+// description resolved to, the media timescale and the sample table.
+// tag carries a pcm format code (FormatPCM or FormatFloat) so the
+// materialized stream feeds pcm.Pipe exactly like a parsed WAV does.
+type movAudio struct {
 	codec     string // stsd sample-entry fourcc
+	tag       uint16 // pcm.FormatPCM or pcm.FormatFloat
+	channels  uint16 // 1 or 2
+	rate      uint32 // samples per second
+	bits      uint16 // per channel
+	be        bool   // big-endian sample words: swap to LE on decode
+	bias      bool   // flip each sample's top bit (unsigned >8-bit, signed 8-bit)
+	timescale uint32
 	samples   []movSample
-	audioSkip bool // a soun track was skipped during the walk
-	data      []byte
 }
 
 // sampleBytes returns sample i's bytes — the frame's whole JPEG.
@@ -118,10 +147,11 @@ func movBrandOK(b string) bool {
 
 // movTrak accumulates one trak's atoms during the walk.
 type movTrak struct {
-	w, h      uint32 // tkhd dims (already shifted out of 16.16)
-	handler   string // hdlr handler_type
-	timescale uint32 // mdhd
-	codec     string // stsd first entry's format fourcc
+	w, h      uint32    // tkhd dims (already shifted out of 16.16)
+	handler   string    // hdlr handler_type
+	timescale uint32    // mdhd
+	codec     string    // stsd first entry's format fourcc
+	sound     *movSound // soun stsd's decode tuple (nil for vide traks)
 	stts      [][2]uint32
 	stsc      [][3]uint32
 	sizes     []uint32 // stsz, expanded per-sample
@@ -294,16 +324,16 @@ func (p *movParse) ftyp(body []byte) error {
 
 // tkhd takes the track dims: the 16.16 fixed-point width/height are the
 // last eight bytes of the box, whichever header version it carries.
+// Zero dims are recorded, not refused here — a soun track honestly
+// carries a 0x0 tkhd; the demux refuses the file only when the SELECTED
+// vide track has no picture.
 func (p *movParse) tkhd(body []byte) error {
 	if len(body) < 8 {
 		return errMOVInvalid
 	}
-	w := be32(body[len(body)-8:]) >> 16
-	h := be32(body[len(body)-4:]) >> 16
-	if w == 0 || h == 0 {
-		return errMOVInvalid
-	}
-	p.cur.w, p.cur.h, p.cur.haveTkhd = w, h, true
+	p.cur.w = be32(body[len(body)-8:]) >> 16
+	p.cur.h = be32(body[len(body)-4:]) >> 16
+	p.cur.haveTkhd = true
 	return nil
 }
 
@@ -362,7 +392,10 @@ func (p *movParse) stbl(typ string, body []byte) error {
 }
 
 // stsd reads the first sample entry's format fourcc — the codec. A
-// sample description with no entries describes nothing to play.
+// sample description with no entries describes nothing to play. On a
+// soun trak the entry is also parsed for its decode tuple; a handler
+// that arrives later than its tables leaves the codec named and the
+// decode unsynthesized, which the demux reports like any coded entry.
 func (t *movTrak) readStsd(body []byte) error {
 	if len(body) < 16 {
 		return errMOVInvalid
@@ -373,8 +406,120 @@ func (t *movTrak) readStsd(body []byte) error {
 		return errMOVInvalid
 	}
 	t.codec = string(body[12:16])
+	if t.handler == "soun" {
+		t.sound = movSoundEntry(body[8 : 8+entry])
+	}
 	t.haveStsd = true
 	return nil
+}
+
+// The PCM family the card decodes plus the rate bound pcm shares
+// (8 kHz..96 kHz — a MOV naming a rate outside it is skipped like a WAV
+// refusing it).
+const (
+	movRateMin, movRateMax = 8000, 96000
+)
+
+// movSound is a soun sample entry resolved to the decode tuple the PCM
+// family shares: a pcm format tag, the channel/rate/bits geometry, and
+// the two byte transforms movAudio's pcmBytes applies — the endian swap
+// for big-endian sample words and the top-bit bias that maps unsigned
+// >8-bit and signed 8-bit encodings onto the decoder's vocabulary
+// (8-bit unsigned, wider signed little-endian).
+type movSound struct {
+	codec    string // stsd sample-entry fourcc
+	tag      uint16 // pcm.FormatPCM or pcm.FormatFloat
+	channels uint16
+	rate     uint32
+	bits     uint16
+	be       bool
+	bias     bool
+}
+
+// movSoundEntry parses one stsd sound sample entry into a decode tuple.
+// The QT sound sample description and the ISO AudioSampleEntry share
+// the channel/bits/rate offsets, so v0/v1 entries and isom entries read
+// the same fields; the version word itself is QT's. nil means the entry
+// is not one this demux synthesizes — a coded fourcc (mp4a, ulaw, …), a
+// PCM-family member whose parameters are unplayable, or an entry too
+// short to describe anything.
+func movSoundEntry(entry []byte) *movSound {
+	if len(entry) < 36 {
+		return nil
+	}
+	s := &movSound{codec: string(entry[4:8]), tag: pcm.FormatPCM}
+	channels := be16(entry[24:26])
+	bits := be16(entry[26:28])
+	rate := be32(entry[32:36]) >> 16
+	switch s.codec {
+	case "sowt":
+		// Signed little-endian — WAV PCM's layout exactly; 8-bit signed
+		// rides the u8 bias like the wider unsigned codecs.
+		s.bias = bits == 8
+	case "twos":
+		// Signed big-endian.
+		s.be = bits > 8
+		s.bias = bits == 8
+	case "raw ":
+		// Offset binary: unsigned 8-bit is the decoder's own encoding;
+		// wider words are big-endian and need the sign flip.
+		s.be = bits > 8
+		s.bias = bits > 8
+	case "lpcm":
+		// Only the QT v2 description carries the format flags that make
+		// lpcm unambiguous — a v0/v1 lpcm stays refused like a coded
+		// entry. The v2 extension overrides the base geometry: f64 rate,
+		// u32 channels, the flags word.
+		if be16(entry[16:18]) != 2 || len(entry) < 72 {
+			return nil
+		}
+		const (
+			lpcmFloat          = 1 << 0
+			lpcmBE             = 1 << 1
+			lpcmSigned         = 1 << 2
+			lpcmPacked         = 1 << 3
+			lpcmAlignedHigh    = 1 << 4
+			lpcmNonInterleaved = 1 << 5
+		)
+		flags := be32(entry[60:64])
+		if flags&(lpcmNonInterleaved|lpcmAlignedHigh) != 0 {
+			return nil
+		}
+		if flags&lpcmPacked == 0 && bits > 8 {
+			return nil // unpacked wide samples have no frame alignment to trust
+		}
+		s.be = flags&lpcmBE != 0
+		if ch := be32(entry[48:52]); ch != 0 {
+			channels = ch
+		}
+		if f := math.Float64frombits(movBe64(entry[40:48])); f >= 1 && f <= 0xffffffff {
+			rate = uint32(f)
+		}
+		if bits == 0 {
+			if bpp, fpp := be32(entry[64:68]), be32(entry[68:72]); bpp != 0 && fpp != 0 && channels != 0 {
+				bits = bpp * 8 / (fpp * channels)
+			}
+		}
+		if flags&lpcmFloat != 0 {
+			s.tag = pcm.FormatFloat
+		} else {
+			s.bias = (flags&lpcmSigned != 0) == (bits == 8)
+		}
+	default:
+		return nil
+	}
+	if channels < 1 || channels > 2 || rate < movRateMin || rate > movRateMax {
+		return nil
+	}
+	if s.tag == pcm.FormatFloat {
+		if bits != 32 {
+			return nil
+		}
+	} else if bits != 8 && bits != 16 && bits != 24 && bits != 32 {
+		return nil
+	}
+	s.channels, s.rate, s.bits = uint16(channels), rate, uint16(bits)
+	return s
 }
 
 // stts reads the time-to-sample runs: (count, delta) pairs.
@@ -570,8 +715,85 @@ func (t *movTrak) resolve(data []byte) ([]movSample, error) {
 	return samples, nil
 }
 
+// audio resolves the soun track into a playable movAudio through the
+// same resolve() the video track runs. The returned string is the
+// refusal's name: the entry's fourcc whenever a sound description was
+// read and refused (coded like mp4a, or PCM-family with unplayable
+// parameters), "" for every quieter skip — no stsd at all, or a sample
+// table that did not resolve. A bad sound track never fails the file:
+// the video the demux already validated still plays.
+func (t *movTrak) audio(data []byte) (*movAudio, string) {
+	if t.sound == nil {
+		return nil, t.codec
+	}
+	samples, err := t.resolve(data)
+	if err != nil {
+		return nil, ""
+	}
+	return &movAudio{
+		codec: t.sound.codec, tag: t.sound.tag,
+		channels: t.sound.channels, rate: t.sound.rate, bits: t.sound.bits,
+		be: t.sound.be, bias: t.sound.bias,
+		timescale: t.timescale, samples: samples,
+	}, ""
+}
+
+// pcmBytes materializes the track's samples as one contiguous
+// little-endian stream — the byte layout pcm.Pipe's decoder reads
+// (little-endian signed for the wide words, unsigned for 8-bit, LE
+// IEEE-754 for float). Big-endian sample words are swapped in place and
+// the codec's sign bias flips each sample's top bit. A sample that does
+// not hold a whole number of frames is not sound — nil, and the caller
+// treats it like the table that never resolved.
+func (a *movAudio) pcmBytes(data []byte) []byte {
+	w := int(a.bits) / 8
+	fb := w * int(a.channels)
+	n := 0
+	for _, s := range a.samples {
+		n += int(s.size)
+	}
+	out := make([]byte, 0, n)
+	for i := range a.samples {
+		s := a.samples[i]
+		b := data[s.off : s.off+uint64(s.size)]
+		if len(b)%fb != 0 {
+			return nil
+		}
+		out = append(out, b...)
+	}
+	if a.be && w > 1 {
+		for i := 0; i+w <= len(out); i += w {
+			for l, r := i, i+w-1; l < r; l, r = l+1, r-1 {
+				out[l], out[r] = out[r], out[l]
+			}
+		}
+	}
+	if a.bias {
+		for i := w - 1; i < len(out); i += w {
+			out[i] ^= 0x80
+		}
+	}
+	return out
+}
+
+// wavInfo dresses the materialized stream as a WavInfo — the same tuple
+// a parsed WAV header negotiates — so NewPipe/Play run unchanged.
+func (a *movAudio) wavInfo(data []byte) (pcm.WavInfo, []byte) {
+	b := a.pcmBytes(data)
+	fb := int(a.channels) * int(a.bits) / 8
+	info := pcm.WavInfo{
+		Tag: a.tag, Channels: a.channels, Rate: a.rate, Bits: a.bits,
+		DataSize: uint64(len(b)),
+	}
+	if fb > 0 {
+		info.Frames = uint64(len(b)) / uint64(fb)
+	}
+	return info, b
+}
+
 // demuxMOV walks the box tree, takes the first `vide` track, resolves
-// its sample table and applies the codec gate. Named refusals:
+// its sample table and applies the codec gate, then resolves the first
+// `soun` track's audio the same bounded way. Named refusals:
 // mov-invalid on structure, mov-limit on a bound, mov-fragmented on
 // moof/mfra, and mov-unsupported-codec-<fourcc> once the table resolved
 // — the demux reads the codec before it is refused.
@@ -584,7 +806,7 @@ func demuxMOV(data []byte) (*movVideo, error) {
 		return nil, err
 	}
 	v := &movVideo{data: data, brand: p.brand}
-	var track *movTrak
+	var track, atrack *movTrak
 	for _, t := range p.traks {
 		switch t.handler {
 		case "vide":
@@ -592,10 +814,12 @@ func demuxMOV(data []byte) (*movVideo, error) {
 				track = t
 			}
 		case "soun":
-			v.audioSkip = true
+			if atrack == nil {
+				atrack = t
+			}
 		}
 	}
-	if track == nil {
+	if track == nil || track.w == 0 || track.h == 0 {
 		return nil, errMOVInvalid
 	}
 	samples, err := track.resolve(data)
@@ -608,6 +832,9 @@ func demuxMOV(data []byte) (*movVideo, error) {
 	v.w, v.h = int(track.w), int(track.h)
 	if v.codec != "jpeg" {
 		return nil, movCodecError{tag: movBrandTag(v.brand), fourcc: v.codec}
+	}
+	if atrack != nil {
+		v.audio, v.audioCodec = atrack.audio(data)
 	}
 	return v, nil
 }
