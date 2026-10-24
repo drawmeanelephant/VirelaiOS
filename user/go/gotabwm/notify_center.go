@@ -1,6 +1,8 @@
 package main
 
 import (
+	"virelai/appkit"
+	"virelai/art"
 	"virelai/draw"
 	"virelai/icons"
 	"virelai/theme"
@@ -420,6 +422,20 @@ func paintNotifyCenter(scan []byte, width, height int) int {
 				written += seatFill(c, widgets.Rect{X: bar.X, Y: bar.Y,
 					W: bar.W * entry.pct / 100, H: bar.H}, tok.Accent)
 			} else {
+				// #3357: the staged arc sheet spins next to the sweep —
+				// the clock already drives both, so the raster needs no
+				// widget state. No decode: the bar answers alone, exactly
+				// as it did before the sheet shipped.
+				spin := appkit.Spinner{
+					R:     widgets.Rect{X: bar.X, Y: bar.Y - 5, W: 14, H: 14},
+					Sheet: art.SpinnerArc,
+					Frame: int(compositeClock),
+				}
+				if spin.Frames() > 0 {
+					spin.Draw(c)
+					bar.X += 18
+					bar.W -= 18
+				}
 				off, seg := notifyProgressSweep(compositeClock, bar.W)
 				written += seatFill(c, widgets.Rect{X: bar.X + off, Y: bar.Y,
 					W: seg, H: bar.H}, tok.Accent)

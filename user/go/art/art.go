@@ -143,6 +143,13 @@ func Spot(name string) func(c widgets.RectCanvas, r widgets.Rect) bool {
 	}
 }
 
+// Stage injects a decoded raster directly — host tests only, the fake
+// share's other half alongside Reset.
+func Stage(name string, c *draw.BufferCanvas) {
+	tried[name] = true
+	cache[name] = c
+}
+
 // Reset drops the decode cache — host tests only.
 func Reset() {
 	cache = map[string]*draw.BufferCanvas{}

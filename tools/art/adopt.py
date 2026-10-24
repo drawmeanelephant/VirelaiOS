@@ -80,6 +80,41 @@ TABLE = [
     ("filetype-binary",      "filetypes", "FT_BIN",  (32, 32),   1257),
     ("filetype-contact",     "filetypes", "FT_VCF",  (32, 32),   1257),
     ("filetype-calendar",    "filetypes", "FT_ICS",  (32, 32),   1257),
+    # #1248 app-icon set (master 64x64 — launcher-grid size; the shared
+    # navy tile frame keeps the family legible at 24 and 16 px reads).
+    # Share names are the delivery's own proposed 8.3 spellings
+    # (f-artcraft prompts/inbox/2026-10-24-icon-set-shared-tile-frame.md).
+    ("icon-gocalc",    "icons", "ICONCALC", (64, 64), 1248),
+    ("icon-note",      "icons", "ICONNOTE", (64, 64), 1248),
+    ("icon-goedit",    "icons", "ICONEDIT", (64, 64), 1248),
+    ("icon-gofiles",   "icons", "ICONFILE", (64, 64), 1248),
+    ("icon-goterm",    "icons", "ICONTERM", (64, 64), 1248),
+    ("icon-web",       "icons", "ICONWEB",  (64, 64), 1248),
+    ("icon-pulse",     "icons", "ICONPULS", (64, 64), 1248),
+    ("icon-gosh",      "icons", "ICONGOSH", (64, 64), 1248),
+    ("icon-gohelp",    "icons", "ICONHELP", (64, 64), 1248),
+    ("icon-gowelcome", "icons", "ICONWELC", (64, 64), 1248),
+    ("icon-gotop",     "icons", "ICONTOP",  (64, 64), 1248),
+    ("icon-goset",     "icons", "ICONSET",  (64, 64), 1248),
+    ("icon-goview",    "icons", "ICONVIEW", (64, 64), 1248),
+    ("icon-gosound",   "icons", "ICONSND",  (64, 64), 1248),
+    ("icon-gostalgia", "icons", "ICONSTLG", (64, 64), 1248),
+    ("icon-gostore",   "icons", "ICONSTOR", (64, 64), 1248),
+    ("icon-goinfer",   "icons", "ICONINFR", (64, 64), 1248),
+    ("icon-gorec",     "icons", "ICONREC",  (64, 64), 1248),
+    ("icon-gosnap",    "icons", "ICONSNAP", (64, 64), 1248),
+    ("icon-goassist",  "icons", "ICONASST", (64, 64), 1248),
+    ("icon-gosheet",   "icons", "ICONSHT",  (64, 64), 1248),
+    ("icon-goreader",  "icons", "ICONREAD", (64, 64), 1248),
+    ("icon-goclock",   "icons", "ICONCLK",  (64, 64), 1248),
+    ("icon-gomine",    "icons", "ICONMINE", (64, 64), 1248),
+    ("icon-gosol",     "icons", "ICONSOL",  (64, 64), 1248),
+    ("icon-goemoji",   "icons", "ICONEMOJ", (64, 64), 1248),
+    ("icon-goirc",     "icons", "ICONIRC",  (64, 64), 1248),
+    ("icon-govault",   "icons", "ICONVLT",  (64, 64), 1248),
+    ("icon-gomail",    "icons", "ICONMAIL", (64, 64), 1248),
+    ("icon-goa11y",    "icons", "ICONA11Y", (64, 64), 1248),
+    ("icon-tabwm",     "icons", "ICONTABM", (64, 64), 1248),
 ]
 
 MANIFEST = ROOT / "image/art/ART.TXT"
