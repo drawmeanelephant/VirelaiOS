@@ -1160,16 +1160,27 @@ func secretAdminVerdict(s *syscalls) (string, error) {
 	if id < 1 {
 		return "", errors.New("ask rc=" + vi.Itoa64(id))
 	}
+	// The marshal is id\tpid\tuid\timage\tkey[\tapps]; the pending
+	// table persists across processes, so an earlier lane's unanswered
+	// ask can stand ahead of ours — scan for OUR key, don't assume the
+	// head row. (Observed on the gate: the plain run's st-self ask still
+	// stands while its asker idles in the report screen's event loop.)
 	var buf [vi.SecretAskMetaMax]byte
-	n, rc := s.secretAskList(0, buf[:])
-	if rc < 0 || n == 0 {
-		return "", errors.New("list rc=" + vi.Itoa64(rc))
+	listed := false
+	for i := uint32(0); i < 4; i++ {
+		n, rc := s.secretAskList(i, buf[:])
+		if rc == -vi.ErrENOENT {
+			break
+		}
+		if rc < 0 || n == 0 {
+			return "", errors.New("list rc=" + vi.Itoa64(rc))
+		}
+		if strings.Contains(string(buf[:n]), "st-admin") {
+			listed = true
+		}
 	}
-	// The marshal is id\tpid\tuid\timage\tkey[\tapps]; the key is
-	// what proves OUR ask stands — the image is the kernel-recorded
-	// name (a monitor spawn, not exec-verbatim).
-	if !strings.Contains(string(buf[:n]), "st-admin") {
-		return "", errors.New("list row " + string(buf[:n]) + " lacks st-admin")
+	if !listed {
+		return "", errors.New("no pending row names st-admin")
 	}
 	if rc := s.secretCommit(uint32(id)); rc != 0 {
 		return "", errors.New("commit rc=" + vi.Itoa64(rc))
