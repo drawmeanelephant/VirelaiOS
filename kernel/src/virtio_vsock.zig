@@ -143,6 +143,10 @@ pub var vs_ready: bool = false; // transport armed, connect usable
 pub var vs_guest_cid: u64 = 0;
 pub var vs_fail_stage: u8 = 0; // init() failure point, for evidence
 pub var vs_last_src_port: u32 = 0; // source port of the last connect()
+/// Counted drop (issue #3398): an OP_RW packet whose device-written
+/// claims (`used.len`, header `len`) do not fit the physical rx slot.
+/// The slot is reposted and the drain continues — never memcpy'd.
+pub var rx_dropped_bad_len: u64 = 0;
 
 var vs_common_bar: u64 = 0;
 var vs_notify_bar: u64 = 0;
@@ -631,7 +635,17 @@ pub fn recv(conn: *Conn, out: []u8) RecvResult {
             result = .{ .verdict = .eof };
             break;
         }
-        if (r_op == op_rw and plen > 0 and used.len >= hdr_size + plen) {
+        if (r_op == op_rw and plen > 0) {
+            // used.len and plen are BOTH device-written claims — bound
+            // each by the physical slot, never one by the other (issue
+            // #3398: a used.len = 4096 on this 2048-byte slot let an
+            // OP_RW plen = 3000 read 44 bytes into adjacent BSS).
+            if (used.len > buf.len or plen > buf.len - hdr_size or
+                used.len < hdr_size + plen)
+            {
+                rx_dropped_bad_len +%= 1;
+                continue;
+            }
             const n = @min(plen, out.len);
             @memcpy(out[0..n], buf[hdr_size .. hdr_size + n]);
             conn.rx_cnt +%= @intCast(plen);
@@ -709,4 +723,132 @@ test "virtio_vsock: header layout and op codes are the virtio shape" {
     // An unarmed transport reports timeout, never a hang.
     vs_ready = false;
     try std.testing.expectEqual(ConnectResult.timeout, connect(1208));
+}
+
+/// Arm just enough of the transport for recv()/connect() to run on the
+/// host: a used ring over the real rx buffers and a writable notify word
+/// (kick() stores one MMIO halfword; vs_notify starts as 0).
+fn arm_test_rings(notify_sink: *[64]u8) void {
+    vs_notify = @intFromPtr(notify_sink);
+    vs_notify_mult = 1;
+    rx_queue.size = @intCast(descriptor_count);
+    rx_queue.notify_off = 0;
+    rx_queue.last_used = 0;
+    rx_queue.avail = .{
+        .flags = 0,
+        .idx = 0,
+        .ring = @splat(0),
+        .used_event = 0,
+    };
+    rx_queue.used = .{
+        .flags = 0,
+        .idx = 0,
+        .ring = @splat(.{ .id = 0, .len = 0 }),
+        .avail_event = 0,
+    };
+}
+
+test "virtio_vsock: recv() bounds plen by the rx slot, not the claimed used.len" {
+    var notify_sink: [64]u8 align(64) = @splat(0);
+    arm_test_rings(&notify_sink);
+    var conn: Conn = .{ .src_port = 30000, .dst_port = 1208 };
+    const drops_before = rx_dropped_bad_len;
+    var out: [512]u8 = undefined;
+
+    // Issue #3398's shape: the device claims used.len = 4096 on the
+    // 2048-byte slot, the OP_RW header claims len = 3000.
+    @memset(&rx_bufs[0], 0);
+    write32(&rx_bufs[0], hdr_src_port, conn.dst_port);
+    write32(&rx_bufs[0], hdr_dst_port, conn.src_port);
+    write16(&rx_bufs[0], hdr_type, type_stream);
+    write16(&rx_bufs[0], hdr_op, op_rw);
+    write32(&rx_bufs[0], hdr_len, 3000);
+    rx_queue.used.ring[0] = .{ .id = 0, .len = 4096 };
+    rx_queue.used.idx = 1;
+    out = @splat(0xAA);
+    var r = recv(&conn, &out);
+    try std.testing.expectEqual(RecvVerdict.none, r.verdict);
+    try std.testing.expectEqual(@as(usize, 0), r.len);
+    try std.testing.expectEqual(drops_before + 1, rx_dropped_bad_len);
+    for (out) |b| try std.testing.expectEqual(@as(u8, 0xAA), b);
+    // The slot went back on the avail ring — a drop, not a leak.
+    try std.testing.expectEqual(@as(u16, 1), rx_queue.avail.idx);
+
+    // An honest used.len still drops when plen alone overruns the slot.
+    @memset(&rx_bufs[1], 0);
+    write32(&rx_bufs[1], hdr_src_port, conn.dst_port);
+    write32(&rx_bufs[1], hdr_dst_port, conn.src_port);
+    write16(&rx_bufs[1], hdr_type, type_stream);
+    write16(&rx_bufs[1], hdr_op, op_rw);
+    write32(&rx_bufs[1], hdr_len, 3000);
+    rx_queue.used.ring[1] = .{ .id = 1, .len = 2048 };
+    rx_queue.used.idx = 2;
+    out = @splat(0xBB);
+    r = recv(&conn, &out);
+    try std.testing.expectEqual(RecvVerdict.none, r.verdict);
+    try std.testing.expectEqual(drops_before + 2, rx_dropped_bad_len);
+    for (out) |b| try std.testing.expectEqual(@as(u8, 0xBB), b);
+
+    // plen inside the slot but past what the device claims it wrote —
+    // the bytes would be stale slot memory, not payload. Dropped too.
+    @memset(&rx_bufs[2], 0);
+    write32(&rx_bufs[2], hdr_src_port, conn.dst_port);
+    write32(&rx_bufs[2], hdr_dst_port, conn.src_port);
+    write16(&rx_bufs[2], hdr_type, type_stream);
+    write16(&rx_bufs[2], hdr_op, op_rw);
+    write32(&rx_bufs[2], hdr_len, 100);
+    rx_queue.used.ring[2] = .{ .id = 2, .len = 64 }; // < hdr_size + 100
+    rx_queue.used.idx = 3;
+    out = @splat(0xCC);
+    r = recv(&conn, &out);
+    try std.testing.expectEqual(RecvVerdict.none, r.verdict);
+    try std.testing.expectEqual(drops_before + 3, rx_dropped_bad_len);
+    for (out) |b| try std.testing.expectEqual(@as(u8, 0xCC), b);
+
+    // A legitimate packet at the slot's edge still lands: plen = 2004
+    // fills hdr_size..buf.len exactly.
+    @memset(&rx_bufs[3], 0x5A);
+    write32(&rx_bufs[3], hdr_src_port, conn.dst_port);
+    write32(&rx_bufs[3], hdr_dst_port, conn.src_port);
+    write16(&rx_bufs[3], hdr_type, type_stream);
+    write16(&rx_bufs[3], hdr_op, op_rw);
+    write32(&rx_bufs[3], hdr_len, rx_buf_size - hdr_size);
+    rx_queue.used.ring[3] = .{ .id = 3, .len = rx_buf_size };
+    rx_queue.used.idx = 4;
+    out = @splat(0x00);
+    r = recv(&conn, &out);
+    try std.testing.expectEqual(RecvVerdict.data, r.verdict);
+    try std.testing.expectEqual(@as(usize, 512), r.len); // out.len wins
+    for (out) |b| try std.testing.expectEqual(@as(u8, 0x5A), b);
+    try std.testing.expectEqual(@as(u32, rx_buf_size - hdr_size), conn.rx_cnt);
+}
+
+test "virtio_vsock: connect() reads fixed header offsets under a lying used.len" {
+    var notify_sink: [64]u8 align(64) = @splat(0);
+    arm_test_rings(&notify_sink);
+    tx_queue.size = @intCast(descriptor_count);
+    tx_queue.notify_off = 0;
+    tx_queue.avail = .{
+        .flags = 0,
+        .idx = 0,
+        .ring = @splat(0),
+        .used_event = 0,
+    };
+
+    // The connect path never slices by used.len — a used.len = 4096 claim
+    // on a RESPONSE must still answer .connected. Debug bounds checks
+    // stand in for ReleaseSmall: any OOB slice panics the test.
+    vs_ready = true;
+    defer vs_ready = false;
+    next_src_port = 40000;
+    @memset(&rx_bufs[0], 0);
+    write32(&rx_bufs[0], hdr_src_port, 1208);
+    write32(&rx_bufs[0], hdr_dst_port, 40000);
+    write16(&rx_bufs[0], hdr_type, type_stream);
+    write16(&rx_bufs[0], hdr_op, op_response);
+    rx_queue.used.ring[0] = .{ .id = 0, .len = 4096 };
+    rx_queue.used.idx = 1;
+
+    try std.testing.expectEqual(ConnectResult.connected, connect(1208));
+    try std.testing.expectEqual(@as(u32, 40000), vs_last_src_port);
 }
