@@ -22,14 +22,15 @@ see [[evidence]].
 
 ## Current status
 
-Milestones through **M149** are landed or closed — the ledger counts three
-remaining open items: **M96** (the Zig 0.17.0 toolchain port's cards are all
-landed; its owner acceptance run is the last step), **M109** (agents as
-first-class citizens landed with a caveat — the reference-host K-run plus
-owner sign-off are owed), and **M119** (benchmarks-as-gates landed; the
-reference-host soak is an owner-run background check). The table below is
-the first 31 milestones; the full table through M149 is on [[roadmap]] and
-the canonical tracker is
+Milestones through **M189** are landed or closed — the open lanes live on
+the tracker as index issues, each claimed one card at a time:
+[#3138](https://github.com/drawmeanelephant/VirelaiOS/issues/3138),
+[#3168](https://github.com/drawmeanelephant/VirelaiOS/issues/3168),
+[#3232](https://github.com/drawmeanelephant/VirelaiOS/issues/3232),
+[#3233](https://github.com/drawmeanelephant/VirelaiOS/issues/3233), and
+[#3305](https://github.com/drawmeanelephant/VirelaiOS/issues/3305). The
+table below is the first 31 milestones; the full table through M189 is on
+[[roadmap]] and the canonical tracker is
 [`docs/status.md`](https://github.com/drawmeanelephant/VirelaiOS/blob/main/docs/status.md).
 
 | Milestone | What it is | Status |
@@ -124,10 +125,21 @@ A single boot of VirelaiOS gets you, in order:
   (`GOHTTPD.ELF`; the Zig `HTTPD.BIN` was retired in M71l) that serves the
   guest's own files to the host, and the Go network diagnostics
   (`GOPING.ELF`, `GONETSTAT.ELF`, `GODNS.ELF`, `GOTRACEROUTE.ELF`).
+- Real comms on that stack: a mail client (`GOMAIL.ELF`) that fetches,
+  reads, and searches IMAP folders and submits over SMTP — TLS on both
+  sockets, plaintext refused unless the stored consent bit says so, mail
+  cached under `/host/MAIL` for offline reads — and an IRC client
+  (`GOIRC.ELF`) that holds a TLS session with mention toasts and
+  snapshot/restore.
 - Keyboard, pointer, and window events routed to focused applications, so an
   EL0 program runs an interactive event loop.
 - A shared clipboard (copy/cut/paste across text apps) and per-process
   application timers that post `TIMER` events instead of spin loops.
+- A seat that photographs and locks itself: `ctrl+shift+3` /
+  `ctrl+shift+4` publish the composed scanout — or just the focused
+  window's rect — as a PNG under `/host/SHOTS/`, and `ctrl+shift+l` (or
+  the PWR menu's Lock row) drops a full-opacity lock curtain that re-auths
+  your passphrase against the `GOVAULT` credential to lift.
 - Sound: a virtio-snd device, PCM playback from EL0, a boot chime, and a
   melody app that plays Twinkle Twinkle Little Star.
 - A disk of its own (opt-in): `--data-disk <img>` attaches a second virtio-blk
