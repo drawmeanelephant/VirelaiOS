@@ -400,15 +400,21 @@ QUERIES = [
 def iface_holding(addr):
     # The interface whose configured IPv4 IS addr — for the vmnet leg
     # that is the bridge the daemon lights when the VM's network exists.
-    for _, name in socket.if_nameindex():
-        try:
-            got = subprocess.run(["ipconfig", "getifaddr", name],
-                                 capture_output=True, text=True,
-                                 timeout=5).stdout.strip()
-        except Exception:
-            got = ""
-        if got == addr:
-            return name
+    # `ipconfig getifaddr` does not service bridge interfaces (observed:
+    # rc=1 on bridge100 while ifconfig shows the inet), so parse
+    # `ifconfig` instead.
+    try:
+        out = subprocess.run(["ifconfig"], capture_output=True,
+                             text=True, timeout=10).stdout
+    except Exception:
+        return None
+    cur = None
+    for line in out.splitlines():
+        m = re.match(r"^(\S+):", line)
+        if m:
+            cur = m.group(1)
+        elif cur and re.search(r"\binet %s\b" % re.escape(addr), line):
+            return cur
     return None
 
 def open4(ip):
