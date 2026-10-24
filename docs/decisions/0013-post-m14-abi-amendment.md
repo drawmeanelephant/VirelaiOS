@@ -142,6 +142,22 @@ rodata-segment fields account for the remainder. Budget raised 11,534,336 →
 **13,631,488 B (13.0 MiB)**; headroom after the raise ≈ 2.2 MiB. Next
 re-measurement trigger: any claim growing `.bss` past 12.5 MiB.
 
+**Amendment (issue #3156, M179d receive window, 2026-10-24):** the kernel
+`.bss` is now **13,680,200 B (13.05 MiB)** measured against this gate at
+`agent/m179d/recv-window` HEAD (85f84fd8, `zig build kernel` +
+`llvm-readelf -SW`). The branch delta over merge-base 006f8374
+(13,606,472 B) is exactly **+73,728 B** — `socket_core.rx_pool`, four
+`RxSlot`s of a 16 KiB receive ring + 2 KiB bitmap each (ADR 0007 D11, a
+deliberate static pool). The per-`Connection` buffers it replaced
+shrunk `socket_native.sockets` 19,600 → 7,216 B, but `Core` carries
+nonzero comptime defaults so it lives in `.data`, not `.bss` — the
+shrink does not offset the pool. The merge-base already sat 25 KiB
+under the old ceiling: the merge wave since the #1163 measurement
+(11,326,456 → 13,606,472 B, +2.18 MiB) had consumed nearly all
+headroom before this card landed. Budget raised 13,631,488 →
+**15,728,640 B (15.0 MiB)**; headroom after the raise ≈ 2.0 MiB. Next
+re-measurement trigger: any claim growing `.bss` past 14.5 MiB.
+
 > **Honest bound:** the exact with-stubs and delta values were measured
 > during an earlier turn of this conversation that is no longer fully
 > reproducible. The baseline (6,119,552 B) is verified by the class-A

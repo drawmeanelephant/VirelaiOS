@@ -237,6 +237,33 @@ fn scenarios() !void {
     try c.close(7, rst);
     print("socket-core: partial reads FIN reset terminal charging ok\n");
 
+    checkpoint = "window pool";
+    listener = reset();
+    const wide = try establish(remote, listener, 0);
+    // Three full segments land ahead of a 4-byte gap — 4380 held bytes,
+    // more than the old one-segment window ever admitted.
+    var seg_body: [wire.payload_max]u8 = undefined;
+    @memset(&seg_body, 'w');
+    try inject(remote, 15, 101, wire.flag_ack, &seg_body, 0);
+    try inject(remote, 1475, 101, wire.flag_ack, &seg_body, 0);
+    try inject(remote, 2935, 101, wire.flag_ack, &seg_body, 0);
+    try check(c.counters.ooo_held == 3);
+    try drain();
+    // The ACK's advertised window is the honest free space: 16384 - 4380.
+    try check(std.mem.readInt(u16, captured[14..16], .big) == core.recv_window - 4380);
+    try inject(remote, 11, 101, wire.flag_ack, "head", 0);
+    var wide_buf: [4 + 3 * wire.payload_max]u8 = undefined;
+    const got = try c.read(7, wide, &wide_buf, 0);
+    try check(got == wide_buf.len and wide_buf[3] == 'd' and wide_buf[4] == 'w' and wide_buf[got - 1] == 'w');
+    try c.close(7, wide);
+    // The pool slot comes back clean: the same table slot's next
+    // connection advertises the whole window and holds nothing stale.
+    const wide2 = try establish(remote, listener, 0);
+    try check(std.mem.readInt(u16, captured[14..16], .big) == core.recv_window);
+    try expected(error.WouldBlock, c.read(7, wide2, &output, 0));
+    try c.close(7, wide2);
+    print("socket-core: 16 KiB window pool ok\n");
+
     checkpoint = "retry and flags";
     listener = reset();
     try inject(remote, 10, 0, wire.flag_syn, "", 0);
