@@ -663,7 +663,7 @@ pub const menu_apps_max: usize = 16;
 /// them; the test at the bottom of this file pins the real file under it, so
 /// the next card that adds rows has to move this number rather than discover
 /// the truncation in a screenshot.
-pub const manifest_buf_max: usize = 4096;
+pub const manifest_buf_max: usize = 8192;
 
 /// Parse manifest text into `out`, returning the entry count (capped at
 /// `out.len`). Malformed lines (fewer than 2 fields, empty name/desc) are

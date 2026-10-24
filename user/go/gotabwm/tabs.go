@@ -15,6 +15,7 @@
 package main
 
 import (
+	"virelai/art"
 	"virelai/draw"
 	"virelai/icons"
 	"virelai/theme"
@@ -46,6 +47,17 @@ const (
 const (
 	railCloseW     = 16
 	railCloseInset = 2
+)
+
+// #3357: the running app's staged icon — a raster at the cell's left
+// edge, after the focus marker and before everything else. Pure paint:
+// the cell keeps its fill and every hit zone stays exactly the rect it
+// was (paint-only chrome never moves a target). railIconMinW is the cell
+// width under which the icon yields — a cell that narrow is all
+// close-zone anyway.
+const (
+	railIconPx   = 16
+	railIconMinW = 40
 )
 
 // M151b (#2913): the space switcher's pill geometry. One pill per space,
@@ -240,10 +252,17 @@ const (
 	// printed when a tab's undismissed-notice count changes (a push, a
 	// center dismiss, or the focus clear, where n=0 is the clear).
 	MarkerRailBadge = "gotabwm: rail badge "
+	// MarkerRailIcons latches the first rail paint that put a staged
+	// raster icon on a cell — the icon= seam's running-set half.
+	MarkerRailIcons = "gotabwm: rail icons n="
 )
 
 // mruMax is the M151a focus-ring bound — the card's eight ids.
 const mruMax = 8
+
+// railIconsMarked latches the MarkerRailIcons one-shot — the rail repaints
+// every frame, so the receipt prints on the first pass an icon blits.
+var railIconsMarked bool
 
 // M79e (#1708): the nav-history bounds, taken from Zig's tabwm rather than
 // invented. navHistMax is `hist_max`; navPathMax is `hist_path_max`, which
@@ -1407,6 +1426,7 @@ func paintRail(scan []byte, width, height, stripH int, ts *TabStrip, hover, clos
 	}
 	focus, _ := ts.Focused()
 	tok := theme.Current
+	railIcons := 0
 	for i := 0; i < n; i++ {
 		x := i * cellW
 		w := cellW
@@ -1462,6 +1482,22 @@ func paintRail(scan []byte, width, height, stripH int, ts *TabStrip, hover, clos
 				written++
 			}
 		}
+		// #3357: the app's icon at the cell's left edge — the rail's first
+		// glyph, and the identifier the cells never had. The unread badge
+		// owns this slot when it posts; a bin with no catalog row (or a
+		// share without the raster) leaves the cell exactly as before.
+		if w >= railIconMinW && railBadgeCount(ts.At(i).ID) == 0 {
+			if name := iconForBin(ts.At(i).Bin); name != "" {
+				if ic := art.Load(name); ic != nil {
+					ir := widgets.Rect{X: x + 1 + seatMarkerW + 3,
+						Y: (stripH - railIconPx) / 2,
+						W: railIconPx, H: railIconPx}
+					draw.BlitScaled(c, ic, ir)
+					written++
+					railIcons++
+				}
+			}
+		}
 		// M79b (#1705): the close glyph — VirelaiChrome's window-close,
 		// the bitmap 'x' when the symbol face is absent — inside the
 		// cell's close zone and left of the frozen badge's edge strip.
@@ -1481,6 +1517,10 @@ func paintRail(scan []byte, width, height, stripH int, ts *TabStrip, hover, clos
 				x+w-railCloseW+railCloseInset, (stripH-8)/2)
 			written++
 		}
+	}
+	if railIcons > 0 && !railIconsMarked {
+		railIconsMarked = true
+		vi.ConsoleLine(MarkerRailIcons + vi.Itoa64(int64(railIcons)))
 	}
 	// M151b (#2913): the rail's space switcher — one pill per live space,
 	// painted only while spaceN > 1 (a single-space desktop has nothing
