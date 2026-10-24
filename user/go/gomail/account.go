@@ -6,15 +6,22 @@ package main
 // exists but its passphrase-locked entries have no headless unlock path;
 // a plain file is the mechanism that exists for a console tool.
 //
-// Keys: host, user, pass, from, sni, imap_port, smtp_port, tls (on|off),
+// Keys: host, user, from, sni, imap_port, smtp_port, tls (on|off),
 // plain (on|off — the stored plaintext-consent answer), max_headers.
 // Argv overrides file values. A corrupt file is a named refusal, never a
 // half-parsed account; a missing file is fine — argv must then carry the
 // account whole.
+//
+// M196b (#3379): the credential is never a file row or an argv flag — a
+// plaintext `pass=` line refuses the file by name and `--pass` refuses
+// on argv; the password resolves out of the kernel secret store (slot 70)
+// as `mail-<user>`, the FLINT loadSeed precedent.
 
 import (
 	"strings"
 
+	"virelai/shlib"
+	"virelai/sshlib"
 	"virelai/vi"
 )
 
@@ -83,9 +90,20 @@ func (c Config) fromAddr() string {
 	return c.User
 }
 
-// accountApply decodes the file body into cfg. ok=false is the
-// named-refusal verdict; the caller reports 'gomail: account bad'.
-func (cfg *Config) accountApply(body []byte) bool {
+// acctVerdict is accountApply's outcome: the file is clean, corrupt, or
+// carries a plaintext pass= row — its own named refusal since M196b.
+type acctVerdict int
+
+const (
+	acctOK acctVerdict = iota
+	acctBad
+	acctPlainPass
+)
+
+// accountApply decodes the file body into cfg. acctBad is the
+// named-refusal verdict ('gomail: account bad'); acctPlainPass is the
+// plaintext-credential refusal ('gomail: refuse pass').
+func (cfg *Config) accountApply(body []byte) acctVerdict {
 	rows := 0
 	for _, raw := range strings.Split(string(body), "\n") {
 		line := strings.TrimSpace(raw)
@@ -94,15 +112,15 @@ func (cfg *Config) accountApply(body []byte) bool {
 		}
 		rows++
 		if rows > accountMaxRows {
-			return false
+			return acctBad
 		}
 		k := strings.IndexByte(line, '=')
 		if k <= 0 || k > accountMaxKey {
-			return false
+			return acctBad
 		}
 		key, val := strings.TrimSpace(line[:k]), strings.TrimSpace(line[k+1:])
 		if key == "" || len(val) > accountMaxVal {
-			return false
+			return acctBad
 		}
 		switch key {
 		case "host":
@@ -110,7 +128,9 @@ func (cfg *Config) accountApply(body []byte) bool {
 		case "user":
 			cfg.User = val
 		case "pass":
-			cfg.Pass = val
+			// M196b: plaintext credentials are refused, never parsed —
+			// the store row mail-<user> is the only credential source.
+			return acctPlainPass
 		case "from":
 			cfg.From = val
 		case "sni":
@@ -118,55 +138,85 @@ func (cfg *Config) accountApply(body []byte) bool {
 		case "imap_port":
 			n, ok := parseUint(val)
 			if !ok || n <= 0 || n > 65535 {
-				return false
+				return acctBad
 			}
 			cfg.IMAPPort = uint16(n)
 		case "smtp_port":
 			n, ok := parseUint(val)
 			if !ok || n <= 0 || n > 65535 {
-				return false
+				return acctBad
 			}
 			cfg.SMTPPort = uint16(n)
 		case "tls":
 			on, ok := onOff(val)
 			if !ok {
-				return false
+				return acctBad
 			}
 			cfg.TLS = on
 		case "plain":
 			on, ok := onOff(val)
 			if !ok {
-				return false
+				return acctBad
 			}
 			cfg.AllowPlain = on
 		case "max_headers":
 			n, ok := parseUint(val)
 			if !ok || n <= 0 || n > headerMaxBound {
-				return false
+				return acctBad
 			}
 			cfg.MaxHeaders = int(n)
 		default:
 			// An unknown key is a named refusal, not a silent drop: a
 			// mistyped 'pas=' would otherwise leave the account silently
 			// unauthenticated.
-			return false
+			return acctBad
 		}
 	}
-	return true
+	return acctOK
 }
 
-// loadAccount reads the settings file into cfg. Missing file: no-op, ok.
-// Corrupt file or unreadable share: false — the caller prints the named
-// refusal and exits.
-func (cfg *Config) loadAccount(path string) (loaded bool, ok bool) {
+// loadAccount reads the settings file into cfg. Missing file: no-op,
+// acctOK — absent is not corrupt. Corrupt file or unreadable share:
+// acctBad; a plaintext pass= row: acctPlainPass — the caller prints the
+// named refusal and exits.
+func (cfg *Config) loadAccount(path string) (loaded bool, v acctVerdict) {
 	body, rc := vi.ReadFileAll(path, accountMaxBytes)
 	if rc < 0 {
-		return false, true // absent is not corrupt
+		return false, acctOK
 	}
-	if !cfg.accountApply(body) {
-		return false, false
+	if v := cfg.accountApply(body); v != acctOK {
+		return false, v
 	}
-	return true, true
+	return true, acctOK
+}
+
+// storeGetFn is the slot-70 secret lookup seam; tests replace it without
+// touching the kernel store (the FLINT sign.go pattern).
+var storeGetFn = shlib.StoreGet
+
+// secretName is the store row the credential resolves from: mail-<user>.
+// Entry names are loggable (vi.SecretRecord: names are the only part of
+// an entry a caller may log); the value never prints.
+func (c Config) secretName() string { return "mail-" + c.User }
+
+// resolvePass fills cfg.Pass out of the kernel secret store — the ONLY
+// credential source now that pass= and --pass refuse by name. The raw
+// buffer is wiped before returning. An unprovisioned row is the named
+// refusal secret_not_found; an empty entry is secret_malformed.
+func (cfg *Config) resolvePass() error {
+	name := cfg.secretName()
+	var raw [vi.SecretValMax]byte
+	defer sshlib.Wipe(raw[:])
+	n := storeGetFn(name, raw[:])
+	if n < 0 {
+		return mailError{s: "gomail: refuse secret_not_found " + name}
+	}
+	if n == 0 {
+		return mailError{s: "gomail: refuse secret_malformed " + name}
+	}
+	cfg.Pass = string(raw[:n])
+	say("gomail: secret " + name)
+	return nil
 }
 
 func onOff(v string) (bool, bool) {
