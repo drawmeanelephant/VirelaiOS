@@ -47,5 +47,10 @@ zig test user/src/ld.zig
 # run keeps the coverage without claiming build.zig (held by M100c #2308).
 zig test kernel/src/virtio_blk.zig
 
+# Issue #3398: same pattern for the virtio-vsock transport — its recv()
+# bound-check and lying-used.len test blocks run on the host (the rings
+# are plain BSS there; kick() writes into a test-armed notify sink).
+zig test kernel/src/virtio_vsock.zig
+
 echo "verify-unit-tests: all unit tests passed"
 exit 0
