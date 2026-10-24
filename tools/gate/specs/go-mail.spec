@@ -29,6 +29,15 @@
 # face's mail-them row execs (two-token --to, no subject/body flags) —
 # submits over SMTP+TLS, the fixture transcript carrying the RCPT.
 #
+# M196b (#3379): the credential left the file — GOMAIL.TXT carries no
+# pass= and the password resolves out of the kernel secret store as the
+# `mail-gate` row (slot 70, seeded app-bound to GOMAIL.ELF), so every
+# dial leg prints 'gomail: secret mail-gate' and the wire's own
+# LOGIN/AUTH bytes carry what only the store could supply. Runs 11-13
+# are the credential legs: a plaintext pass= file row refuses by name,
+# --pass refuses on argv, and an unprovisioned mail-<acct> names
+# secret_not_found before any socket opens.
+#
 # exec-order: assert-proven — runs end on markers only the app prints
 # from fixture traffic ('gomail: refuse attachment report.pdf',
 # 'gomail: sent bytes='), and the python halves read the fixture's own
@@ -41,13 +50,14 @@
 # binary is what every run execs under the GOMAIL.ELF name. Fixture
 # transcripts land in $RUN_DIR/maild-<port>.log for the python asserts.
 
-vgate_name go-mail "M187c #3184 + M193a #3253 + M193d #3256: GOMAIL.ELF — IMAP4 fetch/list/read + SMTP submit over tls.Dial (pinned fixture chain), plaintext consent refusal + grant, attachment/html truth-in-bounds, + use-able folders, bounded /host/MAIL cache, offline search + cache-miss legs, + the chain's send --to leg in the contact face's own argv shape, K=3"
+vgate_name go-mail "M187c #3184 + M193a #3253 + M193d #3256 + M196b #3379: GOMAIL.ELF — IMAP4 fetch/list/read + SMTP submit over tls.Dial (pinned fixture chain), plaintext consent refusal + grant, attachment/html truth-in-bounds, + use-able folders, bounded /host/MAIL cache, offline search + cache-miss legs, + the chain's send --to leg in the contact face's own argv shape, K=3, + the keychain credential — mail-<user> out of the slot-70 store, pass= and --pass refused by name, secret_not_found named"
 vgate_share seed
 vgate_runner_flags -Xswiftc -DSPIKE
 
 # The monitor's exec verb packs at most 8 argv slots and the program
 # name takes one (max_exec_args); every leg stays inside the bound
-# because the account file carries host/user/pass/from/sni.
+# because the account file carries host/user/from/sni and the password
+# arrives through the store — never argv.
 vgate_file script-01.txt <<'EOF'
 net ip 10.0.0.1
 net arp 10.0.0.2
@@ -122,14 +132,37 @@ print("go-mail: staged GOMAIL-GATE.ELF as GOMAIL.ELF (%d)"
 # The account file the app resolves at boot — deliberately WITHOUT a
 # tls/plain row: run 03's bare fetch must hit the plaintext refusal, so
 # the file never carries a transport answer and each leg's flag decides.
+# And deliberately WITHOUT a pass= row: since M196b the credential is
+# the store's, not the file's.
 with open(os.path.join(share, "GOMAIL.TXT"), "w") as f:
     f.write("# go-mail gate fixture account\n"
+            "host=10.0.0.2\n"
+            "user=gate\n"
+            "from=gate@fixture.local\n"
+            "sni=leaf.example.com\n")
+print("go-mail: wrote GOMAIL.TXT account file (no pass= — store holds it)")
+
+# M196b: the credential row, app-bound to GOMAIL.ELF. An apps-allowlist
+# entry is visible only when the named image is operator-owned on /host
+# (kernel secret.zig visible() -> trust.system_owned_key), so OWNERS.TXT
+# pins GOMAIL.ELF uid_system 0644 — the same pair go-flint seeds for
+# FLINT.ELF's agent-sign row.
+with open(os.path.join(share, "SECRETS.TXT"), "w") as f:
+    f.write("#v1\nmail-gate\t1000\tgate-pass\tGOMAIL.ELF\n")
+with open(os.path.join(share, "OWNERS.TXT"), "w") as f:
+    f.write("#v1\nGOMAIL.ELF\t644\t0\t-\n")
+print("go-mail: seeded SECRETS.TXT mail-gate (app-bound) + OWNERS.TXT")
+
+# The refused fixture: an account file still carrying a plaintext pass=
+# row — run 11's named-refusal leg.
+with open(os.path.join(share, "GOMAIL-PLAIN.TXT"), "w") as f:
+    f.write("# legacy plaintext account — refused by name\n"
             "host=10.0.0.2\n"
             "user=gate\n"
             "pass=gate-pass\n"
             "from=gate@fixture.local\n"
             "sni=leaf.example.com\n")
-print("go-mail: wrote GOMAIL.TXT account file")
+print("go-mail: wrote GOMAIL-PLAIN.TXT (the pass= refusal fixture)")
 
 # M193a seed: remembered mail under /host/MAIL/ — the cache files the
 # app's own codec reads. 'Lists' exists ONLY here: the wire LIST never
@@ -407,6 +440,7 @@ vgate_run 01 -- \
     --script '$RUN_DIR/script-01.txt' --script-expect 'gomail: closed' --timeout 240
 
 vgate_assert 01 serial-contains 'gomail: account /host/GOMAIL.TXT'
+vgate_assert 01 serial-contains 'gomail: secret mail-gate'
 vgate_assert 01 serial-contains 'gomail: dial 10.0.0.2 993 tls'
 vgate_assert 01 serial-contains 'gomail: imap ready'
 vgate_assert 01 serial-contains 'gomail: login gate'
@@ -430,6 +464,9 @@ vgate_assert 01 serial-contains 'gomail: cache /host/MAIL/BODIES'
 vgate_assert 01 serial-absent 'gomail: error'
 vgate_assert 01 serial-absent 'gomail: refuse plaintext'
 vgate_assert 01 serial-absent 'gomail: cache-fail'
+# The credential itself never echoes — not from the file (there is no
+# pass=), not from the store read, not from LOGIN.
+vgate_assert 01 serial-absent 'gate-pass'
 vgate_assert 01 serial-absent '[EXC] parking:'
 # The cache really landed: the share holds the folders, the envelopes,
 # and the bodies the wire just proved.
@@ -464,6 +501,7 @@ vgate_run 02 -- \
     --script '$RUN_DIR/script-02.txt' --script-expect 'gomail: sent bytes=' --timeout 240
 
 vgate_assert 02 serial-contains 'gomail: account /host/GOMAIL.TXT'
+vgate_assert 02 serial-contains 'gomail: secret mail-gate'
 vgate_assert 02 serial-contains 'gomail: dial 10.0.0.2 465 tls'
 vgate_assert 02 serial-contains 'gomail: smtp ready'
 vgate_assert 02 serial-contains 'gomail: mail gate@fixture.local'
@@ -471,6 +509,7 @@ vgate_assert 02 serial-contains 'gomail: rcpt alice@fixture.local'
 vgate_assert 02 serial-contains 'gomail: sent bytes='
 vgate_assert 02 serial-contains 'gomail: closed'
 vgate_assert 02 serial-absent 'gomail: error'
+vgate_assert 02 serial-absent 'gate-pass'
 vgate_assert 02 serial-absent '[EXC] parking:'
 vgate_assert 02 python <<'PY'
 import os, sys
@@ -491,12 +530,15 @@ PY
 #
 # GOMAIL.TXT carries no transport answer and the exec has no flag, so
 # the request is plaintext and unconsented: the named refusal prints
-# BEFORE any dial — no socket, no fixture traffic, no net config.
+# BEFORE any dial — no socket, no fixture traffic, no net config. The
+# store read precedes the dial boundary, so 'gomail: secret mail-gate'
+# lands first — the credential resolved even though the wire refused.
 vgate_run 03 -- \
     --screen '$RUN_DIR/screen-03' \
     --via-virtio \
     --script '$RUN_DIR/script-03.txt' --script-expect 'gomail: refuse plaintext' --timeout 180
 
+vgate_assert 03 serial-contains 'gomail: secret mail-gate'
 vgate_assert 03 serial-contains 'gomail: refuse plaintext'
 vgate_assert 03 serial-contains 'gomail: closed'
 vgate_assert 03 serial-absent 'gomail: dial'
@@ -511,6 +553,7 @@ vgate_run 04 -- \
     --net-tcp-respond 10.0.0.2:143:relay --net-tcp-respond-relay 127.0.0.1:26143 \
     --script '$RUN_DIR/script-04.txt' --script-expect 'gomail: closed' --timeout 240
 
+vgate_assert 04 serial-contains 'gomail: secret mail-gate'
 vgate_assert 04 serial-contains 'gomail: dial 10.0.0.2 143 plain'
 vgate_assert 04 serial-contains 'gomail: imap ready'
 vgate_assert 04 serial-contains 'gomail: select INBOX exists=3'
@@ -541,6 +584,7 @@ vgate_run 05 -- \
     --net-tcp-respond 10.0.0.2:993:relay --net-tcp-respond-relay 127.0.0.1:26993 \
     --script '$RUN_DIR/script-05.txt' --script-expect 'gomail: use Sent exists=3' --timeout 240
 
+vgate_assert 05 serial-contains 'gomail: secret mail-gate'
 vgate_assert 05 serial-contains 'gomail: dial 10.0.0.2 993 tls'
 vgate_assert 05 serial-contains 'gomail: imap ready'
 vgate_assert 05 serial-contains 'gomail: box INBOX'
@@ -575,6 +619,7 @@ vgate_run 06 -- \
     --net-tcp-respond 10.0.0.2:993:relay --net-tcp-respond-relay 127.0.0.1:26993 \
     --script '$RUN_DIR/script-06.txt' --script-expect 'gomail: refuse use Lists' --timeout 240
 
+vgate_assert 06 serial-contains 'gomail: secret mail-gate'
 vgate_assert 06 serial-contains 'gomail: box INBOX'
 vgate_assert 06 serial-contains 'gomail: box Sent'
 vgate_assert 06 serial-contains 'gomail: refuse use Lists'
@@ -649,6 +694,71 @@ vgate_assert 10 serial-contains 'gomail: offline read INBOX 1'
 vgate_assert 10 serial-contains 'gomail: body 1 text/plain'
 vgate_assert 10 serial-contains 'gomail: text line one of the gate body'
 vgate_assert 10 serial-contains 'gomail: closed'
+
+# --- Runs 11-13 (M196b #3379): the credential legs ---------------------
+#
+# Every dial above already proved the store row works ('gomail: secret
+# mail-gate' + the wire's own LOGIN/AUTH bytes — the fixture account
+# carries no pass=). These three legs name the three refusal shapes:
+# run 11's GOMAIL-PLAIN.TXT still carries a plaintext pass= row and the
+# file refuses by name before any dial; run 12's --pass argv refuses the
+# same way (a password never rides the command line — the flag is
+# recognized only so the refusal can name it); run 13 steers the lookup
+# at mail-ghost via --user, which nothing provisioned, so the named
+# secret_not_found refusal lands before any socket opens.
+vgate_file script-11.txt <<'EOF'
+exec GOMAIL.ELF --account /host/GOMAIL-PLAIN.TXT --tls fetch INBOX
+EOF
+
+vgate_run 11 -- \
+    --screen '$RUN_DIR/screen-11' \
+    --via-virtio \
+    --script '$RUN_DIR/script-11.txt' --script-expect 'gomail: refuse pass /host/GOMAIL-PLAIN.TXT' --timeout 180
+
+vgate_assert 11 serial-contains 'gomail: refuse pass /host/GOMAIL-PLAIN.TXT'
+vgate_assert 11 serial-contains 'gomail: closed'
+# No account line prints for a refused file, no socket opens, and the
+# seeded value never echoes — the refusal names the row, not the secret.
+vgate_assert 11 serial-absent 'gomail: account'
+vgate_assert 11 serial-absent 'gomail: dial'
+vgate_assert 11 serial-absent 'gomail: login'
+vgate_assert 11 serial-absent 'gate-pass'
+vgate_assert 11 serial-absent '[EXC] parking:'
+
+vgate_file script-12.txt <<'EOF'
+exec GOMAIL.ELF --pass argv-pass --tls fetch INBOX
+EOF
+
+vgate_run 12 -- \
+    --screen '$RUN_DIR/screen-12' \
+    --via-virtio \
+    --script '$RUN_DIR/script-12.txt' --script-expect 'gomail: refuse pass argv' --timeout 180
+
+vgate_assert 12 serial-contains 'gomail: refuse pass argv'
+vgate_assert 12 serial-contains 'gomail: closed'
+# The argv refusal lands before the file even loads.
+vgate_assert 12 serial-absent 'gomail: account'
+vgate_assert 12 serial-absent 'gomail: dial'
+vgate_assert 12 serial-absent 'gomail: login'
+vgate_assert 12 serial-absent 'gate-pass'
+vgate_assert 12 serial-absent '[EXC] parking:'
+
+vgate_file script-13.txt <<'EOF'
+exec GOMAIL.ELF --tls --user ghost fetch INBOX
+EOF
+
+vgate_run 13 -- \
+    --screen '$RUN_DIR/screen-13' \
+    --via-virtio \
+    --script '$RUN_DIR/script-13.txt' --script-expect 'gomail: refuse secret_not_found mail-ghost' --timeout 180
+
+vgate_assert 13 serial-contains 'gomail: account /host/GOMAIL.TXT'
+vgate_assert 13 serial-contains 'gomail: refuse secret_not_found mail-ghost'
+vgate_assert 13 serial-contains 'gomail: closed'
+vgate_assert 13 serial-absent 'gomail: dial'
+vgate_assert 13 serial-absent 'gomail: login'
+vgate_assert 13 serial-absent 'gate-pass'
+vgate_assert 13 serial-absent '[EXC] parking:'
 
 # --- Runs c1-c3 (M193d #3256): the chain's mail leg, K=3 ---------------
 # The contact card's mail-them row execs `GOMAIL.ELF send --to

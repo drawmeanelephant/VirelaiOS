@@ -7,7 +7,7 @@
 //
 // CLI:
 //
-//	exec GOMAIL.ELF [--account P] [--host H] [--user U] [--pass P]
+//	exec GOMAIL.ELF [--account P] [--host H] [--user U]
 //	                [--from A] [--sni NAME] [--imap-port N] [--smtp-port N]
 //	                [--tls] [--plain] [--max N] <verb> [args]
 //	verbs:
@@ -38,6 +38,13 @@
 // --plain or the file's plain=on carries the consent bit — the console
 // form of the journey GOIRC proved.
 //
+// M196b (#3379): the credential never rides the file or argv — a `pass=`
+// row refuses the file ('gomail: refuse pass <path>') and `--pass`
+// refuses on argv ('gomail: refuse pass argv'); a verb that dials
+// resolves the password out of the kernel secret store as `mail-<user>`
+// ('gomail: secret mail-<user>'), naming 'gomail: refuse
+// secret_not_found' when the row is unprovisioned.
+//
 // Serial markers (one per line, grep-able):
 //
 //	gomail: account <path>           gomail: dial <host> <port> tls|plain
@@ -54,6 +61,8 @@
 //	gomail: smtp ready               gomail: mail <from>
 //	gomail: rcpt <to>                gomail: sent bytes=<n>
 //	gomail: refuse plaintext|…       gomail: error <err>
+//	gomail: secret mail-<user>       gomail: refuse pass <path>|argv
+//	gomail: refuse secret_not_found|secret_malformed mail-<user>
 //	gomail: closed
 //
 // Exit: 0 clean, 1 usage, 2 refused/error (the marker line names which).
@@ -94,7 +103,7 @@ type options struct {
 }
 
 func usage() {
-	vi.ConsoleLine("usage: GOMAIL.ELF [--account P] [--host H] [--user U] [--pass P]")
+	vi.ConsoleLine("usage: GOMAIL.ELF [--account P] [--host H] [--user U]")
 	vi.ConsoleLine("                  [--from A] [--sni NAME] [--tls] [--plain] [--max N]")
 	vi.ConsoleLine("                  fetch <mbox> [seq ...] | boxes | use <box> |")
 	vi.ConsoleLine("                  headers [mbox] | read [mbox] <seq> | search <q> |")
@@ -300,15 +309,28 @@ func main() {
 		vi.Exit(exitError)
 	}
 
+	// M196b: --pass is dead argv — a password never rides the command
+	// line. parseArgs still recognizes the flag so the refusal names it.
+	if o.set["pass"] {
+		say("gomail: refuse pass argv")
+		say("gomail: closed")
+		vi.Exit(exitError)
+	}
+
 	// File first, argv over it.
 	cfg := Config{Host: ""}
 	path := o.account
 	if path == "" {
 		path = DefaultAccountPath
 	}
-	loaded, ok := cfg.loadAccount(path)
-	if !ok {
+	loaded, verdict := cfg.loadAccount(path)
+	switch verdict {
+	case acctBad:
 		say("gomail: account bad " + path)
+		say("gomail: closed")
+		vi.Exit(exitError)
+	case acctPlainPass:
+		say("gomail: refuse pass " + path)
 		say("gomail: closed")
 		vi.Exit(exitError)
 	}
@@ -320,9 +342,6 @@ func main() {
 	}
 	if o.set["user"] {
 		cfg.User = o.cfg.User
-	}
-	if o.set["pass"] {
-		cfg.Pass = o.cfg.Pass
 	}
 	if o.set["from"] {
 		cfg.From = o.cfg.From
@@ -445,7 +464,12 @@ func main() {
 // dialIMAP connects + greets + logs in, emitting the dial markers.
 // The 'gomail: dial' marker reports a REAL socket — it prints only
 // after the dial lands, so the consent refusal never claims a dial.
+// The credential resolves out of the store BEFORE any socket opens:
+// a refusal never leaves a half-dialed session.
 func dialIMAP(cfg Config) (*imapClient, error) {
+	if err := cfg.resolvePass(); err != nil {
+		return nil, err
+	}
 	scheme := "plain"
 	if cfg.TLS {
 		scheme = "tls"
@@ -667,6 +691,9 @@ func runSend(cfg Config, o options) error {
 	from := cfg.fromAddr()
 	if from == "" {
 		return protoErr("send needs from (file or --from)", "")
+	}
+	if err := cfg.resolvePass(); err != nil {
+		return err
 	}
 	scheme := "plain"
 	if cfg.TLS {
