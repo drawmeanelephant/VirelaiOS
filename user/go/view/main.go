@@ -15,6 +15,7 @@ import (
 
 	"virelai/appkit"
 	"virelai/draw"
+	"virelai/pcm"
 	"virelai/settings"
 	"virelai/tabapp"
 	"virelai/theme"
@@ -82,8 +83,23 @@ const (
 	// M180a (#3155): the MOV loop receipt — `video frames=<n>
 	// elapsed_ms=<t> decode_us_max=<u>` — the same playing-time measure
 	// plus the slowest per-sample decode the loop paid, in microseconds
-	// on the playNow clock (recorded, never budgeted).
+	// on the playNow clock (recorded, never budgeted). M202b appends
+	// `audio_frames=<n> drift_ms=<d> underruns=<n>` while a soun track's
+	// seat is live: the output frames the mixer reports COMPLETED this
+	// session and the absolute drift between that audio clock and the
+	// video loop's cumulative playing time.
 	markerVideo = "gview: video "
+
+	// M202b (#3385): the soun track's own markers — `audio <fourcc>
+	// ch=<c> rate=<r> out=<fmt> rate=<or> ch=<oc>` when the decode +
+	// negotiate lands, `audio streaming gen=<g>` when the seat goes
+	// live, and the one-time named refusals (`audio no device`,
+	// `audio mixer full`, `audio stream err`, `audio refused <name>`).
+	// The load receipt carries the demux's verdict instead: `audio=<f>
+	// ch=<c> rate=<r>` playable, `audio=skipped codec=<f>` a named
+	// refusal, bare `audio=skipped` a missing or unplayable track.
+	markerAudio        = "gview: audio "
+	markerAudioRefused = "gview: audio refused "
 
 	// M177a (#3142): `-play` under a11y.reduce_motion — the animation
 	// opens parked on frame 1 and this line says why; space still plays
@@ -157,6 +173,21 @@ type app struct {
 	reduceMotion  bool
 	settingsWatch bool
 
+	// M202b (#3385): the MOV soun track's playback state. audio is the
+	// decoded+resampled output the pump loops, built once at first play;
+	// seat is the mixer seat while held (opened at play, kept across
+	// pauses, aborted on a file swap); audioPos is the byte position the
+	// pump has submitted (the loop's wrap rides the modulo of len(buf));
+	// audioErr is the one-time named refusal — once set, this file plays
+	// silent forever. playTotalNs is the video loop's cumulative playing
+	// nanoseconds at the last wrap — the drift receipt's baseline.
+	audio       *movAudioOut
+	audioPos    uint64
+	audioErr    string
+	seat        audioSeat
+	seatLive    bool
+	playTotalNs uint64
+
 	// The M162c save-as modal: while pick.Open every key/mouse event is the
 	// picker's — the same FilePicker GOPAINT raises, painted over the
 	// viewer's own canvas.
@@ -176,12 +207,58 @@ type app struct {
 // The playback seams (M170e): slot 95's arm, slot 41's cancel, and the EL0
 // counter the receipts measure on. Package vars so a host test injects a
 // fake timer and clock — the kernel's re-arm-replaces contract means the
-// schedule a test records IS the delay schedule the guest ran.
+// schedule a test records IS the delay schedule the guest ran. M202b adds
+// the audio seams beside them: AudioQuery's negotiate probe and the
+// mixer-seat open, behind the audioSeat interface so the host test drives
+// a fake queue.
 var (
 	playArm    = func(ns uint64) int64 { return vsys.TimerSetNs(ns) }
 	playCancel = func() int64 { return vsys.TimerCancel() }
 	playNow    = func() int64 { return vi.Nanos() }
+
+	audioQuery = func() (vi.AudioInfo, error) { return vi.AudioQuery() }
+	audioOpen  = func(p vi.AudioStreamParams) (audioSeat, error) {
+		s, err := vi.AudioStreamOpen(p)
+		if err != nil {
+			return nil, err
+		}
+		return s, nil
+	}
 )
+
+// audioSeat is the mixer-seat surface the pump drives — *vi.AudioStream
+// satisfies it; the host test injects a fake queue.
+type audioSeat interface {
+	Submit(period []byte) (int, error)
+	Start() error
+	End() error
+	Abort() error
+	Status() (vi.AudioStreamStatus, error)
+	Generation() uint64
+}
+
+// movAudioOut is the decoded+resampled soun track: the output bytes the
+// pump loops through the seat, in the negotiated tuple.
+type movAudioOut struct {
+	buf []byte
+	out pcm.OutFmt
+}
+
+// The audio bounds: one 16 KiB read block for the resample pipe (the
+// GOSOUND constant), a decoded-output ceiling the file cap makes
+// generous rather than tight, and the idle cadence the pump needs while
+// a seat is live — the four-period queue drains in ~43 ms, so a 50 ms
+// stall would starve it.
+const (
+	audioReadBlock = 16 * 1024
+	movAudioBufMax = 16 << 20
+	audioIdleNs    = 15_000_000
+)
+
+// errAudioNoDevice names the soundless-VM verdict — AudioQuery's
+// Ready == 0 (or a kernel refusal at the probe), the same
+// stNoDevice-shaped refusal GOSOUND reports.
+var errAudioNoDevice = errors.New("no device")
 
 // loadGuestTheme applies /host/SETTINGS.TXT at startup — the theme base
 // AND the a11y.contrast switch through the one ApplySettings door every
@@ -407,10 +484,12 @@ func (a *app) load(path string) {
 		// the same receipt; a bound that stopped the GIF walk names itself.
 		line += " frames=" + vi.Itoa64(int64(im.Frames))
 	}
-	if anim != nil && anim.audioSkip {
-		// A MOV whose sound track the demux skipped says so in the
-		// receipt rather than pretending the file was video-only.
-		line += " audio=skipped"
+	if anim != nil && anim.video != nil {
+		// The soun track's verdict rides the load receipt: the decoded
+		// codec's name when it is playable, the named refusal when the
+		// demux read a coded entry, and the bare `audio=skipped` for the
+		// honest no-track (or unresolvable-track) case.
+		line += movAudioReceipt(anim.video)
 	}
 	if anim != nil && anim.truncated != "" {
 		line += " truncated=" + anim.truncated
@@ -472,7 +551,6 @@ type frameSrc struct {
 	frames    []srcFrame
 	loops     int    // GIF's NETSCAPE2.0 count; -1 when absent
 	truncated string // GIF's walk-bound name; "" for MOV
-	audioSkip bool   // MOV: a sound track was skipped in the demux
 	video     *movVideo
 	decMaxUs  int64 // slowest per-sample decode this loop, µs
 }
@@ -485,6 +563,25 @@ type srcFrame struct {
 	pix     []uint32
 	delayMs int
 	delayNs uint64
+}
+
+// movAudioReceipt renders the load line's audio token for a demuxed
+// MOV — ` audio=sowt ch=1 rate=22050` when the soun track decoded,
+// ` audio=skipped codec=mp4a` for a named coded refusal, the bare
+// ` audio=skipped` for a missing or unplayable track. Video-free
+// callers (a GIF) pass nil and get nothing.
+func movAudioReceipt(v *movVideo) string {
+	if v == nil {
+		return ""
+	}
+	if v.audio != nil {
+		return " audio=" + v.audio.codec + " ch=" + u32s(uint32(v.audio.channels)) +
+			" rate=" + u32s(v.audio.rate)
+	}
+	if v.audioCodec != "" {
+		return " audio=skipped codec=" + v.audioCodec
+	}
+	return " audio=skipped"
 }
 
 // gifSource wraps a decoded GIF as a frameSrc: the composites carry
@@ -508,7 +605,7 @@ func gifSource(anim *webrender.GIFAnimation) *frameSrc {
 // per sample, its arm the stts delta over the track timescale (at least
 // 1 ms, movDelayNs' floor).
 func movSource(v *movVideo) *frameSrc {
-	s := &frameSrc{w: v.w, h: v.h, loops: -1, video: v, audioSkip: v.audioSkip}
+	s := &frameSrc{w: v.w, h: v.h, loops: -1, video: v}
 	for _, smp := range v.samples {
 		s.frames = append(s.frames, srcFrame{
 			delayMs: int(movDelayNs(uint64(smp.dur), v.timescale) / 1_000_000),
@@ -747,6 +844,7 @@ func (a *app) togglePlay() bool {
 		return true // the status line's play/pause hint changed
 	}
 	a.playing = true
+	a.audioStart() // the soun track's seat + pump, before the clocks start
 	a.playStretch = playNow()
 	a.armPlay()
 	return true
@@ -775,10 +873,207 @@ func (a *app) pausePlay() {
 }
 
 // stopPlay leaves playback entirely — the image under it went away (a
-// drop), so the loop clock resets rather than carrying into a new file.
+// drop), so the loop clock resets rather than carrying into a new file,
+// and the audio side abandons its seat and decoded buffer with it.
 func (a *app) stopPlay() {
 	a.pausePlay()
 	a.playAccum = 0
+	a.audioReset()
+}
+
+// --- MOV audio (M202b) ------------------------------------------------------
+//
+// Playback of a demuxed soun track rides the same seat/queue model as
+// GOSOUND: one mixer seat, one bounded queue, the drain pacing the pump.
+// What differs is the driver — there is no pump thread, the event loop
+// tops the queue up once per pass, and the video loop's own stts+timer
+// schedule is the clock the drift receipt measures against.
+
+// audioStart opens the audio side of a playing MOV: the decode +
+// negotiate build runs once per file, then the seat opens and the pump
+// primes the queue. Every failure names itself once in audioErr and
+// leaves the video playing silent — an unplayable sound track is the
+// file's loss, never the picture's.
+func (a *app) audioStart() {
+	if a.anim == nil || a.anim.video == nil || a.anim.video.audio == nil ||
+		a.audioErr != "" || a.seat != nil {
+		return
+	}
+	if a.audio == nil {
+		buf, out, err := a.decodeAudio()
+		if err != nil {
+			if err == errAudioNoDevice {
+				a.audioErr = "no device"
+				vi.ConsoleLine(markerAudio + a.audioErr)
+			} else {
+				a.audioErr = wavErrName(err)
+				vi.ConsoleLine(markerAudioRefused + a.audioErr)
+			}
+			return
+		}
+		a.audio = &movAudioOut{buf: buf, out: out}
+		ma := a.anim.video.audio
+		vi.ConsoleLine(markerAudio + ma.codec +
+			" ch=" + u32s(uint32(ma.channels)) +
+			" rate=" + u32s(ma.rate) +
+			" out=" + out.Name() + " rate=" + u32s(out.Rate) +
+			" ch=" + u32s(uint32(out.Channels)))
+	}
+	seat, err := audioOpen(vi.AudioStreamParams{
+		Format: a.audio.out.Fmt, Rate: a.audio.out.Code,
+		Channels: uint8(a.audio.out.Channels), Version: 1,
+	})
+	if err != nil {
+		switch err {
+		case vi.ErrNoAudioDevice:
+			a.audioErr = "no device"
+		case vi.ErrAudioStreamFull:
+			a.audioErr = "mixer full"
+		default:
+			a.audioErr = "stream err"
+		}
+		vi.ConsoleLine(markerAudio + a.audioErr)
+		return
+	}
+	a.seat = seat
+	a.audioPump()
+}
+
+// decodeAudio builds the playable output: the negotiated tuple through
+// the same AudioQuery GOSOUND probes, the track's PCM materialized by
+// movAudio.wavInfo, and one bounded resample through pcm.Pipe into the
+// buffer the pump loops. The file cap keeps the whole build bounded;
+// movAudioBufMax is the sanity stop on the post-resample size.
+func (a *app) decodeAudio() ([]byte, pcm.OutFmt, error) {
+	ma := a.anim.video.audio
+	q, err := audioQuery()
+	if err != nil || q.Ready == 0 {
+		return nil, pcm.OutFmt{}, errAudioNoDevice
+	}
+	out, ok := pcm.OutFormat(q.Format, q.Rate, q.Channels)
+	if !ok {
+		return nil, pcm.OutFmt{}, errors.New("out tuple")
+	}
+	info, pcmBytes := ma.wavInfo(a.anim.video.data)
+	if len(pcmBytes) == 0 {
+		return nil, pcm.OutFmt{}, errors.New("empty")
+	}
+	exp := pcm.OutFrames(info.Frames, uint64(info.Rate), uint64(out.Rate)) *
+		uint64(out.FrameBytes())
+	if exp > movAudioBufMax {
+		return nil, pcm.OutFmt{}, errors.New("size")
+	}
+	var buf []byte
+	pipe := pcm.NewPipe(info, out, audioReadBlock, vi.AudioPeriodBytes,
+		pcm.ResampleSinc, func(period []byte) error {
+			buf = append(buf, period...)
+			return nil
+		})
+	pos := 0
+	err = pipe.Play(func(b []byte) (int, error) {
+		if pos >= len(pcmBytes) {
+			return 0, nil
+		}
+		n := copy(b, pcmBytes[pos:])
+		pos += n
+		return n, nil
+	})
+	if err != nil {
+		return nil, pcm.OutFmt{}, err
+	}
+	if len(buf) == 0 {
+		return nil, pcm.OutFmt{}, errors.New("empty")
+	}
+	return buf, out, nil
+}
+
+// wavErrName pulls the refusal's short name for the receipt: the named
+// half of a pcm.WavError, or the error text otherwise.
+func wavErrName(err error) string {
+	var we *pcm.WavError
+	if errors.As(err, &we) {
+		return we.Name
+	}
+	return err.Error()
+}
+
+// audioPump tops the seat's bounded queue up from the looping output
+// buffer — one pass per event-loop turn while playing. The queue IS the
+// audio clock: Submit's EAGAIN is the drain's pace, not an error, so the
+// pump simply returns and the next pass refills. A real refusal names
+// itself once and the file plays silent. audioPos wraps modulo len(buf),
+// so the soun track loops alongside the video without a resync step.
+func (a *app) audioPump() {
+	if a.seat == nil || !a.playing || a.audio == nil || len(a.audio.buf) == 0 {
+		return
+	}
+	buf := a.audio.buf
+	for {
+		off := a.audioPos % uint64(len(buf))
+		n := uint64(vi.AudioPeriodBytes)
+		if rem := uint64(len(buf)) - off; n > rem {
+			n = rem
+		}
+		got, err := a.seat.Submit(buf[off : off+n])
+		if err == vi.ErrAudioBusy {
+			return // queue full — the drain paces the next pass
+		}
+		if err != nil || uint64(got) != n {
+			a.audioStreamErr()
+			return
+		}
+		a.audioPos += n
+		if !a.seatLive {
+			if err := a.seat.Start(); err != nil {
+				a.audioStreamErr()
+				return
+			}
+			a.seatLive = true
+			vi.ConsoleLine(markerAudio + "streaming gen=" +
+				vi.Itoa64(int64(a.seat.Generation())))
+		}
+	}
+}
+
+// audioDrift is the loop receipt's A/V sync measure: the mixer's own
+// completed byte count — what the device actually played — as output
+// frames, and the absolute drift in milliseconds between that audio
+// clock and the video loop's cumulative playing time. The queue's depth
+// (~43 ms) is the expected floor, never the sign of a broken feed.
+func (a *app) audioDrift(st vi.AudioStreamStatus) (frames, driftMs uint64) {
+	frames = st.Completed / uint64(a.audio.out.FrameBytes())
+	playedNs := frames * 1_000_000_000 / uint64(a.audio.out.Rate)
+	d := int64(playedNs) - int64(a.playTotalNs)
+	if d < 0 {
+		d = -d
+	}
+	return frames, uint64(d) / 1_000_000
+}
+
+// audioStreamErr names a live-seat failure once and drops the seat — the
+// video keeps playing silent like a file that never had a track.
+func (a *app) audioStreamErr() {
+	if a.seat != nil {
+		_ = a.seat.Abort()
+		a.seat, a.seatLive = nil, false
+	}
+	if a.audioErr == "" {
+		a.audioErr = "stream err"
+		vi.ConsoleLine(markerAudio + a.audioErr)
+	}
+}
+
+// audioReset abandons the audio side on a file swap: the seat is aborted
+// (its queued periods never play under the new picture) and the next
+// play decodes the new file's track fresh, so the drift baseline resets
+// with it.
+func (a *app) audioReset() {
+	if a.seat != nil {
+		_ = a.seat.Abort()
+		a.seat, a.seatLive = nil, false
+	}
+	a.audio, a.audioPos, a.audioErr = nil, 0, ""
+	a.playTotalNs = 0
 }
 
 // playTick is one TIMER event: advance a frame and re-arm with that
@@ -797,11 +1092,24 @@ func (a *app) playTick() bool {
 		a.playAccum, a.playStretch = 0, now
 		if a.anim.video != nil {
 			// The MOV loop receipt adds the slowest sample decode the
-			// loop paid — the number resets per loop, never budgets.
-			vi.ConsoleLine(markerVideo + "frames=" + vi.Itoa64(int64(len(a.anim.frames))) +
+			// loop paid — the number resets per loop, never budgets —
+			// and, while a soun track's seat is live, the mixer's own
+			// completed-frame count against the video clock's cumulative
+			// playing time: the A/V drift, named in milliseconds.
+			line := markerVideo + "frames=" + vi.Itoa64(int64(len(a.anim.frames))) +
 				" elapsed_ms=" + vi.Itoa64(a.playLastElapsed/1_000_000) +
-				" decode_us_max=" + vi.Itoa64(a.anim.decMaxUs))
+				" decode_us_max=" + vi.Itoa64(a.anim.decMaxUs)
 			a.anim.decMaxUs = 0
+			a.playTotalNs += uint64(a.playLastElapsed)
+			if a.seat != nil && a.audio != nil {
+				if st, err := a.seat.Status(); err == nil {
+					frames, driftMs := a.audioDrift(st)
+					line += " audio_frames=" + vi.Itoa64(int64(frames)) +
+						" drift_ms=" + vi.Itoa64(int64(driftMs)) +
+						" underruns=" + vi.Itoa64(int64(st.Underruns))
+				}
+			}
+			vi.ConsoleLine(line)
 		} else {
 			vi.ConsoleLine(markerPlay + "frames=" + vi.Itoa64(int64(len(a.anim.frames))) +
 				" elapsed_ms=" + vi.Itoa64(a.playLastElapsed/1_000_000))
@@ -830,6 +1138,9 @@ func (a *app) viewport() viewport { return viewportRect(a.ta.W, a.ta.H) }
 
 func (a *app) eventLoop() {
 	for {
+		// M202b: top up the mixer seat's queue while it drains — one
+		// pump per loop turn, paced by the queue's own EAGAIN.
+		a.audioPump()
 		// M124a-2: seat drag frames for this window — a delivered drop
 		// runs DropTarget (which repaints) here, one poll per loop turn.
 		a.ta.PollDrag()
@@ -886,9 +1197,16 @@ func (a *app) idleSleep() {
 		return
 	}
 	rem := a.playFireAt - playNow()
+	cap := int64(playIdleCapNs)
+	if a.seatLive {
+		// The seat's four-period queue drains in ~43 ms; the 50 ms
+		// video cap would starve it, so a live audio stream tightens
+		// the stall to the refill cadence.
+		cap = audioIdleNs
+	}
 	switch {
-	case rem > playIdleCapNs:
-		rem = playIdleCapNs
+	case rem > cap:
+		rem = cap
 	case rem < playIdleMinNs:
 		rem = playIdleMinNs
 	}

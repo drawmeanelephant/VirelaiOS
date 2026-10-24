@@ -54,6 +54,16 @@
 # The scanout probe anchors the window like the PNG/JPEG probes and
 # samples the raster against the vector's integer expressions.
 #
+# Issue #3385 (M202b) adds run 04 — the soun-track leg, on a `--sound`
+# boot. AUD.MOV is CLIP.MOV grown a PCM sound track in setup (ten 4410 B
+# sowt s16-mono samples = 22050 frames at 22050 Hz, exactly the video
+# loop's one second, a 440 Hz sine). `-play` opens a mixer seat, decodes
+# the track through virelai/pcm and pumps it paced by the queue's own
+# EAGAIN; the loop receipt carries the mixer's completed-frame count and
+# the named drift bound against the video clock. MP4A.MOV is the same
+# shape with its sound entry fourcc named mp4a — the coded-codec
+# refusal, pinned as `audio=skipped codec=mp4a` on its loaded receipt.
+#
 # Issue #3039 (M170e) adds a SEVENTH exec — the playback leg. Every
 # scripted input channel is spent above (chords on the frame steps, the
 # string on save-as, the key on JPROG's q), so play starts by argv:
@@ -125,10 +135,70 @@ ipng = open("user/go/webrender/testdata/png/adam7-160x120.png", "rb").read()
 assert ipng[:8] == b"\x89PNG\r\n\x1a\n" and ipng[12:16] == b"IHDR" \
     and ipng[28] == 1, "adam7 fixture lost its interlaced IHDR"
 open(os.path.join(share, "IPNG.PNG"), "wb").write(ipng)
+# M202b (#3385): run 04's MOV+audio legs. AUD.MOV is CLIP.MOV grown a
+# soun track — the video trak travels verbatim, the audio samples land
+# at the end of mdat, and both stco tables are repointed for the grown
+# moov. MP4A.MOV is the same shape with the entry fourcc named mp4a.
+import math, struct
+def box(t, p): return struct.pack(">I", 8 + len(p)) + t + p
+u32 = lambda v: struct.pack(">I", v)
+u16 = lambda v: struct.pack(">H", v)
+moov_at = mov.find(b"moov") - 4
+mdat_at = mov.find(b"mdat") - 4
+assert 0 < moov_at < mdat_at, "clip fixture lost its box layout"
+ftyp, moov, mdat = mov[:moov_at], mov[moov_at:mdat_at], mov[mdat_at:]
+moov_body, mdat_body = moov[8:], mdat[8:]
+unity = (u32(0x10000) + u32(0) + u32(0) + u32(0) + u32(0x10000) + u32(0)
+         + u32(0) + u32(0) + u32(0x40000000))
+def soun_trak(codec, ch, bits, rate, nsamp, samp_bytes, samp_dur):
+    # A real sound track carries a 0x0 tkhd — the demux records dims,
+    # it no longer refuses them.
+    tkhd = box(b"tkhd", u32(7) + u32(0) + u32(0) + u32(2) + u32(0)
+               + u32(nsamp * samp_dur) + b"\0" * 8 + u16(0) * 4
+               + unity + u32(0) + u32(0))
+    mdhd = box(b"mdhd", u32(0) + u32(0) + u32(0) + u32(rate)
+               + u32(nsamp * samp_dur) + u16(0x55c4) + u16(0))
+    hdlr = box(b"hdlr", u32(0) + u32(0) + b"soun" + b"\0" * 12)
+    smhd = box(b"smhd", u32(0) + u16(0) + u16(0))
+    dinf = box(b"dinf", box(b"dref", u32(0) + u32(1) + box(b"url ", u32(1))))
+    entry = (b"\0" * 6 + u16(1) + u16(0) + u16(0) + u32(0)
+             + u16(ch) + u16(bits) + u16(0) + u16(0) + u32(rate << 16))
+    stsd = box(b"stsd", u32(0) + u32(1) + box(codec, entry))
+    stts = box(b"stts", u32(0) + u32(1) + u32(nsamp) + u32(samp_dur))
+    stsc = box(b"stsc", u32(0) + u32(1) + u32(1) + u32(nsamp) + u32(1))
+    stsz = box(b"stsz", u32(0) + u32(samp_bytes) + u32(nsamp))
+    stco = box(b"stco", u32(0) + u32(1) + u32(0))
+    stbl = box(b"stbl", stsd + stts + stsc + stsz + stco)
+    minf = box(b"minf", smhd + dinf + stbl)
+    mdia = box(b"mdia", mdhd + hdlr + minf)
+    return box(b"trak", tkhd + mdia)
+def mov_with_audio(codec):
+    # ten 4410-byte sowt s16-mono samples: 22050 frames at 22050 Hz —
+    # exactly the video loop's one second, a 440 Hz sine at 0.3 amp.
+    rate, nsamp, frames = 22050, 10, 2205
+    audio = bytearray()
+    for i in range(nsamp * frames):
+        audio += struct.pack("<h",
+            int(0.3 * 32767 * math.sin(2 * math.pi * 440 * i / rate)))
+    trak = soun_trak(codec, 1, 16, rate, nsamp, 2 * frames, frames)
+    new_moov = bytearray(box(b"moov", moov_body + trak))
+    new_mdat = box(b"mdat", mdat_body + bytes(audio))
+    voff = moov_at + len(new_moov) + 8
+    aoff = voff + len(mdat_body)
+    i = new_moov.find(b"stco"); new_moov[i + 12:i + 16] = u32(voff)
+    j = new_moov.rfind(b"stco"); new_moov[j + 12:j + 16] = u32(aoff)
+    return ftyp + bytes(new_moov) + new_mdat
+aud = mov_with_audio(b"sowt")
+mp4a = mov_with_audio(b"mp4a")
+open(os.path.join(share, "AUD.MOV"), "wb").write(aud)
+open(os.path.join(share, "MP4A.MOV"), "wb").write(mp4a)
 print("staged GOVIEW.ELF + TEST.PNG/JPG/GIF/SVG/QOI + PLAY.GIF + JPROG.JPG "
-      "+ CLIP.MOV + AVC1.MOV + IPNG.PNG (GIF leg is the three-frame anim3; "
-      "PLAY.GIF is ten frames at 50 ms; CLIP.MOV is ten MJPEG frames at "
-      "100 ms; IPNG.PNG is the Adam7 160x120 RGB vector, %d bytes)" % len(ipng))
+      "+ CLIP.MOV + AVC1.MOV + IPNG.PNG + AUD.MOV + MP4A.MOV (GIF leg is "
+      "the three-frame anim3; PLAY.GIF is ten frames at 50 ms; CLIP.MOV is "
+      "ten MJPEG frames at 100 ms; IPNG.PNG is the Adam7 160x120 RGB "
+      "vector, %d bytes; AUD.MOV adds a 22050-frame sowt s16-mono soun "
+      "track, %d bytes; MP4A.MOV renames it mp4a, %d bytes)"
+      % (len(ipng), len(aud), len(mp4a)))
 PYEOF
 
 # The sequence per leg: `exec ... &`, a bounded ~5-tick `fg` dwell (the
@@ -741,6 +811,8 @@ vgate_assert 02 serial-contains "wnd: registered"
 vgate_assert 02 serial-contains "gview: not-tab-aware (shim or WND desktop)"
 vgate_assert 02 serial-count "exec: loaded GOVIEW.ELF" 3
 vgate_assert 02 serial-contains "gview: loaded CLIP.MOV 160x120 MOV bytes=51377 frames=10"
+# M202b: a video-only MOV names the honest no-track case.
+vgate_assert 02 serial-contains "audio=skipped"
 # The stepper walked frame 1 -> 2 -> 3 on the pinned sums — the same
 # decoder renders the samples host-side and guest-side.
 vgate_assert 02 serial-contains "gview: frame 1/10 delay=100 sum=841b31cc2db2c534"
@@ -874,4 +946,80 @@ if frac < 0.95:
              "(%d,%d %dx%d) — the Adam7 pass walk did not scatter "
              "correctly" % (frac, n, ix, iy, iw, ih))
 print("IPNG-PIXELS-OK img=(%d,%d) %dx%d vec=%.3f" % (ix, iy, iw, ih, frac))
+PY
+
+# --- run 04: a MOV with a soun track, played through the mixer (M202b #3385)
+# The same one-boot shape on a `--sound` device: MP4A.MOV execs first —
+# its video loads (the codec refusal is audio-side, never the file's) and
+# its receipt names `audio=skipped codec=mp4a` — then AUD.MOV opens
+# `-play` on top: the demux receipt names `audio=sowt ch=1 rate=22050`,
+# the decode+negotiate lands on `gview: audio sowt ... out=f32 rate=48000
+# ch=2`, and the seat reports `gview: audio streaming gen=`. Three `fg 2`
+# dwells cover several 1 s loops; each wrap's video receipt carries
+# `audio_frames=` (the mixer's own completed output frames — 48000 a
+# second at the negotiated f32/stereo/48 kHz), `drift_ms=` (the absolute
+# drift between the audio clock and the video loop's cumulative playing
+# time) and `underruns=`. The named drift bound is 250 ms: the seat's
+# four-period queue is ~43 ms of drain, so anything inside the window is
+# scheduling noise and anything outside is a broken feed. `q` on the
+# aud-done marker quits the topmost (AUD) viewer for exit 43; MP4A stays
+# parked like run 01's legs.
+vgate_file script-aud.txt <<'EOF'
+exec GOVIEW.ELF /host/MP4A.MOV &
+exec GOVIEW.ELF -play /host/AUD.MOV &
+fg 2
+fg 2
+fg 2
+echo aud-done
+EOF
+
+vgate_run 04 -- \
+    --display --screen '$RUN_DIR/gpu-screen-aud' \
+    --sound \
+    --via-virtio --cvc-snap \
+    --script '$RUN_DIR/script-wm.txt' --script-after "virelai> " \
+    --script2 '$RUN_DIR/script-aud.txt' --script2-after "wnd: registered" \
+    --input-key 12 --input-key-after "aud-done" \
+    --script-expect "user-exec exited status=43" --timeout 240
+
+vgate_assert 04 output-contains 'SOUND: virtio-snd attached'
+vgate_assert 04 serial-contains "VirelaiOS kernel has seized control."
+vgate_assert 04 serial-contains "wnd: registered"
+vgate_assert 04 serial-count "exec: loaded GOVIEW.ELF" 2
+vgate_assert 04 serial-contains "gview: loaded MP4A.MOV 160x120 MOV bytes=95861 frames=10 audio=skipped codec=mp4a"
+vgate_assert 04 serial-contains "gview: loaded AUD.MOV 160x120 MOV bytes=95861 frames=10 audio=sowt ch=1 rate=22050"
+vgate_assert 04 serial-contains "gview: audio sowt ch=1 rate=22050 out=f32 rate=48000 ch=2"
+vgate_assert 04 serial-contains "gview: audio streaming gen="
+vgate_assert 04 serial-contains "gview: video frames=10 elapsed_ms="
+vgate_assert 04 serial-contains "audio_frames="
+vgate_assert 04 serial-contains "drift_ms="
+vgate_assert 04 serial-contains "gview: quit"
+vgate_assert 04 serial-contains "user-exec exited status=43"
+vgate_assert 04 serial-absent "gview: audio refused"
+vgate_assert 04 serial-absent "gview: audio stream err"
+vgate_assert 04 serial-absent "[EXC] parking:"
+vgate_assert 04 python <<'PY'
+import os, re, sys
+ser = open(os.environ["VG_SER"], errors="replace").read()
+# The named drift bound: every loop receipt's drift_ms stays under
+# 250 ms — the seat's queue is ~43 ms of drain, so an overrun means the
+# audio feed stalled or the video clock lied.
+drifts = [int(d) for d in re.findall(r"drift_ms=(\d+)", ser)]
+if not drifts:
+    sys.exit("no drift receipts in serial")
+bad = [d for d in drifts if d > 250]
+if bad:
+    sys.exit("drift_ms %r over the 250 ms bound" % (bad,))
+frames = [int(f) for f in re.findall(r"audio_frames=(\d+)", ser)]
+if len(frames) != len(drifts):
+    sys.exit("audio_frames/drift_ms receipt count mismatch")
+# The device actually played: completed frames grow monotonically and
+# the last receipt shows at least one full audio loop (48000 frames at
+# the negotiated 48 kHz).
+if frames != sorted(frames) or frames[-1] < 48000:
+    sys.exit("audio_frames not advancing a full loop: %r" % (frames,))
+if re.search(r"gview: video frames=10 elapsed_ms=(\d+)", ser) is None:
+    sys.exit("no video loop receipt")
+print("MOV audio: %d loop receipts, last audio_frames=%d, drift max %d ms (bound 250)"
+      % (len(drifts), frames[-1], max(drifts)))
 PY

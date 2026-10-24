@@ -18,9 +18,12 @@ import (
 	"errors"
 	"image"
 	"image/jpeg"
+	"math"
 	"os"
 	"testing"
 
+	"virelai/pcm"
+	"virelai/vi"
 	"virelai/webrender"
 )
 
@@ -145,18 +148,18 @@ func movCat(parts ...[]byte) []byte {
 // refusal tests.
 func movVisualEntry(codec string, w, h uint32) []byte {
 	var e []byte
-	e = append(e, make([]byte, 6)...)      // reserved
-	e = append(e, u16f(1)...)              // data_reference_index
-	e = append(e, make([]byte, 16)...)     // version/revision/vendor/quality
-	e = append(e, u16f(uint16(w))...)      // width
-	e = append(e, u16f(uint16(h))...)      // height
-	e = append(e, u32f(0x00480000)...)     // hres 72dpi
-	e = append(e, u32f(0x00480000)...)     // vres
-	e = append(e, u32f(0)...)              // reserved
-	e = append(e, u16f(1)...)              // frame_count
-	e = append(e, make([]byte, 32)...)     // compressorname (pascal, empty)
-	e = append(e, u16f(24)...)             // depth
-	e = append(e, u16f(0xffff)...)         // pre_defined
+	e = append(e, make([]byte, 6)...)  // reserved
+	e = append(e, u16f(1)...)          // data_reference_index
+	e = append(e, make([]byte, 16)...) // version/revision/vendor/quality
+	e = append(e, u16f(uint16(w))...)  // width
+	e = append(e, u16f(uint16(h))...)  // height
+	e = append(e, u32f(0x00480000)...) // hres 72dpi
+	e = append(e, u32f(0x00480000)...) // vres
+	e = append(e, u32f(0)...)          // reserved
+	e = append(e, u16f(1)...)          // frame_count
+	e = append(e, make([]byte, 32)...) // compressorname (pascal, empty)
+	e = append(e, u16f(24)...)         // depth
+	e = append(e, u16f(0xffff)...)     // pre_defined
 	if len(e) != 78 {
 		panic("visual entry size drift")
 	}
@@ -172,7 +175,7 @@ func movBuild(samples [][]byte, w, h, timescale, dur uint32, codec string, extra
 
 	mvhd := movBox("mvhd", func() []byte {
 		var b []byte
-		b = append(b, u32f(0)...) // version+flags
+		b = append(b, u32f(0)...)                  // version+flags
 		b = append(b, movCat(u32f(0), u32f(0))...) // creation/modification
 		b = append(b, u32f(timescale)...)
 		b = append(b, u32f(uint32(len(samples))*dur)...)
@@ -187,9 +190,9 @@ func movBuild(samples [][]byte, w, h, timescale, dur uint32, codec string, extra
 
 	tkhd := movBox("tkhd", func() []byte {
 		var b []byte
-		b = append(b, u32f(0x000007)...) // enabled | in_movie | in_preview
+		b = append(b, u32f(0x000007)...)           // enabled | in_movie | in_preview
 		b = append(b, movCat(u32f(0), u32f(0))...) // creation/modification
-		b = append(b, u32f(1)...) // track_id
+		b = append(b, u32f(1)...)                  // track_id
 		b = append(b, u32f(0)...)
 		b = append(b, u32f(uint32(len(samples))*dur)...)
 		b = append(b, make([]byte, 8)...)
@@ -213,9 +216,9 @@ func movBuild(samples [][]byte, w, h, timescale, dur uint32, codec string, extra
 
 	hdlr := movBox("hdlr", func() []byte {
 		var b []byte
-		b = append(b, u32f(0)...)   // version+flags
-		b = append(b, u32f(0)...)   // pre_defined
-		b = append(b, "vide"...)    // handler_type
+		b = append(b, u32f(0)...) // version+flags
+		b = append(b, u32f(0)...) // pre_defined
+		b = append(b, "vide"...)  // handler_type
 		b = append(b, make([]byte, 12)...)
 		return b
 	}())
@@ -481,10 +484,11 @@ func TestDemuxCodecRefusalNamesTheFourcc(t *testing.T) {
 	}
 }
 
-// TestDemuxAudioTrackIsSkippedAndNamed: a soun track does not stop the
-// vide track — the demux skips it and the load receipt names it
-// audio=skipped through the frame source.
-func TestDemuxAudioTrackIsSkippedAndNamed(t *testing.T) {
+// TestDemuxUnplayableSounTrackIsSkippedAndNamed: a soun track whose
+// tables never resolve does not stop the vide track — the demux skips it
+// and the load receipt names the bare audio=skipped (there is no codec
+// to name when no stsd was read).
+func TestDemuxUnplayableSounTrackIsSkippedAndNamed(t *testing.T) {
 	soun := movBox("trak", movBox("mdia", bytes.Join([][]byte{
 		movBox("hdlr", func() []byte {
 			var b []byte
@@ -499,12 +503,11 @@ func TestDemuxAudioTrackIsSkippedAndNamed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("demuxMOV with a sound track: %v", err)
 	}
-	if !v.audioSkip {
-		t.Fatal("the soun track was not recorded as skipped")
+	if v.audio != nil || v.audioCodec != "" {
+		t.Fatalf("unresolvable soun track demuxed audio=%+v codec=%q", v.audio, v.audioCodec)
 	}
-	src := movSource(v)
-	if !src.audioSkip {
-		t.Fatal("the frame source must carry audio=skipped to the load receipt")
+	if got := movAudioReceipt(v); got != " audio=skipped" {
+		t.Fatalf("load receipt token = %q, want the bare audio=skipped", got)
 	}
 }
 
@@ -624,5 +627,520 @@ func TestMOVHeaderDimsFromFixture(t *testing.T) {
 	// A head that ends before the moov yields no dims, not garbage.
 	if _, _, ok := headerDims(data[:16]); ok {
 		t.Fatal("a 16-byte head must not size the window")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The soun track (M202b #3385)
+// ---------------------------------------------------------------------------
+
+// movSoundSampleEntry builds one stsd sound sample entry: the classic
+// 36-byte QT description for version 0/1, plus the 36-byte lpcm v2
+// extension (f64 rate, u32 channels, the flags word and the packet
+// constants) when version is 2.
+func movSoundSampleEntry(codec string, ch, bits uint16, rate uint32, version uint16, flags uint32) []byte {
+	var e []byte
+	e = append(e, make([]byte, 6)...) // reserved
+	e = append(e, u16f(1)...)         // data_reference_index
+	e = append(e, u16f(version)...)
+	e = append(e, u16f(0)...) // revision
+	e = append(e, u32f(0)...) // vendor
+	e = append(e, u16f(ch)...)
+	e = append(e, u16f(bits)...)
+	e = append(e, u16f(0)...) // compression id
+	e = append(e, u16f(0)...) // packet size
+	e = append(e, u32f(rate<<16)...)
+	if version == 2 {
+		var f [8]byte
+		binary.BigEndian.PutUint64(f[:], math.Float64bits(float64(rate)))
+		e = append(e, u32f(72)...) // sizeOfStructOnly
+		e = append(e, f[:]...)
+		e = append(e, u32f(uint32(ch))...)
+		e = append(e, u32f(0x7f000000)...)
+		e = append(e, u32f(8)...)
+		e = append(e, u32f(flags)...)
+		e = append(e, u32f(uint32(ch)*uint32(bits)/8)...) // bytes/packet
+		e = append(e, u32f(1)...)                         // frames/packet
+	}
+	return movBox(codec, e)
+}
+
+// movSounTrak builds a complete soun trak — the 0x0 tkhd a real sound
+// track carries, mdhd at the sample-rate timescale, hdlr soun and the
+// stbl tables resolve() walks (stsz in its uniform-sample-size form,
+// stco a placeholder the file assembler patches).
+func movSounTrak(codec string, ch, bits uint16, rate uint32, version uint16, flags uint32,
+	nsamp, sampBytes, sampDur uint32) []byte {
+	tkhd := movBox("tkhd", movCat(
+		u32f(0x000007), u32f(0), u32f(0), u32f(2), u32f(0),
+		u32f(nsamp*sampDur),
+		make([]byte, 8),
+		u16f(0), u16f(0), u16f(0), u16f(0),
+		movUnityMatrix(),
+		u32f(0), u32f(0), // a sound track has no picture
+	))
+	mdhd := movBox("mdhd", movCat(u32f(0), u32f(0), u32f(0),
+		u32f(rate), u32f(nsamp*sampDur), u16f(0x55c4), u16f(0)))
+	hdlr := movBox("hdlr", movCat(u32f(0), u32f(0), []byte("soun"), make([]byte, 12)))
+	smhd := movBox("smhd", movCat(u32f(0), u16f(0), u16f(0)))
+	dinf := movBox("dinf", movBox("dref", movCat(u32f(0), u32f(1), movBox("url ", u32f(0x000001)))))
+	stsd := movBox("stsd", movCat(u32f(0), u32f(1),
+		movSoundSampleEntry(codec, ch, bits, rate, version, flags)))
+	stts := movBox("stts", movCat(u32f(0), u32f(1), u32f(nsamp), u32f(sampDur)))
+	stsc := movBox("stsc", movCat(u32f(0), u32f(1), u32f(1), u32f(nsamp), u32f(1)))
+	stsz := movBox("stsz", movCat(u32f(0), u32f(sampBytes), u32f(nsamp)))
+	stco := movBox("stco", movCat(u32f(0), u32f(1), u32f(0)))
+	stbl := movBox("stbl", bytes.Join([][]byte{stsd, stts, stsc, stsz, stco}, nil))
+	minf := movBox("minf", bytes.Join([][]byte{smhd, dinf, stbl}, nil))
+	mdia := movBox("mdia", bytes.Join([][]byte{mdhd, hdlr, minf}, nil))
+	return movBox("trak", bytes.Join([][]byte{tkhd, mdia}, nil))
+}
+
+// movWithAudio appends a soun trak and its PCM payload to a movBuild
+// file: the audio bytes land at the end of mdat and both stco tables
+// are repointed for the grown moov. The result is run through the demux
+// so a test can never pin a fixture that does not parse.
+func movWithAudio(t *testing.T, vsamples [][]byte, atrak []byte, audio []byte) []byte {
+	base := movBuild(vsamples, 160, 120, 1000, 100, "jpeg")
+	moovAt := bytes.Index(base, []byte("moov")) - 4
+	mdatAt := bytes.Index(base, []byte("mdat")) - 4
+	if moovAt < 0 || mdatAt < 0 || mdatAt < moovAt {
+		t.Fatal("baseline mov lost its top-level boxes")
+	}
+	moov, mdatBody := base[moovAt:mdatAt], base[mdatAt+8:]
+	newMoov := movBox("moov", movCat(moov[8:], atrak))
+	newMdat := movBox("mdat", movCat(mdatBody, audio))
+	voff := uint32(moovAt + len(newMoov) + 8)
+	i := bytes.Index(newMoov, []byte("stco"))
+	binary.BigEndian.PutUint32(newMoov[i+12:i+16], voff)
+	j := bytes.LastIndex(newMoov, []byte("stco"))
+	binary.BigEndian.PutUint32(newMoov[j+12:j+16], voff+uint32(len(mdatBody)))
+	out := movCat(base[:moovAt], newMoov, newMdat)
+	if _, err := demuxMOV(out); err != nil {
+		t.Fatalf("movWithAudio built an undemuxable file: %v", err)
+	}
+	return out
+}
+
+// movAudioFixture is the card's pinned shape: the committed clip's ten
+// JPEG samples beside a sowt s16 mono soun track — ten 4410-byte samples
+// of 2205 frames at 22050 Hz, exactly the video loop's one second.
+func movAudioFixture(t *testing.T) []byte {
+	clip := readFixture(t, movFixture)
+	cv, err := demuxMOV(clip)
+	if err != nil {
+		t.Fatalf("clip demux: %v", err)
+	}
+	var vs [][]byte
+	for i := range cv.samples {
+		vs = append(vs, cv.sampleBytes(i))
+	}
+	audio := make([]byte, 10*4410)
+	for i := range audio {
+		audio[i] = byte(i / 7) // a nonzero, non-constant pattern
+	}
+	return movWithAudio(t, vs,
+		movSounTrak("sowt", 1, 16, 22050, 0, 0, 10, 4410, 2205), audio)
+}
+
+// TestDemuxSounTrackDecodes is the card's happy path: a soun track with
+// a sowt PCM entry demuxes beside the vide track — the decode tuple,
+// the resolved sample table, and the receipt's `audio=sowt` token.
+func TestDemuxSounTrackDecodes(t *testing.T) {
+	v, err := demuxMOV(movAudioFixture(t))
+	if err != nil {
+		t.Fatalf("demuxMOV: %v", err)
+	}
+	a := v.audio
+	if a == nil {
+		t.Fatal("soun track did not demux to a movAudio")
+	}
+	if a.codec != "sowt" || a.tag != pcm.FormatPCM || a.channels != 1 ||
+		a.rate != 22050 || a.bits != 16 || a.be || a.bias {
+		t.Fatalf("audio tuple = %+v, want sowt pcm16 mono 22050 LE", a)
+	}
+	if len(a.samples) != 10 || a.timescale != 22050 {
+		t.Fatalf("audio table = %d samples ts=%d", len(a.samples), a.timescale)
+	}
+	for i, s := range a.samples {
+		if s.size != 4410 || s.dur != 2205 {
+			t.Fatalf("audio sample %d = %d B dur %d, want 4410/2205", i, s.size, s.dur)
+		}
+	}
+	if got := movAudioReceipt(v); got != " audio=sowt ch=1 rate=22050" {
+		t.Fatalf("receipt token = %q", got)
+	}
+	// The materialized stream is the declared 22050 frames of LE s16.
+	info, b := a.wavInfo(v.data)
+	if info.Frames != 22050 || info.DataSize != 44100 || len(b) != 44100 {
+		t.Fatalf("wavInfo = frames %d data %d len %d", info.Frames, info.DataSize, len(b))
+	}
+}
+
+// TestDemuxSounRefusalsByName: every soun entry the demux will not
+// synthesize is named — the coded fourccs by their own name, a
+// PCM-family member with unplayable parameters the same way, and a
+// track whose tables never resolved with the bare audio=skipped.
+func TestDemuxSounRefusalsByName(t *testing.T) {
+	vs := [][]byte{[]byte("v1")}
+	audio := make([]byte, 4*4) // 4 stereo s16 frames, content irrelevant
+	mk := func(codec string, ch, bits uint16, rate uint32, version uint16, flags uint32, sampBytes uint32, n uint32) []byte {
+		return movWithAudio(t, vs,
+			movSounTrak(codec, ch, bits, rate, version, flags, n, sampBytes, 100), audio[:sampBytes*n])
+	}
+	cases := []struct {
+		name       string
+		data       []byte
+		wantCodec  string // the named codec, or "" for the bare skip
+		wantPlayOK bool
+	}{
+		{"mp4a named", mk("mp4a", 1, 16, 22050, 0, 0, 4, 4), "mp4a", false},
+		{"ulaw named", mk("ulaw", 1, 16, 22050, 0, 0, 4, 4), "ulaw", false},
+		{"lpcm v0 named", mk("lpcm", 1, 16, 22050, 0, 0, 4, 4), "lpcm", false},
+		{"sowt 12-bit named", mk("sowt", 1, 12, 22050, 0, 0, 4, 4), "sowt", false},
+		{"sowt 3ch named", mk("sowt", 3, 16, 22050, 0, 0, 4, 4), "sowt", false},
+		{"sowt slow rate named", mk("sowt", 1, 16, 4000, 0, 0, 4, 4), "sowt", false},
+		{"twos plays", mk("twos", 2, 16, 22050, 0, 0, 4, 4), "", true},
+		{"raw 8 plays", mk("raw ", 1, 8, 22050, 0, 0, 4, 4), "", true},
+		{"lpcm v2 s16be plays", mk("lpcm", 1, 16, 22050, 2, 0x0a, 4, 4), "", true},
+	}
+	for _, c := range cases {
+		v, err := demuxMOV(c.data)
+		if err != nil {
+			t.Fatalf("%s: demuxMOV = %v", c.name, err)
+		}
+		if c.wantPlayOK {
+			if v.audio == nil {
+				t.Errorf("%s: audio did not demux", c.name)
+			}
+			continue
+		}
+		if v.audio != nil || v.audioCodec != c.wantCodec {
+			t.Errorf("%s: audio=%+v codec=%q, want refused %q", c.name, v.audio, v.audioCodec, c.wantCodec)
+		}
+		if got := movAudioReceipt(v); got != " audio=skipped codec="+c.wantCodec {
+			t.Errorf("%s: receipt = %q", c.name, got)
+		}
+	}
+	// A soun table that never resolves is the bare skip, no codec name:
+	// stsz declares four samples but the mdat payload holds three.
+	short := movWithAudio(t, vs, movSounTrak("sowt", 2, 16, 22050, 0, 0, 4, 4, 100), audio[:12])
+	v, err := demuxMOV(short)
+	if err != nil {
+		t.Fatalf("short audio table: %v", err)
+	}
+	if v.audio != nil || v.audioCodec != "" {
+		t.Fatalf("unresolvable soun table: audio=%+v codec=%q", v.audio, v.audioCodec)
+	}
+	if got := movAudioReceipt(v); got != " audio=skipped" {
+		t.Fatalf("receipt = %q, want bare skipped", got)
+	}
+	// And a video-only file keeps the bare skip — the honest no-track case.
+	v, err = demuxMOV(movBuild(vs, 160, 120, 1000, 100, "jpeg"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.audio != nil || v.audioCodec != "" {
+		t.Fatalf("video-only demux: audio=%+v codec=%q", v.audio, v.audioCodec)
+	}
+	if got := movAudioReceipt(v); got != " audio=skipped" {
+		t.Fatalf("video-only receipt = %q", got)
+	}
+}
+
+// TestMOVSounEntryParams unit-pins the decode tuple each PCM-family
+// codec resolves to — the endian swap, the sign bias and the lpcm flag
+// semantics — plus the refusals the parser must make.
+func TestMOVSounEntryParams(t *testing.T) {
+	mk := func(codec string, ch, bits uint16, rate uint32, version uint16, flags uint32) []byte {
+		// The parser sees the whole sample entry — size, fourcc, body.
+		return movSoundSampleEntry(codec, ch, bits, rate, version, flags)
+	}
+	// lpcm flag bits, mirroring mov.go's constants.
+	const (
+		fFloat = 1 << 0
+		fBE    = 1 << 1
+		fSig   = 1 << 2
+		fPack  = 1 << 3
+		fNonI  = 1 << 5
+	)
+	cases := []struct {
+		name       string
+		entry      []byte
+		want       *movSound
+		wantNilMsg bool
+	}{
+		{"sowt s16", mk("sowt", 1, 16, 44100, 0, 0),
+			&movSound{codec: "sowt", tag: pcm.FormatPCM, channels: 1, rate: 44100, bits: 16}, false},
+		{"sowt s8 biased", mk("sowt", 2, 8, 22050, 0, 0),
+			&movSound{codec: "sowt", tag: pcm.FormatPCM, channels: 2, rate: 22050, bits: 8, bias: true}, false},
+		{"twos s16 be", mk("twos", 2, 16, 48000, 0, 0),
+			&movSound{codec: "twos", tag: pcm.FormatPCM, channels: 2, rate: 48000, bits: 16, be: true}, false},
+		{"raw u8 direct", mk("raw ", 1, 8, 8000, 0, 0),
+			&movSound{codec: "raw ", tag: pcm.FormatPCM, channels: 1, rate: 8000, bits: 8}, false},
+		{"raw u16 be+bias", mk("raw ", 1, 16, 22050, 0, 0),
+			&movSound{codec: "raw ", tag: pcm.FormatPCM, channels: 1, rate: 22050, bits: 16, be: true, bias: true}, false},
+		{"lpcm s16be v2", mk("lpcm", 1, 16, 44100, 2, fSig|fPack|fBE),
+			&movSound{codec: "lpcm", tag: pcm.FormatPCM, channels: 1, rate: 44100, bits: 16, be: true}, false},
+		{"lpcm f32le v2", mk("lpcm", 2, 32, 48000, 2, fFloat|fPack),
+			&movSound{codec: "lpcm", tag: pcm.FormatFloat, channels: 2, rate: 48000, bits: 32}, false},
+		{"lpcm u16le v2 biased", mk("lpcm", 1, 16, 22050, 2, fPack),
+			&movSound{codec: "lpcm", tag: pcm.FormatPCM, channels: 1, rate: 22050, bits: 16, bias: true}, false},
+		{"lpcm noninterleaved refused", mk("lpcm", 2, 16, 22050, 2, fSig|fPack|fNonI), nil, true},
+		{"lpcm v1 refused", mk("lpcm", 1, 16, 22050, 1, 0), nil, true},
+		{"lpcm f64 refused", mk("lpcm", 1, 64, 44100, 2, fFloat|fPack|fBE), nil, true},
+		{"mp4a refused", mk("mp4a", 2, 16, 44100, 0, 0), nil, true},
+		{"in24 refused", mk("in24", 1, 24, 44100, 0, 0), nil, true},
+		{"sowt rate low refused", mk("sowt", 1, 16, 4000, 0, 0), nil, true},
+		{"sowt 3ch refused", mk("sowt", 3, 16, 22050, 0, 0), nil, true},
+		{"short entry refused", mk("sowt", 1, 16, 22050, 0, 0)[:20], nil, true},
+	}
+	for _, c := range cases {
+		got := movSoundEntry(c.entry)
+		if c.wantNilMsg {
+			if got != nil {
+				t.Errorf("%s: parsed %+v, want refused", c.name, got)
+			}
+			continue
+		}
+		if got == nil || *got != *c.want {
+			t.Errorf("%s: got %+v, want %+v", c.name, got, c.want)
+		}
+	}
+}
+
+// TestMOVAudioPCMBytesTransforms pins the byte munging the materialized
+// stream applies: big-endian word swap, the sign bias, and the
+// whole-frames check on each sample.
+func TestMOVAudioPCMBytesTransforms(t *testing.T) {
+	mk := func(bits uint16, be, bias bool, b ...byte) *movAudio {
+		return &movAudio{codec: "x", tag: pcm.FormatPCM, channels: 1, bits: bits,
+			be: be, bias: bias, samples: []movSample{{off: 0, size: uint32(len(b))}}}
+	}
+	cases := []struct {
+		name string
+		a    *movAudio
+		data []byte
+		want []byte
+	}{
+		{"sowt direct", mk(16, false, false, 1, 2, 3, 4), []byte{1, 2, 3, 4}, []byte{1, 2, 3, 4}},
+		{"twos swap", mk(16, true, false, 0x12, 0x34, 0x56, 0x78), []byte{0x12, 0x34, 0x56, 0x78}, []byte{0x34, 0x12, 0x78, 0x56}},
+		{"sowt8 bias", mk(8, false, true, 0x00, 0x80, 0x7f, 0xff), []byte{0x00, 0x80, 0x7f, 0xff}, []byte{0x80, 0x00, 0xff, 0x7f}},
+		{"raw16 swap+bias", mk(16, true, true, 0x80, 0x00), []byte{0x80, 0x00}, []byte{0x00, 0x00}},
+		{"raw8 direct", mk(8, false, false, 0x80, 0xff), []byte{0x80, 0xff}, []byte{0x80, 0xff}},
+		{"f32 be swap", mk(32, true, false, 0x3f, 0x80, 0x00, 0x00), []byte{0x3f, 0x80, 0x00, 0x00}, []byte{0x00, 0x00, 0x80, 0x3f}},
+		{"u16le bias only", mk(16, false, true, 0x00, 0x80), []byte{0x00, 0x80}, []byte{0x00, 0x00}},
+	}
+	for _, c := range cases {
+		if got := c.a.pcmBytes(c.data); !bytes.Equal(got, c.want) {
+			t.Errorf("%s: pcmBytes = %x, want %x", c.name, got, c.want)
+		}
+	}
+	// A sample that is not a whole number of frames is not sound.
+	bad := mk(16, false, false, 1, 2, 3)
+	if got := bad.pcmBytes([]byte{1, 2, 3}); got != nil {
+		t.Fatalf("partial-frame sample decoded %x, want nil", got)
+	}
+}
+
+// fakeSeat is the host-test mixer seat: a bounded period queue that
+// answers EAGAIN like the kernel and lets the test drain the device.
+type fakeSeat struct {
+	queued    int
+	cap       int
+	submitted uint64
+	completed uint64
+	underruns uint64
+	started   bool
+	aborted   bool
+}
+
+func (f *fakeSeat) Submit(p []byte) (int, error) {
+	if f.queued >= f.cap {
+		return 0, vi.ErrAudioBusy
+	}
+	f.queued++
+	f.submitted += uint64(len(p))
+	return len(p), nil
+}
+func (f *fakeSeat) Start() error { f.started = true; return nil }
+func (f *fakeSeat) End() error   { return nil }
+func (f *fakeSeat) Abort() error { f.aborted = true; return nil }
+func (f *fakeSeat) Status() (vi.AudioStreamStatus, error) {
+	return vi.AudioStreamStatus{Completed: f.completed, Underruns: f.underruns}, nil
+}
+func (f *fakeSeat) Generation() uint64 { return 7 }
+
+// drain releases every queued period into the completed count — the
+// device's real-time consumption, on demand.
+func (f *fakeSeat) drain() { f.queued = 0 }
+
+// movAudioTestSeams installs the fake audio seams and returns them plus
+// a restore func. The device negotiates f32/48k/stereo like the VZ
+// sound device does.
+func movAudioTestSeams(seat *fakeSeat) func() {
+	oldQ, oldO := audioQuery, audioOpen
+	audioQuery = func() (vi.AudioInfo, error) {
+		return vi.AudioInfo{Ready: 1, Format: vi.AudioFmtFloat, Rate: 7, Channels: 2}, nil
+	}
+	audioOpen = func(p vi.AudioStreamParams) (audioSeat, error) {
+		if p.Format != vi.AudioFmtFloat || p.Rate != 7 || p.Channels != 2 {
+			return nil, errors.New("seat opened for the wrong tuple")
+		}
+		return seat, nil
+	}
+	return func() { audioQuery, audioOpen = oldQ, oldO }
+}
+
+// TestMOVAudioPlaybackPumpsAndDrift is the playback half: a MOV with a
+// soun track decodes+resamples at play start, the pump fills the fake
+// queue, and the wrap's drift math measures the mixer's completed clock
+// against the video loop's.
+func TestMOVAudioPlaybackPumpsAndDrift(t *testing.T) {
+	_, src, err := decodeForView(movAudioFixture(t))
+	if err != nil {
+		t.Fatalf("decodeForView: %v", err)
+	}
+	seat := &fakeSeat{cap: 4}
+	restore := movAudioTestSeams(seat)
+	defer restore()
+
+	var arms []uint64
+	var clock int64
+	oldArm, oldCancel, oldNow := playArm, playCancel, playNow
+	playArm = func(ns uint64) int64 { arms = append(arms, ns); return 0 }
+	playCancel = func() int64 { return 1 }
+	playNow = func() int64 { return clock }
+	defer func() { playArm, playCancel, playNow = oldArm, oldCancel, oldNow }()
+
+	a := &app{anim: src}
+	if !a.togglePlay() || !a.playing {
+		t.Fatal("togglePlay did not start playback")
+	}
+	if a.audio == nil || a.seat == nil {
+		t.Fatal("audio did not build and open a seat at play start")
+	}
+	// 22050 mono s16 resampled to 48000 stereo f32: exactly one second.
+	if want := 48000 * 8; len(a.audio.buf) != want {
+		t.Fatalf("audio buffer = %d bytes, want %d", len(a.audio.buf), want)
+	}
+	if !seat.started || seat.submitted != 4*vi.AudioPeriodBytes {
+		t.Fatalf("seat primed with %d bytes started=%v, want 4 periods", seat.submitted, seat.started)
+	}
+	// The queue's own EAGAIN is the pace: a fifth period is refused and
+	// the pump idles rather than erroring.
+	before := a.audioPos
+	a.audioPump()
+	if a.audioPos != before {
+		t.Fatal("the pump submitted past a full queue")
+	}
+	// One full video loop: ten 100 ms ticks, the device draining each
+	// period between them, the wrap printing the drift receipt.
+	fire := func() {
+		clock += int64(arms[len(arms)-1])
+		seat.completed = seat.submitted - 8192 // one queue's backlog behind
+		seat.drain()
+		a.audioPump()
+	}
+	for i := 0; i < 10; i++ {
+		fire()
+		if !a.playTick() {
+			t.Fatalf("tick %d did not advance", i+1)
+		}
+	}
+	if a.frame != 0 || a.playTotalNs == 0 {
+		t.Fatalf("loop did not wrap: frame=%d playTotalNs=%d", a.frame, a.playTotalNs)
+	}
+	// The drift measure: completed lags playing time by the one-queue
+	// backlog (8192 B = 1024 f32stereo frames ≈ 21 ms at 48 kHz).
+	frames, driftMs := a.audioDrift(mustStatus(t, seat))
+	if frames != seat.completed/8 {
+		t.Fatalf("audioDrift frames = %d, want %d", frames, seat.completed/8)
+	}
+	wantDrift := uint64(0)
+	if playedNs := frames * 1_000_000_000 / 48000; playedNs < a.playTotalNs {
+		wantDrift = (a.playTotalNs - playedNs) / 1_000_000
+	} else {
+		wantDrift = (playedNs - a.playTotalNs) / 1_000_000
+	}
+	if driftMs != wantDrift {
+		t.Fatalf("audioDrift = %d ms, want %d", driftMs, wantDrift)
+	}
+	// A file swap abandons the seat and the decoded buffer.
+	a.stopPlay()
+	if !seat.aborted || a.seat != nil || a.audio != nil || a.audioPos != 0 || a.playTotalNs != 0 {
+		t.Fatal("stopPlay did not reset the audio side")
+	}
+}
+
+func mustStatus(t *testing.T, s audioSeat) vi.AudioStreamStatus {
+	st, err := s.Status()
+	if err != nil {
+		t.Fatalf("seat status: %v", err)
+	}
+	return st
+}
+
+// TestMOVAudioNoDevicePlaysSilent: a soundless boot still plays the
+// video — the refusal names itself once and the file is silent forever.
+func TestMOVAudioNoDevicePlaysSilent(t *testing.T) {
+	_, src, err := decodeForView(movAudioFixture(t))
+	if err != nil {
+		t.Fatalf("decodeForView: %v", err)
+	}
+	oldQ, oldO := audioQuery, audioOpen
+	audioQuery = func() (vi.AudioInfo, error) {
+		return vi.AudioInfo{Ready: 0, Format: vi.AudioFmtNone}, nil
+	}
+	openCalled := false
+	audioOpen = func(p vi.AudioStreamParams) (audioSeat, error) {
+		openCalled = true
+		return nil, vi.ErrNoAudioDevice
+	}
+	defer func() { audioQuery, audioOpen = oldQ, oldO }()
+
+	oldArm := playArm
+	playArm = func(ns uint64) int64 { return 0 }
+	defer func() { playArm = oldArm }()
+
+	a := &app{anim: src}
+	if !a.togglePlay() || !a.playing {
+		t.Fatal("playback must still start on a soundless boot")
+	}
+	if a.audioErr != "no device" || a.seat != nil || openCalled {
+		t.Fatalf("audioErr=%q seat=%v openCalled=%v, want named silent",
+			a.audioErr, a.seat, openCalled)
+	}
+	// A second toggle cycle does not retry — the refusal is named once.
+	a.pausePlay()
+	a.audioStart()
+	if a.audioErr != "no device" {
+		t.Fatalf("audioErr = %q after a retry", a.audioErr)
+	}
+}
+
+// TestMOVAudioMixerFullNamesIt: the open-time ENOSPC is a named refusal,
+// not a silent skip.
+func TestMOVAudioMixerFullNamesIt(t *testing.T) {
+	_, src, err := decodeForView(movAudioFixture(t))
+	if err != nil {
+		t.Fatalf("decodeForView: %v", err)
+	}
+	oldQ, oldO := audioQuery, audioOpen
+	audioQuery = func() (vi.AudioInfo, error) {
+		return vi.AudioInfo{Ready: 1, Format: vi.AudioFmtFloat, Rate: 7, Channels: 2}, nil
+	}
+	audioOpen = func(p vi.AudioStreamParams) (audioSeat, error) {
+		return nil, vi.ErrAudioStreamFull
+	}
+	defer func() { audioQuery, audioOpen = oldQ, oldO }()
+	oldArm := playArm
+	playArm = func(ns uint64) int64 { return 0 }
+	defer func() { playArm = oldArm }()
+
+	a := &app{anim: src}
+	a.togglePlay()
+	if a.audioErr != "mixer full" || a.seat != nil {
+		t.Fatalf("audioErr=%q seat=%v, want the named mixer-full refusal", a.audioErr, a.seat)
 	}
 }
