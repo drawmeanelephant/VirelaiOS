@@ -8,6 +8,8 @@ package main
 // Read/Write + absolute deadline).
 
 import (
+	"virelai/shlib"
+	"virelai/sshlib"
 	"virelai/tls"
 	"virelai/vi"
 )
@@ -15,6 +17,53 @@ import (
 // errPlainRefused is the named refusal a plaintext request without
 // AllowPlain gets — the gate and the UI both match this string.
 const errPlainRefused = "goirc: refuse plaintext — pass --plain only when the server has no TLS"
+
+// errSASLArgv is the named refusal a credential-bearing --sasl gets
+// (M196c): the account's password lives in the kernel secret store's
+// `irc-<acct>` row — slot 70, the same seam FLINT's loadSeed reads
+// `agent-sign` through — never on a command line procs can read.
+const errSASLArgv = "goirc: refuse sasl-argv — --sasl names the account; provision irc-<acct> in the secret store"
+
+// saslStoreGet is the slot-70 lookup seam; tests replace it without
+// touching the kernel store (the loadSeed/storeGetFn pattern).
+var saslStoreGet = shlib.StoreGet
+
+// saslStoreKey names the account's row. The store's 32-byte key bound
+// leaves room for `irc-` + 28 account chars; a longer account simply
+// resolves to nothing.
+func saslStoreKey(acct string) string { return "irc-" + acct }
+
+// loadSASL resolves the --sasl account's password out of the secret
+// store. The raw record buffer is wiped before returning and the value
+// is never logged; a missing row names 'secret_not_found' — the
+// operator provisions it through the seat's consent seam.
+func loadSASL(acct string) (*SASLConfig, error) {
+	var raw [vi.SecretValMax]byte
+	defer sshlib.Wipe(raw[:])
+	key := saslStoreKey(acct)
+	if n := saslStoreGet(key, raw[:]); n > 0 {
+		return &SASLConfig{Account: acct, Password: string(raw[:n])}, nil
+	}
+	return nil, ircError("goirc: sasl secret_not_found " + key)
+}
+
+// resolveSASL lands the parsed --sasl intent on cfg: the argv credential
+// shape is the named refusal, a bare account resolves through the store.
+// A nil error leaves the dial path unchanged when --sasl was absent.
+func resolveSASL(o *options) error {
+	if o.saslArgv {
+		return ircError(errSASLArgv)
+	}
+	if o.saslAcct == "" {
+		return nil
+	}
+	s, err := loadSASL(o.saslAcct)
+	if err != nil {
+		return err
+	}
+	o.cfg.SASL = s
+	return nil
+}
 
 // plainDial adapts *vi.Conn (Send/Recv, relative recv deadline) onto
 // WireConn.

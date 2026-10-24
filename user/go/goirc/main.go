@@ -7,10 +7,16 @@
 //
 //	exec GOIRC.ELF --host 10.0.0.2 [--port 6667] --nick N [--user U]
 //	               [--realname R] [--join '#a,#b'] [--tls [--sni NAME]]
-//	               [--sasl acct:pass] [--plain] [--retries N]
+//	               [--sasl acct] [--plain] [--retries N]
 //	               [--backoff-ms N] [--idle-ms N] [--pong-ms N]
 //	               [--max-ms N]
 //	exec GOIRC.ELF <host> <nick> [#chan ...]
+//
+// --sasl names the ACCOUNT only: the password resolves out of the kernel
+// secret store's `irc-<acct>` row (slot 70, the FLINT loadSeed seam).
+// An argv credential (`--sasl acct:pass`) is refused outright — the named
+// 'goirc: refuse sasl-argv' marker — and an unprovisioned account names
+// 'goirc: sasl secret_not_found irc-<acct>' before any dial (M196c).
 //
 // TLS dials 6697-style through tls.Dial; plaintext refuses unless
 // --plain sets the session's consent bit (the refusal is the named
@@ -25,6 +31,7 @@
 //	goirc: drop <err>                  goirc: backoff <ms>
 //	goirc: nick-in-use <nick>          goirc: join-fail <chan> <reason>
 //	goirc: sasl ok|fail                goirc: error <err>
+//	goirc: sasl secret_not_found <key> goirc: refuse sasl-argv
 //	goirc: quit                        goirc: closed
 //
 // The --ui front-end adds (same prefix, same grep discipline):
@@ -65,12 +72,14 @@ type options struct {
 	maxMs    int64
 	haveHost bool
 	haveNick bool
-	ui       bool // M147b: --ui runs the tabapp front-end
+	ui       bool   // M147b: --ui runs the tabapp front-end
+	saslAcct string // --sasl account; the password resolves via the store
+	saslArgv bool   // --sasl acct:pass — the refused argv credential
 }
 
 func usage() {
 	vi.ConsoleLine("usage: GOIRC.ELF --host H --nick N [--port P] [--join '#a,#b']")
-	vi.ConsoleLine("                  [--tls [--sni NAME]] [--sasl acct:pass] [--plain] [--ui]")
+	vi.ConsoleLine("                  [--tls [--sni NAME]] [--sasl acct] [--plain] [--ui]")
 	vi.ConsoleLine("                  [--retries N] [--backoff-ms N] [--idle-ms N] [--pong-ms N] [--max-ms N]")
 	vi.ConsoleLine("       GOIRC.ELF <host> <nick> [#chan ...]")
 }
@@ -198,8 +207,17 @@ func parseArgs(args []string) (options, bool) {
 			if !ok {
 				return o, false
 			}
-			acct, pass, _ := strings.Cut(v, ":")
-			o.cfg.SASL = &SASLConfig{Account: acct, Password: pass}
+			acct, _, onArgv := strings.Cut(v, ":")
+			switch {
+			case onArgv:
+				// M196c: a credential on argv is refused outright —
+				// errSASLArgv names it at startup.
+				o.saslArgv = true
+			case acct == "":
+				return o, false
+			default:
+				o.saslAcct = acct
+			}
 		case "--plain":
 			o.cfg.AllowPlain = true
 		case "--ui":
@@ -357,6 +375,14 @@ func main() {
 		}
 		usage()
 		vi.Exit(exitUsage)
+	}
+
+	// M196c: the SASL credential never rides argv — a refused shape or an
+	// unprovisioned store row both print their named marker and exit
+	// before any dial, in console and --ui modes alike.
+	if err := resolveSASL(&o); err != nil {
+		vi.ConsoleLine(err.Error())
+		vi.Exit(exitError)
 	}
 
 	// M147b: --ui runs the tabapp front-end (channel rail, scrollback,
