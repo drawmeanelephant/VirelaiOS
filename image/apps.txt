@@ -23,41 +23,46 @@
 #   selection=  M124e (#2584): `primary` opts into the seat's primary
 #          selection — publish on select, deliver on middle-click or
 #          shift+insert. A REAL gate: no word, no publish, no delivery.
+#   icon=  the staged-art 8.3 share name of the app's raster icon under
+#          /host/ART/ (image/art/icons/, f-artcraft #1248 — ART.TXT is the
+#          manifest). Field 3's rune stays: it is the v1 reading and the
+#          degrade for a share without the raster. No icon= (or a raster
+#          that does not decode) means the rune/text row.
 #
-# BUDGET: every reader buffers 4096 B (sexiburger.manifest_buf_max — carried
+# BUDGET: every reader buffers 8192 B (sexiburger.manifest_buf_max — carried
 # by wnd.zig, tabwm.zig and the Go seat's appsMaxBytes). A file at or over
 # that is truncated at the last whole line, silently dropping tail rows.
 # sexiburger's host test pins this file under it. A not-yet-shipped row
 # refuses "Binary not staged".
 # Registry: each row needs an `app` row in docs/component-registry.md.
-GOCALC.ELF | 64-bit Calc | c | dock=true
-NOTE.ELF | Text Editor | n | dock=true | v=2 | opens=text
-GOEDIT.ELF | Code Editor | e | dock=true | v=2 | opens=text,binary | selection=primary
-GOFILES.ELF | Files | f | dock=true | v=2 | caps=file,window | opens=text/vcard
-GOTERM.ELF | Terminal | t | dock=true | v=2 | selection=primary
-WEB.ELF | Web | w | dock=true | v=2 | caps=file,window,net | opens=http,https
-PULSE.ELF | Pulse | u | dock=true
-GOSH.ELF | Shell | s | dock=false | v=2 | caps=file,process,term
-GOHELP.ELF | Help | h
-GOWELCOME.ELF | Welcome | ?
-GOTOP.ELF | Top | p | dock=true
-GOSET.ELF | Settings | g | dock=false | v=2 | caps=file,window,audio
-GOVIEW.ELF | Image Viewer | v | dock=false | v=2 | opens=image
-GOSOUND.ELF | Sound | a | dock=false | v=2 | caps=file,window,audio | opens=audio
-TABWM.BIN | Tabbed Desktop | m
-GOSTALGIA.ELF | Gostalgia | o | dock=false | v=2 | argv=shell --root /host/GS | caps=file,window,term,process
-GOSTORE.ELF | Store | i | dock=false | v=2 | caps=file,window,net
-GOINFER.ELF | LLM Infer | l | dock=false | v=2 | caps=file
-GOREC.ELF | Recorder | r | dock=false | v=2 | caps=file,audio
-GOSNAP.ELF | Snapshots | b | dock=false | v=2 | caps=file
-GOASSIST.ELF | Assistant | y | dock=false | v=2 | caps=file,window
-GOSHEET.ELF | Sheet | x | dock=false | v=2 | caps=file,window | opens=text
-GOREADER.ELF | Reader | d | dock=false | v=2 | caps=file,window | opens=document
-GOCLOCK.ELF | Clock | k | dock=false | v=2 | caps=file,window,timer | opens=text/calendar
-GOMINE.ELF | Mines | j | dock=false | v=2 | caps=file,window,audio
-GOSOL.ELF | Solitaire | q | dock=false | v=2 | caps=file,window,audio
-GOEMOJI.ELF | Emoji | : | dock=false | v=2 | caps=file,window
-GOIRC.ELF | IRC | / | dock=false | v=2 | caps=file,window,net
-GOVAULT.ELF | Vault | $ | dock=false | v=2 | caps=file,window,timer | selection=primary
-GOMAIL.ELF | Mail | @ | dock=false | v=2 | caps=file,net
-GOA11Y.ELF | Accessibility | A | dock=true | v=2 | caps=file,window,timer
+GOCALC.ELF | 64-bit Calc | c | dock=true | v=2 | icon=ICONCALC
+NOTE.ELF | Text Editor | n | dock=true | v=2 | opens=text | icon=ICONNOTE
+GOEDIT.ELF | Code Editor | e | dock=true | v=2 | opens=text,binary | selection=primary | icon=ICONEDIT
+GOFILES.ELF | Files | f | dock=true | v=2 | caps=file,window | opens=text/vcard | icon=ICONFILE
+GOTERM.ELF | Terminal | t | dock=true | v=2 | selection=primary | icon=ICONTERM
+WEB.ELF | Web | w | dock=true | v=2 | caps=file,window,net | opens=http,https | icon=ICONWEB
+PULSE.ELF | Pulse | u | dock=true | v=2 | icon=ICONPULS
+GOSH.ELF | Shell | s | dock=false | v=2 | caps=file,process,term | icon=ICONGOSH
+GOHELP.ELF | Help | h | dock=false | v=2 | icon=ICONHELP
+GOWELCOME.ELF | Welcome | ? | dock=false | v=2 | icon=ICONWELC
+GOTOP.ELF | Top | p | dock=true | v=2 | icon=ICONTOP
+GOSET.ELF | Settings | g | dock=false | v=2 | caps=file,window,audio | icon=ICONSET
+GOVIEW.ELF | Image Viewer | v | dock=false | v=2 | opens=image | icon=ICONVIEW
+GOSOUND.ELF | Sound | a | dock=false | v=2 | caps=file,window,audio | opens=audio | icon=ICONSND
+TABWM.BIN | Tabbed Desktop | m | dock=false | v=2 | icon=ICONTABM
+GOSTALGIA.ELF | Gostalgia | o | dock=false | v=2 | argv=shell --root /host/GS | caps=file,window,term,process | icon=ICONSTLG
+GOSTORE.ELF | Store | i | dock=false | v=2 | caps=file,window,net | icon=ICONSTOR
+GOINFER.ELF | LLM Infer | l | dock=false | v=2 | caps=file | icon=ICONINFR
+GOREC.ELF | Recorder | r | dock=false | v=2 | caps=file,audio | icon=ICONREC
+GOSNAP.ELF | Snapshots | b | dock=false | v=2 | caps=file | icon=ICONSNAP
+GOASSIST.ELF | Assistant | y | dock=false | v=2 | caps=file,window | icon=ICONASST
+GOSHEET.ELF | Sheet | x | dock=false | v=2 | caps=file,window | opens=text | icon=ICONSHT
+GOREADER.ELF | Reader | d | dock=false | v=2 | caps=file,window | opens=document | icon=ICONREAD
+GOCLOCK.ELF | Clock | k | dock=false | v=2 | caps=file,window,timer | opens=text/calendar | icon=ICONCLK
+GOMINE.ELF | Mines | j | dock=false | v=2 | caps=file,window,audio | icon=ICONMINE
+GOSOL.ELF | Solitaire | q | dock=false | v=2 | caps=file,window,audio | icon=ICONSOL
+GOEMOJI.ELF | Emoji | : | dock=false | v=2 | caps=file,window | icon=ICONEMOJ
+GOIRC.ELF | IRC | / | dock=false | v=2 | caps=file,window,net | icon=ICONIRC
+GOVAULT.ELF | Vault | $ | dock=false | v=2 | caps=file,window,timer | selection=primary | icon=ICONVLT
+GOMAIL.ELF | Mail | @ | dock=false | v=2 | caps=file,net | icon=ICONMAIL
+GOA11Y.ELF | Accessibility | A | dock=true | v=2 | caps=file,window,timer | icon=ICONA11Y

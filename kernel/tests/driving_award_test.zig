@@ -2277,7 +2277,10 @@ test "driving_award: M91 cursor mask, hotspot, four-edge clipping and restoratio
     for (driving_award.cursor_mask) |row| try std.testing.expectEqual(cursor_w, row.len);
     const hot = driving_award.cursor_hotspot;
     try std.testing.expectEqual(@as(?u32, driving_award.cursor_outline_rgb), driving_award.cursor_pixel(hot.x, hot.y, false));
-    try std.testing.expectEqual(@as(?u32, null), driving_award.cursor_pixel(0, 0, false));
+    // M203 (#3338): the f-artcraft arrow refresh fills the corner — the
+    // transparent pin moved to the far edge of row 0.
+    try std.testing.expectEqual(@as(?u32, driving_award.cursor_outline_rgb), driving_award.cursor_pixel(0, 0, false));
+    try std.testing.expectEqual(@as(?u32, null), driving_award.cursor_pixel(cursor_w - 1, 0, false));
     try std.testing.expectEqual(@as(?u32, 0xffaa00), driving_award.cursor_pixel(2, 3, true));
     try std.testing.expectEqual(@as(?u32, null), driving_award.cursor_pixel(cursor_w, cursor_h, false));
     try std.testing.expect(driving_award.cursor_rect(0, 0, 0, 1) == null);

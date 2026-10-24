@@ -48,6 +48,12 @@ type AppEntry struct {
 	// without it the seat refuses both directions. Unlike caps= this gate
 	// is real — the seat enforces it on every request and delivery.
 	Selection string
+	// IconArt is `icon=` — the staged-art 8.3 share base of the app's
+	// raster icon under /host/ART/ (image/art/icons/, f-artcraft #1248;
+	// #3357 wires it). The rune in field 3 stays the v1 reading and the
+	// degrade: a row without icon=, or a raster the share does not carry,
+	// paints exactly as before.
+	IconArt string
 }
 
 const (
@@ -56,7 +62,7 @@ const (
 	// the file's real row count silently drops the tail exactly like a
 	// buffer truncation.
 	appsMax      = 32
-	appsMaxBytes = 4096
+	appsMaxBytes = 8192
 	appsPath     = "/host/APPS.TXT"
 
 	// appsMaxArgv is the kernel's max_exec_args (vi.ExecMaxArgs, ADR 0007
@@ -134,6 +140,8 @@ func parseAppLine(line string) (AppEntry, bool) {
 			e.Opens = splitComma(val)
 		case "selection":
 			e.Selection = val
+		case "icon":
+			e.IconArt = val
 		default:
 			// A key this reader does not know is a NEWER row, not a bad
 			// one: the positional fields still say what to launch, and the
@@ -256,6 +264,8 @@ type DecodeSummary struct {
 	Opens  int
 	// M124e: how many rows opted into the seat's primary selection.
 	Sel int
+	// #3357: how many rows named a staged-art icon.
+	Icons int
 }
 
 // SummarizeApps is the pure report over a decoded catalog. Pure so the host
@@ -278,8 +288,32 @@ func SummarizeApps(catalog []AppEntry) DecodeSummary {
 		if e.Selection != "" {
 			s.Sel++
 		}
+		if e.IconArt != "" {
+			s.Icons++
+		}
 	}
 	return s
+}
+
+// iconByBin is the lazily decoded bin -> icon= map the rail reads: one
+// manifest decode for the seat session (the catalog is static per boot) —
+// art.Load owns the raster half, so a bin with no row, or a raster the
+// share does not carry, just paints nothing. Nil until the first caller;
+// host tests stub readAppsFile and nil the map between runs.
+var iconByBin map[string]string
+
+func iconForBin(bin string) string {
+	if iconByBin == nil {
+		iconByBin = map[string]string{}
+		if body, r := readAppsFile(appsPath, appsMaxBytes); r >= 0 && body != nil {
+			for _, e := range parseAppsTXT(string(body)) {
+				if e.IconArt != "" {
+					iconByBin[e.Bin] = e.IconArt
+				}
+			}
+		}
+	}
+	return iconByBin[bin]
 }
 
 func filterApps(catalog []AppEntry, q string) []int {

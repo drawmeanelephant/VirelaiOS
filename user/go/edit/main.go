@@ -157,6 +157,7 @@ import (
 	"unicode/utf8"
 
 	"virelai/appkit"
+	"virelai/art"
 	"virelai/draw"
 	"virelai/find"
 	"virelai/heap"
@@ -183,13 +184,14 @@ const (
 	markerPresent = "goedit: present"
 	// M123b (#2576): the shared empty-state plate on an empty buffer —
 	// printed once per transition into empty, from the paint that drew it.
-	markerEmpty   = "goedit: empty "
-	markerDirty   = "goedit: dirty"
-	markerSaved   = "goedit: saved "
-	markerSaveErr = "goedit: save error "
-	markerClose   = "goedit: close"
-	markerOK      = "goedit OK"
-	markerOpenErr = "goedit: error open "
+	markerEmpty    = "goedit: empty "
+	markerEmptyArt = "goedit: empty art qoi "
+	markerDirty    = "goedit: dirty"
+	markerSaved    = "goedit: saved "
+	markerSaveErr  = "goedit: save error "
+	markerClose    = "goedit: close"
+	markerOK       = "goedit OK"
+	markerOpenErr  = "goedit: error open "
 
 	// M20 U3 rehomed (#1485): the find and goto-line bar results, in the Zig
 	// app's exact shape (`find '<pat>' hit=N/M`, `goto line=N offset=O`,
@@ -438,7 +440,7 @@ const (
 	modeDiags
 	modePicker
 	modeDialog
-	modeHints    // M121c (#2566): the '?' chord-hint overlay owns the keyboard
+	modeHints     // M121c (#2566): the '?' chord-hint overlay owns the keyboard
 	modeQuickOpen // M192g (#3252): the ctrl+p palette owns the keyboard
 )
 
@@ -2401,10 +2403,17 @@ func (e *editor) draw() {
 			Icon:     "|",
 			Headline: "Empty buffer",
 			Hints:    []string{"type to insert", "^O open · ^S save · ^F find · ^G goto"},
+			// M203 (#3338): the delivered blank-document spot paints on a
+			// full canvas; the Icon row remains the degrade.
+			Spot: art.Spot(art.SpotDocument),
 		}).Draw(e.ta.Canvas())
 		if !e.emptyShown {
 			e.emptyShown = true
 			vi.ConsoleLine(markerEmpty + e.path)
+			if sp := art.Load(art.SpotDocument); sp != nil {
+				vi.ConsoleLine(markerEmptyArt +
+					vi.Itoa64(int64(sp.W)) + "x" + vi.Itoa64(int64(sp.H)))
+			}
 		}
 	}
 	if len(e.buf) != 0 {

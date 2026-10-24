@@ -164,7 +164,8 @@ func TestLauncherStripIsDockedToTheLeftEdge(t *testing.T) {
 }
 
 // TestLauncherHeaderCarriesTheEmblemRaster stages the repo's mascot fixture
-// at the emblem's share path through the same read seam APPS.TXT uses, then
+// at the emblem's share path (the f-artcraft #1254 about emblem's staging
+// slot) through the same read seam APPS.TXT uses, then
 // checks the strip's emblem slot pixel-for-pixel: opaque source pixels
 // composite exactly, transparent corners leave the Surface showing — the
 // real raster, not a rect-drawn stand-in (AC-B1).
@@ -180,7 +181,7 @@ func TestLauncherHeaderCarriesTheEmblemRaster(t *testing.T) {
 	}
 	old := readAppsFile
 	readAppsFile = func(path string, max int) ([]byte, int64) {
-		if path == "/host/SEXIBURGER.QOI" {
+		if path == "/host/ART/BRD_EMB.QOI" {
 			return body, int64(len(body))
 		}
 		return []byte("GOCALC.ELF | Calculator | c\n"), 0

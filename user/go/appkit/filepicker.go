@@ -5,6 +5,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"virelai/art"
 	"virelai/draw"
 	"virelai/icons"
 	"virelai/mime"
@@ -590,7 +591,7 @@ func (p *FilePicker) Draw(c widgets.Canvas) {
 			label.X = rr.X + 4
 			label.W = rr.W - 4
 		}
-		p.icon(c, icon, widgets.Rect{X: rr.X + 2, Y: rr.Y, W: 16, H: rr.H})
+		p.rowIcon(c, row, icon, widgets.Rect{X: rr.X + 2, Y: rr.Y, W: 16, H: rr.H})
 		fg := tok.Text
 		detail := pickDetail(row)
 		if row.Kind == PickTrash || row.Kind == PickRecent {
@@ -655,6 +656,72 @@ func (p *FilePicker) icon(c widgets.Canvas, name string, r widgets.Rect) {
 	if cp, ok := icons.Codepoint(name); ok {
 		draw.Glyph(c, p.IconFace, r, r.X, r.Y+r.H-2, icons.NominalPx, cp, draw.Opaque(theme.Current.Accent))
 	}
+}
+
+// rowIcon is icon()'s M203 (#3338) front door: on a real pixel canvas the
+// delivered f-artcraft #1257 filetype raster wins where the row maps to
+// one; any other canvas kind or an absent asset falls through to the
+// Chrome glyph — same cell, same degrade rule as the emblem.
+func (p *FilePicker) rowIcon(c widgets.Canvas, row PickerRow, glyph string, r widgets.Rect) {
+	if name := pickArtIcon(row); name != "" {
+		if bc, ok := c.(*draw.BufferCanvas); ok {
+			if src := art.Load(name); src != nil {
+				s := min(r.W, r.H)
+				draw.BlitScaled(bc, src, widgets.Rect{
+					X: r.X + (r.W-s)/2, Y: r.Y + (r.H-s)/2, W: s, H: s,
+				})
+				return
+			}
+		}
+	}
+	p.icon(c, glyph, r)
+}
+
+// pickArtIcon maps a row onto its staged filetype base name (the 8.3s in
+// image/art/ART.TXT). Nav and verb rows name nothing — an "up" chevron and
+// the trash-restore glyph are actions, not file types, and a type icon on
+// them would lie.
+func pickArtIcon(row PickerRow) string {
+	switch row.Kind {
+	case PickDir:
+		return art.FiletypeFolder
+	case PickUp, PickTrash, PickRecent:
+		return ""
+	}
+	// The subtype cards the mime table only spells by extension
+	// (mime.Spelling) — the row carries the family, the name carries
+	// the card.
+	switch strings.ToLower(trailingExt(row.Label)) {
+	case "vcf":
+		return art.FiletypeContact
+	case "ics":
+		return art.FiletypeCalendar
+	}
+	switch row.Mime {
+	case mime.Text:
+		return art.FiletypeText
+	case mime.Image:
+		return art.FiletypeImage
+	case mime.Audio:
+		return art.FiletypeAudio
+	case mime.Archive:
+		return art.FiletypeArchive
+	case mime.Binary:
+		return art.FiletypeBinary
+	case mime.Document:
+		return art.FiletypeDocument
+	}
+	return ""
+}
+
+// trailingExt is the label's suffix past its last dot — the same rule
+// mime.extOf keeps, lifted because Label is display text the row owns.
+func trailingExt(s string) string {
+	i := strings.LastIndexByte(s, '.')
+	if i < 0 || i == len(s)-1 {
+		return ""
+	}
+	return s[i+1:]
 }
 
 // pickIcon maps a row onto its glyph: the class the mime table names where a

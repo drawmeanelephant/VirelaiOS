@@ -19,6 +19,7 @@
 package main
 
 import (
+	"virelai/art"
 	"virelai/draw"
 	"virelai/theme"
 	"virelai/vaultlib"
@@ -33,6 +34,7 @@ const (
 	MarkerLockRefused  = "gotabwm: lock refused "
 	MarkerUnlockFailed = "gotabwm: unlock failed"
 	MarkerUnlocked     = "gotabwm: unlocked"
+	MarkerLockMascot   = "gotabwm: lock mascot qoi "
 )
 
 // Lock state. active while the curtain is up; sink is the seat-owned window
@@ -46,6 +48,10 @@ var (
 	lockPrior  uint32
 	lockFile   []byte
 	lockPass   []byte
+
+	// lockMascotShown latches the one-time decode marker for the locked
+	// pose (the emblem pattern: report what the share carried, once).
+	lockMascotShown bool
 )
 
 const lockPassMax = 64 // govault's passphrase field bound, mirrored
@@ -177,8 +183,11 @@ const (
 	lockH = 96
 )
 
-// paintLockCurtain paints the full-opacity veil and the one passphrase
-// field — a mask of bullets, never the bytes, like govault's fields.
+// paintLockCurtain paints the full-opacity veil, the f-artcraft #1250
+// locked pose standing on it, and the one passphrase field — a mask of
+// bullets, never the bytes, like govault's fields. A share without
+// MSC_LOCK keeps the veil text-only — the mascot is dressing, not
+// contract.
 func paintLockCurtain(scan []byte, width, height int) int {
 	if width <= 0 || height <= 0 || len(scan) < 4 {
 		return 0
@@ -200,6 +209,15 @@ func paintLockCurtain(scan []byte, width, height int) int {
 		return written
 	}
 	x, y := (width-w)/2, (height-h)/2
+	// M203 (#3338): the locked pose stands guard above the plate.
+	if m := art.Load(art.MascotLocked); m != nil && y >= 88 {
+		draw.BlitScaled(c, m, widgets.Rect{X: (width - 64) / 2, Y: y - 80, W: 64, H: 64})
+		if !lockMascotShown {
+			lockMascotShown = true
+			vi.ConsoleLine(MarkerLockMascot +
+				vi.Itoa64(int64(m.W)) + "x" + vi.Itoa64(int64(m.H)))
+		}
+	}
 	plate := widgets.Rect{X: x, Y: y, W: w, H: h}
 	written += seatPlate(c, plate, radiusWindow, tok.Accent, tok.Surface)
 	clip := plate.Inset(seatRuleW)

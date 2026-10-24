@@ -26,6 +26,7 @@ package main
 import (
 	"errors"
 
+	"virelai/art"
 	"virelai/draw"
 	"virelai/find"
 	"virelai/mime"
@@ -42,6 +43,9 @@ const (
 	MarkerLaunchDismiss = "gotabwm: launcher dismiss"
 	MarkerLaunchMissing = "gotabwm: launcher missing "
 	MarkerLaunchEmblem  = "gotabwm: launcher emblem "
+	// MarkerLaunchIcons latches the first paint pass that put a staged
+	// raster icon on a result row — the icon= seam's painted half.
+	MarkerLaunchIcons   = "gotabwm: launcher icons n="
 	// M123b (#2576): the zero-match empty state — printed once per filter
 	// change from the frame that painted the shared plate, not per paint.
 	MarkerLaunchEmpty = "gotabwm: launcher empty"
@@ -82,14 +86,19 @@ const (
 
 	// launchPrompt is the AC-B1 prompt text — byte-identical by card.
 	launchPrompt = "Where do you want to go today?"
+	// launchIconPx is the result-row icon read — the set's 16 px floor,
+	// centred in the ~22 px row.
+	launchIconPx = 16
 
 	filterMax = 24
 
-	// The emblem's staging path and decode budget: /host/SEXIBURGER.QOI is
-	// the repo's existing mascot_64x64.qoi fixture, copied to the share by
+	// The emblem's staging path and decode budget: /host/ART/BRD_EMB.QOI is
+	// the f-artcraft #1254 about emblem (mascot + wordmark roundel, 256px
+	// master) — it replaced the borrowed mascot_64x64 fixture in the strip
+	// header, exactly as the request named. Copied to the share by
 	// gate-run/session.sh exactly like APPS.TXT and WALLPAPER.QOI.
-	emblemPath     = "/host/SEXIBURGER.QOI"
-	emblemMaxBytes = 65536
+	emblemPath     = "/host/ART/BRD_EMB.QOI"
+	emblemMaxBytes = 1 << 20
 	emblemMaxDim   = 256
 	emblemMaxPix   = 256 * 256
 
@@ -132,10 +141,14 @@ type launcherState struct {
 	// always last. M191b gives the launcher's own face the same row: a
 	// query with no name hit still has one honest answer, and it is the
 	// hand-off, not an inline content search.
-	search paletteEntry
-	width      int
-	height     int
-	launching  bool
+	search    paletteEntry
+	width     int
+	height    int
+	launching bool
+	// #3357: the icon= rows' paint receipt — armed at open, latched the
+	// first pass a raster actually blits (the decode receipt already
+	// reports declared rows; this one says pixels made the strip).
+	iconsShown bool
 
 	// M191b: the filename hits. filtered rows encoded <= launchFileIdx0
 	// index into hits; hitsVisit is the entries the last walk counted
@@ -375,6 +388,7 @@ func loadLauncherCatalog() {
 	for i, e := range launch.catalog {
 		launch.reasons[i] = appUnavailable(e)
 	}
+	launch.iconsShown = false
 	launch.refresh()
 	// The manifest's own report, before the launcher's: a reader that
 	// silently ignored every v2 field would still print `launcher open n=14`,
@@ -386,7 +400,8 @@ func loadLauncherCatalog() {
 		" schema=" + vi.Itoa64(int64(appsSchemaVersion)) +
 		" argv=" + vi.Itoa64(int64(s.Argv)) +
 		" caps=" + vi.Itoa64(int64(s.Caps)) +
-		" opens=" + vi.Itoa64(int64(s.Opens)))
+		" opens=" + vi.Itoa64(int64(s.Opens)) +
+		" icons=" + vi.Itoa64(int64(s.Icons)))
 	vi.ConsoleLine(MarkerLaunchOpen + vi.Itoa64(int64(len(launch.catalog))))
 	vi.ConsoleLine(MarkerLaunchFilter + launch.filter + " n=" + vi.Itoa64(int64(len(launch.filtered))))
 	// The emblem is warm by now (the chrome button decoded it on its first
@@ -1006,6 +1021,7 @@ func paintLauncher(scan []byte, width, height int) int {
 	maxH := c.H
 	tok := theme.Current
 	launch.painted, launch.width, launch.height = true, width, maxH
+	launchIcons := 0
 	// The strip is DOCKED chrome — flat plate, no shadow — with the seat's
 	// accent rule on the edge facing the desktop.
 	written := seatFill(c, widgets.Rect{X: launchX, Y: launchY, W: launchW, H: maxH}, tok.Surface)
@@ -1069,6 +1085,9 @@ func paintLauncher(scan []byte, width, height int) int {
 			Headline: headline,
 			Hints:    hints,
 			Face:     seatFaceUI(),
+			// M203 (#3338): the delivered no-results spot on a full
+			// canvas; the '?' row stays the degrade.
+			Spot: art.Spot(art.SpotNoResults),
 		}).Draw(c)
 		written += seatArea(c, widgets.Rect{X: launchX + tok.PadMD, Y: launchY + launchHdr,
 			W: launchW - 2*tok.PadMD - launchRule, H: maxH - launchHdr - tok.PadMD})
@@ -1117,6 +1136,20 @@ func paintLauncher(scan []byte, width, height int) int {
 		row := widgets.Rect{X: x, Y: y, W: w, H: rh}
 		paintLauncherRow(c, row, i == launch.sel)
 		written += seatArea(c, row)
+		// #3357: the row's staged icon (apps.txt icon=) at the left edge —
+		// the family #1248 shipped for exactly this read. The raster is an
+		// upgrade on the same row: no decode, no icon slot, and the text
+		// keeps its 6px inset exactly as the pre-icon rows laid it out.
+		tx := x + 6
+		if name := launch.catalog[ci].IconArt; name != "" {
+			if ic := art.Load(name); ic != nil {
+				ir := widgets.Rect{X: x + 4, Y: y + (rh - launchIconPx) / 2,
+					W: launchIconPx, H: launchIconPx}
+				draw.BlitScaled(c, ic, ir)
+				tx = ir.Right() + 4
+				launchIcons++
+			}
+		}
 		ink := tok.Ink
 		reason := ""
 		if ci < len(launch.reasons) {
@@ -1126,18 +1159,22 @@ func paintLauncher(scan []byte, width, height int) int {
 			// A dimmed row names its own refusal: label and reason on
 			// two lines inside the one row, never a launchable facade.
 			ink = tok.InkMuted
-			seatText(c, row, x+6, y+3, seatTextPx, launchText(launch.catalog[ci].Label, 28), ink)
-			seatText(c, row, x+6, y+13, seatSmallPx, launchText(reason, 28), tok.Muted)
+			seatText(c, row, tx, y+3, seatTextPx, launchText(launch.catalog[ci].Label, 28), ink)
+			seatText(c, row, tx, y+13, seatSmallPx, launchText(reason, 28), tok.Muted)
 			continue
 		}
 		if i == launch.sel && launch.verbArmed() {
 			// The armed verb takes the row's second line — the affordance
 			// made visible, exactly like the file rows'.
-			seatText(c, row, x+6, y+3, seatTextPx, launchText(launch.catalog[ci].Label, 28), ink)
-			seatText(c, row, x+6, y+13, seatSmallPx, launchText(launch.verbs[launch.verb].name, 28), tok.Muted)
+			seatText(c, row, tx, y+3, seatTextPx, launchText(launch.catalog[ci].Label, 28), ink)
+			seatText(c, row, tx, y+13, seatSmallPx, launchText(launch.verbs[launch.verb].name, 28), tok.Muted)
 			continue
 		}
-		seatText(c, row, x+6, y+6, seatTextPx, launchText(launch.catalog[ci].Label, 29), ink)
+		seatText(c, row, tx, y+6, seatTextPx, launchText(launch.catalog[ci].Label, 29), ink)
+	}
+	if launchIcons > 0 && !launch.iconsShown {
+		launch.iconsShown = true
+		vi.ConsoleLine(MarkerLaunchIcons + vi.Itoa64(int64(launchIcons)))
 	}
 	return written
 }

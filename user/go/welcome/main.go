@@ -13,6 +13,7 @@ package main
 
 import (
 	"virelai/appkit"
+	"virelai/art"
 	"virelai/draw"
 	"virelai/tabapp"
 	"virelai/theme"
@@ -38,6 +39,7 @@ const (
 	markerClose      = "gowelcome: close"
 	markerOK         = "gowelcome OK"
 	markerOpenErr    = "gowelcome: error open "
+	markerMascot     = "gowelcome: mascot qoi "
 	// markerState prefixes the M195b envelope report: "saved step=" /
 	// "restored step=" / "refused <why>" — same vocabulary NOTE and
 	// GOCALC print for theirs.
@@ -68,6 +70,7 @@ type app struct {
 	head    widgets.Text
 	buttons []widgets.Button
 	foot    widgets.Text
+	mascot  widgets.Rect
 }
 
 func loadGuestTheme() {
@@ -119,6 +122,12 @@ func main() {
 	loop.ShouldQuit = func() (int, bool) { return 0, a.m.quit }
 	loop.OnInitialPresent = func() {
 		vi.ConsoleLine(markerPresent)
+		// M203 (#3338): the f-artcraft #1250 wave pose, decoded by the
+		// first paint — its marker reports what the share carried.
+		if m := art.Load(art.MascotWave); m != nil {
+			vi.ConsoleLine(markerMascot +
+				vi.Itoa64(int64(m.W)) + "x" + vi.Itoa64(int64(m.H)))
+		}
 		// The envelope applies AFTER the first paint: a reopened tour
 		// shows its fresh frame once, then the restored step repaints
 		// and the marker reports what the blob decided.
@@ -337,6 +346,10 @@ func (a *app) layout() {
 		Fg:    tok.Accent, Bg: tok.Bg,
 	}
 
+	// The wave pose (f-artcraft #1250) greets from the header's right
+	// edge — the title run never reaches that corner.
+	a.mascot = sc(widgets.Rect{X: natW - pad - 48, Y: 4, W: 48, H: 48})
+
 	a.head = widgets.Text{
 		R:     sc(widgets.Rect{X: pad, Y: 288, W: full, H: 16}),
 		Label: "Get started — one click opens it:",
@@ -380,6 +393,14 @@ func (a *app) paintCanvas(cv widgets.Canvas) {
 	cv.FillRect(widgets.Rect{W: int(a.ta.W), H: int(a.ta.H)}, draw.Opaque(tabapp.FillRGB()))
 	a.title.Draw(cv)
 	a.sub.Draw(cv)
+	// M203 (#3338): the delivered mascot wave — an upgrade on the header,
+	// never a dependency: a share without MSC_WAVE keeps the text-only
+	// layout (Load's nil is the degrade signal).
+	if bc, ok := cv.(*draw.BufferCanvas); ok {
+		if m := art.Load(art.MascotWave); m != nil {
+			draw.BlitScaled(bc, m, a.mascot)
+		}
+	}
 	for i := range a.chips {
 		a.chips[i].Draw(cv)
 		a.descs[i].Draw(cv)

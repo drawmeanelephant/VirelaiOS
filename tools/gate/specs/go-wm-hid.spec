@@ -525,12 +525,19 @@ vgate_assert 03 serial-contains 'exec: loaded GOTABWM.ELF'
 vgate_assert 03 serial-contains 'gotabwm: registered'
 vgate_assert 03 serial-contains 'gotabwm: tokens theme=dark bg=0x182026 surface=0x222d35 border=0x334155 accent=0x3b82f6'
 vgate_assert 03 serial-contains 'gotabwm: present'
-vgate_assert 03 serial-contains 'gotabwm: launcher emblem qoi 64x64'
+vgate_assert 03 serial-contains 'gotabwm: launcher emblem qoi 256x256'
 vgate_assert 03 serial-contains 'gotabwm: launcher open n='
+# #3357: the manifest's icon= tail decoded (all 31 rows name a staged
+# raster) and at least one row's raster actually blitted — the decode
+# half and the paint half of the icon= seam.
+vgate_assert 03 serial-contains ' icons=31'
+vgate_assert 03 serial-contains 'gotabwm: launcher icons n='
 vgate_assert 03 serial-contains 'gotabwm: launcher filter q=calc n='
 vgate_assert 03 serial-contains 'gotabwm: launcher exec GOCALC.ELF'
 vgate_assert 03 serial-contains 'gotabwm: launcher dismiss'
 vgate_assert 03 serial-contains 'gocalc: declare accepted'
+# #3357: the exec'd app became a rail cell and its staged icon painted.
+vgate_assert 03 serial-contains 'gotabwm: rail icons n='
 vgate_assert 03 serial-contains 'gotabwm: close'
 vgate_assert 03 serial-contains 'gotabwm OK'
 vgate_assert 03 serial-contains 'wm: unregistered, shim resumed'

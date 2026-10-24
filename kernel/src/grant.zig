@@ -516,7 +516,7 @@ pub fn lookup(name: []const u8, scratch: *Row) Lookup {
 pub const manifest_filename = "APPS.TXT";
 /// Every reader's manifest budget (sexiburger.manifest_buf_max): a file
 /// at or over it is truncated at the last whole line.
-pub const manifest_max: usize = 4096;
+pub const manifest_max: usize = 8192;
 
 var manifest_buf: [manifest_max]u8 = undefined;
 

@@ -265,6 +265,66 @@ func TestSummarizeAppsCountsRowsAndTheHighestVersion(t *testing.T) {
 	if s.Sel != 3 {
 		t.Fatalf("selection=primary rows = %d want 3 (GOEDIT + GOTERM + GOVAULT)", s.Sel)
 	}
+	// #3357: every shipped row names its f-artcraft #1248 icon — a row
+	// that drops icon= is a deliberate edit to this test, like argv.
+	if s.Icons != 31 {
+		t.Fatalf("icon= rows = %d want 31 (the full #1248 set)", s.Icons)
+	}
+}
+
+// #3357: the icon= key decodes to IconArt, and a v2 row without it keeps
+// the field empty — the rune in field 3 stays the degrade either way.
+func TestParseAppsTXTDecodesIconKey(t *testing.T) {
+	got := parseAppsTXT("GOCALC.ELF | 64-bit Calc | c | dock=true | v=2 | icon=ICONCALC\n")
+	if len(got) != 1 {
+		t.Fatalf("n=%d want 1", len(got))
+	}
+	if got[0].IconArt != "ICONCALC" || got[0].Icon != 'c' {
+		t.Fatalf("icon= / rune mismatch: %+v", got[0])
+	}
+	bare := parseAppsTXT("GOHELP.ELF | Help | h | dock=false | v=2\n")
+	if len(bare) != 1 || bare[0].IconArt != "" {
+		t.Fatalf("a row without icon= must keep IconArt empty: %+v", bare)
+	}
+}
+
+// The manifest's icon= values must be real staged-art share names: every
+// row's icon is a base name in image/art/ART.TXT's icons/ family. Pinning
+// the set against the manifest (not a copy of it) is what keeps a renamed
+// asset or a typo'd share name from reaching the share and silently
+// degrading every row to runes.
+func TestManifestIconsAreStagedArtNames(t *testing.T) {
+	src, err := os.ReadFile("../../../image/art/ART.TXT")
+	if err != nil {
+		t.Fatalf("read ART.TXT: %v", err)
+	}
+	staged := map[string]bool{}
+	for _, ln := range strings.Split(string(src), "\n") {
+		f := strings.Fields(ln)
+		if len(f) >= 2 && strings.HasPrefix(f[1], "icons/") {
+			staged[f[0]] = true
+		}
+	}
+	if len(staged) == 0 {
+		t.Fatal("ART.TXT carries no icons/ rows")
+	}
+	txt, err := os.ReadFile("../../../image/apps.txt")
+	if err != nil {
+		t.Fatalf("read apps.txt: %v", err)
+	}
+	seen := 0
+	for _, e := range parseAppsTXT(string(txt)) {
+		if e.IconArt == "" {
+			continue
+		}
+		seen++
+		if !staged[e.IconArt] {
+			t.Fatalf("row %s names icon=%s — not a staged icons/ share name in ART.TXT", e.Bin, e.IconArt)
+		}
+	}
+	if seen == 0 {
+		t.Fatal("no row declares icon=")
+	}
 }
 
 // The `opens=` vocabulary is M81b's mime table, not a second list: a name the

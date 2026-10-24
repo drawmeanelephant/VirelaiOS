@@ -238,7 +238,7 @@ the comment header at the top of `image/apps.txt`):
   launch that can only print usage to the serial console dies silently —
   `TestManifestHonestyRowsOpenAWindowOrAreSeatBound` fails the row. A
   pure-CLI tool does not get a row; it is driven from the shell's `exec`.
-- Keep the manifest small: every reader buffers 4096 bytes and a file at or
+- Keep the manifest small: every reader buffers 8192 bytes and a file at or
   over that is truncated at the last whole line, silently dropping tail rows
   from a seat's menu.
 

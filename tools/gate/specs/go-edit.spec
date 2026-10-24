@@ -750,6 +750,8 @@ vgate_run 10 -- \
 vgate_assert 10 serial-contains 'exec: loaded GOEDIT.ELF'
 vgate_assert 10 serial-contains 'goedit: read /host/EDIT/FRESH.TXT n=0 rc='
 vgate_assert 10 serial-contains 'goedit: empty /host/EDIT/FRESH.TXT'
+# M203 (#3338): the delivered blank-document spot decoded off the share.
+vgate_assert 10 serial-contains 'goedit: empty art qoi 160x120'
 vgate_assert 10 serial-contains 'goedit: present'
 vgate_assert 10 serial-contains 'rx-goedit-empty-ok'
 vgate_assert 10 serial-absent 'goedit: saved '
