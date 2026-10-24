@@ -96,8 +96,16 @@ public enum DataDisk {
     /// flush barrier to the guest.
     public static func attachBlockDevice(url: URL) throws -> String {
         let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/usr/sbin/diskutil")
-        p.arguments = ["image", "attach", "--noMount", url.path]
+        // #3128 diagnostic: VIRELAI_ATTACH_KERNEL=1 switches to the
+        // in-kernel hdiutil backend (IODiskImageBlockStorageDeviceInKernel)
+        // so the OutKernel daemon path can be A/B'd for the tag tear.
+        if ProcessInfo.processInfo.environment["VIRELAI_ATTACH_KERNEL"] != nil {
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/hdiutil")
+            p.arguments = ["attach", "-nomount", "-kernel", url.path]
+        } else {
+            p.executableURL = URL(fileURLWithPath: "/usr/sbin/diskutil")
+            p.arguments = ["image", "attach", "--noMount", url.path]
+        }
         let out = Pipe(), err = Pipe()
         p.standardOutput = out
         p.standardError = err
@@ -108,7 +116,9 @@ public enum DataDisk {
             let e = String(decoding: err.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
             throw AttachError.attachFailed(e.trimmingCharacters(in: .whitespacesAndNewlines))
         }
-        guard let dev = stdout.split(separator: "\n").map(String.init)
+        guard let dev = stdout.split(separator: "\n")
+                .flatMap({ $0.split(separator: "\t") })
+                .map({ $0.trimmingCharacters(in: .whitespaces) })
                 .first(where: { $0.hasPrefix("/dev/disk") }) else {
             throw AttachError.noDeviceNode(stdout.trimmingCharacters(in: .whitespacesAndNewlines))
         }
