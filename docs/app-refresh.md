@@ -69,7 +69,7 @@ at all, and `--stale` sorts those rows first.
 | Store | GOSTORE.ELF |  #3188 | 2026-10-23 | store pin — signed-head rollback + ReleaseDepends |
 | LLM Infer | GOINFER.ELF |  #2784 | 2026-10-20 | engine becomes user/go/infer |
 | Recorder | GOREC.ELF |  #3178 | 2026-10-22 | extract user/go/pcm (with GOSOUND) |
-| Snapshots | GOSNAP.ELF |  #2561 | 2026-10-19 | windowed GOSNAP + PWR menu Snapshot row |
+| Snapshots | GOSNAP.ELF |  #3308 | 2026-10-24 | appver 1 envelope — selection + field round-trip on the windowed face |
 | Assistant | GOASSIST.ELF |  #3145 | 2026-10-22 | romaji→kana composition in a text field |
 | Sheet | GOSHEET.ELF |  #2915 | 2026-10-21 | v2 — fill series, 32-step undo, column formats, blob v2 |
 | Reader | GOREADER.ELF |  #3244 | 2026-10-23 | shared appkit find overlay — GOREADER migrates |

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"testing"
 
+	"virelai/tabapp"
 	"virelai/vi"
 )
 
@@ -311,5 +312,121 @@ func TestViewPollChangeDisarms(t *testing.T) {
 	}
 	if len(f.deleted) != 0 {
 		t.Fatal("a verb ran")
+	}
+}
+
+// --- M195c (#3308): the appver-1 state envelope -------------------------
+
+// The envelope round-trips the face's durable state — the in-progress
+// field text and the selected row's NAME (never its index, so a
+// re-ordered share cannot mispoint the restore). The arm never rides:
+// a confirm gesture is re-armed by the person, not restored.
+func TestSnapEnvelopeRoundTrip(t *testing.T) {
+	f := &fakeEnv{items: []vi.DirItem{
+		dirItem("FIRST.vzsave", 32),
+		dirItem("SECOND.vzsave", 64),
+	}}
+	f.install(t)
+	v := newTestView()
+	v.refresh()
+	v.sel, v.list.Sel = 1, 1
+	v.field.SetValue("draft-name")
+	st, ok := decodeSnapState(v.encode())
+	if !ok || st.field != "draft-name" || st.sel != "SECOND" {
+		t.Fatalf("round-trip = %+v ok=%v", st, ok)
+	}
+	// An armed confirm does not enter the blob.
+	v.armed, v.armedName = "rm", "SECOND"
+	st, ok = decodeSnapState(v.encode())
+	if !ok || st.sel != "SECOND" {
+		t.Fatalf("armed round-trip = %+v ok=%v", st, ok)
+	}
+	// Fresh view: both pieces empty, still well-formed.
+	v2 := newTestView()
+	st, ok = decodeSnapState(v2.encode())
+	if !ok || st.field != "" || st.sel != "" {
+		t.Fatalf("fresh round-trip = %+v ok=%v", st, ok)
+	}
+}
+
+// Decode is total: a bad length, foreign fmtVer, nonzero flags,
+// truncated or trailing bytes, and non-printable text all refuse the
+// whole blob.
+func TestSnapEnvelopeRefusals(t *testing.T) {
+	good := []byte{stateFmtVer, 0, 3, 'w', 'i', 'n', 4, 'B', 'A', 'S', 'E'}
+	if _, ok := decodeSnapState(good); !ok {
+		t.Fatalf("well-formed blob refused: %x", good)
+	}
+	for i, b := range [][]byte{
+		{},                                    // empty
+		{stateFmtVer, 0, 0},                   // short: no sel section
+		{2, 0, 0, 0},                          // foreign fmtver
+		{stateFmtVer, 1, 0, 0},                // nonzero flags
+		{stateFmtVer, 0, 3, 'w', 'i'},         // truncated field
+		{stateFmtVer, 0, 3, 'w', 'i', 'n'},    // missing sel length
+		{stateFmtVer, 0, 0, 4, 'B', 'A', 'S'}, // truncated sel
+		{stateFmtVer, 0, 0, 0, 0},             // trailing byte
+		{stateFmtVer, 0, 1, 0x1b, 0},          // non-printable field
+		{stateFmtVer, 0, 0, 1, 0x7f},          // non-printable sel
+		{stateFmtVer, 0, 1, 'x', 1, 'y', 9},   // trailing garbage
+	} {
+		if _, ok := decodeSnapState(b); ok {
+			t.Fatalf("blob %d decoded: %x", i, b)
+		}
+	}
+}
+
+// The apply side: a restored blob re-selects its row by name wherever
+// the fresh listing sorted it and re-fills the field; a stored name the
+// share has since dropped degrades to `gone`, and every refusal names
+// itself. No blob waiting is a silent fresh start.
+func TestApplyRestored(t *testing.T) {
+	f := &fakeEnv{items: []vi.DirItem{
+		dirItem("FIRST.vzsave", 32),
+		dirItem("SECOND.vzsave", 64),
+	}}
+	f.install(t)
+	// No stored envelope: nothing to report, nothing applied.
+	v := newTestView()
+	if line := v.applyRestored(snapState{}, false); line != "" {
+		t.Fatalf("no-restore marker = %q", line)
+	}
+	// SECOND sorted second; the blob names it, not index 1.
+	v = newTestView()
+	v.ta = &tabapp.TabApp{Restored: true, RestoredVersion: stateAppVer}
+	v.refresh()
+	line := v.applyRestored(snapState{field: "draft", sel: "SECOND"}, true)
+	if v.sel != 1 || v.field.Value() != "draft" {
+		t.Fatalf("applied = sel %d field %q", v.sel, v.field.Value())
+	}
+	if line != "gosnap: state restored sel=SECOND field=draft" {
+		t.Fatalf("restored marker = %q", line)
+	}
+	if v.armed != "" {
+		t.Fatalf("a restore left an arm live: %q", v.armed)
+	}
+	// A stored name the share dropped reports gone, no selection.
+	v2 := newTestView()
+	v2.ta = &tabapp.TabApp{Restored: true, RestoredVersion: stateAppVer}
+	v2.refresh()
+	line = v2.applyRestored(snapState{sel: "DELETED"}, true)
+	if v2.sel != -1 {
+		t.Fatalf("gone sel applied = %d", v2.sel)
+	}
+	if line != "gosnap: state restored sel=gone field=-" {
+		t.Fatalf("gone marker = %q", line)
+	}
+	// The refusals, each named: foreign appver, torn blob.
+	v3 := newTestView()
+	v3.ta = &tabapp.TabApp{Restored: true, RestoredVersion: 9}
+	if line := v3.applyRestored(snapState{}, true); line != "gosnap: state refused ver=9" {
+		t.Fatalf("ver refusal = %q", line)
+	}
+	v3.ta.RestoredVersion = stateAppVer
+	if line := v3.applyRestored(snapState{}, false); line != "gosnap: state refused bad" {
+		t.Fatalf("bad refusal = %q", line)
+	}
+	if v3.sel != -1 || v3.field.Value() != "" {
+		t.Fatalf("a refused blob still applied: sel %d field %q", v3.sel, v3.field.Value())
 	}
 }

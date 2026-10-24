@@ -478,13 +478,186 @@ func (v *snapView) draw() {
 
 func (v *snapView) present() { v.draw(); v.ta.Present() }
 
+// --- the M195c (#3308) appver-1 state envelope -----------------------------
+//
+// The windowed face's half of the M125a (#2586) seat-mediated
+// save/restore protocol — the same shape NOTE's state.go and
+// GOWELCOME's tour keep: the seat stores the blob verbatim on the tab's
+// session row (kind-20 save, kind-21 restore) and hands it back on a
+// reopen, so a close/reopen mid-gesture resumes with the same row
+// selected and the same half-typed name in the field. The seat owns
+// the lifecycle; the face owns the format:
+//
+//	u8 fmtVer (=stateFmtVer) — the blob's own version byte; also the
+//	   Config's StateVersion, so the envelope's appver and the payload
+//	   agree (a stale serialization is refused twice over)
+//	u8 flags (=0, reserved)
+//	u8 fieldLen | fieldLen bytes — the name field's in-progress text
+//	u8 selLen   | selLen bytes   — the selected row's NAME
+//
+// The selection rides as a name, not an index: the listing re-reads on
+// a 1 Hz poll and a re-ordered share must never point the restore at a
+// different snapshot. A name that no longer lists degrades to no
+// selection — the GOTOP clamp rule, a stale-but-well-formed blob never
+// refuses the session.
+//
+// The two-step arm is deliberately NOT in the envelope: a half-finished
+// destructive gesture must be re-armed by the person after any restore,
+// never inherited by a window the seat rebuilt.
+//
+// Decode is total: a bad length, a foreign fmtVer, nonzero flags,
+// truncated or trailing bytes, or non-printable text refuses the WHOLE
+// blob — a torn handoff can never land half-applied.
+
+const (
+	stateFmtVer = 1
+	stateAppVer = 1
+)
+
+// snapState is one decoded session blob.
+type snapState struct {
+	field string
+	sel   string
+}
+
+// encode serializes the face's durable state. Bounded by construction:
+// the field caps at nameMax and a row name is a dir entry — the blob can
+// never approach the seat's 64 KiB envelope ceiling.
+func (v *snapView) encode() []byte {
+	out := []byte{stateFmtVer, 0}
+	out = appendStateName(out, v.field.Value())
+	name, _ := v.selName()
+	return appendStateName(out, name)
+}
+
+// appendStateName length-prefixes one string into the envelope — a name
+// over the u8 bound degrades to empty rather than writing a truncated
+// length decode could never have produced.
+func appendStateName(out []byte, s string) []byte {
+	if len(s) > 255 {
+		s = ""
+	}
+	out = append(out, byte(len(s)))
+	return append(out, s...)
+}
+
+// decodeSnapState is encode's strict inverse. ok=false means stale or
+// foreign — refused whole, never half-applied; the caller names the
+// refusal. Every byte must be printable ASCII, the alphabet the field's
+// insert filter and the row names share; a stored name the fresh
+// listing lacks is the apply side's degrade, not a decode refusal.
+func decodeSnapState(b []byte) (snapState, bool) {
+	var st snapState
+	if len(b) < 4 || b[0] != stateFmtVer || b[1] != 0 {
+		return st, false
+	}
+	o := 2
+	field, ok := takeStateName(b, &o)
+	if !ok {
+		return st, false
+	}
+	sel, ok := takeStateName(b, &o)
+	if !ok || o != len(b) {
+		return st, false
+	}
+	st.field, st.sel = field, sel
+	return st, true
+}
+
+// takeStateName reads one u8-length-prefixed printable string out of the
+// blob, advancing o — false on a truncation or a byte outside the
+// field/listing alphabet.
+func takeStateName(b []byte, o *int) (string, bool) {
+	if *o >= len(b) {
+		return "", false
+	}
+	n := int(b[*o])
+	*o++
+	if len(b)-*o < n {
+		return "", false
+	}
+	s := b[*o : *o+n]
+	*o += n
+	for _, c := range s {
+		if c < 0x20 || c > 0x7e {
+			return "", false
+		}
+	}
+	return string(s), true
+}
+
+// stateDesc is the envelope's marker rendering — '-' for an empty piece
+// so the line never carries a bare `sel=`/`field=`.
+func stateDesc(sel, field string) string {
+	if sel == "" {
+		sel = "-"
+	}
+	if field == "" {
+		field = "-"
+	}
+	return "sel=" + sel + " field=" + field
+}
+
+// applyRestored lands a decoded envelope on the live view and returns
+// the marker to print — "" when the seat handed nothing over. It runs
+// after the first refresh so the selection resolves against real rows:
+// the stored name re-selects its row wherever the fresh listing sorted
+// it, and a name the share has since dropped reports `gone`. The
+// envelope's appver is the face's own stale check: a foreign version or
+// a torn blob is refused by name, never silently misread.
+func (v *snapView) applyRestored(st snapState, ok bool) string {
+	if v.ta == nil || !v.ta.Restored {
+		return ""
+	}
+	if v.ta.RestoredVersion != stateAppVer {
+		return markerState + "refused ver=" + vi.Itoa64(int64(v.ta.RestoredVersion))
+	}
+	if !ok {
+		return markerState + "refused bad"
+	}
+	v.field.SetValue(st.field)
+	sel := st.sel
+	if sel != "" {
+		found := false
+		for i, r := range v.rows {
+			if r.name == sel {
+				v.sel, v.list.Sel = i, i
+				v.ensureVisible()
+				found = true
+				break
+			}
+		}
+		if !found {
+			sel = "gone"
+		}
+	}
+	return markerState + "restored " + stateDesc(sel, st.field)
+}
+
 // runWindowed is the bare-argv entry: open the tab window, host the
 // event loop until the window closes. A refused open falls back to the
 // usage text — a serial-only caller still learns the verbs, and the
 // exit stays nonzero (a window that could not open is not a success).
 func runWindowed() int {
+	// The M195c state hooks, the GOTOP shape: SaveState reads the live
+	// view (the closure captures the variable, so an ask always
+	// serializes the current selection); RestoreState fires inside
+	// tabapp.Init before the view exists, so it only decodes — the
+	// apply lands after the first refresh, once real rows exist to
+	// re-select against.
+	var v *snapView
+	var restored snapState
+	var restoredOK bool
 	ta := tabapp.Init(tabapp.Config{
 		Name: appName, Title: appTitle, X: 64, Y: 64, W: natW, H: natH,
+		StateVersion: stateAppVer,
+		SaveState: func() []byte {
+			if v == nil {
+				return nil
+			}
+			return v.encode()
+		},
+		RestoreState: func(b []byte) { restored, restoredOK = decodeSnapState(b) },
 	})
 	if ta == nil {
 		logLine("gosnap: error open -1")
@@ -498,8 +671,11 @@ func runWindowed() int {
 		logLine("gosnap: declare refused")
 	}
 
-	v := newSnapView(ta)
+	v = newSnapView(ta)
 	v.refresh()
+	if line := v.applyRestored(restored, restoredOK); line != "" {
+		logLine(line)
+	}
 	v.present()
 	logLine("gosnap: present")
 	logLine("gosnap: ready n=" + vi.Itoa64(int64(len(v.rows))))
@@ -507,6 +683,14 @@ func runWindowed() int {
 		dirty := false
 		if v.poll(vi.Nanos()) {
 			dirty = true
+		}
+		// The seat's save ask is mailbox traffic, not an input event:
+		// answer it once per pass before polling, the same discipline
+		// the other hooked apps keep. The saved marker prints only on
+		// an acked handoff — never on silence or a refused post.
+		if v.ta.PollStateAsk() {
+			name, _ := v.selName()
+			logLine(markerState + "saved " + stateDesc(name, v.field.Value()))
 		}
 		ev, rc, ok := vi.PollEventRaw()
 		if ok {

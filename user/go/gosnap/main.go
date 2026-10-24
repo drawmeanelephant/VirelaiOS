@@ -74,6 +74,11 @@ const (
 	exitRefused  = 1
 	exitUsage    = 2
 	markerPrefix = "gosnap: "
+	// markerState prefixes the M195c envelope report on the windowed
+	// face: "saved sel=… field=…" / "restored sel=… field=…" /
+	// "refused <why>" — the same vocabulary NOTE, GOCALC and
+	// GOWELCOME print for theirs.
+	markerState = "gosnap: state "
 )
 
 // The seams — vars for the reason every other caller in the tree makes
