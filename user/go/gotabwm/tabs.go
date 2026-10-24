@@ -392,6 +392,11 @@ func guessBin(title string) string {
 		// re-execs the recorded row, so "Top" must name the real binary
 		// (`refusal ENOENT exec Top`, go-top run 11's restore leg).
 		return "GOTOP.ELF"
+	case "Welcome":
+		// M195b (#3307): GOWELCOME's declared title — the app's state leg
+		// closes and reopens the tour, so "Welcome" must name the real
+		// binary (`reopen missing Welcome` on this card's first spec run).
+		return "GOWELCOME.ELF"
 	default:
 		return binToken(title)
 	}
