@@ -30,7 +30,7 @@ All of them additionally answer to the schema-v2 manifest grammar
 | Terminal | app | GOTERM.ELF | appver 2 | tools/gate/specs/go-term.spec | shipped |
 | Web | app | WEB.ELF | appver 1 | tools/gate/specs/live-web.spec | shipped |
 | Pulse | app | PULSE.ELF | — | tools/gate/specs/go-top.spec | shipped |
-| Shell | app | GOSH.ELF | — | tools/gate/specs/go-sh.spec | shipped |
+| Shell | app | GOSH.ELF | appver 1 | tools/gate/specs/go-sh.spec | shipped |
 | Help | app | GOHELP.ELF | — | tools/gate/specs/go-help.spec | shipped |
 | Welcome | app | GOWELCOME.ELF | appver 1 | tools/gate/specs/go-welcome.spec | shipped |
 | Top | app | GOTOP.ELF | appver 1 | tools/gate/specs/go-top.spec | shipped |

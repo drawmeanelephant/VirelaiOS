@@ -144,12 +144,16 @@ for name, build in (
     ("GOSH.ELF", "bash tools/go/build-gosh.sh"),
     ("GOEDIT.ELF", "bash tools/go/build-goedit.sh"),
     ("WEB.ELF", "bash tools/go/build-web.sh browser"),
+    ("GOTABWM.ELF", "bash tools/go/build-gotabwm.sh"),
 ):
     src = os.path.join(".build", "go", name)
     if not os.path.exists(src):
         sys.exit(name + " missing (expected " + src + ") - build it first: " + build)
     shutil.copy(src, os.path.join(share, name))
 shutil.copy(os.path.join(rd, "STARTUP.SH"), os.path.join(share, "STARTUP.SH"))
+# M195d (#3309): the run-08 cwd leg's restore target — a real directory the
+# seat-launched GOSH can `cd` into and the reopened one can re-enter.
+os.makedirs(os.path.join(share, "GOSHCWD"), exist_ok=True)
 # M138a (#2775): the unterminated-heredoc script the run-06 -c child sources.
 shutil.copy(os.path.join(rd, "GOSHUNTERM.SH"), os.path.join(share, "GOSHUNTERM.SH"))
 # M81e2 (#1787): seed the shrink target LONG, so STARTUP.SH's
@@ -529,3 +533,86 @@ shutil.copy(os.path.join(os.environ["VG_SHARE"], "GOSHDATE.TXT"),
 print("date epoch %d agrees with the Europe/Berlin face (%s) and lies within "
       "60 s of host [%d, %d]" % (epoch, want_label, host_start, host_end))
 PY
+
+# --- M195d (#3309): the cwd round-trips the appver-1 envelope ------------
+# Under the Go seat (the only M125a speaker): exec GOSH.ELF, type
+# `cd /host/GOSHCWD`, then ctrl-shift-w closes the tab — the seat's kind-20
+# ask collects the appver-1 blob before the close lands — and ctrl-shift-t
+# re-execs the recorded bin, whose restore_state hands the envelope back.
+# The shell's PWD is the closed session's directory BEFORE the first
+# prompt: `gosh: state restored cwd=` prints ahead of the second
+# `gosh: prompt`, and the M98h title sync puts the same basename on the
+# reopened tab's rail (`Sh — GOSHCWD`, the prompt's \w source).
+vgate_file script-08.txt <<'EOF'
+echo rx-gosh-cwd-boot
+EOF
+
+vgate_file script2-08.txt <<'EOF'
+exec GOSH.ELF
+EOF
+
+vgate_file script3-08.txt <<'EOF'
+echo rx-gosh-cwd-ok
+EOF
+
+vgate_run 08 -- \
+    --screen '$RUN_DIR/screen-08' \
+    --via-virtio \
+    --script '$RUN_DIR/script-08.txt' \
+    --script2 '$RUN_DIR/script2-08.txt' \
+    --script2-after 'gotabwm: mode live' \
+    --input-chords 'c,d,space,/,h,o,s,t,/,G,O,S,H,C,W,D,return' \
+    --input-chords-after 'gosh: prompt' \
+    --input-chords2 'ctrl-shift-w,ctrl-shift-t' \
+    --input-chords2-after 'Sh — GOSHCWD' \
+    --script3 '$RUN_DIR/script3-08.txt' \
+    --script3-after 'gosh: state restored cwd=' \
+    --script3-delay 5 \
+    --script-expect 'rx-gosh-cwd-ok' --timeout 300
+
+vgate_assert 08 serial-contains 'wm: autostart gotabwm (settings wm=gotabwm)'
+vgate_assert 08 serial-contains 'gotabwm: mode live'
+vgate_assert 08 serial-contains 'exec: loaded GOSH.ELF'
+vgate_assert 08 serial-contains 'gosh: ready'
+vgate_assert 08 serial-contains 'gosh: open id='
+vgate_assert 08 serial-contains 'gosh: declare accepted'
+vgate_assert 08 serial-contains 'gosh: attached'
+vgate_assert 08 serial-contains 'gosh: line cd /host/GOSHCWD'
+# The M98h title followed the cd — the saved blob's cwd is the same string
+# the seat's rail shows.
+vgate_assert 08 serial-contains 'Sh — GOSHCWD'
+# Close: the seat's ask was answered with an appver-1 envelope before the
+# tab close landed.
+vgate_assert 08 serial-contains 'gotabwm: state ask id='
+vgate_assert 08 serial-contains 'gotabwm: state save id='
+vgate_assert 08 serial-contains ' ver=1'
+vgate_assert 08 serial-contains 'gotabwm: tab close id='
+vgate_assert 08 serial-contains 'gosh: close'
+vgate_assert 08 serial-contains 'gosh OK'
+# Reopen: the seat re-execs GOSH.ELF and hands the blob back; the shell
+# reports the restored directory — the decode passed, the dir still
+# existed, and PWD moved before the prompt.
+vgate_assert 08 serial-contains 'gotabwm: reopen GOSH.ELF'
+vgate_assert 08 serial-contains 'gotabwm: state restore id='
+vgate_assert 08 serial-contains 'gosh: state restored cwd=/host/GOSHCWD'
+vgate_assert 08 serial-contains 'rx-gosh-cwd-ok'
+# Both sessions reached their prompt, and the title send ran again under
+# the restored PWD — the prompt's \w source proves the same directory.
+vgate_assert 08 python <<'PY'
+import os, re, sys
+ser = open(os.environ["VG_SER"], errors="replace").read()
+if ser.count("gosh: prompt") < 2:
+    sys.exit("the reopened GOSH never reached its prompt")
+i = ser.find("gosh: state restored cwd=/host/GOSHCWD")
+if i < 0:
+    sys.exit("restored marker missing")
+if ser.find("gosh: prompt", i) < 0:
+    sys.exit("no prompt after the restore — the envelope applied after first paint?")
+if ser.count("Sh — GOSHCWD") < 2:
+    sys.exit("the reopened tab's title did not re-sync to the restored cwd")
+PY
+vgate_assert 08 serial-absent 'gosh: state stale'
+vgate_assert 08 serial-absent 'gosh: state refused'
+vgate_assert 08 serial-absent 'gotabwm: state drop'
+vgate_assert 08 serial-absent '[EXC] parking:'
+vgate_assert 08 serial-absent 'exited status=139'

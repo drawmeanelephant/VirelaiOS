@@ -28,9 +28,10 @@
 // the composable child form the gate and scripts use.
 //
 // This file is the FRONT-END only (M73b, issue #1626): argv dispatch, the
-// three tty owners, the startup contract and the vi host seam. The engine,
-// editor, parser, builtins, toolbox, history persistence and net-auth core
-// live in virelai/shlib, importable by any front-end.
+// three tty owners, the startup contract, the M195d appver-1 state envelope
+// (cwd round-trips the seat's save/restore), and the vi host seam. The
+// engine, editor, parser, builtins, toolbox, history persistence and
+// net-auth core live in virelai/shlib, importable by any front-end.
 package main
 
 import (
@@ -77,6 +78,10 @@ const (
 	markerNetRefus = "gosh: net refused: no credential (pass 'open' for the insecure mode)"
 	markerNetFail  = "gosh: remote attach failed"
 	markerNetBad   = "gosh: net refused: "
+	// markerState prefixes the M195d envelope report: "restored cwd=" /
+	// "refused cwd=" / "stale <why>" — the vocabulary NOTE/GOEDIT/GOPAINT
+	// print for their M125a blobs.
+	markerState = "gosh: state "
 )
 
 func main() {
@@ -152,15 +157,22 @@ func runHeadless(line string) {
 }
 
 // runTab is the window presentation: tabapp + /dev/tty + editor loop.
+// The state hooks make the windowed front-end the M195d appver-1 carrier:
+// the seat's save ask gets the cwd blob, and a reopen's stored blob is
+// stashed by Init (gs.noteState) for the session to apply.
 func runTab() {
 	vi.ConsoleLine(markerReady)
+	gs := &goshState{}
 	ta := tabapp.Init(tabapp.Config{
-		Name:  appName,
-		Title: appTitle,
-		X:     32,
-		Y:     32,
-		W:     natW,
-		H:     natH,
+		Name:         appName,
+		Title:        appTitle,
+		X:            32,
+		Y:            32,
+		W:            natW,
+		H:            natH,
+		StateVersion: stateAppVer,
+		SaveState:    gs.saveState,
+		RestoreState: gs.noteState,
 	})
 	if ta == nil {
 		vi.ConsoleLine(markerOpenErr + "-1")
@@ -191,7 +203,7 @@ func runTab() {
 		ta.CloseAndExit(2)
 	}
 	vi.ConsoleLine(markerAttach)
-	runSession(fd, ta, nil)
+	runSession(fd, ta, nil, gs)
 }
 
 // runSerial attaches the SERIAL front-end (ADR 0020 selector 1) instead of a
@@ -215,7 +227,7 @@ func runSerial() {
 		vi.Exit(2)
 	}
 	vi.ConsoleLine(markerAttach)
-	runSession(fd, nil, nil)
+	runSession(fd, nil, nil, nil)
 }
 
 // runNet attaches the NET front-end (ADR 0020 selector 3): LISTEN on the
@@ -262,7 +274,7 @@ func runNet(na shlib.NetArgs) {
 	default:
 		vi.ConsoleLine(markerAuthEd)
 	}
-	runSession(fd, nil, auth)
+	runSession(fd, nil, auth, nil)
 }
 
 // runSession is the shared startup contract + editor loop. ta is nil on the
@@ -271,11 +283,15 @@ func runNet(na shlib.NetArgs) {
 // (selector 3) delivers the bytes FileRead returns. auth is the delegated
 // handshake, live only in net mode and only when a credential is in force;
 // one step per loop turn, including idle, because the challenge is not a
-// tty byte.
-func runSession(fd uint32, ta *tabapp.TabApp, auth *shlib.NetAuth) {
+// tty byte. gs is the windowed front-end's M195d envelope holder — nil on
+// the serial and net front-ends, which have no seat and no ask.
+func runSession(fd uint32, ta *tabapp.TabApp, auth *shlib.NetAuth, gs *goshState) {
 	hst := newGoshHost(fd, true)
 	hist := &shlib.History{}
 	sh := shlib.NewShell(hst, hist)
+	if gs != nil {
+		gs.cwd = sh.Pwd
+	}
 	editor := shlib.NewEditor(loadPrompt(), hist)
 	editor.Complete = shlib.NewCompleter(sh, hst)
 	// M80n (#1730): the prompt escapes ask the shell where it is, at paint
@@ -300,6 +316,16 @@ func runSession(fd uint32, ta *tabapp.TabApp, auth *shlib.NetAuth) {
 		_, act := sh.RunLineBodies(st.line, st.bodies)
 		if act != shlib.ActionContinue {
 			leave(ta, fd, sh, act)
+		}
+	}
+	// M195d (#3309): a stored envelope's cwd lands here — after the startup
+	// contract (a PROFILE.SH `cd` still runs) and before the first prompt and
+	// the title sync that reads Pwd, so a reopened tab opens where the last
+	// session closed. A refused blob leaves the seeded "/" home, never a
+	// boot-blocker.
+	if gs != nil {
+		if line := gs.applyRestored(ta, hst, sh); line != "" {
+			vi.ConsoleLine(line)
 		}
 	}
 	titles.Sync(shlib.TitleFor("Sh", sh.Pwd()), sendTitle)
@@ -429,6 +455,10 @@ func runSession(fd uint32, ta *tabapp.TabApp, auth *shlib.NetAuth) {
 			continue
 		}
 
+		// M195d: the seat's save ask (snapshot, tab close) is a mailbox
+		// notice nothing wakes; answer it once per pass, the same
+		// discipline PollNav/PollDrag keep.
+		ta.PollStateAsk()
 		ev, r, ok := vi.PollEventRaw()
 		if !ok {
 			if r < 0 {
@@ -605,4 +635,146 @@ func (h *heredocCollector) accept(line string) (run string, bodies [][]byte, wai
 		return "", nil, true
 	}
 	return line, nil, false
+}
+
+// --- the M125a state envelope (M195d #3309) ---------------------------------
+//
+// GOSH's half of the per-app state protocol, the same shape NOTE's M192b
+// envelope keeps: the seat stores the blob verbatim on the tab's session row
+// (kind-20 save, kind-21 restore) and hands it back on a reopen — a re-exec'd
+// GOSH.ELF gets no argv, so the session's working directory lives only here.
+// The format is the app's own; stateFmtVer is the refusal check for a stale
+// serialization and stateAppVer the seat-stored twin — a torn or foreign
+// blob decodes to nothing and the restore degrades to the seeded "/" home,
+// never a crash.
+//
+// History deliberately does NOT ride the envelope: it survives on its own
+// share-file seam (M69f1), so the blob carries one string.
+//
+// Wire v1 (little-endian):
+//
+//	u8  fmtVer (=1)
+//	u8  flags (0 — reserved; decode refuses a nonzero byte)
+//	u16 cwdLen | cwd         the shell's canonical PWD ("/", "/host/DOCS")
+
+const (
+	stateFmtVer = 1
+	stateAppVer = 1
+
+	// statePathMax is the kernel's path bound (file_table.max_path_len):
+	// a stored cwd longer than a path the kernel could ever list is a
+	// foreign blob, refused before it is trusted.
+	statePathMax = 512
+)
+
+// goshState is the windowed front-end's envelope holder: the hooks Init wires
+// into tabapp. noteState runs inside Init — before the session's shell
+// exists — so it only decodes and stashes; runSession binds cwd to the live
+// shell's Pwd and applyRestored lands the stored directory before the first
+// prompt.
+type goshState struct {
+	cwd     func() string // bound to the session shell's Pwd in runSession
+	pend    *string       // the decoded blob's cwd, awaiting apply
+	pendBad bool          // a blob arrived but would not decode
+}
+
+func appendU16(out []byte, v int) []byte { return append(out, byte(v), byte(v>>8)) }
+
+func readU16(b []byte) int { return int(b[0]) | int(b[1])<<8 }
+
+// decodeState parses a blob; ok=false means stale/foreign and the caller
+// degrades to the default home. The declared length is re-verified and the
+// blob must be consumed exactly — the seat carries bytes, it does not vouch
+// for them.
+func decodeState(b []byte) (string, bool) {
+	if len(b) < 4 || b[0] != stateFmtVer || b[1] != 0 {
+		return "", false
+	}
+	pl := readU16(b[2:4])
+	if pl == 0 || pl > statePathMax || len(b) != 4+pl {
+		return "", false
+	}
+	return string(b[4:]), true
+}
+
+// canonCwd reports whether p is a canonical /-rooted PWD — the only shape
+// saveState ever emits and the only shape a restore applies. A blob field
+// carrying "..", a doubled slash, or a relative name is a corrupt blob,
+// refused by name rather than seeded into PWD where resolution and the
+// prompt would silently misread it.
+func canonCwd(p string) bool {
+	if p == "/" {
+		return true
+	}
+	if !strings.HasPrefix(p, "/") || strings.HasSuffix(p, "/") {
+		return false
+	}
+	for _, comp := range strings.Split(p[1:], "/") {
+		if comp == "" || comp == "." || comp == ".." {
+			return false
+		}
+	}
+	return true
+}
+
+// saveState is the tabapp.SaveState hook — the seat's ask (snapshot or tab
+// close) lands once per loop pass and gets this blob staged. gs.cwd is bound
+// by runSession before the loop runs, so the blob always carries the live
+// PWD; the "/" default only covers a nil binding, which is the seeded home
+// anyway.
+func (s *goshState) saveState() []byte {
+	cwd := "/"
+	if s.cwd != nil {
+		cwd = s.cwd()
+	}
+	out := make([]byte, 0, 4+len(cwd))
+	out = append(out, stateFmtVer, 0)
+	out = appendU16(out, len(cwd))
+	return append(out, cwd...)
+}
+
+// noteState is the tabapp.RestoreState hook, run inside Init before the
+// first paint — and before the shell exists. It only decodes and stashes:
+// applyRestored does the version check, the directory probe, and the PWD
+// move once runSession has the pieces.
+func (s *goshState) noteState(b []byte) {
+	cwd, ok := decodeState(b)
+	if !ok {
+		s.pendBad = true
+		return
+	}
+	s.pend = &cwd
+}
+
+// applyRestored runs after the startup contract, before the first prompt:
+// the directory the blob names is validated the same way `cd` validates
+// (canonical shape, then the host's list gate — a missing dir, a file, and
+// an ownership denial are all refusals) and only then written into PWD. A
+// refusal names the directory and keeps the seeded home. It returns the
+// marker to print ("" when no blob was waiting) — the same convention
+// NOTE's applyRestored keeps, so the decision stays host-testable.
+func (s *goshState) applyRestored(ta *tabapp.TabApp, h *goshHost, sh *shlib.Shell) string {
+	if s.pendBad {
+		s.pendBad = false
+		return markerState + "stale bad"
+	}
+	cwd := s.pend
+	if cwd == nil {
+		return ""
+	}
+	s.pend = nil
+	// The envelope's appver is the seat-visible tag; RestoredVersion is the
+	// app's check for a stale serialization — a foreign version is refused
+	// even though the blob itself decoded.
+	if ta != nil && ta.RestoredVersion != stateAppVer {
+		return markerState + "stale version"
+	}
+	if !canonCwd(*cwd) {
+		return markerState + "refused cwd=" + *cwd + " err=invalid"
+	}
+	if err := h.Chdir(*cwd); err != nil {
+		return markerState + "refused cwd=" + *cwd + " err=" + err.Error()
+	}
+	sh.Env().Set("PWD", *cwd)
+	return markerState + "restored cwd=" + *cwd
 }
