@@ -2507,8 +2507,9 @@ fn handle_file_mode(args: Args, _: *exceptions.VectorFrame) u64 {
 /// principal owns nothing it may read;
 /// `EINVAL` for a non-process caller or a `len` too small to hold every
 /// caller entry; `EFAULT` for a bad buffer. The ONLY in-guest reader of the
-/// secret store; there is NO `sys_secret_set` (provisioning is host-side,
-/// D8). The handler and its results are excluded from strace in
+/// secret store; `sys_secret_set` (slot 96) is the consent-gated
+/// provisioning half — staging asks, never direct writes (ADR 0024
+/// D8 amendment). The handler and its results are excluded from strace in
 /// `dispatch`/`maybe_trace` (never-logged contract).
 fn handle_secret_get(args: Args, _: *exceptions.VectorFrame) u64 {
     const address = args[0];
