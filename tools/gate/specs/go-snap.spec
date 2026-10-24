@@ -51,11 +51,19 @@
 #          app and `state restored` is the pre-crash-bytes proof. Same
 #          M119e bound as ld: code=12 is the honest refusal.
 #
+#   #3369 named-store retention cap legs, same profile:
+#   cap:   fills the named store to the host's cap of 8, then saves past
+#          it — oldest-unpinned eviction (WINBASE, CAP0, CAP1 drop) while
+#          the pinned CAP6 survives; `gosnap save` surfaces the eviction
+#          as `gosnap: evicted`. Ends staging `restore CAP6 confirm`.
+#   capld: `--resume` boots the pinned survivor's image — the same
+#          M119e bound applies (code=12 is the honest refusal).
+#
 # HOST PREREQ: bash tools/go/build-gosnap.sh -> .build/go/GOSNAP.ELF
 #              bash tools/go/build-gotabwm.sh -> .build/go/GOTABWM.ELF
 #              bash tools/go/build-tabapp.sh -> .build/go/GOTABAPP.ELF
 
-vgate_name go-snap "M115e #2464: GOSNAP.ELF named snapshots — ls/save/restore/rm, consent-gated, staged --resume restore"
+vgate_name go-snap "M115e #2464: GOSNAP.ELF named snapshots — ls/save/restore/rm, consent-gated, staged --resume restore; #3369 named-store cap eviction + pin"
 vgate_share none
 
 # The crash/offer legs need the SPIKE runner: offer's toast click rides
@@ -541,3 +549,117 @@ vgate_assert winstate serial-contains 'rx-gosnap-state-ok'
 vgate_assert winstate serial-absent 'gosnap: state refused'
 vgate_assert winstate serial-absent 'gotabwm: state drop'
 vgate_assert winstate serial-absent '[EXC]'
+
+# ---------------------------------------------------------------------------
+# #3369: the named store's retention cap — newest-8 auto-eviction with an
+# explicit pin, enforced host-side in the ctl `snapshot` path.
+#
+# The fill rides the monitor's SYNCHRONOUS `vsock ctl snapshot <name>`
+# (live-vsock-ctl's idiom): one line is a whole ctl session, so ten
+# saves fit the three script phases where async `exec`s would
+# interleave. The windowed leg's WINBASE is still parked and is the
+# oldest unpinned name — the cap's first eviction victim.
+#
+#   fill:  CAP0..CAP6 join WINBASE — eight named files, the cap.
+#          `clip cap-witness-6` lands in CAP6's image as capld's RAM
+#          witness; `gosnap pin CAP6` then exempts it from eviction.
+#   over:  CAP7's save evicts WINBASE (oldest unpinned), CAP8's evicts
+#          CAP0, and `gosnap save CAP9` evicts CAP1 — the argv face
+#          prints the `gosnap: evicted` line the wire reply's `evicted`
+#          member named. CAP6 survives all three evictions: pinned.
+#   stage: `restore CAP6 confirm` copies the pinned survivor over
+#          saved-state/state.vzsave — the capld leg's --resume target.
+
+vgate_file cap1.txt <<'EOF'
+vsock ctl snapshot CAP0
+vsock ctl snapshot CAP1
+vsock ctl snapshot CAP2
+vsock ctl snapshot CAP3
+vsock ctl snapshot CAP4
+vsock ctl snapshot CAP5
+clip cap-witness-6
+vsock ctl snapshot CAP6
+exec GOSNAP.ELF pin CAP6
+EOF
+vgate_file cap2.txt <<'EOF'
+vsock ctl snapshot CAP7
+vsock ctl snapshot CAP8
+exec GOSNAP.ELF save CAP9
+EOF
+vgate_file cap3.txt <<'EOF'
+exec GOSNAP.ELF restore CAP6 confirm
+EOF
+
+vgate_run cap -- --profile '$RUN_DIR/prof.virelaivm' --virtio-fs '$RUN_DIR/prof.virelaivm/share' \
+  --vsock --vsock-ctl \
+  --script '$RUN_DIR/cap1.txt' \
+  --script2 '$RUN_DIR/cap2.txt' --script2-after 'gosnap: pin CAP6 ok' \
+  --script3 '$RUN_DIR/cap3.txt' --script3-after 'gosnap: save CAP9 ok' \
+  --script-expect 'gosnap: restore CAP6 staged' --timeout 480
+
+# Every fill save was a whole synchronous session: auth, reply, close.
+vgate_assert cap serial-contains 'vsock-ctl: reply id=1 ok=true'
+vgate_assert cap serial-contains 'gosnap: pin CAP6 ok'
+# The cap's evictions, on both faces: the host names each dropped file;
+# the guest's save answers with its own `evicted` line.
+vgate_assert cap output-contains 'VSOCK-CTL: snapshot evicted WINBASE.vzsave'
+vgate_assert cap output-contains 'VSOCK-CTL: snapshot evicted CAP0.vzsave'
+vgate_assert cap output-contains 'VSOCK-CTL: snapshot evicted CAP1.vzsave'
+vgate_assert cap output-contains 'VSOCK-CTL: snapshot saved CAP9.vzsave'
+vgate_assert cap serial-contains 'gosnap: evicted CAP1'
+vgate_assert cap serial-contains 'gosnap: save CAP9 ok'
+vgate_assert cap serial-contains 'gosnap: restore CAP6 staged'
+vgate_assert cap serial-absent '[EXC]'
+# The store's post-state, proven from the share: the named set is
+# exactly CAP2..CAP9 at the cap, CRASH0 untouched on its exempt
+# rotation, CAP6's pin file beside it, and the stage is byte-identical
+# to the pinned survivor.
+vgate_assert cap python <<'PY'
+import os
+from pathlib import Path
+snaps = Path(os.environ["RUN_DIR"]) / "prof.virelaivm" / "share" / "SNAPSHOTS"
+named = sorted(p.name for p in snaps.glob("*.vzsave") if not p.name.startswith("CRASH"))
+assert named == ["CAP%d.vzsave" % i for i in range(2, 10)], named
+assert (snaps / "CRASH0.vzsave").exists(), "the exempt rotation was touched"
+assert (snaps / "CAP6.pin").exists(), "the pin marker is missing"
+assert not (snaps / "WINBASE.vzsave").exists(), "WINBASE survived the cap"
+assert not (snaps / "CAP0.vzsave").exists() and not (snaps / "CAP1.vzsave").exists()
+staged = Path(os.environ["RUN_DIR"]) / "prof.virelaivm" / "saved-state" / "state.vzsave"
+assert staged.read_bytes() == (snaps / "CAP6.vzsave").read_bytes(), \
+    "the staged image is not byte-identical to the pinned survivor"
+print("cap held at 8 named (CAP2..CAP9); CAP6 pinned+staged; CRASH0 exempt")
+PY
+
+# ---------------------------------------------------------------------------
+# #3369: capld — `--resume` continues the pinned survivor's image: the
+# guest rewinds into mid-`vsock ctl snapshot CAP6`, the stale ctl session
+# closes, and `clip` reads cap-witness-6 — the RAM witness proving the
+# surviving snapshot booted. Same M119e bound as ld: code=12 is the
+# honest refusal on a saturated host.
+
+vgate_file capld.txt <<'EOF'
+clip
+echo gosnap-capld-done
+EOF
+
+vgate_run capld -- --resume '$RUN_DIR/prof.virelaivm' --virtio-fs '$RUN_DIR/prof.virelaivm/share' \
+  --vsock --vsock-ctl \
+  --script-after 'vsock-ctl: closed' --script '$RUN_DIR/capld.txt' \
+  --script-expect 'gosnap-capld-done' --timeout 180
+vgate_allow_rc capld 0 1
+vgate_assert capld output-contains 'SUSPEND-RESUME: armed state='
+vgate_assert capld python <<'PY'
+import os, sys
+from pathlib import Path
+out = Path(os.environ["RUN_DIR"], "run-%s.out" % os.environ["VG_TAG"]).read_bytes()
+sp = Path(os.environ["VG_SER"])
+serial = sp.read_bytes() if sp.exists() else b""
+assert b"VirelaiOS kernel has seized control." not in serial, "a restore never boots"
+if b"SUSPEND-RESUME: restore refused code=12" in out:
+    print("bound: restoreMachineStateFrom -> VZErrorDomain Code=12 (M119e)")
+    sys.exit(0)
+assert b"SUSPEND-RESUME: restored" in out, out[-800:]
+for needle in (b"clip: cap-witness-6", b"gosnap-capld-done"):
+    assert needle in serial, (needle, serial[-1500:])
+print("resume: the pinned survivor booted — clip=cap-witness-6")
+PY

@@ -6,6 +6,7 @@ import CryptoKit
 import Foundation
 import XCTest
 @testable import VSCtl
+@testable import VMRunner
 
 final class VSCtlTests: XCTestCase {
     /// ADR 0056 D2's pinned vector: key = ASCII "a5" x 32, challenge =
@@ -240,7 +241,7 @@ final class VSCtlTests: XCTestCase {
     func testArmedSnapshotRefusalsStillAnswer() {
         // A refused save still counts as answered — the transport resumes
         // the paused machine after writing the refusal.
-        for want in ["exists", "no_state", "unsupported", "save_failed", "busy"] {
+        for want in ["exists", "no_state", "unsupported", "save_failed", "busy", "store_full"] {
             var s = authedSession()
             s.snapshotHandler = { _ in .refuse(want) }
             let r = s.feed(line: "{\"id\":1,\"verb\":\"snapshot\",\"name\":\"S1\"}")
@@ -249,6 +250,135 @@ final class VSCtlTests: XCTestCase {
             XCTAssertTrue(String(decoding: r.reply, as: UTF8.self)
                 .contains(VSCtl.messages[want]!), want)
         }
+    }
+
+    // #3369: a save admitted past the cap names the evicted snapshot in
+    // the ok reply's result — the wire carries which store member paid
+    // for the room.
+    func testSnapshotAcceptRelaysAnEviction() {
+        var s = authedSession()
+        s.snapshotHandler = { _ in
+            SuspendVerdict(accepted: true, code: "", evicted: "OLDEST")
+        }
+        let r = s.feed(line: "{\"id\":1,\"verb\":\"snapshot\",\"name\":\"NEW\"}")
+        let line = String(decoding: r.reply, as: UTF8.self)
+        XCTAssertTrue(line.contains("\"ok\":true"))
+        XCTAssertTrue(line.contains("\"evicted\":\"OLDEST\""))
+        XCTAssertTrue(s.answeredSnapshot)
+    }
+
+    // #3369: SnapshotCtl.admission — the cap policy evaluated against a
+    // tempdir store. The named rule is newest-N auto-eviction with an
+    // explicit pin (`<name>.pin` beside the .vzsave); CRASH<digits>
+    // rides its own bounded namespace.
+    private func snapStore(_ names: [String], pins: [String] = [],
+                           mtimes: [String: Date] = [:]) throws -> URL {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+        let snaps = dir.appendingPathComponent("SNAPSHOTS", isDirectory: true)
+        try FileManager.default.createDirectory(at: snaps, withIntermediateDirectories: true)
+        for (i, n) in names.enumerated() {
+            let url = snaps.appendingPathComponent(n + ".vzsave")
+            try Data([UInt8(i)]).write(to: url)
+            // Distinct mtimes in list order unless overridden — the
+            // eviction victim is the oldest unpinned name.
+            let mtime = mtimes[n] ?? Date(timeIntervalSince1970: 1000 + Double(i))
+            try FileManager.default.setAttributes([.modificationDate: mtime],
+                                                  ofItemAtPath: url.path)
+        }
+        for p in pins {
+            try Data("pin\n".utf8).write(to: snaps.appendingPathComponent(p + ".pin"))
+        }
+        return dir
+    }
+
+    func testAdmissionAllowsBelowTheCap() throws {
+        let dir = try snapStore(["A", "B"])
+        defer { try? FileManager.default.removeItem(at: dir) }
+        XCTAssertEqual(SnapshotCtl.admission(shareDir: dir, name: "C"), .allow)
+    }
+
+    func testAdmissionTreatsAMissingStoreAsEmpty() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        // No SNAPSHOTS/ dir at all — the first save must admit.
+        XCTAssertEqual(SnapshotCtl.admission(shareDir: dir, name: "A"), .allow)
+    }
+
+    func testAdmissionAtCapEvictsTheOldestUnpinned() throws {
+        let dir = try snapStore(["N1", "N2", "N3", "N4", "N5", "N6", "N7", "N8"])
+        defer { try? FileManager.default.removeItem(at: dir) }
+        XCTAssertEqual(SnapshotCtl.admission(shareDir: dir, name: "NEW"),
+                       .evict("N1"))
+    }
+
+    func testAdmissionSkipsPinnedSnapshots() throws {
+        // N1 is oldest but pinned; N2 pays for the room instead.
+        let dir = try snapStore(["N1", "N2", "N3", "N4", "N5", "N6", "N7", "N8"],
+                                pins: ["N1"])
+        defer { try? FileManager.default.removeItem(at: dir) }
+        XCTAssertEqual(SnapshotCtl.admission(shareDir: dir, name: "NEW"),
+                       .evict("N2"))
+    }
+
+    func testAdmissionRefusesWhenEverythingIsPinned() throws {
+        let all = (1...SnapshotCtl.namedCap).map { "N\($0)" }
+        let dir = try snapStore(all, pins: all)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        XCTAssertEqual(SnapshotCtl.admission(shareDir: dir, name: "NEW"),
+                       .refuse("store_full"))
+    }
+
+    func testAdmissionCrashNamesAreExemptAndSeparatelyBounded() throws {
+        // A named store AT cap plus a full CRASH rotation: a CRASH*
+        // save still admits — the rotation is exempt from the named
+        // cap — and never appears as an eviction victim.
+        var names = (1...SnapshotCtl.namedCap).map { "N\($0)" }
+        names += (0...2).map { "CRASH\($0)" }
+        let dir = try snapStore(names)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        XCTAssertEqual(SnapshotCtl.admission(shareDir: dir, name: "CRASH7"),
+                       .allow)
+        // But the exemption is itself bounded: crashCap fresh CRASH
+        // names refuse rather than growing the store through the seam.
+        var crashNames: [String] = []
+        for i in 0..<SnapshotCtl.crashCap { crashNames.append("CRASH\(i)") }
+        let dir2 = try snapStore(crashNames)
+        defer { try? FileManager.default.removeItem(at: dir2) }
+        XCTAssertEqual(SnapshotCtl.admission(shareDir: dir2, name: "CRASH9"),
+                       .refuse("store_full"))
+    }
+
+    func testAdmissionDoesNotCountCrashNamesTowardTheNamedCap() throws {
+        // crashCap crash slots + only 2 named — far under the named
+        // cap: CRASH* files are not named-store members.
+        var names = (0..<SnapshotCtl.crashCap).map { "CRASH\($0)" }
+        names += ["A", "B"]
+        let dir = try snapStore(names)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        XCTAssertEqual(SnapshotCtl.admission(shareDir: dir, name: "C"), .allow)
+    }
+
+    func testAdmissionCrashNameGrammar() {
+        XCTAssertTrue(SnapshotCtl.isCrashName("CRASH0"))
+        XCTAssertTrue(SnapshotCtl.isCrashName("CRASH12"))
+        // The prefix alone is an ordinary name, as is a non-digit tail.
+        XCTAssertFalse(SnapshotCtl.isCrashName("CRASH"))
+        XCTAssertFalse(SnapshotCtl.isCrashName("CRASHX"))
+        XCTAssertFalse(SnapshotCtl.isCrashName("CRASH1A"))
+        XCTAssertFalse(SnapshotCtl.isCrashName("crash0"))
+    }
+
+    func testAdmissionStrayFilesDoNotCount() throws {
+        let dir = try snapStore(["A", "B"])
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let snaps = dir.appendingPathComponent("SNAPSHOTS", isDirectory: true)
+        // An in-flight save's .part and an orphan .pin are not snapshots.
+        try Data([0]).write(to: snaps.appendingPathComponent("WIP.vzsave.part"))
+        try Data("pin\n".utf8).write(to: snaps.appendingPathComponent("ORPHAN.pin"))
+        XCTAssertEqual(SnapshotCtl.admission(shareDir: dir, name: "C"), .allow)
     }
 
     func testArmedRestoreAccepts() {

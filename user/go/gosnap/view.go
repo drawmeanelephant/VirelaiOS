@@ -51,14 +51,16 @@ const (
 )
 
 // The focus ring's slots, Tab order: list -> name field -> Save ->
-// Restore -> Delete. The field leads because naming is the window's
-// most common gesture.
+// Restore -> Delete -> Pin -> Prune. The field leads because naming is
+// the window's most common gesture.
 const (
 	fList = iota
 	fField
 	fSave
 	fRest
 	fDel
+	fPin
+	fPrune
 	fCount
 )
 
@@ -89,6 +91,8 @@ type snapView struct {
 	saveBtn   widgets.Button
 	restBtn   widgets.Button
 	delBtn    widgets.Button
+	pinBtn    widgets.Button
+	pruneBtn  widgets.Button
 	statusTxt widgets.Text
 }
 
@@ -108,8 +112,10 @@ func newSnapView(ta *tabapp.TabApp) *snapView {
 	v.saveBtn = widgets.Button{Label: "Save"}
 	v.restBtn = widgets.Button{Label: "Restore"}
 	v.delBtn = widgets.Button{Label: "Delete"}
+	v.pinBtn = widgets.Button{Label: "Pin"}
+	v.pruneBtn = widgets.Button{Label: "Prune"}
 	v.statusTxt = widgets.Text{Fg: theme.Current.Muted, Bg: theme.Current.Bg}
-	v.status = "type a name + Enter to save; Restore/Delete ask twice"
+	v.status = "type a name + Enter to save; Restore/Delete/Prune ask twice; Pin exempts"
 	return v
 }
 
@@ -142,7 +148,14 @@ func (v *snapView) refresh() {
 	}
 	v.list.Items = make([]string, len(rows))
 	for i, r := range rows {
-		v.list.Items[i] = r.name + "  " + vi.Itoa64(int64(r.bytes)) + " B"
+		tag := ""
+		if r.pinned {
+			tag += " [pin]"
+		}
+		if crashName(r.name) {
+			tag += " [crash]"
+		}
+		v.list.Items[i] = r.name + "  " + vi.Itoa64(int64(r.bytes)) + " B" + tag
 	}
 	v.list.Sel = v.sel
 	v.ensureVisible()
@@ -193,6 +206,8 @@ func (v *snapView) setFocus(i int) {
 	v.saveBtn.Focused = v.focus == fSave
 	v.restBtn.Focused = v.focus == fRest
 	v.delBtn.Focused = v.focus == fDel
+	v.pinBtn.Focused = v.focus == fPin
+	v.pruneBtn.Focused = v.focus == fPrune
 }
 
 // arm is a destructive verb's first gesture: print the consent ask and
@@ -243,6 +258,63 @@ func (v *snapView) activate(verb string) {
 		v.refresh()
 	} else {
 		v.status = verb + " " + name + " refused — see serial"
+	}
+}
+
+// activatePrune is the Prune button's two-step: the armed name is the
+// computed victim — the oldest unpinned named snapshot, the same one
+// the host's cap eviction would take — so the confirm gesture names
+// exactly what dies. No selection needed: the victim is the store's
+// own answer, and nothing qualifies when the store holds only pins and
+// crash slots.
+func (v *snapView) activatePrune() {
+	victim, ok := pruneVictim(v.rows)
+	if !ok {
+		v.disarm()
+		v.status = "nothing unpinned to prune"
+		v.syncWidgets()
+		return
+	}
+	if v.armed != "prune" || v.armedName != victim {
+		v.arm("prune", victim)
+		return
+	}
+	v.disarm()
+	if cmdPrune([]string{confirmToken}) == exitOK {
+		v.status = victim + " pruned"
+		v.refresh()
+	} else {
+		v.status = "prune refused — see serial"
+	}
+}
+
+// togglePin is the Pin button's single-gesture flip on the selected
+// row — additive metadata, never destructive, so it asks once like
+// Save does. The label mirrors the row's state ("Unpin" when pinned).
+func (v *snapView) togglePin() {
+	name, ok := v.selName()
+	if !ok {
+		v.status = "select a snapshot first"
+		return
+	}
+	v.disarm()
+	pinned := v.rows[v.sel].pinned
+	var rc int
+	if pinned {
+		rc = cmdUnpin(name)
+	} else {
+		rc = cmdPin(name)
+	}
+	if rc == exitOK {
+		if pinned {
+			v.status = name + " unpinned"
+		} else {
+			v.status = name + " pinned — cap eviction skips it"
+		}
+		v.refresh()
+	} else {
+		v.status = "pin refused — see serial"
+		v.syncWidgets()
 	}
 }
 
@@ -337,6 +409,16 @@ func (v *snapView) key(ev vi.Event) bool {
 			v.activate("rm")
 			return true
 		}
+	case fPin:
+		if usage == keyEnter || (usage == 0 && (ch == '\r' || ch == '\n')) {
+			v.togglePin()
+			return true
+		}
+	case fPrune:
+		if usage == keyEnter || (usage == 0 && (ch == '\r' || ch == '\n')) {
+			v.activatePrune()
+			return true
+		}
 	}
 	return false
 }
@@ -421,6 +503,16 @@ func (v *snapView) click(x, y int) bool {
 		v.activate("rm")
 		return true
 	}
+	if v.pinBtn.HitTest(x, y) {
+		v.setFocus(fPin)
+		v.togglePin()
+		return true
+	}
+	if v.pruneBtn.HitTest(x, y) {
+		v.setFocus(fPrune)
+		v.activatePrune()
+		return true
+	}
 	v.disarm()
 	return false
 }
@@ -433,6 +525,9 @@ func (v *snapView) syncWidgets() {
 	_, ok := v.selName()
 	v.restBtn.Disabled = !ok
 	v.delBtn.Disabled = !ok
+	v.pinBtn.Disabled = !ok
+	_, hasVictim := pruneVictim(v.rows)
+	v.pruneBtn.Disabled = !hasVictim
 	v.restBtn.Label = "Restore"
 	if v.armed == "restore" && ok {
 		v.restBtn.Label = "Confirm?"
@@ -440,6 +535,14 @@ func (v *snapView) syncWidgets() {
 	v.delBtn.Label = "Delete"
 	if v.armed == "rm" && ok {
 		v.delBtn.Label = "Confirm?"
+	}
+	v.pinBtn.Label = "Pin"
+	if ok && v.rows[v.sel].pinned {
+		v.pinBtn.Label = "Unpin"
+	}
+	v.pruneBtn.Label = "Prune"
+	if v.armed == "prune" {
+		v.pruneBtn.Label = "Confirm?"
 	}
 	v.list.Sel = v.sel
 	v.statusTxt.Label = v.status
@@ -457,8 +560,10 @@ func (v *snapView) layout() {
 	v.list.RowH = sc(widgets.Rect{X: 0, Y: 0, W: 1, H: 18}).H
 	v.field.R = sc(widgets.Rect{X: 12, Y: 196, W: 336, H: 22})
 	v.saveBtn.R = sc(widgets.Rect{X: 356, Y: 196, W: 112, H: 22})
-	v.restBtn.R = sc(widgets.Rect{X: 12, Y: 228, W: 150, H: 22})
-	v.delBtn.R = sc(widgets.Rect{X: 170, Y: 228, W: 150, H: 22})
+	v.restBtn.R = sc(widgets.Rect{X: 12, Y: 228, W: 104, H: 22})
+	v.delBtn.R = sc(widgets.Rect{X: 124, Y: 228, W: 104, H: 22})
+	v.pinBtn.R = sc(widgets.Rect{X: 236, Y: 228, W: 104, H: 22})
+	v.pruneBtn.R = sc(widgets.Rect{X: 348, Y: 228, W: 120, H: 22})
 	v.statusTxt.R = sc(widgets.Rect{X: 12, Y: 260, W: 456, H: 30})
 }
 
@@ -473,6 +578,8 @@ func (v *snapView) draw() {
 	v.saveBtn.Draw(cv)
 	v.restBtn.Draw(cv)
 	v.delBtn.Draw(cv)
+	v.pinBtn.Draw(cv)
+	v.pruneBtn.Draw(cv)
 	v.statusTxt.Draw(cv)
 }
 

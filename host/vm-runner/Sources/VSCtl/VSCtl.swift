@@ -65,6 +65,11 @@ public enum VSCtl {
         // hold refuses by name.
         "exists": "a snapshot by that name already exists",
         "not_found": "no snapshot by that name",
+        // #3369: the named store's retention bound — a save at the cap
+        // evicts the oldest unpinned name; when nothing is evictable
+        // (every stored snapshot pinned) or the bounded CRASH* namespace
+        // is full, the save is refused by this code.
+        "store_full": "the snapshot store is at its retention cap",
         // M128d (#2608): the read-only summary verb has no armed state of
         // its own — its answer carries "-" for what a profile-less run
         // lacks rather than refusing. (No new refusal codes.)
@@ -236,6 +241,17 @@ public enum FlatParse {
 public struct SuspendVerdict {
     public var accepted: Bool
     public var code: String
+    /// #3369: set only by the snapshot driver — the name the capped
+    /// store evicted to admit this save. The ok reply relays it as the
+    /// result's `evicted` member so the wire records which snapshot the
+    /// bound dropped.
+    public var evicted: String?
+
+    public init(accepted: Bool, code: String, evicted: String? = nil) {
+        self.accepted = accepted
+        self.code = code
+        self.evicted = evicted
+    }
 
     public static var accept: SuspendVerdict { SuspendVerdict(accepted: true, code: "") }
     public static func refuse(_ code: String) -> SuspendVerdict { SuspendVerdict(accepted: false, code: code) }
@@ -473,7 +489,12 @@ public struct CTLSession {
                 guard verdict.accepted else {
                     return (errorLine(verdict.code, id: id), false)
                 }
-                return (Data("{\"id\":\(id),\"ok\":true,\"result\":{\"verb\":\"snapshot\",\"name\":\"\(name)\",\"state\":\"saved\"}}\n".utf8), false)
+                // #3369: an eviction is part of the verdict — the reply
+                // names the snapshot the capped store dropped to admit
+                // this one.
+                let evictedTail = verdict.evicted
+                    .map { ",\"evicted\":\"\(ctlEscape($0))\"" } ?? ""
+                return (Data("{\"id\":\(id),\"ok\":true,\"result\":{\"verb\":\"snapshot\",\"name\":\"\(name)\",\"state\":\"saved\"\(evictedTail)}}\n".utf8), false)
             }
             return (errorLine("unimplemented", id: id), false)
         case "restore":
