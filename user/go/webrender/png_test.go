@@ -8,6 +8,7 @@ import (
 	"hash/crc32"
 	"image/color"
 	"image/png"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -27,23 +28,11 @@ func pngChunk(name string, body []byte) []byte {
 	return out
 }
 
-func pngTestFile(t testing.TB, typ, filter byte, level int, trns bool) []byte {
-	t.Helper()
-	const w, h = 7, 5
+// pngRawPixels is the deterministic w×h pixel vector every generated corpus
+// file encodes: channel value x*37+y*53+c*19, palette index (x+y)%3 for
+// type 3, and a three-step alpha ramp for types 4 and 6.
+func pngRawPixels(typ byte, w, h int) []byte {
 	channels := map[byte]int{0: 1, 2: 3, 3: 1, 4: 2, 6: 4}[typ]
-	header := make([]byte, 13)
-	binary.BigEndian.PutUint32(header[:4], w)
-	binary.BigEndian.PutUint32(header[4:8], h)
-	header[8], header[9] = 8, typ
-	out := append([]byte(nil), pngMagic...)
-	out = append(out, pngChunk("IHDR", header)...)
-	if typ == 3 {
-		out = append(out, pngChunk("PLTE", []byte{9, 200, 17, 244, 26, 9, 17, 31, 211})...)
-	}
-	if trns {
-		values := map[byte][]byte{0: {0, 0}, 2: {0, 0, 0, 19, 0, 38}, 3: {0, 127}}
-		out = append(out, pngChunk("tRNS", values[typ])...)
-	}
 	raw := make([]byte, w*h*channels)
 	for y := 0; y < h; y++ {
 		for x := 0; x < w; x++ {
@@ -59,65 +48,135 @@ func pngTestFile(t testing.TB, typ, filter byte, level int, trns bool) []byte {
 			}
 		}
 	}
-	rows := make([]byte, 0, (w*channels+1)*h)
-	for y := 0; y < h; y++ {
-		rows = append(rows, filter)
-		for i := 0; i < w*channels; i++ {
-			p := y*w*channels + i
-			a, b, c := 0, 0, 0
-			if i >= channels {
-				a = int(raw[p-channels])
-			}
-			if y > 0 {
-				b = int(raw[p-w*channels])
-				if i >= channels {
-					c = int(raw[p-w*channels-channels])
-				}
-			}
-			predict := 0
-			switch filter {
-			case 1:
-				predict = a
-			case 2:
-				predict = b
-			case 3:
-				predict = (a + b) / 2
-			case 4:
-				dist := func(n int) int {
-					if n < 0 {
-						return -n
-					}
-					return n
-				}
-				q := a + b - c
-				da, db, dc := dist(q-a), dist(q-b), dist(q-c)
-				predict = c
-				if da <= db && da <= dc {
-					predict = a
-				} else if db <= dc {
-					predict = b
-				}
-			}
-			rows = append(rows, byte(int(raw[p])-predict))
+	return raw
+}
+
+// pngFilterRow returns one filtered scanline — the filter byte then the
+// predictor-subtracted bytes — for a row of a pass, given the pass's
+// previous row. A filter byte outside 0-4 is written verbatim (the
+// malformed-vector use); it just predicts zero.
+func pngFilterRow(filter byte, row, prev []byte, bpp int) []byte {
+	out := []byte{filter}
+	for i := 0; i < len(row); i++ {
+		a, b, c := 0, 0, 0
+		if i >= bpp {
+			a = int(row[i-bpp])
 		}
+		if prev != nil {
+			b = int(prev[i])
+			if i >= bpp {
+				c = int(prev[i-bpp])
+			}
+		}
+		predict := 0
+		switch filter {
+		case 1:
+			predict = a
+		case 2:
+			predict = b
+		case 3:
+			predict = (a + b) / 2
+		case 4:
+			dist := func(n int) int {
+				if n < 0 {
+					return -n
+				}
+				return n
+			}
+			q := a + b - c
+			da, db, dc := dist(q-a), dist(q-b), dist(q-c)
+			predict = c
+			if da <= db && da <= dc {
+				predict = a
+			} else if db <= dc {
+				predict = b
+			}
+		}
+		out = append(out, byte(int(row[i])-predict))
+	}
+	return out
+}
+
+// pngWrap assembles the chunk stream every generated corpus file uses:
+// IHDR (interlace as given), PLTE for type 3, tRNS when asked, the zlib
+// stream split across two IDAT chunks off the stream boundary, IEND.
+func pngWrap(t testing.TB, typ byte, w, h, interlace int, trns bool, scanlines []byte, level int) []byte {
+	t.Helper()
+	header := make([]byte, 13)
+	binary.BigEndian.PutUint32(header[:4], uint32(w))
+	binary.BigEndian.PutUint32(header[4:8], uint32(h))
+	header[8], header[9] = 8, typ
+	header[12] = byte(interlace)
+	out := append([]byte(nil), pngMagic...)
+	out = append(out, pngChunk("IHDR", header)...)
+	if typ == 3 {
+		out = append(out, pngChunk("PLTE", []byte{9, 200, 17, 244, 26, 9, 17, 31, 211})...)
+	}
+	if trns {
+		values := map[byte][]byte{0: {0, 0}, 2: {0, 0, 0, 19, 0, 38}, 3: {0, 127}}
+		out = append(out, pngChunk("tRNS", values[typ])...)
 	}
 	var compressed bytes.Buffer
 	z, err := zlib.NewWriterLevel(&compressed, level)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = z.Write(rows); err != nil {
+	if _, err = z.Write(scanlines); err != nil {
 		t.Fatal(err)
 	}
 	if err = z.Close(); err != nil {
 		t.Fatal(err)
 	}
-	// Split IDAT across non-stream-aligned boundaries.
 	stream := compressed.Bytes()
 	split := len(stream) / 3
 	out = append(out, pngChunk("IDAT", stream[:split])...)
 	out = append(out, pngChunk("IDAT", stream[split:])...)
 	return append(out, pngChunk("IEND", nil)...)
+}
+
+func pngTestFile(t testing.TB, typ, filter byte, level int, trns bool) []byte {
+	t.Helper()
+	const w, h = 7, 5
+	channels := map[byte]int{0: 1, 2: 3, 3: 1, 4: 2, 6: 4}[typ]
+	raw := pngRawPixels(typ, w, h)
+	var rows []byte
+	for y := 0; y < h; y++ {
+		var prev []byte
+		if y > 0 {
+			prev = raw[(y-1)*w*channels : y*w*channels]
+		}
+		rows = append(rows, pngFilterRow(filter, raw[y*w*channels:(y+1)*w*channels], prev, channels)...)
+	}
+	return pngWrap(t, typ, w, h, 0, trns, rows, level)
+}
+
+// pngAdam7TestFile is pngTestFile with interlace method 1: the same pixel
+// vector lifted out of the image in the seven-pass Adam7 order, each pass
+// filtered independently (bpp = channels, prev = the pass's own last row).
+// Passes the grid misses contribute nothing — exactly what the decoder
+// expects of a stream.
+func pngAdam7TestFile(t testing.TB, typ, filter byte, level int, trns bool, w, h int) []byte {
+	t.Helper()
+	channels := map[byte]int{0: 1, 2: 3, 3: 1, 4: 2, 6: 4}[typ]
+	raw := pngRawPixels(typ, w, h)
+	var stream []byte
+	for _, p := range adam7 {
+		pw, ph := adam7Size(w, h, p)
+		if pw == 0 || ph == 0 {
+			continue
+		}
+		var prev []byte
+		for y := 0; y < ph; y++ {
+			row := make([]byte, pw*channels)
+			for x := 0; x < pw; x++ {
+				src := ((p[1]+y*p[3])*w + p[0] + x*p[2]) * channels
+				copy(row[x*channels:], raw[src:src+channels])
+			}
+			stream = append(stream, pngFilterRow(filter, row, prev, channels)...)
+			prev = row
+		}
+	}
+	return pngWrap(t, typ, w, h, 1, trns, stream, level)
 }
 
 func checkPNGEquality(t testing.TB, data []byte) {
@@ -228,6 +287,68 @@ func TestOwnedPNGCorpus(t *testing.T) {
 	}
 }
 
+// TestPNGAdam7StdlibEquality is the interlaced half of
+// TestPNGStdlibEquality: the same vector split into the seven-pass stream,
+// checked byte-for-byte against the stdlib decoder — which is the oracle
+// that keeps the test-side pass walk honest too.
+func TestPNGAdam7StdlibEquality(t *testing.T) {
+	// Sizes picked to hit the pass-skip edges: 1x1 has one contributing
+	// pass, w<=4 skips pass 2, w<=2 skips 4 and 6, h<=4 skips 3, h<=2 skips
+	// 5, h==1 skips 7.
+	sizes := [][2]int{{7, 5}, {8, 8}, {16, 16}, {1, 1}, {2, 9}, {5, 4}}
+	for _, typ := range []byte{0, 2, 3, 4, 6} {
+		for filter := byte(0); filter <= 4; filter++ {
+			for _, level := range []int{zlib.NoCompression, zlib.HuffmanOnly, zlib.BestCompression} {
+				for _, size := range sizes {
+					name := fmt.Sprintf("type-%d-filter-%d-%dx%d", typ, filter, size[0], size[1])
+					t.Run(name, func(t *testing.T) {
+						data := pngAdam7TestFile(t, typ, filter, level,
+							typ == 0 || typ == 2 || typ == 3, size[0], size[1])
+						checkPNGEquality(t, data)
+					})
+				}
+			}
+		}
+	}
+}
+
+// TestOwnedAdam7Corpus is the interlaced half of TestOwnedPNGCorpus: every
+// generated Adam7 vector is pinned under testdata/png/ so generator drift is
+// a reviewable diff, and adam7-160x120.png is the go-selftest leg's seeded
+// fixture — pinned here so the bytes the spec's pixel assert reconstructs
+// cannot drift from the vector.
+func TestOwnedAdam7Corpus(t *testing.T) {
+	pin := func(name string, data []byte) {
+		path := filepath.Join("testdata", "png", name)
+		if os.Getenv("WEBRENDER_CREATE_PNG_CORPUS") == "1" {
+			if _, err := os.Stat(path); os.IsNotExist(err) {
+				if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, data, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		pinned, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(pinned, data) {
+			t.Fatalf("owned corpus vector drift: %s", path)
+		}
+		checkPNGEquality(t, pinned)
+	}
+	for _, typ := range []byte{0, 2, 3, 4, 6} {
+		for filter := byte(0); filter <= 4; filter++ {
+			pin(fmt.Sprintf("adam7-type-%d-filter-%d.png", typ, filter),
+				pngAdam7TestFile(t, typ, filter, zlib.BestCompression,
+					typ == 0 || typ == 2 || typ == 3, 7, 5))
+		}
+	}
+	pin("adam7-160x120.png", pngAdam7TestFile(t, 2, 4, zlib.BestCompression, false, 160, 120))
+}
+
 func TestPNGInflateIntegrity(t *testing.T) {
 	valid := pngTestFile(t, 6, 0, zlib.BestCompression, false)
 	var stream []byte
@@ -253,6 +374,36 @@ func TestPNGInflateIntegrity(t *testing.T) {
 			}
 		})
 	}
+	// The Adam7 stream's exact-size contract is the same: the decompressed
+	// pass walk must fill, not over- or under-shoot, its own byte count.
+	interlaced := pngAdam7TestFile(t, 6, 0, zlib.BestCompression, false, 7, 5)
+	var istream []byte
+	for pos := 8; pos < len(interlaced); {
+		n := int(binary.BigEndian.Uint32(interlaced[pos:]))
+		if string(interlaced[pos+4:pos+8]) == "IDAT" {
+			istream = append(istream, interlaced[pos+8:pos+8+n]...)
+		}
+		pos += 12 + n
+	}
+	// The 7x5 type-6 Adam7 stream is 1*(1*4+1) + 1*(1*4+1) + 1*(2*4+1) +
+	// 2*(2*4+1) + 1*(4*4+1) + 3*(3*4+1) + 2*(7*4+1) = 5+5+9+18+17+39+58.
+	const adam7Stream = 151
+	for name, compressed := range map[string][]byte{
+		"adam7-short":  flate.ZlibStore(make([]byte, adam7Stream-1)),
+		"adam7-excess": flate.ZlibStore(make([]byte, adam7Stream+1)),
+	} {
+		t.Run(name, func(t *testing.T) {
+			data := append(append(append([]byte(nil), interlaced[:33]...), pngChunk("IDAT", compressed)...), pngChunk("IEND", nil)...)
+			if im, err := DecodePNG(data); err == nil || im != nil {
+				t.Fatal("invalid interlaced inflate framing accepted")
+			}
+		})
+	}
+	if zr, err := zlib.NewReader(bytes.NewReader(istream)); err != nil {
+		t.Fatal(err)
+	} else if body, err := io.ReadAll(zr); err != nil || len(body) != adam7Stream {
+		t.Fatalf("interlaced stream length drift: %d", len(body))
+	}
 }
 
 func replacePNGChunk(data []byte, name string, f func([]byte) []byte) []byte {
@@ -274,9 +425,15 @@ func TestPNGMalformed(t *testing.T) {
 	valid := pngTestFile(t, 6, 4, zlib.BestCompression, false)
 	badCRC := append([]byte(nil), valid...)
 	badCRC[29] ^= 1
+	interlaced := pngAdam7TestFile(t, 6, 4, zlib.BestCompression, false, 7, 5)
 	cases := map[string][]byte{
-		"crc":        badCRC,
-		"bad-filter": pngTestFile(t, 6, 5, zlib.NoCompression, false),
+		"crc":              badCRC,
+		"bad-filter":       pngTestFile(t, 6, 5, zlib.NoCompression, false),
+		"adam7-bad-filter": pngAdam7TestFile(t, 6, 5, zlib.NoCompression, false, 7, 5),
+		"interlace-2": replacePNGChunk(interlaced, "IHDR", func(b []byte) []byte {
+			b[12] = 2
+			return b
+		}),
 		"zero-width": replacePNGChunk(valid, "IHDR", func(b []byte) []byte {
 			binary.BigEndian.PutUint32(b, 0)
 			return b
@@ -313,18 +470,15 @@ func TestPNGCapsAndUnsupported(t *testing.T) {
 			t.Fatalf("dimensions %v: image=%v err=%v", pair, im, err)
 		}
 	}
-	for _, field := range []int{8, 12} {
-		data := replacePNGChunk(valid, "IHDR", func(b []byte) []byte {
-			if field == 8 {
-				b[field] = 16
-			} else {
-				b[field] = 1
-			}
-			return b
-		})
-		if _, err := DecodePNG(data); err != ErrImageUnsupported {
-			t.Fatalf("unsupported header field %d: %v", field, err)
-		}
+	// The depth pin: 16-bit stays refused by name. The interlace byte has no
+	// unsupported value left — 0 and 1 decode, anything else is invalid
+	// (TestPNGMalformed's interlace-2 case).
+	data := replacePNGChunk(valid, "IHDR", func(b []byte) []byte {
+		b[8] = 16
+		return b
+	})
+	if _, err := DecodePNG(data); err != ErrImageUnsupported {
+		t.Fatalf("unsupported header field 8: %v", err)
 	}
 	if _, err := DecodePNG(make([]byte, webstyle.MaxImageBytes+1)); err != errPNGLimit {
 		t.Fatal("source cap not honored")
@@ -351,6 +505,7 @@ func FuzzPNG(f *testing.F) {
 		for filter := byte(0); filter <= 4; filter++ {
 			f.Add(pngTestFile(f, typ, filter, zlib.BestCompression, typ == 3))
 		}
+		f.Add(pngAdam7TestFile(f, typ, 4, zlib.BestCompression, typ == 3, 7, 5))
 	}
 	f.Add([]byte{})
 	f.Add([]byte("not png"))
