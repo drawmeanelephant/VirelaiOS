@@ -31,7 +31,7 @@ stages beside it, the generated ELF fixtures, the shared libraries under
 `user/go/` and `user/src/lib/`, the kernel services that own a contract,
 the host tools the system cannot boot or publish without, and the gate
 fleet — every `tools/go/build-*.sh` target that builds and is staged by
-an owning class-B spec but never reaches the session share (the M201a
+an owning class-B spec but never reaches the session share (the fleet
 audit, issue #3397). What stays unlisted is what no `build-*.sh` target
 produces: a gate-only Zig .BIN that `build.zig` emits for one spec's
 share belongs to that spec, not to this table.
@@ -103,11 +103,11 @@ seat owns the envelope, it does not ride in one.
 ## Gate fleet — built and gate-staged, not on the session share
 
 Every `tools/go/build-*.sh` target that is neither an `image/apps.txt`
-row nor staged by `tools/session.sh`, sorted by the M201a audit (issue
+row nor staged by `tools/session.sh`, sorted by the fleet audit (issue
 #3397 — the classification table lives there). `staged` on these rows
 means the owning class-B spec copies the binary onto its gate share;
 none of them rides the session share a daily boot sees — the shell set
-`help` advertises is the M201b card's staging list. `tool` rows are real
+`help` advertises is the next card's staging list. `tool` rows are real
 programs driven by `exec` (windowed candidates marked * are card d's
 promotion judgement); `fixture` rows exist to serve their spec. The
 build-go.sh family is one row — eighteen generated fixtures sharing one

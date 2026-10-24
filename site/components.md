@@ -83,11 +83,11 @@ seat owns the envelope, it does not ride in one.
 ## Gate fleet — built and gate-staged, not on the session share
 
 Every `tools/go/build-*.sh` target that is neither an `image/apps.txt`
-row nor staged by `tools/session.sh`, sorted by the M201a audit (issue
+row nor staged by `tools/session.sh`, sorted by the fleet audit (issue
 #3397 — the classification table lives there). `staged` on these rows
 means the owning class-B spec copies the binary onto its gate share;
 none of them rides the session share a daily boot sees — the shell set
-`help` advertises is the M201b card's staging list. `tool` rows are real
+`help` advertises is the next card's staging list. `tool` rows are real
 programs driven by `exec` (windowed candidates marked * are card d's
 promotion judgement); `fixture` rows exist to serve their spec. The
 build-go.sh family is one row — eighteen generated fixtures sharing one
