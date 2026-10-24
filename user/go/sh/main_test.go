@@ -137,6 +137,72 @@ func TestHeredocCollector(t *testing.T) {
 	}
 }
 
+// TestDecodeState pins the appver-1 blob's refusal rules — the seat carries
+// bytes, it does not vouch for them: every truncation, a wrong format byte,
+// a nonzero flags byte, a trailing byte, and an over-bound cwd are all
+// stale, never trusted.
+func TestDecodeState(t *testing.T) {
+	if cwd, ok := decodeState([]byte{stateFmtVer, 0, 1, 0, '/'}); !ok || cwd != "/" {
+		t.Fatalf("decode / = %q,%v", cwd, ok)
+	}
+	if cwd, ok := decodeState([]byte{stateFmtVer, 0, 13, 0, '/', 'h', 'o', 's', 't', '/', 'G', 'O', 'S', 'H', 'C', 'W', 'D'}); !ok || cwd != "/host/GOSHCWD" {
+		t.Fatalf("decode /host/GOSHCWD = %q,%v", cwd, ok)
+	}
+	for _, tc := range []struct {
+		name string
+		blob []byte
+	}{
+		{"empty", nil},
+		{"short", []byte{stateFmtVer, 0, 1}},
+		{"wrong fmtVer", []byte{9, 0, 1, 0, '/'}},
+		{"flags set", []byte{stateFmtVer, 1, 1, 0, '/'}},
+		{"empty cwd", []byte{stateFmtVer, 0, 0, 0}},
+		{"declared past blob", []byte{stateFmtVer, 0, 9, 0, '/'}},
+		{"trailing byte", []byte{stateFmtVer, 0, 1, 0, '/', 0}},
+	} {
+		if _, ok := decodeState(tc.blob); ok {
+			t.Fatalf("%s decoded", tc.name)
+		}
+	}
+	// A cwd over the kernel's path bound is a foreign blob even when its
+	// own length field is honest.
+	over := append(appendU16([]byte{stateFmtVer, 0}, statePathMax+1),
+		[]byte(strings.Repeat("x", statePathMax+1))...)
+	if _, ok := decodeState(over); ok {
+		t.Fatal("over-bound cwd decoded")
+	}
+}
+
+// TestSaveStateRoundTrip: the blob a save ask stages carries the bound
+// Pwd — the same string a later decode hands back.
+func TestSaveStateRoundTrip(t *testing.T) {
+	gs := &goshState{cwd: func() string { return "/host/GOSHCWD" }}
+	cwd, ok := decodeState(gs.saveState())
+	if !ok || cwd != "/host/GOSHCWD" {
+		t.Fatalf("round trip = %q,%v", cwd, ok)
+	}
+	// An unbound holder still answers — the seeded home.
+	if cwd, ok := decodeState((&goshState{}).saveState()); !ok || cwd != "/" {
+		t.Fatalf("unbound round trip = %q,%v", cwd, ok)
+	}
+}
+
+// TestCanonCwd: the only shapes a restore applies are the ones saveState
+// can emit — canonical /-rooted PWDs, never "..", doubled slashes,
+// trailing slashes, or relative names.
+func TestCanonCwd(t *testing.T) {
+	for _, p := range []string{"/", "/host", "/host/DOCS", "/usb1/a/b"} {
+		if !canonCwd(p) {
+			t.Fatalf("canonCwd(%q) = false", p)
+		}
+	}
+	for _, p := range []string{"", "host", "/host/", "//host", "/host//x", "/host/.", "/host/..", "/..", "/a/../b", "relative/dir"} {
+		if canonCwd(p) {
+			t.Fatalf("canonCwd(%q) = true", p)
+		}
+	}
+}
+
 // TestLineEmitter: headless Out bytes reassemble into whole lines for emit
 // regardless of chunk boundaries, and flush drains a trailing partial.
 func TestLineEmitter(t *testing.T) {

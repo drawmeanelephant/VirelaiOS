@@ -57,7 +57,7 @@ at all, and `--stale` sorts those rows first.
 | Terminal | GOTERM.ELF |  #3251 | 2026-10-23 | notify-on-finish toast for >5s unfocused commands |
 | Web | WEB.ELF |  #3142 | 2026-10-22 | a11y keys honoured — WEB text_scale |
 | Pulse | PULSE.ELF |  #2959 | 2026-10-21 | lipgloss v2 |
-| Shell | GOSH.ELF |  #2775 | 2026-10-20 | shlib heredocs |
+| Shell | GOSH.ELF |  #3309 | 2026-10-24 | appver 1 envelope — cwd round-trips the seat's save/restore |
 | Help | GOHELP.ELF |  #3129 | 2026-10-22 | free-file sleep sites → ns durations (tree-wide) |
 | Welcome | GOWELCOME.ELF |  #3307 | 2026-10-24 | appver-1 envelope — tour step + done flag + first owning spec |
 | Top | GOTOP.ELF |  #3249 | 2026-10-23 | appver-1 envelope — sort + active tab persist |

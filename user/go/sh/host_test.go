@@ -6,6 +6,7 @@ import (
 	"unsafe"
 
 	"virelai/shlib"
+	"virelai/tabapp"
 	"virelai/vi"
 )
 
@@ -785,6 +786,78 @@ func TestLoadPromptAdoptsSettings(t *testing.T) {
 	k.files["/host/SETTINGS.TXT"] = []byte("prompt=\\w\n")
 	if got := loadPrompt(); got != "\\w " {
 		t.Fatalf("settings prompt = %q", got)
+	}
+}
+
+// TestApplyRestored is the M195d envelope's apply path through the real
+// seam: a decoded cwd is validated against the kernel's list gate before
+// PWD moves — a missing dir, a file-as-dir, a denied dir, and a
+// non-canonical field all refuse by name and keep the seeded "/" home; a
+// foreign appver and an undecodable blob are stale, never a boot-blocker.
+func TestApplyRestored(t *testing.T) {
+	k := newFakeKernel(t)
+	k.dirs["/host/GOSHCWD"] = true
+	k.dirs["/host/PRIV"] = true
+	k.dirErr["/host/PRIV"] = -vi.ErrEACCES
+	k.files["/host/AFILE.TXT"] = []byte("x")
+
+	newShell := func() *shlib.Shell {
+		return shlib.NewShell(newGoshHost(k.ttyH, true), &shlib.History{})
+	}
+	pend := func(dir string) *goshState {
+		s := &goshState{cwd: func() string { return dir }}
+		s.noteState(s.saveState())
+		return s
+	}
+
+	// The round trip: an existing dir lands in PWD.
+	gs, sh := pend("/host/GOSHCWD"), newShell()
+	if got := gs.applyRestored(nil, newGoshHost(k.ttyH, true), sh); got != "gosh: state restored cwd=/host/GOSHCWD" {
+		t.Fatalf("restored marker = %q", got)
+	}
+	if sh.Pwd() != "/host/GOSHCWD" {
+		t.Fatalf("PWD = %q", sh.Pwd())
+	}
+
+	// No blob waiting: silent, PWD untouched.
+	if got := (&goshState{}).applyRestored(nil, newGoshHost(k.ttyH, true), newShell()); got != "" {
+		t.Fatalf("empty apply = %q", got)
+	}
+
+	// Refused by name — each bad target leaves the seeded home.
+	for _, tc := range []struct {
+		dir  string
+		want string
+	}{
+		{"/host/GONE", "gosh: state refused cwd=/host/GONE err=ENOENT"},
+		{"/host/AFILE.TXT", "gosh: state refused cwd=/host/AFILE.TXT err=ENOENT"},
+		{"/host/PRIV", "gosh: state refused cwd=/host/PRIV err=EACCES"},
+		{"/a/../b", "gosh: state refused cwd=/a/../b err=invalid"},
+	} {
+		gs, sh = pend(tc.dir), newShell()
+		if got := gs.applyRestored(nil, newGoshHost(k.ttyH, true), sh); got != tc.want {
+			t.Fatalf("%s: marker = %q, want %q", tc.dir, got, tc.want)
+		}
+		if sh.Pwd() != "/" {
+			t.Fatalf("%s: PWD moved to %q", tc.dir, sh.Pwd())
+		}
+	}
+
+	// A blob that decoded but was stored under a foreign appver.
+	gs, sh = pend("/host/GOSHCWD"), newShell()
+	ta := &tabapp.TabApp{RestoredVersion: stateAppVer + 1}
+	if got := gs.applyRestored(ta, newGoshHost(k.ttyH, true), sh); got != "gosh: state stale version" {
+		t.Fatalf("stale version marker = %q", got)
+	}
+	if sh.Pwd() != "/" {
+		t.Fatalf("stale version moved PWD to %q", sh.Pwd())
+	}
+
+	// A blob that would not decode at all.
+	gs = &goshState{}
+	gs.noteState([]byte{0xff, 0xff})
+	if got := gs.applyRestored(nil, newGoshHost(k.ttyH, true), newShell()); got != "gosh: state stale bad" {
+		t.Fatalf("stale bad marker = %q", got)
 	}
 }
 
