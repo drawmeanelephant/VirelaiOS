@@ -180,6 +180,115 @@ func TestSayHookFallbackAndRefusal(t *testing.T) {
 	}
 }
 
+// The -announce verb: the utterance lands on the console in text, and
+// the (win, utterance) dedup is announce-on-change — a live-region
+// rename re-announces while an outline churn that leaves the utterance
+// alone stays silent.
+func TestAnnounceVerb(t *testing.T) {
+	var s stubs
+	s.install(t)
+	a := &app{self: 9, announce: true}
+	s.rows = []vi.WmWindowRow{{ID: 5, Focused: true}}
+	s.files = map[string][]byte{"/host/A11Y.5": appkit.EncodeOutline([]appkit.Node{
+		{Depth: 0, Role: appkit.RoleWindow, Name: "Dialog"},
+		{Depth: 1, Role: appkit.RoleTreeItem,
+			State: appkit.StateFocused, Name: "kernel"},
+	})}
+	if !a.poll() {
+		t.Fatal("outline poll did not report")
+	}
+	if s.console[len(s.console)-1] != "goa11y: announce kernel" {
+		t.Fatalf("console tail = %v", s.console[len(s.console)-1:])
+	}
+	// Identical poll: nothing re-announces.
+	n := len(s.console)
+	if a.poll() || len(s.console) != n {
+		t.Fatal("identical outline re-announced")
+	}
+	// Outline churn under an unchanged utterance: the node dump still
+	// reports, but the narration does not repeat.
+	s.files["/host/A11Y.5"] = appkit.EncodeOutline([]appkit.Node{
+		{Depth: 0, Role: appkit.RoleWindow, Name: "Dialog"},
+		{Depth: 1, Role: appkit.RoleTree, Name: "Tree"},
+		{Depth: 2, Role: appkit.RoleTreeItem,
+			State: appkit.StateFocused, Name: "kernel"},
+	})
+	if !a.poll() {
+		t.Fatal("churned outline did not report")
+	}
+	if s.console[len(s.console)-1] == "goa11y: announce kernel" {
+		t.Fatal("unchanged utterance re-announced")
+	}
+	// A live-region rename: the focused row's new name announces.
+	s.files["/host/A11Y.5"] = appkit.EncodeOutline([]appkit.Node{
+		{Depth: 0, Role: appkit.RoleWindow, Name: "Dialog"},
+		{Depth: 1, Role: appkit.RoleTree, Name: "Tree"},
+		{Depth: 2, Role: appkit.RoleTreeItem,
+			State: appkit.StateFocused, Name: "initrd"},
+	})
+	if !a.poll() || s.console[len(s.console)-1] != "goa11y: announce initrd" {
+		t.Fatalf("renamed row did not announce: %v", s.console[len(s.console)-2:])
+	}
+}
+
+// Focus-follow is part of the dedup identity: the same utterance on a
+// different window is a new context and announces again.
+func TestAnnounceFollowsWindowMove(t *testing.T) {
+	var s stubs
+	s.install(t)
+	a := &app{self: 9, announce: true}
+	outline := appkit.EncodeOutline([]appkit.Node{
+		{Depth: 0, Role: appkit.RoleWindow, Name: "Dialog"},
+		{Depth: 1, Role: appkit.RoleButton,
+			State: appkit.StateFocused, Name: "OK"},
+	})
+	s.files = map[string][]byte{"/host/A11Y.5": outline, "/host/A11Y.7": outline}
+	s.rows = []vi.WmWindowRow{{ID: 5, Focused: true}, {ID: 7}}
+	a.poll()
+	s.rows = []vi.WmWindowRow{{ID: 5}, {ID: 7, Focused: true}}
+	if !a.poll() || s.console[len(s.console)-1] != "goa11y: announce OK" {
+		t.Fatalf("focus move did not re-announce: %v", s.console[len(s.console)-3:])
+	}
+	// Leaving the outlined windows ends the narration context: coming
+	// back to win 5's unchanged outline announces again.
+	s.rows = []vi.WmWindowRow{{ID: 5}, {ID: 7}}
+	if !a.poll() || a.state != viewNoFocus {
+		t.Fatalf("unfocused poll state=%d", a.state)
+	}
+	s.rows = []vi.WmWindowRow{{ID: 5, Focused: true}, {ID: 7}}
+	if !a.poll() || s.console[len(s.console)-1] != "goa11y: announce OK" {
+		t.Fatalf("return to win 5 did not re-announce: %v",
+			s.console[len(s.console)-3:])
+	}
+}
+
+// The voice obeys announce-on-change too: an outline churn that leaves
+// the utterance alone does not re-stage a SAY marker.
+func TestSayDedupOnUtterance(t *testing.T) {
+	var s stubs
+	s.install(t)
+	a := &app{self: 9, say: true}
+	s.rows = []vi.WmWindowRow{{ID: 5, Focused: true}}
+	s.files = map[string][]byte{"/host/A11Y.5": appkit.EncodeOutline([]appkit.Node{
+		{Depth: 0, Role: appkit.RoleWindow, Name: "Dialog"},
+		{Depth: 1, Role: appkit.RoleTreeItem,
+			State: appkit.StateFocused, Name: "kernel"},
+	})}
+	a.poll()
+	s.files["/host/A11Y.5"] = appkit.EncodeOutline([]appkit.Node{
+		{Depth: 0, Role: appkit.RoleWindow, Name: "Dialog"},
+		{Depth: 1, Role: appkit.RoleTree, Name: "Tree"},
+		{Depth: 2, Role: appkit.RoleTreeItem,
+			State: appkit.StateFocused, Name: "kernel"},
+	})
+	if !a.poll() {
+		t.Fatal("churned outline did not report")
+	}
+	if len(s.says) != 1 {
+		t.Fatalf("unchanged utterance re-staged: %v", s.says)
+	}
+}
+
 // Without -say the reader never touches the lane.
 func TestSayOffStagesNothing(t *testing.T) {
 	var s stubs
