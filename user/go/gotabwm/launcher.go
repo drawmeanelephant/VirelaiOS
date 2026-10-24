@@ -26,6 +26,7 @@ package main
 import (
 	"errors"
 
+	"virelai/art"
 	"virelai/draw"
 	"virelai/find"
 	"virelai/mime"
@@ -85,11 +86,13 @@ const (
 
 	filterMax = 24
 
-	// The emblem's staging path and decode budget: /host/SEXIBURGER.QOI is
-	// the repo's existing mascot_64x64.qoi fixture, copied to the share by
+	// The emblem's staging path and decode budget: /host/ART/BRD_EMB.QOI is
+	// the f-artcraft #1254 about emblem (mascot + wordmark roundel, 256px
+	// master) — it replaced the borrowed mascot_64x64 fixture in the strip
+	// header, exactly as the request named. Copied to the share by
 	// gate-run/session.sh exactly like APPS.TXT and WALLPAPER.QOI.
-	emblemPath     = "/host/SEXIBURGER.QOI"
-	emblemMaxBytes = 65536
+	emblemPath     = "/host/ART/BRD_EMB.QOI"
+	emblemMaxBytes = 1 << 20
 	emblemMaxDim   = 256
 	emblemMaxPix   = 256 * 256
 
@@ -132,10 +135,10 @@ type launcherState struct {
 	// always last. M191b gives the launcher's own face the same row: a
 	// query with no name hit still has one honest answer, and it is the
 	// hand-off, not an inline content search.
-	search paletteEntry
-	width      int
-	height     int
-	launching  bool
+	search    paletteEntry
+	width     int
+	height    int
+	launching bool
 
 	// M191b: the filename hits. filtered rows encoded <= launchFileIdx0
 	// index into hits; hitsVisit is the entries the last walk counted
@@ -1069,6 +1072,9 @@ func paintLauncher(scan []byte, width, height int) int {
 			Headline: headline,
 			Hints:    hints,
 			Face:     seatFaceUI(),
+			// M203 (#3338): the delivered no-results spot on a full
+			// canvas; the '?' row stays the degrade.
+			Spot: art.Spot(art.SpotNoResults),
 		}).Draw(c)
 		written += seatArea(c, widgets.Rect{X: launchX + tok.PadMD, Y: launchY + launchHdr,
 			W: launchW - 2*tok.PadMD - launchRule, H: maxH - launchHdr - tok.PadMD})

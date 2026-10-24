@@ -102,30 +102,34 @@ pub const cursor_w: usize = 16;
 pub const cursor_h: usize = 24;
 /// Pointer coordinates and hit tests name the arrow tip, not its bitmap origin.
 pub const cursor_hotspot = struct { x: u32, y: u32 }{ .x = 1, .y = 1 };
+/// M203 (#3338): the f-artcraft #1249 arrow refresh — the same white-fill /
+/// dark-outline read, redrawn by the artist at 32x48 and mask-reduced by
+/// tools/art/mkcursormask.py (the full set + hotspots land in
+/// image/art/cursors/MASKS.TXT; context selection is the followup card).
 pub const cursor_mask = [_][]const u8{
+    "##..............",
+    "###.............",
+    "####............",
+    "##o##...........",
+    "##oo##..........",
+    "##ooo##.........",
+    "##oooo##........",
+    "##ooooo##.......",
+    "##oooooo###.....",
+    "##ooooooo###....",
+    "##oooooooo###...",
+    "##ooooooooo###..",
+    "##oooooo######..",
+    "##ooo#oo#####...",
+    "##o####oo#......",
+    "#######oo##.....",
+    "####..#oo##.....",
+    "##....##oo#.....",
+    ".......#oo##....",
+    ".......#####....",
+    "........###.....",
     "................",
-    ".#..............",
-    ".##.............",
-    ".#o#............",
-    ".#oo#...........",
-    ".#ooo#..........",
-    ".#oooo#.........",
-    ".#ooooo#........",
-    ".#oooooo#.......",
-    ".#ooooooo#......",
-    ".#oooooooo#.....",
-    ".#ooooooooo#....",
-    ".#oooooooooo#...",
-    ".#ooooooooooo#..",
-    ".#oooooooooooo#.",
-    ".#oooooo#######.",
-    ".#oooo#o#.......",
-    ".#ooo#.o#.......",
-    ".#oo#..#o#......",
-    ".#o#...#o#......",
-    ".##.....#o#.....",
-    ".#......#o#.....",
-    ".........##.....",
+    "................",
     "................",
 };
 

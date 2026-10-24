@@ -368,6 +368,16 @@ fi
 [ -f "$ROOT/image/WALLPAPER.QOI" ] && cp "$ROOT/image/WALLPAPER.QOI" "$SHARE/WALLPAPER.QOI"
 # Launcher emblem (#2054): the mascot QOI fixture, read at /host/SEXIBURGER.QOI.
 [ -f "$ROOT/user/src/lib/fixtures/qoi/mascot_64x64.qoi" ] && cp "$ROOT/user/src/lib/fixtures/qoi/mascot_64x64.qoi" "$SHARE/SEXIBURGER.QOI"
+# M203 (#3338) staged art: the f-artcraft drop, read at /host/ART/<NAME>.QOI.
+# Repo files already carry the 8.3 names (image/art/ART.TXT is the manifest);
+# the copy only case-folds — no rename at the seam.
+if [ -d "$ROOT/image/art" ]; then
+    mkdir -p "$SHARE/ART"
+    for src in "$ROOT"/image/art/*/*.qoi; do
+        [ -f "$src" ] || continue
+        cp "$src" "$SHARE/ART/$(basename "$src" | tr 'a-z' 'A-Z')"
+    done
+fi
 # TrueType fonts (Inter Regular/Bold/Italic for UI, Fira Code for the terminal).
 # Share names frozen by M69d #1531 D1.
 [ -f "$ROOT/image/fonts/Inter-Regular.ttf" ] && cp "$ROOT/image/fonts/Inter-Regular.ttf" "$SHARE/INTER.TTF"

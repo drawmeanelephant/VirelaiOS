@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"virelai/theme"
+	"virelai/ttf"
 )
 
 func TestEmptyStateHitTestAgreement(t *testing.T) {
@@ -49,6 +50,44 @@ func TestEmptyStateFlatStream(t *testing.T) {
 		if !r.Contains(f.r.X, f.r.Y) || !r.Contains(f.r.Right()-1, f.r.Bottom()-1) {
 			t.Fatalf("glyph fill %+v escapes the plate %+v", f.r, r)
 		}
+	}
+}
+
+// emptyFullCanvas is the minimal full-Canvas double: enough of the §3.2
+// contract for EmptyState's type assertion to take the decorated path.
+type emptyFullCanvas struct{ recordingCanvas }
+
+func (c *emptyFullCanvas) Text(_ *ttf.Face, _ Rect, _, _, _ int, _ string, _ uint32) {
+}
+
+// The M203 Spot band: on a full Canvas the widget reserves the taller
+// band and hands its rect to the callback; on a fill-only canvas the
+// callback never fires and the Icon row keeps the typographic form.
+func TestEmptyStateSpotBand(t *testing.T) {
+	r := Rect{X: 8, Y: 8, W: 200, H: 160}
+	var got Rect
+	e := &EmptyState{R: r, Icon: "?", Headline: "nothing",
+		Spot: func(_ RectCanvas, band Rect) bool {
+			if band.Empty() {
+				return true
+			}
+			got = band
+			return true
+		}}
+
+	e.Draw(&emptyFullCanvas{})
+	if got.H != emptySpotH {
+		t.Fatalf("spot band height %d, want %d", got.H, emptySpotH)
+	}
+	if !r.Contains(got.X, got.Y) || !r.Contains(got.Right()-1, got.Bottom()-1) {
+		t.Fatalf("spot band %+v escapes the plate %+v", got, r)
+	}
+
+	got = Rect{}
+	rc := &recordingCanvas{}
+	e.Draw(rc)
+	if got != (Rect{}) {
+		t.Fatalf("flat path fired Spot at %+v — the Icon row is its degrade", got)
 	}
 }
 

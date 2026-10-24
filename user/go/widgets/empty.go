@@ -28,16 +28,27 @@ type EmptyState struct {
 	Headline string
 	Hints    []string  // one centred line each, in order
 	Face     *ttf.Face // optional label face; nil → the 8x8 bitmap face
+	// Spot, when set, replaces the Icon row on a full Canvas: the widget
+	// reserves a taller band and hands its rect to the callback, which
+	// paints the staged spot illustration (art.Spot). The callback is
+	// probe-or-paint: an empty band rect asks "would you paint?" (no
+	// drawing); a real band asks it to paint. False on either keeps the
+	// Icon row — so a fill-only canvas, a VT caller, or an undecodable
+	// asset keeps the typographic form.
+	Spot func(c RectCanvas, r Rect) bool
 }
 
 // The stack's band heights are logical, identical on both paint paths, so
 // the bitmap degrade and the TrueType face agree on one geometry. The icon
-// paints at 2x — the bitmap face's 16px cell or the face's 26px.
+// paints at 2x — the bitmap face's 16px cell or the face's 26px. The spot
+// band holds an 80x60-scale illustration plus air (the delivered spots
+// read at 80x60).
 const (
 	emptyIconPx = 2 * labelPx
 	emptyHintPx = 11
 
 	emptyIconH = 22
+	emptySpotH = 76
 	emptyHeadH = 18
 	emptyHintH = 16
 	emptyGap   = 8 // between stack sections
@@ -50,8 +61,10 @@ func (e *EmptyState) Bounds() Rect { return e.R }
 // it owns no targets of its own.
 func (e *EmptyState) HitTest(x, y int) bool { return e.R.Contains(x, y) }
 
-// stackH is the content column's pixel height.
-func (e *EmptyState) stackH() int {
+// stackH is the content column's pixel height. spotOnly reports whether
+// the spot band stands in for the Icon row — the caller passes the full-
+// canvas knowledge stackH cannot see.
+func (e *EmptyState) stackH(spot bool) int {
 	h := 0
 	add := func(rh int) {
 		if h > 0 {
@@ -59,7 +72,9 @@ func (e *EmptyState) stackH() int {
 		}
 		h += rh
 	}
-	if e.Icon != "" {
+	if spot {
+		add(emptySpotH)
+	} else if e.Icon != "" {
 		add(emptyIconH)
 	}
 	if e.Headline != "" {
@@ -108,11 +123,18 @@ func (e *EmptyState) Draw(c RectCanvas) {
 	if full {
 		text, muted = opaque(text), opaque(muted)
 	}
-	y := inner.Y + (inner.H-e.stackH())/2
+	// The probe: does the callback have pixels for a real band? Asked
+	// before the layout so a missing asset costs the Icon row, not a
+	// plate with an empty 76px hole.
+	spot := e.Spot != nil && full && e.Spot(c, Rect{})
+	y := inner.Y + (inner.H-e.stackH(spot))/2
 	if y < inner.Y {
 		y = inner.Y
 	}
-	if e.Icon != "" {
+	if spot {
+		e.Spot(c, Rect{X: inner.X, Y: y, W: inner.W, H: emptySpotH})
+		y += emptySpotH + emptyGap
+	} else if e.Icon != "" {
 		e.line(c, inner, y, emptyIconH, e.Icon, emptyIconPx, 2, muted)
 		y += emptyIconH + emptyGap
 	}

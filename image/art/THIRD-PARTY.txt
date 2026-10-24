@@ -1,0 +1,21 @@
+Staged interface art — provenance
+=================================
+
+Source:   drawmeanelephant/f-artcraft, art/virelai/<slug>/, branch main
+Format:   <slug>-V1R00.vectorcraft + .svg + @2x.png per piece
+Adopted:  rendered QOI rasters only (the repo never vendors the vector
+          sources); tools/art/adopt.py is the deterministic conversion,
+          ART.TXT records per-asset source and output sha256.
+
+Issues (all on f-artcraft, all CLOSED at adoption):
+
+  #1249  cursor set (10)            -> image/art/cursors/
+  #1250  sexiburger pose set (6)    -> image/art/mascot/
+  #1253  empty-state spots (8)      -> image/art/spots/
+  #1254  brand plate + emblem (2)   -> image/art/brand/
+  #1255  spinner sprites (2 sheets) -> image/art/spinner/
+  #1257  filetype icons (10)        -> image/art/filetypes/
+
+License:  f-artcraft carries no LICENSE file; the art is authored for
+          VirelaiOS by the same owner (drawmeanelephant). No third-party
+          license terms ride with these files.

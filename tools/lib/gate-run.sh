@@ -170,6 +170,15 @@ gate_seed_share_contents() {
     if [ -f user/src/lib/fixtures/qoi/mascot_64x64.qoi ]; then
         cp user/src/lib/fixtures/qoi/mascot_64x64.qoi "$SHARE/SEXIBURGER.QOI"
     fi
+    # 4c. M203 (#3338) staged art: the f-artcraft drop at /host/ART/<NAME>.QOI.
+    # Repo files already carry the 8.3 names; the copy only case-folds.
+    if [ -d image/art ]; then
+        mkdir -p "$SHARE/ART"
+        for src in image/art/*/*.qoi; do
+            [ -f "$src" ] || continue
+            cp "$src" "$SHARE/ART/$(basename "$src" | tr 'a-z' 'A-Z')"
+        done
+    fi
     # 5. TrueType fonts (Inter Regular/Bold/Italic/BoldItalic for UI,
     # Fira Code for mono). Share names frozen by M69d #1531 D1 (+ INTERBI.TTF
     # from M99o #2192): INTER.TTF, INTERB.TTF, INTERI.TTF, INTERBI.TTF,

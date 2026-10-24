@@ -73,6 +73,8 @@ vgate_assert 01 serial-contains 'gowelcome: open id='
 vgate_assert 01 serial-contains 'gowelcome: declare accepted'
 vgate_assert 01 serial-contains 'gowelcome: present'
 vgate_assert 01 serial-contains 'gowelcome: ready'
+# M203 (#3338): the delivered wave pose decoded off the share.
+vgate_assert 01 serial-contains 'gowelcome: mascot qoi 64x64'
 
 # The advance: one arrow press walks the tour off its first row.
 vgate_assert 01 serial-contains 'gowelcome: step 1'
