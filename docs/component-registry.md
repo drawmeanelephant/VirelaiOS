@@ -62,7 +62,7 @@ All of them additionally answer to the schema-v2 manifest grammar
 | Store | app | GOSTORE.ELF | — | tools/gate/specs/go-gostore.spec | shipped |
 | LLM Infer | app | GOINFER.ELF | — | tools/gate/specs/live-gpu3d.spec | shipped |
 | Recorder | app | GOREC.ELF | — | tools/gate/specs/live-sound-record.spec | shipped |
-| Snapshots | app | GOSNAP.ELF | — | tools/gate/specs/go-snap.spec | shipped |
+| Snapshots | app | GOSNAP.ELF | appver 1 | tools/gate/specs/go-snap.spec | shipped |
 | Assistant | app | GOASSIST.ELF | appver 2 | tools/gate/specs/go-assist.spec | shipped |
 | Sheet | app | GOSHEET.ELF | appver 2 | tools/gate/specs/go-sheet.spec | shipped |
 | Reader | app | GOREADER.ELF | appver 2 | tools/gate/specs/go-reader.spec | shipped |

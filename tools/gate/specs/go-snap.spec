@@ -439,12 +439,25 @@ PY
 
 # ---------------------------------------------------------------------------
 # M120d (#2561): pwr — the PWR menu's Snapshot row, driven by the pointer the
-# way a person reaches it: press PWR -> the two-row menu -> press Snapshot.
+# way a person reaches it: press PWR -> the menu -> press Snapshot.
 # The seat execs GOSNAP.ELF (no Snapshots tab is open), which opens, declares
 # and lists. cv input is legal here exactly like offer: the run never saves.
+# M195c (#3308): the windowed leg's GOSNAP tab now carries an appver-1
+# session row — a stale SESSION.TABS would restore a second Snapshots
+# window at this boot and the PWR row would focus it instead of execing
+# (observed on this spec's first M195c run). The go-calc run-06 recipe —
+# `vf rm` the session files before `wm` — restores the leg's premise.
+# The row click moved one row up: M190e (#3240) added the Lock row, so the
+# menu grew 20px taller and the old y=675 lands on Lock — `lock refused
+# no_credential` observed on this spec's first M195c run (pre-existing
+# drift: the leg clicks Suspend/Snapshot/Lock now, not the two-row menu
+# it was written against). y=655 is Snapshot's centre on the 1280x720
+# scanout (button band y=692, menu y=622, rows at 625+20*i).
 
 vgate_file pwr1.txt <<'EOF'
 set GOMAXPROCS=1
+vf rm GOTABWM.DEMO
+vf rm SESSION.TABS
 wm
 exec GOTABWM.ELF
 EOF
@@ -453,9 +466,10 @@ echo rx-gosnap-pwr-ok
 EOF
 
 vgate_run pwr -- --profile '$RUN_DIR/prof.virelaivm' --virtio-fs '$RUN_DIR/prof.virelaivm/share' \
+  --cvc-file '$RUN_DIR/prof.virelaivm/share' \
   --vsock --vsock-ctl --screen '$RUN_DIR/screen-pwr' --input \
   --script '$RUN_DIR/pwr1.txt' \
-  --pointer-virtio '338,702,c;308,675,c' \
+  --pointer-virtio '338,702,c;308,655,c' \
   --pointer-virtio-after 'gotabwm: win focus' \
   --script2 '$RUN_DIR/pwr2.txt' --script2-after 'gosnap: ready n=' \
   --script-expect 'rx-gosnap-pwr-ok' --timeout 300
@@ -469,3 +483,61 @@ vgate_assert pwr serial-contains 'gosnap: snap name='
 vgate_assert pwr serial-contains 'gosnap: ready n='
 vgate_assert pwr serial-contains 'rx-gosnap-pwr-ok'
 vgate_assert pwr serial-absent '[EXC]'
+
+# ---------------------------------------------------------------------------
+# M195c (#3308): winstate — the appver-1 envelope round-trip on the windowed
+# face. The seat hosts a BARE GOSNAP.ELF; `down` selects CRASH0's row and
+# `w` fills the name field, ctrl-shift-w closes the tab (the seat's
+# kind-20 ask collects the blob before the close lands), ctrl-shift-t
+# re-execs the recorded bin, and the app decodes the envelope — the row
+# re-selects by NAME and the field refills. cv INPUT carries the chords
+# (--via-virtio, headless-safe like offer): this leg never runs `gosnap
+# save`, so no vzsave needs the pure-VZ device set. SNAPSHOTS still holds
+# CRASH0 + WINBASE, so the fresh window reads n=2 on both execs. The same
+# M195c session hygiene as pwr: `vf rm` the session files first — a stale
+# row would restore a second Snapshots window whose `state restored`
+# marker matches this leg's own after-marker (observed on the first run)
+# and split the chord input across two tabs.
+
+vgate_file st1.txt <<'EOF'
+set GOMAXPROCS=1
+vf rm GOTABWM.DEMO
+vf rm SESSION.TABS
+wm
+exec GOTABWM.ELF
+EOF
+vgate_file st2.txt <<'EOF'
+exec GOSNAP.ELF
+EOF
+vgate_file st3.txt <<'EOF'
+echo rx-gosnap-state-ok
+EOF
+
+vgate_run winstate -- --profile '$RUN_DIR/prof.virelaivm' --virtio-fs '$RUN_DIR/prof.virelaivm/share' \
+  --cvc-file '$RUN_DIR/prof.virelaivm/share' \
+  --vsock --vsock-ctl --screen '$RUN_DIR/screen-state' --via-virtio \
+  --script '$RUN_DIR/st1.txt' \
+  --script2 '$RUN_DIR/st2.txt' --script2-after 'gotabwm: win focus' \
+  --input-chords 'down,w,ctrl-shift-w,ctrl-shift-t' \
+  --input-chords-after 'gosnap: ready n=2' \
+  --script3 '$RUN_DIR/st3.txt' --script3-after 'gosnap: state restored ' \
+  --script-expect 'rx-gosnap-state-ok' --timeout 300
+
+vgate_assert winstate serial-contains 'gotabwm: registered'
+vgate_assert winstate serial-contains 'exec: loaded GOSNAP.ELF'
+vgate_assert winstate serial-contains 'gosnap: open id='
+vgate_assert winstate serial-contains 'gosnap: declare accepted'
+vgate_assert winstate serial-contains 'gosnap: snap name=CRASH0 bytes='
+vgate_assert winstate serial-contains 'gosnap: ready n=2'
+# The seat's ask, the app's appver-1 answer, the close, the reopen.
+vgate_assert winstate serial-contains 'gotabwm: state ask id='
+vgate_assert winstate serial-contains 'gosnap: state saved sel=CRASH0 field=w'
+vgate_assert winstate serial-contains 'gotabwm: state save id='
+vgate_assert winstate serial-contains 'gotabwm: tab close id='
+vgate_assert winstate serial-contains 'gotabwm: reopen GOSNAP.ELF'
+vgate_assert winstate serial-contains 'gotabwm: state restore id='
+vgate_assert winstate serial-contains 'gosnap: state restored sel=CRASH0 field=w'
+vgate_assert winstate serial-contains 'rx-gosnap-state-ok'
+vgate_assert winstate serial-absent 'gosnap: state refused'
+vgate_assert winstate serial-absent 'gotabwm: state drop'
+vgate_assert winstate serial-absent '[EXC]'
