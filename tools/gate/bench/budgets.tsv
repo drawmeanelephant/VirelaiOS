@@ -81,6 +81,11 @@
 # 660/664/686 (acceptance run), tx 71/139/193 + 176/302/332 — a ~4.7x
 # spread under a busy host. Baselines are the best observed samples;
 # the hf-read -75% family covers the observed spread.
+# card #3156 (same host, 2026-10-24): net-rx re-pinned after M179d made
+# the socket_core receive window 16 KiB — a download now keeps ~11
+# segments in flight instead of one. New baseline is the best observed
+# sample: 19822 KiB/s (K=3: 19822/17664/17266); the -75% margin family
+# is kept.
 #
 id	cmp	budget	baseline	margin	ref
 boot-shell	<=	4	1	x4	#2485
@@ -98,5 +103,5 @@ smp-scale-c4	<=	66754980	33377490	x2	#2485
 seat-mbox-burst	>=	24	32	-8	#2487; ring bound, measured post-fix on this host
 seat-key-latency	<=	1999554	999777	x2	#3040; new leg, best of K=3 on this host
 timer-jitter	<=	23480	4696	x5	#3040; new leg, best observed of four boots (tail: 17823)
-net-rx	>=	191.5	766	-75%	#3147; best of K=3 samples 766/693 (one serial-torn) on this host
+net-rx	>=	4955.5	19822	-75%	#3156; re-pinned post-M179d 16 KiB receive window, best of K=3 samples 19822/17664/17266 on this host
 net-tx	>=	83	332	-75%	#3147; best of 6 same-shape samples across two runs on this host (71/139/176/193/302/332 — ~4.7x spread)
