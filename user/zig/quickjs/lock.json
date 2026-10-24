@@ -77,7 +77,7 @@
   "lock_sha256": "1c3df14ba8675dc85a36cf6b54dbb5319a4657b71af3ee91e61a5ca0e82e830c",
   "overlay_sha256": "882067f583fc6894b24a1ecf2740ff924421b8f67b94dfd1bf479f4a7ba6a2e2",
   "sources": {
-   "kernel/src/elf.zig": "2ba866943f0aef56e8f335e024e5599e5a980540589e2b86c9d7f586cb104671",
+   "kernel/src/elf.zig": "06c4a663762473b7800ab8eb838fa060e813d62e849b9b93de2bdeb06b956edf",
    "tools/check-zc-host-contract.py": "dafab47aa42339ff79fd4cbcc6ae8f0edac183914b694b451476590ec55d4661",
    "tools/zig/guest.ld": "22b1d4a67c7979462bda0851af4229fb36aaf83ebfe790bd9fdb0fff6fa54aa2",
    "tools/zig/kernel_contract.zig": "68b975245459facc84422d7f326dea7ac87cbf5ff451fcde3bba922b01630420",

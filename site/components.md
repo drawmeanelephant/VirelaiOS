@@ -72,6 +72,7 @@ seat owns the envelope, it does not ride in one.
 | Diff tool | tool | GODIFF.ELF | — | tools/gate/specs/go-godiff.spec | staged |
 | Release pipeline | tool | GORELEASE.ELF | ADR 0055 | ADR 0055 | staged |
 | WASM runtime | tool | WASM.BIN | — | docs/wasm-import-contract.md, tools/gate/specs/live-wasm.spec | staged |
+| QuickJS engine (now session-staged, was gate-only) | tool | QJS.BIN | ADR 0039 | ADR 0039, tools/gate/specs/live-quickjs.spec | staged |
 | Zig userland root | tool | USER.BIN | — | ADR 0034 | retained-fallback |
 | Sexiburger desktop | tool | SEXIBURG.BIN | — | tools/gate/specs/live-sexiburger.spec, ADR 0034 | retained-fallback |
 | Hello fixture | fixture | HELLO.ELF | — | tools/gate/specs/go-hello.spec | fixture |

@@ -88,11 +88,11 @@
 #   VIRELAI_SESSION_NO_TABWM=1       no seat autostart: the floating-window WM
 #   VIRELAI_SESSION_NO_GOTABWM=1     do not build/stage the Go seat and shell
 #                                    (the rc then falls back to `tabwm start`)
-#   VIRELAI_SESSION_SKIP_BUILD=1     skip EVERY build step — zig, swift, and
-#                                    the Go app builders — reusing the last
-#                                    .build/go output (staged files, the
-#                                    runner, and artifacts/disk.img must
-#                                    already exist)
+#   VIRELAI_SESSION_SKIP_BUILD=1     skip EVERY build step — zig, swift, the
+#                                    Go app builders, and the QJS.BIN product
+#                                    link — reusing the last .build output
+#                                    (staged files, the runner, and
+#                                    artifacts/disk.img must already exist)
 #
 # Controls: close the VM window, choose Quit VirelaiOS (Cmd-Q), or press
 # Ctrl-C in this terminal to stop the VM. Rerun the command to relaunch.
@@ -270,6 +270,8 @@ if [ "$DRY_RUN" = "1" ]; then
                 plan_rebuild=$((plan_rebuild + 1)) ;;
         esac
     done
+    qjs_status="$(python3 "$ROOT/tools/js-client/build.py" stale --output "$ROOT/.build/js-client/QJS.BIN" 2>/dev/null | awk '{print $NF}')"
+    printf 'session:     %-14s %s\n' "QJS.BIN" "${qjs_status:-unknown}"
     printf 'session:   plan: %d fresh, %d would rebuild, %d without a builder\n' "$plan_fresh" "$plan_rebuild" "$plan_nobuilder"
     exit 0
 fi
@@ -487,6 +489,45 @@ fi
 for app in GOUPD.ELF AGENTD.ELF; do
     stage_go_app "$app"
 done
+
+# --- 2c. stage QJS.BIN (M200a, issue #3352) --------------------------------
+# The ADR 0039 engine joins the staged tools: not a manifest app, but on the
+# share so `exec QJS.BIN /host/X.JS` works on a real desk. tools/js-client/
+# build.py emits the product link at .build/js-client/QJS.BIN (+ .BIN.json
+# provenance); its `stale` verdict compares the pinned input hashes so a warm
+# `just session` relinks only when the engine's inputs moved. Same contract
+# as the Go tools: warn-only, and never copy a stale output over share bytes
+# the user owns. QLAUNCH.BIN/QBOUNDS.BIN stay gate-only fixtures.
+stage_qjs() {
+    local product="$ROOT/.build/js-client/QJS.BIN" status
+    if [ "$SKIP_BUILD" = "1" ]; then
+        if [ ! -s "$product" ]; then
+            if [ -s "$SHARE/QJS.BIN" ]; then
+                echo "session: QJS.BIN kept from the share (build skipped)"
+            else
+                echo "session: WARNING — QJS.BIN unavailable: no prior build (VIRELAI_SESSION_SKIP_BUILD=1)"
+            fi
+            return 0
+        fi
+    else
+        status="$(python3 "$ROOT/tools/js-client/build.py" stale --output "$product" 2>/dev/null | awk '{print $NF}')"
+        if [ "$status" != "fresh" ]; then
+            echo "session: building QJS.BIN — ${status:-unknown} (python3 tools/js-client/build.py build)"
+            if ! python3 "$ROOT/tools/js-client/build.py" build --output "$product" > "$ROOT/.build/qjs-build.log" 2>&1; then
+                echo "session: WARNING — QJS.BIN unavailable: builder failed (tools/js-client/build.py)"
+                tail -8 "$ROOT/.build/qjs-build.log" 2>/dev/null | sed 's/^/session:           /'
+                return 0
+            fi
+        fi
+    fi
+    if [ -f "$SHARE/QJS.BIN" ] && cmp -s "$product" "$SHARE/QJS.BIN"; then
+        echo "session: QJS.BIN up-to-date"
+    else
+        cp "$product" "$SHARE/QJS.BIN"
+        echo "session: staged QJS.BIN"
+    fi
+}
+stage_qjs
 
 # --- 3. the session startup file (only written when absent) -----------------
 RC_FILE="$SHARE/.virelairc"
