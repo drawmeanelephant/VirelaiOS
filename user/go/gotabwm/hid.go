@@ -610,6 +610,11 @@ func handleWmKey(e vi.Event) {
 	if handlePowerKey(e) {
 		return
 	}
+	// M196a (#3351): a standing secret-ask is chrome-modal like the
+	// power menu — its g/d/Esc are the seat's alone.
+	if handleSecretAskKey(e) {
+		return
+	}
 	if handleLauncherKey(e) {
 		return
 	}

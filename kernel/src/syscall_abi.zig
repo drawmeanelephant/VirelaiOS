@@ -180,6 +180,15 @@ pub const slots = [_]Slot{
     // grant word, 94 stays ungated.
     row(94, "sys_sleep_ns", .{.int}),
     row(95, "sys_timer_set_ns", .{.int}),
+    // M196a (#3351, ADR 0024 D8 + ADR 0007 amendment): slot 96 is the
+    // provisioning half of the secret store —
+    // `sys_secret_set(op, arg, ptr, len)`. op 0 `ask` is the unprivileged
+    // staging leg (the line's uid must equal the caller's); ops 1..3
+    // `list`/`commit`/`drop` and op 5 `set` are the seat-or-CAP_PROC_ADMIN
+    // gestures (slot-89 shape); op 4 `status` is the asker's own verdict
+    // read. Redacted like slot 70: an arg can carry a secret value, so
+    // the whole call stays out of strace (never-logged contract).
+    row(96, "sys_secret_set", .{ .redacted, .redacted, .redacted, .redacted, .redacted, .redacted }),
 };
 
 // op-dependent shapes override the base row. No pointed-to output or binary

@@ -161,3 +161,31 @@ func TestNetAuthNilStepIsSafe(t *testing.T) {
 	var a *NetAuth
 	a.Step()
 }
+
+// TestStoreAskMarshalsOwnUidAndLine pins the M196a (#3351) wire: the
+// staged line is name<TAB><the slot-68 uid><TAB>value[<TAB>apps], uid
+// taken from the principal seam, never caller-supplied.
+func TestStoreAskMarshalsOwnUidAndLine(t *testing.T) {
+	p, a := storePrincipal, storeSecretAsk
+	defer func() { storePrincipal, storeSecretAsk = p, a }()
+	var gotLine string
+	storePrincipal = func() (uint32, uint32, bool) { return 1000, 0, true }
+	storeSecretAsk = func(line string) int64 { gotLine = line; return 3 }
+	if id := StoreAsk("mail-x", "pw", "GOMAIL.ELF"); id != 3 {
+		t.Fatalf("id=%d want 3", id)
+	}
+	if gotLine != "mail-x\t1000\tpw\tGOMAIL.ELF" {
+		t.Fatalf("line %q", gotLine)
+	}
+	if id := StoreAsk("k", "v", ""); id != 3 {
+		t.Fatalf("id=%d want 3", id)
+	}
+	if gotLine != "k\t1000\tv" {
+		t.Fatalf("unbound line %q", gotLine)
+	}
+	// No principal (a host build) is EINVAL, not a uid-0 line.
+	storePrincipal = func() (uint32, uint32, bool) { return 0, 0, false }
+	if rc := StoreAsk("k", "v", ""); rc != -vi.ErrEINVAL {
+		t.Fatalf("no-principal rc=%d want EINVAL", rc)
+	}
+}

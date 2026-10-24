@@ -186,3 +186,57 @@ func TestErrnoName(t *testing.T) {
 		t.Fatalf("ErrnoName(0) = %q want empty", got)
 	}
 }
+
+// TestSecretSetDispatchesSlot96 pins the M196a (#3351) wire: the op in
+// a0, the ask id or row index in a1, the caller buffer in a2/a3 — and a
+// line handed across as bytes, never a pointer into the kernel.
+func TestSecretSetDispatchesSlot96(t *testing.T) {
+	var calls [][4]uintptr
+	installHook(t, func(num uintptr, a0, a1, a2, a3 uintptr) int64 {
+		if num != SlotSecretSet {
+			t.Fatalf("slot=%d want %d", num, SlotSecretSet)
+		}
+		calls = append(calls, [4]uintptr{a0, a1, a2, a3})
+		switch a0 {
+		case SecretOpAsk, SecretOpSet:
+			if a2 == 0 || a3 == 0 {
+				t.Fatal("op carried no line")
+			}
+			return 7
+		case SecretOpList:
+			line := "3\t41\t1000\tAPP.ELF\tmail-x\tGOMAIL.ELF"
+			copy(unsafe.Slice((*byte)(unsafe.Pointer(a2)), a3), line)
+			return int64(len(line))
+		default:
+			return 0
+		}
+	})
+	if id := SecretAsk("k\t1000\tv"); id != 7 {
+		t.Fatalf("ask rc=%d want 7", id)
+	}
+	var buf [SecretAskMetaMax]byte
+	n, rc := SecretAskList(0, buf[:])
+	if rc < 0 || n == 0 {
+		t.Fatalf("list n=%d rc=%d", n, rc)
+	}
+	if string(buf[:n]) != "3\t41\t1000\tAPP.ELF\tmail-x\tGOMAIL.ELF" {
+		t.Fatalf("line %q", buf[:n])
+	}
+	_ = SecretAskCommit(3)
+	_ = SecretAskDrop(3)
+	_ = SecretAskStatus(3)
+	_ = SecretSet("k\t0\tv")
+	want := [][4]uintptr{
+		{SecretOpAsk, 0, calls[0][2], uintptr(len("k\t1000\tv"))},
+		{SecretOpList, 0, calls[1][2], SecretAskMetaMax},
+		{SecretOpCommit, 3, 0, 0},
+		{SecretOpDrop, 3, 0, 0},
+		{SecretOpStatus, 3, 0, 0},
+		{SecretOpSet, 0, calls[5][2], uintptr(len("k\t0\tv"))},
+	}
+	for i, w := range want {
+		if calls[i] != w {
+			t.Fatalf("call %d args=%v want %v", i, calls[i], w)
+		}
+	}
+}

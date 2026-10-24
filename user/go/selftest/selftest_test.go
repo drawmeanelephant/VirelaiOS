@@ -171,6 +171,11 @@ func (f *fakeFS) setEpoch(epoch int64) int64 {
 	return 0
 }
 
+var (
+	fakesecretAsks   = map[uint32]bool{}
+	fakesecretNextID = uint32(0)
+)
+
 func (f *fakeFS) syscalls() *syscalls {
 	return &syscalls{
 		now: func() int64 { return f.clock },
@@ -190,6 +195,30 @@ func (f *fakeFS) syscalls() *syscalls {
 			f.dirs[path] = true
 			return 0
 		},
+		// M196a (#3351): the uid_user lane — staging an ask is legal
+		// (pending, own-uid lines only); every consent gesture is EACCES.
+		principal: func() (uint32, uint32, bool) { return 1000, 0, true },
+		secretAsk: func(line string) int64 {
+			f := strings.Split(line, "\t")
+			if len(f) < 3 || len(f) > 4 || f[0] == "" || len(f[0]) > 32 ||
+				f[2] == "" || len(f[2]) > 64 || f[1] != "1000" || len(line) > vi.SecretAskLineMax {
+				return -vi.ErrEINVAL
+			}
+			fakesecretNextID++
+			fakesecretAsks[fakesecretNextID] = true
+			return int64(fakesecretNextID)
+		},
+		secretAskList: func(i uint32, buf []byte) (int, int64) { return 0, -vi.ErrEACCES },
+		secretCommit:  func(id uint32) int64 { return -vi.ErrEACCES },
+		secretDrop:    func(id uint32) int64 { return -vi.ErrEACCES },
+		secretSet:     func(line string) int64 { return -vi.ErrEACCES },
+		secretStatus: func(id uint32) int64 {
+			if fakesecretAsks[id] {
+				return vi.SecretAskPending
+			}
+			return -vi.ErrENOENT
+		},
+		secretGet: func(dst []vi.SecretRecord) (int, int64) { return 0, 0 },
 		open:     f.open,
 		read:     f.read,
 		write:    f.writeGuarded,
@@ -638,8 +667,8 @@ const wantReport = "case intake pass\ncase intake-altered pass\n" +
 	"case file-fsync pass\ncase file-errors pass\n" +
 	"case file-write-safe pass\ncase trash pass\ncase file-write-publish pass\n" +
 	"case mime pass\ncase file-snapshot pass\ncase app-logs pass\n" +
-	"case file-lease pass\ncase window pass\ncase disk pass\ncase audio-capture pass\n" +
-	"case clock-epoch pass\ncase clock-set pass\nsummary cases=25 failed=0\n"
+	"case file-lease pass\ncase secret-set pass\ncase window pass\ncase disk pass\ncase audio-capture pass\n" +
+	"case clock-epoch pass\ncase clock-set pass\nsummary cases=26 failed=0\n"
 
 // seedFixtures is the host's half of the intake contract: IN/fixture.txt holds
 // the canonical body, IN/altered.txt the altered one (ADR 0031 D2), and the
@@ -660,8 +689,8 @@ func TestRunCasesAllPassAndReportBytes(t *testing.T) {
 	seedFixtures(fs)
 	rs := runCases(fs.syscalls())
 
-	if len(rs) != 25 {
-		t.Fatalf("cases = %d, want 25", len(rs))
+	if len(rs) != 26 {
+		t.Fatalf("cases = %d, want 26", len(rs))
 	}
 	for _, r := range rs {
 		if !r.ok {
@@ -671,7 +700,7 @@ func TestRunCasesAllPassAndReportBytes(t *testing.T) {
 	if got := string(renderReport(rs)); got != wantReport {
 		t.Fatalf("report bytes:\n got %q\nwant %q", got, wantReport)
 	}
-	if got := string(renderSummary(rs)); got != "summary cases=25 failed=0\n" {
+	if got := string(renderSummary(rs)); got != "summary cases=26 failed=0\n" {
 		t.Fatalf("summary = %q", got)
 	}
 	if got := fs.files[helloPath]; !bytes.Equal(got, []byte(helloPayload)) {
@@ -757,7 +786,7 @@ func TestIntakeFailsOnAMutatedSeed(t *testing.T) {
 	if !strings.Contains(report, "case intake fail fixture mismatch") {
 		t.Fatalf("report lacks the intake failure: %q", report)
 	}
-	if !strings.Contains(report, "summary cases=25 failed=2") {
+	if !strings.Contains(report, "summary cases=26 failed=2") {
 		t.Fatalf("report summary wrong: %q", report)
 	}
 	if got := fs.files[intakeCopy]; !bytes.Equal(got, []byte(intakeAltered)) {
@@ -793,7 +822,7 @@ func TestIntakeFailsWhenTheFixtureIsMissing(t *testing.T) {
 	// The report is still complete: 24 cases, the 2 intake ones failed (the
 	// clock, file and window cases do not read IN/).
 	report := string(renderReport(rs))
-	if !strings.Contains(report, "summary cases=25 failed=2") {
+	if !strings.Contains(report, "summary cases=26 failed=2") {
 		t.Fatalf("report summary wrong: %q", report)
 	}
 	if lines := strings.Count(report, "\n"); lines != len(rs)+1 {
@@ -991,7 +1020,7 @@ func TestFileWriteCaseFailsWhenTheWriteIsRefused(t *testing.T) {
 	if !strings.Contains(report, "case file-write fail ") {
 		t.Fatalf("report lacks the fail detail: %q", report)
 	}
-	if !strings.Contains(report, "summary cases=25 failed=1") {
+	if !strings.Contains(report, "summary cases=26 failed=1") {
 		t.Fatalf("report summary wrong: %q", report)
 	}
 }

@@ -116,6 +116,7 @@ const sys_tty_net_auth = syscall.sys_tty_net_auth;
 const sys_principal = syscall.sys_principal;
 const sys_file_mode = syscall.sys_file_mode;
 const sys_secret_get = syscall.sys_secret_get;
+const sys_secret_set = syscall.sys_secret_set;
 const sys_getrandom = syscall.sys_getrandom;
 const sys_getpid = syscall.sys_getpid;
 const getrandom_max = syscall.getrandom_max;
@@ -157,7 +158,7 @@ test "syscall: M94 trace and profile control and remaining observability stub ar
 
 test "syscall: ABI metadata covers every registered row without pointers" {
     const abi = syscall.abi;
-    try std.testing.expectEqual(@as(usize, 96), abi.slots.len);
+    try std.testing.expectEqual(@as(usize, 97), abi.slots.len);
     for (&abi.slots, 0..) |slot, index| {
         try std.testing.expectEqual(index, slot.number);
         try std.testing.expectEqualStrings(slot.name(), entry_info(index).?.name);
@@ -169,7 +170,7 @@ test "syscall: ABI metadata covers every registered row without pointers" {
                 try std.testing.expect(arg.length_mask != 0);
             }
         }
-        try std.testing.expectEqual(index == 70 or index == 71, abi.redacted(index));
+        try std.testing.expectEqual(index == 70 or index == 71 or index == 96, abi.redacted(index));
     }
     for (abi.variants, 0..) |item, index| {
         try std.testing.expect(item.number < abi.slots.len);
@@ -179,7 +180,7 @@ test "syscall: ABI metadata covers every registered row without pointers" {
             try std.testing.expect(earlier.number != item.number or earlier.selector != item.selector or earlier.op != item.op);
         }
     }
-    try std.testing.expect(abi.lookup(96) == null); // first free slot after card #3036's 94/95 pair; 89 was ADR 0054's reservation
+    try std.testing.expect(abi.lookup(97) == null); // first free slot after M196a's slot-96 provisioning row; 89 was ADR 0054's reservation
     try std.testing.expectEqual(abi.ArgKind.string, abi.shape(79, .{ 0, 0, 0, 0, 0, 0 }).?.args[1].kind);
     try std.testing.expectEqual(abi.ArgKind.fd, abi.shape(80, .{ 2, 0, 0, 0, 0, 0 }).?.args[1].kind);
     try std.testing.expectEqual(abi.ArgKind.int, abi.shape(27, .{ 0, 0, 0, 0x8000000000000002, 0, 0 }).?.args[0].kind);
@@ -215,7 +216,7 @@ test "syscall: runtime table has 128 slots and eighty-four registered rows" {
             implemented += 1;
         }
     }
-    try std.testing.expectEqual(@as(usize, 96), implemented);
+    try std.testing.expectEqual(@as(usize, 97), implemented);
     try std.testing.expectEqualStrings("sys_socket", entry_info(80).?.name);
     try std.testing.expectEqualStrings("sys_fs_metadata", entry_info(79).?.name);
     try std.testing.expectEqualStrings("sys_pipe_read", entry_info(sys_pipe_read).?.name);
@@ -312,13 +313,14 @@ test "syscall: adapter decodes x8 and x0-x5 and unknown numbers return ENOSYS" {
     // In-range slots outside the implemented set still return ENOSYS:
     // 89 is implemented (M113c #2419) — a non-process caller gets the
     // slot's own EINVAL rather than ENOSYS; 91/92 landed with M118c
-    // (#2481) and 94/95 with card #3036, so 96 is the first free slot.
+    // (#2481), 94/95 with card #3036 and 96 with M196a (#3351), so 97 is
+    // the first free slot.
     try std.testing.expect(exceptions.frame_write(&frame, 8, 89));
     try std.testing.expect(handle_svc(&frame, svc_immediate));
     try std.testing.expectEqual(error_result(.einval), exceptions.frame_read(&frame, 0));
     try std.testing.expectEqual(@as(u64, 1), call_count(89));
 
-    try std.testing.expect(exceptions.frame_write(&frame, 8, 96));
+    try std.testing.expect(exceptions.frame_write(&frame, 8, 97));
     try std.testing.expect(handle_svc(&frame, svc_immediate));
     try std.testing.expectEqual(error_result(.enosys), exceptions.frame_read(&frame, 0));
 }
@@ -1437,7 +1439,7 @@ test "syscall: counters are monotonic and report is deterministic" {
     var con = mock.console();
     report(&con);
     try std.testing.expectEqualStrings(
-        "syscalls: slots=64 implemented=96\n" ++
+        "syscalls: slots=64 implemented=97\n" ++
             "  0 sys_ping calls=2\n" ++
             "  1 sys_write calls=0\n" ++
             "  2 sys_yield calls=0\n" ++
@@ -1534,7 +1536,9 @@ test "syscall: counters are monotonic and report is deterministic" {
             "  92 sys_audio_rec calls=0\n" ++
             "  93 sys_vsock_ctl calls=0\n" ++
             "  94 sys_sleep_ns calls=0\n" ++
-            "  95 sys_timer_set_ns calls=0\n",
+            "  95 sys_timer_set_ns calls=0\n" ++
+            // M196a (#3351): slot 96 is implemented and reportable.
+            "  96 sys_secret_set calls=0\n",
         mock.contents(),
     );
 }
@@ -2964,7 +2968,7 @@ test "syscall: slot-65 cmd 22 GPU3D — typed descriptor boundary on the existin
 
     // Slot count/table unchanged: cmd 22 is the only new kernel entry,
     // and it rides slot 65 — the dispatch table itself did not grow.
-    try std.testing.expectEqual(@as(usize, 96), syscall.abi.slots.len);
+    try std.testing.expectEqual(@as(usize, 97), syscall.abi.slots.len);
     gpu3d_device.reset_state();
 }
 
@@ -5991,7 +5995,7 @@ test "syscall: SYS_TIME (slot 66, #1058) returns the firmware wall-clock epoch" 
     // #2398 slot 88 (sys_scanout_read); M111b #2409 slots 89 (the ADR-0054
     // reservation row) + 90 (sys_gpucomp); M118c #2481 slots 91/92
     // (sys_audio_rec_info, sys_audio_rec).
-    try std.testing.expectEqual(@as(usize, 96), syscall.implemented_count);
+    try std.testing.expectEqual(@as(usize, 97), syscall.implemented_count);
 
     const saved_epoch = timer.boot_epoch_secs;
     const saved_ticks = timer.ticks;
@@ -6255,6 +6259,10 @@ test "syscall: M50 TS3 gate table is explicit, bounded, and exactly the ADR 0024
         54, // slot 54 sys_setrlimit (self-only, ADR 0024 D10)
         sys_principal,
         sys_secret_get,
+        // M196a (#3351): the provisioning slot gates inside the handler
+        // on the seat-or-CAP_PROC_ADMIN shape (like slot 89's own check),
+        // not the D10 capability table.
+        sys_secret_set,
         // M51 SSH-P1 (#1166): the EL0 entropy read is capability-free by
         // contract — every principal may read entropy (ADR 0025 D5).
         sys_getrandom,
@@ -6274,7 +6282,7 @@ test "syscall: M50 TS3 gate table is explicit, bounded, and exactly the ADR 0024
         try std.testing.expect(gate.number < syscall.implemented_count);
         try std.testing.expect(entry_info(gate.number) != null);
     }
-    try std.testing.expectEqual(@as(usize, 96), syscall.implemented_count);
+    try std.testing.expectEqual(@as(usize, 97), syscall.implemented_count);
 }
 
 test "syscall: no slot can raise uid/caps (TS3 consumes caps, adds no setter)" {
