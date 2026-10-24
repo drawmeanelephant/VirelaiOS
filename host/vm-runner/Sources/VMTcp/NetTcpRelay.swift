@@ -28,20 +28,37 @@
 //      (the honest ACK of `rcvNxt` tells the guest to retransmit the
 //      gap).
 //
-// Honesty boundaries the relay still cannot cross: it never retransmits
-// guest-bound data. If the guest drops an in-order segment (an overrun
-// past its advertised window should not happen now, but a dropped frame
-// is still possible), the stream is unrecoverable — after `stallLimit`
-// consecutive guest segments that acknowledge nothing new while bytes
-// are in flight, the relay emits RST rather than let the guest park to
-// a timeout. Likewise a dead upstream (connect failure, write error, a
-// data segment for a closed relay) is an immediate named RST, not a
-// silent sink. Upstream-initiated close propagates as FIN once the
-// buffered bytes are sent.
+// Issue #3152 (M179c) — the relay now behaves like a real TCP peer
+// under loss. Sent guest-bound bytes are RETAINED until the guest's
+// cumulative ack covers them (previously `tx.removeFirst` discarded
+// them at emit time, making any dropped frame unrecoverable). Loss is
+// repaired two ways, matching the guest's own bounds
+// (kernel/src/socket_core.zig rto_floor_ns/rto_ceiling_ns/retry_limit):
+// an RTO timer (200 ms floor, doubling, 60 s ceiling) resends from the
+// oldest unacknowledged byte, and three duplicate ACKs trigger a fast
+// retransmit. After `retryLimit` attempts the stream is dead — the
+// relay emits RST with a named log line, the role `stallLimit` served
+// before retransmission existed.
+//
+// `VIRELAI_NET_DROP=<dir>:<n>` is the loss-injection switch: every
+// n-th data segment in the named direction is discarded, counted and
+// logged (`rx` = the guest-bound emits, `tx` = the guest's own
+// segments; `rx:5,tx:5` arms both). Absent, nothing changes. Gate legs
+// cannot set per-run environment — the DSL forwards runner argv only —
+// so a leg arms the same switch by staging `net-drop-<tag>` into the
+// run dir: the relay derives its tag from the harness-owned
+// `--serial .../vm-serial-<tag>.log` argv and reads the rule beside
+// it. The env switch always wins over the file.
+//
+// Honesty boundaries the relay still cannot cross: a dead upstream
+// (connect failure, write error, a data segment for a closed relay) is
+// an immediate named RST, not a silent sink. Upstream-initiated close
+// propagates as FIN once the buffered bytes are sent.
 //
 // Threads: the capture thread calls begin/guestAckSegment/
 // guestDataSegment/pump/shutdown; the upstream reader thread appends to
-// `tx` and calls pump. Everything serializes on `lock`.
+// `tx` and calls pump; the retransmission timer fires on `rtxQueue`.
+// Everything serializes on `lock`.
 import Foundation
 
 public final class NetTcpRelay {
@@ -53,6 +70,7 @@ public final class NetTcpRelay {
         case closed                 // upstream EOF'd — dropped; buffered bytes + FIN still deliver
         case dead                   // no usable upstream — RST was emitted
         case dialing                // upstream connect in flight — dropped; the guest retransmits
+        case dropped                // injected loss (VIRELAI_NET_DROP tx) — the frame never arrived
     }
 
     /// The Ethernet MTU's TCP payload bound — the largest single segment
@@ -60,11 +78,18 @@ public final class NetTcpRelay {
     /// A peer that advertised no MSS option keeps this fleet contract
     /// rather than the RFC 793 536-byte default.
     public static let payloadBound = 1460
-    /// Consecutive in-window guest segments that advance the cumulative
-    /// ack by zero while bytes are in flight before the relay concludes
-    /// the guest dropped a segment it can never signal for — the relay
-    /// has no retransmission, so the stream is dead: RST, not a stall.
-    public static let stallLimit = 8
+    /// Retransmission bounds (M179c #3152), matching the guest's own in
+    /// kernel/src/socket_core.zig: the 200 ms RTO floor, the 60 s
+    /// ceiling, and `retryLimit` attempts before the stream is dead.
+    /// Each RTO and each three-duplicate-ACK fast retransmit is one
+    /// attempt; the bound hit means RST with a named log line — the
+    /// role the old `stallLimit` counter served.
+    public static let rtoFloor: TimeInterval = 0.2
+    public static let rtoCeiling: TimeInterval = 60.0
+    public static let retryLimit = 10
+    /// The retransmit timer's tick cadence — far below the RTO floor,
+    /// cheap enough to run per live connection.
+    static let rtoTick: TimeInterval = 0.02
     /// The bound on `tx`, the upstream->guest staging buffer (#2368).
     /// Above it the reader parks, so TCP's own window — not host RAM —
     /// carries the backpressure to the upstream server. Large enough
@@ -85,8 +110,12 @@ public final class NetTcpRelay {
     private var fd: Int32 = -1
     private var gen = 0
     private var upstreamClosed = false
+    /// The upstream->guest staging buffer. M179c: bytes are RETAINED
+    /// until the guest's cumulative ack covers them — `tx[i]` carries
+    /// sequence `txBase + i`, so `srvNxt - txBase` counts emitted bytes
+    /// and `peerAck - txBase` the acked prefix eligible for compaction.
     private var tx: [UInt8] = []
-    private var txOffset = 0
+    private var txBase: UInt32 = 0
     /// The most recent guest segment (starting with the SYN) — the frame
     /// every reply is templated from.
     private var template: [UInt8] = []
@@ -106,7 +135,27 @@ public final class NetTcpRelay {
     private var peerMSS: UInt16 = 0
     private var finSent = false
     private var rstSent = false
-    private var stallCount = 0
+    /// Consecutive duplicate acknowledgements (ack not advancing while
+    /// bytes are in flight); three trigger a fast retransmit — M179c's
+    /// replacement for the old count-to-`stallLimit` stall death.
+    private var dupAcks = 0
+    /// Retransmission attempts spent on the current unacked flight —
+    /// RTO and fast-retransmit bursts share the budget; at `retryLimit`
+    /// the stream is dead (named RST).
+    private var rtxAttempts = 0
+    /// The current retransmission timeout and its wall-clock deadline —
+    /// nil when nothing is in flight.
+    private var rto: TimeInterval = NetTcpRelay.rtoFloor
+    private var rtxDeadline: Date?
+    /// The timer driving RTO retransmits — created in `begin`, retired
+    /// with the connection.
+    private var rtxTimer: DispatchSourceTimer?
+    private let rtxQueue = DispatchQueue(label: "net-tcp-relay-rtx")
+    /// `VIRELAI_NET_DROP` state per direction — nil = direction clean.
+    /// `seen` counts data segments; every n-th is discarded; `dropped`
+    /// is the leg-visible tally.
+    private var dropRx: (n: Int, seen: Int, dropped: Int)?
+    private var dropTx: (n: Int, seen: Int, dropped: Int)?
     private var dead = false
     /// True while the reader thread's blocking connect is in flight —
     /// guest payload is dropped (the guest retransmits) rather than
@@ -140,13 +189,29 @@ public final class NetTcpRelay {
         if n >= 54 { peerWnd = tcpWindow(buf) }
         rcvNxt = tcpSeq(buf) &+ 1
         srvNxt = serverIsn &+ 1
+        txBase = srvNxt
         peerAck = 0
         finSent = false
         rstSent = false
-        stallCount = 0
+        dupAcks = 0
+        rtxAttempts = 0
+        rto = Self.rtoFloor
+        rtxDeadline = nil
+        dropRx = nil
+        dropTx = nil
+        resolveDropLocked()
         dead = false
         noFin = false
         began = true
+        // The RTO ticker: one per connection, cadence far below the
+        // 200 ms floor. Weak self — a dead relay retires it below.
+        if rtxTimer == nil {
+            let t = DispatchSource.makeTimerSource(queue: rtxQueue)
+            t.schedule(deadline: .now() + Self.rtoTick, repeating: Self.rtoTick)
+            t.setEventHandler { [weak self] in self?.tick() }
+            rtxTimer = t
+            t.resume()
+        }
     }
 
     /// Dial the real upstream and spawn the reader that appends real
@@ -186,7 +251,7 @@ public final class NetTcpRelay {
         connecting = true
         upstreamClosed = false
         tx = []
-        txOffset = 0
+        txBase = srvNxt
         lock.unlock()
         let reader = Thread { [weak self] in
             // The dial lives here so the capture thread never parks on
@@ -226,7 +291,7 @@ public final class NetTcpRelay {
             while true {
                 self.lock.lock()
                 var alive = myGen == self.gen && !self.dead && self.fd == newFd
-                let full = self.tx.count - self.txOffset >= Self.txHighWater
+                let full = self.unackedLocked >= Self.txHighWater
                 self.lock.unlock()
                 if !alive { close(newFd); return }
                 if full {
@@ -243,7 +308,7 @@ public final class NetTcpRelay {
                         Thread.sleep(forTimeInterval: 0.005)
                         self.lock.lock()
                         alive = myGen == self.gen && !self.dead && self.fd == newFd
-                        let drained = self.tx.count - self.txOffset < Self.txLowWater
+                        let drained = self.unackedLocked < Self.txLowWater
                         self.lock.unlock()
                         if !alive { close(newFd); return }
                         if drained { break }
@@ -323,6 +388,21 @@ public final class NetTcpRelay {
     public func guestDataSegment(_ buf: [UInt8], _ n: Int) -> Delivery {
         lock.lock()
         defer { lock.unlock() }
+        // Injected loss (VIRELAI_NET_DROP tx): every n-th payload-bearing
+        // guest segment never arrived — the template, the ack state and
+        // the in-order bound all stay untouched, so the honest ACK the
+        // guest sees next tells it to retransmit.
+        let dataOff = n >= 54 ? 34 + max(5, Int(buf[46] >> 4)) * 4 : 54
+        if n - dataOff > 0, var d = dropTx {
+            d.seen += 1
+            dropTx = d
+            if d.seen % d.n == 0 {
+                d.dropped += 1
+                dropTx = d
+                onLog("NET-TCP-RELAY: VIRELAI_NET_DROP dropped guest->host segment #\(d.seen) (seq 0x\(hex32(tcpSeq(buf))), \(n - dataOff) bytes; total dropped tx=\(d.dropped))")
+                return .dropped
+            }
+        }
         // A fresh-payload segment is liveness, not stall evidence — stall
         // counting stays on the pure-ACK path (a guest that pipelines
         // requests carries the same ack legitimately).
@@ -332,7 +412,6 @@ public final class NetTcpRelay {
             onLog("NET-TCP-RELAY: guest data for a connection that never handshook; sent RST")
             return .dead
         }
-        let dataOff = 34 + max(5, Int(buf[46] >> 4)) * 4
         let payloadLen = n > dataOff ? n - dataOff : 0
         let seq = tcpSeq(buf)
         let rel = Int32(bitPattern: seq &- rcvNxt)
@@ -406,42 +485,49 @@ public final class NetTcpRelay {
         // the first (ack, window) pair worth sending against.
         guard Int32(bitPattern: peerAck &- (serverIsn &+ 1)) >= 0 else { return false }
         var sent = false
-        while txOffset < tx.count {
+        var sentOff = Int(srvNxt &- txBase)
+        while sentOff < tx.count {
             let edge = peerAck &+ UInt32(peerWnd)
             let avail = Int32(bitPattern: edge &- srvNxt)
             guard avail > 0 else { break }
             let mss = peerMSS == 0 ? Self.payloadBound : min(Int(peerMSS), Self.payloadBound)
-            let count = min(min(mss, Int(avail)), tx.count - txOffset)
-            emitLocked(flags: 0x10, payload: Array(tx[txOffset..<txOffset + count]), seq: srvNxt, ack: rcvNxt)
+            let count = min(min(mss, Int(avail)), tx.count - sentOff)
+            emitLocked(flags: 0x10, payload: Array(tx[sentOff..<sentOff + count]), seq: srvNxt, ack: rcvNxt)
             srvNxt = srvNxt &+ UInt32(count)
-            txOffset += count
+            sentOff += count
             sent = true
+            armRtxLocked()
             onLog("NET-TCP-RELAY: sent \(count) bytes to the guest (seq 0x\(hex32(srvNxt &- UInt32(count))))")
         }
-        // Compact the drained head so `tx.count` tracks bytes still owed
-        // to the guest — a partial drain must also relax the reader's
-        // high-water pressure toward the low-water mark (#2368).
-        if txOffset > 0 {
-            tx.removeFirst(txOffset)
-            txOffset = 0
-        }
-        if !finSent, !noFin, upstreamClosed, tx.count == 0 {
+        // M179c: no compaction here — sent bytes stay until `peerAck`
+        // covers them (observeLocked does it), because a dropped frame
+        // is retransmitted, not mourned.
+        if !finSent, !noFin, upstreamClosed, sentOff == tx.count {
             emitLocked(flags: 0x11, payload: [], seq: srvNxt, ack: rcvNxt)
             srvNxt = srvNxt &+ 1
             finSent = true
             sent = true
+            armRtxLocked()
             onLog("NET-TCP-RELAY: upstream drained and closed; sent FIN (seq 0x\(hex32(srvNxt &- 1)))")
         }
         return sent
     }
 
-    /// Bytes buffered upstream->guest, still owed to the guest — the
-    /// high-water check's input. Internal for the test suite; the
+    /// Bytes buffered upstream->guest the guest has not yet
+    /// acknowledged — emitted or still queued, all of it owed (#3152):
+    /// the high-water check's input. Internal for the test suite; the
     /// runner watches the logs.
     var pendingUpstreamBytes: Int {
         lock.lock()
         defer { lock.unlock() }
-        return tx.count - txOffset
+        return unackedLocked
+    }
+
+    /// Buffered bytes not yet covered by `peerAck` — the retention
+    /// bound AND the high-water input. Requires `lock`.
+    private var unackedLocked: Int {
+        let acked = Int32(bitPattern: peerAck &- txBase)
+        return tx.count - max(0, Int(acked))
     }
 
     /// Whether the connection was torn down (stall RST or dead-upstream
@@ -479,33 +565,176 @@ public final class NetTcpRelay {
                 peerAck = ack
             }
             peerWnd = wnd
-            stallCount = 0
+            dupAcks = 0
+            // Retention bookkeeping (M179c): free the acked prefix of
+            // `tx` — it is the head the reader's high-water check
+            // watches — and reset the retransmission state (progress
+            // proves the flight is alive). Fully-acked flights disarm.
+            let covered = Int(peerAck &- txBase)
+            if covered > 0 {
+                tx.removeFirst(min(covered, tx.count))
+                txBase = peerAck
+            }
+            rtxAttempts = 0
+            rto = Self.rtoFloor
+            rtxDeadline = peerAck == srvNxt ? nil : Date().addingTimeInterval(rto)
         } else if adv == 0 {
             peerWnd = wnd
             if countStall, Int32(bitPattern: srvNxt &- ack) > 0 {
-                stallCount += 1
-                if stallCount >= Self.stallLimit {
-                    emitResetLocked()
-                    onLog("NET-TCP-RELAY: guest ack 0x\(hex32(ack)) has not advanced in \(stallCount) segments while 0x\(hex32(srvNxt &- ack)) bytes are in flight — the guest dropped a segment the relay cannot retransmit; sent RST")
-                    return true
+                // M179c: a duplicate acknowledgement while bytes are in
+                // flight is fast-retransmit evidence, not a verdict the
+                // stream is dead — three in a row resend from the
+                // oldest unacked byte. The shared attempts budget is
+                // what finally kills the stream (named RST).
+                dupAcks += 1
+                if dupAcks >= 3 {
+                    dupAcks = 0
+                    retransmitLocked("three duplicate ACKs")
+                    return dead
                 }
             } else {
-                stallCount = 0
+                dupAcks = 0
             }
         }
         return false
     }
 
     private func emitLocked(flags: UInt8, payload: [UInt8], seq: UInt32, ack: UInt32) {
+        // Injected loss (VIRELAI_NET_DROP rx): every n-th payload-bearing
+        // guest-bound segment is counted and discarded — still "sent"
+        // sequence-wise, so the guest never acknowledges it and the
+        // retransmission path gets exercised exactly like a wire drop.
+        if !payload.isEmpty, var d = dropRx {
+            d.seen += 1
+            dropRx = d
+            if d.seen % d.n == 0 {
+                d.dropped += 1
+                dropRx = d
+                onLog("NET-TCP-RELAY: VIRELAI_NET_DROP dropped guest-bound segment #\(d.seen) (seq 0x\(hex32(seq)), \(payload.count) bytes; total dropped rx=\(d.dropped))")
+                return
+            }
+        }
         var reply: [UInt8] = []
         let len = buildTcpReply(&reply, template, template.count, hostMAC, hostPort, seq, ack, flags, payload)
         onFrame?(Array(reply[0..<len]))
+    }
+
+    /// (Re)arm the retransmission deadline — called on every emission of
+    /// NEW sequence space (a fresh segment or the FIN); retransmits
+    /// manage their own backoff. Requires `lock`.
+    private func armRtxLocked() {
+        if rtxDeadline == nil { rto = Self.rtoFloor }
+        if rtxDeadline == nil || rtxDeadline! < Date() {
+            rtxDeadline = Date().addingTimeInterval(rto)
+        }
+    }
+
+    /// The timer's tick: fire one RTO retransmit when the deadline
+    /// passed with bytes still unacknowledged.
+    private func tick() {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !dead, began, let deadline = rtxDeadline, Date() >= deadline else { return }
+        retransmitLocked("RTO \(Int(rto * 1000)) ms")
+    }
+
+    /// One retransmission burst: resend the flight from the oldest
+    /// unacknowledged byte (window- and MSS-capped, FIN included), or —
+    /// with the attempts budget spent — end the stream with the named
+    /// RST the old `stallLimit` used to emit. Requires `lock`.
+    private func retransmitLocked(_ reason: String) {
+        guard Int32(bitPattern: srvNxt &- peerAck) > 0 else {
+            rtxDeadline = nil
+            return
+        }
+        guard began, !dead else { return }
+        guard rtxAttempts < Self.retryLimit else {
+            emitResetLocked()
+            onLog("NET-TCP-RELAY: 0x\(hex32(srvNxt &- peerAck)) bytes unacknowledged after \(rtxAttempts) retransmission attempts — the guest cannot confirm them; sent RST")
+            return
+        }
+        rtxAttempts += 1
+        let mss = peerMSS == 0 ? Self.payloadBound : min(Int(peerMSS), Self.payloadBound)
+        let edge = peerAck &+ UInt32(peerWnd)
+        var seq = peerAck
+        var resent = 0
+        // Data first: the buffered range [peerAck, txBase+tx.count).
+        let dataEnd = txBase &+ UInt32(tx.count)
+        while Int32(bitPattern: seq &- dataEnd) < 0 {
+            let avail = Int32(bitPattern: edge &- seq)
+            guard avail > 0 else { break }
+            let off = Int(seq &- txBase)
+            let count = min(mss, min(Int(avail), Int(dataEnd &- seq)))
+            emitLocked(flags: 0x10, payload: Array(tx[off..<off + count]), seq: seq, ack: rcvNxt)
+            seq = seq &+ UInt32(count)
+            resent += count
+        }
+        // A FIN occupying the unacked tail is resent as FIN.
+        if finSent, Int32(bitPattern: seq &- srvNxt) < 0 {
+            emitLocked(flags: 0x11, payload: [], seq: seq, ack: rcvNxt)
+            seq = seq &+ 1
+        }
+        rto = min(rto * 2, Self.rtoCeiling)
+        rtxDeadline = Date().addingTimeInterval(rto)
+        onLog("NET-TCP-RELAY: retransmitted \(resent) bytes from seq 0x\(hex32(peerAck)) (\(reason); attempt \(rtxAttempts)/\(Self.retryLimit))")
+    }
+
+    /// Resolve `VIRELAI_NET_DROP` for this connection: the environment
+    /// switch first; absent, a `net-drop-<tag>` file beside the run's
+    /// serial log (the gate DSL's only per-run channel into the runner —
+    /// the tag comes from the harness-owned `--serial .../vm-serial-<tag>.log`
+    /// argv, which this process can read itself). Absent both, nothing
+    /// changes. Requires `lock`.
+    private func resolveDropLocked() {
+        var spec: String?
+        // getenv, not ProcessInfo.environment: the snapshot is taken at
+        // launch, and the test suite (and any operator re-arming a live
+        // process) needs the value read when the connection begins.
+        if let env = getenv("VIRELAI_NET_DROP") {
+            spec = String(cString: env)
+        } else {
+            spec = Self.dropSpecFromArgv()
+        }
+        guard let spec else { return }
+        guard let rules = parseNetDropSpec(spec) else {
+            onLog("NET-TCP-RELAY: ignoring malformed VIRELAI_NET_DROP '\(spec)' (want <rx|tx>:<n>)")
+            return
+        }
+        for rule in rules {
+            switch rule.dir {
+            case .rx: dropRx = (n: rule.n, seen: 0, dropped: 0)
+            case .tx: dropTx = (n: rule.n, seen: 0, dropped: 0)
+            }
+        }
+        onLog("NET-TCP-RELAY: VIRELAI_NET_DROP armed (\(rules.map { "\($0.dir == .rx ? "rx" : "tx"):\($0.n)" }.joined(separator: ","))) — every n-th data segment in those directions is discarded")
+    }
+
+    /// The gate leg's drop rule: the run tag comes from the
+    /// `--serial .../vm-serial-<tag>.log` argv; the rule file is
+    /// `net-drop-<tag>` (then `net-drop-<base>` with a `-NN` repeat
+    /// suffix stripped) in the same directory. nil outside a vgate run.
+    private static func dropSpecFromArgv() -> String? {
+        let args = ProcessInfo.processInfo.arguments
+        guard let i = args.firstIndex(of: "--serial"), i + 1 < args.count else { return nil }
+        let serial = args[i + 1] as NSString
+        let base = serial.lastPathComponent
+        guard base.hasPrefix("vm-serial-"), base.hasSuffix(".log") else { return nil }
+        var tag = String(base.dropFirst("vm-serial-".count).dropLast(".log".count))
+        let dir = serial.deletingLastPathComponent
+        for candidate in [tag, tag.replacingOccurrences(of: #"-\d+$"#, with: "", options: .regularExpression)] {
+            if let body = try? String(contentsOfFile: dir + "/net-drop-" + candidate, encoding: .utf8) {
+                return body
+            }
+        }
+        return nil
     }
 
     private func emitResetLocked() {
         guard !rstSent, template.count >= 54 else { return }
         rstSent = true
         dead = true
+        rtxTimer?.cancel()
+        rtxTimer = nil
         // Every death path tears the upstream down (#2369): hand the fd
         // back and half-close it so the reader's EOF/exit checks can
         // finish the job — a live socket held past the RST is a

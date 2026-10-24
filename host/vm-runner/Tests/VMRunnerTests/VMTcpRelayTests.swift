@@ -406,11 +406,10 @@ final class NetTcpRelayTests: XCTestCase {
         XCTAssertTrue(relay.isDead)
     }
 
-    // The relay has no retransmission: when the guest keeps emitting
-    // segments that acknowledge nothing new while bytes are in flight
-    // (the dropped-segment signature), the stream is unrecoverable — the
-    // relay says so with an RST at the stall bound instead of parking
-    // the guest until ETIMEDOUT.
+    // M179c: a duplicate-ACK storm is no longer an instant verdict —
+    // every trio is a fast retransmit, and the stream dies only when the
+    // shared attempts budget (retryLimit bursts) is spent. The named
+    // RST is the same observable reset the old stallLimit emitted.
     func testUnacknowledgedInFlightBytesEventuallyReset() throws {
         let relay = makeRelay()
         relay.begin(synFrame: syn(), 58)
@@ -421,13 +420,17 @@ final class NetTcpRelayTests: XCTestCase {
         _ = relay.pump()
         XCTAssertTrue(waitFor { self.frameCount == 1 })
 
-        // stallLimit unchanged-ack segments while 100 bytes are in flight.
+        // retryLimit bursts, each taking three non-advancing ACKs; the
+        // RST lands when the attempts budget is spent, i.e. one trio
+        // past the last allowed resend.
         var killed = false
-        for _ in 0..<NetTcpRelay.stallLimit {
+        for i in 1...NetTcpRelay.retryLimit * 3 + 3 {
             killed = relay.guestAckSegment(seg(seq: guestIsn + 1, ack: serverIsn + 1, wnd: 0), 54)
+            if killed { break }
+            if i % 3 == 0 { XCTAssertTrue(logged(matching: "three duplicate ACKs")) }
         }
         XCTAssertTrue(killed)
-        XCTAssertTrue(logged(matching: "cannot retransmit"))
+        XCTAssertTrue(logged(matching: "retransmission attempts"))
         XCTAssertEqual(tcpFlags(frame(at: frameCount - 1)) & 0x14, 0x14)
     }
 
@@ -446,8 +449,9 @@ final class NetTcpRelayTests: XCTestCase {
         XCTAssertTrue(waitFor { self.frameCount == 1 })
 
         var killed = false
-        for _ in 0..<NetTcpRelay.stallLimit {
+        for _ in 0..<NetTcpRelay.retryLimit * 3 + 3 {
             killed = relay.guestAckSegment(seg(seq: guestIsn + 1, ack: serverIsn + 1, wnd: 0), 54)
+            if killed { break }
         }
         XCTAssertTrue(killed)
         XCTAssertTrue(relay.isDead)
@@ -606,5 +610,175 @@ final class NetTcpRelayTests: XCTestCase {
         // socket.
         XCTAssertTrue(delivery == .dialing || delivery == .dead)
         if delivery == .dialing { XCTAssertEqual(frameCount, 0) }
+    }
+
+    // --- M179c (#3152): retention + retransmission + injected loss --------
+
+    // Retention: an emitted segment's bytes are kept until the guest's
+    // ack covers them — the RTO timer resends the same seq/payload when
+    // the ack never comes.
+    func testUnackedBytesAreRetransmittedOnRTO() throws {
+        let relay = makeRelay()
+        relay.begin(synFrame: syn(), 58)
+        let up = try upstream(relay)
+        defer { close(up); relay.shutdown() }
+        let body = [UInt8](repeating: 0x65, count: 100)
+        writeUpstream(up, body)
+        _ = relay.guestAckSegment(seg(seq: guestIsn + 1, ack: serverIsn + 1, wnd: 1460), 54)
+        _ = relay.pump()
+        XCTAssertTrue(waitFor { self.frameCount == 1 })
+        XCTAssertEqual(payload(of: frame(at: 0)), body)
+
+        // No ack: the floor RTO (~200 ms) resends the same bytes at the
+        // same seq — proof the relay held them.
+        XCTAssertTrue(waitFor(3) { self.frameCount >= 2 })
+        XCTAssertEqual(payload(of: frame(at: 1)), body)
+        XCTAssertEqual(tcpSeq(frame(at: 1)), tcpSeq(frame(at: 0)))
+        XCTAssertTrue(logged(matching: "retransmitted 100 bytes"))
+        XCTAssertTrue(logged(matching: "RTO"))
+
+        // The ack then arrives: the flight disarms — no further resends.
+        _ = relay.guestAckSegment(seg(seq: guestIsn + 1, ack: serverIsn + 1 + 100, wnd: 1460), 54)
+        let settled = frameCount
+        Thread.sleep(forTimeInterval: 0.5)
+        XCTAssertEqual(frameCount, settled)
+        XCTAssertEqual(relay.pendingUpstreamBytes, 0)
+    }
+
+    // Three duplicate ACKs trigger a fast retransmit without waiting
+    // for the RTO.
+    func testThreeDuplicateAcksTriggerFastRetransmit() throws {
+        let relay = makeRelay()
+        relay.begin(synFrame: syn(), 58)
+        let up = try upstream(relay)
+        defer { close(up); relay.shutdown() }
+        let body = (0..<2000).map { UInt8($0 % 233) }
+        writeUpstream(up, body)
+        _ = relay.guestAckSegment(seg(seq: guestIsn + 1, ack: serverIsn + 1, wnd: 4096), 54)
+        _ = relay.pump()
+        XCTAssertTrue(waitFor { self.frameCount == 2 }) // 1460 + 540
+
+        // The guest's bound acks only the first segment (1460) — the
+        // first moves `peerAck` forward, then three that advance
+        // nothing resend from the oldest unacked byte.
+        for _ in 0..<4 {
+            _ = relay.guestAckSegment(seg(seq: guestIsn + 1, ack: serverIsn + 1 + 1460, wnd: 4096), 54)
+        }
+        XCTAssertEqual(frameCount, 3)
+        XCTAssertEqual(tcpSeq(frame(at: 2)), serverIsn + 1 + 1460)
+        XCTAssertEqual(payload(of: frame(at: 2)), Array(body[1460..<2000]))
+        XCTAssertTrue(logged(matching: "three duplicate ACKs"))
+    }
+
+    // Reordering after a dropped segment delivers in order: emits
+    // 1,2,3 with #3 lost (rx:3), the guest dup-acks at the gap, the
+    // resend fills it — the sequence stream stays complete and
+    // in-order past the hole.
+    func testDroppedSegmentIsRefilledInOrder() throws {
+        setenv("VIRELAI_NET_DROP", "rx:3", 1)
+        defer { unsetenv("VIRELAI_NET_DROP") }
+        let relay = makeRelay()
+        relay.begin(synFrame: syn(), 58)
+        let up = try upstream(relay)
+        defer { close(up); relay.shutdown() }
+        let body = (0..<4000).map { UInt8($0 % 241) }
+        writeUpstream(up, body)
+        _ = relay.guestAckSegment(seg(seq: guestIsn + 1, ack: serverIsn + 1, wnd: 8192), 54)
+        _ = relay.pump()
+        // 4000 bytes at wnd 8192: emits 1460 + 1460 + 1080 — the third
+        // emit is segment #3 and is dropped.
+        XCTAssertTrue(waitFor { self.frameCount == 2 })
+        XCTAssertEqual(payload(of: frame(at: 0)), Array(body[0..<1460]))
+        XCTAssertEqual(payload(of: frame(at: 1)), Array(body[1460..<2920]))
+        XCTAssertTrue(logged(matching: "dropped guest-bound segment #3"))
+
+        // The guest covers 2920 and keeps acking the gap — a fast
+        // retransmit lands the tail segment (emit #4 is not a 3rd).
+        for _ in 0..<4 {
+            _ = relay.guestAckSegment(seg(seq: guestIsn + 1, ack: serverIsn + 1 + 2920, wnd: 8192), 54)
+        }
+        XCTAssertTrue(waitFor { self.frameCount >= 3 })
+        XCTAssertEqual(tcpSeq(frame(at: 2)), serverIsn + 1 + 2920)
+        XCTAssertEqual(payload(of: frame(at: 2)), Array(body[2920..<4000]))
+
+        // The guest's cumulative ack then covers the whole body.
+        _ = relay.guestAckSegment(seg(seq: guestIsn + 1, ack: serverIsn + 1 + 4000, wnd: 8192), 54)
+        XCTAssertEqual(relay.pendingUpstreamBytes, 0)
+    }
+
+    // The tx direction: every n-th guest->host segment never arrives —
+    // the relay leaves template, ack state and the in-order bound
+    // untouched, so the guest's own retransmit lands the payload once.
+    func testInjectedTxDropIsInvisibleToTheStream() throws {
+        setenv("VIRELAI_NET_DROP", "tx:2", 1)
+        defer { unsetenv("VIRELAI_NET_DROP") }
+        let relay = makeRelay()
+        relay.begin(synFrame: syn(), 58)
+        let up = try upstream(relay)
+        defer { close(up); relay.shutdown() }
+        _ = relay.guestAckSegment(seg(seq: guestIsn + 1, ack: serverIsn + 1), 54)
+
+        let req1 = seg(seq: guestIsn + 1, ack: serverIsn + 1, payload: [UInt8](repeating: 0x71, count: 10))
+        XCTAssertEqual(relay.guestDataSegment(req1, req1.count), .forwarded(fresh: 10))
+        XCTAssertEqual(readUpstream(up, 10), [UInt8](repeating: 0x71, count: 10))
+        // Segment #2 (every 2nd) is dropped before it can move anything.
+        let req2 = seg(seq: guestIsn + 11, ack: serverIsn + 1, payload: [UInt8](repeating: 0x72, count: 10))
+        XCTAssertEqual(relay.guestDataSegment(req2, req2.count), .dropped)
+        XCTAssertTrue(noUpstreamBytes(up))
+        XCTAssertEqual(relay.currentSeqAck().ack, guestIsn + 11)
+        XCTAssertTrue(logged(matching: "dropped guest->host segment #2"))
+        // The guest's retransmit (in-order, count #3 — seen survives) lands.
+        XCTAssertEqual(relay.guestDataSegment(req2, req2.count), .forwarded(fresh: 10))
+        XCTAssertEqual(readUpstream(up, 10), [UInt8](repeating: 0x72, count: 10))
+    }
+
+    // The drop switch's arithmetic: only the n-th emit in the armed
+    // direction is discarded; the other direction and non-armed
+    // segments are untouched; a malformed value arms nothing.
+    func testDropSwitchArithmetic() throws {
+        setenv("VIRELAI_NET_DROP", "rx:3,tx:9", 1)
+        defer { unsetenv("VIRELAI_NET_DROP") }
+        let relay = makeRelay()
+        relay.begin(synFrame: syn(), 58)
+        let up = try upstream(relay)
+        defer { close(up); relay.shutdown() }
+        writeUpstream(up, [UInt8](repeating: 0x66, count: 300))
+        _ = relay.guestAckSegment(seg(seq: guestIsn + 1, ack: serverIsn + 1, wnd: 1460), 54)
+        // First emit is segment #1 — survives.
+        _ = relay.pump()
+        XCTAssertTrue(waitFor { self.frameCount == 1 })
+        XCTAssertTrue(logged(matching: "armed (rx:3,tx:9)"))
+
+        // Malformed input never arms.
+        setenv("VIRELAI_NET_DROP", "xyzzy", 1)
+        let clean = makeRelay()
+        clean.begin(synFrame: syn(), 58)
+        let up2 = try upstream(clean)
+        defer { close(up2); clean.shutdown() }
+        writeUpstream(up2, [UInt8](repeating: 0x67, count: 10))
+        _ = clean.guestAckSegment(seg(seq: guestIsn + 1, ack: serverIsn + 1, wnd: 1460), 54)
+        _ = clean.pump()
+        XCTAssertTrue(waitFor { self.frameCount == 2 })
+        XCTAssertTrue(logged(matching: "ignoring malformed VIRELAI_NET_DROP"))
+        unsetenv("VIRELAI_NET_DROP")
+    }
+
+    // With the switch absent the stream is byte-identical to today:
+    // an unacked segment is not retransmitted while the guest acks on
+    // schedule, and nothing logs a drop.
+    func testNoDropsWhenSwitchUnset() throws {
+        unsetenv("VIRELAI_NET_DROP")
+        let relay = makeRelay()
+        relay.begin(synFrame: syn(), 58)
+        let up = try upstream(relay)
+        defer { close(up); relay.shutdown() }
+        writeUpstream(up, [UInt8](repeating: 0x68, count: 100))
+        _ = relay.guestAckSegment(seg(seq: guestIsn + 1, ack: serverIsn + 1, wnd: 1460), 54)
+        _ = relay.pump()
+        XCTAssertTrue(waitFor { self.frameCount == 1 })
+        _ = relay.guestAckSegment(seg(seq: guestIsn + 1, ack: serverIsn + 1 + 100, wnd: 1460), 54)
+        Thread.sleep(forTimeInterval: 0.3)
+        XCTAssertEqual(frameCount, 1)
+        XCTAssertFalse(logged(matching: "VIRELAI_NET_DROP"))
     }
 }
