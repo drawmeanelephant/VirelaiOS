@@ -27,6 +27,17 @@
 #   boot 06   M99i (#2187): GOSH types `exec GODNS.ELF example.com 10.0.0.2`
 #             against the runner's DNS responder -> the deep resolver's
 #             Answer, `dns: status=ok`, one ephemeral-port wire query
+#   boot 07   M198c (#3383): GOSH types `exec GONETSTAT.ELF discover
+#             _workstation._tcp`; --net-inject publishes a fake
+#             _workstation._tcp response frame once the guest's query
+#             marker prints -> the deduped service line names
+#             gate-ws/gate-host/9999, exactly two QU queries ride the
+#             wire (the bounded window), rc=0
+#   boot 08   M198c: the same verb on the observed VZ NAT signature
+#             (net ip 192.168.64.2) -> `discover needs bridged`, rc=1,
+#             zero mDNS frames on the wire
+#   boot 09   M198c: the same verb with no network at all ->
+#             `discover offline`, rc=1
 #
 # WHY THE CONSOLE SHELL AND NOT THE WINDOW: a windowed GOSH would need
 # GOTABWM.ELF staged and a third live Go runtime (seat + shell + CLI), and
@@ -55,12 +66,12 @@
 # HOST PREREQUISITE (fails the gate honestly when missing):
 #   bash tools/go/build-gosh.sh      ->  .build/go/GOSH.ELF
 #   bash tools/go/build-goping.sh    ->  .build/go/GOPING.ELF
-#   bash tools/go/build-netdiag.sh   ->  .build/go/GODNS.ELF
+#   bash tools/go/build-netdiag.sh   ->  .build/go/{GODNS,GONETSTAT}.ELF
 #   bash tools/go/build-web.sh fetch GOFETCH --gate -> .build/go/GOFETCH-GATE.ELF
 #   (staged under the GOFETCH.ELF guest name; the gate build carries the
 #   AutoClaw test root the boot-02 fixture chains to)
 
-vgate_name go-net-clis "issue #1573 M71n: GOSH execs GOPING.ELF (ICMP) and GOFETCH.ELF (TLS) on a live VZ net"
+vgate_name go-net-clis "issue #1573 M71n: GOSH execs GOPING.ELF (ICMP) and GOFETCH.ELF (TLS) on a live VZ net; M198c #3383: GONETSTAT.ELF discover"
 vgate_share seed
 vgate_runner_flags -Xswiftc -DSPIKE
 
@@ -83,7 +94,8 @@ rd = os.environ["RUN_DIR"]
 share = os.environ.get("VG_SHARE") or os.path.join(rd, "share")
 for name, how in (("GOSH.ELF", "build-gosh.sh"),
                   ("GOPING.ELF", "build-goping.sh"),
-                  ("GODNS.ELF", "build-netdiag.sh")):
+                  ("GODNS.ELF", "build-netdiag.sh"),
+                  ("GONETSTAT.ELF", "build-netdiag.sh")):
     src = os.path.join(".build", "go", name)
     if not os.path.exists(src):
         sys.exit(name + " missing (expected " + src + ") - build it first: "
@@ -106,6 +118,12 @@ with open(os.path.join(rd, "typed-fetch.bin"), "wb") as f:
     f.write(b"exec GOFETCH.ELF https://10.0.0.2:24533/\r")
 with open(os.path.join(rd, "typed-dns.bin"), "wb") as f:
     f.write(b"exec GODNS.ELF example.com 10.0.0.2\recho rc=$?\r")
+# M198c (#3383): boot 07 browses one type, boot 08 the same verb under the
+# NAT signature, boot 09 the bare verb with no network at all.
+with open(os.path.join(rd, "typed-discover.bin"), "wb") as f:
+    f.write(b"exec GONETSTAT.ELF discover _workstation._tcp\recho rc=$?\r")
+with open(os.path.join(rd, "typed-discover-bare.bin"), "wb") as f:
+    f.write(b"exec GONETSTAT.ELF discover\recho rc=$?\r")
 PY
 
 # M83b (#1775): boots 03 and 04 type three lines in one burst. `time sync` is a
@@ -121,6 +139,85 @@ with open(os.path.join(rd, "typed-sync.bin"), "wb") as f:
 with open(os.path.join(rd, "typed-sync-default.bin"), "wb") as f:
     f.write(b"time sync\recho rc=$?\rdate\r")
 PY
+
+# M198c (#3383): the fake _workstation._tcp publisher for boot 07 — one
+# raw Ethernet frame --net-inject writes once the guest's query marker
+# prints. The frame is the QU-answer shape: unicast to the guest's own
+# IP:5353 (the only reply form this stack delivers to EL0 — the IPv4 dst
+# gate drops multicast-addressed UDP), TTL 255, ports 5353->5353,
+# carrying PTR -> SRV/TXT -> A for a service the LAN does not have.
+vgate_setup_python <<'PY'
+import os
+rd = os.environ["RUN_DIR"]
+
+def csum(b):
+    s = 0
+    for i in range(0, len(b) - 1, 2):
+        s += (b[i] << 8) | b[i + 1]
+    if len(b) % 2:
+        s += b[-1] << 8
+    while s >> 16:
+        s = (s & 0xffff) + (s >> 16)
+    return (~s) & 0xffff
+
+def mdns_name(n):
+    out = b""
+    for lab in n.split("."):
+        out += bytes([len(lab)]) + lab.encode()
+    return out + b"\x00"
+
+def mdns_rr(name, rtype, ttl, rdata, flush=True):
+    cls = 0x8001 if flush else 0x0001
+    return (mdns_name(name) + rtype.to_bytes(2, "big") + cls.to_bytes(2, "big")
+            + ttl.to_bytes(4, "big") + len(rdata).to_bytes(2, "big") + rdata)
+
+ptr = mdns_rr("_workstation._tcp.local", 12, 120,
+              mdns_name("gate-ws._workstation._tcp.local"), flush=False)
+srv = mdns_rr("gate-ws._workstation._tcp.local", 33, 120,
+              (0).to_bytes(2, "big") + (0).to_bytes(2, "big") + (9999).to_bytes(2, "big")
+              + mdns_name("gate-host.local"))
+txt = mdns_rr("gate-ws._workstation._tcp.local", 16, 120,
+              bytes([9]) + b"txtvers=1" + bytes([9]) + b"role=gate")
+a = mdns_rr("gate-host.local", 1, 120, bytes([10, 0, 0, 2]))
+msg = (b"\x00\x00" + b"\x84\x00"  # ID 0, QR + AA
+       + (0).to_bytes(2, "big") + (3).to_bytes(2, "big")
+       + (0).to_bytes(2, "big") + (1).to_bytes(2, "big")
+       + ptr + srv + txt + a)
+
+def udp_frame(dst_mac, src_mac, src_ip, dst_ip, src_port, dst_port, payload, ttl):
+    udp = bytearray(8 + len(payload))
+    udp[0:2] = src_port.to_bytes(2, "big")
+    udp[2:4] = dst_port.to_bytes(2, "big")
+    udp[4:6] = (8 + len(payload)).to_bytes(2, "big")
+    udp[8:] = payload
+    ph = bytes(src_ip) + bytes(dst_ip) + b"\x00\x11" + (8 + len(payload)).to_bytes(2, "big")
+    udp[6:8] = csum(ph + bytes(udp)).to_bytes(2, "big")
+    buf = bytearray(14 + 20 + len(udp))
+    buf[0:6] = dst_mac
+    buf[6:12] = src_mac
+    buf[12:14] = b"\x08\x00"
+    buf[14] = 0x45
+    buf[16:18] = (20 + len(udp)).to_bytes(2, "big")
+    buf[18:20] = (0x198c).to_bytes(2, "big")
+    buf[22] = ttl
+    buf[23] = 17
+    buf[26:30] = src_ip
+    buf[30:34] = dst_ip
+    buf[24:26] = csum(bytes(buf[14:34])).to_bytes(2, "big")
+    buf[34:] = udp
+    return bytes(buf)
+
+frame = udp_frame([0x02, 0, 0, 0, 0, 1], [0x02, 0, 0, 0, 0, 2],
+                  [10, 0, 0, 2], [10, 0, 0, 1], 5353, 5353, msg, 255)
+open(os.path.join(rd, "mdns-fixture-07.bin"), "wb").write(frame)
+print("go-net-clis: mDNS fixture %d bytes" % len(frame))
+PY
+
+# Boot 08's phase-1 script: the observed VZ NAT signature — the verb must
+# name "needs bridged" before it binds (boot 07's query never fires).
+vgate_file net-nat.txt <<'EOF'
+net ip 192.168.64.2
+EOF
 
 # The TLS 1.3 responder the Go shelf's own fixtures use (leaf.example.com,
 # AutoClaw test CA), reached through the runner's :relay -- the recipe
@@ -471,4 +568,134 @@ if len(ports) != 1:
 if not 49152 <= ports[0] <= 65535:
     sys.exit("FAIL: query source port %d outside the ephemeral range" % ports[0])
 print("go-net-clis 06 ok: GOSH exec'd GODNS.ELF, ephemeral src port %d" % ports[0])
+PY
+
+# --- boot 07: GOSH execs GONETSTAT.ELF discover — the fake _workstation._tcp -
+# M198c (#3383). The runner injects ONE raw response frame the moment the
+# guest's `netstat: discover query` marker prints — the unicast QU-answer
+# shape, the only reply this stack delivers to EL0. The browse must print
+# the deduped PTR -> SRV/TXT -> A chain, and the wire must show exactly
+# the bounded window's two 5353->5353 QU queries.
+vgate_run 07 -- \
+    --screen '$RUN_DIR/screen-07' \
+    --net '$RUN_DIR/cap-07.bin' \
+    --net-inject '$RUN_DIR/mdns-fixture-07.bin' --net-inject-after 'netstat: discover query' \
+    --script '$RUN_DIR/net.txt' \
+    --script2 '$RUN_DIR/sh.txt' --script2-after 'net arp: ' \
+    --script3 '$RUN_DIR/typed-discover.bin' --script3-after 'gosh: attached' \
+    --script-expect 'rc=0' --timeout 180
+
+vgate_assert 07 serial-contains 'gosh: attached'
+vgate_assert 07 serial-absent 'exec: loaded GONETSTAT.ELF'
+vgate_assert 07 serial-contains 'netstat: discover _workstation._tcp.local'
+vgate_assert 07 serial-contains 'netstat: discover query _workstation._tcp.local'
+vgate_assert 07 serial-contains 'netstat: discover service gate-ws._workstation._tcp.local host=gate-host.local port=9999 addr=10.0.0.2 txt=txtvers=1;role=gate'
+vgate_assert 07 serial-contains 'netstat: discover done types=0 services=1'
+vgate_assert 07 serial-contains 'rc=0'
+vgate_assert 07 output-contains 'NET-INJECT: sent'
+vgate_assert 07 serial-absent '[EXC] parking:'
+vgate_assert 07 serial-absent 'fatal error: runtime:'
+vgate_assert 07 python <<'PY'
+import os, re, sys
+ser = open(os.environ["VG_SER"], errors="replace").read()
+if not re.search(r"(?m)^gosh: line exec GONETSTAT\.ELF discover _workstation\._tcp", ser):
+    sys.exit("FAIL: GOSH never recorded the typed `exec GONETSTAT.ELF discover` line")
+rd = os.environ["RUN_DIR"]
+d = open(os.path.join(rd, "cap-07.bin"), "rb").read()
+# Walk the capture: the bounded window's queries are frames TO the mDNS
+# group MAC 01:00:5e:00:00:fb, IPv4 dst 224.0.0.251, UDP 5353->5353 —
+# each a one-question QU PTR for _workstation._tcp.local at TTL 255.
+off, queries = 0, []
+while off < len(d):
+    if d[off+12:off+14] == b"\x08\x00":
+        flen = 14 + ((d[off+16] << 8) | d[off+17])
+        f = d[off:off+flen]
+        off += flen
+        if (f[0:6] == b"\x01\x00\x5e\x00\x00\xfb" and f[23] == 17
+                and f[30:34] == bytes([224, 0, 0, 251])
+                and f[34:38] == b"\x14\xe9\x14\xe9"):
+            queries.append(f)
+    elif d[off+12:off+14] == b"\x86\xdd":
+        off += 14 + 40 + ((d[off+18] << 8) | d[off+19])
+    else:
+        off += 42
+if len(queries) != 2:
+    sys.exit("FAIL: want exactly 2 mDNS queries (the bounded window), saw %d" % len(queries))
+for q in queries:
+    if q[22] != 255:
+        sys.exit("FAIL: mDNS query IP TTL %d, want 255 (RFC 6762 §11)" % q[22])
+    msg = q[42:]
+    if len(msg) < 12 or msg[4:6] != b"\x00\x01":
+        sys.exit("FAIL: query is not a one-question message")
+    if b"\x0c_workstation\x04_tcp\x05local\x00\x00\x0c\x80\x01" not in msg:
+        sys.exit("FAIL: query question is not the QU PTR _workstation._tcp.local")
+typed = ser.find("exec GONETSTAT.ELF discover")
+query = ser.find("netstat: discover query")
+service = ser.find("netstat: discover service gate-ws")
+if not 0 <= typed < query < service:
+    sys.exit("FAIL: order want typed(%d) < query(%d) < service(%d)" % (typed, query, service))
+print("go-net-clis 07 ok: GOSH exec'd GONETSTAT.ELF discover — fixture browsed, 2 bounded QU queries")
+PY
+
+# --- boot 08: the NAT signature names "needs bridged" -------------------
+# M198c. Same verb, own IP inside the observed VZ NAT subnet — the refusal
+# must precede the bind, so the wire carries no mDNS at all.
+vgate_run 08 -- \
+    --screen '$RUN_DIR/screen-08' \
+    --net '$RUN_DIR/cap-08.bin' \
+    --script '$RUN_DIR/net-nat.txt' \
+    --script2 '$RUN_DIR/sh.txt' --script2-after 'net ip: ip=192.168.64.2' \
+    --script3 '$RUN_DIR/typed-discover.bin' --script3-after 'gosh: attached' \
+    --script-expect 'rc=1' --timeout 180
+
+vgate_assert 08 serial-contains 'gosh: attached'
+vgate_assert 08 serial-absent 'exec: loaded GONETSTAT.ELF'
+vgate_assert 08 serial-contains 'netstat: discover needs bridged'
+vgate_assert 08 serial-absent 'netstat: discover query'
+vgate_assert 08 serial-contains 'rc=1'
+vgate_assert 08 serial-absent '[EXC] parking:'
+vgate_assert 08 serial-absent 'fatal error: runtime:'
+vgate_assert 08 python <<'PY'
+import os, sys
+rd = os.environ["RUN_DIR"]
+d = open(os.path.join(rd, "cap-08.bin"), "rb").read()
+off, mdns_frames = 0, 0
+while off < len(d):
+    if d[off+12:off+14] == b"\x08\x00":
+        flen = 14 + ((d[off+16] << 8) | d[off+17])
+        f = d[off:off+flen]
+        off += flen
+        if len(f) >= 42 and f[23] == 17 and (f[36:38] == b"\x14\xe9" or f[34:36] == b"\x14\xe9"):
+            mdns_frames += 1
+    elif d[off+12:off+14] == b"\x86\xdd":
+        off += 14 + 40 + ((d[off+18] << 8) | d[off+19])
+    else:
+        off += 42
+if mdns_frames != 0:
+    sys.exit("FAIL: a refused browse still put %d mDNS frame(s) on the wire" % mdns_frames)
+print("go-net-clis 08 ok: NAT-signature refusal before bind, 0 mDNS frames")
+PY
+
+# --- boot 09: no network names "offline" ----------------------------------
+# M198c. No --net at all — the bare verb reads the snapshot, finds no own
+# IP, and refuses by name. The bare (meta-browse) entry is exercised too.
+vgate_run 09 -- \
+    --screen '$RUN_DIR/screen-09' \
+    --script '$RUN_DIR/sh.txt' \
+    --script3 '$RUN_DIR/typed-discover-bare.bin' --script3-after 'gosh: attached' \
+    --script-expect 'rc=1' --timeout 120
+
+vgate_assert 09 serial-contains 'gosh: attached'
+vgate_assert 09 serial-absent 'exec: loaded GONETSTAT.ELF'
+vgate_assert 09 serial-contains 'netstat: discover offline'
+vgate_assert 09 serial-absent 'netstat: discover query'
+vgate_assert 09 serial-contains 'rc=1'
+vgate_assert 09 serial-absent '[EXC] parking:'
+vgate_assert 09 serial-absent 'fatal error: runtime:'
+vgate_assert 09 python <<'PY'
+import os, re, sys
+ser = open(os.environ["VG_SER"], errors="replace").read()
+if not re.search(r"(?m)^gosh: line exec GONETSTAT\.ELF discover$", ser):
+    sys.exit("FAIL: GOSH never recorded the typed bare `exec GONETSTAT.ELF discover` line")
+print("go-net-clis 09 ok: bare discover names the offline refusal")
 PY

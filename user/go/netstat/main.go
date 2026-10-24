@@ -251,6 +251,17 @@ func drawSnapshot(c *canvas, s vi.NetStats) {
 }
 
 func main() {
+	// M198c (#3383): `exec GONETSTAT.ELF discover [service-type]` is a
+	// pure console verb — the mDNS browse runs, prints, and exits before
+	// any window opens (discover.go carries the honest bounds).
+	if args := vi.Args(); len(args) > 0 {
+		for i, a := range args {
+			if a == "discover" {
+				discoverMain(args[i+1:])
+				return
+			}
+		}
+	}
 	win, rc := vi.WinOpen(winX, winY, winW, winH)
 	if rc < 0 {
 		headlessMain()
