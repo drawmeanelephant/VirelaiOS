@@ -24,13 +24,38 @@ def sha(data):
     return hashlib.sha256(data).hexdigest()
 
 
-def build(work, cache, baseline=False, fixture=None):
-    work.mkdir(parents=True, exist_ok=True)
+def input_hashes(fixture=None):
+    """The sha256 map of every product input, keyed repo-relative.
+
+    Recorded into each artifact's .BIN.json provenance; `stale` compares
+    this map against a staged product's record to decide a relink."""
     inputs = [ROOT / "user/src/quickjs.zig", HERE / "policy.zig", HERE / "hooks.zig", Path(__file__),
               ROOT / "tools/zig/guest.ld", ROOT / "user/zig/quickjs/lock.json"]
     if fixture:
         inputs.append(HERE / (fixture + ".zig"))
-    hashes = {p.relative_to(ROOT).as_posix(): sha(p.read_bytes()) for p in inputs}
+    return {p.relative_to(ROOT).as_posix(): sha(p.read_bytes()) for p in inputs}
+
+
+def stale(output):
+    """'NAME fresh|stale|missing' — the session-side freshness verdict.
+
+    Mirrors ensure-guest-elf's plan row: the staged product is `fresh`
+    only when the artifact AND its provenance exist and pin today's
+    input hashes. Always exits zero — the word is the answer."""
+    prov = output.with_suffix(".BIN.json")
+    word = "missing"
+    if output.is_file() and prov.is_file():
+        try:
+            recorded = json.loads(prov.read_text()).get("inputs_sha256")
+        except (OSError, ValueError):
+            recorded = None
+        word = "fresh" if recorded == input_hashes() else "stale"
+    print(output.name + " " + word)
+
+
+def build(work, cache, baseline=False, fixture=None):
+    work.mkdir(parents=True, exist_ok=True)
+    hashes = input_hashes(fixture)
     objects = None if baseline or fixture == "launcher" else runtime_build.objects(work / "c", cache)
     compiler, library, provenance = runtime_build.prepare_runtime(cache, work)
     copy = work / "sdk"
@@ -76,7 +101,7 @@ def build(work, cache, baseline=False, fixture=None):
     image = inspection.elf(artifact)
     subprocess.run([sys.executable, str(ROOT / "tools/check-zc-host-contract.py"),
                     "--profile", "sdk", str(artifact)], check=True)
-    if hashes != {p.relative_to(ROOT).as_posix(): sha(p.read_bytes()) for p in inputs}:
+    if hashes != input_hashes(fixture):
         raise ValueError("BuildInputChanged")
     provenance.update(inputs_sha256=hashes, artifact_sha256=sha(artifact.read_bytes()), artifact=image,
                       flags=flags, strip=True, linker_script="tools/zig/guest.ld", entry="_start",
@@ -119,11 +144,14 @@ def verify(work, cache):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("build", "verify", "baseline", "launcher", "bounds"))
+    parser.add_argument("command", choices=("build", "verify", "baseline", "launcher", "bounds", "stale"))
     parser.add_argument("--work", type=Path, default=ROOT / ".build/js-client/product")
     parser.add_argument("--cache", type=Path, default=sdk.DEFAULT_CACHE)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
+    if args.command == "stale":
+        stale(args.output or (ROOT / ".build/js-client/QJS.BIN"))
+        return
     try:
         if args.command == "verify":
             artifact = verify(args.work.resolve(), args.cache.resolve())

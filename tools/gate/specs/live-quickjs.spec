@@ -9,7 +9,7 @@ vgate_name live-quickjs "ADR 0039 file, interactive, refusal, bounds and cold/cl
 vgate_share arm-virtiofs
 vgate_runner_flags -Xswiftc -DSPIKE
 vgate_fmt user/src/quickjs.zig tools/js-client/*.zig
-vgate_note "QJS-FILE-EVAL QJS-INTERACTIVE-EVAL QJS-REFUSALS QJS-BOUNDS QJS-COLD-AND-CLEANUP"
+vgate_note "QJS-FILE-EVAL QJS-INTERACTIVE-EVAL QJS-REFUSALS QJS-BOUNDS QJS-COLD-AND-CLEANUP QJS-STAGED"
 
 vgate_setup_python <<'PY'
 import os, pathlib, sys
@@ -17,6 +17,47 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, str(pathlib.Path("tools/js-client").resolve()))
 from prepare import prepare
 prepare(pathlib.Path(os.environ["RUN_DIR"]))
+PY
+
+# M200a (issue #3352): the engine must also arrive through the session's own
+# staging, not only the gate's prepare(). prepare() already dropped its copy
+# — remove it so reappearance proves tools/session.sh put QJS.BIN on the
+# share. VIRELAI_SESSION_SHARE rides the armed share, so the legs that
+# follow read /host/QJS.BIN over the same virtio-fs a --save-capable
+# session uses. SKIP_BUILD is the gate's reuse path: the product link runs
+# first to .build/js-client/QJS.BIN, then the session stages it. The
+# provisioned .virelairc is removed afterward — session.sh writes a seat
+# line into it and the kernel monitor runs the rc on EVERY boot, which
+# would change the serial-monitor shape of all 23 legs.
+vgate_setup_python <<'PY'
+import filecmp, os, pathlib, subprocess, sys
+rd = os.environ["RUN_DIR"]
+share = pathlib.Path(rd) / "share"
+(share / "QJS.BIN").unlink(missing_ok=True)
+subprocess.run([sys.executable, "tools/js-client/build.py", "build",
+                "--output", ".build/js-client/QJS.BIN"], check=True)
+env = dict(os.environ)
+env["VIRELAI_SESSION_PROFILE"] = os.path.join(rd, "session.virelaivm")
+env["VIRELAI_SESSION_SHARE"] = str(share)
+env["VIRELAI_SESSION_SKIP_BUILD"] = "1"
+env["VIRELAI_SESSION_NO_GOTABWM"] = "1"
+r = subprocess.run(["bash", "tools/session.sh", "--provision-only"],
+                   capture_output=True, text=True, env=env)
+sys.stdout.write(r.stdout)
+if r.returncode != 0:
+    sys.exit("session.sh --provision-only failed rc=%d: %s" % (r.returncode, r.stderr))
+if "session: provisioning complete" not in r.stdout:
+    sys.exit("no provisioning-complete receipt")
+staged = share / "QJS.BIN"
+assert staged.is_file(), "session.sh did not stage QJS.BIN"
+assert filecmp.cmp(str(staged), ".build/js-client/QJS.BIN", shallow=False), \
+    "staged QJS.BIN differs from the .build/js-client product"
+(share / ".virelairc").unlink(missing_ok=True)
+(share / "QJSESS.js").write_text("print('qjs-session-staged');\n")
+(pathlib.Path(rd) / "staged.txt").write_text(
+    "pages\nexec QJS.BIN /host/QJSESS.js --receipt=/host/QJSESS.R\n")
+print("setup: session.sh staged QJS.BIN into the session share "
+      "(byte-equal to the .build/js-client product)")
 PY
 
 vgate_file check.py <<'PY'
@@ -61,6 +102,9 @@ vgate_run receipt -- --console-tcp '127.0.0.1:24790' --timeout 600
 vgate_run eof -- --console-tcp '127.0.0.1:24791' --timeout 90
 vgate_run idle --from-checkpoint qjs -- --script '$RUN_DIR/idle.txt' --script-after 'tasks user-el0 reaped' --script2 '$RUN_DIR/after.txt' --script2-after 'tasks user-exec reaped' --script-expect 'qjs-gate-done' --timeout 100
 vgate_run usage --from-checkpoint qjs -- --script '$RUN_DIR/usage.txt' --script-after 'tasks user-el0 reaped' --script2 '$RUN_DIR/after.txt' --script2-after 'tasks user-exec reaped' --script-expect 'qjs-gate-done' --timeout 90
+# M200a: a warm boot on the session share — exec the binary session.sh
+# staged on a script that lives beside it, output + receipt on /host.
+vgate_run staged --from-checkpoint qjs -- --script '$RUN_DIR/staged.txt' --script-after 'tasks user-el0 reaped' --script2 '$RUN_DIR/after.txt' --script2-after 'tasks user-exec reaped' --script-expect 'qjs-gate-done' --timeout 90
 
 vgate_assert file serial-contains 'procs QJS.BIN exited status=0'
 vgate_assert refused serial-contains 'procs QJS.BIN exited status=0'
@@ -85,6 +129,8 @@ vgate_assert receipt serial-contains 'qjs: ReceiptLimit'
 vgate_assert eof serial-contains 'qjs: quit'
 vgate_assert idle serial-contains 'qjs: IdleLimit'
 vgate_assert usage serial-exact 'Usage' 1
+vgate_assert staged serial-contains 'qjs-session-staged'
+vgate_assert staged serial-contains 'procs QJS.BIN exited status=0'
 
 vgate_assert file python <<'PY'
 import os, runpy
@@ -175,6 +221,10 @@ import os, runpy
 runpy.run_path(os.path.join(os.environ["RUN_DIR"], "check.py"))
 PY
 vgate_assert usage python <<'PY'
+import os, runpy
+runpy.run_path(os.path.join(os.environ["RUN_DIR"], "check.py"))
+PY
+vgate_assert staged python <<'PY'
 import os, runpy
 runpy.run_path(os.path.join(os.environ["RUN_DIR"], "check.py"))
 PY
