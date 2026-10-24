@@ -781,4 +781,16 @@ final class NetTcpRelayTests: XCTestCase {
         XCTAssertEqual(frameCount, 1)
         XCTAssertFalse(logged(matching: "VIRELAI_NET_DROP"))
     }
+
+    // The gate stages the rule as a `net-drop-<tag>` FILE, and a text
+    // file ends in a newline — the parser must tolerate it or the file
+    // channel can never arm (observed live: 'rx:5\n' off the staged
+    // file logged "ignoring malformed VIRELAI_NET_DROP" and the loss
+    // legs ran clean).
+    func testNetDropSpecToleratesFileTrailingNewline() throws {
+        let rules = try XCTUnwrap(parseNetDropSpec("rx:5\n"))
+        XCTAssertEqual(rules.count, 1)
+        XCTAssertEqual(rules[0].dir, .rx)
+        XCTAssertEqual(rules[0].n, 5)
+    }
 }
