@@ -793,17 +793,18 @@ PY
 # a large share of the PNGs browsers meet. Run 01's boot is full (the
 # 8-window cap), so the leg is its own boot on the same shape: one exec, a
 # marker-settle snap, the viewer's own `q` via --input-key anchored to the
-# snap marker, exit 43. The pixel assert is the card's "interlaced fixture
+# ipng-done echo (the snap streams inside the two dwells first), exit 43. The pixel assert is the card's "interlaced fixture
 # through DecodeImage pixel-compared": the image rect is anchored the same
 # way as run 01's probes (serial open rect -> centered image), then the
 # scanout is sampled against the vector's integer expressions — pixels only
 # a working seven-pass walk can scatter into place.
 vgate_file script-ipng.txt <<'EOF'
-exec GOVIEW.ELF /host/IPNG.PNG
+exec GOVIEW.ELF /host/IPNG.PNG &
 fg 1
 echo snap-ipng
 fg 1
 fg 1
+echo ipng-done
 EOF
 
 vgate_run 03 -- \
@@ -813,7 +814,7 @@ vgate_run 03 -- \
     --snapshot-after 'snap-ipng' \
     --script '$RUN_DIR/script-wm.txt' --script-after "virelai> " \
     --script2 '$RUN_DIR/script-ipng.txt' --script2-after "wnd: registered" \
-    --input-key 12 --input-key-after "snap-ipng" \
+    --input-key 12 --input-key-after "ipng-done" \
     --script-expect "user-exec exited status=43" --timeout 240
 
 vgate_assert 03 serial-contains "VirelaiOS kernel has seized control."
