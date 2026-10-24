@@ -234,6 +234,14 @@ var Global = Table{
 	{Chord{ModCtrl | ModShift, UsageG}, "GOTERM.ELF", AppScope("GOTERM.ELF"), "",
 		"open the scrollback find bar over the capture-ring corpus",
 		"#3242 (M191a)", false},
+	// M192g (#3252): quick-open takes ctrl+p at the app's own dispatch
+	// point — the seat's ctrl+shift+p palette row above is a different
+	// point, which the one-owner-per-scope rule allows. The chord came
+	// free by taking it from GOEDIT's undocumented prev-diagnostic
+	// keymap entry, re-homed to ctrl+comma inside the app.
+	{Chord{ModCtrl, UsageP}, "GOEDIT.ELF", AppScope("GOEDIT.ELF"), "",
+		"summon the quick-open palette — open a file by name over " +
+			"recents + the open file's directory subtree", "#3252 (M192g)", false},
 	{Chord{ModCtrl, UsageS}, "NOTE.ELF", AppScope("NOTE.ELF"), "",
 		"save the note", "#1485 (M66c)", false},
 	// M82c rebase note: this chord was ctrl+shift+s when #1770 was written;

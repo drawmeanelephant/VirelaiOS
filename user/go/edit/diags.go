@@ -15,10 +15,12 @@ import (
 //   - Ctrl-E loads it and opens the list panel (up/down move, Return jumps
 //     to the selected row, Escape closes). Pressing it again re-reads the
 //     file, so a fresh build's list replaces the old one.
-//   - Ctrl-N / Ctrl-P are next/prev: the list loads on first use and each
-//     step jumps straight to the row after/before the last landing. The
-//     same chords move the selection while the panel is open. A step off
-//     either end is the `end` refusal — named, never a wrap.
+//   - Ctrl-N / Ctrl-comma are next/prev: the list loads on first use and
+//     each step jumps straight to the row after/before the last landing.
+//     The same chords move the selection while the panel is open. A step
+//     off either end is the `end` refusal — named, never a wrap. (The
+//     pair was Ctrl-N/Ctrl-P until M192g #3252: the card's quick-open
+//     owns ctrl+p, so prev-error re-homes to the ',<' key.)
 //
 // A jump lands the caret on the diagnostic's line:col. M166a (#2979): a
 // row naming a different file switches to that file's buffer or opens one
@@ -185,14 +187,14 @@ func (e *editor) openErrors() bool {
 }
 
 // diagsKey owns the keyboard while the panel is open: up/down (and the
-// same ctrl-n/ctrl-p the document steps with) move the selection, Return
-// jumps to it and closes, Escape closes without jumping. Plain keys are
-// eaten — the panel is a list, not a text bar.
+// same ctrl-n/ctrl-comma the document steps with) move the selection,
+// Return jumps to it and closes, Escape closes without jumping. Plain
+// keys are eaten — the panel is a list, not a text bar.
 func (e *editor) diagsKey(ev vi.Event) bool {
 	if chord(ev, 'n', false) {
 		return e.selDiag(1)
 	}
-	if chord(ev, 'p', false) {
+	if commaChord(ev) {
 		return e.selDiag(-1)
 	}
 	if ev.Flags&modCtrl != 0 {

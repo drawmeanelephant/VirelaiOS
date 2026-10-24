@@ -274,6 +274,37 @@ func TestM190bShotChordPicks(t *testing.T) {
 	}
 }
 
+// TestM192gQuickOpenRow pins the card's dispatch-point pick: ctrl+p is
+// GOEDIT's own app row (the quick-open summon), and it is ctrl+p —
+// UNshifted — so the seat's ctrl+shift+p palette row stays a different
+// (chord, scope) pair entirely, not a second claimant.
+func TestM192gQuickOpenRow(t *testing.T) {
+	want := Chord{ModCtrl, UsageP}
+	found := false
+	for _, r := range Global {
+		if r.Chord == want && r.Owner == "GOEDIT.ELF" && r.Scope == AppScope("GOEDIT.ELF") {
+			found = true
+		}
+		if r.Chord == want && r.Scope == ScopeSeat {
+			t.Errorf("ctrl+p must never become a seat chord: %v", r)
+		}
+	}
+	if !found {
+		t.Error("the GOEDIT ctrl+p quick-open row is missing")
+	}
+	// The seat's palette keeps its shifted spelling.
+	shifted := Chord{ModCtrl | ModShift, UsageP}
+	seatPalette := false
+	for _, r := range Global {
+		if r.Chord == shifted && r.Scope == ScopeSeat && r.Action == "palette" {
+			seatPalette = true
+		}
+	}
+	if !seatPalette {
+		t.Error("the seat's ctrl+shift+p palette row is missing")
+	}
+}
+
 // TestM132aReservedChordPicks pins the wave reservation table's R4–R6
 // spellings (ADR 0007 "M132 wave reservations"): the seat claims these
 // chords now so no other lane binds them, and their actions are the

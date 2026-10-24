@@ -2,8 +2,10 @@
 # build's ERRORS.TXT and navigates it. Run 01: GOBUILD.ELF fails /host/EDBAD
 # at the driver stage (positioned no_package + bad_package diags, no
 # toolchain children), GOEDIT opens the file, Ctrl-E populates the list, and
-# Enter/ctrl-n/ctrl-p jump file:line:col — the cross-file row swaps the one
-# buffer. Run 02's fix+rebuild runs in a seat-less boot — with tabwm up,
+# Enter/ctrl-n/ctrl-comma jump file:line:col — the cross-file row swaps the
+# one buffer. (M192g #3252 re-homed prev-error off ctrl+p: quick-open owns
+# that chord now, so the leg spells prev as ctrl-comma.)
+# Run 02's fix+rebuild runs in a seat-less boot — with tabwm up,
 # the second sequential compile child answers -ENOSPC (twice observed:
 # rc=-5) because a just-exited child's slots are not reaped instantly.
 # Run 03 then reads the clean build's empty ERRORS.TXT off the persisted
@@ -178,7 +180,7 @@ PY
 #   /host/EDBAD/helper/helper.go:1:9: package helper in dir expecting wrong
 #   /host/EDBAD/main.go:3:8: cannot find package "missing" ...
 # GOEDIT opens main.go, Ctrl-E loads the list (n=2), down selects the
-# main.go row, Return jumps 3:8; ctrl-p steps to the helper row — the
+# main.go row, Return jumps 3:8; ctrl-comma steps to the helper row — the
 # cross-file jump swaps the buffer to helper.go and lands 1:9; ctrl-n
 # steps back to main.go and the second ctrl-n ends on the named refusal.
 vgate_file script2.txt <<'EOF'
@@ -197,7 +199,7 @@ vgate_run 01 -- \
     --script2-after 'tabwm: sidebar-rendered' \
     --script3 '$RUN_DIR/script3.txt' \
     --script3-after 'gobuild: FAIL' \
-    --input-chords 'ctrl-e,down,return,ctrl-p,ctrl-n,ctrl-n' \
+    --input-chords 'ctrl-e,down,return,ctrl-comma,ctrl-n,ctrl-n' \
     --input-chords-after 'goedit: present' \
     --script-expect 'goedit: errors end' --timeout 300
 
@@ -212,7 +214,7 @@ vgate_assert 01 serial-contains 'goedit: errors n=2'
 vgate_assert 01 serial-contains 'goedit: errors sel=2/2'
 vgate_assert 01 serial-contains 'goedit: errors jump line=3 col=8'
 vgate_assert 01 serial-contains 'goedit: status line=3/5 col=8'
-# ctrl-p stepped to the helper row — the buffer swapped files and landed 1:9.
+# ctrl-comma stepped to the helper row — the buffer swapped files and landed 1:9.
 vgate_assert 01 serial-contains 'goedit: read /host/EDBAD/helper/helper.go n='
 vgate_assert 01 serial-contains 'goedit: errors jump line=1 col=9'
 vgate_assert 01 serial-contains 'goedit: status line=1/3 col=9'

@@ -148,6 +148,7 @@ func (e *editor) openBuf(path string) bool {
 	e.docs = append(e.docs, doc{path: path})
 	e.switchDoc(len(e.docs) - 1)
 	e.load()
+	e.pushRecent(path)
 	if rc := e.ensureLease(); rc < 0 {
 		vi.ConsoleLine(markerLeaseHeld + vi.Itoa64(rc))
 	}
@@ -173,8 +174,11 @@ func (e *editor) closeBufAsk() bool {
 
 // closeDoc drops the active buffer: its lease releases, its bytes leave
 // with it, and the following buffer (the previous one when it was last)
-// becomes active — reported like any switch.
+// becomes active — reported like any switch. The closed path stays in
+// the MRU — a just-closed buffer is exactly what quick-open's recents
+// are for.
 func (e *editor) closeDoc() {
+	e.pushRecent(e.path)
 	e.releaseLease()
 	e.docs = append(e.docs[:e.active], e.docs[e.active+1:]...)
 	if e.active >= len(e.docs) {
