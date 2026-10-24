@@ -58,7 +58,7 @@
 //!
 //! ## Provisioning (M196a, issue #3351, ADR 0024 D8 amendment)
 //!
-//! `sys_secret_set` (slot 94) is the write half, in the M116c consent
+//! `sys_secret_set` (slot 96) is the write half, in the M116c consent
 //! shape: ANY EL0 process may `ask` — it stages a parsed line in a bounded
 //! pending-ask table with the asker's recorded identity, per-principal
 //! scoped (the line's uid must equal the caller's). The seat-or-admin
@@ -255,7 +255,7 @@ pub fn parse(text: []const u8) LoadResult {
 }
 
 /// The decoded `key<TAB>uid<TAB>value[<TAB>apps]` line (slices borrow the
-/// input). M196a: factored out of `parseLine` so the slot-94 ask path runs
+/// input). M196a: factored out of `parseLine` so the slot-96 ask path runs
 /// the SAME validation a host-provisioned line does.
 const Fields = struct { uid: u32, key: []const u8, val: []const u8, apps: []const u8 };
 
@@ -395,10 +395,10 @@ pub fn save_to_share() bool {
 
 // ---------------------------------------------------------------------------
 // M196a (issue #3351, ADR 0024 D8 amendment): the consent-gated pending-ask
-// table behind `sys_secret_set` (slot 94)
+// table behind `sys_secret_set` (slot 96)
 // ---------------------------------------------------------------------------
 
-/// Slot-94 op vocabulary (ADR 0007 amendment). `ask` is the unprivileged
+/// Slot-96 op vocabulary (ADR 0007 amendment). `ask` is the unprivileged
 /// half — staging is not consent; `list`/`commit`/`drop`/`set` are the
 /// seat-or-admin gestures (`grant_admin_authorized` shape); `status` is
 /// the asker's own verdict read.
