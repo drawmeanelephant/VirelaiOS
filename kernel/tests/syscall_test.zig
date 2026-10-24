@@ -3804,12 +3804,12 @@ test "B6 DNS service: ownership source ID exclusive UDP seat timeout and release
     @memcpy(reply[12..17], query[12..17]); // the question echo the reply must carry
     var packet: [128]u8 = undefined;
     reply[1] = 3;
-    const wrong_id_len = udp.build_frame_ex(&packet, .{ 2, 0, 0, 0, 0, 1 }, &.{ 2, 0, 0, 0, 0, 2 }, .{ 10, 0, 0, 2 }, .{ 10, 0, 0, 1 }, 53, dport, &reply);
+    const wrong_id_len = udp.build_frame_ex(&packet, .{ 2, 0, 0, 0, 0, 1 }, &.{ 2, 0, 0, 0, 0, 2 }, .{ 10, 0, 0, 2 }, .{ 10, 0, 0, 1 }, udp.default_ttl, 53, dport, &reply);
     try std.testing.expect(ns.receiveDns(packet[0..wrong_id_len]));
     try std.testing.expectError(error.WouldBlock, ns.readDns(7, h, &output));
     reply[1] = 2;
     for ([_][4]u8{ .{ 10, 0, 0, 3 }, .{ 10, 0, 0, 2 } }) |source| {
-        const n = udp.build_frame_ex(&packet, .{ 2, 0, 0, 0, 0, 1 }, &.{ 2, 0, 0, 0, 0, 2 }, source, .{ 10, 0, 0, 1 }, 53, dport, &reply);
+        const n = udp.build_frame_ex(&packet, .{ 2, 0, 0, 0, 0, 1 }, &.{ 2, 0, 0, 0, 0, 2 }, source, .{ 10, 0, 0, 1 }, udp.default_ttl, 53, dport, &reply);
         try std.testing.expect(ns.receiveDns(packet[0..n]));
         if (source[3] == 3) try std.testing.expectError(error.WouldBlock, ns.readDns(7, h, &output));
     }
@@ -3865,7 +3865,7 @@ test "handle_native_socket_dns: M97e-F5 refusals — wrong question echo, zero c
     // A correct id + server tuple but a DIFFERENT question echo — the
     // forged answer is consumed but never stored (M97e-F5 QNAME check).
     reply[12] = 0xcc;
-    const bad_q_len = udp.build_frame_ex(&packet, src_mac, &dst_mac, .{ 10, 0, 0, 2 }, .{ 10, 0, 0, 1 }, 53, dport, &reply);
+    const bad_q_len = udp.build_frame_ex(&packet, src_mac, &dst_mac, .{ 10, 0, 0, 2 }, .{ 10, 0, 0, 1 }, udp.default_ttl, 53, dport, &reply);
     try std.testing.expect(ns.receiveDns(packet[0..bad_q_len]));
     try std.testing.expectError(error.WouldBlock, ns.readDns(7, h, &output));
     reply[12] = 0xaa;
@@ -3873,7 +3873,7 @@ test "handle_native_socket_dns: M97e-F5 refusals — wrong question echo, zero c
 
     // A zero UDP checksum is refused — IPv4 tolerates the field, the
     // resolver does not (the datagram is consumed, not stored).
-    const csum_len = udp.build_frame_ex(&packet, src_mac, &dst_mac, .{ 10, 0, 0, 2 }, .{ 10, 0, 0, 1 }, 53, dport, &reply);
+    const csum_len = udp.build_frame_ex(&packet, src_mac, &dst_mac, .{ 10, 0, 0, 2 }, .{ 10, 0, 0, 1 }, udp.default_ttl, 53, dport, &reply);
     packet[40] = 0;
     packet[41] = 0;
     try std.testing.expect(ns.receiveDns(packet[0..csum_len]));
@@ -3881,16 +3881,16 @@ test "handle_native_socket_dns: M97e-F5 refusals — wrong question echo, zero c
 
     // A reply addressed to a DIFFERENT destination port is not ours at
     // all — receiveDns declines it entirely (returns false).
-    const other = udp.build_frame_ex(&packet, src_mac, &dst_mac, .{ 10, 0, 0, 2 }, .{ 10, 0, 0, 1 }, 53, dport + 1, &reply);
+    const other = udp.build_frame_ex(&packet, src_mac, &dst_mac, .{ 10, 0, 0, 2 }, .{ 10, 0, 0, 1 }, udp.default_ttl, 53, dport + 1, &reply);
     try std.testing.expect(!ns.receiveDns(packet[0..other]));
 
     // A reply from port 5353 (not :53) is consumed but refused.
-    const wrong_sport = udp.build_frame_ex(&packet, src_mac, &dst_mac, .{ 10, 0, 0, 2 }, .{ 10, 0, 0, 1 }, 5353, dport, &reply);
+    const wrong_sport = udp.build_frame_ex(&packet, src_mac, &dst_mac, .{ 10, 0, 0, 2 }, .{ 10, 0, 0, 1 }, udp.default_ttl, 5353, dport, &reply);
     try std.testing.expect(ns.receiveDns(packet[0..wrong_sport]));
     try std.testing.expectError(error.WouldBlock, ns.readDns(7, h, &output));
 
     // The genuine reply (right id, echo, checksum, tuple) still lands.
-    const good = udp.build_frame_ex(&packet, src_mac, &dst_mac, .{ 10, 0, 0, 2 }, .{ 10, 0, 0, 1 }, 53, dport, &reply);
+    const good = udp.build_frame_ex(&packet, src_mac, &dst_mac, .{ 10, 0, 0, 2 }, .{ 10, 0, 0, 1 }, udp.default_ttl, 53, dport, &reply);
     try std.testing.expect(ns.receiveDns(packet[0..good]));
     try std.testing.expectEqual(@as(usize, 17), try ns.readDns(7, h, &output));
     try ns.close(7, h);

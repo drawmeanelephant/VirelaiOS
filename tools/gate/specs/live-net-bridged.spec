@@ -32,6 +32,20 @@
 # refusals short-circuit it exactly like b1. vgate_repeat makes the
 # acceptance K: 3 consecutive green spec runs.
 #
+# M198b (#3361, index #3313): a0-a3 are the advertise legs — GOHTTPD.ELF
+# --advertise announces _http._tcp over 224.0.0.251:5353 while it serves.
+# a0 is the host-independent half: --net capture decodes the wire frames
+# byte-exact (group MAC, TTL 255, 5353->5353, PTR/SRV/TXT/A/AAAA, TTL=0
+# goodbye). a1 is the observable browse leg on this host: vmnet static,
+# host `dns-sd -B _http._tcp` scoped to the gate sees the Add and the
+# kill-time Rmv. a2 is the en0 dual-branch like b1/m1 — the named
+# com.apple.vm.networking refusal passes on ad-hoc signatures; a
+# development-signed runner runs the full chain (dhcp bound -> announce
+# -> dns-sd Add -> kill -> Rmv). a3 is the NAT named refusal — the
+# observed VZ NAT subnet 192.168.64.0/24 is the in-guest signature
+# (the attachment serves no DHCP and no LAN segment), so --advertise
+# there exits with `advertise needs bridged`, never silently absent.
+#
 # M198a (#3349, index #3313): m1 is the multicast-delivery probe — the
 # measurement the M198 arc hinges on. Setup spawns a host emitter that
 # sends a fixed mDNS PTR query once a second to 224.0.0.251:5353 (en0,
@@ -49,7 +63,8 @@
 # the comment records the observation. The same named refusals as b1
 # short-circuit it.
 
-vgate_name live-net-bridged "M117d #2476 ADR 0057 D11 — --net-bridged/--net-vmnet named refusals + dual-branch lease/LAN-ping; M117f h1 LAN-httpd; M198a m1 multicast-delivery probe"
+vgate_name live-net-bridged "M117d #2476 ADR 0057 D11 — --net-bridged/--net-vmnet named refusals + dual-branch lease/LAN-ping; M117f h1 LAN-httpd; M198a m1 multicast-delivery probe; M198b a0-a3 advertise"
+vgate_share seed
 vgate_repeat 3 BOOTS
 vgate_note "K=3 consecutive green spec runs is the M117f (#2478) acceptance record (BOOTS overrides the default 3)"
 vgate_note "r1-r5 named refusals (host-independent): bogus iface, exclusivity x2, subnet requires+base"
@@ -57,6 +72,10 @@ vgate_note "b1 --net-bridged en0: dev-signed -> dhcp bound + gw ping; ad-hoc -> 
 vgate_note "v1 --net-vmnet --net-vmnet-subnet: bound 192.168.77.2 + ping host 192.168.77.1, or named vmnet_return_t refusal"
 vgate_note "h1 --net-bridged en0: dev-signed -> dhcp bound + tcp connect/GET to the host's LAN httpd on en0:8077, or the same named refusals"
 vgate_note "m1 --net-bridged en0: host mDNS emitter (canary + _http._tcp) vs guest mcast/mdns/mcast-filt counters + offered-bits record; verdict printed, every named outcome passes"
+vgate_note "a0 --net: announce+goodbye frames decoded byte-exact from the capture (group MAC, TTL 255, PTR/SRV/TXT/A/AAAA)"
+vgate_note "a1 --net-vmnet 192.168.78.0/24 static: host dns-sd -B sees v198ba1 Add then Rmv on kill; vmnet named refusals short-circuit"
+vgate_note "a2 --net-bridged en0: dual-branch like b1 — dev-signed runs dhcp bound + dns-sd Add/Rmv, ad-hoc passes on the named refusal"
+vgate_note "a3 --net-nat: --advertise refuses by name (advertise needs bridged), no listener binds"
 
 # r1-r5: the named refusals — the runner exits rc=1 before any VM is
 # configured, so the output file carries the ERROR line and nothing else
@@ -663,3 +682,285 @@ sys.exit(subprocess.run(
     env=dict(os.environ, RUN_DIR=rd, VG_TAG=os.environ["VG_TAG"],
              VG_SER=ser_path)).returncode)
 PY
+
+# ---- M198b (#3361): GOHTTPD --advertise legs ----------------------------
+#
+# a0 is the host-independent proof: the --net capture records guest TX
+# byte-exact, so the announce/goodbye frames are decoded off the file —
+# no entitlement, no dns-sd, no timing debt. a1 (vmnet) and a2 (en0) are
+# the real-wire halves; a3 is the named NAT refusal. GOHTTPD.ELF is
+# staged into the seed share; the dns-sd browse watcher is
+# peer_watch-scoped to this gate's lifetime like m1/m2's emitters.
+
+vgate_file adv_decode.py <<'EOF'
+# Decode raw-Ethernet captures for M198b announce/goodbye frames:
+# dst 01:00:5e:00:00:fb, IPv4 TTL 255, UDP 5353->5353, then walk the
+# mDNS answer/additional records (uncompressed names — the guest codec
+# never compresses; backward pointers are followed anyway).
+import sys
+
+def name(buf, off, depth=0):
+    out, hops = [], 0
+    while True:
+        if off >= len(buf) or depth > 8:
+            return None, off
+        b = buf[off]
+        if b == 0:
+            return ".".join(out), off + 1
+        if b & 0xC0 == 0xC0:
+            if off + 2 > len(buf):
+                return None, off
+            nxt = off + 2
+            tgt, _ = name(buf, (b & 0x3F) << 8 | buf[off + 1], depth + 1)
+            if tgt is None:
+                return None, off
+            out.append(tgt)
+            return ".".join(out), nxt
+        if off + 1 + b > len(buf):
+            return None, off
+        out.append(buf[off + 1:off + 1 + b].decode("ascii", "replace"))
+        off += 1 + b
+
+def records(pkt, off, n):
+    out = []
+    for _ in range(n):
+        nm, off = name(pkt, off)
+        if nm is None or off + 10 > len(pkt):
+            return out
+        typ, _, ttl, rdl = (pkt[off] << 8 | pkt[off + 1],
+                            pkt[off + 2] << 8 | pkt[off + 3],
+                            int.from_bytes(pkt[off + 4:off + 8], "big"),
+                            pkt[off + 8] << 8 | pkt[off + 9])
+        off += 10
+        rd = pkt[off:off + rdl]
+        body = rd
+        if typ in (12, 33):
+            tgt, _ = name(pkt, off)
+            body = rd[:6] + tgt.encode() if typ == 33 else tgt
+        out.append((nm, typ, ttl, body))
+        off += rdl
+    return out
+
+cap = open(sys.argv[1], "rb").read()
+frames = []
+i = 0
+while i + 42 <= len(cap):
+    et = cap[i + 12] << 8 | cap[i + 13]
+    if et == 0x0806:
+        i += 42
+        continue
+    if et != 0x0800 or cap[i + 14] >> 4 != 4:
+        break
+    tot = cap[i + 16] << 8 | cap[i + 17]
+    if tot < 20 or i + 14 + tot > len(cap):
+        break
+    frames.append(cap[i:i + 14 + tot])
+    i += 14 + tot
+
+announces, goodbyes = 0, 0
+detail = ""
+for f in frames:
+    if f[0:6] != b"\x01\x00\x5e\x00\x00\xfb" or f[23] != 17:
+        continue
+    ihl = (f[14] & 0x0F) * 4
+    uoff = 14 + ihl
+    if f[uoff:uoff + 4] != b"\x14\xe9\x14\xe9":  # src 5353, dst 5353
+        continue
+    if f[22] != 255:
+        continue  # mDNS wire TTL (RFC 6762 section 11)
+    pkt = f[uoff + 8:]
+    if len(pkt) < 12:
+        continue
+    qd, an, ns, ar = (pkt[j] << 8 | pkt[j + 1] for j in (4, 6, 8, 10))
+    off = 12
+    skip = True
+    for _ in range(qd):
+        _, off = name(pkt, off)
+        off += 4
+    recs = records(pkt, off, an + ns + ar)
+    names = [r for r in recs if r[0] == "_http._tcp.local" and r[1] == 12]
+    if not names:
+        continue
+    if any(r[2] == 0 for r in recs):
+        goodbyes += 1
+    else:
+        announces += 1
+    detail = " ".join("%s t=%d ttl=%d" % (r[0], r[1], r[2]) for r in recs)
+    detail += " | " + pkt.hex()
+
+print("frames=%d announces=%d goodbyes=%d" % (len(frames), announces, goodbyes))
+print("last-mdns:", detail)
+want_name = sys.argv[2]
+if announces == 0:
+    sys.exit("FAIL: no mDNS announce frame in capture")
+if goodbyes == 0:
+    sys.exit("FAIL: no TTL=0 goodbye frame in capture")
+if not any(want_name.encode() in pkt for pkt in [f[uoff + 8:] for f in frames if f[0:6] == b"\x01\x00\x5e\x00\x00\xfb"]):
+    sys.exit("FAIL: instance name %r absent from announce frames" % want_name)
+sys.exit(0)
+EOF
+
+vgate_file a0.s1 <<'EOF'
+net ip 10.0.0.1
+exec GOHTTPD.ELF --advertise v198ba0
+echo a0-execd
+EOF
+
+vgate_file a0.s2 <<'EOF'
+kill GOHTTPD.ELF
+echo a0-ok
+EOF
+
+vgate_file a1.s1 <<'EOF'
+net ip 192.168.78.5
+exec GOHTTPD.ELF --advertise v198ba1
+echo a1-execd
+EOF
+
+vgate_file a1.s2 <<'EOF'
+kill GOHTTPD.ELF
+echo a1-ok
+EOF
+
+vgate_file a2.s1 <<'EOF'
+net dhcp
+net dhcp
+net dhcp
+net dhcp
+net dhcp
+net dhcp
+net dhcp
+net dhcp
+net dhcp
+net dhcp
+net
+echo a2-pumped
+EOF
+
+vgate_file a2.s2 <<'EOF'
+exec GOHTTPD.ELF --advertise v198ba2
+echo a2-execd
+EOF
+
+vgate_file a2.s3 <<'EOF'
+kill GOHTTPD.ELF
+echo a2-ok
+EOF
+
+vgate_file a3.s1 <<'EOF'
+net ip 192.168.64.5
+exec GOHTTPD.ELF --advertise v198ba3
+echo a3-execd
+EOF
+
+vgate_file a3.s2 <<'EOF'
+procs
+echo a3-ok
+EOF
+
+vgate_setup_python <<'PY'
+# Stage GOHTTPD.ELF into the armed share (the live-httpd shape) and spawn
+# the host `dns-sd -B _http._tcp` browse watcher, peer_watch-scoped to
+# this gate's lifetime — its log is the a1/a2 evidence.
+import os, shutil, subprocess, sys
+rd = os.environ["RUN_DIR"]
+share = os.environ.get("VG_SHARE") or os.path.join(rd, "share")
+os.makedirs(share, exist_ok=True)
+src = os.path.join(".build", "go", "GOHTTPD.ELF")
+if not os.path.exists(src):
+    sys.exit("GOHTTPD.ELF missing (expected " + src + ") - build it first: "
+             "bash tools/go/build-gohttpd.sh")
+dst = os.path.join(share, "GOHTTPD.ELF")
+shutil.copy(src, dst)
+print("m198b: staged GOHTTPD.ELF (%d bytes)" % os.path.getsize(dst))
+watch = os.path.join("user", "go", "browser", "peer_watch.py")
+log = open(os.path.join(rd, "dnssd.log"), "wb")
+proc = subprocess.Popen(
+    [sys.executable, watch, str(os.getppid()),
+     "dns-sd", "-B", "_http._tcp", "local."],
+    stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+print("m198b: dns-sd browse watcher pid=%d" % proc.pid)
+PY
+
+vgate_run a0 -- --net '$RUN_DIR/a0.cap' --script '$RUN_DIR/a0.s1' --script2 '$RUN_DIR/a0.s2' --script2-after 'httpd: advertise sent' --script2-delay 2 --script-expect 'a0-ok' --timeout 90
+vgate_assert a0 python <<'PY'
+import os, subprocess, sys
+rd = os.environ["RUN_DIR"]
+cap = os.path.join(rd, "a0.cap")
+if not os.path.exists(cap):
+    sys.exit("FAIL: no capture file")
+sys.exit(subprocess.run(
+    [sys.executable, os.path.join(rd, "adv_decode.py"), cap, "v198ba0"]).returncode)
+PY
+
+vgate_run a1 -- --net-vmnet --net-vmnet-subnet 192.168.78.0/24 --script '$RUN_DIR/a1.s1' --script2 '$RUN_DIR/a1.s2' --script2-after 'httpd: advertise sent' --script2-delay 4 --script-expect 'a1-ok' --timeout 120
+vgate_allow_rc a1 0 1
+vgate_assert a1 python <<'PY'
+import os, sys, time
+rd = os.environ["RUN_DIR"]
+out = open(os.path.join(rd, "run-" + os.environ["VG_TAG"] + ".out"),
+           errors="replace").read()
+if "failed (vmnet_return_t=" in out:
+    sys.exit(0)  # named refusal leg — a non-success status carried by name
+if "net-vmnet: ENABLED (M117d, issue #2476, ADR 0057 D11)" not in out:
+    sys.exit("FAIL: success branch missing the net-vmnet ENABLED line")
+ser_path = os.environ.get("VG_SER", "")
+ser = open(ser_path, errors="replace").read() if ser_path and os.path.exists(ser_path) else ""
+need = ["net ip: ip=192.168.78.5",
+        "httpd: advertising v198ba1._http._tcp.local",
+        "httpd: advertise sent",
+        "httpd: advertise goodbye sent",
+        "a1-ok"]
+missing = [n for n in need if n not in ser]
+if missing:
+    sys.exit("FAIL: announce/kill chain incomplete; missing: " + " | ".join(missing))
+# The host-side evidence: dns-sd's browse log records Add then Rmv for
+# the instance (the watcher was spawned before the run booted).
+log = open(os.path.join(rd, "dnssd.log"), errors="replace").read()
+add = [l for l in log.splitlines() if "v198ba1" in l and "Add" in l]
+rmv = [l for l in log.splitlines() if "v198ba1" in l and "Rmv" in l]
+if not add:
+    sys.exit("FAIL: dns-sd browse never recorded the v198ba1 Add")
+if not rmv:
+    sys.exit("FAIL: dns-sd browse never recorded the v198ba1 Rmv (goodbye)")
+print("a1: dns-sd observed", add[0].strip())
+print("a1: dns-sd observed", rmv[0].strip())
+PY
+
+vgate_run a2 -- --net-bridged en0 --script '$RUN_DIR/a2.s1' --script2 '$RUN_DIR/a2.s2' --script2-after 'timer heartbeat ticks=45' --script3 '$RUN_DIR/a2.s3' --script3-after 'httpd: advertise sent' --script3-delay 4 --script-expect 'a2-ok' --timeout 120
+vgate_allow_rc a2 0 1
+vgate_assert a2 python <<'PY'
+import os, sys
+rd = os.environ["RUN_DIR"]
+out = open(os.path.join(rd, "run-" + os.environ["VG_TAG"] + ".out"),
+           errors="replace").read()
+if "requires the com.apple.vm.networking entitlement" in out:
+    sys.exit(0)  # named refusal leg — the absent entitlement named itself
+if "is not in VZBridgedNetworkInterface.networkInterfaces" in out:
+    sys.exit(0)  # named refusal leg — en0 is not bridgeable on this host
+ser_path = os.environ.get("VG_SER", "")
+ser = open(ser_path, errors="replace").read() if ser_path and os.path.exists(ser_path) else ""
+need = ["net: dhcp bound ip=",
+        "httpd: advertising v198ba2._http._tcp.local",
+        "httpd: advertise sent",
+        "httpd: advertise goodbye sent",
+        "a2-ok"]
+missing = [n for n in need if n not in ser]
+if missing:
+    sys.exit("FAIL: neither the com.apple.vm.networking refusal nor the bridged announce/goodbye completed; missing: " + " | ".join(missing))
+log = open(os.path.join(rd, "dnssd.log"), errors="replace").read()
+add = [l for l in log.splitlines() if "v198ba2" in l and "Add" in l]
+rmv = [l for l in log.splitlines() if "v198ba2" in l and "Rmv" in l]
+if not add:
+    sys.exit("FAIL: dns-sd browse never recorded the v198ba2 Add")
+if not rmv:
+    sys.exit("FAIL: dns-sd browse never recorded the v198ba2 Rmv (goodbye)")
+print("a2: dns-sd observed", add[0].strip())
+print("a2: dns-sd observed", rmv[0].strip())
+PY
+
+vgate_run a3 -- --net-nat --script '$RUN_DIR/a3.s1' --script2 '$RUN_DIR/a3.s2' --script2-after 'httpd: advertise needs bridged' --script-expect 'a3-ok' --timeout 60
+vgate_assert a3 serial-contains 'net ip: ip=192.168.64.5'
+vgate_assert a3 serial-contains 'httpd: advertise needs bridged'
+vgate_assert a3 serial-absent 'httpd: listening'
+vgate_assert a3 serial-absent 'httpd: advertise sent'

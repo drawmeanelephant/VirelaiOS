@@ -37,6 +37,12 @@ pub const udp_hdr_len: usize = 8; // src port (2) + dst port (2) + length (2) + 
 pub const protocol_udp: u8 = 17;
 /// The fixed source port for `net udp send` (deterministic, gate-assertable).
 pub const default_src_port: u16 = 7000;
+/// The IPv4 TTL every unicast/broadcast frame carries. M198b (#3361):
+/// link-local multicast sends pass `mcast_ttl` instead — RFC 6762 §11
+/// requires 255 on the wire (Apple's responder discards anything else).
+pub const default_ttl: u8 = 64;
+/// M198b: the TTL a link-local multicast datagram goes out with.
+pub const mcast_ttl: u8 = 255;
 /// Bounded payload for `net udp send` (the honest bound — the byte-index
 /// pattern, gate-assertable). Over-length sends truncate honestly.
 /// M99i (#2187): raised 64 -> 512 — a multi-answer DNS reply cannot fit a
@@ -563,14 +569,16 @@ pub fn build_frame6(buf: []u8, dst_mac: [6]u8, own_mac: *const [6]u8, src6: *con
 /// ipv4_hdr_len + udp_hdr_len + payload.len` — the caller's payload is
 /// ALREADY bounded, no truncation here): dst MAC, src MAC, ethertype
 /// 0x0800, a 20-byte IPv4 header (version 4 / IHL 5, total length, TTL
-/// 64, protocol 17, header checksum), then the UDP datagram (src port,
-/// dst port, length, checksum over the pseudo-header src/dst). This is
-/// the general builder behind the N5 `build_frame` AND the N8 DHCP
-/// broadcast-dst send seam (card N8 — the ONE N5-layer change: a DHCP
-/// frame goes out with dst MAC ff:ff:ff:ff:ff:ff + dst IP
+/// `ip_ttl`, protocol 17, header checksum), then the UDP datagram (src
+/// port, dst port, length, checksum over the pseudo-header src/dst).
+/// This is the general builder behind the N5 `build_frame` AND the N8
+/// DHCP broadcast-dst send seam (card N8 — the ONE N5-layer change: a
+/// DHCP frame goes out with dst MAC ff:ff:ff:ff:ff:ff + dst IP
 /// 255.255.255.255 directly, no ARP, src IP 0.0.0.0). Returns the frame
-/// length (42 + the written payload).
-pub fn build_frame_ex(buf: []u8, dst_mac: [6]u8, own_mac: *const [6]u8, src_ip: [4]u8, dst_ip: [4]u8, src_port: u16, dst_port: u16, payload: []const u8) usize {
+/// length (42 + the written payload). M198b (#3361): `ip_ttl` is the
+/// caller's — 64 everywhere except link-local multicast sends, which
+/// RFC 6762 §11 requires at 255.
+pub fn build_frame_ex(buf: []u8, dst_mac: [6]u8, own_mac: *const [6]u8, src_ip: [4]u8, dst_ip: [4]u8, ip_ttl: u8, src_port: u16, dst_port: u16, payload: []const u8) usize {
     const total = ipv4_hdr_len + udp_hdr_len + payload.len;
     const frame_len = eth_hdr_len + total;
     @memset(buf[0..frame_len], 0);
@@ -581,7 +589,7 @@ pub fn build_frame_ex(buf: []u8, dst_mac: [6]u8, own_mac: *const [6]u8, src_ip: 
     buf[14] = 0x45; // version 4, IHL 5
     buf[16] = @truncate(total >> 8);
     buf[17] = @truncate(total); // total length
-    buf[22] = 64; // TTL
+    buf[22] = ip_ttl;
     buf[23] = protocol_udp;
     @memcpy(buf[26..30], &src_ip); // src
     @memcpy(buf[30..34], &dst_ip); // dst
@@ -613,7 +621,7 @@ pub fn build_frame_ex(buf: []u8, dst_mac: [6]u8, own_mac: *const [6]u8, src_ip: 
 /// byte-exact N5 fixtures pin the unchanged output.
 pub fn build_frame(buf: []u8, own_mac: *const [6]u8, own_ip: [4]u8, peer_mac: [6]u8, peer_ip: [4]u8, dst_port: u16, payload: []const u8) usize {
     const plen = @min(payload.len, payload_max);
-    return build_frame_ex(buf, peer_mac, own_mac, own_ip, peer_ip, default_src_port, dst_port, payload[0..plen]);
+    return build_frame_ex(buf, peer_mac, own_mac, own_ip, peer_ip, default_ttl, default_src_port, dst_port, payload[0..plen]);
 }
 
 /// Loopback: deliver a datagram to OUR OWN address — built here (src port
