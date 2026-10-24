@@ -75,3 +75,4 @@ GOVAULT.ELF	file,window,timer,memory,process,debug	file,window,timer,memory,proc
 GOPAINT.ELF	file,window,memory,process,debug	file,window,memory,process,debug	-
 GOMAIL.ELF	file,net	file,net	-
 GOA11Y.ELF	-	file,window,timer,memory,process,debug	not audited — M177b (#3143) new app; declared caps=file,window,timer + the observed Go-runtime ambient set (debug,memory,process); surface ReadFileAll outline read + TimerSetNs poll + WmWindows kind-16 query (user/go/goa11y)
+QJS.BIN	file	file,term	declared: M200b's opens dispatch needs file (script read + --receipt write); term covers the --repl /dev/tty surface the argv policy also admits
