@@ -27,9 +27,29 @@ so.
 - [[processes|Processes & IPC]] — concurrent EL0 programs, mailboxes, wait,
   kill, `sys_exec`/`sys_kill`, and Go threads over futex slots.
 - [[desktop|The desktop]] — the `GOTABWM.ELF` seat, the WM_RPC contract,
-  appkit, spaces, split panes, the chord registry, and session fidelity.
+  appkit, spaces, split panes, the chord registry, and session fidelity —
+  and the daily-driver depth: a clipboard-history ring with its paste
+  menu, guest screenshots to the share, per-tab unread badges and a
+  right-press menu on the rail, a vault-backed screen lock, launcher
+  verbs, and shared menubar/find overlays.
+- **Accessibility** — three `a11y.*` settings rows every
+  `theme.ApplySettings` caller honours (`a11y.contrast` off/high,
+  `a11y.reduce_motion`, `a11y.text_scale` 100/125/150; GOSET's access
+  tab edits them, #2983), plus the outline surface: an appkit window
+  publishes a `#a11y v1` role/state/name outline crash-safe to
+  `/host/A11Y.<win>` — opt-in per app, control and focused-item labels
+  only, never field contents — and `GOA11Y.ELF` renders the focused
+  window's outline
+  through the seat's `WINDOWS_QUERY`, with a `-say` hook onto the
+  signed host speech lane (#3143, #3181).
+- **Mail** — `GOMAIL.ELF`: IMAP4rev1 `boxes`/`headers`/`read` plus SMTP
+  submit for one message over `tls.Dial`, the plaintext consent rule
+  at the dial boundary, and a bounded cache under the data root's
+  `MAIL/` subtree so `search` never dials and a failed dial answers
+  from what the cache can prove; out-of-scope verbs and attachments
+  refuse by name (#3184, #3253).
 - [[apps|The app fleet]] — what ships on the image: editors, shell, browser,
-  sheets, paint, IRC, games, and the signed-store installs.
+  mail, sheets, paint, IRC, games, and the signed-store installs.
 - [[components|Components]] — the per-component version surfaces behind the
   fleet, rendered from the canonical registry so it cannot lag.
 - [[media|Media & typography]] — bounded PDF, SVG raster, JPEG/GIF/PNG/QOI
@@ -42,11 +62,14 @@ so.
 - **Dynamic linking** — a freestanding `LD.SO` runtime linker,
   `LIBUI.SO`/`LIBFONT.SO` shared libraries, and `dlopen`/`dlsym` plugin
   loading.
-- **Shared services & sound** — a machine-global clipboard, per-process app
-  timers that post `TIMER` events, a virtio-snd audio pipeline from the
-  device up to EL0 apps (playback *and* bounded capture), and the opt-in
-  bidirectional host clipboard over HMAC-signed share files
-  (`--host-clipboard`, M108b).
+- **Shared services & sound** — a machine-global clipboard (512 bytes,
+  slots 38/39) with a typed mime vocabulary, a seat-held history ring
+  behind `ctrl+shift+i`, OSC 52 copies bridged out of bound terminals
+  and DECSET-2004 bracketed paste on the way in (#1715, #1629);
+  per-process app timers that post `TIMER` events; a virtio-snd audio
+  pipeline from the device up to EL0 apps (playback *and* bounded
+  capture); and the opt-in bidirectional host clipboard over
+  HMAC-signed share files (`--host-clipboard`, M108b).
 - **In-guest development** — the guest's own `cmd/compile`/`cmd/link` build
   and run Go programs (`live-selfhost-go`), `GOBUILD.ELF` drives them across
   the fleet (`live-dev-loop`), and `FLINT.ELF` — the agent-native SCM —

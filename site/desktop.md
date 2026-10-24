@@ -132,7 +132,15 @@ tick:
   hosted tab, with pin, reorder (click or `ctrl+shift+PgUp`/`PgDn`),
   close, a frozen badge, and a focus badge that names the focused app.
   More than one space draws the live space's name at the rail's right
-  edge.
+  edge. The strip *is* the running set — a cell exists only while its
+  tab lives, so there is no separate dock and no running dot to paint.
+  What a cell carries instead is attention and action: an unread badge
+  counts that tab's undismissed notifications-center entries posted
+  since it last took focus (it clears when the tab takes focus, not
+  when the toast fades), and a right press opens a four-row menu —
+  Focus / Duplicate / Pin-or-Unpin / Quit — aimed at that cell's tab
+  through the same seams the chords run, chrome-modal like the power
+  menu (#3238).
 - **The clock panel** — bottom-right, with an honest source chain:
   kernel wall time (slot 66) first, the session launcher's
   `/host/.clock` next, the seat's own uptime last, and a one-shot
@@ -143,9 +151,41 @@ tick:
   `APPS.TXT` catalogue; the same engine's second face is the
   **command palette** (`ctrl+shift+p`), which subsequence-ranks open
   tabs, apps, recent files, settings keys, help topics and the whole
-  chord registry in one modal input.
+  chord registry in one modal input. A non-empty filter also ranks
+  bounded filename hits under the share, and every row carries a verb
+  affordance — Tab or the horizontal arrows step between open, reveal
+  in GOFILES, and one open-with row per manifest `opens=` candidate for
+  the hit's mime spelling. Content search stays a hand-off: a "Search
+  files for" row sends the query to GOFILES's own walk rather than
+  doing it inline (#3243).
 - **The god menu and PWR buttons** — small seat glyphs on the bottom
-  band for system actions and the snapshot/power row.
+  band for system actions and the power menu: three rows, Suspend,
+  Snapshot (launches or focuses GOSNAP's snapshot window), and Lock.
+- **Screenshots** — the guest photographs itself, no host recorder
+  involved: `ctrl+shift+3` publishes the composed scanout and
+  `ctrl+shift+4` the focused window's rect of it, as a PNG to
+  `/host/SHOTS/SHOT-<unix>.png` through a banded scanout read and a
+  crash-safe share write. Every refusal names itself twice — the
+  serial marker and a toast: `no_host`, `no_window`, `no_clock`,
+  `bad_rect`, `io_<errno>` (#3237).
+- **The clipboard-history menu** — `ctrl+shift+i` summons the seat's
+  paste menu over the rail: a ≤16-entry ring of every clip the kernel
+  buffer has carried this boot, FIFO-evicted, a re-copy bumping to the
+  head, memory-only — never serialized to the share or the session.
+  Each row shows the mime the seat classified the bytes as plus a
+  preview; Enter (or a row press) writes the pick back through the same
+  slot-38 seam every copy takes and forwards the app's own paste chord.
+  The primary selection is excluded by construction — it never touches
+  the shared buffer — and host-clipboard applies join the ring like any
+  other clip (#3236).
+- **The lock curtain** — `ctrl+shift+l`, or the PWR menu's Lock row,
+  drops a full-opacity veil holding one passphrase field: a seat-owned
+  input sink takes kernel focus, so no hosted app receives a keystroke
+  while it is up. Unlock re-authenticates the passphrase against the
+  GOVAULT credential through the same `vaultlib` codec GOVAULT opens —
+  and with no readable credential the lock refuses by name
+  (`no_credential`, `bad_credential`, `no_sink`), never a silent no-op
+  (#3240).
 
 <Aside kind="note">
 
@@ -156,6 +196,41 @@ plate, the palette strip and the focus badge with pixel asserts at
 each step.
 
 </Aside>
+
+The clipboard the paste menu fronts is the kernel's one bounded
+machine-global buffer — 512 bytes behind slots 38/39 — and every
+writer meets it the same way, so a terminal copy chord, the monitor's
+`clip`, a capability holder's set, a signed host-lane apply and the
+menu's own pick are indistinguishable to its observers. Terminal
+owners speak it through real escape sequences: an OSC 52
+`c;<base64>` string from a bound terminal's owner queues a copy the
+session pump lands in the shared buffer — a `?` read-back is refused
+outright, and malformed base64 refuses whole rather than landing a
+partial clip — while DECSET 2004 (**bracketed paste**) wraps a
+chord-pushed paste in `\e[200~` … `\e[201~` so the receiving editor
+keeps the bytes literal (#1715, #1629).
+
+Menus and find are app chrome with one shared shape. The appkit
+`MenuBar` — a top strip of titled menus with `&` mnemonics, engaged
+by F10 or a bare Alt — is the fleet's menu surface: GOEDIT, GOFILES
+and WEB share their title row with it, and GOTERM's tty-bound
+front-end engages the same bar on the alternate screen, each row
+firing the code path its named chord takes (#3239). The appkit `Find`
+overlay is likewise one bar — a bottom-docked strip with a pattern
+field, a live match count, and Enter / Shift-Enter cycling over the
+app's own corpus seam — adopted by NOTE, GOREADER and GOTERM (#3244).
+GOTERM's face of it is the scrollback find: `ctrl+shift+g` (BEL on
+the tty wire — the kernel encoder folds shift out of ctrl-letters)
+opens an alternate-screen bar over the capture ring re-derived into
+plain rows. The kernel owns tty presentation and exposes no readback,
+so the searchable corpus is the app's own mirror of grid plus
+history — searching it searches scrollback and the visible grid
+whole, and sixel image rows are named, never searched as text
+(#3242).
+
+Chrome also answers the accessibility rows: `a11y.contrast`
+recomposes every `theme.ApplySettings` palette including the seat's
+own, and `a11y.reduce_motion` holds the toast ramp's fade (#2983).
 
 ## Tabs, panes, and spaces
 
