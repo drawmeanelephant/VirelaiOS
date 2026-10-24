@@ -12,6 +12,7 @@ package main
 
 import (
 	"virelai/appkit"
+	"virelai/speech"
 	"virelai/tabapp"
 	"virelai/theme"
 	"virelai/vi"
@@ -41,6 +42,10 @@ const (
 	markerNoFocus   = "goa11y: no focus"
 	markerQueryFail = "goa11y: query "
 	markerClose     = "goa11y: done"
+	// M186d (#3181): the -say hook's receipts — the staged utterance's
+	// byte length, or the lane's refusal word.
+	markerSayQueued  = "goa11y: say queued len="
+	markerSayRefused = "goa11y: say refused reason="
 )
 
 // The syscall seams a host test swaps out — the wmstate.go / playArm
@@ -50,6 +55,10 @@ var (
 	readFile   = vi.ReadFileAll
 	armTimerNs = vsys.TimerSetNs
 	console    = vi.ConsoleLine
+	// sayStage is the M186d speech seam — production binds the shared
+	// virelai/speech gesture (a SAY intent marker the seat signs into a
+	// SPEAK record); tests pin the call without a share.
+	sayStage = func(text string) string { return speech.Guest.Say(text) }
 )
 
 // view is the reader's reportable state — the named outcomes a poll can
@@ -68,6 +77,9 @@ const (
 type app struct {
 	ta   *tabapp.TabApp
 	self uint32 // own window id — the bound-window kind 16 needs
+	// say is the -say flag: a changed outline also stages a SAY intent
+	// marker, so the reader has a voice on the host's speech lane.
+	say bool
 
 	state view
 	win   uint32
@@ -142,6 +154,9 @@ func (a *app) print() {
 		for i, n := range a.nodes {
 			console(nodeLine(i, n))
 		}
+		if a.say {
+			a.speak()
+		}
 	case viewNoOutline:
 		console(markerNoOutline + vi.Itoa64(int64(a.win)))
 	case viewBadOutline:
@@ -158,6 +173,34 @@ func (a *app) print() {
 func nodeLine(i int, n appkit.Node) string {
 	return markerNode + vi.Itoa64(int64(i)) + " " + n.Role.String() +
 		" " + n.State.String() + " " + n.Name
+}
+
+// speak is the -say hook (M186d, ADR 0051 V2-D8): the changed outline's
+// voice, staged as a SAY intent marker the seat signs into a SPEAK
+// record — the reader emits speak records instead of only visual
+// outlines. The utterance is the focused node's name when one exists
+// (what a screen reader announces), else the window's name and the node
+// count; speech.Clamp keeps it inside the lane's 512-byte grammar.
+func (a *app) speak() {
+	text := ""
+	for _, n := range a.nodes {
+		if n.State&appkit.StateFocused != 0 && n.Name != "" {
+			text = n.Name
+			break
+		}
+	}
+	if text == "" && len(a.nodes) > 0 {
+		text = a.nodes[0].Name + ", " + vi.Itoa64(int64(len(a.nodes))) + " nodes"
+	}
+	text = speech.Clamp(text)
+	if text == "" {
+		return
+	}
+	if r := sayStage(text); r != "" {
+		console(markerSayRefused + r)
+		return
+	}
+	console(markerSayQueued + vi.Itoa64(int64(len(text))))
 }
 
 func bytesEq(a, b []byte) bool {
@@ -248,7 +291,15 @@ func main() {
 	} else {
 		vi.ConsoleLine(markerRefused)
 	}
-	a := &app{ta: ta, self: uint32(ta.Win)}
+	// -say: every changed outline also stages a SAY intent marker —
+	// the reader's voice on the host speech lane (M186d).
+	say := false
+	for _, arg := range vi.Args()[1:] {
+		if arg == "-say" {
+			say = true
+		}
+	}
+	a := &app{ta: ta, self: uint32(ta.Win), say: say}
 	// The first poll runs before the first frame so the initial paint is
 	// a real state, then the 500 ms timer owns the cadence.
 	_ = a.poll()
