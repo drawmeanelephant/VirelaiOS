@@ -5284,6 +5284,15 @@ fn cmd_net(m: *Monitor, args: []const []const u8) ExecError {
     m.console.puts(" q1=tx:size=");
     m.console.print_u64(@intCast(virtio_net.queue_size));
     m.console.puts("\n");
+    // M198a (#3349): the device's OFFERED feature bits on the success
+    // path too (the failure branch already prints them) — the
+    // multicast-probe evidence for whether VIRTIO_NET_F_CTRL_VQ
+    // (bit 17) / CTRL_MAC_ADDR (bit 23) programming is even possible.
+    m.console.puts("net: offered=");
+    m.console.print_hex(virtio_net.net_dev_feats_lo);
+    m.console.puts("/");
+    m.console.print_hex(virtio_net.net_dev_feats_hi);
+    m.console.puts("\n");
     m.console.puts("net: status=");
     m.console.print_hex(virtio_net.net_status_last);
     m.console.puts(" rearm=");
@@ -5307,6 +5316,16 @@ fn cmd_net(m: *Monitor, args: []const []const u8) ExecError {
     m.console.print_u64(virtio_net.rx_overflow);
     m.console.puts(",fifo=");
     m.console.print_u64(@intCast(virtio_net.fifo_occupancy()));
+    // M198a (#3349): multicast-delivery evidence for the probe leg —
+    // accepted group-dst frames, the mDNS subset, and multicast the
+    // device delivered but the filter refused (delivery proven even
+    // when nothing admitted it).
+    m.console.puts(",mcast=");
+    m.console.print_u64(virtio_net.rx_mcast);
+    m.console.puts(",mdns=");
+    m.console.print_u64(virtio_net.rx_mdns);
+    m.console.puts(",mcast-filt=");
+    m.console.print_u64(virtio_net.rx_mcast_filtered);
     m.console.puts("\n");
     // The raw ring state (the claim-time record): the guest's avail.idx
     // vs the device's used.idx tell whether a delivery ever completed.

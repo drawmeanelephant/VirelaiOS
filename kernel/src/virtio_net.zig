@@ -173,6 +173,29 @@ pub const payload_max: usize = 1500;
 /// Largest single TX frame: 14-byte header + 1500-byte payload.
 pub const frame_max: usize = eth_hdr_len + payload_max; // 1514
 
+/// M198a (#3349, index #3313): the two mDNS multicast MACs the probe
+/// admits — 224.0.0.251's IPv4 multicast and ff02::fb's IPv6 multicast
+/// (RFC 6762's mDNS groups). The set is fixed and computed like D2's.
+/// Whether VZ offers VIRTIO_NET_F_CTRL_VQ (the only path to a
+/// device-side multicast filter) is recorded by the `net: offered=`
+/// report — the probe leg reads it, this driver assumes nothing.
+pub const mdns_mac_v4 = [6]u8{ 0x01, 0x00, 0x5e, 0x00, 0x00, 0xfb };
+pub const mdns_mac_v6 = [6]u8{ 0x33, 0x33, 0x00, 0x00, 0x00, 0xfb };
+
+/// Whether `dst` is a multicast (not broadcast) Ethernet destination:
+/// the group bit (low bit of the first octet) set on a non-all-ff
+/// address (RFC 1042 / IEEE 802 — ff:ff:ff:ff:ff:ff has the bit set
+/// too and is counted separately as broadcast).
+pub fn is_mcast_dst(dst: *const [6]u8) bool {
+    if (dst[0] & 0x01 == 0) return false;
+    var i: usize = 0;
+    var bcast = true;
+    while (i < 6) : (i += 1) {
+        if (dst[i] != 0xff) bcast = false;
+    }
+    return !bcast;
+}
+
 /// TX buffer layout, OBSERVED at claim time (2026-08-11, the live VZ
 /// gate): VZ's virtio-net device consumes a 12-byte virtio_net_hdr prefix
 /// on EVERY TX buffer, even with no offload/checksum feature negotiated
@@ -365,6 +388,16 @@ pub var rx_frames: u64 = 0;
 pub var rx_bytes: u64 = 0;
 pub var rx_filtered: u64 = 0;
 pub var rx_overflow: u64 = 0;
+/// M198a (#3349): the multicast-delivery evidence. `rx_mcast` counts
+/// ACCEPTED multicast-dst frames (non-broadcast group bit set — all-
+/// nodes, solicited-node, the mDNS groups), `rx_mdns` the subset
+/// addressed to the two mDNS group MACs, and `rx_mcast_filtered` the
+/// multicast frames the device delivered but the filter refused — a
+/// growing mcast-filtered count beside a flat mdns= means delivery
+/// works and the bound is the admit set, not the device.
+pub var rx_mcast: u64 = 0;
+pub var rx_mdns: u64 = 0;
+pub var rx_mcast_filtered: u64 = 0;
 pub var rx_last_len: u32 = 0;
 pub var rx_first16: [16]u8 = @splat(0);
 /// Whether queue 0 currently has any buffer supplied (armed + kicked).
@@ -832,6 +865,9 @@ fn transport_init(ops: *const Ops, dev: *Device, rearm: bool) bool {
     rx_bytes = 0;
     rx_filtered = 0;
     rx_overflow = 0;
+    rx_mcast = 0;
+    rx_mdns = 0;
+    rx_mcast_filtered = 0;
     rx_last_len = 0;
     rx_fifo_head = 0;
     rx_fifo_count = 0;
@@ -1172,22 +1208,29 @@ pub fn net_rx_arm() bool {
 /// bounded v6 multicast set (ADR 0057 D2: all-nodes `33:33:00:00:00:01`
 /// and the solicited-node group `33:33:ff:xx:xx:xx` of every
 /// formed-or-tentative v6 address — they share the IID, so the set is
-/// ONE computed group, never stored). Everything else still drops.
-/// `off` is the frame start in the buffer (the `rx_hdr_len` constant —
-/// pinned from observation at claim time). Pure and host-testable.
+/// ONE computed group, never stored) + the M198a (#3349) mDNS pair
+/// (`mdns_mac_v4`/`mdns_mac_v6` — admitted unconditionally so the
+/// multicast probe leg and the later advertiser/browser can observe
+/// them). Everything else still drops. `off` is the frame start in the
+/// buffer (the `rx_hdr_len` constant — pinned from observation at claim
+/// time). Pure and host-testable.
 pub fn mac_accept(off: usize, buf: []const u8, own: *const [6]u8) bool {
     if (off + 6 > buf.len) return false;
     const dst = buf[off .. off + 6];
     var own_match = true;
     var bcast = true;
     var allnodes = true;
+    var mdns4 = true;
+    var mdns6 = true;
     var i: usize = 0;
     while (i < 6) : (i += 1) {
         if (dst[i] != own[i]) own_match = false;
         if (dst[i] != 0xff) bcast = false;
         if (dst[i] != ipv6.all_nodes_mac[i]) allnodes = false;
+        if (dst[i] != mdns_mac_v4[i]) mdns4 = false;
+        if (dst[i] != mdns_mac_v6[i]) mdns6 = false;
     }
-    if (own_match or bcast or allnodes) return true;
+    if (own_match or bcast or allnodes or mdns4 or mdns6) return true;
     // The solicited-node group: admitted once an IID exists (the
     // link-local formed-or-tentative — every owned address shares the
     // IID's low 24 bits).
@@ -1294,11 +1337,28 @@ pub fn net_rx_drain() void {
         // rx-obs, and is corrected like tx_hdr_len was).
         if (!mac_accept(rx_hdr_len, buf[0..dev_len], &net_mac)) {
             rx_filtered +%= 1;
+            // M198a: a multicast frame the filter refused still proves
+            // the device DELIVERED one — the probe distinguishes "no
+            // delivery" from "delivered but not admitted".
+            if (dev_len >= rx_hdr_len + 6 and
+                is_mcast_dst(buf[rx_hdr_len..][0..6])) rx_mcast_filtered +%= 1;
             continue;
         }
         _ = fifo_push(buf[0..dev_len]);
         rx_frames +%= 1;
         rx_bytes +%= dev_len;
+        if (is_mcast_dst(buf[rx_hdr_len..][0..6])) {
+            rx_mcast +%= 1;
+            const dst = buf[rx_hdr_len..][0..6];
+            var mdns4 = true;
+            var mdns6 = true;
+            var mi: usize = 0;
+            while (mi < 6) : (mi += 1) {
+                if (dst[mi] != mdns_mac_v4[mi]) mdns4 = false;
+                if (dst[mi] != mdns_mac_v6[mi]) mdns6 = false;
+            }
+            if (mdns4 or mdns6) rx_mdns +%= 1;
+        }
         // Card N3 (claim 7293): ARP dispatch — the frame's Ethernet
         // header starts at `rx_hdr_len` (the observed RX-header
         // contract). A request for our static IP is answered (the reply
@@ -2078,10 +2138,17 @@ test "virtio_net: MAC filter — own MAC + broadcast accepted, other dropped" {
     const own = [6]u8{ 0x02, 0x00, 0x00, 0x00, 0x00, 0x01 };
     const bcast = [6]u8{ 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
     const other = [6]u8{ 0x02, 0x00, 0x00, 0x00, 0x00, 0x03 };
+    // M198a: the bounded mDNS multicast pair is admitted; a FOREIGN
+    // multicast group (SSDP's 01:00:5e:7f:ff:fa — 239.255.255.250) is
+    // not — the admit set stays the four named comparisons.
+    const ssdp = [6]u8{ 0x01, 0x00, 0x5e, 0x7f, 0xff, 0xfa };
     // A bare 6-byte dst at offset 0.
     try std.testing.expect(mac_accept(0, &own, &own));
     try std.testing.expect(mac_accept(0, &bcast, &own));
     try std.testing.expect(!mac_accept(0, &other, &own));
+    try std.testing.expect(mac_accept(0, &mdns_mac_v4, &own));
+    try std.testing.expect(mac_accept(0, &mdns_mac_v6, &own));
+    try std.testing.expect(!mac_accept(0, &ssdp, &own));
     // With a 12-byte virtio_net_hdr prefix (the RX-header contract): the
     // dst sits at offset 12.
     var buf: [rx_hdr_len + 14]u8 = @splat(0);
@@ -2145,6 +2212,9 @@ test "virtio_net: RX supply + used-ring drain + filter + FIFO over a mock" {
     rx_frames = 0;
     rx_bytes = 0;
     rx_filtered = 0;
+    rx_mcast = 0;
+    rx_mdns = 0;
+    rx_mcast_filtered = 0;
     rx_overflow = 0;
     rx_posted_mask = 0;
     rx_posted = 0;
@@ -2229,6 +2299,9 @@ test "virtio_net: RX MAC filter drops a foreign frame (counter, not FIFO)" {
     rx_frames = 0;
     rx_bytes = 0;
     rx_filtered = 0;
+    rx_mcast = 0;
+    rx_mdns = 0;
+    rx_mcast_filtered = 0;
     rx_overflow = 0;
     rx_posted_mask = 0;
     rx_posted = 0;
@@ -2265,6 +2338,73 @@ test "virtio_net: RX MAC filter drops a foreign frame (counter, not FIFO)" {
     try std.testing.expectEqualSlices(u8, dst[0..4], rx_first16[12..16]);
 }
 
+test "virtio_net: mDNS multicast admitted and counted; foreign mcast counted as filtered" {
+    const saved_ops = net_ops;
+    net_ops = mock_ops();
+    net_ready = true;
+    defer {
+        net_ops = saved_ops;
+        net_ready = false;
+    }
+    net_dev = .{};
+    net_mac = fallback_mac;
+    rx_fifo_head = 0;
+    rx_fifo_count = 0;
+    rx_frames = 0;
+    rx_bytes = 0;
+    rx_filtered = 0;
+    rx_mcast = 0;
+    rx_mdns = 0;
+    rx_mcast_filtered = 0;
+    rx_overflow = 0;
+    rx_posted_mask = 0;
+    rx_posted = 0;
+    rx_armed = false;
+    mock_used_idx = 0;
+    mock_tx_used_idx = 0;
+    mock_rx_head = 0;
+    mock_rx_n = 0;
+    mock_rx_seen = 0;
+    mock_kicks = 0;
+
+    // Three frames, a non-IP ethertype (0x88b5 — the stack's dispatchers
+    // self-filter on it) so only the MAC filter + counters are measured:
+    // the mDNS v4 group, the mDNS v6 group, and a foreign multicast
+    // (SSDP's 01:00:5e:7f:ff:fa) the admit set refuses.
+    const groups = [3][6]u8{ mdns_mac_v4, mdns_mac_v6, .{ 0x01, 0x00, 0x5e, 0x7f, 0xff, 0xfa } };
+    const src = [6]u8{ 0x02, 0x00, 0x00, 0x00, 0x00, 0x05 };
+    var backing: [3][rx_hdr_len + 46]u8 = undefined;
+    for (&backing, groups) |*b, dst| {
+        @memset(b, 0);
+        b[10] = 0x01; // the OBSERVED virtio_net_hdr num_buffers=1
+        @memcpy(b[rx_hdr_len .. rx_hdr_len + 6], &dst);
+        @memcpy(b[rx_hdr_len + 6 .. rx_hdr_len + 12], &src);
+        b[rx_hdr_len + 12] = 0x88;
+        b[rx_hdr_len + 13] = 0xb5;
+        mock_rx_enqueue(b[0..]);
+    }
+
+    try std.testing.expect(net_rx_arm());
+    net_rx_drain();
+    // The two mDNS frames land (frames=2, mcast=2, mdns=2); the foreign
+    // group drops — and the DROP is recorded as multicast (delivery was
+    // proven; the admit set was the bound).
+    try std.testing.expectEqual(@as(u64, 2), rx_frames);
+    try std.testing.expectEqual(@as(u64, 2), rx_mcast);
+    try std.testing.expectEqual(@as(u64, 2), rx_mdns);
+    try std.testing.expectEqual(@as(u64, 1), rx_filtered);
+    try std.testing.expectEqual(@as(u64, 1), rx_mcast_filtered);
+    try std.testing.expectEqual(@as(usize, 2), fifo_occupancy());
+}
+
+test "virtio_net: is_mcast_dst — group bit, broadcast excluded" {
+    try std.testing.expect(is_mcast_dst(&mdns_mac_v4));
+    try std.testing.expect(is_mcast_dst(&mdns_mac_v6));
+    try std.testing.expect(is_mcast_dst(&ipv6.all_nodes_mac));
+    try std.testing.expect(!is_mcast_dst(&[6]u8{ 0xff, 0xff, 0xff, 0xff, 0xff, 0xff })); // broadcast
+    try std.testing.expect(!is_mcast_dst(&[6]u8{ 0x02, 0x00, 0x00, 0x00, 0x00, 0x01 })); // unicast
+}
+
 test "virtio_net: RX burst — 12 back-to-back frames drain in order, every descriptor re-armed" {
     const saved_ops = net_ops;
     net_ops = mock_ops();
@@ -2280,6 +2420,9 @@ test "virtio_net: RX burst — 12 back-to-back frames drain in order, every desc
     rx_frames = 0;
     rx_bytes = 0;
     rx_filtered = 0;
+    rx_mcast = 0;
+    rx_mdns = 0;
+    rx_mcast_filtered = 0;
     rx_overflow = 0;
     rx_posted_mask = 0;
     rx_posted = 0;
@@ -2364,6 +2507,9 @@ test "virtio_net: RX ARP request is answered — byte-exact reply on TX over a m
     rx_frames = 0;
     rx_bytes = 0;
     rx_filtered = 0;
+    rx_mcast = 0;
+    rx_mdns = 0;
+    rx_mcast_filtered = 0;
     rx_overflow = 0;
     rx_posted_mask = 0;
     rx_posted = 0;
@@ -2438,6 +2584,9 @@ test "virtio_net: RX ARP reply is learned into the bounded table" {
     rx_frames = 0;
     rx_bytes = 0;
     rx_filtered = 0;
+    rx_mcast = 0;
+    rx_mdns = 0;
+    rx_mcast_filtered = 0;
     rx_overflow = 0;
     rx_posted_mask = 0;
     rx_posted = 0;
