@@ -451,6 +451,19 @@ type syscalls struct {
 	capQuery   func() (vi.AudioCapInfo, error)
 	capCapture func(format, rate, channels uint8, buf []byte) (int, error)
 
+	// M196a (#3351): the slot-96 provisioning seam. The case drives the
+	// ops end to end — WHICH refusal each lane gets is the property under
+	// test (a uid_user GOSELF names EACCES on the consent gestures; the
+	// -u0 probe lands the ask→commit→get round-trip).
+	principal     func() (uint32, uint32, bool)
+	secretAsk     func(line string) int64
+	secretAskList func(i uint32, buf []byte) (int, int64)
+	secretCommit  func(id uint32) int64
+	secretDrop    func(id uint32) int64
+	secretStatus  func(id uint32) int64
+	secretSet     func(line string) int64
+	secretGet     func(dst []vi.SecretRecord) (int, int64)
+
 	// M61e (#1385): the window surface. Separate from the file rows above
 	// because id/reqW/reqH are STATE the shell copied out of tabapp.Init, not
 	// syscall bindings — the three function rows are the ADR 0007 window rows
@@ -490,15 +503,23 @@ func guestSyscalls() syscalls {
 			}
 			return rc
 		},
-		open:      vi.FileOpen,
-		read:      vi.FileRead,
-		write:     vi.FileWrite,
-		truncate:  vi.FileTruncate,
-		sync:      vi.FileSync,
-		remove:    vi.FileDelete,
-		list:      vi.DirList,
-		close:     vi.FileClose,
-		writeSafe: vi.WriteFileSafe,
+		principal:     vi.Principal,
+		secretAsk:     vi.SecretAsk,
+		secretAskList: vi.SecretAskList,
+		secretCommit:  vi.SecretAskCommit,
+		secretDrop:    vi.SecretAskDrop,
+		secretStatus:  vi.SecretAskStatus,
+		secretSet:     vi.SecretSet,
+		secretGet:     vi.SecretList,
+		open:          vi.FileOpen,
+		read:          vi.FileRead,
+		write:         vi.FileWrite,
+		truncate:      vi.FileTruncate,
+		sync:          vi.FileSync,
+		remove:        vi.FileDelete,
+		list:          vi.DirList,
+		close:         vi.FileClose,
+		writeSafe:     vi.WriteFileSafe,
 		// M81e2 (#1787): the two-contract policy seam — replace publishes
 		// crash-safe, append stays an append.
 		publish: vi.WriteFilePublish,
@@ -604,6 +625,9 @@ func cases() []testCase {
 		// release rules. Inserted before the window case so the M61d
 		// report prefix stays untouched.
 		{id: "file-lease", run: caseFileLease},
+		// M196a (#3351): the plain-lane provisioning refusals — inserted
+		// before the window case like every earlier pack.
+		{id: "secret-set", run: caseSecretSet},
 		// M61e (#1385): the window receipt.
 		{id: "window", run: caseWindow},
 		// M100f (#2311): the VLFS data-disk leg — write, fsync, readback on
@@ -1052,6 +1076,143 @@ func caseClockSet(s *syscalls) error {
 // file-ABI case pack (M61d, #1384) — the first-read behaviour filed as #1391
 // is fixed kernel-side, so a read-back into a fresh buffer is now expected to
 // work rather than to be worked around.
+// secretSetReceipt is the M196a (#3351) admin probe's host-readable
+// evidence — deterministic, like every OUT/ receipt.
+const secretSetReceipt = outDir + "/secret-set-admin.txt"
+
+// caseSecretSet is the M196a (#3351) plain-lane leg: a uid_user GOSELF
+// may ASK (staging is not consent) but every consent gesture names
+// EACCES — the registered seat or CAP_PROC_ADMIN is the only writer.
+// The ask staying `pending` is the no-consent evidence.
+func caseSecretSet(s *syscalls) error {
+	uid, _, ok := s.principal()
+	if !ok || uid != 1000 {
+		return errors.New("uid=" + vi.Itoa64(int64(uid)) + " want the uid_user lane")
+	}
+	// Oversized and foreign-uid lines are refused at staging.
+	big := strings.Repeat("v", 70)
+	if rc := s.secretAsk("k	1000	" + big); rc != -vi.ErrEINVAL {
+		return errors.New("oversized ask rc=" + vi.Itoa64(rc))
+	}
+	if rc := s.secretAsk("k	0	v"); rc != -vi.ErrEINVAL {
+		return errors.New("foreign-uid ask rc=" + vi.Itoa64(rc))
+	}
+	id := s.secretAsk("st-self	1000	v")
+	if id < 1 {
+		return errors.New("ask rc=" + vi.Itoa64(id))
+	}
+	var buf [vi.SecretAskMetaMax]byte
+	if _, rc := s.secretAskList(0, buf[:]); rc != -vi.ErrEACCES {
+		return errors.New("list rc=" + vi.Itoa64(rc))
+	}
+	if rc := s.secretCommit(uint32(id)); rc != -vi.ErrEACCES {
+		return errors.New("commit rc=" + vi.Itoa64(rc))
+	}
+	if rc := s.secretSet("x	1000	v"); rc != -vi.ErrEACCES {
+		return errors.New("set rc=" + vi.Itoa64(rc))
+	}
+	if rc := s.secretDrop(uint32(id)); rc != -vi.ErrEACCES {
+		return errors.New("drop rc=" + vi.Itoa64(rc))
+	}
+	if st := s.secretStatus(uint32(id)); st != vi.SecretAskPending {
+		return errors.New("status=" + vi.Itoa64(st) + " want pending")
+	}
+	return nil
+}
+
+// secretAdminProbe is the M196a (#3351) admin lane — the same headless
+// shape as captureProbe: the monitor's `exec -u0 GOSELF.ELF
+// --secret-admin` gives the caller CAP_PROC_ADMIN, the slot-96 gestures
+// land, and the receipt + serial verdict are the evidence. No window,
+// no REPORT.txt rewrite.
+func secretAdminProbe() {
+	s := guestSyscalls()
+	_ = s.mkdir(selftestDir)
+	_ = s.mkdir(outDir)
+	line, err := secretAdminVerdict(&s)
+	if line != "" {
+		_ = writeReceipt(&s, secretSetReceipt, line)
+		vi.ConsoleLine("goself: " + line)
+	}
+	if err != nil {
+		vi.ConsoleLine("selftest: case secret-set-admin fail " + oneLine(err.Error()))
+		vi.ConsoleLine("goself: secret-admin done")
+		vi.Exit(1)
+	}
+	vi.ConsoleLine("selftest: case secret-set-admin pass")
+	vi.ConsoleLine("goself: secret-admin done")
+	vi.Exit(0)
+}
+
+// secretAdminVerdict drives the whole slot-96 surface as uid_system:
+// ask → list → commit → slot-70 read-back → status, then the refusals
+// (oversized, foreign-uid, store cap) and the decline gesture. The
+// receipt line is deterministic for the spec's share-equals.
+func secretAdminVerdict(s *syscalls) (string, error) {
+	uid, _, ok := s.principal()
+	if !ok || uid != 0 {
+		return "", errors.New("probe uid=" + vi.Itoa64(int64(uid)) + " want the admin lane")
+	}
+	// The consent journey: ask stages, list names it, commit lands and
+	// persists, slot 70 reads the value back.
+	seed := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	id := s.secretAsk("st-admin	0	" + seed)
+	if id < 1 {
+		return "", errors.New("ask rc=" + vi.Itoa64(id))
+	}
+	var buf [vi.SecretAskMetaMax]byte
+	n, rc := s.secretAskList(0, buf[:])
+	if rc < 0 || n == 0 || !strings.Contains(string(buf[:n]), "GOSELF.ELF	st-admin") {
+		return "", errors.New("list did not name the ask")
+	}
+	if rc := s.secretCommit(uint32(id)); rc != 0 {
+		return "", errors.New("commit rc=" + vi.Itoa64(rc))
+	}
+	var recs [vi.SecretEntriesMax]vi.SecretRecord
+	got, _ := s.secretGet(recs[:])
+	found := false
+	for i := 0; i < got; i++ {
+		if recs[i].KeyString() == "st-admin" && recs[i].ValString() == seed {
+			found = true
+		}
+	}
+	if !found {
+		return "", errors.New("st-admin did not round-trip through slot 70")
+	}
+	if st := s.secretStatus(uint32(id)); st != vi.SecretAskCommitted {
+		return "", errors.New("status=" + vi.Itoa64(st) + " want committed")
+	}
+	// Refusals: oversized, foreign-uid, the 8-entry cap, then the
+	// decline gesture on a second staged ask.
+	big := strings.Repeat("v", 70)
+	if rc := s.secretSet("k	0	" + big); rc != -vi.ErrEINVAL {
+		return "", errors.New("oversized set rc=" + vi.Itoa64(rc))
+	}
+	if rc := s.secretSet("k	1000	v"); rc != 0 {
+		return "", errors.New("seat set rc=" + vi.Itoa64(rc))
+	}
+	for i := 1; i <= 8; i++ {
+		if rc := s.secretSet("fill" + vi.Itoa64(int64(i)) + "	0	v"); rc != 0 && rc != -vi.ErrENOSPC {
+			return "", errors.New("fill rc=" + vi.Itoa64(rc))
+		}
+	}
+	if rc := s.secretSet("over	0	v"); rc != -vi.ErrENOSPC {
+		return "", errors.New("cap set rc=" + vi.Itoa64(rc))
+	}
+	id2 := s.secretAsk("st-drop	0	v")
+	if id2 < 1 {
+		return "", errors.New("second ask rc=" + vi.Itoa64(id2))
+	}
+	if rc := s.secretDrop(uint32(id2)); rc != 0 {
+		return "", errors.New("drop rc=" + vi.Itoa64(rc))
+	}
+	if st := s.secretStatus(uint32(id2)); st != vi.SecretAskDropped {
+		return "", errors.New("dropped status=" + vi.Itoa64(st))
+	}
+	return "case secret-set-admin ask=1 listed=yes commit=0 readback=yes " +
+		"status=committed oversized=einval full=enospc drop=dropped", nil
+}
+
 func caseFileWrite(s *syscalls) error {
 	s.mkdir(outDir)
 	payload := []byte(helloPayload)

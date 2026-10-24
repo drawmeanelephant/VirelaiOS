@@ -80,6 +80,12 @@ func main() {
 		if arg == "--capture-probe" {
 			captureProbe() // never returns
 		}
+		// M196a (#3351): the admin provisioning leg. The monitor's
+		// `exec -u0` gives the caller CAP_PROC_ADMIN; the slot-96 consent
+		// gestures land and the probe exits — no window, no report.
+		if arg == "--secret-admin" {
+			secretAdminProbe() // never returns
+		}
 	}
 	ta := tabapp.Init(tabapp.Config{
 		Name:  appName,

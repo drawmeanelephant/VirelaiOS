@@ -54,8 +54,24 @@
 //! tombstones, or syscall strace. The monitor may print secret NAMES only.
 //! This module exposes names only through `entry_at`; the `sys_secret_get`
 //! handler copies values into caller memory through uaccess and is excluded
-//! from strace in `syscall.dispatch`. There is deliberately NO `sys_secret_set`
-//! (provisioning is host-side; a non-echoing set path is deferred per D8).
+//! from strace in `syscall.dispatch`.
+//!
+//! ## Provisioning (M196a, issue #3351, ADR 0024 D8 amendment)
+//!
+//! `sys_secret_set` (slot 94) is the write half, in the M116c consent
+//! shape: ANY EL0 process may `ask` — it stages a parsed line in a bounded
+//! pending-ask table with the asker's recorded identity, per-principal
+//! scoped (the line's uid must equal the caller's). The seat-or-admin
+//! gestures `list`/`commit`/`drop` answer the standing ask
+//! (`grant_admin_authorized` shape — the registered WM seat or
+//! CAP_PROC_ADMIN), and `set` is the seat's own direct provisioning
+//! gesture. `commit`/`set` refuse a line whose apps allowlist names the
+//! WRITER's image (the D11 analog: never the app the row names) and never
+//! evict — the 8-entry cap is a refusal (`ENOSPC`), while a same-(uid,key)
+//! overwrite costs no slot. A landed write persists through
+//! `save_to_share()`. The asker learns the verdict through `status`; the
+//! value itself crosses only caller memory — the pending table keeps it
+//! in the kernel, never on a channel another party reads.
 //!
 //! Boot default unchanged: `init_from_share()` is a no-op when no host
 //! channel or no `SECRETS.TXT` exists; nothing reads a secret at boot on a
@@ -120,6 +136,8 @@ var initialized: bool = false;
 pub fn init() void {
     entries = @as([max_secret_entries]Entry, @splat(@as(Entry, .{})));
     entry_count = 0;
+    asks = @as([max_pending_asks]Ask, @splat(@as(Ask, .{})));
+    next_ask_id = 1;
     initialized = true;
 }
 
@@ -236,7 +254,12 @@ pub fn parse(text: []const u8) LoadResult {
     return if (overflow) .full else .ok;
 }
 
-fn parseLine(line: []const u8) SetResult {
+/// The decoded `key<TAB>uid<TAB>value[<TAB>apps]` line (slices borrow the
+/// input). M196a: factored out of `parseLine` so the slot-94 ask path runs
+/// the SAME validation a host-provisioned line does.
+const Fields = struct { uid: u32, key: []const u8, val: []const u8, apps: []const u8 };
+
+fn parseFields(line: []const u8) ?Fields {
     var fields: [4][]const u8 = .{ "", "", "", "" };
     var nfields: usize = 0;
     var it = std.mem.splitScalar(u8, line, '\t');
@@ -244,24 +267,29 @@ fn parseLine(line: []const u8) SetResult {
         if (nfields < 4) fields[nfields] = f;
         nfields += 1;
     }
-    if (nfields != 3 and nfields != 4) return .invalid_value;
-    if (fields[1].len == 0) return .invalid_value;
+    if (nfields != 3 and nfields != 4) return null;
+    if (fields[1].len == 0) return null;
     var uid: u32 = 0;
     for (fields[1]) |c| {
-        if (c < '0' or c > '9') return .invalid_value;
+        if (c < '0' or c > '9') return null;
         uid = uid * 10 + @as(u32, c - '0');
     }
     // M97g (#2083): the optional apps allowlist is a comma-separated set of
     // image names; an empty member makes the whole line invalid (fail
     // closed — a half-parsed policy is worse than a skipped one).
     if (nfields == 4) {
-        if (fields[3].len == 0) return .invalid_value;
+        if (fields[3].len == 0) return null;
         var ait = std.mem.splitScalar(u8, fields[3], ',');
         while (ait.next()) |app| {
-            if (app.len == 0) return .invalid_value;
+            if (app.len == 0) return null;
         }
     }
-    return set_internal(uid, fields[0], fields[2], if (nfields == 4) fields[3] else "");
+    return .{ .uid = uid, .key = fields[0], .val = fields[2], .apps = if (nfields == 4) fields[3] else "" };
+}
+
+fn parseLine(line: []const u8) SetResult {
+    const f = parseFields(line) orelse return .invalid_value;
+    return set_internal(f.uid, f.key, f.val, f.apps);
 }
 
 /// Serialize the store as `#v1\n` + one `key<TAB>uid<TAB>value` line per
@@ -363,6 +391,237 @@ pub fn save_to_share() bool {
     var buf: [file_max]u8 = undefined;
     const len = serialize(&buf);
     return virtio_file.write_whole(filename, buf[0..len]) == virtio_file.st_ok;
+}
+
+// ---------------------------------------------------------------------------
+// M196a (issue #3351, ADR 0024 D8 amendment): the consent-gated pending-ask
+// table behind `sys_secret_set` (slot 94)
+// ---------------------------------------------------------------------------
+
+/// Slot-94 op vocabulary (ADR 0007 amendment). `ask` is the unprivileged
+/// half — staging is not consent; `list`/`commit`/`drop`/`set` are the
+/// seat-or-admin gestures (`grant_admin_authorized` shape); `status` is
+/// the asker's own verdict read.
+pub const op_ask: u64 = 0;
+pub const op_list: u64 = 1;
+pub const op_commit: u64 = 2;
+pub const op_drop: u64 = 3;
+pub const op_status: u64 = 4;
+pub const op_set: u64 = 5;
+
+/// The ask verdicts `op_status` reports (the asker's own asks only).
+pub const ask_pending: u64 = 1;
+pub const ask_committed: u64 = 2;
+pub const ask_dropped: u64 = 3;
+
+/// The pending-ask table bound: a staged ask waits for a human gesture,
+/// so the queue is small by design — an app flooding it gets ENOSPC, and
+/// a dead asker's rows are reaped lazily at the next op.
+pub const max_pending_asks: usize = 4;
+/// The widest line an `ask`/`set` op accepts: 32-key + 10-uid + 64-value +
+/// 64-apps + 3 tabs, rounded.
+pub const ask_line_max: usize = max_key_len + 10 + max_val_len + max_apps_len + 4;
+/// The widest LIST marshal: id + pid + uid + image + key + apps + tabs.
+pub const ask_meta_max: usize = 10 + 10 + 10 + process.name_max + max_key_len + max_apps_len + 6;
+
+/// The ask lifecycle — `pending` stands until the seat gestures; the
+/// terminal states stay recorded so the asker's `status` read learns the
+/// verdict (a vanished ask reports ENOENT, not a lie).
+pub const AskState = enum(u8) { pending = 1, committed = 2, dropped = 3 };
+
+/// A staged ask: the parsed entry fields plus the asker's recorded
+/// identity. The seat needs WHO is asking (`pid`/`image`) and the NAME
+/// the entry would take (`key`) — the LIST marshal never carries the
+/// value.
+pub const Ask = struct {
+    state: AskState = .pending,
+    id: u32 = 0,
+    pid: usize = 0,
+    image: [process.name_max]u8 = @as([process.name_max]u8, @splat(@as(u8, 0))),
+    image_len: u8 = 0,
+    entry: Entry = .{},
+};
+
+var asks: [max_pending_asks]Ask = @as([max_pending_asks]Ask, @splat(@as(Ask, .{})));
+var next_ask_id: u32 = 1;
+
+/// The commit/set persistence call, wrapped so a host test can pin the
+/// virtio-less boot (save unavailable → EIO, the ask stays pending) AND
+/// the landed-write path without a fake device.
+var test_persist: ?bool = null;
+
+fn persist() bool {
+    if (@import("builtin").is_test and test_persist != null) return test_persist.?;
+    return save_to_share();
+}
+
+/// A pending ask whose asker is gone can never be consented honestly —
+/// free the slot. Lazy: runs at the top of each op rather than hooking
+/// the exit path (a dead asker between ops is a `list`/`commit`-visible
+/// row, not a leak).
+fn reap_dead_asks() void {
+    for (&asks) |*a| {
+        if (a.state != .pending or a.id == 0) continue;
+        const live = if (process.info(a.pid)) |pi| pi.state != .exited else false;
+        if (!live) a.* = .{};
+    }
+}
+
+/// The `apps` field names the caller's image? `caller_image` is the
+/// writer's recorded exec image (the same verbatim path `visible` parses);
+/// a row whose allowlist covers the WRITER is refused at commit/set — the
+/// D11 analog: never the app the row names.
+fn names_caller(apps: []const u8, caller_image: []const u8) bool {
+    if (apps.len == 0 or caller_image.len == 0) return false;
+    const parsed = file_table.parse_path(caller_image) orelse return false;
+    if (parsed.partition != .host) return false;
+    const key = parsed.path[0..parsed.parsed_len()];
+    var it = std.mem.splitScalar(u8, apps, ',');
+    while (it.next()) |app| {
+        if (std.ascii.eqlIgnoreCase(app, key)) return true;
+    }
+    return false;
+}
+
+pub const AskResult = union(enum) { id: u32, err: enum { invalid, table_full } };
+
+/// op 0 — `ask(line)`: stage a parsed line for the calling principal.
+/// Unprivileged by design (staging is not consent), but per-principal
+/// scoped: the line's uid must equal the caller's — an app may only ask
+/// for itself. Returns the ask id; `invalid` for a malformed line or a
+/// uid the caller does not hold; `table_full` at the ask cap.
+pub fn ask(pid: usize, uid: u32, image: []const u8, line: []const u8) AskResult {
+    ensure_init();
+    reap_dead_asks();
+    const f = parseFields(line) orelse return .{ .err = .invalid };
+    if (f.key.len == 0 or f.key.len > max_key_len) return .{ .err = .invalid };
+    if (f.val.len == 0 or f.val.len > max_val_len) return .{ .err = .invalid };
+    if (f.uid != uid) return .{ .err = .invalid };
+    for (&asks) |*a| {
+        if (a.id != 0) continue;
+        a.* = .{ .id = next_ask_id, .pid = pid, .entry = .{ .uid = f.uid } };
+        next_ask_id +%= 1;
+        if (next_ask_id == 0) next_ask_id = 1;
+        const itake = @min(image.len, process.name_max);
+        @memcpy(a.image[0..itake], image[0..itake]);
+        a.image_len = @intCast(itake);
+        @memcpy(a.entry.key[0..f.key.len], f.key);
+        a.entry.key_len = @intCast(f.key.len);
+        @memcpy(a.entry.val[0..f.val.len], f.val);
+        a.entry.val_len = @intCast(f.val.len);
+        @memcpy(a.entry.apps[0..f.apps.len], f.apps);
+        a.entry.apps_len = @intCast(f.apps.len);
+        return .{ .id = a.id };
+    }
+    return .{ .err = .table_full };
+}
+
+fn find_ask(id: u32) ?*Ask {
+    for (&asks) |*a| {
+        if (a.id == id and a.id != 0) return a;
+    }
+    return null;
+}
+
+/// op 1 — `list(index)`: marshal the `index`-th PENDING ask as
+/// `id\tpid\tuid\timage\tkey[\tapps]` — names and policy only, never the
+/// value. Returns the byte count, or null past the last pending row (the
+/// caller iterates until ENOENT, the grant-admin op-0 shape).
+pub fn ask_line(index: usize, out: []u8) ?usize {
+    ensure_init();
+    reap_dead_asks();
+    var seen: usize = 0;
+    for (&asks) |*a| {
+        if (a.id == 0 or a.state != .pending) continue;
+        if (seen == index) {
+            var nbuf: [30]u8 = undefined;
+            const nums = std.fmt.bufPrint(&nbuf, "{d}\t{d}\t{d}\t", .{ a.id, a.pid, a.entry.uid }) catch return null;
+            var pos: usize = 0;
+            const need = nums.len + a.image_len + 1 + a.entry.key_len +
+                (if (a.entry.apps_len != 0) a.entry.apps_len + 1 else 0);
+            if (need > out.len) return null;
+            @memcpy(out[pos .. pos + nums.len], nums);
+            pos += nums.len;
+            @memcpy(out[pos .. pos + a.image_len], a.image[0..a.image_len]);
+            pos += a.image_len;
+            out[pos] = '\t';
+            pos += 1;
+            @memcpy(out[pos .. pos + a.entry.key_len], a.entry.key[0..a.entry.key_len]);
+            pos += a.entry.key_len;
+            if (a.entry.apps_len != 0) {
+                out[pos] = '\t';
+                pos += 1;
+                @memcpy(out[pos .. pos + a.entry.apps_len], a.entry.apps[0..a.entry.apps_len]);
+                pos += a.entry.apps_len;
+            }
+            return pos;
+        }
+        seen += 1;
+    }
+    return null;
+}
+
+pub const CommitResult = enum { ok, enoent, enospc, eacces, einval, eio };
+
+/// op 2 — `commit(id)`: the consent gesture. Applies the pending ask into
+/// the store and persists it; a persist failure leaves the ask standing
+/// (the seat may retry — the in-memory set is idempotent by key). Refuses
+/// a row whose apps list names the WRITER's image.
+pub fn commit(id: u32, caller_image: []const u8) CommitResult {
+    ensure_init();
+    reap_dead_asks();
+    const a = find_ask(id) orelse return .enoent;
+    if (a.state != .pending) return .enoent;
+    const e = &a.entry;
+    if (names_caller(e.apps[0..e.apps_len], caller_image)) return .eacces;
+    switch (set_internal(e.uid, e.key[0..e.key_len], e.val[0..e.val_len], e.apps[0..e.apps_len])) {
+        .ok => {},
+        .table_full => return .enospc,
+        else => return .einval,
+    }
+    a.state = .committed;
+    if (!persist()) {
+        a.state = .pending;
+        return .eio;
+    }
+    return .ok;
+}
+
+/// op 3 — `drop(id)`: the decline gesture. The staged line never lands;
+/// the ask stays recorded so the asker's `status` reads `dropped`.
+pub fn drop(id: u32) CommitResult {
+    ensure_init();
+    reap_dead_asks();
+    const a = find_ask(id) orelse return .enoent;
+    if (a.state != .pending) return .enoent;
+    a.state = .dropped;
+    return .ok;
+}
+
+/// op 4 — `status(id)`: the asker's own verdict, and nobody else's —
+/// another pid's ask reports ENOENT (an ask's existence is not a
+/// broadcast). Returns the AskState value.
+pub fn status(id: u32, pid: usize) ?u64 {
+    ensure_init();
+    const a = find_ask(id) orelse return null;
+    if (a.pid != pid) return null;
+    return @backingInt(a.state);
+}
+
+/// op 5 — `set(line)`: the seat's direct provisioning gesture (the
+/// operator's own entry needs no machine asker). Same line grammar and
+/// the same names-the-writer refusal as `commit`; a persist failure
+/// reports EIO with the in-memory set applied.
+pub fn set_direct(caller_image: []const u8, line: []const u8) CommitResult {
+    ensure_init();
+    const f = parseFields(line) orelse return .einval;
+    if (names_caller(f.apps, caller_image)) return .eacces;
+    switch (set_internal(f.uid, f.key, f.val, f.apps)) {
+        .ok => {},
+        .table_full => return .enospc,
+        .invalid_key, .invalid_value => return .einval,
+    }
+    return if (persist()) .ok else .eio;
 }
 
 // ---------------------------------------------------------------------------
@@ -539,4 +798,114 @@ test "secret: the 8-entry cap counts the table, not one principal" {
     var recs: [max_secret_entries]SecretRecord = undefined;
     try std.testing.expectEqual(@as(usize, 4), records_for(.{ .uid = process.uid_user }, &recs));
     try std.testing.expectEqual(@as(usize, 4), records_for(.{ .uid = process.uid_system }, &recs));
+}
+
+test "secret: slot-96 ask/list/commit/drop/status — the consent lifecycle (#3351)" {
+    init();
+    test_persist = true;
+    defer test_persist = null;
+    const pid = process.create_as("ASKER.ELF", .{}, .{}, .{}, .{ .uid = process.uid_user }).?;
+    const seat = "/host/GOTABWM.ELF";
+
+    // Per-principal staging: the line's uid must equal the caller's.
+    const r1 = ask(pid, process.uid_user, "ASKER.ELF", "mail-x\t1000\tpw\tGOMAIL.ELF");
+    try std.testing.expectEqual(@as(u32, 1), r1.id);
+    try std.testing.expectEqual(@as(u64, ask_pending), status(1, pid).?);
+    try std.testing.expectEqual(AskResult{ .err = .invalid }, ask(pid, process.uid_user, "ASKER.ELF", "k\t0\tv"));
+    // A second principal's malformed ask — oversized key and value.
+    var kbuf: [max_key_len + 1]u8 = @splat('k');
+    var vbuf: [max_val_len + 1]u8 = @splat('v');
+    var linebuf: [ask_line_max]u8 = undefined;
+    const bad = std.fmt.bufPrint(&linebuf, "{s}\t1000\t{s}", .{ kbuf[0..], vbuf[0..] }) catch unreachable;
+    try std.testing.expectEqual(AskResult{ .err = .invalid }, ask(pid, process.uid_user, "ASKER.ELF", bad));
+
+    // LIST marshals names and policy only — never the value.
+    var buf: [ask_meta_max]u8 = undefined;
+    const n = ask_line(0, &buf).?;
+    const want = std.fmt.bufPrint(&linebuf, "1\t{d}\t1000\tASKER.ELF\tmail-x\tGOMAIL.ELF", .{pid}) catch unreachable;
+    try std.testing.expectEqualStrings(want, buf[0..n]);
+    try std.testing.expect(ask_line(1, &buf) == null);
+    try std.testing.expect(std.mem.indexOf(u8, buf[0..n], "pw") == null);
+
+    // The seat's consent lands the entry; status now reports committed.
+    try std.testing.expectEqual(CommitResult.ok, commit(1, seat));
+    try std.testing.expectEqual(@as(u64, ask_committed), status(1, pid).?);
+    try std.testing.expectEqual(@as(usize, 1), count());
+    try std.testing.expectEqualStrings("mail-x", entry_at(0).?.key);
+    try std.testing.expectEqual(CommitResult.enoent, commit(1, seat));
+
+    // The decline gesture leaves a verdict, not a write.
+    const r2 = ask(pid, process.uid_user, "ASKER.ELF", "irc\t1000\tsasl");
+    try std.testing.expectEqual(@as(u32, 2), r2.id);
+    try std.testing.expectEqual(CommitResult.ok, drop(2));
+    try std.testing.expectEqual(@as(u64, ask_dropped), status(2, pid).?);
+    try std.testing.expectEqual(@as(usize, 1), count());
+    // Another pid's ask is invisible to status.
+    const pid2 = process.create_as("NOSEY.ELF", .{}, .{}, .{}, .{ .uid = process.uid_user }).?;
+    try std.testing.expect(status(2, pid2) == null);
+}
+
+test "secret: slot-96 refusals — writer-named rows, caps, dead askers (#3351)" {
+    init();
+    test_persist = true;
+    defer test_persist = null;
+    const pid = process.create_as("ASKER.ELF", .{}, .{}, .{}, .{ .uid = process.uid_user }).?;
+    const seat = "/host/GOTABWM.ELF";
+
+    // A row whose apps list names the WRITER is refused — commit and set.
+    _ = ask(pid, process.uid_user, "ASKER.ELF", "mine\t1000\tv\tGOTABWM.ELF");
+    try std.testing.expectEqual(CommitResult.eacces, commit(1, seat));
+    try std.testing.expectEqual(CommitResult.eacces, set_direct(seat, "mine\t1000\tv\tGOTABWM.ELF"));
+    try std.testing.expectEqual(@as(usize, 0), count());
+    // The asker naming ITSELF in apps is fine — the gesture still lands.
+    _ = ask(pid, process.uid_user, "ASKER.ELF", "mail\t1000\tv\tASKER.ELF");
+    try std.testing.expectEqual(CommitResult.ok, commit(2, seat));
+
+    // The store cap is a refusal, never eviction — commit reports ENOSPC.
+    init();
+    var i: usize = 0;
+    while (i < max_secret_entries) : (i += 1) {
+        var nb: [16]u8 = undefined;
+        const nm = std.fmt.bufPrint(&nb, "k{d}", .{i}) catch unreachable;
+        try std.testing.expectEqual(SetResult.ok, set_internal(process.uid_user, nm, "v", ""));
+    }
+    const r3 = ask(pid, process.uid_user, "ASKER.ELF", "late\t1000\tv");
+    try std.testing.expectEqual(CommitResult.enospc, commit(r3.id, seat));
+    try std.testing.expectEqual(CommitResult.enospc, set_direct(seat, "late\t1000\tv"));
+    // An overwrite of an existing (uid,key) costs no slot — it lands.
+    try std.testing.expectEqual(CommitResult.ok, set_direct(seat, "k0\t1000\tnewval"));
+
+    // A dead asker's row is reaped: the commit reports ENOENT.
+    init();
+    const dead = ask(999, process.uid_user, "GHOST.ELF", "k\t1000\tv");
+    try std.testing.expectEqual(@as(u32, 1), dead.id);
+    var buf: [ask_meta_max]u8 = undefined;
+    try std.testing.expect(ask_line(0, &buf) == null); // reaped on the next op
+    try std.testing.expectEqual(CommitResult.enoent, commit(1, seat));
+
+    // The ask table itself is bounded: four staged, the fifth refused.
+    init();
+    var a: usize = 0;
+    while (a < max_pending_asks) : (a += 1) {
+        var nb: [16]u8 = undefined;
+        const nm = std.fmt.bufPrint(&nb, "a{d}", .{a}) catch unreachable;
+        var lb: [32]u8 = undefined;
+        const ln = std.fmt.bufPrint(&lb, "{s}\t1000\tv", .{nm}) catch unreachable;
+        try std.testing.expect(ask(pid, process.uid_user, "ASKER.ELF", ln) == .id);
+    }
+    try std.testing.expectEqual(AskResult{ .err = .table_full }, ask(pid, process.uid_user, "ASKER.ELF", "fifth\t1000\tv"));
+}
+
+test "secret: slot-96 persist failure keeps the ask standing (EIO) (#3351)" {
+    init();
+    test_persist = false;
+    defer test_persist = null;
+    const pid = process.create_as("ASKER.ELF", .{}, .{}, .{}, .{ .uid = process.uid_user }).?;
+    _ = ask(pid, process.uid_user, "ASKER.ELF", "k\t1000\tv");
+    try std.testing.expectEqual(CommitResult.eio, commit(1, "GOTABWM.ELF"));
+    // The in-memory set landed; the ask stays pending for a retry, and
+    // status still reads pending — a torn write is never reported landed.
+    try std.testing.expectEqual(@as(usize, 1), count());
+    try std.testing.expectEqual(@as(u64, ask_pending), status(1, pid).?);
+    try std.testing.expectEqual(CommitResult.eio, set_direct("GOTABWM.ELF", "j\t1000\tw"));
 }

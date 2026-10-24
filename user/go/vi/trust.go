@@ -114,6 +114,90 @@ func SecretList(dst []SecretRecord) (int, int64) {
 	return n, r
 }
 
+// M196a (issue #3351, ADR 0024 D8 amendment): the slot-96 provisioning
+// half. `ask` stages a `key\tuid\tvalue[\tapps]` line into the kernel's
+// bounded pending table — unprivileged, but the line's uid must equal
+// the caller's, so an app may only ask for itself. `list`/`commit`/
+// `drop`/`set` are the consent gestures, gated to the registered WM seat
+// or CAP_PROC_ADMIN like slot 89. `status` is the asker's own verdict
+// read. The whole call is redacted like slot 70: an arg can carry a
+// secret value.
+const (
+	SecretOpAsk    uintptr = 0
+	SecretOpList   uintptr = 1
+	SecretOpCommit uintptr = 2
+	SecretOpDrop   uintptr = 3
+	SecretOpStatus uintptr = 4
+	SecretOpSet    uintptr = 5
+)
+
+// The ask verdicts SecretAskStatus reports (the kernel's AskState).
+const (
+	SecretAskPending   int64 = 1
+	SecretAskCommitted int64 = 2
+	SecretAskDropped   int64 = 3
+)
+
+// SecretAskLineMax is the widest line an ask/set op accepts
+// (32-key + 10-uid + 64-value + 64-apps + separators); SecretAskMetaMax
+// bounds one list marshal (id + pid + uid + image + key + apps).
+const (
+	SecretAskLineMax = SecretKeyMax + 10 + SecretValMax + 64 + 4
+	SecretAskMetaMax = 10 + 10 + 10 + 16 + SecretKeyMax + 64 + 6
+)
+
+// SecretAsk stages line for the seat's consent gesture. Returns the ask
+// id (≥1) or the negative errno: EINVAL for a malformed line, a uid the
+// caller does not hold or len > SecretAskLineMax; ENOSPC at the 4-ask
+// cap; EFAULT for a bad pointer.
+func SecretAsk(line string) int64 {
+	return svc4(SlotSecretSet, SecretOpAsk, 0, strPtr(line), uintptr(len(line)))
+}
+
+// SecretAskList marshals the index-th pending ask's metadata into buf —
+// `id\tpid\tuid\timage\tkey[\tapps]`, names and policy only. Returns the
+// byte count; ENOENT past the last pending row; EACCES for a caller that
+// is neither the seat nor CAP_PROC_ADMIN.
+func SecretAskList(index uint32, buf []byte) (int, int64) {
+	if len(buf) == 0 {
+		return 0, -ErrEINVAL
+	}
+	r := svc4(SlotSecretSet, SecretOpList, uintptr(index),
+		uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)))
+	if r < 0 {
+		return 0, r
+	}
+	return int(r), r
+}
+
+// SecretAskCommit is the consent gesture: apply pending ask id into the
+// store and persist it. 0, or the named refusal — ENOENT unknown or
+// already answered, EACCES row names the writer, ENOSPC store cap, EIO
+// persist failed (the ask stays pending). Seat-or-admin only.
+func SecretAskCommit(id uint32) int64 {
+	return svc4(SlotSecretSet, SecretOpCommit, uintptr(id), 0, 0)
+}
+
+// SecretAskDrop is the decline gesture: retire ask id without a store
+// write. 0 or ENOENT. Seat-or-admin only.
+func SecretAskDrop(id uint32) int64 {
+	return svc4(SlotSecretSet, SecretOpDrop, uintptr(id), 0, 0)
+}
+
+// SecretAskStatus reads the CALLER's own ask verdict: SecretAskPending /
+// SecretAskCommitted / SecretAskDropped; ENOENT when the id is not the
+// caller's.
+func SecretAskStatus(id uint32) int64 {
+	return svc4(SlotSecretSet, SecretOpStatus, uintptr(id), 0, 0)
+}
+
+// SecretSet is the seat's direct provisioning gesture — the operator's
+// own entry needs no machine asker. Same line grammar, writer-name
+// refusal and persist as the commit path. Seat-or-admin only.
+func SecretSet(line string) int64 {
+	return svc4(SlotSecretSet, SecretOpSet, 0, strPtr(line), uintptr(len(line)))
+}
+
 // ErrnoName renders a syscall result as the kernel's own error name (the
 // spelling the gates assert: "EACCES", "ENOENT"), or "" when r is not an
 // error. Guest code should print this rather than a generic "not found": an

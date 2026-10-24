@@ -547,6 +547,9 @@ func main() {
 	vi.ConsoleLine(MarkerServing)
 	for events := 0; !demoMode || (events < maxEvents && ticks < tickLimit); {
 		serviceMailbox()
+		// M196a (#3351): the secrets-ask poll rides the same cadence —
+		// one LIST op per pass, ENOENT while the table is empty.
+		pollSecretAsks()
 		noteBadgeTransition()
 		noteRailBadges()
 		if remote != nil {
@@ -561,6 +564,12 @@ func main() {
 		// dead-window discipline as the launcher's.
 		if powerMenuOpen && powerSink != 0 && !ensurePowerFocus() {
 			dismissPowerMenu()
+		}
+		// M196a (#3351): the consent sink is reaped on the same
+		// dead-window discipline — a vanished sink must not strand a
+		// prompt whose keys are the seat's alone.
+		if secretAskModal.open && secretAskModal.sink != 0 && !ensureSecretFocus() {
+			closeSecretAsk()
 		}
 		// M190c (#3238): the rail menu's sink on the same discipline.
 		if railMenuOpen && railMenuSink != 0 && !ensureRailMenuFocus() {
@@ -862,6 +871,11 @@ func compositePaint(scan []byte, ticks uint64, presents *int) (presented bool) {
 	// first).
 	if powerMenuOpen {
 		_ = paintPowerMenu(scan, vi.ScanoutWidth, vi.ScanoutHeight)
+	}
+	// M196a (#3351): the secret-ask prompt floats with the modal chrome —
+	// above the rail, under the toasts, names only (never the value).
+	if secretAskModal.open {
+		_ = paintSecretAsk(scan, vi.ScanoutWidth, vi.ScanoutHeight)
 	}
 	// M190c (#3238): the button-2 rail menu floats with the other modal
 	// chrome — above the rail it opened from, under the toasts.

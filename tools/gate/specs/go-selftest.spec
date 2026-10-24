@@ -213,6 +213,17 @@ vgate_file script2.txt <<'EOF'
 exec GOSELF.ELF
 EOF
 
+# M196a (#3351): the admin provisioning leg — the monitor's -u0 spawn is
+# the only CAP_PROC_ADMIN caller in the run, so the slot-96 gestures land
+# here and nowhere else (the plain run above names them EACCES).
+vgate_file script3.txt <<'EOF'
+exec -u0 GOSELF.ELF --secret-admin
+EOF
+
+vgate_file secret-set-admin.expected <<'EOF'
+case secret-set-admin ask=1 listed=yes commit=0 readback=yes status=committed oversized=einval full=enospc drop=dropped
+EOF
+
 # The expected bytes for the two share-equals asserts. vgate_file bodies are
 # newline-terminated by contract, which is exactly REPORT.txt's shape (the
 # report ends on the summary line + one newline, ADR 0031), so the fixture and
@@ -238,12 +249,13 @@ case mime pass
 case file-snapshot pass
 case app-logs pass
 case file-lease pass
+case secret-set pass
 case window pass
 case disk pass
 case audio-capture pass
 case clock-epoch pass
 case clock-set pass
-summary cases=25 failed=0
+summary cases=26 failed=0
 EOF
 vgate_file clock-set.expected <<'EOF'
 case clock-set refused=4 stepped=+100 restored=yes
@@ -363,7 +375,9 @@ vgate_run 01 -- \
     --script '$RUN_DIR/script.txt' \
     --script2 '$RUN_DIR/script2.txt' \
     --script2-after 'tabwm: sidebar-rendered' \
-    --script-expect 'selftest: FAIL n=' --timeout 240
+    --script3 '$RUN_DIR/script3.txt' \
+    --script3-after 'selftest: summary ' \
+    --script-expect 'goself: secret-admin done' --timeout 240
 
 # M94f: preserve run 01 and its pinned receipts above. Later boots use isolated
 # A/B rings; only after run 01's original asserts do we stage the new apps and
@@ -710,12 +724,21 @@ vgate_assert 01 share-equals SELFTEST/OUT/file-lease.ok file-lease.expected
 # M83b (#1775): the setter drilled on the real kernel -- four out-of-range
 # epochs refused, +100 s stepped and read back, then stepped exactly back.
 vgate_assert 01 share-equals SELFTEST/OUT/clock-set.ok clock-set.expected
+# M196a (#3351): the two provisioning lanes. The plain run's secret-set
+# case names every refusal a uid_user caller gets (the consent gestures
+# are EACCES, staging is legal but stays pending — no consent given);
+# the -u0 probe is the run's ONLY CAP_PROC_ADMIN caller, so ask -> list
+# -> commit -> slot-70 read-back lands exactly there.
+vgate_assert 01 serial-contains 'selftest: case secret-set pass'
+vgate_assert 01 serial-contains 'selftest: case secret-set-admin pass'
+vgate_assert 01 serial-count 'exec: loaded GOSELF.ELF' 2
+vgate_assert 01 share-equals SELFTEST/OUT/secret-set-admin.txt secret-set-admin.expected
 # The takeover evidence: the record as the FOREIGN writer left it (stamped
 # past the expiry), not GOSELF's own — the copy is of the pre-takeover text.
 vgate_assert 01 share-contains SELFTEST/OUT/file-lease.copy 'token=0123456789abcdef'
 vgate_assert 01 share-contains SELFTEST/OUT/file-lease.copy 'path=/host/SELFTEST/LEASE/TARGET.TXT'
 vgate_assert 01 share-equals CRASH/GOSELF.ELF.TXT app-log-receipt.expected
-vgate_assert 01 share-contains SELFTEST/OUT/summary.txt 'summary cases=25 failed=0'
+vgate_assert 01 share-contains SELFTEST/OUT/summary.txt 'summary cases=26 failed=0'
 
 # The load-bearing assert: the copies and the receipts on the host's own
 # filesystem must be byte-exact, the share's directory state must agree with
@@ -792,7 +815,7 @@ win_open_rect = (32, 32, 640, 400)
 win_viewport_w = 1100
 win_viewport_h = 720
 
-want_summary = b"summary cases=25 failed=0\n"
+want_summary = b"summary cases=26 failed=0\n"
 want_hello = b"goself smoke\n"
 want_intake_receipt = b"case intake path=IN/fixture.txt bytes=25 match=yes\n"
 want_altered_receipt = b"case intake-altered path=IN/altered.txt bytes=25 differs=yes\n"

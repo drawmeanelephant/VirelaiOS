@@ -68,6 +68,39 @@ func StoreGet(name string, out []byte) int {
 	return -1
 }
 
+// M196a (issue #3351): the provisioning half beside StoreGet. StoreAsk
+// stages `name<TAB><own uid><TAB>value[<TAB>apps]` for the seat's consent
+// gesture — the kernel binds the caller's principal itself, so the helper
+// reads it through slot 68 rather than trusting a caller-supplied uid.
+// Returns the ask id (≥1) or the negative errno — EINVAL when the caller
+// has no principal (a host build) or the line is malformed, ENOSPC at
+// the kernel's ask cap. StoreAskStatus reads the staged ask's verdict:
+// vi.SecretAskPending / Committed / Dropped, or ENOENT when the id is
+// not the caller's.
+var (
+	storePrincipal = vi.Principal
+	storeSecretAsk = vi.SecretAsk
+)
+
+func StoreAsk(name, value, apps string) int64 {
+	uid, _, ok := storePrincipal()
+	if !ok {
+		return -vi.ErrEINVAL
+	}
+	line := name + "\t" + vi.Itoa64(int64(uid)) + "\t" + value
+	if apps != "" {
+		line += "\t" + apps
+	}
+	return storeSecretAsk(line)
+}
+
+func StoreAskStatus(id int64) int64 {
+	if id < 0 || id > 0x7fffffff {
+		return -vi.ErrEINVAL
+	}
+	return vi.SecretAskStatus(uint32(id))
+}
+
 // SelectScheme prefers hmac-sha256, then ed25519, else none. Reads no
 // secret beyond a length probe.
 func SelectScheme(get func(name string, out []byte) int) (uint64, bool) {

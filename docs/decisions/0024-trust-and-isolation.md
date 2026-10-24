@@ -391,6 +391,27 @@ shape and never-logged contract are unchanged. The provisioned bindings:
 `net-hmac`/`net-ed25519` → `GOSH.ELF`, `ssh-user-ed25519` → `GOSSH.ELF`,
 `ssh-host-ed25519` → `GOSSHD.ELF`.
 
+**M196a amendment (2026-10-24, #3351 — the consent-gated provisioning
+seam).** The D8 deferral is lifted: `sys_secret_set` (slot 96) is the
+write half, in the M116c consent shape. ANY EL0 process may `ask`
+(op 0) — it stages a parsed `key<TAB>uid<TAB>value[<TAB>apps]` line in a
+bounded pending-ask table (4 slots, `ENOSPC`) with the asker's recorded
+identity, per-principal scoped (the line's uid must equal the caller's;
+staging is not consent). The seat-or-`CAP_PROC_ADMIN` gestures
+`list`/`commit`/`drop` (ops 1-3) answer the standing ask — the same
+authorization shape as slot 89 — and `set` (op 5) is the seat's own
+direct provisioning gesture. `commit`/`set` refuse a row whose apps
+allowlist names the WRITER's image (the D11 analog of grant rows: never
+the app the row names) and never evict — the 8-entry cap stays a refusal,
+while a same-(uid,key) overwrite costs no slot. A landed write persists
+through the kernel's own `save_to_share`; a persist failure reports `EIO`
+and leaves the ask pending. `status` (op 4) is the asker's own verdict
+read — pending/committed/dropped; another pid's ask reports `ENOENT`.
+The whole slot is redacted like slot 70 (an arg can carry a secret
+value), and the pending table holds values only in kernel memory — never
+on a channel another party reads. The serial-echo problem the deferral
+named is why the seat, not a shell verb, owns the gesture.
+
 **M113a note (2026-10-16, #2417 — ADR 0054):** `GRANTS.TXT` joins the
 secret class as the second member. Its contents are policy, not a secret —
 the class is taken for *integrity*: secret-class-by-construction is the
