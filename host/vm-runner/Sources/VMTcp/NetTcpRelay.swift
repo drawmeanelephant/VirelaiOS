@@ -151,6 +151,14 @@ public final class NetTcpRelay {
     /// with the connection.
     private var rtxTimer: DispatchSourceTimer?
     private let rtxQueue = DispatchQueue(label: "net-tcp-relay-rtx")
+    /// Clock seam for the test suite (#3340): RTO bookkeeping reads
+    /// `now`, and `rtxTimerAutostart = false` leaves `begin` without a
+    /// DispatchSourceTimer — the test steps `tick()` itself, so a
+    /// loaded host cannot land a wall-clock retransmit inside an exact
+    /// frame count. Both default to production behaviour; assign them
+    /// before `begin`.
+    var now: () -> Date = { Date() }
+    var rtxTimerAutostart = true
     /// `VIRELAI_NET_DROP` state per direction — nil = direction clean.
     /// `seen` counts data segments; every n-th is discarded; `dropped`
     /// is the leg-visible tally.
@@ -205,7 +213,7 @@ public final class NetTcpRelay {
         began = true
         // The RTO ticker: one per connection, cadence far below the
         // 200 ms floor. Weak self — a dead relay retires it below.
-        if rtxTimer == nil {
+        if rtxTimer == nil && rtxTimerAutostart {
             let t = DispatchSource.makeTimerSource(queue: rtxQueue)
             t.schedule(deadline: .now() + Self.rtoTick, repeating: Self.rtoTick)
             t.setEventHandler { [weak self] in self?.tick() }
@@ -577,7 +585,7 @@ public final class NetTcpRelay {
             }
             rtxAttempts = 0
             rto = Self.rtoFloor
-            rtxDeadline = peerAck == srvNxt ? nil : Date().addingTimeInterval(rto)
+            rtxDeadline = peerAck == srvNxt ? nil : now().addingTimeInterval(rto)
         } else if adv == 0 {
             peerWnd = wnd
             if countStall, Int32(bitPattern: srvNxt &- ack) > 0 {
@@ -624,17 +632,19 @@ public final class NetTcpRelay {
     /// manage their own backoff. Requires `lock`.
     private func armRtxLocked() {
         if rtxDeadline == nil { rto = Self.rtoFloor }
-        if rtxDeadline == nil || rtxDeadline! < Date() {
-            rtxDeadline = Date().addingTimeInterval(rto)
+        if rtxDeadline == nil || rtxDeadline! < now() {
+            rtxDeadline = now().addingTimeInterval(rto)
         }
     }
 
     /// The timer's tick: fire one RTO retransmit when the deadline
-    /// passed with bytes still unacknowledged.
-    private func tick() {
+    /// passed with bytes still unacknowledged. Internal (not private)
+    /// so the test suite steps it by hand under `rtxTimerAutostart =
+    /// false` (#3340).
+    func tick() {
         lock.lock()
         defer { lock.unlock() }
-        guard !dead, began, let deadline = rtxDeadline, Date() >= deadline else { return }
+        guard !dead, began, let deadline = rtxDeadline, now() >= deadline else { return }
         retransmitLocked("RTO \(Int(rto * 1000)) ms")
     }
 
@@ -675,7 +685,7 @@ public final class NetTcpRelay {
             seq = seq &+ 1
         }
         rto = min(rto * 2, Self.rtoCeiling)
-        rtxDeadline = Date().addingTimeInterval(rto)
+        rtxDeadline = now().addingTimeInterval(rto)
         onLog("NET-TCP-RELAY: retransmitted \(resent) bytes from seq 0x\(hex32(peerAck)) (\(reason); attempt \(rtxAttempts)/\(Self.retryLimit))")
     }
 

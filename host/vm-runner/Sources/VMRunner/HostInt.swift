@@ -42,15 +42,19 @@ enum HostInt {
     /// v2: the OUTBOX export lane. NOTIFY_FOCUS needs no bit of its own —
     /// it rides lane_notify (both directions of a lane share one bit).
     static let laneOutbox: UInt8 = 1 << 3
+    /// M186d (#3181): the speech lane — signed SPEAK records carry bounded
+    /// utterances to NSSpeechSynthesizer.
+    static let laneSpeech: UInt8 = 1 << 4
 
-    /// The lane name a mask bit names ("clip"/"drop"/"notify"/"outbox") —
-    /// the `lane=` word refusal markers carry.
+    /// The lane name a mask bit names ("clip"/"drop"/"notify"/"outbox"/
+    /// "speech") — the `lane=` word refusal markers carry.
     static func laneName(_ bit: UInt8) -> String {
         switch bit {
         case laneClip: return "clip"
         case laneDrop: return "drop"
         case laneNotify: return "notify"
         case laneOutbox: return "outbox"
+        case laneSpeech: return "speech"
         default: return "?"
         }
     }
@@ -71,6 +75,10 @@ enum HostInt {
         // naming a payload the seat staged in OUTBOX/; sender is the
         // source window id. Rides the outbox lane bit.
         case dragOut = 9     // g→h seat → runner:  the DROP shape, reversed
+        // M186d (#3181): the speech lane — one bounded UTF-8 utterance
+        // per record; plen MUST be 1..512 (the NOTIFY_FOCUS grammar
+        // rule mirrored: a header-only record has no utterance).
+        case speak = 10      // g→h seat → runner:  UTF-8 1..512
 
         var stem: String {
             switch self {
@@ -84,6 +92,7 @@ enum HostInt {
             case .clipOutT: return "CLIPTOUT"
             case .clipInT: return "CLIPTIN"
             case .dragOut: return "DRAGOUT"
+            case .speak: return "SPEAK"
             }
         }
 
@@ -96,6 +105,7 @@ enum HostInt {
             case .notifyOut, .notifyFocus: return "notify"
             case .outbox: return "outbox"
             case .dragOut: return "dragout"
+            case .speak: return "speech"
             case .armed: return ""
             }
         }
@@ -108,6 +118,7 @@ enum HostInt {
             case .drop: return HostInt.laneDrop
             case .notifyOut, .notifyFocus: return HostInt.laneNotify
             case .outbox, .dragOut: return HostInt.laneOutbox
+            case .speak: return HostInt.laneSpeech
             case .armed: return 0
             }
         }
@@ -124,6 +135,7 @@ enum HostInt {
             case "CLIPTOUT": return .clipOutT
             case "CLIPTIN": return .clipInT
             case "DRAGOUT": return .dragOut
+            case "SPEAK": return .speak
             default: return nil
             }
         }
@@ -202,10 +214,12 @@ enum HostInt {
     /// the TRUNCATED flag) rather than emit an unreadable record. v2:
     /// `sender` is the window-id correlation field; every v1-shaped call
     /// leaves it 0. A NOTIFY_FOCUS record is refused unless plen is 0
-    /// and sender is nonzero — the header is its whole payload.
+    /// and sender is nonzero — the header is its whole payload. A SPEAK
+    /// record is refused on plen 0 — no utterance to speak.
     static func encode(tag: Tag, flags: UInt8, sender: UInt16 = 0, seq: UInt32, epoch: UInt32, payload: Data, key: Data) -> Data? {
         guard payload.count <= payloadMax else { return nil }
         if tag == .notifyFocus, payload.count != 0 || sender == 0 { return nil }
+        if tag == .speak, payload.isEmpty { return nil }
         var out = Data()
         out.append(contentsOf: [0x56, 0x48, 0x49, 0x31]) // "VHI1"
         out.append(tag.rawValue)
@@ -232,6 +246,7 @@ enum HostInt {
         let plen = Int(raw[16]) | (Int(raw[17]) << 8)
         guard plen <= payloadMax, raw.count == headerLen + plen + macLen else { return nil }
         guard tag != .notifyFocus || plen == 0 else { return nil }
+        guard tag != .speak || plen > 0 else { return nil }
         let rec = Record(
             tag: tag,
             flags: raw[5],
@@ -346,6 +361,7 @@ enum HostInt {
         if mask & laneDrop != 0 { names.append("drop") }
         if mask & laneNotify != 0 { names.append("notify") }
         if mask & laneOutbox != 0 { names.append("outbox") }
+        if mask & laneSpeech != 0 { names.append("speech") }
         let lanes = names.isEmpty ? "-" : names.joined(separator: ",")
         FileHandle.standardOutput.write(Data("host-int: armed lanes=\(lanes) epoch=\(epoch)\n".utf8))
     }

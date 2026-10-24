@@ -32,6 +32,11 @@ final class NetTcpRelayTests: XCTestCase {
         frames = []
         relayLogs = []
         let relay = NetTcpRelay()
+        // #3340: no wall-clock retransmits in this suite — the RTO
+        // timer is stepped by hand (`relay.now` + `relay.tick()`), so
+        // a loaded host cannot land a retransmit inside an exact frame
+        // count. Tests that exercise RTO drive it explicitly.
+        relay.rtxTimerAutostart = false
         relay.hostMAC = hostMAC
         relay.hostPort = hostPort
         relay.serverIsn = serverIsn
@@ -103,6 +108,23 @@ final class NetTcpRelayTests: XCTestCase {
             Thread.sleep(forTimeInterval: 0.005)
         }
         return cond()
+    }
+
+    /// A hand-stepped clock for the relay's `now` seam (#3340) —
+    /// locked because the upstream reader thread's pump reads it too.
+    private final class TestClock {
+        private let l = NSLock()
+        private var t = Date()
+        var now: Date {
+            l.lock()
+            defer { l.unlock() }
+            return t
+        }
+        func advance(_ dt: TimeInterval) {
+            l.lock()
+            t += dt
+            l.unlock()
+        }
     }
 
     private struct UpstreamTimeout: Error {}
@@ -544,8 +566,9 @@ final class NetTcpRelayTests: XCTestCase {
         _ = relay.pump()
         XCTAssertTrue(waitFor { self.frameCount == 1 })
         XCTAssertEqual(payload(of: frame(at: 0)), Array(response[0..<1460]))
+        // The clamped window is spent: a second pump emits nothing, and
+        // with the manual RTO clock (#3340) nothing else can arrive.
         _ = relay.pump()
-        Thread.sleep(forTimeInterval: 0.1)
         XCTAssertEqual(frameCount, 1)
         XCTAssertTrue(logged(matching: "past send-next"))
     }
@@ -618,7 +641,9 @@ final class NetTcpRelayTests: XCTestCase {
     // ack covers them — the RTO timer resends the same seq/payload when
     // the ack never comes.
     func testUnackedBytesAreRetransmittedOnRTO() throws {
+        let clock = TestClock()
         let relay = makeRelay()
+        relay.now = { clock.now }
         relay.begin(synFrame: syn(), 58)
         let up = try upstream(relay)
         defer { close(up); relay.shutdown() }
@@ -629,18 +654,23 @@ final class NetTcpRelayTests: XCTestCase {
         XCTAssertTrue(waitFor { self.frameCount == 1 })
         XCTAssertEqual(payload(of: frame(at: 0)), body)
 
-        // No ack: the floor RTO (~200 ms) resends the same bytes at the
-        // same seq — proof the relay held them.
-        XCTAssertTrue(waitFor(3) { self.frameCount >= 2 })
+        // No ack: the floor RTO resends the same bytes at the same
+        // seq — proof the relay held them. Stepped by hand (#3340),
+        // not awaited on the wall clock.
+        clock.advance(NetTcpRelay.rtoFloor)
+        relay.tick()
+        XCTAssertEqual(frameCount, 2)
         XCTAssertEqual(payload(of: frame(at: 1)), body)
         XCTAssertEqual(tcpSeq(frame(at: 1)), tcpSeq(frame(at: 0)))
         XCTAssertTrue(logged(matching: "retransmitted 100 bytes"))
         XCTAssertTrue(logged(matching: "RTO"))
 
-        // The ack then arrives: the flight disarms — no further resends.
+        // The ack then arrives: the flight disarms — stepping past the
+        // next deadline resends nothing.
         _ = relay.guestAckSegment(seg(seq: guestIsn + 1, ack: serverIsn + 1 + 100, wnd: 1460), 54)
         let settled = frameCount
-        Thread.sleep(forTimeInterval: 0.5)
+        clock.advance(NetTcpRelay.rtoCeiling)
+        relay.tick()
         XCTAssertEqual(frameCount, settled)
         XCTAssertEqual(relay.pendingUpstreamBytes, 0)
     }
@@ -758,7 +788,10 @@ final class NetTcpRelayTests: XCTestCase {
         writeUpstream(up2, [UInt8](repeating: 0x67, count: 10))
         _ = clean.guestAckSegment(seg(seq: guestIsn + 1, ack: serverIsn + 1, wnd: 1460), 54)
         _ = clean.pump()
-        XCTAssertTrue(waitFor { self.frameCount == 2 })
+        // The second makeRelay reset `frames`; clean's emit is the only
+        // one that can land — the first relay's RTO clock is manual
+        // (#3340), so it cannot add a retransmit to the count.
+        XCTAssertTrue(waitFor { self.frameCount == 1 })
         XCTAssertTrue(logged(matching: "ignoring malformed VIRELAI_NET_DROP"))
         unsetenv("VIRELAI_NET_DROP")
     }
@@ -780,5 +813,17 @@ final class NetTcpRelayTests: XCTestCase {
         Thread.sleep(forTimeInterval: 0.3)
         XCTAssertEqual(frameCount, 1)
         XCTAssertFalse(logged(matching: "VIRELAI_NET_DROP"))
+    }
+
+    // The gate stages the rule as a `net-drop-<tag>` FILE, and a text
+    // file ends in a newline — the parser must tolerate it or the file
+    // channel can never arm (observed live: 'rx:5\n' off the staged
+    // file logged "ignoring malformed VIRELAI_NET_DROP" and the loss
+    // legs ran clean).
+    func testNetDropSpecToleratesFileTrailingNewline() throws {
+        let rules = try XCTUnwrap(parseNetDropSpec("rx:5\n"))
+        XCTAssertEqual(rules.count, 1)
+        XCTAssertEqual(rules[0].dir, .rx)
+        XCTAssertEqual(rules[0].n, 5)
     }
 }

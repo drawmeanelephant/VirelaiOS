@@ -219,6 +219,7 @@ func TestOutboxTagAndLane(t *testing.T) {
 	}{
 		{TagOutbox, 3, "OUTBOX-00000003"},
 		{TagNotifyFocus, 9, "NFOCUS-00000009"},
+		{TagSpeak, 10, "SPEAK-0000000a"},
 	} {
 		if got := RecordName(tc.tag, tc.seq); got != tc.want {
 			t.Fatalf("RecordName(%d,%08x) = %q want %q", tc.tag, tc.seq, got, tc.want)
@@ -234,7 +235,10 @@ func TestOutboxTagAndLane(t *testing.T) {
 	if LaneBit(TagNotifyFocus) != LaneNotify || LaneName(TagNotifyFocus) != "notify" {
 		t.Fatal("notify-focus rides the notify lane bit")
 	}
-	if got := MaskNames(LaneClip | LaneDrop | LaneNotify | LaneOutbox); got != "clip,drop,notify,outbox" {
+	if LaneBit(TagSpeak) != LaneSpeech || LaneName(TagSpeak) != "speech" {
+		t.Fatal("speech lane mapping wrong")
+	}
+	if got := MaskNames(LaneClip | LaneDrop | LaneNotify | LaneOutbox | LaneSpeech); got != "clip,drop,notify,outbox,speech" {
 		t.Fatalf("MaskNames = %q", got)
 	}
 	// M124c: the typed clip tags ride the clip lane's bit + name.
@@ -243,6 +247,32 @@ func TestOutboxTagAndLane(t *testing.T) {
 	}
 	if LaneName(TagClipOutT) != "clip" || LaneName(TagClipInT) != "clip" {
 		t.Fatal("typed clip refusals render lane=clip")
+	}
+}
+
+// SPEAK is plen 1..512 by grammar (the NOTIFY_FOCUS rule mirrored): an
+// empty payload is bad_record on decode and refused at encode; the wire
+// bound is the shared 512.
+func TestSpeakGrammar(t *testing.T) {
+	if EncodeRecord(testKey, TagSpeak, 0, 1, 9, nil) != nil {
+		t.Fatal("a payloadless SPEAK must refuse at encode")
+	}
+	raw := EncodeRecord(testKey, TagSpeak, 0, 1, 9, []byte("hello"))
+	if raw == nil {
+		t.Fatal("a bounded utterance is the legal form")
+	}
+	rec, ok := DecodeRecord(raw)
+	if !ok || rec.Tag != TagSpeak || string(rec.Payload) != "hello" {
+		t.Fatalf("decode: ok=%v tag=%d payload=%q", ok, rec.Tag, rec.Payload)
+	}
+	// Hand-mutate plen to zero on the wire form: still fails decode.
+	mut := append(append([]byte{}, raw[:16]...), append([]byte{0, 0}, raw[HeaderLen+5:]...)...)
+	if _, ok := DecodeRecord(mut); ok {
+		t.Fatal("a payloadless SPEAK must decode as bad_record")
+	}
+	// The record bound is the shared 512 — an over-cap utterance refuses.
+	if EncodeRecord(testKey, TagSpeak, 0, 1, 9, make([]byte, PayloadMax+1)) != nil {
+		t.Fatal("an over-cap utterance must refuse at encode")
 	}
 }
 
