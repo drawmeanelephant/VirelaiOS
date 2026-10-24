@@ -50,6 +50,17 @@ func main() {
 	cfg := parseArgs(args)
 	vi.ConsoleLine(markerStarting)
 
+	// M198b (#3361): --advertise is validated BEFORE the listener binds —
+	// a boot that cannot announce (a bad name, the NAT attachment's
+	// no-LAN signature) refuses by name and exits, never silently absent.
+	var adv *advertiser
+	if cfg.advertise != "" {
+		adv = newAdvertiser(cfg.advertise, cfg.port, guestAdvSeam())
+		if adv == nil {
+			vi.Exit(1)
+		}
+	}
+
 	var tlsCfg *tls.ServerConfig
 	if cfg.tls {
 		c := loadTLSConfig(cfg.certPath, cfg.seedPath)
@@ -66,6 +77,11 @@ func main() {
 		vi.Exit(1)
 	}
 	vi.ConsoleLine(markerListening + vi.Itoa64(int64(cfg.port)))
+
+	if adv != nil && !adv.start() {
+		_ = ln.Close()
+		vi.Exit(1)
+	}
 
 	// The accept loop hands every ESTABLISHED child its own Conn; the
 	// listener itself stays live, so session close IS the relisten. The
@@ -101,6 +117,9 @@ func main() {
 		vi.ConsoleLine(markerClosed)
 	}
 	_ = ln.Close()
+	if adv != nil {
+		adv.stop()
+	}
 	vi.ConsoleLine(markerBye)
 	vi.Exit(0)
 }
@@ -173,12 +192,15 @@ func answerAndClose(c connStream, resp response) {
 }
 
 // config is the parsed argv: plaintext on defaultPort, or --tls <cert>
-// <seed> on defaultTLSPort (both loadable share files).
+// <seed> on defaultTLSPort (both loadable share files). M198b:
+// `--advertise NAME` publishes the share as NAME._http._tcp.local over
+// mDNS while it serves.
 type config struct {
-	port     uint16
-	tls      bool
-	certPath string
-	seedPath string
+	port      uint16
+	tls       bool
+	certPath  string
+	seedPath  string
+	advertise string
 }
 
 func parseArgs(args []string) config {
@@ -194,6 +216,13 @@ func parseArgs(args []string) config {
 			cfg.certPath = args[i+1]
 			cfg.seedPath = args[i+2]
 			i += 2
+			continue
+		}
+		if args[i] == "--advertise" {
+			if i+1 < len(args) {
+				cfg.advertise = args[i+1]
+				i++
+			}
 			continue
 		}
 		if p, ok := atoiPort(args[i]); ok {

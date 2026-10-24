@@ -182,6 +182,18 @@ pub const frame_max: usize = eth_hdr_len + payload_max; // 1514
 pub const mdns_mac_v4 = [6]u8{ 0x01, 0x00, 0x5e, 0x00, 0x00, 0xfb };
 pub const mdns_mac_v6 = [6]u8{ 0x33, 0x33, 0x00, 0x00, 0x00, 0xfb };
 
+/// M198b (#3361, index #3313): the RFC 1112 §6.4 Ethernet address for an
+/// IPv4 link-local multicast group — 01:00:5e:(low 23 bits of the
+/// address). Bounded to 224.0.0.0/24 (the Local Network Control Block —
+/// the only multicast scope this stack speaks; the mDNS group
+/// 224.0.0.251 is its only caller). Null outside the block, so a
+/// routable-group dst keeps the unicast semantics (unresolvable —
+/// `.no_peer` — never a computed MAC that lies about the scope).
+pub fn mcast_mac4(dst: [4]u8) ?[6]u8 {
+    if (dst[0] != 224 or dst[1] != 0 or dst[2] != 0) return null;
+    return .{ 0x01, 0x00, 0x5e, dst[1] & 0x7f, dst[2], dst[3] };
+}
+
 /// Whether `dst` is a multicast (not broadcast) Ethernet destination:
 /// the group bit (low bit of the first octet) set on a non-all-ff
 /// address (RFC 1042 / IEEE 802 — ff:ff:ff:ff:ff:ff has the bit set
@@ -1619,9 +1631,15 @@ pub fn net_udp_send(target_ip: [4]u8, dst_port: u16, payload: []const u8, out_le
         return .ok;
     }
     if (!net_ready) return .not_ready;
-    const peer_mac = arp.lookup(target_ip) orelse return .no_peer;
+    // M198b: a link-local multicast dst never ARPs — the group MAC is
+    // derived and the frame goes out at udp.mcast_ttl (RFC 6762 §11).
+    const mc = mcast_mac4(target_ip);
+    const peer_mac = mc orelse arp.lookup(target_ip) orelse return .no_peer;
     @memset(tx_staging[0..tx_hdr_len], 0);
-    const n = udp.build_frame(tx_staging[tx_hdr_len .. tx_hdr_len + udp.frame_max], &net_mac, arp.own_ip, peer_mac, target_ip, dst_port, payload);
+    const n = if (mc != null)
+        udp.build_frame_ex(tx_staging[tx_hdr_len .. tx_hdr_len + udp.frame_max], peer_mac, &net_mac, arp.own_ip, target_ip, udp.mcast_ttl, udp.default_src_port, dst_port, payload)
+    else
+        udp.build_frame(tx_staging[tx_hdr_len .. tx_hdr_len + udp.frame_max], &net_mac, arp.own_ip, peer_mac, target_ip, dst_port, payload);
     out_len.* = n;
     const r = net_send(&net_ops, &net_dev, tx_staging[0 .. tx_hdr_len + n]);
     if (r == .ok) udp.sent += 1;
@@ -1643,9 +1661,15 @@ pub fn net_udp_send_from(target_ip: [4]u8, src_port: u16, dst_port: u16, payload
         return .ok;
     }
     if (!net_ready) return .not_ready;
-    const peer_mac = arp.lookup(target_ip) orelse return .no_peer;
+    // M198b: same multicast branch as `net_udp_send` — mDNS
+    // announcements ride this seam (src port 5353 bound by the caller).
+    const mc = mcast_mac4(target_ip);
+    const peer_mac = mc orelse arp.lookup(target_ip) orelse return .no_peer;
     @memset(tx_staging[0..tx_hdr_len], 0);
-    const n = udp.build_frame_ex(tx_staging[tx_hdr_len .. tx_hdr_len + udp.frame_max], peer_mac, &net_mac, arp.own_ip, target_ip, src_port, dst_port, payload);
+    const n = if (mc != null)
+        udp.build_frame_ex(tx_staging[tx_hdr_len .. tx_hdr_len + udp.frame_max], peer_mac, &net_mac, arp.own_ip, target_ip, udp.mcast_ttl, src_port, dst_port, payload)
+    else
+        udp.build_frame_ex(tx_staging[tx_hdr_len .. tx_hdr_len + udp.frame_max], peer_mac, &net_mac, arp.own_ip, target_ip, udp.default_ttl, src_port, dst_port, payload);
     out_len.* = n;
     const r = net_send(&net_ops, &net_dev, tx_staging[0 .. tx_hdr_len + n]);
     if (r == .ok) udp.sent += 1;
@@ -1696,7 +1720,7 @@ pub fn net_dhcp_send(msg: []const u8, out_len: *usize) SendResult {
     const bcast_mac = [6]u8{ 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
     const bcast_ip = [4]u8{ 255, 255, 255, 255 };
     const src_ip = [4]u8{ 0, 0, 0, 0 }; // the client pre-lease address
-    const n = udp.build_frame_ex(tx_staging[tx_hdr_len .. tx_hdr_len + dhcp.frame_max], bcast_mac, &net_mac, src_ip, bcast_ip, dhcp.client_port, dhcp.server_port, msg);
+    const n = udp.build_frame_ex(tx_staging[tx_hdr_len .. tx_hdr_len + dhcp.frame_max], bcast_mac, &net_mac, src_ip, bcast_ip, udp.default_ttl, dhcp.client_port, dhcp.server_port, msg);
     out_len.* = n;
     return net_send(&net_ops, &net_dev, tx_staging[0 .. tx_hdr_len + n]);
 }
@@ -1713,7 +1737,7 @@ pub fn net_dhcp_send_bound(msg: []const u8, out_len: *usize) SendResult {
     @memset(tx_staging[0..tx_hdr_len], 0);
     const bcast_mac = [6]u8{ 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
     const bcast_ip = [4]u8{ 255, 255, 255, 255 };
-    const n = udp.build_frame_ex(tx_staging[tx_hdr_len .. tx_hdr_len + dhcp.frame_max], bcast_mac, &net_mac, dhcp.lease_ip, bcast_ip, dhcp.client_port, dhcp.server_port, msg);
+    const n = udp.build_frame_ex(tx_staging[tx_hdr_len .. tx_hdr_len + dhcp.frame_max], bcast_mac, &net_mac, dhcp.lease_ip, bcast_ip, udp.default_ttl, dhcp.client_port, dhcp.server_port, msg);
     out_len.* = n;
     return net_send(&net_ops, &net_dev, tx_staging[0 .. tx_hdr_len + n]);
 }
@@ -1728,7 +1752,7 @@ pub fn net_dhcp_send_unicast(dst_ip: [4]u8, dst_mac: [6]u8, msg: []const u8, out
     if (!net_ready) return .not_ready;
     if (!dhcp_bound()) return .not_ready;
     @memset(tx_staging[0..tx_hdr_len], 0);
-    const n = udp.build_frame_ex(tx_staging[tx_hdr_len .. tx_hdr_len + dhcp.frame_max], dst_mac, &net_mac, dhcp.lease_ip, dst_ip, dhcp.client_port, dhcp.server_port, msg);
+    const n = udp.build_frame_ex(tx_staging[tx_hdr_len .. tx_hdr_len + dhcp.frame_max], dst_mac, &net_mac, dhcp.lease_ip, dst_ip, udp.default_ttl, dhcp.client_port, dhcp.server_port, msg);
     out_len.* = n;
     return net_send(&net_ops, &net_dev, tx_staging[0 .. tx_hdr_len + n]);
 }
@@ -1892,7 +1916,7 @@ pub fn net_socket_dns_send(server: [4]u8, query: []const u8) SendResult {
     const d = native_socket.dns orelse return .not_ready;
     const mac = arp.lookup(server) orelse return .no_peer;
     @memset(tx_staging[0..tx_hdr_len], 0);
-    const n = udp.build_frame_ex(tx_staging[tx_hdr_len..], mac, &net_mac, arp.own_ip, server, d.port, 53, query);
+    const n = udp.build_frame_ex(tx_staging[tx_hdr_len..], mac, &net_mac, arp.own_ip, server, udp.default_ttl, d.port, 53, query);
     return net_send(&net_ops, &net_dev, tx_staging[0 .. tx_hdr_len + n]);
 }
 
@@ -2687,6 +2711,52 @@ test "virtio_net: net_arp_request resolves the NEXT HOP for an off-subnet target
     try std.testing.expectEqual(SendResult.ok, net_arp_request(.{ 8, 8, 8, 8 }, &out_len));
     _ = arp.build_request(&expected, &net_mac, arp.own_ip, .{ 8, 8, 8, 8 });
     try std.testing.expectEqualSlices(u8, &expected, tx_staging[tx_hdr_len .. tx_hdr_len + arp.arp_frame_len]);
+}
+
+test "virtio_net: link-local multicast TX derives the group MAC, no ARP (M198b)" {
+    const saved_ops = net_ops;
+    net_ops = mock_ops();
+    net_ready = true;
+    defer {
+        net_ops = saved_ops;
+        net_ready = false;
+    }
+    net_dev = .{};
+    net_mac = [6]u8{ 0x02, 0x00, 0x00, 0x00, 0x00, 0x01 };
+    arp.own_ip = .{ 192, 168, 78, 5 };
+    arp.own_mask = .{ 255, 255, 255, 0 };
+    arp.gateway = .{ 0, 0, 0, 0 };
+    defer {
+        arp.own_ip = .{ 0, 0, 0, 0 };
+        arp.own_mask = .{ 255, 255, 255, 0 };
+        arp.gateway = .{ 0, 0, 0, 0 };
+    }
+    mock_tx_used_idx = 0;
+    mock_kicks = 0;
+
+    // The mDNS group: no ARP entry exists and none is needed — the send
+    // lands a frame to 01:00:5e:00:00:fb at IP TTL 255, src/dst port
+    // 5353 (the advertise seam's shape).
+    var out_len: usize = 0;
+    const payload = [4]u8{ 0xde, 0xad, 0xbe, 0xef };
+    try std.testing.expectEqual(SendResult.ok, net_udp_send_from(.{ 224, 0, 0, 251 }, 5353, 5353, &payload, &out_len));
+    try std.testing.expectEqual(@as(usize, udp.eth_hdr_len + udp.ipv4_hdr_len + udp.udp_hdr_len + 4), out_len);
+    const f = tx_staging[tx_hdr_len .. tx_hdr_len + out_len];
+    try std.testing.expectEqualSlices(u8, &mdns_mac_v4, f[0..6]); // dst = the group MAC
+    try std.testing.expectEqualSlices(u8, &net_mac, f[6..12]);
+    try std.testing.expectEqual(@as(u8, 0x08), f[12]);
+    try std.testing.expectEqual(@as(u8, 255), f[22]); // RFC 6762 §11 — mDNS TTL
+    try std.testing.expectEqualSlices(u8, &.{ 224, 0, 0, 251 }, f[30..34]);
+    try std.testing.expectEqual(@as(u16, 5353), (@as(u16, f[34]) << 8) | f[35]);
+    try std.testing.expectEqual(@as(u16, 5353), (@as(u16, f[36]) << 8) | f[37]);
+    try std.testing.expectEqualSlices(u8, &payload, f[42..46]);
+
+    // A routable group outside 224.0.0.0/24 does NOT derive a MAC — the
+    // unicast rule stands (no ARP entry -> .no_peer), never a computed
+    // address for a scope this stack does not speak.
+    try std.testing.expectEqual(SendResult.no_peer, net_udp_send_from(.{ 239, 255, 255, 250 }, 5353, 5353, &payload, &out_len));
+    // And the mDNS group works on the fixed-port seam the same way.
+    try std.testing.expectEqual(SendResult.ok, net_udp_send(.{ 224, 0, 0, 251 }, 5353, &payload, &out_len));
 }
 
 /// Test helper: pop the oldest FIFO frame into `out` (the real path peeks

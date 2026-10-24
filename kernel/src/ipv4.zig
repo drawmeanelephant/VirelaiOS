@@ -582,7 +582,7 @@ test "ipv4: M97e-F2 dst gate — a foreign unicast address is dropped before UDP
     // filter admitted it — broadcast/multicast frames come through): it
     // must never reach the UDP layer's listener.
     var frame: [udp.frame_max]u8 = undefined;
-    var n = udp.build_frame_ex(&frame, test_mac, &host_mac, ip_host, .{ 10, 0, 0, 99 }, 9999, 7000, "hi");
+    var n = udp.build_frame_ex(&frame, test_mac, &host_mac, ip_host, .{ 10, 0, 0, 99 }, udp.default_ttl, 9999, 7000, "hi");
     try std.testing.expect(handle_rx(frame[0..n], &test_mac, &reply_buf) == null);
     try std.testing.expectEqual(@as(u64, 1), dropped_other);
     try std.testing.expectEqual(@as(u64, 0), udp.received); // never delivered
@@ -590,21 +590,21 @@ test "ipv4: M97e-F2 dst gate — a foreign unicast address is dropped before UDP
 
     // The same datagram to OUR address: delivered (the control — the
     // gate did not wedge the listener).
-    n = udp.build_frame_ex(&frame, test_mac, &host_mac, ip_host, ip_guest, 9999, 7000, "hi");
+    n = udp.build_frame_ex(&frame, test_mac, &host_mac, ip_host, ip_guest, udp.default_ttl, 9999, 7000, "hi");
     try std.testing.expect(handle_rx(frame[0..n], &test_mac, &reply_buf) == null);
     try std.testing.expectEqual(@as(u64, 1), udp.received);
     try std.testing.expect(udp.pop(7000) != null);
 
     // The limited broadcast address (the DHCP client's reply shape):
     // admitted through the gate and delivered the same way.
-    n = udp.build_frame_ex(&frame, .{ 0xff, 0xff, 0xff, 0xff, 0xff, 0xff }, &host_mac, ip_host, .{ 255, 255, 255, 255 }, 9999, 7000, "bc");
+    n = udp.build_frame_ex(&frame, .{ 0xff, 0xff, 0xff, 0xff, 0xff, 0xff }, &host_mac, ip_host, .{ 255, 255, 255, 255 }, udp.default_ttl, 9999, 7000, "bc");
     try std.testing.expect(handle_rx(frame[0..n], &test_mac, &reply_buf) == null);
     try std.testing.expectEqual(@as(u64, 2), udp.received);
     try std.testing.expect(udp.pop(7000) != null);
 
     // And a directed broadcast / multicast-shaped address is NOT
     // admitted (no consumer — the honest bound).
-    n = udp.build_frame_ex(&frame, .{ 0xff, 0xff, 0xff, 0xff, 0xff, 0xff }, &host_mac, ip_host, .{ 10, 0, 0, 255 }, 9999, 7000, "db");
+    n = udp.build_frame_ex(&frame, .{ 0xff, 0xff, 0xff, 0xff, 0xff, 0xff }, &host_mac, ip_host, .{ 10, 0, 0, 255 }, udp.default_ttl, 9999, 7000, "db");
     try std.testing.expect(handle_rx(frame[0..n], &test_mac, &reply_buf) == null);
     try std.testing.expectEqual(@as(u64, 2), dropped_other);
     try std.testing.expectEqual(@as(u64, 2), udp.received);
