@@ -32,8 +32,8 @@ front-ends.
 |-----|-----------|
 | `GOEDIT.ELF` | The code editor — find/goto bars, an undo op ring, syntax-aware editing, themes, a minimap, bracket matching, build-diagnostics navigation (it is the face of the in-guest `GOBUILD` error list), and format-on-save. Owns the unsaved-changes dialog client the seat arms on `WIN_UNSAVED`. Gate: `go-edit`. |
 | `NOTE.ELF` | The fleet's plain text editor — deliberately *not* an editor arms race: open, edit, `ctrl+s` save, auto-save on close when dirty. It is the manifest's `opens=text` default and the seat specs' canonical hosted tab. |
-| `GOFILES.ELF` | The file manager — a real Bubble Tea model over the window-bound tty (not a widget app): list/open on the share, batch copy/move, trash + undoable delete, recent files, "Open With…" dispatch through the shared mime registry, drag-source/drop-target, spacebar **QuickLook** previews, and per-tab navigation history on the seat's nav kinds. Gate: `go-fileman`. |
-| `GOTERM.ELF` | The terminal — named profiles (`term-profile` bundles font and palette keys and applies them live through the settings store), clickable OSC-8 hyperlinks, scrollback, selection, search, and the bound-tty surface every TUI shares. Gate: `go-term`. |
+| `GOFILES.ELF` | The file manager — a real Bubble Tea model over the window-bound tty (not a widget app): list/open on the share, batch copy/move, trash + undoable delete, recent files, "Open With…" dispatch through the shared mime registry, drag-source/drop-target, spacebar **QuickLook** previews (a `.vcf` paints as a parsed contact card ready to hand to GOMAIL, #3255), the `/` chord's bounded content search over the folder subtree with `n`/`N` walking the hits (#2931), and per-tab navigation history on the seat's nav kinds. Gate: `go-fileman`. |
+| `GOTERM.ELF` | The terminal — named profiles (`term-profile` bundles font and palette keys and applies them live through the settings store), clickable OSC-8 hyperlinks, scrollback with a `ctrl+shift+g` incremental find bar over it (#3242), selection, OSC 52 copies bridged into the seat's clipboard, DECSET 2004 bracketed paste on the shared line editor (#2926), and the bound-tty surface every TUI shares. Gate: `go-term`. |
 | `GOSH.ELF` | The shell — serial seat and hosted tab alike, backed by the pure-Go **`shlib`** engine it shares with GOTERM: pipes, redirection, slot-79 globbing, `cd -` and a directory stack, aliases, heredocs, history expansion (`!n`, `!!`, `!$`), contextual completion, `jobs`/`kill %N`/Ctrl-C job control, a `toolbox` multicall of builtins, SNTP `time sync`, and the `log`/`date`/`clip` readers. Gates: `go-sh`, `go-shell-polish`. |
 
 ## Productivity
@@ -48,7 +48,7 @@ a tab close does not lose the document.
 | `GOSHEET.ELF` | A CSV spreadsheet — a 128×64 virtualized grid behind a `TableController`, an edit line, formulas, a menu bar, typed `text/csv` copy/paste, and crash-safe CSV import/export through the shared FilePicker. Gate: `go-sheet`. |
 | `GOPAINT.ELF` | A paint app — brush, line, rectangle, flood fill and eraser over a fixed 16-colour palette, an undo ring, QOI save/open and PNG export. Gate: `go-paint`. |
 | `GOREADER.ELF` | The document reader — the `opens=document` handler that renders PDFs through the bounded engine in `user/go/pdf` ([[media]]), with page navigation, zoom, find, and session state. Gate: `go-reader`. |
-| `GOCLOCK.ELF` | Clock — World / Stopwatch / Timer / Alarm tabs multiplexed onto the kernel's one app timer; alarms persist and late-fire on start. Gate: `go-clock`. |
+| `GOCLOCK.ELF` | Clock — World / Stopwatch / Timer / Alarm tabs multiplexed onto the kernel's one app timer; alarm rows add, edit in place, toggle and delete, persist, and late-fire on start. The headless `import`/`export` verbs merge a `.ics` file into the event list and write it back as a VCALENDAR through WriteFileSafe (#3185, #3254), and it is the `opens=text/calendar` hand-off. Gate: `go-clock`. |
 | `GOEMOJI.ELF` | The emoji picker — `ctrl+shift+e` summons it from anywhere; pick a glyph from the grid, compose-pair, or kaomoji tables and it pastes into the previously focused tab. Gate: `go-emoji`. |
 | `GOVAULT.ELF` | A secrets store — one unlock-gated vault file (PBKDF2-HMAC-SHA256 → AES-256-GCM, crash-safe writes), masked entry fields, expiring copies through the primary selection, an idle lock, TOTP codes, and its own plaintext audit + receipts face. Gate: `go-vault`. |
 | `GOIRC.ELF` | An IRC client — the RFC 1459/2812 core plus channel list, scrollback and mentions; TLS by default (`tls.Dial`, 6697-style), and plaintext refuses unless `--plain` sets the session's consent bit. Gate: `go-irc`. |
@@ -62,12 +62,13 @@ viewer, the snapshot and self-test tools, and the first-boot tour.
 |-----|-----------|
 | `GOTOP.ELF` | The process monitor — live procs tab with click-to-kill and real CPU%/MEM columns, a GPU tab reporting the compute device's busy/queued/submit counters, and a Trust tab tailing grant decisions and audit receipts. Gate: `go-top`. |
 | `GOSET.ELF` | Settings — edits the schema-v2 `SETTINGS.TXT` the seat and kernel read (writes are crash-safe publishes), hosts the **grants consent** pane for signed `ReleaseCaps`, the shortcuts view of the chord registry, font-size and palette pickers, and per-app grant rows. Gate: `go-settings`. |
-| `GOVIEW.ELF` | The multi-format image viewer — QOI/PNG/JPEG/GIF/SVG through the shared decoder, zoom and pan, GIF playback with per-frame delays and a space-bar pause, and the `opens=image` default. Gate: `live-image-viewer`. |
+| `GOVIEW.ELF` | The multi-format image viewer — QOI/PNG/JPEG/GIF/SVG through the shared decoder plus MOV/Motion-JPEG video through a bounded box demux (#3155), zoom and pan, animated playback with per-frame delays and a space-bar pause — held to a still frame when `a11y.reduce_motion` is set (#3142) — and the `opens=image` default. Gate: `live-image-viewer`. |
 | `GOSNAP.ELF` | Snapshots — list/save/restore/delete named machine images parked on the share, with a two-step consent arm; also reachable as the PWR Snapshot row. Gate: `go-snap`. |
 | `GOSELF.ELF` | The guest self-test — runs in-OS cases and writes receipts the host byte-compares; the standing proof that EL0 file, window and misc ABI behave. Gate: `go-selftest`. |
 | `GOWELCOME.ELF` | The first-boot tour — five core gestures plus one-click launchers. |
 | `GOHELP.ELF` | The help browser — a Bubble Tea model over the bound tty that walks the staged `/host/docs` bundle. Gate: `go-help`. |
 | `PULSE.ELF` | A Charm TUI system monitor — a real `tea.Model` fed by the kernel's bound-tty queue and repainted on a 1 Hz tick. |
+| `GOA11Y.ELF` | The accessibility outline reader — asks the seat's `WINDOWS_QUERY` every 500 ms which window holds the focus, reads that window's published outline at `/host/A11Y.<win>`, and paints it as an indented role/state/name node list; no focus, no outline, and a malformed file are each named states, never crashes (#3143). Gate: `go-wm-journey`. |
 
 ## Network
 
@@ -79,6 +80,7 @@ open that serves the share outward.
 |-----|-----------|
 | `GOHTTPD.ELF` | The in-guest HTTP/1.1 **and** HTTPS server — one passive-open port (8080 cleartext, 8443 TLS with the in-tree TLS 1.3 server half), keep-alive connections, serial per-connection serving of the share. Gate: `live-httpd`. |
 | `GOFETCH.ELF` | The HTTP(S) client — windowed `https://` fetch over in-process TLS, a console cleartext mode, and `--download` saving the body to the share; `expect-fail` legs pin name/expired/chain refusals closed. Gate: `go-fetch-https`. |
+| `GOMAIL.ELF` | The mail client — IMAP4rev1 `boxes`/`headers`/`read` plus SMTP submit for one message over `tls.Dial`, the GOIRC-proven consent rule at the dial boundary (plaintext refuses unless `--plain` or the account file says so). The wire work caches into a bounded `MAIL/` subtree on the data root, so `search` answers offline and a failed dial falls back to what the cache can prove — never fabricated mail (#3184, #3253). Out-of-scope verbs and attachments refuse by name. Gate: `go-mail`. |
 | `GOPING.ELF` | ICMP echo — including `ping6` on the IPv6 datapath. |
 | `GONETSTAT.ELF` | The network dashboard over the net-stats snapshot seam. |
 | `GODNS.ELF` | Bounded RFC 1035 lookup (A records; no cache). |
@@ -104,7 +106,7 @@ device — not a network call, not a demo stub.
 | App | What it is |
 |-----|-----------|
 | `GOINFER.ELF` | The inference CLI over `user/go/infer` — a VIW model image (owner-approved SmolLM2-135M, Apache-2.0) loaded into sealed weight buffers, with a greedy argmax decode that is deliberately deterministic: the same tokens every run. Legs in `live-gpu3d`. |
-| `GOASSIST.ELF` | The chat front-end — streams the engine's tokens into a windowed conversation view, persists transcripts under `ASSIST/` crash-safe, and round-trips an open thread through save/restore. Gate: `go-assist`. |
+| `GOASSIST.ELF` | The chat front-end — streams the engine's tokens into a windowed conversation view, persists transcripts under `ASSIST/` crash-safe, and round-trips an open thread through save/restore. The prompt composes romaji→kana through the shared IME — Space cycles kanji candidates resolved from the staged kanji dictionary, kana-only when it is absent (#3145). Gate: `go-assist`. |
 
 ## Web
 
