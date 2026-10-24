@@ -2722,7 +2722,7 @@ command shares the same session engine (`kernel/src/vsock_ctl.zig`).
 The slot joins no `word_*` grant group today — the same ungrouped-service
 posture slots 88/91/92 took.
 
-## Amendment (2026-10-24, M196a #3351 — slot 96 `sys_secret_set`, the consent-gated provisioning seam)
+## Amendment (2026-10-24, #3351 #3351 — slot 96 `sys_secret_set`, the consent-gated provisioning seam)
 
 The secret store's write half, ADR 0024 D8 amended. Slot 96 is additive,
 redacted like slot 70 (an arg can carry a secret value — never-logged

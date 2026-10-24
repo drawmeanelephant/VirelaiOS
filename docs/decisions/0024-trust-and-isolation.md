@@ -391,7 +391,7 @@ shape and never-logged contract are unchanged. The provisioned bindings:
 `net-hmac`/`net-ed25519` → `GOSH.ELF`, `ssh-user-ed25519` → `GOSSH.ELF`,
 `ssh-host-ed25519` → `GOSSHD.ELF`.
 
-**M196a amendment (2026-10-24, #3351 — the consent-gated provisioning
+**#3351 amendment (2026-10-24, #3351 — the consent-gated provisioning
 seam).** The D8 deferral is lifted: `sys_secret_set` (slot 96) is the
 write half, in the M116c consent shape. ANY EL0 process may `ask`
 (op 0) — it stages a parsed `key<TAB>uid<TAB>value[<TAB>apps]` line in a
