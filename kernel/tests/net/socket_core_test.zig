@@ -307,7 +307,7 @@ test "socket core: partial reads, the honest window and exact sequence prevent d
     cap.drain(&c);
     // M99h (#2186, h2): the advertised window is the queue's real free
     // space — six buffered bytes shrink it, never zero it.
-    try t.expectEqual(@as(u16, wire.payload_max - 6), std.mem.readInt(u16, cap.bytes[14..16], .big));
+    try t.expectEqual(@as(u16, core.recv_window - 6), std.mem.readInt(u16, cap.bytes[14..16], .big));
     var buf: [8]u8 = undefined;
     try t.expectEqual(@as(usize, 2), try c.read(7, h, buf[0..2], 1));
     try t.expectEqualStrings("ab", buf[0..2]);
@@ -325,7 +325,7 @@ test "socket core: partial reads, the honest window and exact sequence prevent d
     cap.drain(&c);
     // The drained ACK is the read-triggered window update — four bytes
     // were still queued when it was built.
-    try t.expectEqual(@as(u16, wire.payload_max - 4), std.mem.readInt(u16, cap.bytes[14..16], .big));
+    try t.expectEqual(@as(u16, core.recv_window - 4), std.mem.readInt(u16, cap.bytes[14..16], .big));
     try t.expectEqual(@as(usize, 4), try c.read(7, h, &buf, 1));
     try t.expectEqualStrings("next", buf[0..4]);
     try t.expectError(error.WouldBlock, c.read(7, h, &buf, 1));
@@ -909,7 +909,7 @@ test "socket core: the reassembly window holds out-of-order bytes and splices th
     try t.expectError(error.WouldBlock, c.read(7, h, &buf, 0));
     // The window field counts held bytes as occupied space.
     cap.drain(&c);
-    try t.expectEqual(@as(u16, wire.payload_max - 6), std.mem.readInt(u16, cap.bytes[14..16], .big));
+    try t.expectEqual(@as(u16, core.recv_window - 6), std.mem.readInt(u16, cap.bytes[14..16], .big));
     // The gap fills — the held bytes splice in wire order.
     frame = Frame.init(remote, 11, 101, wire.flag_ack, "ABCD");
     try frame.inject(&c, 0);
@@ -928,28 +928,43 @@ test "socket core: the reassembly window is bounded — edge trims and beyond-wi
     _ = try init(&c);
     var cap: Capture = .{};
     const h = try establish(&c, &cap, remote, 0);
-    // One byte ahead keeps rcv_nxt put; the segment's tail runs past the
-    // window edge — 1459 of its 1460 bytes are held, the last refused.
+    // The window only admits a segment that STARTS inside the free
+    // space, so a full out-of-order fill lands far-to-near: eleven
+    // contiguous segments down from the window's edge, then the tail —
+    // 16383 held bytes at seqs 12..16395, one gap byte free.
     const body: [wire.payload_max]u8 = @splat('x');
-    var segment: [wire.segment_max]u8 = undefined;
-    const slen = wire.build_segment(&segment, remote.ip, local.ip, remote.port, local.port, 12, 101, wire.flag_ack, &body);
-    var frame: Frame = .{ .len = 0 };
-    frame.len = wire.build_frame(&frame.bytes, &peer_mac, remote.ip, guest_mac, local.ip, segment[0..slen]);
+    var frame: Frame = undefined;
+    for (0..11) |k| {
+        const start: u32 = @intCast(11 + core.recv_window - (k + 1) * wire.payload_max);
+        frame = Frame.init(remote, start, 101, wire.flag_ack, &body);
+        try frame.inject(&c, 0);
+    }
+    const tail: [core.recv_window - 1 - 11 * wire.payload_max]u8 = @splat('x');
+    frame = Frame.init(remote, 12, 101, wire.flag_ack, &tail);
     try frame.inject(&c, 0);
-    try t.expectEqual(@as(u64, 1), c.counters.ooo_held);
-    try t.expectEqual(@as(u64, 1), c.counters.rx_full); // the trimmed tail byte
-    // The window is now exactly full — a byte wholly past the edge is
-    // malformed, never held.
-    frame = Frame.init(remote, 11 + wire.payload_max, 101, wire.flag_ack, "y");
+    try t.expectEqual(@as(u64, 12), c.counters.ooo_held);
+    try t.expectEqual(@as(u64, 0), c.counters.rx_full);
+    cap.drain(&c);
+    try t.expectEqual(@as(u16, 1), std.mem.readInt(u16, cap.bytes[14..16], .big));
+    // A byte wholly past the edge is malformed, never held.
+    frame = Frame.init(remote, 11 + core.recv_window, 101, wire.flag_ack, "y");
     try frame.inject(&c, 0);
     try t.expectEqual(@as(u64, 1), c.counters.malformed);
-    // Delivering the gap byte splices the whole held window in order.
-    frame = Frame.init(remote, 11, 101, wire.flag_ack, "G");
+    // The gap segment lands in order: its one free byte is held, the
+    // tail is trimmed at the edge — then the whole held window splices
+    // into a 16 KiB contiguous prefix and the next byte is refused.
+    const gap: [wire.payload_max]u8 = @splat('G');
+    frame = Frame.init(remote, 11, 101, wire.flag_ack, &gap);
     try frame.inject(&c, 0);
-    var buf: [wire.payload_max]u8 = undefined;
-    try t.expectEqual(@as(usize, wire.payload_max), try c.read(7, h, &buf, 0));
+    try t.expectEqual(@as(u64, 1), c.counters.rx_full); // the trimmed tail
+    frame = Frame.init(remote, 11 + core.recv_window, 101, wire.flag_ack, "y");
+    try frame.inject(&c, 0);
+    try t.expectEqual(@as(u64, 2), c.counters.rx_full);
+    var buf: [core.recv_window]u8 = undefined;
+    try t.expectEqual(core.recv_window, try c.read(7, h, &buf, 0));
     try t.expectEqual(@as(u8, 'G'), buf[0]);
-    try t.expectEqual(@as(u8, 'x'), buf[wire.payload_max - 1]);
+    try t.expectEqual(@as(u8, 'x'), buf[1]);
+    try t.expectEqual(@as(u8, 'x'), buf[core.recv_window - 1]);
 }
 
 test "socket core: a FIN ahead of the stream applies only when contiguous" {
@@ -1002,4 +1017,87 @@ test "socket core: RTT samples feed the estimator; Karn's rule keeps retries out
     try frame.inject(&c, 1_300_000_000);
     try t.expectEqual(@as(u64, 125_000_000), c.children[0].?.srtt_ns); // unchanged
     try t.expectEqual(@min(core.rto_ceiling_ns, rto * 2), c.children[0].?.rto_ns_cur);
+}
+
+// --- M179d (#3156): the 16 KiB receive window from the static pool ---
+
+test "socket core: the window's backing lives in the pool, priced outside the core bound" {
+    try t.expectEqual(@as(usize, 16 * 1024), core.recv_window);
+    try t.expect(@sizeOf(core.Core) + wire.frame_max <= core.core_limit);
+    // A slot is the ring plus its per-byte validity map — no third
+    // structure, and nothing this size inside `Core` itself.
+    try t.expectEqual(@as(usize, 16 * 1024 + (16 * 1024 / 64) * 8), @sizeOf(core.RxSlot));
+    try t.expect(@sizeOf(core.Connection) < @sizeOf(core.RxSlot));
+}
+
+test "socket core: in-order fill reaches 16 KiB; the window is the honest free space" {
+    var c: core.Core = .{};
+    _ = try init(&c);
+    var cap: Capture = .{};
+    const h = try establish(&c, &cap, remote, 0);
+    // The fresh connection advertises the whole 16 KiB — ~eleven
+    // payload_max segments in flight where the old bound allowed one.
+    try t.expectEqual(@as(u16, core.recv_window), std.mem.readInt(u16, cap.bytes[14..16], .big));
+    var body: [wire.payload_max]u8 = undefined;
+    var seq: u32 = 11;
+    for (0..11) |k| {
+        @memset(&body, @intCast(k));
+        const frame = Frame.init(remote, seq, 101, wire.flag_ack, &body);
+        try frame.inject(&c, 0);
+        seq += wire.payload_max;
+    }
+    const tail_len = core.recv_window - 11 * wire.payload_max;
+    const tail: [tail_len]u8 = @splat(0x0b);
+    const last = Frame.init(remote, seq, 101, wire.flag_ack, &tail);
+    try last.inject(&c, 0);
+    try t.expectEqual(core.recv_window, c.children[0].?.rx_len);
+    cap.drain(&c);
+    // Window exactly full: the ACK advertises zero and the next byte —
+    // even in order — is refused, not silently misordered.
+    try t.expectEqual(@as(u16, 0), std.mem.readInt(u16, cap.bytes[14..16], .big));
+    const over = Frame.init(remote, seq + @as(u32, @intCast(tail_len)), 101, wire.flag_ack, "y");
+    try over.inject(&c, 0);
+    try t.expectEqual(@as(u64, 1), c.counters.rx_full);
+    // The whole window reads back in order, each segment's fill intact.
+    var buf: [core.recv_window]u8 = undefined;
+    try t.expectEqual(core.recv_window, try c.read(7, h, &buf, 0));
+    for (0..11) |k| {
+        for (buf[k * wire.payload_max .. (k + 1) * wire.payload_max]) |b|
+            try t.expectEqual(@as(u8, @intCast(k)), b);
+    }
+    for (buf[11 * wire.payload_max ..]) |b| try t.expectEqual(@as(u8, 0x0b), b);
+    // Drained: the read-triggered window update re-advertises 16 KiB.
+    cap.drain(&c);
+    try t.expectEqual(@as(u16, core.recv_window), std.mem.readInt(u16, cap.bytes[14..16], .big));
+}
+
+test "socket core: pool slots are reclaimed on close and on reset" {
+    var c: core.Core = .{};
+    _ = try init(&c);
+    var cap: Capture = .{};
+    const h = try establish(&c, &cap, remote, 0);
+    var buf: [8]u8 = undefined;
+    // Charge slot 0's pool with held out-of-order bytes, then close.
+    var frame = Frame.init(remote, 15, 101, wire.flag_ack, "EFGH");
+    try frame.inject(&c, 0);
+    try t.expectEqual(@as(u64, 1), c.counters.ooo_held);
+    try c.close(7, h);
+    // The next mint rebinds the same pool slot clean: a whole-window
+    // advertisement, nothing readable, no stale held byte.
+    const h2 = try establish(&c, &cap, remote, 0);
+    try t.expectEqual(@as(u16, core.recv_window), std.mem.readInt(u16, cap.bytes[14..16], .big));
+    try t.expectError(error.WouldBlock, c.read(7, h2, &buf, 0));
+    // A mid-stream reset frees the same way — finish clears the map on
+    // the spot, before close reclaims the table entry.
+    frame = Frame.init(remote, 11, 101, wire.flag_ack, "data");
+    try frame.inject(&c, 0);
+    frame = Frame.init(remote, 15, 101, wire.flag_rst | wire.flag_ack, "");
+    try frame.inject(&c, 0);
+    try t.expectEqual(core.Outcome.reset, try c.status(7, h2));
+    try t.expectEqual(@as(usize, 0), c.children[0].?.rx_len);
+    try t.expectEqual(@as(u16, 0), c.children[0].?.ooo_bytes);
+    try c.close(7, h2);
+    const h3 = try establish(&c, &cap, remote, 0);
+    try t.expectEqual(@as(u16, core.recv_window), std.mem.readInt(u16, cap.bytes[14..16], .big));
+    try t.expectError(error.WouldBlock, c.read(7, h3, &buf, 0));
 }

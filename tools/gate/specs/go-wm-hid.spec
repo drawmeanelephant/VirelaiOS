@@ -82,6 +82,10 @@
 # opening the containing folder, and the M165f hand-off row as this
 # face's answer to a content-intent query.
 #
+# Run 23 (M191d / #3245): the chord-dispatch leg — GOTERM's app-scope
+# find chord and the seat's freeze-badge chord both silent on an empty
+# strip, then the same freeze chord toggling once a tab holds focus.
+#
 # Runs 17–19 (M121e / #2568): the undo chord on every surface it routes.
 # One boot per surface — a focus switch cannot ride inside a chord batch:
 # the seat's WM_KEY mirror lags the app's own KEY_DOWN delivery (measured
@@ -2163,4 +2167,126 @@ if not any(re.match(r"^gotabwm: rail n=1 ", l) for l in ser[close_i:]):
     sys.exit("no rail n=1 after the quit")
 print("M190c leg: badge n=1@%d clear@%d menu@%d quit->close@%d" % (
     badge_i, clear_i, menu_i, close_i))
+PY
+
+# ---------------------------------------------------------------------------
+# Run 23 (M191d / #3245): the chord-dispatch leg. The composition card's
+# empty-seat half — go-term run 06 pins the other half (a focused GOTERM
+# answers ctrl-shift-g with ITS find bar and no seat row fires).
+#
+# One batch lands three chords on the focused EMPTY strip:
+#   ctrl-shift-g  GOTERM's app-scope find row (#3242). The registry gives
+#                 the seat no row on it and no app is focused — it fires
+#                 nothing: no freeze, no undo, no open.
+#   ctrl-shift-f  the seat's OWN freeze-badge row — matched, but its
+#                 action finds no focused tab and honestly no-ops. The
+#                 "fires correctly by focus" negative.
+#   ctrl-space    a row the strip does own — 'launcher open n=' is the
+#                 batch's delivery witness: the chords arrived and the
+#                 seat was dispatching the whole time.
+# The launcher's 'calc' + return then execs GOCALC (run 03's pick), the
+# new tab takes focus, and batch two's ctrl-shift-f — same chord that
+# no-oped a moment ago — now toggles its badge: 'freeze id= on'.
+vgate_file script-m191d.txt <<'EOF'
+set GOMAXPROCS=1
+vf rm GOTABWM.DEMO
+vf rm SESSION.TABS
+wm
+exec GOTABWM.ELF
+EOF
+
+vgate_file script3-m191d.txt <<'EOF'
+wm
+dui
+echo rx-gotabwm-dispatch-ok
+EOF
+
+vgate_run 23 -- \
+    --screen '$RUN_DIR/screen-23' \
+    --via-virtio \
+    --script '$RUN_DIR/script-m191d.txt' \
+    --script2 '$RUN_DIR/script2-launch.txt' \
+    --script2-after 'gotabwm: win focus' \
+    --input-chords 'ctrl-shift-g,ctrl-shift-f,ctrl-space,c,a,l,c,return' \
+    --input-chords-after 'gotabwm: present' \
+    --input-chords2 'ctrl-shift-f' \
+    --input-chords2-after 'gocalc: present' \
+    --script3 '$RUN_DIR/script3-m191d.txt' \
+    --script3-after 'gotabwm: freeze id=' \
+    --script-expect 'rx-gotabwm-dispatch-ok' --timeout 300
+
+vgate_assert 23 serial-contains 'VirelaiOS kernel has seized control.'
+vgate_assert 23 serial-contains 'exec: loaded GOTABWM.ELF'
+vgate_assert 23 serial-contains 'gotabwm: registered'
+vgate_assert 23 serial-contains 'gotabwm: mode live'
+vgate_assert 23 serial-contains 'gotabwm: present'
+vgate_assert 23 serial-contains 'dui focus: focused=0'
+# The delivery witness — the batch reached a seat that was dispatching.
+vgate_assert 23 serial-contains 'gotabwm: launcher open n='
+vgate_assert 23 serial-contains 'gotabwm: launcher filter q=calc n='
+vgate_assert 23 serial-contains 'gotabwm: launcher exec GOCALC.ELF'
+vgate_assert 23 serial-contains 'gotabwm: launcher dismiss'
+vgate_assert 23 serial-contains 'gocalc: declare accepted'
+vgate_assert 23 serial-contains 'gocalc: present'
+vgate_assert 23 serial-contains 'gotabwm: tab open id='
+# The same chord that printed nothing on the strip now toggles the badge.
+vgate_assert 23 serial-contains 'gotabwm: freeze id='
+vgate_assert 23 serial-contains 'rx-gotabwm-dispatch-ok'
+# The strip half fired NOTHING: no freeze/thaw before a tab existed and
+# no other seat row answered either chord.
+vgate_assert 23 serial-absent 'gotabwm: thaw id='
+vgate_assert 23 serial-absent 'gotabwm: undo '
+vgate_assert 23 serial-absent 'gotabwm: reopen '
+vgate_assert 23 serial-absent 'gotabwm: duplicate '
+vgate_assert 23 serial-absent 'gotabwm: tab close id='
+vgate_assert 23 serial-absent 'goterm: find open'
+vgate_assert 23 serial-absent '[EXC] parking:'
+vgate_assert 23 serial-absent 'exited status=139'
+vgate_assert 23 python <<'PY'
+import os, re, sys
+ser = open(os.environ["VG_SER"], errors="replace").read().splitlines()
+
+def first_after(prefix, start=0):
+    for i in range(start, len(ser)):
+        if ser[i].startswith(prefix):
+            return i
+    sys.exit("missing %s after %d" % (prefix, start))
+
+present_i = first_after("gotabwm: present")
+open_i = first_after("gotabwm: launcher open n=", present_i)
+
+# The dispatch window: cs-g + cs-f are the only chords before the
+# launcher opens. The seat prints 'gotabwm: key' for every kind-21
+# WM_KEY it observes — at least three must be inside the window (the
+# chords' own delivery receipts), but no chord-triggerable seat action
+# may print alongside them.
+window = ser[present_i:open_i]
+keys = [l for l in window if l == "gotabwm: key"]
+if len(keys) < 3:
+    sys.exit("only %d seat key receipts before the launcher opened — "
+             "the chord batch did not arrive" % len(keys))
+bad = re.compile(
+    r"^gotabwm: (freeze|thaw|undo|reopen|duplicate|pin|palette|snapshot|"
+    r"nav|clipmenu|shot|emoji|summon|lock|split|space|alt-tab|"
+    r"tab (open|close)|start-surface|sel|reorder|move)")
+hits = [l for l in window if bad.match(l)]
+if hits:
+    sys.exit("seat actions fired on the empty strip: %s" % hits)
+
+filter_i = first_after("gotabwm: launcher filter q=calc n=", open_i)
+exec_i = first_after("gotabwm: launcher exec GOCALC.ELF", filter_i)
+tab_i = first_after("gotabwm: tab open id=", exec_i)
+tab_id = ser[tab_i].rsplit("id=", 1)[1]
+freeze_i = first_after("gotabwm: freeze id=" + tab_id + " on", tab_i)
+
+# Exactly one badge toggle in the whole run — the phase-3 one.
+freezes = [l for l in ser if l.startswith("gotabwm: freeze id=")]
+if len(freezes) != 1:
+    sys.exit("freeze fired %d times, want exactly 1: %s" % (len(freezes), freezes))
+
+rx_i = first_after("rx-gotabwm-dispatch-ok", freeze_i)
+print("M191d dispatch leg: quiet strip@%d-%d (%d key receipts), "
+      "launcher@%d exec@%d tab %s open@%d, freeze on@%d rx@%d" % (
+      present_i, open_i, len(keys), open_i, exec_i, tab_id, tab_i,
+      freeze_i, rx_i))
 PY

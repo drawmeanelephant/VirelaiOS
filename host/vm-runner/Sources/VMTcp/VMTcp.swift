@@ -281,6 +281,32 @@ public func buildTcp6Reply(_ reply: inout [UInt8], _ req: [UInt8], _ n: Int, _ h
     return frameLen
 }
 
+// M179c (#3152): the `VIRELAI_NET_DROP=<dir>:<n>` injection grammar —
+// one rule per direction, `rx` counting the relay's guest-BOUND emits
+// (the guest's RX side) and `tx` counting the guest's own segments
+// (the guest's TX side). A comma-separated list arms both at once
+// (`rx:5,tx:5`); n is the period — every n-th DATA segment in that
+// direction is discarded. Anything that is not `<dir>:<n>` with n >= 1
+// makes the whole value malformed: the switch fails OFF, never half-
+// armed.
+public enum NetDropDir { case rx, tx }
+
+public func parseNetDropSpec(_ spec: String) -> [(dir: NetDropDir, n: Int)]? {
+    var out: [(NetDropDir, Int)] = []
+    for rule in spec.split(separator: ",") {
+        let halves = rule.split(separator: ":")
+        guard halves.count == 2, let n = Int(halves[1].trimmingCharacters(in: .whitespacesAndNewlines)), n >= 1 else {
+            return nil
+        }
+        switch halves[0].trimmingCharacters(in: .whitespacesAndNewlines) {
+        case "rx": out.append((.rx, n))
+        case "tx": out.append((.tx, n))
+        default: return nil
+        }
+    }
+    return out.isEmpty ? nil : out
+}
+
 // SH7 (#1083, ADR 0020 Amendment B): match a guest-originated TCP segment
 // in the HOST-CLIENT direction — src IP/port = the guest listener, dst port
 // = the host client's fixed source port (the reverse of `isTcpSegment`).

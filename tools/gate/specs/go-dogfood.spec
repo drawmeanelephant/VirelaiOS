@@ -76,9 +76,10 @@
 #   bash tools/go/build-charmhello.sh     ->  .build/go/CHARMHELLO.ELF (boot 04)
 #   bash tools/go/build-files.sh          ->  .build/go/GOFILES.ELF   (boots 05/06/08)
 #   bash tools/go/build-gosound.sh        ->  .build/go/GOSOUND.ELF   (boot 07)
-#   bash tools/go/build-goedit.sh         ->  .build/go/GOEDIT.ELF    (boots 08/09)
+#   bash tools/go/build-goedit.sh         ->  .build/go/GOEDIT.ELF    (boots 08/09/13)
 #   bash tools/go/build-goview.sh         ->  .build/go/GOVIEW.ELF    (boot 08)
 #   bash tools/go/build-goset.sh          ->  .build/go/GOSET.ELF     (boot 09)
+#   bash tools/go/build-goclock.sh        ->  .build/go/GOCLOCK.ELF   (boot 13)
 #   bash tools/go/build-goterm.sh already covers boot 09's terminal tab.
 #   (the page is the pinned fixture user/go/browser/testdata/gate-page.html,
 #    staged as /host/DOGFOOD.HTML; no new fixture)
@@ -299,7 +300,8 @@ for name, how in (("GOTABWM.ELF", "build-gotabwm.sh"),
                   ("GOEDIT.ELF", "build-goedit.sh"),
                   ("GOVIEW.ELF", "build-goview.sh"),
                   ("GOVAULT.ELF", "build-govault.sh"),
-                  ("GOSET.ELF", "build-goset.sh")):
+                  ("GOSET.ELF", "build-goset.sh"),
+                  ("GOCLOCK.ELF", "build-goclock.sh")):
     src = os.path.join(".build", "go", name)
     if not os.path.exists(src):
         sys.exit(name + " missing (expected " + src + ") - build it first: "
@@ -313,7 +315,8 @@ if os.path.exists(os.path.join(share, "SETTINGS.TXT")):
     sys.exit("SETTINGS.TXT already present in the share; the dogfood beat must "
              "boot with no persisted `wm`")
 print("staged GOTABWM/GOSH/NOTE/GOCALC/WEB/GOTERM/CHARMHELLO/GOFILES/GOSOUND/"
-      "GOEDIT/GOVIEW/GOVAULT/GOSET + DOGFOOD.HTML from the pinned gate-page.html fixture")
+      "GOEDIT/GOVIEW/GOVAULT/GOSET/GOCLOCK + DOGFOOD.HTML from the pinned "
+      "gate-page.html fixture")
 PY
 
 # M82d2 (#1785): boot 05's notice sender is GOFILES.ELF (its completed copy
@@ -3171,3 +3174,412 @@ PY
 vgate_assert 12 serial-contains 'rx-dogfood-12-ok'
 vgate_assert 12 serial-absent '[EXC] parking:'
 vgate_assert 12 serial-absent 'exited status=139'
+
+# Boot 13 wants a restored-empty strip (no starter GOSH — its two execs are
+# the only tabs, so ctrl-1/ctrl-2 name them) and a SHOTS/ tree holding only
+# this boot's PNG. GOVAULT/VAULT.BIN is deliberately KEPT: boot 12's minted
+# hunter2 credential is the file this boot's lock curtain verifies.
+vgate_assert 12 python <<'PY'
+import os, shutil, sys
+share = os.environ.get("VG_SHARE")
+if not share:
+    sys.exit("no armed share exported to the assert (vgate_share arm?)")
+open(os.path.join(share, "SESSION.TABS"), "wb").write(b"\x02\x00\x00\x00\x00\x00")
+removed = ["SESSION.TABS"]
+d = os.path.join(share, "SHOTS")
+if os.path.isdir(d):
+    shutil.rmtree(d)
+    removed.append("SHOTS/")
+vault = os.path.exists(os.path.join(share, "GOVAULT", "VAULT.BIN"))
+print("between-run cleanup: emptied SESSION.TABS, removed " +
+      ", ".join(removed[1:]) +
+      " (boot 13 restores empty + shoots its own PNG); " +
+      ("GOVAULT/VAULT.BIN kept" if vault else
+       "WARNING: no GOVAULT/VAULT.BIN — boot 13's lock leg will refuse"))
+PY
+
+# ---------------------------------------------------------------------------
+# M190f (#3241): the desk journey — the wave's five seat legs chained in ONE
+# boot on the LIVE default seat, so the seams prove they compose: the paste
+# menu opens while a toast badges another rail cell, the shot captures the
+# real chrome, the menubar verb lands, and the curtain swallows input then
+# releases it.
+#
+#   copy A -> copy B -> paste menu -> A lands -> screenshot -> PNG decodes
+#   -> toast badge counts -> menu row fires its verb -> lock -> typed
+#   input swallowed -> unlock -> input flows again
+#
+# Clients: GOEDIT (exec'd -u0 for CAP_CLIPBOARD — its ctrl-c write, the
+# menu's forwarded ctrl-v, and the File>Save row all ride slots 38/39) and
+# GOCLOCK (the toast poster — the same armed-countdown kind-12 path
+# go-wm-hid run 22 badges on). The lock's credential is boot 12's own
+# mint: GOVAULT wrote hunter2's VAULT.BIN onto this armed share and the
+# seat reads the file itself (lockcurtain.go) — no GOVAULT client rides
+# this boot, so the chain stays inside the proven envelope (seat + 2
+# clients, GOMAXPROCS=1 like boot 09).
+#
+# Phase anchors, in fire order (every anchor is a guest-printed marker):
+#
+#   dogfood: seat            script a: `dui focus 0` + GOMAXPROCS +
+#                            `clip alpha` — copy A, the OLDER ring entry —
+#                            + exec -u0 GOEDIT.ELF /host/DESK.TXT (first
+#                            tab, rail cell 0)
+#   goedit: present          script b: exec GOCLOCK.ELF — second tab, its
+#                            declare takes focus on landing
+#   goclock: painted epoch=  chords 1: ctrl-1 x4 dwell re-asserting focus
+#                            on cell 0 (the declare's steal beats a
+#                            scripted burst — the boot-08 dwell rule),
+#                            then b,e,t,a types, ctrl-a selects, and
+#                            ctrl-c is copy B — the NEWER ring entry.
+#                            Copy B lives in THIS batch, ahead of the
+#                            summon: an in-batch app copy races the menu
+#                            (the seat cannot observe a write the app
+#                            has not completed — go-wm-hid run 20's own
+#                            rule, and the v1 shape of this boot: the
+#                            menu opened n=1 and the forwarded ctrl-v
+#                            pasted B, not A), so the next phase anchors
+#                            on the push, not on a sibling stroke.
+#   cliphist push len=9      chords 2: ctrl-2 x4 dwell onto the clock,
+#                            right,right walks world->stopwatch->timer,
+#                            'e' opens the seconds entry, '5' + return
+#                            arms the countdown (`goclock: timer armed
+#                            5`), ctrl-1 x4 dwell hands focus back to
+#                            GOEDIT, then the journey in one ordered
+#                            burst — ctrl-shift-i opens the paste menu
+#                            n=2, down picks the OLDER clip, return
+#                            writes it through the typed slot-38 seam and
+#                            the app's own ctrl-v lands A over the
+#                            selection; ctrl-shift-3 photographs the
+#                            composed scanout to /host/SHOTS; and
+#                            f10,down,down,down,return fires File>Save
+#                            (go-edit run 18's exact row). The 5 s timer
+#                            fires INSIDE this batch: its toast posts to
+#                            the unfocused GOCLOCK cell (`rail badge
+#                            id=<clock> n=1`) while GOEDIT holds focus.
+#   rail badge id=           pointer: PWR button -> Lock row. The curtain
+#                            is summoned by CLICK, not chord, for one
+#                            reason: ordering. The badge's n=1 and the
+#                            lock chord would race — the toast's notify
+#                            event and the queued keystrokes share the
+#                            seat's one drain, so an armed pointer phase
+#                            turns "the badge counts while the menu is
+#                            up" into a proven `badge -> locked` order.
+#                            The row and the chord call the same
+#                            requestLock() (hid.go case "lock"), so the
+#                            leg underneath is identical.
+#   gotabwm: locked          input-string: two wrong passphrases and the
+#                            right one, all typed at the curtain — the
+#                            seat's sink holds kernel focus the whole
+#                            time, so nothing hosted can print an input
+#                            marker. GOEDIT's buffer is CLEAN post-save,
+#                            which makes `goedit: dirty` the canary: any
+#                            keystroke that leaked to the editor would
+#                            re-print it under the curtain.
+#   gotabwm: unlocked        input-key 'q' into the restored GOEDIT —
+#                            the SECOND `goedit: dirty` is the
+#                            input-flows-again proof; script c's echo is
+#                            the run's end marker.
+# ---------------------------------------------------------------------------
+vgate_file script-13a.txt <<'EOF'
+dui focus 0
+set GOMAXPROCS=1
+clip alpha
+exec -u0 GOEDIT.ELF /host/DESK.TXT
+EOF
+
+vgate_file script-13b.txt <<'EOF'
+exec GOCLOCK.ELF
+EOF
+
+vgate_file script-13c.txt <<'EOF'
+echo rx-m190f-ok
+EOF
+
+# The file GOEDIT opens: five bytes so copy B's n= pins 9 (desk\n + beta)
+# and the pasted A lands as n=5. The Save pin carries NO byte count:
+# whether the forwarded ctrl-v splices over the still-live selection or
+# inserts at the collapsed caret is app-scheduler timing, not contract —
+# saved n=14 and saved n=5 are both observed honest outcomes (go-edit
+# run 18 drops the count for the same reason). Share-root, not FLOW/ —
+# boot 08 pins `gofiles: list /host/FLOW n=3`.
+vgate_setup_python <<'PY'
+import os
+rd = os.environ["RUN_DIR"]
+share = os.environ.get("VG_SHARE") or os.path.join(rd, "share")
+with open(os.path.join(share, "DESK.TXT"), "w") as f:
+    f.write("desk\n")
+print("staged DESK.TXT (5 bytes) for the desk journey's GOEDIT")
+PY
+
+vgate_run 13 -- \
+    --via-virtio \
+    --screen '$RUN_DIR/screen-13' \
+    --script '$RUN_DIR/script-13a.txt' \
+    --script-after 'dogfood: seat' \
+    --script2 '$RUN_DIR/script-13b.txt' \
+    --script2-after 'goedit: present' \
+    --input-chords 'ctrl-1,ctrl-1,ctrl-1,ctrl-1,b,e,t,a,ctrl-a,ctrl-c' \
+    --input-chords-after 'goclock: painted epoch=' \
+    --input-chords2 'ctrl-2,ctrl-2,ctrl-2,ctrl-2,right,right,e,5,return,ctrl-1,ctrl-1,ctrl-1,ctrl-1,ctrl-shift-i,down,return,ctrl-shift-3,f10,down,down,down,return' \
+    --input-chords2-after 'gotabwm: cliphist push mime=text/plain len=9 ' \
+    --pointer-virtio '338,702,c;308,675,c' \
+    --pointer-virtio-after 'gotabwm: rail badge id=' \
+    --input-string $'nope\nbadpass\nhunter2\n' \
+    --input-string-after 'gotabwm: locked' \
+    --input-key 12 \
+    --input-key-after 'gotabwm: unlocked' \
+    --script3 '$RUN_DIR/script-13c.txt' \
+    --script3-after 'gotabwm: unlocked' --script3-delay 5 \
+    --script-expect 'rx-m190f-ok' --timeout 300
+
+# The LIVE default seat, restored-empty: no starter GOSH, no demo
+# choreography, no persisted wm row.
+vgate_assert 13 serial-contains 'wm: autostart gotabwm (settings wm=gotabwm)'
+vgate_assert 13 serial-contains 'gotabwm: mode live'
+vgate_assert 13 serial-contains 'dogfood: seat'
+vgate_assert 13 serial-absent 'gotabwm: mode demo'
+vgate_assert 13 serial-absent 'dogfood: gosh'
+
+# --- the two tabs -----------------------------------------------------------
+vgate_assert 13 serial-contains 'exec: loaded GOEDIT.ELF'
+vgate_assert 13 serial-contains 'goedit: read /host/DESK.TXT n=5'
+vgate_assert 13 serial-contains 'goedit: declare accepted'
+vgate_assert 13 serial-contains 'goedit: present'
+vgate_assert 13 serial-contains 'exec: loaded GOCLOCK.ELF'
+vgate_assert 13 serial-contains 'goclock: open id='
+vgate_assert 13 serial-contains 'goclock: painted epoch='
+vgate_assert 13 serial-contains 'gotabwm: rail n=2'
+
+# --- leg 1: copy A -> copy B -> paste menu -> A lands ------------------------
+# The monitor's `clip alpha` is the older clip (observed through the
+# seat's CLIP_IN/poll path); GOEDIT's ctrl-c of the selected 9 bytes is
+# the newer. The menu opens n=2, down reaches i=1 = A, and Enter's
+# slot-38 write + forwarded ctrl-v lands 'alpha' over the selection.
+vgate_assert 13 serial-contains 'clip: stored 5 bytes'
+vgate_assert 13 serial-contains 'gotabwm: cliphist push mime=text/plain len=5 '
+vgate_assert 13 serial-contains 'goedit: copy n=9'
+vgate_assert 13 serial-contains 'gotabwm: cliphist push mime=text/plain len=9 '
+vgate_assert 13 serial-contains 'gotabwm: clipmenu open n=2'
+vgate_assert 13 serial-contains 'gotabwm: clipmenu pick i=1 mime=text/plain '
+vgate_assert 13 serial-contains 'gotabwm: clipmenu paste id='
+vgate_assert 13 serial-contains 'gotabwm: clipmenu dismiss'
+vgate_assert 13 serial-contains 'goedit: paste n=5'
+vgate_assert 13 serial-absent 'gotabwm: clipmenu empty'
+vgate_assert 13 serial-absent 'gotabwm: clipmenu paste refuse'
+
+# --- leg 2: the seat photographs the scanout ---------------------------------
+vgate_assert 13 serial-contains 'gotabwm: shot saved /host/SHOTS/SHOT-'
+vgate_assert 13 serial-contains ' mode=full w=1280 h=720 bytes='
+vgate_assert 13 serial-contains 'gotabwm: notify id=0 shot SHOT-'
+vgate_assert 13 serial-count 'gotabwm: shot saved ' 1
+vgate_assert 13 serial-absent 'gotabwm: shot refused'
+
+# --- leg 3: the toast badges the unfocused rail cell --------------------------
+vgate_assert 13 serial-contains 'goclock: timer armed 5'
+vgate_assert 13 serial-contains 'goclock: fired timer'
+vgate_assert 13 serial-contains 'timer done'
+vgate_assert 13 serial-contains 'gotabwm: rail badge id='
+
+# --- leg 4: the menubar row fires its verb ------------------------------------
+vgate_assert 13 serial-contains 'goedit: menu open'
+vgate_assert 13 serial-contains 'goedit: menu Save'
+vgate_assert 13 serial-contains 'goedit: saved /host/DESK.TXT'
+
+# --- leg 5: lock -> typed input swallowed -> unlock ----------------------------
+# The PWR-row summon: open on the button's down edge, the row's click
+# dismisses and calls the same requestLock the chord rides.
+vgate_assert 13 serial-contains 'gotabwm: power open'
+vgate_assert 13 serial-contains 'gotabwm: power dismiss'
+vgate_assert 13 serial-contains 'gotabwm: locked'
+vgate_assert 13 serial-count 'gotabwm: unlock failed' 2
+vgate_assert 13 serial-contains 'gotabwm: unlocked'
+vgate_assert 13 serial-absent 'gotabwm: lock refused'
+# dirty prints once per clean->dirty transition: once typing 'beta', and
+# once on the post-unlock 'q' — the buffer the menubar Save cleaned.
+vgate_assert 13 serial-count 'goedit: dirty' 2
+vgate_assert 13 serial-contains 'rx-m190f-ok'
+
+# The pointer phase is exactly the two PWR clicks — none of the
+# content-lane pointer paths ran: no rail-click (the badge was raised by
+# a toast, not a focus click), no tty selection, no drag.
+vgate_assert 13 serial-absent 'gotabwm: rail-click'
+vgate_assert 13 serial-absent 'dui: term sel'
+vgate_assert 13 serial-absent 'gotabwm: drag'
+vgate_assert 13 serial-absent '[EXC] parking:'
+vgate_assert 13 serial-absent 'exited status=139'
+
+# M123e (#2579): no serial-only refusals in this boot either.
+vgate_assert 13 python <<'PY'
+import os
+exec(compile(open(os.path.join(os.environ["RUN_DIR"], "refusal-pair.py")).read(),
+             "refusal-pair.py", "exec"))
+PY
+
+# The journey as ONE ordered chain. The seat queue is the spine: the
+# clipmenu's open->pick->paste, the shot's save and the PWR pair all print
+# inside the seat's own drain, so they pin against each other in batch
+# order. App-side markers pin only against their own causes — `goedit:
+# paste` follows the menu's delivery, `goclock: fired timer` follows its
+# arm, `goedit: saved` follows the row's fire — never against the seat's
+# stream (the M121e rule: each side drains its own queue). The badge ->
+# PWR -> locked order is phase-anchored, not a race: the pointer batch
+# fires only after the host sees `rail badge id=`.
+vgate_assert 13 python <<'PY'
+import os, re, sys
+ser = open(os.environ["VG_SER"], errors="replace").read()
+lines = ser.splitlines()
+
+def at(sub, start=0):
+    i = ser.find(sub, start)
+    if i < 0:
+        sys.exit("missing %r (after %d)" % (sub, start))
+    return i
+
+def first_after(rx, start):
+    for i, l in enumerate(lines):
+        m = rx.match(l)
+        if m:
+            return i, m
+    sys.exit("missing /%s/" % rx.pattern)
+
+i_seat = at("dogfood: seat")
+i_clip = at("clip: stored 5 bytes", i_seat)
+i_pushA = at("gotabwm: cliphist push mime=text/plain len=5 ", i_clip)
+i_edit = at("goedit: read /host/DESK.TXT n=5", i_pushA)
+i_present = at("goedit: present", i_edit)
+_, clock_m = first_after(re.compile(r"^goclock: open id=(\d+)$"), 0)
+clock_id = clock_m.group(1)
+# Copy B in chords 1 — all app-side, so pinned in GOEDIT's own order and
+# before the push the chords-2 anchor waits on.
+i_dirty = at("goedit: dirty", i_present)
+i_copy = at("goedit: copy n=9", i_dirty)
+i_pushB = at("gotabwm: cliphist push mime=text/plain len=9 ", i_copy)
+i_arm = at("goclock: timer armed 5", i_pushB)
+# The menu half of chords 2 — seat-queue order after the push that
+# released the batch.
+i_open = at("gotabwm: clipmenu open n=2", i_pushB)
+i_pick = at("gotabwm: clipmenu pick i=1 mime=text/plain ", i_open)
+i_paste = at("gotabwm: clipmenu paste id=", i_pick)
+i_lands = at("goedit: paste n=5", i_paste)
+# The shot is synchronous inside the seat's chord dispatch (shotChord):
+# its save pins in the seat stream after the paste menu's return drained.
+i_shot = at("gotabwm: shot saved /host/SHOTS/SHOT-", i_paste)
+i_menufire = at("goedit: menu Save", i_lands)
+i_saved = at("goedit: saved /host/DESK.TXT", i_menufire)
+# The badge's provable pins: it counts the CLOCK's cell (never GOEDIT's),
+# it follows that cell's own toast, and it stands before the PWR open —
+# the pointer batch is armed on this marker.
+badge_i, badge_m = first_after(
+    re.compile(r"^gotabwm: rail badge id=" + clock_id + r" n=(\d+)$"), 0)
+if badge_m.group(1) != "1":
+    sys.exit("first badge on the clock cell is n=%s, want n=1" % badge_m.group(1))
+i_fired = at("goclock: fired timer", i_arm)
+fired_line = ser[:i_fired].count("\n")
+i_popen = at("gotabwm: power open", i_saved)
+popen_line = ser[:i_popen].count("\n")
+i_locked = at("gotabwm: locked", i_popen)
+locked_line = ser[:i_locked].count("\n")
+if not (fired_line < badge_i < popen_line < locked_line):
+    sys.exit("badge order broken: fired@%d badge@%d power-open@%d locked@%d "
+             "— the toast must count while the menu journey is up, before "
+             "the curtain drops" % (fired_line, badge_i, popen_line, locked_line))
+if re.search(r"^gotabwm: rail badge id=" + clock_id + r" n=0$",
+             ser[ser.find("gotabwm: rail badge id=" + clock_id):], re.M):
+    sys.exit("the clock badge cleared without a focus click — the leg's "
+             "one toast should still be counting")
+i_u1 = at("gotabwm: unlock failed", i_locked)
+i_u2 = at("gotabwm: unlock failed", i_u1 + 1)
+i_unlocked = at("gotabwm: unlocked", i_u2)
+# The swallow: the curtain's sink held kernel focus, so no hosted app may
+# print an input-evidence line between locked and unlocked. Painted/fired
+# rows are app OUTPUT (the clock's own cadence), not input — excluded.
+INPUT_EVIDENCE = re.compile(
+    r"^(goedit: (dirty|paste|copy|menu|saved|read|open|close)|"
+    r"goclock: (timer armed|timer refused|tab |sw |alarm))")
+lo, hi = locked_line, ser[:i_unlocked].count("\n")
+for l in lines[lo:hi]:
+    if INPUT_EVIDENCE.match(l):
+        sys.exit("input reached a hosted app under the curtain: %r" % l)
+# Input flows again: the second dirty lands between unlocked and the echo.
+i_dirty2 = at("goedit: dirty", i_unlocked)
+i_ok = at("rx-m190f-ok", i_dirty2)
+print("M190f desk journey chain OK: seat -> clipA@%d -> push -> goedit -> "
+      "goclock(%s) -> copyB@%d -> push -> armed -> menu@%d -> pick -> "
+      "paste@%d -> shot@%d -> save@%d -> badge(n=1 @%d) -> pwr@%d -> "
+      "locked@%d -> swallowed(2 fails) -> unlocked -> dirty2@%d -> rx"
+      % (i_clip, clock_id, i_copy, i_open, i_paste, i_shot,
+         i_saved, badge_i, i_popen, i_locked, i_dirty2))
+PY
+
+# The PNG leg: the share's SHOT-*.png is a real decode — signature, IHDR
+# at the scanout's shape, zlib inflate, the four filter kinds undone —
+# and the decoded field is NOT one flat color (the rail, the menubar
+# chrome and the hosted window are on it). Byte-equality against the
+# framebuffer is boot 10's own leg and stays there.
+vgate_assert 13 python <<'PY'
+import glob, os, struct, sys, zlib
+share = os.environ["VG_SHARE"]
+shots = sorted(glob.glob(os.path.join(share, "SHOTS", "SHOT-*.png")))
+if not shots:
+    sys.exit("no SHOTS/SHOT-*.png on the share after the shot chord")
+if len(shots) != 1:
+    sys.exit("want exactly one SHOT-*.png (cleanup keeps this boot's), got %r"
+             % [os.path.basename(s) for s in shots])
+path = shots[0]
+d = open(path, "rb").read()
+if d[:8] != b'\x89PNG\r\n\x1a\n':
+    sys.exit(os.path.basename(path) + " is not a PNG")
+pos = 8
+idat = b''
+w = h = ct = 0
+while pos < len(d):
+    ln, typ = struct.unpack('>I4s', d[pos:pos+8])
+    data = d[pos+8:pos+8+ln]
+    if typ == b'IHDR':
+        w, h, bd, ct = struct.unpack('>IIBB', data[:10])
+    elif typ == b'IDAT':
+        idat += data
+    pos += 12 + ln
+if (w, h) != (1280, 720):
+    sys.exit("SHOT png is %dx%d, want the scanout's 1280x720" % (w, h))
+raw = zlib.decompress(idat)
+bpp = 4 if ct == 6 else 3
+stride = w * bpp
+out = bytearray()
+prev = bytearray(stride)
+i = 0
+for y in range(h):
+    f = raw[i]
+    i += 1
+    line = bytearray(raw[i:i+stride])
+    i += stride
+    if f == 1:
+        for x in range(bpp, stride):
+            line[x] = (line[x] + line[x-bpp]) & 0xff
+    elif f == 2:
+        for x in range(stride):
+            line[x] = (line[x] + prev[x]) & 0xff
+    elif f == 3:
+        for x in range(stride):
+            a = line[x-bpp] if x >= bpp else 0
+            line[x] = (line[x] + ((a + prev[x]) >> 1)) & 0xff
+    elif f == 4:
+        for x in range(stride):
+            a = line[x-bpp] if x >= bpp else 0
+            b = prev[x]
+            c = prev[x-bpp] if x >= bpp else 0
+            p = a + b - c
+            pa, pb, pc = abs(p-a), abs(p-b), abs(p-c)
+            pr = a if (pa <= pb and pa <= pc) else (b if pb <= pc else c)
+            line[x] = (line[x] + pr) & 0xff
+    out += line
+    prev = line
+if len(out) != h * stride:
+    sys.exit("decoded %d bytes, want %d (%dx%d bpp=%d)"
+             % (len(out), h * stride, w, h, bpp))
+colors = len(set(bytes(out[i:i+bpp]) for i in range(0, len(out), 977 * bpp)))
+if colors < 2:
+    sys.exit("decoded shot is one flat color — no rail, no chrome, no window")
+print("%s %dx%d ctype=%d decoded; sampled colors=%d"
+      % (os.path.basename(path), w, h, ct, colors))
+PY

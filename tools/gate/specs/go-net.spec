@@ -1072,3 +1072,262 @@ assert any(f[67] == 2 for f in tcps), "no TCP6 SYN on the wire"
 assert len(echo6) >= 2, "ping6 sent fewer than 2 echo requests"
 print("v6 transport ok: %d v6 frames (%d UDP, %d TCP, %d echo), checksums verify" % (len(v6frames), len(udps), len(tcps), len(echo6)))
 PY
+
+# --- M179c (#3152): relay loss recovery — loss-rx, loss-tx, stall ----------
+# The `:relay` responder now keeps guest-bound bytes until the guest ACKs
+# them and retransmits on RTO + three duplicate ACKs. The legs inject loss
+# through VIRELAI_NET_DROP's gate channel: the DSL forwards no per-run
+# environment, so each leg stages `net-drop-<tag>` (the relay resolves its
+# tag from the harness-owned `--serial vm-serial-<tag>.log` argv). GONETLOSS
+# moves a multi-segment request AND a multi-segment reply so `every 5th`
+# fires in both directions; the reply's tail is the N10 responder's pinned
+# body, byte-checked by the fixture. The stall leg drops every guest-bound
+# segment — the bounded retransmission budget exhausts and the relay's
+# named RST lands (~160 s at the 200 ms doubling schedule).
+
+vgate_file net-drop-loss-rx <<'EOF'
+rx:5
+EOF
+
+vgate_file net-drop-loss-tx <<'EOF'
+tx:5
+EOF
+
+vgate_file net-drop-stall <<'EOF'
+rx:1
+EOF
+
+vgate_file script-loss.txt <<'EOF'
+net ip 10.0.0.1
+net arp 10.0.0.2
+exec GONETLOSS.ELF
+EOF
+
+vgate_file gonetloss.go <<'EOF'
+// GONETLOSS.ELF — the M179c (#3152) relay-loss fixture: a multi-segment
+// request upstream and a multi-segment reply down, so an every-5th drop
+// fires in each direction. The reply's tail is the N10 responder's
+// pinned body; the fixture prints `gonetloss: done` when the byte stream
+// is intact and `gonetloss: reset` when the peer RSTs (the stall leg's
+// bounded retransmission exhaustion).
+package main
+
+import (
+	"virelai/vsys"
+)
+
+func main() {
+	vsys.Println("gonetloss: start")
+	conn, err := vsys.Dial("10.0.0.2", 8080)
+	if err != nil {
+		vsys.Println("gonetloss: dial failed err=" + err.Error())
+		vsys.Exit(1)
+		return
+	}
+	// ~8 KiB of patterned request ending in END\n — six-plus segments,
+	// so tx:5 drops at least one.
+	req := make([]byte, 8192)
+	for i := range req {
+		req[i] = byte('A' + i%23)
+	}
+	copy(req[8192-4:], "END\n")
+	// Conn.Write emits at most one segment per call (TCPPayloadMax) and
+	// reports the unsent tail as ErrShortWrite — the io.Writer contract
+	// net_test.go pins. Loop until the whole request is on the wire.
+	sent := 0
+	for sent < len(req) {
+		n, err := conn.Write(req[sent:])
+		sent += n
+		if err != nil && err != vsys.ErrShortWrite {
+			vsys.Println("gonetloss: write failed err=" + err.Error())
+			vsys.Exit(1)
+			return
+		}
+		if n == 0 {
+			vsys.Println("gonetloss: write failed err=zero progress")
+			vsys.Exit(1)
+			return
+		}
+	}
+	vsys.Println("gonetloss: wrote request n=8192")
+	// The stall leg's relay RST lands after the ~160 s bounded-resend
+	// schedule; the read deadline must outwait it.
+	conn.SetReadDeadline(240_000_000_000)
+	marker := "Hello from VirelaiOS Host!\n"
+	resp := make([]byte, 0, 16384)
+	saw := false
+	for i := 0; i < 64; i++ {
+		buf := make([]byte, vsys.TCPPayloadMax)
+		n, err := conn.Read(buf)
+		if err != nil {
+			vsys.Println("gonetloss: read err=" + err.Error())
+			if len(resp) == 0 || !saw {
+				vsys.Println("gonetloss: reset")
+				vsys.Exit(0)
+			}
+			break
+		}
+		resp = append(resp, buf[:n]...)
+		// The 27-byte marker can straddle two reads — Read boundaries
+		// follow the relay's emit schedule, not the stream's — so scan
+		// the accumulated body, not one buffer.
+		for j := 0; j+len(marker) <= len(resp); j++ {
+			if string(resp[j:j+len(marker)]) == marker {
+				saw = true
+				break
+			}
+		}
+		if n < vsys.TCPPayloadMax {
+			break
+		}
+	}
+	if !saw || len(resp) < 6000 {
+		vsys.Println("gonetloss: FAIL body total=" + vsys.Itoa64(int64(len(resp))))
+		vsys.Exit(1)
+		return
+	}
+	vsys.Println("gonetloss: body intact total=" + vsys.Itoa64(int64(len(resp))))
+	vsys.Println("gonetloss: done")
+	vsys.Exit(0)
+}
+EOF
+
+vgate_file gonetloss-srv.py <<'EOF'
+import socket, sys
+
+# M179c (#3152): the upstream behind --net-tcp-respond-relay. Reads the
+# fixture's request to its END\n terminator (byte-checked into a receipt
+# the gate asserts), answers a >8-segment body whose tail is the N10
+# responder's pinned "Hello from VirelaiOS Host!\n", closes.
+port, logpath = int(sys.argv[1]), sys.argv[2]
+log = open(logpath, "w")
+ls = socket.socket()
+ls.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+ls.bind(("127.0.0.1", port))
+ls.listen(4)
+log.write("GONETLOSS-SRV: listening on 127.0.0.1:%d\n" % port)
+log.flush()
+body_tail = b"Hello from VirelaiOS Host!\n"
+body = bytes((66 + i % 57) for i in range(10000 - len(body_tail))) + body_tail
+reply = b"HTTP/1.0 200 OK\r\nContent-Length: %d\r\n\r\n" % len(body) + body
+while True:
+    conn, _ = ls.accept()
+    try:
+        req = b""
+        while not req.endswith(b"END\n") and len(req) < 65536:
+            chunk = conn.recv(4096)
+            if not chunk:
+                break
+            req += chunk
+        ok = req.endswith(b"END\n") and len(req) == 8192
+        log.write("GONETLOSS-SRV: request %s bytes=%d\n" % ("intact" if ok else "CORRUPT", len(req)))
+        log.flush()
+        conn.sendall(reply)
+        log.write("GONETLOSS-SRV: served %d-byte reply\n" % len(reply))
+        log.flush()
+    finally:
+        conn.close()
+EOF
+
+vgate_setup_python <<'PY'
+import os, pathlib, subprocess
+rd = pathlib.Path(os.environ["RUN_DIR"])
+share = pathlib.Path(os.environ.get("VG_SHARE") or rd / "share")
+tmp = rd / "gonetloss-build"
+tmp.mkdir(exist_ok=True)
+env = dict(os.environ, TMPDIR=str(tmp), GO_BUILD_OUT=str(share),
+           GO_BUILD_NAME="GONETLOSS", GO_LDFLAGS_VALUE="-s -w")
+subprocess.run(["bash", "tools/go/build-go.sh", str(rd / "gonetloss.go")], env=env, check=True)
+PY
+
+vgate_setup_python <<'PY'
+import os, subprocess, sys, time, socket
+rd = os.environ["RUN_DIR"]
+# Fleet convention (go-fetch-https, go-flint): gonetloss-srv.py is
+# spawned detached and nothing kills it at teardown, so a crashed run
+# leaks a listener that holds this fixed port forever — the fresh
+# server's bind then dies silently into an empty log and every reply
+# comes from the foreign worktree's orphan. Kill the incumbent first.
+subprocess.run(["sh", "-c", "lsof -ti tcp:24080 | xargs kill -9"],
+               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+time.sleep(0.2)
+subprocess.Popen(
+    [sys.executable, os.path.join(rd, "gonetloss-srv.py"), "24080",
+     os.path.join(rd, "gonetloss-srv.log")],
+    stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT,
+    start_new_session=True,
+)
+for _ in range(100):
+    try:
+        s = socket.create_connection(("127.0.0.1", 24080), 0.2)
+        s.close()
+        break
+    except OSError:
+        time.sleep(0.1)
+else:
+    sys.exit("gonetloss-srv did not come up on 127.0.0.1:24080")
+print("gonetloss-srv up on 127.0.0.1:24080")
+PY
+
+# loss-rx -- every 5th guest-bound segment is discarded: the relay's own
+# retransmission (RTO + dup-ACK) repairs it; the pinned body lands intact.
+vgate_run loss-rx -- --net '$RUN_DIR/loss-rx.bin' --net-arp-respond 10.0.0.2 \
+    --net-tcp-respond 10.0.0.2:8080:relay --net-tcp-respond-relay 127.0.0.1:24080 \
+    --script '$RUN_DIR/script-loss.txt' --script-expect 'gonetloss: done' --timeout 180
+
+vgate_assert loss-rx serial-contains 'gonetloss: wrote request n=8192'
+vgate_assert loss-rx serial-contains 'gonetloss: body intact total='
+vgate_assert loss-rx serial-contains 'gonetloss: done'
+vgate_assert loss-rx serial-absent 'gonetloss: FAIL'
+vgate_assert loss-rx serial-absent '[EXC] parking:'
+vgate_assert loss-rx output-contains 'VIRELAI_NET_DROP armed (rx:5)'
+vgate_assert loss-rx output-contains 'dropped guest-bound segment #5'
+vgate_assert loss-rx output-contains 'retransmitted'
+vgate_assert loss-rx python <<'PY'
+import os, re, sys
+log = open(os.path.join(os.environ["RUN_DIR"], "gonetloss-srv.log")).read()
+assert "request intact bytes=8192" in log, "upstream did not receive the request intact"
+out = open(os.environ["RUN_DIR"] + "/run-loss-rx.out", errors="replace").read()
+drops = len(re.findall(r"dropped guest-bound segment", out))
+resends = len(re.findall(r"retransmitted \d+ bytes", out))
+assert drops >= 1, "no guest-bound drops logged"
+assert resends >= 1, "no retransmits logged"
+print("loss-rx ok: %d drops, %d retransmits, request intact upstream" % (drops, resends))
+PY
+
+# loss-tx -- every 5th guest->host segment is discarded: the guest's own
+# retransmission (existing kernel path) lands the request intact.
+vgate_run loss-tx -- --net '$RUN_DIR/loss-tx.bin' --net-arp-respond 10.0.0.2 \
+    --net-tcp-respond 10.0.0.2:8080:relay --net-tcp-respond-relay 127.0.0.1:24080 \
+    --script '$RUN_DIR/script-loss.txt' --script-expect 'gonetloss: done' --timeout 180
+
+vgate_assert loss-tx serial-contains 'gonetloss: wrote request n=8192'
+vgate_assert loss-tx serial-contains 'gonetloss: body intact total='
+vgate_assert loss-tx serial-contains 'gonetloss: done'
+vgate_assert loss-tx serial-absent 'gonetloss: FAIL'
+vgate_assert loss-tx serial-absent '[EXC] parking:'
+vgate_assert loss-tx output-contains 'VIRELAI_NET_DROP armed (tx:5)'
+vgate_assert loss-tx output-contains 'dropped guest->host segment #5'
+vgate_assert loss-tx python <<'PY'
+import os, re, sys
+log = open(os.path.join(os.environ["RUN_DIR"], "gonetloss-srv.log")).read()
+assert "request intact bytes=8192" in log, "upstream did not receive the request intact"
+out = open(os.environ["RUN_DIR"] + "/run-loss-tx.out", errors="replace").read()
+drops = len(re.findall(r"dropped guest->host segment", out))
+assert drops >= 1, "no guest->host drops logged"
+print("loss-tx ok: %d drops, request intact upstream" % drops)
+PY
+
+# stall -- every guest-bound segment is discarded: the bounded
+# retransmission budget exhausts and the relay's named RST lands — the
+# same observable reset the old stallLimit emitted.
+vgate_run stall -- --net '$RUN_DIR/stall.bin' --net-arp-respond 10.0.0.2 \
+    --net-tcp-respond 10.0.0.2:8080:relay --net-tcp-respond-relay 127.0.0.1:24080 \
+    --script '$RUN_DIR/script-loss.txt' --script-expect 'gonetloss: reset' --timeout 300
+
+vgate_assert stall serial-contains 'gonetloss: wrote request n=8192'
+vgate_assert stall serial-contains 'gonetloss: reset'
+vgate_assert stall serial-absent 'gonetloss: FAIL'
+vgate_assert stall serial-absent '[EXC] parking:'
+vgate_assert stall output-contains 'VIRELAI_NET_DROP armed (rx:1)'
+vgate_assert stall output-contains 'retransmission attempts'

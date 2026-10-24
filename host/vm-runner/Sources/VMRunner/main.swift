@@ -147,6 +147,13 @@
 //         [--host-outbox-dir <path>] (modifier on --host-outbox: the
 //          export landing. Default ~/Downloads — the flag is the gate
 //          redirect, so a class-B run never touches a real Downloads.)
+//         [--host-speech] (M186d #3181, ADR 0051 V2-D8: the guest→host
+//          speech lane — GOSH `say` / GOA11Y -say stage <share>/SAY/
+//          SAY-<hex> intent markers; the seat signs a SPEAK record and
+//          the runner verifies, then hands the bounded UTF-8 utterance
+//          to NSSpeechSynthesizer — queued, never blocking the VM.
+//          Requires --cvc-file and the `host-int` SECRETS.TXT row; OFF
+//          by default — no SAY/, no records.)
 //         [--host-cmd-after <marker>:<verb>] (M114a #2454, index #2447:
 //          dispatch <verb> on the HostCommand bus — the same seam every
 //          AppKit menu item uses — once <marker> appears in the serial
@@ -905,6 +912,15 @@ var hostOutboxDir: String?
 var hostOutbox: HostOutbox? {
     get { primarySession.outbox }
     set { primarySession.outbox = newValue }
+}
+// M186d (#3181, ADR 0051 V2-D8): `--host-speech` arms the speech lane —
+// SAY intent markers under <share>/SAY/ become signed SPEAK records the
+// runner verifies and hands to NSSpeechSynthesizer (queued,
+// interruptible, never blocking the VM). No display precondition.
+var hostSpeechFlag = false
+var hostSpeech: HostSpeech? {
+    get { primarySession.speech }
+    set { primarySession.speech = newValue }
 }
 // M114a (#2454, index #2447): `--host-cmd-after <marker>:<verb>` — the
 // headless mirror of the HostCommand bus every menu item dispatches on
@@ -1866,6 +1882,12 @@ while idx < arguments.count {
     } else if arg == "--host-outbox-dir", idx + 1 < arguments.count {
         hostOutboxDir = arguments[idx + 1]
         idx += 2
+    } else if arg == "--host-speech" {
+        // M186d (#3181, ADR 0051 V2-D8): the speech lane — SAY-marked
+        // utterances become signed SPEAK records the runner feeds
+        // NSSpeechSynthesizer. Modifier on --cvc-file.
+        hostSpeechFlag = true
+        idx += 1
     } else if arg == "--cvc-console-file", idx + 1 < arguments.count {
         // Claim 0680: structured console — capture every queue-1 guest log
         // line to this file and arm the guest's console tee (kind-3) when
@@ -3535,6 +3557,13 @@ if hostOutboxFlag || hostOutboxDir != nil {
         fail("--host-outbox requires --cvc-file <share-dir> (the lanes are signed files in that share — ADR 0051 D1).")
     }
 }
+// M186d (#3181, ADR 0051 V2-D8): the speech lane is the same modifier
+// shape — no display prerequisite (speech is not a window gesture).
+if hostSpeechFlag {
+    guard cvcFileEnabled else {
+        fail("--host-speech requires --cvc-file <share-dir> (the lanes are signed files in that share — ADR 0051 D1).")
+    }
+}
 // Claim 9367: --pointer-virtio rides the four-queue device; the after-marker
 // only makes sense with a sequence to schedule.
 if pointerVirtioScript == nil, pointerVirtioAfter != nil {
@@ -4693,7 +4722,7 @@ if netVmnetEnabled {
 // The drop lane's display precondition (D4): the drop target is the
 // display view, so a headless runner refuses lane_disabled at arm and the
 // drop bit never enters the mask.
-if hostClipboardFlag || hostDropFlag || hostNotifyFlag || hostOutboxFlag {
+if hostClipboardFlag || hostDropFlag || hostNotifyFlag || hostOutboxFlag || hostSpeechFlag {
     let shareURL = URL(fileURLWithPath: cvcFileShareDir!, isDirectory: true)
     var mask: UInt8 = 0
     var requested: [String] = []
@@ -4718,6 +4747,10 @@ if hostClipboardFlag || hostDropFlag || hostNotifyFlag || hostOutboxFlag {
     if hostOutboxFlag {
         mask |= HostInt.laneOutbox
         requested.append("outbox")
+    }
+    if hostSpeechFlag {
+        mask |= HostInt.laneSpeech
+        requested.append("speech")
     }
     if mask != 0 {
         hostIntSession = HostIntSession.arm(shareDir: shareURL, mask: mask, requested: requested)
@@ -4744,10 +4777,14 @@ if hostClipboardFlag || hostDropFlag || hostNotifyFlag || hostOutboxFlag {
             hostOutbox = HostOutbox(session: session, destDir: dest)
             hostOutbox?.start()
         }
+        if hostSpeechFlag {
+            hostSpeech = HostSpeech(session: session)
+            hostSpeech?.start()
+        }
         // One shared 250 ms drain for every consuming lane — the notify
         // and outbox lanes ride the same poll as the clipboard drain
         // (ADR 0051 D5, V2-D5).
-        if hostClipboard != nil || hostNotify != nil || hostOutbox != nil {
+        if hostClipboard != nil || hostNotify != nil || hostOutbox != nil || hostSpeech != nil {
             DispatchQueue.main.async { hostIntTick() }
         }
     }
@@ -5638,6 +5675,7 @@ func hostIntTick() {
     hostClipboard?.tick()
     hostNotify?.tick()
     hostOutbox?.tick()
+    hostSpeech?.tick()
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { hostIntTick() }
 }
 

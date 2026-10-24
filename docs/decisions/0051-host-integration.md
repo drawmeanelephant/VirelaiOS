@@ -586,6 +586,10 @@ misread.
 | 4 | `DROP` | `DROP` | h→g | runner → seat | `[name_len u8][name][size u64le]` | 0 |
 | 5 | `OUTBOX` | `OUTBOX` | g→h | seat → runner | `[name_len u8][name][size u64le]` — the DROP shape, reversed | 0 |
 | 6 | `NOTIFY_FOCUS` | `NFOCUS` | h→g | runner → seat | empty (plen MUST be 0 — else `bad_record`) | tab to focus |
+| 7 | `CLIP_OUT_T` | `CLIPTOUT` | g→h | seat → runner | `u8 mime_len\|mime\|blob` — the typed clip envelope (M124c) | 0 |
+| 8 | `CLIP_IN_T` | `CLIPTIN` | h→g | runner → seat | `u8 mime_len\|mime\|blob` — the typed clip envelope (M124c) | 0 |
+| 9 | `DRAGOUT` | `DRAGOUT` | g→h | seat → runner | the DROP shape, reversed (M184b) | the drag's source window id |
+| 10 | `SPEAK` | `SPEAK` | g→h | seat → runner | UTF-8, plen MUST be 1..512 — else `bad_record` (M186d) | 0 |
 
 Tags 0–4 are **observed** in `vhi1.go`/`HostInt.swift` as shipped;
 tags 5–6 and `sender_id` are **reserved by this amendment** — no codec
@@ -596,6 +600,13 @@ LaneBit rule. `MaskNames` renders e.g. `clip,drop,notify,outbox`. Tag
 6 joins the seat's consumed set beside `CLIP_IN`/`DROP`; tag 5 is a
 seat emit tag like 1 and 3, so a seat-side `OUTBOX` file is its own
 unconsumed emission and a runner-side `NOTIFY_FOCUS` file likewise.
+
+Later rows, landed since: tags 7–8 ride `lane_clip`, tag 9 rides
+`lane_outbox` (the M184b amendment), and tag 10 rides `lane_speech =
+1<<4` (lane name `speech`) — `MaskNames` renders e.g.
+`clip,drop,notify,outbox,speech`. Tag 10 is a seat emit tag like 1, 3
+and 5; the runner's consumer is the NSSpeechSynthesizer hand-off
+(V2-D8).
 
 ### V2-D3. Notify click-through — `TagNotifyFocus` (M127c)
 
@@ -740,6 +751,47 @@ D6 shape; `just session` adds it to the default lane set); no display
 precondition — exports are not a window gesture.
 `--host-outbox-dir <path>` is the destination modifier. `lane-outbox`
 joins the Integration toggles.
+
+### V2-D8. `TagSpeak` — the `/host/SAY/` speech lane (M186d, #3181)
+
+The seat can say something out loud. The OUTBOX shape carried one
+level simpler: a guest app cannot sign, so intent and provenance split
+— but a bounded utterance needs no payload file, so the marker IS the
+utterance:
+
+- `/host/SAY/SAY-<8hex>` — the intent marker, app-written (GOSH `say`,
+  GOA11Y `-say`), temp+rename per the share's atomicity rule; its whole
+  content is the utterance text verbatim (1..512 bytes of UTF-8 — the
+  record's own grammar). The app-chosen hex suffix needs only per-app
+  uniqueness; a collision just coalesces two utterances (the REQ rule).
+  The runner creates `SAY/` at arm — the SDK has no mkdir, the same
+  posture `OUTBOX/` takes.
+- The seat polls `SAY/` once per tick beside the lane dir **only while
+  the adopted mask carries `lane_speech = 1<<4`** — the D7 posture.
+  For each well-formed marker it emits one signed `SPEAK` record whose
+  payload is the marker's content and deletes the marker; ≤ 1 marker
+  consumed per tick, the emit-side bound every g→h lane already holds,
+  plus the shared `MaxOutstanding` backpressure on the tag. An empty
+  or invalid-UTF-8 marker is `payload_not_text`, over the bound is
+  `payload_too_large` — refused and deleted; `io_error` on the read
+  leaves the marker for the next tick, as does `backpressured`.
+- The runner drains `SPEAK` records on the shared 250 ms poll —
+  verify-then-consume like every lane (decode, MAC, epoch, seq; ≤ 1
+  verified record per tick, the notify drain's cadence) — and hands
+  each verified payload to `NSSpeechSynthesizer`: queued,
+  interruptible, never blocking the VM. The synth is a seam so the
+  decode → synth hand-off is class-A pinned with a mock.
+
+Flags: `--host-speech` arms the lane as a `--cvc-file` modifier (the
+D6 shape); no display precondition — speech is not a window gesture.
+The lane has no bus toggle in v2-D8: the M114c suspend pattern can add
+`lane-speech` later with no wire change (the lane already honours a
+suspended mask bit).
+
+Markers: `gotabwm: hostint speak seq=<n> len=<n> sha=<8>` (seat emit
+receipt); `host-speech: speak seq=<n> sha256=<8> len=<n>` (runner
+consume → synth receipt). Never-logged holds: the utterance text
+reaches neither serial nor runner stdout.
 
 ### V2-D6. v2 vocabulary additions
 

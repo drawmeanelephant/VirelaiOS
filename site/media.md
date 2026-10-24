@@ -36,8 +36,18 @@ carries CJK fallback at the tail of every cascade. Coverage is never
 declared in the manifest: the engine reads each face's `cmap`, a rune
 the primary lacks falls through the cascade, and one nothing covers
 paints `.notdef` and is counted (`fonts: notdef`), never silently
-dropped. Scripts needing complex shaping or bidi — Arabic, Hebrew,
-Indic, Thai — are excluded by name.
+dropped. The two RTL scripts ship faces and engines of their own:
+**NOTOHEB** (order 6) paints Hebrew — `ttf/bidi.go` resolves each
+painted fragment's UAX #9 visual order and mirrors paired brackets,
+while the explicit bidi controls stay refused and drop out as
+boundary neutrals — and **NOTOARAB** (order 7) paints Arabic,
+`ttf/shape.go` rewriting each letter to its contextual presentation
+form and ligating lam-alef before face lookup. The bounds are named
+as always: marks — niqqud included — paint at default advance with
+no mark positioning, kashida justification is refused, and the
+scripts that still need a shaping engine the guest refuses to grow
+are excluded by name — Indic and Thai — with Hangul deferred until a
+KR face lands.
 
 The `font_size` setting (small/medium/large) moves **two ladders at
 once**: the UI text ladder and the bound terminal's rasterized grid
@@ -51,6 +61,16 @@ the Zig `font_ttf.zig` behind the fallback seat and the Zig app
 portfolio is frozen at bug-fix level — no GPOS kerning, no GSUB
 ligatures, BMP only — with a generated parity fixture pinning that the
 two engines measure the shared faces to the same widths.
+
+Text in matches text out: an `appkit` TextField that opts in — the
+GOASSIST prompt does — swaps its dead-key stage for a romaji→kana
+composer on `Ctrl+J`. Typed romaji paints live hiragana pre-edit,
+`space` cycles hiragana → dictionary candidates → katakana → the raw
+spelling, and `return` commits. The candidates come from `user/go/ime`:
+a packed JMdict-derived subset (CC BY-SA 4.0) that the composer
+now reads at `/host/KANADICT.BIN`. An absent or corrupt dictionary is
+the honest bound: the cycle falls back to kana-only forms, never a
+wrong kanji.
 
 ## PDF: a bounded engine, not a viewer port
 
@@ -116,9 +136,20 @@ and every refusal names itself (`image-limit:`, `image-invalid:`,
 box rather than rendering nothing or hanging.
 
 **GOVIEW.ELF** is the multi-format viewer on top: zoom, pan, a `.`/`,`
-frame stepper, and real GIF playback — each frame armed on the
-nanosecond app timer (slot 95) at its own GCE delay, with `space`
-toggling play/pause so a paused loop's elapsed time stays honest.
+frame stepper, and real playback — each frame armed on the nanosecond
+app timer (slot 95) at its own dwell, with `space` toggling
+play/pause so a paused loop's elapsed time stays honest. MOV and MP4
+come through the same viewer's bounded demux — eight boxes deep, 1024
+boxes, 600 samples of at most 256 KiB — taking the first `vide` track
+and admitting exactly one codec, QuickTime `jpeg` (Motion-JPEG), each
+sample decoding lazily through `webrender.DecodeImage` at its `stts`
+dwell. A `soun` track is skipped and named `audio=skipped` in the
+load receipt, fragmented (`moof`) files refuse outright, and every
+other fourcc refuses `mov-unsupported-codec-<fourcc>` — reported as
+"MOV codec=avc1", a format fact, not corrupt bytes. Autoplay honours
+`a11y.reduce_motion`: a `-play` open parks on frame 1 with a
+`gview: motion reduced` line (the setting is subscribed live), and
+`space` still plays because pressing it is the user's own request.
 
 ## Sixel: graphics inside the terminal
 
@@ -137,10 +168,12 @@ scanout pixels end to end.
 
 <Aside kind="info">
 
-**LIVE-GATED.** `live-image-viewer` runs five formats through one
-viewer; `live-term-graphics` asserts sixel pixels on a real scanout;
+**LIVE-GATED.** `live-image-viewer` runs five formats plus a stepped
+and played MOV clip — and a named codec refusal — through one viewer;
+`live-term-graphics` asserts sixel pixels on a real scanout;
 `live-web-ttf` pins serif resolution, CJK through NOTOCJK and the
-`.notdef` counter; `live-svg-raster` and the PDF corpus gates pin the
+`.notdef` counter; `go-assist` runs the kana composer against the
+real dictionary; `live-svg-raster` and the PDF corpus gates pin the
 document engines.
 
 </Aside>

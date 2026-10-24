@@ -1082,10 +1082,23 @@ vgate_assert 09 serial-absent 'exited status=139'
 #            pattern's 60 hits.
 #   phase 4  return steps to a hit (`find hit` cur=1/60, the row below
 #            the fold — scrollback); n steps forward (cur=2), and N —
-#            shift+n, the runner's chord vocabulary maps it — steps back
-#            (cur=1 again): the n/N cycle.
-#   phase 5  escape closes the bar (`find close`), the editor repaints,
-#            and one more submitted echo proves the prompt came back.
+#            the batch's 'N' token IS shift+n to the cv-input vocabulary
+#            (an uppercase single char carries the shift bit; there is
+#            no 'shift-<letter>' spelling) — steps back (cur=1 again):
+#            the n/N cycle.
+#   phase 5  escape closes the bar (`find close`) and the editor
+#            repaints — the run ends there.
+#
+# Two choreography constraints shape the batches:
+#   - 'ctrl-shift-g' rides batch 1 ALONE, gated on 'goterm: done' (the
+#     sourced script's last echo reaped — 'line source' is only the
+#     submit, and bytes that land while a child owns the tty feed its
+#     stream, not the prompt loop). The bar opens only on a SINGLE-byte
+#     BEL read — strokes that coalesce into one FileRead stay editor
+#     input, so the chord can share a batch with nothing.
+#   - batch 2 ends on 'escape' for the same reason in reverse: the bar's
+#     Esc closes it and the rest of that read buffer is dropped, so any
+#     post-close echo bundled into the same read would die silently.
 #
 # The hit marker's row/top are corpus coordinates relative to the fold
 # (negative = scrollback above the visible grid), so the python assert
@@ -1122,8 +1135,10 @@ vgate_run 06 -- --display --input \
     --script2-after 'gotabwm: present' \
     --input-string $'source SEED191A.SH\n' \
     --input-string-after 'goterm: prompt' \
-    --input-chords 'ctrl-shift-g,s,e,e,d,1,9,1,a,return,n,shift-n,escape,e,c,h,o,space,f,i,n,d,o,n,e,return' \
-    --input-chords-after 'goterm: line source SEED191A.SH' \
+    --input-chords 'ctrl-shift-g' \
+    --input-chords-after 'goterm: done status=0' \
+    --input-chords2 's,e,e,d,1,9,1,a,return,n,N,escape' \
+    --input-chords2-after 'goterm: find open' \
     --script3 '$RUN_DIR/script3-06.txt' \
     --script3-after 'goterm: find close' \
     --script-expect 'rx-goterm-find-ok' --timeout 300
@@ -1134,21 +1149,25 @@ vgate_assert 06 serial-contains 'exec: loaded GOTERM.ELF'
 vgate_assert 06 serial-contains 'goterm: attached'
 vgate_assert 06 serial-contains 'goterm: prompt'
 vgate_assert 06 serial-contains 'goterm: line source SEED191A.SH'
-# The bar opened, narrowed live, and closed after the prompt returned.
+# The bar opened, narrowed live, and closed — the run ends on the close.
 vgate_assert 06 serial-contains 'goterm: find open'
 vgate_assert 06 serial-contains 'goterm: find n='
 vgate_assert 06 serial-contains 'goterm: find hit '
 vgate_assert 06 serial-contains 'goterm: find close'
-# The post-close echo submitted through the restored prompt.
-vgate_assert 06 serial-contains 'goterm: line echo findone'
 vgate_assert 06 serial-contains 'rx-goterm-find-ok'
 vgate_assert 06 serial-absent '[EXC] parking:'
 vgate_assert 06 serial-absent 'exited status=139'
+# M191d (#3245): the focused half of the dispatch assert — the chord is
+# GOTERM's own app-scope row, so no seat row may fire alongside it. The
+# freeze/thaw pair is the collision the card's original ctrl-shift-f
+# spelling would have caused and why #3242 landed ctrl-shift-g.
+vgate_assert 06 serial-absent 'gotabwm: freeze id='
+vgate_assert 06 serial-absent 'gotabwm: thaw id='
 # The whole chain in order, with the counts and geometry proven:
 #   open after the seed's done marker, the live count climbing to 60
 #   (seeded rows only — the typed lines never contain the token), the
 #   first Step landing on a hit BELOW the fold (row<0: scrollback), the
-#   n/N cycle (cur 1 -> 2 -> 1), close, then the restored prompt's echo.
+#   n/N cycle (cur 1 -> 2 -> 1), close, then the script's own receipt.
 vgate_assert 06 python <<'PY'
 import os, re, sys
 ser = open(os.environ["VG_SER"], errors="replace").read()
@@ -1167,7 +1186,7 @@ if not counts:
 if counts[-1] != 60:
     sys.exit("full-pattern count = %d, want 60 (the seeded rows alone)" % counts[-1])
 
-hit1  = at(r"(?m)^goterm: find hit cur=(\d+)/(\d+) row=(-?\d+) top=(-?\d+)$",
+hit1  = at(r"(?m)^goterm: find hit  cur=(\d+)/(\d+) row=(-?\d+) top=(-?\d+)$",
            "first hit", opened.end())
 cur1, tot1, row1, top1 = (int(hit1.group(i)) for i in (1, 2, 3, 4))
 if tot1 != 60 or cur1 != 1:
@@ -1179,19 +1198,18 @@ if not (top1 <= row1 < top1 + 20):
     sys.exit("hit row=%d outside its window (top=%d) — no scroll-to-hit"
              % (row1, top1))
 
-hit2 = at(r"(?m)^goterm: find hit cur=(\d+)/(\d+) row=(-?\d+) top=(-?\d+)$",
+hit2 = at(r"(?m)^goterm: find hit  cur=(\d+)/(\d+) row=(-?\d+) top=(-?\d+)$",
           "n step hit", hit1.end())
 if int(hit2.group(1)) != 2:
     sys.exit("after n: cur=%s, want 2 (forward cycle)" % hit2.group(1))
-hit3 = at(r"(?m)^goterm: find hit cur=(\d+)/(\d+) row=(-?\d+) top=(-?\d+)$",
+hit3 = at(r"(?m)^goterm: find hit  cur=(\d+)/(\d+) row=(-?\d+) top=(-?\d+)$",
           "N step hit", hit2.end())
 if int(hit3.group(1)) != 1:
     sys.exit("after N: cur=%s, want 1 (backward cycle)" % hit3.group(1))
 
 closed = at(r"(?m)^goterm: find close$", "find close", hit3.end())
-echo   = at(r"(?m)^goterm: line echo findone$", "post-close echo", closed.end())
-rx     = at(r"(?m)^rx-goterm-find-ok$", "run receipt", echo.end())
+rx     = at(r"(?m)^rx-goterm-find-ok$", "run receipt", closed.end())
 print("find chain OK: open -> n=%d live -> hit 1/60 row=%d (below fold, "
-      "in window top=%d) -> n 2/60 -> N 1/60 -> close -> prompt back"
+      "in window top=%d) -> n 2/60 -> N 1/60 -> close -> receipt"
       % (counts[-1], row1, top1))
 PY

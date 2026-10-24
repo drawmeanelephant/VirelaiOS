@@ -59,13 +59,13 @@ at all, and `--stale` sorts those rows first.
 | Pulse | PULSE.ELF |  #2959 | 2026-10-21 | lipgloss v2 |
 | Shell | GOSH.ELF |  #2775 | 2026-10-20 | shlib heredocs |
 | Help | GOHELP.ELF |  #3129 | 2026-10-22 | free-file sleep sites → ns durations (tree-wide) |
-| Welcome | GOWELCOME.ELF |  #2571 | 2026-10-19 | first-boot welcome tour |
+| Welcome | GOWELCOME.ELF |  #3307 | 2026-10-24 | appver-1 envelope — tour step + done flag + first owning spec |
 | Top | GOTOP.ELF |  #3249 | 2026-10-23 | appver-1 envelope — sort + active tab persist |
 | Settings | GOSET.ELF |  #3171 | 2026-10-22 | settings table grows past 24 via bounded second bank |
 | Image Viewer | GOVIEW.ELF |  #3155 | 2026-10-22 | MOV demux + Motion-JPEG playback |
 | Sound | GOSOUND.ELF |  #3178 | 2026-10-22 | extract user/go/pcm (with GOREC) |
 | Tabbed Desktop | TABWM.BIN |  #3226 | 2026-10-23 | docs litterbox touched the fallback source |
-| Gostalgia | GOSTALGIA.ELF | M97g | 2026-10-09 | eight owner-approved security follow-ups (#2080 et al.) |
+| Gostalgia | GOSTALGIA.ELF | #3306 | 2026-10-23 | durable /users/guest home over gsport/vfs HostFS |
 | Store | GOSTORE.ELF |  #3188 | 2026-10-23 | store pin — signed-head rollback + ReleaseDepends |
 | LLM Infer | GOINFER.ELF |  #2784 | 2026-10-20 | engine becomes user/go/infer |
 | Recorder | GOREC.ELF |  #3178 | 2026-10-22 | extract user/go/pcm (with GOSOUND) |

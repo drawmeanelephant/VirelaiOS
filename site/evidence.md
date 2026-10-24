@@ -118,7 +118,9 @@ three forward-lying checks plus the publication pipeline itself:
    forward lie and fails the gate.
 3. **The never-lie-forward M-watermark.** No page under `site/`, `docs/`,
    or `README.md` may claim a milestone number higher than the maximum
-   `docs/status.md` carries (today: M149). The design choice is deliberate:
+   `docs/status.md` carries — the bound lives in the ledger, and naming a
+   number here would only restate it one milestone stale. The design
+   choice is deliberate:
    forbid lying *forward*, never enforce freshness — a page that lags the
    ledger is honest, and staleness never reds an unrelated PR.
 

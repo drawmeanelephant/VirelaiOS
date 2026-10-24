@@ -46,6 +46,7 @@ import (
 
 	"virelai/gsport/fsys"
 	"virelai/gsport/tty"
+	gvfs "virelai/gsport/vfs"
 )
 
 const defaultShellRoot = "/host/GS"
@@ -116,6 +117,19 @@ func cmdShellVirelai(root string, verbose bool) error {
 		if err := env.MkdirAll(dir); err != nil {
 			return fmt.Errorf("vfs seed %s: %w", dir, err)
 		}
+	}
+
+	// M195a (#3306): the guest home is durable — /users/guest mounts on
+	// the gsport/vfs HostFS rooted at <root>/home, so files written
+	// through the fs service survive relaunch (the rest of the env stays
+	// memory-backed, matching M95c's composition). The seeded memory dir
+	// remains the fallback: a host root that cannot be created or opened
+	// downgrades to memory with a named marker, never a boot refusal.
+	homeRoot := filepath.Join(root, "home")
+	if err := mountDurableHome(env, homeRoot); err != nil {
+		marker("home memory reason=%v", err)
+	} else {
+		marker("home durable root=%s", homeRoot)
 	}
 
 	procs := process.NewManager(bus, log)
@@ -245,4 +259,23 @@ func cmdShellVirelai(root string, verbose bool) error {
 	<-shutdownDone
 	marker("done")
 	return runErr
+}
+
+// mountDurableHome binds env's /users/guest to a confined host share dir
+// (M195a, #3306): gvfs.MkdirAll creates the root when absent, vfs.NewHost
+// refuses one that cannot be opened, and Mount shadows the seeded memory
+// dir — no pre-existing mount point is required, so the ordering is safe
+// on every path. Any step's failure leaves the memory seed in place.
+func mountDurableHome(env *vfs.VFS, root string) error {
+	if err := gvfs.MkdirAll(root); err != nil {
+		return fmt.Errorf("home root: %w", err)
+	}
+	home, err := vfs.NewHost(root)
+	if err != nil {
+		return fmt.Errorf("home hostfs: %w", err)
+	}
+	if err := env.Mount("/users/guest", home); err != nil {
+		return fmt.Errorf("home mount: %w", err)
+	}
+	return nil
 }

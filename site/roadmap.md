@@ -165,46 +165,82 @@ proof (see [[evidence]] and [[live-gates]]).
 | 147 | GOIRC: an IRC client — TLS + consent journey, snapshot, restore; `go-irc` K=3 (index #2749) |
 | 148 | GOVAULT: a secrets vault whose own audit file is the receipt; K=3 (index #2750) |
 | 149 | Shipped-app polish: GOFILES spacebar QuickLook, GOTERM OSC-8 links + named profiles, GOEDIT themes + a minimap (index #2751) |
+| 150 | Skipped — no index was ever filed under the number; the wave-2 arcs ran M151–M158 |
+| 151 | Platform adoption: pane posture (zoom chord, drag a tab into a split, focus restore), a rail space switcher + move-tab chords, and the `save_state` fleet audit (index #2903) |
+| 152 | New apps v2: GOSHEET fill/undo/column formats, GOCLOCK recurring alarms + timer presets, GOEMOJI recents/favorites, game stats + undo, GOIRC logs + highlight rules, GOASSIST rename/delete/presets (index #2904) |
+| 153 | Print to PDF: the bounded `user/go/pdfwrite` writer, GOEDIT export, WEB save-page-as-PDF, GOREADER bookmarks + position memory (index #2905) |
+| 154 | Terminal depth: bracketed paste, scrollback search (`/` + n/N), profiles that cycle and persist (index #2906) |
+| 155 | Files UX depth: the properties card with real mtime, marks + batch copy/move/delete, bounded content search (index #2907) |
+| 156 | Trust observability: the AGENTD journal + `journal` verb, effective grants + denial receipts in view, GOVAULT v2 export/import + TOTP (index #2908) |
+| 157 | Host & fleet depth: per-VM window identity + stats, the inspector tracer view, bench trend history + regression table (index #2909) |
+| 158 | Grant truth: the shipped apps' grant rows re-audited to honest masks, and the five gap apps writing under enforce (index #2910) |
+| 159 | Wave-3 contracts: the ADR 0007 reservation amendment (rows W1–W11) + the GOSET `+audio` grant rows (index #2964) |
+| 160 | Storage truth: host STATFS + STAT v3 (ctime, birth, allocated), free space at EL0, GOFILES shows the new facts (index #2965) |
+| 161 | Trust observability v2: the kernel denial ring on slot 89 op 2 and the seat watchdog's "not responding" banner with Close / Force quit (index #2966) |
+| 162 | Media completeness: multi-frame GIF with disposal + a GOVIEW frame stepper, PNG encode + GOPAINT export, QOI save-as, GOSOUND ADPCM decode + sinc resample (index #2967) |
+| 163 | Agent surface v2: `ui.screenshot` at full resolution, `ui.geometry` on WM_RPC kind 30; the MCP surface stayed held (index #2968) |
+| 164 | Documents v3-lite: baseline DCTDecode in GOREADER through the decoder hook; ADR 0040 amendment A4 (index #2969) |
+| 165 | Desktop ergonomics & honesty: a11y v1 keys (contrast, reduce motion, text scale) with live consumers, the palette's app catalog + file-search hand-off (index #2970) |
+| 166 | GOEDIT v3: a four-file buffer ring, brace folding, a per-function heat gutter (index #2971) |
+| 167 | GOFILES v3: the thumbnail grid with a sixel focus tile, favorites + a `--search` argument, read-only tar browsing with QuickLook (index #2972) |
+| 168 | Charm, for real: Bubble Tea v2 runs its own Program on a bound tty, Bubbles lands with a vsys clipboard shim, PULSE moves to lipgloss v2, and GOSSHD serves a TUI over SSH (index #2956) |
+| 169 | Wave-4 contracts: the ADR 0007 reservation amendment (rows X1–X9) + ADR 0060's tick-unit audit (index #3021) |
+| 170 | Time at human scale: the kernel deadline overlay beside an unchanged heartbeat, slots 94/95 + futex nanosecond rounding, damage-driven present, GOVIEW GIF pacing (index #3022) |
+| 171 | Memory that isn't eager: lazy zero-fill segments make `map_max` a virtual bound, EL0 reads and writes past 2048 bytes (index #3023) |
+| 172 | Sealed storage: kernel ChaCha20-Poly1305 + PBKDF2, `mkfs.vlfs --seal`, the sealed mount with boot prompt + lockout, the canary gate under encryption; ADR 0061 (index #3024) |
+| 173 | Agent-vs-user principal separation: `uid_agent` exec-name binding + kill rule, principal-tagged receipts, AGENTD runs as the agent; ADR 0052 amendment (index #3025) |
+| 174 | Held — JS in WEB stays owner-held; it revisits when GOASSIST needs tool use or a real page corpus demands it (per index #3021) |
+| 175 | Held — h2/WebSocket has consumers (AGENTD, GOIRC) but no pull; re-evaluates in a later wave (per index #3021) |
+| 176 | Held — a CI runner needs a spare Mac (owner hardware decision); `vz-gates.yml` stays not-enforced until then (per index #3021) |
+| 177 | Accessibility tree, bounded: every a11y key gets a live consumer, appkit publishes role/name/state outlines + GOA11Y reads them, the keyboard journey audited (index #3136) |
+| 178 | The world's text: Hebrew lays out in visual order with bracket mirroring, romaji→kana pre-edit in GOASSIST, IANA timezones with DST (index #3137) |
+| 179 | Network at speed (in flight): throughput bench rows + virtio-net receive depth landed; relay loss recovery and the 16 KiB receive window open (index #3138) |
+| 180 | Moving pictures, bounded: GOVIEW walks a MOV/MP4 within fixed bounds and plays its Motion-JPEG track with per-sample timing; other codecs refuse by name (index #3139) |
+| 181 | The guest publishes: `store publish` signs a guest-built ELF, and a second VM installs it over the relay trusting only the publisher key (index #3140) |
+| 182 | Truth mop-up: the kernel CSI parser swallows private sequences, wire-argument range checks before narrowing, ADR hygiene (index #3141) |
+| 183 | Platform ceilings: settings past 24 via namespaced rows + a second bank, virtio-balloon attached + driven, idle-pause for occluded VMs (index #3165) |
+| 184 | Net & the glass, deeper: AAAA in ResolveDNS so a hostname dials v6, and drag a file out of a guest window to the host (index #3166) |
+| 185 | GPU3D productization: the virgl coverage matrix written and gate-pinned, a real GPU-compute consumer (index #3167) |
+| 186 | Media & text, wave 2 (in flight): `user/go/pcm`, Arabic shaping + RTL in WEB, kana→kanji landed; host TTS over VHI1 open (index #3168) |
+| 187 | Desktop & PIM: the ⌘Space launcher over apps + files, print-to-GOREADER, GOMAIL IMAP fetch + SMTP submit, .ics into GOCLOCK + .vcf contact cards (index #3169) |
+| 188 | Trust, store & devloop depth: manifest `caps=` enforced as a syscall ceiling, VLFS `owner_uid`, STORE rollback + dependency rows + delta eval, the diagnostics surface, the proof-binary census (index #3170) |
+| 189 | Docs tell the truth: the component registry, the docs litterbox, the living site (registry render + freshness guard), the m1x-era archive digest (index #3224) |
 
-Every milestone through **M149** is landed or closed. `docs/status.md` is
-the ledger. For a curated account of merged work from 2026-09-01 through
-2026-10-02, see the [[chronicle|weekly merged-PR chronicle]].
+Every milestone through **M189** is landed, closed, or held.
+`docs/status.md` is the ledger. For a curated account of merged work from
+2026-09-01 through 2026-10-02, see the
+[[chronicle|weekly merged-PR chronicle]].
 
 ## Current
 
-The ledger is nearly clean: every index through M149 is closed except the
-lanes below, which are landed-but-not-yet-signed-off rather than unbuilt.
+Every index through M189 is closed except two in-flight arcs. The open
+lanes on the tracker, by issue number:
 
-- **M96, the Zig 0.17.0 toolchain port**
-  ([#2060](https://github.com/drawmeanelephant/VirelaiOS/issues/2060)) —
-  all five cards landed, including the `build.zig`/kernel/user/zc flag-day
-  port and the `@bitCast` audit; the index closes by owner hand on the K=3
-  class-A + class-B acceptance run under the pinned 0.17 SDK.
-- **M109, agents as first-class citizens**
-  ([#2382](https://github.com/drawmeanelephant/VirelaiOS/issues/2382)) —
-  landed-with-caveat: all six cards are in and the acceptance gates went
-  green on the dev host (`live-agent-loop` K=5 35/35, `go-agentd` 14/14,
-  `go-top` 8/8, `go-wm-seat` 20/20); the reference-host K=5 plus owner
-  sign-off are still owed.
-- **M119, performance as a contract**
-  ([#2452](https://github.com/drawmeanelephant/VirelaiOS/issues/2452)) —
-  landed: `live-bench` 18/18 on the dev host plus the headroom legs all
-  PASS ([[benchmarks]]). Per the re-scope, the reference-host full-fleet
-  pass + K=3 soak is an owner-run background check, not a merge gate; the
-  index closes on owner sign-off.
-- **M103, FLINT SCM M0** — all four cards landed (atoms, ops, signed
-  changes, the semantic merge; `go-flint` green); the ledger marks it
-  *landed* rather than closed.
-- **M131, warm checkpoints** ([#2637](https://github.com/drawmeanelephant/VirelaiOS/issues/2637))
-  — closed on the ledger: all four cards landed (ADR 0059, the
-  checkpoint/resume primitives, the `live-quickjs` pilot, the fleet
-  census). The ledger still carries a stale second M131 row reading
-  "Filed" from before the land; the closed row is the truth.
+- **Network at speed**
+  ([#3138](https://github.com/drawmeanelephant/VirelaiOS/issues/3138)) —
+  in flight: the throughput bench rows and the virtio-net receive-depth
+  rework landed; relay loss recovery and the 16 KiB receive window are
+  the open cards.
+- **Media & text, wave 2**
+  ([#3168](https://github.com/drawmeanelephant/VirelaiOS/issues/3168)) —
+  in flight: the shared PCM package, Arabic shaping + RTL in WEB, and the
+  kana→kanji dictionary landed; host TTS over VHI1 is the open card.
+- **The desk you sit at: daily-driver seat depth**
+  ([#3232](https://github.com/drawmeanelephant/VirelaiOS/issues/3232)) —
+  clipboard-history ring, guest screenshot, dock depth, menubar
+  adoption, and screen lock landed; the seat-journey acceptance is in
+  flight.
+- **Find things: the search contract**
+  ([#3233](https://github.com/drawmeanelephant/VirelaiOS/issues/3233)) —
+  scrollback find, launcher verbs, and the shared find overlay landed;
+  the cross-surface acceptance is in flight.
+- **App refresh, wave 2: the back of the ledger**
+  ([#3305](https://github.com/drawmeanelephant/VirelaiOS/issues/3305)) —
+  filed: appver envelopes and first owning specs across the shipped
+  fleet, starting with GOSTALGIA's durable home.
 
 Honest-bound edges that remain regardless of milestone:
 
-- **The balloon device** — not attached. Demand paging does not itself
-  provide memory reclaim.
 - **The guest is an endpoint, not a router** — M117 added IPv6 and a real
   bridged LAN (`--net-bridged` needs the vmnet entitlement), but nothing
   forwards for other hosts, and TCP RTO stays fixed rather than adaptive.

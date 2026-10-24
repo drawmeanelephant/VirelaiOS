@@ -15,11 +15,13 @@ type stubs struct {
 	err     error
 	files   map[string][]byte
 	console []string
+	says    []string
+	sayErr  string
 }
 
 func (s *stubs) install(t *testing.T) {
 	t.Helper()
-	savedW, savedR, savedC := wmWindows, readFile, console
+	savedW, savedR, savedC, savedSay := wmWindows, readFile, console, sayStage
 	wmWindows = func(uint32, string) ([]vi.WmWindowRow, error) {
 		return s.rows, s.err
 	}
@@ -30,8 +32,12 @@ func (s *stubs) install(t *testing.T) {
 		return nil, -vi.ErrENOENT
 	}
 	console = func(line string) { s.console = append(s.console, line) }
+	sayStage = func(text string) string {
+		s.says = append(s.says, text)
+		return s.sayErr
+	}
 	t.Cleanup(func() {
-		wmWindows, readFile, console = savedW, savedR, savedC
+		wmWindows, readFile, console, sayStage = savedW, savedR, savedC, savedSay
 	})
 }
 
@@ -122,6 +128,70 @@ func TestPollStatesAndDedup(t *testing.T) {
 	s.files["/host/A11Y.5"] = body2
 	if !a.poll() || len(s.console) != n+4 {
 		t.Fatalf("changed outline re-report failed: %v", s.console[n:])
+	}
+}
+
+// The -say hook: a changed outline stages one utterance — the focused
+// node's name, or the window's name plus count — and a lane refusal is
+// a named marker, never silent.
+func TestSayHookSpeaksFocusedNode(t *testing.T) {
+	var s stubs
+	s.install(t)
+	a := &app{self: 9, say: true}
+	s.rows = []vi.WmWindowRow{{ID: 5, Focused: true}}
+	s.files = map[string][]byte{"/host/A11Y.5": appkit.EncodeOutline([]appkit.Node{
+		{Depth: 0, Role: appkit.RoleWindow, Name: "Dialog"},
+		{Depth: 1, Role: appkit.RoleTreeItem,
+			State: appkit.StateFocused, Name: "kernel"},
+	})}
+	if !a.poll() || a.state != viewOutline {
+		t.Fatalf("poll state=%d", a.state)
+	}
+	if len(s.says) != 1 || s.says[0] != "kernel" {
+		t.Fatalf("says = %v", s.says)
+	}
+	if s.console[len(s.console)-1] != "goa11y: say queued len=6" {
+		t.Fatalf("console tail = %v", s.console[len(s.console)-1:])
+	}
+	// An identical poll stays silent — the dedup rule owns the voice too.
+	if a.poll() || len(s.says) != 1 {
+		t.Fatal("identical outline re-spoke")
+	}
+}
+
+func TestSayHookFallbackAndRefusal(t *testing.T) {
+	var s stubs
+	s.install(t)
+	a := &app{self: 9, say: true}
+	s.rows = []vi.WmWindowRow{{ID: 5, Focused: true}}
+	s.files = map[string][]byte{"/host/A11Y.5": appkit.EncodeOutline([]appkit.Node{
+		{Depth: 0, Role: appkit.RoleWindow, Name: "Panel"},
+		{Depth: 1, Role: appkit.RoleTree, Name: "Tree"},
+	})}
+	s.sayErr = "lane_disabled"
+	if !a.poll() {
+		t.Fatal("outline poll did not report")
+	}
+	if len(s.says) != 1 || s.says[0] != "Panel, 2 nodes" {
+		t.Fatalf("says = %v", s.says)
+	}
+	if s.console[len(s.console)-1] != "goa11y: say refused reason=lane_disabled" {
+		t.Fatalf("console tail = %v", s.console[len(s.console)-1:])
+	}
+}
+
+// Without -say the reader never touches the lane.
+func TestSayOffStagesNothing(t *testing.T) {
+	var s stubs
+	s.install(t)
+	a := &app{self: 9}
+	s.rows = []vi.WmWindowRow{{ID: 5, Focused: true}}
+	s.files = map[string][]byte{"/host/A11Y.5": appkit.EncodeOutline([]appkit.Node{
+		{Depth: 0, Role: appkit.RoleWindow, Name: "Dialog"},
+	})}
+	a.poll()
+	if len(s.says) != 0 {
+		t.Fatalf("say-off poll staged %v", s.says)
 	}
 }
 

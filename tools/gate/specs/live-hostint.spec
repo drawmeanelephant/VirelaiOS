@@ -925,3 +925,60 @@ if "GuestDrag.txt" in ob:
     sys.exit("FAIL: the payload stayed in OUTBOX after staging")
 print("run-06 drag-out: edge handoff, signed record, byte-equal stage")
 PY
+
+# ---- 07: M186d (#3181) — the seat speaks: say -> SPEAK -> synth -------
+# --host-speech arms the lane (lanes=speech, a bit no earlier run has
+# exercised); the runner's arm creates SAY/; GOSH `say hello` stages a
+# SAY-<hex> intent marker; the seat signs it into a SPEAK record on its
+# next tick; the runner verifies and hands the utterance to
+# NSSpeechSynthesizer — queued, never blocking the VM. The receipts are
+# the whole round-trip: seat emit (seq+len+sha) and the runner's speak
+# hand-off (seq+sha+len). The bare runner still runs the real synth —
+# NSSpeechSynthesizer needs no bundle — so the leg proves decode ->
+# synth, not a stub.
+vgate_file script2-07.txt <<'EOF2'
+exec GOSH.ELF -c "say hello"
+EOF2
+
+vgate_run 07 -- \
+    --screen '$RUN_DIR/screen-07' \
+    --script '$RUN_DIR/script-seat.txt' \
+    --script2 '$RUN_DIR/script2-07.txt' --script2-after 'gotabwm: hostint armed' \
+    --host-speech \
+    --script-expect 'gotabwm: hostint speak seq=1' --script-expect-tail 15 --timeout 300
+
+vgate_assert 07 serial-contains 'gotabwm: registered'
+# ONE session, the speech bit named at both ends.
+vgate_assert 07 output-contains 'host-int: armed lanes=speech epoch='
+vgate_assert 07 serial-contains 'gotabwm: hostint armed epoch='
+vgate_assert 07 serial-contains 'lanes=speech'
+# The staging receipt, the seat's signed emit, and the runner's
+# consume -> synth hand-off — sha256("hello")[:8] on both receipts.
+vgate_assert 07 serial-contains 'gosh: say queued len=5'
+vgate_assert 07 serial-contains 'gotabwm: hostint speak seq=1 len=5 sha=2cf24dba'
+vgate_assert 07 output-contains 'host-speech: speak seq=1 sha256=2cf24dba len=5'
+vgate_assert 07 serial-absent '[EXC] parking:'
+vgate_assert 07 python <<'PY'
+import os, sys
+run = os.environ["RUN_DIR"]
+share = os.environ.get("VG_SHARE") or os.path.join(run, "share")
+# The runner created SAY/ at arm and the seat consumed the marker —
+# intent and provenance both discharged, nothing left behind.
+say = os.path.join(share, "SAY")
+if not os.path.isdir(say):
+    sys.exit("FAIL: --host-speech arm did not create SAY/")
+left = [x for x in os.listdir(say) if not x.endswith("~")]
+if left:
+    sys.exit("FAIL: unconsumed SAY markers left: %r" % left)
+left = [x for x in os.listdir(os.path.join(share, "HOSTINT"))
+        if not x.endswith("~")]
+if left:
+    sys.exit("FAIL: unconsumed lane files left in HOSTINT: %r" % left)
+# Never-logged: the utterance text stays off every lane line (the seat's
+# own `say` echo on serial is the guest console, not a lane marker).
+out = open(os.path.join(run, "run-07.out"), errors="replace").read()
+for line in out.splitlines():
+    if line.startswith(("host-int:", "host-speech:")) and "hello" in line:
+        sys.exit("FAIL: a lane line carried the utterance: " + line[:80])
+print("run-07 speak: say -> signed SPEAK -> synth hand-off, marker drained")
+PY

@@ -2431,18 +2431,27 @@ one listener, two children). The card's recommended option wins:
 
 | Object | Bound | Priced against |
 |---|---:|---|
-| Connections (`children`) | 4 system-wide | `Connection` ≈ 3.1 KiB (RX `payload_max` + TX `segment_max` + control + metadata); 4 × ≈12.3 KiB |
+| Connections (`children`) | 4 system-wide | `Connection` ≈ 1.7 KiB (TX `segment_max` + control + metadata — the RX window lives in `rx_pool`, not the struct); 4 × ≈6.7 KiB |
 | Listeners | 4 system-wide, ≤1 per owner | `listener` keeps the slot-0 field `ipv4.zig` reads; slots 1–3 are `extra_listeners` |
 | Children per listener | 2 (`child_limit`) | the B6 "two clients, third refused" contract is preserved end-to-end |
 | Sockets per owner | 4 (listeners + conns + DNS seat) | `ownedCount` accounting |
 | Refusal slot | 1 (unchanged) | over-cap SYNs answered RST+ACK, counted `capacity_refused`/`refusal_dropped` |
+| Receive pool (`rx_pool`) | 4 slots, bound to the connection slot | static BSS outside `Core`: 4 × (16 KiB ring + 2 KiB bitmap) = 72 KiB |
 
-`@sizeOf(Core) + wire.frame_max` stays ≤ `core_limit` (16 KiB) — the
+`@sizeOf(Core) + wire.frame_max` stays ≤ `core_limit` (24 KiB) — the
 existing comptime check enforces it: 4 conns + 4 listeners + refusal +
-counters ≈ 12.6 KiB + 1514 B ≈ 14.1 KiB. A fifth connection would price
-≈17.1 KiB — the 16 KiB budget, not a policy, sets the system bound. The
-card's "16 system-wide" is therefore dominated honestly: the real bound
-is 8 live TCP handles (4 conns + 4 listeners) + the unchanged DNS seat.
+counters ≈ 7.2 KiB + 1514 B ≈ 8.7 KiB. M99h (#2186) grew each
+`Connection` to ~4.8 KiB by embedding a one-segment (1460 B) reassembly
+window, and `core_limit` was priced 24 KiB for it. M179d (#3156, D11)
+raises every connection's advertised window to 16 KiB and moves its
+backing store out of `Core` into `rx_pool`: a static array of four
+slots — one per connection slot — each a 16 KiB ring indexed by masked
+sequence number plus its 256-word validity bitmap (64 KiB of buffers +
+8 KiB of bitmaps = 72 KiB of BSS). A live connection binds its table
+slot's pool slot at mint; close and reset release it, and the next mint
+clears it — no allocation, no dynamic binding. The handle encoding and
+the connection bounds do not change: the real bound remains 8 live TCP
+handles (4 conns + 4 listeners) + the unchanged DNS seat.
 
 Handles widen from `generation << 2 | slot2` to `generation << 4 |
 slot4`: slots 0–3 listeners, 4–7 connections, 15 the DNS seat (socket
