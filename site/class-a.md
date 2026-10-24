@@ -17,19 +17,23 @@ go local-only.
 ## What it runs
 
 ```bash
+python3 tools/test-timing.py init
 zig fmt --check boot/src/*.zig kernel/src/*.zig user/src/*.zig build.zig
-bash tools/verify-unit-tests.sh
-zig build test-console
+python3 tools/test-timing.py run timing-reporter -- python3 -m unittest discover -s tools/tests -p test_test_timing.py
+python3 tools/test-timing.py run registry -- python3 -m unittest discover -s tools/tests -p test_component_registry.py
+python3 tools/test-timing.py run app-refresh -- python3 -m unittest discover -s tools/tests -p test_app_refresh.py
+python3 tools/test-timing.py run zig-unit -- bash tools/verify-unit-tests.sh
+python3 tools/test-timing.py run console-transcript -- zig build test-console
 zig build
 zig build image
 zig build inspect
 swift build --package-path host/vm-runner
-swift test --package-path host/vm-runner
-go -C user/go test ./...
-go -C tools/go/vlfs test ./...
+python3 tools/test-timing.py run swift-host -- swift test --package-path host/vm-runner
+python3 tools/test-timing.py run go-user -- go -C user/go test -count=1 ./...
+python3 tools/test-timing.py run go-vlfs -- go -C tools/go/vlfs test -count=1 ./...
 zig build context
 bash tools/status/verify-issue-coordination.sh
-bash tools/status/test-coordination.sh
+python3 tools/test-timing.py run coordination -- bash tools/status/test-coordination.sh
 bash tools/inventory-gates.sh --check
 bash tools/lint-workflows.sh
 bash tools/verify-mmu-debt.sh
@@ -38,14 +42,32 @@ bash tools/verify-ttf-fonts.sh
 bash tools/verify-mutations.sh
 bash tools/verify-bss-budget.sh
 bash tools/verify-vf-class-a.sh
-bash tools/gate/test-gate-run.sh
-python3 tools/gate/bench-check.py
-bash tools/go/test-ensure-guest-elf.sh
+python3 tools/test-timing.py run gate-runner -- bash tools/gate/test-gate-run.sh
+python3 tools/test-timing.py run benchmark-checker -- python3 tools/gate/bench-check.py
+python3 tools/test-timing.py run guest-elf -- bash tools/go/test-ensure-guest-elf.sh
+python3 tools/test-timing.py finish
 ```
 
 ## What each check pins
 
 - **`zig fmt --check`** — formatting is part of the contract, not a suggestion.
+- **`tools/test-timing.py`** — the wrapper the timed legs run under:
+  `init` opens the run, each `run <label> -- …` records that leg's
+  wall-clock time, and `finish` writes
+  `artifacts/test-timings/report.json`, so the suite leaves a duration
+  record, not just pass/fail.
+- **`test_test_timing.py`** — the timing reporter's own regression
+  suite, exercised in isolated subprocesses.
+- **`test_component_registry.py`** — the drift check for
+  `docs/component-registry.md`: an `image/apps.txt` executable with no
+  registry row (or a row naming a binary the manifest does not carry), a
+  cited spec, ADR, or path that does not resolve, or an `appver` cell
+  disagreeing with the app's registered `StateVersion` — in either
+  direction — fails.
+- **`test_app_refresh.py`** — the same guard for the
+  `docs/app-refresh.md` ledger: row shape, manifest coverage and order,
+  ISO-8601 dates, and `Mnnnx`/`#issue` card tokens. Its `--stale` report
+  stays advisory — staleness is never a gate.
 - **`verify-unit-tests.sh`** — the Zig unit suite (thousands of host tests)
   for the pure logic: allocators, ARP/IPv4/UDP/TCP checksums and state
   machines, the text renderer against a mock canvas, the window compositor,
@@ -60,7 +82,8 @@ bash tools/go/test-ensure-guest-elf.sh
   launcher builds clean and its own suite (the serial parser, the runner's
   scripted-input machinery) passes.
 - **`go -C user/go test` / `go -C tools/go/vlfs test`** — the Go SDK's
-  class-A loop: the pure layers of the userland modules plus the host-side
+  class-A loop (`-count=1`, so a cached pass never stands in for a real
+  run): the pure layers of the userland modules plus the host-side
   VLFS tooling (`mkfs.vlfs`, the journal checker) that the class-B specs
   consume.
 - **`zig build context`** — the context snapshot stage.
