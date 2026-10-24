@@ -50,6 +50,7 @@ func TestGuessBinShippingTitles(t *testing.T) {
 		{"Sh", "GOSH.ELF"},
 		{"Vault", "GOVAULT.ELF"},
 		{"Settings", "GOSET.ELF"},
+		{"Welcome", "GOWELCOME.ELF"},
 		{"Other", "Other"},
 	}
 	for _, c := range cases {
