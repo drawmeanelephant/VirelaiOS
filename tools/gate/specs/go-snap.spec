@@ -62,6 +62,7 @@
 # HOST PREREQ: bash tools/go/build-gosnap.sh -> .build/go/GOSNAP.ELF
 #              bash tools/go/build-gotabwm.sh -> .build/go/GOTABWM.ELF
 #              bash tools/go/build-tabapp.sh -> .build/go/GOTABAPP.ELF
+#              bash tools/go/build-gosh.sh -> .build/go/GOSH.ELF
 
 vgate_name go-snap "M115e #2464: GOSNAP.ELF named snapshots — ls/save/restore/rm, consent-gated, staged --resume restore; #3369 named-store cap eviction + pin"
 vgate_share none
@@ -94,8 +95,10 @@ if not os.path.exists(src):
              "bash tools/go/build-gosnap.sh")
 shutil.copy(src, os.path.join(share, "GOSNAP.ELF"))
 # M125f (#2591): the crash legs also need the seat and its state client.
+# #3399: the neg leg's serial GOSH — the EL0-spawned callers it execs.
 for elf, tool in (("GOTABWM.ELF", "build-gotabwm.sh"),
-                  ("GOTABAPP.ELF", "build-tabapp.sh")):
+                  ("GOTABAPP.ELF", "build-tabapp.sh"),
+                  ("GOSH.ELF", "build-gosh.sh")):
     s = os.path.join(".build", "go", elf)
     if not os.path.exists(s):
         sys.exit(elf + " missing (expected " + s + ") — build it first: "
@@ -109,6 +112,15 @@ cfg_path = os.path.join(prof, "config.json")
 cfg = json.load(open(cfg_path))
 cfg.setdefault("devices", {})["share"] = False
 json.dump(cfg, open(cfg_path, "w"), indent=2, sort_keys=True)
+# #3399: the neg leg's serial-GOSH input. The monitor's exec lands GOSH
+# kernel-spawned (an operator class — the same console that runs
+# `vsock ctl` verbatim), so every ctl caller below is an EL0 CHILD of
+# that shell (spawned_by = the shell's pid), never an operator class.
+open(os.path.join(run, "gosh-neg.bin"), "wb").write(
+    ("exec GOSH.ELF -c suspend\r"
+     + "exec GOSNAP.ELF save NEG1\r"
+     + "exec GOSNAP.ELF restore NEG1 confirm\r"
+     + "echo neg-done\r").encode())
 print("staged profile share (GOSNAP.ELF + vsock-ctl credential), "
       "devices.share=false")
 PY
@@ -662,4 +674,41 @@ assert b"SUSPEND-RESUME: restored" in out, out[-800:]
 for needle in (b"clip: cap-witness-6", b"gosnap-capld-done"):
     assert needle in serial, (needle, serial[-1500:])
 print("resume: the pinned survivor booted — clip=cap-witness-6")
+PY
+
+# ---------------------------------------------------------------------------
+# #3399 (audit R3-F2): neg — slot 93 gates the destructive verbs to the
+# operator classes. The monitor's `exec` lands GOSH kernel-spawned, but
+# everything IT execs is an ordinary EL0 child: a nested `suspend`, a
+# `gosnap save`, and a consented `gosnap restore` all die at the gate with
+# EACCES before a session opens — no authed line, no .vzsave, no stage.
+# The positive side is unchanged and covered above: the legs' own
+# kernel-spawned `gosnap save`/`restore` round-trips, and the seat's
+# suspend/crash-snapshot verbs pass grant_admin_authorized.
+
+vgate_file neg1.txt <<'EOF'
+exec GOSH.ELF serial
+EOF
+
+vgate_run neg -- --profile '$RUN_DIR/prof.virelaivm' --virtio-fs '$RUN_DIR/prof.virelaivm/share' \
+  --vsock --vsock-ctl \
+  --script '$RUN_DIR/neg1.txt' \
+  --script2 '$RUN_DIR/gosh-neg.bin' --script2-after 'gosh: attached' \
+  --script-expect 'neg-done' --timeout 120
+vgate_assert neg serial-contains 'gosh: attached'
+vgate_assert neg serial-contains 'suspend: EACCES'
+vgate_assert neg serial-contains 'gosnap: save NEG1 refused EACCES'
+vgate_assert neg serial-contains 'gosnap: restore NEG1 refused EACCES'
+vgate_assert neg serial-contains 'neg-done'
+vgate_assert neg serial-absent 'vsock-ctl: authed'
+vgate_assert neg serial-absent 'gosnap: save NEG1 ok'
+vgate_assert neg serial-absent 'gosnap: restore NEG1 staged'
+vgate_assert neg serial-absent '[EXC]'
+vgate_assert neg python <<'PY'
+import os
+from pathlib import Path
+share = Path(os.environ["RUN_DIR"]) / "prof.virelaivm" / "share"
+assert not (share / "SNAPSHOTS" / "NEG1.vzsave").exists(), \
+    "an EL0-spawned child parked a snapshot"
+print("neg: no NEG1.vzsave — the slot-93 gate refused all three verbs")
 PY

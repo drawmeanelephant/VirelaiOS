@@ -2722,6 +2722,19 @@ command shares the same session engine (`kernel/src/vsock_ctl.zig`).
 The slot joins no `word_*` grant group today — the same ungrouped-service
 posture slots 88/91/92 took.
 
+## Amendment (2026-10-24, #3399 — slot 93's destructive verbs admit the operator classes only)
+
+Audit R3 (#3373) found the slot ungated per-verb: any EL0 process could
+drive `suspend`/`snapshot`/`restore` whenever the runner armed
+`--vsock-ctl`. The slot now refuses `EACCES` for those three verbs —
+the ones that halt the machine, park a `.vzsave` per call on the armed
+share, or stage guest bytes over `saved-state` for VZ's restore parser —
+unless the caller is an operator class: `CAP_PROC_ADMIN` (the monitor's
+`exec -u0`), the registered WM seat, or a kernel-spawned principal (the
+monitor `exec`/boot-autostart provenance an EL0 `sys_exec` child can
+never carry). `profile-info` and the refusal vocabulary stay
+unprivileged; the slot's argument contract is otherwise unchanged.
+
 ## Amendment (2026-10-24, #3351 #3351 — slot 96 `sys_secret_set`, the consent-gated provisioning seam)
 
 The secret store's write half, ADR 0024 D8 amended. Slot 96 is additive,

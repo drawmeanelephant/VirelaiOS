@@ -21,8 +21,11 @@ package vi
 // (`no_device`, `no_credential`, `unimplemented`, `unknown_verb`,
 // `busy`, `io_error`, ...), truncated to len(code). Negative errno:
 // EINVAL (non-process caller, verb_len outside 1..31, name_len > 31),
-// EFAULT (a bad pointer). On a host build every call degrades to
-// -ENOSYS like the rest of the seam.
+// EFAULT (a bad pointer), EACCES (a destructive verb — suspend,
+// snapshot or restore — from a caller outside the operator classes:
+// the registered seat, CAP_PROC_ADMIN, or a kernel-spawned principal;
+// #3399). On a host build every call degrades to -ENOSYS like the rest
+// of the seam.
 func VsockCtl(verb, name string, code []byte) int64 {
 	return svc6(SlotVsockCtl,
 		strPtr(verb), uintptr(len(verb)),
