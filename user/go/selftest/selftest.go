@@ -1162,8 +1162,14 @@ func secretAdminVerdict(s *syscalls) (string, error) {
 	}
 	var buf [vi.SecretAskMetaMax]byte
 	n, rc := s.secretAskList(0, buf[:])
-	if rc < 0 || n == 0 || !strings.Contains(string(buf[:n]), "GOSELF.ELF	st-admin") {
-		return "", errors.New("list did not name the ask")
+	if rc < 0 || n == 0 {
+		return "", errors.New("list rc=" + vi.Itoa64(rc))
+	}
+	// The marshal is id\tpid\tuid\timage\tkey[\tapps]; the key is
+	// what proves OUR ask stands — the image is the kernel-recorded
+	// name (a monitor spawn, not exec-verbatim).
+	if !strings.Contains(string(buf[:n]), "st-admin") {
+		return "", errors.New("list row " + string(buf[:n]) + " lacks st-admin")
 	}
 	if rc := s.secretCommit(uint32(id)); rc != 0 {
 		return "", errors.New("commit rc=" + vi.Itoa64(rc))
