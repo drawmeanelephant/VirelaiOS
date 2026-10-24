@@ -24,9 +24,10 @@
 #   post-M14 reservations = +1,737 B (ADR 0013 D3 -- planned)
 #   headroom = ~1.7 MiB for future claims
 #
-# The budget = 11,534,336 B (11.0 MiB) gives 1,746,760 B of headroom over the
-# observed baseline. To raise the budget, amend ADR 0013 D3.1 with the
-# observed post-change measurement and a justification, then bump the
+# The budget is the pinned constant below (15,728,640 B = 15.0 MiB after the
+# #1163 and #3156 raises; ADR 0013 D3.1 carries each raise's observed
+# measurement + justification). To raise the budget, amend ADR 0013 D3.1 with
+# the observed post-change measurement and a justification, then bump the
 # constant below.
 #
 # What this does NOT do
@@ -50,7 +51,8 @@ mkdir -p "$(dirname "$GATE_LOG")"
 
 # Budget ceiling. Override at run time for ad-hoc checks:
 #   BSS_BUDGET_BYTES=8000000 bash tools/verify-bss-budget.sh
-BSS_BUDGET_BYTES="${BSS_BUDGET_BYTES:-13631488}" # 13.0 MiB (ADR 0013 D3.1, amended for issue #1163)
+BSS_BUDGET_BYTES="${BSS_BUDGET_BYTES:-15728640}" # 15.0 MiB (ADR 0013 D3.1, amended for issue #3156)
+BSS_BUDGET_MIB="$(awk -v b="$BSS_BUDGET_BYTES" 'BEGIN { printf "%.1f", b / 1048576 }')"
 # Discover llvm-readelf: env override > PATH > Homebrew > Xcode > fail.
 if [ -z "${LLVM_READELF:-}" ]; then
     LLVM_READELF="$(command -v llvm-readelf 2>/dev/null || true)"
@@ -73,7 +75,7 @@ fi
 
 echo "=== verify-bss-budget: ADR 0013 D3.1 CI gate — kernel .bss ceiling (class A, deterministic, no VM) ==="
 echo "budget source: docs/decisions/0013-post-m14-abi-amendment.md D3.1"
-echo "budget:        $BSS_BUDGET_BYTES B (11.0 MiB)"
+echo "budget:        $BSS_BUDGET_BYTES B ($BSS_BUDGET_MIB MiB)"
 echo
 
 # Build the kernel. `zig build kernel` runs elf2bin.py on the linked ELF;
@@ -147,12 +149,13 @@ echo
 echo "-- known large .bss contributors (sourced from kernel/src; informational) --"
 echo "  mmu.table_storage (kernel/src/mmu.zig):     2,097,152 B (2.0 MiB; page-table carve-out, ADR 0006, doubled in M16 C4)"
 echo "  virtio_gpu.gpu_fb (kernel/src/virtio_gpu.zig): 3,686,400 B (3.52 MiB; 1280x720x4 scanout, align 4096)"
+echo "  socket_core.rx_pool (kernel/src/socket_core.zig):     73,728 B (72 KiB; 4 x 16 KiB rx window + 2 KiB bitmap, ADR 0007 D11)"
 echo "  post-M14 reservations (ADR 0013 D3):           1,737 B (~1.7 KiB; planned, not yet landed)"
 echo "  other (font, console, scheduler, virtio rings, process table, mailbox, evidence, etc.): the remainder"
 
 if [ "$STATUS" = "FAIL" ]; then
     echo
-    echo "verify-bss-budget: FAILED — kernel .bss exceeded the 11.0 MiB ceiling."
+    echo "verify-bss-budget: FAILED — kernel .bss exceeded the $BSS_BUDGET_MIB MiB ceiling."
     echo "Either:"
     echo "  1. Remove the offending allocation (preferred -- amend the design)."
     echo "  2. Amend ADR 0013 D3.1 with the post-change measurement + justification,"
