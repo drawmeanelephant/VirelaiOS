@@ -17,10 +17,11 @@ const (
 	errPNGLimit   = imageError("image-limit: png")
 )
 
-// DecodePNG implements ADR 0028 Amendment D: non-interlaced, 8-bit PNG
-// types 0/2/3/4/6, straight RGBA8, no profile/gamma transformation.
-// All allocation sizes are validated before allocating. The host and guest
-// use this same decoder; image/png is only a host test reference.
+// DecodePNG implements ADR 0028 Amendment D: 8-bit PNG types 0/2/3/4/6,
+// interlace methods 0 (none) and 1 (Adam7), straight RGBA8, no
+// profile/gamma transformation. All allocation sizes are validated before
+// allocating. The host and guest use this same decoder; image/png is only
+// a host test reference.
 func DecodePNG(data []byte) (*Image, error) {
 	if len(data) > webstyle.MaxImageBytes {
 		return nil, errPNGLimit
@@ -30,6 +31,7 @@ func DecodePNG(data []byte) (*Image, error) {
 	}
 	var w, h, channels int
 	var typ byte
+	var interlaced bool
 	var palette []byte
 	var transparency []byte
 	var compressed []byte
@@ -95,9 +97,10 @@ func DecodePNG(data []byte) (*Image, error) {
 			if body[10] != 0 || body[11] != 0 || body[12] > 1 {
 				return nil, errPNGInvalid
 			}
-			if body[8] != 8 || body[12] != 0 {
+			if body[8] != 8 {
 				return nil, ErrImageUnsupported
 			}
+			interlaced = body[12] == 1
 		case "PLTE":
 			if seenPalette || seenTRNS || seenIDAT || typ == 0 || typ == 4 ||
 				len(body) == 0 || len(body)%3 != 0 || len(body) > 768 {
@@ -135,7 +138,7 @@ func DecodePNG(data []byte) (*Image, error) {
 			if len(body) != 0 || !seenIDAT || pos != len(data) {
 				return nil, errPNGInvalid
 			}
-			return pngPixels(w, h, typ, channels, palette, transparency, compressed)
+			return pngPixels(w, h, typ, channels, palette, transparency, compressed, interlaced)
 		case "acTL", "fcTL", "fdAT":
 			return nil, ErrImageUnsupported
 		default:
@@ -147,9 +150,45 @@ func DecodePNG(data []byte) (*Image, error) {
 	return nil, errPNGInvalid
 }
 
-func pngPixels(w, h int, typ byte, channels int, palette, transparency, compressed []byte) (*Image, error) {
-	stride := w*channels + 1
-	n := stride * h
+// adam7 is the pass grid of PNG interlace method 1: xstart, ystart, xstep,
+// ystep for each of the seven passes, in stream order.
+var adam7 = [7][4]int{
+	{0, 0, 8, 8},
+	{4, 0, 8, 8},
+	{0, 4, 4, 8},
+	{2, 0, 4, 4},
+	{0, 2, 2, 4},
+	{1, 0, 2, 2},
+	{0, 1, 1, 2},
+}
+
+// adam7Size returns a pass's pixel dimensions for a w×h image: (0,0) when
+// the pass's grid misses the image entirely (small or narrow inputs), in
+// which case the pass contributes no scanlines to the stream.
+func adam7Size(w, h int, pass [4]int) (pw, ph int) {
+	if w > pass[0] {
+		pw = (w - pass[0] + pass[2] - 1) / pass[2]
+	}
+	if h > pass[1] {
+		ph = (h - pass[1] + pass[3] - 1) / pass[3]
+	}
+	return pw, ph
+}
+
+func pngPixels(w, h int, typ byte, channels int, palette, transparency, compressed []byte, interlaced bool) (*Image, error) {
+	// The decompressed stream is exact — one filter byte per scanline then
+	// the pass's pixel row — so the same scanline budget bounds both
+	// layouts; interlacing only adds filter bytes (≤7/4 of h more).
+	n := (w*channels + 1) * h
+	if interlaced {
+		n = 0
+		for _, pass := range adam7 {
+			pw, ph := adam7Size(w, h, pass)
+			if pw > 0 && ph > 0 {
+				n += ph * (pw*channels + 1)
+			}
+		}
+	}
 	if n > maxPNGScanlines {
 		return nil, errPNGLimit
 	}
@@ -159,67 +198,109 @@ func pngPixels(w, h int, typ byte, channels int, palette, transparency, compress
 		return nil, errPNGInvalid
 	}
 	out := &Image{Width: w, Height: h, Pix: make([]uint32, w*h), png: true}
-	var previous []byte
-	for y := 0; y < h; y++ {
-		filter := rows[y*stride]
-		row := rows[y*stride+1 : (y+1)*stride]
-		if filter > 4 {
-			return nil, errPNGInvalid
+	pos := 0
+	// pass decodes ph scanlines of pw pixels each from rows[pos:] and scatters
+	// them into out at (x0+x*dx, y0+y*dy). Filtering restarts per pass: prev
+	// is the prior row of THIS pass only.
+	pass := func(pw, ph, x0, y0, dx, dy int) error {
+		var prev []byte
+		for y := 0; y < ph; y++ {
+			row, err := pngScanline(rows[pos:], pw*channels, channels, prev)
+			if err != nil {
+				return err
+			}
+			pos += pw*channels + 1
+			for x := 0; x < pw; x++ {
+				pix, err := pngPixel(row[x*channels:(x+1)*channels], typ, palette, transparency)
+				if err != nil {
+					return err
+				}
+				out.Pix[(y0+y*dy)*w+x0+x*dx] = pix
+			}
+			prev = row
 		}
-		for i := range row {
-			var a, b, c byte
-			if i >= channels {
-				a = row[i-channels]
+		return nil
+	}
+	if interlaced {
+		for _, p := range adam7 {
+			pw, ph := adam7Size(w, h, p)
+			if pw == 0 || ph == 0 {
+				continue
 			}
-			if previous != nil {
-				b = previous[i]
-				if i >= channels {
-					c = previous[i-channels]
-				}
-			}
-			switch filter {
-			case 1:
-				row[i] += a
-			case 2:
-				row[i] += b
-			case 3:
-				row[i] += byte((int(a) + int(b)) / 2)
-			case 4:
-				row[i] += pngPaeth(a, b, c)
+			if err := pass(pw, ph, p[0], p[1], p[2], p[3]); err != nil {
+				return nil, err
 			}
 		}
-		for x := 0; x < w; x++ {
-			p := row[x*channels : (x+1)*channels]
-			r, g, b, a := p[0], p[0], p[0], byte(255)
-			switch typ {
-			case 0:
-				if len(transparency) != 0 && r == transparency[1] {
-					a = 0
-				}
-			case 2:
-				g, b = p[1], p[2]
-				if len(transparency) != 0 && r == transparency[1] && g == transparency[3] && b == transparency[5] {
-					a = 0
-				}
-			case 3:
-				index := int(p[0])
-				if index >= len(palette)/3 {
-					return nil, errPNGInvalid
-				}
-				r, g, b = palette[index*3], palette[index*3+1], palette[index*3+2]
-				if index < len(transparency) {
-					a = transparency[index]
-				}
-			case 4:
-				a = p[1]
-			case 6:
-				g, b, a = p[1], p[2], p[3]
-			}
-			out.Pix[y*w+x] = uint32(a)<<24 | uint32(r)<<16 | uint32(g)<<8 | uint32(b)
-		}
-		previous = row
+	} else if err := pass(w, h, 0, 0, 1, 1); err != nil {
+		return nil, err
 	}
 	return out, nil
+}
+
+// pngScanline unfilters one row in place and returns it: raw[0] is the
+// filter byte, raw[1:1+rowLen] the filtered bytes. bpp is the pixel stride
+// (channels at 8-bit depth); prev is the previous unfiltered row of the same
+// pass, nil on the first.
+func pngScanline(raw []byte, rowLen, bpp int, prev []byte) ([]byte, error) {
+	filter := raw[0]
+	if filter > 4 {
+		return nil, errPNGInvalid
+	}
+	row := raw[1 : 1+rowLen]
+	for i := range row {
+		var a, b, c byte
+		if i >= bpp {
+			a = row[i-bpp]
+		}
+		if prev != nil {
+			b = prev[i]
+			if i >= bpp {
+				c = prev[i-bpp]
+			}
+		}
+		switch filter {
+		case 1:
+			row[i] += a
+		case 2:
+			row[i] += b
+		case 3:
+			row[i] += byte((int(a) + int(b)) / 2)
+		case 4:
+			row[i] += pngPaeth(a, b, c)
+		}
+	}
+	return row, nil
+}
+
+// pngPixel converts one decoded pixel to the straight RGBA8 word the tree
+// expects, applying the palette and tRNS of types 0/2/3.
+func pngPixel(p []byte, typ byte, palette, transparency []byte) (uint32, error) {
+	r, g, b, a := p[0], p[0], p[0], byte(255)
+	switch typ {
+	case 0:
+		if len(transparency) != 0 && r == transparency[1] {
+			a = 0
+		}
+	case 2:
+		g, b = p[1], p[2]
+		if len(transparency) != 0 && r == transparency[1] && g == transparency[3] && b == transparency[5] {
+			a = 0
+		}
+	case 3:
+		index := int(p[0])
+		if index >= len(palette)/3 {
+			return 0, errPNGInvalid
+		}
+		r, g, b = palette[index*3], palette[index*3+1], palette[index*3+2]
+		if index < len(transparency) {
+			a = transparency[index]
+		}
+	case 4:
+		a = p[1]
+	case 6:
+		g, b, a = p[1], p[2], p[3]
+	}
+	return uint32(a)<<24 | uint32(r)<<16 | uint32(g)<<8 | uint32(b), nil
 }
 
 func pngPaeth(a, b, c byte) byte {

@@ -48,6 +48,12 @@
 # decode_us_max=`), and refused by name as AVC1.MOV (`unsupported MOV
 # codec=avc1` anchors the q that ends the boot on exit 43).
 #
+# Issue #3350 (M202a) adds run 03 — the Adam7 leg. Run 01's window cap is
+# full, so IPNG.PNG (the pinned 160x120 RGB interlaced vector) gets its
+# own boot: exec, marker-settle snap, `q` on the snap marker, exit 43.
+# The scanout probe anchors the window like the PNG/JPEG probes and
+# samples the raster against the vector's integer expressions.
+#
 # Issue #3039 (M170e) adds a SEVENTH exec — the playback leg. Every
 # scripted input channel is spent above (chords on the frame steps, the
 # string on save-as, the key on JPROG's q), so play starts by argv:
@@ -67,7 +73,7 @@
 # 01's JPROG, run 02's AVC1); the `fg` dwells pace the sequence and every
 # assert reads output only the guest produces.
 
-vgate_name live-image-viewer "M136d (#2770): one boot decodes PNG+JPEG+GIF+SVG+QOI in GOVIEW in sequence — size markers, scanout pixel probes, JPROG named refusal — K=3"
+vgate_name live-image-viewer "M136d (#2770): one boot decodes PNG+JPEG+GIF+SVG+QOI in GOVIEW in sequence — size markers, scanout pixel probes, JPROG named refusal — K=3; run 03 (M202a #3350) pixel-compares an Adam7 interlaced PNG"
 vgate_share seed
 vgate_runner_flags -Xswiftc -DSPIKE
 vgate_repeat 3 BOOTS
@@ -110,9 +116,19 @@ assert pos > 0, "baseline fixture lost its SOF0 marker"
 prog = bytearray(jpg)
 prog[pos + 1] = 0xc2
 open(os.path.join(share, "JPROG.JPG"), "wb").write(bytes(prog))
+# M202a (#3350): run 03's fixture is the webrender corpus's pinned Adam7
+# vector — the same bytes TestOwnedAdam7Corpus regenerates and
+# stdlib-compares, so the gate and the host tests pin ONE fixture. The
+# interlace byte (IHDR body[12], offset 28) is asserted here so a
+# non-interlaced fixture can never stage this leg vacuously.
+ipng = open("user/go/webrender/testdata/png/adam7-160x120.png", "rb").read()
+assert ipng[:8] == b"\x89PNG\r\n\x1a\n" and ipng[12:16] == b"IHDR" \
+    and ipng[28] == 1, "adam7 fixture lost its interlaced IHDR"
+open(os.path.join(share, "IPNG.PNG"), "wb").write(ipng)
 print("staged GOVIEW.ELF + TEST.PNG/JPG/GIF/SVG/QOI + PLAY.GIF + JPROG.JPG "
-      "+ CLIP.MOV + AVC1.MOV (GIF leg is the three-frame anim3; PLAY.GIF is "
-      "ten frames at 50 ms; CLIP.MOV is ten MJPEG frames at 100 ms)")
+      "+ CLIP.MOV + AVC1.MOV + IPNG.PNG (GIF leg is the three-frame anim3; "
+      "PLAY.GIF is ten frames at 50 ms; CLIP.MOV is ten MJPEG frames at "
+      "100 ms; IPNG.PNG is the Adam7 160x120 RGB vector, %d bytes)" % len(ipng))
 PYEOF
 
 # The sequence per leg: `exec ... &`, a bounded ~5-tick `fg` dwell (the
@@ -770,4 +786,91 @@ if not plays or not (800 <= int(plays[0]) <= 3000):
 if ser.count("gview: quit") != 1 or ser.count("user-exec exited status=43") != 1:
     sys.exit("expected exactly one quit -> status=43 (the AVC1 viewer)")
 print("MOV: two loads, ordered distinct stepper sums, video loop window, one refusal, clean exit")
+PY
+
+# --- run 03: an Adam7 interlaced PNG through DecodeImage (M202a #3350) ----
+# Before this card an Adam7 IHDR was a named `image-unsupported` refusal —
+# a large share of the PNGs browsers meet. Run 01's boot is full (the
+# 8-window cap), so the leg is its own boot on the same shape: one exec, a
+# marker-settle snap, the viewer's own `q` via --input-key anchored to the
+# snap marker, exit 43. The pixel assert is the card's "interlaced fixture
+# through DecodeImage pixel-compared": the image rect is anchored the same
+# way as run 01's probes (serial open rect -> centered image), then the
+# scanout is sampled against the vector's integer expressions — pixels only
+# a working seven-pass walk can scatter into place.
+vgate_file script-ipng.txt <<'EOF'
+exec GOVIEW.ELF /host/IPNG.PNG
+fg 1
+echo snap-ipng
+fg 1
+fg 1
+EOF
+
+vgate_run 03 -- \
+    --display --screen '$RUN_DIR/gpu-screen-ipng' \
+    --via-virtio --cvc-snap \
+    --snapshot-out '$RUN_DIR/snap-ipng' \
+    --snapshot-after 'snap-ipng' \
+    --script '$RUN_DIR/script-wm.txt' --script-after "virelai> " \
+    --script2 '$RUN_DIR/script-ipng.txt' --script2-after "wnd: registered" \
+    --input-key 12 --input-key-after "snap-ipng" \
+    --script-expect "user-exec exited status=43" --timeout 240
+
+vgate_assert 03 serial-contains "VirelaiOS kernel has seized control."
+vgate_assert 03 serial-contains "wnd: registered"
+vgate_assert 03 serial-contains "gview: not-tab-aware (shim or WND desktop)"
+vgate_assert 03 serial-count "exec: loaded GOVIEW.ELF" 1
+vgate_assert 03 serial-contains "gview: loaded IPNG.PNG 160x120 PNG bytes=1569"
+vgate_assert 03 serial-contains "snap-ipng"
+vgate_assert 03 serial-contains "gview: quit"
+vgate_assert 03 serial-contains "user-exec exited status=43"
+vgate_assert 03 serial-absent "gview: unsupported"
+vgate_assert 03 serial-absent "gview: image-"
+vgate_assert 03 serial-absent "[EXC] parking:"
+# The pixel-compared fixture: IPNG.PNG is the pinned 160x120 RGB Adam7
+# vector (webrender testdata, pngRawPixels: channel x*37+y*53+c*19, all
+# opaque). The scanout samples the image rect's interior on a stride —
+# every sampled pixel must be its vector value exactly (opaque, 1:1 blit).
+vgate_assert 03 snapshot 'snap-ipng-0.raw' <<'PY'
+import glob, os, re, sys
+raw = open(sys.argv[1], "rb").read()
+W, H = 1280, 720
+if len(raw) < W * H * 4:
+    sys.exit("snapshot is %d bytes, want %dx%d BGRX" % (len(raw), W, H))
+def px(x, y):
+    k = (y * W + x) * 4
+    return (raw[k + 2], raw[k + 1], raw[k])
+rd = os.path.dirname(os.path.abspath(sys.argv[1]))
+sers = glob.glob(os.path.join(rd, "vm-serial-*.log"))
+if not sers:
+    sys.exit("no vm-serial-*.log beside the snapshot")
+ser = open(max(sers, key=os.path.getmtime), errors="replace").read()
+pos = ser.find("gview: loaded IPNG.PNG")
+if pos < 0:
+    sys.exit("IPNG loaded receipt missing from serial")
+ids = re.findall(r"gview: open id=(\d+)", ser[:pos])
+m = re.search(r"open: id=%s owner=\d+ rect=(\d+),(\d+) (\d+)x(\d+)" % ids[-1], ser)
+if not m:
+    sys.exit("no kernel open rect for viewer window id=%s" % ids[-1])
+rx, ry, rw, rh = map(int, m.groups())
+im = re.search(r"gview: loaded IPNG\.PNG (\d+)x(\d+)", ser)
+iw, ih = int(im.group(1)), int(im.group(2))
+ix = rx + max(0, (rw - iw) // 2)
+iy = ry + 16 + max(0, (rh - 28 - ih) // 2)
+if ix < 0 or iy < 0 or ix + iw > W or iy + ih > H:
+    sys.exit("anchored image rect (%d,%d %dx%d) escapes the scanout" % (ix, iy, iw, ih))
+def vec(x, y):
+    return ((x * 37 + y * 53) & 0xff, (x * 37 + y * 53 + 19) & 0xff,
+            (x * 37 + y * 53 + 38) & 0xff)
+n = ok = 0
+for y in range(2, ih - 2, 3):
+    for x in range(2, iw - 2, 3):
+        n += 1
+        ok += px(ix + x, iy + y) == vec(x, y)
+frac = ok / max(n, 1)
+if frac < 0.95:
+    sys.exit("IPNG pixels wrong: %.3f of %d samples match the vector at img "
+             "(%d,%d %dx%d) — the Adam7 pass walk did not scatter "
+             "correctly" % (frac, n, ix, iy, iw, ih))
+print("IPNG-PIXELS-OK img=(%d,%d) %dx%d vec=%.3f" % (ix, iy, iw, ih, frac))
 PY
