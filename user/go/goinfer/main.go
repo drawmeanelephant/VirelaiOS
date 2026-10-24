@@ -12,7 +12,12 @@ package main
 //	(bare)          M122c (#2572): the windowed view — Stub/Model buttons
 //	                and a log mirroring every goinfer: line, for the
 //	                launcher's "LLM Infer" row. One compute session per
-//	                process: a spent session says so, honestly.
+//	                process: a spent session says so, honestly. Since
+//	                M195e (#3310) the face is an appver-1 carrier: the
+//	                seat's save/restore round-trips the last-armed
+//	                journey, the weights path and the log tail —
+//	                view.go owns the wire format; a restore never
+//	                re-runs a journey.
 //	stub            deterministic PRNG-weights model, K=5 runs — the
 //	                live-gpu3d leg payload; needs no fetched weights
 //	model [path]    the owner-approved real model from a VIW image on the

@@ -9,6 +9,7 @@ import (
 
 	"virelai/gpu3d"
 	"virelai/infer"
+	"virelai/tabapp"
 	"virelai/vi"
 )
 
@@ -188,5 +189,46 @@ func TestUsageError(t *testing.T) {
 	h := newFakeHost()
 	if err := run(h, []string{"bogus"}); !errors.Is(err, errUsage) {
 		t.Fatalf("want usage: %v", err)
+	}
+}
+
+// --- M195e (#3310): the envelope's refusal corpus -------------------------
+
+// decodeState refuses whole on every corrupt shape — a torn or foreign
+// blob must never land half-applied on the reopened face. The corpus is
+// the app's own valid blob mutated each way: wrong fmtVer, nonzero
+// flags, an unknown journey tag, a non-canonical path, truncation,
+// trailing bytes.
+func TestDecodeStateRefusals(t *testing.T) {
+	src := newInferView(&tabapp.TabApp{W: viewW, H: viewH}, newFakeHost())
+	src.modelPath = "/host/GOINFER/ALT.VIW"
+	src.journey("model") // weights absent — armed anyway, log narrates
+	good := src.encodeState()
+	if _, ok := decodeState(good); !ok {
+		t.Fatal("the app's own blob would not decode")
+	}
+
+	mut := func(f func(b []byte)) []byte {
+		b := append([]byte(nil), good...)
+		f(b)
+		return b
+	}
+	cases := map[string][]byte{
+		"empty":         {},
+		"short":         good[:4],
+		"bad fmtVer":    mut(func(b []byte) { b[0] = 2 }),
+		"nonzero flags": mut(func(b []byte) { b[1] = 1 }),
+		"bad journey":   mut(func(b []byte) { b[2] = 9 }),
+		// A well-formed blob whose path is a relative name — the
+		// canonical-path check's own refusal, not a length accident.
+		"rel path": append(append([]byte{stateFmtVer, 0, 2, 7, 0},
+			[]byte("ALT.VIW")...), 0),
+		"truncated": good[:len(good)-3],
+		"trailing":  append(append([]byte(nil), good...), 0),
+	}
+	for name, blob := range cases {
+		if _, ok := decodeState(blob); ok {
+			t.Fatalf("%s: corrupt blob decoded", name)
+		}
 	}
 }
