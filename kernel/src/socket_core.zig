@@ -22,8 +22,8 @@
 //! lists are dropped in their own counter; window scaling, SACK blocks,
 //! timestamps, congestion control and keepalive are NOT implemented.
 //! Received data reassembles inside each connection's bounded window
-//! (1460 bytes, bitmap-marked); the advertised window is the real free
-//! space. Retransmission uses RFC 6298 adaptive RTO in nanoseconds
+//! (16 KiB, bitmap-marked, in a static per-slot pool outside the core);
+//! the advertised window is the real free space. Retransmission uses RFC 6298 adaptive RTO in nanoseconds
 //! (200 ms floor, 60 s ceiling, Karn's rule, backoff). Fragmented IPv4
 //! is still counted and dropped.
 const std = @import("std");
@@ -37,9 +37,9 @@ pub const child_limit = 2;
 /// fast path reads; slots 1..3 live in `extra_listeners`.
 pub const listener_limit = 4;
 /// System connection slots, priced against `core_limit`: a Connection is
-/// ~3.1 KiB (RX + TX + control + metadata), so 4 fit the 16 KiB core budget
-/// with the listeners, refusal and counters (~14.1 KiB incl. one owned frame)
-/// where 5 do not (~17.1 KiB).
+/// ~1.7 KiB (TX + control + metadata — the 16 KiB RX window lives in the
+/// pool, not here), so 4 fit the 24 KiB core budget with the listeners,
+/// refusal and counters (~8.7 KiB incl. one owned frame) with room.
 pub const conn_limit = 4;
 /// Sockets (listeners + connections) one owner may hold at once.
 pub const owner_limit = 4;
@@ -53,10 +53,10 @@ pub const dns_slot: u64 = 15;
 /// A connection spawned by `open`, not by a listener's SYN.
 pub const no_parent: u8 = 0xff;
 /// The whole table's byte budget. M99f priced 16 KiB for 4 connections
-/// at ~3.1 KiB each; M99h (#2186) adds each connection's bounded
-/// reassembly window (1460 bytes + a 184-byte validity bitmap + spans),
-/// the RFC 6298 estimator triple and the peer MSS — ~4.8 KiB per
-/// connection — so the honest bound is 24 KiB.
+/// at ~3.1 KiB each; M99h (#2186) grew each to ~4.8 KiB with the
+/// reassembly window — 24 KiB. M179d (#3156, D11) moves the window's
+/// backing store to `rx_pool` outside the core: a Connection is back to
+/// ~1.7 KiB, the table prices ~8.7 KiB, and the bound stays 24 KiB.
 pub const core_limit = 24 * 1024;
 pub const deadline_ns: u64 = 30_000_000_000;
 /// The INITIAL retransmission timeout before any RTT sample exists
@@ -69,12 +69,30 @@ pub const rto_ns: u64 = 3_000_000_000;
 pub const rto_floor_ns: u64 = 200_000_000;
 pub const rto_ceiling_ns: u64 = 60_000_000_000;
 pub const retry_limit: u8 = 10;
-/// M99h (#2186, card h2): the receive window every connection
-/// advertises — one `wire.payload_max` span. Held bytes (the in-order
-/// prefix plus the bitmap-marked out-of-order bytes) always fit inside
+/// M179d (#3156, D11): the receive window every connection advertises —
+/// 16 KiB, ~eleven `payload_max` segments in flight instead of one
+/// (M99h's h2 bound was a single segment). Held bytes — the in-order
+/// prefix plus the bitmap-marked out-of-order bytes — always fit inside
 /// it, so the advertised free space is exactly the honest bound.
-pub const recv_window: usize = wire.payload_max;
-const ooo_map_words = (recv_window + 63) / 64;
+pub const recv_window: usize = 16 * 1024;
+/// The window is a power of two: a held byte's buffer position is its
+/// sequence number masked — the ring never slides or re-bases.
+const recv_mask: usize = recv_window - 1;
+const rx_map_words = (recv_window + 63) / 64;
+/// M179d (#3156, D11): one pool slot per connection slot — the 16 KiB
+/// reassembly ring plus the bitmap marking which positions hold a byte.
+pub const RxSlot = struct {
+    /// Ring-indexed by masked sequence number: `buf[seq & recv_mask]`
+    /// is the byte for `seq` whenever `map` marks it held.
+    buf: [recv_window]u8,
+    /// Bit i marks `buf[i]` holding a byte (16 KiB → 256 words).
+    map: [rx_map_words]u64,
+};
+/// The static receive pool (D11): `conn_limit` slots of 16 KiB + 2 KiB
+/// each — 72 KiB of BSS outside `Core`, so the `core_limit` budget is
+/// untouched. A connection binds `rx_pool[table index]` at mint; close
+/// and reset release the binding and the next mint clears it.
+var rx_pool: [conn_limit]RxSlot = @splat(.{ .buf = undefined, .map = @splat(0) });
 /// M117c (#2475, ADR 0057 D8): the endpoint pair is family-tagged — a
 /// v4 endpoint carries its address in `ip` (the pre-M117c field, its
 /// readers and literals untouched), a v6 endpoint in `addr6`.
@@ -158,18 +176,24 @@ pub const Connection = struct {
     /// M99h (#2186): the peer's advertised MSS (0 = none — outbound
     /// payloads keep the `payload_max` bound; otherwise `send` clamps).
     peer_mss: u16 = 0,
-    rx: [wire.payload_max]u8 = undefined,
+    /// M179d (#3156, D11): the connection's receive-window backing — a
+    /// slot in `rx_pool` bound at mint to the connection's table index.
+    /// The ring holds every byte charged to the window: `buf[seq &
+    /// recv_mask]` is the byte for `seq` while its `map` bit is set.
+    /// In-order bytes sit at seqs below `rcv_nxt` (the readable prefix
+    /// `rx_len` counts); held out-of-order bytes sit ahead of it
+    /// (`ooo_bytes` counts). `rx_len + ooo_bytes <= recv_window` keeps
+    /// distinct held seqs on distinct positions — the windowed space
+    /// never wraps onto itself.
+    pool: *RxSlot,
+    /// The sequence number of the oldest held byte — the window's base.
+    /// Stored, not derived: a queued FIN consumes a sequence number with
+    /// no byte, so `rcv_nxt - rx_len` can sit ahead of the prefix.
+    rx_base: u32 = 0,
     rx_len: usize = 0,
-    /// M99h (#2186, card h2): the bounded out-of-order window.
-    /// `ooo_buf[i]` holds sequence `ooo_base + i`; `ooo_map` marks which
-    /// bytes are valid. `ooo_base` always equals `rcv_nxt` while bytes
-    /// are held (rebased on every advance), so index 0 is never valid
-    /// outside a drain — a held byte is strictly ahead of the stream.
-    /// The window bound itself caps held bytes; there is no segment
-    /// limit beyond it.
-    ooo_buf: [recv_window]u8 = undefined,
-    ooo_map: [ooo_map_words]u64 = @splat(0),
-    ooo_base: u32 = 0,
+    /// M99h (#2186, card h2): held out-of-order bytes, bitmap-marked in
+    /// the pool slot. The window bound itself caps held bytes; there is
+    /// no segment limit beyond it.
     ooo_bytes: u16 = 0,
     /// A FIN received ahead of the stream — the sequence number it
     /// consumes, applied when contiguous.
@@ -364,12 +388,16 @@ pub const Core = struct {
                 .remote = remote,
                 .remote_mac = remote_mac,
                 .peer_window = 0, // unknown until the peer's SYN-ACK arrives
+                .pool = &rx_pool[index],
                 .snd_una = fresh_isn,
                 .snd_nxt = fresh_isn,
                 .rcv_nxt = 0,
                 .phase_deadline = deadline(now),
                 .parent = no_parent,
             };
+            // A released slot can still carry the dead connection's
+            // bitmap — the new binding starts empty.
+            rx_pool[index].map = @splat(0);
             // M99h (#2186, card h1): the active-open SYN advertises our
             // MSS 1460 — the table path's originated SYN, where the
             // legacy singleton's bare SYN stays pinned by the fleet.
@@ -430,8 +458,14 @@ pub const Core = struct {
         if (output.len == 0) return 0;
         if (c.rx_len != 0) {
             const count = @min(output.len, c.rx_len);
-            @memcpy(output[0..count], c.rx[0..count]);
-            std.mem.copyForwards(u8, c.rx[0 .. c.rx_len - count], c.rx[count..c.rx_len]);
+            const base = rxBase(c);
+            const pos: usize = rxPos(base);
+            const head = @min(count, recv_window - pos);
+            @memcpy(output[0..head], c.pool.buf[pos .. pos + head]);
+            if (count > head) @memcpy(output[head..count], c.pool.buf[0 .. count - head]);
+            // Freed positions return to the advertised window honestly.
+            for (0..count) |i| rxSet(c, rxPos(base +% @as(u32, @intCast(i))), false);
+            c.rx_base +%= @intCast(count);
             c.rx_len -= count;
             c.read_deadline = deadline(now);
             if (c.state != .terminal) ack(c);
@@ -586,12 +620,14 @@ pub const Core = struct {
                 .remote_mac = p.mac,
                 .peer_window = p.window,
                 .peer_mss = p.mss, // M99h: the requester's MSS, if it sent one
+                .pool = &rx_pool[i],
                 .snd_una = fresh_isn,
                 .snd_nxt = fresh_isn,
                 .rcv_nxt = p.seq +% 1,
                 .phase_deadline = deadline(now),
                 .parent = @intCast(parent),
             };
+            rx_pool[i].map = @splat(0); // released slots can carry stale bits
             // M99h: the SYN-ACK advertises our MSS — a SYN is a SYN.
             queueOpts(&entry.*.?, wire.flag_syn | wire.flag_ack, &wire.mss_option, &.{}, now);
             return;
@@ -746,10 +782,9 @@ pub const Core = struct {
             }
             if (d_len != 0) {
                 if (d_seq == c.rcv_nxt) {
-                    @memcpy(c.rx[c.rx_len .. c.rx_len + d_len], p.payload[off .. off + d_len]);
-                    c.rx_len += d_len;
+                    rxFill(c, p.payload[off .. off + d_len]);
                     c.rcv_nxt +%= @intCast(d_len);
-                    oooAdvance(c, @intCast(d_len));
+                    oooAdvance(c);
                 } else {
                     if (oooInsert(c, d_seq, p.payload[off .. off + d_len])) {
                         self.counters.ooo_held +%= 1;
@@ -874,7 +909,7 @@ pub const Core = struct {
 
 comptime {
     if (@sizeOf(Core) + wire.frame_max > core_limit)
-        @compileError("SocketCoreBudget: core plus one owned frame exceeds 16 KiB");
+        @compileError("SocketCoreBudget: core plus one owned frame exceeds core_limit");
 }
 fn deadline(now: u64) u64 {
     return now +| deadline_ns;
@@ -932,7 +967,7 @@ fn finish(c: *Connection, outcome: Outcome) void {
     // M99h: a dead connection releases its reassembly window and any
     // queued FIN — the .eof path keeps the in-order prefix readable
     // exactly like before.
-    c.ooo_map = @splat(0);
+    c.pool.map = @splat(0);
     c.ooo_bytes = 0;
     c.fin_ooo_set = false;
 }
@@ -981,84 +1016,86 @@ fn queueOpts(c: *Connection, flags: u8, opts: []const u8, payload: []const u8, n
     else
         rto_ns;
 }
-/// M99h (#2186, card h2): the reassembly bitmap — bit i marks
-/// `ooo_buf[i]` valid (sequence `ooo_base + i`).
-fn oooBit(c: *const Connection, i: usize) bool {
-    return (c.ooo_map[i / 64] >> @intCast(i % 64)) & 1 != 0;
+/// M179d (#3156, D11): the receive window is a ring — sequence `seq`'s
+/// buffer position and bitmap index are both `seq & recv_mask`.
+fn rxPos(seq: u32) usize {
+    return seq & recv_mask;
 }
-fn oooSet(c: *Connection, i: usize, v: bool) void {
+/// The window's oldest covered sequence: the stored base while an
+/// in-order prefix exists, else `rcv_nxt` (held bytes always sit at or
+/// ahead of it). Held bytes span `[rxBase, rxBase + recv_window)`.
+fn rxBase(c: *const Connection) u32 {
+    return if (c.rx_len == 0) c.rcv_nxt else c.rx_base;
+}
+/// The window bitmap — bit i marks `pool.buf[i]` holding a byte.
+fn rxBit(c: *const Connection, i: usize) bool {
+    return (c.pool.map[i / 64] >> @intCast(i % 64)) & 1 != 0;
+}
+fn rxSet(c: *Connection, i: usize, v: bool) void {
     if (v) {
-        c.ooo_map[i / 64] |= @as(u64, 1) << @intCast(i % 64);
+        c.pool.map[i / 64] |= @as(u64, 1) << @intCast(i % 64);
     } else {
-        c.ooo_map[i / 64] &= ~(@as(u64, 1) << @intCast(i % 64));
+        c.pool.map[i / 64] &= ~(@as(u64, 1) << @intCast(i % 64));
     }
 }
+/// Append `data` at `rcv_nxt`, extending the in-order prefix (wrapping
+/// at the ring's end). A position already bitmap-marked held the same
+/// byte out of order — its charge transfers from `ooo_bytes` to the
+/// prefix; the byte itself is identical (sequence numbers name bytes,
+/// not arrivals).
+fn rxFill(c: *Connection, data: []const u8) void {
+    if (c.rx_len == 0) c.rx_base = c.rcv_nxt; // the new byte is the oldest
+    const pos: usize = rxPos(c.rcv_nxt);
+    const head = @min(data.len, recv_window - pos);
+    @memcpy(c.pool.buf[pos .. pos + head], data[0..head]);
+    if (data.len > head) @memcpy(c.pool.buf[0 .. data.len - head], data[head..]);
+    for (0..data.len) |i| {
+        const bit = rxPos(c.rcv_nxt +% @as(u32, @intCast(i)));
+        if (rxBit(c, bit)) {
+            c.ooo_bytes -= 1;
+        } else {
+            rxSet(c, bit, true);
+        }
+    }
+    c.rx_len += data.len;
+}
 /// Hold `data` (sequence `seq`, strictly ahead of `rcv_nxt`, already
-/// trimmed to the free window) in the reassembly window. `ooo_base` is
-/// `rcv_nxt` whenever bytes are held, so the offset is always positive;
-/// the first held byte also re-bases. Overlapping a held byte is free —
-/// the bitmap is idempotent and `ooo_bytes` counts only the new bits.
+/// trimmed to the free window) in the reassembly ring. Overlapping a
+/// held byte is free — the bitmap is idempotent and `ooo_bytes` counts
+/// only the new bits.
 fn oooInsert(c: *Connection, seq: u32, data: []const u8) bool {
-    if (c.ooo_bytes == 0) c.ooo_base = c.rcv_nxt;
-    const off: usize = seq -% c.ooo_base;
+    const off: usize = @intCast(seq -% rxBase(c));
     if (off + data.len > recv_window) return false;
     var added: u16 = 0;
     for (0..data.len) |i| {
-        if (!oooBit(c, off + i)) {
-            oooSet(c, off + i, true);
+        const pos = rxPos(seq +% @as(u32, @intCast(i)));
+        if (!rxBit(c, pos)) {
+            rxSet(c, pos, true);
             added += 1;
         }
+        c.pool.buf[pos] = data[i];
     }
-    @memcpy(c.ooo_buf[off .. off + data.len], data);
     c.ooo_bytes += added;
     return true;
 }
-/// `rcv_nxt` just advanced by `n` in-order bytes: re-base the held
-/// window (bytes the new prefix covered are dropped, the rest slide
-/// down), then splice every now-contiguous held run into `rx` — the
-/// stream cannot go backwards. A queued FIN applies the moment its
-/// sequence number becomes contiguous. The window invariant
-/// (`rx_len + ooo_bytes <= recv_window`) guarantees each splice fits.
-fn oooAdvance(c: *Connection, n: u32) void {
-    if (c.ooo_bytes != 0) {
-        oooSlide(c, n);
-        while (c.ooo_bytes != 0 and oooBit(c, 0)) {
-            var k: usize = 0;
-            while (k < recv_window and oooBit(c, k)) k += 1;
-            @memcpy(c.rx[c.rx_len .. c.rx_len + k], c.ooo_buf[0..k]);
-            c.rx_len += k;
-            c.rcv_nxt +%= @intCast(k);
-            oooSlide(c, @intCast(k));
-        }
+/// `rcv_nxt` just advanced by in-order bytes: splice every now-
+/// contiguous held run into the prefix — ring positions never move, so
+/// the splice is only the charge transfer `ooo_bytes` → `rx_len` and
+/// the `rcv_nxt` advance. A queued FIN applies the moment its sequence
+/// number becomes contiguous.
+fn oooAdvance(c: *Connection) void {
+    var k: usize = 0;
+    while (k < c.ooo_bytes and rxBit(c, rxPos(c.rcv_nxt +% @as(u32, @intCast(k))))) k += 1;
+    if (k != 0) {
+        c.ooo_bytes -= @intCast(k);
+        c.rx_len += k;
+        c.rcv_nxt +%= @intCast(k);
     }
     if (c.fin_ooo_set and c.fin_ooo == c.rcv_nxt) {
         c.fin_ooo_set = false;
         c.rcv_nxt +%= 1; // the FIN consumes one sequence number
         c.peer_fin = true;
     }
-}
-/// Drop the lowest `n` held positions, sliding the rest down and
-/// advancing `ooo_base` to match — the shared re-base step for
-/// `oooAdvance` (n = the rcv_nxt advance) and its inner splice
-/// (n = the run length, so `ooo_base` tracks `rcv_nxt` exactly).
-fn oooSlide(c: *Connection, n: usize) void {
-    if (n >= recv_window) {
-        c.ooo_map = @splat(0);
-        c.ooo_bytes = 0;
-        c.ooo_base +%= @intCast(n);
-        return;
-    }
-    var kept: u16 = 0;
-    var i: usize = 0;
-    while (i + n < recv_window) : (i += 1) {
-        const b = oooBit(c, i + n);
-        oooSet(c, i, b);
-        if (b) kept += 1;
-    }
-    while (i < recv_window) : (i += 1) oooSet(c, i, false);
-    std.mem.copyForwards(u8, c.ooo_buf[0 .. recv_window - n], c.ooo_buf[n..recv_window]);
-    c.ooo_bytes = kept;
-    c.ooo_base +%= @intCast(n);
 }
 /// M99h (#2186, card h3): the RFC 6298 RTT update — called at every
 /// ACK-accept site BEFORE `clearTx`. A sample exists only when the
