@@ -11,6 +11,7 @@ import (
 	"virelai/mime"
 	"virelai/outbox"
 	"virelai/settings"
+	"virelai/speech"
 	"virelai/timesync"
 	"virelai/vi"
 	"virelai/vsys"
@@ -57,6 +58,9 @@ func init() {
 		"history": bHistory, "help": bHelp, "exit": bExit, "monitor": bMonitor,
 		// M115d (issue #2463, ADR 0056): the guest-initiated suspend request.
 		"suspend": bSuspend,
+		// M186d (issue #3181, ADR 0051 V2-D8): the host-speech lane's
+		// intent marker.
+		"say": bSay,
 		"sleep": bSleep, "clear": bClear, "log": bLog, "date": bDate,
 		"time": bTime,
 		// M50 trust surface (ADR 0024): identity, owner-only chmod, and the
@@ -451,6 +455,34 @@ func bExportFile(c *cmdCtx) int {
 	return 1
 }
 
+// sayToHost is the SAY stage seam — production binds the shared
+// virelai/speech gesture; tests pin the refusal vocabulary without a
+// guest.
+var sayToHost = func(text string) string {
+	return speech.Guest.Say(text)
+}
+
+// bSay is the M186d host-speech verb: `say <text>` stages the utterance
+// as a SAY intent marker under /host/SAY/; the seat's next tick turns it
+// into a signed SPEAK record the runner feeds NSSpeechSynthesizer.
+// Refusals carry the lane vocabulary (lane_disabled, payload_not_text,
+// payload_too_large, io_error).
+func bSay(c *cmdCtx) int {
+	if len(c.args) == 0 {
+		c.out([]byte("gosh: say TEXT\n"))
+		return 2
+	}
+	text := strings.Join(c.args, " ")
+	if r := sayToHost(text); r != "" {
+		c.sh.host.Marker("gosh: say refused reason=" + r)
+		c.out([]byte("gosh: say: " + r + "\n"))
+		return 1
+	}
+	c.sh.host.Marker("gosh: say queued len=" + vi.Itoa64(int64(len(text))))
+	c.out([]byte("said to host\n"))
+	return 0
+}
+
 // bRead takes one line from bound stdin (a pipe or redirect), or from the
 // terminal when stdin is unbound, into the named variable.
 func bRead(c *cmdCtx) int {
@@ -695,6 +727,7 @@ var helpCatalog = map[string]helpEntry{
 	"log":     {group: "shell", usage: "log [APP]", blurb: "read one app's bounded log ring, or all app rings"},
 	"monitor": {group: "shell", usage: "monitor", blurb: "hand the console back to the kernel monitor"},
 	"suspend": {group: "shell", usage: "suspend", blurb: "ask the host to freeze machine state into the profile (virelai-ctl/1 suspend)", notes: "The guest fsyncs VLFS and settings and records the request marker before the verb leaves; a refused request prints the ADR 0056 code and nothing is frozen. An `ok` reply may arrive after a save/restore — the session simply resumes."},
+	"say":     {group: "shell", usage: "say TEXT", blurb: "speak text through the host's speech synthesizer (the --host-speech lane)", notes: "The utterance crosses as a signed SPEAK record — ≤ 512 bytes of UTF-8, one per lane tick; a lane that is not armed answers lane_disabled."},
 	"time":    {group: "shell", usage: "time CMD [ARGS...] | time sync [SERVER]", blurb: "time a command, or set the clock from one SNTP query (default time.apple.com)", notes: "With CMD the command runs and `real N.NNs` reports on the terminal. SERVER is a name or a dotted IPv4 address. One query, no retry; on no reply the clock is left untouched and the exit is 1."},
 
 	// files

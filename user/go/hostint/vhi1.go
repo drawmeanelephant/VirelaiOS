@@ -25,7 +25,8 @@ import "virelai/shlib"
 //	0..3    magic  "VHI1"
 //	4       tag    u8: 0=ARMED 1=CLIP_OUT 2=CLIP_IN 3=NOTIFY_OUT 4=DROP
 //	               5=OUTBOX 6=NOTIFY_FOCUS (v2) 7=CLIP_OUT_T 8=CLIP_IN_T
-//	               (M124c typed clipboard) 9=DRAGOUT (M184b)
+//	               (M124c typed clipboard) 9=DRAGOUT (M184b) 10=SPEAK
+//	               (M186d host TTS)
 //	5       flags  u8: bit0 TRUNCATED; bits 1-7 reserved (writer sends 0)
 //	6..7    sender_id u16le — the kernel window id the record is about;
 //	        v1 wrote reserved zeros, so v1 records carry 0 here and a v1
@@ -78,7 +79,12 @@ const (
 	// in OUTBOX/, signed like an OUTBOX record and riding the same lane
 	// bit; the sender is the source window id (the V2-D1 correlation).
 	TagDragOut uint8 = 9 // g→h seat → runner: the DROP shape, reversed
-	tagCount          = 10
+	// M186d (#3181): the speech lane — one utterance per record, bounded
+	// UTF-8 like CLIP_IN, the marker's whole content. plen MUST be 1..512
+	// (the NOTIFY_FOCUS grammar rule mirrored: a record that is nothing
+	// but a header has no utterance to speak).
+	TagSpeak uint8 = 10 // g→h seat → runner: UTF-8 1..512
+	tagCount        = 11
 )
 
 // FlagTruncated is the record flags bit0: the producer cut the payload at
@@ -126,6 +132,7 @@ const (
 	LaneDrop   uint8 = 1 << 1
 	LaneNotify uint8 = 1 << 2
 	LaneOutbox uint8 = 1 << 3
+	LaneSpeech uint8 = 1 << 4
 )
 
 // The refusal vocabulary (ADR 0051 D2): one set of names, both ends,
@@ -180,6 +187,8 @@ func tagStem(tag uint8) string {
 		return "CLIPTIN"
 	case TagDragOut:
 		return "DRAGOUT"
+	case TagSpeak:
+		return "SPEAK"
 	}
 	return ""
 }
@@ -207,6 +216,8 @@ func stemTag(stem string) (uint8, bool) {
 		return TagClipInT, true
 	case "DRAGOUT":
 		return TagDragOut, true
+	case "SPEAK":
+		return TagSpeak, true
 	}
 	return 0, false
 }
@@ -229,6 +240,8 @@ func LaneName(tag uint8) string {
 		return "outbox"
 	case TagDragOut:
 		return "dragout"
+	case TagSpeak:
+		return "speech"
 	}
 	return ""
 }
@@ -245,6 +258,8 @@ func LaneBit(tag uint8) uint8 {
 		return LaneNotify
 	case TagOutbox, TagDragOut:
 		return LaneOutbox
+	case TagSpeak:
+		return LaneSpeech
 	}
 	return 0
 }
@@ -273,6 +288,12 @@ func MaskNames(mask uint8) string {
 			out += ","
 		}
 		out += "outbox"
+	}
+	if mask&LaneSpeech != 0 {
+		if out != "" {
+			out += ","
+		}
+		out += "speech"
 	}
 	if out == "" {
 		return "-"
@@ -389,12 +410,16 @@ func EncodeRecord(key []byte, tag, flags uint8, seq, epoch uint32, payload []byt
 // record is about (NOTIFY_OUT's toast source, NOTIFY_FOCUS's target). A
 // NOTIFY_FOCUS record is refused unless plen is 0 and sender is nonzero —
 // the header is its whole payload, so a senderless focus request is
-// malformed, not "focus nothing".
+// malformed, not "focus nothing". A SPEAK record is refused on plen 0 —
+// a header-only record carries no utterance.
 func EncodeRecordSender(key []byte, tag, flags uint8, sender uint16, seq, epoch uint32, payload []byte) []byte {
 	if len(payload) > PayloadMax || tagStem(tag) == "" || flags&^FlagTruncated != 0 {
 		return nil
 	}
 	if tag == TagNotifyFocus && (len(payload) != 0 || sender == 0) {
+		return nil
+	}
+	if tag == TagSpeak && len(payload) == 0 {
 		return nil
 	}
 	out := make([]byte, HeaderLen+len(payload)+MACLen)
@@ -413,9 +438,9 @@ func EncodeRecordSender(key []byte, tag, flags uint8, sender uint16, seq, epoch 
 
 // DecodeRecord parses the wire form. ok=false means a bad_record refusal:
 // wrong magic, bad tag, a flag bit outside FlagTruncated, plen > 512, a
-// NOTIFY_FOCUS with a nonempty payload, or a total size that does not
-// match header+payload+mac exactly. MAC verification is a separate step
-// (Verify) so the two refusal names stay distinct.
+// NOTIFY_FOCUS with a nonempty payload, a SPEAK with none, or a total
+// size that does not match header+payload+mac exactly. MAC verification
+// is a separate step (Verify) so the two refusal names stay distinct.
 func DecodeRecord(raw []byte) (rec Record, ok bool) {
 	if len(raw) < HeaderLen+MACLen || len(raw) > RecordMax {
 		return rec, false
@@ -434,6 +459,9 @@ func DecodeRecord(raw []byte) (rec Record, ok bool) {
 		return rec, false
 	}
 	if raw[4] == TagNotifyFocus && plen != 0 {
+		return rec, false
+	}
+	if raw[4] == TagSpeak && plen == 0 {
 		return rec, false
 	}
 	rec.Tag = raw[4]

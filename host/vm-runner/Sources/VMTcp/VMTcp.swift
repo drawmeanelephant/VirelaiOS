@@ -295,10 +295,10 @@ public func parseNetDropSpec(_ spec: String) -> [(dir: NetDropDir, n: Int)]? {
     var out: [(NetDropDir, Int)] = []
     for rule in spec.split(separator: ",") {
         let halves = rule.split(separator: ":")
-        guard halves.count == 2, let n = Int(halves[1].trimmingCharacters(in: .whitespaces)), n >= 1 else {
+        guard halves.count == 2, let n = Int(halves[1].trimmingCharacters(in: .whitespacesAndNewlines)), n >= 1 else {
             return nil
         }
-        switch halves[0].trimmingCharacters(in: .whitespaces) {
+        switch halves[0].trimmingCharacters(in: .whitespacesAndNewlines) {
         case "rx": out.append((.rx, n))
         case "tx": out.append((.tx, n))
         default: return nil

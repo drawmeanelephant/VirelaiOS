@@ -1131,44 +1131,62 @@ func main() {
 		req[i] = byte('A' + i%23)
 	}
 	copy(req[8192-4:], "END\n")
-	if _, err := conn.Write(req); err != nil {
-		vsys.Println("gonetloss: write failed err=" + err.Error())
-		vsys.Exit(1)
-		return
+	// Conn.Write emits at most one segment per call (TCPPayloadMax) and
+	// reports the unsent tail as ErrShortWrite — the io.Writer contract
+	// net_test.go pins. Loop until the whole request is on the wire.
+	sent := 0
+	for sent < len(req) {
+		n, err := conn.Write(req[sent:])
+		sent += n
+		if err != nil && err != vsys.ErrShortWrite {
+			vsys.Println("gonetloss: write failed err=" + err.Error())
+			vsys.Exit(1)
+			return
+		}
+		if n == 0 {
+			vsys.Println("gonetloss: write failed err=zero progress")
+			vsys.Exit(1)
+			return
+		}
 	}
 	vsys.Println("gonetloss: wrote request n=8192")
 	// The stall leg's relay RST lands after the ~160 s bounded-resend
 	// schedule; the read deadline must outwait it.
 	conn.SetReadDeadline(240_000_000_000)
-	total := 0
+	marker := "Hello from VirelaiOS Host!\n"
+	resp := make([]byte, 0, 16384)
 	saw := false
 	for i := 0; i < 64; i++ {
 		buf := make([]byte, vsys.TCPPayloadMax)
 		n, err := conn.Read(buf)
 		if err != nil {
 			vsys.Println("gonetloss: read err=" + err.Error())
-			if total == 0 || !saw {
+			if len(resp) == 0 || !saw {
 				vsys.Println("gonetloss: reset")
 				vsys.Exit(0)
 			}
 			break
 		}
-		total += n
-		for j := 0; j+26 <= n; j++ {
-			if string(buf[j:j+26]) == "Hello from VirelaiOS Host!\n" {
+		resp = append(resp, buf[:n]...)
+		// The 27-byte marker can straddle two reads — Read boundaries
+		// follow the relay's emit schedule, not the stream's — so scan
+		// the accumulated body, not one buffer.
+		for j := 0; j+len(marker) <= len(resp); j++ {
+			if string(resp[j:j+len(marker)]) == marker {
 				saw = true
+				break
 			}
 		}
 		if n < vsys.TCPPayloadMax {
 			break
 		}
 	}
-	if !saw || total < 6000 {
-		vsys.Println("gonetloss: FAIL body total=" + vsys.Itoa64(int64(total)))
+	if !saw || len(resp) < 6000 {
+		vsys.Println("gonetloss: FAIL body total=" + vsys.Itoa64(int64(len(resp))))
 		vsys.Exit(1)
 		return
 	}
-	vsys.Println("gonetloss: body intact total=" + vsys.Itoa64(int64(total)))
+	vsys.Println("gonetloss: body intact total=" + vsys.Itoa64(int64(len(resp))))
 	vsys.Println("gonetloss: done")
 	vsys.Exit(0)
 }
@@ -1225,6 +1243,14 @@ PY
 vgate_setup_python <<'PY'
 import os, subprocess, sys, time, socket
 rd = os.environ["RUN_DIR"]
+# Fleet convention (go-fetch-https, go-flint): gonetloss-srv.py is
+# spawned detached and nothing kills it at teardown, so a crashed run
+# leaks a listener that holds this fixed port forever — the fresh
+# server's bind then dies silently into an empty log and every reply
+# comes from the foreign worktree's orphan. Kill the incumbent first.
+subprocess.run(["sh", "-c", "lsof -ti tcp:24080 | xargs kill -9"],
+               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+time.sleep(0.2)
 subprocess.Popen(
     [sys.executable, os.path.join(rd, "gonetloss-srv.py"), "24080",
      os.path.join(rd, "gonetloss-srv.log")],
