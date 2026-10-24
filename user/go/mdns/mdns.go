@@ -153,6 +153,51 @@ func Query(name string, qtype uint16, qu bool) *Message {
 	}
 }
 
+// ValidName reports whether name encodes as a wire name: a non-empty
+// dotted sequence, every label non-empty and ≤ 63 octets, total within
+// MaxNameWire — the same bounds appendName enforces, so a caller can
+// refuse a bad flag BEFORE building the message (the browser's
+// service-type argument is exactly this case).
+func ValidName(name string) bool {
+	if name == "" || len(name) > MaxNameWire {
+		return false
+	}
+	start := 0
+	for i := 0; i <= len(name); i++ {
+		if i == len(name) || name[i] == '.' {
+			if i-start == 0 || i-start > maxLabel {
+				return false
+			}
+			start = i + 1
+		}
+	}
+	return true
+}
+
+// EqualName compares two wire names the way the DNS does — ASCII
+// case-insensitive (RFC 1035 §3.1); a responder's record names match a
+// question's regardless of the case it chose to emit. Byte-wise folding
+// only: mDNS labels can carry UTF-8, and folding outside ASCII is a
+// display decision, not a wire one.
+func EqualName(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := 0; i < len(a); i++ {
+		ca, cb := a[i], b[i]
+		if ca >= 'a' && ca <= 'z' {
+			ca -= 'a' - 'A'
+		}
+		if cb >= 'a' && cb <= 'z' {
+			cb -= 'a' - 'A'
+		}
+		if ca != cb {
+			return false
+		}
+	}
+	return true
+}
+
 // ---------------------------------------------------------------------------
 // Encode
 // ---------------------------------------------------------------------------
