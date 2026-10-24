@@ -73,7 +73,7 @@ All of them additionally answer to the schema-v2 manifest grammar
 | IRC | app | GOIRC.ELF | appver 3 | tools/gate/specs/go-irc.spec | shipped |
 | Vault | app | GOVAULT.ELF | appver 1 | tools/gate/specs/go-vault.spec | shipped |
 | Mail | app | GOMAIL.ELF | — | tools/gate/specs/go-mail.spec | shipped |
-| Accessibility | app | GOA11Y.ELF | — | tools/gate/specs/go-wm-journey.spec | shipped |
+| Accessibility | app | GOA11Y.ELF | — | tools/gate/specs/go-a11y.spec | shipped |
 
 ## Seat and staged tools
 

@@ -8,6 +8,12 @@
 // and a file that is not the v1 grammar prints `goa11y: bad outline
 // win=<id>` — a missing or malformed file is a named state, never a
 // crash.
+//
+// The M197b (issue #3382) narration verbs layer the reader's voice on
+// that focus-follow loop: -announce prints the report's utterance as
+// `goa11y: announce <text>` (the text-first form — a focus move or a
+// live-region row update announces the new name), and -say stages the
+// same utterance on the M186d speech lane.
 package main
 
 import (
@@ -46,6 +52,9 @@ const (
 	// byte length, or the lane's refusal word.
 	markerSayQueued  = "goa11y: say queued len="
 	markerSayRefused = "goa11y: say refused reason="
+	// M197b (#3382): the -announce verb's receipt — the utterance in
+	// text on the console, the same line -say voices on the lane.
+	markerAnnounce = "goa11y: announce "
 )
 
 // The syscall seams a host test swaps out — the wmstate.go / playArm
@@ -80,6 +89,9 @@ type app struct {
 	// say is the -say flag: a changed outline also stages a SAY intent
 	// marker, so the reader has a voice on the host's speech lane.
 	say bool
+	// announce is the -announce flag (M197b): the same utterance prints
+	// as `goa11y: announce <text>` — the text-first narration voice.
+	announce bool
 
 	state view
 	win   uint32
@@ -91,6 +103,14 @@ type app struct {
 	lastWin  uint32
 	lastBody []byte
 	reported bool
+
+	// Narration dedup: the last utterance's identity — the window it
+	// described plus the text — so announce-on-change fires when the
+	// narration moves (a focus switch, a live-region rename) and an
+	// outline churn that leaves the utterance alone stays silent.
+	annSet  bool
+	annWin  uint32
+	annText string
 }
 
 // focusedWin answers the seat query and returns the focused window's id,
@@ -137,6 +157,11 @@ func (a *app) report(st view, win uint32, body []byte, nodes ...appkit.Node) boo
 	}
 	a.reported = true
 	a.state, a.win = st, win
+	if st != viewOutline {
+		// A non-outline report ends the narration context: leaving a
+		// window and returning is a new announcement, not a repeat.
+		a.annSet = false
+	}
 	a.lastWin = win
 	a.lastBody = append(a.lastBody[:0], body...)
 	a.nodes = append(a.nodes[:0], nodes...)
@@ -154,8 +179,8 @@ func (a *app) print() {
 		for i, n := range a.nodes {
 			console(nodeLine(i, n))
 		}
-		if a.say {
-			a.speak()
+		if a.announce || a.say {
+			a.narrate()
 		}
 	case viewNoOutline:
 		console(markerNoOutline + vi.Itoa64(int64(a.win)))
@@ -175,13 +200,11 @@ func nodeLine(i int, n appkit.Node) string {
 		" " + n.State.String() + " " + n.Name
 }
 
-// speak is the -say hook (M186d, ADR 0051 V2-D8): the changed outline's
-// voice, staged as a SAY intent marker the seat signs into a SPEAK
-// record — the reader emits speak records instead of only visual
-// outlines. The utterance is the focused node's name when one exists
-// (what a screen reader announces), else the window's name and the node
-// count; speech.Clamp keeps it inside the lane's 512-byte grammar.
-func (a *app) speak() {
+// utterance is the report's narration text — the focused node's name
+// when one exists (what a screen reader announces), else the window's
+// name and the node count; speech.Clamp keeps it inside the lane's
+// 512-byte grammar. "" means there is nothing to narrate.
+func (a *app) utterance() string {
 	text := ""
 	for _, n := range a.nodes {
 		if n.State&appkit.StateFocused != 0 && n.Name != "" {
@@ -192,15 +215,35 @@ func (a *app) speak() {
 	if text == "" && len(a.nodes) > 0 {
 		text = a.nodes[0].Name + ", " + vi.Itoa64(int64(len(a.nodes))) + " nodes"
 	}
-	text = speech.Clamp(text)
+	return speech.Clamp(text)
+}
+
+// narrate is the announce-on-change verb pair (M197b): -announce prints
+// the utterance on the console, -say stages it as a SAY intent marker
+// the seat signs into a SPEAK record (M186d, ADR 0051 V2-D8). Both verbs
+// share the (win, utterance) dedup: a focus move re-announces even a
+// repeated utterance — the context changed — a live-region row update
+// announces the new name, and an outline churn that leaves the
+// utterance alone is silence on both verbs.
+func (a *app) narrate() {
+	text := a.utterance()
 	if text == "" {
 		return
 	}
-	if r := sayStage(text); r != "" {
-		console(markerSayRefused + r)
+	if a.annSet && a.annWin == a.win && a.annText == text {
 		return
 	}
-	console(markerSayQueued + vi.Itoa64(int64(len(text))))
+	a.annSet, a.annWin, a.annText = true, a.win, text
+	if a.announce {
+		console(markerAnnounce + text)
+	}
+	if a.say {
+		if r := sayStage(text); r != "" {
+			console(markerSayRefused + r)
+			return
+		}
+		console(markerSayQueued + vi.Itoa64(int64(len(text))))
+	}
 }
 
 func bytesEq(a, b []byte) bool {
@@ -291,15 +334,20 @@ func main() {
 	} else {
 		vi.ConsoleLine(markerRefused)
 	}
-	// -say: every changed outline also stages a SAY intent marker —
-	// the reader's voice on the host speech lane (M186d).
+	// The narration verbs (M197b): -announce prints each new utterance
+	// as `goa11y: announce <text>`; -say also stages it as a SAY intent
+	// marker — the reader's voice on the host speech lane (M186d).
 	say := false
+	announce := false
 	for _, arg := range vi.Args()[1:] {
-		if arg == "-say" {
+		switch arg {
+		case "-say":
 			say = true
+		case "-announce":
+			announce = true
 		}
 	}
-	a := &app{ta: ta, self: uint32(ta.Win), say: say}
+	a := &app{ta: ta, self: uint32(ta.Win), say: say, announce: announce}
 	// The first poll runs before the first frame so the initial paint is
 	// a real state, then the 500 ms timer owns the cadence.
 	_ = a.poll()
