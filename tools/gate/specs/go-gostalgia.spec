@@ -36,6 +36,16 @@
 #           -> a marker-triggered raw-framebuffer snapshot whose glyph
 #           decode proves the seeded document byte-exact -> typed `exit`
 #           -> status 0, window gone, focus on the desktop.
+#   run 09: M195a (#3306) durable home, write half — a launcher-exec'd
+#           shell (the seat hands focus, no hardcoded window id) pastes a
+#           clip-seeded `call fs/write` that lands keep.txt under
+#           /users/guest, which the card's mount binds to /host/GS/home;
+#           share-equals proves the bytes are on the armed share (a
+#           memory-backed env could never put them there).
+#   run 10: durable home, readback half — a fresh boot over the same
+#           share mounts the same host root and `type keep.txt` answers
+#           fs/read ok: bytes written by a process that no longer exists,
+#           on a boot that never ran it.
 #
 # HOST PREREQUISITE: `.build/go/GSSMOKE.ELF` and `.build/go/GOSTALGIA.ELF`
 # via `bash tools/go/build-gostalgia.sh` (overlay leg; --no-overlay is the
@@ -1669,6 +1679,140 @@ PY
 
 # Repeat-cycle hygiene, same as tags 05-07.
 vgate_assert 08 python <<'PY'
+import os
+share = os.environ.get("VG_SHARE")
+st = os.path.join(share, "SESSION.TABS") if share else None
+if st and os.path.exists(st):
+    os.remove(st)
+    print("between-run cleanup: SESSION.TABS removed (repeat hygiene)")
+else:
+    print("between-run cleanup: no SESSION.TABS (nothing to remove)")
+PY
+
+# --- boot 09: durable /users/guest — the write half (M195a #3306) --------
+# The card's mount binds the shell's home to a gsport/vfs HostFS over
+# /host/GS/home. This boot proves the write half: a file created through
+# the shell's own fs service lands ON THE SHARE — a memory-backed env
+# could never put it there. Boot 10's fresh shell reads it back.
+# Launch goes through the seat's own launcher (run 08's path), never a
+# monitor exec + `dui focus <n>` — the hosted window's id is the boot's
+# own numbering, and a hardcoded id can hand focus to a chrome window.
+#   procs: count=         -> --input-key Return on the empty strip: the
+#                          start surface's affordance opens the launcher.
+#   launcher open         -> --input-string types the `gostalgia` filter +
+#                          Return; the seat execs the v2 row's argv and
+#                          hands the new window keyboard focus itself.
+#   ready endpoint=       -> script-09b seeds the kernel clipboard with
+#                          `call fs/write {"path":"/users/guest/keep.txt",
+#                          ...}` — `clip <text>` is the only channel that
+#                          carries JSON byte-exact (run 08's lesson).
+#   call app/list ok      -> --input-chords: settle spaces, ctrl-shift-v +
+#                          Return — the pasted write submits while the
+#                          model is idle.
+#   call fs/write ok      -> --input-chords2: `exit` — the write receipt
+#                          is the honest gate; a refused write leaves the
+#                          chords unfired and the run to its timeout.
+#   exited status=0       -> KEEP.TXT must still be on the share for
+#                          boot 10 — share-equals pins its bytes.
+vgate_file script-09.txt <<'EOF'
+procs
+EOF
+
+vgate_file script-09b.txt <<'EOF'
+clip call fs/write '{"path":"/users/guest/keep.txt","data_base64":"bTE5NWEgZHVyYWJsZSBob21lCg=="}'
+EOF
+
+vgate_file keep-09.expected <<'EOF'
+m195a durable home
+EOF
+
+vgate_run 09 -- \
+    --screen '$RUN_DIR/gos-09' \
+    --input --via-virtio \
+    --script '$RUN_DIR/script-09.txt' \
+    --script-after 'gotabwm: present' \
+    --input-key 36 \
+    --input-key-after 'procs: count=' \
+    --input-string $'gostalgia\n' \
+    --input-string-after 'gotabwm: launcher open n=' \
+    --script2 '$RUN_DIR/script-09b.txt' \
+    --script2-after 'gostalgia: ready endpoint=' --script2-delay 1 \
+    --input-chords 'space,space,space,space,space,space,space,space,ctrl-shift-v,return,space,space,space,space,space,space,space,space' \
+    --input-chords-after 'gostalgia: call app/list ok' \
+    --input-chords2 'space,space,space,space,space,space,space,space,space,space,space,space,e,x,i,t,space,space,space,space,space,space,space,space,return' \
+    --input-chords2-after 'gostalgia: call fs/write ok' \
+    --script-expect 'procs GOSTALGIA.ELF exited status=0' --timeout 240
+
+vgate_assert 09 serial-contains 'gotabwm: launcher exec GOSTALGIA.ELF'
+vgate_assert 09 serial-contains 'gostalgia: tty attached window='
+vgate_assert 09 serial-contains 'gostalgia: home durable root=/host/GS/home'
+vgate_assert 09 serial-absent 'gostalgia: home memory'
+vgate_assert 09 serial-contains 'tty: paste '
+vgate_assert 09 serial-contains 'gostalgia: call fs/write ok'
+vgate_assert 09 serial-contains 'gostalgia: shutdown reason=shell exited'
+vgate_assert 09 serial-contains 'gostalgia: done'
+vgate_assert 09 serial-contains 'procs GOSTALGIA.ELF exited status=0'
+vgate_assert 09 serial-absent '[EXC] parking:'
+vgate_assert 09 serial-absent 'exited status=139'
+vgate_assert 09 serial-absent 'panic:'
+vgate_assert 09 share-equals 'GS/home/keep.txt' keep-09.expected
+
+# Between-run hygiene for boot 10 — same two writes as tags 02-08: a
+# SESSION.TABS row from this boot's declare would restore a dead-id
+# placeholder, and the medium rung is the cell math's assumption.
+vgate_assert 09 python <<'PY'
+import os, sys
+share = os.environ.get("VG_SHARE")
+if not share:
+    sys.exit("no armed share exported to the assert")
+st = os.path.join(share, "SESSION.TABS")
+if os.path.exists(st):
+    os.remove(st)
+    print("between-run cleanup: SESSION.TABS removed before boot 10")
+with open(os.path.join(share, "SETTINGS.TXT"), "w") as f:
+    f.write("#v2\n")
+print("between-run restore: SETTINGS.TXT back to defaults")
+PY
+
+# --- boot 10: durable home — the readback half ---------------------------
+# A fresh boot over the same share: the shell mounts the same host root
+# (`home durable` again), and `type keep.txt` — all lowercase, so plain
+# chords carry it — answers `call fs/read ok`: bytes written by a process
+# that no longer exists, on a boot that never ran it. The exit chords
+# wait on that receipt, so a missing file ends the run on the timeout,
+# never a false pass.
+vgate_file script-10.txt <<'EOF'
+procs
+EOF
+
+vgate_run 10 -- \
+    --screen '$RUN_DIR/gos-10' \
+    --input --via-virtio \
+    --script '$RUN_DIR/script-10.txt' \
+    --script-after 'gotabwm: present' \
+    --input-key 36 \
+    --input-key-after 'procs: count=' \
+    --input-string $'gostalgia\n' \
+    --input-string-after 'gotabwm: launcher open n=' \
+    --input-chords 'space,space,space,space,space,space,space,space,t,y,p,e,space,k,e,e,p,.,t,x,t,return,space,space,space,space,space,space,space,space' \
+    --input-chords-after 'gostalgia: call app/list ok' \
+    --input-chords2 'space,space,space,space,space,space,space,space,space,space,space,space,e,x,i,t,space,space,space,space,space,space,space,space,return' \
+    --input-chords2-after 'gostalgia: call fs/read ok' \
+    --script-expect 'procs GOSTALGIA.ELF exited status=0' --timeout 240
+
+vgate_assert 10 serial-contains 'gotabwm: launcher exec GOSTALGIA.ELF'
+vgate_assert 10 serial-contains 'gostalgia: tty attached window='
+vgate_assert 10 serial-contains 'gostalgia: home durable root=/host/GS/home'
+vgate_assert 10 serial-contains 'gostalgia: call fs/read ok'
+vgate_assert 10 serial-contains 'gostalgia: shutdown reason=shell exited'
+vgate_assert 10 serial-contains 'gostalgia: done'
+vgate_assert 10 serial-contains 'procs GOSTALGIA.ELF exited status=0'
+vgate_assert 10 serial-absent '[EXC] parking:'
+vgate_assert 10 serial-absent 'exited status=139'
+vgate_assert 10 serial-absent 'panic:'
+
+# Repeat-cycle hygiene, same as tags 05-08.
+vgate_assert 10 python <<'PY'
 import os
 share = os.environ.get("VG_SHARE")
 st = os.path.join(share, "SESSION.TABS") if share else None
