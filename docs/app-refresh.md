@@ -67,7 +67,7 @@ at all, and `--stale` sorts those rows first.
 | Tabbed Desktop | TABWM.BIN |  #3226 | 2026-10-23 | docs litterbox touched the fallback source |
 | Gostalgia | GOSTALGIA.ELF | #3306 | 2026-10-23 | durable /users/guest home over gsport/vfs HostFS |
 | Store | GOSTORE.ELF |  #3188 | 2026-10-23 | store pin — signed-head rollback + ReleaseDepends |
-| LLM Infer | GOINFER.ELF |  #2784 | 2026-10-20 | engine becomes user/go/infer |
+| LLM Infer | GOINFER.ELF |  #3310 | 2026-10-24 | appver-1 envelope — armed journey + weights path + log tail; first owning spec |
 | Recorder | GOREC.ELF |  #3178 | 2026-10-22 | extract user/go/pcm (with GOSOUND) |
 | Snapshots | GOSNAP.ELF |  #3308 | 2026-10-24 | appver 1 envelope — selection + field round-trip on the windowed face |
 | Assistant | GOASSIST.ELF |  #3145 | 2026-10-22 | romaji→kana composition in a text field |

@@ -60,7 +60,7 @@ All of them additionally answer to the schema-v2 manifest grammar
 | Tabbed Desktop | app | TABWM.BIN | — | tools/gate/specs/live-tabwm.spec, ADR 0034 | retained-fallback |
 | Gostalgia | app | GOSTALGIA.ELF | — | tools/gate/specs/go-gostalgia.spec | shipped |
 | Store | app | GOSTORE.ELF | — | tools/gate/specs/go-gostore.spec | shipped |
-| LLM Infer | app | GOINFER.ELF | — | tools/gate/specs/live-gpu3d.spec | shipped |
+| LLM Infer | app | GOINFER.ELF | appver 1 | tools/gate/specs/go-infer.spec | shipped |
 | Recorder | app | GOREC.ELF | — | tools/gate/specs/live-sound-record.spec | shipped |
 | Snapshots | app | GOSNAP.ELF | appver 1 | tools/gate/specs/go-snap.spec | shipped |
 | Assistant | app | GOASSIST.ELF | appver 2 | tools/gate/specs/go-assist.spec | shipped |

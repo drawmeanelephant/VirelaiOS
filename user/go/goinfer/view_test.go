@@ -9,7 +9,9 @@ import (
 	"testing"
 
 	"virelai/gpu3d"
+	"virelai/infer"
 	"virelai/tabapp"
+	"virelai/vi"
 )
 
 func (v *inferView) hasLine(sub string) bool {
@@ -124,6 +126,150 @@ func TestViewLogBounded(t *testing.T) {
 	}
 	if len(v.lines) != viewLogMax {
 		t.Fatalf("log n=%d, want %d", len(v.lines), viewLogMax)
+	}
+}
+
+// --- M195e (#3310): the appver-1 state envelope -------------------------
+
+// A stub journey's armed state and the whole log tail encode and decode
+// back identically — the blob the seat stores is the blob the app wrote.
+func TestStateRoundTrip(t *testing.T) {
+	h := newFakeHost()
+	v := newInferView(&tabapp.TabApp{W: viewW, H: viewH}, h)
+	v.journey("stub")
+	st, ok := decodeState(v.encodeState())
+	if !ok {
+		t.Fatal("a blob the app just wrote refused to decode")
+	}
+	if st.journey != "stub" || st.path != "" {
+		t.Fatalf("journey/path = %q/%q, want stub/''", st.journey, st.path)
+	}
+	if len(st.tail) != len(v.lines) {
+		t.Fatalf("tail n=%d, want %d", len(st.tail), len(v.lines))
+	}
+	for i := range st.tail {
+		if st.tail[i] != v.lines[i] {
+			t.Fatalf("tail[%d] drifted: %q vs %q", i, st.tail[i], v.lines[i])
+		}
+	}
+}
+
+// The apply path: a stored envelope replays its tail on the reopened
+// view and re-arms the journey — but runs NOTHING (no compute session
+// opens, the press stays the person's). A foreign appver and a torn
+// blob refuse by name; no blob is a silent fresh start.
+func TestApplyRestored(t *testing.T) {
+	src := newInferView(&tabapp.TabApp{W: viewW, H: viewH}, newFakeHost())
+	src.journey("stub")
+	st, ok := decodeState(src.encodeState())
+	if !ok {
+		t.Fatal("the app's own blob would not decode")
+	}
+
+	// The round trip: tail replayed, armed journey carried, nothing ran.
+	h := newFakeHost()
+	v := newInferView(&tabapp.TabApp{W: viewW, H: viewH,
+		Restored: true, RestoredVersion: stateAppVer}, h)
+	line := v.applyRestored(st, ok)
+	if line != "goinfer: state restored journey=stub tail="+vi.Itoa64(int64(len(st.tail))) {
+		t.Fatalf("restored marker = %q", line)
+	}
+	if len(h.devs) != 0 {
+		t.Fatal("a restore opened a compute session — journeys stay the person's click")
+	}
+	if !v.hasLine("goinfer: stub consistent K=5") {
+		t.Fatalf("restored tail lacks the run lines: %v", v.lines)
+	}
+	if v.armed != "stub" {
+		t.Fatalf("armed = %q, want stub", v.armed)
+	}
+
+	// No stored envelope: silent, nothing applied.
+	v = newInferView(&tabapp.TabApp{W: viewW, H: viewH}, newFakeHost())
+	if line := v.applyRestored(inferState{}, false); line != "" {
+		t.Fatalf("fresh-start apply = %q, want silence", line)
+	}
+
+	// A foreign appver refuses even though the blob decoded.
+	v = newInferView(&tabapp.TabApp{W: viewW, H: viewH,
+		Restored: true, RestoredVersion: 9}, newFakeHost())
+	if line := v.applyRestored(st, true); line != "goinfer: state refused ver=9" {
+		t.Fatalf("refused-ver marker = %q", line)
+	}
+
+	// A torn blob refuses whole — nothing applied.
+	v = newInferView(&tabapp.TabApp{W: viewW, H: viewH,
+		Restored: true, RestoredVersion: stateAppVer}, newFakeHost())
+	if line := v.applyRestored(inferState{}, false); line != "goinfer: state refused bad" {
+		t.Fatalf("refused-bad marker = %q", line)
+	}
+	if v.armed != "" || len(v.lines) != 3 {
+		t.Fatalf("a refused blob touched the view: armed=%q lines=%v", v.armed, v.lines)
+	}
+}
+
+// A restored weights path is what the next model press runs — the armed
+// journey and its path carry forward, still nobody's auto-run.
+func TestRestoredModelPathRearms(t *testing.T) {
+	src := newInferView(&tabapp.TabApp{W: viewW, H: viewH}, newFakeHost())
+	src.modelPath = "/host/GOINFER/ALT.VIW"
+	src.journey("model") // absent weights: armed, path armed with it
+	st, ok := decodeState(src.encodeState())
+	if !ok || st.journey != "model" || st.path != "/host/GOINFER/ALT.VIW" {
+		t.Fatalf("decode: ok=%v st=%+v", ok, st)
+	}
+
+	h := newFakeHost()
+	h.files["/host/GOINFER/ALT.VIW"] = infer.SynthStub()
+	v := newInferView(&tabapp.TabApp{W: viewW, H: viewH,
+		Restored: true, RestoredVersion: stateAppVer}, h)
+	line := v.applyRestored(st, ok)
+	if line != "goinfer: state restored journey=model path=/host/GOINFER/ALT.VIW tail="+vi.Itoa64(int64(len(st.tail))) {
+		t.Fatalf("restored marker = %q", line)
+	}
+	if len(h.devs) != 0 {
+		t.Fatal("a restore opened a compute session")
+	}
+	// The person's next 'm' press runs the restored path, not the card
+	// default — absent on the default, present on ALT.VIW.
+	v.journey("model")
+	if !h.hasConsole("goinfer: model answer") {
+		t.Fatalf("model run at restored path did not land: %v", h.console)
+	}
+}
+
+// runView wires the seat hooks end to end: a stored blob handed to
+// Config.RestoreState inside the (stubbed) Init surfaces as the restored
+// marker on serial once the view exists, and nothing auto-runs.
+func TestRunViewAppliesStoredEnvelope(t *testing.T) {
+	src := newInferView(&tabapp.TabApp{W: viewW, H: viewH}, newFakeHost())
+	src.journey("stub")
+	blob := src.encodeState()
+
+	var lines []string
+	oldCon, oldOpen := viewConsole, openViewWindow
+	viewConsole = func(s string) { lines = append(lines, s) }
+	openViewWindow = func(cfg tabapp.Config) *tabapp.TabApp {
+		ta := &tabapp.TabApp{Win: 9, W: viewW, H: viewH, OpenOK: true}
+		if cfg.RestoreState != nil {
+			ta.Restored = true
+			ta.RestoredVersion = cfg.StateVersion
+			cfg.RestoreState(blob)
+		}
+		return ta
+	}
+	defer func() { viewConsole, openViewWindow = oldCon, oldOpen }()
+	if rc := dispatch(nil); rc != 0 {
+		t.Fatalf("dispatch(nil) rc=%d", rc)
+	}
+	var restored bool
+	for _, l := range lines {
+		if strings.HasPrefix(l, "goinfer: state restored journey=stub") {
+			restored = true
+		}
+	}
+	if !restored {
+		t.Fatalf("no restored marker: %v", lines)
 	}
 }
 

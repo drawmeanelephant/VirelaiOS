@@ -18,6 +18,7 @@ package main
 
 import (
 	"io"
+	"strings"
 
 	uidraw "virelai/draw"
 	"virelai/infer"
@@ -78,6 +79,11 @@ type inferView struct {
 	h     *viewHost
 	lines []string
 	busy  bool
+	// armed is the last journey the person armed ("", "stub" or
+	// "model"); modelPath the weights a model journey runs with (""
+	// keeps the card default). The M195e envelope round-trips both.
+	armed     string
+	modelPath string
 }
 
 func newInferView(ta *tabapp.TabApp, inner host) *inferView {
@@ -111,7 +117,12 @@ func (v *inferView) journey(name string) {
 		return
 	}
 	v.busy = true
-	_ = run(v.h, []string{name})
+	v.armed = name
+	args := []string{name}
+	if name == "model" && v.modelPath != "" {
+		args = append(args, v.modelPath)
+	}
+	_ = run(v.h, args)
 	v.busy = false
 	if v.h.opened {
 		v.say("goinfer: session spent — close and relaunch GOINFER.ELF to run again")
@@ -200,16 +211,41 @@ func (v *inferView) repaint() {
 // `goinfer: done` anchor the console journeys print.
 func runView() int {
 	defer viewConsole("goinfer: done")
-	ta := openViewWindow(tabapp.Config{Name: appName, Title: viewTitle, X: 48, Y: 40, W: viewW, H: viewH})
+	// The M195e state hooks, the GOSNAP shape: SaveState reads the live
+	// view (the closure captures the variable, so an ask always
+	// serializes the current armed journey and log tail); RestoreState
+	// fires inside tabapp.Init before the view exists, so it only
+	// decodes — the apply lands once the window's intro lines exist.
+	var v *inferView
+	var restored inferState
+	var restoredOK bool
+	ta := openViewWindow(tabapp.Config{
+		Name: appName, Title: viewTitle, X: 48, Y: 40, W: viewW, H: viewH,
+		StateVersion: stateAppVer,
+		SaveState: func() []byte {
+			if v == nil {
+				return nil
+			}
+			return v.encodeState()
+		},
+		RestoreState: func(b []byte) { restored, restoredOK = decodeState(b) },
+	})
 	if ta == nil {
 		viewConsole("goinfer: window refused — journeys: GOINFER.ELF stub | model [path]")
 		return 1
 	}
 	viewConsole("goinfer: view open id=" + vi.Itoa64(int64(ta.Win)))
-	v := newInferView(ta, guestHost{})
+	v = newInferView(ta, guestHost{})
+	if line := v.applyRestored(restored, restoredOK); line != "" {
+		viewConsole(line)
+	}
 	v.draw()
 	ta.Present()
 	for {
+		// M195e: the seat's save ask (snapshot, tab close) is a mailbox
+		// notice nothing wakes; answer it once per pass, the same
+		// discipline PollNav keeps in the other hooked apps.
+		ta.PollStateAsk()
 		ev, r, ok := vi.PollEventRaw()
 		if !ok {
 			if r < 0 {
@@ -238,4 +274,209 @@ func runView() int {
 			}
 		}
 	}
+}
+
+// --- the M195e (#3310) appver-1 state envelope -----------------------------
+//
+// The windowed face's half of the M125a (#2586) seat-mediated
+// save/restore protocol — the same shape GOSNAP's M195c envelope keeps:
+// the seat stores the blob verbatim on the tab's session row (kind-20
+// save, kind-21 restore) and hands it back on a reopen, so a
+// close/reopen shows the last session's log tail and remembers which
+// journey was armed last. The seat owns the lifecycle; the face owns
+// the format:
+//
+//	u8  fmtVer (=stateFmtVer) — also Config's StateVersion, so the
+//	    envelope's appver and the payload agree (a stale serialization
+//	    is refused twice over)
+//	u8  flags (=0, reserved)
+//	u8  journey — 0 none / 1 stub / 2 model, the last journey the
+//	    person armed
+//	u16 pathLen | path — the weights a model journey runs with;
+//	    empty when the card default stands
+//	u8  nLines | nLines × (u16 len | bytes) — the on-window log tail
+//
+// Restore NEVER runs a journey: a reopened window shows the previous
+// session's tail and carries the armed journey and weights path
+// forward, but a run stays the person's click — a fresh process owns a
+// fresh compute session, and replaying a run would spend it without
+// being asked.
+//
+// Decode is total: a bad length, foreign fmtVer, nonzero flags, an
+// unknown journey tag, a non-canonical path, truncation or trailing
+// bytes refuse the WHOLE blob — a torn handoff never lands half-applied.
+
+const (
+	stateFmtVer = 1
+	stateAppVer = 1
+
+	// markerState prefixes the M195e envelope report: "restored
+	// journey=" / "refused <why>" — the vocabulary NOTE/GOSNAP/GOSH
+	// print for their M125a blobs.
+	markerState = "goinfer: state "
+
+	// statePathMax is the kernel's path bound (file_table.max_path_len):
+	// a stored path longer than anything the kernel could open is a
+	// foreign blob, refused before it is trusted. stateLineMax bounds
+	// one serialized log line the same way.
+	statePathMax = 512
+	stateLineMax = 1024
+)
+
+// inferState is one decoded session blob: journey is ""/"stub"/"model",
+// path the armed weights ("" = the card default), tail the on-window
+// log's last lines.
+type inferState struct {
+	journey string
+	path    string
+	tail    []string
+}
+
+func appendU16(out []byte, v int) []byte { return append(out, byte(v), byte(v>>8)) }
+
+func readU16(b []byte) int { return int(b[0]) | int(b[1])<<8 }
+
+// journeyCode maps the armed name to its wire tag; an unrecognized name
+// (none yet) is 0.
+func journeyCode(name string) byte {
+	switch name {
+	case "stub":
+		return 1
+	case "model":
+		return 2
+	}
+	return 0
+}
+
+// journeyName is journeyCode's inverse; ok=false on an unknown tag —
+// a corrupt blob, never a journey.
+func journeyName(code byte) (string, bool) {
+	switch code {
+	case 0:
+		return "", true
+	case 1:
+		return "stub", true
+	case 2:
+		return "model", true
+	}
+	return "", false
+}
+
+// canonPath reports whether p is a canonical /-rooted path — the only
+// shape a stored weights path may carry. A blob field holding "..", a
+// doubled slash or a relative name is a corrupt blob, refused whole
+// rather than steering the next model run at a path encodeState could
+// never have written.
+func canonPath(p string) bool {
+	if p == "/" {
+		return true
+	}
+	if !strings.HasPrefix(p, "/") || strings.HasSuffix(p, "/") {
+		return false
+	}
+	for _, comp := range strings.Split(p[1:], "/") {
+		if comp == "" || comp == "." || comp == ".." {
+			return false
+		}
+	}
+	return true
+}
+
+// encodeState serializes the face's durable state for the seat's save
+// ask. Bounded by construction: the log already caps at viewLogMax
+// lines and a path is a share name — the blob stays nowhere near the
+// seat's 64 KiB envelope ceiling.
+func (v *inferView) encodeState() []byte {
+	out := []byte{stateFmtVer, 0, journeyCode(v.armed)}
+	out = appendU16(out, len(v.modelPath))
+	out = append(out, v.modelPath...)
+	out = append(out, byte(len(v.lines)))
+	for _, l := range v.lines {
+		if len(l) > stateLineMax {
+			l = l[:stateLineMax]
+		}
+		out = appendU16(out, len(l))
+		out = append(out, l...)
+	}
+	return out
+}
+
+// decodeState is encodeState's strict inverse — ok=false means stale or
+// foreign, refused whole by the caller, never half-applied. Every
+// declared length is re-verified and the blob must be consumed exactly:
+// the seat carries bytes, it does not vouch for them.
+func decodeState(b []byte) (inferState, bool) {
+	var st inferState
+	if len(b) < 5 || b[0] != stateFmtVer || b[1] != 0 {
+		return st, false
+	}
+	journey, ok := journeyName(b[2])
+	if !ok {
+		return st, false
+	}
+	o := 3
+	pl := readU16(b[o : o+2])
+	o += 2
+	if pl > statePathMax || len(b)-o < pl+1 {
+		return st, false
+	}
+	path := string(b[o : o+pl])
+	o += pl
+	if pl != 0 && !canonPath(path) {
+		return st, false
+	}
+	st.path = path
+	n := int(b[o])
+	o++
+	for i := 0; i < n; i++ {
+		if len(b)-o < 2 {
+			return st, false
+		}
+		ll := readU16(b[o : o+2])
+		o += 2
+		if ll > stateLineMax || len(b)-o < ll {
+			return st, false
+		}
+		st.tail = append(st.tail, string(b[o:o+ll]))
+		o += ll
+	}
+	if o != len(b) {
+		return st, false
+	}
+	st.journey = journey
+	return st, true
+}
+
+// applyRestored lands a decoded envelope on the live view and returns
+// the marker to print — "" when the seat handed nothing over. The
+// stored tail replays into the on-window log after the intro lines and
+// the armed journey and weights path carry forward (a model press
+// re-arms the same weights) — but nothing runs: a journey stays the
+// person's click. A foreign appver or a torn blob is refused by name.
+func (v *inferView) applyRestored(st inferState, ok bool) string {
+	if v.ta == nil || !v.ta.Restored {
+		return ""
+	}
+	if v.ta.RestoredVersion != stateAppVer {
+		return markerState + "refused ver=" + vi.Itoa64(int64(v.ta.RestoredVersion))
+	}
+	if !ok {
+		return markerState + "refused bad"
+	}
+	for _, l := range st.tail {
+		v.say(l)
+	}
+	v.armed = st.journey
+	if st.path != "" {
+		v.modelPath = st.path
+	}
+	journey := st.journey
+	if journey == "" {
+		journey = "-"
+	}
+	line := markerState + "restored journey=" + journey
+	if st.path != "" {
+		line += " path=" + st.path
+	}
+	return line + " tail=" + vi.Itoa64(int64(len(st.tail)))
 }
