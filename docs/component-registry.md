@@ -81,9 +81,11 @@ All of them additionally answer to the schema-v2 manifest grammar
 
 The session share (`tools/session.sh`) stages these beside the manifest:
 the Go seat that is the boot default, the persistence tools the app-bound
-credentials name, and the generated fixtures the exec/dyn-link gates run.
-None is a catalog app, so none carries an `appver` column entry — the
-seat owns the envelope, it does not ride in one.
+credentials name, the shell set `help` advertises plus the audit's other
+named tools (issue #3397's table; staged by #3417), and the generated
+fixtures the exec/dyn-link gates run. None is a catalog app, so none
+carries an `appver` column entry — the seat owns the envelope, it does
+not ride in one.
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
@@ -91,6 +93,15 @@ seat owns the envelope, it does not ride in one.
 | OS updater | tool | GOUPD.ELF | — | tools/gate/specs/live-os-update.spec | staged |
 | Agent daemon | tool | AGENTD.ELF | — | tools/gate/specs/go-agentd.spec, ADR 0044 | staged |
 | Diff tool | tool | GODIFF.ELF | — | tools/gate/specs/go-godiff.spec | staged |
+| Ping | tool | GOPING.ELF | — | tools/gate/specs/live-n1-ping.spec | staged |
+| Web fetch | tool | GOFETCH.ELF | — | tools/gate/specs/go-fetch-https.spec | staged |
+| Netstat | tool | GONETSTAT.ELF | — | tools/gate/specs/live-netstat.spec | staged |
+| DNS lookup | tool | GODNS.ELF | — | tools/gate/specs/live-n5-dns.spec | staged |
+| Traceroute | tool | GOTRACEROUTE.ELF | — | tools/gate/specs/live-n7-traceroute.spec | staged |
+| Git client | tool | GOTGIT.ELF | — | tools/gate/specs/go-git.spec | staged |
+| SSH client | tool | GOSSH.ELF | — | tools/gate/specs/live-ssh-endpoint.spec | staged |
+| SSH server | tool | GOSSHD.ELF | — | tools/gate/specs/live-ssh-server.spec | staged |
+| HTTP server | tool | GOHTTPD.ELF | — | tools/gate/specs/live-httpd.spec | staged |
 | Release pipeline | tool | GORELEASE.ELF | ADR 0055 | ADR 0055 | staged |
 | WASM runtime | tool | WASM.BIN | — | docs/wasm-import-contract.md, tools/gate/specs/live-wasm.spec | staged |
 | QuickJS engine (now session-staged, was gate-only) | tool | QJS.BIN | ADR 0039 | ADR 0039, tools/gate/specs/live-quickjs.spec | staged |
@@ -106,24 +117,14 @@ Every `tools/go/build-*.sh` target that is neither an `image/apps.txt`
 row nor staged by `tools/session.sh`, sorted by the fleet audit (issue
 #3397 — the classification table lives there). `staged` on these rows
 means the owning class-B spec copies the binary onto its gate share;
-none of them rides the session share a daily boot sees — the shell set
-`help` advertises is the next card's staging list. `tool` rows are real
-programs driven by `exec` (windowed candidates marked * are card d's
-promotion judgement); `fixture` rows exist to serve their spec. The
-build-go.sh family is one row — eighteen generated fixtures sharing one
-builder and one naming map.
+none of them rides the session share a daily boot sees. `tool` rows are
+real programs driven by `exec` (windowed candidates marked * are the
+promotion judgement the audit reserved); `fixture` rows exist to serve
+their spec. The build-go.sh family is one row — eighteen generated
+fixtures sharing one builder and one naming map.
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| Ping | tool | GOPING.ELF | — | tools/gate/specs/live-n1-ping.spec | staged |
-| Web fetch | tool | GOFETCH.ELF | — | tools/gate/specs/go-fetch-https.spec | staged |
-| Netstat | tool | GONETSTAT.ELF | — | tools/gate/specs/live-netstat.spec | staged |
-| DNS lookup | tool | GODNS.ELF | — | tools/gate/specs/live-n5-dns.spec | staged |
-| Traceroute | tool | GOTRACEROUTE.ELF | — | tools/gate/specs/live-n7-traceroute.spec | staged |
-| Git client | tool | GOTGIT.ELF | — | tools/gate/specs/go-git.spec | staged |
-| SSH client | tool | GOSSH.ELF | — | tools/gate/specs/live-ssh-endpoint.spec | staged |
-| SSH server | tool | GOSSHD.ELF | — | tools/gate/specs/live-ssh-server.spec | staged |
-| HTTP server | tool | GOHTTPD.ELF | — | tools/gate/specs/live-httpd.spec | staged |
 | Init service supervisor | tool | INIT.ELF | — | tools/gate/specs/live-boot-order.spec, ADR 0042 | staged |
 | Paint * | tool | GOPAINT.ELF | — | tools/gate/specs/go-paint.spec | staged |
 | R3D renderer * | tool | GOR3D.ELF | — | tools/gate/specs/go-r3d.spec | staged |

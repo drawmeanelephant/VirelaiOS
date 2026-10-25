@@ -616,3 +616,88 @@ vgate_assert 08 serial-absent 'gosh: state refused'
 vgate_assert 08 serial-absent 'gotabwm: state drop'
 vgate_assert 08 serial-absent '[EXC] parking:'
 vgate_assert 08 serial-absent 'exited status=139'
+
+# ---------------------------------------------------------------------------
+# M201b (#3417): the shell set rides the session share. The audit's "stage
+# as named tool" rows (issue #3397) — the six CLIs `help` advertises plus
+# GOSSH/GOSSHD/GOHTTPD — are staged by tools/session.sh itself, so this
+# hook provisions the armed share through `session.sh --provision-only`
+# rather than a gate-local copy. SKIP_BUILD=1 reuses the .build/go products
+# the ensure pass below just verified; NO_GOTABWM=1 keeps the seat out of
+# the staging — the tools are machine wiring, not seat passengers. The
+# provisioned .virelairc is removed afterward: the monitor runs it on every
+# boot, and a stray seat line would reshape every leg in this spec.
+vgate_setup_python <<'PY'
+import os, subprocess, sys
+rd = os.environ["RUN_DIR"]
+share = os.environ.get("VG_SHARE") or os.path.join(rd, "share")
+tools = ["GOPING", "GOFETCH", "GONETSTAT", "GODNS", "GOTRACEROUTE",
+         "GOTGIT", "GOSSH", "GOSSHD", "GOHTTPD"]
+for app in tools:
+    r = subprocess.run(["bash", "tools/go/ensure-guest-elf.sh", "ensure", app],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        sys.exit("%s.ELF could not be ensured (rc=%d): %s%s"
+                 % (app, r.returncode, r.stdout, r.stderr))
+env = dict(os.environ)
+env["VIRELAI_SESSION_PROFILE"] = os.path.join(rd, "session.virelaivm")
+env["VIRELAI_SESSION_SHARE"] = share
+env["VIRELAI_SESSION_SKIP_BUILD"] = "1"
+env["VIRELAI_SESSION_NO_GOTABWM"] = "1"
+r = subprocess.run(["bash", "tools/session.sh", "--provision-only"],
+                   capture_output=True, text=True, env=env)
+sys.stdout.write(r.stdout)
+if r.returncode != 0:
+    sys.exit("session.sh --provision-only failed rc=%d: %s"
+             % (r.returncode, r.stderr))
+if "session: provisioning complete" not in r.stdout:
+    sys.exit("no provisioning-complete receipt")
+missing = [t + ".ELF" for t in tools
+           if not os.path.isfile(os.path.join(share, t + ".ELF"))]
+if missing:
+    sys.exit("session.sh did not stage: " + ", ".join(missing))
+rc = os.path.join(share, ".virelairc")
+if os.path.exists(rc):
+    os.unlink(rc)
+print("setup: session.sh staged the shell set (%d tools) on the share"
+      % len(tools))
+PY
+
+# Each `exec NAME.ELF` below is the MONITOR's load: `exec: loaded NAME.ELF`
+# only prints when the kernel's own exec resolves the binary out of the
+# share — a file session.sh never staged would answer `NAME.ELF: not found
+# on the host share` instead, which the leg also asserts absent.
+vgate_file script-09.txt <<'EOF'
+exec GOPING.ELF
+exec GOFETCH.ELF
+exec GONETSTAT.ELF
+exec GODNS.ELF
+exec GOTRACEROUTE.ELF
+exec GOTGIT.ELF
+echo rx-shell-set-ok
+EOF
+
+vgate_run 09 -- \
+    --script '$RUN_DIR/script-09.txt' \
+    --script-expect 'rx-shell-set-ok' --timeout 120
+
+vgate_assert 09 serial-contains 'exec: loaded GOPING.ELF'
+vgate_assert 09 serial-contains 'exec: loaded GOFETCH.ELF'
+vgate_assert 09 serial-contains 'exec: loaded GONETSTAT.ELF'
+vgate_assert 09 serial-contains 'exec: loaded GODNS.ELF'
+vgate_assert 09 serial-contains 'exec: loaded GOTRACEROUTE.ELF'
+vgate_assert 09 serial-contains 'exec: loaded GOTGIT.ELF'
+vgate_assert 09 serial-contains 'rx-shell-set-ok'
+vgate_assert 09 serial-absent ': not found on the host share'
+# The three daemons are staged the same way but are not exec'd here —
+# each is a resident server; their staged presence is the assertion.
+vgate_assert 09 python <<'PY'
+import os, sys
+share = os.environ.get("VG_SHARE") or os.path.join(os.environ["RUN_DIR"], "share")
+missing = [n for n in ("GOSSH.ELF", "GOSSHD.ELF", "GOHTTPD.ELF")
+           if not os.path.isfile(os.path.join(share, n))]
+if missing:
+    sys.exit("daemons missing from the session share: " + ", ".join(missing))
+PY
+vgate_assert 09 serial-absent '[EXC] parking:'
+vgate_assert 09 serial-absent 'exited status=139'
