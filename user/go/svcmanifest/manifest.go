@@ -288,7 +288,7 @@ func Validate(m Manifest) error {
 		caps := make(map[string]bool)
 		for _, cap := range s.Caps {
 			switch cap {
-			case "file", "window", "audio", "timer", "memory", "process", "debug", "net", "term":
+			case "file", "window", "audio", "timer", "memory", "process", "debug", "net", "term", "net-mdns":
 			default:
 				return refuse(BadCaps, "caps")
 			}

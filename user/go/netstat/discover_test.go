@@ -14,7 +14,7 @@ import (
 // group, 5353->5353) is asserted, not assumed.
 type fakeDisc struct {
 	snap      vi.NetStats
-	snapOK    bool
+	snapRC    int64
 	listenRC  int64
 	sendRC    int64
 	inbox     [][]byte
@@ -56,7 +56,7 @@ func (f *fakeDisc) seam() discSeam {
 			return int64(copy(buf, d))
 		},
 		close: func(port uint16) int64 { f.closed = port; return 0 },
-		stats: func() (vi.NetStats, bool) { return f.snap, f.snapOK },
+		stats: func() (vi.NetStats, int64) { return f.snap, f.snapRC },
 		sleep: func(ticks uint64) { f.sleeps += ticks },
 		log:   func(line string) { f.logs = append(f.logs, line) },
 	}
@@ -76,7 +76,7 @@ func (f *fakeDisc) has(sub string) bool {
 func bridgedFake() *fakeDisc {
 	return &fakeDisc{
 		snap:   vi.NetStats{OwnIP: [4]byte{10, 0, 0, 1}, MAC: [6]byte{2, 0, 0, 0, 0, 1}},
-		snapOK: true,
+		snapRC: vi.NetStatsBytes,
 	}
 }
 
@@ -135,22 +135,39 @@ func TestDiscNormName(t *testing.T) {
 
 func TestDiscoverRefusals(t *testing.T) {
 	// No snapshot at all — the guest cannot even read its own stats.
-	f := &fakeDisc{snapOK: false}
+	f := &fakeDisc{snapRC: 0}
 	if rc := runDiscover([]string{"_workstation._tcp"}, f.seam()); rc != 1 || !f.has("netstat: discover offline") {
 		t.Fatalf("no-snapshot: rc=%d logs=%v", rc, f.logs)
 	}
 	// A snapshot with no own IP — nothing to source a query from.
-	f = &fakeDisc{snap: vi.NetStats{}, snapOK: true}
+	f = &fakeDisc{snap: vi.NetStats{}, snapRC: vi.NetStatsBytes}
 	if rc := runDiscover([]string{"_workstation._tcp"}, f.seam()); rc != 1 || !f.has("netstat: discover offline") {
 		t.Fatalf("no-IP: rc=%d logs=%v", rc, f.logs)
 	}
 	// The observed VZ NAT signature — multicast has no LAN segment.
-	f = &fakeDisc{snap: vi.NetStats{OwnIP: [4]byte{192, 168, 64, 5}}, snapOK: true}
+	f = &fakeDisc{snap: vi.NetStats{OwnIP: [4]byte{192, 168, 64, 5}}, snapRC: vi.NetStatsBytes}
 	if rc := runDiscover([]string{"_workstation._tcp"}, f.seam()); rc != 1 || !f.has("netstat: discover needs bridged") {
 		t.Fatalf("NAT: rc=%d logs=%v", rc, f.logs)
 	}
 	if f.listened != 0 || f.sends != 0 {
 		t.Fatal("a refused browse must not bind or send")
+	}
+	// #3444: grant refusals name the missing word — the stats read rides
+	// the `net` slot group, the :5353 bind/sends the `net-mdns` service
+	// right.
+	f = &fakeDisc{snapRC: -vi.ErrEACCES}
+	if rc := runDiscover([]string{"_workstation._tcp"}, f.seam()); rc != 1 || !f.has("netstat: discover needs net") {
+		t.Fatalf("net denied: rc=%d logs=%v", rc, f.logs)
+	}
+	f = bridgedFake()
+	f.listenRC = -vi.ErrEACCES
+	if rc := runDiscover([]string{"_workstation._tcp"}, f.seam()); rc != 1 || !f.has("netstat: discover needs net-mdns") {
+		t.Fatalf("net-mdns denied at bind: rc=%d logs=%v", rc, f.logs)
+	}
+	f = bridgedFake()
+	f.sendRC = -vi.ErrEACCES
+	if rc := runDiscover([]string{"_workstation._tcp"}, f.seam()); rc != 1 || !f.has("netstat: discover needs net-mdns") {
+		t.Fatalf("net-mdns denied at send: rc=%d logs=%v", rc, f.logs)
 	}
 	// The bind is refused — a running advertiser holds 5353.
 	f = bridgedFake()

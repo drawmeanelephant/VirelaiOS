@@ -10,7 +10,8 @@
 //!     the literal `*` wildcard, which may only NARROW (never grant a word
 //!     outside the baseline — a name-only row is forgeable by rename);
 //!   - `words` — a subset of the `caps=` vocabulary (`file window audio
-//!     timer memory process debug net term`), one word = one thing.
+//!     timer memory process debug net term net-mdns`), one word = one
+//!     thing.
 //!
 //! Two sources, neither writable through the file ABI:
 //!
@@ -112,7 +113,14 @@ pub const word_process: u32 = 1 << 5;
 pub const word_debug: u32 = 1 << 6;
 pub const word_net: u32 = 1 << 7;
 pub const word_term: u32 = 1 << 8;
-pub const word_count: usize = 9;
+/// #3444 (ADR 0054 D9 amendment): the LAN discovery/advertise service
+/// right — the mDNS endpoint (UDP port 5353). Op-aware like the slot-80
+/// open class: ops pointed at the mDNS port carry THIS word in place of
+/// `net`, so a `net` grant alone never reaches the LAN's service surface
+/// and a `net-mdns` consent never opens unicast egress — each word stays
+/// one thing.
+pub const word_net_mdns: u32 = 1 << 9;
+pub const word_count: usize = 10;
 pub const baseline: u32 = (1 << word_count) - 1;
 
 /// M116b (#2468): the ambient word set — what a process no row names
@@ -124,7 +132,10 @@ pub const baseline: u32 = (1 << word_count) - 1;
 ///   - `audio` — virtio-snd drives playback AND capture since M118b —
 ///               a microphone is an exfil/surveillance source;
 ///   - `net`   — socket egress (the slot group plus the slot-80
-///               open-class ops).
+///               open-class ops);
+///   - `net-mdns` — the LAN service surface: binding :5353 puts the
+///               guest ON the LAN map and a :5353-directed send browses
+///               it — a presence right, not ambient reach.
 ///
 /// Kept — and why:
 ///
@@ -142,8 +153,9 @@ pub const baseline: u32 = (1 << word_count) - 1;
 ///                  stay inside the boundary the seat already mediates.
 ///
 /// Rows still express the whole vocabulary against `baseline` — a fleet
-/// or consented app's row keeps its `net`/`file`/`audio` words.
-pub const ambient: u32 = baseline & ~(word_file | word_audio | word_net);
+/// or consented app's row keeps its `net`/`file`/`audio`/`net-mdns`
+/// words.
+pub const ambient: u32 = baseline & ~(word_file | word_audio | word_net | word_net_mdns);
 
 /// M188a (#3186, ADR 0054 amendment): the manifest `caps=` ceiling.
 /// `image/apps.txt`'s declared words reach exec as a NARROW-ONLY bound:
@@ -157,7 +169,7 @@ pub const ambient: u32 = baseline & ~(word_file | word_audio | word_net);
 /// declare those away, they are how a process exists at all.
 pub const caps_floor: u32 = word_memory | word_process | word_debug;
 
-const vocab = [word_count][]const u8{ "file", "window", "audio", "timer", "memory", "process", "debug", "net", "term" };
+const vocab = [word_count][]const u8{ "file", "window", "audio", "timer", "memory", "process", "debug", "net", "term", "net-mdns" };
 
 comptime {
     // process.zig carries its own constants (one-way dependency); a
@@ -207,6 +219,29 @@ pub fn slot_word(number: u64) u32 {
 /// handle.
 pub fn socket_open_op(op: u64) bool {
     return op == 0 or op == 8 or op == 10;
+}
+
+/// #3444 (ADR 0054 D9 amendment): the mDNS service endpoint — UDP port
+/// 5353, the whole LAN discovery/advertise surface this stack has
+/// (no EL0 v6 datagram send exists, and mDNS-over-TCP has no codec in
+/// the tree — a TCP connect to :5353 stays an ordinary `net` open).
+pub const mdns_port: u16 = 5353;
+
+/// The op-level `net-mdns` gate — the D9 slot-group mechanism applied
+/// op-aware, like `socket_open_op`: the legacy UDP slots keep their
+/// `net` group EXCEPT an op pointed at the mDNS endpoint, which carries
+/// `net-mdns` in place of `net`. `number` is the syscall slot; `a0`/`a1`
+/// its first two register arguments — slot 9's bind port is a0, slots
+/// 10/84's DESTINATION port is a1. Handle ops on a bound :5353 (recv,
+/// close, send_from's caller-owned source side) ride the word
+/// transitively: a process without `net-mdns` can never have bound the
+/// port it must own.
+pub fn udp_mdns_op(number: u64, a0: u64, a1: u64) bool {
+    return switch (number) {
+        9 => a0 == mdns_port,
+        10, 84 => a1 == mdns_port,
+        else => false,
+    };
 }
 
 // ---------------------------------------------------------------------------
@@ -1640,14 +1675,14 @@ test "grant: word masks only narrow — no EL0 path widens past the baseline" {
         }
     }
     // The baseline itself remains the full vocabulary ceiling.
-    try std.testing.expectEqual(@as(u32, 0x1ff), baseline);
+    try std.testing.expectEqual(@as(u32, 0x3ff), baseline);
 }
 
 test "grant: the ambient floor drops the boundary words, keeps existence (M116b)" {
     init();
-    // The no-row floor: file/audio/net are row-only words now.
+    // The no-row floor: file/audio/net/net-mdns are row-only words now.
     try std.testing.expectEqual(
-        baseline & ~(word_file | word_audio | word_net),
+        baseline & ~(word_file | word_audio | word_net | word_net_mdns),
         ambient,
     );
     // debug stays: sys_ping/sys_write/sys_exit are existence verbs —
@@ -1688,6 +1723,21 @@ test "grant: word -> slot-group map follows ADR 0054 D9" {
     try std.testing.expect(socket_open_op(10));
     try std.testing.expect(!socket_open_op(1));
     try std.testing.expect(!socket_open_op(9));
+    // #3444: the mDNS endpoint is op-aware — bind :5353 and a send whose
+    // destination port is 5353 leave the `net` group for `net-mdns`;
+    // every other UDP op (and the handle-side slots) stays grouped.
+    try std.testing.expect(udp_mdns_op(9, mdns_port, 0)); // bind :5353
+    try std.testing.expect(udp_mdns_op(10, 0, mdns_port)); // send -> :5353
+    try std.testing.expect(udp_mdns_op(84, 0, mdns_port)); // send_from -> :5353
+    try std.testing.expect(!udp_mdns_op(9, 8080, 0));
+    try std.testing.expect(!udp_mdns_op(10, 0, 8080));
+    try std.testing.expect(!udp_mdns_op(84, 0, 8080));
+    try std.testing.expect(!udp_mdns_op(11, mdns_port, 0)); // recv rides the bind
+    try std.testing.expect(!udp_mdns_op(85, mdns_port, 0));
+    try std.testing.expect(!udp_mdns_op(86, mdns_port, 0)); // close likewise
+    // The word parses/serializes like any other.
+    try std.testing.expectEqual(word_net_mdns, wordBit("net-mdns").?);
+    try std.testing.expectEqualStrings("net-mdns", wordName(9));
     // Every grouped slot's word is inside the baseline by construction.
     for (0..128) |n| {
         try std.testing.expect((slot_word(n) & ~baseline) == 0);

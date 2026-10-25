@@ -110,7 +110,7 @@ func TestSemanticBounds(t *testing.T) {
 		{"disabled-invalid", func(s *Service) { s.Enabled = false; s.Class = "" }, BadClass},
 		{"duplicate-caps", func(s *Service) { s.Caps = []string{"net", "net"} }, BadCaps},
 		{"all-caps", func(s *Service) {
-			s.Caps = []string{"file", "window", "audio", "timer", "memory", "process", "debug", "net", "term"}
+			s.Caps = []string{"file", "window", "audio", "timer", "memory", "process", "debug", "net", "term", "net-mdns"}
 		}, ""},
 		{"duplicate-requires", func(s *Service) { s.Requires = []string{"b", "b"} }, DuplicateDependency},
 		{"graph-defers-required-cycle", func(s *Service) { s.Requires = []string{"a"} }, ""},

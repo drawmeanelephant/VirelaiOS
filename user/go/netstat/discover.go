@@ -75,7 +75,7 @@ type discSeam struct {
 	send   func(dst [4]byte, dstPort, srcPort uint16, b []byte) int64 // vi.UDPSendFrom
 	recv   func(port uint16, buf []byte) int64                        // vi.UDPRecvFrom
 	close  func(port uint16) int64                                    // vi.UDPClose
-	stats  func() (vi.NetStats, bool)                                 // vi.NetStatsSnapshot
+	stats  func() (vi.NetStats, int64)                                // vi.NetStatsSnapshotRC
 	sleep  func(ticks uint64)                                         // vi.Sleep
 	log    func(line string)                                          // vi.ConsoleLine
 }
@@ -86,7 +86,7 @@ func guestDiscSeam() discSeam {
 		send:   vi.UDPSendFrom,
 		recv:   vi.UDPRecvFrom,
 		close:  vi.UDPClose,
-		stats:  vi.NetStatsSnapshot,
+		stats:  vi.NetStatsSnapshotRC,
 		sleep:  vi.Sleep,
 		log:    vi.ConsoleLine,
 	}
@@ -242,7 +242,11 @@ func discBrowse(names []string, enc map[string][]byte, c *discCache, seam discSe
 		for _, name := range names {
 			seam.log("netstat: discover query " + name)
 			if rc := seam.send(mdns.Group4Bytes, mdns.Port, mdns.Port, enc[name]); rc < 0 {
-				seam.log("netstat: discover send refused rc=" + vi.Itoa64(rc))
+				if rc == -vi.ErrEACCES {
+					seam.log("netstat: discover needs net-mdns")
+				} else {
+					seam.log("netstat: discover send refused rc=" + vi.Itoa64(rc))
+				}
 				return false
 			}
 		}
@@ -359,8 +363,15 @@ func runDiscover(args []string, seam discSeam) int {
 			return 1
 		}
 	}
-	snap, ok := seam.stats()
-	if !ok || snap.OwnIP == [4]byte{} {
+	// #3444: the verb declares what it uses — `net` (the stats read above)
+	// plus the `net-mdns` service right (the :5353 ops below) — and names
+	// the absent grant rather than printing a bare errno.
+	snap, statrc := seam.stats()
+	if statrc == -vi.ErrEACCES {
+		seam.log("netstat: discover needs net")
+		return 1
+	}
+	if statrc != vi.NetStatsBytes || snap.OwnIP == [4]byte{} {
 		seam.log("netstat: discover offline")
 		return 1
 	}
@@ -369,7 +380,11 @@ func runDiscover(args []string, seam discSeam) int {
 		return 1
 	}
 	if rc := seam.listen(mdns.Port); rc < 0 {
-		seam.log("netstat: discover bind refused rc=" + vi.Itoa64(rc))
+		if rc == -vi.ErrEACCES {
+			seam.log("netstat: discover needs net-mdns")
+		} else {
+			seam.log("netstat: discover bind refused rc=" + vi.Itoa64(rc))
+		}
 		return 1
 	}
 	defer func() { _ = seam.close(mdns.Port) }()

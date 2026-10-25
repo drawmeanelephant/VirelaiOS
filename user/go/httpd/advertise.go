@@ -56,8 +56,9 @@ type advSeam struct {
 	listen func(port uint16) int64                                    // vi.UDPListen
 	send   func(dst [4]byte, dstPort, srcPort uint16, b []byte) int64 // vi.UDPSendFrom
 	close  func(port uint16) int64                                    // vi.UDPClose
-	stats  func() (vi.NetStats, bool)                                 // vi.NetStatsSnapshot
+	stats  func() (vi.NetStats, int64)                                // vi.NetStatsSnapshotRC
 	sleep  func(ticks uint64)                                         // vi.Sleep
+	log    func(line string)                                          // vi.ConsoleLine
 }
 
 func guestAdvSeam() advSeam {
@@ -65,8 +66,9 @@ func guestAdvSeam() advSeam {
 		listen: vi.UDPListen,
 		send:   vi.UDPSendFrom,
 		close:  vi.UDPClose,
-		stats:  vi.NetStatsSnapshot,
+		stats:  vi.NetStatsSnapshotRC,
 		sleep:  vi.Sleep,
+		log:    vi.ConsoleLine,
 	}
 }
 
@@ -163,12 +165,19 @@ func advertiseRecords(svcName, hostName string, port uint16, ip4 [4]byte, ip6 [1
 // console refusal — the caller exits.
 func newAdvertiser(name string, port uint16, seam advSeam) *advertiser {
 	if !validateAdvertiseName(name) {
-		vi.ConsoleLine("httpd: advertise bad name")
+		seam.log("httpd: advertise bad name")
 		return nil
 	}
-	snap, ok := seam.stats()
-	if onNatAttachment(snap, ok) {
-		vi.ConsoleLine("httpd: advertise needs bridged")
+	// #3444: --advertise declares `net` (this stats read plus the served
+	// listener) and the `net-mdns` service right (the :5353 bind/sends) —
+	// a refused grant is named, not folded into the bridged check.
+	snap, statrc := seam.stats()
+	if statrc == -vi.ErrEACCES {
+		seam.log("httpd: advertise needs net")
+		return nil
+	}
+	if onNatAttachment(snap, statrc == vi.NetStatsBytes) {
+		seam.log("httpd: advertise needs bridged")
 		return nil
 	}
 	a := &advertiser{
@@ -183,13 +192,13 @@ func newAdvertiser(name string, port uint16, seam advSeam) *advertiser {
 	ans, add := advertiseRecords(a.svcName, a.hostName, port, a.ip4, a.ip6, advTTL)
 	msg, err := (&mdns.Message{Response: true, Authoritative: true, Answers: ans, Additionals: add}).Encode()
 	if err != nil {
-		vi.ConsoleLine("httpd: advertise encode failed")
+		seam.log("httpd: advertise encode failed")
 		return nil
 	}
 	ans, add = advertiseRecords(a.svcName, a.hostName, port, a.ip4, a.ip6, 0)
 	bye, err := (&mdns.Message{Response: true, Authoritative: true, Answers: ans, Additionals: add}).Encode()
 	if err != nil {
-		vi.ConsoleLine("httpd: advertise encode failed")
+		seam.log("httpd: advertise encode failed")
 		return nil
 	}
 	a.announce = msg
@@ -203,10 +212,14 @@ func newAdvertiser(name string, port uint16, seam advSeam) *advertiser {
 // exits rather than run unadvertised.
 func (a *advertiser) start() bool {
 	if rc := a.seam.listen(mdns.Port); rc < 0 {
-		vi.ConsoleLine("httpd: advertise bind failed")
+		if rc == -vi.ErrEACCES {
+			a.seam.log("httpd: advertise needs net-mdns")
+		} else {
+			a.seam.log("httpd: advertise bind failed")
+		}
 		return false
 	}
-	vi.ConsoleLine("httpd: advertising " + a.svcName + " port=" + vi.Itoa64(int64(a.port)))
+	a.seam.log("httpd: advertising " + a.svcName + " port=" + vi.Itoa64(int64(a.port)))
 	if !a.emit(a.announce) {
 		return false
 	}
@@ -232,10 +245,14 @@ func (a *advertiser) start() bool {
 func (a *advertiser) emit(msg []byte) bool {
 	rc := a.seam.send(mdns.Group4Bytes, mdns.Port, mdns.Port, msg)
 	if rc < 0 {
-		vi.ConsoleLine("httpd: advertise send rc=" + vi.Itoa64(rc))
+		if rc == -vi.ErrEACCES {
+			a.seam.log("httpd: advertise needs net-mdns")
+		} else {
+			a.seam.log("httpd: advertise send rc=" + vi.Itoa64(rc))
+		}
 		return false
 	}
-	vi.ConsoleLine("httpd: advertise sent")
+	a.seam.log("httpd: advertise sent")
 	return true
 }
 
@@ -248,6 +265,6 @@ func (a *advertiser) stop() {
 			break
 		}
 	}
-	vi.ConsoleLine("httpd: advertise goodbye sent")
+	a.seam.log("httpd: advertise goodbye sent")
 	_ = a.seam.close(mdns.Port)
 }
