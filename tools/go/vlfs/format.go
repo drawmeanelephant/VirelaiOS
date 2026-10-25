@@ -44,8 +44,8 @@ const (
 	MagicCommit uint32 = 0x544D434A
 	// MagicExtent is the extent-block magic, "VXEB".
 	MagicExtent uint32 = 0x42455856
-	// Version is the v1 format version — an unsealed volume.
-	Version uint32 = 1
+	// VersionV1 is the v1 format version — an unsealed volume.
+	VersionV1 uint32 = 1
 	// Version2 is the sealed format version (ADR 0061).
 	Version2 uint32 = 2
 
@@ -361,7 +361,7 @@ func writeSuperblock(img []byte, slot uint32, g Geometry, seq, volumeID, mkfsTim
 		b[i] = 0
 	}
 	binary.LittleEndian.PutUint32(b[sbMagic:], MagicSuper)
-	binary.LittleEndian.PutUint32(b[sbVersion:], Version)
+	binary.LittleEndian.PutUint32(b[sbVersion:], VersionV1)
 	binary.LittleEndian.PutUint64(b[sbSeq:], seq)
 	binary.LittleEndian.PutUint64(b[sbVolumeID:], volumeID)
 	binary.LittleEndian.PutUint64(b[sbVolumeBytes:], g.VolumeBytes)
