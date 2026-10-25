@@ -82,6 +82,7 @@ STALE_DAYS="${STALE_DAYS:-14}"
 is_generated() {
     case "$1" in
         docs/gate-fleet-inventory.md) return 0 ;;
+        docs/component-registry.md) return 0 ;; # compiled from docs/registry/*.md (issue #3676)
         *) return 1 ;;
     esac
 }

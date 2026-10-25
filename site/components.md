@@ -11,9 +11,10 @@ canonical [component registry]
 (https://github.com/drawmeanelephant/VirelaiOS/blob/main/docs/component-registry.md),
 kept from drifting by the docs gate's freshness check (M189c): a row that
 lands in the manifest or the registry without landing here fails the build.
-Edit the registry, not this page — the table region is generated.
+Edit the row's fragment under `docs/registry/`, not this page — the
+table region is generated.
 
-<!-- BEGIN generated component-registry table (docs/component-registry.md) -->
+<!-- BEGIN generated component-registry table (docs/registry/*.md) -->
 ## Shipped apps (image/apps.txt)
 
 Every row below is a manifest row — `app` means "has an `image/apps.txt`
