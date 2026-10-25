@@ -15,10 +15,18 @@ and fails when:
     the version a non-tabapp app stamps on the envelope itself via a
     direct `PostStateSave` call — in either direction, so a new
     registration showing `—` is drift too;
+  * a `ver M.m.p` cell disagrees with the product-version const in the
+    component's own source (`AppVersion`/`Version`/`pub const version`/
+    `VER=`), in either direction — a const with no `ver` here is drift
+    too (issue #3463); and
   * a cell carries a kind/state/version token outside the grammar the
     registry documents in its "Row grammar" section.
+
+`--missing-ver` prints the non-exempt rows still lacking a `ver` token
+and exits 0 — the advisory ledger the seeding cards burn down.
 """
 import re
+import sys
 import unittest
 from glob import glob
 from pathlib import Path
@@ -37,6 +45,7 @@ ANY_BINARY_RE = re.compile(r"\b[A-Z][A-Z0-9_]{0,24}\.(?:ELF|BIN|SO|EFI)\b")
 SPEC_RE = re.compile(r"^tools/gate/specs/[A-Za-z0-9._-]+\.spec$")
 ADR_RE = re.compile(r"^ADR\s+(\d{4})$")
 APPVER_RE = re.compile(r"^appver\s+(\d+)$")
+VER_RE = re.compile(r"^ver\s+(\d+\.\d+\.\d+)$")
 PIN_RE = re.compile(r"^pin\s+(\S+)$")
 RELEASE_CONST_RE = re.compile(r"^Release[A-Z][A-Za-z0-9]*$")
 STATEVERSION_RE = re.compile(r"StateVersion:\s*([A-Za-z_][A-Za-z0-9_]*|\d+)")
@@ -171,6 +180,127 @@ def registered_state_versions(pkg_dir):
     return values
 
 
+# --- ver M.m.p resolution (issue #3463) ------------------------------------
+#
+# `ver` is the product version: one semver-shaped const in the component's
+# own source, resolved per kind the same walk app_package_dir /
+# registered_state_versions already make for `appver`. The shapes:
+#
+#   user/go package (.ELF binary)   -> const AppVersion = "M.m.p"
+#   Zig source (.BIN/.EFI binary)   -> pub const version = "M.m.p"
+#   SCRIPTS/*.JS + producer scripts -> VER="M.m.p" / VER=M.m.p
+#   Go library dir (lib row)        -> const Version = "M.m.p"
+#   Zig library unit (lib row)      -> pub const version = "M.m.p"
+#   host-tool source root           -> const Version / let version
+#
+# Only a semver-valued const counts — `pub const version: u32 = 4`
+# (handoff ABI) and "virelai-gate-roots-…" (vendored roots) are other
+# meanings of "version" and must not resolve. kernel-service rows and
+# `pin`-carrying rows are exempt: the ADR / the pin file is the surface.
+
+# Zig guest binary -> the source file that carries its version const.
+# The kernel image's is osver.zig — a version file, not main.zig, so the
+# stamp and the product version share one read site.
+ZIG_VER_SOURCES = {
+    "KERNEL.BIN": "kernel/src/osver.zig",
+    "BOOTAA64.EFI": "boot/src/main.zig",
+    "USER.BIN": "user/src/main.zig",
+    "TABWM.BIN": "user/src/tabwm.zig",
+    "SEXIBURG.BIN": "user/src/sexiburger.zig",
+    "WASM.BIN": "user/src/wasm.zig",
+}
+
+VER_CONST_RES = {
+    "go-app": re.compile(r'\bAppVersion\s*=\s*"(\d+\.\d+\.\d+)"'),
+    "go-lib": re.compile(r'\bVersion\s*=\s*"(\d+\.\d+\.\d+)"'),
+    "zig": re.compile(r'pub\s+const\s+version\s*(?::\s*\S+\s*)?=\s*"(\d+\.\d+\.\d+)"'),
+    "script": re.compile(r'^\s*VER\s*=\s*"?(\d+\.\d+\.\d+)"?\s*$', re.M),
+    "swift": re.compile(r'\bversion\s*=\s*"(\d+\.\d+\.\d+)"'),
+}
+
+
+def ver_targets(name, kind, binary, owning):
+    """(path, const-kind) pairs the row's `ver` may resolve against.
+
+    A row that declares `ver` but yields no target cannot keep the
+    promise — the check fails it. A target carrying a semver const the
+    row does not declare is drift in the other direction.
+    """
+    targets = []
+    if binary.endswith(".ELF"):
+        pkg = app_package_dir(binary)
+        if pkg:
+            const_kind = "go-lib" if kind == "lib" else "go-app"
+            targets += [
+                (go, const_kind)
+                for go in sorted(pkg.glob("*.go"))
+                if not go.name.endswith("_test.go")
+            ]
+    if binary in ZIG_VER_SOURCES:
+        targets.append((ROOT / ZIG_VER_SOURCES[binary], "zig"))
+    if kind == "script" and binary.startswith("SCRIPTS/"):
+        targets.append((ROOT / "image/scripts" / binary[8:].lower(), "script"))
+    if kind == "lib":
+        for unit in name.split("+"):
+            unit = unit.strip()
+            if unit.endswith("/"):
+                lib_dir = ROOT / "user/src/lib" / unit
+                targets += [(f, "zig") for f in sorted(lib_dir.glob("*.zig"))]
+            elif unit.endswith(".zig"):
+                f = ROOT / "user/src/lib" / unit
+                if f.exists():
+                    targets.append((f, "zig"))
+            else:
+                go_dir = ROOT / "user/go" / unit
+                targets += [
+                    (go, "go-lib")
+                    for go in sorted(go_dir.glob("*.go"))
+                    if not go.name.endswith("_test.go")
+                ]
+    if kind == "host-tool" and binary != "—":
+        root = ROOT / binary
+        if root.is_dir():
+            targets += [(f, "go-lib") for f in sorted(root.rglob("*.go"))]
+            targets += [(f, "swift") for f in sorted(root.rglob("*.swift"))]
+    # A producer script named in the owning column carries VER= (the
+    # build-go.sh fixture set, tools/mkdyn-elf.py, …).
+    for token in [t.strip() for t in owning.split(",")]:
+        if token.startswith("tools/") and token.endswith((".sh", ".py")):
+            script = ROOT / token
+            if script.is_file():
+                targets.append((script, "script"))
+    return targets
+
+
+def source_versions(targets):
+    """{semver: [files]} of every product-version const in the targets."""
+    found = {}
+    for path, const_kind in targets:
+        for m in VER_CONST_RES[const_kind].finditer(
+            path.read_text(errors="replace")
+        ):
+            found.setdefault(m.group(1), []).append(path)
+    return found
+
+
+def ver_exempt(kind, version_cell):
+    """kernel-service rows keep the owning ADR; `pin` rows keep the pin."""
+    if kind == "kernel-service":
+        return True
+    return any(t.strip().startswith("pin ") for t in version_cell.split(","))
+
+
+def missing_ver_rows():
+    """Non-exempt rows carrying no `ver` token — the seeding ledger."""
+    out = []
+    for lineno, cells in registry_rows():
+        if len(cells) != 6 or ver_exempt(cells[1], cells[3]):
+            continue
+        if not any(VER_RE.match(t.strip()) for t in cells[3].split(",")):
+            out.append((lineno, cells[0], cells[1]))
+    return out
+
+
 class TestComponentRegistry(unittest.TestCase):
     def test_row_grammar(self):
         fails = []
@@ -206,7 +336,12 @@ class TestComponentRegistry(unittest.TestCase):
             if kind == "lib" and binary != "—":
                 fails.append(f"{where}: lib row carries binary {binary!r}")
             for token in [t.strip() for t in version.split(",")]:
-                if token == "—" or APPVER_RE.match(token) or token == "osver":
+                if (
+                    token == "—"
+                    or APPVER_RE.match(token)
+                    or VER_RE.match(token)
+                    or token == "osver"
+                ):
                     continue
                 am = ADR_RE.match(token)
                 if am:
@@ -323,6 +458,51 @@ class TestComponentRegistry(unittest.TestCase):
                 )
         self.assertEqual([], fails, "appver drift:\n  " + "\n  ".join(fails))
 
+    def test_ver_matches_source_const(self):
+        fails = []
+        for lineno, cells in registry_rows():
+            if len(cells) != 6:
+                continue
+            name, kind, binary, version, owning = cells[0], cells[1], cells[2], cells[3], cells[4]
+            where = f"component-registry.md:{lineno}"
+            declared = [
+                m.group(1)
+                for m in (VER_RE.match(t.strip()) for t in version.split(","))
+                if m
+            ]
+            if len(declared) > 1:
+                fails.append(f"{where}: multiple ver tokens {declared}")
+                continue
+            found = source_versions(ver_targets(name, kind, binary, owning))
+            if len(found) > 1:
+                paths = sorted({str(p.relative_to(ROOT)) for ps in found.values() for p in ps})
+                fails.append(
+                    f"{where}: ambiguous ver consts {sorted(found)} across {paths}"
+                )
+                continue
+            if declared:
+                if not found:
+                    fails.append(
+                        f"{where}: declares ver {declared[0]} but no "
+                        "product-version const resolves in its source"
+                    )
+                elif declared[0] not in found:
+                    paths = sorted(str(p.relative_to(ROOT)) for p in next(iter(found.values())))
+                    fails.append(
+                        f"{where}: declares ver {declared[0]} but the source "
+                        f"carries {next(iter(found))} ({', '.join(paths)})"
+                    )
+            elif found:
+                # Exemption lifts the requirement to carry `ver`, never
+                # the agreement rule: a resolvable const the row does
+                # not show is drift on any row.
+                paths = sorted(str(p.relative_to(ROOT)) for p in next(iter(found.values())))
+                fails.append(
+                    f"{where}: source carries ver {next(iter(found))} "
+                    f"({', '.join(paths)}) but the row shows no ver token"
+                )
+        self.assertEqual([], fails, "ver drift:\n  " + "\n  ".join(fails))
+
     def test_osver_surface_exists(self):
         rows = [c for _, c in registry_rows() if len(c) == 6 and "osver" in c[3]]
         if rows:
@@ -331,4 +511,11 @@ class TestComponentRegistry(unittest.TestCase):
 
 
 if __name__ == "__main__":
+    if "--missing-ver" in sys.argv:
+        missing = missing_ver_rows()
+        print(f"{len(missing)} registry rows carry no ver token "
+              "(advisory — exempt: kernel-service, pin rows):")
+        for lineno, name, kind in missing:
+            print(f"  component-registry.md:{lineno}: {name} ({kind})")
+        sys.exit(0)
     unittest.main()

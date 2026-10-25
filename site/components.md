@@ -307,7 +307,7 @@ the ADR is amended, the number in this table is what changed.
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| Kernel image | kernel-service | KERNEL.BIN | osver | ADR 0004 | shipped |
+| Kernel image | kernel-service | KERNEL.BIN | osver, ver 1.0.0 | ADR 0004 | shipped |
 | Boot loader | kernel-service | BOOTAA64.EFI | — | ADR 0001 | shipped |
 | Syscall ABI | kernel-service | — | ADR 0007 | ADR 0007, ADR 0013 | shipped |
 | exec / ELF loader | kernel-service | — | ADR 0035 | ADR 0035, ADR 0038 | shipped |

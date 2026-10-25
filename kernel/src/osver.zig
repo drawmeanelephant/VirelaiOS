@@ -10,3 +10,10 @@
 //! reports the same label either way.
 
 pub var label: []const u8 = "dev";
+
+/// M204a (#3463): the kernel image's product version — the `ver M.m.p`
+/// the component registry row shows and the drift check resolves
+/// (docs/component-registry.md). Unlike `label`, which is a build stamp,
+/// this is a source-level const: the bump rule in the registry's
+/// version rule says when it moves.
+pub const version = "1.0.0";
