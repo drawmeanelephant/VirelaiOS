@@ -76,6 +76,7 @@ All of them additionally answer to the schema-v2 manifest grammar
 | Vault | app | GOVAULT.ELF | appver 1 | tools/gate/specs/go-vault.spec | shipped |
 | Mail | app | GOMAIL.ELF | — | tools/gate/specs/go-mail.spec | shipped |
 | Accessibility | app | GOA11Y.ELF | — | tools/gate/specs/go-a11y.spec | shipped |
+| Paint | app | GOPAINT.ELF | appver 1 | tools/gate/specs/go-paint.spec | shipped |
 
 ## Seat and staged tools
 
@@ -119,18 +120,16 @@ row nor staged by `tools/session.sh`, sorted by the fleet audit (issue
 #3397 — the classification table lives there). `staged` on these rows
 means the owning class-B spec copies the binary onto its gate share;
 none of them rides the session share a daily boot sees. `tool` rows are
-real programs driven by `exec` (windowed candidates marked * are the
-promotion judgement the audit reserved); `fixture` rows exist to serve
-their spec. The build-go.sh family is one row — eighteen generated
-fixtures sharing one builder and one naming map.
+real programs driven by `exec`; `fixture` rows exist to serve their
+spec. The build-go.sh family is one row — eighteen generated fixtures
+sharing one builder and one naming map.
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
 | Init service supervisor | tool | INIT.ELF | — | tools/gate/specs/live-boot-order.spec, ADR 0042 | staged |
-| Paint * | tool | GOPAINT.ELF | — | tools/gate/specs/go-paint.spec | staged |
-| R3D renderer * | tool | GOR3D.ELF | — | tools/gate/specs/go-r3d.spec | staged |
-| RSS reader * | tool | RSS.ELF | — | tools/gate/specs/go-rss.spec | staged |
-| Git UI * | tool | GOGITUI.ELF | — | tools/gate/specs/go-gitui.spec | staged |
+| R3D renderer | tool | GOR3D.ELF | — | tools/gate/specs/go-r3d.spec | staged |
+| RSS reader | tool | RSS.ELF | — | tools/gate/specs/go-rss.spec | staged |
+| Git UI | tool | GOGITUI.ELF | — | tools/gate/specs/go-gitui.spec | staged |
 | Crash viewer | tool | CRASHVIEW.ELF | — | tools/gate/specs/live-crash-viewer.spec | staged |
 | Log viewer | tool | LOGVIEW.ELF | — | tools/gate/specs/go-selftest.spec | staged |
 | Selftest runner | tool | GOSELF.ELF | — | tools/gate/specs/go-selftest.spec | staged |
@@ -162,6 +161,37 @@ fixtures sharing one builder and one naming map.
 | Big-math fixture | fixture | BTMATH.ELF | — | tools/gate/specs/go-btmath.spec | fixture |
 | GPU triangle proof | fixture | GPUTRIANGLE.ELF | — | tools/gate/specs/live-gpu3d.spec | fixture |
 | build-go.sh fixture set (GOHELLO/GOARGS/GOROUT/GOSCALE/GOSTRESS/GOPANIC/GOWIN/GONET/GOVINET/GOVIDNS/GOBIG/GOLOADBSS/GOREAD/GONETRATE/GOMBURST/GOSYSCALL/GOBIGREAD/GOSELFHOST) | fixture | — | — | tools/go/build-go.sh, tools/gate/specs/go-hello.spec | fixture |
+
+### The windowed-candidates verdict (issue #3455)
+
+The audit's four `*`-marked candidates were judged on their landed,
+gate-proven usage — one promotion, three named refusals:
+
+- **GOPAINT.ELF — promoted.** Its v2 row is not new config: the spec's
+  drop leg ran `GOPAINT.ELF | Paint | P | dock=false | v=2 | opens=image`
+  gate-locally for every drag-admission leg, and the signed
+  ReleaseManifestRow the store journey installs spells the same row. It
+  is a real interactive windowed app (brush/line/rect/fill/erase tools,
+  undo, QOI save + PNG export, drop-open, `appver 1` save_state), so the
+  row moved to `## Shipped apps` and `image/apps.txt`; the spec's share
+  setup now asserts the upstream row instead of appending it.
+- **GOR3D.ELF — refused.** The window exists to own the golden-match
+  viewport the spec snapshots (`tools/gate/specs/go-r3d.spec`): the
+  program draws one fixed scene, then its event loop answers only close
+  and the first resize (`user/go/r3d/main.go`). No argv, no `opens=`
+  surface, no state. A desk tile would launch a static picture of the
+  fill-batcher proof — the proof is already its honest row.
+- **RSS.ELF — refused.** A bound-tty tea program (the bound-window tty
+  shape): every proven launch is `exec RSS.ELF` on a share seeded with
+  RSS.OPML/RSS.CACHE and a configured net (`tools/gate/specs/go-rss.spec`).
+  A manifest row would promise a no-arg, unseeded desk launch no gate has
+  ever run, and a TUI's honest desk face is `exec` inside a terminal,
+  not a launcher tile.
+- **GOGITUI.ELF — refused.** Same bound-tty shape, and its proven
+  invocation is argv-bound — `exec GOGITUI.ELF /host/R`
+  (`tools/gate/specs/go-gitui.spec`). A session share carries no
+  guaranteed repository path, so the tile would open on a legible error
+  rather than a desk face.
 
 ## Staged art — the f-artcraft conveyor
 

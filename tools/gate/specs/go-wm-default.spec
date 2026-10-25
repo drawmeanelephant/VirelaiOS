@@ -372,9 +372,11 @@ import os, sys
 share = os.environ["VG_SHARE"]
 text = open(os.path.join(share, "APPS.TXT"), encoding="utf-8").read()
 rows = [ln for ln in text.splitlines() if ln.strip() and not ln.startswith("#")]
-if len(rows) != 29:
-    sys.exit("manifest has %d rows, want 29 (M132b #2753 appended the nine "
-             "M140-M148 reservation rows; dock stays 8)" % len(rows))
+if len(rows) != 32:
+    sys.exit("manifest has %d rows, want 32 (the pin went stale at 29: "
+             "M132b #2753's nine reservation rows, then #3192 GOMAIL and "
+             "#3212 GOA11Y shipped unpinned, and M201d #3455 adds "
+             "GOPAINT's row; dock is 9 since GOA11Y)" % len(rows))
 dock = 0
 v2 = 0
 for ln in rows:
@@ -402,8 +404,9 @@ for ln in rows:
             if tail != "v=2":
                 sys.exit("unexpected row version: %r" % ln)
             v2 += 1
-if dock != 8:
-    sys.exit("dock rows = %d, want 8 (the number the Zig mirrors claim)" % dock)
+if dock != 9:
+    sys.exit("dock rows = %d, want 9 (GOA11Y docked at #3212 — the count "
+             "the sexiburger pin claims)" % dock)
 if v2 == 0:
     sys.exit("no row declares v=2: this is the v1 file, not the v2 schema")
 print("share APPS.TXT: %d rows, %d docked, %d rows at v=2, %d bytes"
@@ -1482,7 +1485,8 @@ PY
 # --- M132b (#2753) run 21: a reserved manifest row refuses its launch by name
 #
 # APPS.TXT now carries the nine M140-M148 reservation rows; their binaries
-# ship with the app cards. The launcher decodes all 29 rows (the decode
+# ship with the app cards, and M201d (#3455) shipped GOPAINT's row. The
+# launcher decodes all 32 rows (the decode
 # receipt and the open count name it), and a click on a row whose binary
 # the share lacks is a NAMED refusal, not a silent death — the same shape
 # go-wm-seat run 17 pins for a deleted binary. GOCLOCK.ELF is staged
@@ -1519,11 +1523,11 @@ vgate_run 21 -- \
 
 vgate_assert 21 serial-contains 'wm: autostart gotabwm (settings wm=gotabwm)'
 vgate_assert 21 serial-contains 'gotabwm: mode live'
-# The live decode: all 29 manifest rows — shipped and reserved — are in
-# the seat's catalog, schema v2, 8 docked (the host-side APPS.TXT check
+# The live decode: all 32 manifest rows — shipped and reserved — are in
+# the seat's catalog, schema v2, 9 docked (the host-side APPS.TXT check
 # on boot 01 pins the file half).
-vgate_assert 21 serial-contains 'gotabwm: apps decode n=29 v=2 schema=2'
-vgate_assert 21 serial-contains 'gotabwm: launcher open n=29'
+vgate_assert 21 serial-contains 'gotabwm: apps decode n=32 v=2 schema=2'
+vgate_assert 21 serial-contains 'gotabwm: launcher open n=32'
 vgate_assert 21 serial-contains 'gotabwm: launcher filter q=goclock n=1'
 # The named refusal: the reserved row's exec was attempted and refused by
 # name — the launcher's existing missing-binary marker plus the refusal

@@ -65,9 +65,11 @@ if "NOTE.ELF" not in ser:
 share = os.environ.get("VG_SHARE") or os.path.join(os.environ["RUN_DIR"], "share")
 rows = [ln for ln in open(os.path.join(share, "APPS.TXT"), encoding="utf-8").read().splitlines()
         if ln.strip() and not ln.startswith("#")]
-if len(rows) != 29:
-    sys.exit("manifest has %d rows, want 29 (M132b #2753 appended the nine "
-             "M140-M148 reservation rows)" % len(rows))
+if len(rows) != 32:
+    sys.exit("manifest has %d rows, want 32 (the pin went stale at 29: "
+             "M132b #2753's nine reservation rows, then #3192 GOMAIL and "
+             "#3212 GOA11Y shipped unpinned, and M201d #3455 adds "
+             "GOPAINT's row)" % len(rows))
 m = re.search(r'inventory: \d+ application\(s\):\n(.*?)rx-inv-ok', ser, re.S)
 if not m:
     sys.exit("cannot isolate the inventory block in the serial log")

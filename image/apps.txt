@@ -66,3 +66,4 @@ GOIRC.ELF | IRC | / | dock=false | v=2 | caps=file,window,net | icon=ICONIRC
 GOVAULT.ELF | Vault | $ | dock=false | v=2 | caps=file,window,timer | selection=primary | icon=ICONVLT
 GOMAIL.ELF | Mail | @ | dock=false | v=2 | caps=file,net | icon=ICONMAIL
 GOA11Y.ELF | Accessibility | A | dock=true | v=2 | caps=file,window,timer | icon=ICONA11Y
+GOPAINT.ELF | Paint | P | dock=false | v=2 | opens=image
