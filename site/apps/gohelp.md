@@ -10,7 +10,7 @@ tags: [apps, showcase]
 | field | value |
 |-------|-------|
 | binary | `GOHELP.ELF` |
-| version | — |
+| version | ver 1.0.0 |
 | owning spec / contract | [`tools/gate/specs/go-help.spec`](https://github.com/drawmeanelephant/VirelaiOS/blob/main/tools/gate/specs/go-help.spec) |
 | state | shipped |
 

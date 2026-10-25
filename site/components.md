@@ -69,24 +69,24 @@ not ride in one.
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| Tabbed desktop seat | seat | GOTABWM.ELF | ADR 0033 | tools/gate/specs/go-wm-seat.spec, ADR 0033 | shipped |
-| OS updater | tool | GOUPD.ELF | — | tools/gate/specs/live-os-update.spec | staged |
-| Agent daemon | tool | AGENTD.ELF | — | tools/gate/specs/go-agentd.spec, ADR 0044 | staged |
-| Diff tool | tool | GODIFF.ELF | — | tools/gate/specs/go-godiff.spec | staged |
-| Ping | tool | GOPING.ELF | — | tools/gate/specs/live-n1-ping.spec | staged |
-| Web fetch | tool | GOFETCH.ELF | — | tools/gate/specs/go-fetch-https.spec | staged |
-| Netstat | tool | GONETSTAT.ELF | — | tools/gate/specs/live-netstat.spec | staged |
-| DNS lookup | tool | GODNS.ELF | — | tools/gate/specs/live-n5-dns.spec | staged |
-| Traceroute | tool | GOTRACEROUTE.ELF | — | tools/gate/specs/live-n7-traceroute.spec | staged |
-| Git client | tool | GOTGIT.ELF | — | tools/gate/specs/go-git.spec | staged |
-| SSH client | tool | GOSSH.ELF | — | tools/gate/specs/live-ssh-endpoint.spec | staged |
-| SSH server | tool | GOSSHD.ELF | — | tools/gate/specs/live-ssh-server.spec | staged |
-| HTTP server | tool | GOHTTPD.ELF | — | tools/gate/specs/live-httpd.spec | staged |
-| WASM runtime | tool | WASM.BIN | — | docs/wasm-import-contract.md, tools/gate/specs/live-wasm.spec | staged |
-| QuickJS engine (now session-staged, was gate-only) | tool | QJS.BIN | ADR 0039 | ADR 0039, tools/gate/specs/live-quickjs.spec | staged |
-| App-manifest report script (card d / index #3334) | script | SCRIPTS/REPORT.JS | ADR 0039 | tools/gate/specs/live-quickjs.spec | staged |
-| Zig userland root | tool | USER.BIN | — | ADR 0034 | retained-fallback |
-| Sexiburger desktop | tool | SEXIBURG.BIN | — | tools/gate/specs/live-sexiburger.spec, ADR 0034 | retained-fallback |
+| Tabbed desktop seat | seat | GOTABWM.ELF | ADR 0033, ver 1.0.0 | tools/gate/specs/go-wm-seat.spec, ADR 0033 | shipped |
+| OS updater | tool | GOUPD.ELF | ver 1.0.0 | tools/gate/specs/live-os-update.spec | staged |
+| Agent daemon | tool | AGENTD.ELF | ver 1.0.0 | tools/gate/specs/go-agentd.spec, ADR 0044 | staged |
+| Diff tool | tool | GODIFF.ELF | ver 1.0.0 | tools/gate/specs/go-godiff.spec | staged |
+| Ping | tool | GOPING.ELF | ver 1.0.0 | tools/gate/specs/live-n1-ping.spec | staged |
+| Web fetch | tool | GOFETCH.ELF | ver 1.0.0 | tools/gate/specs/go-fetch-https.spec | staged |
+| Netstat | tool | GONETSTAT.ELF | ver 1.0.0 | tools/gate/specs/live-netstat.spec | staged |
+| DNS lookup | tool | GODNS.ELF | ver 1.0.0 | tools/gate/specs/live-n5-dns.spec | staged |
+| Traceroute | tool | GOTRACEROUTE.ELF | ver 1.0.0 | tools/gate/specs/live-n7-traceroute.spec | staged |
+| Git client | tool | GOTGIT.ELF | ver 1.0.0 | tools/gate/specs/go-git.spec | staged |
+| SSH client | tool | GOSSH.ELF | ver 1.0.0 | tools/gate/specs/live-ssh-endpoint.spec | staged |
+| SSH server | tool | GOSSHD.ELF | ver 1.0.0 | tools/gate/specs/live-ssh-server.spec | staged |
+| HTTP server | tool | GOHTTPD.ELF | ver 1.0.0 | tools/gate/specs/live-httpd.spec | staged |
+| WASM runtime | tool | WASM.BIN | ver 1.0.0 | docs/wasm-import-contract.md, tools/gate/specs/live-wasm.spec | staged |
+| QuickJS engine (now session-staged, was gate-only) | tool | QJS.BIN | ADR 0039, ver 1.0.0 | ADR 0039, tools/gate/specs/live-quickjs.spec | staged |
+| App-manifest report script (card d / index #3334) | script | SCRIPTS/REPORT.JS | ADR 0039, ver 1.0.0 | tools/gate/specs/live-quickjs.spec | staged |
+| Zig userland root | tool | USER.BIN | ver 1.0.0 | ADR 0034 | retained-fallback |
+| Sexiburger desktop | tool | SEXIBURG.BIN | ver 1.0.0 | tools/gate/specs/live-sexiburger.spec, ADR 0034 | retained-fallback |
 | Hello fixture | fixture | HELLO.ELF | — | tools/gate/specs/go-hello.spec | fixture |
 | Crash fixture | fixture | CRASH.ELF | — | tools/gate/specs/live-crash-viewer.spec | fixture |
 | Dyn-link fixture set | fixture | DYNAPP.ELF | — | tools/mkdyn-elf.py, tools/gate/specs/live-dynamic-linking.spec | fixture |
@@ -120,20 +120,20 @@ sharing one builder and one naming map.
 | Guest go-build driver | tool | GOBUILD.ELF | — | tools/gate/specs/live-gobuild.spec | staged |
 | Guest compiler | tool | GOCMDCOMPILE.ELF | — | tools/gate/specs/live-gobuild.spec | staged |
 | Guest linker | tool | GOCMDLINK.ELF | — | tools/gate/specs/live-gobuild.spec | staged |
-| Release pipeline | tool | GORELEASE.ELF | ADR 0055 | tools/gate/specs/live-release.spec, ADR 0055 | staged |
+| Release pipeline | tool | GORELEASE.ELF | ADR 0055, ver 1.0.0 | tools/gate/specs/live-release.spec, ADR 0055 | staged |
 | Audio-seam proof | fixture | FART.ELF | — | tools/gate/specs/go-fart.spec | fixture |
 | Term-graphics fixture | fixture | IMGCAT.ELF | — | tools/gate/specs/live-term-graphics.spec | fixture |
 | Panic fixture | fixture | CRASHFIX.ELF | — | tools/gate/specs/live-crash-viewer.spec | fixture |
 | Log fixture | fixture | LOGFIX.ELF | — | tools/gate/specs/go-selftest.spec | fixture |
 | Charm/Bubble Tea seam proof | fixture | CHARMHELLO.ELF | — | tools/gate/specs/go-charmhello.spec | fixture |
-| Symbol-donor fixture | fixture | GOEDITSYM.ELF | — | tools/gate/specs/live-observe.spec | fixture |
+| Symbol-donor fixture | fixture | GOEDITSYM.ELF | ver 1.0.0 | tools/gate/specs/live-observe.spec | fixture |
 | Profile workload fixture | fixture | PROFFIX.ELF | — | tools/gate/specs/live-observe.spec | fixture |
 | Instrumented compiler fixture | fixture | GOCMDPROFILE.ELF | — | tools/gate/specs/live-observe.spec | fixture |
 | Trace workload fixture | fixture | TRACEFIX.ELF | — | tools/gate/specs/live-strace.spec | fixture |
 | Heap workload fixture | fixture | HEAPFIX.ELF | — | tools/gate/specs/go-stress.spec | fixture |
 | Heap budget fixture | fixture | HEAPBUDG.ELF | — | tools/gate/specs/go-stress.spec | fixture |
-| Gostalgia child fixture | fixture | GSCHILD.ELF | — | tools/gate/specs/go-gostalgia-proc.spec | fixture |
-| Gostalgia proc fixture | fixture | GSPROC.ELF | — | tools/gate/specs/go-gostalgia-proc.spec | fixture |
+| Gostalgia child fixture | fixture | GSCHILD.ELF | ver 1.0.0 | tools/gate/specs/go-gostalgia-proc.spec | fixture |
+| Gostalgia proc fixture | fixture | GSPROC.ELF | ver 1.0.0 | tools/gate/specs/go-gostalgia-proc.spec | fixture |
 | Stress storm fixture | fixture | GOSTORM.ELF | — | tools/gate/specs/go-stress.spec | fixture |
 | Supervise fixture | fixture | SVFIX.ELF | — | tools/gate/specs/live-supervise.spec | fixture |
 | Tabapp harness fixture | fixture | GOTABAPP.ELF | — | tools/gate/specs/go-tabapp.spec | fixture |
@@ -285,7 +285,7 @@ subdirectory package).
 | qoi.zig | lib | — | — | — | shipped |
 | rng.zig | lib | — | — | — | shipped |
 | script.zig | lib | — | — | ADR 0021 | shipped |
-| sexiburger.zig | lib | — | — | ADR 0034 | retained-fallback |
+| sexiburger.zig | lib | — | ver 1.0.0 | ADR 0034 | retained-fallback |
 | shell.zig | lib | — | — | ADR 0021 | shipped |
 | smpst.zig | lib | — | — | — | fixture |
 | ssh/ | lib | — | — | ADR 0025 | shipped |
