@@ -39,7 +39,14 @@ vgate_run 01 -- --net-nat --script '$RUN_DIR/script-1.txt' --script2 '$RUN_DIR/s
 vgate_assert 01 serial-contains 'net ip: ip=192.168.64.5'
 vgate_assert 01 serial-contains 'net arp: request for 192.168.64.1 sent (42 bytes)'
 vgate_assert 01 serial-contains 'net ping: echo request to 192.168.64.1 sent (46 bytes)'
-vgate_assert 01 serial-contains ' icmp=req=1,repl=0,pong=1,drop=0,fail=0,seq=1'
+# The icmp drop= sum is NOT pinned (#3429): since M198a's multicast MAC
+# admit, LAN noise (mDNS to 224.0.0.251) reaches ipv4.handle_rx on
+# --net-nat and lands in dropped_other -- ambient noise the dst gate
+# counts by design, not scripted-traffic loss. The round trip's proof
+# is req/pong/fail/seq, so the assert splits around the unpinned drop
+# field (`,fail=0,seq=` occurs only on icmp report lines).
+vgate_assert 01 serial-contains ' icmp=req=1,repl=0,pong=1,drop='
+vgate_assert 01 serial-contains ',fail=0,seq=1'
 vgate_assert 01 serial-contains 'net arp: 192.168.64.1 is at '
 vgate_assert 01 serial-contains 'net: mac=02:00:00:00:00:01 source=feature'
 vgate_assert 01 serial-contains 'net: ip=192.168.64.5 arp=req=1,repl=0,learn=1,drop=1,fail=0'
