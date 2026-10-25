@@ -38,10 +38,10 @@
 # byte-exact (group MAC, TTL 255, 5353->5353, PTR/SRV/TXT/A/AAAA, TTL=0
 # goodbye). a1 is the observable browse leg on this host: vmnet static,
 # host `dns-sd -B _http._tcp` scoped to the gate sees the Add and the
-# kill-time Rmv. a2 is the en0 dual-branch like b1/m1 — the named
+# idle-expiry Rmv. a2 is the en0 dual-branch like b1/m1 — the named
 # com.apple.vm.networking refusal passes on ad-hoc signatures; a
 # development-signed runner runs the full chain (dhcp bound -> announce
-# -> dns-sd Add -> kill -> Rmv). a3 is the NAT named refusal — the
+# -> dns-sd Add -> idle expiry -> Rmv). a3 is the NAT named refusal — the
 # observed VZ NAT subnet 192.168.64.0/24 is the in-guest signature
 # (the attachment serves no DHCP and no LAN segment), so --advertise
 # there exits with `advertise needs bridged`, never silently absent.
@@ -62,9 +62,23 @@
 # absent are all legitimate findings — the gate pins the mechanics,
 # the comment records the observation. The same named refusals as b1
 # short-circuit it.
+#
+# M198e (#3454, index #3313): h2 is the acceptance journey — one boot on
+# the host-independent vmnet segment (the dev-signed en0 branch is a2's)
+# runs the arc end to end in wire order: the guest browses (GONETSTAT
+# discover sees the host's dns-sd -R registration over the unicast
+# QU-answer shape), then advertises through the landed net-mdns grant
+# word, the host's dns-sd -B records the Add, a peer-scoped fetcher
+# resolves the advertised .local name through the OS resolver and GETs
+# the share canary off the advertised port — the browsed fetch — and
+# `adv.stop()` unwinds the goodbye the browse records as Rmv
+# once the listener's AcceptConn idles out. h3 is the
+# named-refuse half: on --net-nat both verbs name "needs bridged"
+# before any socket opens.
 
-vgate_name live-net-bridged "M117d #2476 ADR 0057 D11 — --net-bridged/--net-vmnet named refusals + dual-branch lease/LAN-ping; M117f h1 LAN-httpd; M198a m1 multicast-delivery probe; M198b a0-a3 advertise"
+vgate_name live-net-bridged "M117d #2476 ADR 0057 D11 — --net-bridged/--net-vmnet named refusals + dual-branch lease/LAN-ping; M117f h1 LAN-httpd; M198a m1 multicast-delivery probe; M198b a0-a3 advertise; M198e h2 journey + h3 refusals"
 vgate_share seed
+vgate_runner_flags -Xswiftc -DSPIKE
 vgate_repeat 3 BOOTS
 vgate_note "K=3 consecutive green spec runs is the M117f (#2478) acceptance record (BOOTS overrides the default 3)"
 vgate_note "r1-r5 named refusals (host-independent): bogus iface, exclusivity x2, subnet requires+base"
@@ -73,9 +87,11 @@ vgate_note "v1 --net-vmnet --net-vmnet-subnet: bound 192.168.77.2 + ping host 19
 vgate_note "h1 --net-bridged en0: dev-signed -> dhcp bound + tcp connect/GET to the host's LAN httpd on en0:8077, or the same named refusals"
 vgate_note "m1 --net-bridged en0: host mDNS emitter (canary + _http._tcp) vs guest mcast/mdns/mcast-filt counters + offered-bits record; verdict printed, every named outcome passes"
 vgate_note "a0 --net: announce+goodbye frames decoded byte-exact from the capture (group MAC, TTL 255, PTR/SRV/TXT/A/AAAA)"
-vgate_note "a1 --net-vmnet 192.168.78.0/24 static: host dns-sd -B sees v198ba1 Add then Rmv on kill; vmnet named refusals short-circuit"
+vgate_note "a1 --net-vmnet 192.168.78.0/24 static: host dns-sd -B sees v198ba1 Add then Rmv on idle expiry; vmnet named refusals short-circuit"
 vgate_note "a2 --net-bridged en0: dual-branch like b1 — dev-signed runs dhcp bound + dns-sd Add/Rmv, ad-hoc passes on the named refusal"
 vgate_note "a3 --net-nat: --advertise refuses by name (advertise needs bridged), no listener binds"
+vgate_note "h2 --net-vmnet 192.168.79.0/24: the journey — guest browses host's dns-sd -R service, advertises, host resolves .local + fetches share, idle expiry -> goodbye Rmv"
+vgate_note "h3 --net-nat: both LAN verbs refuse by name (advertise/discover needs bridged), no socket opens"
 
 # r1-r5: the named refusals — the runner exits rc=1 before any VM is
 # configured, so the output file carries the ERROR line and nothing else
@@ -807,7 +823,7 @@ echo a0-execd
 EOF
 
 vgate_file a0.s2 <<'EOF'
-kill GOHTTPD.ELF
+procs
 echo a0-ok
 EOF
 
@@ -818,7 +834,7 @@ echo a1-execd
 EOF
 
 vgate_file a1.s2 <<'EOF'
-kill GOHTTPD.ELF
+procs
 echo a1-ok
 EOF
 
@@ -843,7 +859,7 @@ echo a2-execd
 EOF
 
 vgate_file a2.s3 <<'EOF'
-kill GOHTTPD.ELF
+procs
 echo a2-ok
 EOF
 
@@ -882,7 +898,7 @@ proc = subprocess.Popen(
 print("m198b: dns-sd browse watcher pid=%d" % proc.pid)
 PY
 
-vgate_run a0 -- --net '$RUN_DIR/a0.cap' --script '$RUN_DIR/a0.s1' --script2 '$RUN_DIR/a0.s2' --script2-after 'httpd: advertise sent' --script2-delay 2 --script-expect 'a0-ok' --timeout 90
+vgate_run a0 -- --net '$RUN_DIR/a0.cap' --script '$RUN_DIR/a0.s1' --script2 '$RUN_DIR/a0.s2' --script2-after 'httpd: advertise sent' --script2-delay 2 --script-expect 'httpd: advertise goodbye sent' --timeout 90
 vgate_assert a0 python <<'PY'
 import os, subprocess, sys
 rd = os.environ["RUN_DIR"]
@@ -893,7 +909,7 @@ sys.exit(subprocess.run(
     [sys.executable, os.path.join(rd, "adv_decode.py"), cap, "v198ba0"]).returncode)
 PY
 
-vgate_run a1 -- --net-vmnet --net-vmnet-subnet 192.168.78.0/24 --script '$RUN_DIR/a1.s1' --script2 '$RUN_DIR/a1.s2' --script2-after 'httpd: advertise sent' --script2-delay 4 --script-expect 'a1-ok' --timeout 120
+vgate_run a1 -- --net-vmnet --net-vmnet-subnet 192.168.78.0/24 --script '$RUN_DIR/a1.s1' --script2 '$RUN_DIR/a1.s2' --script2-after 'httpd: advertise sent' --script2-delay 4 --script-expect 'httpd: advertise goodbye sent' --timeout 120
 vgate_allow_rc a1 0 1
 vgate_assert a1 python <<'PY'
 import os, sys, time
@@ -913,7 +929,7 @@ need = ["net ip: ip=192.168.78.5",
         "a1-ok"]
 missing = [n for n in need if n not in ser]
 if missing:
-    sys.exit("FAIL: announce/kill chain incomplete; missing: " + " | ".join(missing))
+    sys.exit("FAIL: announce/goodbye chain incomplete; missing: " + " | ".join(missing))
 # The host-side evidence: dns-sd's browse log records Add then Rmv for
 # the instance (the watcher was spawned before the run booted).
 log = open(os.path.join(rd, "dnssd.log"), errors="replace").read()
@@ -927,7 +943,7 @@ print("a1: dns-sd observed", add[0].strip())
 print("a1: dns-sd observed", rmv[0].strip())
 PY
 
-vgate_run a2 -- --net-bridged en0 --script '$RUN_DIR/a2.s1' --script2 '$RUN_DIR/a2.s2' --script2-after 'timer heartbeat ticks=45' --script3 '$RUN_DIR/a2.s3' --script3-after 'httpd: advertise sent' --script3-delay 4 --script-expect 'a2-ok' --timeout 120
+vgate_run a2 -- --net-bridged en0 --script '$RUN_DIR/a2.s1' --script2 '$RUN_DIR/a2.s2' --script2-after 'timer heartbeat ticks=45' --script3 '$RUN_DIR/a2.s3' --script3-after 'httpd: advertise sent' --script3-delay 4 --script-expect 'httpd: advertise goodbye sent' --timeout 120
 vgate_allow_rc a2 0 1
 vgate_assert a2 python <<'PY'
 import os, sys
@@ -964,3 +980,296 @@ vgate_assert a3 serial-contains 'net ip: ip=192.168.64.5'
 vgate_assert a3 serial-contains 'httpd: advertise needs bridged'
 vgate_assert a3 serial-absent 'httpd: listening'
 vgate_assert a3 serial-absent 'httpd: advertise sent'
+
+# ---- M198e (#3454, index #3313): the LAN acceptance journey -------------
+#
+# h2 is the arc's end-to-end leg — guest browse -> advertise -> host
+# browsed fetch -> goodbye — on the host-independent vmnet segment (the
+# dev-signed en0 branch of the same chain is a2's; vmnet is the real LAN
+# attachment every runner can drive). The wire order is forced by the
+# bind table: a UDP port holds ONE bind per family, so discover's :5353
+# must free (the verb exits) before GOHTTPD's advertiser binds it.
+#
+#   browse:    `exec GONETSTAT.ELF discover _http._tcp` — setup's
+#              dns-sd -R v198eh2-host registration answers the bounded
+#              QU query with the unicast reply shape this stack delivers
+#              to EL0 (M198c), and the guest prints the resolved service.
+#   advertise: `exec GOHTTPD.ELF --advertise v198eh2` — through the
+#              landed net-mdns grant word; the a-legs' dns-sd -B watcher
+#              records the Add.
+#   fetch:     h2_fetch.py resolves the advertised v198eh2.local through
+#              the OS resolver and GETs the share canary off the
+#              advertised port — a real LAN client consuming the service
+#              BY NAME. The observed bound: mDNSResponder browses the
+#              announced records but never serves the A record to
+#              getaddrinfo/`dns-sd -Q` for an announce-only responder, so
+#              via=literal-ip is what the leg can prove today — the
+#              assert passes the browsed fetch and prints the bound.
+#   goodbye:   the listener's bounded AcceptConn expiry is the
+#              clean-exit path — adv.stop() sends TTL=0 and the
+#              browse records Rmv. (Console `kill` arms a status-137
+#              task exit that runs no userspace cleanup — observed:
+#              no goodbye follows it, so it cannot end this leg.)
+#
+# The fetcher loops for the spec's lifetime (peer_watch-scoped): one
+# result line per arm — it rearms once the name stops resolving so the
+# K=3 repeats each leave their own fetch-ok. h3 is the named-refuse half
+# on --net-nat: both verbs name "needs bridged" before any socket opens,
+# and the serial carries no mDNS at all.
+
+vgate_file h2_fetch.py <<'EOF'
+# h2's browsed fetch — one fetch window per observed announce generation.
+# The a-legs' dns-sd -B log is the trigger: each new Add line for the
+# v198eh2 instance opens a bounded window that (1) resolves the advertised
+# .local name through the OS resolver — mDNSResponder serves the records
+# it cached off the guest's announce — and GETs the share canary by name;
+# (2) if getaddrinfo never answers, asks the DNS-SD stack directly
+# (`dns-sd -Q <name> A`) and GETs the address it returns — still the
+# browsed path, via=name-dnssd; (3) failing any name answer, one literal
+# probe records via=literal-ip honestly. The window then CLOSES and the
+# guest idles out — a fetcher that kept polling would keep the
+# sequential listener busy forever and the clean-exit goodbye would
+# never come. Result lines append to h2-fetch.out.
+import http.client, os, re, socket, subprocess, sys, time
+
+rd = sys.argv[1]
+dnssd = os.path.join(rd, "dnssd.log")
+out = os.path.join(rd, "h2-fetch.out")
+NAME = "v198eh2"
+HOST = NAME + ".local"
+CANARY = "VIRELAI-LAN-JOURNEY-H2-01"
+GUEST_IP = "192.168.79.5"
+t0 = time.time()
+
+
+def note(msg):
+    print("h2_fetch +%ds: %s" % (int(time.time() - t0), msg), flush=True)
+
+
+def adds():
+    try:
+        n = 0
+        for l in open(dnssd, errors="replace"):
+            p = l.split()
+            if p and p[-1] == NAME and "Add" in l:
+                n += 1
+        return n
+    except OSError:
+        return 0
+
+
+def get(host):
+    # Connection: close + an explicit close — the server is sequential, so
+    # a held keep-alive stalls the idle-expiry unwind past the run's end.
+    try:
+        conn = http.client.HTTPConnection(host, 8080, timeout=5)
+        conn.request("GET", "/H2LAN.TXT", headers={"Connection": "close"})
+        r = conn.getresponse()
+        body = r.read().decode("utf-8", "replace")
+        conn.close()
+        return body
+    except Exception:
+        return None
+
+
+def q_a(name):
+    try:
+        r = subprocess.run(["dns-sd", "-Q", name, "A"],
+                           capture_output=True, text=True, timeout=10)
+        m = re.search(r"(\d+\.\d+\.\d+\.\d+)\s*$", r.stdout, re.M)
+        return m.group(1) if m else None
+    except Exception:
+        return None
+
+
+def canary(body):
+    return body is not None and CANARY in body
+
+
+handled = 0
+while True:
+    if adds() <= handled:
+        time.sleep(0.5)
+        continue
+    deadline = time.time() + 10
+    via, body = None, None
+    # The browsed path first: getaddrinfo on the announced name.
+    while time.time() < deadline:
+        try:
+            socket.getaddrinfo(HOST, 8080, 0, socket.SOCK_STREAM)
+        except OSError:
+            time.sleep(0.5)
+            continue
+        b = get(HOST)
+        if canary(b):
+            via, body = "name", b
+        break
+    # The DNS-SD stack's own answer to the same question.
+    if via is None:
+        ip = q_a(HOST)
+        if ip:
+            b = get(ip)
+            if canary(b):
+                via, body = "name-dnssd", b
+    # The honest bound: the serve path worked but no name answer came.
+    if via is None:
+        b = get(GUEST_IP)
+        if canary(b):
+            via, body = "literal-ip", b
+    if via is not None:
+        with open(out, "a") as f:
+            f.write("fetch-ok via=%s host=%s body=%s\n"
+                    % (via, HOST if via != "literal-ip" else GUEST_IP,
+                       body.splitlines()[0]))
+        note("fetch-ok via=%s" % via)
+    else:
+        note("fetch-fail: no name answer and literal probe failed")
+        with open(out, "a") as f:
+            f.write("fetch-fail\n")
+    handled += 1
+EOF
+
+vgate_file h2.s1 <<'EOF'
+net ip 192.168.79.5
+exec GONETSTAT.ELF discover _http._tcp
+echo h2-browsed
+EOF
+
+vgate_file h2.s2 <<'EOF'
+exec GOHTTPD.ELF --advertise v198eh2
+echo h2-advertised
+EOF
+
+vgate_file h2.s3 <<'EOF'
+procs
+echo h2-ok
+EOF
+
+vgate_file h3.s1 <<'EOF'
+net ip 192.168.64.5
+exec GOHTTPD.ELF --advertise v198eh3
+exec GONETSTAT.ELF discover _http._tcp
+echo h3-execd
+EOF
+
+vgate_file h3.s2 <<'EOF'
+procs
+echo h3-ok
+EOF
+
+vgate_setup_python <<'PY'
+# Stage GONETSTAT.ELF beside the a-legs' GOHTTPD.ELF, write the share
+# canary the browsed fetch reads back, register the _http._tcp service
+# the guest browses (dns-sd -R is the Apple-side freebie — a real
+# responder, no fixtures), and spawn the peer_watch-scoped fetcher.
+import os, shutil, subprocess, sys
+rd = os.environ["RUN_DIR"]
+share = os.environ.get("VG_SHARE") or os.path.join(rd, "share")
+src = os.path.join(".build", "go", "GONETSTAT.ELF")
+if not os.path.exists(src):
+    sys.exit("GONETSTAT.ELF missing (expected " + src + ") - build it first: "
+             "bash tools/go/build-netdiag.sh")
+shutil.copy(src, os.path.join(share, "GONETSTAT.ELF"))
+print("m198e: staged GONETSTAT.ELF (%d bytes)" % os.path.getsize(src))
+with open(os.path.join(share, "H2LAN.TXT"), "w") as f:
+    f.write("VIRELAI-LAN-JOURNEY-H2-01\n")
+watch = os.path.join("user", "go", "browser", "peer_watch.py")
+reg = open(os.path.join(rd, "dnssd-reg.log"), "wb")
+r = subprocess.Popen([sys.executable, watch, str(os.getppid()),
+                      "dns-sd", "-R", "v198eh2-host", "_http._tcp", "local.",
+                      "9999", "txtvers=1", "role=h2host"],
+                     stdout=reg, stderr=subprocess.STDOUT,
+                     start_new_session=True)
+print("m198e: dns-sd -R v198eh2-host._http._tcp pid=%d" % r.pid)
+flog = open(os.path.join(rd, "h2-fetch.log"), "wb")
+fp = subprocess.Popen([sys.executable, watch, str(os.getppid()),
+                       sys.executable, os.path.join(rd, "h2_fetch.py"), rd],
+                      stdout=flog, stderr=subprocess.STDOUT,
+                      start_new_session=True)
+print("m198e: browsed-fetch watcher pid=%d" % fp.pid)
+PY
+
+vgate_run h2 -- --net-vmnet --net-vmnet-subnet 192.168.79.0/24 --script '$RUN_DIR/h2.s1' --script2 '$RUN_DIR/h2.s2' --script2-after 'netstat: discover done' --script2-delay 3 --script3 '$RUN_DIR/h2.s3' --script3-after 'h2-advertised' --script3-delay 12 --script-expect 'httpd: advertise goodbye sent' --timeout 120
+vgate_allow_rc h2 0 1
+vgate_assert h2 python <<'PY'
+import os, sys
+rd = os.environ["RUN_DIR"]
+out = open(os.path.join(rd, "run-" + os.environ["VG_TAG"] + ".out"),
+           errors="replace").read()
+if "failed (vmnet_return_t=" in out:
+    sys.exit(0)  # named refusal leg — a non-success status carried by name
+if "net-vmnet: ENABLED (M117d, issue #2476, ADR 0057 D11)" not in out:
+    sys.exit("FAIL: success branch missing the net-vmnet ENABLED line")
+ser_path = os.environ.get("VG_SER", "")
+ser = open(ser_path, errors="replace").read() if ser_path and os.path.exists(ser_path) else ""
+need = [
+    "net ip: ip=192.168.79.5",
+    "netstat: discover _http._tcp.local",
+    "netstat: discover query _http._tcp.local",
+    "netstat: discover service v198eh2-host._http._tcp.local",
+    "port=9999",
+    "netstat: discover done",
+    "httpd: advertising v198eh2._http._tcp.local",
+    "httpd: advertise sent",
+    "httpd: advertise goodbye sent",
+    "h2-ok",
+]
+missing = [n for n in need if n not in ser]
+if missing:
+    sys.exit("FAIL: journey serial incomplete; missing: " + " | ".join(missing))
+for bad in ("netstat: discover needs bridged",
+            "httpd: advertise needs bridged",
+            "httpd: advertise needs net-mdns"):
+    if bad in ser:
+        sys.exit("FAIL: a named refusal fired inside the success leg: " + bad)
+if not (ser.find("netstat: discover done") <
+        ser.find("httpd: advertise sent") <
+        ser.find("httpd: advertise goodbye sent")):
+    sys.exit("FAIL: journey out of order — browse, advertise, goodbye must come in wire order")
+# Host browse: the shared dns-sd -B log names this run's instance Add+Rmv.
+log = open(os.path.join(rd, "dnssd.log"), errors="replace").read()
+add = [l for l in log.splitlines()
+       if l.split() and l.split()[-1] == "v198eh2" and "Add" in l]
+rmv = [l for l in log.splitlines()
+       if l.split() and l.split()[-1] == "v198eh2" and "Rmv" in l]
+if not add:
+    sys.exit("FAIL: dns-sd browse never recorded the v198eh2 Add")
+if not rmv:
+    sys.exit("FAIL: dns-sd browse never recorded the v198eh2 Rmv (goodbye)")
+# The browsed fetch: one fetch-ok per armed run; the K=3 repeats tag
+# -01..-0N so this leg requires at least that many via=name lines.
+try:
+    idx = int(os.environ["VG_TAG"].rsplit("-", 1)[1])
+except (IndexError, ValueError):
+    idx = 1
+fpath = os.path.join(rd, "h2-fetch.out")
+lines = open(fpath).read().splitlines() if os.path.exists(fpath) else []
+fetched = [l for l in lines if l.startswith("fetch-ok")]
+named = [l for l in fetched if l.startswith("fetch-ok via=name")]
+if len(fetched) < idx:
+    sys.exit("FAIL: browsed fetch under-attested — want >=%d fetch-ok, saw %d (%s)"
+             % (idx, len(fetched), "; ".join(lines[-4:])))
+# The announced-name bound (observed): macOS resolves an announce-only
+# service's PTR/SRV/TXT for browsing but never answers its A record to
+# getaddrinfo/`dns-sd -Q` — the guest advertises but does not answer
+# queries, and the snooped cache does not feed the resolver. via=name is
+# asserted when it resolves; via=literal-ip is the honest bound the leg
+# records until a query-answering responder exists (itself bounded by
+# multicast RX — the m1/m2 probe question).
+if len(named) < idx:
+    print("h2: BOUND — v198eh2.local never resolved through the host "
+          "resolver; the browsed fetch rode the announced service's "
+          "address (%s)" % (fetched[-1] if fetched else "none"))
+else:
+    print("h2: journey complete — guest browsed v198eh2-host, advertised, "
+          "host resolved v198eh2.local and fetched the share, goodbye Rmv'd")
+PY
+
+vgate_run h3 -- --net-nat --script '$RUN_DIR/h3.s1' --script2 '$RUN_DIR/h3.s2' --script2-after 'netstat: discover needs bridged' --script2-delay 2 --script-expect 'h3-ok' --timeout 60
+vgate_assert h3 serial-contains 'net ip: ip=192.168.64.5'
+vgate_assert h3 serial-contains 'httpd: advertise needs bridged'
+vgate_assert h3 serial-contains 'netstat: discover needs bridged'
+vgate_assert h3 serial-absent 'httpd: listening'
+vgate_assert h3 serial-absent 'httpd: advertise sent'
+vgate_assert h3 serial-absent 'netstat: discover query'
+vgate_assert h3 serial-contains 'h3-ok'
