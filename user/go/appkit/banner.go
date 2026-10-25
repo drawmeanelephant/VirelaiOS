@@ -1,6 +1,7 @@
 package appkit
 
 import (
+	"virelai/art"
 	"virelai/draw"
 	"virelai/icons"
 	"virelai/theme"
@@ -293,15 +294,30 @@ func (b *ErrorBanner) Draw(c widgets.RectCanvas) {
 	if inner.Empty() {
 		return
 	}
-	// The warning mark: the icon font's triangle on a full canvas, a plain
-	// "!" on the fill-only degrade.
+	// The warning mark: the staged oops pose (MSC_OOPS, #3348 #1250) on a
+	// real pixel buffer that decodes it, the icon font's triangle on any
+	// other full canvas, a plain "!" on the fill-only degrade.
 	mark := widgets.Rect{X: inner.X, Y: inner.Y, W: 16, H: inner.H}
-	if full && b.IconFace != nil {
-		if cp, ok := icons.Codepoint("warning-triangle"); ok {
-			draw.Glyph(fc, b.IconFace, mark, mark.X, mark.Y+inner.H-4, icons.NominalPx, cp, danger)
+	mascotPainted := false
+	if bc, ok := c.(*draw.BufferCanvas); ok {
+		if m := art.Load(art.MascotOops); m != nil {
+			s := inner.H
+			if s > mark.W {
+				s = mark.W
+			}
+			draw.BlitScaled(bc, m, widgets.Rect{
+				X: mark.X, Y: mark.Y + (mark.H-s)/2, W: s, H: s})
+			mascotPainted = true
 		}
-	} else {
-		b.bannerText(c, mark, mark.X+4, mark.Y, "!", danger)
+	}
+	if !mascotPainted {
+		if full && b.IconFace != nil {
+			if cp, ok := icons.Codepoint("warning-triangle"); ok {
+				draw.Glyph(fc, b.IconFace, mark, mark.X, mark.Y+inner.H-4, icons.NominalPx, cp, danger)
+			}
+		} else {
+			b.bannerText(c, mark, mark.X+4, mark.Y, "!", danger)
+		}
 	}
 	buttons, dismiss := b.layout()
 	tx := mark.Right() + tok.PadSM

@@ -12,6 +12,7 @@ import (
 	"testing"
 	"unsafe"
 
+	"virelai/art"
 	"virelai/clockfmt"
 	"virelai/draw"
 	"virelai/theme"
@@ -754,5 +755,51 @@ func TestClockZoneRereadsOnMinuteRollover(t *testing.T) {
 	clockZoneFor(101)
 	if loads != 2 {
 		t.Fatalf("minute rollover did not re-read: %d", loads)
+	}
+}
+
+// #3348 (#1250): the staged sleep pose stands centred on the dim veil at
+// full ink; an absent asset keeps the uniform half-brightness degrade.
+func TestIdleDimPaintsStagedMascotAndDegrades(t *testing.T) {
+	art.Reset()
+	defer art.Reset()
+	saved := idleMascotShown
+	idleMascotShown = false
+	defer func() { idleMascotShown = saved }()
+
+	pix := make([]uint32, 16)
+	for i := range pix {
+		pix[i] = 0xff224466
+	}
+	art.Stage(art.MascotSleep, &draw.BufferCanvas{Pix: pix, W: 4, H: 4})
+
+	const w, h = 128, 96
+	scan := make([]byte, w*h*4)
+	for i := range asUint32(scan) {
+		asUint32(scan)[i] = 0xffabcdef
+	}
+	if got := paintIdleDim(scan, w, h); got != w*h {
+		t.Fatalf("dim pixels = %d, want %d", got, w*h)
+	}
+	sp := asUint32(scan)
+	// The 64px pose centres at (32,16) — a pixel well inside it is the
+	// staged colour, a corner stays the half-dim blend.
+	if got := sp[20*w+40]; got != 0xff224466 {
+		t.Fatalf("mascot pixel = %#08x, want %#08x", got, uint32(0xff224466))
+	}
+	if got := sp[5*w+5]; got != 0xff556677 {
+		t.Fatalf("veil pixel = %#08x, want half-brightness", got)
+	}
+	if !idleMascotShown {
+		t.Fatal("the mascot decode marker never latched")
+	}
+	art.Reset()
+	scan2 := make([]byte, w*h*4)
+	for i := range asUint32(scan2) {
+		asUint32(scan2)[i] = 0xffabcdef
+	}
+	paintIdleDim(scan2, w, h)
+	if got := asUint32(scan2)[20*w+40]; got != 0xff556677 {
+		t.Fatalf("centre pixel without the asset = %#08x, want the bare dim", got)
 	}
 }

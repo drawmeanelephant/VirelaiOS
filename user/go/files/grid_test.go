@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	"virelai/art"
+	"virelai/draw"
 	"virelai/rss/keys"
 	"virelai/vi"
 	"virelai/webrender"
@@ -507,5 +509,77 @@ func TestGridReentryAndResort(t *testing.T) {
 	}
 	if *counts["/host/FM/A.QOI"] != 1 {
 		t.Fatalf("a re-sort must not re-read cached tiles: %d reads", *counts["/host/FM/A.QOI"])
+	}
+}
+
+// stagedIconCanvas is one solid-colour 4x4 stand-in for a staged filetype
+// raster — the art.Stage shape spinner_test established.
+func stagedIconCanvas(r, g, b uint32) *draw.BufferCanvas {
+	pix := make([]uint32, 16)
+	for i := range pix {
+		pix[i] = rgb(r, g, b)
+	}
+	return &draw.BufferCanvas{Pix: pix, W: 4, H: 4}
+}
+
+// #3348: a staged filetype raster paints the icon mosaic in place of the
+// mime-word tile — directories take the folder card, unmapped families
+// keep their word, and the stats pass reports the icon count once.
+func TestGridFiletypeIcons(t *testing.T) {
+	art.Reset()
+	defer art.Reset()
+	art.Stage(art.FiletypeFolder, stagedIconCanvas(200, 160, 40))
+	art.Stage(art.FiletypeText, stagedIconCanvas(40, 90, 200))
+	files := map[string][]byte{
+		"/host/FM/A.TXT": []byte("plain text\n"),
+		"/host/FM/S.JS":  []byte("print(1)\n"),
+	}
+	countingBacker(t, files)
+	statBacker(t, map[string]int64{})
+	m := testModel(entry("SUB", true), entry("A.TXT", false), entry("S.JS", false))
+	m.handleKey(runeKey('t'))
+	for m.gridPending() {
+		m.gridStep()
+	}
+	// Sort put the dir first: SUB's folder icon, A.TXT's text icon,
+	// S.JS's uncovered family stays the word tile.
+	if got := m.gridTileAt(0).kind; got != tileIcon {
+		t.Fatalf("dir tile kind=%d, want icon", got)
+	}
+	if got := m.gridTileAt(1).kind; got != tileIcon {
+		t.Fatalf("A.TXT tile kind=%d, want icon", got)
+	}
+	if t2 := m.gridTileAt(2); t2.kind != tileWord || t2.word != "script" {
+		t.Fatalf("S.JS tile = %+v, want word script", t2)
+	}
+	got := pendingJoined(&m)
+	if !strings.Contains(got, markerGridIcons+"2") {
+		t.Fatalf("icons marker missing or wrong: %q", got)
+	}
+	// The icon mosaic paints through the image path — a truecolour cell
+	// row, not a flat plate.
+	row := m.tileMosaicRow(1, 0)
+	if !strings.Contains(row, "\x1b[48;2;") {
+		t.Fatalf("icon tile must paint cell colours: %q", row)
+	}
+	if !strings.Contains(row, "40;90;200") {
+		t.Fatalf("icon mosaic must carry the staged colour: %q", row)
+	}
+	// An absent asset is the honest degrade: no icon tile, no marker.
+	art.Reset()
+	m2 := testModel(entry("SUB", true), entry("A.TXT", false))
+	countingBacker(t, map[string][]byte{"/host/FM/A.TXT": []byte("plain text\n")})
+	m2.handleKey(runeKey('t'))
+	for m2.gridPending() {
+		m2.gridStep()
+	}
+	if got := m2.gridTileAt(0).kind; got != tileDir {
+		t.Fatalf("dir without staged art kind=%d, want the flat tile", got)
+	}
+	if got := m2.gridTileAt(1).kind; got != tileWord {
+		t.Fatalf("A.TXT without staged art kind=%d, want word", got)
+	}
+	if strings.Contains(pendingJoined(&m2), markerGridIcons) {
+		t.Fatal("icons marker must stay silent without staged art")
 	}
 }

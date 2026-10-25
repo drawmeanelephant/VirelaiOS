@@ -32,6 +32,7 @@
 package main
 
 import (
+	"virelai/art"
 	"virelai/clockfmt"
 	"virelai/draw"
 	"virelai/settings"
@@ -694,6 +695,10 @@ func startSurfaceHit(px, py uint32) bool {
 // software-blended, opaque BGRX frame: half of each colour channel remains
 // visible, but the scanout's X byte stays 0xff so VZ displays the pixels.
 // One FillRect of straight-alpha 0x80000000 is that same 50% blend.
+// idleMascotShown latches the one-time decode marker for the sleeping pose
+// on the dim veil — the same latch shape lockMascotShown keeps.
+var idleMascotShown bool
+
 func paintIdleDim(scan []byte, width, height int) int {
 	if width <= 0 || height <= 0 || len(scan) < 4 {
 		return 0
@@ -707,6 +712,18 @@ func paintIdleDim(scan []byte, width, height int) int {
 		n = width * height
 	}
 	draw.FillRect(c, widgets.Rect{X: 0, Y: 0, W: width, H: c.H}, 0x80000000)
+	// #3348 (#1250): the sleep pose stands on the veil — painted over the
+	// half-opacity fill so it reads at full ink. A share without MSC_SLEP
+	// keeps the bare dim, dressing not contract.
+	if m := art.Load(art.MascotSleep); m != nil {
+		draw.BlitScaled(c, m, widgets.Rect{
+			X: (width - 64) / 2, Y: (height - 64) / 2, W: 64, H: 64})
+		if !idleMascotShown {
+			idleMascotShown = true
+			vi.ConsoleLine(MarkerIdleMascot +
+				vi.Itoa64(int64(m.W)) + "x" + vi.Itoa64(int64(m.H)))
+		}
+	}
 	return n
 }
 

@@ -99,6 +99,10 @@ const (
 	MarkerIdleDim  = "gotabwm: idle dim"
 	MarkerIdleLock = "gotabwm: idle lock"
 	MarkerIdleWake = "gotabwm: idle wake"
+	// #3348: the first frame the staged sleep pose (MSC_SLEP) painted on
+	// the dim veil — the same decode-receipt shape the lock curtain's
+	// mascot marker already keeps.
+	MarkerIdleMascot = "gotabwm: idle mascot qoi "
 )
 
 const idleThresholdPath = "/host/GOTABWM.IDLE.TEST"

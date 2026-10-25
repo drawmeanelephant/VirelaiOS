@@ -506,6 +506,12 @@ func paintNotify(scan []byte, width, height int, ticks uint64) int {
 			notifyRule(tok, remaining), notifyFill(tok, remaining))
 		draw.StrokeRoundedRect(c, plate, radiusWindow, tok.BorderW,
 			draw.Opaque(mixRGB(tok.Border, tok.Bg, step, uint32(notifyFadeTicks))))
+		// #3348 (#1250): the crash-snap offer's toast carries the staged
+		// oops pose as a trailing badge — the text never moves, and a
+		// share without MSC_OOPS keeps the bare plate.
+		if e.action == notifyActionCrashSnap {
+			crashMascotPaint(c, widgets.Rect{X: x + w - 16, Y: y + 4, W: 12, H: 12})
+		}
 		seatText(c, plate, x+notifyTextPad, y+chromePad, seatTextPx,
 			e.text, notifyText(tok, remaining))
 	}

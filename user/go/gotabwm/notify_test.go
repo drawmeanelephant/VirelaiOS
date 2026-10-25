@@ -11,6 +11,8 @@ package main
 import (
 	"testing"
 
+	"virelai/art"
+	"virelai/draw"
 	"virelai/settings"
 	"virelai/theme"
 	"virelai/vi"
@@ -814,5 +816,47 @@ func TestNotifyReduceMotionCollapsesTheRamp(t *testing.T) {
 func TestNotifyFadeOffMarkerShape(t *testing.T) {
 	if MarkerNotifyFadeOff != "gotabwm: notify fade=off" {
 		t.Fatalf("marker = %q", MarkerNotifyFadeOff)
+	}
+}
+
+// #3348 (#1250): the crash-snap offer's toast carries the staged oops
+// pose as a trailing badge; an ordinary toast carries none.
+func TestCrashOfferToastPaintsMascotBadge(t *testing.T) {
+	resetNotify(t)
+	art.Reset()
+	defer art.Reset()
+	saved := crashMascotShown
+	crashMascotShown = false
+	defer func() { crashMascotShown = saved }()
+
+	pix := make([]uint32, 16)
+	for i := range pix {
+		pix[i] = 0xff778899
+	}
+	art.Stage(art.MascotOops, &draw.BufferCanvas{Pix: pix, W: 4, H: 4})
+	notifyPushAction(0, crashSnapToast, 0, notifyActionCrashSnap, "CRASH0", 0)
+	const w, h = 800, 600
+	scan := make([]byte, w*h*4)
+	if paintNotify(scan, w, h, 0) == 0 {
+		t.Fatal("queued toast painted no pixels")
+	}
+	px := asUint32(scan)
+	tx, ty, tw, _ := notifyRect(w, h, 0, 1)
+	// The badge stands 12px at the plate's top-right, 4px in from each
+	// edge (x+w-16, y+4).
+	if got := px[(ty+4+6)*w+tx+tw-16+6]; got != 0xff778899 {
+		t.Fatalf("badge pixel = %#08x, want the staged colour", got)
+	}
+	// An ordinary toast in the same slot paints no badge.
+	resetNotify(t)
+	notifyPush(7, "saved report", 0)
+	for i := range scan {
+		scan[i] = 0
+	}
+	if paintNotify(scan, w, h, 0) == 0 {
+		t.Fatal("ordinary toast painted no pixels")
+	}
+	if got := asUint32(scan)[(ty+4+6)*w+tx+tw-16+6]; got == 0xff778899 {
+		t.Fatal("an ordinary toast carried the crash badge")
 	}
 }

@@ -3,6 +3,7 @@ package appkit
 import (
 	"testing"
 
+	"virelai/art"
 	"virelai/draw"
 	"virelai/theme"
 	"virelai/widgets"
@@ -152,5 +153,69 @@ func TestErrorBannerDigitOutOfRange(t *testing.T) {
 	}
 	if changed, done := b.HandleKey(key(0, '1')); !changed || !done || b.Choice != "a" {
 		t.Fatalf("digit 1: changed=%v done=%v choice=%q", changed, done, b.Choice)
+	}
+}
+
+// #3348 (#1250): the staged oops pose stands in the mark cell on a real
+// pixel buffer; a fill-only canvas or an absent asset keeps the "!" or
+// triangle degrade exactly as it was.
+func TestErrorBannerMascotMark(t *testing.T) {
+	savedTheme := theme.Current
+	theme.Current = theme.Dark
+	defer func() { theme.Current = savedTheme }()
+	art.Reset()
+	defer art.Reset()
+
+	const mrgb = 0xff123456
+	pix := make([]uint32, 16)
+	for i := range pix {
+		pix[i] = mrgb
+	}
+	art.Stage(art.MascotOops, &draw.BufferCanvas{Pix: pix, W: 4, H: 4})
+
+	var b ErrorBanner
+	b.R = widgets.Rect{X: 4, Y: 4, W: 200, H: 30}
+	b.Show("save refused")
+	buf := make([]byte, 208*38*4)
+	c, err := draw.BytesCanvas(buf, 208, 38)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.Draw(c)
+	tok := theme.Current
+	inner := b.R.Inset(tok.BorderW + tok.PadSM)
+	// The mascot square is s=min(inner.H,16) at the mark's left edge,
+	// centred vertically — its centre pixel must be the staged colour.
+	s := inner.H
+	if s > 16 {
+		s = 16
+	}
+	mx, my := inner.X+s/2, inner.Y+inner.H/2
+	if got := c.Pix[my*208+mx]; got != mrgb {
+		t.Fatalf("mascot pixel = %#08x, want %#08x", got, mrgb)
+	}
+	// Without the staged raster the mark cell falls back to the "!"
+	// degrade — Danger ink, never the mascot's pixels.
+	art.Reset()
+	buf2 := make([]byte, 208*38*4)
+	c2, err := draw.BytesCanvas(buf2, 208, 38)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.Draw(c2)
+	if got := c2.Pix[my*208+mx]; got == mrgb {
+		t.Fatal("an absent asset still painted the mascot")
+	}
+	degrade := false
+	for y := inner.Y; y < inner.Y+inner.H && !degrade; y++ {
+		for x := inner.X; x < inner.X+16; x++ {
+			if c2.Pix[y*208+x] == draw.Opaque(tok.Danger) {
+				degrade = true
+				break
+			}
+		}
+	}
+	if !degrade {
+		t.Fatal("the '!' degrade painted no Danger ink in the mark cell")
 	}
 }

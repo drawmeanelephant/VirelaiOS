@@ -24,6 +24,8 @@ package main
 import (
 	"strings"
 
+	"virelai/appkit"
+	"virelai/art"
 	"virelai/mime"
 	"virelai/vi"
 	"virelai/webrender"
@@ -64,6 +66,10 @@ const (
 	tileFailed           // decode refused — placeholder while the key stands
 	tileWord             // non-image — muted tile carrying the mime word
 	tileDir              // a directory or mount-table dir — the folder tile
+	// #3348 (#1257): the staged filetype icon, downsampled to the cell
+	// mosaic — the same paint path tileImage already owns, sourced from
+	// image/art/filetypes instead of the entry's own bytes.
+	tileIcon
 )
 
 // gridTile is one resolved tile. The cache holds cell colours only (the
@@ -217,7 +223,7 @@ func (m *model) gridEmitStats() {
 		return
 	}
 	m.gridTilesEmitted = true
-	dec, fail := 0, 0
+	dec, fail, icons := 0, 0, 0
 	for i := 0; i < m.n && i < len(m.gridRef); i++ {
 		if t := m.gridRef[i]; t != nil {
 			switch t.kind {
@@ -225,11 +231,24 @@ func (m *model) gridEmitStats() {
 				dec++
 			case tileFailed:
 				fail++
+			case tileIcon:
+				icons++
 			}
+		}
+	}
+	// Directory tiles never enter the resolve queue, so their folder
+	// icons count here — the same "what the screen holds" rule the
+	// decoded/failed arms keep.
+	for i := 0; i < m.n; i++ {
+		if m.entries[i].Dir() && m.gridIconTile(art.FiletypeFolder) != nil {
+			icons++
 		}
 	}
 	m.emit(markerGridTiles + "decoded=" + vi.Itoa64(int64(dec)) +
 		" failed=" + vi.Itoa64(int64(fail)))
+	if icons > 0 {
+		m.emit(markerGridIcons + vi.Itoa64(int64(icons)))
+	}
 }
 
 // gridDecode is the one read+decode path behind every tile resolution:
@@ -245,6 +264,14 @@ func (m *model) gridDecode(k gridKey, name string) (gridTile, *webrender.Image) 
 	}
 	id := mime.Sniff(name, data)
 	if id != mime.Image {
+		// #3348: a non-image asks the picker's own mapping whether the
+		// staged family covers its type — a staged raster paints the
+		// icon mosaic, anything else keeps the mime word.
+		if an := appkit.FiletypeArt(false, name, id); an != "" {
+			if t := m.gridIconTile(an); t != nil {
+				return *t, nil
+			}
+		}
 		return gridTile{kind: tileWord, word: id.String()}, nil
 	}
 	im, err := decodeImage(data)
@@ -268,12 +295,38 @@ func (m *model) gridResolve(k gridKey, i int) {
 	}
 }
 
+// gridIconTile resolves a staged filetype raster into its cell mosaic,
+// cached per art name for the run's life (the decoded raster itself stays
+// in art.Load's own cache). An absent or refused asset answers nil — the
+// caller keeps its flat tile, the same degrade every other art seam holds.
+func (m *model) gridIconTile(name string) *gridTile {
+	if t := m.gridIcons[name]; t != nil {
+		return t
+	}
+	src := art.Load(name)
+	if src == nil || src.W < 1 || src.H < 1 || len(src.Pix) != src.W*src.H {
+		return nil
+	}
+	t := &gridTile{kind: tileIcon}
+	mosaic(&webrender.Image{Width: src.W, Height: src.H, Pix: src.Pix}, &t.cells)
+	if m.gridIcons == nil {
+		m.gridIcons = make(map[string]*gridTile)
+	}
+	m.gridIcons[name] = t
+	return t
+}
+
 // gridTileAt is the render half of the resolution: directory rows paint
-// the folder tile, non-dir mount-table rows the volume tile, resolved
-// entries their cached tile, and everything else the pending placeholder.
+// the folder tile (the staged FT_FOLD mosaic when the share carries it,
+// the flat amber word otherwise), non-dir mount-table rows the volume
+// tile, resolved entries their cached tile, and everything else the
+// pending placeholder.
 func (m *model) gridTileAt(i int) *gridTile {
 	e := m.entries[i]
 	if e.Dir() {
+		if t := m.gridIconTile(art.FiletypeFolder); t != nil {
+			return t
+		}
 		return dirTile
 	}
 	if m.path == volsPath {
@@ -613,7 +666,7 @@ func (m model) gridPaneRow(i, w int) string {
 func (m model) tileMosaicRow(idx, sub int) string {
 	t := m.gridTileAt(idx)
 	var b strings.Builder
-	if t.kind == tileImage {
+	if t.kind == tileImage || t.kind == tileIcon {
 		var last uint32
 		for x := 0; x < tileW; x++ {
 			rgb := t.cells[sub*tileW+x]

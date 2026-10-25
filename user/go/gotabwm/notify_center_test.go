@@ -3,6 +3,8 @@ package main
 import (
 	"testing"
 
+	"virelai/art"
+	"virelai/draw"
 	"virelai/theme"
 	"virelai/vi"
 )
@@ -223,5 +225,83 @@ func TestNotifyCenterFocusFailureLatchesClosedSource(t *testing.T) {
 	notifyCenterClick(uint32(rowX), uint32(rowY))
 	if calls != 1 {
 		t.Fatalf("center retried a dead source focus %d times", calls)
+	}
+}
+
+// #3348 (#1253): the empty centre paints the staged no-notifications
+// spot centred in the body band with its caption; an absent asset keeps
+// the caption-only degrade.
+func TestNotifyCenterEmptyPaintsStagedSpot(t *testing.T) {
+	resetNotify(t)
+	art.Reset()
+	defer art.Reset()
+	saved := centerSpotShown
+	centerSpotShown = false
+	defer func() { centerSpotShown = saved }()
+
+	pix := make([]uint32, 8*6)
+	for i := range pix {
+		pix[i] = 0xff335577
+	}
+	art.Stage(art.SpotNotifications, &draw.BufferCanvas{Pix: pix, W: 8, H: 6})
+	notifyCenterOpen = true
+	const w, h = 800, 600
+	scan := make([]byte, w*h*4)
+	if paintNotifyCenter(scan, w, h) == 0 {
+		t.Fatal("open centre painted no pixels")
+	}
+	px := asUint32(scan)
+	x, y, cw, _ := notifyCenterRect(w, h)
+	// The spot band starts at y+notifyHeaderH+16; the 4:3 raster stands
+	// centred in it, so the panel's middle inside the band is its ink.
+	if got := px[(y+notifyHeaderH+16+80)*w+x+cw/2]; got != 0xff335577 {
+		t.Fatalf("spot pixel = %#08x, want the staged colour", got)
+	}
+	if !centerSpotShown {
+		t.Fatal("the spot decode marker never latched")
+	}
+	art.Reset()
+	for i := range scan {
+		scan[i] = 0
+	}
+	if paintNotifyCenter(scan, w, h) == 0 {
+		t.Fatal("empty centre without the asset painted nothing")
+	}
+	if got := asUint32(scan)[(y+notifyHeaderH+16+80)*w+x+cw/2]; got == 0xff335577 {
+		t.Fatal("an absent asset still painted the spot")
+	}
+}
+
+// #3348 (#1250): the crash-snap offer's centre row carries the staged
+// oops pose at its left, the row's text yielding it the room.
+func TestCrashOfferRowPaintsMascot(t *testing.T) {
+	resetNotify(t)
+	art.Reset()
+	defer art.Reset()
+	saved := crashMascotShown
+	crashMascotShown = false
+	defer func() { crashMascotShown = saved }()
+
+	pix := make([]uint32, 16)
+	for i := range pix {
+		pix[i] = 0xff778899
+	}
+	art.Stage(art.MascotOops, &draw.BufferCanvas{Pix: pix, W: 4, H: 4})
+	notifyPushAction(0, crashSnapToast, 0, notifyActionCrashSnap, "CRASH0", 0)
+	notifyCenterOpen = true
+	const w, h = 800, 600
+	scan := make([]byte, w*h*4)
+	if paintNotifyCenter(scan, w, h) == 0 {
+		t.Fatal("open centre painted no pixels")
+	}
+	px := asUint32(scan)
+	x, y, _, _ := notifyCenterRect(w, h)
+	rowY := y + notifyHeaderH
+	// The pose stands 28px at the row's left edge, 3px below its top.
+	if got := px[(rowY+14)*w+x+notifyCenterPad+14]; got != 0xff778899 {
+		t.Fatalf("row mascot pixel = %#08x, want the staged colour", got)
+	}
+	if !crashMascotShown {
+		t.Fatal("the mascot decode marker never latched")
 	}
 }

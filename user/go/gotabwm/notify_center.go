@@ -34,6 +34,10 @@ const (
 	MarkerNotifyCenterClose  = "gotabwm: notify center close"
 	MarkerNotifyCenterPaint  = "gotabwm: notify center paint"
 	MarkerNotifyCenterAction = "gotabwm: notify center "
+	// #3348 (#1253): the first frame the staged no-notifications spot
+	// (SPT_BELL) painted in the empty center — the decode receipt the
+	// mascot markers already established.
+	MarkerNotifyCenterSpot = "gotabwm: notify center spot qoi "
 )
 
 type centerNotification struct {
@@ -69,7 +73,10 @@ var (
 	notifyCenterOpen    bool
 	notifyCenterNextID  uint32
 	notifyCenterPainted bool
-	focusNotifySource   = focusHosted
+	// centerSpotShown latches the one-time decode marker for the empty
+	// band's staged spot — the same latch shape the mascot markers keep.
+	centerSpotShown   bool
+	focusNotifySource = focusHosted
 )
 
 func notifyCenterPush(tabID uint32, text string) uint32 {
@@ -395,6 +402,40 @@ func paintNotifyCenter(scan []byte, width, height int) int {
 	written += seatFill(c, widgets.Rect{X: x + notifyCenterPad, Y: y + notifyHeaderH - 1,
 		W: w - 2*notifyCenterPad, H: 1}, tok.Border)
 
+	if len(notifyCenter) == 0 {
+		// #3348 (#1253): the empty band is the staged no-notifications
+		// spot's home — the caption alone when the share carries no art.
+		band := widgets.Rect{
+			X: x + notifyCenterPad, Y: y + notifyHeaderH + 16,
+			W: w - 2*notifyCenterPad,
+			H: h - notifyHeaderH - notifyFooterH - 40,
+		}
+		textY := band.Y + (band.H-seatTextPx)/2
+		if sp := art.Spot(art.SpotNotifications); sp(c, widgets.Rect{}) {
+			spotH := band.H - 32
+			if spotH > 160 {
+				spotH = 160
+			}
+			sr := widgets.Rect{X: band.X, Y: band.Y, W: band.W, H: spotH}
+			if sp(c, sr) {
+				textY = sr.Y + sr.H + 14
+				if !centerSpotShown {
+					centerSpotShown = true
+					if src := art.Load(art.SpotNotifications); src != nil {
+						vi.ConsoleLine(MarkerNotifyCenterSpot +
+							vi.Itoa64(int64(src.W)) + "x" + vi.Itoa64(int64(src.H)))
+					}
+				}
+			}
+		}
+		caption := "No notifications"
+		cx := x + (w-seatTextWidth(caption, seatTextPx))/2
+		if cx < x+notifyCenterPad {
+			cx = x + notifyCenterPad
+		}
+		seatText(c, clip, cx, textY, seatTextPx, caption, tok.Muted)
+	}
+
 	rows := notifyCenterVisibleRows(h)
 	for i := 0; i < rows && i < len(notifyCenter); i++ {
 		rowY := y + notifyHeaderH + i*notifyRowH
@@ -405,7 +446,15 @@ func paintNotifyCenter(scan []byte, width, height int) int {
 			source += " [closed]"
 			fg = tok.Muted
 		}
-		seatText(c, clip, x+notifyCenterPad, rowY+2, seatTextPx,
+		// #3348 (#1250): the crash-snap receipt's row carries the staged
+		// oops pose at its left; the offer's text yields it the room.
+		textX := x + notifyCenterPad
+		if entry.action == notifyActionCrashSnap &&
+			crashMascotPaint(c, widgets.Rect{
+				X: textX, Y: rowY + 3, W: notifyRowH - 6, H: notifyRowH - 6}) {
+			textX += notifyRowH - 6 + 6
+		}
+		seatText(c, clip, textX, rowY+2, seatTextPx,
 			centerText(source, 48), fg)
 		if entry.progress {
 			label := entry.text
@@ -450,7 +499,7 @@ func paintNotifyCenter(scan []byte, width, height int) int {
 					closeIcon, tok.Muted, "X", x+w-28, rowY+10)
 			}
 		} else {
-			seatText(c, clip, x+notifyCenterPad, rowY+16, seatTextPx,
+			seatText(c, clip, textX, rowY+16, seatTextPx,
 				centerText(entry.text, 48), tok.InkMuted)
 			// The row's dismiss glyph, centred on its trailing-34px hit zone.
 			seatGlyph(c, widgets.Rect{X: x + w - 34, Y: rowY, W: 34, H: notifyRowH},
