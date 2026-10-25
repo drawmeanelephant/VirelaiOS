@@ -14,6 +14,11 @@
 #      --net-tcp-connect-stream relay, cert DER + body checked (M135a)
 #   06 negative: a TLS 1.2-only client gets the protocol_version alert
 #      in the serial log
+#   07 M201c: the shipped manifest's httpd row enabled — INIT.ELF owns
+#      the lifecycle (order-1 start, kill 137 -> backoff -> supervisor
+#      relisten -> a second client served)
+#   08 opt-out: the shipped manifest as-is (httpd enabled=false) boots
+#      to the seat with no svc: start for it
 #
 # The kernel's child_limit=2 bounds simultaneous children and every
 # --net-tcp-connect client fires on its own dispatch queue at the same
@@ -209,7 +214,9 @@ env = dict(os.environ)
 env["HTTPD_TLS_GEN_FIXTURE"] = "1"
 env["HTTPD_TLS_FIXTURE_DIR"] = share
 import subprocess
-repo = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+# Setup hooks run with the repo root as cwd (vgate.sh cd's there); __file__
+# is $RUN_DIR/setup-N.py and says nothing about the checkout.
+repo = os.getcwd()
 r = subprocess.run(["go", "-C", "user/go", "test", "-run", "TestGenTLSFixture",
                     "-v", "./httpd/"], cwd=repo, env=env,
                    capture_output=True, text=True)
@@ -388,3 +395,123 @@ vgate_assert 06 serial-contains 'httpd: tls alert protocol_version'
 vgate_assert 06 serial-contains 'httpd: closed'
 vgate_assert 06 serial-absent 'httpd: served'
 vgate_assert 06 serial-absent '[EXC] parking:'
+
+vgate_assert 06 python <<'PY'
+import json, os, pathlib, shutil, subprocess
+# Stage the M201c opt-in boot for leg 07: INIT.ELF + the seat binaries, and
+# the SHIPPED manifest with the httpd row enabled — the opt-in boot the
+# card names, not a hand-built service shape.
+share = pathlib.Path(os.environ["VG_SHARE"])
+for script in ("build-init.sh", "build-gotabwm.sh", "build-gosh.sh"):
+    subprocess.run(["bash", "tools/go/" + script], check=True)
+for name in ("INIT", "GOTABWM", "GOSH"):
+    shutil.copyfile(".build/go/" + name + ".ELF", share / (name + ".ELF"))
+(share / "INIT").mkdir(exist_ok=True)
+m = json.loads(pathlib.Path("user/go/init/SERVICES.JSON").read_text())
+row = [s for s in m["services"] if s["name"] == "httpd"]
+assert len(row) == 1 and row[0].get("enabled") is False, "shipped httpd row is not opt-in"
+row[0]["enabled"] = True
+(share / "INIT/SERVICES.JSON").write_text(json.dumps(m))
+print("live-httpd: staged INIT/GOTABWM/GOSH; shipped httpd row enabled for leg 07")
+PY
+
+# ---- 07: M201c -- init owns the server lifecycle on an opt-in boot -------
+# The enabled httpd row makes init start GOHTTPD.ELF in plan order (httpd
+# sorts before seat). The kernel's SocketListen refuses ENXIO until the
+# guest carries an IP (syscall.zig op 0), so the pre-`net ip` start fails
+# by name -- 'httpd: listen failed' / 'svc: exit status=1' -- and the
+# manifest's on-failure policy retries in backoff until the scripted IP
+# lands. That churn IS the lifecycle evidence: the manifest, not a manual
+# exec, owns every start, backoff and receipt. (An external `kill NAME`
+# would only ever reach the exited first incarnation -- live-supervise
+# documents the lowest-id name rule -- so the natural ENXIO failure is
+# what exercises the restart policy.)
+vgate_file script-7.txt <<'EOF'
+net ip 10.0.0.1
+procs
+echo init-seated-observed
+EOF
+
+vgate_run 07 -- --screen '$RUN_DIR/screen-init' --net '$RUN_DIR/cap7.bin' --net-arp-respond 10.0.0.2 \
+    --net-tcp-connect '10.0.0.1:8080:$RUN_DIR/req-index.txt' \
+    --net-tcp-connect-after 'httpd: listening on port 8080' \
+    --net-tcp-connect-close-after 'Connection: close' \
+    --script '$RUN_DIR/script-7.txt' --script-after 'init: seated' \
+    --script-expect 'httpd: served' --script-expect-tail 4 --timeout 150
+
+vgate_assert 07 serial-contains 'init: autostart INIT.ELF (settings init=on)'
+vgate_assert 07 serial-contains 'init: manifest ok n=2'
+vgate_assert 07 serial-contains 'init: start name=httpd order=1'
+vgate_assert 07 serial-contains 'init: start name=seat order=2'
+vgate_assert 07 serial-contains 'init: seated'
+vgate_assert 07 serial-contains 'httpd: starting'
+vgate_assert 07 serial-contains 'httpd: listen failed'
+vgate_assert 07 serial-contains 'svc: backoff name=httpd k=1'
+vgate_assert 07 serial-contains 'httpd: listening on port 8080'
+vgate_assert 07 serial-contains 'init: ready name=httpd'
+vgate_assert 07 serial-contains 'httpd: accepted'
+vgate_assert 07 serial-contains 'httpd: request /'
+vgate_assert 07 serial-contains 'httpd: served'
+vgate_assert 07 output-contains 'HTTP/1.1 200 OK'
+vgate_assert 07 output-contains 'VirelaiOS'
+vgate_assert 07 serial-absent 'init: refuse'
+vgate_assert 07 serial-absent 'init: fallback'
+vgate_assert 07 serial-absent 'svc: failed name=httpd'
+vgate_assert 07 serial-absent '[EXC] parking:'
+vgate_assert 07 share-contains CRASH/GOHTTPD.TXT 'status=1'
+vgate_assert 07 python <<'PY'
+import os, re, sys
+ser = open(os.environ["VG_SER"], errors="replace").read()
+assert ser.index("net ip: ip=10.0.0.1") < ser.index("httpd: listening on port 8080"),     "listener bound before the guest had an IP"
+exits1 = len(re.findall(r"svc: exit name=httpd status=1 ", ser))
+starts = re.findall(r"svc: start name=httpd pid=(\d+) t_ns=\d+", ser)
+assert len(starts) >= 2 and len(starts) == len(set(starts)), ("restarts", starts)
+backoffs = re.findall(r"svc: backoff name=httpd k=(\d+) delay_s=(\d+)", ser)
+assert [int(k) for k, _ in backoffs] == list(range(1, len(backoffs) + 1)), backoffs
+for k, delay in ((int(k), int(d)) for k, d in backoffs):
+    base = min(16, 2 << (k - 1))
+    assert base <= delay < base + 2, ("backoff bound", k, delay)
+assert ser.index("init: seated") < ser.index("httpd: served")
+print("init-owned lifecycle: %d supervised starts, %d named no-IP exits, backoff %s -> listen -> served" % (
+    len(starts), exits1, [d for _, d in backoffs]))
+PY
+vgate_assert 07 python <<'PY'
+import os, pathlib
+# Restore the shipped opt-out manifest for leg 08.
+share = pathlib.Path(os.environ["VG_SHARE"])
+(share / "INIT/SERVICES.JSON").write_bytes(
+    pathlib.Path("user/go/init/SERVICES.JSON").read_bytes())
+for name in ("CRASH/GOHTTPD.TXT", "SESSION.TABS", "WINDOWS.SAV"):
+    (share / name).unlink(missing_ok=True)
+print("live-httpd: shipped manifest restored (httpd row disabled) for leg 08")
+PY
+# ---- 08: opt-out is honest -- the shipped manifest boots without it ------
+vgate_file script-8.txt <<'EOF'
+procs
+echo optout-observed
+EOF
+
+vgate_run 08 -- --screen '$RUN_DIR/screen-optout' \
+    --script '$RUN_DIR/script-8.txt' --script-after 'init: seated' \
+    --script-expect 'optout-observed' --script-expect-tail 2 --timeout 90
+
+vgate_assert 08 serial-contains 'init: manifest ok n=1'
+vgate_assert 08 serial-contains 'init: start name=seat order=1'
+vgate_assert 08 serial-contains 'init: seated'
+vgate_assert 08 serial-absent 'svc: start name=httpd'
+vgate_assert 08 serial-absent 'httpd: starting'
+vgate_assert 08 serial-absent 'httpd: listening'
+vgate_assert 08 serial-absent 'init: refuse'
+vgate_assert 08 serial-absent '[EXC] parking:'
+vgate_assert 08 python <<'PY'
+import json, os, pathlib, re
+ser = pathlib.Path(os.environ["VG_SER"]).read_text(errors="replace")
+share = pathlib.Path(os.environ["VG_SHARE"])
+m = json.loads((share / "INIT/SERVICES.JSON").read_text())
+row = [s for s in m["services"] if s["name"] == "httpd"]
+assert len(row) == 1 and row[0].get("enabled") is False, \
+    "the shipped row is not the opt-out shape the leg booted"
+assert not re.search(r"procs: [^\n]*name=GOHTTPD.ELF", ser), \
+    "a disabled service is on the process table"
+print("opt-out boot: the shipped disabled httpd row never leaves the manifest")
+PY
