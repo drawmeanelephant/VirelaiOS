@@ -16,7 +16,15 @@
 # GOMAIL, reading the app-bound row — is the sys_secret_get read-back in
 # the same boot. Iteration 1's ask is mode-new; iterations 2/3 exercise
 # the #3407 replace path (SECRETS.TXT persists and the file ABI cannot
-# delete it, so the row is already there).
+# delete it, so the row is already there). M196e (run 09) is the wave's
+# acceptance journey — one boot where the whole arc holds at once: the
+# vault provisions irc-gate through the seat's modal (the OTHER bind arm,
+# bound to GOIRC.ELF — the modal owns the keyboard while it stands and
+# focus falls to the terminal when it closes, so one boot consents one
+# ask), GOIRC resolves the just-granted row into its dial boundary,
+# GOMAIL reads the mail-gate row run 08 persisted earlier in the same
+# iteration, and an unprovisioned mail-ghost names secret_not_found —
+# all in the same boot, K=3.
 #
 # REPEAT SEMANTICS: vgate_repeat 3 re-runs EVERY leg, and the armed share
 # persists across iterations — so each leg must be iteration-safe. Run 01
@@ -43,8 +51,9 @@
 #   bash tools/go/build-govault.sh  ->  .build/go/GOVAULT.ELF
 #   bash tools/go/build-gotabwm.sh  ->  .build/go/GOTABWM.ELF
 #   bash tools/go/build-gomail.sh   ->  .build/go/GOMAIL.ELF
+#   bash tools/go/build-goirc.sh    ->  .build/go/GOIRC.ELF
 
-vgate_name go-vault "M148a #2804 + M148b #2805 + M196d #3433: PBKDF2/AES-GCM vault — masked unlock, entry store, per-entry reveal, copy-with-expiry on the seat selection, idle lock, named refusals, receipts file + Receipts view; K=3, + the slot-96 provision leg: 'p' asks, the seat consents, GOMAIL reads the bound row back"
+vgate_name go-vault "M148a #2804 + M148b #2805 + M196d #3433 + M196e #3445: PBKDF2/AES-GCM vault — masked unlock, entry store, per-entry reveal, copy-with-expiry on the seat selection, idle lock, named refusals, receipts file + Receipts view; K=3, + the slot-96 provision leg: 'p' asks, the seat consents, GOMAIL reads the bound row back, + the acceptance journey: two consent-provisioned rows (GOMAIL+GOIRC consume, ghost names secret_not_found)"
 vgate_share seed
 vgate_runner_flags -Xswiftc -DSPIKE
 vgate_repeat 3
@@ -173,9 +182,19 @@ with open(os.path.join(share, "GOMAIL.TXT"), "w") as f:
             "host=10.0.0.2\n"
             "user=gate\n"
             "plain=on\n")
+# M196e (run 09): GOIRC is the journey's second consumer — the vault
+# provisions irc-gate bound to it through the same consent path, so its
+# OWNERS row rides the same uid_system pinning GOMAIL's does. All argv —
+# no config file exists to carry a credential.
+goirc = os.path.join(".build", "go", "GOIRC.ELF")
+if not os.path.exists(goirc):
+    sys.exit("GOIRC.ELF missing (expected .build/go/GOIRC.ELF) - build "
+             "it first: bash tools/go/build-goirc.sh")
+shutil.copy(goirc, os.path.join(share, "GOIRC.ELF"))
 with open(os.path.join(share, "OWNERS.TXT"), "w") as f:
-    f.write("#v1\nGOMAIL.ELF\t644\t0\t-\n")
-print("go-vault: staged GOMAIL.ELF + GOMAIL.TXT/OWNERS.TXT for run 08")
+    f.write("#v1\nGOMAIL.ELF\t644\t0\t-\nGOIRC.ELF\t644\t0\t-\n")
+print("go-vault: staged GOMAIL.ELF+GOIRC.ELF + GOMAIL.TXT/OWNERS.TXT "
+      "for runs 08/09")
 PY
 
 # --- run 01: create, add, reveal, copy, lock, unlock, quit ------------------
@@ -775,4 +794,149 @@ want = "mail-gate\t1000\tpw-gate-7\tGOMAIL.ELF"
 if want not in data:
     raise SystemExit("SECRETS.TXT lacks the provisioned row %r: %r" % (want, data))
 print("SECRETS.TXT persisted: mail-gate bound to GOMAIL.ELF")
+PY
+
+# --- run 09 (M196e / #3445): the acceptance journey — one boot, all legs --
+# One boot where the M196 arc holds at once, built on one hard fact about
+# the modal: its input-sink OWNS the keyboard while an ask stands, and the
+# kernel hands focus to the terminal (focused_id=0) when a focused window
+# closes — so a second 'p' typed after a grant lands on the console, not
+# the vault (observed 09-01: the strokes injected fine, the app's list
+# face never saw them). The journey therefore exercises ONE consent per
+# boot and picks the bind arm run 08 never touched: 'p' stages the entry
+# irc-gate, the seat's modal names GOVAULT.ELF + the GOIRC.ELF binding it
+# would grant, 'g' commits it, and the kernel persists SECRETS.TXT.
+# mail-gate needs no second consent — run 08's own provision earlier in
+# the SAME iteration already persists it (the file ABI cannot delete
+# SECRETS.TXT), so the mail side of the arc rides the store's
+# cross-boot persistence, itself a load-bearing part of the design.
+#
+# The consumers read their bound rows in the same boot: GOMAIL `boxes`
+# resolves mail-gate out of slot 70 ('gomail: secret mail-gate' — the run
+# ends there, the dead 10.0.0.2 transport is never the verdict, run 08's
+# rule); GOIRC --sasl=gate resolves the just-granted irc-gate into its own
+# dial boundary — 'goirc: dial' can only print AFTER resolveSASL, an
+# unprovisioned row exits at 'goirc: sasl secret_not_found' before any
+# dial — bounded by --no-reconnect + --max-ms so the dead transport costs
+# one refused connection. The ghost leg names the unprovisioned path:
+# --user ghost steers the lookup at mail-ghost, which nothing provisioned,
+# so 'gomail: refuse secret_not_found mail-ghost' lands before any socket.
+#
+# Iteration-safe: irc-gate is mode-new on iteration 1 and mode-replace on
+# 2/3 (it persists like mail-gate), mail-gate is replace in every leg
+# after run 08 — every stage gate is a mode-agnostic substring. The
+# secrets stay off the wire: 'pw-gate-7' and 'sasl-gate-9' never print —
+# the asks marshal names only, argv carries the row name, and SECRETS.TXT
+# is the share's only copy of either value.
+vgate_file script-09.txt <<'EOF'
+set GOMAXPROCS=1
+vf rm GOTABWM.DEMO
+vf rm SESSION.TABS
+vf rm GOVAULT/VAULT.BIN
+wm
+exec GOTABWM.ELF
+EOF
+
+vgate_file script2-09.txt <<'EOF'
+dui focus 0
+exec GOVAULT.ELF
+EOF
+
+vgate_file script3-09.txt <<'EOF'
+exec GOIRC.ELF --host=10.0.0.2 --nick=gate --plain --sasl=gate --no-reconnect --max-ms 15000
+exec GOMAIL.ELF --tls --user ghost fetch INBOX
+exec GOMAIL.ELF boxes
+EOF
+
+vgate_run 09 -- \
+    --screen '$RUN_DIR/vault-screen-09' \
+    --via-virtio \
+    --script '$RUN_DIR/script-09.txt' \
+    --script2 '$RUN_DIR/script2-09.txt' \
+    --script2-after 'gotabwm: registered' \
+    --input-string $'hunter2\nhunter2\nairc-gate\nsasl-gate-9\n\n\np' \
+    --input-string-after 'govault: new vault' \
+    --input-chords 'g' \
+    --input-chords-after 'gotabwm: secret-ask name=GOVAULT.ELF key=irc-gate' \
+    --script3 '$RUN_DIR/script3-09.txt' \
+    --script3-after 'govault: provision-grant irc-gate' \
+    --script-expect 'goirc: closed' --timeout 300
+
+vgate_assert 09 serial-contains 'gotabwm: registered'
+vgate_assert 09 serial-contains 'exec: loaded GOVAULT.ELF'
+vgate_assert 09 serial-contains 'govault: new vault'
+vgate_assert 09 serial-contains 'govault: added'
+# The journey's own provision: the ask staged under the entry's name, the
+# seat naming asker + key + the GOIRC.ELF app-binding, the 'g' grant, the
+# asker's verdict read.
+vgate_assert 09 serial-contains 'govault: provision irc-gate'
+vgate_assert 09 serial-contains 'gotabwm: secret-ask name=GOVAULT.ELF key=irc-gate'
+vgate_assert 09 serial-contains 'apps=GOIRC.ELF'
+vgate_assert 09 serial-contains 'gotabwm: secret grant name=GOVAULT.ELF key=irc-gate'
+vgate_assert 09 serial-contains 'govault: provision-grant irc-gate'
+# mail-gate is NOT re-staged this boot — its row persists from run 08's
+# consent, and the consume below reads the store, not a second ask.
+vgate_assert 09 serial-absent 'govault: provision mail-gate'
+# The consumers' slot-70 read-backs in the same boot: GOIRC's dial
+# boundary only prints after its row resolved; GOMAIL's marker is the
+# run's own end gate. The ghost names the unprovisioned path before any
+# socket opens.
+vgate_assert 09 serial-contains 'exec: loaded GOMAIL.ELF'
+vgate_assert 09 serial-contains 'exec: loaded GOIRC.ELF'
+vgate_assert 09 serial-contains 'goirc: dial 10.0.0.2 6667 plain'
+vgate_assert 09 serial-contains 'goirc: closed'
+vgate_assert 09 serial-contains 'gomail: refuse secret_not_found mail-ghost'
+vgate_assert 09 serial-contains 'gomail: secret mail-gate'
+# Neither secret value ever reaches the wire — the ask marshals names
+# only, argv carries the row name, no marker echoes a value.
+vgate_assert 09 serial-absent 'pw-gate-7'
+vgate_assert 09 serial-absent 'sasl-gate-9'
+vgate_assert 09 serial-absent 'goirc: sasl secret_not_found irc-gate'
+vgate_assert 09 serial-absent 'goirc: refuse sasl-argv'
+vgate_assert 09 serial-absent '[EXC] parking:'
+vgate_assert 09 serial-absent 'exited status=139'
+# The provision arc is ordered, not just present — stage, ask, grant,
+# verdict. The consumers are NOT ordered among themselves: script3's
+# execs run concurrently, so their markers interleave (observed 09-02:
+# the ghost's refuse landed before GOIRC's own dial marker) — each only
+# has to land after the grant, which is the gate script3 fired on.
+vgate_assert 09 python <<'PY'
+import os, sys
+ser = open(os.environ["VG_SER"], "rb").read().decode("utf-8", "replace")
+prev = -1
+for m in ("govault: provision irc-gate",
+          "gotabwm: secret-ask name=GOVAULT.ELF key=irc-gate",
+          "gotabwm: secret grant name=GOVAULT.ELF key=irc-gate",
+          "govault: provision-grant irc-gate"):
+    i = ser.find(m, prev + 1)
+    if i < 0:
+        sys.exit("journey arc broke — %r missing after position %d"
+                 % (m, prev))
+    prev = i
+for m in ("goirc: dial 10.0.0.2 6667 plain",
+          "gomail: refuse secret_not_found mail-ghost",
+          "gomail: secret mail-gate"):
+    if ser.find(m, prev + 1) < 0:
+        sys.exit("consumer read %r missing after the grant" % m)
+print("journey arc ordered: provision->consent->verdict, then 3 "
+      "consumer reads after the grant")
+PY
+# The receipts file carries this boot's ask AND its verdict — the audit
+# surface the arc demands.
+vgate_assert 09 share-contains GOVAULT/RECEIPTS.TXT 'provision irc-gate'
+vgate_assert 09 share-contains GOVAULT/RECEIPTS.TXT 'provision-grant irc-gate'
+# Both rows persisted: irc-gate was written by THIS boot's consent,
+# mail-gate by run 08's earlier in the iteration — the host reads what
+# the guest file ABI cannot (the class denial is in-guest by
+# construction).
+vgate_assert 09 python <<'PY'
+import os
+share = os.environ["VG_SHARE"]
+data = open(os.path.join(share, "SECRETS.TXT"), "rb").read().decode("utf-8", "replace")
+for want in ("mail-gate\t1000\tpw-gate-7\tGOMAIL.ELF",
+             "irc-gate\t1000\tsasl-gate-9\tGOIRC.ELF"):
+    if want not in data:
+        raise SystemExit("SECRETS.TXT lacks the provisioned row %r: %r"
+                         % (want, data))
+print("SECRETS.TXT persisted: mail-gate->GOMAIL.ELF, irc-gate->GOIRC.ELF")
 PY
