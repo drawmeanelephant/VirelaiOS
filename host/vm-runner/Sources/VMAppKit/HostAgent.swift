@@ -252,12 +252,26 @@ public final class HostAgentCompanion {
             reject(name, reason: "malformed")
             return
         }
+        // #3391 F4: the filename binds to the receipt's own epoch+seq —
+        // the MAC already covers those fields, so a verified body under
+        // a fresh RCPT-<epoch>-<seq> name is a replay, flagged like any
+        // other planting.
+        guard let epoch = fields["epoch"] as? String,
+              let seqNum = fields["seq"] as? NSNumber,
+              seqNum.doubleValue == seqNum.doubleValue.rounded(),
+              seqNum.doubleValue >= 0, seqNum.doubleValue <= 0xFFFFFFFF,
+              name == "RCPT-\(epoch)-\(String(format: "%08x", seqNum.uint32Value))" else {
+            reject(name, reason: "replay")
+            return
+        }
         let agent = fields["agent"] as? String ?? "-"
         let result = fields["result"] as? String ?? "-"
         var event = ""
+        var refuseN = 0
         var argsSummary = ""
         if let args = fields["args"] as? [String: Any] {
             event = args["event"] as? String ?? ""
+            refuseN = (args["n"] as? NSNumber)?.intValue ?? 0
             argsSummary = Self.argsSummary(args, excluding: "event")
         }
         verifiedCount += 1
@@ -274,7 +288,9 @@ public final class HostAgentCompanion {
                 liveSessions = max(0, liveSessions - 1)
                 emit("host-agent: session close agent=\(Self.mark(agent))")
             case "auth_fail":
-                authFailures += 1
+                // #3391 F3: refused sessions coalesce — the receipt's
+                // n= is the covered count, 1 when absent.
+                authFailures += max(1, refuseN)
                 emit("host-agent: session auth_fail agent=\(Self.mark(agent))")
             default:
                 break

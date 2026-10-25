@@ -16,13 +16,14 @@ import (
 // into (sessionSeams installs the write/delete/list fakes below).
 var sessShare = map[string][]byte{}
 
-// shareReceiptNames lists the fake share's committed RCPT-* names sorted —
-// the auditListFn fake's answer.
+// shareReceiptNames lists the fake share's committed AUDIT file names
+// sorted — the auditListFn fake's answer (F8: every file counts toward
+// the bound, receipt-shaped or not).
 func shareReceiptNames(files map[string][]byte) []string {
 	var names []string
 	prefix := auditDir + "/"
 	for p := range files {
-		if strings.HasPrefix(p, prefix) && validReceiptName(p[len(prefix):]) {
+		if strings.HasPrefix(p, prefix) && !strings.HasSuffix(p, "/") {
 			names = insertName(names, p[len(prefix):])
 		}
 	}
@@ -247,23 +248,63 @@ func TestReceiptRotationCrossEpoch(t *testing.T) {
 	}
 }
 
-func TestAuditNamesFilter(t *testing.T) {
-	// "~" publish temps and foreign names never join the lane set.
-	for _, bad := range []string{
-		"RCPT-00000001-00000001~", "OTHER.TXT", "RCPT-", "RCPT-zzzzzzzz-00000001",
-		"RCPT-00000001_00000001", "RCPT-00000001-0000000g",
-	} {
-		if validReceiptName(bad) {
-			t.Fatalf("validReceiptName(%q) = true", bad)
+// F8 (#3391): foreign files planted mid-boot — lowercase rcpt-* names
+// and junk names alike — count toward the bound and rotate out ahead of
+// real receipts (they sort ahead of RCPT-<epoch>).
+func TestAuditForeignRotation(t *testing.T) {
+	seamScope(t)
+	files := map[string][]byte{}
+	auditTestSeams(t, files, "k", "0000000a")
+	logs := &[]string{}
+	prevCon := consoleFn
+	consoleFn = func(s string) { *logs = append(*logs, s) }
+	t.Cleanup(func() { consoleFn = prevCon })
+	// Sixty real old-epoch receipts plus planted garbage: lowercase
+	// receipt-shaped names and plain junk, both mid-boot (lane.names was
+	// snapshotted before the plants).
+	for i := 1; i <= 60; i++ {
+		name := "RCPT-00000001-" + hex8u(uint32(i))
+		files[auditDir+"/"+name] = []byte("x\ny\n")
+	}
+	for i := 0; i < 10; i++ {
+		files[auditDir+"/rcpt-zzzz0000-0000000"+string(rune('0'+i))] = []byte("j\n")
+		files[auditDir+"/JUNK-"+string(rune('A'+i))+".TXT"] = []byte("j\n")
+	}
+	lane.emit("a", "proc.list", `{}`, "ok")
+	// 80 files became the bound's 64: the fresh receipt is in, the real
+	// old-epoch set is down by what the garbage could not cover — the
+	// garbage went first (it sorts ahead of RCPT-).
+	rcpts := shareReceiptNames(files)
+	if len(rcpts) != auditFileMax {
+		t.Fatalf("lane holds %d names want %d", len(rcpts), auditFileMax)
+	}
+	if _, ok := files[auditDir+"/RCPT-0000000a-00000001"]; !ok {
+		t.Fatal("the new receipt is missing")
+	}
+	junk, real := 0, 0
+	for p := range files {
+		name := p[len(auditDir)+1:]
+		if strings.HasPrefix(name, "RCPT-00000001-") {
+			real++
+		} else {
+			junk++
 		}
 	}
-	if !validReceiptName("RCPT-00000001-00000001") || !validReceiptName("RCPT-ABCDEF01-abcdef01") {
-		t.Fatal("a real receipt name failed validation")
+	// 17 drops: the 10 JUNK-* went first (they sort ahead of RCPT-),
+	// then 7 real old-epoch receipts — the new receipt and the planted
+	// rcpt-* names survive on the lane (junk counts the new receipt
+	// too: it is not an RCPT-00000001-* name).
+	if junk != 11 || real != 53 {
+		t.Fatalf("lane = %d junk %d real, want 11 junk 53 real", junk, real)
+	}
+	if !hasLine(*logs, "agentd: audit drop JUNK-A.TXT") {
+		t.Fatalf("markers = %v", *logs)
 	}
 }
 
-// The authenticated session's audit bracket: open under "-", one receipt
-// per dispatch in order, close under the agent id — refusals included.
+// The authenticated session's audit bracket: open under the agent id
+// (F3 — the open exists only once the verdict is in), one receipt per
+// dispatch in order, close under the same id — refusals included.
 func TestSessionReceipts(t *testing.T) {
 	seamScope(t)
 	k := &fakeKernel{procs: []vi.ProcRow{proc(9, vi.ProcRunning, 0, "AGENTD.ELF")}}
@@ -290,7 +331,7 @@ func TestSessionReceipts(t *testing.T) {
 		agent, verb, result string
 	}
 	wants := []want{
-		{"-", "session", "ok"},
+		{"devin", "session", "ok"},
 		{"devin", "proc.list", "ok"},
 		{"devin", "fs.read", "path_rejected"},
 		{"devin", "nope", "unknown_verb"},
@@ -317,6 +358,9 @@ func TestSessionReceipts(t *testing.T) {
 }
 
 // A failed auth receipts its claimed id — a refused credential is named.
+// F3 (#3391): the whole refused session coalesces into ONE auth_fail
+// receipt (n=1 for the boot's first refusal); there is no pre-verdict
+// open and no close bracket for a session that never authenticated.
 func TestAuthFailReceipt(t *testing.T) {
 	seamScope(t)
 	sessShare = map[string][]byte{}
@@ -329,10 +373,10 @@ func TestAuthFailReceipt(t *testing.T) {
 		t.Fatal("bad sig not reported as auth failure")
 	}
 	names := receiptNames(files)
-	if len(names) != 3 {
+	if len(names) != 1 {
 		t.Fatalf("receipts = %v", names)
 	}
-	line := receiptLine1(t, files, names[1])
+	line := receiptLine1(t, files, names[0])
 	if got := receiptField(t, line, "agent").str; got != pinnedAgent {
 		t.Fatalf("auth_fail agent = %q", got)
 	}
@@ -342,14 +386,125 @@ func TestAuthFailReceipt(t *testing.T) {
 	if got := receiptField(t, line, "verb").str; got != "session" {
 		t.Fatalf("auth_fail verb = %q", got)
 	}
-	// The close receipt names the refused session's end and stays "-": the
-	// claimed id never authenticated.
-	line = receiptLine1(t, files, names[2])
-	if got := receiptField(t, line, "result").str; got != "auth_failed" {
-		t.Fatalf("close result = %q", got)
+	args := receiptField(t, line, "args")
+	if got := jvalStr(args, "event"); got != "auth_fail" {
+		t.Fatalf("auth_fail event = %q", got)
 	}
-	if got := receiptField(t, line, "agent").str; got != "-" {
-		t.Fatalf("close agent = %q", got)
+	if got := jvalStr(args, "n"); got != "1" {
+		t.Fatalf("auth_fail n = %q", got)
+	}
+}
+
+// jvalStr pulls one scalar field's text out of a parsed object.
+func jvalStr(v jval, key string) string {
+	for _, m := range v.membs {
+		if m.key == key {
+			return m.val.str
+		}
+	}
+	return ""
+}
+
+// F3 (#3391): refusals past the first coalesce — one auth_fail receipt
+// per auditRefuseBatch, n= covering the batch — and an authenticated
+// session flushes whatever is held ahead of its open.
+func TestRefusedCoalescing(t *testing.T) {
+	seamScope(t)
+	sessShare = map[string][]byte{}
+	files := sessShare
+	sessionSeams(t, keyringBody())
+	bad := `{"agent":"mallory","auth":"` + strings.Repeat("0", 128) + `"}`
+	refuse := func() {
+		session(&fakeConn{chunks: [][]byte{[]byte(bad + "\n")}}, true)
+	}
+	// Eight refused sessions: the first receipts immediately, 2..8 hold.
+	for i := 0; i < 8; i++ {
+		refuse()
+	}
+	if n := len(receiptNames(files)); n != 1 {
+		t.Fatalf("after 8 refusals receipts = %d", n)
+	}
+	// The ninth completes a batch of 8 — one receipt covering it.
+	refuse()
+	names := receiptNames(files)
+	if len(names) != 2 {
+		t.Fatalf("after 9 refusals receipts = %v", names)
+	}
+	line := receiptLine1(t, files, names[1])
+	if got := jvalStr(receiptField(t, line, "args"), "n"); got != "8" {
+		t.Fatalf("batched n = %q", got)
+	}
+	// Three more refused sessions, then an authenticated session: the
+	// held batch (n=3) flushes ahead of the open.
+	for i := 0; i < 3; i++ {
+		refuse()
+	}
+	if n := len(receiptNames(files)); n != 2 {
+		t.Fatalf("held batch leaked: receipts = %v", receiptNames(files))
+	}
+	c := &fakeConn{chunks: [][]byte{[]byte(
+		authLine(t, pinnedAgent) + "\n" +
+			`{"id":1,"verb":"proc.list"}` + "\n"),
+	}, recvErr: errPeerGoneTest}
+	session(c, true)
+	names = receiptNames(files)
+	// +flush(n=3) +open +proc.list +close = 6.
+	if len(names) != 6 {
+		t.Fatalf("post-flush receipts = %v", names)
+	}
+	line = receiptLine1(t, files, names[2])
+	if got := jvalStr(receiptField(t, line, "args"), "n"); got != "3" {
+		t.Fatalf("flushed n = %q", got)
+	}
+	if got := receiptField(t, line, "result").str; got != "agent_unknown" {
+		t.Fatalf("flush result = %q", got)
+	}
+	line = receiptLine1(t, files, names[3])
+	if got := jvalStr(receiptField(t, line, "args"), "event"); got != "open" {
+		t.Fatalf("open event = %q", got)
+	}
+}
+
+// F2 (#3391): a refused receipt write fails the lane closed — the
+// marker names the errno once and every subsequent dispatch is refused
+// audit_full rather than running unreceipted.
+func TestAuditFullFailsClosed(t *testing.T) {
+	seamScope(t)
+	sessShare = map[string][]byte{}
+	files := sessShare
+	sessionSeams(t, keyringBody())
+	logs := &[]string{}
+	prevCon := consoleFn
+	consoleFn = func(s string) { *logs = append(*logs, s) }
+	prevWrite := writeFileFn
+	writeFileFn = func(string, []byte) int64 { return -vi.ErrENOSPC }
+	t.Cleanup(func() { consoleFn, writeFileFn = prevCon, prevWrite })
+	c := &fakeConn{chunks: [][]byte{[]byte(
+		authLine(t, pinnedAgent) + "\n" +
+			`{"id":1,"verb":"proc.list"}` + "\n" +
+			`{"id":2,"verb":"fs.read","path":"SEED.TXT"}` + "\n"),
+	}, recvErr: errPeerGoneTest}
+	session(c, true)
+	if !lane.dead {
+		t.Fatal("a refused write did not mark the lane dead")
+	}
+	// The open receipt's write is the first failure — both verbs are
+	// refused audit_full and nothing was unreceipted onto the share.
+	if len(files) != 0 {
+		t.Fatalf("dead lane still wrote receipts: %v", files)
+	}
+	nFull := 0
+	for _, l := range *logs {
+		if l == "agentd: audit full errno=ENOSPC" {
+			nFull++
+		}
+	}
+	if nFull != 1 {
+		t.Fatalf("audit full marker x%d; logs %v", nFull, *logs)
+	}
+	if !hasLine(*logs, "agentd: refuse id=1 verb=proc.list code=audit_full") ||
+		!hasLine(*logs, "agentd: refuse id=2 verb=fs.read code=audit_full") {
+		t.Fatalf("refusal markers = %v", *logs)
 	}
 }
 

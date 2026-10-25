@@ -168,10 +168,10 @@ adir = os.path.join(share, "AGENT", "AUDIT")
 os.makedirs(adir, exist_ok=True)
 
 
-def rcpt(seq, agent, verb, args, result, forge=False):
-    line = ('{"seq":%d,"epoch":"01020304","agent":"%s","verb":"%s",'
+def rcpt(seq, agent, verb, args, result, forge=False, epoch="01020304"):
+    line = ('{"seq":%d,"epoch":"%s","agent":"%s","verb":"%s",'
             '"args":%s,"ts":1761234567,"mono":42,"result":"%s"}'
-            % (seq, agent, verb, args, result))
+            % (seq, epoch, agent, verb, args, result))
     mac = _hmac.new(KEY.encode(), line.encode(), _hashlib.sha256).hexdigest()
     if forge:
         mac = ("0" if mac[0] != "0" else "1") + mac[1:]
@@ -188,13 +188,19 @@ open(os.path.join(adir, "RCPT-01020304-00000003"), "wb").write(
 open(os.path.join(adir, "RCPT-01020304-00000004"), "wb").write(
     rcpt(4, "mallory", "gosh.run", '{"cmd":"rm -rf /"}', "ok", forge=True))
 # A second-epoch receipt from an older boot — the lane keeps it, the view
-# shows it verified.
+# shows it verified. The epoch field must match the name (the F4 #3391
+# name binding): a real writer emits both from the same draw.
 open(os.path.join(adir, "RCPT-00aa11bb-00000007"), "wb").write(
-    rcpt(7, "ghost", "proc.list", '{}', "ok"))
+    rcpt(7, "ghost", "proc.list", '{}', "ok", epoch="00aa11bb"))
+# #3391 F4: a replayed receipt — seq-2's verified body under a fresh
+# name — marks forged like any other planting.
+open(os.path.join(adir, "RCPT-01020304-00000008"), "wb").write(
+    rcpt(2, "devin", "fs.write",
+         '{"path":"HELLO.TXT","size":27,"sha256_8":"01234567"}', "ok"))
 # Foreign files the view must skip.
 open(os.path.join(adir, "RCPT-01020304-0000000~"), "wb").write(b"tmp\n")
 open(os.path.join(adir, "OTHER.TXT"), "wb").write(b"x\n")
-print("staged audit lane (5 receipts, 1 forged, + noise files)")
+print("staged audit lane (6 receipts, 1 forged, 1 replayed, + noise files)")
 # M111d run 06: GPUTRIANGLE.ELF is the compute-submit fixture — its `gemm`
 # journey is the real slot-90 workload whose counters the gpu tab must show.
 trsrc = os.path.join(".build", "go", "GPUTRIANGLE.ELF")
@@ -568,8 +574,10 @@ vgate_run 05 -- \
 vgate_assert 05 serial-contains 'exec: loaded GOTOP.ELF'
 vgate_assert 05 serial-contains 'top: ready'
 vgate_assert 05 serial-contains 'top: tab=agent'
-vgate_assert 05 serial-contains 'top: agent n=5 verified=4 bad=1 key=yes'
+vgate_assert 05 serial-contains 'top: agent n=6 verified=4 bad=2 key=yes'
 vgate_assert 05 serial-contains 'top: agent rcpt agent=viewer verb=fs.read result=cap_required:file mark=v'
+# #3391 F4: the replayed seq-2 body under the seq-8 name marks forged.
+vgate_assert 05 serial-contains 'top: agent rcpt agent=devin verb=fs.write result=ok mark=!'
 vgate_assert 05 serial-contains 'top: agent rcpt agent=mallory verb=gosh.run result=ok mark=!'
 vgate_assert 05 serial-contains 'top: agent rcpt agent=ghost verb=proc.list result=ok mark=v'
 vgate_assert 05 serial-contains 'top: agent rcpt agent=- verb=session result=ok mark=v'

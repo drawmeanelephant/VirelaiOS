@@ -185,6 +185,14 @@ func agentApply(name string) bool {
 	if !agentMacEq(mac[:], macHex) {
 		return false
 	}
+	// F4 (#3391): the filename is part of the receipt's identity — the
+	// MAC already covers the epoch/seq fields, so a verified body under
+	// a fresh RCPT-<epoch>-<seq> name is a replay, not a live event.
+	epoch, eok := agentField(line, "epoch")
+	seq, sok := agentNumber(line, "seq")
+	if !eok || !sok || name != "RCPT-"+epoch+"-"+agentHex8(seq) {
+		return false
+	}
 	verb, _ := agentField(line, "verb")
 	agent, _ := agentField(line, "agent")
 	result, _ := agentField(line, "result")
@@ -297,6 +305,21 @@ func agentBadge() (text string, rgb uint32, ok bool) {
 		return "", 0, false
 	}
 	return "AGENT", theme.Current.Accent, true
+}
+
+// agentHex8 renders a receipt seq the filename's way — 8 lowercase hex
+// digits, the writer's uint32 shape. An out-of-range seq returns a
+// string that can never equal a filename's hex field.
+func agentHex8(v int64) string {
+	if v < 0 || v > 0xffffffff {
+		return "~~~~~~~~"
+	}
+	const d = "0123456789abcdef"
+	var b [8]byte
+	for i := 0; i < 8; i++ {
+		b[i] = d[(v>>uint((7-i)*4))&0xf]
+	}
+	return string(b[:])
 }
 
 // agentRcptName is the lane's committed file shape — RCPT-<8hex>-<8hex>

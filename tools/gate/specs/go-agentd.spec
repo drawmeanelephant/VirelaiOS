@@ -578,7 +578,8 @@ for n in names:
     r = json.loads(body[0])
     seen.add((r.get("agent"), r.get("verb"), r.get("result")))
 for need in (
-    ("-", "session", "ok"),
+    # The open receipt now names the authenticated agent (F3, #3391).
+    ("viewer", "session", "ok"),
     ("viewer", "proc.list", "ok"),
     ("viewer", "fs.read", "cap_required:file"),
     ("viewer", "fs.write", "cap_required:file"),
@@ -1067,3 +1068,204 @@ vgate_run 20 -- \
 vgate_assert 20 serial-count 'exec refused (name_unprovisioned' 2
 vgate_assert 20 serial-contains 'verdict=refused:name_unprovisioned name=AGENTD.ELF'
 vgate_assert 20 serial-absent 'exec: loaded AGENTD.ELF'
+
+# ---- 21: #3391 F2 — a refused receipt write fails the lane closed -----------
+# auditro-share's AUDIT lane is staged read-only on the host: the session
+# open receipt is the first write, its EACCES is the named-degraded mark
+# (`agentd: audit full`), and every dispatch after refuses audit_full
+# rather than run unreceipted — the trail goes silent only because the
+# verbs stop, never silently.
+vgate_setup_python <<'PY'
+import os, sys
+rd = os.environ["RUN_DIR"]
+alt = os.path.join(rd, "auditro-share")
+sys.path.insert(0, os.path.join(os.getcwd(), "tools", "agentctl"))
+import agentctl
+elf = os.path.join(".build", "go", "AGENTD.ELF")
+if not os.path.exists(elf):
+    sys.exit("AGENTD.ELF missing - build it first")
+import shutil
+os.makedirs(alt, exist_ok=True)
+shutil.copy(elf, os.path.join(alt, "AGENTD.ELF"))
+pub = agentctl.ed_public_key(bytes.fromhex("0a" * 32)).hex()
+open(os.path.join(alt, "AGENTS.TXT"), "w").write(
+    "#v1\nagent=devin key=%s caps=file,process,window,term,input\n" % pub)
+open(os.path.join(alt, "OWNERS.TXT"), "w").write("#v1\nAGENTD.ELF\t644\t0\t-\n")
+KEY = "a5" * 32
+open(os.path.join(alt, "SECRETS.TXT"), "w").write(
+    "#v1\nagent-hmac\t2000\t" + KEY + "\tAGENTD.ELF,GOTOP.ELF\n")
+ad = os.path.join(alt, "AGENT")
+os.makedirs(ad, exist_ok=True)
+open(os.path.join(ad, "SEED.TXT"), "wb").write(agentctl.SEED_BYTES)
+adir = os.path.join(ad, "AUDIT")
+os.makedirs(adir, exist_ok=True)
+os.chmod(adir, 0o555)  # the full-share posture: every receipt write refuses
+print("staged auditro-share (read-only AUDIT lane)")
+PY
+
+vgate_run 21 -- \
+    --net '$RUN_DIR/cap.bin' --net-arp-respond 10.0.0.2 \
+    --net-tcp-connect 10.0.0.1:4747 \
+    --net-tcp-connect-stream 'tools/agentctl/agentctl.py' \
+    --net-tcp-connect-stream-arg harness \
+    --net-tcp-connect-stream-arg '--journey=noexec' \
+    --net-tcp-connect-stream-arg '--key-file=$RUN_DIR/devin.key' \
+    --net-tcp-connect-after 'agentd: listen 4747' \
+    --cvc-file '$RUN_DIR/auditro-share' \
+    --script '$RUN_DIR/script-daemon.txt' \
+    --script-expect 'agentd: session end reason=client_close' \
+    --script-expect-tail 4 --timeout 150
+
+vgate_assert 21 serial-contains 'agentd: audit full errno='
+vgate_assert 21 serial-exact 'agentd: audit full errno=EACCES' 1
+vgate_assert 21 serial-contains 'agentd: auth ok agent=devin'
+vgate_assert 21 serial-contains 'verb=gosh.run code=audit_full'
+vgate_assert 21 serial-absent 'agentd: req id='
+vgate_assert 21 output-contains 'audit_full'
+vgate_assert 21 serial-absent '0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a'
+vgate_assert 21 serial-absent '[EXC] parking:'
+
+# The dead lane writes nothing — the refused session leaves no receipts.
+vgate_assert 21 python <<'PY'
+import os, sys
+adir = os.path.join(os.environ["RUN_DIR"], "auditro-share", "AGENT", "AUDIT")
+names = [n for n in os.listdir(adir)]
+if names:
+    sys.exit("FAIL: dead lane wrote receipts: %r" % names)
+print("run-21 audit ok: read-only lane wrote 0 receipts, verbs refused audit_full")
+PY
+
+# ---- 22: #3391 F3/F8 — connect-spam cannot evict the lane's evidence --------
+# spamaudit-share carries 30 real older-epoch receipts. The spam client
+# re-SYNs on every 'agentd: listen 4747' sighting (the daemon's own
+# relisten is the sequential-session clock): 40 refused sessions, each a
+# bad-signature payload. The ender client skips 40 sightings and its
+# pre-auth payload answers auth_required — the run's deterministic end
+# marker. Mid-boot, script3 clones foreign + lowercase junk into the
+# lane: the per-emit re-list counts and rotates it ahead of evidence.
+vgate_setup_python <<'PY'
+import hashlib, hmac, json, os, sys
+rd = os.environ["RUN_DIR"]
+alt = os.path.join(rd, "spamaudit-share")
+sys.path.insert(0, os.path.join(os.getcwd(), "tools", "agentctl"))
+import agentctl
+import shutil
+elf = os.path.join(".build", "go", "AGENTD.ELF")
+if not os.path.exists(elf):
+    sys.exit("AGENTD.ELF missing - build it first")
+os.makedirs(alt, exist_ok=True)
+shutil.copy(elf, os.path.join(alt, "AGENTD.ELF"))
+pub = agentctl.ed_public_key(bytes.fromhex("0a" * 32)).hex()
+open(os.path.join(alt, "AGENTS.TXT"), "w").write(
+    "#v1\nagent=devin key=%s caps=file,process,window,term,input\n" % pub)
+open(os.path.join(alt, "OWNERS.TXT"), "w").write("#v1\nAGENTD.ELF\t644\t0\t-\n")
+KEY = "a5" * 32
+open(os.path.join(alt, "SECRETS.TXT"), "w").write(
+    "#v1\nagent-hmac\t2000\t" + KEY + "\tAGENTD.ELF,GOTOP.ELF\n")
+ad = os.path.join(alt, "AGENT")
+adir = os.path.join(ad, "AUDIT")
+os.makedirs(adir, exist_ok=True)
+open(os.path.join(ad, "SEED.TXT"), "wb").write(agentctl.SEED_BYTES)
+# 30 real receipts from an older boot — the evidence spam must not evict.
+def rcpt(seq):
+    line = ('{"seq":%d,"epoch":"b0000001","agent":"devin","verb":"fs.read",'
+            '"args":{"path":"SEED.TXT"},"ts":1,"mono":1,"result":"ok"}' % seq)
+    mac = hmac.new(KEY.encode(), line.encode(), hashlib.sha256).hexdigest()
+    return (line + "\n" + mac + "\n").encode()
+for i in range(1, 31):
+    open(os.path.join(adir, "RCPT-b0000001-%08x" % i), "wb").write(rcpt(i))
+# The spam payload: a listed id with an all-zero signature (auth_failed).
+open(os.path.join(rd, "badauth.bin"), "wb").write(
+    b'{"agent":"devin","auth":"' + b"0" * 128 + b'"}\n')
+# The ender payload: a pre-auth request (auth_required).
+open(os.path.join(rd, "preauth.bin"), "wb").write(
+    b'{"id":1,"verb":"proc.list"}\n')
+print("staged spamaudit-share (30 evidence receipts) + payloads")
+PY
+
+# The plants run while the spam sessions cycle: lowercase receipt-shaped
+# names and plain junk, cloned into the lane mid-boot (F8's hole was that
+# names snapshot at start never re-listed).
+vgate_file script3-spam.txt <<'EOF'
+vf clone AGENT/SEED.TXT AGENT/AUDIT/rcpt-zzzz0000-00000001
+vf clone AGENT/SEED.TXT AGENT/AUDIT/rcpt-zzzz0000-00000002
+vf clone AGENT/SEED.TXT AGENT/AUDIT/rcpt-zzzz0000-00000003
+vf clone AGENT/SEED.TXT AGENT/AUDIT/rcpt-zzzz0000-00000004
+vf clone AGENT/SEED.TXT AGENT/AUDIT/rcpt-zzzz0000-00000005
+vf clone AGENT/SEED.TXT AGENT/AUDIT/rcpt-zzzz0000-00000006
+vf clone AGENT/SEED.TXT AGENT/AUDIT/rcpt-zzzz0000-00000007
+vf clone AGENT/SEED.TXT AGENT/AUDIT/rcpt-zzzz0000-00000008
+vf clone AGENT/SEED.TXT AGENT/AUDIT/JUNK-01.TXT
+vf clone AGENT/SEED.TXT AGENT/AUDIT/JUNK-02.TXT
+vf clone AGENT/SEED.TXT AGENT/AUDIT/JUNK-03.TXT
+vf clone AGENT/SEED.TXT AGENT/AUDIT/JUNK-04.TXT
+vf clone AGENT/SEED.TXT AGENT/AUDIT/JUNK-05.TXT
+vf clone AGENT/SEED.TXT AGENT/AUDIT/JUNK-06.TXT
+vf clone AGENT/SEED.TXT AGENT/AUDIT/JUNK-07.TXT
+vf clone AGENT/SEED.TXT AGENT/AUDIT/JUNK-08.TXT
+vf clone AGENT/SEED.TXT AGENT/AUDIT/JUNK-09.TXT
+vf clone AGENT/SEED.TXT AGENT/AUDIT/JUNK-10.TXT
+vf clone AGENT/SEED.TXT AGENT/AUDIT/JUNK-11.TXT
+vf clone AGENT/SEED.TXT AGENT/AUDIT/JUNK-12.TXT
+echo rx-planted
+EOF
+
+vgate_run 22 -- \
+    --net '$RUN_DIR/cap.bin' --net-arp-respond 10.0.0.2 \
+    --net-tcp-connect '10.0.0.1:4747:$RUN_DIR/badauth.bin' \
+    --net-tcp-connect '10.0.0.1:4747:$RUN_DIR/preauth.bin' \
+    --net-tcp-connect-after-skip 40 \
+    --net-tcp-connect-resyn 39 \
+    --net-tcp-connect-after 'agentd: listen 4747' \
+    --cvc-file '$RUN_DIR/spamaudit-share' \
+    --script '$RUN_DIR/script-daemon.txt' \
+    --script3 '$RUN_DIR/script3-spam.txt' --script3-after 'agentd: listen 4747' \
+    --script-expect 'agentd: session end reason=auth_required' \
+    --script-expect-tail 4 --timeout 300
+
+vgate_assert 22 serial-count 'agentd: accepted' 40
+vgate_assert 22 serial-count 'agentd: session end reason=auth_failed' 40
+vgate_assert 22 serial-contains 'agentd: session end reason=auth_required'
+# F8: planted foreign names rotate out ahead of the evidence (the drop
+# marker prints them sanitized — JUNK sorts ahead of RCPT-).
+vgate_assert 22 serial-contains 'agentd: audit drop JUNK-'
+vgate_assert 22 serial-absent '[EXC] parking:'
+
+# F3+F8: 41 refused sessions produced <= ~8 coalesced auth_fail receipts
+# (one per auditRefuseBatch plus the boot's first), all 30 staged
+# evidence receipts survive, and the lane never passed its 64 bound.
+vgate_assert 22 python <<'PY'
+import hashlib, hmac, json, os, sys
+rd = os.environ["RUN_DIR"]
+adir = os.path.join(rd, "spamaudit-share", "AGENT", "AUDIT")
+names = os.listdir(adir)
+if len(names) > 64:
+    sys.exit("FAIL: lane grew past the bound: %d files" % len(names))
+KEY = b"a5" * 32
+staged = [n for n in names if n.startswith("RCPT-b0000001-")]
+if len(staged) != 30:
+    sys.exit("FAIL: evidence evicted: %d/30 staged receipts remain" % len(staged))
+n_fail, covered = 0, 0
+for n in names:
+    body = open(os.path.join(adir, n), "rb").read().split(b"\n")
+    if len(body) != 3:
+        continue  # planted junk is not a receipt
+    if body[1] != hmac.new(KEY, body[0], hashlib.sha256).hexdigest().encode():
+        sys.exit("FAIL: unverifiable receipt %s on the lane" % n)
+    r = json.loads(body[0])
+    if (r.get("args") or {}).get("event") == "auth_fail":
+        n_fail += 1
+        covered += int((r.get("args") or {}).get("n", 1))
+ser = open(os.environ["VG_SER"], errors="replace").read()
+sessions = ser.count("agentd: accepted")
+if sessions < 40:
+    sys.exit("FAIL: only %d refused sessions ran" % sessions)
+if covered < sessions:
+    sys.exit("FAIL: receipts cover %d of %d refused sessions" % (covered, sessions))
+if n_fail > (sessions // 8) + 1:
+    sys.exit("FAIL: %d auth_fail receipts for %d sessions — not coalesced"
+             % (n_fail, sessions))
+print("run-22 audit ok: %d refused sessions -> %d auth_fail receipts "
+      "(n covered %d), 30/30 evidence kept, lane %d/64"
+      % (sessions, n_fail, covered, len(names)))
+PY

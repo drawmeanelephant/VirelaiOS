@@ -144,28 +144,29 @@ func errKind(err error) string {
 	return err.Error()
 }
 
-// session runs one connection inside its audit bracket: the open receipt
-// is written at accept, one auth_fail receipt per failed verdict (the
-// claimed id when there is one), and the close receipt with the end
-// reason — allowed and refused activity alike (ADR 0052 D4). runSession
-// fills the trail; the emits here keep open..close in seq order around
-// the per-verb receipts.
+// session runs one connection inside its audit bracket. The open receipt
+// exists only once the auth verdict is in (F3, #3391): runSession emits
+// it at success, ahead of the per-verb receipts, and an authenticated
+// session closes with its reason under the agent's id. A session that
+// ends unauthenticated writes no open/close bracket — it feeds the
+// refused-session coalescer instead, which receipts refusals by the
+// batch so connect/close spam cannot rotate the lane (ADR 0052 D4).
 func session(c connIO, allowExec bool) bool {
 	tr := &sessionTrail{end: "client_close"}
-	auditSessionEvent("-", "open", "ok")
 	failed := runSession(c, allowExec, tr)
-	if tr.verdict != "" {
-		agent := tr.claimed
-		if agent == "" {
-			agent = "-"
-		}
-		auditSessionEvent(agent, "auth_fail", tr.verdict)
-	}
-	agent := "-"
 	if tr.authed {
-		agent = tr.claimed
+		auditSessionEvent(tr.claimed, "close", tr.end)
+		return failed
 	}
-	auditSessionEvent(agent, "close", tr.end)
+	agent := tr.claimed
+	if agent == "" {
+		agent = "-"
+	}
+	code := tr.verdict
+	if code == "" {
+		code = tr.end
+	}
+	lane.refusedSession(agent, code)
 	return failed
 }
 
@@ -275,6 +276,11 @@ func runSession(c connIO, allowExec bool, tr *sessionTrail) bool {
 	}
 	tr.authed = true
 	consoleFn(markerAuthOK + " agent=" + agentID)
+	// The open receipt lands at the verdict, not at accept: a refused
+	// session never gets an open/close bracket (F3). Any held refused
+	// batch flushes first so the lane's seq order stays chronological.
+	lane.flushRefused()
+	auditSessionEvent(agentID, "open", "ok")
 	sess := &sessionCtx{agentID: agentID, caps: row.caps, allowExec: allowExec}
 
 	var sb strings.Builder
@@ -397,6 +403,11 @@ func serveLine(c connIO, line []byte, sess *sessionCtx) {
 		verb = req.verb
 	}
 	var result string
+	if code == "" && lane.dead {
+		// The audit lane refused a receipt write (F2): refuse the verb
+		// rather than run it unreceipted — fail closed, not silent.
+		code = "audit_full"
+	}
 	if code == "" {
 		seq := 0
 		sess.emit = func(chunk []byte) {
@@ -472,6 +483,7 @@ var errMessages = map[string]string{
 	"spawn_failed":     "could not start the command",
 	"timed_out":        "command exceeded its time budget",
 	"rate_limited":     "request exceeds its per-session rate bound",
+	"audit_full":       "the audit lane cannot take receipts",
 	"seat_unsupported": "the window seat cannot answer this query",
 	"seat_absent":      "no window seat is running",
 	"seat_timeout":     "the window seat did not answer in time",
