@@ -65,6 +65,12 @@ const wnd_core = @import("wnd_core");
 const Rect = ui.Rect;
 const Event = ui.Event;
 
+/// M204b (#3464): TABWM.BIN's product version — the `ver M.m.p` the
+/// component-registry row shows and the drift check resolves
+/// (docs/component-registry.md). The registry's bump rule says when it
+/// moves.
+pub const version = "1.0.0";
+
 // ---------------------------------------------------------------------------
 // Syscall numbers (slots frozen in ADR 0007 / ADR 0015).
 // ---------------------------------------------------------------------------
