@@ -162,7 +162,7 @@ fixtures sharing one builder and one naming map.
 | GPU triangle proof | fixture | GPUTRIANGLE.ELF | — | tools/gate/specs/live-gpu3d.spec | fixture |
 | build-go.sh fixture set (GOHELLO/GOARGS/GOROUT/GOSCALE/GOSTRESS/GOPANIC/GOWIN/GONET/GOVINET/GOVIDNS/GOBIG/GOLOADBSS/GOREAD/GONETRATE/GOMBURST/GOSYSCALL/GOBIGREAD/GOSELFHOST) | fixture | — | — | tools/go/build-go.sh, tools/gate/specs/go-hello.spec | fixture |
 
-## Staged art — the f-artcraft conveyor (M203)
+## Staged art — the f-artcraft conveyor
 
 Signed f-artcraft drops adopted by `tools/art/adopt.py` into `image/art/`
 and staged on the session share under `/host/ART/`. The manifest
