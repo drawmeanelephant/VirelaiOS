@@ -68,6 +68,7 @@ final class VMSession {
     var notify: HostNotify?
     var outbox: HostOutbox?
     var speech: HostSpeech?
+    var printLane: HostPrint?
 
     // vsock-ctl — the listener+delegate are per socket device, per VM.
     var vsockCtlListener: VZVirtioSocketListener?
@@ -837,7 +838,7 @@ final class VMSessionRegistry {
     /// on THIS session's share, the flagged lanes on THIS session's bus.
     private func armHostInt(_ s: VMSession) {
         guard let p = s.profile, p.config.devices.share else { return }
-        guard hostClipboardFlag || hostDropFlag || hostNotifyFlag || hostOutboxFlag || hostSpeechFlag else { return }
+        guard hostClipboardFlag || hostDropFlag || hostNotifyFlag || hostOutboxFlag || hostSpeechFlag || hostPrintFlag else { return }
         var mask: UInt8 = 0
         var requested: [String] = []
         if hostClipboardFlag { mask |= HostInt.laneClip; requested.append("clip") }
@@ -850,6 +851,7 @@ final class VMSessionRegistry {
         if hostNotifyFlag { mask |= HostInt.laneNotify; requested.append("notify") }
         if hostOutboxFlag { mask |= HostInt.laneOutbox; requested.append("outbox") }
         if hostSpeechFlag { mask |= HostInt.laneSpeech; requested.append("speech") }
+        if hostPrintFlag { mask |= HostInt.lanePrint; requested.append("print") }
         guard mask != 0 else { return }
         s.hostInt = HostIntSession.arm(shareDir: p.shareURL, mask: mask, requested: requested)
         guard let session = s.hostInt else { return }
@@ -875,7 +877,16 @@ final class VMSessionRegistry {
             s.speech = HostSpeech(session: session)
             s.speech?.start()
         }
-        if s.clipboard != nil || s.notify != nil || s.outbox != nil || s.speech != nil {
+        if hostPrintFlag {
+            // A secondary session is bundled by construction — its jobs
+            // take the panel path; --host-print-dir still names the
+            // degrade landing a panel can't show.
+            let dest = hostPrintDir.map { URL(fileURLWithPath: $0, isDirectory: true) }
+                ?? FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first!
+            s.printLane = HostPrint(session: session, destDir: dest)
+            s.printLane?.start()
+        }
+        if s.clipboard != nil || s.notify != nil || s.outbox != nil || s.speech != nil || s.printLane != nil {
             DispatchQueue.main.async { [weak self, weak s] in
                 guard let self, let s else { return }
                 self.hostIntTick(s)
@@ -890,6 +901,7 @@ final class VMSessionRegistry {
         s.notify?.tick()
         s.outbox?.tick()
         s.speech?.tick()
+        s.printLane?.tick()
         guard !s.stopped else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self, weak s] in
             guard let self, let s else { return }

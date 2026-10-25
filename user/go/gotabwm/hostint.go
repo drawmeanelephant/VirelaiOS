@@ -110,6 +110,9 @@ var (
 	// speechTickFn is M186d's per-tick SAY drive (hostspeech.go binds
 	// it): the same intent-marker scan for the speech lane.
 	speechTickFn func()
+	// printTickFn is M202c's per-tick PRINT drive (hostprint.go binds
+	// it): the same intent-marker scan for the print lane.
+	printTickFn func()
 )
 
 // hostintConsume routes seat-inbound records to their lane — M108b owns
@@ -135,8 +138,9 @@ func hostintConsume(tag uint8, rec hostint.Record) string {
 // hostintSeatTick is the per-composite-tick drive: consume what the lane
 // directory holds (adoption first), then produce what changed (the
 // clipboard lane's CLIP_OUT, M108b), what the strip staged (the notify-out
-// lane's NOTIFY_OUT, M108d), what the OUTBOX markers request (M127d) and
-// what the SAY markers request (M186d).
+// lane's NOTIFY_OUT, M108d), what the OUTBOX markers request (M127d),
+// what the SAY markers request (M186d) and what the PREQ markers request
+// (M202c).
 // ~1 Hz, bounded file ops.
 func hostintSeatTick() {
 	if hostintEngine == nil {
@@ -150,5 +154,8 @@ func hostintSeatTick() {
 	}
 	if speechTickFn != nil {
 		speechTickFn()
+	}
+	if printTickFn != nil {
+		printTickFn()
 	}
 }

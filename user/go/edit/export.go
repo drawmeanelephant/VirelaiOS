@@ -30,6 +30,7 @@ import (
 	"unicode/utf8"
 
 	"virelai/pdfwrite"
+	"virelai/printq"
 	"virelai/vi"
 )
 
@@ -136,12 +137,16 @@ func exportPath(path string) bool {
 		(s[3] == 'f' || s[3] == 'F')
 }
 
-// exportRefuse reports a refused export: the named marker first, then the
-// banner carries the same shape the save path gives its failures.
-func (e *editor) exportRefuse(why string) bool {
-	vi.ConsoleLine(markerExportRefused + why)
-	e.raiseBanner("export refused " + why)
+// refuseVerb is the shared refusal shape: the named marker first, then
+// the banner carries the same shape the save path gives its failures.
+func (e *editor) refuseVerb(marker, label, why string) bool {
+	vi.ConsoleLine(marker + why)
+	e.raiseBanner(label + why)
 	return false
+}
+
+func (e *editor) exportRefuse(why string) bool {
+	return e.refuseVerb(markerExportRefused, "export refused ", why)
 }
 
 // exportPDF publishes the buffer as a paginated PDF at path and reports
@@ -150,12 +155,29 @@ func (e *editor) exportRefuse(why string) bool {
 // export was taken from. The page count is computed up front so the
 // over-64 refusal names pages=<n> before any object exists.
 func (e *editor) exportPDF(path string) bool {
+	out, pages, why := e.exportBuild(baseOf(path))
+	if why != "" {
+		return e.exportRefuse(why)
+	}
+	if rc := bufWrite(path, out); rc < 0 {
+		return e.exportRefuse("rc=" + vi.Itoa64(rc))
+	}
+	vi.ConsoleLine(markerExport + path + " pages=" + vi.Itoa64(int64(pages)) +
+		" bytes=" + vi.Itoa64(int64(len(out))))
+	return true
+}
+
+// exportBuild is the shared render half of exportPDF and printDoc: wrap
+// the buffer, lay out the fixed-pitch pages, return the finished PDF
+// bytes + page count — or ("", 0, <refusal word>) with nothing emitted.
+// title is the document's own name for the PDF Info entry.
+func (e *editor) exportBuild(title string) ([]byte, int, string) {
 	rows := exportWrapAll(e.buf)
 	pages := (len(rows) + exportPageRows - 1) / exportPageRows
 	if pages > exportMaxPg {
-		return e.exportRefuse("pages=" + vi.Itoa64(int64(pages)))
+		return nil, 0, "pages=" + vi.Itoa64(int64(pages))
 	}
-	d := pdfwrite.New(pdfwrite.Meta{Title: baseOf(path), Producer: "GOEDIT.ELF"})
+	d := pdfwrite.New(pdfwrite.Meta{Title: title, Producer: "GOEDIT.ELF"})
 	for p := 0; p < pages; p++ {
 		body := rows[p*exportPageRows:]
 		if len(body) > exportPageRows {
@@ -170,17 +192,47 @@ func (e *editor) exportPDF(path string) bool {
 		if _, err := d.AddTextPage(lines, pdfwrite.TextOptions{
 			Scale: 1, Left: exportLeft, Top: exportTop, LineAdvance: exportLead,
 		}); err != nil {
-			return e.exportRefuse(err.Error()[len("pdfwrite: "):])
+			return nil, 0, err.Error()[len("pdfwrite: "):]
 		}
 	}
 	out, err := d.Bytes()
 	if err != nil {
-		return e.exportRefuse(err.Error()[len("pdfwrite: "):])
+		return nil, 0, err.Error()[len("pdfwrite: "):]
 	}
-	if rc := bufWrite(path, out); rc < 0 {
-		return e.exportRefuse("rc=" + vi.Itoa64(rc))
+	return out, pages, ""
+}
+
+// printDoc is the M202c print verb: the export renderer's same document
+// staged onto the host print lane instead of published to a picked path.
+// The session is untouched exactly like an export — the staged job names
+// the buffer's own name (or UNTITLED) folded to the lane's name rule.
+// Refusals are the lane's words: a flags-off boot's PRINT/ absence
+// answers lane_disabled, not a generic failure.
+func (e *editor) printDoc() bool {
+	title := baseOf(e.path)
+	if title == "" {
+		title = "UNTITLED"
 	}
-	vi.ConsoleLine(markerExport + path + " pages=" + vi.Itoa64(int64(pages)) +
+	out, pages, why := e.exportBuild(title)
+	if why != "" {
+		return e.printRefuse(why)
+	}
+	name, ok := printq.Name(title)
+	if !ok {
+		return e.printRefuse(printq.RefuseNameRejected)
+	}
+	// The seam is printq.Guest itself — the IO fields are what a test
+	// swaps, so the verb body names the production binding plainly.
+	if refusal := printq.Guest.Print(name, out); refusal != "" {
+		return e.printRefuse(refusal)
+	}
+	vi.ConsoleLine(markerPrint + name + " pages=" + vi.Itoa64(int64(pages)) +
 		" bytes=" + vi.Itoa64(int64(len(out))))
 	return true
+}
+
+// printRefuse reports a refused print staging: the export refusal's
+// shape, the lane's vocabulary.
+func (e *editor) printRefuse(why string) bool {
+	return e.refuseVerb(markerPrintRefused, "print refused ", why)
 }

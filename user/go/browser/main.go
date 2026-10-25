@@ -207,6 +207,7 @@ const (
 	keyH        = 0x0b
 	keyF        = 0x09
 	keyO        = 0x12
+	keyP        = 0x13
 	keyReturn   = 0x28
 )
 
@@ -1381,6 +1382,14 @@ func (a *app) key(usage uint32, flags uint16) {
 		}
 	case keyR, keyF5:
 		a.reload()
+	case keyP:
+		// M202c (#3386): print the laid-out page through the host print
+		// lane — bare p and ctrl+p both spell it (ctrl+p is unclaimed at
+		// this app's dispatch point; the seat's palette row is the
+		// ctrl+shift spelling).
+		if !alt {
+			a.printPage()
+		}
 	case keyO:
 		// Completion plate's Open — dispatch the saved file through
 		// mime.Open, the same contract GOFILES holds.
@@ -2133,6 +2142,9 @@ func (a *app) buildMenus() {
 			mi("&Address…", "ctrl+l", func() bool { a.focusURL(); return true }),
 			mi("&Save page", "s", key(keyS, 0)),
 			mi("Save &as…", "ctrl+shift+s", func() bool { a.openSavePicker(); return true }),
+			// M202c (#3386): the print verb — same dispatch the p key
+			// takes through a.key.
+			mi("&Print…", "p", key(keyP, 0)),
 			mi("Open &download", "o", key(keyO, 0)),
 			mi("Show in &folder", "f", key(keyF, 0)),
 			mi("&Quit", "q", key(keyQ, 0)),
@@ -2176,9 +2188,10 @@ func (a *app) syncMenu() {
 	f, ed, v := &a.bar.Menus[0], &a.bar.Menus[1], &a.bar.Menus[2]
 	f.Items[1].Disabled = !(len(a.lastBody) > 0 && a.target != "" && ledgerFieldOK(a.target))
 	f.Items[2].Disabled = a.target == ""
+	f.Items[3].Disabled = a.lay == nil // M202c: print needs a laid-out page
 	dlDone := a.dl != nil && a.dl.done
-	f.Items[3].Disabled = !dlDone
 	f.Items[4].Disabled = !dlDone
+	f.Items[5].Disabled = !dlDone
 	ed.Items[1].Disabled = a.target == ""
 	v.Items[1].Disabled = !a.hist.canBack()
 	v.Items[2].Disabled = !a.hist.canForward()

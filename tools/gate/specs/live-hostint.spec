@@ -79,10 +79,30 @@
 # connect itself waits on the paste toast — strictly after the burst) and
 # resume fires on the export emit, which script3 only stages post-auth.
 #
+# Run 08 is M202c (#3386): the print lane. --host-print arms lane_print;
+# GOREADER's `p` verb stages its open document (/host/PRINTSRC.PDF — the
+# PDF bytes themselves, a reader never re-renders) plus a PREQ intent
+# marker under PRINT/; the seat signs the PRINT record; the BARE runner
+# verifies and takes the consent-free degrade: the payload moves to
+# --host-print-dir, receipt `saved` (NSPrintPanel needs an app bundle the
+# headless run does not have — the panel path is pinned by
+# HostPrintTests.swift's bundled-leg case). The negatives ride the same
+# boot: forged + foreign-epoch PRINT records (bad_mac / stale_epoch,
+# deleted), seat-side PREQ plants naming an absent payload (gone), a
+# directory (unsupported_kind) and an over-4-MiB file (payload_too_large),
+# and an UNMARKED payload that must never earn a record. A byte-equal
+# check on the landed file proves the PDF bytes crossed the glass.
+#
+# Run 09 is the lane's flags-off posture on the credentialed off-share:
+# same seat + same print verb, zero lane flags — the app names
+# lane_disabled, no PRINT/ or HOSTINT/ is created, no lane marker either
+# end.
+#
 # The credential rides the share's SECRETS.TXT, bound to GOTABWM.ELF (the
 # ADR 0024 D8 app binding). --screen arms the virtio-gpu the seat's
 # WmctlRegister requires AND the display path the drop lane needs.
 # exec-order: intentional -- run 05's later scripts exec several programs
+# (and run 08/09 exec GOREADER post-seat, the verb gated on its `ready`)
 # (AGENTD/GOCALC/GOFILES at arm, then GOSH post-auth); each consumer is
 # gated on that program's own marker and the run ends on `hostint
 # notify-focus`, which no script prints.
@@ -94,6 +114,7 @@
 #   bash tools/go/build-gosh.sh      ->  .build/go/GOSH.ELF
 #   bash tools/go/build-agentd.sh    ->  .build/go/AGENTD.ELF
 #   bash tools/go/build-gocalc.sh    ->  .build/go/GOCALC.ELF
+#   bash tools/go/build-goreader.sh  ->  .build/go/GOREADER.ELF
 #   GO_BUILD_NAME=GOCOMP bash tools/go/build-go.sh user/go/compose/main.go
 
 vgate_name live-hostint "M108e #2329: standing host-integration acceptance -- all lanes + negatives (ADR 0051)"
@@ -171,6 +192,7 @@ share = os.environ.get("VG_SHARE") or os.path.join(run, "share")
 for name, build in (
     ("GOTABWM.ELF", "bash tools/go/build-gotabwm.sh"),
     ("GOVIEW.ELF", "bash tools/go/build-goview.sh"),
+    ("GOREADER.ELF", "bash tools/go/build-goreader.sh"),
     ("GOCOMP.ELF", "GO_BUILD_NAME=GOCOMP bash tools/go/build-go.sh user/go/compose/main.go"),
 ):
     src = os.path.join(".build", "go", name)
@@ -207,6 +229,27 @@ open(os.path.join(share, "HOSTINT", "DROP-00000077"), "wb").write(
     rec(4, 0, 0x77, 999, drop_payload("STALE.QOI", 9), KEY))
 open(os.path.join(share, "HOSTINT", "DROP-00000088"), "wb").write(
     rec(4, 0, 0x88, 1, drop_payload("FORGED.QOI", 9), "wrongkey" * 8))
+# M202c (#3386) run 08: the print lane's seeds. GOREADER opens
+# PRINTSRC.PDF (a real PDF fixture — the payload IS the open document);
+# the PREQ plants exercise the seat's refusal names (absent payload,
+# directory payload, over-bound payload); UNMARKED.PDF is the anti-spoof
+# (a payload with no PREQ earns no record). No forged/stale PRINT records
+# are planted in HOSTINT/: the seat's Poll refuses bad_mac/stale_epoch on
+# ANY lane file regardless of direction, so a planted outbound tag would
+# race the runner's consume — the host-side negatives are pinned
+# deterministically class-A instead (HostPrintTests.swift).
+shutil.copy("user/go/goreader/testdata/dct.pdf",
+            os.path.join(share, "PRINTSRC.PDF"))
+pq = os.path.join(share, "PRINT")
+os.makedirs(os.path.join(pq, "BADDIR.PDF"), exist_ok=True)
+with open(os.path.join(pq, "BIG.PDF"), "wb") as f:
+    f.truncate(4 * 1024 * 1024 + 1)  # sparse: over the job bound, instant
+open(os.path.join(pq, "UNMARKED.PDF"), "wb").write(b"%PDF-inert\n")
+for hexid, name in (("00000010", "ABSENT.PDF"),
+                    ("00000011", "BADDIR.PDF"),
+                    ("00000012", "BIG.PDF")):
+    open(os.path.join(pq, "PREQ-" + hexid), "w").write(name)
+os.makedirs(os.path.join(run, "printdest"), exist_ok=True)
 # The 18-path drop gesture: items 1-4 land (real QOIs), item 5 is over
 # the 64 MiB cap (sparse), items 6-16 are not regular files, items 17-18
 # are REGULAR files the >16 gesture bound refuses without ever
@@ -239,6 +282,12 @@ for off in ("off-share", "nocred-share"):
     open(os.path.join(d, "SETTINGS.TXT"), "w").write("#v2\nwm=none\n")
     open(os.path.join(d, "OWNERS.TXT"), "w").write(
         "#v1\nGOTABWM.ELF\t644\t0\t-\n")
+# run 09's flags-off print leg: off-share carries the reader + its source
+# but zero lane flags — the verb names lane_disabled app-side.
+shutil.copy(os.path.join(".build", "go", "GOREADER.ELF"),
+            os.path.join(run, "off-share", "GOREADER.ELF"))
+shutil.copy("user/go/goreader/testdata/dct.pdf",
+            os.path.join(run, "off-share", "PRINTSRC.PDF"))
 # off-share keeps the credential (flags are the consent switch);
 # nocred-share deliberately omits the host-int row.
 open(os.path.join(run, "off-share", "SECRETS.TXT"), "w").write(
@@ -981,4 +1030,113 @@ for line in out.splitlines():
     if line.startswith(("host-int:", "host-speech:")) and "hello" in line:
         sys.exit("FAIL: a lane line carried the utterance: " + line[:80])
 print("run-07 speak: say -> signed SPEAK -> synth hand-off, marker drained")
+PY
+
+# ---- 08: M202c (#3386) — print through the glass ----------------------
+# --host-print arms lane_print; the arm holds PRINT/ (pre-seeded with the
+# refusal plants — the runner's mkdir is idempotent, the Swift unit test
+# pins dir creation). GOREADER opens the fixture, the scripted `p` fires
+# the verb post-`ready`, printq stages payload+PREQ, the seat signs seq=1,
+# and the BARE runner takes the consent-free degrade: the payload moves
+# to --host-print-dir as `saved` (a bare runner has no panel — the
+# bundled NSPrintPanel leg is pinned by HostPrintTests, never claimed
+# here). Negatives on the same boot: forged + stale-epoch PRINT records
+# host-side; absent/dir/oversize PREQ payloads seat-side; the unmarked
+# payload that earns no record at all.
+vgate_file script2-08.txt <<'EOF2'
+exec GOREADER.ELF /host/PRINTSRC.PDF
+EOF2
+
+vgate_run 08 -- \
+    --screen '$RUN_DIR/screen-08' \
+    --script '$RUN_DIR/script-seat.txt' \
+    --script2 '$RUN_DIR/script2-08.txt' --script2-after 'gotabwm: hostint armed' \
+    --host-print --host-print-dir '$RUN_DIR/printdest' \
+    --input-chords 'p' --input-chords-after 'goreader: ready' \
+    --script-expect 'gotabwm: hostint print seq=1' --script-expect-tail 40 --timeout 300
+
+vgate_assert 08 serial-contains 'gotabwm: registered'
+# ONE session, the print bit named at both ends.
+vgate_assert 08 output-contains 'host-int: armed lanes=print epoch='
+vgate_assert 08 serial-contains 'gotabwm: hostint armed epoch='
+vgate_assert 08 serial-contains 'lanes=print'
+# The verb fired, the seat signed it, the runner's degrade landed it.
+vgate_assert 08 serial-contains 'goreader: print PRINTSRC.PDF bytes=1184'
+vgate_assert 08 serial-contains 'gotabwm: hostint print seq=1 name=PRINTSRC.PDF'
+vgate_assert 08 output-contains 'host-print: saved seq=1 name=PRINTSRC.PDF'
+# Seat-side PREQ plants: every refusal named. (Host-side bad_mac/
+# stale_epoch on tag 11 are pinned class-A by HostPrintTests — a planted
+# outbound record would race the seat's own MAC/epoch sweep, so class B
+# plants refuse on the PREQ side where the seat alone answers.)
+vgate_assert 08 serial-contains 'gotabwm: hostint refuse lane=print reason=gone'
+vgate_assert 08 serial-contains 'gotabwm: hostint refuse lane=print reason=unsupported_kind'
+vgate_assert 08 serial-contains 'gotabwm: hostint refuse lane=print reason=payload_too_large'
+# Anti-spoof: the unmarked payload was never attributed.
+vgate_assert 08 serial-absent 'UNMARKED'
+vgate_assert 08 serial-absent '[EXC] parking:'
+vgate_assert 08 python <<'PY'
+import os, sys
+run = os.environ["RUN_DIR"]
+out = open(os.path.join(run, "run-08.out"), errors="replace").read()
+share = os.environ.get("VG_SHARE") or os.path.join(run, "share")
+# The byte-equal check: the PDF that crossed the glass IS the fixture —
+# the card's "PDF bytes arrive host-side" claim, verified.
+want = open("user/go/goreader/testdata/dct.pdf", "rb").read()
+landed = os.path.join(run, "printdest", "PRINTSRC.PDF")
+if not os.path.isfile(landed):
+    sys.exit("FAIL: the degrade landing is absent")
+if open(landed, "rb").read() != want:
+    sys.exit("FAIL: landed bytes differ from the guest-side source")
+# The bare runner's honesty: `saved`, never a claimed `printed`/`panel`.
+for line in out.splitlines():
+    if line.startswith("host-print:") and "saved" not in line:
+        sys.exit("FAIL: bare-runner lane line claims a print: " + line[:80])
+if out.count("host-print: saved") != 1:
+    sys.exit("FAIL: saved count = %d" % out.count("host-print: saved"))
+# End state: the refused payloads + the anti-spoof file stay put (a
+# refusal is named, the bytes are the caller's), the consumed job is gone,
+# and no lane files remain.
+left = sorted(x for x in os.listdir(os.path.join(share, "PRINT"))
+              if not x.endswith("~"))
+if left != ["BADDIR.PDF", "BIG.PDF", "UNMARKED.PDF"]:
+    sys.exit("FAIL: PRINT/ end state = %r" % left)
+left = [x for x in os.listdir(os.path.join(share, "HOSTINT"))
+        if x.startswith("PRINT-")]
+if left:
+    sys.exit("FAIL: unconsumed PRINT records left: %r" % left)
+print("run-08 print: verb -> signed PRINT -> saved landing, %d payload "
+      "bytes byte-identical, every refusal named" % len(want))
+PY
+
+# ---- 09: M202c flags-off — the print verb names lane_disabled ---------
+# The credentialed off-share with ZERO lane flags: GOREADER opens, `p`
+# fires, and printq's staging sees no PRINT/ — the lane's byte-silence
+# means the dir's absence IS the consent answer. Nothing is created,
+# nothing is emitted, and the refusal is named on serial.
+vgate_run 09 -- \
+    --screen '$RUN_DIR/screen-09' \
+    --cvc-file '$RUN_DIR/off-share' \
+    --script '$RUN_DIR/script-seat.txt' \
+    --script2 '$RUN_DIR/script2-08.txt' --script2-after 'gotabwm: mode live' \
+    --input-chords 'p' --input-chords-after 'goreader: ready' \
+    --script-expect 'goreader: print refused lane_disabled' \
+    --script-expect-tail 10 --timeout 180
+
+vgate_assert 09 serial-contains 'gotabwm: registered'
+vgate_assert 09 serial-contains 'goreader: ready'
+vgate_assert 09 serial-contains 'goreader: print refused lane_disabled'
+vgate_assert 09 serial-absent 'gotabwm: hostint'
+vgate_assert 09 serial-absent '[EXC] parking:'
+vgate_assert 09 python <<'PY'
+import os, sys
+run = os.environ["RUN_DIR"]
+out = open(os.path.join(run, "run-09.out"), errors="replace").read()
+for needle in ("host-int:", "host-print:"):
+    if needle in out:
+        sys.exit("FAIL: flags-off print run printed lane traffic: " + needle)
+share = os.path.join(run, "off-share")
+for d in ("HOSTINT", "PRINT"):
+    if os.path.isdir(os.path.join(share, d)):
+        sys.exit("FAIL: flags-off run created " + d + "/")
+print("run-09 flags-off print: lane_disabled named, nothing created")
 PY

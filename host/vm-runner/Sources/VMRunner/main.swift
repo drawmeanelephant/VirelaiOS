@@ -154,6 +154,20 @@
 //          to NSSpeechSynthesizer — queued, never blocking the VM.
 //          Requires --cvc-file and the `host-int` SECRETS.TXT row; OFF
 //          by default — no SAY/, no records.)
+//         [--host-print] (M202c #3386, ADR 0051: the guest→host print
+//          lane — the print verbs in GOEDIT/WEB/GOREADER stage
+//          <share>/PRINT/<name>.pdf + a PREQ-<hex> intent marker; the
+//          seat signs a PRINT record and the runner verifies. A bundled
+//          session shows NSPrintPanel per job (the human's click is the
+//          per-job consent — no path prints unconfirmed); a bare runner
+//          takes the consent-free degrade: the PDF moves to
+//          --host-print-dir (default ~/Downloads), receipt `saved`. Caps:
+//          ≤4 MiB/job, ≤16 jobs/epoch, ≤1 record per tick. Requires
+//          --cvc-file and the `host-int` SECRETS.TXT row; OFF by default
+//          — no PRINT/, no records.)
+//         [--host-print-dir <path>] (modifier on --host-print: the
+//          degrade landing. Default ~/Downloads — the flag is the gate
+//          redirect, so a class-B run never touches a real Downloads.)
 //         [--host-cmd-after <marker>:<verb>] (M114a #2454, index #2447:
 //          dispatch <verb> on the HostCommand bus — the same seam every
 //          AppKit menu item uses — once <marker> appears in the serial
@@ -921,6 +935,18 @@ var hostSpeechFlag = false
 var hostSpeech: HostSpeech? {
     get { primarySession.speech }
     set { primarySession.speech = newValue }
+}
+// M202c (#3386, ADR 0051): `--host-print` arms the print lane — PREQ
+// intent markers under <share>/PRINT/ become signed PRINT records the
+// runner verifies and hands to NSPrintPanel (bundled — the human's click
+// is the per-job consent) or moves to `--host-print-dir` (bare runner:
+// the consent-free degrade, receipt `saved` — a saved file, never a
+// claimed print).
+var hostPrintFlag = false
+var hostPrintDir: String?
+var hostPrint: HostPrint? {
+    get { primarySession.printLane }
+    set { primarySession.printLane = newValue }
 }
 // M114a (#2454, index #2447): `--host-cmd-after <marker>:<verb>` — the
 // headless mirror of the HostCommand bus every menu item dispatches on
@@ -1881,6 +1907,14 @@ while idx < arguments.count {
         idx += 1
     } else if arg == "--host-outbox-dir", idx + 1 < arguments.count {
         hostOutboxDir = arguments[idx + 1]
+        idx += 2
+    } else if arg == "--host-print" {
+        // M202c: arm the print lane — signed PRINT records naming
+        // PREQ-staged PDFs under <share>/PRINT/.
+        hostPrintFlag = true
+        idx += 1
+    } else if arg == "--host-print-dir", idx + 1 < arguments.count {
+        hostPrintDir = arguments[idx + 1]
         idx += 2
     } else if arg == "--host-speech" {
         // M186d (#3181, ADR 0051 V2-D8): the speech lane — SAY-marked
@@ -3564,6 +3598,17 @@ if hostSpeechFlag {
         fail("--host-speech requires --cvc-file <share-dir> (the lanes are signed files in that share — ADR 0051 D1).")
     }
 }
+// M202c (#3386): the print lane is the same modifier shape — no display
+// prerequisite (the bare runner's degrade is a file landing, not a window
+// gesture).
+if hostPrintFlag || hostPrintDir != nil {
+    guard hostPrintFlag else {
+        fail("--host-print-dir is a modifier on --host-print (no lane to redirect).")
+    }
+    guard cvcFileEnabled else {
+        fail("--host-print requires --cvc-file <share-dir> (the lanes are signed files in that share — ADR 0051 D1).")
+    }
+}
 // Claim 9367: --pointer-virtio rides the four-queue device; the after-marker
 // only makes sense with a sequence to schedule.
 if pointerVirtioScript == nil, pointerVirtioAfter != nil {
@@ -4722,7 +4767,7 @@ if netVmnetEnabled {
 // The drop lane's display precondition (D4): the drop target is the
 // display view, so a headless runner refuses lane_disabled at arm and the
 // drop bit never enters the mask.
-if hostClipboardFlag || hostDropFlag || hostNotifyFlag || hostOutboxFlag || hostSpeechFlag {
+if hostClipboardFlag || hostDropFlag || hostNotifyFlag || hostOutboxFlag || hostSpeechFlag || hostPrintFlag {
     let shareURL = URL(fileURLWithPath: cvcFileShareDir!, isDirectory: true)
     var mask: UInt8 = 0
     var requested: [String] = []
@@ -4751,6 +4796,10 @@ if hostClipboardFlag || hostDropFlag || hostNotifyFlag || hostOutboxFlag || host
     if hostSpeechFlag {
         mask |= HostInt.laneSpeech
         requested.append("speech")
+    }
+    if hostPrintFlag {
+        mask |= HostInt.lanePrint
+        requested.append("print")
     }
     if mask != 0 {
         hostIntSession = HostIntSession.arm(shareDir: shareURL, mask: mask, requested: requested)
@@ -4781,10 +4830,19 @@ if hostClipboardFlag || hostDropFlag || hostNotifyFlag || hostOutboxFlag || host
             hostSpeech = HostSpeech(session: session)
             hostSpeech?.start()
         }
+        if hostPrintFlag {
+            // --host-print-dir redirects the degrade landing; absent it
+            // the lane default is ~/Downloads (the flag is what keeps a
+            // class-B run out of the real one).
+            let dest = hostPrintDir.map { URL(fileURLWithPath: $0, isDirectory: true) }
+                ?? FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first!
+            hostPrint = HostPrint(session: session, destDir: dest)
+            hostPrint?.start()
+        }
         // One shared 250 ms drain for every consuming lane — the notify
         // and outbox lanes ride the same poll as the clipboard drain
         // (ADR 0051 D5, V2-D5).
-        if hostClipboard != nil || hostNotify != nil || hostOutbox != nil || hostSpeech != nil {
+        if hostClipboard != nil || hostNotify != nil || hostOutbox != nil || hostSpeech != nil || hostPrint != nil {
             DispatchQueue.main.async { hostIntTick() }
         }
     }
@@ -5676,6 +5734,7 @@ func hostIntTick() {
     hostNotify?.tick()
     hostOutbox?.tick()
     hostSpeech?.tick()
+    hostPrint?.tick()
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { hostIntTick() }
 }
 
@@ -5752,7 +5811,7 @@ func fireHostWriteIfMarker(_ text: String) {
 func feedInspector(_ text: String) {
     inspector.ingest(serialText: text)
     if let laneDir = hostIntSession?.laneDir {
-        for tag in [HostInt.Tag.clipIn, .clipOut, .notifyOut, .drop, .outbox, .notifyFocus] {
+        for tag in [HostInt.Tag.clipIn, .clipOut, .notifyOut, .drop, .outbox, .notifyFocus, .print] {
             for (_, seq) in HostInt.records(laneDir: laneDir, tag: tag) ?? [] {
                 inspector.noteHostIntSeq(seq)
             }

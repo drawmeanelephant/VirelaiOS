@@ -34,6 +34,7 @@ const (
 	keyQuitQ   = 0x14 // `q`
 	keyMark    = 0x05 // `b` — toggle a bookmark on the current page
 	keySaveAs  = 0x16 // `s` — save a byte copy through the picker
+	keyPrint   = 0x13 // `p` — stage the open document on the host print lane (M202c)
 	keyBmPrev  = 0x2F // `[` — jump to the previous bookmark
 	keyBmNext  = 0x30 // `]` — jump to the next bookmark
 	keyHome    = 0x4A
