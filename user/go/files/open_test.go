@@ -268,33 +268,19 @@ func TestDispatchUsesTheRegisteredHandlers(t *testing.T) {
 
 // --- M200b (#3384): the .js open ---------------------------------------------
 
-// withScriptShare makes readHead serve `head` on the script path itself
-// and answer rc<0 for the receipt names — the "no receipts exist" share.
-func withScriptShare(t *testing.T, head []byte) {
-	t.Helper()
-	saved := readHead
-	readHead = func(path string, cap int) ([]byte, int64) {
-		if strings.HasSuffix(path, ".JS") {
-			return head, int64(len(head))
-		}
-		return nil, -1
-	}
-	t.Cleanup(func() { readHead = saved })
-}
-
 var jsHead = []byte("print('hi');\n")
 
-// Enter on a .js execs the ENGINE — the decision marker pairs with the
-// receipt line, and the launch carries the argv policy's own shape:
-// [--receipt=<derived>, <script>] ahead of the kernel's argv[0] prepend.
+// Enter on a .js execs the ENGINE — exec-to-console: the decision marker
+// pairs with the named sink, and the launch is the bare script path (the
+// kernel prepends argv[0]=QJS.BIN; policy.parse reads args[1..]).
 func TestOpenFileRunsAJSScript(t *testing.T) {
-	withScriptShare(t, jsHead)
+	withHead(t, jsHead)
 	m := testModel(entry("HELLO.JS", false))
 	m.handleKey(keys.Event{Key: keys.KeyEnter})
 	got := pendingJoined(&m)
 	for _, want := range []string{
 		markerOpenFile + "HELLO.JS type=script handler=QJS.BIN",
-		markerOpenReceipt + "HELLO.JS -> /host/FM/HELLO.R",
+		markerOpenConsole + "HELLO.JS",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("markers = %q, want it to contain %q", got, want)
@@ -304,34 +290,8 @@ func TestOpenFileRunsAJSScript(t *testing.T) {
 	if !ok {
 		t.Fatal("a script open must hand main an exec request")
 	}
-	if r.bin != "QJS.BIN" || r.path != "/host/FM/HELLO.JS" ||
-		len(r.args) != 1 || r.args[0] != "--receipt=/host/FM/HELLO.R" {
-		t.Fatalf("launch = %+v; want QJS.BIN --receipt=/host/FM/HELLO.R /host/FM/HELLO.JS", r)
-	}
-}
-
-// A receipt name that is already taken must not be claimed again — the
-// mirror is createExclusive, so the open walks to the first free one.
-func TestOpenScriptSkipsTakenReceiptNames(t *testing.T) {
-	saved := readHead
-	readHead = func(path string, cap int) ([]byte, int64) {
-		switch {
-		case strings.HasSuffix(path, ".JS"):
-			return jsHead, int64(len(jsHead))
-		case strings.HasSuffix(path, "HELLO.R"), strings.HasSuffix(path, "HELLO-1.R"):
-			return []byte("x"), 1 // both earlier names are claimed
-		}
-		return nil, -1
-	}
-	t.Cleanup(func() { readHead = saved })
-	m := testModel(entry("HELLO.JS", false))
-	m.handleKey(keys.Event{Key: keys.KeyEnter})
-	if got := pendingJoined(&m); !strings.Contains(got, markerOpenReceipt+"HELLO.JS -> /host/FM/HELLO-2.R") {
-		t.Fatalf("receipt marker = %q, want the first FREE name HELLO-2.R", got)
-	}
-	r, ok := m.takeLaunch()
-	if !ok || r.args[0] != "--receipt=/host/FM/HELLO-2.R" {
-		t.Fatalf("launch = %+v ok=%v", r, ok)
+	if r.bin != "QJS.BIN" || r.path != "/host/FM/HELLO.JS" || len(r.args) != 0 {
+		t.Fatalf("launch = %+v; want QJS.BIN on the bare script path", r)
 	}
 }
 
@@ -339,7 +299,7 @@ func TestOpenScriptSkipsTakenReceiptNames(t *testing.T) {
 // USB volume is a script QJS.BIN would refuse at parse — the open names
 // the policy's own error rather than exec a guaranteed-Usage exit.
 func TestOpenScriptRefusesOutsideHost(t *testing.T) {
-	withScriptShare(t, jsHead)
+	withHead(t, jsHead)
 	m := testModel(entry("HELLO.JS", false))
 	m.path = "/usb"
 	m.handleKey(keys.Event{Key: keys.KeyEnter})
@@ -358,69 +318,11 @@ func TestOpenScriptRefusesOutsideHost(t *testing.T) {
 	}
 }
 
-// Every candidate receipt name taken (or un derivable inside the policy
-// bounds) means the run's output has nowhere honest to go — refused by
-// name, never launched blind.
-func TestOpenScriptRefusesWhenNoReceiptName(t *testing.T) {
-	saved := readHead
-	readHead = func(path string, cap int) ([]byte, int64) {
-		return jsHead, int64(len(jsHead)) // every probe answers "exists"
-	}
-	t.Cleanup(func() { readHead = saved })
-	m := testModel(entry("HELLO.JS", false))
-	m.handleKey(keys.Event{Key: keys.KeyEnter})
-	got := pendingJoined(&m)
-	if !strings.Contains(got, markerOpenNo+"HELLO.JS (no receipt name)") {
-		t.Fatalf("a share with no free receipt name must refuse: %q", got)
-	}
-	if _, ok := m.takeLaunch(); ok {
-		t.Fatal("a refused open must not queue an exec")
-	}
-}
-
-// The open-with pick of the engine carries the same shaped argv — the
-// receipt half is the handler's, not the gesture's.
-func TestOpenWithChoseQJSCarriesTheReceipt(t *testing.T) {
-	withScriptShare(t, jsHead)
-	m := testModel(entry("HELLO.JS", false))
-	m.handleKey(runeKey('o'))
-	if got := pendingJoined(&m); !strings.Contains(got, markerOpenWith+"HELLO.JS type=script candidates=2") {
-		t.Fatalf("candidate marker = %q", got)
-	}
-	m.handleKey(runeKey('1'))
-	got := pendingJoined(&m)
-	for _, want := range []string{
-		markerOpenChose + "HELLO.JS type=script handler=QJS.BIN",
-		markerOpenReceipt + "HELLO.JS -> /host/FM/HELLO.R",
-	} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("markers = %q, want it to contain %q", got, want)
-		}
-	}
-	r, ok := m.takeLaunch()
-	if !ok || r.bin != "QJS.BIN" || r.args[0] != "--receipt=/host/FM/HELLO.R" {
-		t.Fatalf("launch = %+v ok=%v", r, ok)
-	}
-}
-
-// And the second candidate is still the editor on the raw source — no
-// receipt argv rides an editor's open.
-func TestOpenWithChoseEditorKeepsThePlainLaunch(t *testing.T) {
-	withScriptShare(t, jsHead)
-	m := testModel(entry("HELLO.JS", false))
-	m.handleKey(runeKey('o'))
-	m.handleKey(runeKey('2'))
-	r, ok := m.takeLaunch()
-	if !ok || r.bin != "GOEDIT.ELF" || r.path != "/host/FM/HELLO.JS" || len(r.args) != 0 {
-		t.Fatalf("editor launch = %+v ok=%v; want a bare path hand-off", r, ok)
-	}
-}
-
 // A script inside a component the policy cannot take (>31 chars) is
 // refused on the TARGET itself — QJS.BIN's own PathLimit word, named
 // before any exec rather than read back off an exit status.
 func TestOpenScriptRefusesAnUnadmittablePath(t *testing.T) {
-	withScriptShare(t, jsHead)
+	withHead(t, jsHead)
 	m := testModel(entry("HELLO.JS", false))
 	// A real share can hold a 46-char directory name; sharePath admits it
 	// (≤64 total), the argv policy does not (≤31 a component).
@@ -432,5 +334,43 @@ func TestOpenScriptRefusesAnUnadmittablePath(t *testing.T) {
 	}
 	if _, ok := m.takeLaunch(); ok {
 		t.Fatal("a refused open must not queue an exec")
+	}
+}
+
+// The open-with pick of the engine takes the same console dispatch — the
+// sink is the handler's, not the gesture's.
+func TestOpenWithChoseQJS(t *testing.T) {
+	withHead(t, jsHead)
+	m := testModel(entry("HELLO.JS", false))
+	m.handleKey(runeKey('o'))
+	if got := pendingJoined(&m); !strings.Contains(got, markerOpenWith+"HELLO.JS type=script candidates=2") {
+		t.Fatalf("candidate marker = %q", got)
+	}
+	m.handleKey(runeKey('1'))
+	got := pendingJoined(&m)
+	for _, want := range []string{
+		markerOpenChose + "HELLO.JS type=script handler=QJS.BIN",
+		markerOpenConsole + "HELLO.JS",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("markers = %q, want it to contain %q", got, want)
+		}
+	}
+	r, ok := m.takeLaunch()
+	if !ok || r.bin != "QJS.BIN" || r.path != "/host/FM/HELLO.JS" || len(r.args) != 0 {
+		t.Fatalf("launch = %+v ok=%v", r, ok)
+	}
+}
+
+// And the second candidate is still the editor on the raw source — the
+// console sink is the engine's face, not the editor's.
+func TestOpenWithChoseEditorKeepsThePlainLaunch(t *testing.T) {
+	withHead(t, jsHead)
+	m := testModel(entry("HELLO.JS", false))
+	m.handleKey(runeKey('o'))
+	m.handleKey(runeKey('2'))
+	r, ok := m.takeLaunch()
+	if !ok || r.bin != "GOEDIT.ELF" || r.path != "/host/FM/HELLO.JS" || len(r.args) != 0 {
+		t.Fatalf("editor launch = %+v ok=%v; want a bare path hand-off", r, ok)
 	}
 }

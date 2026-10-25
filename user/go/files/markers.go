@@ -85,11 +85,11 @@ const (
 	markerOpenLaunched = "gofiles: open launched "
 	markerOpenLaunchNo = "gofiles: open launch refused "
 
-	// M200b (#3384): the receipt half of a script open's decision —
-	// `open receipt <name> -> /host/…` names where QJS.BIN's --receipt
-	// mirror was told to write before the exec runs, so a gate (and the
-	// desk) can tell a kept record from output dropped on the floor.
-	markerOpenReceipt = "gofiles: open receipt "
+	// M200b (#3384): the sink half of a script open's decision —
+	// `open console <name>` names the child's inherited console stream as
+	// where output lands, so a gate can tell a named sink from output
+	// dropped on the floor.
+	markerOpenConsole = "gofiles: open console "
 
 	// M121c (#2566): the '?' overlay's receipts — `hints n=` the registry
 	// row count on the painted frame, one `hints row` per row the plate

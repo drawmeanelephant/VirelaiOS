@@ -111,20 +111,19 @@
 # surface.
 #
 # M200b (#3384) adds run 23: a staged .js opens through the new Script
-# mime family — Enter execs QJS.BIN with the argv policy's own shape
-# (`--receipt=/host/FMJS/HELLO.R` ahead of the script path), so the run's
-# output lands in the two sinks the console-only face honestly has: the
-# child's inherited console stream (`fileman-js-opened` on serial beside
-# every other marker) and the receipt file on the share beside the
-# script, asserted byte-content here. `procs QJS.BIN exited status=0` is
-# the kernel's own third reporter — the engine really ran to completion.
+# mime family — Enter execs QJS.BIN on the bare script path (the argv
+# policy's own shape), and the console-only engine's print output lands
+# on the sink the decision marker names: the child's inherited console
+# stream (`fileman-js-opened` on serial beside every other marker).
+# `procs QJS.BIN exited status=0` is the kernel's own third reporter —
+# the engine really ran to completion.
 #
 # exec-order: assert-proven -- each run ends on its own `rx-go-fileman-*`
 # marker, which only its closing script prints, and that script waits on the
 # app's own marker; an app that never ran, never renamed, never settled or
 # never refused cannot pass.
 
-vgate_name go-fileman "M74a + M81a #1761 + M125c #2588 + M124b #2581 + M124d #2583 + M134b #2760 + M149a #2806 + M155a #2929 + M155b #2930 + M155c #2931 + M155d #2932 + M167a #2989 + M167b #2992 + M167c #2993 + M160c #2994 + M192e #3250 + M193c #3255 + M193d #3256: GOFILES navigates, previews, renames, trashes, restores, opens files, picks paths, resumes its session, opens with the right-click menu, lists the kernel mount table, spacebar-QuickLooks image, text and a PDF's page one, answers file properties with its ctime, birth, on-disk bytes and volume free facts, batch-moves and batch-deletes a marked set, and content-searches a seeded subtree within bounds, and runs the props + batch-move + search journey three times over, and toggles a thumbnail grid of cell-mosaic tiles with the focused image as a real sixel, and pins folders into FILES.FAV favorites that list with gone pins named missing, and browses a .tar in place as a read-only virtual directory with QuickLook on its members, and routes a .vcf through the opens=text/vcard manifest row into a painted contact-card face whose email row hands off to GOMAIL's send --to — the chain leg carrying an account so the exec'd argv completes a real SMTP+TLS submit, and runs a staged .js through the Script mime dispatch to QJS.BIN — M200b #3384 — the script's print output landing on the console while its --receipt record lands on the share beside the script"
+vgate_name go-fileman "M74a + M81a #1761 + M125c #2588 + M124b #2581 + M124d #2583 + M134b #2760 + M149a #2806 + M155a #2929 + M155b #2930 + M155c #2931 + M155d #2932 + M167a #2989 + M167b #2992 + M167c #2993 + M160c #2994 + M192e #3250 + M193c #3255 + M193d #3256: GOFILES navigates, previews, renames, trashes, restores, opens files, picks paths, resumes its session, opens with the right-click menu, lists the kernel mount table, spacebar-QuickLooks image, text and a PDF's page one, answers file properties with its ctime, birth, on-disk bytes and volume free facts, batch-moves and batch-deletes a marked set, and content-searches a seeded subtree within bounds, and runs the props + batch-move + search journey three times over, and toggles a thumbnail grid of cell-mosaic tiles with the focused image as a real sixel, and pins folders into FILES.FAV favorites that list with gone pins named missing, and browses a .tar in place as a read-only virtual directory with QuickLook on its members, and routes a .vcf through the opens=text/vcard manifest row into a painted contact-card face whose email row hands off to GOMAIL's send --to — the chain leg carrying an account so the exec'd argv completes a real SMTP+TLS submit, and runs a staged .js through the Script mime dispatch to QJS.BIN — M200b #3384 — the script's print output landing on the named console sink"
 vgate_share seed
 vgate_runner_flags -Xswiftc -DSPIKE
 
@@ -2965,18 +2964,18 @@ PY
 # GOFILES in /host/FMJS on the kernel desktop (the run 01–10 shape), one
 # file so Enter's target is unambiguous. The mime table's new Script
 # family names the bytes application/javascript, the registry default
-# execs QJS.BIN, and the launch carries the argv policy's own shape —
-# `--receipt=<derived>` ahead of the script path — so the console-only
-# engine's output lands in the two sinks this card names: the child's
-# inherited console stream and the receipt file beside the script. The
-# closing script waits on the kernel's own `procs QJS.BIN exited
-# status=0` — the engine ran to completion — before tearing the window
-# down.
+# execs QJS.BIN on the bare script path, and the console-only engine's
+# print output lands on the sink the decision marker names — the child's
+# inherited console stream, serial-observable. (`--receipt=` was the
+# other candidate; the desk's share is custom-virtio, where the
+# receipt's createExclusive answers Unsupported — a sink the share
+# cannot keep is not a sink this leg names.) The closing script waits on
+# the kernel's own `procs QJS.BIN exited status=0` — the engine really
+# ran to completion — before tearing the window down.
 vgate_setup_python <<'PY'
-import os, pathlib, shutil, subprocess, sys
+import os, shutil, subprocess, sys
 share = os.environ.get("VG_SHARE") or os.path.join(os.environ["RUN_DIR"], "share")
-# QJS.BIN is the offline product link — build it the way live-quickjs does
-# (the .build path is the same one tools/session.sh stages from).
+# QJS.BIN is the offline product link — build it the way live-quickjs does.
 subprocess.run([sys.executable, "tools/js-client/build.py", "build",
                 "--output", ".build/js-client/QJS.BIN"], check=True)
 shutil.copy(".build/js-client/QJS.BIN", os.path.join(share, "QJS.BIN"))
@@ -2984,11 +2983,6 @@ fmjs = os.path.join(share, "FMJS")
 os.makedirs(fmjs, exist_ok=True)
 with open(os.path.join(fmjs, "HELLO.JS"), "w") as f:
     f.write("print('fileman-js-opened');\n")
-# The derived receipt name must NOT exist beforehand — a pre-staged
-# HELLO.R would send the launch to HELLO-1.R and silently re-aim the
-# assertions below.
-if os.path.exists(os.path.join(fmjs, "HELLO.R")):
-    sys.exit("FMJS/HELLO.R already staged - run 23 would prove nothing")
 print("staged QJS.BIN + FMJS/HELLO.JS")
 PY
 
@@ -3015,27 +3009,22 @@ vgate_assert 23 serial-contains 'exec: loaded GOFILES.ELF'
 vgate_assert 23 serial-contains 'gofiles: list /host/FMJS n=1'
 vgate_assert 23 serial-contains 'gofiles: entry HELLO.JS file'
 
-# The dispatch: the DECISION (model) pairs with the receipt line — the
-# run's record is named before any exec — then the OUTCOME marker after
-# vi.Exec returned.
+# The dispatch: the DECISION (model) pairs with the named console sink,
+# then the OUTCOME marker after vi.Exec returned.
 vgate_assert 23 serial-contains 'gofiles: open file HELLO.JS type=script handler=QJS.BIN'
-vgate_assert 23 serial-contains 'gofiles: open receipt HELLO.JS -> /host/FMJS/HELLO.R'
+vgate_assert 23 serial-contains 'gofiles: open console HELLO.JS'
 vgate_assert 23 serial-contains 'gofiles: open launched HELLO.JS handler=QJS.BIN pid='
 
-# The two output sinks the card names: the script's print on the
-# inherited console stream (the exec-to-console half), and the receipt
-# file's 'O' frame on the share (the desk-visible half) — the engine's
-# own clean-exit line plus the kernel's exit report close the proof.
+# The output lands where the card said it would: the script's print on
+# the inherited console stream; the engine's own clean-exit line plus
+# the kernel's exit report close the proof.
 vgate_assert 23 serial-contains 'fileman-js-opened'
 vgate_assert 23 serial-contains 'qjs: clean'
 vgate_assert 23 serial-contains 'procs QJS.BIN exited status=0'
-vgate_assert 23 share-contains FMJS/HELLO.R 'fileman-js-opened'
-vgate_assert 23 share-contains FMJS/HELLO.R 'QJS/1'
 
 vgate_assert 23 serial-contains 'dui close: closed=2'
 vgate_assert 23 serial-contains 'rx-go-fileman-js-ok'
 vgate_assert 23 serial-absent 'gofiles: open refused HELLO.JS'
 vgate_assert 23 serial-absent 'gofiles: open launch refused'
-vgate_assert 23 serial-absent 'qjs: ReceiptExists'
 vgate_assert 23 serial-absent '[EXC] parking:'
 vgate_assert 23 serial-absent 'exited status=139'
