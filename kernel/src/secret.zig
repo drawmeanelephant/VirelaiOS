@@ -436,8 +436,9 @@ pub const ask_line_max: usize = max_key_len + 10 + max_val_len + max_apps_len + 
 pub const ask_meta_max: usize = 10 + 10 + 10 + process.name_max + max_key_len + 8 + max_apps_len + 6;
 
 /// The ask lifecycle — `pending` stands until the seat gestures; the
-/// terminal states stay recorded so the asker's `status` read learns the
-/// verdict (a vanished ask reports ENOENT, not a lie).
+/// terminal states stay recorded until the asker's `status` read learns
+/// the verdict, which CONSUMES the row (a vanished ask reports ENOENT,
+/// not a lie — #3406). A dead asker's row frees regardless of state.
 pub const AskState = enum(u8) { pending = 1, committed = 2, dropped = 3 };
 
 /// A staged ask: the parsed entry fields plus the asker's recorded
@@ -466,13 +467,14 @@ fn persist() bool {
     return save_to_share();
 }
 
-/// A pending ask whose asker is gone can never be consented honestly —
-/// free the slot. Lazy: runs at the top of each op rather than hooking
-/// the exit path (a dead asker between ops is a `list`/`commit`-visible
-/// row, not a leak).
+/// A dead asker's row frees regardless of state: a pending ask can never
+/// be consented honestly, and a terminal verdict can never be read —
+/// either way the slot is a leak, not a standing record (#3406). Lazy:
+/// runs at the top of each op rather than hooking the exit path (a dead
+/// asker between ops is a `list`/`commit`-visible row, not a leak).
 fn reap_dead_asks() void {
     for (&asks) |*a| {
-        if (a.state != .pending or a.id == 0) continue;
+        if (a.id == 0) continue;
         const live = if (process.info(a.pid)) |pi| pi.state != .exited else false;
         if (!live) a.* = .{};
     }
@@ -595,7 +597,8 @@ pub const CommitResult = enum { ok, enoent, enospc, eacces, einval, eio };
 /// the store and persists it; a persist failure leaves the ask standing
 /// (the seat may retry — the in-memory set is idempotent by key). Refuses
 /// a row whose apps list names the WRITER's image. An overwrite keeps a
-/// bound allowlist when the staged line omits `apps` (#3407).
+/// bound allowlist when the staged line omits `apps` (#3407). A landed
+/// verdict scrubs the staged plaintext (#3406).
 pub fn commit(id: u32, caller_image: []const u8) CommitResult {
     ensure_init();
     reap_dead_asks();
@@ -613,28 +616,40 @@ pub fn commit(id: u32, caller_image: []const u8) CommitResult {
         a.state = .pending;
         return .eio;
     }
+    // The verdict stands; the staged plaintext is residue — scrub it
+    // (#3406). The retry path above keeps the entry for the retry.
+    a.entry = .{};
     return .ok;
 }
 
 /// op 3 — `drop(id)`: the decline gesture. The staged line never lands;
-/// the ask stays recorded so the asker's `status` reads `dropped`.
+/// the ask stays recorded so the asker's `status` reads `dropped`, and
+/// the staged plaintext is scrubbed with the verdict (#3406).
 pub fn drop(id: u32) CommitResult {
     ensure_init();
     reap_dead_asks();
     const a = find_ask(id) orelse return .enoent;
     if (a.state != .pending) return .enoent;
     a.state = .dropped;
+    a.entry = .{};
     return .ok;
 }
 
 /// op 4 — `status(id)`: the asker's own verdict, and nobody else's —
 /// another pid's ask reports ENOENT (an ask's existence is not a
-/// broadcast). Returns the AskState value.
+/// broadcast). A terminal verdict is CONSUMED on read (#3406): the row
+/// retires with the answer, so the bounded table is not consume-once
+/// per boot — a second read reports ENOENT like any vanished ask.
+/// `pending` never retires; the ask still waits on the seat. Returns
+/// the AskState value.
 pub fn status(id: u32, pid: usize) ?u64 {
     ensure_init();
+    reap_dead_asks();
     const a = find_ask(id) orelse return null;
     if (a.pid != pid) return null;
-    return @backingInt(a.state);
+    const verdict = @backingInt(a.state);
+    if (a.state != .pending) a.* = .{};
+    return verdict;
 }
 
 /// op 5 — `set(line)`: the seat's direct provisioning gesture (the
@@ -979,6 +994,52 @@ test "secret: overwrite preserves the apps binding; LIST marks replace (#3407)" 
     try std.testing.expectEqual(CommitResult.ok, commit(3, seat));
     const s4n = serialize(&out);
     try std.testing.expect(std.mem.indexOf(u8, out[0..s4n], "other\t1000\tv2\n") != null);
+}
+
+test "secret: slot-96 terminal rows retire — the verdict read frees the slot (#3406)" {
+    init();
+    test_persist = true;
+    defer test_persist = null;
+    const pid = process.create_as("ASKER.ELF", .{}, .{}, .{}, .{ .uid = process.uid_user }).?;
+    const seat = "/host/GOTABWM.ELF";
+
+    // The audit's consume-once shape: four asks fill the table and a
+    // fifth is refused — and answering all four frees nothing by itself,
+    // the verdict has to be readable by a live asker.
+    var ids: [max_pending_asks]u32 = undefined;
+    var i: usize = 0;
+    while (i < max_pending_asks) : (i += 1) {
+        var lb: [40]u8 = undefined;
+        const ln = std.fmt.bufPrint(&lb, "k{d}\t1000\tsecretval{d}", .{ i, i }) catch unreachable;
+        ids[i] = ask(pid, process.uid_user, "ASKER.ELF", ln).id;
+    }
+    try std.testing.expectEqual(AskResult{ .err = .table_full }, ask(pid, process.uid_user, "ASKER.ELF", "fifth\t1000\tv"));
+    try std.testing.expectEqual(CommitResult.ok, commit(ids[0], seat));
+    try std.testing.expectEqual(CommitResult.ok, drop(ids[1]));
+    try std.testing.expectEqual(CommitResult.ok, commit(ids[2], seat));
+    try std.testing.expectEqual(CommitResult.ok, drop(ids[3]));
+    try std.testing.expectEqual(AskResult{ .err = .table_full }, ask(pid, process.uid_user, "ASKER.ELF", "fifth\t1000\tv"));
+
+    // The terminal transitions scrubbed the staged plaintext — the asks
+    // BSS no longer holds a copy of a landed or declined value.
+    for (&asks) |*a| {
+        try std.testing.expectEqual(@as(u8, 0), a.entry.val_len);
+        try std.testing.expect(std.mem.allEqual(u8, &a.entry.val, 0));
+    }
+
+    // Each verdict is delivered exactly once — the read retires the row,
+    // so a second read reports ENOENT like any vanished ask.
+    try std.testing.expectEqual(@as(u64, ask_committed), status(ids[0], pid).?);
+    try std.testing.expectEqual(@as(u64, ask_dropped), status(ids[1], pid).?);
+    try std.testing.expect(status(ids[0], pid) == null);
+    try std.testing.expectEqual(@as(u64, ask_committed), status(ids[2], pid).?);
+    try std.testing.expectEqual(@as(u64, ask_dropped), status(ids[3], pid).?);
+
+    // The fifth ask now fits: the table recovers inside the boot, and
+    // the two consents landed in the store.
+    const r5 = ask(pid, process.uid_user, "ASKER.ELF", "fifth\t1000\tv");
+    try std.testing.expect(r5 == .id);
+    try std.testing.expectEqual(@as(usize, 2), count());
 }
 
 test "secret: slot-96 persist failure keeps the ask standing (EIO) (#3351)" {
