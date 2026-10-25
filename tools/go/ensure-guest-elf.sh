@@ -18,7 +18,11 @@
 #
 # <APP> is an upper-case ELF base name (GOSH, GOSSHD, GOSSH, GOTABWM, ...).
 # The builder resolves to tools/go/build-<lower>.sh with the historical
-# exceptions GOSSHD->sshd, GOSSH->ssh, GOFILES->files, GOHELP->help.
+# exceptions GOSSHD->sshd, GOSSH->ssh, GOFILES->files, GOHELP->help, plus
+# the M201b (#3417) named-tool set whose products share one multi-target
+# script or a production-named wrapper: GONETSTAT/GODNS/GOTRACEROUTE->netdiag,
+# GOTGIT->git. (GOFETCH needs a target argument build-<lower>.sh cannot
+# express, so it resolves conventionally to the build-gofetch.sh shim.)
 #
 # check:   fail closed with a named ensure-guest-elf error if missing/stale
 #          (no rebuild — that is what vgate.sh calls before zig build / boot).
@@ -65,6 +69,13 @@ SPECIAL_BUILDERS = {
     "GOSSH": "ssh",
     "GOFILES": "files",
     "GOHELP": "help",
+    # M201b (#3417): three products share build-netdiag.sh; the production
+    # GOTGIT builder is the build-git.sh wrapper (the audit's "stage as
+    # named tool" set needs every staged name to resolve a real script).
+    "GONETSTAT": "netdiag",
+    "GODNS": "netdiag",
+    "GOTRACEROUTE": "netdiag",
+    "GOTGIT": "git",
 }
 
 APP_CHARS = set("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_")

@@ -17,9 +17,10 @@
 #      that fixes a missing piece (zig, swift, the GOOS=virelai fork)
 #      rather than letting it die deep in a build log or silently booting
 #      the Zig-seat fallback;
-#   2. seed a PERSISTENT host share (apps, APPS.TXT, wallpaper, fonts, and
-#      the Go seat) -- M34/HF6 removed the apps from the disk image, so
-#      without this the shell has nothing to `exec`;
+#   2. seed a PERSISTENT host share (apps, APPS.TXT, wallpaper, fonts, the
+#      Go seat, and the named machine tools — GOUPD/AGENTD plus the shell
+#      set `help` advertises, M201b #3417) -- M34/HF6 removed the apps from
+#      the disk image, so without this the shell has nothing to `exec`;
 #   3. boot with the GPU window + USB keyboard/pointing devices attached
 #      (`--display --input`);
 #   4. arm the host-integration lanes by DEFAULT (M114c #2456, M127d #2602):
@@ -138,8 +139,17 @@ if [ "${VIRELAI_SESSION_SKIP_BUILD:-0}" = "1" ]; then SKIP_BUILD=1; fi
 # persistence tools (GOUPD/AGENTD — the credentials below bind to them) are
 # not manifest apps and stage even under VIRELAI_SESSION_NO_GOTABWM=1, which
 # disables the SEAT, not the machine's own wiring.
+#
+# M201b (#3417): the shell set joins the machine tools. GOSH's `help`
+# catalog advertises GOPING/GOFETCH/GONETSTAT/GODNS/GOTRACEROUTE/GOTGIT and
+# the fleet audit's "stage as named tool" rows (issue #3397) add
+# GOSSH/GOSSHD/GOHTTPD — staged tools like GOUPD/AGENTD, not catalog rows.
+# They stage on every session share because `exec NAME.ELF` resolves out
+# of the share whatever seat or shell is running.
+SESSION_MACHINE_TOOLS="GOUPD.ELF AGENTD.ELF GOPING.ELF GOFETCH.ELF GONETSTAT.ELF GODNS.ELF GOTRACEROUTE.ELF GOTGIT.ELF GOSSH.ELF GOSSHD.ELF GOHTTPD.ELF"
+
 session_go_apps() {
-    python3 - "$ROOT/image/apps.txt" "${VIRELAI_SESSION_NO_GOTABWM:-0}" <<'PY'
+    python3 - "$ROOT/image/apps.txt" "${VIRELAI_SESSION_NO_GOTABWM:-0}" "$SESSION_MACHINE_TOOLS" <<'PY'
 import pathlib, sys
 names = []
 if sys.argv[2] != "1":
@@ -151,7 +161,8 @@ if sys.argv[2] != "1":
         name = line.split("|", 1)[0].strip()
         if name.endswith(".ELF") and name not in names:
             names.append(name)
-for tool in ("GOUPD.ELF", "AGENTD.ELF"):
+# The machine tools (argv[3]): staged on every session share, seat or not.
+for tool in sys.argv[3].split():
     if tool not in names:
         names.append(tool)
 # M122c (#2572): catalog rows open a window, so the pure-CLI tools left
@@ -168,6 +179,11 @@ go_app_builder() {  # NAME.ELF -> tools/go/build-*.sh (session-side mirror of en
     case "$1" in
         GOFILES.ELF) echo "tools/go/build-files.sh" ;;
         GOHELP.ELF)  echo "tools/go/build-help.sh" ;;
+        GOSSH.ELF)   echo "tools/go/build-ssh.sh" ;;
+        GOSSHD.ELF)  echo "tools/go/build-sshd.sh" ;;
+        GONETSTAT.ELF|GODNS.ELF|GOTRACEROUTE.ELF)
+                     echo "tools/go/build-netdiag.sh" ;;
+        GOTGIT.ELF)  echo "tools/go/build-git.sh" ;;
         *) echo "tools/go/build-$(printf '%s\n' "${1%.ELF}" | tr '[:upper:]' '[:lower:]').sh" ;;
     esac
 }
@@ -467,7 +483,7 @@ GO_SEAT_STAGED=0
 if [ "${VIRELAI_SESSION_NO_GOTABWM:-0}" != "1" ]; then
     while IFS= read -r app; do
         [ -n "$app" ] || continue
-        case "$app" in GOUPD.ELF|AGENTD.ELF) continue ;; esac
+        case " $SESSION_MACHINE_TOOLS " in *" $app "*) continue ;; esac
         stage_go_app "$app"
     done <<< "$GO_APPS"
     if [ -s "$SHARE/GOTABWM.ELF" ] && [ -s "$SHARE/GOSH.ELF" ]; then
@@ -480,13 +496,16 @@ if [ "${VIRELAI_SESSION_NO_GOTABWM:-0}" != "1" ]; then
     fi
 fi
 
-# The persistence tools (M120a #2558): not manifest apps — the credentials
-# below bind to them, so a session without them carries dead rows. GOUPD.ELF
+# The machine tools (M120a #2558, M201b #3417): not manifest apps. GOUPD.ELF
 # signs staged OS updates under the `os-update` row; AGENTD.ELF serves the
-# agent channel under `agent-hmac`. They stage outside the NO_GOTABWM
-# guard: --no-gotabwm disables the SEAT, not the machine's own wiring.
+# agent channel under `agent-hmac` — a session without them carries dead
+# credential rows. The rest are the help-advertised shell set the audit
+# sorted into "stage as named tool" (issue #3397): the desk's `help` said
+# they existed while the share never carried them. They stage outside the
+# NO_GOTABWM guard: --no-gotabwm disables the SEAT, not the machine's own
+# wiring, and `exec` resolves them whatever seat the boot lands in.
 # Same contract as the manifest apps: warn-only, never copy a stale output.
-for app in GOUPD.ELF AGENTD.ELF; do
+for app in $SESSION_MACHINE_TOOLS; do
     stage_go_app "$app"
 done
 
