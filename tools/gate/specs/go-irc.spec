@@ -25,6 +25,16 @@
 #     is stored ('goirc: state saved' from the seat's kind-20 ack) and
 #     the session dials + joins.
 #
+# M196c (#3380) adds runs 10+11. Run 10 is the stored-SASL leg: the
+# 'irc-gate' row rides the share's SECRETS.TXT (app-bound to the
+# uid_system-owned GOIRC.ELF), '--sasl=gate' resolves it through slot 70,
+# the fixture only 903s when the AUTHENTICATE payload decodes to the
+# row's value, and a 'procs' read gated on 'goirc: sasl ok' plus a
+# serial-absent pin the password out of every line the boot printed --
+# the card's "no password substring in argv". Run 11 is the argv
+# refusal: '--sasl acct:pass' prints 'goirc: refuse sasl-argv' and never
+# dials.
+#
 # M147c (#2803) is the K=3 acceptance: vgate_repeat 3 replays every leg.
 # Run 07 is the scripted conversation the card names -- TLS first,
 # plaintext only after the stored consent, a mention toast with a real
@@ -54,7 +64,7 @@
 # asserts. Run 07's TLS leg wraps the same pinned leaf.example.com
 # chain go-fetch-https serves (user/src/lib/tls/vectors/fx).
 
-vgate_name go-irc "M147a+b+c #2801/#2802/#2803: GOIRC.ELF core (register/join/recv/drop/reconnect, consent refusal, 433) + UI legs (mention toast click-through, consent dialog) + K=3 journey (TLS first, consent-stored plaintext, toast, snapshot, restore) + M152e #2919 run 09 (/hl toast, /log share file tail)"
+vgate_name go-irc "M147a+b+c #2801/#2802/#2803: GOIRC.ELF core (register/join/recv/drop/reconnect, consent refusal, 433) + UI legs (mention toast click-through, consent dialog) + K=3 journey (TLS first, consent-stored plaintext, toast, snapshot, restore) + M152e #2919 run 09 (/hl toast, /log share file tail) + M196c #3380 runs 10-11 (slot-70 stored SASL + procs no-secret-on-argv, sasl-argv refusal)"
 vgate_share seed
 vgate_runner_flags -Xswiftc -DSPIKE
 vgate_repeat 3 BOOTS
@@ -119,10 +129,21 @@ for name, script in (("GOTABWM.ELF", "build-gotabwm.sh"),
     shutil.copy(src, os.path.join(share, name))
     print("go-irc: staged %s (%d)" % (name, os.path.getsize(src)))
 
+# M196c (#3380): the stored-SASL row run 10 resolves. `irc-gate` is
+# app-bound to the uid_system-owned GOIRC.ELF (the FLINT agent-sign
+# shape); the value exists only here and in the guest's kernel store —
+# no script line carries it.
+open(os.path.join(share, "SECRETS.TXT"), "w", encoding="utf-8").write(
+    "#v1\nirc-gate\t1000\tsasl-secret-7\tGOIRC.ELF\n"
+)
+open(os.path.join(share, "OWNERS.TXT"), "w", encoding="utf-8").write(
+    "#v1\nGOIRC.ELF\t644\t0\t-\n"
+)
+
 fixture = os.path.join(run, "ircd.py")
 with open(fixture, "w") as f:
     f.write('''
-import socket, sys, time
+import base64, socket, sys, time
 
 mode, port, logpath = sys.argv[1], int(sys.argv[2]), sys.argv[3]
 logf = open(logpath, "w", buffering=1)
@@ -234,13 +255,57 @@ def pump(conn, idx, nick, buf, on_join, hold=20, first_only=False,
         elif cmd == "QUIT":
             break
 
+def sasl_session(conn, idx):
+    """M196c (#3380) run 10: the client sends CAP REQ :sasl, NICK and
+    USER up front. The fixture ACKs, asks for PLAIN, and only 903s when
+    the AUTHENTICATE payload decodes to the store row's
+    'gate\\x00gate\\x00sasl-secret-7' — 'goirc: sasl ok' is therefore the
+    slot-70 round-trip's proof, not a handshake formality. A wrong
+    payload earns a 904 and 001 is withheld until CAP END."""
+    buf, nick, user, authz = b"", None, False, False
+    deadline = time.time() + 60
+    while time.time() < deadline:
+        line, buf = recvline(conn, buf)
+        if line is None:
+            return
+        log("c%d rx %s" % (idx, line))
+        parts = line.split()
+        if not parts:
+            continue
+        cmd = parts[0].upper()
+        if cmd == "CAP" and len(parts) > 1 and parts[1].upper() == "REQ":
+            send(conn, ":srv CAP * ACK :sasl")
+        elif cmd == "NICK" and len(parts) > 1:
+            nick = parts[1]
+        elif cmd == "USER":
+            user = True
+        elif cmd == "AUTHENTICATE" and len(parts) > 1:
+            if parts[1].upper() == "PLAIN":
+                send(conn, "AUTHENTICATE +")
+            else:
+                got = base64.b64decode(parts[1]).split(b"\\x00")
+                if got == [b"gate", b"gate", b"sasl-secret-7"]:
+                    authz = True
+                    log("c%d sasl payload ok" % idx)
+                    send(conn, ":srv 903 gate :SASL authentication successful")
+                else:
+                    log("c%d sasl payload bad" % idx)
+                    send(conn, ":srv 904 gate :SASL authentication failed")
+        elif cmd == "CAP" and len(parts) > 1 and parts[1].upper() == "END":
+            break
+    if nick and user and authz:
+        send(conn, ":srv 001 %s :Welcome to the fixture net" % nick)
+        pump(conn, idx, nick, buf,
+             lambda ch: send(conn, ":alice!u@h PRIVMSG %s :sasl-hello" % ch),
+             hold=30)
+
 # Conn budgets count EVERY iteration's legs — vgate_repeat 3 replays the
 # spec, so rejoin alternates first/drop legs on idx parity and journey
 # serves 3 registered conns per iteration (TLS session, consent-armed
 # plaintext, the reopen's re-dial) plus slack for stray conns the relay
 # layer opens but never registers.
 conns = {"rejoin": 6, "nickuse": 3, "mention": 3, "once": 3,
-         "logs": 3, "journey": 24}[mode]
+         "logs": 3, "journey": 24, "sasl": 6}[mode]
 
 if mode == "journey":
     import threading
@@ -420,6 +485,13 @@ for idx in range(conns):
              on_privmsg=on_pv)
         conn.close()
         log("c%d close" % idx)
+    elif mode == "sasl":
+        try:
+            sasl_session(conn, idx)
+        except Exception as e:
+            log("c%d sasl %s" % (idx, e))
+        conn.close()
+        log("c%d close" % idx)
 
 srv.close()
 log("fixture done")
@@ -436,7 +508,7 @@ if not os.path.exists(chain) or not os.path.exists(irckey):
 procs = []
 for mode, port in (("rejoin", 26667), ("nickuse", 26668),
                    ("mention", 26669), ("once", 26670),
-                   ("journey", 26671), ("logs", 26672)):
+                   ("journey", 26671), ("logs", 26672), ("sasl", 26673)):
     subprocess.run(["sh", "-c", "lsof -ti tcp:%d | xargs kill -9" % port],
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     logpath = os.path.join(run, "ircd-%d.log" % port)
@@ -1210,3 +1282,91 @@ for i in range(30):
         sys.exit("missing %r in %r" % (want, lines))
 print("run09 log: %d lines, %d bytes, tail %r" % (len(lines), len(body), lines[-1]))
 PY
+
+# --- M196c (#3380) runs 10+11: the keychain legs ------------------------
+#
+# Run 10 — stored SASL + the procs no-secret read. '--sasl=gate' carries
+# the ACCOUNT only; the password resolves out of the 'irc-gate' row the
+# setup seeded (app-bound to the uid_system-owned GOIRC.ELF). The fixture
+# 903s only when AUTHENTICATE decodes to the row's value, so 'goirc: sasl
+# ok' IS the slot-70 round-trip. script2's 'procs' lands while the
+# authenticated session is live: its rows name the image, never argv —
+# and the serial-absent pins 'sasl-secret-7' out of the whole transcript
+# (exec echo, procs output, marker stream alike; nothing the script
+# typed ever spelled it).
+vgate_file script-10.txt <<'EOF'
+net ip 10.0.0.1
+net arp 10.0.0.2
+vf rm GOTABWM.DEMO
+vf rm SESSION.TABS
+vf rm NOTIFY.HIST
+exec GOIRC.ELF --host=10.0.0.2 --port=6673 --nick=gate --join '#goirc' --plain --sasl=gate
+EOF
+
+vgate_file script2-10.txt <<'EOF'
+procs
+EOF
+
+vgate_run 10 -- \
+    --screen '$RUN_DIR/screen-10' \
+    --via-virtio \
+    --net '$RUN_DIR/cap10.bin' --net-arp-respond 10.0.0.2 \
+    --net-tcp-respond 10.0.0.2:6673:relay --net-tcp-respond-relay 127.0.0.1:26673 \
+    --script '$RUN_DIR/script-10.txt' \
+    --script2 '$RUN_DIR/script2-10.txt' --script2-after 'goirc: sasl ok' \
+    --script-expect 'goirc: msg #goirc alice sasl-hello' --timeout 300
+
+vgate_assert 10 serial-contains 'exec: loaded GOIRC.ELF'
+vgate_assert 10 serial-contains 'goirc: dial 10.0.0.2 6673 plain'
+vgate_assert 10 serial-contains 'goirc: sasl ok'
+vgate_assert 10 serial-contains 'goirc: registered nick=gate'
+vgate_assert 10 serial-contains 'goirc: join #goirc'
+vgate_assert 10 serial-contains 'goirc: msg #goirc alice sasl-hello'
+vgate_assert 10 serial-contains 'procs: count='
+vgate_assert 10 serial-contains 'name=GOIRC.ELF'
+vgate_assert 10 serial-absent 'sasl-secret-7'
+vgate_assert 10 serial-absent 'goirc: refuse sasl-argv'
+vgate_assert 10 serial-absent 'goirc: sasl fail'
+vgate_assert 10 serial-absent 'secret_not_found'
+vgate_assert 10 serial-absent 'goirc: error'
+vgate_assert 10 serial-absent '[EXC] parking:'
+# Order + wire proof: the procs read comes after 'sasl ok' (the script2
+# gate), and the fixture transcript shows the whole CAP/AUTHENTICATE
+# exchange ending in a payload-verified 903 and the post-join greeting.
+vgate_assert 10 python <<'PY'
+import os, sys
+ser = open(os.environ["VG_SER"], errors="replace").read()
+pos = 0
+for m in ["goirc: sasl ok", "procs: count="]:
+    i = ser.find(m, pos)
+    if i < 0:
+        sys.exit("marker %r missing after pos %d" % (m, pos))
+    pos = i + len(m)
+log = open(os.path.join(os.environ["RUN_DIR"], "ircd-26673.log")).read()
+need = ["rx CAP REQ :sasl", "tx :srv CAP * ACK :sasl",
+        "rx AUTHENTICATE PLAIN", "tx AUTHENTICATE +",
+        "sasl payload ok", "tx :srv 903", "rx CAP END",
+        "rx NICK gate", "rx USER", "tx :srv 001",
+        "rx JOIN #goirc", "tx :alice!u@h PRIVMSG #goirc :sasl-hello"]
+missing = [n for n in need if n not in log]
+sys.exit("sasl fixture missing: %r\n%s" % (missing, log) if missing else 0)
+PY
+
+# Run 11 — the argv credential is refused outright: '--sasl
+# gate:sasl-decoy-9' prints the named marker and exits 2 before any
+# dial. No --net legs: nothing may reach a socket.
+vgate_file script-11.txt <<'EOF'
+exec GOIRC.ELF --host=10.0.0.2 --nick=gate --plain --sasl=gate:sasl-decoy-9
+EOF
+
+vgate_run 11 -- \
+    --screen '$RUN_DIR/screen-11' \
+    --via-virtio \
+    --script '$RUN_DIR/script-11.txt' --script-expect 'procs GOIRC.ELF exited status=2' --timeout 180
+
+vgate_assert 11 serial-contains 'goirc: refuse sasl-argv'
+vgate_assert 11 serial-contains 'procs GOIRC.ELF exited status=2'
+vgate_assert 11 serial-absent 'goirc: dial'
+vgate_assert 11 serial-absent 'goirc: registered'
+vgate_assert 11 serial-absent 'goirc: sasl ok'
+vgate_assert 11 serial-absent '[EXC] parking:'
