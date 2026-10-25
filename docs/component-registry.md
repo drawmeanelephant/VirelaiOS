@@ -127,9 +127,9 @@ not ride in one.
 | App-manifest report script (card d / index #3334) | script | SCRIPTS/REPORT.JS | ADR 0039, ver 1.0.0 | tools/gate/specs/live-quickjs.spec | staged |
 | Zig userland root | tool | USER.BIN | ver 1.0.0 | ADR 0034 | retained-fallback |
 | Sexiburger desktop | tool | SEXIBURG.BIN | ver 1.0.0 | tools/gate/specs/live-sexiburger.spec, ADR 0034 | retained-fallback |
-| Hello fixture | fixture | HELLO.ELF | — | tools/gate/specs/go-hello.spec | fixture |
-| Crash fixture | fixture | CRASH.ELF | — | tools/gate/specs/live-crash-viewer.spec | fixture |
-| Dyn-link fixture set | fixture | DYNAPP.ELF | — | tools/mkdyn-elf.py, tools/gate/specs/live-dynamic-linking.spec | fixture |
+| Hello fixture | fixture | HELLO.ELF | ver 1.0.0 | tools/mkhello-elf.py, tools/gate/specs/go-hello.spec | fixture |
+| Crash fixture | fixture | CRASH.ELF | ver 1.0.0 | tools/mkhello-elf.py, tools/gate/specs/live-crash-viewer.spec | fixture |
+| Dyn-link fixture set | fixture | DYNAPP.ELF | ver 1.0.0 | tools/mkdyn-elf.py, tools/gate/specs/live-dynamic-linking.spec | fixture |
 
 ## Gate fleet — built and gate-staged, not on the session share
 
@@ -144,41 +144,45 @@ sharing one builder and one naming map.
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| Init service supervisor | tool | INIT.ELF | — | tools/gate/specs/live-boot-order.spec, ADR 0042 | staged |
-| R3D renderer | tool | GOR3D.ELF | — | tools/gate/specs/go-r3d.spec | staged |
-| RSS reader | tool | RSS.ELF | — | tools/gate/specs/go-rss.spec | staged |
-| Git UI | tool | GOGITUI.ELF | — | tools/gate/specs/go-gitui.spec | staged |
-| Crash viewer | tool | CRASHVIEW.ELF | — | tools/gate/specs/live-crash-viewer.spec | staged |
-| Log viewer | tool | LOGVIEW.ELF | — | tools/gate/specs/go-selftest.spec | staged |
-| Selftest runner | tool | GOSELF.ELF | — | tools/gate/specs/go-selftest.spec | staged |
-| Observe CLI | tool | OBSERVE.ELF | — | tools/gate/specs/live-observe.spec | staged |
-| Profiler | tool | PROF.ELF | — | tools/gate/specs/live-observe.spec, tools/gate/specs/live-n12-netprof.spec | staged |
-| Syscall tracer | tool | STRACE.ELF | — | tools/gate/specs/live-strace.spec | staged |
-| Heap inspector | tool | HEAP.ELF | — | tools/gate/specs/go-stress.spec | staged |
-| FLINT release CLI | tool | FLINT.ELF | ADR 0055 | tools/gate/specs/go-flint.spec, ADR 0055 | staged |
-| Guest go-build driver | tool | GOBUILD.ELF | — | tools/gate/specs/live-gobuild.spec | staged |
-| Guest compiler | tool | GOCMDCOMPILE.ELF | — | tools/gate/specs/live-gobuild.spec | staged |
-| Guest linker | tool | GOCMDLINK.ELF | — | tools/gate/specs/live-gobuild.spec | staged |
+| Init service supervisor | tool | INIT.ELF | ver 1.0.0 | tools/gate/specs/live-boot-order.spec, ADR 0042 | staged |
+| R3D renderer | tool | GOR3D.ELF | ver 1.0.0 | tools/gate/specs/go-r3d.spec | staged |
+| RSS reader | tool | RSS.ELF | ver 1.0.0 | tools/gate/specs/go-rss.spec | staged |
+| Git UI | tool | GOGITUI.ELF | ver 1.0.0 | tools/gate/specs/go-gitui.spec | staged |
+| Crash viewer | tool | CRASHVIEW.ELF | ver 1.0.0 | tools/gate/specs/live-crash-viewer.spec | staged |
+| Log viewer | tool | LOGVIEW.ELF | ver 1.0.0 | tools/gate/specs/go-selftest.spec | staged |
+| Selftest runner | tool | GOSELF.ELF | ver 1.0.0 | tools/gate/specs/go-selftest.spec | staged |
+| Observe CLI | tool | OBSERVE.ELF | ver 1.0.0 | tools/gate/specs/live-observe.spec | staged |
+| Profiler | tool | PROF.ELF | ver 1.0.0 | tools/gate/specs/live-observe.spec, tools/gate/specs/live-n12-netprof.spec | staged |
+| Syscall tracer | tool | STRACE.ELF | ver 1.0.0 | tools/gate/specs/live-strace.spec | staged |
+| Heap inspector | tool | HEAP.ELF | ver 1.0.0 | tools/gate/specs/go-stress.spec | staged |
+| FLINT release CLI | tool | FLINT.ELF | ADR 0055, ver 1.0.0 | tools/gate/specs/go-flint.spec, ADR 0055 | staged |
+| Guest go-build driver | tool | GOBUILD.ELF | ver 1.0.0 | tools/gate/specs/live-gobuild.spec | staged |
+| Guest compiler | tool | GOCMDCOMPILE.ELF | ver 1.0.0 | tools/go/build-gotool.sh, tools/gate/specs/live-gobuild.spec | staged |
+| Guest linker | tool | GOCMDLINK.ELF | ver 1.0.0 | tools/go/build-gotool.sh, tools/gate/specs/live-gobuild.spec | staged |
 | Release pipeline | tool | GORELEASE.ELF | ADR 0055, ver 1.0.0 | tools/gate/specs/live-release.spec, ADR 0055 | staged |
-| Audio-seam proof | fixture | FART.ELF | — | tools/gate/specs/go-fart.spec | fixture |
-| Term-graphics fixture | fixture | IMGCAT.ELF | — | tools/gate/specs/live-term-graphics.spec | fixture |
-| Panic fixture | fixture | CRASHFIX.ELF | — | tools/gate/specs/live-crash-viewer.spec | fixture |
-| Log fixture | fixture | LOGFIX.ELF | — | tools/gate/specs/go-selftest.spec | fixture |
-| Charm/Bubble Tea seam proof | fixture | CHARMHELLO.ELF | — | tools/gate/specs/go-charmhello.spec | fixture |
+| Store install CLI | tool | STORE.ELF | ver 1.0.0 | tools/gate/specs/live-install-consent.spec | staged |
+| Audio-seam proof | fixture | FART.ELF | ver 1.0.0 | tools/gate/specs/go-fart.spec | fixture |
+| Term-graphics fixture | fixture | IMGCAT.ELF | ver 1.0.0 | tools/gate/specs/live-term-graphics.spec | fixture |
+| Panic fixture | fixture | CRASHFIX.ELF | ver 1.0.0 | tools/gate/specs/live-crash-viewer.spec | fixture |
+| Log fixture | fixture | LOGFIX.ELF | ver 1.0.0 | tools/gate/specs/go-selftest.spec | fixture |
+| Charm/Bubble Tea seam proof | fixture | CHARMHELLO.ELF | ver 1.0.0 | tools/gate/specs/go-charmhello.spec | fixture |
 | Symbol-donor fixture | fixture | GOEDITSYM.ELF | ver 1.0.0 | tools/gate/specs/live-observe.spec | fixture |
-| Profile workload fixture | fixture | PROFFIX.ELF | — | tools/gate/specs/live-observe.spec | fixture |
-| Instrumented compiler fixture | fixture | GOCMDPROFILE.ELF | — | tools/gate/specs/live-observe.spec | fixture |
-| Trace workload fixture | fixture | TRACEFIX.ELF | — | tools/gate/specs/live-strace.spec | fixture |
-| Heap workload fixture | fixture | HEAPFIX.ELF | — | tools/gate/specs/go-stress.spec | fixture |
-| Heap budget fixture | fixture | HEAPBUDG.ELF | — | tools/gate/specs/go-stress.spec | fixture |
+| Profile workload fixture | fixture | PROFFIX.ELF | ver 1.0.0 | tools/gate/specs/live-observe.spec | fixture |
+| Instrumented compiler fixture | fixture | GOCMDPROFILE.ELF | ver 1.0.0 | tools/go/build-prof.sh, tools/gate/specs/live-observe.spec | fixture |
+| Trace workload fixture | fixture | TRACEFIX.ELF | ver 1.0.0 | tools/gate/specs/live-strace.spec | fixture |
+| Heap workload fixture | fixture | HEAPFIX.ELF | ver 1.0.0 | tools/gate/specs/go-stress.spec | fixture |
+| Heap budget fixture | fixture | HEAPBUDG.ELF | ver 1.0.0 | tools/gate/specs/go-stress.spec | fixture |
 | Gostalgia child fixture | fixture | GSCHILD.ELF | ver 1.0.0 | tools/gate/specs/go-gostalgia-proc.spec | fixture |
 | Gostalgia proc fixture | fixture | GSPROC.ELF | ver 1.0.0 | tools/gate/specs/go-gostalgia-proc.spec | fixture |
-| Stress storm fixture | fixture | GOSTORM.ELF | — | tools/gate/specs/go-stress.spec | fixture |
-| Supervise fixture | fixture | SVFIX.ELF | — | tools/gate/specs/live-supervise.spec | fixture |
-| Tabapp harness fixture | fixture | GOTABAPP.ELF | — | tools/gate/specs/go-tabapp.spec | fixture |
-| Appkit demo fixture | fixture | GODEMO.ELF | — | tools/gate/specs/go-wm-journey.spec | fixture |
-| Big-math fixture | fixture | BTMATH.ELF | — | tools/gate/specs/go-btmath.spec | fixture |
-| GPU triangle proof | fixture | GPUTRIANGLE.ELF | — | tools/gate/specs/live-gpu3d.spec | fixture |
+| Stress storm fixture | fixture | GOSTORM.ELF | ver 1.0.0 | tools/gate/specs/go-stress.spec | fixture |
+| Supervise fixture | fixture | SVFIX.ELF | ver 1.0.0 | tools/gate/specs/live-supervise.spec | fixture |
+| Tabapp harness fixture | fixture | GOTABAPP.ELF | ver 1.0.0 | tools/gate/specs/go-tabapp.spec | fixture |
+| Appkit demo fixture | fixture | GODEMO.ELF | ver 1.0.0 | tools/gate/specs/go-wm-journey.spec | fixture |
+| Big-math fixture | fixture | BTMATH.ELF | ver 1.0.0 | tools/gate/specs/go-btmath.spec | fixture |
+| GPU triangle proof | fixture | GPUTRIANGLE.ELF | ver 1.0.0 | tools/gate/specs/live-gpu3d.spec | fixture |
+| Composition probe | fixture | GOCOMP.ELF | ver 1.0.0 | tools/gate/specs/live-m14-composition.spec | fixture |
+| Progress-wire driver | fixture | GOPROGRESS.ELF | ver 1.0.0 | tools/gate/specs/go-wm-seat.spec | fixture |
+| WM-RPC probe | fixture | WMRPCPROBE.ELF | ver 1.0.0 | tools/gate/specs/go-agentd.spec, tools/gate/specs/go-wm-tabs.spec | fixture |
 | build-go.sh fixture set (GOHELLO/GOARGS/GOROUT/GOSCALE/GOSTRESS/GOPANIC/GOWIN/GONET/GOVINET/GOVIDNS/GOBIG/GOLOADBSS/GOREAD/GONETRATE/GOMBURST/GOSYSCALL/GOBIGREAD/GOSELFHOST) | fixture | — | — | tools/go/build-go.sh, tools/gate/specs/go-hello.spec | fixture |
 
 ### The windowed-candidates verdict (issue #3455)

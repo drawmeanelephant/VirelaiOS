@@ -2,6 +2,15 @@
 # Existing Go 1.27.1 fork and stdlib only (BSD-3-Clause). Keep target .symtab:
 # PROF symbolizes the exact guest compiler and fixture images, not host twins.
 set -euo pipefail
+
+# Product version — the `ver M.m.p` the component-registry row for
+# GOCMDPROFILE.ELF shows and the drift check resolves
+# (docs/component-registry.md); bump per the registry's rule. The
+# instrumented cmd/compile it emits is a fork build with no in-repo
+# const, so the producer script is the carrier. (The same script also
+# builds PROF.ELF/PROFFIX.ELF — those version at their own packages.)
+VER="1.0.0"
+
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 FORK_DIR="${GO_FORK_DIR:-$(dirname "$REPO")/go-virelai}"
 [ -x "$FORK_DIR/bin/go" ] || {

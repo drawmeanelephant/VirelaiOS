@@ -25,6 +25,12 @@
 
 set -euo pipefail
 
+# Product version — the `ver M.m.p` the component-registry rows for
+# GOCMDCOMPILE.ELF and GOCMDLINK.ELF show and the drift check resolves
+# (docs/component-registry.md); bump per the registry's rule. The fork's
+# sources carry no in-repo const, so the producer script is the carrier.
+VER="1.0.0"
+
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 FORK_DIR="${GO_FORK_DIR:-$(dirname "$REPO")/go-virelai}"
 TAG="virelaitoolchain"

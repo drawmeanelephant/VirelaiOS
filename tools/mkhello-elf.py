@@ -25,6 +25,12 @@ Usage: mkhello-elf.py [OUTPUT]   (default: zig-out/bin/HELLO.ELF)
 import struct
 import sys
 
+# Product version — the `ver M.m.p` the component-registry row shows
+# and the drift check resolves (docs/component-registry.md); bump per
+# the registry's rule. One line serves both rows this script produces:
+# HELLO.ELF and CRASH.ELF (`--crash`).
+VER = "1.0.0"
+
 TEXT_BASE = 0x400000
 EM_AARCH64 = 0xB7
 PT_LOAD = 1
