@@ -548,6 +548,22 @@ stage_qjs() {
 }
 stage_qjs
 
+# --- 2d. stage shipped scripts (card d / index #3334, issue #3441) ---------
+# image/scripts/ is the shipped-workflow seam: every .js there lands on the
+# share under SCRIPTS/ so `exec QJS.BIN /host/SCRIPTS/REPORT.JS` works on a
+# real desk — the same convention GOFILES' application/javascript open and
+# the help row name. Repo files carry 8.3 names; the copy only case-folds,
+# like the art drop. On the default custom-virtio share the exec answers
+# `qjs: Unsupported` (the .js open needs object ops that channel lacks —
+# card b / #3384); a --save-capable virtio-fs session runs it.
+if [ -d "$ROOT/image/scripts" ]; then
+    mkdir -p "$SHARE/SCRIPTS"
+    for src in "$ROOT"/image/scripts/*.js; do
+        [ -f "$src" ] || continue
+        cp "$src" "$SHARE/SCRIPTS/$(basename "$src" | tr 'a-z' 'A-Z')"
+    done
+fi
+
 # --- 3. the session startup file (only written when absent) -----------------
 RC_FILE="$SHARE/.virelairc"
 if [ ! -f "$RC_FILE" ]; then

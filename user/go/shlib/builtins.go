@@ -797,6 +797,7 @@ var helpCatalog = map[string]helpEntry{
 	"GODNS.ELF":        {group: "externals", usage: "exec GODNS.ELF <hostname> [<server_ip>]", blurb: "resolve a DNS A record over UDP (Go)", notes: "The default resolver is 10.0.0.2; lookup failures exit nonzero."},
 	"GOTRACEROUTE.ELF": {group: "externals", usage: "exec GOTRACEROUTE.ELF [-m max_attempts] [-q probes] [<ip>]", blurb: "bounded ICMP echo reachability probe (Go)", notes: "The ICMP syscall reports echo replies only; this does not discover routes."},
 	"GOTGIT.ELF":       {group: "externals", usage: "exec GOTGIT.ELF clone https://HOST[:PORT]/REPO [DIR]", blurb: "clone a git repository over in-process TLS (Go)", notes: "Clone is the supported verb; the work tree lands on the share."},
+	"QJS.BIN":          {group: "externals", usage: "exec QJS.BIN /host/SCRIPT.JS [--receipt=/host/OUT]", blurb: "run a JavaScript file (QuickJS); shipped scripts live in /host/SCRIPTS/", notes: "Output prints to the console. Inside a script, virelai.readFile/virelai.writeFile/virelai.args reach /host/ files only — every other host surface is refused by name (ADR 0039). Try: exec QJS.BIN /host/SCRIPTS/REPORT.JS — it summarizes APPS.TXT into APPSUM.TXT."},
 }
 
 // helpGroupNames lists one group's verbs, sorted, or nil when the group is

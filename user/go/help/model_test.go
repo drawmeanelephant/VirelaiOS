@@ -55,10 +55,10 @@ func hasLine(lines []string, want string) bool {
 func TestBootMarkers(t *testing.T) {
 	m := newModel(64, 23)
 	got := m.drain()
-	// n=61 is the catalog row count (M115d #2463 adds `suspend`; M186d #3181 adds `say`);
-	// a catalog change trips this AND the class-B gate deliberately — both
-	// are the drift tripwire for shlib.HelpRows.
-	if !hasLine(got, "gohelp: catalog n=61") {
+	// n=62 is the catalog row count (M115d #2463 adds `suspend`; M186d #3181 adds `say`;
+	// card d #3441 adds the QJS.BIN externals row); a catalog change trips this
+	// AND the class-B gate deliberately — both are the drift tripwire for shlib.HelpRows.
+	if !hasLine(got, "gohelp: catalog n=62") {
 		t.Errorf("boot markers missing catalog count: %v", got)
 	}
 	if !hasLine(got, "gohelp: docs n=0") {
@@ -156,7 +156,7 @@ func TestFilterFlow(t *testing.T) {
 		t.Errorf("filter ec matched %v, want echo,secrets,exec", names)
 	}
 	got = key(&m, kEsc)
-	if !hasLine(got, "gohelp: filter cleared n=61") {
+	if !hasLine(got, "gohelp: filter cleared n=62") {
 		t.Errorf("escape did not clear the filter: %v", got)
 	}
 	if m.filter != "" || m.filtering {

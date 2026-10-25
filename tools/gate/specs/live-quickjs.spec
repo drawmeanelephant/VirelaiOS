@@ -9,7 +9,7 @@ vgate_name live-quickjs "ADR 0039 file, interactive, refusal, bounds and cold/cl
 vgate_share arm-virtiofs
 vgate_runner_flags -Xswiftc -DSPIKE
 vgate_fmt user/src/quickjs.zig tools/js-client/*.zig
-vgate_note "QJS-FILE-EVAL QJS-INTERACTIVE-EVAL QJS-REFUSALS QJS-BOUNDS QJS-COLD-AND-CLEANUP QJS-STAGED QJS-VIRELAI-NS"
+vgate_note "QJS-FILE-EVAL QJS-INTERACTIVE-EVAL QJS-REFUSALS QJS-BOUNDS QJS-COLD-AND-CLEANUP QJS-STAGED QJS-VIRELAI-NS QJS-SHIPPED-WORKFLOW"
 
 vgate_setup_python <<'PY'
 import os, pathlib, sys
@@ -34,7 +34,11 @@ import filecmp, os, pathlib, subprocess, sys
 rd = os.environ["RUN_DIR"]
 share = pathlib.Path(rd) / "share"
 (share / "QJS.BIN").unlink(missing_ok=True)
+# --work rides RUN_DIR, not the persistent .build/js-client/product: a
+# Finder .DS_Store in either tree makes math_library's pinned file-set
+# answer SourceDrift/EEXIST on a warm rerun (observed on this host).
 subprocess.run([sys.executable, "tools/js-client/build.py", "build",
+                "--work", os.path.join(rd, "build-product"),
                 "--output", ".build/js-client/QJS.BIN"], check=True)
 env = dict(os.environ)
 env["VIRELAI_SESSION_PROFILE"] = os.path.join(rd, "session.virelaivm")
@@ -56,6 +60,16 @@ assert filecmp.cmp(str(staged), ".build/js-client/QJS.BIN", shallow=False), \
 (share / "QJSESS.js").write_text("print('qjs-session-staged');\n")
 (pathlib.Path(rd) / "staged.txt").write_text(
     "pages\nexec QJS.BIN /host/QJSESS.js --receipt=/host/QJSESS.R\n")
+# M200d (issue #3441): the shipped script must also arrive through the
+# session's own staging — image/scripts/report.js lands as
+# SCRIPTS/REPORT.JS, beside the APPS.TXT input the workflow reads.
+script = share / "SCRIPTS" / "REPORT.JS"
+assert script.is_file(), "session.sh did not stage SCRIPTS/REPORT.JS"
+assert filecmp.cmp(str(script), "image/scripts/report.js", shallow=False), \
+    "staged SCRIPTS/REPORT.JS differs from image/scripts/report.js"
+assert (share / "APPS.TXT").is_file(), "session.sh did not stage APPS.TXT"
+(pathlib.Path(rd) / "workflow.txt").write_text(
+    "pages\nexec QJS.BIN /host/SCRIPTS/REPORT.JS --receipt=/host/REPORT.R\n")
 print("setup: session.sh staged QJS.BIN into the session share "
       "(byte-equal to the .build/js-client product)")
 PY
@@ -70,7 +84,7 @@ PY
 
 # ADR 0059 (M131c #2640): one dedicated base boot checkpoints the armed
 # arm-virtiofs guest at the default boot-settle marker `tasks user-el0 reaped`,
-# before any leg's workload (D4). The 16 script-only legs below restore it via
+# before any leg's workload (D4). The 20 script-only legs below restore it via
 # --from-checkpoint qjs; their first --script-after is re-based onto the
 # post-restore handshake (D5), while their later markers gate on the leg's own
 # exec and re-occur inside the leg's epoch. The seven cold legs keep a
@@ -109,6 +123,10 @@ vgate_run staged --from-checkpoint qjs -- --script '$RUN_DIR/staged.txt' --scrip
 # share — readFile/writeFile round-trip, args, and every named refusal.
 vgate_run virelai --from-checkpoint qjs -- --script '$RUN_DIR/virelai.txt' --script-after 'tasks user-el0 reaped' --script2 '$RUN_DIR/after.txt' --script2-after 'tasks user-exec reaped' --script-expect 'qjs-gate-done' --timeout 90
 vgate_run virelai-refused --from-checkpoint qjs -- --script '$RUN_DIR/virelai-refused.txt' --script-after 'tasks user-el0 reaped' --script2 '$RUN_DIR/after.txt' --script2-after 'tasks user-exec reaped' --script-expect 'qjs-gate-done' --timeout 90
+# M200d (issue #3441): the shipped scripted workflow — the script session.sh
+# staged under SCRIPTS/ runs end to end on the virelai namespace: readFile
+# APPS.TXT, writeFile APPSUM.TXT, print the summary line.
+vgate_run workflow --from-checkpoint qjs -- --script '$RUN_DIR/workflow.txt' --script-after 'tasks user-el0 reaped' --script2 '$RUN_DIR/after.txt' --script2-after 'tasks user-exec reaped' --script-expect 'qjs-gate-done' --timeout 90
 
 vgate_assert file serial-contains 'procs QJS.BIN exited status=0'
 vgate_assert refused serial-contains 'procs QJS.BIN exited status=0'
@@ -148,6 +166,37 @@ vgate_assert virelai-refused serial-contains 'ns-refusal:PathAlreadyExists'
 vgate_assert virelai-refused serial-absent 'ns-refusal-miss'
 vgate_assert virelai-refused serial-contains 'ns-refusals-done'
 vgate_assert virelai-refused serial-contains 'procs QJS.BIN exited status=0'
+vgate_assert workflow serial-contains 'report: apps='
+vgate_assert workflow serial-contains 'wrote /host/APPSUM.TXT'
+vgate_assert workflow serial-contains 'procs QJS.BIN exited status=0'
+# The written file is compared against a report recomputed from the share's
+# own APPS.TXT — the assertion follows the manifest, not a pinned golden.
+# VG_SHARE, not RUN_DIR/share: a --from-checkpoint leg mounts the warm
+# bundle's share clone (ADR 0059 D3), which is where the guest's write
+# lands — warm or D8 cold-fallback alike.
+vgate_assert workflow python <<'PY'
+import os, pathlib
+share = pathlib.Path(os.environ.get("VG_SHARE")
+                     or os.path.join(os.environ["RUN_DIR"], "share"))
+rows = docked = 0
+names = []
+for raw in (share / "APPS.TXT").read_text().split("\n"):
+    line = raw.strip()
+    if not line or line.startswith("#"):
+        continue
+    f = [s.strip() for s in line.split("|")]
+    if len(f) < 4:
+        continue
+    rows += 1
+    if f[3] == "dock=true":
+        docked += 1
+    names.append(f[1])
+assert rows > 0, "APPS.TXT carried no app rows — the report is meaningless"
+expected = ("APPS.TXT summary\napps: %d (%d docked)\n%s\n"
+            % (rows, docked, "\n".join(names)))
+got = (share / "APPSUM.TXT").read_text()
+assert got == expected, "APPSUM.TXT mismatch:\n%r\nwant\n%r" % (got, expected)
+PY
 
 vgate_assert file python <<'PY'
 import os, runpy
