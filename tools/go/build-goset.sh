@@ -20,7 +20,7 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 FORK_DIR="${GO_FORK_DIR:-$(dirname "$REPO")/go-virelai}"
 DIR="goset"
 NAME="${GO_BUILD_NAME:-GOSET}"
-MAX_BYTES=2097152 # kernel/src/exec.zig exec_program_max
+MAX_BYTES=$((32 * 1024 * 1024)) # M72a load_max (exec_image_max): gap-layout ELF bytes.
 
 log() { printf 'build-goset: %s\n' "$*"; }
 
@@ -47,18 +47,18 @@ OUT_DIR="$REPO/.build/go"
 mkdir -p "$OUT_DIR"
 OUT="$OUT_DIR/$NAME.ELF"
 
-# -gcflags=all=-l: GOSET sits within a few KB of exec_program_max, and the
-# M128d profile view tipped the .text run past a 64KB ELF segment boundary —
-# every page-sized step costs ~64KB of file for a few hundred bytes of code.
-# Disabling inlining buys ~90KB of headroom at no ABI cost (the guest ABI is
-# the ELF entry point, not call shapes); a settings panel trades nothing.
+# -gcflags=all=-l: the M128d profile view tipped GOSET's .text run past a
+# 64KB ELF segment boundary — every page-sized step costs ~64KB of file for
+# a few hundred bytes of code. Disabling inlining buys ~90KB of headroom at
+# no ABI cost (the guest ABI is the ELF entry point, not call shapes); a
+# settings panel trades nothing.
 log "building virelai/$DIR -> $OUT"
 ( cd "$REPO" && GOOS=virelai GOARCH=arm64 go build -o "$OUT" -gcflags=all=-l -ldflags "-s -w" "virelai/$DIR" )
 
 SIZE="$(stat -f%z "$OUT" 2>/dev/null || stat -c%s "$OUT")"
 log "wrote $OUT ($SIZE bytes)"
 if [ "$SIZE" -gt "$MAX_BYTES" ]; then
-    log "FAIL: $SIZE bytes exceeds exec_program_max ($MAX_BYTES); the kernel loader will refuse it"
+    log "FAIL: $SIZE bytes exceeds M72a load_max ($MAX_BYTES)"
     exit 1
 fi
 log "size ok (< $MAX_BYTES bytes)"

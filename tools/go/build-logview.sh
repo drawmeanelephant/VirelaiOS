@@ -21,5 +21,5 @@ for pair in logview:LOGVIEW logfixture:LOGFIX; do
     GOOS=virelai GOARCH=arm64 go build -o "$out" -ldflags "-s -w" "virelai/$dir"
     size="$(stat -f%z "$out" 2>/dev/null || stat -c%s "$out")"
     echo "build-logview: $name.ELF $size bytes"
-    [ "$size" -le 2097152 ] || { echo "build-logview: exceeds exec_program_max" >&2; exit 1; }
+    [ "$size" -le $((32 * 1024 * 1024)) ] || { echo "build-logview: exceeds M72a load_max" >&2; exit 1; }
 done

@@ -17,5 +17,5 @@ for pair in HEAP:heap/cmd HEAPFIX:heapfixture HEAPBUDG:heapfixture/budget; do
     GOOS=virelai GOARCH=arm64 go build -o "$out" -ldflags "-s -w" "virelai/$dir"
     size="$(stat -f%z "$out" 2>/dev/null || stat -c%s "$out")"
     echo "build-heap: $name.ELF $size bytes"
-    [ "$size" -le 2097152 ] || { echo "build-heap: exceeds exec_program_max"; exit 1; }
+    [ "$size" -le $((32 * 1024 * 1024)) ] || { echo "build-heap: exceeds M72a load_max"; exit 1; }
 done

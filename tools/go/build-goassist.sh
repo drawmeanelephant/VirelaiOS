@@ -29,7 +29,7 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 FORK_DIR="${GO_FORK_DIR:-$(dirname "$REPO")/go-virelai}"
 DIR="goassist"
 NAME="GOASSIST"
-MAX_BYTES=2097152 # kernel/src/exec.zig exec_program_max
+MAX_BYTES=$((32 * 1024 * 1024)) # M72a load_max (exec_image_max): gap-layout ELF bytes.
 
 log() { printf 'build-goassist: %s\n' "$*"; }
 
@@ -162,7 +162,7 @@ build() {
     SIZE="$(stat -f%z "$OUT" 2>/dev/null || stat -c%s "$OUT")"
     log "wrote $OUT ($SIZE bytes)"
     if [ "$SIZE" -gt "$MAX_BYTES" ]; then
-        log "FAIL: $SIZE bytes exceeds exec_program_max ($MAX_BYTES); the kernel loader will refuse it"
+        log "FAIL: $SIZE bytes exceeds M72a load_max ($MAX_BYTES)"
         exit 1
     fi
     log "size ok (< $MAX_BYTES bytes)"
