@@ -29,7 +29,7 @@ APPS_TXT = ROOT / "image/apps.txt"
 RELEASE_GO = ROOT / "user/go/store/release.go"
 OSVER = ROOT / "kernel/src/osver.zig"
 
-KINDS = {"app", "seat", "tool", "fixture", "lib", "kernel-service", "host-tool", "asset"}
+KINDS = {"app", "seat", "tool", "fixture", "lib", "kernel-service", "host-tool", "asset", "script"}
 STATES = {"shipped", "staged", "fixture", "retained-fallback", "host"}
 
 BINARY_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,24}\.(?:ELF|BIN|SO|EFI)$")
@@ -98,6 +98,8 @@ def produced_binaries():
         p = Path(f)
         if p.is_file():
             corpus.update(ANY_BINARY_RE.findall(p.read_text(errors="replace")))
+    for js in glob(str(ROOT / "image/scripts/*.js")):
+        corpus.add("SCRIPTS/" + Path(js).name.upper())
     return corpus
 
 
@@ -192,6 +194,13 @@ class TestComponentRegistry(unittest.TestCase):
                         )
                     elif not (ROOT / binary).exists():
                         fails.append(f"{where}: host-tool root {binary!r} missing")
+                elif kind == "script":
+                    if not re.match(r"^SCRIPTS/[A-Z][A-Z0-9_]{0,24}\.JS$", binary):
+                        fails.append(
+                            f"{where}: script binary {binary!r} is not a SCRIPTS/*.JS name"
+                        )
+                    elif not (ROOT / "image/scripts" / binary[8:].lower()).exists():
+                        fails.append(f"{where}: script source {binary!r} missing")
                 elif not BINARY_RE.match(binary):
                     fails.append(f"{where}: binary {binary!r} is not a staged name")
             if kind == "lib" and binary != "—":
