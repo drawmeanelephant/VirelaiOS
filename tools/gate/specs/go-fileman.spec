@@ -2969,9 +2969,13 @@ PY
 # inherited console stream, serial-observable. (`--receipt=` was the
 # other candidate; the desk's share is custom-virtio, where the
 # receipt's createExclusive answers Unsupported — a sink the share
-# cannot keep is not a sink this leg names.) The closing script waits on
-# the kernel's own `procs QJS.BIN exited status=0` — the engine really
-# ran to completion — before tearing the window down.
+# cannot keep is not a sink this leg names.) QJS.BIN's contained opens
+# need object ops the custom channel lacks (virtio_file.zig: ops==null),
+# so this leg arms the seeded share on virtio-fs too — the live-dev-loop
+# --cvc-file + --virtio-fs same-dir pattern — which is also the honest
+# desk answer: script runs need the virtio-fs share. The closing script
+# waits on the kernel's own `procs QJS.BIN exited status=0` — the engine
+# really ran to completion — before tearing the window down.
 vgate_setup_python <<'PY'
 import os, shutil, subprocess, sys
 share = os.environ.get("VG_SHARE") or os.path.join(os.environ["RUN_DIR"], "share")
@@ -2998,6 +3002,7 @@ EOF
 vgate_run 23 -- \
     --screen '$RUN_DIR/fileman-js-screen' \
     --input --via-virtio \
+    --virtio-fs '$RUN_DIR/share' \
     --script '$RUN_DIR/script-23.txt' \
     --input-chords 'return' \
     --input-chords-after 'gofiles: ready' \
