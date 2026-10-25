@@ -219,6 +219,14 @@ verify-bss-budget:
 verify-coordination:
     bash tools/status/verify-issue-coordination.sh
 
+# Recompile the component registry aggregate from docs/registry/*.md
+# fragments (issue #3676). Default regenerates docs/component-registry.md;
+# --check fails on drift (also covered by the registry unit test).
+[positional-arguments]
+registry *ARGS:
+    #!/usr/bin/env bash
+    python3 tools/component-registry/compile.py "$@"
+
 # Regenerate (default) or verify (--check: fail on drift) the machine-generated
 # gate fleet inventory (M40 GF1, issue #934 — docs/gate-fleet-inventory.md).
 # The check is the registration guard: every added/removed/renamed script

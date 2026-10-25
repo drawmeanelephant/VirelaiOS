@@ -118,8 +118,11 @@ jobs:
           PY
 
       # Component-registry freshness (M189c, issue #3227). The registry
-      # (M189a) is the one truth for what ships and at what version; the
-      # site renders it (site/components.md, generated region between the
+      # (M189a) is the one truth for what ships and at what version —
+      # rows live in docs/registry/<key>.md fragments and
+      # docs/component-registry.md is generated output
+      # (tools/component-registry/compile.py, issue #3676); the site
+      # renders it (site/components.md, generated region between the
       # BEGIN/END markers by tools/render-component-site.py). This check
       # fails a PR that ships an app without a site-visible row: an
       # image/apps.txt row with no registry `app` row, or a registry whose
@@ -129,6 +132,7 @@ jobs:
       # the deeper semantic guard (appver vs StateVersion, refs, grammar).
       - name: Component-registry freshness (apps.txt <-> registry <-> site)
         run: |
+          python3 tools/component-registry/compile.py --check
           python3 tools/render-component-site.py --check
           python3 - <<'PY2'
           import re, sys, pathlib

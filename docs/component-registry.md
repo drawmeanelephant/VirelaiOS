@@ -1,15 +1,27 @@
+<!-- GENERATED FILE — do not hand-edit. Rows live in
+     docs/registry/<key>.md (one fragment per row key); this file is
+     compiled from the fragments + tools/component-registry/template.md
+     by `python3 tools/component-registry/compile.py`. Edit the
+     fragment, rerun the compiler, commit both. Declaring this file as
+     a Touch is exempt (generated) — claim the fragment instead. -->
+
 # Component registry (M189a, #3225)
 
 One table of every shipped component: name, kind, binary, the one version
 surface that answers "what version is it", the owning gate spec or contract,
-and its state. Checked by `tools/tests/test_component_registry.py`, which
-runs in `just verify-portable` — a row that disagrees with `image/apps.txt`,
-with a spec pin it cites, or with the release grammar fails the build.
-The registry is also what the public site renders: `site/components.md`
-carries a generated region (M189c, #3227) produced by
-`tools/render-component-site.py`, re-rendered at publish time, and the
-docs gate fails a PR that lets `image/apps.txt`, this file, or the
-rendered page drift apart.
+and its state. The rows are authored as fragments —
+`docs/registry/<key>.md` holds one row key (binary stem for binaries,
+the component's name otherwise); this file is generated output compiled
+by `tools/component-registry/compile.py`, never hand-edited. Checked by
+`tools/tests/test_component_registry.py`, which reads the fragments and
+runs in `just verify-portable` — a row that disagrees with
+`image/apps.txt`, with a spec pin it cites, or with the release grammar
+fails the build, and so does a committed aggregate that no longer
+matches a fresh compile. The registry is also what the public site
+renders: `site/components.md` carries a generated region (M189c, #3227)
+produced by `tools/render-component-site.py` off the same fragments,
+re-rendered at publish time, and the docs gate fails a PR that lets
+`image/apps.txt`, the fragments, or the rendered page drift apart.
 
 ## The version rule
 
@@ -383,8 +395,12 @@ The host-side pieces the system cannot boot, image, or publish without.
 
 ## Row grammar (what the drift check reads)
 
-Every `|`-delimited line with six cells is a registry row; the check skips
-the header and separator lines. Cells, in order:
+Rows are authored one key per file under `docs/registry/`: a `---`-fenced
+front-matter block (`key` — the filename stem; `section` — which table
+below it lands in; `order` — its slot in that table) followed by the
+row's table verbatim. Every `|`-delimited line with six cells in a
+fragment block is a registry row; the check skips the header and
+separator lines. Cells, in order:
 
 - **name** — free text.
 - **kind** — `app` (an `image/apps.txt` row), `seat`, `tool` (a staged
@@ -415,6 +431,8 @@ not resolve; a binary is not in the produced set; an `appver` value
 disagrees with the `StateVersion` the app's package registers (in either
 direction — a new registration with a `—` here is drift too); a `ver`
 value disagrees with the product-version const in the component's
-source, or the source carries one the row does not show; or a cell
-uses a token outside this grammar. `--missing-ver` prints the rows
+source, or the source carries one the row does not show; a fragment is
+malformed or its `key`/`section`/`order` disagrees with its name; the
+committed aggregate differs from a fresh compile of the fragments; or a
+cell uses a token outside this grammar. `--missing-ver` prints the rows
 still unseeded and exits 0 — advisory until the seeding cards land.
