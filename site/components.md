@@ -144,7 +144,7 @@ sharing one builder and one naming map.
 | Composition probe | fixture | GOCOMP.ELF | ver 1.0.0 | tools/gate/specs/live-m14-composition.spec | fixture |
 | Progress-wire driver | fixture | GOPROGRESS.ELF | ver 1.0.0 | tools/gate/specs/go-wm-seat.spec | fixture |
 | WM-RPC probe | fixture | WMRPCPROBE.ELF | ver 1.0.0 | tools/gate/specs/go-agentd.spec, tools/gate/specs/go-wm-tabs.spec | fixture |
-| build-go.sh fixture set (GOHELLO/GOARGS/GOROUT/GOSCALE/GOSTRESS/GOPANIC/GOWIN/GONET/GOVINET/GOVIDNS/GOBIG/GOLOADBSS/GOREAD/GONETRATE/GOMBURST/GOSYSCALL/GOBIGREAD/GOSELFHOST) | fixture | — | — | tools/go/build-go.sh, tools/gate/specs/go-hello.spec | fixture |
+| build-go.sh fixture set (GOHELLO/GOARGS/GOROUT/GOSCALE/GOSTRESS/GOPANIC/GOWIN/GONET/GOVINET/GOVIDNS/GOBIG/GOLOADBSS/GOREAD/GONETRATE/GOMBURST/GOSYSCALL/GOBIGREAD/GOSELFHOST) | fixture | — | ver 1.0.0 | tools/go/build-go.sh, tools/gate/specs/go-hello.spec | fixture |
 
 ### The windowed-candidates verdict (issue #3455)
 
