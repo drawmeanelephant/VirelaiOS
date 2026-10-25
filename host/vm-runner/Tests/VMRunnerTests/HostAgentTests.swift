@@ -187,6 +187,33 @@ final class HostAgentTests: XCTestCase {
         XCTAssertEqual(agent.pillText, "AGENT ●")
     }
 
+    /// #3391 F4: a MAC-verified body under a name its own epoch+seq does
+    /// not recompute is a replay — rejected like any other planting.
+    func testReplayedReceiptIsFlaggedRejected() throws {
+        let share = try makeShare()
+        let line = "{\"seq\":1,\"epoch\":\"0000000a\",\"agent\":\"devin\",\"verb\":\"gosh.run\",\"args\":{\"exit_status\":0},\"ts\":1,\"mono\":1,\"result\":\"ok\"}"
+        writeReceipt(share, name: "RCPT-0000000a-00000007", body: receiptBody(line))
+        let agent = companion(share)
+        agent.scan()
+        let rcpt = try XCTUnwrap(agent.receipts.first)
+        XCTAssertFalse(rcpt.verified)
+        XCTAssertEqual(rcpt.reason, "replay")
+        XCTAssertEqual(agent.rejectedCount, 1)
+        XCTAssertEqual(agent.verifiedCount, 0)
+    }
+
+    /// #3391 F3: refused sessions coalesce — one auth_fail receipt's n=
+    /// is the covered count.
+    func testCoalescedAuthFailCountsN() throws {
+        let share = try makeShare()
+        let line = "{\"seq\":1,\"epoch\":\"0000000a\",\"agent\":\"mallory\",\"verb\":\"session\",\"args\":{\"event\":\"auth_fail\",\"n\":8},\"ts\":1,\"mono\":1,\"result\":\"auth_failed\"}"
+        writeReceipt(share, name: "RCPT-0000000a-00000001", body: receiptBody(line))
+        let agent = companion(share)
+        agent.scan()
+        XCTAssertEqual(agent.authFailures, 8)
+        XCTAssertEqual(agent.verifiedCount, 1)
+    }
+
     /// Rejected receipts surface on the pill — tamper evidence without
     /// opening the drawer.
     func testRejectedReceiptsMarkThePill() throws {

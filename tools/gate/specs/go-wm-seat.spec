@@ -268,10 +268,11 @@ if not os.path.exists(elf):
              "bash tools/go/build-gotabwm.sh")
 KEY = "a5" * 32  # the pinned receipt key (the go-agentd.spec vector)
 
-def receipt(agent, verb, args, result):
-    line = ('{"seq":1,"epoch":"b0000001","agent":%s,"verb":%s,"args":%s,'
+def receipt(agent, verb, args, result, seq=1, epoch="b0000001"):
+    line = ('{"seq":%d,"epoch":%s,"agent":%s,"verb":%s,"args":%s,'
             '"ts":100,"mono":200,"result":%s}'
-            % (json.dumps(agent), json.dumps(verb), args, json.dumps(result)))
+            % (seq, json.dumps(epoch), json.dumps(agent), json.dumps(verb),
+               args, json.dumps(result)))
     mac = hmac.new(KEY.encode(), line.encode(), hashlib.sha256).hexdigest()
     return (line + "\n" + mac + "\n").encode()
 
@@ -311,16 +312,21 @@ a12 = stage("agent", secrets_on,
     audit=[("RCPT-b0000001-00000001",
             receipt("devin", "fs.read", '{"path":"APP/main.go","size":4,"sha256_8":"deadbeef"}', "ok"))],
     staged=[
-        ("R1", receipt("devin", "session", '{"event":"open"}', "ok")),
-        ("R2", receipt("devin", "gosh.run", GOSH('FLINT.ELF commit -m "x"', 0), "ok")),
-        ("R3", receipt("devin", "gosh.run", GOSH("FLINT.ELF push --remote=10.0.0.2:4750 --stream=main", 0), "ok")),
-        ("R4", receipt("devin", "gosh.run", GOSH("STORE.ELF install main --remote=10.0.0.2:4750", 0), "ok")),
+        ("R1", receipt("devin", "session", '{"event":"open"}', "ok", seq=2)),
+        ("R2", receipt("devin", "gosh.run", GOSH('FLINT.ELF commit -m "x"', 0), "ok", seq=3)),
+        ("R3", receipt("devin", "gosh.run", GOSH("FLINT.ELF push --remote=10.0.0.2:4750 --stream=main", 0), "ok", seq=4)),
+        ("R4", receipt("devin", "gosh.run", GOSH("STORE.ELF install main --remote=10.0.0.2:4750", 0), "ok", seq=5)),
         # The forged close: a valid-shape file with a junk MAC — it must
         # be named `rcpt bad`, must not print a close marker, and must
         # not take the badge down.
-        ("R5", b'{"seq":1,"epoch":"b0000001","agent":"devin","verb":"session",'
+        ("R5", b'{"seq":6,"epoch":"b0000001","agent":"devin","verb":"session",'
                b'"args":{"event":"close"},"ts":100,"mono":200,"result":"ok"}\n'
                + b"0" * 64 + b"\n"),
+        # #3391 F4: the replay — R2's own verified bytes copied to a
+        # fresh name. The MAC still verifies, but the name does not
+        # recompute from the receipt's epoch+seq, so it is `rcpt bad`
+        # and must NOT re-toast the push milestone.
+        ("R6", receipt("devin", "gosh.run", GOSH("FLINT.ELF push --remote=10.0.0.2:4750 --stream=main", 0), "ok", seq=4)),
     ])
 
 # Run 13's share: the open is boot backlog (the catch-up lights the
@@ -328,7 +334,7 @@ a12 = stage("agent", secrets_on,
 a13 = stage("agent-close", secrets_on,
     audit=[("RCPT-b0000001-00000001",
             receipt("devin", "session", '{"event":"open"}', "ok"))],
-    staged=[("R2", receipt("devin", "session", '{"event":"close"}', "client_close"))])
+    staged=[("R2", receipt("devin", "session", '{"event":"close"}', "client_close", seq=2))])
 
 # Run 14's share: verifiable receipts and the row exist — but the
 # allowlist does not name the seat, so the watch is the flags-off
@@ -336,7 +342,7 @@ a13 = stage("agent-close", secrets_on,
 a14 = stage("agent-off", secrets_off,
     audit=[
         ("RCPT-b0000001-00000001", receipt("devin", "session", '{"event":"open"}', "ok")),
-        ("RCPT-b0000001-00000002", receipt("devin", "gosh.run", GOSH('FLINT.ELF commit -m "x"', 0), "ok")),
+        ("RCPT-b0000001-00000002", receipt("devin", "gosh.run", GOSH('FLINT.ELF commit -m "x"', 0), "ok", seq=2)),
     ],
     staged=[])
 print("agent-watch shares staged: %s / %s / %s" % (a12, a13, a14))
@@ -1556,6 +1562,7 @@ vf mv AGENT/STAGED/R2 AGENT/AUDIT/RCPT-b0000001-00000003
 vf mv AGENT/STAGED/R3 AGENT/AUDIT/RCPT-b0000001-00000004
 vf mv AGENT/STAGED/R4 AGENT/AUDIT/RCPT-b0000001-00000005
 vf mv AGENT/STAGED/R5 AGENT/AUDIT/RCPT-b0000001-00000006
+vf mv AGENT/STAGED/R6 AGENT/AUDIT/RCPT-b0000001-00000007
 echo rx-gotabwm-agent-ok
 EOF
 
@@ -1591,6 +1598,12 @@ vgate_assert 12 serial-contains 'gotabwm: notify id=0 agent: push ok'
 vgate_assert 12 serial-contains 'gotabwm: notify id=0 agent: install ok'
 vgate_assert 12 serial-contains 'gotabwm: notify paint id=0'
 vgate_assert 12 serial-contains 'gotabwm: agent rcpt bad RCPT-b0000001-00000006'
+# #3391 F4: the replayed push receipt — MAC-verified but its name does
+# not recompute from its epoch+seq — is refused by name and never
+# re-toasts (the milestone marker and toast each appear exactly once).
+vgate_assert 12 serial-contains 'gotabwm: agent rcpt bad RCPT-b0000001-00000007'
+vgate_assert 12 serial-exact 'gotabwm: agent milestone push' 1
+vgate_assert 12 serial-exact 'gotabwm: notify id=0 agent: push ok' 1
 vgate_assert 12 serial-absent 'gotabwm: agent session close'
 vgate_assert 12 serial-contains 'rx-gotabwm-agent-ok'
 vgate_assert 12 serial-absent '[EXC] parking:'

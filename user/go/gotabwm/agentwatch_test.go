@@ -7,6 +7,7 @@ package main
 
 import (
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -105,18 +106,26 @@ func newAgentFixture(t *testing.T, key string) *agentFixture {
 }
 
 // rcpt builds one signed receipt file body (line + 64-hex MAC) exactly
-// the shape the lane's own emit writes.
-func (f *agentFixture) rcpt(agent, verb, args, result string) []byte {
-	line := `{"seq":1,"epoch":"b0000001","agent":` + jq(agent) +
+// the shape the lane's own emit writes — epoch and seq are the fields the
+// F4 name binding checks against the filename.
+func (f *agentFixture) rcpt(epoch string, seq uint64, agent, verb, args, result string) []byte {
+	line := `{"seq":` + vi.Itoa64(int64(seq)) + `,"epoch":` + jq(epoch) +
+		`,"agent":` + jq(agent) +
 		`,"verb":` + jq(verb) + `,"args":` + args +
 		`,"ts":100,"mono":200,"result":` + jq(result) + `}`
 	mac := shlib.HMACSHA256(f.key, []byte(line))
 	return []byte(line + "\n" + hexLower(mac[:]) + "\n")
 }
 
-// stage drops a signed receipt into the lane (agentd's publish).
+// stage drops a signed receipt into the lane (agentd's publish). The
+// body derives epoch+seq from the name — the writer's own binding —
+// so a staged name like RCPT-b0000001-00000003 needs nothing else.
 func (f *agentFixture) stage(name, agent, verb, args, result string) {
-	f.files[name] = f.rcpt(agent, verb, args, result)
+	seq, err := strconv.ParseUint(name[14:22], 16, 32)
+	if err != nil {
+		panic("stage: bad receipt name " + name)
+	}
+	f.files[name] = f.rcpt(name[5:13], seq, agent, verb, args, result)
 }
 
 // jq renders s as a JSON string with the escapes the lane writer uses.
@@ -357,7 +366,7 @@ func TestAgentWatchForgedReceiptRefused(t *testing.T) {
 	f.stage("RCPT-b0000001-00000001", "devin", "session", `{"event":"open"}`, "ok")
 	agentSeatTick()
 	// A forged close: real shape, wrong MAC.
-	forged := f.rcpt("devin", "session", `{"event":"close"}`, "client_close")
+	forged := f.rcpt("b0000001", 2, "devin", "session", `{"event":"close"}`, "client_close")
 	f.files["RCPT-b0000001-00000002"] = append([]byte(nil), forged...)
 	f.files["RCPT-b0000001-00000002"][0] = 'X'
 	agentSeatTick()
@@ -374,6 +383,38 @@ func TestAgentWatchForgedReceiptRefused(t *testing.T) {
 	agentSeatTick()
 	if f.count("gotabwm: agent rcpt bad") != 1 {
 		t.Fatalf("the forged file re-logged: %v", f.logs)
+	}
+}
+
+// F4 (#3391): a MAC-verified body under a fresh name is a replay — the
+// filename must recompute from the receipt's own epoch+seq or the file
+// is refused like any other planting, milestones and toasts included.
+func TestAgentWatchReplayRefused(t *testing.T) {
+	f := newAgentFixture(t, agentTestKey)
+	agentSeatInit()
+	agentSeatTick()
+	// A real milestone receipt lands live and toasts once.
+	f.stage("RCPT-b0000001-00000001", "devin", "gosh.run",
+		`{"cmd":"FLINT.ELF commit -m x","exit_status":0}`, "ok")
+	agentSeatTick()
+	if !f.has("gotabwm: agent milestone commit") {
+		t.Fatalf("the real milestone never marked: %v", f.logs)
+	}
+	// The replay: the same verified bytes copied to a fresh name.
+	f.files["RCPT-b0000001-00000002"] = f.files["RCPT-b0000001-00000001"]
+	agentSeatTick()
+	if !f.has("gotabwm: agent rcpt bad RCPT-b0000001-00000002") {
+		t.Fatalf("replayed receipt not named: %v", f.logs)
+	}
+	if f.count("gotabwm: agent milestone commit") != 1 || f.count("agent: commit ok") != 1 {
+		t.Fatalf("a replayed milestone re-marked/re-toasted: %v", f.logs)
+	}
+	// The right name under the same fields applies cleanly — the
+	// binding checks identity, not content.
+	f.stage("RCPT-b0000001-00000003", "devin", "session", `{"event":"close"}`, "client_close")
+	agentSeatTick()
+	if !f.has("gotabwm: agent session close agent=devin") {
+		t.Fatalf("a bound receipt refused: %v", f.logs)
 	}
 }
 

@@ -225,7 +225,10 @@ func (v *AgentView) readOne(name string) agentRow {
 	row.mark = markUnknownKey
 	if v.hasKey {
 		mac := shlib.HMACSHA256(v.key, line)
-		if macHexEq(mac[:], macHex) {
+		// F4 (#3391): the filename binds to the receipt's own epoch+seq —
+		// a MAC-verified body under a fresh name is a replayed receipt,
+		// flagged forged like any other planting.
+		if macHexEq(mac[:], macHex) && receiptNameBound(name, fields) {
 			row.mark = markVerified
 		} else {
 			row.mark = markForged
@@ -471,6 +474,27 @@ func fieldNum(s string) int64 {
 		n = n*10 + int64(s[i]-'0')
 	}
 	return n
+}
+
+// receiptNameBound reports whether the receipt's epoch+seq fields
+// recompute its filename — the binding the F4 replay check verifies.
+func receiptNameBound(name string, fields map[string][]byte) bool {
+	return name == "RCPT-"+fieldStr(fields, "epoch", "")+"-"+hex8u(fieldInt(fields, "seq"))
+}
+
+// hex8u renders a receipt seq the filename's way — 8 lowercase hex
+// digits, the writer's uint32 shape. An out-of-range seq returns a
+// string that can never equal a filename's hex field.
+func hex8u(v int64) string {
+	if v < 0 || v > 0xffffffff {
+		return "~~~~~~~~"
+	}
+	const d = "0123456789abcdef"
+	var b [8]byte
+	for i := 0; i < 8; i++ {
+		b[i] = d[(v>>uint((7-i)*4))&0xf]
+	}
+	return string(b[:])
 }
 
 // receiptNameOK reports whether name is RCPT-<8hex>-<8hex> (the lane's

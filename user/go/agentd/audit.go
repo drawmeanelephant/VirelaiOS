@@ -41,15 +41,22 @@ const (
 const receiptKeyMax = auditKeyMax
 
 // auditLane is the daemon's receipt state: the loaded key, this boot's
-// epoch, the next seq, and the sorted RCPT-* names the bound rotates over.
-// names is loaded once at start and kept by the writer itself — receipts
-// are only ever appended by this process, so the sorted view never goes
-// stale inside a boot.
+// epoch, the next seq, and the sorted lane names the bound rotates over.
+// names is refreshed from the directory on every emit (F8, #3391) — a
+// start-time snapshot let foreign files planted mid-boot evade the bound.
+// dead is the F2 named-degraded mark: set by the first refused receipt
+// write, it fails the lane closed — dispatches refuse audit_full rather
+// than run unreceipted. ref* is the F3 refused-session coalescer.
 type auditLane struct {
-	key   []byte
-	epoch uint32
-	seq   uint32
-	names []string
+	key      []byte
+	epoch    uint32
+	seq      uint32
+	names    []string
+	dead     bool
+	refTot   uint32 // refused sessions this boot
+	refPend  uint32 // refused sessions awaiting a receipt
+	refAgent string // the batch's last claimed id ("-" when none)
+	refCode  string // the batch's last verdict (or end reason)
 }
 
 var lane auditLane
@@ -61,11 +68,13 @@ var (
 	timeFn      = vi.Time
 )
 
-// auditList returns the AUDIT directory's RCPT-* names sorted ascending —
-// the drop candidate is always names[0]. "~" publish temps and foreign
-// files are skipped (WriteFileSafe's temp is one byte past the receipt
-// name). A listing failure returns nil: the writer still publishes, the
-// bound simply has nothing to rotate against.
+// auditList returns the AUDIT directory's regular-file names sorted
+// ascending — the drop candidate is always names[0]. Every file counts
+// toward the bound, receipt-shaped or not (F8): a planted rcpt-*/foreign
+// file is lane garbage the rotation evicts like any other name, which is
+// what keeps the lane at 64 for the seat's per-tick listing. A listing
+// failure returns nil: the writer still publishes, the bound simply has
+// nothing to rotate against.
 func auditList() []string {
 	items, err := vi.ListDirAt(auditCanon)
 	if err != nil {
@@ -73,32 +82,27 @@ func auditList() []string {
 	}
 	var names []string
 	for _, it := range items {
-		if validReceiptName(it.Name) {
+		if !it.IsDir {
 			names = insertName(names, it.Name)
 		}
 	}
 	return names
 }
 
-// validReceiptName reports whether name is RCPT-<8hex>-<8hex> — the only
-// shape the lane rotates or the viewer reads.
-func validReceiptName(name string) bool {
-	if len(name) != len(auditStem)+17 || !strings.HasPrefix(name, auditStem) {
-		return false
+// auditMark makes a lane name marker-safe: bounded and control bytes
+// folded — a planted filename can carry bytes that would split the serial
+// line a gate greps (the dropName rule the seat's agentMark follows).
+func auditMark(s string) string {
+	if len(s) > 32 {
+		s = s[:32]
 	}
-	if name[len(auditStem)+8] != '-' {
-		return false
-	}
-	for i := len(auditStem); i < len(name); i++ {
-		if i == len(auditStem)+8 {
-			continue
-		}
-		c := name[i]
-		if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
-			return false
+	out := []byte(s)
+	for i, c := range out {
+		if c < 0x20 || c == 0x7f {
+			out[i] = '?'
 		}
 	}
-	return true
+	return string(out)
 }
 
 // insertName inserts name into the sorted list (binary search, stays
@@ -151,10 +155,14 @@ func auditInit() string {
 }
 
 // emit writes one receipt: the JSON line, its MAC line, then the publish.
-// A write failure is one marker — audit must never take the session down
-// (posture already guaranteed the lane exists), and the bound is
-// best-effort around the same rule.
+// A refused write is the F2 named-degraded mark — the lane goes dead and
+// the dispatch loop refuses verbs audit_full rather than run them
+// unreceipted; the marker names the errno once. The bound re-lists on
+// every emit (F8) so planted files count and rotate like real receipts.
 func (l *auditLane) emit(agent, verb, args, result string) {
+	if l.dead {
+		return
+	}
 	l.seq++
 	var sb strings.Builder
 	sb.WriteString(`{"seq":`)
@@ -179,10 +187,11 @@ func (l *auditLane) emit(agent, verb, args, result string) {
 	name := auditStem + hex8u(l.epoch) + "-" + hex8u(l.seq)
 	body := line + "\n" + hexString(mac[:]) + "\n"
 	if r := writeFileFn(auditDir+"/"+name, []byte(body)); r < 0 {
-		consoleFn("agentd: audit io_error errno=" + vi.ErrnoName(r))
+		l.dead = true
+		consoleFn("agentd: audit full errno=" + vi.ErrnoName(r))
 		return
 	}
-	l.names = insertName(l.names, name)
+	l.names = auditListFn()
 	// D4's lexical rotation reads "oldest goes first" only inside one
 	// epoch: a share that outlives a boot holds earlier epochs whose
 	// names may sort anywhere relative to the fresh one. A boot's own
@@ -204,9 +213,49 @@ func (l *auditLane) emit(agent, verb, args, result string) {
 			consoleFn("agentd: audit io_error errno=" + vi.ErrnoName(r))
 			break
 		}
-		consoleFn("agentd: audit drop " + l.names[victim])
+		consoleFn("agentd: audit drop " + auditMark(l.names[victim]))
 		l.names = append(l.names[:victim], l.names[victim+1:]...)
 	}
+}
+
+// --- refused-session coalescing (F3, #3391) -------------------------------------
+//
+// An unauthenticated session costs one counter, not one file: ~2 lane
+// files per bare TCP connection let ~32 connect/close cycles evict all
+// real evidence from the 64-file bound. The first refused session of a
+// boot receipts immediately — a refused credential is always named on
+// the lane (D2); further refusals fold into one auth_fail receipt per
+// auditRefuseBatch, its n= carrying the covered count and the last
+// claim/verdict standing for the batch. An authenticated session flushes
+// any held batch ahead of its open receipt so the lane's seq order stays
+// chronological.
+const auditRefuseBatch = 8
+
+// refusedSession records one session that ended without an auth verdict
+// in its favour: the claimed id ("-" when none) and the refusal code
+// (the wire verdict, else the end reason).
+func (l *auditLane) refusedSession(agent, code string) {
+	l.refTot++
+	l.refPend++
+	l.refAgent, l.refCode = agent, code
+	if l.refTot == 1 || l.refPend >= auditRefuseBatch {
+		l.flushRefused()
+	}
+}
+
+// flushRefused emits the held batch's one auth_fail receipt — args
+// {"event":"auth_fail","n":<covered>} — and clears it. No-op while none
+// are held (and while the lane is dead, emit itself is).
+func (l *auditLane) flushRefused() {
+	if l.refPend == 0 {
+		return
+	}
+	var sb strings.Builder
+	sb.WriteString(`{"event":"auth_fail","n":`)
+	sb.WriteString(vi.Itoa64(int64(l.refPend)))
+	sb.WriteByte('}')
+	l.emit(l.refAgent, "session", sb.String(), l.refCode)
+	l.refPend = 0
 }
 
 // --- the session trail --------------------------------------------------------

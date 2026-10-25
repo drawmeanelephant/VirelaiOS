@@ -109,30 +109,37 @@ func TestAgentViewRendersReceipts(t *testing.T) {
 		agentHostDir + "RCPT-01020304-00000004": rcptBody(agentTestKey,
 			rcptLine("4", "mallory", "gosh.run", `{"cmd":"rm -rf /"}`, "ok"), true), // forged
 		agentHostDir + "RCPT-01020304-00000005": []byte("not json\n" + strings.Repeat("0", 64) + "\n"),
+		// F4 (#3391): a MAC-verified body under a name its own epoch+seq
+		// does not recompute is a replay — flagged forged.
+		agentHostDir + "RCPT-01020304-00000008": rcptBody(agentTestKey,
+			rcptLine("2", "devin", "fs.write", `{"path":"HELLO.TXT","size":27,"sha256_8":"01234567"}`, "ok"), false),
 		agentHostDir + "RCPT-01020304-0000000~": rcptBody(agentTestKey, "{}", false),
 		agentHostDir + "OTHER.TXT":              rcptBody(agentTestKey, "{}", false),
 	}
 	fakeAgentLane(t, files, agentTestKey, true)
 	v := NewAgentView()
 	v.Refresh()
-	if len(v.rows) != 5 {
+	if len(v.rows) != 6 {
 		t.Fatalf("rows = %d (temps/foreign files must be skipped)", len(v.rows))
 	}
-	// Newest first, and the marks land: 3 verified, 1 forged, 1 malformed.
-	if v.rows[0].mark != markMalformed {
-		t.Fatalf("row0 = %+v", v.rows[0])
+	// Newest first, and the marks land: 3 verified, 2 forged, 1 malformed.
+	if v.rows[0].mark != markForged {
+		t.Fatalf("replayed row = %+v", v.rows[0])
 	}
-	if v.rows[1].agent != "mallory" || v.rows[1].mark != markForged {
+	if v.rows[1].mark != markMalformed {
 		t.Fatalf("row1 = %+v", v.rows[1])
 	}
-	if v.nVerif != 3 || v.nBad != 2 {
+	if v.rows[2].agent != "mallory" || v.rows[2].mark != markForged {
+		t.Fatalf("row2 = %+v", v.rows[2])
+	}
+	if v.nVerif != 3 || v.nBad != 3 {
 		t.Fatalf("verdicts = %d verified %d bad", v.nVerif, v.nBad)
 	}
 	m := v.Marker()
-	if !strings.Contains(m, "top: agent n=5 verified=3 bad=2 key=yes") {
+	if !strings.Contains(m, "top: agent n=6 verified=3 bad=3 key=yes") {
 		t.Fatalf("marker = %q", m)
 	}
-	rm, ok := v.RowMarker(2)
+	rm, ok := v.RowMarker(3)
 	if !ok || rm != "top: agent rcpt agent=viewer verb=fs.read result=cap_required:file mark=v" {
 		t.Fatalf("row marker = %q ok=%v", rm, ok)
 	}

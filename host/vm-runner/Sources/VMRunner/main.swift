@@ -313,6 +313,11 @@
 //          [--net-tcp-connect-stream-arg <arg>] (repeatable; stream argv)
 //          [--net-tcp-connect-intruder] (stream only: a second SYN from
 //           another port once the guest speaks; reports whether it answered)
+//          [--net-tcp-connect-resyn <n>] (non-stream/non-ssh clients re-SYN
+//           on each NEW after-marker sighting, n extra SYNs max — sequential
+//           sessions paced by the server's own relisten marker)
+//          [--net-tcp-connect-after-skip <n>] (applies to the last declared
+//           client: its SYN ignores the first n after-marker sightings)
 //          [--net-tcp-connect-after <text>]
 //          [--net-tcp-connect-close-after <text>]
 //          [--net-tcp-connect-secret <s>] (M50 TS4: answer the guest's
@@ -1332,6 +1337,12 @@ var netTcpConnectSSHSessionFile: String?
 // M99f: it attaches to the FIRST connect target's client.
 var netTcpConnectStreamExec: String?
 var netTcpConnectStreamArgs: [String] = []
+// #3391: `--net-tcp-connect-resyn <n>` — a non-stream, non-SSH client
+// re-SYNs on each NEW sighting of the after-marker while attempts
+// remain. Against a relistening daemon (agentd prints its listen marker
+// per session) the marker itself is the sequential-session clock: every
+// sighting admits exactly one fresh connection.
+var netTcpConnectResyn = 0
 // A second viewer's SYN, sent from the next source port while the first
 // holds the guest's one connection. The guest's answer (or silence) is the
 // over-cap receipt.
@@ -1389,6 +1400,11 @@ final class NetTcpClient {
     var streamRxBytes = 0
     var intruderSent = false
     var intruderAnswered = false
+    /// `--net-tcp-connect-after-skip <n>` (#3391): the client's SYN fires
+    /// only once the after-marker's occurrence count passes n — several
+    /// clients can take turns on one relisten marker, e.g. a spam client
+    /// on every sighting and an ender client on the last.
+    var afterSkip = 0
     /// `--net-tcp-connect-stream` attaches the probe to the FIRST declared
     /// client only (M99f: later clients never take the stream branch).
     var isStreamClient: Bool {
@@ -2354,6 +2370,23 @@ while idx < arguments.count {
         guard mode == "reset" || mode == "timeout" else { fail("--net-native-preview requires reset|timeout") }
         nativeSocketProbeMode = mode
         nativeSocketProbe = NativeSocketProbe(mode: mode)
+        idx += 2
+    } else if arg == "--net-tcp-connect-resyn", idx + 1 < arguments.count {
+        // #3391: re-SYN each eligible client on every new after-marker
+        // sighting — sequential refused sessions for the audit-lane spam
+        // leg, paced by the daemon's own relisten marker.
+        guard let n = Int(arguments[idx + 1]), n >= 0 else {
+            fail("--net-tcp-connect-resyn requires a non-negative count, got '\(arguments[idx + 1])'.")
+        }
+        netTcpConnectResyn = n
+        idx += 2
+    } else if arg == "--net-tcp-connect-after-skip", idx + 1 < arguments.count {
+        // #3391: this client's SYN ignores the first <n> after-marker
+        // sightings. Applies to the most recently declared client.
+        guard let n = Int(arguments[idx + 1]), n >= 0, let client = netTcpClients.last else {
+            fail("--net-tcp-connect-after-skip requires a non-negative count after a --net-tcp-connect, got '\(arguments[idx + 1])'.")
+        }
+        client.afterSkip = n
         idx += 2
     } else if arg == "--net-tcp-connect-intruder" {
         netTcpConnectIntruder = true
@@ -7441,30 +7474,46 @@ func startNetTcpConnect() {
         let q = DispatchQueue(label: "virelaios.nettcpconnect.\(client.cliPort)")
         q.async {
             let marker = netTcpConnectAfter ?? "sh: remote"
-            let waitDeadline = Date().addingTimeInterval(60)
+            // #3391: a resyn client treats each NEW sighting of the marker
+            // as a fresh SYN slot — against a relisten-on-session-end
+            // daemon the marker IS the sequential-session clock. Stream
+            // and SSH clients never resyn. afterSkip skips the first n
+            // sightings so clients can take turns on the one marker.
+            let resyn = (client.isStreamClient || client.sshMode) ? 0 : netTcpConnectResyn
+            let waitDeadline = Date().addingTimeInterval(resyn > 0 ? 1800 : 60)
             var sent = false
+            var attempts = 1 + resyn
+            var seen = 0
             while Date() < waitDeadline {
-                if let text = try? String(contentsOf: serialURL, encoding: .utf8), text.contains(marker) {
-                    client.seq = netTcpCliIsn
-                    client.ack = 0
-                    client.sshGuestDataSeen = false
-                    client.state = 1
-                    var syn = [UInt8](repeating: 0, count: 4096)
-                    let len = buildTcpFrameExplicit(&syn, netTcpGuestMAC, [0x02, 0x00, 0x00, 0x00, 0x00, 0x02], netTcpCliSrcIP, client.guestIP, client.cliPort, client.guestPort, netTcpCliIsn, 0, 0x02, [])
-                    do {
-                        try socket.write(contentsOf: Data(syn[0..<len]))
-                        let ipText = client.guestIP.map(String.init).joined(separator: ".")
-                        FileHandle.standardOutput.write(Data("NET-TCP-CONNECT: sent SYN to \(ipText):\(client.guestPort) (seq 0x\(hex32(netTcpCliIsn))) after \"\(marker)\"\n".utf8))
-                    } catch {
-                        FileHandle.standardError.write(Data("ERROR: net-tcp-connect SYN write failed: \(error)\n".utf8))
+                if let text = try? String(contentsOf: serialURL, encoding: .utf8) {
+                    let occ = text.components(separatedBy: marker).count - 1
+                    if occ > seen {
+                        seen = occ
+                        if occ > client.afterSkip && attempts > 0 &&
+                            (client.state == 0 || client.state == 3) {
+                            attempts -= 1
+                            client.seq = netTcpCliIsn
+                            client.ack = 0
+                            client.sshGuestDataSeen = false
+                            client.state = 1
+                            var syn = [UInt8](repeating: 0, count: 4096)
+                            let len = buildTcpFrameExplicit(&syn, netTcpGuestMAC, [0x02, 0x00, 0x00, 0x00, 0x00, 0x02], netTcpCliSrcIP, client.guestIP, client.cliPort, client.guestPort, netTcpCliIsn, 0, 0x02, [])
+                            do {
+                                try socket.write(contentsOf: Data(syn[0..<len]))
+                                let ipText = client.guestIP.map(String.init).joined(separator: ".")
+                                FileHandle.standardOutput.write(Data("NET-TCP-CONNECT: sent SYN to \(ipText):\(client.guestPort) (seq 0x\(hex32(netTcpCliIsn))) after \"\(marker)\" sighting \(occ)\n".utf8))
+                            } catch {
+                                FileHandle.standardError.write(Data("ERROR: net-tcp-connect SYN write failed: \(error)\n".utf8))
+                            }
+                            sent = true
+                        }
                     }
-                    sent = true
-                    break
                 }
+                if sent && (resyn == 0 || attempts == 0) { break }
                 Thread.sleep(forTimeInterval: 0.02)
             }
             if !sent {
-                FileHandle.standardError.write(Data("ERROR: guest did not emit net-tcp-connect marker '\(marker)' within 60s; connection not attempted\n".utf8))
+                FileHandle.standardError.write(Data("ERROR: guest did not emit net-tcp-connect marker '\(marker)' within the wait window; connection not attempted\n".utf8))
             }
         }
     }
