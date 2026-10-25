@@ -80,6 +80,86 @@ static JSValue print(JSContext *context, JSValueConst self, int count, JSValueCo
     return JS_UNDEFINED;
 }
 
+/* ADR 0039 amendment (M200c): virelai.* refusals are ordinary JS exceptions
+ * whose name/message is the host's named refusal verbatim. They are
+ * catchable and never pretend a partial read, write or arg list. */
+static JSValue host_error(JSContext *context)
+{
+    const char *name = qjs_native_host_failure();
+    JSValue error = JS_NewError(context);
+    if (JS_IsException(error))
+        return error;
+    JS_SetPropertyStr(context, error, "name", JS_NewString(context, name ? name : "AccessDenied"));
+    JS_SetPropertyStr(context, error, "message", JS_NewString(context, name ? name : "AccessDenied"));
+    return JS_Throw(context, error);
+}
+
+static JSValue virelai_read_file(JSContext *context, JSValueConst self, int count, JSValueConst *values)
+{
+    (void)self;
+    size_t path_len, length = 0;
+    qjs_native_step();
+    const char *path = JS_ToCStringLen(context, &path_len, count ? values[0] : JS_UNDEFINED);
+    if (!path)
+        return JS_EXCEPTION;
+    const char *data = qjs_native_host_read(path, path_len, &length);
+    JS_FreeCString(context, path);
+    qjs_native_step();
+    if (!data)
+        return host_error(context);
+    JSValue result = JS_NewStringLen(context, data, length);
+    qjs_native_step();
+    return result;
+}
+
+static JSValue virelai_write_file(JSContext *context, JSValueConst self, int count, JSValueConst *values)
+{
+    (void)self;
+    size_t path_len, data_len;
+    qjs_native_step();
+    const char *path = JS_ToCStringLen(context, &path_len, count ? values[0] : JS_UNDEFINED);
+    if (!path)
+        return JS_EXCEPTION;
+    const char *data = JS_ToCStringLen(context, &data_len, count > 1 ? values[1] : JS_UNDEFINED);
+    if (!data) {
+        JS_FreeCString(context, path);
+        return JS_EXCEPTION;
+    }
+    int failed = qjs_native_host_write(path, path_len, data, data_len);
+    JS_FreeCString(context, data);
+    JS_FreeCString(context, path);
+    qjs_native_step();
+    if (failed)
+        return host_error(context);
+    return JS_UNDEFINED;
+}
+
+static JSValue virelai_args_get(JSContext *context, JSValueConst self)
+{
+    (void)self;
+    size_t count = qjs_native_host_arg_count();
+    JSValue array = JS_NewArray(context);
+    if (JS_IsException(array))
+        return array;
+    for (size_t i = 0; i < count; i++) {
+        char buffer[256];
+        long length = qjs_native_host_arg(i, buffer, sizeof buffer);
+        if (length < 0) {
+            JS_FreeValue(context, array);
+            return host_error(context);
+        }
+        JSValue entry = JS_NewStringLen(context, buffer, (size_t)length);
+        if (JS_IsException(entry) ||
+            JS_SetPropertyUint32(context, array, (uint32_t)i, entry) < 0) {
+            JS_FreeValue(context, entry);
+            JS_FreeValue(context, array);
+            return JS_EXCEPTION;
+        }
+    }
+    qjs_native_step();
+    return array;
+}
+
 QjsEngine *qjs_engine_create(void)
 {
     QJS_BOUNDARY_OR_RETURN(NULL);
@@ -114,6 +194,26 @@ QjsEngine *qjs_engine_create(void)
     }
     if (JS_SetPropertyStr(context, global, "print", JS_NewCFunction(context, print, "print", 0)) < 0 ||
         JS_SetPropertyStr(context, console, "log", JS_NewCFunction(context, print, "log", 0)) < 0) {
+        JS_FreeValue(context, console);
+        JS_FreeValue(context, global);
+        goto fail;
+    }
+    JSValue virelai = JS_NewObject(context);
+    if (JS_IsException(virelai)) {
+        JS_FreeValue(context, console);
+        JS_FreeValue(context, global);
+        goto fail;
+    }
+    JSAtom args_atom = JS_NewAtom(context, "args");
+    int defined = JS_DefinePropertyGetSet(context, virelai, args_atom,
+        JS_NewCFunction2(context, (JSCFunction *)virelai_args_get, "args", 0, JS_CFUNC_getter, 0),
+        JS_UNDEFINED, JS_PROP_HAS_GET | JS_PROP_HAS_ENUMERABLE | JS_PROP_ENUMERABLE);
+    JS_FreeAtom(context, args_atom);
+    if (defined < 0 ||
+        JS_SetPropertyStr(context, virelai, "readFile", JS_NewCFunction(context, virelai_read_file, "readFile", 1)) < 0 ||
+        JS_SetPropertyStr(context, virelai, "writeFile", JS_NewCFunction(context, virelai_write_file, "writeFile", 2)) < 0 ||
+        JS_SetPropertyStr(context, global, "virelai", virelai) < 0) {
+        JS_FreeValue(context, virelai);
         JS_FreeValue(context, console);
         JS_FreeValue(context, global);
         goto fail;

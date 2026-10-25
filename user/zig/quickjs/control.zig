@@ -19,6 +19,11 @@ pub const limits = struct {
     pub const files = 2;
     pub const resources = 7;
     pub const filename = 64;
+    // ADR 0039 amendment (M200c): the virelai host surface's own bounds —
+    // one call transfers at most host_file bytes of file data and a path
+    // never exceeds the shared /host/ full-path budget.
+    pub const host_path = 64;
+    pub const host_file = 262_144;
 };
 
 pub const Error = error{

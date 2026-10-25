@@ -590,3 +590,57 @@ then both this ADR and A2 remain proposed, and #1921 is not done.
 M88 implementation cards are filed only afterward. The R1 leaves #1915
 open; the owner accepts that index only after file eval, interactive eval
 and every budget/refusal proof land with evidence.
+
+## Amendment (M200c / #3434) — the `virelai` namespace
+
+Directed by the M200 index (#3334): "card c below is the *only* ADR
+amendment this arc seeks — a bounded fs/args namespace inside the
+existing `/host/` path policy." This amendment admits exactly that
+surface and changes nothing else.
+
+**New JS-visible names, the complete list:**
+
+| Name | Semantics |
+|---|---|
+| `virelai.readFile(path)` | Returns the file's contents as a UTF-8 string. `path` must satisfy the same `/host/` policy `policy.path` already enforces on argv: `/host/` prefix, ≤64 B full path, ≤31 B per component, no NUL/`\\`/`:`/empty/`.`/`..` components. One synchronous contained no-follow open → bounded read → close per call; handles never become JS values |
+| `virelai.writeFile(path, data)` | Writes `String(data)`'s UTF-8 bytes to a **new** `/host/` file through the same directory-pin exclusive create receipts use. An existing name is refused `PathAlreadyExists`, never truncated or replaced — the receipt rule applied to JS |
+| `virelai.args` | A fresh array of the process argv strings on each access — the policy-bounded argv (≤8 entries incl. program name, ≤255 B each), never env |
+
+**Per-call bounds.** One call moves at most **262,144 B** of file data
+(new `limits.host_file`) and a path never exceeds the shared 64 B
+`/host/` budget (`limits.host_path`). The read buffer and the returned
+string charge the same single arena as every other engine allocation;
+no second budget is created. A file larger than the bound is refused,
+as is an over-bound write payload.
+
+**Named refusals.** A refused call throws an ordinary, catchable JS
+exception whose `name` and `message` are the refusal verbatim:
+`AccessDenied` outside `/host/` (and for the no-follow symlink rule),
+`InvalidPath`, `PathLimit`, `FileNotFound`, `PathAlreadyExists`,
+`InputLimit` at the byte bound, `InvalidUtf8` on non-text file content
+(readFile returns text, not bytes — the same UTF-8 rule as source;
+never U+FFFD), and the adapter's own error names for any other refused
+operation. These are not resource/budget refusals: they do not latch
+the context. An uncaught refusal is an ordinary `JSException`; the
+interactive context stays usable.
+
+**Sync-only stands.** Each call completes inside its eval like `print`:
+no Promise, job queue, async entry point or callback is added, and the
+deadline/cancel polling and file-handle/resource ceilings already in
+§5–§6 still govern — a read or write holds at most the two native file
+handles and one transient directory pin the resource budget already
+admits (released before return; a receipt still occupies its one).
+
+**The contract pins are amended by name.** The `typeof fs`, `read`,
+`write === "undefined"` pins stay — those globals remain refused. The
+namespace surface is pinned positively: `virelai` is an object,
+`virelai.readFile`/`writeFile` functions, `virelai.args` an array.
+
+**Everything else stays refused, by name:** DOM and browser APIs, JS in
+WEB.ELF (ADR 0028 D2), modules/`import`/`require`, async/Promise/timers
+and any job queue, `os`/`std`/`fetch`/sockets, workers, a second
+engine, wasm EH, npm, JIT, JS-visible env, and every other filesystem
+verb — no readdir/stat/remove/rename/mkdir/open, no terminal access, no
+byte- or stream-oriented file API. File path values are the only file
+authority JS holds; handles, argv packing and the `/host/` policy stay
+adapter-side.

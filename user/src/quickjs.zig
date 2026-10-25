@@ -218,6 +218,46 @@ const Session = struct {
         if (failure) |err| return err;
     }
 
+    /// ADR 0039 amendment (M200c): the JS `virelai.readFile`/`writeFile`
+    /// seams. The runtime bounds path and payload; policy.path and the
+    /// contained I/O below name every refusal that reaches JS verbatim.
+    fn hostReadFile(context: *anyopaque, name: []const u8, out: []u8) anyerror!usize {
+        const self: *Session = @ptrCast(@alignCast(context));
+        try policy.path(name);
+        const input = try sdk.filesystem().openContained("/host", name[6..], .read);
+        var opened = true;
+        defer if (opened) sdk.filesystem().closeChecked(input) catch {};
+        try self.resources();
+        const data = try sdk.io_helpers.readBounded(input, sdk.io, out);
+        try sdk.filesystem().closeChecked(input);
+        opened = false;
+        try self.resources();
+        return data.len;
+    }
+
+    /// writeFile creates exclusively — an existing name is PathAlreadyExists,
+    /// never a silent truncate (the receipt rule applied to JS).
+    fn hostWriteFile(context: *anyopaque, name: []const u8, data: []const u8) anyerror!void {
+        const self: *Session = @ptrCast(@alignCast(context));
+        try policy.path(name);
+        const slash = std.mem.lastIndexOfScalar(u8, name, '/').?;
+        const parent = if (slash == 5) "" else name[6..slash];
+        const directory = try sdk.filesystem().openDirectory("/host", parent);
+        var pinned = true;
+        defer if (pinned) sdk.filesystem().closeDirectory(directory) catch {};
+        const output = try sdk.filesystem().createExclusive(directory, name[slash + 1 ..]);
+        var opened = true;
+        defer if (opened) sdk.filesystem().closeChecked(output) catch {};
+        try sdk.filesystem().closeDirectory(directory);
+        pinned = false;
+        try self.resources();
+        try output.writeStreamingAll(sdk.io, data);
+        try output.sync(sdk.io);
+        try sdk.filesystem().closeChecked(output);
+        opened = false;
+        try self.resources();
+    }
+
     fn evalFile(self: *Session, name: []const u8) !void {
         const input = try sdk.filesystem().openContained("/host", name[6..], .read);
         var opened = true;
@@ -318,6 +358,12 @@ fn run(args: *const sdk.startup.Startup) !void {
     defer if (alive) runtime.destroy() catch {};
     const queue = try runtime.allocate(qjs.limits.line + 1);
     var session: Session = .{ .runtime = runtime, .queue = queue };
+    runtime.host = .{
+        .context = &session,
+        .readFile = Session.hostReadFile,
+        .writeFile = Session.hostWriteFile,
+        .args = args.args[0..args.argc],
+    };
     var status: u8 = 0;
     if (options.receipt) |name| session.openReceipt(name) catch |err| {
         session.close() catch {};

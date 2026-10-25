@@ -24,6 +24,20 @@ pub const Sink = struct {
     poll: ?*const fn (*anyopaque) bool = null,
 };
 
+/// ADR 0039 amendment (M200c): the adapter-owned virelai.* surface. Paths and
+/// payloads cross as JS values; handles, argv and the /host/ path policy stay
+/// adapter-side. A callback error's @errorName reaches JS verbatim as the
+/// refusal name, so adapters only ever return named refusals.
+pub const Host = struct {
+    context: *anyopaque,
+    /// Reads one admitted file fully into out; out.len is the per-call bound.
+    readFile: *const fn (*anyopaque, []const u8, []u8) anyerror!usize,
+    /// Writes every byte to an admitted path.
+    writeFile: *const fn (*anyopaque, []const u8, []const u8) anyerror!void,
+    /// JS-visible argv, already policy-bounded by the adapter.
+    args: []const []const u8 = &.{},
+};
+
 pub const Result = struct {
     failure: ?Error = null,
     context_reset: bool = false,
@@ -45,6 +59,9 @@ pub const Runtime = struct {
     control: policy.Control,
     engine: ?*Engine = null,
     sink: ?Sink = null,
+    host: ?Host = null,
+    host_buffer: ?[]u8 = null,
+    host_failure: ?[:0]const u8 = null,
     in_boundary: bool = false,
     in_poll: bool = false,
     c_failed: bool = false,
@@ -336,6 +353,126 @@ export fn qjs_native_emit(ptr: [*]const u8, bytes: usize, diagnostic: c_int) c_i
     }
     return @intFromBool(!self.checkpoint());
 }
+fn hostRefusal(self: *Runtime, name: [:0]const u8) void {
+    self.host_failure = name;
+}
+
+/// virelai.readFile returns text, not bytes: the same UTF-8 rule the engine
+/// applies to source. A refused byte names InvalidUtf8, never U+FFFD.
+fn hostUtf8(self: *Runtime, bytes: []const u8) ?anyerror {
+    var index: usize = 0;
+    while (index < bytes.len) {
+        if (index % 4096 == 0 and !self.checkpoint())
+            return self.control.failure orelse error.Cancelled;
+        const length = std.unicode.utf8ByteSequenceLength(bytes[index]) catch return error.InvalidUtf8;
+        if (length > bytes.len - index) return error.InvalidUtf8;
+        _ = std.unicode.utf8Decode(bytes[index .. index + length]) catch return error.InvalidUtf8;
+        index += length;
+    }
+    return null;
+}
+
+export fn qjs_native_host_read(path: [*]const u8, path_len: usize, out_len: *usize) ?[*]const u8 {
+    const self = current orelse return null;
+    self.host_failure = null;
+    const host = self.host orelse {
+        hostRefusal(self, "AccessDenied");
+        return null;
+    };
+    if (path_len > limits.host_path) {
+        hostRefusal(self, "PathLimit");
+        return null;
+    }
+    if (self.control.failure) |failure| {
+        hostRefusal(self, @errorName(failure));
+        return null;
+    }
+    if (self.host_buffer) |previous| {
+        self.host_buffer = null;
+        self.release(previous);
+    }
+    const buffer = self.allocate(limits.host_file) catch {
+        hostRefusal(self, "OutOfMemory");
+        return null;
+    };
+    const count = host.readFile(host.context, path[0..path_len], buffer) catch |err| {
+        self.release(buffer);
+        self.host_failure = @errorName(err);
+        return null;
+    };
+    std.debug.assert(count <= buffer.len);
+    if (hostUtf8(self, buffer[0..count])) |err| {
+        self.release(buffer);
+        self.host_failure = @errorName(err);
+        return null;
+    }
+    self.host_buffer = buffer;
+    out_len.* = count;
+    return buffer.ptr;
+}
+
+export fn qjs_native_host_write(path: [*]const u8, path_len: usize, data: [*]const u8, data_len: usize) c_int {
+    const self = current orelse return -1;
+    self.host_failure = null;
+    const host = self.host orelse {
+        hostRefusal(self, "AccessDenied");
+        return -1;
+    };
+    if (path_len > limits.host_path) {
+        hostRefusal(self, "PathLimit");
+        return -1;
+    }
+    if (data_len > limits.host_file) {
+        hostRefusal(self, "InputLimit");
+        return -1;
+    }
+    if (self.control.failure) |failure| {
+        hostRefusal(self, @errorName(failure));
+        return -1;
+    }
+    host.writeFile(host.context, path[0..path_len], data[0..data_len]) catch |err| {
+        self.host_failure = @errorName(err);
+        return -1;
+    };
+    if (!self.checkpoint()) {
+        self.host_failure = @errorName(self.control.failure orelse error.Cancelled);
+        return -1;
+    }
+    return 0;
+}
+
+export fn qjs_native_host_failure() ?[*:0]const u8 {
+    const self = current orelse return null;
+    const name = self.host_failure orelse return null;
+    return name.ptr;
+}
+
+export fn qjs_native_host_arg_count() usize {
+    const self = current orelse return 0;
+    const host = self.host orelse return 0;
+    return @min(host.args.len, 16);
+}
+
+export fn qjs_native_host_arg(index: usize, out: [*]u8, capacity: usize) c_int {
+    const self = current orelse return -1;
+    self.host_failure = null;
+    const host = self.host orelse {
+        hostRefusal(self, "AccessDenied");
+        return -1;
+    };
+    if (index >= host.args.len or index >= 16) {
+        hostRefusal(self, "ArgumentLimit");
+        return -1;
+    }
+    const entry = host.args[index];
+    if (entry.len > 255 or entry.len > capacity) {
+        hostRefusal(self, "ArgumentLimit");
+        return -1;
+    }
+    @memcpy(out[0..entry.len], entry);
+    return @intCast(entry.len);
+}
+
 export fn abort() noreturn {
     @import("hooks").invariant();
 }

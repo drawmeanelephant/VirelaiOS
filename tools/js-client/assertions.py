@@ -167,6 +167,16 @@ def check():
         assert "qjs: LineLimit" in text and output(frames) == b"42\n"
     if tag == "exists":
         assert (share / "EXISTS").read_bytes() == b"previous receipt is never replaced\n"
+    if tag == "virelai":
+        assert "ns-roundtrip:seed-42+wrote" in text and "ns-args:QJS.BIN|/host/VIRELAI.js" in text
+        assert (share / "NSOUT").read_bytes() == b"seed-42+wrote"
+        print("QJS-VIRELAI-NS: readFile/writeFile/args round-trip over the /host/ policy")
+    if tag == "virelai-refused":
+        for name in ("AccessDenied", "InvalidPath", "FileNotFound", "InputLimit",
+                     "PathLimit", "PathAlreadyExists"):
+            assert ("ns-refusal:" + name) in text, name
+        assert "ns-refusal-miss" not in text and "ns-refusals-done" in text
+        assert not (share / "OVER").exists() and not (share / "escape").exists()
     if tag == "bounds":
         assert text.count("stubs=5") == 3 and text.count("\n42\n") == 3
         print("QJS-BOUNDS: native policy checks, five stub latches and repeated complete teardown")
