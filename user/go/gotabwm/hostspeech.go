@@ -45,6 +45,9 @@ var (
 		if err != nil {
 			return nil, err.Error() == "ENOENT"
 		}
+		if items == nil {
+			items = []vi.DirItem{} // an empty snapshot is a listing, not a failure
+		}
 		return items, false
 	}
 	// hostspeechListFailed latches the listing-failure refusal so a
@@ -85,6 +88,14 @@ func hostspeechTick() {
 		return
 	}
 	hostspeechListFailed = false
+	// Foreign-name eviction (#3387): SAY/ holds markers only — there is
+	// no payload file shape — so anything that is not a SAY-<8hex> marker
+	// or a publish temp deletes on sight, one bounded sweep per tick.
+	if laneSweep(items, func(it vi.DirItem) bool {
+		return speech.IsSayName(it.Name)
+	}, hostspeechDeleteFile) > 0 {
+		eng.RefuseLane(hostint.TagSpeak, hostint.RefuseNameRejected)
+	}
 	// Name-ordered scan, mirroring the engine's own ordering.
 	var names []string
 	for _, it := range items {

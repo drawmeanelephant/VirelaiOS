@@ -14,12 +14,12 @@ var testKey = []byte(strings.Repeat("a5", 32))
 // fakeDir is an in-memory lane directory: files map name -> bytes, and it
 // records deletes + logs so a test asserts the whole disposition.
 type fakeDir struct {
-	files    map[string][]byte
-	absent   bool
-	listErr  bool // a real channel failure — (nil, false), not the absent case
-	readErr  map[string]bool // listed-but-unreadable files (Read rc < 0)
-	logs     []string
-	consumed []Record
+	files           map[string][]byte
+	absent          bool
+	listErr         bool            // a real channel failure — (nil, false), not the absent case
+	readErr         map[string]bool // listed-but-unreadable files (Read rc < 0)
+	logs            []string
+	consumed        []Record
 	consumedReasons []string
 }
 
@@ -537,9 +537,10 @@ func TestEngineAbsentDirIsSilent(t *testing.T) {
 func TestEngineIOErrLatchEvictsDeadNames(t *testing.T) {
 	d := &fakeDir{files: map[string][]byte{}, readErr: map[string]bool{}}
 	e := d.engine()
-	// A foreign file keeps the listing non-empty (fakeDir's nil list is
-	// a channel failure, not an empty dir).
-	d.files["KEEP.TXT"] = []byte("x")
+	// A publish-temp name keeps the listing non-empty (fakeDir's nil
+	// list is a channel failure, not an empty dir) — and a '~' row is
+	// never evicted, so it survives the sweep.
+	d.files["KEEP~"] = []byte("x")
 	d.plant(TagClipIn, 0, 1, 7, []byte("x"))
 	d.readErr["CLIPIN-00000001"] = true
 	e.Poll()
@@ -579,5 +580,67 @@ func TestEngineIOErrLatchIsBounded(t *testing.T) {
 	}
 	if got := d.countLog("reason=io_error"); got != ioErrLatchCap+4 {
 		t.Fatalf("first-failure markers %d want %d", got, ioErrLatchCap+4)
+	}
+}
+
+// #3387 (audit R5 F1): a foreign name that can never be a lane artifact
+// (not a record, not a '~' publish temp) is evicted on sight and named
+// once per sweep — bounded per Poll so a directory of them drains
+// without stalling the seat.
+func TestEngineEvictsForeignNames(t *testing.T) {
+	d := &fakeDir{files: map[string][]byte{}, readErr: map[string]bool{}}
+	e := d.engine()
+	// A >31-byte poison name (the listing killer of old), a bad-charset
+	// name, a non-record plain name, a dir-shaped foreign row, a live
+	// publish temp, and one real record all sit together.
+	d.files["AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA.BIN"] = []byte("x")
+	d.files["evil;name"] = []byte("x")
+	d.files["KEEP.TXT"] = []byte("x")
+	d.files["REQ-00000001~"] = []byte("x")
+	d.plant(TagArmed, 0, 1, 7, []byte{LaneClip})
+	e.Poll()
+	for _, gone := range []string{
+		"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA.BIN", "evil;name", "KEEP.TXT",
+	} {
+		if _, ok := d.files[gone]; ok {
+			t.Fatalf("foreign name %q survived the sweep", gone)
+		}
+	}
+	if _, ok := d.files["REQ-00000001~"]; !ok {
+		t.Fatal("a live publish temp was evicted")
+	}
+	if !d.hasLog("reason=name_rejected") {
+		t.Fatalf("sweep unnamed; logs=%v", d.logs)
+	}
+	// The record still processed — the plant never pinned anything.
+	if !e.Armed() {
+		t.Fatal("ARMED was not adopted beside foreign names")
+	}
+}
+
+// The sweep is bounded: a directory of foreign names drains evictPerTick
+// per Poll, not all at once and never none.
+func TestEngineEvictIsBounded(t *testing.T) {
+	d := &fakeDir{files: map[string][]byte{}, readErr: map[string]bool{}}
+	e := d.engine()
+	for i := 0; i < evictPerTick+4; i++ {
+		name := "BADNAME" + string(rune('A'+i)) + string(rune('a'+i))
+		d.files[name] = []byte("x")
+	}
+	e.Poll()
+	left := 0
+	for name := range d.files {
+		if _, _, ok := ParseName(name); !ok && name[len(name)-1] != '~' {
+			left++
+		}
+	}
+	if left != 4 {
+		t.Fatalf("foreign names left %d want 4 after one bounded sweep", left)
+	}
+	e.Poll()
+	for name := range d.files {
+		if _, _, ok := ParseName(name); !ok && name[len(name)-1] != '~' {
+			t.Fatalf("foreign name %q survived a second sweep", name)
+		}
 	}
 }

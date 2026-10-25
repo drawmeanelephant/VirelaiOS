@@ -46,6 +46,9 @@ var (
 			// The errno error's name, the way agentwatch branches on it.
 			return nil, err.Error() == "ENOENT"
 		}
+		if items == nil {
+			items = []vi.DirItem{} // an empty snapshot is a listing, not a failure
+		}
 		return items, false
 	}
 	// hostoutboxListFailed latches the listing-failure refusal so a
@@ -85,6 +88,16 @@ func hostoutboxTick() {
 		return
 	}
 	hostoutboxListFailed = false
+	// Foreign-name eviction (#3387): an entry that is neither a REQ
+	// marker nor a lawful payload name can never be signed, so it
+	// deletes on sight — one bounded sweep per tick, one refusal per
+	// sweep. A D4-valid unmarked file stays (it may be a payload whose
+	// REQ is still in flight; inert either way).
+	if laneSweep(items, func(it vi.DirItem) bool {
+		return outbox.IsReqName(it.Name) || outbox.NameValid(it.Name)
+	}, hostoutboxDeleteFile) > 0 {
+		eng.RefuseLane(hostint.TagOutbox, hostint.RefuseNameRejected)
+	}
 	// Name-ordered scan, mirroring the engine's own ordering. Payloads
 	// are looked up in the same listing the REQs came from; directories
 	// join the map too so a dir payload is unsupported_kind, not gone.
