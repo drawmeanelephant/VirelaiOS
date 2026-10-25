@@ -42,6 +42,26 @@ def prepare(rd):
     (share / "STRING.js").write_text("print('x'.repeat(32768).split('').length);\n")
     (share / "CONVERT.js").write_text("print({toString(){for(;;){}}});\n")
     (share / "EXISTS").write_bytes(b"previous receipt is never replaced\n")
+    # M200c (ADR 0039 amendment): virelai.* legs — a real seed file, an
+    # over-bound file and the two scripts that round-trip / refuse by name.
+    (share / "NSIN").write_bytes(b"seed-42")
+    (share / "NSBIG").write_bytes(b"x" * 262145)
+    (share / "VIRELAI.js").write_text(
+        "print('ns-args:' + virelai.args.join('|'));\n"
+        "virelai.writeFile('/host/NSOUT', virelai.readFile('/host/NSIN') + '+wrote');\n"
+        "print('ns-roundtrip:' + virelai.readFile('/host/NSOUT'));\n")
+    (share / "NSREF.js").write_text(
+        "for (const f of [\n"
+        "  () => virelai.readFile('/dev/tty'),\n"
+        "  () => virelai.readFile('/host/../escape'),\n"
+        "  () => virelai.readFile('/host/MISSING'),\n"
+        "  () => virelai.readFile('/host/NSBIG'),\n"
+        "  () => virelai.readFile('/host/' + 'x'.repeat(96)),\n"
+        "  () => virelai.writeFile('/etc/nope', 'x'),\n"
+        "  () => virelai.writeFile('/host/NSIN', 'x'),\n"
+        "  () => virelai.writeFile('/host/OVER', 'x'.repeat(262145)),\n"
+        "]) { try { f(); print('ns-refusal-miss'); } catch (e) { print('ns-refusal:' + e.name); } }\n"
+        "print('ns-refusals-done');\n")
     # No-follow access refusal is independent of guest/host uid or chmod interpretation.
     (share / "DENIED.js").symlink_to("FILE.js")
     (rd / "line-input.txt").write_bytes(b" " * 4093 + b"7*6\n:quit\n")
@@ -66,6 +86,8 @@ def prepare(rd):
         "diagnostics": "--repl --receipt=/host/DIAG.R",
         "idle": "--repl --receipt=/host/IDLE.R",
         "usage": "",
+        "virelai": "/host/VIRELAI.js",
+        "virelai-refused": "/host/NSREF.js",
     }
     for tag, args in commands.items():
         (rd / (tag + ".txt")).write_text("pages\nexec QJS.BIN " + args + "\n")

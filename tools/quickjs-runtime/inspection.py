@@ -12,6 +12,8 @@ PRIVATE = {
     "qjs_native_checkpoint", "qjs_native_emit", "qjs_native_hosted_diagnostic",
     "qjs_native_out_of_memory", "qjs_native_stack_failure", "qjs_native_step",
     "qjs_native_unsupported_feature", "qjs_native_refuse_feature",
+    "qjs_native_host_read", "qjs_native_host_write", "qjs_native_host_failure",
+    "qjs_native_host_arg", "qjs_native_host_arg_count",
     "qjs_guard_save", "qjs_guard_restore", "qjs_guard_enter", "qjs_guard_leave",
     "qjs_guard_high_water",
     "qjs_native_checked_alloca_size",

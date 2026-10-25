@@ -24,6 +24,74 @@ pub const Harness = struct {
     runtime: ?*qjs.Runtime = null,
     force_work_limit: bool = false,
     arm_on_output: bool = false,
+    host_names: [8][64]u8 = undefined,
+    host_datas: [8][4096]u8 = undefined,
+    host_files: [8]HostFile = @splat(.{}),
+
+    /// The fixture's adapter-free stand-in for the product host: the same
+    /// /host/ path rules policy.zig enforces on the product, a fixed file
+    /// table and a launch argv. `declared` is the virtual size so an
+    /// over-bound file need not store its bytes.
+    const HostFile = struct { name_len: usize = 0, data_len: usize = 0, declared: usize = 0 };
+
+    fn hostPath(path: []const u8) !void {
+        if (!std.mem.startsWith(u8, path, "/host/")) return error.AccessDenied;
+        if (path.len > 64) return error.PathLimit;
+        if (std.mem.indexOfAny(u8, path, "\x00\\:") != null) return error.InvalidPath;
+        var parts = std.mem.splitScalar(u8, path[6..], '/');
+        while (parts.next()) |part| {
+            if (part.len == 0 or std.mem.eql(u8, part, ".") or std.mem.eql(u8, part, ".."))
+                return error.InvalidPath;
+            if (part.len > 31) return error.PathLimit;
+        }
+    }
+
+    fn hostRead(context: *anyopaque, path: []const u8, out: []u8) !usize {
+        const self: *Harness = @ptrCast(@alignCast(context));
+        try hostPath(path);
+        for (&self.host_files, 0..) |*entry, i| {
+            if (entry.name_len == 0) continue;
+            if (!std.mem.eql(u8, self.host_names[i][0..entry.name_len], path)) continue;
+            if (entry.declared > out.len) return error.InputLimit;
+            @memcpy(out[0..entry.data_len], self.host_datas[i][0..entry.data_len]);
+            return entry.data_len;
+        }
+        return error.FileNotFound;
+    }
+
+    fn hostWrite(context: *anyopaque, path: []const u8, data: []const u8) !void {
+        const self: *Harness = @ptrCast(@alignCast(context));
+        try hostPath(path);
+        for (&self.host_files, 0..) |*entry, i| {
+            if (entry.name_len != 0 and std.mem.eql(u8, self.host_names[i][0..entry.name_len], path))
+                return error.PathAlreadyExists;
+        }
+        for (&self.host_files, 0..) |*entry, i| {
+            if (entry.name_len != 0) continue;
+            if (data.len > self.host_datas[i].len) return error.WriteFailed;
+            @memcpy(self.host_names[i][0..path.len], path);
+            @memcpy(self.host_datas[i][0..data.len], data);
+            entry.* = .{ .name_len = path.len, .data_len = data.len, .declared = data.len };
+            return;
+        }
+        return error.WriteFailed;
+    }
+
+    pub fn host(self: *Harness) qjs.Host {
+        return .{ .context = self, .readFile = hostRead, .writeFile = hostWrite, .args = &.{ "QJS.BIN", "/host/T.js" } };
+    }
+
+    fn hostSeed(self: *Harness, path: []const u8, data: []const u8, declared: usize) !void {
+        try hostPath(path);
+        for (&self.host_files, 0..) |*entry, i| {
+            if (entry.name_len != 0) continue;
+            @memcpy(self.host_names[i][0..path.len], path);
+            @memcpy(self.host_datas[i][0..data.len], data);
+            entry.* = .{ .name_len = path.len, .data_len = data.len, .declared = declared };
+            return;
+        }
+        return error.WriteFailed;
+    }
 
     pub fn clock(self: *Harness) qjs.Clock {
         return .{ .context = self, .frequency = self.frequency, .counter = count };
@@ -100,6 +168,9 @@ pub fn run(arena: memory.Arena) !void {
     harness.* = .{};
     const runtime = try qjs.Runtime.create(arena, harness.clock());
     harness.runtime = runtime;
+    runtime.host = harness.host();
+    try harness.hostSeed("/host/IN.txt", "seed 42", 7);
+    try harness.hostSeed("/host/BIG", "", qjs.limits.host_file + 1);
     defer runtime.destroy() catch @panic("fixture teardown failed");
     const second = qjs.Runtime.create(arena, harness.clock());
     if (second) |_| return error.ContextLimitMissing else |err| try require(err == error.ContextLimit);
@@ -192,6 +263,30 @@ pub fn run(arena: memory.Arena) !void {
         "write",   "fetch",   "WebSocket",         "setTimeout",           "performance", "document",
         "window",
     }) |name| try success(runtime, harness, "typeof " ++ name, "undefined\n");
+
+    // ADR 0039 amendment (M200c): the fs/read/write pins above stay refused
+    // as GLOBALS — the only file/argv surface is the virelai namespace
+    // object, pinned here by name. Refusals are catchable JS exceptions
+    // whose name is the host's refusal verbatim; the context stays usable.
+    try success(runtime, harness, "typeof virelai + ':' + typeof virelai.readFile + ':' + typeof virelai.writeFile", "object:function:function\n");
+    try success(runtime, harness, "Array.isArray(virelai.args) + ':' + virelai.args.join('|')", "true:QJS.BIN|/host/T.js\n");
+    try success(runtime, harness, "virelai.readFile('/host/IN.txt')", "seed 42\n");
+    try success(runtime, harness, "virelai.writeFile('/host/OUT.txt', 'first ' + 21 * 2); virelai.readFile('/host/OUT.txt')", "first 42\n");
+    inline for (.{
+        .{ "try{virelai.readFile('/dev/tty')}catch(e){e.name}", "AccessDenied" },
+        .{ "try{virelai.readFile('/host/../escape')}catch(e){e.name}", "InvalidPath" },
+        .{ "try{virelai.readFile('/host/MISSING')}catch(e){e.name}", "FileNotFound" },
+        .{ "try{virelai.readFile('/host/BIG')}catch(e){e.name}", "InputLimit" },
+        .{ "try{virelai.readFile('/host/'+'x'.repeat(96))}catch(e){e.name}", "PathLimit" },
+        .{ "try{virelai.writeFile('/etc/nope','x')}catch(e){e.name}", "AccessDenied" },
+        .{ "try{virelai.writeFile('/host/IN.txt','x')}catch(e){e.name}", "PathAlreadyExists" },
+        .{ "try{virelai.writeFile('/host/OVER','x'.repeat(262145))}catch(e){e.name}", "InputLimit" },
+    }) |case| try success(runtime, harness, case[0], case[1] ++ "\n");
+    try success(runtime, harness, "6*7", "42\n");
+    harness.clear();
+    result = try runtime.eval("virelai.readFile('/dev/tty')", "contract.js", harness.sink(), true);
+    try require(result.failure != null and result.failure.? == error.JSException and !result.context_reset);
+    try success(runtime, harness, "6*7", "42\n");
 
     harness.clear();
     harness.step = 100_000;

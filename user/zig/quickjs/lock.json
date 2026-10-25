@@ -18,7 +18,7 @@
  "private_inputs": {
   "tools/quickjs-runtime/build.py": "a99745f3196ca48d53162f625187c4a7a76220bbcf40976d26bc6d679028a1aa",
   "tools/quickjs-runtime/check.py": "4f3639edb32d65935de07aa63a393bea6d9ed1dc93b2d2ff19b03bdc56c421a8",
-  "tools/quickjs-runtime/inspection.py": "98a9b9cc999e133af787f8ce12cdd5270284e20dfc35abf8a6715be16582ec5c",
+  "tools/quickjs-runtime/inspection.py": "84ab6dfdbd0e2a48483caae6dedfdcc69a234042334f6a3fa30621a1a1ee89b1",
   "tools/quickjs-runtime/materialize.py": "aecd756d2ba85ad159942836eac4979e6aa7de408f5c9eb41d19fa5355d4e6f9",
   "tools/quickjs-runtime/math_library.py": "77df512b394fcb4364abe3cd49cc0f91d0df35c96f706787e8cdd7cba72f3a1e",
   "tools/quickjs-runtime/pin.py": "06161b88e4bed721e56d16199d728d439bc1a266ecf476d28e000c5ca30ca345",
@@ -27,13 +27,13 @@
   "tools/quickjs-runtime/test_safety.py": "2618b1d5421c14eca5fac9e9f7bac466e7e35ba7ed4a28042773a1139cb82581",
   "user/zig/quickjs/allocator.zig": "94cae209a943aaec4946f0f6ac100fd977f8181b4aba9cf933e9406239c986fd",
   "user/zig/quickjs/arena_alias.zig": "b281a93be6391729c9ae4c70f1a1ac283a63c9fe43b623ed19b7758038ebad10",
-  "user/zig/quickjs/binding.c": "6beb38a9a65727b04bb9c64bf8dac1bd206e76ba794f7b85401804fd8f4735c4",
+  "user/zig/quickjs/binding.c": "fef1ef4210c18024f4650ab716e160cc1b6069c1537c1b011047a082648b0490",
   "user/zig/quickjs/bytes.c": "92d641520cbbb891b4eb1eb359a54edc9a1a820802b0bd9aefa35d713cf349a1",
   "user/zig/quickjs/bytes_fixture.c": "804ad464b525266d9b18b1af31355451d20ba5dc0ad82c35e418b49457cdc280",
   "user/zig/quickjs/bytes_test.zig": "3f42eb12f84d7a98a0685646741636a570d5c1e960907c20f3dfd9e7348d29ee",
   "user/zig/quickjs/clock.zig": "7c0c302fe1d43b7de64fe729ca27ea94ccf2f8eb1171381d634673d7db0669bd",
-  "user/zig/quickjs/contract.zig": "6219e8468dd6aab58976e8f4df68ee73a700ad2930866b5f4bcb8d5cd8d6aca8",
-  "user/zig/quickjs/control.zig": "4151d9a6794ca631133b03aed7e7c57607a2dea34c73429c33bc5a9c447e3f6c",
+  "user/zig/quickjs/contract.zig": "b4ea1770077527a6b01d107e6bb1532efb4393cdb15c75dabbfc8d2e18952ba4",
+  "user/zig/quickjs/control.zig": "db0eb1e8ba8f8925f1ffa6827e1677862acefb45732ff1662c71206e9a304f77",
   "user/zig/quickjs/fatal_fixture.zig": "38f9669502f8a2d795825b88a6c53a9af2f2dc32b973b63a2f471a1785669d25",
   "user/zig/quickjs/fatal_probe.c": "2330cad217f3b9982240ca06ff3741d6fd35bf242fe8d65e03d5f8507721c150",
   "user/zig/quickjs/format.c": "75f363fc59a9f154fa6be553788ff89ab5c3cd93835287bd83f7788bb74cf4c7",
@@ -45,7 +45,7 @@
   "user/zig/quickjs/headers/guard.h": "678c441037e971e333f997ffcaa7de2b753d819bbbe6e3bf2dd6c1209a036a12",
   "user/zig/quickjs/headers/inttypes.h": "db1fb228cdfbc0031d6d8d88cac4b03e0d3629d3f41157f4f0b9d00bec815021",
   "user/zig/quickjs/headers/math.h": "eb37bd5a30569c9b102f26076a6b2e3c3a265b897929349b28fb12e44150194b",
-  "user/zig/quickjs/headers/native-boundary.h": "99baeff24964374de307f76bdd14139ba59cd923af43f99d42af82e35e3a39b2",
+  "user/zig/quickjs/headers/native-boundary.h": "a7eeadbdbde872d9841907233e12d12c2c9249fbf252510a0c2f1184106e2b45",
   "user/zig/quickjs/headers/stdio.h": "87c6d4bdfd3c99d198bf753224ac5e544930597648dbde63d923a60c3043d2cb",
   "user/zig/quickjs/headers/stdlib.h": "f797d4e68d938085b9b542eb3e2b21d66d1a0c6236966e1328d73343e6dd64e3",
   "user/zig/quickjs/headers/string.h": "d1b64ee71c5c0baa9786feeb3fb7a2709f42e34bc49964c79af937fff322b370",
@@ -56,7 +56,7 @@
   "user/zig/quickjs/math_test.zig": "c52dbd4baed0f349c681a21bb756ae6dc28f1a20ff362b060379625aecf1d48d",
   "user/zig/quickjs/native_fixture.zig": "8750dfba4f08e63492345e3cdfb4dc384f13b3e87de3e5222c9132c82720b5c2",
   "user/zig/quickjs/native_hooks.zig": "55054407be33b0a8b66ca4847aa48d0f5e70ff69c626a64ac4024ce60ef2497d",
-  "user/zig/quickjs/runtime.zig": "f4520ba647992bbeb1593879d03e36291296a170770937c2226d8c890cbfd12d"
+  "user/zig/quickjs/runtime.zig": "031fb907b8665f1119fda9787a120abbb7fedc0ac1c924eb7e0f16d90b9d7326"
  },
  "schema": 1,
  "sdk": {

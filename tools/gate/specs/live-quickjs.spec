@@ -9,7 +9,7 @@ vgate_name live-quickjs "ADR 0039 file, interactive, refusal, bounds and cold/cl
 vgate_share arm-virtiofs
 vgate_runner_flags -Xswiftc -DSPIKE
 vgate_fmt user/src/quickjs.zig tools/js-client/*.zig
-vgate_note "QJS-FILE-EVAL QJS-INTERACTIVE-EVAL QJS-REFUSALS QJS-BOUNDS QJS-COLD-AND-CLEANUP QJS-STAGED"
+vgate_note "QJS-FILE-EVAL QJS-INTERACTIVE-EVAL QJS-REFUSALS QJS-BOUNDS QJS-COLD-AND-CLEANUP QJS-STAGED QJS-VIRELAI-NS"
 
 vgate_setup_python <<'PY'
 import os, pathlib, sys
@@ -105,6 +105,10 @@ vgate_run usage --from-checkpoint qjs -- --script '$RUN_DIR/usage.txt' --script-
 # M200a: a warm boot on the session share — exec the binary session.sh
 # staged on a script that lives beside it, output + receipt on /host.
 vgate_run staged --from-checkpoint qjs -- --script '$RUN_DIR/staged.txt' --script-after 'tasks user-el0 reaped' --script2 '$RUN_DIR/after.txt' --script2-after 'tasks user-exec reaped' --script-expect 'qjs-gate-done' --timeout 90
+# M200c (issue #3434, ADR 0039 amendment): the virelai namespace on a real
+# share — readFile/writeFile round-trip, args, and every named refusal.
+vgate_run virelai --from-checkpoint qjs -- --script '$RUN_DIR/virelai.txt' --script-after 'tasks user-el0 reaped' --script2 '$RUN_DIR/after.txt' --script2-after 'tasks user-exec reaped' --script-expect 'qjs-gate-done' --timeout 90
+vgate_run virelai-refused --from-checkpoint qjs -- --script '$RUN_DIR/virelai-refused.txt' --script-after 'tasks user-el0 reaped' --script2 '$RUN_DIR/after.txt' --script2-after 'tasks user-exec reaped' --script-expect 'qjs-gate-done' --timeout 90
 
 vgate_assert file serial-contains 'procs QJS.BIN exited status=0'
 vgate_assert refused serial-contains 'procs QJS.BIN exited status=0'
@@ -131,6 +135,19 @@ vgate_assert idle serial-contains 'qjs: IdleLimit'
 vgate_assert usage serial-exact 'Usage' 1
 vgate_assert staged serial-contains 'qjs-session-staged'
 vgate_assert staged serial-contains 'procs QJS.BIN exited status=0'
+vgate_assert virelai serial-contains 'ns-args:QJS.BIN|/host/VIRELAI.js'
+vgate_assert virelai serial-contains 'ns-roundtrip:seed-42+wrote'
+vgate_assert virelai serial-contains 'procs QJS.BIN exited status=0'
+vgate_assert virelai share-equals NSOUT 'seed-42+wrote'
+vgate_assert virelai-refused serial-contains 'ns-refusal:AccessDenied'
+vgate_assert virelai-refused serial-contains 'ns-refusal:InvalidPath'
+vgate_assert virelai-refused serial-contains 'ns-refusal:FileNotFound'
+vgate_assert virelai-refused serial-contains 'ns-refusal:InputLimit'
+vgate_assert virelai-refused serial-contains 'ns-refusal:PathLimit'
+vgate_assert virelai-refused serial-contains 'ns-refusal:PathAlreadyExists'
+vgate_assert virelai-refused serial-absent 'ns-refusal-miss'
+vgate_assert virelai-refused serial-contains 'ns-refusals-done'
+vgate_assert virelai-refused serial-contains 'procs QJS.BIN exited status=0'
 
 vgate_assert file python <<'PY'
 import os, runpy
@@ -225,6 +242,14 @@ import os, runpy
 runpy.run_path(os.path.join(os.environ["RUN_DIR"], "check.py"))
 PY
 vgate_assert staged python <<'PY'
+import os, runpy
+runpy.run_path(os.path.join(os.environ["RUN_DIR"], "check.py"))
+PY
+vgate_assert virelai python <<'PY'
+import os, runpy
+runpy.run_path(os.path.join(os.environ["RUN_DIR"], "check.py"))
+PY
+vgate_assert virelai-refused python <<'PY'
 import os, runpy
 runpy.run_path(os.path.join(os.environ["RUN_DIR"], "check.py"))
 PY
