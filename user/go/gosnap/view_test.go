@@ -4,8 +4,11 @@ import (
 	"errors"
 	"testing"
 
+	"virelai/art"
+	"virelai/draw"
 	"virelai/tabapp"
 	"virelai/vi"
+	"virelai/widgets"
 )
 
 // view_test.go — M120d (#2561): class-A tests for the windowed face's
@@ -549,5 +552,77 @@ func TestApplyRestored(t *testing.T) {
 	}
 	if v3.sel != -1 || v3.field.Value() != "" {
 		t.Fatalf("a refused blob still applied: sel %d field %q", v3.sel, v3.field.Value())
+	}
+}
+
+// #3348 (#1250): the save confirmation stands the staged celebrate pose
+// at the status band's left, the text yielding it the room — an absent
+// asset or any other status keeps the text-only band.
+func TestSavedStatusStandsCelebratePose(t *testing.T) {
+	f := &fakeEnv{}
+	f.install(t)
+	art.Reset()
+	defer art.Reset()
+	saved := savedMascotShown
+	savedMascotShown = false
+	defer func() { savedMascotShown = saved }()
+
+	const mrgb = 0xff224466
+	pix := make([]uint32, 16)
+	for i := range pix {
+		pix[i] = mrgb
+	}
+	art.Stage(art.MascotCelebrate, &draw.BufferCanvas{Pix: pix, W: 4, H: 4})
+
+	// The predicate rides the real save path: only the "saved" verdict is
+	// the confirmation — the relist's own status and every other line
+	// keep the plain band.
+	v := newTestView()
+	v.field.SetValue("BASE")
+	v.save()
+	if !v.statusSaved() || v.status != "BASE saved" {
+		t.Fatalf("status = %q, want the save confirmation", v.status)
+	}
+	v.status = "snapshot list changed"
+	if v.statusSaved() {
+		t.Fatal("a non-save status claimed the pose")
+	}
+	v.status = "BASE saved"
+
+	buf := make([]byte, 200*40*4)
+	c, err := draw.BytesCanvas(buf, 200, 40)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := widgets.Rect{X: 12, Y: 8, W: 176, H: 30}
+	got := statusArtYield(c, r, v.statusSaved())
+	// s = 30-4 = 26: the pose paints 26px at the band's left edge,
+	// centred vertically (Y 10..36), the text yielding s+8 = 34px.
+	if got.X != r.X+34 || got.W != r.W-34 || got.Y != r.Y || got.H != r.H {
+		t.Fatalf("yielded rect = %+v", got)
+	}
+	if px := c.Pix[(10+13)*200+12+13]; px != mrgb {
+		t.Fatalf("pose pixel = %#08x, want %#08x", px, mrgb)
+	}
+	if !savedMascotShown || !f.has("gosnap: saved mascot qoi 4x4") {
+		t.Fatalf("decode receipt missing: shown=%v logs=%v", savedMascotShown, f.logs)
+	}
+
+	// The degrade contract: a non-save status returns the band unchanged;
+	// an absent asset neither moves the band nor paints.
+	if got := statusArtYield(c, r, false); got != r {
+		t.Fatalf("non-save status moved the band: %+v", got)
+	}
+	art.Reset()
+	buf2 := make([]byte, 200*40*4)
+	c2, err := draw.BytesCanvas(buf2, 200, 40)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := statusArtYield(c2, r, true); got != r {
+		t.Fatalf("absent asset moved the band: %+v", got)
+	}
+	if c2.Pix[(10+13)*200+12+13] == mrgb {
+		t.Fatal("an absent asset still painted the pose")
 	}
 }

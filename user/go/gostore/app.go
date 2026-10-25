@@ -139,6 +139,12 @@ func (a *app) firstActionable() int {
 	return 0
 }
 
+// installDone reports whether the standing status line is a completed
+// install's verdict — the one line the staged celebrate pose dresses
+// (#3348). runOp's `<verb> rc=<n>` shape makes the match exact: only a
+// successful install produces it.
+func (a *app) installDone() bool { return a.status == "install rc=0" }
+
 // target is the op argument for the selected row: a release's installed
 // name when the card exists, else the stream name — store.Update/
 // Rollback/Remove normalize or refuse it by name either way.

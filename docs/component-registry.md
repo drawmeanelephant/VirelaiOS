@@ -240,7 +240,7 @@ binaries, so the binary column stays `—`.
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
 | Cursor set (10 masks + ship hotspots — arrow paints; context selection is #3348 b) | asset | — | ver 1.0.0 | tools/art/adopt.py, image/art/cursors/MASKS.TXT, image/art/ART.TXT, tools/art/mkcursormask.py | staged |
-| Mascot poses (wave + locked paint via GOWELCOME/lock curtain; slep/thnk/celb/oops unwired) | asset | — | ver 1.0.0 | tools/art/adopt.py, image/art/ART.TXT | staged |
+| Mascot poses (six — wave GOWELCOME, locked curtain, sleep idle-dim veil, oops ErrorBanner/crash offer, think live progress rows, celebrate GOSNAP saved + GOSTORE install verdicts) | asset | — | ver 1.0.0 | tools/art/adopt.py, image/art/ART.TXT | staged |
 | Spot icons (doc + nres paint via EmptyState.Spot; six unwired — see #3348) | asset | — | ver 1.0.0 | tools/art/adopt.py, image/art/ART.TXT | staged |
 | Spinner sheets (arc + mascot — unwired; no spinner widget yet) | asset | — | ver 1.0.0 | tools/art/adopt.py, image/art/ART.TXT | staged |
 | Boot plate (plt + emb — unwired; kernel render_splash cannot read /host) | asset | — | ver 1.0.0 | tools/art/adopt.py, image/art/ART.TXT | staged |

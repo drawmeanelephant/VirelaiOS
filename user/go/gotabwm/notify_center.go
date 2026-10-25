@@ -306,7 +306,7 @@ func notifyCenterClick(px, py uint32) bool {
 			// "Cancel" (the wider notifyProgressCancelW zone), not the
 			// plain dismiss X. A done row or one whose source is gone
 			// has nothing left to cancel — plain dismiss.
-			if entry.progress && !entry.progressDone() && !entry.sourceGone {
+			if entry.progressBusy() {
 				if pxi >= x+w-notifyProgressCancelW {
 					notifyProgressCancel(index)
 					return true
@@ -454,6 +454,16 @@ func paintNotifyCenter(scan []byte, width, height int) int {
 				X: textX, Y: rowY + 3, W: notifyRowH - 6, H: notifyRowH - 6}) {
 			textX += notifyRowH - 6 + 6
 		}
+		// #3348 (#1250): a live progress row — the seat's busy surface —
+		// stands the staged think pose at its left on the same contract;
+		// the source, label and bar all yield it the room. The pose drops
+		// with the operation: a done row or a dead source keeps the
+		// pre-card layout.
+		if entry.progressBusy() &&
+			busyMascotPaint(c, widgets.Rect{
+				X: textX, Y: rowY + 3, W: notifyRowH - 6, H: notifyRowH - 6}) {
+			textX += notifyRowH - 6 + 6
+		}
 		seatText(c, clip, textX, rowY+2, seatTextPx,
 			centerText(source, 48), fg)
 		if entry.progress {
@@ -461,13 +471,15 @@ func paintNotifyCenter(scan []byte, width, height int) int {
 			if entry.pct >= 0 {
 				label = label + " " + vi.Itoa64(int64(entry.pct)) + "%"
 			}
-			seatText(c, clip, x+notifyCenterPad, rowY+16, seatTextPx,
+			seatText(c, clip, textX, rowY+16, seatTextPx,
 				centerText(label, 48), tok.InkMuted)
 			// The bar: accent fill for the reported fraction, or the
 			// sweeping segment while the total is unknown (seatTick
-			// drives it at the seat's own 1 Hz cadence).
-			barW := w - 2*notifyCenterPad - notifyProgressCancelW - notifyCenterPad
-			bar := widgets.Rect{X: x + notifyCenterPad, Y: rowY + 27, W: barW, H: 4}
+			// drives it at the seat's own 1 Hz cadence). The track's
+			// left edge is the row's text edge — a yielded mark narrows
+			// the track; the right edge and the Cancel zone never move.
+			bar := widgets.Rect{X: textX, Y: rowY + 27,
+				W: x + w - 2*notifyCenterPad - notifyProgressCancelW - textX, H: 4}
 			written += seatFill(c, bar, tok.Rule)
 			if entry.pct >= 0 {
 				written += seatFill(c, widgets.Rect{X: bar.X, Y: bar.Y,
@@ -491,7 +503,7 @@ func paintNotifyCenter(scan []byte, width, height int) int {
 				written += seatFill(c, widgets.Rect{X: bar.X + off, Y: bar.Y,
 					W: seg, H: bar.H}, tok.Accent)
 			}
-			if !entry.progressDone() && !entry.sourceGone {
+			if entry.progressBusy() {
 				seatText(c, clip, x+w-notifyProgressCancelW+4, rowY+13,
 					seatTextPx, "Cancel", tok.Muted)
 			} else {

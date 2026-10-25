@@ -1997,6 +1997,10 @@ vgate_assert 16 serial-contains 'goprogress: progress sent op=1'
 vgate_assert 16 serial-absent 'goprogress: FAIL'
 vgate_assert 16 serial-contains 'gotabwm: notify progress id='
 vgate_assert 16 serial-contains 'gotabwm: notify center open'
+# #3348: the live row's first paint stands the staged think pose — the
+# decode receipt lands between the open and the Cancel click (the
+# pointer batch's per-click pacing leaves composite ticks between them).
+vgate_assert 16 serial-contains 'gotabwm: busy mascot qoi 64x64'
 vgate_assert 16 serial-contains 'gotabwm: notify progress cancel id='
 vgate_assert 16 serial-contains ' op=1 sent=1'
 vgate_assert 16 serial-contains 'goprogress: progress cancel op=1'

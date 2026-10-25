@@ -305,3 +305,59 @@ func TestCrashOfferRowPaintsMascot(t *testing.T) {
 		t.Fatal("the mascot decode marker never latched")
 	}
 }
+
+// #3348 (#1250): a live progress row — the seat's busy surface — carries
+// the staged think pose at its left, the label and bar yielding it the
+// room. The pose drops with the operation: a pct-100 row keeps the
+// pre-card layout, and an absent asset never paints.
+func TestProgressRowPaintsBusyMascot(t *testing.T) {
+	resetNotify(t)
+	art.Reset()
+	defer art.Reset()
+	saved := busyMascotShown
+	busyMascotShown = false
+	defer func() { busyMascotShown = saved }()
+
+	pix := make([]uint32, 16)
+	for i := range pix {
+		pix[i] = 0xff335577
+	}
+	art.Stage(art.MascotThink, &draw.BufferCanvas{Pix: pix, W: 4, H: 4})
+	notifyProgressUpdate(3, 9, 1, 40, "Copying")
+	notifyCenterOpen = true
+	const w, h = 800, 600
+	scan := make([]byte, w*h*4)
+	if paintNotifyCenter(scan, w, h) == 0 {
+		t.Fatal("open centre painted no pixels")
+	}
+	px := asUint32(scan)
+	x, y, _, _ := notifyCenterRect(w, h)
+	rowY := y + notifyHeaderH
+	// The pose stands 28px at the row's left edge, 3px below its top —
+	// the same cell the crash offer's oops pose keeps.
+	if got := px[(rowY+14)*w+x+notifyCenterPad+14]; got != 0xff335577 {
+		t.Fatalf("busy mascot pixel = %#08x, want the staged colour", got)
+	}
+	if !busyMascotShown {
+		t.Fatal("the mascot decode marker never latched")
+	}
+
+	// The operation's end drops the pose: the mark cell keeps the plate's
+	// surface, never a stale mascot.
+	notifyProgressUpdate(3, 9, 1, 100, "Copying")
+	scan = make([]byte, w*h*4)
+	paintNotifyCenter(scan, w, h)
+	if got := asUint32(scan)[(rowY+14)*w+x+notifyCenterPad+14]; got == 0xff335577 {
+		t.Fatal("a done row still painted the busy pose")
+	}
+
+	// Without the staged raster the live row is byte-identical to its
+	// pre-card form — nothing paints in the mark cell.
+	art.Reset()
+	notifyProgressUpdate(3, 9, 1, 50, "Copying")
+	scan = make([]byte, w*h*4)
+	paintNotifyCenter(scan, w, h)
+	if got := asUint32(scan)[(rowY+14)*w+x+notifyCenterPad+14]; got == 0xff335577 {
+		t.Fatal("an absent asset still painted the pose")
+	}
+}
