@@ -10,7 +10,7 @@ tags: [apps, showcase]
 | field | value |
 |-------|-------|
 | binary | `GOVIEW.ELF` |
-| version | — |
+| version | ver 1.0.0 |
 | owning spec / contract | [`tools/gate/specs/live-image-viewer.spec`](https://github.com/drawmeanelephant/VirelaiOS/blob/main/tools/gate/specs/live-image-viewer.spec) |
 | state | shipped |
 

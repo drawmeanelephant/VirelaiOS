@@ -10,7 +10,7 @@ tags: [apps, showcase]
 | field | value |
 |-------|-------|
 | binary | `TABWM.BIN` |
-| version | — |
+| version | ver 1.0.0 |
 | owning spec / contract | [`tools/gate/specs/live-tabwm.spec`](https://github.com/drawmeanelephant/VirelaiOS/blob/main/tools/gate/specs/live-tabwm.spec), [ADR 0034](https://github.com/drawmeanelephant/VirelaiOS/blob/main/docs/decisions/0034-tabwm-retained-fallback.md) |
 | state | retained-fallback |
 

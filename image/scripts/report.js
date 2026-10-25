@@ -11,6 +11,12 @@
 // re-running while APPSUM.TXT exists refuses PathAlreadyExists — JS has no
 // delete or rename verb to clear it.
 
+// Product version — the `ver M.m.p` the component-registry row shows
+// and the drift check resolves (docs/component-registry.md); bump per
+// the registry's rule. Bare assignment is deliberate: the check matches
+// a `VER = "M.m.p"` line, and this file is a classic non-strict script.
+VER = "1.0.0"
+
 var text = virelai.readFile('/host/APPS.TXT');
 var lines = text.split('\n');
 var rows = 0;

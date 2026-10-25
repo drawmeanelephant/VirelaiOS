@@ -10,7 +10,7 @@ tags: [apps, showcase]
 | field | value |
 |-------|-------|
 | binary | `PULSE.ELF` |
-| version | — |
+| version | ver 1.0.0 |
 | owning spec / contract | [`tools/gate/specs/go-top.spec`](https://github.com/drawmeanelephant/VirelaiOS/blob/main/tools/gate/specs/go-top.spec) |
 | state | shipped |
 

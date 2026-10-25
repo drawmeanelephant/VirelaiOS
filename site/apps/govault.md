@@ -10,7 +10,7 @@ tags: [apps, showcase]
 | field | value |
 |-------|-------|
 | binary | `GOVAULT.ELF` |
-| version | appver 1 |
+| version | appver 1, ver 1.0.0 |
 | owning spec / contract | [`tools/gate/specs/go-vault.spec`](https://github.com/drawmeanelephant/VirelaiOS/blob/main/tools/gate/specs/go-vault.spec) |
 | state | shipped |
 
