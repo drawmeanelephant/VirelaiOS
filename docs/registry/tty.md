@@ -12,4 +12,4 @@ order: 290
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| tty.zig | lib | — | — | ADR 0020 | shipped |
+| tty.zig | lib | — | ver 1.0.0 | ADR 0020 | shipped |

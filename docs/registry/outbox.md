@@ -12,4 +12,4 @@ order: 220
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| outbox | lib | — | — | ADR 0051 | shipped |
+| outbox | lib | — | ver 1.0.0 | ADR 0051 | shipped |

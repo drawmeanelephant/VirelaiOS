@@ -21,4 +21,4 @@ order: 210
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| observe | lib | — | — | ADR 0043 | shipped |
+| observe | lib | — | ver 1.0.0 | ADR 0043 | shipped |

@@ -12,4 +12,4 @@ order: 460
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| vcard | lib | — | — | — | shipped |
+| vcard | lib | — | ver 1.0.0 | — | shipped |

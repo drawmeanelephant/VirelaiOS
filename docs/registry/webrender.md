@@ -12,4 +12,4 @@ order: 520
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| webrender | lib | — | — | ADR 0028 | shipped |
+| webrender | lib | — | ver 1.0.0 | ADR 0028 | shipped |

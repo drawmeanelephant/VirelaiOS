@@ -12,7 +12,7 @@ order: 400
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| tabapp | lib | — | — | ADR 0033 | shipped |
+| tabapp | lib | — | ver 1.0.0 | ADR 0033 | shipped |
 ---
 key: tabapp
 section: zig-libs
@@ -21,4 +21,4 @@ order: 260
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| tabapp.zig | lib | — | — | ADR 0033 | shipped |
+| tabapp.zig | lib | — | ver 1.0.0 | ADR 0033 | shipped |

@@ -12,4 +12,4 @@ order: 480
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| vectorconsumer | lib | — | — | ADR 0041 | fixture |
+| vectorconsumer | lib | — | ver 1.0.0 | ADR 0041 | fixture |

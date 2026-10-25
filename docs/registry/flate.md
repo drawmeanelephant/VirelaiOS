@@ -12,7 +12,7 @@ order: 90
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| flate | lib | — | — | — | shipped |
+| flate | lib | — | ver 1.0.0 | — | shipped |
 ---
 key: flate
 section: zig-libs
@@ -21,4 +21,4 @@ order: 60
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| flate.zig | lib | — | — | — | shipped |
+| flate.zig | lib | — | ver 1.0.0 | — | shipped |

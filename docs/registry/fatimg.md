@@ -12,4 +12,4 @@ order: 70
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| fatimg | lib | — | — | ADR 0055 | shipped |
+| fatimg | lib | — | ver 1.0.0 | ADR 0055 | shipped |

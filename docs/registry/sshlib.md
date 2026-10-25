@@ -12,4 +12,4 @@ order: 320
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| sshlib | lib | — | — | ADR 0025 | shipped |
+| sshlib | lib | — | ver 1.0.0 | ADR 0025 | shipped |

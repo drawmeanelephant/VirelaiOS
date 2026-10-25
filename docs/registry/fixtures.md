@@ -12,4 +12,4 @@ order: 50
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| fixtures/ | lib | — | — | — | fixture |
+| fixtures/ | lib | — | ver 1.0.0 | — | fixture |

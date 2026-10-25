@@ -12,4 +12,4 @@ order: 10
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| appkit | lib | — | — | ADR 0011 | shipped |
+| appkit | lib | — | ver 1.0.0 | ADR 0011 | shipped |

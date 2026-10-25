@@ -12,4 +12,4 @@ order: 420
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| theme | lib | — | — | — | shipped |
+| theme | lib | — | ver 1.0.0 | — | shipped |

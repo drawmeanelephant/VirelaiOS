@@ -12,4 +12,4 @@ order: 80
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| font_atlas_gen.zig | lib | — | — | — | shipped |
+| font_atlas_gen.zig | lib | — | ver 1.0.0 | — | shipped |

@@ -12,4 +12,4 @@ order: 450
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| ttf | lib | — | — | — | shipped |
+| ttf | lib | — | ver 1.0.0 | — | shipped |

@@ -12,4 +12,4 @@ order: 280
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| rfb | lib | — | — | ADR 0045 | shipped |
+| rfb | lib | — | ver 1.0.0 | ADR 0045 | shipped |

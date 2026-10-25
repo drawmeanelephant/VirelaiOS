@@ -12,4 +12,4 @@ order: 250
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| pdfproof | lib | — | — | ADR 0040 | fixture |
+| pdfproof | lib | — | ver 1.0.0 | ADR 0040 | fixture |

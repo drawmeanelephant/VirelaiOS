@@ -12,4 +12,4 @@ order: 170
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| qoi.zig | lib | — | — | — | shipped |
+| qoi.zig | lib | — | ver 1.0.0 | — | shipped |

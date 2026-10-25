@@ -12,4 +12,4 @@ order: 290
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| settings | lib | — | — | tools/gate/specs/live-settings.spec | shipped |
+| settings | lib | — | ver 1.0.0 | tools/gate/specs/live-settings.spec | shipped |

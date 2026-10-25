@@ -12,4 +12,4 @@ order: 80
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| find | lib | — | — | — | shipped |
+| find | lib | — | ver 1.0.0 | — | shipped |

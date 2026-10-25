@@ -12,4 +12,4 @@ order: 280
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| toolbox.zig | lib | — | — | — | shipped |
+| toolbox.zig | lib | — | ver 1.0.0 | — | shipped |

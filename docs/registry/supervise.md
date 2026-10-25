@@ -12,4 +12,4 @@ order: 350
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| supervise | lib | — | — | ADR 0042 | shipped |
+| supervise | lib | — | ver 1.0.0 | ADR 0042 | shipped |

@@ -12,4 +12,4 @@ order: 310
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| zc.zig | lib | — | — | tools/check-zc-host-contract.py | shipped |
+| zc.zig | lib | — | ver 1.0.0 | tools/check-zc-host-contract.py | shipped |

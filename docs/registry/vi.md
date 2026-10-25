@@ -12,4 +12,4 @@ order: 490
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| vi | lib | — | — | — | shipped |
+| vi | lib | — | ver 1.0.0 | — | shipped |

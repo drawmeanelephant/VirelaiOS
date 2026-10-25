@@ -12,4 +12,4 @@ order: 210
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| shell.zig | lib | — | — | ADR 0021 | shipped |
+| shell.zig | lib | — | ver 1.0.0 | ADR 0021 | shipped |

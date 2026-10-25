@@ -12,4 +12,4 @@ order: 430
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| timesync | lib | — | — | ADR 0060 | shipped |
+| timesync | lib | — | ver 1.0.0 | ADR 0060 | shipped |

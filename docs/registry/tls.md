@@ -12,7 +12,7 @@ order: 440
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| tls | lib | — | — | ADR 0029 | shipped |
+| tls | lib | — | ver 1.0.0 | ADR 0029 | shipped |
 ---
 key: tls
 section: zig-libs
@@ -21,4 +21,4 @@ order: 270
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| tls/ | lib | — | — | ADR 0029 | shipped |
+| tls/ | lib | — | ver 1.0.0 | ADR 0029 | shipped |

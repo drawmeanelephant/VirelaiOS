@@ -12,4 +12,4 @@ order: 120
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| netauth.zig | lib | — | — | — | shipped |
+| netauth.zig | lib | — | ver 1.0.0 | — | shipped |

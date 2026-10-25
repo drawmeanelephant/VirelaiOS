@@ -12,4 +12,4 @@ order: 360
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| svcgraph | lib | — | — | ADR 0042 | shipped |
+| svcgraph | lib | — | ver 1.0.0 | ADR 0042 | shipped |

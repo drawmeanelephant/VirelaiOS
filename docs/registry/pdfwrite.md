@@ -12,4 +12,4 @@ order: 260
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| pdfwrite | lib | — | — | ADR 0040 | shipped |
+| pdfwrite | lib | — | ver 1.0.0 | ADR 0040 | shipped |

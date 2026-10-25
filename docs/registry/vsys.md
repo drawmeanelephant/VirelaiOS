@@ -12,4 +12,4 @@ order: 510
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| vsys | lib | — | — | — | shipped |
+| vsys | lib | — | ver 1.0.0 | — | shipped |

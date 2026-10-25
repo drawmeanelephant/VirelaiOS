@@ -12,4 +12,4 @@ order: 100
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| gpu3d | lib | — | — | ADR 0053 | shipped |
+| gpu3d | lib | — | ver 1.0.0 | ADR 0053 | shipped |

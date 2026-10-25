@@ -12,4 +12,4 @@ order: 130
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| netstats.zig | lib | — | — | — | shipped |
+| netstats.zig | lib | — | ver 1.0.0 | — | shipped |

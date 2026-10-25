@@ -12,4 +12,4 @@ order: 140
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| ical | lib | — | — | — | shipped |
+| ical | lib | — | ver 1.0.0 | — | shipped |

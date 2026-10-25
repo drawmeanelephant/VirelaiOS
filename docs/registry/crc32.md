@@ -12,4 +12,4 @@ order: 30
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| crc32.zig | lib | — | — | — | shipped |
+| crc32.zig | lib | — | ver 1.0.0 | — | shipped |

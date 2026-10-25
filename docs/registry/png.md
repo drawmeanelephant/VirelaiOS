@@ -12,4 +12,4 @@ order: 160
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| png.zig | lib | — | — | — | shipped |
+| png.zig | lib | — | ver 1.0.0 | — | shipped |

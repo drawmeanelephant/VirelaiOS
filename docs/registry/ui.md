@@ -12,4 +12,4 @@ order: 300
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| ui.zig + ui/ | lib | — | — | ADR 0011 | shipped |
+| ui.zig + ui/ | lib | — | ver 1.0.0 | ADR 0011 | shipped |

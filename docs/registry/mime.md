@@ -12,4 +12,4 @@ order: 200
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| mime | lib | — | — | — | shipped |
+| mime | lib | — | ver 1.0.0 | — | shipped |

@@ -12,4 +12,4 @@ order: 230
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| ssh/ | lib | — | — | ADR 0025 | shipped |
+| ssh/ | lib | — | ver 1.0.0 | ADR 0025 | shipped |

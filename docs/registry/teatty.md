@@ -12,4 +12,4 @@ order: 410
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| teatty | lib | — | — | ADR 0020 | shipped |
+| teatty | lib | — | ver 1.0.0 | ADR 0020 | shipped |

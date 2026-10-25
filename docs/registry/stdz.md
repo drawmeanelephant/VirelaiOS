@@ -12,4 +12,4 @@ order: 250
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| stdz/ | lib | — | — | — | shipped |
+| stdz/ | lib | — | ver 1.0.0 | — | shipped |

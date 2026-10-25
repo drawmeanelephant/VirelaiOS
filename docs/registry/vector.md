@@ -12,4 +12,4 @@ order: 470
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| vector | lib | — | — | ADR 0041 | shipped |
+| vector | lib | — | ver 1.0.0 | ADR 0041 | shipped |

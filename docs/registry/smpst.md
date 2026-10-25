@@ -12,4 +12,4 @@ order: 220
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| smpst.zig | lib | — | — | — | fixture |
+| smpst.zig | lib | — | ver 1.0.0 | — | fixture |

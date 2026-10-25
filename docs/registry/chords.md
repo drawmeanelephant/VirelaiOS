@@ -12,4 +12,4 @@ order: 20
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| chords | lib | — | — | — | shipped |
+| chords | lib | — | ver 1.0.0 | — | shipped |

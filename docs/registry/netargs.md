@@ -12,4 +12,4 @@ order: 110
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| netargs.zig | lib | — | — | — | shipped |
+| netargs.zig | lib | — | ver 1.0.0 | — | shipped |

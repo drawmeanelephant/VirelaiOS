@@ -12,4 +12,4 @@ order: 230
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| pcm | lib | — | — | ADR 0046 | shipped |
+| pcm | lib | — | ver 1.0.0 | ADR 0046 | shipped |

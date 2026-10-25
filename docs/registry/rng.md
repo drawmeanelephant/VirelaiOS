@@ -12,4 +12,4 @@ order: 180
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| rng.zig | lib | — | — | — | shipped |
+| rng.zig | lib | — | ver 1.0.0 | — | shipped |

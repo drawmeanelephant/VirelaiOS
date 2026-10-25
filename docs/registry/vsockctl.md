@@ -12,4 +12,4 @@ order: 500
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| vsockctl | lib | — | — | ADR 0056 | shipped |
+| vsockctl | lib | — | ver 1.0.0 | ADR 0056 | shipped |

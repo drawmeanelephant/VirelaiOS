@@ -12,4 +12,4 @@ order: 90
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| font_ttf.zig | lib | — | — | — | shipped |
+| font_ttf.zig | lib | — | ver 1.0.0 | — | shipped |

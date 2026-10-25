@@ -12,4 +12,4 @@ order: 50
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| draw | lib | — | — | ADR 0011 | shipped |
+| draw | lib | — | ver 1.0.0 | ADR 0011 | shipped |

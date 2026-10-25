@@ -12,4 +12,4 @@ order: 120
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| hostint | lib | — | — | ADR 0051 | shipped |
+| hostint | lib | — | ver 1.0.0 | ADR 0051 | shipped |

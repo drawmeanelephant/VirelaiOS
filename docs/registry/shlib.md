@@ -12,4 +12,4 @@ order: 300
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| shlib | lib | — | — | ADR 0044 | shipped |
+| shlib | lib | — | ver 1.0.0 | ADR 0044 | shipped |

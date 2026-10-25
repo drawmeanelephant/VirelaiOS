@@ -12,4 +12,4 @@ order: 390
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| svgproof | lib | — | — | ADR 0041 | fixture |
+| svgproof | lib | — | ver 1.0.0 | ADR 0041 | fixture |

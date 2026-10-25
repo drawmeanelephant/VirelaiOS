@@ -12,4 +12,4 @@ order: 540
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| widgets | lib | — | — | ADR 0011 | shipped |
+| widgets | lib | — | ver 1.0.0 | ADR 0011 | shipped |

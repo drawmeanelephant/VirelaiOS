@@ -12,4 +12,4 @@ order: 370
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| svcmanifest | lib | — | — | ADR 0042 | shipped |
+| svcmanifest | lib | — | ver 1.0.0 | ADR 0042 | shipped |

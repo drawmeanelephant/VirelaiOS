@@ -12,4 +12,4 @@ order: 40
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| crypto.zig + crypto/ | lib | — | — | ADR 0023 | shipped |
+| crypto.zig + crypto/ | lib | — | ver 1.0.0 | ADR 0023 | shipped |

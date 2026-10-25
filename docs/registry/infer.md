@@ -12,4 +12,4 @@ order: 170
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| infer | lib | — | — | — | shipped |
+| infer | lib | — | ver 1.0.0 | — | shipped |

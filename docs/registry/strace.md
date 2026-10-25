@@ -21,4 +21,4 @@ order: 340
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| strace | lib | — | — | — | shipped |
+| strace | lib | — | ver 1.0.0 | — | shipped |

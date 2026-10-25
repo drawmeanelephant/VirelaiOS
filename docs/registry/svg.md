@@ -12,4 +12,4 @@ order: 380
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| svg | lib | — | — | ADR 0041 | shipped |
+| svg | lib | — | ver 1.0.0 | ADR 0041 | shipped |

@@ -12,4 +12,4 @@ order: 10
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| action_registry.zig | lib | — | — | — | shipped |
+| action_registry.zig | lib | — | ver 1.0.0 | — | shipped |

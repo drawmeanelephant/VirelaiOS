@@ -21,4 +21,4 @@ order: 110
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| heap | lib | — | — | — | shipped |
+| heap | lib | — | ver 1.0.0 | — | shipped |

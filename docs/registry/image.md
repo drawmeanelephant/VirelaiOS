@@ -12,4 +12,4 @@ order: 100
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| image.zig | lib | — | — | — | shipped |
+| image.zig | lib | — | ver 1.0.0 | — | shipped |

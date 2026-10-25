@@ -12,4 +12,4 @@ order: 180
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| layout | lib | — | — | — | shipped |
+| layout | lib | — | ver 1.0.0 | — | shipped |

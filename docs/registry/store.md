@@ -21,4 +21,4 @@ order: 330
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| store | lib | — | ReleaseVersion | ADR 0055 | shipped |
+| store | lib | — | ReleaseVersion, ver 1.0.0 | ADR 0055 | shipped |

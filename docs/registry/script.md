@@ -12,4 +12,4 @@ order: 190
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| script.zig | lib | — | — | ADR 0021 | shipped |
+| script.zig | lib | — | ver 1.0.0 | ADR 0021 | shipped |

@@ -12,4 +12,4 @@ order: 190
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| linebuf | lib | — | — | — | shipped |
+| linebuf | lib | — | ver 1.0.0 | — | shipped |
