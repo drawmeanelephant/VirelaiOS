@@ -209,6 +209,7 @@ jobs:
             --input site \
             --target public=dist \
             --target-layout public=themes/virelaios/layouts/main.html \
+            --layout-rule public "glob:apps/*" themes/virelaios/layouts/apps.html \
             --sitemap \
             --pages-base-url https://drawmeanelephant.github.io/VirelaiOS \
             --pages-origin https://drawmeanelephant.github.io \
