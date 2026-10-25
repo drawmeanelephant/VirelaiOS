@@ -591,9 +591,9 @@ M88 implementation cards are filed only afterward. The R1 leaves #1915
 open; the owner accepts that index only after file eval, interactive eval
 and every budget/refusal proof land with evidence.
 
-## Amendment (M200c / #3434) — the `virelai` namespace
+## Amendment (card c / #3434) — the `virelai` namespace
 
-Directed by the M200 index (#3334): "card c below is the *only* ADR
+Directed by the milestone index #3334: "card c below is the *only* ADR
 amendment this arc seeks — a bounded fs/args namespace inside the
 existing `/host/` path policy." This amendment admits exactly that
 surface and changes nothing else.
