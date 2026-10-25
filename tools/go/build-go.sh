@@ -4,8 +4,9 @@
 # (issue #1163). Runs the host make.bash pass on first use (the
 # cross-std pass is GOVIRELAI_STD=1 opt-in; see the pass-1 comment), then
 # links the named program as a static ET_EXEC at the kernel's fixed text
-# aperture (0x400000), DWARF+symtab stripped to fit the 1 MiB staging
-# bound (kernel exec.zig exec_program_max).
+# aperture (0x400000), DWARF+symtab stripped. A gap-layout Go ELF
+# stream-loads under the M72a load_max / exec_image_max bound (32 MiB),
+# not the 2 MiB staging bound (exec_program_max).
 #
 # Usage: bash tools/go/build-go.sh [program.go ...]
 #   Builds tools/go/hello.go by default. Output: <program>.ELF next to the

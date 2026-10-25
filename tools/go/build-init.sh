@@ -15,7 +15,7 @@ OUT="$REPO/.build/go/INIT.ELF"
 "$FORK_DIR/bin/go" version
 GOOS=virelai GOARCH=arm64 "$FORK_DIR/bin/go" build -ldflags "-s -w" -o "$OUT" virelai/init
 SIZE="$(stat -f%z "$OUT" 2>/dev/null || stat -c%s "$OUT")"
-test "$SIZE" -le 2097152 || { echo "build-init: $SIZE exceeds 2097152 bytes" >&2; exit 1; }
+test "$SIZE" -le $((32 * 1024 * 1024)) || { echo "build-init: $SIZE exceeds M72a load_max" >&2; exit 1; }
 echo "build-init: INIT.ELF $SIZE bytes"
 if [ "$#" -gt 0 ]; then
     test "$#" -eq 1 || exit 2

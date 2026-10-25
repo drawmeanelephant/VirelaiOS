@@ -21,5 +21,5 @@ for pair in crashview:CRASHVIEW crashfixture:CRASHFIX; do
     GOOS=virelai GOARCH=arm64 go build -o "$out" -ldflags "-s -w" "virelai/$dir"
     size="$(stat -f%z "$out" 2>/dev/null || stat -c%s "$out")"
     echo "build-crashview: $name.ELF $size bytes"
-    [ "$size" -le 2097152 ] || { echo "build-crashview: exceeds exec_program_max" >&2; exit 1; }
+    [ "$size" -le $((32 * 1024 * 1024)) ] || { echo "build-crashview: exceeds M72a load_max" >&2; exit 1; }
 done
