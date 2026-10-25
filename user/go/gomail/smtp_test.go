@@ -90,6 +90,54 @@ func TestSMTPRefusals(t *testing.T) {
 	}
 }
 
+func TestSMTPReplyFlood(t *testing.T) {
+	// A server streaming '<code>-' continuations trips the line cap:
+	// readLine bounds ONE line, smtpReplyMax bounds the reply (#3396).
+	var b strings.Builder
+	for i := 0; i < smtpReplyMax+4; i++ {
+		b.WriteString("250-more\r\n")
+	}
+	b.WriteString("250 done\r\n")
+	fc := &fakeConn{reads: []byte(b.String())}
+	s := newSMTP(fc)
+	s.now = func() int64 { return 0 }
+	if _, _, err := s.reply(); err == nil ||
+		!strings.Contains(err.Error(), "reply flood") {
+		t.Fatalf("reply flood: %v", err)
+	}
+
+	// A reply at the cap still parses.
+	var ok strings.Builder
+	for i := 0; i < smtpReplyMax-1; i++ {
+		ok.WriteString("250-more\r\n")
+	}
+	ok.WriteString("250 done\r\n")
+	fc2 := &fakeConn{reads: []byte(ok.String())}
+	s2 := newSMTP(fc2)
+	s2.now = func() int64 { return 0 }
+	code, text, err := s2.reply()
+	if err != nil || code != 250 || len(text) != smtpReplyMax {
+		t.Fatalf("capped reply: code=%d lines=%d err=%v", code, len(text), err)
+	}
+}
+
+func TestSMTPDeadlinePerReply(t *testing.T) {
+	// Byte-drip service forces many reads inside one reply; the
+	// deadline is armed ONCE per reply() — a drip cannot re-arm it
+	// per read (#3396).
+	fc := &fakeConn{reads: []byte("220-a\r\n220 b\r\n"), chunk: 1}
+	s := newSMTP(fc)
+	tick := int64(0)
+	s.now = func() int64 { tick += 1e9; return tick }
+	code, text, err := s.reply()
+	if err != nil || code != 220 || len(text) != 2 {
+		t.Fatalf("reply: code=%d text=%v err=%v", code, text, err)
+	}
+	if len(fc.deadlines) != 1 || fc.deadlines[0] != 1e9+cmdWaitNs {
+		t.Fatalf("deadlines %v, want one arm per reply", fc.deadlines)
+	}
+}
+
 func TestDotStuff(t *testing.T) {
 	in := "a\r\n.b\r\n..c\r\n"
 	out := string(dotStuff([]byte(in)))
