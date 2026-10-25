@@ -15,6 +15,11 @@
 //! Fail closed by default. The argv block is the kernel's card-3e
 //! packaging (`argc` in x0, block VA in x1): 256-byte slots since M71m.
 
+/// Product version — the `ver M.m.p` the component-registry lib row
+/// shows and the drift check resolves (docs/component-registry.md).
+/// The registry's bump rule says when it moves.
+pub const version = "1.0.0";
+
 const std = @import("std");
 
 /// The default TCP port when `net` gives no port (SH7).

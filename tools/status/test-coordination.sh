@@ -119,6 +119,16 @@ jq -s '.' \
     > "$TMP/fixture.json"
 run_case "generated inventory overlap across branches is exempt" 0
 
+# --- case 5b2: the generated registry aggregate is exempt too -> PASS -------
+# docs/component-registry.md compiles from docs/registry/*.md (issue
+# #3676); claims declare the fragment, so the aggregate must not conflict.
+
+jq -s '.' \
+    <(claim_json 513 "agent/a/one" "2026-09-02T00:00:00Z" "docs/component-registry.md, docs/registry/a.md") \
+    <(claim_json 514 "agent/b/two" "2026-09-02T00:00:00Z" "docs/component-registry.md, docs/registry/b.md") \
+    > "$TMP/fixture.json"
+run_case "generated registry overlap across branches is exempt" 0
+
 # --- case 5c: the exemption does not mask a real overlap -> FAIL ------------
 
 jq -s '.' \

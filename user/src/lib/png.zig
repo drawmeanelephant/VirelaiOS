@@ -17,6 +17,11 @@
 //! fixture/small-image use; larger images call `scan` then
 //! `decode_with_buffers` with caller memory (e.g. an M29 mmap region).
 
+/// Product version — the `ver M.m.p` the component-registry lib row
+/// shows and the drift check resolves (docs/component-registry.md).
+/// The registry's bump rule says when it moves.
+pub const version = "1.0.0";
+
 const std = @import("std");
 const crc32 = @import("crc32.zig");
 const flate = @import("flate.zig");

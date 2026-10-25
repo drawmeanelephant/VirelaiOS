@@ -14,5 +14,5 @@ export GOROOT="$FORK_DIR" GOPATH="$GOPATH_DIR" GOTOOLCHAIN=local GO111MODULE=off
 OUT="$REPO/.build/go/GOR3D.ELF"
 GOOS=virelai GOARCH=arm64 "$FORK_DIR/bin/go" build -o "$OUT" -ldflags '-s -w' virelai/r3d
 SIZE="$(stat -f%z "$OUT" 2>/dev/null || stat -c%s "$OUT")"
-[ "$SIZE" -le 2097152 ] || { printf 'GOR3D exceeds exec size limit: %s\n' "$SIZE" >&2; exit 1; }
+[ "$SIZE" -le $((32 * 1024 * 1024)) ] || { printf 'GOR3D exceeds M72a load_max: %s\n' "$SIZE" >&2; exit 1; }
 printf 'GOR3D.ELF: %s bytes\n' "$SIZE"

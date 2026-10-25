@@ -17,6 +17,12 @@ import os
 import struct
 import sys
 
+# Product version — the `ver M.m.p` the component-registry row shows
+# and the drift check resolves (docs/component-registry.md); bump per
+# the registry's rule. One line serves the whole generated set this
+# script emits (DYNAPP.ELF, LIBUI.SO, LIBFONT.SO, PLUGIN.SO, …).
+VER = "1.0.0"
+
 TEXT_BASE = 0x00400000
 EM_AARCH64 = 0xB7
 

@@ -22,6 +22,11 @@ version in one landing.
 Staleness is advisory, never a gate: `--stale` prints the table
 oldest-first and exits 0 regardless. Time is not a build input.
 
+The polish rotation's runnable half is the `live-polish-sweep` gate spec
+(`tools/gate/specs/live-polish-sweep.spec`, #3668): it boots the
+default seat on the session's NAT+sound posture and runs every shipped
+app through open -> its cheapest verifiable marker -> clean close.
+
 ## Seeding convention
 
 A row's `last refresh`/`date` is the newest non-merge commit on the
@@ -151,7 +156,9 @@ it does for the app table, and `--stale` prints both tables.
 | Guest compiler | tool | user/go/gobuild | #2767 | 2026-10-20 | one inflater — promote hardened reader to user/go/flate |
 | Guest linker | tool | user/go/gobuild | #2767 | 2026-10-20 | one inflater — promote hardened reader to user/go/flate |
 | Release pipeline | tool | user/go/release | #2651 | 2026-10-18 | argv-block residuals: dead pads/asserts, stale 32-byte bound, census re-pin |
+| Store install CLI | tool | user/go/store/main | #3188 | 2026-10-23 | store pin — signed-head rollback + ReleaseDepends |
 | appkit | lib | user/go/appkit | #3348 | 2026-10-25 | wire the staged art's seated and raster surfaces |
+| art | lib | user/go/art | #3338 | 2026-10-24 | adopt the f-artcraft drop — stage the six sets, wire the open seams |
 | chords | lib | user/go/chords | #3252 | 2026-10-23 | GOEDIT quick-open — ctrl+p palette over recents + subtree |
 | clockfmt | lib | user/go/clockfmt | #3262 | 2026-10-23 | GOREADER.ELF over its build bound — strip ianaZones via Names reachability, gate on exec_image_max |
 | css | lib | user/go/css | #2596 | 2026-10-18 | per-tab zoom Ctrl+=/-/0 with layout reflow + font_size setting |
@@ -170,17 +177,20 @@ it does for the app table, and `--stale` prints both tables.
 | infer | lib | user/go/infer | #3054 | 2026-10-21 | goinfer: hostile .VIW hardening — shape-pinned tensors, bounded fields |
 | layout | lib | user/go/layout | #3180 | 2026-10-22 | ime,layout,go-assist: kana->kanji candidates from a curated dict |
 | linebuf | lib | user/go/linebuf | #2581 | 2026-10-19 | shared appkit.FilePicker adopted by GOEDIT/GOFILES/WEB |
+| mdns | lib | user/go/mdns | #3383 | 2026-10-24 | GONETSTAT discover — the guest browses the LAN over mDNS |
 | mime | lib | user/go/mime | #3384 | 2026-10-24 | application/javascript opens — Script dispatch to QJS.BIN |
 | observe | lib | user/go/observe | #3189 | 2026-10-22 | diagnostics census — documented split + shared drain |
 | outbox | lib | user/go/outbox | #2602 | 2026-10-18 | OUTBOX export lane — REQ intent → signed TagOutbox → host Downloads |
 | pcm | lib | user/go/pcm | #3178 | 2026-10-22 | extract user/go/pcm — the PCM library GOSOUND+GOREC consume |
 | pdf | lib | user/go/pdf | #2988 | 2026-10-22 | ADR 0040 A4 — baseline DCTDecode via decoder hook |
 | pdfwrite | lib | user/go/pdfwrite | #2976 | 2026-10-21 | shared zlib encoder, PNG encoder, GOPAINT PNG export |
+| printq | lib | user/go/printq | #3386 | 2026-10-24 | VHI1 print lane — print verbs ship PDFs through the glass |
 | prof | lib | user/go/prof | — | 2026-10-06 | use paired median budget and guard profile control |
 | rfb | lib | user/go/rfb | #1810 | 2026-09-27 | add transport-agnostic RFB wire codec |
 | settings | lib | user/go/settings | #3402 | 2026-10-24 | a11y.* live family — running GOVIEW answers a reduce_motion flip |
 | shlib | lib | user/go/shlib | #3441 | 2026-10-25 | the first shipped scripted workflow — SCRIPTS/REPORT.JS |
 | snapshot | lib | user/go/snapshot | #2846 | 2026-10-20 | gotabwm: split panes as a tree + agent_input |
+| speech | lib | user/go/speech | #3181 | 2026-10-24 | the seat speaks — host TTS over VHI1 |
 | sshlib | lib | user/go/sshlib | #2960 | 2026-10-21 | sshlib server interactive session — pty/shell/windowed IO |
 | store | lib | user/go/store | #3188 | 2026-10-23 | store pin — signed-head rollback + ReleaseDepends |
 | strace | lib | user/go/strace | #3189 | 2026-10-22 | diagnostics census — documented split + shared drain |
@@ -196,6 +206,7 @@ it does for the app table, and `--stale` prints both tables.
 | ttf | lib | user/go/ttf | #3179 | 2026-10-22 | Arabic presentation-form shaper + Noto Naskh face in WEB |
 | vcard | lib | user/go/vcard | #3255 | 2026-10-23 | a real contact-card face for .vcf — QuickLook pane + GOMAIL hand-off |
 | vector | lib | user/go/vector | — | 2026-10-18 | vector: re-measure on nonzero AllocsPerRun — the stray alloc is runtime-internal |
+| vaultlib | lib | user/go/vaultlib | #3405 | 2026-10-24 | vlfs+vaultlib: bound stored kdf_iters — hostile counts refused at parse |
 | vi | lib | user/go/vi | #3444 | 2026-10-25 | net-mdns — the LAN discovery verbs bind a real grant-table word |
 | vsockctl | lib | user/go/vsockctl | — | 2026-10-18 | guest-visible profile summary in GOSET/GOTOP via vsock-ctl |
 | vsys | lib | user/go/vsys | #3036 | 2026-10-22 | ns duration syscalls on the deadline overlay |

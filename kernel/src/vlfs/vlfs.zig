@@ -654,6 +654,15 @@ fn journalRead(src: SectorSource, blk: u32, scratch: *[block_len]u8) Error!bool 
     return error.Io;
 }
 
+/// A re-read of a journal block the validation pass already authenticated
+/// is a hard failure, not torn: a source that opens a block once and then
+/// names bad_block_auth on the second touch has split a committed
+/// transaction (#3403) — abort the mount rather than skip the block and
+/// let the journal cursor cover a transaction that landed as a prefix.
+fn journalReread(src: SectorSource, blk: u32, scratch: *[block_len]u8) Error!void {
+    if (!try journalRead(src, blk, scratch)) return error.Io;
+}
+
 fn checkJournalRecord(src: SectorSource, sb: Superblock, pos: u32, scratch: *[block_len]u8) Error!JournalStep {
     const end = sb.journal_first + sb.journal_blocks;
     if (!try journalRead(src, pos, scratch)) return .torn;
@@ -746,8 +755,10 @@ fn journalWalk(src: SectorSource, sb: Superblock, scratch: *[block_len]u8, st: ?
             .torn => break,
         };
         if (st) |s| {
-            // Re-read DESC for the dest table (scratch holds COMMIT).
-            if (!try journalRead(src, pos, scratch)) break;
+            // Re-read DESC for the dest table (scratch holds COMMIT). A
+            // validated record must re-read — a failure here would leave
+            // the check overlay short of what replay lands.
+            try journalReread(src, pos, scratch);
             for (0..n) |i| {
                 if (s.dest_count >= max_journal_blocks) return error.BadJournal;
                 s.dests[s.dest_count] = .{
@@ -788,20 +799,23 @@ const TagEntry = struct { dest: u32, entry: [tag_entry_len]u8 };
 /// one pair. A transaction with no tag payloads (a crafted or pre-M172f
 /// record) replays through the eager fallback unchanged.
 fn replayJournal(src: SectorSource, sb: *Superblock, count: u32, scratch: *[block_len]u8) Error!void {
-    _ = count;
     var pos = sb.journal_first;
     var expected = sb.journal_applied + 1;
-    const end = sb.journal_first + sb.journal_blocks;
     var entries: [max_payload]TagEntry = undefined;
-    while (pos < end) {
+    // Replay exactly the records journalWalk validated. A record that
+    // re-validates torn — or any re-read that fails after validation —
+    // means the source disagreed with its own answer (#3403): abort the
+    // mount, never let journal_applied cover a partially landed txn.
+    var replayed: u32 = 0;
+    while (replayed < count) {
         var probe = sb.*;
         probe.journal_applied = expected - 1;
         const n = switch (try checkJournalRecord(src, probe, pos, scratch)) {
             .valid => |n| n,
-            .torn => break,
+            .torn => return error.Io,
         };
         // Re-read DESC (scratch currently holds COMMIT).
-        if (!try journalRead(src, pos, scratch)) break;
+        try journalReread(src, pos, scratch);
         const desc = scratch.*;
         var entries_n: usize = 0;
         if (sb.seal) |seal_| {
@@ -810,7 +824,7 @@ fn replayJournal(src: SectorSource, sb: *Superblock, count: u32, scratch: *[bloc
             for (0..n) |i| {
                 const dest = rd32(&desc, jd_entries + 8 * @as(usize, @intCast(i)));
                 if (dest < seal_.tag_first) continue;
-                if (!try journalRead(src, pos + 1 + @as(u32, @intCast(i)), scratch)) break;
+                try journalReread(src, pos + 1 + @as(u32, @intCast(i)), scratch);
                 const tagblk = scratch.*;
                 for (0..n) |j| {
                     const d2 = rd32(&desc, jd_entries + 8 * @as(usize, @intCast(j)));
@@ -830,7 +844,7 @@ fn replayJournal(src: SectorSource, sb: *Superblock, count: u32, scratch: *[bloc
             if (sb.seal) |seal_| {
                 if (dest >= seal_.tag_first) continue; // landed in pass 1
             }
-            if (!try journalRead(src, pos + 1 + @as(u32, @intCast(i)), scratch)) break;
+            try journalReread(src, pos + 1 + @as(u32, @intCast(i)), scratch);
             const payload = scratch.*;
             for (entries[0..entries_n]) |*e| {
                 if (e.dest == dest) {
@@ -840,6 +854,7 @@ fn replayJournal(src: SectorSource, sb: *Superblock, count: u32, scratch: *[bloc
             }
             if (!src.writeBlock(dest, &payload)) return error.Io;
         }
+        replayed += 1;
         expected += 1;
         pos += n + 2;
     }
@@ -1880,6 +1895,141 @@ fn journalAppend(img: []u8, pos: u32, seq: u64, dest: u32, payload: *const [bloc
     @memcpy(img[@as(usize, pos + 2) * block_len ..][0..block_len], &commit);
 }
 
+/// journalAppend's multi-payload form: DESC + n payload blocks + COMMIT —
+/// the record a mid-transaction replay failure splits.
+fn journalAppendN(img: []u8, pos: u32, seq: u64, dests: []const u32, payloads: []const *const [block_len]u8) void {
+    const n = dests.len;
+    var desc: [block_len]u8 = @splat(0);
+    std.mem.writeInt(u32, desc[jd_magic..][0..4], magic_desc, .little);
+    std.mem.writeInt(u64, desc[jd_seq..][0..8], seq, .little);
+    std.mem.writeInt(u16, desc[jd_count..][0..2], @intCast(n), .little);
+    for (dests, 0..) |dest, i| {
+        std.mem.writeInt(u32, desc[jd_entries + 8 * i ..][0..4], dest, .little);
+        std.mem.writeInt(u32, desc[jd_entries + 8 * i + 4 ..][0..4], fnv32(payloads[i]), .little);
+        @memcpy(img[(@as(usize, pos) + 1 + i) * block_len ..][0..block_len], payloads[i]);
+    }
+    var h = fnv32(desc[0 .. jd_entries + 8 * n]);
+    for (payloads) |p| h = fnv32Continue(h, p);
+    std.mem.writeInt(u32, desc[jd_cksum..][0..4], fnv32(desc[0..jd_cksum]), .little);
+    @memcpy(img[@as(usize, pos) * block_len ..][0..block_len], &desc);
+    var commit: [block_len]u8 = @splat(0);
+    std.mem.writeInt(u32, commit[jc_magic..][0..4], magic_commit, .little);
+    std.mem.writeInt(u64, commit[jc_seq..][0..8], seq, .little);
+    std.mem.writeInt(u32, commit[jc_txn..][0..4], h, .little);
+    std.mem.writeInt(u32, commit[jc_cksum..][0..4], fnv32(commit[0..jc_cksum]), .little);
+    @memcpy(img[(@as(usize, pos) + 1 + n) * block_len ..][0..block_len], &commit);
+}
+
+/// A minimal v2 (sealed) image: two identical superblock copies, the v2
+/// geometry (data region ends at tag_first, tag region closes the volume),
+/// and nothing else — the mount path parses it without a DEK because the
+/// block-hook source defines what "authenticates" means.
+fn sealTestImage(img: []u8, seq: u64) void {
+    @memset(img, 0);
+    const tag_blocks = tagBlocksFor(4096); // 28
+    const sbv = Superblock{
+        .seq = seq,
+        .volume_id = 0x5ea15ea15ea15ea1,
+        .volume_bytes = test_image_bytes,
+        .volume_blocks = @intCast(test_image_bytes / block_len),
+        .journal_first = 2,
+        .journal_blocks = 512,
+        .ibitmap_first = 514,
+        .ibitmap_blocks = 1,
+        .bbitmap_first = 515,
+        .bbitmap_blocks = 1,
+        .itable_first = 516,
+        .itable_blocks = 8,
+        .data_first = 524,
+        .data_blocks = 4096 - tag_blocks - 524,
+        .inode_count = 256,
+        .journal_applied = 0,
+        .next_txn_seq = 1,
+        .slot = 0,
+        .seal = .{
+            .kdf_iters = 1,
+            .salt = @splat(0),
+            .wrap_nonce = @splat(0),
+            .wrapped_dek = @splat(0),
+            .wrap_tag = @splat(0),
+            .tag_first = 4096 - tag_blocks,
+            .tag_blocks = tag_blocks,
+        },
+    };
+    var blk: [block_len]u8 = @splat(0);
+    writeSuperblockSector(blk[0..sector_len], sbv);
+    @memcpy(img[0..block_len], &blk);
+    @memcpy(img[block_len..][0..block_len], &blk);
+}
+
+/// The #3403 rig: a block-level "sealed" source that opens `target` a
+/// bounded number of times and then names bad_block_auth — the host that
+/// authenticates a journal block during validation and flakes the AEAD
+/// open on the replay's re-read.
+const FlakySealDisk = struct {
+    img: []u8,
+    target: u32,
+    ok_reads: u32,
+    reads: u32 = 0,
+    last_err: Error = error.Io,
+
+    fn src(self: *FlakySealDisk) SectorSource {
+        return .{
+            .ctx = self,
+            .total_sectors = @intCast(self.img.len / sector_len),
+            .readFn = readFn,
+            .writeFn = writeFn,
+            .flushFn = flushFn,
+            .readBlockFn = readBlockFn,
+            .writeBlockFn = writeBlockFn,
+            .errFn = errFn,
+        };
+    }
+
+    fn readFn(ctx: ?*anyopaque, lba: u64, out: *[sector_len]u8) bool {
+        const d: *FlakySealDisk = @ptrCast(@alignCast(ctx));
+        if (lba >= d.img.len / sector_len) return false;
+        @memcpy(out, d.img[@as(usize, @intCast(lba)) * sector_len ..][0..sector_len]);
+        return true;
+    }
+
+    fn writeFn(ctx: ?*anyopaque, lba: u64, data: *const [sector_len]u8) bool {
+        const d: *FlakySealDisk = @ptrCast(@alignCast(ctx));
+        if (lba >= d.img.len / sector_len) return false;
+        @memcpy(d.img[@as(usize, @intCast(lba)) * sector_len ..][0..sector_len], data);
+        return true;
+    }
+
+    fn flushFn(ctx: ?*anyopaque) bool {
+        _ = ctx;
+        return true;
+    }
+
+    fn readBlockFn(ctx: ?*anyopaque, blk: u32, out: *[block_len]u8) bool {
+        const d: *FlakySealDisk = @ptrCast(@alignCast(ctx));
+        if (blk == d.target) {
+            d.reads += 1;
+            if (d.reads > d.ok_reads) {
+                d.last_err = error.BadBlockAuth;
+                return false;
+            }
+        }
+        @memcpy(out, d.img[@as(usize, blk) * block_len ..][0..block_len]);
+        return true;
+    }
+
+    fn writeBlockFn(ctx: ?*anyopaque, blk: u32, data: *const [block_len]u8) bool {
+        const d: *FlakySealDisk = @ptrCast(@alignCast(ctx));
+        @memcpy(d.img[@as(usize, blk) * block_len ..][0..block_len], data);
+        return true;
+    }
+
+    fn errFn(ctx: ?*anyopaque) Error {
+        const d: *FlakySealDisk = @ptrCast(@alignCast(ctx));
+        return d.last_err;
+    }
+};
+
 test "vlfs: mount replays a committed transaction; read-only refuses" {
     try buildImage(empty_regions, &image_buf);
     var disk = MemDisk{ .img = &image_buf };
@@ -2047,6 +2197,62 @@ test "vlfs: torn journal tail is discarded, mount still succeeds" {
     var check: [block_len]u8 = undefined;
     try std.testing.expect(ro2.ro().readBlock(vol.data_first + 7, &check));
     try std.testing.expect(check[0] != 't'); // payload never reached home
+}
+
+test "vlfs #3403: sealed replay aborts a mid-txn bad_block_auth; the cursor never covers a prefix" {
+    const journal_pos: u32 = 2;
+    const tag_first: u32 = 4096 - tagBlocksFor(4096); // 4068
+    const dest0: u32 = 700;
+    const dest1: u32 = 701;
+    var payload0: [block_len]u8 = @splat(0);
+    @memcpy(payload0[0..5], "first");
+    var payload1: [block_len]u8 = @splat(0);
+    @memcpy(payload1[0..6], "second");
+    const payloads = [_]*const [block_len]u8{ &payload0, &payload1 };
+
+    // Control: a faithful source replays the two-payload commit and the
+    // ping-pong lands journal_applied = 1.
+    sealTestImage(&image_buf, 1);
+    journalAppendN(&image_buf, journal_pos, 1, &.{ dest0, dest1 }, &payloads);
+    var ok_disk = FlakySealDisk{ .img = &image_buf, .target = journal_pos + 2, .ok_reads = std.math.maxInt(u32) };
+    const vol = try mount(ok_disk.src(), &test_scratch);
+    try std.testing.expectEqual(@as(u32, 1), vol.replayed);
+    try std.testing.expectEqual(@as(u64, 1), vol.journal_applied);
+
+    // The attack: the second payload block authenticates through both
+    // validation passes (the walk's read and the replay's own
+    // checkJournalRecord), then fails the AEAD open on the replay's
+    // re-read — after dest0 has already landed. The mount must refuse
+    // io_error rather than drain the journal over a prefix.
+    sealTestImage(&image_buf, 1);
+    journalAppendN(&image_buf, journal_pos, 1, &.{ dest0, dest1 }, &payloads);
+    var disk = FlakySealDisk{ .img = &image_buf, .target = journal_pos + 2, .ok_reads = 2 };
+    try std.testing.expectError(error.Io, mount(disk.src(), &test_scratch));
+    // dest0 landed — the split is real — but dest1 did not, and both
+    // superblock copies still carry journal_applied = 0: the next mount
+    // revalidates the same transaction instead of trusting the cursor.
+    try std.testing.expectEqualSlices(u8, payload0[0..5], image_buf[@as(usize, dest0) * block_len ..][0..5]);
+    try std.testing.expect(image_buf[@as(usize, dest1) * block_len] != 's');
+    try std.testing.expectEqual(@as(u64, 0), rd64(&image_buf, sb_journal_applied));
+    try std.testing.expectEqual(@as(u64, 0), rd64(image_buf[block_len..], sb_journal_applied));
+
+    // Pass 1's twin shape: a tag-home dest's payload re-read flakes after
+    // validation — the entries pass 2 would inject never arrive, so the
+    // mount must refuse before any write lands.
+    sealTestImage(&image_buf, 1);
+    journalAppendN(&image_buf, journal_pos, 1, &.{ tag_first, dest0 }, &payloads);
+    var disk2 = FlakySealDisk{ .img = &image_buf, .target = journal_pos + 1, .ok_reads = 2 };
+    try std.testing.expectError(error.Io, mount(disk2.src(), &test_scratch));
+    try std.testing.expectEqual(@as(u64, 0), rd64(&image_buf, sb_journal_applied));
+
+    // The agree direction: a block that opens for journalWalk but reads
+    // torn on the replay's own validation means the two passes disagree —
+    // the mount refuses rather than silently skipping the committed txn.
+    sealTestImage(&image_buf, 1);
+    journalAppendN(&image_buf, journal_pos, 1, &.{ dest0, dest1 }, &payloads);
+    var disk3 = FlakySealDisk{ .img = &image_buf, .target = journal_pos + 1, .ok_reads = 1 };
+    try std.testing.expectError(error.Io, mount(disk3.src(), &test_scratch));
+    try std.testing.expectEqual(@as(u64, 0), rd64(&image_buf, sb_journal_applied));
 }
 
 // #2365: the D3 itable size is ⌈inode_count/32⌉. A 17 MiB image written

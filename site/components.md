@@ -11,9 +11,10 @@ canonical [component registry]
 (https://github.com/drawmeanelephant/VirelaiOS/blob/main/docs/component-registry.md),
 kept from drifting by the docs gate's freshness check (M189c): a row that
 lands in the manifest or the registry without landing here fails the build.
-Edit the registry, not this page — the table region is generated.
+Edit the row's fragment under `docs/registry/`, not this page — the
+table region is generated.
 
-<!-- BEGIN generated component-registry table (docs/component-registry.md) -->
+<!-- BEGIN generated component-registry table (docs/registry/*.md) -->
 ## Shipped apps (image/apps.txt)
 
 Every row below is a manifest row — `app` means "has an `image/apps.txt`
@@ -87,9 +88,9 @@ not ride in one.
 | App-manifest report script (card d / index #3334) | script | SCRIPTS/REPORT.JS | ADR 0039, ver 1.0.0 | tools/gate/specs/live-quickjs.spec | staged |
 | Zig userland root | tool | USER.BIN | ver 1.0.0 | ADR 0034 | retained-fallback |
 | Sexiburger desktop | tool | SEXIBURG.BIN | ver 1.0.0 | tools/gate/specs/live-sexiburger.spec, ADR 0034 | retained-fallback |
-| Hello fixture | fixture | HELLO.ELF | — | tools/gate/specs/go-hello.spec | fixture |
-| Crash fixture | fixture | CRASH.ELF | — | tools/gate/specs/live-crash-viewer.spec | fixture |
-| Dyn-link fixture set | fixture | DYNAPP.ELF | — | tools/mkdyn-elf.py, tools/gate/specs/live-dynamic-linking.spec | fixture |
+| Hello fixture | fixture | HELLO.ELF | ver 1.0.0 | tools/mkhello-elf.py, tools/gate/specs/go-hello.spec | fixture |
+| Crash fixture | fixture | CRASH.ELF | ver 1.0.0 | tools/mkhello-elf.py, tools/gate/specs/live-crash-viewer.spec | fixture |
+| Dyn-link fixture set | fixture | DYNAPP.ELF | ver 1.0.0 | tools/mkdyn-elf.py, tools/gate/specs/live-dynamic-linking.spec | fixture |
 
 
 ## Gate fleet — built and gate-staged, not on the session share
@@ -105,42 +106,46 @@ sharing one builder and one naming map.
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| Init service supervisor | tool | INIT.ELF | — | tools/gate/specs/live-boot-order.spec, ADR 0042 | staged |
-| R3D renderer | tool | GOR3D.ELF | — | tools/gate/specs/go-r3d.spec | staged |
-| RSS reader | tool | RSS.ELF | — | tools/gate/specs/go-rss.spec | staged |
-| Git UI | tool | GOGITUI.ELF | — | tools/gate/specs/go-gitui.spec | staged |
-| Crash viewer | tool | CRASHVIEW.ELF | — | tools/gate/specs/live-crash-viewer.spec | staged |
-| Log viewer | tool | LOGVIEW.ELF | — | tools/gate/specs/go-selftest.spec | staged |
-| Selftest runner | tool | GOSELF.ELF | — | tools/gate/specs/go-selftest.spec | staged |
-| Observe CLI | tool | OBSERVE.ELF | — | tools/gate/specs/live-observe.spec | staged |
-| Profiler | tool | PROF.ELF | — | tools/gate/specs/live-observe.spec, tools/gate/specs/live-n12-netprof.spec | staged |
-| Syscall tracer | tool | STRACE.ELF | — | tools/gate/specs/live-strace.spec | staged |
-| Heap inspector | tool | HEAP.ELF | — | tools/gate/specs/go-stress.spec | staged |
-| FLINT release CLI | tool | FLINT.ELF | ADR 0055 | tools/gate/specs/go-flint.spec, ADR 0055 | staged |
-| Guest go-build driver | tool | GOBUILD.ELF | — | tools/gate/specs/live-gobuild.spec | staged |
-| Guest compiler | tool | GOCMDCOMPILE.ELF | — | tools/gate/specs/live-gobuild.spec | staged |
-| Guest linker | tool | GOCMDLINK.ELF | — | tools/gate/specs/live-gobuild.spec | staged |
+| Init service supervisor | tool | INIT.ELF | ver 1.0.0 | tools/gate/specs/live-boot-order.spec, ADR 0042 | staged |
+| R3D renderer | tool | GOR3D.ELF | ver 1.0.0 | tools/gate/specs/go-r3d.spec | staged |
+| RSS reader | tool | RSS.ELF | ver 1.0.0 | tools/gate/specs/go-rss.spec | staged |
+| Git UI | tool | GOGITUI.ELF | ver 1.0.0 | tools/gate/specs/go-gitui.spec | staged |
+| Crash viewer | tool | CRASHVIEW.ELF | ver 1.0.0 | tools/gate/specs/live-crash-viewer.spec | staged |
+| Log viewer | tool | LOGVIEW.ELF | ver 1.0.0 | tools/gate/specs/go-selftest.spec | staged |
+| Selftest runner | tool | GOSELF.ELF | ver 1.0.0 | tools/gate/specs/go-selftest.spec | staged |
+| Observe CLI | tool | OBSERVE.ELF | ver 1.0.0 | tools/gate/specs/live-observe.spec | staged |
+| Profiler | tool | PROF.ELF | ver 1.0.0 | tools/gate/specs/live-observe.spec, tools/gate/specs/live-n12-netprof.spec | staged |
+| Syscall tracer | tool | STRACE.ELF | ver 1.0.0 | tools/gate/specs/live-strace.spec | staged |
+| Heap inspector | tool | HEAP.ELF | ver 1.0.0 | tools/gate/specs/go-stress.spec | staged |
+| FLINT release CLI | tool | FLINT.ELF | ADR 0055, ver 1.0.0 | tools/gate/specs/go-flint.spec, ADR 0055 | staged |
+| Guest go-build driver | tool | GOBUILD.ELF | ver 1.0.0 | tools/gate/specs/live-gobuild.spec | staged |
+| Guest compiler | tool | GOCMDCOMPILE.ELF | ver 1.0.0 | tools/go/build-gotool.sh, tools/gate/specs/live-gobuild.spec | staged |
+| Guest linker | tool | GOCMDLINK.ELF | ver 1.0.0 | tools/go/build-gotool.sh, tools/gate/specs/live-gobuild.spec | staged |
 | Release pipeline | tool | GORELEASE.ELF | ADR 0055, ver 1.0.0 | tools/gate/specs/live-release.spec, ADR 0055 | staged |
-| Audio-seam proof | fixture | FART.ELF | — | tools/gate/specs/go-fart.spec | fixture |
-| Term-graphics fixture | fixture | IMGCAT.ELF | — | tools/gate/specs/live-term-graphics.spec | fixture |
-| Panic fixture | fixture | CRASHFIX.ELF | — | tools/gate/specs/live-crash-viewer.spec | fixture |
-| Log fixture | fixture | LOGFIX.ELF | — | tools/gate/specs/go-selftest.spec | fixture |
-| Charm/Bubble Tea seam proof | fixture | CHARMHELLO.ELF | — | tools/gate/specs/go-charmhello.spec | fixture |
+| Store install CLI | tool | STORE.ELF | ver 1.0.0 | tools/gate/specs/live-install-consent.spec | staged |
+| Audio-seam proof | fixture | FART.ELF | ver 1.0.0 | tools/gate/specs/go-fart.spec | fixture |
+| Term-graphics fixture | fixture | IMGCAT.ELF | ver 1.0.0 | tools/gate/specs/live-term-graphics.spec | fixture |
+| Panic fixture | fixture | CRASHFIX.ELF | ver 1.0.0 | tools/gate/specs/live-crash-viewer.spec | fixture |
+| Log fixture | fixture | LOGFIX.ELF | ver 1.0.0 | tools/gate/specs/go-selftest.spec | fixture |
+| Charm/Bubble Tea seam proof | fixture | CHARMHELLO.ELF | ver 1.0.0 | tools/gate/specs/go-charmhello.spec | fixture |
 | Symbol-donor fixture | fixture | GOEDITSYM.ELF | ver 1.0.0 | tools/gate/specs/live-observe.spec | fixture |
-| Profile workload fixture | fixture | PROFFIX.ELF | — | tools/gate/specs/live-observe.spec | fixture |
-| Instrumented compiler fixture | fixture | GOCMDPROFILE.ELF | — | tools/gate/specs/live-observe.spec | fixture |
-| Trace workload fixture | fixture | TRACEFIX.ELF | — | tools/gate/specs/live-strace.spec | fixture |
-| Heap workload fixture | fixture | HEAPFIX.ELF | — | tools/gate/specs/go-stress.spec | fixture |
-| Heap budget fixture | fixture | HEAPBUDG.ELF | — | tools/gate/specs/go-stress.spec | fixture |
+| Profile workload fixture | fixture | PROFFIX.ELF | ver 1.0.0 | tools/gate/specs/live-observe.spec | fixture |
+| Instrumented compiler fixture | fixture | GOCMDPROFILE.ELF | ver 1.0.0 | tools/go/build-prof.sh, tools/gate/specs/live-observe.spec | fixture |
+| Trace workload fixture | fixture | TRACEFIX.ELF | ver 1.0.0 | tools/gate/specs/live-strace.spec | fixture |
+| Heap workload fixture | fixture | HEAPFIX.ELF | ver 1.0.0 | tools/gate/specs/go-stress.spec | fixture |
+| Heap budget fixture | fixture | HEAPBUDG.ELF | ver 1.0.0 | tools/gate/specs/go-stress.spec | fixture |
 | Gostalgia child fixture | fixture | GSCHILD.ELF | ver 1.0.0 | tools/gate/specs/go-gostalgia-proc.spec | fixture |
 | Gostalgia proc fixture | fixture | GSPROC.ELF | ver 1.0.0 | tools/gate/specs/go-gostalgia-proc.spec | fixture |
-| Stress storm fixture | fixture | GOSTORM.ELF | — | tools/gate/specs/go-stress.spec | fixture |
-| Supervise fixture | fixture | SVFIX.ELF | — | tools/gate/specs/live-supervise.spec | fixture |
-| Tabapp harness fixture | fixture | GOTABAPP.ELF | — | tools/gate/specs/go-tabapp.spec | fixture |
-| Appkit demo fixture | fixture | GODEMO.ELF | — | tools/gate/specs/go-wm-journey.spec | fixture |
-| Big-math fixture | fixture | BTMATH.ELF | — | tools/gate/specs/go-btmath.spec | fixture |
-| GPU triangle proof | fixture | GPUTRIANGLE.ELF | — | tools/gate/specs/live-gpu3d.spec | fixture |
-| build-go.sh fixture set (GOHELLO/GOARGS/GOROUT/GOSCALE/GOSTRESS/GOPANIC/GOWIN/GONET/GOVINET/GOVIDNS/GOBIG/GOLOADBSS/GOREAD/GONETRATE/GOMBURST/GOSYSCALL/GOBIGREAD/GOSELFHOST) | fixture | — | — | tools/go/build-go.sh, tools/gate/specs/go-hello.spec | fixture |
+| Stress storm fixture | fixture | GOSTORM.ELF | ver 1.0.0 | tools/gate/specs/go-stress.spec | fixture |
+| Supervise fixture | fixture | SVFIX.ELF | ver 1.0.0 | tools/gate/specs/live-supervise.spec | fixture |
+| Tabapp harness fixture | fixture | GOTABAPP.ELF | ver 1.0.0 | tools/gate/specs/go-tabapp.spec | fixture |
+| Appkit demo fixture | fixture | GODEMO.ELF | ver 1.0.0 | tools/gate/specs/go-wm-journey.spec | fixture |
+| Big-math fixture | fixture | BTMATH.ELF | ver 1.0.0 | tools/gate/specs/go-btmath.spec | fixture |
+| GPU triangle proof | fixture | GPUTRIANGLE.ELF | ver 1.0.0 | tools/gate/specs/live-gpu3d.spec | fixture |
+| Composition probe | fixture | GOCOMP.ELF | ver 1.0.0 | tools/gate/specs/live-m14-composition.spec | fixture |
+| Progress-wire driver | fixture | GOPROGRESS.ELF | ver 1.0.0 | tools/gate/specs/go-wm-seat.spec | fixture |
+| WM-RPC probe | fixture | WMRPCPROBE.ELF | ver 1.0.0 | tools/gate/specs/go-agentd.spec, tools/gate/specs/go-wm-tabs.spec | fixture |
+| build-go.sh fixture set (GOHELLO/GOARGS/GOROUT/GOSCALE/GOSTRESS/GOPANIC/GOWIN/GONET/GOVINET/GOVIDNS/GOBIG/GOLOADBSS/GOREAD/GONETRATE/GOMBURST/GOSYSCALL/GOBIGREAD/GOSELFHOST) | fixture | — | ver 1.0.0 | tools/go/build-go.sh, tools/gate/specs/go-hello.spec | fixture |
 
 ### The windowed-candidates verdict (issue #3455)
 
@@ -203,60 +208,65 @@ to where one exists.
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| appkit | lib | — | — | ADR 0011 | shipped |
-| chords | lib | — | — | — | shipped |
-| clockfmt | lib | — | — | — | shipped |
-| css | lib | — | — | ADR 0028 | shipped |
-| draw | lib | — | — | ADR 0011 | shipped |
-| ed25519 | lib | — | — | ADR 0023 | shipped |
-| fatimg | lib | — | — | ADR 0055 | shipped |
-| find | lib | — | — | — | shipped |
-| flate | lib | — | — | — | shipped |
-| gpu3d | lib | — | — | ADR 0053 | shipped |
-| heap | lib | — | — | — | shipped |
-| hostint | lib | — | — | ADR 0051 | shipped |
-| httpc | lib | — | — | — | shipped |
-| ical | lib | — | — | — | shipped |
-| icons | lib | — | — | — | shipped |
-| ime | lib | — | — | — | shipped |
-| infer | lib | — | — | — | shipped |
-| layout | lib | — | — | — | shipped |
-| linebuf | lib | — | — | — | shipped |
-| mime | lib | — | — | — | shipped |
-| observe | lib | — | — | ADR 0043 | shipped |
-| outbox | lib | — | — | ADR 0051 | shipped |
-| pcm | lib | — | — | ADR 0046 | shipped |
-| pdf | lib | — | — | ADR 0040 | shipped |
-| pdfproof | lib | — | — | ADR 0040 | fixture |
-| pdfwrite | lib | — | — | ADR 0040 | shipped |
-| prof | lib | — | — | — | shipped |
-| rfb | lib | — | — | ADR 0045 | shipped |
-| settings | lib | — | — | tools/gate/specs/live-settings.spec | shipped |
-| shlib | lib | — | — | ADR 0044 | shipped |
-| snapshot | lib | — | — | — | shipped |
-| sshlib | lib | — | — | ADR 0025 | shipped |
-| store | lib | — | ReleaseVersion | ADR 0055 | shipped |
-| strace | lib | — | — | — | shipped |
-| supervise | lib | — | — | ADR 0042 | shipped |
-| svcgraph | lib | — | — | ADR 0042 | shipped |
-| svcmanifest | lib | — | — | ADR 0042 | shipped |
-| svg | lib | — | — | ADR 0041 | shipped |
-| svgproof | lib | — | — | ADR 0041 | fixture |
-| tabapp | lib | — | — | ADR 0033 | shipped |
-| teatty | lib | — | — | ADR 0020 | shipped |
-| theme | lib | — | — | — | shipped |
-| timesync | lib | — | — | ADR 0060 | shipped |
-| tls | lib | — | — | ADR 0029 | shipped |
-| ttf | lib | — | — | — | shipped |
-| vcard | lib | — | — | — | shipped |
-| vector | lib | — | — | ADR 0041 | shipped |
-| vectorconsumer | lib | — | — | ADR 0041 | fixture |
-| vi | lib | — | — | — | shipped |
-| vsockctl | lib | — | — | ADR 0056 | shipped |
-| vsys | lib | — | — | — | shipped |
-| webrender | lib | — | — | ADR 0028 | shipped |
-| webstyle | lib | — | — | ADR 0028 | shipped |
-| widgets | lib | — | — | ADR 0011 | shipped |
+| appkit | lib | — | ver 1.0.0 | ADR 0011 | shipped |
+| art | lib | — | ver 1.0.0 | — | shipped |
+| chords | lib | — | ver 1.0.0 | — | shipped |
+| clockfmt | lib | — | ver 1.0.0 | — | shipped |
+| css | lib | — | ver 1.0.0 | ADR 0028 | shipped |
+| draw | lib | — | ver 1.0.0 | ADR 0011 | shipped |
+| ed25519 | lib | — | ver 1.0.0 | ADR 0023 | shipped |
+| fatimg | lib | — | ver 1.0.0 | ADR 0055 | shipped |
+| find | lib | — | ver 1.0.0 | — | shipped |
+| flate | lib | — | ver 1.0.0 | — | shipped |
+| gpu3d | lib | — | ver 1.0.0 | ADR 0053 | shipped |
+| heap | lib | — | ver 1.0.0 | — | shipped |
+| hostint | lib | — | ver 1.0.0 | ADR 0051 | shipped |
+| httpc | lib | — | ver 1.0.0 | — | shipped |
+| ical | lib | — | ver 1.0.0 | — | shipped |
+| icons | lib | — | ver 1.0.0 | — | shipped |
+| ime | lib | — | ver 1.0.0 | — | shipped |
+| infer | lib | — | ver 1.0.0 | — | shipped |
+| layout | lib | — | ver 1.0.0 | — | shipped |
+| linebuf | lib | — | ver 1.0.0 | — | shipped |
+| mdns | lib | — | ver 1.0.0 | — | shipped |
+| mime | lib | — | ver 1.0.0 | — | shipped |
+| observe | lib | — | ver 1.0.0 | ADR 0043 | shipped |
+| outbox | lib | — | ver 1.0.0 | ADR 0051 | shipped |
+| pcm | lib | — | ver 1.0.0 | ADR 0046 | shipped |
+| pdf | lib | — | ver 1.0.0 | ADR 0040 | shipped |
+| pdfproof | lib | — | ver 1.0.0 | ADR 0040 | fixture |
+| pdfwrite | lib | — | ver 1.0.0 | ADR 0040 | shipped |
+| printq | lib | — | ver 1.0.0 | ADR 0051 | shipped |
+| prof | lib | — | ver 1.0.0 | — | shipped |
+| rfb | lib | — | ver 1.0.0 | ADR 0045 | shipped |
+| settings | lib | — | ver 1.0.0 | tools/gate/specs/live-settings.spec | shipped |
+| shlib | lib | — | ver 1.0.0 | ADR 0044 | shipped |
+| snapshot | lib | — | ver 1.0.0 | — | shipped |
+| speech | lib | — | ver 1.0.0 | ADR 0051 | shipped |
+| sshlib | lib | — | ver 1.0.0 | ADR 0025 | shipped |
+| store | lib | — | ReleaseVersion, ver 1.0.0 | ADR 0055 | shipped |
+| strace | lib | — | ver 1.0.0 | — | shipped |
+| supervise | lib | — | ver 1.0.0 | ADR 0042 | shipped |
+| svcgraph | lib | — | ver 1.0.0 | ADR 0042 | shipped |
+| svcmanifest | lib | — | ver 1.0.0 | ADR 0042 | shipped |
+| svg | lib | — | ver 1.0.0 | ADR 0041 | shipped |
+| svgproof | lib | — | ver 1.0.0 | ADR 0041 | fixture |
+| tabapp | lib | — | ver 1.0.0 | ADR 0033 | shipped |
+| teatty | lib | — | ver 1.0.0 | ADR 0020 | shipped |
+| theme | lib | — | ver 1.0.0 | — | shipped |
+| timesync | lib | — | ver 1.0.0 | ADR 0060 | shipped |
+| tls | lib | — | ver 1.0.0 | ADR 0029 | shipped |
+| ttf | lib | — | ver 1.0.0 | — | shipped |
+| vcard | lib | — | ver 1.0.0 | — | shipped |
+| vector | lib | — | ver 1.0.0 | ADR 0041 | shipped |
+| vectorconsumer | lib | — | ver 1.0.0 | ADR 0041 | fixture |
+| vaultlib | lib | — | ver 1.0.0 | — | shipped |
+| vi | lib | — | ver 1.0.0 | — | shipped |
+| vsockctl | lib | — | ver 1.0.0 | ADR 0056 | shipped |
+| vsys | lib | — | ver 1.0.0 | — | shipped |
+| webrender | lib | — | ver 1.0.0 | ADR 0028 | shipped |
+| webstyle | lib | — | ver 1.0.0 | ADR 0028 | shipped |
+| widgets | lib | — | ver 1.0.0 | ADR 0011 | shipped |
 
 
 ## Shared libraries — user/src/lib
@@ -266,37 +276,37 @@ subdirectory package).
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| action_registry.zig | lib | — | — | — | shipped |
-| asmenc.zig | lib | — | — | — | shipped |
-| crc32.zig | lib | — | — | — | shipped |
-| crypto.zig + crypto/ | lib | — | — | ADR 0023 | shipped |
-| fixtures/ | lib | — | — | — | fixture |
-| flate.zig | lib | — | — | — | shipped |
-| font8x8.zig | lib | — | — | — | shipped |
-| font_atlas_gen.zig | lib | — | — | — | shipped |
-| font_ttf.zig | lib | — | — | — | shipped |
-| image.zig | lib | — | — | — | shipped |
-| netargs.zig | lib | — | — | — | shipped |
-| netauth.zig | lib | — | — | — | shipped |
-| netstats.zig | lib | — | — | — | shipped |
-| netstatus.zig | lib | — | — | — | shipped |
-| pipe.zig | lib | — | — | — | shipped |
-| png.zig | lib | — | — | — | shipped |
-| qoi.zig | lib | — | — | — | shipped |
-| rng.zig | lib | — | — | — | shipped |
-| script.zig | lib | — | — | ADR 0021 | shipped |
+| action_registry.zig | lib | — | ver 1.0.0 | — | shipped |
+| asmenc.zig | lib | — | ver 1.0.0 | — | shipped |
+| crc32.zig | lib | — | ver 1.0.0 | — | shipped |
+| crypto.zig + crypto/ | lib | — | ver 1.0.0 | ADR 0023 | shipped |
+| fixtures/ | lib | — | ver 1.0.0 | — | fixture |
+| flate.zig | lib | — | ver 1.0.0 | — | shipped |
+| font8x8.zig | lib | — | ver 1.0.0 | — | shipped |
+| font_atlas_gen.zig | lib | — | ver 1.0.0 | — | shipped |
+| font_ttf.zig | lib | — | ver 1.0.0 | — | shipped |
+| image.zig | lib | — | ver 1.0.0 | — | shipped |
+| netargs.zig | lib | — | ver 1.0.0 | — | shipped |
+| netauth.zig | lib | — | ver 1.0.0 | — | shipped |
+| netstats.zig | lib | — | ver 1.0.0 | — | shipped |
+| netstatus.zig | lib | — | ver 1.0.0 | — | shipped |
+| pipe.zig | lib | — | ver 1.0.0 | — | shipped |
+| png.zig | lib | — | ver 1.0.0 | — | shipped |
+| qoi.zig | lib | — | ver 1.0.0 | — | shipped |
+| rng.zig | lib | — | ver 1.0.0 | — | shipped |
+| script.zig | lib | — | ver 1.0.0 | ADR 0021 | shipped |
 | sexiburger.zig | lib | — | ver 1.0.0 | ADR 0034 | retained-fallback |
-| shell.zig | lib | — | — | ADR 0021 | shipped |
-| smpst.zig | lib | — | — | — | fixture |
-| ssh/ | lib | — | — | ADR 0025 | shipped |
-| startup.zig | lib | — | — | — | shipped |
-| stdz/ | lib | — | — | — | shipped |
-| tabapp.zig | lib | — | — | ADR 0033 | shipped |
-| tls/ | lib | — | — | ADR 0029 | shipped |
-| toolbox.zig | lib | — | — | — | shipped |
-| tty.zig | lib | — | — | ADR 0020 | shipped |
-| ui.zig + ui/ | lib | — | — | ADR 0011 | shipped |
-| zc.zig | lib | — | — | tools/check-zc-host-contract.py | shipped |
+| shell.zig | lib | — | ver 1.0.0 | ADR 0021 | shipped |
+| smpst.zig | lib | — | ver 1.0.0 | — | fixture |
+| ssh/ | lib | — | ver 1.0.0 | ADR 0025 | shipped |
+| startup.zig | lib | — | ver 1.0.0 | — | shipped |
+| stdz/ | lib | — | ver 1.0.0 | — | shipped |
+| tabapp.zig | lib | — | ver 1.0.0 | ADR 0033 | shipped |
+| tls/ | lib | — | ver 1.0.0 | ADR 0029 | shipped |
+| toolbox.zig | lib | — | ver 1.0.0 | — | shipped |
+| tty.zig | lib | — | ver 1.0.0 | ADR 0020 | shipped |
+| ui.zig + ui/ | lib | — | ver 1.0.0 | ADR 0011 | shipped |
+| zc.zig | lib | — | ver 1.0.0 | tools/check-zc-host-contract.py | shipped |
 
 
 ## Kernel services owning a contract

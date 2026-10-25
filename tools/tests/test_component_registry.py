@@ -1,8 +1,10 @@
-"""Drift check for docs/component-registry.md (M189a, #3225).
+"""Drift check for the component registry (M189a, #3225; split #3676).
 
-The registry is the canonical component -> version-surface map; this test
-is what keeps it from silently lying. It parses the six-cell table rows
-and fails when:
+Rows are authored as fragments — docs/registry/<key>.md, one file per
+row key — and docs/component-registry.md is generated output compiled
+from them by tools/component-registry/compile.py. This test is what
+keeps the registry from silently lying. It parses the six-cell table
+rows out of the fragments and fails when:
 
   * an image/apps.txt executable has no `app` row, or an `app` row names
     a binary the manifest does not carry (both directions — coverage);
@@ -18,7 +20,13 @@ and fails when:
   * a `ver M.m.p` cell disagrees with the product-version const in the
     component's own source (`AppVersion`/`Version`/`pub const version`/
     `VER=`), in either direction — a const with no `ver` here is drift
-    too (issue #3463); and
+    too (issue #3463);
+  * a fragment is malformed (bad block, `key` != filename stem, unknown
+    `section`, non-integer `order`, no data rows) or two blocks claim
+    the same (section, order) slot;
+  * the committed docs/component-registry.md differs from a fresh
+    compile of the fragments (the aggregate is generated — edit the
+    fragment, rerun the compiler, commit both); and
   * a cell carries a kind/state/version token outside the grammar the
     registry documents in its "Row grammar" section.
 
@@ -27,6 +35,7 @@ and exits 0 — the ledger the seeding cards burned down; the flip
 (`test_every_row_carries_ver`, #3469) now fails the suite on any
 remaining row.
 """
+import importlib.util
 import re
 import sys
 import unittest
@@ -35,9 +44,22 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 REGISTRY = ROOT / "docs/component-registry.md"
+REGISTRY_DIR = ROOT / "docs/registry"
 APPS_TXT = ROOT / "image/apps.txt"
 RELEASE_GO = ROOT / "user/go/store/release.go"
 OSVER = ROOT / "kernel/src/osver.zig"
+
+
+def _compiler():
+    spec = importlib.util.spec_from_file_location(
+        "component_registry_compile",
+        ROOT / "tools" / "component-registry" / "compile.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+COMPILE = _compiler()
 
 KINDS = {"app", "seat", "tool", "fixture", "lib", "kernel-service", "host-tool", "asset", "script"}
 STATES = {"shipped", "staged", "fixture", "retained-fallback", "host"}
@@ -61,23 +83,26 @@ POSTSTATESAVE_RE = re.compile(
 
 
 def registry_rows():
-    """(lineno, cells) for every `|` row in the file.
+    """(where, cells) for every `|` data row in every fragment.
 
-    Header and separator lines are excluded; a `|` line that is neither a
-    header, a separator, nor a six-cell row is yielded as a one-cell row so
-    the grammar test can flag it as malformed rather than skipping it.
+    `where` is the docs/registry/<key>.md:line a fix goes in. Header and
+    separator lines are excluded; a `|` line that is neither a header, a
+    separator, nor a six-cell row is yielded as a one-cell row so the
+    grammar test can flag it as malformed rather than skipping it.
     """
     rows = []
-    for lineno, line in enumerate(REGISTRY.read_text().splitlines(), 1):
-        line = line.strip()
-        if not line.startswith("|"):
-            continue
-        cells = [c.strip() for c in line.strip("|").split("|")]
-        if all(set(c) <= {"-", ":", " "} and c for c in cells):
-            continue  # separator row
-        if cells[0] in ("name", ""):
-            continue  # header row
-        rows.append((lineno, cells))
+    for path in sorted(REGISTRY_DIR.glob("*.md")):
+        rel = path.relative_to(ROOT)
+        for lineno, line in enumerate(path.read_text().splitlines(), 1):
+            line = line.strip()
+            if not line.startswith("|"):
+                continue
+            cells = [c.strip() for c in line.strip("|").split("|")]
+            if all(set(c) <= {"-", ":", " "} and c for c in cells):
+                continue  # separator row
+            if cells[0] in ("name", ""):
+                continue  # header row
+            rows.append((f"{rel}:{lineno}", cells))
     return rows
 
 
@@ -346,19 +371,18 @@ def ver_exempt(kind, version_cell):
 def missing_ver_rows():
     """Non-exempt rows carrying no `ver` token — the seeding ledger."""
     out = []
-    for lineno, cells in registry_rows():
+    for where, cells in registry_rows():
         if len(cells) != 6 or ver_exempt(cells[1], cells[3]):
             continue
         if not any(VER_RE.match(t.strip()) for t in cells[3].split(",")):
-            out.append((lineno, cells[0], cells[1]))
+            out.append((where, cells[0], cells[1]))
     return out
 
 
 class TestComponentRegistry(unittest.TestCase):
     def test_row_grammar(self):
         fails = []
-        for lineno, cells in registry_rows():
-            where = f"component-registry.md:{lineno}"
+        for where, cells in registry_rows():
             if len(cells) != 6:
                 fails.append(
                     f"{where}: row has {len(cells)} cells, expected 6 — malformed row"
@@ -439,7 +463,7 @@ class TestComponentRegistry(unittest.TestCase):
     def test_binaries_are_produced(self):
         corpus = produced_binaries()
         fails = []
-        for lineno, cells in registry_rows():
+        for where, cells in registry_rows():
             if len(cells) != 6:
                 continue
             name, kind, binary = cells[0], cells[1], cells[2]
@@ -447,7 +471,7 @@ class TestComponentRegistry(unittest.TestCase):
                 continue
             if binary not in corpus:
                 fails.append(
-                    f"component-registry.md:{lineno}: {binary} ({name}) is not "
+                    f"{where}: {binary} ({name}) is not "
                     "produced by build.zig, image/, or tools/"
                 )
         self.assertEqual([], fails, "unproduced binaries:\n  " + "\n  ".join(fails))
@@ -455,21 +479,21 @@ class TestComponentRegistry(unittest.TestCase):
     def test_release_consts_in_grammar(self):
         grammar = release_grammar_consts()
         fails = []
-        for lineno, cells in registry_rows():
+        for where, cells in registry_rows():
             if len(cells) != 6:
                 continue
             for cell in (cells[3], cells[4]):
                 for token in [t.strip() for t in cell.split(",")]:
                     if RELEASE_CONST_RE.match(token) and token not in grammar:
                         fails.append(
-                            f"component-registry.md:{lineno}: {token} is not in "
+                            f"{where}: {token} is not in "
                             "the release grammar (user/go/store/release.go)"
                         )
         self.assertEqual([], fails, "const drift:\n  " + "\n  ".join(fails))
 
     def test_appver_matches_state_version(self):
         fails = []
-        for lineno, cells in registry_rows():
+        for where, cells in registry_rows():
             if len(cells) != 6:
                 continue
             name, kind, binary, version = cells[0], cells[1], cells[2], cells[3]
@@ -480,44 +504,43 @@ class TestComponentRegistry(unittest.TestCase):
             actual = registered_state_versions(pkg) if pkg else set()
             if len(actual) > 1:
                 fails.append(
-                    f"component-registry.md:{lineno}: {binary} registers "
+                    f"{where}: {binary} registers "
                     f"ambiguous StateVersions {sorted(actual)}"
                 )
                 continue
             if declared:
                 if len(declared) != 1:
-                    fails.append(f"component-registry.md:{lineno}: multiple appver tokens")
+                    fails.append(f"{where}: multiple appver tokens")
                     continue
                 if pkg is None:
                     fails.append(
-                        f"component-registry.md:{lineno}: appver on {binary} but "
+                        f"{where}: appver on {binary} but "
                         "no user/go package resolves"
                     )
                 elif not actual:
                     fails.append(
-                        f"component-registry.md:{lineno}: {binary} declares "
+                        f"{where}: {binary} declares "
                         f"appver {declared[0]} but {pkg.relative_to(ROOT)} "
                         "registers no StateVersion"
                     )
                 elif actual != {declared[0]}:
                     fails.append(
-                        f"component-registry.md:{lineno}: {binary} declares "
+                        f"{where}: {binary} declares "
                         f"appver {declared[0]} but the package registers {sorted(actual)[0]}"
                     )
             elif kind == "app" and actual:
                 fails.append(
-                    f"component-registry.md:{lineno}: {binary} registers "
+                    f"{where}: {binary} registers "
                     f"StateVersion {sorted(actual)[0]} but the registry shows '—'"
                 )
         self.assertEqual([], fails, "appver drift:\n  " + "\n  ".join(fails))
 
     def test_ver_matches_source_const(self):
         fails = []
-        for lineno, cells in registry_rows():
+        for where, cells in registry_rows():
             if len(cells) != 6:
                 continue
             name, kind, binary, version, owning = cells[0], cells[1], cells[2], cells[3], cells[4]
-            where = f"component-registry.md:{lineno}"
             declared = [
                 m.group(1)
                 for m in (VER_RE.match(t.strip()) for t in version.split(","))
@@ -588,6 +611,27 @@ class TestComponentRegistry(unittest.TestCase):
             "rows still missing ver:\n  " + "\n  ".join(
                 f"component-registry.md:{ln}: {name} ({kind})"
                 for ln, name, kind in missing))
+    def test_fragments_wellformed(self):
+        """Every docs/registry/*.md parses: key == filename stem, known
+        section, integer order, at least one data row per block, and no
+        two blocks claim the same (section, order) slot."""
+        # collect_rows runs fragment_errors on every file plus the
+        # cross-fragment (section, order) duplicate check.
+        _, fails = COMPILE.collect_rows()
+        self.assertEqual([], fails, "fragment violations:\n  " + "\n  ".join(fails))
+
+    def test_aggregate_in_sync(self):
+        """docs/component-registry.md is generated — it must equal a
+        fresh compile of the fragments + template."""
+        try:
+            fresh = COMPILE.render()
+        except ValueError as e:
+            self.fail(str(e))
+        committed = REGISTRY.read_text()
+        self.assertEqual(
+            committed, fresh,
+            "component-registry.md is stale — run "
+            "python3 tools/component-registry/compile.py and commit both")
 
     def test_osver_surface_exists(self):
         rows = [c for _, c in registry_rows() if len(c) == 6 and "osver" in c[3]]
@@ -601,7 +645,7 @@ if __name__ == "__main__":
         missing = missing_ver_rows()
         print(f"{len(missing)} registry rows carry no ver token "
               "(advisory — exempt: kernel-service, pin rows):")
-        for lineno, name, kind in missing:
-            print(f"  component-registry.md:{lineno}: {name} ({kind})")
+        for where, name, kind in missing:
+            print(f"  {where}: {name} ({kind})")
         sys.exit(0)
     unittest.main()

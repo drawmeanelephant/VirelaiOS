@@ -15,7 +15,7 @@ NAME="${GO_BUILD_NAME:-GODIFF}"
 # Gap-layout Go ELFs stream straight from the share into mapped pages and are
 # bounded by exec_image_max = 32 MiB on the file and elf.map_max = 64 MiB on
 # mapped memory (kernel/src/exec.zig:16-19,138), not the 2 MiB staging buffer.
-MAX_BYTES=33554432
+MAX_BYTES=$((32 * 1024 * 1024))
 
 log() { printf 'build-godiff: %s\n' "$*"; }
 
@@ -48,7 +48,7 @@ log "building virelai/$DIR -> $OUT"
 SIZE="$(stat -f%z "$OUT" 2>/dev/null || stat -c%s "$OUT")"
 log "wrote $OUT ($SIZE bytes)"
 if [ "$SIZE" -gt "$MAX_BYTES" ]; then
-    log "FAIL: $SIZE bytes exceeds exec_program_max ($MAX_BYTES); the kernel loader will refuse it"
+    log "FAIL: $SIZE bytes exceeds M72a load_max ($MAX_BYTES)"
     exit 1
 fi
 log "size ok (< $MAX_BYTES bytes)"

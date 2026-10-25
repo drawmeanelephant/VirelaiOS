@@ -4,14 +4,22 @@
 # (issue #1163). Runs the host make.bash pass on first use (the
 # cross-std pass is GOVIRELAI_STD=1 opt-in; see the pass-1 comment), then
 # links the named program as a static ET_EXEC at the kernel's fixed text
-# aperture (0x400000), DWARF+symtab stripped to fit the 1 MiB staging
-# bound (kernel exec.zig exec_program_max).
+# aperture (0x400000), DWARF+symtab stripped. A gap-layout Go ELF
+# stream-loads under the M72a load_max / exec_image_max bound (32 MiB),
+# not the 2 MiB staging bound (exec_program_max).
 #
 # Usage: bash tools/go/build-go.sh [program.go ...]
 #   Builds tools/go/hello.go by default. Output: <program>.ELF next to the
 #   source, or into $GO_BUILD_OUT when set (the gate copies from there).
 
 set -euo pipefail
+
+# Product version — the `ver M.m.p` the component-registry row for the
+# build-go.sh fixture set shows and the drift check resolves
+# (docs/component-registry.md); bump per the registry's rule. The
+# fixtures are single-file tools/go/*.go programs with no in-repo
+# version const, so the producer script is the carrier.
+VER="1.0.0"
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 FORK_DIR="${GO_FORK_DIR:-$(dirname "$REPO")/go-virelai}"

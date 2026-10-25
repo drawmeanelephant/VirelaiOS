@@ -1,0 +1,15 @@
+<!-- docs/registry/gocmdprofile.md — row fragment for docs/component-registry.md. The
+     aggregate is GENERATED (tools/component-registry/compile.py);
+     edit the row cells below + rerun the compiler. Never hand-edit
+     docs/component-registry.md. `section`/`order` place the block in
+     the emitted table; new blocks pick a free order between
+     neighbours. -->
+---
+key: gocmdprofile
+section: gate-fleet
+order: 250
+---
+
+| name | kind | binary | version | owning spec / contract | state |
+|------|------|--------|---------|------------------------|-------|
+| Instrumented compiler fixture | fixture | GOCMDPROFILE.ELF | ver 1.0.0 | tools/go/build-prof.sh, tools/gate/specs/live-observe.spec | fixture |

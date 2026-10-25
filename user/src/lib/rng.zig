@@ -7,6 +7,11 @@
 //! the GOOS=virelai Go runtime (#1163) consumes the same shared slot for its
 //! hash seed. No capability is required — every principal may read entropy.
 
+/// Product version — the `ver M.m.p` the component-registry lib row
+/// shows and the drift check resolves (docs/component-registry.md).
+/// The registry's bump rule says when it moves.
+pub const version = "1.0.0";
+
 const std = @import("std");
 // Module-mapped dep (the `ssh/` pattern): the wrapper is its own module in
 // the SSH.BIN graph, so `ui` arrives as a mapped module. Resolving

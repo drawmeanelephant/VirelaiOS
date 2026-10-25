@@ -4,6 +4,11 @@
 //! Freestanding, single-pass sequential decoder with zero heap allocation.
 //! Decodes directly into caller-provided 32-bpp B8G8R8X8_UNORM destination buffers.
 
+/// Product version — the `ver M.m.p` the component-registry lib row
+/// shows and the drift check resolves (docs/component-registry.md).
+/// The registry's bump rule says when it moves.
+pub const version = "1.0.0";
+
 const std = @import("std");
 
 pub const DecodeError = error{

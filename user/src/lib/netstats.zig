@@ -9,6 +9,11 @@
 //! All integers little-endian; IPs are raw network-order bytes ([4]u8);
 //! MACs raw bytes ([6]u8). Enum naturals are pinned in the kernel doc.
 
+/// Product version — the `ver M.m.p` the component-registry lib row
+/// shows and the drift check resolves (docs/component-registry.md).
+/// The registry's bump rule says when it moves.
+pub const version = "1.0.0";
+
 const std = @import("std");
 const ui = @import("ui.zig");
 
