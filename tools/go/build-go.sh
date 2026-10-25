@@ -14,6 +14,13 @@
 
 set -euo pipefail
 
+# Product version — the `ver M.m.p` the component-registry row for the
+# build-go.sh fixture set shows and the drift check resolves
+# (docs/component-registry.md); bump per the registry's rule. The
+# fixtures are single-file tools/go/*.go programs with no in-repo
+# version const, so the producer script is the carrier.
+VER="1.0.0"
+
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 FORK_DIR="${GO_FORK_DIR:-$(dirname "$REPO")/go-virelai}"
 BOOTSTRAP="${GOROOT_STOCK:-/opt/homebrew/Cellar/go/1.27.1/libexec}"
