@@ -134,10 +134,15 @@ if not bound and not unbound:
     sys.exit("FAIL: last dhcp report is neither bound nor honest-unbound: %r" % last)
 # Not stranded: last icmp report shows a completed round trip (req is
 # cumulative across the two scripted pings -- pong>=1 anchors it).
+# drop= is NOT pinned (#3429): since M198a's multicast MAC admit, LAN
+# noise (mDNS to 224.0.0.251) reaches ipv4.handle_rx on --net-nat and
+# lands in dropped_other -- ambient noise the dst gate counts by
+# design, not scripted-traffic loss. The round trip's proof is
+# pong/fail/seq; a dropped scripted echo costs the pong and fails here.
 last_icmp = [l for l in lines if " icmp=req=" in l]
 if not last_icmp:
     sys.exit("FAIL: no icmp report line")
-if not re.search(r" icmp=req=[0-9]+,repl=0,pong=[1-9][0-9]*,drop=0,fail=0,seq=[1-9][0-9]*", last_icmp[-1]):
+if not re.search(r" icmp=req=[0-9]+,repl=0,pong=[1-9][0-9]*,drop=[0-9]+,fail=0,seq=[1-9][0-9]*", last_icmp[-1]):
     sys.exit("FAIL: no completed gateway round trip: %r" % last_icmp[-1])
 print("dhcp P2 honest-branch + fallback ok (%s)" % ("bound" if bound else "unbound"))
 PY
