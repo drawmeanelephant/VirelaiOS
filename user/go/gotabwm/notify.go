@@ -43,6 +43,7 @@
 package main
 
 import (
+	"virelai/appkit"
 	"virelai/draw"
 	"virelai/settings"
 	"virelai/theme"
@@ -251,6 +252,19 @@ func notifyPushAction(tabID uint32, text string, ticks uint64, action uint8, sna
 	// notify_sound=off and no-device are no-ops inside the call.
 	notifyPlayChime()
 	return text, true, dropped
+}
+
+// toastA11yNodes is the strip's half of the M197a (#3381) seat outline:
+// one toast node per queued entry, oldest first — the queue's own order
+// is the band's top-to-bottom read, so no remap. The name is the toast
+// text as it was bounded onto the wire; a toast carries no state bits.
+func toastA11yNodes(depth int) []appkit.Node {
+	var out []appkit.Node
+	for _, t := range notifyQueue {
+		out = append(out, appkit.Node{Depth: depth,
+			Role: appkit.RoleToast, Name: t.text})
+	}
+	return out
 }
 
 // notifyCount is the queue depth (the test surface for the bound).

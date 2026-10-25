@@ -28,7 +28,9 @@
 # a11y.contrast=high seeds the boot, GODEMO and GOA11Y (the M177b outline
 # reader) are the hosted pair, run 01's key drive replays, and every
 # focus step GOA11Y samples must read as a named node in key order on
-# high-contrast seat chrome.
+# high-contrast seat chrome. M197a (#3381) adds the seat's own half: a
+# leg decodes the staged /host/A11Y.SEAT outline the seat publishes and
+# names the rail's live tab cells.
 #
 # HOST PREREQUISITES (fail the gate honestly when missing):
 #   bash tools/go/build-gotabwm.sh     ->  .build/go/GOTABWM.ELF
@@ -158,7 +160,8 @@ PY
 #                        even with serial-poll jitter (they fall to the
 #                        seat as non-chords on the dormant space)
 #   ctrl-alt-pageup   -> back to space "1" for the snapshot (so the
-#                        restore lands on the panes, cur=0)
+#                        restore lands on the panes, cur=1 — the v2
+#                        sidecar's 1-based entry ordinal, #3106)
 #   ctrl-shift-s      -> the snapshot bundle publishes
 vgate_run 01 -- \
     --screen '$RUN_DIR/screen-01' \
@@ -238,12 +241,13 @@ vgate_assert 01 serial-absent 'exited status=139'
 vgate_assert 01 python <<'PY'
 import os, sys
 share = os.environ["VG_SHARE"]
-# SESSION.PANES is the v2 spaces frame: PN\x02 nspaces=2 cur=0 — the
-# internal 0-based index of space "1" — both space names, and space "1"'s
+# SESSION.PANES is the v2 spaces frame: PN\x02 nspaces=2 cur=1 — the
+# sidecar's 1-based entry ordinal for space "1" (#3106 made cur 1-based;
+# 0 is never a space) — both space names, and space "1"'s
 # blob holding the three-leaf tree (v+h splits).
 blob = open(os.path.join(share, "SESSION.PANES"), "rb").read()
-if blob[:5] != b"PN\x02\x02\x00":
-    sys.exit("SESSION.PANES v2 header %r want PN\\x02 n=2 cur=0" % blob[:5])
+if blob[:5] != b"PN\x02\x02\x01":
+    sys.exit("SESSION.PANES v2 header %r want PN\\x02 n=2 cur=1" % blob[:5])
 if b"\x011" not in blob or b"\x012" not in blob:
     sys.exit("sidecar must carry both space names: %r" % blob)
 if b"v" not in blob[5:]:
@@ -271,7 +275,7 @@ if "split=v" not in lay:
     sys.exit("layout lost the v split")
 if "focus=1" not in lay:
     sys.exit("no focused pane recorded")
-print("sidecar %dB nspaces=2 cur=0; session records=%d groups=%s; layout: %s"
+print("sidecar %dB nspaces=2 cur=1; session records=%d groups=%s; layout: %s"
       % (len(blob), count, sorted(groups), rows))
 PY
 
@@ -635,10 +639,11 @@ panes = open(os.path.join(share, "SESSION.PANES"), "rb").read()
 if panes != ents["panes"]:
     sys.exit("SESSION.PANES != bundle panes (%d vs %d bytes)"
              % (len(panes), len(ents["panes"])))
-# Structural spot-checks: v2 header, two spaces, live=space "1" (cur=0),
-# the split kind byte, and three records over groups {1,2}.
-if panes[:5] != b"PN\x02\x02\x00":
-    sys.exit("SESSION.PANES v2 header %r want PN\\x02 n=2 cur=0" % panes[:5])
+# Structural spot-checks: v2 header, two spaces, live=space "1" (cur=1 —
+# the 1-based entry ordinal, #3106), the split kind byte, and three
+# records over groups {1,2}.
+if panes[:5] != b"PN\x02\x02\x01":
+    sys.exit("SESSION.PANES v2 header %r want PN\\x02 n=2 cur=1" % panes[:5])
 if b"\x011" not in panes or b"\x012" not in panes:
     sys.exit("sidecar must carry both space names: %r" % panes)
 if b"v" not in panes[5:]:
@@ -989,6 +994,44 @@ if False not in menubar[first_e + 1:]:
              % menubar)
 print("a11y audit win=%s: %d outline blocks, focused chain %r, "
       "menubar expanded-then-restored" % (win, len(blocks), focused))
+PY
+
+# --- the seat describes itself ---------------------------------------------
+# M197a (#3381): the seat stages its own #a11y v1 outline at A11Y.SEAT —
+# the fixed rendezvous, since the seat is not a kind-16 row — and this leg
+# decodes it whole. The rail subtree must name the run's two live tabs by
+# their declared titles, with exactly the focused cell carrying 'f'.
+vgate_assert 03 serial-contains 'gotabwm: a11y seat nodes='
+vgate_assert 03 python <<'PY'
+import os, sys
+share = os.environ["VG_SHARE"]
+path = os.path.join(share, "A11Y.SEAT")
+if not os.path.isfile(path):
+    sys.exit("A11Y.SEAT missing — the seat never staged its outline")
+body = open(path, "rb").read()
+if not body.startswith(b"#a11y v1\n"):
+    sys.exit("A11Y.SEAT header %r" % body[:16])
+nodes = []
+for ln in body[len(b"#a11y v1\n"):].decode("utf-8", "replace").splitlines():
+    if not ln:
+        continue
+    f = ln.split(" ", 3)
+    if len(f) < 3:
+        sys.exit("bad seat-outline line %r" % ln)
+    nodes.append((int(f[0]), f[1], f[2], f[3] if len(f) > 3 else ""))
+if not nodes or nodes[0][:3] != (0, "seat", "-"):
+    sys.exit("seat root %r" % (nodes[0] if nodes else None))
+rails = [n for n in nodes if n[1] == "rail"]
+if len(rails) != 1 or not rails[0][3].startswith("space "):
+    sys.exit("rail container %r" % rails)
+cells = [(n[2], n[3]) for n in nodes if n[1] == "tab"]
+if sorted(name for _, name in cells) != ["A11y", "Dialog"]:
+    sys.exit("rail cells %r want the run's two live tabs" % cells)
+focused = [name for st, name in cells if "f" in st]
+if focused != ["Dialog"]:
+    sys.exit("focused cell %r, want only Dialog" % focused)
+print("seat outline: %d nodes; rail cells %r; focused %s"
+      % (len(nodes), cells, focused[0]))
 PY
 
 # --- seat chrome is the high-contrast table -------------------------------

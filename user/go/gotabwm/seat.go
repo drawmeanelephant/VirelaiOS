@@ -652,6 +652,9 @@ func main() {
 	// M82d2 (#1785): the tail of the center's history (whatever landed since
 	// the last tick) is published before the seat says it is done.
 	flushNotifyHistory()
+	// M197a: a seat that exits cleanly leaves no stale chrome outline on
+	// the share for a reader to describe against a dead desktop.
+	seatA11yUnpublish()
 	vi.ConsoleLine(MarkerHostDone)
 
 	// M69a (#1528): the beat's closing marker for THIS boot. Gated on the
@@ -953,6 +956,11 @@ func compositePaint(scan []byte, ticks uint64, presents *int) (presented bool) {
 	if launch.open && presented && launch.painted {
 		vi.ConsoleLine("gotabwm: launcher presented")
 	}
+	// M197a (#3381): the seat's own a11y outline republishes on the frame
+	// cadence — gated on presented like every chrome marker above, so the
+	// staged file names only what a frame already showed, and the
+	// byte-dedup inside keeps an unchanged description from restaging.
+	seatA11yPublish(presented)
 	return presented
 }
 
