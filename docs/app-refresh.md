@@ -19,6 +19,11 @@ the ledger, not memory, decides which apps the next wave sees.
 Staleness is advisory, never a gate: `--stale` prints the table
 oldest-first and exits 0 regardless. Time is not a build input.
 
+The polish rotation's runnable half is the `live-polish-sweep` gate spec
+(`tools/gate/specs/live-polish-sweep.spec`, #3668): it boots the
+default seat on the session's NAT+sound posture and runs every shipped
+app through open -> its cheapest verifiable marker -> clean close.
+
 ## Seeding convention
 
 A row's `last refresh`/`date` is the newest non-merge commit on the
