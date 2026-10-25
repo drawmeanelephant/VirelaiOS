@@ -133,6 +133,9 @@ func menuSession(ta *tabapp.TabApp, ts *termState, fd uint32, in0 []byte) menuAc
 
 	paint()
 	vi.ConsoleLine("goterm: menubar open")
+	// M197d: the bar owns the keys — its subtree carries the focus
+	// verdict while the session stands.
+	a11yPublish(ta, menuOutline(&bar))
 
 	var in [64]byte
 	n := copy(in[:], in0)
@@ -154,6 +157,7 @@ func menuSession(ta *tabapp.TabApp, ts *termState, fd uint32, in0 []byte) menuAc
 					continue
 				}
 				bar.OnKey(k)
+				a11yPublish(ta, menuOutline(&bar))
 			}
 			if act == actNone {
 				paint()
@@ -172,8 +176,10 @@ func menuSession(ta *tabapp.TabApp, ts *termState, fd uint32, in0 []byte) menuAc
 	}
 
 	// Pop the alternate screen; the caller's repaint (or the fired verb's
-	// own output) restores the session frame.
+	// own output) restores the session frame — and the outline's focus
+	// returns to the line editor with it.
 	writeTTY(ts, fd, []byte("\x1b[?1049l"))
+	a11yPublish(ta, sessionOutline())
 	return act
 }
 

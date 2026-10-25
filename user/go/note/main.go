@@ -274,6 +274,21 @@ func main() {
 	if title := tabTitleForPath(a.path); ta.SetTabTitle(title) {
 		vi.ConsoleLine(markerTabTitle + title)
 	}
+	// M197d (#3416): the #a11y v1 outline — staged on every change the
+	// loop drives, deduped on the encoded bytes so a key that moved
+	// nothing costs a compare, never a write.
+	lastOutline := ""
+	publish := func() {
+		nodes := a.outline()
+		enc := string(appkit.EncodeOutline(nodes))
+		if enc == lastOutline {
+			return
+		}
+		if appkit.PublishOutline(uint32(ta.Win), nodes) {
+			lastOutline = enc
+		}
+	}
+	publish()
 	a.top = a.buf.Follow(a.top, a.rowsIn())
 	a.draw()
 	// ready means the first frame is BUILT AND PRESENTED, which is why it comes
@@ -314,6 +329,7 @@ func main() {
 			// path that fills a batch and forgets to present it.
 			vi.ConsoleLine(markerPresents + vi.Itoa64(int64(a.presents)))
 			vi.ConsoleLine(markerOK)
+			_ = appkit.UnpublishOutline(uint32(ta.Win))
 			// The seat specs wait on the exit marker before they read the kernel
 			// registry, so it has to be the LAST thing printed.
 			vi.ConsoleLine(markerExiting + vi.Itoa64(0))
@@ -332,9 +348,14 @@ func main() {
 				a.top = a.buf.Follow(a.top, a.rowsIn())
 				a.draw()
 				a.flushFindLog()
+				publish()
 			}
 		}
 	}
+	// A clean exit leaves the share honest; a crash leaves dead data a
+	// reader can never mistake for another window's tree (the kind-16
+	// focus check).
+	_ = appkit.UnpublishOutline(uint32(ta.Win))
 }
 
 // load reads the path into the buffer and returns the marker to print. The

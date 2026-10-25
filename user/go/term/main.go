@@ -166,6 +166,9 @@ func main() {
 		ta.CloseAndExit(2)
 	}
 	vi.ConsoleLine(markerAttach)
+	// M197d (#3416): stage the resting outline — the line editor owns
+	// the keys until a modal session says otherwise.
+	a11yPublish(ta, sessionOutline())
 	runSession(ta, fd, ts)
 }
 
@@ -545,6 +548,8 @@ func hintsSession(ta *tabapp.TabApp, ts *termState, fd uint32, editor *shlib.Edi
 	for _, l := range h.RowLines() {
 		vi.ConsoleLine(markerHintsRow + l)
 	}
+	// M197d: the overlay owns the keys while it stands.
+	a11yPublish(ta, modalOutline(appkit.RoleTree, "chord hints"))
 
 	var in [64]byte
 	for {
@@ -596,6 +601,7 @@ hintsDone:
 	// and the in-flight line exactly as the overlay found them.
 	writeTTY(ts, fd, []byte("\x1b[?1049l"))
 	writeTTY(ts, fd, editor.Repaint())
+	a11yPublish(ta, sessionOutline())
 	vi.ConsoleLine(markerHints + "close")
 }
 
@@ -646,6 +652,7 @@ func shutdown(ta *tabapp.TabApp, fd uint32, status int) {
 	// the second call only keeps this the single exit path.
 	_ = vi.TtyAttach(vi.TtyDetach)
 	vi.FileClose(fd)
+	a11yUnpublish(ta)
 	vi.ConsoleLine(markerClose)
 	vi.ConsoleLine(markerOK)
 	ta.CloseAndExit(status)
@@ -720,6 +727,8 @@ func findSession(ta *tabapp.TabApp, ts *termState, fd uint32, editor *shlib.Edit
 	rescan()
 	paint()
 	vi.ConsoleLine(markerFindOpen)
+	// M197d: the find field owns the keys while the bar stands.
+	a11yPublish(ta, modalOutline(appkit.RoleTextField, "find"))
 
 	var in [64]byte
 	for {
@@ -758,6 +767,7 @@ func findSession(ta *tabapp.TabApp, ts *termState, fd uint32, editor *shlib.Edit
 					// with the overlay) and returns the prompt.
 					writeRaw(ts, fd, []byte("\x1b[?1049l"))
 					writeTTY(ts, fd, editor.Repaint())
+					a11yPublish(ta, sessionOutline())
 					vi.ConsoleLine(markerFindClose)
 					return
 				case c == 0x0e || c == 0x0f, c == 0x07, c == '\r', c == '\n', c == '	', c == 0x08:

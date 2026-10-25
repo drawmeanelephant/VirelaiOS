@@ -133,6 +133,9 @@ type app struct {
 	disp       widgets.Text
 	hist       widgets.Text
 	keys       [maxCells]widgets.Button
+	// M197d (#3416): the last staged #a11y v1 body — publishOutline's
+	// dedup, so an unchanged frame costs a compare, never a write.
+	a11yLast string
 }
 
 func loadGuestTheme() {
@@ -173,6 +176,9 @@ func main() {
 		vi.ConsoleLine("gocalc: declare refused")
 	}
 	a.applyRestored()
+	// M197d: stage the resting outline — the restored mode decides the
+	// pad it describes.
+	a.publishOutline()
 
 	loop := appkit.NewLoop(a.ta, a.draw, a.handle)
 	if loop.SubscribeSetting("theme", func(value string) bool {
@@ -185,6 +191,7 @@ func main() {
 	}
 	loop.OnInitialPresent = func() { vi.ConsoleLine(markerPresent) }
 	loop.OnExit = func(status int) {
+		a.unpublishOutline()
 		vi.ConsoleLine(markerClose)
 		vi.ConsoleLine(markerOK)
 		a.ta.CloseAndExit(status)
@@ -199,6 +206,9 @@ func main() {
 }
 
 func (a *app) handle(ev vi.Event) bool {
+	// M197d: a handled event can move the pad (the mode toggle rewrites
+	// it) — republish deduped whatever the outcome was.
+	defer a.publishOutline()
 	switch ev.Kind {
 	case vi.EvKeyDown:
 		return a.key(ev)
