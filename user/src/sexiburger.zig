@@ -20,6 +20,13 @@ pub const SectionId = sexiburger.SectionId;
 pub const Command = sexiburger.Command;
 pub const ActionRegistry = sexiburger.ActionRegistry;
 
+/// SEXIBURG.BIN's product version — the `ver M.m.p` the component-
+/// registry row shows and the drift check resolves
+/// (docs/component-registry.md). The registry's bump rule says when it
+/// moves. The sexiburger.zig lib row resolves the same literal in
+/// lib/sexiburger.zig.
+pub const version = "1.0.0";
+
 pub const window_id: u32 = 7;
 pub const window_x: u32 = 32;
 pub const window_y: u32 = 32;

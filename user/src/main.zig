@@ -32,6 +32,12 @@
 //! exec (argc=0) prints exactly the markers earlier cards assert, so every
 //! existing live gate stays byte-identical.
 
+/// USER.BIN's product version — the `ver M.m.p` the component-registry
+/// row shows and the drift check resolves
+/// (docs/component-registry.md). The registry's bump rule says when it
+/// moves.
+pub const version = "1.0.0";
+
 export fn _start() callconv(.naked) noreturn {
     asm volatile (
         \\mov x10, x0 // argc (card 3e: entry contract — x0 argc, x1 argv VA; both 0 for no args)

@@ -219,6 +219,42 @@ VER_CONST_RES = {
 }
 
 
+# Explicit binary -> product-version source for the rows the name-guess
+# cannot serve (issue #3663): a package main under a lib dir
+# (observe/cmd, store/main), a fixture package its builder names nothing
+# like the binary (crashfixture -> CRASHFIX.ELF), a borrowed const
+# (GOEDITSYM.ELF takes GOEDIT's AppVersion; GSCHILD/GSPROC take
+# GOSTALGIA's), or a Zig root no guess names (QJS.BIN). The map is
+# consulted BEFORE the app_package_dir / ZIG_VER_SOURCES guesses — for
+# OBSERVE/PROF/STRACE/HEAP/GOTABAPP/STORE the same-named lib dir wins
+# the guess today and must not. Entries follow the leaf lists in the
+# family indexes (#3462).
+VER_SOURCE_MAP = {
+    "GOTGIT.ELF": "user/go/git",
+    "GOSELF.ELF": "user/go/selftest",
+    "OBSERVE.ELF": "user/go/observe/cmd",
+    "PROF.ELF": "user/go/prof/cmd",
+    "STRACE.ELF": "user/go/strace/cmd",
+    "HEAP.ELF": "user/go/heap/cmd",
+    "STORE.ELF": "user/go/store/main",
+    "CRASHFIX.ELF": "user/go/crashfixture",
+    "LOGFIX.ELF": "user/go/logfixture",
+    "GOEDITSYM.ELF": "user/go/edit",
+    "PROFFIX.ELF": "user/go/proffixture",
+    "TRACEFIX.ELF": "user/go/strace/fixture",
+    "HEAPFIX.ELF": "user/go/heapfixture",
+    "HEAPBUDG.ELF": "user/go/heapfixture/budget",
+    "GSCHILD.ELF": "user/go/gsport",
+    "GSPROC.ELF": "user/go/gsport",
+    "GOSTORM.ELF": "user/go/stormfixture",
+    "SVFIX.ELF": "user/go/svfixture",
+    "GOTABAPP.ELF": "user/go/tabapp/demo",
+    "GODEMO.ELF": "user/go/appkit/demo",
+    "GOCOMP.ELF": "user/go/compose",
+    "QJS.BIN": "user/src/quickjs.zig",
+}
+
+
 def ver_targets(name, kind, binary, owning):
     """(path, const-kind) pairs the row's `ver` may resolve against.
 
@@ -227,17 +263,32 @@ def ver_targets(name, kind, binary, owning):
     row does not declare is drift in the other direction.
     """
     targets = []
-    if binary.endswith(".ELF"):
-        pkg = app_package_dir(binary)
-        if pkg:
+    mapped = VER_SOURCE_MAP.get(binary)
+    if mapped is not None:
+        src = ROOT / mapped
+        if src.is_dir():
             const_kind = "go-lib" if kind == "lib" else "go-app"
             targets += [
                 (go, const_kind)
-                for go in sorted(pkg.glob("*.go"))
+                for go in sorted(src.glob("*.go"))
                 if not go.name.endswith("_test.go")
             ]
-    if binary in ZIG_VER_SOURCES:
-        targets.append((ROOT / ZIG_VER_SOURCES[binary], "zig"))
+        elif src.suffix == ".zig" and src.is_file():
+            targets.append((src, "zig"))
+        elif src.is_file():
+            targets.append((src, "script"))
+    else:
+        if binary.endswith(".ELF"):
+            pkg = app_package_dir(binary)
+            if pkg:
+                const_kind = "go-lib" if kind == "lib" else "go-app"
+                targets += [
+                    (go, const_kind)
+                    for go in sorted(pkg.glob("*.go"))
+                    if not go.name.endswith("_test.go")
+                ]
+        if binary in ZIG_VER_SOURCES:
+            targets.append((ROOT / ZIG_VER_SOURCES[binary], "zig"))
     if kind == "script" and binary.startswith("SCRIPTS/"):
         targets.append((ROOT / "image/scripts" / binary[8:].lower(), "script"))
     if kind == "lib":
@@ -502,6 +553,29 @@ class TestComponentRegistry(unittest.TestCase):
                     f"({', '.join(paths)}) but the row shows no ver token"
                 )
         self.assertEqual([], fails, "ver drift:\n  " + "\n  ".join(fails))
+
+    def test_ver_source_map_targets_exist(self):
+        """Every VER_SOURCE_MAP entry names a real const carrier.
+
+        The map wins over the name-guess, so a stale or mistyped entry
+        silently detargets a row — it must fail here, not as a
+        confusing "no const resolves" on some later leaf's diff.
+        """
+        fails = []
+        for binary, relpath in sorted(VER_SOURCE_MAP.items()):
+            p = ROOT / relpath
+            if p.is_dir():
+                if not [
+                    go
+                    for go in p.glob("*.go")
+                    if not go.name.endswith("_test.go")
+                ]:
+                    fails.append(
+                        f"{binary} -> {relpath}: directory holds no non-test .go"
+                    )
+            elif not p.is_file():
+                fails.append(f"{binary} -> {relpath}: no such file")
+        self.assertEqual([], fails, "stale ver source map:\n  " + "\n  ".join(fails))
 
     def test_osver_surface_exists(self):
         rows = [c for _, c in registry_rows() if len(c) == 6 and "osver" in c[3]]

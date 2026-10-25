@@ -12,6 +12,12 @@ pub const std_options_debug_io = sdk.std_options_debug_io;
 pub const std_options_FilePermissions = sdk.std_options_FilePermissions;
 pub const std_options_cwd = sdk.std_options_cwd;
 
+/// QJS.BIN's product version — the `ver M.m.p` the component-registry
+/// row shows and the drift check resolves
+/// (docs/component-registry.md). The registry's bump rule says when it
+/// moves.
+pub const version = "1.0.0";
+
 comptime {
     @import("sdk").entry.exportEntry(dispatch);
 }

@@ -23,6 +23,12 @@ const std = @import("std");
 // against the module bytes. The in-tree hash is the same one lib/ssh uses.
 const sha256 = @import("lib/crypto/sha256.zig");
 
+/// WASM.BIN's product version — the `ver M.m.p` the component-registry
+/// row shows and the drift check resolves
+/// (docs/component-registry.md). The registry's bump rule says when it
+/// moves.
+pub const version = "1.0.0";
+
 // ---------------------------------------------------------------------------
 // Bounds (the zc discipline: fixed arrays, no heap)
 // ---------------------------------------------------------------------------
