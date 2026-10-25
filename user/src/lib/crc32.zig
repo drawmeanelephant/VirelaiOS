@@ -3,6 +3,11 @@
 //! Milestone 23 / Issue #824 (IMG3).
 //! Polynomial 0xEDB88320, comptime table-driven, zero heap allocation.
 
+/// Product version — the `ver M.m.p` the component-registry lib row
+/// shows and the drift check resolves (docs/component-registry.md).
+/// The registry's bump rule says when it moves.
+pub const version = "1.0.0";
+
 const std = @import("std");
 
 pub const table = blk: {

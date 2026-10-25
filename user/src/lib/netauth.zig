@@ -22,6 +22,11 @@
 //!
 //! Pure policy over injected syscall/secret seams, so it is host-testable.
 
+/// Product version — the `ver M.m.p` the component-registry lib row
+/// shows and the drift check resolves (docs/component-registry.md).
+/// The registry's bump rule says when it moves.
+pub const version = "1.0.0";
+
 const std = @import("std");
 const abi = @import("ui/abi.zig");
 const hmac = @import("crypto/hmac.zig");

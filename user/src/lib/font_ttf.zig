@@ -4,6 +4,11 @@
 //! Parses standard TrueType tables (head, maxp, hhea, hmtx, cmap, loca, glyf),
 //! evaluates quadratic Bézier curves, and rasterizes anti-aliased glyphs.
 
+/// Product version — the `ver M.m.p` the component-registry lib row
+/// shows and the drift check resolves (docs/component-registry.md).
+/// The registry's bump rule says when it moves.
+pub const version = "1.0.0";
+
 const std = @import("std");
 
 pub const Error = error{

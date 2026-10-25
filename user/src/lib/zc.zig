@@ -1,6 +1,11 @@
 //! Host-side & in-guest prelude for zc (DipshitOS self-hosting compiler).
 //! Exposes syscall wrappers and helpers that match in-guest zc semantics.
 
+/// Product version — the `ver M.m.p` the component-registry lib row
+/// shows and the drift check resolves (docs/component-registry.md).
+/// The registry's bump rule says when it moves.
+pub const version = "1.0.0";
+
 pub fn exit(status: u64) noreturn {
     asm volatile ("svc #0"
         :

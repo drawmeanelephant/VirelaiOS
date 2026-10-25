@@ -7,6 +7,11 @@
 //! This is the source table's documented convention: pixel `x` is
 //! `(row >> x) & 1`, not an MSB-first framebuffer encoding.
 
+/// Product version — the `ver M.m.p` the component-registry lib row
+/// shows and the drift check resolves (docs/component-registry.md).
+/// The registry's bump rule says when it moves.
+pub const version = "1.0.0";
+
 const std = @import("std");
 
 /// Whether source-font row `row` paints horizontal pixel `x`. Daniel

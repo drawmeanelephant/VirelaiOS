@@ -8,6 +8,11 @@
 //!   - draw.zig: Rect, Point, fill_rect, draw_text (Inter TTF), FillBatcher, WindowBacking
 //!   - widgets.zig: Button, Label, TextInput, ListView, DropDown, Menu, ScrollView, Dialog, etc.
 
+/// Product version — the `ver M.m.p` the component-registry lib row
+/// shows and the drift check resolves (docs/component-registry.md).
+/// The registry's bump rule says when it moves.
+pub const version = "1.0.0";
+
 const std = @import("std");
 
 pub const font8x8 = @import("font8x8.zig");
