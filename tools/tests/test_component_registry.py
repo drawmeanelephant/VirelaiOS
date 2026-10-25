@@ -81,12 +81,19 @@ def apps_txt_executables():
 
 
 def produced_binaries():
-    """Every NAME.ELF/BIN/SO/EFI the build or staging path can produce."""
+    """Every NAME.ELF/BIN/SO/EFI the build or staging path can produce.
+
+    Gate specs are part of the staging path: the M201a gate-fleet rows
+    name binaries a build-*.sh emits under a computed output name, and
+    the spec that copies it onto the gate share is where the literal
+    staged name is written down.
+    """
     corpus = set(apps_txt_executables())
     files = [ROOT / "build.zig"]
     files += glob(str(ROOT / "image/*"))
     files += glob(str(ROOT / "tools/**/*.sh"), recursive=True)
     files += glob(str(ROOT / "tools/**/*.py"), recursive=True)
+    files += glob(str(ROOT / "tools/gate/specs/*.spec"))
     for f in files:
         p = Path(f)
         if p.is_file():
