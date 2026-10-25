@@ -7,6 +7,11 @@
 //! escape awareness, right-to-left `>>` preference, fnmatch-style classes —
 //! are fully host-testable. The execution glue lives in `user/src/sh.zig`.
 
+/// Product version — the `ver M.m.p` the component-registry lib row
+/// shows and the drift check resolves (docs/component-registry.md).
+/// The registry's bump rule says when it moves.
+pub const version = "1.0.0";
+
 const std = @import("std");
 
 fn isSpace(byte: u8) bool {

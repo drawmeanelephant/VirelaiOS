@@ -15,6 +15,11 @@
 //! returning `error.CovenantOfSixExceeded` with citation:
 //! "the tentacle count is load-bearing: seventh section rejected by the covenant of six".
 
+/// Product version — the `ver M.m.p` the component-registry lib row
+/// shows and the drift check resolves (docs/component-registry.md).
+/// The registry's bump rule says when it moves.
+pub const version = "1.0.0";
+
 const std = @import("std");
 
 pub const covenant_citation: []const u8 =
