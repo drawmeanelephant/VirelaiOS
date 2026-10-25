@@ -5,11 +5,11 @@
 # exec-order: assert-proven -- every snapshot follows guest reap or launcher
 # exit; output, receipt and page assertions fail if any guest work is absent.
 
-vgate_name live-quickjs "ADR 0039 file, interactive, refusal, bounds and cold/cleanup acceptance"
+vgate_name live-quickjs "ADR 0039 file, interactive, refusal, bounds, cold/cleanup and desk-open journey acceptance"
 vgate_share arm-virtiofs
 vgate_runner_flags -Xswiftc -DSPIKE
 vgate_fmt user/src/quickjs.zig tools/js-client/*.zig
-vgate_note "QJS-FILE-EVAL QJS-INTERACTIVE-EVAL QJS-REFUSALS QJS-BOUNDS QJS-COLD-AND-CLEANUP QJS-STAGED QJS-VIRELAI-NS QJS-SHIPPED-WORKFLOW"
+vgate_note "QJS-FILE-EVAL QJS-INTERACTIVE-EVAL QJS-REFUSALS QJS-BOUNDS QJS-COLD-AND-CLEANUP QJS-STAGED QJS-VIRELAI-NS QJS-SHIPPED-WORKFLOW QJS-JOURNEY"
 
 vgate_setup_python <<'PY'
 import os, pathlib, sys
@@ -74,6 +74,45 @@ print("setup: session.sh staged QJS.BIN into the session share "
       "(byte-equal to the .build/js-client product)")
 PY
 
+# M200e (issue #3446): the acceptance journey fixture. The NO_GOTABWM
+# provision above skips manifest apps, so the consumer itself —
+# GOFILES.ELF — is staged through the same ensure-guest-elf builder
+# session.sh would call (hash-cached). The .js a user wrote lives in its
+# own directory so Enter's target is unambiguous; the readFile input
+# sits at the share root, outside that listing. JOURNEY.JS reads JSEED,
+# writes OUT.TXT through the virelai namespace, reads it back, then
+# names the out-of-policy refusals — the whole arc in one script.
+vgate_setup_python <<'PY'
+import os, pathlib, shutil, subprocess, sys
+rd = os.environ["RUN_DIR"]
+share = pathlib.Path(rd) / "share"
+subprocess.run(["bash", "tools/go/ensure-guest-elf.sh", "ensure", "GOFILES"],
+               check=True)
+shutil.copy2(".build/go/GOFILES.ELF", share / "GOFILES.ELF")
+(share / "JSEED.TXT").write_text("jny-seed")
+jdir = share / "JNEY"
+jdir.mkdir(exist_ok=True)
+(jdir / "JOURNEY.JS").write_text(
+    "print('jny-args:' + virelai.args.join('|'));\n"
+    "var s = virelai.readFile('/host/JSEED.TXT');\n"
+    "print('jny-read:' + s);\n"
+    "virelai.writeFile('/host/JNEY/OUT.TXT', s + '+js');\n"
+    "print('jny-roundtrip:' + virelai.readFile('/host/JNEY/OUT.TXT'));\n"
+    "for (const f of [\n"
+    "  () => virelai.readFile('/dev/tty'),\n"
+    "  () => virelai.readFile('/host/JNEY/GONE.TXT'),\n"
+    "  () => virelai.writeFile('/etc/nope', 'x'),\n"
+    "  () => virelai.writeFile('/host/JSEED.TXT', 'x'),\n"
+    "]) { try { f(); print('jny-refusal-miss'); } catch (e) { print('jny-refusal:' + e.name); } }\n"
+    "print('jny-done');\n")
+(pathlib.Path(rd) / "journey-open.txt").write_text(
+    "pages\nexec GOFILES.ELF /host/JNEY\n")
+(pathlib.Path(rd) / "journey-close.txt").write_text("dui close 2\n")
+(pathlib.Path(rd) / "journey-after.txt").write_text(
+    "pages\nprocs receipt QJS.BIN\ntty\nsyscalls\necho jny-teardown-ok\n")
+print("setup: staged GOFILES.ELF + JNEY/JOURNEY.JS journey fixture")
+PY
+
 vgate_file check.py <<'PY'
 import pathlib, sys
 sys.dont_write_bytecode = True
@@ -87,7 +126,7 @@ PY
 # before any leg's workload (D4). The 20 script-only legs below restore it via
 # --from-checkpoint qjs; their first --script-after is re-based onto the
 # post-restore handshake (D5), while their later markers gate on the leg's own
-# exec and re-occur inside the leg's epoch. The seven cold legs keep a
+# exec and re-occur inside the leg's epoch. The eight cold legs keep a
 # `warm-cold:` comment naming their ADR D7 class.
 vgate_checkpoint qjs --
 
@@ -127,6 +166,23 @@ vgate_run virelai-refused --from-checkpoint qjs -- --script '$RUN_DIR/virelai-re
 # staged under SCRIPTS/ runs end to end on the virelai namespace: readFile
 # APPS.TXT, writeFile APPSUM.TXT, print the summary line.
 vgate_run workflow --from-checkpoint qjs -- --script '$RUN_DIR/workflow.txt' --script-after 'tasks user-el0 reaped' --script2 '$RUN_DIR/after.txt' --script2-after 'tasks user-exec reaped' --script-expect 'qjs-gate-done' --timeout 90
+# M200e (issue #3446): the acceptance journey — ONE boot walks the whole
+# consumer path: GOFILES' Script mime dispatch opens JNEY/JOURNEY.JS
+# (the go-fileman run-23 shape), QJS.BIN execs it over the armed
+# virtio-fs share, and the script itself round-trips /host/ through the
+# virelai namespace and refuses outside it by name. --screen attaches
+# the virtio-gpu scanout the window composites into.
+# warm-cold: journey (D1) — --via-virtio arms a VZCustomVirtioDevice,
+# unsaveable; statically cold, never attempted.
+# Teardown ordering is load-bearing: check.py wants the last
+# `tasks … reaped` BEFORE the last `pages:` and wants both pages samples
+# equal — so GOFILES must be gone, not just QJS. `dui close 2` fires on
+# QJS's reap (the first user-exec reap in this leg); the closing pages
+# gate on `procs GOFILES.ELF exited` plus a 3 s settle, the same
+# drain-the-reap-report margin the cold leg's --script2-delay uses —
+# contains() cannot count a second `tasks user-exec reaped`, so the exit
+# report + delay is the honest gate on the manager's reap landing first.
+vgate_run journey -- --screen '$RUN_DIR/journey-screen' --input --via-virtio --script '$RUN_DIR/journey-open.txt' --script-after 'tasks user-el0 reaped' --input-chords 'return' --input-chords-after 'gofiles: ready' --script2 '$RUN_DIR/journey-close.txt' --script2-after 'tasks user-exec reaped' --script3 '$RUN_DIR/journey-after.txt' --script3-after 'procs GOFILES.ELF exited status=0' --script3-delay 3 --script-expect 'jny-teardown-ok' --timeout 240
 
 vgate_assert file serial-contains 'procs QJS.BIN exited status=0'
 vgate_assert refused serial-contains 'procs QJS.BIN exited status=0'
@@ -196,6 +252,38 @@ expected = ("APPS.TXT summary\napps: %d (%d docked)\n%s\n"
             % (rows, docked, "\n".join(names)))
 got = (share / "APPSUM.TXT").read_text()
 assert got == expected, "APPSUM.TXT mismatch:\n%r\nwant\n%r" % (got, expected)
+PY
+
+# M200e: the journey, in order — the dispatch decision pairs with the
+# named console sink, the launch outcome names the handler + pid, the
+# script's own markers prove the virelai namespace round-trip and the
+# named refusals, and the file it wrote is byte-compared on the share.
+vgate_assert journey serial-contains 'exec: loaded GOFILES.ELF'
+vgate_assert journey serial-contains 'gofiles: list /host/JNEY n=1'
+vgate_assert journey serial-contains 'gofiles: entry JOURNEY.JS file'
+vgate_assert journey serial-contains 'gofiles: open file JOURNEY.JS type=script handler=QJS.BIN'
+vgate_assert journey serial-contains 'gofiles: open console JOURNEY.JS'
+vgate_assert journey serial-contains 'gofiles: open launched JOURNEY.JS handler=QJS.BIN pid='
+vgate_assert journey serial-contains 'jny-args:QJS.BIN|/host/JNEY/JOURNEY.JS'
+vgate_assert journey serial-contains 'jny-read:jny-seed'
+vgate_assert journey serial-contains 'jny-roundtrip:jny-seed+js'
+vgate_assert journey serial-contains 'jny-refusal:AccessDenied'
+vgate_assert journey serial-contains 'jny-refusal:FileNotFound'
+vgate_assert journey serial-contains 'jny-refusal:PathAlreadyExists'
+vgate_assert journey serial-absent 'jny-refusal-miss'
+vgate_assert journey serial-contains 'jny-done'
+vgate_assert journey serial-contains 'qjs: clean'
+vgate_assert journey serial-contains 'procs QJS.BIN exited status=0'
+vgate_assert journey serial-contains 'dui close: closed=2'
+vgate_assert journey serial-contains 'procs GOFILES.ELF exited status=0'
+vgate_assert journey serial-contains 'jny-teardown-ok'
+vgate_assert journey serial-absent 'gofiles: open refused JOURNEY.JS'
+vgate_assert journey serial-absent 'gofiles: open launch refused'
+vgate_assert journey serial-absent 'exited status=139'
+vgate_assert journey share-equals JNEY/OUT.TXT 'jny-seed+js'
+vgate_assert journey python <<'PY'
+import os, runpy
+runpy.run_path(os.path.join(os.environ["RUN_DIR"], "check.py"))
 PY
 
 vgate_assert file python <<'PY'
