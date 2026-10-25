@@ -29,7 +29,7 @@ APPS_TXT = ROOT / "image/apps.txt"
 RELEASE_GO = ROOT / "user/go/store/release.go"
 OSVER = ROOT / "kernel/src/osver.zig"
 
-KINDS = {"app", "seat", "tool", "fixture", "lib", "kernel-service", "host-tool"}
+KINDS = {"app", "seat", "tool", "fixture", "lib", "kernel-service", "host-tool", "asset"}
 STATES = {"shipped", "staged", "fixture", "retained-fallback", "host"}
 
 BINARY_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,24}\.(?:ELF|BIN|SO|EFI)$")

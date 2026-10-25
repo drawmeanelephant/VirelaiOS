@@ -143,6 +143,26 @@ fixtures sharing one builder and one naming map.
 | build-go.sh fixture set (GOHELLO/GOARGS/GOROUT/GOSCALE/GOSTRESS/GOPANIC/GOWIN/GONET/GOVINET/GOVIDNS/GOBIG/GOLOADBSS/GOREAD/GONETRATE/GOMBURST/GOSYSCALL/GOBIGREAD/GOSELFHOST) | fixture | — | — | tools/go/build-go.sh, tools/gate/specs/go-hello.spec | fixture |
 
 
+## Staged art — the f-artcraft conveyor (M203)
+
+Signed f-artcraft drops adopted by `tools/art/adopt.py` into `image/art/`
+and staged on the session share under `/host/ART/`. The manifest
+(`image/art/ART.TXT`) is the canonical row set — it pins each asset's
+source slug, share name, ship size, and both SHA-256s; rows here group
+the manifest by family and say which seams consume them. Assets are not
+binaries, so the binary column stays `—`.
+
+| name | kind | binary | version | owning spec / contract | state |
+|------|------|--------|---------|------------------------|-------|
+| Cursor set (10 masks + ship hotspots — arrow paints; context selection is #3348 b) | asset | — | — | image/art/cursors/MASKS.TXT, image/art/ART.TXT, tools/art/mkcursormask.py | staged |
+| Mascot poses (wave + locked paint via GOWELCOME/lock curtain; slep/thnk/celb/oops unwired) | asset | — | — | image/art/ART.TXT | staged |
+| Spot icons (doc + nres paint via EmptyState.Spot; six unwired — see #3348) | asset | — | — | image/art/ART.TXT | staged |
+| Spinner sheets (arc + mascot — unwired; no spinner widget yet) | asset | — | — | image/art/ART.TXT | staged |
+| Boot plate (plt + emb — unwired; kernel render_splash cannot read /host) | asset | — | — | image/art/ART.TXT | staged |
+| Filetype icons (10 — paint in appkit.FilePicker rows; GOFILES list grid is text) | asset | — | — | image/art/ART.TXT | staged |
+| App icons (30 — pending the f-artcraft icon worker's apps.txt `icon=` seam) | asset | — | — | image/art/ART.TXT | staged |
+
+
 ## Shared libraries — user/go
 
 Importable packages under `user/go/` (every directory whose `.go` files
