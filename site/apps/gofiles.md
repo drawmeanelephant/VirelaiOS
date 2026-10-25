@@ -10,7 +10,7 @@ tags: [apps, showcase]
 | field | value |
 |-------|-------|
 | binary | `GOFILES.ELF` |
-| version | appver 1 |
+| version | appver 1, ver 1.0.0 |
 | owning spec / contract | [`tools/gate/specs/go-fileman.spec`](https://github.com/drawmeanelephant/VirelaiOS/blob/main/tools/gate/specs/go-fileman.spec) |
 | state | shipped |
 

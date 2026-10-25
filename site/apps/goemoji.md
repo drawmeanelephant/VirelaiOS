@@ -10,7 +10,7 @@ tags: [apps, showcase]
 | field | value |
 |-------|-------|
 | binary | `GOEMOJI.ELF` |
-| version | appver 2 |
+| version | appver 2, ver 1.0.0 |
 | owning spec / contract | [`tools/gate/specs/go-emoji.spec`](https://github.com/drawmeanelephant/VirelaiOS/blob/main/tools/gate/specs/go-emoji.spec) |
 | state | shipped |
 

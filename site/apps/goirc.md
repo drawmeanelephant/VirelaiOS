@@ -10,7 +10,7 @@ tags: [apps, showcase]
 | field | value |
 |-------|-------|
 | binary | `GOIRC.ELF` |
-| version | appver 3 |
+| version | appver 3, ver 1.0.0 |
 | owning spec / contract | [`tools/gate/specs/go-irc.spec`](https://github.com/drawmeanelephant/VirelaiOS/blob/main/tools/gate/specs/go-irc.spec) |
 | state | shipped |
 
