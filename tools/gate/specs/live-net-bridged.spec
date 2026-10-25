@@ -765,6 +765,12 @@ while i + 42 <= len(cap):
     if et == 0x0806:
         i += 42
         continue
+    if et == 0x86DD:
+        # IPv6 (the guest's NDP/link-local noise): fixed 40-byte header +
+        # payload length — the go-net-clis walk's shape. Skipping, not
+        # breaking: mDNS frames interleave with it.
+        i += 14 + 40 + ((cap[i + 18] << 8) | cap[i + 19])
+        continue
     if et != 0x0800 or cap[i + 14] >> 4 != 4:
         break
     tot = cap[i + 16] << 8 | cap[i + 17]
