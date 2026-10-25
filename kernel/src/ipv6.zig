@@ -105,9 +105,10 @@ pub var ping6_seq: u16 = 1;
 // ---------------------------------------------------------------------------
 
 /// The address state per D3/D5: tentative until its one DAD probe goes
-/// unanswered, valid after, conflicted forever on a DAD conflict (the
-/// ADR's "never leaves tentative" — a distinct tag so promotion can
-/// never resurrect it).
+/// unanswered, valid after, conflicted once the bounded re-probe budget
+/// is exhausted (issue #3400 — the conflict evidence is forgeable, so
+/// ndp.zig re-probes before the terminal tag; a conflicted address is
+/// never resurrected — promotion refuses it).
 pub const AddrState = enum { none, tentative, valid, conflicted };
 
 /// The ONE interface identifier — the modified EUI-64 of the device MAC.
@@ -274,9 +275,10 @@ pub fn promote(addr: *const Addr) bool {
     return false;
 }
 
-/// D5: a peer's NS/NA claimed the tentative target — mark it conflicted;
-/// it never becomes usable and the guest keeps running (a named
-/// refusal, not a panic).
+/// D5: the tentative target's bounded re-probe budget is exhausted
+/// (#3400 — ndp.zig re-probes on each forged-or-real conflict evidence
+/// before calling here) — mark it conflicted; it never becomes usable
+/// and the guest keeps running (a named refusal, not a panic).
 pub fn mark_conflicted(addr: *const Addr) void {
     if (link_local_state == .tentative and std.mem.eql(u8, &link_local, addr)) link_local_state = .conflicted;
     if (global_state == .tentative and std.mem.eql(u8, &global, addr)) global_state = .conflicted;

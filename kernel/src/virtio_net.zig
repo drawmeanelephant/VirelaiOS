@@ -1507,6 +1507,10 @@ pub const NdpPoll = struct {
 
 pub fn net_ndp_poll() NdpPoll {
     var ev: NdpPoll = .{};
+    // Issue #3400: ARP shares the stamped tick — the caller stamps
+    // `ndp.now_ticks` before this poll, and the same clock bounds the
+    // `pending_reply` learn window the RX drain checks.
+    arp.now_ticks = ndp.now_ticks;
     if (!net_ready) return ev;
     while (ndp.dad_due()) |addr| {
         if (ipv6.promote(&addr)) {

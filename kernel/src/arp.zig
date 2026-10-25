@@ -6,9 +6,11 @@
 //!
 //! Honest bounds: IPv4 ONLY (ptype 0x0800) — no IPv6/other; ONE bounded 4-slot
 //! table (fixed BSS, no heap, no allocation); no cache expiry (an entry
-//! lives until it is replaced — documented, not assumed); a request for
-//! an address we do not own is dropped with a counter (we only answer for
-//! our own protocol address).
+//! lives until it is replaced — documented, not assumed); the
+//! `pending_reply` learn window IS bounded — `pending_wait_ticks` on the
+//! stamped tick (issue #3400: an unanswered request does not leave the
+//! slot open forever); a request for an address we do not own is dropped
+//! with a counter (we only answer for our own protocol address).
 //!
 //! Next-hop (the off-subnet card): `lookup` answers the MAC of the NEXT
 //! HOP toward the queried address, not only the peer itself. A peer that
@@ -76,13 +78,26 @@ pub var table_cursor: usize = 0;
 /// `build_request` (the ONE wire-request funnel: every request we send
 /// asks "who has THIS address", so the built tpa is the pending target,
 /// already the NEXT-HOP resolution for an off-subnet destination) and
-/// cleared when its matching reply is learned. `null` = no request
-/// outstanding. M97e-F3 (#2102): a reply is learned ONLY against this —
-/// an unsolicited reply can never create or overwrite an entry (an
-/// on-link host could otherwise overwrite the gateway mapping and
-/// redirect every off-subnet flow). ONE slot: a second request
-/// supersedes the first, matching the single-request-at-a-time senders.
+/// cleared when its matching reply is learned or the bounded wait
+/// elapses. `null` = no request outstanding. M97e-F3 (#2102): a reply
+/// is learned ONLY against this — an unsolicited reply can never create
+/// or overwrite an entry (an on-link host could otherwise overwrite the
+/// gateway mapping and redirect every off-subnet flow). ONE slot: a
+/// second request supersedes the first, matching the
+/// single-request-at-a-time senders. #3400: `pending_reply_tick`
+/// bounds the learn window — an unanswered request does not leave the
+/// slot open forever.
 pub var pending_reply: ?[4]u8 = null;
+
+/// The 1 Hz tick clock — stamped by the caller each poll (the
+/// `dhcp.now_ticks`/`ndp.now_ticks` precedent; `net_ndp_poll` shares
+/// the NDP stamp). It bounds the `pending_reply` learn window.
+pub var now_ticks: u64 = 0;
+/// The tick `build_request` last opened the pending slot.
+pub var pending_reply_tick: u64 = 0;
+/// The bounded learn window: a matching reply learns only while
+/// `now_ticks - pending_reply_tick <= pending_wait_ticks`.
+pub const pending_wait_ticks: u64 = 2;
 
 /// ARP counters (the `net`/`net arp` reports).
 pub var requests_sent: u64 = 0; // ARP requests we transmitted (a resolve miss)
@@ -320,6 +335,7 @@ pub fn build_request(buf: []u8, own_mac: *const [6]u8, own_ip_addr: [4]u8, targe
     @memset(buf[0..arp_frame_len], 0);
     @memset(buf[0..6], 0xff); // broadcast dst
     pending_reply = target_ip; // a request for `target_ip` is now outstanding (M97e-F3)
+    pending_reply_tick = now_ticks; // the learn window bounds at this instant (#3400)
     @memcpy(buf[6..12], own_mac); // src
     buf[12] = 0x08;
     buf[13] = 0x06; // ethertype ARP
@@ -380,6 +396,15 @@ pub fn handle_rx(frame: []const u8, own_mac: *const [6]u8, reply_buf: []u8) ?usi
         const spa = sender_ip(frame);
         if (pending_reply) |p| {
             if (std.mem.eql(u8, &spa, &p)) {
+                // #3400: the learn window is bounded — a reply landing
+                // after `pending_wait_ticks` cannot learn; the slot
+                // closes instead of staying open forever (the NDP
+                // `na_wait_ticks` shape — the F4 solicited-race twin).
+                if (now_ticks -| pending_reply_tick > pending_wait_ticks) {
+                    pending_reply = null;
+                    dropped += 1;
+                    return null;
+                }
                 upsert(spa, sender_mac(frame));
                 replies_learned += 1;
                 pending_reply = null;
@@ -631,6 +656,44 @@ test "arp: handle_rx — answer for us, learn a reply, drop the rest" {
     own_ip = .{ 0, 0, 0, 0 };
     try std.testing.expect(handle_rx(&req, &test_mac, &reply_buf) == null);
     try std.testing.expectEqual(@as(u64, 5), dropped);
+}
+
+test "arp: the solicited-reply learn is bounded — a stale pending cannot learn" {
+    own_ip = ip_guest;
+    table = @as([table_slots]ArpEntry, @splat(@as(ArpEntry, .{})));
+    table_cursor = 0;
+    replies_learned = 0;
+    dropped = 0;
+    pending_reply = null;
+    now_ticks = 0;
+    defer own_ip = .{ 0, 0, 0, 0 };
+    defer pending_reply = null;
+    defer now_ticks = 0;
+
+    var reply_buf: [arp_frame_len]u8 = undefined;
+    var req: [arp_frame_len]u8 = undefined;
+    var rep: [arp_frame_len]u8 = undefined;
+    _ = build_reply(&rep, &host_mac, ip_host, test_mac, ip_guest);
+
+    // The fresh window: a reply inside `pending_wait_ticks` learns.
+    _ = build_request(&req, &test_mac, ip_guest, ip_host);
+    now_ticks = pending_reply_tick + pending_wait_ticks; // the window edge
+    try std.testing.expect(handle_rx(&rep, &test_mac, &reply_buf) == null);
+    try std.testing.expectEqual(@as(u64, 1), replies_learned);
+    try std.testing.expect(pending_reply == null);
+
+    // Past the wait: the matching reply cannot learn — the slot closes
+    // on sight (the NDP `na_wait_ticks` shape, issue #3400).
+    const other_ip = [4]u8{ 10, 0, 0, 7 };
+    var rep2: [arp_frame_len]u8 = undefined;
+    _ = build_reply(&rep2, &host_mac, other_ip, test_mac, ip_guest);
+    _ = build_request(&req, &test_mac, ip_guest, other_ip);
+    now_ticks = pending_reply_tick + pending_wait_ticks + 1;
+    try std.testing.expect(handle_rx(&rep2, &test_mac, &reply_buf) == null);
+    try std.testing.expectEqual(@as(u64, 1), replies_learned); // unchanged
+    try std.testing.expectEqual(@as(u64, 1), dropped);
+    try std.testing.expect(pending_reply == null);
+    try std.testing.expect(lookup(other_ip) == null);
 }
 
 // ---------------------------------------------------------------------------

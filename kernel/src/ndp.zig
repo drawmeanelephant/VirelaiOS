@@ -9,12 +9,18 @@
 //! DELAY/PROBE are documented-not-implemented — the ARP no-expiry
 //! precedent; the table bound and the pending slot are the whole
 //! state); ONE pending solicitation — a Neighbor Advertisement is
-//! learned only when it carries S=1 and its target matches it (the
-//! M97e-F3 precedent: an on-link host cannot overwrite the router
-//! mapping); unsolicited NAs and Redirects are counted drops, never
-//! learned; RSs are never answered (the guest is a host, not a router);
+//! learned only when it carries S=1, its target matches the pending,
+//! the pending is within `na_wait_ticks` of the solicitation that
+//! opened it, AND the NA's own source address IS the target (issue
+//! #3400: a multicast NS reveals the target to every on-link host, so
+//! an NA from any other source is `na_unsolicited`, never learned);
+//! unsolicited NAs and Redirects are counted drops, never learned;
+//! RSs are never answered (the guest is a host, not a router);
 //! the router record is RA-only; DAD is ONE probe per formed address
-//! and ONE bounded wait on the tick seam.
+//! and ONE bounded wait on the tick seam, plus `dad_retries_max`
+//! bounded re-probes on conflict evidence (issue #3400: the evidence —
+//! a src=:: NS or an NA — is forgeable on a hostile link, so it is not
+//! terminal on first sight).
 
 const std = @import("std");
 const ipv6 = @import("ipv6.zig");
@@ -63,11 +69,19 @@ pub var table_cursor: usize = 0;
 /// The ONE outstanding solicitation — set by `build_ns` (the wire-
 /// request funnel: every resolve asks "who has THIS target", already
 /// the NEXT-HOP resolution for an off-link destination) and cleared
-/// when its matching NA is learned. M97e-F3: a solicited NA is learned
-/// ONLY against this; an unsolicited NA (gratuitous or forged — an
-/// on-link host racing to overwrite the router mapping) is counted and
-/// dropped, never upserted.
+/// when its matching NA is learned or the bounded wait elapses.
+/// M97e-F3: a solicited NA is learned ONLY against this; an unsolicited
+/// NA (gratuitous or forged — an on-link host racing to overwrite the
+/// router mapping) is counted and dropped, never upserted. #3400:
+/// `pending_na_tick` bounds the learn window — an unanswered
+/// solicitation does not leave the slot open forever.
 pub var pending_na: ?ipv6.Addr = null;
+/// The tick `build_ns` last opened the pending slot (the
+/// `dad_wait_ticks` 1 Hz seam).
+pub var pending_na_tick: u64 = 0;
+/// The bounded learn window: a matching NA learns only while
+/// `now_ticks - pending_na_tick <= na_wait_ticks`.
+pub const na_wait_ticks: u64 = 2;
 
 // ---------------------------------------------------------------------------
 // The bounded RS train + one-probe DAD state (D4/D5 — the tick seam)
@@ -91,6 +105,24 @@ pub var dad_ll_sent: bool = false;
 pub var dad_ll_tick: u64 = 0;
 pub var dad_g6_sent: bool = false;
 pub var dad_g6_tick: u64 = 0;
+
+/// The bounded DAD re-probe (issue #3400): conflict evidence — an NS
+/// from the unspecified address (a peer's own DAD probe) or any NA
+/// naming the tentative target, per RFC 4862 §5.4.3 — is forgeable by
+/// an on-link peer, so it is not terminal on first sight. Each
+/// tentative address re-probes once `dad_rearm_ticks` have elapsed, up
+/// to `dad_retries_max` re-probes; only an exhausted budget calls
+/// `ipv6.mark_conflicted` (the honest terminal refusal). A persistent
+/// spammer still wins — the bound turns a one-packet permanent kill
+/// into a sustained-presence requirement, it is not invincibility.
+pub const dad_retries_max: u64 = 2;
+pub const dad_rearm_ticks: u64 = 2;
+pub var dad_ll_retries: u64 = 0;
+pub var dad_ll_rearm: bool = false;
+pub var dad_ll_rearm_tick: u64 = 0;
+pub var dad_g6_retries: u64 = 0;
+pub var dad_g6_rearm: bool = false;
+pub var dad_g6_rearm_tick: u64 = 0;
 
 /// The recorded-never-acted RA fields (D4): the last accepted RA's M/O
 /// flags and the global-forming PIO's lifetimes — report-only (no
@@ -229,6 +261,7 @@ pub fn build_ns(buf: []u8, own_mac: *const [6]u8, src_ll: *const ipv6.Addr, targ
     m[25] = 1;
     @memcpy(m[26..32], own_mac);
     pending_na = target.*; // the solicitation for `target` is now outstanding (M97e-F3)
+    pending_na_tick = now_ticks; // the learn window bounds at this instant (#3400)
     finish_checksum(buf, ns_msg_len);
     return frame_len;
 }
@@ -390,10 +423,14 @@ pub fn handle_ra(frame: []const u8) void {
     }
 }
 
-/// Neighbor Solicitation (D5): a tentative target is a DAD conflict; an
-/// NS for any other target is `ndp_drop`; an NS for an OWNED address is
-/// answered with an NA built into `reply_buf` (the caller transmits it —
-/// dst = the frame's observed Ethernet source, never a parsed option).
+/// Neighbor Solicitation (D5): a tentative target is DAD conflict
+/// evidence ONLY when the NS is itself a DAD probe — source :: per
+/// RFC 4862 §5.4.3 (a soliciting NS with a real source is a resolution
+/// attempt for an address we have not finished claiming; it is
+/// ignored, never a conflict, never answered). An NS for any other
+/// unowned target is `ndp_drop`; an NS for an OWNED address is answered
+/// with an NA built into `reply_buf` (the caller transmits it — dst =
+/// the frame's observed Ethernet source, never a parsed option).
 pub fn handle_ns(frame: []const u8, own_mac: *const [6]u8, reply_buf: []u8) ?usize {
     if (ipv6.payload_len(frame) < 24) {
         ndp_drop += 1; // too short to carry the target
@@ -402,9 +439,11 @@ pub fn handle_ns(frame: []const u8, own_mac: *const [6]u8, reply_buf: []u8) ?usi
     var target: ipv6.Addr = undefined;
     @memcpy(&target, frame[62..78]);
     if (ipv6.is_tentative(&target)) {
-        dad_conflicts += 1;
-        ipv6.mark_conflicted(&target);
-        last_conflict = target;
+        if (ipv6.is_unspecified(ipv6.src_addr(frame))) {
+            note_dad_conflict(&target);
+        } else {
+            ndp_drop += 1; // a resolution attempt — ignored (#3400)
+        }
         return null;
     }
     if (!ipv6.is_owned(&target)) {
@@ -414,10 +453,13 @@ pub fn handle_ns(frame: []const u8, own_mac: *const [6]u8, reply_buf: []u8) ?usi
     return build_na_reply(reply_buf, own_mac, frame);
 }
 
-/// Neighbor Advertisement (D5): a tentative target is a DAD conflict;
-/// S=1 + the target matching the pending solicitation is learned into
-/// the bounded table (the M97e-F3 solicited-only rule); everything else
-/// is `na_unsolicited` — an on-link host cannot overwrite the router
+/// Neighbor Advertisement (D5): a tentative target is DAD conflict
+/// evidence; S=1 + the target matching the pending solicitation is
+/// learned into the bounded table (the M97e-F3 solicited-only rule) —
+/// but only while the pending is within its bounded window AND the
+/// NA's own source IS the target (#3400: an honest answer always comes
+/// from the target's owner, the router included). Everything else is
+/// `na_unsolicited` — an on-link host cannot overwrite the router
 /// mapping.
 pub fn handle_na(frame: []const u8) void {
     if (ipv6.payload_len(frame) < 24) {
@@ -427,14 +469,22 @@ pub fn handle_na(frame: []const u8) void {
     var target: ipv6.Addr = undefined;
     @memcpy(&target, frame[62..78]);
     if (ipv6.is_tentative(&target)) {
-        dad_conflicts += 1;
-        ipv6.mark_conflicted(&target);
-        last_conflict = target;
+        note_dad_conflict(&target);
         return;
     }
     const flags = std.mem.readInt(u32, frame[58..62], .big);
     const solicited = (flags & 0x4000_0000) != 0;
     if (solicited and pending_na != null and std.mem.eql(u8, &pending_na.?, &target)) {
+        if (now_ticks -| pending_na_tick > na_wait_ticks) {
+            pending_na = null; // the bounded wait elapsed — close the slot (#3400)
+            na_unsolicited += 1;
+            return;
+        }
+        const src = ipv6.src_addr(frame);
+        if (!std.mem.eql(u8, &src, &target)) {
+            na_unsolicited += 1; // an answer must come from the target's owner (#3400)
+            return;
+        }
         var smac: [6]u8 = undefined;
         @memcpy(&smac, frame[6..12]); // the observed source, not a parsed option
         upsert(&target, smac);
@@ -445,39 +495,77 @@ pub fn handle_na(frame: []const u8) void {
     na_unsolicited += 1;
 }
 
+/// DAD conflict evidence for a tentative target (a src=:: NS or any
+/// NA — RFC 4862 §5.4.3). Forged evidence is possible on a hostile
+/// link, so first sight is not terminal: the address re-probes once
+/// `dad_rearm_ticks` have elapsed, up to `dad_retries_max` re-probes;
+/// only an exhausted budget marks it `conflicted` (#3400).
+fn note_dad_conflict(target: *const ipv6.Addr) void {
+    dad_conflicts += 1;
+    last_conflict = target.*;
+    const ll = std.mem.eql(u8, &ipv6.link_local, target) and ipv6.link_local_state == .tentative;
+    const g6 = std.mem.eql(u8, &ipv6.global, target) and ipv6.global_state == .tentative;
+    if (!ll and !g6) return; // not a tentative slot of ours — nothing to arm
+    const retries = if (ll) &dad_ll_retries else &dad_g6_retries;
+    const rearm = if (ll) &dad_ll_rearm else &dad_g6_rearm;
+    const rearm_tick = if (ll) &dad_ll_rearm_tick else &dad_g6_rearm_tick;
+    if (retries.* < dad_retries_max) {
+        retries.* += 1;
+        rearm.* = true;
+        rearm_tick.* = now_ticks;
+    } else {
+        ipv6.mark_conflicted(target);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // The tick-seam drive (D4/D5) — pure state; the transport sends
 // ---------------------------------------------------------------------------
 
 pub const DadSlot = enum { ll, g6 };
 
-/// Which tentative address needs its one DAD probe sent (null = none).
-/// The transport builds + transmits, then calls `dad_mark_sent`.
+/// Which tentative address needs its DAD probe sent (null = none):
+/// either the first probe (`!sent`) or a conflict re-arm whose backoff
+/// elapsed (#3400). The transport builds + transmits, then calls
+/// `dad_mark_sent`.
 pub fn dad_pending() ?struct { addr: ipv6.Addr, slot: DadSlot } {
-    if (ipv6.link_local_state == .tentative and !dad_ll_sent) return .{ .addr = ipv6.link_local, .slot = .ll };
-    if (ipv6.global_state == .tentative and !dad_g6_sent) return .{ .addr = ipv6.global, .slot = .g6 };
+    if (ipv6.link_local_state == .tentative) {
+        if (dad_ll_rearm) {
+            if (now_ticks -| dad_ll_rearm_tick >= dad_rearm_ticks) return .{ .addr = ipv6.link_local, .slot = .ll };
+        } else if (!dad_ll_sent) return .{ .addr = ipv6.link_local, .slot = .ll };
+    }
+    if (ipv6.global_state == .tentative) {
+        if (dad_g6_rearm) {
+            if (now_ticks -| dad_g6_rearm_tick >= dad_rearm_ticks) return .{ .addr = ipv6.global, .slot = .g6 };
+        } else if (!dad_g6_sent) return .{ .addr = ipv6.global, .slot = .g6 };
+    }
     return null;
 }
 
-/// Record the probe's send tick — the wait starts at transmission.
+/// Record the probe's send tick — the wait starts at transmission. A
+/// re-arm is discharged by the send (the backoff already elapsed).
 pub fn dad_mark_sent(slot: DadSlot) void {
     switch (slot) {
         .ll => {
             dad_ll_sent = true;
             dad_ll_tick = now_ticks;
+            dad_ll_rearm = false;
         },
         .g6 => {
             dad_g6_sent = true;
             dad_g6_tick = now_ticks;
+            dad_g6_rearm = false;
         },
     }
 }
 
 /// Which tentative address's bounded wait elapsed unanswered — the
 /// transport promotes it via `ipv6.promote` (D5's one probe, one wait).
+/// A pending conflict re-arm holds promotion off: the last probe's
+/// wait may have elapsed, but the address has not re-probed yet (#3400).
 pub fn dad_due() ?ipv6.Addr {
-    if (ipv6.link_local_state == .tentative and dad_ll_sent and now_ticks -| dad_ll_tick >= dad_wait_ticks) return ipv6.link_local;
-    if (ipv6.global_state == .tentative and dad_g6_sent and now_ticks -| dad_g6_tick >= dad_wait_ticks) return ipv6.global;
+    if (ipv6.link_local_state == .tentative and dad_ll_sent and !dad_ll_rearm and now_ticks -| dad_ll_tick >= dad_wait_ticks) return ipv6.link_local;
+    if (ipv6.global_state == .tentative and dad_g6_sent and !dad_g6_rearm and now_ticks -| dad_g6_tick >= dad_wait_ticks) return ipv6.global;
     return null;
 }
 
@@ -516,6 +604,7 @@ fn reset() void {
     table = @splat(@as(NdpEntry, .{}));
     table_cursor = 0;
     pending_na = null;
+    pending_na_tick = 0;
     now_ticks = 0;
     rs_active = false;
     rs_last_tick = 0;
@@ -523,6 +612,12 @@ fn reset() void {
     dad_ll_tick = 0;
     dad_g6_sent = false;
     dad_g6_tick = 0;
+    dad_ll_retries = 0;
+    dad_ll_rearm = false;
+    dad_ll_rearm_tick = 0;
+    dad_g6_retries = 0;
+    dad_g6_rearm = false;
+    dad_g6_rearm_tick = 0;
     ra_flags = 0;
     pio_valid_lifetime = 0;
     pio_preferred_lifetime = 0;
@@ -853,16 +948,49 @@ test "ndp: NS answering — owned target, tentative conflict, foreign drop" {
     pending_na = null; // the peer's NS must not consume our pending
     try std.testing.expect(handle_ns(&ns, &test_mac, &rbuf) == null);
     try std.testing.expectEqual(@as(u64, 1), ndp_drop);
-    // An NS for a TENTATIVE target: the DAD conflict — the address is
-    // marked conflicted and never becomes usable.
+    // #3400: an NS with a REAL source for a tentative target is a
+    // resolution attempt for an address we have not finished claiming —
+    // ignored (ndp_drop), NOT a conflict (RFC 4862 §5.4.3). Conflict
+    // evidence is a src=:: DAD probe or an NA only.
     ipv6.global_state = .tentative;
     _ = build_ns(&ns, &host_mac, &host_ll, &test_g6);
     pending_na = null; // the peer's NS must not consume our pending
     try std.testing.expect(handle_ns(&ns, &test_mac, &rbuf) == null);
+    try std.testing.expectEqual(@as(u64, 2), ndp_drop);
+    try std.testing.expectEqual(@as(u64, 0), dad_conflicts);
+    try std.testing.expect(ipv6.global_state == .tentative); // not killed
+    // A src=:: DAD probe IS evidence — but first sight is not terminal:
+    // the bounded re-probe arms instead of marking conflicted.
+    _ = build_dad_ns(&ns, &host_mac, &test_g6);
+    try std.testing.expect(handle_ns(&ns, &test_mac, &rbuf) == null);
     try std.testing.expectEqual(@as(u64, 1), dad_conflicts);
-    try std.testing.expect(ipv6.global_state == .conflicted);
     try std.testing.expectEqualSlices(u8, &test_g6, &last_conflict.?);
-    // A conflicting NA hits the same refusal while still tentative.
+    try std.testing.expect(ipv6.global_state == .tentative);
+    try std.testing.expect(dad_g6_rearm);
+    try std.testing.expectEqual(@as(u64, 1), dad_g6_retries);
+    // An NA for the still-tentative target is the other evidence shape;
+    // exhausting the retry budget marks the conflict terminal.
+    var na: [frame_len_max]u8 = undefined;
+    @memset(&na, 0);
+    @memcpy(na[0..6], &test_mac);
+    @memcpy(na[6..12], &host_mac);
+    na[12] = 0x86;
+    na[13] = 0xdd;
+    na[14] = 0x60;
+    std.mem.writeInt(u16, na[18..20], 32, .big);
+    na[20] = 58;
+    na[21] = 255;
+    @memcpy(na[22..38], &host_ll);
+    @memcpy(na[38..54], &ipv6.all_nodes);
+    na[54] = icmpv6_na;
+    na[58] = 0x40; // O only — the S bit is not required for the evidence
+    @memcpy(na[62..78], &test_g6);
+    handle_na(&na);
+    try std.testing.expectEqual(@as(u64, 2), dad_conflicts);
+    try std.testing.expect(ipv6.global_state == .tentative); // retry 2 of 2
+    handle_na(&na);
+    try std.testing.expectEqual(@as(u64, 3), dad_conflicts);
+    try std.testing.expect(ipv6.global_state == .conflicted); // budget out — terminal
     try std.testing.expect(!ipv6.is_owned(&test_g6));
 }
 
@@ -896,4 +1024,82 @@ test "ndp: the tick seam — DAD pending/due, the bounded RS train" {
     rs_note_sent();
     now_ticks = 4;
     try std.testing.expect(!rs_due()); // rs_max reached — the bounded train
+}
+
+test "ndp: DAD conflict re-arms a bounded re-probe; the address still promotes" {
+    reset();
+    ipv6.form_link_local(&test_mac);
+    var ns: [frame_len_max]u8 = undefined;
+    var rbuf: [frame_len_max]u8 = undefined;
+    // First probe out; a forged src=:: DAD probe lands during the wait.
+    _ = dad_pending().?;
+    dad_mark_sent(.ll);
+    _ = build_dad_ns(&ns, &host_mac, &test_ll);
+    try std.testing.expect(handle_ns(&ns, &test_mac, &rbuf) == null);
+    try std.testing.expectEqual(@as(u64, 1), dad_conflicts);
+    // The address stays tentative; the elapsed wait cannot promote while
+    // the re-arm backoff is pending.
+    now_ticks = 1;
+    try std.testing.expect(ipv6.link_local_state == .tentative);
+    try std.testing.expect(dad_due() == null);
+    try std.testing.expect(dad_pending() == null); // backoff (2 ticks) has not elapsed
+    now_ticks = 2;
+    const p = dad_pending().?; // the re-probe is due
+    try std.testing.expect(p.slot == .ll);
+    try std.testing.expectEqualSlices(u8, &test_ll, &p.addr);
+    dad_mark_sent(.ll);
+    try std.testing.expect(dad_pending() == null);
+    now_ticks = 3;
+    try std.testing.expectEqualSlices(u8, &test_ll, &dad_due().?);
+    try std.testing.expect(ipv6.promote(&dad_due().?));
+    try std.testing.expect(ipv6.link_local_state == .valid); // the kill was not permanent
+}
+
+test "ndp: the solicited-NA learn is bounded — fresh window, src == target" {
+    reset();
+    form_pair();
+    var buf: [frame_len_max]u8 = undefined;
+    _ = build_ns(&buf, &test_mac, &test_ll, &host_g6);
+    // A forged solicited NA for the pending target but sourced from a
+    // DIFFERENT address (the solicited-node group reveals the target to
+    // every on-link host): counted, never learned, pending kept.
+    const fake_src = ipv6.parse_ip6("2001:db8:64::77").?;
+    var na: [frame_len_max]u8 = undefined;
+    @memset(&na, 0);
+    @memcpy(na[0..6], &test_mac);
+    @memcpy(na[6..12], &host_mac); // the attacker's own MAC — the MITM payload
+    na[12] = 0x86;
+    na[13] = 0xdd;
+    na[14] = 0x60;
+    std.mem.writeInt(u16, na[18..20], 32, .big);
+    na[20] = 58;
+    na[21] = 255;
+    @memcpy(na[22..38], &fake_src); // src != target
+    @memcpy(na[38..54], &test_ll);
+    na[54] = icmpv6_na;
+    na[58] = 0x60; // S|O
+    @memcpy(na[62..78], &host_g6); // target == pending — would have learned before #3400
+    handle_na(&na);
+    try std.testing.expectEqual(@as(u64, 1), na_unsolicited);
+    try std.testing.expect(lookup(&host_g6) == null);
+    try std.testing.expect(pending_na != null); // the window stays open for the real answer
+    // The honest answer — S=1, target == pending, src == target — learns.
+    @memcpy(na[22..38], &host_g6);
+    handle_na(&na);
+    try std.testing.expectEqual(@as(u64, 1), learned);
+    try std.testing.expectEqualSlices(u8, &host_mac, &lookup(&host_g6).?);
+    try std.testing.expect(pending_na == null);
+    // A stale pending cannot learn: re-solicit, let the window lapse,
+    // then deliver the matching answer — closed and counted.
+    _ = build_ns(&buf, &test_mac, &test_ll, &host_g6);
+    now_ticks = pending_na_tick + na_wait_ticks + 1;
+    handle_na(&na);
+    try std.testing.expectEqual(@as(u64, 2), na_unsolicited);
+    try std.testing.expectEqual(@as(u64, 1), learned); // unchanged
+    try std.testing.expect(pending_na == null); // the slot closed on sight
+    // The window edge: exactly `na_wait_ticks` later still learns.
+    _ = build_ns(&buf, &test_mac, &test_ll, &host_g6);
+    now_ticks = pending_na_tick + na_wait_ticks;
+    handle_na(&na);
+    try std.testing.expectEqual(@as(u64, 2), learned);
 }

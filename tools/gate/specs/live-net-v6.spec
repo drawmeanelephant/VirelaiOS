@@ -170,8 +170,11 @@ vgate_assert p1 serial-contains 'net ndp: entries=2'
 vgate_assert p1 serial-contains 'net ndp: 2001:db8:64::ff:fe00:2 -> 02:00:00:00:00:02'
 vgate_assert p1 serial-contains 'net ndp: fe80::ff:fe00:2 -> 02:00:00:00:00:02'
 vgate_assert p1 serial-contains 'net: rx=frames=6'
-vgate_assert p1 serial-contains 'filtered=0,overflow=2'
-vgate_assert p1 serial-contains 'net recv: frames=4'
+# M179b grew the RX FIFO 4->16 slots: the six p1 inbound frames all fit
+# now (the pre-M179b expectation was overflow=2 + frames=4 under the
+# 4-slot bound).
+vgate_assert p1 serial-contains 'filtered=0,overflow=0'
+vgate_assert p1 serial-contains 'net recv: frames=6'
 vgate_assert p1 serial-contains ' v6=ll=fe80::ff:fe00:1,g6=2001:db8:64::ff:fe00:1,rt=fe80::ff:fe00:2,onl=2001:db8:64::/64'
 vgate_assert p1 serial-contains ' ndp=rs=3,dad=2,dadc=0,ra=3,for=0,mal=0,opt=2,ns=2,na=0,learn=2,unsol=0,drop=0,redir=0,fail=0'
 vgate_assert p1 serial-contains ' icmp6=req=2,repl=0,pong=1,err=0,drop=0,fail=0,seq=1'
