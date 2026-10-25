@@ -35,7 +35,10 @@ ART.TXT asset rows under `artmanifest`).
     python3 tools/component-registry/compile.py --check  # fail on drift
 
 Byte-deterministic: no dates, no host state; same fragments + template
-produce the same aggregate in every environment.
+produce the same aggregate in every environment. All file IO pins
+encoding="utf-8" — the registry is UTF-8 (em-dashes, —) and Python's
+locale-default codec would otherwise misread it under a C/POSIX locale
+(the same class of bug the inventory script pins LC_ALL=C against).
 """
 
 import re
@@ -84,7 +87,7 @@ def parse_fragment(path, root=ROOT):
     naming the fragment-relative line.
     """
     rel = path.relative_to(root)
-    lines = path.read_text().splitlines()
+    lines = path.read_text(encoding="utf-8").splitlines()
     blocks = []
     i, n = 0, len(lines)
     while i < n:
@@ -212,7 +215,7 @@ def render(root=ROOT):
         raise ValueError("fragment errors:\n  " + "\n  ".join(errors))
     template = (
         root / "tools" / "component-registry" / "template.md"
-    ).read_text()
+    ).read_text(encoding="utf-8")
     seen = set()
     out = []
     for line in template.splitlines(keepends=True):
@@ -251,18 +254,24 @@ def main():
         return 1
     if check:
         try:
-            committed = AGGREGATE.read_text()
+            committed = AGGREGATE.read_text(encoding="utf-8")
         except OSError:
             print(f"{AGGREGATE.relative_to(ROOT)}: missing — run "
                   "tools/component-registry/compile.py")
             return 1
         if committed != fresh:
+            import difflib
             print(f"{AGGREGATE.relative_to(ROOT)}: stale — run "
                   "python3 tools/component-registry/compile.py")
+            diff = difflib.unified_diff(
+                committed.splitlines(keepends=True),
+                fresh.splitlines(keepends=True),
+                "committed", "fresh")
+            print("".join(list(diff)[:40]))
             return 1
         print("component-registry.md: in sync with docs/registry/ fragments")
         return 0
-    AGGREGATE.write_text(fresh)
+    AGGREGATE.write_text(fresh, encoding="utf-8")
     rows = sum(1 for line in fresh.splitlines() if is_data_row(line))
     print(f"component-registry.md: regenerated ({rows} rows from "
           f"{len(list(REGISTRY_DIR.glob('*.md')))} fragments)")
