@@ -7,7 +7,10 @@ surfaces:
 
 1. `site/components.md` — front matter and prose are authored by hand;
    the BEGIN/END "generated component-registry table" region is this
-   script's output (the registry's table sections verbatim).
+   script's output: the registry's table sections verbatim except each
+   `app` row, whose name cell gains a wikilink to its `apps/<slug>`
+   showcase page (issue #3670 — the join to surface 2 is the renderer's;
+   the registry itself stays free of site routes).
 2. `site/apps/` — a wholly generated directory: `index.md` links every
    app page in registry row order, and one `<slug>.md` per `app` registry
    row carries name, binary, version cell, owning-spec links, and state.
@@ -65,8 +68,34 @@ LAYOUT_APPS = ROOT / "themes" / "virelaios" / "layouts" / "apps.html"
 LOCAL_HREF_RE = re.compile(r'href="([A-Za-z0-9._-]+\.html)"')
 
 
+def row_cells(line: str):
+    """Stripped cells for a six-cell registry data row, else None."""
+    line = line.strip()
+    if not line.startswith("|"):
+        return None
+    cells = [c.strip() for c in line.strip("|").split("|")]
+    if len(cells) != 6:
+        return None
+    if all(set(c) <= {"-", ":", " "} and c for c in cells):
+        return None  # separator row
+    if cells[0] == "name":
+        return None  # header row
+    return cells
+
+
+def app_row_line(line: str, cells: list) -> str:
+    """An `app` row with its name cell wikilinked to the app's showcase
+    page. `[[apps/slug|name]]` survives table-cell splitting in Boris —
+    site/chronicle.md's index table is the landed proof."""
+    cells = list(cells)
+    cells[0] = f"[[apps/{slug(cells[2])}|{cells[0]}]]"
+    tail = "\n" if line.endswith("\n") else ""
+    return "| " + " | ".join(cells) + " |" + tail
+
+
 def render_region() -> str:
-    """The registry's table sections, verbatim, as the page's region body."""
+    """The registry's table sections as the page's region body — verbatim
+    except `app` rows, which carry the showcase-page link."""
     lines = REGISTRY.read_text().splitlines(keepends=True)
     sections, cur = [], None
     for line in lines:
@@ -78,7 +107,10 @@ def render_region() -> str:
     sections = [s for s in sections if any(l.lstrip().startswith("|") for l in s)]
     out = [BEGIN + "\n"]
     for s in sections:
-        out.extend(s)
+        for line in s:
+            cells = row_cells(line)
+            out.append(app_row_line(line, cells)
+                       if cells is not None and cells[1] == "app" else line)
         if not out[-1].endswith("\n"):
             out[-1] += "\n"
         out.append("\n")
@@ -90,17 +122,8 @@ def app_rows() -> list:
     """Every six-cell registry row whose kind is `app`, in file order."""
     rows = []
     for line in REGISTRY.read_text().splitlines():
-        line = line.strip()
-        if not line.startswith("|"):
-            continue
-        cells = [c.strip() for c in line.strip("|").split("|")]
-        if len(cells) != 6:
-            continue
-        if all(set(c) <= {"-", ":", " "} and c for c in cells):
-            continue  # separator row
-        if cells[0] == "name":
-            continue  # header row
-        if cells[1] != "app":
+        cells = row_cells(line)
+        if cells is None or cells[1] != "app":
             continue
         rows.append({
             "name": cells[0],
