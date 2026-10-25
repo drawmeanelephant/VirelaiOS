@@ -148,6 +148,7 @@ it does for the app table, and `--stale` prints both tables.
 | Guest compiler | tool | user/go/gobuild | #2767 | 2026-10-20 | one inflater — promote hardened reader to user/go/flate |
 | Guest linker | tool | user/go/gobuild | #2767 | 2026-10-20 | one inflater — promote hardened reader to user/go/flate |
 | Release pipeline | tool | user/go/release | #2651 | 2026-10-18 | argv-block residuals: dead pads/asserts, stale 32-byte bound, census re-pin |
+| Store install CLI | tool | user/go/store/main | #3188 | 2026-10-23 | store pin — signed-head rollback + ReleaseDepends |
 | appkit | lib | user/go/appkit | #3348 | 2026-10-25 | wire the staged art's seated and raster surfaces |
 | chords | lib | user/go/chords | #3252 | 2026-10-23 | GOEDIT quick-open — ctrl+p palette over recents + subtree |
 | clockfmt | lib | user/go/clockfmt | #3262 | 2026-10-23 | GOREADER.ELF over its build bound — strip ianaZones via Names reachability, gate on exec_image_max |
