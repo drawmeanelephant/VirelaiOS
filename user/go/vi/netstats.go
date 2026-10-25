@@ -106,13 +106,23 @@ func netStatsWanted() netStatsOffsets {
 // kernel refused (a short buffer / off the guest), in which case the caller
 // keeps its previous view — the same contract Zig's read_stats has.
 func NetStatsSnapshot() (NetStats, bool) {
+	s, rc := NetStatsSnapshotRC()
+	return s, rc == NetStatsBytes
+}
+
+// NetStatsSnapshotRC is NetStatsSnapshot with the kernel's own return
+// preserved: rc is NetStatsBytes on success, 0 on a short-buffer refusal,
+// or the negative errno — -EACCES when the caller's grant set lacks the
+// `net` word slot 62 belongs to (#3444: a verb that must name WHICH grant
+// refused cannot do that off the ok bool).
+func NetStatsSnapshotRC() (NetStats, int64) {
 	var s NetStats
 	buf := unsafe.Slice((*byte)(unsafe.Pointer(&s)), NetStatsBytes)
 	r := svc2(SlotNetStats, uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)))
 	if r != NetStatsBytes {
-		return NetStats{}, false
+		return NetStats{}, r
 	}
-	return decodeNetStats(buf), true
+	return decodeNetStats(buf), r
 }
 
 // decodeNetStats unpacks a wire snapshot. It is the single decode site, so a

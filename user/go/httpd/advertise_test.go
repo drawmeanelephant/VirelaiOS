@@ -69,16 +69,18 @@ func TestLinkLocal6(t *testing.T) {
 }
 
 func TestNewAdvertiserRefusals(t *testing.T) {
+	var logs []string
 	seam := advSeam{
-		stats: func() (vi.NetStats, bool) {
-			return vi.NetStats{OwnIP: [4]byte{192, 168, 64, 5}}, true
+		log: func(l string) { logs = append(logs, l) },
+		stats: func() (vi.NetStats, int64) {
+			return vi.NetStats{OwnIP: [4]byte{192, 168, 64, 5}}, vi.NetStatsBytes
 		},
 	}
 	if a := newAdvertiser("v198b", 8080, seam); a != nil {
 		t.Fatal("NAT-signature own IP must refuse the advertiser")
 	}
-	seam.stats = func() (vi.NetStats, bool) {
-		return vi.NetStats{OwnIP: [4]byte{192, 168, 78, 5}}, true
+	seam.stats = func() (vi.NetStats, int64) {
+		return vi.NetStats{OwnIP: [4]byte{192, 168, 78, 5}}, vi.NetStatsBytes
 	}
 	if a := newAdvertiser("a..b", 8080, seam); a != nil {
 		t.Fatal("a bad name must refuse the advertiser")
@@ -107,8 +109,9 @@ func decodeAnswers(t *testing.T, pkt []byte) *mdns.Message {
 }
 
 func TestAdvertiseWireShape(t *testing.T) {
-	seam := advSeam{stats: func() (vi.NetStats, bool) {
-		return vi.NetStats{OwnIP: [4]byte{192, 168, 78, 5}, MAC: [6]byte{0x02, 0, 0, 0, 0, 1}}, true
+	var logs []string
+	seam := advSeam{log: func(l string) { logs = append(logs, l) }, stats: func() (vi.NetStats, int64) {
+		return vi.NetStats{OwnIP: [4]byte{192, 168, 78, 5}, MAC: [6]byte{0x02, 0, 0, 0, 0, 1}}, vi.NetStatsBytes
 	}}
 	a := newAdvertiser("v198b", 8080, seam)
 	if a == nil {
@@ -174,6 +177,7 @@ func TestAdvertiserStartStopSeam(t *testing.T) {
 	var binds, closes []uint16
 	var sends [][]byte
 	seam := advSeam{
+		log:    func(string) {},
 		listen: func(p uint16) int64 { binds = append(binds, p); return 0 },
 		close:  func(p uint16) int64 { closes = append(closes, p); return 0 },
 		send: func(dst [4]byte, dp, sp uint16, b []byte) int64 {
@@ -187,8 +191,8 @@ func TestAdvertiserStartStopSeam(t *testing.T) {
 			mu.Unlock()
 			return int64(len(b))
 		},
-		stats: func() (vi.NetStats, bool) {
-			return vi.NetStats{OwnIP: [4]byte{192, 168, 78, 5}}, true
+		stats: func() (vi.NetStats, int64) {
+			return vi.NetStats{OwnIP: [4]byte{192, 168, 78, 5}}, vi.NetStatsBytes
 		},
 		// Every sleep parks — the cadence goroutine blocks at its first
 		// burst wait and never emits again, so the sends list is
@@ -234,15 +238,57 @@ func TestAdvertiserStartStopSeam(t *testing.T) {
 }
 
 func TestAdvertiserBindRefusal(t *testing.T) {
+	var logs []string
 	seam := advSeam{
+		log:    func(l string) { logs = append(logs, l) },
 		listen: func(uint16) int64 { return -1 },
-		stats: func() (vi.NetStats, bool) {
-			return vi.NetStats{OwnIP: [4]byte{192, 168, 78, 5}}, true
+		stats: func() (vi.NetStats, int64) {
+			return vi.NetStats{OwnIP: [4]byte{192, 168, 78, 5}}, vi.NetStatsBytes
 		},
 	}
 	a := newAdvertiser("v198b", 8080, seam)
 	if a.start() {
 		t.Fatal("a refused bind must fail start, not run unadvertised")
+	}
+}
+
+// #3444: a grant refusal names the missing word — `net` when the stats
+// read is denied, `net-mdns` when the :5353 bind is.
+func TestAdvertiseGrantRefusals(t *testing.T) {
+	var logs []string
+	seam := advSeam{
+		log: func(l string) { logs = append(logs, l) },
+		stats: func() (vi.NetStats, int64) {
+			return vi.NetStats{}, -vi.ErrEACCES
+		},
+	}
+	if a := newAdvertiser("v198d", 8080, seam); a != nil {
+		t.Fatal("a net-denied stats read must refuse the advertiser")
+	}
+	if len(logs) == 0 || logs[len(logs)-1] != "httpd: advertise needs net" {
+		t.Fatalf("logs=%v", logs)
+	}
+
+	logs = nil
+	seam.stats = func() (vi.NetStats, int64) {
+		return vi.NetStats{OwnIP: [4]byte{192, 168, 78, 5}}, vi.NetStatsBytes
+	}
+	seam.listen = func(uint16) int64 { return -vi.ErrEACCES }
+	a := newAdvertiser("v198d", 8080, seam)
+	if a == nil {
+		t.Fatal("bridged-shaped stats must accept the advertiser")
+	}
+	if a.start() {
+		t.Fatal("a net-mdns-denied bind must fail start")
+	}
+	found := false
+	for _, l := range logs {
+		if l == "httpd: advertise needs net-mdns" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("logs=%v", logs)
 	}
 }
 

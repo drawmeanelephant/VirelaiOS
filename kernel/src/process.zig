@@ -41,14 +41,14 @@ const svclock = @import("svclock.zig");
 /// imported to keep the dependency one-way (grant.zig already consumes
 /// this module); grant.zig comptime-asserts its own `baseline` equals
 /// this constant.
-pub const word_baseline: u32 = 0x1ff;
+pub const word_baseline: u32 = 0x3ff;
 
 /// M116b (#2468): the ambient word set — the per-process authority a
 /// process carries when no row narrows it (and before exec stamps one).
 /// `word_baseline` minus the boundary-crossing words — file (0x01),
-/// audio (0x04), net (0x80); grant.zig's `ambient` documents why and
-/// comptime-asserts equality.
-pub const word_ambient: u32 = word_baseline & ~@as(u32, 0x01 | 0x04 | 0x80);
+/// audio (0x04), net (0x80), net-mdns (0x200 — #3444); grant.zig's
+/// `ambient` documents why and comptime-asserts equality.
+pub const word_ambient: u32 = word_baseline & ~@as(u32, 0x01 | 0x04 | 0x80 | 0x200);
 
 /// Bounded process registry size (fixed BSS array). Milestone sixteen C3
 /// (claim 0339): grew 8 -> 16 — at the new 8-program concurrency the

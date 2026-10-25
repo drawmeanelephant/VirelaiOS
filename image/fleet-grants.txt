@@ -12,7 +12,8 @@
 #             where it has one, `audit:<word>_denied` receipts = calls
 #             made — or `-` when the audit could not run it.
 #   MASK      the authored grant word set, in vocabulary order
-#             (file window audio timer memory process debug net term).
+#             (file window audio timer memory process debug net term
+#             net-mdns).
 #   REASON    `-` when MASK == OBSERVED; otherwise the named reason the
 #             mask is wider than observed — the card's rule is mask ⊇
 #             observed and never wider without a named reason.
@@ -49,7 +50,8 @@ GOTABWM.ELF	window,memory,process,debug	file,window,audio,memory,process,debug,n
 GOSTALGIA.ELF	window,memory,process,debug	file,window,memory,process,debug,term	declared caps=file,window,term,process; argv=shell --root /host/GS reads ROM files and the tty win_open was refused under the no-seat shim
 GOFETCH.ELF	memory,process,debug,net	file,memory,process,debug,net	surface: WriteFileSafe output path (user/go/fetch)
 GOPING.ELF	memory,process,debug,net	memory,process,debug,net	-
-GOHTTPD.ELF	memory,process,debug,net	file,memory,process,debug,net	surface: FileOpen/FileRead — the daemon serves files (user/go/httpd)
+GOHTTPD.ELF	memory,process,debug,net	file,memory,process,debug,net,net-mdns	surface: FileOpen/FileRead — the daemon serves files; UDPListen/UDPSendFrom on :5353 — the --advertise announce/goodbye path (user/go/httpd/advertise.go)
+GONETSTAT.ELF	-	memory,process,debug,net,net-mdns	not audited — staged machine tool (tools/session.sh); surface: sys_net_stats reads (net) + the discover verb's UDPListen/UDPSendFrom/UDPRecvFrom on :5353 (user/go/netstat/discover.go)
 GOSSHD.ELF	memory,process,debug	file,memory,process,debug,net	audit note: exit 1 — refuses before bind without hostkey, so SocketListen (net) and ReadFileAll/FileDelete (file) never ran
 GOBUILD.ELF	memory,process,debug	file,memory,process,debug	audit note: usage exit — startup words only; the build path opens sources and writes objects (FileOpen)
 FLINT.ELF	memory,process,debug	file,memory,process,debug,net	audit note: usage exit — startup words only; workspace File* ops and Dial remote streams (user/go/flint)

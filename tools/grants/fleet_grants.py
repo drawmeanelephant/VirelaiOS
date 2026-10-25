@@ -41,7 +41,7 @@ ZIG_OUT = os.path.join(ROOT, "kernel", "src", "grant_fleet.zig")
 # kernel/src/grant.zig `vocab` — canonical mask order, one byte-shape per
 # word set (vi.GrantWordsCanonical renders the same order).
 VOCAB = ["file", "window", "audio", "timer", "memory",
-         "process", "debug", "net", "term"]
+         "process", "debug", "net", "term", "net-mdns"]
 WORD_BIT = {w: 1 << i for i, w in enumerate(VOCAB)}
 
 # kernel/src/grant.zig name_max: a row name is the exec-recorded share
@@ -58,6 +58,12 @@ SERVICE_FLEET = [
     "GOSSHD.ELF", "GOBUILD.ELF", "FLINT.ELF", "STORE.ELF",
     "AGENTD.ELF", "INIT.ELF", "GOHELLO.ELF", "GOSSH.ELF",
     "GOSNAP.ELF", "GODIFF.ELF", "ZC.BIN",
+    # #3444: GONETSTAT.ELF is a staged machine tool (tools/session.sh)
+    # whose `discover` verb needs the net-mdns service right — a row is
+    # the only way it keeps it under enforce. QJS.BIN's row predates its
+    # roster entry (M200b #3280); the row already exists, this just lets
+    # `check` see it.
+    "GONETSTAT.ELF", "QJS.BIN",
     # M132b (#2753): GOPAINT.ELF is store-delivered and self-registers its
     # apps.txt row at install, so it has no manifest row — but grants are
     # name-bound, not manifest-bound, so its reservation row lives here.
@@ -149,7 +155,9 @@ def cmd_emit(args):
     for name in order:
         obs, mask, _reason = rows[name]
         del obs
-        expr = " | ".join("grant.word_" + w for w in VOCAB if w in mask) or "0"
+        # "net-mdns" serializes with a dash; the Zig const is word_net_mdns.
+        expr = " | ".join("grant.word_" + w.replace("-", "_")
+                          for w in VOCAB if w in mask) or "0"
         out.append('    .{ .name = "%s", .sha256 = null, .words = %s },'
                    % (name, expr))
     out.append("};")

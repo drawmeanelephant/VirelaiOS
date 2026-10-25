@@ -58,9 +58,11 @@ type GrantRow struct {
 // GrantWordVocab is the caps=/grant word vocabulary (kernel grant.vocab,
 // ADR 0054 D9): one word means one slot group, and baseline is every
 // word set — the ambient authority a row can only narrow. Order is the
-// kernel's bit order; renderers canonicalize to it.
-var GrantWordVocab = [9]string{
-	"file", "window", "audio", "timer", "memory", "process", "debug", "net", "term",
+// kernel's bit order; renderers canonicalize to it. `net-mdns` (#3444)
+// is the LAN discovery/advertise service right — ops pointed at UDP
+// :5353 carry it in place of `net`.
+var GrantWordVocab = [10]string{
+	"file", "window", "audio", "timer", "memory", "process", "debug", "net", "term", "net-mdns",
 }
 
 // GrantWordKnown reports whether w is a word of the grant vocabulary.

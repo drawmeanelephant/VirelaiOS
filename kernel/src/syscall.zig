@@ -851,6 +851,13 @@ pub fn dispatch(number: u64, args: Args, frame: *exceptions.VectorFrame) u64 {
     // are never the EL0 principal the gate exists for.
     var required = grant.slot_word(number);
     if (number == sys_socket and grant.socket_open_op(args[0])) required |= grant.word_net;
+    // #3444 (ADR 0054 D9 amendment): an op pointed at the mDNS service
+    // endpoint (UDP :5353) carries `net-mdns` IN PLACE OF `net` — the
+    // `net` word no longer silently covers the LAN's discovery surface,
+    // and a `net-mdns` consent alone never opens unicast egress.
+    if (grant.udp_mdns_op(number, args[0], args[1])) {
+        required = (required & ~grant.word_net) | grant.word_net_mdns;
+    }
     if (required != 0) {
         if (process.find_by_task(scheduler.current_id())) |pid| {
             const missing = required & ~process.word_mask(pid);

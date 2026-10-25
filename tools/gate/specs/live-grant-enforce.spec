@@ -10,8 +10,12 @@
 #     its socket open is refused the same way. It still prints and exits
 #     cleanly: confined, not stuck.
 #   * GRANTED.ELF — the SAME bytes under a `*`-bound row carrying
-#     file,memory,process,debug,net: under enforce both calls land — a
-#     row overrides the ambient floor.
+#     file,memory,process,debug,net: under enforce the file/net calls
+#     land — a row overrides the ambient floor — but its :5353 bind is
+#     refused by name: `net` no longer covers the mDNS service endpoint
+#     (#3444's `net-mdns` word, ADR 0054 D9 amendment).
+#   * MDNSOK.ELF — the same bytes again under net,net-mdns: the :5353
+#     bind lands — the service right consented by name.
 #   * GOHELLO.ELF / GOSH.ELF — the in-tree fleet: rowed apps measure in,
 #     run, and the serial seat still attaches under enforce.
 #
@@ -56,6 +60,14 @@ func main() {
         vsys.Println("enforce: connected")
         _ = c.Close()
     }
+    // The `net-mdns` word (#3444): binding the mDNS service endpoint is
+    // its own grant — the `net` row alone does not reach :5353.
+    if rc := vi.UDPListen(5353); rc < 0 {
+        vsys.Println("enforce: mdns refused " + errnoName(rc))
+    } else {
+        vsys.Println("enforce: mdns bound")
+        _ = vi.UDPClose(5353)
+    }
     // The `debug` word (ambient): the confined app still prints and
     // exits — the refusal is named, not silent.
     vsys.Println("enforce: done")
@@ -75,7 +87,7 @@ env = dict(os.environ, TMPDIR=str(tmp), GO_BUILD_OUT=str(share),
            GO_BUILD_NAME="ENPROBE", GO_LDFLAGS_VALUE="-s -w")
 subprocess.run(["bash", "tools/go/build-go.sh", str(rd / "enforce.go")],
                env=env, check=True)
-for name in ("DENIED", "GRANTED"):
+for name in ("DENIED", "GRANTED", "MDNSOK"):
     shutil.copyfile(share / "ENPROBE.ELF", share / (name + ".ELF"))
 os.remove(share / "ENPROBE.ELF")
 # The fleet legs: GOHELLO (rowed, debug+memory+process+file) and GOSH
@@ -93,6 +105,7 @@ for name, script in (("GOHELLO.ELF", ["tools/go/build-go.sh", "tools/go/hello.go
 (share / "GRANTS.TXT").write_text(
     "#v1 mode=enforce\n"
     "GRANTED.ELF\t*\tfile,memory,process,debug,net\n"
+    "MDNSOK.ELF\t*\tfile,memory,process,debug,net,net-mdns\n"
 )
 print("enforce fixtures + GRANTS.TXT ok")
 PY
@@ -103,6 +116,7 @@ net arp 10.0.0.2
 net arp 10.0.0.2
 exec DENIED.ELF
 exec GRANTED.ELF
+exec MDNSOK.ELF
 exec GOHELLO.ELF
 exec GOSH.ELF serial
 echo monitor-done
@@ -130,16 +144,29 @@ vgate_run 01 -- --net '$RUN_DIR/cap.bin' \
 vgate_assert 01 serial-contains 'verdict=measured name=DENIED.ELF'
 vgate_assert 01 serial-contains 'refused:file_denied name=DENIED.ELF word=file'
 vgate_assert 01 serial-contains 'refused:net_denied name=DENIED.ELF word=net'
+# The ambient floor lacks `net-mdns` too: the :5353 bind is refused under
+# its own word, and the receipt names it.
+vgate_assert 01 serial-contains 'refused:net-mdns_denied name=DENIED.ELF word=net-mdns'
 vgate_assert 01 serial-contains 'enforce: file refused EACCES'
 vgate_assert 01 serial-contains 'enforce: dial refused EACCES'
+vgate_assert 01 serial-contains 'enforce: mdns refused EACCES'
 vgate_assert 01 serial-contains 'enforce: done'
 vgate_assert 01 serial-contains 'DENIED.ELF exited status=0'
 
-# --- the rowed control: same bytes, both calls land --------------------
+# --- the rowed control: same bytes, the declared calls land ------------
 vgate_assert 01 serial-contains 'verdict=measured name=GRANTED.ELF'
 vgate_assert 01 serial-contains 'enforce: file read'
 vgate_assert 01 serial-contains 'enforce: connected'
-vgate_assert 01 serial-absent 'denied name=GRANTED.ELF'
+# ...but `net` alone does not reach the mDNS endpoint: the bind refuses
+# under `net-mdns`, by name — the service right is a separate consent.
+vgate_assert 01 serial-contains 'refused:net-mdns_denied name=GRANTED.ELF word=net-mdns'
+vgate_assert 01 serial-absent 'denied name=GRANTED.ELF word=file'
+vgate_assert 01 serial-absent 'denied name=GRANTED.ELF word=net '
+
+# --- the mdns-consented row: the same :5353 bind lands ------------------
+vgate_assert 01 serial-contains 'verdict=measured name=MDNSOK.ELF'
+vgate_assert 01 serial-contains 'enforce: mdns bound'
+vgate_assert 01 serial-absent 'denied name=MDNSOK.ELF'
 # "Allowed" reached the wire — the responder saw the SYN, so the word
 # gate let the open through, not just failed to receipt.
 vgate_assert 01 output-contains 'NET-TCP: answered the guest'

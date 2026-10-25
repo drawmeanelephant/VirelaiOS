@@ -325,12 +325,32 @@ The word → slot-group map (the declared default M113c lands):
 | `debug` | 0, 1, 3 |
 | `net` | 9–11, 30–33, 59, 60, 62, 76, 84–86, and slot 80 open-class ops 0/8/10 |
 | `term` | 67, 71 |
+| `net-mdns` | the mDNS endpoint: UDP ops pointed at port 5353 — slot 9's bind port, slots 10/84's destination port |
 
 Slots in no group (4 `sleep`, 66/78 `time`, 72 `getrandom`, and any
 ungated remainder) stay open in every word set — they are services, not
 powers. The query/read surface for the trust viewer is `sys_grant_query`
 (slot 89 — additive per ADR 0007 D10): it returns the caller's own word
 mask and the row that produced it, nothing more.
+
+**Amendment (#3444): `net-mdns` joins the vocabulary as the LAN
+discovery/advertise service right.** The mDNS verbs the discovery arc
+landed — GONETSTAT's `discover` and GOHTTPD's `--advertise` — speak UDP
+to one endpoint, port 5353. That endpoint is a *presence right*, not
+ordinary egress: binding it puts the guest on the LAN map for every
+peer, and a send to it browses them. So the ops pointed at :5353 carry
+`net-mdns` **in place of** `net` at the one dispatch seam — op-aware, the
+same mechanism slot 80's open class already uses — while the handle-side
+ops (recv/close on :5353, send_from's caller-owned source port) ride the
+word transitively: a process without `net-mdns` can never have bound the
+port it must own. The word is not ambient; the fleet rows for the two
+verbs' binaries carry `net,net-mdns` (the stats read and the served
+listener stay `net`), and a `caps=` declaration may name it like any
+word. A refusal receipts `net-mdns_denied`, so audit rows name the verb,
+and the verbs print `needs net` / `needs net-mdns` rather than a bare
+errno. Bounds, honestly: no EL0 v6 datagram send exists, and
+mDNS-over-TCP has no codec in the tree — a TCP connect to :5353 stays an
+ordinary `net` open until a card that ships the codec names otherwise.
 
 ### D10. The publisher declares, the user decides
 A signed `ReleaseCaps` in the release manifest (ADR 0055, M110a) is a
