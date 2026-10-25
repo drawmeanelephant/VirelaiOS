@@ -76,7 +76,8 @@ func StoreGet(name string, out []byte) int {
 // has no principal (a host build) or the line is malformed, ENOSPC at
 // the kernel's ask cap. StoreAskStatus reads the staged ask's verdict:
 // vi.SecretAskPending / Committed / Dropped, or ENOENT when the id is
-// not the caller's.
+// not the caller's — a terminal verdict is consumed on read (#3406), so
+// a second read reports ENOENT too.
 var (
 	storePrincipal = vi.Principal
 	storeSecretAsk = vi.SecretAsk

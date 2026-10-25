@@ -187,8 +187,10 @@ func SecretAskDrop(id uint32) int64 {
 }
 
 // SecretAskStatus reads the CALLER's own ask verdict: SecretAskPending /
-// SecretAskCommitted / SecretAskDropped; ENOENT when the id is not the
-// caller's.
+// SecretAskCommitted / SecretAskDropped. A terminal verdict is consumed
+// on read — the kernel retires the row with the answer (#3406), so a
+// second read reports ENOENT like any vanished ask; ENOENT also when
+// the id is not the caller's.
 func SecretAskStatus(id uint32) int64 {
 	return svc4(SlotSecretSet, SecretOpStatus, uintptr(id), 0, 0)
 }

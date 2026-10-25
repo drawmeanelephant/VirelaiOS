@@ -2576,8 +2576,10 @@ fn secret_set_result(r: secret.CommitResult) u64 {
 ///   store write. 0 / `ENOENT` like `commit`.
 ///
 ///   op 4 `status` — UNPRIVILEGED, own asks only: `secret.ask_pending` /
-///   `ask_committed` / `ask_dropped`; `ENOENT` when the id is not the
-///   caller's (an ask's existence is not broadcast).
+///   `ask_committed` / `ask_dropped`. A terminal verdict is CONSUMED on
+///   read — the row retires with the answer, so the 4-ask table is not
+///   consume-once per boot (#3406). `ENOENT` when the id is not the
+///   caller's or was already read (an ask's existence is not broadcast).
 ///
 ///   op 5 `set` — seat-or-admin: the operator's own direct write (no
 ///   machine asker) — the same line grammar, writer-name refusal and
