@@ -1,8 +1,16 @@
 //! Native boundary checks use the real guest clock. Policy-only cases are
 //! distinguished from evals; no fake elapsed time or harness kill is a refusal.
-fn repeat_lit(comptime lit: []const u8, comptime n: usize) *const [n * lit.len:0]u8 {
-    if (n == 0) return "";
-    return lit ++ repeat_lit(lit, n - 1);
+// Pinned Zig 0.17 miscompiles comptime "++" chains on sentinel-terminated
+// arrays (interior NUL bytes); build the maximum env entry byte-wise instead.
+fn max_env_entry() []const u8 {
+    const entry = comptime blk: {
+        var bytes: [127]u8 = undefined;
+        bytes[0] = 'A';
+        bytes[1] = '=';
+        @memset(bytes[2..], 'x');
+        break :blk bytes;
+    };
+    return &entry;
 }
 const std = @import("std");
 const sdk = @import("sdk").runtime;
@@ -130,7 +138,7 @@ fn policyChecks(clock: qjs.Clock) !void {
     try require(!state.site() and state.failure != null and state.failure.? == error.WorkLimit);
     try product.path("/host/" ++ &@as([31:0]u8, @splat("a"[0])) ++ "/" ++ &@as([26:0]u8, @splat("b"[0])));
     if (product.path("/host/" ++ &@as([31:0]u8, @splat("a"[0])) ++ "/" ++ &@as([27:0]u8, @splat("b"[0])))) |_| return error.PathLimitMissing else |err| try require(err == error.PathLimit);
-    _ = try product.parse(&.{ "QJS.BIN", "/host/F" }, &(@as([16][]const u8, @splat(@as([]const u8, "A=" ++ repeat_lit("x", 125))))));
+    _ = try product.parse(&.{ "QJS.BIN", "/host/F" }, &(@as([16][]const u8, @splat(max_env_entry()))));
     if (product.parse(&.{ "QJS.BIN", &@as([256:0]u8, @splat("x"[0])) }, &.{})) |_| return error.ArgLimitMissing else |err| try require(err == error.ArgumentLimit);
     if (product.parse(&(@as([9][]const u8, @splat(@as([]const u8, "QJS.BIN")))), &.{})) |_| return error.ArgCountMissing else |err| try require(err == error.ArgumentLimit);
     if (product.parse(&.{ "QJS.BIN", "/host/F" }, &(@as([17][]const u8, @splat(@as([]const u8, "A=B")))))) |_| return error.EnvCountMissing else |err| try require(err == error.EnvironmentLimit);
