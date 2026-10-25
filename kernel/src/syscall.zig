@@ -3969,7 +3969,10 @@ fn handle_exec(args: Args, _: *exceptions.VectorFrame) u64 {
     // the caller's uid and caps. M173b (#3041, ADR 0052 amendment): the one
     // kernel-side override — the recorded image name AGENTD.ELF binds
     // {uid_agent,0} on any EL0 spawn, and uid_agent parents' children keep
-    // inheriting through this same preserve rule.
+    // inheriting through this same preserve rule. R4-F1 (#3390): the bind
+    // is gated on operator provisioning — the loader refuses an
+    // AGENTD.ELF-named image that is not uid_system-owned in OWNERS.TXT
+    // (`name_unprovisioned` → EACCES) before any spawn happens.
     const caller_principal = process.principal(caller) orelse process.default_principal;
     const principal = esp_exec.el0_spawn_principal(path_buf[0..path_len], caller_principal);
     const res = esp_exec.exec_file_streams_as(path_buf[0..path_len], exec_args, principal, &plan);
@@ -3998,6 +4001,10 @@ fn handle_exec(args: Args, _: *exceptions.VectorFrame) u64 {
         // M113c (#2419): a named grant row's sha256 did not match this
         // image — the refusal receipt names it, the caller sees EACCES.
         .grant_stale => error_result(.eacces),
+        // R4-F1 (#3390): the recorded agent name on an unprovisioned
+        // image — the plant is refused, not demoted, and the caller sees
+        // the same EACCES a grant refusal gets.
+        .name_unprovisioned => error_result(.eacces),
     };
 }
 

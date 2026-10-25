@@ -269,6 +269,16 @@ pub const ExecResult = enum {
     /// poisoned (malformed) row and a failed measurement are refused by
     /// the same name.
     grant_stale,
+    /// R4-F1 (#3390): the image's recorded name binds a principal
+    /// (`AGENTD.ELF` → `uid_agent`, plus the seat's kind-29/30 admission
+    /// and the fleet row's words) but the file is not
+    /// operator-provisioned — `trust.system_owned_key` refuses it: no
+    /// OWNERS row, a non-`uid_system` owner, or a non-owner write bit.
+    /// A `uid_user` plant could create `AGENTD.ELF` itself (no OWNERS
+    /// row → default uid_user owner) and ride the recorded name into
+    /// every grant it proxies for; the name refuses exec BY NAME, the
+    /// same fail-closed shape `grant_stale` established.
+    name_unprovisioned,
 };
 
 /// The loaded program image (BSS, page-aligned so the user root can map the
@@ -392,6 +402,26 @@ fn apply_exec_grant(name: []const u8, size: u64, uid: u32) ExecResult {
             emit_exec_receipt("refused:grant_stale");
             return .grant_stale;
         },
+    }
+    // R4-F1 (#3390): `AGENTD.ELF` is a principal-binding name —
+    // `el0_spawn_principal` binds it to `uid_agent`, the fleet row hands
+    // it `file|net` over ambient, and the seat admits kinds 29/30 on the
+    // proc-table name it records. Those grants are only as sound as the
+    // name is unforgeable, and the name is forgeable wherever the file
+    // is guest-owned: a `uid_user` app can create `AGENTD.ELF` itself in
+    // an unprovisioned boot (no OWNERS row → default uid_user owner) and
+    // plant+exec its way into the daemon's seat powers, AGENT/AUDIT
+    // write/delete, and same-uid `sys_kill` reach. The fix is the same
+    // `system_owned_key` invariant the M97g secret binding already
+    // trusts: the recorded name may run only when OWNERS.TXT pins the
+    // image `uid_system`-owned with no non-owner write bit. Every other
+    // ownership shape refuses by name — never demotes quietly, so a
+    // forgotten provision fails loud. (The strict rule stays scoped to
+    // the principal-binding name: the rest of the fleet rides staged
+    // boots whose shares carry no OWNERS rows at all — OA1 on #3374.)
+    if (std.ascii.eqlIgnoreCase(name, agent_image_name) and !trust.system_owned_key(name)) {
+        emit_exec_receipt("refused:name_unprovisioned");
+        return .name_unprovisioned;
     }
     // M188a (#3186, ADR 0054 amendment): the manifest's `caps=` reaches
     // exec as a NARROW-ONLY ceiling — the granted set intersected with
@@ -524,10 +554,14 @@ pub fn exec_file(name: []const u8, args: []const []const u8) ExecResult {
 pub const agent_image_name = "AGENTD.ELF";
 
 /// The principal an EL0 `sys_exec` spawns. `AGENTD.ELF` by recorded name
-/// binds `{uid_agent, 0}` no matter who asks — the binding only narrows,
-/// and the EL0 caller can never name a principal anyway. Every other
-/// image preserves the caller's principal, so a `uid_agent` parent's
-/// children inherit `uid_agent` (index D15) and caps stay 0.
+/// binds `{uid_agent, 0}` no matter who asks — and the EL0 caller can
+/// never name a principal anyway. The name is only this honest once
+/// `apply_exec_grant` has proven the image operator-provisioned (R4-F1
+/// #3390): an unprovisioned `AGENTD.ELF` refuses `name_unprovisioned`
+/// before any spawn, so this bind can never be reached by a
+/// guest-planted file. Every other image preserves the caller's
+/// principal, so a `uid_agent` parent's children inherit `uid_agent`
+/// (index D15) and caps stay 0.
 pub fn el0_spawn_principal(name: []const u8, caller: process.Principal) process.Principal {
     if (std.ascii.eqlIgnoreCase(name, agent_image_name)) return process.agent_principal;
     return caller;
@@ -600,8 +634,11 @@ fn exec_file_impl(name: []const u8, args: []const []const u8, pin: ?usize, princ
     // parsed or mapped — the digest is the raw-file SHA-256 the row
     // pins, over the same channel bytes the loader is about to read. A
     // named row whose hash is wrong refuses by name (`grant_stale`) and
-    // never falls open; no row means the ambient set (M116b).
-    if (apply_exec_grant(name, st.size, principal.uid) == .grant_stale) return .grant_stale;
+    // never falls open; no row means the ambient set (M116b). R4-F1
+    // (#3390) adds the second by-name refusal at the same gate: an
+    // unprovisioned `AGENTD.ELF` never reaches the loader either.
+    const grant_res = apply_exec_grant(name, st.size, principal.uid);
+    if (grant_res != .ok) return grant_res;
 
     // M70c-K (issue #1504): a file too big for the staging buffer is no
     // longer refused outright. `exec_program_max` is a bound of the STAGED
@@ -3129,4 +3166,59 @@ test "exec: el0_spawn_principal binds AGENTD.ELF to uid_agent, preserves all els
     try std.testing.expectEqual(process.uid_system, el0_spawn_principal("GOSH.ELF", sys).uid);
     // A same-named file in a subdirectory does NOT bind (verbatim recorded name).
     try std.testing.expectEqual(process.uid_user, el0_spawn_principal("SUB/AGENTD.ELF", user).uid);
+}
+
+test "exec: unprovisioned AGENTD.ELF refuses name_unprovisioned; provisioned runs (R4-F1 #3390)" {
+    virtio_file.set_test_share(null);
+    defer virtio_file.set_test_share(null);
+    defer test_share_n = 0;
+    // The trust table is process-global — restore the empty state on
+    // every exit so a row minted here never leaks into a sibling test.
+    defer trust.init();
+    arm_allocator();
+    _ = mmu.build_user_root(userspace.text_va, 0x1000, 64, userspace.stack_va, 0x2000, 8192) orelse return error.TestUnexpectedResult;
+    _ = scheduler.init();
+    _ = scheduler.register_worker(0x2000);
+    _ = scheduler.register_user(0x3000, 0);
+    scheduler.start();
+    try std.testing.expect(scheduler.yield_current()); // shell -> user
+    try std.testing.expect(scheduler.exit_current(7)); // user -> idle
+    try std.testing.expect(scheduler.reap(2));
+
+    test_share_n = 0;
+    trust.init();
+    const img = dsk1("agentd: planted\n", 24, 24 + 17);
+    test_seed("AGENTD.ELF", img[0 .. 24 + 17]);
+
+    // The issue's plant shape: no OWNERS row at all — a guest-created
+    // file mints none, and a host drop without a provision reads the
+    // same way (the ambiguity the fix resolves in favor of refusal).
+    try std.testing.expectEqual(ExecResult.name_unprovisioned, exec_file("AGENTD.ELF", &.{}));
+    // Case-folded — the recorded name compares case-insensitively.
+    test_seed("agentd.elf", img[0 .. 24 + 17]);
+    try std.testing.expectEqual(ExecResult.name_unprovisioned, exec_file("agentd.elf", &.{}));
+    // A subdirectory lookalike was never the recorded name: it loads
+    // under the ambient set like any other image.
+    test_seed("SUB/AGENTD.ELF", img[0 .. 24 + 17]);
+    try std.testing.expectEqual(ExecResult.ok, exec_file("SUB/AGENTD.ELF", &.{}));
+
+    // A uid_user-owned row is a guest's own shape, not a provision —
+    // the strongest form of squat still refuses.
+    trust.init();
+    try std.testing.expectEqual(trust.LoadResult.ok, trust.load("#v1\nAGENTD.ELF\t644\t1000\t-\n"));
+    try std.testing.expectEqual(ExecResult.name_unprovisioned, exec_file("AGENTD.ELF", &.{}));
+
+    // A world-writable uid_system row is no provision either: the
+    // non-owner write bit means a guest can still rewrite the bytes
+    // (the same shape system_owned_key refuses for the secret store).
+    trust.init();
+    _ = trust.load("#v1\nAGENTD.ELF\t666\t0\t-\n");
+    try std.testing.expectEqual(ExecResult.name_unprovisioned, exec_file("AGENTD.ELF", &.{}));
+
+    // The provisioned shape — uid_system-owned, no non-owner write —
+    // runs, and the recorded name still carries its principal.
+    trust.init();
+    _ = trust.load("#v1\nAGENTD.ELF\t644\t0\t-\n");
+    try std.testing.expectEqual(ExecResult.ok, exec_file_as("AGENTD.ELF", &.{}, process.agent_principal));
+    try std.testing.expectEqual(process.uid_agent, process.info(last_exec_pid().?).?.uid);
 }
