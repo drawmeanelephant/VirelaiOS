@@ -239,9 +239,9 @@ func TestSummarizeAppsCountsRowsAndTheHighestVersion(t *testing.T) {
 	// M122b (#2571) added GOWELCOME; M120d (#2561) restored GOSNAP now
 	// that a bare exec opens its window; M132b (#2753) appended the nine
 	// M140–M148 reservation rows and #3143 docked GOA11Y — the honest
-	// catalog is 31 rows.
-	if s.Rows != 31 {
-		t.Fatalf("rows = %d want 31 (the honest catalog)", s.Rows)
+	// catalog is 32 rows with #3455's GOPAINT promotion.
+	if s.Rows != 32 {
+		t.Fatalf("rows = %d want 32 (the honest catalog)", s.Rows)
 	}
 	// The receipt's headline: the manifest declares v2 rows, so a reader that
 	// ignored the tail would report v=0 and fail here.
@@ -480,6 +480,8 @@ var catalogHonesty = []struct {
 	{"GOVAULT.ELF", "reserved", ""},
 	{"GOMAIL.ELF", "reserved", ""},
 	{"GOA11Y.ELF", "window", "user/go/goa11y/main.go"},
+	// #3455: GOPAINT's row shipped — its bare exec opens a tabapp window.
+	{"GOPAINT.ELF", "window", "user/go/gopaint/main.go"},
 }
 
 // windowMarkers are the calls that open (or bind) a window in this tree:

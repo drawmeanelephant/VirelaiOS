@@ -81,3 +81,4 @@ at all, and `--stale` sorts those rows first.
 | Vault | GOVAULT.ELF |  #3240 | 2026-10-23 | PWR Lock row + ctrl+shift-l screen lock |
 | Mail | GOMAIL.ELF |  #3253 | 2026-10-23 | folder browse over real LIST + bounded /host/MAIL cache, offline search |
 | Accessibility | GOA11Y.ELF |  #3143 | 2026-10-22 | appkit a11y outlines + GOA11Y reader |
+| Paint | GOPAINT.ELF |  #3455 | 2026-10-25 | manifest promotion — the gate-proven `opens=image` row ships |

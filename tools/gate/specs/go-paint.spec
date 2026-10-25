@@ -15,10 +15,10 @@
 #       pixels to the QOI save's sum=.
 #   02  SEAT (GOTABWM): the M124a drag — GOFILES arms PIC.QOI, the release
 #       lands on GOPAINT's split pane, the in-app confirm answers the
-#       staged payload, and the canvas becomes the image. GOPAINT has no
-#       APPS.TXT row in the repo manifest (M132b reserved grants only), so
-#       this leg stages one on the gate's own share — the same seam
-#       go-fileman run 13 uses for its MISSING.ELF refusal row.
+#       staged payload, and the canvas becomes the image. Since #3455 the
+#       repo manifest itself carries the GOPAINT row, so the opens=
+#       admission under test reads the desk's own APPS.TXT entry — the
+#       setup hook fails honestly if it ever goes missing again.
 #   03  SEAT: M125a state — tool rect, ctrl-shift-w closes (the seat
 #       collects the blob), ctrl-shift-t reopens the recorded bin, and the
 #       restored app reloads the file and the tool selection.
@@ -26,8 +26,9 @@
 # M141b (#2788) adds two store legs on a second share (paint-store-share),
 # shim-mode like run 01, driven by STORE.ELF .SH journeys inside gosh:
 #
-#   04  A stock APPS.TXT (no GOPAINT row anywhere — the release's signed
-#       ReleaseManifestRow self-registers at install), a host flintd
+#   04  An APPS.TXT with the GOPAINT row stripped (the repo manifest
+#       carries it since #3455; the release's signed ReleaseManifestRow
+#       still has to prove it self-registers at install), a host flintd
 #       serving the `gopaint` stream on this gate's own lane (4859), then:
 #       ls folds the signed catalog card, a tampered-ELF install refuses
 #       by name (elf_mismatch GOPAINT.ELF), the real install verifies and
@@ -84,7 +85,7 @@
 #   ../flint-server checkout (or FLINT_SERVER_DIR=...) — the hook zig-builds
 #   flintd and serves the signed gopaint stream on 127.0.0.1:4859.
 
-vgate_name go-paint "M141a #2787 + M141b #2788 + #2976: GOPAINT.ELF — tools/undo/QOI, PNG export, drop-in, save_state, signed STORE install + round-trip K=3"
+vgate_name go-paint "M141a #2787 + M141b #2788 + #2976 + M201d #3455: GOPAINT.ELF — tools/undo/QOI, PNG export, drop-in, save_state, signed STORE install + round-trip K=3, upstream manifest row"
 vgate_share seed
 vgate_runner_flags -Xswiftc -DSPIKE
 vgate_repeat 3 BOOTS
@@ -162,24 +163,22 @@ if not os.path.exists(qoi):
     sys.exit("QOI fixture missing (expected " + qoi + ")")
 shutil.copy(qoi, os.path.join(drop, "PIC.QOI"))
 shutil.copy(qoi, os.path.join(drop, "SEED.QOI"))
-# GOPAINT has no manifest row in the repo's image/apps.txt (M132b reserved
-# the grant line only); the seat's drag admission reads opens= from the
-# SHARE's APPS.TXT, so append the row here — the go-fileman run-13
-# MISSING.ELF precedent, one gate-local line, never upstreamed.
+# The adoption leg (M201d #3455): image/apps.txt now carries the GOPAINT
+# row this leg once appended gate-locally. The seed share's APPS.TXT is a
+# copy of the repo manifest, so the seat's opens= drag admission reads
+# the desk's own row — assert it is here verbatim and fail honestly if
+# the promotion ever regresses, rather than papering over a missing one.
 apps = os.path.join(share, "APPS.TXT")
 with open(apps) as f:
     body = f.read()
-if "GOPAINT.ELF" not in body:
-    if not body.endswith("\n"):
-        body += "\n"
-    body += "GOPAINT.ELF | Paint | P | dock=false | v=2 | opens=image\n"
-    with open(apps, "w") as f:
-        f.write(body)
+if "GOPAINT.ELF | Paint | P | dock=false | v=2 | opens=image" not in body:
+    sys.exit("share APPS.TXT lost the upstream GOPAINT row (image/apps.txt "
+             "regressed) — refusing to run the drop leg against it")
 # Runs 02/03 exec the seat explicitly; keep the autostart off (wm=none) so
 # the boot proves the exec'd seat, and run 01 stays the bare shim.
 with open(os.path.join(share, "SETTINGS.TXT"), "w") as f:
     f.write("#v2\nwm=none\n")
-print("staged GOPAINT/GOTABWM/GOFILES + DROP/{PIC,SEED}.QOI + APPS.TXT row")
+print("staged GOPAINT/GOTABWM/GOFILES + DROP/{PIC,SEED}.QOI; upstream APPS.TXT row verified")
 PY
 
 vgate_run 01 -- \
@@ -416,11 +415,15 @@ for name, cmd in (
         sys.exit(name + " missing (expected .build/go/" + name +
                  ") - build it first: " + cmd)
 
-# No dsk-special manifest entry: GOPAINT self-registers at install from the
-# signed ReleaseManifestRow, so the stock manifest must NOT name it.
+# GOPAINT's manifest row is upstream now (M201d #3455) — assert the stock
+# file still carries it, then strip it from THIS share's APPS.TXT below:
+# the install journey's premise is a share that has never met the app, so
+# the signed ReleaseManifestRow's self-registration is what puts the row
+# back — a share already naming GOPAINT could not prove that.
 apps_stock = open(os.path.join("image", "apps.txt"), encoding="utf-8").read()
-if "GOPAINT.ELF" in apps_stock:
-    sys.exit("image/apps.txt carries GOPAINT.ELF — store installs self-register")
+if "GOPAINT.ELF | Paint | P | dock=false | v=2 | opens=image" not in apps_stock:
+    sys.exit("image/apps.txt lost the GOPAINT row — the promotion this "
+             "gate's adoption leg depends on regressed")
 
 # The env-gated generator (the go-gostore seam) signs the `gopaint` release
 # under the repo's first-party fixture seed, pinning THIS build's ELF sha —
@@ -513,7 +516,8 @@ if not flintd_up:
 print("flintd: serving %s on 127.0.0.1:4859 pid=%d rev=%s"
       % (flintd_store, flintd_proc.pid, flintd_rev))
 
-# paint-store-share: the store toolchain, a stock APPS.TXT, the first-party
+# paint-store-share: the store toolchain, a stock APPS.TXT sans the GOPAINT
+# row (the self-registration premise), the first-party
 # keyring pinning name=virelai only, the staged replica (release-sized
 # Changes outrun the wire read — the go-flint seam), the signed channel
 # drop, the one-byte-tampered DROPBAD, and the two .SH journeys.
@@ -536,8 +540,10 @@ for suffix, body in ((".jsonl", gp_line + "\n"),
                      (".json", json.dumps(gp_stream_rec, separators=(",", ":")) + "\n")):
     with open(os.path.join(store_share, "FLINT", "streams", gp_sid + suffix), "w") as f:
         f.write(body)
-shutil.copy(os.path.join("image", "apps.txt"),
-            os.path.join(store_share, "APPS.TXT"))
+# Stock APPS.TXT minus the GOPAINT line — see the note at apps_stock.
+with open(os.path.join(store_share, "APPS.TXT"), "w", encoding="utf-8") as f:
+    f.write("".join(ln for ln in apps_stock.splitlines(keepends=True)
+                    if not ln.startswith("GOPAINT.ELF |")))
 
 
 def write_drop(drop, elf):
