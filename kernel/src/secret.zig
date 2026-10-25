@@ -68,7 +68,12 @@
 //! gesture. `commit`/`set` refuse a line whose apps allowlist names the
 //! WRITER's image (the D11 analog: never the app the row names) and never
 //! evict — the 8-entry cap is a refusal (`ENOSPC`), while a same-(uid,key)
-//! overwrite costs no slot. A landed write persists through
+//! overwrite costs no slot. An overwrite can never silently strip a second
+//! access control (#3407): a line that OMITS `apps` preserves a bound
+//! allowlist rather than reverting the entry to uid-scope (only an
+//! explicit new list rewrites the binding), and the LIST marshal marks a
+//! would-be overwrite `replace` so the consent gesture is asked with the
+//! decisive fact. A landed write persists through
 //! `save_to_share()`. The asker learns the verdict through `status`; the
 //! value itself crosses only caller memory — the pending table keeps it
 //! in the kernel, never on a channel another party reads.
@@ -223,8 +228,14 @@ fn set_internal(uid: u32, key: []const u8, val: []const u8, apps: []const u8) Se
     }
     @memcpy(e.val[0..val.len], val);
     e.val_len = @intCast(val.len);
-    e.apps_len = @intCast(apps.len);
-    @memcpy(e.apps[0..apps.len], apps);
+    // #3407: an OMITTED apps field preserves a bound allowlist — an
+    // overwrite can never silently revert an app-bound entry to
+    // uid-scope (a widening to every uid_user reader). Only an explicit
+    // new list rewrites the binding; unbinding is a host-side act.
+    if (apps.len != 0) {
+        e.apps_len = @intCast(apps.len);
+        @memcpy(e.apps[0..apps.len], apps);
+    }
     return .ok;
 }
 
@@ -421,8 +432,8 @@ pub const max_pending_asks: usize = 4;
 /// The widest line an `ask`/`set` op accepts: 32-key + 10-uid + 64-value +
 /// 64-apps + 3 tabs, rounded.
 pub const ask_line_max: usize = max_key_len + 10 + max_val_len + max_apps_len + 4;
-/// The widest LIST marshal: id + pid + uid + image + key + apps + tabs.
-pub const ask_meta_max: usize = 10 + 10 + 10 + process.name_max + max_key_len + max_apps_len + 6;
+/// The widest LIST marshal: id + pid + uid + image + key + mode + apps + tabs.
+pub const ask_meta_max: usize = 10 + 10 + 10 + process.name_max + max_key_len + 8 + max_apps_len + 6;
 
 /// The ask lifecycle — `pending` stands until the seat gestures; the
 /// terminal states stay recorded so the asker's `status` read learns the
@@ -523,10 +534,22 @@ fn find_ask(id: u32) ?*Ask {
     return null;
 }
 
+/// Whether `(uid,key)` already holds an entry — the replace signal the
+/// LIST marshal carries so an overwrite can never pose as an add (#3407).
+fn exists(uid: u32, key: []const u8) bool {
+    for (entries[0..entry_count]) |*e| {
+        if (e.uid == uid and std.mem.eql(u8, e.key[0..e.key_len], key)) return true;
+    }
+    return false;
+}
+
 /// op 1 — `list(index)`: marshal the `index`-th PENDING ask as
-/// `id\tpid\tuid\timage\tkey[\tapps]` — names and policy only, never the
-/// value. Returns the byte count, or null past the last pending row (the
-/// caller iterates until ENOENT, the grant-admin op-0 shape).
+/// `id\tpid\tuid\timage\tkey\tmode[\tapps]` — names and policy only, never
+/// the value. `mode` is `new` or `replace` (#3407): `replace` when the
+/// ask's (uid,key) already holds an entry, so the seat's consent is asked
+/// with the add-vs-overwrite fact. Returns the byte count, or null past
+/// the last pending row (the caller iterates until ENOENT, the grant-admin
+/// op-0 shape).
 pub fn ask_line(index: usize, out: []u8) ?usize {
     ensure_init();
     reap_dead_asks();
@@ -534,10 +557,11 @@ pub fn ask_line(index: usize, out: []u8) ?usize {
     for (&asks) |*a| {
         if (a.id == 0 or a.state != .pending) continue;
         if (seen == index) {
+            const mode: []const u8 = if (exists(a.entry.uid, a.entry.key[0..a.entry.key_len])) "replace" else "new";
             var nbuf: [30]u8 = undefined;
             const nums = std.fmt.bufPrint(&nbuf, "{d}\t{d}\t{d}\t", .{ a.id, a.pid, a.entry.uid }) catch return null;
             var pos: usize = 0;
-            const need = nums.len + a.image_len + 1 + a.entry.key_len +
+            const need = nums.len + a.image_len + 1 + a.entry.key_len + 1 + mode.len +
                 (if (a.entry.apps_len != 0) a.entry.apps_len + 1 else 0);
             if (need > out.len) return null;
             @memcpy(out[pos .. pos + nums.len], nums);
@@ -548,6 +572,10 @@ pub fn ask_line(index: usize, out: []u8) ?usize {
             pos += 1;
             @memcpy(out[pos .. pos + a.entry.key_len], a.entry.key[0..a.entry.key_len]);
             pos += a.entry.key_len;
+            out[pos] = '\t';
+            pos += 1;
+            @memcpy(out[pos .. pos + mode.len], mode);
+            pos += mode.len;
             if (a.entry.apps_len != 0) {
                 out[pos] = '\t';
                 pos += 1;
@@ -566,7 +594,8 @@ pub const CommitResult = enum { ok, enoent, enospc, eacces, einval, eio };
 /// op 2 — `commit(id)`: the consent gesture. Applies the pending ask into
 /// the store and persists it; a persist failure leaves the ask standing
 /// (the seat may retry — the in-memory set is idempotent by key). Refuses
-/// a row whose apps list names the WRITER's image.
+/// a row whose apps list names the WRITER's image. An overwrite keeps a
+/// bound allowlist when the staged line omits `apps` (#3407).
 pub fn commit(id: u32, caller_image: []const u8) CommitResult {
     ensure_init();
     reap_dead_asks();
@@ -611,7 +640,8 @@ pub fn status(id: u32, pid: usize) ?u64 {
 /// op 5 — `set(line)`: the seat's direct provisioning gesture (the
 /// operator's own entry needs no machine asker). Same line grammar and
 /// the same names-the-writer refusal as `commit`; a persist failure
-/// reports EIO with the in-memory set applied.
+/// reports EIO with the in-memory set applied. The same overwrite rule
+/// holds (#3407): an omitted `apps` field preserves a bound allowlist.
 pub fn set_direct(caller_image: []const u8, line: []const u8) CommitResult {
     ensure_init();
     const f = parseFields(line) orelse return .einval;
@@ -819,10 +849,11 @@ test "secret: slot-96 ask/list/commit/drop/status — the consent lifecycle (#33
     const bad = std.fmt.bufPrint(&linebuf, "{s}\t1000\t{s}", .{ kbuf[0..], vbuf[0..] }) catch unreachable;
     try std.testing.expectEqual(AskResult{ .err = .invalid }, ask(pid, process.uid_user, "ASKER.ELF", bad));
 
-    // LIST marshals names and policy only — never the value.
+    // LIST marshals names and policy only — never the value; mode names
+    // the row an add (`new`) or an overwrite (`replace`, #3407).
     var buf: [ask_meta_max]u8 = undefined;
     const n = ask_line(0, &buf).?;
-    const want = std.fmt.bufPrint(&linebuf, "1\t{d}\t1000\tASKER.ELF\tmail-x\tGOMAIL.ELF", .{pid}) catch unreachable;
+    const want = std.fmt.bufPrint(&linebuf, "1\t{d}\t1000\tASKER.ELF\tmail-x\tnew\tGOMAIL.ELF", .{pid}) catch unreachable;
     try std.testing.expectEqualStrings(want, buf[0..n]);
     try std.testing.expect(ask_line(1, &buf) == null);
     try std.testing.expect(std.mem.indexOf(u8, buf[0..n], "pw") == null);
@@ -894,6 +925,60 @@ test "secret: slot-96 refusals — writer-named rows, caps, dead askers (#3351)"
         try std.testing.expect(ask(pid, process.uid_user, "ASKER.ELF", ln) == .id);
     }
     try std.testing.expectEqual(AskResult{ .err = .table_full }, ask(pid, process.uid_user, "ASKER.ELF", "fifth\t1000\tv"));
+}
+
+test "secret: overwrite preserves the apps binding; LIST marks replace (#3407)" {
+    init();
+    test_persist = true;
+    defer test_persist = null;
+    const pid = process.create_as("ASKER.ELF", .{}, .{}, .{}, .{ .uid = process.uid_user }).?;
+    const seat = "/host/GOTABWM.ELF";
+
+    // A host-provisioned app-bound entry stands; an ask that omits the
+    // apps field targets the same (uid,key).
+    try std.testing.expectEqual(SetResult.ok, set_internal(process.uid_user, "net-hmac", "hostseed", "GOSSHD.ELF"));
+    const r = ask(pid, process.uid_user, "ASKER.ELF", "net-hmac\t1000\tattacker-val");
+    try std.testing.expectEqual(@as(u32, 1), r.id);
+
+    // The LIST marshal carries the replace signal — the overwrite cannot
+    // pose as an ordinary add to the consenting seat.
+    var buf: [ask_meta_max]u8 = undefined;
+    const n = ask_line(0, &buf).?;
+    var want: [ask_meta_max]u8 = undefined;
+    const wl = std.fmt.bufPrint(&want, "1\t{d}\t1000\tASKER.ELF\tnet-hmac\treplace", .{pid}) catch unreachable;
+    try std.testing.expectEqualStrings(wl, buf[0..n]);
+
+    // Consent lands the new value but the omitted apps field does NOT
+    // strip the binding — the entry stays app-bound, never reverts to
+    // uid-scope. The serialized row still names GOSSHD.ELF.
+    try std.testing.expectEqual(CommitResult.ok, commit(1, seat));
+    var out: [file_max]u8 = undefined;
+    const sn = serialize(&out);
+    try std.testing.expect(std.mem.indexOf(u8, out[0..sn], "net-hmac\t1000\tattacker-val\tGOSSHD.ELF\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out[0..sn], "net-hmac\t1000\tattacker-val\n") == null);
+
+    // The seat's own `set` follows the same rule: value rotates, the
+    // binding survives an omitted field; an explicit list rewrites it.
+    try std.testing.expectEqual(CommitResult.ok, set_direct(seat, "net-hmac\t1000\trotated"));
+    const s2n = serialize(&out);
+    try std.testing.expect(std.mem.indexOf(u8, out[0..s2n], "net-hmac\t1000\trotated\tGOSSHD.ELF\n") != null);
+    try std.testing.expectEqual(CommitResult.ok, set_direct(seat, "net-hmac\t1000\trotated\tTOOL.ELF"));
+    const s3n = serialize(&out);
+    try std.testing.expect(std.mem.indexOf(u8, out[0..s3n], "net-hmac\t1000\trotated\tTOOL.ELF\n") != null);
+
+    // An unbound entry stays unbound — omitting apps on its overwrite is
+    // a plain uid-scope value swap, and LIST still calls it replace.
+    const r2 = ask(pid, process.uid_user, "ASKER.ELF", "other\t1000\tv1");
+    try std.testing.expectEqual(@as(u32, 2), r2.id);
+    try std.testing.expectEqual(CommitResult.ok, commit(2, seat));
+    const r3 = ask(pid, process.uid_user, "ASKER.ELF", "other\t1000\tv2");
+    try std.testing.expectEqual(@as(u32, 3), r3.id);
+    const n3 = ask_line(0, &buf).?;
+    const wl3 = std.fmt.bufPrint(&want, "3\t{d}\t1000\tASKER.ELF\tother\treplace", .{pid}) catch unreachable;
+    try std.testing.expectEqualStrings(wl3, buf[0..n3]);
+    try std.testing.expectEqual(CommitResult.ok, commit(3, seat));
+    const s4n = serialize(&out);
+    try std.testing.expect(std.mem.indexOf(u8, out[0..s4n], "other\t1000\tv2\n") != null);
 }
 
 test "secret: slot-96 persist failure keeps the ask standing (EIO) (#3351)" {

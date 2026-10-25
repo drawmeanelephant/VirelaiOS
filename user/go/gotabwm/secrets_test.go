@@ -30,7 +30,7 @@ func TestSecretAskLifecycleGrantAndDecline(t *testing.T) {
 	focusRaise = func(id uint32) int64 { return 0 }
 	t.Cleanup(func() { openInputSink, queryWindow, closeWin, focusRaise = oldOpen, oldQuery, oldClose, oldRaise })
 
-	pending := []string{"7\t41\t1000\tGOMAIL.ELF\tmail-x\tGOMAIL.ELF"}
+	pending := []string{"7\t41\t1000\tGOMAIL.ELF\tmail-x\tnew\tGOMAIL.ELF"}
 	stubSecrets(t,
 		func(i uint32, buf []byte) (int, int64) {
 			if int(i) >= len(pending) {
@@ -46,7 +46,7 @@ func TestSecretAskLifecycleGrantAndDecline(t *testing.T) {
 	if !secretAskModal.open || secretAskModal.id != 7 {
 		t.Fatalf("modal open=%v id=%d", secretAskModal.open, secretAskModal.id)
 	}
-	if log[len(log)-1] != MarkerSecretAsk+"GOMAIL.ELF key=mail-x" {
+	if log[len(log)-1] != MarkerSecretAsk+"GOMAIL.ELF key=mail-x apps=GOMAIL.ELF" {
 		t.Fatalf("ask marker: %v", log)
 	}
 	// An unrelated key is swallowed, not answered.
@@ -63,7 +63,7 @@ func TestSecretAskLifecycleGrantAndDecline(t *testing.T) {
 	}
 
 	// A second ask stands after the first answered; Esc declines it.
-	pending = []string{"9\t42\t1000\tGOIRC.ELF\tirc"}
+	pending = []string{"9\t42\t1000\tGOIRC.ELF\tirc\tnew"}
 	pollSecretAsks()
 	if !secretAskModal.open || secretAskModal.id != 9 {
 		t.Fatalf("second ask open=%v", secretAskModal.open)
@@ -78,10 +78,16 @@ func TestSecretAskLifecycleGrantAndDecline(t *testing.T) {
 }
 
 func TestSecretAskParseAndRefusalMarker(t *testing.T) {
-	if _, ok := parseSecretAskLine("1\t41\t1000\tA.ELF\tk\tAPPS"); !ok {
-		t.Fatal("valid line refused")
+	a, ok := parseSecretAskLine("1\t41\t1000\tA.ELF\tk\tnew\tAPPS")
+	if !ok || a.replaces || a.apps != "APPS" {
+		t.Fatalf("valid line: ok=%v ask=%+v", ok, a)
 	}
-	for _, bad := range []string{"", "1\t2\t3", "x\t41\t1000\tA\tk", "1\t41\tx\tA\tk", "1\t41\t1000\t\tk"} {
+	a, ok = parseSecretAskLine("2\t41\t1000\tA.ELF\tk\treplace")
+	if !ok || !a.replaces || a.apps != "" {
+		t.Fatalf("replace line: ok=%v ask=%+v", ok, a)
+	}
+	for _, bad := range []string{"", "1\t2\t3", "x\t41\t1000\tA\tk", "1\t41\tx\tA\tk", "1\t41\t1000\t\tk",
+		"1\t41\t1000\tA.ELF\tk\tbogus", "1\t41\t1000\tA.ELF\tk"} {
 		if _, ok := parseSecretAskLine(bad); ok {
 			t.Fatalf("malformed line accepted: %q", bad)
 		}
@@ -99,7 +105,7 @@ func TestSecretAskParseAndRefusalMarker(t *testing.T) {
 			if i != 0 {
 				return 0, -vi.ErrENOENT
 			}
-			l := "5\t41\t1000\tAPP.ELF\tk"
+			l := "5\t41\t1000\tAPP.ELF\tk\tnew"
 			copy(buf, l)
 			return len(l), int64(len(l))
 		},
@@ -109,5 +115,37 @@ func TestSecretAskParseAndRefusalMarker(t *testing.T) {
 	handleSecretAskKey(vi.Event{Kind: vi.EvWmKey, Arg0: 0x22, Arg1: 'g'})
 	if log[len(log)-1] != MarkerSecretRefuse+"APP.ELF key=k ENOSPC" {
 		t.Fatalf("refuse marker: %v", log)
+	}
+}
+
+// #3407: a `replace`-mode ask names the overwrite — the standing marker
+// carries `replace` so the consent gesture is asked with the decisive
+// fact instead of presenting a clobber as an ordinary add.
+func TestSecretAskReplaceMarker(t *testing.T) {
+	var log []string
+	oldLog := secretLog
+	secretLog = func(s string) { log = append(log, s) }
+	t.Cleanup(func() { secretLog = oldLog })
+	oldOpen, oldQuery := openInputSink, queryWindow
+	openInputSink = func(x, y, w, h uint32) (int, int64) { return 91, 0 }
+	queryWindow = func(id int) ([8]uint32, int64) { var st [8]uint32; st[5] = 1; return st, 0 }
+	t.Cleanup(func() { openInputSink, queryWindow = oldOpen, oldQuery })
+	stubSecrets(t,
+		func(i uint32, buf []byte) (int, int64) {
+			if i != 0 {
+				return 0, -vi.ErrENOENT
+			}
+			l := "5\t41\t1000\tAPP.ELF\tnet-hmac\treplace"
+			copy(buf, l)
+			return len(l), int64(len(l))
+		},
+		func(id uint32) int64 { return -vi.ErrEACCES },
+		func(id uint32) int64 { return 0 })
+	pollSecretAsks()
+	if !secretAskModal.open || !secretAskModal.replaces {
+		t.Fatalf("modal open=%v replaces=%v", secretAskModal.open, secretAskModal.replaces)
+	}
+	if log[len(log)-1] != MarkerSecretAsk+"APP.ELF key=net-hmac replace" {
+		t.Fatalf("replace marker: %v", log)
 	}
 }

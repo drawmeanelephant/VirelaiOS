@@ -204,7 +204,7 @@ func TestSecretSetDispatchesSlot96(t *testing.T) {
 			}
 			return 7
 		case SecretOpList:
-			line := "3\t41\t1000\tAPP.ELF\tmail-x\tGOMAIL.ELF"
+			line := "3\t41\t1000\tAPP.ELF\tmail-x\tnew\tGOMAIL.ELF"
 			copy(unsafe.Slice((*byte)(unsafe.Pointer(a2)), a3), line)
 			return int64(len(line))
 		default:
@@ -219,7 +219,7 @@ func TestSecretSetDispatchesSlot96(t *testing.T) {
 	if rc < 0 || n == 0 {
 		t.Fatalf("list n=%d rc=%d", n, rc)
 	}
-	if string(buf[:n]) != "3\t41\t1000\tAPP.ELF\tmail-x\tGOMAIL.ELF" {
+	if string(buf[:n]) != "3\t41\t1000\tAPP.ELF\tmail-x\tnew\tGOMAIL.ELF" {
 		t.Fatalf("line %q", buf[:n])
 	}
 	_ = SecretAskCommit(3)

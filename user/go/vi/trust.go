@@ -140,10 +140,10 @@ const (
 
 // SecretAskLineMax is the widest line an ask/set op accepts
 // (32-key + 10-uid + 64-value + 64-apps + separators); SecretAskMetaMax
-// bounds one list marshal (id + pid + uid + image + key + apps).
+// bounds one list marshal (id + pid + uid + image + key + mode + apps).
 const (
 	SecretAskLineMax = SecretKeyMax + 10 + SecretValMax + 64 + 4
-	SecretAskMetaMax = 10 + 10 + 10 + 16 + SecretKeyMax + 64 + 6
+	SecretAskMetaMax = 10 + 10 + 10 + 16 + SecretKeyMax + 8 + 64 + 6
 )
 
 // SecretAsk stages line for the seat's consent gesture. Returns the ask
@@ -155,9 +155,11 @@ func SecretAsk(line string) int64 {
 }
 
 // SecretAskList marshals the index-th pending ask's metadata into buf —
-// `id\tpid\tuid\timage\tkey[\tapps]`, names and policy only. Returns the
-// byte count; ENOENT past the last pending row; EACCES for a caller that
-// is neither the seat nor CAP_PROC_ADMIN.
+// `id\tpid\tuid\timage\tkey\tmode[\tapps]`, names and policy only. mode is
+// the add-vs-replace signal (#3407): "new" or "replace" (the ask's
+// (uid,key) already holds an entry). Returns the byte count; ENOENT past
+// the last pending row; EACCES for a caller that is neither the seat nor
+// CAP_PROC_ADMIN.
 func SecretAskList(index uint32, buf []byte) (int, int64) {
 	if len(buf) == 0 {
 		return 0, -ErrEINVAL
