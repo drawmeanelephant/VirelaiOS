@@ -13,18 +13,37 @@ rendered page drift apart.
 
 ## The version rule
 
-"Version" names exactly one surface per kind, and that surface only. A
-shipped **app**'s version is its seat-stored state envelope `appver` — the
-`StateVersion` the app registers with the tabapp harness in its package
-under `user/go/`; an app that never saves state has no version surface and
-shows `—`. A **store release**'s version is the signed `ReleaseVersion`
-const in the head release manifest of its FLINT stream (ADR 0055 D2) — that
-versions the release, never the app binary itself. A **kernel service** or
-shared-format **contract**'s version is the ADR number that pins it. The
-**kernel image**'s version is the `osver` build stamp (`-Dos-version`,
-`kernel/src/osver.zig`). A **shared library** has no version of its own
-unless it implements a contract — then the contract's ADR is the surface.
-A pinned external **host tool**'s version is its pin file.
+"Version" names exactly one contract surface per kind, and that surface
+only. A shipped **app**'s version is its seat-stored state envelope
+`appver` — the `StateVersion` the app registers with the tabapp harness
+in its package under `user/go/`; an app that never saves state has no
+version surface and shows `—`. A **store release**'s version is the
+signed `ReleaseVersion` const in the head release manifest of its FLINT
+stream (ADR 0055 D2) — that versions the release, never the app binary
+itself. A **kernel service** or shared-format **contract**'s version is
+the ADR number that pins it. The **kernel image**'s version is the
+`osver` build stamp (`-Dos-version`, `kernel/src/osver.zig`). A
+**shared library** has no version of its own unless it implements a
+contract — then the contract's ADR is the surface. A pinned external
+**host tool**'s version is its pin file.
+
+Beside that contract surface, every component carries a product version
+`ver M.m.p` — a semver-shaped const in the component's own source that
+the drift check resolves the same way it resolves `StateVersion` today
+(#3463): a `user/go` package carries `const AppVersion`, a Zig source
+carries `pub const version`, a producer script carries `VER=`, a Go
+library dir carries `const Version`, a host tool its own const. The
+`ver` token sits comma-separated beside the kind's contract surface —
+`appver`/`ADR`/`osver`/`pin` stay what they are; renaming them would
+lie. Two exemptions: kernel-service rows, whose version IS the owning
+ADR (the kernel image is the one exception — the product image itself
+carries `ver` beside `osver`), and boris, whose pin file is the
+surface.
+
+Bump rule: everything seeds `ver 1.0.0` — no fake history; the refresh
+ledger already carries touch dates. A PR that substantively touches a
+component bumps patch; a feature-adding card bumps minor; a major bump
+is an explicit owner decision.
 
 Scope: every `image/apps.txt` row, the seat and the tools the session
 stages beside it, the generated ELF fixtures, the shared libraries under
@@ -323,7 +342,7 @@ the ADR is amended, the number in this table is what changed.
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| Kernel image | kernel-service | KERNEL.BIN | osver | ADR 0004 | shipped |
+| Kernel image | kernel-service | KERNEL.BIN | osver, ver 1.0.0 | ADR 0004 | shipped |
 | Boot loader | kernel-service | BOOTAA64.EFI | — | ADR 0001 | shipped |
 | Syscall ABI | kernel-service | — | ADR 0007 | ADR 0007, ADR 0013 | shipped |
 | exec / ELF loader | kernel-service | — | ADR 0035 | ADR 0035, ADR 0038 | shipped |
@@ -366,10 +385,14 @@ the header and separator lines. Cells, in order:
   `tool`, `fixture` and `kernel-service` rows it must be produced by the
   build or staging path (build.zig, `image/`, `tools/`); `lib` rows carry
   `—`; `host-tool` rows name their in-repo source root, which must exist.
-- **version** — comma-separated tokens: `appver N` (the app's registered
-  `StateVersion` under `user/go/`), a `Release`-prefixed const (one of
-  the ADR 0055 grammar names in `user/go/store/release.go`), `ADR NNNN`,
-  `osver`, `pin <path>`, or `—`.
+- **version** — comma-separated tokens: `ver M.m.p` (the product
+  version — the drift check resolves it against a const in the
+  component's own source per "The version rule"; at most one per row,
+  required on every row outside the named exemptions), `appver N` (the
+  app's registered `StateVersion` under `user/go/`), a
+  `Release`-prefixed const (one of the ADR 0055 grammar names in
+  `user/go/store/release.go`), `ADR NNNN`, `osver`, `pin <path>`, or
+  `—`.
 - **owning spec / contract** — comma-separated refs: a
   `tools/gate/specs/*.spec` path, `ADR NNNN` (a file under
   `docs/decisions/` with that number must exist), another repo path that
@@ -381,5 +404,8 @@ The check (`tools/tests/test_component_registry.py`, in
 registry `app` row or vice versa; a cited spec, ADR, const, or path does
 not resolve; a binary is not in the produced set; an `appver` value
 disagrees with the `StateVersion` the app's package registers (in either
-direction — a new registration with a `—` here is drift too); or a cell
-uses a token outside this grammar.
+direction — a new registration with a `—` here is drift too); a `ver`
+value disagrees with the product-version const in the component's
+source, or the source carries one the row does not show; or a cell
+uses a token outside this grammar. `--missing-ver` prints the rows
+still unseeded and exits 0 — advisory until the seeding cards land.
