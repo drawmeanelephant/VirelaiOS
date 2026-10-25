@@ -154,6 +154,32 @@ func TestBadFileRefusals(t *testing.T) {
 	}
 }
 
+// The recorded iteration count is unauthenticated plaintext: a count past
+// MaxIters is ErrBadFile by name at ParseHeader, so Open and the seat's
+// Verify never pay a hostile PBKDF2 (#3405). MaxIters itself still parses.
+func TestRecordedItersBound(t *testing.T) {
+	patch := func(iters uint32) []byte {
+		file := append([]byte(nil), sealTest(t, testPass, testEntries())...)
+		file[8] = byte(iters)
+		file[9] = byte(iters >> 8)
+		file[10] = byte(iters >> 16)
+		file[11] = byte(iters >> 24)
+		return file
+	}
+	for _, iters := range []uint32{MaxIters + 1, 0xFFFFFFFF} {
+		file := patch(iters)
+		if _, _, _, _, _, err := ParseHeader(file, FileMagic); !errors.Is(err, ErrBadFile) {
+			t.Fatalf("ParseHeader iters=%d err=%v, want ErrBadFile", iters, err)
+		}
+		if err := Verify(testPass, file); !errors.Is(err, ErrBadFile) {
+			t.Fatalf("Verify iters=%d err=%v, want ErrBadFile", iters, err)
+		}
+	}
+	if _, _, _, _, _, err := ParseHeader(patch(MaxIters), FileMagic); err != nil {
+		t.Fatalf("ParseHeader iters=MaxIters err=%v", err)
+	}
+}
+
 // The decode bounds are the refusal lines a hostile body hits.
 func TestBodyBounds(t *testing.T) {
 	if _, err := decodeBody(nil, FileVersion); !errors.Is(err, ErrBadFile) {

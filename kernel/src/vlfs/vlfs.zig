@@ -48,6 +48,12 @@ pub const format_version: u32 = 1;
 pub const format_version_2: u32 = 2;
 pub const magic_seal: u32 = 0x53464C53; // "SLFS"
 pub const kdf_pbkdf2_sha256: u32 = 1;
+/// Stored-iteration ceiling (#3405): the ~1 s seal-time calibration lands
+/// near 5–7 M iters on the reference host, so a stored count an order past
+/// that is not a superblock mkfs wrote — it is refused at parse rather
+/// than paid as unbounded PBKDF2 work at unseal. tools/go/vlfs's
+/// MaxKdfIters agrees.
+pub const max_kdf_iters: u32 = 64_000_000;
 /// Tag-region entry: {nonce 12 B, tag 16 B} per sealed block; 146 per tag
 /// block with an 8-byte zero tail (ADR 0061). The entry for sealed block
 /// b (2 ≤ b < tag_first) is slot b-2.
@@ -478,7 +484,9 @@ fn parseSuperblock(sector: *const [sector_len]u8, slot: u8) SbResult {
 
 /// Parse and validate the v2 seal span (ADR 0061). A version-2 superblock
 /// without the SLFS mark is malformed by definition; a KDF other than
-/// PBKDF2-HMAC-SHA256 or a zero iteration count is equally malformed.
+/// PBKDF2-HMAC-SHA256 or an iteration count outside [1, max_kdf_iters] is
+/// equally malformed — the count is unauthenticated plaintext, so the
+/// honest bound is what keeps unwrapDek's PBKDF2 bounded (#3405).
 fn parseSealFields(sector: *const [sector_len]u8) Error!SealInfo {
     if (rd32(sector, sb_seal_magic) != magic_seal) return error.BadSuperblock;
     if (rd32(sector, sb_kdf_id) != kdf_pbkdf2_sha256) return error.BadSuperblock;
@@ -491,7 +499,7 @@ fn parseSealFields(sector: *const [sector_len]u8) Error!SealInfo {
         .tag_first = rd32(sector, sb_tag_first),
         .tag_blocks = rd32(sector, sb_tag_blocks),
     };
-    if (info.kdf_iters == 0) return error.BadSuperblock;
+    if (info.kdf_iters == 0 or info.kdf_iters > max_kdf_iters) return error.BadSuperblock;
     // The reserved tail of the seal span is zero by format.
     for (sector[sb_seal_zero..sb_cksum]) |c| {
         if (c != 0) return error.BadSuperblock;
@@ -1821,6 +1829,33 @@ test "vlfs: named refusals — not_vlfs, bad_superblock, small, torn dirent" {
     image_buf[root_block + de_kind] = 9; // slot 0 = APPLE.TXT
     var out: [16]Dirent = undefined;
     try std.testing.expectError(error.BadDirent, listDir(disk3.ro(), vol2, root_inode, &out, &test_scratch));
+}
+
+test "vlfs: stored kdf_iters ceiling — a hostile count is bad_superblock, not computed (#3405)" {
+    // A minimal v2 superblock: magic + version + the seal span, with the
+    // FNV checksum kept honest so the refusal names the iteration count,
+    // not a torn sector.
+    var sector: [sector_len]u8 = @splat(0);
+    std.mem.writeInt(u32, sector[sb_magic..][0..4], magic_super, .little);
+    std.mem.writeInt(u32, sector[sb_version..][0..4], format_version_2, .little);
+    std.mem.writeInt(u32, sector[sb_seal_magic..][0..4], magic_seal, .little);
+    std.mem.writeInt(u32, sector[sb_kdf_id..][0..4], kdf_pbkdf2_sha256, .little);
+
+    // At the ceiling the stored count still parses.
+    std.mem.writeInt(u32, sector[sb_kdf_iters..][0..4], max_kdf_iters, .little);
+    const ok = try parseSealFields(&sector);
+    try std.testing.expectEqual(max_kdf_iters, ok.kdf_iters);
+
+    // One past it — and the audit's 0xFFFFFFFF — is refused by name.
+    for ([_]u32{ max_kdf_iters + 1, 0xFFFFFFFF }) |iters| {
+        std.mem.writeInt(u32, sector[sb_kdf_iters..][0..4], iters, .little);
+        std.mem.writeInt(u32, sector[sb_cksum..][0..4], fnv32(sector[0..sb_cksum]), .little);
+        try std.testing.expectError(error.BadSuperblock, parseSealFields(&sector));
+        switch (parseSuperblock(&sector, 0)) {
+            .bad => |e| try std.testing.expectEqual(error.BadSuperblock, e),
+            else => return error.TestUnexpectedResult,
+        }
+    }
 }
 
 /// Hand-encode one committed journal transaction (DESC + payload + COMMIT)

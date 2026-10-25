@@ -225,7 +225,10 @@ func ParseHeader(file []byte, magic string) (salt, nonce, body []byte, ver, iter
 		return nil, nil, nil, 0, 0, ErrBadFile
 	}
 	iters = getU32(file, 8)
-	if iters == 0 {
+	// The recorded count is unauthenticated until the body opens, so the
+	// MaxIters clamp must hold at open, not just at create: a hostile
+	// frame gets ErrBadFile, not unbounded PBKDF2 (#3405).
+	if iters == 0 || iters > MaxIters {
 		return nil, nil, nil, 0, 0, ErrBadFile
 	}
 	sl := int(getU16(file, 12))
