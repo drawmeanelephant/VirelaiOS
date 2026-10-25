@@ -88,6 +88,8 @@ func TestExtensionIsTheFallback(t *testing.T) {
 		{"GUEST.BIN", Binary},
 		{"ICON.SVG", Image},
 		{"PAPER.PDF", Document},
+		{"HELLO.JS", Script},
+		{"hello.js", Script},
 		// Case is the caller's accident, not the file's identity.
 		{"Seed.Txt", Text},
 		{"PHOTO.QOI", Image},
@@ -266,7 +268,7 @@ func TestIDNamesAreTheMarkerVocabulary(t *testing.T) {
 	want := map[ID]string{
 		Unknown: "unknown", Text: "text", Image: "image",
 		Audio: "audio", Archive: "archive", Binary: "binary",
-		Document: "document",
+		Document: "document", Script: "script",
 	}
 	for id, s := range want {
 		if got := id.String(); got != s {
@@ -295,6 +297,7 @@ func TestSpelling(t *testing.T) {
 		{"Z.ZIP", "PK\x03\x04rest", "archive"},
 		{"APP.ELF", "\x7fELFrest", "binary"},
 		{"R.PDF", "%PDF-1.4", "document"},
+		{"H.JS", "print(1)\n", "application/javascript"},
 		{"X.DAT", "\x00\x01\x02\x03", "application/octet-stream"},
 	} {
 		if got := Spelling(tc.name, []byte(tc.head)); got != tc.want {

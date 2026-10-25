@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"virelai/mime"
 	"virelai/rss/keys"
 	"virelai/vi"
 )
@@ -297,5 +298,28 @@ func TestMenuOverlayPaintsInPlace(t *testing.T) {
 	frame = m.render()
 	if !strings.Contains(frame, "Code Editor (default)") {
 		t.Fatal("the submenu must show the marked default")
+	}
+}
+
+// The manifest's documented budget is 8192 B (the apps.txt header and the
+// seat's appsMaxBytes) — GOFILES' reader must cover the whole file the
+// seat admits, or tail rows drop silently. M200b fixup: observed on the
+// go-fileman legs as `apps=2` against the ~5 KB manifest the gate seeds.
+func TestManifestReadBudgetMatchesTheContract(t *testing.T) {
+	if appsTxtMax != 8192 {
+		t.Fatalf("appsTxtMax = %d, want the manifest's 8192-byte budget", appsTxtMax)
+	}
+	// And the whole point: a manifest whose tail rows sit past the old
+	// 4096 cap still parses every acceptor.
+	var sb strings.Builder
+	for i := 0; i < 70; i++ {
+		sb.WriteString("FILLER" + vi.Itoa64(int64(i)) + ".ELF | F | f | dock=false | v=2 | opens=image\n")
+	}
+	sb.WriteString("LATE.ELF | Late | l | dock=false | v=2 | opens=text\n")
+	withApps(t, sb.String())
+	// Only the late opens=text row accepts text/plain — under the old cap
+	// it would have been truncated away, answering zero.
+	if got := len(ctxAppsFor("text/plain", mime.Text)); got != 1 {
+		t.Fatalf("ctxAppsFor(text/plain) = %d acceptors; want 1 (LATE.ELF) — tail rows dropped", got)
 	}
 }

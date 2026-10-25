@@ -20,10 +20,13 @@ import (
 
 const (
 	// appsTxtPath/appsTxtMax are the manifest's contract path and the
-	// 4096-byte budget every reader buffers (sexiburger.manifest_buf_max —
-	// the same cap the seat's appsMaxBytes carries).
+	// 8192-byte budget every reader buffers (sexiburger.manifest_buf_max,
+	// per the apps.txt header — the same cap the seat's appsMaxBytes
+	// carries). M200b fixup: this cap had drifted to 4096 while the
+	// manifest grew past it, silently dropping tail rows — the open-with
+	// submenu then saw fewer acceptors than the seat's drag admission.
 	appsTxtPath = "/host/APPS.TXT"
-	appsTxtMax  = 4096
+	appsTxtMax  = 8192
 )
 
 // readAppsFile is the manifest read seam — vi.ReadFileAll in the guest,

@@ -246,6 +246,15 @@ func TestDispatchUsesTheRegisteredHandlers(t *testing.T) {
 	if h, ok := mime.Default(mime.Text); !ok || h.Bin != "GOEDIT.ELF" {
 		t.Fatalf("Default(Text) = %+v ok=%v; want GOEDIT.ELF", h, ok)
 	}
+	// M200b (#3384): Enter on a .js RUNS it — QJS.BIN is the Script
+	// default, GOEDIT the honest second candidate (the file is also
+	// source text).
+	if h, ok := mime.Default(mime.Script); !ok || h.Bin != "QJS.BIN" {
+		t.Fatalf("Default(Script) = %+v ok=%v; want QJS.BIN", h, ok)
+	}
+	if hs := mime.Handlers(mime.Script); len(hs) != 2 || hs[1].Bin != "GOEDIT.ELF" {
+		t.Fatalf("Handlers(Script) = %+v; want QJS.BIN then GOEDIT.ELF", hs)
+	}
 	// A text file opens in the editor, and the editor takes a path in argv[1]
 	// (edit/main.go reads vi.Args()) — so the launch carries the path.
 	withHead(t, []byte("hello from the share\n"))
@@ -254,5 +263,114 @@ func TestDispatchUsesTheRegisteredHandlers(t *testing.T) {
 	r, ok := m.takeLaunch()
 	if !ok || r.bin != "GOEDIT.ELF" || r.path != "/host/FM/NOTES.TXT" {
 		t.Fatalf("text launch = %+v ok=%v", r, ok)
+	}
+}
+
+// --- M200b (#3384): the .js open ---------------------------------------------
+
+var jsHead = []byte("print('hi');\n")
+
+// Enter on a .js execs the ENGINE — exec-to-console: the decision marker
+// pairs with the named sink, and the launch is the bare script path (the
+// kernel prepends argv[0]=QJS.BIN; policy.parse reads args[1..]).
+func TestOpenFileRunsAJSScript(t *testing.T) {
+	withHead(t, jsHead)
+	m := testModel(entry("HELLO.JS", false))
+	m.handleKey(keys.Event{Key: keys.KeyEnter})
+	got := pendingJoined(&m)
+	for _, want := range []string{
+		markerOpenFile + "HELLO.JS type=script handler=QJS.BIN",
+		markerOpenConsole + "HELLO.JS",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("markers = %q, want it to contain %q", got, want)
+		}
+	}
+	r, ok := m.takeLaunch()
+	if !ok {
+		t.Fatal("a script open must hand main an exec request")
+	}
+	if r.bin != "QJS.BIN" || r.path != "/host/FM/HELLO.JS" || len(r.args) != 0 {
+		t.Fatalf("launch = %+v; want QJS.BIN on the bare script path", r)
+	}
+}
+
+// The argv policy admits /host/-confined paths only: a .js browsed on a
+// USB volume is a script QJS.BIN would refuse at parse — the open names
+// the policy's own error rather than exec a guaranteed-Usage exit.
+func TestOpenScriptRefusesOutsideHost(t *testing.T) {
+	withHead(t, jsHead)
+	m := testModel(entry("HELLO.JS", false))
+	m.path = "/usb"
+	m.handleKey(keys.Event{Key: keys.KeyEnter})
+	got := pendingJoined(&m)
+	if !strings.Contains(got, markerOpenNo+"HELLO.JS (AccessDenied)") {
+		t.Fatalf("a script off /host must refuse by name: %q", got)
+	}
+	if strings.Contains(got, markerOpenFile) {
+		t.Fatalf("a refused open must not also claim a dispatch: %q", got)
+	}
+	if _, ok := m.takeLaunch(); ok {
+		t.Fatal("a refused open must not queue an exec")
+	}
+	if m.status != "HELLO.JS: AccessDenied" {
+		t.Fatalf("status = %q, want the named refusal", m.status)
+	}
+}
+
+// A script inside a component the policy cannot take (>31 chars) is
+// refused on the TARGET itself — QJS.BIN's own PathLimit word, named
+// before any exec rather than read back off an exit status.
+func TestOpenScriptRefusesAnUnadmittablePath(t *testing.T) {
+	withHead(t, jsHead)
+	m := testModel(entry("HELLO.JS", false))
+	// A real share can hold a 46-char directory name; sharePath admits it
+	// (≤64 total), the argv policy does not (≤31 a component).
+	m.path = "/host/" + strings.Repeat("D", 46)
+	m.handleKey(keys.Event{Key: keys.KeyEnter})
+	got := pendingJoined(&m)
+	if !strings.Contains(got, markerOpenNo+"HELLO.JS (PathLimit)") {
+		t.Fatalf("an unadmittable script must refuse with the policy's word: %q", got)
+	}
+	if _, ok := m.takeLaunch(); ok {
+		t.Fatal("a refused open must not queue an exec")
+	}
+}
+
+// The open-with pick of the engine takes the same console dispatch — the
+// sink is the handler's, not the gesture's.
+func TestOpenWithChoseQJS(t *testing.T) {
+	withHead(t, jsHead)
+	m := testModel(entry("HELLO.JS", false))
+	m.handleKey(runeKey('o'))
+	if got := pendingJoined(&m); !strings.Contains(got, markerOpenWith+"HELLO.JS type=script candidates=2") {
+		t.Fatalf("candidate marker = %q", got)
+	}
+	m.handleKey(runeKey('1'))
+	got := pendingJoined(&m)
+	for _, want := range []string{
+		markerOpenChose + "HELLO.JS type=script handler=QJS.BIN",
+		markerOpenConsole + "HELLO.JS",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("markers = %q, want it to contain %q", got, want)
+		}
+	}
+	r, ok := m.takeLaunch()
+	if !ok || r.bin != "QJS.BIN" || r.path != "/host/FM/HELLO.JS" || len(r.args) != 0 {
+		t.Fatalf("launch = %+v ok=%v", r, ok)
+	}
+}
+
+// And the second candidate is still the editor on the raw source — the
+// console sink is the engine's face, not the editor's.
+func TestOpenWithChoseEditorKeepsThePlainLaunch(t *testing.T) {
+	withHead(t, jsHead)
+	m := testModel(entry("HELLO.JS", false))
+	m.handleKey(runeKey('o'))
+	m.handleKey(runeKey('2'))
+	r, ok := m.takeLaunch()
+	if !ok || r.bin != "GOEDIT.ELF" || r.path != "/host/FM/HELLO.JS" || len(r.args) != 0 {
+		t.Fatalf("editor launch = %+v ok=%v; want a bare path hand-off", r, ok)
 	}
 }

@@ -101,6 +101,13 @@ func fileMime(name string, head []byte) string {
 		return "archive"
 	case mime.Binary:
 		return "binary"
+	case mime.Script:
+		// M200b (#3384): .js is the only extension the table maps to
+		// Script — kept in step with mime.Spelling's own arm.
+		if extOf(name) == "js" {
+			return "application/javascript"
+		}
+		return "script"
 	}
 	return "application/octet-stream"
 }

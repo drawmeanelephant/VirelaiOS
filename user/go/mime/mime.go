@@ -44,6 +44,11 @@ const (
 	// reader app can claim `opens=document` without pretending the bytes
 	// are text. Magic beats the name here too: %PDF- at offset 0.
 	Document
+	// M200b (#3384): scripts — .js today — are their own family so the
+	// QuickJS engine can claim `opens=application/javascript` (and be the
+	// default "run it" dispatch) without pretending the source is prose.
+	// Magic still wins: an ELF named *.JS is a binary, not a script.
+	Script
 )
 
 // String is the type's table name — the word markers and receipts carry.
@@ -61,6 +66,8 @@ func (id ID) String() string {
 		return "binary"
 	case Document:
 		return "document"
+	case Script:
+		return "script"
 	default:
 		return "unknown"
 	}
@@ -138,6 +145,10 @@ var exts = map[string]ID{
 	"bmp": Image, "webp": Image, "svg": Image,
 	// document
 	"pdf": Document,
+	// script — .js is extension-named (JS source carries no magic), and
+	// it is a family of its own so Enter runs the file rather than
+	// treating the engine and the editor as competing text handlers.
+	"js": Script,
 	// audio
 	"wav": Audio, "mp3": Audio, "ogg": Audio, "flac": Audio,
 	// archive
@@ -296,6 +307,11 @@ func Spelling(name string, head []byte) string {
 		return "binary"
 	case Document:
 		return "document"
+	case Script:
+		if extOf(name) == "js" {
+			return "application/javascript"
+		}
+		return "script"
 	}
 	return "application/octet-stream"
 }
@@ -665,4 +681,10 @@ func init() {
 	Register(Document, "GOREADER.ELF", "Reader")
 	Register(Text, "GOSHEET.ELF", "Sheet")
 	Register(Image, "GOPAINT.ELF", "Paint")
+	// M200b (#3384): Enter on a .js RUNS it — QJS.BIN is the Script
+	// default through the same registry dispatch every other type takes.
+	// GOEDIT is the second candidate, not the default: the file is also
+	// source text, and editing it stays an honest Open-with pick.
+	Register(Script, "QJS.BIN", "QuickJS")
+	Register(Script, "GOEDIT.ELF", "Code Editor")
 }
