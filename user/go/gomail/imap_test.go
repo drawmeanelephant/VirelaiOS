@@ -13,16 +13,23 @@ import (
 var errFakeEOF = errors.New("fake: peer gone")
 
 // fakeConn serves a scripted read stream and records writes verbatim.
+// chunk > 0 drips the stream that many bytes per Read, and every armed
+// deadline lands in deadlines so tests can prove one arm per command.
 type fakeConn struct {
-	reads    []byte
-	writes   []string
-	closed   bool
-	deadline int64
+	reads     []byte
+	writes    []string
+	closed    bool
+	deadline  int64
+	deadlines []int64
+	chunk     int
 }
 
 func (f *fakeConn) Read(p []byte) (int, error) {
 	if len(f.reads) == 0 {
 		return 0, errFakeEOF
+	}
+	if f.chunk > 0 && len(p) > f.chunk {
+		p = p[:f.chunk]
 	}
 	n := copy(p, f.reads)
 	f.reads = f.reads[n:]
@@ -34,8 +41,11 @@ func (f *fakeConn) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-func (f *fakeConn) SetReadDeadline(at int64) { f.deadline = at }
-func (f *fakeConn) Close() error             { f.closed = true; return nil }
+func (f *fakeConn) SetReadDeadline(at int64) {
+	f.deadline = at
+	f.deadlines = append(f.deadlines, at)
+}
+func (f *fakeConn) Close() error { f.closed = true; return nil }
 
 func allWrites(f *fakeConn) string { return strings.Join(f.writes, "") }
 
@@ -174,6 +184,54 @@ func TestIMAPRefusals(t *testing.T) {
 	body, err := c3.section(9, "TEXT")
 	if err != nil || string(body) != "ab" {
 		t.Fatalf("section3 %q %v", body, err)
+	}
+}
+
+func TestIMAPDeadlinePerCommand(t *testing.T) {
+	// Byte-drip service forces many fills inside one exchange; the
+	// deadline is armed ONCE per greeting()/command() — a drip cannot
+	// re-arm it per read (#3396).
+	script := "* OK x\r\n* 1 EXISTS\r\na1 OK done\r\n"
+	fc := &fakeConn{reads: []byte(script), chunk: 1}
+	c := newIMAP(fc)
+	tick := int64(0)
+	c.now = func() int64 { tick += 1e9; return tick }
+	if err := c.greeting(); err != nil {
+		t.Fatalf("greeting: %v", err)
+	}
+	if _, _, err := c.command("NOOP"); err != nil {
+		t.Fatalf("command: %v", err)
+	}
+	if len(fc.deadlines) != 2 {
+		t.Fatalf("deadlines %v, want exactly one arm per greeting+command", fc.deadlines)
+	}
+	// Each armed value is fixed at its unit's start: the drip read
+	// path never pushes a later deadline onto the conn.
+	if fc.deadlines[0] != 1e9+cmdWaitNs || fc.deadlines[1] != 2e9+cmdWaitNs {
+		t.Fatalf("armed deadlines %v", fc.deadlines)
+	}
+}
+
+func TestIMAPUntaggedByteCap(t *testing.T) {
+	// maxUntagged bounds record COUNT; untaggedBytesMax bounds the
+	// aggregate bytes — a few huge records must trip it well before
+	// the count cap (#3396: 512 x 512 KiB was ~256 MiB per command).
+	var b strings.Builder
+	b.WriteString("* OK x\r\n")
+	lit := strings.Repeat("x", 200000)
+	for i := 0; i < 12; i++ {
+		b.WriteString("* 1 FETCH (BODY[TEXT] {200000}\r\n" + lit + ")\r\n")
+	}
+	b.WriteString("a1 OK done\r\n")
+	fc := &fakeConn{reads: []byte(b.String())}
+	c := newIMAP(fc)
+	c.now = func() int64 { return 0 }
+	if err := c.greeting(); err != nil {
+		t.Fatalf("greeting: %v", err)
+	}
+	_, _, err := c.command("FETCH 1 (BODY[TEXT])")
+	if err == nil || !strings.Contains(err.Error(), "untagged aggregate") {
+		t.Fatalf("byte cap: %v", err)
 	}
 }
 

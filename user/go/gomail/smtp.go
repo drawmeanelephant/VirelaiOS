@@ -24,9 +24,17 @@ func newSMTP(conn WireConn) *smtpClient {
 	return &smtpClient{conn: conn, now: vi.Nanos}
 }
 
+// smtpReplyMax caps the lines one multiline reply may carry — a server
+// streaming '<code>-' continuations cannot grow text past it (#3396:
+// the per-line bound alone left the aggregate unbounded).
+const smtpReplyMax = 64
+
 // reply reads one SMTP reply: "<code> text" or the "<code>-...*<code> "
 // multiline form; returns the numeric code and the text lines.
 func (s *smtpClient) reply() (int, []string, error) {
+	// One absolute deadline bounds the WHOLE reply; arming per read
+	// would let a byte-drip hold the command alive forever (#3396).
+	s.conn.SetReadDeadline(s.now() + cmdWaitNs)
 	var text []string
 	code := -1
 	for {
@@ -48,6 +56,9 @@ func (s *smtpClient) reply() (int, []string, error) {
 		if line[3] != '-' {
 			return 0, nil, protoErr("smtp bad reply: ", string(line))
 		}
+		if len(text) > smtpReplyMax {
+			return 0, nil, protoErr("smtp reply flood", "")
+		}
 	}
 }
 
@@ -65,7 +76,6 @@ func (s *smtpClient) readLine() ([]byte, error) {
 			return nil, protoErr("smtp overlong reply", "")
 		}
 		b := make([]byte, 8192)
-		s.conn.SetReadDeadline(s.now() + cmdWaitNs)
 		n, err := s.conn.Read(b)
 		if n > 0 {
 			s.buf = append(s.buf, b[:n]...)

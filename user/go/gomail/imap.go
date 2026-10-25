@@ -31,8 +31,9 @@ func protoErr(format string, a string) error {
 }
 
 const (
-	cmdWaitNs   = int64(30 * 1000 * 1000 * 1000) // per-command read bound
-	maxUntagged = 512                            // records per command
+	cmdWaitNs        = int64(30 * 1000 * 1000 * 1000) // per-command bound — one absolute deadline armed per command()/greeting(), never re-armed per read (#3396)
+	maxUntagged      = 512                            // records per command
+	untaggedBytesMax = 2 * 1024 * 1024                // total record bytes per command — the count cap alone allowed ~256 MiB of parsed forms (#3396)
 )
 
 // itoa is the decimal formatter the tag counter and FETCH sets use.
@@ -61,10 +62,12 @@ func newIMAP(conn WireConn) *imapClient {
 
 // --- record layer -----------------------------------------------------
 
-// fill appends at least one read to buf (or the read error).
+// fill appends at least one read to buf (or the read error). The read
+// deadline is NOT armed here: command()/greeting() arm one absolute
+// deadline for the whole exchange — a per-read re-arm would let a
+// byte-drip hold a command alive indefinitely (#3396).
 func (c *imapClient) fill() error {
 	b := make([]byte, 8192)
-	c.conn.SetReadDeadline(c.now() + cmdWaitNs)
 	n, err := c.conn.Read(b)
 	if n > 0 {
 		c.buf = append(c.buf, b[:n]...)
@@ -170,10 +173,16 @@ func (c *imapClient) command(cmd string) (unt [][]form, status string, err error
 	if _, err := c.conn.Write([]byte(tag + " " + cmd + "\r\n")); err != nil {
 		return nil, "", err
 	}
+	c.conn.SetReadDeadline(c.now() + cmdWaitNs)
+	untBytes := 0
 	for i := 0; i < maxUntagged; i++ {
 		rec, err := c.readRecord()
 		if err != nil {
 			return nil, "", err
+		}
+		untBytes += len(rec)
+		if untBytes > untaggedBytesMax {
+			return nil, "", protoErr("imap untagged aggregate", "")
 		}
 		toks, err := parseRecord(rec)
 		if err != nil {
@@ -224,6 +233,7 @@ func (c *imapClient) commandOK(verb, cmd string) ([]form, error) {
 // greeting consumes the server banner: '* OK'/'* PREAUTH' connect, a
 // '* BYE' refuses by name.
 func (c *imapClient) greeting() error {
+	c.conn.SetReadDeadline(c.now() + cmdWaitNs)
 	rec, err := c.readRecord()
 	if err != nil {
 		return err
