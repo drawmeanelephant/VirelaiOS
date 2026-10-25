@@ -1,6 +1,14 @@
-fn repeat_lit(comptime lit: []const u8, comptime n: usize) *const [n * lit.len:0]u8 {
-    if (n == 0) return "";
-    return lit ++ repeat_lit(lit, n - 1);
+// Pinned Zig 0.17 miscompiles comptime "++" chains on sentinel-terminated
+// arrays (interior NUL bytes); build the maximum env entry byte-wise instead.
+fn max_env_entry() []const u8 {
+    const entry = comptime blk: {
+        var bytes: [127]u8 = undefined;
+        bytes[0] = 'A';
+        bytes[1] = '=';
+        @memset(bytes[2..], 'x');
+        break :blk bytes;
+    };
+    return &entry;
 }
 const std = @import("std");
 
@@ -70,5 +78,5 @@ test "usage never clips or invents argv and env" {
     try std.testing.expectError(error.ArgumentLimit, parse(&.{ "QJS.BIN", &@as([256:0]u8, @splat("x"[0])) }, &.{}));
     try std.testing.expectError(error.EnvironmentLimit, parse(&.{"QJS.BIN"}, &(@as([17][]const u8, @splat(@as([]const u8, "A=B"))))));
     try std.testing.expectError(error.EnvironmentLimit, parse(&.{"QJS.BIN"}, &.{"A=" ++ &@as([126:0]u8, @splat("x"[0]))}));
-    _ = try parse(&.{ "QJS.BIN", "/host/F" }, &(@as([16][]const u8, @splat(@as([]const u8, "A=" ++ repeat_lit("x", 125))))));
+    _ = try parse(&.{ "QJS.BIN", "/host/F" }, &(@as([16][]const u8, @splat(max_env_entry()))));
 }
