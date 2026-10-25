@@ -207,7 +207,7 @@ exercise Go supervisor/child fixtures within its separate budget. Dynamic
 desktop clients share the same finite pool, so a spawn refusal is handled
 honestly, never by raising `max_tasks`.
 
-### Amendment (2026-10-25, M201c #3435): admission bound 16 -> 18
+### Amendment (2026-10-25, card c of the gated-fleet arc, #3435): admission bound 16 -> 18
 
 The 16 bound above derived from `max_processes = 16`; M129b (#2611) grew
 the kernel task pool to 64. Init's conservative accounting is unchanged —
