@@ -12,4 +12,4 @@ order: 10
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| VMRunner | host-tool | host/vm-runner | — | docs/vz-runner.md | host |
+| VMRunner | host-tool | host/vm-runner | ver 1.0.0 | docs/vz-runner.md | host |

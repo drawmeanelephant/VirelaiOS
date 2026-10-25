@@ -72,7 +72,7 @@ func parseSuperblock(img []byte, slot uint32) (*superblock, error) {
 		return nil, nil
 	}
 	version := binary.LittleEndian.Uint32(b[sbVersion:])
-	if version != Version && version != Version2 {
+	if version != VersionV1 && version != Version2 {
 		return nil, errCode{"unsupported_version", fmt.Sprintf("version %d", version)}
 	}
 	if binary.LittleEndian.Uint32(b[sbCksum:]) != fnv1a(b[:sbCksum]) {

@@ -31,7 +31,9 @@ rows out of the fragments and fails when:
     registry documents in its "Row grammar" section.
 
 `--missing-ver` prints the non-exempt rows still lacking a `ver` token
-and exits 0 — the advisory ledger the seeding cards burn down.
+and exits 0 — the ledger the seeding cards burned down; the flip
+(`test_every_row_carries_ver`, #3469) now fails the suite on any
+remaining row.
 """
 import importlib.util
 import re
@@ -600,6 +602,15 @@ class TestComponentRegistry(unittest.TestCase):
                 fails.append(f"{binary} -> {relpath}: no such file")
         self.assertEqual([], fails, "stale ver source map:\n  " + "\n  ".join(fails))
 
+    def test_every_row_carries_ver(self):
+        """The M204g flip: --missing-ver's ledger is a required check —
+        every non-exempt row carries `ver`."""
+        missing = missing_ver_rows()
+        self.assertEqual(
+            [], missing,
+            "rows still missing ver:\n  " + "\n  ".join(
+                f"component-registry.md:{ln}: {name} ({kind})"
+                for ln, name, kind in missing))
     def test_fragments_wellformed(self):
         """Every docs/registry/*.md parses: key == filename stem, known
         section, integer order, at least one data row per block, and no

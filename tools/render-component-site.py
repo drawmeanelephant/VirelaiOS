@@ -50,6 +50,7 @@ import re
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+REFRESH = ROOT / "docs" / "app-refresh.md"
 SITE_PAGE = ROOT / "site" / "components.md"
 APPS_DIR = ROOT / "site" / "apps"
 STORIES_DIR = ROOT / "site" / "includes" / "apps"
@@ -114,9 +115,27 @@ def app_row_line(line: str, cells: list) -> str:
     return "| " + " | ".join(cells) + " |" + tail
 
 
+def refresh_ledger():
+    """{binary: (last refresh, date)} from docs/app-refresh.md's app
+    table — the join the public apps table renders (#3469)."""
+    out = {}
+    for line in REFRESH.read_text().splitlines():
+        line = line.strip()
+        if not line.startswith("|"):
+            continue
+        cells = [c.strip() for c in line.strip("|").split("|")]
+        if len(cells) != 5 or cells[0] in ("app", ""):
+            continue
+        if all(set(c) <= {"-", ":", " "} and c for c in cells):
+            continue
+        out[cells[1]] = (cells[2], cells[3])
+    return out
+
+
 def render_region() -> str:
     """The registry's table sections as the page's region body — verbatim
-    except `app` rows, which carry the showcase-page link."""
+    except `app` rows, which carry the showcase-page link and gain the
+    `last refresh`/`date` columns from docs/app-refresh.md's ledger."""
     lines = registry_text().splitlines(keepends=True)
     sections, cur = [], None
     for line in lines:
@@ -126,10 +145,35 @@ def render_region() -> str:
         elif cur is not None:
             cur.append(line)
     sections = [s for s in sections if any(l.lstrip().startswith("|") for l in s)]
+    ledger = refresh_ledger()
     out = [BEGIN + "\n"]
     for s in sections:
+        app_table = any(
+            (c := row_cells(l)) is not None and c[1] == "app" for l in s)
         for line in s:
             cells = row_cells(line)
+            if app_table:
+                if cells is not None and cells[1] == "app":
+                    cells = list(cells)
+                    cells[0] = f"[[apps/{slug(cells[2])}|{cells[0]}]]"
+                    refresh, date = ledger.get(cells[2], ("—", "—"))
+                    cells = cells[:4] + [refresh, date] + cells[4:]
+                    tail = "\n" if line.endswith("\n") else ""
+                    out.append("| " + " | ".join(cells) + " |" + tail)
+                    continue
+                stripped = line.strip()
+                if stripped.startswith("|"):
+                    raw = [c.strip() for c in stripped.strip("|").split("|")]
+                    if all(set(c) <= {"-", ":", " "} and c for c in raw):
+                        raw = raw[:4] + ["---", "---"] + raw[4:]
+                        tail = "\n" if line.endswith("\n") else ""
+                        out.append("| " + " | ".join(raw) + " |" + tail)
+                        continue
+                    if raw and raw[0] == "name":
+                        raw = raw[:4] + ["last refresh", "date"] + raw[4:]
+                        tail = "\n" if line.endswith("\n") else ""
+                        out.append("| " + " | ".join(raw) + " |" + tail)
+                        continue
             out.append(app_row_line(line, cells)
                        if cells is not None and cells[1] == "app" else line)
         if not out[-1].endswith("\n"):
