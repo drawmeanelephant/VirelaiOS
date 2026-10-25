@@ -454,15 +454,23 @@ const (
 // clipboard. The indirection is the host-test seam: vsys's syscallFn is
 // package-internal, so tests swap these two instead.
 var (
-	clipWrite = func(p []byte) (int, int64) { return vsys.ClipboardSet(p) }
-	// M107e (#2322): ClipboardGetInto reads into a 512 B caller buffer, not
-	// the 256 B vsys staging pool — the kernel clipboard holds 512 and the
-	// M108b host lane fills all of it, so a 257..512 B host paste used to
-	// splice into the buffer silently truncated.
-	clipRead = func() ([]byte, int64) {
+	// M202d (#3443): the ops ride the M124c typed seam end to end. The
+	// write declares text/plain — ClipboardSetTyped's shape rule refuses a
+	// body that cannot honestly be text (a non-UTF-8 buffer range lands on
+	// the marker as rc=, the same refusal a denied slot gives). The read
+	// comes back classified: paste splices the text classes and names its
+	// refusal for the payload shapes (image/*, octet-stream).
+	clipWrite = func(mime string, p []byte) (int, int64) {
+		return vsys.ClipboardSetTyped(mime, p)
+	}
+	// M107e (#2322): ClipboardGetTyped reads into a 512 B caller buffer,
+	// not the 256 B vsys staging pool — the kernel clipboard holds 512 and
+	// the M108b host lane fills all of it, so a 257..512 B host paste used
+	// to splice into the buffer silently truncated.
+	clipRead = func() (string, []byte, int64) {
 		var buf [512]byte
-		n, r := vsys.ClipboardGetInto(buf[:])
-		return buf[:n], r
+		mime, n, r := vsys.ClipboardGetTyped(buf[:])
+		return mime, buf[:n], r
 	}
 	// M149c: the settings-bus poll is a package seam too — a host test
 	// substitutes the delivered notice without a seat on the other end.
@@ -1828,7 +1836,7 @@ func (e *editor) copy() {
 		vi.ConsoleLine(markerCopy + "none")
 		return
 	}
-	n, r := clipWrite(b)
+	n, r := clipWrite(vsys.ClipText, b)
 	if r < 0 {
 		vi.ConsoleLine(markerCopy + "rc=" + vi.Itoa64(r))
 		return
@@ -1844,7 +1852,7 @@ func (e *editor) cut() {
 		vi.ConsoleLine(markerCut + "none")
 		return
 	}
-	n, r := clipWrite(e.buf[lo:hi])
+	n, r := clipWrite(vsys.ClipText, e.buf[lo:hi])
 	if r < 0 {
 		vi.ConsoleLine(markerCut + "rc=" + vi.Itoa64(r))
 		return
@@ -1855,15 +1863,23 @@ func (e *editor) cut() {
 }
 
 // paste splices the clipboard at the caret — over the selection when one is
-// pinned, so paste-over-selection is one undoable op too.
+// pinned, so paste-over-selection is one undoable op too. The typed read's
+// class rules the splice: the text shapes (plain, uri-list, html, csv — all
+// valid-UTF-8 bodies) are text the buffer can hold; an image or unnamed
+// payload is refused BY NAME, because splicing it would drop undecodable
+// bytes into a text buffer and call them content.
 func (e *editor) paste() {
-	b, r := clipRead()
+	mime, b, r := clipRead()
 	if r < 0 {
 		vi.ConsoleLine(markerPaste + "rc=" + vi.Itoa64(r))
 		return
 	}
 	if len(b) == 0 {
 		vi.ConsoleLine(markerPaste + "empty")
+		return
+	}
+	if !strings.HasPrefix(mime, "text/") {
+		vi.ConsoleLine(markerPaste + "refused " + mime)
 		return
 	}
 	e.clampCaret()
@@ -2747,8 +2763,8 @@ func (e *editor) syncMenu() {
 	_, _, selOn := e.selRange()
 	ed.Items[2].Disabled = !selOn
 	ed.Items[3].Disabled = !selOn
-	cb, rc := clipRead()
-	ed.Items[4].Disabled = rc < 0 || len(cb) == 0
+	mime, cb, rc := clipRead()
+	ed.Items[4].Disabled = rc < 0 || len(cb) == 0 || !strings.HasPrefix(mime, "text/")
 	s.Items[4].Disabled = len(e.diags) == 0
 	s.Items[5].Disabled = len(e.diags) == 0
 	_, mOK := e.matchCell()

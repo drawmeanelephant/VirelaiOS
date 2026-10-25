@@ -18,7 +18,7 @@ func swapClip(t *testing.T, rc int64) *[]byte {
 	t.Helper()
 	var got []byte
 	old := clipWrite
-	clipWrite = func(p []byte) (int, int64) {
+	clipWrite = func(mime string, p []byte) (int, int64) {
 		got = append([]byte{}, p...)
 		return len(p), rc
 	}

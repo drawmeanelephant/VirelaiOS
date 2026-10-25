@@ -6,6 +6,8 @@
 package main
 
 import (
+	"strings"
+
 	"virelai/appkit"
 	"virelai/rss/keys"
 	"virelai/vi"
@@ -394,6 +396,153 @@ func (m *model) yankClip(cut bool) {
 	}
 }
 
+// clipSysRead is the machine-clipboard read seam — vsys.ClipboardGetTyped
+// in the guest, swapped by the host tests (the goedit clipRead precedent).
+var clipSysRead = func() (string, []byte, int64) {
+	var buf [vsys.ClipKernelMax]byte
+	mime, n, r := vsys.ClipboardGetTyped(buf[:])
+	return mime, buf[:n], r
+}
+
+// adoptSysClip is `p` with an empty in-app queue (M202d #3443): the machine
+// clipboard's typed read classifies the body and the CLASS rules what paste
+// means — a text/uri-list becomes a copy set (publishClipURIs' own spelling
+// read back, so a copy in one window pastes in another), an image payload
+// lands as a new PASTE.<ext> file in the listing, and every other class is
+// refused BY NAME. The in-app queue keeps precedence while it holds a
+// staged copy/cut — a machine-clipboard body does not redirect `p` away
+// from a set the user already armed.
+func (m *model) adoptSysClip() {
+	if m.atPseudo() {
+		return
+	}
+	mime, body, rc := clipSysRead()
+	if rc < 0 {
+		m.emit(markerPasteNo + "rc=" + vi.Itoa64(rc))
+		m.status = refusalStatus("paste", rc)
+		return
+	}
+	if len(body) == 0 {
+		m.emit(markerPasteNo + "empty clip")
+		m.status = "paste: nothing held"
+		return
+	}
+	switch {
+	case mime == vsys.ClipURIList:
+		m.adoptURIList(body)
+	case clipImageExt(mime) != "":
+		m.adoptBlob(mime, body)
+	default:
+		m.emit(markerPasteNo + mime)
+		m.status = "paste: " + mime + " is not a file"
+	}
+}
+
+// adoptURIList turns a text/uri-list body into the queue the single/batch
+// paste paths already run: file:// lines become absolute source paths with
+// COPY semantics — a published list cannot express a move. A line that is
+// not a file URI refuses the whole adopt by name: a partial import would
+// pretend the list said less than it did.
+func (m *model) adoptURIList(body []byte) {
+	var set []string
+	for _, line := range strings.Split(string(body), "\n") {
+		line = strings.TrimSuffix(line, "\r")
+		if line == "" {
+			continue
+		}
+		p := strings.TrimPrefix(line, "file://")
+		if p == line || p == "" || p[0] != '/' {
+			m.emit(markerPasteNo + line + " not a file URI")
+			m.status = "paste: not a file URI"
+			return
+		}
+		set = append(set, p)
+	}
+	if len(set) == 0 {
+		m.emit(markerPasteNo + "empty uri-list")
+		m.status = "paste: nothing held"
+		return
+	}
+	m.emit(markerClipSys + "adopt text/uri-list n=" + vi.Itoa64(int64(len(set))))
+	m.clipSet, m.clipCut = set, false
+	m.pasteClip()
+}
+
+// writePasteFile is the blob-landing write seam — vi.WriteFileSafe in the
+// guest, stood up by the host tests (the clipSysRead precedent) so the
+// PASTE.<ext> naming pins without a share.
+var writePasteFile = vi.WriteFileSafe
+
+// clipBlobName derives the landing name for a pasted payload: PASTE.<ext>,
+// then PASTE1..9.<ext> when an earlier paste already holds the slot — a
+// paste never overwrites, so "" is the no-free-name refusal.
+func clipBlobName(entries []vi.DirEntry, n int, ext string) string {
+	for i := 0; i < 10; i++ {
+		name := "PASTE"
+		if i > 0 {
+			name += vi.Itoa64(int64(i))
+		}
+		name += "." + ext
+		if !containsName(entries, n, name) {
+			return name
+		}
+	}
+	return ""
+}
+
+// adoptBlob writes an image payload as a new file in the listing under the
+// derived PASTE.<ext> name. The write is the copy path's own safe-write
+// plus lease check, and the receipt is the same pasted marker.
+func (m *model) adoptBlob(mime string, body []byte) {
+	ext := clipImageExt(mime)
+	name := clipBlobName(m.entries[:], m.n, ext)
+	if name == "" {
+		m.emit(markerPasteNo + "PASTE." + ext + " no free name")
+		m.status = "paste: no free name"
+		return
+	}
+	dst, ok := joinPath(m.path, name)
+	if !ok {
+		m.emit(markerPasteNo + name + " path")
+		m.status = "paste: path too long"
+		return
+	}
+	if leaseBlocks(dst) {
+		m.emit(markerPasteNo + name + " rc=" + vi.Itoa64(-vi.ErrEAGAIN))
+		m.status = refusalStatus("paste", -vi.ErrEAGAIN)
+		return
+	}
+	if rc := writePasteFile(dst, body); rc < 0 {
+		m.emit(markerPasteNo + name + " rc=" + vi.Itoa64(rc))
+		m.status = refusalStatus("paste", rc)
+		return
+	}
+	m.emit(markerClipSys + "adopt " + mime)
+	m.emit(markerPasted + name)
+	m.status = "pasted " + name
+	m.notifyToast("pasted " + name)
+	m.refresh()
+	m.status = "pasted " + name
+}
+
+// clipImageExt maps a classified image mime to the file extension the
+// pasted blob lands under; "" names a class adoptBlob does not take.
+func clipImageExt(mime string) string {
+	switch mime {
+	case vsys.ClipPNG:
+		return "PNG"
+	case vsys.ClipQOI:
+		return "QOI"
+	case vsys.ClipGIF:
+		return "GIF"
+	case vsys.ClipJPEG:
+		return "JPG"
+	case vsys.ClipBMP:
+		return "BMP"
+	}
+	return ""
+}
+
 // pasteClip materializes the held file(s) in the current directory: copy
 // reads the bytes and safe-writes them, move renames. An existing target
 // is refused — a paste never overwrites. A queued SET (M155b #2930)
@@ -404,8 +553,7 @@ func (m *model) pasteClip() {
 		return
 	}
 	if len(m.clipSet) == 0 {
-		m.emit(markerPasteNo + "empty clip")
-		m.status = "paste: nothing held"
+		m.adoptSysClip()
 		return
 	}
 	if m.atPseudo() {
