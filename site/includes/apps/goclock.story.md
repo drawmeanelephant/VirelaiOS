@@ -1,0 +1,11 @@
+Four tabs — World, Stopwatch, Timer, Alarm — multiplexed by
+one scheduler onto the process's single kernel app timer: the
+timer is one-shot, so each fire re-arms the next-earliest
+deadline. Wall-clock seconds drive the faces while the stopwatch
+counts a monotonic counter, so a wall step moves the calendar and
+never a measurement. Alarm rows persist through both the seat's
+save_state blob and a crash-safe share file, and headless
+`import`/`export` verbs merge `.ics` files — it is the
+`opens=text/calendar` hand-off. `go-clock.spec` owns the
+deadlines; the tile is
+[ICONCLK](https://github.com/drawmeanelephant/VirelaiOS/blob/main/image/art/icons/iconclk.qoi).
