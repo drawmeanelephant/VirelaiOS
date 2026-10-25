@@ -1140,3 +1140,109 @@ for d in ("HOSTINT", "PRINT"):
         sys.exit("FAIL: flags-off run created " + d + "/")
 print("run-09 flags-off print: lane_disabled named, nothing created")
 PY
+
+# ---- 10: #3387 (audit R5 F1) — lane-dir interference bounds -----------
+# One armed session on a dedicated share: a >31-byte bad-charset poison
+# name sits in HOSTINT (the old st_path_limit whole-listing kill), 20
+# illegal-name files crowd OUTBOX beside one real REQ, and SAY/ carries
+# 300 lawful-name files (the >256 snapshot bound). The seat now rides
+# the paged v2 snapshot: the poison is a foreign row evicted by name,
+# the REQ signs normally while the sweep drains, and the SAY flood is a
+# bounded once-named io_error that takes down NO other lane.
+vgate_setup_python <<'PY'
+import os, shutil, sys
+run = os.environ["RUN_DIR"]
+d = os.path.join(run, "flood-share")
+os.makedirs(d, exist_ok=True)
+src = os.path.join(".build", "go", "GOTABWM.ELF")
+if not os.path.isfile(src):
+    sys.exit("GOTABWM.ELF missing — build it first: bash tools/go/build-gotabwm.sh")
+shutil.copy(src, os.path.join(d, "GOTABWM.ELF"))
+open(os.path.join(d, "SETTINGS.TXT"), "w").write("#v2\nwm=none\n")
+KEY = "m108ekey" * 8
+open(os.path.join(d, "SECRETS.TXT"), "w").write(
+    "#v1\n" + "host-int\t1000\t" + KEY + "\tGOTABWM.ELF\n")
+open(os.path.join(d, "OWNERS.TXT"), "w").write(
+    "#v1\nGOTABWM.ELF\t644\t0\t-\n")
+# The poison: 44 bytes, spaces outside the D4 charset — old listing died
+# on st_path_limit; now it is one foreign row the engine evicts.
+os.makedirs(os.path.join(d, "HOSTINT"), exist_ok=True)
+open(os.path.join(d, "HOSTINT",
+     "POISON NAME WITH SPACES AND A VERY LONG TAIL.BIN"), "w").write("x")
+# OUTBOX: 20 unutterable names beside one honest REQ+payload pair.
+ob = os.path.join(d, "OUTBOX")
+os.makedirs(ob, exist_ok=True)
+for i in range(20):
+    open(os.path.join(ob, "BAD;NAME%02d" % i), "w").write("x")
+open(os.path.join(ob, "PAYLOAD.TXT"), "w").write("flood-survivor\n")
+open(os.path.join(ob, "REQ-00000001"), "w").write("PAYLOAD.TXT")
+# SAY: 300 lawful names — over the 256 snapshot bound, a host-adversary
+# flood no guest listing can enumerate; the refusal must stay scoped.
+say = os.path.join(d, "SAY")
+os.makedirs(say, exist_ok=True)
+for i in range(300):
+    open(os.path.join(say, "FLOOD%04d" % i), "w").write("x")
+open(os.path.join(run, "key-sentinel.txt"), "w").write(KEY + "\n")
+os.makedirs(os.path.join(run, "dest10"), exist_ok=True)
+print("staged flood share: HOSTINT poison + OUTBOX bad names + REQ + 300-file SAY")
+PY
+
+vgate_run 10 -- \
+    --screen '$RUN_DIR/screen-10' \
+    --cvc-file '$RUN_DIR/flood-share' \
+    --script '$RUN_DIR/script-seat.txt' \
+    --host-clipboard --host-pasteboard 'virelai-r10-clip' \
+    --host-clip-in 'r10-paste' --host-clip-in-after 'gotabwm: hostint armed' \
+    --host-outbox --host-outbox-dir '$RUN_DIR/dest10' \
+    --host-speech \
+    --script-expect 'gotabwm: hostint outbox seq=1' --script-expect-tail 40 --timeout 300
+
+vgate_assert 10 serial-contains 'gotabwm: registered'
+vgate_assert 10 output-contains 'host-int: armed lanes=clip,outbox,speech epoch='
+vgate_assert 10 serial-contains 'gotabwm: hostint armed epoch='
+# The poison never killed the listing: ARMED adopted, CLIP_IN applied,
+# the foreign names refused by name (never printed — attacker text).
+vgate_assert 10 serial-contains 'gotabwm: hostint refuse lane=dirlist reason=name_rejected'
+vgate_assert 10 serial-contains 'gotabwm: hostint clip-in seq=1'
+vgate_assert 10 serial-contains 'clip: r10-paste'
+# The OUTBOX sweep names its sweep once while the REQ still signs.
+vgate_assert 10 serial-contains 'gotabwm: hostint refuse lane=outbox reason=name_rejected'
+vgate_assert 10 serial-contains 'gotabwm: hostint outbox seq=1 name=PAYLOAD.TXT'
+vgate_assert 10 output-contains 'host-outbox: file seq=1 name=PAYLOAD.TXT'
+# The >256 SAY flood: one named io_error (serial-exact = latched, not
+# spammed) and the OTHER lanes prove the refusal stayed scoped.
+vgate_assert 10 serial-exact 'gotabwm: hostint refuse lane=speech reason=io_error' 1
+vgate_assert 10 serial-absent 'POISON'
+vgate_assert 10 serial-absent 'BAD;NAME'
+vgate_assert 10 serial-absent '[EXC] parking:'
+vgate_assert 10 python <<'PY'
+import os, sys
+run = os.environ["RUN_DIR"]
+share = os.path.join(run, "flood-share")
+# The HOSTINT poison was evicted by name — nothing foreign remains.
+hi = [n for n in os.listdir(os.path.join(share, "HOSTINT"))
+      if not n.endswith("~")]
+if hi:
+    sys.exit("FAIL: unconsumed lane files left in HOSTINT: %r" % hi)
+# Every bad OUTBOX name drained (40 s tail ≈ 40 ticks ≥ 20 evictions);
+# the payload moved host-side byte-identical.
+ob = os.listdir(os.path.join(share, "OUTBOX"))
+if any(";" in n for n in ob):
+    sys.exit("FAIL: foreign names left in OUTBOX: %r" % ob)
+if any(n.startswith("REQ-") and not n.endswith("~") for n in ob):
+    sys.exit("FAIL: REQ marker left in OUTBOX: %r" % ob)
+landed = os.path.join(run, "dest10", "PAYLOAD.TXT")
+if not os.path.isfile(landed) or \
+   open(landed).read() != "flood-survivor\n":
+    sys.exit("FAIL: the REQ payload did not land byte-equal")
+# The SAY flood still sits (host-planted, lawful names — the named
+# refusal is the answer, not deletion of plausible markers).
+say = os.listdir(os.path.join(share, "SAY"))
+if len(say) < 290:
+    sys.exit("FAIL: the seat ate lawful-name files in SAY: %d left" % len(say))
+out = open(os.path.join(run, "run-10.out"), errors="replace").read()
+key = open(os.path.join(run, "key-sentinel.txt")).read().strip()
+if key in out:
+    sys.exit("FAIL: the lane key reached runner stdout")
+print("run-10: poison evicted, REQ signed beside the sweep, flood named once")
+PY

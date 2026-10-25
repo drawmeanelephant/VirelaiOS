@@ -7,14 +7,14 @@
 // Ordering/consent rules the engine owns, so no lane re-derives them:
 //
 //   - Dormant until one ARMED verifies: the seat adopts (epoch, lane_mask)
-//    and only then accepts records bearing that epoch (stale_epoch/stale_seq
-//    are named refusals, never silent weirdness).
+//     and only then accepts records bearing that epoch (stale_epoch/stale_seq
+//     are named refusals, never silent weirdness).
 //   - Every refused or consumed record is DELETED; a record whose MAC is
-//    valid but predates adoption is held (its epoch is not yet judgable).
+//     valid but predates adoption is held (its epoch is not yet judgable).
 //   - At most one record per inbound tag is consumed per Poll — the ADR's
-//    per-tick apply bound; queued records wait for the next tick.
+//     per-tick apply bound; queued records wait for the next tick.
 //   - A producer never has more than MaxOutstanding records unconsumed per
-//    tag — over that the emit refuses `backpressured`.
+//     tag — over that the emit refuses `backpressured`.
 package hostint
 
 import "virelai/vi"
@@ -82,6 +82,13 @@ type Engine struct {
 // record files; a flood past this many failing names resets the table
 // (latchIOErr) instead of pinning one map entry per churned filename.
 const ioErrLatchCap = 64
+
+// evictPerTick bounds the foreign-name sweep one Poll performs — a lane
+// directory entry that can NEVER be a lane artifact (not a record name,
+// not a '~' publish temp) is deleted on sight, but a directory of them
+// drains a bounded few per tick rather than letting one listing's worth
+// of deletes stall the seat's whole composite tick.
+const evictPerTick = 8
 
 // NewEngine builds an engine for key (the host-int credential bytes) with
 // the given IO seams and marker prefix.
@@ -159,6 +166,34 @@ func (e *Engine) Poll() {
 		}
 	}
 	e.lastItems = items
+	// Foreign-name eviction (#3387, audit R5 F1): an entry that can never
+	// be a lane artifact — not a record name, not a '~' publish temp —
+	// is interference the lane owns, so it deletes on sight rather than
+	// sitting in the window forever. The seat's listing is the paged
+	// snapshot now, so a planted long or odd name can no longer wedge
+	// the scan, but every foreign row is still one closer to the bound.
+	// Bounded per tick, named once per sweep — the names themselves are
+	// attacker-controlled text and never reach the log.
+	evicted := 0
+	for _, it := range items {
+		if evicted >= evictPerTick {
+			break
+		}
+		if it.IsDir {
+			continue // a directory is foreign too, but outlives file delete
+		}
+		if _, _, ok := ParseName(it.Name); ok {
+			continue
+		}
+		if len(it.Name) > 0 && it.Name[len(it.Name)-1] == '~' {
+			continue // in-flight publish temp — deleting it tears a live write
+		}
+		e.del(it.Name)
+		evicted++
+	}
+	if evicted > 0 {
+		e.refuse(0, RefuseNameRejected)
+	}
 	// Name-sorted processing gives per-tag seq order for free (STEM-%08x
 	// sorts numerically inside a stem) and ARMED before CLIPIN (A < C),
 	// which is the order adoption needs when both land in one window.

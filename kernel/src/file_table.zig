@@ -48,6 +48,7 @@ const driving_award = @import("driving_award.zig");
 // M50 TS2 (issue #1136, ADR 0024 D3/D4): the file-ownership/mode predicate
 // and the bounded metadata table `OWNERS.TXT` persists.
 const trust = @import("trust.zig");
+const wm_server = @import("wm_server.zig"); // #3387 (audit R5 F1): the lane-dir record tier is the registered seat's alone
 const grant = @import("grant.zig"); // M116d (#2470): the row's `fs=` path scope at the path-bearing entry points
 pub const directory = @import("directory.zig");
 pub const metadata = @import("fs_metadata.zig");
@@ -1580,6 +1581,137 @@ fn disk_errno(err: vlfs.Error) i64 {
     return rc;
 }
 
+// ---------------------------------------------------------------------------
+// Lane-dir write policy (#3387, audit R5 F1)
+// ---------------------------------------------------------------------------
+//
+// The ADR 0051 lane directories are uid_user-owned like every /host path:
+// unhardened, any app could create, overwrite and delete lane files — one
+// >31-byte name killed the seat's whole listing via st_path_limit, >=16
+// foreign names pinned the 16-row window, >256 entries wedged the
+// snapshot's bound. Two tiers of guest-write policy:
+//
+//   - Record dirs (HOSTINT, INBOX): every mutation is the registered
+//     seat's alone. Only the seat emits lane records; only the runner
+//     lands INBOX payloads — both arrive host-side or seat-side, so
+//     another guest's create/delete/rename is interference by
+//     definition. Reads and listings stay open (the dir contents were
+//     never secret; the MAC is the forgery wall, not the listing).
+//   - Intent dirs (OUTBOX, SAY, PRINT): apps legitimately stage payload
+//     + marker, so creates stay open but a basename must satisfy the
+//     lane name rule — the D4 charset the runners sanitize inbound names
+//     to — directories are never lawful entries, and a create that would
+//     fill the dir past listing headroom is refused ENOSPC so the seat's
+//     snapshot can always enumerate it.
+
+/// The create-side bound behind the snapshot's own 256: a lane dir stays
+/// under this many entries so every listing the seat takes is complete.
+/// Refusing the create is what keeps the scan enumerable — once the dir
+/// itself can no longer be snapshotted (st_limit), the same ENOSPC
+/// answers. One page of slack under the wire bound absorbs creates that
+/// race the count.
+const lane_entry_cap: usize = directory.entry_max - directory.page_max;
+
+const LaneDirKind = enum { record, intent };
+
+fn laneDirKind(dir: []const u8) ?LaneDirKind {
+    // Case-insensitive — the share's filesystem is.
+    const record_dirs = [_][]const u8{ "HOSTINT", "INBOX" };
+    const intent_dirs = [_][]const u8{ "OUTBOX", "SAY", "PRINT" };
+    for (record_dirs) |d| if (std.ascii.eqlIgnoreCase(dir, d)) return .record;
+    for (intent_dirs) |d| if (std.ascii.eqlIgnoreCase(dir, d)) return .intent;
+    return null;
+}
+
+/// A direct child of a lane dir: exactly two path components, the first
+/// naming a lane dir. Nested paths can't be lane children — the guest
+/// cannot mkdir under a lane dir, so a deeper entry is host business.
+const LaneChild = struct { kind: LaneDirKind, parent: []const u8, base: []const u8 };
+
+fn laneChild(path: []const u8) ?LaneChild {
+    const slash = std.mem.indexOfScalar(u8, path, '/') orelse return null;
+    const base = path[slash + 1 ..];
+    if (base.len == 0 or std.mem.indexOfScalar(u8, base, '/') != null) return null;
+    const kind = laneDirKind(path[0..slash]) orelse return null;
+    return .{ .kind = kind, .parent = path[0..slash], .base = base };
+}
+
+/// The lane name rule (the D4 charset HostDrop/outbox sanitize to): 1..48
+/// bytes of [A-Za-z0-9._-] with a leading alphanumeric, optionally one
+/// trailing '~' for the share's publish-temp form. A basename outside
+/// this can never be a lawful lane entry.
+fn laneNameOk(base: []const u8) bool {
+    var name = base;
+    if (name.len > 0 and name[name.len - 1] == '~') name = name[0 .. name.len - 1];
+    if (name.len == 0 or name.len > 48) return false;
+    if (!std.ascii.isAlphanumeric(name[0])) return false;
+    for (name) |c| {
+        if (!std.ascii.isAlphanumeric(c) and c != '.' and c != '_' and c != '-') return false;
+    }
+    return true;
+}
+
+/// The record tier's one question: is this pid the registered seat?
+fn laneSeat(pid: u64) bool {
+    return if (wm_server.registered_pid()) |seat| seat == pid else false;
+}
+
+/// -7 EACCES unless pid is the seat — a record-dir mutation by anyone
+/// else is interference by definition.
+fn laneRecordMutate(pid: u64, path: []const u8) i64 {
+    const child = laneChild(path) orelse return 0;
+    if (child.kind != .record) return 0;
+    return if (laneSeat(pid)) 0 else -7;
+}
+
+/// The create-time policy for an open that may mint an entry in a lane
+/// dir (a mutating flag on a record child, MODE_CREATE file or MODE_DIR
+/// mkdir on an intent child). 0 admits, -7 is the policy refusal, -5 the
+/// headroom bound.
+fn laneOpen(pid: u64, path: []const u8, flags: u32) i64 {
+    const child = laneChild(path) orelse return 0;
+    if (child.kind == .record) {
+        if ((flags & (MODE_WRITE | MODE_CREATE | MODE_APPEND | MODE_DIR)) == 0) return 0;
+        return if (laneSeat(pid)) 0 else -7;
+    }
+    if ((flags & MODE_DIR) != 0) return -7; // directories are never lane entries
+    if ((flags & MODE_CREATE) == 0) return 0;
+    if (!laneNameOk(child.base)) return -7;
+    // The headroom count IS a listing — the same snapshot the seat takes.
+    // st_limit means the dir already crossed the wire bound: fail closed.
+    // Other snapshot failures (a missing dir, a channel hiccup) fall
+    // through to the real op, which names its own error honestly.
+    var snap: directory.Snapshot = undefined;
+    const st = virtio_file.snapshot(child.parent, &snap);
+    if (st == virtio_file.st_ok) return if (snap.count >= lane_entry_cap) -5 else 0;
+    return if (st == virtio_file.st_limit) -5 else 0;
+}
+
+/// The rename policy on both ends: a record-dir source or destination is
+/// the seat's alone (a move out is a delete, a move in a create); an
+/// intent-dir destination holds the name rule, and a move INTO it from
+/// outside counts against the entry bound — a same-dir rename mints no
+/// entry, so the name rule alone applies.
+fn laneRename(pid: u64, oldp: []const u8, newp: []const u8) i64 {
+    const src = laneChild(oldp);
+    const dst = laneChild(newp);
+    if (src) |s| {
+        if (s.kind == .record and !laneSeat(pid)) return -7;
+        if (dst) |d| {
+            if (std.ascii.eqlIgnoreCase(s.parent, d.parent)) {
+                return if (d.kind == .intent and !laneNameOk(d.base)) -7 else 0;
+            }
+        }
+    }
+    const d = dst orelse return 0;
+    if (d.kind == .record) return if (laneSeat(pid)) 0 else -7;
+    if (!laneNameOk(d.base)) return -7;
+    var snap: directory.Snapshot = undefined;
+    const st = virtio_file.snapshot(d.parent, &snap);
+    if (st == virtio_file.st_ok) return if (snap.count >= lane_entry_cap) -5 else 0;
+    return if (st == virtio_file.st_limit) -5 else 0;
+}
+
 /// Open a file for `pid` with given `flags`.
 /// Returns fd (0..7) on success, or negative error code:
 /// - `-1` (`EINVAL`): Invalid flags, bad path syntax, traversal attempted,
@@ -1800,6 +1932,11 @@ pub fn open(pid: u64, path_bytes: []const u8, flags: u32) i64 {
     if (!virtio_file.available()) return -9;
 
     const subpath = parsed.path[0..parsed.parsed_len()];
+
+    // #3387 (audit R5 F1): the lane-dir write policy — record dirs admit
+    // seat mutations only; intent dirs hold the name rule + entry bound.
+    const lane_rc = laneOpen(pid, subpath, flags);
+    if (lane_rc != 0) return lane_rc;
 
     // M34 HF5 (issue #739): the host share is READ-WRITE now — the file
     // channel is user data. MODE_DIR creates a directory (parity with the
@@ -2435,6 +2572,11 @@ pub fn delete(pid: u64, path_bytes: []const u8) i64 {
     // path is denied delete through the file ABI for every actor. Only the
     // `.host` table is keyed by paths; `.usb`/`.tty` are not mode-governed.
     if (!hostAllowed(pid, parsed.path[0..parsed.parsed_len()], .delete)) return -7; // EACCES
+    // #3387 (audit R5 F1): a record-dir entry deletes only under the
+    // seat — an app's delete of an in-flight record is the audit's racy
+    // DoS, refused at the policy layer instead.
+    const lane_rc = laneRecordMutate(pid, parsed.path[0..parsed.parsed_len()]);
+    if (lane_rc != 0) return lane_rc;
     if (!virtio_file.available()) return -6;
     const subpath = parsed.path[0..parsed.parsed_len()];
     // M34 HF5 (issue #739): host deletes route to the channel. M66a: the
@@ -2488,6 +2630,11 @@ pub fn rename_mode(pid: u64, old_bytes: []const u8, new_bytes: []const u8, mode:
     if (old.partition == .host) {
         if (!hostAllowed(pid, oldp, .delete)) return -7; // EACCES
         if (!hostAllowed(pid, newp, .create)) return -7; // EACCES
+        // #3387 (audit R5 F1): the lane-dir write policy on both ends —
+        // a record dir mutates only under the seat; an intent-dir
+        // destination holds the name rule + (cross-dir) the entry bound.
+        const lane_rc = laneRename(pid, oldp, newp);
+        if (lane_rc != 0) return lane_rc;
     }
     if (!virtio_file.available()) return -6;
     const status = if (mode == .replace) virtio_file.replace(oldp, newp) else virtio_file.rename(oldp, newp);
@@ -4032,4 +4179,67 @@ test "file_table: M160b slot-79 op 15 — facts record and its flags" {
     try std.testing.expectEqual(metadata.fact_has_alloc, facts.flags);
     try std.testing.expectEqual(@as(u64, 11 * vlfs.block_len), facts.alloc_bytes);
     try std.testing.expectEqual(@as(i64, -6), metadata_facts(0, "/disk", "NOPE.TXT", &facts));
+}
+
+test "#3387: lane-dir write policy — seat-gated record dirs, intent name rule + entry cap" {
+    init();
+    const files = [_]virtio_file.TestFile{
+        .{ .name = "HOSTINT", .data = "", .is_dir = true },
+        .{ .name = "HOSTINT/ARMED-00000001", .data = "x" },
+        .{ .name = "OUTBOX", .data = "", .is_dir = true },
+        .{ .name = "OUTBOX/REQ-00000001", .data = "x" },
+        .{ .name = "A", .data = "y" },
+    };
+    virtio_file.set_test_share(&files);
+    defer virtio_file.set_test_share(null);
+
+    // Record dirs refuse every non-seat mutation; listings stay open.
+    try std.testing.expectEqual(@as(i64, -7), open(0, "HOSTINT/X", MODE_WRITE | MODE_CREATE));
+    try std.testing.expectEqual(@as(i64, -7), open(0, "INBOX/X", MODE_WRITE | MODE_CREATE));
+    try std.testing.expectEqual(@as(i64, -7), delete(0, "HOSTINT/ARMED-00000001"));
+    try std.testing.expectEqual(@as(i64, -7), rename(0, "A", "HOSTINT/B"));
+    try std.testing.expectEqual(@as(i64, -7), rename(0, "HOSTINT/ARMED-00000001", "B"));
+    var rows: [4]DirEntry = undefined;
+    // Listings stay open for non-seat readers — the fixture's flat root
+    // answers not_found, never the -7 policy refusal.
+    try std.testing.expect(dir_list(0, "HOSTINT", &rows) != -7);
+
+    // Intent dirs: the D4 name rule, no directories, lawful names pass.
+    try std.testing.expectEqual(@as(i64, -7), open(0, "OUTBOX/evil;name", MODE_WRITE | MODE_CREATE));
+    try std.testing.expectEqual(@as(i64, -7), open(0, "OUTBOX/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", MODE_WRITE | MODE_CREATE));
+    try std.testing.expectEqual(@as(i64, -7), open(0, "SAY/sub", MODE_DIR | MODE_CREATE | MODE_WRITE));
+    try std.testing.expectEqual(@as(i64, -7), rename(0, "A", "PRINT/bad name"));
+    // Lawful intent shapes pass policy — anything but the -7 policy
+    // refusal is admission (the test channel names its own error).
+    try std.testing.expect(open(0, "OUTBOX/REQ-00000002", MODE_WRITE | MODE_CREATE) != -7);
+    try std.testing.expect(open(0, "OUTBOX/TMP~", MODE_WRITE | MODE_CREATE) != -7);
+    try std.testing.expect(open(0, "SAY/SAY-00000001", MODE_WRITE | MODE_CREATE) != -7);
+    try std.testing.expect(rename(0, "A", "OUTBOX/NEWNAME.TXT") != -7);
+
+    // The seat passes the record tier the same way — admitted past the
+    // policy, whatever the backend answers. A leaked registration from an
+    // earlier test in the shared binary would make register(0) refuse —
+    // evict it first (file_table.init() does not own wm_server's state).
+    if (wm_server.registered_pid()) |old| _ = wm_server.unregister(old);
+    try std.testing.expect(wm_server.register(0));
+    defer _ = wm_server.unregister(0);
+    try std.testing.expect(open(0, "HOSTINT/CLIPOUT-00000001", MODE_WRITE | MODE_CREATE) != -7);
+    try std.testing.expect(delete(0, "HOSTINT/ARMED-00000001") != -7);
+    try std.testing.expect(rename(0, "A", "HOSTINT/B") != -7);
+}
+
+test "#3387: intent-dir entry cap refuses the create that would exceed it" {
+    init();
+    var flood_files: [lane_entry_cap + 1]virtio_file.TestFile = undefined;
+    var flood_names: [lane_entry_cap + 1][24]u8 = undefined;
+    flood_files[0] = .{ .name = "OUTBOX", .data = "", .is_dir = true };
+    for (1..lane_entry_cap + 1) |i| {
+        flood_files[i] = .{ .name = std.fmt.bufPrint(&flood_names[i], "OUTBOX/F{d:0>4}", .{i}) catch unreachable, .data = "x" };
+    }
+    virtio_file.set_test_share(&flood_files);
+    defer virtio_file.set_test_share(null);
+    // At cap the next create is ENOSPC — the snapshot the seat takes
+    // stays enumerable, which is the whole bound.
+    try std.testing.expectEqual(@as(i64, -5), open(0, "OUTBOX/OVER", MODE_WRITE | MODE_CREATE));
+    try std.testing.expectEqual(@as(i64, -5), rename(0, "Z", "OUTBOX/OVER"));
 }

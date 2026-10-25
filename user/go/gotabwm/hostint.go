@@ -30,26 +30,27 @@ var hostintEngine *hostint.Engine
 // production values wire the engine to the real file channel and console.
 var (
 	hostintSecretGet = shlib.StoreGet
-	// The lane dir rides the --cvc-file channel (queue 5), so the listing
-	// is slot-27 sys_dir_list — vi.ListDirAt's slot-79 snapshot needs the
-	// virtio_fs backend, which is ContainmentUnavailable on this share.
-	// The 16-row window is within the lane's own bound (≤ MaxOutstanding
-	// per tag + the handshake, and consumers delete on sight, so a fuller
-	// directory still drains a page per tick). ENOENT — a missing dir or a
-	// channel that is not there — is the flags-off steady state: silent.
+	// The lane dir rides the --cvc-file channel (queue 5): vi.ListDirAt
+	// pages the v2 open/page/close protocol the kernel serves there (the
+	// dirV2List fallback — the same shape OUTBOX/SAY/PRINT already use).
+	// The 16-row sys_dir_list window was a pinning surface (≥16 foreign
+	// names starved every record) AND the 31-byte row's st_path_limit
+	// whole-listing kill — the snapshot serves 255-byte names up to the
+	// 256-entry bound, so a hostile name degrades to a foreign row the
+	// engine evicts, never a dead listing (#3387). ENOENT — a missing
+	// dir or a channel that is not there — is the flags-off steady
+	// state: silent. Any other failure reports absent=false and Poll
+	// names io_error once.
 	hostintListDir = func() ([]vi.DirItem, bool) {
-		var rows [vi.MaxDirEntries]vi.DirEntry
-		n, rc := vi.DirList(hostint.HostDir, rows[:])
-		if rc < 0 {
-			return nil, rc == -vi.ErrENOENT
+		items, err := vi.ListDirAt("/HOSTINT")
+		if err != nil {
+			return nil, err.Error() == "ENOENT"
 		}
-		items := make([]vi.DirItem, 0, n)
-		for i := 0; i < n; i++ {
-			items = append(items, vi.DirItem{
-				Name:  rows[i].NameString(),
-				IsDir: rows[i].Dir(),
-				Size:  uint64(rows[i].Size),
-			})
+		// A successful-but-empty snapshot comes back nil — the (nil,
+		// false) pair is the channel-failure form, so an empty dir must
+		// be normalized or it would read as io_error.
+		if items == nil {
+			items = []vi.DirItem{}
 		}
 		return items, false
 	}
@@ -158,4 +159,30 @@ func hostintSeatTick() {
 	if printTickFn != nil {
 		printTickFn()
 	}
+}
+
+// laneEvictBound mirrors the engine's own evictPerTick — the per-tick
+// bound on the foreign-name sweep one lane scan performs.
+const laneEvictBound = 8
+
+// laneSweep deletes up to laneEvictBound entries keep() refuses — the
+// foreign names a lane dir can never carry lawfully (#3387, audit R5
+// F1). Directories and '~'-suffixed names are always kept: a dir
+// outlives file delete, and a temp is a live publish whose deletion
+// would tear the rename. Returns the count so the caller names one
+// refusal per sweep — the names themselves are attacker-controlled text
+// and never reach the log.
+func laneSweep(items []vi.DirItem, keep func(it vi.DirItem) bool, del func(string) int64) int {
+	n := 0
+	for _, it := range items {
+		if n >= laneEvictBound {
+			break
+		}
+		if it.IsDir || keep(it) || (len(it.Name) > 0 && it.Name[len(it.Name)-1] == '~') {
+			continue
+		}
+		_ = del(it.Name)
+		n++
+	}
+	return n
 }

@@ -43,6 +43,9 @@ var (
 		if err != nil {
 			return nil, err.Error() == "ENOENT"
 		}
+		if items == nil {
+			items = []vi.DirItem{} // an empty snapshot is a listing, not a failure
+		}
 		return items, false
 	}
 	// hostprintListFailed latches the listing-failure refusal so a
@@ -82,6 +85,16 @@ func hostprintTick() {
 		return
 	}
 	hostprintListFailed = false
+	// Foreign-name eviction (#3387): an entry that is neither a PREQ
+	// marker nor a lawful payload name can never be signed, so it
+	// deletes on sight — one bounded sweep per tick, one refusal per
+	// sweep. A name-rule-valid unmarked file stays (it may be a payload
+	// whose PREQ is still in flight; inert either way).
+	if laneSweep(items, func(it vi.DirItem) bool {
+		return printq.IsReqName(it.Name) || printq.NameValid(it.Name)
+	}, hostprintDeleteFile) > 0 {
+		eng.RefuseLane(hostint.TagPrint, hostint.RefuseNameRejected)
+	}
 	// Name-ordered scan, mirroring the engine's own ordering. Payloads
 	// are looked up in the same listing the PREQs came from; directories
 	// join the map too so a dir payload is unsupported_kind, not gone.
