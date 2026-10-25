@@ -5391,7 +5391,7 @@ fn cmd_net(m: *Monitor, args: []const []const u8) ExecError {
     m.console.puts("\n");
     // Card N5 (claim 8552): the UDP layer — datagrams received (into a
     // listener's buffer, incl. loopback), sent (device TX + loopback),
-    // loopbacked (the no-device path), and dropped (the sum of the three
+    // loopbacked (the no-device path), and dropped (the sum of the four
     // counted causes). Grep-able and deterministic.
     m.console.puts(" udp=rx=");
     m.console.print_u64(virtio_net.udp.received);
@@ -5400,7 +5400,7 @@ fn cmd_net(m: *Monitor, args: []const []const u8) ExecError {
     m.console.puts(",loop=");
     m.console.print_u64(virtio_net.udp.loopbacked);
     m.console.puts(",drop=");
-    m.console.print_u64(virtio_net.udp.dropped_badsum + virtio_net.udp.dropped_closed + virtio_net.udp.dropped_len);
+    m.console.print_u64(virtio_net.udp.dropped_badsum + virtio_net.udp.dropped_closed + virtio_net.udp.dropped_len + virtio_net.udp.dropped_bcast);
     m.console.puts("\n");
     // Card N8 (claim 0351) + card N9 (claim 9489): the DHCP client — the
     // state (bound/unbound/renewing/rebinding), the lease
@@ -7008,7 +7008,7 @@ fn cmd_net_udp(m: *Monitor, args: []const []const u8) ExecError {
         m.console.puts(",loop=");
         m.console.print_u64(virtio_net.udp.loopbacked);
         m.console.puts(",drop=");
-        m.console.print_u64(virtio_net.udp.dropped_badsum + virtio_net.udp.dropped_closed + virtio_net.udp.dropped_len);
+        m.console.print_u64(virtio_net.udp.dropped_badsum + virtio_net.udp.dropped_closed + virtio_net.udp.dropped_len + virtio_net.udp.dropped_bcast);
         m.console.puts("\n");
         return .none;
     }

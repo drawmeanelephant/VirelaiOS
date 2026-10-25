@@ -41,6 +41,12 @@ pub var dropped_frag: u64 = 0; // MF set or a nonzero fragment offset
 pub var dropped_checksum: u64 = 0; // header checksum mismatch
 pub var dropped_proto: u64 = 0; // protocol != ICMP
 pub var dropped_other: u64 = 0; // an ICMP echo for an address we do not own / other ICMP
+/// Sev-C (#3401): a broadcast-dst (255.255.255.255) TCP segment —
+/// refused before `sockets.receive` or the bounded client can see it.
+/// Counted, named — and deliberately OUT of the `net` report's `drop=`
+/// sum: that sum is gate-pinned (`drop=0` on the scripted legs) and
+/// LAN broadcast noise is not the scripted traffic's business.
+pub var dropped_bcast: u64 = 0;
 pub var replies_sent: u64 = 0; // echo replies to requests for our static IP
 pub var requests_sent: u64 = 0; // `net ping` echo requests transmitted
 pub var pongs_observed: u64 = 0; // echo replies received (the ping's pong)
@@ -260,13 +266,17 @@ pub fn handle_rx(frame: []const u8, own_mac: *const [6]u8, reply_buf: []u8) ?usi
     // handler ever sees the packet — `arp.own_ip`, or the limited
     // broadcast 255.255.255.255 (the DHCP client sets the broadcast
     // flag; its OFFER/ACKs arrive there, server port 67 -> client 68).
+    // Sev-C (#3401): the broadcast admit is NARROW — broadcast-dst UDP
+    // delivers only to a listener that opted in to group delivery (the
+    // DHCP divert runs first, `dropped_bcast` names every other
+    // refusal), and broadcast-dst TCP is a counted drop below.
     // The MAC filter admits broadcast + multicast frames, so unicast
     // traffic for OTHER addresses on the segment reaches this layer:
     // without this check a UDP listener or a TCP session would ingest a
     // datagram never addressed to this host. Directed broadcast and
     // multicast are NOT admitted (no consumer — the honest bound).
     const dst = dst_ip(frame);
-    if (!std.mem.eql(u8, &dst, &arp.own_ip) and !std.mem.eql(u8, &dst, &[4]u8{ 255, 255, 255, 255 })) {
+    if (!std.mem.eql(u8, &dst, &arp.own_ip) and !std.mem.eql(u8, &dst, &udp.bcast_addr)) {
         dropped_other += 1;
         return null;
     }
@@ -279,6 +289,16 @@ pub fn handle_rx(frame: []const u8, own_mac: *const [6]u8, reply_buf: []u8) ?usi
         return null;
     }
     if (protocol(frame) == tcp.protocol_tcp) {
+        // Sev-C (#3401): broadcast-dst TCP is a counted drop — the
+        // limited-broadcast admit above exists for the UDP/DHCP path;
+        // a LAN peer's broadcast SYN must never reach `sockets.receive`
+        // or the bounded client. Its own named counter: the `drop=` sum
+        // on the `net` report's icmp line is gate-pinned `drop=0`, and
+        // broadcast noise is not the scripted traffic's business.
+        if (std.mem.eql(u8, &dst, &udp.bcast_addr)) {
+            dropped_bcast += 1;
+            return null;
+        }
         // Card N10 (claim 7026): TCP segments are handed to the bounded
         // TCP client ALREADY VALIDATED (checksum/fragment/dst checks
         // stayed above — never duplicated). The client's RX processing
@@ -439,6 +459,7 @@ test "ipv4: handle_rx — answer an echo for us, observe a reply, drop the rest"
     dropped_checksum = 0;
     dropped_proto = 0;
     dropped_other = 0;
+    dropped_bcast = 0;
     replies_sent = 0;
     requests_sent = 0;
     pongs_observed = 0;
@@ -566,6 +587,22 @@ test "ipv4: protocol dispatch — UDP (17) is handed to udp, TCP (6) to the tcp 
     try std.testing.expect(handle_rx(&tcpf, &test_mac, &reply_buf) == null);
     try std.testing.expectEqual(@as(u64, 0), dropped_proto); // dispatched, not dropped
     try std.testing.expectEqual(@as(u64, 1), tcp.dropped_malformed); // the client saw it
+
+    // Sev-C (#3401): the SAME segment with a broadcast dst is a counted
+    // drop at the gate — it never reaches the client or the socket
+    // table (dropped_malformed does not move, and the refusal lands in
+    // its own named counter, not the not-for-us sum).
+    dropped_bcast = 0;
+    @memcpy(tcpf[30..34], &udp.bcast_addr);
+    tcpf[24] = 0;
+    tcpf[25] = 0;
+    const tc3 = checksum(tcpf[14..34]);
+    tcpf[24] = @truncate(tc3 >> 8);
+    tcpf[25] = @truncate(tc3);
+    try std.testing.expect(handle_rx(&tcpf, &test_mac, &reply_buf) == null);
+    try std.testing.expectEqual(@as(u64, 1), dropped_bcast);
+    try std.testing.expectEqual(@as(u64, 1), tcp.dropped_malformed);
+    dropped_bcast = 0;
     udp.reset();
 }
 
@@ -596,11 +633,23 @@ test "ipv4: M97e-F2 dst gate — a foreign unicast address is dropped before UDP
     try std.testing.expect(udp.pop(7000) != null);
 
     // The limited broadcast address (the DHCP client's reply shape):
-    // admitted through the gate and delivered the same way.
-    n = udp.build_frame_ex(&frame, .{ 0xff, 0xff, 0xff, 0xff, 0xff, 0xff }, &host_mac, ip_host, .{ 255, 255, 255, 255 }, udp.default_ttl, 9999, 7000, "bc");
+    // still admitted through the gate — but Sev-C (#3401) restricts
+    // delivery to opted-in listeners. The plain port-7000 bind gets the
+    // named drop, not the datagram.
+    n = udp.build_frame_ex(&frame, .{ 0xff, 0xff, 0xff, 0xff, 0xff, 0xff }, &host_mac, ip_host, udp.bcast_addr, udp.default_ttl, 9999, 7000, "bc");
+    try std.testing.expect(handle_rx(frame[0..n], &test_mac, &reply_buf) == null);
+    try std.testing.expectEqual(@as(u64, 1), dropped_other); // the gate still admits it
+    try std.testing.expectEqual(@as(u64, 1), udp.dropped_bcast);
+    try std.testing.expectEqual(@as(u64, 1), udp.received); // not delivered
+    try std.testing.expect(udp.pop(7000) == null);
+
+    // An opted-in (`group`) listener on another port takes the same
+    // broadcast-dst datagram.
+    try std.testing.expect(udp.listen_port_group(7001));
+    n = udp.build_frame_ex(&frame, .{ 0xff, 0xff, 0xff, 0xff, 0xff, 0xff }, &host_mac, ip_host, udp.bcast_addr, udp.default_ttl, 9999, 7001, "bc");
     try std.testing.expect(handle_rx(frame[0..n], &test_mac, &reply_buf) == null);
     try std.testing.expectEqual(@as(u64, 2), udp.received);
-    try std.testing.expect(udp.pop(7000) != null);
+    try std.testing.expect(udp.pop(7001) != null);
 
     // And a directed broadcast / multicast-shaped address is NOT
     // admitted (no consumer — the honest bound).

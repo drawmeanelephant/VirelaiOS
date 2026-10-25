@@ -19,7 +19,12 @@
 //! computed ALWAYS (the RFC 768 IPv4 "may be zero" escape is not used —
 //! byte-exact gates pin the real value); a datagram whose length is < 8
 //! or exceeds the frame, a bad checksum, and a datagram for a port with
-//! NO listener are DROPPED, each with its own counter. The N5 guest
+//! NO listener are DROPPED, each with its own counter. Sev-C (#3401):
+//! a broadcast-dst (255.255.255.255) datagram the ipv4 gate admits is
+//! delivered ONLY to a listener that opted in to group delivery — the
+//! port-68 DHCP divert runs ahead of the check, so the client's
+//! OFFER/ACKs are unchanged; every other port's broadcast-dst datagram
+//! is a counted drop (`dropped_bcast`). The N5 guest
 //! RECEIVES and SENDS — it does not ANSWER UDP (the host answers,
 //! `--net-udp-respond`); a later card can add guest-side responders.
 //! v6's bound is tighter still: the checksum is MANDATORY inbound (a
@@ -57,6 +62,11 @@ pub const recv_from_max: usize = 4 + datagram_max; // 524
 pub const frame_min: usize = eth_hdr_len + ipv4_hdr_len + udp_hdr_len; // 42
 /// The largest full frame: Ethernet + IPv4 + header + the bounded payload.
 pub const frame_max: usize = eth_hdr_len + ipv4_hdr_len + udp_hdr_len + payload_max; // 554
+/// Sev-C (#3401): the limited broadcast IPv4 dst — the M97e-F2 gate in
+/// ipv4.zig admits it for the DHCP client's reply shape; `handle_rx`
+/// delivers a broadcast-dst datagram ONLY to a listener that opted in
+/// to group delivery (or the port-68 DHCP divert ahead of it).
+pub const bcast_addr: [4]u8 = .{ 255, 255, 255, 255 };
 /// M117c: the largest v6 frame — Ethernet + the 40-byte fixed v6 header +
 /// header + the bounded payload (a 512-byte payload fits the 1280-byte
 /// minimum-MTU envelope, so no PMTUD machinery is needed — D6).
@@ -77,6 +87,9 @@ pub var loopbacked: u64 = 0; // sends that took the local loopback path (no devi
 pub var dropped_badsum: u64 = 0; // UDP checksum mismatch (pseudo-header + datagram)
 pub var dropped_closed: u64 = 0; // datagram for a port with NO listener
 pub var dropped_len: u64 = 0; // length < 8 or exceeding the frame's remaining bytes
+/// Sev-C (#3401): a broadcast-dst datagram for a port whose listener
+/// did not opt in to group delivery (incl. a port with NO listener).
+pub var dropped_bcast: u64 = 0;
 /// M99i (#2187): listen-table seats reclaimed from exited owners by the
 /// syscall layer (a program that exits without sys_udp_close).
 pub var stale_reclaimed: u64 = 0;
@@ -109,6 +122,11 @@ pub const ListenEntry = struct {
     /// listener of its own family, so the v4-only EL0 marshal (slots
     /// 10/84/85) can never observe a v6 datagram.
     v6: bool = false,
+    /// Sev-C (#3401): the bind opted IN to group-addressed delivery —
+    /// a broadcast-dst v4 datagram lands only in a listener carrying
+    /// this flag (`listen_port_group`; a plain `listen_port` bind never
+    /// sees one). v6 delivery never consults it.
+    group: bool = false,
     valid: bool = false,
 };
 
@@ -217,23 +235,32 @@ pub fn listen_port(port: u16) bool {
 /// `unowned` for kernel callers). Duplicate port or full table → false,
 /// the same honest bool `listen_port` always returned.
 pub fn listen_port_owned(port: u16, owner: u64) bool {
-    return listen_family(port, owner, false);
+    return listen_family(port, owner, false, false);
 }
 
 /// M117c (#2475): bind `port` as a v6 listener (the `net udp6 listen`
 /// path — kernel-owned, never EL0). A port may hold ONE bind per family;
 /// a same-family duplicate or a full table is refused.
 pub fn listen_port6(port: u16) bool {
-    return listen_family(port, unowned, true);
+    return listen_family(port, unowned, true, false);
 }
 
-fn listen_family(port: u16, owner: u64, v6: bool) bool {
+/// Sev-C (#3401): bind `port` opting IN to group-addressed delivery —
+/// the only listener shape a broadcast-dst (255.255.255.255) v4
+/// datagram can land in. A plain `listen_port` bind never receives one;
+/// the port-68 DHCP divert runs ahead of the check, so the client
+/// carries no flag.
+pub fn listen_port_group(port: u16) bool {
+    return listen_family(port, unowned, false, true);
+}
+
+fn listen_family(port: u16, owner: u64, v6: bool, group: bool) bool {
     for (&listen) |*e| {
         if (e.valid and e.port == port and e.v6 == v6) return false; // duplicate
     }
     for (&listen) |*e| {
         if (!e.valid) {
-            e.* = .{ .port = port, .owner = owner, .v6 = v6, .valid = true };
+            e.* = .{ .port = port, .owner = owner, .v6 = v6, .group = group, .valid = true };
             return true;
         }
     }
@@ -327,6 +354,7 @@ pub fn reset() void {
     dropped_badsum = 0;
     dropped_closed = 0;
     dropped_len = 0;
+    dropped_bcast = 0;
     received6 = 0;
     sent6 = 0;
     dropped6_len = 0;
@@ -477,6 +505,19 @@ pub fn handle_rx(frame: []const u8) void {
         // consumed). The datagram was ALREADY checksum-validated above.
         _ = dhcp.handle_rx(datagram);
         return;
+    }
+    if (std.mem.eql(u8, &dst, &bcast_addr)) {
+        // Sev-C (#3401): the limited-broadcast dst the ipv4 gate admits
+        // exists for DHCP (diverted above); every other port receives a
+        // broadcast-dst datagram ONLY when its listener opted in to
+        // group delivery — a LAN peer on a bridged/vmnet attachment
+        // cannot push datagrams into a plain `listen_port` bind. The
+        // refusal is counted, never silent.
+        const slot = find_listener(dst_port);
+        if (slot == null or !listen[slot.?].group) {
+            dropped_bcast += 1;
+            return;
+        }
     }
     deliver(dst_port, src, datagram);
 }
@@ -803,6 +844,79 @@ test "udp: handle_rx — deliver to a listener, drop badsum / closed / short" {
     frame[39] = 0x04;
     handle_rx(&frame);
     try std.testing.expectEqual(@as(u64, 1), dropped_len);
+}
+
+test "udp: Sev-C broadcast dst — only an opted-in listener receives it" {
+    reset();
+    defer reset();
+
+    // A broadcast-dst datagram to a PLAIN listener is a counted drop —
+    // the ring stays empty (audit #3373: every bound socket used to
+    // take it).
+    try std.testing.expect(listen_port(7000));
+    var frame: [46]u8 = @splat(0);
+    frame[12] = 0x08;
+    frame[13] = 0x00; // ethertype IPv4
+    frame[14] = 0x45;
+    frame[16] = 0x00;
+    frame[17] = 32; // total length 20 + 8 + 4
+    frame[22] = 64;
+    frame[23] = 17; // protocol UDP
+    @memcpy(frame[26..30], &[_]u8{ 10, 0, 0, 2 });
+    @memcpy(frame[30..34], &bcast_addr);
+    const dg_len = build_datagram(frame[34..46], .{ 10, 0, 0, 2 }, bcast_addr, 9999, 7000, &.{ 1, 2, 3, 4 });
+    try std.testing.expectEqual(@as(usize, 12), dg_len);
+    handle_rx(&frame);
+    try std.testing.expectEqual(@as(u64, 0), received);
+    try std.testing.expectEqual(@as(u64, 1), dropped_bcast);
+    try std.testing.expect(pop(7000) == null);
+
+    // A broadcast-dst datagram to a CLOSED port lands in the same
+    // named counter (the broadcast refusal, not dropped_closed).
+    const saved = frame[36..38].*;
+    frame[36] = 0x27;
+    frame[37] = 0x0e; // dst port 9998 — no listener
+    frame[40] = 0;
+    frame[41] = 0;
+    const c = checksum_udp(.{ 10, 0, 0, 2 }, bcast_addr, frame[34..46]);
+    frame[40] = @truncate(c >> 8);
+    frame[41] = @truncate(c);
+    handle_rx(&frame);
+    try std.testing.expectEqual(@as(u64, 2), dropped_bcast);
+    try std.testing.expectEqual(@as(u64, 0), dropped_closed);
+    frame[36..38].* = saved;
+    frame[40] = 0;
+    frame[41] = 0;
+    const c2 = checksum_udp(.{ 10, 0, 0, 2 }, bcast_addr, frame[34..46]);
+    frame[40] = @truncate(c2 >> 8);
+    frame[41] = @truncate(c2);
+
+    // An opted-in (`group`) listener takes the SAME datagram.
+    try std.testing.expect(listen_port_group(7001));
+    frame[36] = 0x1b;
+    frame[37] = 0x59; // dst port 7001
+    frame[40] = 0;
+    frame[41] = 0;
+    const c3 = checksum_udp(.{ 10, 0, 0, 2 }, bcast_addr, frame[34..46]);
+    frame[40] = @truncate(c3 >> 8);
+    frame[41] = @truncate(c3);
+    handle_rx(&frame);
+    try std.testing.expectEqual(@as(u64, 1), received);
+    try std.testing.expect(pop(7001) != null);
+
+    // And UNICAST to the plain listener is unchanged (the control).
+    @memcpy(frame[30..34], &[_]u8{ 10, 0, 0, 1 });
+    frame[36] = 0x1b;
+    frame[37] = 0x58; // dst port 7000
+    frame[40] = 0;
+    frame[41] = 0;
+    const c4 = checksum_udp(.{ 10, 0, 0, 2 }, .{ 10, 0, 0, 1 }, frame[34..46]);
+    frame[40] = @truncate(c4 >> 8);
+    frame[41] = @truncate(c4);
+    handle_rx(&frame);
+    try std.testing.expectEqual(@as(u64, 2), received);
+    try std.testing.expect(pop(7000) != null);
+    try std.testing.expectEqual(@as(u64, 2), dropped_bcast); // unchanged
 }
 
 test "udp: bounded per-listener buffer — drop-oldest at 4" {
