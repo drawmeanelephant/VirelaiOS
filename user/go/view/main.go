@@ -14,6 +14,7 @@ import (
 	"errors"
 
 	"virelai/appkit"
+	"virelai/art"
 	"virelai/draw"
 	"virelai/pcm"
 	"virelai/settings"
@@ -45,6 +46,10 @@ const (
 	markerNotTabAware = "gview: not-tab-aware (shim or WND desktop)"
 	markerOpenFailed  = "gview: failed to open window"
 	markerEmpty       = "gview: empty (no args)"
+	// #3348 (#1253): the first frame a staged spot (SPT_IMG on the empty
+	// state, SPT_ERR on the error state) painted — the decode receipt the
+	// seat's mascot markers already established.
+	markerSpot = "gview: spot qoi "
 	markerLoaded      = "gview: loaded "
 	markerTitleSet    = "gview: title set"
 	markerPresent     = "gview: present"
@@ -1662,15 +1667,46 @@ func (a *app) drawStatus(s *canvasSurface, vp viewport) {
 }
 
 func (a *app) drawEmpty(s *canvasSurface, vp viewport) {
+	a.drawSpot(s, vp, art.SpotNoImage, &spotEmptyShown)
 	centred(s, vp, 1, appName, theme.Current.Text)
 	centred(s, vp, 2, "no image loaded", theme.Current.Muted)
 	centred(s, vp, 3, "exec GOVIEW.ELF /host/FILE.QOI", theme.Current.Muted)
 }
 
 func (a *app) drawError(s *canvasSurface, vp viewport) {
+	a.drawSpot(s, vp, art.SpotError, &spotErrorShown)
 	centred(s, vp, 1, "cannot open", theme.Current.Danger)
 	centred(s, vp, 2, loadSummary(a.st, a.name), theme.Current.Muted)
 	centred(s, vp, 3, "stay open - q quits", theme.Current.Muted)
+}
+
+// spotEmptyShown/spotErrorShown latch the one-time decode markers for the
+// two staged spots — the same latch shape the seat's mascot markers keep.
+var spotEmptyShown, spotErrorShown bool
+
+// drawSpot is the #3348 (#1253) staged-spot seam the empty and error
+// states share: the spot stands in the band above the headline, the text
+// layout never moves, and an absent asset or a fill-only canvas keeps
+// the typographic state exactly as it was.
+func (a *app) drawSpot(s *canvasSurface, vp viewport, name string, shown *bool) {
+	sp := art.Spot(name)
+	if !sp(s.cv, widgets.Rect{}) {
+		return
+	}
+	band := widgets.Rect{
+		X: int(vp.X) + 8, Y: int(vp.Y) + 8,
+		W: int(vp.W) - 16, H: int(vp.H)/4 - 24,
+	}
+	if band.W <= 0 || band.H <= 0 || !sp(s.cv, band) {
+		return
+	}
+	if !*shown {
+		*shown = true
+		if src := art.Load(name); src != nil {
+			vi.ConsoleLine(markerSpot + name + " " +
+				vi.Itoa64(int64(src.W)) + "x" + vi.Itoa64(int64(src.H)))
+		}
+	}
 }
 
 // centred paints one line of the empty/error state. line 1 is the headline and

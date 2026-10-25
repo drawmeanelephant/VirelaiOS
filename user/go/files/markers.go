@@ -236,6 +236,9 @@ const (
 	markerGridOn    = "gofiles: grid on "
 	markerGridOff   = "gofiles: grid off"
 	markerGridTiles = "gofiles: grid tiles "
+	// #3348: the staged filetype-icon count — emitted once, right after
+	// the stats line it pairs with, only when the share's art resolved.
+	markerGridIcons = "gofiles: grid icons n="
 	markerGridFocus = "gofiles: grid focus "
 
 	// M167b (#2992): pinned places and the `--search` argv hand-off.

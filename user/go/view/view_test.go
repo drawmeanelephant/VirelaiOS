@@ -3,6 +3,9 @@ package main
 import (
 	"os"
 	"testing"
+
+	"virelai/art"
+	"virelai/draw"
 )
 
 // The fixtures the live-image-viewer gate stages into the share. The viewer's
@@ -334,5 +337,49 @@ func TestComposeTitle(t *testing.T) {
 	}
 	if got := composeTitle("", 0, 0, fmtUnknown, 100); got != "(no image)" {
 		t.Errorf("composeTitle with no file = %q, want the empty-state title", got)
+	}
+}
+
+// #3348 (#1253): a staged spot paints its raster centred in the band
+// above the empty/error headline; an absent asset or a non-buffer canvas
+// leaves the typographic state byte-for-byte alone.
+func TestDrawSpotPaintsStagedAndDegrades(t *testing.T) {
+	art.Reset()
+	defer art.Reset()
+	pix := make([]uint32, 8*6)
+	for i := range pix {
+		pix[i] = 0xff335577
+	}
+	art.Stage(art.SpotNoImage, &draw.BufferCanvas{Pix: pix, W: 8, H: 6})
+
+	const w, h = 200, 200
+	bc := &draw.BufferCanvas{Pix: make([]uint32, w*h), W: w, H: h}
+	s := &canvasSurface{cv: bc}
+	vp := viewport{0, 0, w, h}
+	a := &app{}
+	shown := false
+	a.drawSpot(s, vp, art.SpotNoImage, &shown)
+	// The band is {8,8,W-16,H/4-24} = {8,8,184,26}; the 4:3 spot stands
+	// centred — its middle is the staged colour.
+	if got := bc.Pix[(8+13)*w+100]; got != 0xff335577 {
+		t.Fatalf("spot pixel = %#08x, want the staged colour", got)
+	}
+	if !shown {
+		t.Fatal("the decode receipt never latched")
+	}
+	// A second paint emits no second receipt but still paints.
+	a.drawSpot(s, vp, art.SpotNoImage, &shown)
+	// The absent-asset degrade: nothing lands, the latch never arms.
+	art.Reset()
+	bc2 := &draw.BufferCanvas{Pix: make([]uint32, w*h), W: w, H: h}
+	shown2 := false
+	a.drawSpot(&canvasSurface{cv: bc2}, vp, art.SpotNoImage, &shown2)
+	for i, p := range bc2.Pix {
+		if p != 0 {
+			t.Fatalf("absent spot painted pixel %d = %#08x", i, p)
+		}
+	}
+	if shown2 {
+		t.Fatal("an absent asset armed the receipt")
 	}
 }

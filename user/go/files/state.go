@@ -217,6 +217,10 @@ type model struct {
 	gridRef          []*gridTile
 	gridQueue        []int
 	gridTilesEmitted bool
+	// #3348: gridIcons is the staged filetype-icon mosaic cache, keyed by
+	// the art package's base name — one 10x5 downsample per family per
+	// run, absent assets never entering it (the word/dir tile stays).
+	gridIcons        map[string]*gridTile
 	gridFKey         gridKey
 	gridFSixel       []byte
 	gridFTW, gridFTH int

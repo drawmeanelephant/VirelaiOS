@@ -683,21 +683,30 @@ func (p *FilePicker) rowIcon(c widgets.Canvas, row PickerRow, glyph string, r wi
 // them would lie.
 func pickArtIcon(row PickerRow) string {
 	switch row.Kind {
-	case PickDir:
-		return art.FiletypeFolder
 	case PickUp, PickTrash, PickRecent:
 		return ""
 	}
-	// The subtype cards the mime table only spells by extension
-	// (mime.Spelling) — the row carries the family, the name carries
-	// the card.
-	switch strings.ToLower(trailingExt(row.Label)) {
+	return FiletypeArt(row.Kind == PickDir, row.Label, row.Mime)
+}
+
+// FiletypeArt is the row-icon mapping's exported half — the #3348 wiring
+// lets GOFILES' cell-mosaic grid ask the same question the picker's raster
+// rows do. dir covers the folder card; label carries the subtype extension
+// cards (vcf/ics) the mime table only spells by extension (mime.Spelling);
+// id is the sniffed mime family. "" means the family staged no icon — the
+// caller keeps its own degrade (the picker's Chrome glyph, the grid's
+// mime-word tile).
+func FiletypeArt(dir bool, label string, id mime.ID) string {
+	if dir {
+		return art.FiletypeFolder
+	}
+	switch strings.ToLower(trailingExt(label)) {
 	case "vcf":
 		return art.FiletypeContact
 	case "ics":
 		return art.FiletypeCalendar
 	}
-	switch row.Mime {
+	switch id {
 	case mime.Text:
 		return art.FiletypeText
 	case mime.Image:

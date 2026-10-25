@@ -40,8 +40,11 @@
 package main
 
 import (
+	"virelai/art"
+	"virelai/draw"
 	"virelai/snapshot"
 	"virelai/vi"
+	"virelai/widgets"
 )
 
 const (
@@ -76,6 +79,10 @@ const (
 	// MarkerCrashRestartNone reports a crash receipt with nothing to
 	// re-exec: the row's record carried no binary name.
 	MarkerCrashRestartNone = "gotabwm: crash restart none"
+	// MarkerCrashMascot is the decode receipt for the staged oops pose
+	// (MSC_OOPS) standing on the offer's toast badge and center row —
+	// the same one-shot shape the lock curtain's mascot marker keeps.
+	MarkerCrashMascot = "gotabwm: crash mascot qoi "
 	// MarkerCrashRestartFail names an exec refusal — the errno rides the
 	// marker so a gate run says WHICH bound refused, never a silent skip.
 	MarkerCrashRestartFail = "gotabwm: crash restart fail "
@@ -137,6 +144,30 @@ func crashSave() {
 // crashSnapSeq is the rotation cursor: boot 0's first crash parks CRASH0,
 // the second CRASH1, and so on modulo the slot count.
 var crashSnapSeq int
+
+// crashMascotShown latches the one-time decode marker for the oops pose
+// on the offer's surfaces — the same latch shape the other mascot
+// markers keep.
+var crashMascotShown bool
+
+// crashMascotPaint blits the staged oops pose into r on the offer's
+// surfaces (toast badge, center row), reporting whether pixels landed so
+// the caller can give the pose its layout room. An absent or refused
+// asset is a silent no-op — the offer's text is the contract, the pose
+// is dressing.
+func crashMascotPaint(c *draw.BufferCanvas, r widgets.Rect) bool {
+	m := art.Load(art.MascotOops)
+	if m == nil || r.Empty() {
+		return false
+	}
+	draw.BlitScaled(c, m, r)
+	if !crashMascotShown {
+		crashMascotShown = true
+		crashLog(MarkerCrashMascot +
+			vi.Itoa64(int64(m.W)) + "x" + vi.Itoa64(int64(m.H)))
+	}
+	return true
+}
 
 // crashSnapSave parks the machine image under the next rotated name. The
 // ctl `snapshot` verb refuses an existing name (exists), so a stale slot

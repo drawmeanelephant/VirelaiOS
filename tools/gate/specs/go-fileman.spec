@@ -1517,6 +1517,10 @@ vgate_assert 16 serial-contains 'gofiles: quicklook close'
 vgate_assert 16 serial-contains 'gofiles: grid on cols=2 rows=3'
 vgate_assert 16 serial-contains 'gofiles: grid focus LOOK.QOI thumb=64x64'
 vgate_assert 16 serial-contains 'gofiles: grid tiles decoded=1 failed=0'
+# #3348: the staged filetype family paints WORDS.TXT (FT_TEXT) as an icon
+# mosaic — SAMPLE.TAR sniffs Unknown (the .tar ext is the browser's own
+# detector, not the mime table's) and keeps its word tile.
+vgate_assert 16 serial-contains 'gofiles: grid icons n=1'
 
 vgate_assert 16 serial-contains 'gofiles: close'
 vgate_assert 16 serial-contains 'gofiles OK'
