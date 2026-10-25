@@ -85,7 +85,12 @@ func admit(m svcmanifest.Manifest, seatBinary string, loginShell, needSeat bool)
 	if needSeat && seat == "" {
 		return svcgraph.Plan{}, nil, "", errors.New("seat")
 	}
-	if tasks > 16 {
+	// M201c (#3435): M129b grew the kernel task pool 16 -> 64, so the
+	// desktop reservation admits one managed Go service beside the seat —
+	// the seated base (kernel 3, init 3, seat-owned GOSH 4, seat 4 = 14)
+	// plus one default-GOMAXPROCS ELF is exactly 18; a second added ELF
+	// still refuses before spawn. Dynamic desktop clients keep the rest.
+	if tasks > 18 {
 		return svcgraph.Plan{}, nil, "", errors.New("task-budget")
 	}
 	return plan, diagnostics, seat, nil

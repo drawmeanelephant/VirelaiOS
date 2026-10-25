@@ -207,6 +207,17 @@ exercise Go supervisor/child fixtures within its separate budget. Dynamic
 desktop clients share the same finite pool, so a spawn refusal is handled
 honestly, never by raising `max_tasks`.
 
+### Amendment (2026-10-25, M201c #3435): admission bound 16 -> 18
+
+The 16 bound above derived from `max_processes = 16`; M129b (#2611) grew
+the kernel task pool to 64. Init's conservative accounting is unchanged —
+kernel 3, init 3, seat-owned GOSH 4, the seat's own 4 — and the bound now
+admits **one** additional default-GOMAXPROCS `.ELF` service beside the
+seat: total 18, leaving 46 pool tasks for dynamic desktop clients. The
+shipped manifest's `httpd` row is the first such service (`enabled:
+false`; opt-in boots admit it). A second added ELF, or a managed service
+beside a serial login shell, still refuses `task-budget` before spawn.
+
 ## 6. Enable key, fallback and reload
 
 M92e alone adds the boolean `init` settings key, compiled default on at

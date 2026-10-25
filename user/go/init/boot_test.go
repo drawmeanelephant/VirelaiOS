@@ -125,6 +125,10 @@ func TestAdmissionRefusesBeforeAnyExec(t *testing.T) {
 		login bool
 	}{
 		{"extra-Go", func(m *svcmanifest.Manifest) { m.Services[1].Argv[0] = "DAEMON.ELF" }, false},
+		{"two-extra-Go", func(m *svcmanifest.Manifest) {
+			m.Services[1].Argv[0] = "DAEMON.ELF"
+			m.Services[2].Argv[0] = "OTHER.ELF"
+		}, false},
 		{"unknown-native", func(m *svcmanifest.Manifest) { m.Services[1].Argv[0] = "DAEMON.BIN" }, false},
 		{"duplicate-shell", func(m *svcmanifest.Manifest) { m.Services[1].Argv[0] = "GOSH.ELF" }, false},
 		{"serial-login", func(*svcmanifest.Manifest) {}, true},
@@ -142,6 +146,36 @@ func TestAdmissionRefusesBeforeAnyExec(t *testing.T) {
 				t.Fatal("partial activation")
 			}
 		})
+	}
+}
+
+// M201c (#3435): the seat plus one managed Go service is exactly the
+// admission bound (14 + 4 = 18); a disabled service costs nothing, and a
+// login shell beside the managed service still refuses (22 > 18).
+func TestAdmissionSeatPlusOneManagedGoService(t *testing.T) {
+	daemon := svcmanifest.Service{Name: "httpd", Argv: []string{"GOHTTPD.ELF"},
+		Restart: svcmanifest.Policy{Restart: "on-failure", BackoffBaseS: 2,
+			BackoffCapS: 16, MaxRestarts: 32, Window: 300},
+		Class: "boot", Enabled: true}
+	m := svcmanifest.Manifest{Version: 1, Services: []svcmanifest.Service{
+		service("seat", "GOTABWM.ELF"), daemon}}
+	f := &fakeBoot{}
+	b, err := NewBoot(m, "GOTABWM.ELF", false, f.hooks())
+	if err != nil {
+		t.Fatal(err)
+	}
+	tick(t, b, f)
+	if !reflect.DeepEqual(f.launches, []string{"GOHTTPD.ELF", "GOTABWM.ELF"}) {
+		t.Fatal(f.launches)
+	}
+	m.Services[1].Enabled = false
+	if _, err := NewBoot(m, "GOTABWM.ELF", true, f.hooks()); err != nil {
+		t.Fatal("disabled managed service must not consume the budget", err)
+	}
+	m.Services[1].Enabled = true
+	if _, err := NewBoot(m, "GOTABWM.ELF", true, f.hooks()); err == nil ||
+		err.Error() != "task-budget" {
+		t.Fatal("seat + login shell + managed service must refuse", err)
 	}
 }
 

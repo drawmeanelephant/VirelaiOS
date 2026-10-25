@@ -6,6 +6,14 @@
       "argv": ["GOTABWM.ELF"],
       "restart": {"restart": "never"},
       "class": "boot"
+    },
+    {
+      "name": "httpd",
+      "argv": ["GOHTTPD.ELF"],
+      "restart": {"restart": "on-failure", "backoff_base_s": 2, "backoff_cap_s": 16, "max_restarts": 32, "window": 300},
+      "class": "boot",
+      "enabled": false,
+      "caps": ["file", "net"]
     }
   ]
 }

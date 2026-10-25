@@ -10,7 +10,10 @@
 // carry several requests (keep-alive); the session ends on the peer's FIN,
 // a Connection: close answer, or the bounded recv budget lapsing.
 //
-// Not on the boot path.
+// M201c (#3435): not on the default boot path — the shipped INIT manifest
+// carries an `httpd` row with `"enabled": false`; an opt-in boot (the row
+// enabled, e.g. through GOSET's persisted toggle) runs it as a supervised
+// service, with restart policy and start order owned by the manifest.
 package main
 
 import (
