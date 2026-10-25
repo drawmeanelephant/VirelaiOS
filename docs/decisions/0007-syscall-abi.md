@@ -2749,8 +2749,8 @@ channel). Every existing number stays frozen; `implemented_count` is now
 | op | name | gate | contract |
 |----|------|------|----------|
 | 0 | `ask` | any process | stage a `key<TAB>uid<TAB>value[<TAB>apps]` line (≤ 174 B) into the 4-slot pending table; the line's uid must equal the caller's. Returns the ask id ≥ 1; `EINVAL`/`ENOSPC`/`EFAULT` |
-| 1 | `list` | seat or CAP_PROC_ADMIN | marshal the `arg`-th pending ask as `id\tpid\tuid\timage\tkey[\tapps]` — names and policy only, never the value; `ENOENT` past the last row |
-| 2 | `commit` | seat or CAP_PROC_ADMIN | apply pending ask `arg` and persist; `ENOENT`/`EACCES` (row names the writer)/`ENOSPC`/`EIO` (persist failed — ask stays pending) |
+| 1 | `list` | seat or CAP_PROC_ADMIN | marshal the `arg`-th pending ask as `id\tpid\tuid\timage\tkey\tmode[\tapps]` — names and policy only, never the value; `mode` is `new` or `replace` (#3407: an existing `(uid,key)` names the overwrite); `ENOENT` past the last row |
+| 2 | `commit` | seat or CAP_PROC_ADMIN | apply pending ask `arg` and persist; `ENOENT`/`EACCES` (row names the writer)/`ENOSPC`/`EIO` (persist failed — ask stays pending); an overwrite preserves a bound `apps` allowlist when the staged line omits the field (#3407) |
 | 3 | `drop` | seat or CAP_PROC_ADMIN | decline ask `arg`; 0 or `ENOENT` |
 | 4 | `status` | any process | the caller's own ask verdict — 1 pending, 2 committed, 3 dropped; `ENOENT` when not the caller's |
 | 5 | `set` | seat or CAP_PROC_ADMIN | the seat's direct write — same line grammar, writer-name refusal and persist as `commit` |

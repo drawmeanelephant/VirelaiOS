@@ -50,23 +50,27 @@ var (
 // secretAsk is the standing consent prompt. One at a time, oldest first:
 // a second staged ask waits behind the answered one — kernel LIST order.
 type secretAsk struct {
-	open  bool
-	id    uint32
-	image string
-	key   string
-	apps  string
-	sink  uint32
+	open     bool
+	id       uint32
+	image    string
+	key      string
+	apps     string
+	replaces bool
+	sink     uint32
 }
 
 var secretAskModal secretAsk
 
 // parseSecretAskLine decodes one LIST marshal —
-// `id\tpid\tuid\timage\tkey[\tapps]` — or fails. The pid/uid fields are
-// kernel-recorded facts the modal does not render; the image is what the
-// asker exec'd, the key is the name the entry would take.
+// `id\tpid\tuid\timage\tkey\tmode[\tapps]` — or fails. The pid/uid fields
+// are kernel-recorded facts the modal does not render; the image is what
+// the asker exec'd, the key is the name the entry would take. mode is the
+// kernel's add-vs-replace signal (#3407): "replace" means the ask's
+// (uid,key) already holds an entry, so consent is asked with the decisive
+// fact instead of a silent overwrite posing as an ordinary add.
 func parseSecretAskLine(line string) (a secretAsk, ok bool) {
 	f := strings.Split(line, "\t")
-	if len(f) != 5 && len(f) != 6 {
+	if len(f) != 6 && len(f) != 7 {
 		return a, false
 	}
 	id, err := strconv.ParseUint(f[0], 10, 32)
@@ -77,8 +81,15 @@ func parseSecretAskLine(line string) (a secretAsk, ok bool) {
 		return a, false
 	}
 	a = secretAsk{id: uint32(id), image: f[3], key: f[4]}
-	if len(f) == 6 {
-		a.apps = f[5]
+	switch f[5] {
+	case "new":
+	case "replace":
+		a.replaces = true
+	default:
+		return secretAsk{}, false
+	}
+	if len(f) == 7 {
+		a.apps = f[6]
 	}
 	return a, true
 }
@@ -111,7 +122,14 @@ func openSecretAsk(a secretAsk) {
 	secretAskModal.open = true
 	secretAskModal.sink = 0
 	acquireSecretFocus()
-	secretLog(MarkerSecretAsk + a.image + " key=" + a.key)
+	m := MarkerSecretAsk + a.image + " key=" + a.key
+	if a.replaces {
+		m += " replace"
+	}
+	if a.apps != "" {
+		m += " apps=" + a.apps
+	}
+	secretLog(m)
 }
 
 // acquireSecretFocus steals focus for the prompt the way the power menu
@@ -224,9 +242,17 @@ func paintSecretAsk(scan []byte, width, height int) int {
 	tok := theme.Current
 	plate := widgets.Rect{X: x, Y: y, W: w, H: h}
 	n := seatPlate(c, plate, radiusControl, tok.Accent, tok.ChromeBg)
-	label := secretAskModal.image + " wants to store " + secretAskModal.key
+	verb := " wants to store "
+	if secretAskModal.replaces {
+		verb = " wants to REPLACE "
+	}
+	label := secretAskModal.image + verb + secretAskModal.key
+	if secretAskModal.apps != "" {
+		label += " for " + secretAskModal.apps
+	}
 	hint := "[g]rant [d]eny"
 	clip := plate.Inset(1)
+	label = seatFitText(label, w-16-seatTextWidth(hint, seatSmallPx)-8, seatSmallPx)
 	seatText(c, clip, x+8, y+4, seatSmallPx, label, tok.Ink)
 	seatText(c, clip, x+w-8-7*len(hint), y+4, seatSmallPx, hint, tok.InkMuted)
 	return n
