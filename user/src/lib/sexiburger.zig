@@ -22,6 +22,13 @@ pub const Command = action_reg.Command;
 pub const ActionRegistry = action_reg.ActionRegistry;
 pub const FilterResult = action_reg.FilterResult;
 
+/// The sexiburger.zig lib row's product version — the `ver M.m.p` the
+/// component-registry row shows and the drift check resolves
+/// (docs/component-registry.md). The registry's bump rule says when it
+/// moves. One version, two rows: SEXIBURG.BIN resolves the same
+/// literal in user/src/sexiburger.zig.
+pub const version = "1.0.0";
+
 pub const menu_default_width: u32 = 488;
 pub const menu_default_height: u32 = 316;
 
