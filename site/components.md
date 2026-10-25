@@ -23,38 +23,38 @@ All of them additionally answer to the schema-v2 manifest grammar
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| 64-bit Calc | app | GOCALC.ELF | appver 1, ver 1.0.0 | tools/gate/specs/go-calc.spec | shipped |
-| Text Editor | app | NOTE.ELF | appver 1, ver 1.0.0 | tools/gate/specs/go-note.spec | shipped |
-| Code Editor | app | GOEDIT.ELF | appver 1, ver 1.0.0 | tools/gate/specs/go-edit.spec | shipped |
-| Files | app | GOFILES.ELF | appver 1, ver 1.0.0 | tools/gate/specs/go-fileman.spec | shipped |
-| Terminal | app | GOTERM.ELF | appver 2, ver 1.0.0 | tools/gate/specs/go-term.spec | shipped |
-| Web | app | WEB.ELF | appver 1, ver 1.0.0 | tools/gate/specs/live-web.spec | shipped |
-| Pulse | app | PULSE.ELF | ver 1.0.0 | tools/gate/specs/go-top.spec | shipped |
-| Shell | app | GOSH.ELF | appver 1, ver 1.0.0 | tools/gate/specs/go-sh.spec | shipped |
-| Help | app | GOHELP.ELF | ver 1.0.0 | tools/gate/specs/go-help.spec | shipped |
-| Welcome | app | GOWELCOME.ELF | appver 1, ver 1.0.0 | tools/gate/specs/go-welcome.spec | shipped |
-| Top | app | GOTOP.ELF | appver 1, ver 1.0.0 | tools/gate/specs/go-top.spec | shipped |
-| Settings | app | GOSET.ELF | ver 1.0.0 | tools/gate/specs/go-settings.spec | shipped |
-| Image Viewer | app | GOVIEW.ELF | ver 1.0.0 | tools/gate/specs/live-image-viewer.spec | shipped |
-| Sound | app | GOSOUND.ELF | ver 1.0.0 | tools/gate/specs/live-sound-playback.spec | shipped |
-| Tabbed Desktop | app | TABWM.BIN | ver 1.0.0 | tools/gate/specs/live-tabwm.spec, ADR 0034 | retained-fallback |
-| Gostalgia | app | GOSTALGIA.ELF | ver 1.0.0 | tools/gate/specs/go-gostalgia.spec | shipped |
-| Store | app | GOSTORE.ELF | ver 1.0.0 | tools/gate/specs/go-gostore.spec | shipped |
-| LLM Infer | app | GOINFER.ELF | appver 1, ver 1.0.0 | tools/gate/specs/go-infer.spec | shipped |
-| Recorder | app | GOREC.ELF | ver 1.0.0 | tools/gate/specs/live-sound-record.spec | shipped |
-| Snapshots | app | GOSNAP.ELF | appver 1, ver 1.0.0 | tools/gate/specs/go-snap.spec | shipped |
-| Assistant | app | GOASSIST.ELF | appver 2, ver 1.0.0 | tools/gate/specs/go-assist.spec | shipped |
-| Sheet | app | GOSHEET.ELF | appver 2, ver 1.0.0 | tools/gate/specs/go-sheet.spec | shipped |
-| Reader | app | GOREADER.ELF | appver 2, ver 1.0.0 | tools/gate/specs/go-reader.spec | shipped |
-| Clock | app | GOCLOCK.ELF | appver 1, ver 1.0.0 | tools/gate/specs/go-clock.spec | shipped |
-| Mines | app | GOMINE.ELF | appver 2, ver 1.0.0 | tools/gate/specs/go-games.spec | shipped |
-| Solitaire | app | GOSOL.ELF | appver 2, ver 1.0.0 | tools/gate/specs/go-games.spec | shipped |
-| Emoji | app | GOEMOJI.ELF | appver 2, ver 1.0.0 | tools/gate/specs/go-emoji.spec | shipped |
-| IRC | app | GOIRC.ELF | appver 3, ver 1.0.0 | tools/gate/specs/go-irc.spec | shipped |
-| Vault | app | GOVAULT.ELF | appver 1, ver 1.0.0 | tools/gate/specs/go-vault.spec | shipped |
-| Mail | app | GOMAIL.ELF | ver 1.0.0 | tools/gate/specs/go-mail.spec | shipped |
-| Accessibility | app | GOA11Y.ELF | ver 1.0.0 | tools/gate/specs/go-a11y.spec | shipped |
-| Paint | app | GOPAINT.ELF | appver 1, ver 1.0.0 | tools/gate/specs/go-paint.spec | shipped |
+| [[apps/gocalc|64-bit Calc]] | app | GOCALC.ELF | appver 1, ver 1.0.0 | tools/gate/specs/go-calc.spec | shipped |
+| [[apps/note|Text Editor]] | app | NOTE.ELF | appver 1, ver 1.0.0 | tools/gate/specs/go-note.spec | shipped |
+| [[apps/goedit|Code Editor]] | app | GOEDIT.ELF | appver 1, ver 1.0.0 | tools/gate/specs/go-edit.spec | shipped |
+| [[apps/gofiles|Files]] | app | GOFILES.ELF | appver 1, ver 1.0.0 | tools/gate/specs/go-fileman.spec | shipped |
+| [[apps/goterm|Terminal]] | app | GOTERM.ELF | appver 2, ver 1.0.0 | tools/gate/specs/go-term.spec | shipped |
+| [[apps/web|Web]] | app | WEB.ELF | appver 1, ver 1.0.0 | tools/gate/specs/live-web.spec | shipped |
+| [[apps/pulse|Pulse]] | app | PULSE.ELF | ver 1.0.0 | tools/gate/specs/go-top.spec | shipped |
+| [[apps/gosh|Shell]] | app | GOSH.ELF | appver 1, ver 1.0.0 | tools/gate/specs/go-sh.spec | shipped |
+| [[apps/gohelp|Help]] | app | GOHELP.ELF | ver 1.0.0 | tools/gate/specs/go-help.spec | shipped |
+| [[apps/gowelcome|Welcome]] | app | GOWELCOME.ELF | appver 1, ver 1.0.0 | tools/gate/specs/go-welcome.spec | shipped |
+| [[apps/gotop|Top]] | app | GOTOP.ELF | appver 1, ver 1.0.0 | tools/gate/specs/go-top.spec | shipped |
+| [[apps/goset|Settings]] | app | GOSET.ELF | ver 1.0.0 | tools/gate/specs/go-settings.spec | shipped |
+| [[apps/goview|Image Viewer]] | app | GOVIEW.ELF | ver 1.0.0 | tools/gate/specs/live-image-viewer.spec | shipped |
+| [[apps/gosound|Sound]] | app | GOSOUND.ELF | ver 1.0.0 | tools/gate/specs/live-sound-playback.spec | shipped |
+| [[apps/tabwm|Tabbed Desktop]] | app | TABWM.BIN | ver 1.0.0 | tools/gate/specs/live-tabwm.spec, ADR 0034 | retained-fallback |
+| [[apps/gostalgia|Gostalgia]] | app | GOSTALGIA.ELF | ver 1.0.0 | tools/gate/specs/go-gostalgia.spec | shipped |
+| [[apps/gostore|Store]] | app | GOSTORE.ELF | ver 1.0.0 | tools/gate/specs/go-gostore.spec | shipped |
+| [[apps/goinfer|LLM Infer]] | app | GOINFER.ELF | appver 1, ver 1.0.0 | tools/gate/specs/go-infer.spec | shipped |
+| [[apps/gorec|Recorder]] | app | GOREC.ELF | ver 1.0.0 | tools/gate/specs/live-sound-record.spec | shipped |
+| [[apps/gosnap|Snapshots]] | app | GOSNAP.ELF | appver 1, ver 1.0.0 | tools/gate/specs/go-snap.spec | shipped |
+| [[apps/goassist|Assistant]] | app | GOASSIST.ELF | appver 2, ver 1.0.0 | tools/gate/specs/go-assist.spec | shipped |
+| [[apps/gosheet|Sheet]] | app | GOSHEET.ELF | appver 2, ver 1.0.0 | tools/gate/specs/go-sheet.spec | shipped |
+| [[apps/goreader|Reader]] | app | GOREADER.ELF | appver 2, ver 1.0.0 | tools/gate/specs/go-reader.spec | shipped |
+| [[apps/goclock|Clock]] | app | GOCLOCK.ELF | appver 1, ver 1.0.0 | tools/gate/specs/go-clock.spec | shipped |
+| [[apps/gomine|Mines]] | app | GOMINE.ELF | appver 2, ver 1.0.0 | tools/gate/specs/go-games.spec | shipped |
+| [[apps/gosol|Solitaire]] | app | GOSOL.ELF | appver 2, ver 1.0.0 | tools/gate/specs/go-games.spec | shipped |
+| [[apps/goemoji|Emoji]] | app | GOEMOJI.ELF | appver 2, ver 1.0.0 | tools/gate/specs/go-emoji.spec | shipped |
+| [[apps/goirc|IRC]] | app | GOIRC.ELF | appver 3, ver 1.0.0 | tools/gate/specs/go-irc.spec | shipped |
+| [[apps/govault|Vault]] | app | GOVAULT.ELF | appver 1, ver 1.0.0 | tools/gate/specs/go-vault.spec | shipped |
+| [[apps/gomail|Mail]] | app | GOMAIL.ELF | ver 1.0.0 | tools/gate/specs/go-mail.spec | shipped |
+| [[apps/goa11y|Accessibility]] | app | GOA11Y.ELF | ver 1.0.0 | tools/gate/specs/go-a11y.spec | shipped |
+| [[apps/gopaint|Paint]] | app | GOPAINT.ELF | appver 1, ver 1.0.0 | tools/gate/specs/go-paint.spec | shipped |
 
 
 ## Seat and staged tools
