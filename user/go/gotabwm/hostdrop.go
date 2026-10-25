@@ -82,10 +82,12 @@ func hostdropApply(rec hostint.Record) string {
 	hostintLog(MarkerHostintDrop + "seq=" + vi.Itoa64(int64(rec.Seq)) +
 		" name=" + name + " size=" + vi.Itoa64(int64(size)))
 	// V2-D4: the toast carries the open-drop action bound to THIS record's
-	// sanitized name — the click can never be retargeted at a file the
-	// record did not announce. The binding lands on the center row too,
-	// so a DND-held notice stays actionable there.
-	_, _, dropped := notifyPushAction(0, text, compositeClock, notifyActionDropOpen, name)
+	// sanitized name AND attested size — the click can never be retargeted
+	// at a file the record did not announce, and (#3388) dispatch refuses
+	// changed when the live INBOX entry no longer matches what the record
+	// attested. The binding lands on the center row too, so a DND-held
+	// notice stays actionable there.
+	_, _, dropped := notifyPushAction(0, text, compositeClock, notifyActionDropOpen, name, size)
 	if dropped {
 		hostintLog(MarkerNotifyDrop + vi.Itoa64(int64(notifyDropped)))
 	}

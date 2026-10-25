@@ -128,9 +128,9 @@ func TestRefusalDispatchRetryGrantCopy(t *testing.T) {
 	}
 	defer func() { hostClipSet = oldClip }()
 
-	runNotifyAction(notifyActionRetry, "MISSING.ELF")
-	runNotifyAction(notifyActionGrant, "")
-	runNotifyAction(notifyActionCopy, "ENOENT exec MISSING.ELF")
+	runNotifyAction(notifyActionRetry, "MISSING.ELF", 0)
+	runNotifyAction(notifyActionGrant, "", 0)
+	runNotifyAction(notifyActionCopy, "ENOENT exec MISSING.ELF", 0)
 	if len(execs) != 2 || execs[0] != "MISSING.ELF" || execs[1] != gosetBin {
 		t.Fatalf("execs = %v want MISSING.ELF then GOSET.ELF", execs)
 	}
@@ -186,7 +186,7 @@ func TestCenterRowClickRunsRefusalAction(t *testing.T) {
 	if len(notifyCenter) != 1 {
 		t.Fatalf("no center row under DND: %+v", notifyCenter)
 	}
-	runNotifyAction(notifyCenter[0].action, notifyCenter[0].snap)
+	runNotifyAction(notifyCenter[0].action, notifyCenter[0].snap, notifyCenter[0].snapSize)
 	if len(execs) != 1 || execs[0] != "MISSING.ELF" {
 		t.Fatalf("execs = %v want the row's retry", execs)
 	}

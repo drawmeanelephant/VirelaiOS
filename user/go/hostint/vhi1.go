@@ -166,6 +166,11 @@ const (
 	// file); quota_exceeded is the per-epoch OUTBOX export cap.
 	RefuseGone  = "gone"
 	RefuseQuota = "quota_exceeded"
+	// #3388: changed names a target that still exists but no longer
+	// matches what the signed record attested — an INBOX file whose live
+	// size is not the size its DROP record carried (substitution between
+	// notice and click).
+	RefuseChanged = "changed"
 )
 
 // tagStem is the filename stem per tag (ARMED-00000001, CLIPIN-00000007,

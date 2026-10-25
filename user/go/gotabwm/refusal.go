@@ -172,7 +172,7 @@ func seatRefusalName(name, ctx, payload string) {
 	}
 push:
 	text := refusalText(name, ctx)
-	notifyPushAction(0, text, compositeClock, action, payload)
+	notifyPushAction(0, text, compositeClock, action, payload, 0)
 	vi.ConsoleLine(MarkerRefusal + name + " " + ctx +
 		" act=" + refusalActionName(action))
 }
@@ -254,8 +254,9 @@ func seatLaneRefusal(lane, reason string) {
 
 // runNotifyAction performs an action toast's side effect — the dispatch
 // the toast's click and its center row's click SHARE, so an error report
-// resolves the same way from either surface.
-func runNotifyAction(action uint8, payload string) {
+// resolves the same way from either surface. size is the binding's
+// attested payload size (#3388 — drop-open only; 0 on every other arm).
+func runNotifyAction(action uint8, payload string, size uint64) {
 	switch action {
 	case notifyActionCrashSnap:
 		crashSnapRestore(payload)
@@ -266,7 +267,7 @@ func runNotifyAction(action uint8, payload string) {
 	case notifyActionCopy:
 		refusalCopy(payload)
 	case notifyActionDropOpen:
-		dropOpen(payload)
+		dropOpen(payload, size)
 	}
 }
 

@@ -281,7 +281,7 @@ func crashSnapOffer() {
 	if !ok {
 		return
 	}
-	notifyPushAction(0, crashSnapToast, compositeClock, notifyActionCrashSnap, name)
+	notifyPushAction(0, crashSnapToast, compositeClock, notifyActionCrashSnap, name, 0)
 	crashLog(MarkerCrashSnapOffer + name)
 }
 

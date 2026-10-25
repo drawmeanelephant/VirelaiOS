@@ -8,6 +8,17 @@
 // argv[1]; a type with no handler falls back to GOFILES on /host/INBOX —
 // the reveal gesture is the file manager open at your drop.
 //
+// #3388: the name binding alone left the PAYLOAD unbound — any EL0 app
+// could rewrite INBOX/<name> between the verified notice and the click,
+// and the toast still attributed the substituted bytes to the host. The
+// binding now also carries the record's attested size, and dispatch
+// compares it against the live INBOX entry (a directory snapshot is the
+// share's file-size surface — there is no per-file stat op) before
+// mime.Open runs: a mismatch is the changed refusal, an absent name or a
+// failed listing is gone. Size is the whole attestation the wire carries;
+// a same-length substitution still dispatches — the residual is named in
+// ADR 0051 V2-D4.
+//
 // Dispatch never execs the payload and never resolves outside INBOX: the
 // name was sanitized at ingest and is re-validated here (name_rejected is
 // the belt for a seat-internal bug — a verified name cannot legitimately
@@ -37,14 +48,36 @@ const gofilesBin = "GOFILES.ELF"
 // tests so the routing is pinned without a share.
 var dropReadFile = vi.ReadFileAll
 
+// dropListDir is the INBOX stat seam for the attested-size check —
+// vi.ListDirAt in the guest, swapped by the host tests. The canonical
+// form "/INBOX" is the share's /host/INBOX.
+var dropListDir = vi.ListDirAt
+
 var errDropUnreadable = errors.New("drop-open: head unreadable")
 
-// dropOpen runs the open-drop action against the announced name. It is
-// the click arm and the center row's arm — one binding, one dispatch.
-func dropOpen(name string) {
+// dropOpen runs the open-drop action against the announced name bound to
+// the record's attested size. It is the click arm and the center row's
+// arm — one binding, one dispatch.
+func dropOpen(name string, size uint64) {
 	if !dropNameOK(name) {
 		hostintLog(hostintMarkerPrefix + " refuse lane=drop reason=" +
 			hostint.RefuseNameRejected)
+		return
+	}
+	// The live-size check (#3388): the record attested name+size, so the
+	// file the click opens must still be the file the notice announced.
+	// A missing INBOX entry — or a listing the channel cannot serve —
+	// is the same gone the head read would report; a surviving entry
+	// whose size drifted is substitution, refused changed.
+	live, ok := dropLiveSize(name)
+	if !ok {
+		hostintLog(hostintMarkerPrefix + " refuse lane=drop reason=" +
+			hostint.RefuseGone)
+		return
+	}
+	if live != size {
+		hostintLog(hostintMarkerPrefix + " refuse lane=drop reason=" +
+			hostint.RefuseChanged)
 		return
 	}
 	path := "/host/INBOX/" + name
@@ -113,4 +146,21 @@ func dropNameOK(name string) bool {
 	}
 	c := name[0]
 	return c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9'
+}
+
+// dropLiveSize is the dispatch-side stat: one INBOX snapshot, the size
+// the entry named `name` reports. ok=false covers both absent and a
+// listing refusal — the caller cannot tell "not there" from "could not
+// look", and both mean the attested file is not there to open.
+func dropLiveSize(name string) (uint64, bool) {
+	items, err := dropListDir("/INBOX")
+	if err != nil {
+		return 0, false
+	}
+	for i := range items {
+		if items[i].Name == name {
+			return items[i].Size, true
+		}
+	}
+	return 0, false
 }

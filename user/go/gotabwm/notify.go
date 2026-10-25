@@ -122,8 +122,9 @@ const (
 // notifyToast is one queued notification. tabID is the SENDER (the window
 // the request carried), and it is what a click focuses — not a slot index.
 // For an action toast snap carries the binding the click resolves against
-// (crashSnap's slot name, drop-open's announced INBOX name); ordinary
-// toasts leave it empty.
+// (crashSnap's slot name, drop-open's announced INBOX name) and snapSize
+// the attested size that binding is checked against (#3388 — drop-open
+// only; 0 on every other action). Ordinary toasts leave both empty.
 type notifyToast struct {
 	tabID    uint32
 	text     string
@@ -132,6 +133,7 @@ type notifyToast struct {
 	centerID uint32
 	action   uint8
 	snap     string
+	snapSize uint64
 }
 
 // notifyQueue is the seat's toast strip: oldest first, so the newest is
@@ -206,20 +208,22 @@ func notifyQueueSet(q []notifyToast) {
 // accepted all the same (ok is true), which is what keeps suppression from
 // ever losing one; the caller tells the two outcomes apart by notifyDND.
 func notifyPush(tabID uint32, text string, ticks uint64) (string, bool, bool) {
-	return notifyPushAction(tabID, text, ticks, notifyActionNone, "")
+	return notifyPushAction(tabID, text, ticks, notifyActionNone, "", 0)
 }
 
 // notifyPushAction is notifyPush's action-carrying variant — identical
 // except the toast and its center row both remember which seat action a
-// click runs and the name it runs against (M125f's crash-snap offer).
-func notifyPushAction(tabID uint32, text string, ticks uint64, action uint8, snap string) (string, bool, bool) {
+// click runs and the binding it runs against (M125f's crash-snap offer).
+// snapSize is drop-open's attested payload size (#3388); every other
+// action passes 0.
+func notifyPushAction(tabID uint32, text string, ticks uint64, action uint8, snap string, snapSize uint64) (string, bool, bool) {
 	if text == "" {
 		return "", false, false
 	}
 	// M165b (#2983): the toast's fade policy is the file's value NOW — a
 	// GOSET save from seconds ago applies to the very next toast.
 	refreshReduceMotion()
-	centerID := notifyCenterPushAction(tabID, text, action, snap)
+	centerID := notifyCenterPushAction(tabID, text, action, snap, snapSize)
 	if notifyDND {
 		return text, true, false
 	}
@@ -237,6 +241,7 @@ func notifyPushAction(tabID uint32, text string, ticks uint64, action uint8, sna
 		centerID: centerID,
 		action:   action,
 		snap:     snap,
+		snapSize: snapSize,
 	})
 	// The toast is queued with the ramp switched off; name it so a gate
 	// can pin "this toast honoured reduce_motion" without probing pixels.
@@ -584,7 +589,7 @@ func notifyClicked(px, py uint32) int {
 	// the kernel says about focusing a window that may have died.
 	vi.ConsoleLine(MarkerNotifyDismiss + vi.Itoa64(int64(id)))
 	if toast.action != notifyActionNone {
-		runNotifyAction(toast.action, toast.snap)
+		runNotifyAction(toast.action, toast.snap, toast.snapSize)
 		// A resolved report leaves both surfaces: the paired history
 		// row retires with the toast.
 		dropCenterRowByID(toast.centerID)

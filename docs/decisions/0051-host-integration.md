@@ -280,6 +280,7 @@ never echoing payload bytes):
 | `no_bundle` | notify banner requested on a bundleless runner (D5) |
 | `auth_denied` | macOS notification authorization was refused |
 | `io_error` | share read/write failure |
+| `changed` | the target a click names survives but no longer matches the record's attestation — an INBOX file whose live size is not the size its DROP record carried (substitution between notice and click, #3388) |
 
 **Never-logged contract** (ADR 0044 D6 verbatim): the key, MACs,
 clipboard text, notify text and dropped file contents never reach
@@ -682,6 +683,19 @@ mutually exclusive in v2.
 Markers: `gotabwm: hostint drop-open name=<name> app=<bin>` on
 dispatch (the M127b leg); refusals ride the shared
 `refuse lane=drop reason=<code>` shape.
+
+**Amendment (#3388): the binding carries the attested size too.** The
+name-only binding left the payload unbound — `INBOX/` is
+uid_user-default, so any EL0 app could rewrite `INBOX/<name>` between
+the verified notice and the click and the toast still attributed the
+substituted bytes to the host. The action now binds name *and* the
+record's attested size; `open-drop` lists INBOX at dispatch and refuses
+`gone` when the entry vanished (or the listing fails) and `changed`
+when the live size does not match. Size is the whole attestation the
+wire carries: a same-length substitution still dispatches — accepted
+residual, since the payload is hostile-by-design either way (sniff →
+registered handler, never exec'd); what the check restores is the
+notice's provenance claim on anything it does refuse.
 
 ### V2-D5. `TagOutbox` — the `/host/OUTBOX/` export lane (M127d)
 
