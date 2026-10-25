@@ -82,7 +82,6 @@ not ride in one.
 | SSH client | tool | GOSSH.ELF | — | tools/gate/specs/live-ssh-endpoint.spec | staged |
 | SSH server | tool | GOSSHD.ELF | — | tools/gate/specs/live-ssh-server.spec | staged |
 | HTTP server | tool | GOHTTPD.ELF | — | tools/gate/specs/live-httpd.spec | staged |
-| Release pipeline | tool | GORELEASE.ELF | ADR 0055 | ADR 0055 | staged |
 | WASM runtime | tool | WASM.BIN | — | docs/wasm-import-contract.md, tools/gate/specs/live-wasm.spec | staged |
 | QuickJS engine (now session-staged, was gate-only) | tool | QJS.BIN | ADR 0039 | ADR 0039, tools/gate/specs/live-quickjs.spec | staged |
 | App-manifest report script (card d / index #3334) | script | SCRIPTS/REPORT.JS | ADR 0039 | tools/gate/specs/live-quickjs.spec | staged |
@@ -121,6 +120,7 @@ sharing one builder and one naming map.
 | Guest go-build driver | tool | GOBUILD.ELF | — | tools/gate/specs/live-gobuild.spec | staged |
 | Guest compiler | tool | GOCMDCOMPILE.ELF | — | tools/gate/specs/live-gobuild.spec | staged |
 | Guest linker | tool | GOCMDLINK.ELF | — | tools/gate/specs/live-gobuild.spec | staged |
+| Release pipeline | tool | GORELEASE.ELF | ADR 0055 | tools/gate/specs/live-release.spec, ADR 0055 | staged |
 | Audio-seam proof | fixture | FART.ELF | — | tools/gate/specs/go-fart.spec | fixture |
 | Term-graphics fixture | fixture | IMGCAT.ELF | — | tools/gate/specs/live-term-graphics.spec | fixture |
 | Panic fixture | fixture | CRASHFIX.ELF | — | tools/gate/specs/live-crash-viewer.spec | fixture |
