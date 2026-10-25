@@ -5391,7 +5391,7 @@ fn cmd_net(m: *Monitor, args: []const []const u8) ExecError {
     m.console.puts("\n");
     // Card N5 (claim 8552): the UDP layer — datagrams received (into a
     // listener's buffer, incl. loopback), sent (device TX + loopback),
-    // loopbacked (the no-device path), and dropped (the sum of the three
+    // loopbacked (the no-device path), and dropped (the sum of the four
     // counted causes). Grep-able and deterministic.
     m.console.puts(" udp=rx=");
     m.console.print_u64(virtio_net.udp.received);

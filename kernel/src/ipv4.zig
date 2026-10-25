@@ -41,6 +41,12 @@ pub var dropped_frag: u64 = 0; // MF set or a nonzero fragment offset
 pub var dropped_checksum: u64 = 0; // header checksum mismatch
 pub var dropped_proto: u64 = 0; // protocol != ICMP
 pub var dropped_other: u64 = 0; // an ICMP echo for an address we do not own / other ICMP
+/// Sev-C (#3401): a broadcast-dst (255.255.255.255) TCP segment —
+/// refused before `sockets.receive` or the bounded client can see it.
+/// Counted, named — and deliberately OUT of the `net` report's `drop=`
+/// sum: that sum is gate-pinned (`drop=0` on the scripted legs) and
+/// LAN broadcast noise is not the scripted traffic's business.
+pub var dropped_bcast: u64 = 0;
 pub var replies_sent: u64 = 0; // echo replies to requests for our static IP
 pub var requests_sent: u64 = 0; // `net ping` echo requests transmitted
 pub var pongs_observed: u64 = 0; // echo replies received (the ping's pong)
@@ -286,10 +292,11 @@ pub fn handle_rx(frame: []const u8, own_mac: *const [6]u8, reply_buf: []u8) ?usi
         // Sev-C (#3401): broadcast-dst TCP is a counted drop — the
         // limited-broadcast admit above exists for the UDP/DHCP path;
         // a LAN peer's broadcast SYN must never reach `sockets.receive`
-        // or the bounded client (the same `dropped_other` not-for-us
-        // counting the dst gate uses).
+        // or the bounded client. Its own named counter: the `drop=` sum
+        // on the `net` report's icmp line is gate-pinned `drop=0`, and
+        // broadcast noise is not the scripted traffic's business.
         if (std.mem.eql(u8, &dst, &udp.bcast_addr)) {
-            dropped_other += 1;
+            dropped_bcast += 1;
             return null;
         }
         // Card N10 (claim 7026): TCP segments are handed to the bounded
@@ -452,6 +459,7 @@ test "ipv4: handle_rx — answer an echo for us, observe a reply, drop the rest"
     dropped_checksum = 0;
     dropped_proto = 0;
     dropped_other = 0;
+    dropped_bcast = 0;
     replies_sent = 0;
     requests_sent = 0;
     pongs_observed = 0;
@@ -582,8 +590,9 @@ test "ipv4: protocol dispatch — UDP (17) is handed to udp, TCP (6) to the tcp 
 
     // Sev-C (#3401): the SAME segment with a broadcast dst is a counted
     // drop at the gate — it never reaches the client or the socket
-    // table (dropped_malformed does not move).
-    dropped_other = 0;
+    // table (dropped_malformed does not move, and the refusal lands in
+    // its own named counter, not the not-for-us sum).
+    dropped_bcast = 0;
     @memcpy(tcpf[30..34], &udp.bcast_addr);
     tcpf[24] = 0;
     tcpf[25] = 0;
@@ -591,9 +600,9 @@ test "ipv4: protocol dispatch — UDP (17) is handed to udp, TCP (6) to the tcp 
     tcpf[24] = @truncate(tc3 >> 8);
     tcpf[25] = @truncate(tc3);
     try std.testing.expect(handle_rx(&tcpf, &test_mac, &reply_buf) == null);
-    try std.testing.expectEqual(@as(u64, 1), dropped_other);
+    try std.testing.expectEqual(@as(u64, 1), dropped_bcast);
     try std.testing.expectEqual(@as(u64, 1), tcp.dropped_malformed);
-    dropped_other = 0;
+    dropped_bcast = 0;
     udp.reset();
 }
 
