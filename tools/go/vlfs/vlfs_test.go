@@ -1208,6 +1208,44 @@ func TestSealedBadSuperblock(t *testing.T) {
 	}
 }
 
+// TestSealedKdfItersBound pins #3405: a stored kdf_iters past the honest
+// ceiling — the audit's 0xFFFFFFFF — is bad_superblock by name at parse,
+// with or without a passphrase; it is never paid as PBKDF2 work. The
+// ceiling itself still parses (structural check only, so no KDF runs).
+func TestSealedKdfItersBound(t *testing.T) {
+	pass := []byte("p")
+	patch := func(img []byte, iters uint32) {
+		for _, slot := range []uint64{0, BlockLen} {
+			binary.LittleEndian.PutUint32(img[slot+sbKdfIters:], iters)
+			b := img[slot:]
+			binary.LittleEndian.PutUint32(b[sbCksum:], fnv1a(b[:sbCksum]))
+		}
+	}
+	found := func(fs []finding, code string) bool {
+		for _, f := range fs {
+			if f.code == code {
+				return true
+			}
+		}
+		return false
+	}
+	for _, iters := range []uint32{MaxKdfIters + 1, 0xFFFFFFFF} {
+		img, _ := sealedImage(t, string(pass))
+		patch(img, iters)
+		if !found(checkImage(img, nil), "bad_superblock") {
+			t.Fatalf("kdf_iters=%d: structural check did not yield bad_superblock", iters)
+		}
+		if !found(checkImage(img, pass), "bad_superblock") {
+			t.Fatalf("kdf_iters=%d: --check did not yield bad_superblock", iters)
+		}
+	}
+	img, _ := sealedImage(t, string(pass))
+	patch(img, MaxKdfIters)
+	if found(checkImage(img, nil), "bad_superblock") {
+		t.Fatal("kdf_iters=MaxKdfIters refused as bad_superblock")
+	}
+}
+
 // TestSealedUnreplayedTxn pins the post-kill shape a sealed volume
 // legitimately carries (M172e): a committed-uncheckpointed transaction.
 // The kernel journals each payload's PLAINTEXT — sealed at the journal

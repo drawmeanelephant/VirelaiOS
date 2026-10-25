@@ -122,9 +122,11 @@ func parseSuperblock(img []byte, slot uint32) (*superblock, error) {
 }
 
 // checkSeal enforces the ADR 0061 v2 structure inside the reserved span:
-// the seal mark, the only kdf_id, a nonzero iteration count, the
-// tag-region fixpoint, and zeroed reserved bytes through +508. A v2
-// superblock without seal_magic is malformed (bad_superblock).
+// the seal mark, the only kdf_id, a nonzero iteration count within the
+// honest ceiling (the count is unauthenticated plaintext — the bound is
+// what keeps unwrapDEK's PBKDF2 bounded, #3405), the tag-region fixpoint,
+// and zeroed reserved bytes through +508. A v2 superblock without
+// seal_magic is malformed (bad_superblock).
 func (s *superblock) checkSeal(b []byte) error {
 	bad := func(format string, args ...any) error {
 		return errCode{"bad_superblock", fmt.Sprintf(format, args...)}
@@ -137,6 +139,9 @@ func (s *superblock) checkSeal(b []byte) error {
 	}
 	if s.kdfIters == 0 {
 		return bad("kdf_iters is zero")
+	}
+	if s.kdfIters > MaxKdfIters {
+		return bad("kdf_iters %d over ceiling %d", s.kdfIters, MaxKdfIters)
 	}
 	if want := tagBlocksFor(s.volumeBlocks); s.tagBlocks != want {
 		return bad("tag_blocks %d != ceil((volume_blocks-2)/%d)=%d",

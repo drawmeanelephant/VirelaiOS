@@ -54,6 +54,12 @@ const (
 	MagicSeal uint32 = 0x53464C53
 	// KdfPbkdf2Sha256 is the only kdf_id: PBKDF2-HMAC-SHA256.
 	KdfPbkdf2Sha256 uint32 = 1
+	// MaxKdfIters bounds the stored PBKDF2 count a reader will run: the
+	// ~1 s seal-time calibration lands near 5–7 M iters on the reference
+	// host, so a stored count an order past that is not a superblock mkfs
+	// wrote — it is bad_superblock, never computed (#3405). The kernel's
+	// max_kdf_iters in vlfs.zig agrees.
+	MaxKdfIters uint32 = 64_000_000
 
 	// Tag region (ADR 0061): the last region of the volume, tag_blocks
 	// plaintext blocks ending at volume_blocks. Each carries
