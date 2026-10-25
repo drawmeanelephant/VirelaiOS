@@ -174,23 +174,28 @@ func closeSecretAsk() {
 // handleSecretAskKey answers the standing prompt. `g` commits the staged
 // line through the seat's authority; `d`/Esc declines. A refused write
 // is named, never silent. Returns true whenever the prompt owns the key.
+// The seat sees the kind-21 WM_KEY mirror, not an app-facing KEY_DOWN:
+// the gesture decodes out of Arg0's raw HID usage (arg1 is always 0 on
+// that wire — the codepoint contract is the focused window's, never the
+// seat's). M196d (#3433): the gate leg was the first class-B exercise of
+// this path — decoding Arg1 'g'/'d' could never fire on the real wire.
 func handleSecretAskKey(e vi.Event) bool {
 	if !secretAskModal.open {
 		return false
 	}
 	name := secretAskModal.image
 	key := secretAskModal.key
-	switch {
-	case e.Arg0 == 0x29: // Escape
+	switch e.Arg0 {
+	case 0x29: // Escape
 		answerSecretAsk(secretAskModal.id, false)
 		secretLog(MarkerSecretDecline + name + " key=" + key)
-	case e.Arg1 == 'g':
+	case 0x0a: // 'g' — grant
 		if rc := answerSecretAsk(secretAskModal.id, true); rc < 0 {
 			secretLog(MarkerSecretRefuse + name + " key=" + key + " " + vi.ErrnoName(rc))
 		} else {
 			secretLog(MarkerSecretGrant + name + " key=" + key)
 		}
-	case e.Arg1 == 'd':
+	case uint32(hidUsageD): // 'd' — deny
 		answerSecretAsk(secretAskModal.id, false)
 		secretLog(MarkerSecretDecline + name + " key=" + key)
 	}

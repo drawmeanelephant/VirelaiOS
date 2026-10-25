@@ -112,6 +112,10 @@ const (
 	markerImportBad  = "govault: import bad file"
 	markerImportErr  = "govault: import refused rc="
 	markerClock      = "govault: clock epoch="
+	markerProvision  = "govault: provision "
+	markerProvGrant  = "govault: provision-grant "
+	markerProvDeny   = "govault: provision-deny "
+	markerProvRef    = "govault: provision refused "
 	markerStateSave  = "govault: state saved"
 	markerStateRest  = "govault: state restored"
 	markerClose      = "govault: close"
@@ -145,6 +149,27 @@ var (
 	// owner-only slot-69 chmod; the daemon owns the file it publishes.
 	fileMode = vi.FileMode
 	notifyFn = func(ta *tabapp.TabApp, text string) bool { return ta.Notify(text) }
+	// M196d (#3433): the slot-96 provisioning seams — stage the ask and
+	// read its verdict. The line binds the caller's own principal (the
+	// shlib.StoreAsk shape): the kernel refuses a uid the caller does not
+	// hold, so the uid is read through slot 68 rather than assumed.
+	storeAsk = func(name, value, apps string) int64 {
+		uid, _, ok := vi.Principal()
+		if !ok {
+			return -vi.ErrEINVAL
+		}
+		line := name + "\t" + vi.Itoa64(int64(uid)) + "\t" + value
+		if apps != "" {
+			line += "\t" + apps
+		}
+		return vi.SecretAsk(line)
+	}
+	storeAskStatus = func(id int64) int64 {
+		if id < 0 || id > 0x7fffffff {
+			return -vi.ErrEINVAL
+		}
+		return vi.SecretAskStatus(uint32(id))
+	}
 )
 
 // marker keys, not the HIDs (the kernel decodes arg1 to the codepoint; arg0
@@ -242,6 +267,9 @@ func main() {
 			// this is the marker closest to the host's verdict time.
 			a.clockMarker()
 		}
+		// M196d: the staged provision asks' verdicts — one status read per
+		// pass, the same pass discipline as the state ask above.
+		a.pollAsks()
 		return vi.PollEventRaw()
 	}, vi.Sleep)
 }

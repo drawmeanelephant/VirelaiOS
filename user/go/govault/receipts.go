@@ -28,6 +28,9 @@ import (
 // every secret out under a second passphrase and an import folds a bundle
 // in; both are exactly what the audit file is for. Import's name field
 // carries the merge counts (added=N skipped=M), never an entry's name.
+// M196d (#3433) adds the provisioning arc: the staged ask and its terminal
+// verdict are both rows, so the audit file shows the consent, not just the
+// request — the name field is the store key the ask staged.
 const (
 	actUnlock      = "unlock"
 	actUnlockFail  = "unlock-failed"
@@ -35,6 +38,9 @@ const (
 	actCopy        = "copy"
 	actExport      = "export"
 	actImport      = "import"
+	actProvision   = "provision"
+	actProvGrant   = "provision-grant"
+	actProvDeny    = "provision-deny"
 	rcptCorruptRow = "corrupt" // serial marker for a row that did not parse
 )
 
