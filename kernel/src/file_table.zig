@@ -4217,8 +4217,11 @@ test "#3387: lane-dir write policy — seat-gated record dirs, intent name rule 
     try std.testing.expect(rename(0, "A", "OUTBOX/NEWNAME.TXT") != -7);
 
     // The seat passes the record tier the same way — admitted past the
-    // policy, whatever the backend answers.
-    _ = wm_server.register(0);
+    // policy, whatever the backend answers. A leaked registration from an
+    // earlier test in the shared binary would make register(0) refuse —
+    // evict it first (file_table.init() does not own wm_server's state).
+    if (wm_server.registered_pid()) |old| _ = wm_server.unregister(old);
+    try std.testing.expect(wm_server.register(0));
     defer _ = wm_server.unregister(0);
     try std.testing.expect(open(0, "HOSTINT/CLIPOUT-00000001", MODE_WRITE | MODE_CREATE) != -7);
     try std.testing.expect(delete(0, "HOSTINT/ARMED-00000001") != -7);
