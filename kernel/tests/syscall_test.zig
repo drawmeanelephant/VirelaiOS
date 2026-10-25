@@ -8094,3 +8094,88 @@ test "syscall: M182b (#3153) — wrapping user-pointer sums are EFAULT" {
     @memcpy(buf[0..7], "suspend");
     try std.testing.expectEqual(error_result(.efault), dispatch(syscall.sys_vsock_ctl, .{ @intFromPtr(&buf), 7, 0, 0, std.math.maxInt(u64) - 4, 8 }, &frame));
 }
+
+var r3f2_console = console.MockConsole(1024){};
+
+test "syscall: #3399 — slot 93 gates the destructive verbs to the operator classes" {
+    userspace.init();
+    init(test_writer);
+    _ = scheduler.init();
+    _ = scheduler.register_worker(0x2000);
+    _ = scheduler.register_user(0x3000, 0); // task 2 = process 0, kernel-spawned
+    scheduler.start();
+    var frame = fresh_frame();
+    try std.testing.expect(scheduler.yield_current()); // shell -> user (2)
+
+    var buf: [4096]u8 = undefined;
+    set_user_regions(
+        .{ .base = @intFromPtr(&buf), .len = buf.len },
+        .{ .base = @intFromPtr(&buf), .len = buf.len },
+    );
+    // The refused session's verdict line rides the tee console.
+    syscall.road_pops.arm(r3f2_console.console(), null);
+    const verb_at = @intFromPtr(&buf);
+    const name_at = @intFromPtr(&buf) + 64;
+    const code_at = @intFromPtr(&buf) + 1024;
+
+    // A kernel-spawned caller (the monitor's exec class — here the boot
+    // payload itself, spawned_by == null) reaches the session: with no
+    // vsock device armed the refusal is the named `no_device` verdict,
+    // never the gate's EACCES.
+    @memcpy(buf[0..7], "suspend");
+    try std.testing.expectEqual(@as(u64, 9), dispatch(syscall.sys_vsock_ctl, .{ verb_at, 7, 0, 0, code_at, 40 }, &frame));
+    try std.testing.expectEqualStrings("no_device", buf[1024..1033]);
+
+    // An EL0-spawned app: the boot payload's own child is the launcher
+    // class, its child ordinary EL0 — NEITHER is an operator class.
+    var kstack1: [scheduler.task_stack_size]u8 align(16) = undefined;
+    var kstack2: [scheduler.task_stack_size]u8 align(16) = undefined;
+    var kstack3: [scheduler.task_stack_size]u8 align(16) = undefined;
+    const app_pid = process.create("APP.BIN", .{ .entry_va = 0x400000, .content_len = 64 }, .{}, .{}).?;
+    const app_task = scheduler.register_exec_user(userspace.text_va, 0x4000_0000, 100, 0x8000_0000, 8192, &kstack1, 0, 0).?;
+    _ = process.bind(app_pid, app_task);
+    try std.testing.expectEqual(@as(?usize, 0), scheduler.spawn_provenance(app_task).parent);
+    scheduler.current[0] = app_task;
+    const grand_pid = process.create("GRAND.BIN", .{ .entry_va = 0x400000, .content_len = 64 }, .{}, .{}).?;
+    const grand_task = scheduler.register_exec_user(userspace.text_va, 0x4000_0000, 100, 0x8000_0000, 8192, &kstack2, 0, 0).?;
+    _ = process.bind(grand_pid, grand_task);
+    const adm_pid = process.create_as("ADM.BIN", .{ .entry_va = 0x400000, .content_len = 64 }, .{}, .{}, .{ .caps = process.cap_proc_admin }).?;
+    const adm_task = scheduler.register_exec_user(userspace.text_va, 0x4000_0000, 100, 0x8000_0000, 8192, &kstack3, 0, 0).?;
+    _ = process.bind(adm_pid, adm_task);
+
+    // The launcher child and the ordinary EL0 grandchild are refused all
+    // three destructive verbs by name — a machine halt, a .vzsave write
+    // and a staged restore are not EL0 powers.
+    @memcpy(buf[64..67], "NAM");
+    for ([_]usize{ app_task, grand_task }) |task| {
+        scheduler.current[0] = task;
+        @memcpy(buf[0..7], "suspend");
+        try std.testing.expectEqual(error_result(.eacces), dispatch(syscall.sys_vsock_ctl, .{ verb_at, 7, 0, 0, code_at, 40 }, &frame));
+        @memcpy(buf[0..8], "snapshot");
+        try std.testing.expectEqual(error_result(.eacces), dispatch(syscall.sys_vsock_ctl, .{ verb_at, 8, name_at, 3, code_at, 40 }, &frame));
+        @memcpy(buf[0..7], "restore");
+        try std.testing.expectEqual(error_result(.eacces), dispatch(syscall.sys_vsock_ctl, .{ verb_at, 7, name_at, 3, code_at, 40 }, &frame));
+        // The refusal precedes the name's copy-in — a refused caller's
+        // other pointers stay untouched (EACCES, not EFAULT).
+        try std.testing.expectEqual(error_result(.eacces), dispatch(syscall.sys_vsock_ctl, .{ verb_at, 7, uaccess.diagnostic_unmapped, 3, code_at, 40 }, &frame));
+        // The benign verb is untouched by the gate — the session's own
+        // refusal names why it cannot run, not EACCES.
+        @memcpy(buf[0..12], "profile-info");
+        try std.testing.expectEqual(@as(u64, 9), dispatch(syscall.sys_vsock_ctl, .{ verb_at, 12, 0, 0, code_at, 40 }, &frame));
+    }
+
+    // The gate's authorized classes cross on the same destructive verb.
+    scheduler.current[0] = adm_task; // CAP_PROC_ADMIN — the exec -u0 class
+    @memcpy(buf[0..7], "suspend");
+    try std.testing.expectEqual(@as(u64, 9), dispatch(syscall.sys_vsock_ctl, .{ verb_at, 7, 0, 0, code_at, 40 }, &frame));
+
+    // The registered seat — the user's gesture mediator — crosses too.
+    wm_server.init();
+    try std.testing.expect(wm_server.register(app_pid));
+    scheduler.current[0] = app_task;
+    try std.testing.expectEqual(@as(u64, 9), dispatch(syscall.sys_vsock_ctl, .{ verb_at, 7, 0, 0, code_at, 40 }, &frame));
+    try std.testing.expect(wm_server.unregister(app_pid));
+    // Seat dropped: the same caller is an ordinary EL0 app again.
+    try std.testing.expectEqual(error_result(.eacces), dispatch(syscall.sys_vsock_ctl, .{ verb_at, 7, 0, 0, code_at, 40 }, &frame));
+    scheduler.current[0] = 0;
+}

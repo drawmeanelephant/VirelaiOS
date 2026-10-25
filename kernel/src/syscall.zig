@@ -3808,6 +3808,30 @@ fn handle_audio_rec(args: Args, _: *exceptions.VectorFrame) u64 {
 // M115d (issue #2463, ADR 0056 D5 + ADR 0007 amendment): sys_vsock_ctl — slot 93
 // ---------------------------------------------------------------------------
 
+/// R3-F2 (#3399, audit #3373): the wire's DESTRUCTIVE verbs — the ones
+/// that halt the machine (`suspend`), park a full `.vzsave` per call on
+/// the armed share (`snapshot`), or stage guest-controlled bytes over
+/// the profile's `saved-state` for VZ's restore parser (`restore`).
+/// `profile-info` and the refusal vocabulary stay unprivileged.
+fn vsock_ctl_destructive(verb: []const u8) bool {
+    return std.mem.eql(u8, verb, "suspend") or
+        std.mem.eql(u8, verb, "snapshot") or
+        std.mem.eql(u8, verb, "restore");
+}
+
+/// R3-F2 (#3399): a destructive verb admits the operator classes only —
+/// `grant_admin_authorized` (the slot-96 model: `CAP_PROC_ADMIN` or the
+/// registered WM seat) or a kernel-spawned principal (the monitor's
+/// `exec` and boot autostart — the console that already runs
+/// `vsock ctl` verbatim). Any process an EL0 app can spawn is refused:
+/// `spawned_by` is non-null for every EL0 `sys_exec` child and an EL0
+/// caller cannot forge the kernel-task provenance.
+fn vsock_ctl_authorized(pid: usize, task_id: usize) bool {
+    if (grant_admin_authorized(pid)) return true;
+    const prov = scheduler.spawn_provenance(task_id);
+    return prov.valid and prov.parent == null;
+}
+
 /// `sys_vsock_ctl(verb_ptr, verb_len, name_ptr, name_len, code_ptr,
 /// code_cap)`: run ONE `virelai-ctl/1` session on the caller's behalf over
 /// the virtio-vsock transport — connect to the host's `--vsock-ctl-port`
@@ -3833,6 +3857,10 @@ fn handle_audio_rec(args: Args, _: *exceptions.VectorFrame) u64 {
 /// `unknown_verb`, `busy`, `io_error`, ...) — truncated to `code_cap`
 /// when the buffer is short. `EINVAL` for a non-process caller or a
 /// `verb_len`/`name_len` outside 1..31/0..31; `EFAULT` for a bad pointer.
+/// R3-F2 (#3399, audit #3373): `EACCES` when the verb is one of the
+/// destructive three — `suspend`/`snapshot`/`restore` — and the caller
+/// is not an operator class (`vsock_ctl_authorized`); `profile-info`
+/// and every refusal-code path stay unprivileged.
 fn handle_vsock_ctl(args: Args, _: *exceptions.VectorFrame) u64 {
     const verb_ptr = args[0];
     const verb_len = args[1];
@@ -3840,10 +3868,16 @@ fn handle_vsock_ctl(args: Args, _: *exceptions.VectorFrame) u64 {
     const name_len = args[3];
     const code_ptr = args[4];
     const code_cap = args[5];
-    _ = process.find_by_task(scheduler.current_id()) orelse return error_result(.einval);
+    const pid = process.find_by_task(scheduler.current_id()) orelse return error_result(.einval);
     if (verb_len == 0 or verb_len > 31 or name_len > 31) return error_result(.einval);
     var verb_buf: [32]u8 = undefined;
     if (uaccess.copy_in(&verb_buf, verb_ptr, @intCast(verb_len)) != .ok) return error_result(.efault);
+    // The gate follows the verb's copy-in (the check reads its text) and
+    // precedes the name's — a refused caller's other pointers stay
+    // untouched (the refusal-first discipline).
+    const verb = verb_buf[0..@intCast(verb_len)];
+    if (vsock_ctl_destructive(verb) and !vsock_ctl_authorized(pid, scheduler.current_id()))
+        return error_result(.eacces);
     var name_buf: [32]u8 = undefined;
     if (name_len > 0 and uaccess.copy_in(&name_buf, name_ptr, @intCast(name_len)) != .ok) return error_result(.efault);
     const verdict = vsock_ctl.session(road_pops.tee_console(), verb_buf[0..@intCast(verb_len)], name_buf[0..@intCast(name_len)], .normal);
