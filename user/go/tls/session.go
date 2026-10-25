@@ -111,7 +111,15 @@ func (s *session) readRecord() (int, byte, error) {
 	}
 	ct := hdr[0]
 	l := int(hdr[3])<<8 | int(hdr[4])
-	if l > maxCiphertext {
+	// The admit bound is the epoch's: TLSPlaintext.length cannot exceed
+	// 2^14 (RFC 8446 §5.2); only TLSCiphertext may reach 2^14+256. The
+	// wider bound before keys are installed would admit a record that
+	// slices past plainBuf.
+	limit := maxCiphertext
+	if !s.readEncrypted {
+		limit = maxPlaintext
+	}
+	if l > limit {
 		return 0, 0, errRecordTooLarge
 	}
 	rec := make([]byte, recordHeaderLen+l)
@@ -146,6 +154,12 @@ func (s *session) readRecord() (int, byte, error) {
 	pt, err := s.openRecord(rec, &innerType)
 	if err != nil {
 		return 0, 0, ErrRecordDecryptFailed // AEAD failure: fail closed
+	}
+	// The ciphertext admit bound exceeds the plaintext one: an AEAD
+	// record may legally carry 2^14+256 bytes while its inner plaintext
+	// must stay ≤2^14 (RFC 8446 §5.2). Enforce it before plainBuf.
+	if len(pt) > maxPlaintext {
+		return 0, 0, errRecordTooLarge
 	}
 	s.readSeq++
 	copy(s.plainBuf[:len(pt)], pt)
