@@ -9,7 +9,11 @@
 # refusal names that are not landings, the seat's signed-notice consume
 # (toast `host drop: <name>` on the kind-12 strip), and the M81b dispatch
 # unchanged (GOSH `open` routes the landed file to GOVIEW). Two planted
-# records prove the MAC/epoch refusals live on the DROP tag.
+# records prove the MAC/epoch refusals live on the DROP tag. A
+# marker-timed --host-write then rewrites INBOX/DUP-2.QOI between its
+# notice and the click: the #3388 attested-size binding refuses the
+# open-drop `changed` instead of dispatching substituted bytes as a host
+# drop; the untouched seq=3 toast still dispatches on the next press.
 #
 # Run 02 is the flags-off posture: same credentialed share shape, no
 # --host-drop -- no INBOX/, no HOSTINT/, no lane marker either end.
@@ -130,10 +134,15 @@ PY
 # one record per tick, and the open burst rides the seq=1 consume -- the
 # file is in INBOX the moment the runner's `host-drop: file` printed, so
 # the open is never racing delivery. The 10 s tail covers the remaining
-# seat consumes. M127b (V2-D4): after the last DROP consumes, a pointer
-# press on the newest toast (bottom of the strip, always 692<=y<712) runs
-# its open-drop action -- mime.Open sniffs /host/INBOX/DUP-2.QOI and the
-# registry execs GOVIEW on it.
+# seat consumes. M127b (V2-D4) + #3388: after seq=3's consume, a
+# macOS-side --host-write substitutes INBOX/DUP-2.QOI (same name, new
+# bytes+size) before seq=4's toast arrives. The pointer train then rides
+# the notify CENTER -- rows persist past toast expiry, so the whole
+# sequence is expiry-immune: the clock chrome opens it, a press on the
+# newest row (index 3, DUP-2.QOI) runs the substituted binding and earns
+# the changed refusal, and the next press on index 2 (the untouched
+# DUP.QOI) dispatches through the opens= table -- image magic names
+# GOVIEW, argv the path.
 vgate_run 01 -- \
     --screen '$RUN_DIR/screen' \
     --script '$RUN_DIR/script-seat.txt' \
@@ -145,10 +154,12 @@ vgate_run 01 -- \
     --host-drop-file '$RUN_DIR/drop-src/big.bin' \
     --host-drop-file '$RUN_DIR/drop-src/somedir' \
     --host-drop-after 'gotabwm: hostint armed' \
+    --host-write 'INBOX/DUP-2.QOI' --host-write-content 'substituted-payload' \
+    --host-write-after 'gotabwm: hostint drop seq=3 name=DUP.QOI' \
     --script2 '$RUN_DIR/script-open.txt' --script2-after 'gotabwm: hostint drop seq=1 name=PHOTO.QOI' \
-    --pointer-virtio '112,702,c' \
+    --pointer-virtio '1250,702,c;640,329,c;640,295,c' \
     --pointer-virtio-after 'gotabwm: hostint drop seq=4 name=DUP-2.QOI' \
-    --script-expect 'gview: open id=' --script-expect-tail 10 --timeout 300
+    --script-expect 'gotabwm: notify center drop-open DUP.QOI' --script-expect-tail 10 --timeout 300
 
 vgate_assert 01 serial-contains 'VirelaiOS kernel has seized control.'
 vgate_assert 01 serial-contains 'exec: loaded GOTABWM.ELF'
@@ -180,9 +191,16 @@ vgate_assert 01 serial-contains 'gotabwm: notify id=0 host drop: PHOTO.QOI'
 # MIME dispatch unchanged: the landed file routes to the image handler.
 vgate_assert 01 serial-contains 'gosh: open launched scheme=file target=/host/INBOX/PHOTO.QOI handler=GOVIEW.ELF'
 vgate_assert 01 serial-contains 'gview: open id='
-# M127b (V2-D4): the press on the newest toast dispatched DUP-2.QOI
-# through the opens= table -- image magic named GOVIEW, argv the path.
-vgate_assert 01 serial-contains 'gotabwm: hostint drop-open name=DUP-2.QOI app=GOVIEW.ELF'
+# M127b (V2-D4) + #3388: the INBOX/DUP-2.QOI substitution landed before
+# the click, so its center row's press earned the changed refusal -- no
+# drop-open for it -- and the untouched DUP.QOI row dispatched through
+# the opens= table (image magic named GOVIEW, argv the path).
+vgate_assert 01 output-contains 'HOST-WRITE: wrote INBOX/DUP-2.QOI'
+vgate_assert 01 serial-contains 'gotabwm: notify center open'
+vgate_assert 01 serial-contains 'gotabwm: hostint refuse lane=drop reason=changed'
+vgate_assert 01 serial-absent 'gotabwm: hostint drop-open name=DUP-2.QOI'
+vgate_assert 01 serial-contains 'gotabwm: notify center drop-open DUP.QOI'
+vgate_assert 01 serial-contains 'gotabwm: hostint drop-open name=DUP.QOI app=GOVIEW.ELF'
 vgate_assert 01 serial-absent '[EXC] parking:'
 # The credential never reaches serial or runner stdout.
 vgate_assert 01 serial-absent 'dropkey0dropkey0'
@@ -196,13 +214,17 @@ if key in out:
 share = os.environ.get("VG_SHARE") or os.path.join(run, "share")
 want = os.path.getsize("tests/fixtures/qoi/viewer_160x120.qoi")
 # INBOX holds the four landings and NOTHING else: no refusal leaked a
-# file, no publish temp survived.
+# file, no publish temp survived. DUP-2.QOI is the #3388 substitution
+# target -- its live bytes are the --host-write body, not the dropped
+# QOI; the other three still carry the landed size.
 inbox = sorted(os.listdir(os.path.join(share, "INBOX")))
 if inbox != ["DUP-2.QOI", "DUP.QOI", "PHOTO.QOI", "odd_name_.qoi"]:
     sys.exit("FAIL: INBOX = %r" % inbox)
 for n in inbox:
-    if os.path.getsize(os.path.join(share, "INBOX", n)) != want:
-        sys.exit("FAIL: INBOX/%s size != %d" % (n, want))
+    got = os.path.getsize(os.path.join(share, "INBOX", n))
+    exp = len("substituted-payload\n") if n == "DUP-2.QOI" else want
+    if got != exp:
+        sys.exit("FAIL: INBOX/%s size = %d != %d" % (n, got, exp))
 left = [n for n in os.listdir(os.path.join(share, "HOSTINT"))
         if not n.endswith("~")]
 if left:

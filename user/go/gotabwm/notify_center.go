@@ -58,8 +58,10 @@ type centerNotification struct {
 	// snap is the action's payload: the crash-save slot name on M125f's
 	// recovery offer, M123a's binary name or error text. Its row's
 	// click is the action, not a sender focus. Empty on every ordinary
-	// notice.
-	snap string
+	// notice. snapSize is drop-open's attested payload size (#3388); 0
+	// on every other action.
+	snap     string
+	snapSize uint64
 }
 
 var (
@@ -71,13 +73,13 @@ var (
 )
 
 func notifyCenterPush(tabID uint32, text string) uint32 {
-	return notifyCenterPushAction(tabID, text, notifyActionNone, "")
+	return notifyCenterPushAction(tabID, text, notifyActionNone, "", 0)
 }
 
 // notifyCenterPushAction carries the toast's action kind and payload
 // onto the history row so an actionable notice survives its own toast's
 // expiry: the row is the action after the toast fades.
-func notifyCenterPushAction(tabID uint32, text string, action uint8, snap string) uint32 {
+func notifyCenterPushAction(tabID uint32, text string, action uint8, snap string, snapSize uint64) uint32 {
 	source := "App " + vi.Itoa64(int64(tabID))
 	if action != notifyActionNone {
 		// An action toast is the seat's own, not a sender's — a
@@ -96,7 +98,7 @@ func notifyCenterPushAction(tabID uint32, text string, action uint8, snap string
 	}
 	notifyCenter = append(notifyCenter, centerNotification{
 		tabID: tabID, id: notifyCenterNextID, source: source, text: text,
-		action: action, snap: snap,
+		action: action, snap: snap, snapSize: snapSize,
 	})
 	notifyHistoryChanged()
 	return notifyCenterNextID
@@ -314,7 +316,7 @@ func notifyCenterClick(px, py uint32) bool {
 				// depend on which surface carried the report. A resolved
 				// report leaves both surfaces: the row like a dismissed
 				// one, its toast like an expired one.
-				runNotifyAction(entry.action, entry.snap)
+				runNotifyAction(entry.action, entry.snap, entry.snapSize)
 				dismissNotifyCenter(index)
 				dropCenterRowToast(entry.id)
 				vi.ConsoleLine(MarkerNotifyCenterAction + refusalActionName(entry.action) + " " + entry.snap)

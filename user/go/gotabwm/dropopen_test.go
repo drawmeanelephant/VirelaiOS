@@ -8,13 +8,15 @@ import (
 	"virelai/vi"
 )
 
-// dropOpenFixture stubs the dispatch's two seams — the head read (the
-// share bytes mime.Open sniffs) and the exec arm — so the whole
-// name -> mime -> binary routing is pinned on the host. The returned
-// pointer's slice grows with each exec the dispatch runs.
+// dropOpenFixture stubs the dispatch's three seams — the head read (the
+// share bytes mime.Open sniffs), the INBOX listing the attested-size
+// check stats through (one entry per head, size = the stub's full
+// length), and the exec arm — so the whole name -> size -> mime ->
+// binary routing is pinned on the host. The returned pointer's slice
+// grows with each exec the dispatch runs.
 func dropOpenFixture(t *testing.T, heads map[string][]byte) *[][2]string {
 	t.Helper()
-	oldRead, oldExec := dropReadFile, execApp
+	oldRead, oldExec, oldList := dropReadFile, execApp, dropListDir
 	got := new([][2]string)
 	dropReadFile = func(path string, max int) ([]byte, int64) {
 		b, ok := heads[path]
@@ -26,6 +28,19 @@ func dropOpenFixture(t *testing.T, heads map[string][]byte) *[][2]string {
 		}
 		return b, int64(len(b))
 	}
+	dropListDir = func(dir string) ([]vi.DirItem, error) {
+		if dir != "/INBOX" {
+			return nil, errDropUnreadable
+		}
+		items := make([]vi.DirItem, 0, len(heads))
+		for p, b := range heads {
+			items = append(items, vi.DirItem{
+				Name: p[len("/host/INBOX/"):],
+				Size: uint64(len(b)),
+			})
+		}
+		return items, nil
+	}
 	execApp = func(bin string, args ...string) (int64, error) {
 		arg := ""
 		if len(args) > 0 {
@@ -34,7 +49,7 @@ func dropOpenFixture(t *testing.T, heads map[string][]byte) *[][2]string {
 		*got = append(*got, [2]string{bin, arg})
 		return 42, nil
 	}
-	t.Cleanup(func() { dropReadFile, execApp = oldRead, oldExec })
+	t.Cleanup(func() { dropReadFile, execApp, dropListDir = oldRead, oldExec, oldList })
 	return got
 }
 
@@ -59,18 +74,17 @@ func TestDropNameOK(t *testing.T) {
 
 func TestDropOpenRoutesBySniff(t *testing.T) {
 	f := newHostintFixture(t, strings.Repeat("b7", 32))
-	execs := dropOpenFixture(t, map[string][]byte{
+	heads := map[string][]byte{
 		"/host/INBOX/PHOTO.QOI": []byte("qoif" + strings.Repeat("x", 12)),
 		"/host/INBOX/NOTES.TXT": []byte("plain hello\n"),
 		"/host/INBOX/SONG.WAV":  []byte("RIFF\x04\x00\x00\x00WAVEfmt "),
 		"/host/INBOX/PIC.PNG":   []byte("\x89PNG\r\n\x1a\n" + strings.Repeat("x", 8)),
 		"/host/INBOX/DOC.MD":    []byte("# title\n\ntext"),
-	})
-	dropOpen("PHOTO.QOI")
-	dropOpen("NOTES.TXT")
-	dropOpen("SONG.WAV")
-	dropOpen("PIC.PNG")
-	dropOpen("DOC.MD")
+	}
+	execs := dropOpenFixture(t, heads)
+	for _, name := range []string{"PHOTO.QOI", "NOTES.TXT", "SONG.WAV", "PIC.PNG", "DOC.MD"} {
+		dropOpen(name, uint64(len(heads["/host/INBOX/"+name])))
+	}
 	want := [][2]string{
 		{"GOVIEW.ELF", "/host/INBOX/PHOTO.QOI"},
 		{"GOEDIT.ELF", "/host/INBOX/NOTES.TXT"},
@@ -94,14 +108,15 @@ func TestDropOpenRoutesBySniff(t *testing.T) {
 
 func TestDropOpenNoHandlerFallsBackToGofiles(t *testing.T) {
 	f := newHostintFixture(t, strings.Repeat("b7", 32))
-	execs := dropOpenFixture(t, map[string][]byte{
+	heads := map[string][]byte{
 		// An ELF payload: the binary type has no registered handler.
 		"/host/INBOX/TOOL.ELF": []byte("\x7fELF" + strings.Repeat("x", 11)),
 		// A zip: the archive type registers nothing either.
 		"/host/INBOX/PACK.ZIP": []byte("PK\x03\x04" + strings.Repeat("x", 12)),
-	})
-	dropOpen("TOOL.ELF")
-	dropOpen("PACK.ZIP")
+	}
+	execs := dropOpenFixture(t, heads)
+	dropOpen("TOOL.ELF", uint64(len(heads["/host/INBOX/TOOL.ELF"])))
+	dropOpen("PACK.ZIP", uint64(len(heads["/host/INBOX/PACK.ZIP"])))
 	want := [][2]string{
 		{"GOFILES.ELF", "/host/INBOX"},
 		{"GOFILES.ELF", "/host/INBOX"},
@@ -120,7 +135,7 @@ func TestDropOpenGoneWhenUnreadable(t *testing.T) {
 	// The heads map is empty: every read is ENOENT — the file the record
 	// announced vanished between drop and click.
 	execs := dropOpenFixture(t, map[string][]byte{})
-	dropOpen("VANISHED.QOI")
+	dropOpen("VANISHED.QOI", 4100)
 	if len(*execs) != 0 {
 		t.Fatalf("exec ran on a vanished file: %v", *execs)
 	}
@@ -135,7 +150,7 @@ func TestDropOpenNameRejected(t *testing.T) {
 		"/host/INBOX/A.QOI": []byte("qoif" + strings.Repeat("x", 12)),
 	})
 	for _, name := range []string{"../A.QOI", "A/B.QOI", ".hidden", "A B.QOI"} {
-		dropOpen(name)
+		dropOpen(name, 16)
 	}
 	if len(*execs) != 0 {
 		t.Fatalf("a bad name dispatched: %v", *execs)
@@ -165,17 +180,18 @@ func TestDropToastClickOpens(t *testing.T) {
 		"/host/INBOX/PHOTO.QOI": []byte("qoif" + strings.Repeat("x", 12)),
 	})
 
-	f.plantDrop(0xBEEF, 1, "PHOTO.QOI", 4100)
+	f.plantDrop(0xBEEF, 1, "PHOTO.QOI", 16)
 	hostintSeatTick()
 	if len(notifyQueue) != 1 {
 		t.Fatalf("queue = %+v", notifyQueue)
 	}
 	toast := notifyQueue[0]
-	if toast.action != notifyActionDropOpen || toast.snap != "PHOTO.QOI" {
-		t.Fatalf("drop toast = %+v want open-drop bound to PHOTO.QOI", toast)
+	if toast.action != notifyActionDropOpen || toast.snap != "PHOTO.QOI" ||
+		toast.snapSize != 16 {
+		t.Fatalf("drop toast = %+v want open-drop bound to PHOTO.QOI@16", toast)
 	}
 	if len(notifyCenter) != 1 || notifyCenter[0].action != notifyActionDropOpen ||
-		notifyCenter[0].snap != "PHOTO.QOI" {
+		notifyCenter[0].snap != "PHOTO.QOI" || notifyCenter[0].snapSize != 16 {
 		t.Fatalf("center row = %+v want the same binding", notifyCenter[0])
 	}
 
@@ -207,7 +223,7 @@ func TestDropCenterRowOpensHeldNotice(t *testing.T) {
 	})
 
 	notifyDND = true
-	f.plantDrop(0xBEEF, 1, "PHOTO.QOI", 4100)
+	f.plantDrop(0xBEEF, 1, "PHOTO.QOI", 16)
 	hostintSeatTick()
 	if notifyCount() != 0 {
 		t.Fatalf("DND leaked a toast: %d", notifyCount())
@@ -234,20 +250,92 @@ func TestDropCenterRowOpensHeldNotice(t *testing.T) {
 	}
 }
 
+// #3388: the name binding alone left the payload unbound — a file
+// rewritten in INBOX between the verified notice and the click kept the
+// host's `host drop:` attribution. The toast binds the record's attested
+// size too; a live entry that no longer matches refuses `changed` and
+// never reaches mime.Open.
+func TestDropToastClickRefusesSubstituted(t *testing.T) {
+	resetNotify(t)
+	resetRefusal(t)
+	f := newHostintFixture(t, strings.Repeat("b7", 32))
+	hostintSeatInit()
+	f.plantArmed(0xBEEF, hostint.LaneDrop)
+	hostintSeatTick()
+	execs := dropOpenFixture(t, map[string][]byte{
+		// The substituted payload: the notice attested 4100 bytes, the
+		// live INBOX entry is 16 — same name, different file.
+		"/host/INBOX/PHOTO.QOI": []byte("qoif" + strings.Repeat("x", 12)),
+	})
+
+	f.plantDrop(0xBEEF, 1, "PHOTO.QOI", 4100)
+	hostintSeatTick()
+	if len(notifyQueue) != 1 || notifyQueue[0].snapSize != 4100 {
+		t.Fatalf("drop toast = %+v want binding to attested size 4100", notifyQueue)
+	}
+
+	notifyClicked(112, 702)
+	if len(*execs) != 0 {
+		t.Fatalf("substituted payload dispatched: %v", *execs)
+	}
+	if !f.hasLog("refuse lane=drop reason=" + hostint.RefuseChanged) {
+		t.Fatalf("missing changed refusal: %v", f.logs)
+	}
+	if f.hasLog(MarkerDropOpen) {
+		t.Fatalf("a refused substitution claimed a dispatch: %v", f.logs)
+	}
+	if notifyCount() != 0 || len(notifyCenter) != 0 {
+		t.Fatalf("a resolved report left surfaces: %d %d",
+			notifyCount(), len(notifyCenter))
+	}
+}
+
+// The same substitution through the center row's arm — one binding, one
+// check, whichever surface carries the click.
+func TestDropCenterRowRefusesSubstituted(t *testing.T) {
+	resetNotify(t)
+	resetRefusal(t)
+	f := newHostintFixture(t, strings.Repeat("b7", 32))
+	hostintSeatInit()
+	f.plantArmed(0xBEEF, hostint.LaneDrop)
+	hostintSeatTick()
+	execs := dropOpenFixture(t, map[string][]byte{
+		"/host/INBOX/PHOTO.QOI": []byte("qoif" + strings.Repeat("x", 12)),
+	})
+
+	notifyDND = true
+	f.plantDrop(0xBEEF, 1, "PHOTO.QOI", 4100)
+	hostintSeatTick()
+
+	notifyCenterOpen = true
+	if !notifyCenterClick(400, 220) {
+		t.Fatal("center click not consumed")
+	}
+	if len(*execs) != 0 {
+		t.Fatalf("substituted payload dispatched: %v", *execs)
+	}
+	if !f.hasLog("refuse lane=drop reason=" + hostint.RefuseChanged) {
+		t.Fatalf("missing changed refusal: %v", f.logs)
+	}
+}
+
 // An exec refusal keeps its serial marker and earns the M123a errno
 // toast — the dispatch reported what the kernel answered.
 func TestDropOpenExecRefusedToasts(t *testing.T) {
 	resetNotify(t)
 	resetRefusal(t)
 	f := newHostintFixture(t, strings.Repeat("b7", 32))
-	oldRead, oldExec := dropReadFile, execApp
+	oldRead, oldExec, oldList := dropReadFile, execApp, dropListDir
 	dropReadFile = func(string, int) ([]byte, int64) {
 		return []byte("qoif" + strings.Repeat("x", 12)), 16
 	}
+	dropListDir = func(string) ([]vi.DirItem, error) {
+		return []vi.DirItem{{Name: "PHOTO.QOI", Size: 16}}, nil
+	}
 	execApp = func(string, ...string) (int64, error) { return 0, errnoForTest }
-	t.Cleanup(func() { dropReadFile, execApp = oldRead, oldExec })
+	t.Cleanup(func() { dropReadFile, execApp, dropListDir = oldRead, oldExec, oldList })
 
-	dropOpen("PHOTO.QOI")
+	dropOpen("PHOTO.QOI", 16)
 	if f.hasLog(MarkerDropOpen) {
 		t.Fatalf("a refused exec claimed a dispatch: %v", f.logs)
 	}
