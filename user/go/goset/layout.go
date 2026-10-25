@@ -137,13 +137,20 @@ func (a *panel) labels() []string {
 	return out
 }
 
-// accessLabels renders the M165b access tab's three rows. The text-scale
-// row names its consumer: WEB scales its base text by it (M177a #3142).
+// accessLabels renders the M165b access tab's three rows, each naming the
+// consumer that honours it live (M177a #3142, M197c #3402): the seat's own
+// chrome and every ApplySettings app take contrast, GOVIEW parks
+// app-started playback on reduce_motion, and WEB scales its base text.
 func (a *panel) accessLabels() []string {
 	out := make([]string, 0, len(a.accessRows))
 	for _, s := range a.accessRows {
 		line := s.Key + " = " + s.Val
-		if s.Key == settings.A11yTextScaleKey {
+		switch s.Key {
+		case settings.A11yContrastKey:
+			line += "  (honoured by seat chrome + apps)"
+		case settings.A11yReduceMotionKey:
+			line += "  (honoured by GOVIEW + seat toasts)"
+		case settings.A11yTextScaleKey:
 			line += "  (honoured by WEB)"
 		}
 		out = append(out, line)

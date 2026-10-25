@@ -455,3 +455,59 @@ func TestSettingsApplyKeys(t *testing.T) {
 		t.Fatal("a foreign key reported a repaint")
 	}
 }
+
+// TestSettingsApplyReduceMotionLive is the M197c (#3402) leg's host half:
+// the broadcast lands on a RUNNING viewer, so `on` parks a playing
+// animation in place and only then prints the receipt; a parked
+// animation prints it too (the gate is armed for the next -play); `off`
+// disarms the gate without a receipt and restarts nothing.
+func TestSettingsApplyReduceMotionLive(t *testing.T) {
+	var lines []string
+	oldReceipt := motionReceipt
+	motionReceipt = func(s string) { lines = append(lines, s) }
+	defer func() { motionReceipt = oldReceipt }()
+	oldArm, oldCancel := playArm, playCancel
+	playArm = func(ns uint64) int64 { return 0 }
+	playCancel = func() int64 { return 0 }
+	defer func() { playArm, playCancel = oldArm, oldCancel }()
+
+	mkAnim := func() *frameSrc {
+		return gifSource(&webrender.GIFAnimation{Width: 2, Height: 2, Frames: []webrender.GIFFrame{
+			{Pix: make([]uint32, 4), Delay: 5},
+			{Pix: make([]uint32, 4), Delay: 5},
+		}})
+	}
+
+	// Playing when the notice lands: motion stops first, receipt second.
+	a := &app{anim: mkAnim()}
+	if !a.togglePlay() || !a.playing {
+		t.Fatal("setup: animation did not start playing")
+	}
+	if a.settingsApply("a11y.reduce_motion", "on") || a.playing {
+		t.Fatal("live reduce_motion did not park the playing animation")
+	}
+	if len(lines) != 1 || lines[0] != "gview: motion reduced" {
+		t.Fatalf("receipt = %v, want [gview: motion reduced]", lines)
+	}
+
+	// A parked animation prints the same receipt — the gate is armed.
+	b := &app{anim: mkAnim()}
+	b.settingsApply("a11y.reduce_motion", "on")
+	if len(lines) != 2 {
+		t.Fatalf("parked flip printed %d receipts, want 2 total", len(lines))
+	}
+	// `off` disarms silently; nothing restarts on its own.
+	if b.settingsApply("a11y.reduce_motion", "off") || b.playing || len(lines) != 2 {
+		t.Fatal("reduce_motion=off reported a repaint, restarted, or printed")
+	}
+
+	// A still image has no motion to reduce — the flag latches, no receipt.
+	c := &app{}
+	c.settingsApply("a11y.reduce_motion", "on")
+	if len(lines) != 2 {
+		t.Fatal("still image printed the motion receipt")
+	}
+	if !c.reduceMotion {
+		t.Fatal("the gate flag did not latch on a still image")
+	}
+}

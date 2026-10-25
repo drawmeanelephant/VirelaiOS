@@ -317,8 +317,9 @@ func ValidDataRoot(value string) bool {
 // materializes in the file once set. They are GOSET's access tab, not the
 // settings list: a11y.contrast is honoured by every theme.ApplySettings
 // caller — the seat's own chrome among them — a11y.reduce_motion by the
-// seat's toast ramp and GOVIEW's -play gate, and a11y.text_scale by WEB's
-// base text size.
+// seat's toast ramp and GOVIEW's -play gate (startup and, since M197c
+// #3402, the live broadcast: a running viewer parks and answers
+// `gview: motion reduced`), and a11y.text_scale by WEB's base text size.
 var A11yKeys = []Key{
 	{Name: "a11y.contrast", Default: "off", Vocab: []string{"off", "high"}},
 	{Name: "a11y.reduce_motion", Default: "off", Vocab: []string{"off", "on"}},

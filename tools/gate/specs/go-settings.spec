@@ -242,8 +242,13 @@ vgate_assert 02 serial-absent 'exited status=139'
 # The seat's workspace window — the surface hosted apps are composited
 # into — is the one win rect the seat reports (1024,528,256,192; observed
 # on both the go-wm-default single-app boot and this run). Its interior
-# must read the DarkHC Bg token (0x000000), never the plain Dark one
-# (0x182026) — ApplySettings took the a11y.contrast=high row GOSET saved.
+# must read the DarkHC table, never the plain Dark one — ApplySettings
+# took the a11y.contrast=high row GOSET saved. M197c (#3402) widened the
+# probe from Bg-only to the whole DarkHC token family: the hosted app's
+# armed-timer face paints BtnIdle surfaces over most of the rect, which
+# is the SAME proof (16/81 Bg + 63/81 BtnIdle read as a failure under the
+# old probe while the contrast apply had plainly landed). The token sets
+# mirror the run-03 rail probe.
 vgate_assert 02 snapshot 'snap-02-*.raw' <<'PY'
 import sys
 
@@ -257,21 +262,28 @@ def px(x, y):
     off = (y * W + x) * 4
     return (raw[off + 2], raw[off + 1], raw[off])  # BGRX -> (r, g, b)
 
-HC_BG   = (0x00, 0x00, 0x00)  # theme.DarkHC.Bg
-DARK_BG = (0x18, 0x20, 0x26)  # theme.Dark.Bg — the unthemed answer
+HC = {(0x00, 0x00, 0x00),          # Bg
+      (0x1f, 0x3a, 0x5f),          # Selection
+      (0x1c, 0x21, 0x28),          # BtnIdle
+      (0x58, 0xa6, 0xff),          # Accent
+      (0x8b, 0x94, 0x9e),          # Border
+      (0xff, 0xff, 0xff),          # Text
+      (0xb1, 0xba, 0xc4)}          # Muted
+DARK = {(0x18, 0x20, 0x26), (0x2a, 0x44, 0x60), (0x2d, 0x37, 0x48),
+        (0x3b, 0x82, 0xf6), (0x33, 0x41, 0x55), (0x94, 0xa3, 0xb8)}
 
 x, y, w, h = 1024, 528, 256, 192  # gotabwm's workspace win rect
 samples = [px(x + int(w * fx / 10), y + int(h * fy / 10))
            for fx in range(1, 10) for fy in range(1, 10)]
-hc = sum(1 for c in samples if c == HC_BG)
-dark = sum(1 for c in samples if c == DARK_BG)
+hc = sum(1 for c in samples if c in HC)
+dark = sum(1 for c in samples if c in DARK)
 if hc * 2 < len(samples):
-    sys.exit("workspace window: only %d/81 px are the high-contrast Bg — "
+    sys.exit("workspace window: only %d/81 px are high-contrast tokens — "
              "ApplySettings did not take a11y.contrast=high" % hc)
 if dark > 2:
-    sys.exit("workspace window: %d px are the plain Dark Bg — the "
+    sys.exit("workspace window: %d px are plain-Dark tokens — the "
              "high-contrast variant did not apply" % dark)
-print("hosted workspace (%dx%d@%d,%d): %d/81 px high-contrast Bg, %d plain-Dark strays"
+print("hosted workspace (%dx%d@%d,%d): %d/81 px DarkHC tokens, %d plain-Dark strays"
       % (w, h, x, y, hc, dark))
 PY
 
@@ -531,3 +543,106 @@ vgate_assert 04 serial-contains 'goset: saved keys=32'
 vgate_assert 04 share-contains 'SETTINGS.TXT' 'overflow7=zz7'
 vgate_assert 04 serial-absent '[EXC] parking:'
 vgate_assert 04 serial-absent 'exited status=139'
+
+# --- run 05 (M197c / #3402): a LIVE reduce_motion flip reaches the viewer ---
+# The card's leg: GOVIEW is already running -play on the ten-frame GIF —
+# actually playing, reduce_motion off at boot — when GOSET's access pane
+# writes a11y.reduce_motion=on. The save publishes, the seat broadcasts
+# kind-15 to the one subscriber, and the running viewer answers `gview:
+# motion reduced` — and parks: no `gview: play ` loop receipt may print
+# after that marker. The same bus shape go-edit run 15 proved for theme.
+#
+# The between-runs seed rewrites SETTINGS.TXT to the two rows the leg
+# needs (wm=gotabwm autostarts the seat run 02 left on the share; init=on
+# brings the first-boot GOSH workspace up) — the a11y rows are absent, so
+# the compiled defaults are in force and GOSET's write is a real off->on
+# transition the bus will fan out. SESSION.TABS goes away the same way
+# run 04's seed did: a restored GOSET would steal the declare/focus order
+# the typed lines need.
+vgate_assert 04 python <<'PY'
+import os, sys
+share = os.environ.get("VG_SHARE")
+if not share:
+    sys.exit("no armed share exported to the assert (vgate_share seed?)")
+sess = os.path.join(share, "SESSION.TABS")
+if os.path.exists(sess):
+    os.remove(sess)
+body = "#v2\nwm=gotabwm\ninit=on\n"
+p = os.path.join(share, "SETTINGS.TXT")
+open(p, "w", encoding="utf-8").write(body)
+print("run-05 seed: SETTINGS.TXT reset to wm=gotabwm + init=on (%d bytes); "
+      "session dropped" % len(body))
+PY
+
+vgate_file script-05.txt <<'EOF'
+exec GOVIEW.ELF -play /host/PLAY.GIF
+exec GOSET.ELF
+EOF
+
+# script fires on `gosh: attached`, not `mode live` — the run-02 lesson:
+# the seat hands focus to the LAST declare, so GOVIEW and GOSET exec only
+# after the first-boot workspace's shell settles, and GOSET (exec'd
+# second) holds the focus the typed lines need. `access` opens the pane
+# (its `goset: tab access` marker is the only producer), then the typed
+# key=value line is apply+save+publish on Enter. The run ends on the
+# viewer's live receipt — graded output, not a sleep.
+vgate_run 05 -- \
+    --screen '$RUN_DIR/screen-05' \
+    --via-virtio \
+    --script '$RUN_DIR/script-05.txt' \
+    --script-after 'gosh: attached' \
+    --input-string $'access\na11y.reduce_motion=on\n' \
+    --input-string-after 'goset: ready ' \
+    --script-expect 'gview: motion reduced' --timeout 300
+
+vgate_assert 05 serial-contains 'wm: autostart gotabwm (settings wm=gotabwm)'
+vgate_assert 05 serial-contains 'gotabwm: mode live'
+vgate_assert 05 serial-contains 'gosh: attached'
+vgate_assert 05 serial-contains 'exec: loaded GOVIEW.ELF'
+vgate_assert 05 serial-contains 'gview: loaded PLAY.GIF 160x120 GIF bytes=24121 frames=10'
+# The Go seat is up, so the subscription landed — the mailbox the flip
+# will arrive on.
+vgate_assert 05 serial-contains 'gview: settings subscribed key=a11y.reduce_motion'
+# And it was really playing: at least one loop wrap receipt printed
+# BEFORE the settings write went out.
+vgate_assert 05 serial-contains 'gview: play '
+vgate_assert 05 serial-contains 'exec: loaded GOSET.ELF'
+vgate_assert 05 serial-contains 'goset: declare accepted'
+vgate_assert 05 serial-contains 'goset: tab access'
+vgate_assert 05 serial-contains 'goset: set a11y.reduce_motion=on'
+vgate_assert 05 serial-contains 'goset: saved keys='
+vgate_assert 05 serial-contains 'goset: settings notified key=a11y.reduce_motion'
+# GOVIEW is the only a11y.reduce_motion subscriber in this boot.
+vgate_assert 05 serial-contains 'gotabwm: settings broadcast key=a11y.reduce_motion listeners=1'
+vgate_assert 05 serial-contains 'gview: motion reduced'
+# The write persisted, not just broadcast.
+vgate_assert 05 share-contains 'SETTINGS.TXT' 'a11y.reduce_motion=on'
+vgate_assert 05 serial-absent '[EXC] parking:'
+vgate_assert 05 serial-absent 'exited status=139'
+
+# The chain as an ordering pin, and the park as a liveness proof. Only
+# cross-process causality is safe to order on serial: GOSET's own
+# `settings notified` line is printed AFTER the publish RPC returned, so
+# the seat's broadcast — and the viewer's receipt — can flush to the log
+# before it (observed: broadcast and `motion reduced` both precede the
+# notified line's serial bytes). The guaranteed spine is subscribe < play
+# < set < broadcast < receipt; and the last `gview: play ` loop receipt
+# sits BEFORE the marker — once the notice applied, the armed timer's
+# next event found playing=false, so no wrap receipt can follow it.
+vgate_assert 05 python <<'PY'
+import os, re, sys
+ser = open(os.environ["VG_SER"], errors="replace").read()
+patterns = [
+    "gview: settings subscribed key=a11y.reduce_motion",
+    "gview: play ",
+    "goset: set a11y.reduce_motion=on",
+    "gotabwm: settings broadcast key=a11y.reduce_motion listeners=1",
+    "gview: motion reduced",
+]
+pos = [ser.find(p) for p in patterns]
+if any(p < 0 for p in pos) or pos != sorted(pos):
+    sys.exit("live-flip chain out of order: " + repr(list(zip(patterns, pos))))
+if ser.find("gview: play ", pos[-1]) >= 0:
+    sys.exit("a play receipt printed AFTER `gview: motion reduced` — the flip did not park playback")
+print("live a11y.reduce_motion flip reached the running viewer and parked playback")
+PY

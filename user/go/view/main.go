@@ -103,7 +103,9 @@ const (
 
 	// M177a (#3142): `-play` under a11y.reduce_motion — the animation
 	// opens parked on frame 1 and this line says why; space still plays
-	// because pressing it is the user's own request.
+	// because pressing it is the user's own request. M197c (#3402): the
+	// same receipt answers a live broadcast flip to `on` — the running
+	// viewer parks first, then prints.
 	markerMotionReduced = "gview: motion reduced"
 
 	// M177a (#3142): one line per settings subscription the seat accepts
@@ -167,9 +169,11 @@ type app struct {
 
 	// M177a (#3142): the a11y.reduce_motion row in force — read at startup
 	// and kept live by the settings subscription; it gates playback the
-	// app would start on its own (-play), never a key the user pressed.
-	// settingsWatch records that at least one subscription landed, so the
-	// poll can skip its syscall on a shim boot.
+	// app would start on its own (-play), never a key the user pressed —
+	// though a live broadcast flip to `on` parks even that (M197c #3402:
+	// the settings write is the newer instruction). settingsWatch records
+	// that at least one subscription landed, so the poll can skip its
+	// syscall on a shim boot.
 	reduceMotion  bool
 	settingsWatch bool
 
@@ -224,6 +228,10 @@ var (
 		}
 		return s, nil
 	}
+
+	// M197c (#3402): the receipt seam for the live reduce-motion flip —
+	// the guest posts the console line; a host test captures it.
+	motionReceipt = vi.ConsoleLine
 )
 
 // audioSeat is the mixer-seat surface the pump drives — *vi.AudioStream
@@ -786,7 +794,7 @@ func (a *app) setFrame(i int) {
 // Space is unaffected — togglePlay answers the user's own request.
 func (a *app) requestPlay() {
 	if a.reduceMotion && a.anim != nil && len(a.anim.frames) >= 2 {
-		vi.ConsoleLine(markerMotionReduced)
+		motionReceipt(markerMotionReduced)
 		return
 	}
 	a.togglePlay()
@@ -813,6 +821,18 @@ func (a *app) settingsApply(key, value string) bool {
 			return false
 		}
 		a.reduceMotion = on
+		// M197c (#3402): the live half of the -play gate. The notice lands
+		// on a RUNNING viewer, so `on` parks a multi-frame animation where
+		// it stands — whichever way playback started, the settings write
+		// is the newer instruction — and only then does the receipt
+		// print, so `gview: motion reduced` never runs ahead of the
+		// still it reports. A parked animation prints it too: the mode
+		// took effect on the thing it applies to. `off` just disarms the
+		// gate; nothing restarts on its own.
+		if on && a.anim != nil && len(a.anim.frames) >= 2 {
+			a.pausePlay()
+			motionReceipt(markerMotionReduced)
+		}
 	}
 	return false
 }
