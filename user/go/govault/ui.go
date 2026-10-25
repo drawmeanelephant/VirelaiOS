@@ -220,7 +220,7 @@ func (a *app) drawList(cv widgets.Canvas, w, h int) {
 	}
 	y := chromeH + 8
 	for i := range a.m.entries {
-		if y+rowH > h-40 {
+		if y+rowH > h-56 {
 			break
 		}
 		if i == a.m.sel {
@@ -258,7 +258,11 @@ func (a *app) drawList(cv widgets.Canvas, w, h int) {
 		a.text(cv, pad+376, y+3, note, tok.InkMuted)
 		y += rowH
 	}
-	a.text(cv, pad, h-32, "a add · r reveal · c copy · e export · i import · v receipts · ctrl-l lock", tok.Muted)
+	// The verb hints take two lines: at the native 512 px width one row
+	// already clipped its tail, and 'p provision' made that worse — the
+	// row bound above keeps the last entry row clear of the pair.
+	a.text(cv, pad, h-44, "a add · r reveal · c copy · p provision", tok.Muted)
+	a.text(cv, pad, h-32, "e export · i import · v receipts · ctrl-l lock", tok.Muted)
 }
 
 // sixDigits renders a TOTP value as its zero-padded six-digit string.

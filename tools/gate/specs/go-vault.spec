@@ -10,7 +10,13 @@
 # GVLX under its own passphrase, a fresh vault, picker open, the no-clobber
 # merge — plus the M125a save_state hook and the TOTP probe (hmac/sha1 in
 # class-A; guest clock within ±30 s of host, and the displayed six-digit
-# code glyph-matched against a host-computed TOTP).
+# code glyph-matched against a host-computed TOTP). M196d (run 08) is the
+# provisioning leg: the vault's 'p' verb stages a mail-<acct> row through
+# the slot-96 ask seam, the seat's modal consents, and the consumer —
+# GOMAIL, reading the app-bound row — is the sys_secret_get read-back in
+# the same boot. Iteration 1's ask is mode-new; iterations 2/3 exercise
+# the #3407 replace path (SECRETS.TXT persists and the file ABI cannot
+# delete it, so the row is already there).
 #
 # REPEAT SEMANTICS: vgate_repeat 3 re-runs EVERY leg, and the armed share
 # persists across iterations — so each leg must be iteration-safe. Run 01
@@ -36,8 +42,9 @@
 # HOST PREREQUISITE (fails the gate honestly when missing):
 #   bash tools/go/build-govault.sh  ->  .build/go/GOVAULT.ELF
 #   bash tools/go/build-gotabwm.sh  ->  .build/go/GOTABWM.ELF
+#   bash tools/go/build-gomail.sh   ->  .build/go/GOMAIL.ELF
 
-vgate_name go-vault "M148a #2804 + M148b #2805: PBKDF2/AES-GCM vault — masked unlock, entry store, per-entry reveal, copy-with-expiry on the seat selection, idle lock, named refusals, receipts file + Receipts view; K=3"
+vgate_name go-vault "M148a #2804 + M148b #2805 + M196d #3433: PBKDF2/AES-GCM vault — masked unlock, entry store, per-entry reveal, copy-with-expiry on the seat selection, idle lock, named refusals, receipts file + Receipts view; K=3, + the slot-96 provision leg: 'p' asks, the seat consents, GOMAIL reads the bound row back"
 vgate_share seed
 vgate_runner_flags -Xswiftc -DSPIKE
 vgate_repeat 3
@@ -146,6 +153,29 @@ if not row or "selection=primary" not in row[0]:
     sys.exit("GOVAULT's APPS.TXT row must carry selection=primary: %r"
              % (row,))
 print("share APPS.TXT GOVAULT row carries selection=primary")
+
+# M196d (run 08): the provision leg's consumer read-back. GOMAIL resolves
+# its password as the store row mail-<user>, app-bound to GOMAIL.ELF — an
+# apps-allowlist entry is visible only when the named image is
+# operator-owned on /host (kernel secret.zig visible() ->
+# trust.system_owned_key), so OWNERS.TXT pins GOMAIL.ELF uid_system 0644.
+# GOMAIL.TXT is the bare account the leg execs (no pass= — the store is
+# the only credential source since M196b). SECRETS.TXT is deliberately NOT
+# seeded: the vault's 'p' verb provisions the row through the consent
+# path, and the kernel persists it itself.
+gomail = os.path.join(".build", "go", "GOMAIL.ELF")
+if not os.path.exists(gomail):
+    sys.exit("GOMAIL.ELF missing (expected .build/go/GOMAIL.ELF) - build "
+             "it first: bash tools/go/build-gomail.sh")
+shutil.copy(gomail, os.path.join(share, "GOMAIL.ELF"))
+with open(os.path.join(share, "GOMAIL.TXT"), "w") as f:
+    f.write("# go-vault M196d consumer fixture — the store holds the pass\n"
+            "host=10.0.0.2\n"
+            "user=gate\n"
+            "plain=on\n")
+with open(os.path.join(share, "OWNERS.TXT"), "w") as f:
+    f.write("#v1\nGOMAIL.ELF\t644\t0\t-\n")
+print("go-vault: staged GOMAIL.ELF + GOMAIL.TXT/OWNERS.TXT for run 08")
 PY
 
 # --- run 01: create, add, reveal, copy, lock, unlock, quit ------------------
@@ -664,4 +694,85 @@ for name, raw in frames:
           "countdown %s (origin %d,%d)" % (name, shown, left, ox, oy))
     sys.exit(0)
 sys.exit(verdict or "no capture carried the list face (revealed row + totp)")
+PY
+
+# --- run 08 (M196d / #3433): 'p' provisions through the slot-96 ask seam --
+# The vault entry IS the store row: name mail-gate (the M196b convention,
+# bound to GOMAIL.ELF by provisionApps), secret pw-gate-7. 'p' stages the
+# ask; the seat's modal stands on 'gotabwm: secret-ask ... key=mail-gate';
+# the 'g' chord is the consent gesture — the grant lands the entry AND
+# persists SECRETS.TXT. GOVAULT's once-per-pass status read reports the
+# verdict ('govault: provision-grant'), and the consumer is the read-back:
+# GOMAIL's `boxes` resolves mail-gate out of slot 70 ('gomail: secret
+# mail-gate') before its dial — script-expect ends the run there, so the
+# dead 10.0.0.2 transport is never the verdict. Iteration-safe: iteration
+# 1 stages mode-new; iterations 2/3 meet the persisted row and exercise
+# the #3407 replace path — the markers are mode-agnostic.
+vgate_file script-08.txt <<'EOF'
+set GOMAXPROCS=1
+vf rm GOTABWM.DEMO
+vf rm SESSION.TABS
+vf rm GOVAULT/VAULT.BIN
+wm
+exec GOTABWM.ELF
+EOF
+
+vgate_file script2-08.txt <<'EOF'
+dui focus 0
+exec GOVAULT.ELF
+EOF
+
+vgate_file script3-08.txt <<'EOF'
+exec GOMAIL.ELF boxes
+EOF
+
+vgate_run 08 -- \
+    --screen '$RUN_DIR/vault-screen-08' \
+    --via-virtio \
+    --script '$RUN_DIR/script-08.txt' \
+    --script2 '$RUN_DIR/script2-08.txt' \
+    --script2-after 'gotabwm: registered' \
+    --input-string $'hunter2\nhunter2\namail-gate\npw-gate-7\n\n\np' \
+    --input-string-after 'govault: new vault' \
+    --input-chords 'g' \
+    --input-chords-after 'gotabwm: secret-ask name=GOVAULT.ELF key=mail-gate' \
+    --script3 '$RUN_DIR/script3-08.txt' \
+    --script3-after 'govault: provision-grant mail-gate' \
+    --script-expect 'gomail: secret mail-gate' --timeout 240
+
+vgate_assert 08 serial-contains 'gotabwm: registered'
+vgate_assert 08 serial-contains 'exec: loaded GOVAULT.ELF'
+vgate_assert 08 serial-contains 'govault: new vault'
+vgate_assert 08 serial-contains 'govault: added'
+# The ask staged under the entry's own name; the seat modal named the
+# asker, the key and the app-binding it would grant.
+vgate_assert 08 serial-contains 'govault: provision mail-gate'
+vgate_assert 08 serial-contains 'gotabwm: secret-ask name=GOVAULT.ELF key=mail-gate'
+vgate_assert 08 serial-contains 'apps=GOMAIL.ELF'
+vgate_assert 08 serial-contains 'gotabwm: secret grant name=GOVAULT.ELF key=mail-gate'
+# The asker's own verdict read, then the consumer's slot-70 read-back in
+# the same boot.
+vgate_assert 08 serial-contains 'govault: provision-grant mail-gate'
+vgate_assert 08 serial-contains 'exec: loaded GOMAIL.ELF'
+vgate_assert 08 serial-contains 'gomail: secret mail-gate'
+# The secret never reaches serial — not in the ask marshal (names only),
+# not in the modal, not in a marker.
+vgate_assert 08 serial-absent 'pw-gate-7'
+vgate_assert 08 serial-absent '[EXC] parking:'
+vgate_assert 08 serial-absent 'exited status=139'
+# The receipts file carries the ask AND the verdict — the audit surface
+# the card asks for.
+vgate_assert 08 share-contains GOVAULT/RECEIPTS.TXT 'provision mail-gate'
+vgate_assert 08 share-contains GOVAULT/RECEIPTS.TXT 'provision-grant mail-gate'
+# Commit persisted: the share's SECRETS.TXT holds the app-bound row the
+# kernel wrote (the host reads what the guest file ABI cannot — the
+# class denial is in-guest by construction).
+vgate_assert 08 python <<'PY'
+import os
+share = os.environ["VG_SHARE"]
+data = open(os.path.join(share, "SECRETS.TXT"), "rb").read().decode("utf-8", "replace")
+want = "mail-gate\t1000\tpw-gate-7\tGOMAIL.ELF"
+if want not in data:
+    raise SystemExit("SECRETS.TXT lacks the provisioned row %r: %r" % (want, data))
+print("SECRETS.TXT persisted: mail-gate bound to GOMAIL.ELF")
 PY

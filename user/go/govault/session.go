@@ -33,6 +33,11 @@ type app struct {
 	picking  bool   // the picker plate owns input while open
 	pickPath string // the path the picker resolved — export target or import source
 
+	// asks are the staged slot-96 provision rows awaiting the seat's
+	// gesture (M196d) — bookkeeping, not session material, so lock() does
+	// not clear them and pollAsks still answers for them.
+	asks []pendingAsk
+
 	status string
 	quit   bool
 }

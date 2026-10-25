@@ -50,11 +50,12 @@ func TestSecretAskLifecycleGrantAndDecline(t *testing.T) {
 		t.Fatalf("ask marker: %v", log)
 	}
 	// An unrelated key is swallowed, not answered.
-	if !handleSecretAskKey(vi.Event{Kind: vi.EvWmKey, Arg0: 0x1e, Arg1: 'x'}) || commitID != 0 {
+	if !handleSecretAskKey(vi.Event{Kind: vi.EvWmKey, Arg0: 0x1b}) || commitID != 0 {
 		t.Fatalf("stray key committed %d", commitID)
 	}
-	// 'g' commits the staged ask and closes the prompt.
-	handleSecretAskKey(vi.Event{Kind: vi.EvWmKey, Arg0: 0x22, Arg1: 'g'})
+	// 'g' commits the staged ask and closes the prompt — Arg0 carries the
+	// raw HID usage on the kind-21 wire (arg1 is always 0).
+	handleSecretAskKey(vi.Event{Kind: vi.EvWmKey, Arg0: 0x0a})
 	if commitID != 7 || secretAskModal.open {
 		t.Fatalf("commit id=%d open=%v", commitID, secretAskModal.open)
 	}
@@ -112,7 +113,7 @@ func TestSecretAskParseAndRefusalMarker(t *testing.T) {
 		func(id uint32) int64 { return -vi.ErrENOSPC },
 		func(id uint32) int64 { return 0 })
 	pollSecretAsks()
-	handleSecretAskKey(vi.Event{Kind: vi.EvWmKey, Arg0: 0x22, Arg1: 'g'})
+	handleSecretAskKey(vi.Event{Kind: vi.EvWmKey, Arg0: 0x0a})
 	if log[len(log)-1] != MarkerSecretRefuse+"APP.ELF key=k ENOSPC" {
 		t.Fatalf("refuse marker: %v", log)
 	}

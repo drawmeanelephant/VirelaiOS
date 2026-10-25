@@ -267,6 +267,9 @@ func (a *app) keyList(ev vi.Event) bool {
 	case 'c':
 		a.copy()
 		return true
+	case 'p':
+		a.provision()
+		return true
 	case 'v':
 		a.openReceipts()
 		return true
