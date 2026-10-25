@@ -26,6 +26,11 @@
 //!     or font change reddens the gate until the fixtures are deliberately
 //!     regenerated and the diff reviewed.
 
+/// Product version — the `ver M.m.p` the component-registry lib row
+/// shows and the drift check resolves (docs/component-registry.md).
+/// The registry's bump rule says when it moves.
+pub const version = "1.0.0";
+
 const std = @import("std");
 const ttf = @import("font_ttf.zig");
 

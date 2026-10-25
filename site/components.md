@@ -266,37 +266,37 @@ subdirectory package).
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| action_registry.zig | lib | — | — | — | shipped |
-| asmenc.zig | lib | — | — | — | shipped |
-| crc32.zig | lib | — | — | — | shipped |
-| crypto.zig + crypto/ | lib | — | — | ADR 0023 | shipped |
-| fixtures/ | lib | — | — | — | fixture |
-| flate.zig | lib | — | — | — | shipped |
-| font8x8.zig | lib | — | — | — | shipped |
-| font_atlas_gen.zig | lib | — | — | — | shipped |
-| font_ttf.zig | lib | — | — | — | shipped |
-| image.zig | lib | — | — | — | shipped |
-| netargs.zig | lib | — | — | — | shipped |
-| netauth.zig | lib | — | — | — | shipped |
-| netstats.zig | lib | — | — | — | shipped |
-| netstatus.zig | lib | — | — | — | shipped |
-| pipe.zig | lib | — | — | — | shipped |
-| png.zig | lib | — | — | — | shipped |
-| qoi.zig | lib | — | — | — | shipped |
-| rng.zig | lib | — | — | — | shipped |
-| script.zig | lib | — | — | ADR 0021 | shipped |
+| action_registry.zig | lib | — | ver 1.0.0 | — | shipped |
+| asmenc.zig | lib | — | ver 1.0.0 | — | shipped |
+| crc32.zig | lib | — | ver 1.0.0 | — | shipped |
+| crypto.zig + crypto/ | lib | — | ver 1.0.0 | ADR 0023 | shipped |
+| fixtures/ | lib | — | ver 1.0.0 | — | fixture |
+| flate.zig | lib | — | ver 1.0.0 | — | shipped |
+| font8x8.zig | lib | — | ver 1.0.0 | — | shipped |
+| font_atlas_gen.zig | lib | — | ver 1.0.0 | — | shipped |
+| font_ttf.zig | lib | — | ver 1.0.0 | — | shipped |
+| image.zig | lib | — | ver 1.0.0 | — | shipped |
+| netargs.zig | lib | — | ver 1.0.0 | — | shipped |
+| netauth.zig | lib | — | ver 1.0.0 | — | shipped |
+| netstats.zig | lib | — | ver 1.0.0 | — | shipped |
+| netstatus.zig | lib | — | ver 1.0.0 | — | shipped |
+| pipe.zig | lib | — | ver 1.0.0 | — | shipped |
+| png.zig | lib | — | ver 1.0.0 | — | shipped |
+| qoi.zig | lib | — | ver 1.0.0 | — | shipped |
+| rng.zig | lib | — | ver 1.0.0 | — | shipped |
+| script.zig | lib | — | ver 1.0.0 | ADR 0021 | shipped |
 | sexiburger.zig | lib | — | ver 1.0.0 | ADR 0034 | retained-fallback |
-| shell.zig | lib | — | — | ADR 0021 | shipped |
-| smpst.zig | lib | — | — | — | fixture |
-| ssh/ | lib | — | — | ADR 0025 | shipped |
-| startup.zig | lib | — | — | — | shipped |
-| stdz/ | lib | — | — | — | shipped |
-| tabapp.zig | lib | — | — | ADR 0033 | shipped |
-| tls/ | lib | — | — | ADR 0029 | shipped |
-| toolbox.zig | lib | — | — | — | shipped |
-| tty.zig | lib | — | — | ADR 0020 | shipped |
-| ui.zig + ui/ | lib | — | — | ADR 0011 | shipped |
-| zc.zig | lib | — | — | tools/check-zc-host-contract.py | shipped |
+| shell.zig | lib | — | ver 1.0.0 | ADR 0021 | shipped |
+| smpst.zig | lib | — | ver 1.0.0 | — | fixture |
+| ssh/ | lib | — | ver 1.0.0 | ADR 0025 | shipped |
+| startup.zig | lib | — | ver 1.0.0 | — | shipped |
+| stdz/ | lib | — | ver 1.0.0 | — | shipped |
+| tabapp.zig | lib | — | ver 1.0.0 | ADR 0033 | shipped |
+| tls/ | lib | — | ver 1.0.0 | ADR 0029 | shipped |
+| toolbox.zig | lib | — | ver 1.0.0 | — | shipped |
+| tty.zig | lib | — | ver 1.0.0 | ADR 0020 | shipped |
+| ui.zig + ui/ | lib | — | ver 1.0.0 | ADR 0011 | shipped |
+| zc.zig | lib | — | ver 1.0.0 | tools/check-zc-host-contract.py | shipped |
 
 
 ## Kernel services owning a contract

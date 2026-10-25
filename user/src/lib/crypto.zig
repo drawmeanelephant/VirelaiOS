@@ -11,6 +11,11 @@
 //! CP3 X25519 (#1117); CP4 Ed25519 (#1118); CP5 ct + demo (#1119);
 //! SSH-P2 djb ChaCha20 + OpenSSH cipher (#1167, M51).
 
+/// Product version — the `ver M.m.p` the component-registry lib row
+/// shows and the drift check resolves (docs/component-registry.md).
+/// The registry's bump rule says when it moves.
+pub const version = "1.0.0";
+
 pub const ct = @import("crypto/ct.zig");
 pub const sha256 = @import("crypto/sha256.zig");
 pub const sha512 = @import("crypto/sha512.zig");

@@ -7,6 +7,11 @@
 //! the freestanding tag and return 0/-1 — the host tests only pin the
 //! marker constants, never run the payload).
 
+/// Product version — the `ver M.m.p` the component-registry lib row
+/// shows and the drift check resolves (docs/component-registry.md).
+/// The registry's bump rule says when it moves.
+pub const version = "1.0.0";
+
 const builtin = @import("builtin");
 const std = @import("std");
 

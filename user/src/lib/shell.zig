@@ -14,6 +14,11 @@
 //! pipes/redirection/globs (SH4), no control flow or command substitution
 //! (SH5), no tab completion or Ctrl-R (SH3).
 
+/// Product version — the `ver M.m.p` the component-registry lib row
+/// shows and the drift check resolves (docs/component-registry.md).
+/// The registry's bump rule says when it moves.
+pub const version = "1.0.0";
+
 const std = @import("std");
 const pipe = @import("pipe.zig");
 const script = @import("script.zig");
