@@ -184,6 +184,10 @@ pub fn readDns(owner: u64, handle: core.Handle, output: []u8) core.Error!usize {
 /// Called only after IPv4 checksum/destination/fragment validation.
 pub fn receiveDns(frame: []const u8) bool {
     if (frame.len < 42 or frame[23] != 17) return false;
+    // Sev-C (#3401): a resolver's reply is never broadcast-addressed —
+    // refuse the claim so the udp layer counts its named drop instead
+    // of the datagram landing in the transaction's reply buffer.
+    if (std.mem.eql(u8, frame[30..34], &udp.bcast_addr)) return false;
     const d = if (dns) |*d| d else return false;
     if (std.mem.readInt(u16, frame[36..38], .big) != d.port) return false;
     if (d.timed_out or d.len != 0 or d.failed) return true;

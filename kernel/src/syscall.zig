@@ -1941,7 +1941,7 @@ fn handle_net_stats(args: Args, _: *exceptions.VectorFrame) u64 {
     snap.rx_filtered = virtio_net.rx_filtered;
     snap.rx_overflow = virtio_net.rx_overflow;
     snap.tcp_segs = .{ tcp.syn_sent, tcp.synack_recv, tcp.ack_sent, tcp.data_sent, tcp.data_recv, tcp.fin_sent, tcp.finack_recv, tcp.rst_sent };
-    snap.udp_dgrams = .{ udp.received, udp.sent, udp.loopbacked, udp.dropped_badsum + udp.dropped_closed + udp.dropped_len };
+    snap.udp_dgrams = .{ udp.received, udp.sent, udp.loopbacked, udp.dropped_badsum + udp.dropped_closed + udp.dropped_len + udp.dropped_bcast };
 
     // Marshal through the fixed scratch (no stack copies of untrusted
     // sizes; the struct is comptime-sized).
