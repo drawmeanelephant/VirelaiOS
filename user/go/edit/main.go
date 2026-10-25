@@ -601,6 +601,10 @@ type editor struct {
 	mbar     appkit.MenuBar
 	menuOpen bool
 
+	// M197d (#3416): the last staged #a11y v1 body — publishOutline's
+	// dedup, so a quiet loop pass costs a compare, never a write.
+	a11yLast string
+
 	// M149c (#2808): the -minimap flag — the document's right-edge column
 	// of one pixel row per buffer line, and the press-to-jump arm.
 	minimap bool
@@ -815,6 +819,8 @@ func main() {
 		// same pass (publishSel diffs, so a quiet pass costs a compare).
 		ta.PollSelPaste()
 		e.publishSel()
+		// M197d: the a11y outline rides the same deduped per-pass publish.
+		e.publishOutline()
 		// M149c: a published theme change repaints the frame it applies
 		// to, and its receipt prints after that frame is on the scanout —
 		// the bannerFresh discipline.
@@ -842,6 +848,7 @@ func main() {
 		switch ta.Dispatch(ev) {
 		case tabapp.ActionClosed:
 			e.releaseAllLeases()
+			e.unpublishOutline()
 			vi.ConsoleLine(markerClose)
 			vi.ConsoleLine(markerOK)
 			ta.CloseAndExit(0)
@@ -875,6 +882,7 @@ func main() {
 	// The event loop broke on a poll error — the same exit discipline as the
 	// clean paths, so a lease is not left standing on a dead session.
 	e.releaseAllLeases()
+	e.unpublishOutline()
 }
 
 // load reads the fixture into the buffer. A missing file is not fatal: the

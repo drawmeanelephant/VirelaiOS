@@ -30,7 +30,9 @@
 # focus step GOA11Y samples must read as a named node in key order on
 # high-contrast seat chrome. M197a (#3381) adds the seat's own half: a
 # leg decodes the staged /host/A11Y.SEAT outline the seat publishes and
-# names the rail's live tab cells.
+# names the rail's live tab cells. M197d (#3416) adds the adoption leg:
+# GOEDIT rides the boot between the pair, and the drive's ctrl-2/ctrl-3
+# detour makes GOA11Y read its published outline mid-run.
 #
 # HOST PREREQUISITES (fail the gate honestly when missing):
 #   bash tools/go/build-gotabwm.sh     ->  .build/go/GOTABWM.ELF
@@ -809,6 +811,10 @@ PY
 # GOA11Y execs first so GODEMO's declare + self-raise is the last focus
 # event the seat sees — a late GOA11Y declare would steal the keyboard
 # and the chords would land on a window that ignores input by contract.
+# M197d (#3416) seats GOEDIT between them: the adopted app's outline is
+# staged from boot, the drive's ctrl-2 detour focuses its rail cell long
+# enough for the 500 ms poll to read it, and ctrl-3 returns to GODEMO so
+# the seat outline still ends on the demo's cell.
 #
 # The drive is run 01's key sequence verbatim through Return: escape
 # (cancel the prompt), F10 (the bar's expanded state flips), down/right/
@@ -837,6 +843,7 @@ EOF
 vgate_file script2-03.txt <<'EOF'
 dui focus 0
 exec GOA11Y.ELF
+exec GOEDIT.ELF
 exec GODEMO.ELF
 EOF
 
@@ -874,7 +881,7 @@ vgate_run 03 -- \
     --script '$RUN_DIR/script-03.txt' \
     --script2 '$RUN_DIR/script2-03.txt' \
     --script2-after 'gotabwm: win focus' \
-    --input-chords 'escape,f10,down,right,right,e,tab,down,down,right,return' \
+    --input-chords 'escape,f10,down,right,right,e,tab,down,down,right,return,ctrl-2,down,down,down,down,down,down,ctrl-3' \
     --input-chords-after 'godialog: painted' \
     --script-expect 'row 3 of 64' --script-expect-tail 20 --timeout 300
 
@@ -893,9 +900,10 @@ vgate_assert 03 serial-contains 'exec: loaded GOA11Y.ELF'
 vgate_assert 03 serial-contains 'goa11y: open id='
 vgate_assert 03 serial-contains 'goa11y: declare accepted'
 vgate_assert 03 serial-contains 'goa11y: present'
+vgate_assert 03 serial-contains 'exec: loaded GOEDIT.ELF'
 vgate_assert 03 serial-contains 'exec: loaded GODEMO.ELF'
 vgate_assert 03 serial-contains 'goa11y: focus win='
-vgate_assert 03 serial-contains 'gotabwm: rail n=2'
+vgate_assert 03 serial-contains 'gotabwm: rail n=3'
 # --- the same key drive run 01 makes --------------------------------------
 vgate_assert 03 serial-contains 'godialog: painted'
 vgate_assert 03 serial-contains 'godemo: menu expand-all'
@@ -945,12 +953,20 @@ for ln in ser[i0:].splitlines():
     elif ln.startswith("goa11y: node ") and cur is not None:
         cur[1].append(ln)
 wins = sorted({w for w, ns in blocks if ns})
-if len(wins) != 1:
-    sys.exit("node blocks span wins %r, want GODEMO's single id" % wins)
-win = wins[0]
+# M197d (#3416): run 03 now spans TWO outlines — the drive's ctrl-2 detour
+# lands GOA11Y on GOEDIT (the adopted app's window+menubar+document read)
+# before ctrl-3 returns to GODEMO. The chain audit below still scopes to
+# GODEMO: its win is the one whose blocks print the run's end marker.
+win = None
+edit_nodes = []  # the adopted app's node lines (M197d)
+for w in wins:
+    if any("row 3 of 64" in ln for w2, ns in blocks if w2 == w for ln in ns):
+        win = w
+if win is None:
+    sys.exit("no window's block carries 'row 3 of 64': wins %r" % wins)
 
-focused = []   # (role, name) the reader saw focused, in order
-menubar = []   # expanded flag per menubar node line, in order
+focused = []   # (role, name) the reader saw focused on GODEMO, in order
+menubar = []   # expanded flag per GODEMO menubar node line, in order
 for w, ns in blocks:
     for ln in ns:
         f = ln[len("goa11y: node "):].split(" ", 3)
@@ -958,7 +974,10 @@ for w, ns in blocks:
         state = f[2] if len(f) > 2 else ""
         name = f[3] if len(f) > 3 else ""
         if role == "unknown" or name == "":
-            sys.exit("win=%s names an unauditable node: %r" % (win, ln))
+            sys.exit("win=%s names an unauditable node: %r" % (w, ln))
+        if w != win:
+            edit_nodes.append(ln)
+            continue
         if role == "menubar":
             menubar.append("e" in state)
         if "f" in state:
@@ -992,8 +1011,25 @@ first_e = menubar.index(True)
 if False not in menubar[first_e + 1:]:
     sys.exit("menubar expanded but never read unexpanded again: %r"
              % menubar)
+
+# --- the M197d adoption leg: GOA11Y read the adopted app's outline ------
+# ctrl-2 landed the focus on GOEDIT for ~1.5 s — long enough for the
+# 500 ms poll to stage at least one block — and the adopted app's
+# outline must read as its real structure: a window root, the appkit
+# menubar's subtree, and the document textfield carrying the focus
+# verdict. Every node line was already audited above for role+name.
+if not edit_nodes:
+    sys.exit("GOA11Y never printed a second window's outline — the "
+             "ctrl-2 detour to GOEDIT was never sampled")
+roles = {ln[len("goa11y: node "):].split(" ", 3)[1] for ln in edit_nodes}
+if "window" not in roles or "menubar" not in roles or "textfield" not in roles:
+    sys.exit("adopted outline missing window/menubar/textfield: %r" % edit_nodes)
+if not any("textfield" in ln and " f " in ln and "document" in ln
+           for ln in edit_nodes):
+    sys.exit("adopted outline has no focused document field: %r" % edit_nodes)
 print("a11y audit win=%s: %d outline blocks, focused chain %r, "
-      "menubar expanded-then-restored" % (win, len(blocks), focused))
+      "menubar expanded-then-restored; adopted win read %d nodes"
+      % (win, len(blocks), focused, len(edit_nodes)))
 PY
 
 # --- the seat describes itself ---------------------------------------------
@@ -1025,8 +1061,9 @@ rails = [n for n in nodes if n[1] == "rail"]
 if len(rails) != 1 or not rails[0][3].startswith("space "):
     sys.exit("rail container %r" % rails)
 cells = [(n[2], n[3]) for n in nodes if n[1] == "tab"]
-if sorted(name for _, name in cells) != ["A11y", "Dialog"]:
-    sys.exit("rail cells %r want the run's two live tabs" % cells)
+# M197d: three live tabs — GOA11Y, GOEDIT (the adopted app), GODEMO.
+if sorted(name for _, name in cells) != ["A11y", "Dialog", "Edit"]:
+    sys.exit("rail cells %r want the run's three live tabs" % cells)
 focused = [name for st, name in cells if "f" in st]
 if focused != ["Dialog"]:
     sys.exit("focused cell %r, want only Dialog" % focused)

@@ -20,16 +20,16 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"virelai/appkit"
 	"virelai/rss/keys"
 	"virelai/tabapp"
 	"virelai/vi"
 )
 
 const (
-	appName  = "GOFILES.ELF"
-	appTitle = "Files"
-	natW     = 512
-	natH     = 384
+	appName = "GOFILES.ELF"
+	natW    = 512
+	natH    = 384
 
 	ttyPath = "/dev/tty"
 )
@@ -375,6 +375,9 @@ func main() {
 	ta.DeclareNav(m.path)
 	vi.ConsoleLine(markerNavDeclare + m.path)
 	vi.ConsoleLine(markerReady)
+	// M197d (#3416): stage the resting outline — the listing's selection
+	// is the focus until a modal says otherwise.
+	m.publishOutline()
 	declared := m.path
 
 	// M81f (#1766): the change feed is polled from the IDLE branch only,
@@ -495,6 +498,10 @@ func main() {
 			}
 			progress = true
 		}
+
+		// M197d: the a11y outline restages on any change the pass drove —
+		// a selection move, a menu open, a modal — deduped on the bytes.
+		m.publishOutline()
 
 		if !progress {
 			idlePasses++
@@ -813,6 +820,10 @@ func shutdown(ta *tabapp.TabApp, fd uint32, status int) {
 	_, _ = vi.FileWrite(fd, []byte("\x1b[?1000l\x1b[?1002l\x1b[?1006l\x1b[?1049l\x1b[?25h"))
 	_ = vi.TtyAttach(vi.TtyDetach)
 	vi.FileClose(fd)
+	// A clean exit leaves the share honest; a kill leaves dead data a
+	// reader can never mistake for another window's tree (kind 16 reads
+	// only the focused window's file).
+	_ = appkit.UnpublishOutline(uint32(ta.Win))
 	vi.ConsoleLine(markerClose)
 	vi.ConsoleLine(markerOK)
 	ta.CloseAndExit(status)

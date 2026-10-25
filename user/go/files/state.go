@@ -47,6 +47,10 @@ const (
 	modeSearchHits
 )
 
+// appTitle is the window's declared title — here (untagged) rather than
+// main.go so the host-built a11y outline names the window too.
+const appTitle = "Files"
+
 // titleBarPx is the window title band the client area sits below: the
 // kernel's grid is client_w/8 columns (terminal.syncWindowCols) and the
 // client height is H-16 (the dui/charmhello geometry: rect 32,32,W,H with a
@@ -91,6 +95,10 @@ type model struct {
 	batchOn bool
 	prog    appkit.Progress
 	winID   uint32
+
+	// M197d (#3416): the last staged #a11y v1 body — publishOutline's
+	// dedup, so a quiet loop pass costs a compare, never a write.
+	a11yLast string
 
 	preview    string // preview pane body
 	previewOf  string // name the preview shows (pane header)
