@@ -582,7 +582,9 @@ func (m *model) syncMenu() {
 	for j := 0; j < 7; j++ {
 		m.bar.Menus[0].Items[j].Disabled = !hasSel
 	}
-	m.bar.Menus[1].Items[2].Disabled = len(m.clipSet) == 0 // Paste
+	// Paste stays armed on an empty in-app queue: M202d adoption reads the
+	// machine clipboard at press time, and the refusal names what it found.
+	m.bar.Menus[1].Items[2].Disabled = false // Paste
 	m.bar.Menus[1].Items[4].Disabled = m.n == 0            // Mark
 	m.bar.Menus[1].Items[5].Disabled = m.markCount() == 0  // Unmark all
 	selDir := false

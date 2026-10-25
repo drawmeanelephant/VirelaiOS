@@ -6,6 +6,7 @@ import (
 	"virelai/layout"
 	"virelai/tabapp"
 	"virelai/vi"
+	"virelai/vsys"
 )
 
 // main_test.go pins the #2199 wiring the buffer layer plugs into: the new
@@ -198,22 +199,28 @@ func TestTypeOverSelectionIsOneOp(t *testing.T) {
 // programmable refusal, mirroring the kernel's machine-global buffer.
 type fakeClip struct {
 	data []byte
+	mime string
 	rc   int64
 }
 
-func (f *fakeClip) write(p []byte) (int, int64) {
+func (f *fakeClip) write(mime string, p []byte) (int, int64) {
 	if f.rc < 0 {
 		return 0, f.rc
 	}
 	f.data = append([]byte{}, p...)
+	f.mime = mime
 	return len(p), 0
 }
 
-func (f *fakeClip) read() ([]byte, int64) {
+func (f *fakeClip) read() (string, []byte, int64) {
 	if f.rc < 0 {
-		return nil, f.rc
+		return "", nil, f.rc
 	}
-	return append([]byte{}, f.data...), 0
+	mime := f.mime
+	if mime == "" {
+		mime = vsys.ClipText
+	}
+	return mime, append([]byte{}, f.data...), 0
 }
 
 // installClip swaps the slot wrappers for the test.
@@ -235,6 +242,9 @@ func TestCutCopyPasteThroughTheSlot(t *testing.T) {
 	e.copy()
 	if string(f.data) != "clipthis" {
 		t.Fatalf("clipboard = %q want %q", f.data, "clipthis")
+	}
+	if f.mime != vsys.ClipText {
+		t.Fatalf("copy declared %q, want text/plain", f.mime)
 	}
 	if string(e.buf) != "clipthis" {
 		t.Fatalf("copy must not touch the buffer: %q", e.buf)
@@ -285,6 +295,30 @@ func TestDropSplicesLikePaste(t *testing.T) {
 	e.drop(tabapp.DragOffer{Mime: "text/plain", Blob: []byte{}})
 	if string(e.buf) != "clipthisdrop" {
 		t.Fatalf("empty/nil drops must not splice: %q", e.buf)
+	}
+}
+
+// TestPasteRefusesPayloadShapes: M202d (#3443) — the typed read classifies
+// the body; an image payload is refused BY NAME and the buffer does not
+// move, while a non-plain text class (uri-list, html, csv — all valid-UTF-8
+// shapes) still splices like a plain paste.
+func TestPasteRefusesPayloadShapes(t *testing.T) {
+	f := &fakeClip{data: []byte("\x89PNG\r\n\x1a\nblob"), mime: vsys.ClipPNG}
+	installClip(t, f)
+	e := usEditor("keepme")
+	e.paste()
+	if string(e.buf) != "keepme" {
+		t.Fatalf("an image payload must not splice: %q", e.buf)
+	}
+	f.mime = "application/octet-stream"
+	e.paste()
+	if string(e.buf) != "keepme" {
+		t.Fatalf("an octet payload must not splice: %q", e.buf)
+	}
+	f.data, f.mime = []byte("file:///host/A.TXT"), vsys.ClipURIList
+	e.paste()
+	if string(e.buf) != "keepmefile:///host/A.TXT" {
+		t.Fatalf("a uri-list IS text — it splices: %q", e.buf)
 	}
 }
 

@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"virelai/rss/keys"
+	"virelai/vi"
+	"virelai/vsys"
 )
 
 func TestRenamePromptFlowAndRefusalMarkers(t *testing.T) {
@@ -316,8 +318,19 @@ func TestDeleteModalShedsUnrelatedKeys(t *testing.T) {
 	}
 }
 
+// installSysClip swaps the machine-clipboard read seam with the test's
+// programmable cell — the goedit installClip shape: (mime, body, rc).
+func installSysClip(t *testing.T, mime string, body []byte, rc int64) {
+	t.Helper()
+	old := clipSysRead
+	clipSysRead = func() (string, []byte, int64) { return mime, body, rc }
+	t.Cleanup(func() { clipSysRead = old })
+}
+
 func TestClipPasteRefusals(t *testing.T) {
-	// Paste with an empty clip: named refusal, no syscall.
+	// Paste with an empty clip: named refusal, no syscall beyond the
+	// typed read (the machine clipboard answered empty).
+	installSysClip(t, "", nil, 0)
 	m := testModel(entry("SUB", true), entry("KNOWN.TXT", false))
 	m.handleKey(runeKey('p'))
 	if got := pendingJoined(&m); !strings.Contains(got, markerPasteNo+"empty clip") {
@@ -346,6 +359,148 @@ func TestClipPasteRefusals(t *testing.T) {
 	}
 }
 
+// TestAdoptSysClipRefusesByName: M202d (#3443) — with an empty in-app
+// queue, `p` reads the machine clipboard through the typed seam and the
+// class rules the outcome. A refused read names the code; a class with no
+// file meaning (plain/html/csv text, unnamed bytes) is refused BY NAME and
+// arms nothing.
+func TestAdoptSysClipRefusesByName(t *testing.T) {
+	installSysClip(t, "", nil, -7)
+	m := testModel(entry("KNOWN.TXT", false))
+	m.pasteClip()
+	if got := pendingJoined(&m); !strings.Contains(got, markerPasteNo+"rc=-7") {
+		t.Fatalf("a refused read must name rc: %q", got)
+	}
+	for _, mime := range []string{"text/plain", "text/html", "text/csv", "application/octet-stream"} {
+		installSysClip(t, mime, []byte("body"), 0)
+		m = testModel(entry("KNOWN.TXT", false))
+		m.pasteClip()
+		if got := pendingJoined(&m); !strings.Contains(got, markerPasteNo+mime) {
+			t.Fatalf("%s must be refused by name: %q", mime, got)
+		}
+		if m.clipSet != nil {
+			t.Fatalf("%s must not arm a clip set", mime)
+		}
+	}
+}
+
+// TestAdoptKeepsInAppPrecedence: a staged copy/cut owns `p` — the machine
+// clipboard is not even read while the in-app queue holds a set.
+func TestAdoptKeepsInAppPrecedence(t *testing.T) {
+	calls := 0
+	old := clipSysRead
+	clipSysRead = func() (string, []byte, int64) {
+		calls++
+		return vsys.ClipPNG, []byte("x"), 0
+	}
+	t.Cleanup(func() { clipSysRead = old })
+	m := testModel(entry("KNOWN.TXT", false))
+	m.clipSet = []string{"/host/OTHER/KNOWN.TXT"}
+	m.pasteClip()
+	if calls != 0 {
+		t.Fatalf("a held set must not read the machine clipboard (calls=%d)", calls)
+	}
+	if got := pendingJoined(&m); !strings.Contains(got, markerPasteNo+"KNOWN.TXT exists") {
+		t.Fatalf("the in-app paste owns p while it holds a set: %q", got)
+	}
+}
+
+// TestAdoptURIListBecomesTheCopySet: a text/uri-list body parses into the
+// queue the normal paste paths then run — copy semantics, named per-item
+// refusals. The host vi layer is ENOSYS, so the pin is the adopt marker
+// plus the single path's own refused read; the live gate owns the landing.
+func TestAdoptURIListBecomesTheCopySet(t *testing.T) {
+	installSysClip(t, vsys.ClipURIList, []byte("file:///host/OTHER/ONE.TXT"), 0)
+	m := testModel(entry("KNOWN.TXT", false))
+	m.pasteClip()
+	got := pendingJoined(&m)
+	if !strings.Contains(got, markerClipSys+"adopt text/uri-list n=1") {
+		t.Fatalf("adopt marker missing: %q", got)
+	}
+	if len(m.clipSet) != 1 || m.clipCut {
+		t.Fatalf("adopted set = %v cut=%v, want a 1-path copy", m.clipSet, m.clipCut)
+	}
+	if !strings.Contains(got, markerPasteNo+"ONE.TXT rc=") {
+		t.Fatalf("the single path must reach its own read refusal: %q", got)
+	}
+
+	// A set of URIs arms the same batch the in-app queue would.
+	installSysClip(t, vsys.ClipURIList,
+		[]byte("file:///host/OTHER/A.TXT\nfile:///host/OTHER/B.TXT\n"), 0)
+	m = testModel(entry("KNOWN.TXT", false))
+	m.pasteClip()
+	got = pendingJoined(&m)
+	if !strings.Contains(got, markerClipSys+"adopt text/uri-list n=2") {
+		t.Fatalf("multi adopt marker missing: %q", got)
+	}
+	if len(m.clipSet) != 2 {
+		t.Fatalf("adopted set = %v, want 2 paths", m.clipSet)
+	}
+	if !m.batchOn {
+		t.Fatal("a 2-URI adopt must arm the batch planner")
+	}
+
+	// A non-file line refuses the whole adopt by name — no partial import.
+	installSysClip(t, vsys.ClipURIList, []byte("https://example.com/x\nfile:///host/ONE.TXT"), 0)
+	m = testModel(entry("KNOWN.TXT", false))
+	m.pasteClip()
+	got = pendingJoined(&m)
+	if !strings.Contains(got, markerPasteNo+"https://example.com/x not a file URI") {
+		t.Fatalf("non-file URI refusal missing: %q", got)
+	}
+	if m.clipSet != nil {
+		t.Fatal("a refused adopt arms nothing")
+	}
+}
+
+// TestAdoptBlobWritesThePayload: an image payload lands as PASTE.<ext>
+// through the safe-write seam, with the adopt + pasted receipts and the
+// toast; a refused write names rc and writes nothing.
+func TestAdoptBlobWritesThePayload(t *testing.T) {
+	var wrotePath string
+	var wroteBody []byte
+	old := writePasteFile
+	writePasteFile = func(path string, b []byte) int64 {
+		wrotePath, wroteBody = path, append([]byte{}, b...)
+		return 0
+	}
+	t.Cleanup(func() { writePasteFile = old })
+	installSysClip(t, vsys.ClipPNG, []byte("\x89PNG\r\n\x1a\nblob"), 0)
+	m := testModel(entry("KNOWN.TXT", false))
+	m.pasteClip()
+	got := pendingJoined(&m)
+	if wrotePath != "/host/FM/PASTE.PNG" || string(wroteBody) != "\x89PNG\r\n\x1a\nblob" {
+		t.Fatalf("blob write = %q %q, want /host/FM/PASTE.PNG holding the payload", wrotePath, wroteBody)
+	}
+	if !strings.Contains(got, markerClipSys+"adopt image/png") ||
+		!strings.Contains(got, markerPasted+"PASTE.PNG") {
+		t.Fatalf("adopt/pasted receipts missing: %q", got)
+	}
+	if got := m.takeNotify(); got != "pasted PASTE.PNG" {
+		t.Fatalf("toast = %q", got)
+	}
+}
+
+// TestClipBlobNameDedup: the derived name never overwrites — PASTE.<ext>
+// then PASTE1..9.<ext>, and a fully-held run is the no-free-name refusal.
+func TestClipBlobNameDedup(t *testing.T) {
+	m := testModel(entry("PASTE.PNG", false), entry("PASTE1.PNG", false))
+	if got := clipBlobName(m.entries[:], m.n, "PNG"); got != "PASTE2.PNG" {
+		t.Fatalf("dedup = %q, want PASTE2.PNG", got)
+	}
+	if got := clipBlobName(m.entries[:], m.n, "QOI"); got != "PASTE.QOI" {
+		t.Fatalf("a different ext is a different run: %q", got)
+	}
+	var all []vi.DirEntry
+	all = append(all, entry("PASTE.GIF", false))
+	for i := 1; i < 10; i++ {
+		all = append(all, entry("PASTE"+vi.Itoa64(int64(i))+".GIF", false))
+	}
+	if got := clipBlobName(all, len(all), "GIF"); got != "" {
+		t.Fatalf("ten held names must exhaust: %q", got)
+	}
+}
+
 // M79k (#1720): the model decides WHAT happened and main owns the seat
 // seam, so the toast text is queued on the model and drained exactly once.
 // A completed copy is the honest adopter: the status line already says
@@ -353,6 +508,7 @@ func TestClipPasteRefusals(t *testing.T) {
 // a copy that did not happen is the one thing this must never print.
 func TestPasteQueuesOneToastAndRefusalsQueueNone(t *testing.T) {
 	// Empty clip: refused, no toast.
+	installSysClip(t, "", nil, 0)
 	m := testModel(entry("SUB", true), entry("KNOWN.TXT", false))
 	m.handleKey(runeKey('p'))
 	if got := m.takeNotify(); got != "" {

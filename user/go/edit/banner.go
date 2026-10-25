@@ -22,6 +22,7 @@ package main
 import (
 	"virelai/appkit"
 	"virelai/vi"
+	"virelai/vsys"
 	"virelai/widgets"
 )
 
@@ -93,7 +94,7 @@ func (e *editor) bannerResolve() {
 	choice := e.banner.Choice
 	e.banner.Choice = ""
 	if choice == appkit.BannerCopy {
-		if _, rc := clipWrite([]byte(e.banner.Text)); rc < 0 {
+		if _, rc := clipWrite(vsys.ClipText, []byte(e.banner.Text)); rc < 0 {
 			vi.ConsoleLine(markerBannerAct + "copy rc=" + vi.Itoa64(rc))
 		} else {
 			vi.ConsoleLine(markerBannerAct + "copy")
