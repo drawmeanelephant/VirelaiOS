@@ -15,6 +15,9 @@ run `python3 tools/tests/test_app_refresh.py --stale`, take the top
 rows, and refresh those apps. A refresh PR bumps its row — set
 `last refresh` to the landing card and `date` to the merge date — so
 the ledger, not memory, decides which apps the next wave sees.
+The same diff also bumps the component's `ver` patch — the registry's
+bump rule — so a refresh re-dates the ledger row and the product
+version in one landing.
 
 Staleness is advisory, never a gate: `--stale` prints the table
 oldest-first and exits 0 regardless. Time is not a build input.
