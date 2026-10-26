@@ -4,8 +4,11 @@ import (
 	"strings"
 	"testing"
 
+	"virelai/art"
+	"virelai/draw"
 	"virelai/store"
 	"virelai/vi"
+	"virelai/widgets"
 )
 
 type fakeRepaint struct{ n int }
@@ -266,8 +269,8 @@ func capsRow() store.CatalogRow {
 		Entry: &store.CatalogEntry{
 			Stream: "caprel", Head: "h1", Publisher: "ab", PubState: "trusted",
 			Rel: &store.Release{Name: "GRANTME", Version: "1.0.0",
-				ELFSHA256:    strings.Repeat("ab", 32),
-				Caps:         []string{"file", "memory", "process", "debug", "net"},
+				ELFSHA256:   strings.Repeat("ab", 32),
+				Caps:        []string{"file", "memory", "process", "debug", "net"},
 				ManifestRow: "GRANTME.ELF | Grant Me | g | dock=false"},
 		}}
 }
@@ -437,5 +440,80 @@ func TestPinTargetsReleaseName(t *testing.T) {
 	}
 	if !start || !done {
 		t.Fatalf("pin op markers missing in %v", *lines)
+	}
+}
+
+// #3348 (#1250): the install-done verdict stands the staged celebrate
+// pose at the status line's left, the text yielding it the room — an
+// absent asset or any other status keeps the text-only line.
+func TestInstallDoneStandsCelebratePose(t *testing.T) {
+	a, lines := testApp(t)
+	loadFn = func(store.FS, string, string, string, string, string) ([]store.CatalogRow, error) {
+		return rowsFixture(), nil
+	}
+	a.refresh()
+	installFn = func(fs store.FS, root, stream, remote, channel string) int { return 0 }
+	a.key(vi.Event{Kind: vi.EvKeyDown, Arg0: 'i' - 0x60, Arg1: 'i'})
+	if !a.installDone() || a.status != "install rc=0" {
+		t.Fatalf("status = %q, want the install-done verdict", a.status)
+	}
+	// Every other status keeps the plain line.
+	a.status = "update rc=0"
+	if a.installDone() {
+		t.Fatal("a non-install verdict claimed the pose")
+	}
+	a.status = "install rc=0"
+
+	art.Reset()
+	defer art.Reset()
+	saved := installMascotShown
+	installMascotShown = false
+	defer func() { installMascotShown = saved }()
+
+	const mrgb = 0xff664422
+	pix := make([]uint32, 16)
+	for i := range pix {
+		pix[i] = mrgb
+	}
+	art.Stage(art.MascotCelebrate, &draw.BufferCanvas{Pix: pix, W: 4, H: 4})
+
+	buf := make([]byte, 200*40*4)
+	c, err := draw.BytesCanvas(buf, 200, 40)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := widgets.Rect{X: padX, Y: 8, W: 176, H: lineH}
+	got := installArtYield(c, r, a.installDone())
+	// The pose fills the line's 12px left cell; the text yields it + 6px.
+	if got.X != r.X+lineH+6 || got.W != r.W-lineH-6 || got.Y != r.Y || got.H != r.H {
+		t.Fatalf("yielded rect = %+v", got)
+	}
+	if px := c.Pix[(r.Y+6)*200+r.X+6]; px != mrgb {
+		t.Fatalf("pose pixel = %#08x, want %#08x", px, mrgb)
+	}
+	var receipt bool
+	for _, l := range *lines {
+		receipt = receipt || l == "gostore: install mascot qoi 4x4"
+	}
+	if !installMascotShown || !receipt {
+		t.Fatalf("decode receipt missing: shown=%v lines=%v", installMascotShown, *lines)
+	}
+
+	// The degrade contract: a non-install status returns the band
+	// unchanged; an absent asset neither moves the band nor paints.
+	if got := installArtYield(c, r, false); got != r {
+		t.Fatalf("non-install status moved the line: %+v", got)
+	}
+	art.Reset()
+	buf2 := make([]byte, 200*40*4)
+	c2, err := draw.BytesCanvas(buf2, 200, 40)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := installArtYield(c2, r, true); got != r {
+		t.Fatalf("absent asset moved the line: %+v", got)
+	}
+	if c2.Pix[(r.Y+6)*200+r.X+6] == mrgb {
+		t.Fatal("an absent asset still painted the pose")
 	}
 }

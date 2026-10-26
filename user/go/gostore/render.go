@@ -3,6 +3,7 @@ package main
 import (
 	"strings"
 
+	"virelai/art"
 	"virelai/draw"
 	"virelai/store"
 	"virelai/theme"
@@ -196,6 +197,45 @@ func (a *app) draw() {
 	}
 	text(padX, h-footerH+4, "[l]ist [/]search [enter]detail [i]nstall [u]pdate [r]ollback [p]in [d]elete [q]uit", th.Muted)
 	if a.status != "" {
-		text(padX, h-footerH+16, a.status, th.Accent)
+		// #3348 (#1250): a completed install's verdict stands the staged
+		// celebrate pose at the status line's left, the text yielding it
+		// the room — an upgrade on the confirmation, never a dependency.
+		sr := installArtYield(c, widgets.Rect{
+			X: padX, Y: h - footerH + 16, W: w - 2*padX, H: lineH},
+			a.installDone())
+		(&widgets.Text{R: sr, Label: a.status, Fg: th.Accent, Bg: th.Bg}).Draw(c)
 	}
+}
+
+// installMascotShown latches the one-shot decode receipt for the
+// celebrate pose on the install-done status — the same latch shape the
+// seat's mascot markers keep.
+var installMascotShown bool
+
+// installArtYield blits the staged celebrate pose (MSC_CELB) into the
+// status line's left cell when the line carries the install-done
+// verdict, returning the rect the text keeps. The degrade contract is
+// the fleet's: an absent or refused asset — or a canvas that is not a
+// pixel buffer — returns r unchanged, so the line stays byte-identical
+// to its text-only form.
+func installArtYield(c widgets.RectCanvas, r widgets.Rect, done bool) widgets.Rect {
+	if !done {
+		return r
+	}
+	bc, ok := c.(*draw.BufferCanvas)
+	if !ok {
+		return r
+	}
+	m := art.Load(art.MascotCelebrate)
+	if m == nil || r.H <= 0 {
+		return r
+	}
+	draw.BlitScaled(bc, m, widgets.Rect{X: r.X, Y: r.Y, W: r.H, H: r.H})
+	if !installMascotShown {
+		installMascotShown = true
+		consoleFn("gostore: install mascot qoi " + itoa(m.W) + "x" + itoa(m.H))
+	}
+	r.X += r.H + 6
+	r.W -= r.H + 6
+	return r
 }

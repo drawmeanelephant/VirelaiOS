@@ -24,7 +24,10 @@
 package main
 
 import (
+	"virelai/art"
+	"virelai/draw"
 	"virelai/vi"
+	"virelai/widgets"
 )
 
 const (
@@ -44,6 +47,10 @@ const (
 	// trailing 48px of a live progress row ("Cancel" is 6 cells at the
 	// 8px face), vs the plain row's 34px X.
 	notifyProgressCancelW = 48
+	// MarkerBusyMascot is the decode receipt for the staged think pose
+	// (MSC_THNK) standing on a live progress row — the seat's busy
+	// surface — the same one-shot shape the other mascot markers keep.
+	MarkerBusyMascot = "gotabwm: busy mascot qoi "
 )
 
 // sendProgressNotice is the kind-23 push seam — a var like
@@ -85,6 +92,38 @@ func notifyProgressUpdate(tabID uint32, pid, op uint8, pct int, label string) (c
 // progressDone reports whether the operation reached 100 — the moment the
 // row's affordance flips from Cancel to a plain dismiss.
 func (e centerNotification) progressDone() bool { return e.progress && e.pct >= 100 }
+
+// progressBusy reports whether the row's operation is still in flight —
+// the same predicate the trailing affordance reads (a done row or a dead
+// source shows the dismiss X, not Cancel). It is also the think pose's
+// contract: the mascot stands only while the operation it marks is
+// genuinely working.
+func (e centerNotification) progressBusy() bool {
+	return e.progress && !e.progressDone() && !e.sourceGone
+}
+
+// busyMascotShown latches the one-time decode marker for the think pose
+// on the progress rows — the same latch shape the other mascot markers
+// keep.
+var busyMascotShown bool
+
+// busyMascotPaint blits the staged think pose into r on a live progress
+// row, reporting whether pixels landed so the caller can give the pose
+// its layout room. An absent or refused asset is a silent no-op — the
+// row's bar is the contract, the pose is dressing.
+func busyMascotPaint(c *draw.BufferCanvas, r widgets.Rect) bool {
+	m := art.Load(art.MascotThink)
+	if m == nil || r.Empty() {
+		return false
+	}
+	draw.BlitScaled(c, m, r)
+	if !busyMascotShown {
+		busyMascotShown = true
+		vi.ConsoleLine(MarkerBusyMascot +
+			vi.Itoa64(int64(m.W)) + "x" + vi.Itoa64(int64(m.H)))
+	}
+	return true
+}
 
 // notifyProgressCancel acts on a live progress row's Cancel: the kind-23
 // push to the reporter's pid, carrying the op in title[0] and the bound

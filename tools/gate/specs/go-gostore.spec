@@ -723,6 +723,9 @@ vgate_assert 01 serial-contains 'gostore: leg sha'
 vgate_assert 01 serial-contains 'gostore: leg publish'
 vgate_assert 01 serial-contains 'store: install ok GOHELLO.ELF version=1.0.0'
 vgate_assert 01 serial-contains 'gostore: install rc=0'
+# #3348: the install-done verdict stands the staged celebrate pose — the
+# decode receipt prints on the first frame the line paints with it.
+vgate_assert 01 serial-contains 'gostore: install mascot qoi 64x64'
 vgate_assert 01 serial-contains 'virelai-go OK'
 vgate_assert 01 serial-absent 'store: refuse'
 vgate_assert 01 serial-absent 'sig_invalid'

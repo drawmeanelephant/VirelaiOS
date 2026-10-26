@@ -22,6 +22,9 @@
 package main
 
 import (
+	"strings"
+
+	"virelai/art"
 	"virelai/draw"
 	"virelai/tabapp"
 	"virelai/theme"
@@ -34,6 +37,11 @@ const (
 	appTitle = "Snapshots"
 	natW     = 480
 	natH     = 300
+
+	// markerSavedMascot is the one-shot decode receipt for the staged
+	// celebrate pose (MSC_CELB) standing on the save confirmation —
+	// the seat's mascot markers' latch shape in this app's namespace.
+	markerSavedMascot = "gosnap: saved mascot qoi "
 )
 
 // The HID usage codes the window understands — the per-app copy every
@@ -339,6 +347,51 @@ func (v *snapView) save() {
 	}
 }
 
+// savedMascotShown latches the one-shot decode receipt for the celebrate
+// pose on the save confirmation — the same latch shape the seat's mascot
+// markers keep.
+var savedMascotShown bool
+
+// statusSaved reports whether the standing status line is the save
+// verb's confirmation — the one line the staged celebrate pose dresses
+// (#3348). Every other status (refusals, the restore/rm verdicts, the
+// consent asks) keeps the text-only band.
+func (v *snapView) statusSaved() bool {
+	return strings.HasSuffix(v.status, " saved")
+}
+
+// statusArtYield blits the staged celebrate pose at the status band's
+// left when the band carries the save confirmation, returning the rect
+// the status text keeps. The degrade contract is the fleet's: an absent
+// or refused asset — or a canvas that is not a pixel buffer — returns r
+// unchanged, so the band stays byte-identical to its text-only form.
+func statusArtYield(c widgets.RectCanvas, r widgets.Rect, saved bool) widgets.Rect {
+	if !saved {
+		return r
+	}
+	bc, ok := c.(*draw.BufferCanvas)
+	if !ok {
+		return r
+	}
+	m := art.Load(art.MascotCelebrate)
+	if m == nil || r.H < 8 {
+		return r
+	}
+	s := r.H - 4
+	if s > 48 {
+		s = 48
+	}
+	draw.BlitScaled(bc, m, widgets.Rect{X: r.X, Y: r.Y + (r.H-s)/2, W: s, H: s})
+	if !savedMascotShown {
+		savedMascotShown = true
+		logLine(markerSavedMascot +
+			vi.Itoa64(int64(m.W)) + "x" + vi.Itoa64(int64(m.H)))
+	}
+	r.X += s + 8
+	r.W -= s + 8
+	return r
+}
+
 // handle applies one input event, reporting whether the frame changed.
 func (v *snapView) handle(ev vi.Event) bool {
 	switch ev.Kind {
@@ -580,6 +633,10 @@ func (v *snapView) draw() {
 	v.delBtn.Draw(cv)
 	v.pinBtn.Draw(cv)
 	v.pruneBtn.Draw(cv)
+	// #3348 (#1250): a saved snapshot stands the staged celebrate pose
+	// at the status band's left, the status text yielding it the room —
+	// an upgrade on the confirmation, never a dependency.
+	v.statusTxt.R = statusArtYield(cv, v.statusTxt.R, v.statusSaved())
 	v.statusTxt.Draw(cv)
 }
 
