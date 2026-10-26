@@ -110,6 +110,12 @@ func main() {
 
 	cols, rows := gridOf(ta.W, ta.H)
 	m := newModel(cols, rows)
+	// The argv deep-link (issue #3767 — the NOTE argv convention): an Open
+	// With-style hand-off execs GOHELP.ELF <topic>. A miss refuses honestly
+	// on the status line and stays on the index.
+	if args := vi.Args(); len(args) > 1 && args[1] != "" {
+		m.deepLink(args[1])
+	}
 	if !paint(fd, m) {
 		shutdown(ta, fd, 4)
 	}
@@ -118,6 +124,9 @@ func main() {
 	flush(&m)
 	vi.ConsoleLine(markerPresent)
 	vi.ConsoleLine(markerReady)
+	// A boot-time deep-link's detail gets the same settle barrier a
+	// key-opened one earns in onKey — a no-op without a pending detail.
+	settle(&m)
 
 	var in [64]byte
 	for {

@@ -46,7 +46,7 @@ type model struct {
 	sel      int             // cursor into visible()
 	listTop  int             // first visible catalog index in browse mode
 
-	filter    string // `/`-to-filter, matched case-folded against names
+	filter    string // `/`-to-filter, matched case-folded against the topic text
 	filtering bool   // the filter line owns the keyboard
 
 	mode   viewMode
@@ -142,20 +142,31 @@ func (m *model) loadDocs() {
 	}
 }
 
-// visible is the flat command list under the current filter: every catalog
-// row whose NAME contains the filter (case-folded), section order intact.
+// visible is the flat command list under the current filter — the launcher's
+// incremental-query idiom (issue #3767), now full-text: rows whose NAME
+// contains the query (case-folded) lead in catalog order, then rows the
+// query found only in their help text (usage, blurb, notes), also in
+// catalog order. A name hit always outranks a body hit so `ec` still opens
+// with echo/secrets/exec.
 func (m model) visible() []shlib.HelpRow {
 	if m.filter == "" {
 		return m.cmds
 	}
 	q := strings.ToLower(m.filter)
-	out := make([]shlib.HelpRow, 0, len(m.cmds))
+	named := make([]shlib.HelpRow, 0, len(m.cmds))
+	body := make([]shlib.HelpRow, 0, len(m.cmds))
 	for _, r := range m.cmds {
 		if strings.Contains(strings.ToLower(r.Name), q) {
-			out = append(out, r)
+			named = append(named, r)
+			continue
+		}
+		if strings.Contains(strings.ToLower(r.Usage), q) ||
+			strings.Contains(strings.ToLower(r.Blurb), q) ||
+			strings.Contains(strings.ToLower(r.Notes), q) {
+			body = append(body, r)
 		}
 	}
-	return out
+	return append(named, body...)
 }
 
 func (m *model) clampSel() {
@@ -239,6 +250,28 @@ func (m *model) jumpGroup(dir int) {
 		m.sel = tail + 1
 		m.emitFocus()
 	}
+}
+
+// deepLink applies the argv[1] hand-off (issue #3767 — the NOTE argv
+// convention: GOHELP.ELF <topic> opens straight to that topic's detail
+// page). The match is a case-folded exact NAME — a destination an Open
+// With dispatch can compute. A name the catalog does not have refuses
+// honestly: the status line says so and the index view stays up — a typo'd
+// hand-off must never crash the browser nor pretend it opened something.
+// On a hit the cursor lands on the row too, so backing out of the detail
+// keeps the linked topic in view.
+func (m *model) deepLink(topic string) {
+	q := strings.ToLower(topic)
+	for i, r := range m.cmds {
+		if strings.ToLower(r.Name) == q {
+			m.sel = i
+			m.emit(markerDeepLink + r.Name)
+			m.openDetail(r)
+			return
+		}
+	}
+	m.status = "no such topic: " + topic
+	m.emit(markerDeepLink + "miss " + topic)
 }
 
 // openDetail flips to the full-page detail of one row. The detail marker is

@@ -35,10 +35,15 @@ const (
 	markerBrowse = "gohelp: browse"
 
 	// `/`-to-filter: one marker per edit (n = visible matches), then the
-	// clear. The gate pins `filter ec n=3` and the 45-row catalog clear.
+	// clear. The gate pins `filter directory n=5` — a name-free query, so
+	// every hit proves the full-text pass — and the 62-row catalog clear.
 	markerFilter        = "gohelp: filter "
 	markerFilterOn      = "gohelp: filter on"
 	markerFilterCleared = "gohelp: filter cleared n="
+
+	// The argv deep-link (issue #3767): `deeplink <name>` on a hit (the
+	// detail marker follows), `deeplink miss <topic>` on an honest refusal.
+	markerDeepLink = "gohelp: deeplink "
 
 	// markerSettled is printed after the detail frame has been painted and
 	// its `gohelp: detail …` marker flushed: the gate's close script waits on

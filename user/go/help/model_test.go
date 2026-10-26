@@ -142,18 +142,19 @@ func TestFilterFlow(t *testing.T) {
 	}
 	key(&m, runeKey('e'))
 	got := key(&m, runeKey('c'))
-	if !hasLine(got, "gohelp: filter ec n=3") {
-		t.Errorf("filter ec marker missing (want n=3): %v", got)
+	// #3767: the filter is full-text — `ec` leads with its three name hits
+	// (echo, secrets, exec) then the rows whose help text carries the
+	// substring (SECONDS, "checked", "record", "ICMP echo", …).
+	if !hasLine(got, "gohelp: filter ec n=22") {
+		t.Errorf("filter ec marker missing (want n=22): %v", got)
 	}
-	// The matches, in catalog order: shell's echo, identity's secrets,
-	// then the externals' exec.
 	vis := m.visible()
 	var names []string
 	for _, r := range vis {
 		names = append(names, r.Name)
 	}
-	if strings.Join(names, ",") != "echo,secrets,exec" {
-		t.Errorf("filter ec matched %v, want echo,secrets,exec", names)
+	if strings.Join(names[:3], ",") != "echo,secrets,exec" {
+		t.Errorf("filter ec name hits lead with %v, want echo,secrets,exec", names[:3])
 	}
 	got = key(&m, kEsc)
 	if !hasLine(got, "gohelp: filter cleared n=62") {
@@ -161,6 +162,66 @@ func TestFilterFlow(t *testing.T) {
 	}
 	if m.filter != "" || m.filtering {
 		t.Errorf("filter state after escape: filter=%q filtering=%v", m.filter, m.filtering)
+	}
+}
+
+// TestFilterFullText is the #3767 leg's host half: a query no NAME contains
+// still matches — every row comes from usage/blurb/notes, pinned exactly so
+// a regression to name-only matching fails as n=0.
+func TestFilterFullText(t *testing.T) {
+	m := testModel()
+	key(&m, runeKey('/'))
+	var got []string
+	for _, r := range "directory" {
+		got = key(&m, runeKey(r))
+	}
+	vis := m.visible()
+	var names []string
+	for _, r := range vis {
+		names = append(names, r.Name)
+	}
+	if strings.Join(names, ",") != "cd,dirs,popd,pushd,pwd" {
+		t.Errorf("filter directory matched %v, want cd,dirs,popd,pushd,pwd", names)
+	}
+	if !hasLine(got, "gohelp: filter directory n=5") {
+		t.Errorf("filter directory marker missing (want n=5): %v", got)
+	}
+}
+
+// TestDeepLink is the #3767 argv hand-off's host half: an exact (case-folded)
+// topic name opens its detail page and moves the cursor onto the row; a name
+// the catalog does not have refuses on the status line and stays on the
+// index — never a crash, never a pretend detail.
+func TestDeepLink(t *testing.T) {
+	m := testModel()
+	m.deepLink("ECHO") // case-folded, like an exec'd hand-off spelling
+	got := m.drain()
+	if !hasLine(got, "gohelp: deeplink echo") ||
+		!hasLine(got, "gohelp: detail echo usage=echo [ARG...]") {
+		t.Errorf("deep-link hit markers: %v", got)
+	}
+	if m.mode != modeDetail || m.detail.Name != "echo" || !m.detailBatch {
+		t.Errorf("state after deep-link hit: mode=%v detail=%q batch=%v",
+			m.mode, m.detail.Name, m.detailBatch)
+	}
+	if m.visible()[m.sel].Name != "echo" {
+		t.Errorf("cursor after deep-link hit: %q, want echo",
+			m.visible()[m.sel].Name)
+	}
+
+	m2 := testModel()
+	m2.deepLink("nosuchtopic")
+	got = m2.drain()
+	if !hasLine(got, "gohelp: deeplink miss nosuchtopic") {
+		t.Errorf("deep-link miss marker: %v", got)
+	}
+	for _, l := range got {
+		if strings.HasPrefix(l, "gohelp: detail ") {
+			t.Errorf("miss emitted a detail marker: %v", got)
+		}
+	}
+	if m2.mode != modeBrowse || m2.status != "no such topic: nosuchtopic" {
+		t.Errorf("state after deep-link miss: mode=%v status=%q", m2.mode, m2.status)
 	}
 }
 

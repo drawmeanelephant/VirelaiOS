@@ -12,4 +12,4 @@ order: 90
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| Help | app | GOHELP.ELF | ver 1.0.0 | tools/gate/specs/go-help.spec | shipped |
+| Help | app | GOHELP.ELF | ver 1.1.0 | tools/gate/specs/go-help.spec | shipped |
