@@ -111,6 +111,14 @@ func (s *TabStrip) sessionRows() TabStrip {
 		if t0.ID >= sessionIDBase {
 			continue
 		}
+		// M122b (#2571): the first-boot tour is a first-boot surface, not
+		// workspace state — recording it would re-exec GOWELCOME on every
+		// restored boot (observed go-wm-default run 20: session load n=3
+		// restored Welcome beside [Sh, Term] and alt-tab landed on it).
+		// Reopen (ctrl-shift-t) still finds it through the close LIFO.
+		if t0.Bin == welcomeBin {
+			continue
+		}
 		if !out.OpenTab(t0.ID, t0.Title) {
 			return TabStrip{}
 		}

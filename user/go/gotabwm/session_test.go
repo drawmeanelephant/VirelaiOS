@@ -299,6 +299,30 @@ func TestSessionWriteSkipsRestoredPlaceholders(t *testing.T) {
 	}
 }
 
+// TestSessionWriteSkipsTourRow: the first-boot tour is a first-boot
+// surface (M122b) — a Welcome tab on the strip never reaches SESSION.TABS,
+// so a relaunch cannot re-exec it (observed: session load n=3 restoring
+// Welcome beside [Sh, Term], go-wm-default run 20).
+func TestSessionWriteSkipsTourRow(t *testing.T) {
+	var log sessionWriteLog
+	log.install(t)
+
+	tabs = TabStrip{}
+	if !tabs.OpenTab(3, "Sh") || !tabs.OpenTab(4, "Welcome") || !tabs.OpenTab(5, "Term") {
+		t.Fatal("OpenTab")
+	}
+	if tabs.At(1).Bin != welcomeBin {
+		t.Fatalf("Welcome tab recorded bin %q, want %q", tabs.At(1).Bin, welcomeBin)
+	}
+	if !writeSession() {
+		t.Fatal("writeSession")
+	}
+	_, recs, _, _ := log.last(t)
+	if len(recs) != 2 || recs[0].Title != "Sh" || recs[1].Title != "Term" {
+		t.Fatalf("published %+v want [Sh Term] only", recs)
+	}
+}
+
 // TestSessionWriteFailureStaysDirty: a failed publish must not be recorded
 // as an up-to-date file — the next mutation retries.
 func TestSessionWriteFailureStaysDirty(t *testing.T) {

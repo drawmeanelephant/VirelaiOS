@@ -108,9 +108,13 @@ EOF
 
 # Boot 01, stage 3: the two-tab choreography has closed GOSH and GOSET, so
 # GOCALC.ELF is exec'd as the M59 hosted-client proof on an empty strip. The
-# save under test already happened in stage 2 and was the PANEL's, never the
-# monitor's `settings set`. The trailing `wm` dumps the kernel's M53 rate row
-# AFTER both typed legs landed (card #3034: the typed-key latency evidence).
+# anchor is the seat's own `tabs empty` — the client's `goset: close` lands
+# at/after the teardown boundary (observed 2026-10-26: `host done` printed
+# before `goset: close`, the exec reached a dead seat, `declare refused`).
+# The save under test already happened in stage 2 and was the PANEL's, never
+# the monitor's `settings set`. The trailing `wm` dumps the kernel's M53 rate
+# row AFTER both typed legs landed (card #3034: the typed-key latency
+# evidence).
 vgate_file script3.txt <<'EOF'
 exec GOCALC.ELF
 wm
@@ -284,7 +288,7 @@ vgate_run 01 -- \
     --input-chords 'space,space,space,space,space,space,space,space,space,space,space,space,k,e,y,b,o,a,r,d,_,l,a,y,o,u,t,=,d,e,return' \
     --input-chords-after 'goset: saved ' \
     --script3 '$RUN_DIR/script3.txt' \
-    --script3-after 'goset: close' \
+    --script3-after 'gotabwm: tabs empty' \
     --script-expect 'goset: saved ' --script-expect-tail 150 --timeout 300
 
 # --- the flip: an untouched boot lands in the Go desktop ------------------
