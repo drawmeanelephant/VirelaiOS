@@ -15,7 +15,9 @@
 #           2+3.5=5.5 — fixed-point division with round-half-away, and an
 #           exact decimal add (never the float 5.5000000000000004)
 #   run 03  programmer keyboard leg: 'p' toggles the mode, hex digits
-#           enter and display in HEX (FF-1=FE)
+#           enter and display in HEX (FF-1=FE), then the radix row's
+#           keyboard path (#3701): ctrl-o/ctrl-b drive the same doBase the
+#           pad's OCT/BIN cells own — '10-1=7' in OCT, '10-1=1' in BIN
 #   run 04  the PAD leg: --pointer-virtio clicks hit-test real pad buttons.
 #           It must run under the bare shim (no seat): with a WM registered,
 #           the kernel fans the raw pointer stream to the seat and never
@@ -31,7 +33,10 @@
 #           the Border stroke + BtnIdle faces, the bitmap '7' label ink,
 #           and the Ink digits a typed '12+3' leaves in the display — the
 #           draw-engine composite end-to-end, discriminated from the v1
-#           flat-rect path by the corner probe.
+#           flat-rect path by the corner probe. The trailing 't' presses
+#           the copy verb on an EMPTY tape: the staged notice paints the
+#           strip's bottom row in Warning ink — #3701's visible-refusal
+#           candidate, probed as Warning pixels.
 #
 # M192c (#3248) legs — the appver-1 envelope, the bounded tape, the copy verb:
 #   run 06  state leg (GOTABWM): 'p' + 'f,f,-,1,return' puts the app in
@@ -217,17 +222,22 @@ PY
 # --- run 03: the programmer keyboard leg ------------------------------------
 # 'p' toggles programmer mode (default base HEX), 'f'/'f' enter hex digits
 # through the SAME engine calls as the pad's F button, '-' and return do
-# the integer op + equals. 0xFF - 1 = 0xFE -> 'FF-1=FE'.
+# the integer op + equals. 0xFF - 1 = 0xFE -> 'FF-1=FE'. #3701 then
+# exercises the radix row's keyboard path: a-f being hex digits is why no
+# letter could spell the bases, so they ride the app's registered chords
+# — 'ctrl-o' puts the display in OCT (10-1=7, not the HEX 'F') and
+# 'ctrl-b' puts it in BIN (10-1=1, not the OCT '7'). The serial markers
+# and the share file pin the base the SAME doBase call produced.
 vgate_run 03 -- \
     --screen '$RUN_DIR/screen-03' \
     --via-virtio \
     --script '$RUN_DIR/script.txt' \
     --script2 '$RUN_DIR/script2.txt' \
     --script2-after 'tabwm: sidebar-rendered' \
-    --input-chords 'p,f,f,-,1,return' \
+    --input-chords 'p,f,f,-,1,return,ctrl-o,1,0,-,1,return,ctrl-b,1,0,-,1,return' \
     --input-chords-after 'gocalc: present' \
     --script3 '$RUN_DIR/script3-prog.txt' \
-    --script3-after 'gocalc: result FF-1=FE' \
+    --script3-after 'gocalc: result 10-1=1' \
     --script-expect 'rx-gocalc-prog-ok' --timeout 240
 
 vgate_assert 03 serial-contains 'tabwm: registered'
@@ -235,6 +245,8 @@ vgate_assert 03 serial-contains 'exec: loaded GOCALC.ELF'
 vgate_assert 03 serial-contains 'gocalc: declare accepted'
 vgate_assert 03 serial-contains 'gocalc: present'
 vgate_assert 03 serial-contains 'gocalc: result FF-1=FE'
+vgate_assert 03 serial-contains 'gocalc: result 10-1=7'
+vgate_assert 03 serial-contains 'gocalc: result 10-1=1'
 vgate_assert 03 serial-contains 'gocalc: close'
 vgate_assert 03 serial-contains 'rx-gocalc-prog-ok'
 vgate_assert 03 serial-absent '[EXC] parking:'
@@ -244,7 +256,7 @@ vgate_assert 03 python <<'PY'
 import os
 share = os.environ["VG_SHARE"]
 path = os.path.join(share, "CALC", "RESULT.TXT")
-want = b"FF-1=FE\n"
+want = b"10-1=1\n"
 got = open(path, "rb").read()
 if got != want:
     print("RESULT CONTENT MISMATCH: got %r want %r" % (got, want))
@@ -316,6 +328,10 @@ PY
 # trigger, so the kind-4 stream reads a fully settled frame — the same
 # marker-settle idiom as the seat specs. No '=': the run ends with the
 # app still open (RESULT.TXT is run 01-04's evidence, not this leg's).
+# The trailing 't' is #3701's visible refusal: the tape is empty (no eval
+# ran), so the copy verb stages its "tape empty" notice — the strip's
+# bottom row in Warning ink (canvas y 19..26 -> scanout 51..57, clear of
+# the kernel band that covers the top row's first 6 glyph rows).
 vgate_file script3-pixels.txt <<'S3EOF'
 echo rx-gocalc-pixels
 S3EOF
@@ -324,7 +340,7 @@ vgate_run 05 -- \
     --screen '$RUN_DIR/screen-05' \
     --via-virtio --cvc-snap --snapshot-out '$RUN_DIR/snap-05' \
     --script '$RUN_DIR/script-pad.txt' \
-    --input-chords '1,2,+,3' \
+    --input-chords '1,2,+,3,t' \
     --input-chords-after 'gocalc: present' \
     --script3 '$RUN_DIR/script3-pixels.txt' \
     --script3-after 'gocalc: present' \
@@ -336,6 +352,7 @@ vgate_assert 05 serial-contains 'exec: loaded GOCALC.ELF'
 vgate_assert 05 serial-contains 'gocalc: open id='
 vgate_assert 05 serial-contains 'gocalc: declare refused'
 vgate_assert 05 serial-contains 'gocalc: present'
+vgate_assert 05 serial-contains 'gocalc: tape copy empty'
 vgate_assert 05 serial-contains 'rx-gocalc-pixels'
 vgate_assert 05 serial-absent '[EXC] parking:'
 vgate_assert 05 serial-absent 'exited status=139'
@@ -372,6 +389,7 @@ BTNIDLE  = (0x2d, 0x37, 0x48)  # §2.3 idle face
 TEXT     = (0xff, 0xff, 0xff)  # button label ink
 INK      = (0xe6, 0xed, 0xf3)  # display text ink
 TITLE    = (0x1a, 0x2b, 0x3c)  # kernel title band (user_title_bg dark)
+WARNING  = (0xf5, 0x9e, 0x0b)  # theme.Dark.Warning - the notice row's ink
 
 # Kernel chrome band over canvas rows 0..15 -> scanout rows 32..47: the
 # window's own chrome frame is present and the surface sits below it.
@@ -415,6 +433,17 @@ digits = sum(1 for y in range(64, 108) for x in range(40, 536)
              if px(x, y) == INK)
 if digits < 12:
     sys.exit("only %d Ink px in the display band - '12+3' did not repaint" % digits)
+
+# #3701: the copy refusal is VISIBLE, not serial-only — the "tape empty"
+# notice is the strip's bottom row in Warning ink: canvas y 19..26 ->
+# scanout rows 51..57, below the kernel band. "tape empty: nothing to
+# copy" is 27 glyphs of ~10 lit px each; 24 is a floor no wallpaper or
+# chrome token can fake.
+notice = sum(1 for y in range(51, 58) for x in range(42, 534)
+             if px(x, y) == WARNING)
+if notice < 24:
+    sys.exit("only %d Warning px in the strip's notice row - the "
+             "copy-refusal notice did not paint" % notice)
 
 # Outside the window is NOT the app: the wallpaper gradient, which shares
 # no token with the pad field.

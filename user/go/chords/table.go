@@ -250,4 +250,18 @@ var Global = Table{
 	// against this table, the kernel chrome and the app rows).
 	{Chord{ModCtrl | ModShift, UsageH}, "GOSET.ELF", AppScope("GOSET.ELF"), "",
 		"show the shortcuts registry (the panel's shortcuts view)", "#1770 (M82c)", false},
+	// #3701: the radix row's keyboard path. The pad's HEX/DEC/OCT/BIN
+	// buttons are pointer-only; these four chords drive the same doBase
+	// calls from KEY_DOWN. The letters spell the base names; a-f being hex
+	// digits is exactly why no plain-letter spelling exists. Free at every
+	// scope — the seat's plain-ctrl rows are space/tab/z/digit and the
+	// kernel's chrome is the ctrl+shift block.
+	{Chord{ModCtrl, UsageH}, "GOCALC.ELF", AppScope("GOCALC.ELF"), "",
+		"programmer pad: set the display base to HEX", "#3701", false},
+	{Chord{ModCtrl, UsageD}, "GOCALC.ELF", AppScope("GOCALC.ELF"), "",
+		"programmer pad: set the display base to DEC", "#3701", false},
+	{Chord{ModCtrl, UsageO}, "GOCALC.ELF", AppScope("GOCALC.ELF"), "",
+		"programmer pad: set the display base to OCT", "#3701", false},
+	{Chord{ModCtrl, UsageB}, "GOCALC.ELF", AppScope("GOCALC.ELF"), "",
+		"programmer pad: set the display base to BIN", "#3701", false},
 }

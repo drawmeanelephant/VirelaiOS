@@ -19,6 +19,7 @@ import (
 
 	"virelai/draw"
 	"virelai/tabapp"
+	"virelai/theme"
 )
 
 // A diff is never auto-accepted. CALC_UPDATE_GOLDEN=1 explicitly
@@ -96,4 +97,54 @@ func TestCalcProgCompositeGolden(t *testing.T) {
 	c := &draw.BufferCanvas{Pix: make([]uint32, natW*natH), W: natW, H: natH}
 	a.paintCanvas(c)
 	checkCompositeGolden(t, "calc-prog", c)
+}
+
+// The two-row strip must paint on the migrated surface too: tapeRow's
+// fills need opaqued tokens — a raw 24-bit token is an alpha-0 no-op on
+// BufferCanvas, which is what the seat hands the app. Pin the ink, not
+// a golden.
+func TestHistSecondRowPaints(t *testing.T) {
+	a := &app{ta: &tabapp.TabApp{W: natW, H: natH}}
+	feedKeys(t, a, "12-3=2+2=")
+	c := &draw.BufferCanvas{Pix: make([]uint32, natW*natH), W: natW, H: natH}
+	a.paintCanvas(c)
+	want := draw.Opaque(theme.Current.InkMuted)
+	n := 0
+	for y := 8 + histRowA; y < 8+histRowA+8; y++ {
+		for x := 10; x < natW-10; x++ {
+			if c.Pix[y*natW+x] == want {
+				n++
+			}
+		}
+	}
+	if n < 8 {
+		t.Fatalf("only %d InkMuted px in the tape row — the second history "+
+			"row did not paint on the migrated surface", n)
+	}
+}
+
+// #3701: the copy refusal is visible, not serial-only — a staged notice
+// paints the strip's bottom row in Warning ink. Not a golden: the pin is
+// the ink itself inside the plate's inner rows.
+func TestCopyNoticePaintsWarning(t *testing.T) {
+	a := &app{ta: &tabapp.TabApp{W: natW, H: natH}}
+	a.key(downASCII('t')) // empty tape → "tape empty: nothing to copy"
+	if a.notice == "" {
+		t.Fatal("'t' on an empty tape staged no notice")
+	}
+	c := &draw.BufferCanvas{Pix: make([]uint32, natW*natH), W: natW, H: natH}
+	a.paintCanvas(c)
+	want := draw.Opaque(theme.Current.Warning)
+	n := 0
+	// The notice row: the plate's histRowB band, inside its inset.
+	for y := 8 + histRowB; y < 8+histRowB+8; y++ {
+		for x := 10; x < natW-10; x++ {
+			if c.Pix[y*natW+x] == want {
+				n++
+			}
+		}
+	}
+	if n < 8 {
+		t.Fatalf("only %d Warning px in the notice row — the refusal did not paint", n)
+	}
 }

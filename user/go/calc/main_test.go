@@ -247,6 +247,66 @@ func TestCtrlIsIgnored(t *testing.T) {
 	if a.key(ev) {
 		t.Fatal("ctrl chords must not type digits")
 	}
+	// The radix chords are the prog pad's; in decimal mode they take
+	// SetBase's refusal — the same no-op the missing pad row gives.
+	for _, usage := range []uint32{0x0b, 0x07, 0x12, 0x05} { // h d o b
+		if a.key(downChord(usage)) {
+			t.Fatalf("ctrl+usage %#x must be a no-op in decimal mode", usage)
+		}
+	}
+}
+
+// downChord is a ctrl+key KEY_DOWN as the kernel delivers it to a window
+// app: usage in Arg0, the unshifted letter codepoint in Arg1.
+func downChord(usage uint32) vi.Event {
+	return vi.Event{Kind: vi.EvKeyDown, Flags: vi.ModCtrl, Arg0: usage}
+}
+
+// #3701: the radix row's keyboard path — ctrl+h/d/o/b drives the same
+// doBase as the pad's HEX/DEC/OCT/BIN cells.
+func TestRadixChordPath(t *testing.T) {
+	a := &app{}
+	feedKeys(t, a, "pff")
+	if !a.key(downChord(0x07)) { // ctrl+d → DEC
+		t.Fatal("ctrl+d must be handled in programmer mode")
+	}
+	if a.eng.Display() != "255" {
+		t.Fatalf("ctrl+d display = %q want 255", a.eng.Display())
+	}
+	if !a.key(downChord(0x12)) { // ctrl+o → OCT
+		t.Fatal("ctrl+o must be handled")
+	}
+	if a.eng.Display() != "377" {
+		t.Fatalf("ctrl+o display = %q want 377", a.eng.Display())
+	}
+	if !a.key(downChord(0x05)) { // ctrl+b → BIN
+		t.Fatal("ctrl+b must be handled")
+	}
+	if a.eng.Display() != "11111111" {
+		t.Fatalf("ctrl+b display = %q want 11111111", a.eng.Display())
+	}
+	if !a.key(downChord(0x0b)) { // ctrl+h → HEX
+		t.Fatal("ctrl+h must be handled")
+	}
+	if a.eng.Display() != "FF" {
+		t.Fatalf("ctrl+h display = %q want FF", a.eng.Display())
+	}
+	// The arg1 spellings are the same keycap: a codepoint-carrying
+	// delivery (letter or folded control code) lands identically.
+	b := &app{}
+	feedKeys(t, b, "p")
+	if !b.key(vi.Event{Kind: vi.EvKeyDown, Flags: vi.ModCtrl, Arg1: 'o'}) {
+		t.Fatal("ctrl chord on arg1 'o' must be handled")
+	}
+	if b.eng.dispBase() != 8 {
+		t.Fatalf("arg1 'o' base = %d want 8", b.eng.dispBase())
+	}
+	if !b.key(vi.Event{Kind: vi.EvKeyDown, Flags: vi.ModCtrl, Arg1: 0x02}) {
+		t.Fatal("ctrl chord on arg1 0x02 (ctrl-b) must be handled")
+	}
+	if b.eng.dispBase() != 2 {
+		t.Fatalf("arg1 0x02 base = %d want 2", b.eng.dispBase())
+	}
 }
 
 // --- M192c (#3248): the bounded tape, the copy verb, the appver-1 envelope ---
@@ -413,5 +473,33 @@ func TestCopyVerbKeyPath(t *testing.T) {
 	feedKeys(t, a, "1+1=")
 	if !a.key(downASCII('t')) {
 		t.Fatal("'t' with a tape must be handled")
+	}
+}
+
+// #3701: the copy verb's refusals stage the status band's notice — an
+// in-window line, not a serial-only marker — and the next key re-arms
+// the strip's live line.
+func TestCopyRefusalNotice(t *testing.T) {
+	a := &app{}
+	a.key(downASCII('t'))
+	if a.notice == "" {
+		t.Fatal("copy on an empty tape must stage a notice")
+	}
+	// The next keystroke clears it — toast semantics, not a mode.
+	a.key(downASCII('1'))
+	if a.notice != "" {
+		t.Fatalf("notice survived a key: %q", a.notice)
+	}
+	// A pad press clears it the same way.
+	a.key(downASCII('t'))
+	a.press("5")
+	if a.notice != "" {
+		t.Fatalf("notice survived a pad press: %q", a.notice)
+	}
+	// The refused publish names the rc on the notice too (host: -ENOSYS).
+	feedKeys(t, a, "1+1=")
+	a.key(downASCII('t'))
+	if !strings.HasPrefix(a.notice, "copy refused rc=") {
+		t.Fatalf("refused notice = %q want 'copy refused rc=…'", a.notice)
 	}
 }

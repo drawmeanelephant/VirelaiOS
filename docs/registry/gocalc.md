@@ -12,4 +12,4 @@ order: 10
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| 64-bit Calc | app | GOCALC.ELF | appver 1, ver 1.0.0 | tools/gate/specs/go-calc.spec | shipped |
+| 64-bit Calc | app | GOCALC.ELF | appver 1, ver 1.1.0 | tools/gate/specs/go-calc.spec | shipped |

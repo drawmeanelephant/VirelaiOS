@@ -76,7 +76,7 @@ All of them additionally answer to the schema-v2 manifest grammar
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| 64-bit Calc | app | GOCALC.ELF | appver 1, ver 1.0.0 | tools/gate/specs/go-calc.spec | shipped |
+| 64-bit Calc | app | GOCALC.ELF | appver 1, ver 1.1.0 | tools/gate/specs/go-calc.spec | shipped |
 | Text Editor | app | NOTE.ELF | appver 1, ver 1.1.0 | tools/gate/specs/go-note.spec | shipped |
 | Code Editor | app | GOEDIT.ELF | appver 1, ver 1.0.0 | tools/gate/specs/go-edit.spec | shipped |
 | Files | app | GOFILES.ELF | appver 1, ver 1.0.0 | tools/gate/specs/go-fileman.spec | shipped |

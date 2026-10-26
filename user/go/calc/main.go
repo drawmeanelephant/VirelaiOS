@@ -10,8 +10,12 @@
 // engine calls as the pad — digits, '.', '%', 'n' (±), 'p' (mode),
 // a–f + '&' '|' '^' '~' '<' '>' in programmer mode, 't' copies the tape,
 // Enter = equals, Escape = clear, Backspace edits the entry — there is
-// no second input path. Above the entry, the history strip keeps the
-// live line plus the previous tape row once one exists.
+// no second input path. The radix row is the one pad row a–f make
+// unreachable from letters, so it answers ctrl+h/d/o/b (the GOCALC.ELF
+// rows in chords.Global) — #3701. Above the entry, the history strip
+// keeps the live line plus the previous tape row once one exists; the
+// strip is also the status band — a copy-verb refusal takes its bottom
+// row in Warning ink until the next key or pad press re-arms it.
 //
 // M192c (#3248): the calc remembers. Each '=' appends its rendered line
 // to a bounded tape (tapeMax entries, newest last); 't' publishes the
@@ -28,6 +32,7 @@ import (
 	"strings"
 
 	"virelai/appkit"
+	"virelai/chords"
 	"virelai/draw"
 	"virelai/tabapp"
 	"virelai/theme"
@@ -130,9 +135,13 @@ type app struct {
 	justEvaled bool
 	tape       []string
 	pend       []byte
-	disp       widgets.Text
-	hist       widgets.Text
-	keys       [maxCells]widgets.Button
+	// notice is the status band's transient line (#3701): set by the copy
+	// verb's refusal paths, painted in Warning ink on the strip's bottom
+	// row, and cleared by the next key or pad press.
+	notice string
+	disp   widgets.Text
+	hist   widgets.Text
+	keys   [maxCells]widgets.Button
 	// M197d (#3416): the last staged #a11y v1 body — publishOutline's
 	// dedup, so an unchanged frame costs a compare, never a write.
 	a11yLast string
@@ -249,8 +258,9 @@ func (a *app) key(ev vi.Event) bool {
 	if ev.Kind != vi.EvKeyDown {
 		return false
 	}
+	a.notice = "" // a fresh keystroke re-arms the strip's live line
 	if ev.Flags&vi.ModCtrl != 0 {
-		return false
+		return a.radixChord(ev)
 	}
 	switch ev.Arg0 {
 	case keyEnter:
@@ -301,7 +311,42 @@ func (a *app) key(ev vi.Event) bool {
 	return false
 }
 
+// radixChord is the radix row's keyboard path (#3701): the pad's
+// HEX/DEC/OCT/BIN cells drive doBase — ctrl+h/d/o/b is the same call, the
+// GOCALC.ELF rows in chords.Global. The match is on the HID usage first,
+// then the arg1 spellings (the letter or its folded control code) for the
+// deliveries that arrive codepoint-carrying. Decimal mode refuses through
+// SetBase's own refusal — the same no-op the missing pad row gives.
+func (a *app) radixChord(ev vi.Event) bool {
+	var base uint8
+	switch uint8(ev.Arg0) {
+	case chords.UsageH:
+		base = 16
+	case chords.UsageD:
+		base = 10
+	case chords.UsageO:
+		base = 8
+	case chords.UsageB:
+		base = 2
+	default:
+		switch ev.Arg1 {
+		case 'h', 'H', 0x08:
+			base = 16
+		case 'd', 'D', 0x04:
+			base = 10
+		case 'o', 'O', 0x0f:
+			base = 8
+		case 'b', 'B', 0x02:
+			base = 2
+		default:
+			return false
+		}
+	}
+	return a.doBase(base)
+}
+
 func (a *app) press(label string) bool {
+	a.notice = "" // a pad press re-arms the strip's live line like a key
 	switch label {
 	case "":
 		return false
@@ -754,11 +799,13 @@ func stripTag(line string) string {
 func (a *app) doCopyTape() bool {
 	text := a.tapeText()
 	if text == nil {
+		a.notice = "tape empty: nothing to copy"
 		vi.ConsoleLine(markerTape + "copy empty")
 		return true
 	}
 	n, rc := vsys.ClipboardSetTyped(vsys.ClipText, text)
 	if rc < 0 {
+		a.notice = "copy refused rc=" + vi.Itoa64(rc)
 		vi.ConsoleLine(markerTape + "copy refused rc=" + vi.Itoa64(rc))
 		return true
 	}
@@ -800,18 +847,29 @@ func (a *app) tapeText() []byte {
 // drawHist paints the history plate. With no older tape entry the plate
 // is exactly the single Text line the golden pins; a second row rides
 // the same plate once the tape holds one — bitmap rows at histRowA and
-// histRowB, the two offsets the one-line widget cannot express.
+// histRowB, the two offsets the one-line widget cannot express. A staged
+// notice (#3701) takes the bottom row in Warning ink — the strip's
+// status-band face — while the tape row or live line keeps the top.
 func (a *app) drawHist(cv widgets.Canvas) {
 	top, bottom := a.histLines()
-	if top == "" {
+	tok := theme.Current
+	botInk := tok.InkMuted
+	if a.notice != "" {
+		if top == "" {
+			top = bottom
+		}
+		bottom, botInk = a.notice, tok.Warning
+	} else if top == "" {
 		a.hist.Draw(cv)
 		return
 	}
 	r := a.hist.R
-	tok := theme.Current
 	cv.FillRoundedRect(r, 4 /* widgets' radiusControl */, draw.Opaque(tok.Surface))
-	tapeRow(cv, r, top, r.Y+histRowA, tok.InkMuted)
-	tapeRow(cv, r, bottom, r.Y+histRowB, tok.InkMuted)
+	// The rows must be opaqued like the plate: a raw 24-bit token is a
+	// no-op on BufferCanvas (alpha-0 fills skip) — the bug that had the
+	// second tape row painting nothing on the seat's shared surface.
+	tapeRow(cv, r, top, r.Y+histRowA, draw.Opaque(tok.InkMuted))
+	tapeRow(cv, r, bottom, r.Y+histRowB, draw.Opaque(botInk))
 }
 
 // tapeRow paints one 8x8 bitmap line at a caller-chosen top inside the
