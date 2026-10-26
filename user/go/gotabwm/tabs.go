@@ -258,6 +258,11 @@ const (
 	// MarkerRailIcons latches the first rail paint that put a staged
 	// raster icon on a cell — the icon= seam's running-set half.
 	MarkerRailIcons = "gotabwm: rail icons n="
+	// MarkerRailSpin is the #3348 (#1255) decode receipt for the staged
+	// arc sheet (SPN_ARC) spinning on a session-restore placeholder cell
+	// — the rail's "this tab is coming back" mark while the re-exec'd
+	// pid's declare is awaited. One-shot, like MarkerRailIcons.
+	MarkerRailSpin = "gotabwm: rail spinner qoi "
 )
 
 // mruMax is the M151a focus-ring bound — the card's eight ids.
@@ -266,6 +271,10 @@ const mruMax = 8
 // railIconsMarked latches the MarkerRailIcons one-shot — the rail repaints
 // every frame, so the receipt prints on the first pass an icon blits.
 var railIconsMarked bool
+
+// railSpinMarked is the MarkerRailSpin twin: the first pass a
+// placeholder cell spins the staged sheet is the whole receipt.
+var railSpinMarked bool
 
 // M79e (#1708): the nav-history bounds, taken from Zig's tabwm rather than
 // invented. navHistMax is `hist_max`; navPathMax is `hist_path_max`, which
@@ -1551,14 +1560,41 @@ func paintRail(scan []byte, width, height, stripH int, ts *TabStrip, hover, clos
 		// owns this slot when it posts; a bin with no catalog row (or a
 		// share without the raster) leaves the cell exactly as before.
 		if w >= railIconMinW && railBadgeCount(ts.At(i).ID) == 0 {
-			if name := iconForBin(ts.At(i).Bin); name != "" {
-				if ic := art.Load(name); ic != nil {
-					ir := widgets.Rect{X: x + 1 + seatMarkerW + 3,
-						Y: (stripH - railIconPx) / 2,
-						W: railIconPx, H: railIconPx}
-					draw.BlitScaled(c, ic, ir)
+			ir := widgets.Rect{X: x + 1 + seatMarkerW + 3,
+				Y: (stripH - railIconPx) / 2,
+				W: railIconPx, H: railIconPx}
+			spun := false
+			// #3348 (#1255): a restored row still pending its re-exec'd
+			// pid's declare spins the staged arc sheet in the icon slot
+			// — the rail's honest "this tab is coming back" mark,
+			// compositeClock-paced like the notify rows. The declare
+			// swaps the placeholder id for the live window's and the
+			// icon returns; an absent sheet keeps the icon the whole
+			// wait.
+			if reexecPendingID(ts.At(i).ID) {
+				spin := appkit.Spinner{R: ir, Sheet: art.SpinnerArc,
+					Frame: int(compositeClock)}
+				if spin.Frames() > 0 {
+					spin.Draw(c)
 					written++
-					railIcons++
+					spun = true
+					if !railSpinMarked {
+						if sheet := art.Load(art.SpinnerArc); sheet != nil {
+							railSpinMarked = true
+							vi.ConsoleLine(MarkerRailSpin +
+								vi.Itoa64(int64(sheet.W)) + "x" +
+								vi.Itoa64(int64(sheet.H)))
+						}
+					}
+				}
+			}
+			if !spun {
+				if name := iconForBin(ts.At(i).Bin); name != "" {
+					if ic := art.Load(name); ic != nil {
+						draw.BlitScaled(c, ic, ir)
+						written++
+						railIcons++
+					}
 				}
 			}
 		}

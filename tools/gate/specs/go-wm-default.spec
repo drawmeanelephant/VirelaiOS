@@ -303,6 +303,10 @@ vgate_assert 01 serial-contains 'gotabwm: seat-taken'
 vgate_assert 01 serial-contains 'gotabwm: scanout'
 vgate_assert 01 serial-contains 'gotabwm: draw'
 vgate_assert 01 serial-contains 'gotabwm: holding seat'
+# #3348 (#1254): the seat-side boot plate — the staged raster presented
+# over the blocking startup between the blank-desktop frame and the
+# first composite.
+vgate_assert 01 serial-contains 'gotabwm: boot plate qoi 800x450'
 vgate_assert 01 serial-contains 'gotabwm: tick'
 vgate_assert 01 serial-contains 'gotabwm: present'
 # M76b: the empty SESSION.TABS branch launches one GOSH tab on the default
