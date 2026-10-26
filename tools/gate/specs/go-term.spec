@@ -917,7 +917,15 @@ PY
 #
 # `dui cycle` rides script3 off the `sleep 7` submit marker, so the blur
 # lands inside its 7-second window — the kernel's focus id is what the
-# app's WinQuery reads when the engine answers. The toast click is
+# app's WinQuery reads when the engine answers. --script3-delay 5 holds
+# it back: the cv-input transport paces chords at a fixed 0.25 s/stroke,
+# so the 50-stroke burst takes ~12.5 s and `cd /data`'s tail is still in
+# flight when `goterm: line sleep 7` prints. A blur fired at the marker
+# re-routes those in-flight strokes to the focused window — they never
+# reach goterm's tty, and a partial `cd /d…` sits unsubmitted in the
+# editor forever (observed on issue #3734's runs). 5 s clears the tail
+# (~3 s worst case after sleep 6's 6 s run) while staying ~2 s inside
+# sleep 7's own window for the toast. The toast click is
 # go-clock run 02's recipe: slot-0's centre (112,702) on the painted
 # toast dismisses it and click-through refocuses the sender. The boot
 # recipe is leg 03's — SESSION.TABS/PANES are removed so the seat comes
@@ -949,6 +957,7 @@ vgate_run 05 -- --display --input \
     --input-chords-after 'goterm: prompt' \
     --script3 '$RUN_DIR/script3-05.txt' \
     --script3-after 'goterm: line sleep 7' \
+    --script3-delay 5 \
     --pointer-virtio '112,702,d;112,702,u' \
     --pointer-virtio-after 'gotabwm: notify paint id=' \
     --script-expect 'gotabwm: notify dismiss id=' --timeout 300
