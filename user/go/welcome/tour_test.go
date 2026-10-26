@@ -3,6 +3,7 @@ package main
 import (
 	"testing"
 
+	"virelai/art"
 	"virelai/chords"
 	"virelai/draw"
 	"virelai/tabapp"
@@ -71,7 +72,7 @@ func TestDigitLaunch(t *testing.T) {
 }
 
 func TestFootText(t *testing.T) {
-	m := newTour()
+	m := newTour(false)
 	if got := m.footText(); got != "step 1 of 5 · arrows walk · 1-4 launch · esc closes" {
 		t.Fatalf("idle foot = %q", got)
 	}
@@ -98,7 +99,7 @@ func TestFootText(t *testing.T) {
 // nothing. The rects come from the same layout the paint used — no
 // duplicated geometry.
 func TestLauncherHitTest(t *testing.T) {
-	a := &app{ta: &tabapp.TabApp{W: natW, H: natH}, m: newTour()}
+	a := &app{ta: &tabapp.TabApp{W: natW, H: natH}, m: newTour(false)}
 	a.layout()
 	rects := a.launchRects()
 	if len(rects) != 4 {
@@ -130,7 +131,7 @@ func TestPointerLaunchesThroughExecSeam(t *testing.T) {
 	}
 	defer func() { execBin = old }()
 
-	a := &app{ta: &tabapp.TabApp{W: natW, H: natH}, m: newTour()}
+	a := &app{ta: &tabapp.TabApp{W: natW, H: natH}, m: newTour(false)}
 	a.layout()
 	r := a.launchRects()[3] // Terminal
 	// Hover first: no exec, but the hover state repaints.
@@ -163,7 +164,7 @@ func TestKeyLaunchAndQuit(t *testing.T) {
 	}
 	defer func() { execBin = old }()
 
-	a := &app{ta: &tabapp.TabApp{W: natW, H: natH}, m: newTour()}
+	a := &app{ta: &tabapp.TabApp{W: natW, H: natH}, m: newTour(false)}
 	a.key(vi.Event{Kind: vi.EvKeyDown, Arg1: '2'})
 	if len(execs) != 1 || execs[0] != "GOFILES.ELF" {
 		t.Fatalf("'2' exec'd %v, want GOFILES.ELF", execs)
@@ -182,7 +183,7 @@ func TestKeyLaunchAndQuit(t *testing.T) {
 // The render leg: the frame's plates land where layout put them, in the
 // theme's own colours, and glyph runs paint ink inside them.
 func TestWelcomeFramePaints(t *testing.T) {
-	a := &app{ta: &tabapp.TabApp{W: natW, H: natH}, m: newTour()}
+	a := &app{ta: &tabapp.TabApp{W: natW, H: natH}, m: newTour(false)}
 	c := &draw.BufferCanvas{Pix: make([]uint32, natW*natH), W: natW, H: natH}
 	a.paintCanvas(c)
 
@@ -221,7 +222,7 @@ func TestWelcomeFramePaints(t *testing.T) {
 // Hover repaints the button face — the pointer feedback a one-click
 // launcher owes the user.
 func TestHoverRepaintsButton(t *testing.T) {
-	a := &app{ta: &tabapp.TabApp{W: natW, H: natH}, m: newTour()}
+	a := &app{ta: &tabapp.TabApp{W: natW, H: natH}, m: newTour(false)}
 	c := &draw.BufferCanvas{Pix: make([]uint32, natW*natH), W: natW, H: natH}
 	a.paintCanvas(c)
 
@@ -240,7 +241,7 @@ func op(rgb uint32) uint32 { return rgb | 0xff000000 }
 // The step walk: Right advances to the last row then latches done, Left
 // steps back without clearing the latch, both ends are bounded.
 func TestStepWalk(t *testing.T) {
-	m := newTour()
+	m := newTour(false)
 	if m.step != 0 || m.done {
 		t.Fatalf("fresh tour = step %d done %v", m.step, m.done)
 	}
@@ -269,7 +270,7 @@ func TestStepWalk(t *testing.T) {
 // the pointer spelling of the arrow keys, over the same laid-out strips
 // the paint produced.
 func TestGestureHitTest(t *testing.T) {
-	a := &app{ta: &tabapp.TabApp{W: natW, H: natH}, m: newTour()}
+	a := &app{ta: &tabapp.TabApp{W: natW, H: natH}, m: newTour(false)}
 	a.layout()
 	rects := a.gestureRects()
 	if len(rects) != 5 {
@@ -295,7 +296,7 @@ func TestGestureHitTest(t *testing.T) {
 // space. Esc and q dismiss — the done latch sets on dismissal so a saved
 // envelope restores finished, never re-run.
 func TestKeyStepsAndDismiss(t *testing.T) {
-	a := &app{ta: &tabapp.TabApp{W: natW, H: natH}, m: newTour()}
+	a := &app{ta: &tabapp.TabApp{W: natW, H: natH}, m: newTour(false)}
 	if !a.key(vi.Event{Kind: vi.EvKeyDown, Arg0: hidRight}) || a.m.step != 1 {
 		t.Fatalf("right = step %d", a.m.step)
 	}
@@ -318,14 +319,14 @@ func TestKeyStepsAndDismiss(t *testing.T) {
 // cases by name: wrong length, wrong fmtver, unknown flag bits, nonzero
 // reserved. A step byte past the live table clamps, never refuses.
 func TestTourEnvelope(t *testing.T) {
-	m := newTour()
+	m := newTour(false)
 	m.step = 3
 	m.done = true
 	st, ok := decodeTourState(m.encode())
 	if !ok || st.step != 3 || !st.done {
 		t.Fatalf("round-trip = %+v ok=%v", st, ok)
 	}
-	m2 := newTour()
+	m2 := newTour(false)
 	st, ok = decodeTourState(m2.encode())
 	if !ok || st.step != 0 || st.done {
 		t.Fatalf("fresh round-trip = %+v ok=%v", st, ok)
@@ -355,7 +356,7 @@ func TestTourEnvelope(t *testing.T) {
 // themselves. No blob waiting is a silent fresh start.
 func TestApplyRestored(t *testing.T) {
 	// No stored envelope: nothing to report, nothing applied.
-	a := &app{ta: &tabapp.TabApp{W: natW, H: natH}, m: newTour()}
+	a := &app{ta: &tabapp.TabApp{W: natW, H: natH}, m: newTour(false)}
 	if line := a.applyRestored(tourState{}, false); line != "" {
 		t.Fatalf("no-restore marker = %q", line)
 	}
@@ -370,7 +371,7 @@ func TestApplyRestored(t *testing.T) {
 		t.Fatalf("restored marker = %q", line)
 	}
 	// A completed tour restores complete — the latch does not re-run it.
-	a2 := &app{ta: &tabapp.TabApp{W: natW, H: natH}, m: newTour()}
+	a2 := &app{ta: &tabapp.TabApp{W: natW, H: natH}, m: newTour(false)}
 	a2.ta.Restored, a2.ta.RestoredVersion = true, stateAppVer
 	st, _ = decodeTourState([]byte{stateFmtVer, flagDone, 4, 0})
 	line = a2.applyRestored(st, true)
@@ -381,7 +382,7 @@ func TestApplyRestored(t *testing.T) {
 		t.Fatalf("done marker = %q", line)
 	}
 	// The refusals, each named: foreign appver, torn blob.
-	a3 := &app{ta: &tabapp.TabApp{W: natW, H: natH}, m: newTour()}
+	a3 := &app{ta: &tabapp.TabApp{W: natW, H: natH}, m: newTour(false)}
 	a3.ta.Restored, a3.ta.RestoredVersion = true, 9
 	if line := a3.applyRestored(tourState{}, true); line != "gowelcome: state refused ver=9" {
 		t.Fatalf("ver refusal = %q", line)
@@ -392,5 +393,245 @@ func TestApplyRestored(t *testing.T) {
 	}
 	if a3.m.step != 0 || a3.m.done {
 		t.Fatalf("a refused blob still applied: step %d done %v", a3.m.step, a3.m.done)
+	}
+}
+
+// --- #3769: the try-it tour ---------------------------------------------
+
+// The try table: six steps, the DRAG row honestly unobservable, every
+// prompt naming its action.
+func TestTryStepsTable(t *testing.T) {
+	steps := trySteps()
+	if len(steps) != 6 {
+		t.Fatalf("trySteps = %d, want 6", len(steps))
+	}
+	for i, s := range steps {
+		if s.prompt == "" {
+			t.Fatalf("try step %d has an empty prompt", i)
+		}
+	}
+	if steps[3].want != evNone {
+		t.Fatalf("the rail-drag row pretends to be observable: %v", steps[3].want)
+	}
+	if steps[0].want != evPress || steps[0].row != 5 {
+		t.Fatalf("the press step = %+v, want evPress on the launcher line", steps[0])
+	}
+	for r := 0; r < 5; r++ {
+		if rowStep(r) < 0 {
+			t.Fatalf("gesture row %d owns no try step", r)
+		}
+	}
+}
+
+// Evidence resolves only the armed row and only on the class it asked
+// for; the cursor advances to the next pending row each time.
+func TestTryObserve(t *testing.T) {
+	m := newTour(true)
+	if m.armed() != 0 {
+		t.Fatalf("fresh try tour armed = %d", m.armed())
+	}
+	// A blur while the press row is armed is not its evidence.
+	if _, ok := m.observe(evBlur); ok {
+		t.Fatal("blur resolved the press row")
+	}
+	i, ok := m.observe(evPress)
+	if !ok || i != 0 || m.states[0] != stepDone || m.tried != 1 {
+		t.Fatalf("press = %d %v state %v tried %d", i, ok, m.states[0], m.tried)
+	}
+	if m.armed() != 1 {
+		t.Fatalf("after resolve armed = %d", m.armed())
+	}
+	// A read-mode tour observes nothing.
+	r := newTour(false)
+	if _, ok := r.observe(evBlur); ok {
+		t.Fatal("read mode resolved a try step")
+	}
+}
+
+// The honest paths: Right-skip one row at a time, the evNone row can
+// only ever be skipped, and the last resolve latches the tour done.
+func TestTrySkipWalk(t *testing.T) {
+	m := newTour(true)
+	// Two real blurs, then the skip chain over cycle/drag/palette.
+	m.observe(evPress)
+	m.observe(evBlur)
+	i, ok := m.skip()
+	if !ok || i != 2 || m.states[2] != stepSkipped || m.skipped != 1 {
+		t.Fatalf("skip = %d %v state %v skipped %d", i, ok, m.states[2], m.skipped)
+	}
+	// The drag row is skip-only by declaration: no evidence resolves it.
+	if _, ok := m.observe(evBlur); ok {
+		t.Fatal("the unobservable drag row took blur evidence")
+	}
+	if _, ok := m.observe(evPress); ok {
+		t.Fatal("the unobservable drag row took press evidence")
+	}
+	if i, ok := m.skip(); !ok || i != 3 {
+		t.Fatalf("drag-row skip = %d %v", i, ok)
+	}
+	// Skip the palette row, then the cycle row takes its blur.
+	m.skip()
+	i, ok = m.observe(evBlur)
+	if !ok || i != 5 || !m.done {
+		t.Fatalf("press = %d %v done %v", i, ok, m.done)
+	}
+	if m.tried != 3 || m.skipped != 3 {
+		t.Fatalf("counts tried=%d skipped=%d, want 3/3", m.tried, m.skipped)
+	}
+	if !m.atDone() {
+		t.Fatal("a finished try tour does not show the done screen")
+	}
+}
+
+// The marker vocabulary the spec pins: a blur resolve, the skips, the
+// done line's counts — each line in the order it leaves the console.
+func TestTryMarkers(t *testing.T) {
+	var lines []string
+	old := consoleLine
+	consoleLine = func(s string) { lines = append(lines, s) }
+	defer func() { consoleLine = old }()
+
+	a := &app{ta: &tabapp.TabApp{W: natW, H: natH}, m: newTour(true)}
+	a.observeTry(evPress)
+	a.skipTry(false)
+	a.skipTry(true)
+	want := []string{
+		"gowelcome: try 0 done press",
+		"gowelcome: try 1 armed",
+		"gowelcome: try 1 skip",
+		"gowelcome: try 2 armed",
+		"gowelcome: try 2 skip",
+		"gowelcome: try 3 skip",
+		"gowelcome: try 4 skip",
+		"gowelcome: try 5 skip",
+		"gowelcome: done tried=1 skipped=5",
+	}
+	if len(lines) != len(want) {
+		t.Fatalf("lines = %v", lines)
+	}
+	for i := range want {
+		if lines[i] != want[i] {
+			t.Fatalf("line %d = %q, want %q (all: %v)", i, lines[i], want[i], lines)
+		}
+	}
+}
+
+// argv: the bare exec is the try tour, --read is the walk, --try names
+// the default, anything else is refused by name.
+func TestParseMode(t *testing.T) {
+	for _, tc := range []struct {
+		args []string
+		try  bool
+		bad  string
+	}{
+		{nil, true, ""},
+		{[]string{appName}, true, ""},
+		{[]string{appName, "--try"}, true, ""},
+		{[]string{appName, "--read"}, false, ""},
+		{[]string{appName, "--bogus"}, true, "--bogus"},
+		{[]string{appName, "--read", "extra"}, false, "extra"},
+	} {
+		try, bad := parseMode(tc.args)
+		if try != tc.try || bad != tc.bad {
+			t.Fatalf("parseMode(%v) = %v %q, want %v %q", tc.args, try, bad, tc.try, tc.bad)
+		}
+	}
+}
+
+// The flagTry bit round-trips the mode through the envelope; an old
+// read blob stays read, foreign flag bits still refuse whole.
+func TestTryEnvelope(t *testing.T) {
+	m := newTour(true)
+	m.step = 5
+	m.done = true
+	st, ok := decodeTourState(m.encode())
+	if !ok || st.step != 5 || !st.done || !st.try {
+		t.Fatalf("try round-trip = %+v ok=%v", st, ok)
+	}
+	st, ok = decodeTourState([]byte{stateFmtVer, 0, 3, 0})
+	if !ok || st.try {
+		t.Fatalf("read blob decoded try: %+v", st)
+	}
+	if _, ok = decodeTourState([]byte{stateFmtVer, flagDone | flagTry | 0x80, 0, 0}); ok {
+		t.Fatal("an unknown flag bit decoded")
+	}
+	// The try clamp bound is the six-row try table, not the five rows.
+	st, ok = decodeTourState([]byte{stateFmtVer, flagTry, 250, 0})
+	if !ok || st.step != len(trySteps())-1 {
+		t.Fatalf("try clamp = %+v ok=%v", st, ok)
+	}
+}
+
+// A restored try blob resumes interactive: the mode lands, rows before
+// the cursor settle without inventing evidence, and a done blob stays
+// finished on the done screen.
+func TestApplyRestoredTry(t *testing.T) {
+	a := &app{ta: &tabapp.TabApp{W: natW, H: natH}, m: newTour(true)}
+	a.ta.Restored, a.ta.RestoredVersion = true, stateAppVer
+	st, _ := decodeTourState([]byte{stateFmtVer, flagTry, 4, 0})
+	a.applyRestored(st, true)
+	if !a.m.try || a.m.step != 4 || a.m.armed() != 4 {
+		t.Fatalf("restored try = try %v step %d armed %d", a.m.try, a.m.step, a.m.armed())
+	}
+	for i := 0; i < 4; i++ {
+		if a.m.states[i] != stepDone {
+			t.Fatalf("row %d not settled: %v", i, a.m.states[i])
+		}
+	}
+	// A read blob over a try exec downgrades the live tour too.
+	a2 := &app{ta: &tabapp.TabApp{W: natW, H: natH}, m: newTour(true)}
+	a2.ta.Restored, a2.ta.RestoredVersion = true, stateAppVer
+	st2, _ := decodeTourState([]byte{stateFmtVer, 0, 2, 0})
+	a2.applyRestored(st2, true)
+	if a2.m.try || a2.m.states != nil || a2.m.step != 2 {
+		t.Fatalf("read restore = try %v states %v step %d", a2.m.try, a2.m.states, a2.m.step)
+	}
+	// A finished blob keeps the done screen up on the reopen.
+	a3 := &app{ta: &tabapp.TabApp{W: natW, H: natH}, m: newTour(true)}
+	a3.ta.Restored, a3.ta.RestoredVersion = true, stateAppVer
+	st3, _ := decodeTourState([]byte{stateFmtVer, flagDone | flagTry, 5, 0})
+	a3.applyRestored(st3, true)
+	if !a3.m.atDone() {
+		t.Fatalf("restored done = done %v step %d", a3.m.done, a3.m.step)
+	}
+}
+
+// The completion surface: the celebrate pose blits through the same
+// degrade contract as the wave, the receipt prints once, and the
+// counts line names this run's observed record.
+func TestDoneScreenPaints(t *testing.T) {
+	art.Reset()
+	defer art.Reset()
+	art.Stage(art.MascotCelebrate, &draw.BufferCanvas{
+		Pix: []uint32{0xffff0000}, W: 1, H: 1,
+	})
+	var lines []string
+	old := consoleLine
+	consoleLine = func(s string) { lines = append(lines, s) }
+	defer func() { consoleLine = old }()
+	oldShown := doneMascotShown
+	doneMascotShown = false
+	defer func() { doneMascotShown = oldShown }()
+
+	a := &app{ta: &tabapp.TabApp{W: natW, H: natH}, m: newTour(true)}
+	a.m.done, a.m.step = true, 5
+	a.m.tried, a.m.skipped = 4, 2
+	c := &draw.BufferCanvas{Pix: make([]uint32, natW*natH), W: natW, H: natH}
+	a.paintCanvas(c)
+	// The staged pose painted inside its rect.
+	m := a.dMascot
+	if got := c.Pix[(m.Y+m.H/2)*c.W+m.X+m.W/2]; got != 0xffff0000 {
+		t.Fatalf("done mascot pixel = %#x", got)
+	}
+	if len(lines) != 1 || lines[0] != "gowelcome: done mascot qoi 1x1" {
+		t.Fatalf("receipt lines = %v", lines)
+	}
+	// The receipt is one-shot across repaints.
+	a.paintCanvas(c)
+	if len(lines) != 1 {
+		t.Fatalf("receipt repeated: %v", lines)
+	}
+	if a.dSub.Label != "4 tried · 2 skipped of 6" {
+		t.Fatalf("counts line = %q", a.dSub.Label)
 	}
 }

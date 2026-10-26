@@ -67,28 +67,182 @@ var launchers = []launcher{
 	{"Terminal", "GOTERM.ELF"},
 }
 
+// --- the #3769 "try it" tour -------------------------------------------
+//
+// Try mode (the bare exec's default) turns each gesture row into a step
+// the user performs: the tour arms a row and waits for its evidence —
+// the event the app can honestly observe — before the cursor moves on.
+// `GOWELCOME.ELF --read` keeps the read-only walk the scripted path
+// types, and the envelope's flagTry bit carries the mode through a seat
+// close/reopen so a restored tour resumes in the same flow.
+//
+// What a step can observe is the honest limit: a seat modal (launcher,
+// palette, a rail menu) takes kernel focus exactly the way a tab switch
+// does, so every "drive the seat" row waits on WIN_BLUR and reports
+// just that — the marker names the OBSERVED event, never the action it
+// stood in for. The rail's drag is invisible to the app outright (the
+// strip is seat chrome; no event follows a reorder), so its row is
+// skip-only by declaration, not by a guess. The launcher row's own
+// press is the app's most certain evidence of all.
+type tryEvidence uint8
+
+const (
+	evNone  tryEvidence = iota // no honest observable — skip is the only advance
+	evBlur                     // WIN_BLUR: focus left the window
+	evPress                    // a launcher button's own press edge
+)
+
+// stepState is one try-step's outcome.
+type stepState uint8
+
+const (
+	stepPending stepState = iota
+	stepDone               // its evidence arrived
+	stepSkipped            // the user passed on it — named, never faked
+)
+
+// tryStep is one "do it yourself" row: the ask painted while it is
+// armed, the evidence class that resolves it, and the painted row it
+// owns — 0..4 name the gesture rows, 5 the launcher line.
+type tryStep struct {
+	prompt string
+	want   tryEvidence
+	row    int
+}
+
+// trySteps is the try tour's execution order — the step cursor runs
+// over this table, opening on the launcher press (the one piece of
+// evidence the app sees with complete certainty) and closing on the
+// cycle. The bound rows' spellings ride gestures()' registry lookups
+// so a re-homed chord updates the ask for free.
+func trySteps() []tryStep {
+	g := gestures()
+	return []tryStep{
+		{"click a button below — the apps live in their own tabs", evPress, 5},
+		{"press " + g[1].keys + " — the launcher takes the keys", evBlur, 1},
+		{"click another tab — its rail cell up top takes the focus", evBlur, 0},
+		{"drag a rail tab to reorder — the tour cannot watch the rail", evNone, 3},
+		{"press " + g[4].keys + " — the palette takes the keys", evBlur, 4},
+		{"press " + g[2].keys + " — the focus moves to the next tab", evBlur, 2},
+	}
+}
+
+// rowStep is row's inverse: the try-step index owning painted row r,
+// or -1 — the launcher line's step has no gesture row to light.
+func rowStep(r int) int {
+	for i, s := range trySteps() {
+		if s.row == r {
+			return i
+		}
+	}
+	return -1
+}
+
 // tour is the frame's state: the gesture step the tour is teaching, the
 // done latch (walked to the end or dismissed — a restore never restarts a
 // finished tour), the launcher hover/press for the pointer, the quit latch
 // for Esc/q, and the last launch outcome the status line echoes.
 type tour struct {
-	step     int    // gesture row the tour is on, 0..len(gestures())-1
-	done     bool   // completed or dismissed — the envelope's terminal flag
-	hover    int    // launcher index under the pointer; -1 when none
-	pressed  int    // launcher index held on a left press; -1 when none
-	launched string // last bin the tour successfully started
-	failed   string // last bin the exec refused
+	step     int         // cursor: gesture row in read mode, armed try-step in try mode
+	done     bool        // completed or dismissed — the envelope's terminal flag
+	try      bool        // #3769: the interactive tour vs the read-only walk
+	states   []stepState // per try-step outcome; nil in read mode
+	tried    int         // try-steps this run saw real evidence for
+	skipped  int         // try-steps this run skipped past
+	hover    int         // launcher index under the pointer; -1 when none
+	pressed  int         // launcher index held on a left press; -1 when none
+	launched string      // last bin the tour successfully started
+	failed   string      // last bin the exec refused
 	quit     bool
 }
 
-func newTour() tour {
-	return tour{hover: -1, pressed: -1}
+func newTour(try bool) tour {
+	t := tour{hover: -1, pressed: -1, try: try}
+	if try {
+		t.states = make([]stepState, len(trySteps()))
+	}
+	return t
+}
+
+// stepsLen is the cursor's bound — the try table in try mode, the
+// gesture rows on the read-only walk.
+func (t *tour) stepsLen() int {
+	if t.try {
+		return len(trySteps())
+	}
+	return len(gestures())
+}
+
+// atDone reports that the painted surface flips to the completion
+// screen: the tour is finished AND the cursor sits at its end — the
+// read walk's look-back keeps the rows up for review while the latch
+// itself stays set.
+func (t *tour) atDone() bool {
+	return t.done && t.step >= t.stepsLen()-1
+}
+
+// armed is the try-step awaiting its evidence: the cursor row while it
+// is pending. -1 in read mode, on a finished tour, or off-table.
+func (t *tour) armed() int {
+	if !t.try || t.done || t.step < 0 || t.step >= len(t.states) {
+		return -1
+	}
+	if t.states[t.step] != stepPending {
+		return -1
+	}
+	return t.step
+}
+
+// advance moves the cursor to the next pending row after i; none left
+// latches the tour done. It only looks forward — rows resolve in order,
+// so a pending row is never behind the cursor.
+func (t *tour) advance() int {
+	for j := t.step + 1; j < len(t.states); j++ {
+		if t.states[j] == stepPending {
+			t.step = j
+			return j
+		}
+	}
+	t.done = true
+	return -1
+}
+
+// observe lands evidence on the armed row when that row asked for this
+// event class. ok=true carries the resolved index so the caller can
+// print its marker — the model decides, main reports.
+func (t *tour) observe(ev tryEvidence) (i int, ok bool) {
+	i = t.armed()
+	if i < 0 || trySteps()[i].want != ev {
+		return -1, false
+	}
+	t.states[i] = stepDone
+	t.tried++
+	t.advance()
+	return i, true
+}
+
+// skip resolves the armed row WITHOUT evidence — the honest path past a
+// step the user could not perform (or the tour cannot watch, the
+// evNone case). ok=true carries the skipped index for the marker.
+func (t *tour) skip() (i int, ok bool) {
+	i = t.armed()
+	if i < 0 {
+		return -1, false
+	}
+	t.states[i] = stepSkipped
+	t.skipped++
+	t.advance()
+	return i, true
 }
 
 // next steps the tour one gesture forward; stepping past the last row
 // latches done — the tour ran to its end. The latch is sticky: stepping
 // back to review an earlier row does not un-complete a finished tour.
+// The try tour never walks: its cursor moves only on evidence or a skip.
 func (t *tour) next() bool {
+	if t.try {
+		return false
+	}
 	if t.step < len(gestures())-1 {
 		t.step++
 		return true
@@ -101,9 +255,10 @@ func (t *tour) next() bool {
 }
 
 // prev steps the tour one gesture back. The done latch survives — once
-// the tour reached its end it stays complete.
+// the tour reached its end it stays complete. Try mode keeps the whole
+// table painted with per-row outcomes instead of a walk-back cursor.
 func (t *tour) prev() bool {
-	if t.step == 0 {
+	if t.try || t.step == 0 {
 		return false
 	}
 	t.step--
@@ -161,8 +316,11 @@ func (t *tour) footText() string {
 	if n < 0 {
 		n = 0
 	}
-	if n >= len(gestures()) {
-		n = len(gestures()) - 1
+	if n >= t.stepsLen() {
+		n = t.stepsLen() - 1
+	}
+	if t.try {
+		return "try " + string(rune('1'+n)) + " of 6 · → skips · a skips all · 1-4 launch · esc closes"
 	}
 	return "step " + string(rune('1'+n)) + " of 5 · arrows walk · 1-4 launch · esc closes"
 }
@@ -189,7 +347,9 @@ func (r rect) contains(x, y int) bool {
 //	   Config's StateVersion, so the envelope's appver and the payload
 //	   agree (a stale serialization is refused twice over)
 //	u8 flags — bit 0: done — the tour walked to its last gesture or was
-//	   dismissed; a restored done flag never re-runs a finished tour
+//	   dismissed; a restored done flag never re-runs a finished tour.
+//	   bit 1: try (#3769) — the session was the interactive tour; a
+//	   reopen resumes it rather than degrading to the read walk
 //	u8 step  — the gesture row the tour was teaching
 //	u8 reserved (=0)
 //
@@ -204,12 +364,14 @@ const (
 	stateAppVer = 1
 
 	flagDone = 1 << 0
+	flagTry  = 1 << 1
 )
 
 // tourState is one decoded session blob.
 type tourState struct {
 	step int
 	done bool
+	try  bool
 }
 
 // encode serializes the tour's durable state. Bounded by construction:
@@ -219,25 +381,35 @@ func (t *tour) encode() []byte {
 	if t.done {
 		flags |= flagDone
 	}
+	if t.try {
+		flags |= flagTry
+	}
 	return []byte{stateFmtVer, flags, byte(t.step), 0}
 }
 
 // decodeTourState is encode's strict inverse. ok=false means stale or
 // foreign — refused whole, never half-applied; the caller names the
-// refusal. The step byte clamps into the live gesture table's range: a
-// shorter future tour degrades to its last row instead of a refusal.
+// refusal. The step byte clamps into the live table's range — six try
+// rows when the blob says try, five gesture rows on the read walk — so
+// a stale-but-well-formed blob degrades to the nearest live row instead
+// of refusing the session.
 func decodeTourState(b []byte) (tourState, bool) {
 	var st tourState
 	if len(b) != 4 || b[0] != stateFmtVer {
 		return st, false
 	}
-	if b[1]&^flagDone != 0 || b[3] != 0 {
+	if b[1]&^(flagDone|flagTry) != 0 || b[3] != 0 {
 		return st, false
 	}
 	st.done = b[1]&flagDone != 0
+	st.try = b[1]&flagTry != 0
 	st.step = int(b[2])
-	if st.step >= len(gestures()) {
-		st.step = len(gestures()) - 1
+	limit := len(gestures())
+	if st.try {
+		limit = len(trySteps())
+	}
+	if st.step >= limit {
+		st.step = limit - 1
 	}
 	return st, true
 }

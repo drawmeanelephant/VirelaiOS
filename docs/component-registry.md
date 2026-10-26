@@ -85,7 +85,7 @@ All of them additionally answer to the schema-v2 manifest grammar
 | Pulse | app | PULSE.ELF | ver 1.0.0 | tools/gate/specs/go-top.spec | shipped |
 | Shell | app | GOSH.ELF | appver 1, ver 1.0.0 | tools/gate/specs/go-sh.spec | shipped |
 | Help | app | GOHELP.ELF | ver 1.0.0 | tools/gate/specs/go-help.spec | shipped |
-| Welcome | app | GOWELCOME.ELF | appver 1, ver 1.0.0 | tools/gate/specs/go-welcome.spec | shipped |
+| Welcome | app | GOWELCOME.ELF | appver 1, ver 1.1.0 | tools/gate/specs/go-welcome.spec | shipped |
 | Top | app | GOTOP.ELF | appver 1, ver 1.0.0 | tools/gate/specs/go-top.spec | shipped |
 | Settings | app | GOSET.ELF | ver 1.0.0 | tools/gate/specs/go-settings.spec | shipped |
 | Image Viewer | app | GOVIEW.ELF | ver 1.0.0 | tools/gate/specs/live-image-viewer.spec | shipped |
@@ -240,7 +240,7 @@ binaries, so the binary column stays `—`.
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
 | Cursor set (10 masks + ship hotspots — the seat picks a shape per context via wmctl cmd 24: sash=rsx/rsy, rail=grb, drags=grg, refused drops=no; text/link/busy need the app-declare half of #3348) | asset | — | ver 1.0.0 | tools/art/adopt.py, image/art/cursors/MASKS.TXT, image/art/ART.TXT, tools/art/mkcursormask.py | staged |
-| Mascot poses (six — wave GOWELCOME, locked curtain, sleep idle-dim veil, oops ErrorBanner/crash offer, think live progress rows, celebrate GOSNAP saved + GOSTORE install verdicts) | asset | — | ver 1.0.0 | tools/art/adopt.py, image/art/ART.TXT | staged |
+| Mascot poses (six — wave GOWELCOME, locked curtain, sleep idle-dim veil, oops ErrorBanner/crash offer, think live progress rows, celebrate GOWELCOME done screen + GOSNAP saved + GOSTORE install verdicts) | asset | — | ver 1.0.0 | tools/art/adopt.py, image/art/ART.TXT | staged |
 | Spot icons (doc + nres via EmptyState.Spot; bell notify centre; img + err GOVIEW — fold, offl, trsh unwired; see #3348) | asset | — | ver 1.0.0 | tools/art/adopt.py, image/art/ART.TXT | staged |
 | Spinner sheets (arc spins on seat busy surfaces — notify-center indeterminate rows, session-restore placeholder rail cells; mascot sheet unwired) | asset | — | ver 1.0.0 | tools/art/adopt.py, image/art/ART.TXT | staged |
 | Boot plate (plt paints at the seat-side boot moment — the frame presented over the blocking startup; emb unwired; kernel render_splash cannot read /host) | asset | — | ver 1.0.0 | tools/art/adopt.py, image/art/ART.TXT | staged |
