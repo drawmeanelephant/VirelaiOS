@@ -298,7 +298,7 @@ vgate_run 02 -- \
     --screenshot-after 'gostalgia: call app/com.gostalgia.echo/echo ok' \
     --script3 '$RUN_DIR/script-02c.txt' \
     --script3-after 'gostalgia: call app/com.gostalgia.echo/echo ok' --script3-delay 2 \
-    --snapshot-after 'dui[' \
+    --snapshot-after 'gostalgia: call app/com.gostalgia.echo/echo ok' \
     --input-chords 'e,x,i,t,return' \
     --input-chords-after 'dui[' \
     --script-expect 'procs GOSTALGIA.ELF exited status=0' --timeout 240
