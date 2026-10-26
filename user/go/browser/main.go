@@ -277,6 +277,10 @@ type app struct {
 	// framing (chunked, duplicate/bogus Content-Length, over the byte cap).
 	loadFramed bool
 	loadNeed   int
+	// loadScan is the incremental head parser for the in-flight load: the
+	// terminator scan and line bound resume where the last read stopped,
+	// so a byte-dripped head is parsed once, not once per read (#3684).
+	loadScan headScan
 	// loadEOF marks a peer FIN already seen on the in-flight load (a
 	// complete response on a dead conn is complete, never reusable).
 	// chunkDec/loadDecoded are the stepped incremental chunked decode.
@@ -908,6 +912,7 @@ func (a *app) startHTTP(u webrender.URL) {
 	a.loadURL = u
 	a.loadBuf = a.loadBuf[:0]
 	a.loadFramed = false
+	a.loadScan = headScan{}
 	a.loadNeed = 0
 	a.loadEOF = false
 	a.chunkDec = nil
@@ -934,14 +939,14 @@ func (a *app) startHTTPS(u webrender.URL) {
 	a.finishResponse(true, head, body, truncated)
 }
 
-// bodyLen is the response body bytes buffered so far (0 before the header
-// block completes).
+// bodyLen is the response body bytes buffered so far: zero while the head
+// is incomplete, the bytes past the cached head offset once it is framed.
+// (The pre-#3684 shape rescanned the whole buffer per read for this.)
 func (a *app) bodyLen() int {
-	_, body, ok := webrender.SplitHTTPResponse(a.loadBuf)
-	if !ok {
+	if !a.loadFramed {
 		return 0
 	}
-	return len(body)
+	return len(a.loadBuf) - a.frameInfo.offset
 }
 
 // frame parses (once) and caches the response framing.
@@ -949,7 +954,7 @@ func (a *app) frame() {
 	if a.loadFramed {
 		return
 	}
-	frame := parseResponseFrame(a.loadBuf)
+	frame := a.loadScan.feed(a.loadBuf)
 	if frame.complete {
 		a.loadFramed, a.frameInfo = true, frame
 		a.loadNeed = frame.need
@@ -1067,7 +1072,10 @@ func (a *app) loadStep() {
 			return
 		}
 		a.completeLoad() // close-delimited: the FIN ended the body
-	default:
+	case !a.loadFramed:
+		// Head still incomplete: there is no body to bound, and scanning
+		// the buffer for one here would reintroduce the per-read rescan.
+	default: // framed, close-delimited body mid-stream
 		if a.bodyLen() > webstyle.MaxHTMLBytes {
 			a.htmlTruncated = true
 			a.completeLoad()

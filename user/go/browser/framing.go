@@ -1,8 +1,6 @@
 package main
 
 import (
-	"strings"
-
 	"virelai/httpc"
 	"virelai/webrender"
 	"virelai/webstyle"
@@ -25,16 +23,68 @@ type responseFrame struct {
 	complete  bool
 }
 
-func parseResponseFrame(raw []byte) responseFrame {
-	i := httpc.HeadEnd(raw)
-	if i < 0 {
-		if len(raw) > maxHTTPHeaders {
-			return responseFrame{err: "http-header-limit", complete: true}
+// headScan is the incremental front of parseResponseFrame: the fetch
+// drivers append each read to one buffer, so the terminator scan resumes
+// where the last feed stopped and the line bound sees each byte once.
+// Feeding an n-byte head in drips is O(n) total where reparse-per-read is
+// O(n^2) in head length with the peer picking the read count (#3684).
+// The buffer is append-only between feeds.
+type headScan struct {
+	scan   int // terminator scan resumes here (3 back for a split match)
+	lineAt int // line-bound check resumes here
+	open   int // open line's length, trailing '\r's excluded
+	crs    int // '\r's at the open line's tail, counted on the next byte
+	work   int // byte positions examined across feeds (test observability)
+}
+
+// headEnd is httpc.HeadEnd resumed: a terminator match can begin at most
+// three bytes before the previous buffer end (\r\n\r\n split across
+// reads), so the scan restarts there instead of at zero.
+func (s *headScan) headEnd(raw []byte) int {
+	for i := s.scan; i+1 < len(raw); i++ {
+		s.work++
+		if raw[i] == '\n' && raw[i+1] == '\n' {
+			return i + 2
 		}
-		for _, line := range strings.Split(string(raw), "\n") {
-			if len(strings.TrimRight(line, "\r")) > maxHTTPLine {
-				return responseFrame{err: "http-header-limit", complete: true}
+		if i+3 < len(raw) && raw[i] == '\r' && raw[i+1] == '\n' && raw[i+2] == '\r' && raw[i+3] == '\n' {
+			return i + 4
+		}
+	}
+	if back := len(raw) - 3; back > s.scan {
+		s.scan = back
+	}
+	return -1
+}
+
+// lineOver advances the per-line bound over the bytes appended since the
+// last feed. open is the running length of the unterminated line without
+// its trailing '\r's; crs holds '\r's pending at its tail (they count
+// only once a non-'\r' lands behind them). The verdict is the one-shot
+// grammar's len(TrimRight(line, "\r")) > maxHTTPLine applied per byte.
+func (s *headScan) lineOver(raw []byte) bool {
+	for ; s.lineAt < len(raw); s.lineAt++ {
+		s.work++
+		switch raw[s.lineAt] {
+		case '\n':
+			if s.open > maxHTTPLine {
+				return true
 			}
+			s.open, s.crs = 0, 0
+		case '\r':
+			s.crs++
+		default:
+			s.open += s.crs + 1
+			s.crs = 0
+		}
+	}
+	return s.open > maxHTTPLine
+}
+
+func (s *headScan) feed(raw []byte) responseFrame {
+	i := s.headEnd(raw)
+	if i < 0 {
+		if len(raw) > maxHTTPHeaders || s.lineOver(raw) {
+			return responseFrame{err: "http-header-limit", complete: true}
 		}
 		return responseFrame{}
 	}
@@ -51,6 +101,14 @@ func parseResponseFrame(raw []byte) responseFrame {
 	f.parsed = h
 	f.need = h.Length
 	return f
+}
+
+// parseResponseFrame is the one-shot form kept for complete buffers
+// (responseNeed and the host tests); the fetch drivers keep a headScan
+// across reads instead — same grammar, incremental cost.
+func parseResponseFrame(raw []byte) responseFrame {
+	var s headScan
+	return s.feed(raw)
 }
 
 func formatPageRequest(u webrender.URL, cookie string) string {

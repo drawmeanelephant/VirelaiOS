@@ -253,6 +253,7 @@ func (a *app) exchange(p *pooledConn, u webrender.URL, capn int, mainPage bool) 
 	}
 	vi.ConsoleLine(markerFetch + u.Host + u.Path)
 	raw := make([]byte, 0, min(capn+maxHTTPHeaders, 16384))
+	var scan headScan
 	var frame responseFrame
 	var dec httpc.Chunked
 	var decoded []byte
@@ -305,7 +306,7 @@ func (a *app) exchange(p *pooledConn, u webrender.URL, capn int, mainPage bool) 
 			raw = append(raw, chunk[:n]...)
 		}
 		if !frame.complete {
-			frame = parseResponseFrame(raw)
+			frame = scan.feed(raw)
 			if frame.complete && frame.err == "" {
 				end = a.stageEnd(5_000_000_000)
 			}
