@@ -37,7 +37,7 @@ All of them additionally answer to the schema-v2 manifest grammar
 | [[apps/gotop|Top]] | app | GOTOP.ELF | appver 1, ver 1.0.0 | #3249 | 2026-10-23 | tools/gate/specs/go-top.spec | shipped |
 | [[apps/goset|Settings]] | app | GOSET.ELF | ver 1.0.0 | #3171 | 2026-10-22 | tools/gate/specs/go-settings.spec | shipped |
 | [[apps/goview|Image Viewer]] | app | GOVIEW.ELF | ver 1.0.0 | #3155 | 2026-10-22 | tools/gate/specs/live-image-viewer.spec | shipped |
-| [[apps/gosound|Sound]] | app | GOSOUND.ELF | ver 1.0.0 | #3178 | 2026-10-22 | tools/gate/specs/live-sound-playback.spec | shipped |
+| [[apps/gosound|Sound]] | app | GOSOUND.ELF | ver 1.1.0 | #3178 | 2026-10-22 | tools/gate/specs/live-sound-playback.spec | shipped |
 | [[apps/tabwm|Tabbed Desktop]] | app | TABWM.BIN | ver 1.0.0 | #3226 | 2026-10-23 | tools/gate/specs/live-tabwm.spec, ADR 0034 | retained-fallback |
 | [[apps/gostalgia|Gostalgia]] | app | GOSTALGIA.ELF | ver 1.0.0 | #3306 | 2026-10-23 | tools/gate/specs/go-gostalgia.spec | shipped |
 | [[apps/gostore|Store]] | app | GOSTORE.ELF | ver 1.0.0 | #3188 | 2026-10-23 | tools/gate/specs/go-gostore.spec | shipped |
