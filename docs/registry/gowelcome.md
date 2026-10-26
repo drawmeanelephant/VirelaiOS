@@ -12,4 +12,4 @@ order: 100
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| Welcome | app | GOWELCOME.ELF | appver 1, ver 1.0.0 | tools/gate/specs/go-welcome.spec | shipped |
+| Welcome | app | GOWELCOME.ELF | appver 1, ver 1.1.0 | tools/gate/specs/go-welcome.spec | shipped |
