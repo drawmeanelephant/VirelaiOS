@@ -5092,10 +5092,22 @@ func setupDisplayWindow() {
         view.registerForDraggedTypes([.fileURL])
         view.dropHandler = { urls in hostDrop?.drop(urls: urls) }
     }
-    window.orderFrontRegardless()
-    window.makeKeyAndOrderFront(nil)
+    // VIRELAI_WINDOW_BG=1 keeps gate/test windows out of the user's face:
+    // the view still exists (scanout, screenshots, drop lanes all work)
+    // but the window is ordered behind everything and no activation is
+    // attempted. Pointer-script and native-input runs may still want a
+    // key window for synthesized key events — the knob is opt-in.
+    let windowBackground = ProcessInfo.processInfo.environment["VIRELAI_WINDOW_BG"] != nil
+    if windowBackground {
+        window.orderBack(nil)
+    } else {
+        window.orderFrontRegardless()
+        window.makeKeyAndOrderFront(nil)
+    }
     if hostSessionMode {
         // HostApplication owns activation, focus and close/quit.
+    } else if windowBackground {
+        pmo("diag window-bg: unfocused run; synthesized key events may not land without key status")
     } else if wantPointer {
         window.level = .normal
         // macOS 14+: the deprecated ignoringOtherApps form is a no-op for
