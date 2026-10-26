@@ -146,7 +146,7 @@ func TestChordHintsLines(t *testing.T) {
 	if lines[0] != "chord hints — GOCALC.ELF" {
 		t.Fatalf("title line = %q", lines[0])
 	}
-	var sawHead, sawNote, sawKernelRow bool
+	var sawHead, sawNote, sawKernelRow, sawRadix bool
 	for _, l := range lines {
 		switch {
 		case l == "this app — GOCALC.ELF":
@@ -155,10 +155,26 @@ func TestChordHintsLines(t *testing.T) {
 			sawNote = true
 		case strings.HasPrefix(l, "  ctrl+shift+c"):
 			sawKernelRow = true
+		case strings.HasPrefix(l, "  ctrl+h"):
+			sawRadix = true // #3701: the radix row's registered chords render
 		}
 	}
-	if !sawHead || !sawNote {
-		t.Fatalf("app section or its note missing: %v", lines[:6])
+	if !sawHead {
+		t.Fatalf("app section missing: %v", lines[:6])
+	}
+	if !sawRadix {
+		t.Fatalf("GOCALC's registered radix rows missing: %v", lines[:6])
+	}
+	// The none-registered note still needs a chordless binary — GOCALC
+	// outgrew the role when its radix chords registered.
+	empty := NewChordHints("GOPAINT.ELF")
+	for _, l := range empty.Lines(80) {
+		if l == "    (none registered)" {
+			sawNote = true
+		}
+	}
+	if !sawNote {
+		t.Fatal("(none registered) note missing for a chordless binary")
 	}
 	if !sawKernelRow {
 		t.Fatal("kernel-terminal chord row missing from Lines")

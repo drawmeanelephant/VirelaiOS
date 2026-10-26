@@ -56,6 +56,7 @@ const (
 // table_test.go pins every one of them against that arithmetic.
 const (
 	UsageA            uint8 = 0x04
+	UsageB            uint8 = 0x05
 	UsageC            uint8 = 0x06
 	UsageD            uint8 = 0x07
 	UsageE            uint8 = 0x08
@@ -66,6 +67,7 @@ const (
 	UsageK            uint8 = 0x0E
 	UsageL            uint8 = 0x0F
 	UsageN            uint8 = 0x11
+	UsageO            uint8 = 0x12
 	UsageP            uint8 = 0x13
 	UsageR            uint8 = 0x15
 	UsageS            uint8 = 0x16
