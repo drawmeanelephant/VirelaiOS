@@ -400,6 +400,11 @@ vgate_assert 01 serial-contains 'gofiles: list /host/FM n=2'
 vgate_assert 01 serial-contains 'gofiles: entry SUB dir'
 vgate_assert 01 serial-contains 'gofiles: entry KNOWN.TXT file'
 vgate_assert 01 serial-contains 'gofiles: found KNOWN.TXT'
+# #3348 (#1257): the staged filetype family paints the list rows too —
+# SUB takes FT_FOLD's strip, KNOWN.TXT FT_TEXT's; the receipt counts the
+# painted rows and re-emits on each re-list like the `list` markers it
+# rides.
+vgate_assert 01 serial-contains 'gofiles: list icon qoi n=2'
 
 # Navigate: enter SUB (preview INNER.TXT), come back, select KNOWN.TXT.
 vgate_assert 01 serial-contains 'gofiles: cd /host/FM/SUB'
@@ -514,9 +519,25 @@ for y in range(96, 96 + 736):
             accent += 1
         if abs(r - 44) <= 6 and abs(g - 58) <= 6 and abs(b - 76) <= 6:
             selbg += 1
-print("fileman scanout: preview-accent=%d sel-bg=%d" % (accent, selbg))
+# #3348 (#1257): the icon strip on the unselected SUB row — body row 0 is
+# screen row 2 (y=160..192), the strip cells cols 2..3 (x=96..128). The
+# staged FT_FOLD raster's two-cell downsample means (112,82,48) and
+# (106,78,47); the +-40 bound is the capture's hue-preserving shift, the
+# same tolerance the accent assert keeps. Either half alone would prove
+# the strip; the AND keeps it from passing on a flat band.
+fold0 = fold1 = 0
+for y in range(164, 188):
+    for x in range(98, 126):
+        k = (y * w + x) * bpp
+        r, g, b = out[k], out[k + 1], out[k + 2]
+        if x < 112 and max(abs(r - 112), abs(g - 82), abs(b - 48)) <= 40:
+            fold0 += 1
+        if x >= 112 and max(abs(r - 106), abs(g - 78), abs(b - 47)) <= 40:
+            fold1 += 1
+print("fileman scanout: preview-accent=%d sel-bg=%d fold=%d/%d" % (accent, selbg, fold0, fold1))
 assert accent >= 40, "preview pane accent (122,162,255) absent from the client rect"
 assert selbg >= 100, "selected-row background (44,58,76) absent from the client rect"
+assert fold0 >= 100 and fold1 >= 100, "SUB row's FT_FOLD icon strip absent (the two painted cells)"
 PY
 
 # --- M81b (#1762): run 02, the OPEN dispatch -------------------------------
@@ -1505,6 +1526,11 @@ vgate_assert 16 serial-contains 'gofiles: list /host/FMQ n=3'
 vgate_assert 16 serial-contains 'gofiles: entry LOOK.QOI file'
 vgate_assert 16 serial-contains 'gofiles: entry SAMPLE.TAR file'
 vgate_assert 16 serial-contains 'gofiles: entry WORDS.TXT file'
+# #3348 (#1257): the same family paints the LIST rows before `t` — LOOK.QOI
+# (FT_IMG) and WORDS.TXT (FT_TEXT) carry their two-cell strips; SAMPLE.TAR
+# sniffs Unknown and keeps the typographic row (the blank column holds its
+# alignment).
+vgate_assert 16 serial-contains 'gofiles: list icon qoi n=2'
 # The DECISION marker names the arm and the decoded dims the pane scaled.
 vgate_assert 16 serial-contains 'gofiles: quicklook LOOK.QOI kind=image 16x16 thumb=64x64'
 # Esc closed the pane; the window then tore down through dui close.

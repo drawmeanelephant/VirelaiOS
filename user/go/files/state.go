@@ -226,6 +226,16 @@ type model struct {
 	gridFTW, gridFTH int
 	gridFCW, gridFCH uint32
 	gridFName        string
+
+	// #3348 (#1257): the list rows' icon strips (rowicon.go). rowIcons
+	// caches each staged family's two-cell strip by art name for the
+	// run's life; rowIconRef is the current listing's per-row resolution
+	// (nil = the row stays typographic); rowIconN counts the painted
+	// rows — the column's reservation key, so a listing where nothing
+	// resolved paints and reserves nothing.
+	rowIcons   map[string]*rowIcon
+	rowIconRef []*rowIcon
+	rowIconN   int
 }
 
 // hintsBin names this app's registry scope — the untagged twin of
@@ -359,14 +369,17 @@ func (m *model) ensureSelVisible() {
 func (m *model) refresh() {
 	if m.path == volsPath {
 		m.refreshVolumes()
+		m.syncListIcons()
 		return
 	}
 	if m.path == favsView {
 		m.refreshFavs()
+		m.syncListIcons()
 		return
 	}
 	if m.tar != nil {
 		m.refreshTar()
+		m.syncListIcons()
 		return
 	}
 	n, rc := vi.DirList(m.path, m.entries[:])
@@ -383,6 +396,7 @@ func (m *model) refresh() {
 		}
 		m.emit(markerListErr + vi.Itoa64(rc))
 		m.watcher.Adopt(vi.DirSnapshot{OK: false})
+		m.syncListIcons()
 		m.loadPreview()
 		return
 	}
@@ -410,6 +424,7 @@ func (m *model) refresh() {
 	if m.view == viewGrid {
 		m.gridSync()
 	}
+	m.syncListIcons()
 	m.loadPreview()
 }
 
@@ -843,6 +858,8 @@ func (m *model) cycleSort() {
 		// longer name the same entries, so the queue is rebuilt.
 		m.gridSync()
 	}
+	// The per-row icon table keys on the same indices — rebuild it too.
+	m.syncListIcons()
 	m.loadPreview()
 }
 

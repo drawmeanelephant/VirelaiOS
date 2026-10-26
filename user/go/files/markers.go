@@ -240,6 +240,12 @@ const (
 	// the stats line it pairs with, only when the share's art resolved.
 	markerGridIcons = "gofiles: grid icons n="
 	markerGridFocus = "gofiles: grid focus "
+	// #3348 (#1257): the list rows' icon strip — `list icon qoi n=<k>`
+	// counts the rows carrying a painted strip in the listing just
+	// synced, emitted per listing like the `list`/`entry` markers it
+	// rides. Silent when no staged family resolved — an absent share
+	// reserves no column.
+	markerListIcons = "gofiles: list icon qoi n="
 
 	// M167b (#2992): pinned places and the `--search` argv hand-off.
 	// `fav add <path> n=<k>` / `fav del <path> n=<k>` are the `b` toggle's

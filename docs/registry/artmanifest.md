@@ -17,5 +17,5 @@ order: 10
 | Spot icons (doc + nres via EmptyState.Spot; bell notify centre; img + err GOVIEW — fold, offl, trsh unwired; see #3348) | asset | — | ver 1.0.0 | tools/art/adopt.py, image/art/ART.TXT | staged |
 | Spinner sheets (arc spins on seat busy surfaces — notify-center indeterminate rows, session-restore placeholder rail cells; mascot sheet unwired) | asset | — | ver 1.0.0 | tools/art/adopt.py, image/art/ART.TXT | staged |
 | Boot plate (plt paints at the seat-side boot moment — the frame presented over the blocking startup; emb unwired; kernel render_splash cannot read /host) | asset | — | ver 1.0.0 | tools/art/adopt.py, image/art/ART.TXT | staged |
-| Filetype icons (10 — paint in appkit.FilePicker rows and the GOFILES grid mosaic; the VT list rows stay text) | asset | — | ver 1.0.0 | tools/art/adopt.py, image/art/ART.TXT | staged |
+| Filetype icons (10 — paint in appkit.FilePicker rows, the GOFILES grid mosaic, and the GOFILES VT list rows as two-cell strips) | asset | — | ver 1.0.0 | tools/art/adopt.py, image/art/ART.TXT | staged |
 | App icons (31 — icon= manifest seam; paint on launcher result rows and the tab rail) | asset | — | ver 1.0.0 | tools/art/adopt.py, image/art/ART.TXT | staged |

@@ -500,17 +500,33 @@ func (m model) listRow(i, w int) string {
 	if m.isMarked(e.NameString()) {
 		pre = " *"
 	}
+	// #3348 (#1257): the icon strip rides between the gutter and the
+	// label while the listing resolved any staged raster — the family's
+	// two-cell downsample plus one space (rowicon.go), costed out of the
+	// label's budget. Nothing resolved = no column at all.
+	icw := 0
+	if m.rowIconN > 0 {
+		icw = listIconW + 1
+	}
 	if idx == m.sel {
 		if pre == " *" {
 			pre = ">*"
 		} else {
 			pre = "> "
 		}
-		label := clipVis(label, w-2)
-		return colSel + pre + label +
-			strings.Repeat(" ", w-2-visLen(label)) + colReset
+		label := clipVis(label, w-2-icw)
+		var b strings.Builder
+		b.WriteString(colSel)
+		b.WriteString(pre)
+		if icw > 0 {
+			m.rowIconCells(&b, idx, colSel)
+			b.WriteByte(' ')
+		}
+		b.WriteString(label)
+		b.WriteString(strings.Repeat(" ", max(0, w-2-icw-visLen(label))))
+		b.WriteString(colReset)
+		return b.String()
 	}
-	vis := clipVis(pre+label, w)
 	style := colFile
 	switch {
 	case missing, tarDim:
@@ -518,7 +534,18 @@ func (m model) listRow(i, w int) string {
 	case e.Dir():
 		style = colDir
 	}
-	return style + vis + strings.Repeat(" ", w-visLen(vis)) + colReset
+	label = clipVis(label, w-2-icw)
+	var b strings.Builder
+	b.WriteString(style)
+	b.WriteString(pre)
+	if icw > 0 {
+		m.rowIconCells(&b, idx, style)
+		b.WriteByte(' ')
+	}
+	b.WriteString(label)
+	b.WriteString(strings.Repeat(" ", max(0, w-2-icw-visLen(label))))
+	b.WriteString(colReset)
+	return b.String()
 }
 
 // previewRow is one preview line in the gate's accent colour, padded to w.
