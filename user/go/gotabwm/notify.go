@@ -96,6 +96,12 @@ const (
 const (
 	NotifyMax       = 4           // queue depth; the oldest is dropped beyond it
 	NotifyTicks     = 8           // lifetime in composite ticks (~8s at the 1Hz tick)
+	// Actionable toasts dwell twice as long: the offer is useless if the
+	// user cannot read the refusal and reach the action inside the window.
+	// Observed go-wm-seat run 17: the scripted Retry click landed one
+	// composite tick after expiry (born t8, down at t17 > expires t16) —
+	// the press fell through to the launcher and the retry never ran.
+	NotifyActionTicks = 16
 	notifyFadeTicks = 3           // ramp length: the last N ticks step toward Bg
 	NotifyW         = 208         // panel width: 24 chars * 8 + rule + pads
 	NotifyH         = ChromeH     // same band as the clock panel: 8px face + pads
@@ -233,11 +239,15 @@ func notifyPushAction(tabID uint32, text string, ticks uint64, action uint8, sna
 		notifyDropped++
 		dropped = true
 	}
+	lifetime := uint64(NotifyTicks)
+	if action != notifyActionNone {
+		lifetime = NotifyActionTicks
+	}
 	notifyQueue = append(notifyQueue, notifyToast{
 		tabID:    tabID,
 		text:     text,
 		born:     ticks,
-		expires:  ticks + NotifyTicks,
+		expires:  ticks + lifetime,
 		centerID: centerID,
 		action:   action,
 		snap:     snap,
