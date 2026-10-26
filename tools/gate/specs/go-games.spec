@@ -34,11 +34,16 @@
 #
 # M145b (#2797) run 03: the GOSOL leg, bare shim like the GOMINE pair.
 # `exec GOSOL.ELF --seed=1` deals the pinned table; three stock clicks
-# fan the waste and a scripted press/move/release attempts the tab0 ->
-# tab5 drag — which is UNREACHABLE today (#2878: kernel MOUSE_UP carries
-# flags=0, so gosol's BtnLeft-gated up() never runs; under the seat no
-# pointer reaches hosted apps at all). The serial-absent pins document
-# the defect honestly; the probe reads the waste fan + tab0's face.
+# fan the waste and a scripted press/move/release drags tab0's lone JH
+# onto tab5's QC — 'gosol: move tab0->tab5' resolves the legal drop.
+# The leg once pinned the drop unreachable (#2878: kernel MOUSE_UP
+# carried flags=0, so gosol's BtnLeft-gated up() never ran). The fix
+# landed, yet the pin held (#3721): the choreography anchored the run's
+# end on 'draw n=1' +35s and the VM stopped while the host still paced
+# out the final release message — the release was never INJECTED, so
+# the serial-absent pins could never have flipped either way. script3
+# now anchors on the app's own drop-resolved marker, so the run cannot
+# end mid-gesture; the probe reads the waste fan + the landed JH.
 # Layout: stock (16,12,56,80), waste (88,12), tab p at (18+70p,108);
 # canvas->scanout is +32,+32 exactly like run 01.
 #
@@ -73,7 +78,7 @@
 #   bash tools/go/build-gosol.sh    ->  .build/go/GOSOL.ELF
 #   bash tools/go/build-gotabwm.sh  ->  .build/go/GOTABWM.ELF
 
-vgate_name go-games "M145a+b+c #2796/#2797/#2798: GOMINE.ELF seeded win/loss legs + GOSOL.ELF stock-draw leg + K=3 acceptance — both games played part way under the seat, mid-game session snapshot, exact-restore pixel compare (drag leg pinned on #2878)"
+vgate_name go-games "M145a+b+c #2796/#2797/#2798: GOMINE.ELF seeded win/loss legs + GOSOL.ELF stock-draw + in-surface drag leg + K=3 acceptance — both games played part way under the seat, mid-game session snapshot, exact-restore pixel compare (drag resolves tab0->tab5 on the shim path, #3721)"
 vgate_share seed
 vgate_runner_flags -Xswiftc -DSPIKE
 vgate_repeat 3 BOOTS
@@ -260,20 +265,23 @@ vgate_assert 02 serial-contains 'rx-gomine-boom'
 vgate_assert 02 serial-absent '[EXC] parking:'
 vgate_assert 02 serial-absent 'exited status=139'
 
-# --- run 03 (M145b #2797): the GOSOL boot + stock-draw leg, bare shim -------
+# --- run 03 (M145b #2797): the GOSOL boot + stock-draw + drag leg, bare shim
 # exec GOSOL.ELF --seed=1 under the bare shim. Three stock clicks fan the
-# waste to its full three-card spread ('draw n=1' x3); the pixel probe
-# reads the three fanned faces and a tableau card.
+# waste to its full three-card spread ('draw n=1' x3); the scripted
+# press/move/release then drags tab0's lone JH onto tab5's QC — a legal
+# tableau build (alternating colour, one rank down) that prints
+# 'gosol: move tab0->tab5' and lands the card at tab5's top.
 #
-# The in-surface drag gesture is still unresolved on this raw-shim path
-# (observed 2026-10-26: with #2878 in the kernel, the press/move/release
-# below produces NEITHER 'move' nor 'drop bad' — gosol's BtnLeft-gated
-# up() never runs — while run 04's seat-hosted content-pointer clicks DO
-# reach GOMINE and play a win). The serial-absent lines pin that broken
-# state honestly; the pixel probe reads the card still mid-flight at the
-# last pointer position. When the raw path's release flags are fixed the
-# gesture resolves a legal move tab0->tab5 and these asserts flip to
-# serial-contains plus the face/'J'-ink probes at tab5's top card.
+# script3 anchors on that drop-resolved marker, NOT a wall-clock delay:
+# the pre-#3721 choreography waited 'draw n=1' +35s and the run's
+# success/tail window stopped the VM while the host still paced out the
+# last 'u' message (19 messages at ~2.5s each — observed in run-03's
+# host log: 18 enqueued, no "sequence complete"). A release that was
+# never injected can never resolve, and a leg ended mid-gesture pins
+# nothing. Anchoring on the app's own marker makes the wait exact —
+# the marker prints only after the kernel delivered the release with
+# BtnLeft and up() ran, and if the raw-shim path ever regresses the leg
+# times out honestly instead of re-pinning a dead drop.
 vgate_file script-gosol.txt <<'EOF'
 exec GOSOL.ELF --seed=1
 EOF
@@ -290,7 +298,7 @@ vgate_run 03 -- \
     --pointer-virtio-after 'gosol: ready' \
     --snapshot-after 'rx-gosol-03' \
     --script3 '$RUN_DIR/script3-gosol.txt' \
-    --script3-after 'gosol: draw n=1' --script3-delay 35 \
+    --script3-after 'gosol: move tab0->tab5' --script3-delay 10 \
     --script-expect 'rx-gosol-03' --timeout 240
 
 vgate_assert 03 serial-contains 'exec: loaded GOSOL.ELF'
@@ -299,19 +307,21 @@ vgate_assert 03 serial-contains 'gosol: not-tab-aware (shim or WND desktop)'
 vgate_assert 03 serial-contains 'gosol: deal seed=1 draw=1'
 vgate_assert 03 serial-contains 'gosol: ready'
 vgate_assert 03 serial-count 'gosol: draw n=1' 3
-# Observed: the drop cannot resolve on this path — the release reaches
-# gosol without BtnLeft so up() never runs (see header comment).
-vgate_assert 03 serial-absent 'gosol: move tab0->tab5'
+# The drop resolves the legal move tab0->tab5 (JH onto QC); any other
+# resolution — a refused drop or a mid-flight card — is the defect.
+vgate_assert 03 serial-contains 'gosol: move tab0->tab5'
 vgate_assert 03 serial-absent 'gosol: drop bad'
 vgate_assert 03 serial-contains 'rx-gosol-03'
 vgate_assert 03 serial-absent '[EXC] parking:'
 vgate_assert 03 serial-absent 'exited status=139'
 
 # Pixel probes, canvas->scanout +32,+32. Three waste cards fan right at
-# canvas x=88/100/112 (face interiors at y 50..60); tab0's lifted card
-# flies at canvas (368,160)-(424,240) -> interior scanout (410..450,
-# 205..245). When the drop resolves the card lands on tab5 and this
-# probe moves to tab5's top card at home.
+# canvas x=88/100/112 (face interiors at y 50..60). The landed JH is
+# tab5's seventh card, its frame at canvas (368,166)-(424,246) -> scanout
+# (400,198)-(456,278): face interior below the corner ink at scanout
+# (407..447, 232..257), the red 'J' glyph at (404..412, 201..209), the
+# heart pip at (404..411, 211..218). tab0's slot is bare again — its
+# interior (scanout 60..96, 152..200) must show no card face.
 vgate_assert 03 snapshot 'snap-03-*.raw' <<'PY'
 import sys
 
@@ -325,6 +335,7 @@ def px(x, y):
     return (raw[off + 2], raw[off + 1], raw[off])  # BGRX -> RGB
 
 FACE    = (0xf6, 0xf3, 0xec)  # card face
+RED     = (0xb3, 0x32, 0x2c)  # heart-suit ink
 TITLE   = (0x1a, 0x2b, 0x3c)  # kernel title band
 
 band = [px(x, y) for y in range(34, 46) for x in range(60, 700, 10)]
@@ -338,9 +349,15 @@ def count(x0, y0, w, h, want):
 for i, x in enumerate((124, 136, 148)):
     if count(x, 60, 8, 10, FACE) < 60:
         sys.exit("waste fan slot %d shows no card face" % i)
-if count(410, 205, 40, 40, FACE) < 1000:
-    sys.exit("the lifted card is not rendering mid-flight at the pointer")
-print("gosol: waste fanned to 3 faces, dragged card flying")
+if count(407, 232, 40, 25, FACE) < 800:
+    sys.exit("the JH did not land at tab5's top card frame")
+if count(404, 201, 8, 8, RED) < 10:
+    sys.exit("no red 'J' glyph at the landed card's corner")
+if count(404, 211, 7, 7, RED) < 12:
+    sys.exit("no heart pip under the landed card's rank")
+if count(60, 152, 36, 48, FACE) > 40:
+    sys.exit("tab0 still shows a card face — the move did not commit")
+print("gosol: waste fanned to 3 faces, JH landed on tab5, tab0 empty")
 PY
 
 
