@@ -2651,16 +2651,28 @@ shutil.copy(gomail, os.path.join(share, "GOMAIL.ELF"))
 
 # The account the chain boots clone into place — tls=on is the stored
 # transport answer, so the flag-free exec'd argv dials SMTP:465 over
-# TLS at 10.0.0.2 with the pinned fixture chain's SNI.
+# TLS at 10.0.0.2 with the pinned fixture chain's SNI. And deliberately
+# WITHOUT a pass= row: since M196b GOMAIL refuses a plaintext credential
+# by name, and the store row mail-<user> is the only source it reads.
 with open(os.path.join(share, "CHAINMAIL.TXT"), "w") as f:
     f.write("# go-fileman chain-leg account\n"
             "host=10.0.0.2\n"
             "user=gate\n"
-            "pass=gate-pass\n"
             "from=gate@fixture.local\n"
             "sni=leaf.example.com\n"
             "tls=on\n")
-print("staged CHAINMAIL.TXT (account for the chain boots' clone)")
+print("staged CHAINMAIL.TXT (account for the chain boots' clone, no pass=)")
+
+# M196b: the credential row, app-bound to GOMAIL.ELF — the same pair
+# go-mail.spec seeds for its dial legs. An apps-allowlist entry is
+# visible only when the named image is operator-owned on /host (kernel
+# secret.zig visible() -> trust.system_owned_key), so OWNERS.TXT pins
+# GOMAIL.ELF uid_system 0644.
+with open(os.path.join(share, "SECRETS.TXT"), "w") as f:
+    f.write("#v1\nmail-gate\t1000\tgate-pass\tGOMAIL.ELF\n")
+with open(os.path.join(share, "OWNERS.TXT"), "w") as f:
+    f.write("#v1\nGOMAIL.ELF\t644\t0\t-\n")
+print("seeded SECRETS.TXT mail-gate (app-bound) + OWNERS.TXT")
 
 # A multi-connection SMTP+TLS fixture — the go-mail.spec pattern,
 # trimmed to submission only; c1-c3 each open one session.
@@ -2847,6 +2859,8 @@ vgate_assert c1 serial-contains 'gofiles: contact done cards=1'
 vgate_assert c1 serial-contains 'gofiles: contact mail grace@example.com handler=GOMAIL.ELF'
 vgate_assert c1 serial-contains 'gofiles: open launched grace@example.com handler=GOMAIL.ELF pid='
 vgate_assert c1 serial-contains 'gomail: account /host/GOMAIL.TXT'
+# The credential resolved through the slot-70 store row, not a file.
+vgate_assert c1 serial-contains 'gomail: secret mail-gate'
 vgate_assert c1 serial-contains 'gomail: dial 10.0.0.2 465 tls'
 vgate_assert c1 serial-contains 'gomail: smtp ready'
 vgate_assert c1 serial-contains 'gomail: mail gate@fixture.local'
@@ -2891,6 +2905,7 @@ vgate_assert c2 serial-contains 'gofiles: contact done cards=1'
 vgate_assert c2 serial-contains 'gofiles: contact mail grace@example.com handler=GOMAIL.ELF'
 vgate_assert c2 serial-contains 'gofiles: open launched grace@example.com handler=GOMAIL.ELF pid='
 vgate_assert c2 serial-contains 'gomail: account /host/GOMAIL.TXT'
+vgate_assert c2 serial-contains 'gomail: secret mail-gate'
 vgate_assert c2 serial-contains 'gomail: dial 10.0.0.2 465 tls'
 vgate_assert c2 serial-contains 'gomail: smtp ready'
 vgate_assert c2 serial-contains 'gomail: mail gate@fixture.local'
@@ -2935,6 +2950,7 @@ vgate_assert c3 serial-contains 'gofiles: contact done cards=1'
 vgate_assert c3 serial-contains 'gofiles: contact mail grace@example.com handler=GOMAIL.ELF'
 vgate_assert c3 serial-contains 'gofiles: open launched grace@example.com handler=GOMAIL.ELF pid='
 vgate_assert c3 serial-contains 'gomail: account /host/GOMAIL.TXT'
+vgate_assert c3 serial-contains 'gomail: secret mail-gate'
 vgate_assert c3 serial-contains 'gomail: dial 10.0.0.2 465 tls'
 vgate_assert c3 serial-contains 'gomail: smtp ready'
 vgate_assert c3 serial-contains 'gomail: mail gate@fixture.local'
