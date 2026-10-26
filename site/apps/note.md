@@ -10,7 +10,7 @@ tags: [apps, showcase]
 | field | value |
 |-------|-------|
 | binary | `NOTE.ELF` |
-| version | appver 1, ver 1.0.0 |
+| version | appver 1, ver 1.1.0 |
 | owning spec / contract | [`tools/gate/specs/go-note.spec`](https://github.com/drawmeanelephant/VirelaiOS/blob/main/tools/gate/specs/go-note.spec) |
 | state | shipped |
 

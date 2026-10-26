@@ -635,3 +635,40 @@ func TestStateRestoreClampsCaret(t *testing.T) {
 		t.Fatalf("mid-rune caret = %d want rune boundary 1", a.buf.Cursor())
 	}
 }
+
+// The opens=text drop half (#3706): a delivered payload splices at the
+// caret through the same InsertText typing uses, the offer names its mime
+// in the marker, and the two wire refusal shapes keep their own names. A
+// drop longer than the room left stops at the buffer bound like a file
+// that does not fit.
+func TestDropSplicesAtCaret(t *testing.T) {
+	a := &app{buf: NewBuffer(), top: 1}
+	a.buf.InsertText("ab")
+	a.buf.SetCursor(1)
+	if m := a.drop(tabapp.DragOffer{Mime: "text/plain", Blob: []byte("XY")}); m != "note: drop text/plain n=2" {
+		t.Fatalf("drop marker = %q", m)
+	}
+	if got := string(a.buf.Bytes()); got != "aXYb" {
+		t.Fatalf("drop splice got %q want aXYb", got)
+	}
+	if !a.dirty {
+		t.Fatal("a spliced drop left the buffer clean")
+	}
+
+	if m := a.drop(tabapp.DragOffer{Mime: "text/plain"}); m != "note: drop no-payload" {
+		t.Fatalf("nil-payload marker = %q", m)
+	}
+	if m := a.drop(tabapp.DragOffer{Mime: "text/plain", Blob: []byte{}}); m != "note: drop empty" {
+		t.Fatalf("empty-payload marker = %q", m)
+	}
+
+	full := &app{buf: NewBuffer(), top: 1}
+	full.buf.Load(bytes.Repeat([]byte{'x'}, MaxBytes-1))
+	if m := full.drop(tabapp.DragOffer{Mime: "text/plain", Blob: []byte("wxyz")}); m !=
+		"note: drop text/plain n=1 truncated at 32768" {
+		t.Fatalf("bound drop marker = %q", m)
+	}
+	if full.buf.Len() != MaxBytes {
+		t.Fatalf("bound drop len = %d want %d", full.buf.Len(), MaxBytes)
+	}
+}

@@ -14,8 +14,14 @@
 # rewrite notes.txt — and the restored blob carries no buffer bytes at all
 # (the flag was clean), which is why the assert set has both a `state save`
 # and a `state restore` seat marker.
+#
+# Run 02 is #3706: the opens=text argv hand-off — `exec NOTE.ELF
+# /host/HANDOFF.TXT` opens the named file (the M124d convention GOFILES'
+# Open With dispatch builds), and the same close/reopen pair proves the
+# ordering the fix keeps: a session re-exec runs the bare bin and the
+# blob's path wins.
 
-vgate_name go-note "M192b #3247: NOTE.ELF appver 1 envelope — type/save/close/reopen round-trip, first owning gate"
+vgate_name go-note "M192b #3247: NOTE.ELF appver 1 envelope — type/save/close/reopen round-trip, first owning gate; #3706 opens=text argv hand-off"
 vgate_share seed
 vgate_runner_flags -Xswiftc -DSPIKE
 
@@ -31,6 +37,18 @@ vgate_file script3-01.txt <<'EOF'
 echo rx-go-note-restored
 EOF
 
+vgate_file script-02.txt <<'EOF'
+echo rx-go-note-boot2
+EOF
+
+vgate_file script2-02.txt <<'EOF'
+exec NOTE.ELF /host/HANDOFF.TXT
+EOF
+
+vgate_file script3-02.txt <<'EOF'
+echo rx-go-note-argv-restored
+EOF
+
 vgate_setup_python <<'PY'
 import os, shutil, sys
 share = os.environ.get("VG_SHARE") or os.path.join(os.environ["RUN_DIR"], "share")
@@ -43,6 +61,10 @@ for name, how in (("NOTE", "build-note.sh"),
     shutil.copy(src, os.path.join(share, name + ".ELF"))
     print("staged %s.ELF into share (%d bytes)" %
           (name, os.path.getsize(os.path.join(share, name + ".ELF"))))
+# The run-02 hand-off fixture: seven bytes so `loaded ok n=` pins the read.
+with open(os.path.join(share, "HANDOFF.TXT"), "w") as f:
+    f.write("handoff")
+print("staged HANDOFF.TXT argv fixture (7 bytes)")
 PY
 
 # The seat autostarts (wm=gotabwm default); exec NOTE once the seat is live.
@@ -102,3 +124,52 @@ vgate_assert 01 serial-absent 'gotabwm: state drop'
 vgate_assert 01 serial-absent 'note: save error'
 vgate_assert 01 serial-absent '[EXC] parking:'
 vgate_assert 01 serial-absent 'exited status=139'
+
+# --- #3706 run 02: the opens=text argv hand-off ----------------------------
+# The seat's Open With dispatch execs the handler bin with the path as
+# argv[1] (the M124d convention; `exec NOTE.ELF /host/HANDOFF.TXT` is
+# exactly the line GOFILES' drainLaunch builds). The named file loads and
+# its name reaches the rail; then the same close/reopen pair as run 01
+# proves the ordering the fix keeps — a re-exec runs the bare bin and the
+# restored blob's path, not argv and not the default, names the document.
+vgate_run 02 -- \
+    --screen '$RUN_DIR/note-argv-screen' \
+    --via-virtio \
+    --script '$RUN_DIR/script-02.txt' \
+    --script2 '$RUN_DIR/script2-02.txt' \
+    --script2-after 'gotabwm: mode live' \
+    --input-chords 'ctrl-shift-w,ctrl-shift-t' \
+    --input-chords-after 'note: ready' \
+    --script3 '$RUN_DIR/script3-02.txt' \
+    --script3-after 'note: state restored' \
+    --script-expect 'rx-go-note-argv-restored' --timeout 300
+
+vgate_assert 02 serial-contains 'wm: autostart gotabwm (settings wm=gotabwm)'
+vgate_assert 02 serial-contains 'gotabwm: mode live'
+vgate_assert 02 serial-contains 'exec: loaded NOTE.ELF'
+vgate_assert 02 serial-contains 'note: loaded ok n=7'
+vgate_assert 02 serial-contains 'note: tab title HANDOFF.TXT'
+vgate_assert 02 serial-contains 'note: ready'
+
+# Close: clean buffer, so the envelope still stages but no save-on-close
+# touches the hand-off file.
+vgate_assert 02 serial-contains 'gotabwm: state ask id='
+vgate_assert 02 serial-contains 'gotabwm: state save id='
+vgate_assert 02 serial-contains 'note: win_close'
+vgate_assert 02 serial-contains 'note: exiting 0'
+
+# Reopen: the bare re-exec restores the argv-opened path from the blob.
+vgate_assert 02 serial-contains 'gotabwm: reopen NOTE.ELF'
+vgate_assert 02 serial-contains 'gotabwm: state restore id='
+vgate_assert 02 serial-contains 'note: state restored cur=0 path=/host/HANDOFF.TXT'
+vgate_assert 02 serial-contains 'rx-go-note-argv-restored'
+
+# The clean app never wrote the file: the fixture reads back untouched.
+vgate_assert 02 share-equals HANDOFF.TXT handoff
+
+vgate_assert 02 serial-absent 'note: load miss /host/HANDOFF.TXT'
+vgate_assert 02 serial-absent 'note: load error'
+vgate_assert 02 serial-absent 'note: state stale'
+vgate_assert 02 serial-absent 'note: save error'
+vgate_assert 02 serial-absent '[EXC] parking:'
+vgate_assert 02 serial-absent 'exited status=139'

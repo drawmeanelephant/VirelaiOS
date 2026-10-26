@@ -119,6 +119,7 @@ const (
 	markerFindMiss    = "note: find miss '"
 	markerResize      = "note: resize relayout"
 	markerClose       = "note: win_close"
+	markerDrop        = "note: drop "
 	markerPresents    = "note: presents n="
 	markerOK          = "note OK"
 	markerOpenErr     = "note: error open "
@@ -199,6 +200,10 @@ type app struct {
 	pend    *noteState
 	pendBad bool
 
+	// lastOutline is the #a11y v1 dedupe: publish spends the RPC only when
+	// the encoded nodes changed since the last accepted write.
+	lastOutline string
+
 	// presents counts the frames this app has put on the scanout. Draw and
 	// present are separate calls, so the only way a gate can tell a filled frame
 	// that was never presented (which looks identical in the serial) from a
@@ -225,6 +230,14 @@ func init() { argvHeadroom[0] = 0 }
 func main() {
 	loadGuestTheme()
 	a := &app{buf: NewBuffer(), path: defaultPath, top: 1}
+	// The opens=text hand-off (M124d): an Open With dispatch or a drag
+	// release on a not-running NOTE execs this bin with the file path as
+	// argv[1], the same convention GOEDIT reads. noteState still runs
+	// inside Init and overwrites a.path with the blob's, so a session
+	// re-exec keeps its stored document even if argv were ever present.
+	if args := vi.Args(); len(args) > 1 && len(args[1]) > 0 {
+		a.path = args[1]
+	}
 	a.find = appkit.NewFind()
 	a.find.Scan = a.findScan
 	a.find.Show = a.findShow
@@ -242,6 +255,16 @@ func main() {
 		StateVersion: stateAppVer,
 		SaveState:    a.saveState,
 		RestoreState: a.noteState,
+		// The drop half of opens=text: the seat's hit-test accepts a text
+		// drag landing on this window and PollDrag hands the offer here.
+		// The callback runs mid-loop with no frame pending, so it owns
+		// the repaint the splice earned.
+		DropTarget: func(offer tabapp.DragOffer) {
+			vi.ConsoleLine(a.drop(offer))
+			a.top = a.buf.Follow(a.top, a.rowsIn())
+			a.draw()
+			a.publish()
+		},
 	})
 	if ta == nil {
 		vi.ConsoleLine(markerOpenErr + "-1")
@@ -277,18 +300,7 @@ func main() {
 	// M197d (#3416): the #a11y v1 outline — staged on every change the
 	// loop drives, deduped on the encoded bytes so a key that moved
 	// nothing costs a compare, never a write.
-	lastOutline := ""
-	publish := func() {
-		nodes := a.outline()
-		enc := string(appkit.EncodeOutline(nodes))
-		if enc == lastOutline {
-			return
-		}
-		if appkit.PublishOutline(uint32(ta.Win), nodes) {
-			lastOutline = enc
-		}
-	}
-	publish()
+	a.publish()
 	a.top = a.buf.Follow(a.top, a.rowsIn())
 	a.draw()
 	// ready means the first frame is BUILT AND PRESENTED, which is why it comes
@@ -301,10 +313,11 @@ func main() {
 	vi.ConsoleLine(a.cursorMarker())
 
 	for {
-		// The seat's save ask (snapshot, tab close) is a notice in the
-		// mailbox nothing wakes; answering it is once per pass, the same
-		// discipline PollDrag/PollSelPaste keep.
+		// The seat's save ask (snapshot, tab close) and a delivered drag
+		// payload are notices in the mailbox nothing wakes; answering them
+		// is once per pass, the same discipline PollDrag keeps elsewhere.
 		a.ta.PollStateAsk()
+		a.ta.PollDrag()
 		ev, r, ok := vi.PollEventRaw()
 		if !ok {
 			if r < 0 {
@@ -348,7 +361,7 @@ func main() {
 				a.top = a.buf.Follow(a.top, a.rowsIn())
 				a.draw()
 				a.flushFindLog()
-				publish()
+				a.publish()
 			}
 		}
 	}
@@ -444,6 +457,49 @@ func (a *app) save() string {
 func (a *app) cursorMarker() string {
 	return markerCursor + vi.Itoa64(int64(a.buf.Line())) + " col=" + vi.Itoa64(int64(a.buf.Col())) +
 		" n=" + vi.Itoa64(int64(a.buf.Len()))
+}
+
+// publish stages the #a11y v1 outline for the live buffer, deduped on the
+// encoded bytes so a change that moved nothing costs a compare, never a
+// write. Every mutating path calls it after its frame: keys, and the drop
+// splice inside the DropTarget callback.
+func (a *app) publish() {
+	if a.ta == nil {
+		return
+	}
+	nodes := a.outline()
+	enc := string(appkit.EncodeOutline(nodes))
+	if enc == a.lastOutline {
+		return
+	}
+	if appkit.PublishOutline(uint32(a.ta.Win), nodes) {
+		a.lastOutline = enc
+	}
+}
+
+// drop splices a delivered drag payload at the caret — the opens=text
+// target half of the manifest row, the same offer shape GOEDIT's
+// DropTarget answers. The seat's hit-test already filtered the mime; a
+// nil payload is the wire's "no envelope" case and an empty one has
+// nothing to splice, both named like refusals. A drop longer than the
+// room left stops at the buffer bound and the marker says so, the same
+// honesty loadMarker keeps for a file that does not fit. The marker is
+// returned, not printed, for the same reason load's is.
+func (a *app) drop(offer tabapp.DragOffer) string {
+	b := offer.Blob
+	if b == nil {
+		return markerDrop + "no-payload"
+	}
+	if len(b) == 0 {
+		return markerDrop + "empty"
+	}
+	n := a.buf.InsertText(string(b))
+	a.dirty = true
+	if n < len(b) {
+		return markerDrop + offer.Mime + " n=" + vi.Itoa64(int64(n)) +
+			" truncated at " + vi.Itoa64(int64(MaxBytes))
+	}
+	return markerDrop + offer.Mime + " n=" + vi.Itoa64(int64(n))
 }
 
 // ---------------------------------------------------------------------------
