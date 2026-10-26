@@ -280,19 +280,31 @@ GATE_RUNNER_PRIVATE=""
 gate_build_lock() {
     # Re-entrant per PROCESS (the vgate preamble holds it across the whole
     # provision step AND calls gate_build_runner, which holds its own) —
-    # keyed on the caller's BASHPID, so a forked subshell that inherits
+    # keyed on the caller's real pid, so a forked subshell that inherits
     # DEPTH>0 still acquires for real instead of riding the parent's hold.
     # Beyond that the lock file carries the holder's pid: `>` under
     # noclobber is the atomic test-and-set (create+pid land in one
     # redirection), and the pid lets a waiter retire a lock whose holder
     # died without unlocking — shlock semantics without the shlock
-    # dependency. BASHPID is resolved HERE, in the calling shell: a holder
-    # that is itself a subshell must stamp ITS pid (evaluating BASHPID
-    # inside the write's own subshell would stamp an ephemeral pid that is
-    # dead before the lock is even observed — making every held lock look
-    # stealable).
-    local pid="${BASHPID:-$$}"
-    if [ "$GATE_BUILD_LOCK_OWNER" = "$pid" ]; then
+    # dependency.
+    #
+    # The pid is resolved HERE, in the calling shell — a holder that is
+    # itself a subshell must stamp ITS pid, and resolving it inside a
+    # commsub or the write's own subshell would stamp an ephemeral pid
+    # that is dead before the lock is even observed (making every held
+    # lock look stealable). BASHPID answers it on bash >= 4. bash 3.2 —
+    # CI's /bin/bash on the macOS runner — has no BASHPID, and a forked
+    # subshell inherits the parent's $$: `${BASHPID:-$$}` let a second
+    # acquirer stamp the HOLDER's pid, take the re-entrancy path and walk
+    # straight into the critical section (PR #3768: "the second acquirer
+    # entered while the lock was held"). The fallback asks a spawned child
+    # for its PPID; `exec` collapses the command substitution to a single
+    # fork layer, so the child's parent IS this process. A plain
+    # `$(sh -c 'echo $PPID')` is NOT safe — bash 3.2 double-forks there
+    # and stamps the ephemeral commsub pid, the same failure again.
+    local pid="${BASHPID:-}"
+    [ -n "$pid" ] || pid="$(exec /bin/sh -c 'echo "$PPID"')"
+    if [ -n "$GATE_BUILD_LOCK_OWNER" ] && [ "$GATE_BUILD_LOCK_OWNER" = "$pid" ]; then
         GATE_BUILD_LOCK_DEPTH=$((GATE_BUILD_LOCK_DEPTH + 1))
         return 0
     fi
@@ -322,11 +334,15 @@ gate_build_lock() {
 
 gate_build_unlock() {
     # No-op for a non-holder, so cleanup paths (gate_end's traps) can call it
-    # unconditionally. OWNER == caller's pid means the stamp on the file is
-    # ours — a subshell that inherited DEPTH>0 but never acquired can never
-    # delete a lock its PARENT holds.
-    local pid="${BASHPID:-$$}"
-    [ "$GATE_BUILD_LOCK_OWNER" = "$pid" ] || return 0
+    # unconditionally. OWNER == caller's real pid means the stamp on the
+    # file is ours — a subshell that inherited DEPTH>0 but never acquired
+    # can never delete a lock its PARENT holds. Same pid resolution as
+    # gate_build_lock (bash 3.2 has no BASHPID and inherits $$); the
+    # OWNER-nonempty test keeps an unresolvable pid from matching the
+    # unset sentinel and deleting a stranger's lock.
+    local pid="${BASHPID:-}"
+    [ -n "$pid" ] || pid="$(exec /bin/sh -c 'echo "$PPID"')"
+    [ -n "$GATE_BUILD_LOCK_OWNER" ] && [ "$GATE_BUILD_LOCK_OWNER" = "$pid" ] || return 0
     GATE_BUILD_LOCK_DEPTH=$((GATE_BUILD_LOCK_DEPTH - 1))
     if [ "$GATE_BUILD_LOCK_DEPTH" -le 0 ]; then
         rm -f "$GATE_BUILD_LOCK"
