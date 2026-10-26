@@ -66,6 +66,16 @@ var stateServiceDrain func() int
 // count, not a timer.
 var stateAskPend [256]bool
 
+// stateAdoptPend marks a row whose stored blob was ADOPTED for the live
+// window — a reopen's or re-exec's staged envelope that the new instance
+// has not yet claimed with a restore_state request. While it is latched
+// the blob is mid-handoff: a save answer can only report state the app
+// was never handed (a fresh instance's defaults — #3737), so
+// serveStateSave refuses to overwrite rather than clobber the session
+// record the claim still owns. serveStateRestore's delivery clears it;
+// clearAppState drops it with the binding so a reused id inherits nothing.
+var stateAdoptPend [256]bool
+
 // stateAskRounds bounds the drain between the ask and giving up: each
 // round is one serviceRPC pass plus one tick of real wait, so the app gets
 // wall-clock time to notice the ask and answer — the notice lands in a
@@ -177,6 +187,15 @@ func serveStateSave(req vi.WmRpc) bool {
 		stateLog(MarkerStateDrop + name + " bad")
 		return false
 	}
+	// #3737: the row's blob is an adopted handoff the new instance has
+	// not claimed yet — anything the app can report right now predates
+	// the restore it never saw, so storing it would replace the user's
+	// recorded session with defaults. Refused BY NAME like every drop;
+	// the app's applied=0 ack cleans its own staging.
+	if stateAdoptPend[req.ID] {
+		stateLog(MarkerStateDrop + name + " pending")
+		return false
+	}
 	_ = tabs.SetState(id, ver, blob)
 	stateLog(MarkerStateSave + vi.Itoa64(int64(id)) +
 		" len=" + vi.Itoa64(int64(len(blob))) +
@@ -196,6 +215,9 @@ func serveStateRestore(req vi.WmRpc) bool {
 	id := uint32(req.ID)
 	i := tabs.index(id)
 	if i < 0 || len(tabs.tabs[i].State) == 0 {
+		// No handoff outstanding — a surviving latch is stale, and the
+		// app asking proves the claim window has passed.
+		stateAdoptPend[req.ID] = false
 		return false
 	}
 	enc, ok := vi.EncodeAppState(tabs.tabs[i].StateVer, tabs.tabs[i].State)
@@ -206,6 +228,8 @@ func serveStateRestore(req vi.WmRpc) bool {
 	n := len(tabs.tabs[i].State)
 	tabs.tabs[i].State = nil
 	tabs.tabs[i].StateVer = 0
+	// The adopted handoff is claimed: ordinary saves own the row again.
+	stateAdoptPend[req.ID] = false
 	stateLog(MarkerStateRestore + vi.Itoa64(int64(id)) +
 		" len=" + vi.Itoa64(int64(n)) +
 		" ver=" + vi.Itoa64(int64(ver)))
@@ -264,7 +288,12 @@ func adoptPendingState(pid uint8, id uint32) {
 		pendingAppStates[i] = pendingAppStates[pendingAppStateN-1]
 		pendingAppStates[pendingAppStateN-1] = pendingAppState{}
 		pendingAppStateN--
-		_ = tabs.SetState(id, p.ver, p.blob)
+		if tabs.SetState(id, p.ver, p.blob) && id <= 255 {
+			// The blob is a handoff owed to this instance's own restore
+			// request — latch it against a save that could only carry
+			// pre-restore defaults (#3737).
+			stateAdoptPend[id] = true
+		}
 		return
 	}
 }
@@ -279,5 +308,6 @@ func clearAppState(id uint32) {
 		return
 	}
 	stateAskPend[id] = false
+	stateAdoptPend[id] = false
 	_ = stateFileDelete(vi.AppStatePath(id))
 }

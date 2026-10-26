@@ -365,6 +365,13 @@ func adoptReexec(pid uint8, id uint32) int {
 		// M137a: a pane leaf named by the dead placeholder id follows
 		// the swap to the live window id.
 		s.retreeID(phid, id)
+		if len(s.tabs[idx].State) > 0 && id <= 255 {
+			// The session record's blob is an unclaimed handoff until
+			// this instance's own restore_state asks for it — a save
+			// landing first could only carry pre-restore defaults, so
+			// serveStateSave refuses it like the reopen path's (#3737).
+			stateAdoptPend[id] = true
+		}
 		if si != spaceCur {
 			wmctlSetVisible(id, false)
 		}
