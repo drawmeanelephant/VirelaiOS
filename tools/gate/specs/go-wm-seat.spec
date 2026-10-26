@@ -2047,6 +2047,11 @@ PY
 # that window) clicks the row: exec -> ENOENT -> refusal toast -> a
 # second click runs Retry, which execs again and reports ENOENT.
 #
+# The `vf rm` pair is load-bearing like run 16's: earlier legs leave a
+# SESSION.TABS row (run 16's goprogress tab re-execs at THIS boot — its
+# title-keyed bin ENOENTs and posts a refusal toast the leg never
+# choreographed, observed run 17 red 2026-10-25) and a NOTIFY.HIST.
+#
 # The one-row manifest is staged as GHOSTAPPS.TXT and swapped in by the
 # boot script's `vf mv` pair — writing APPS.TXT directly here would
 # collapse the shared manifest for EVERY run (M165f #2978's run-15 legs
@@ -2072,6 +2077,8 @@ PY
 
 vgate_file script-17.txt <<'EOF'
 vf rm GOTABWM.DEMO
+vf rm SESSION.TABS
+vf rm NOTIFY.HIST
 vf mv APPS.TXT APPSREAL.TXT
 vf mv GHOSTAPPS.TXT APPS.TXT
 set GOMAXPROCS=1

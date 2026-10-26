@@ -10,16 +10,18 @@ def check(path, out):
     width, height = 1280, 720
     assert len(raw) == width * height * 4, "missing full guest scanout"
     # The launcher is the #2054 left-edge strip: emblem + prompt + filter
-    # field, then manifest rows at y=140+24*i, labels at x=14 (a dimmed row
-    # paints its label at +3 and its reason at +13). Glyph masks are the
-    # shared 8x8 bitmap face (the gate share stages no FONTS.TXT, so the
-    # seat's degrade path paints them), first-lit-pixel ink vs cell bg.
+    # field, then manifest rows at y=140+24*i. Row labels sit at x=32 since
+    # M203 (#3338): a staged icon= raster takes the row's left edge and the
+    # text yields to icon-right+4 (iconless rows keep the x=14 inset).
+    # A dimmed row paints its label at +3 and its reason at +13. Glyph masks
+    # are the shared 8x8 bitmap face (the gate share stages no FONTS.TXT, so
+    # the seat's degrade path paints them), first-lit-pixel ink vs cell bg.
     glyphs = [
         ("prompt", 8, 88, [99, 99, 99, 107, 127, 119, 99, 0]),
-        ("Code Editor", 14, 194, [60, 102, 3, 3, 3, 102, 60, 0]),
-        ("Files (dimmed)", 14, 215, [127, 70, 22, 30, 22, 6, 15, 0]),
-        ("Binary not staged", 14, 225, [63, 102, 102, 62, 102, 102, 63, 0]),
-        ("Terminal", 14, 242, [63, 45, 12, 12, 12, 12, 30, 0]),
+        ("Code Editor", 32, 194, [60, 102, 3, 3, 3, 102, 60, 0]),
+        ("Files (dimmed)", 32, 215, [127, 70, 22, 30, 22, 6, 15, 0]),
+        ("Binary not staged", 32, 225, [63, 102, 102, 62, 102, 102, 63, 0]),
+        ("Terminal", 32, 242, [63, 45, 12, 12, 12, 12, 30, 0]),
     ]
     for name, x, y, rows in glyphs:
         def pixel(dx, dy):

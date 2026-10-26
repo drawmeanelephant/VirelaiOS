@@ -1033,8 +1033,13 @@ func paintLauncher(scan []byte, width, height int) int {
 	// share without it gets a bordered box and the marker's
 	// `unavailable`, never a fabricated mascot.
 	if icon := emblemCanvas(); icon != nil {
-		dst := widgets.Rect{X: launchX + (launchW-launchRule-icon.W)/2,
-			Y: launchY + launchAvatarY, W: icon.W, H: icon.H}
+		// The raster blits into the header's emblem SLOT at slot size —
+		// the header geometry (prompt/field/rows) is pinned against the
+		// 64px box, so a 256px master must scale down, not paint over
+		// them (observed go-wm-default run 19: the 256px BRD_EMB painted
+		// y=16..272 and the prompt glyph pin read artwork, not Surface).
+		dst := widgets.Rect{X: launchX + (launchW-launchRule-launchEmblem)/2,
+			Y: launchY + launchAvatarY, W: launchEmblem, H: launchEmblem}
 		draw.BlitScaled(c, icon, dst)
 		written += seatArea(c, dst)
 	} else {

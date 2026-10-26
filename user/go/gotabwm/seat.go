@@ -823,7 +823,16 @@ func compositeTick(scan []byte, ticks uint64, presents *int) {
 				}
 			default:
 				closeHosted()
-				stripDone = true
+				// "Done" is an EMPTY strip, not one swept step: a client
+				// that declares mid-choreography (go-wm-default boot 01's
+				// scripted exec lands between the scripted closes) still
+				// owes the teardown a close — and while it stays hosted,
+				// its own state-save answers keep re-arming lastActivity,
+				// so the demo would never reach `host done` (observed
+				// 2026-10-27: seat alive at the 300s runner timeout).
+				if tabs.Count() == 0 {
+					stripDone = true
+				}
 			}
 		}
 		return
