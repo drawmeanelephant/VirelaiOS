@@ -14,7 +14,8 @@
 # consented byte-proof or the bounded ETIMEDOUT refusal with no file.
 #
 # HOST PREREQUISITE (fails honestly when missing):
-#   bash tools/go/build-gorec.sh   ->  .build/go/GOREC.ELF
+#   bash tools/go/build-gorec.sh    ->  .build/go/GOREC.ELF
+#   bash tools/go/build-gotabwm.sh  ->  .build/go/GOTABWM.ELF (run 02's seat)
 
 vgate_name live-sound-record "M118d (#2482): GOREC.ELF records N s to WAV via WriteFileSafe — the host recomputes header, duration and sha256 off the share"
 vgate_share seed
@@ -26,7 +27,7 @@ exec GOREC.ELF 2 /host/GOREC/absent.wav
 EOF
 
 vgate_setup_python <<'PY'
-import os, subprocess, sys
+import os, shutil, subprocess, sys
 rd = os.environ["RUN_DIR"]
 share = os.environ.get("VG_SHARE") or os.path.join(rd, "share")
 # The freshness guard refuses a stale or missing ELF by name (issue #1503's
@@ -36,6 +37,16 @@ if rc != 0:
     sys.exit("GOREC.ELF missing or stale — build it first: "
              "bash tools/go/build-gorec.sh")
 subprocess.run(["bash", "tools/go/build-gorec.sh", "stage", share], check=True)
+# Run 02's windowed face needs a real seat: without GOTABWM.ELF on the
+# share the kernel runs shim compositing and every bare exec answers
+# `gorec: window refused` (observed 2026-10-25). Run 01 is untouched —
+# its exec carries argv, so the CLI path never consults the seat.
+wsrc = os.path.join(".build", "go", "GOTABWM.ELF")
+if not os.path.exists(wsrc):
+    sys.exit("GOTABWM.ELF missing — build it first: "
+             "bash tools/go/build-gotabwm.sh")
+shutil.copy(wsrc, os.path.join(share, "GOTABWM.ELF"))
+print("staged GOTABWM.ELF into share (%d bytes)" % os.path.getsize(wsrc))
 PY
 
 # Run 01 -- the stock VM's named refusal. No --sound device on the bus, so
@@ -64,13 +75,18 @@ PY
 # Run 02 -- M122c (#2572): a BARE `exec GOREC.ELF` is the launcher's click.
 # It must open the windowed view — `gorec: view open id=` on serial — never
 # fall to the usage line. The run ends on the marker; the window is torn
-# down with the boot.
+# down with the boot. The leg boots the seat like its sibling bare-launch
+# legs (go-infer/go-welcome run 01): GOTABWM.ELF on the share, a scanout
+# for the compositor, and the exec held until `gotabwm: mode live` — a
+# seat still in its window phase already answers WinOpen, but the
+# registered-WM gate is what tabapp.Init's declare needs.
 vgate_file script-view.txt <<'EOF'
 exec GOREC.ELF
 EOF
 
-vgate_run 02 -- --script '$RUN_DIR/script-view.txt' --script-expect 'gorec: view open id=' --timeout 90
+vgate_run 02 -- --screen '$RUN_DIR/screen-02' --script '$RUN_DIR/script-view.txt' --script-after 'gotabwm: mode live' --script-expect 'gorec: view open id=' --timeout 180
 
+vgate_assert 02 serial-contains 'gotabwm: mode live'
 vgate_assert 02 serial-contains 'exec: loaded GOREC.ELF'
 vgate_assert 02 serial-contains 'gorec: view open id='
 vgate_assert 02 serial-absent 'gorec: window refused'
