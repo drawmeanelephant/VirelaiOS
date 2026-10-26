@@ -6254,6 +6254,10 @@ test "splash hold: a seatless user present releases silently" {
     // #3731: the hold survives a mere open — the first PRESENT is the
     // successor content the shim-only boot was waiting on.
     try std.testing.expect(splash_hold);
+    // user_open emits its per-open attribution marker (issue #990) — the
+    // silence contract covers the hold's own release, so the measurement
+    // starts here with the hook still armed.
+    splash_test_log_len = 0;
     try std.testing.expect(user_present(id));
     try std.testing.expect(!splash_hold);
     // Silent like the seat bind: no expiry line — the app's own markers
