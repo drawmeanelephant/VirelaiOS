@@ -1432,7 +1432,10 @@ PY
 # session entirely now (M122b's first-boot-only contract), so the strip is
 # [Sh, Term, Edit] and the focus-back chord is ctrl-2 (1-indexed rail
 # cells; ctrl-1 hits Sh, observed r20 `alt-tab id=3`), not the old
-# placeholder-strip ctrl-3. A scripted second term also costs a task-pool
+# placeholder-strip ctrl-3. It rides chords2 anchored on `goedit: saved` —
+# in one batch the chord lands before the editor's async write flushes and
+# the saved-before-focus pin fails (observed 2026-10-27).
+# A scripted second term also costs a task-pool
 # slot the boot cannot spare: observed r20 — seat + restored Term +
 # scripted Term left GOEDIT's runtime unable to make an M
 # (`newosproc: sys_thread create failed`, no `goedit: present`).
