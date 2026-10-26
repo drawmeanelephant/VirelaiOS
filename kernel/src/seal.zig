@@ -8,7 +8,12 @@
 //! presents the armed volume as a `vlfs.SectorSource` whose block-level
 //! hooks run every block in the sealed span [2, tag_first) through AEAD
 //! with its tag-region entry. The superblock pair and the tag region
-//! itself stay plaintext (ADR 0061 — nonces and tags are public).
+//! itself stay plaintext (ADR 0061 — nonces and tags are public). Every
+//! tag field the guest emits has a nonzero first byte (#3685): VZ's
+//! virtio-blk write path re-serializes a leading-zero 16-byte tag field
+//! minimal-length — the #3128 tear — so the seal re-draws the block
+//! nonce until the tag starts nonzero and the corruptor's trigger never
+//! exists on disk.
 //!
 //! **I/O hooks, not a fork.** `vlfs.SectorSource` carries optional
 //! readBlock/writeBlock/err hooks; this module is the only producer of
@@ -152,6 +157,23 @@ fn tagHome(slot: u32, s: *const Seal) struct { blk: u32, off: usize } {
         .blk = s.tag_first + slot / vlfs.tag_entries_per_block,
         .off = (slot % vlfs.tag_entries_per_block) * vlfs.tag_entry_len,
     };
+}
+
+/// #3685 — seal `pt` under a fresh random nonce, re-drawing until the
+/// tag's first byte is nonzero (~1/256 of seals take one extra draw).
+/// VZ's virtio-blk storage write path emits a stored 16-byte tag field
+/// minimal-length — leading zeros dropped, zero tail — whenever the
+/// field starts with 0x00 (the #3128 tear, host-authored below every
+/// guest observation point). A tag field that never starts with 0x00 is
+/// written verbatim, so the emit side simply never produces one. The
+/// on-disk format is unchanged: readers, --check, and older volumes see
+/// an ordinary {nonce, tag} entry.
+fn sealBlockFresh(s: *Seal, out: *[vlfs.block_len]u8, tag: *[aead.tag_len]u8, pt: *const [vlfs.block_len]u8, aad: *const [12]u8, nonce: *[aead.nonce_len]u8) void {
+    while (true) {
+        s.nonceFn(s.nonceCtx, nonce);
+        aead.seal(out, tag, pt, aad, nonce, &s.dek);
+        if (tag[0] != 0) break;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -557,10 +579,9 @@ fn sealWriteBlock(ctx: ?*anyopaque, blk: u32, data: *const [vlfs.block_len]u8) b
     // this path: a fresh random nonce on EVERY write — including
     // rewrites of the same block (D9's never-repeat rule under one DEK).
     var nonce: [aead.nonce_len]u8 = undefined;
-    s.nonceFn(s.nonceCtx, &nonce);
-    const aad = blockAad(s.volume_id, blk);
     var tag: [aead.tag_len]u8 = undefined;
-    aead.seal(&s.raw, &tag, data, &aad, &nonce, &s.dek);
+    const aad = blockAad(s.volume_id, blk);
+    sealBlockFresh(s, &s.raw, &tag, data, &aad, &nonce);
     if (!s.inner.writeBlock(blk, &s.raw)) {
         s.fail = error.Io;
         return false;
@@ -652,9 +673,8 @@ fn sealStageBlock(ctx: ?*anyopaque, dest: u32, contents: *const [vlfs.block_len]
     };
     const e = &s.staged[idx];
     e.dest = dest;
-    s.nonceFn(s.nonceCtx, &e.nonce);
     const aad = blockAad(s.volume_id, dest);
-    aead.seal(&s.raw, &e.tag, contents, &aad, &e.nonce, &s.dek);
+    sealBlockFresh(s, &s.raw, &e.tag, contents, &aad, &e.nonce);
     // #3128: pin that the staged entry holds the true tag at stage time —
     // a staged entry already torn here means guest-authored corruption.
     var vfy_tag: [aead.tag_len]u8 = undefined;
@@ -971,6 +991,83 @@ test "seal: fresh nonce on every write — a rewrite never reuses one" {
     try std.testing.expect(src.writeBlock(4, &pt));
     const second_nonce = img[7 * vlfs.block_len + (4 - 2) * vlfs.tag_entry_len ..][0..aead.nonce_len].*;
     try std.testing.expect(!std.mem.eql(u8, &first_nonce, &second_nonce));
+}
+
+/// #3685 test seam: walk the deterministic nonce stream for a counter
+/// whose tag for (blk, pt) starts with 0x00 — the tear's trigger — and
+/// whose successor's tag is clean. Returns the bad counter and the good
+/// pair that follows it.
+fn findLeadZeroNonce(s: *Seal, blk: u32, pt: *const [vlfs.block_len]u8, bad_ctr: *u64, good_nonce: *[aead.nonce_len]u8, good_tag: *[aead.tag_len]u8) void {
+    const aad = blockAad(s.volume_id, blk);
+    var probe_nonce: [aead.nonce_len]u8 = undefined;
+    var probe_tag: [aead.tag_len]u8 = undefined;
+    var probe_ct: [vlfs.block_len]u8 = undefined;
+    var ctr: u64 = 0;
+    while (true) {
+        ctr += 1;
+        @memset(&probe_nonce, 0);
+        std.mem.writeInt(u64, probe_nonce[0..8], ctr, .little);
+        aead.seal(&probe_ct, &probe_tag, pt, &aad, &probe_nonce, &s.dek);
+        if (probe_tag[0] != 0) continue;
+        @memset(&probe_nonce, 0);
+        std.mem.writeInt(u64, probe_nonce[0..8], ctr + 1, .little);
+        aead.seal(&probe_ct, &probe_tag, pt, &aad, &probe_nonce, &s.dek);
+        if (probe_tag[0] != 0) {
+            bad_ctr.* = ctr;
+            good_nonce.* = probe_nonce;
+            good_tag.* = probe_tag;
+            return;
+        }
+    }
+}
+
+test "seal: #3685 — a leading-zero tag re-draws the nonce; the bad pair never lands" {
+    var img: [8 * vlfs.block_len]u8 = @splat(0);
+    var disk = MemDisk{ .img = &img };
+    var s = makeSeal(0x55, 8, 7, disk.rw());
+    const src = source(&s);
+
+    var pt: [vlfs.block_len]u8 = @splat(0x42);
+    var bad_ctr: u64 = undefined;
+    var good_nonce: [aead.nonce_len]u8 = undefined;
+    var good_tag: [aead.tag_len]u8 = undefined;
+    findLeadZeroNonce(&s, 3, &pt, &bad_ctr, &good_nonce, &good_tag);
+    test_nonce_ctr = bad_ctr - 1;
+    try std.testing.expect(src.writeBlock(3, &pt));
+
+    // The write took two draws: the bad counter was consumed and skipped,
+    // and the stored pair is the successor's nonce and clean tag.
+    try std.testing.expectEqual(bad_ctr + 1, test_nonce_ctr);
+    const e = img[7 * vlfs.block_len + (3 - 2) * vlfs.tag_entry_len ..][0..vlfs.tag_entry_len];
+    try std.testing.expectEqualSlices(u8, &good_nonce, e[0..aead.nonce_len]);
+    try std.testing.expectEqualSlices(u8, &good_tag, e[aead.nonce_len..][0..aead.tag_len]);
+    try std.testing.expect(e[aead.nonce_len] != 0);
+
+    var out: [vlfs.block_len]u8 = undefined;
+    try std.testing.expect(src.readBlock(3, &out));
+    try std.testing.expectEqualSlices(u8, &pt, &out);
+}
+
+test "seal: #3685 — a staged txn entry also carries no leading-zero tag" {
+    var img: [8 * vlfs.block_len]u8 = @splat(0);
+    var disk = MemDisk{ .img = &img };
+    var s = makeSeal(0x55, 8, 7, disk.rw());
+    const src = source(&s);
+
+    var pt: [vlfs.block_len]u8 = @splat(0x77);
+    var bad_ctr: u64 = undefined;
+    var good_nonce: [aead.nonce_len]u8 = undefined;
+    var good_tag: [aead.tag_len]u8 = undefined;
+    findLeadZeroNonce(&s, 4, &pt, &bad_ctr, &good_nonce, &good_tag);
+    test_nonce_ctr = bad_ctr - 1;
+    try std.testing.expectEqual(@as(u32, 7), src.stageBlock(4, &pt));
+    try std.testing.expectEqual(bad_ctr + 1, test_nonce_ctr);
+
+    var tagblk: [vlfs.block_len]u8 = @splat(0);
+    try std.testing.expectEqual(@as(u32, 1), src.applyStaged(7, &tagblk));
+    const e = tagblk[(4 - 2) * vlfs.tag_entry_len ..][0..vlfs.tag_entry_len];
+    try std.testing.expectEqualSlices(u8, &good_nonce, e[0..aead.nonce_len]);
+    try std.testing.expectEqualSlices(u8, &good_tag, e[aead.nonce_len..][0..aead.tag_len]);
 }
 
 // Scripted prompt session for the unseal tests.

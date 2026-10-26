@@ -447,7 +447,13 @@ func (c *checker) plainJournal(b uint32) []byte {
 }
 
 // sealOpen AEAD-opens one sealed block's stored bytes against its
-// {nonce, tag} home entry. A failed open yields zeros and false.
+// {nonce, tag} home entry. A failed open yields zeros and false — except
+// when the stored tag is the recoverable VZ backing-file tear (#3685):
+// the persistence path can land the field minimal-length (leading zeros
+// dropped, left-justified, zero tail) though the served view reconstructs
+// the full tag, so the artifact is file-side only. Each dropped-prefix
+// depth is retried; a shifted form that opens is the true tag, reported
+// as informational vz_tag_tear rather than bad_block_auth.
 func (c *checker) sealOpen(b uint32, stored []byte) ([]byte, bool) {
 	e := c.tagSlot(b)
 	var nonce [aeadNonceLen]byte
@@ -455,7 +461,21 @@ func (c *checker) sealOpen(b uint32, stored []byte) ([]byte, bool) {
 	copy(nonce[:], e[:aeadNonceLen])
 	copy(tag[:], e[aeadNonceLen:])
 	out := make([]byte, BlockLen)
-	return out, aeadOpen(out, stored, &tag, blockAAD(c.volID, b), &nonce, c.dek)
+	if aeadOpen(out, stored, &tag, blockAAD(c.volID, b), &nonce, c.dek) {
+		return out, true
+	}
+	for k := 1; k < aeadTagLen; k++ {
+		var cand [aeadTagLen]byte
+		copy(cand[k:], tag[:aeadTagLen-k])
+		if aeadOpen(out, stored, &cand, blockAAD(c.volID, b), &nonce, c.dek) {
+			if !c.authBad[b] {
+				c.authBad[b] = true
+				c.note("vz_tag_tear", "block %d tag field torn depth %d (VZ minimal-length artifact)", b, k)
+			}
+			return out, true
+		}
+	}
+	return out, false
 }
 
 // tagSlot reads the {nonce, tag} slot for sealed block b through the
