@@ -165,6 +165,10 @@ vgate_assert 01 serial-contains ' mime=text/plain len=8'
 # The seat's half: the hover accepted and the release delivered.
 vgate_assert 01 serial-contains 'gotabwm: drag over id='
 vgate_assert 01 serial-contains 'accept=1'
+# #3348 cursor-context: the held-drag samples over the SOURCE pane
+# (GOFILES' opens=text/vcard refuses text/plain) pick the staged refused
+# mask (wmctl cmd 24) — the receipt prints once per accepted pick.
+vgate_assert 01 serial-contains 'gotabwm: cursor shape no'
 vgate_assert 01 serial-contains 'gotabwm: drag drop id='
 vgate_assert 01 serial-contains ' mime=text/plain'
 

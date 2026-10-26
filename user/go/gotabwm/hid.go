@@ -159,6 +159,30 @@ var execApp = vi.Exec
 // host tests assert which pointer samples reach an app without a guest kernel.
 var forwardContentPointer = vi.WmctlContentPtr
 
+// #3348 (the cursor-context seam): the seat owns the PICK, the kernel owns
+// the stamp — slot-65 cmd 24 (vi.WmctlCursorShape) selects which staged
+// mask of the f-artcraft #1249 set is drawn over the composed frame.
+// setCursorShape is the raw syscall; the indirection lets host tests pin
+// the pick table without a guest kernel (the real call degrades to
+// -ENOSYS off the guest anyway).
+var setCursorShape = vi.WmctlCursorShape
+
+// curCursorShape is the last pick the kernel accepted. The pick rides
+// pointer samples only: a state change with no motion (a drag armed from
+// the mailbox, a toast landing under a resting pointer) repicks on the
+// next sample — the honest bound of a hit-test-driven seam.
+var curCursorShape uint64 = vi.CursorPtr
+
+// cursorShapeSeen latches each shape's first accepted pick so the receipt
+// prints once per shape, not once per boundary crossing.
+var cursorShapeSeen [10]bool
+
+// cursorShapeNames is the serial spelling of each CursorShape index —
+// the MASKS.TXT suffix names (kernel/src/driving_award.zig's enum order).
+var cursorShapeNames = [10]string{
+	"ptr", "txt", "lnk", "grb", "grg", "rsx", "rsy", "xhr", "bsy", "no",
+}
+
 // kernelFocusID tracks the kernel's focused USER window from the kind-20
 // registry mirror (flags: id in the low byte, focused<<9, released<<13).
 // The kernel pushes an app's KEY_DOWN to focused_owner(), never to the
@@ -981,6 +1005,82 @@ func focusHosted(id uint32) bool {
 	return true
 }
 
+// MarkerCursorShape is the #3348 cursor-context receipt: printed once per
+// shape AFTER the kernel accepted the pick (the marker discipline — a
+// receipt names a landed state, never an attempted call).
+const MarkerCursorShape = "gotabwm: cursor shape "
+
+// updateCursorShape applies the pick for this sample: the pick rides
+// pointer samples so it sees post-handler state (a down that armed a sash
+// drag flips to the resize mask on that same sample). The syscall is a
+// state swap, not a per-sample channel — it fires only on a pick CHANGE,
+// and a refusal leaves curCursorShape alone so the next sample retries.
+func updateCursorShape(px, py uint32) {
+	shape := pickCursorShape(px, py)
+	if shape == curCursorShape {
+		return
+	}
+	if setCursorShape(shape) != 0 {
+		return
+	}
+	curCursorShape = shape
+	if int(shape) < len(cursorShapeSeen) && !cursorShapeSeen[shape] {
+		cursorShapeSeen[shape] = true
+		vi.ConsoleLine(MarkerCursorShape + cursorShapeNames[shape])
+	}
+}
+
+// pickCursorShape is the seat's half of the #3348 cursor-context seam:
+// which staged mask belongs under the pointer HERE, in THIS gesture
+// state. Priority follows pointer ownership — an armed guest drag owns
+// every sample (and knows the manifest's drop verdict), then the
+// in-flight chrome drags (sash, rail reorder), then plain hover over the
+// seat's own resizable/grabbable surfaces; everything else is the arrow.
+// Text/link/busy picks have no hit-testable seat surface yet — they need
+// an app-declared region (the WM_RPC half of the seam), a later card.
+func pickCursorShape(px, py uint32) uint64 {
+	switch {
+	case drag.armed:
+		// The armed drag owns the pointer outright; the verdict is the
+		// manifest's — a target that declines the mime gets the refused
+		// cursor, anything else is a drag in flight.
+		if drag.hover != 0 && !drag.accept {
+			return vi.CursorNo
+		}
+		return vi.CursorGrg
+	case sashDragging:
+		return sashCursorShape(sashDragNode)
+	case railDragFrom >= 0:
+		return vi.CursorGrg
+	}
+	if ni, _, ok := tabs.sashHitAt(px, py,
+		uint32(vi.ScanoutWidth), uint32(vi.ScanoutHeight)); ok {
+		return sashCursorShape(ni)
+	}
+	// Rail cells are grabbable — but the two zones painted over them
+	// that are pure click targets (the close-x zone, a space pill) keep
+	// the arrow: the pointer there clicks, it does not grab.
+	if _, ok := railCloseZoneAt(px, py, vi.ScanoutWidth, tabs.Count(), RailHeight); ok {
+		return vi.CursorPtr
+	}
+	if _, ok := spacePillAt(px, py, vi.ScanoutWidth, RailHeight); ok {
+		return vi.CursorPtr
+	}
+	if _, ok := railCellAt(px, py, vi.ScanoutWidth, tabs.Count(), RailHeight); ok {
+		return vi.CursorGrb
+	}
+	return vi.CursorPtr
+}
+
+// sashCursorShape maps a split node's kind to its resize shape: a
+// left/right divider resizes along x, a top/bottom one along y.
+func sashCursorShape(ni int) uint64 {
+	if ni >= 0 && ni < tabs.treeN && tabs.tree[ni].kind == SplitHoriz {
+		return vi.CursorRsy
+	}
+	return vi.CursorRsx
+}
+
 func handleWmPointer(e vi.Event) {
 	// M190a (#3236): the pointer path is an observation point too — a
 	// copy made by a click-driven app lands in the ring inside the
@@ -994,6 +1094,10 @@ func handleWmPointer(e vi.Event) {
 	// judges the press on what was held when it was captured, not on a
 	// drain-time read a concurrent chord burst may have changed.
 	mods := uint8(e.Arg1)
+	// #3348: the cursor pick re-evaluates on EVERY sample's exit path
+	// (the armed-drag early return included) so it always sees the
+	// post-handler gesture state.
+	defer updateCursorShape(px, py)
 	down := pointerDownEdge(btn, prevPtrButtons)
 	up := pointerUpEdge(btn, prevPtrButtons)
 	// M124e (#2584): the middle-button's own down edge — the primary-paste

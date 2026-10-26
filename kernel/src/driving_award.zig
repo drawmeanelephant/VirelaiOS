@@ -109,6 +109,281 @@ pub const cursor_w: usize = 16;
 pub const cursor_h: usize = 24;
 /// Pointer coordinates and hit tests name the arrow tip, not its bitmap origin.
 pub const cursor_hotspot = struct { x: u32, y: u32 }{ .x = 1, .y = 1 };
+/// M203 (#3348): the f-artcraft #1249 cursor set — all ten delivered shapes,
+/// mask-reduced by tools/art/mkcursormask.py (canonical copy in
+/// image/art/cursors/MASKS.TXT; hotspots are the delivered ship coords).
+/// `cursor_shape` below selects the drawn mask; the seat drives it through
+/// wmctl cmd 24 (`wmctl_cursor_shape`). The enum's index order IS the wire
+/// order — do not renumber.
+pub const CursorShape = enum(u8) {
+    ptr, // CURS_PTR — the default arrow
+    txt, // CURS_TXT — i-beam, editable text
+    lnk, // CURS_LNK — hand, link-like surface
+    grb, // CURS_GRB — open hand, grabbable surface
+    grg, // CURS_GRG — closed hand, drag in flight
+    rsx, // CURS_RSX — horizontal resize (left/right)
+    rsy, // CURS_RSY — vertical resize (top/bottom)
+    xhr, // CURS_XHR — crosshair
+    bsy, // CURS_BSY — busy
+    no, // CURS_NO — refused (a drop the target declines)
+};
+pub const cursor_shape_count: usize = 10;
+/// One staged shape: its ship hotspot and its 16x24 two-level mask.
+pub const CursorDef = struct {
+    hx: u32,
+    hy: u32,
+    mask: *const [cursor_h][]const u8,
+};
+/// #3348: the shape the kernel stamps. The arrow default keeps the shim and
+/// every pre-seat gate byte-identical; a seat's last pick dies with it
+/// (wm_server.unregister restores `ptr`).
+pub var cursor_shape: CursorShape = .ptr;
+pub const cursor_set: [cursor_shape_count]CursorDef = .{
+    .{ .hx = 1, .hy = 1, .mask = &cursor_mask },
+    .{ .hx = 8, .hy = 12, .mask = &cursor_txt_mask },
+    .{ .hx = 6, .hy = 2, .mask = &cursor_lnk_mask },
+    .{ .hx = 8, .hy = 14, .mask = &cursor_grb_mask },
+    .{ .hx = 8, .hy = 14, .mask = &cursor_grg_mask },
+    .{ .hx = 8, .hy = 12, .mask = &cursor_rsx_mask },
+    .{ .hx = 8, .hy = 12, .mask = &cursor_rsy_mask },
+    .{ .hx = 8, .hy = 12, .mask = &cursor_xhr_mask },
+    .{ .hx = 8, .hy = 12, .mask = &cursor_bsy_mask },
+    .{ .hx = 8, .hy = 12, .mask = &cursor_no_mask },
+};
+const cursor_txt_mask = [_][]const u8{
+    "................",
+    "................",
+    "...##########...",
+    "..############..",
+    "..#oooooooooo#..",
+    "..#oooooooooo#..",
+    "..#####oo#####..",
+    "....###oo###....",
+    ".....##oo##.....",
+    ".....##oo##.....",
+    ".....##oo##.....",
+    ".....##oo##.....",
+    ".....##oo##.....",
+    ".....##oo##.....",
+    ".....##oo##.....",
+    ".....##oo##.....",
+    "....###oo###....",
+    "..#####oo#####..",
+    "..#oooooooooo#..",
+    "..#oooooooooo#..",
+    "..############..",
+    "...##########...",
+    "................",
+    "................",
+};
+const cursor_lnk_mask = [_][]const u8{
+    "................",
+    "....#..#........",
+    "...######.......",
+    "...######.......",
+    "...##oo##.##....",
+    "...##oo#####....",
+    "...##oo#######..",
+    "...##oo##o####..",
+    "...##oo##o##o#..",
+    "...##oo##o##o#..",
+    "...#########o#..",
+    "...###########..",
+    "..##o####oo###..",
+    ".###o#oooooo##..",
+    ".####ooooooo##..",
+    "...##ooooooo##..",
+    "...##ooooooo##..",
+    "...##ooooooo##..",
+    "....#########...",
+    ".....#######....",
+    "................",
+    "................",
+    "................",
+    "................",
+};
+const cursor_grb_mask = [_][]const u8{
+    "................",
+    "................",
+    "....#######.....",
+    "..#########.....",
+    "..####o#######..",
+    "..####o#oo####..",
+    "..#oo#o#oo#o##..",
+    "..#oo#o#oo#o##..",
+    "..#oo#o####o##..",
+    "..#o##########..",
+    "..####ooooo###..",
+    "..###ooooooo##..",
+    "..##oooooooo##..",
+    "..##ooooooooo#..",
+    ".###ooooooooo##.",
+    ".###ooooooooo#..",
+    "..##oooooooo##..",
+    "...##ooooooo##..",
+    "...###ooooo##...",
+    "....########....",
+    "......#####.....",
+    "................",
+    "................",
+    "................",
+};
+const cursor_grg_mask = [_][]const u8{
+    "................",
+    "................",
+    "................",
+    "................",
+    "................",
+    "...##########...",
+    "..############..",
+    "..############..",
+    "..###ooooooo##..",
+    "...#oooooooo##..",
+    "..##oooooooo##..",
+    "..##oooooooo##..",
+    "..##ooo###oo##..",
+    "..#######ooo##..",
+    "..####oo##oo##..",
+    "..########oo##..",
+    "..#####ooooo##..",
+    "...#oooooooo##..",
+    "...#oooooooo##..",
+    "...##oooooo##...",
+    "....#########...",
+    ".......###......",
+    "................",
+    "................",
+};
+const cursor_rsx_mask = [_][]const u8{
+    "................",
+    "................",
+    "................",
+    "................",
+    "................",
+    "................",
+    ".....##..##.....",
+    "....###..###....",
+    "....########....",
+    "...##########...",
+    "..##oooooooo##..",
+    ".##oooooooooo##.",
+    ".##oooooooooo##.",
+    "..##oooooooo##..",
+    "...##########...",
+    "....########....",
+    "....###..###....",
+    ".....##..##.....",
+    "................",
+    "................",
+    "................",
+    "................",
+    "................",
+    "................",
+};
+const cursor_rsy_mask = [_][]const u8{
+    "................",
+    "................",
+    ".......##.......",
+    "......####......",
+    ".....##oo##.....",
+    "...###oooo###...",
+    "..####oooo####..",
+    "..####oooo####..",
+    "....##oooo##....",
+    "....##oooo##....",
+    "....##oooo##....",
+    "....##oooo##....",
+    "....##oooo##....",
+    "....##oooo##....",
+    "....##oooo##....",
+    "....##oooo##....",
+    "..####oooo####..",
+    "..####oooo####..",
+    "...###oooo###...",
+    ".....##oo##.....",
+    "......####......",
+    ".......##.......",
+    "................",
+    "................",
+};
+const cursor_xhr_mask = [_][]const u8{
+    "................",
+    ".......##.......",
+    "......####......",
+    "......####......",
+    "......####......",
+    "......####......",
+    "......####......",
+    "......####......",
+    "......####......",
+    "......####......",
+    "..############..",
+    ".##############.",
+    ".##############.",
+    "..############..",
+    "......####......",
+    "......####......",
+    "......####......",
+    "......####......",
+    "......####......",
+    "......####......",
+    "......####......",
+    "......####......",
+    ".......##.......",
+    "................",
+};
+const cursor_bsy_mask = [_][]const u8{
+    "................",
+    "....########....",
+    "...##########...",
+    "...#oooooooo#...",
+    "...##########...",
+    "....##oooo##....",
+    "....##oooo##....",
+    "....##oooo##....",
+    "....##oooo##....",
+    ".....##oo##.....",
+    ".....######.....",
+    "......####......",
+    "......####......",
+    ".....######.....",
+    ".....##oo##.....",
+    "....##oooo##....",
+    "....##oooo##....",
+    "....##oooo##....",
+    "....##oooo##....",
+    "...##########...",
+    "...#oooooooo#...",
+    "...##########...",
+    "....########....",
+    "................",
+};
+const cursor_no_mask = [_][]const u8{
+    "................",
+    "................",
+    "................",
+    "................",
+    "................",
+    "................",
+    "......oooo......",
+    ".....o####o.....",
+    "....########....",
+    "...o###ooo##o...",
+    "..o#####ooo##o..",
+    "..o##o###oo##o..",
+    "..o##oo###o##o..",
+    "..o##ooo#####o..",
+    "...o##ooo###o...",
+    "....########....",
+    ".....o####o.....",
+    "......oooo......",
+    "................",
+    "................",
+    "................",
+    "................",
+    "................",
+    "................",
+};
 /// M203 (#3338): the f-artcraft #1249 arrow refresh — the same white-fill /
 /// dark-outline read, redrawn by the artist at 32x48 and mask-reduced by
 /// tools/art/mkcursormask.py (the full set + hotspots land in
@@ -718,6 +993,7 @@ pub fn arm() void {
     wm_tray_clip_set = false;
     cursor_shown = false;
     pointer_mod.cursor_drawn = false;
+    cursor_shape = .ptr;
     cursor_old_damage = null;
     cursor_new_damage = null;
     prev_ptr_buttons = 0;
@@ -1087,6 +1363,7 @@ pub const cursor_pixel = pointer_mod.cursor_pixel;
 pub const cursor_draw = pointer_mod.cursor_draw;
 pub const cursor_restore = pointer_mod.cursor_restore;
 pub const cursor_damage_clear = pointer_mod.cursor_damage_clear;
+pub const cursor_shape_apply = pointer_mod.cursor_shape_apply;
 test {
     // #3754: the seam files' own test blocks are analyzed only when the file
     // is referenced from the test root — one named edge per seam.

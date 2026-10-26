@@ -5277,6 +5277,17 @@ fn handle_wmctl(args: Args, _: *exceptions.VectorFrame) u64 {
             input.inject_content_key(@truncate(args[1]), @truncate(args[2]));
             return 0;
         },
+        wm_server.wmctl_cursor_shape => {
+            // #3348: the registered seat selects which staged cursor mask
+            // the kernel stamps (a1 = driving_award.CursorShape index).
+            // Seat-gated like cmd 15; a2..a5 are reserved (unchecked —
+            // callers' unused arg registers are not guaranteed zero).
+            if (!wm_server.registered()) return error_result(.enosys);
+            if (wm_server.registered_pid() != pid) return error_result(.eacces);
+            if (args[1] >= driving_award.cursor_shape_count) return error_result(.einval);
+            driving_award.cursor_shape_apply(@fromBackingInt(@intCast(@as(u8, @intCast(args[1])))));
+            return 0;
+        },
         wm_server.wmctl_set_window => {
             // M32 WMS4 (issue #624): the WM submits a chrome descriptor.
             // M32 WMS5 (issue #625): the frozen ADR 0007 a1/a2 encoding
