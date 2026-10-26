@@ -9,10 +9,10 @@
 # the hosted window on the strip + kernel registry with its title, and
 # clean exit back to the desktop.
 #
-#   run 02: render + echo + typed `exit` -> status 0. `dui focus` is the
-#           marker-gated refocus: the seat's own chrome windows (the Apps
-#           button, blur probe) grab kernel focus at open — typing waits
-#           for `dui focus: focused=3` so every key lands on the bound tty.
+#   run 02: render + echo + typed `exit` -> status 0. The exec waits for
+#           `gotabwm: present` — the seat's adoption handoff then leaves
+#           the new tab focused with no `dui focus <n>` (window ids
+#           recycle; the seat's own chrome can hold a pinned one).
 #   run 03: seat relayout resize + WIN_CLOSE. ctrl-shift-v cycles the
 #           live seat's split (needs the staged CHARMHELLO tab), both
 #           panes re-rect through wm_apply_rect -> WIN_RESIZE -> 80x21.
@@ -68,10 +68,6 @@ vgate_file script-02.txt <<'EOF'
 exec GOSTALGIA.ELF
 EOF
 
-vgate_file script-02b.txt <<'EOF'
-dui focus 3
-EOF
-
 # script-02c's bare `dui` registry dump doubles as the post-echo repaint
 # barrier: it runs 2 s after the echo reply marker, so the guest-side
 # snapshot (on `dui[`) reads the repainted grid.
@@ -83,9 +79,11 @@ vgate_file script-05.txt <<'EOF'
 exec GOSTALGIA.ELF
 EOF
 
-# focus before zoom: the font leg needs no input, but the exit chord does.
+# No `dui focus <n>`: a hardcoded id can land on seat chrome (window ids
+# are recycled — 2026-10-25 the seat's M52 client-death probe held id 3).
+# The seat's own adoption handoff (`tab open`/`host focus`) leaves the new
+# tab focused; the python assert below correlates the ids instead.
 vgate_file script-05b.txt <<'EOF'
-dui focus 3
 font large
 EOF
 
@@ -103,31 +101,23 @@ vgate_file script-03b.txt <<'EOF'
 exec CHARMHELLO.ELF
 EOF
 
-# `dui` first (geometry evidence + the screenshot marker), then close the
-# GOSTALGIA window by id (the seat itself holds id 2) — the kernel release pushes WIN_CLOSE to its
-# owner, which is the run's exit leg.
+# `dui` first (geometry evidence + the screenshot marker); the close is
+# the seat's own ctrl-shift-w chords after `dui[` — one per tab, never a
+# hardcoded window id (ids recycle — the clock can hold the pinned one).
 vgate_file script-03c.txt <<'EOF'
 dui
-dui close 3
 EOF
 
 vgate_file script-04.txt <<'EOF'
 exec GOSTALGIA.ELF
 EOF
 
-# Same seat-chrome focus steal as run 02: the clock window (seat-owned,
-# opened right after the declare) grabs kernel focus, so the typed echo
-# must wait for `dui focus: focused=3` before any key is injected.
-vgate_file script-04b.txt <<'EOF'
-dui focus 3
-EOF
-
-# `clip` prints the clipboard lines on the console (the readback half of
-# the echo proof); `dui close 3` is only a failsafe so a stalled ctrl-c
-# still ends the boot.
+# `clip` prints the clipboard lines on the console — the readback half of
+# the echo proof. The boot's failsafe close is a real seat chord, not
+# `dui close <n>`: ctrl-shift-w after `tty: copy` drops WIN_CLOSE on the
+# focused tab, so a stalled ctrl-c still ends the run at status 0.
 vgate_file script-04c.txt <<'EOF'
 clip
-dui close 3
 EOF
 
 # --- M95f run-06/07 inputs ---------------------------------------------------
@@ -262,17 +252,20 @@ PY
 
 # --- boot 02: render + echo + `exit` ---------------------------------------
 # The chain, each step gated on a marker only the guest produces:
+#   gotabwm: present   -> script-02 `exec GOSTALGIA.ELF`: the seat anchor
+#                        is not optional — an exec that races the seat's
+#                        boot declares into an unregistered WM mailbox,
+#                        the window is never adopted, and no grant ever
+#                        arrives (the run-05 defect class). Post-present,
+#                        every chrome window already exists, so the seat's
+#                        adoption handoff (`tab open`/`host focus`) leaves
+#                        the new tab focused — no `dui focus <n>` (ids
+#                        recycle; the clock can hold the pinned one).
 #   exec GOSTALGIA.ELF  -> the app opens its .user window, the seat hosts
 #                        it (full-viewport grant -> WIN_RESIZE -> 80x44),
 #                        gsport/tty binds /dev/tty to the window and the
 #                        Bubble Tea shell starts. `gostalgia:` markers ride
 #                        the kernel console (fd 1), never the tty.
-#   ready endpoint=     -> script-02b `dui focus 3`: the seat's own chrome
-#                        windows (the 1x1 blur probe, the Apps button)
-#                        grabbed kernel focus at open; the restore is the
-#                        seat's syncSeatChrome path, but the `dui focus:
-#                        focused=3` marker is what proves it held before a
-#                        single key is typed.
 #   call app/list ok    -> --input-string types `echo m95c tty echo ok`:
 #                        real HID key reports -> bound-tty bytes (the
 #                        adapter maps the kernel's LF Enter to the CR the
@@ -299,22 +292,19 @@ vgate_run 02 -- \
     --input --via-virtio --cvc-snap \
     --snapshot-out '$RUN_DIR/gos-02-snap' \
     --script '$RUN_DIR/script-02.txt' \
-    --script2 '$RUN_DIR/script-02b.txt' \
-    --script2-after 'gostalgia: ready endpoint=' --script2-delay 1 \
+    --script-after 'gotabwm: present' \
     --input-string $'echo m95c tty echo ok\n' \
     --input-string-after 'gostalgia: call app/list ok' \
     --screenshot-after 'gostalgia: call app/com.gostalgia.echo/echo ok' \
     --script3 '$RUN_DIR/script-02c.txt' \
     --script3-after 'gostalgia: call app/com.gostalgia.echo/echo ok' --script3-delay 2 \
-    --snapshot-after 'dui[' \
+    --snapshot-after 'gostalgia: call app/com.gostalgia.echo/echo ok' \
     --input-chords 'e,x,i,t,return' \
     --input-chords-after 'dui[' \
     --script-expect 'procs GOSTALGIA.ELF exited status=0' --timeout 240
 
-vgate_assert 02 serial-contains 'gostalgia: tty attached window=3'
-# The marker-gated refocus — typed keys depend on it (the seat's clock
-# window steals kernel focus right after the declare).
-vgate_assert 02 serial-contains 'dui focus: focused=3'
+vgate_assert 02 serial-contains 'gostalgia: tty attached window='
+vgate_assert 02 serial-contains 'gotabwm: tab open id='
 # The two size markers pin the declared rect's cells and the seat's
 # full-viewport grant (the font-zoom rung change lives on run 05).
 vgate_assert 02 serial-contains 'gostalgia: size 80x24'
@@ -330,6 +320,28 @@ vgate_assert 02 serial-contains 'procs GOSTALGIA.ELF exited status=0'
 vgate_assert 02 serial-absent '[EXC] parking:'
 vgate_assert 02 serial-absent 'exited status=139'
 vgate_assert 02 serial-absent 'panic:'
+
+# Semantics, not a pinned id: the window the app attached is the window
+# the seat adopted AND the window it host-focused — the typed echo and
+# the exit chords land on the bound tty (run 05's python assert pins the
+# same correlation; `dui focus <n>` was dropped because ids recycle).
+vgate_assert 02 python <<'PY'
+import os, re, sys
+ser = open(os.environ["VG_SER"], errors="replace").read()
+w = re.search(r"gostalgia: tty attached window=(\d+)", ser)
+if not w:
+    sys.exit("no tty-attached marker")
+wid = w.group(1)
+t = re.search(r"gotabwm: tab open id=(\d+)", ser)
+f = re.search(r"gotabwm: host focus id=(\d+)", ser)
+if not t or t.group(1) != wid:
+    sys.exit("seat adopted id=%s but the app bound id=%s"
+             % (t.group(1) if t else "none", wid))
+if not f or f.group(1) != wid:
+    sys.exit("seat host-focus went to id=%s, not the bound window id=%s"
+             % (f.group(1) if f else "none", wid))
+print("attach/adopt/focus agree on window id=%s" % wid)
+PY
 
 # Between-run restore for boots 03-05: guarantee the medium rung — the
 # cell math below (80x21 splits, the readback drag, the 80x33 zoom)
@@ -488,14 +500,17 @@ PY
 #                                  (1280x360 pane, (360-16)/16).
 #   split h + 3 s                 -> script-03c `dui` (dump + the `dui[`
 #                                  marker the screenshot keys on, after
-#                                  the repaint) then `dui close 3`:
-#                                  kernel release -> WIN_CLOSE -> the
-#                                  event goroutine's NotifyClose -> the
-#                                  same in-band seam -> status 0.
+#                                  the repaint) then the chords2 close:
+#                                  ctrl-shift-w twice — the seat's own
+#                                  close chord drops WIN_CLOSE on each
+#                                  focused tab (charmhello, then
+#                                  Gostalgia) -> the in-band seam ->
+#                                  status 0. No window id is pinned.
 vgate_run 03 -- \
     --screen '$RUN_DIR/gos-03' \
     --input --via-virtio \
     --script '$RUN_DIR/script-03.txt' \
+    --script-after 'gotabwm: present' \
     --script2 '$RUN_DIR/script-03b.txt' \
     --script2-after 'gostalgia: ready endpoint=' \
     --input-chords 'ctrl-shift-v,ctrl-shift-v' \
@@ -503,9 +518,11 @@ vgate_run 03 -- \
     --screenshot-after 'dui[' \
     --script3 '$RUN_DIR/script-03c.txt' \
     --script3-after 'gotabwm: split h' --script3-delay 6 \
+    --input-chords2 'ctrl-shift-w,ctrl-shift-w' \
+    --input-chords2-after 'dui[' \
     --script-expect 'procs GOSTALGIA.ELF exited status=0' --timeout 240
 
-vgate_assert 03 serial-contains 'gostalgia: tty attached window=3'
+vgate_assert 03 serial-contains 'gostalgia: tty attached window='
 vgate_assert 03 serial-contains 'gostalgia: size 80x44'
 vgate_assert 03 serial-contains 'gotabwm: split v'
 vgate_assert 03 serial-contains 'gotabwm: split h'
@@ -516,6 +533,26 @@ vgate_assert 03 serial-contains 'procs GOSTALGIA.ELF exited status=0'
 vgate_assert 03 serial-absent '[EXC] parking:'
 vgate_assert 03 serial-absent 'exited status=139'
 vgate_assert 03 serial-absent 'panic:'
+
+# Same semantic correlation as runs 02/05: gostalgia's bound window is
+# the seat's first adopted+focused tab (charmhello adopts second).
+vgate_assert 03 python <<'PY'
+import os, re, sys
+ser = open(os.environ["VG_SER"], errors="replace").read()
+w = re.search(r"gostalgia: tty attached window=(\d+)", ser)
+if not w:
+    sys.exit("no tty-attached marker")
+wid = w.group(1)
+t = re.search(r"gotabwm: tab open id=(\d+)", ser)
+f = re.search(r"gotabwm: host focus id=(\d+)", ser)
+if not t or t.group(1) != wid:
+    sys.exit("seat adopted id=%s but the app bound id=%s"
+             % (t.group(1) if t else "none", wid))
+if not f or f.group(1) != wid:
+    sys.exit("seat host-focus went to id=%s, not the bound window id=%s"
+             % (f.group(1) if f else "none", wid))
+print("attach/adopt/focus agree on window id=%s" % wid)
+PY
 
 # Same between-run delete as tag 02: run 03's declares (gostalgia +
 # charmhello) wrote two SESSION.TABS rows; boot 04 would otherwise
@@ -611,8 +648,8 @@ PY
 # --- boot 04: text-grid readback + ctrl-c ---------------------------------
 #   exec GOSTALGIA.ELF -> hosted shell; `call app/list ok` means the model
 #   is interactive.
-#   ready endpoint=    -> script-04b `dui focus 3` (the same clock-window
-#   focus steal as run 02) -> `dui focus: focused=3`.
+#   gotabwm: present   -> script-04 `exec GOSTALGIA.ELF` — the adoption
+#   handoff focuses the bound window; no `dui focus <n>` (ids recycle).
 #   call app/list ok   -> --input-string types `echo m95c readback echo`
 #   (the Init-discovery marker — the model drops keys while `busy`, same
 #   as run 02).
@@ -626,14 +663,13 @@ PY
 #   quit.
 #   tty: copy          -> script-04c `clip` prints the clipboard lines on
 #   the console — the text-grid readback half of the echo proof (the reply
-#   text the app painted is read back cell-for-cell) — then `dui close 3`
-#   as the failsafe so a stalled ctrl-c still ends the boot.
+#   text the app painted is read back cell-for-cell) — then a
+#   ctrl-shift-w failsafe so a stalled ctrl-c still ends the boot.
 vgate_run 04 -- \
     --screen '$RUN_DIR/gos-04' \
     --input --via-virtio \
     --script '$RUN_DIR/script-04.txt' \
-    --script2 '$RUN_DIR/script-04b.txt' \
-    --script2-after 'gostalgia: ready endpoint=' --script2-delay 1 \
+    --script-after 'gotabwm: present' \
     --input-string $'echo m95c readback echo\n' \
     --input-string-after 'gostalgia: call app/list ok' \
     --pointer-virtio '24,120,d;1100,168;1100,168,u' \
@@ -643,10 +679,12 @@ vgate_run 04 -- \
     --screenshot-after 'tty: copy ' \
     --script3 '$RUN_DIR/script-04c.txt' \
     --script3-after 'tty: copy ' \
+    --input-chords2 'ctrl-shift-w' \
+    --input-chords2-after 'tty: copy ' \
     --script-expect 'procs GOSTALGIA.ELF exited status=0' --timeout 240
 
-vgate_assert 04 serial-contains 'gostalgia: tty attached window=3'
-vgate_assert 04 serial-contains 'dui focus: focused=3'
+vgate_assert 04 serial-contains 'gostalgia: tty attached window='
+vgate_assert 04 serial-contains 'gotabwm: tab open id='
 vgate_assert 04 serial-contains 'gostalgia: call app/com.gostalgia.echo/echo ok'
 vgate_assert 04 serial-contains 'dui: term sel begin'
 vgate_assert 04 serial-contains 'dui: term sel end'
@@ -656,6 +694,25 @@ vgate_assert 04 serial-contains 'procs GOSTALGIA.ELF exited status=0'
 vgate_assert 04 serial-absent '[EXC] parking:'
 vgate_assert 04 serial-absent 'exited status=139'
 vgate_assert 04 serial-absent 'panic:'
+
+# Same semantic correlation as runs 02/03/05.
+vgate_assert 04 python <<'PY'
+import os, re, sys
+ser = open(os.environ["VG_SER"], errors="replace").read()
+w = re.search(r"gostalgia: tty attached window=(\d+)", ser)
+if not w:
+    sys.exit("no tty-attached marker")
+wid = w.group(1)
+t = re.search(r"gotabwm: tab open id=(\d+)", ser)
+f = re.search(r"gotabwm: host focus id=(\d+)", ser)
+if not t or t.group(1) != wid:
+    sys.exit("seat adopted id=%s but the app bound id=%s"
+             % (t.group(1) if t else "none", wid))
+if not f or f.group(1) != wid:
+    sys.exit("seat host-focus went to id=%s, not the bound window id=%s"
+             % (f.group(1) if f else "none", wid))
+print("attach/adopt/focus agree on window id=%s" % wid)
+PY
 
 # The readback: `clip` prints the whole clipboard after one `clip: ` prefix,
 # so a multi-row copy lands as the `clip:` line plus continuation rows. The
@@ -699,32 +756,43 @@ PY
 # --- boot 05: font-zoom resize + `exit` -------------------------------------
 # The font-zoom half of the resize contract, on its own boot so every step
 # keeps a marker gate:
-#   exec GOSTALGIA.ELF -> hosted shell, 80x44 on the seat's grant (medium
-#                        rung restored on tag 02).
-#   ready endpoint=    -> script-05b: `dui focus 3` (the exit chord needs
-#                        the same keyboard focus as run 02's typing), then
-#                        `font large`: the kernel's own WIN_RESIZE fan-out
-#                        (apply_grid_font_size) -> NoteResize re-reads the
-#                        now-10x21 rung -> `gostalgia: size 80x33`.
+#   gotabwm: present   -> script-05 `exec GOSTALGIA.ELF`. The seat anchor
+#                        is not optional: an exec that races the seat's
+#                        boot declares into an unregistered WM mailbox —
+#                        DeclareFullscreen is refused, the window is never
+#                        adopted, and no full-viewport grant ever arrives
+#                        (observed 2026-10-25: attach ahead of `mode
+#                        live`, no `tab open`, the leg stuck at the
+#                        declared 640x400 — `size 64x18` at the zoom).
+#   size 80x44         -> script-05b `font large`: gated on the grant
+#                        itself, never a delay — the kernel's own
+#                        WIN_RESIZE fan-out (apply_grid_font_size) ->
+#                        NoteResize re-reads the now-10x21 rung ->
+#                        `gostalgia: size 80x33`.
 #   size 80x33 + 2 s   -> script-05c `dui`: registry dump + the `dui[`
 #                        barrier for the large-font screenshot and exit.
 #   dui[               -> --screenshot-after captures the repainted frame;
 #                        --input-chords types `exit` -> status 0.
+# The `gotabwm: win leak id=` line is the seat's deliberate M52
+# client-death probe (a window opened and never closed so the kernel's
+# exit seam must reap it) — present on every live-seat boot, not a bug.
 vgate_run 05 -- \
     --screen '$RUN_DIR/gos-05' \
     --input --via-virtio \
     --script '$RUN_DIR/script-05.txt' \
+    --script-after 'gotabwm: present' \
     --script2 '$RUN_DIR/script-05b.txt' \
-    --script2-after 'gostalgia: ready endpoint=' --script2-delay 4 \
+    --script2-after 'gostalgia: size 80x44' --script2-delay 2 \
     --script3 '$RUN_DIR/script-05c.txt' \
     --script3-after 'gostalgia: size 80x33' --script3-delay 6 \
-    --screenshot-after 'dui[' \
+    --screenshot-after 'gostalgia: size 80x33' --screenshot-after-delay 5 \
     --input-chords 'e,x,i,t,return' \
     --input-chords-after 'dui[' \
     --script-expect 'procs GOSTALGIA.ELF exited status=0' --timeout 240
 
-vgate_assert 05 serial-contains 'gostalgia: tty attached window=3'
-vgate_assert 05 serial-contains 'dui focus: focused=3'
+vgate_assert 05 serial-contains 'gostalgia: tty attached window='
+vgate_assert 05 serial-contains 'gotabwm: tab open id='
+vgate_assert 05 serial-contains 'gostalgia: size 80x24'
 vgate_assert 05 serial-contains 'gostalgia: size 80x44'
 # The font-zoom leg: NoteResize re-read TerminalCell and reported the
 # 10x21 rung's cells — the resize path the seat's pixel payload cannot
@@ -736,6 +804,28 @@ vgate_assert 05 serial-contains 'procs GOSTALGIA.ELF exited status=0'
 vgate_assert 05 serial-absent '[EXC] parking:'
 vgate_assert 05 serial-absent 'exited status=139'
 vgate_assert 05 serial-absent 'panic:'
+
+# Semantics, not a pinned id: the window the app attached is the window
+# the seat adopted AND the window it host-focused — the exit chords land
+# on the bound tty without a `dui focus <n>` (which once refocused the
+# recycled id the seat's leak probe was holding).
+vgate_assert 05 python <<'PY'
+import os, re, sys
+ser = open(os.environ["VG_SER"], errors="replace").read()
+w = re.search(r"gostalgia: tty attached window=(\d+)", ser)
+if not w:
+    sys.exit("no tty-attached marker")
+wid = w.group(1)
+t = re.search(r"gotabwm: tab open id=(\d+)", ser)
+f = re.search(r"gotabwm: host focus id=(\d+)", ser)
+if not t or t.group(1) != wid:
+    sys.exit("seat adopted id=%s but the app bound id=%s"
+             % (t.group(1) if t else "none", wid))
+if not f or f.group(1) != wid:
+    sys.exit("seat host-focus went to id=%s, not the bound window id=%s"
+             % (f.group(1) if f else "none", wid))
+print("attach/adopt/focus agree on window id=%s" % wid)
+PY
 
 # The large-font frame still carries the lipgloss border (ANSI 62) and the
 # accent line (117): a repaint that never ran would leave the border at the
@@ -800,12 +890,14 @@ for y in range(30, 1440):
         r, g, b = px(x, y)
         if abs(r - 95) < 40 and abs(g - 95) < 40 and b > 175:
             border += 1
-        if r > 100 and r < 170 and g > 180 and b > 220:
+        # The accent is the theme token 0x3b82f6 (gotabwm: tokens
+        # accent=), not a generic cyan — a range the leg never validated.
+        if abs(r - 59) < 45 and abs(g - 130) < 55 and b > 200:
             accent += 1
-print("zoomed shell frame: border-62 px=%d accent-117 px=%d" % (border, accent))
-assert border >= 300, ("no lipgloss border on the post-zoom scanout (%d px): "
+print("zoomed shell frame: border px=%d accent(3b82f6) px=%d" % (border, accent))
+assert border >= 200, ("no lipgloss border on the post-zoom scanout (%d px): "
                        "the shell never repainted at the new rung" % border)
-assert accent >= 10, ("no accent-colour text on the post-zoom scanout "
+assert accent >= 50, ("no accent-colour content on the post-zoom scanout "
                       "(%d px)" % accent)
 PY
 
@@ -869,9 +961,15 @@ vgate_run 06 -- \
 
 # Launcher path: the seat opened its launcher, decoded the manifest's v2
 # fields (a v2 row with argv/caps bumps those counts), filtered to exactly
-# the Gostalgia row, and exec'd it with the row's fixed argv.
+# the Gostalgia row, and exec'd it with the row's fixed argv. The filter
+# marker reports len(filtered): app rows + file hits + the M165f/M191b
+# "Search files for '<q>'" row every non-empty query appends — so
+# q=gostalgia is n=2 (one app + the search row; `files` reports zero name
+# hits), the same +1 convention go-dogfood's q=term n=2 and go-wm-hid's
+# q=zzzqq n=1 already pin.
 vgate_assert 06 serial-contains 'gotabwm: launcher open n='
-vgate_assert 06 serial-contains 'gotabwm: launcher filter q=gostalgia n=1'
+vgate_assert 06 serial-contains 'gotabwm: launcher filter q=gostalgia n=2'
+vgate_assert 06 serial-contains 'gotabwm: launcher files q=gostalgia n=0'
 vgate_assert 06 serial-contains 'gotabwm: launcher exec GOSTALGIA.ELF argv=shell --root /host/GS'
 vgate_assert 06 serial-absent 'gotabwm: launcher missing'
 # Window-list evidence: the seat's strip gained a tab and persisted the
@@ -1030,7 +1128,7 @@ vgate_run 07 -- \
     --script-expect-tail 16 --timeout 240
 
 vgate_assert 07 serial-contains 'gotabwm: launcher open n='
-vgate_assert 07 serial-contains 'gotabwm: launcher filter q=gostalgia n=1'
+vgate_assert 07 serial-contains 'gotabwm: launcher filter q=gostalgia n=2'
 vgate_assert 07 serial-contains 'gotabwm: launcher exec GOSTALGIA.ELF argv=shell --root /host/GS'
 vgate_assert 07 serial-absent 'gotabwm: launcher missing'
 vgate_assert 07 serial-contains 'gotabwm: tab open id='
@@ -1314,7 +1412,7 @@ vgate_run 08 -- \
 vgate_assert 08 serial-contains 'gotabwm: present'
 vgate_assert 08 serial-contains 'procs: count='
 vgate_assert 08 serial-contains 'gotabwm: launcher open n='
-vgate_assert 08 serial-contains 'gotabwm: launcher filter q=gostalgia n=1'
+vgate_assert 08 serial-contains 'gotabwm: launcher filter q=gostalgia n=2'
 vgate_assert 08 serial-contains 'gotabwm: launcher exec GOSTALGIA.ELF argv=shell --root /host/GS'
 vgate_assert 08 serial-absent 'gotabwm: launcher missing'
 # The hosted window landed on the strip and in the session file.
@@ -1353,7 +1451,7 @@ order = [
     ("seat presented",        "gotabwm: present"),
     ("baseline procs",        "procs: count="),
     ("launcher open",         "gotabwm: launcher open n="),
-    ("launcher filter",       "gotabwm: launcher filter q=gostalgia n=1"),
+    ("launcher filter",       "gotabwm: launcher filter q=gostalgia n=2"),
     ("launcher exec",         "gotabwm: launcher exec GOSTALGIA.ELF"),
     ("tty attached",          "gostalgia: tty attached window="),
     ("runtime ready",         "gostalgia: ready endpoint="),
