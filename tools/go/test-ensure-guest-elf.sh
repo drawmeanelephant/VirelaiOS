@@ -225,7 +225,7 @@ else
     bad "vgate.sh must call ensure-guest-elf.sh check (fail closed before boot)"
 fi
 check_line="$(grep -n 'ensure-guest-elf.sh' "$ROOT/tools/gate/vgate.sh" | head -1 | cut -d: -f1)"
-zig_line="$(grep -n '^    zig build$' "$ROOT/tools/gate/vgate.sh" | head -1 | cut -d: -f1)"
+zig_line="$(grep -n '^    zig build' "$ROOT/tools/gate/vgate.sh" | head -1 | cut -d: -f1)"
 if [ -n "$check_line" ] && [ -n "$zig_line" ] && [ "$check_line" -lt "$zig_line" ]; then
     ok "vgate.sh checks guest ELF freshness before zig build (line $check_line < $zig_line)"
 else

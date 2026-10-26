@@ -302,6 +302,97 @@ else
     bad "the preflight must run before gate_begin"
 fi
 
+# --- the worktree build lock + private runner (issue #3689) ------------------
+# The failure this guards: two `just gate` runs in one worktree collided on
+# host/vm-runner/.build — a mid-spec relink/`codesign --force` rewrote the
+# binary the other gate's VM was exec'ing, and the boot died on a VZ
+# entitlement error that read as environmental. Two invariants are asserted
+# here: the lock actually serializes (a held lock blocks, a dead holder's
+# lock retires), and publish retargets VZ_RUNNER_BIN at a private copy.
+echo
+echo "── gate_build_lock / private runner (issue #3689) ──"
+
+GATE_BUILD_LOCK="$TMP/build.lock"
+VZ_RUNNER_BIN_SAVE="$VZ_RUNNER_BIN"
+
+gate_build_lock && [ -f "$GATE_BUILD_LOCK" ] \
+    && ok "gate_build_lock acquires (lock file created)" \
+    || bad "gate_build_lock did not create $GATE_BUILD_LOCK"
+gate_build_unlock
+[ ! -e "$GATE_BUILD_LOCK" ] && ok "gate_build_unlock drops the lock file" \
+                            || bad "unlock left $GATE_BUILD_LOCK behind"
+
+# A held lock must block a second acquirer until it is released.
+gate_build_lock
+( gate_build_lock; echo got-it > "$TMP/child-lock.out"; gate_build_unlock ) &
+lockchild=$!
+sleep 0.7
+[ ! -f "$TMP/child-lock.out" ] \
+    && ok "a held lock blocks a second acquirer" \
+    || bad "the second acquirer entered while the lock was held"
+gate_build_unlock
+wait "$lockchild"
+[ -f "$TMP/child-lock.out" ] \
+    && ok "the waiter acquires once the holder unlocks" \
+    || bad "the waiter never acquired the lock"
+
+# A lock whose holder died without unlocking is retired, not deadlocked on.
+printf '999999\n' > "$GATE_BUILD_LOCK"
+gate_build_lock && ok "a stale-pid lock is retired and acquired" \
+                || bad "a stale-pid lock blocked acquisition"
+gate_build_unlock
+
+# gate_runner_publish: the gate execs a private copy, not the shared path.
+# (Called directly, not through `run` — publish mutates VZ_RUNNER_BIN, and a
+# command-substitution subshell would drop the retarget.)
+echo "runner-bytes" > "$BIN"; chmod +x "$BIN"
+VZ_RUNNER_BIN="$BIN"
+gate_runner_publish >"$TMP/publish.out" 2>&1; rc=$?
+if [ "$rc" = 0 ] && [ "$VZ_RUNNER_BIN" != "$BIN" ] \
+        && [ -f "$VZ_RUNNER_BIN" ] && cmp -s "$BIN" "$VZ_RUNNER_BIN" \
+        && [ -x "$VZ_RUNNER_BIN" ]; then
+    ok "publish retargets VZ_RUNNER_BIN at a private executable copy"
+else
+    bad "publish did not produce a private copy (rc=$rc, bin=$VZ_RUNNER_BIN): $(cat "$TMP/publish.out")"
+fi
+
+priv="$VZ_RUNNER_BIN"
+gate_runner_publish >"$TMP/publish.out" 2>&1; rc=$?
+[ "$rc" = 0 ] && [ "$VZ_RUNNER_BIN" = "$priv" ] \
+    && ok "republish is a no-op" \
+    || bad "republish moved the runner (rc=$rc)"
+
+gate_runner_cleanup
+[ ! -d "${priv%/VMRunner}" ] \
+    && ok "cleanup removes the private runner dir" \
+    || bad "private runner dir leaked at ${priv%/VMRunner}"
+
+VZ_RUNNER_BIN="$MISSING"
+gate_runner_publish >"$TMP/publish.out" 2>&1; rc=$?
+[ "$rc" != 0 ] && ok "a missing runner fails publish loudly (rc=$rc)" \
+               || bad "publish of a missing runner must fail"
+case "$(cat "$TMP/publish.out")" in
+    *"$MISSING"*) ok "the publish failure names the missing binary" ;;
+    *) bad "the publish failure should name $MISSING: $(cat "$TMP/publish.out")" ;;
+esac
+GATE_RUNNER_PRIVATE=""   # the failed publish may have left a fresh dir; drop the name
+VZ_RUNNER_BIN="$VZ_RUNNER_BIN_SAVE"
+GATE_BUILD_LOCK="$_GATE_RUN_ROOT/.build/gate-build.lock"
+
+# Wiring: the helpers only protect the fleet if the gate path calls them.
+awk '/^gate_build_runner\(\)/,/^}/' tools/lib/gate-run.sh | grep -q 'gate_build_lock' \
+    && ok "gate_build_runner holds the build lock" \
+    || bad "gate_build_runner does not take the build lock"
+awk '/^gate_build_runner\(\)/,/^}/' tools/lib/gate-run.sh | grep -q 'gate_runner_publish_locked' \
+    && ok "gate_build_runner publishes the private runner inside the lock" \
+    || bad "gate_build_runner does not publish a private runner"
+grep -q 'gate_runner_publish' tools/gate/vgate.sh \
+    && ok "vgate's no-build path privatizes the runner too" \
+    || bad "vgate.sh no-build path never privatizes the runner"
+grep -q 'gate_build_lock' tools/gate/fleet.sh \
+    && ok "fleet.sh holds the lock over the guest-ELF ensure pass" \
+    || bad "fleet.sh does not take the build lock"
+
 # --- the false-PASS guard (issue #1338) ------------------------------------
 # The bug this covers: an empty-array expansion under `set -u` aborted the
 # harness with exit status ZERO, and the fleet reported `PASS go-fart (16s)`
@@ -471,7 +562,7 @@ else
     bad "vgate.sh must fail closed on a stale GOSH.ELF / GOSSHD.ELF"
 fi
 check_line="$(grep -n 'ensure-guest-elf.sh' tools/gate/vgate.sh | head -1 | cut -d: -f1)"
-zig_line="$(grep -n '^    zig build$' tools/gate/vgate.sh | head -1 | cut -d: -f1)"
+zig_line="$(grep -n '^    zig build' tools/gate/vgate.sh | head -1 | cut -d: -f1)"
 if [ -n "$check_line" ] && [ -n "$zig_line" ] && [ "$check_line" -lt "$zig_line" ]; then
     ok "guest-ELF freshness is checked before zig build (line $check_line < $zig_line)"
 else
@@ -880,6 +971,10 @@ vgate_assert 01 serial-contains 'sig-line'
 SPEC
 
 for sig in TERM INT; do
+    # virelai-runner.* dirs may already exist: the earlier VIRELAI_KEEP_RUN=1
+    # vgate keeps its private runner copy on purpose. Only a NEW dir this
+    # iteration failed to remove counts as a leak.
+    priv_before="$(ls -d "$TMP"/virelai-runner.* 2>/dev/null | sort | tr '\n' ' ')"
     VGATE_NO_BUILD=1 VZ_RUNNER_BIN="$STUB_RUNNER" STUB_RUNNER_SLEEP=6 \
         VIRELAI_RUN_DIR_BASE="$TMP" \
         python3 - "$MODERN_BASH" "$SIG_SPEC" > "$TMP/vgate-sig-$sig.out" 2>&1 <<'PY' &
@@ -890,11 +985,13 @@ os.execvpe(sys.argv[1], [sys.argv[1], "tools/gate/vgate.sh", sys.argv[2]], os.en
 PY
     sig_vgpid=$!
     # Wait for the run dir to exist AND the stub to be in-flight (inside its
-    # sleep), so the signal lands mid-run.
+    # sleep), so the signal lands mid-run. The stub runs under its PRIVATE
+    # path now (issue #3689 — vgate execs a copied runner), so match the
+    # run-dir token in its --serial argv, not $STUB_RUNNER's path.
     sig_dir=""
     for _ in $(seq 40); do
         sig_dir="$(ls -d "$TMP"/virelai-sig-mini.* 2>/dev/null | head -1)"
-        [ -n "$sig_dir" ] && pgrep -f "$STUB_RUNNER" >/dev/null 2>&1 && break
+        [ -n "$sig_dir" ] && pgrep -f "virelai-sig-mini" >/dev/null 2>&1 && break
         sleep 0.25
     done
     if [ "$sig" = INT ]; then
@@ -909,7 +1006,14 @@ PY
     [ -n "$sig_dir" ] && [ ! -d "$sig_dir" ] \
         && ok "SIG$sig mid-run: run dir removed" \
         || bad "SIG$sig mid-run: run dir still present: ${sig_dir:-<none created>}"
-    pgrep -f "$STUB_RUNNER" >/dev/null 2>&1 && pkill -f "$STUB_RUNNER" || true
+    priv_leaked=""
+    for d in $(ls -d "$TMP"/virelai-runner.* 2>/dev/null); do
+        case " $priv_before " in *" $d "*) ;; *) priv_leaked="$d" ;; esac
+    done
+    [ -z "$priv_leaked" ] \
+        && ok "SIG$sig mid-run: private runner dir removed" \
+        || bad "SIG$sig mid-run: private runner dir leaked: $priv_leaked"
+    pgrep -f "virelai-sig-mini" >/dev/null 2>&1 && pkill -f "virelai-sig-mini" || true
 done
 rm -f artifacts/sig-mini-*
 
