@@ -64,7 +64,9 @@ vgate_assert A serial-contains 'gotabwm: registered'
 vgate_assert A serial-contains 'gotabwm: present'
 vgate_assert A serial-contains 'gotabwm: key'
 vgate_assert A serial-contains 'gotabwm: launcher open n='
-vgate_assert A serial-contains 'gotabwm: launcher filter q=calc n=1'
+# M191b: `calc` ranks three rows — the manifest app, the GOCALC.ELF
+# filename hit, and the "Search files" hand-off.
+vgate_assert A serial-contains 'gotabwm: launcher filter q=calc n=3'
 vgate_assert A serial-contains 'gotabwm: launcher exec GOCALC.ELF'
 vgate_assert A serial-contains 'gocalc: declare accepted'
 vgate_assert A serial-contains 'gocalc: present'

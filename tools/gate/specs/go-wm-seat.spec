@@ -2174,12 +2174,14 @@ vgate_assert 18 serial-contains 'goset: declare accepted'
 vgate_assert 18 serial-absent '[EXC] parking:'
 vgate_assert 18 serial-absent 'exited status=139'
 
-# --- M123b (#2576) run 19: the launcher's zero-match empty state -----------
-# ctrl+space opens the strip, `zzz` drives the ranked list to zero matches
-# (no manifest row ranks it), and the results region paints the shared
-# widgets.EmptyState plate — Border ring, centred icon/headline/hint rows —
-# while the seat emits `gotabwm: launcher empty` once for the frame that
-# drew it. The snapshot reads the plate out of the guest's own scanout.
+# --- run 19: the launcher's zero-match state (M123b #2576, M191b #3243) ----
+# ctrl+space opens the strip and `zzz` ranks nothing — no manifest row, no
+# filename hit — so the list is exactly the M165f "Search files for 'zzz'"
+# hand-off row (n=1), painted selected at the top of the results region.
+# The M123b empty-state plate can no longer paint on this face: refresh()
+# always appends the hand-off for a non-empty query, `filtered` is never
+# empty, and `gotabwm: launcher empty` never fires. The snapshot reads the
+# hand-off row — and the plate ring's absence — out of the guest's scanout.
 vgate_file script-19.txt <<'EOS'
 vf rm GOTABWM.DEMO
 vf rm SESSION.TABS
@@ -2188,34 +2190,42 @@ wm
 exec GOTABWM.ELF
 EOS
 
-# The run must end on the FULL filter, not on `launcher empty`: `zzz` is
-# n=0 from the first stroke, so the empty plate paints — and the expect
-# used to match — while strokes 2/3 were still in the host's 0.25 s
-# pacing (observed 2026-10-20: serial stopped at `q=z`, the run torn
-# down on the first `launcher empty`). The screenshot still gates on the
-# empty marker; the plate is identical at any n=0 filter.
+# The triggers name the FULL query's marker: `z` and `zz` print their own
+# n=1 lines, so only the complete `q=zzz n=1` satisfies them — the capture
+# cannot race ahead of the keystroke pacing the way the first `launcher
+# empty` once could (observed 2026-10-20: torn down mid-stroke at `q=z`).
 vgate_run 19 -- \
     --via-virtio \
     --screen '$RUN_DIR/screen-19' \
     --script '$RUN_DIR/script-19.txt' \
     --input-chords 'ctrl-space' --input-chords-after 'gotabwm: mode live' \
     --input-string 'zzz' --input-string-after 'gotabwm: launcher open n=' \
-    --screenshot-after 'gotabwm: launcher empty' \
-    --script-expect 'gotabwm: launcher filter q=zzz n=0' --timeout 300
+    --screenshot-after 'gotabwm: launcher filter q=zzz n=1' \
+    --script-expect 'gotabwm: launcher filter q=zzz n=1' --timeout 300
 
 vgate_assert 19 serial-contains 'exec: loaded GOTABWM.ELF'
 vgate_assert 19 serial-contains 'gotabwm: mode live'
 vgate_assert 19 serial-contains 'gotabwm: launcher open n='
-vgate_assert 19 serial-contains 'gotabwm: launcher filter q=zzz n=0'
-vgate_assert 19 serial-contains 'gotabwm: launcher empty'
+vgate_assert 19 serial-contains 'gotabwm: launcher filter q=zzz n=1'
+# The dead marker: a non-empty query always owns the hand-off row, so the
+# empty-state frame never draws and its marker stays silent.
+vgate_assert 19 serial-absent 'gotabwm: launcher empty'
 vgate_assert 19 serial-absent 'gotabwm: launcher exec'
 vgate_assert 19 serial-absent '[EXC] parking:'
 vgate_assert 19 serial-absent 'exited status=139'
 
-# The plate: results region x=8..254, y=140..712 (the strip minus header and
-# accent rule), a 1px Border ring (51,65,85) around it, and centred text
-# inside — counted as pixels that are neither Surface nor Border, so the
-# assert holds whether the ui face resolved or the bitmap degrade painted.
+# The row: results region x=8..254, the selected hand-off row at y=140..162
+# — the 3px Accent marker, then the Selection band carrying the label AND
+# detail text lines (the two-line shape an app row never paints). The
+# strip is translucent — the centred wallpaper emblem bleeds through
+# everywhere the opaque row fill does not cover, so colour asserts are
+# predicates, not nominal-token distance: "off the strip's dark
+# Surface-blend" for fills, "saturated blue" for Accent, "R>120" for text.
+# The plate's old ring is checked only below the emblem's reach (guest
+# y>650 + the bottom edge), where a real ring line would paint hundreds
+# of pixels. The trigger marker is emitted before the repaint lands, so
+# the capture can show a zero-match prefix frame ('z' or 'zz') — the
+# layout is prefix-identical; only the quoted text differs.
 # The --screenshot-after capture is a host-side PNG like run 03's — decode
 # and scale the probe the same way (a raw-BGRX read failed this assert on
 # 2026-10-20: 138305 PNG bytes < 3686400 wanted).
@@ -2264,32 +2274,56 @@ def px(x, y):
     k = (y * w + x) * bpp
     return out[k], out[k+1], out[k+2]
 
-BORDER = (0x33, 0x41, 0x55)
-SURFACE = (0x22, 0x2d, 0x35)
-# The PNG's colour-space shift needs a tolerance, like run 03's probe.
-def near(c, t, tol=10):
-    return all(abs(a - b) <= tol for a, b in zip(c, t))
+# Observed-through-wallpaper strip background (nominal Surface blended
+# over the dark wallpaper) — the selected row's opaque fill stands ~20+
+# per channel away from it.
+SUR = (36, 45, 52)
+def off_bg(c, tol=12):
+    return any(abs(a - b) > tol for a, b in zip(c, SUR))
+def is_accent(c):
+    r, g, b = c
+    return b > 150 and b > g + 60 and g > r + 20
+def is_text(c):
+    return c[0] > 120
 
 scale = w / 1280.0
 X0, X1 = int(8 * scale), int(254 * scale)
-Y0, Y1 = int(140 * scale), int(711 * scale)
-ring = textish = 0
+RY0, RY1 = int(140 * scale), int(162 * scale)
+band = accent = detail = plate = 0
+# The opaque selected-row fill covers the whole band (rounded corners
+# excepted): wallpaper cannot bleed through it.
+for y in range(RY0 + int(2 * scale), RY1 - int(2 * scale)):
+    for x in range(X0 + int(1 * scale), X1 - int(1 * scale)):
+        if off_bg(px(x, y)):
+            band += 1
+# The selection marker: the left 3px of the row, sampled off the corners.
+for y in range(RY0 + int(3 * scale), RY1 - int(3 * scale)):
+    for x in range(X0, X0 + int(3 * scale)):
+        if is_accent(px(x, y)):
+            accent += 1
+# The detail line (row y+13..y+21) inks text on the hand-off row's second
+# line — an app row's lower half is bare fill.
+for y in range(RY0 + int(13 * scale), RY0 + int(21 * scale)):
+    for x in range(X0 + int(4 * scale), X1):
+        if is_text(px(x, y)):
+            detail += 1
+# The M123b plate's old outline, sampled only where the wallpaper emblem
+# cannot reach: side columns below guest y=650 and the bottom edge. A real
+# 1px Border ring scores hundreds here.
+for y in range(int(650 * scale), int(710 * scale)):
+    for x in (X0, X0 + 1, X1 - 1, X1):
+        if off_bg(px(x, y)):
+            plate += 1
 for x in range(X0, X1):
-    for y in (Y0, Y1):
-        if near(px(x, y), BORDER):
-            ring += 1
-for y in range(Y0 + 1, Y1):
-    for x in (X0, X1):
-        if near(px(x, y), BORDER):
-            ring += 1
-for y in range(int(160 * scale), int(700 * scale)):
-    for x in range(int(20 * scale), int(240 * scale)):
-        c = px(x, y)
-        if not near(c, SURFACE) and not near(c, BORDER):
-            textish += 1
-print("launcher empty leg: border-ring=%d interior-non-plate=%d" % (ring, textish))
-assert ring >= 200, "empty-state border ring absent from the results region"
-assert textish >= 200, "no empty-state text inside the plate"
+    for y in range(int(710 * scale), int(713 * scale)):
+        if off_bg(px(x, y)):
+            plate += 1
+print("launcher zero-match leg: band=%d accent=%d detail=%d plate=%d"
+      % (band, accent, detail, plate))
+assert band >= 8000, "selected hand-off row fill not painted"
+assert accent >= 40, "hand-off row's accent marker absent"
+assert detail >= 150, "hand-off row's detail line bare — not the two-line row"
+assert plate < 50, "the empty-state plate ring still paints post-M191b"
 PY
 
 # --- M121d (#2567) run 20: the chrome focus indicator ------------------------

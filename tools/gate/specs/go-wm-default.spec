@@ -1528,7 +1528,10 @@ vgate_assert 21 serial-contains 'gotabwm: mode live'
 # on boot 01 pins the file half).
 vgate_assert 21 serial-contains 'gotabwm: apps decode n=32 v=2 schema=2'
 vgate_assert 21 serial-contains 'gotabwm: launcher open n=32'
-vgate_assert 21 serial-contains 'gotabwm: launcher filter q=goclock n=1'
+# M191b: `goclock` ranks the manifest row plus the "Search files"
+# hand-off — the staged-then-removed GOCLOCK.ELF is gone before the
+# query completes, so the filename walk contributes nothing.
+vgate_assert 21 serial-contains 'gotabwm: launcher filter q=goclock n=2'
 # The named refusal: the reserved row's exec was attempted and refused by
 # name — the launcher's existing missing-binary marker plus the refusal
 # toast's errno line.

@@ -143,7 +143,10 @@ vgate_assert 01 serial-contains 'exec: loaded GOTABWM.ELF'
 vgate_assert 01 serial-contains 'gotabwm: mode live'
 vgate_assert 01 serial-contains 'gotabwm: present'
 vgate_assert 01 serial-contains 'gotabwm: launcher open n='
-vgate_assert 01 serial-contains 'gotabwm: launcher filter q=goemoji n=1'
+# M191b: `goemoji` ranks the manifest row plus the "Search files"
+# hand-off; the filename walk's visit bound keeps GOEMOJI.ELF itself
+# out of this share's list (observed files q=goemoji n=0).
+vgate_assert 01 serial-contains 'gotabwm: launcher filter q=goemoji n=2'
 vgate_assert 01 serial-contains 'gotabwm: launcher exec GOEMOJI.ELF'
 vgate_assert 01 serial-contains 'goemoji: open id='
 vgate_assert 01 serial-contains 'goemoji: declare accepted'
