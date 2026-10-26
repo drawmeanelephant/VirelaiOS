@@ -291,7 +291,7 @@ vgate_run 01 -- \
     --input-chords-after 'goset: saved ' \
     --script3 '$RUN_DIR/script3.txt' \
     --script3-after 'gotabwm: host close id=' \
-    --script-expect 'goset: saved ' --script-expect-tail 150 --timeout 300
+    --script-expect 'gotabwm: tabs empty' --script-expect-tail 60 --timeout 300
 
 # --- the flip: an untouched boot lands in the Go desktop ------------------
 vgate_assert 01 serial-contains 'VirelaiOS kernel has seized control.'
