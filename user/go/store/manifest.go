@@ -11,7 +11,7 @@ import (
 // the next launcher call — nothing notifies or restarts.
 const (
 	appsPath     = "/host/APPS.TXT"
-	appsMaxBytes = 4096 // sexiburger.manifest_buf_max — every reader's bound
+	appsMaxBytes = 8192 // sexiburger.manifest_buf_max — every reader's bound
 )
 
 // loadManifest returns APPS.TXT's raw lines, blank lines included. An
@@ -73,7 +73,7 @@ func renderManifest(lines []string) []byte {
 }
 
 // manifestWithRow appends row to the manifest, enforcing the shared
-// 4096-byte reader budget (a manifest over it is silently truncated at
+// 8192-byte reader budget (a manifest over it is silently truncated at
 // the last whole line by every seat — appending past the bound would
 // hide rows, so it refuses manifest_full instead).
 func manifestWithRow(lines []string, row string) ([]byte, error) {
