@@ -81,9 +81,24 @@ echo
 # Build the kernel. `zig build kernel` runs elf2bin.py on the linked ELF;
 # the linked ELF (the input to elf2bin) is what we inspect, and it lives
 # at .zig-cache/o/*/virelai-kernel.
+#
+# .zig-cache is shared with the class-B gate fleet (issue #3689): a
+# concurrent `just gate` holds the worktree build lock over its own
+# zig build, so wiping the cache must happen under the same lock or this
+# recipe can delete files out from under a running build. The rm retry is
+# for the observed macOS flake where an entry lands mid-removal and
+# rmdir reports ENOTEMPTY with no concurrent build in play at all.
+source tools/lib/gate-run.sh
 echo "-- building kernel --"
-rm -rf .zig-cache
-zig build kernel 2>&1 | tail -1
+gate_build_lock
+rm_rc=1
+for _ in 1 2 3 4 5; do rm -rf .zig-cache && { rm_rc=0; break; }; sleep 0.5; done
+if [ "$rm_rc" -eq 0 ]; then
+    zig build kernel 2>&1 | tail -1
+    rm_rc=$?
+fi
+gate_build_unlock
+[ "$rm_rc" -eq 0 ] || { echo "verify-bss-budget: FAIL — could not clear + rebuild .zig-cache"; exit 1; }
 
 KERNEL_ELF="$(find .zig-cache -name 'virelai-kernel' -type f 2>/dev/null | head -1 || true)"
 if [ -z "$KERNEL_ELF" ]; then
