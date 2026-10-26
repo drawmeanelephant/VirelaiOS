@@ -32,7 +32,7 @@ All of them additionally answer to the schema-v2 manifest grammar
 | [[apps/web|Web]] | app | WEB.ELF | appver 1, ver 1.0.0 | #3142 | 2026-10-22 | tools/gate/specs/live-web.spec | shipped |
 | [[apps/pulse|Pulse]] | app | PULSE.ELF | ver 1.0.0 | #2959 | 2026-10-21 | tools/gate/specs/go-top.spec | shipped |
 | [[apps/gosh|Shell]] | app | GOSH.ELF | appver 1, ver 1.0.0 | #3309 | 2026-10-24 | tools/gate/specs/go-sh.spec | shipped |
-| [[apps/gohelp|Help]] | app | GOHELP.ELF | ver 1.0.0 | #3129 | 2026-10-22 | tools/gate/specs/go-help.spec | shipped |
+| [[apps/gohelp|Help]] | app | GOHELP.ELF | ver 1.1.0 | #3129 | 2026-10-22 | tools/gate/specs/go-help.spec | shipped |
 | [[apps/gowelcome|Welcome]] | app | GOWELCOME.ELF | appver 1, ver 1.1.0 | #3307 | 2026-10-24 | tools/gate/specs/go-welcome.spec | shipped |
 | [[apps/gotop|Top]] | app | GOTOP.ELF | appver 1, ver 1.0.0 | #3249 | 2026-10-23 | tools/gate/specs/go-top.spec | shipped |
 | [[apps/goset|Settings]] | app | GOSET.ELF | ver 1.0.0 | #3171 | 2026-10-22 | tools/gate/specs/go-settings.spec | shipped |

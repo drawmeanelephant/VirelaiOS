@@ -4,6 +4,12 @@
 # detail page. The screenshot asserts the detail page's exact truecolour
 # accent (M73h) in the real scanout — not a host ANSI render.
 #
+# Issue #3767 adds two legs: `/` is now a FULL-TEXT filter (name hits lead,
+# then usage/blurb/notes hits — the launcher idiom), so the batch types a
+# query no NAME contains; and run 02 execs `GOHELP.ELF <topic>` twice to
+# prove the argv deep-link — a hit lands on the detail page, a miss refuses
+# on the status line and stays on the index.
+#
 # Shape: go-charmhello / go-fileman — direct exec on the kernel desktop
 # (no `tabwm start` seat), native 512x384 window = the kernel grid's 64x23
 # client (cols <= the grid's 80-col cap), chords over the real HID path,
@@ -16,9 +22,11 @@
 # what script3 waits on before closing — the teardown can never race the
 # capture.
 #
-# exec-order: assert-proven -- the run ends on `rx-gohelp-ok`, which only
+# exec-order: assert-proven -- run 01 ends on `rx-gohelp-ok`, which only
 # script3 prints, and script3 waits on the app's own settle marker; an app
 # that never ran, never opened a detail, or never settled cannot pass.
+# Run 02 ends on `rx-gohelp-argv-ok`, printed only after both exec'd
+# instances have quit.
 
 vgate_name go-help "M74c #1646: the GOHELP.ELF Charm help browser group-jumps, filters, browses /host/docs and pixel-asserts a detail page over the bound tty"
 vgate_share seed
@@ -35,6 +43,24 @@ EOF
 vgate_file script3.txt <<'EOF'
 dui close 2
 echo rx-gohelp-ok
+EOF
+
+# --- run 02: the #3767 argv deep-link, hit then honest miss ----------------
+# script-argv execs `GOHELP.ELF help` — argv[1] follows NOTE's convention
+# (vi.Args() -> argv[1]) — and the app opens straight onto help's detail
+# page. chords back out and quit it; script-argv-miss then execs
+# `GOHELP.ELF nosuchtopic`, which must refuse (status line + index, never a
+# crash) and quit on `q`; script-argv-done's rx marker is the run barrier.
+vgate_file script-argv.txt <<'EOF'
+exec GOHELP.ELF help
+EOF
+
+vgate_file script-argv-miss.txt <<'EOF'
+exec GOHELP.ELF nosuchtopic
+EOF
+
+vgate_file script-argv-done.txt <<'EOF'
+echo rx-gohelp-argv-ok
 EOF
 
 vgate_setup_python <<'PY'
@@ -59,24 +85,25 @@ print("staged GOHELP.ELF into share (%d bytes), %s (%d bytes), %s (%d bytes)" %
        guide, os.path.getsize(guide), notes, os.path.getsize(notes)))
 PY
 
-# The chord batch, in full (14 strokes at the cv-input transport's fixed
+# The chord batch, in full (21 strokes at the cv-input transport's fixed
 # 0.25 s): `l` hops to the files group head, `h` hops back to shell, then
 # open the docs bundle, read its first page, back out to browse, arm `/`,
-# type `ec` (pinned n=3: echo, secrets, exec), escape to clear, move onto
-# echo with `j,j,j` (M98b's alias leads the shell group, M83a's date sorts
-# between clear and echo), and open the full detail — the LAST stroke, so
-# the screenshot
-# barrier and the dui script both fire against an idle app. Printable h/j/l
+# type `directory` — the #3767 full-text pin: no NAME contains it, so all
+# five hits (cd, dirs, popd, pushd, pwd — pinned in model_test.go) come
+# from usage/blurb/notes — escape to clear, move onto echo with `j,j,j`
+# (M98b's alias leads the shell group, M83a's date sorts between clear and
+# echo), and open the full detail — the LAST stroke, so the screenshot
+# barrier fires against an idle app. Printable h/j/l
 # avoid the currently unreliable multi-byte arrow input path.
 vgate_run 01 -- \
     --screen '$RUN_DIR/help-screen' \
     --input --via-virtio \
     --script '$RUN_DIR/script.txt' \
-    --input-chords 'l,h,d,return,backspace,backspace,/,e,c,escape,j,j,j,return' \
+    --input-chords 'l,h,d,return,backspace,backspace,/,d,i,r,e,c,t,o,r,y,escape,j,j,j,return' \
     --input-chords-after 'gohelp: ready' \
     --screenshot-after 'gohelp: detail echo usage=echo [ARG...]' \
     --script2 '$RUN_DIR/script2.txt' \
-    --script2-after 'gohelp: detail echo usage=echo [ARG...]' \
+    --script2-after 'gohelp: ready' \
     --script3 '$RUN_DIR/script3.txt' \
     --script3-after 'gohelp: settled after detail' \
     --script-expect 'rx-gohelp-ok' --timeout 240
@@ -97,8 +124,10 @@ vgate_assert 01 serial-contains 'gohelp: catalog n=62'
 vgate_assert 01 serial-contains 'gohelp: docs n=2'
 
 # The window itself: native rect on the kernel desktop (dui from script2,
-# fired at the detail barrier, so it describes the live window) — the
-# charmhello/fileman dui row shape.
+# fired at `gohelp: ready` — the rect never changes, and firing this early
+# leaves seconds of headroom before script3's close can race it; observed
+# 2026-10-26: a detail-barrier dui can lose to `dui close 2` and list four
+# windows) — the charmhello/fileman dui row shape.
 vgate_assert 01 serial-contains 'dui[4]: user user rect=32,32,512,384'
 
 # Group navigation: `l` lands on the files head (ASCII sorts `.` before the
@@ -113,12 +142,13 @@ vgate_assert 01 serial-contains 'gohelp: docs open'
 vgate_assert 01 serial-contains 'gohelp: docfocus GUIDE.TXT'
 vgate_assert 01 serial-contains 'gohelp: doc GUIDE.TXT bytes=26'
 
-# Back to browse, then `/`-to-filter: `ec` matches exactly three rows
-# (echo, secrets, exec — pinned in model_test.go), escape clears to the
-# full catalog.
+# Back to browse, then `/`-to-filter (#3767's full-text leg): `directory`
+# matches exactly five rows (cd, dirs, popd, pushd, pwd — pinned in
+# model_test.go) and NO row's name contains it, so every hit is proof the
+# query read usage/blurb/notes. Escape clears to the full catalog.
 vgate_assert 01 serial-contains 'gohelp: browse'
 vgate_assert 01 serial-contains 'gohelp: filter on'
-vgate_assert 01 serial-contains 'gohelp: filter ec n=3'
+vgate_assert 01 serial-contains 'gohelp: filter directory n=5'
 vgate_assert 01 serial-contains 'gohelp: filter cleared n=62'
 
 # Key labels line up with the chord table verbatim.
@@ -230,3 +260,59 @@ for y in range(96, 224):
 print("gohelp scanout: detail-accent=%d" % accent)
 assert accent >= 300, "detail accent (255,199,92, +/-36) absent from the detail text band"
 PY
+
+# --- run 02 (issue #3767): argv deep-link, hit then honest miss -----------
+# Boot: `exec GOHELP.ELF help` — argv[1] is the topic name (the NOTE argv
+# convention). The app deep-links onto help's detail page and earns the
+# same settle barrier a key-opened detail does; the chords then back out
+# to the index and quit. script2's second exec — `GOHELP.ELF nosuchtopic`
+# — must refuse honestly: a `deeplink miss` marker, the status line naming
+# the bad topic, and the index view still up (catalog + focus markers are
+# its face). chords2 quits it; script3's echo (delayed past the quit) is
+# the run barrier.
+vgate_run 02 -- \
+    --screen '$RUN_DIR/help-argv-screen' \
+    --input --via-virtio \
+    --script '$RUN_DIR/script-argv.txt' \
+    --input-chords 'backspace,q' \
+    --input-chords-after 'gohelp: settled after detail' \
+    --script2 '$RUN_DIR/script-argv-miss.txt' \
+    --script2-after 'gohelp OK' \
+    --input-chords2 'q' \
+    --input-chords2-after 'gohelp: deeplink miss nosuchtopic' \
+    --script3 '$RUN_DIR/script-argv-done.txt' \
+    --script3-after 'gohelp: deeplink miss nosuchtopic' \
+    --script3-delay 3 \
+    --script-expect 'rx-gohelp-argv-ok' --timeout 240
+
+# The hit: argv[1]=help landed straight on the detail page — deeplink and
+# detail markers, the settle barrier, then backspace/q walked it back out.
+vgate_assert 02 serial-contains 'VirelaiOS kernel has seized control.'
+vgate_assert 02 serial-contains 'exec: loaded GOHELP.ELF'
+vgate_assert 02 serial-contains 'gohelp: attached'
+vgate_assert 02 serial-contains 'gohelp: ready'
+vgate_assert 02 serial-contains 'gohelp: deeplink help'
+vgate_assert 02 serial-contains 'gohelp: detail help usage=help [CMD|GROUP]'
+vgate_assert 02 serial-contains 'gohelp: settled after detail'
+vgate_assert 02 serial-contains 'gohelp: browse'
+vgate_assert 02 serial-contains 'gohelp: key backspace'
+
+# The miss: `deeplink miss nosuchtopic` is the honest refusal — the index
+# view stays up (both instances booted a catalog and focused its head),
+# and exactly one detail page ever opened across both execs.
+vgate_assert 02 serial-contains 'gohelp: deeplink miss nosuchtopic'
+vgate_assert 02 serial-count 'gohelp: catalog n=62' 2
+vgate_assert 02 serial-count 'gohelp: docs n=2' 2
+vgate_assert 02 serial-count 'gohelp: focus alias group=shell' 2
+vgate_assert 02 serial-count 'gohelp: detail ' 1
+
+# Clean teardown through each instance's own quit path.
+vgate_assert 02 serial-count 'gohelp: close' 2
+vgate_assert 02 serial-count 'gohelp OK' 2
+vgate_assert 02 serial-contains 'rx-gohelp-argv-ok'
+
+# The refusals that must NOT happen on either exec.
+vgate_assert 02 serial-absent 'gohelp: no /dev/tty'
+vgate_assert 02 serial-absent 'gohelp: attach failed'
+vgate_assert 02 serial-absent '[EXC] parking:'
+vgate_assert 02 serial-absent 'exited status=139'
