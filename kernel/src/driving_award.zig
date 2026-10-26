@@ -1910,6 +1910,12 @@ pub fn user_fill(id: u8, x: u32, y: u32, w: u32, h: u32, rgb: u32) bool {
 pub fn user_present(id: u8) bool {
     const win = find_user_window(id) orelse return false;
     win.dirty = true;
+    // #3731: a seatless boot's first user present ends the splash hold —
+    // the app's own frame is the honest successor content, the same
+    // one-frame handoff shape as the seat bind (splash -> app frame, zero
+    // kernel-art frames between). The bound still owns windowless boots,
+    // and a boot whose seat may still bind keeps holding for it.
+    if (splash_hold and seat_impossible and !wm_owns_user_layer) splash_hold = false;
     // card #3034 (ADR 0007 X4): a whole-surface present is damage too — the
     // same seat backpressure edge mark_damage fires (the hook bounds it to
     // one pending tick).
@@ -5214,6 +5220,15 @@ pub fn paint_scene() virtio_gpu.CmdResult {
 /// clean-scene no-flush decision in composite()). Read by composite() only.
 pub var scene_dirty: bool = false;
 
+/// #3731: whether one composite() call would still change the scanout — a
+/// visible window carries unconsumed damage and nothing suppresses the
+/// paint (splash hold, seat ownership). The kind-4 snapshot seam holds
+/// its stream while this is true so it never ships a pre-composite frame.
+pub fn composite_pending() bool {
+    if (splash_hold or wm_owns_user_layer) return false;
+    return repaint_start() != null;
+}
+
 /// Opt-in, guest-only presentation evidence. The exact fixture consent is
 /// required; ordinary boots neither record scanouts nor perform capture IO.
 pub var presentation_trace: bool = false;
@@ -6105,6 +6120,12 @@ pub fn draw_chrome() void {
 //     between. The serial ordering for that happy path is carried by the
 //     seat's own markers (go-dogfood: `wm: autostart` ->
 //     `gotabwm: registered` -> `gotabwm: seat-taken`).
+//   * the first user present in a boot whose seat question already
+//     settled-negative (#3731, `seat_impossible`): on a shim-only boot
+//     the app's own frame is the successor content — the same silent
+//     one-frame handoff as the seat bind. Without it an app whose first
+//     present lands inside the window (routine since card #3036 made
+//     sub-second sleeps precise) stays invisible until the bound.
 //   * the BOUND: `splash_bound_ticks` timer ticks (1 Hz) after the first
 //     idle evaluation — one honest klog line naming what was waited for,
 //     then Road Pops presents as before. The bound is stated in (and
@@ -6124,6 +6145,13 @@ pub fn draw_chrome() void {
 
 /// Whether the splash frame is still holding the scanout.
 pub var splash_hold: bool = false;
+/// #3731: the seat question resolved to "no seat can bind this boot" —
+/// share mode `none`, `settings wm none`, or the seat program missing /
+/// failing to load (set by the shell's autostart path). While a seat may
+/// still come the hold keeps the one-frame handoff; once the question is
+/// settled-negative, a user window's first present IS the successor
+/// content the bound was waiting for.
+pub var seat_impossible: bool = false;
 /// The timer.ticks value of the first evaluation — the bound's anchor.
 var splash_anchor_tick: ?u64 = null;
 /// The bound: 1 Hz timer ticks after the anchor before the hold expires
@@ -6203,6 +6231,56 @@ test "splash hold: a seat that binds releases silently" {
     try std.testing.expect(!splash_hold);
     // The happy path never prints: the seat's own markers carry the chain.
     try std.testing.expect(splash_test_log_len == 0);
+}
+
+test "splash hold: a seatless user present releases silently" {
+    arm();
+    splash_hold = true;
+    splash_anchor_tick = null;
+    splash_test_log_len = 0;
+    seat_impossible = true;
+    defer {
+        splash_hold = false;
+        seat_impossible = false;
+        splash_anchor_tick = null;
+    }
+    klog.line_hook = splash_test_capture;
+    defer klog.line_hook = null;
+    const id = switch (user_open(64, 48, 640, 400, 9)) {
+        .opened => |i| i,
+        else => return error.TestUnexpectedResult,
+    };
+    defer _ = user_close(id);
+    // #3731: the hold survives a mere open — the first PRESENT is the
+    // successor content the shim-only boot was waiting on.
+    try std.testing.expect(splash_hold);
+    // user_open emits its per-open attribution marker (issue #990) — the
+    // silence contract covers the hold's own release, so the measurement
+    // starts here with the hook still armed.
+    splash_test_log_len = 0;
+    try std.testing.expect(user_present(id));
+    try std.testing.expect(!splash_hold);
+    // Silent like the seat bind: no expiry line — the app's own markers
+    // carry the ordering.
+    try std.testing.expect(splash_test_log_len == 0);
+}
+
+test "splash hold: a user present keeps holding while a seat may bind" {
+    arm();
+    splash_hold = true;
+    splash_anchor_tick = null;
+    seat_impossible = false;
+    defer {
+        splash_hold = false;
+        splash_anchor_tick = null;
+    }
+    const id = switch (user_open(64, 48, 640, 400, 9)) {
+        .opened => |i| i,
+        else => return error.TestUnexpectedResult,
+    };
+    defer _ = user_close(id);
+    try std.testing.expect(user_present(id));
+    try std.testing.expect(splash_hold);
 }
 
 test "splash hold: composite refuses kernel presents while held" {

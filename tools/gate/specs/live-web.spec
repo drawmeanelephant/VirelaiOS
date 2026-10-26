@@ -279,11 +279,16 @@ vgate_setup_python <<'PY'
 # in M71k (#1570); this boot is its coverage. Long deadline because this
 # spec has many boots before 12.
 import os, subprocess, sys
+sys.path.insert(0, os.path.abspath(os.path.join("user", "go", "browser")))
+import peer_guard
 rd = os.environ["RUN_DIR"]
 cfx = os.path.join("user", "src", "lib", "tls", "vectors", "fx")
 chain = os.path.join(cfx, "chain-ec.pem")
 if not os.path.exists(chain):
     sys.exit("pinned fixture chain missing at %s" % chain)
+# #3731: a stale responder holding 127.0.0.1:24533 serves this run's guest
+# while the run's own peer log stays empty. Reap orphans, refuse squatters.
+peer_guard.claim(24533, "tlsresponder.py")
 cmd = [
     sys.executable,
     os.path.join("user", "src", "lib", "tls", "vectors", "tlsresponder.py"),
@@ -295,6 +300,7 @@ log = open(os.path.join(rd, "tlsresponder.log"), "wb")
 watch = os.path.join("user", "go", "browser", "peer_watch.py")
 proc = subprocess.Popen([sys.executable, watch, str(os.getppid())] + cmd,
                         stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+peer_guard.await_ready(log.name, "listening", proc)
 print("live-web 12: tlsresponder pid=%d on 127.0.0.1:24533" % proc.pid)
 PY
 
@@ -303,6 +309,8 @@ vgate_setup_python <<'PY'
 # fixed A answer is 93.184.216.34; using it as the DNS peer too needs one ARP
 # identity, not a host/SDK change. No public internet is reached.
 import os, shutil, subprocess, sys
+sys.path.insert(0, os.path.abspath(os.path.join("user", "go", "browser")))
+import peer_guard
 run = os.environ["RUN_DIR"]
 share = os.environ.get("VG_SHARE") or os.path.join(run, "share")
 production = os.path.join(".build", "go", "WEB.ELF")
@@ -349,6 +357,11 @@ watch = os.path.join("user", "go", "browser", "peer_watch.py")
 for port, certificate, negative in (
         (24560, cert, False), (24561, os.path.join(base, "chain-ec.pem"), True),
         (24562, expired_cert, True)):
+    # #3731: a stale stand-in bound to this port answers for the run while
+    # the run's own peer log stays empty — the app verifies the same pinned
+    # inter CA either way, so only the peer-side assert can tell. Reap
+    # orphans, refuse squatters, then prove the spawn really bound.
+    peer_guard.claim(port, "standin_responder.py")
     log = open(os.path.join(run, "m93-peer-%d.log" % port), "wb")
     command = [sys.executable, peer, "--port", str(port), "--cert", certificate,
                "--key", key, "--timeout", "3600"]
@@ -356,6 +369,7 @@ for port, certificate, negative in (
         command.append("--negative")
     proc = subprocess.Popen([sys.executable, watch, str(os.getppid())] + command,
                             stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+    peer_guard.await_ready(log.name, "listening %d" % port, proc)
     print("M93 original peer pid=%d port=%d" % (proc.pid, port))
 PY
 
@@ -953,11 +967,11 @@ import os, shutil
 path = os.path.join(os.environ["RUN_DIR"], "m93-peer-24560.log")
 peer = open(path).read()
 assert "SNI en.wikipedia.org" in peer
-assert "request GET /wiki/Harbor HTTP/1.0" in peer
-assert "request GET /m93.css HTTP/1.0" in peer
-assert peer.count("request GET /m93-next HTTP/1.0") >= 2, "forward did not refetch the internal link"
-assert peer.count("request GET /wiki/Harbor HTTP/1.0") >= 3, "back navigation did not restore the article"
-assert "request GET /w/index.php?search=Zig HTTP/1.0" in peer, "successful controls were not sent exactly"
+assert "request GET /wiki/Harbor HTTP/1.1" in peer
+assert "request GET /m93.css HTTP/1.1" in peer
+assert peer.count("request GET /m93-next HTTP/1.1") >= 2, "forward did not refetch the internal link"
+assert peer.count("request GET /wiki/Harbor HTTP/1.1") >= 3, "back navigation did not restore the article"
+assert "request GET /w/index.php?search=Zig HTTP/1.1" in peer, "successful controls were not sent exactly"
 assert "request POST " not in peer
 os.makedirs(os.path.join("artifacts", "m93f", "runs"), exist_ok=True)
 shutil.copyfile(path, os.path.join("artifacts", "m93f", "runs", "wiki-peer-evidence.log"))
@@ -998,8 +1012,8 @@ vgate_assert 16 python <<'PY'
 import os
 peer = open(os.path.join(os.environ["RUN_DIR"], "m93-peer-24560.log")).read()
 assert "SNI github.com" in peer
-assert "request GET /mattn/go-runewidth HTTP/1.0" in peer
-assert "request GET /m93-next HTTP/1.0" in peer
+assert "request GET /mattn/go-runewidth HTTP/1.1" in peer
+assert "request GET /m93-next HTTP/1.1" in peer
 print("M93f GitHub stand-in GET/SNI and internal link proved")
 PY
 vgate_assert 16 snapshot 'snap-16-*.raw' <<'PY'
@@ -1034,8 +1048,8 @@ vgate_assert 17 python <<'PY'
 import os
 peer = open(os.path.join(os.environ["RUN_DIR"], "m93-peer-24560.log")).read()
 assert "SNI developer.mozilla.org" in peer
-assert "request GET /en-US/docs/Web/CSS/display HTTP/1.0" in peer
-assert "request GET /m93-next HTTP/1.0" in peer
+assert "request GET /en-US/docs/Web/CSS/display HTTP/1.1" in peer
+assert "request GET /m93-next HTTP/1.1" in peer
 print("M93f MDN stand-in GET/SNI and internal link proved")
 PY
 vgate_assert 17 snapshot 'snap-17-*.raw' <<'PY'

@@ -314,7 +314,10 @@ pub fn wm_autostart_once(m: *monitor.Monitor) void {
     settings.ensure_init();
     // wm=none remains the explicit shim-only boot, including serial-shell
     // gates. It never allocates init merely to discover there is no seat.
-    const program = settings.wm_seat_kind().program() orelse return;
+    const program = settings.wm_seat_kind().program() orelse {
+        driving_award.seat_impossible = true;
+        return;
+    };
     if (settings.init_enabled()) {
         init_boot_seat = settings.wm_seat_kind();
         svclock.kernel.acquire();
@@ -347,7 +350,10 @@ pub fn wm_autostart_once(m: *monitor.Monitor) void {
 /// Keep the direct path's markers byte-for-byte for init=off and fallback.
 fn wm_autostart_direct(m: *monitor.Monitor) void {
     const seat = settings.wm_seat_kind();
-    const program = seat.program() orelse return;
+    const program = seat.program() orelse {
+        driving_award.seat_impossible = true;
+        return;
+    };
     var buf: [192]u8 = undefined;
     switch (exec_mod.exec_file(program, &.{})) {
         .ok => {
@@ -356,9 +362,13 @@ fn wm_autostart_direct(m: *monitor.Monitor) void {
         // No share, or the seat's program is not on it: shim compositing is
         // the outcome and it is reported as such.
         .no_disk, .not_found => {
+            // #3731: no seat can bind this boot — a user window's first
+            // present may end the splash hold now.
+            driving_award.seat_impossible = true;
             m.console.puts(std.fmt.bufPrint(&buf, "wm: autostart {s}: {s} not on the share (shim compositing)\n", .{ seat.name(), program }) catch return);
         },
         else => {
+            driving_award.seat_impossible = true;
             m.console.puts(std.fmt.bufPrint(&buf, "wm: autostart {s} failed: {s} did not load (see `exec` for the diagnosis)\n", .{ seat.name(), program }) catch return);
         },
     }
