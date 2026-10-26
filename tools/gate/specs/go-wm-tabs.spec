@@ -693,6 +693,10 @@ vgate_assert 02 serial-contains 'gotabwm: session titles=notes.txt pin=0 active=
 vgate_assert 02 serial-contains 'gotabwm: session freeze n=0'
 vgate_assert 02 serial-contains 'gotabwm: session reexec n=1'
 vgate_assert 02 serial-contains 'gotabwm: session exec NOTE.ELF'
+# #3348 (#1255): the restored row's placeholder cell spins the staged
+# arc sheet while NOTE's declare is awaited — the receipt latches on the
+# first rail pass that sees the pending row, long before the app binds.
+vgate_assert 02 serial-contains 'gotabwm: rail spinner qoi 384x32'
 # The re-exec'd app really hosted: its own declare is what opened the tab.
 vgate_assert 02 serial-contains 'note: tab-aware (full-viewport)'
 vgate_assert 02 serial-count 'gotabwm: tab open id=' 1

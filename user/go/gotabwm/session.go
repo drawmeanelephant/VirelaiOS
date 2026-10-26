@@ -309,6 +309,18 @@ func dropRestoredRow(si int, t0 Tab, why string) {
 	_ = stripOf(si).CloseTab(t0.ID)
 }
 
+// reexecPendingID reports whether id is a placeholder row still waiting
+// on its re-exec'd pid's declare — the rail's restore-wait predicate
+// (#3348: the spinner's contract is the wait, not the placeholder flag).
+func reexecPendingID(id uint32) bool {
+	for i := 0; i < reexecN; i++ {
+		if reexecPending[i].id == id {
+			return true
+		}
+	}
+	return false
+}
+
 // reexecSession turns the just-restored placeholder strips into live tabs:
 // every space's backed row's bin is exec'd (the `.tabs` v2 row cap is the
 // seat's tab limit, and the kernel's task pool refuses what cannot fit —

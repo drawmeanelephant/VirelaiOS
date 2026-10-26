@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	"virelai/art"
+	"virelai/draw"
 	"virelai/theme"
 	"virelai/vi"
 )
@@ -1097,5 +1099,97 @@ func TestLayoutFileBodySash(t *testing.T) {
 	want1 := "tab=4 bin=NOTE.ELF x=803 y=0 w=477 h=720 focus=0 split=v"
 	if lines[0] != want0 || lines[1] != want1 {
 		t.Fatalf("got\n %q\n %q\nwant\n %q\n %q", lines[0], lines[1], want0, want1)
+	}
+}
+
+// #3348 (#1255): a restored row still pending its re-exec'd pid's
+// declare spins the staged arc sheet in the rail's icon slot — the
+// rail's "coming back" mark. The declare returns the static icon, and an
+// absent sheet keeps the icon for the whole wait: the pre-card cell.
+func TestPaintRailRestoreSpinner(t *testing.T) {
+	savedPend, savedN := reexecPending, reexecN
+	savedSpin, savedIcons := railSpinMarked, railIconsMarked
+	savedMap, savedRead := iconByBin, readAppsFile
+	savedClock := compositeClock
+	defer func() {
+		reexecPending, reexecN = savedPend, savedN
+		railSpinMarked, railIconsMarked = savedSpin, savedIcons
+		iconByBin, readAppsFile = savedMap, savedRead
+		compositeClock = savedClock
+	}()
+	art.Reset()
+	defer art.Reset()
+
+	readAppsFile = func(string, int) ([]byte, int64) {
+		row := "RESTORE.ELF | Restored | r | dock=false | v=2 | icon=ICONTST\n"
+		return []byte(row), int64(len(row))
+	}
+	iconByBin = nil
+	iconPix := make([]uint32, 16)
+	for i := range iconPix {
+		iconPix[i] = 0xff112233
+	}
+	art.Stage("ICONTST", &draw.BufferCanvas{Pix: iconPix, W: 4, H: 4})
+	// A two-frame sheet — uniform 4x4 cells side by side in the single
+	// row: the frame read proves which cell the clock picked.
+	sheet := make([]uint32, 32)
+	for y := 0; y < 4; y++ {
+		for x := 0; x < 4; x++ {
+			sheet[y*8+x] = 0xff102030
+			sheet[y*8+4+x] = 0xff405060
+		}
+	}
+	art.Stage(art.SpinnerArc, &draw.BufferCanvas{Pix: sheet, W: 8, H: 4})
+
+	var s TabStrip
+	if !s.OpenTab(sessionIDBase, "restored") || !s.OpenTab(4, "live") {
+		t.Fatal("OpenTab")
+	}
+	s.tabs[0].Bin = "RESTORE.ELF"
+	reexecPending[0] = reexecWait{pid: 9, space: 0, id: sessionIDBase}
+	reexecN = 1
+	railSpinMarked, railIconsMarked = false, false
+
+	const w, h = 200, 40
+	scan := make([]byte, w*h*4)
+	compositeClock = 0
+	paintRail(scan, w, h, RailHeight, &s, -1, -1)
+	pix := asUint32(scan)
+	// Cell 0's icon slot opens at x=7,y=3 on the 22px rail.
+	slot := func(col, row int) uint32 { return pix[(3+row)*w+7+col] }
+	if got := slot(8, 8); got != 0xff102030 {
+		t.Fatalf("pending cell painted %#08x, want spinner frame 0", got)
+	}
+	// The live cell's slot keeps its cell fill — no sheet pixels there.
+	if got := pix[(3+8)*w+107+8]; got == 0xff102030 || got == 0xff405060 {
+		t.Fatal("a live cell painted spinner pixels")
+	}
+	if !railSpinMarked {
+		t.Fatal("the spinner decode marker never latched")
+	}
+
+	// The clock drives the frame: the next tick paints the second cell.
+	compositeClock = 1
+	paintRail(scan, w, h, RailHeight, &s, -1, -1)
+	if got := slot(8, 8); got != 0xff405060 {
+		t.Fatalf("pending cell painted %#08x, want spinner frame 1", got)
+	}
+
+	// The declare's adoption ends the wait — the pre-card icon returns.
+	reexecN = 0
+	reexecPending[0] = reexecWait{}
+	paintRail(scan, w, h, RailHeight, &s, -1, -1)
+	if got := slot(8, 8); got != 0xff112233 {
+		t.Fatalf("adopted cell painted %#08x, want the staged icon", got)
+	}
+
+	// An absent sheet keeps the icon for the whole wait — the degrade.
+	art.Reset()
+	art.Stage("ICONTST", &draw.BufferCanvas{Pix: iconPix, W: 4, H: 4})
+	reexecPending[0] = reexecWait{pid: 9, space: 0, id: sessionIDBase}
+	reexecN = 1
+	paintRail(scan, w, h, RailHeight, &s, -1, -1)
+	if got := slot(8, 8); got != 0xff112233 {
+		t.Fatalf("degraded pending cell painted %#08x, want the icon", got)
 	}
 }

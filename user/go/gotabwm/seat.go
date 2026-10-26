@@ -41,6 +41,7 @@
 package main
 
 import (
+	"virelai/art"
 	"virelai/draw"
 	"virelai/settings"
 	"virelai/theme"
@@ -103,6 +104,11 @@ const (
 	// the dim veil — the same decode-receipt shape the lock curtain's
 	// mascot marker already keeps.
 	MarkerIdleMascot = "gotabwm: idle mascot qoi "
+	// #3348 (#1254): the staged boot plate (BRD_PLT) presented at the
+	// seat-side boot moment — the kernel's render_splash cannot read
+	// /host, so the plate stands over the blocking startup until the
+	// first composite frame replaces it.
+	MarkerBootPlate = "gotabwm: boot plate qoi "
 )
 
 const idleThresholdPath = "/host/GOTABWM.IDLE.TEST"
@@ -375,6 +381,20 @@ func main() {
 	_ = paintBlank(scan, blankRGB())
 	vi.ConsoleLine(MarkerDraw)
 	vi.ConsoleLine(MarkerHolding)
+
+	// #3348 (#1254): the seat-side boot moment the issue names — the
+	// kernel's render_splash cannot read /host, so the staged plate
+	// stands on the scanout over the whole blocking startup below (the
+	// snapshot restore, the settings decode, the probes, the window
+	// choreography's bounded waits, the session load and its re-exec
+	// fan-out) until the first composite frame replaces it. An absent
+	// sheet skips the present entirely: the blank desktop the seat just
+	// painted answers alone, a byte-identical boot.
+	if plate := paintBootPlate(scan, vi.ScanoutWidth, vi.ScanoutHeight); plate != nil &&
+		vi.WmctlRequestPresent() == 0 {
+		vi.ConsoleLine(MarkerBootPlate +
+			vi.Itoa64(int64(plate.W)) + "x" + vi.Itoa64(int64(plate.H)))
+	}
 
 	// M81g (#1767): the restore drill, BEFORE the settings decode below and
 	// therefore before loadSession as well. A bundle rehydrates the three
@@ -1212,6 +1232,33 @@ func paintBlank(scan []byte, rgb uint32) int {
 	}
 	draw.FillRect(c, widgets.Rect{X: 0, Y: 0, W: n, H: 1}, draw.Opaque(rgb))
 	return n
+}
+
+// paintBootPlate is the #3348 (#1254) seat-side boot moment: the staged
+// BRD_PLT raster fitted aspect-preserved and centred over the desktop
+// fill the caller already painted. Returns the decoded sheet so the
+// caller can size the receipt, nil when the share does not carry it —
+// the blank fill then answers alone: no pixels, no present, a
+// byte-identical boot.
+func paintBootPlate(scan []byte, width, height int) *draw.BufferCanvas {
+	c := seatCanvas(scan, width, height)
+	if c == nil {
+		return nil
+	}
+	src := art.Load(art.BrandBootPlate)
+	if src == nil || src.W <= 0 || src.H <= 0 {
+		return nil
+	}
+	w, h := c.W, c.W*src.H/src.W
+	if h > c.H {
+		h, w = c.H, c.H*src.W/src.H
+	}
+	if w < 1 || h < 1 {
+		return nil
+	}
+	draw.BlitScaled(c, src, widgets.Rect{
+		X: (c.W - w) / 2, Y: (c.H - h) / 2, W: w, H: h})
+	return src
 }
 
 // lastRailN / lastRailFocus suppress repeat rail markers; the gate greps

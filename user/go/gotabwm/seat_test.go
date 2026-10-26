@@ -3,6 +3,8 @@ package main
 import (
 	"testing"
 
+	"virelai/art"
+	"virelai/draw"
 	"virelai/settings"
 	"virelai/theme"
 	"virelai/vi"
@@ -756,5 +758,49 @@ func TestRailPaintMarkerFiresOnceAfterPaintedPresent(t *testing.T) {
 	}
 	if _, once := railPaintMarker(true, true); once {
 		t.Fatal("the rail paint marker is once per boot, not per tick")
+	}
+}
+
+// #3348 (#1254): the staged boot plate paints aspect-fitted and centred
+// over the blank desktop at the seat-side boot moment; an absent sheet
+// leaves the fill byte-identical — the caller then skips the present
+// and the boot is exactly the pre-card one.
+func TestBootPlatePaintsStagedAndDegrades(t *testing.T) {
+	art.Reset()
+	defer art.Reset()
+	const w, h = 64, 36
+	scan := make([]byte, w*h*4)
+	if paintBlank(scan, blankRGB()) != w*h {
+		t.Fatal("paintBlank short")
+	}
+	if got := paintBootPlate(scan, w, h); got != nil {
+		t.Fatal("an unstaged share must not paint a plate")
+	}
+	pix := asUint32(scan)
+	bg := uint32(0xff000000) | blankRGB()
+	for i, p := range pix {
+		if p != bg {
+			t.Fatalf("pixel %d = %#08x — the degrade must keep the blank fill", i, p)
+		}
+	}
+	if got := paintBootPlate(nil, 0, 0); got != nil {
+		t.Fatal("a degenerate scanout must not paint a plate")
+	}
+
+	// A 4x2 plate fits 64x32 on the 64x36 scanout, centred at y=2.
+	ppix := make([]uint32, 8)
+	for i := range ppix {
+		ppix[i] = 0xff224466
+	}
+	art.Stage(art.BrandBootPlate, &draw.BufferCanvas{Pix: ppix, W: 4, H: 2})
+	got := paintBootPlate(scan, w, h)
+	if got == nil || got.W != 4 || got.H != 2 {
+		t.Fatalf("paintBootPlate = %+v, want the staged 4x2 sheet", got)
+	}
+	if px := pix[(h/2)*w+w/2]; px != 0xff224466 {
+		t.Fatalf("plate centre pixel = %#08x, want the staged colour", px)
+	}
+	if pix[0] != bg || pix[(h-1)*w] != bg {
+		t.Fatal("the plate's letterbox bands must keep the desktop fill")
 	}
 }
