@@ -1457,8 +1457,10 @@ vgate_run 20 -- \
     --input-string-after 'goterm: prompt' \
     --pointer-virtio '272,702,d;272,702,u;120,199,d;120,199,u' \
     --pointer-virtio-after 'goterm: done status=0' \
-    --input-chords 'w,o,r,k,e,d,return,ctrl-s,ctrl-2' \
+    --input-chords 'w,o,r,k,e,d,return,ctrl-s' \
     --input-chords-after 'goedit: present' \
+    --input-chords2 'ctrl-2' \
+    --input-chords2-after 'goedit: saved' \
     --script-expect 'gotabwm: alt-tab id=' --script-expect-tail 4 --timeout 180
 vgate_assert 20 serial-contains 'wm: autostart gotabwm (settings wm=gotabwm)'
 vgate_assert 20 serial-contains 'gotabwm: mode live'
