@@ -106,15 +106,17 @@ wm
 exec GOSET.ELF
 EOF
 
-# Boot 01, stage 3: the two-tab choreography has closed GOSH and GOSET, so
-# GOCALC.ELF is exec'd as the M59 hosted-client proof on an empty strip. The
-# anchor is the seat's own `tabs empty` — the client's `goset: close` lands
-# at/after the teardown boundary (observed 2026-10-26: `host done` printed
-# before `goset: close`, the exec reached a dead seat, `declare refused`).
-# The save under test already happened in stage 2 and was the PANEL's, never
-# the monitor's `settings set`. The trailing `wm` dumps the kernel's M53 rate
-# row AFTER both typed legs landed (card #3034: the typed-key latency
-# evidence).
+# Boot 01, stage 3: the two-tab choreography has started closing — GOCALC.ELF
+# is exec'd as the M59 hosted-client proof, and the chain's remaining closes
+# sweep it like any hosted tab. The anchor is the first `host close id=`,
+# ~hidChordHold+teardown ticks before exit: lastActivity re-arms only on
+# events, so anchors that print after the last close (`tabs empty`, the old
+# `goset: close`) sit ~2s from `host done` — less than the exec's dispatch
+# latency (observed 2026-10-26: the exec reached a dead seat both ways,
+# `declare refused`). The save under test already happened in stage 2 and
+# was the PANEL's, never the monitor's `settings set`. The trailing `wm`
+# dumps the kernel's M53 rate row AFTER both typed legs landed (card #3034:
+# the typed-key latency evidence).
 vgate_file script3.txt <<'EOF'
 exec GOCALC.ELF
 wm
@@ -288,7 +290,7 @@ vgate_run 01 -- \
     --input-chords 'space,space,space,space,space,space,space,space,space,space,space,space,k,e,y,b,o,a,r,d,_,l,a,y,o,u,t,=,d,e,return' \
     --input-chords-after 'goset: saved ' \
     --script3 '$RUN_DIR/script3.txt' \
-    --script3-after 'gotabwm: tabs empty' \
+    --script3-after 'gotabwm: host close id=' \
     --script-expect 'goset: saved ' --script-expect-tail 150 --timeout 300
 
 # --- the flip: an untouched boot lands in the Go desktop ------------------
@@ -504,7 +506,12 @@ assert green >= 200, ("first-boot GOSH prompt absent from scanout (%d pixels)" %
 PY
 
 # --- boot 02: the PANEL's `wm=tabwm` from boot 01 -> the Zig fallback seat ---
+# The vf rm is load-bearing: boot 01's scripted GOCALC lands mid-choreography
+# now, so its row (or the survivor's) is the last session write before the
+# empty-strip refusal — boot 03+'s gotabwm would otherwise restore a stale
+# tab it never staged.
 vgate_file script-02.txt <<'EOF'
+vf rm SESSION.TABS
 settings get keyboard_layout
 settings get idle_minutes
 tabwm
@@ -1421,9 +1428,10 @@ PY
 
 # Relaunch on the SAME share, without touching the receipt or changing wm.
 # Restored tabs re-exec their recorded bins now (M120b #2559): boot 19's
-# [Sh, Term] file drops the unbacked Sh row and spawns a real GOTERM.ELF
-# into rail cell 1 — so NO scripted Terminal runs at all (the re-exec'd
-# one reads the receipt), and the focus-back chord is ctrl-1, not the old
+# [Sh, Term] file re-execs BOTH rows — the tour row is excluded from the
+# session entirely now (M122b's first-boot-only contract), so the strip is
+# [Sh, Term, Edit] and the focus-back chord is ctrl-2 (1-indexed rail
+# cells; ctrl-1 hits Sh, observed r20 `alt-tab id=3`), not the old
 # placeholder-strip ctrl-3. A scripted second term also costs a task-pool
 # slot the boot cannot spare: observed r20 — seat + restored Term +
 # scripted Term left GOEDIT's runtime unable to make an M
@@ -1449,7 +1457,7 @@ vgate_run 20 -- \
     --input-string-after 'goterm: prompt' \
     --pointer-virtio '272,702,d;272,702,u;120,199,d;120,199,u' \
     --pointer-virtio-after 'goterm: done status=0' \
-    --input-chords 'w,o,r,k,e,d,return,ctrl-s,ctrl-1' \
+    --input-chords 'w,o,r,k,e,d,return,ctrl-s,ctrl-2' \
     --input-chords-after 'goedit: present' \
     --script-expect 'gotabwm: alt-tab id=' --script-expect-tail 4 --timeout 180
 vgate_assert 20 serial-contains 'wm: autostart gotabwm (settings wm=gotabwm)'
