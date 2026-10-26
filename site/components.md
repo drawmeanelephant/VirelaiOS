@@ -25,7 +25,7 @@ All of them additionally answer to the schema-v2 manifest grammar
 | name | kind | binary | version | last refresh | date | owning spec / contract | state |
 | ------ | ------ | -------- | --------- | --- | --- | ------------------------ | ------- |
 | [[apps/gocalc|64-bit Calc]] | app | GOCALC.ELF | appver 1, ver 1.0.0 | #3248 | 2026-10-23 | tools/gate/specs/go-calc.spec | shipped |
-| [[apps/note|Text Editor]] | app | NOTE.ELF | appver 1, ver 1.0.0 | #3247 | 2026-10-23 | tools/gate/specs/go-note.spec | shipped |
+| [[apps/note|Text Editor]] | app | NOTE.ELF | appver 1, ver 1.1.0 | #3247 | 2026-10-23 | tools/gate/specs/go-note.spec | shipped |
 | [[apps/goedit|Code Editor]] | app | GOEDIT.ELF | appver 1, ver 1.0.0 | #2991 | 2026-10-22 | tools/gate/specs/go-edit.spec | shipped |
 | [[apps/gofiles|Files]] | app | GOFILES.ELF | appver 1, ver 1.0.0 | #3255 | 2026-10-23 | tools/gate/specs/go-fileman.spec | shipped |
 | [[apps/goterm|Terminal]] | app | GOTERM.ELF | appver 2, ver 1.0.0 | #3251 | 2026-10-23 | tools/gate/specs/go-term.spec | shipped |
