@@ -136,9 +136,22 @@ func writeSealFields(sb []byte, g Geometry, volumeID uint64, p *sealParams, pass
 	}
 	var wrapped [KeyBytes]byte
 	var wtag [aeadTagLen]byte
-	nonce := (*[aeadNonceLen]byte)(p.wrapNonce[:])
 	key := (*[aeadKeyLen]byte)(kek)
-	aeadSeal(wrapped[:], &wtag, p.dek[:], blockAAD(volumeID, wrapBlockNum), nonce, key)
+	// #3685: the wrap tag is a stored 16-byte tag field like any block
+	// tag — keep the same no-leading-zero invariant the kernel's seal
+	// path holds (sealBlockFresh) so VZ's minimal-length tag-field
+	// rewrite never has a trigger on disk. The first seal usually wins;
+	// a leading-zero tag just re-draws the wrap nonce.
+	for {
+		nonce := (*[aeadNonceLen]byte)(p.wrapNonce[:])
+		aeadSeal(wrapped[:], &wtag, p.dek[:], blockAAD(volumeID, wrapBlockNum), nonce, key)
+		if wtag[0] != 0 {
+			break
+		}
+		if _, err := rand.Read(p.wrapNonce[:]); err != nil {
+			return err
+		}
+	}
 
 	binary.LittleEndian.PutUint32(sb[sbVersion:], Version2)
 	binary.LittleEndian.PutUint32(sb[sbSealMagic:], MagicSeal)
@@ -185,14 +198,26 @@ func formatSealedImage(img []byte, volumeID, mkfsTime uint64, pass []byte, p sea
 // refuses sealing, mirroring the kernel's unseeded-CSPRNG refusal.
 func sealBlocks(img []byte, g Geometry, volumeID uint64, dek *[KeyBytes]byte) error {
 	key := (*[aeadKeyLen]byte)(dek[:])
+	var pt [BlockLen]byte
 	for b := uint32(2); b < g.TagFirst; b++ {
-		var nonce [aeadNonceLen]byte
-		if _, err := rand.Read(nonce[:]); err != nil {
-			return errCode{"seal_failed", "csprng: " + err.Error()}
-		}
 		blk := block(img, b)
+		copy(pt[:], blk)
+		var nonce [aeadNonceLen]byte
 		var tag [aeadTagLen]byte
-		aeadSeal(blk, &tag, blk, blockAAD(volumeID, b), &nonce, key)
+		// #3685: re-draw the nonce until the tag's first byte is nonzero —
+		// the same invariant seal.zig's sealBlockFresh holds. VZ's
+		// virtio-blk write path emits a leading-zero 16-byte tag field
+		// minimal-length (the #3128 tear); a field that never starts
+		// with 0x00 is written verbatim.
+		for {
+			if _, err := rand.Read(nonce[:]); err != nil {
+				return errCode{"seal_failed", "csprng: " + err.Error()}
+			}
+			aeadSeal(blk, &tag, pt[:], blockAAD(volumeID, b), &nonce, key)
+			if tag[0] != 0 {
+				break
+			}
+		}
 		e := tagEntry(img, g, b)
 		copy(e[:aeadNonceLen], nonce[:])
 		copy(e[aeadNonceLen:], tag[:])

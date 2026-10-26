@@ -987,17 +987,23 @@ func sealOpenBlock(t *testing.T, img []byte, g Geometry, volID uint64,
 // sealSlotWrite replicates the kernel's journal-slot write on a test
 // image: plaintext sealed in place at the slot's AAD under a fresh
 // nonce, the {nonce, tag} pair written eagerly to the slot's tag home
-// (seal.zig's journal-record path).
+// (seal.zig's journal-record path — #3685 included: the nonce re-draws
+// until the tag's first byte is nonzero).
 func sealSlotWrite(t *testing.T, img []byte, g Geometry, volID uint64,
 	dek *[KeyBytes]byte, slot uint32, pt []byte) {
 	t.Helper()
 	var nonce [aeadNonceLen]byte
-	if _, err := rand.Read(nonce[:]); err != nil {
-		t.Fatal(err)
-	}
 	var tag [aeadTagLen]byte
-	aeadSeal(block(img, slot), &tag, pt, blockAAD(volID, slot),
-		&nonce, (*[aeadKeyLen]byte)(dek))
+	for {
+		if _, err := rand.Read(nonce[:]); err != nil {
+			t.Fatal(err)
+		}
+		aeadSeal(block(img, slot), &tag, pt, blockAAD(volID, slot),
+			&nonce, (*[aeadKeyLen]byte)(dek))
+		if tag[0] != 0 {
+			break
+		}
+	}
 	e := tagEntry(img, g, slot)
 	copy(e[:aeadNonceLen], nonce[:])
 	copy(e[aeadNonceLen:], tag[:])
@@ -1047,6 +1053,21 @@ func TestSealedFormat(t *testing.T) {
 	for tb := g.TagFirst; tb < g.VolumeBlocks; tb++ {
 		if !isZero(block(img, tb)[TagEntriesPerBlock*TagEntryBytes:]) {
 			t.Fatalf("tag block %d tail nonzero", tb)
+		}
+	}
+
+	// #3685: no stored 16-byte tag field may start with 0x00 — the VZ
+	// virtio-blk write path re-serializes a leading-zero tag field
+	// minimal-length (the #3128 tear). The seal path re-draws the nonce
+	// until the invariant holds, on block tags and the DEK wrap alike.
+	for b := uint32(2); b < g.TagFirst; b++ {
+		if e := tagEntry(img, g, b); e[aeadNonceLen] == 0 {
+			t.Fatalf("block %d tag field has a leading zero", b)
+		}
+	}
+	for _, slot := range []uint32{0, 1} {
+		if sb := block(img, slot)[:SectorLen]; sb[sbWrapTag] == 0 {
+			t.Fatalf("slot %d wrap tag has a leading zero", slot)
 		}
 	}
 }

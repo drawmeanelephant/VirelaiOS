@@ -225,6 +225,23 @@ never read back wrong. Block-granularity rollback — replaying an
 older (nonce, ciphertext, tag) triple — is undetectable and stated
 as a limit below.
 
+**Emit-side invariant + checker tolerance (#3685).** Every stored
+16-byte tag field — block-tag entries and the superblock wrap tag
+alike — is emitted with a nonzero first byte: the writer re-draws
+the nonce until the tag starts nonzero (~1/256 of seals take one
+extra draw). The format is unchanged; the invariant is writer-side
+hygiene so any leading-zero field in the file is unambiguously
+host-authored. It does not prevent the VZ virtio-blk defect (#3128):
+the persistence path can land a stored tag in minimal-length form
+(leading zeros dropped, zero tail) even when no leading-zero field
+was ever written — instrumented runs showed zero leading-zero
+emissions with torn fields still appearing, and the served view
+reconstructs the full tag so the guest never observes the artifact.
+`mkfs.vlfs --check` therefore treats the canonical dropped-prefix
+form (verified by re-open) as the recoverable informational class
+`vz_tag_tear`, not `bad_block_auth`; only a pair that fails every
+shift depth remains a hard failure.
+
 ### Inode reservation (D13)
 
 Six of the inode's 32 reserved bytes at +92 are claimed:
