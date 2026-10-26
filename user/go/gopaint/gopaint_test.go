@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"virelai/appkit"
+	"virelai/tabapp"
 	"virelai/vi"
 	"virelai/webrender"
 	"virelai/webrender/qoi"
@@ -343,6 +344,51 @@ func TestExportPNGPickerFallback(t *testing.T) {
 	}
 	if !raised || !done {
 		t.Fatalf("markers %v", *lines)
+	}
+}
+
+// #3737: the loop must drain the window queue before it services the
+// seat's mailbox — a save blob built while input still waits snapshots
+// the pre-input state (run 03: a close-ask answered ahead of a queued 'r'
+// stored tool=brush and the reopen restored it over the user's rect).
+func TestAskAnsweredAfterQueueDrain(t *testing.T) {
+	var order []string
+	evs := []vi.Event{{Kind: vi.EvKeyDown, Arg1: 'r'}}
+	oldP, oldS, oldA, oldD, oldC := pollEvent, sleepTick, serviceAsk, serviceDrag, conLine
+	pollEvent = func() (vi.Event, int64, bool) {
+		if len(evs) == 0 {
+			return vi.Event{}, 0, false
+		}
+		e := evs[0]
+		evs = evs[1:]
+		return e, 0, true
+	}
+	sleepTick = func() {}
+	serviceAsk = func(a *app) bool { order = append(order, "ask"); return false }
+	serviceDrag = func(a *app) bool { order = append(order, "drag"); return false }
+	conLine = func(s string) { order = append(order, s) }
+	t.Cleanup(func() {
+		pollEvent, sleepTick, serviceAsk, serviceDrag, conLine = oldP, oldS, oldA, oldD, oldC
+	})
+
+	a := &app{ta: &tabapp.TabApp{}, d: newDoc(8, 8), tool: toolBrush}
+	if !a.step() {
+		t.Fatal("step consumed the queued key but reported window-gone")
+	}
+	if !a.step() {
+		t.Fatal("step on a drained queue reported window-gone")
+	}
+	want := []string{markerTool + "rect", "ask", "drag"}
+	if len(order) != len(want) {
+		t.Fatalf("passes recorded %v, want %v", order, want)
+	}
+	for i := range want {
+		if order[i] != want[i] {
+			t.Fatalf("order[%d] = %q in %v, want the key applied before the ask", i, order[i], order)
+		}
+	}
+	if a.tool != toolRect {
+		t.Fatalf("tool = %v, want the queued 'r' applied", a.tool)
 	}
 }
 

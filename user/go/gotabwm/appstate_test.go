@@ -33,6 +33,7 @@ func (f *stateFixture) install(t *testing.T) {
 	oldTabs, oldLog := tabs, stateLog
 	oldBind := rpcBindings
 	oldPend := stateAskPend
+	oldAdopt := stateAdoptPend
 	oldPA, oldPAN := pendingAppStates, pendingAppStateN
 	oldClose := closeWin
 	t.Cleanup(func() {
@@ -41,6 +42,7 @@ func (f *stateFixture) install(t *testing.T) {
 		tabs, stateLog = oldTabs, oldLog
 		rpcBindings = oldBind
 		stateAskPend = oldPend
+		stateAdoptPend = oldAdopt
 		pendingAppStates, pendingAppStateN = oldPA, oldPAN
 		closeWin = oldClose
 	})
@@ -85,6 +87,7 @@ func (f *stateFixture) install(t *testing.T) {
 	tabs = TabStrip{}
 	rpcBindings = [256]rpcBinding{}
 	stateAskPend = [256]bool{}
+	stateAdoptPend = [256]bool{}
 	pendingAppStates = [MaxTabs]pendingAppState{}
 	pendingAppStateN = 0
 }
@@ -371,13 +374,71 @@ func TestClearAppStateDiesWithBinding(t *testing.T) {
 	f := &stateFixture{}
 	f.install(t)
 	stateAskPend[9] = true
+	stateAdoptPend[9] = true
 	f.files[vi.AppStatePath(9)] = []byte("orphan")
 	clearAppState(9)
 	if stateAskPend[9] {
 		t.Fatal("ask latch survived teardown")
 	}
+	if stateAdoptPend[9] {
+		t.Fatal("adopt latch survived teardown")
+	}
 	if _, ok := f.files[vi.AppStatePath(9)]; ok {
 		t.Fatal("orphan staging survived teardown")
+	}
+}
+
+// #3737: an adopted blob is a handoff the new instance has not claimed —
+// a save landing before its own restore request can only report defaults
+// and must not overwrite the recorded session.
+func TestAdoptedBlobSurvivesPreRestoreSave(t *testing.T) {
+	f := &stateFixture{}
+	f.install(t)
+
+	if !tabs.OpenTab(9, "GoTabApp") {
+		t.Fatal("OpenTab")
+	}
+	stagePendingState(42, 2, []byte("rect and file"))
+	adoptPendingState(42, 9)
+	if !stateAdoptPend[9] {
+		t.Fatal("adoption did not latch the unclaimed blob")
+	}
+
+	// A watchdog-asked answer arriving before the app's restore request
+	// is refused by name; the adopted blob and the latch both survive.
+	f.stage(9, 1, []byte("defaults"))
+	if serveStateSave(saveReq(9)) {
+		t.Fatal("pre-restore save overwrote the adopted blob")
+	}
+	if !bytes.Equal(tabs.At(0).State, []byte("rect and file")) {
+		t.Fatalf("adopted blob = %x", tabs.At(0).State)
+	}
+	if !f.hasLog(MarkerStateDrop + "GoTabApp pending") {
+		t.Fatalf("no pending drop marker: %v", f.logs)
+	}
+	if _, ok := f.files[vi.AppStatePath(9)]; ok {
+		t.Fatal("the refused answer's staging was not consumed")
+	}
+	if !stateAdoptPend[9] {
+		t.Fatal("drop cleared the latch — the blob is still owed")
+	}
+
+	// The claiming restore clears the latch; ordinary saves own the row.
+	var r vi.WmRpc
+	r.Kind = vi.WmRpcKindRestoreState
+	r.ID = 9
+	if !serveStateRestore(r) {
+		t.Fatal("restore refused the adopted blob")
+	}
+	if stateAdoptPend[9] {
+		t.Fatal("latch survived delivery")
+	}
+	f.stage(9, 1, []byte("live answer"))
+	if !serveStateSave(saveReq(9)) {
+		t.Fatal("post-restore save refused")
+	}
+	if !bytes.Equal(tabs.At(0).State, []byte("live answer")) {
+		t.Fatalf("post-restore state = %x", tabs.At(0).State)
 	}
 }
 

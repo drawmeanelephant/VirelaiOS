@@ -127,6 +127,14 @@ var (
 	readFile  = vi.FileRead
 	closeFile = vi.FileClose
 	writeSafe = vi.WriteFileSafe
+	// The event-loop seams: pollEvent reads the kernel window queue,
+	// sleepTick is the idle-pass wait, and serviceAsk/serviceDrag wrap the
+	// seat-mailbox arms so a host test can pin WHEN the loop services them
+	// relative to queued input (#3737's drain-before-answer order).
+	pollEvent   = vi.PollEventRaw
+	sleepTick   = func() { vi.Sleep(1) }
+	serviceAsk  = func(a *app) bool { return a.ta.PollStateAsk() }
+	serviceDrag = func(a *app) bool { return a.ta.PollDrag() }
 )
 
 type app struct {
@@ -235,41 +243,51 @@ func main() {
 	a.eventLoop()
 }
 
-func (a *app) eventLoop() {
-	for {
-		a.ta.PollStateAsk()
-		a.ta.PollDrag()
-		ev, r, ok := vi.PollEventRaw()
-		if !ok {
-			if r < 0 {
-				conLine(markerWinClose)
-				conLine(markerOK)
-				a.ta.CloseAndExit(exitQuit)
-			}
-			vi.Sleep(1)
-			continue
+// step runs one event-loop pass. The seat's mailbox (state asks, drag
+// notices) is serviced ONLY when the window queue reports empty: a save
+// blob built while input still waits in the queue snapshots the pre-input
+// state — #3737's run 03 had a close-ask answered ahead of a queued 'r',
+// so the seat stored tool=brush and the reopen restored it over the
+// user's rect. False means the window is gone; the caller prints the
+// close markers and exits.
+func (a *app) step() bool {
+	ev, r, ok := pollEvent()
+	if !ok {
+		if r < 0 {
+			return false
 		}
-		switch a.ta.Dispatch(ev) {
-		case tabapp.ActionClosed:
-			conLine(markerWinClose)
-			conLine(markerOK)
-			a.ta.CloseAndExit(exitQuit)
-		case tabapp.ActionResized:
-			conLine(markerResize + strconv.Itoa(int(a.ta.W)) + "x" + strconv.Itoa(int(a.ta.H)))
+		serviceAsk(a)
+		serviceDrag(a)
+		sleepTick()
+		return true
+	}
+	switch a.ta.Dispatch(ev) {
+	case tabapp.ActionClosed:
+		return false
+	case tabapp.ActionResized:
+		conLine(markerResize + strconv.Itoa(int(a.ta.W)) + "x" + strconv.Itoa(int(a.ta.H)))
+		a.draw()
+		a.ta.Present()
+	case tabapp.ActionUndo:
+		if a.ta.Undo() {
 			a.draw()
 			a.ta.Present()
-		case tabapp.ActionUndo:
-			if a.ta.Undo() {
-				a.draw()
-				a.ta.Present()
-			}
-		case tabapp.ActionNone:
-			if a.handle(ev) {
-				a.draw()
-				a.ta.Present()
-			}
+		}
+	case tabapp.ActionNone:
+		if a.handle(ev) {
+			a.draw()
+			a.ta.Present()
 		}
 	}
+	return true
+}
+
+func (a *app) eventLoop() {
+	for a.step() {
+	}
+	conLine(markerWinClose)
+	conLine(markerOK)
+	a.ta.CloseAndExit(exitQuit)
 }
 
 // ---------------------------------------------------------------------------
