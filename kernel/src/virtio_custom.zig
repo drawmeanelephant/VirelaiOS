@@ -1000,6 +1000,7 @@ fn dispatch_input_msg(msg: []const u8) void {
             }
             input_rx_count += 1;
             snap_pending = true; // serviced from the idle seam, never inline
+            snap_defer_count = 0;
         },
         else => {
             input_bad_count += 1;
@@ -1450,6 +1451,23 @@ pub const snap_chunk_len: usize = 32768;
 /// True while a kind-4 request waits for the idle seam (set by
 /// dispatch_input_msg, consumed by service_snapshot).
 pub var snap_pending: bool = false;
+/// #3731: passes a request has stayed armed waiting for pending window
+/// damage to reach the scene — bounded by snap_defer_max.
+var snap_defer_count: u32 = 0;
+/// The most idle passes a request defers before streaming anyway: an app
+/// present only marks damage and the shell drain composites on its own
+/// cadence, so a request serviced the pass it was armed could ship a
+/// pre-composite frame (the wallpaper-crop signature). 4096 passes is
+/// generous headroom for one drain under fleet load while still
+/// bounding a drain that never comes — degrading to the pre-fix frame,
+/// never a hang.
+pub const snap_defer_max: u32 = 4096;
+/// #3731: optional "a composite can still change the scene" probe — set
+/// by main.zig to driving_award.composite_pending so the deferral reads
+/// pending window damage without this module importing the compositor
+/// (the wm_damage_hook pattern). null = never defer: headless and test
+/// boots behave exactly as before.
+pub var snap_defer_hook: ?*const fn () bool = null;
 /// Snapshots successfully streamed since boot.
 pub var snap_count: u32 = 0;
 /// Snapshot requests refused or failed mid-stream (loud by counter).
@@ -1566,7 +1584,22 @@ pub fn service_snapshot() void {
     // fail-counter movement (the request the winner is streaming is the
     // same one).
     if (!snap_pending) return;
+    // #3731: hold the request while a composite can still change the
+    // scene — shipping now would stream the pre-composite frame (the
+    // wallpaper-crop signature): the app present only marked damage and
+    // the shell drain composites on its own cadence while this service
+    // rides the scheduler idle pass. Bounded so a drain that never comes
+    // degrades to the pre-fix frame instead of hanging the stream.
+    if (snap_defer_count < snap_defer_max) {
+        if (snap_defer_hook) |pending| {
+            if (pending()) {
+                snap_defer_count += 1;
+                return;
+            }
+        }
+    }
     snap_pending = false;
+    snap_defer_count = 0;
     if (!cv_ready or !has_snap_queue) {
         snap_fail_count += 1;
         return;

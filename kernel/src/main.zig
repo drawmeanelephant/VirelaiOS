@@ -1283,6 +1283,12 @@ fn kernel_main(base: u64, size: u64, st: *const SystemTable, handoff_rec: *Hando
     // read source too — injected keys then reach the line editor exactly
     // like USB keys do.
     if (input.armed() or virtio_custom.input_armed) road_pops.set_read_source(rp_read_source);
+    // #3731: the kind-4 snapshot seam's pending-damage probe — a request
+    // stays armed while a composite could still change the scene, so the
+    // stream never ships a pre-composite frame (the wallpaper-crop
+    // signature). Unconditional: the hook itself is a pure read and the
+    // deferral no-ops when nothing is dirty.
+    virtio_custom.snap_defer_hook = driving_award.composite_pending;
     var mon = monitor.Monitor.init(
         road_pops.tee_console(),
         .{
