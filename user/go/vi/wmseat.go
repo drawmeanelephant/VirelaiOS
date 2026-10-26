@@ -47,6 +47,14 @@ const (
 	// WM_KEY is a fan-out, never that path). a1 = HID usage, a2 = the
 	// press's ADR 0009 modifier bits.
 	WmctlContentKeyCmd uint64 = 23
+	// WmctlCursorShapeCmd is slot-65 subcommand 24 (#3348, ADR 0015
+	// additive): the registered seat selects which staged cursor mask
+	// the kernel stamps over the composed frame — the kernel half of
+	// the f-artcraft #1249 cursor set (kernel/src/driving_award.zig's
+	// cursor_set). a1 = the shape index (the Cursor* constants below);
+	// a2..a5 reserved-zero. Seat-gated like every other subcommand; the
+	// pick dies with the seat (unregister restores the arrow).
+	WmctlCursorShapeCmd uint64 = 24
 
 	// M33MapShared is the frozen seam-B flag (ADR 0016, bit 16 of the mmap
 	// flags word): a shared-anonymous mapping. The scanout bind is one.
@@ -143,6 +151,31 @@ func WmctlContentPtr(x, y uint32, buttons, mods uint8) int64 {
 func WmctlContentKey(usage uint8, flags uint16) int64 {
 	return syscall6(SlotWmctl, uintptr(WmctlContentKeyCmd),
 		uintptr(usage), uintptr(flags), 0, 0, 0)
+}
+
+// The cursor shapes (slot-65 cmd 24's a1) — kernel/src/driving_award.zig's
+// CursorShape index order, which is the frozen wire order. Names match the
+// staged MASKS.TXT sections (image/art/cursors/).
+const (
+	CursorPtr uint64 = 0 // CURS_PTR — the default arrow
+	CursorTxt uint64 = 1 // CURS_TXT — i-beam, editable text
+	CursorLnk uint64 = 2 // CURS_LNK — hand, link-like surface
+	CursorGrb uint64 = 3 // CURS_GRB — open hand, grabbable surface
+	CursorGrg uint64 = 4 // CURS_GRG — closed hand, drag in flight
+	CursorRsx uint64 = 5 // CURS_RSX — horizontal resize (left/right)
+	CursorRsy uint64 = 6 // CURS_RSY — vertical resize (top/bottom)
+	CursorXhr uint64 = 7 // CURS_XHR — crosshair
+	CursorBsy uint64 = 8 // CURS_BSY — busy
+	CursorNo  uint64 = 9 // CURS_NO — refused (a drop the target declines)
+)
+
+// WmctlCursorShape selects which staged mask the kernel stamps over the
+// composed frame (slot 65 cmd 24, #3348). The seat calls it on pick
+// changes only — it is a state swap, not a per-sample channel. Returns 0;
+// -ENOSYS off-guest / no seat, -EACCES from a non-seat caller, -EINVAL for
+// an out-of-range shape.
+func WmctlCursorShape(shape uint64) int64 {
+	return syscall2(SlotWmctl, uintptr(WmctlCursorShapeCmd), uintptr(shape))
 }
 
 // MmapScanout maps the virtio-gpu framebuffer WRITABLE into the registered

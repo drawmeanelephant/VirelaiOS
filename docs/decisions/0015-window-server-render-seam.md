@@ -195,6 +195,22 @@ it (the render server already separates policy from blit).
   `flags`. A press is one down+up pair; no held-set or compose state is
   touched. Backs the go-agentd run-15 fix: kind-29 keys applied at the
   seat but never reached the app, so `goedit: dirty` could not fire.
+- 2026-10-26 — issue #3348 / claim #3770: **additive WMCTL subcommand 24**
+  (seat-gated like every other subcommand; no existing opcode or arg
+  layout changes). `CURSOR_SHAPE`
+  (`wmctl(cmd=24, shape, 0, 0, 0, 0)`) selects which staged cursor mask
+  the kernel stamps over the composed frame — the kernel half of the
+  f-artcraft #1249 cursor set
+  (`driving_award.cursor_set` / `image/art/cursors/MASKS.TXT`, ten shapes,
+  `ptr` = index 0). The kernel owns only the draw; the seat owns the
+  picking (which surface or gesture the pointer is over) and calls it on
+  pick changes. `EINVAL` for an out-of-range shape (reserved args are
+  unchecked — callers' unused arg registers are not guaranteed zero);
+  `ENOSYS`/`EACCES` like every other seat-gated subcommand. A seat's
+  last pick dies with it — `unregister` restores `ptr`, so the resumed
+  shim stamps the arrow and every pre-seat gate stays byte-identical.
+  Backs the #3348 cursor-context seam: staged shapes could not be drawn
+  until a seat-gated selection channel existed.
 
 ## Open issues (left to implementing claims)
 

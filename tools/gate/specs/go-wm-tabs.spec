@@ -1297,6 +1297,10 @@ vgate_assert 07 serial-contains 'gotabwm: split v'
 vgate_assert 07 serial-contains 'x=640 y=0 w=640 h=720'
 # The drag committed: divider 640 -> 800, the 6 px gutter as geometry.
 vgate_assert 07 serial-contains 'gotabwm: sash v from=640 to=800'
+# #3348 cursor-context: the press lands on the SplitVert divider, so the
+# seat picks the staged rsx mask (wmctl cmd 24) — the receipt prints once
+# per shape, after the kernel accepts.
+vgate_assert 07 serial-contains 'gotabwm: cursor shape rsx'
 vgate_assert 07 serial-contains 'x=0 y=0 w=797 h=720'
 vgate_assert 07 serial-contains 'x=803 y=0 w=477 h=720'
 # Both panes moved, so the hosted client observed its WIN_RESIZE after the
@@ -1653,6 +1657,11 @@ vgate_assert 09 serial-contains 'gotabwm: tab focus id='
 vgate_assert 09 serial-contains 'gotabwm: pin id='
 vgate_assert 09 serial-contains 'gotabwm: freeze id='
 vgate_assert 09 serial-contains 'gotabwm: order ids='
+# #3348 cursor-context: the rail reorder drag picks the grabbing mask on
+# the armed press and the open-hand (grabbable) mask on the release's
+# hover over the destination cell — both through wmctl cmd 24.
+vgate_assert 09 serial-contains 'gotabwm: cursor shape grg'
+vgate_assert 09 serial-contains 'gotabwm: cursor shape grb'
 vgate_assert 09 serial-contains 'pin=1,0'
 vgate_assert 09 serial-contains 'pin=0,1'
 vgate_assert 09 serial-contains 'gotabwm: reorder 0->1'

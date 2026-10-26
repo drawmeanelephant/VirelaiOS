@@ -2346,6 +2346,46 @@ test "driving_award: M91 cursor old/new damage coalesces and restores without st
     try std.testing.expect(driving_award.cursor_new_damage == null);
 }
 
+test "driving_award: #3348 cursor shapes — the staged set, per-shape hotspots, and a clean swap" {
+    arm();
+    driving_award.wm_owns_user_layer = false;
+    defer driving_award.cursor_shape = .ptr;
+    // The staged set is complete and every mask is exactly 16x24.
+    try std.testing.expectEqual(@as(usize, 10), driving_award.cursor_shape_count);
+    for (driving_award.cursor_set) |def| {
+        try std.testing.expectEqual(driving_award.cursor_h, def.mask.len);
+        for (def.mask.*) |row| try std.testing.expectEqual(driving_award.cursor_w, row.len);
+        try std.testing.expect(def.hx < driving_award.cursor_w and def.hy < driving_award.cursor_h);
+    }
+    // The arrow is index 0 with the ship hotspot (1,1); the i-beam's is
+    // centred (8,12) — a shape swap re-anchors the stamp at the same (x,y).
+    try std.testing.expectEqual(driving_award.CursorShape.ptr, driving_award.cursor_shape);
+    driving_award.cursor_x = 400;
+    driving_award.cursor_y = 300;
+    driving_award.cursor_shown = true;
+    @memset(&virtio_gpu.gpu_fb, 0x32);
+    driving_award.cursor_draw();
+    const px = struct {
+        fn f(x: usize, y: usize) u32 {
+            return std.mem.readInt(u32, virtio_gpu.gpu_fb[(y * virtio_gpu.fb_width + x) * 4 ..][0..4], .little);
+        }
+    }.f;
+    const outline = driving_award.cursor_outline_rgb | 0xff000000;
+    // Arrow tip at hotspot (1,1): (399,299) is its top-left outline pixel.
+    try std.testing.expectEqual(outline, px(399, 299));
+    driving_award.cursor_shape_apply(.txt);
+    try std.testing.expectEqual(driving_award.CursorShape.txt, driving_award.cursor_shape);
+    // The i-beam's stroke: mask row 3 col 4 lands at (396,291) — the old
+    // glyph's pixels were restored before the new stamp, so the arrow's
+    // tip pixel is either the i-beam's fill (399,299 -> row 11 col 7 'o')
+    // or background again, never the stale outline.
+    try std.testing.expectEqual(outline, px(396, 291));
+    try std.testing.expectEqual(driving_award.cursor_rgb | 0xff000000, px(399, 299));
+    driving_award.cursor_restore();
+    for (virtio_gpu.gpu_fb) |byte| try std.testing.expectEqual(@as(u8, 0x32), byte);
+    driving_award.cursor_shape_apply(.ptr);
+}
+
 var m91_transfers: usize = 0;
 var m91_flushes: usize = 0;
 fn m91_transfer() virtio_gpu.CmdResult {

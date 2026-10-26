@@ -239,7 +239,7 @@ binaries, so the binary column stays `—`.
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| Cursor set (10 masks + ship hotspots — arrow paints; context selection is #3348 b) | asset | — | ver 1.0.0 | tools/art/adopt.py, image/art/cursors/MASKS.TXT, image/art/ART.TXT, tools/art/mkcursormask.py | staged |
+| Cursor set (10 masks + ship hotspots — the seat picks a shape per context via wmctl cmd 24: sash=rsx/rsy, rail=grb, drags=grg, refused drops=no; text/link/busy need the app-declare half of #3348) | asset | — | ver 1.0.0 | tools/art/adopt.py, image/art/cursors/MASKS.TXT, image/art/ART.TXT, tools/art/mkcursormask.py | staged |
 | Mascot poses (six — wave GOWELCOME, locked curtain, sleep idle-dim veil, oops ErrorBanner/crash offer, think live progress rows, celebrate GOSNAP saved + GOSTORE install verdicts) | asset | — | ver 1.0.0 | tools/art/adopt.py, image/art/ART.TXT | staged |
 | Spot icons (doc + nres via EmptyState.Spot; bell notify centre; img + err GOVIEW — fold, offl, trsh unwired; see #3348) | asset | — | ver 1.0.0 | tools/art/adopt.py, image/art/ART.TXT | staged |
 | Spinner sheets (arc spins on seat busy surfaces — notify-center indeterminate rows, session-restore placeholder rail cells; mascot sheet unwired) | asset | — | ver 1.0.0 | tools/art/adopt.py, image/art/ART.TXT | staged |

@@ -183,6 +183,15 @@ pub const wmctl_gpu3d: u64 = 22;
 /// owner gets the KEY_DOWN/KEY_UP pair. Seat-gated like every other
 /// subcommand; no existing opcode or arg layout changes.
 pub const wmctl_content_key: u64 = 23;
+/// #3348 (ADR 0015 additive): CURSOR_SHAPE — the registered seat selects
+/// which staged cursor mask the kernel stamps over the composed frame
+/// (driving_award.cursor_set, the f-artcraft #1249 drop). a1 = the
+/// CursorShape index (0..9); a2..a5 reserved-zero. The kernel side is a
+/// pure state swap — the seat owns the picking (which surface/context the
+/// pointer is over); the shim and every pre-seat gate keep `ptr`, and a
+/// seat's last pick dies with it (unregister resets to `ptr`). Seat-gated
+/// like every other subcommand; no existing opcode or arg layout changes.
+pub const wmctl_cursor_shape: u64 = 24;
 /// OVERVIEW actions (a0).
 pub const overview_enter_action: u64 = 0;
 pub const overview_exit_action: u64 = 1;
@@ -621,6 +630,9 @@ pub fn unregister(pid: usize) bool {
     driving_award.wm_pointer_hook = null;
     driving_award.wm_window_hook = null;
     driving_award.wm_key_hook = null;
+    // #3348: a dead seat's last cursor-shape pick dies with it — the
+    // resumed shim stamps the arrow again.
+    driving_award.cursor_shape = .ptr;
     // card #3034: the seat that owned a pending damage tick is gone — the
     // bit and the hook die with it.
     driving_award.wm_damage_hook = null;

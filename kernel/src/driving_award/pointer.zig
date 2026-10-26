@@ -10,8 +10,6 @@ const arm = da.arm;
 const clamp_resize_h = da.clamp_resize_h;
 const clamp_resize_w = da.clamp_resize_w;
 const cursor_h = da.cursor_h;
-const cursor_hotspot = da.cursor_hotspot;
-const cursor_mask = da.cursor_mask;
 const cursor_outline_rgb = da.cursor_outline_rgb;
 const cursor_rgb = da.cursor_rgb;
 const cursor_w = da.cursor_w;
@@ -86,6 +84,10 @@ pub var cursor_drawn: bool = false;
 var cursor_drawn_x: u32 = 0;
 var cursor_drawn_y: u32 = 0;
 var cursor_drawn_resize: bool = false;
+/// #3348: the shape `cursor_draw` last stamped — `cursor_restore` must
+/// iterate THAT mask's opaque pixels, not whatever `da.cursor_shape` has
+/// since become (a seat's wmctl between draw and restore).
+var cursor_drawn_shape: da.CursorShape = .ptr;
 /// M49 SD5 (#1132): a terminal selection drag is in progress (pointer held
 /// inside a terminal window's client area).
 var term_sel_dragging: bool = false;
@@ -819,10 +821,16 @@ pub fn cursor_pos() ?struct { x: u32, y: u32 } {
     return .{ .x = da.cursor_x, .y = da.cursor_y };
 }
 
-pub fn cursor_rect(x: u32, y: u32, width: u32, height: u32) ?CursorRect {
+/// #3348: the active shape's def (mask + ship hotspot) — the single place
+/// `da.cursor_shape` is read through `cursor_set`.
+fn active_cursor_def() da.CursorDef {
+    return da.cursor_set[@backingInt(da.cursor_shape)];
+}
+
+fn cursor_rect_for(def: da.CursorDef, x: u32, y: u32, width: u32, height: u32) ?CursorRect {
     if (width == 0 or height == 0) return null;
-    const left: i64 = @as(i64, x) - cursor_hotspot.x;
-    const top: i64 = @as(i64, y) - cursor_hotspot.y;
+    const left: i64 = @as(i64, x) - def.hx;
+    const top: i64 = @as(i64, y) - def.hy;
     const x0 = @max(left, 0);
     const y0 = @max(top, 0);
     const x1 = @min(left + cursor_w, width);
@@ -831,13 +839,42 @@ pub fn cursor_rect(x: u32, y: u32, width: u32, height: u32) ?CursorRect {
     return .{ .x = @intCast(x0), .y = @intCast(y0), .w = @intCast(x1 - x0), .h = @intCast(y1 - y0) };
 }
 
-pub fn cursor_pixel(x: usize, y: usize, resizing: bool) ?u32 {
-    if (y >= cursor_mask.len or x >= cursor_w) return null;
-    return switch (cursor_mask[y][x]) {
+/// The damage rect for the ACTIVE shape at (x,y) — what a move stamps.
+pub fn cursor_rect(x: u32, y: u32, width: u32, height: u32) ?CursorRect {
+    return cursor_rect_for(active_cursor_def(), x, y, width, height);
+}
+
+fn cursor_pixel_in(def: da.CursorDef, x: usize, y: usize, resizing: bool) ?u32 {
+    if (y >= cursor_h or x >= cursor_w) return null;
+    return switch (def.mask[y][x]) {
         '#' => cursor_outline_rgb,
         'o' => if (resizing) 0xffaa00 else cursor_rgb,
         else => null,
     };
+}
+
+pub fn cursor_pixel(x: usize, y: usize, resizing: bool) ?u32 {
+    return cursor_pixel_in(active_cursor_def(), x, y, resizing);
+}
+
+/// #3348 (cursor-context seam, wmctl cmd 24): select the stamped shape.
+/// In the shim the cursor is persistently drawn — unstamp the old glyph and
+/// stamp the new one now. Under a seat the cursor lives only inside
+/// request_present's draw/flush/restore window (`wm_owns_user_layer`), so
+/// there is nothing drawn to fix here; the next present picks the new mask.
+pub fn cursor_shape_apply(shape: da.CursorShape) void {
+    if (da.cursor_shape == shape) return;
+    const old_def = active_cursor_def();
+    cursor_restore();
+    da.cursor_shape = shape;
+    if (!da.wm_owns_user_layer) cursor_draw();
+    // Keep the tracked damage pair honest across a shape swap: the old
+    // rect is computed under the OLD hotspot, the new under the NEW one —
+    // same (x,y), different boxes (all masks share cursor_w x cursor_h).
+    if (da.cursor_shown) {
+        da.cursor_old_damage = cursor_rect_for(old_def, da.cursor_x, da.cursor_y, virtio_gpu.fb_width, virtio_gpu.fb_height);
+        da.cursor_new_damage = cursor_rect(da.cursor_x, da.cursor_y, virtio_gpu.fb_width, virtio_gpu.fb_height);
+    }
 }
 
 /// Save only opaque mask pixels. A seat frame gets the cursor LAST, and its
@@ -846,12 +883,13 @@ pub fn cursor_pixel(x: usize, y: usize, resizing: bool) ?u32 {
 pub fn cursor_draw() void {
     if (!da.cursor_shown) return;
     cursor_restore();
+    const def = active_cursor_def();
     const fb = &virtio_gpu.gpu_fb;
     for (0..cursor_h) |my| {
         for (0..cursor_w) |mx| {
-            const rgb = cursor_pixel(mx, my, da.resize_id != null) orelse continue;
-            const x = @as(i64, da.cursor_x) - cursor_hotspot.x + @as(i64, @intCast(mx));
-            const y = @as(i64, da.cursor_y) - cursor_hotspot.y + @as(i64, @intCast(my));
+            const rgb = cursor_pixel_in(def, mx, my, da.resize_id != null) orelse continue;
+            const x = @as(i64, da.cursor_x) - def.hx + @as(i64, @intCast(mx));
+            const y = @as(i64, da.cursor_y) - def.hy + @as(i64, @intCast(my));
             if (x < 0 or y < 0 or x >= virtio_gpu.fb_width or y >= virtio_gpu.fb_height) continue;
             const at: usize = @intCast((y * virtio_gpu.fb_width + x) * 4);
             cursor_saved[my * cursor_w + mx] = std.mem.readInt(u32, fb[at..][0..4], .little);
@@ -861,17 +899,19 @@ pub fn cursor_draw() void {
     cursor_drawn_x = da.cursor_x;
     cursor_drawn_y = da.cursor_y;
     cursor_drawn_resize = da.resize_id != null;
+    cursor_drawn_shape = da.cursor_shape;
     cursor_drawn = true;
 }
 
 pub fn cursor_restore() void {
     if (!cursor_drawn) return;
+    const def = da.cursor_set[@backingInt(cursor_drawn_shape)];
     const fb = &virtio_gpu.gpu_fb;
     for (0..cursor_h) |my| {
         for (0..cursor_w) |mx| {
-            const rgb = cursor_pixel(mx, my, cursor_drawn_resize) orelse continue;
-            const x = @as(i64, cursor_drawn_x) - cursor_hotspot.x + @as(i64, @intCast(mx));
-            const y = @as(i64, cursor_drawn_y) - cursor_hotspot.y + @as(i64, @intCast(my));
+            const rgb = cursor_pixel_in(def, mx, my, cursor_drawn_resize) orelse continue;
+            const x = @as(i64, cursor_drawn_x) - def.hx + @as(i64, @intCast(mx));
+            const y = @as(i64, cursor_drawn_y) - def.hy + @as(i64, @intCast(my));
             if (x < 0 or y < 0 or x >= virtio_gpu.fb_width or y >= virtio_gpu.fb_height) continue;
             const at: usize = @intCast((y * virtio_gpu.fb_width + x) * 4);
             // Do not restore stale underlay over a newer seat/application store.
