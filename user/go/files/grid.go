@@ -581,18 +581,24 @@ func (m model) gridSixelSpan() (row, col, tw, th int) {
 // pixel). Transparent pixels (alpha < 128, the sixel transparency rule)
 // contribute the blank stand-in rather than their channels.
 func mosaic(im *webrender.Image, out *[tileW * tileH]uint32) {
-	for cy := 0; cy < tileH; cy++ {
-		y0 := cy * im.Height / tileH
-		y1 := (cy + 1) * im.Height / tileH
+	mosaicInto(im, out[:], tileW, tileH)
+}
+
+// mosaicInto is mosaic's rule at an arbitrary cell rect — #3348 (#1257)
+// reuses it for the list rows' 2x1 icon strip (rowicon.go).
+func mosaicInto(im *webrender.Image, out []uint32, w, h int) {
+	for cy := 0; cy < h; cy++ {
+		y0 := cy * im.Height / h
+		y1 := (cy + 1) * im.Height / h
 		if y1 <= y0 {
 			y1 = y0 + 1
 		}
 		if y1 > im.Height {
 			y1 = im.Height
 		}
-		for cx := 0; cx < tileW; cx++ {
-			x0 := cx * im.Width / tileW
-			x1 := (cx + 1) * im.Width / tileW
+		for cx := 0; cx < w; cx++ {
+			x0 := cx * im.Width / w
+			x1 := (cx + 1) * im.Width / w
 			if x1 <= x0 {
 				x1 = x0 + 1
 			}
@@ -612,7 +618,7 @@ func mosaic(im *webrender.Image, out *[tileW * tileH]uint32) {
 					n++
 				}
 			}
-			out[cy*tileW+cx] = ((rs+n/2)/n)<<16 | ((gs+n/2)/n)<<8 | (bs+n/2)/n
+			out[cy*w+cx] = ((rs+n/2)/n)<<16 | ((gs+n/2)/n)<<8 | (bs+n/2)/n
 		}
 	}
 }

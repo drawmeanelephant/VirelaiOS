@@ -3,6 +3,8 @@ package main
 import (
 	"strings"
 	"testing"
+
+	"virelai/art"
 )
 
 // The gate's pixel assert counts this EXACT RGB in the real scanout — if a
@@ -112,6 +114,64 @@ func TestListWidthKeepsBothPanes(t *testing.T) {
 		if w < 4 || cols-w-1 < 2 {
 			t.Errorf("listWidth(%d)=%d leaves the preview pane dead", cols, w)
 		}
+	}
+}
+
+// #3348 (#1257): the staged filetype family paints a two-cell strip in
+// the list rows — dirs the folder card, mapped families their raster,
+// uncovered families the blank column — and the receipt counts the
+// painted rows once per listing. An absent share keeps the text row and
+// reserves nothing.
+func TestListRowIcons(t *testing.T) {
+	art.Reset()
+	defer art.Reset()
+	art.Stage(art.FiletypeFolder, stagedIconCanvas(200, 160, 40))
+	art.Stage(art.FiletypeText, stagedIconCanvas(40, 90, 200))
+	m := testModel(entry("SUB", true), entry("A.TXT", false), entry("S.JS", false))
+	m.syncListIcons()
+	if m.rowIconN != 2 {
+		t.Fatalf("rowIconN = %d, want 2 (S.JS's script family is uncovered)", m.rowIconN)
+	}
+	if m.rowIconRef[0] == nil || m.rowIconRef[1] == nil || m.rowIconRef[2] != nil {
+		t.Fatalf("rowIconRef = %v, want [icon icon nil]", m.rowIconRef)
+	}
+	if got := pendingJoined(&m); !strings.Contains(got, markerListIcons+"2") {
+		t.Fatalf("icons receipt missing or wrong: %q", got)
+	}
+	// The strip is painted cells on every resolved row — the selected
+	// row's chip keeps its own colours inside the selection band.
+	if row := m.listRow(0, 28); !strings.Contains(row, "\x1b[48;2;200;160;40") {
+		t.Fatalf("dir row must paint the folder strip: %q", row)
+	} else if visLen(row) != 28 {
+		t.Fatalf("dir row visLen = %d, want 28: %q", visLen(row), row)
+	}
+	if row := m.listRow(1, 28); !strings.Contains(row, "\x1b[48;2;40;90;200") {
+		t.Fatalf("text row must paint the text strip: %q", row)
+	}
+	// The uncovered row keeps the column as blanks — aligned, typographic.
+	if row := m.listRow(2, 28); strings.Contains(row, "\x1b[48;2;") {
+		t.Fatalf("uncovered row must not paint cell colours: %q", row)
+	} else if visLen(row) != 28 {
+		t.Fatalf("uncovered row visLen = %d, want 28: %q", visLen(row), row)
+	}
+	// A re-sort remaps the table: name order puts A.TXT first, and its
+	// strip follows the row, not the index.
+	m.handleKey(runeKey('s'))
+	if m.rowIconRef[0] == nil {
+		t.Fatal("after re-sort A.TXT must still carry its strip")
+	}
+	// The honest degrade: no staged art at all — no column, no marker.
+	art.Reset()
+	m2 := testModel(entry("SUB", true), entry("A.TXT", false))
+	m2.syncListIcons()
+	if m2.rowIconN != 0 || len(m2.rowIconRef) != 2 {
+		t.Fatalf("absent art must resolve nothing: n=%d ref=%v", m2.rowIconN, m2.rowIconRef)
+	}
+	if strings.Contains(pendingJoined(&m2), markerListIcons) {
+		t.Fatal("icons receipt must stay silent without staged art")
+	}
+	if row := m2.listRow(1, 28); !strings.Contains(row, "  A.TXT") {
+		t.Fatalf("no-art row keeps the plain layout: %q", row)
 	}
 }
 
