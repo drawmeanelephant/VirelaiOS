@@ -16,6 +16,9 @@
 #   02  GOFILES + GOVIEW, same gesture on PIC.PNG: the image/png envelope
 #       decodes through the same DecodeImage as a file load
 #       (`gview: drop image/png 160x120 bytes=`).
+#   05  GOFILES + NOTE (#3706), same gesture on NOTE.TXT: the manifest's
+#       opens=text row admits the drop and the notepad splices the
+#       payload at the caret (`note: drop text/plain n=8`).
 #
 # Geometry: SplitVert tiles 0..640 / 640..1280 edge-to-edge (unset sash has
 # no gutter) and the hosted window starts at RailHeight=22 — observed on
@@ -36,7 +39,7 @@
 # a script echo); a drag that never armed, never delivered, or was
 # refused can never reach it.
 
-vgate_name go-drag "M124a-2 #2677: GOFILES drags a file onto GOEDIT (text/plain splice) and GOVIEW (image/png decode) through the seat's drag session"
+vgate_name go-drag "M124a-2 #2677: GOFILES drags a file onto GOEDIT (text/plain splice) and GOVIEW (image/png decode) through the seat's drag session; #3706: NOTE takes a text/plain drop through its opens=text row"
 vgate_share seed
 vgate_runner_flags -Xswiftc -DSPIKE
 
@@ -90,7 +93,8 @@ share = os.environ.get("VG_SHARE") or os.path.join(rd, "share")
 for elf, build in (("GOTABWM.ELF", "tools/go/build-gotabwm.sh"),
                    ("GOFILES.ELF", "tools/go/build-files.sh"),
                    ("GOEDIT.ELF", "tools/go/build-goedit.sh"),
-                   ("GOVIEW.ELF", "tools/go/build-goview.sh")):
+                   ("GOVIEW.ELF", "tools/go/build-goview.sh"),
+                   ("NOTE.ELF", "tools/go/build-note.sh")):
     src = os.path.join(".build", "go", elf)
     if not os.path.exists(src):
         sys.exit("%s missing (expected %s) - build it first: bash %s"
@@ -113,7 +117,7 @@ shutil.copy(png, os.path.join(drag, "PIC.PNG"))
 # GOTABWM, not the autostart path.
 with open(os.path.join(share, "SETTINGS.TXT"), "w") as f:
     f.write("#v2\nwm=none\n")
-print("staged GOTABWM/GOFILES/GOEDIT/GOVIEW + DRAG/{NOTE.TXT,PIC.PNG}")
+print("staged GOTABWM/GOFILES/GOEDIT/GOVIEW/NOTE + DRAG/{NOTE.TXT,PIC.PNG}")
 PY
 
 # --- run 01: text/plain onto GOEDIT ----------------------------------------
@@ -301,6 +305,23 @@ vgate_file script3-04.txt <<'EOF'
 exec GOFILES.ELF /host/DRAG
 EOF
 
+vgate_file script-05.txt <<'EOF'
+set GOMAXPROCS=1
+vf rm GOTABWM.DEMO
+vf rm SESSION.TABS
+wm
+exec GOTABWM.ELF
+EOF
+
+vgate_file script2-05.txt <<'EOF'
+dui focus 0
+exec GOFILES.ELF /host/DRAG
+EOF
+
+vgate_file script3-05.txt <<'EOF'
+exec NOTE.ELF
+EOF
+
 vgate_setup_python <<'PY'
 import os, shutil, sys
 rd = os.environ["RUN_DIR"]
@@ -403,3 +424,46 @@ vgate_assert 04 serial-absent 'gotabwm: sel paste id='
 vgate_assert 04 serial-absent 'gofiles: sel-paste'
 vgate_assert 04 serial-absent '[EXC] parking:'
 vgate_assert 04 serial-absent 'exited status=139'
+
+# --- #3706 run 05: text/plain onto NOTE -----------------------------------
+# Same gesture as run 01 with the manifest's other text target as the
+# landing pane: NOTE's opens=text row admits the drop and the DropTarget
+# splices the payload at the caret. The notepad's own load miss on
+# /host/notes.txt leaves an empty buffer, so `n=8` is the whole splice.
+vgate_run 05 -- \
+    --screen '$RUN_DIR/drag-note-screen' \
+    --via-virtio \
+    --script '$RUN_DIR/script-05.txt' \
+    --script2 '$RUN_DIR/script2-05.txt' \
+    --script2-after 'gotabwm: win focus' \
+    --input-chords 'ctrl-1,ctrl-shift-v' \
+    --input-chords-after 'gotabwm: rail n=2' \
+    --pointer-virtio '40,62,d;200,200;320,240;480,280;900,360,u' \
+    --pointer-virtio-after 'gotabwm: split v' \
+    --script3 '$RUN_DIR/script3-05.txt' \
+    --script3-after 'gofiles: ready' \
+    --script-expect 'gofiles: drag end delivered' --timeout 300
+
+vgate_assert 05 serial-contains 'exec: loaded GOTABWM.ELF'
+vgate_assert 05 serial-contains 'gotabwm: registered'
+vgate_assert 05 serial-contains 'exec: loaded GOFILES.ELF'
+vgate_assert 05 serial-contains 'gofiles: list /host/DRAG n=2'
+vgate_assert 05 serial-contains 'exec: loaded NOTE.ELF'
+vgate_assert 05 serial-contains 'note: ready'
+vgate_assert 05 serial-contains 'gotabwm: split v'
+vgate_assert 05 serial-contains 'gofiles: drag arm NOTE.TXT text/plain len=8'
+vgate_assert 05 serial-contains 'gotabwm: drag arm id='
+vgate_assert 05 serial-contains ' mime=text/plain len=8'
+vgate_assert 05 serial-contains 'gotabwm: drag over id='
+vgate_assert 05 serial-contains 'accept=1'
+vgate_assert 05 serial-contains 'gotabwm: drag drop id='
+vgate_assert 05 serial-contains ' mime=text/plain'
+vgate_assert 05 serial-contains 'note: drop text/plain n=8'
+vgate_assert 05 serial-contains 'gofiles: drag end delivered win='
+vgate_assert 05 serial-absent 'gotabwm: drag refuse'
+vgate_assert 05 serial-absent 'gotabwm: drag cancel'
+vgate_assert 05 serial-absent 'gofiles: drag refused'
+vgate_assert 05 serial-absent 'gofiles: open file NOTE.TXT'
+vgate_assert 05 serial-absent 'note: drop no-payload'
+vgate_assert 05 serial-absent '[EXC] parking:'
+vgate_assert 05 serial-absent 'exited status=139'

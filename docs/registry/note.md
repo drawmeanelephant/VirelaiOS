@@ -12,4 +12,4 @@ order: 20
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| Text Editor | app | NOTE.ELF | appver 1, ver 1.0.0 | tools/gate/specs/go-note.spec | shipped |
+| Text Editor | app | NOTE.ELF | appver 1, ver 1.1.0 | tools/gate/specs/go-note.spec | shipped |
