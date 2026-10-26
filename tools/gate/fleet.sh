@@ -54,6 +54,11 @@ set -euo pipefail
 FLEET_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$FLEET_DIR/../.." && pwd)"
 
+# gate_build_lock/unlock (issue #3689): the guest-ELF ensure pass writes
+# .build/go while a concurrent invocation may be building the VMRunner — one
+# lock serializes every provisioning write in the worktree.
+source "$ROOT/tools/lib/gate-run.sh"
+
 # Class-B gates that predate the spec format (kept as scripts, sharded
 # alongside the specs since before GF5). Do not add to this list: new gates
 # arrive as specs (tools/gate/SPEC.md, the M40 GF1 freeze).
@@ -144,7 +149,8 @@ fleet_ensure_guest_elfs() {
     # invocation when a selected spec stages them. Hash-cached inside
     # ensure-guest-elf.sh — a matching stamp is a no-op, so this is not a
     # per-spec Go rebuild.
-    local id spec app seen=" "
+    local id spec app seen=" " rc=0
+    gate_build_lock
     for id in "$@"; do
         [ "$(fleet_kind "$id")" = spec ] || continue
         spec="$SPEC_DIR/$id.spec"
@@ -154,9 +160,11 @@ fleet_ensure_guest_elfs() {
             case "$seen" in *" $app "*) continue ;; esac
             seen="$seen$app "
             echo "fleet: ensure ${app}.ELF (issue #1503, hash-cached)"
-            bash "$ROOT/tools/go/ensure-guest-elf.sh" ensure "$app"
+            bash "$ROOT/tools/go/ensure-guest-elf.sh" ensure "$app" || { rc=$?; break 2; }
         done < <(bash "$ROOT/tools/go/ensure-guest-elf.sh" needed-by "$spec")
     done
+    gate_build_unlock
+    [ "$rc" -eq 0 ] || return "$rc"
 }
 
 fleet_run() {

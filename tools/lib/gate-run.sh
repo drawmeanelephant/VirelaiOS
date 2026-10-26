@@ -242,6 +242,8 @@ gate_reset_share_state() {
 }
 
 gate_end() {
+    gate_build_unlock   # depth-guarded no-op for a non-holder
+    gate_runner_cleanup
     [ -n "$RUN_DIR" ] || return 0
     if [ "${VIRELAI_KEEP_RUN:-0}" = "1" ]; then
         echo "gate-run: keeping $RUN_DIR (VIRELAI_KEEP_RUN=1)"
@@ -250,6 +252,130 @@ gate_end() {
     fi
     RUN_DIR=""
     SHARE=""
+}
+
+# --- the worktree build lock + a private runner binary (issue #3689) ---------
+# Two `just gate` runs in ONE worktree share host/vm-runner/.build: the
+# loser's `swift build` + `codesign --force` used to rewrite the very file the
+# winner's VM was exec'ing mid-spec, and the boot then died on the VZ
+# entitlement error (a signature read mid-rewrite, reported as a
+# configuration fault). Two rules keep concurrent invocations safe:
+#   1. every provision write runs inside GATE_BUILD_LOCK, a stale-safe
+#      cross-process lock keyed to the worktree's .build dir: the runner's
+#      swift build + codesign, the concurrent-clobberable zig build +
+#      zig build image (.zig-cache generated files), the hv probe, and
+#      fleet.sh's guest-ELF ensure pass all take it;
+#   2. the gate then boots a PRIVATE copy of the signed runner (VZ_RUNNER_BIN
+#      is retargeted to it), so a later invocation's relink/re-sign can never
+#      touch the file this gate's runs exec — that includes the SPIKE /
+#      non-SPIKE flag split, where the two gates genuinely need different
+#      binaries at the same shared path.
+
+_GATE_RUN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+GATE_BUILD_LOCK="${GATE_BUILD_LOCK:-$_GATE_RUN_ROOT/.build/gate-build.lock}"
+GATE_BUILD_LOCK_DEPTH=0
+GATE_BUILD_LOCK_OWNER=""
+GATE_RUNNER_PRIVATE=""
+
+gate_build_lock() {
+    # Re-entrant per PROCESS (the vgate preamble holds it across the whole
+    # provision step AND calls gate_build_runner, which holds its own) —
+    # keyed on the caller's BASHPID, so a forked subshell that inherits
+    # DEPTH>0 still acquires for real instead of riding the parent's hold.
+    # Beyond that the lock file carries the holder's pid: `>` under
+    # noclobber is the atomic test-and-set (create+pid land in one
+    # redirection), and the pid lets a waiter retire a lock whose holder
+    # died without unlocking — shlock semantics without the shlock
+    # dependency. BASHPID is resolved HERE, in the calling shell: a holder
+    # that is itself a subshell must stamp ITS pid (evaluating BASHPID
+    # inside the write's own subshell would stamp an ephemeral pid that is
+    # dead before the lock is even observed — making every held lock look
+    # stealable).
+    local pid="${BASHPID:-$$}"
+    if [ "$GATE_BUILD_LOCK_OWNER" = "$pid" ]; then
+        GATE_BUILD_LOCK_DEPTH=$((GATE_BUILD_LOCK_DEPTH + 1))
+        return 0
+    fi
+    local empty=0 owner
+    mkdir -p "$(dirname "$GATE_BUILD_LOCK")"
+    while :; do
+        if ( set -o noclobber; printf '%s\n' "$pid" > "$GATE_BUILD_LOCK" ) 2>/dev/null; then
+            GATE_BUILD_LOCK_DEPTH=1
+            GATE_BUILD_LOCK_OWNER="$pid"
+            return 0
+        fi
+        owner="$(cat "$GATE_BUILD_LOCK" 2>/dev/null || true)"
+        if [ -n "$owner" ]; then
+            empty=0
+            kill -0 "$owner" 2>/dev/null || rm -f "$GATE_BUILD_LOCK"
+        else
+            # An empty file is a lock mid-acquire (the pid lands within the
+            # same redirection, microseconds later) or an orphan from a
+            # killed holder. Steal only after it stays empty across several
+            # observations, so a live acquire is never sniped mid-write.
+            empty=$((empty + 1))
+            [ "$empty" -gt 5 ] && rm -f "$GATE_BUILD_LOCK"
+        fi
+        sleep 0.2
+    done
+}
+
+gate_build_unlock() {
+    # No-op for a non-holder, so cleanup paths (gate_end's traps) can call it
+    # unconditionally. OWNER == caller's pid means the stamp on the file is
+    # ours — a subshell that inherited DEPTH>0 but never acquired can never
+    # delete a lock its PARENT holds.
+    local pid="${BASHPID:-$$}"
+    [ "$GATE_BUILD_LOCK_OWNER" = "$pid" ] || return 0
+    GATE_BUILD_LOCK_DEPTH=$((GATE_BUILD_LOCK_DEPTH - 1))
+    if [ "$GATE_BUILD_LOCK_DEPTH" -le 0 ]; then
+        rm -f "$GATE_BUILD_LOCK"
+        GATE_BUILD_LOCK_DEPTH=0
+        GATE_BUILD_LOCK_OWNER=""
+    fi
+}
+
+# gate_runner_cleanup -- drop this invocation's private runner copy. Called
+# by gate_end (so the harness's EXIT/signal traps reach it); standalone gates
+# that never call gate_begin can `trap gate_end EXIT` for the same teardown.
+gate_runner_cleanup() {
+    [ -n "$GATE_RUNNER_PRIVATE" ] || return 0
+    if [ "${VIRELAI_KEEP_RUN:-0}" = "1" ]; then
+        echo "gate-run: keeping $GATE_RUNNER_PRIVATE (VIRELAI_KEEP_RUN=1)"
+    else
+        rm -rf "$GATE_RUNNER_PRIVATE"
+    fi
+    GATE_RUNNER_PRIVATE=""
+}
+
+# gate_runner_publish_locked -- copy the runner at VZ_RUNNER_BIN into this
+# invocation's private dir and retarget VZ_RUNNER_BIN to the copy. The CALLER
+# holds the build lock, so the copy always reads a fully-linked binary.
+gate_runner_publish_locked() {
+    if [ -n "$GATE_RUNNER_PRIVATE" ] && [ "$VZ_RUNNER_BIN" = "$GATE_RUNNER_PRIVATE/VMRunner" ]; then
+        return 0
+    fi
+    if [ -z "$GATE_RUNNER_PRIVATE" ]; then
+        local base="${VIRELAI_RUN_DIR_BASE:-${TMPDIR:-/tmp}}"
+        mkdir -p "$base"
+        GATE_RUNNER_PRIVATE="$(mktemp -d "$base/virelai-runner.XXXXXX")"
+    fi
+    cp -c "$VZ_RUNNER_BIN" "$GATE_RUNNER_PRIVATE/VMRunner" 2>/dev/null \
+        || cp "$VZ_RUNNER_BIN" "$GATE_RUNNER_PRIVATE/VMRunner" \
+        || { echo "gate-run: ERROR — cannot stage a private runner copy from $VZ_RUNNER_BIN" >&2; return 1; }
+    VZ_RUNNER_BIN="$GATE_RUNNER_PRIVATE/VMRunner"
+}
+
+# gate_runner_publish -- the self-locking form, for invocations that skip the
+# build preamble entirely (VGATE_NO_BUILD=1): the shared binary can still be
+# re-signed by a concurrent gate's build, so privatize it before the first
+# boot all the same.
+gate_runner_publish() {
+    local rc=0
+    gate_build_lock
+    gate_runner_publish_locked || rc=$?
+    gate_build_unlock
+    return "$rc"
 }
 
 # --- shared build bootstrap + serial-echo conventions ------------------------
@@ -268,11 +394,21 @@ gate_fmt_check() {
 
 # gate_build_runner -- build + ad-hoc-codesign the release VMRunner with the
 # VZ entitlements. Optional extra swift flags pass through (e.g.
-# -Xswiftc -DSPIKE for the custom-virtio spike build).
+# -Xswiftc -DSPIKE for the custom-virtio spike build). The build, the re-sign,
+# AND the private publish happen inside one hold of the worktree build lock
+# (issue #3689): a concurrent `just gate` waits here instead of relinking or
+# re-signing the runner out from under this gate's in-flight VM boots, and
+# this gate goes on to exec its own copy of the binary it just built.
 gate_build_runner() {
-    swift build --package-path host/vm-runner --configuration release "$@"
-    codesign --force --sign - --entitlements host/vm-runner/entitlements.plist \
-        host/vm-runner/.build/release/VMRunner
+    local rc=0
+    gate_build_lock
+    swift build --package-path host/vm-runner --configuration release "$@" || rc=$?
+    [ "$rc" -ne 0 ] || codesign --force --sign - \
+        --entitlements host/vm-runner/entitlements.plist \
+        host/vm-runner/.build/release/VMRunner || rc=$?
+    [ "$rc" -ne 0 ] || gate_runner_publish_locked || rc=$?
+    gate_build_unlock
+    [ "$rc" -eq 0 ] || return "$rc"
     # The signature is the difference between a runner that boots and one that
     # cannot; assert it here, where it was just applied, rather than letting a
     # later VM boot report it as something else (see the preflight below).
@@ -357,11 +493,20 @@ gate_build_hv_probe() {
         return 0
     fi
     command -v clang >/dev/null 2>&1 || { echo "gate-run: clang not found; cannot build the hv probe" >&2; return 1; }
-    mkdir -p "$(dirname "$VZ_HV_PROBE_BIN")" 2>/dev/null || { echo "gate-run: cannot create $(dirname "$VZ_HV_PROBE_BIN")" >&2; return 1; }
-    clang -o "$VZ_HV_PROBE_BIN" "$VZ_HV_PROBE_SRC" -framework Hypervisor >/dev/null 2>&1 \
-        || { echo "gate-run: clang failed to build the hv probe" >&2; return 1; }
-    codesign --force --sign - --entitlements "$VZ_HV_PROBE_ENT" "$VZ_HV_PROBE_BIN" >/dev/null 2>&1 \
-        || { echo "gate-run: codesign failed on the hv probe" >&2; return 1; }
+    # Under the worktree build lock like the runner (issue #3689): the
+    # compile + `codesign --force` writes a shared .build file a concurrent
+    # gate may be probing right now.
+    gate_build_lock
+    local rc=0
+    mkdir -p "$(dirname "$VZ_HV_PROBE_BIN")" 2>/dev/null \
+        && clang -o "$VZ_HV_PROBE_BIN" "$VZ_HV_PROBE_SRC" -framework Hypervisor >/dev/null 2>&1 \
+        && codesign --force --sign - --entitlements "$VZ_HV_PROBE_ENT" "$VZ_HV_PROBE_BIN" >/dev/null 2>&1 \
+        || rc=$?
+    gate_build_unlock
+    if [ "$rc" -ne 0 ]; then
+        echo "gate-run: cannot build+sign the hv probe (clang/codesign failed)" >&2
+        return 1
+    fi
     return 0
 }
 

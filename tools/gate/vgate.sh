@@ -260,13 +260,30 @@ done < <(bash "$ROOT/tools/go/ensure-guest-elf.sh" needed-by "$SPEC")
 # --- one shared build preamble (never per gate) ------------------------------
 if [ "${VGATE_NO_BUILD:-0}" = "1" ]; then
     echo "vgate: skipping build preamble (VGATE_NO_BUILD=1)"
+    # Skipping the build does not skip the race: a concurrent gate's
+    # swift build + codesign --force still rewrites the shared binary, so
+    # this gate execs a private copy taken under the build lock (#3689).
+    gate_runner_publish
 else
     # shellcheck disable=SC2086
     gate_fmt_check $VGATE_FMT
-    zig build
-    zig build image
-    # shellcheck disable=SC2086
-    gate_build_runner $VGATE_RUNNER_FLAGS
+    # The WHOLE provision step runs under one hold of the worktree build
+    # lock (issue #3689): concurrent zig builds clobber each other's
+    # generated files under .zig-cache, and a swift build + codesign
+    # --force used to rewrite the runner binary out from under a
+    # concurrent gate's in-flight VM boots. The lock is re-entrant so
+    # gate_build_runner's own hold is free; VM boots after this still run
+    # concurrently (each on its private runner copy).
+    gate_build_lock
+    provision_rc=0
+    zig build || provision_rc=$?
+    if [ "$provision_rc" -eq 0 ]; then zig build image || provision_rc=$?; fi
+    if [ "$provision_rc" -eq 0 ]; then
+        # shellcheck disable=SC2086
+        gate_build_runner $VGATE_RUNNER_FLAGS || provision_rc=$?
+    fi
+    gate_build_unlock
+    [ "$provision_rc" -eq 0 ] || exit "$provision_rc"
 fi
 
 # --- preflight: name the two failures that otherwise surface at VM boot -----

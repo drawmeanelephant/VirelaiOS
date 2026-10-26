@@ -13,12 +13,13 @@
 set -euo pipefail
 
 echo "=== m15 host plumbing gate: swift build runner ==="
-swift build --package-path host/vm-runner --configuration release
-codesign --force --sign - --entitlements host/vm-runner/entitlements.plist host/vm-runner/.build/release/VMRunner
+source tools/lib/gate-run.sh
+trap gate_end EXIT   # drops the private runner copy (issue #3689)
+gate_build_runner
 
 echo "=== gate 2: scripted console run (piped stdin, no TTY) ==="
 set +e
-printf 'hello\r' | host/vm-runner/.build/release/VMRunner artifacts/disk.img artifacts/m15-host-console.log --console --timeout 6 --debug-input > artifacts/m15-host-console-scripted.txt 2>&1
+printf 'hello\r' | "$VZ_RUNNER_BIN" artifacts/disk.img artifacts/m15-host-console.log --console --timeout 6 --debug-input > artifacts/m15-host-console-scripted.txt 2>&1
 RC=$?
 set -e
 echo "scripted run exit code: $RC (expected 0 = session ended by timeout)"
@@ -29,7 +30,7 @@ grep -q 'session timed out after 6s' artifacts/m15-host-console-scripted.txt || 
 echo "gate 2 PASS"
 
 echo "=== gate 3: PTY console run — character mode, SIGINT, terminal restore ==="
-python3 - <<'PY'
+VZ_RUNNER_BIN="$VZ_RUNNER_BIN" python3 - <<'PY'
 import fcntl
 import os
 import pty
@@ -39,7 +40,7 @@ import sys
 import termios
 import time
 
-runner = "host/vm-runner/.build/release/VMRunner"
+runner = os.environ["VZ_RUNNER_BIN"]
 disk = "artifacts/disk.img"
 log = "artifacts/m15-host-console-pty.log"
 

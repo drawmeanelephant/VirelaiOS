@@ -55,13 +55,14 @@ zig version; swift --version 2>&1 | head -1; sw_vers
 # --- formatting gate ---------------------------------------------------------
 zig fmt --check boot/src/*.zig kernel/src/*.zig build.zig
 
-# --- build gates (kernel built with console TX routed through NVRAM) ---------
+# --- build gates (kernel built with console TX routed through NVRAM) --------
+source tools/lib/gate-run.sh
+trap gate_end EXIT   # releases the lock + drops the private runner copy
+gate_build_lock      # provision under the worktree build lock (issue #3689)
 zig build -Dnvram-console=true
 zig build -Dnvram-console=true image
-
-# --- Swift runner build ---------------------------------------------------------
-swift build --package-path host/vm-runner --configuration release
-codesign --force --sign - --entitlements host/vm-runner/entitlements.plist host/vm-runner/.build/release/VMRunner
+gate_build_runner
+gate_build_unlock
 
 # --- gate assertions (shared by every attempt) --------------------------------
 needs_stream() {
@@ -99,7 +100,7 @@ while [ "$attempt" -lt "$MAX_ATTEMPTS" ] && [ "$passed" -eq 0 ]; do
     echo "--- attempt $attempt/$MAX_ATTEMPTS (fresh variable store) ---"
     rm -f artifacts/efi-vars.bin
     set +e
-    host/vm-runner/.build/release/VMRunner artifacts/disk.img artifacts/vm-serial.log \
+    "$VZ_RUNNER_BIN" artifacts/disk.img artifacts/vm-serial.log \
         --nvram-console artifacts/nvram-console.log --timeout 25 \
         > artifacts/nvram-console-run.txt 2>&1
     RUNNER_RC=$?

@@ -49,13 +49,14 @@ zig version; swift --version 2>&1 | head -1; sw_vers
 # --- formatting gate ---------------------------------------------------------
 zig fmt --check boot/src/*.zig kernel/src/*.zig build.zig
 
-# --- build gates ---------------------------------------------------------------
+# --- build gates (provision under the worktree build lock, issue #3689) -----
+source tools/lib/gate-run.sh
+trap gate_end EXIT   # releases the lock + drops the private runner copy
+gate_build_lock
 zig build
 zig build image
-
-# --- Swift runner build ---------------------------------------------------------
-swift build --package-path host/vm-runner --configuration release
-codesign --force --sign - --entitlements host/vm-runner/entitlements.plist host/vm-runner/.build/release/VMRunner
+gate_build_runner
+gate_build_unlock
 
 # Fresh variable store so the ladder in the dump is exactly this run's writes
 # (the store is append-per-write and survives across runs otherwise).
@@ -63,7 +64,7 @@ rm -f artifacts/efi-vars.bin
 
 # --- THE GATE: boot the VM with the marker dump enabled -----------------------
 set +e
-host/vm-runner/.build/release/VMRunner artifacts/disk.img artifacts/vm-serial.log \
+"$VZ_RUNNER_BIN" artifacts/disk.img artifacts/vm-serial.log \
     --dump-marker artifacts/marker-dump.txt --timeout 25 \
     --expect "VirelaiOS kernel has seized control." \
     --terminal-marker "kernel terminal state" \
