@@ -10,7 +10,7 @@ tags: [apps, showcase]
 | field | value |
 |-------|-------|
 | binary | `GOSOUND.ELF` |
-| version | ver 1.0.0 |
+| version | ver 1.1.0 |
 | owning spec / contract | [`tools/gate/specs/live-sound-playback.spec`](https://github.com/drawmeanelephant/VirelaiOS/blob/main/tools/gate/specs/live-sound-playback.spec) |
 | state | shipped |
 

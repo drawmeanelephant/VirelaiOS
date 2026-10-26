@@ -89,7 +89,7 @@ All of them additionally answer to the schema-v2 manifest grammar
 | Top | app | GOTOP.ELF | appver 1, ver 1.0.0 | tools/gate/specs/go-top.spec | shipped |
 | Settings | app | GOSET.ELF | ver 1.0.0 | tools/gate/specs/go-settings.spec | shipped |
 | Image Viewer | app | GOVIEW.ELF | ver 1.0.0 | tools/gate/specs/live-image-viewer.spec | shipped |
-| Sound | app | GOSOUND.ELF | ver 1.0.0 | tools/gate/specs/live-sound-playback.spec | shipped |
+| Sound | app | GOSOUND.ELF | ver 1.1.0 | tools/gate/specs/live-sound-playback.spec | shipped |
 | Tabbed Desktop | app | TABWM.BIN | ver 1.0.0 | tools/gate/specs/live-tabwm.spec, ADR 0034 | retained-fallback |
 | Gostalgia | app | GOSTALGIA.ELF | ver 1.0.0 | tools/gate/specs/go-gostalgia.spec | shipped |
 | Store | app | GOSTORE.ELF | ver 1.0.0 | tools/gate/specs/go-gostore.spec | shipped |

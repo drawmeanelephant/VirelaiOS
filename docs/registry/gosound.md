@@ -12,4 +12,4 @@ order: 140
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| Sound | app | GOSOUND.ELF | ver 1.0.0 | tools/gate/specs/live-sound-playback.spec | shipped |
+| Sound | app | GOSOUND.ELF | ver 1.1.0 | tools/gate/specs/live-sound-playback.spec | shipped |

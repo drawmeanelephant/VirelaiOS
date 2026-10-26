@@ -104,6 +104,14 @@ func (a *app) recordMain(argv []string) int {
 		recConsole(markerRecDone)
 		return 2
 	}
+	return a.recordRun(secs, path)
+}
+
+// recordRun is the windowed record both entry points share — the argv
+// verb's parsed args and the chooser's fixed clip land on the same run:
+// cap report, bounded recPump, receipt, park. A chooser-armed run reuses
+// the chooser's own window (openWindow no-ops on a bound tab).
+func (a *app) recordRun(secs int, path string) int {
 	a.mode = modeRecord
 	a.name = basename(path)
 	a.recSecs, a.recTotal = secs, pcm.CaptureBytes(secs)
@@ -178,6 +186,14 @@ func (a *app) meterMain(argv []string) int {
 		recConsole(markerMeterDone)
 		return 2
 	}
+	return a.meterRun(secs)
+}
+
+// meterRun is the windowed meter both entry points share — the argv
+// verb's parsed seconds and the chooser's meterDefaultSeconds arm land on
+// the same run: cap report, bounded recPump discarding to the meter, the
+// end marker, the park.
+func (a *app) meterRun(secs int) int {
 	a.mode = modeMeter
 	a.recSecs, a.recTotal = secs, pcm.CaptureBytes(secs)
 	recConsole(markerMeter + vi.Itoa64(int64(secs)))

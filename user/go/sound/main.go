@@ -16,6 +16,12 @@
 // capture stream (slot 92, v1 tuple S16/48k/mono) with a live mic meter in
 // the same window — GOREC's bounded flow adopted by the player.
 //
+// #3776 gives the bare launch a face (choose.go): no file was handed, so
+// the window offers the modes — 'o' the shared FilePicker for a file to
+// play (the windowed half of the app's opens=audio contract), 'r' a fixed
+// clip through the record run, 'm' the bounded meter. The argv verbs are
+// unchanged; the arms land on the same recordRun/meterRun they drive.
+//
 // Every marker below is printed only AFTER the syscall it reports, so the
 // live-sound-playback gate's asserts can only pass if the app really ran.
 package main
@@ -24,6 +30,7 @@ import (
 	"errors"
 	"strings"
 
+	"virelai/appkit"
 	"virelai/draw"
 	"virelai/pcm"
 	"virelai/settings"
@@ -72,6 +79,9 @@ const (
 	markerNotTabAware = "gosound: not-tab-aware (shim or WND desktop)"
 	markerOpenFailed  = "gosound: failed to open window"
 	markerEmpty       = "gosound: empty (no args)"
+	markerChooser     = "gosound: chooser"
+	markerChoose      = "gosound: choose " // "record" / "meter" — the armed pick
+	markerPick        = "gosound: pick "   // "open" at raise, "open <path>" / "cancel" at result
 	markerRefused     = "gosound: refused "
 	markerOpenErr     = "gosound: open err"
 	markerNoDevice    = "gosound: no audio device"
@@ -105,6 +115,9 @@ const (
 	stPlaying
 	stStopped
 	stDone
+	// stChoose is the bare launch's face (#3776): no file was handed, so
+	// the window offers the modes instead of parking on 'no file'.
+	stChoose
 )
 
 // runMode picks the app's face: the WAV player (default) or the M118e
@@ -137,6 +150,11 @@ type app struct {
 	quit    bool            // the event service saw quit/close
 	stop    bool            // the event service saw stop
 	started bool            // the seat went live (first period submitted)
+
+	// The bare-launch face: pick is the shared FilePicker the chooser's
+	// 'o' raises; sel is the record/meter arm the event loop hands main.
+	pick appkit.FilePicker
+	sel  chooserSel
 
 	submitted uint64 // output bytes accepted this playback (position readout)
 
@@ -192,6 +210,7 @@ func main() {
 	// compositor) simply carries the same truth on the console.
 	if path == "" {
 		vi.ConsoleLine(markerEmpty)
+		a.st = stChoose
 	} else {
 		a.st = a.probe(path)
 	}
@@ -199,6 +218,11 @@ func main() {
 	a.openWindow()
 	a.draw()
 	a.present()
+	if a.st == stChoose && a.ta != nil {
+		// #3776: the face is only claimed when a window exists to show it;
+		// headless the empty marker above stays the whole truth.
+		vi.ConsoleLine(markerChooser)
+	}
 
 	switch {
 	case a.st == stNoDevice:
@@ -206,10 +230,23 @@ func main() {
 		vi.ConsoleLine(markerNoDevice)
 		a.exit(0)
 	case a.st != stLoaded:
-		// Empty and refused park in the window (GOVIEW's error rule) until
-		// quit/close; headless, eventLoop exits at once.
+		// Chooser and refused park in the window (GOVIEW's error rule)
+		// until quit/close — or until the face arms a mode: the picker
+		// landing a playable file returns stLoaded and falls through to
+		// the pump; sel dispatches to the record/meter verbs' shared run.
+		// Headless, eventLoop exits at once.
 		a.eventLoop()
-		a.exit(0)
+		switch a.sel {
+		case selRecord:
+			a.sel = selNone
+			vi.Exit(a.recordRun(chooseSecs, chooseRecPath))
+		case selMeter:
+			a.sel = selNone
+			vi.Exit(a.meterRun(meterDefaultSeconds))
+		}
+		if a.st != stLoaded {
+			a.exit(0)
+		}
 	}
 
 	// stLoaded: play it. The pump services events through its sink, so the
@@ -229,7 +266,12 @@ func main() {
 // openWindow is best-effort: no display means no window, and the console
 // verdicts stand alone. Playback itself never needs the window — the pump
 // works headless; draw/service/eventLoop no-op or exit when a.ta is nil.
+// A second call is a no-op: the chooser's record/meter arms reach
+// recordRun/meterRun with the chooser's own window already bound.
 func (a *app) openWindow() {
+	if a.ta != nil {
+		return
+	}
 	ta := tabapp.Init(tabapp.Config{
 		Name: appName, Title: a.title(),
 		X: winX, Y: winY, W: winW, H: winH,
@@ -580,8 +622,11 @@ func (a *app) service() bool {
 			a.draw()
 			a.ta.Present()
 		case tabapp.ActionNone:
-			a.key(ev)
+			redraw := a.key(ev)
 			if a.pointer(ev) {
+				redraw = true
+			}
+			if redraw {
 				a.draw()
 				a.ta.Present()
 			}
@@ -614,12 +659,38 @@ const (
 	keyLeft   = 0x50
 )
 
-// key handles raw keys the tab harness does not own. space/enter/p toggles
-// play, s stops, q/esc quit — all after Dispatch, so M78 ctrl-chords (close
-// / quit / Ctrl+Q) arrive through ActionClosed like everyone else's.
-func (a *app) key(ev vi.Event) {
+// key handles raw keys the tab harness does not own. While the FilePicker
+// is up every key is the modal's (GOVIEW's rule — Enter resolves, Escape
+// cancels); the chooser's o/r/m arms a mode; elsewhere space/enter/p
+// toggles play, s stops, q/esc quit — all after Dispatch, so M78
+// ctrl-chords (close / quit / Ctrl+Q) arrive through ActionClosed like
+// everyone else's. The return reports a repaint-worthy change.
+func (a *app) key(ev vi.Event) bool {
 	if ev.Kind != vi.EvKeyDown {
-		return
+		return false
+	}
+	if a.pick.Open {
+		_, done := a.pick.HandleKey(ev)
+		if done {
+			a.pickerDone()
+		}
+		return true
+	}
+	// 'o' raises the picker from the faces that hold no playable file —
+	// the chooser and a refused pick alike (a bad pick is not a dead end).
+	if (a.st == stChoose || a.st == stRefused) && (ev.Arg1 == 'o' || ev.Arg1 == 'O') {
+		a.openPick()
+		return true
+	}
+	if a.st == stChoose {
+		switch ev.Arg1 {
+		case 'r', 'R':
+			vi.ConsoleLine(markerChoose + "record")
+			a.sel = selRecord
+		case 'm', 'M':
+			vi.ConsoleLine(markerChoose + "meter")
+			a.sel = selMeter
+		}
 	}
 	switch ev.Arg0 {
 	case keyQ, keyEscape:
@@ -650,12 +721,24 @@ func (a *app) key(ev vi.Event) {
 			a.setVolume(a.volume() + 5)
 		}
 	}
+	return false
 }
 
 // pointer drives the volume slider: press grabs the knob, drag maps x to the
 // 0..100 gain, release ends it. Returns whether the frame changed. Capture
-// has no gain knob, so the record/meter faces take no pointer input.
+// has no gain knob, so the record/meter faces take no pointer input. While
+// the FilePicker is up its rows and buttons own every press.
 func (a *app) pointer(ev vi.Event) bool {
+	if a.pick.Open {
+		if ev.Kind != vi.EvMouseDown {
+			return false
+		}
+		_, done := a.pick.HandleMouse(int(ev.Arg0), int(ev.Arg1), true)
+		if done {
+			a.pickerDone()
+		}
+		return true
+	}
 	if a.mode != modePlay {
 		return false
 	}
@@ -704,15 +787,18 @@ func (a *app) eventLoop() bool {
 			a.draw()
 			a.present()
 		case tabapp.ActionNone:
-			a.key(ev)
+			redraw := a.key(ev)
 			if a.pointer(ev) {
+				redraw = true
+			}
+			if redraw {
 				a.draw()
 				a.present()
 			}
 			if a.quit {
 				a.quitApp()
 			}
-			if a.st == stLoaded {
+			if a.st == stLoaded || a.sel != selNone {
 				return true
 			}
 		}
@@ -894,6 +980,14 @@ func (a *app) draw() {
 	}
 
 	switch a.st {
+	case stChoose:
+		line(0, "no file - choose:", theme.Current.Text)
+		line(1, "o open a file", theme.Current.Text)
+		line(2, "r record "+vi.Itoa64(int64(chooseSecs))+
+			"s -> "+chooseRecPath, theme.Current.Text)
+		line(3, "m meter "+vi.Itoa64(int64(meterDefaultSeconds))+"s",
+			theme.Current.Text)
+		line(5, "q quit", theme.Current.Muted)
 	case stEmpty:
 		line(1, "no file", theme.Current.Text)
 		line(2, "exec GOSOUND.ELF /host/FILE.WAV", theme.Current.Muted)
@@ -948,6 +1042,10 @@ func (a *app) draw() {
 		}
 		a.vol.Draw(cv)
 	}
+
+	// The FilePicker plate floats over whichever face raised it (GOVIEW's
+	// overlay rule); Draw no-ops while it is closed.
+	a.pick.Draw(cv)
 }
 
 // drawRec is the record/meter face: the mode line, the live level rendered

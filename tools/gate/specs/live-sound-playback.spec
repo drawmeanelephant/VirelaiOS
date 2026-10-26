@@ -264,6 +264,45 @@ vgate_assert wav-nodev serial-absent 'gosound: refused'
 vgate_assert wav-nodev serial-absent '[EXC] parking'
 
 # ----------------------------------------------------------------------
+# #3776 run bare: a no-arg exec is a person clicking the catalog row, so
+# the window is a CHOOSER, not the old dead-end 'no file'. 'o' raises the
+# shared FilePicker — the opens=audio contract's windowed half — and the
+# typed path lands on the same probe an argv file takes: same loaded/out
+# markers, same seat counters. The batch is split like go-paint run 01's:
+# 'o' fires once the chooser is painted, the path is typed once the pick
+# is raised, Return resolves it. The staged TONE.WAV is the wav leg's own
+# fixture — the picker's verdict is the probe's, never faked.
+vgate_file gosound-bare.txt <<'EOF'
+exec GOSOUND.ELF
+EOF
+
+vgate_run bare -- --sound \
+    --screen '$RUN_DIR/bare-screen' \
+    --input --via-virtio \
+    --script '$RUN_DIR/gosound-bare.txt' \
+    --input-chords 'o' \
+    --input-chords-after 'gosound: chooser' \
+    --input-string $'/host/SND/TONE.WAV\n' \
+    --input-string-after 'gosound: pick open' \
+    --script-expect 'gosound: done ' --timeout 240
+
+vgate_assert bare output-contains 'SOUND: virtio-snd attached'
+vgate_assert bare serial-contains 'exec: loaded GOSOUND.ELF'
+vgate_assert bare serial-contains 'gosound: empty (no args)'
+vgate_assert bare serial-contains 'gosound: open id='
+vgate_assert bare serial-contains 'gosound: chooser'
+vgate_assert bare serial-contains 'gosound: pick open /host/SND/TONE.WAV'
+vgate_assert bare serial-contains 'gosound: loaded TONE.WAV fmt=pcm16 ch=2 rate=44100 frames=132300'
+vgate_assert bare serial-contains 'gosound: out f32 rate=48000 ch=2 frames=144000'
+vgate_assert bare serial-contains 'gosound: streaming gen='
+vgate_assert bare serial-contains 'gosound: done '
+vgate_assert bare serial-absent 'gosound: refused'
+vgate_assert bare serial-absent 'gosound: pick cancel'
+vgate_assert bare serial-absent 'gosound: no decoder'
+vgate_assert bare serial-absent '[EXC] parking'
+vgate_assert bare serial-absent 'exited status=139'
+
+# ----------------------------------------------------------------------
 # M162d (#2980) run wav-adpcm: a COMPRESSED wav on the same dispatch path.
 # GOFILES opens ADPCM.WAV — a stereo IMA ADPCM file, the tag old games and
 # recorders write — GOSOUND block-decodes it and windowed-sinc resamples
