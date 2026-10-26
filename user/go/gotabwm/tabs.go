@@ -15,6 +15,8 @@
 package main
 
 import (
+	"strings"
+
 	"virelai/appkit"
 	"virelai/art"
 	"virelai/draw"
@@ -332,6 +334,12 @@ func (s *TabStrip) FrozenCount() int {
 // guessBin fills the `.tabs` v2 bin field from a declared title. WM_RPC
 // carries the window title, not the executable name.
 func guessBin(title string) string {
+	// #3691: GOSOUND's play-launch declares `Sound Player: <file>` — the
+	// title carries the opened file, so an exact switch row can never
+	// cover it; a reopened player tab must still exec the binary.
+	if strings.HasPrefix(title, "Sound Player: ") {
+		return "GOSOUND.ELF"
+	}
 	switch title {
 	case "Calc":
 		return "GOCALC.ELF"
@@ -417,6 +425,33 @@ func guessBin(title string) string {
 		// closes and reopens the tour, so "Welcome" must name the real
 		// binary (`reopen missing Welcome` on this card's first spec run).
 		return "GOWELCOME.ELF"
+	case "LLM Infer":
+		// #3691: GOINFER's windowed face declares "LLM Infer" — observed
+		// `reopen missing LLM_Infer` on go-infer run 01's close→reopen→
+		// restore leg.
+		return "GOINFER.ELF"
+	case "Recorder":
+		// #3691: GOREC's windowed face declares "Recorder" — same defect.
+		return "GOREC.ELF"
+	case "Store":
+		// #3691: GOSTORE's declared title — same defect.
+		return "GOSTORE.ELF"
+	case "Gostalgia":
+		// #3691: GOSTALGIA's declared title (gsport/tty) — same defect.
+		return "GOSTALGIA.ELF"
+	case "Sound Player", "Sound Recorder", "Mic Meter":
+		// #3691: GOSOUND's three faces each declare their own title (the
+		// bare player title is the file-less arm of the prefix rule
+		// above) — all three reopen to the one binary.
+		return "GOSOUND.ELF"
+	case "A11y":
+		// #3691: GOA11Y's declared title — same defect class; the audit's
+		// table missed it but the docked app's closed tab records
+		// Bin="A11y" just the same.
+		return "GOA11Y.ELF"
+	case "Help":
+		// #3691: GOHELP's declared title — same defect class.
+		return "GOHELP.ELF"
 	default:
 		return binToken(title)
 	}
