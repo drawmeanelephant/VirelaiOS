@@ -52,9 +52,9 @@ GOSOUND.ELF | Sound | a | dock=false | v=2 | caps=file,window,audio | opens=audi
 TABWM.BIN | Tabbed Desktop | m | dock=false | v=2 | icon=ICONTABM
 GOSTALGIA.ELF | Gostalgia | o | dock=false | v=2 | argv=shell --root /host/GS | caps=file,window,term,process | icon=ICONSTLG
 GOSTORE.ELF | Store | i | dock=false | v=2 | caps=file,window,net | icon=ICONSTOR
-GOINFER.ELF | LLM Infer | l | dock=false | v=2 | caps=file | icon=ICONINFR
-GOREC.ELF | Recorder | r | dock=false | v=2 | caps=file,audio | icon=ICONREC
-GOSNAP.ELF | Snapshots | b | dock=false | v=2 | caps=file | icon=ICONSNAP
+GOINFER.ELF | LLM Infer | l | dock=false | v=2 | caps=file,window | icon=ICONINFR
+GOREC.ELF | Recorder | r | dock=false | v=2 | caps=file,window,audio | icon=ICONREC
+GOSNAP.ELF | Snapshots | b | dock=false | v=2 | caps=file,window | icon=ICONSNAP
 GOASSIST.ELF | Assistant | y | dock=false | v=2 | caps=file,window | icon=ICONASST
 GOSHEET.ELF | Sheet | x | dock=false | v=2 | caps=file,window | opens=text | icon=ICONSHT
 GOREADER.ELF | Reader | d | dock=false | v=2 | caps=file,window | opens=document | icon=ICONREAD

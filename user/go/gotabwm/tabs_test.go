@@ -51,6 +51,16 @@ func TestGuessBinShippingTitles(t *testing.T) {
 		{"Vault", "GOVAULT.ELF"},
 		{"Settings", "GOSET.ELF"},
 		{"Welcome", "GOWELCOME.ELF"},
+		{"LLM Infer", "GOINFER.ELF"},
+		{"Recorder", "GOREC.ELF"},
+		{"Store", "GOSTORE.ELF"},
+		{"Gostalgia", "GOSTALGIA.ELF"},
+		{"Sound Player", "GOSOUND.ELF"},
+		{"Sound Player: TONE.WAV", "GOSOUND.ELF"},
+		{"Sound Recorder", "GOSOUND.ELF"},
+		{"Mic Meter", "GOSOUND.ELF"},
+		{"A11y", "GOA11Y.ELF"},
+		{"Help", "GOHELP.ELF"},
 		{"Other", "Other"},
 	}
 	for _, c := range cases {
