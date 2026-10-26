@@ -129,6 +129,18 @@ for name, script in (("GOTABWM.ELF", "build-gotabwm.sh"),
     shutil.copy(src, os.path.join(share, name))
     print("go-irc: staged %s (%d)" % (name, os.path.getsize(src)))
 
+# The armed share is ONE share for all 11 runs x K=3, so the boot
+# autostart must not fire: it exec'd GOTABWM.ELF + restored a stale
+# SESSION.TABS before the script's first `vf rm` could clear it (run 07
+# then snapshotted a third row, run 08 restored n=3 — #3708). `wm=none`
+# (the go-emoji/go-vault idiom) keeps every boot seatless; each run's
+# script execs GOTABWM.ELF itself — same seat, same restore code path,
+# same 'exec: loaded GOTABWM.ELF' marker, and run 08's n=2 restore still
+# loads the file run 07's snapshot wrote because only run 08's script
+# leaves SESSION.TABS in place.
+with open(os.path.join(share, "SETTINGS.TXT"), "w") as f:
+    f.write("#v2\nwm=none\n")
+
 # M196c (#3380): the stored-SASL row run 10 resolves. `irc-gate` is
 # app-bound to the uid_system-owned GOIRC.ELF (the FLINT agent-sign
 # shape); the value exists only here and in the guest's kernel store —
@@ -695,23 +707,34 @@ vgate_assert 04 serial-contains 'goirc: focus #other'
 vgate_assert 04 serial-absent 'goirc: error'
 vgate_assert 04 serial-absent '[EXC] parking:'
 # Ordering: the toast must be painted before the click dismisses it, and
-# the blur before the refocus -- each marker can appear without the
-# others, so the causal chain is asserted as an order. 'tab focus id='
-# also prints at tab-setup, so each link is searched AFTER the previous
-# one, not globally.
+# the blur delivered before the refocus can land the mention. The
+# chord and the pointer batch are BOTH armed on 'notify paint', so which
+# input reaches the kernel FIFO first is a race (#3708): the seat-side
+# truth is unchanged (the click's refocus can only deliver WIN_FOCUS
+# after the chord's blur took focus away), but the app's 'goirc: blur'
+# prints from its own event loop and can interleave after the seat's
+# dismiss/tab-focus markers on the shared serial line. The assert
+# therefore pins two sub-chains that ARE causal: paint -> dismiss ->
+# tab focus -> focus #other (the click-through itself), and blur ->
+# focus #other (same-producer ordering inside the app's event queue --
+# the landing still proves a real blur->refocus transition happened).
+# 'tab focus id=' also prints at tab-setup, so each link is searched
+# AFTER the previous one, not globally.
 vgate_assert 04 python <<'PY'
 import os, sys
 ser = open(os.environ["VG_SER"], errors="replace").read()
 
-chain = ["gotabwm: notify paint id=", "goirc: blur",
-         "gotabwm: notify dismiss id=", "gotabwm: tab focus id=",
-         "goirc: focus #other"]
-pos = 0
-for m in chain:
-    i = ser.find(m, pos)
-    if i < 0:
-        sys.exit("chain marker missing after %d: %r" % (pos, m))
-    pos = i + len(m)
+def after(markers):
+    pos = 0
+    for m in markers:
+        i = ser.find(m, pos)
+        if i < 0:
+            sys.exit("chain marker missing after %d: %r" % (pos, m))
+        pos = i + len(m)
+
+after(["gotabwm: notify paint id=", "gotabwm: notify dismiss id=",
+       "gotabwm: tab focus id=", "goirc: focus #other"])
+after(["goirc: blur", "goirc: focus #other"])
 log = open(os.path.join(os.environ["RUN_DIR"], "ircd-26669.log")).read()
 need = ["c0 open", "c0 rx NICK gate", "c0 rx USER", "c0 rx JOIN #goirc",
         "c0 rx JOIN #other", "tx :alice!u@h PRIVMSG #other :ping gate"]

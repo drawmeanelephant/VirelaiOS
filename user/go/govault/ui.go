@@ -313,7 +313,7 @@ func (a *app) drawReceipts(cv widgets.Canvas, w, h int) {
 
 func (a *app) drawAdd(cv widgets.Canvas, w, h int) {
 	tok := theme.Current
-	a.text(cv, pad, chromeH+16, "New vaultlib.Entry", tok.Text)
+	a.text(cv, pad, chromeH+16, "New entry", tok.Text)
 	a.fieldRow(cv, chromeH+44, &a.add[0], a.focus == 0)
 	a.fieldRow(cv, chromeH+44+fieldH+10, &a.add[1], a.focus == 1)
 	a.fieldRow(cv, chromeH+44+2*(fieldH+10), &a.add[2], a.focus == 2)
