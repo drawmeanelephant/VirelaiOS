@@ -3121,7 +3121,7 @@ test "syscall: SET_STATE (cmd 4, claim 4278) applies visibility/workspace/ws-swi
     _ = driving_award.user_close(2);
 }
 
-test "syscall: ALT_TAB (cmd 5, claim 4510) drives the overlay from the WM's chosen id" {
+test "syscall: ALT_TAB (cmd 5, claim 4510 + #3759) applies the WM's commit; the snapshot verbs are retired" {
     userspace.init();
     init(test_writer);
     wm_server.init();
@@ -3146,20 +3146,18 @@ test "syscall: ALT_TAB (cmd 5, claim 4510) drives the overlay from the WM's chos
     try std.testing.expectEqual(@as(u64, 0), dispatch(sys_wmctl, .{ wm_server.wmctl_alt_tab, 3, wm_server.alt_tab_commit, 0, 0, 0 }, &frame));
     try std.testing.expectEqual(@as(u8, 3), driving_award.focused_window_id());
     try std.testing.expectEqual(@as(u64, 1), wm_server.info().alt_tab_apply_count);
-    // activate highlights the WM's chosen id in the overlay snapshot.
-    try std.testing.expectEqual(@as(u64, 0), dispatch(sys_wmctl, .{ wm_server.wmctl_alt_tab, 2, wm_server.alt_tab_activate, 0, 0, 0 }, &frame));
-    try std.testing.expect(driving_award.alt_tab_is_active());
-    try std.testing.expectEqual(@as(u8, 2), driving_award.alt_tab_selected_id().?);
-    // dismiss drops the overlay.
-    try std.testing.expectEqual(@as(u64, 0), dispatch(sys_wmctl, .{ wm_server.wmctl_alt_tab, 0, wm_server.alt_tab_dismiss, 0, 0, 0 }, &frame));
+    // #3759 (third item): the kernel-hosted switcher bookkeeping verbs are
+    // RETIRED — activate/cycle/dismiss refuse EINVAL and touch no state.
+    try std.testing.expectEqual(error_result(.einval), dispatch(sys_wmctl, .{ wm_server.wmctl_alt_tab, 2, 1, 0, 0, 0 }, &frame)); // activate
+    try std.testing.expectEqual(error_result(.einval), dispatch(sys_wmctl, .{ wm_server.wmctl_alt_tab, 2, 2, 0, 0, 0 }, &frame)); // cycle
+    try std.testing.expectEqual(error_result(.einval), dispatch(sys_wmctl, .{ wm_server.wmctl_alt_tab, 0, 4, 0, 0, 0 }, &frame)); // dismiss
     try std.testing.expect(!driving_award.alt_tab_is_active());
-    try std.testing.expectEqual(@as(u64, 3), wm_server.info().alt_tab_apply_count);
     // A commit to a window that does not exist -> EINVAL (kernel clamps).
     try std.testing.expectEqual(error_result(.einval), dispatch(sys_wmctl, .{ wm_server.wmctl_alt_tab, 9, wm_server.alt_tab_commit, 0, 0, 0 }, &frame));
     // A malformed action -> EINVAL.
     try std.testing.expectEqual(error_result(.einval), dispatch(sys_wmctl, .{ wm_server.wmctl_alt_tab, 2, 77, 0, 0, 0 }, &frame));
-    // The counter only counted the accepted calls.
-    try std.testing.expectEqual(@as(u64, 3), wm_server.info().alt_tab_apply_count);
+    // The counter only counted the accepted call.
+    try std.testing.expectEqual(@as(u64, 1), wm_server.info().alt_tab_apply_count);
 
     // Teardown: no leaked input ownership into the aggregated binary.
     try std.testing.expect(wm_server.unregister(0));

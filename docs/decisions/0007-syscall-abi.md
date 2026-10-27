@@ -782,7 +782,7 @@ syscall number 0–64 stays frozen):
 | SET_WINDOW | `WMCTL_SET_WINDOW` | 2 | a0 = window id, a1 = packed rect (x\|y<<16), a2 = packed wh (w\|h<<16); `ptr` → chrome descriptor (WMS4; 0 = none), `len` = descriptor length | 0 = accepted | `EACCES` caller not the WM; `EINVAL` bad id/rect/len |
 | REQUEST_PRESENT | `WMCTL_REQUEST_PRESENT` | 3 | all reserved (0) | 0 = present scheduled | `EACCES` caller not the WM |
 | SET_STATE | `WMCTL_SET_STATE` | 4 | a0 = window id (or `0xFFFF_FFFF` for the ALL workspace broadcast), a1 = visible (bits 0–1) \| workspace << 8 \| always-on-top bit 16 | 0 = applied | `EACCES` caller not the WM; `EINVAL` bad id / workspace / visibility |
-| ALT_TAB | `WMCTL_ALT_TAB` | 5 | a0 = window id, a1 = action (1 activate, 2 cycle, 3 commit, 4 dismiss) | 0 = applied | `EACCES` caller not the WM; `EINVAL` bad id / action |
+| ALT_TAB | `WMCTL_ALT_TAB` | 5 | a0 = window id, a1 = action (3 commit only; 1 activate / 2 cycle / 4 dismiss retired — the switcher bookkeeping is the seat's, #3759) | 0 = applied | `EACCES` caller not the WM; `EINVAL` bad id / action |
 | NOTIF_CENTER | `WMCTL_NOTIF_CENTER` | 6 | a0 = 0 close / 1 open / 2 clear-all | 0 = applied | `EACCES` caller not the WM; `EINVAL` bad action |
 | NOTIF_DISMISS | `WMCTL_NOTIF_DISMISS` | 7 | a0 = row index | 0 = applied | `EACCES` caller not the WM; `EINVAL` out-of-range index |
 | TOOLTIP | `WMCTL_TOOLTIP` | 8 | a0 = 0 hide / 1 show (show: `ptr/len` carry the text, ≤ 32 bytes) | 0 = applied | `EACCES` caller not the WM; `EINVAL` bad action / over-length; `EFAULT` bad text pointer |
@@ -917,6 +917,14 @@ registered the kernel fans the raw Alt+Tab chord to the WM (kind 21 `WM_KEY`
 with `MOD_ALT`), its own `alt_tab_pending` is gated behind `!wm_owns_input`,
 and the WM decides the target from its kind-20 mirror registry via the shared
 wnd_core rule, issuing `ALT_TAB commit`. No WM registered → shim byte-identical.
+
+*Amended (#3759, third item — 2026-10-27):* the kernel-hosted switcher
+bookkeeping moved to the seat outright. Actions 1/2/4 (activate/cycle/
+dismiss — the snapshot verbs above) are **retired** and refuse `EINVAL`; no
+in-tree seat ever called them (wnd/tabwm pick the target from their kind-20
+mirror and commit by id, gotabwm goes through TASKBAR). Commit (3) is the
+only live action. The kernel's `overlay_*` state and painted switcher remain
+as the no-seat shim fallback — the same rule `layout.zig`'s drain took.
 
 ### Amendment (2026-08-29, claim 7557 — the WMS6 Gate-B NOTIF_CENTER channel)
 
