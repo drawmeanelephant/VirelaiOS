@@ -1058,13 +1058,19 @@ func TestMOVAudioPlaybackPumpsAndDrift(t *testing.T) {
 		t.Fatalf("audioDrift frames = %d, want %d", frames, seat.completed/8)
 	}
 	wantDrift := uint64(0)
-	if playedNs := frames * 1_000_000_000 / 48000; playedNs < a.playTotalNs {
+	if playedNs := frames*1_000_000_000/48000 + a.audioSkipNs; playedNs < a.playTotalNs {
 		wantDrift = (a.playTotalNs - playedNs) / 1_000_000
 	} else {
 		wantDrift = (playedNs - a.playTotalNs) / 1_000_000
 	}
 	if driftMs != wantDrift {
 		t.Fatalf("audioDrift = %d ms, want %d", driftMs, wantDrift)
+	}
+	// #3778: the fake device lags the video clock by more than the resync
+	// bound, so the pump must have dropped content forward — the skip is
+	// what holds the drift under the starvation instead of past it.
+	if a.audioSkipNs == 0 {
+		t.Fatal("audioSkipNs = 0: the starved feed never resynced")
 	}
 	// A file swap abandons the seat and the decoded buffer.
 	a.stopPlay()

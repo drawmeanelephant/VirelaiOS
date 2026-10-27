@@ -43,7 +43,7 @@ GOWELCOME.ELF	-	file,window,memory,process,debug	surface: ReadFileAll for the SE
 GOTOP.ELF	file,window,memory,process,debug	file,window,memory,process,debug,net	surface: NetStats* pane — slot 62 sys_net_stats is net-grouped (user/go/top)
 GOSET.ELF	window,memory,process,debug	file,window,audio,memory,process,debug	declared caps=file; surface: the audio_volume row applies through slot 44 — vi.AudioVolume (user/go/goset)
 GODIFF.ELF	memory,process,debug	file,memory,process,debug	declared caps=file; a diff tool reads both inputs
-GOVIEW.ELF	window,memory,process,debug	file,window,timer,memory,process,debug	opens=image handler contract; no image was handed in the audit window; surface: TimerSetNs playback arm + EvTimer dispatch (user/go/view/main.go)
+GOVIEW.ELF	window,memory,process,debug	file,window,audio,timer,memory,process,debug	opens=image handler contract; no image was handed in the audit window; surface: TimerSetNs playback arm + EvTimer dispatch + AudioStream* mixer seat for MOV soun playback (user/go/view/main.go) — M202b (#3385) landed the track without the word (#3778)
 GOSOUND.ELF	window,memory,process,debug	file,window,audio,memory,process,debug	declared caps=file,window,audio + opens=audio; playback was not exercised
 GOSTORE.ELF	window,memory,process,debug	file,window,memory,process,debug,net	declared caps=file,net; the install/fetch path (Dial + WriteFileSafe) was not exercised
 GOTABWM.ELF	window,memory,process,debug	file,window,audio,memory,process,debug,net	surface: the seat reads /host/APPS.TXT + settings (File*/ReadFileAll), drives AudioStream*, and holds the Listen/TCP* remote lane (user/go/gotabwm)
