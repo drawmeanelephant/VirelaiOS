@@ -70,15 +70,20 @@ tag_dedupe() {
 }
 
 # --- 2. overlay files (new, GOOS-gated) --------------------------------
-# gostalgia/, gostalgia-mods/ and charm-mods/ are stage overlays:
-# build-gostalgia.sh / build-charmhello.sh apply them onto staged trees
-# in .build/, never onto the fork. Copied into src/ they both fail
-# make.bash (`go_bootstrap install std` compiles them) and collide with
-# the stage at package resolution (ambiguous import: gostalgia/cmd/*
-# found in two modules — observed breaking #2634 cold and warm).
+# gostalgia/, gostalgia-mods/, charm/ and charm-mods/ are stage overlays:
+# build-gostalgia.sh stages gostalgia*/ in .build/, and the Charm
+# build-*.sh scripts map charm/ onto a staged Bubble Tea module copy via
+# -overlay JSON (charm-mods/ onto the closure's other modules — see
+# overlay/charm-mods/README.md) — never onto the fork. Copied into src/
+# they fail the phase-2 make.bash (`go_bootstrap install std` scans
+# src/charm as std package "charm", hits its mixed package names and
+# unresolvable virelai/* imports — #3736) and collide with the stage at
+# package resolution (ambiguous import: gostalgia/cmd/* found in two
+# modules — observed breaking #2634 cold and warm).
 log "copying overlay files"
 ( cd "$REPO/tools/go/overlay" && find . -type f \
-    ! -path "./gostalgia/*" ! -path "./gostalgia-mods/*" ! -path "./charm-mods/*" | while read -r f; do
+    ! -path "./gostalgia/*" ! -path "./gostalgia-mods/*" \
+    ! -path "./charm/*" ! -path "./charm-mods/*" | while read -r f; do
     mkdir -p "$FORK_DIR/src/$(dirname "$f")"
     cp "$f" "$FORK_DIR/src/$f"
 done )
@@ -103,12 +108,14 @@ done )
 done )
 
 # --- 2c. remove leaked stage overlays ------------------------------------
-# An earlier revision of the copy above mirrored gostalgia/ and
-# gostalgia-mods/ into the fork too. Those trees are never fork files —
-# only the build scripts' stages consume them — so an existing polluted
-# fork is healed here by deleting them outright (the narrow *_virelai*
-# prune cannot reach them: the stage overlays carry other names).
-for d in gostalgia gostalgia-mods charm-mods; do
+# Earlier revisions of the copy above mirrored gostalgia/, gostalgia-mods/
+# and charm/ into the fork too. Those trees are never fork files — only
+# the build scripts' stages consume them — so an existing polluted fork
+# is healed here by deleting them outright (the narrow *_virelai* prune
+# cannot reach the stage overlays' non-*_virelai* names, and for charm/
+# it keeps the files precisely because they DO still exist under
+# overlay/charm/).
+for d in gostalgia gostalgia-mods charm charm-mods; do
     if [ -d "$FORK_DIR/src/$d" ]; then
         rm -rf "$FORK_DIR/src/$d"
         log "removed leaked stage overlay src/$d"
@@ -730,6 +737,29 @@ vir_include net/cgo_stub.go         "cgoAvailable=false; the cgo resolver never 
 # nothing it wraps can run).
 vir_include net/internal/socktest/switch_unix.go "Sockets switch; wraps refusing syscalls"
 vir_include net/internal/socktest/sys_unix.go    "socket wrappers over the ENOSYS surface"
+
+# --- 3g6c. the remaining phase-2 holdouts (issue #3736) ----------------
+# With the stage overlays out of src/, `go_bootstrap install std` reaches
+# the whole tree and exactly two packages still refuse — each missing one
+# platform leaf, each closed by the tag alone.
+# testenv_unix.go: Sigquit + syscallIsNotSupported. The port's syscall
+# package defines every name this file uses (SIGQUIT, Errno, EPERM/EROFS/
+# EINVAL); signal delivery itself refuses ENOSYS the same way os/signal's
+# watchers do (3g6), so the unix variant is the honest one.
+vir_include internal/testenv/testenv_unix.go "Sigquit + syscallIsNotSupported (SIGQUIT defined; delivery refuses ENOSYS)"
+# x509: the guest ships no CA bundle and has no platform verifier —
+# verify.go only calls systemVerify on windows/darwin/ios. The empty
+# certFiles/certDirectories lists are an overlay file (overlay/crypto/
+# x509/root_virelai.go): root_wasm.go has the right empty values but its
+# _wasm suffix pins it to GOARCH=wasm whatever the tag says.
+vir_include crypto/x509/root_unix.go "systemVerify -> nil,nil (dead symbol on virelai)"
+# The phase-2 make.bash goes on to `install cmd/go cmd/gofmt ...` for the
+# target (the guest selfhost toolchain); two more leaves hold out:
+# mmap_other.go is the io.ReadAll fallback (no file-mmap slot), and
+# signal_unix.go only names os.Interrupt/syscall.SIGQUIT — both defined,
+# delivery refuses as usual.
+vir_include cmd/go/internal/mmap/mmap_other.go  "mmapFile = io.ReadAll fallback (no file-mmap slot)"
+vir_include cmd/go/internal/base/signal_unix.go "signalsToIgnore/SignalTrace (SIGQUIT defined; undeliverable)"
 
 # --- 3g7. os/dir_unix.go's zero-inode skip (issue #1525) ---------------
 # dir_unix.go drops a directory row whose inode is 0 unless the GOOS is
