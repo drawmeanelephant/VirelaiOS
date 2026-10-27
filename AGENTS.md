@@ -16,6 +16,10 @@ You are authorized to act without asking on:
   not a question.
 - **Routine git operations.** Branch, commit, push to the session branch, open PRs.
   Never merge without the owner's review.
+- **Direction calls on queued work.** The project's direction is already set;
+  "needs an owner decision" on a filed card is almost always an invented
+  roadblock. Pick the approach most consistent with existing architecture,
+  record the reasoning in the PR/issue, and move.
 
 Ask the owner only when:
 
