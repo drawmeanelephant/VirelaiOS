@@ -707,7 +707,11 @@ pub fn init_wallpaper_if_present() void {
 }
 
 /// Blit the scaled wallpaper pixels to the scanout surface, preserving dock,
-/// taskbar, and all visible interactive windows.
+/// taskbar, and all visible interactive windows. The row's occluding
+/// x-intervals are collected and merged once per row — the per-pixel rescan
+/// they replace cost a ~120 ms slice per composite tick (issue #3778), long
+/// enough on a yield-driven scheduler to starve a co-tenant's sub-50 ms
+/// deadlines. The blit itself is then straight-line stores.
 pub fn render_wallpaper_root() void {
     const bg = wallpaper_bg_buf orelse return;
     const scan = scanout_ptr orelse return;
@@ -716,29 +720,39 @@ pub fn render_wallpaper_root() void {
     var y: u32 = 0;
     while (y < max_y) : (y += 1) {
         const row_off = y * fb_w;
-        var x: u32 = dock_w;
-        while (x < fb_w) : (x += 1) {
-            // Check occlusion by visible windows
-            var occluded = false;
-            for (mirrors) |m| {
-                if (m.valid and m.visible and !m.minimized) {
-                    if (x >= m.x and x < m.x + m.w and y >= m.y and y < m.y + m.h) {
-                        occluded = true;
-                        break;
-                    }
-                }
-            }
-            if (!occluded and god_menu_open) {
-                const menu_x = if (fb_w > god_menu_w) (fb_w - god_menu_w) / 2 else 0;
-                const menu_y = if (fb_h > god_menu_h) (fb_h - god_menu_h) / 2 else 0;
-                if (x >= menu_x and x < menu_x + god_menu_w and y >= menu_y and y < menu_y + god_menu_h) {
-                    occluded = true;
-                }
-            }
-            if (!occluded) {
-                scan[row_off + x] = bg[row_off + x];
+        // This row's occluding x-intervals: every visible window covering y,
+        // plus the open god menu's rect — sorted by start so the merge walk
+        // below emits each gap once.
+        var spans: [max_user_windows + 1][2]u32 = undefined;
+        var n: usize = 0;
+        for (mirrors) |m| {
+            if (m.valid and m.visible and !m.minimized and y >= m.y and y < m.y + m.h) {
+                spans[n] = .{ m.x, m.x + m.w };
+                n += 1;
             }
         }
+        if (god_menu_open) {
+            const menu_x = if (fb_w > god_menu_w) (fb_w - god_menu_w) / 2 else 0;
+            const menu_y = if (fb_h > god_menu_h) (fb_h - god_menu_h) / 2 else 0;
+            if (y >= menu_y and y < menu_y + god_menu_h) {
+                spans[n] = .{ menu_x, menu_x + god_menu_w };
+                n += 1;
+            }
+        }
+        var i: usize = 1;
+        while (i < n) : (i += 1) {
+            const s = spans[i];
+            var j = i;
+            while (j > 0 and spans[j - 1][0] > s[0]) : (j -= 1) spans[j] = spans[j - 1];
+            spans[j] = s;
+        }
+        var x: u32 = dock_w;
+        for (spans[0..n]) |s| {
+            const lo = @min(s[0], fb_w);
+            if (x < lo) @memcpy(scan[row_off + x .. row_off + lo], bg[row_off + x .. row_off + lo]);
+            x = @max(x, @min(s[1], fb_w));
+        }
+        if (x < fb_w) @memcpy(scan[row_off + x .. row_off + fb_w], bg[row_off + x .. row_off + fb_w]);
     }
 }
 

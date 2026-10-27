@@ -190,12 +190,16 @@ type app struct {
 	// audioErr is the one-time named refusal — once set, this file plays
 	// silent forever. playTotalNs is the video loop's cumulative playing
 	// nanoseconds at the last wrap — the drift receipt's baseline.
+	// audioSkipNs is the resync total: content the pump dropped forward to
+	// keep the track aligned after a starvation gap (#3778) — the receipt's
+	// audio clock is emitted time PLUS the skipped time.
 	audio       *movAudioOut
 	audioPos    uint64
 	audioErr    string
 	seat        audioSeat
 	seatLive    bool
 	playTotalNs uint64
+	audioSkipNs uint64
 
 	// The M162c save-as modal: while pick.Open every key/mouse event is the
 	// picker's — the same FilePicker GOPAINT raises, painted over the
@@ -266,6 +270,10 @@ const (
 	audioReadBlock = 16 * 1024
 	movAudioBufMax = 16 << 20
 	audioIdleNs    = 15_000_000
+	// #3778: past this lag the pump drops content forward instead of
+	// letting a starvation gap pin the track behind the video clock —
+	// the 250 ms drift bound's own margin above the ~43 ms queue.
+	audioResyncNs = 120_000_000
 )
 
 // errAudioNoDevice names the soundless-VM verdict — AudioQuery's
@@ -1032,6 +1040,24 @@ func (a *app) audioPump() {
 	if a.seat == nil || !a.playing || a.audio == nil || len(a.audio.buf) == 0 {
 		return
 	}
+	if a.seatLive {
+		// #3778: the device cannot wait — a starvation gap emits silence
+		// and pins the track behind the video clock by the gap's whole
+		// length. Once the feed runs again, skip the loop position forward
+		// by the lag and bank it in audioSkipNs: the listener rejoins the
+		// picture, and the receipt's audio clock (emitted + skipped) is the
+		// alignment that remains, not every gap the boot ever took.
+		if st, err := a.seat.Status(); err == nil {
+			fb := uint64(a.audio.out.FrameBytes())
+			played := st.Completed/fb*1_000_000_000/uint64(a.audio.out.Rate) + a.audioSkipNs
+			video := a.playTotalNs + uint64(a.playAccum+playNow()-a.playStretch)
+			if lag := int64(video) - int64(played); lag > audioResyncNs {
+				skip := uint64(lag) * uint64(a.audio.out.Rate) / 1e9
+				a.audioPos += skip * fb
+				a.audioSkipNs += skip * 1_000_000_000 / uint64(a.audio.out.Rate)
+			}
+		}
+	}
 	buf := a.audio.buf
 	for {
 		off := a.audioPos % uint64(len(buf))
@@ -1067,7 +1093,7 @@ func (a *app) audioPump() {
 // (~43 ms) is the expected floor, never the sign of a broken feed.
 func (a *app) audioDrift(st vi.AudioStreamStatus) (frames, driftMs uint64) {
 	frames = st.Completed / uint64(a.audio.out.FrameBytes())
-	playedNs := frames * 1_000_000_000 / uint64(a.audio.out.Rate)
+	playedNs := frames*1_000_000_000/uint64(a.audio.out.Rate) + a.audioSkipNs
 	d := int64(playedNs) - int64(a.playTotalNs)
 	if d < 0 {
 		d = -d
@@ -1098,7 +1124,7 @@ func (a *app) audioReset() {
 		a.seat, a.seatLive = nil, false
 	}
 	a.audio, a.audioPos, a.audioErr = nil, 0, ""
-	a.playTotalNs = 0
+	a.playTotalNs, a.audioSkipNs = 0, 0
 }
 
 // playTick is one TIMER event: advance a frame and re-arm with that
