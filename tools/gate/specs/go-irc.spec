@@ -35,6 +35,14 @@
 # refusal: '--sasl acct:pass' prints 'goirc: refuse sasl-argv' and never
 # dials.
 #
+# #3779 adds runs 12+13, the first-run connect face: run 12 rm's
+# GOIRC.TXT and bare-execs GOIRC.ELF under the seat -- the server+nick
+# prompts take --input-string's two lines, the consent ask answers, and
+# 'goirc: config saved' proves the register-time persist; run 13 boots
+# the very next share state (the file run 12 wrote stays put), re-execs
+# bare, and the picker's stored row connects with no prompt and no
+# consent re-ask.
+#
 # M147c (#2803) is the K=3 acceptance: vgate_repeat 3 replays every leg.
 # Run 07 is the scripted conversation the card names -- TLS first,
 # plaintext only after the stored consent, a mention toast with a real
@@ -64,7 +72,7 @@
 # asserts. Run 07's TLS leg wraps the same pinned leaf.example.com
 # chain go-fetch-https serves (user/src/lib/tls/vectors/fx).
 
-vgate_name go-irc "M147a+b+c #2801/#2802/#2803: GOIRC.ELF core (register/join/recv/drop/reconnect, consent refusal, 433) + UI legs (mention toast click-through, consent dialog) + K=3 journey (TLS first, consent-stored plaintext, toast, snapshot, restore) + M152e #2919 run 09 (/hl toast, /log share file tail) + M196c #3380 runs 10-11 (slot-70 stored SASL + procs no-secret-on-argv, sasl-argv refusal)"
+vgate_name go-irc "M147a+b+c #2801/#2802/#2803: GOIRC.ELF core (register/join/recv/drop/reconnect, consent refusal, 433) + UI legs (mention toast click-through, consent dialog) + K=3 journey (TLS first, consent-stored plaintext, toast, snapshot, restore) + M152e #2919 run 09 (/hl toast, /log share file tail) + M196c #3380 runs 10-11 (slot-70 stored SASL + procs no-secret-on-argv, sasl-argv refusal) + #3779 runs 12-13 (first-run connect face: server+nick prompts + GOIRC.TXT persist, saved-server picker)"
 vgate_share seed
 vgate_runner_flags -Xswiftc -DSPIKE
 vgate_repeat 3 BOOTS
@@ -129,7 +137,7 @@ for name, script in (("GOTABWM.ELF", "build-gotabwm.sh"),
     shutil.copy(src, os.path.join(share, name))
     print("go-irc: staged %s (%d)" % (name, os.path.getsize(src)))
 
-# The armed share is ONE share for all 11 runs x K=3, so the boot
+# The armed share is ONE share for all 13 runs x K=3, so the boot
 # autostart must not fire: it exec'd GOTABWM.ELF + restored a stale
 # SESSION.TABS before the script's first `vf rm` could clear it (run 07
 # then snapshotted a third row, run 08 restored n=3 — #3708). `wm=none`
@@ -520,7 +528,8 @@ if not os.path.exists(chain) or not os.path.exists(irckey):
 procs = []
 for mode, port in (("rejoin", 26667), ("nickuse", 26668),
                    ("mention", 26669), ("once", 26670),
-                   ("journey", 26671), ("logs", 26672), ("sasl", 26673)):
+                   ("journey", 26671), ("logs", 26672), ("sasl", 26673),
+                   ("once", 26674), ("once", 26675)):
     subprocess.run(["sh", "-c", "lsof -ti tcp:%d | xargs kill -9" % port],
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     logpath = os.path.join(run, "ircd-%d.log" % port)
@@ -1393,3 +1402,159 @@ vgate_assert 11 serial-absent 'goirc: dial'
 vgate_assert 11 serial-absent 'goirc: registered'
 vgate_assert 11 serial-absent 'goirc: sasl ok'
 vgate_assert 11 serial-absent '[EXC] parking:'
+
+# --- #3779 runs 12+13: the first-run connect face -------------------------
+#
+# Run 12 — no saved server. GOIRC.TXT is rm'd (it may exist from a prior
+# iteration's run 12/13 — the share persists), the seat boots, and a BARE
+# 'exec GOIRC.ELF' opens the window with no argv and no staged blob. The
+# face is the prompt chain: --input-string's first line answers 'server'
+# (10.0.0.2 → default port 6667, plain), the second answers 'nick'; the
+# plaintext consent ask still gates the dial ('tab,return' = Yes), and the
+# first 001 persists the resolved config — 'goirc: config saved' is the
+# terminal marker and the file-on-share half is checked byte-level below.
+vgate_file script-12.txt <<'EOF'
+net ip 10.0.0.1
+net arp 10.0.0.2
+vf rm GOTABWM.DEMO
+vf rm SESSION.TABS
+vf rm NOTIFY.HIST
+vf rm GOIRC.TXT
+set GOMAXPROCS=1
+wm
+exec GOTABWM.ELF
+EOF
+
+vgate_file script2-12.txt <<'EOF'
+dui focus 0
+exec GOIRC.ELF
+EOF
+
+vgate_run 12 -- \
+    --screen '$RUN_DIR/screen-12' \
+    --via-virtio \
+    --net '$RUN_DIR/cap12.bin' --net-arp-respond 10.0.0.2 \
+    --net-tcp-respond 10.0.0.2:6667:relay --net-tcp-respond-relay 127.0.0.1:26674 \
+    --script '$RUN_DIR/script-12.txt' \
+    --script2 '$RUN_DIR/script2-12.txt' --script2-after 'gotabwm: win focus' \
+    --input-string $'10.0.0.2\ngate\n' --input-string-after 'goirc: connect ask' \
+    --input-chords 'tab,return' --input-chords-after 'goirc: consent ask' \
+    --script-expect 'goirc: config saved' --timeout 300
+
+vgate_assert 12 serial-contains 'gotabwm: mode live'
+vgate_assert 12 serial-contains 'exec: loaded GOIRC.ELF'
+vgate_assert 12 serial-contains 'goirc: open id='
+vgate_assert 12 serial-contains 'goirc: declare accepted'
+vgate_assert 12 serial-contains 'goirc: connect ask'
+vgate_assert 12 serial-absent 'goirc: connect saved'
+vgate_assert 12 serial-contains 'goirc: consent ask'
+vgate_assert 12 serial-contains 'goirc: consent yes'
+vgate_assert 12 serial-contains 'goirc: dial 10.0.0.2 6667 plain'
+vgate_assert 12 serial-contains 'goirc: registered nick=gate'
+vgate_assert 12 serial-contains 'goirc: config saved'
+vgate_assert 12 serial-absent 'goirc: connect cancel'
+vgate_assert 12 serial-absent 'goirc: config write-fail'
+vgate_assert 12 serial-absent 'goirc: error'
+vgate_assert 12 serial-absent '[EXC] parking:'
+# Order: the face precedes the consent ask, the dial waits on consent yes,
+# and the register precedes the publish — a prompt that never ran cannot
+# produce any of these.
+vgate_assert 12 python <<'PY'
+import os, sys
+ser = open(os.environ["VG_SER"], errors="replace").read()
+pos = 0
+for m in ["goirc: connect ask", "goirc: consent ask", "goirc: consent yes",
+          "goirc: dial 10.0.0.2 6667 plain", "goirc: registered nick=gate",
+          "goirc: config saved"]:
+    i = ser.find(m, pos)
+    if i < 0:
+        sys.exit("marker %r missing after pos %d" % (m, pos))
+    pos = i + len(m)
+
+# The file IS the persist half: byte-level, written by the register-time
+# publish — host+port+nick as typed, plain=on as consented.
+tag = os.environ["VG_TAG"]
+it = int(tag.rsplit("-", 1)[-1]) if "-" in tag else 1
+body = open(os.path.join(os.environ["VG_SHARE"], "GOIRC.TXT")).read()
+for want in ["host=10.0.0.2", "port=6667", "nick=gate", "tls=off",
+             "plain=on"]:
+    if want not in body:
+        sys.exit("GOIRC.TXT missing %r:\n%s" % (want, body))
+
+log = open(os.path.join(os.environ["RUN_DIR"], "ircd-26674.log")).read()
+need = ["c0 open", "c0 rx NICK gate", "c0 rx USER", "tx :srv 001"]
+missing = [n for n in need if n not in log]
+opens = sum(1 for l in log.splitlines() if l.rstrip().endswith(" open"))
+if opens < it:
+    missing.append("opens %d < iteration %d" % (opens, it))
+if missing:
+    sys.exit("first-run fixture missing: %r\n%s" % (missing, log))
+PY
+
+# --- run 13: the saved-server picker --------------------------------------
+#
+# The very next boot over the same share: run 12's register-time publish
+# left GOIRC.TXT in place, so the bare exec opens the picker — the stored
+# row focused — and a bare 'return' connects it. The stored plain=on
+# consent means 'consent ask' stays ABSENT the whole run; the register
+# re-publishes the file.
+vgate_file script-13.txt <<'EOF'
+net ip 10.0.0.1
+net arp 10.0.0.2
+vf rm GOTABWM.DEMO
+vf rm SESSION.TABS
+vf rm NOTIFY.HIST
+set GOMAXPROCS=1
+wm
+exec GOTABWM.ELF
+EOF
+
+vgate_file script2-13.txt <<'EOF'
+dui focus 0
+exec GOIRC.ELF
+EOF
+
+vgate_run 13 -- \
+    --screen '$RUN_DIR/screen-13' \
+    --via-virtio \
+    --net '$RUN_DIR/cap13.bin' --net-arp-respond 10.0.0.2 \
+    --net-tcp-respond 10.0.0.2:6667:relay --net-tcp-respond-relay 127.0.0.1:26675 \
+    --script '$RUN_DIR/script-13.txt' \
+    --script2 '$RUN_DIR/script2-13.txt' --script2-after 'gotabwm: win focus' \
+    --input-chords 'return' --input-chords-after 'goirc: connect ask' \
+    --script-expect 'goirc: config saved' --timeout 300
+
+vgate_assert 13 serial-contains 'gotabwm: mode live'
+vgate_assert 13 serial-contains 'exec: loaded GOIRC.ELF'
+vgate_assert 13 serial-contains 'goirc: config /host/GOIRC.TXT'
+vgate_assert 13 serial-contains 'goirc: connect ask'
+vgate_assert 13 serial-contains 'goirc: connect saved'
+vgate_assert 13 serial-absent 'goirc: consent ask'
+vgate_assert 13 serial-contains 'goirc: dial 10.0.0.2 6667 plain'
+vgate_assert 13 serial-contains 'goirc: registered nick=gate'
+vgate_assert 13 serial-contains 'goirc: config saved'
+vgate_assert 13 serial-absent 'goirc: connect cancel'
+vgate_assert 13 serial-absent 'goirc: error'
+vgate_assert 13 serial-absent '[EXC] parking:'
+vgate_assert 13 python <<'PY'
+import os, sys
+ser = open(os.environ["VG_SER"], errors="replace").read()
+pos = 0
+for m in ["goirc: connect ask", "goirc: connect saved",
+          "goirc: dial 10.0.0.2 6667 plain", "goirc: registered nick=gate",
+          "goirc: config saved"]:
+    i = ser.find(m, pos)
+    if i < 0:
+        sys.exit("marker %r missing after pos %d" % (m, pos))
+    pos = i + len(m)
+tag = os.environ["VG_TAG"]
+it = int(tag.rsplit("-", 1)[-1]) if "-" in tag else 1
+log = open(os.path.join(os.environ["RUN_DIR"], "ircd-26675.log")).read()
+need = ["c0 open", "c0 rx NICK gate", "c0 rx USER", "tx :srv 001"]
+missing = [n for n in need if n not in log]
+opens = sum(1 for l in log.splitlines() if l.rstrip().endswith(" open"))
+if opens < it:
+    missing.append("opens %d < iteration %d" % (opens, it))
+if missing:
+    sys.exit("picker fixture missing: %r\n%s" % (missing, log))
+PY

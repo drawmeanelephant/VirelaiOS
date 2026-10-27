@@ -41,6 +41,13 @@
 //	goirc: focus <buf>                 goirc: blur
 //	goirc: state restored|refused|saved
 //
+// #3779: a bare launch with no staged blob gets the connect face —
+// /host/GOIRC.TXT's saved-server picker, else the server+nick prompts —
+// instead of the old usage+exit dead end. Its markers:
+//
+//	goirc: connect ask|saved|cancel    goirc: config <path>
+//	goirc: config saved                goirc: config write-fail <err>
+//
 // M152e (#2919) adds:
 //
 //	goirc: hl add|del|full             goirc: log on|off <chan>
@@ -368,7 +375,8 @@ func main() {
 		// carries only the recorded bin — no argv can ride it). The
 		// session's host/nick/channels live in the save_state blob, so a
 		// zero-arg launch falls into the UI: a staged blob resumes it,
-		// and runUI itself prints usage + exits when none arrives.
+		// and the #3779 connect face supplies host/nick when none
+		// arrives.
 		if len(args) == 0 {
 			runUI(o)
 			vi.Exit(exitError) // runUI exits via CloseAndExit; unreachable

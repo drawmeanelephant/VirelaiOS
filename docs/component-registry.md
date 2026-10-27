@@ -103,7 +103,7 @@ All of them additionally answer to the schema-v2 manifest grammar
 | Mines | app | GOMINE.ELF | appver 2, ver 1.0.0 | tools/gate/specs/go-games.spec | shipped |
 | Solitaire | app | GOSOL.ELF | appver 2, ver 1.0.0 | tools/gate/specs/go-games.spec | shipped |
 | Emoji | app | GOEMOJI.ELF | appver 2, ver 1.0.0 | tools/gate/specs/go-emoji.spec | shipped |
-| IRC | app | GOIRC.ELF | appver 3, ver 1.0.0 | tools/gate/specs/go-irc.spec | shipped |
+| IRC | app | GOIRC.ELF | appver 3, ver 1.1.0 | tools/gate/specs/go-irc.spec | shipped |
 | Vault | app | GOVAULT.ELF | appver 1, ver 1.0.0 | tools/gate/specs/go-vault.spec | shipped |
 | Mail | app | GOMAIL.ELF | ver 1.0.0 | tools/gate/specs/go-mail.spec | shipped |
 | Accessibility | app | GOA11Y.ELF | ver 1.0.0 | tools/gate/specs/go-a11y.spec | shipped |
