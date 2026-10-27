@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"virelai/clockfmt"
+	"virelai/vi"
 )
 
 func TestWorldZonesLocalFirst(t *testing.T) {
@@ -319,5 +320,92 @@ func TestAlarmAtFollowsTheNamedOffset(t *testing.T) {
 	// now = 2026-10-20 11:30 UTC, 12:00 today is 1800 s out.
 	if got := alarmAt(1792495800, clockfmt.UTC, 12, 0); got != 1792497600 {
 		t.Fatalf("alarmAt UTC = %d, want 1792497600", got)
+	}
+}
+
+// --- #3782: alarm labels -----------------------------------------------------
+
+// TestAlarmLabelCommit: 'l' arms the appkit prompt on the picked row,
+// the committed answer lands cleaned onto the row and into the
+// persisted record's escaped token, an empty commit clears the label,
+// and a cancelled prompt changes nothing.
+func TestAlarmLabelCommit(t *testing.T) {
+	saved := alarmFileWrite
+	defer func() { alarmFileWrite = saved }()
+	var blob []byte
+	alarmFileWrite = func(_ string, b []byte) int64 {
+		blob = append([]byte{}, b...)
+		return 0
+	}
+	a := &app{alarms: []Alarm{
+		{At: 1792502700, HHMM: 645, Daily: true, Enabled: true},
+	}}
+	// An empty list has no picked row — the prompt refuses.
+	if (&app{}).openLabelPrompt() {
+		t.Fatal("the label prompt must refuse an empty list")
+	}
+	if !a.openLabelPrompt() || a.dlg == nil || !a.dlg.Open {
+		t.Fatal("'l' must arm the label prompt on the picked row")
+	}
+	if a.dlg.Input != "" {
+		t.Fatalf("an unlabeled row's prompt starts empty, got %q", a.dlg.Input)
+	}
+	// While the prompt is open it owns the events: 'x' types into the
+	// field through handle(), it does not delete the row.
+	a.handle(vi.Event{Kind: vi.EvKeyDown, Arg0: 0x1b, Arg1: 'x'})
+	if a.dlg == nil || a.dlg.Input != "x" || len(a.alarms) != 1 {
+		t.Fatalf("the open prompt must own 'x' (input=%q rows=%d)",
+			a.dlg.Input, len(a.alarms))
+	}
+	// Return commits: the row carries the cleaned label and the record
+	// republishes with the escaped token.
+	a.handle(vi.Event{Kind: vi.EvKeyDown, Arg0: 0x28, Arg1: '\r'})
+	if a.dlg != nil {
+		t.Fatal("the prompt must close on Return")
+	}
+	if a.alarms[0].Summary != "x" {
+		t.Fatalf("committed label = %q, want x", a.alarms[0].Summary)
+	}
+	if !strings.Contains(string(blob), `0645 d+ x`) {
+		t.Fatalf("persisted record = %q, want the label's token", blob)
+	}
+	// A reopen preloads the label — a rename is a tweak — and an empty
+	// answer clears it.
+	if !a.openLabelPrompt() || a.dlg.Input != "x" {
+		t.Fatalf("rename preloads the label, got %q", a.dlg.Input)
+	}
+	a.dlg.Result = ""
+	a.labelDone()
+	if a.alarms[0].Summary != "" {
+		t.Fatalf("an empty commit must clear the label, got %q",
+			a.alarms[0].Summary)
+	}
+	// The cancelled answer leaves the row alone.
+	a.openLabelPrompt()
+	a.dlg.Result = "cancel"
+	a.labelDone()
+	if a.alarms[0].Summary != "" || a.dlg != nil {
+		t.Fatalf("cancel must abandon the edit, summary=%q", a.alarms[0].Summary)
+	}
+}
+
+// TestFiredToastLabel: a fired alarm's toast speaks the row's label;
+// unlabeled rows and the timer keep the bare "<id> done".
+func TestFiredToastLabel(t *testing.T) {
+	a := &app{alarms: []Alarm{
+		{HHMM: 645, Summary: "Wake up"},
+		{HHMM: 2359},
+	}}
+	if got := a.firedToast("alarm0"); got != "alarm0 Wake up done" {
+		t.Fatalf("labeled toast = %q", got)
+	}
+	if got := a.firedToast("alarm1"); got != "alarm1 done" {
+		t.Fatalf("unlabeled toast = %q", got)
+	}
+	if got := a.firedToast("timer"); got != "timer done" {
+		t.Fatalf("timer toast = %q", got)
+	}
+	if got := a.firedToast("alarm9"); got != "alarm9 done" {
+		t.Fatalf("out-of-range toast = %q", got)
 	}
 }

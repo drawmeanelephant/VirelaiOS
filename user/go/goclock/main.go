@@ -21,9 +21,10 @@
 // drive the stopwatch; on the Timer tab digits 1–5 arm presets, 'e'
 // opens the custom-seconds entry and 'x' cancels; on the Alarm tab four
 // digits + Return add a daily alarm ('o' a once), Up/Down pick a row,
-// Space toggles it, 'e' edits its time in place (M193b) and 'x' deletes
-// it. Headless verbs: `import <path>` merges an .ics into the store,
-// `export <path>` writes it back as a VCALENDAR through WriteFileSafe.
+// Space toggles it, 'e' edits its time in place (M193b), 'l' opens the
+// row's label prompt (#3782) and 'x' deletes it. Headless verbs:
+// `import <path>` merges an .ics into the store, `export <path>` writes
+// it back as a VCALENDAR through WriteFileSafe.
 //
 // Every marker is printed only AFTER the call it reports returned, so the
 // go-clock VZ gate's asserts cannot pass on an app that did not do the
@@ -33,6 +34,7 @@
 package main
 
 import (
+	"virelai/appkit"
 	"virelai/clockfmt"
 	"virelai/settings"
 	"virelai/tabapp"
@@ -73,6 +75,7 @@ const (
 	markerAToggle  = "goclock: alarm toggled "
 	markerAFull    = "goclock: alarm full"
 	markerARefuse  = "goclock: alarm refused"
+	markerALabel   = "goclock: alarm label "
 	markerARestore = "goclock: alarm restored "
 	markerASaved   = "goclock: alarm saved"
 	markerASaveBad = "goclock: alarm save failed rc="
@@ -180,6 +183,10 @@ type app struct {
 	alarmSel  int
 	timerEdit bool
 	alarmEdit bool
+
+	// dlg is the Alarm tab's label prompt while it is open (#3782) — an
+	// appkit modal that owns every event until it answers.
+	dlg *appkit.Dialog
 
 	buttons       [2]widgets.Button
 	presetButtons [5]widgets.Button
@@ -357,7 +364,7 @@ func (a *app) onTimer() {
 		}
 		vi.ConsoleLine(markerFired + d.ID)
 		firedOff = a.markFiredAlarm(d.ID) || firedOff
-		if !a.ta.Notify(d.ID + " done") {
+		if !a.ta.Notify(a.firedToast(d.ID)) {
 			vi.ConsoleLine(markerNotifyNo + d.ID)
 		}
 	}
@@ -369,6 +376,25 @@ func (a *app) onTimer() {
 }
 
 func (a *app) handle(ev vi.Event) bool {
+	// The label prompt owns the INPUT events while it is open (the goirc
+	// modal discipline): keys feed its field, a click picks its buttons,
+	// either closing path lands in labelDone. Other kinds fall through —
+	// a due deadline must still fire behind an open prompt.
+	if a.dlg != nil && a.dlg.Open {
+		switch ev.Kind {
+		case vi.EvKeyDown:
+			if _, done := a.dlg.HandleKey(ev); done {
+				a.labelDone()
+			}
+			return true
+		case vi.EvMouseDown:
+			if _, done := a.dlg.HandleMouse(int(ev.Arg0), int(ev.Arg1),
+				ev.Flags&vi.BtnLeft != 0); done {
+				a.labelDone()
+			}
+			return true
+		}
+	}
 	switch ev.Kind {
 	case vi.EvTimer:
 		a.onTimer()
@@ -492,6 +518,8 @@ func (a *app) key(ev vi.Event) bool {
 		switch ch {
 		case 'e', 'E':
 			return a.editAlarm()
+		case 'l', 'L':
+			return a.openLabelPrompt()
 		case 'o', 'O':
 			return a.addAlarm(false)
 		case 'x', 'X':

@@ -47,6 +47,10 @@ func (a *app) paint() {
 	case tabAlarm:
 		a.paintAlarm(cv)
 	}
+	// The label prompt paints last, on top of the tab it belongs to.
+	if a.dlg != nil && a.dlg.Open {
+		a.dlg.Draw(cv)
+	}
 }
 
 func (a *app) paintStrip(cv widgets.Canvas) {
@@ -151,7 +155,7 @@ func (a *app) paintAlarm(cv widgets.Canvas) {
 	}
 	drawText(cv, displayR, disp, th.Ink, th.Surface)
 	entryLab := "HHMM: " + e.String()
-	hint := "4 digits - return daily - o once - e edits - up/dn pick - spc toggles - x del"
+	hint := "4 digits - ret daily - o once - e edit - l label - up/dn - spc tgl - x del"
 	if a.alarmEdit {
 		entryLab = "edit HHMM: " + e.String()
 		hint = "retype 4 digits - return commits - esc cancels"

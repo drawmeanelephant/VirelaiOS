@@ -93,6 +93,16 @@
 #           EDITOUT.ICS through WriteFileSafe, the store is then cleared
 #           and `import` re-parses the app's own export into a fresh
 #           list, the verdict naming the round-tripped instant.
+#   run 15  #3782 alarm labels: a staged overdue two-row record (labels
+#           aboard) restores and late-fires — each row's toast names its
+#           label; then 'l' opens the appkit prompt on the picked row,
+#           the preloaded label is backspaced and 'Med pack' retyped +
+#           Return commits the rename ('alarm saved'/'state posted' are
+#           the republish evidence). The leg then DELETES both rows so
+#           the app's last posted blob is empty — a session row that
+#           survives the tail's rm carries 'no state' and nothing
+#           restores into the next iteration (observed leaks: 04-03's
+#           blob check found the 3-row union, 05-03 double-fired).
 #
 # HOST PREREQUISITES (the gate fails honestly when missing):
 #   bash tools/go/build-goclock.sh  ->  .build/go/GOCLOCK.ELF
@@ -102,7 +112,7 @@
 # exec-order: assert-proven -- each run ends on a marker only its own
 # stage chain can produce.
 
-vgate_name go-clock "issue #2794 M144a + #2795 M144b + #2916 M152b + #3185 M187d + #3254 M193b + #3256 M193d: GOCLOCK.ELF — world clock, stopwatch, timer, alarm->toast over one multiplexed kernel timer; the gocal3 alarm list (up to 7, once/daily, toggled, summary'd) persists through save_state + its own share file, gocal1/gocal2 still read, late-fire on start; the .ics import verb lands VEVENTs into the same store and the export verb writes it back — alarms edit in place and re-import their own export, the chain leg proving edit -> export -> re-parse inside one boot"
+vgate_name go-clock "issue #2794 M144a + #2795 M144b + #2916 M152b + #3185 M187d + #3254 M193b + #3256 M193d + #3782: GOCLOCK.ELF — world clock, stopwatch, timer, alarm->toast over one multiplexed kernel timer; the gocal3 alarm list (up to 7, once/daily, toggled, summary'd) persists through save_state + its own share file, gocal1/gocal2 still read, late-fire on start; the .ics import verb lands VEVENTs into the same store and the export verb writes it back — alarms edit in place and re-import their own export, the chain leg proving edit -> export -> re-parse inside one boot; 'l' labels a row through the appkit prompt and the label rides the row and the fired toast"
 vgate_share seed
 vgate_runner_flags -Xswiftc -DSPIKE
 vgate_repeat 3 BOOTS
@@ -1539,3 +1549,93 @@ if not re.fullmatch(want, b):
 print("chain leg EDITOUT.ICS = one VEVENT, DTSTART %s" %
       re.search(rb"DTSTART:(\S+)", b).group(1).decode())
 PY
+
+# --- run 15 (#3782): alarm labels — prompt-set, toast-carried --------------
+# The monitor stages a two-row gocal3 record with both instants already
+# past (at=1): the daily 06:45 labelled Wakesup, the once 23:59 labelled
+# Old — single-token labels only, because the monitor's `write` path
+# cannot carry the record's backslash escapes (observed 15-01: `\_` and
+# `\s` arrive stripped). The exec'd app restores both rows and each
+# overdue deadline fires once, marked late: every toast names its row's
+# label ('notify id=<n> alarm0 Wakesup done' / 'alarm1 Old done') — the
+# seat's queue line IS the fire-with-label evidence. The chords then
+# reach the Alarm tab and 'l' opens the appkit prompt on the picked row
+# (alarm1, the last-restored row, switched off by its own late fire),
+# preloaded with 'Old'; three backspaces clear it and the typed
+# 'Med pack' + Return commits the rename — 'goclock: alarm label 23:59
+# Med pack' — republishing the record whose escaped `Med\spack` token
+# proves the label rode the write (the space survives through the APP's
+# own encoder, which is the direction this card adds).
+#
+# Iteration safety is the leg's hard half: a non-empty blob in the seat's
+# session table can be re-published by ANY later `session write` — the
+# watchdog's periodic state asks included — AFTER the tail's SESSION.TABS
+# rm (observed twice: a two-row labelled blob surfacing inside the next
+# iteration's run-04 snapshot, and its late-fire toasts stealing the
+# pointer click in run-02's chain). rm'ing earlier or later only narrows
+# the race. Deleting both rows first makes the residue harmless instead:
+# the app's last posted blob is the empty answer — 'no state' — so a
+# resurrected row restores nothing. 'q' then quits, and the settle +
+# rm cover the file side the same way the other legs do.
+vgate_file script-15.txt <<'EOF'
+vf rm SESSION.TABS
+write GOCLOCK.ALARM gocal3 2 1 0645 d+ Wakesup 1 2359 o+ Old
+echo rx-goclock-15-boot
+EOF
+
+vgate_file script2-15.txt <<'EOF'
+exec GOCLOCK.ELF
+EOF
+
+vgate_file script3-15.txt <<'EOF'
+vf rm SESSION.TABS
+vf rm GOCLOCK.ALARM
+echo rx-goclock-label-ok
+EOF
+
+vgate_run 15 -- \
+    --screen '$RUN_DIR/screen-15' \
+    --via-virtio \
+    --script '$RUN_DIR/script-15.txt' \
+    --script2 '$RUN_DIR/script2-15.txt' \
+    --script2-after 'gotabwm: mode live' \
+    --input-chords 'right,right,right,l,backspace,backspace,backspace,M,e,d,space,p,a,c,k,return,x,x,q' \
+    --input-chords-after 'goclock: alarm restored 23:59' \
+    --script3 '$RUN_DIR/script3-15.txt' \
+    --script3-after 'goclock OK' \
+    --script3-delay 10 \
+    --script-expect 'rx-goclock-label-ok' --timeout 300
+
+vgate_assert 15 serial-contains 'write: ok (persisted '
+vgate_assert 15 serial-contains 'exec: loaded GOCLOCK.ELF'
+vgate_assert 15 serial-contains 'goclock: declare accepted'
+# Both staged rows restored — the daily and the once.
+vgate_assert 15 serial-contains 'goclock: alarm restored 06:45 daily'
+vgate_assert 15 serial-contains 'goclock: alarm restored 23:59 once'
+# Each overdue deadline fired exactly once, marked late.
+vgate_assert 15 serial-exact 'goclock: fired alarm0 late' 1
+vgate_assert 15 serial-exact 'goclock: fired alarm1 late' 1
+# Both fired toasts carry their row's label.
+vgate_assert 15 serial-contains 'alarm0 Wakesup done'
+vgate_assert 15 serial-contains 'alarm1 Old done'
+# 'l' opened the prompt preloaded with the row's label; the backspaced
+# + retyped answer committed as the rename.
+vgate_assert 15 serial-contains 'goclock: alarm label 23:59 Med pack'
+# The commit republished through both carriers — the record's escaped
+# token (Med\spack) is byte-pinned by the host test, since the leg's own
+# teardown (below) empties the store before the share assert could read it.
+vgate_assert 15 serial-contains 'goclock: alarm saved'
+vgate_assert 15 serial-contains 'goclock: state posted'
+# The teardown: both rows deleted — 'x' on the picked row (the renamed
+# 23:59), then the 06:45 — so the app's last posted blob is the empty
+# 'no state' answer and nothing can leak into the next iteration.
+vgate_assert 15 serial-contains 'goclock: alarm deleted 23:59'
+vgate_assert 15 serial-contains 'goclock: alarm deleted 06:45'
+vgate_assert 15 serial-contains 'goclock: close'
+vgate_assert 15 serial-contains 'goclock OK'
+vgate_assert 15 serial-contains 'rx-goclock-label-ok'
+vgate_assert 15 serial-absent 'goclock: alarm refused'
+vgate_assert 15 serial-absent 'goclock: alarm file bad'
+vgate_assert 15 serial-absent 'goclock: deadline full'
+vgate_assert 15 serial-absent '[EXC] parking:'
+vgate_assert 15 serial-absent 'exited status=139'
