@@ -366,10 +366,19 @@ fn wm_autostart_direct(m: *monitor.Monitor) void {
             // present may end the splash hold now.
             driving_award.seat_impossible = true;
             m.console.puts(std.fmt.bufPrint(&buf, "wm: autostart {s}: {s} not on the share (shim compositing)\n", .{ seat.name(), program }) catch return);
+            // #3759 (fifth item): with the seat question settled-negative
+            // the kernel owns the replay again — park_body skipped it for
+            // this configured seat. A seat that already bound owns the
+            // decision instead, and the once-per-boot guard makes the call
+            // a no-op whenever the file was already consumed.
+            if (!wm_server.registered()) restore_windows();
         },
         else => {
             driving_award.seat_impossible = true;
             m.console.puts(std.fmt.bufPrint(&buf, "wm: autostart {s} failed: {s} did not load (see `exec` for the diagnosis)\n", .{ seat.name(), program }) catch return);
+            // #3759 (fifth item): same settled-negative fallback as the
+            // not-found branch — the shim owns the replay now.
+            if (!wm_server.registered()) restore_windows();
         },
     }
 }
@@ -3894,7 +3903,13 @@ fn park_body(mon: *monitor.Monitor) callconv(.c) void {
     load_history(&shell.editor);
     load_env(); // M19 P3: restore persistent environment
     // M21 W11: restore window state from previous session.
-    restore_windows();
+    // #3759 (fifth item): only when this boot will have NO seat — under a
+    // configured seat the replay decision (and the adopting owner) is the
+    // seat's own slot-65 PERSIST verb, not the kernel's. A configured seat
+    // that cannot bind lands the same shim restore through the
+    // seat_impossible path in the autostart below; the replay is
+    // once-per-boot whichever channel owns it.
+    if (settings.wm_seat_kind() == .none) restore_windows();
 
     // M18 T14: run startup file (.virelairc) if present on the host
     // share (HF6: the ESP window is gone).
@@ -4255,62 +4270,24 @@ fn persist_window_state_tick() void {
     }
 }
 
-/// M21 W11: save current window state to ESP as WINDOWS.SAV.
-///
-/// #563: skip the write when the serialized state is byte-identical to the
-/// last one actually written. The persist tick fires every 300 idle cycles
-/// — at the real (~250 Hz) idle-loop rate that is roughly once a second —
-/// and each write's cluster-allocation scan reads ~170 FAT sectors (the
-/// ESP's file region spans ~21.8k clusters). A stable desktop was rewriting
-/// identical WINDOWS.SAV content every tick, keeping the virtio-blk
-/// transport continuously busy and starving concurrent reads (the
-/// verify-live-desktop CALC exec hit a transport timeout and surfaced as
-/// ENOENT). Unchanged state is not persisted: no disk traffic, same
-/// restore semantics.
-var last_saved_windows: [driving_award.persist_max_bytes]u8 = undefined;
-var last_saved_windows_len: usize = 0;
-var have_last_saved_windows: bool = false;
+/// M21 W11: save current window state to the share's WINDOWS.SAV.
+/// #3759 (fifth item): the write itself moved into driving_award.persist —
+/// the same applied operation the seat's slot-65 PERSIST save lands on.
+/// The kernel's tick stays the baseline record-keeper: it is the shim
+/// fallback when no seat is registered AND the bookkeeping a seat that
+/// never issues a save decision still gets (the file stays fresh under
+/// any registrant; the #563 dedup makes a seat-driven save + this tick
+/// coexist without double writes).
 fn save_windows() void {
-    var buf: [driving_award.persist_max_bytes]u8 = undefined;
-    const n = driving_award.serialize_state(&buf);
-    if (have_last_saved_windows and last_saved_windows_len == n and std.mem.eql(u8, last_saved_windows[0..n], buf[0..n])) return;
-    // M34 HF6 (issue #740): WINDOWS.SAV lives on the host share.
-    // M50 TS2 (ADR 0024 D4): the kernel-actor gate (secret paths deny).
-    // #2865: an empty live set is persisted TOO — restored phantoms are
-    // never re-serialized, so a stale file would otherwise replay the
-    // same dead rows every boot forever (a fixed-point leak, not
-    // accumulation but the same ghost). Delete it; absent is already the
-    // goal state.
-    if (n == 0) {
-        if (trust.check(trust.kernel_actor(), .host, "WINDOWS.SAV", .delete) != .allow) return;
-        const dst = virtio_file.delete("WINDOWS.SAV");
-        if (dst == virtio_file.st_ok or dst == virtio_file.st_not_found) {
-            last_saved_windows_len = 0;
-            have_last_saved_windows = true;
-        }
-        return;
-    }
-    if (trust.check(trust.kernel_actor(), .host, "WINDOWS.SAV", .write) != .allow) return;
-    if (virtio_file.write_whole("WINDOWS.SAV", buf[0..n]) == virtio_file.st_ok) {
-        @memcpy(last_saved_windows[0..n], buf[0..n]);
-        last_saved_windows_len = n;
-        have_last_saved_windows = true;
-    }
+    driving_award.persist_save();
 }
 
 /// M21 W11: restore window state from the share's WINDOWS.SAV (if it
-/// exists). HF6: the ESP window is gone.
+/// exists). HF6: the ESP window is gone. #3759 (fifth item): the replay
+/// rides `driving_award.persist_restore` — the same primitive the seat's
+/// PERSIST verb applies — and the shim keeps the sentinel owner 99.
 fn restore_windows() void {
-    var content: [driving_award.persist_max_bytes]u8 = undefined;
-    const n_opt = blk: {
-        if (trust.check(trust.kernel_actor(), .host, "WINDOWS.SAV", .read) != .allow) break :blk null;
-        const taken = acquire_file_lock();
-        defer release_file_lock(taken);
-        break :blk virtio_file.read_whole("WINDOWS.SAV", &content);
-    };
-    const n = n_opt orelse return;
-    if (n == 0) return;
-    _ = driving_award.restore_state(content[0..n], 99);
+    _ = driving_award.persist_restore(99);
 }
 
 /// Idle between input polls in RX-wired mode: a bounded nop delay, not WFE.

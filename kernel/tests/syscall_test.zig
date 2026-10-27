@@ -3261,6 +3261,63 @@ test "syscall: LAYOUT (cmd 17, #3759) applies the seat's window-policy decisions
     }
 }
 
+test "syscall: PERSIST (cmd 26, #3759) applies the seat's save/restore decisions through the kept path" {
+    userspace.init();
+    init(test_writer);
+    wm_server.init();
+    _ = scheduler.init();
+    _ = scheduler.register_worker(0x2000);
+    _ = scheduler.register_user(0x3000, 0); // task 2 = process 0 (boot payload)
+    scheduler.start();
+    var frame = fresh_frame();
+    try std.testing.expect(scheduler.yield_current()); // shell -> user (2)
+
+    // No WM registered: PERSIST -> ENOSYS (the ADR 0007 "no WM" case).
+    try std.testing.expectEqual(error_result(.enosys), dispatch(sys_wmctl, .{ wm_server.wmctl_persist, wm_server.persist_save_action, 0, 0, 0, 0 }, &frame));
+
+    // Boot 1: a live window serializes to one record — the file the next
+    // boot's replay would read.
+    const o2 = driving_award.user_open(64, 64, 400, 300, 0);
+    try std.testing.expectEqual(@as(u8, 2), o2.opened);
+    var sav: [driving_award.persist_max_bytes]u8 = undefined;
+    const saved = driving_award.serialize_state(&sav);
+    try std.testing.expectEqual(driving_award.persist_record_bytes, saved);
+    _ = driving_award.user_close(2);
+
+    // Seed the WM as pid 0.
+    try std.testing.expect(wm_server.register(0));
+
+    // Unknown action -> EINVAL (not counted).
+    try std.testing.expectEqual(error_result(.einval), dispatch(sys_wmctl, .{ wm_server.wmctl_persist, 77, 0, 0, 0, 0 }, &frame));
+    try std.testing.expectEqual(@as(u64, 0), wm_server.info().persist_count);
+
+    // Save: applied through the kernel's own path — returns 0 (the write
+    // refuses honestly with no armed channel; the dedup stays unarmed).
+    try std.testing.expectEqual(@as(u64, 0), dispatch(sys_wmctl, .{ wm_server.wmctl_persist, wm_server.persist_save_action, 0, 0, 0, 0 }, &frame));
+
+    // Restore: WINDOWS.SAV rides the test share; the seat names owner 7 —
+    // the replay lands as a phantom under THE SEAT'S adoption pick (the
+    // shim fallback's sentinel 99 is a decision, not a constant).
+    const files = [_]virtio_file.TestFile{.{ .name = "WINDOWS.SAV", .data = sav[0..saved] }};
+    virtio_file.set_test_share(&files);
+    defer virtio_file.set_test_share(null);
+    try std.testing.expectEqual(@as(u64, 1), dispatch(sys_wmctl, .{ wm_server.wmctl_persist, wm_server.persist_restore_action, 7, 0, 0, 0 }, &frame));
+    const w = driving_award.find_user_window(2).?;
+    try std.testing.expect(w.phantom);
+    try std.testing.expectEqual(@as(?usize, 7), w.owner);
+
+    // Once per boot: a re-issue reports 0 — no duplicate phantom stack on
+    // the same records. It is still an accepted submission, so the counter
+    // sees all three (save + restore + re-issue).
+    try std.testing.expectEqual(@as(u64, 0), dispatch(sys_wmctl, .{ wm_server.wmctl_persist, wm_server.persist_restore_action, 7, 0, 0, 0 }, &frame));
+    try std.testing.expectEqual(@as(u64, 3), wm_server.info().persist_count);
+
+    // Teardown: input ownership returns to the shim.
+    try std.testing.expect(wm_server.unregister(0));
+    try std.testing.expect(!driving_award.wm_owns_input);
+    _ = driving_award.user_close(2);
+}
+
 test "syscall: NOTIF_CENTER / NOTIF_DISMISS (cmd 6/7, claim 7557) drive the center from the WM's decision" {
     userspace.init();
     init(test_writer);

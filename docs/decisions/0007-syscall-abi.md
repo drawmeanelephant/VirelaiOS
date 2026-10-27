@@ -2961,3 +2961,26 @@ increments the seat's `notif_get` counter in the `wm` monitor report like
 every other verb. The seat paints the toasts + center it owns into the
 scanout it holds; the kernel's `draw_chrome` painters stay as the no-seat
 shim fallback and the unbound-seat render path, byte-identical.
+
+### Amendment (2026-10-27, #3759 fifth item — slot-65 cmd 26 `PERSIST`, the seat's session-persistence decision channel)
+
+The persist.zig drain (#3754 split, fifth checklist item of #3759) moves
+session-persistence POLICY to the seat: when to save, when to replay, and
+which owner adopts the replayed phantom records. The records themselves and
+the serialize/replay primitives stay kernel facts — `PERSIST` (cmd 26) is
+the decision channel, applying the same applied operation the shim's boot
+restore and idle-tick save run (parity by construction).
+
+| PERSIST | `WMCTL_PERSIST` | 26 | a0 = action: 0 save (serialize the live window set + write `WINDOWS.SAV`), 1 restore (replay each record as a phantom adopted by owner a1) | save → 0; restore → restored record count | `ENOSYS` no WM; `EACCES` caller not the WM; `EINVAL` unknown action |
+
+A replay is consumed once per boot whichever channel lands first — a
+re-issued restore returns 0 rather than stacking a duplicate phantom set on
+the same records. The kernel's boot restore now runs only when no seat is
+configured (`wm=none`) or the seat question settled negative
+(`seat_impossible`: the configured program is missing or failed to load and
+no seat has bound); a configured seat that binds owns the replay decision
+itself. The kernel's idle save tick is unchanged — it is the baseline
+record-keeper under any registrant and the shim fallback when no seat is
+registered; the seat's save decisions ride the same dedup'd write path.
+Each accepted submission increments the `persist` counter in the `wm`
+monitor report.
