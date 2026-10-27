@@ -320,7 +320,7 @@ pub fn cmd_dui(m: *Monitor, args: []const []const u8) ExecError {
             }
             // The EL1h half of M21 W2's Ctrl+M chord: swap master/detail
             // (a no-op unless two windows are tiled).
-            driving_award.swap_master();
+            _ = driving_award.swap_master();
             _ = driving_award.composite();
             m.console.puts("dui master: side=");
             m.console.puts(if (driving_award.tile_master_side) "left" else "right");

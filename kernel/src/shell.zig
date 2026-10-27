@@ -4080,8 +4080,9 @@ fn park_body(mon: *monitor.Monitor) callconv(.c) void {
             // always-on-top/workspace switch+cycle); the applied primitives
             // remain, driven by the `dui` monitor commands + SET_STATE, and
             // the matrix re-runs green through them.
-            // M21 W10: Alt+arrow keyboard window movement (KEPT — no WM
-            // coverage yet).
+            // M21 W10: Alt+arrow keyboard window movement (KEPT as the
+            // shim fallback — #3759 routed the seat's coverage through
+            // slot-65 LAYOUT cmd 17).
             if (input.take_move()) |mv| {
                 const fid = driving_award.focused_window_id();
                 if (driving_award.move_window_keyboard(fid, mv.dx, mv.dy)) {

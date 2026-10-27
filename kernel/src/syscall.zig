@@ -5555,6 +5555,60 @@ fn handle_wmctl(args: Args, _: *exceptions.VectorFrame) u64 {
             wm_server.note_taskbar();
             return 0;
         },
+        wm_server.wmctl_layout => {
+            // #3759 (first item — the layout.zig drain): the seat's
+            // per-window layout decisions. The kernel applies the SAME
+            // clamped primitives the shim/dui paths run (parity by
+            // construction), so the flag facts its own chrome/persist/hit
+            // paths consume (minimized, maximized, fullscreen_active,
+            // modal, transient, the tile roles) record the WM's decision
+            // exactly as a shim action would. a0 = window id, a1 =
+            // action, a2/a3 = action args. Seat-gated like every cmd.
+            if (!wm_server.registered()) return error_result(.enosys);
+            if (wm_server.registered_pid() != pid) return error_result(.eacces);
+            const action = args[2];
+            if (action == wm_server.layout_dismiss_transients) {
+                driving_award.dismiss_transients();
+                wm_server.note_layout();
+                return 0;
+            }
+            const window_id = args[1];
+            if (window_id > 0xff) return error_result(.einval);
+            const id: u8 = @intCast(window_id);
+            const applied = switch (action) {
+                wm_server.layout_tile_toggle => driving_award.toggle_tiling_for(id),
+                wm_server.layout_swap_master => driving_award.swap_master(),
+                wm_server.layout_minimize => driving_award.minimize_window(id),
+                wm_server.layout_restore => driving_award.restore_from_dock(id),
+                wm_server.layout_maximize => driving_award.toggle_maximize(id),
+                wm_server.layout_fullscreen => driving_award.toggle_fullscreen(id),
+                wm_server.layout_always_on_top => driving_award.toggle_always_on_top(id),
+                wm_server.layout_modal => blk: {
+                    if (args[3] > 1) return error_result(.einval);
+                    break :blk driving_award.set_modal(id, args[3] != 0);
+                },
+                wm_server.layout_transient => blk: {
+                    if (args[3] > std.math.maxInt(u32)) return error_result(.einval);
+                    break :blk driving_award.set_transient(id, @intCast(args[3]));
+                },
+                wm_server.layout_kmove, wm_server.layout_kresize => blk: {
+                    // a2/a3 carry i32 deltas in their low 32 bits; a value
+                    // that does not fit its field is refused, never
+                    // silently narrowed (the M182b discipline).
+                    if (args[3] > 0xffff_ffff or args[4] > 0xffff_ffff) return error_result(.einval);
+                    const a2s: i32 = @bitCast(@as(u32, @truncate(args[3])));
+                    const a3s: i32 = @bitCast(@as(u32, @truncate(args[4])));
+                    break :blk if (action == wm_server.layout_kmove)
+                        driving_award.move_window_keyboard(id, a2s, a3s)
+                    else
+                        driving_award.resize_window_keyboard(id, a2s, a3s);
+                },
+                else => return error_result(.einval), // unknown action
+            };
+            if (!applied) return error_result(.einval);
+            wm_server.note_layout();
+            return 0;
+        },
         wm_server.wmctl_win_close => {
             // M42 UX (2026-09-05, TABWM tab-close seam): the WM — not the
             // kernel — decides WHEN a window closes (the tab 'x' click);

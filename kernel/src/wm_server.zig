@@ -183,6 +183,35 @@ pub const wmctl_gpu3d: u64 = 22;
 /// owner gets the KEY_DOWN/KEY_UP pair. Seat-gated like every other
 /// subcommand; no existing opcode or arg layout changes.
 pub const wmctl_content_key: u64 = 23;
+/// #3759 (first item — the driving_award `layout.zig` drain): LAYOUT —
+/// the seat's decision channel for the M21 window-policy surface the
+/// kernel still owns as the no-seat fallback: tiling, minimize/restore,
+/// maximize, fullscreen, always-on-top, modal, transient, and keyboard
+/// move/resize. The WM — not the kernel — decides WHICH window and WHICH
+/// action; the kernel applies the SAME clamped primitives the shim/dui
+/// paths run (parity by construction), so the flag facts the kernel's
+/// own chrome/persist/hit paths consume (minimized, maximized,
+/// fullscreen_active, modal, transient, the tile roles) record the WM's
+/// decision exactly as a shim action would — facts a bare SET_WINDOW
+/// rect or SET_STATE hide cannot express. a0 = window id, a1 = action,
+/// a2/a3 = action args. Fills the 17 hole in the frozen slot-65 table
+/// (cmds 18–20 are the S6 tab ops); the ADR 0007 numbering amendment.
+pub const wmctl_layout: u64 = 17;
+/// LAYOUT actions (a1) — each names the kernel primitive it applies.
+/// Actions 1–9 take a0 = the window id; 10 ignores a0; 11/12 take
+/// a2/a3 = the signed move/resize deltas (two's-complement u32 lanes).
+pub const layout_tile_toggle: u64 = 1;
+pub const layout_swap_master: u64 = 2;
+pub const layout_minimize: u64 = 3;
+pub const layout_restore: u64 = 4;
+pub const layout_maximize: u64 = 5;
+pub const layout_fullscreen: u64 = 6;
+pub const layout_always_on_top: u64 = 7;
+pub const layout_modal: u64 = 8; // a2 = 0 clear / 1 set
+pub const layout_transient: u64 = 9; // a2 = timeout in composite ticks
+pub const layout_dismiss_transients: u64 = 10; // a0/a2/a3 ignored
+pub const layout_kmove: u64 = 11; // a2 = dx, a3 = dy
+pub const layout_kresize: u64 = 12; // a2 = dw, a3 = dh
 /// #3348 (ADR 0015 additive): CURSOR_SHAPE — the registered seat selects
 /// which staged cursor mask the kernel stamps over the composed frame
 /// (driving_award.cursor_set, the f-artcraft #1249 drop). a1 = the
@@ -352,6 +381,10 @@ var overview_count: u64 = 0;
 /// M102d1 (issue #2166): GPU3D (cmd 22) submissions accepted — the
 /// bounded render decisions the seat relayed. Refusals never count.
 var gpu3d_count: u64 = 0;
+/// #3759: LAYOUT (cmd 17) submissions accepted — the seat's window-layout
+/// policy decisions (tiling/minimize/maximize/fullscreen/aot/modal/
+/// transient/kbd move+resize) applied by the kernel's kept primitives.
+var layout_count: u64 = 0;
 /// Set when the registered WM exits (teardown) — the shell idle loop drains
 /// this into the `wm: unregistered, shim resumed` report (the exit path is
 /// IRQ context and console-free, so the report is drained like the process
@@ -393,6 +426,12 @@ fn release_wm_captures() void {
     // WM's pending choice dies with the WM — the kernel never auto-applies
     // a dead compositor's save/discard decision to a live client window.
     driving_award.unsaved_dialog_cancel();
+    // #3759 (cmd 17 LAYOUT): a seat-entered fullscreen keeps the
+    // taskbar/dock hidden and a seat-declared modal wedges the shim's
+    // click gate — both are modalities the resumed shim cannot dismiss.
+    // Minimized/maximized/aot/transient stay: per-window state with live
+    // shim consumers, not captures (see release_seat_layout).
+    driving_award.release_seat_layout();
 }
 
 /// Reset the seam (kernel boot + host-test setups).
@@ -430,6 +469,7 @@ pub fn init() void {
     tab_activate_count = 0;
     overview_count = 0;
     gpu3d_count = 0;
+    layout_count = 0;
     // M102d1 (#2166): a seam reset strands no GPU3D context (records bind
     // to windows/seat — pure BSS wipe, no device I/O).
     gpu3d_broker.reset_state();
@@ -810,8 +850,10 @@ pub const WmInfo = struct {
     taskbar_count: u64,
     win_close_count: u64,
     overview_count: u64,
-    /// M102d1 (#2166): accepted GPU3D (cmd 22) submissions.
+    /// M102d1 (issue #2166): accepted GPU3D (cmd 22) submissions.
     gpu3d_count: u64,
+    /// #3759: accepted LAYOUT (cmd 17) submissions.
+    layout_count: u64,
     pointer_fan_count: u64,
     window_mirror_count: u64,
     key_fan_count: u64,
@@ -851,6 +893,7 @@ pub fn info() WmInfo {
         .win_close_count = win_close_count,
         .overview_count = overview_count,
         .gpu3d_count = gpu3d_count,
+        .layout_count = layout_count,
         .pointer_fan_count = pointer_fan_count,
         .window_mirror_count = window_mirror_count,
         .key_fan_count = key_fan_count,
@@ -1034,6 +1077,12 @@ pub fn note_tab_activate() void {
 /// OVERVIEW submission — the WM's grid-policy decision applied.
 pub fn note_overview() void {
     overview_count +%= 1;
+}
+
+/// #3759: note one accepted LAYOUT (cmd 17) submission — the WM's
+/// window-layout policy decision applied by the kernel's kept primitives.
+pub fn note_layout() void {
+    layout_count +%= 1;
 }
 
 // ---------------------------------------------------------------------------

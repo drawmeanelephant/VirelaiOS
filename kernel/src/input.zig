@@ -662,8 +662,9 @@ pub fn decode_keyboard_report(rep: []const u8) void {
         // SET_WINDOW/SET_STATE). The Ctrl+Shift+A about chord was already
         // deleted in Gate 3. The WM serves these; the kernel no longer
         // self-decides them.
-        // M21 W10: Alt+arrow for keyboard window movement (KEPT — no WM
-        // coverage yet).
+        // M21 W10: Alt+arrow for keyboard window movement (KEPT as the
+        // shim fallback — #3759 gave the seat coverage through slot-65
+        // LAYOUT cmd 17; this consumer stays !wm_owns_input-gated).
         if (alt) {
             var dx: i32 = 0;
             var dy: i32 = 0;
