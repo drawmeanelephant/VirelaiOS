@@ -117,6 +117,12 @@ type Tab struct {
 	// noteRailBadges printed, so the marker reports transitions.
 	notifySeen uint32
 	badgeN     int
+	// #3348 (the WM_RPC region declare, kind 31): the app's own cursor
+	// zones — window-local rects and the staged shape each wants, at
+	// most regionSlotsMax. It rides the Tab value like navHist, so a
+	// reorder, a pin, or a space move carries it for free and a close
+	// frees it with the row; an empty slot is w=0/h=0.
+	regions [regionSlotsMax]appRegion
 }
 
 // TabStrip is the in-process tab list. The zero value is empty (unsplit).

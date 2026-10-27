@@ -1035,9 +1035,9 @@ func updateCursorShape(px, py uint32) {
 // state. Priority follows pointer ownership — an armed guest drag owns
 // every sample (and knows the manifest's drop verdict), then the
 // in-flight chrome drags (sash, rail reorder), then plain hover over the
-// seat's own resizable/grabbable surfaces; everything else is the arrow.
-// Text/link/busy picks have no hit-testable seat surface yet — they need
-// an app-declared region (the WM_RPC half of the seam), a later card.
+// seat's own resizable/grabbable surfaces, then the window's own
+// declared regions (the WM_RPC kind-31 half — text/link/busy zones only
+// the app can name); everything else is the arrow.
 func pickCursorShape(px, py uint32) uint64 {
 	switch {
 	case drag.armed:
@@ -1068,6 +1068,13 @@ func pickCursorShape(px, py uint32) uint64 {
 	}
 	if _, ok := railCellAt(px, py, vi.ScanoutWidth, tabs.Count(), RailHeight); ok {
 		return vi.CursorGrb
+	}
+	// #3348: the app-declared half of the seam — a hosted window's own
+	// zones (text/link/busy) win only here, behind every seat gesture
+	// and the rail chrome above; a modal surface or overlay covering
+	// the point keeps the arrow rather than picking the region beneath.
+	if shape, ok := regionShapeAt(px, py); ok {
+		return shape
 	}
 	return vi.CursorPtr
 }

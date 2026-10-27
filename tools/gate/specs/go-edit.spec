@@ -1277,6 +1277,8 @@ vgate_run 15 -- \
     --script2-after 'gotabwm: mode live' \
     --script3 '$RUN_DIR/script3-15.txt' \
     --script3-after 'goedit: settings subscribed key=theme' \
+    --pointer-virtio '400,300' \
+    --pointer-virtio-after 'gotabwm: region id=' \
     --input-string $'theme=light\n' \
     --input-string-after 'goset: ready ' \
     --snapshot-after 'goedit: present' \
@@ -1304,6 +1306,17 @@ vgate_assert 15 serial-contains 'goset: settings notified key=theme'
 vgate_assert 15 serial-contains 'gotabwm: settings broadcast key=theme listeners=1'
 # The repaint receipt prints after the light frame was presented.
 vgate_assert 15 serial-contains 'goedit: settings repaint key=theme value=light'
+# #3348 (the WM_RPC region declare, kind 31): GOEDIT names its document
+# band a txt zone at init — `goedit: regions txt` is the app's receipt,
+# `gotabwm: region id=` the seat's — and the bare hover at (400,300),
+# anchored on the seat's apply, picks the staged i-beam. The receipt
+# prints once, after the kernel accepts the pick (the go-wm-tabs run 07
+# discipline). The move lands while GOEDIT is still the only hosted
+# window: GOSET's exec is typed at 'settings subscribed' but its
+# win_open reaches the mirror seconds after the hover sample does.
+vgate_assert 15 serial-contains 'goedit: regions txt'
+vgate_assert 15 serial-contains 'gotabwm: region id='
+vgate_assert 15 serial-contains 'gotabwm: cursor shape txt'
 vgate_assert 15 serial-contains 'gotabwm: alt-tab id='
 # The typed q landed in the focused GOEDIT buffer — caret stays on line 2,
 # column moves to 4, the dirty flag joins the status.

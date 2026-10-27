@@ -254,6 +254,10 @@ const (
 	markerSelPaste = "goedit: sel-paste "
 	markerRepl     = "goedit: replace '"
 	markerReplAll  = "goedit: replace-all '"
+	// #3348: the kind-31 region declare's receipt — printed when the seat
+	// applies this window's declared cursor zone (the seat's `gotabwm:
+	// region id=` names the landed slot).
+	markerRegions = "goedit: regions txt"
 
 	// M138b (#2776): bracket matching and format-on-save. `match jump
 	// off=` is a landing, `match none` the caret-not-on-a-bracket (or
@@ -777,6 +781,9 @@ func main() {
 	if settings.Subscribe("theme", uint32(ta.Win), ta.Name) {
 		vi.ConsoleLine(markerThemeSub)
 	}
+	// #3348: publish the cursor zones once the bind exists — the seat
+	// holds window-local rects, so WIN_RESIZE re-declares below.
+	e.declareRegions()
 
 	// M166a: the boot buffer is ring slot 0 — materialize the ring after
 	// noteState had its say on the path, then load. applyRestored appends
@@ -861,6 +868,7 @@ func main() {
 			vi.ConsoleLine(markerOK)
 			ta.CloseAndExit(0)
 		case tabapp.ActionResized:
+			e.declareRegions()
 			e.draw()
 			ta.Present()
 			e.bannerFlush()
@@ -2592,6 +2600,37 @@ func (e *editor) pollThemeChange() (key, value string, applied bool) {
 		return "", "", false
 	}
 	return key, value, true
+}
+
+// declareRegion is the kind-31 syscall seam (vi.DeclareRegion in the
+// guest); the indirection lets host tests pin the declared geometry
+// without a guest kernel.
+var declareRegion = vi.DeclareRegion
+
+// declareRegions publishes this window's cursor zones to the seat (the
+// kind-31 WM_RPC seam, #3348): the document band is editable text — the
+// staged txt pick — while the chrome row (menus, buffer tabs, status)
+// and the minimap column keep the arrow, so slot 0 stops short of each.
+// Re-issued on every WIN_RESIZE because the seat holds the window-local
+// rect verbatim and does not rescale it. A refused declare — the Zig
+// seats know no kind 31 — degrades to the arrow and nothing else
+// changes.
+func (e *editor) declareRegions() {
+	if e.ta == nil || !e.ta.TabAware {
+		return
+	}
+	w, h := int(e.ta.W), int(e.ta.H)
+	right := w
+	if e.minimap {
+		right -= miniW
+	}
+	if right <= 0 || h <= chromeH {
+		return
+	}
+	if declareRegion(uint32(e.ta.Win), 0, vi.CursorTxt,
+		0, chromeH, uint16(right), uint16(h-chromeH), appTitle, appName) {
+		vi.ConsoleLine(markerRegions)
+	}
 }
 
 // miniW is the minimap column's width in pixels.
