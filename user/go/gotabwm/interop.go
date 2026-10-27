@@ -696,6 +696,8 @@ func applyRPC(req vi.WmRpc) bool {
 		return serveSelPublish(req)
 	case vi.WmRpcKindSelPaste: // 28, client -> seat: pull the primary buffer
 		return serveSelPaste(req)
+	case vi.WmRpcKindRegionDeclare: // 31, client -> seat: declare a cursor zone
+		return serveRegionDeclare(req)
 	case vi.WmRpcKindSettingsSubscribe: // 13, client -> seat: subscribe to one key
 		return applySettingsSubscribe(req)
 	case vi.WmRpcKindSettingsPublish: // 14, writer -> seat: a persisted key changed
