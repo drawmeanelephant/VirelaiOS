@@ -478,6 +478,47 @@ else
     printf 'FAIL lane: --app — got:\n%s\n' "$out" >&2
 fi
 
+# case 29: a foreign path cited before the app's own does not steer the
+# scan — the #3792 regression. The GOTOP audit cites
+# `user/go/gotabwm/apps.go` (a dock= caveat) ahead of `user/go/top`;
+# first-citation resolution read the SEAT's winW=256/winH=192 as GOTOP's
+# declared window and filed a false layout finding against the 512x412
+# design frame. Resolution must pick the app's own dir: binbase
+# candidates first, and among citations the one naming the app.
+
+if python3 - "$LANE" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("lane", sys.argv[1])
+lane = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(lane)
+# The audit cites the seat first, the app second.
+body = ("Manifest row mentions (user/go/gotabwm/apps.go:22, M190c). "
+        "Observed from `user/go/top`.")
+ok = True
+p = lane.declared_path(body, "GOTOP.ELF")
+if str(p) != "user/go/top":
+    print("declared_path picked %s over user/go/top" % p); ok = False
+d = lane.app_source_dir(body, "GOTOP.ELF")
+if str(d) != "user/go/top":
+    print("app_source_dir picked %s over user/go/top" % d); ok = False
+# A body citing ONLY a foreign path still lands on the app dir.
+d2 = lane.app_source_dir("caveat (user/go/gotabwm/apps.go:22).",
+                         "GOTOP.ELF")
+if str(d2) != "user/go/top":
+    print("foreign-only citation steered to %s" % d2); ok = False
+# A non-conforming app keeps citation steering when binbase misses.
+d3 = lane.app_source_dir("Observed (code, `user/go/svg/`).", "FAKEZ.ELF")
+if str(d3) != "user/go/svg":
+    print("non-conforming citation lost: %s" % d3); ok = False
+sys.exit(0 if ok else 1)
+PY
+then
+    pass=$((pass + 1)); printf 'ok   lane: foreign citation cannot steer the scan\n'
+else
+    failn=$((failn + 1))
+    printf 'FAIL lane: foreign-citation steering (#3792)\n' >&2
+fi
+
 echo
 if [ "$failn" -eq 0 ]; then
     echo "test-coordination: $pass/$((pass + failn)) PASS"

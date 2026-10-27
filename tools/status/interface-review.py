@@ -217,20 +217,55 @@ def claim_touches(claims, app_paths):
 # Per-app checks. Each returns findings [(cls, text)] and notes [text].
 # ---------------------------------------------------------------------------
 
-def declared_path(audit_body):
+def binbase_candidates(binbase):
+    """The fleet's conventional source paths for a binary, in trust
+    order: `user/go/<bin>`, `user/go/<bin minus the GO prefix>`
+    (GOTOP.ELF's package is user/go/top), `user/src/<bin>.zig`. When one
+    exists on disk it IS the app — the build scripts derive the package
+    dir from the binary name the same way."""
+    b = binbase.split(".")[0].lower()
+    out = [f"user/go/{b}"]
+    if b.startswith("go"):
+        out.append(f"user/go/{b[2:]}")
+    return out + [f"user/src/{b}.zig"]
+
+
+def declared_path(audit_body, binbase=""):
     """The `user/...` path the audit names as evidence — existence not
-    required (a claim on it still holds the app's files)."""
-    m = re.search(r"`?(user/(?:go|src)/[\w./-]+)`?", audit_body or "")
-    if not m:
+    required (a claim on it still holds the app's files).
+
+    An audit cites neighbouring paths too — a seat file, a doc — so the
+    body's FIRST citation is not necessarily the app's: #3792's false
+    "shipped window 256x192" was the seat's own winW/winH read out of a
+    `user/go/gotabwm/apps.go` citation ahead of `user/go/top`. Prefer a
+    citation naming the app itself — a binbase candidate or a file
+    inside a candidate dir — and fall back to the first."""
+    cands = [m.group(1).rstrip("/")
+             for m in re.finditer(r"`?(user/(?:go|src)/[\w./-]+)`?",
+                                  audit_body or "")]
+    if not cands:
         return None
-    return Path(m.group(1).rstrip("/"))
+    canon = binbase_candidates(binbase)
+    for c in cands:
+        if c in canon or any(c.startswith(d + "/") for d in canon):
+            return Path(c)
+    return Path(cands[0])
 
 
 def app_source_dir(audit_body, binbase):
     """The app's source dir/file ON DISK, for the checks themselves.
     user/go/<dir>/file.go resolves to the dir (the app is the package);
-    user/src/<file>.zig is the single-file app itself."""
-    p = declared_path(audit_body)
+    user/src/<file>.zig is the single-file app itself.
+
+    The binbase candidates check BEFORE the audit's declared path: a
+    conventional dir that exists is the app by definition, while a body
+    citation can name a neighbour — the #3792 false finding read
+    user/go/gotabwm's window consts as GOTOP's. The citation still
+    steers apps whose source follows no convention."""
+    for cand in binbase_candidates(binbase):
+        if (ROOT / cand).exists():
+            return Path(cand)
+    p = declared_path(audit_body, binbase)
     if p is not None:
         if p.suffix in (".go", ".zig") and (ROOT / p).is_file():
             if p.parts[1] == "go":
@@ -238,11 +273,6 @@ def app_source_dir(audit_body, binbase):
             return p
         if (ROOT / p).is_dir():
             return p
-    b = binbase.lower()
-    for cand in (f"user/go/{b}", f"user/go/{b[2:] if b.startswith('go') else b}",
-                 f"user/src/{b}.zig"):
-        if (ROOT / cand).exists():
-            return Path(cand)
     return None
 
 
@@ -250,7 +280,7 @@ def app_paths(audit_body, bin_):
     """The surface a claim Touches would hold: the audit-declared path,
     the resolved source dir, and every spec asserting the app's markers."""
     out = set()
-    p = declared_path(audit_body)
+    p = declared_path(audit_body, bin_)
     if p is not None:
         out.add(p.as_posix().rstrip("/"))
         if p.suffix in (".go", ".zig"):
