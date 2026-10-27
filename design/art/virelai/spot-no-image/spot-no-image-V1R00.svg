@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="160" height="120" viewBox="0 0 160 120">
+  <defs>
+    <linearGradient id="linear-gradient-1" x1="44" y1="24" x2="116" y2="100" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#e8edf5"/>
+      <stop offset="1" stop-color="#b7c2d4"/>
+    </linearGradient>
+  </defs>
+  <title>VirelaiOS — spot no image</title>
+  <g id="Layer_1" data-name="Layer 1">
+    <path id="card" d="M39.1 29.4 L110.4 19.4 L120.9 94.6 L49.6 104.6 Z" fill="url(#linear-gradient-1)" stroke="#503139" stroke-width="4.5" stroke-linejoin="round"/>
+    <path id="window" d="M48.1 36.2 L103.6 28.4 L110 73.9 L54.5 81.7 Z" fill="#232b3a" stroke="#503139" stroke-width="3.5" stroke-linejoin="round"/>
+    <path id="ghost_mountains" data-name="ghost mountains" d="M57.6 75.2 L68.7 53.5 L78 62.3 L86 47 L105.2 68.6" fill="none" stroke="#8b98a5" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="5 6" opacity="0.7"/>
+    <path id="ghost_sun" data-name="ghost sun" d="M57.353 44.143 C57.353 40.829 60.039 38.143 63.353 38.143 C66.666 38.143 69.353 40.829 69.353 44.143 C69.353 47.457 66.666 50.143 63.353 50.143 C60.039 50.143 57.353 47.457 57.353 44.143 Z" fill="none" stroke="#8b98a5" stroke-width="3" stroke-miterlimit="10" stroke-dasharray="4 5" opacity="0.7"/>
+    <path id="caption" d="M62.111 92.789 L105.683 86.666" fill="none" stroke="#b7c2d4" stroke-width="5" stroke-linecap="round" stroke-miterlimit="10" opacity="0.8"/>
+    <path id="pin" d="M69.711 22.37 C69.711 19.608 71.95 17.37 74.711 17.37 C77.473 17.37 79.711 19.608 79.711 22.37 C79.711 25.131 77.473 27.37 74.711 27.37 C71.95 27.37 69.711 25.131 69.711 22.37 Z" fill="#e04b35" stroke="#503139" stroke-width="3.5" stroke-miterlimit="10"/>
+  </g>
+</svg>

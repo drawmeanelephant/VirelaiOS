@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="64" height="64" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="linear-gradient-1" x1="4" y1="32" x2="60" y2="32" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2e2e4a"/>
+      <stop offset="0.55" stop-color="#23233a"/>
+      <stop offset="1" stop-color="#181828"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-2" x1="10" y1="17" x2="54" y2="17" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7a7aa8" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#7a7aa8" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <title>icon-goinfer-V1R00</title>
+  <g id="Layer_1" data-name="Layer 1">
+    <path id="plate" d="M18 4 L46 4 C55.333 4 60 8.667 60 18 L60 46 C60 55.333 55.333 60 46 60 L18 60 C8.667 60 4 55.333 4 46 L4 18 C4 8.667 8.667 4 18 4 Z" fill="url(#linear-gradient-1)" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="sheen" d="M18 8 L46 8 C51.333 8 54 10.667 54 16 L54 18 C54 23.333 51.333 26 46 26 L18 26 C12.667 26 10 23.333 10 18 L10 16 C10 10.667 12.667 8 18 8 Z" fill="url(#linear-gradient-2)"/>
+    <path id="star_big" data-name="star big" d="M32 15 C37.6 26.4 37.6 26.4 49 32 C37.6 37.6 37.6 37.6 32 49 C26.4 37.6 26.4 37.6 15 32 C26.4 26.4 26.4 26.4 32 15 Z" fill="#7fd4c8" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="star_small" data-name="star small" d="M20 38.5 C22.1 42.4 22.1 42.4 26 44.5 C22.1 46.6 22.1 46.6 20 50.5 C17.9 46.6 17.9 46.6 14 44.5 C17.9 42.4 17.9 42.4 20 38.5 Z" fill="#e6edf3" stroke="#503139" stroke-width="2.2" stroke-linejoin="round"/>
+    <path id="mote" d="M43.8 19 C43.8 17.785 44.785 16.8 46 16.8 C47.215 16.8 48.2 17.785 48.2 19 C48.2 20.215 47.215 21.2 46 21.2 C44.785 21.2 43.8 20.215 43.8 19 Z" fill="#e6edf3"/>
+  </g>
+</svg>

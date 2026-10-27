@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="32" height="32" viewBox="0 0 32 32">
+  <title>filetype-folder-V1R00</title>
+  <g id="Layer_1" data-name="Layer 1">
+    <path id="back" d="M4 9.5 C4 8.167 4.667 7.5 6 7.5 L11.5 7.5 C12.367 7.5 13.033 7.867 13.5 8.6 L15 10.8 L26 10.8 C27.333 10.8 28 11.367 28 12.5 L28 25 C28 26.333 27.333 27 26 27 L6 27 C4.667 27 4 26.333 4 25 Z" fill="#f5ac3c" stroke="#503139" stroke-width="2.4" stroke-linejoin="round"/>
+    <path id="front" d="M6.5 13.5 L25.5 13.5 C27.167 13.5 28 14.333 28 16 L28 24.5 C28 26.167 27.167 27 25.5 27 L6.5 27 C4.833 27 4 26.167 4 24.5 L4 16 C4 14.333 4.833 13.5 6.5 13.5 Z" fill="#fdb845" stroke="#503139" stroke-width="2.4" stroke-linejoin="round"/>
+  </g>
+</svg>

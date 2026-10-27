@@ -1,0 +1,559 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="608" height="328" viewBox="0 0 608 328">
+  <defs>
+    <linearGradient id="linear-gradient-1" x1="10" y1="36" x2="66" y2="36" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2e2e4a"/>
+      <stop offset="0.55" stop-color="#23233a"/>
+      <stop offset="1" stop-color="#181828"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-2" x1="16" y1="21" x2="60" y2="21" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7a7aa8" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#7a7aa8" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-3" x1="86" y1="36" x2="142" y2="36" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2e2e4a"/>
+      <stop offset="0.55" stop-color="#23233a"/>
+      <stop offset="1" stop-color="#181828"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-4" x1="92" y1="21" x2="136" y2="21" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7a7aa8" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#7a7aa8" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-5" x1="162" y1="36" x2="218" y2="36" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2e2e4a"/>
+      <stop offset="0.55" stop-color="#23233a"/>
+      <stop offset="1" stop-color="#181828"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-6" x1="168" y1="21" x2="212" y2="21" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7a7aa8" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#7a7aa8" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-7" x1="238" y1="36" x2="294" y2="36" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2e2e4a"/>
+      <stop offset="0.55" stop-color="#23233a"/>
+      <stop offset="1" stop-color="#181828"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-8" x1="244" y1="21" x2="288" y2="21" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7a7aa8" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#7a7aa8" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-9" x1="314" y1="36" x2="370" y2="36" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2e2e4a"/>
+      <stop offset="0.55" stop-color="#23233a"/>
+      <stop offset="1" stop-color="#181828"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-10" x1="320" y1="21" x2="364" y2="21" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7a7aa8" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#7a7aa8" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-11" x1="390" y1="36" x2="446" y2="36" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2e2e4a"/>
+      <stop offset="0.55" stop-color="#23233a"/>
+      <stop offset="1" stop-color="#181828"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-12" x1="396" y1="21" x2="440" y2="21" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7a7aa8" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#7a7aa8" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-13" x1="466" y1="36" x2="522" y2="36" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2e2e4a"/>
+      <stop offset="0.55" stop-color="#23233a"/>
+      <stop offset="1" stop-color="#181828"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-14" x1="472" y1="21" x2="516" y2="21" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7a7aa8" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#7a7aa8" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-15" x1="542" y1="36" x2="598" y2="36" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2e2e4a"/>
+      <stop offset="0.55" stop-color="#23233a"/>
+      <stop offset="1" stop-color="#181828"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-16" x1="548" y1="21" x2="592" y2="21" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7a7aa8" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#7a7aa8" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-17" x1="10" y1="118" x2="66" y2="118" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2e2e4a"/>
+      <stop offset="0.55" stop-color="#23233a"/>
+      <stop offset="1" stop-color="#181828"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-18" x1="16" y1="103" x2="60" y2="103" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7a7aa8" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#7a7aa8" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-19" x1="86" y1="118" x2="142" y2="118" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2e2e4a"/>
+      <stop offset="0.55" stop-color="#23233a"/>
+      <stop offset="1" stop-color="#181828"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-20" x1="92" y1="103" x2="136" y2="103" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7a7aa8" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#7a7aa8" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-21" x1="162" y1="118" x2="218" y2="118" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2e2e4a"/>
+      <stop offset="0.55" stop-color="#23233a"/>
+      <stop offset="1" stop-color="#181828"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-22" x1="168" y1="103" x2="212" y2="103" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7a7aa8" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#7a7aa8" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-23" x1="238" y1="118" x2="294" y2="118" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2e2e4a"/>
+      <stop offset="0.55" stop-color="#23233a"/>
+      <stop offset="1" stop-color="#181828"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-24" x1="244" y1="103" x2="288" y2="103" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7a7aa8" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#7a7aa8" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-25" x1="314" y1="118" x2="370" y2="118" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2e2e4a"/>
+      <stop offset="0.55" stop-color="#23233a"/>
+      <stop offset="1" stop-color="#181828"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-26" x1="320" y1="103" x2="364" y2="103" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7a7aa8" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#7a7aa8" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-27" x1="390" y1="118" x2="446" y2="118" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2e2e4a"/>
+      <stop offset="0.55" stop-color="#23233a"/>
+      <stop offset="1" stop-color="#181828"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-28" x1="396" y1="103" x2="440" y2="103" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7a7aa8" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#7a7aa8" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-29" x1="400" y1="118" x2="436" y2="118" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#bfebe0"/>
+      <stop offset="1" stop-color="#63bfb4"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-30" x1="466" y1="118" x2="522" y2="118" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2e2e4a"/>
+      <stop offset="0.55" stop-color="#23233a"/>
+      <stop offset="1" stop-color="#181828"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-31" x1="472" y1="103" x2="516" y2="103" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7a7aa8" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#7a7aa8" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-32" x1="542" y1="118" x2="598" y2="118" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2e2e4a"/>
+      <stop offset="0.55" stop-color="#23233a"/>
+      <stop offset="1" stop-color="#181828"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-33" x1="548" y1="103" x2="592" y2="103" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7a7aa8" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#7a7aa8" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-34" x1="10" y1="200" x2="66" y2="200" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2e2e4a"/>
+      <stop offset="0.55" stop-color="#23233a"/>
+      <stop offset="1" stop-color="#181828"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-35" x1="16" y1="185" x2="60" y2="185" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7a7aa8" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#7a7aa8" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-36" x1="86" y1="200" x2="142" y2="200" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2e2e4a"/>
+      <stop offset="0.55" stop-color="#23233a"/>
+      <stop offset="1" stop-color="#181828"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-37" x1="92" y1="185" x2="136" y2="185" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7a7aa8" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#7a7aa8" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-38" x1="162" y1="200" x2="218" y2="200" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2e2e4a"/>
+      <stop offset="0.55" stop-color="#23233a"/>
+      <stop offset="1" stop-color="#181828"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-39" x1="168" y1="185" x2="212" y2="185" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7a7aa8" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#7a7aa8" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-40" x1="238" y1="200" x2="294" y2="200" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2e2e4a"/>
+      <stop offset="0.55" stop-color="#23233a"/>
+      <stop offset="1" stop-color="#181828"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-41" x1="244" y1="185" x2="288" y2="185" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7a7aa8" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#7a7aa8" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-42" x1="314" y1="200" x2="370" y2="200" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2e2e4a"/>
+      <stop offset="0.55" stop-color="#23233a"/>
+      <stop offset="1" stop-color="#181828"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-43" x1="320" y1="185" x2="364" y2="185" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7a7aa8" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#7a7aa8" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-44" x1="390" y1="200" x2="446" y2="200" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2e2e4a"/>
+      <stop offset="0.55" stop-color="#23233a"/>
+      <stop offset="1" stop-color="#181828"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-45" x1="396" y1="185" x2="440" y2="185" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7a7aa8" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#7a7aa8" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-46" x1="466" y1="200" x2="522" y2="200" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2e2e4a"/>
+      <stop offset="0.55" stop-color="#23233a"/>
+      <stop offset="1" stop-color="#181828"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-47" x1="472" y1="185" x2="516" y2="185" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7a7aa8" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#7a7aa8" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-48" x1="542" y1="200" x2="598" y2="200" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2e2e4a"/>
+      <stop offset="0.55" stop-color="#23233a"/>
+      <stop offset="1" stop-color="#181828"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-49" x1="548" y1="185" x2="592" y2="185" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7a7aa8" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#7a7aa8" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-50" x1="10" y1="282" x2="66" y2="282" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2e2e4a"/>
+      <stop offset="0.55" stop-color="#23233a"/>
+      <stop offset="1" stop-color="#181828"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-51" x1="16" y1="267" x2="60" y2="267" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7a7aa8" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#7a7aa8" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-52" x1="86" y1="282" x2="142" y2="282" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2e2e4a"/>
+      <stop offset="0.55" stop-color="#23233a"/>
+      <stop offset="1" stop-color="#181828"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-53" x1="92" y1="267" x2="136" y2="267" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7a7aa8" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#7a7aa8" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-54" x1="162" y1="282" x2="218" y2="282" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2e2e4a"/>
+      <stop offset="0.55" stop-color="#23233a"/>
+      <stop offset="1" stop-color="#181828"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-55" x1="168" y1="267" x2="212" y2="267" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7a7aa8" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#7a7aa8" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-56" x1="238" y1="282" x2="294" y2="282" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2e2e4a"/>
+      <stop offset="0.55" stop-color="#23233a"/>
+      <stop offset="1" stop-color="#181828"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-57" x1="244" y1="267" x2="288" y2="267" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7a7aa8" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#7a7aa8" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-58" x1="314" y1="282" x2="370" y2="282" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2e2e4a"/>
+      <stop offset="0.55" stop-color="#23233a"/>
+      <stop offset="1" stop-color="#181828"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-59" x1="320" y1="267" x2="364" y2="267" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7a7aa8" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#7a7aa8" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-60" x1="390" y1="282" x2="446" y2="282" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2e2e4a"/>
+      <stop offset="0.55" stop-color="#23233a"/>
+      <stop offset="1" stop-color="#181828"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-61" x1="396" y1="267" x2="440" y2="267" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7a7aa8" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#7a7aa8" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-62" x1="466" y1="282" x2="522" y2="282" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2e2e4a"/>
+      <stop offset="0.55" stop-color="#23233a"/>
+      <stop offset="1" stop-color="#181828"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-63" x1="472" y1="267" x2="516" y2="267" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7a7aa8" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#7a7aa8" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <title>sheet-icons-V1R00</title>
+  <g id="Layer_1" data-name="Layer 1">
+    <path id="field" d="M0 0 L608 0 L608 328 L0 328 Z" fill="#1e1e2e"/>
+    <path id="plate" d="M24 8 L52 8 C61.333 8 66 12.667 66 22 L66 50 C66 59.333 61.333 64 52 64 L24 64 C14.667 64 10 59.333 10 50 L10 22 C10 12.667 14.667 8 24 8 Z" fill="url(#linear-gradient-1)" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="sheen" d="M24 12 L52 12 C57.333 12 60 14.667 60 20 L60 22 C60 27.333 57.333 30 52 30 L24 30 C18.667 30 16 27.333 16 22 L16 20 C16 14.667 18.667 12 24 12 Z" fill="url(#linear-gradient-2)"/>
+    <path id="back" d="M20 23 C20 21 21 20 23 20 L32 20 C33.333 20 34.333 20.5 35 21.5 L37 24 L53 24 C55 24 56 25 56 27 L56 48 C56 49.333 55 50 53 50 L23 50 C21 50 20 49.333 20 48 Z" fill="#f5ac3c" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="front" d="M24 29 L52 29 C54.667 29 56 30.333 56 33 L56 46 C56 48.667 54.667 50 52 50 L24 50 C21.333 50 20 48.667 20 46 L20 33 C20 30.333 21.333 29 24 29 Z" fill="#fdb845" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <text transform="matrix(1 0 0 1 38 76)" x="0" y="0" xml:space="preserve" font-family="&apos;Virelai Sans&apos;, sans-serif" font-size="8.5" fill="#94a3b8" text-anchor="middle"><tspan x="0" y="0">GOFILES</tspan></text>
+    <path id="plate-2" data-name="plate" d="M100 8 L128 8 C137.333 8 142 12.667 142 22 L142 50 C142 59.333 137.333 64 128 64 L100 64 C90.667 64 86 59.333 86 50 L86 22 C86 12.667 90.667 8 100 8 Z" fill="url(#linear-gradient-3)" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="sheen-2" data-name="sheen" d="M100 12 L128 12 C133.333 12 136 14.667 136 20 L136 22 C136 27.333 133.333 30 128 30 L100 30 C94.667 30 92 27.333 92 22 L92 20 C92 14.667 94.667 12 100 12 Z" fill="url(#linear-gradient-4)"/>
+    <path id="left_bracket" data-name="left bracket" d="M108 26 L99 36 L108 46" fill="none" stroke="#7fd4c8" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round"/>
+    <path id="right_bracket" data-name="right bracket" d="M120 26 L129 36 L120 46" fill="none" stroke="#7fd4c8" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round"/>
+    <path id="slash" d="M117.5 23 L110.5 49" fill="none" stroke="#f59e0b" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+    <text transform="matrix(1 0 0 1 114 76)" x="0" y="0" xml:space="preserve" font-family="&apos;Virelai Sans&apos;, sans-serif" font-size="8.5" fill="#94a3b8" text-anchor="middle"><tspan x="0" y="0">GOEDIT</tspan></text>
+    <path id="plate-3" data-name="plate" d="M176 8 L204 8 C213.333 8 218 12.667 218 22 L218 50 C218 59.333 213.333 64 204 64 L176 64 C166.667 64 162 59.333 162 50 L162 22 C162 12.667 166.667 8 176 8 Z" fill="url(#linear-gradient-5)" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="sheen-3" data-name="sheen" d="M176 12 L204 12 C209.333 12 212 14.667 212 20 L212 22 C212 27.333 209.333 30 204 30 L176 30 C170.667 30 168 27.333 168 22 L168 20 C168 14.667 170.667 12 176 12 Z" fill="url(#linear-gradient-6)"/>
+    <path id="window" d="M176 21 L204 21 C207.333 21 209 22.667 209 26 L209 46 C209 49.333 207.333 51 204 51 L176 51 C172.667 51 171 49.333 171 46 L171 26 C171 22.667 172.667 21 176 21 Z" fill="#0f0f1c" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="prompt" d="M177 29 L184 34 L177 39" fill="none" stroke="#22c55e" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/>
+    <path id="cursor" d="M187 42.5 L197 42.5" fill="none" stroke="#22c55e" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/>
+    <text transform="matrix(1 0 0 1 190 76)" x="0" y="0" xml:space="preserve" font-family="&apos;Virelai Sans&apos;, sans-serif" font-size="8.5" fill="#94a3b8" text-anchor="middle"><tspan x="0" y="0">GOTERM</tspan></text>
+    <path id="plate-4" data-name="plate" d="M252 8 L280 8 C289.333 8 294 12.667 294 22 L294 50 C294 59.333 289.333 64 280 64 L252 64 C242.667 64 238 59.333 238 50 L238 22 C238 12.667 242.667 8 252 8 Z" fill="url(#linear-gradient-7)" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="sheen-4" data-name="sheen" d="M252 12 L280 12 C285.333 12 288 14.667 288 20 L288 22 C288 27.333 285.333 30 280 30 L252 30 C246.667 30 244 27.333 244 22 L244 20 C244 14.667 246.667 12 252 12 Z" fill="url(#linear-gradient-8)"/>
+    <path id="sphere" d="M250 36 C250 27.163 257.163 20 266 20 C274.837 20 282 27.163 282 36 C282 44.837 274.837 52 266 52 C257.163 52 250 44.837 250 36 Z" fill="#3b82f6" stroke="#503139" stroke-width="3" stroke-miterlimit="10"/>
+    <path id="sphere_light" data-name="sphere light" d="M254.5 28 C257 23 263 20.5 268 21 C262 23 258 25.5 256 31 Z" fill="#7fb3fa"/>
+    <path id="meridian" d="M261.5 36 C261.5 27.716 263.515 21 266 21 C268.485 21 270.5 27.716 270.5 36 C270.5 44.284 268.485 51 266 51 C263.515 51 261.5 44.284 261.5 36 Z" fill="none" stroke="#bfdbfe" stroke-width="3" stroke-miterlimit="10"/>
+    <path id="equator" d="M251 36 L281 36" fill="none" stroke="#bfdbfe" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+    <text transform="matrix(1 0 0 1 266 76)" x="0" y="0" xml:space="preserve" font-family="&apos;Virelai Sans&apos;, sans-serif" font-size="8.5" fill="#94a3b8" text-anchor="middle"><tspan x="0" y="0">WEB</tspan></text>
+    <path id="plate-5" data-name="plate" d="M328 8 L356 8 C365.333 8 370 12.667 370 22 L370 50 C370 59.333 365.333 64 356 64 L328 64 C318.667 64 314 59.333 314 50 L314 22 C314 12.667 318.667 8 328 8 Z" fill="url(#linear-gradient-9)" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="sheen-5" data-name="sheen" d="M328 12 L356 12 C361.333 12 364 14.667 364 20 L364 22 C364 27.333 361.333 30 356 30 L328 30 C322.667 30 320 27.333 320 22 L320 20 C320 14.667 322.667 12 328 12 Z" fill="url(#linear-gradient-10)"/>
+    <path id="page" d="M330 17 L346 17 L352 23 L352 53 L330 53 Z" fill="#e6edf3" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="ear" d="M346 17 L352 23 L346 23 Z" fill="#cbd5e1" stroke="#503139" stroke-width="1.8" stroke-linejoin="round"/>
+    <path id="line_1" data-name="line 1" d="M334.7 29 L344.3 29 C345.1 29 345.5 29.4 345.5 30.2 L345.5 30.2 C345.5 31 345.1 31.4 344.3 31.4 L334.7 31.4 C333.9 31.4 333.5 31 333.5 30.2 L333.5 30.2 C333.5 29.4 333.9 29 334.7 29 Z" fill="#64748b"/>
+    <path id="line_2" data-name="line 2" d="M334.7 34 L344.3 34 C345.1 34 345.5 34.4 345.5 35.2 L345.5 35.2 C345.5 36 345.1 36.4 344.3 36.4 L334.7 36.4 C333.9 36.4 333.5 36 333.5 35.2 L333.5 35.2 C333.5 34.4 333.9 34 334.7 34 Z" fill="#64748b"/>
+    <path id="line_3" data-name="line 3" d="M334.7 39 L340.3 39 C341.1 39 341.5 39.4 341.5 40.2 L341.5 40.2 C341.5 41 341.1 41.4 340.3 41.4 L334.7 41.4 C333.9 41.4 333.5 41 333.5 40.2 L333.5 40.2 C333.5 39.4 333.9 39 334.7 39 Z" fill="#64748b"/>
+    <path id="pencil" d="M338.3 47.6 L353.1 32.8 L357.7 37.4 L342.9 52.2 Z" fill="#f59e0b" stroke="#503139" stroke-width="2.4" stroke-linejoin="round"/>
+    <path id="pencil_tip" data-name="pencil tip" d="M337 53.5 L340.5 47 L345 50.5 Z" fill="#3a2530" stroke="#503139" stroke-width="1.6" stroke-linejoin="round"/>
+    <text transform="matrix(1 0 0 1 342 76)" x="0" y="0" xml:space="preserve" font-family="&apos;Virelai Sans&apos;, sans-serif" font-size="8.5" fill="#94a3b8" text-anchor="middle"><tspan x="0" y="0">NOTE</tspan></text>
+    <path id="plate-6" data-name="plate" d="M404 8 L432 8 C441.333 8 446 12.667 446 22 L446 50 C446 59.333 441.333 64 432 64 L404 64 C394.667 64 390 59.333 390 50 L390 22 C390 12.667 394.667 8 404 8 Z" fill="url(#linear-gradient-11)" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="sheen-6" data-name="sheen" d="M404 12 L432 12 C437.333 12 440 14.667 440 20 L440 22 C440 27.333 437.333 30 432 30 L404 30 C398.667 30 396 27.333 396 22 L396 20 C396 14.667 398.667 12 404 12 Z" fill="url(#linear-gradient-12)"/>
+    <path id="body" d="M412 17 L424 17 C427.333 17 429 18.667 429 22 L429 50 C429 53.333 427.333 55 424 55 L412 55 C408.667 55 407 53.333 407 50 L407 22 C407 18.667 408.667 17 412 17 Z" fill="#e6edf3" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="screen" d="M413 21.5 L423 21.5 C424.333 21.5 425 22.167 425 23.5 L425 27 C425 28.333 424.333 29 423 29 L413 29 C411.667 29 411 28.333 411 27 L411 23.5 C411 22.167 411.667 21.5 413 21.5 Z" fill="#0f0f1c" stroke="#503139" stroke-width="2" stroke-linejoin="round"/>
+    <path id="btn_00" data-name="btn 00" d="M410.9 34.5 C410.9 33.34 411.84 32.4 413 32.4 C414.16 32.4 415.1 33.34 415.1 34.5 C415.1 35.66 414.16 36.6 413 36.6 C411.84 36.6 410.9 35.66 410.9 34.5 Z" fill="#503139"/>
+    <path id="btn_01" data-name="btn 01" d="M415.9 34.5 C415.9 33.34 416.84 32.4 418 32.4 C419.16 32.4 420.1 33.34 420.1 34.5 C420.1 35.66 419.16 36.6 418 36.6 C416.84 36.6 415.9 35.66 415.9 34.5 Z" fill="#503139"/>
+    <path id="btn_02" data-name="btn 02" d="M420.9 34.5 C420.9 33.34 421.84 32.4 423 32.4 C424.16 32.4 425.1 33.34 425.1 34.5 C425.1 35.66 424.16 36.6 423 36.6 C421.84 36.6 420.9 35.66 420.9 34.5 Z" fill="#503139"/>
+    <path id="btn_10" data-name="btn 10" d="M410.9 39.5 C410.9 38.34 411.84 37.4 413 37.4 C414.16 37.4 415.1 38.34 415.1 39.5 C415.1 40.66 414.16 41.6 413 41.6 C411.84 41.6 410.9 40.66 410.9 39.5 Z" fill="#503139"/>
+    <path id="btn_11" data-name="btn 11" d="M415.9 39.5 C415.9 38.34 416.84 37.4 418 37.4 C419.16 37.4 420.1 38.34 420.1 39.5 C420.1 40.66 419.16 41.6 418 41.6 C416.84 41.6 415.9 40.66 415.9 39.5 Z" fill="#503139"/>
+    <path id="btn_12" data-name="btn 12" d="M420.9 39.5 C420.9 38.34 421.84 37.4 423 37.4 C424.16 37.4 425.1 38.34 425.1 39.5 C425.1 40.66 424.16 41.6 423 41.6 C421.84 41.6 420.9 40.66 420.9 39.5 Z" fill="#503139"/>
+    <path id="equals" d="M415.2 45 L420.8 45 C422.267 45 423 45.733 423 47.2 L423 47.3 C423 48.767 422.267 49.5 420.8 49.5 L415.2 49.5 C413.733 49.5 413 48.767 413 47.3 L413 47.2 C413 45.733 413.733 45 415.2 45 Z" fill="#f59e0b" stroke="#503139" stroke-width="1.8" stroke-linejoin="round"/>
+    <text transform="matrix(1 0 0 1 418 76)" x="0" y="0" xml:space="preserve" font-family="&apos;Virelai Sans&apos;, sans-serif" font-size="8.5" fill="#94a3b8" text-anchor="middle"><tspan x="0" y="0">GOCALC</tspan></text>
+    <path id="plate-7" data-name="plate" d="M480 8 L508 8 C517.333 8 522 12.667 522 22 L522 50 C522 59.333 517.333 64 508 64 L480 64 C470.667 64 466 59.333 466 50 L466 22 C466 12.667 470.667 8 480 8 Z" fill="url(#linear-gradient-13)" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="sheen-7" data-name="sheen" d="M480 12 L508 12 C513.333 12 516 14.667 516 20 L516 22 C516 27.333 513.333 30 508 30 L480 30 C474.667 30 472 27.333 472 22 L472 20 C472 14.667 474.667 12 480 12 Z" fill="url(#linear-gradient-14)"/>
+    <path id="dial_edge" data-name="dial edge" d="M479 46 C489 30 499 30 509 46" fill="none" stroke="#503139" stroke-width="8.2" stroke-linecap="round" stroke-linejoin="round"/>
+    <path id="dial" d="M479 46 C489 30 499 30 509 46" fill="none" stroke="#94a3b8" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+    <path id="red_zone" data-name="red zone" d="M504 31.5 C507 35.167 508.667 39.333 509 44" fill="none" stroke="#ef4444" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+    <path id="needle" d="M494 42 L503 31" fill="none" stroke="#f59e0b" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/>
+    <path id="hub" d="M490 43 C490 40.791 491.791 39 494 39 C496.209 39 498 40.791 498 43 C498 45.209 496.209 47 494 47 C491.791 47 490 45.209 490 43 Z" fill="#e6edf3" stroke="#503139" stroke-width="2.2" stroke-miterlimit="10"/>
+    <text transform="matrix(1 0 0 1 494 76)" x="0" y="0" xml:space="preserve" font-family="&apos;Virelai Sans&apos;, sans-serif" font-size="8.5" fill="#94a3b8" text-anchor="middle"><tspan x="0" y="0">GOTOP</tspan></text>
+    <path id="plate-8" data-name="plate" d="M556 8 L584 8 C593.333 8 598 12.667 598 22 L598 50 C598 59.333 593.333 64 584 64 L556 64 C546.667 64 542 59.333 542 50 L542 22 C542 12.667 546.667 8 556 8 Z" fill="url(#linear-gradient-15)" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="sheen-8" data-name="sheen" d="M556 12 L584 12 C589.333 12 592 14.667 592 20 L592 22 C592 27.333 589.333 30 584 30 L556 30 C550.667 30 548 27.333 548 22 L548 20 C548 14.667 550.667 12 556 12 Z" fill="url(#linear-gradient-16)"/>
+    <path id="disc" d="M554 36 C554 27.163 561.163 20 570 20 C578.837 20 586 27.163 586 36 C586 44.837 578.837 52 570 52 C561.163 52 554 44.837 554 36 Z" fill="#3b82f6" stroke="#503139" stroke-width="3" stroke-miterlimit="10"/>
+    <path id="head" d="M567.2 27.5 C567.2 25.954 568.454 24.7 570 24.7 C571.546 24.7 572.8 25.954 572.8 27.5 C572.8 29.046 571.546 30.3 570 30.3 C568.454 30.3 567.2 29.046 567.2 27.5 Z" fill="#e6edf3"/>
+    <path id="arms" d="M561.2 31 L578.8 31 C580.267 31 581 31.733 581 33.2 L581 33.3 C581 34.767 580.267 35.5 578.8 35.5 L561.2 35.5 C559.733 35.5 559 34.767 559 33.3 L559 33.2 C559 31.733 559.733 31 561.2 31 Z" fill="#e6edf3"/>
+    <path id="torso" d="M570 33 L570 33 C571.333 33 572 33.667 572 35 L572 40 C572 41.333 571.333 42 570 42 L570 42 C568.667 42 568 41.333 568 40 L568 35 C568 33.667 568.667 33 570 33 Z" fill="#e6edf3"/>
+    <path id="leg_L" data-name="leg L" d="M566.6 39.6 L570.5 40.6 L568.4 49.4 L564.5 48.4 Z" fill="#e6edf3"/>
+    <path id="leg_R" data-name="leg R" d="M569.5 40.6 L573.4 39.6 L575.5 48.4 L571.6 49.4 Z" fill="#e6edf3"/>
+    <text transform="matrix(1 0 0 1 570 76)" x="0" y="0" xml:space="preserve" font-family="&apos;Virelai Sans&apos;, sans-serif" font-size="8.5" fill="#94a3b8" text-anchor="middle"><tspan x="0" y="0">GOA11Y</tspan></text>
+    <path id="plate-9" data-name="plate" d="M24 90 L52 90 C61.333 90 66 94.667 66 104 L66 132 C66 141.333 61.333 146 52 146 L24 146 C14.667 146 10 141.333 10 132 L10 104 C10 94.667 14.667 90 24 90 Z" fill="url(#linear-gradient-17)" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="sheen-9" data-name="sheen" d="M24 94 L52 94 C57.333 94 60 96.667 60 102 L60 104 C60 109.333 57.333 112 52 112 L24 112 C18.667 112 16 109.333 16 104 L16 102 C16 96.667 18.667 94 24 94 Z" fill="url(#linear-gradient-18)"/>
+    <path id="trace" d="M21 120 L29 120 L34 108 L40 132 L45 116 L49 120 L56 120" fill="none" stroke="#22c55e" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+    <text transform="matrix(1 0 0 1 38 158)" x="0" y="0" xml:space="preserve" font-family="&apos;Virelai Sans&apos;, sans-serif" font-size="8.5" fill="#94a3b8" text-anchor="middle"><tspan x="0" y="0">PULSE</tspan></text>
+    <path id="plate-10" data-name="plate" d="M100 90 L128 90 C137.333 90 142 94.667 142 104 L142 132 C142 141.333 137.333 146 128 146 L100 146 C90.667 146 86 141.333 86 132 L86 104 C86 94.667 90.667 90 100 90 Z" fill="url(#linear-gradient-19)" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="sheen-10" data-name="sheen" d="M100 94 L128 94 C133.333 94 136 96.667 136 102 L136 104 C136 109.333 133.333 112 128 112 L100 112 C94.667 112 92 109.333 92 104 L92 102 C92 96.667 94.667 94 100 94 Z" fill="url(#linear-gradient-20)"/>
+    <path id="shell" d="M114 136 C104 130 96 122 96 113 C96 106 102 100 108 100 C111 100 113 101 114 103 C115 101 117 100 120 100 C126 100 132 106 132 113 C132 122 124 130 114 136 Z" fill="#fdb845" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="rib_1" data-name="rib 1" d="M114 133.5 L102 107" fill="none" stroke="#da761e" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+    <path id="rib_2" data-name="rib 2" d="M114 133.5 L108 102.5" fill="none" stroke="#da761e" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+    <path id="rib_3" data-name="rib 3" d="M114 133.5 L114 102" fill="none" stroke="#da761e" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+    <path id="rib_4" data-name="rib 4" d="M114 133.5 L120 102.5" fill="none" stroke="#da761e" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+    <path id="rib_5" data-name="rib 5" d="M114 133.5 L126 107" fill="none" stroke="#da761e" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+    <path id="hinge" d="M112.5 133 L115.5 133 C116.833 133 117.5 133.667 117.5 135 L117.5 135.5 C117.5 136.833 116.833 137.5 115.5 137.5 L112.5 137.5 C111.167 137.5 110.5 136.833 110.5 135.5 L110.5 135 C110.5 133.667 111.167 133 112.5 133 Z" fill="#f5ac3c" stroke="#503139" stroke-width="2" stroke-linejoin="round"/>
+    <text transform="matrix(1 0 0 1 114 158)" x="0" y="0" xml:space="preserve" font-family="&apos;Virelai Sans&apos;, sans-serif" font-size="8.5" fill="#94a3b8" text-anchor="middle"><tspan x="0" y="0">GOSH</tspan></text>
+    <path id="plate-11" data-name="plate" d="M176 90 L204 90 C213.333 90 218 94.667 218 104 L218 132 C218 141.333 213.333 146 204 146 L176 146 C166.667 146 162 141.333 162 132 L162 104 C162 94.667 166.667 90 176 90 Z" fill="url(#linear-gradient-21)" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="sheen-11" data-name="sheen" d="M176 94 L204 94 C209.333 94 212 96.667 212 102 L212 104 C212 109.333 209.333 112 204 112 L176 112 C170.667 112 168 109.333 168 104 L168 102 C168 96.667 170.667 94 176 94 Z" fill="url(#linear-gradient-22)"/>
+    <path id="ring" d="M175 118 C175 109.716 181.716 103 190 103 C198.284 103 205 109.716 205 118 C205 126.284 198.284 133 190 133 C181.716 133 175 126.284 175 118 Z" fill="#e6edf3" stroke="#503139" stroke-width="3" stroke-miterlimit="10"/>
+    <path id="strap_1" data-name="strap 1" d="M181.2 104.2 L203.8 126.8 L198.8 131.8 L176.2 109.2 Z" fill="#ef4444" stroke="#503139" stroke-width="2" stroke-linejoin="round"/>
+    <path id="strap_2" data-name="strap 2" d="M176.2 126.8 L198.8 104.2 L203.8 109.2 L181.2 131.8 Z" fill="#ef4444" stroke="#503139" stroke-width="2" stroke-linejoin="round"/>
+    <path id="hole" d="M183 118 C183 114.134 186.134 111 190 111 C193.866 111 197 114.134 197 118 C197 121.866 193.866 125 190 125 C186.134 125 183 121.866 183 118 Z" fill="#23233a" stroke="#503139" stroke-width="2.5" stroke-miterlimit="10"/>
+    <text transform="matrix(1 0 0 1 190 158)" x="0" y="0" xml:space="preserve" font-family="&apos;Virelai Sans&apos;, sans-serif" font-size="8.5" fill="#94a3b8" text-anchor="middle"><tspan x="0" y="0">GOHELP</tspan></text>
+    <path id="plate-12" data-name="plate" d="M252 90 L280 90 C289.333 90 294 94.667 294 104 L294 132 C294 141.333 289.333 146 280 146 L252 146 C242.667 146 238 141.333 238 132 L238 104 C238 94.667 242.667 90 252 90 Z" fill="url(#linear-gradient-23)" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="sheen-12" data-name="sheen" d="M252 94 L280 94 C285.333 94 288 96.667 288 102 L288 104 C288 109.333 285.333 112 280 112 L252 112 C246.667 112 244 109.333 244 104 L244 102 C244 96.667 246.667 94 252 94 Z" fill="url(#linear-gradient-24)"/>
+    <path id="glove" d="M277.4 108 C277.4 105.459 279.459 103.4 282 103.4 C284.541 103.4 286.6 105.459 286.6 108 C286.6 110.541 284.541 112.6 282 112.6 C279.459 112.6 277.4 110.541 277.4 108 Z" fill="#ffffff" stroke="#503139" stroke-width="2.6" stroke-miterlimit="10"/>
+    <path id="glove_thumb" data-name="glove thumb" d="M284.2 105.4 C284.2 104.185 285.185 103.2 286.4 103.2 C287.615 103.2 288.6 104.185 288.6 105.4 C288.6 106.615 287.615 107.6 286.4 107.6 C285.185 107.6 284.2 106.615 284.2 105.4 Z" fill="#ffffff" stroke="#503139" stroke-width="2" stroke-miterlimit="10"/>
+    <path id="wave_1" data-name="wave 1" d="M288 112 C289.667 109.333 290.167 106.5 289.5 103.5" fill="none" stroke="#e6edf3" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+    <path id="wave_2" data-name="wave 2" d="M283 100.5 C285 98.833 287.167 98.333 289.5 99" fill="none" stroke="#e6edf3" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+    <path id="dome" d="M251 126 C251 111 257 102.5 266 102.5 C275 102.5 281 111 281 126 Z" fill="#fdb845" stroke="#503139" stroke-width="3.2" stroke-linejoin="round"/>
+    <path id="dome_light" data-name="dome light" d="M255 116 C257 109 262 105.5 267 105 C262 107.5 258.5 111.5 257.5 117 Z" fill="#ffd98a"/>
+    <path id="seed_1" data-name="seed 1" d="M258.2 108 C258.2 107.448 259.006 107 260 107 C260.994 107 261.8 107.448 261.8 108 C261.8 108.552 260.994 109 260 109 C259.006 109 258.2 108.552 258.2 108 Z" fill="#fff0c2"/>
+    <path id="seed_2" data-name="seed 2" d="M267.2 106.5 C267.2 105.948 268.006 105.5 269 105.5 C269.994 105.5 270.8 105.948 270.8 106.5 C270.8 107.052 269.994 107.5 269 107.5 C268.006 107.5 267.2 107.052 267.2 106.5 Z" fill="#fff0c2"/>
+    <path id="seed_3" data-name="seed 3" d="M273.2 112 C273.2 111.448 274.006 111 275 111 C275.994 111 276.8 111.448 276.8 112 C276.8 112.552 275.994 113 275 113 C274.006 113 273.2 112.552 273.2 112 Z" fill="#fff0c2"/>
+    <path id="lettuce" d="M251 123 L281 123 L281 127 C279 130.667 277 130.833 275 127.5 C273 130.833 271 130.833 269 127.5 C267 130.833 265 130.833 263 127.5 C261 130.833 259 130.833 257 127.5 C255 130.833 253 130.667 251 127 Z" fill="#8bc34a" stroke="#503139" stroke-width="2.6" stroke-linejoin="round"/>
+    <path id="eye_1" data-name="eye 1" d="M256.6 115.5 C256.6 113.291 258.122 111.5 260 111.5 C261.878 111.5 263.4 113.291 263.4 115.5 C263.4 117.709 261.878 119.5 260 119.5 C258.122 119.5 256.6 117.709 256.6 115.5 Z" fill="#ffffff" stroke="#503139" stroke-width="2.4" stroke-miterlimit="10"/>
+    <path id="pupil_1" data-name="pupil 1" d="M258.5 117 C258.5 115.84 259.44 114.9 260.6 114.9 C261.76 114.9 262.7 115.84 262.7 117 C262.7 118.16 261.76 119.1 260.6 119.1 C259.44 119.1 258.5 118.16 258.5 117 Z" fill="#3a2530"/>
+    <path id="eye_2" data-name="eye 2" d="M268.6 115.5 C268.6 113.291 270.122 111.5 272 111.5 C273.878 111.5 275.4 113.291 275.4 115.5 C275.4 117.709 273.878 119.5 272 119.5 C270.122 119.5 268.6 117.709 268.6 115.5 Z" fill="#ffffff" stroke="#503139" stroke-width="2.4" stroke-miterlimit="10"/>
+    <path id="pupil_2" data-name="pupil 2" d="M270.5 117 C270.5 115.84 271.44 114.9 272.6 114.9 C273.76 114.9 274.7 115.84 274.7 117 C274.7 118.16 273.76 119.1 272.6 119.1 C271.44 119.1 270.5 118.16 270.5 117 Z" fill="#3a2530"/>
+    <path id="smile" d="M260.5 122.5 C264.167 124.5 267.833 124.5 271.5 122.5" fill="none" stroke="#503139" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+    <text transform="matrix(1 0 0 1 266 158)" x="0" y="0" xml:space="preserve" font-family="&apos;Virelai Sans&apos;, sans-serif" font-size="8.5" fill="#94a3b8" text-anchor="middle"><tspan x="0" y="0">GOWELCOME</tspan></text>
+    <path id="plate-13" data-name="plate" d="M328 90 L356 90 C365.333 90 370 94.667 370 104 L370 132 C370 141.333 365.333 146 356 146 L328 146 C318.667 146 314 141.333 314 132 L314 104 C314 94.667 318.667 90 328 90 Z" fill="url(#linear-gradient-25)" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="sheen-13" data-name="sheen" d="M328 94 L356 94 C361.333 94 364 96.667 364 102 L364 104 C364 109.333 361.333 112 356 112 L328 112 C322.667 112 320 109.333 320 104 L320 102 C320 96.667 322.667 94 328 94 Z" fill="url(#linear-gradient-26)"/>
+    <path id="tooth_1" data-name="tooth 1" d="M350.5 114 L359.5 114 L359.5 122 L350.5 122 Z" fill="#94a3b8" stroke="#503139" stroke-width="2.6" stroke-linejoin="round"/>
+    <path id="tooth_2" data-name="tooth 2" d="M350.8 121.2 L357.2 127.5 L351.5 133.2 L345.2 126.8 Z" fill="#94a3b8" stroke="#503139" stroke-width="2.6" stroke-linejoin="round"/>
+    <path id="tooth_3" data-name="tooth 3" d="M346 126.5 L346 135.5 L338 135.5 L338 126.5 Z" fill="#94a3b8" stroke="#503139" stroke-width="2.6" stroke-linejoin="round"/>
+    <path id="tooth_4" data-name="tooth 4" d="M338.8 126.8 L332.5 133.2 L326.8 127.5 L333.2 121.2 Z" fill="#94a3b8" stroke="#503139" stroke-width="2.6" stroke-linejoin="round"/>
+    <path id="tooth_5" data-name="tooth 5" d="M333.5 122 L324.5 122 L324.5 114 L333.5 114 Z" fill="#94a3b8" stroke="#503139" stroke-width="2.6" stroke-linejoin="round"/>
+    <path id="tooth_6" data-name="tooth 6" d="M333.2 114.8 L326.8 108.5 L332.5 102.8 L338.8 109.2 Z" fill="#94a3b8" stroke="#503139" stroke-width="2.6" stroke-linejoin="round"/>
+    <path id="tooth_7" data-name="tooth 7" d="M338 109.5 L338 100.5 L346 100.5 L346 109.5 Z" fill="#94a3b8" stroke="#503139" stroke-width="2.6" stroke-linejoin="round"/>
+    <path id="tooth_8" data-name="tooth 8" d="M345.2 109.2 L351.5 102.8 L357.2 108.5 L350.8 114.8 Z" fill="#94a3b8" stroke="#503139" stroke-width="2.6" stroke-linejoin="round"/>
+    <path id="disc-2" data-name="disc" d="M329 118 C329 110.82 334.82 105 342 105 C349.18 105 355 110.82 355 118 C355 125.18 349.18 131 342 131 C334.82 131 329 125.18 329 118 Z" fill="#94a3b8" stroke="#503139" stroke-width="3" stroke-miterlimit="10"/>
+    <path id="disc_light" data-name="disc light" d="M332 116 C334 110 339 106.5 344 106.5 C339 108.5 335.5 111.5 334 117 Z" fill="#c3ceda"/>
+    <path id="hub-2" data-name="hub" d="M336.5 118 C336.5 114.962 338.962 112.5 342 112.5 C345.038 112.5 347.5 114.962 347.5 118 C347.5 121.038 345.038 123.5 342 123.5 C338.962 123.5 336.5 121.038 336.5 118 Z" fill="#23233a" stroke="#503139" stroke-width="2.4" stroke-miterlimit="10"/>
+    <text transform="matrix(1 0 0 1 342 158)" x="0" y="0" xml:space="preserve" font-family="&apos;Virelai Sans&apos;, sans-serif" font-size="8.5" fill="#94a3b8" text-anchor="middle"><tspan x="0" y="0">GOSET</tspan></text>
+    <path id="plate-14" data-name="plate" d="M404 90 L432 90 C441.333 90 446 94.667 446 104 L446 132 C446 141.333 441.333 146 432 146 L404 146 C394.667 146 390 141.333 390 132 L390 104 C390 94.667 394.667 90 404 90 Z" fill="url(#linear-gradient-27)" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="sheen-14" data-name="sheen" d="M404 94 L432 94 C437.333 94 440 96.667 440 102 L440 104 C440 109.333 437.333 112 432 112 L404 112 C398.667 112 396 109.333 396 104 L396 102 C396 96.667 398.667 94 404 94 Z" fill="url(#linear-gradient-28)"/>
+    <path id="frame" d="M405 103 L431 103 C434.333 103 436 104.667 436 108 L436 128 C436 131.333 434.333 133 431 133 L405 133 C401.667 133 400 131.333 400 128 L400 108 C400 104.667 401.667 103 405 103 Z" fill="url(#linear-gradient-29)" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="peak_big" data-name="peak big" d="M403 128 L413 114 L423 128 Z" fill="#16a34a"/>
+    <path id="peak_small" data-name="peak small" d="M415 128 L423 118 L432 128 Z" fill="#1f7a4d"/>
+    <path id="sun" d="M422.6 110.5 C422.6 108.622 424.122 107.1 426 107.1 C427.878 107.1 429.4 108.622 429.4 110.5 C429.4 112.378 427.878 113.9 426 113.9 C424.122 113.9 422.6 112.378 422.6 110.5 Z" fill="#fdb845" stroke="#503139" stroke-width="1.8" stroke-miterlimit="10"/>
+    <path id="ground" d="M401.5 128 L434.5 128" fill="none" stroke="#1f7a4d" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+    <text transform="matrix(1 0 0 1 418 158)" x="0" y="0" xml:space="preserve" font-family="&apos;Virelai Sans&apos;, sans-serif" font-size="8.5" fill="#94a3b8" text-anchor="middle"><tspan x="0" y="0">GOVIEW</tspan></text>
+    <path id="plate-15" data-name="plate" d="M480 90 L508 90 C517.333 90 522 94.667 522 104 L522 132 C522 141.333 517.333 146 508 146 L480 146 C470.667 146 466 141.333 466 132 L466 104 C466 94.667 470.667 90 480 90 Z" fill="url(#linear-gradient-30)" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="sheen-15" data-name="sheen" d="M480 94 L508 94 C513.333 94 516 96.667 516 102 L516 104 C516 109.333 513.333 112 508 112 L480 112 C474.667 112 472 109.333 472 104 L472 102 C472 96.667 474.667 94 480 94 Z" fill="url(#linear-gradient-31)"/>
+    <path id="speaker" d="M480 113 L488 113 L499 105 L499 131 L488 123 L480 123 Z" fill="#e6edf3" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="wave_in" data-name="wave in" d="M504 113 C506.667 116.333 506.667 119.667 504 123" fill="none" stroke="#7fd4c8" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+    <path id="wave_out" data-name="wave out" d="M508.5 109 C512.5 115 512.5 121 508.5 127" fill="none" stroke="#7fd4c8" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+    <text transform="matrix(1 0 0 1 494 158)" x="0" y="0" xml:space="preserve" font-family="&apos;Virelai Sans&apos;, sans-serif" font-size="8.5" fill="#94a3b8" text-anchor="middle"><tspan x="0" y="0">GOSOUND</tspan></text>
+    <path id="plate-16" data-name="plate" d="M556 90 L584 90 C593.333 90 598 94.667 598 104 L598 132 C598 141.333 593.333 146 584 146 L556 146 C546.667 146 542 141.333 542 132 L542 104 C542 94.667 546.667 90 556 90 Z" fill="url(#linear-gradient-32)" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="sheen-16" data-name="sheen" d="M556 94 L584 94 C589.333 94 592 96.667 592 102 L592 104 C592 109.333 589.333 112 584 112 L556 112 C550.667 112 548 109.333 548 104 L548 102 C548 96.667 550.667 94 556 94 Z" fill="url(#linear-gradient-33)"/>
+    <path id="bag" d="M560 108 L580 108 L583.5 134 L556.5 134 Z" fill="#fdb845" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="handle" d="M564 110 C564 102.5 566.5 100 570 100 C573.5 100 576 102.5 576 110" fill="none" stroke="#503139" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+    <path id="brand_dot" data-name="brand dot" d="M567.4 121 C567.4 119.564 568.564 118.4 570 118.4 C571.436 118.4 572.6 119.564 572.6 121 C572.6 122.436 571.436 123.6 570 123.6 C568.564 123.6 567.4 122.436 567.4 121 Z" fill="#7fd4c8"/>
+    <text transform="matrix(1 0 0 1 570 158)" x="0" y="0" xml:space="preserve" font-family="&apos;Virelai Sans&apos;, sans-serif" font-size="8.5" fill="#94a3b8" text-anchor="middle"><tspan x="0" y="0">GOSTORE</tspan></text>
+    <path id="plate-17" data-name="plate" d="M24 172 L52 172 C61.333 172 66 176.667 66 186 L66 214 C66 223.333 61.333 228 52 228 L24 228 C14.667 228 10 223.333 10 214 L10 186 C10 176.667 14.667 172 24 172 Z" fill="url(#linear-gradient-34)" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="sheen-17" data-name="sheen" d="M24 176 L52 176 C57.333 176 60 178.667 60 184 L60 186 C60 191.333 57.333 194 52 194 L24 194 C18.667 194 16 191.333 16 186 L16 184 C16 178.667 18.667 176 24 176 Z" fill="url(#linear-gradient-35)"/>
+    <path id="hump" d="M32.5 184 L39.5 184 C41.167 184 42 184.833 42 186.5 L42 188.5 C42 190.167 41.167 191 39.5 191 L32.5 191 C30.833 191 30 190.167 30 188.5 L30 186.5 C30 184.833 30.833 184 32.5 184 Z" fill="#94a3b8" stroke="#503139" stroke-width="2.6" stroke-linejoin="round"/>
+    <path id="body-2" data-name="body" d="M24 189 L52 189 C55.333 189 57 190.667 57 194 L57 210 C57 213.333 55.333 215 52 215 L24 215 C20.667 215 19 213.333 19 210 L19 194 C19 190.667 20.667 189 24 189 Z" fill="#94a3b8" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="lens" d="M29 202 C29 197.029 33.029 193 38 193 C42.971 193 47 197.029 47 202 C47 206.971 42.971 211 38 211 C33.029 211 29 206.971 29 202 Z" fill="#0f0f1c" stroke="#503139" stroke-width="3" stroke-miterlimit="10"/>
+    <path id="glass" d="M33.4 202 C33.4 199.459 35.459 197.4 38 197.4 C40.541 197.4 42.6 199.459 42.6 202 C42.6 204.541 40.541 206.6 38 206.6 C35.459 206.6 33.4 204.541 33.4 202 Z" fill="#1e40af"/>
+    <path id="glint" d="M33.9 199.4 C33.9 198.461 34.661 197.7 35.6 197.7 C36.539 197.7 37.3 198.461 37.3 199.4 C37.3 200.339 36.539 201.1 35.6 201.1 C34.661 201.1 33.9 200.339 33.9 199.4 Z" fill="#ffffff"/>
+    <path id="shutter" d="M50 186.5 L52 186.5 C53.333 186.5 54 187.167 54 188.5 L54 189 C54 190.333 53.333 191 52 191 L50 191 C48.667 191 48 190.333 48 189 L48 188.5 C48 187.167 48.667 186.5 50 186.5 Z" fill="#ef4444" stroke="#503139" stroke-width="2" stroke-linejoin="round"/>
+    <text transform="matrix(1 0 0 1 38 240)" x="0" y="0" xml:space="preserve" font-family="&apos;Virelai Sans&apos;, sans-serif" font-size="8.5" fill="#94a3b8" text-anchor="middle"><tspan x="0" y="0">GOSNAP</tspan></text>
+    <path id="plate-18" data-name="plate" d="M100 172 L128 172 C137.333 172 142 176.667 142 186 L142 214 C142 223.333 137.333 228 128 228 L100 228 C90.667 228 86 223.333 86 214 L86 186 C86 176.667 90.667 172 100 172 Z" fill="url(#linear-gradient-36)" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="sheen-18" data-name="sheen" d="M100 176 L128 176 C133.333 176 136 178.667 136 184 L136 186 C136 191.333 133.333 194 128 194 L100 194 C94.667 194 92 191.333 92 186 L92 184 C92 178.667 94.667 176 100 176 Z" fill="url(#linear-gradient-37)"/>
+    <path id="back_window" data-name="back window" d="M107 182 L128 182 C130.667 182 132 183.333 132 186 L132 200 C132 202.667 130.667 204 128 204 L107 204 C104.333 204 103 202.667 103 200 L103 186 C103 183.333 104.333 182 107 182 Z" fill="#64748b" stroke="#503139" stroke-width="2.6" stroke-linejoin="round"/>
+    <path id="front-2" data-name="front" d="M101 191 L127 191 C130.333 191 132 192.667 132 196 L132 212 C132 215.333 130.333 217 127 217 L101 217 C97.667 217 96 215.333 96 212 L96 196 C96 192.667 97.667 191 101 191 Z" fill="#e6edf3" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="titlebar" d="M101 191 L127 191 C130.333 191 132 192.667 132 196 L132 199 L96 199 L96 196 C96 192.667 97.667 191 101 191 Z" fill="#222d35"/>
+    <path id="tab" d="M103 187 L110 187 C112 187 113 188 113 190 L113 191 C113 193 112 194 110 194 L103 194 C101 194 100 193 100 191 L100 190 C100 188 101 187 103 187 Z" fill="#e6edf3" stroke="#503139" stroke-width="2.2" stroke-linejoin="round"/>
+    <path id="close" d="M124.2 195 C124.2 194.006 125.006 193.2 126 193.2 C126.994 193.2 127.8 194.006 127.8 195 C127.8 195.994 126.994 196.8 126 196.8 C125.006 196.8 124.2 195.994 124.2 195 Z" fill="#f1f5f9"/>
+    <path id="line_1-2" data-name="line 1" d="M101.3 204.5 L119.7 204.5 C120.567 204.5 121 204.933 121 205.8 L121 205.8 C121 206.667 120.567 207.1 119.7 207.1 L101.3 207.1 C100.433 207.1 100 206.667 100 205.8 L100 205.8 C100 204.933 100.433 204.5 101.3 204.5 Z" fill="#64748b"/>
+    <path id="line_2-2" data-name="line 2" d="M101.3 210 L112.7 210 C113.567 210 114 210.433 114 211.3 L114 211.3 C114 212.167 113.567 212.6 112.7 212.6 L101.3 212.6 C100.433 212.6 100 212.167 100 211.3 L100 211.3 C100 210.433 100.433 210 101.3 210 Z" fill="#64748b"/>
+    <text transform="matrix(1 0 0 1 114 240)" x="0" y="0" xml:space="preserve" font-family="&apos;Virelai Sans&apos;, sans-serif" font-size="8.5" fill="#94a3b8" text-anchor="middle"><tspan x="0" y="0">TABWM</tspan></text>
+    <path id="plate-19" data-name="plate" d="M176 172 L204 172 C213.333 172 218 176.667 218 186 L218 214 C218 223.333 213.333 228 204 228 L176 228 C166.667 228 162 223.333 162 214 L162 186 C162 176.667 166.667 172 176 172 Z" fill="url(#linear-gradient-38)" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="sheen-19" data-name="sheen" d="M176 176 L204 176 C209.333 176 212 178.667 212 184 L212 186 C212 191.333 209.333 194 204 194 L176 194 C170.667 194 168 191.333 168 186 L168 184 C168 178.667 170.667 176 176 176 Z" fill="url(#linear-gradient-39)"/>
+    <path id="crt" d="M179 182 L201 182 C203.667 182 205 183.333 205 186 L205 202 C205 204.667 203.667 206 201 206 L179 206 C176.333 206 175 204.667 175 202 L175 186 C175 183.333 176.333 182 179 182 Z" fill="#e6edf3" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="screen-2" data-name="screen" d="M181 186 L199 186 C200.333 186 201 186.667 201 188 L201 197 C201 198.333 200.333 199 199 199 L181 199 C179.667 199 179 198.333 179 197 L179 188 C179 186.667 179.667 186 181 186 Z" fill="#0f0f1c" stroke="#503139" stroke-width="2" stroke-linejoin="round"/>
+    <path id="dash" d="M182.5 194.5 L189 194.5" fill="none" stroke="#22c55e" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+    <path id="neck" d="M187.5 206 L192.5 206 C193.5 206 194 206.5 194 207.5 L194 209 C194 210 193.5 210.5 192.5 210.5 L187.5 210.5 C186.5 210.5 186 210 186 209 L186 207.5 C186 206.5 186.5 206 187.5 206 Z" fill="#64748b" stroke="#503139" stroke-width="2" stroke-linejoin="round"/>
+    <path id="foot" d="M181 210.5 L199 210.5 C200.333 210.5 201 211.167 201 212.5 L201 213 C201 214.333 200.333 215 199 215 L181 215 C179.667 215 179 214.333 179 213 L179 212.5 C179 211.167 179.667 210.5 181 210.5 Z" fill="#e6edf3" stroke="#503139" stroke-width="2.4" stroke-linejoin="round"/>
+    <text transform="matrix(1 0 0 1 190 240)" x="0" y="0" xml:space="preserve" font-family="&apos;Virelai Sans&apos;, sans-serif" font-size="8.5" fill="#94a3b8" text-anchor="middle"><tspan x="0" y="0">GOSTALGIA</tspan></text>
+    <path id="plate-20" data-name="plate" d="M252 172 L280 172 C289.333 172 294 176.667 294 186 L294 214 C294 223.333 289.333 228 280 228 L252 228 C242.667 228 238 223.333 238 214 L238 186 C238 176.667 242.667 172 252 172 Z" fill="url(#linear-gradient-40)" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="sheen-20" data-name="sheen" d="M252 176 L280 176 C285.333 176 288 178.667 288 184 L288 186 C288 191.333 285.333 194 280 194 L252 194 C246.667 194 244 191.333 244 186 L244 184 C244 178.667 246.667 176 252 176 Z" fill="url(#linear-gradient-41)"/>
+    <path id="star_big" data-name="star big" d="M266 183 C271.6 194.4 271.6 194.4 283 200 C271.6 205.6 271.6 205.6 266 217 C260.4 205.6 260.4 205.6 249 200 C260.4 194.4 260.4 194.4 266 183 Z" fill="#7fd4c8" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="star_small" data-name="star small" d="M254 206.5 C256.1 210.4 256.1 210.4 260 212.5 C256.1 214.6 256.1 214.6 254 218.5 C251.9 214.6 251.9 214.6 248 212.5 C251.9 210.4 251.9 210.4 254 206.5 Z" fill="#e6edf3" stroke="#503139" stroke-width="2.2" stroke-linejoin="round"/>
+    <path id="mote" d="M277.8 187 C277.8 185.785 278.785 184.8 280 184.8 C281.215 184.8 282.2 185.785 282.2 187 C282.2 188.215 281.215 189.2 280 189.2 C278.785 189.2 277.8 188.215 277.8 187 Z" fill="#e6edf3"/>
+    <text transform="matrix(1 0 0 1 266 240)" x="0" y="0" xml:space="preserve" font-family="&apos;Virelai Sans&apos;, sans-serif" font-size="8.5" fill="#94a3b8" text-anchor="middle"><tspan x="0" y="0">GOINFER</tspan></text>
+    <path id="plate-21" data-name="plate" d="M328 172 L356 172 C365.333 172 370 176.667 370 186 L370 214 C370 223.333 365.333 228 356 228 L328 228 C318.667 228 314 223.333 314 214 L314 186 C314 176.667 318.667 172 328 172 Z" fill="url(#linear-gradient-42)" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="sheen-21" data-name="sheen" d="M328 176 L356 176 C361.333 176 364 178.667 364 184 L364 186 C364 191.333 361.333 194 356 194 L328 194 C322.667 194 320 191.333 320 186 L320 184 C320 178.667 322.667 176 328 176 Z" fill="url(#linear-gradient-43)"/>
+    <path id="cradle_edge" data-name="cradle edge" d="M330 196 C330 206.5 336 210.5 342 210.5 C348 210.5 354 206.5 354 196" fill="none" stroke="#503139" stroke-width="6.2" stroke-linecap="round" stroke-linejoin="round"/>
+    <path id="cradle" d="M330 196 C330 206.5 336 210.5 342 210.5 C348 210.5 354 206.5 354 196" fill="none" stroke="#94a3b8" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+    <path id="capsule" d="M342 181 L342 181 C346 181 348 183 348 187 L348 196 C348 200 346 202 342 202 L342 202 C338 202 336 200 336 196 L336 187 C336 183 338 181 342 181 Z" fill="#94a3b8" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="rec" d="M339.9 187.5 C339.9 186.34 340.84 185.4 342 185.4 C343.16 185.4 344.1 186.34 344.1 187.5 C344.1 188.66 343.16 189.6 342 189.6 C340.84 189.6 339.9 188.66 339.9 187.5 Z" fill="#ef4444"/>
+    <path id="stem" d="M341.7 210.5 L342.3 210.5 C343.1 210.5 343.5 210.9 343.5 211.7 L343.5 213.8 C343.5 214.6 343.1 215 342.3 215 L341.7 215 C340.9 215 340.5 214.6 340.5 213.8 L340.5 211.7 C340.5 210.9 340.9 210.5 341.7 210.5 Z" fill="#94a3b8" stroke="#503139" stroke-width="2" stroke-linejoin="round"/>
+    <path id="base" d="M336 215 L348 215 C349.333 215 350 215.667 350 217 L350 217 C350 218.333 349.333 219 348 219 L336 219 C334.667 219 334 218.333 334 217 L334 217 C334 215.667 334.667 215 336 215 Z" fill="#94a3b8" stroke="#503139" stroke-width="2.2" stroke-linejoin="round"/>
+    <text transform="matrix(1 0 0 1 342 240)" x="0" y="0" xml:space="preserve" font-family="&apos;Virelai Sans&apos;, sans-serif" font-size="8.5" fill="#94a3b8" text-anchor="middle"><tspan x="0" y="0">GOREC</tspan></text>
+    <path id="plate-22" data-name="plate" d="M404 172 L432 172 C441.333 172 446 176.667 446 186 L446 214 C446 223.333 441.333 228 432 228 L404 228 C394.667 228 390 223.333 390 214 L390 186 C390 176.667 394.667 172 404 172 Z" fill="url(#linear-gradient-44)" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="sheen-22" data-name="sheen" d="M404 176 L432 176 C437.333 176 440 178.667 440 184 L440 186 C440 191.333 437.333 194 432 194 L404 194 C398.667 194 396 191.333 396 186 L396 184 C396 178.667 398.667 176 404 176 Z" fill="url(#linear-gradient-45)"/>
+    <path id="antenna" d="M418 186 L418 180.5" fill="none" stroke="#503139" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+    <path id="antenna_tip" data-name="antenna tip" d="M415.4 179.5 C415.4 178.064 416.564 176.9 418 176.9 C419.436 176.9 420.6 178.064 420.6 179.5 C420.6 180.936 419.436 182.1 418 182.1 C416.564 182.1 415.4 180.936 415.4 179.5 Z" fill="#3b82f6" stroke="#503139" stroke-width="1.8" stroke-miterlimit="10"/>
+    <path id="ear_L" data-name="ear L" d="M401 196 L402 196 C403.333 196 404 196.667 404 198 L404 202 C404 203.333 403.333 204 402 204 L401 204 C399.667 204 399 203.333 399 202 L399 198 C399 196.667 399.667 196 401 196 Z" fill="#94a3b8" stroke="#503139" stroke-width="2.2" stroke-linejoin="round"/>
+    <path id="ear_R" data-name="ear R" d="M434 196 L435 196 C436.333 196 437 196.667 437 198 L437 202 C437 203.333 436.333 204 435 204 L434 204 C432.667 204 432 203.333 432 202 L432 198 C432 196.667 432.667 196 434 196 Z" fill="#94a3b8" stroke="#503139" stroke-width="2.2" stroke-linejoin="round"/>
+    <path id="head-2" data-name="head" d="M411 186 L425 186 C430.333 186 433 188.667 433 194 L433 206 C433 211.333 430.333 214 425 214 L411 214 C405.667 214 403 211.333 403 206 L403 194 C403 188.667 405.667 186 411 186 Z" fill="#e6edf3" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="eye_L" data-name="eye L" d="M408.9 197 C408.9 195.288 410.288 193.9 412 193.9 C413.712 193.9 415.1 195.288 415.1 197 C415.1 198.712 413.712 200.1 412 200.1 C410.288 200.1 408.9 198.712 408.9 197 Z" fill="#503139"/>
+    <path id="eye_R" data-name="eye R" d="M420.9 197 C420.9 195.288 422.288 193.9 424 193.9 C425.712 193.9 427.1 195.288 427.1 197 C427.1 198.712 425.712 200.1 424 200.1 C422.288 200.1 420.9 198.712 420.9 197 Z" fill="#503139"/>
+    <path id="glint_L" data-name="glint L" d="M411.9 196 C411.9 195.392 412.392 194.9 413 194.9 C413.608 194.9 414.1 195.392 414.1 196 C414.1 196.608 413.608 197.1 413 197.1 C412.392 197.1 411.9 196.608 411.9 196 Z" fill="#ffffff"/>
+    <path id="glint_R" data-name="glint R" d="M423.9 196 C423.9 195.392 424.392 194.9 425 194.9 C425.608 194.9 426.1 195.392 426.1 196 C426.1 196.608 425.608 197.1 425 197.1 C424.392 197.1 423.9 196.608 423.9 196 Z" fill="#ffffff"/>
+    <path id="smile-2" data-name="smile" d="M412 205 C416 207.667 420 207.667 424 205" fill="none" stroke="#503139" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+    <text transform="matrix(1 0 0 1 418 240)" x="0" y="0" xml:space="preserve" font-family="&apos;Virelai Sans&apos;, sans-serif" font-size="8.5" fill="#94a3b8" text-anchor="middle"><tspan x="0" y="0">GOASSIST</tspan></text>
+    <path id="plate-23" data-name="plate" d="M480 172 L508 172 C517.333 172 522 176.667 522 186 L522 214 C522 223.333 517.333 228 508 228 L480 228 C470.667 228 466 223.333 466 214 L466 186 C466 176.667 470.667 172 480 172 Z" fill="url(#linear-gradient-46)" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="sheen-23" data-name="sheen" d="M480 176 L508 176 C513.333 176 516 178.667 516 184 L516 186 C516 191.333 513.333 194 508 194 L480 194 C474.667 194 472 191.333 472 186 L472 184 C472 178.667 474.667 176 480 176 Z" fill="url(#linear-gradient-47)"/>
+    <path id="page-2" data-name="page" d="M481 185 L507 185 C509.667 185 511 186.333 511 189 L511 211 C511 213.667 509.667 215 507 215 L481 215 C478.333 215 477 213.667 477 211 L477 189 C477 186.333 478.333 185 481 185 Z" fill="#e6edf3" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="header" d="M481 185 L507 185 C509.667 185 511 186.333 511 189 L511 192 L477 192 L477 189 C477 186.333 478.333 185 481 185 Z" fill="#22c55e"/>
+    <path id="col_1" data-name="col 1" d="M489 192 L489.1 192 C489.567 192 489.8 192.233 489.8 192.7 L489.8 214.3 C489.8 214.767 489.567 215 489.1 215 L489 215 C488.533 215 488.3 214.767 488.3 214.3 L488.3 192.7 C488.3 192.233 488.533 192 489 192 Z" fill="#64748b"/>
+    <path id="col_2" data-name="col 2" d="M500.3 192 L500.4 192 C500.867 192 501.1 192.233 501.1 192.7 L501.1 214.3 C501.1 214.767 500.867 215 500.4 215 L500.3 215 C499.833 215 499.6 214.767 499.6 214.3 L499.6 192.7 C499.6 192.233 499.833 192 500.3 192 Z" fill="#64748b"/>
+    <path id="row_1" data-name="row 1" d="M477.7 199.7 L510.3 199.7 C510.767 199.7 511 199.933 511 200.4 L511 200.5 C511 200.967 510.767 201.2 510.3 201.2 L477.7 201.2 C477.233 201.2 477 200.967 477 200.5 L477 200.4 C477 199.933 477.233 199.7 477.7 199.7 Z" fill="#64748b"/>
+    <path id="row_2" data-name="row 2" d="M477.7 207.3 L510.3 207.3 C510.767 207.3 511 207.533 511 208 L511 208.1 C511 208.567 510.767 208.8 510.3 208.8 L477.7 208.8 C477.233 208.8 477 208.567 477 208.1 L477 208 C477 207.533 477.233 207.3 477.7 207.3 Z" fill="#64748b"/>
+    <path id="cell_A1" data-name="cell A1" d="M480.5 194.5 L485.5 194.5 C486.167 194.5 486.5 194.833 486.5 195.5 L486.5 197.5 C486.5 198.167 486.167 198.5 485.5 198.5 L480.5 198.5 C479.833 198.5 479.5 198.167 479.5 197.5 L479.5 195.5 C479.5 194.833 479.833 194.5 480.5 194.5 Z" fill="#bfdbfe"/>
+    <text transform="matrix(1 0 0 1 494 240)" x="0" y="0" xml:space="preserve" font-family="&apos;Virelai Sans&apos;, sans-serif" font-size="8.5" fill="#94a3b8" text-anchor="middle"><tspan x="0" y="0">GOSHEET</tspan></text>
+    <path id="plate-24" data-name="plate" d="M556 172 L584 172 C593.333 172 598 176.667 598 186 L598 214 C598 223.333 593.333 228 584 228 L556 228 C546.667 228 542 223.333 542 214 L542 186 C542 176.667 546.667 172 556 172 Z" fill="url(#linear-gradient-48)" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="sheen-24" data-name="sheen" d="M556 176 L584 176 C589.333 176 592 178.667 592 184 L592 186 C592 191.333 589.333 194 584 194 L556 194 C550.667 194 548 191.333 548 186 L548 184 C548 178.667 550.667 176 556 176 Z" fill="url(#linear-gradient-49)"/>
+    <path id="cover" d="M553 187 C559 183 565 183 570 186.5 C575 183 581 183 587 187 L587 214 C581 211 575 211 570 214 C565 211 559 211 553 214 Z" fill="#9d4a0d" stroke="#503139" stroke-width="2.8" stroke-linejoin="round"/>
+    <path id="pages" d="M556 189.5 C561 186.5 566 186.5 570 189 C574 186.5 579 186.5 584 189.5 L584 210.5 C579 208 574 208 570 210.5 C566 208 561 208 556 210.5 Z" fill="#e6edf3" stroke="#503139" stroke-width="2.4" stroke-linejoin="round"/>
+    <path id="spine" d="M570 188.5 L570 210" fill="none" stroke="#503139" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+    <path id="line_L1" data-name="line L1" d="M560.9 194 L565.6 194 C566.2 194 566.5 194.3 566.5 194.9 L566.5 194.9 C566.5 195.5 566.2 195.8 565.6 195.8 L560.9 195.8 C560.3 195.8 560 195.5 560 194.9 L560 194.9 C560 194.3 560.3 194 560.9 194 Z" fill="#64748b"/>
+    <path id="line_R1" data-name="line R1" d="M574.4 194 L579.1 194 C579.7 194 580 194.3 580 194.9 L580 194.9 C580 195.5 579.7 195.8 579.1 195.8 L574.4 195.8 C573.8 195.8 573.5 195.5 573.5 194.9 L573.5 194.9 C573.5 194.3 573.8 194 574.4 194 Z" fill="#64748b"/>
+    <path id="line_L2" data-name="line L2" d="M560.9 199 L565.6 199 C566.2 199 566.5 199.3 566.5 199.9 L566.5 199.9 C566.5 200.5 566.2 200.8 565.6 200.8 L560.9 200.8 C560.3 200.8 560 200.5 560 199.9 L560 199.9 C560 199.3 560.3 199 560.9 199 Z" fill="#64748b"/>
+    <path id="line_R2" data-name="line R2" d="M574.4 199 L579.1 199 C579.7 199 580 199.3 580 199.9 L580 199.9 C580 200.5 579.7 200.8 579.1 200.8 L574.4 200.8 C573.8 200.8 573.5 200.5 573.5 199.9 L573.5 199.9 C573.5 199.3 573.8 199 574.4 199 Z" fill="#64748b"/>
+    <text transform="matrix(1 0 0 1 570 240)" x="0" y="0" xml:space="preserve" font-family="&apos;Virelai Sans&apos;, sans-serif" font-size="8.5" fill="#94a3b8" text-anchor="middle"><tspan x="0" y="0">GOREADER</tspan></text>
+    <path id="plate-25" data-name="plate" d="M24 254 L52 254 C61.333 254 66 258.667 66 268 L66 296 C66 305.333 61.333 310 52 310 L24 310 C14.667 310 10 305.333 10 296 L10 268 C10 258.667 14.667 254 24 254 Z" fill="url(#linear-gradient-50)" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="sheen-25" data-name="sheen" d="M24 258 L52 258 C57.333 258 60 260.667 60 266 L60 268 C60 273.333 57.333 276 52 276 L24 276 C18.667 276 16 273.333 16 268 L16 266 C16 260.667 18.667 258 24 258 Z" fill="url(#linear-gradient-51)"/>
+    <path id="face" d="M23 282 C23 273.716 29.716 267 38 267 C46.284 267 53 273.716 53 282 C53 290.284 46.284 297 38 297 C29.716 297 23 290.284 23 282 Z" fill="#e6edf3" stroke="#503139" stroke-width="3.4" stroke-miterlimit="10"/>
+    <path id="tick_1" data-name="tick 1" d="M36.4 270 C36.4 269.116 37.116 268.4 38 268.4 C38.884 268.4 39.6 269.116 39.6 270 C39.6 270.884 38.884 271.6 38 271.6 C37.116 271.6 36.4 270.884 36.4 270 Z" fill="#503139"/>
+    <path id="tick_2" data-name="tick 2" d="M48.4 282 C48.4 281.116 49.116 280.4 50 280.4 C50.884 280.4 51.6 281.116 51.6 282 C51.6 282.884 50.884 283.6 50 283.6 C49.116 283.6 48.4 282.884 48.4 282 Z" fill="#503139"/>
+    <path id="tick_3" data-name="tick 3" d="M36.4 294 C36.4 293.116 37.116 292.4 38 292.4 C38.884 292.4 39.6 293.116 39.6 294 C39.6 294.884 38.884 295.6 38 295.6 C37.116 295.6 36.4 294.884 36.4 294 Z" fill="#503139"/>
+    <path id="tick_4" data-name="tick 4" d="M24.4 282 C24.4 281.116 25.116 280.4 26 280.4 C26.884 280.4 27.6 281.116 27.6 282 C27.6 282.884 26.884 283.6 26 283.6 C25.116 283.6 24.4 282.884 24.4 282 Z" fill="#503139"/>
+    <path id="minute" d="M38 282 L46 274.5" fill="none" stroke="#503139" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+    <path id="hour" d="M38 282 L31.5 276" fill="none" stroke="#503139" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+    <path id="second" d="M38 283.5 L44 289" fill="none" stroke="#f59e0b" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+    <path id="pin" d="M35.6 282 C35.6 280.675 36.675 279.6 38 279.6 C39.325 279.6 40.4 280.675 40.4 282 C40.4 283.325 39.325 284.4 38 284.4 C36.675 284.4 35.6 283.325 35.6 282 Z" fill="#503139"/>
+    <text transform="matrix(1 0 0 1 38 322)" x="0" y="0" xml:space="preserve" font-family="&apos;Virelai Sans&apos;, sans-serif" font-size="8.5" fill="#94a3b8" text-anchor="middle"><tspan x="0" y="0">GOCLOCK</tspan></text>
+    <path id="plate-26" data-name="plate" d="M100 254 L128 254 C137.333 254 142 258.667 142 268 L142 296 C142 305.333 137.333 310 128 310 L100 310 C90.667 310 86 305.333 86 296 L86 268 C86 258.667 90.667 254 100 254 Z" fill="url(#linear-gradient-52)" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="sheen-26" data-name="sheen" d="M100 258 L128 258 C133.333 258 136 260.667 136 266 L136 268 C136 273.333 133.333 276 128 276 L100 276 C94.667 276 92 273.333 92 268 L92 266 C92 260.667 94.667 258 100 258 Z" fill="url(#linear-gradient-53)"/>
+    <path id="fuse" d="M121 273 C124.5 267.5 128 265.5 130 267" fill="none" stroke="#503139" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+    <path id="spark" d="M131 258.5 C132.9 262.1 132.9 262.1 136.5 264 C132.9 265.9 132.9 265.9 131 269.5 C129.1 265.9 129.1 265.9 125.5 264 C129.1 262.1 129.1 262.1 131 258.5 Z" fill="#fdb845" stroke="#503139" stroke-width="2" stroke-linejoin="round"/>
+    <path id="body-3" data-name="body" d="M99 286 C99 278.82 104.82 273 112 273 C119.18 273 125 278.82 125 286 C125 293.18 119.18 299 112 299 C104.82 299 99 293.18 99 286 Z" fill="#2e3a44" stroke="#503139" stroke-width="3.4" stroke-miterlimit="10"/>
+    <path id="cap" d="M120.1 271 L122.9 271 C123.967 271 124.5 271.533 124.5 272.6 L124.5 274.4 C124.5 275.467 123.967 276 122.9 276 L120.1 276 C119.033 276 118.5 275.467 118.5 274.4 L118.5 272.6 C118.5 271.533 119.033 271 120.1 271 Z" fill="#64748b" stroke="#503139" stroke-width="2.2" stroke-linejoin="round"/>
+    <path id="sheen-27" data-name="sheen" d="M104.5 279.75 C104.5 278.507 106.067 277.5 108 277.5 C109.933 277.5 111.5 278.507 111.5 279.75 C111.5 280.993 109.933 282 108 282 C106.067 282 104.5 280.993 104.5 279.75 Z" fill="#4a5568" opacity="0.7"/>
+    <text transform="matrix(1 0 0 1 114 322)" x="0" y="0" xml:space="preserve" font-family="&apos;Virelai Sans&apos;, sans-serif" font-size="8.5" fill="#94a3b8" text-anchor="middle"><tspan x="0" y="0">GOMINE</tspan></text>
+    <path id="plate-27" data-name="plate" d="M176 254 L204 254 C213.333 254 218 258.667 218 268 L218 296 C218 305.333 213.333 310 204 310 L176 310 C166.667 310 162 305.333 162 296 L162 268 C162 258.667 166.667 254 176 254 Z" fill="url(#linear-gradient-54)" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="sheen-28" data-name="sheen" d="M176 258 L204 258 C209.333 258 212 260.667 212 266 L212 268 C212 273.333 209.333 276 204 276 L176 276 C170.667 276 168 273.333 168 268 L168 266 C168 260.667 170.667 258 176 258 Z" fill="url(#linear-gradient-55)"/>
+    <path id="card_back" data-name="card back" d="M172.3 271.4 L191.9 267.2 L197.7 294.6 L178.1 298.8 Z" fill="#ef4444" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="card_front" data-name="card front" d="M187.6 266.5 L207.3 269.9 L202.4 297.5 L182.7 294.1 Z" fill="#e6edf3" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="heart" d="M195 286.5 C191.5 283.5 191 280.5 193.3 279.4 C194.5 278.8 195 279.4 195 280.2 C195 279.4 195.5 278.8 196.7 279.4 C199 280.5 198.5 283.5 195 286.5 Z" fill="#ef4444" stroke="#503139" stroke-width="1.6" stroke-linejoin="round"/>
+    <text transform="matrix(1 0 0 1 190 322)" x="0" y="0" xml:space="preserve" font-family="&apos;Virelai Sans&apos;, sans-serif" font-size="8.5" fill="#94a3b8" text-anchor="middle"><tspan x="0" y="0">GOSOL</tspan></text>
+    <path id="plate-28" data-name="plate" d="M252 254 L280 254 C289.333 254 294 258.667 294 268 L294 296 C294 305.333 289.333 310 280 310 L252 310 C242.667 310 238 305.333 238 296 L238 268 C238 258.667 242.667 254 252 254 Z" fill="url(#linear-gradient-56)" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="sheen-29" data-name="sheen" d="M252 258 L280 258 C285.333 258 288 260.667 288 266 L288 268 C288 273.333 285.333 276 280 276 L252 276 C246.667 276 244 273.333 244 268 L244 266 C244 260.667 246.667 258 252 258 Z" fill="url(#linear-gradient-57)"/>
+    <path id="face-2" data-name="face" d="M251 282 C251 273.716 257.716 267 266 267 C274.284 267 281 273.716 281 282 C281 290.284 274.284 297 266 297 C257.716 297 251 290.284 251 282 Z" fill="#fdb845" stroke="#503139" stroke-width="3.4" stroke-miterlimit="10"/>
+    <path id="shade" d="M273 292 C278 288 280 281 279 275 C278 283 275 288.5 270 291.5 Z" fill="#f5ac3c"/>
+    <path id="eye_1-2" data-name="eye 1" d="M258.1 279.5 C258.1 277.843 259.175 276.5 260.5 276.5 C261.825 276.5 262.9 277.843 262.9 279.5 C262.9 281.157 261.825 282.5 260.5 282.5 C259.175 282.5 258.1 281.157 258.1 279.5 Z" fill="#503139"/>
+    <path id="eye_2-2" data-name="eye 2" d="M269.1 279.5 C269.1 277.843 270.175 276.5 271.5 276.5 C272.825 276.5 273.9 277.843 273.9 279.5 C273.9 281.157 272.825 282.5 271.5 282.5 C270.175 282.5 269.1 281.157 269.1 279.5 Z" fill="#503139"/>
+    <path id="grin" d="M258 286 C263.333 291 268.667 291 274 286" fill="none" stroke="#503139" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/>
+    <text transform="matrix(1 0 0 1 266 322)" x="0" y="0" xml:space="preserve" font-family="&apos;Virelai Sans&apos;, sans-serif" font-size="8.5" fill="#94a3b8" text-anchor="middle"><tspan x="0" y="0">GOEMOJI</tspan></text>
+    <path id="plate-29" data-name="plate" d="M328 254 L356 254 C365.333 254 370 258.667 370 268 L370 296 C370 305.333 365.333 310 356 310 L328 310 C318.667 310 314 305.333 314 296 L314 268 C314 258.667 318.667 254 328 254 Z" fill="url(#linear-gradient-58)" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="sheen-30" data-name="sheen" d="M328 258 L356 258 C361.333 258 364 260.667 364 266 L364 268 C364 273.333 361.333 276 356 276 L328 276 C322.667 276 320 273.333 320 268 L320 266 C320 260.667 322.667 258 328 258 Z" fill="url(#linear-gradient-59)"/>
+    <path id="bubble" d="M334 267 L350 267 C356 267 359 270 359 276 L359 282 C359 288 356 291 350 291 L341 291 L331 299 L333.5 291 L334 291 C328 291 325 288 325 282 L325 276 C325 270 328 267 334 267 Z" fill="#7fd4c8" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="dot_1" data-name="dot 1" d="M331.3 279 C331.3 277.509 332.509 276.3 334 276.3 C335.491 276.3 336.7 277.509 336.7 279 C336.7 280.491 335.491 281.7 334 281.7 C332.509 281.7 331.3 280.491 331.3 279 Z" fill="#ffffff"/>
+    <path id="dot_2" data-name="dot 2" d="M339.3 279 C339.3 277.509 340.509 276.3 342 276.3 C343.491 276.3 344.7 277.509 344.7 279 C344.7 280.491 343.491 281.7 342 281.7 C340.509 281.7 339.3 280.491 339.3 279 Z" fill="#ffffff"/>
+    <path id="dot_3" data-name="dot 3" d="M347.3 279 C347.3 277.509 348.509 276.3 350 276.3 C351.491 276.3 352.7 277.509 352.7 279 C352.7 280.491 351.491 281.7 350 281.7 C348.509 281.7 347.3 280.491 347.3 279 Z" fill="#ffffff"/>
+    <text transform="matrix(1 0 0 1 342 322)" x="0" y="0" xml:space="preserve" font-family="&apos;Virelai Sans&apos;, sans-serif" font-size="8.5" fill="#94a3b8" text-anchor="middle"><tspan x="0" y="0">GOIRC</tspan></text>
+    <path id="plate-30" data-name="plate" d="M404 254 L432 254 C441.333 254 446 258.667 446 268 L446 296 C446 305.333 441.333 310 432 310 L404 310 C394.667 310 390 305.333 390 296 L390 268 C390 258.667 394.667 254 404 254 Z" fill="url(#linear-gradient-60)" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="sheen-31" data-name="sheen" d="M404 258 L432 258 C437.333 258 440 260.667 440 266 L440 268 C440 273.333 437.333 276 432 276 L404 276 C398.667 276 396 273.333 396 268 L396 266 C396 260.667 398.667 258 404 258 Z" fill="url(#linear-gradient-61)"/>
+    <path id="safe" d="M405 266 L431 266 C433.667 266 435 267.333 435 270 L435 295 C435 297.667 433.667 299 431 299 L405 299 C402.333 299 401 297.667 401 295 L401 270 C401 267.333 402.333 266 405 266 Z" fill="#64748b" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="door" d="M408 270 L428 270 C430 270 431 271 431 273 L431 292 C431 294 430 295 428 295 L408 295 C406 295 405 294 405 292 L405 273 C405 271 406 270 408 270 Z" fill="#94a3b8" stroke="#503139" stroke-width="2.4" stroke-linejoin="round"/>
+    <path id="dial-2" data-name="dial" d="M407.8 282.5 C407.8 279.076 410.576 276.3 414 276.3 C417.424 276.3 420.2 279.076 420.2 282.5 C420.2 285.924 417.424 288.7 414 288.7 C410.576 288.7 407.8 285.924 407.8 282.5 Z" fill="#0f0f1c" stroke="#503139" stroke-width="2.6" stroke-miterlimit="10"/>
+    <path id="spoke_1" data-name="spoke 1" d="M414 282.5 L414 277.5" fill="none" stroke="#94a3b8" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+    <path id="spoke_2" data-name="spoke 2" d="M414 282.5 L418.33 285" fill="none" stroke="#94a3b8" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+    <path id="spoke_3" data-name="spoke 3" d="M414 282.5 L409.67 285" fill="none" stroke="#94a3b8" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+    <path id="handle-2" data-name="handle" d="M426 278.5 L426 278.5 C427.333 278.5 428 279.167 428 280.5 L428 284.5 C428 285.833 427.333 286.5 426 286.5 L426 286.5 C424.667 286.5 424 285.833 424 284.5 L424 280.5 C424 279.167 424.667 278.5 426 278.5 Z" fill="#0f0f1c" stroke="#503139" stroke-width="2.2" stroke-linejoin="round"/>
+    <text transform="matrix(1 0 0 1 418 322)" x="0" y="0" xml:space="preserve" font-family="&apos;Virelai Sans&apos;, sans-serif" font-size="8.5" fill="#94a3b8" text-anchor="middle"><tspan x="0" y="0">GOVAULT</tspan></text>
+    <path id="plate-31" data-name="plate" d="M480 254 L508 254 C517.333 254 522 258.667 522 268 L522 296 C522 305.333 517.333 310 508 310 L480 310 C470.667 310 466 305.333 466 296 L466 268 C466 258.667 470.667 254 480 254 Z" fill="url(#linear-gradient-62)" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="sheen-32" data-name="sheen" d="M480 258 L508 258 C513.333 258 516 260.667 516 266 L516 268 C516 273.333 513.333 276 508 276 L480 276 C474.667 276 472 273.333 472 268 L472 266 C472 260.667 474.667 258 480 258 Z" fill="url(#linear-gradient-63)"/>
+    <path id="envelope" d="M480 270 L508 270 C511.333 270 513 271.667 513 275 L513 291 C513 294.333 511.333 296 508 296 L480 296 C476.667 296 475 294.333 475 291 L475 275 C475 271.667 476.667 270 480 270 Z" fill="#e6edf3" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="flap" d="M476 271.5 L494 285 L512 271.5" fill="none" stroke="#503139" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+    <text transform="matrix(1 0 0 1 494 322)" x="0" y="0" xml:space="preserve" font-family="&apos;Virelai Sans&apos;, sans-serif" font-size="8.5" fill="#94a3b8" text-anchor="middle"><tspan x="0" y="0">GOMAIL</tspan></text>
+  </g>
+</svg>

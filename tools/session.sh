@@ -386,7 +386,8 @@ fi
 [ -f "$ROOT/image/WALLPAPER.QOI" ] && cp "$ROOT/image/WALLPAPER.QOI" "$SHARE/WALLPAPER.QOI"
 # Launcher emblem (#2054): the mascot QOI fixture, read at /host/SEXIBURGER.QOI.
 [ -f "$ROOT/user/src/lib/fixtures/qoi/mascot_64x64.qoi" ] && cp "$ROOT/user/src/lib/fixtures/qoi/mascot_64x64.qoi" "$SHARE/SEXIBURGER.QOI"
-# M203 (#3338) staged art: the f-artcraft drop, read at /host/ART/<NAME>.QOI.
+# M203 (#3338) staged art: the vendored design masters (#3783,
+# design/art/virelai/) adopted to QOI, read at /host/ART/<NAME>.QOI.
 # Repo files already carry the 8.3 names (image/art/ART.TXT is the manifest);
 # the copy only case-folds — no rename at the seam.
 if [ -d "$ROOT/image/art" ]; then

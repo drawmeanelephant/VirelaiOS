@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="160" height="120" viewBox="0 0 160 120">
+  <defs>
+    <linearGradient id="linear-gradient-1" x1="60" y1="16" x2="100" y2="106" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#f4f7fb"/>
+      <stop offset="1" stop-color="#c9d4e2"/>
+    </linearGradient>
+  </defs>
+  <title>VirelaiOS — spot blank document</title>
+  <g id="Layer_1" data-name="Layer 1">
+    <path id="sheet" d="M52 16 L96 16 L112 32 L112 100 C112 104 110 106 106 106 L58 106 C54 106 52 104 52 100 Z" fill="url(#linear-gradient-1)" stroke="#503139" stroke-width="4.5" stroke-linejoin="round"/>
+    <path id="dog_ear" data-name="dog ear" d="M96 16 L96 30 C96 32.667 97.333 34 100 34 L112 34" fill="none" stroke="#503139" stroke-width="3.5" stroke-linejoin="round"/>
+    <path id="ear_shade" data-name="ear shade" d="M96 16 L112 32 L98 32 C96.667 32 96 31.333 96 30 Z" fill="#c9d4e2"/>
+    <path id="rule0" d="M62 48 L96 48" fill="none" stroke="#8b98a5" stroke-width="3.5" stroke-linecap="round" stroke-miterlimit="10" opacity="0.6"/>
+    <path id="rule1" d="M62 62 L106 62" fill="none" stroke="#8b98a5" stroke-width="3.5" stroke-linecap="round" stroke-miterlimit="10" opacity="0.6"/>
+    <path id="rule2" d="M62 76 L88 76" fill="none" stroke="#8b98a5" stroke-width="3.5" stroke-linecap="round" stroke-miterlimit="10" opacity="0.6"/>
+    <path id="caret" d="M62 84 L62 96" fill="none" stroke="#3b82f6" stroke-width="4" stroke-linecap="round" stroke-miterlimit="10"/>
+    <path id="pencil_body" data-name="pencil body" d="M96 108 L132 88 L139 95 L103 115 Z" fill="#f59e0b" stroke="#503139" stroke-width="3.5" stroke-linejoin="round"/>
+    <path id="pencil_tip" data-name="pencil tip" d="M132 88 L144 80 L139 95 Z" fill="#f0e4bc" stroke="#503139" stroke-width="3.5" stroke-linejoin="round"/>
+    <path id="pencil_lead" data-name="pencil lead" d="M141 83 L144 80 L141.5 86 Z" fill="#503139"/>
+    <path id="pencil_band" data-name="pencil band" d="M100 106 L105 111" fill="none" stroke="#503139" stroke-width="3" stroke-linecap="round" stroke-miterlimit="10" opacity="0.6"/>
+  </g>
+</svg>

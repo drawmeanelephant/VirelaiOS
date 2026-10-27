@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="160" height="120" viewBox="0 0 160 120">
+  <defs>
+    <linearGradient id="linear-gradient-1" x1="80" y1="36" x2="80" y2="102" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#c9a86a"/>
+      <stop offset="1" stop-color="#8f6e3c"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-2" x1="80" y1="62" x2="80" y2="102" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#e3c184"/>
+      <stop offset="1" stop-color="#c9a86a"/>
+    </linearGradient>
+  </defs>
+  <title>VirelaiOS — spot empty folder</title>
+  <g id="Layer_1" data-name="Layer 1">
+    <path id="folder_back" data-name="folder back" d="M34 44 L66 44 L74 36 L100 36 C104 36 106 38 106 42 L106 52 L126 52 C130 52 132 54 132 58 L132 96 C132 100 130 102 126 102 L40 102 C36 102 34 100 34 96 L34 50 C34 46 36 44 40 44 Z" fill="url(#linear-gradient-1)" stroke="#503139" stroke-width="4.5" stroke-linejoin="round"/>
+    <path id="empty_inside" data-name="empty inside" d="M40 58 L126 58 L120 92 L46 92 Z" fill="#2a2118"/>
+    <path id="mote0" d="M58 50 C58 48.895 58.895 48 60 48 C61.105 48 62 48.895 62 50 C62 51.105 61.105 52 60 52 C58.895 52 58 51.105 58 50 Z" fill="#f0e4bc" opacity="0.45"/>
+    <path id="mote1" d="M78.5 44 C78.5 43.172 79.172 42.5 80 42.5 C80.828 42.5 81.5 43.172 81.5 44 C81.5 44.828 80.828 45.5 80 45.5 C79.172 45.5 78.5 44.828 78.5 44 Z" fill="#f0e4bc" opacity="0.35"/>
+    <path id="mote2" d="M98 50 C98 48.895 98.895 48 100 48 C101.105 48 102 48.895 102 50 C102 51.105 101.105 52 100 52 C98.895 52 98 51.105 98 50 Z" fill="#f0e4bc" opacity="0.4"/>
+    <path id="folder_flap" data-name="folder flap" d="M34 62 L126 62 L118 102 L42 102 Z" fill="url(#linear-gradient-2)" stroke="#503139" stroke-width="4.5" stroke-linejoin="round"/>
+    <path id="flap_lit_edge" data-name="flap lit edge" d="M42 66 L118 66" fill="none" stroke="#f0dcb0" stroke-width="3" stroke-linecap="round" stroke-miterlimit="10" opacity="0.7"/>
+  </g>
+</svg>

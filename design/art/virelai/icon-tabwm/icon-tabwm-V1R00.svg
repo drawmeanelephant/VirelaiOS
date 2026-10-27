@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="64" height="64" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="linear-gradient-1" x1="4" y1="32" x2="60" y2="32" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2e2e4a"/>
+      <stop offset="0.55" stop-color="#23233a"/>
+      <stop offset="1" stop-color="#181828"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-2" x1="10" y1="17" x2="54" y2="17" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7a7aa8" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#7a7aa8" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <title>icon-tabwm-V1R00</title>
+  <g id="Layer_1" data-name="Layer 1">
+    <path id="plate" d="M18 4 L46 4 C55.333 4 60 8.667 60 18 L60 46 C60 55.333 55.333 60 46 60 L18 60 C8.667 60 4 55.333 4 46 L4 18 C4 8.667 8.667 4 18 4 Z" fill="url(#linear-gradient-1)" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="sheen" d="M18 8 L46 8 C51.333 8 54 10.667 54 16 L54 18 C54 23.333 51.333 26 46 26 L18 26 C12.667 26 10 23.333 10 18 L10 16 C10 10.667 12.667 8 18 8 Z" fill="url(#linear-gradient-2)"/>
+    <path id="back_window" data-name="back window" d="M25 14 L46 14 C48.667 14 50 15.333 50 18 L50 32 C50 34.667 48.667 36 46 36 L25 36 C22.333 36 21 34.667 21 32 L21 18 C21 15.333 22.333 14 25 14 Z" fill="#64748b" stroke="#503139" stroke-width="2.6" stroke-linejoin="round"/>
+    <path id="front" d="M19 23 L45 23 C48.333 23 50 24.667 50 28 L50 44 C50 47.333 48.333 49 45 49 L19 49 C15.667 49 14 47.333 14 44 L14 28 C14 24.667 15.667 23 19 23 Z" fill="#e6edf3" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="titlebar" d="M19 23 L45 23 C48.333 23 50 24.667 50 28 L50 31 L14 31 L14 28 C14 24.667 15.667 23 19 23 Z" fill="#222d35"/>
+    <path id="tab" d="M21 19 L28 19 C30 19 31 20 31 22 L31 23 C31 25 30 26 28 26 L21 26 C19 26 18 25 18 23 L18 22 C18 20 19 19 21 19 Z" fill="#e6edf3" stroke="#503139" stroke-width="2.2" stroke-linejoin="round"/>
+    <path id="close" d="M42.2 27 C42.2 26.006 43.006 25.2 44 25.2 C44.994 25.2 45.8 26.006 45.8 27 C45.8 27.994 44.994 28.8 44 28.8 C43.006 28.8 42.2 27.994 42.2 27 Z" fill="#f1f5f9"/>
+    <path id="line_1" data-name="line 1" d="M19.3 36.5 L37.7 36.5 C38.567 36.5 39 36.933 39 37.8 L39 37.8 C39 38.667 38.567 39.1 37.7 39.1 L19.3 39.1 C18.433 39.1 18 38.667 18 37.8 L18 37.8 C18 36.933 18.433 36.5 19.3 36.5 Z" fill="#64748b"/>
+    <path id="line_2" data-name="line 2" d="M19.3 42 L30.7 42 C31.567 42 32 42.433 32 43.3 L32 43.3 C32 44.167 31.567 44.6 30.7 44.6 L19.3 44.6 C18.433 44.6 18 44.167 18 43.3 L18 43.3 C18 42.433 18.433 42 19.3 42 Z" fill="#64748b"/>
+  </g>
+</svg>

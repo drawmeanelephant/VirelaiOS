@@ -1,39 +1,46 @@
 #!/usr/bin/env python3
-"""sync.py -- the VirelaiOS <-> f-artcraft interface bridge (#3357).
+"""sync.py -- the VirelaiOS design lane's sync tool (#3783).
 
-Two directions over the M203 (#3338) conveyor:
+VirelaiOS is the design truth: the figcraft design sheets and the
+delivered piece masters live in-repo under design/ (vendored from
+drawmeanelephant/f-artcraft; layout + provenance in design/README.md).
+f-artcraft is now renderer/preview only — nothing fetches from it.
+(#3357 is the superseded pull/push conveyor, kept here as history.)
 
-  --pull   Diff drawmeanelephant/f-artcraft's `art/virelai/` drop against
-           image/art/ART.TXT: fetch every changed `<slug>-V*R*@2x.png`
-           master (new assets, and revised masters at the same or a newer
-           VxRy), convert through tools/art/adopt.py's deterministic
-           PNG->QOI path, regenerate ART.TXT (sha-pinned, same format),
-           and print an adoption report. Slugs with no adopt TABLE row
-           are reported, never silently named — naming/family is the
-           adopt.py contract's job, not the fetcher's.
-           `virelai/design/` .figcraft masters are listed with their
-           revisions so a design-side change is visible to the loop.
+Two modes over the M203 (#3338) staged-art seam:
 
-  --push   Regenerate the shipped-truth figcraft templates under
-           --out (default artifacts/figcraft-out/): document.json+zip per
-           template, carrying what the code ships today —
-             tokens-VxRy     <- user/go/theme/theme.go color tokens
-             apps-VxRy       <- image/apps.txt catalog rows
-             seat-shell-VxRy <- user/go/gotabwm chrome geometry consts
-           then print a design-drift report: shipped values vs the
-           remote design documents, so f-artcraft sees drift and files
-           adoption cards. The emitted document carries the truth as
-           figcraft variables + named nodes — a pixel-faithful mockup
-           regeneration (the 246-1140 node visual layouts) stays
-           designer-side followup; see the header of this file.
+  (default) Local-truth adoption. Scan design/art/virelai/<slug>/ for
+            each slug's highest `<slug>-V*R*@2x.png` master, convert new
+            or revised masters through tools/art/adopt.py's deterministic
+            PNG->QOI path into image/art/, regenerate ART.TXT
+            (sha-pinned, same format), and print an adoption report.
+            Slugs with no adopt TABLE row are reported, never silently
+            named — naming/family is the adopt.py contract's job.
+            `design/virelai/design/` sheets are listed with their
+            revisions so a design-side change is visible to the loop.
+
+  --check   Same scan, verify-only: fail when image/art/ or ART.TXT
+            differ from what the local masters produce.
+
+  --export  Regenerate the shipped-truth figcraft templates under
+            --out (default artifacts/figcraft-out/): document.json+zip
+            per template, carrying what the code ships today —
+              tokens-SHIPPED     <- user/go/theme/theme.go color tokens
+              apps-SHIPPED       <- image/apps.txt catalog rows
+              seat-shell-SHIPPED <- user/go/gotabwm chrome geometry consts
+            then print a design-drift report: shipped values vs the
+            local design sheets, so f-artcraft sees drift when it picks
+            the templates up for preview. The emitted document carries
+            the truth as figcraft variables + named nodes — a
+            pixel-faithful mockup regeneration (the 246-1140 node visual
+            layouts) stays designer-side followup.
 
 Usage:
-  python3 tools/art/sync.py --pull [--dry-run]
-  python3 tools/art/sync.py --push [--out DIR] [--no-fetch]
+  python3 tools/art/sync.py [--dry-run]
+  python3 tools/art/sync.py --check
+  python3 tools/art/sync.py --export [--out DIR]
 
---no-fetch diffs against the cached copies in --out/../fartcraft-cache
-(a --pull or plain --push run refreshes it). python3 stdlib + the
-project's Pillow (adopt.convert) only; `gh` does auth.
+python3 stdlib + the project's Pillow (adopt.convert) only.
 """
 
 import argparse
@@ -41,7 +48,6 @@ import hashlib
 import io
 import json
 import re
-import subprocess
 import sys
 import zipfile
 from pathlib import Path
@@ -52,135 +58,145 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 import adopt  # noqa: E402
 
-REPO = "drawmeanelephant/f-artcraft"
-CACHE = ROOT / "artifacts" / "fartcraft-cache"
 OUT = ROOT / "artifacts" / "figcraft-out"
-
-DESIGN = ("apps", "seat-shell", "tokens", "app-screens")
-REV = re.compile(r"-V(\d+)R(\d+)@")
-
-
-def gh_json(args):
-    out = subprocess.run(
-        ["gh", "api"] + args, capture_output=True, text=True, check=True)
-    return json.loads(out.stdout)
-
-
-def gh_blob(path):
-    meta = gh_json([f"repos/{REPO}/contents/{path}"])
-    import base64
-    return base64.b64decode(meta["content"])
+ART_MASTERS = ROOT / "design" / "art" / "virelai"
+SHEETS = ROOT / "design" / "virelai" / "design"
 
 
 def sha256(b):
     return hashlib.sha256(b).hexdigest()
 
 
-def remote_tree():
-    tree = gh_json([f"repos/{REPO}/git/trees/main?recursive=1"])["tree"]
-    return [t["path"] for t in tree if t["type"] == "blob"]
-
-
 def manifest_rows():
-    """ART.TXT -> {slug: (share, rel, size, issue, src_sha)}."""
+    """ART.TXT -> {slug: (share, rel, slug, size, issue, src_sha, qoi_sha)}."""
     rows = {}
     for ln in adopt.MANIFEST.read_text().splitlines():
         f = ln.split()
         if len(f) >= 7 and not ln.startswith("#"):
-            rows[f[2]] = (f[0], f[1], f[3], f[4], f[5])
+            rows[f[2]] = (f[0], f[1], f[2], f[3], f[4], f[5], f[6])
     return rows
 
 
-def remote_art(paths):
-    """{slug: (V, R, path)} — highest revision per art/virelai/ slug."""
+def local_art():
+    """{slug: (V, R, path)} — highest revision master per slug."""
     best = {}
-    for p in paths:
-        m = re.match(r"art/virelai/([^/]+)/\1-V(\d+)R(\d+)@2x\.png$", p)
-        if m:
-            key = (int(m.group(2)), int(m.group(3)))
-            if m.group(1) not in best or key > best[m.group(1)][:2]:
-                best[m.group(1)] = key + (p,)
+    for d in sorted(ART_MASTERS.iterdir()):
+        if not d.is_dir():
+            continue
+        slug = d.name
+        for p in d.glob(f"{slug}-V*R*@2x.png"):
+            m = re.fullmatch(
+                rf"{re.escape(slug)}-V(\d+)R(\d+)@2x\.png", p.name)
+            if not m:
+                continue
+            key = (int(m.group(1)), int(m.group(2)))
+            if slug not in best or key > best[slug][:2]:
+                best[slug] = key + (p,)
     return best
 
 
-def remote_design(paths):
-    """{name: (V, R, path)} — highest .figcraft revision per design doc."""
+def local_design(figcraft_only=False):
+    """{name: (V, R, path)} — highest-revision native per design sheet.
+
+    A sheet's native is .figcraft (drawn in FigCraft) or .vectorcraft
+    (drawn by f-artcraft scripts) per design/virelai/design/README.md;
+    .figcraft wins when a revision carries both."""
     best = {}
-    for p in paths:
-        m = re.match(
-            r"virelai/design/([^/]+)/\1-V(\d+)R(\d+)\.figcraft$", p)
-        if m:
-            key = (int(m.group(2)), int(m.group(3)))
-            if m.group(1) not in best or key > best[m.group(1)][:2]:
-                best[m.group(1)] = key + (p,)
-    return best
+    if not SHEETS.is_dir():
+        return best
+    exts = ("figcraft",) if figcraft_only else ("figcraft", "vectorcraft")
+    for d in sorted(SHEETS.iterdir()):
+        if not d.is_dir():
+            continue
+        name = d.name
+        for ext in exts:
+            for p in d.glob(f"{name}-V*R*.{ext}"):
+                m = re.fullmatch(
+                    rf"{re.escape(name)}-V(\d+)R(\d+)\.{ext}", p.name)
+                if not m:
+                    continue
+                key = (int(m.group(1)), int(m.group(2)),
+                       ext == "figcraft")
+                if name not in best or key > best[name][0]:
+                    best[name] = (key, p)
+    return {name: key[:2] + (p,) for name, (key, p) in best.items()}
 
 
-def pull(dry_run):
-    paths = remote_tree()
+def sync(dry_run, check):
     table = {slug: (fam, name, size, iss)
              for slug, fam, name, size, iss in adopt.TABLE}
     have = manifest_rows()
-    best = remote_art(paths)
+    best = local_art()
 
-    fetched = {}
     adopted, revised, same, unknown = [], [], [], []
+    fails = []
     for slug, (v, r, path) in sorted(best.items()):
         if slug not in table:
-            unknown.append(f"{slug} (V{v}R{r:02d} on remote; no adopt row)")
+            unknown.append(f"{slug} (V{v}R{r:02d} master; no adopt row)")
             continue
-        blob = fetched.setdefault(slug, gh_blob(path))
+        blob = path.read_bytes()
         s = sha256(blob)
         fam, name, size, iss = table[slug]
+        rel = f"image/art/{fam}/{name.lower()}.qoi"
+        dst = ROOT / rel
         old = have.get(slug)
-        if old and old[4] == s:
+        if old and old[5] == s:
+            if check and (not dst.exists()
+                          or sha256(dst.read_bytes()) != old[6]):
+                fails.append(f"{rel} does not match ART.TXT's qoi sha")
             same.append(slug)
             continue
-        tmp = CACHE / "pull" / f"{slug}.png"
-        tmp.parent.mkdir(parents=True, exist_ok=True)
-        tmp.write_bytes(blob)
-        out = adopt.convert(tmp, size)
-        rel = f"image/art/{fam}/{name.lower()}.qoi"
+        out = adopt.convert(path, size)
         (revised if old else adopted).append(
             f"{slug} -> {name} ({'V%dR%02d' % (v, r)})")
+        if check:
+            if not dst.exists() or dst.read_bytes() != out:
+                fails.append(f"{rel} differs from the local master")
+            continue
         if not dry_run:
-            dst = ROOT / rel
             dst.parent.mkdir(parents=True, exist_ok=True)
             dst.write_bytes(out)
         have[slug] = (name, f"{fam}/{name.lower()}.qoi", slug,
                       f"{size[0]}x{size[1]}", iss, s, sha256(out))
 
-    if not dry_run and (adopted or revised):
-        write_manifest(have)
+    # The manifest is regenerated text — a sync rewrites it whenever the
+    # generated form drifts (new rows, or a header/ver change), not only
+    # when an asset's bytes moved.
+    want = manifest_text(have)
+    drifted = want != adopt.MANIFEST.read_text()
+    if check:
+        if drifted:
+            fails.append("image/art/ART.TXT differs from a fresh sync")
+    elif not dry_run and drifted:
+        adopt.MANIFEST.write_text(want)
 
-    design = remote_design(paths)
-    print("== sync --pull ==")
+    design = local_design()
+    print("== sync (local truth) ==")
     for l in adopted:
         print("  adopt   " + l)
     for l in revised:
         print("  revise  " + l)
     for l in unknown:
         print("  no-row  " + l)
-    print(f"  unchanged: {len(same)} staged assets identical to remote")
-    print("  design docs on remote:")
-    for name, (v, r, _p) in sorted(design.items()):
-        print(f"    {name}-V{v}R{r:02d}.figcraft")
+    print(f"  unchanged: {len(same)} staged assets identical to masters")
+    print("  design sheets vendored:")
+    for name, (v, r, p) in sorted(design.items()):
+        print(f"    {name}-V{v}R{r:02d}{p.suffix}")
     if dry_run:
         print("  (dry run — nothing written)")
+    if check:
+        for f in fails:
+            print("  FAIL " + f)
+        if fails:
+            return 1
+        print("  --check ok: staged rasters + ART.TXT match local masters")
     return 0
 
 
-def write_manifest(have):
-    """Regenerate ART.TXT in adopt.py's exact format, TABLE order."""
+def manifest_text(have):
+    """ART.TXT in adopt.py's exact format, TABLE order -> text."""
     by_share = {v[0]: v for v in have.values()}
-    lines = [
-        "# VirelaiOS staged art manifest (M203 #3338 conveyor).",
-        "# Source: drawmeanelephant/f-artcraft art/virelai/<slug>/<slug>-V1R00@2x.png",
-        "# Generated by tools/art/adopt.py -- do not hand-edit rows.",
-        f"# ver {adopt.VER}",
-        "#",
-        "# SHARE    REPO FILE                       SOURCE SLUG            SHIP SIZE  ISSUE  SRC SHA256                                                       QOI SHA256",
-    ]
+    lines = list(adopt.MANIFEST_HEAD)
     for slug, fam, name, size, iss in adopt.TABLE:
         row = by_share.get(name)
         if row is None:
@@ -189,11 +205,11 @@ def write_manifest(have):
         issue_t = issue if str(issue).startswith("#") else f"#{issue}"
         lines.append(
             f"{name:<9} {rel:<30} {slug:<22} {sz:<10} {issue_t:<6} {ssrc} {sout}")
-    adopt.MANIFEST.write_text("\n".join(lines) + "\n")
+    return "\n".join(lines) + "\n"
 
 
 # ---------------------------------------------------------------------------
-# --push: shipped truth -> figcraft templates + design-drift report.
+# --export: shipped truth -> figcraft templates + design-drift report.
 # ---------------------------------------------------------------------------
 
 THEME_RE = re.compile(
@@ -280,7 +296,7 @@ def emit_figcraft(name, collections, note):
 
 
 def design_variables(doc):
-    """Remote figcraft document.json -> {name: {mode: (r,g,b)}}."""
+    """figcraft document.json -> {name: {mode: (r,g,b)}}."""
     out = {}
     coll = (doc.get("variables") or {})
     modes = {}
@@ -301,7 +317,7 @@ def close(a, b, eps=0.004):
     return all(abs(x - y) <= eps for x, y in zip(a, b))
 
 
-def push(outdir, no_fetch):
+def export(outdir):
     toks = shipped_tokens()
     apps = shipped_apps()
     shell = shipped_shell()
@@ -350,25 +366,20 @@ def push(outdir, no_fetch):
                     ("seat-shell-SHIPPED", shell_doc)):
         dst = outdir / f"{name}.figcraft"
         dst.write_bytes(emit_figcraft(
-            name, c, "generated by tools/art/sync.py --push from shipped "
+            name, c, "generated by tools/art/sync.py --export from shipped "
             "truth; visual mockup regeneration is a designer-side "
             "followup (VirelaiOS#3357 notes)"))
         emitted.append(dst.name)
 
-    # --- drift report ------------------------------------------------------
-    print("== sync --push ==")
+    # --- drift report vs the local design sheets ---------------------------
+    print("== sync --export ==")
     print("  emitted: " + ", ".join(emitted) + f"  -> {outdir}")
-    if no_fetch:
-        print("  drift: skipped (--no-fetch)")
-        return 0
 
-    paths = remote_tree()
-    design = remote_design(paths)
-    print("  drift vs remote design docs:")
+    design = local_design(figcraft_only=True)
+    print("  drift vs local design sheets:")
     if "tokens" in design:
         v, r, p = design["tokens"]
-        doc = json.loads(zipfile.ZipFile(io.BytesIO(gh_blob(p)))
-                         .read("document.json"))
+        doc = json.loads(zipfile.ZipFile(p).read("document.json"))
         remote = design_variables(doc)
         drifts, missing = [], []
         for mode, mode_remote in (("Dark", "dark"), ("Light", "light")):
@@ -392,12 +403,11 @@ def push(outdir, no_fetch):
         if not drifts:
             print("    tokens: no color drift Dark/Light")
     else:
-        print("    tokens: no remote doc found")
+        print("    tokens: no local sheet found")
 
     if "apps" in design:
         v, r, p = design["apps"]
-        doc = json.loads(zipfile.ZipFile(io.BytesIO(gh_blob(p)))
-                         .read("document.json"))
+        doc = json.loads(zipfile.ZipFile(p).read("document.json"))
         nodes = doc.get("nodes", {})
         designed = {n["name"][5:] for n in nodes.values()
                     if isinstance(n.get("name"), str)
@@ -410,24 +420,26 @@ def push(outdir, no_fetch):
         if designed == shipped_bins:
             print("    apps: catalog set matches design fleet")
     else:
-        print("    apps: no remote doc found")
-    print("  (push does not write to f-artcraft — adoption cards are filed "
-          "from this report)")
+        print("    apps: no local sheet found")
+    print("  (export does not write to f-artcraft — it previews from "
+          "these templates)")
     return 0
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    g = ap.add_mutually_exclusive_group(required=True)
-    g.add_argument("--pull", action="store_true")
-    g.add_argument("--push", action="store_true")
+    g = ap.add_mutually_exclusive_group()
+    g.add_argument("--check", action="store_true",
+                   help="verify image/art + ART.TXT match local masters")
+    g.add_argument("--export", action="store_true",
+                   help="emit shipped-truth figcraft templates for "
+                        "f-artcraft preview")
     ap.add_argument("--dry-run", action="store_true")
-    ap.add_argument("--no-fetch", action="store_true")
     ap.add_argument("--out", type=Path, default=OUT)
     a = ap.parse_args()
-    if a.pull:
-        return pull(a.dry_run)
-    return push(a.out, a.no_fetch)
+    if a.export:
+        return export(a.out)
+    return sync(a.dry_run, a.check)
 
 
 if __name__ == "__main__":

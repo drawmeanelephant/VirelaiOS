@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="64" height="64" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="linear-gradient-1" x1="4" y1="32" x2="60" y2="32" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2e2e4a"/>
+      <stop offset="0.55" stop-color="#23233a"/>
+      <stop offset="1" stop-color="#181828"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-2" x1="10" y1="17" x2="54" y2="17" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7a7aa8" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#7a7aa8" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <title>icon-goemoji-V1R00</title>
+  <g id="Layer_1" data-name="Layer 1">
+    <path id="plate" d="M18 4 L46 4 C55.333 4 60 8.667 60 18 L60 46 C60 55.333 55.333 60 46 60 L18 60 C8.667 60 4 55.333 4 46 L4 18 C4 8.667 8.667 4 18 4 Z" fill="url(#linear-gradient-1)" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="sheen" d="M18 8 L46 8 C51.333 8 54 10.667 54 16 L54 18 C54 23.333 51.333 26 46 26 L18 26 C12.667 26 10 23.333 10 18 L10 16 C10 10.667 12.667 8 18 8 Z" fill="url(#linear-gradient-2)"/>
+    <path id="face" d="M17 32 C17 23.716 23.716 17 32 17 C40.284 17 47 23.716 47 32 C47 40.284 40.284 47 32 47 C23.716 47 17 40.284 17 32 Z" fill="#fdb845" stroke="#503139" stroke-width="3.4" stroke-miterlimit="10"/>
+    <path id="shade" d="M39 42 C44 38 46 31 45 25 C44 33 41 38.5 36 41.5 Z" fill="#f5ac3c"/>
+    <path id="eye_1" data-name="eye 1" d="M24.1 29.5 C24.1 27.843 25.175 26.5 26.5 26.5 C27.825 26.5 28.9 27.843 28.9 29.5 C28.9 31.157 27.825 32.5 26.5 32.5 C25.175 32.5 24.1 31.157 24.1 29.5 Z" fill="#503139"/>
+    <path id="eye_2" data-name="eye 2" d="M35.1 29.5 C35.1 27.843 36.175 26.5 37.5 26.5 C38.825 26.5 39.9 27.843 39.9 29.5 C39.9 31.157 38.825 32.5 37.5 32.5 C36.175 32.5 35.1 31.157 35.1 29.5 Z" fill="#503139"/>
+    <path id="grin" d="M24 36 C29.333 41 34.667 41 40 36" fill="none" stroke="#503139" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+</svg>

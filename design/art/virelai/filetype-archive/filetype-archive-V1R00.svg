@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="32" height="32" viewBox="0 0 32 32">
+  <title>filetype-archive-V1R00</title>
+  <g id="Layer_1" data-name="Layer 1">
+    <path id="box" d="M8 10 L24 10 C25.333 10 26 10.667 26 12 L26 23 C26 24.333 25.333 25 24 25 L8 25 C6.667 25 6 24.333 6 23 L6 12 C6 10.667 6.667 10 8 10 Z" fill="#da761e" stroke="#503139" stroke-width="2.4" stroke-linejoin="round"/>
+    <path id="seam" d="M6.5 14 L25.5 14" fill="none" stroke="#503139" stroke-width="1.6" stroke-linecap="round" stroke-miterlimit="10"/>
+    <path id="tape" d="M15.2 10.5 L16.8 10.5 C17.333 10.5 17.6 10.767 17.6 11.3 L17.6 23.7 C17.6 24.233 17.333 24.5 16.8 24.5 L15.2 24.5 C14.667 24.5 14.4 24.233 14.4 23.7 L14.4 11.3 C14.4 10.767 14.667 10.5 15.2 10.5 Z" fill="#9d4a0d"/>
+    <path id="flaps" d="M6 10 L10.5 6.5 L21.5 6.5 L26 10" fill="#da761e" stroke="#503139" stroke-width="2.4" stroke-linejoin="round"/>
+  </g>
+</svg>

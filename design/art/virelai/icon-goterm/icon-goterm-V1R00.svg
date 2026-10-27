@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="64" height="64" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="linear-gradient-1" x1="4" y1="32" x2="60" y2="32" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2e2e4a"/>
+      <stop offset="0.55" stop-color="#23233a"/>
+      <stop offset="1" stop-color="#181828"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-2" x1="10" y1="17" x2="54" y2="17" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7a7aa8" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#7a7aa8" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <title>icon-goterm-V1R00</title>
+  <g id="Layer_1" data-name="Layer 1">
+    <path id="plate" d="M18 4 L46 4 C55.333 4 60 8.667 60 18 L60 46 C60 55.333 55.333 60 46 60 L18 60 C8.667 60 4 55.333 4 46 L4 18 C4 8.667 8.667 4 18 4 Z" fill="url(#linear-gradient-1)" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="sheen" d="M18 8 L46 8 C51.333 8 54 10.667 54 16 L54 18 C54 23.333 51.333 26 46 26 L18 26 C12.667 26 10 23.333 10 18 L10 16 C10 10.667 12.667 8 18 8 Z" fill="url(#linear-gradient-2)"/>
+    <path id="window" d="M18 17 L46 17 C49.333 17 51 18.667 51 22 L51 42 C51 45.333 49.333 47 46 47 L18 47 C14.667 47 13 45.333 13 42 L13 22 C13 18.667 14.667 17 18 17 Z" fill="#0f0f1c" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="prompt" d="M19 25 L26 30 L19 35" fill="none" stroke="#22c55e" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/>
+    <path id="cursor" d="M29 38.5 L39 38.5" fill="none" stroke="#22c55e" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+</svg>

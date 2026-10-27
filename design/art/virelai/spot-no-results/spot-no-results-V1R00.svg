@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="160" height="120" viewBox="0 0 160 120">
+  <defs>
+    <radialGradient id="radial-gradient-1" cx="70" cy="52" r="28" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#d8e4f0" stop-opacity="0.35"/>
+      <stop offset="1" stop-color="#d8e4f0" stop-opacity="0.1"/>
+    </radialGradient>
+    <linearGradient id="linear-gradient-1" x1="33.5" y1="52" x2="106.5" y2="52" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#8b99ac"/>
+      <stop offset="1" stop-color="#4a5468"/>
+    </linearGradient>
+  </defs>
+  <title>VirelaiOS — spot no results</title>
+  <g id="Layer_1" data-name="Layer 1">
+    <path id="handle" d="M94.48 76.48 L128.48 110.48" fill="none" stroke="#503139" stroke-width="15" stroke-linecap="round" stroke-miterlimit="10"/>
+    <path id="handle_fill" data-name="handle fill" d="M94.48 76.48 L128.48 110.48" fill="none" stroke="#4a5468" stroke-width="8" stroke-linecap="round" stroke-miterlimit="10"/>
+    <path id="glass" d="M42 52 C42 36.536 54.536 24 70 24 C85.464 24 98 36.536 98 52 C98 67.464 85.464 80 70 80 C54.536 80 42 67.464 42 52 Z" fill="url(#radial-gradient-1)"/>
+    <path id="rim" d="M36 52 C36 33.222 51.222 18 70 18 C88.778 18 104 33.222 104 52 C104 70.778 88.778 86 70 86 C51.222 86 36 70.778 36 52 Z" fill="none" stroke="#503139" stroke-width="9" stroke-miterlimit="10"/>
+    <path id="rim_band" data-name="rim band" d="M36 52 C36 33.222 51.222 18 70 18 C88.778 18 104 33.222 104 52 C104 70.778 88.778 86 70 86 C51.222 86 36 70.778 36 52 Z" fill="none" stroke="url(#linear-gradient-1)" stroke-width="5" stroke-miterlimit="10"/>
+    <path id="dry0" d="M82.8 54.3 C84.467 58.433 83.1 60.9 78.7 61.7" fill="none" stroke="#8b98a5" stroke-width="3" stroke-linecap="round" stroke-miterlimit="10" opacity="0.75"/>
+    <path id="dry1" d="M74.4 64.2 C71.667 67.733 68.867 67.8 66 64.4" fill="none" stroke="#8b98a5" stroke-width="3" stroke-linecap="round" stroke-miterlimit="10" opacity="0.75"/>
+    <path id="dry2" d="M61.6 62 C57.2 61.333 55.767 58.9 57.3 54.7" fill="none" stroke="#8b98a5" stroke-width="3" stroke-linecap="round" stroke-miterlimit="10" opacity="0.75"/>
+    <path id="dry3" d="M57.2 49.7 C55.533 45.567 56.9 43.1 61.3 42.3" fill="none" stroke="#8b98a5" stroke-width="3" stroke-linecap="round" stroke-miterlimit="10" opacity="0.75"/>
+    <path id="dry4" d="M65.6 39.8 C68.333 36.267 71.133 36.2 74 39.6" fill="none" stroke="#8b98a5" stroke-width="3" stroke-linecap="round" stroke-miterlimit="10" opacity="0.75"/>
+    <path id="dry5" d="M78.4 42 C82.8 42.667 84.233 45.1 82.7 49.3" fill="none" stroke="#8b98a5" stroke-width="3" stroke-linecap="round" stroke-miterlimit="10" opacity="0.75"/>
+    <path id="speck" d="M67 52 C67 50.343 68.343 49 70 49 C71.657 49 73 50.343 73 52 C73 53.657 71.657 55 70 55 C68.343 55 67 53.657 67 52 Z" fill="#8b98a5" opacity="0.55"/>
+    <path id="rim_glint" data-name="rim glint" d="M49.6 27.52 C59.8 22.307 70.567 21.627 81.9 25.48" fill="none" stroke="#d8e4f0" stroke-width="4" stroke-linecap="round" stroke-miterlimit="10" opacity="0.8"/>
+  </g>
+</svg>

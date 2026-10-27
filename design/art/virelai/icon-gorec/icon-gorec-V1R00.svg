@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="64" height="64" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="linear-gradient-1" x1="4" y1="32" x2="60" y2="32" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2e2e4a"/>
+      <stop offset="0.55" stop-color="#23233a"/>
+      <stop offset="1" stop-color="#181828"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-2" x1="10" y1="17" x2="54" y2="17" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7a7aa8" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#7a7aa8" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <title>icon-gorec-V1R00</title>
+  <g id="Layer_1" data-name="Layer 1">
+    <path id="plate" d="M18 4 L46 4 C55.333 4 60 8.667 60 18 L60 46 C60 55.333 55.333 60 46 60 L18 60 C8.667 60 4 55.333 4 46 L4 18 C4 8.667 8.667 4 18 4 Z" fill="url(#linear-gradient-1)" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="sheen" d="M18 8 L46 8 C51.333 8 54 10.667 54 16 L54 18 C54 23.333 51.333 26 46 26 L18 26 C12.667 26 10 23.333 10 18 L10 16 C10 10.667 12.667 8 18 8 Z" fill="url(#linear-gradient-2)"/>
+    <path id="cradle_edge" data-name="cradle edge" d="M20 28 C20 38.5 26 42.5 32 42.5 C38 42.5 44 38.5 44 28" fill="none" stroke="#503139" stroke-width="6.2" stroke-linecap="round" stroke-linejoin="round"/>
+    <path id="cradle" d="M20 28 C20 38.5 26 42.5 32 42.5 C38 42.5 44 38.5 44 28" fill="none" stroke="#94a3b8" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+    <path id="capsule" d="M32 13 L32 13 C36 13 38 15 38 19 L38 28 C38 32 36 34 32 34 L32 34 C28 34 26 32 26 28 L26 19 C26 15 28 13 32 13 Z" fill="#94a3b8" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="rec" d="M29.9 19.5 C29.9 18.34 30.84 17.4 32 17.4 C33.16 17.4 34.1 18.34 34.1 19.5 C34.1 20.66 33.16 21.6 32 21.6 C30.84 21.6 29.9 20.66 29.9 19.5 Z" fill="#ef4444"/>
+    <path id="stem" d="M31.7 42.5 L32.3 42.5 C33.1 42.5 33.5 42.9 33.5 43.7 L33.5 45.8 C33.5 46.6 33.1 47 32.3 47 L31.7 47 C30.9 47 30.5 46.6 30.5 45.8 L30.5 43.7 C30.5 42.9 30.9 42.5 31.7 42.5 Z" fill="#94a3b8" stroke="#503139" stroke-width="2" stroke-linejoin="round"/>
+    <path id="base" d="M26 47 L38 47 C39.333 47 40 47.667 40 49 L40 49 C40 50.333 39.333 51 38 51 L26 51 C24.667 51 24 50.333 24 49 L24 49 C24 47.667 24.667 47 26 47 Z" fill="#94a3b8" stroke="#503139" stroke-width="2.2" stroke-linejoin="round"/>
+  </g>
+</svg>

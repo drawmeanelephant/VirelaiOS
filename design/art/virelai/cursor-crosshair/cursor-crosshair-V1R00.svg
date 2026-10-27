@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="32" height="48" viewBox="0 0 32 48">
+  <title>cursor-crosshair-V1R00</title>
+  <g id="Layer_1" data-name="Layer 1">
+    <path id="arm_top" data-name="arm top" d="M16 4 L16 4 C17.2 4 17.8 4.6 17.8 5.8 L17.8 19.2 C17.8 20.4 17.2 21 16 21 L16 21 C14.8 21 14.2 20.4 14.2 19.2 L14.2 5.8 C14.2 4.6 14.8 4 16 4 Z" fill="#ffffff" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="arm_bottom" data-name="arm bottom" d="M16 27 L16 27 C17.2 27 17.8 27.6 17.8 28.8 L17.8 42.2 C17.8 43.4 17.2 44 16 44 L16 44 C14.8 44 14.2 43.4 14.2 42.2 L14.2 28.8 C14.2 27.6 14.8 27 16 27 Z" fill="#ffffff" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="arm_left" data-name="arm left" d="M5.8 22.2 L19.2 22.2 C20.4 22.2 21 22.8 21 24 L21 24 C21 25.2 20.4 25.8 19.2 25.8 L5.8 25.8 C4.6 25.8 4 25.2 4 24 L4 24 C4 22.8 4.6 22.2 5.8 22.2 Z" fill="#ffffff" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="arm_right" data-name="arm right" d="M20.8 22.2 L26.2 22.2 C27.4 22.2 28 22.8 28 24 L28 24 C28 25.2 27.4 25.8 26.2 25.8 L20.8 25.8 C19.6 25.8 19 25.2 19 24 L19 24 C19 22.8 19.6 22.2 20.8 22.2 Z" fill="#ffffff" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+  </g>
+</svg>

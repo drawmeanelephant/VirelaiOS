@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="32" height="32" viewBox="0 0 32 32">
+  <title>filetype-audio-V1R00</title>
+  <g id="Layer_1" data-name="Layer 1">
+    <path id="head" d="M6.5 22.5 C6.5 20.843 8.291 19.5 10.5 19.5 C12.709 19.5 14.5 20.843 14.5 22.5 C14.5 24.157 12.709 25.5 10.5 25.5 C8.291 25.5 6.5 24.157 6.5 22.5 Z" fill="#7fd4c8" stroke="#503139" stroke-width="2.4" stroke-miterlimit="10"/>
+    <path id="stem" d="M13.7 6.5 L13.7 6.5 C14.567 6.5 15 6.933 15 7.8 L15 20.2 C15 21.067 14.567 21.5 13.7 21.5 L13.7 21.5 C12.833 21.5 12.4 21.067 12.4 20.2 L12.4 7.8 C12.4 6.933 12.833 6.5 13.7 6.5 Z" fill="#7fd4c8" stroke="#503139" stroke-width="2.4" stroke-linejoin="round"/>
+    <path id="flag" d="M15 6.5 C19.667 7.167 21.733 9.667 21.2 14 L18.4 14 C18.8 10.8 17.667 9.133 15 9 Z" fill="#7fd4c8" stroke="#503139" stroke-width="2.4" stroke-linejoin="round"/>
+  </g>
+</svg>

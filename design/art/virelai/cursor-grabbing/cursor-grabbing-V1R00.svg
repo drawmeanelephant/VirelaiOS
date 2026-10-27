@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="32" height="48" viewBox="0 0 32 48">
+  <title>cursor-grabbing-V1R00</title>
+  <g id="Layer_1" data-name="Layer 1">
+    <path id="knuckle_1" data-name="knuckle 1" d="M5.8 14.75 C5.8 12.679 7.233 11 9 11 C10.767 11 12.2 12.679 12.2 14.75 C12.2 16.821 10.767 18.5 9 18.5 C7.233 18.5 5.8 16.821 5.8 14.75 Z" fill="#ffffff" stroke="#503139" stroke-width="3" stroke-miterlimit="10"/>
+    <path id="knuckle_2" data-name="knuckle 2" d="M10.3 14.75 C10.3 12.679 11.733 11 13.5 11 C15.267 11 16.7 12.679 16.7 14.75 C16.7 16.821 15.267 18.5 13.5 18.5 C11.733 18.5 10.3 16.821 10.3 14.75 Z" fill="#ffffff" stroke="#503139" stroke-width="3" stroke-miterlimit="10"/>
+    <path id="knuckle_3" data-name="knuckle 3" d="M14.8 14.75 C14.8 12.679 16.233 11 18 11 C19.767 11 21.2 12.679 21.2 14.75 C21.2 16.821 19.767 18.5 18 18.5 C16.233 18.5 14.8 16.821 14.8 14.75 Z" fill="#ffffff" stroke="#503139" stroke-width="3" stroke-miterlimit="10"/>
+    <path id="knuckle_4" data-name="knuckle 4" d="M19.3 14.75 C19.3 12.679 20.733 11 22.5 11 C24.267 11 25.7 12.679 25.7 14.75 C25.7 16.821 24.267 18.5 22.5 18.5 C20.733 18.5 19.3 16.821 19.3 14.75 Z" fill="#ffffff" stroke="#503139" stroke-width="3" stroke-miterlimit="10"/>
+    <path id="fist" d="M14 14 L19 14 C23.667 14 26 16.333 26 21 L26 34 C26 38.667 23.667 41 19 41 L14 41 C9.333 41 7 38.667 7 34 L7 21 C7 16.333 9.333 14 14 14 Z" fill="#ffffff" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="thumb" d="M9.3 33.1 L19.8 30.1 C18.452 30.306 17.158 29.493 16.757 28.19 C16.356 26.887 16.97 25.488 18.2 24.9 L7.7 27.9 C9.048 27.694 10.342 28.507 10.743 29.81 C11.144 31.113 10.53 32.512 9.3 33.1 Z" fill="#ffffff" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+  </g>
+</svg>

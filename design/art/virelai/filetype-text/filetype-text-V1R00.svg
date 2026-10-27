@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="32" height="32" viewBox="0 0 32 32">
+  <title>filetype-text-V1R00</title>
+  <g id="Layer_1" data-name="Layer 1">
+    <path id="page" d="M9 5 L19 5 L23 9 L23 27 L9 27 Z" fill="#ffffff" stroke="#503139" stroke-width="2.4" stroke-linejoin="round"/>
+    <path id="ear" d="M19 5 L23 9 L19 9 Z" fill="#e2e8f0" stroke="#503139" stroke-width="1.6" stroke-linejoin="round"/>
+    <path id="line_1" data-name="line 1" d="M12.95 13 L19.05 13 C19.683 13 20 13.317 20 13.95 L20 13.95 C20 14.583 19.683 14.9 19.05 14.9 L12.95 14.9 C12.317 14.9 12 14.583 12 13.95 L12 13.95 C12 13.317 12.317 13 12.95 13 Z" fill="#64748b"/>
+    <path id="line_2" data-name="line 2" d="M12.95 17 L19.05 17 C19.683 17 20 17.317 20 17.95 L20 17.95 C20 18.583 19.683 18.9 19.05 18.9 L12.95 18.9 C12.317 18.9 12 18.583 12 17.95 L12 17.95 C12 17.317 12.317 17 12.95 17 Z" fill="#64748b"/>
+    <path id="line_3" data-name="line 3" d="M12.95 21 L17.05 21 C17.683 21 18 21.317 18 21.95 L18 21.95 C18 22.583 17.683 22.9 17.05 22.9 L12.95 22.9 C12.317 22.9 12 22.583 12 21.95 L12 21.95 C12 21.317 12.317 21 12.95 21 Z" fill="#64748b"/>
+  </g>
+</svg>

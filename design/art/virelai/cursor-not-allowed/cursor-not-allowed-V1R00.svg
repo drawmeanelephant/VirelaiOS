@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="32" height="48" viewBox="0 0 32 48">
+  <title>cursor-not-allowed-V1R00</title>
+  <g id="Layer_1" data-name="Layer 1">
+    <path id="ring_halo" data-name="ring halo" d="M5 24 C5 17.925 9.925 13 16 13 C22.075 13 27 17.925 27 24 C27 30.075 22.075 35 16 35 C9.925 35 5 30.075 5 24 Z" fill="#ffffff"/>
+    <path id="ring_ink" data-name="ring ink" d="M5.8 24 C5.8 18.367 10.367 13.8 16 13.8 C21.633 13.8 26.2 18.367 26.2 24 C26.2 29.633 21.633 34.2 16 34.2 C10.367 34.2 5.8 29.633 5.8 24 Z" fill="#503139"/>
+    <path id="ring_inner" data-name="ring inner" d="M9.3 24 C9.3 20.3 12.3 17.3 16 17.3 C19.7 17.3 22.7 20.3 22.7 24 C22.7 27.7 19.7 30.7 16 30.7 C12.3 30.7 9.3 27.7 9.3 24 Z" fill="#ffffff"/>
+    <path id="bar" d="M10.3 14.9 L25.1 29.7 L21.7 33.1 L6.9 18.3 Z" fill="#503139"/>
+  </g>
+</svg>

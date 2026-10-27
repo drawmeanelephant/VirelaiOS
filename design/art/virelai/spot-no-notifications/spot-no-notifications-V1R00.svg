@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="160" height="120" viewBox="0 0 160 120">
+  <defs>
+    <linearGradient id="linear-gradient-1" x1="80" y1="16" x2="80" y2="28" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#f0d08a"/>
+      <stop offset="1" stop-color="#d8a94e"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-2" x1="56" y1="24" x2="110" y2="94" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#f0d08a"/>
+      <stop offset="1" stop-color="#9c7230"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-3" x1="80" y1="94" x2="80" y2="105" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#d8a94e"/>
+      <stop offset="1" stop-color="#9c7230"/>
+    </linearGradient>
+  </defs>
+  <title>VirelaiOS — spot no notifications</title>
+  <g id="Layer_1" data-name="Layer 1">
+    <path id="crown" d="M73 22 C73 18.686 76.134 16 80 16 C83.866 16 87 18.686 87 22 C87 25.314 83.866 28 80 28 C76.134 28 73 25.314 73 22 Z" fill="url(#linear-gradient-1)" stroke="#503139" stroke-width="4" stroke-miterlimit="10"/>
+    <path id="bell_body" data-name="bell body" d="M80 24 C60 26 48 44 46 66 C45 78 40 84 34 88 C31.333 90.667 32 92.667 36 94 L124 94 C128 92.667 128.667 90.667 126 88 C120 84 115 78 114 66 C112 44 100 26 80 24 Z" fill="url(#linear-gradient-2)" stroke="#503139" stroke-width="4.5" stroke-linejoin="round"/>
+    <path id="bell_lit_edge" data-name="bell lit edge" d="M56 60 C58 44 66 34 78 31" fill="none" stroke="#f6e2ae" stroke-width="3.5" stroke-linecap="round" stroke-miterlimit="10" opacity="0.75"/>
+    <path id="mouth_rim" data-name="mouth rim" d="M40 94 L120 94" fill="none" stroke="#503139" stroke-width="4.5" stroke-linecap="round" stroke-miterlimit="10" opacity="0.9"/>
+    <path id="clapper" d="M73 99.5 C73 96.462 76.134 94 80 94 C83.866 94 87 96.462 87 99.5 C87 102.538 83.866 105 80 105 C76.134 105 73 102.538 73 99.5 Z" fill="url(#linear-gradient-3)" stroke="#503139" stroke-width="4" stroke-miterlimit="10"/>
+    <path id="rest0" d="M120 48 C120 46.895 120.895 46 122 46 C123.105 46 124 46.895 124 48 C124 49.105 123.105 50 122 50 C120.895 50 120 49.105 120 48 Z" fill="#94a3b8" opacity="0.55"/>
+    <path id="rest1" d="M129 38 C129 36.895 129.895 36 131 36 C132.105 36 133 36.895 133 38 C133 39.105 132.105 40 131 40 C129.895 40 129 39.105 129 38 Z" fill="#94a3b8" opacity="0.43"/>
+    <path id="rest2" d="M138 29 C138 27.895 138.895 27 140 27 C141.105 27 142 27.895 142 29 C142 30.105 141.105 31 140 31 C138.895 31 138 30.105 138 29 Z" fill="#94a3b8" opacity="0.31"/>
+    <path id="dust" d="M94 41.5 C94 40.672 94.895 40 96 40 C97.105 40 98 40.672 98 41.5 C98 42.328 97.105 43 96 43 C94.895 43 94 42.328 94 41.5 Z" fill="#f6e2ae" opacity="0.4"/>
+  </g>
+</svg>
