@@ -1775,8 +1775,10 @@ var overview_titles: [max_user_windows][64]u8 = undefined;
 var overview_title_lens: [max_user_windows]u8 = @as([max_user_windows]u8, @splat(@as(u8, 0)));
 /// The save-under: the pre-grid scanout, restored on close so the seat's
 /// dim never strands the fixed layer (taskbar/dock/wallpaper gaps) the
-/// kernel stops repainting under wm_owns_user_layer.
-var overview_save: [@as(usize, fb_w) * @as(usize, fb_h)]u32 = undefined;
+/// kernel stops repainting under wm_owns_user_layer. Mapped lazily at enter
+/// — a static frame-sized array would balloon WND.BIN's BSS past the
+/// loader's image bound (#3759: observed — `wnd start` refused the load).
+var overview_save: ?[*]u32 = null;
 var overview_saved: bool = false;
 
 /// The WM's card list: valid + visible mirrors on the current workspace in
@@ -1911,7 +1913,8 @@ fn draw_overview_grid() void {
             const mw = @min(m.?.w, fb_w -| m.?.x);
             const mh = @min(m.?.h, fb_h -| m.?.y);
             if (mw > 0 and mh > 0) {
-                const src: [*]const u8 = @ptrCast(&overview_save[@as(usize, m.?.y) * fb_w + m.?.x]);
+                const save = overview_save.?;
+                const src: [*]const u8 = @ptrCast(save + @as(usize, m.?.y) * fb_w + m.?.x);
                 wnd_core.blit_scaled(@ptrCast(scan), fb_w * 4, src, mw, mh, @as(usize, fb_w) * 4, cx + 2, thumb_y, thumb_w, thumb_h);
             }
         }
@@ -1935,8 +1938,12 @@ fn overview_restore_pixels() void {
         overview_saved = false;
         return;
     };
+    const save = overview_save orelse {
+        overview_saved = false;
+        return;
+    };
     if (!overview_saved) return;
-    @memcpy(scan[0 .. @as(usize, fb_w) * fb_h], &overview_save);
+    @memcpy(scan[0 .. @as(usize, fb_w) * fb_h], save[0 .. @as(usize, fb_w) * fb_h]);
     overview_saved = false;
 }
 
@@ -1952,8 +1959,17 @@ fn overview_enter_grid() void {
     // kernel applies them); the grid is simply not drawn.
     if (ensure_scanout_mapped()) {
         const scan = scanout_ptr.?;
-        @memcpy(&overview_save, scan[0 .. @as(usize, fb_w) * fb_h]);
-        overview_saved = true;
+        // Map the save-under lazily (the wallpaper path's own fb_len anon
+        // map is the precedent); it stays mapped for the process's life.
+        if (overview_save == null) {
+            const fb_len: u64 = @as(u64, fb_w) * fb_h * 4;
+            const save_va = ui.syscall4(ui.sys_mmap_num, 0, fb_len, prot_rw, map_anonymous);
+            if (save_va > 0) overview_save = @ptrFromInt(@as(usize, @intCast(save_va)));
+        }
+        if (overview_save) |save| {
+            @memcpy(save[0 .. @as(usize, fb_w) * fb_h], scan[0 .. @as(usize, fb_w) * fb_h]);
+            overview_saved = true;
+        }
         // Resolve each card's display name through WINDOW_NAME (cmd 14).
         var i: usize = 0;
         while (i < overview_n) : (i += 1) {
