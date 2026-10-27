@@ -11,7 +11,7 @@ import (
 	"virelai/vi"
 )
 
-// The card's bar: exactly five gestures and the four named launchers.
+// The card's bar: exactly five gestures and the five named launchers.
 func TestTourTables(t *testing.T) {
 	gs := gestures()
 	if len(gs) != 5 {
@@ -46,11 +46,11 @@ func TestTourTables(t *testing.T) {
 		}
 	}
 
-	if len(launchers) != 4 {
-		t.Fatalf("launchers = %d, want 4", len(launchers))
+	if len(launchers) != 5 {
+		t.Fatalf("launchers = %d, want 5", len(launchers))
 	}
-	wantBins := []string{"GOSET.ELF", "GOFILES.ELF", "GOSTORE.ELF", "GOTERM.ELF"}
-	wantLabels := []string{"Settings", "Files", "Store", "Terminal"}
+	wantBins := []string{"GOSET.ELF", "GOFILES.ELF", "GOSTORE.ELF", "GOTERM.ELF", "GOHELP.ELF"}
+	wantLabels := []string{"Settings", "Files", "Store", "Terminal", "Help"}
 	for i := range launchers {
 		if launchers[i].bin != wantBins[i] || launchers[i].label != wantLabels[i] {
 			t.Fatalf("launcher %d = %+v, want %s %s", i, launchers[i], wantLabels[i], wantBins[i])
@@ -59,12 +59,12 @@ func TestTourTables(t *testing.T) {
 }
 
 func TestDigitLaunch(t *testing.T) {
-	for ch := uint32('1'); ch <= '4'; ch++ {
+	for ch := uint32('1'); ch <= '5'; ch++ {
 		if got := digitLaunch(ch); got != int(ch-'1') {
 			t.Fatalf("digitLaunch(%c) = %d", ch, got)
 		}
 	}
-	for _, ch := range []uint32{'0', '5', 'a', ' '} {
+	for _, ch := range []uint32{'0', '6', 'a', ' '} {
 		if digitLaunch(ch) != -1 {
 			t.Fatalf("digitLaunch(%c) did not refuse", ch)
 		}
@@ -73,11 +73,11 @@ func TestDigitLaunch(t *testing.T) {
 
 func TestFootText(t *testing.T) {
 	m := newTour(false)
-	if got := m.footText(); got != "step 1 of 5 · arrows walk · 1-4 launch · esc closes" {
+	if got := m.footText(); got != "step 1 of 5 · arrows walk · 1-5 launch · esc closes" {
 		t.Fatalf("idle foot = %q", got)
 	}
 	m.step = 2
-	if got := m.footText(); got != "step 3 of 5 · arrows walk · 1-4 launch · esc closes" {
+	if got := m.footText(); got != "step 3 of 5 · arrows walk · 1-5 launch · esc closes" {
 		t.Fatalf("stepped foot = %q", got)
 	}
 	m.launched = "GOTERM.ELF"
@@ -102,7 +102,7 @@ func TestLauncherHitTest(t *testing.T) {
 	a := &app{ta: &tabapp.TabApp{W: natW, H: natH}, m: newTour(false)}
 	a.layout()
 	rects := a.launchRects()
-	if len(rects) != 4 {
+	if len(rects) != 5 {
 		t.Fatalf("launchRects = %d", len(rects))
 	}
 	for i, r := range rects {
@@ -152,6 +152,13 @@ func TestPointerLaunchesThroughExecSeam(t *testing.T) {
 	a.pointer(vi.Event{Kind: vi.EvMouseDown, Flags: vi.BtnLeft, Arg0: 4, Arg1: 4})
 	if len(execs) != 1 {
 		t.Fatalf("dead-zone click exec'd %v", execs)
+	}
+	// The designed Help button (apps-V1R00 `btn/Help`, #3790) execs
+	// GOHELP.ELF — the same bare launch the palette's help row takes.
+	r = a.launchRects()[4]
+	a.pointer(vi.Event{Kind: vi.EvMouseDown, Flags: vi.BtnLeft, Arg0: uint32(r.X + r.W/2), Arg1: uint32(r.Y + r.H/2)})
+	if len(execs) != 2 || execs[1] != "GOHELP.ELF" {
+		t.Fatalf("Help click exec'd %v, want GOHELP.ELF", execs)
 	}
 }
 

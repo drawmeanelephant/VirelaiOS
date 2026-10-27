@@ -340,7 +340,7 @@ func (a *app) pointer(ev vi.Event) bool {
 
 // key: on the read walk Right/Left step the tour; on the try tour Right
 // skips the armed row and 'a' skips all that remain — both honest
-// advances, each row's marker named. Digits 1-4 fire the matching
+// advances, each row's marker named. Digits 1-5 fire the matching
 // launcher, and Escape or q dismisses — the done latch sets on
 // dismissal too, so a saved envelope restores a finished tour instead
 // of re-running it. A chord the seat owns (ctrl-*) never reaches here —
