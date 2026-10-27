@@ -1,23 +1,28 @@
 // alarms.go — the Alarm tab's row list (M152b #2916) and the persisted
-// alarm store (M144b #2795): add/edit/delete/toggle, the scheduler re-sync,
-// and the two carriers (the GOCLOCK.ALARM share file and the seat's
-// save_state blob) that make the list survive the app. Input dispatch,
-// painting and the .ics verbs live in main.go, paint.go and import.go.
+// alarm store (M144b #2795): add/edit/delete/toggle, the label prompt
+// (#3782), the scheduler re-sync, and the two carriers (the
+// GOCLOCK.ALARM share file and the seat's save_state blob) that make
+// the list survive the app. Input dispatch, painting and the .ics
+// verbs live in main.go, paint.go and import.go.
 package main
 
-import "virelai/vi"
+import (
+	"virelai/appkit"
+	"virelai/vi"
+	"virelai/widgets"
+)
 
 // --- alarm list (M152b, #2916) ------------------------------------------------
 //
 // The Alarm tab is a bounded row list: four digits + Return adds a daily
 // alarm, 'o' adds a once, Up/Down (or a row click) picks a row, Space/'t'
-// toggles it between armed and off, 'x' deletes it. 'e' edits the picked
-// row in place (M193b): the entry preloads its HHMM, a re-typed field
-// commits on Return and abandons on Escape — mode, enabled flag and
-// summary are the row's own; only the civil field (and its re-anchored
-// instant) changes. Deadline ids are the row index ("alarm3"); every
-// mutation re-syncs the scheduler from the list so index shifts can
-// never strand a deadline under the wrong id.
+// toggles it between armed and off, 'x' deletes it, 'l' labels it
+// (#3782). 'e' edits the picked row in place (M193b): the entry preloads
+// its HHMM, a re-typed field commits on Return and abandons on Escape —
+// mode, enabled flag and summary are the row's own; only the civil
+// field (and its re-anchored instant) changes. Deadline ids are the row
+// index ("alarm3"); every mutation re-syncs the scheduler from the list
+// so index shifts can never strand a deadline under the wrong id.
 
 // alarmMode renders the record's repeat field for the markers.
 func alarmMode(daily bool) string {
@@ -99,6 +104,71 @@ func (a *app) commitAlarmEdit() bool {
 	a.persistAlarms()
 	a.armTimer()
 	return true
+}
+
+// --- alarm labels (#3782) ---------------------------------------------------
+//
+// A row's label is the Summary field the .ics door already carries —
+// import's SUMMARY, export's SUMMARY, the gocal3 record's fourth token —
+// so naming a row needs no new persisted state, only a way to type it.
+// 'l' raises an appkit prompt on the picked row (preloaded with the
+// current label, so a rename is a tweak); its OK commits the cleaned
+// text — empty clears the label — and Escape or Cancel abandons. The
+// modal owns every event until it answers (handle() routes), and the
+// label rides the row's paint and the fired toast.
+
+// openLabelPrompt arms the prompt on the picked row, centred on the
+// app's fixed native canvas.
+func (a *app) openLabelPrompt() bool {
+	if a.alarmSel < 0 || a.alarmSel >= len(a.alarms) {
+		return false
+	}
+	al := a.alarms[a.alarmSel]
+	h, m, _ := parseHHMM(al.HHMM)
+	d := appkit.NewPrompt("Alarm label",
+		"name for "+two(int64(h))+":"+two(int64(m)))
+	d.R = widgets.Rect{
+		X: (natW - d.R.W) / 2, Y: (natH - d.R.H) / 2,
+		W: d.R.W, H: d.R.H,
+	}
+	d.Input = al.Summary
+	a.dlg = &d
+	return true
+}
+
+// labelDone applies the closed prompt's answer: "cancel" leaves the row
+// alone; anything else commits the cleaned text (empty clears it). The
+// marker prints the landed label — '-' for a cleared one, the import
+// verdict's convention — and only AFTER the republish, so a gate keyed
+// on it knows the write landed.
+func (a *app) labelDone() bool {
+	res := a.dlg.Result
+	a.dlg = nil
+	if res == "cancel" || a.alarmSel < 0 || a.alarmSel >= len(a.alarms) {
+		return true
+	}
+	al := &a.alarms[a.alarmSel]
+	al.Summary = cleanSummary(res)
+	h, m, _ := parseHHMM(al.HHMM)
+	lab := al.Summary
+	if lab == "" {
+		lab = "-"
+	}
+	a.persistAlarms()
+	vi.ConsoleLine(markerALabel + two(int64(h)) + ":" + two(int64(m)) + " " + lab)
+	return true
+}
+
+// firedToast is the seat toast's text for a fired deadline: an alarm row
+// speaks its label when it has one — "alarm0 Wake up done" vs the bare
+// "timer done". The wire bounds the text to the frame title, so a long
+// label tails off rather than refusing.
+func (a *app) firedToast(id string) string {
+	if i, ok := alarmIndex(id); ok && i < len(a.alarms) &&
+		a.alarms[i].Summary != "" {
+		return id + " " + a.alarms[i].Summary + " done"
+	}
+	return id + " done"
 }
 
 // deleteAlarm removes the picked row, deadline included.
@@ -298,7 +368,7 @@ func (a *app) applyPersistedAlarm() {
 		}
 		vi.ConsoleLine(markerFired + d.ID + " late")
 		firedOff = a.markFiredAlarm(d.ID) || firedOff
-		if !a.ta.Notify(d.ID + " done") {
+		if !a.ta.Notify(a.firedToast(d.ID)) {
 			vi.ConsoleLine(markerNotifyNo + d.ID)
 		}
 	}
