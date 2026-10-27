@@ -1,4 +1,4 @@
-# App refresh ledger (#3246, index #3234)
+# App refresh ledger (#3246, index #3234; non-app rotation #3322)
 
 One row per shipped app — every `image/apps.txt` row — carrying the card
 that last touched it and the ISO-8601 date. The component registry
@@ -12,14 +12,16 @@ touches an app's package re-dates that row in the same diff.
 
 Each wave files one app-refresh index over the ledger's oldest tranche:
 run `python3 tools/tests/test_app_refresh.py --stale`, take the top
-rows, and refresh those apps. A refresh PR bumps its row — set
-`last refresh` to the landing card and `date` to the merge date — so
-the ledger, not memory, decides which apps the next wave sees.
-The same diff also bumps the component's `ver` patch — the registry's
+rows, and refresh those apps. The same index also pulls a small fixed
+non-app tranche — the top ~3 rows of the non-app table (#3322). A
+refresh PR bumps its row — set `last refresh` to the landing card and
+`date` to the merge date — so the ledger, not memory, decides which
+components the next wave sees. The same diff also bumps the
+component's `ver` patch where the row carries one — the registry's
 bump rule — so a refresh re-dates the ledger row and the product
 version in one landing.
 
-Staleness is advisory, never a gate: `--stale` prints the table
+Staleness is advisory, never a gate: `--stale` prints the tables
 oldest-first and exits 0 regardless. Time is not a build input.
 
 The polish rotation's runnable half is the `live-polish-sweep` gate spec
@@ -99,16 +101,32 @@ per `docs/component-registry.md` row whose kind is `seat`, `tool`,
 `fixture`, in registry order. `fixture`-state rows exist to serve their
 spec — the rotation never refreshes a proof — and the `asset` rows
 (staged art) sit outside the families the goal named; both skips are
-recorded on the card (issue #3665). The wave-cadence question for
-non-app rows is the owner's; until then this table is read-only
-evidence, not a rotation.
+recorded on the card (issue #3665).
+
+Cadence (#3322): non-app rows ride the same wave as the app tranche —
+each refresh index also pulls the top ~3 rows of `--stale`'s non-app
+table, oldest first. No separate schedule: `user/go` churn under app
+and tool cards re-dates lib rows transitively, so the fixed tranche
+attacks the dormant tail (`user/src/lib`, quiet tools) at a ~yearly
+per-row cadence without new rotation state.
+
+Audit-only kinds: `kernel-service` and `host-tool` rows are tracked
+but never tranche-picked — their owning contracts are ADRs and the
+ADR is also the version surface (kernel-service rows are exempt from
+`ver M.m.p`), so there is no app-style refresh to land. Their verb is
+a row audit — verify the owning-contract cell and seed path, fix
+drift — riding ADR-amendment cards plus a yearly sweep; `last
+refresh`/`notes` record the audit landing, so no `last audited`
+column. For boris the honest refresh is a `.github/boris-pin.json`
+pin bump. `--stale` prints these rows in a separate audit-only table
+below the tranche surface.
 
 Same seeding convention: `last refresh`/`date` is the newest non-merge
 commit on the row's `seed path` — a package dir, or the pinning file a
 kernel-service or host row names (`git log --no-merges -1
 --format=%ad --date=short -- <path>`). `—`/`—` still means no recorded
 touch. The checker enforces row↔registry coverage and order exactly as
-it does for the app table, and `--stale` prints both tables.
+it does for the app table, and `--stale` prints all three tables.
 
 ### Row grammar (non-app)
 
