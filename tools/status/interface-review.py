@@ -1,17 +1,23 @@
 #!/usr/bin/env python3
 """interface-review.py -- the interface-review lane for the issue-conveyor (#3784).
 
-One pass reviews ONE app in rotation over the open `polish` audit issues
-("App audit: <name> (<BIN>)"). Rotation state lives on the audit issues
-themselves -- the newest comment carrying the lane marker is that app's
-last-reviewed stamp -- never in a repo file, so the hourly sweep can invoke
-this from any checkout.
+One pass reviews ONE app in rotation over the app audits in
+`docs/audits/*.md` (retired from the `polish` audit issues by #3793; each
+file carries an `<!-- iface-review:v1 app=<BIN> issue=<old #> -->` header
+that marks it as a rotation subject). Rotation state lives on a single
+standing state-tracker issue -- the open `lane-state`-labeled issue whose
+comments carry `<!-- iface-review:v1 app=<BIN> [last=<iso>] -->` markers;
+the newest stamp per app is its last-reviewed mark. State is deliberately
+NOT in the audit files or any repo file: the hourly sweep can invoke this
+from any checkout, and a stamp that only landed on one checkout's branch
+would strand the rotation (#3784's constraint, kept by #3793). The tracker
+issue is created on first use if absent.
 
 For the picked app the lane checks the shipped face against the figcraft
 design lane (f-artcraft `virelai/design/apps/` -- the same paths
 tools/art/sync.py reads; the in-repo migration is #3783) and the gate
 specs that assert on it, then either files ONE bounded `polish` card via
-`gh issue create` or posts a no-drift comment on the audit issue. Drift
+`gh issue create` or posts a no-drift stamp on the state tracker. Drift
 classes (per the card):
 
   missing-art      apps.txt icon= has no ART.TXT row / shipped .qoi
@@ -32,7 +38,8 @@ Usage:
   python3 tools/status/interface-review.py --dry-run       # reads live, posts nothing
   python3 tools/status/interface-review.py --app GOCLOCK.ELF [--dry-run]
   offline fixtures (tools/status/test-coordination.sh):
-    --audits-json F   `gh issue list --json number,title,body,comments,labels`
+    --audits-dir D    a dir of docs/audits-style *.md audit files
+    --state-json F    tracker-issue comments: [{body, createdAt}]
     --claims-json F   `gh issue list --json number,title,body,updatedAt,labels`
     --open-json F     `gh issue list --search <bin> --json number,title,body,labels`
     --figcraft F      a local apps-*.figcraft (skips the f-artcraft fetch)
@@ -54,8 +61,19 @@ DESIGN_REPO = "drawmeanelephant/f-artcraft"
 CACHE = ROOT / "artifacts" / "fartcraft-cache" / "design"
 
 MARKER = "iface-review"
+AUDITS_DIR = ROOT / "docs" / "audits"
+STATE_LABEL = "lane-state"
+STATE_TITLE = "iface-review lane state — audit rotation tracker"
 AUDIT_RE = re.compile(r"App audit:\s*(.+?)\s*\((\w+\.(?:ELF|BIN))\)")
+# `<!-- iface-review:v1 app=BIN [issue=N] [last=ISO] -->` -- the file
+# header / state-comment marker. attrs are key=value tokens.
+MARKER_RE = re.compile(r"<!--\s*iface-review:v1\s+([^>]*)-->")
 TITLEBAR_H = 28  # the seat chrome every apps-sheet frame carries (titlebar node)
+
+
+def marker_attrs(s):
+    """{key: value} parsed out of a marker's attr tail."""
+    return dict(re.findall(r"(\w+)=([^\s>]+)", s or ""))
 
 # Design text nodes that name a control the app must ship. `btn label` /
 # `ctab` are the sheet's control vocabulary; sample texts ('ztab', hint
@@ -76,15 +94,76 @@ def gh_text(args):
 
 
 # ---------------------------------------------------------------------------
-# Inputs: audits, claims, open issues, the design master.
+# Inputs: audit docs, lane state, claims, open issues, the design master.
 # ---------------------------------------------------------------------------
 
-def load_audits(path):
-    if path:
-        return json.loads(Path(path).read_text())
-    return gh_json(["issue", "list", "--label", "polish", "--state", "open",
-                    "--limit", "200",
-                    "--json", "number,title,body,comments,labels"])
+def load_audits(docs_dir):
+    """Audit records from docs/audits-style files: only .md files whose
+    header carries the iface-review marker are rotation subjects (the dir's
+    README.md is not). Each record: {bin, name, issue, doc, body} where
+    `doc` is the canonical `docs/audits/<file>` path cards cite."""
+    out = []
+    for f in sorted(Path(docs_dir or AUDITS_DIR).glob("*.md")):
+        text = f.read_text(errors="replace")
+        m = MARKER_RE.search(text)
+        if not m:
+            continue
+        attrs = marker_attrs(m.group(1))
+        bin_ = attrs.get("app")
+        if not bin_:
+            continue
+        tm = AUDIT_RE.search(text)
+        out.append({
+            "bin": bin_,
+            "name": tm.group(1) if tm else f.stem,
+            "issue": int(attrs["issue"]) if attrs.get("issue") else None,
+            "doc": f"docs/audits/{f.name}",
+            "body": text,
+        })
+    return out
+
+
+def find_state_issue(create=True):
+    """The tracker issue number: the lowest-numbered open `lane-state`
+    issue, created on first use when absent."""
+    issues = gh_json(["issue", "list", "--label", STATE_LABEL,
+                      "--state", "open", "--limit", "20",
+                      "--json", "number"])
+    if issues:
+        return min(i["number"] for i in issues)
+    if not create:
+        return None
+    try:
+        gh_text(["label", "create", STATE_LABEL, "--color", "8B959F",
+                 "--description",
+                 "Standing lane-state tracker issues — operational "
+                 "bookkeeping, not work cards (#3793)"])
+    except subprocess.CalledProcessError:
+        pass  # already exists
+    url = gh_text(["issue", "create", "--label", STATE_LABEL,
+                   "--title", STATE_TITLE,
+                   "--body",
+                   "Standing state tracker for the interface-review lane "
+                   "(#3784). **Not a work card — do not close.** Each "
+                   "`iface-review:v1 app=<BIN>` comment is one app review; "
+                   "the newest `last=` stamp (or comment timestamp) per app "
+                   "is that audit's last-reviewed mark. See "
+                   "`tools/status/interface-review.py`, "
+                   "`docs/audits/README.md`."])
+    return int(url.rstrip("/").rsplit("/", 1)[-1])
+
+
+def load_state(state_json, create):
+    """-> (tracker comments [{body, createdAt}], tracker num or None).
+    `create` is False under --dry-run: a missing tracker then reads as
+    "never reviewed" instead of posting an issue to exist."""
+    if state_json:
+        return json.loads(Path(state_json).read_text()), None
+    num = find_state_issue(create=create)
+    if num is None:
+        return [], None
+    issue = gh_json(["issue", "view", str(num), "--json", "comments"])
+    return issue.get("comments") or [], num
 
 
 def load_claims(path):
@@ -142,28 +221,32 @@ def load_design_doc(figcraft_path, no_fetch):
 
 
 # ---------------------------------------------------------------------------
-# Rotation.
+# Rotation. Stamps live on the state-tracker issue's comments.
 # ---------------------------------------------------------------------------
 
-def last_reviewed(audit):
-    """Newest iface-review comment's createdAt, else None."""
+def last_reviewed(state, bin_):
+    """Newest iface-review stamp for `bin_` in the tracker comments:
+    a marker's `last=` attr when present (migration seeds), else the
+    comment's own createdAt. None when never reviewed."""
     best = None
-    for c in audit.get("comments") or []:
-        if MARKER in (c.get("body") or ""):
-            at = c.get("createdAt") or ""
+    for c in state or []:
+        body = c.get("body") or ""
+        if MARKER not in body:
+            continue
+        for m in MARKER_RE.finditer(body):
+            attrs = marker_attrs(m.group(1))
+            if attrs.get("app") != bin_:
+                continue
+            at = attrs.get("last") or c.get("createdAt") or ""
             if best is None or at > best:
                 best = at
     return best
 
 
-def rotation_order(audits):
+def rotation_order(audits, state):
     """[(audit, bin, name)] oldest review first; never-reviewed first."""
-    rows = []
-    for a in audits:
-        m = AUDIT_RE.search(a.get("title") or "")
-        if m:
-            rows.append((a, m.group(2), m.group(1)))
-    rows.sort(key=lambda r: (last_reviewed(r[0]) or "", r[0]["number"]))
+    rows = [(a, a["bin"], a["name"]) for a in audits]
+    rows.sort(key=lambda r: (last_reviewed(state, r[1]) or "", r[1]))
     return rows
 
 
@@ -171,16 +254,21 @@ def rotation_order(audits):
 # Guardrails.
 # ---------------------------------------------------------------------------
 
-def derived_cards(open_issues, audit_num, binbase):
+def derived_cards(open_issues, audit, binbase):
     """Open issues that are cards derived from this audit: the binary in
-    the title ("GOCLOCK: alarm labels") or a body reference to the audit
-    ("From polish audit #3733")."""
+    the title ("GOCLOCK: alarm labels"), a body reference to the audit doc
+    or the retired audit issue ("From polish audit #3733"). Open issues
+    still titled like a retired audit ("App audit: ...") don't count —
+    they ARE audits, not derived work."""
     hits = []
     for i in open_issues:
-        if i["number"] == audit_num:
+        if AUDIT_RE.search(i.get("title") or ""):
             continue
         title_hit = binbase.lower() in (i.get("title") or "").lower()
-        body_hit = f"audit #{audit_num}" in (i.get("body") or "")
+        body = i.get("body") or ""
+        body_hit = (audit["doc"] in body
+                    or (audit["issue"] is not None
+                        and f"audit #{audit['issue']}" in body))
         if title_hit or body_hit:
             hits.append(i["number"])
     return hits
@@ -623,11 +711,11 @@ def review_app(audit, bin_, name, doc, rev):
 # Output.
 # ---------------------------------------------------------------------------
 
-def review_comment(bin_, audit_num, findings, notes, srcdir, rev, prov,
+def review_comment(bin_, findings, notes, srcdir, rev, prov,
                    filed_url, skipped):
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     lines = [
-        f"<!-- {MARKER}:v1 -->",
+        f"<!-- {MARKER}:v1 app={bin_} -->",
         f"**Interface review — {bin_}** ({today}, lane #3784)",
         "",
         f"- face reviewed: `{srcdir or 'unknown'}` vs design master "
@@ -649,18 +737,20 @@ def review_comment(bin_, audit_num, findings, notes, srcdir, rev, prov,
         lines.append("- skipped ahead in rotation: "
                      + "; ".join(f"{b} ({r})" for b, r in skipped))
     lines.append("")
-    lines.append("_Rotation state is this comment's timestamp; next pass "
-                 "takes the stalest unreviewed audit._")
+    lines.append("_Rotation state is this comment's stamp on the "
+                 "state-tracker issue; next pass takes the stalest "
+                 "unreviewed audit in docs/audits/._")
     return "\n".join(lines)
 
 
-def card_body(bin_, name, audit_num, findings, notes, rev):
+def card_body(bin_, name, audit, findings, notes, rev):
+    was = f" (was #{audit['issue']})" if audit["issue"] else ""
     lines = [
         f"## Interface drift — {bin_} ({name})",
         "",
         "Filed by the interface-review lane (#3784) from drift the "
         f"shipped face shows against the design master (apps-{rev}) "
-        f"and the gate specs. Audit: #{audit_num}.",
+        f"and the gate specs. Audit: `{audit['doc']}`{was}.",
         "",
         "**Findings:**",
     ]
@@ -676,13 +766,14 @@ def card_body(bin_, name, audit_num, findings, notes, rev):
         "",
         "**Scope (bounded):** fix the finding(s) above in the app and/or "
         "its spec — do not redesign the face. If the design master is "
-        "what's stale, say so on the audit issue and route it to the "
+        "what's stale, say so on this card and route it to the "
         "figcraft lane instead of patching code.",
         "",
         "**Verify:** `just verify-portable`; the app's gate "
         "(`just gate <spec>`) stays green.",
         "",
-        f"From polish audit #{audit_num} via interface-review lane #3784.",
+        f"From app audit `{audit['doc']}` via interface-review lane "
+        "#3784.",
     ]
     return "\n".join(lines)
 
@@ -694,7 +785,10 @@ def main():
     ap.add_argument("--dry-run", action="store_true",
                     help="read live state; print, post nothing")
     ap.add_argument("--app", help="review this BIN regardless of rotation")
-    ap.add_argument("--audits-json", help="fixture: polish issue list")
+    ap.add_argument("--audits-dir",
+                    help="fixture: dir of docs/audits-style *.md files")
+    ap.add_argument("--state-json",
+                    help="fixture: tracker comments [{body, createdAt}]")
     ap.add_argument("--claims-json", help="fixture: claim issue list")
     ap.add_argument("--open-json", help="fixture: open issues naming the bin")
     ap.add_argument("--figcraft", help="local apps-*.figcraft design doc")
@@ -702,15 +796,18 @@ def main():
                     help="design doc from artifacts/fartcraft-cache only")
     a = ap.parse_args()
 
-    audits = load_audits(a.audits_json)
-    order = rotation_order(audits)
+    audits = load_audits(a.audits_dir)
+    state, state_num = load_state(a.state_json, create=not a.dry_run)
+    order = rotation_order(audits, state)
     if not order:
-        print("interface-review: no open polish audits — nothing to do")
+        print("interface-review: no audit docs in "
+              f"{a.audits_dir or AUDITS_DIR} — nothing to do")
         return 0
-    never = sum(1 for au, _b, _n in order if last_reviewed(au) is None)
+    never = sum(1 for _au, b, _n in order
+                if last_reviewed(state, b) is None)
     print(f"rotation: {len(order)} audit(s), {never} never reviewed; "
           f"next up: "
-          + ", ".join(f"{b}(#{au['number']})" for au, b, _n in order[:4]))
+          + ", ".join(f"{b}({au['doc']})" for au, b, _n in order[:4]))
 
     doc, rev, prov = load_design_doc(a.figcraft, a.no_fetch)
     print(f"design master: {prov}")
@@ -722,17 +819,16 @@ def main():
     if a.app:
         candidates = [r for r in order if r[1] == a.app]
         if not candidates:
-            print(f"interface-review: --app {a.app} names no open audit")
+            print(f"interface-review: --app {a.app} names no audit doc")
             return 2
 
     for audit, bin_, name in candidates:
-        num = audit["number"]
         open_issues = load_open_issues(bin_.split(".")[0], a.open_json)
-        dups = derived_cards(open_issues, num, bin_.split(".")[0])
+        dups = derived_cards(open_issues, audit, bin_.split(".")[0])
         if dups:
             skipped.append((bin_, f"open derived card(s) "
                             f"{'/'.join('#' + str(d) for d in dups)}"))
-            print(f"skip {bin_} (audit #{num}): open derived card(s) "
+            print(f"skip {bin_} ({audit['doc']}): open derived card(s) "
                   + ", ".join(f"#{d}" for d in dups))
             continue
         if claims is None:
@@ -741,7 +837,7 @@ def main():
         if hits:
             by = ", ".join(sorted({f"#{n}" for n, _t, _p in hits}))
             skipped.append((bin_, f"active claim(s) {by} touch its files"))
-            print(f"skip {bin_} (audit #{num}): active claim(s) {by} "
+            print(f"skip {bin_} ({audit['doc']}): active claim(s) {by} "
                   "touch its files")
             continue
         picked = (audit, bin_, name)
@@ -754,9 +850,8 @@ def main():
         return 0
 
     audit, bin_, name = picked
-    num = audit["number"]
     findings, notes, srcdir = review_app(audit, bin_, name, doc, rev)
-    print(f"review {bin_} ({name}, audit #{num}): "
+    print(f"review {bin_} ({name}, {audit['doc']}): "
           f"{len(findings)} finding(s)")
     for cls, text in findings:
         print(f"  finding {cls}: {text}")
@@ -766,7 +861,7 @@ def main():
     filed_url = None
     if findings:
         title = f"{bin_}: interface drift — {findings[0][0]} lane"
-        body = card_body(bin_, name, num, findings, notes, rev)
+        body = card_body(bin_, name, audit, findings, notes, rev)
         if a.dry_run:
             filed_url = "(dry-run — not filed)"
             print(f"card (dry-run): {title}")
@@ -777,14 +872,17 @@ def main():
                                  "--title", title, "--body", body])
             print(f"filed card: {filed_url}")
 
-    comment = review_comment(bin_, num, findings, notes, srcdir, rev,
+    comment = review_comment(bin_, findings, notes, srcdir, rev,
                              prov, filed_url or "", skipped)
     if a.dry_run:
-        print(f"comment (dry-run) on audit #{num}:")
+        print(f"comment (dry-run) on state tracker "
+              f"{'#' + str(state_num) if state_num else '(none — dry-run)'}:")
         print(comment)
     else:
-        gh_text(["issue", "comment", str(num), "--body", comment])
-        print(f"commented on audit #{num}")
+        if state_num is None:
+            state_num = find_state_issue()
+        gh_text(["issue", "comment", str(state_num), "--body", comment])
+        print(f"commented on state tracker #{state_num}")
 
     verdict = ("filed card" if filed_url and not a.dry_run
                else "would file card" if findings else "no drift")
