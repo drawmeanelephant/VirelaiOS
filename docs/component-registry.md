@@ -85,7 +85,7 @@ All of them additionally answer to the schema-v2 manifest grammar
 | Pulse | app | PULSE.ELF | ver 1.0.0 | tools/gate/specs/go-top.spec | shipped |
 | Shell | app | GOSH.ELF | appver 1, ver 1.0.0 | tools/gate/specs/go-sh.spec | shipped |
 | Help | app | GOHELP.ELF | ver 1.1.0 | tools/gate/specs/go-help.spec | shipped |
-| Welcome | app | GOWELCOME.ELF | appver 1, ver 1.1.0 | tools/gate/specs/go-welcome.spec | shipped |
+| Welcome | app | GOWELCOME.ELF | appver 1, ver 1.2.0 | tools/gate/specs/go-welcome.spec | shipped |
 | Top | app | GOTOP.ELF | appver 1, ver 1.0.0 | tools/gate/specs/go-top.spec | shipped |
 | Settings | app | GOSET.ELF | ver 1.0.0 | tools/gate/specs/go-settings.spec | shipped |
 | Image Viewer | app | GOVIEW.ELF | ver 1.0.0 | tools/gate/specs/live-image-viewer.spec | shipped |

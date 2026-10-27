@@ -1,5 +1,5 @@
-# go-welcome.spec — GOWELCOME.ELF (M195b #3307, #3769)
-# class-B gate: the welcome tour's owning spec. Two boots under the live
+# go-welcome.spec — GOWELCOME.ELF (M195b #3307, #3769, #3790)
+# class-B gate: the welcome tour's owning spec. Three boots under the live
 # Go seat, one per flow the app now ships:
 #
 #   run 01  READ: `exec GOWELCOME.ELF --read` keeps the read-only walk —
@@ -21,6 +21,11 @@
 #           and a pointer-virtio click on a launcher button is the last
 #           row's press evidence. The done screen stands MSC_CELB and
 #           prints its decode receipt.
+#
+#   run 03  HELP (the #3790 designed button): a pointer-virtio click on
+#           the Help launcher execs the staged GOHELP.ELF for real — the
+#           app's own open chain on the seat is the activation proof the
+#           design master's `btn/Help` row owed the face.
 #
 # The done-flag half (a finished tour never re-runs) is pinned by the
 # host tests in user/go/welcome/tour_test.go — the leg needs the app's
@@ -53,11 +58,20 @@ vgate_file script3-02.txt <<'EOF'
 echo rx-go-welcome-done
 EOF
 
+vgate_file script-03.txt <<'EOF'
+echo rx-go-welcome-boot3
+EOF
+
+vgate_file script3-03.txt <<'EOF'
+echo rx-go-welcome-help
+EOF
+
 vgate_setup_python <<'PY'
 import os, shutil, sys
 share = os.environ.get("VG_SHARE") or os.path.join(os.environ["RUN_DIR"], "share")
 for name, how in (("GOWELCOME", "build-gowelcome.sh"),
-                  ("GOTABWM", "build-gotabwm.sh")):
+                  ("GOTABWM", "build-gotabwm.sh"),
+                  ("GOHELP", "build-help.sh")):
     src = os.path.join(".build", "go", name + ".ELF")
     if not os.path.exists(src):
         sys.exit(name + ".ELF missing (expected " + src + ") - build it first: "
@@ -142,14 +156,15 @@ vgate_assert 01 serial-absent 'exited status=139'
 #   done mascot qoi   -> script3's echo ends the run
 #
 # Button geometry: the seat proposes the full 1280x720 viewport, so the
-# 512x384 natural canvas scales x2.5/y1.875 — the Terminal button's
-# natural (384,308,116,48) lands at screen (960,577,290,90), centre
-# (1105,622).
+# 512x384 natural canvas scales x2.5/y1.875 — the launcher row divides
+# the 488-wide content into five 91-wide buttons, so the Terminal
+# button's natural (309,308,91,48) lands at screen (772,577,227,90),
+# centre (886,622).
 vgate_run 02 -- \
     --screen '$RUN_DIR/welcome-try-screen' \
     --via-virtio \
     --script '$RUN_DIR/script-02.txt' \
-    --pointer-virtio '1105,622,d;1105,622,u' \
+    --pointer-virtio '886,622,d;886,622,u' \
     --pointer-virtio-after 'gowelcome: ready' \
     --input-chords 'ctrl-space,ctrl-space' \
     --input-chords-after 'gowelcome: try 1 armed' \
@@ -199,3 +214,51 @@ vgate_assert 02 serial-contains 'rx-go-welcome-done'
 
 vgate_assert 02 serial-absent '[EXC] parking:'
 vgate_assert 02 serial-absent 'exited status=139'
+
+# --- #3790 run 03: the designed Help button -------------------------------
+#
+# The autostart tour is again the only instance. GOHELP.ELF is staged on
+# this share (the setup loop above), so the click's exec runs for real:
+# the launch receipt, then the opened app's own markers, are the
+# activation evidence — an in-guest exec never prints the monitor's
+# `exec: loaded` (the go-wm-default run-22 comment's rule), so the pin is
+# `gohelp:`'s open chain. The new tab taking focus is also a blur the
+# next armed row counts.
+#
+# Button geometry, same math as run 02: five 91-wide buttons over the
+# 488-wide content put Help at natural (408,308,91,48), screen
+# (1020,577,227,90) — centre (1134,622).
+vgate_run 03 -- \
+    --screen '$RUN_DIR/welcome-help-screen' \
+    --via-virtio \
+    --script '$RUN_DIR/script-03.txt' \
+    --pointer-virtio '1134,622,d;1134,622,u' \
+    --pointer-virtio-after 'gowelcome: ready' \
+    --script3 '$RUN_DIR/script3-03.txt' \
+    --script3-after 'gohelp: ready' \
+    --script-expect 'rx-go-welcome-help' --timeout 300
+
+vgate_assert 03 serial-contains 'wm: autostart gotabwm (settings wm=gotabwm)'
+vgate_assert 03 serial-contains 'gotabwm: mode live'
+vgate_assert 03 serial-contains 'gotabwm: welcome tour'
+vgate_assert 03 serial-contains 'gowelcome: open id='
+vgate_assert 03 serial-contains 'gowelcome: mode try'
+vgate_assert 03 serial-contains 'gowelcome: ready'
+
+# The press on Help: the launch receipt names the bin, the armed row
+# counts the press, and no refusal line ever prints — GOHELP was staged.
+vgate_assert 03 serial-contains 'gowelcome: launch GOHELP.ELF'
+vgate_assert 03 serial-contains 'gowelcome: try 0 done press'
+vgate_assert 03 serial-absent 'gowelcome: launch fail'
+
+# The activation: the exec'd browser runs its own boot chain on the seat
+# (open -> catalog -> ready), and its tab grab is the blur that resolves
+# the tour's next armed row.
+vgate_assert 03 serial-contains 'gohelp: open id='
+vgate_assert 03 serial-contains 'gohelp: catalog n='
+vgate_assert 03 serial-contains 'gohelp: ready'
+vgate_assert 03 serial-contains 'gowelcome: try 1 done blur'
+vgate_assert 03 serial-contains 'rx-go-welcome-help'
+
+vgate_assert 03 serial-absent '[EXC] parking:'
+vgate_assert 03 serial-absent 'exited status=139'

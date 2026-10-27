@@ -53,8 +53,11 @@ func gestures() []gesture {
 }
 
 // launcher is a one-click app start: the button label and the ELF it
-// execs. These are the four daily apps the tour hands a newcomer —
-// Settings, Files, Store and Terminal are all dock-side catalogue rows.
+// execs. These are the five daily apps the tour hands a newcomer —
+// Settings, Files, Store and Terminal are all dock-side catalogue rows,
+// and Help is the designed row the apps sheet adds (apps-V1R00's
+// `btn/Help`): the same bare GOHELP.ELF the palette's help row execs,
+// opening the browser's index.
 type launcher struct {
 	label string
 	bin   string
@@ -65,6 +68,7 @@ var launchers = []launcher{
 	{"Files", "GOFILES.ELF"},
 	{"Store", "GOSTORE.ELF"},
 	{"Terminal", "GOTERM.ELF"},
+	{"Help", "GOHELP.ELF"},
 }
 
 // --- the #3769 "try it" tour -------------------------------------------
@@ -290,7 +294,7 @@ func (t *tour) gestureAt(rects []rect, x, y int) int {
 	return -1
 }
 
-// digitLaunch maps the keyboard spelling of a launch: '1'..'4' fire the
+// digitLaunch maps the keyboard spelling of a launch: '1'..'5' fire the
 // same exec as a click on that button. Out-of-range is no launch.
 func digitLaunch(ch uint32) int {
 	if ch >= '1' && ch < '1'+uint32(len(launchers)) {
@@ -320,9 +324,9 @@ func (t *tour) footText() string {
 		n = t.stepsLen() - 1
 	}
 	if t.try {
-		return "try " + string(rune('1'+n)) + " of 6 · → skips · a skips all · 1-4 launch · esc closes"
+		return "try " + string(rune('1'+n)) + " of 6 · → skips · a skips all · 1-5 launch · esc closes"
 	}
-	return "step " + string(rune('1'+n)) + " of 5 · arrows walk · 1-4 launch · esc closes"
+	return "step " + string(rune('1'+n)) + " of 5 · arrows walk · 1-5 launch · esc closes"
 }
 
 // rect is a canvas-space box; contains is the hit test the pointer path
