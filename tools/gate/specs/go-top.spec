@@ -366,6 +366,32 @@ if not re.search(r"procs: id=%s name=COUNTER\.BIN .*state=exited .*exit=137" % p
 print("gotop kill ok: listed+armed pid=%s, status 137, no markers after" % pid)
 PY
 
+# The declared window IS the design frame (issue #3792): apps-V1R00 draws
+# GOTOP at 512x412 = the win_open rect + the seat's 28px titlebar. The
+# kernel's open-attribution record (`open:`) carries the DECLARED rect,
+# immune to the seat's later full-viewport resize; tying it to the id the
+# app's own `top: open id=` reported keeps the pin on GOTOP's window, not
+# any neighbour's. A shrunk or stretched declaration fails here before a
+# review lane ever compares the face.
+vgate_assert 01 python <<'PY'
+import os, re, sys
+ser = open(os.environ["VG_SER"], errors="replace").read()
+m = re.search(r"top: open id=(\d+)", ser)
+if m is None:
+    sys.exit("FAIL: no `top: open id=` marker")
+wid = m.group(1)
+rec = re.search(r"open: id=%s owner=\d+ rect=(\d+),(\d+) (\d+)x(\d+)" % wid,
+                ser)
+if rec is None:
+    sys.exit("FAIL: no kernel open record for window id=%s" % wid)
+x, y, w, h = (int(v) for v in rec.groups())
+if (x, y, w, h) != (40, 40, 512, 384):
+    sys.exit("FAIL: declared rect is %d,%d %dx%d — design frame wants "
+             "40,40 512x384 (+28px titlebar = 512x412)" % (x, y, w, h))
+print("gotop geometry ok: open id=%s rect=40,40 512x384 "
+      "(design frame 512x412 = +28px titlebar)" % wid)
+PY
+
 # Run 02 -- the `/` filter leg (issue #2197). One cv-input chord sequence does
 # the whole dance: `/` opens the field, `counter` narrows the table to the one
 # matching row, `return` commits it, `/` reopens the committed text and
