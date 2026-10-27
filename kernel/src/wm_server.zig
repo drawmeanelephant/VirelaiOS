@@ -119,10 +119,15 @@ pub const wmctl_activate_tab: u64 = 20;
 /// OVERVIEW (cmd 21). The WM — not the kernel — decides overview policy
 /// from its kind-19/21 input streams (which card was clicked, which
 /// workspace a drag targets); the kernel applies the SAME clamped
-/// primitives the shim runs (snapshot/enter, focus+raise, move-to-
-/// workspace + switch, exit) and blits the grid from its own
-/// `overview_open` state. a0 = action: 0 enter, 1 exit, 2 focus (a1 = id),
-/// 3 move (a1 = id, a2 = workspace). Zero new syscall slots (slot 65).
+/// primitives the shim runs (focus+raise, move-to-workspace + switch).
+/// a0 = action: 0 enter, 1 exit, 2 focus (a1 = id), 3 move (a1 = id,
+/// a2 = workspace). Zero new syscall slots (slot 65).
+/// #3759 (second item): the grid's render + bookkeeping are the seat's
+/// own outright — it snapshots its mirrored card list and paints the
+/// shared wnd_core grid into the scanout it already owns under
+/// `wm_owns_user_layer`; the kernel holds no `overview_open` state, no
+/// card snapshot, and no grid paint (the seat was always mandatory —
+/// no shim chord reaches enter).
 pub const wmctl_overview: u64 = 21;
 /// M42 UX (2026-09-05, TABWM tab-close seam): WIN_CLOSE — a0 = window id.
 /// The registered WM closes a live user window through the kernel's OWN
@@ -413,8 +418,9 @@ var scanout_pages: u32 = 0;
 fn release_wm_captures() void {
     // Alt+Tab overlay snapshot (cmd 5 ALT_TAB activate/cycle).
     driving_award.alt_tab_dismiss();
-    // Mission-control grid (cmd 21 OVERVIEW enter).
-    driving_award.overview_exit();
+    // #3759 (second item): the mission-control grid needs no release — the
+    // seat owns its render + bookkeeping outright, so a dead seat's grid
+    // dies with its scanout grant (scanout_teardown repaints the layer).
     // Tooltip box (cmd 8 TOOLTIP show).
     driving_award.tooltip_clear();
     // Notification-center panel (cmd 6 NOTIF_CENTER open).
@@ -1570,11 +1576,13 @@ test "wm_server: seat release drops every WM-owned input capture (M52 card 2, #1
     try std.testing.expect(register(3));
     // Open every capture through the SAME applied primitive the WM's slot-65
     // command reaches: cmd 5 activate / cmd 21 enter / cmd 8 show /
-    // cmd 6 open / cmd 11 (about + unsaved).
+    // cmd 6 open / cmd 11 (about + unsaved). #3759 (second item): the
+    // overview grid left the kernel's capture set — the seat owns its
+    // render + bookkeeping outright, so enter returns only the live card
+    // count and there is no kernel open state to release.
     try std.testing.expect(driving_award.alt_tab_activate());
     try std.testing.expect(driving_award.overlay_active);
-    _ = driving_award.overview_enter();
-    try std.testing.expect(driving_award.overview_is_open());
+    try std.testing.expectEqual(@as(usize, 2), driving_award.overview_enter());
     driving_award.tooltip_show("Clock");
     try std.testing.expect(driving_award.tooltip_visible);
     driving_award.notif_center_set_open(true);
@@ -1589,11 +1597,10 @@ test "wm_server: seat release drops every WM-owned input capture (M52 card 2, #1
     try std.testing.expect(driving_award.overlay_active);
     try std.testing.expect(driving_award.tooltip_visible);
 
-    // The SEAT RELEASE drops all six — the resumed shim never inherits a
-    // modality it has no path to dismiss.
+    // The SEAT RELEASE drops the five kernel-held captures — the resumed
+    // shim never inherits a modality it has no path to dismiss.
     try std.testing.expect(unregister(3));
     try std.testing.expect(!driving_award.overlay_active);
-    try std.testing.expect(!driving_award.overview_is_open());
     try std.testing.expect(!driving_award.tooltip_visible);
     try std.testing.expect(!driving_award.notif_center_open);
     try std.testing.expect(!driving_award.about_dialog_open);

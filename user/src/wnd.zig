@@ -162,8 +162,17 @@ const wmctl_activate_tab: u64 = 20;
 // WM2 mission-control overview (Self-hosting Lane 1, issue #707 card 2):
 // OVERVIEW (cmd 21) a0 = action (0 enter, 1 exit, 2 focus with a1 = id,
 // 3 move with a1 = id and a2 = workspace). The WM decides grid policy from
-// its kind-19/21 streams; the kernel applies + repaints. Zero new slots.
+// its kind-19/21 streams; the kernel applies the primitives. Zero new slots.
+// #3759 (second item): the grid's render + bookkeeping are THIS seat's own —
+// it freezes the card list at enter and paints the shared wnd_core grid into
+// the scanout it owns (save-under + per-tick redraw), the same discipline as
+// the snap-preview and wallpaper layers.
 const wmctl_overview: u64 = 21;
+// #1056 item 2: WINDOW_NAME (cmd 14) — a1 = window id, a2 = destination
+// buffer, a3 = length; returns the display-name byte count (app-set title,
+// else the owning process's executable name). The card bands name their
+// windows through it.
+const wmctl_window_name: u64 = 14;
 const overview_enter_act: u64 = 0;
 const overview_exit_act: u64 = 1;
 const overview_focus_act: u64 = 2;
@@ -1734,22 +1743,48 @@ fn handle_alt_tab() void {
 
 // ---------------------------------------------------------------------------
 // WM2 mission-control overview (Self-hosting Lane 1, issue #707 card 2).
-// The grid POLICY: the WM hit-tests its kind-19 pointer stream against the
-// SHARED wnd_core grid rules (the same rects the kernel paints) and issues
-// OVERVIEW (cmd 21) decisions — the kernel applies + repaints. The card
-// order is ascending id on both sides (mirror slot order here, the sorted
-// kernel snapshot there), so card index i names the same window everywhere.
+// #3759 (second item): the grid's render + bookkeeping are the seat's own.
+// The seat freezes the card list at enter (the same membership + ascending-id
+// order the kernel snapshot used), hit-tests its kind-19 stream against the
+// SHARED wnd_core grid rules, paints the grid into the scanout it owns under
+// wm_owns_user_layer, and issues OVERVIEW (cmd 21) decisions — the kernel
+// applies the primitives (focus+raise, move-to-workspace + switch). Card
+// order is ascending id everywhere, so card index i names the same window on
+// both sides of the seam.
+//
+// The paint model is the snap-preview's: the kernel's layer runs first each
+// tick (unmigrated windows + overlays — it skips the seat's layer while
+// wm_owns_user_layer stands), the seat then draws dim + cards + strip into
+// the same framebuffer and REQUEST_PRESENT publishes it. A full-frame
+// save-under taken at enter is the exit path's restore AND the thumbnail
+// source (once dimmed, the scanout no longer holds the windows, so card
+// thumbs are frozen snapshots — the kernel's version re-read the back-buffer
+// each frame, which EL0 cannot reach).
 // ---------------------------------------------------------------------------
 
-/// The grid input state (open = the kernel grid is on screen; press_id =
-/// the card pressed at the down-edge, 0 = none).
+/// The grid input + bookkeeping state: open = the grid is on screen;
+/// press_id = the card pressed at the down-edge (0 = none); ids/n = the
+/// card list frozen at enter.
 var overview_open: bool = false;
 var overview_press_id: u8 = 0;
+var overview_ids: [max_user_windows]u8 = @as([max_user_windows]u8, @splat(@as(u8, 0)));
+var overview_n: usize = 0;
+/// Per-card display names resolved at enter (WINDOW_NAME cmd 14 — the
+/// app-set title, else the owning process's executable name).
+var overview_titles: [max_user_windows][64]u8 = undefined;
+var overview_title_lens: [max_user_windows]u8 = @as([max_user_windows]u8, @splat(@as(u8, 0)));
+/// The save-under: the pre-grid scanout, restored on close so the seat's
+/// dim never strands the fixed layer (taskbar/dock/wallpaper gaps) the
+/// kernel stops repainting under wm_owns_user_layer. Mapped lazily at enter
+/// — a static frame-sized array would balloon WND.BIN's BSS past the
+/// loader's image bound (#3759: observed — `wnd start` refused the load).
+var overview_save: ?[*]u32 = null;
+var overview_saved: bool = false;
 
 /// The WM's card list: valid + visible mirrors on the current workspace in
 /// ascending id order — the same membership rule AND order as the kernel's
-/// overview snapshot (which filters on its own visible/workspace fields and
-/// sorts ascending). Pure over the mirrors (host-testable via the real
+/// old overview snapshot (which filters on its own visible/workspace fields
+/// and sorts ascending). Pure over the mirrors (host-testable via the real
 /// table — tests set up mirrors directly).
 fn overview_card_list() struct { ids: [max_user_windows]u8, n: usize } {
     var out: [max_user_windows]u8 = @as([max_user_windows]u8, @splat(@as(u8, 0)));
@@ -1788,22 +1823,178 @@ fn write_overview_move_marker(id: u8, ws: u8) void {
     write_marker(s);
 }
 
-/// Enter the grid: issue OVERVIEW enter, mirror the open state, report the
-/// card count the kernel returned.
+/// Solid fill in the seat's u32 scanout (kernel colors are 0xRRGGBB; the
+/// scanout pixel is 0xffRRGGBB — the BGRX byte order put_px writes).
+fn grid_fill(scan: [*]u32, x0: u32, y0: u32, w: u32, h: u32, rgb: u32) void {
+    const pxv: u32 = 0xff000000 | rgb;
+    var y: u32 = 0;
+    while (y < h) : (y += 1) {
+        const py = y0 + y;
+        if (py >= fb_h) break;
+        var x: u32 = 0;
+        while (x < w) : (x += 1) {
+            const px = x0 + x;
+            if (px >= fb_w) break;
+            scan[@as(usize, py) * fb_w + px] = pxv;
+        }
+    }
+}
+
+/// 8×8 text into the scanout — the shared font8x8 table (the kernel's own
+/// glyph data, user-side copy) so the grid reads identical to the kernel's
+/// retired paint.
+fn grid_text(scan: [*]u32, x0: u32, y0: u32, s: []const u8, rgb: u32) void {
+    const pxv: u32 = 0xff000000 | rgb;
+    var cx: u32 = x0;
+    for (s) |ch| {
+        if (ch < 0x20 or ch > 0x7e) {
+            cx += 8;
+            continue;
+        }
+        const glyph = ui.font8x8.glyphs[ch - 0x20];
+        var row: usize = 0;
+        while (row < 8) : (row += 1) {
+            const py = y0 + @as(u32, @intCast(row));
+            if (py >= fb_h) break;
+            var col: usize = 0;
+            while (col < 8) : (col += 1) {
+                const px = cx + @as(u32, @intCast(col));
+                if (px >= fb_w) break;
+                if (ui.font8x8.row_pixel(glyph[row], col)) {
+                    scan[@as(usize, py) * fb_w + px] = pxv;
+                }
+            }
+        }
+        cx += 8;
+    }
+}
+
+/// The seat-owned grid paint (was `paint_overview` in the kernel): dim
+/// backdrop + one card per frozen card (surface + border, title band, the
+/// save-under's snapshot of the window's own rect scaled in) + the workspace
+/// strip. Geometry is the shared wnd_core rule end to end.
+fn draw_overview_grid() void {
+    const scan = scanout_ptr orelse return;
+    // Dim backdrop over the whole scanout.
+    grid_fill(scan, 0, 0, fb_w, fb_h, 0x0f0f1a);
+    const g = wnd_core.overview_grid(overview_n, fb_w, fb_h, taskbar_h, dock_w);
+    grid_text(scan, g.x0, 0, "Overview - click focuses, drag to a workspace, Esc exits", 0x94a3b8);
+    var idx: usize = 0;
+    while (idx < overview_n) : (idx += 1) {
+        const id = overview_ids[idx];
+        const card = wnd_core.overview_card_rect(g, idx);
+        const cx = card.x;
+        const cy = card.y;
+        const cw = card.w;
+        const ch = card.h;
+        // Card surface + border (accent when focused).
+        grid_fill(scan, cx, cy, cw, ch, 0x1e293b);
+        const m = mirror(id);
+        const border: u32 = if (m != null and m.?.focused) ui.theme_accent() else 0x64748b;
+        grid_fill(scan, cx, cy, cw, 2, border);
+        grid_fill(scan, cx, cy + ch -| 2, cw, 2, border);
+        grid_fill(scan, cx, cy, 2, ch, border);
+        grid_fill(scan, cx + cw -| 2, cy, 2, ch, border);
+        // Title band: the display name resolved at enter.
+        const tlen = overview_title_lens[idx];
+        if (tlen > 0) {
+            const max_chars = if (cw > 8) (cw - 8) / 8 else 0;
+            const n = @min(@as(usize, tlen), @as(usize, @intCast(max_chars)));
+            if (n > 0) grid_text(scan, cx + 4, cy + 4, overview_titles[idx][0..n], 0xffffff);
+        }
+        // The window's pixels at enter, scaled into the card below the title
+        // band. Source is the save-under (the scanout is already dimmed); the
+        // kernel's version read the live back-buffer, which EL0 cannot map —
+        // so thumbs are the enter-time snapshot, not live animation.
+        const thumb_y = cy + wnd_core.title_bar_h;
+        const thumb_h = ch -| (wnd_core.title_bar_h + 2);
+        const thumb_w = cw -| 4;
+        if (thumb_w > 0 and thumb_h > 0 and m != null and overview_saved) {
+            const mw = @min(m.?.w, fb_w -| m.?.x);
+            const mh = @min(m.?.h, fb_h -| m.?.y);
+            if (mw > 0 and mh > 0) {
+                const save = overview_save.?;
+                const src: [*]const u8 = @ptrCast(save + @as(usize, m.?.y) * fb_w + m.?.x);
+                wnd_core.blit_scaled(@ptrCast(scan), fb_w * 4, src, mw, mh, @as(usize, fb_w) * 4, cx + 2, thumb_y, thumb_w, thumb_h);
+            }
+        }
+    }
+    // Workspace strip: one button per workspace, current highlighted.
+    var ws: u8 = 0;
+    while (ws < wnd_core.overview_ws_count) : (ws += 1) {
+        const b = wnd_core.overview_ws_button_rect(ws, fb_w, dock_w, g.strip_y);
+        const bg: u32 = if (ws == current_workspace) ui.theme_accent() else 0x0f172a;
+        grid_fill(scan, b.x, b.y, b.w, b.h, bg);
+        var label: [4]u8 = .{ 'W', 'S', ' ', '0' + ws };
+        grid_text(scan, b.x + 6, b.y + 10, &label, 0xffffff);
+    }
+}
+
+/// Restore the pre-grid scanout (the save-under) and drop it — the exit
+/// path's pixel heal for every layer the seat's dim covered (windows the
+/// kernel has no dirty reason to repaint included). No-op when unmapped.
+fn overview_restore_pixels() void {
+    const scan = scanout_ptr orelse {
+        overview_saved = false;
+        return;
+    };
+    const save = overview_save orelse {
+        overview_saved = false;
+        return;
+    };
+    if (!overview_saved) return;
+    @memcpy(scan[0 .. @as(usize, fb_w) * fb_h], save[0 .. @as(usize, fb_w) * fb_h]);
+    overview_saved = false;
+}
+
+/// Enter the grid: freeze the card list, take the save-under, resolve the
+/// card names, issue OVERVIEW enter, and paint — the seat's own grid.
 fn overview_enter_grid() void {
     if (overview_open) return;
+    const cards = overview_card_list();
+    overview_n = cards.n;
+    @memcpy(overview_ids[0..cards.n], cards.ids[0..cards.n]);
+    // Bind the scanout on demand — the same lazy bind the snap-preview runs.
+    // A seat that cannot map it still gets the bookkeeping + decisions (the
+    // kernel applies them); the grid is simply not drawn.
+    if (ensure_scanout_mapped()) {
+        const scan = scanout_ptr.?;
+        // Map the save-under lazily (the wallpaper path's own fb_len anon
+        // map is the precedent); it stays mapped for the process's life.
+        if (overview_save == null) {
+            const fb_len: u64 = @as(u64, fb_w) * fb_h * 4;
+            const save_va = ui.syscall4(ui.sys_mmap_num, 0, fb_len, prot_rw, map_anonymous);
+            if (save_va > 0) overview_save = @ptrFromInt(@as(usize, @intCast(save_va)));
+        }
+        if (overview_save) |save| {
+            @memcpy(save[0 .. @as(usize, fb_w) * fb_h], scan[0 .. @as(usize, fb_w) * fb_h]);
+            overview_saved = true;
+        }
+        // Resolve each card's display name through WINDOW_NAME (cmd 14).
+        var i: usize = 0;
+        while (i < overview_n) : (i += 1) {
+            const rc = syscall6(sys_wmctl, wmctl_window_name, overview_ids[i], @intFromPtr(&overview_titles[i]), 64, 0, 0);
+            overview_title_lens[i] = if (rc > 0) @intCast(@min(rc, 64)) else 0;
+        }
+    }
     const rc = syscall6(sys_wmctl, wmctl_overview, overview_enter_act, 0, 0, 0, 0);
     overview_open = true;
     overview_press_id = 0;
     write_overview_enter_marker(if (rc >= 0) @as(usize, @intCast(rc)) else 0);
+    if (overview_saved) {
+        draw_overview_grid();
+        _ = syscall6(sys_wmctl, wmctl_request_present, 0, 0, 0, 0, 0);
+    }
 }
 
 /// Exit the grid without touching focus.
 fn overview_exit_grid() void {
     if (!overview_open) return;
-    _ = syscall6(sys_wmctl, wmctl_overview, overview_exit_act, 0, 0, 0, 0);
     overview_open = false;
     overview_press_id = 0;
+    overview_restore_pixels();
+    _ = syscall6(sys_wmctl, wmctl_overview, overview_exit_act, 0, 0, 0, 0);
+    if (scanout_mapped) _ = syscall6(sys_wmctl, wmctl_request_present, 0, 0, 0, 0, 0);
     write_marker(overview_exit_marker);
 }
 
@@ -1814,18 +2005,22 @@ fn overview_toggle_grid() void {
 
 /// Click decision: card `id` gains focus+raise and the grid closes.
 fn overview_focus_card(id: u8) void {
-    _ = syscall6(sys_wmctl, wmctl_overview, overview_focus_act, id, 0, 0, 0);
     overview_open = false;
     overview_press_id = 0;
+    overview_restore_pixels();
+    _ = syscall6(sys_wmctl, wmctl_overview, overview_focus_act, id, 0, 0, 0);
+    if (scanout_mapped) _ = syscall6(sys_wmctl, wmctl_request_present, 0, 0, 0, 0, 0);
     write_overview_focus_marker(id);
 }
 
 /// Drag decision: card `id` moves to workspace `ws` and the desktop follows.
 fn overview_move_card(id: u8, ws: u8) void {
-    _ = syscall6(sys_wmctl, wmctl_overview, overview_move_act, id, ws, 0, 0);
-    current_workspace = ws;
     overview_open = false;
     overview_press_id = 0;
+    overview_restore_pixels();
+    _ = syscall6(sys_wmctl, wmctl_overview, overview_move_act, id, ws, 0, 0);
+    current_workspace = ws;
+    if (scanout_mapped) _ = syscall6(sys_wmctl, wmctl_request_present, 0, 0, 0, 0, 0);
     write_overview_move_marker(id, ws);
 }
 
@@ -1834,16 +2029,16 @@ fn overview_move_card(id: u8, ws: u8) void {
 /// card there; up-edge on a card focuses that card; anything else cancels
 /// the press but leaves the grid open (Esc / hotkey / a decision exits).
 /// Returns true when the sample was consumed (the caller skips the normal
-/// pointer dispatch). Pure hit-testing over the shared grid rules.
+/// pointer dispatch). Pure hit-testing over the shared grid rules against
+/// the frozen card list.
 fn overview_pointer(px: u32, py: u32, left: bool, prev_left: bool) bool {
     if (!overview_open) return false;
-    const cards = overview_card_list();
-    const g = wnd_core.overview_grid(cards.n, fb_w, fb_h, taskbar_h, dock_w);
+    const g = wnd_core.overview_grid(overview_n, fb_w, fb_h, taskbar_h, dock_w);
     const down_edge = left and !prev_left;
     const up_edge = !left and prev_left;
     if (down_edge) {
         if (wnd_core.overview_card_at(g, px, py)) |idx| {
-            if (idx < cards.n) overview_press_id = cards.ids[idx];
+            if (idx < overview_n) overview_press_id = overview_ids[idx];
         } else {
             overview_press_id = 0;
         }
@@ -1858,8 +2053,8 @@ fn overview_pointer(px: u32, py: u32, left: bool, prev_left: bool) bool {
                 return true;
             }
             if (wnd_core.overview_card_at(g, px, py)) |idx| {
-                if (idx < cards.n) {
-                    overview_focus_card(cards.ids[idx]);
+                if (idx < overview_n) {
+                    overview_focus_card(overview_ids[idx]);
                     return true;
                 }
             }
@@ -2471,9 +2666,21 @@ fn main() noreturn {
             composite_tick_kind => {
                 ticks +%= 1;
                 // Issue #825: render wallpaper on root desktop behind windows
-                if (wallpaper_loaded and scanout_mapped) {
+                // — suspended while the overview grid is open: the seat's own
+                // dim+grid owns those pixels until close (the grid restores
+                // them from the save-under on exit).
+                if (wallpaper_loaded and scanout_mapped and !overview_open) {
                     render_wallpaper_root();
                     write_marker(wallpaper_present_marker);
+                }
+                // #3759 (second item): the seat's overview grid is redrawn
+                // every tick while open — the kernel's layer may repaint a
+                // damaged unmigrated window through the dim between ticks —
+                // and presented each tick so the grid shows at once instead
+                // of waiting for the decimated cadence.
+                if (overview_open) {
+                    if (overview_saved) draw_overview_grid();
+                    _ = syscall6(sys_wmctl, wmctl_request_present, 0, 0, 0, 0, 0);
                 }
                 // M37 DQ5 (issue #837): redraw the snap outline while held —
                 // the kernel's paint ran before this tick was delivered and
@@ -3451,14 +3658,16 @@ test "wnd: wm2 grid click focuses the card under the cursor" {
         overview_open = false;
         overview_press_id = 0;
     }
-    // Two cards: grid is 2x1; card 1 spans x 648..1264, y 8..664.
-    overview_open = true;
+    // Two cards: grid is 2x1; card 1 spans x 648..1264, y 8..664. Enter
+    // freezes the card list (the seat's own bookkeeping since #3759).
+    overview_enter_grid();
+    try std.testing.expect(overview_open);
     try std.testing.expect(overview_pointer(900, 100, true, false)); // down on card 1
     try std.testing.expectEqual(@as(u8, 3), overview_press_id);
     try std.testing.expect(overview_pointer(900, 100, false, true)); // up: focus card 1
     try std.testing.expect(!overview_open); // a decision exits the grid
     // Move path: press card 0, release on workspace-1 strip button.
-    overview_open = true;
+    overview_enter_grid();
     try std.testing.expect(overview_pointer(100, 100, true, false)); // down on card 0
     try std.testing.expectEqual(@as(u8, 2), overview_press_id);
     try std.testing.expect(overview_pointer(640, 690, false, true)); // up on WS 1 button

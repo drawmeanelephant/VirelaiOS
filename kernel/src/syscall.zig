@@ -5746,8 +5746,12 @@ fn handle_wmctl(args: Args, _: *exceptions.VectorFrame) u64 {
             // card 2): the WM's grid-policy decisions. a0 = action
             // (0 enter, 1 exit, 2 focus with a1 = id, 3 move with a1 = id
             // and a2 = workspace); the kernel applies the SAME clamped
-            // primitives the shim runs and repaints. Enter returns the card
-            // count; focus/move return the id. Zero new syscall slots.
+            // primitives the shim runs. Enter returns the live card count;
+            // focus/move return the id. Zero new syscall slots.
+            // #3759 (second item): the grid's render + bookkeeping are the
+            // seat's own — the kernel holds no open flag and no card list;
+            // enter/exit are the seat's session markers and focus/move are
+            // gated on live-window facts (the seat decides which card).
             if (!wm_server.registered()) return error_result(.enosys);
             if (wm_server.registered_pid() != pid) return error_result(.eacces);
             const action = args[1];
@@ -5756,7 +5760,10 @@ fn handle_wmctl(args: Args, _: *exceptions.VectorFrame) u64 {
                 wm_server.note_overview();
                 return n;
             } else if (action == wm_server.overview_exit_action) {
-                driving_award.overview_exit();
+                // Exit is pure bookkeeping — the seat's own open flag.
+                // Nothing kernel-side to clear; the seat's grid pixels heal
+                // through its own save-under restore (or a dead seat's
+                // scanout teardown repaints the layer).
                 wm_server.note_overview();
                 return 0;
             } else if (action == wm_server.overview_focus_action) {
