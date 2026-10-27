@@ -5632,6 +5632,37 @@ fn handle_wmctl(args: Args, _: *exceptions.VectorFrame) u64 {
             wm_server.note_layout();
             return 0;
         },
+        wm_server.wmctl_persist => {
+            // #3759 (fifth item — the persist.zig drain): the seat's
+            // session-persistence decisions. a0 = action: 0 save
+            // (serialize the live set + write WINDOWS.SAV), 1 restore
+            // (replay each record as a phantom adopted by owner a1 — the
+            // seat's pick where the shim passes sentinel 99). The kernel
+            // applies the SAME applied operation the shim's boot/idle
+            // paths run (parity by construction); the replay is consumed
+            // once per boot whichever channel lands first. save returns
+            // 0; restore returns the restored record count. The persist
+            // path needs FILE|WIN (and EV for the replay's kind-20 mirror
+            // fan-out) — all ranking BELOW this dispatch's EV hold, so
+            // the lock hand-off happens inside persist (the exit-thread
+            // precedent: drop, take canonically, keep the caller's bits
+            // held at exit).
+            if (!wm_server.registered()) return error_result(.enosys);
+            if (wm_server.registered_pid() != pid) return error_result(.eacces);
+            switch (args[1]) {
+                wm_server.persist_save_action => {
+                    driving_award.persist_save();
+                    wm_server.note_persist();
+                    return 0;
+                },
+                wm_server.persist_restore_action => {
+                    const restored = driving_award.persist_restore(@intCast(args[2]));
+                    wm_server.note_persist();
+                    return restored;
+                },
+                else => return error_result(.einval), // unknown action
+            }
+        },
         wm_server.wmctl_win_close => {
             // M42 UX (2026-09-05, TABWM tab-close seam): the WM — not the
             // kernel — decides WHEN a window closes (the tab 'x' click);

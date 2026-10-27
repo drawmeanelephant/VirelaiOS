@@ -930,6 +930,10 @@ pub fn arm() void {
     // means a fresh context pool too (pure BSS wipe, mirrors c1's
     // reset_state contract; nothing is live at boot).
     gpu3d_broker.reset_state();
+    // #3759 (fifth item): a fresh boot gets a fresh replay budget — the
+    // once-per-boot WINDOWS.SAV consumption guard re-arms here (arm()
+    // runs once at boot on device and per simulated boot in host tests).
+    persist_mod.replay_done = false;
     windows[win_count] = .{
         .id = 0,
         .title = "roadpops",
@@ -1276,6 +1280,8 @@ pub const persist_max_records = persist_mod.persist_max_records;
 pub const persist_max_bytes = persist_mod.persist_max_bytes;
 pub const serialize_state = persist_mod.serialize_state;
 pub const restore_state = persist_mod.restore_state;
+pub const persist_save = persist_mod.save_now;
+pub const persist_restore = persist_mod.restore_now;
 pub const read_u32_le = persist_mod.read_u32_le;
 const render_mod = @import("driving_award/render.zig");
 pub const put_px = render_mod.put_px;

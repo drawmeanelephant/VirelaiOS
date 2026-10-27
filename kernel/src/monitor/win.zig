@@ -948,6 +948,10 @@ pub fn cmd_wm(m: *Monitor, args: []const []const u8) ExecError {
         // seat — the center/toasts' contents access, not a decision.
         m.console.puts(" notif_get=");
         m.console.print_u64(info.notif_get_count);
+        // #3759 (fifth item): PERSIST (cmd 26) — the seat's save/restore
+        // decisions the kernel applied.
+        m.console.puts(" persist=");
+        m.console.print_u64(info.persist_count);
         // M32 WMS6 Gate C (issue #626): the tooltip observability — TOOLTIP
         // (cmd 8) show/hide decisions applied.
         m.console.puts(" tooltip=");

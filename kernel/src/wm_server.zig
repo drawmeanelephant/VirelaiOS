@@ -239,6 +239,21 @@ pub const wmctl_cursor_shape: u64 = 24;
 /// writes [level:u8][text bytes] and returns the byte count, EINVAL when
 /// the index is out of range or the dest can't hold the level byte.
 pub const wmctl_notif_get: u64 = 25;
+/// #3759 (fifth item — the persist.zig drain): PERSIST — the seat's
+/// session-persistence decision channel. a0 = action: 0 save (serialize
+/// the live window set + write WINDOWS.SAV through the same dedup'd
+/// kernel path the shim's idle tick runs), 1 restore (read WINDOWS.SAV
+/// and replay each record as a phantom adopted by owner a1 — the seat's
+/// pick, where the shim fallback passes the sentinel 99). The records
+/// and the serialize/replay primitives stay kernel facts; WHEN to save,
+/// WHEN to replay, and WHICH owner adopts the phantoms are the seat's
+/// decisions. A replay is consumed once per boot whichever channel lands
+/// first — a re-issue returns 0 rather than stacking duplicate phantoms.
+/// Save returns 0; restore returns the restored record count.
+pub const wmctl_persist: u64 = 26;
+/// PERSIST actions (a0).
+pub const persist_save_action: u64 = 0;
+pub const persist_restore_action: u64 = 1;
 /// OVERVIEW actions (a0).
 pub const overview_enter_action: u64 = 0;
 pub const overview_exit_action: u64 = 1;
@@ -404,6 +419,9 @@ var gpu3d_count: u64 = 0;
 /// policy decisions (tiling/minimize/maximize/fullscreen/aot/modal/
 /// transient/kbd move+resize) applied by the kernel's kept primitives.
 var layout_count: u64 = 0;
+/// #3759 (fifth item): PERSIST (cmd 26) submissions accepted — the seat's
+/// save/restore decisions applied by the kernel's kept persist path.
+var persist_count: u64 = 0;
 /// Set when the registered WM exits (teardown) — the shell idle loop drains
 /// this into the `wm: unregistered, shim resumed` report (the exit path is
 /// IRQ context and console-free, so the report is drained like the process
@@ -878,6 +896,8 @@ pub const WmInfo = struct {
     gpu3d_count: u64,
     /// #3759: accepted LAYOUT (cmd 17) submissions.
     layout_count: u64,
+    /// #3759 (fifth item): accepted PERSIST (cmd 26) submissions.
+    persist_count: u64,
     pointer_fan_count: u64,
     window_mirror_count: u64,
     key_fan_count: u64,
@@ -919,6 +939,7 @@ pub fn info() WmInfo {
         .overview_count = overview_count,
         .gpu3d_count = gpu3d_count,
         .layout_count = layout_count,
+        .persist_count = persist_count,
         .pointer_fan_count = pointer_fan_count,
         .window_mirror_count = window_mirror_count,
         .key_fan_count = key_fan_count,
@@ -1107,6 +1128,12 @@ pub fn note_tab_activate() void {
 /// OVERVIEW submission — the WM's grid-policy decision applied.
 pub fn note_overview() void {
     overview_count +%= 1;
+}
+
+/// #3759 (fifth item): count one accepted PERSIST (cmd 26) submission —
+/// the seat's save/restore decision the kernel just applied.
+pub fn note_persist() void {
+    persist_count +%= 1;
 }
 
 /// #3759: note one accepted LAYOUT (cmd 17) submission — the WM's

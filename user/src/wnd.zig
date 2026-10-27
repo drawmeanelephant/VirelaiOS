@@ -173,6 +173,17 @@ const wmctl_overview: u64 = 21;
 // same order NOTIF_DISMISS takes). The queue stays a kernel fact; the
 // seat reads it to paint the toasts + center it owns while bound.
 const wmctl_notif_get: u64 = 25;
+// #3759 (fifth item — the persist.zig drain): PERSIST (cmd 26), the
+// seat's session-persistence decision channel. a0 = 0 save / 1 restore;
+// restore's a1 = the owner pid that adopts the replayed phantoms. The
+// kernel applies its own serialize/replay primitives — WHEN to save,
+// WHEN to replay, and WHICH owner adopts are decided here.
+const wmctl_persist: u64 = 26;
+const persist_save_action: u64 = 0;
+const persist_restore_action: u64 = 1;
+/// sys_getpid (slot 87) — the pid the seat names as the phantom-adopting
+/// owner on a PERSIST restore: this seat, so its replays die with it.
+const sys_getpid_num: u64 = 87;
 // #1056 item 2: WINDOW_NAME (cmd 14) — a1 = window id, a2 = destination
 // buffer, a3 = length; returns the display-name byte count (app-set title,
 // else the owning process's executable name). The card bands name their
@@ -326,6 +337,10 @@ pub const snap_tick_marker: []const u8 = "wnd: snap-tick\n";
 pub const snap_settled_marker: []const u8 = "wnd: snap-settled\n";
 /// Ticks of continuous restore before the settled marker fires.
 pub const snap_settled_ticks: u32 = 8;
+/// #3759 (fifth item): written each time the seat's save cadence issues a
+/// PERSIST save the kernel accepted (~1 line per 30 s — bounded volume,
+/// the live gate's grep target for the seat's save decision).
+pub const persist_save_marker: []const u8 = "wnd: persist save\n";
 
 // WMS5 Gate 2 (issue #625, claim 4278): the policy markers — one per
 // geometry decision the WM issues over the seam. The live gate greps these
@@ -482,6 +497,11 @@ pub const tray_theme_letter: u8 = 'D';
 /// REFRESHES under the WM — it was frozen while a WM was registered (the
 /// kernel's drain is gated off), the exact gap this gate closes.
 pub const tray_refresh_every: u64 = 10;
+/// #3759 (fifth item): the seat's session-save cadence — issue PERSIST
+/// save every Nth COMPOSITE_TICK (~30 s at the 1 Hz tick, the cadence the
+/// kernel's shim tick already runs). The kernel's dedup swallows a
+/// no-change write, so the seat's saves and the baseline tick coexist.
+pub const persist_save_every: u64 = 30;
 /// The clipboard probe buffer the WM reads each refresh (filled = returned
 /// length != 0). The kernel clamps to its capacity.
 pub const tray_clip_probe: usize = 32;
@@ -2849,6 +2869,23 @@ fn main() noreturn {
         write_marker(rs);
     }
 
+    // #3759 (fifth item): the seat owns the replay decision — WINDOWS.SAV
+    // replays HERE (when the seat wants it) under the seat-named owner,
+    // not in the kernel's boot path. Owner = this seat's pid: the adopted
+    // phantoms die with the seat instead of leaking as owner-99 shadows.
+    // A negative return is a refusal (never consumed this boot: no file);
+    // 0 means the boot's replay was already taken or the file was empty.
+    {
+        const my_pid = syscall0(sys_getpid_num);
+        // Fall back to the shim's sentinel 99 rather than adopting phantoms
+        // to a pid we could not resolve.
+        const owner: u64 = if (my_pid > 0) @intCast(my_pid) else 99;
+        const restored = syscall6(sys_wmctl, wmctl_persist, persist_restore_action, owner, 0, 0, 0);
+        var pbuf: [48]u8 = undefined;
+        const ps = std.fmt.bufPrint(&pbuf, "wnd: persist restore n={d}\n", .{@max(restored, 0)}) catch "wnd: persist restore n=?\n";
+        write_marker(ps);
+    }
+
     // WMS5 mirror + drag + policy state.
     var ev: Event = undefined;
     var presents: u64 = 0;
@@ -2991,6 +3028,15 @@ fn main() noreturn {
                     // not fake "filled".
                     const clip_len = syscall3(sys_clipboard_get, @intFromPtr(&clip_buf), clip_buf.len, 0);
                     _ = tray_tick_policy(tick_count, clip_len > 0, &tray_state);
+                }
+                // #3759 (fifth item): the seat's save cadence — issue
+                // PERSIST save on its own schedule; the kernel serializes
+                // the live set + writes WINDOWS.SAV through the same
+                // dedup'd path the shim's idle tick runs.
+                if (tick_count % persist_save_every == 0) {
+                    if (syscall6(sys_wmctl, wmctl_persist, persist_save_action, 0, 0, 0, 0) == 0) {
+                        write_marker(persist_save_marker);
+                    }
                 }
                 // WMS7 Gate A (issue #627): the app↔WM mailbox service loop —
                 // serve any WM_RPC requests an app queued in the WM's inbox

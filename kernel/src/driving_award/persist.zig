@@ -5,6 +5,9 @@
 //! private state.
 
 const da = @import("../driving_award.zig");
+const svclock = @import("../svclock.zig");
+const trust = @import("../trust.zig");
+const virtio_file = @import("../virtio_file.zig");
 const UserOpenResult = da.UserOpenResult;
 const arm = da.arm;
 const find_user_window = da.find_user_window;
@@ -105,6 +108,119 @@ pub fn restore_state(buf: []const u8, owner: usize) usize {
 
 pub fn read_u32_le(b: []const u8) u32 {
     return @as(u32, b[0]) | (@as(u32, b[1]) << 8) | (@as(u32, b[2]) << 16) | (@as(u32, b[3]) << 24);
+}
+
+// ---------------------------------------------------------------------------
+// WINDOWS.SAV file channel — moved out of shell.zig for #3759's fifth item.
+// The serialize/replay above are the record primitives; the functions below
+// are the APPLIED operation every decision channel lands on: the shim's boot
+// restore + idle tick and the seat's slot-65 PERSIST verb run the same code
+// (parity by construction). Who calls them and when is the policy the drain
+// moved to userland; what they do to the registry and the share is the
+// kernel fact.
+// ---------------------------------------------------------------------------
+
+/// Bracket one persist operation in the domains it touches: serialize reads
+/// the window registry (WIN), the WINDOWS.SAV I/O rides the host file
+/// channel (FILE), and a replay's `user_open` can fan kind-20 mirrors into
+/// the seat's queue (EV — the hook fires only while one is registered).
+/// A caller that already holds a lock ranking ABOVE file or win cannot take
+/// the lower pair under its hold — sys_wmctl's dispatch domain is EV — so
+/// the held set is dropped, the union re-taken in canonical order, and the
+/// caller's own bits stay held at exit (the exit-thread precedent).
+const PersistLock = struct {
+    missing: u5,
+};
+
+fn persist_lock() PersistLock {
+    const need = svclock.dom_bit(.file) | svclock.dom_bit(.win) | svclock.dom_bit(.ev);
+    const held = svclock.held_bits();
+    const missing = need & ~held;
+    if (missing == 0) return .{ .missing = 0 };
+    svclock.release_set(held);
+    svclock.acquire_set(held | missing);
+    return .{ .missing = missing };
+}
+
+fn persist_unlock(guard: PersistLock) void {
+    svclock.release_set(guard.missing);
+}
+
+/// #563: skip the write when the serialized state is byte-identical to the
+/// last one actually written. The persist tick fires every 300 idle cycles
+/// — at the real (~250 Hz) idle-loop rate that is roughly once a second —
+/// and each write's cluster-allocation scan reads ~170 FAT sectors (the
+/// ESP's file region spans ~21.8k clusters). A stable desktop was rewriting
+/// identical WINDOWS.SAV content every tick, keeping the virtio-blk
+/// transport continuously busy and starving concurrent reads (the
+/// verify-live-desktop CALC exec hit a transport timeout and surfaced as
+/// ENOENT). Unchanged state is not persisted: no disk traffic, same
+/// restore semantics.
+var last_saved_windows: [persist_max_bytes]u8 = undefined;
+var last_saved_windows_len: usize = 0;
+var have_last_saved_windows: bool = false;
+
+/// Serialize the LIVE window set and persist it as WINDOWS.SAV on the host
+/// share. M34 HF6 (issue #740): the share is the only store — with no file
+/// channel the write refuses honestly and the dedup stays unarmed, so the
+/// next save retries the same content instead of skipping it.
+pub fn save_now() void {
+    const guard = persist_lock();
+    defer persist_unlock(guard);
+    var buf: [persist_max_bytes]u8 = undefined;
+    const n = serialize_state(&buf);
+    if (have_last_saved_windows and last_saved_windows_len == n and std.mem.eql(u8, last_saved_windows[0..n], buf[0..n])) return;
+    // M50 TS2 (ADR 0024 D4): the kernel-actor gate (secret paths deny).
+    // #2865: an empty live set is persisted TOO — restored phantoms are
+    // never re-serialized, so a stale file would otherwise replay the
+    // same dead rows every boot forever (a fixed-point leak, not
+    // accumulation but the same ghost). Delete it; absent is already the
+    // goal state.
+    if (n == 0) {
+        if (trust.check(trust.kernel_actor(), .host, "WINDOWS.SAV", .delete) != .allow) return;
+        const dst = virtio_file.delete("WINDOWS.SAV");
+        if (dst == virtio_file.st_ok or dst == virtio_file.st_not_found) {
+            last_saved_windows_len = 0;
+            have_last_saved_windows = true;
+        }
+        return;
+    }
+    if (trust.check(trust.kernel_actor(), .host, "WINDOWS.SAV", .write) != .allow) return;
+    if (virtio_file.write_whole("WINDOWS.SAV", buf[0..n]) == virtio_file.st_ok) {
+        @memcpy(last_saved_windows[0..n], buf[0..n]);
+        last_saved_windows_len = n;
+        have_last_saved_windows = true;
+    }
+}
+
+/// #3759 (fifth item): a replay is consumed once per boot — whichever
+/// decision channel lands first (the shim's wm=none boot restore, the
+/// seat_impossible fallback, or the seat's PERSIST verb) owns it. A second
+/// call reports 0 rather than stacking a duplicate phantom set on the same
+/// records: `restore_state` opens NEW windows each pass, so an unguarded
+/// re-replay fills the slots with copies. Reset by `arm()` — the per-boot
+/// arm in production, the per-test boot simulation in host tests.
+pub var replay_done: bool = false;
+
+/// Replay WINDOWS.SAV: read the share file and re-open each record as a
+/// phantom adopted by `owner` — the CALLER's adoption decision (the shim
+/// passes the sentinel 99; a seat names whichever pid it wants over
+/// slot-65). Returns the restored count; 0 when the boot's replay is
+/// already consumed, the file is absent/empty, or the trust/channel path
+/// yields nothing.
+pub fn restore_now(owner: usize) usize {
+    if (replay_done) return 0;
+    const guard = persist_lock();
+    defer persist_unlock(guard);
+    if (replay_done) return 0; // re-check under the lock
+    var content: [persist_max_bytes]u8 = undefined;
+    const n = blk: {
+        if (trust.check(trust.kernel_actor(), .host, "WINDOWS.SAV", .read) != .allow) break :blk null;
+        break :blk virtio_file.read_whole("WINDOWS.SAV", &content);
+    } orelse return 0;
+    if (n == 0) return 0;
+    replay_done = true;
+    return restore_state(content[0..n], owner);
 }
 
 test "persist: a WINDOWS.SAV replay is never re-serialized (#2865)" {
