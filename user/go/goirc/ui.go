@@ -73,7 +73,10 @@ type uiApp struct {
 	focus       int            // index into bufs
 	scroll      map[string]int // lines scrolled up from the newest entry
 	input       widgets.TextInput
-	dlg         *appkit.Dialog // the plaintext-consent ask, while open
+	dlg         *appkit.Dialog // the active modal (dlgFor names which)
+	dlgFor      int            // dlgConsent | dlgServer | dlgNick
+	pick        *serverPick    // the connect face's saved-server select
+	fromFace    bool           // cfg came from the connect face — persist on register
 	pendMention string         // buffer the last toast named
 	winFocus    bool
 	started     bool
@@ -176,17 +179,11 @@ func mentionMatch(text, nick string) bool {
 		return false
 	}
 	n := len(nick)
-	isNickByte := func(c byte) bool {
-		return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' ||
-			c >= '0' && c <= '9' || c == '-' || c == '_' ||
-			c == '[' || c == ']' || c == '{' || c == '}' ||
-			c == '\\' || c == '|' || c == '`' || c == '^'
-	}
 	for i := 0; i+n <= len(text); i++ {
-		if i > 0 && isNickByte(text[i-1]) {
+		if i > 0 && nickByte(text[i-1]) {
 			continue
 		}
-		if i+n < len(text) && isNickByte(text[i+n]) {
+		if i+n < len(text) && nickByte(text[i+n]) {
 			continue
 		}
 		match := true
@@ -243,6 +240,14 @@ func (u *uiApp) onEvent(e Event) {
 					vi.ConsoleLine("goirc: toast-refused " + en.Channel)
 				}
 			}
+		}
+	case EvRegistered:
+		// #3779: a face-launched session persists the resolved config on
+		// the first 001 — the file then holds a target that provably
+		// dialed, consent bit included.
+		if u.fromFace {
+			u.fromFace = false
+			u.saveConnectConfig()
 		}
 	case EvJoined, EvRejoined, EvJoinFail, EvNames:
 		u.addBuf(e.Channel)
@@ -412,17 +417,42 @@ func (u *uiApp) railHit(x, y int) int {
 
 // handleEvent routes one non-lifecycle window event.
 func (u *uiApp) handleEvent(ev vi.Event) {
-	// The consent dialog owns every event while it is open.
+	// The connect face's picker owns every event while it is open.
+	if u.pick != nil {
+		switch ev.Kind {
+		case vi.EvKeyDown:
+			k, ok := appkit.NormalizeKey(ev)
+			if !ok {
+				break
+			}
+			switch k.Named() {
+			case appkit.NamedEnter:
+				u.pickChoose()
+			case appkit.NamedEscape:
+				u.cancelConnect()
+			default:
+				u.pick.ctl.HandleKey(k)
+			}
+		case vi.EvMouseDown:
+			if u.pick.ctl.OnClick(int(ev.Arg0), int(ev.Arg1)) {
+				u.pickChoose()
+			}
+		}
+		u.dirty = true
+		return
+	}
+	// The active modal owns every event while it is open — the consent
+	// ask or a connect prompt; dlgFor names which.
 	if u.dlg != nil && u.dlg.Open {
 		switch ev.Kind {
 		case vi.EvKeyDown:
 			if _, done := u.dlg.HandleKey(ev); done {
-				u.consentAnswer()
+				u.dialogDone()
 			}
 		case vi.EvMouseDown:
 			x, y := int(ev.Arg0), int(ev.Arg1)
 			if _, done := u.dlg.HandleMouse(x, y, true); done {
-				u.consentAnswer()
+				u.dialogDone()
 			}
 		}
 		u.dirty = true
@@ -486,7 +516,7 @@ func (u *uiApp) openConsent() {
 		Y: (int(u.ta.H) - d.R.H) / 2,
 		W: d.R.W, H: d.R.H,
 	}
-	u.dlg = &d
+	u.dlg, u.dlgFor = &d, dlgConsent
 }
 
 // consentAnswer applies the dialog's result: Yes arms the session's
@@ -674,6 +704,9 @@ func (u *uiApp) draw() {
 	if u.dlg != nil && u.dlg.Open {
 		u.dlg.Draw(cv)
 	}
+	if u.pick != nil {
+		u.pick.draw(cv)
+	}
 }
 
 // cliJoined reports the live membership set's answer (cli nil → joined).
@@ -705,14 +738,23 @@ func (u *uiApp) run() {
 	u.draw()
 	u.ta.Present()
 
-	if u.needConsent() {
+	switch {
+	case u.cfg.Host == "" || u.cfg.Nick == "":
+		// #3779: a bare launch with no staged blob gets the connect
+		// face — the saved server's picker, else the server+nick
+		// prompts — instead of the old usage+exit dead end.
+		u.openConnect()
+		u.draw()
+		u.ta.Present()
+		vi.ConsoleLine("goirc: connect ask")
+	case u.needConsent():
 		u.openConsent()
 		u.draw()
 		u.ta.Present()
 		// Printed AFTER the dialog reached the scanout — the gate's
 		// pointer/chord anchor proves the ask was visible, not queued.
 		vi.ConsoleLine("goirc: consent ask")
-	} else {
+	default:
 		u.startClient()
 	}
 
@@ -811,11 +853,8 @@ func runUI(o options) {
 		vi.ConsoleLine("goirc: declare refused")
 	}
 	u.applyRestored()
-	// A bare exec with no staged blob has no host/nick to dial: the same
-	// usage + exit the malformed-argv path gives, minus the argv walk.
-	if u.cfg.Host == "" || u.cfg.Nick == "" {
-		usage()
-		u.ta.CloseAndExit(exitUsage)
-	}
+	// A bare exec with no staged blob has no host/nick to dial — run()
+	// opens the #3779 connect face for it; the face's Esc still lands
+	// the usage + exit the malformed-argv path gives.
 	u.run()
 }
