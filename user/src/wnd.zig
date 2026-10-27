@@ -132,6 +132,29 @@ const dialog_unsaved_cancel: u64 = 6;
 // same clamped chain a shim click would run (restore-if-minimized, else
 // focus + raise).
 const wmctl_taskbar: u64 = 12;
+// #3759 (the driving_award layout.zig drain): LAYOUT (cmd 17) — the
+// seat's decision channel for the window-policy primitives the kernel
+// keeps as the no-seat fallback: tiling, minimize/restore, maximize,
+// fullscreen, always-on-top, modal, transient, and keyboard move/resize.
+// a0 = window id, a1 = action, a2/a3 = action args. The kernel applies
+// the SAME clamped primitives the shim/dui paths run (parity by
+// construction) — the flag facts its chrome/persist/hit paths consume
+// (minimized, maximized, fullscreen_active, modal, transient, the tile
+// roles) record this seat's decision; a bare SET_WINDOW rect or
+// SET_STATE hide cannot set them.
+const wmctl_layout: u64 = 17;
+const layout_tile_toggle: u64 = 1;
+const layout_swap_master: u64 = 2;
+const layout_minimize: u64 = 3;
+const layout_restore: u64 = 4;
+const layout_maximize: u64 = 5;
+const layout_fullscreen: u64 = 6;
+const layout_always_on_top: u64 = 7;
+const layout_modal: u64 = 8; // a2 = 0 clear / 1 set
+const layout_transient: u64 = 9; // a2 = timeout in composite ticks
+const layout_dismiss_transients: u64 = 10;
+const layout_kmove: u64 = 11; // a2 = dx, a3 = dy (two's-complement u32 lanes)
+const layout_kresize: u64 = 12; // a2 = dw, a3 = dh
 // S6 Tab model (Milestone 19, issue #782)
 const wmctl_attach_tab: u64 = 18;
 const wmctl_detach_tab: u64 = 19;
@@ -301,6 +324,11 @@ pub const max_marker: []const u8 = "wnd: max\n";
 pub const ws_marker: []const u8 = "wnd: ws\n";
 pub const fs_marker: []const u8 = "wnd: fs\n";
 pub const aot_marker: []const u8 = "wnd: aot\n";
+// #3759: the keyboard move/resize decision markers — the live gate greps
+// these to prove the WM — not the kernel — decided the Alt+arrow /
+// Alt+Ctrl+arrow geometry (the last "KEPT — no WM coverage" chord).
+pub const kmove_marker: []const u8 = "wnd: kmove\n";
+pub const kresize_marker: []const u8 = "wnd: kresize\n";
 // S6 Tab model (Milestone 19, issue #782)
 pub const tab_attach_marker: []const u8 = "wnd: tab-attach";
 pub const tab_detach_marker: []const u8 = "wnd: tab-detach";
@@ -471,6 +499,14 @@ pub const usage_tab: u8 = 0x2b;
 pub const usage_w: u8 = 0x1a; // S6 Tab model: Ctrl+W closes/detaches tab
 pub const usage_a: u8 = 0x04; // M27 G2 / WMS8 Gate 2: Ctrl+Shift+A toggles the about dialog
 pub const usage_space: u8 = 0x2c; // Issue #821: Ctrl+Space toggles Sexiburger God Menu
+// #3759: the arrow usages for the keyboard move/resize chords (Alt+arrow
+// = move, Alt+Ctrl+arrow = resize — the shim's kept chord pair, now
+// served by this seat through LAYOUT cmd 17 like every other drained
+// geometry decision).
+pub const usage_right: u8 = 0x4f;
+pub const usage_left: u8 = 0x50;
+pub const usage_down: u8 = 0x51;
+pub const usage_up: u8 = 0x52;
 
 pub fn hid_to_ascii(usage: u8, shift: bool) ?u8 {
     if (usage >= 0x04 and usage <= 0x1d) {
@@ -1282,6 +1318,20 @@ fn switch_workspace(ws: u8) void {
     _ = syscall6(sys_wmctl, wmctl_set_state, 0xFFFF_FFFF, @as(u64, ws) << 8, 0, 0, 0);
 }
 
+/// #3759: LAYOUT (cmd 17) — a window-policy decision the kernel applies
+/// through the SAME primitive the shim/dui paths run. a2/a3 carry the
+/// action args; the signed move/resize deltas ride the low 32 bits
+/// (two's-complement u32 lanes). Returns the syscall result so callers
+/// can keep their mirror honest (a refusal is not a decision applied).
+fn layout_op(id: u8, action: u64, a2: u64, a3: u64) i64 {
+    return syscall6(sys_wmctl, wmctl_layout, id, action, a2, a3, 0);
+}
+
+/// The u64 lane for an i32 delta (two's-complement low 32 bits).
+fn signed_lane(v: i32) u64 {
+    return @as(u32, @bitCast(v));
+}
+
 /// M21 W1: toggle the focused window floating/tiled. Mirrors the kernel
 /// shim's rule (max 2 tiled windows; a third shifts master -> stack).
 fn toggle_tiling() void {
@@ -1352,95 +1402,46 @@ fn apply_tile_layout() void {
     }
 }
 
-/// M21 W3: minimize/restore the focused window (SET_STATE visibility).
+/// M21 W3: minimize/restore the focused window — DECIDED here, applied
+/// by the kernel's own minimize_window/restore_from_dock primitives via
+/// LAYOUT (cmd 17). The kernel's `minimized` flag and saved rect now
+/// record the seat's decision (the taskbar dims the entry, alt-tab skips
+/// it, WINDOWS.SAV persists it, and TASKBAR cmd-12's restore-if-minimized
+/// chain works on it) — a bare SET_STATE hide could never set the flag.
+/// The kind-20 mirror keeps this seat's copy of the rect current.
 fn toggle_minimize() void {
     const fm = focused_mirror() orelse return;
     if (fm.minimized) {
+        if (layout_op(fm.id, layout_restore, 0, 0) != 0) return;
         fm.minimized = false;
-        set_state(fm.id, true, null, false);
-        // Restore the saved rect (the kernel kept it; we mirror the truth).
-        if (fm.snap_valid) {
-            set_window_rect(fm.id, fm.snap_last_x, fm.snap_last_y, fm.snap_last_w, fm.snap_last_h);
-            fm.x = fm.snap_last_x;
-            fm.y = fm.snap_last_y;
-            fm.w = fm.snap_last_w;
-            fm.h = fm.snap_last_h;
-            fm.snap_valid = false;
-        }
-        write_marker(min_marker);
     } else {
+        if (layout_op(fm.id, layout_minimize, 0, 0) != 0) return;
         fm.minimized = true;
-        // Save the current rect for restore (the WM's own pre-min copy).
-        fm.snap_last_x = fm.x;
-        fm.snap_last_y = fm.y;
-        fm.snap_last_w = fm.w;
-        fm.snap_last_h = fm.h;
-        fm.snap_valid = true;
-        set_state(fm.id, false, null, false);
-        write_marker(min_marker);
     }
+    write_marker(min_marker);
 }
 
-/// M21 W6: maximize/restore the focused window (SET_WINDOW max rect).
+/// M21 W6: maximize/restore the focused window — the kernel's own
+/// toggle_maximize via LAYOUT (cmd 17), so its `maximized` flag and the
+/// pre-max rect it saves are honest rather than a bare rect the kernel
+/// cannot name (the geometry is the same clamped reflow; the tile-clear
+/// rule inside it is dormant under this seat's own tile roles).
 fn toggle_maximize() void {
     const fm = focused_mirror() orelse return;
-    if (fm.maximized) {
-        fm.maximized = false;
-        if (fm.snap_valid) {
-            set_window_rect(fm.id, fm.snap_last_x, fm.snap_last_y, fm.snap_last_w, fm.snap_last_h);
-            fm.x = fm.snap_last_x;
-            fm.y = fm.snap_last_y;
-            fm.w = fm.snap_last_w;
-            fm.h = fm.snap_last_h;
-            fm.snap_valid = false;
-        }
-        write_marker(max_marker);
-    } else {
-        const mx = wnd_core.maximize_rect(fb_w, fb_h, taskbar_h, dock_w);
-        fm.maximized = true;
-        fm.snap_last_x = fm.x;
-        fm.snap_last_y = fm.y;
-        fm.snap_last_w = fm.w;
-        fm.snap_last_h = fm.h;
-        fm.snap_valid = true;
-        fm.x = mx.x;
-        fm.y = mx.y;
-        fm.w = mx.w;
-        fm.h = mx.h;
-        set_window_rect(fm.id, mx.x, mx.y, mx.w, mx.h);
-        write_marker(max_marker);
-    }
+    if (layout_op(fm.id, layout_maximize, 0, 0) != 0) return;
+    fm.maximized = !fm.maximized;
+    write_marker(max_marker);
 }
 
-/// M21 W7: fullscreen/restore the focused window (SET_WINDOW full rect).
+/// M21 W7: fullscreen/restore the focused window — the kernel's own
+/// toggle_fullscreen via LAYOUT (cmd 17). This is the one M21 geometry
+/// decision this seat could not express before: fullscreen_active hides
+/// the kernel's taskbar/dock chrome too, which no SET_WINDOW rect can do.
 fn toggle_fullscreen() void {
     const fm = focused_mirror() orelse return;
-    if (fm.fullscreen) {
-        fm.fullscreen = false;
-        if (fm.snap_valid) {
-            set_window_rect(fm.id, fm.snap_last_x, fm.snap_last_y, fm.snap_last_w, fm.snap_last_h);
-            fm.x = fm.snap_last_x;
-            fm.y = fm.snap_last_y;
-            fm.w = fm.snap_last_w;
-            fm.h = fm.snap_last_h;
-            fm.snap_valid = false;
-        }
-        write_marker(fs_marker);
-    } else {
-        const fs = wnd_core.fullscreen_rect(fb_w, fb_h);
-        fm.fullscreen = true;
-        fm.snap_last_x = fm.x;
-        fm.snap_last_y = fm.y;
-        fm.snap_last_w = fm.w;
-        fm.snap_last_h = fm.h;
-        fm.snap_valid = true;
-        fm.x = fs.x;
-        fm.y = fs.y;
-        fm.w = fs.w;
-        fm.h = fs.h;
-        set_window_rect(fm.id, fs.x, fs.y, fs.w, fs.h);
-        write_marker(fs_marker);
-    }
+    if (layout_op(fm.id, layout_fullscreen, 0, 0) != 0) return;
+    fm.fullscreen = !fm.fullscreen;
+    write_marker(fs_marker);
 }
 
 /// M21 W8: toggle always-on-top on the focused window (SET_STATE bit 16).
@@ -2255,6 +2256,32 @@ fn handle_wm_key(usage: u8, flags: u16) void {
         switch_workspace(current_workspace);
         write_marker(ws_marker);
         return;
+    }
+    // #3759: Alt+arrow = keyboard move (16px; 1px with Shift — the shim's
+    // kept chord), Alt+Ctrl+arrow = keyboard resize (16px). Decided here,
+    // applied through the kernel's own move/resize primitives via LAYOUT
+    // (cmd 17) — the last "no WM coverage yet" chord now has one.
+    if (alt) {
+        var dx: i32 = 0;
+        var dy: i32 = 0;
+        if (usage == usage_right) dx = 16;
+        if (usage == usage_left) dx = -16;
+        if (usage == usage_up) dy = -16;
+        if (usage == usage_down) dy = 16;
+        if (dx != 0 or dy != 0) {
+            const fm = focused_mirror() orelse return;
+            if (ctrl) {
+                if (layout_op(fm.id, layout_kresize, signed_lane(dx), signed_lane(dy)) != 0) return;
+                write_marker(kresize_marker);
+            } else {
+                // Alt+Shift = fine movement (1px) — the shim's rule.
+                const mdx: i32 = if (shift) @divTrunc(dx, 16) else dx;
+                const mdy: i32 = if (shift) @divTrunc(dy, 16) else dy;
+                if (layout_op(fm.id, layout_kmove, signed_lane(mdx), signed_lane(mdy)) != 0) return;
+                write_marker(kmove_marker);
+            }
+            return;
+        }
     }
     if (ctrl and !shift) {
         if (usage == usage_f1) {

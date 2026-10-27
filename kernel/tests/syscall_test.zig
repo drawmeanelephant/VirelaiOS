@@ -3168,6 +3168,101 @@ test "syscall: ALT_TAB (cmd 5, claim 4510) drives the overlay from the WM's chos
     _ = driving_award.user_close(3);
 }
 
+test "syscall: LAYOUT (cmd 17, #3759) applies the seat's window-policy decisions through the kept primitives" {
+    userspace.init();
+    init(test_writer);
+    wm_server.init();
+    _ = scheduler.init();
+    _ = scheduler.register_worker(0x2000);
+    _ = scheduler.register_user(0x3000, 0); // task 2 = process 0 (boot payload)
+    scheduler.start();
+    var frame = fresh_frame();
+    try std.testing.expect(scheduler.yield_current()); // shell -> user (2)
+
+    // No WM registered: LAYOUT -> ENOSYS (the ADR 0007 "no WM" case).
+    try std.testing.expectEqual(error_result(.enosys), dispatch(sys_wmctl, .{ wm_server.wmctl_layout, 2, wm_server.layout_minimize, 0, 0, 0 }, &frame));
+
+    // Seed the WM as pid 0 and open two real user windows.
+    try std.testing.expect(wm_server.register(0));
+    const o2 = driving_award.user_open(64, 64, 400, 300, 0);
+    const o3 = driving_award.user_open(200, 100, 400, 300, 0);
+    try std.testing.expectEqual(@as(u8, 2), o2.opened);
+    try std.testing.expectEqual(@as(u8, 3), o3.opened);
+
+    // Unknown action -> EINVAL; bad id -> EINVAL; oversized a0 -> EINVAL.
+    try std.testing.expectEqual(error_result(.einval), dispatch(sys_wmctl, .{ wm_server.wmctl_layout, 2, 77, 0, 0, 0 }, &frame));
+    try std.testing.expectEqual(error_result(.einval), dispatch(sys_wmctl, .{ wm_server.wmctl_layout, 9, wm_server.layout_minimize, 0, 0, 0 }, &frame));
+    try std.testing.expectEqual(error_result(.einval), dispatch(sys_wmctl, .{ wm_server.wmctl_layout, 0x100, wm_server.layout_minimize, 0, 0, 0 }, &frame));
+
+    // Minimize: the kernel's `minimized` flag records the seat's decision
+    // (the fact a bare SET_STATE hide could never set).
+    try std.testing.expectEqual(@as(u64, 0), dispatch(sys_wmctl, .{ wm_server.wmctl_layout, 2, wm_server.layout_minimize, 0, 0, 0 }, &frame));
+    try std.testing.expect(driving_award.find_user_window(2).?.minimized);
+    try std.testing.expect(!driving_award.find_user_window(2).?.visible);
+    // Restore: the kernel's saved-rect chain brings it back.
+    try std.testing.expectEqual(@as(u64, 0), dispatch(sys_wmctl, .{ wm_server.wmctl_layout, 2, wm_server.layout_restore, 0, 0, 0 }, &frame));
+    try std.testing.expect(!driving_award.find_user_window(2).?.minimized);
+    try std.testing.expect(driving_award.find_user_window(2).?.visible);
+    try std.testing.expectEqual(@as(u32, 64), driving_award.find_user_window(2).?.x);
+
+    // Maximize: flag + workspace-area rect via the kept primitive.
+    try std.testing.expectEqual(@as(u64, 0), dispatch(sys_wmctl, .{ wm_server.wmctl_layout, 3, wm_server.layout_maximize, 0, 0, 0 }, &frame));
+    try std.testing.expect(driving_award.find_user_window(3).?.maximized);
+    // Toggle back off.
+    try std.testing.expectEqual(@as(u64, 0), dispatch(sys_wmctl, .{ wm_server.wmctl_layout, 3, wm_server.layout_maximize, 0, 0, 0 }, &frame));
+    try std.testing.expect(!driving_award.find_user_window(3).?.maximized);
+
+    // Fullscreen: kernel fullscreen_active + hidden chrome, then back.
+    try std.testing.expectEqual(@as(u64, 0), dispatch(sys_wmctl, .{ wm_server.wmctl_layout, 3, wm_server.layout_fullscreen, 0, 0, 0 }, &frame));
+    try std.testing.expect(driving_award.fullscreen_active);
+    try std.testing.expectEqual(@as(u64, 0), dispatch(sys_wmctl, .{ wm_server.wmctl_layout, 3, wm_server.layout_fullscreen, 0, 0, 0 }, &frame));
+    try std.testing.expect(!driving_award.fullscreen_active);
+
+    // Always-on-top and modal flags ride the same channel.
+    try std.testing.expectEqual(@as(u64, 0), dispatch(sys_wmctl, .{ wm_server.wmctl_layout, 2, wm_server.layout_always_on_top, 0, 0, 0 }, &frame));
+    try std.testing.expect(driving_award.find_user_window(2).?.always_on_top);
+    try std.testing.expectEqual(@as(u64, 0), dispatch(sys_wmctl, .{ wm_server.wmctl_layout, 2, wm_server.layout_modal, 1, 0, 0 }, &frame));
+    try std.testing.expect(driving_award.find_user_window(2).?.modal);
+    // a2 out of range for modal -> EINVAL.
+    try std.testing.expectEqual(error_result(.einval), dispatch(sys_wmctl, .{ wm_server.wmctl_layout, 2, wm_server.layout_modal, 2, 0, 0 }, &frame));
+
+    // Transient: flag + timeout recorded; dismiss clears it.
+    try std.testing.expectEqual(@as(u64, 0), dispatch(sys_wmctl, .{ wm_server.wmctl_layout, 3, wm_server.layout_transient, 9, 0, 0 }, &frame));
+    try std.testing.expect(driving_award.find_user_window(3).?.transient);
+    try std.testing.expectEqual(@as(u64, 0), dispatch(sys_wmctl, .{ wm_server.wmctl_layout, 0, wm_server.layout_dismiss_transients, 0, 0, 0 }, &frame));
+    try std.testing.expect(driving_award.find_user_window(3) == null); // closed by dismiss
+
+    // Keyboard move/resize: signed deltas in the low 32 bits, clamped by
+    // the kept primitives; a lane that does not fit is refused.
+    try std.testing.expectEqual(@as(u64, 0), dispatch(sys_wmctl, .{ wm_server.wmctl_layout, 2, wm_server.layout_kmove, 16, 0, 0 }, &frame));
+    try std.testing.expectEqual(@as(u32, 80), driving_award.find_user_window(2).?.x);
+    try std.testing.expectEqual(@as(u64, 0), dispatch(sys_wmctl, .{ wm_server.wmctl_layout, 2, wm_server.layout_kmove, 0xffff_fffc, 0, 0 }, &frame));
+    try std.testing.expectEqual(@as(u32, 76), driving_award.find_user_window(2).?.x);
+    try std.testing.expectEqual(@as(u64, 0), dispatch(sys_wmctl, .{ wm_server.wmctl_layout, 2, wm_server.layout_kresize, 16, 16, 0 }, &frame));
+    try std.testing.expectEqual(@as(u32, 416), driving_award.find_user_window(2).?.w);
+    try std.testing.expectEqual(error_result(.einval), dispatch(sys_wmctl, .{ wm_server.wmctl_layout, 2, wm_server.layout_kmove, 0x1_0000_0000, 0, 0 }, &frame));
+
+    // Tiling through the channel: toggle names the window (not the focus),
+    // the roles record it, and swap applies.
+    try std.testing.expectEqual(@as(u64, 0), dispatch(sys_wmctl, .{ wm_server.wmctl_layout, 2, wm_server.layout_tile_toggle, 0, 0, 0 }, &frame));
+    try std.testing.expectEqual(@as(?u8, 2), driving_award.tile_master_id);
+    try std.testing.expectEqual(@as(u64, 0), dispatch(sys_wmctl, .{ wm_server.wmctl_layout, 0, wm_server.layout_swap_master, 0, 0, 0 }, &frame));
+    try std.testing.expectEqual(error_result(.einval), dispatch(sys_wmctl, .{ wm_server.wmctl_layout, 9, wm_server.layout_tile_toggle, 0, 0, 0 }, &frame));
+    // The counter observed every accepted submission.
+    try std.testing.expect(wm_server.info().layout_count >= 10);
+
+    // Teardown: unregister releases the layout modalities (fullscreen was
+    // already exited; modal flag is cleared so the resumed shim's click
+    // gate cannot wedge) and input ownership returns to the shim.
+    try std.testing.expect(wm_server.unregister(0));
+    try std.testing.expect(!driving_award.wm_owns_input);
+    try std.testing.expect(!driving_award.fullscreen_active);
+    if (driving_award.find_user_window(2)) |w2| {
+        try std.testing.expect(!w2.modal);
+        _ = driving_award.user_close(2);
+    }
+}
+
 test "syscall: NOTIF_CENTER / NOTIF_DISMISS (cmd 6/7, claim 7557) drive the center from the WM's decision" {
     userspace.init();
     init(test_writer);

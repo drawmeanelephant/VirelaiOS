@@ -42,8 +42,17 @@ pub const tile_y_start: u32 = 0;
 /// the focused window becomes master (or stack if a master already exists).
 /// Max 2 tiled windows per workspace; third window reverts to floating.
 pub fn toggle_tiling() void {
-    const fid = da.focused_id;
-    if (fid < user_window_id_base or fid >= user_window_id_base + user_windows_max) return;
+    _ = toggle_tiling_for(da.focused_id);
+}
+
+/// #3759 (slot-65 LAYOUT, cmd 17): the id-parameterized form the WM's
+/// decision channel drives — the WM, not the kernel, names WHICH window
+/// toggles; the kernel applies the SAME chain the shim's focused-window
+/// toggle runs (parity by construction). Returns false for an id that
+/// cannot tile (non-user window).
+pub fn toggle_tiling_for(fid: u8) bool {
+    if (fid < user_window_id_base or fid >= user_window_id_base + user_windows_max) return false;
+    if (find_user_window(fid) == null) return false;
     // If already tiled, detach this window (back to floating).
     if (da.tile_master_id) |mid| {
         if (mid == fid) {
@@ -55,7 +64,7 @@ pub fn toggle_tiling() void {
             }
             da.tile_mode = da.tile_master_id != null;
             apply_tile_layout();
-            return;
+            return true;
         }
     }
     if (da.tile_stack_id) |sid| {
@@ -63,7 +72,7 @@ pub fn toggle_tiling() void {
             da.tile_stack_id = null;
             da.tile_mode = da.tile_master_id != null;
             apply_tile_layout();
-            return;
+            return true;
         }
     }
     // Not yet tiled — add this window.
@@ -78,11 +87,14 @@ pub fn toggle_tiling() void {
     }
     da.tile_mode = true;
     apply_tile_layout();
+    return true;
 }
 
-/// M21 W2: swap which window is master and which is detail.
-pub fn swap_master() void {
-    if (!da.tile_mode) return;
+/// M21 W2: swap which window is master and which is detail. Returns false
+/// when tiling is off (nothing to swap — the slot-65 LAYOUT channel maps
+/// that to an honest EINVAL).
+pub fn swap_master() bool {
+    if (!da.tile_mode) return false;
     if (da.tile_master_id) |mid| {
         if (da.tile_stack_id) |sid| {
             da.tile_master_id = sid;
@@ -91,6 +103,7 @@ pub fn swap_master() void {
     }
     da.tile_master_side = !da.tile_master_side;
     apply_tile_layout();
+    return true;
 }
 
 /// Apply the current tiling layout: recalculate window rects for all
@@ -506,5 +519,45 @@ pub fn dismiss_transients() void {
         if (da.windows[i].transient) {
             _ = user_close(da.windows[i].id);
         }
+    }
+}
+
+/// #3759 (slot-65 LAYOUT, cmd 17): the seat-teardown half of the channel —
+/// called from `wm_server.release_wm_captures` so a dead seat cannot
+/// strand a layout modality the resumed shim no longer decides. A seat-
+/// entered fullscreen keeps the taskbar/dock hidden forever (the shim's
+/// F11 chord is drained; only `dui fullscreen` could undo it), and a
+/// seat-declared modal wedges the shim's modal click gate. Minimize /
+/// maximize / always-on-top / transient stay: they are per-window state
+/// with live shim consumers (taskbar_click restores a minimized window;
+/// the composite tick still expires transients).
+pub fn release_seat_layout() void {
+    if (da.fullscreen_active) {
+        var exited = false;
+        if (da.fullscreen_window_id) |fid| {
+            if (find_user_window(fid) != null) {
+                _ = toggle_fullscreen(fid);
+                exited = true;
+            }
+        }
+        if (!exited) {
+            // The fullscreen window is gone — drop the mode outright and
+            // re-show the chrome it hid.
+            da.fullscreen_active = false;
+            da.fullscreen_window_id = null;
+            var i: usize = 0;
+            while (i < da.win_count) : (i += 1) {
+                if (da.windows[i].kind == .taskbar or da.windows[i].kind == .dock) {
+                    da.windows[i].visible = true;
+                    da.windows[i].dirty = true;
+                }
+            }
+        }
+    }
+    // A seat-declared modal would block every shim click outside it —
+    // the resumed shim reads the flag but owns no clear path.
+    var i: usize = 0;
+    while (i < da.win_count) : (i += 1) {
+        da.windows[i].modal = false;
     }
 }
