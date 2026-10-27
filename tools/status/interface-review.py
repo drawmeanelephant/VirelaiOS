@@ -444,11 +444,21 @@ def check_specs(bin_, texts, findings, notes):
     stale = []
     tree_src = "\n".join(t for _r, t in texts)
     if not hasattr(check_specs, "_tree"):
-        check_specs._tree = "\n".join(
+        # tools/go is guest source too: the top-level fixtures compile
+        # into the .build/go ELFs the gates exec (goroutines.go prints
+        # the `go-goroutines done n=8 counter=8` marker), and
+        # tools/go/overlay holds the pinned-tree apps' whole virelai
+        # face — every `gostalgia:` marker lives there. Subdirs other
+        # than overlay (rfbprobe, tabcodec, vlfs) are host tools.
+        parts = [
             f.read_text(errors="replace")
-            for root in ("user/src", "user/go", "kernel/src")
+            for root in ("user/src", "user/go", "kernel/src",
+                         "tools/go/overlay")
             for f in sorted((ROOT / root).rglob("*"))
-            if f.suffix in (".go", ".zig") and f.is_file())
+            if f.suffix in (".go", ".zig") and f.is_file()]
+        parts += [f.read_text(errors="replace")
+                  for f in sorted((ROOT / "tools/go").glob("*.go"))]
+        check_specs._tree = "\n".join(parts)
     all_src = tree_src + "\n" + check_specs._tree
     markers = spec_markers(bin_)
     for spec_name, mk in markers:
