@@ -61,16 +61,20 @@ pub const wmctl_request_present: u64 = 3;
 pub const wmctl_set_state: u64 = 4;
 /// M32 WMS6 Gate A (issue #626): ALT_TAB — the desktop-chrome drain's first
 /// read-mostly surface. a0 = window id, a1 = action: the WM (not the kernel)
-/// decides WHICH window Alt+Tab switches to; the kernel clamps + repaints
-/// the overlay blit from WM-declared state. The action encoding is frozen
-/// here (ADR 0007 amendment by this claim).
+/// decides WHICH window Alt+Tab switches to; the kernel applies the same
+/// focus+raise primitives the shim's commit runs. The action encoding is
+/// frozen here (ADR 0007 amendment by this claim).
+/// #3759 (third item): the switcher bookkeeping moved to the seat outright —
+/// actions 1/2/4 (activate/cycle/dismiss, the kernel-hosted snapshot verbs)
+/// are RETIRED and refuse EINVAL; commit is the only live action (no in-tree
+/// seat ever used the rest — wnd/tabwm pick the target from their own
+/// mirror and commit by id). The kernel's `overlay_*` state is the no-seat
+/// shim's fallback switcher, untouched by the seat.
 pub const wmctl_alt_tab: u64 = 5;
-/// ALT_TAB actions (a1) — mirror the kernel shim's overlay state machine
-/// (activate/cycle/commit/dismiss) but driven by the WM's chosen id.
-pub const alt_tab_activate: u64 = 1;
-pub const alt_tab_cycle: u64 = 2;
+/// ALT_TAB action (a1) — commit: focus + raise the named window.
+/// (Retired: 1 activate / 2 cycle / 4 dismiss — the seat-side switcher
+/// bookkeeping verbs, EINVAL since #3759's third item.)
 pub const alt_tab_commit: u64 = 3;
-pub const alt_tab_dismiss: u64 = 4;
 /// M32 WMS6 Gate B (issue #626): NOTIF_CENTER — the notification-center
 /// surface. a0 = 0 close, 1 open, 2 clear-all. The WM decides the panel's
 /// open/close/clear; the kernel clamps + blits from its own `notif_center_open`.
@@ -416,7 +420,9 @@ var scanout_pages: u32 = 0;
 /// stay PAINTED) for the rest of the boot. Seat release is the one moment
 /// that knows the WM is gone, so the release lives here.
 fn release_wm_captures() void {
-    // Alt+Tab overlay snapshot (cmd 5 ALT_TAB activate/cycle).
+    // Alt+Tab overlay. #3759 (third item): the seat can no longer raise one —
+    // the kernel-hosted snapshot verbs are retired — so this releases only a
+    // shim overlay stranded across the bind.
     driving_award.alt_tab_dismiss();
     // #3759 (second item): the mission-control grid needs no release — the
     // seat owns its render + bookkeeping outright, so a dead seat's grid
@@ -1574,12 +1580,14 @@ test "wm_server: seat release drops every WM-owned input capture (M52 card 2, #1
     try std.testing.expect(a != b);
 
     try std.testing.expect(register(3));
-    // Open every capture through the SAME applied primitive the WM's slot-65
-    // command reaches: cmd 5 activate / cmd 21 enter / cmd 8 show /
-    // cmd 6 open / cmd 11 (about + unsaved). #3759 (second item): the
-    // overview grid left the kernel's capture set — the seat owns its
-    // render + bookkeeping outright, so enter returns only the live card
-    // count and there is no kernel open state to release.
+    // Open every capture through the applied primitive its producer
+    // reaches: the shim's alt_tab_activate (#3759 third item — cmd 5's
+    // kernel-hosted activate/cycle/dismiss are retired; the release now
+    // covers a shim overlay stranded across the bind) / cmd 21 enter /
+    // cmd 8 show / cmd 6 open / cmd 11 (about + unsaved). #3759 (second
+    // item): the overview grid left the kernel's capture set — the seat
+    // owns its render + bookkeeping outright, so enter returns only the
+    // live card count and there is no kernel open state to release.
     try std.testing.expect(driving_award.alt_tab_activate());
     try std.testing.expect(driving_award.overlay_active);
     try std.testing.expectEqual(@as(usize, 2), driving_award.overview_enter());

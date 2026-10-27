@@ -768,6 +768,9 @@ pub var unsaved_dialog_open: bool = false;
 pub var unsaved_dialog_target: u8 = 0; // window id being closed
 
 /// M15 C2 (Alt+Tab overlay, #225): hold-Alt cycling UI state — BSS, no heap.
+/// #3759 (third item): the no-seat SHIM's switcher bookkeeping (the kernel
+/// fallback). A bound seat holds its own snapshot/ordering and commits
+/// through `alt_tab_wm_commit`; nothing seat-side writes this state.
 pub var overlay_active: bool = false;
 pub var overlay_selected: usize = 0;
 pub var overlay_ids: [max_windows]u8 = undefined;
@@ -1147,7 +1150,6 @@ pub const alt_tab_activate = focus_mod.alt_tab_activate;
 pub const alt_tab_cycle = focus_mod.alt_tab_cycle;
 pub const alt_tab_commit = focus_mod.alt_tab_commit;
 pub const alt_tab_dismiss = focus_mod.alt_tab_dismiss;
-pub const alt_tab_overlay_focus = focus_mod.alt_tab_overlay_focus;
 pub const alt_tab_wm_commit = focus_mod.alt_tab_wm_commit;
 const drag_mod = @import("driving_award/drag.zig");
 pub const drag_start = drag_mod.drag_start;

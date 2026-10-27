@@ -24,7 +24,6 @@ const alt_tab_count = driving_award.alt_tab_count;
 const alt_tab_cycle = driving_award.alt_tab_cycle;
 const alt_tab_dismiss = driving_award.alt_tab_dismiss;
 const alt_tab_is_active = driving_award.alt_tab_is_active;
-const alt_tab_overlay_focus = driving_award.alt_tab_overlay_focus;
 const alt_tab_selected_id = driving_award.alt_tab_selected_id;
 const alt_tab_wm_commit = driving_award.alt_tab_wm_commit;
 const apply_tile_layout = driving_award.apply_tile_layout;

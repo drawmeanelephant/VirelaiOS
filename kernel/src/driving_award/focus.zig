@@ -3,6 +3,16 @@
 //! Split out of driving_award.zig (#3754) — shared registry state lives in the
 //! module root and is reached through `da`; this file owns the seam's own
 //! private state.
+//!
+//! #3759 (third item): focus/z-order/hit-test and `switch_workspace` are
+//! kernel facts and stay. The switcher bookkeeping below is the NO-SEAT
+//! SHIM's — the same kernel-fallback rule layout.zig keeps: while a seat is
+//! bound the chord fans to it (kind-21 WM_KEY, `!wm_owns_input` gates the
+//! pending flag) and the seat owns its own snapshot/ordering (wnd's
+//! `next_alt_tab_target` over the kind-20 mirror), driving only the commit
+//! primitive `alt_tab_wm_commit` over slot-65. The kernel-hosted seat
+//! bookkeeping (`alt_tab_overlay_focus` + the cmd-5 activate/cycle/dismiss
+//! verbs) is DELETED — the seat never adopted it; it commits by id directly.
 
 const da = @import("../driving_award.zig");
 const Window = da.Window;
@@ -226,6 +236,9 @@ pub fn cycle_focus() ?u8 {
 /// M15 C2 (Alt+Tab overlay, #225): hold-Alt cycling UI — BSS snapshot + highlight.
 /// Pure overlay: Alt held + first Tab captures user-window ids, Tab/Shift+Tab cycles
 /// `overlay_selected`, Alt release commits the highlight. No new syscall/kind.
+/// #3759 (third item): this whole block is the no-seat SHIM's switcher — the
+/// kernel fallback the card allows. A bound seat owns its own bookkeeping and
+/// reaches the kernel only through `alt_tab_wm_commit` below.
 pub fn alt_tab_is_active() bool {
     return da.overlay_active;
 }
@@ -311,52 +324,15 @@ pub fn alt_tab_dismiss() void {
 }
 
 /// M32 WMS6 Gate A (issue #626): the WM, not the kernel, picks which window
-/// Alt+Tab switches to. The kernel keeps the overlay SNAPSHOT + blit (WMS8
-/// deletes it) but exposes focus-by-id so the WM's decision drives it. The
-/// WM proposes the highlighted id; the kernel clamps (id must name a live
-/// alt-tab window: visible, non-minimized, on the current workspace — the
-/// M21 W3/W4 rules) and repaints. Returns false when `id` is not a valid
-/// alt-tab target (the handler maps that to EINVAL).
-pub fn alt_tab_overlay_focus(id: u8) bool {
-    // Build the snapshot if the overlay isn't active (the same rules
-    // alt_tab_activate uses — visible, non-minimized, current workspace).
-    if (!da.overlay_active) {
-        var ids: [max_windows]u8 = undefined;
-        var cnt: usize = 0;
-        var i: usize = 0;
-        while (i < da.win_count) : (i += 1) {
-            const w = &da.windows[i];
-            if (!w.visible) continue;
-            if (w.kind != .user) continue;
-            if (w.minimized) continue;
-            if (!workspace_visible(w)) continue;
-            if (cnt < max_windows) {
-                ids[cnt] = w.id;
-                cnt += 1;
-            }
-        }
-        if (cnt <= 1) return false; // not enough windows to Alt+Tab
-        var j: usize = 0;
-        while (j < cnt) : (j += 1) da.overlay_ids[j] = ids[j];
-        da.overlay_count = cnt;
-        da.overlay_active = true;
-    }
-    // Find the WM's proposed id in the snapshot and make it the highlight.
-    var k: usize = 0;
-    while (k < da.overlay_count) : (k += 1) {
-        if (da.overlay_ids[k] == id) {
-            da.overlay_selected = k;
-            _ = mark_dirty(0);
-            return true;
-        }
-    }
-    return false; // id not a live alt-tab window
-}
-
-/// WMS6 Gate A: commit the WM's chosen id directly (focus + raise + dismiss),
-/// the same final action `alt_tab_commit` performs (by value, not by snapshot
-/// index). Returns false when `id` does not name a live user window (the
-/// handler maps that to EINVAL).
+/// Alt+Tab switches to — and under #3759 (third item) it keeps that
+/// switcher's bookkeeping itself (wnd's `next_alt_tab_target` over its
+/// kind-20 mirror). This is the only slot-65 ALT_TAB verb left: the seat
+/// names the window, the kernel applies the same final action the shim's
+/// `alt_tab_commit` performs (focus + raise, by value — and any stranded
+/// shim overlay is dropped). The activate/cycle/dismiss verbs are retired:
+/// they existed only to drive kernel-held snapshot state the seat never
+/// adopted (the handler maps any non-commit action to EINVAL). Returns
+/// false when `id` does not name a live user window (EINVAL).
 pub fn alt_tab_wm_commit(id: u8) bool {
     if (find_user_window_index(id) == null) return false;
     da.overlay_active = false;

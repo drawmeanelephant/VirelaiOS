@@ -5402,11 +5402,14 @@ fn handle_wmctl(args: Args, _: *exceptions.VectorFrame) u64 {
         wm_server.wmctl_alt_tab => {
             // M32 WMS6 Gate A (issue #626): the WM — not the kernel —
             // decides which window Alt+Tab switches to. a0 = window id,
-            // a1 = action: 1/2 activate|cycle (highlight the id in the
-            // overlay snapshot), 3 commit (focus + raise + dismiss to the
-            // id), 4 dismiss (drop the overlay). The kernel clamps (id must
-            // name a live user / alt-tab window, the M21 W3/W4 rules) and
-            // repaints the overlay blit from the WM's declared choice.
+            // a1 = action: 3 commit (focus + raise to the id through the
+            // kernel's own primitives — the same final action the shim's
+            // overlay commit runs). The kernel clamps (id must name a live
+            // user window).
+            // #3759 (third item): actions 1/2/4 (activate/cycle/dismiss) are
+            // RETIRED — they only existed to mutate kernel-held switcher
+            // bookkeeping the seat now owns itself (its kind-20 mirror
+            // decides the ordering; no in-tree seat ever called them).
             if (!wm_server.registered()) return error_result(.enosys);
             if (wm_server.registered_pid() != pid) return error_result(.eacces);
             const window_id = args[1];
@@ -5416,12 +5419,7 @@ fn handle_wmctl(args: Args, _: *exceptions.VectorFrame) u64 {
                     if (window_id > 0xff) return error_result(.einval);
                     if (!driving_award.alt_tab_wm_commit(@intCast(window_id))) return error_result(.einval); // bad id
                 },
-                wm_server.alt_tab_activate, wm_server.alt_tab_cycle => {
-                    if (window_id > 0xff) return error_result(.einval);
-                    if (!driving_award.alt_tab_overlay_focus(@intCast(window_id))) return error_result(.einval); // not a live alt-tab target
-                },
-                wm_server.alt_tab_dismiss => driving_award.alt_tab_dismiss(),
-                else => return error_result(.einval), // unknown action
+                else => return error_result(.einval), // retired or unknown action
             }
             wm_server.note_alt_tab();
             return 0;
