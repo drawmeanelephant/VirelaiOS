@@ -341,30 +341,28 @@ guard_case "closed claim left alone" issue_comment "$TMP/payload.json" \
 
 # --- interface-review lane (tools/status/interface-review.py) --------------
 #
-# The lane rotates over open `polish` audit issues, skips apps blocked by an
-# open derived card or an active claim's Touches, and files one card or
-# comments no-drift. These cases run it fully offline: issue JSON fixtures,
-# a minimal .figcraft zip built here, and --dry-run so nothing posts.
+# The lane rotates over the audit docs (docs/audits-style *.md fixtures),
+# reads last-reviewed stamps from state-tracker comments, skips apps blocked
+# by an open derived card or an active claim's Touches, and files one card
+# or posts a no-drift stamp on the tracker. These cases run it fully
+# offline: fixture audit files, tracker-comment JSON, a minimal .figcraft
+# zip built here, and --dry-run so nothing posts.
 
 LANE="$ROOT/tools/status/interface-review.py"
 
-# audit_json NUM BIN APPNAME [LAST_REVIEW_TS] -- one polish-audit record in
-# the `gh issue list --json number,title,body,comments,labels` shape. The
-# body names a source path the way real audits do.
-audit_json() {
-    local num="$1" bin="$2" name="$3" review="${4:-}"
-    local comments="[]"
-    if [ -n "$review" ]; then
-        comments="$(jq -n --arg at "$review" \
-            '[{author: {login: "lane"}, createdAt: $at,
-               body: "<!-- iface-review:v1 --> reviewed"}]')"
-    fi
-    jq -n --argjson n "$num" --arg bin "$bin" --arg name "$name" \
-        --argjson comments "$comments" \
-        '{number: $n,
-          title: ("App audit: " + $name + " (" + $bin + ")"),
-          body: "Observed (code, `user/go/" + ($name|ascii_downcase) + "/`).",
-          labels: [{name: "polish"}], comments: $comments}'
+# audit_md NUM BIN APPNAME -- one docs/audits-style file into
+# $TMP/lane-audits/<slug>.md: the iface-review header (app=, issue=), the
+# App-audit H1, and a body naming a source path the way real audits do.
+audit_md() {
+    local num="$1" bin="$2" name="$3"
+    local slug; slug="$(printf '%s' "$bin" | cut -d. -f1 | tr 'A-Z' 'a-z')"
+    mkdir -p "$TMP/lane-audits"
+    printf '%s\n' \
+        "<!-- iface-review:v1 app=$bin issue=$num -->" \
+        "# App audit: $name ($bin)" \
+        "" \
+        "Observed (code, \`user/go/$(printf '%s' "$name" | tr 'A-Z' 'a-z')/\`)." \
+        > "$TMP/lane-audits/$slug.md"
 }
 
 # mk_figcraft PATH BIN... -- a minimal figcraft zip: a page + one empty
@@ -384,12 +382,16 @@ PY
 }
 
 # lane_run EXPECTED_SUBSTR [LANE_ARGS...] -- run the lane offline and assert
-# one output line; claims fixture is empty unless a case stages its own.
+# one output line; claims + state fixtures are empty unless a case stages
+# its own ($TMP/lane-claims.json / $TMP/lane-state.json).
 lane_run() {
     local want="$1"; shift
-    printf '[]' > "$TMP/lane-claims.json"
+    [ -f "$TMP/lane-claims.json" ] || printf '[]' > "$TMP/lane-claims.json"
+    [ -f "$TMP/lane-state.json" ] || printf '[]' > "$TMP/lane-state.json"
     local out
     out="$(python3 "$LANE" --dry-run \
+        --audits-dir "$TMP/lane-audits" \
+        --state-json "$TMP/lane-state.json" \
         --claims-json "$TMP/lane-claims.json" "$@" 2>&1 || true)"
     if printf '%s' "$out" | grep -qF "$want"; then
         pass=$((pass + 1)); printf 'ok   lane: %s\n' "$want"
@@ -401,38 +403,32 @@ lane_run() {
 
 mk_figcraft "$TMP/apps.figcraft" FAKEA.ELF FAKEB.ELF FAKEC.ELF
 
-# case 23: rotation picks the lowest-numbered never-reviewed audit
+# case 23: rotation picks the first never-reviewed audit (name order)
 
-jq -s '.' \
-    <(audit_json 9302 FAKEB.ELF Fakeb) \
-    <(audit_json 9301 FAKEA.ELF Fakea) \
-    > "$TMP/lane-audits.json"
+audit_md 9301 FAKEA.ELF Fakea
+audit_md 9302 FAKEB.ELF Fakeb
 printf '[]' > "$TMP/lane-open.json"
 lane_run "review FAKEA.ELF" \
-    --audits-json "$TMP/lane-audits.json" --open-json "$TMP/lane-open.json" \
-    --figcraft "$TMP/apps.figcraft"
+    --open-json "$TMP/lane-open.json" --figcraft "$TMP/apps.figcraft"
 
-# case 24: a never-reviewed audit outranks a reviewed one
+# case 24: a never-reviewed audit outranks a reviewed one (tracker stamp)
 
-jq -s '.' \
-    <(audit_json 9301 FAKEA.ELF Fakea "2026-10-26T00:00:00Z") \
-    <(audit_json 9302 FAKEB.ELF Fakeb) \
-    > "$TMP/lane-audits.json"
+jq -n '[{author: {login: "lane"}, createdAt: "2026-10-27T00:00:00Z",
+         body: "<!-- iface-review:v1 app=FAKEA.ELF last=2026-10-26T00:00:00Z -->"}]' \
+    > "$TMP/lane-state.json"
 lane_run "review FAKEB.ELF" \
-    --audits-json "$TMP/lane-audits.json" --open-json "$TMP/lane-open.json" \
-    --figcraft "$TMP/apps.figcraft"
+    --open-json "$TMP/lane-open.json" --figcraft "$TMP/apps.figcraft"
+printf '[]' > "$TMP/lane-state.json"
 
-# case 25: an open derived card (binary named in title) skips the app
+# case 25: an open derived card (binary named in title) skips the app;
+# a second card citing the audit doc path counts too
 
-jq -s '.' \
-    <(audit_json 9301 FAKEA.ELF Fakea) \
-    <(audit_json 9302 FAKEB.ELF Fakeb) \
-    > "$TMP/lane-audits.json"
-jq -n '[{number: 9401, title: "FAKEA.ELF: drift fix", body: "", labels: []}]' \
+jq -n '[{number: 9401, title: "FAKEA.ELF: drift fix", body: "", labels: []},
+        {number: 9403, title: "fix the fakea face",
+          body: "From app audit `docs/audits/fakea.md`.", labels: []}]' \
     > "$TMP/lane-open.json"
-lane_run "skip FAKEA.ELF (audit #9301): open derived card(s) #9401" \
-    --audits-json "$TMP/lane-audits.json" --open-json "$TMP/lane-open.json" \
-    --figcraft "$TMP/apps.figcraft"
+lane_run "skip FAKEA.ELF (docs/audits/fakea.md): open derived card(s) #9401" \
+    --open-json "$TMP/lane-open.json" --figcraft "$TMP/apps.figcraft"
 
 # case 26: an active claim touching the app's files skips it
 
@@ -441,11 +437,12 @@ jq -s '.' \
     > "$TMP/lane-claims-full.json"
 printf '[]' > "$TMP/lane-open.json"
 out="$(python3 "$LANE" --dry-run \
-    --audits-json "$TMP/lane-audits.json" \
+    --audits-dir "$TMP/lane-audits" \
+    --state-json "$TMP/lane-state.json" \
     --claims-json "$TMP/lane-claims-full.json" \
     --open-json "$TMP/lane-open.json" \
     --figcraft "$TMP/apps.figcraft" 2>&1 || true)"
-if printf '%s' "$out" | grep -qF "skip FAKEA.ELF (audit #9301): active claim(s) #9501" \
+if printf '%s' "$out" | grep -qF "skip FAKEA.ELF (docs/audits/fakea.md): active claim(s) #9501" \
     && printf '%s' "$out" | grep -qF "review FAKEB.ELF"; then
     pass=$((pass + 1)); printf 'ok   lane: claim-touched app skipped, next reviewed\n'
 else
@@ -459,19 +456,19 @@ jq -n '[{number: 9401, title: "FAKEA.ELF: drift fix", body: "", labels: []},
         {number: 9402, title: "FAKEB.ELF: drift fix", body: "", labels: []}]' \
     > "$TMP/lane-open.json"
 lane_run "interface-review: no eligible app this pass" \
-    --audits-json "$TMP/lane-audits.json" --open-json "$TMP/lane-open.json" \
-    --figcraft "$TMP/apps.figcraft"
+    --open-json "$TMP/lane-open.json" --figcraft "$TMP/apps.figcraft"
 
 # case 28: --app reviews a specific audit out of rotation order
 
 printf '[]' > "$TMP/lane-open.json"
 out="$(python3 "$LANE" --dry-run --app FAKEB.ELF \
-    --audits-json "$TMP/lane-audits.json" \
+    --audits-dir "$TMP/lane-audits" \
+    --state-json "$TMP/lane-state.json" \
     --claims-json "$TMP/lane-claims.json" \
     --open-json "$TMP/lane-open.json" \
     --figcraft "$TMP/apps.figcraft" 2>&1 || true)"
 if printf '%s' "$out" | grep -qF "review FAKEB.ELF" \
-    && printf '%s' "$out" | grep -qF "comment (dry-run) on audit #9302"; then
+    && printf '%s' "$out" | grep -qF "comment (dry-run) on state tracker"; then
     pass=$((pass + 1)); printf 'ok   lane: --app reviews out of rotation\n'
 else
     failn=$((failn + 1))

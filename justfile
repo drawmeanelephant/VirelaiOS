@@ -256,10 +256,11 @@ claim-card ISSUE *ARGS:
 rehearse-unlabel:
     bash tools/status/rehearse-unlabel.sh
 
-# One interface-review pass over the polish app audits (issue #3784): the
-# hourly issue-conveyor invokes this. Picks the stalest unreviewed audit,
-# checks the app's face vs the figcraft design master + gate specs, files
-# one bounded card or comments no-drift. --dry-run reads live, posts nothing.
+# One interface-review pass over the app audits in docs/audits/ (issues
+# #3784/#3793): the hourly issue-conveyor invokes this. Picks the stalest
+# unreviewed audit per the lane-state tracker issue, checks the app's face
+# vs the figcraft design master + gate specs, files one bounded card or
+# stamps no-drift on the tracker. --dry-run reads live, posts nothing.
 interface-review *ARGS:
     python3 tools/status/interface-review.py {{ARGS}}
 
