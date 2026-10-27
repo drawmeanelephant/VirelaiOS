@@ -254,6 +254,35 @@ pub const wmctl_persist: u64 = 26;
 /// PERSIST actions (a0).
 pub const persist_save_action: u64 = 0;
 pub const persist_restore_action: u64 = 1;
+/// #3759 (final item — the drag.zig drain): DRAG — the seat's
+/// drag-and-drop record channel. An app's `sys_drag_start` (slot 48)
+/// stages the payload kernel-side and the kind-22 WM_DRAG mirror tells
+/// the seat a record waits; from the TAKE on, the seat owns the record
+/// end to end and calls back for each delivery the kernel applies. The
+/// staging buffers, the owner-resolved DRAG_ENTER/LEAVE/DROP pushes and
+/// the consume-on-read `sys_drag_read` stay the kept kernel primitives —
+/// WHEN to take, WHERE the hover sits, and WHICH window takes the drop
+/// are the seat's decisions. a0 = action:
+///   0 TAKE   — copy the staged arm record OUT to the seat (a1 = dest
+///              ptr, a2 = dest len); writes [u32 LE source_pid][payload]
+///              and returns the byte count, EINVAL nothing armed.
+///   1 ENTER  — a1 = window id the pointer crossed into, a2 = payload
+///              size, a3 = source pid; the kernel pushes DRAG_ENTER to
+///              that window's owner (the shim fan's shape).
+///   2 LEAVE  — a1 = window id, a2 = source pid; pushes DRAG_LEAVE.
+///   3 DROP   — a1 = target window id, a2 = payload ptr, a3 = len,
+///              a4 = source pid; the kernel re-stages the bytes for the
+///              target's sys_drag_read and pushes DROP to its owner.
+///   4 CANCEL — the drag ended undelivered; both stagings clear.
+/// ENTER/LEAVE/DROP/CANCEL return 0; EINVAL for an unknown action or a
+/// bad/unowned window id; EFAULT for a bad buffer on TAKE/DROP.
+pub const wmctl_drag: u64 = 27;
+/// DRAG actions (a0).
+pub const drag_take_action: u64 = 0;
+pub const drag_enter_action: u64 = 1;
+pub const drag_leave_action: u64 = 2;
+pub const drag_drop_action: u64 = 3;
+pub const drag_cancel_action: u64 = 4;
 /// OVERVIEW actions (a0).
 pub const overview_enter_action: u64 = 0;
 pub const overview_exit_action: u64 = 1;
@@ -422,6 +451,10 @@ var layout_count: u64 = 0;
 /// #3759 (fifth item): PERSIST (cmd 26) submissions accepted — the seat's
 /// save/restore decisions applied by the kernel's kept persist path.
 var persist_count: u64 = 0;
+/// #3759 (final item): DRAG (cmd 27) submissions accepted — the seat's
+/// take/enter/leave/drop/cancel decisions applied by the kernel's kept
+/// staging + delivery primitives.
+var drag_count: u64 = 0;
 /// Set when the registered WM exits (teardown) — the shell idle loop drains
 /// this into the `wm: unregistered, shim resumed` report (the exit path is
 /// IRQ context and console-free, so the report is drained like the process
@@ -511,6 +544,8 @@ pub fn init() void {
     overview_count = 0;
     gpu3d_count = 0;
     layout_count = 0;
+    persist_count = 0;
+    drag_count = 0;
     // M102d1 (#2166): a seam reset strands no GPU3D context (records bind
     // to windows/seat — pure BSS wipe, no device I/O).
     gpu3d_broker.reset_state();
@@ -534,6 +569,8 @@ pub fn init() void {
     driving_award.wm_key_hook = null;
     // card #3034: the damage fan-out detaches the same way.
     driving_award.wm_damage_hook = null;
+    // #3759 (final item): the drag-ARM mirror fan detaches too.
+    driving_award.wm_drag_hook = null;
     // M52 card 2 (#1239): a reset is a seat release — no WM-owned capture
     // may leak into the next boot/test (the same reasoning as the hooks).
     release_wm_captures();
@@ -601,6 +638,10 @@ pub fn register(pid: usize) bool {
     // surface taking damage wakes this seat with one pending kind-18 tick
     // (flags bit 0) instead of waiting up to a heartbeat for on_tick.
     driving_award.wm_damage_hook = fan_damage;
+    // #3759 (final item): the drag-ARM mirror — an app's sys_drag_start
+    // while the seat owns input fans one kind-22 WM_DRAG here; the seat
+    // TAKEs the staged record (cmd 27) and owns it end to end.
+    driving_award.wm_drag_hook = fan_drag;
     return true;
 }
 
@@ -718,6 +759,13 @@ pub fn unregister(pid: usize) bool {
     // bit and the hook die with it.
     driving_award.wm_damage_hook = null;
     damage_tick_pending = false;
+    // #3759 (final item): the drag-ARM mirror dies with the seat — a
+    // resumed shim must not fan kind-22 mirrors it would never read (its
+    // own hit-test fan drives the delivery record again). An arm the dead
+    // seat never took clears with it: the record was mediated TO that
+    // seat and no later registrant may adopt one it was never told about.
+    driving_award.wm_drag_hook = null;
+    driving_award.drag_armed_cancel();
     return true;
 }
 
@@ -898,6 +946,8 @@ pub const WmInfo = struct {
     layout_count: u64,
     /// #3759 (fifth item): accepted PERSIST (cmd 26) submissions.
     persist_count: u64,
+    /// #3759 (final item): accepted DRAG (cmd 27) submissions.
+    drag_count: u64,
     pointer_fan_count: u64,
     window_mirror_count: u64,
     key_fan_count: u64,
@@ -940,6 +990,7 @@ pub fn info() WmInfo {
         .gpu3d_count = gpu3d_count,
         .layout_count = layout_count,
         .persist_count = persist_count,
+        .drag_count = drag_count,
         .pointer_fan_count = pointer_fan_count,
         .window_mirror_count = window_mirror_count,
         .key_fan_count = key_fan_count,
@@ -1055,6 +1106,24 @@ pub fn fan_key(usage: u8, flags: u16) void {
     });
 }
 
+/// #3759 (final item — the drag.zig drain): fan ONE drag-ARM mirror to
+/// the registered WM — kind 22 WM_DRAG, `arg0` = staged payload size,
+/// `arg1` = source pid. Fired from `sys_drag_start` while the seat owns
+/// input (the drag record's delivery is the seat's from here). Routing-
+/// restricted like the other fans: a no-op with no registered seat — the
+/// shim runs its own hit-test fan over the delivery record instead.
+pub fn fan_drag(payload_len: usize, source_pid: usize) void {
+    const pid = wm_pid orelse return;
+    if (seat_dead(pid)) return; // M52 card 2: never route to a dead pid
+    events.push(pid, .{
+        .kind = events.WM_DRAG,
+        .flags = 0,
+        .seq = 0,
+        .arg0 = @intCast(payload_len),
+        .arg1 = @intCast(source_pid),
+    });
+}
+
 /// Note a SET_STATE (cmd 4) call — the WM's visibility/workspace change.
 pub fn note_set_state() void {
     set_state_count +%= 1;
@@ -1134,6 +1203,12 @@ pub fn note_overview() void {
 /// the seat's save/restore decision the kernel just applied.
 pub fn note_persist() void {
     persist_count +%= 1;
+}
+
+/// #3759 (final item): count one accepted DRAG (cmd 27) submission — the
+/// seat's take/enter/leave/drop/cancel decision the kernel just applied.
+pub fn note_drag() void {
+    drag_count +%= 1;
 }
 
 /// #3759: note one accepted LAYOUT (cmd 17) submission — the WM's

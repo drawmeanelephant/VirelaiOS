@@ -5663,6 +5663,87 @@ fn handle_wmctl(args: Args, _: *exceptions.VectorFrame) u64 {
                 else => return error_result(.einval), // unknown action
             }
         },
+        wm_server.wmctl_drag => {
+            // #3759 (final item — the drag.zig drain): the seat's
+            // drag-and-drop record channel. The record's LIFECYCLE — when
+            // to take, where the hover sits, which window takes the drop —
+            // is the seat's policy, driven off its own kind-19/20 streams;
+            // the kernel keeps the staging buffers, the owner-resolved
+            // DRAG_ENTER/LEAVE/DROP pushes, and the consume-on-read
+            // sys_drag_read. An arm staged while the seat owns input waits
+            // for the seat's TAKE (the kind-22 mirror told it so); a dead
+            // source's untaken arm clears in close_owner like the
+            // delivery record always did.
+            if (!wm_server.registered()) return error_result(.enosys);
+            if (wm_server.registered_pid() != pid) return error_result(.eacces);
+            switch (args[1]) {
+                wm_server.drag_take_action => {
+                    // TAKE (a0): a1 = dest ptr, a2 = dest len. Writes
+                    // [u32 LE source_pid][payload] — a self-contained
+                    // record handoff, so a re-arm between the mirror and
+                    // the take can never mislabel the bytes the seat got.
+                    // The staging clears only AFTER a successful copy —
+                    // a faulting dest loses no record.
+                    const rec = driving_award.drag_armed_record() orelse return error_result(.einval);
+                    const cap: usize = @intCast(args[3]);
+                    if (cap < 4) return error_result(.einval);
+                    var hdr: [4]u8 = undefined;
+                    std.mem.writeInt(u32, &hdr, @intCast(rec.source_pid), .little);
+                    if (uaccess.copy_out(args[2], &hdr, 4) != .ok) return error_result(.efault);
+                    const n = @min(rec.payload.len, cap - 4);
+                    if (n > 0 and uaccess.copy_out(args[2] + 4, rec.payload[0..n], n) != .ok) {
+                        return error_result(.efault);
+                    }
+                    driving_award.drag_armed_cancel();
+                    wm_server.note_drag();
+                    return 4 + n;
+                },
+                wm_server.drag_enter_action => {
+                    // ENTER (a1): a1 = window id, a2 = payload size,
+                    // a3 = source pid — the kernel pushes DRAG_ENTER to
+                    // the owner like the shim's pointer fan did.
+                    if (args[2] > std.math.maxInt(u8)) return error_result(.einval);
+                    if (!driving_award.drag_enter(@intCast(args[2]), @intCast(args[3]), @intCast(args[4]))) return error_result(.einval);
+                    wm_server.note_drag();
+                    return 0;
+                },
+                wm_server.drag_leave_action => {
+                    // LEAVE (a2): a1 = window id, a2 = source pid —
+                    // DRAG_LEAVE to the owner.
+                    if (args[2] > std.math.maxInt(u8)) return error_result(.einval);
+                    if (!driving_award.drag_leave(@intCast(args[2]), @intCast(args[3]))) return error_result(.einval);
+                    wm_server.note_drag();
+                    return 0;
+                },
+                wm_server.drag_drop_action => {
+                    // DROP (a3): a1 = target window id, a2 = payload ptr,
+                    // a3 = len, a4 = source pid — the kernel re-stages
+                    // the bytes for the target's sys_drag_read and pushes
+                    // DROP to its owner (the consume-on-read contract the
+                    // shim produced). a4 names the source — the seat is
+                    // the trusted arbiter naming it, exactly like the
+                    // PERSIST restore's owner pick.
+                    if (args[2] > std.math.maxInt(u8)) return error_result(.einval);
+                    const drop_len: usize = @min(args[4], driving_award.drag_payload_max);
+                    if (drop_len == 0) return error_result(.einval);
+                    var buf: [driving_award.drag_payload_max]u8 = undefined;
+                    if (uaccess.copy_in(buf[0..drop_len], args[3], drop_len) != .ok) return error_result(.efault);
+                    if (!driving_award.drag_drop(@intCast(args[2]), buf[0..drop_len], @intCast(args[5]))) return error_result(.einval);
+                    wm_server.note_drag();
+                    return 0;
+                },
+                wm_server.drag_cancel_action => {
+                    // CANCEL (a4): the seat's undelivered ending — an
+                    // untaken arm AND any pending delivery both clear
+                    // (no stale capture state, the M52 card-3 rule).
+                    driving_award.drag_armed_cancel();
+                    driving_award.drag_cancel();
+                    wm_server.note_drag();
+                    return 0;
+                },
+                else => return error_result(.einval), // unknown action
+            }
+        },
         wm_server.wmctl_win_close => {
             // M42 UX (2026-09-05, TABWM tab-close seam): the WM — not the
             // kernel — decides WHEN a window closes (the tab 'x' click);

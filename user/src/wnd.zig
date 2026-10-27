@@ -181,6 +181,18 @@ const wmctl_notif_get: u64 = 25;
 const wmctl_persist: u64 = 26;
 const persist_save_action: u64 = 0;
 const persist_restore_action: u64 = 1;
+// #3759 (final item — the drag.zig drain): DRAG (cmd 27), the seat's
+// drag-and-drop record channel. An app's sys_drag_start arms a record
+// kernel-side and the kind-22 mirror tells this seat; TAKE pulls the
+// staged bytes out and the record lives HERE from then on — this seat
+// drives hover/drop off its own kind-19/20 streams and the kernel
+// applies the ENTER/LEAVE/DROP deliveries through the kept primitives.
+const wmctl_drag: u64 = 27;
+const drag_take_action: u64 = 0;
+const drag_enter_action: u64 = 1;
+const drag_leave_action: u64 = 2;
+const drag_drop_action: u64 = 3;
+const drag_cancel_action: u64 = 4;
 /// sys_getpid (slot 87) — the pid the seat names as the phantom-adopting
 /// owner on a PERSIST restore: this seat, so its replays die with it.
 const sys_getpid_num: u64 = 87;
@@ -309,6 +321,10 @@ pub const composite_tick_kind: u64 = 18;
 pub const wm_pointer_kind: u64 = 19;
 pub const wm_window_kind: u64 = 20;
 pub const wm_key_kind: u64 = 21;
+/// #3759 (final item): the kind-22 drag-ARM mirror — pushed to this seat
+/// once per sys_drag_start that lands while it owns input (arg0 = staged
+/// size, arg1 = source pid). Pinned against kernel events.WM_DRAG.
+pub const wm_drag_kind: u64 = 22;
 /// Left-button bit inside the WM_POINTER `flags` byte (must match the HID
 /// button byte the kernel fans out: 0x01 = left).
 pub const btn_left: u8 = 0x01;
@@ -1115,6 +1131,48 @@ fn tab_press_clear() void {
     tab_press_id = null;
     tab_press_close = false;
     tab_dragging = false;
+}
+
+// ---------------------------------------------------------------------------
+// #3759 (final item — the drag.zig drain): the kernel-mediated DnD record
+// this seat owns. The kind-22 arm mirror says a sys_drag_start staged a
+// record; TAKE (cmd 27 act 0) pulls the bytes into `dnd_buf` and the seat
+// holds them until its own gesture decision lands them back through DROP
+// (act 3) or clears them through CANCEL (act 4). Hover edges ride ENTER/
+// LEAVE (acts 1/2) — the kernel applies each delivery to the window's
+// owner, the same primitives the shim's pointer fan ran.
+// ---------------------------------------------------------------------------
+
+/// The DnD markers the gate greps — the MarkerNotify discipline: a marker
+/// prints only after the state transition it names (arm after the TAKE
+/// landed, over on a hover edge, drop after the DROP verb, cancel after
+/// the undelivered ending cleared the session).
+pub const dnd_arm_marker: []const u8 = "wnd: dnd arm\n";
+pub const dnd_over_marker: []const u8 = "wnd: dnd over id=";
+pub const dnd_drop_marker: []const u8 = "wnd: dnd drop id=";
+pub const dnd_cancel_marker: []const u8 = "wnd: dnd cancel\n";
+
+const dnd_payload_max: usize = 512;
+var dnd_buf: [dnd_payload_max]u8 = undefined;
+var dnd_len: usize = 0;
+var dnd_src: u64 = 0;
+var dnd_armed: bool = false;
+/// The mirrored window id the drag hovers — 0xff = chrome/desktop/none.
+var dnd_over: u8 = 0xff;
+
+/// The seat's DnD hit-test — the topmost visible mirrored window under
+/// the point (z-order == id order, the close-button scan's rule); the
+/// kernel's own fan resolves owners the same way and never delivers to
+/// an unowned window, so mirror coverage IS the deliverable set.
+fn dnd_hit_at(x: u32, y: u32) u8 {
+    var si: usize = max_user_windows;
+    while (si > 0) {
+        si -= 1;
+        const m = &mirrors[si];
+        if (!m.valid or !m.visible) continue;
+        if (x >= m.x and x < m.x + m.w and y >= m.y and y < m.y + m.h) return m.id;
+    }
+    return 0xff;
 }
 
 pub fn init_god_menu_if_needed() void {
@@ -3087,6 +3145,44 @@ fn main() noreturn {
                 const left = (btn & btn_left) != 0;
                 const prev_left = (prev_btn & btn_left) != 0;
 
+                // #3759 (final item): the kernel-mediated drag this seat
+                // owns observes EVERY sample — the shim's fan was
+                // unconditional too (it ran ahead of the delivery blocks
+                // regardless of modal state). Hover edges ride ENTER/
+                // LEAVE; a release edge lands DROP on the hit window, or
+                // CANCEL when nothing deliverable sits under it (the
+                // seat's ending — the shim left the record armed; the
+                // seat owns the record now and closes the gesture).
+                if (dnd_armed) {
+                    const hit = dnd_hit_at(px, py);
+                    if (hit != dnd_over) {
+                        if (dnd_over != 0xff) {
+                            _ = syscall6(sys_wmctl, wmctl_drag, drag_leave_action, dnd_over, dnd_src, 0, 0);
+                        }
+                        if (hit != 0xff) {
+                            _ = syscall6(sys_wmctl, wmctl_drag, drag_enter_action, hit, dnd_len, dnd_src, 0);
+                            var obuf: [40]u8 = undefined;
+                            const omsg = std.fmt.bufPrint(&obuf, "{s}{d}\n", .{ dnd_over_marker, hit }) catch "wnd: dnd over\n";
+                            write_marker(omsg);
+                        }
+                        dnd_over = hit;
+                    }
+                    if (prev_left and !left) {
+                        if (hit != 0xff) {
+                            _ = syscall6(sys_wmctl, wmctl_drag, drag_drop_action, hit, @intFromPtr(&dnd_buf), dnd_len, dnd_src);
+                            var dbuf2: [40]u8 = undefined;
+                            const dmsg = std.fmt.bufPrint(&dbuf2, "{s}{d}\n", .{ dnd_drop_marker, hit }) catch "wnd: dnd drop\n";
+                            write_marker(dmsg);
+                        } else {
+                            _ = syscall6(sys_wmctl, wmctl_drag, drag_cancel_action, 0, 0, 0, 0);
+                            write_marker(dnd_cancel_marker);
+                        }
+                        dnd_armed = false;
+                        dnd_over = 0xff;
+                        dnd_len = 0;
+                    }
+                }
+
                 // WM2 (issue #707 card 2): the overview grid captures
                 // pointer input while open — the god menu, when open,
                 // sits above it (Ctrl+F12 closes the menu first).
@@ -3398,6 +3494,31 @@ fn main() noreturn {
                 // WMP card 2 (#1250): a chord is input too (a WM-driven
                 // Ctrl+T layout change, a modal, a focus move) — flush it
                 // when the burst ends rather than at the next tick.
+                input_dirty = true;
+            },
+            wm_drag_kind => {
+                // #3759 (final item): WM_DRAG (kind 22) — an app's
+                // sys_drag_start armed a record while this seat owns
+                // input (arg0 = staged size, arg1 = source pid). TAKE
+                // pulls the staged bytes out: [u32 LE source_pid]
+                // [payload] — a self-contained handoff, so the record
+                // this seat owns from here is labelled by the kernel's
+                // own staging, never by a stale mirror. From the TAKE on
+                // the bytes live in dnd_buf — the seat's session.
+                var rec: [4 + dnd_payload_max]u8 = undefined;
+                const n = syscall6(sys_wmctl, wmctl_drag, drag_take_action, @intFromPtr(&rec), rec.len, 0, 0);
+                // A refusal is a negative error word (huge as u64); a
+                // landed take is 4 + payload bytes, bounded by the buf.
+                if (n >= 4 and n <= rec.len) {
+                    const take_n: usize = @intCast(n - 4);
+                    const copy_n = @min(take_n, dnd_payload_max);
+                    dnd_src = std.mem.readInt(u32, rec[0..4], .little);
+                    @memcpy(dnd_buf[0..copy_n], rec[4..][0..copy_n]);
+                    dnd_len = copy_n;
+                    dnd_over = 0xff;
+                    dnd_armed = true;
+                    write_marker(dnd_arm_marker);
+                }
                 input_dirty = true;
             },
             else => {},

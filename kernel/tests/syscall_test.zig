@@ -3318,6 +3318,120 @@ test "syscall: PERSIST (cmd 26, #3759) applies the seat's save/restore decisions
     _ = driving_award.user_close(2);
 }
 
+test "syscall: DRAG (cmd 27, #3759) moves the drag record to the seat through the kept primitives" {
+    userspace.init();
+    init(test_writer);
+    wm_server.init();
+    events.init();
+    _ = scheduler.init();
+    _ = scheduler.register_worker(0x2000);
+    _ = scheduler.register_user(0x3000, 0); // task 2 = process 0 (boot payload)
+    scheduler.start();
+    var frame = fresh_frame();
+    try std.testing.expect(scheduler.yield_current()); // shell -> user (2)
+
+    var src: [9]u8 = "seat-drag".*;
+    var take_buf: [4 + driving_award.drag_payload_max]u8 = undefined;
+    set_user_regions(
+        .{ .base = @intFromPtr(&src), .len = src.len },
+        .{ .base = @intFromPtr(&take_buf), .len = take_buf.len },
+    );
+    defer set_user_regions(.{ .base = 0, .len = 0 }, .{ .base = 0, .len = 0 });
+
+    // No WM registered: DRAG -> ENOSYS (the ADR 0007 "no WM" case).
+    try std.testing.expectEqual(error_result(.enosys), dispatch(sys_wmctl, .{ wm_server.wmctl_drag, wm_server.drag_take_action, 0, 0, 0, 0 }, &frame));
+
+    // Seed the WM as pid 0 — the test's own task drives the seat calls.
+    try std.testing.expect(wm_server.register(0));
+
+    // Unknown action -> EINVAL (not counted); TAKE with nothing armed
+    // -> EINVAL (not counted either).
+    try std.testing.expectEqual(error_result(.einval), dispatch(sys_wmctl, .{ wm_server.wmctl_drag, 77, 0, 0, 0, 0 }, &frame));
+    try std.testing.expectEqual(error_result(.einval), dispatch(sys_wmctl, .{ wm_server.wmctl_drag, wm_server.drag_take_action, @intFromPtr(&take_buf), take_buf.len, 0, 0 }, &frame));
+    try std.testing.expectEqual(@as(u64, 0), wm_server.info().drag_count);
+
+    const o2 = driving_award.user_open(64, 64, 400, 300, 0);
+    const o3 = driving_award.user_open(500, 64, 400, 300, 0);
+    try std.testing.expectEqual(@as(u8, 2), o2.opened);
+    try std.testing.expectEqual(@as(u8, 3), o3.opened);
+    while (events.pop(0) != null) {} // drain the open/mirror traffic
+
+    // An app's sys_drag_start under the seat stages the ARM record — the
+    // delivery record stays dark (no drag_active, nothing for
+    // sys_drag_read) — and fans exactly ONE kind-22 mirror to the seat.
+    try std.testing.expectEqual(@as(u64, 0), dispatch(48, .{ @intFromPtr(&src), src.len, 0, 0, 0, 0 }, &frame));
+    try std.testing.expect(!driving_award.drag_is_active());
+    const arm_ev = events.pop(0).?;
+    try std.testing.expectEqual(events.WM_DRAG, arm_ev.kind);
+    try std.testing.expectEqual(@as(u32, 9), arm_ev.arg0);
+    try std.testing.expectEqual(@as(u32, 0), arm_ev.arg1); // source pid 0
+
+    // TAKE: [u32 LE source_pid][payload] — a self-contained handoff, so a
+    // stale mirror could never mislabel the bytes the seat got.
+    try std.testing.expectEqual(@as(u64, 4 + 9), dispatch(sys_wmctl, .{ wm_server.wmctl_drag, wm_server.drag_take_action, @intFromPtr(&take_buf), take_buf.len, 0, 0 }, &frame));
+    try std.testing.expectEqual(@as(u32, 0), std.mem.readInt(u32, take_buf[0..4], .little));
+    try std.testing.expectEqualStrings("seat-drag", take_buf[4..13]);
+    try std.testing.expect(driving_award.drag_armed_record() == null); // consumed
+    // A second TAKE refuses — the record left the kernel with the take.
+    try std.testing.expectEqual(error_result(.einval), dispatch(sys_wmctl, .{ wm_server.wmctl_drag, wm_server.drag_take_action, @intFromPtr(&take_buf), take_buf.len, 0, 0 }, &frame));
+
+    // The seat's hover edge lands the shim fan's event shapes on the
+    // target's owner — ENTER carries size+pid, LEAVE the pid alone.
+    try std.testing.expectEqual(@as(u64, 0), dispatch(sys_wmctl, .{ wm_server.wmctl_drag, wm_server.drag_enter_action, 3, 9, 0, 0 }, &frame));
+    const enter_ev = events.pop(0).?;
+    try std.testing.expectEqual(events.DRAG_ENTER, enter_ev.kind);
+    try std.testing.expectEqual(@as(u32, 9), enter_ev.arg0);
+    try std.testing.expectEqual(@as(u32, 0), enter_ev.arg1);
+    try std.testing.expectEqual(@as(u64, 0), dispatch(sys_wmctl, .{ wm_server.wmctl_drag, wm_server.drag_leave_action, 3, 0, 0, 0 }, &frame));
+    const leave_ev = events.pop(0).?;
+    try std.testing.expectEqual(events.DRAG_LEAVE, leave_ev.kind);
+    try std.testing.expectEqual(@as(u32, 0), leave_ev.arg0);
+    try std.testing.expectEqual(@as(u32, 0), leave_ev.arg1);
+    // A bad window id refuses; a too-wide id word is refused, never
+    // narrowed into a different valid window (the M182b rule).
+    try std.testing.expectEqual(error_result(.einval), dispatch(sys_wmctl, .{ wm_server.wmctl_drag, wm_server.drag_enter_action, 99, 9, 0, 0 }, &frame));
+    try std.testing.expectEqual(error_result(.einval), dispatch(sys_wmctl, .{ wm_server.wmctl_drag, wm_server.drag_enter_action, 0x100, 9, 0, 0 }, &frame));
+
+    // DROP: the seat's copy-in re-stages the bytes for the target's
+    // sys_drag_read and pushes DROP to its owner — the consume-on-read
+    // contract the shim produced.
+    try std.testing.expectEqual(@as(u64, 0), dispatch(sys_wmctl, .{ wm_server.wmctl_drag, wm_server.drag_drop_action, 3, @intFromPtr(&src), src.len, 0 }, &frame));
+    try std.testing.expect(driving_award.drag_is_active());
+    try std.testing.expectEqual(@as(usize, 0), driving_award.drag_source_pid);
+    const drop_ev = events.pop(0).?;
+    try std.testing.expectEqual(events.DROP, drop_ev.kind);
+    try std.testing.expectEqual(@as(u32, 9), drop_ev.arg0);
+    try std.testing.expectEqual(@as(u32, 0), drop_ev.arg1);
+    // The target's read consumes the staged payload — slot 55 unchanged.
+    var read_buf: [64]u8 = undefined;
+    set_user_regions(.{ .base = @intFromPtr(&src), .len = src.len }, .{ .base = @intFromPtr(&read_buf), .len = read_buf.len });
+    try std.testing.expectEqual(@as(u64, 9), dispatch(sys_drag_read, .{ @intFromPtr(&read_buf), read_buf.len, 0, 0, 0, 0 }, &frame));
+    try std.testing.expectEqualStrings("seat-drag", read_buf[0..9]);
+    try std.testing.expect(!driving_award.drag_is_active()); // consumed
+    try std.testing.expectEqual(@as(u64, 0), dispatch(sys_drag_read, .{ @intFromPtr(&read_buf), read_buf.len, 0, 0, 0, 0 }, &frame));
+
+    // CANCEL clears an untaken arm AND any pending delivery.
+    try std.testing.expectEqual(@as(u64, 0), dispatch(48, .{ @intFromPtr(&src), src.len, 0, 0, 0, 0 }, &frame));
+    _ = events.pop(0); // the second arm mirror
+    try std.testing.expect(driving_award.drag_armed_record() != null);
+    try std.testing.expectEqual(@as(u64, 0), dispatch(sys_wmctl, .{ wm_server.wmctl_drag, wm_server.drag_cancel_action, 0, 0, 0, 0 }, &frame));
+    try std.testing.expect(driving_award.drag_armed_record() == null);
+    try std.testing.expect(!driving_award.drag_is_active());
+
+    // The counter observed every accepted submission: take + enter +
+    // leave + drop + cancel = 5 (the refused calls never counted).
+    try std.testing.expectEqual(@as(u64, 5), wm_server.info().drag_count);
+
+    // Teardown: input ownership returns to the shim — the kernel's own
+    // hit-test fan drives the delivery record again, byte-identical.
+    try std.testing.expect(wm_server.unregister(0));
+    try std.testing.expect(!driving_award.wm_owns_input);
+    try std.testing.expectEqual(@as(u64, 0), dispatch(48, .{ @intFromPtr(&src), src.len, 0, 0, 0, 0 }, &frame));
+    try std.testing.expect(driving_award.drag_is_active()); // shim path armed the delivery record
+    _ = driving_award.user_close(2);
+    _ = driving_award.user_close(3);
+}
+
 test "syscall: NOTIF_CENTER / NOTIF_DISMISS (cmd 6/7, claim 7557) drive the center from the WM's decision" {
     userspace.init();
     init(test_writer);

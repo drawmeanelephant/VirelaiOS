@@ -101,6 +101,18 @@ pub const WM_WINDOW: u16 = 20;
 /// from this stream instead.
 pub const WM_KEY: u16 = 21;
 
+/// #3759 (final item — the drag.zig drain): the drag-ARM mirror for the
+/// registered WM — an app's `sys_drag_start` (slot 48) staged a payload
+/// while the seat owns input. `arg0` = payload size (≤ 512), `arg1` =
+/// source pid. The seat owns the record end to end from here: it TAKEs the
+/// staged bytes (slot-65 DRAG cmd 27 act 0), drives the hover/drop
+/// decisions off its own kind-19/20 streams, and the kernel applies the
+/// DRAG_ENTER/LEAVE/DROP deliveries through the kept primitives.
+/// Routing-restricted like kinds 18–21: pushed ONLY to the registered
+/// WM's queue, never generated in shim mode (the kernel's own hit-test
+/// fan drives the delivery there instead).
+pub const WM_DRAG: u16 = 22;
+
 /// Modifier bitmasks (flags bits 0..7).
 pub const MOD_SHIFT: u16 = 0x0001;
 pub const MOD_CTRL: u16 = 0x0002;

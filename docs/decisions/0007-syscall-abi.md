@@ -2984,3 +2984,31 @@ record-keeper under any registrant and the shim fallback when no seat is
 registered; the seat's save decisions ride the same dedup'd write path.
 Each accepted submission increments the `persist` counter in the `wm`
 monitor report.
+
+### Amendment (2026-10-27, #3759 final item — slot-65 cmd 27 `DRAG`, the seat's drag-and-drop record channel)
+
+The drag.zig drain (#3754 split, final checklist item of #3759) moves the
+Arc4 #237 drag payload record's LIFECYCLE to the seat. The record had
+always been seat-mediated at the syscall boundary (slots 48/55 are the
+only entry points); under a registered seat the record is now the seat's
+end to end: `sys_drag_start` stages the source's bytes into a dedicated
+ARM staging and fans one kind-22 `WM_DRAG` mirror (arg0 = staged size,
+arg1 = source pid — routing-restricted like kinds 18–21), the seat TAKEs
+the record out, drives the hover/drop decisions off its own kind-19/20
+streams, and calls back for each delivery the kernel applies. The staging
+buffers, the owner-resolved `DRAG_ENTER`/`DRAG_LEAVE`/`DROP` pushes and
+the consume-on-read `sys_drag_read` stay the kept kernel primitives —
+slots 48/55 are unchanged to apps.
+
+| DRAG | `WMCTL_DRAG` | 27 | a0 = action: 0 TAKE (a1 = dest ptr, a2 = dest len; copies `[u32 LE source_pid][payload]` out and consumes the staged arm), 1 ENTER (a1 = window id, a2 = payload size, a3 = source pid; pushes DRAG_ENTER to the owner), 2 LEAVE (a1 = window id, a2 = source pid; pushes DRAG_LEAVE), 3 DROP (a1 = target window id, a2 = payload ptr, a3 = len, a4 = source pid; re-stages the bytes for the target's `sys_drag_read` and pushes DROP), 4 CANCEL (clears the untaken arm AND any pending delivery) | TAKE → copied byte count; others → 0 | `ENOSYS` no WM; `EACCES` caller not the WM; `EINVAL` unknown action, bad/unowned window id, empty or unarmed TAKE; `EFAULT` bad buffer on TAKE/DROP |
+
+The TAKE copy-out is `[u32 LE source_pid][payload]` — a self-contained
+record handoff, so a re-arm between the mirror and the take can never
+mislabel the bytes the seat got; the staging clears only after a
+successful copy (a faulting dest loses no record). A dead source's
+untaken arm clears in `close_owner` under the same no-stale-capture rule
+the delivery record always had (M52 card 3). The no-seat shim is
+unchanged: with no seat registered the kernel's own pointer-path hit-test
+fan drives the delivery record byte-identically — `sys_drag_start`
+branches on `wm_owns_input`, never on which program bound. Each accepted
+submission increments the `drag` counter in the `wm` monitor report.

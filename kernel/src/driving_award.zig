@@ -662,6 +662,13 @@ pub var wm_key_hook: ?*const fn (usage: u8, flags: u16) void = null;
 /// decides whether the seat is owed a kind-18 flags-bit0 damage tick —
 /// at most one pending per seat, cleared when its REQUEST_PRESENT lands.
 pub var wm_damage_hook: ?*const fn () void = null;
+/// #3759 (final item — the drag.zig drain): the drag-ARM mirror fan-out
+/// (set by wm_server at REGISTER time; null when no WM — the hook style of
+/// the pointer/key/window seams). While a seat owns input an app's
+/// `sys_drag_start` stages into `drag_armed_*` and this hook fires once
+/// with the staged size + source pid; wm_server packs kind 22 WM_DRAG.
+/// The seat TAKEs the record (slot-65 DRAG cmd 27) and owns it end to end.
+pub var wm_drag_hook: ?*const fn (payload_len: usize, source_pid: usize) void = null;
 /// M32 WMS4: the WM's broadcast chrome policy (SET_WINDOW with a0 = ALL).
 /// When set, every user window without its own override renders chrome
 /// from this descriptor; null = no WM chrome (shim rules — the default
@@ -758,6 +765,15 @@ pub var drag_payload_len: usize = 0;
 pub var drag_active: bool = false;
 pub var drag_source_pid: usize = 0;
 pub var drag_over_id: ?u8 = null; // window currently under pointer during drag
+/// #3759 (final item): the ARM staging — the source's `sys_drag_start`
+/// record while a seat owns input. The seat TAKEs it (slot-65 DRAG cmd 27
+/// act 0) and owns the record end to end from there; the delivery staging
+/// above is written again only at the seat's DROP decision. Two stagings,
+/// one direction each — a fresh arm never clobbers a pending delivery.
+pub var drag_armed: bool = false;
+pub var drag_armed_payload: [drag_payload_max]u8 = undefined;
+pub var drag_armed_len: usize = 0;
+pub var drag_armed_source_pid: usize = 0;
 
 /// Arc4 #242: unsaved-changes confirmation dialog state — BSS, no heap.
 /// M32 WMS8 Gate 4 (issue #628): the WM — not the kernel — decides WHEN the
@@ -1015,6 +1031,12 @@ pub fn arm() void {
     drag_payload_len = 0;
     drag_source_pid = 0;
     drag_over_id = null;
+    // #3759 (final item): the seat-side arm staging clears with the same
+    // stroke — a record waiting for a seat's TAKE is process-scoped BSS
+    // too and must not survive a re-arm either.
+    drag_armed = false;
+    drag_armed_len = 0;
+    drag_armed_source_pid = 0;
     overlay_active = false;
     overlay_count = 0;
     overlay_selected = 0;
@@ -1162,6 +1184,11 @@ pub const drag_start = drag_mod.drag_start;
 pub const drag_is_active = drag_mod.drag_is_active;
 pub const drag_get_payload = drag_mod.drag_get_payload;
 pub const drag_cancel = drag_mod.drag_cancel;
+pub const drag_armed_record = drag_mod.drag_armed_record;
+pub const drag_armed_cancel = drag_mod.drag_armed_cancel;
+pub const drag_enter = drag_mod.drag_enter;
+pub const drag_leave = drag_mod.drag_leave;
+pub const drag_drop = drag_mod.drag_drop;
 const dialogs_mod = @import("driving_award/dialogs.zig");
 pub const unsaved_dialog_show = dialogs_mod.unsaved_dialog_show;
 pub const unsaved_dialog_is_open = dialogs_mod.unsaved_dialog_is_open;
