@@ -12,4 +12,4 @@ order: 240
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| Clock | app | GOCLOCK.ELF | appver 1, ver 1.0.0 | tools/gate/specs/go-clock.spec | shipped |
+| Clock | app | GOCLOCK.ELF | appver 1, ver 1.1.0 | tools/gate/specs/go-clock.spec | shipped |

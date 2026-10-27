@@ -99,7 +99,7 @@ All of them additionally answer to the schema-v2 manifest grammar
 | Assistant | app | GOASSIST.ELF | appver 2, ver 1.0.0 | tools/gate/specs/go-assist.spec | shipped |
 | Sheet | app | GOSHEET.ELF | appver 2, ver 1.0.0 | tools/gate/specs/go-sheet.spec | shipped |
 | Reader | app | GOREADER.ELF | appver 2, ver 1.0.0 | tools/gate/specs/go-reader.spec | shipped |
-| Clock | app | GOCLOCK.ELF | appver 1, ver 1.0.0 | tools/gate/specs/go-clock.spec | shipped |
+| Clock | app | GOCLOCK.ELF | appver 1, ver 1.1.0 | tools/gate/specs/go-clock.spec | shipped |
 | Mines | app | GOMINE.ELF | appver 2, ver 1.0.0 | tools/gate/specs/go-games.spec | shipped |
 | Solitaire | app | GOSOL.ELF | appver 2, ver 1.0.0 | tools/gate/specs/go-games.spec | shipped |
 | Emoji | app | GOEMOJI.ELF | appver 2, ver 1.0.0 | tools/gate/specs/go-emoji.spec | shipped |

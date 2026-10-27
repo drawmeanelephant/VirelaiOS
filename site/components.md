@@ -47,7 +47,7 @@ All of them additionally answer to the schema-v2 manifest grammar
 | [[apps/goassist|Assistant]] | app | GOASSIST.ELF | appver 2, ver 1.0.0 | #3145 | 2026-10-22 | tools/gate/specs/go-assist.spec | shipped |
 | [[apps/gosheet|Sheet]] | app | GOSHEET.ELF | appver 2, ver 1.0.0 | #2915 | 2026-10-21 | tools/gate/specs/go-sheet.spec | shipped |
 | [[apps/goreader|Reader]] | app | GOREADER.ELF | appver 2, ver 1.0.0 | #3244 | 2026-10-23 | tools/gate/specs/go-reader.spec | shipped |
-| [[apps/goclock|Clock]] | app | GOCLOCK.ELF | appver 1, ver 1.0.0 | #3254 | 2026-10-23 | tools/gate/specs/go-clock.spec | shipped |
+| [[apps/goclock|Clock]] | app | GOCLOCK.ELF | appver 1, ver 1.1.0 | #3254 | 2026-10-23 | tools/gate/specs/go-clock.spec | shipped |
 | [[apps/gomine|Mines]] | app | GOMINE.ELF | appver 2, ver 1.0.0 | #2918 | 2026-10-21 | tools/gate/specs/go-games.spec | shipped |
 | [[apps/gosol|Solitaire]] | app | GOSOL.ELF | appver 2, ver 1.0.0 | #2918 | 2026-10-21 | tools/gate/specs/go-games.spec | shipped |
 | [[apps/goemoji|Emoji]] | app | GOEMOJI.ELF | appver 2, ver 1.0.0 | #2917 | 2026-10-21 | tools/gate/specs/go-emoji.spec | shipped |
