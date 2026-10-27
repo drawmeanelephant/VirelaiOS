@@ -56,11 +56,13 @@ jobs:
       #      current is a forward lie. docs/testing.md's dated history
       #      entries stay exempt for the same reason as (1).
       #   2. Never-lie-forward watermark: no page under site/, README.md, or
-      #      docs/ (minus docs/archive/, the generated
+      #      docs/ (minus docs/archive/, docs/audits/, the generated
       #      gate-fleet-inventory.md,
       #      and docs/status.md — the source) may claim an M-number higher
       #      than docs/status.md contains. README may name an M-number only
       #      once status.md carries it — link the issue until then.
+      #      docs/audits/ is exempt for archive's reason: the retired app
+      #      audits quote milestone history verbatim (#3793).
       - name: Site truth guard (deleted binaries + milestone watermark)
         run: |
           python3 - <<'PY'
@@ -102,7 +104,8 @@ jobs:
               paths = sorted(base.rglob("*.md")) if base.is_dir() else [base]
               for path in paths:
                   rel = path.relative_to(root)
-                  if path.name in skip or "archive" in rel.parts:
+                  if (path.name in skip or "archive" in rel.parts
+                          or "audits" in rel.parts):
                       continue
                   for lineno, line in enumerate(path.read_text().splitlines(), 1):
                       for token in re.findall(r"\bM(\d{1,3})", line):
