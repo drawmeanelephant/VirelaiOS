@@ -1,0 +1,175 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="2560" height="1440" viewBox="0 0 2560 1440">
+  <defs>
+    <linearGradient id="linear-gradient-1" x1="0" y1="0" x2="0" y2="1440" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#1a1a2e"/>
+      <stop offset="1" stop-color="#0a0a14"/>
+    </linearGradient>
+    <radialGradient id="radial-gradient-1" cx="1900" cy="330" r="170" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#d8deea" stop-opacity="0.2"/>
+      <stop offset="1" stop-color="#d8deea" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="radial-gradient-2" cx="1900" cy="330" r="92" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#e8edf5"/>
+      <stop offset="1" stop-color="#b9c4d8"/>
+    </radialGradient>
+    <radialGradient id="radial-gradient-3" cx="1520" cy="710" r="480" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#f0a83c" stop-opacity="0.34"/>
+      <stop offset="0.55" stop-color="#d88a28" stop-opacity="0.13"/>
+      <stop offset="1" stop-color="#d88a28" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="linear-gradient-2" x1="0" y1="985" x2="0" y2="1180" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#333c4e"/>
+      <stop offset="1" stop-color="#232a38"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-3" x1="0" y1="959" x2="0" y2="997" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#4a5468"/>
+      <stop offset="1" stop-color="#333c4e"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-4" x1="0" y1="867" x2="0" y2="971" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#4a5468"/>
+      <stop offset="1" stop-color="#333c4e"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-5" x1="1220" y1="0" x2="1870" y2="0" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#f0a83c" stop-opacity="0"/>
+      <stop offset="0.6" stop-color="#f0a83c" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#ffc65e" stop-opacity="0.4"/>
+    </linearGradient>
+    <radialGradient id="radial-gradient-4" cx="1325" cy="1214" r="605" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#06060e" stop-opacity="0.6"/>
+      <stop offset="1" stop-color="#06060e" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="linear-gradient-6" x1="1520" y1="933" x2="1520" y2="967" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#8a6428"/>
+      <stop offset="1" stop-color="#5e4014"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-7" x1="1498" y1="0" x2="1542" y2="0" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#f7edcb"/>
+      <stop offset="1" stop-color="#d8c690"/>
+    </linearGradient>
+    <radialGradient id="radial-gradient-5" cx="1520" cy="715" r="54" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffd98a"/>
+      <stop offset="0.62" stop-color="#f59a33"/>
+      <stop offset="1" stop-color="#d95e14"/>
+    </radialGradient>
+    <radialGradient id="radial-gradient-6" cx="1520" cy="731" r="36" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#fff6d2"/>
+      <stop offset="1" stop-color="#ffc65e"/>
+    </radialGradient>
+    <radialGradient id="radial-gradient-7" cx="1145" cy="959" r="115" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#06060e" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#06060e" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="radial-gradient-8" cx="1325" cy="885" r="145" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffb85c" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#ffb85c" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <title>VirelaiOS — wallpaper night watch</title>
+  <g id="Layer_1" data-name="Layer 1">
+    <path id="night_field" data-name="night field" d="M0 0 L2560 0 L2560 1440 L0 1440 Z" fill="url(#linear-gradient-1)"/>
+    <path id="moon_halo" data-name="moon halo" d="M1730 330 C1730 236.112 1806.112 160 1900 160 C1993.888 160 2070 236.112 2070 330 C2070 423.888 1993.888 500 1900 500 C1806.112 500 1730 423.888 1730 330 Z" fill="url(#radial-gradient-1)"/>
+    <path id="moon" d="M1808 330 C1808 279.19 1849.19 238 1900 238 C1950.81 238 1992 279.19 1992 330 C1992 380.81 1950.81 422 1900 422 C1849.19 422 1808 380.81 1808 330 Z" fill="url(#radial-gradient-2)"/>
+    <path id="moon_bite" data-name="moon bite" d="M1852 312 C1852 261.19 1893.19 220 1944 220 C1994.81 220 2036 261.19 2036 312 C2036 362.81 1994.81 404 1944 404 C1893.19 404 1852 362.81 1852 312 Z" fill="#1a1a2e"/>
+    <path id="crater0" d="M1857 312 C1857 304.82 1862.82 299 1870 299 C1877.18 299 1883 304.82 1883 312 C1883 319.18 1877.18 325 1870 325 C1862.82 325 1857 319.18 1857 312 Z" fill="#c6d0e0" opacity="0.55"/>
+    <path id="crater1" d="M1839 356 C1839 351.029 1843.029 347 1848 347 C1852.971 347 1857 351.029 1857 356 C1857 360.971 1852.971 365 1848 365 C1843.029 365 1839 360.971 1839 356 Z" fill="#c6d0e0" opacity="0.55"/>
+    <path id="crater2" d="M1885 374 C1885 370.134 1888.134 367 1892 367 C1895.866 367 1899 370.134 1899 374 C1899 377.866 1895.866 381 1892 381 C1888.134 381 1885 377.866 1885 374 Z" fill="#c6d0e0" opacity="0.55"/>
+    <path id="star0" d="M237.5 200 C237.5 198.619 238.619 197.5 240 197.5 C241.381 197.5 242.5 198.619 242.5 200 C242.5 201.381 241.381 202.5 240 202.5 C238.619 202.5 237.5 201.381 237.5 200 Z" fill="#c8d6f0" opacity="0.26"/>
+    <path id="star1" d="M518 130 C518 128.895 518.895 128 520 128 C521.105 128 522 128.895 522 130 C522 131.105 521.105 132 520 132 C518.895 132 518 131.105 518 130 Z" fill="#c8d6f0" opacity="0.26"/>
+    <path id="star2" d="M858 170 C858 168.895 858.895 168 860 168 C861.105 168 862 168.895 862 170 C862 171.105 861.105 172 860 172 C858.895 172 858 171.105 858 170 Z" fill="#c8d6f0" opacity="0.26"/>
+    <path id="star3" d="M1198.5 120 C1198.5 119.172 1199.172 118.5 1200 118.5 C1200.828 118.5 1201.5 119.172 1201.5 120 C1201.5 120.828 1200.828 121.5 1200 121.5 C1199.172 121.5 1198.5 120.828 1198.5 120 Z" fill="#c8d6f0" opacity="0.26"/>
+    <path id="star4" d="M1558 180 C1558 178.895 1558.895 178 1560 178 C1561.105 178 1562 178.895 1562 180 C1562 181.105 1561.105 182 1560 182 C1558.895 182 1558 181.105 1558 180 Z" fill="#c8d6f0" opacity="0.26"/>
+    <path id="star5" d="M2177.5 160 C2177.5 158.619 2178.619 157.5 2180 157.5 C2181.381 157.5 2182.5 158.619 2182.5 160 C2182.5 161.381 2181.381 162.5 2180 162.5 C2178.619 162.5 2177.5 161.381 2177.5 160 Z" fill="#c8d6f0" opacity="0.26"/>
+    <path id="star6" d="M2338 340 C2338 338.895 2338.895 338 2340 338 C2341.105 338 2342 338.895 2342 340 C2342 341.105 2341.105 342 2340 342 C2338.895 342 2338 341.105 2338 340 Z" fill="#c8d6f0" opacity="0.26"/>
+    <path id="star7" d="M2078 560 C2078 558.895 2078.895 558 2080 558 C2081.105 558 2082 558.895 2082 560 C2082 561.105 2081.105 562 2080 562 C2078.895 562 2078 561.105 2078 560 Z" fill="#c8d6f0" opacity="0.26"/>
+    <path id="star8" d="M158 620 C158 618.895 158.895 618 160 618 C161.105 618 162 618.895 162 620 C162 621.105 161.105 622 160 622 C158.895 622 158 621.105 158 620 Z" fill="#c8d6f0" opacity="0.26"/>
+    <path id="star9" d="M337.5 980 C337.5 978.619 338.619 977.5 340 977.5 C341.381 977.5 342.5 978.619 342.5 980 C342.5 981.381 341.381 982.5 340 982.5 C338.619 982.5 337.5 981.381 337.5 980 Z" fill="#c8d6f0" opacity="0.26"/>
+    <path id="star10" d="M2358 900 C2358 898.895 2358.895 898 2360 898 C2361.105 898 2362 898.895 2362 900 C2362 901.105 2361.105 902 2360 902 C2358.895 902 2358 901.105 2358 900 Z" fill="#c8d6f0" opacity="0.26"/>
+    <path id="star11" d="M2157.5 1200 C2157.5 1198.619 2158.619 1197.5 2160 1197.5 C2161.381 1197.5 2162.5 1198.619 2162.5 1200 C2162.5 1201.381 2161.381 1202.5 2160 1202.5 C2158.619 1202.5 2157.5 1201.381 2157.5 1200 Z" fill="#c8d6f0" opacity="0.26"/>
+    <path id="star12" d="M238 1280 C238 1278.895 238.895 1278 240 1278 C241.105 1278 242 1278.895 242 1280 C242 1281.105 241.105 1282 240 1282 C238.895 1282 238 1281.105 238 1280 Z" fill="#c8d6f0" opacity="0.26"/>
+    <path id="star13" d="M998.5 100 C998.5 99.172 999.172 98.5 1000 98.5 C1000.828 98.5 1001.5 99.172 1001.5 100 C1001.5 100.828 1000.828 101.5 1000 101.5 C999.172 101.5 998.5 100.828 998.5 100 Z" fill="#c8d6f0" opacity="0.26"/>
+    <path id="star14" d="M1448 90 C1448 88.895 1448.895 88 1450 88 C1451.105 88 1452 88.895 1452 90 C1452 91.105 1451.105 92 1450 92 C1448.895 92 1448 91.105 1448 90 Z" fill="#c8d6f0" opacity="0.26"/>
+    <path id="candle_pool" data-name="candle pool" d="M1040 710 C1040 472.518 1254.903 280 1520 280 C1785.097 280 2000 472.518 2000 710 C2000 947.482 1785.097 1140 1520 1140 C1254.903 1140 1040 947.482 1040 710 Z" fill="url(#radial-gradient-3)"/>
+    <path id="parapet_face" data-name="parapet face" d="M788 985 L1862 985 C1867.333 985 1870 987.667 1870 993 L1870 1172 C1870 1177.333 1867.333 1180 1862 1180 L788 1180 C782.667 1180 780 1177.333 780 1172 L780 993 C780 987.667 782.667 985 788 985 Z" fill="url(#linear-gradient-2)" stroke="#503139" stroke-width="8" stroke-miterlimit="10"/>
+    <path id="walk_cap" data-name="walk cap" d="M772 959 L1878 959 C1883.333 959 1886 961.667 1886 967 L1886 989 C1886 994.333 1883.333 997 1878 997 L772 997 C766.667 997 764 994.333 764 989 L764 967 C764 961.667 766.667 959 772 959 Z" fill="url(#linear-gradient-3)" stroke="#503139" stroke-width="7" stroke-miterlimit="10"/>
+    <path id="merlon0" d="M808 867 L888 867 C893.333 867 896 869.667 896 875 L896 963 C896 968.333 893.333 971 888 971 L808 971 C802.667 971 800 968.333 800 963 L800 875 C800 869.667 802.667 867 808 867 Z" fill="url(#linear-gradient-4)" stroke="#503139" stroke-width="7" stroke-miterlimit="10"/>
+    <path id="merlon1" d="M984 867 L1064 867 C1069.333 867 1072 869.667 1072 875 L1072 963 C1072 968.333 1069.333 971 1064 971 L984 971 C978.667 971 976 968.333 976 963 L976 875 C976 869.667 978.667 867 984 867 Z" fill="url(#linear-gradient-4)" stroke="#503139" stroke-width="7" stroke-miterlimit="10"/>
+    <path id="merlon2" d="M1160 867 L1240 867 C1245.333 867 1248 869.667 1248 875 L1248 963 C1248 968.333 1245.333 971 1240 971 L1160 971 C1154.667 971 1152 968.333 1152 963 L1152 875 C1152 869.667 1154.667 867 1160 867 Z" fill="url(#linear-gradient-4)" stroke="#503139" stroke-width="7" stroke-miterlimit="10"/>
+    <path id="merlon3" d="M1336 867 L1416 867 C1421.333 867 1424 869.667 1424 875 L1424 963 C1424 968.333 1421.333 971 1416 971 L1336 971 C1330.667 971 1328 968.333 1328 963 L1328 875 C1328 869.667 1330.667 867 1336 867 Z" fill="url(#linear-gradient-4)" stroke="#503139" stroke-width="7" stroke-miterlimit="10"/>
+    <path id="merlon4" d="M1512 867 L1592 867 C1597.333 867 1600 869.667 1600 875 L1600 963 C1600 968.333 1597.333 971 1592 971 L1512 971 C1506.667 971 1504 968.333 1504 963 L1504 875 C1504 869.667 1506.667 867 1512 867 Z" fill="url(#linear-gradient-4)" stroke="#503139" stroke-width="7" stroke-miterlimit="10"/>
+    <path id="merlon5" d="M1688 867 L1768 867 C1773.333 867 1776 869.667 1776 875 L1776 963 C1776 968.333 1773.333 971 1768 971 L1688 971 C1682.667 971 1680 968.333 1680 963 L1680 875 C1680 869.667 1682.667 867 1688 867 Z" fill="url(#linear-gradient-4)" stroke="#503139" stroke-width="7" stroke-miterlimit="10"/>
+    <path id="course0" d="M794 1040 L1856 1040" fill="none" stroke="#232a38" stroke-width="5" stroke-linecap="round" stroke-miterlimit="10" opacity="0.7"/>
+    <path id="course1" d="M794 1100 L1856 1100" fill="none" stroke="#232a38" stroke-width="5" stroke-linecap="round" stroke-miterlimit="10" opacity="0.7"/>
+    <path id="course2" d="M794 1152 L1856 1152" fill="none" stroke="#232a38" stroke-width="5" stroke-linecap="round" stroke-miterlimit="10" opacity="0.7"/>
+    <path id="joint0" d="M890 1006 L890 1034" fill="none" stroke="#232a38" stroke-width="5" stroke-linecap="round" stroke-miterlimit="10" opacity="0.55"/>
+    <path id="joint1" d="M1110 1066 L1110 1094" fill="none" stroke="#232a38" stroke-width="5" stroke-linecap="round" stroke-miterlimit="10" opacity="0.55"/>
+    <path id="joint2" d="M1330 1006 L1330 1034" fill="none" stroke="#232a38" stroke-width="5" stroke-linecap="round" stroke-miterlimit="10" opacity="0.55"/>
+    <path id="joint3" d="M1550 1066 L1550 1094" fill="none" stroke="#232a38" stroke-width="5" stroke-linecap="round" stroke-miterlimit="10" opacity="0.55"/>
+    <path id="joint4" d="M1770 1006 L1770 1034" fill="none" stroke="#232a38" stroke-width="5" stroke-linecap="round" stroke-miterlimit="10" opacity="0.55"/>
+    <path id="candle_rim" data-name="candle rim" d="M1220 1015 L1856 1015 L1856 1043 L1220 1043 Z" fill="url(#linear-gradient-5)"/>
+    <path id="wall_shadow" data-name="wall shadow" d="M720 1214 C720 1191.909 990.868 1174 1325 1174 C1659.132 1174 1930 1191.909 1930 1214 C1930 1236.091 1659.132 1254 1325 1254 C990.868 1254 720 1236.091 720 1214 Z" fill="url(#radial-gradient-4)"/>
+    <path id="holder" d="M1468 950 C1468 940.611 1491.281 933 1520 933 C1548.719 933 1572 940.611 1572 950 C1572 959.389 1548.719 967 1520 967 C1491.281 967 1468 959.389 1468 950 Z" fill="url(#linear-gradient-6)" stroke="#503139" stroke-width="6" stroke-miterlimit="10"/>
+    <path id="candle_wax" data-name="candle wax" d="M1498 937 L1498 795 C1498 788.333 1501.333 785 1508 785 L1532 785 C1538.667 785 1542 788.333 1542 795 L1542 937 C1527.333 945 1512.667 945 1498 937 Z" fill="url(#linear-gradient-7)" stroke="#503139" stroke-width="6" stroke-miterlimit="10"/>
+    <path id="wax_drip" data-name="wax drip" d="M1498 825 C1504.667 827.667 1507.333 835 1506 847 C1504.667 856.333 1502 859.667 1498 857 C1494 854.333 1494 843.667 1498 825 Z" fill="#f7edcb" stroke="#503139" stroke-width="4" stroke-miterlimit="10"/>
+    <path id="wick" d="M1520 781 L1520 769" fill="none" stroke="#3a2a16" stroke-width="6" stroke-linecap="round" stroke-miterlimit="10"/>
+    <path id="flame_outer" data-name="flame outer" d="M1520 661 C1554 707 1550 745 1520 769 C1490 745 1486 707 1520 661 Z" fill="url(#radial-gradient-5)"/>
+    <path id="flame_inner" data-name="flame inner" d="M1520 695 C1539 725 1537 755 1520 767 C1503 755 1501 725 1520 695 Z" fill="url(#radial-gradient-6)"/>
+    <path id="mote0" d="M1475 579 C1475 576.239 1477.239 574 1480 574 C1482.761 574 1485 576.239 1485 579 C1485 581.761 1482.761 584 1480 584 C1477.239 584 1475 581.761 1475 579 Z" fill="#ffc65e" opacity="0.6"/>
+    <path id="mote1" d="M1546 529 C1546 526.791 1547.791 525 1550 525 C1552.209 525 1554 526.791 1554 529 C1554 531.209 1552.209 533 1550 533 C1547.791 533 1546 531.209 1546 529 Z" fill="#ffc65e" opacity="0.6"/>
+    <path id="mote2" d="M1508 469 C1508 466.791 1509.791 465 1512 465 C1514.209 465 1516 466.791 1516 469 C1516 471.209 1514.209 473 1512 473 C1509.791 473 1508 471.209 1508 469 Z" fill="#ffc65e" opacity="0.6"/>
+    <path id="mote3" d="M1573 609 C1573 607.343 1574.343 606 1576 606 C1577.657 606 1579 607.343 1579 609 C1579 610.657 1577.657 612 1576 612 C1574.343 612 1573 610.657 1573 609 Z" fill="#ffc65e" opacity="0.6"/>
+    <path id="mascot_shadow" data-name="mascot shadow" d="M1030 959 C1030 950.716 1081.487 944 1145 944 C1208.513 944 1260 950.716 1260 959 C1260 967.284 1208.513 974 1145 974 C1081.487 974 1030 967.284 1030 959 Z" fill="url(#radial-gradient-7)"/>
+    <path id="leg_L2" data-name="leg L2" d="M1087.9 844.7 C1060.7 881.433 1036.667 908.1 1015.8 924.7 L1024.2 937.9 C1052.067 923.233 1081.933 899.467 1113.8 866.6 Z" fill="#fdb845" stroke="#503139" stroke-width="4.435" stroke-miterlimit="10"/>
+    <path id="leg_L1" data-name="leg L1" d="M1107.9 861.8 C1102.167 895.6 1095.833 920.9 1088.9 937.7 L1102.4 945.8 C1116.333 927.8 1129.1 902.667 1140.7 870.4 Z" fill="#fdb845" stroke="#503139" stroke-width="4.435" stroke-miterlimit="10"/>
+    <path id="leg_R1" data-name="leg R1" d="M1139.3 870.4 C1150.9 902.667 1163.667 927.8 1177.6 945.8 L1191.1 937.7 C1184.167 920.9 1177.833 895.6 1172.1 861.8 Z" fill="#fdb845" stroke="#503139" stroke-width="4.435" stroke-miterlimit="10"/>
+    <path id="leg_R2" data-name="leg R2" d="M1166.2 866.6 C1198.067 899.467 1227.933 923.233 1255.8 937.9 L1264.2 924.7 C1243.333 908.1 1219.3 881.433 1192.1 844.7 Z" fill="#fdb845" stroke="#503139" stroke-width="4.435" stroke-miterlimit="10"/>
+    <path id="arm_L" data-name="arm L" d="M1055.5 808.5 C1032.767 836.033 1024.933 867.267 1032 902.2 L1049.7 897.8 C1042.9 877.067 1052.467 854.4 1078.4 829.8 Z" fill="#fdb845" stroke="#503139" stroke-width="4.435" stroke-miterlimit="10"/>
+    <path id="arm_R" data-name="arm R" d="M1217.1 834.2 C1261.767 819.933 1302.133 806.533 1338.2 794 L1333.1 776.4 C1296.1 784.733 1254.733 793.933 1209 804 Z" fill="#fdb845" stroke="#503139" stroke-width="4.435" stroke-miterlimit="10"/>
+    <path id="glove_L_palm" data-name="glove L palm" d="M1021.304 900 C1021.304 890.635 1030.064 883.043 1040.87 883.043 C1051.675 883.043 1060.435 890.635 1060.435 900 C1060.435 909.365 1051.675 916.957 1040.87 916.957 C1030.064 916.957 1021.304 909.365 1021.304 900 Z" fill="#ffffff" stroke="#503139" stroke-width="4.174" stroke-miterlimit="10"/>
+    <path id="glove_L_thumb" data-name="glove L thumb" d="M1016.087 890.87 C1016.087 885.827 1019.591 881.739 1023.913 881.739 C1028.235 881.739 1031.739 885.827 1031.739 890.87 C1031.739 895.912 1028.235 900 1023.913 900 C1019.591 900 1016.087 895.912 1016.087 890.87 Z" fill="#ffffff" stroke="#503139" stroke-width="3.913" stroke-miterlimit="10"/>
+    <path id="glove_L_finger0" data-name="glove L finger0" d="M1051.3 887 C1049.567 883.533 1047.4 880.933 1044.8 879.2" fill="none" stroke="#503139" stroke-width="2.87" stroke-linecap="round" stroke-miterlimit="10"/>
+    <path id="glove_L_finger1" data-name="glove L finger1" d="M1040.9 887 C1039.167 883.533 1037 880.933 1034.4 879.2" fill="none" stroke="#503139" stroke-width="2.87" stroke-linecap="round" stroke-miterlimit="10"/>
+    <path id="glove_L_finger2" data-name="glove L finger2" d="M1030.4 887 C1028.667 883.533 1026.5 880.933 1023.9 879.2" fill="none" stroke="#503139" stroke-width="2.87" stroke-linecap="round" stroke-miterlimit="10"/>
+    <path id="glove_R_palm" data-name="glove R palm" d="M1316.087 785.217 C1316.087 775.853 1324.847 768.261 1335.652 768.261 C1346.458 768.261 1355.217 775.853 1355.217 785.217 C1355.217 794.582 1346.458 802.174 1335.652 802.174 C1324.847 802.174 1316.087 794.582 1316.087 785.217 Z" fill="#ffffff" stroke="#503139" stroke-width="4.174" stroke-miterlimit="10"/>
+    <path id="glove_R_thumb" data-name="glove R thumb" d="M1344.783 776.087 C1344.783 771.044 1348.286 766.957 1352.609 766.957 C1356.931 766.957 1360.435 771.044 1360.435 776.087 C1360.435 781.13 1356.931 785.217 1352.609 785.217 C1348.286 785.217 1344.783 781.13 1344.783 776.087 Z" fill="#ffffff" stroke="#503139" stroke-width="3.913" stroke-miterlimit="10"/>
+    <path id="glove_R_finger0" data-name="glove R finger0" d="M1325.2 772.2 C1326.933 768.733 1329.1 766.133 1331.7 764.4" fill="none" stroke="#503139" stroke-width="2.87" stroke-linecap="round" stroke-miterlimit="10"/>
+    <path id="glove_R_finger1" data-name="glove R finger1" d="M1335.7 772.2 C1337.433 768.733 1339.6 766.133 1342.2 764.4" fill="none" stroke="#503139" stroke-width="2.87" stroke-linecap="round" stroke-miterlimit="10"/>
+    <path id="glove_R_finger2" data-name="glove R finger2" d="M1346.1 772.2 C1347.833 768.733 1350 766.133 1352.6 764.4" fill="none" stroke="#503139" stroke-width="2.87" stroke-linecap="round" stroke-miterlimit="10"/>
+    <path id="body" d="M1051.3 806.1 C1043.5 845.2 1059.1 868.7 1082.6 881.7 L1197.4 881.7 C1220.9 868.7 1236.5 845.2 1228.7 806.1 Z" fill="#fdb845" stroke="#503139" stroke-width="5.478" stroke-miterlimit="10"/>
+    <path id="body_shade" data-name="body shade" d="M1179.1 816.5 C1215.7 829.6 1220.9 855.7 1197.4 873.9 L1166.1 873.9 C1184.3 850.4 1187 832.2 1179.1 816.5 Z" fill="#f5ac3c"/>
+    <path id="patty" d="M1046.1 782.6 L1233.9 782.6 C1241.7 782.6 1244.3 793 1239.1 800.9 C1218.3 808.7 1061.7 808.7 1040.9 800.9 C1035.7 793 1038.3 782.6 1046.1 782.6 Z" fill="#5e3d49" stroke="#503139" stroke-width="4.696" stroke-miterlimit="10"/>
+    <path id="cheese0" d="M1070.9 787.8 L1099.6 787.8 L1087.8 813.9 Z" fill="#ffc93c" stroke="#503139" stroke-width="3.391" stroke-miterlimit="10"/>
+    <path id="cheese1" d="M1128.3 787.8 L1157 787.8 L1145.2 821.7 Z" fill="#ffc93c" stroke="#503139" stroke-width="3.391" stroke-miterlimit="10"/>
+    <path id="cheese2" d="M1183 787.8 L1211.7 787.8 L1200 811.3 Z" fill="#ffc93c" stroke="#503139" stroke-width="3.391" stroke-miterlimit="10"/>
+    <path id="tomato" d="M1040.9 764.3 L1239.1 764.3 L1236.5 783.9 L1043.5 783.9 Z" fill="#e04b35" stroke="#503139" stroke-width="4.174" stroke-miterlimit="10"/>
+    <path id="lettuce" d="M1025.2 753.9 C1034.8 767.833 1044.367 774.8 1053.9 774.8 C1063.5 783.467 1073.067 778.233 1082.6 759.1 C1092.2 767.833 1101.767 773.067 1111.3 774.8 C1120.9 783.467 1130.467 778.233 1140 759.1 C1149.533 767.833 1159.1 773.067 1168.7 774.8 C1178.233 783.467 1187.8 778.233 1197.4 759.1 C1206.933 767.833 1216.5 773.067 1226.1 774.8 C1235.633 783.467 1245.2 779.1 1254.8 761.7 L1249.6 748.7 L1030.4 748.7 Z" fill="#8bc34a" stroke="#503139" stroke-width="3.913" stroke-miterlimit="10"/>
+    <path id="bun_dome" data-name="bun dome" d="M1035.7 751.3 C1035.7 693.9 1080 662.6 1140 660 C1200 662.6 1244.3 693.9 1244.3 751.3 Z" fill="#fdb845" stroke="#503139" stroke-width="5.739" stroke-miterlimit="10"/>
+    <path id="dome_light" data-name="dome light" d="M1056.5 735.7 C1053.9 704.3 1082.6 678.3 1116.5 670.4 C1090.4 688.7 1072.2 714.8 1067 740.9 Z" fill="#ffd98a"/>
+    <path id="dome_shade" data-name="dome shade" d="M1179.1 667.8 C1213 678.3 1233.9 707 1236.5 746.1 L1215.7 746.1 C1215.7 712.2 1202.6 686.1 1179.1 667.8 Z" fill="#f5ac3c"/>
+    <path id="seed0" d="M1076.739 699.13 C1076.739 697.33 1079.367 695.87 1082.609 695.87 C1085.85 695.87 1088.478 697.33 1088.478 699.13 C1088.478 700.931 1085.85 702.391 1082.609 702.391 C1079.367 702.391 1076.739 700.931 1076.739 699.13 Z" fill="#fff0c2"/>
+    <path id="seed1" d="M1113.261 683.478 C1113.261 681.677 1115.889 680.217 1119.13 680.217 C1122.372 680.217 1125 681.677 1125 683.478 C1125 685.279 1122.372 686.739 1119.13 686.739 C1115.889 686.739 1113.261 685.279 1113.261 683.478 Z" fill="#fff0c2"/>
+    <path id="seed2" d="M1147.174 693.913 C1147.174 692.112 1149.802 690.652 1153.043 690.652 C1156.285 690.652 1158.913 692.112 1158.913 693.913 C1158.913 695.714 1156.285 697.174 1153.043 697.174 C1149.802 697.174 1147.174 695.714 1147.174 693.913 Z" fill="#fff0c2"/>
+    <path id="seed3" d="M1181.087 683.478 C1181.087 681.677 1183.715 680.217 1186.957 680.217 C1190.198 680.217 1192.826 681.677 1192.826 683.478 C1192.826 685.279 1190.198 686.739 1186.957 686.739 C1183.715 686.739 1181.087 685.279 1181.087 683.478 Z" fill="#fff0c2"/>
+    <path id="seed4" d="M1204.565 706.957 C1204.565 705.156 1207.193 703.696 1210.435 703.696 C1213.676 703.696 1216.304 705.156 1216.304 706.957 C1216.304 708.757 1213.676 710.217 1210.435 710.217 C1207.193 710.217 1204.565 708.757 1204.565 706.957 Z" fill="#fff0c2"/>
+    <path id="seed5" d="M1058.478 722.609 C1058.478 720.808 1061.106 719.348 1064.348 719.348 C1067.589 719.348 1070.217 720.808 1070.217 722.609 C1070.217 724.41 1067.589 725.87 1064.348 725.87 C1061.106 725.87 1058.478 724.41 1058.478 722.609 Z" fill="#fff0c2"/>
+    <path id="seed6" d="M1100.217 717.391 C1100.217 715.59 1102.845 714.13 1106.087 714.13 C1109.329 714.13 1111.957 715.59 1111.957 717.391 C1111.957 719.192 1109.329 720.652 1106.087 720.652 C1102.845 720.652 1100.217 719.192 1100.217 717.391 Z" fill="#fff0c2"/>
+    <path id="seed7" d="M1136.739 725.217 C1136.739 723.416 1139.367 721.957 1142.609 721.957 C1145.85 721.957 1148.478 723.416 1148.478 725.217 C1148.478 727.018 1145.85 728.478 1142.609 728.478 C1139.367 728.478 1136.739 727.018 1136.739 725.217 Z" fill="#fff0c2"/>
+    <path id="seed8" d="M1173.261 720 C1173.261 718.199 1175.889 716.739 1179.13 716.739 C1182.372 716.739 1185 718.199 1185 720 C1185 721.801 1182.372 723.261 1179.13 723.261 C1175.889 723.261 1173.261 721.801 1173.261 720 Z" fill="#fff0c2"/>
+    <path id="seed9" d="M1207.174 730.435 C1207.174 728.634 1209.802 727.174 1213.043 727.174 C1216.285 727.174 1218.913 728.634 1218.913 730.435 C1218.913 732.236 1216.285 733.696 1213.043 733.696 C1209.802 733.696 1207.174 732.236 1207.174 730.435 Z" fill="#fff0c2"/>
+    <path id="eye-1_white" data-name="eye-1 white" d="M1097.609 834.783 C1097.609 825.418 1103.74 817.826 1111.304 817.826 C1118.868 817.826 1125 825.418 1125 834.783 C1125 844.147 1118.868 851.739 1111.304 851.739 C1103.74 851.739 1097.609 844.147 1097.609 834.783 Z" fill="#ffffff" stroke="#503139" stroke-width="3.913" stroke-miterlimit="10"/>
+    <path id="eye-1_pupil" data-name="eye-1 pupil" d="M1108.043 838.696 C1108.043 834.373 1110.671 830.87 1113.913 830.87 C1117.155 830.87 1119.783 834.373 1119.783 838.696 C1119.783 843.018 1117.155 846.522 1113.913 846.522 C1110.671 846.522 1108.043 843.018 1108.043 838.696 Z" fill="#3a2530"/>
+    <path id="eye-1_glint" data-name="eye-1 glint" d="M1108.957 833.478 C1108.957 831.821 1110.008 830.478 1111.304 830.478 C1112.601 830.478 1113.652 831.821 1113.652 833.478 C1113.652 835.135 1112.601 836.478 1111.304 836.478 C1110.008 836.478 1108.957 835.135 1108.957 833.478 Z" fill="#ffffff"/>
+    <path id="eye1_white" data-name="eye1 white" d="M1155 834.783 C1155 825.418 1161.132 817.826 1168.696 817.826 C1176.26 817.826 1182.391 825.418 1182.391 834.783 C1182.391 844.147 1176.26 851.739 1168.696 851.739 C1161.132 851.739 1155 844.147 1155 834.783 Z" fill="#ffffff" stroke="#503139" stroke-width="3.913" stroke-miterlimit="10"/>
+    <path id="eye1_pupil" data-name="eye1 pupil" d="M1173.261 838.696 C1173.261 834.373 1175.889 830.87 1179.13 830.87 C1182.372 830.87 1185 834.373 1185 838.696 C1185 843.018 1182.372 846.522 1179.13 846.522 C1175.889 846.522 1173.261 843.018 1173.261 838.696 Z" fill="#3a2530"/>
+    <path id="eye1_glint" data-name="eye1 glint" d="M1179.391 833.478 C1179.391 831.821 1180.442 830.478 1181.739 830.478 C1183.036 830.478 1184.087 831.821 1184.087 833.478 C1184.087 835.135 1183.036 836.478 1181.739 836.478 C1180.442 836.478 1179.391 835.135 1179.391 833.478 Z" fill="#ffffff"/>
+    <path id="smile" d="M1123 858.3 C1134.333 870.433 1145.667 870.433 1157 858.3" fill="none" stroke="#503139" stroke-width="4.696" stroke-linecap="round" stroke-miterlimit="10"/>
+    <path id="bow_L" data-name="bow L" d="M1133.5 889.6 L1106.1 876.5 L1106.1 902.6 Z" fill="#d94f3d" stroke="#503139" stroke-width="3.652" stroke-miterlimit="10"/>
+    <path id="bow_R" data-name="bow R" d="M1146.5 889.6 L1173.9 876.5 L1173.9 902.6 Z" fill="#d94f3d" stroke="#503139" stroke-width="3.652" stroke-miterlimit="10"/>
+    <path id="bow_knot" data-name="bow knot" d="M1132.174 889.565 C1132.174 885.963 1135.678 883.043 1140 883.043 C1144.322 883.043 1147.826 885.963 1147.826 889.565 C1147.826 893.167 1144.322 896.087 1140 896.087 C1135.678 896.087 1132.174 893.167 1132.174 889.565 Z" fill="#d94f3d" stroke="#503139" stroke-width="3.652" stroke-miterlimit="10"/>
+    <path id="bowdot0" d="M1114.304 884.348 C1114.304 883.123 1115.297 882.13 1116.522 882.13 C1117.746 882.13 1118.739 883.123 1118.739 884.348 C1118.739 885.572 1117.746 886.565 1116.522 886.565 C1115.297 886.565 1114.304 885.572 1114.304 884.348 Z" fill="#7fd4c8"/>
+    <path id="bowdot1" d="M1119.522 896.087 C1119.522 894.862 1120.514 893.87 1121.739 893.87 C1122.964 893.87 1123.957 894.862 1123.957 896.087 C1123.957 897.312 1122.964 898.304 1121.739 898.304 C1120.514 898.304 1119.522 897.312 1119.522 896.087 Z" fill="#7fd4c8"/>
+    <path id="bowdot2" d="M1158.652 883.043 C1158.652 881.819 1159.645 880.826 1160.87 880.826 C1162.094 880.826 1163.087 881.819 1163.087 883.043 C1163.087 884.268 1162.094 885.261 1160.87 885.261 C1159.645 885.261 1158.652 884.268 1158.652 883.043 Z" fill="#7fd4c8"/>
+    <path id="bowdot3" d="M1163.87 894.783 C1163.87 893.558 1164.862 892.565 1166.087 892.565 C1167.312 892.565 1168.304 893.558 1168.304 894.783 C1168.304 896.007 1167.312 897 1166.087 897 C1164.862 897 1163.87 896.007 1163.87 894.783 Z" fill="#7fd4c8"/>
+    <path id="candle_kiss" data-name="candle kiss" d="M1230 885 C1230 804.919 1272.533 740 1325 740 C1377.467 740 1420 804.919 1420 885 C1420 965.081 1377.467 1030 1325 1030 C1272.533 1030 1230 965.081 1230 885 Z" fill="url(#radial-gradient-8)"/>
+  </g>
+</svg>

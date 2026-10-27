@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="64" height="64" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="linear-gradient-1" x1="4" y1="32" x2="60" y2="32" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2e2e4a"/>
+      <stop offset="0.55" stop-color="#23233a"/>
+      <stop offset="1" stop-color="#181828"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-2" x1="10" y1="17" x2="54" y2="17" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7a7aa8" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#7a7aa8" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <title>icon-goirc-V1R00</title>
+  <g id="Layer_1" data-name="Layer 1">
+    <path id="plate" d="M18 4 L46 4 C55.333 4 60 8.667 60 18 L60 46 C60 55.333 55.333 60 46 60 L18 60 C8.667 60 4 55.333 4 46 L4 18 C4 8.667 8.667 4 18 4 Z" fill="url(#linear-gradient-1)" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="sheen" d="M18 8 L46 8 C51.333 8 54 10.667 54 16 L54 18 C54 23.333 51.333 26 46 26 L18 26 C12.667 26 10 23.333 10 18 L10 16 C10 10.667 12.667 8 18 8 Z" fill="url(#linear-gradient-2)"/>
+    <path id="bubble" d="M24 17 L40 17 C46 17 49 20 49 26 L49 32 C49 38 46 41 40 41 L31 41 L21 49 L23.5 41 L24 41 C18 41 15 38 15 32 L15 26 C15 20 18 17 24 17 Z" fill="#7fd4c8" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="dot_1" data-name="dot 1" d="M21.3 29 C21.3 27.509 22.509 26.3 24 26.3 C25.491 26.3 26.7 27.509 26.7 29 C26.7 30.491 25.491 31.7 24 31.7 C22.509 31.7 21.3 30.491 21.3 29 Z" fill="#ffffff"/>
+    <path id="dot_2" data-name="dot 2" d="M29.3 29 C29.3 27.509 30.509 26.3 32 26.3 C33.491 26.3 34.7 27.509 34.7 29 C34.7 30.491 33.491 31.7 32 31.7 C30.509 31.7 29.3 30.491 29.3 29 Z" fill="#ffffff"/>
+    <path id="dot_3" data-name="dot 3" d="M37.3 29 C37.3 27.509 38.509 26.3 40 26.3 C41.491 26.3 42.7 27.509 42.7 29 C42.7 30.491 41.491 31.7 40 31.7 C38.509 31.7 37.3 30.491 37.3 29 Z" fill="#ffffff"/>
+  </g>
+</svg>

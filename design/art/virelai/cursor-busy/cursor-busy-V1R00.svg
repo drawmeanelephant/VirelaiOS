@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="32" height="48" viewBox="0 0 32 48">
+  <title>cursor-busy-V1R00</title>
+  <g id="Layer_1" data-name="Layer 1">
+    <path id="cap_top" data-name="cap top" d="M9.2 4.5 L22.8 4.5 C24.267 4.5 25 5.233 25 6.7 L25 6.8 C25 8.267 24.267 9 22.8 9 L9.2 9 C7.733 9 7 8.267 7 6.8 L7 6.7 C7 5.233 7.733 4.5 9.2 4.5 Z" fill="#ffffff" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="cap_bottom" data-name="cap bottom" d="M9.2 39 L22.8 39 C24.267 39 25 39.733 25 41.2 L25 41.3 C25 42.767 24.267 43.5 22.8 43.5 L9.2 43.5 C7.733 43.5 7 42.767 7 41.3 L7 41.2 C7 39.733 7.733 39 9.2 39 Z" fill="#ffffff" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="glass" d="M10 9 L22 9 L22 13 C22 16.333 20.833 19 18.5 21 L17.4 22.2 C16.933 22.733 16.7 23.333 16.7 24 C16.7 24.667 16.933 25.267 17.4 25.8 L18.5 27 C20.833 29 22 31.667 22 35 L22 39 L10 39 L10 35 C10 31.667 11.167 29 13.5 27 L14.6 25.8 C15.067 25.267 15.3 24.667 15.3 24 C15.3 23.333 15.067 22.733 14.6 22.2 L13.5 21 C11.167 19 10 16.333 10 13 Z" fill="#ffffff" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="sand" d="M12.5 36.5 L19.5 36.5 L17 30.5 L15 30.5 Z" fill="#f59e0b"/>
+    <path id="grain" d="M15.2 26.8 C15.2 26.082 15.558 25.5 16 25.5 C16.442 25.5 16.8 26.082 16.8 26.8 C16.8 27.518 16.442 28.1 16 28.1 C15.558 28.1 15.2 27.518 15.2 26.8 Z" fill="#f59e0b"/>
+  </g>
+</svg>

@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="64" height="64" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="linear-gradient-1" x1="4" y1="32" x2="60" y2="32" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2e2e4a"/>
+      <stop offset="0.55" stop-color="#23233a"/>
+      <stop offset="1" stop-color="#181828"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-2" x1="10" y1="17" x2="54" y2="17" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7a7aa8" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#7a7aa8" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <title>icon-goset-V1R00</title>
+  <g id="Layer_1" data-name="Layer 1">
+    <path id="plate" d="M18 4 L46 4 C55.333 4 60 8.667 60 18 L60 46 C60 55.333 55.333 60 46 60 L18 60 C8.667 60 4 55.333 4 46 L4 18 C4 8.667 8.667 4 18 4 Z" fill="url(#linear-gradient-1)" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="sheen" d="M18 8 L46 8 C51.333 8 54 10.667 54 16 L54 18 C54 23.333 51.333 26 46 26 L18 26 C12.667 26 10 23.333 10 18 L10 16 C10 10.667 12.667 8 18 8 Z" fill="url(#linear-gradient-2)"/>
+    <path id="tooth_1" data-name="tooth 1" d="M40.5 28 L49.5 28 L49.5 36 L40.5 36 Z" fill="#94a3b8" stroke="#503139" stroke-width="2.6" stroke-linejoin="round"/>
+    <path id="tooth_2" data-name="tooth 2" d="M40.8 35.2 L47.2 41.5 L41.5 47.2 L35.2 40.8 Z" fill="#94a3b8" stroke="#503139" stroke-width="2.6" stroke-linejoin="round"/>
+    <path id="tooth_3" data-name="tooth 3" d="M36 40.5 L36 49.5 L28 49.5 L28 40.5 Z" fill="#94a3b8" stroke="#503139" stroke-width="2.6" stroke-linejoin="round"/>
+    <path id="tooth_4" data-name="tooth 4" d="M28.8 40.8 L22.5 47.2 L16.8 41.5 L23.2 35.2 Z" fill="#94a3b8" stroke="#503139" stroke-width="2.6" stroke-linejoin="round"/>
+    <path id="tooth_5" data-name="tooth 5" d="M23.5 36 L14.5 36 L14.5 28 L23.5 28 Z" fill="#94a3b8" stroke="#503139" stroke-width="2.6" stroke-linejoin="round"/>
+    <path id="tooth_6" data-name="tooth 6" d="M23.2 28.8 L16.8 22.5 L22.5 16.8 L28.8 23.2 Z" fill="#94a3b8" stroke="#503139" stroke-width="2.6" stroke-linejoin="round"/>
+    <path id="tooth_7" data-name="tooth 7" d="M28 23.5 L28 14.5 L36 14.5 L36 23.5 Z" fill="#94a3b8" stroke="#503139" stroke-width="2.6" stroke-linejoin="round"/>
+    <path id="tooth_8" data-name="tooth 8" d="M35.2 23.2 L41.5 16.8 L47.2 22.5 L40.8 28.8 Z" fill="#94a3b8" stroke="#503139" stroke-width="2.6" stroke-linejoin="round"/>
+    <path id="disc" d="M19 32 C19 24.82 24.82 19 32 19 C39.18 19 45 24.82 45 32 C45 39.18 39.18 45 32 45 C24.82 45 19 39.18 19 32 Z" fill="#94a3b8" stroke="#503139" stroke-width="3" stroke-miterlimit="10"/>
+    <path id="disc_light" data-name="disc light" d="M22 30 C24 24 29 20.5 34 20.5 C29 22.5 25.5 25.5 24 31 Z" fill="#c3ceda"/>
+    <path id="hub" d="M26.5 32 C26.5 28.962 28.962 26.5 32 26.5 C35.038 26.5 37.5 28.962 37.5 32 C37.5 35.038 35.038 37.5 32 37.5 C28.962 37.5 26.5 35.038 26.5 32 Z" fill="#23233a" stroke="#503139" stroke-width="2.4" stroke-miterlimit="10"/>
+  </g>
+</svg>

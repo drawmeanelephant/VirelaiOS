@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="64" height="64" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="linear-gradient-1" x1="4" y1="32" x2="60" y2="32" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2e2e4a"/>
+      <stop offset="0.55" stop-color="#23233a"/>
+      <stop offset="1" stop-color="#181828"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-2" x1="10" y1="17" x2="54" y2="17" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7a7aa8" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#7a7aa8" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <title>icon-gomine-V1R00</title>
+  <g id="Layer_1" data-name="Layer 1">
+    <path id="plate" d="M18 4 L46 4 C55.333 4 60 8.667 60 18 L60 46 C60 55.333 55.333 60 46 60 L18 60 C8.667 60 4 55.333 4 46 L4 18 C4 8.667 8.667 4 18 4 Z" fill="url(#linear-gradient-1)" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="sheen" d="M18 8 L46 8 C51.333 8 54 10.667 54 16 L54 18 C54 23.333 51.333 26 46 26 L18 26 C12.667 26 10 23.333 10 18 L10 16 C10 10.667 12.667 8 18 8 Z" fill="url(#linear-gradient-2)"/>
+    <path id="fuse" d="M39 23 C42.5 17.5 46 15.5 48 17" fill="none" stroke="#503139" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+    <path id="spark" d="M49 8.5 C50.9 12.1 50.9 12.1 54.5 14 C50.9 15.9 50.9 15.9 49 19.5 C47.1 15.9 47.1 15.9 43.5 14 C47.1 12.1 47.1 12.1 49 8.5 Z" fill="#fdb845" stroke="#503139" stroke-width="2" stroke-linejoin="round"/>
+    <path id="body" d="M17 36 C17 28.82 22.82 23 30 23 C37.18 23 43 28.82 43 36 C43 43.18 37.18 49 30 49 C22.82 49 17 43.18 17 36 Z" fill="#2e3a44" stroke="#503139" stroke-width="3.4" stroke-miterlimit="10"/>
+    <path id="cap" d="M38.1 21 L40.9 21 C41.967 21 42.5 21.533 42.5 22.6 L42.5 24.4 C42.5 25.467 41.967 26 40.9 26 L38.1 26 C37.033 26 36.5 25.467 36.5 24.4 L36.5 22.6 C36.5 21.533 37.033 21 38.1 21 Z" fill="#64748b" stroke="#503139" stroke-width="2.2" stroke-linejoin="round"/>
+    <path id="sheen-2" data-name="sheen" d="M22.5 29.75 C22.5 28.507 24.067 27.5 26 27.5 C27.933 27.5 29.5 28.507 29.5 29.75 C29.5 30.993 27.933 32 26 32 C24.067 32 22.5 30.993 22.5 29.75 Z" fill="#4a5568" opacity="0.7"/>
+  </g>
+</svg>

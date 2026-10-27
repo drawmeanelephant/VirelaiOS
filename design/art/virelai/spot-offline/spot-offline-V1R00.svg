@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="160" height="120" viewBox="0 0 160 120">
+  <defs>
+    <linearGradient id="linear-gradient-1" x1="60" y1="50" x2="100" y2="90" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#8b99ac"/>
+      <stop offset="1" stop-color="#3c4657"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-2" x1="80" y1="36" x2="108" y2="70" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#5e6e82"/>
+      <stop offset="1" stop-color="#3c4657"/>
+    </linearGradient>
+  </defs>
+  <title>VirelaiOS — spot offline</title>
+  <g id="Layer_1" data-name="Layer 1">
+    <path id="cable" d="M20 104 C30 84 44 96 52 80 C58 68 54 60 62 54" fill="none" stroke="#503139" stroke-width="12" stroke-linecap="round" stroke-miterlimit="10"/>
+    <path id="cable_skin" data-name="cable skin" d="M20 104 C30 84 44 96 52 80 C58 68 54 60 62 54" fill="none" stroke="#3c4657" stroke-width="6" stroke-linecap="round" stroke-miterlimit="10"/>
+    <path id="plug_body" data-name="plug body" d="M58 62 L74 46 L104 74 L88 92 Z" fill="url(#linear-gradient-1)" stroke="#503139" stroke-width="4.5" stroke-linejoin="round"/>
+    <path id="plug_collar" data-name="plug collar" d="M74 46 L86 34 L110 58 L104 74 Z" fill="url(#linear-gradient-2)" stroke="#503139" stroke-width="4.5" stroke-linejoin="round"/>
+    <path id="prong_a" data-name="prong a" d="M92 36 L100 18" fill="none" stroke="#503139" stroke-width="10" stroke-linecap="round" stroke-miterlimit="10"/>
+    <path id="prong_a_tip" data-name="prong a tip" d="M92 36 L100 18" fill="none" stroke="#e8c26a" stroke-width="5" stroke-linecap="round" stroke-miterlimit="10"/>
+    <path id="prong_b" data-name="prong b" d="M104 48 L112 30" fill="none" stroke="#503139" stroke-width="10" stroke-linecap="round" stroke-miterlimit="10"/>
+    <path id="prong_b_tip" data-name="prong b tip" d="M104 48 L112 30" fill="none" stroke="#e8c26a" stroke-width="5" stroke-linecap="round" stroke-miterlimit="10"/>
+    <path id="ghost0" d="M115.5 27 C112.567 20.6 114.5 18.3 121.3 20.1" fill="none" stroke="#8b98a5" stroke-width="3.5" stroke-linecap="round" stroke-miterlimit="10" opacity="0.55"/>
+    <path id="ghost1" d="M125.8 17 C126.733 10.067 129.6 9.167 134.4 14.3" fill="none" stroke="#8b98a5" stroke-width="3.5" stroke-linecap="round" stroke-miterlimit="10" opacity="0.55"/>
+    <path id="ghost2" d="M139.8 14.1 C144.267 8.633 147.2 9.333 148.6 16.2" fill="none" stroke="#8b98a5" stroke-width="3.5" stroke-linecap="round" stroke-miterlimit="10" opacity="0.55"/>
+  </g>
+</svg>

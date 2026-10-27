@@ -1,0 +1,364 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="1864" height="1152" viewBox="0 0 1864 1152">
+  <title>VirelaiOS — key app screens</title>
+  <g id="Layer_1" data-name="Layer 1">
+    <path id="sheet_field" data-name="sheet field" d="M0 0 L1864 0 L1864 1152 L0 1152 Z" fill="#101418"/>
+    <text transform="matrix(1 0 0 1 48 30)" x="0" y="0" xml:space="preserve" font-family="&apos;Virelai Sans&apos;, sans-serif" font-size="15" fill="#94a3b8" letter-spacing="5.4"><tspan x="0" y="0">VIRELAIOS</tspan></text>
+    <text transform="matrix(1 0 0 1 48 54)" x="0" y="0" xml:space="preserve" font-family="&apos;Virelai Sans&apos;, sans-serif" font-size="26" fill="#ffffff" letter-spacing="3.64"><tspan x="0" y="0">KEY APP SCREENS</tspan></text>
+    <text transform="matrix(1 0 0 1 48 92)" x="0" y="0" xml:space="preserve" font-family="Inter, sans-serif" font-size="12" fill="#94a3b8"><tspan x="0" y="0">the six highest-traffic apps at their declare-block window sizes — design-iteration sheet · chrome per docs/ui-primitives.md v2 · tokens theme.go dark (boot default) · #1263</tspan></text>
+    <path id="win_Shell___GOSH.ELF" data-name="win/Shell — GOSH.ELF" d="M84 130 L580 130 C585.333 130 588 132.667 588 138 L588 534 C588 539.333 585.333 542 580 542 L84 542 C78.667 542 76 539.333 76 534 L76 138 C76 132.667 78.667 130 84 130 Z" fill="#182026" stroke="#334155" stroke-miterlimit="10"/>
+    <path id="titlebar_Shell___GOSH.ELF" data-name="titlebar/Shell — GOSH.ELF" d="M84 130 L580 130 C585.333 130 588 132.667 588 138 L588 158 L76 158 L76 138 C76 132.667 78.667 130 84 130 Z" fill="#222d35"/>
+    <path id="title_rule_Shell___GOSH.ELF" data-name="title rule/Shell — GOSH.ELF" d="M76 157 L588 157 L588 158 L76 158 Z" fill="#334155"/>
+    <text transform="matrix(1 0 0 1 86 138)" x="0" y="0" xml:space="preserve" font-family="Inter, sans-serif" font-size="13" fill="#ffffff"><tspan x="0" y="0">Shell — GOSH.ELF</tspan></text>
+    <path id="ctl0_Shell___GOSH.ELF" data-name="ctl0/Shell — GOSH.ELF" d="M516 136 L524 136 C526.667 136 528 137.333 528 140 L528 148 C528 150.667 526.667 152 524 152 L516 152 C513.333 152 512 150.667 512 148 L512 140 C512 137.333 513.333 136 516 136 Z" fill="#2d3748"/>
+    <text transform="matrix(1 0 0 1 520 138)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="9" fill="#8b98a5" text-anchor="middle"><tspan x="0" y="0">_</tspan></text>
+    <path id="ctl1_Shell___GOSH.ELF" data-name="ctl1/Shell — GOSH.ELF" d="M538 136 L546 136 C548.667 136 550 137.333 550 140 L550 148 C550 150.667 548.667 152 546 152 L538 152 C535.333 152 534 150.667 534 148 L534 140 C534 137.333 535.333 136 538 136 Z" fill="#2d3748"/>
+    <text transform="matrix(1 0 0 1 542 138)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="9" fill="#8b98a5" text-anchor="middle"><tspan x="0" y="0">[]</tspan></text>
+    <path id="ctl2_Shell___GOSH.ELF" data-name="ctl2/Shell — GOSH.ELF" d="M560 136 L568 136 C570.667 136 572 137.333 572 140 L572 148 C572 150.667 570.667 152 568 152 L560 152 C557.333 152 556 150.667 556 148 L556 140 C556 137.333 557.333 136 560 136 Z" fill="#2d3748"/>
+    <text transform="matrix(1 0 0 1 564 138)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="9" fill="#ef4444" text-anchor="middle"><tspan x="0" y="0">x</tspan></text>
+    <text transform="matrix(1 0 0 1 86 168)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="11" fill="#e6edf3"><tspan x="0" y="0">gosh$ uname -a</tspan></text>
+    <path id="sel" d="M82 183 L370 183 L370 199 L82 199 Z" fill="#2a4460"/>
+    <text transform="matrix(1 0 0 1 86 185)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="11" fill="#e6edf3"><tspan x="0" y="0">VirelaiOS sexiburger aarch64-virt</tspan></text>
+    <text transform="matrix(1 0 0 1 86 202)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="11" fill="#e6edf3"><tspan x="0" y="0">gosh$ ls /host</tspan></text>
+    <text transform="matrix(1 0 0 1 86 219)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="11" fill="#e6edf3"><tspan x="0" y="0">APPS.TXT  DOCUMENTS/  GOMAIL.TXT  SNAPSHOTS/</tspan></text>
+    <text transform="matrix(1 0 0 1 86 236)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="11" fill="#e6edf3"><tspan x="0" y="0">gosh$ exec GOTOP.ELF &amp;</tspan></text>
+    <text transform="matrix(1 0 0 1 86 253)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="11" fill="#e6edf3"><tspan x="0" y="0">gotop: open id=7</tspan></text>
+    <text transform="matrix(1 0 0 1 86 270)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="11" fill="#e6edf3"><tspan x="0" y="0">gosh$ ./deploy.sh --check</tspan></text>
+    <text transform="matrix(1 0 0 1 86 287)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="11" fill="#e6edf3"><tspan x="0" y="0">deploy: dry run ok · 14 steps</tspan></text>
+    <text transform="matrix(1 0 0 1 86 304)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="11" fill="#e6edf3"><tspan x="0" y="0">gosh$ </tspan></text>
+    <path id="caret" d="M128 306 L135 306 L135 318 L128 318 Z" fill="#3b82f6"/>
+    <path id="find" d="M76 514 L588 514 L588 542 L76 542 Z" fill="#11171c"/>
+    <path id="find_rule" data-name="find rule" d="M76 514 L588 514 L588 515 L76 515 Z" fill="#2e3a44"/>
+    <text transform="matrix(1 0 0 1 86 522)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="11" fill="#94a3b8"><tspan x="0" y="0">find</tspan></text>
+    <path id="find_field" data-name="find field" d="M125 518 L285 518 C287.667 518 289 519.333 289 522 L289 534 C289 536.667 287.667 538 285 538 L125 538 C122.333 538 121 536.667 121 534 L121 522 C121 519.333 122.333 518 125 518 Z" fill="#222d35" stroke="#3b82f6" stroke-width="2" stroke-miterlimit="10"/>
+    <text transform="matrix(1 0 0 1 129 522)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="11" fill="#e6edf3"><tspan x="0" y="0">sexiburger</tspan></text>
+    <path id="find_caret" data-name="find caret" d="M199 521 L201 521 L201 535 L199 535 Z" fill="#3b82f6"/>
+    <text transform="matrix(1 0 0 1 297 522)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="11" fill="#94a3b8"><tspan x="0" y="0">1/1</tspan></text>
+    <text transform="matrix(1 0 0 1 578 522)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="10" fill="#94a3b8" text-anchor="end"><tspan x="0" y="0">ctrl+shift+g</tspan></text>
+    <text transform="matrix(1 0 0 1 76 556)" x="0" y="0" xml:space="preserve" font-family="Inter, sans-serif" font-size="12" fill="#e6edf3"><tspan x="0" y="0">GOSH.ELF — Shell</tspan></text>
+    <text transform="matrix(1 0 0 1 76 574)" x="0" y="0" xml:space="preserve" font-family="&apos;Source Sans 3&apos;, sans-serif" font-size="10" fill="#94a3b8"><tspan x="0" y="0">512x384 natural (declare block) · prompt + scrollback · find bar open (ctrl+shift+g) · selection</tspan></text>
+    <path id="win_Code_Editor___GOEDIT.ELF" data-name="win/Code Editor — GOEDIT.ELF" d="M700 130 L1196 130 C1201.333 130 1204 132.667 1204 138 L1204 534 C1204 539.333 1201.333 542 1196 542 L700 542 C694.667 542 692 539.333 692 534 L692 138 C692 132.667 694.667 130 700 130 Z" fill="#182026" stroke="#334155" stroke-miterlimit="10"/>
+    <path id="titlebar_Code_Editor___GOEDIT.ELF" data-name="titlebar/Code Editor — GOEDIT.ELF" d="M700 130 L1196 130 C1201.333 130 1204 132.667 1204 138 L1204 158 L692 158 L692 138 C692 132.667 694.667 130 700 130 Z" fill="#222d35"/>
+    <path id="title_rule_Code_Editor___GOEDIT.ELF" data-name="title rule/Code Editor — GOEDIT.ELF" d="M692 157 L1204 157 L1204 158 L692 158 Z" fill="#334155"/>
+    <text transform="matrix(1 0 0 1 702 138)" x="0" y="0" xml:space="preserve" font-family="Inter, sans-serif" font-size="13" fill="#ffffff"><tspan x="0" y="0">Code Editor — GOEDIT.ELF</tspan></text>
+    <path id="ctl0_Code_Editor___GOEDIT.ELF" data-name="ctl0/Code Editor — GOEDIT.ELF" d="M1132 136 L1140 136 C1142.667 136 1144 137.333 1144 140 L1144 148 C1144 150.667 1142.667 152 1140 152 L1132 152 C1129.333 152 1128 150.667 1128 148 L1128 140 C1128 137.333 1129.333 136 1132 136 Z" fill="#2d3748"/>
+    <text transform="matrix(1 0 0 1 1136 138)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="9" fill="#8b98a5" text-anchor="middle"><tspan x="0" y="0">_</tspan></text>
+    <path id="ctl1_Code_Editor___GOEDIT.ELF" data-name="ctl1/Code Editor — GOEDIT.ELF" d="M1154 136 L1162 136 C1164.667 136 1166 137.333 1166 140 L1166 148 C1166 150.667 1164.667 152 1162 152 L1154 152 C1151.333 152 1150 150.667 1150 148 L1150 140 C1150 137.333 1151.333 136 1154 136 Z" fill="#2d3748"/>
+    <text transform="matrix(1 0 0 1 1158 138)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="9" fill="#8b98a5" text-anchor="middle"><tspan x="0" y="0">[]</tspan></text>
+    <path id="ctl2_Code_Editor___GOEDIT.ELF" data-name="ctl2/Code Editor — GOEDIT.ELF" d="M1176 136 L1184 136 C1186.667 136 1188 137.333 1188 140 L1188 148 C1188 150.667 1186.667 152 1184 152 L1176 152 C1173.333 152 1172 150.667 1172 148 L1172 140 C1172 137.333 1173.333 136 1176 136 Z" fill="#2d3748"/>
+    <text transform="matrix(1 0 0 1 1180 138)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="9" fill="#ef4444" text-anchor="middle"><tspan x="0" y="0">x</tspan></text>
+    <path id="menubar" d="M692 158 L1204 158 L1204 182 L692 182 Z" fill="#222d35"/>
+    <path id="menu_rule" data-name="menu rule" d="M692 181 L1204 181 L1204 182 L692 182 Z" fill="#2e3a44"/>
+    <text transform="matrix(1 0 0 1 700 164)" x="0" y="0" xml:space="preserve" font-family="Inter, sans-serif" font-size="11" fill="#e6edf3"><tspan x="0" y="0">File</tspan></text>
+    <text transform="matrix(1 0 0 1 748 164)" x="0" y="0" xml:space="preserve" font-family="Inter, sans-serif" font-size="11" fill="#e6edf3"><tspan x="0" y="0">Edit</tspan></text>
+    <text transform="matrix(1 0 0 1 796 164)" x="0" y="0" xml:space="preserve" font-family="Inter, sans-serif" font-size="11" fill="#e6edf3"><tspan x="0" y="0">View</tspan></text>
+    <text transform="matrix(1 0 0 1 844 164)" x="0" y="0" xml:space="preserve" font-family="Inter, sans-serif" font-size="11" fill="#e6edf3"><tspan x="0" y="0">Go</tspan></text>
+    <text transform="matrix(1 0 0 1 892 164)" x="0" y="0" xml:space="preserve" font-family="Inter, sans-serif" font-size="11" fill="#e6edf3"><tspan x="0" y="0">Prof</tspan></text>
+    <path id="doctabs" d="M692 182 L1204 182 L1204 204 L692 204 Z" fill="#11171c"/>
+    <path id="doctabs_rule" data-name="doctabs rule" d="M692 203 L1204 203 L1204 204 L692 204 Z" fill="#2e3a44"/>
+    <path id="doctabs_tab_main.go" data-name="doctabs tab/main.go" d="M692 182 L861 182 L861 203 L692 203 Z" fill="#222d35"/>
+    <path id="doctabs_edge_main.go" data-name="doctabs edge/main.go" d="M692 182 L695 182 L695 203 L692 203 Z" fill="#3b82f6"/>
+    <text transform="matrix(1 0 0 1 700 187)" x="0" y="0" xml:space="preserve" font-family="Inter, sans-serif" font-size="11" fill="#e6edf3"><tspan x="0" y="0">main.go</tspan></text>
+    <text transform="matrix(1 0 0 1 850 187)" x="0" y="0" xml:space="preserve" font-family="Inter, sans-serif" font-size="10" fill="#8b98a5"><tspan x="0" y="0">x</tspan></text>
+    <path id="doctabs_tab_util.go" data-name="doctabs tab/util.go" d="M862 182 L1031 182 L1031 203 L862 203 Z" fill="#11171c"/>
+    <text transform="matrix(1 0 0 1 870 187)" x="0" y="0" xml:space="preserve" font-family="Inter, sans-serif" font-size="11" fill="#8b98a5"><tspan x="0" y="0">util.go</tspan></text>
+    <text transform="matrix(1 0 0 1 1020 187)" x="0" y="0" xml:space="preserve" font-family="Inter, sans-serif" font-size="10" fill="#8b98a5"><tspan x="0" y="0">x</tspan></text>
+    <path id="doctabs_tab_prof.out" data-name="doctabs tab/prof.out" d="M1032 182 L1201 182 L1201 203 L1032 203 Z" fill="#11171c"/>
+    <text transform="matrix(1 0 0 1 1040 187)" x="0" y="0" xml:space="preserve" font-family="Inter, sans-serif" font-size="11" fill="#8b98a5"><tspan x="0" y="0">prof.out</tspan></text>
+    <text transform="matrix(1 0 0 1 1190 187)" x="0" y="0" xml:space="preserve" font-family="Inter, sans-serif" font-size="10" fill="#8b98a5"><tspan x="0" y="0">x</tspan></text>
+    <path id="heat0" d="M732 208 L736 208 L736 222 L732 222 Z" fill="#2d3748"/>
+    <text transform="matrix(1 0 0 1 726 210)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="10" fill="#8b98a5" text-anchor="end"><tspan x="0" y="0">1</tspan></text>
+    <text transform="matrix(1 0 0 1 744 210)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="11" fill="#94a3b8"><tspan x="0" y="0">package main</tspan></text>
+    <path id="heat1" d="M732 224 L736 224 L736 238 L732 238 Z" fill="#2d3748"/>
+    <text transform="matrix(1 0 0 1 726 226)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="10" fill="#8b98a5" text-anchor="end"><tspan x="0" y="0">2</tspan></text>
+    <text transform="matrix(1 0 0 1 744 226)" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="11" fill="#e6edf3"></text>
+    <path id="heat2" d="M732 240 L736 240 L736 254 L732 254 Z" fill="#2d3748"/>
+    <text transform="matrix(1 0 0 1 726 242)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="10" fill="#8b98a5" text-anchor="end"><tspan x="0" y="0">3</tspan></text>
+    <text transform="matrix(1 0 0 1 744 242)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="11" fill="#94a3b8"><tspan x="0" y="0">import &quot;virelai/vi&quot;</tspan></text>
+    <path id="heat3" d="M732 256 L736 256 L736 270 L732 270 Z" fill="#2d3748"/>
+    <text transform="matrix(1 0 0 1 726 258)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="10" fill="#8b98a5" text-anchor="end"><tspan x="0" y="0">4</tspan></text>
+    <text transform="matrix(1 0 0 1 744 258)" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="11" fill="#e6edf3"></text>
+    <path id="heat4" d="M732 272 L736 272 L736 286 L732 286 Z" fill="#ef4444"/>
+    <text transform="matrix(1 0 0 1 726 274)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="10" fill="#8b98a5" text-anchor="end"><tspan x="0" y="0">5</tspan></text>
+    <text transform="matrix(1 0 0 1 744 274)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="11" fill="#e6edf3"><tspan x="0" y="0">func main() {</tspan></text>
+    <path id="curln" d="M736 287 L1204 287 L1204 303 L736 303 Z" fill="#2a4460"/>
+    <path id="heat5" d="M732 288 L736 288 L736 302 L732 302 Z" fill="#ef4444"/>
+    <text transform="matrix(1 0 0 1 726 290)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="10" fill="#8b98a5" text-anchor="end"><tspan x="0" y="0">6</tspan></text>
+    <text transform="matrix(1 0 0 1 744 290)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="11" fill="#e6edf3"><tspan x="0" y="0">    app := vi.Open(&quot;GOEDIT.ELF&quot;)</tspan></text>
+    <path id="heat6" d="M732 304 L736 304 L736 318 L732 318 Z" fill="#f59e0b"/>
+    <text transform="matrix(1 0 0 1 726 306)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="10" fill="#8b98a5" text-anchor="end"><tspan x="0" y="0">7</tspan></text>
+    <text transform="matrix(1 0 0 1 744 306)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="11" fill="#e6edf3"><tspan x="0" y="0">    app.Declare(512, 384)</tspan></text>
+    <path id="heat7" d="M732 320 L736 320 L736 334 L732 334 Z" fill="#f59e0b"/>
+    <text transform="matrix(1 0 0 1 726 322)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="10" fill="#8b98a5" text-anchor="end"><tspan x="0" y="0">8</tspan></text>
+    <text transform="matrix(1 0 0 1 744 322)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="11" fill="#e6edf3"><tspan x="0" y="0">    for app.Poll() {</tspan></text>
+    <path id="heat8" d="M732 336 L736 336 L736 350 L732 350 Z" fill="#2d3748"/>
+    <text transform="matrix(1 0 0 1 726 338)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="10" fill="#8b98a5" text-anchor="end"><tspan x="0" y="0">9</tspan></text>
+    <text transform="matrix(1 0 0 1 744 338)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="11" fill="#e6edf3"><tspan x="0" y="0">        app.Paint()</tspan></text>
+    <path id="heat9" d="M732 352 L736 352 L736 366 L732 366 Z" fill="#2d3748"/>
+    <text transform="matrix(1 0 0 1 726 354)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="10" fill="#8b98a5" text-anchor="end"><tspan x="0" y="0">10</tspan></text>
+    <text transform="matrix(1 0 0 1 744 354)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="11" fill="#e6edf3"><tspan x="0" y="0">    }</tspan></text>
+    <path id="heat10" d="M732 368 L736 368 L736 382 L732 382 Z" fill="#2d3748"/>
+    <text transform="matrix(1 0 0 1 726 370)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="10" fill="#8b98a5" text-anchor="end"><tspan x="0" y="0">11</tspan></text>
+    <text transform="matrix(1 0 0 1 744 370)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="11" fill="#e6edf3"><tspan x="0" y="0">}</tspan></text>
+    <path id="heat11" d="M732 384 L736 384 L736 398 L732 398 Z" fill="#0b0e11"/>
+    <text transform="matrix(1 0 0 1 726 386)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="10" fill="#8b98a5" text-anchor="end"><tspan x="0" y="0">12</tspan></text>
+    <text transform="matrix(1 0 0 1 744 386)" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="11" fill="#e6edf3"></text>
+    <path id="heat12" d="M732 400 L736 400 L736 414 L732 414 Z" fill="#ef4444"/>
+    <text transform="matrix(1 0 0 1 726 402)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="10" fill="#8b98a5" text-anchor="end"><tspan x="0" y="0">13</tspan></text>
+    <text transform="matrix(1 0 0 1 744 402)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="11" fill="#e6edf3"><tspan x="0" y="0">func render(f *Frame) {</tspan></text>
+    <path id="heat13" d="M732 416 L736 416 L736 430 L732 430 Z" fill="#f59e0b"/>
+    <text transform="matrix(1 0 0 1 726 418)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="10" fill="#8b98a5" text-anchor="end"><tspan x="0" y="0">14</tspan></text>
+    <text transform="matrix(1 0 0 1 744 418)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="11" fill="#e6edf3"><tspan x="0" y="0">    f.Tab(main.go)</tspan></text>
+    <path id="heat14" d="M732 432 L736 432 L736 446 L732 446 Z" fill="#2d3748"/>
+    <text transform="matrix(1 0 0 1 726 434)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="10" fill="#8b98a5" text-anchor="end"><tspan x="0" y="0">15</tspan></text>
+    <text transform="matrix(1 0 0 1 744 434)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="11" fill="#e6edf3"><tspan x="0" y="0">    f.Gutter(heat(prof.out))</tspan></text>
+    <path id="heat15" d="M732 448 L736 448 L736 462 L732 462 Z" fill="#2d3748"/>
+    <text transform="matrix(1 0 0 1 726 450)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="10" fill="#8b98a5" text-anchor="end"><tspan x="0" y="0">16</tspan></text>
+    <text transform="matrix(1 0 0 1 744 450)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="11" fill="#e6edf3"><tspan x="0" y="0">}</tspan></text>
+    <text transform="matrix(1 0 0 1 744 464)" x="0" y="0" xml:space="preserve" font-family="&apos;Source Sans 3&apos;, sans-serif" font-size="9" fill="#f59e0b"><tspan x="0" y="0">heat ← --prof=prof.out</tspan></text>
+    <path id="find-2" data-name="find" d="M692 490 L1204 490 L1204 518 L692 518 Z" fill="#11171c"/>
+    <path id="find_rule-2" data-name="find rule" d="M692 490 L1204 490 L1204 491 L692 491 Z" fill="#2e3a44"/>
+    <text transform="matrix(1 0 0 1 702 498)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="11" fill="#94a3b8"><tspan x="0" y="0">find</tspan></text>
+    <path id="find_field-2" data-name="find field" d="M741 494 L901 494 C903.667 494 905 495.333 905 498 L905 510 C905 512.667 903.667 514 901 514 L741 514 C738.333 514 737 512.667 737 510 L737 498 C737 495.333 738.333 494 741 494 Z" fill="#222d35" stroke="#3b82f6" stroke-width="2" stroke-miterlimit="10"/>
+    <text transform="matrix(1 0 0 1 745 498)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="11" fill="#e6edf3"><tspan x="0" y="0">Paint</tspan></text>
+    <path id="find_caret-2" data-name="find caret" d="M780 497 L782 497 L782 511 L780 511 Z" fill="#3b82f6"/>
+    <text transform="matrix(1 0 0 1 913 498)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="11" fill="#94a3b8"><tspan x="0" y="0">3/7</tspan></text>
+    <text transform="matrix(1 0 0 1 1194 498)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="10" fill="#94a3b8" text-anchor="end"><tspan x="0" y="0">ctrl+g goto</tspan></text>
+    <path id="status" d="M692 522 L1204 522 L1204 542 L692 542 Z" fill="#11171c"/>
+    <path id="status_rule" data-name="status rule" d="M692 522 L1204 522 L1204 523 L692 523 Z" fill="#2e3a44"/>
+    <text transform="matrix(1 0 0 1 700 526)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="10" fill="#8b98a5"><tspan x="0" y="0">main.go · Ln 6, Col 5 · utf-8 · go · prof.out loaded</tspan></text>
+    <text transform="matrix(1 0 0 1 692 556)" x="0" y="0" xml:space="preserve" font-family="Inter, sans-serif" font-size="12" fill="#e6edf3"><tspan x="0" y="0">GOEDIT.ELF — Code Editor</tspan></text>
+    <text transform="matrix(1 0 0 1 692 574)" x="0" y="0" xml:space="preserve" font-family="&apos;Source Sans 3&apos;, sans-serif" font-size="10" fill="#94a3b8"><tspan x="0" y="0">512x384 natural (declare block) · doc tabs · gutter + per-function heat (--prof=) · find/goto bar</tspan></text>
+    <path id="win_Files___GOFILES.ELF" data-name="win/Files — GOFILES.ELF" d="M1316 130 L1812 130 C1817.333 130 1820 132.667 1820 138 L1820 534 C1820 539.333 1817.333 542 1812 542 L1316 542 C1310.667 542 1308 539.333 1308 534 L1308 138 C1308 132.667 1310.667 130 1316 130 Z" fill="#182026" stroke="#334155" stroke-miterlimit="10"/>
+    <path id="titlebar_Files___GOFILES.ELF" data-name="titlebar/Files — GOFILES.ELF" d="M1316 130 L1812 130 C1817.333 130 1820 132.667 1820 138 L1820 158 L1308 158 L1308 138 C1308 132.667 1310.667 130 1316 130 Z" fill="#222d35"/>
+    <path id="title_rule_Files___GOFILES.ELF" data-name="title rule/Files — GOFILES.ELF" d="M1308 157 L1820 157 L1820 158 L1308 158 Z" fill="#334155"/>
+    <text transform="matrix(1 0 0 1 1318 138)" x="0" y="0" xml:space="preserve" font-family="Inter, sans-serif" font-size="13" fill="#ffffff"><tspan x="0" y="0">Files — GOFILES.ELF</tspan></text>
+    <path id="ctl0_Files___GOFILES.ELF" data-name="ctl0/Files — GOFILES.ELF" d="M1748 136 L1756 136 C1758.667 136 1760 137.333 1760 140 L1760 148 C1760 150.667 1758.667 152 1756 152 L1748 152 C1745.333 152 1744 150.667 1744 148 L1744 140 C1744 137.333 1745.333 136 1748 136 Z" fill="#2d3748"/>
+    <text transform="matrix(1 0 0 1 1752 138)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="9" fill="#8b98a5" text-anchor="middle"><tspan x="0" y="0">_</tspan></text>
+    <path id="ctl1_Files___GOFILES.ELF" data-name="ctl1/Files — GOFILES.ELF" d="M1770 136 L1778 136 C1780.667 136 1782 137.333 1782 140 L1782 148 C1782 150.667 1780.667 152 1778 152 L1770 152 C1767.333 152 1766 150.667 1766 148 L1766 140 C1766 137.333 1767.333 136 1770 136 Z" fill="#2d3748"/>
+    <text transform="matrix(1 0 0 1 1774 138)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="9" fill="#8b98a5" text-anchor="middle"><tspan x="0" y="0">[]</tspan></text>
+    <path id="ctl2_Files___GOFILES.ELF" data-name="ctl2/Files — GOFILES.ELF" d="M1792 136 L1800 136 C1802.667 136 1804 137.333 1804 140 L1804 148 C1804 150.667 1802.667 152 1800 152 L1792 152 C1789.333 152 1788 150.667 1788 148 L1788 140 C1788 137.333 1789.333 136 1792 136 Z" fill="#2d3748"/>
+    <text transform="matrix(1 0 0 1 1796 138)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="9" fill="#ef4444" text-anchor="middle"><tspan x="0" y="0">x</tspan></text>
+    <path id="toolbar" d="M1308 158 L1820 158 L1820 186 L1308 186 Z" fill="#222d35"/>
+    <path id="tb_rule" data-name="tb rule" d="M1308 185 L1820 185 L1820 186 L1308 186 Z" fill="#2e3a44"/>
+    <path id="nav0" d="M1318 162 L1330 162 C1332.667 162 1334 163.333 1334 166 L1334 178 C1334 180.667 1332.667 182 1330 182 L1318 182 C1315.333 182 1314 180.667 1314 178 L1314 166 C1314 163.333 1315.333 162 1318 162 Z" fill="#2d3748"/>
+    <text transform="matrix(1 0 0 1 1324 166)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="10" fill="#e6edf3" text-anchor="middle"><tspan x="0" y="0">&lt;</tspan></text>
+    <path id="nav1" d="M1342 162 L1354 162 C1356.667 162 1358 163.333 1358 166 L1358 178 C1358 180.667 1356.667 182 1354 182 L1342 182 C1339.333 182 1338 180.667 1338 178 L1338 166 C1338 163.333 1339.333 162 1342 162 Z" fill="#2d3748"/>
+    <text transform="matrix(1 0 0 1 1348 166)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="10" fill="#e6edf3" text-anchor="middle"><tspan x="0" y="0">&gt;</tspan></text>
+    <path id="nav2" d="M1366 162 L1378 162 C1380.667 162 1382 163.333 1382 166 L1382 178 C1382 180.667 1380.667 182 1378 182 L1366 182 C1363.333 182 1362 180.667 1362 178 L1362 166 C1362 163.333 1363.333 162 1366 162 Z" fill="#2d3748"/>
+    <text transform="matrix(1 0 0 1 1372 166)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="10" fill="#e6edf3" text-anchor="middle"><tspan x="0" y="0">^</tspan></text>
+    <text transform="matrix(1 0 0 1 1400 167)" x="0" y="0" xml:space="preserve" font-family="Inter, sans-serif" font-size="10" fill="#8b98a5"><tspan x="0" y="0">mkdir</tspan></text>
+    <text transform="matrix(1 0 0 1 1444 167)" x="0" y="0" xml:space="preserve" font-family="Inter, sans-serif" font-size="10" fill="#8b98a5"><tspan x="0" y="0">copy</tspan></text>
+    <text transform="matrix(1 0 0 1 1488 167)" x="0" y="0" xml:space="preserve" font-family="Inter, sans-serif" font-size="10" fill="#8b98a5"><tspan x="0" y="0">paste</tspan></text>
+    <path id="pathbar" d="M1308 186 L1820 186 L1820 208 L1308 208 Z" fill="#11171c"/>
+    <path id="pathbar_rule" data-name="pathbar rule" d="M1308 186 L1820 186 L1820 187 L1308 187 Z" fill="#2e3a44"/>
+    <text transform="matrix(1 0 0 1 1318 191)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="11" fill="#8b98a5"><tspan x="0" y="0">/host</tspan></text>
+    <text transform="matrix(1 0 0 1 1360 191)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="11" fill="#3b82f6"><tspan x="0" y="0">/ DOCUMENTS</tspan></text>
+    <path id="listpane" d="M1308 208 L1604 208 L1604 522 L1308 522 Z" fill="#11171c"/>
+    <text transform="matrix(1 0 0 1 1320 216)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="11" fill="#8b98a5"><tspan x="0" y="0">..</tspan></text>
+    <text transform="matrix(1 0 0 1 1320 235)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="11" fill="#e6edf3"><tspan x="0" y="0">CONTRACT.TXT</tspan></text>
+    <text transform="matrix(1 0 0 1 1320 254)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="11" fill="#e6edf3"><tspan x="0" y="0">INVOICE.PDF</tspan></text>
+    <text transform="matrix(1 0 0 1 1320 273)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="11" fill="#e6edf3"><tspan x="0" y="0">MAP.QOI</tspan></text>
+    <text transform="matrix(1 0 0 1 1320 292)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="11" fill="#e6edf3"><tspan x="0" y="0">NOTES/</tspan></text>
+    <text transform="matrix(1 0 0 1 1320 311)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="11" fill="#e6edf3"><tspan x="0" y="0">PACKING.TXT</tspan></text>
+    <path id="sel-2" data-name="sel" d="M1310 328 L1602 328 L1602 346 L1310 346 Z" fill="#2a4460"/>
+    <path id="sel_edge" data-name="sel edge" d="M1310 328 L1313 328 L1313 346 L1310 346 Z" fill="#3b82f6"/>
+    <text transform="matrix(1 0 0 1 1320 330)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="11" fill="#e6edf3"><tspan x="0" y="0">VCARD.VCF</tspan></text>
+    <path id="pane_rule" data-name="pane rule" d="M1604 208 L1605 208 L1605 522 L1604 522 Z" fill="#2e3a44"/>
+    <text transform="matrix(1 0 0 1 1619 218)" x="0" y="0" xml:space="preserve" font-family="Inter, sans-serif" font-size="10" fill="#94a3b8"><tspan x="0" y="0">VCARD.VCF — contact</tspan></text>
+    <path id="vcf_card" data-name="vcf card" d="M1625 240 L1800 240 C1805.333 240 1808 242.667 1808 248 L1808 380 C1808 385.333 1805.333 388 1800 388 L1625 388 C1619.667 388 1617 385.333 1617 380 L1617 248 C1617 242.667 1619.667 240 1625 240 Z" fill="#222d35" stroke="#334155" stroke-miterlimit="10"/>
+    <path id="avatar" d="M1629 274 C1629 261.85 1638.85 252 1651 252 C1663.15 252 1673 261.85 1673 274 C1673 286.15 1663.15 296 1651 296 C1638.85 296 1629 286.15 1629 274 Z" fill="#3b82f6"/>
+    <text transform="matrix(1 0 0 1 1651 265)" x="0" y="0" xml:space="preserve" font-family="Inter, sans-serif" font-size="14" fill="#ffffff" text-anchor="middle"><tspan x="0" y="0">AV</tspan></text>
+    <text transform="matrix(1 0 0 1 1683 256)" x="0" y="0" xml:space="preserve" font-family="Inter, sans-serif" font-size="13" fill="#e6edf3"><tspan x="0" y="0">Ada Virel</tspan></text>
+    <text transform="matrix(1 0 0 1 1683 274)" x="0" y="0" xml:space="preserve" font-family="Inter, sans-serif" font-size="10" fill="#94a3b8"><tspan x="0" y="0">ada@virelai.os</tspan></text>
+    <text transform="matrix(1 0 0 1 1629 310)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="9" fill="#94a3b8"><tspan x="0" y="0">TEL</tspan></text>
+    <text transform="matrix(1 0 0 1 1669 310)" x="0" y="0" xml:space="preserve" font-family="Inter, sans-serif" font-size="10" fill="#8b98a5"><tspan x="0" y="0">+1-555-0123</tspan></text>
+    <text transform="matrix(1 0 0 1 1629 328)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="9" fill="#94a3b8"><tspan x="0" y="0">ORG</tspan></text>
+    <text transform="matrix(1 0 0 1 1669 328)" x="0" y="0" xml:space="preserve" font-family="Inter, sans-serif" font-size="10" fill="#8b98a5"><tspan x="0" y="0">Storytold Systems</tspan></text>
+    <text transform="matrix(1 0 0 1 1629 346)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="9" fill="#94a3b8"><tspan x="0" y="0">NOTE</tspan></text>
+    <text transform="matrix(1 0 0 1 1669 346)" x="0" y="0" xml:space="preserve" font-family="Inter, sans-serif" font-size="10" fill="#8b98a5"><tspan x="0" y="0">art pipeline liaison</tspan></text>
+    <path id="toast" d="M1326 480 L1500 480 C1505.333 480 1508 482.667 1508 488 L1508 500 C1508 505.333 1505.333 508 1500 508 L1326 508 C1320.667 508 1318 505.333 1318 500 L1318 488 C1318 482.667 1320.667 480 1326 480 Z" fill="#222d35" stroke="#334155" stroke-miterlimit="10"/>
+    <path id="toast_edge" data-name="toast edge" d="M1318 480 L1320 480 L1320 508 L1318 508 Z" fill="#3b82f6"/>
+    <text transform="matrix(1 0 0 1 1330 488)" x="0" y="0" xml:space="preserve" font-family="Inter, sans-serif" font-size="11" fill="#e6edf3"><tspan x="0" y="0">path copied to clipboard</tspan></text>
+    <path id="status-2" data-name="status" d="M1308 522 L1820 522 L1820 542 L1308 542 Z" fill="#11171c"/>
+    <path id="status_rule-2" data-name="status rule" d="M1308 522 L1820 522 L1820 523 L1308 523 Z" fill="#2e3a44"/>
+    <text transform="matrix(1 0 0 1 1316 526)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="10" fill="#8b98a5"><tspan x="0" y="0">7 items · sort name · ^Q quicklook · / filter</tspan></text>
+    <text transform="matrix(1 0 0 1 1308 556)" x="0" y="0" xml:space="preserve" font-family="Inter, sans-serif" font-size="12" fill="#e6edf3"><tspan x="0" y="0">GOFILES.ELF — Files</tspan></text>
+    <text transform="matrix(1 0 0 1 1308 574)" x="0" y="0" xml:space="preserve" font-family="&apos;Source Sans 3&apos;, sans-serif" font-size="10" fill="#94a3b8"><tspan x="0" y="0">512x384 natural (declare block) · list + QuickLook .vcf card · toolbar · path bar · toast</tspan></text>
+    <path id="win_Web___WEB.ELF" data-name="win/Web — WEB.ELF" d="M84 672 L580 672 C585.333 672 588 674.667 588 680 L588 1076 C588 1081.333 585.333 1084 580 1084 L84 1084 C78.667 1084 76 1081.333 76 1076 L76 680 C76 674.667 78.667 672 84 672 Z" fill="#182026" stroke="#334155" stroke-miterlimit="10"/>
+    <path id="titlebar_Web___WEB.ELF" data-name="titlebar/Web — WEB.ELF" d="M84 672 L580 672 C585.333 672 588 674.667 588 680 L588 700 L76 700 L76 680 C76 674.667 78.667 672 84 672 Z" fill="#222d35"/>
+    <path id="title_rule_Web___WEB.ELF" data-name="title rule/Web — WEB.ELF" d="M76 699 L588 699 L588 700 L76 700 Z" fill="#334155"/>
+    <text transform="matrix(1 0 0 1 86 680)" x="0" y="0" xml:space="preserve" font-family="Inter, sans-serif" font-size="13" fill="#ffffff"><tspan x="0" y="0">Web — WEB.ELF</tspan></text>
+    <path id="ctl0_Web___WEB.ELF" data-name="ctl0/Web — WEB.ELF" d="M516 678 L524 678 C526.667 678 528 679.333 528 682 L528 690 C528 692.667 526.667 694 524 694 L516 694 C513.333 694 512 692.667 512 690 L512 682 C512 679.333 513.333 678 516 678 Z" fill="#2d3748"/>
+    <text transform="matrix(1 0 0 1 520 680)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="9" fill="#8b98a5" text-anchor="middle"><tspan x="0" y="0">_</tspan></text>
+    <path id="ctl1_Web___WEB.ELF" data-name="ctl1/Web — WEB.ELF" d="M538 678 L546 678 C548.667 678 550 679.333 550 682 L550 690 C550 692.667 548.667 694 546 694 L538 694 C535.333 694 534 692.667 534 690 L534 682 C534 679.333 535.333 678 538 678 Z" fill="#2d3748"/>
+    <text transform="matrix(1 0 0 1 542 680)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="9" fill="#8b98a5" text-anchor="middle"><tspan x="0" y="0">[]</tspan></text>
+    <path id="ctl2_Web___WEB.ELF" data-name="ctl2/Web — WEB.ELF" d="M560 678 L568 678 C570.667 678 572 679.333 572 682 L572 690 C572 692.667 570.667 694 568 694 L560 694 C557.333 694 556 692.667 556 690 L556 682 C556 679.333 557.333 678 560 678 Z" fill="#2d3748"/>
+    <text transform="matrix(1 0 0 1 564 680)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="9" fill="#ef4444" text-anchor="middle"><tspan x="0" y="0">x</tspan></text>
+    <path id="tabs" d="M76 700 L588 700 L588 722 L76 722 Z" fill="#11171c"/>
+    <path id="tabs_rule" data-name="tabs rule" d="M76 721 L588 721 L588 722 L76 722 Z" fill="#2e3a44"/>
+    <path id="tabs_tab_10.0.0.2___docs" data-name="tabs tab/10.0.0.2 — docs" d="M76 700 L331 700 L331 721 L76 721 Z" fill="#222d35"/>
+    <path id="tabs_edge_10.0.0.2___docs" data-name="tabs edge/10.0.0.2 — docs" d="M76 700 L79 700 L79 721 L76 721 Z" fill="#3b82f6"/>
+    <text transform="matrix(1 0 0 1 84 705)" x="0" y="0" xml:space="preserve" font-family="Inter, sans-serif" font-size="11" fill="#e6edf3"><tspan x="0" y="0">10.0.0.2 — docs</tspan></text>
+    <text transform="matrix(1 0 0 1 320 705)" x="0" y="0" xml:space="preserve" font-family="Inter, sans-serif" font-size="10" fill="#8b98a5"><tspan x="0" y="0">x</tspan></text>
+    <path id="tabs_tab_apps.txt" data-name="tabs tab/apps.txt" d="M332 700 L587 700 L587 721 L332 721 Z" fill="#11171c"/>
+    <text transform="matrix(1 0 0 1 340 705)" x="0" y="0" xml:space="preserve" font-family="Inter, sans-serif" font-size="11" fill="#8b98a5"><tspan x="0" y="0">apps.txt</tspan></text>
+    <text transform="matrix(1 0 0 1 576 705)" x="0" y="0" xml:space="preserve" font-family="Inter, sans-serif" font-size="10" fill="#8b98a5"><tspan x="0" y="0">x</tspan></text>
+    <path id="webnav0" d="M86 727 L98 727 C100.667 727 102 728.333 102 731 L102 743 C102 745.667 100.667 747 98 747 L86 747 C83.333 747 82 745.667 82 743 L82 731 C82 728.333 83.333 727 86 727 Z" fill="#2d3748"/>
+    <text transform="matrix(1 0 0 1 92 731)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="10" fill="#e6edf3" text-anchor="middle"><tspan x="0" y="0">&lt;</tspan></text>
+    <path id="webnav1" d="M110 727 L122 727 C124.667 727 126 728.333 126 731 L126 743 C126 745.667 124.667 747 122 747 L110 747 C107.333 747 106 745.667 106 743 L106 731 C106 728.333 107.333 727 110 727 Z" fill="#2d3748"/>
+    <text transform="matrix(1 0 0 1 116 731)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="10" fill="#e6edf3" text-anchor="middle"><tspan x="0" y="0">&gt;</tspan></text>
+    <path id="webnav2" d="M134 727 L146 727 C148.667 727 150 728.333 150 731 L150 743 C150 745.667 148.667 747 146 747 L134 747 C131.333 747 130 745.667 130 743 L130 731 C130 728.333 131.333 727 134 727 Z" fill="#2d3748"/>
+    <text transform="matrix(1 0 0 1 140 731)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="10" fill="#e6edf3" text-anchor="middle"><tspan x="0" y="0">R</tspan></text>
+    <path id="url_field" data-name="url field" d="M162 726 L576 726 C578.667 726 580 727.333 580 730 L580 744 C580 746.667 578.667 748 576 748 L162 748 C159.333 748 158 746.667 158 744 L158 730 C158 727.333 159.333 726 162 726 Z" fill="#222d35" stroke="#3b82f6" stroke-width="2" stroke-miterlimit="10"/>
+    <text transform="matrix(1 0 0 1 166 731)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="10" fill="#e6edf3"><tspan x="0" y="0">http://10.0.0.2/docs/</tspan></text>
+    <path id="page" d="M76 752 L588 752 L588 1066 L76 1066 Z" fill="#11171c"/>
+    <text transform="matrix(1 0 0 1 100 770)" x="0" y="0" xml:space="preserve" font-family="Inter, sans-serif" font-size="16" fill="#e6edf3"><tspan x="0" y="0">VirelaiOS documentation</tspan></text>
+    <text transform="matrix(1 0 0 1 100 798)" x="0" y="0" xml:space="preserve" font-family="Inter, sans-serif" font-size="11" fill="#8b98a5"><tspan x="0" y="0">The desktop is a tab rail — one row of live apps.</tspan></text>
+    <text transform="matrix(1 0 0 1 100 814)" x="0" y="0" xml:space="preserve" font-family="Inter, sans-serif" font-size="11" fill="#8b98a5"><tspan x="0" y="0">Click a cell, or Ctrl+T for the launcher. Every</tspan></text>
+    <text transform="matrix(1 0 0 1 100 830)" x="0" y="0" xml:space="preserve" font-family="Inter, sans-serif" font-size="11" fill="#8b98a5"><tspan x="0" y="0">app is a full-viewport tab; windows keep their</tspan></text>
+    <text transform="matrix(1 0 0 1 100 846)" x="0" y="0" xml:space="preserve" font-family="Inter, sans-serif" font-size="11" fill="#8b98a5"><tspan x="0" y="0">declare-block natural size in the floating layer.</tspan></text>
+    <text transform="matrix(1 0 0 1 100 870)" x="0" y="0" xml:space="preserve" font-family="Inter, sans-serif" font-size="11" fill="#3b82f6"><tspan x="0" y="0">» desktop.md   » ui-primitives.md</tspan></text>
+    <path id="figure" d="M104 902 L296 902 C298.667 902 300 903.333 300 906 L300 1008 C300 1010.667 298.667 1012 296 1012 L104 1012 C101.333 1012 100 1010.667 100 1008 L100 906 C100 903.333 101.333 902 104 902 Z" fill="#222d35" stroke="#334155" stroke-miterlimit="10"/>
+    <path id="fig_dot" data-name="fig dot" d="M120 942 C120 930.954 128.954 922 140 922 C151.046 922 160 930.954 160 942 C160 953.046 151.046 962 140 962 C128.954 962 120 953.046 120 942 Z" fill="#3b82f6"/>
+    <text transform="matrix(1 0 0 1 172 936)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="9" fill="#8b98a5"><tspan x="0" y="0">WALLPAPER.QOI</tspan></text>
+    <text transform="matrix(1 0 0 1 108 1020)" x="0" y="0" xml:space="preserve" font-family="Inter, sans-serif" font-size="9" fill="#94a3b8"><tspan x="0" y="0">figure: the shipped wallpaper fixture</tspan></text>
+    <path id="status-3" data-name="status" d="M76 1066 L588 1066 L588 1086 L76 1086 Z" fill="#11171c"/>
+    <path id="status_rule-3" data-name="status rule" d="M76 1066 L588 1066 L588 1067 L76 1067 Z" fill="#2e3a44"/>
+    <text transform="matrix(1 0 0 1 84 1070)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="10" fill="#8b98a5"><tspan x="0" y="0">200 · 4.1 KB · webrender · idle</tspan></text>
+    <text transform="matrix(1 0 0 1 76 1098)" x="0" y="0" xml:space="preserve" font-family="Inter, sans-serif" font-size="12" fill="#e6edf3"><tspan x="0" y="0">WEB.ELF — Web</tspan></text>
+    <text transform="matrix(1 0 0 1 76 1116)" x="0" y="0" xml:space="preserve" font-family="&apos;Source Sans 3&apos;, sans-serif" font-size="10" fill="#94a3b8"><tspan x="0" y="0">512x384 natural (declare block) · tab strip · address row (focused) · rendered page</tspan></text>
+    <path id="win_64-bit_Calc___GOCALC.ELF" data-name="win/64-bit Calc — GOCALC.ELF" d="M700 672 L1196 672 C1201.333 672 1204 674.667 1204 680 L1204 1076 C1204 1081.333 1201.333 1084 1196 1084 L700 1084 C694.667 1084 692 1081.333 692 1076 L692 680 C692 674.667 694.667 672 700 672 Z" fill="#182026" stroke="#334155" stroke-miterlimit="10"/>
+    <path id="titlebar_64-bit_Calc___GOCALC.ELF" data-name="titlebar/64-bit Calc — GOCALC.ELF" d="M700 672 L1196 672 C1201.333 672 1204 674.667 1204 680 L1204 700 L692 700 L692 680 C692 674.667 694.667 672 700 672 Z" fill="#222d35"/>
+    <path id="title_rule_64-bit_Calc___GOCALC.ELF" data-name="title rule/64-bit Calc — GOCALC.ELF" d="M692 699 L1204 699 L1204 700 L692 700 Z" fill="#334155"/>
+    <text transform="matrix(1 0 0 1 702 680)" x="0" y="0" xml:space="preserve" font-family="Inter, sans-serif" font-size="13" fill="#ffffff"><tspan x="0" y="0">64-bit Calc — GOCALC.ELF</tspan></text>
+    <path id="ctl0_64-bit_Calc___GOCALC.ELF" data-name="ctl0/64-bit Calc — GOCALC.ELF" d="M1132 678 L1140 678 C1142.667 678 1144 679.333 1144 682 L1144 690 C1144 692.667 1142.667 694 1140 694 L1132 694 C1129.333 694 1128 692.667 1128 690 L1128 682 C1128 679.333 1129.333 678 1132 678 Z" fill="#2d3748"/>
+    <text transform="matrix(1 0 0 1 1136 680)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="9" fill="#8b98a5" text-anchor="middle"><tspan x="0" y="0">_</tspan></text>
+    <path id="ctl1_64-bit_Calc___GOCALC.ELF" data-name="ctl1/64-bit Calc — GOCALC.ELF" d="M1154 678 L1162 678 C1164.667 678 1166 679.333 1166 682 L1166 690 C1166 692.667 1164.667 694 1162 694 L1154 694 C1151.333 694 1150 692.667 1150 690 L1150 682 C1150 679.333 1151.333 678 1154 678 Z" fill="#2d3748"/>
+    <text transform="matrix(1 0 0 1 1158 680)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="9" fill="#8b98a5" text-anchor="middle"><tspan x="0" y="0">[]</tspan></text>
+    <path id="ctl2_64-bit_Calc___GOCALC.ELF" data-name="ctl2/64-bit Calc — GOCALC.ELF" d="M1176 678 L1184 678 C1186.667 678 1188 679.333 1188 682 L1188 690 C1188 692.667 1186.667 694 1184 694 L1176 694 C1173.333 694 1172 692.667 1172 690 L1172 682 C1172 679.333 1173.333 678 1176 678 Z" fill="#2d3748"/>
+    <text transform="matrix(1 0 0 1 1180 680)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="9" fill="#ef4444" text-anchor="middle"><tspan x="0" y="0">x</tspan></text>
+    <path id="mode_DEC" data-name="mode DEC" d="M710 708 L738 708 C744.667 708 748 711.333 748 718 L748 718 C748 724.667 744.667 728 738 728 L710 728 C703.333 728 700 724.667 700 718 L700 718 C700 711.333 703.333 708 710 708 Z" fill="#2d3748"/>
+    <text transform="matrix(1 0 0 1 724 713)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="10" fill="#8b98a5" text-anchor="middle"><tspan x="0" y="0">DEC</tspan></text>
+    <path id="mode_HEX" data-name="mode HEX" d="M764 708 L792 708 C798.667 708 802 711.333 802 718 L802 718 C802 724.667 798.667 728 792 728 L764 728 C757.333 728 754 724.667 754 718 L754 718 C754 711.333 757.333 708 764 708 Z" fill="#3b82f6"/>
+    <text transform="matrix(1 0 0 1 778 713)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="10" fill="#ffffff" text-anchor="middle"><tspan x="0" y="0">HEX</tspan></text>
+    <path id="mode_OCT" data-name="mode OCT" d="M818 708 L846 708 C852.667 708 856 711.333 856 718 L856 718 C856 724.667 852.667 728 846 728 L818 728 C811.333 728 808 724.667 808 718 L808 718 C808 711.333 811.333 708 818 708 Z" fill="#2d3748"/>
+    <text transform="matrix(1 0 0 1 832 713)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="10" fill="#8b98a5" text-anchor="middle"><tspan x="0" y="0">OCT</tspan></text>
+    <path id="mode_BIN" data-name="mode BIN" d="M872 708 L900 708 C906.667 708 910 711.333 910 718 L910 718 C910 724.667 906.667 728 900 728 L872 728 C865.333 728 862 724.667 862 718 L862 718 C862 711.333 865.333 708 872 708 Z" fill="#2d3748"/>
+    <text transform="matrix(1 0 0 1 886 713)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="10" fill="#8b98a5" text-anchor="middle"><tspan x="0" y="0">BIN</tspan></text>
+    <path id="prog_chip" data-name="prog chip" d="M1152 708 L1186 708 C1192.667 708 1196 711.333 1196 718 L1196 718 C1196 724.667 1192.667 728 1186 728 L1152 728 C1145.333 728 1142 724.667 1142 718 L1142 718 C1142 711.333 1145.333 708 1152 708 Z" fill="#222d35"/>
+    <text transform="matrix(1 0 0 1 1169 713)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="10" fill="#8b98a5" text-anchor="middle"><tspan x="0" y="0">prog</tspan></text>
+    <text transform="matrix(1 0 0 1 702 736)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="10" fill="#8b98a5"><tspan x="0" y="0">0xFF &amp; 0x0F</tspan></text>
+    <path id="display" d="M704 752 L1192 752 C1194.667 752 1196 753.333 1196 756 L1196 794 C1196 796.667 1194.667 798 1192 798 L704 798 C701.333 798 700 796.667 700 794 L700 756 C700 753.333 701.333 752 704 752 Z" fill="#222d35"/>
+    <text transform="matrix(1 0 0 1 1184 762)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="18" fill="#e6edf3" text-anchor="end"><tspan x="0" y="0">0x0F</tspan></text>
+    <text transform="matrix(1 0 0 1 1184 784)" x="0" y="0" xml:space="preserve" font-family="&apos;Source Sans 3&apos;, sans-serif" font-size="10" fill="#94a3b8" text-anchor="end"><tspan x="0" y="0">= 15</tspan></text>
+    <path id="tape" d="M700 806 L872 806 L872 1076 L700 1076 Z" fill="#11171c"/>
+    <text transform="matrix(1 0 0 1 708 814)" x="0" y="0" xml:space="preserve" font-family="Inter, sans-serif" font-size="9" fill="#94a3b8" letter-spacing="1.62"><tspan x="0" y="0">TAPE</tspan></text>
+    <text transform="matrix(1 0 0 1 708 836)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="10" fill="#e6edf3"><tspan x="0" y="0">12 * 3.5</tspan></text>
+    <text transform="matrix(1 0 0 1 708 852)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="10" fill="#94a3b8"><tspan x="0" y="0">  = 42</tspan></text>
+    <text transform="matrix(1 0 0 1 708 868)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="10" fill="#e6edf3"><tspan x="0" y="0">0xFF &amp; 0x0F</tspan></text>
+    <text transform="matrix(1 0 0 1 708 884)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="10" fill="#94a3b8"><tspan x="0" y="0">  = 0x0F</tspan></text>
+    <text transform="matrix(1 0 0 1 708 900)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="10" fill="#e6edf3"><tspan x="0" y="0">1 &lt;&lt; 8</tspan></text>
+    <text transform="matrix(1 0 0 1 708 916)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="10" fill="#94a3b8"><tspan x="0" y="0">  = 256</tspan></text>
+    <text transform="matrix(1 0 0 1 708 932)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="10" fill="#e6edf3"><tspan x="0" y="0">0x2A | 0x10</tspan></text>
+    <text transform="matrix(1 0 0 1 708 948)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="10" fill="#94a3b8"><tspan x="0" y="0">  = 0x3A</tspan></text>
+    <path id="k00" d="M884 806 L949 806 C951.667 806 953 807.333 953 810 L953 842 C953 844.667 951.667 846 949 846 L884 846 C881.333 846 880 844.667 880 842 L880 810 C880 807.333 881.333 806 884 806 Z" fill="#2d3748"/>
+    <text transform="matrix(1 0 0 1 916.5 820)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="10" fill="#e6edf3" text-anchor="middle"><tspan x="0" y="0">A</tspan></text>
+    <path id="k01" d="M965 806 L1030 806 C1032.667 806 1034 807.333 1034 810 L1034 842 C1034 844.667 1032.667 846 1030 846 L965 846 C962.333 846 961 844.667 961 842 L961 810 C961 807.333 962.333 806 965 806 Z" fill="#2d3748"/>
+    <text transform="matrix(1 0 0 1 997.5 820)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="10" fill="#e6edf3" text-anchor="middle"><tspan x="0" y="0">B</tspan></text>
+    <path id="k02" d="M1046 806 L1111 806 C1113.667 806 1115 807.333 1115 810 L1115 842 C1115 844.667 1113.667 846 1111 846 L1046 846 C1043.333 846 1042 844.667 1042 842 L1042 810 C1042 807.333 1043.333 806 1046 806 Z" fill="#2d3748"/>
+    <text transform="matrix(1 0 0 1 1078.5 820)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="10" fill="#e6edf3" text-anchor="middle"><tspan x="0" y="0">C</tspan></text>
+    <path id="k03" d="M1127 806 L1192 806 C1194.667 806 1196 807.333 1196 810 L1196 842 C1196 844.667 1194.667 846 1192 846 L1127 846 C1124.333 846 1123 844.667 1123 842 L1123 810 C1123 807.333 1124.333 806 1127 806 Z" fill="#2d3748"/>
+    <text transform="matrix(1 0 0 1 1159.5 820)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="10" fill="#e6edf3" text-anchor="middle"><tspan x="0" y="0">/</tspan></text>
+    <path id="k10" d="M884 852 L949 852 C951.667 852 953 853.333 953 856 L953 888 C953 890.667 951.667 892 949 892 L884 892 C881.333 892 880 890.667 880 888 L880 856 C880 853.333 881.333 852 884 852 Z" fill="#2d3748"/>
+    <text transform="matrix(1 0 0 1 916.5 866)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="10" fill="#e6edf3" text-anchor="middle"><tspan x="0" y="0">D</tspan></text>
+    <path id="k11" d="M965 852 L1030 852 C1032.667 852 1034 853.333 1034 856 L1034 888 C1034 890.667 1032.667 892 1030 892 L965 892 C962.333 892 961 890.667 961 888 L961 856 C961 853.333 962.333 852 965 852 Z" fill="#2d3748"/>
+    <text transform="matrix(1 0 0 1 997.5 866)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="10" fill="#e6edf3" text-anchor="middle"><tspan x="0" y="0">E</tspan></text>
+    <path id="k12" d="M1046 852 L1111 852 C1113.667 852 1115 853.333 1115 856 L1115 888 C1115 890.667 1113.667 892 1111 892 L1046 892 C1043.333 892 1042 890.667 1042 888 L1042 856 C1042 853.333 1043.333 852 1046 852 Z" fill="#2d3748"/>
+    <text transform="matrix(1 0 0 1 1078.5 866)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="10" fill="#e6edf3" text-anchor="middle"><tspan x="0" y="0">F</tspan></text>
+    <path id="k13" d="M1127 852 L1192 852 C1194.667 852 1196 853.333 1196 856 L1196 888 C1196 890.667 1194.667 892 1192 892 L1127 892 C1124.333 892 1123 890.667 1123 888 L1123 856 C1123 853.333 1124.333 852 1127 852 Z" fill="#2d3748"/>
+    <text transform="matrix(1 0 0 1 1159.5 866)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="10" fill="#e6edf3" text-anchor="middle"><tspan x="0" y="0">*</tspan></text>
+    <path id="k20" d="M884 898 L949 898 C951.667 898 953 899.333 953 902 L953 934 C953 936.667 951.667 938 949 938 L884 938 C881.333 938 880 936.667 880 934 L880 902 C880 899.333 881.333 898 884 898 Z" fill="#2d3748"/>
+    <text transform="matrix(1 0 0 1 916.5 912)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="10" fill="#e6edf3" text-anchor="middle"><tspan x="0" y="0">7</tspan></text>
+    <path id="k21" d="M965 898 L1030 898 C1032.667 898 1034 899.333 1034 902 L1034 934 C1034 936.667 1032.667 938 1030 938 L965 938 C962.333 938 961 936.667 961 934 L961 902 C961 899.333 962.333 898 965 898 Z" fill="#2d3748"/>
+    <text transform="matrix(1 0 0 1 997.5 912)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="10" fill="#e6edf3" text-anchor="middle"><tspan x="0" y="0">8</tspan></text>
+    <path id="k22" d="M1046 898 L1111 898 C1113.667 898 1115 899.333 1115 902 L1115 934 C1115 936.667 1113.667 938 1111 938 L1046 938 C1043.333 938 1042 936.667 1042 934 L1042 902 C1042 899.333 1043.333 898 1046 898 Z" fill="#2d3748"/>
+    <text transform="matrix(1 0 0 1 1078.5 912)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="10" fill="#e6edf3" text-anchor="middle"><tspan x="0" y="0">9</tspan></text>
+    <path id="k23" d="M1127 898 L1192 898 C1194.667 898 1196 899.333 1196 902 L1196 934 C1196 936.667 1194.667 938 1192 938 L1127 938 C1124.333 938 1123 936.667 1123 934 L1123 902 C1123 899.333 1124.333 898 1127 898 Z" fill="#2d3748"/>
+    <text transform="matrix(1 0 0 1 1159.5 912)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="10" fill="#e6edf3" text-anchor="middle"><tspan x="0" y="0">-</tspan></text>
+    <path id="k30" d="M884 944 L949 944 C951.667 944 953 945.333 953 948 L953 980 C953 982.667 951.667 984 949 984 L884 984 C881.333 984 880 982.667 880 980 L880 948 C880 945.333 881.333 944 884 944 Z" fill="#2d3748"/>
+    <text transform="matrix(1 0 0 1 916.5 958)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="10" fill="#e6edf3" text-anchor="middle"><tspan x="0" y="0">4</tspan></text>
+    <path id="k31" d="M965 944 L1030 944 C1032.667 944 1034 945.333 1034 948 L1034 980 C1034 982.667 1032.667 984 1030 984 L965 984 C962.333 984 961 982.667 961 980 L961 948 C961 945.333 962.333 944 965 944 Z" fill="#2d3748"/>
+    <text transform="matrix(1 0 0 1 997.5 958)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="10" fill="#e6edf3" text-anchor="middle"><tspan x="0" y="0">5</tspan></text>
+    <path id="k32" d="M1046 944 L1111 944 C1113.667 944 1115 945.333 1115 948 L1115 980 C1115 982.667 1113.667 984 1111 984 L1046 984 C1043.333 984 1042 982.667 1042 980 L1042 948 C1042 945.333 1043.333 944 1046 944 Z" fill="#2d3748"/>
+    <text transform="matrix(1 0 0 1 1078.5 958)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="10" fill="#e6edf3" text-anchor="middle"><tspan x="0" y="0">6</tspan></text>
+    <path id="k33" d="M1127 944 L1192 944 C1194.667 944 1196 945.333 1196 948 L1196 980 C1196 982.667 1194.667 984 1192 984 L1127 984 C1124.333 984 1123 982.667 1123 980 L1123 948 C1123 945.333 1124.333 944 1127 944 Z" fill="#2d3748"/>
+    <text transform="matrix(1 0 0 1 1159.5 958)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="10" fill="#e6edf3" text-anchor="middle"><tspan x="0" y="0">+</tspan></text>
+    <path id="k40" d="M884 990 L949 990 C951.667 990 953 991.333 953 994 L953 1026 C953 1028.667 951.667 1030 949 1030 L884 1030 C881.333 1030 880 1028.667 880 1026 L880 994 C880 991.333 881.333 990 884 990 Z" fill="#2d3748"/>
+    <text transform="matrix(1 0 0 1 916.5 1004)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="10" fill="#e6edf3" text-anchor="middle"><tspan x="0" y="0">1</tspan></text>
+    <path id="k41" d="M965 990 L1030 990 C1032.667 990 1034 991.333 1034 994 L1034 1026 C1034 1028.667 1032.667 1030 1030 1030 L965 1030 C962.333 1030 961 1028.667 961 1026 L961 994 C961 991.333 962.333 990 965 990 Z" fill="#2d3748"/>
+    <text transform="matrix(1 0 0 1 997.5 1004)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="10" fill="#e6edf3" text-anchor="middle"><tspan x="0" y="0">2</tspan></text>
+    <path id="k42" d="M1046 990 L1111 990 C1113.667 990 1115 991.333 1115 994 L1115 1026 C1115 1028.667 1113.667 1030 1111 1030 L1046 1030 C1043.333 1030 1042 1028.667 1042 1026 L1042 994 C1042 991.333 1043.333 990 1046 990 Z" fill="#2d3748"/>
+    <text transform="matrix(1 0 0 1 1078.5 1004)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="10" fill="#e6edf3" text-anchor="middle"><tspan x="0" y="0">3</tspan></text>
+    <path id="k43" d="M1127 990 L1192 990 C1194.667 990 1196 991.333 1196 994 L1196 1026 C1196 1028.667 1194.667 1030 1192 1030 L1127 1030 C1124.333 1030 1123 1028.667 1123 1026 L1123 994 C1123 991.333 1124.333 990 1127 990 Z" fill="#222d35"/>
+    <text transform="matrix(1 0 0 1 1159.5 1004)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="10" fill="#e6edf3" text-anchor="middle"><tspan x="0" y="0">=</tspan></text>
+    <path id="k50" d="M884 1036 L949 1036 C951.667 1036 953 1037.333 953 1040 L953 1072 C953 1074.667 951.667 1076 949 1076 L884 1076 C881.333 1076 880 1074.667 880 1072 L880 1040 C880 1037.333 881.333 1036 884 1036 Z" fill="#2d3748"/>
+    <text transform="matrix(1 0 0 1 916.5 1050)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="10" fill="#e6edf3" text-anchor="middle"><tspan x="0" y="0">0</tspan></text>
+    <path id="k51" d="M965 1036 L1030 1036 C1032.667 1036 1034 1037.333 1034 1040 L1034 1072 C1034 1074.667 1032.667 1076 1030 1076 L965 1076 C962.333 1076 961 1074.667 961 1072 L961 1040 C961 1037.333 962.333 1036 965 1036 Z" fill="#2d3748"/>
+    <text transform="matrix(1 0 0 1 997.5 1050)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="10" fill="#e6edf3" text-anchor="middle"><tspan x="0" y="0">&lt;&lt;</tspan></text>
+    <path id="k52" d="M1046 1036 L1111 1036 C1113.667 1036 1115 1037.333 1115 1040 L1115 1072 C1115 1074.667 1113.667 1076 1111 1076 L1046 1076 C1043.333 1076 1042 1074.667 1042 1072 L1042 1040 C1042 1037.333 1043.333 1036 1046 1036 Z" fill="#2d3748"/>
+    <text transform="matrix(1 0 0 1 1078.5 1050)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="10" fill="#e6edf3" text-anchor="middle"><tspan x="0" y="0">&gt;&gt;</tspan></text>
+    <path id="k53" d="M1127 1036 L1192 1036 C1194.667 1036 1196 1037.333 1196 1040 L1196 1072 C1196 1074.667 1194.667 1076 1192 1076 L1127 1076 C1124.333 1076 1123 1074.667 1123 1072 L1123 1040 C1123 1037.333 1124.333 1036 1127 1036 Z" fill="#2d3748"/>
+    <text transform="matrix(1 0 0 1 1159.5 1050)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="10" fill="#e6edf3" text-anchor="middle"><tspan x="0" y="0">&amp;</tspan></text>
+    <text transform="matrix(1 0 0 1 692 1098)" x="0" y="0" xml:space="preserve" font-family="Inter, sans-serif" font-size="12" fill="#e6edf3"><tspan x="0" y="0">GOCALC.ELF — 64-bit Calc</tspan></text>
+    <text transform="matrix(1 0 0 1 692 1116)" x="0" y="0" xml:space="preserve" font-family="&apos;Source Sans 3&apos;, sans-serif" font-size="10" fill="#94a3b8"><tspan x="0" y="0">512x384 natural (declare block) · programmer mode · tape pane · hex pad</tspan></text>
+    <path id="win_Settings___GOSET.ELF" data-name="win/Settings — GOSET.ELF" d="M1292 672 L1836 672 C1841.333 672 1844 674.667 1844 680 L1844 1052 C1844 1057.333 1841.333 1060 1836 1060 L1292 1060 C1286.667 1060 1284 1057.333 1284 1052 L1284 680 C1284 674.667 1286.667 672 1292 672 Z" fill="#182026" stroke="#334155" stroke-miterlimit="10"/>
+    <path id="titlebar_Settings___GOSET.ELF" data-name="titlebar/Settings — GOSET.ELF" d="M1292 672 L1836 672 C1841.333 672 1844 674.667 1844 680 L1844 700 L1284 700 L1284 680 C1284 674.667 1286.667 672 1292 672 Z" fill="#222d35"/>
+    <path id="title_rule_Settings___GOSET.ELF" data-name="title rule/Settings — GOSET.ELF" d="M1284 699 L1844 699 L1844 700 L1284 700 Z" fill="#334155"/>
+    <text transform="matrix(1 0 0 1 1294 680)" x="0" y="0" xml:space="preserve" font-family="Inter, sans-serif" font-size="13" fill="#ffffff"><tspan x="0" y="0">Settings — GOSET.ELF</tspan></text>
+    <path id="ctl0_Settings___GOSET.ELF" data-name="ctl0/Settings — GOSET.ELF" d="M1772 678 L1780 678 C1782.667 678 1784 679.333 1784 682 L1784 690 C1784 692.667 1782.667 694 1780 694 L1772 694 C1769.333 694 1768 692.667 1768 690 L1768 682 C1768 679.333 1769.333 678 1772 678 Z" fill="#2d3748"/>
+    <text transform="matrix(1 0 0 1 1776 680)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="9" fill="#8b98a5" text-anchor="middle"><tspan x="0" y="0">_</tspan></text>
+    <path id="ctl1_Settings___GOSET.ELF" data-name="ctl1/Settings — GOSET.ELF" d="M1794 678 L1802 678 C1804.667 678 1806 679.333 1806 682 L1806 690 C1806 692.667 1804.667 694 1802 694 L1794 694 C1791.333 694 1790 692.667 1790 690 L1790 682 C1790 679.333 1791.333 678 1794 678 Z" fill="#2d3748"/>
+    <text transform="matrix(1 0 0 1 1798 680)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="9" fill="#8b98a5" text-anchor="middle"><tspan x="0" y="0">[]</tspan></text>
+    <path id="ctl2_Settings___GOSET.ELF" data-name="ctl2/Settings — GOSET.ELF" d="M1816 678 L1824 678 C1826.667 678 1828 679.333 1828 682 L1828 690 C1828 692.667 1826.667 694 1824 694 L1816 694 C1813.333 694 1812 692.667 1812 690 L1812 682 C1812 679.333 1813.333 678 1816 678 Z" fill="#2d3748"/>
+    <text transform="matrix(1 0 0 1 1820 680)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="9" fill="#ef4444" text-anchor="middle"><tspan x="0" y="0">x</tspan></text>
+    <path id="schema_nav" data-name="schema nav" d="M1284 700 L1416 700 L1416 1040 L1284 1040 Z" fill="#11171c"/>
+    <text transform="matrix(1 0 0 1 1294 710)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="9" fill="#94a3b8"><tspan x="0" y="0">SETTINGS.TXT</tspan></text>
+    <text transform="matrix(1 0 0 1 1296 734)" x="0" y="0" xml:space="preserve" font-family="Inter, sans-serif" font-size="11" fill="#8b98a5"><tspan x="0" y="0">GENERAL</tspan></text>
+    <path id="navsel" d="M1286 756 L1414 756 L1414 780 L1286 780 Z" fill="#2a4460"/>
+    <path id="navsel_edge" data-name="navsel edge" d="M1286 756 L1289 756 L1289 780 L1286 780 Z" fill="#3b82f6"/>
+    <text transform="matrix(1 0 0 1 1296 760)" x="0" y="0" xml:space="preserve" font-family="Inter, sans-serif" font-size="11" fill="#e6edf3"><tspan x="0" y="0">THEME</tspan></text>
+    <text transform="matrix(1 0 0 1 1296 786)" x="0" y="0" xml:space="preserve" font-family="Inter, sans-serif" font-size="11" fill="#8b98a5"><tspan x="0" y="0">INPUT</tspan></text>
+    <text transform="matrix(1 0 0 1 1296 812)" x="0" y="0" xml:space="preserve" font-family="Inter, sans-serif" font-size="11" fill="#8b98a5"><tspan x="0" y="0">AUDIO</tspan></text>
+    <text transform="matrix(1 0 0 1 1296 838)" x="0" y="0" xml:space="preserve" font-family="Inter, sans-serif" font-size="11" fill="#8b98a5"><tspan x="0" y="0">A11Y</tspan></text>
+    <path id="nav_rule" data-name="nav rule" d="M1416 700 L1417 700 L1417 1040 L1416 1040 Z" fill="#2e3a44"/>
+    <text transform="matrix(1 0 0 1 1432 712)" x="0" y="0" xml:space="preserve" font-family="Inter, sans-serif" font-size="13" fill="#e6edf3"><tspan x="0" y="0">theme — 4 keys</tspan></text>
+    <text transform="matrix(1 0 0 1 1432 751)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="11" fill="#e6edf3"><tspan x="0" y="0">theme</tspan></text>
+    <path id="dd" d="M1626 744 L1758 744 C1760.667 744 1762 745.333 1762 748 L1762 764 C1762 766.667 1760.667 768 1758 768 L1626 768 C1623.333 768 1622 766.667 1622 764 L1622 748 C1622 745.333 1623.333 744 1626 744 Z" fill="#222d35" stroke="#334155" stroke-miterlimit="10"/>
+    <text transform="matrix(1 0 0 1 1630 749)" x="0" y="0" xml:space="preserve" font-family="Inter, sans-serif" font-size="11" fill="#e6edf3"><tspan x="0" y="0">dark</tspan></text>
+    <text transform="matrix(1 0 0 1 1750 751)" x="0" y="0" xml:space="preserve" font-family="Inter, sans-serif" font-size="9" fill="#94a3b8"><tspan x="0" y="0">v</tspan></text>
+    <text transform="matrix(1 0 0 1 1432 791)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="11" fill="#e6edf3"><tspan x="0" y="0">a11y.contrast</tspan></text>
+    <path id="tg" d="M1632 786 L1652 786 C1658.667 786 1662 789.333 1662 796 L1662 796 C1662 802.667 1658.667 806 1652 806 L1632 806 C1625.333 806 1622 802.667 1622 796 L1622 796 C1622 789.333 1625.333 786 1632 786 Z" fill="#2d3748"/>
+    <path id="tgk" d="M1624 796 C1624 791.582 1627.582 788 1632 788 C1636.418 788 1640 791.582 1640 796 C1640 800.418 1636.418 804 1632 804 C1627.582 804 1624 800.418 1624 796 Z" fill="#94a3b8"/>
+    <text transform="matrix(1 0 0 1 1672 790)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="10" fill="#94a3b8"><tspan x="0" y="0">off</tspan></text>
+    <text transform="matrix(1 0 0 1 1432 831)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="11" fill="#e6edf3"><tspan x="0" y="0">a11y.text_scale</tspan></text>
+    <path id="slbg" d="M1625 834 L1729 834 C1731 834 1732 835 1732 837 L1732 837 C1732 839 1731 840 1729 840 L1625 840 C1623 840 1622 839 1622 837 L1622 837 C1622 835 1623 834 1625 834 Z" fill="#2d3748"/>
+    <path id="slk" d="M1680 837 C1680 832.582 1683.582 829 1688 829 C1692.418 829 1696 832.582 1696 837 C1696 841.418 1692.418 845 1688 845 C1683.582 845 1680 841.418 1680 837 Z" fill="#3b82f6"/>
+    <text transform="matrix(1 0 0 1 1744 831)" x="0" y="0" xml:space="preserve" font-family="&apos;Source Sans 3&apos;, sans-serif" font-size="10" fill="#94a3b8"><tspan x="0" y="0">1.0</tspan></text>
+    <text transform="matrix(1 0 0 1 1432 871)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="11" fill="#e6edf3"><tspan x="0" y="0">a11y.reduce_motion</tspan></text>
+    <path id="tg-2" data-name="tg" d="M1632 866 L1652 866 C1658.667 866 1662 869.333 1662 876 L1662 876 C1662 882.667 1658.667 886 1652 886 L1632 886 C1625.333 886 1622 882.667 1622 876 L1622 876 C1622 869.333 1625.333 866 1632 866 Z" fill="#3b82f6"/>
+    <path id="tgk-2" data-name="tgk" d="M1644 876 C1644 871.582 1647.582 868 1652 868 C1656.418 868 1660 871.582 1660 876 C1660 880.418 1656.418 884 1652 884 C1647.582 884 1644 880.418 1644 876 Z" fill="#ffffff"/>
+    <text transform="matrix(1 0 0 1 1672 870)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="10" fill="#94a3b8"><tspan x="0" y="0">on</tspan></text>
+    <path id="pal_Bg" data-name="pal Bg" d="M1432 996 L1464 996 L1464 1018 L1432 1018 Z" fill="#182026" stroke="#334155" stroke-miterlimit="10"/>
+    <path id="pal_Surface" data-name="pal Surface" d="M1468 996 L1500 996 L1500 1018 L1468 1018 Z" fill="#222d35" stroke="#334155" stroke-miterlimit="10"/>
+    <path id="pal_Border" data-name="pal Border" d="M1504 996 L1536 996 L1536 1018 L1504 1018 Z" fill="#334155" stroke="#334155" stroke-miterlimit="10"/>
+    <path id="pal_Accent" data-name="pal Accent" d="M1540 996 L1572 996 L1572 1018 L1540 1018 Z" fill="#3b82f6" stroke="#334155" stroke-miterlimit="10"/>
+    <path id="pal_Text" data-name="pal Text" d="M1576 996 L1608 996 L1608 1018 L1576 1018 Z" fill="#ffffff" stroke="#334155" stroke-miterlimit="10"/>
+    <text transform="matrix(1 0 0 1 1432 1024)" x="0" y="0" xml:space="preserve" font-family="Inter, sans-serif" font-size="9" fill="#94a3b8"><tspan x="0" y="0">live palette preview</tspan></text>
+    <path id="status-4" data-name="status" d="M1284 1040 L1844 1040 L1844 1060 L1284 1060 Z" fill="#11171c"/>
+    <path id="status_rule-4" data-name="status rule" d="M1284 1040 L1844 1040 L1844 1041 L1284 1041 Z" fill="#2e3a44"/>
+    <text transform="matrix(1 0 0 1 1292 1044)" x="0" y="0" xml:space="preserve" font-family="&apos;Fira Code&apos;, sans-serif" font-size="10" fill="#8b98a5"><tspan x="0" y="0">SETTINGS.TXT · 4 keys · autosave on</tspan></text>
+    <text transform="matrix(1 0 0 1 1284 1074)" x="0" y="0" xml:space="preserve" font-family="Inter, sans-serif" font-size="12" fill="#e6edf3"><tspan x="0" y="0">GOSET.ELF — Settings</tspan></text>
+    <text transform="matrix(1 0 0 1 1284 1092)" x="0" y="0" xml:space="preserve" font-family="&apos;Source Sans 3&apos;, sans-serif" font-size="10" fill="#94a3b8"><tspan x="0" y="0">560x360 natural (declare block) · schema list · edit pane · live palette</tspan></text>
+  </g>
+</svg>

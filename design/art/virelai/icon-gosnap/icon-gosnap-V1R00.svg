@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="64" height="64" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="linear-gradient-1" x1="4" y1="32" x2="60" y2="32" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2e2e4a"/>
+      <stop offset="0.55" stop-color="#23233a"/>
+      <stop offset="1" stop-color="#181828"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-2" x1="10" y1="17" x2="54" y2="17" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7a7aa8" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#7a7aa8" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <title>icon-gosnap-V1R00</title>
+  <g id="Layer_1" data-name="Layer 1">
+    <path id="plate" d="M18 4 L46 4 C55.333 4 60 8.667 60 18 L60 46 C60 55.333 55.333 60 46 60 L18 60 C8.667 60 4 55.333 4 46 L4 18 C4 8.667 8.667 4 18 4 Z" fill="url(#linear-gradient-1)" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="sheen" d="M18 8 L46 8 C51.333 8 54 10.667 54 16 L54 18 C54 23.333 51.333 26 46 26 L18 26 C12.667 26 10 23.333 10 18 L10 16 C10 10.667 12.667 8 18 8 Z" fill="url(#linear-gradient-2)"/>
+    <path id="hump" d="M26.5 16 L33.5 16 C35.167 16 36 16.833 36 18.5 L36 20.5 C36 22.167 35.167 23 33.5 23 L26.5 23 C24.833 23 24 22.167 24 20.5 L24 18.5 C24 16.833 24.833 16 26.5 16 Z" fill="#94a3b8" stroke="#503139" stroke-width="2.6" stroke-linejoin="round"/>
+    <path id="body" d="M18 21 L46 21 C49.333 21 51 22.667 51 26 L51 42 C51 45.333 49.333 47 46 47 L18 47 C14.667 47 13 45.333 13 42 L13 26 C13 22.667 14.667 21 18 21 Z" fill="#94a3b8" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="lens" d="M23 34 C23 29.029 27.029 25 32 25 C36.971 25 41 29.029 41 34 C41 38.971 36.971 43 32 43 C27.029 43 23 38.971 23 34 Z" fill="#0f0f1c" stroke="#503139" stroke-width="3" stroke-miterlimit="10"/>
+    <path id="glass" d="M27.4 34 C27.4 31.459 29.459 29.4 32 29.4 C34.541 29.4 36.6 31.459 36.6 34 C36.6 36.541 34.541 38.6 32 38.6 C29.459 38.6 27.4 36.541 27.4 34 Z" fill="#1e40af"/>
+    <path id="glint" d="M27.9 31.4 C27.9 30.461 28.661 29.7 29.6 29.7 C30.539 29.7 31.3 30.461 31.3 31.4 C31.3 32.339 30.539 33.1 29.6 33.1 C28.661 33.1 27.9 32.339 27.9 31.4 Z" fill="#ffffff"/>
+    <path id="shutter" d="M44 18.5 L46 18.5 C47.333 18.5 48 19.167 48 20.5 L48 21 C48 22.333 47.333 23 46 23 L44 23 C42.667 23 42 22.333 42 21 L42 20.5 C42 19.167 42.667 18.5 44 18.5 Z" fill="#ef4444" stroke="#503139" stroke-width="2" stroke-linejoin="round"/>
+  </g>
+</svg>

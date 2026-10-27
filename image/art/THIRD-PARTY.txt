@@ -1,11 +1,17 @@
 Staged interface art — provenance
 =================================
 
-Source:   drawmeanelephant/f-artcraft, art/virelai/<slug>/, branch main
-Format:   <slug>-V1R00.vectorcraft + .svg + @2x.png per piece
-Adopted:  rendered QOI rasters only (the repo never vendors the vector
-          sources); tools/art/adopt.py is the deterministic conversion,
-          ART.TXT records per-asset source and output sha256.
+Source:   design/art/virelai/<slug>/ — vendored from
+          drawmeanelephant/f-artcraft art/virelai/<slug>/ @ 1b0b03a8
+          (2026-10-25). VirelaiOS is the design truth (#3783); f-artcraft
+          is the renderer/preview sandbox.
+Format:   <slug>-V*R*.vectorcraft + .svg + @2x.png per piece; the
+          .vectorcraft/.svg masters and rendered drops are all vendored
+          under design/ (see design/README.md).
+Adopted:  rendered QOI rasters under image/art/; tools/art/sync.py runs
+          the deterministic conversion over the local masters in
+          local-truth mode, ART.TXT records per-asset source and output
+          sha256.
 
 Issues (all on f-artcraft, all CLOSED at adoption):
 
@@ -16,6 +22,10 @@ Issues (all on f-artcraft, all CLOSED at adoption):
   #1255  spinner sprites (2 sheets) -> image/art/spinner/
   #1257  filetype icons (10)        -> image/art/filetypes/
   #1248  app-icon set (31)          -> image/art/icons/
+
+Vendored but not yet adopted (no adopt.py TABLE row — reported as
+no-row by sync.py): sheet-icons contact sheet and the four wallpaper-*
+pieces.
 
 License:  f-artcraft carries no LICENSE file; the art is authored for
           VirelaiOS by the same owner (drawmeanelephant). No third-party

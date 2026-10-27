@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="32" height="48" viewBox="0 0 32 48">
+  <title>cursor-grab-V1R00</title>
+  <g id="Layer_1" data-name="Layer 1">
+    <path id="finger_1" data-name="finger 1" d="M5.8 8 L5.8 24 C6.022 22.963 6.939 22.222 8 22.222 C9.061 22.222 9.978 22.963 10.2 24 L10.2 8 C9.978 9.037 9.061 9.778 8 9.778 C6.939 9.778 6.022 9.037 5.8 8 Z" fill="#ffffff" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="finger_2" data-name="finger 2" d="M10.7 5 L10.7 24 C10.928 22.912 11.888 22.132 13 22.132 C14.112 22.132 15.072 22.912 15.3 24 L15.3 5 C15.072 6.088 14.112 6.868 13 6.868 C11.888 6.868 10.928 6.088 10.7 5 Z" fill="#ffffff" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="finger_3" data-name="finger 3" d="M15.7 6 L15.7 24 C15.7 22.702 16.752 21.65 18.05 21.65 C19.348 21.65 20.4 22.702 20.4 24 L20.4 6 C20.4 7.298 19.348 8.35 18.05 8.35 C16.752 8.35 15.7 7.298 15.7 6 Z" fill="#ffffff" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="finger_4" data-name="finger 4" d="M20.9 9 L20.9 24 C21.117 23.014 21.99 22.311 23 22.311 C24.01 22.311 24.883 23.014 25.1 24 L25.1 9 C24.883 9.986 24.01 10.689 23 10.689 C21.99 10.689 21.117 9.986 20.9 9 Z" fill="#ffffff" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="thumb" d="M7.4 33.2 L12.4 25.2 C11.71 26.181 10.372 26.448 9.358 25.808 C8.344 25.167 8.011 23.844 8.6 22.8 L3.6 30.8 C4.29 29.819 5.628 29.552 6.642 30.192 C7.656 30.833 7.989 32.156 7.4 33.2 Z" fill="#ffffff" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="palm" d="M6 29 C6 22.925 10.701 18 16.5 18 C22.299 18 27 22.925 27 29 C27 35.075 22.299 40 16.5 40 C10.701 40 6 35.075 6 29 Z" fill="#ffffff" stroke="#503139" stroke-width="3" stroke-miterlimit="10"/>
+  </g>
+</svg>

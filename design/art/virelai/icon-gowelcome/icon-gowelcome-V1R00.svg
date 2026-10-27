@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="64" height="64" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="linear-gradient-1" x1="4" y1="32" x2="60" y2="32" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2e2e4a"/>
+      <stop offset="0.55" stop-color="#23233a"/>
+      <stop offset="1" stop-color="#181828"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-2" x1="10" y1="17" x2="54" y2="17" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7a7aa8" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#7a7aa8" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <title>icon-gowelcome-V1R00</title>
+  <g id="Layer_1" data-name="Layer 1">
+    <path id="plate" d="M18 4 L46 4 C55.333 4 60 8.667 60 18 L60 46 C60 55.333 55.333 60 46 60 L18 60 C8.667 60 4 55.333 4 46 L4 18 C4 8.667 8.667 4 18 4 Z" fill="url(#linear-gradient-1)" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="sheen" d="M18 8 L46 8 C51.333 8 54 10.667 54 16 L54 18 C54 23.333 51.333 26 46 26 L18 26 C12.667 26 10 23.333 10 18 L10 16 C10 10.667 12.667 8 18 8 Z" fill="url(#linear-gradient-2)"/>
+    <path id="glove" d="M43.4 22 C43.4 19.459 45.459 17.4 48 17.4 C50.541 17.4 52.6 19.459 52.6 22 C52.6 24.541 50.541 26.6 48 26.6 C45.459 26.6 43.4 24.541 43.4 22 Z" fill="#ffffff" stroke="#503139" stroke-width="2.6" stroke-miterlimit="10"/>
+    <path id="glove_thumb" data-name="glove thumb" d="M50.2 19.4 C50.2 18.185 51.185 17.2 52.4 17.2 C53.615 17.2 54.6 18.185 54.6 19.4 C54.6 20.615 53.615 21.6 52.4 21.6 C51.185 21.6 50.2 20.615 50.2 19.4 Z" fill="#ffffff" stroke="#503139" stroke-width="2" stroke-miterlimit="10"/>
+    <path id="wave_1" data-name="wave 1" d="M54 26 C55.667 23.333 56.167 20.5 55.5 17.5" fill="none" stroke="#e6edf3" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+    <path id="wave_2" data-name="wave 2" d="M49 14.5 C51 12.833 53.167 12.333 55.5 13" fill="none" stroke="#e6edf3" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+    <path id="dome" d="M17 40 C17 25 23 16.5 32 16.5 C41 16.5 47 25 47 40 Z" fill="#fdb845" stroke="#503139" stroke-width="3.2" stroke-linejoin="round"/>
+    <path id="dome_light" data-name="dome light" d="M21 30 C23 23 28 19.5 33 19 C28 21.5 24.5 25.5 23.5 31 Z" fill="#ffd98a"/>
+    <path id="seed_1" data-name="seed 1" d="M24.2 22 C24.2 21.448 25.006 21 26 21 C26.994 21 27.8 21.448 27.8 22 C27.8 22.552 26.994 23 26 23 C25.006 23 24.2 22.552 24.2 22 Z" fill="#fff0c2"/>
+    <path id="seed_2" data-name="seed 2" d="M33.2 20.5 C33.2 19.948 34.006 19.5 35 19.5 C35.994 19.5 36.8 19.948 36.8 20.5 C36.8 21.052 35.994 21.5 35 21.5 C34.006 21.5 33.2 21.052 33.2 20.5 Z" fill="#fff0c2"/>
+    <path id="seed_3" data-name="seed 3" d="M39.2 26 C39.2 25.448 40.006 25 41 25 C41.994 25 42.8 25.448 42.8 26 C42.8 26.552 41.994 27 41 27 C40.006 27 39.2 26.552 39.2 26 Z" fill="#fff0c2"/>
+    <path id="lettuce" d="M17 37 L47 37 L47 41 C45 44.667 43 44.833 41 41.5 C39 44.833 37 44.833 35 41.5 C33 44.833 31 44.833 29 41.5 C27 44.833 25 44.833 23 41.5 C21 44.833 19 44.667 17 41 Z" fill="#8bc34a" stroke="#503139" stroke-width="2.6" stroke-linejoin="round"/>
+    <path id="eye_1" data-name="eye 1" d="M22.6 29.5 C22.6 27.291 24.122 25.5 26 25.5 C27.878 25.5 29.4 27.291 29.4 29.5 C29.4 31.709 27.878 33.5 26 33.5 C24.122 33.5 22.6 31.709 22.6 29.5 Z" fill="#ffffff" stroke="#503139" stroke-width="2.4" stroke-miterlimit="10"/>
+    <path id="pupil_1" data-name="pupil 1" d="M24.5 31 C24.5 29.84 25.44 28.9 26.6 28.9 C27.76 28.9 28.7 29.84 28.7 31 C28.7 32.16 27.76 33.1 26.6 33.1 C25.44 33.1 24.5 32.16 24.5 31 Z" fill="#3a2530"/>
+    <path id="eye_2" data-name="eye 2" d="M34.6 29.5 C34.6 27.291 36.122 25.5 38 25.5 C39.878 25.5 41.4 27.291 41.4 29.5 C41.4 31.709 39.878 33.5 38 33.5 C36.122 33.5 34.6 31.709 34.6 29.5 Z" fill="#ffffff" stroke="#503139" stroke-width="2.4" stroke-miterlimit="10"/>
+    <path id="pupil_2" data-name="pupil 2" d="M36.5 31 C36.5 29.84 37.44 28.9 38.6 28.9 C39.76 28.9 40.7 29.84 40.7 31 C40.7 32.16 39.76 33.1 38.6 33.1 C37.44 33.1 36.5 32.16 36.5 31 Z" fill="#3a2530"/>
+    <path id="smile" d="M26.5 36.5 C30.167 38.5 33.833 38.5 37.5 36.5" fill="none" stroke="#503139" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+</svg>

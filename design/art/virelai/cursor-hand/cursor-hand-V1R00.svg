@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="32" height="48" viewBox="0 0 32 48">
+  <title>cursor-hand-V1R00</title>
+  <g id="Layer_1" data-name="Layer 1">
+    <path id="fist" d="M15 16 L19 16 C23.667 16 26 18.333 26 23 L26 31 C26 35.667 23.667 38 19 38 L15 38 C10.333 38 8 35.667 8 31 L8 23 C8 18.333 10.333 16 15 16 Z" fill="#ffffff" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="index" d="M8.8 4 L8.8 24 C9.075 22.448 10.424 21.318 12 21.318 C13.576 21.318 14.925 22.448 15.2 24 L15.2 4 C14.925 5.552 13.576 6.682 12 6.682 C10.424 6.682 9.075 5.552 8.8 4 Z" fill="#ffffff" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="middle" d="M17 10 L17 24 C17 22.619 18.119 21.5 19.5 21.5 C20.881 21.5 22 22.619 22 24 L22 10 C22 11.381 20.881 12.5 19.5 12.5 C18.119 12.5 17 11.381 17 10 Z" fill="#ffffff" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="ring" d="M22.2 13 L22.2 25 C22.2 23.73 23.23 22.7 24.5 22.7 C25.77 22.7 26.8 23.73 26.8 25 L26.8 13 C26.8 14.27 25.77 15.3 24.5 15.3 C23.23 15.3 22.2 14.27 22.2 13 Z" fill="#ffffff" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="thumb" d="M8.1 31.3 L13.1 23.3 C12.298 24.234 10.935 24.444 9.888 23.796 C8.841 23.148 8.422 21.835 8.9 20.7 L3.9 28.7 C4.702 27.766 6.065 27.556 7.112 28.204 C8.159 28.852 8.578 30.165 8.1 31.3 Z" fill="#ffffff" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+  </g>
+</svg>

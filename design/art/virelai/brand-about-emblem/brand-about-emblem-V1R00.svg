@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <radialGradient id="radial-gradient-1" cx="128" cy="105" r="84" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2a2a44"/>
+      <stop offset="1" stop-color="#1e1e2e"/>
+    </radialGradient>
+  </defs>
+  <title>VirelaiOS — brand about emblem</title>
+  <g id="Layer_1" data-name="Layer 1">
+    <path id="roundel" d="M8 128 C8 61.726 61.726 8 128 8 C194.274 8 248 61.726 248 128 C248 194.274 194.274 248 128 248 C61.726 248 8 194.274 8 128 Z" fill="#1e1e2e" stroke="#334155" stroke-width="4" stroke-miterlimit="10"/>
+    <path id="inner_ring" data-name="inner ring" d="M22 128 C22 69.458 69.458 22 128 22 C186.542 22 234 69.458 234 128 C234 186.542 186.542 234 128 234 C69.458 234 22 186.542 22 128 Z" fill="none" stroke="#f0e4bc" stroke-width="1.5" stroke-miterlimit="10" opacity="0.4"/>
+    <path id="inner_glow" data-name="inner glow" d="M44 105 C44 63.579 81.608 30 128 30 C174.392 30 212 63.579 212 105 C212 146.421 174.392 180 128 180 C81.608 180 44 146.421 44 105 Z" fill="url(#radial-gradient-1)"/>
+    <path id="leg_L2" data-name="leg L2" d="M105.8 112.8 C94.2 128.467 83.933 139.833 75 146.9 L78.6 152.6 C90.467 146.333 103.2 136.2 116.8 122.2 Z" fill="#fdb845" stroke="#503139" stroke-width="1.892" stroke-miterlimit="10"/>
+    <path id="leg_L1" data-name="leg L1" d="M114.3 120.1 C111.833 134.5 109.133 145.3 106.2 152.5 L111.9 155.9 C117.9 148.233 123.367 137.533 128.3 123.8 Z" fill="#fdb845" stroke="#503139" stroke-width="1.892" stroke-miterlimit="10"/>
+    <path id="leg_R1" data-name="leg R1" d="M127.7 123.8 C132.633 137.533 138.1 148.233 144.1 155.9 L149.8 152.5 C146.867 145.3 144.167 134.5 141.7 120.1 Z" fill="#fdb845" stroke="#503139" stroke-width="1.892" stroke-miterlimit="10"/>
+    <path id="leg_R2" data-name="leg R2" d="M139.2 122.2 C152.8 136.2 165.533 146.333 177.4 152.6 L181 146.9 C172.067 139.833 161.8 128.467 150.2 112.8 Z" fill="#fdb845" stroke="#503139" stroke-width="1.892" stroke-miterlimit="10"/>
+    <path id="arm_L" data-name="arm L" d="M97.3 95.2 C76.433 94.667 62.1 92.433 54.3 88.5 L50.4 95.2 C60.333 101.667 75.667 106.133 96.4 108.6 Z" fill="#fdb845" stroke="#503139" stroke-width="1.892" stroke-miterlimit="10"/>
+    <path id="arm_R" data-name="arm R" d="M159.6 108.6 C180.333 106.133 195.667 101.667 205.6 95.2 L201.7 88.5 C193.9 92.433 179.567 94.667 158.7 95.2 Z" fill="#fdb845" stroke="#503139" stroke-width="1.892" stroke-miterlimit="10"/>
+    <path id="glove_L_palm" data-name="glove L palm" d="M43.965 91.878 C43.965 87.883 47.703 84.643 52.313 84.643 C56.923 84.643 60.661 87.883 60.661 91.878 C60.661 95.874 56.923 99.113 52.313 99.113 C47.703 99.113 43.965 95.874 43.965 91.878 Z" fill="#ffffff" stroke="#503139" stroke-width="1.781" stroke-miterlimit="10"/>
+    <path id="glove_L_thumb" data-name="glove L thumb" d="M41.739 87.983 C41.739 85.831 43.234 84.087 45.078 84.087 C46.922 84.087 48.417 85.831 48.417 87.983 C48.417 90.134 46.922 91.878 45.078 91.878 C43.234 91.878 41.739 90.134 41.739 87.983 Z" fill="#ffffff" stroke="#503139" stroke-width="1.67" stroke-miterlimit="10"/>
+    <path id="glove_L_finger0" data-name="glove L finger0" d="M56.8 86.3 C56.067 84.833 55.133 83.733 54 83" fill="none" stroke="#503139" stroke-width="1.224" stroke-linecap="round" stroke-miterlimit="10"/>
+    <path id="glove_L_finger1" data-name="glove L finger1" d="M52.3 86.3 C51.567 84.833 50.633 83.733 49.5 83" fill="none" stroke="#503139" stroke-width="1.224" stroke-linecap="round" stroke-miterlimit="10"/>
+    <path id="glove_L_finger2" data-name="glove L finger2" d="M47.9 86.3 C47.167 84.833 46.233 83.733 45.1 83" fill="none" stroke="#503139" stroke-width="1.224" stroke-linecap="round" stroke-miterlimit="10"/>
+    <path id="glove_R_palm" data-name="glove R palm" d="M195.339 91.878 C195.339 87.883 199.077 84.643 203.687 84.643 C208.297 84.643 212.035 87.883 212.035 91.878 C212.035 95.874 208.297 99.113 203.687 99.113 C199.077 99.113 195.339 95.874 195.339 91.878 Z" fill="#ffffff" stroke="#503139" stroke-width="1.781" stroke-miterlimit="10"/>
+    <path id="glove_R_thumb" data-name="glove R thumb" d="M207.583 87.983 C207.583 85.831 209.078 84.087 210.922 84.087 C212.766 84.087 214.261 85.831 214.261 87.983 C214.261 90.134 212.766 91.878 210.922 91.878 C209.078 91.878 207.583 90.134 207.583 87.983 Z" fill="#ffffff" stroke="#503139" stroke-width="1.67" stroke-miterlimit="10"/>
+    <path id="glove_R_finger0" data-name="glove R finger0" d="M199.2 86.3 C199.933 84.833 200.867 83.733 202 83" fill="none" stroke="#503139" stroke-width="1.224" stroke-linecap="round" stroke-miterlimit="10"/>
+    <path id="glove_R_finger1" data-name="glove R finger1" d="M203.7 86.3 C204.433 84.833 205.367 83.733 206.5 83" fill="none" stroke="#503139" stroke-width="1.224" stroke-linecap="round" stroke-miterlimit="10"/>
+    <path id="glove_R_finger2" data-name="glove R finger2" d="M208.1 86.3 C208.833 84.833 209.767 83.733 210.9 83" fill="none" stroke="#503139" stroke-width="1.224" stroke-linecap="round" stroke-miterlimit="10"/>
+    <path id="body" d="M90.2 96.3 C86.8 113 93.5 123 103.5 128.6 L152.5 128.6 C162.5 123 169.2 113 165.8 96.3 Z" fill="#fdb845" stroke="#503139" stroke-width="2.337" stroke-miterlimit="10"/>
+    <path id="body_shade" data-name="body shade" d="M144.7 100.8 C160.3 106.3 162.5 117.5 152.5 125.3 L139.1 125.3 C146.9 115.3 148 107.5 144.7 100.8 Z" fill="#f5ac3c"/>
+    <path id="patty" d="M87.9 86.3 L168.1 86.3 C171.4 86.3 172.5 90.8 170.3 94.1 C161.4 97.4 94.6 97.4 85.7 94.1 C83.5 90.8 84.6 86.3 87.9 86.3 Z" fill="#5e3d49" stroke="#503139" stroke-width="2.003" stroke-miterlimit="10"/>
+    <path id="cheese0" d="M98.5 88.5 L110.7 88.5 L105.7 99.7 Z" fill="#ffc93c" stroke="#503139" stroke-width="1.447" stroke-miterlimit="10"/>
+    <path id="cheese1" d="M123 88.5 L135.2 88.5 L130.2 103 Z" fill="#ffc93c" stroke="#503139" stroke-width="1.447" stroke-miterlimit="10"/>
+    <path id="cheese2" d="M146.4 88.5 L158.6 88.5 L153.6 98.6 Z" fill="#ffc93c" stroke="#503139" stroke-width="1.447" stroke-miterlimit="10"/>
+    <path id="tomato" d="M85.7 78.5 L170.3 78.5 L169.2 86.9 L86.8 86.9 Z" fill="#e04b35" stroke="#503139" stroke-width="1.781" stroke-miterlimit="10"/>
+    <path id="lettuce" d="M79 74.1 C83.067 80.033 87.167 83 91.3 83 C95.367 86.667 99.433 84.433 103.5 76.3 C107.567 80.033 111.667 82.267 115.8 83 C119.867 86.667 123.933 84.433 128 76.3 C132.067 80.033 136.133 82.267 140.2 83 C144.333 86.667 148.433 84.433 152.5 76.3 C156.567 80.033 160.633 82.267 164.7 83 C168.833 86.667 172.933 84.8 177 77.4 L174.7 71.8 L81.3 71.8 Z" fill="#8bc34a" stroke="#503139" stroke-width="1.67" stroke-miterlimit="10"/>
+    <path id="bun_dome" data-name="bun dome" d="M83.5 73 C83.5 48.5 102.4 35.1 128 34 C153.6 35.1 172.5 48.5 172.5 73 Z" fill="#fdb845" stroke="#503139" stroke-width="2.449" stroke-miterlimit="10"/>
+    <path id="dome_light" data-name="dome light" d="M92.4 66.3 C91.3 52.9 103.5 41.8 118 38.5 C106.9 46.2 99.1 57.4 96.8 68.5 Z" fill="#ffd98a"/>
+    <path id="dome_shade" data-name="dome shade" d="M144.7 37.3 C159.2 41.8 168.1 54 169.2 70.7 L160.3 70.7 C160.3 56.3 154.7 45.1 144.7 37.3 Z" fill="#f5ac3c"/>
+    <path id="seed0" d="M101.009 50.696 C101.009 49.927 102.13 49.304 103.513 49.304 C104.896 49.304 106.017 49.927 106.017 50.696 C106.017 51.464 104.896 52.087 103.513 52.087 C102.13 52.087 101.009 51.464 101.009 50.696 Z" fill="#fff0c2"/>
+    <path id="seed1" d="M131.061 48.47 C131.061 47.701 132.182 47.078 133.565 47.078 C134.948 47.078 136.07 47.701 136.07 48.47 C136.07 49.238 134.948 49.861 133.565 49.861 C132.182 49.861 131.061 49.238 131.061 48.47 Z" fill="#fff0c2"/>
+    <path id="seed2" d="M155.548 54.035 C155.548 53.266 156.669 52.643 158.052 52.643 C159.435 52.643 160.557 53.266 160.557 54.035 C160.557 54.803 159.435 55.426 158.052 55.426 C156.669 55.426 155.548 54.803 155.548 54.035 Z" fill="#fff0c2"/>
+    <path id="seed3" d="M111.026 58.487 C111.026 57.719 112.147 57.096 113.53 57.096 C114.914 57.096 116.035 57.719 116.035 58.487 C116.035 59.255 114.914 59.878 113.53 59.878 C112.147 59.878 111.026 59.255 111.026 58.487 Z" fill="#fff0c2"/>
+    <path id="seed4" d="M142.191 59.6 C142.191 58.832 143.313 58.209 144.696 58.209 C146.079 58.209 147.2 58.832 147.2 59.6 C147.2 60.368 146.079 60.991 144.696 60.991 C143.313 60.991 142.191 60.368 142.191 59.6 Z" fill="#fff0c2"/>
+    <path id="eye-1_white" data-name="eye-1 white" d="M109.913 108.574 C109.913 104.578 112.529 101.339 115.757 101.339 C118.984 101.339 121.6 104.578 121.6 108.574 C121.6 112.57 118.984 115.809 115.757 115.809 C112.529 115.809 109.913 112.57 109.913 108.574 Z" fill="#ffffff" stroke="#503139" stroke-width="1.67" stroke-miterlimit="10"/>
+    <path id="eye-1_pupil" data-name="eye-1 pupil" d="M111.583 110.243 C111.583 108.399 112.704 106.904 114.087 106.904 C115.47 106.904 116.591 108.399 116.591 110.243 C116.591 112.088 115.47 113.583 114.087 113.583 C112.704 113.583 111.583 112.088 111.583 110.243 Z" fill="#3a2530"/>
+    <path id="eye-1_glint" data-name="eye-1 glint" d="M111.972 108.017 C111.972 107.31 112.421 106.737 112.974 106.737 C113.527 106.737 113.976 107.31 113.976 108.017 C113.976 108.724 113.527 109.297 112.974 109.297 C112.421 109.297 111.972 108.724 111.972 108.017 Z" fill="#ffffff"/>
+    <path id="eye1_white" data-name="eye1 white" d="M134.4 108.574 C134.4 104.578 137.016 101.339 140.243 101.339 C143.471 101.339 146.087 104.578 146.087 108.574 C146.087 112.57 143.471 115.809 140.243 115.809 C137.016 115.809 134.4 112.57 134.4 108.574 Z" fill="#ffffff" stroke="#503139" stroke-width="1.67" stroke-miterlimit="10"/>
+    <path id="eye1_pupil" data-name="eye1 pupil" d="M139.409 110.243 C139.409 108.399 140.53 106.904 141.913 106.904 C143.296 106.904 144.417 108.399 144.417 110.243 C144.417 112.088 143.296 113.583 141.913 113.583 C140.53 113.583 139.409 112.088 139.409 110.243 Z" fill="#3a2530"/>
+    <path id="eye1_glint" data-name="eye1 glint" d="M142.024 108.017 C142.024 107.31 142.473 106.737 143.026 106.737 C143.579 106.737 144.028 107.31 144.028 108.017 C144.028 108.724 143.579 109.297 143.026 109.297 C142.473 109.297 142.024 108.724 142.024 108.017 Z" fill="#ffffff"/>
+    <path id="smile" d="M120.8 118.6 C125.6 123.8 130.4 123.8 135.2 118.6" fill="none" stroke="#503139" stroke-width="2.003" stroke-linecap="round" stroke-miterlimit="10"/>
+    <path id="bow_L" data-name="bow L" d="M125.2 131.9 L113.5 126.4 L113.5 137.5 Z" fill="#d94f3d" stroke="#503139" stroke-width="1.558" stroke-miterlimit="10"/>
+    <path id="bow_R" data-name="bow R" d="M130.8 131.9 L142.5 126.4 L142.5 137.5 Z" fill="#d94f3d" stroke="#503139" stroke-width="1.558" stroke-miterlimit="10"/>
+    <path id="bow_knot" data-name="bow knot" d="M124.661 131.948 C124.661 130.411 126.156 129.165 128 129.165 C129.844 129.165 131.339 130.411 131.339 131.948 C131.339 133.485 129.844 134.73 128 134.73 C126.156 134.73 124.661 133.485 124.661 131.948 Z" fill="#d94f3d" stroke="#503139" stroke-width="1.558" stroke-miterlimit="10"/>
+    <text transform="matrix(1 0 0 1 128 182)" x="0" y="0" xml:space="preserve" font-family="&apos;Virelai Sans&apos;, sans-serif" font-size="24" fill="#f0e4bc" letter-spacing="2.64" text-anchor="middle"><tspan x="0" y="0">VIRELAIOS</tspan></text>
+    <path id="flank_dot0" data-name="flank dot0" d="M33.032 176.8 C33.032 175.143 34.375 173.8 36.032 173.8 C37.689 173.8 39.032 175.143 39.032 176.8 C39.032 178.457 37.689 179.8 36.032 179.8 C34.375 179.8 33.032 178.457 33.032 176.8 Z" fill="#f0e4bc" opacity="0.55"/>
+    <path id="flank_dot1" data-name="flank dot1" d="M216.968 176.8 C216.968 175.143 218.311 173.8 219.968 173.8 C221.625 173.8 222.968 175.143 222.968 176.8 C222.968 178.457 221.625 179.8 219.968 179.8 C218.311 179.8 216.968 178.457 216.968 176.8 Z" fill="#f0e4bc" opacity="0.55"/>
+  </g>
+</svg>

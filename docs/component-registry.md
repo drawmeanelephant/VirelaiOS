@@ -228,14 +228,19 @@ gate-proven usage — one promotion, three named refusals:
   guaranteed repository path, so the tile would open on a legible error
   rather than a desk face.
 
-## Staged art — the f-artcraft conveyor
+## Staged art — the vendored design masters
 
-Signed f-artcraft drops adopted by `tools/art/adopt.py` into `image/art/`
-and staged on the session share under `/host/ART/`. The manifest
-(`image/art/ART.TXT`) is the canonical row set — it pins each asset's
-source slug, share name, ship size, and both SHA-256s; rows here group
-the manifest by family and say which seams consume them. Assets are not
-binaries, so the binary column stays `—`.
+VirelaiOS is the design truth (#3783): the figcraft design sheets and
+per-piece masters are vendored under `design/` (mirroring f-artcraft's
+`virelai/` + `art/virelai/` trees), adopted by `tools/art/sync.py` +
+`tools/art/adopt.py` into `image/art/`, and staged on the session share
+under `/host/ART/`. f-artcraft is the renderer/preview sandbox —
+`sync.py --export` regenerates the shipped-truth templates it consumes;
+nothing fetches into this repo. The manifest (`image/art/ART.TXT`) is the
+canonical row set — it pins each asset's source slug, share name, ship
+size, and both SHA-256s; rows here group the manifest by family and say
+which seams consume them. Assets are not binaries, so the binary column
+stays `—`.
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
@@ -246,6 +251,8 @@ binaries, so the binary column stays `—`.
 | Boot plate (plt paints at the seat-side boot moment — the frame presented over the blocking startup; emb unwired; kernel render_splash cannot read /host) | asset | — | ver 1.0.0 | tools/art/adopt.py, image/art/ART.TXT | staged |
 | Filetype icons (10 — paint in appkit.FilePicker rows, the GOFILES grid mosaic, and the GOFILES VT list rows as two-cell strips) | asset | — | ver 1.0.0 | tools/art/adopt.py, image/art/ART.TXT | staged |
 | App icons (31 — icon= manifest seam; paint on launcher result rows and the tab rail) | asset | — | ver 1.0.0 | tools/art/adopt.py, image/art/ART.TXT | staged |
+| Design sheets (figcraft/vectorcraft masters — tokens, apps, seat-shell, app-screens; VirelaiOS is the design truth #3783, f-artcraft previews from `sync.py --export` templates) | asset | — | ver 1.0.0 | design/virelai/design/, tools/art/sync.py, tools/art/adopt.py | staged |
+| Piece masters (vectorcraft + svg + @2x.png per slug — the adoption sources ART.TXT pins; wallpapers + sheet-icons vendored ahead of adoption) | asset | — | ver 1.0.0 | design/art/virelai/, tools/art/sync.py, tools/art/adopt.py | staged |
 
 ## Shared libraries — user/go
 

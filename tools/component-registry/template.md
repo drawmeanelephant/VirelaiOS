@@ -138,14 +138,19 @@ gate-proven usage — one promotion, three named refusals:
   guaranteed repository path, so the tile would open on a legible error
   rather than a desk face.
 
-## Staged art — the f-artcraft conveyor
+## Staged art — the vendored design masters
 
-Signed f-artcraft drops adopted by `tools/art/adopt.py` into `image/art/`
-and staged on the session share under `/host/ART/`. The manifest
-(`image/art/ART.TXT`) is the canonical row set — it pins each asset's
-source slug, share name, ship size, and both SHA-256s; rows here group
-the manifest by family and say which seams consume them. Assets are not
-binaries, so the binary column stays `—`.
+VirelaiOS is the design truth (#3783): the figcraft design sheets and
+per-piece masters are vendored under `design/` (mirroring f-artcraft's
+`virelai/` + `art/virelai/` trees), adopted by `tools/art/sync.py` +
+`tools/art/adopt.py` into `image/art/`, and staged on the session share
+under `/host/ART/`. f-artcraft is the renderer/preview sandbox —
+`sync.py --export` regenerates the shipped-truth templates it consumes;
+nothing fetches into this repo. The manifest (`image/art/ART.TXT`) is the
+canonical row set — it pins each asset's source slug, share name, ship
+size, and both SHA-256s; rows here group the manifest by family and say
+which seams consume them. Assets are not binaries, so the binary column
+stays `—`.
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|

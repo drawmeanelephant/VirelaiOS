@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="64" height="64" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="linear-gradient-1" x1="4" y1="32" x2="60" y2="32" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2e2e4a"/>
+      <stop offset="0.55" stop-color="#23233a"/>
+      <stop offset="1" stop-color="#181828"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-2" x1="10" y1="17" x2="54" y2="17" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7a7aa8" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#7a7aa8" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <title>icon-govault-V1R00</title>
+  <g id="Layer_1" data-name="Layer 1">
+    <path id="plate" d="M18 4 L46 4 C55.333 4 60 8.667 60 18 L60 46 C60 55.333 55.333 60 46 60 L18 60 C8.667 60 4 55.333 4 46 L4 18 C4 8.667 8.667 4 18 4 Z" fill="url(#linear-gradient-1)" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="sheen" d="M18 8 L46 8 C51.333 8 54 10.667 54 16 L54 18 C54 23.333 51.333 26 46 26 L18 26 C12.667 26 10 23.333 10 18 L10 16 C10 10.667 12.667 8 18 8 Z" fill="url(#linear-gradient-2)"/>
+    <path id="safe" d="M19 16 L45 16 C47.667 16 49 17.333 49 20 L49 45 C49 47.667 47.667 49 45 49 L19 49 C16.333 49 15 47.667 15 45 L15 20 C15 17.333 16.333 16 19 16 Z" fill="#64748b" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+    <path id="door" d="M22 20 L42 20 C44 20 45 21 45 23 L45 42 C45 44 44 45 42 45 L22 45 C20 45 19 44 19 42 L19 23 C19 21 20 20 22 20 Z" fill="#cbd5e1" stroke="#503139" stroke-width="2.4" stroke-linejoin="round"/>
+    <path id="dial" d="M21.8 32.5 C21.8 29.076 24.576 26.3 28 26.3 C31.424 26.3 34.2 29.076 34.2 32.5 C34.2 35.924 31.424 38.7 28 38.7 C24.576 38.7 21.8 35.924 21.8 32.5 Z" fill="#0f0f1c" stroke="#503139" stroke-width="2.6" stroke-miterlimit="10"/>
+    <path id="spoke_1" data-name="spoke 1" d="M28 32.5 L28 27.5" fill="none" stroke="#94a3b8" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+    <path id="spoke_2" data-name="spoke 2" d="M28 32.5 L32.33 35" fill="none" stroke="#94a3b8" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+    <path id="spoke_3" data-name="spoke 3" d="M28 32.5 L23.67 35" fill="none" stroke="#94a3b8" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+    <path id="handle" d="M40 28.5 L40 28.5 C41.333 28.5 42 29.167 42 30.5 L42 34.5 C42 35.833 41.333 36.5 40 36.5 L40 36.5 C38.667 36.5 38 35.833 38 34.5 L38 30.5 C38 29.167 38.667 28.5 40 28.5 Z" fill="#0f0f1c" stroke="#503139" stroke-width="2.2" stroke-linejoin="round"/>
+  </g>
+</svg>

@@ -170,7 +170,8 @@ gate_seed_share_contents() {
     if [ -f user/src/lib/fixtures/qoi/mascot_64x64.qoi ]; then
         cp user/src/lib/fixtures/qoi/mascot_64x64.qoi "$SHARE/SEXIBURGER.QOI"
     fi
-    # 4c. M203 (#3338) staged art: the f-artcraft drop at /host/ART/<NAME>.QOI.
+    # 4c. M203 (#3338) staged art: the vendored masters (#3783,
+    # design/art/virelai/) adopted to QOI, at /host/ART/<NAME>.QOI.
     # Repo files already carry the 8.3 names; the copy only case-folds.
     if [ -d image/art ]; then
         mkdir -p "$SHARE/ART"

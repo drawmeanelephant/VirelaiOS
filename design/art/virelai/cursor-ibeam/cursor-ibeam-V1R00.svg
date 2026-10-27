@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="32" height="48" viewBox="0 0 32 48">
+  <title>cursor-ibeam-V1R00</title>
+  <g id="Layer_1" data-name="Layer 1">
+    <path id="ibeam" d="M8 6.5 L24 6.5 C25.667 6.5 26.5 7.333 26.5 9 L26.5 10.5 C26.5 12.167 25.667 13 24 13 L19.5 13 L19.5 35 L24 35 C25.667 35 26.5 35.833 26.5 37.5 L26.5 39 C26.5 40.667 25.667 41.5 24 41.5 L8 41.5 C6.333 41.5 5.5 40.667 5.5 39 L5.5 37.5 C5.5 35.833 6.333 35 8 35 L12.5 35 L12.5 13 L8 13 C6.333 13 5.5 12.167 5.5 10.5 L5.5 9 C5.5 7.333 6.333 6.5 8 6.5 Z" fill="#ffffff" stroke="#503139" stroke-width="3" stroke-linejoin="round"/>
+  </g>
+</svg>
