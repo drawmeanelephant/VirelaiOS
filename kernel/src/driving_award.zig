@@ -1009,9 +1009,6 @@ pub fn arm() void {
     overlay_active = false;
     overlay_count = 0;
     overlay_selected = 0;
-    // WM2: the overview grid never survives a registry reset.
-    overview_open = false;
-    overview_n = 0;
     presentation_trace_arm();
 }
 
@@ -1049,17 +1046,18 @@ pub fn kind_name(kind: Kind) []const u8 {
 // card to focus+raise it, drag a card onto a workspace-strip button to move
 // it there (and switch to it), Esc/hotkey to exit. The GRID GEOMETRY is the
 // shared wnd_core rule (geom.overview_grid / card_rect / ws_button_rect) —
-// the kernel renders these rects and the WM hit-tests the SAME rects, so
-// the two cannot disagree. Policy (which card was clicked) arrives over
-// slot-65 OVERVIEW (cmd 21); the kernel only applies + repaints.
+// the seat renders these rects and hit-tests the SAME rects, so the two
+// cannot disagree. Policy (which card was clicked) arrives over slot-65
+// OVERVIEW (cmd 21); the kernel only applies the primitives.
+//
+// #3759 (second item): the grid's render + bookkeeping are the seat's own —
+// cmd 21 was always seat-mandatory (ENOSYS unregistered, no shim chord), so
+// the kernel needed no fallback and holds NO overview state: no card
+// snapshot, no open flag, no grid paint. What stays are the kernel facts the
+// seat's decisions apply (focus+raise, move-to-workspace + switch) and the
+// M27 G3 dock-preview painter (a kernel painter striding pool/surface pages
+// the seat cannot map).
 // ---------------------------------------------------------------------------
-
-/// True while the overview grid is on screen.
-pub var overview_open: bool = false;
-/// Snapshot of current-workspace user-window ids taken at enter.
-pub var overview_ids: [user_windows_max]u8 = @as([user_windows_max]u8, @splat(@as(u8, 0)));
-/// Live entries in `overview_ids`.
-pub var overview_n: usize = 0;
 
 /// Whether the last paint_scene() actually repainted anything (drives the
 /// clean-scene no-flush decision in composite()). Read by composite() only.
@@ -1239,15 +1237,10 @@ pub const surface_revoked = user_mod.surface_revoked;
 pub const remove_user_at = user_mod.remove_user_at;
 pub const user_window_slot = user_mod.user_window_slot;
 const overview_mod = @import("driving_award/overview.zig");
-pub const overview_is_open = overview_mod.overview_is_open;
-pub const overview_window_count = overview_mod.overview_window_count;
 pub const overview_enter = overview_mod.overview_enter;
-pub const overview_exit = overview_mod.overview_exit;
 pub const overview_focus = overview_mod.overview_focus;
 pub const overview_move = overview_mod.overview_move;
 pub const overview_move_refusal = overview_mod.overview_move_refusal;
-pub const blit_scaled = overview_mod.blit_scaled;
-pub const paint_overview = overview_mod.paint_overview;
 pub const render_preview = overview_mod.render_preview;
 const layout_mod = @import("driving_award/layout.zig");
 pub const tile_x_start = layout_mod.tile_x_start;

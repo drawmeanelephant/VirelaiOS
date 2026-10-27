@@ -24,7 +24,6 @@ const kbuf_ptr = da.kbuf_ptr;
 const max_windows = da.max_windows;
 const notif_center_w = da.notif_center_w;
 const notify_entry = da.notify_entry;
-const paint_overview = da.paint_overview;
 const paint_scene = da.paint_scene;
 const render_preview = da.render_preview;
 const settings = da.settings;
@@ -772,11 +771,10 @@ pub fn draw_chrome() void {
             fill_rect(fb, stride, pv_x + pv_w - 1, pv_y, 1, pv_h, 0x64748b);
         }
     }
-    // WM2 mission-control overview (issue #707 card 2): the grid paints
-    // above the alt-tab overlay (both cannot be open at once in practice —
-    // the WM exits overview before other chords — but a deterministic order
-    // keeps the scanout honest if they ever coincide).
-    if (da.overview_open) paint_overview(fb, stride, wspan, hspan);
+    // WM2 mission-control overview (issue #707 card 2): #3759's second item
+    // moved the grid paint to the seat — cmd 21 was always seat-mandatory,
+    // so no kernel fallback was needed. The seat draws the same shared
+    // wnd_core rects into the scanout it owns under wm_owns_user_layer.
     // M32 WMS8 Gate 6 (issue #628): the kernel snap-preview render (dragging
     // near an edge highlighted the zone) is DELETED — the WM owns snap-on-
     // drop; with a WM registered pointer_tick never reaches this drag path.

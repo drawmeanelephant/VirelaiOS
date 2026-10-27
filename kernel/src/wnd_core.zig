@@ -813,6 +813,42 @@ pub fn overview_ws_button_at(g: OverviewGrid, sw: u32, dk_w: u32, x: u32, y: u32
     return null;
 }
 
+/// #3759 (second item — the overview render drain): the card-thumbnail
+/// scale rule, now shared so the SEAT's grid paint and the kernel tests pin
+/// ONE implementation (it moved here from driving_award/overview.zig when
+/// the seat took the render). Nearest-neighbor blit — a source image (a
+/// user window's pixels, never the scanout the destination lives in, so
+/// source and destination cannot overlap) scaled into a destination rect.
+/// Pure BSS math, no allocation. Zero-size rects are honest no-ops.
+pub fn blit_scaled(
+    dst: [*]u8,
+    dst_stride: usize,
+    src: [*]const u8,
+    src_w: usize,
+    src_h: usize,
+    src_stride: usize,
+    dx: usize,
+    dy: usize,
+    dw: usize,
+    dh: usize,
+) void {
+    if (dw == 0 or dh == 0 or src_w == 0 or src_h == 0) return;
+    var y: usize = 0;
+    while (y < dh) : (y += 1) {
+        const src_y = y * src_h / dh;
+        var x: usize = 0;
+        while (x < dw) : (x += 1) {
+            const src_x = x * src_w / dw;
+            const s = src + src_y * src_stride + src_x * 4;
+            const d = dst + (dy + y) * dst_stride + (dx + x) * 4;
+            d[0] = s[0];
+            d[1] = s[1];
+            d[2] = s[2];
+            d[3] = 0xff;
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Host tests (Class A) — pin the RULES so the shim and the WM server provably
 // share identical decision logic (the drift guard's machine check).

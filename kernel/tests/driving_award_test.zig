@@ -32,7 +32,7 @@ const arm = driving_award.arm;
 const armed = driving_award.armed;
 const blit_rect = driving_award.blit_rect;
 const blit_rect_alpha = driving_award.blit_rect_alpha;
-const blit_scaled = driving_award.blit_scaled;
+const blit_scaled = driving_award.geom.blit_scaled;
 const builtin = driving_award.builtin;
 const chrome_border_w = driving_award.chrome_border_w;
 const chrome_shadow_off = driving_award.chrome_shadow_off;
@@ -138,11 +138,8 @@ const notify_max = driving_award.notify_max;
 const notify_push = driving_award.notify_push;
 const notify_text_max = driving_award.notify_text_max;
 const overview_enter = driving_award.overview_enter;
-const overview_exit = driving_award.overview_exit;
 const overview_focus = driving_award.overview_focus;
-const overview_is_open = driving_award.overview_is_open;
 const overview_move = driving_award.overview_move;
-const overview_window_count = driving_award.overview_window_count;
 const paint = driving_award.paint;
 const paint_scene = driving_award.paint_scene;
 const paint_tab_strip = driving_award.paint_tab_strip;
@@ -2941,75 +2938,51 @@ test "driving_award: notification FIFO push/dismiss/advance" {
     try std.testing.expectEqual(@as(usize, 0), notify_count_visible());
 }
 
-test "driving_award: WM2 overview enter snapshots current-workspace windows" {
+test "driving_award: WM2 overview enter counts current-workspace windows" {
     arm();
-    try std.testing.expect(!overview_is_open());
-    try std.testing.expectEqual(@as(usize, 0), overview_window_count());
-    // No user windows: enter opens an empty grid (honest, not a refusal).
+    // #3759 (second item): the kernel holds no snapshot — the seat owns the
+    // card list — so enter returns the LIVE eligible-card count under the
+    // same membership rule the snapshot filtered on.
     try std.testing.expectEqual(@as(usize, 0), overview_enter());
-    try std.testing.expect(overview_is_open());
-    overview_exit();
-    try std.testing.expect(!overview_is_open());
-    // Two windows on ws 0, one moved to ws 1: only ws-0 windows snapshot.
+    // Two windows on ws 0, one moved to ws 1: only ws-0 windows count.
     try std.testing.expectEqual(UserOpenResult{ .opened = 2 }, user_open(100, 100, 200, 100, 7));
     try std.testing.expectEqual(UserOpenResult{ .opened = 3 }, user_open(400, 100, 200, 100, 7));
     try std.testing.expectEqual(UserOpenResult{ .opened = 4 }, user_open(700, 100, 200, 100, 7));
     try std.testing.expect(user_move_to_workspace(4, 1));
     try std.testing.expectEqual(@as(usize, 2), overview_enter());
-    try std.testing.expectEqual(@as(usize, 2), overview_window_count());
-    try std.testing.expectEqual(@as(u8, 2), driving_award.overview_ids[0]);
-    try std.testing.expectEqual(@as(u8, 3), driving_award.overview_ids[1]);
-    overview_exit();
-    // Registry order is NOT the card order: raise(2) moves it to the top
-    // of the z-order, but the snapshot still sorts ascending (the shared
-    // card-index contract with the WM's mirror-order list).
-    try std.testing.expect(raise(2));
-    try std.testing.expectEqual(@as(usize, 2), overview_enter());
-    try std.testing.expectEqual(@as(u8, 2), driving_award.overview_ids[0]);
-    try std.testing.expectEqual(@as(u8, 3), driving_award.overview_ids[1]);
-    overview_exit();
-    // Exit closes without touching focus.
-    const before = driving_award.focused_id;
-    _ = overview_enter();
-    overview_exit();
-    try std.testing.expect(!overview_is_open());
-    try std.testing.expectEqual(before, driving_award.focused_id);
+    switch_workspace(1);
+    try std.testing.expectEqual(@as(usize, 1), overview_enter());
+    switch_workspace(0);
     _ = user_close(2);
     _ = user_close(3);
     _ = user_close(4);
 }
 
-test "driving_award: WM2 overview focus raises the card and closes" {
+test "driving_award: WM2 overview focus raises the window the seat named" {
     arm();
     try std.testing.expectEqual(UserOpenResult{ .opened = 2 }, user_open(100, 100, 200, 100, 7));
     try std.testing.expectEqual(UserOpenResult{ .opened = 3 }, user_open(400, 100, 200, 100, 7));
-    _ = overview_enter();
-    // Unknown id is refused, grid stays open.
+    // Not a live user window is refused — card membership is the seat's own
+    // bookkeeping, not a kernel gate.
     try std.testing.expect(!overview_focus(9));
-    try std.testing.expect(overview_is_open());
-    // Focus while closed is refused.
-    overview_exit();
-    try std.testing.expect(!overview_focus(2));
-    // Card click: focus+raise + close.
-    _ = overview_enter();
+    try std.testing.expect(!overview_focus(0));
+    // The seat's card click: focus+raise.
     try std.testing.expect(overview_focus(3));
-    try std.testing.expect(!overview_is_open());
     try std.testing.expectEqual(@as(u8, 3), driving_award.focused_id);
     _ = user_close(2);
     _ = user_close(3);
+    // A closed id refuses afterward (not live).
+    try std.testing.expect(!overview_focus(3));
 }
 
-test "driving_award: WM2 overview move relocates the card and switches" {
+test "driving_award: WM2 overview move relocates the window and switches" {
     arm();
     try std.testing.expectEqual(UserOpenResult{ .opened = 2 }, user_open(100, 100, 200, 100, 7));
-    _ = overview_enter();
-    // Bad workspace and unknown id are refused, grid stays open.
+    // Bad workspace and unknown id are refused.
     try std.testing.expect(!overview_move(2, 9));
     try std.testing.expect(!overview_move(9, 1));
-    try std.testing.expect(overview_is_open());
     // Drag onto workspace 1: window moves and the desktop follows.
     try std.testing.expect(overview_move(2, 1));
-    try std.testing.expect(!overview_is_open());
     try std.testing.expectEqual(@as(u8, 1), driving_award.current_workspace);
     const w = driving_award.find_user_window(2).?;
     try std.testing.expectEqual(@as(u8, 1), w.workspace);
