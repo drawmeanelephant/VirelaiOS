@@ -339,6 +339,145 @@ webhook_event issue_comment 2201 closed 1 alice User "wrapping this up" > "$TMP/
 guard_case "closed claim left alone" issue_comment "$TMP/payload.json" \
     "skip: issue #2201 is 'closed', not open"
 
+# --- interface-review lane (tools/status/interface-review.py) --------------
+#
+# The lane rotates over open `polish` audit issues, skips apps blocked by an
+# open derived card or an active claim's Touches, and files one card or
+# comments no-drift. These cases run it fully offline: issue JSON fixtures,
+# a minimal .figcraft zip built here, and --dry-run so nothing posts.
+
+LANE="$ROOT/tools/status/interface-review.py"
+
+# audit_json NUM BIN APPNAME [LAST_REVIEW_TS] -- one polish-audit record in
+# the `gh issue list --json number,title,body,comments,labels` shape. The
+# body names a source path the way real audits do.
+audit_json() {
+    local num="$1" bin="$2" name="$3" review="${4:-}"
+    local comments="[]"
+    if [ -n "$review" ]; then
+        comments="$(jq -n --arg at "$review" \
+            '[{author: {login: "lane"}, createdAt: $at,
+               body: "<!-- iface-review:v1 --> reviewed"}]')"
+    fi
+    jq -n --argjson n "$num" --arg bin "$bin" --arg name "$name" \
+        --argjson comments "$comments" \
+        '{number: $n,
+          title: ("App audit: " + $name + " (" + $bin + ")"),
+          body: "Observed (code, `user/go/" + ($name|ascii_downcase) + "/`).",
+          labels: [{name: "polish"}], comments: $comments}'
+}
+
+# mk_figcraft PATH BIN... -- a minimal figcraft zip: a page + one empty
+# `apps/<BIN>` frame per argument after the first.
+mk_figcraft() {
+    python3 - "$@" <<'PY'
+import json, sys, zipfile
+out, bins = sys.argv[1], sys.argv[2:]
+nodes = {"1": {"id": 1, "name": "apps", "type": "page",
+               "children": list(range(2, len(bins) + 2))}}
+for i, b in enumerate(bins):
+    nodes[str(i + 2)] = {"id": i + 2, "name": f"apps/{b}", "type": "frame",
+                         "width": 100.0, "height": 128.0, "children": []}
+with zipfile.ZipFile(out, "w") as z:
+    z.writestr("document.json", json.dumps({"nodes": nodes}))
+PY
+}
+
+# lane_run EXPECTED_SUBSTR [LANE_ARGS...] -- run the lane offline and assert
+# one output line; claims fixture is empty unless a case stages its own.
+lane_run() {
+    local want="$1"; shift
+    printf '[]' > "$TMP/lane-claims.json"
+    local out
+    out="$(python3 "$LANE" --dry-run \
+        --claims-json "$TMP/lane-claims.json" "$@" 2>&1 || true)"
+    if printf '%s' "$out" | grep -qF "$want"; then
+        pass=$((pass + 1)); printf 'ok   lane: %s\n' "$want"
+    else
+        failn=$((failn + 1))
+        printf 'FAIL lane: wanted %q, got:\n%s\n' "$want" "$out" >&2
+    fi
+}
+
+mk_figcraft "$TMP/apps.figcraft" FAKEA.ELF FAKEB.ELF FAKEC.ELF
+
+# case 23: rotation picks the lowest-numbered never-reviewed audit
+
+jq -s '.' \
+    <(audit_json 9302 FAKEB.ELF Fakeb) \
+    <(audit_json 9301 FAKEA.ELF Fakea) \
+    > "$TMP/lane-audits.json"
+printf '[]' > "$TMP/lane-open.json"
+lane_run "review FAKEA.ELF" \
+    --audits-json "$TMP/lane-audits.json" --open-json "$TMP/lane-open.json" \
+    --figcraft "$TMP/apps.figcraft"
+
+# case 24: a never-reviewed audit outranks a reviewed one
+
+jq -s '.' \
+    <(audit_json 9301 FAKEA.ELF Fakea "2026-10-26T00:00:00Z") \
+    <(audit_json 9302 FAKEB.ELF Fakeb) \
+    > "$TMP/lane-audits.json"
+lane_run "review FAKEB.ELF" \
+    --audits-json "$TMP/lane-audits.json" --open-json "$TMP/lane-open.json" \
+    --figcraft "$TMP/apps.figcraft"
+
+# case 25: an open derived card (binary named in title) skips the app
+
+jq -s '.' \
+    <(audit_json 9301 FAKEA.ELF Fakea) \
+    <(audit_json 9302 FAKEB.ELF Fakeb) \
+    > "$TMP/lane-audits.json"
+jq -n '[{number: 9401, title: "FAKEA.ELF: drift fix", body: "", labels: []}]' \
+    > "$TMP/lane-open.json"
+lane_run "skip FAKEA.ELF (audit #9301): open derived card(s) #9401" \
+    --audits-json "$TMP/lane-audits.json" --open-json "$TMP/lane-open.json" \
+    --figcraft "$TMP/apps.figcraft"
+
+# case 26: an active claim touching the app's files skips it
+
+jq -s '.' \
+    <(claim_json 9501 "agent/other/lane" "2026-10-26T00:00:00Z" "user/go/fakea") \
+    > "$TMP/lane-claims-full.json"
+printf '[]' > "$TMP/lane-open.json"
+out="$(python3 "$LANE" --dry-run \
+    --audits-json "$TMP/lane-audits.json" \
+    --claims-json "$TMP/lane-claims-full.json" \
+    --open-json "$TMP/lane-open.json" \
+    --figcraft "$TMP/apps.figcraft" 2>&1 || true)"
+if printf '%s' "$out" | grep -qF "skip FAKEA.ELF (audit #9301): active claim(s) #9501" \
+    && printf '%s' "$out" | grep -qF "review FAKEB.ELF"; then
+    pass=$((pass + 1)); printf 'ok   lane: claim-touched app skipped, next reviewed\n'
+else
+    failn=$((failn + 1))
+    printf 'FAIL lane: claim-touches skip/review — got:\n%s\n' "$out" >&2
+fi
+
+# case 27: every app blocked -> nothing filed, clean exit
+
+jq -n '[{number: 9401, title: "FAKEA.ELF: drift fix", body: "", labels: []},
+        {number: 9402, title: "FAKEB.ELF: drift fix", body: "", labels: []}]' \
+    > "$TMP/lane-open.json"
+lane_run "interface-review: no eligible app this pass" \
+    --audits-json "$TMP/lane-audits.json" --open-json "$TMP/lane-open.json" \
+    --figcraft "$TMP/apps.figcraft"
+
+# case 28: --app reviews a specific audit out of rotation order
+
+printf '[]' > "$TMP/lane-open.json"
+out="$(python3 "$LANE" --dry-run --app FAKEB.ELF \
+    --audits-json "$TMP/lane-audits.json" \
+    --claims-json "$TMP/lane-claims.json" \
+    --open-json "$TMP/lane-open.json" \
+    --figcraft "$TMP/apps.figcraft" 2>&1 || true)"
+if printf '%s' "$out" | grep -qF "review FAKEB.ELF" \
+    && printf '%s' "$out" | grep -qF "comment (dry-run) on audit #9302"; then
+    pass=$((pass + 1)); printf 'ok   lane: --app reviews out of rotation\n'
+else
+    failn=$((failn + 1))
+    printf 'FAIL lane: --app — got:\n%s\n' "$out" >&2
+fi
+
 echo
 if [ "$failn" -eq 0 ]; then
     echo "test-coordination: $pass/$((pass + failn)) PASS"

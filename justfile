@@ -256,6 +256,13 @@ claim-card ISSUE *ARGS:
 rehearse-unlabel:
     bash tools/status/rehearse-unlabel.sh
 
+# One interface-review pass over the polish app audits (issue #3784): the
+# hourly issue-conveyor invokes this. Picks the stalest unreviewed audit,
+# checks the app's face vs the figcraft design master + gate specs, files
+# one bounded card or comments no-drift. --dry-run reads live, posts nothing.
+interface-review *ARGS:
+    python3 tools/status/interface-review.py {{ARGS}}
+
 # Preview which open claim issues the weekly staleness sweep would warn on (live dry-run)
 sweep-stale-claims:
     bash tools/status/sweep-stale-claims.sh --dry-run
