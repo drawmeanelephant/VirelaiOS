@@ -5454,6 +5454,31 @@ fn handle_wmctl(args: Args, _: *exceptions.VectorFrame) u64 {
             wm_server.note_notif_dismiss();
             return 0;
         },
+        wm_server.wmctl_notif_get => {
+            // #3759 (fourth item — the shell-widgets drain): the seat's
+            // read on the notification queue. The queue stays a kernel
+            // fact (apps post through sys_notify); the seat reads entries
+            // in the same index order NOTIF_DISMISS (cmd 7) takes so it can
+            // render the toasts + center it owns while it holds the
+            // scanout. a0 = index, a1 = dest ptr, a2 = dest len; writes
+            // [level:u8][text bytes] and returns the byte count (a dest of
+            // at least 1 byte still reports the level). EINVAL out of
+            // range; EFAULT bad buffer. Seat-gated like every query.
+            if (!wm_server.registered()) return error_result(.enosys);
+            if (wm_server.registered_pid() != pid) return error_result(.eacces);
+            if (args[1] > 0xff) return error_result(.einval);
+            const entry = driving_award.notify_entry(@intCast(args[1])) orelse return error_result(.einval);
+            const cap: usize = @intCast(args[3]);
+            if (cap == 0) return error_result(.einval);
+            const header: [1]u8 = .{entry.level};
+            if (uaccess.copy_out(args[2], header[0..1], 1) != .ok) return error_result(.efault);
+            const text_n = @min(entry.text.len, cap - 1);
+            if (text_n > 0 and uaccess.copy_out(args[2] + 1, entry.text[0..text_n], text_n) != .ok) {
+                return error_result(.efault);
+            }
+            wm_server.note_notif_get();
+            return 1 + text_n;
+        },
         wm_server.wmctl_tooltip => {
             // M32 WMS6 Gate C (issue #626): the WM — not the kernel — decides
             // WHEN a tooltip shows and WHAT it says (the raw hover already

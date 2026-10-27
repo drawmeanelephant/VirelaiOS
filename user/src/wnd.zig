@@ -168,6 +168,11 @@ const wmctl_activate_tab: u64 = 20;
 // the scanout it owns (save-under + per-tick redraw), the same discipline as
 // the snap-preview and wallpaper layers.
 const wmctl_overview: u64 = 21;
+// #3759 (fourth item — the shell-widgets drain): NOTIF_GET (cmd 25), the
+// seat's read on the kernel notification queue ([level][text] per index,
+// same order NOTIF_DISMISS takes). The queue stays a kernel fact; the
+// seat reads it to paint the toasts + center it owns while bound.
+const wmctl_notif_get: u64 = 25;
 // #1056 item 2: WINDOW_NAME (cmd 14) — a1 = window id, a2 = destination
 // buffer, a3 = length; returns the display-name byte count (app-set title,
 // else the owning process's executable name). The card bands name their
@@ -423,6 +428,10 @@ pub const unsaved_cancel_marker: []const u8 = "wnd: unsaved-cancel\n";
 /// own state.
 fn toggle_about() void {
     _ = syscall6(sys_wmctl, wmctl_dialog, dialog_toggle_act, 0, 0, 0, 0);
+    // #3759: the seat's own open copy flips in lockstep with the kernel's
+    // applied record (both toggle on the same chord).
+    about_open = !about_open;
+    widgets_present_now();
     write_marker(about_marker);
 }
 
@@ -432,6 +441,7 @@ fn toggle_about() void {
 fn show_unsaved_dialog(id: u8) void {
     _ = syscall6(sys_wmctl, wmctl_dialog, dialog_unsaved_show, id, 0, 0, 0);
     unsaved_dialog_open = true;
+    widgets_present_now();
     write_marker(unsaved_dialog_marker);
 }
 
@@ -455,6 +465,7 @@ fn apply_unsaved_choice(choice: wnd_core.UnsavedChoice) void {
         .none => return,
     }
     unsaved_dialog_open = false;
+    widgets_present_now();
 }
 
 // WMS6 Gate E (issue #626): the tray decision marker — written when the WM
@@ -1249,7 +1260,9 @@ pub fn execute_god_menu_command(cmd: Command) void {
     } else if (std.mem.eql(u8, cmd.verb, "devcons")) {
         _ = ui.exec_program("DEVCONS.BIN");
     } else if (std.mem.eql(u8, cmd.verb, "notify")) {
+        notif_open = true;
         _ = syscall6(sys_wmctl, wmctl_notif_center, notif_open_act, 0, 0, 0, 0);
+        widgets_present_now();
     } else if (std.mem.eql(u8, cmd.verb, "tab-next")) {
         cycle_tabs();
     } else if (std.mem.eql(u8, cmd.verb, "tab-close")) {
@@ -2065,6 +2078,262 @@ fn overview_pointer(px: u32, py: u32, left: bool, prev_left: bool) bool {
 }
 
 // ---------------------------------------------------------------------------
+// #3759 (fourth item) — the desktop-shell widgets the seat owns.
+//
+// The seat already decides WHEN each widget appears and WHAT it carries
+// (cmds 6/7/8/10/11). What stays kernel-side is the applied record the
+// painters + `dui` shim render from — byte-identical while the kernel
+// composites the desktop. Once the seat binds the scanout the kernel's
+// draw_chrome widgets are under its layer (the wallpaper pass rewrites
+// the frame every tick), so the seat paints its own copies on top with
+// the same geometry + palette — the overview grid's discipline. The one
+// input the seat could not see was the notification queue itself; it
+// reads it through NOTIF_GET (cmd 25). Clicking a shown panel is the
+// seat's decision too: rows + clear-all hit-test through the shared
+// wnd_core.notif_center_hit_at rule (the kernel's own copy of that
+// geometry was deleted with this item).
+// ---------------------------------------------------------------------------
+
+/// The about-dialog open state — this seat's own copy (it decides the
+/// Ctrl+Shift+A/menu toggle; the kernel's about_dialog_open is the
+/// applied record the kernel painter + `dui` shim read).
+var about_open: bool = false;
+/// The notification-center open state — the seat's decision, mirrored to
+/// the kernel via NOTIF_CENTER (cmd 6) so the applied record + shim legs
+/// stay byte-identical.
+var notif_open: bool = false;
+/// The 1 Hz COMPOSITE_TICK counter — file-scope so the widget paint can
+/// format the tray clock outside the event loop.
+var tick_count: u64 = 0;
+/// The tray widget content this seat declared (see TrayState below).
+var tray_state: TrayState = .{};
+/// The seat's tooltip record — the text + placement it issued through
+/// TOOLTIP (cmd 8), for its own paint while bound.
+var seat_tip_text: [32]u8 = undefined;
+var seat_tip_len: usize = 0;
+var seat_tip_x: u32 = 0;
+var seat_tip_y: u32 = 0;
+/// The last pointer position this seat saw (kind 19) — the tooltip
+/// placement the kernel painter derives from its own cursor.
+var last_px: u32 = 0;
+var last_py: u32 = 0;
+
+const seat_notif_max: usize = 10;
+const NotifRow = struct {
+    level: u8 = 0,
+    len: usize = 0,
+    text: [280]u8 = undefined,
+};
+
+/// Read one queue entry through NOTIF_GET (cmd 25): dest gets
+/// [level:u8][text bytes]; same index order NOTIF_DISMISS takes.
+fn notif_read(index: u8, out: *NotifRow) bool {
+    var buf: [281]u8 = undefined;
+    const rc = syscall6(sys_wmctl, wmctl_notif_get, index, @intFromPtr(&buf), buf.len, 0, 0);
+    if (rc < 1) return false;
+    out.level = buf[0];
+    const n = @min(@as(usize, @intCast(rc)) - 1, out.text.len);
+    @memcpy(out.text[0..n], buf[1 .. 1 + n]);
+    out.len = n;
+    return true;
+}
+
+/// Drain the live queue into `out` (index order), returning the count.
+fn notif_snapshot(out: *[seat_notif_max]NotifRow) usize {
+    var n: usize = 0;
+    while (n < seat_notif_max) : (n += 1) {
+        if (!notif_read(@intCast(n), &out[n])) break;
+    }
+    return n;
+}
+
+/// The seat's toasts — same rects + palette the kernel painter uses
+/// (top-right, 300x40 stacked, 4px level border, 36-char text).
+fn draw_toasts(scan: [*]u32) void {
+    var rows: [seat_notif_max]NotifRow = undefined;
+    const n = notif_snapshot(&rows);
+    const toast_w: u32 = 300;
+    const toast_h: u32 = 40;
+    const toast_x: u32 = if (fb_w > toast_w) fb_w - toast_w - 8 else 0;
+    var ti: usize = 0;
+    while (ti < n) : (ti += 1) {
+        const toast_y: u32 = 8 + @as(u32, @intCast(ti)) * (toast_h + 4);
+        if (toast_y + toast_h > fb_h) break;
+        grid_fill(scan, toast_x, toast_y, toast_w, toast_h, 0x1e293b);
+        const border: u32 = switch (rows[ti].level) {
+            1 => 0xf59e0b,
+            2 => 0xef4444,
+            else => 0x3b82f6,
+        };
+        grid_fill(scan, toast_x, toast_y, 4, toast_h, border);
+        const len = @min(rows[ti].len, 36);
+        if (len > 0) grid_text(scan, toast_x + 10, toast_y + 6, rows[ti].text[0..len], 0xffffff);
+    }
+}
+
+/// The seat's notification-center panel — the same geometry
+/// wnd_core.notif_center_hit_at hit-tests and the kernel painter draws.
+fn draw_notif_center(scan: [*]u32) void {
+    if (!notif_open) return;
+    var rows: [seat_notif_max]NotifRow = undefined;
+    const n = @min(notif_snapshot(&rows), wnd_core.notif_center_max_rows);
+    const panel_x: u32 = if (fb_w > wnd_core.notif_center_w) fb_w - wnd_core.notif_center_w else 0;
+    const panel_y: u32 = wnd_core.notif_center_y;
+    const pad = wnd_core.notif_center_pad;
+    const header_h = wnd_core.notif_center_header_h;
+    const row_h = wnd_core.notif_center_row_h;
+    const panel_h: u32 = header_h + pad * 2 + @as(u32, @intCast(n)) * row_h + pad + 28;
+    // Dim backdrop + surface + border (kernel parity).
+    grid_fill(scan, 0, 0, fb_w, fb_h, 0x0f0f1a);
+    grid_fill(scan, panel_x, panel_y, wnd_core.notif_center_w, panel_h, 0x1e293b);
+    grid_fill(scan, panel_x, panel_y, wnd_core.notif_center_w, 2, 0x3b82f6);
+    grid_fill(scan, panel_x, panel_y + panel_h - 2, wnd_core.notif_center_w, 2, 0x3b82f6);
+    grid_fill(scan, panel_x, panel_y, 2, panel_h, 0x3b82f6);
+    grid_fill(scan, panel_x + wnd_core.notif_center_w - 2, panel_y, 2, panel_h, 0x3b82f6);
+    grid_text(scan, panel_x + pad, panel_y + pad, "Notifications", 0xffffff);
+    var ni: usize = 0;
+    while (ni < n) : (ni += 1) {
+        const row_y = panel_y + header_h + pad + @as(u32, @intCast(ni)) * row_h;
+        grid_fill(scan, panel_x + pad, row_y, wnd_core.notif_center_w - pad * 2, row_h - 2, if (ni == 0) 0x0f172a else 0x1e293b);
+        const border: u32 = switch (rows[ni].level) {
+            1 => 0xf59e0b,
+            2 => 0xef4444,
+            else => 0x3b82f6,
+        };
+        grid_fill(scan, panel_x + pad, row_y, 4, row_h - 2, border);
+        const len = @min(rows[ni].len, 34);
+        if (len > 0) grid_text(scan, panel_x + pad + 10, row_y + 6, rows[ni].text[0..len], 0xffffff);
+    }
+    const btn_y = panel_y + header_h + pad * 2 + @as(u32, @intCast(n)) * row_h + pad;
+    grid_fill(scan, panel_x + pad, btn_y, wnd_core.notif_center_w - pad * 2, wnd_core.notif_center_clear_h, 0xef4444);
+    grid_text(scan, panel_x + pad + 8, btn_y + 6, "Clear all", 0xffffff);
+}
+
+/// The seat's unsaved-changes confirm — 200x100 centered (the shared
+/// wnd_core dialog geometry), same palette the kernel paints.
+fn draw_unsaved_dialog(scan: [*]u32) void {
+    if (!unsaved_dialog_open) return;
+    const dlg_w = wnd_core.unsaved_dialog_w;
+    const dlg_h = wnd_core.unsaved_dialog_h;
+    const dlg_x: u32 = if (fb_w > dlg_w) (fb_w - dlg_w) / 2 else 0;
+    const dlg_y: u32 = if (fb_h > dlg_h) (fb_h - dlg_h) / 2 else 0;
+    grid_fill(scan, 0, 0, fb_w, fb_h, 0x0f0f1a);
+    grid_fill(scan, dlg_x, dlg_y, dlg_w, dlg_h, 0x1e293b);
+    grid_fill(scan, dlg_x, dlg_y, dlg_w, 2, 0xf59e0b);
+    grid_fill(scan, dlg_x, dlg_y + dlg_h - 2, dlg_w, 2, 0xf59e0b);
+    grid_fill(scan, dlg_x, dlg_y, 2, dlg_h, 0xf59e0b);
+    grid_fill(scan, dlg_x + dlg_w - 2, dlg_y, 2, dlg_h, 0xf59e0b);
+    grid_text(scan, dlg_x + 10, dlg_y + 10, "Save before closing?", 0xffffff);
+    grid_fill(scan, dlg_x + 20, dlg_y + dlg_h - 30, 60, 20, 0x10b981);
+    grid_text(scan, dlg_x + 26, dlg_y + dlg_h - 24, "Save", 0xffffff);
+    grid_fill(scan, dlg_x + 90, dlg_y + dlg_h - 30, 60, 20, 0xef4444);
+    grid_text(scan, dlg_x + 96, dlg_y + dlg_h - 24, "Don't", 0xffffff);
+    grid_fill(scan, dlg_x + 160, dlg_y + dlg_h - 30, 30, 20, 0x64748b);
+    grid_text(scan, dlg_x + 163, dlg_y + dlg_h - 24, "No", 0xffffff);
+}
+
+/// The seat's about dialog — 280x160 centered, kernel parity.
+fn draw_about_dialog(scan: [*]u32) void {
+    if (!about_open) return;
+    const dlg_w: u32 = 280;
+    const dlg_h: u32 = 160;
+    const dlg_x: u32 = if (fb_w > dlg_w) (fb_w - dlg_w) / 2 else 0;
+    const dlg_y: u32 = if (fb_h > dlg_h) (fb_h - dlg_h) / 2 else 0;
+    grid_fill(scan, 0, 0, fb_w, fb_h, 0x0f0f1a);
+    grid_fill(scan, dlg_x, dlg_y, dlg_w, dlg_h, 0x1e293b);
+    grid_fill(scan, dlg_x, dlg_y, dlg_w, 2, 0x3b82f6);
+    grid_fill(scan, dlg_x, dlg_y + dlg_h - 2, dlg_w, 2, 0x3b82f6);
+    grid_fill(scan, dlg_x, dlg_y, 2, dlg_h, 0x3b82f6);
+    grid_fill(scan, dlg_x + dlg_w - 2, dlg_y, 2, dlg_h, 0x3b82f6);
+    grid_text(scan, dlg_x + 10, dlg_y + 10, "VirelaiOS", 0xffaa00);
+    grid_text(scan, dlg_x + 10, dlg_y + 26, "v0.1  (M21+M27)", 0x94a3b8);
+    grid_text(scan, dlg_x + 10, dlg_y + 42, "AArch64 on Apple Virtualization", 0xd8dee9);
+    grid_text(scan, dlg_x + 10, dlg_y + 54, ".framework", 0xd8dee9);
+    grid_text(scan, dlg_x + 10, dlg_y + 70, "Built with Zig 0.17", 0x94a3b8);
+    grid_text(scan, dlg_x + 10, dlg_y + 86, "Window Manager: Driving Award", 0x94a3b8);
+    grid_fill(scan, dlg_x + dlg_w - 16, dlg_y + 4, 8, 8, 0xef4444);
+    grid_text(scan, dlg_x + dlg_w - 14, dlg_y + 4, "x", 0xffffff);
+}
+
+/// The seat's tooltip — the text + placement it issued via cmd 8, box
+/// below the pointer (kernel parity: len*8+8 wide, 14 high, blue lip).
+fn draw_tooltip(scan: [*]u32) void {
+    if (seat_tip_len == 0) return;
+    const tw: u32 = @as(u32, @intCast(seat_tip_len)) * 8 + 8;
+    const th: u32 = 14;
+    var tx: u32 = seat_tip_x + 4;
+    var ty: u32 = seat_tip_y + 12;
+    if (tx + tw > fb_w) tx = if (fb_w > tw) fb_w - tw else 0;
+    if (ty + th > fb_h) ty = if (fb_h > th) fb_h - th else 0;
+    grid_fill(scan, tx, ty, tw, th, 0x1e293b);
+    grid_fill(scan, tx, ty, tw, 1, 0x3b82f6);
+    grid_text(scan, tx + 4, ty + 3, seat_tip_text[0..seat_tip_len], 0xffffff);
+}
+
+/// The seat's tray — the right-80px taskbar slice: the clock string,
+/// theme letter, and clipboard indicator it declares through TRAY (cmd
+/// 10). While bound the kernel's taskbar paint is skipped, so this is
+/// the strip's only live contents.
+fn draw_tray(scan: [*]u32, ticks: u64, clip_filled: bool) void {
+    const tray_x: u32 = if (fb_w > tray_w) fb_w - tray_w else 0;
+    const tray_y: u32 = fb_h - taskbar_h;
+    grid_fill(scan, tray_x, tray_y, tray_w, taskbar_h, 0x0f172a);
+    var clock_buf: [5]u8 = undefined;
+    const clock = if (tray_state.clock_set) tray_state.clock[0..] else format_wm_hhmm(&clock_buf, ticks);
+    grid_text(scan, tray_x + 4, tray_y + 6, clock, 0xffffff);
+    var tletter: [1]u8 = .{tray_theme_letter};
+    grid_text(scan, tray_x + 48, tray_y + 6, tletter[0..1], 0x3b82f6);
+    const clip_x = tray_x + 64;
+    const clip_y = tray_y + 6;
+    if (clip_filled) {
+        grid_fill(scan, clip_x, clip_y, 10, 8, 0xffffff);
+    } else {
+        grid_fill(scan, clip_x, clip_y, 10, 1, 0xffffff);
+        grid_fill(scan, clip_x, clip_y + 7, 10, 1, 0xffffff);
+        grid_fill(scan, clip_x, clip_y, 1, 8, 0xffffff);
+        grid_fill(scan, clip_x + 9, clip_y, 1, 8, 0xffffff);
+    }
+}
+
+/// The seat's widget layer — drawn each tick while it owns the scanout
+/// (kernel-paint → seat-draw → present, the grid's discipline).
+fn draw_shell_widgets(ticks: u64) void {
+    const scan = scanout_ptr orelse return;
+    var clip_buf: [tray_clip_probe]u8 = undefined;
+    const clip_len = syscall3(sys_clipboard_get, @intFromPtr(&clip_buf), clip_buf.len, 0);
+    draw_tray(scan, ticks, clip_len > 0);
+    draw_toasts(scan);
+    draw_notif_center(scan);
+    draw_unsaved_dialog(scan);
+    draw_about_dialog(scan);
+    draw_tooltip(scan);
+}
+
+/// Repaint + present the widget layer on a decision edge (the seat does
+/// not wait for the next tick to show a dialog).
+fn widgets_present_now() void {
+    if (!scanout_mapped) return;
+    draw_shell_widgets(tick_count);
+    _ = syscall6(sys_wmctl, wmctl_request_present, 0, 0, 0, 0, 0);
+}
+
+/// The seat's record of a TOOLTIP show — text + placement for its own
+/// paint (the kernel painter uses its own cursor identically).
+fn send_tooltip_show(text: []const u8) void {
+    _ = syscall6(sys_wmctl, wmctl_tooltip, tooltip_show_act, 0, 0, @intFromPtr(text.ptr), text.len);
+    const len = @min(text.len, seat_tip_text.len);
+    @memcpy(seat_tip_text[0..len], text[0..len]);
+    seat_tip_len = len;
+    seat_tip_x = last_px;
+    seat_tip_y = last_py;
+}
+
+fn send_tooltip_hide() void {
+    _ = syscall6(sys_wmctl, wmctl_tooltip, tooltip_hide_act, 0, 0, 0, 0);
+    seat_tip_len = 0;
+}
+
+// ---------------------------------------------------------------------------
 // WMS6 Gate D — the dock policy (icon clicks + hover labels).
 // ---------------------------------------------------------------------------
 
@@ -2142,11 +2411,11 @@ fn handle_dock_hover(prev: ?u8, cur: ?u8) void {
     if (cur) |c| {
         if (prev == null or prev.? != c) {
             const label = dock_labels[c];
-            _ = syscall6(sys_wmctl, wmctl_tooltip, tooltip_show_act, 0, 0, @intFromPtr(label.ptr), label.len);
+            send_tooltip_show(label);
             write_marker(tooltip_show_marker);
         }
     } else if (prev != null) {
-        _ = syscall6(sys_wmctl, wmctl_tooltip, tooltip_hide_act, 0, 0, 0, 0);
+        send_tooltip_hide();
         write_marker(tooltip_hide_marker);
     }
 }
@@ -2582,7 +2851,6 @@ fn main() noreturn {
 
     // WMS5 mirror + drag + policy state.
     var ev: Event = undefined;
-    var ticks: u64 = 0;
     var presents: u64 = 0;
     // WMP card 2 (#1250): an event the head's look-ahead already took out of
     // the queue, to be serviced WITHOUT parking.
@@ -2603,9 +2871,8 @@ fn main() noreturn {
     // M37 DQ5 (issue #837): continuous tick-restores in the current zone
     // (drives the settled marker; reset on zone change/drop/grab).
     var snap_tick_count: u32 = 0;
-    var notif_open: bool = false;
-    // WMS6 Gate E (issue #626): the tray widget-content state the WM owns.
-    var tray_state: TrayState = .{};
+    // WMS6 Gate E (issue #626): the tray widget-content state the WM owns
+    // (file-scope since #3759 — the widget paint reads it off the loop).
     var prev_in_tray: bool = false;
     var prev_dock_idx: ?u8 = null;
     while (true) {
@@ -2664,7 +2931,7 @@ fn main() noreturn {
 
         switch (ev.kind) {
             composite_tick_kind => {
-                ticks +%= 1;
+                tick_count +%= 1;
                 // Issue #825: render wallpaper on root desktop behind windows
                 // — suspended while the overview grid is open: the seat's own
                 // dim+grid owns those pixels until close (the grid restores
@@ -2673,6 +2940,11 @@ fn main() noreturn {
                     render_wallpaper_root();
                     write_marker(wallpaper_present_marker);
                 }
+                // #3759 (fourth item): while the seat owns the scanout its
+                // shell widgets are the TOPMOST layer — repainted every
+                // tick over the wallpaper pass (toasts/center contents
+                // change; dialogs are modal).
+                if (scanout_mapped) draw_shell_widgets(tick_count);
                 // #3759 (second item): the seat's overview grid is redrawn
                 // every tick while open — the kernel's layer may repaint a
                 // damaged unmigrated window through the dim between ticks —
@@ -2698,7 +2970,7 @@ fn main() noreturn {
                         }
                     }
                 }
-                if (ticks % present_every == 0) {
+                if (tick_count % present_every == 0) {
                     _ = syscall6(sys_wmctl, wmctl_request_present, 0, 0, 0, 0, 0);
                     presents +%= 1;
                     if (presents % marker_every == 0) {
@@ -2712,13 +2984,13 @@ fn main() noreturn {
                 // sys_clipboard_get probe) and issues TRAY on change. Before
                 // this gate the tray froze while a WM was registered (the
                 // kernel's drain is gated off); now the WM drives it.
-                if (ticks % tray_refresh_every == 0) {
+                if (tick_count % tray_refresh_every == 0) {
                     var clip_buf: [tray_clip_probe]u8 = undefined;
                     // M97g (#2082): slot 39 admits CAP_CLIPBOARD or the
                     // registered seat — a refused probe is rc < 0 and must
                     // not fake "filled".
                     const clip_len = syscall3(sys_clipboard_get, @intFromPtr(&clip_buf), clip_buf.len, 0);
-                    _ = tray_tick_policy(ticks, clip_len > 0, &tray_state);
+                    _ = tray_tick_policy(tick_count, clip_len > 0, &tray_state);
                 }
                 // WMS7 Gate A (issue #627): the app↔WM mailbox service loop —
                 // serve any WM_RPC requests an app queued in the WM's inbox
@@ -2763,6 +3035,8 @@ fn main() noreturn {
                 input_dirty = true;
                 const px = ev.arg0 & 0xffff;
                 const py = ev.arg0 >> 16;
+                last_px = px;
+                last_py = py;
                 const btn: u8 = @intCast(ev.flags & 0xff);
                 const left = (btn & btn_left) != 0;
                 const prev_left = (prev_btn & btn_left) != 0;
@@ -2905,6 +3179,7 @@ fn main() noreturn {
                         if (py >= fb_h - taskbar_h and px >= fb_w - tray_w) {
                             notif_open = !notif_open;
                             _ = syscall6(sys_wmctl, wmctl_notif_center, if (notif_open) notif_open_act else notif_close_act, 0, 0, 0, 0);
+                            widgets_present_now();
                             write_marker(if (notif_open) notif_open_marker else notif_close_marker);
                         }
                         // WMS6 Gate D (issue #626): a left-button DOWN EDGE on a
@@ -2941,6 +3216,43 @@ fn main() noreturn {
                         // WM3: a taskbar-entry click consumes the edge — the
                         // entry band is kernel chrome, never a title bar.
                         if (tb_clicked) down_handled = true;
+                        // #3759 (fourth item): the notification-center panel
+                        // is the seat's own widget — while open it consumes
+                        // clicks inside its rect: a row dismisses through
+                        // NOTIF_DISMISS (cmd 7), "clear all" through
+                        // NOTIF_CENTER (cmd 6 act 2), a panel-body miss is
+                        // eaten. Hit-testing is the shared wnd_core rule —
+                        // the kernel's own copy was deleted with this item.
+                        if (notif_open and px >= fb_w - wnd_core.notif_center_w) {
+                            var rows: [seat_notif_max]NotifRow = undefined;
+                            const hit = wnd_core.notif_center_hit_at(fb_w, notif_snapshot(&rows), px, py);
+                            if (hit) |h| {
+                                if (h == ~@as(usize, 0)) {
+                                    _ = syscall6(sys_wmctl, wmctl_notif_center, notif_clear_act, 0, 0, 0, 0);
+                                    write_marker(notif_clear_marker);
+                                } else {
+                                    _ = syscall6(sys_wmctl, wmctl_notif_dismiss, h, 0, 0, 0, 0);
+                                    write_marker(notif_dismiss_marker);
+                                }
+                            }
+                            widgets_present_now();
+                            down_handled = true;
+                        }
+                        // The about dialog's close 'x' — DIALOG act 0
+                        // (kernel applies about_dialog_close; the seat's
+                        // own open copy clears in lockstep).
+                        if (about_open) {
+                            const ax: u32 = if (fb_w > 280) (fb_w - 280) / 2 else 0;
+                            const ay: u32 = if (fb_h > 160) (fb_h - 160) / 2 else 0;
+                            if (px >= ax and px < ax + 280 and py >= ay and py < ay + 160) {
+                                if (px >= ax + 264 and px < ax + 272 and py >= ay + 4 and py < ay + 12) {
+                                    _ = syscall6(sys_wmctl, wmctl_dialog, 0, 0, 0, 0, 0);
+                                    about_open = false;
+                                }
+                                widgets_present_now();
+                                down_handled = true;
+                            }
+                        }
                         if (unsaved_dialog_open) {
                             apply_unsaved_choice(wnd_core.unsaved_dialog_choice_at(fb_w, fb_h, px, py));
                             down_handled = true;
@@ -3018,10 +3330,10 @@ fn main() noreturn {
                 // own tooltip system is a dormant stub that WMS8 deletes).
                 const in_tray = (py >= fb_h - taskbar_h and px >= fb_w - tray_w);
                 if (in_tray and !prev_in_tray) {
-                    _ = syscall6(sys_wmctl, wmctl_tooltip, tooltip_show_act, 0, 0, @intFromPtr(tray_tooltip_text.ptr), tray_tooltip_text.len);
+                    send_tooltip_show(tray_tooltip_text);
                     write_marker(tooltip_show_marker);
                 } else if (!in_tray and prev_in_tray) {
-                    _ = syscall6(sys_wmctl, wmctl_tooltip, tooltip_hide_act, 0, 0, 0, 0);
+                    send_tooltip_hide();
                     write_marker(tooltip_hide_marker);
                 }
                 prev_in_tray = in_tray;

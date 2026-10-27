@@ -6,11 +6,9 @@
 
 const da = @import("../driving_award.zig");
 const mark_dirty = da.mark_dirty;
-const notif_center_w = da.notif_center_w;
 const notify_dismiss_ticks = da.notify_dismiss_ticks;
 const notify_max = da.notify_max;
 const notify_text_max = da.notify_text_max;
-const virtio_gpu = da.virtio_gpu;
 const virtio_snd = da.virtio_snd;
 
 /// Push a notification into the bounded FIFO (drop-oldest on overflow).
@@ -112,28 +110,8 @@ pub fn notif_center_clear_all() void {
     _ = mark_dirty(0);
 }
 
-/// M21 W5: hit-test the notification center panel. Returns the
-/// notification index if a click landed on a notification row, or
-/// ~0 for the "clear all" button, or null for a miss.
-pub fn notif_center_hit_test(x: u32, y: u32) ?usize {
-    if (!da.notif_center_open) return null;
-    const panel_x: u32 = if (virtio_gpu.fb_width > notif_center_w) virtio_gpu.fb_width - notif_center_w else 0;
-    const panel_y: u32 = 40;
-    const row_h: u32 = 36;
-    const pad: u32 = 8;
-    const header_h: u32 = 24;
-    // "Clear all" button at the bottom.
-    const btn_y = panel_y + header_h + pad * 2 + @as(u32, @intCast(@min(da.notify_count, 8))) * row_h + pad;
-    if (x >= panel_x + pad and x < panel_x + notif_center_w - pad and y >= btn_y and y < btn_y + 20) {
-        return ~@as(usize, 0); // clear all sentinel
-    }
-    // Check notification rows.
-    var i: usize = 0;
-    while (i < @min(da.notify_count, 8)) : (i += 1) {
-        const row_y = panel_y + header_h + pad + @as(u32, @intCast(i)) * row_h;
-        if (x >= panel_x + pad and x < panel_x + notif_center_w - pad and y >= row_y and y < row_y + row_h) {
-            return i;
-        }
-    }
-    return null;
-}
+// #3759 (fourth item): the kernel's `notif_center_hit_test` is DELETED —
+// hit-testing a shown panel is the seat's decision, and the kernel's own
+// click path was already drained by WMS8 (panel clicks fan out as kind 19;
+// the seat hit-tests through the shared wnd_core.notif_center_hit_at rule,
+// the same numbers draw_chrome paints).

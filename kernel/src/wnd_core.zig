@@ -137,6 +137,45 @@ pub fn unsaved_dialog_choice_at(fw: u32, fh: u32, x: u32, y: u32) UnsavedChoice 
     return .none;
 }
 
+/// M21 W5 / #3759 (fourth item): the notification-center panel geometry —
+/// single source. The kernel's `draw_chrome` paints these rects and the
+/// seat's panel hit-test uses the SAME numbers (parity by construction);
+/// the kernel's own `notif_center_hit_test` was deleted with the kernel
+/// click decisions (WMS8) — hit-testing a shown panel is the seat's job.
+/// Pure.
+pub const notif_center_w: u32 = 300;
+pub const notif_center_y: u32 = 40;
+pub const notif_center_row_h: u32 = 36;
+pub const notif_center_pad: u32 = 8;
+pub const notif_center_header_h: u32 = 24;
+pub const notif_center_max_rows: usize = 8;
+/// Clear-all button height (the row below the last notification row).
+pub const notif_center_clear_h: u32 = 20;
+
+/// Hit-test the notification-center panel: the row index a point lands on,
+/// `~0` for the "clear all" button, or null for a miss. `count` is the
+/// live queue depth (the painter draws at most `notif_center_max_rows`).
+pub fn notif_center_hit_at(fw: u32, count: usize, x: u32, y: u32) ?usize {
+    const panel_x: u32 = if (fw > notif_center_w) fw - notif_center_w else 0;
+    const rows: u32 = @intCast(@min(count, notif_center_max_rows));
+    const btn_y = notif_center_y + notif_center_header_h + notif_center_pad * 2 + rows * notif_center_row_h + notif_center_pad;
+    if (x >= panel_x + notif_center_pad and x < panel_x + notif_center_w - notif_center_pad and
+        y >= btn_y and y < btn_y + notif_center_clear_h)
+    {
+        return ~@as(usize, 0); // clear all sentinel
+    }
+    var i: usize = 0;
+    while (i < @min(count, notif_center_max_rows)) : (i += 1) {
+        const row_y = notif_center_y + notif_center_header_h + notif_center_pad + @as(u32, @intCast(i)) * notif_center_row_h;
+        if (x >= panel_x + notif_center_pad and x < panel_x + notif_center_w - notif_center_pad and
+            y >= row_y and y < row_y + notif_center_row_h)
+        {
+            return i;
+        }
+    }
+    return null;
+}
+
 /// The z-order rank of a window by id (the registry index, 0 = bottom), or
 /// null. Pure — the number the kernel's monitor row and the EL0
 /// `sys_win_query` both report; the WM server uses it once it owns the
@@ -1158,6 +1197,26 @@ test "wnd_core: DQ2 tab-strip chrome geometry (strip row, title truncation, clos
     try std.testing.expect(!tab_rect_contains(c0, 300, 216)); // next cell
     try std.testing.expect(!tab_rect_contains(c0, 100, 238)); // below strip
     try std.testing.expect(!tab_rect_contains(c0, 99, 216)); // left of strip
+}
+
+test "wnd_core: notif_center_hit_at — rows, clear-all sentinel, misses" {
+    // #3759 (fourth item): the panel geometry the seat hit-tests is the
+    // same set of numbers the kernel painter draws. Panel at
+    // x = fb_w-300, y=40, header 24, pad 8, rows of 36.
+    const count: usize = 2;
+    const panel_x: u32 = fb_w - notif_center_w;
+    // Row 0: y = 40+24+8 = 72 .. 108.
+    try std.testing.expectEqual(@as(?usize, 0), notif_center_hit_at(fb_w, count, panel_x + 40, 72 + 10));
+    // Row 1: y = 108 .. 144.
+    try std.testing.expectEqual(@as(?usize, 1), notif_center_hit_at(fb_w, count, panel_x + 40, 108 + 10));
+    // Clear-all: btn_y = 40+24+16 + 2*36 + 8 = 160, height 20.
+    try std.testing.expectEqual(@as(?usize, ~@as(usize, 0)), notif_center_hit_at(fb_w, count, panel_x + 40, 170));
+    // Misses: outside the panel's x band, in the header, past clear-all.
+    try std.testing.expectEqual(@as(?usize, null), notif_center_hit_at(fb_w, count, panel_x - 4, 80));
+    try std.testing.expectEqual(@as(?usize, null), notif_center_hit_at(fb_w, count, panel_x + 40, 50));
+    try std.testing.expectEqual(@as(?usize, null), notif_center_hit_at(fb_w, count, panel_x + 40, 200));
+    // Only 8 rows are ever drawn: a point under row 9 hits nothing.
+    try std.testing.expectEqual(@as(?usize, null), notif_center_hit_at(fb_w, 10, panel_x + 40, 40 + 24 + 8 + 8 * 36 + 10));
 }
 
 test "wnd_core: WM3 taskbar entry layout — rects, hit-test, tray clamp, title slice" {

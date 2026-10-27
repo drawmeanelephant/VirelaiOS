@@ -112,17 +112,6 @@ pub fn tooltip_clear() void {
     da.tooltip_text_len = 0;
 }
 
-/// M32 WMS6 Gate C (issue #626): set + show the tooltip IMMEDIATELY — the
-/// decision channel for the registered WM (TOOLTIP cmd 8). The WM owns the
-/// dwell policy by choosing WHEN to show; the kernel's old 10-tick hover timer
-/// and its dwell decision died with WMS8 Gate 1. The kernel still clamps +
-/// places + blits the box.
-pub fn tooltip_show_now() void {
-    if (da.tooltip_text_len == 0) return;
-    da.tooltip_visible = true;
-    _ = mark_dirty(0);
-}
-
 /// M32 WMS6 Gate C (issue #626): set + show the tooltip at the kernel's own
 /// cursor (the `cursor_x/cursor_y` the box renders below) — the one call the
 /// registered WM's TOOLTIP show reaches through (clamped 32-byte bound).

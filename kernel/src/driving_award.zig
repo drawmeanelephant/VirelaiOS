@@ -851,7 +851,9 @@ pub var notify_count: usize = 0;
 /// M21 W5: notification center panel state — BSS, no heap.
 /// The panel opens on tray clock click and shows the last 10 notifications.
 pub var notif_center_open: bool = false;
-pub const notif_center_w: u32 = 300;
+/// #3759 (fourth item): the panel geometry is single-sourced in wnd_core —
+/// the seat's hit-test rule and draw_chrome's rects cannot drift.
+pub const notif_center_w: u32 = geom.notif_center_w;
 pub const notif_center_h: u32 = 400;
 pub var notify_ticks: [notify_max]u32 = @as([notify_max]u32, @splat(@as(u32, 0)));
 
@@ -1165,7 +1167,6 @@ pub const unsaved_dialog_cancel = dialogs_mod.unsaved_dialog_cancel;
 pub const unsaved_dialog_click = dialogs_mod.unsaved_dialog_click;
 pub const user_set_unsaved = dialogs_mod.user_set_unsaved;
 pub const tooltip_clear = dialogs_mod.tooltip_clear;
-pub const tooltip_show_now = dialogs_mod.tooltip_show_now;
 pub const tooltip_show = dialogs_mod.tooltip_show;
 pub const about_dialog_open_dialog = dialogs_mod.about_dialog_open_dialog;
 pub const about_dialog_close = dialogs_mod.about_dialog_close;
@@ -1180,7 +1181,6 @@ pub const notif_center_toggle = notify_mod.notif_center_toggle;
 pub const notif_center_set_open = notify_mod.notif_center_set_open;
 pub const notif_center_dismiss = notify_mod.notif_center_dismiss;
 pub const notif_center_clear_all = notify_mod.notif_center_clear_all;
-pub const notif_center_hit_test = notify_mod.notif_center_hit_test;
 const tray_mod = @import("driving_award/tray.zig");
 pub const tray_rect = tray_mod.tray_rect;
 pub const format_hhmm = tray_mod.format_hhmm;

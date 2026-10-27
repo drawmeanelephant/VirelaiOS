@@ -944,6 +944,10 @@ pub fn cmd_wm(m: *Monitor, args: []const []const u8) ExecError {
         m.console.print_u64(info.notif_center_count);
         m.console.puts(" notif_dismiss=");
         m.console.print_u64(info.notif_dismiss_count);
+        // #3759 (fourth item): NOTIF_GET (cmd 25) queue reads served to the
+        // seat — the center/toasts' contents access, not a decision.
+        m.console.puts(" notif_get=");
+        m.console.print_u64(info.notif_get_count);
         // M32 WMS6 Gate C (issue #626): the tooltip observability — TOOLTIP
         // (cmd 8) show/hide decisions applied.
         m.console.puts(" tooltip=");
