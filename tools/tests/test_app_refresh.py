@@ -29,8 +29,12 @@ when:
     tokens (`Mnnnx` or `#issue` each).
 
 As a script — `python3 tools/tests/test_app_refresh.py --stale` — it
-prints both tables oldest-first for wave filers (`—` dates sort
-oldest). That mode is advisory only: staleness is never a gate, time is
+prints the tables oldest-first for wave filers (`—` dates sort
+oldest): the app table, then the non-app table split by wave verb
+(#3322) — seat/tool/script/lib rows are the wave tranche surface,
+while kernel-service and host-tool rows are audit-only (ADR-amendment
+cards plus a yearly sweep, never the tranche) and print in their own
+table. That mode is advisory only: staleness is never a gate, time is
 not a build input, and --stale exits 0 regardless.
 """
 import re
@@ -47,6 +51,7 @@ REGISTRY = ROOT / "docs/component-registry.md"
 APP_HEADING = "The ledger"
 NONAPP_HEADING = "Non-app staleness"
 NONAPP_KINDS = {"seat", "tool", "script", "lib", "kernel-service", "host-tool"}
+AUDIT_ONLY_KINDS = {"kernel-service", "host-tool"}
 
 REF_TOKEN_RE = re.compile(r"^(?:M\d+[a-z]|#\d+)$")
 EPOCH = date.min
@@ -281,7 +286,13 @@ def stale_table(rows, columns):
 
 
 def stale_report():
-    """Both ledger tables, oldest row first in each."""
+    """Ledger tables, oldest row first in each.
+
+    The non-app ledger prints as two tables (#3322): the tranche
+    surface (seat/tool/script/lib — a wave's ~3-row non-app pick comes
+    from the top of this table) and the audit-only rows
+    (kernel-service/host-tool — yearly sweep, never tranche-picked).
+    """
     app_order = {b: i for i, (b, _) in enumerate(apps_txt_rows())}
     apps = stale_table(
         [
@@ -292,15 +303,19 @@ def stale_report():
         ("APP", "BINARY", "LAST REFRESH", "DATE"),
     )
     nonapp_order = {n: i for i, (n, _) in enumerate(nonapp_scope())}
-    nonapp = stale_table(
-        [
-            (nonapp_order.get(c[0], lineno), c[:2] + c[3:])
-            for lineno, c in nonapp_rows()
-            if len(c) == 6
-        ],
-        ("COMPONENT", "KIND", "LAST REFRESH", "DATE"),
+    columns = ("COMPONENT", "KIND", "LAST REFRESH", "DATE")
+    rows = [
+        (nonapp_order.get(c[0], lineno), c[:2] + c[3:])
+        for lineno, c in nonapp_rows()
+        if len(c) == 6
+    ]
+    tranche = stale_table([r for r in rows if r[1][1] not in AUDIT_ONLY_KINDS], columns)
+    audit = stale_table([r for r in rows if r[1][1] in AUDIT_ONLY_KINDS], columns)
+    audit_heading = "Audit-only staleness (kernel-service, host-tool — yearly sweep, not the tranche)"
+    return (
+        f"{apps}\n\n{NONAPP_HEADING}\n{'-' * len(NONAPP_HEADING)}\n{tranche}"
+        f"\n\n{audit_heading}\n{'-' * len(audit_heading)}\n{audit}"
     )
-    return f"{apps}\n\n{NONAPP_HEADING}\n{'-' * len(NONAPP_HEADING)}\n{nonapp}"
 
 
 if __name__ == "__main__":
