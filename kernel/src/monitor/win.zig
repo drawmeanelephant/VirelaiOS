@@ -952,6 +952,10 @@ pub fn cmd_wm(m: *Monitor, args: []const []const u8) ExecError {
         // decisions the kernel applied.
         m.console.puts(" persist=");
         m.console.print_u64(info.persist_count);
+        // #3759 (final item): DRAG (cmd 27) — the seat's take/enter/
+        // leave/drop/cancel decisions the kernel applied.
+        m.console.puts(" drag=");
+        m.console.print_u64(info.drag_count);
         // M32 WMS6 Gate C (issue #626): the tooltip observability — TOOLTIP
         // (cmd 8) show/hide decisions applied.
         m.console.puts(" tooltip=");

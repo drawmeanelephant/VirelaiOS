@@ -2149,6 +2149,90 @@ test "driving_award: M52 card 3 review — removing the HOVERED window clears th
     drag_cancel();
 }
 
+// #3759 (final item): the seat-side arm mirror hook — a host-test sink
+// standing in for wm_server.fan_drag's kind-22 push.
+var test_drag_hook_calls: u32 = 0;
+var test_drag_hook_len: usize = 0;
+var test_drag_hook_src: usize = 0;
+fn test_drag_arm_hook(payload_len: usize, source_pid: usize) void {
+    test_drag_hook_calls += 1;
+    test_drag_hook_len = payload_len;
+    test_drag_hook_src = source_pid;
+}
+
+test "driving_award: #3759 final item — under a seat the arm stages for TAKE and the seat's calls land the kept deliveries" {
+    events.init();
+    arm();
+    _ = user_open(64, 64, 512, 384, 7); // window 2, owner 7 (the drag source)
+    _ = user_open(320, 64, 512, 384, 8); // window 3, owner 8 (the target)
+    while (events.pop(7) != null) {}
+    while (events.pop(8) != null) {}
+
+    driving_award.wm_owns_input = true;
+    driving_award.wm_drag_hook = test_drag_arm_hook;
+    defer {
+        driving_award.wm_owns_input = false;
+        driving_award.wm_drag_hook = null;
+    }
+
+    // The arm stages a record for the seat's TAKE — the delivery record
+    // stays dark (sys_drag_read would answer 0) and the mirror hook
+    // fires exactly once with the staged size + source pid.
+    test_drag_hook_calls = 0;
+    drag_start("hello", 7);
+    try std.testing.expect(!drag_is_active());
+    try std.testing.expectEqual(@as(usize, 0), drag_get_payload().len);
+    try std.testing.expectEqual(@as(u32, 1), test_drag_hook_calls);
+    try std.testing.expectEqual(@as(usize, 5), test_drag_hook_len);
+    try std.testing.expectEqual(@as(usize, 7), test_drag_hook_src);
+    const rec = driving_award.drag_armed_record().?;
+    try std.testing.expectEqual(@as(usize, 7), rec.source_pid);
+    try std.testing.expectEqualStrings("hello", rec.payload);
+
+    // The seat's hover-edge calls push the shim fan's own event shapes:
+    // ENTER carries size+pid, LEAVE the pid alone.
+    try std.testing.expect(driving_award.drag_enter(3, rec.payload.len, rec.source_pid));
+    try std.testing.expect(driving_award.drag_leave(3, rec.source_pid));
+    const e1 = events.pop(8).?;
+    try std.testing.expectEqual(events.DRAG_ENTER, e1.kind);
+    try std.testing.expectEqual(@as(u32, 5), e1.arg0);
+    try std.testing.expectEqual(@as(u32, 7), e1.arg1);
+    const e2 = events.pop(8).?;
+    try std.testing.expectEqual(events.DRAG_LEAVE, e2.kind);
+    try std.testing.expectEqual(@as(u32, 0), e2.arg0);
+    try std.testing.expectEqual(@as(u32, 7), e2.arg1);
+
+    // A bad or unowned target refuses honestly — nothing pushed.
+    try std.testing.expect(!driving_award.drag_enter(99, 5, 7));
+    try std.testing.expect(!driving_award.drag_leave(99, 7));
+    try std.testing.expect(!driving_award.drag_drop(99, "hello", 7));
+    try std.testing.expectEqual(@as(usize, 0), events.pending(8));
+
+    // The TAKE consumed the record; the seat's DROP re-stages it for the
+    // target's sys_drag_read and pushes DROP to the target's owner.
+    driving_award.drag_armed_cancel();
+    try std.testing.expect(driving_award.drag_armed_record() == null);
+    try std.testing.expect(driving_award.drag_drop(3, "hello", 7));
+    try std.testing.expect(drag_is_active());
+    try std.testing.expectEqual(@as(usize, 7), driving_award.drag_source_pid);
+    const e3 = events.pop(8).?;
+    try std.testing.expectEqual(events.DROP, e3.kind);
+    try std.testing.expectEqual(@as(u32, 5), e3.arg0);
+    try std.testing.expectEqual(@as(u32, 7), e3.arg1);
+    try std.testing.expectEqualStrings("hello", drag_get_payload());
+
+    // The dead-source rule covers the arm staging too: an untaken arm
+    // clears with the source; another process's death does not cancel it.
+    drag_start("again", 7);
+    try std.testing.expect(driving_award.drag_armed_record() != null);
+    try std.testing.expectEqual(@as(usize, 1), close_owner(8));
+    try std.testing.expect(driving_award.drag_armed_record() != null);
+    _ = close_owner(7);
+    try std.testing.expect(driving_award.drag_armed_record() == null);
+    // ...and the pending delivery cleared with the source as before.
+    try std.testing.expect(!drag_is_active());
+}
+
 // ---------------------------------------------------------------------------
 // Card U4/U5 host tests (claims 0935/4993)
 // ---------------------------------------------------------------------------

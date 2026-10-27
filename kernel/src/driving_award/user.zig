@@ -708,6 +708,10 @@ pub fn close_owner(owner: usize) usize {
     // later pointer move kept crossing windows and every drop still named
     // the dead pid as the source. Cancel it with the source.
     if (da.drag_active and da.drag_source_pid == owner) drag_cancel();
+    // #3759 (final item): the seat-side ARM staging is the same capture —
+    // a source that dies before the seat's TAKE must not leave an armed
+    // record naming it (the seat's take would adopt a dead pid's bytes).
+    if (da.drag_armed and da.drag_armed_source_pid == owner) da.drag_armed_cancel();
     var closed: usize = 0;
     while (true) {
         var idx: ?usize = null;
