@@ -6075,6 +6075,50 @@ test "syscall: WMCTL WINDOW_NAME (cmd 14, #1056) resolves a window's display nam
     _ = driving_award.user_close(2);
 }
 
+test "syscall: WMCTL NOTIF_GET (cmd 25, #3759) reads the notification queue to the seat" {
+    userspace.init();
+    init(test_writer);
+    wm_server.init();
+    _ = scheduler.init();
+    _ = scheduler.register_worker(0x2000);
+    _ = scheduler.register_user(0x3000, 0); // task 2 = process 0 (the WM seat)
+    scheduler.start();
+    var frame = fresh_frame();
+    try std.testing.expect(scheduler.yield_current()); // shell -> user (2)
+
+    var buf: [300]u8 = @as([300]u8, @splat(@as(u8, 0)));
+
+    // No WM registered -> ENOSYS (the ADR 0007 "no WM" case).
+    try std.testing.expectEqual(error_result(.enosys), dispatch(sys_wmctl, .{ wm_server.wmctl_notif_get, 0, @intFromPtr(&buf), buf.len, 0, 0 }, &frame));
+
+    try std.testing.expect(wm_server.register(0));
+    defer _ = wm_server.unregister(0);
+
+    // Empty queue -> EINVAL (out of range index).
+    try std.testing.expectEqual(error_result(.einval), dispatch(sys_wmctl, .{ wm_server.wmctl_notif_get, 0, @intFromPtr(&buf), buf.len, 0, 0 }, &frame));
+
+    // Seed the kernel queue and read it back: [level][text] per entry.
+    driving_award.notify_push("first", 0);
+    driving_award.notify_push("urgent", 2);
+    set_user_regions(.{ .base = 0, .len = 0 }, .{ .base = @intFromPtr(&buf), .len = buf.len });
+    try std.testing.expectEqual(@as(u64, 6), dispatch(sys_wmctl, .{ wm_server.wmctl_notif_get, 0, @intFromPtr(&buf), buf.len, 0, 0 }, &frame));
+    try std.testing.expectEqual(@as(u8, 0), buf[0]);
+    try std.testing.expectEqualStrings("first", buf[1..6]);
+    try std.testing.expectEqual(@as(u64, 7), dispatch(sys_wmctl, .{ wm_server.wmctl_notif_get, 1, @intFromPtr(&buf), buf.len, 0, 0 }, &frame));
+    try std.testing.expectEqual(@as(u8, 2), buf[0]);
+    try std.testing.expectEqualStrings("urgent", buf[1..7]);
+    // Past the tail -> EINVAL; over-255 -> EINVAL; zero dest -> EINVAL.
+    try std.testing.expectEqual(error_result(.einval), dispatch(sys_wmctl, .{ wm_server.wmctl_notif_get, 2, @intFromPtr(&buf), buf.len, 0, 0 }, &frame));
+    try std.testing.expectEqual(error_result(.einval), dispatch(sys_wmctl, .{ wm_server.wmctl_notif_get, 0x100, @intFromPtr(&buf), buf.len, 0, 0 }, &frame));
+    try std.testing.expectEqual(error_result(.einval), dispatch(sys_wmctl, .{ wm_server.wmctl_notif_get, 0, @intFromPtr(&buf), 0, 0, 0 }, &frame));
+    // Reads are counted like every other verb.
+    try std.testing.expect(wm_server.info().notif_get_count >= 2);
+
+    // An unwritable destination -> EFAULT.
+    set_user_regions(.{ .base = 0, .len = 0 }, .{ .base = 0, .len = 0 });
+    try std.testing.expectEqual(error_result(.efault), dispatch(sys_wmctl, .{ wm_server.wmctl_notif_get, 0, uaccess.diagnostic_unmapped, 8, 0, 0 }, &frame));
+}
+
 test "syscall: SYS_TIME (slot 66, #1058) returns the firmware wall-clock epoch" {
     init(test_writer);
     var frame = fresh_frame();

@@ -230,6 +230,15 @@ pub const layout_kresize: u64 = 12; // a2 = dw, a3 = dh
 /// seat's last pick dies with it (unregister resets to `ptr`). Seat-gated
 /// like every other subcommand; no existing opcode or arg layout changes.
 pub const wmctl_cursor_shape: u64 = 24;
+
+/// #3759 (fourth item — the shell-widgets drain): the seat's read on the
+/// notification queue. The queue stays a kernel fact (apps post through
+/// sys_notify, slot 51); the seat reads entries to render the toasts and
+/// the center it owns when it holds the scanout. a0 = queue index (the
+/// same order NOTIF_DISMISS cmd 7 takes), a1 = dest ptr, a2 = dest len;
+/// writes [level:u8][text bytes] and returns the byte count, EINVAL when
+/// the index is out of range or the dest can't hold the level byte.
+pub const wmctl_notif_get: u64 = 25;
 /// OVERVIEW actions (a0).
 pub const overview_enter_action: u64 = 0;
 pub const overview_exit_action: u64 = 1;
@@ -363,6 +372,7 @@ var alt_tab_apply_count: u64 = 0;
 /// M32 WMS6 Gate B (issue #626): NOTIF_CENTER / NOTIF_DISMISS submissions
 /// accepted — the notification-center decisions the WM made.
 var notif_center_count: u64 = 0;
+var notif_get_count: u64 = 0;
 var notif_dismiss_count: u64 = 0;
 /// M32 WMS6 Gate C (issue #626): TOOLTIP submissions accepted (show/hide).
 var tooltip_count: u64 = 0;
@@ -471,6 +481,7 @@ pub fn init() void {
     set_state_count = 0;
     alt_tab_apply_count = 0;
     notif_center_count = 0;
+    notif_get_count = 0;
     notif_dismiss_count = 0;
     tooltip_count = 0;
     dock_count = 0;
@@ -854,6 +865,7 @@ pub const WmInfo = struct {
     set_state_count: u64,
     alt_tab_apply_count: u64,
     notif_center_count: u64,
+    notif_get_count: u64,
     notif_dismiss_count: u64,
     tooltip_count: u64,
     dock_count: u64,
@@ -896,6 +908,7 @@ pub fn info() WmInfo {
         .set_state_count = set_state_count,
         .alt_tab_apply_count = alt_tab_apply_count,
         .notif_center_count = notif_center_count,
+        .notif_get_count = notif_get_count,
         .notif_dismiss_count = notif_dismiss_count,
         .tooltip_count = tooltip_count,
         .dock_count = dock_count,
@@ -1035,6 +1048,11 @@ pub fn note_alt_tab() void {
 /// Note a NOTIF_CENTER (cmd 6) submission — the WM's open/close/clear call.
 pub fn note_notif_center() void {
     notif_center_count +%= 1;
+}
+
+/// #3759 (fourth item): NOTIF_GET (cmd 25) queue reads served to the seat.
+pub fn note_notif_get() void {
+    notif_get_count +%= 1;
 }
 
 /// Note a NOTIF_DISMISS (cmd 7) submission — the WM dismissing a row.

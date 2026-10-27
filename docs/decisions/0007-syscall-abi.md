@@ -2942,3 +2942,22 @@ refs only.
 | X7 | Principal `uid_agent` = 2000 | Assigned at exec to the image named `AGENTD.ELF`. An EL0 spawn from a `uid_agent` parent inherits `uid_agent`; other spawns stay `uid_user` (amends `process.zig:114-116` for agent parents only). Kill gate: same uid, or `uid_user` acting on `uid_agent` (D12), or `CAP_PROC_ADMIN`. `procs` and `sys_principal` (slot 68) report 2000; receipts gain a `uid=` field | cards #3041, #3044 |
 | X8 | `kernel/src/syscall.zig` | Wave-4 editors, in order: card #3035, then card #3036, then card #3041. All of them come after card #2990 merges; #3007, which also held the file, closed 2026-10-21. No other wave-4 card edits it | — |
 | X9 | Not reserved | No WM_RPC kind for a11y (no caller; R1's reason); kinds ≥ 31 stay unallocated. No statfs slot (W2/W3 carry it). W8's "no `timer` row" (`:2834`) held while wave-3's D2 kept GIFs on the stepper; slot 95 changes that for GOVIEW. That is a grant-row edit, not ABI, so it goes to whichever card next holds the grant files (D5) | — |
+
+### Amendment (2026-10-27, #3759 fourth item — slot-65 cmd 25 `NOTIF_GET`, the seat's notification-queue read)
+
+The shell-widgets drain (#3754 split, fourth checklist item of #3759) moves
+the desktop-shell widgets' contents ownership to the seat. The notification
+queue itself stays a kernel fact — apps post through `sys_notify` (slot 51)
+and the kernel's bounded FIFO (10 entries, drop-oldest) is the applied
+record both the kernel painters (no-seat shim, unbound seat) and `dui`
+consume. What the seat could not do was READ it: `NOTIF_GET` (cmd 25) is the
+query, following the WINDOW_NAME (cmd 14) read-back pattern.
+
+| NOTIF_GET | `WMCTL_NOTIF_GET` | 25 | a0 = queue index (the same order `NOTIF_DISMISS` cmd 7 takes); a1 = dest ptr, a2 = dest len; writes `[level:u8][text bytes]` | byte count written (≥ 1; a 1-byte dest still reports the level) | `ENOSYS` no WM; `EACCES` caller not the WM; `EINVAL` out-of-range index or empty dest; `EFAULT` bad buffer |
+
+Reads are not decisions — the seat's widget STATE never enters the kernel
+(the seat's own open/visible copies stay seat-side), but each served read
+increments the seat's `notif_get` counter in the `wm` monitor report like
+every other verb. The seat paints the toasts + center it owns into the
+scanout it holds; the kernel's `draw_chrome` painters stay as the no-seat
+shim fallback and the unbound-seat render path, byte-identical.
