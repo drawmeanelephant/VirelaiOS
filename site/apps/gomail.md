@@ -10,7 +10,7 @@ tags: [apps, showcase]
 | field | value |
 |-------|-------|
 | binary | `GOMAIL.ELF` |
-| version | ver 1.0.0 |
+| version | ver 1.1.0 |
 | owning spec / contract | [`tools/gate/specs/go-mail.spec`](https://github.com/drawmeanelephant/VirelaiOS/blob/main/tools/gate/specs/go-mail.spec) |
 | state | shipped |
 

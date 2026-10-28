@@ -45,6 +45,11 @@
 // ('gomail: secret mail-<user>'), naming 'gomail: refuse
 // secret_not_found' when the row is unprovisioned.
 //
+// M208a (#3822): a no-argument launch opens the tabapp window instead
+// of usage — mailboxes, the selected box's headers, and the selected
+// message's text/plain body, all read from the MAIL/ cache with no
+// dial; an explicit Fetch key runs the existing fetch path (view.go).
+//
 // Serial markers (one per line, grep-able):
 //
 //	gomail: account <path>           gomail: dial <host> <port> tls|plain
@@ -279,7 +284,17 @@ func parseArgs(args []string) (options, bool) {
 	return o, true
 }
 
-func say(s string) { vi.ConsoleLine(s) }
+// sayTap is the window's status-line seam (view.go): while a Fetch runs,
+// the tap sees every marker line say() emits so the pane can name the
+// last one. Nil outside a fetch — CLI output is untouched.
+var sayTap func(string)
+
+func say(s string) {
+	vi.ConsoleLine(s)
+	if sayTap != nil {
+		sayTap(s)
+	}
+}
 
 // fail reports an error line — protoErr/mailError texts already carry
 // the 'gomail:' marker — and the closing marker.
@@ -293,31 +308,10 @@ func fail(err error) {
 	vi.Exit(exitError)
 }
 
-func main() {
-	argvPad[0] = 1
-	args := cliArgs(vi.Args())
-	o, ok := parseArgs(args)
-	if !ok {
-		usage()
-		vi.Exit(exitUsage)
-	}
-
-	// Out-of-scope verbs refuse by name before any file or socket work.
-	if refusedVerbs[o.verb] {
-		say("gomail: refuse " + o.verb)
-		say("gomail: closed")
-		vi.Exit(exitError)
-	}
-
-	// M196b: --pass is dead argv — a password never rides the command
-	// line. parseArgs still recognizes the flag so the refusal names it.
-	if o.set["pass"] {
-		say("gomail: refuse pass argv")
-		say("gomail: closed")
-		vi.Exit(exitError)
-	}
-
-	// File first, argv over it.
+// loadConfig resolves the account the same way for the CLI and the
+// window: file first, argv over it. The file's refusal verdicts exit by
+// name before any socket or window work, exactly as the verbs do.
+func loadConfig(o options) Config {
 	cfg := Config{Host: ""}
 	path := o.account
 	if path == "" {
@@ -367,6 +361,41 @@ func main() {
 	if cfg.MaxHeaders <= 0 {
 		cfg.MaxHeaders = headerMaxDefault
 	}
+	return cfg
+}
+
+func main() {
+	argvPad[0] = 1
+	args := cliArgs(vi.Args())
+	o, ok := parseArgs(args)
+	if !ok {
+		// M208a: a bare launch (the desk's dock/launcher exec shape —
+		// no argv can ride it) opens the window over the cache; any
+		// malformed argv keeps the usage refusal.
+		if len(args) == 0 {
+			runView(loadConfig(o))
+			return // runView exits via CloseAndExit; unreachable
+		}
+		usage()
+		vi.Exit(exitUsage)
+	}
+
+	// Out-of-scope verbs refuse by name before any file or socket work.
+	if refusedVerbs[o.verb] {
+		say("gomail: refuse " + o.verb)
+		say("gomail: closed")
+		vi.Exit(exitError)
+	}
+
+	// M196b: --pass is dead argv — a password never rides the command
+	// line. parseArgs still recognizes the flag so the refusal names it.
+	if o.set["pass"] {
+		say("gomail: refuse pass argv")
+		say("gomail: closed")
+		vi.Exit(exitError)
+	}
+
+	cfg := loadConfig(o)
 	// 'search' never dials, so it never needs the account's host.
 	if cfg.Host == "" && o.verb != "search" {
 		say("gomail: account missing host")
