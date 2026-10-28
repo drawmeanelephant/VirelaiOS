@@ -41,6 +41,27 @@
 #   10  (M186c #3180, stub) KANADICT.BIN staged: nihongo + one Space
 #       converts to the dict's top kanji (日本語) and commits it; a
 #       reading outside the subset commits kana-only — the honest bound.
+#   11  (M205c #3810, stub) the allow leg: a staged PRESETS.TXT persona's
+#       @@system turn carries '@emit @call proc.list' — the deterministic
+#       driver — and tab,return on the consent dialog runs proc.list
+#       in-process under GOASSIST's grants; the v3 call/consent/result
+#       records land in C0001.CHAT.
+#   12  (M205c) reload + deny: the armed share's C0001 v3 file reloads at
+#       boot (strict decode or the emit never fires), the same call's
+#       dialog gets return on the deny default, and refuse:declined is
+#       recorded with no result body.
+#   13  (M205c) gosh.run refuses cap_required:term before any dialog.
+#   14  (M205c) ui.input refuses cap_required:input — `input` is an
+#       agent-keyring word with no caps= spelling, so the seat's
+#       agent_input_denied is unreachable in-process and the refusal
+#       lands one layer earlier, still a named refusal with no dialog.
+#
+# The act legs stage their PRESETS.TXT in the previous leg's tail hook
+# (leg 10's for leg 11, leg 12's for 13, leg 13's for 14): the file must
+# exist before the boot's loadPresets, and leg 14's tail removes it so
+# the next iteration's legs 01-10 see the old picker-less store again.
+# Leg 12's tail also stages its own conversation: keeping C0001 across
+# the leg boundary is the reload evidence, not leftover state.
 #
 # The armed share persists across iterations, so per-leg python tails
 # keep each iteration honest: legs 01-04 and leg 06 clear ASSIST/*.CHAT
@@ -796,3 +817,263 @@ vgate_assert 10 serial-absent 'goassist: send conv='
 vgate_assert 10 serial-absent 'goassist: error'
 vgate_assert 10 serial-absent 'gpu3d: timeout'
 vgate_assert 10 serial-absent '[EXC] parking:'
+# Act-leg staging, tail-hook: leg 11's boot must find the 'callproc'
+# persona's PRESETS.TXT already inside the store — its @@system turn is
+# the '@emit @call proc.list' driver the deterministic leg rides.
+vgate_assert 10 python <<'PY'
+import os
+d = os.path.join(os.environ["VG_SHARE"], "ASSIST")
+os.makedirs(d, exist_ok=True)
+with open(os.path.join(d, "PRESETS.TXT"), "w") as f:
+    f.write("GOASSIST-PRESETS v1\n@@callproc\n@emit @call proc.list\n")
+print("staged PRESETS.TXT with the callproc @emit driver for leg 11")
+PY
+
+# --- leg 11 (M205c #3810): the allow act --------------------------------
+# The whole loop under the seat: 'hi' + Return raises the preset picker,
+# down,return chooses 'callproc' (row 1 after the default), the stub's
+# @@system turn emits '@call proc.list' verbatim, the cap gate passes
+# (process is a floor word GOASSIST holds), and the consent dialog comes
+# up on the deny default — tab moves to Yes, return allows, proc.list
+# runs in-process through virelai/agentverbs under GOASSIST's own grants,
+# and the v3 records land crash-safe in C0001.CHAT.
+vgate_file script-rx11.txt <<'EOF'
+echo rx-assist-11-ok
+EOF
+
+vgate_run 11 -- \
+    --screen '$RUN_DIR/screen-11' \
+    --gpu3d-metal --via-virtio \
+    --script '$RUN_DIR/script-seat.txt' \
+    --script2 '$RUN_DIR/script-stub.txt' \
+    --script2-after 'gotabwm: holding seat' \
+    --input-chords 'h,i,return,down,return,tab,return' \
+    --input-chords-after 'goassist: present' \
+    --script3 '$RUN_DIR/script-rx11.txt' \
+    --script3-after 'goassist: act ok proc.list' \
+    --script-expect 'rx-assist-11-ok' --timeout 300
+
+vgate_assert 11 serial-contains 'goassist: open id='
+vgate_assert 11 serial-contains 'goassist: declare accepted'
+vgate_assert 11 serial-contains 'goassist: present'
+vgate_assert 11 serial-contains 'goassist: presets n=1'
+vgate_assert 11 serial-contains 'goassist: conv new C0001 preset=callproc'
+vgate_assert 11 serial-contains 'goassist: send conv=C0001'
+vgate_assert 11 serial-contains 'goassist: emit'
+vgate_assert 11 serial-contains 'goassist: call proc.list'
+vgate_assert 11 serial-contains 'goassist: consent ask proc.list'
+vgate_assert 11 serial-contains 'goassist: consent allow proc.list'
+vgate_assert 11 serial-contains 'goassist: act ok proc.list'
+vgate_assert 11 serial-contains 'goassist: saved C0001.CHAT'
+vgate_assert 11 serial-contains 'goassist: committed conv=C0001'
+vgate_assert 11 serial-absent 'goassist: consent deny'
+vgate_assert 11 serial-absent 'goassist: call refused'
+vgate_assert 11 serial-absent 'goassist: call malformed'
+vgate_assert 11 serial-absent 'goassist: act refused'
+vgate_assert 11 serial-absent 'goassist: error'
+vgate_assert 11 serial-absent 'gpu3d: timeout'
+vgate_assert 11 serial-absent '[EXC] parking:'
+# The conversation file is the load-bearing v3 evidence: the driver
+# persona, the emitted call in the assistant turn, and the act's three
+# records — call, consent allow, ok result holding the live proc table.
+vgate_assert 11 python <<'PY'
+import os, sys
+path = os.path.join(os.environ["VG_SHARE"], "ASSIST", "C0001.CHAT")
+body = open(path, "rb").read().decode("utf-8", "replace")
+for want in ("GOASSIST-CHAT v3", "@@system\n@emit @call proc.list\n",
+             "@@user\nhi\n", "@@assistant\n@call proc.list\n",
+             "@@call proc.list\n", "@@consent allow\n",
+             "@@result ok\n", '"procs":[', "GOASSIST.ELF"):
+    if want not in body:
+        sys.exit("C0001.CHAT missing %r\n%s" % (want, body))
+print("v3 records: call + consent allow + ok result with the proc table")
+PY
+# Iteration hygiene: C0001 stays — leg 12's boot must reload this v3
+# file (its own @@system turn carries the driver), so clearing here
+# would erase the evidence, not just the state.
+
+# --- leg 12 (M205c): the reload proves the records; deny is named ------
+# A fresh boot over the armed share: the store's C0001 v3 file must pass
+# the strict decode or the @@system driver is gone and 'goassist: emit'
+# never prints — the reload IS this leg's first assert. 'hi' + Return
+# sends into the open conversation (no picker: the conv is already open),
+# the same call raises the consent dialog, and a bare return lands on
+# the deny default: consent deny + refuse:declined, and the verb never
+# runs.
+vgate_file script-rx12.txt <<'EOF'
+echo rx-assist-12-ok
+EOF
+
+vgate_run 12 -- \
+    --screen '$RUN_DIR/screen-12' \
+    --gpu3d-metal --via-virtio \
+    --script '$RUN_DIR/script-seat.txt' \
+    --script2 '$RUN_DIR/script-stub.txt' \
+    --script2-after 'gotabwm: holding seat' \
+    --input-chords 'h,i,return,return' \
+    --input-chords-after 'goassist: present' \
+    --script3 '$RUN_DIR/script-rx12.txt' \
+    --script3-after 'goassist: consent deny proc.list' \
+    --script-expect 'rx-assist-12-ok' --timeout 300
+
+vgate_assert 12 serial-contains 'goassist: open id='
+vgate_assert 12 serial-contains 'goassist: declare accepted'
+vgate_assert 12 serial-contains 'goassist: present'
+vgate_assert 12 serial-contains 'goassist: send conv=C0001'
+vgate_assert 12 serial-contains 'goassist: emit'
+vgate_assert 12 serial-contains 'goassist: call proc.list'
+vgate_assert 12 serial-contains 'goassist: consent ask proc.list'
+vgate_assert 12 serial-contains 'goassist: consent deny proc.list'
+vgate_assert 12 serial-contains 'goassist: committed conv=C0001'
+vgate_assert 12 serial-absent 'goassist: consent allow'
+vgate_assert 12 serial-absent 'goassist: act ok'
+vgate_assert 12 serial-absent 'goassist: act refused'
+vgate_assert 12 serial-absent 'goassist: conv new'
+vgate_assert 12 serial-absent 'goassist: error'
+vgate_assert 12 serial-absent 'gpu3d: timeout'
+vgate_assert 12 serial-absent '[EXC] parking:'
+# Deny evidence: leg 11's allow act survives the reload byte-for-byte,
+# and this leg's decline appended consent deny + refuse:declined with no
+# result body — the file holds BOTH verdicts.
+vgate_assert 12 python <<'PY'
+import os, sys
+path = os.path.join(os.environ["VG_SHARE"], "ASSIST", "C0001.CHAT")
+body = open(path, "rb").read().decode("utf-8", "replace")
+if body.count("@@consent allow\n") != 1 or body.count("@@result ok\n") != 1:
+    sys.exit("leg 11's allow act did not survive the reload\n%s" % body)
+# The codec writes one empty body line per empty-bodied record, so the
+# wire order is marker, blank line, next marker — the declined result
+# is the file's empty-bodied tail.
+if body.count("@@consent deny\n") != 1:
+    sys.exit("deny consent record missing\n%s" % body)
+if not body.endswith("@@result refuse:declined\n\n"):
+    sys.exit("the declined result is not the empty-bodied tail\n%s" % body)
+print("reload held leg 11's records; deny appended refuse:declined, no body")
+PY
+# Iteration hygiene + next-leg staging: the gosh.run leg wants a fresh
+# store AND its own driver persona.
+vgate_assert 12 python <<'PY'
+import glob, os
+share = os.environ["VG_SHARE"]
+n = 0
+for f in glob.glob(os.path.join(share, "ASSIST", "*.CHAT")):
+    os.remove(f)
+    n += 1
+with open(os.path.join(share, "ASSIST", "PRESETS.TXT"), "w") as f:
+    f.write("GOASSIST-PRESETS v1\n@@callgosh\n@emit @call gosh.run cmd=ls\n")
+print("store cleared (%d); staged callgosh @emit driver for leg 13" % n)
+PY
+
+# --- leg 13 (M205c): gosh.run is cap-gated before any dialog ------------
+# The emit driver makes the stub call gosh.run; GOASSIST's grants hold
+# no `term` word, so the cap gate refuses cap_required:term and no
+# consent dialog ever stands — the file records call + refusal only.
+vgate_file script-rx13.txt <<'EOF'
+echo rx-assist-13-ok
+EOF
+
+vgate_run 13 -- \
+    --screen '$RUN_DIR/screen-13' \
+    --gpu3d-metal --via-virtio \
+    --script '$RUN_DIR/script-seat.txt' \
+    --script2 '$RUN_DIR/script-stub.txt' \
+    --script2-after 'gotabwm: holding seat' \
+    --input-chords 'h,i,return,down,return' \
+    --input-chords-after 'goassist: present' \
+    --script3 '$RUN_DIR/script-rx13.txt' \
+    --script3-after 'goassist: call refused gosh.run cap_required:term' \
+    --script-expect 'rx-assist-13-ok' --timeout 300
+
+vgate_assert 13 serial-contains 'goassist: conv new C0001 preset=callgosh'
+vgate_assert 13 serial-contains 'goassist: emit'
+vgate_assert 13 serial-contains 'goassist: call gosh.run'
+vgate_assert 13 serial-contains 'goassist: call refused gosh.run cap_required:term'
+vgate_assert 13 serial-contains 'goassist: committed conv=C0001'
+vgate_assert 13 serial-absent 'goassist: consent'
+vgate_assert 13 serial-absent 'goassist: act ok'
+vgate_assert 13 serial-absent 'gosh: '
+vgate_assert 13 serial-absent 'goassist: error'
+vgate_assert 13 serial-absent '[EXC] parking:'
+vgate_assert 13 python <<'PY'
+import os, sys
+path = os.path.join(os.environ["VG_SHARE"], "ASSIST", "C0001.CHAT")
+body = open(path, "rb").read().decode("utf-8", "replace")
+for want in ("@@call gosh.run\ncmd=ls\n", "@@result refuse:cap_required:term\n"):
+    if want not in body:
+        sys.exit("gosh.run act missing %r\n%s" % (want, body))
+if "@@consent" in body:
+    sys.exit("a consent record landed for a cap-refused call\n%s" % body)
+print("gosh.run: @@call + refuse:cap_required:term, no consent record")
+PY
+# Iteration hygiene + staging: the ui.input leg's own store and driver.
+vgate_assert 13 python <<'PY'
+import glob, os
+share = os.environ["VG_SHARE"]
+n = 0
+for f in glob.glob(os.path.join(share, "ASSIST", "*.CHAT")):
+    os.remove(f)
+    n += 1
+with open(os.path.join(share, "ASSIST", "PRESETS.TXT"), "w") as f:
+    f.write("GOASSIST-PRESETS v1\n@@callui\n@emit @call ui.input win=0 events=x\n")
+print("store cleared (%d); staged callui @emit driver for leg 14" % n)
+PY
+
+# --- leg 14 (M205c): ui.input's named refusal ---------------------------
+# The seat-facing verb GOASSIST can never hold: `input` is an
+# agent-keyring word outside the caps= vocabulary, so the cap gate
+# refuses cap_required:input and the seat's agent_input_denied is
+# unreachable in-process — the named refusal lands one layer earlier,
+# still with no dialog and no dispatch.
+vgate_file script-rx14.txt <<'EOF'
+echo rx-assist-14-ok
+EOF
+
+vgate_run 14 -- \
+    --screen '$RUN_DIR/screen-14' \
+    --gpu3d-metal --via-virtio \
+    --script '$RUN_DIR/script-seat.txt' \
+    --script2 '$RUN_DIR/script-stub.txt' \
+    --script2-after 'gotabwm: holding seat' \
+    --input-chords 'h,i,return,down,return' \
+    --input-chords-after 'goassist: present' \
+    --script3 '$RUN_DIR/script-rx14.txt' \
+    --script3-after 'goassist: call refused ui.input cap_required:input' \
+    --script-expect 'rx-assist-14-ok' --timeout 300
+
+vgate_assert 14 serial-contains 'goassist: conv new C0001 preset=callui'
+vgate_assert 14 serial-contains 'goassist: emit'
+vgate_assert 14 serial-contains 'goassist: call ui.input'
+vgate_assert 14 serial-contains 'goassist: call refused ui.input cap_required:input'
+vgate_assert 14 serial-contains 'goassist: committed conv=C0001'
+vgate_assert 14 serial-absent 'goassist: consent'
+vgate_assert 14 serial-absent 'goassist: act ok'
+vgate_assert 14 serial-absent 'agent_input_denied'
+vgate_assert 14 serial-absent 'goassist: error'
+vgate_assert 14 serial-absent '[EXC] parking:'
+vgate_assert 14 python <<'PY'
+import os, sys
+path = os.path.join(os.environ["VG_SHARE"], "ASSIST", "C0001.CHAT")
+body = open(path, "rb").read().decode("utf-8", "replace")
+for want in ("@@call ui.input\nwin=0 events=x\n",
+             "@@result refuse:cap_required:input\n"):
+    if want not in body:
+        sys.exit("ui.input act missing %r\n%s" % (want, body))
+if "@@consent" in body:
+    sys.exit("a consent record landed for a cap-refused call\n%s" % body)
+print("ui.input: @@call + refuse:cap_required:input, no consent record")
+PY
+# Iteration hygiene, last act leg: remove the driver persona and the
+# convs so the NEXT vgate_repeat's legs 01-10 see the picker-less store
+# they were written for — PRESETS.TXT must not leak across an iteration.
+vgate_assert 14 python <<'PY'
+import glob, os
+share = os.environ["VG_SHARE"]
+n = 0
+for f in glob.glob(os.path.join(share, "ASSIST", "*.CHAT")):
+    os.remove(f)
+    n += 1
+p = os.path.join(share, "ASSIST", "PRESETS.TXT")
+if os.path.exists(p):
+    os.remove(p)
+print("store cleared (%d); PRESETS.TXT removed for the next iteration" % n)
+PY

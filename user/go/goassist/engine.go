@@ -110,6 +110,11 @@ func (e *engine) prompt(c *conversation) []int {
 		sb.Reset()
 		sb.WriteString(sys)
 		for _, t := range turns {
+			// The v3 act records are the conversation's memory of a run,
+			// not model input — the prompt window holds only the chat.
+			if isActRole(t.role) {
+				continue
+			}
 			sb.WriteString(chatStart + t.role + "\n" + t.text + chatEnd + "\n")
 		}
 		sb.WriteString(chatStart + "assistant\n")

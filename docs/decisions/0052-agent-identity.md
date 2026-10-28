@@ -529,3 +529,42 @@ kernel principal answers *whether* a process is the agent's.
   this wave, `AGENTS.TXT` ids stay channel-level labels — VLFS
   ownership (index D13; the inode reservation is card #3028's ADR), and
   multi-user.
+
+## Amendment (2026-10-28, card #3810 / index #3807): GOASSIST as an in-process verb caller
+
+The verb table this ADR declared for the channel has a second caller.
+`virelai/agentverbs` (card #3808) lifted the table, the cap check and
+the handlers out of AGENTD; GOASSIST — the windowed chat app, uid_user,
+`caps=file,window` plus the grant floor — drives the same Dispatcher
+in-process when an assistant turn carries a call. The wire, auth,
+keyring and audit lane stay AGENTD's; nothing below is a second
+implementation of a verb.
+
+- **The principal.** The session cap bitmask resolves GOASSIST's own
+  grants — the manifest ceiling `{file, window} + {memory, process,
+  debug}` through `CapWord`, i.e. process|file|window — never a word
+  the model asks for. A narrower `GRANTS.TXT` row still binds
+  underneath: the kernel's grant enforcement is the backstop the named
+  refusals ride on.
+- **The sandbox.** `fs.*` roots at GOASSIST's data root (the ASSIST
+  conversation store), configured as `Config.Sandbox` the way AGENTD
+  configures `/host/AGENT`. There is no reserved lane — receipts are
+  card d's — so `Config.Reserved` is empty.
+- **The order.** Cap check first, consent second, dispatch last. A
+  refused verb is recorded with its named refusal and no dialog — the
+  codec's call-then-result shape, no consent record. A permitted verb
+  raises the `appkit` confirm dialog (the M116c shape, focus on deny);
+  allow runs the verb and records `@@consent allow` plus `@@result
+  ok|refuse:<code>`, deny records `@@consent deny` plus
+  `@@result refuse:declined` and nothing runs.
+- **The pinned refusals.** `gosh.run` lands `cap_required:term` — the
+  term word is outside GOASSIST's ceiling. `ui.input` lands
+  `cap_required:input`: `input` is an agent-keyring word with no
+  `caps=` spelling in the kernel vocabulary (`grant.zig word_count`),
+  so no manifest can grant it to an app and the seat's
+  `agent_input_denied` is unreachable in-process — the refusal lands
+  one layer earlier than the seat check, same name discipline.
+- **What does not change.** GOASSIST gains no channel, no key and no
+  receipt lane in this card; `uid_agent` is untouched. The
+  deterministic driver — a preset `@@system` turn carrying
+  `@emit <text>` — is a stub-persona test hook, not a capability.

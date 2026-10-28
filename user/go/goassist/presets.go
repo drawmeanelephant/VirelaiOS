@@ -17,6 +17,11 @@
 // name, a duplicate, a body before the first name, a bound overflow, or
 // trailing garbage refuse the WHOLE file: a malformed preset list offers
 // nothing rather than half a menu.
+//
+// One prompt-body line is also a driver, not persona text: `@emit <text>`
+// (M205c #3810) makes the STUB engine emit the line's tail verbatim as
+// its answer — the deterministic way a gate leg lands a fixed `@call`
+// line in an assistant turn. The staged model never sees the intercept.
 package main
 
 import "strings"
