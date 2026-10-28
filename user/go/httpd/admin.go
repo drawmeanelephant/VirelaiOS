@@ -101,6 +101,8 @@ func routeAdmin(req request) response {
 		return adminPage("grants", adminGrantsBody())
 	case "/admin/gpu":
 		return adminPage("gpu", adminGPUBody())
+	case "/admin/screen.png":
+		return adminScreenPNG()
 	}
 	return notFound()
 }
@@ -201,7 +203,11 @@ func adminIndexBody() []byte {
 		"<li><a href=\"/admin/mounts\">mounts</a></li>\n" +
 		"<li><a href=\"/admin/grants\">grants</a></li>\n" +
 		"<li><a href=\"/admin/gpu\">gpu</a></li>\n" +
-		"</ul>\n")
+		"<li><a href=\"/admin/screen.png\">screen.png</a></li>\n" +
+		"</ul>\n" +
+		// M209b: the current frame, embedded — the img rides the same
+		// auth this page answered under.
+		"<p><img src=\"/admin/screen.png\" alt=\"framebuffer\"></p>\n")
 }
 
 // procStateName is GOTOP's state vocabulary (top/table.go StateName).

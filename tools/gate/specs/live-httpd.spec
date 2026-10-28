@@ -27,6 +27,11 @@
 #      404 while the file is armed (the card's first check, pinned),
 #      unknown admin path 404, index 200
 #   11 M209a: --admin over plaintext -> 403 'admin requires tls'
+#   12 M209b: /admin/screen.png on an ARMED framebuffer (--screen boots
+#      the virtio-gpu) — the authed GET answers image/png whose IHDR is
+#      the fixed 1280x720 frame; the unauthed GET on the same boot is 401
+#   13 M209b: same TLS+row shape with NO graphics device — scanout_read's
+#      ENXIO answers 503 by name
 #
 # The kernel's child_limit=2 bounds simultaneous children and every
 # --net-tcp-connect client fires on its own dispatch queue at the same
@@ -563,9 +568,11 @@ EOF
 
 # Legs 09/10's client: TLS 1.3 over the runner's byte relay (tlscli.py's
 # shape), then the /admin/ suite on ONE keep-alive connection.
-# argv: CERT_DER GOOD_B64 BAD_B64 [norow] — the *_B64 args are base64'd
-# Basic user:pass pairs; "norow" runs only the procs request (leg 09).
-# stderr carries "ADMINCLI <tag> <status>" plus ADMINCLI-BODY blocks.
+# argv: CERT_DER GOOD_B64 BAD_B64 [mode] — the *_B64 args are base64'd
+# Basic user:pass pairs; "norow" runs only the procs request (leg 09),
+# "screen" runs the M209b authed+unauthed /admin/screen.png pair
+# (legs 12/13). stderr carries "ADMINCLI <tag> <status>" plus
+# ADMINCLI-BODY blocks; a PNG body is elided to its IHDR shape.
 vgate_file admincli.py <<'EOF'
 #!/usr/bin/env python3
 import os, ssl, sys
@@ -670,18 +677,25 @@ def http_get(path, cred, last):
             break
     return buf
 
-seq = [("procs", "/admin/procs", good)]
-if mode != "norow":
-    seq += [
-        ("grants", "/admin/grants", good),
-        ("badcred", "/admin/procs", bad),
-        # The card's first check, observed: SECRETS.TXT is armed on the
-        # share this boot and the share fallback still cannot serve it
-        # (secret-class by construction, ADR 0024 D8 -> FileOpen EACCES).
-        ("secrets", "/SECRETS.TXT", good),
-        ("noadmin", "/admin/nope", good),
-        ("index", "/admin/", good),
-    ]
+# M209b "screen" mode: the authed PNG GET and the unauthed refusal ride
+# one connection on both the armed boot (leg 12) and the unarmed one
+# (leg 13).
+if mode == "screen":
+    seq = [("screen", "/admin/screen.png", good),
+           ("screenbad", "/admin/screen.png", "")]
+else:
+    seq = [("procs", "/admin/procs", good)]
+    if mode != "norow":
+        seq += [
+            ("grants", "/admin/grants", good),
+            ("badcred", "/admin/procs", bad),
+            # The card's first check, observed: SECRETS.TXT is armed on the
+            # share this boot and the share fallback still cannot serve it
+            # (secret-class by construction, ADR 0024 D8 -> FileOpen EACCES).
+            ("secrets", "/SECRETS.TXT", good),
+            ("noadmin", "/admin/nope", good),
+            ("index", "/admin/", good),
+        ]
 for i, (tag, path, cred) in enumerate(seq):
     try:
         r = http_get(path, cred, i == len(seq) - 1)
@@ -689,7 +703,16 @@ for i, (tag, path, cred) in enumerate(seq):
         sys.stderr.write("ADMINCLI %s client error %r\n" % (tag, e))
         r = b""
     status = r.split(b"\r\n", 1)[0].decode(errors="replace") if r else "NO-RESPONSE"
-    sys.stderr.write("ADMINCLI %s %s\n" % (tag, status))
+    extra = ""
+    head, sep, pbody = r.partition(b"\r\n\r\n")
+    if sep and pbody[:8] == b"\x89PNG\r\n\x1a\n" and len(pbody) >= 24:
+        # A binary body stays off the log: the evidence is the status, the
+        # headers (Content-Type: image/png) and the decoded IHDR shape.
+        extra = " ihdr=%dx%d png_bytes=%d" % (
+            int.from_bytes(pbody[16:20], "big"),
+            int.from_bytes(pbody[20:24], "big"), len(pbody))
+        r = head + sep + b"<png body elided>"
+    sys.stderr.write("ADMINCLI %s %s%s\n" % (tag, status, extra))
     sys.stderr.write("ADMINCLI-BODY %s\n%s\nADMINCLI-END %s\n"
                      % (tag, r.decode(errors="replace"), tag))
 sys.exit(0)
@@ -805,3 +828,71 @@ vgate_assert 11 output-contains 'admin requires tls'
 vgate_assert 11 serial-absent 'm209a-gate-token'
 vgate_assert 11 serial-absent 'YWRtaW46bTIwOWEtZ2F0ZS10b2tlbg=='
 vgate_assert 11 serial-absent '[EXC] parking:'
+vgate_assert 11 python <<'PY'
+import os, pathlib
+# Legs 12/13's precondition, owned by the run before them so the order is
+# honest under vgate_repeat too: the httpd-admin row is staged.
+pathlib.Path(os.environ["VG_SHARE"], "SECRETS.TXT").write_text(
+    "#v1\nhttpd-admin\t1000\tm209a-gate-token\n")
+print("live-httpd: SECRETS.TXT httpd-admin row staged for legs 12/13")
+PY
+
+# ---- M209b (#3826): /admin/screen.png ------------------------------------
+# Leg 12 boots with --screen, which attaches the virtio-gpu device, so the
+# kernel arms the scanout (virtio_gpu.gpu_ready set at transport init) and
+# slot 88 serves real pixels. Leg 13 boots with no graphics device at all:
+# gpu_ready stays false and the same authenticated GET reads back ENXIO,
+# which the handler names in a 503.
+
+# ---- 12: armed framebuffer -> authed PNG, unauthed 401 -------------------
+vgate_run 12 -- --screen '$RUN_DIR/screen-png' --net '$RUN_DIR/cap12.bin' --net-arp-respond 10.0.0.2 \
+    --net-tcp-connect '10.0.0.1:8443' \
+    --net-tcp-connect-stream '$RUN_DIR/admincli.py' \
+    --net-tcp-connect-stream-arg '$RUN_DIR/TLS.CRT' \
+    --net-tcp-connect-stream-arg 'YWRtaW46bTIwOWEtZ2F0ZS10b2tlbg==' \
+    --net-tcp-connect-stream-arg 'YWRtaW46d3JvbmctdG9rZW4=' \
+    --net-tcp-connect-stream-arg 'screen' \
+    --net-tcp-connect-after 'httpd: listening on port 8443' \
+    --script '$RUN_DIR/script-admin-tls.txt' \
+    --script2 '$RUN_DIR/script-tls-kill.txt' --script2-after 'httpd: closed' --script2-delay 3 \
+    --script-expect 'tls-killed' --timeout 90
+
+vgate_assert 12 serial-contains 'httpd: listening on port 8443'
+vgate_assert 12 output-contains 'ADMINCLI screen HTTP/1.1 200'
+vgate_assert 12 output-contains 'ihdr=1280x720'
+vgate_assert 12 output-contains 'Content-Type: image/png'
+vgate_assert 12 output-contains 'ADMINCLI screenbad HTTP/1.1 401'
+vgate_assert 12 serial-absent 'm209a-gate-token'
+vgate_assert 12 serial-absent 'YWRtaW46bTIwOWEtZ2F0ZS10b2tlbg=='
+vgate_assert 12 serial-absent 'httpd: tls alert'
+vgate_assert 12 serial-absent 'httpd: tls error'
+vgate_assert 12 serial-absent '[EXC] parking:'
+vgate_assert 12 python <<'PY'
+import os, sys
+ser = open(os.environ["VG_SER"], errors="replace").read()
+n = ser.count("httpd: request /admin/screen.png")
+if n != 2:
+    sys.exit("FAIL: screen.png logged %d requests, want 2" % n)
+print("screen leg: authed PNG (IHDR 1280x720) + unauthed 401 on one armed boot")
+PY
+
+# ---- 13: no graphics device -> 503 'screen unavailable (ENXIO)' ----------
+vgate_run 13 -- --net '$RUN_DIR/cap13.bin' --net-arp-respond 10.0.0.2 \
+    --net-tcp-connect '10.0.0.1:8443' \
+    --net-tcp-connect-stream '$RUN_DIR/admincli.py' \
+    --net-tcp-connect-stream-arg '$RUN_DIR/TLS.CRT' \
+    --net-tcp-connect-stream-arg 'YWRtaW46bTIwOWEtZ2F0ZS10b2tlbg==' \
+    --net-tcp-connect-stream-arg 'YWRtaW46d3JvbmctdG9rZW4=' \
+    --net-tcp-connect-stream-arg 'screen' \
+    --net-tcp-connect-after 'httpd: listening on port 8443' \
+    --script '$RUN_DIR/script-admin-tls.txt' \
+    --script2 '$RUN_DIR/script-tls-kill.txt' --script2-after 'httpd: closed' --script2-delay 3 \
+    --script-expect 'tls-killed' --timeout 90
+
+vgate_assert 13 serial-contains 'httpd: listening on port 8443'
+vgate_assert 13 output-contains 'ADMINCLI screen HTTP/1.1 503'
+vgate_assert 13 output-contains 'screen unavailable (ENXIO)'
+vgate_assert 13 serial-absent 'm209a-gate-token'
+vgate_assert 13 serial-absent 'httpd: tls alert'
+vgate_assert 13 serial-absent 'httpd: tls error'
+vgate_assert 13 serial-absent '[EXC] parking:'
