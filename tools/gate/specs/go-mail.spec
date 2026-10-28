@@ -47,8 +47,17 @@
 # (the shared file must stay transport-less for run 03's plaintext
 # refusal); the legs are LAST so the mutation can never reach a CLI leg.
 #
+# Runs m1-m3 (M208b #3823) are the compose + attachment legs, K=3: the
+# window's 'c' compose pane types To/Subject/Body through real chords
+# and Ctrl-S submits over SMTP+TLS to the fixture (RCPT TO:<bob>), then
+# `fetch Attach` saves the box's three fixture attachments under
+# /host/MAIL/ and `open` routes them through APPS.TXT's opens= contract
+# — invite.ics execs GOCLOCK.ELF (headless import, the merge markers),
+# card.vcf execs GOFILES.ELF (the contact face), payload.bin refuses by
+# type and is never executed.
+#
 # exec-order: assert-proven — runs end on markers only the app prints
-# from fixture traffic ('gomail: refuse attachment report.pdf',
+# from fixture traffic ('gomail: saved /host/MAIL/report.pdf',
 # 'gomail: sent bytes='), and the python halves read the fixture's own
 # transcript of the wire bytes.
 #
@@ -59,7 +68,7 @@
 # binary is what every run execs under the GOMAIL.ELF name. Fixture
 # transcripts land in $RUN_DIR/maild-<port>.log for the python asserts.
 
-vgate_name go-mail "M187c #3184 + M193a #3253 + M193d #3256 + M196b #3379 + M208a #3822: GOMAIL.ELF — IMAP4 fetch/list/read + SMTP submit over tls.Dial (pinned fixture chain), plaintext consent refusal + grant, attachment/html truth-in-bounds, + use-able folders, bounded /host/MAIL cache, offline search + cache-miss legs, + the chain's send --to leg in the contact face's own argv shape, K=3, + the keychain credential — mail-<user> out of the slot-70 store, pass= and --pass refused by name, secret_not_found named, + the no-arg window: boxes/headers/message panes over the cache with an explicit Fetch, K=3 under a live seat"
+vgate_name go-mail "M187c #3184 + M193a #3253 + M193d #3256 + M196b #3379 + M208a #3822 + M208b #3823: GOMAIL.ELF — IMAP4 fetch/list/read + SMTP submit over tls.Dial (pinned fixture chain), plaintext consent refusal + grant, attachment/html truth-in-bounds, + use-able folders, bounded /host/MAIL cache, offline search + cache-miss legs, + the chain's send --to leg in the contact face's own argv shape, K=3, + the keychain credential — mail-<user> out of the slot-70 store, pass= and --pass refused by name, secret_not_found named, + the no-arg window: boxes/headers/message panes over the cache with an explicit Fetch, K=3 under a live seat, + compose pane send + attachment save/open: .ics -> GOCLOCK merge, .vcf -> GOFILES contact face, .bin saved not run, K=3"
 vgate_share seed
 vgate_runner_flags -Xswiftc -DSPIKE
 
@@ -149,6 +158,22 @@ shutil.copy(gotabwm, os.path.join(share, "GOTABWM.ELF"))
 print("go-mail: staged GOTABWM.ELF (%d)" % os.path.getsize(gotabwm))
 with open(os.path.join(share, "SETTINGS.TXT"), "w") as f:
     f.write("#v2\nwm=none\n")
+
+# M208b: the attachment hand-off targets — GOCLOCK's headless .ics
+# merge and GOFILES' .vcf contact face — plus the real manifest whose
+# opens= rows route them (gomail's `open` reads APPS.TXT, never a
+# hardcoded table).
+for elf, build in (("GOFILES.ELF", "build-files.sh"),
+                   ("GOCLOCK.ELF", "build-goclock.sh")):
+    src = os.path.join(".build", "go", elf)
+    if not os.path.exists(src):
+        sys.exit(elf + " missing (expected " + src + ") - build it "
+                 "first: bash tools/go/" + build)
+    shutil.copy(src, os.path.join(share, elf))
+    print("go-mail: staged %s (%d)" % (elf, os.path.getsize(src)))
+shutil.copy(os.path.join("image", "apps.txt"),
+            os.path.join(share, "APPS.TXT"))
+print("go-mail: staged APPS.TXT manifest for the opens= route")
 
 # The account file the app resolves at boot — deliberately WITHOUT a
 # tls/plain row: run 03's bare fetch must hit the plaintext refusal, so
@@ -274,10 +299,50 @@ def recvline(conn, buf):
 
 # The three fixture messages: a text/plain, a text/html (the client
 # renders it stripped), and a multipart/mixed whose application/pdf
-# attachment lists by name and refuses to open.
+# attachment saves under /host/MAIL/ (M208b — fetched parts land on the
+# share base64-decoded instead of an unconditional refuse).
+import base64
 B1 = b"line one of the gate body\\r\\nsecond line\\r\\nthird line"
 B2 = b"<html><body><p>html <b>hello</b> fixture</p></body></html>"
 B3 = b"see the attached report"
+PDF_B64 = base64.b64encode(b"%PDF-1.4 gate report bytes")
+# M208b: the Attach box's three messages each carry one hand-off-class
+# attachment — text/calendar -> GOCLOCK's merge, text/vcard -> GOFILES'
+# contact face, application/octet-stream -> saved, never routed. The
+# payloads ride the wire base64 like a real MIME part.
+ICS = (b"BEGIN:VCALENDAR\\r\\nVERSION:2.0\\r\\nPRODID:-//VirelaiOS//M208b//EN\\r\\n"
+       b"BEGIN:VEVENT\\r\\nUID:mail-attach-1@virelai\\r\\nDTSTAMP:20261028T120000Z\\r\\n"
+       b"DTSTART:20270620T150000Z\\r\\nSUMMARY:Mail sync\\r\\nEND:VEVENT\\r\\nEND:VCALENDAR\\r\\n")
+VCF = (b"BEGIN:VCARD\\r\\nVERSION:4.0\\r\\nFN:Grace Hopper\\r\\nORG:Cognition\\r\\n"
+       b"TEL:+1-555-0100\\r\\nEMAIL:grace@example.com\\r\\nEND:VCARD\\r\\n")
+BIN = b"\\x00\\x01\\x02payload-not-a-program"
+ICS_B64, VCF_B64, BIN_B64 = (base64.b64encode(ICS), base64.b64encode(VCF),
+                           base64.b64encode(BIN))
+def att_bs(media, sub, fn, payload):
+    return ("((\\"TEXT\\" \\"PLAIN\\" (\\"CHARSET\\" \\"US-ASCII\\") NIL NIL \\"7BIT\\" %d 1) "
+            "(\\"%s\\" \\"%s\\" NIL NIL NIL \\"BASE64\\" %d NIL "
+            "(\\"attachment\\" (\\"filename\\" \\"%s\\")) NIL NIL) \\"MIXED\\")"
+            % (len(B3), media, sub, len(payload), fn))
+ATTACH_MSGS = {
+    1: dict(
+        env="\\"Wed, 21 Oct 2026 11:00:00 +0000\\" \\"calendar invite\\" "
+            "((\\"Dana\\" NIL \\"dana\\" \\"fixture.local\\")) NIL NIL NIL NIL NIL NIL "
+            "\\"<a1@fixture.local>\\"",
+        bs=att_bs("TEXT", "CALENDAR", "invite.ics", ICS_B64),
+        parts={"1": B3, "2": ICS_B64}),
+    2: dict(
+        env="\\"Wed, 21 Oct 2026 11:05:00 +0000\\" \\"contact card\\" "
+            "((\\"Erin\\" NIL \\"erin\\" \\"fixture.local\\")) NIL NIL NIL NIL NIL NIL "
+            "\\"<a2@fixture.local>\\"",
+        bs=att_bs("TEXT", "VCARD", "card.vcf", VCF_B64),
+        parts={"1": B3, "2": VCF_B64}),
+    3: dict(
+        env="\\"Wed, 21 Oct 2026 11:10:00 +0000\\" \\"binary blob\\" "
+            "((\\"Fran\\" NIL \\"fran\\" \\"fixture.local\\")) NIL NIL NIL NIL NIL NIL "
+            "\\"<a3@fixture.local>\\"",
+        bs=att_bs("APPLICATION", "OCTET-STREAM", "payload.bin", BIN_B64),
+        parts={"1": B3, "2": BIN_B64}),
+}
 MSGS = {
     1: dict(
         env="\\"Wed, 21 Oct 2026 10:00:00 +0000\\" \\"gate hello\\" "
@@ -296,14 +361,16 @@ MSGS = {
             "((\\"Carol\\" NIL \\"carol\\" \\"fixture.local\\")) NIL NIL NIL NIL NIL NIL "
             "\\"<m3@fixture.local>\\"",
         bs="((\\"TEXT\\" \\"PLAIN\\" (\\"CHARSET\\" \\"US-ASCII\\") NIL NIL \\"7BIT\\" %d 1) "
-           "(\\"APPLICATION\\" \\"PDF\\" NIL NIL NIL \\"BASE64\\" 2048 NIL "
-           "(\\"attachment\\" (\\"filename\\" \\"report.pdf\\")) NIL NIL) \\"MIXED\\")" % len(B3),
-        parts={"1": B3, "TEXT": B3}),
+           "(\\"APPLICATION\\" \\"PDF\\" NIL NIL NIL \\"BASE64\\" %d NIL "
+           "(\\"attachment\\" (\\"filename\\" \\"report.pdf\\")) NIL NIL) \\"MIXED\\")"
+           % (len(B3), len(PDF_B64)),
+        parts={"1": B3, "2": PDF_B64, "TEXT": B3}),
 }
 
 def imap_serve(conn, idx):
     send(conn, "* OK fixture IMAP4rev1 ready")
     buf = b""
+    selbox = "INBOX"  # SELECT retargets the message table (M208b: Attach)
     deadline = time.time() + 120
     while time.time() < deadline:
         conn.settimeout(max(1.0, deadline - time.time()))
@@ -319,13 +386,16 @@ def imap_serve(conn, idx):
             continue
         tag, verb = parts[0], parts[1].upper()
         rest = parts[2] if len(parts) > 2 else ""
+        msgs = ATTACH_MSGS if selbox == "Attach" else MSGS
         if verb == "LOGIN":
             send(conn, tag + " OK Login completed")
         elif verb == "LIST":
             send(conn, "* LIST (\\\\HasNoChildren) \\"/\\" \\"INBOX\\"")
             send(conn, "* LIST (\\\\HasNoChildren) \\"/\\" \\"Sent\\"")
+            send(conn, "* LIST (\\\\HasNoChildren) \\"/\\" \\"Attach\\"")
             send(conn, tag + " OK List completed")
         elif verb == "SELECT":
+            selbox = rest.strip('"')
             send(conn, "* 3 EXISTS")
             send(conn, "* 1 RECENT")
             send(conn, "* FLAGS (\\\\Seen \\\\Answered \\\\Draft)")
@@ -342,7 +412,7 @@ def imap_serve(conn, idx):
             else:
                 seqs = [int(spec)]
             for seq in seqs:
-                m = MSGS.get(seq)
+                m = msgs.get(seq)
                 if m is None:
                     continue
                 if "ENVELOPE" in items:
@@ -397,7 +467,7 @@ def smtp_serve(conn, idx):
         else:
             send(conn, "502 5.5.2 verb not implemented")
 
-conns = 9  # M208a: the three window legs fetch twice each (c3-c8 on imap-tls)
+conns = 12  # c0 fetch, c1-c2 use, c3-c8 windows, c9-c11 M208b attach (imap-tls)
 for idx in range(conns):
     try:
         conn, _ = srv.accept()
@@ -495,7 +565,7 @@ vgate_assert 01 serial-contains 'gomail: html-stripped 2'
 vgate_assert 01 serial-contains 'gomail: text html hello fixture'
 vgate_assert 01 serial-contains 'gomail: body 3 text/plain'
 vgate_assert 01 serial-contains 'gomail: attach 3 report.pdf application/pdf'
-vgate_assert 01 serial-contains 'gomail: refuse attachment report.pdf'
+vgate_assert 01 serial-contains 'gomail: saved /host/MAIL/report.pdf'
 vgate_assert 01 serial-contains 'gomail: closed'
 vgate_assert 01 serial-contains 'gomail: cache /host/MAIL/BOXES'
 vgate_assert 01 serial-contains 'gomail: cache /host/MAIL/HDRS'
@@ -512,6 +582,9 @@ vgate_assert 01 serial-absent '[EXC] parking:'
 vgate_assert 01 share-contains MAIL/BOXES 'INBOX'
 vgate_assert 01 share-contains MAIL/HDRS 'gate hello'
 vgate_assert 01 share-contains MAIL/BODIES 'line one of the gate body'
+# M208b: the attachment landed base64-decoded with an index row.
+vgate_assert 01 share-contains MAIL/report.pdf '%PDF-1.4 gate report bytes'
+vgate_assert 01 share-contains MAIL/ATTACH 'report.pdf'
 # The wire half: the fixture transcript carries the exact tagged
 # commands — a program that never ran cannot produce them.
 vgate_assert 01 python <<'PY'
@@ -521,8 +594,8 @@ need = ["c0 tls ok", "c0 rx a1 LOGIN", "c0 rx a2 LIST", "c0 rx a3 SELECT",
         "c0 rx a4 FETCH 1:3 (ENVELOPE)",
         "c0 rx a5 FETCH 1 (BODYSTRUCTURE)", "c0 rx a6 FETCH 1 (BODY[TEXT])",
         "FETCH 2 (BODYSTRUCTURE)", "FETCH 2 (BODY[TEXT])",
-        "FETCH 3 (BODYSTRUCTURE)", "FETCH 3 (BODY[1])",
-        "rx a11 LOGOUT"]
+        "FETCH 3 (BODYSTRUCTURE)", "FETCH 3 (BODY[1])", "FETCH 3 (BODY[2])",
+        "rx a12 LOGOUT"]
 missing = [n for n in need if n not in log]
 if missing:
     sys.exit("imap fixture transcript missing: %r\n%s" % (missing, log))
@@ -1052,4 +1125,201 @@ need = ["c7 tls ok", 'c7 rx a3 SELECT "INBOX"', "c7 rx a4 FETCH",
 missing = [n for n in need if n not in log]
 if missing:
     sys.exit("w3 imap fixture transcript missing: %r\n%s" % (missing, log))
+PY
+
+# --- Runs m1-m3 (M208b #3823): compose/send + attachment hand-off, K=3 --
+#
+# Each leg boots the seat, opens the window, and types a whole message
+# through the compose pane: 'c' opens it, the To/Subject/Body fields
+# fill in order (Tab walks the ring), Ctrl-S submits through the same
+# runSend path the verb drives — the fixture's RCPT TO:<bob> is the
+# wire receipt. 'q' then quits the window so the console is free again.
+# script3 runs the four attachment legs in order: fetch Attach saves
+# the three fixture parts under /host/MAIL (base64-decoded), `open`
+# routes invite.ics to GOCLOCK's headless merge and card.vcf to
+# GOFILES' contact face, and payload.bin refuses by type — saved,
+# never executed. The leg's own script clears ATTACH, the saved names,
+# and GOCLOCK.ALARM first so all three runs are byte-identical.
+vgate_file script-m.txt <<'EOF'
+net ip 10.0.0.1
+net arp 10.0.0.2
+set GOMAXPROCS=1
+vf rm GOTABWM.DEMO
+vf rm SESSION.TABS
+vf rm GOMAIL.TXT
+vf clone GOMAIL-TLS.TXT GOMAIL.TXT
+vf rm MAIL/USE
+vf rm MAIL/ATTACH
+vf rm MAIL/invite.ics
+vf rm MAIL/card.vcf
+vf rm MAIL/payload.bin
+vf rm GOCLOCK.ALARM
+wm
+exec GOTABWM.ELF
+EOF
+
+vgate_file script2-m.txt <<'EOF'
+dui focus 0
+exec GOMAIL.ELF
+EOF
+
+vgate_file script3-m.txt <<'EOF'
+exec GOMAIL.ELF --tls fetch Attach 1 2 3
+exec GOMAIL.ELF open invite.ics
+exec GOMAIL.ELF open card.vcf
+exec GOMAIL.ELF open payload.bin
+EOF
+
+vgate_run m1 -- \
+    --screen '$RUN_DIR/screen-m1' \
+    --via-virtio \
+    --net '$RUN_DIR/cap-m1.bin' --net-arp-respond 10.0.0.2 \
+    --net-tcp-respond 10.0.0.2:993:relay --net-tcp-respond-relay 127.0.0.1:26993 \
+    --net-tcp-respond 10.0.0.2:465:relay --net-tcp-respond-relay 127.0.0.1:26465 \
+    --script '$RUN_DIR/script-m.txt' \
+    --script2 '$RUN_DIR/script2-m.txt' --script2-after 'gotabwm: mode live' \
+    --input-chords 'c,b,o,b,tab,g,a,t,e,space,s,y,n,c,tab,g,a,t,e,space,m,a,i,l,ctrl-s,q' \
+    --input-chords-after 'gomail: window' \
+    --script3 '$RUN_DIR/script3-m.txt' --script3-after 'gomail: closed' \
+    --script-expect 'gomail: refuse open payload.bin application/octet-stream' --timeout 300
+
+vgate_assert m1 serial-contains 'exec: loaded GOTABWM.ELF'
+vgate_assert m1 serial-contains 'gotabwm: mode live'
+vgate_assert m1 serial-contains 'gomail: open id='
+vgate_assert m1 serial-contains 'gomail: window'
+# The compose pane typed, submitted and named itself.
+vgate_assert m1 serial-contains 'gomail: compose'
+vgate_assert m1 serial-contains 'gomail: smtp ready'
+vgate_assert m1 serial-contains 'gomail: mail gate@fixture.local'
+vgate_assert m1 serial-contains 'gomail: rcpt bob'
+vgate_assert m1 serial-contains 'gomail: sent bytes='
+vgate_assert m1 serial-contains 'gomail: compose sent'
+# The fetch proved the Attach box and saved all three parts.
+vgate_assert m1 serial-contains 'gomail: box Attach'
+vgate_assert m1 serial-contains 'gomail: select Attach exists=3'
+vgate_assert m1 serial-contains 'gomail: attach 1 invite.ics text/calendar'
+vgate_assert m1 serial-contains 'gomail: attach 2 card.vcf text/vcard'
+vgate_assert m1 serial-contains 'gomail: attach 3 payload.bin application/octet-stream'
+vgate_assert m1 serial-contains 'gomail: saved /host/MAIL/invite.ics'
+vgate_assert m1 serial-contains 'gomail: saved /host/MAIL/card.vcf'
+vgate_assert m1 serial-contains 'gomail: saved /host/MAIL/payload.bin'
+# The opens= route: .ics -> GOCLOCK's merge markers, .vcf -> GOFILES'
+# contact face, .bin -> named refusal and no exec.
+vgate_assert m1 serial-contains 'gomail: open invite.ics handler=GOCLOCK.ELF'
+vgate_assert m1 serial-contains 'goclock: import 15:00 once Mail sync'
+vgate_assert m1 serial-contains 'goclock: import done added=1 refused=0'
+vgate_assert m1 serial-contains 'gomail: open card.vcf handler=GOFILES.ELF'
+vgate_assert m1 serial-contains 'gofiles: quicklook card.vcf kind=contact'
+vgate_assert m1 serial-contains 'gofiles: contact fn=Grace Hopper'
+vgate_assert m1 serial-contains 'gofiles: contact done cards=1'
+vgate_assert m1 serial-contains 'gomail: refuse open payload.bin application/octet-stream'
+vgate_assert m1 serial-absent 'gomail: error'
+vgate_assert m1 serial-absent 'gomail: attach-fail'
+vgate_assert m1 serial-absent 'gofiles: contact refused'
+vgate_assert m1 serial-absent '[EXC] parking:'
+# The saved payloads really landed, decoded — never the wire's b64.
+vgate_assert m1 share-contains MAIL/invite.ics 'BEGIN:VCALENDAR'
+vgate_assert m1 share-contains MAIL/invite.ics 'SUMMARY:Mail sync'
+vgate_assert m1 share-contains MAIL/card.vcf 'FN:Grace Hopper'
+vgate_assert m1 share-contains MAIL/payload.bin 'payload-not-a-program'
+vgate_assert m1 share-contains MAIL/ATTACH 'invite.ics'
+vgate_assert m1 python <<'PY'
+import os, sys
+ilog = open(os.path.join(os.environ["RUN_DIR"], "maild-26993.log")).read()
+slog = open(os.path.join(os.environ["RUN_DIR"], "maild-26465.log")).read()
+ineed = ["c9 tls ok", 'c9 rx a3 SELECT "Attach"',
+         "c9 rx a4 FETCH 1:3 (ENVELOPE)", "c9 rx a5 FETCH 1 (BODYSTRUCTURE)",
+         "c9 rx a6 FETCH 1 (BODY[1])", "c9 rx a7 FETCH 1 (BODY[2])",
+         "FETCH 2 (BODY[2])", "FETCH 3 (BODY[2])"]
+sneed = ["c4 tls ok", "c4 rx RCPT TO:<bob>", "c4 rx DATA",
+         "c4 rx Subject: gate sync", "c4 rx gate mail", "c4 rx QUIT"]
+missing = [n for n in ineed if n not in ilog]
+missing += [n for n in sneed if n not in slog]
+if missing:
+    sys.exit("m1 fixture transcript missing: %r\nimap:\n%s\nsmtp:\n%s"
+             % (missing, ilog, slog))
+PY
+
+vgate_run m2 -- \
+    --screen '$RUN_DIR/screen-m2' \
+    --via-virtio \
+    --net '$RUN_DIR/cap-m2.bin' --net-arp-respond 10.0.0.2 \
+    --net-tcp-respond 10.0.0.2:993:relay --net-tcp-respond-relay 127.0.0.1:26993 \
+    --net-tcp-respond 10.0.0.2:465:relay --net-tcp-respond-relay 127.0.0.1:26465 \
+    --script '$RUN_DIR/script-m.txt' \
+    --script2 '$RUN_DIR/script2-m.txt' --script2-after 'gotabwm: mode live' \
+    --input-chords 'c,b,o,b,tab,g,a,t,e,space,s,y,n,c,tab,g,a,t,e,space,m,a,i,l,ctrl-s,q' \
+    --input-chords-after 'gomail: window' \
+    --script3 '$RUN_DIR/script3-m.txt' --script3-after 'gomail: closed' \
+    --script-expect 'gomail: refuse open payload.bin application/octet-stream' --timeout 300
+
+vgate_assert m2 serial-contains 'gomail: window'
+vgate_assert m2 serial-contains 'gomail: compose'
+vgate_assert m2 serial-contains 'gomail: rcpt bob'
+vgate_assert m2 serial-contains 'gomail: sent bytes='
+vgate_assert m2 serial-contains 'gomail: select Attach exists=3'
+vgate_assert m2 serial-contains 'gomail: saved /host/MAIL/invite.ics'
+vgate_assert m2 serial-contains 'gomail: saved /host/MAIL/card.vcf'
+vgate_assert m2 serial-contains 'gomail: saved /host/MAIL/payload.bin'
+vgate_assert m2 serial-contains 'gomail: open invite.ics handler=GOCLOCK.ELF'
+vgate_assert m2 serial-contains 'goclock: import done added=1 refused=0'
+vgate_assert m2 serial-contains 'gomail: open card.vcf handler=GOFILES.ELF'
+vgate_assert m2 serial-contains 'gofiles: contact fn=Grace Hopper'
+vgate_assert m2 serial-contains 'gofiles: contact done cards=1'
+vgate_assert m2 serial-contains 'gomail: refuse open payload.bin application/octet-stream'
+vgate_assert m2 serial-absent 'gomail: error'
+vgate_assert m2 serial-absent 'gomail: attach-fail'
+vgate_assert m2 serial-absent '[EXC] parking:'
+vgate_assert m2 python <<'PY'
+import os, sys
+ilog = open(os.path.join(os.environ["RUN_DIR"], "maild-26993.log")).read()
+slog = open(os.path.join(os.environ["RUN_DIR"], "maild-26465.log")).read()
+ineed = ["c10 tls ok", 'c10 rx a3 SELECT "Attach"', "FETCH 3 (BODY[2])"]
+sneed = ["c5 tls ok", "c5 rx RCPT TO:<bob>"]
+missing = [n for n in ineed if n not in ilog]
+missing += [n for n in sneed if n not in slog]
+if missing:
+    sys.exit("m2 fixture transcript missing: %r" % missing)
+PY
+
+vgate_run m3 -- \
+    --screen '$RUN_DIR/screen-m3' \
+    --via-virtio \
+    --net '$RUN_DIR/cap-m3.bin' --net-arp-respond 10.0.0.2 \
+    --net-tcp-respond 10.0.0.2:993:relay --net-tcp-respond-relay 127.0.0.1:26993 \
+    --net-tcp-respond 10.0.0.2:465:relay --net-tcp-respond-relay 127.0.0.1:26465 \
+    --script '$RUN_DIR/script-m.txt' \
+    --script2 '$RUN_DIR/script2-m.txt' --script2-after 'gotabwm: mode live' \
+    --input-chords 'c,b,o,b,tab,g,a,t,e,space,s,y,n,c,tab,g,a,t,e,space,m,a,i,l,ctrl-s,q' \
+    --input-chords-after 'gomail: window' \
+    --script3 '$RUN_DIR/script3-m.txt' --script3-after 'gomail: closed' \
+    --script-expect 'gomail: refuse open payload.bin application/octet-stream' --timeout 300
+
+vgate_assert m3 serial-contains 'gomail: window'
+vgate_assert m3 serial-contains 'gomail: compose'
+vgate_assert m3 serial-contains 'gomail: rcpt bob'
+vgate_assert m3 serial-contains 'gomail: sent bytes='
+vgate_assert m3 serial-contains 'gomail: select Attach exists=3'
+vgate_assert m3 serial-contains 'gomail: saved /host/MAIL/invite.ics'
+vgate_assert m3 serial-contains 'gomail: saved /host/MAIL/card.vcf'
+vgate_assert m3 serial-contains 'gomail: saved /host/MAIL/payload.bin'
+vgate_assert m3 serial-contains 'gomail: open invite.ics handler=GOCLOCK.ELF'
+vgate_assert m3 serial-contains 'goclock: import done added=1 refused=0'
+vgate_assert m3 serial-contains 'gomail: open card.vcf handler=GOFILES.ELF'
+vgate_assert m3 serial-contains 'gofiles: contact fn=Grace Hopper'
+vgate_assert m3 serial-contains 'gofiles: contact done cards=1'
+vgate_assert m3 serial-contains 'gomail: refuse open payload.bin application/octet-stream'
+vgate_assert m3 serial-absent 'gomail: error'
+vgate_assert m3 serial-absent 'gomail: attach-fail'
+vgate_assert m3 serial-absent '[EXC] parking:'
+vgate_assert m3 python <<'PY'
+import os, sys
+ilog = open(os.path.join(os.environ["RUN_DIR"], "maild-26993.log")).read()
+slog = open(os.path.join(os.environ["RUN_DIR"], "maild-26465.log")).read()
+ineed = ["c11 tls ok", 'c11 rx a3 SELECT "Attach"', "FETCH 3 (BODY[2])"]
+sneed = ["c6 tls ok", "c6 rx RCPT TO:<bob>"]
+missing = [n for n in ineed if n not in ilog]
+missing += [n for n in sneed if n not in slog]
+if missing:
+    sys.exit("m3 fixture transcript missing: %r" % missing)
 PY

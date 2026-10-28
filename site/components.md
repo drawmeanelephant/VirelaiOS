@@ -53,7 +53,7 @@ All of them additionally answer to the schema-v2 manifest grammar
 | [[apps/goemoji|Emoji]] | app | GOEMOJI.ELF | appver 2, ver 1.0.0 | #2917 | 2026-10-21 | tools/gate/specs/go-emoji.spec | shipped |
 | [[apps/goirc|IRC]] | app | GOIRC.ELF | appver 3, ver 1.1.0 | #2919 | 2026-10-21 | tools/gate/specs/go-irc.spec | shipped |
 | [[apps/govault|Vault]] | app | GOVAULT.ELF | appver 1, ver 1.0.0 | #3240 | 2026-10-23 | tools/gate/specs/go-vault.spec | shipped |
-| [[apps/gomail|Mail]] | app | GOMAIL.ELF | ver 1.1.0 | #3253 | 2026-10-23 | tools/gate/specs/go-mail.spec | shipped |
+| [[apps/gomail|Mail]] | app | GOMAIL.ELF | ver 1.2.0 | #3253 | 2026-10-23 | tools/gate/specs/go-mail.spec | shipped |
 | [[apps/goa11y|Accessibility]] | app | GOA11Y.ELF | ver 1.0.0 | #3143 | 2026-10-22 | tools/gate/specs/go-a11y.spec | shipped |
 | [[apps/gopaint|Paint]] | app | GOPAINT.ELF | appver 1, ver 1.0.0 | #3455 | 2026-10-25 | tools/gate/specs/go-paint.spec | shipped |
 

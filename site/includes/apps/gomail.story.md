@@ -2,7 +2,10 @@ The smallest honest mail client — IMAP4rev1 LIST/SELECT/FETCH
 for boxes, bounded headers and one readable body, plus SMTP submit
 for a single message, over `tls.Dial` with the plaintext-consent
 rule at the dial boundary and named refusals for everything out of
-scope, attachments included. The wire work caches into a bounded
+scope. The window also composes and sends through the same SMTP
+path, and attachments save under `MAIL/` with sanitized names —
+a `.ics` hands to GOCLOCK's merge, a `.vcf` to GOFILES' contact
+face, anything else stays saved and is never executed. The wire work caches into a bounded
 `MAIL/` subtree on the data root, so `search` answers offline and
 a failed dial falls back to what the cache can prove — never
 fabricated mail. `go-mail.spec` walks fetch INBOX end to end
