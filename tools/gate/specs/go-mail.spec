@@ -38,6 +38,15 @@
 # --pass refuses on argv, and an unprovisioned mail-<acct> names
 # secret_not_found before any socket opens.
 #
+# Runs w1-w3 (M208a #3822) are the window legs, K=3: a live GOTABWM seat,
+# a bare `exec GOMAIL.ELF` (the dock/launcher argv shape), and one chord
+# batch walks the panes with the letter keys — INBOX's cached headers +
+# body (run 01 left them), then 'f' on Sent runs the existing fetch path
+# against the IMAP+TLS fixture so its envelopes land in the pane and the
+# cache. Each leg clones the seeded GOMAIL-TLS.TXT over GOMAIL.TXT first
+# (the shared file must stay transport-less for run 03's plaintext
+# refusal); the legs are LAST so the mutation can never reach a CLI leg.
+#
 # exec-order: assert-proven — runs end on markers only the app prints
 # from fixture traffic ('gomail: refuse attachment report.pdf',
 # 'gomail: sent bytes='), and the python halves read the fixture's own
@@ -50,7 +59,7 @@
 # binary is what every run execs under the GOMAIL.ELF name. Fixture
 # transcripts land in $RUN_DIR/maild-<port>.log for the python asserts.
 
-vgate_name go-mail "M187c #3184 + M193a #3253 + M193d #3256 + M196b #3379: GOMAIL.ELF — IMAP4 fetch/list/read + SMTP submit over tls.Dial (pinned fixture chain), plaintext consent refusal + grant, attachment/html truth-in-bounds, + use-able folders, bounded /host/MAIL cache, offline search + cache-miss legs, + the chain's send --to leg in the contact face's own argv shape, K=3, + the keychain credential — mail-<user> out of the slot-70 store, pass= and --pass refused by name, secret_not_found named"
+vgate_name go-mail "M187c #3184 + M193a #3253 + M193d #3256 + M196b #3379 + M208a #3822: GOMAIL.ELF — IMAP4 fetch/list/read + SMTP submit over tls.Dial (pinned fixture chain), plaintext consent refusal + grant, attachment/html truth-in-bounds, + use-able folders, bounded /host/MAIL cache, offline search + cache-miss legs, + the chain's send --to leg in the contact face's own argv shape, K=3, + the keychain credential — mail-<user> out of the slot-70 store, pass= and --pass refused by name, secret_not_found named, + the no-arg window: boxes/headers/message panes over the cache with an explicit Fetch, K=3 under a live seat"
 vgate_share seed
 vgate_runner_flags -Xswiftc -DSPIKE
 
@@ -129,6 +138,18 @@ shutil.copy(gomail, os.path.join(share, "GOMAIL.ELF"))
 print("go-mail: staged GOMAIL-GATE.ELF as GOMAIL.ELF (%d)"
       % os.path.getsize(os.path.join(share, "GOMAIL.ELF")))
 
+# M208a runs w1-w3 drive the window under a live seat: stage GOTABWM and
+# keep the boot seatless (wm=none — the go-irc/go-vault idiom) so each
+# window leg execs the seat itself; the CLI legs never needed one.
+gotabwm = os.path.join(".build", "go", "GOTABWM.ELF")
+if not os.path.exists(gotabwm):
+    sys.exit("GOTABWM.ELF missing (expected " + gotabwm + ") - build it "
+             "first: bash tools/go/build-gotabwm.sh")
+shutil.copy(gotabwm, os.path.join(share, "GOTABWM.ELF"))
+print("go-mail: staged GOTABWM.ELF (%d)" % os.path.getsize(gotabwm))
+with open(os.path.join(share, "SETTINGS.TXT"), "w") as f:
+    f.write("#v2\nwm=none\n")
+
 # The account file the app resolves at boot — deliberately WITHOUT a
 # tls/plain row: run 03's bare fetch must hit the plaintext refusal, so
 # the file never carries a transport answer and each leg's flag decides.
@@ -141,6 +162,18 @@ with open(os.path.join(share, "GOMAIL.TXT"), "w") as f:
             "from=gate@fixture.local\n"
             "sni=leaf.example.com\n")
 print("go-mail: wrote GOMAIL.TXT account file (no pass= — store holds it)")
+
+# M208a: the same account with its transport answer filled — the window
+# legs clone it over GOMAIL.TXT so their bare `exec GOMAIL.ELF` (no argv
+# can carry --tls) dials TLS; run 03's refusal keeps the plain file.
+with open(os.path.join(share, "GOMAIL-TLS.TXT"), "w") as f:
+    f.write("# go-mail gate fixture account — tls=on for the window legs\n"
+            "host=10.0.0.2\n"
+            "user=gate\n"
+            "from=gate@fixture.local\n"
+            "sni=leaf.example.com\n"
+            "tls=on\n")
+print("go-mail: wrote GOMAIL-TLS.TXT (the window legs' account)")
 
 # M196b: the credential row, app-bound to GOMAIL.ELF. An apps-allowlist
 # entry is visible only when the named image is operator-owned on /host
@@ -177,10 +210,16 @@ with open(os.path.join(maildir, "HDRS"), "w") as f:
     f.write("Lists\t7\tdana@fixture.local\tweekly digest\t"
             "Wed, 21 Oct 2026 11:00:00 +0000\n")
 seed_body = b"the orchid thread grows\r\nsecond seeded line"
+# M208a: a body matching the seeded envelope too (Lists/7) — the window
+# legs' message pane renders it; 'weekly' still hits once (the envelope
+# dedupes), 'orchid' is untouched.
+seed_body7 = b"weekly digest body"
 with open(os.path.join(maildir, "BODIES"), "wb") as f:
     f.write(b"@Lists\t9\t1\ttext/plain\t" + str(len(seed_body)).encode()
             + b"\n" + seed_body + b"\n")
-print("go-mail: seeded /host/MAIL cache (BOXES, Lists hdr 7, body 9)")
+    f.write(b"@Lists\t7\t1\ttext/plain\t" + str(len(seed_body7)).encode()
+            + b"\n" + seed_body7 + b"\n")
+print("go-mail: seeded /host/MAIL cache (BOXES, Lists hdr 7, bodies 9+7)")
 
 fixture = os.path.join(run, "maild.py")
 with open(fixture, "w") as f:
@@ -358,7 +397,7 @@ def smtp_serve(conn, idx):
         else:
             send(conn, "502 5.5.2 verb not implemented")
 
-conns = 4
+conns = 9  # M208a: the three window legs fetch twice each (c3-c8 on imap-tls)
 for idx in range(conns):
     try:
         conn, _ = srv.accept()
@@ -861,4 +900,156 @@ need = ["c3 rx RCPT TO:<grace@example.com>",
 missing = [n for n in need if n not in log]
 if missing:
     sys.exit("chain smtp fixture transcript missing: %r\n%s" % (missing, log))
+PY
+
+# --- Runs w1-w3 (M208a #3822): the window legs, K=3 ---------------------
+#
+# A bare `exec GOMAIL.ELF` — the dock/launcher's argv shape — opens the
+# tabapp window under a live GOTABWM seat. Each leg first clears the
+# cache's remembered box + corpus so the open is deterministic: no USE
+# means resolveBox's INBOX default, no HDRS/BODIES means the pane's
+# evidence can only come from THIS leg's fetch. The chord batch is just
+# 'f,f' — the pane nav letters/arrows stay app-side (the seat's chord
+# palette claims some of them, so the leg proves the model through the
+# keys that always reach): the first Fetch runs the existing fetch path
+# and the fixture's envelopes land as the pane's new rows — "the new
+# mail" the leg proves; the second reads seq 1's body through the same
+# path and the message pane renders it on reload. GOMAIL-TLS.TXT is
+# cloned over GOMAIL.TXT in each leg's own script (the shared file
+# stays transport-less for run 03; the legs run LAST so the mutation
+# reaches no CLI leg). SESSION.TABS is cleared so no stale session row
+# re-execs a second GOMAIL tab mid-leg.
+vgate_file script-w.txt <<'EOF'
+net ip 10.0.0.1
+net arp 10.0.0.2
+set GOMAXPROCS=1
+vf rm GOTABWM.DEMO
+vf rm SESSION.TABS
+vf rm GOMAIL.TXT
+vf clone GOMAIL-TLS.TXT GOMAIL.TXT
+vf rm MAIL/USE
+vf rm MAIL/HDRS
+vf rm MAIL/BODIES
+wm
+exec GOTABWM.ELF
+EOF
+
+vgate_file script2-w.txt <<'EOF'
+dui focus 0
+exec GOMAIL.ELF
+EOF
+
+vgate_run w1 -- \
+    --screen '$RUN_DIR/screen-w1' \
+    --via-virtio \
+    --net '$RUN_DIR/cap-w1.bin' --net-arp-respond 10.0.0.2 \
+    --net-tcp-respond 10.0.0.2:993:relay --net-tcp-respond-relay 127.0.0.1:26993 \
+    --script '$RUN_DIR/script-w.txt' \
+    --script2 '$RUN_DIR/script2-w.txt' --script2-after 'gotabwm: mode live' \
+    --input-chords 'f,f' \
+    --input-chords-after 'gomail: window' \
+    --script-expect 'gomail: fetch done' --timeout 300
+
+vgate_assert w1 serial-contains 'exec: loaded GOTABWM.ELF'
+vgate_assert w1 serial-contains 'gotabwm: mode live'
+vgate_assert w1 serial-contains 'exec: loaded GOMAIL.ELF'
+vgate_assert w1 serial-contains 'gomail: account /host/GOMAIL.TXT'
+vgate_assert w1 serial-contains 'gomail: open id='
+vgate_assert w1 serial-contains 'gomail: declare accepted'
+vgate_assert w1 serial-contains 'gomail: box INBOX'
+vgate_assert w1 serial-contains 'gomail: box Sent'
+vgate_assert w1 serial-contains 'gomail: window'
+vgate_assert w1 serial-contains 'gomail: fetch INBOX'
+vgate_assert w1 serial-contains 'gomail: secret mail-gate'
+vgate_assert w1 serial-contains 'gomail: dial 10.0.0.2 993 tls'
+vgate_assert w1 serial-contains 'gomail: imap ready'
+vgate_assert w1 serial-contains 'gomail: select INBOX exists=3'
+vgate_assert w1 serial-contains 'gomail: hdr 1 Alice: gate hello'
+vgate_assert w1 serial-contains 'gomail: hdr 3 Carol: report attached'
+vgate_assert w1 serial-contains 'gomail: body 1 text/plain'
+vgate_assert w1 serial-contains 'gomail: text line one of the gate body'
+vgate_assert w1 serial-contains 'gomail: cache /host/MAIL/HDRS'
+vgate_assert w1 serial-contains 'gomail: fetch done'
+vgate_assert w1 serial-absent 'gomail: error'
+vgate_assert w1 serial-absent 'gomail: refuse'
+vgate_assert w1 serial-absent '[EXC] parking:'
+# The fetched rows really landed on the share.
+vgate_assert w1 share-contains MAIL/HDRS 'gate hello'
+vgate_assert w1 python <<'PY'
+import os, sys
+log = open(os.path.join(os.environ["RUN_DIR"], "maild-26993.log")).read()
+need = ["c3 tls ok", "c3 rx a1 LOGIN", 'c3 rx a3 SELECT "INBOX"',
+        "c3 rx a4 FETCH", "c4 tls ok", 'c4 rx a3 SELECT "INBOX"',
+        "c4 rx a5 FETCH 1 (BODYSTRUCTURE)"]
+missing = [n for n in need if n not in log]
+if missing:
+    sys.exit("w1 imap fixture transcript missing: %r\n%s" % (missing, log))
+PY
+
+vgate_run w2 -- \
+    --screen '$RUN_DIR/screen-w2' \
+    --via-virtio \
+    --net '$RUN_DIR/cap-w2.bin' --net-arp-respond 10.0.0.2 \
+    --net-tcp-respond 10.0.0.2:993:relay --net-tcp-respond-relay 127.0.0.1:26993 \
+    --script '$RUN_DIR/script-w.txt' \
+    --script2 '$RUN_DIR/script2-w.txt' --script2-after 'gotabwm: mode live' \
+    --input-chords 'f,f' \
+    --input-chords-after 'gomail: window' \
+    --script-expect 'gomail: fetch done' --timeout 300
+
+vgate_assert w2 serial-contains 'gomail: open id='
+vgate_assert w2 serial-contains 'gomail: window'
+vgate_assert w2 serial-contains 'gomail: box INBOX'
+vgate_assert w2 serial-contains 'gomail: fetch INBOX'
+vgate_assert w2 serial-contains 'gomail: dial 10.0.0.2 993 tls'
+vgate_assert w2 serial-contains 'gomail: select INBOX exists=3'
+vgate_assert w2 serial-contains 'gomail: hdr 1 Alice: gate hello'
+vgate_assert w2 serial-contains 'gomail: body 1 text/plain'
+vgate_assert w2 serial-contains 'gomail: text line one of the gate body'
+vgate_assert w2 serial-contains 'gomail: fetch done'
+vgate_assert w2 serial-absent 'gomail: error'
+vgate_assert w2 serial-absent 'gomail: refuse'
+vgate_assert w2 serial-absent '[EXC] parking:'
+vgate_assert w2 python <<'PY'
+import os, sys
+log = open(os.path.join(os.environ["RUN_DIR"], "maild-26993.log")).read()
+need = ["c5 tls ok", 'c5 rx a3 SELECT "INBOX"', "c5 rx a4 FETCH",
+        "c6 tls ok", 'c6 rx a3 SELECT "INBOX"']
+missing = [n for n in need if n not in log]
+if missing:
+    sys.exit("w2 imap fixture transcript missing: %r\n%s" % (missing, log))
+PY
+
+vgate_run w3 -- \
+    --screen '$RUN_DIR/screen-w3' \
+    --via-virtio \
+    --net '$RUN_DIR/cap-w3.bin' --net-arp-respond 10.0.0.2 \
+    --net-tcp-respond 10.0.0.2:993:relay --net-tcp-respond-relay 127.0.0.1:26993 \
+    --script '$RUN_DIR/script-w.txt' \
+    --script2 '$RUN_DIR/script2-w.txt' --script2-after 'gotabwm: mode live' \
+    --input-chords 'f,f' \
+    --input-chords-after 'gomail: window' \
+    --script-expect 'gomail: fetch done' --timeout 300
+
+vgate_assert w3 serial-contains 'gomail: open id='
+vgate_assert w3 serial-contains 'gomail: window'
+vgate_assert w3 serial-contains 'gomail: box INBOX'
+vgate_assert w3 serial-contains 'gomail: fetch INBOX'
+vgate_assert w3 serial-contains 'gomail: dial 10.0.0.2 993 tls'
+vgate_assert w3 serial-contains 'gomail: select INBOX exists=3'
+vgate_assert w3 serial-contains 'gomail: hdr 1 Alice: gate hello'
+vgate_assert w3 serial-contains 'gomail: body 1 text/plain'
+vgate_assert w3 serial-contains 'gomail: text line one of the gate body'
+vgate_assert w3 serial-contains 'gomail: fetch done'
+vgate_assert w3 serial-absent 'gomail: error'
+vgate_assert w3 serial-absent 'gomail: refuse'
+vgate_assert w3 serial-absent '[EXC] parking:'
+vgate_assert w3 python <<'PY'
+import os, sys
+log = open(os.path.join(os.environ["RUN_DIR"], "maild-26993.log")).read()
+need = ["c7 tls ok", 'c7 rx a3 SELECT "INBOX"', "c7 rx a4 FETCH",
+        "c8 tls ok", 'c8 rx a3 SELECT "INBOX"']
+missing = [n for n in need if n not in log]
+if missing:
+    sys.exit("w3 imap fixture transcript missing: %r\n%s" % (missing, log))
 PY
