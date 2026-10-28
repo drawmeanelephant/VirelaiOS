@@ -19,6 +19,14 @@
 #      relisten -> a second client served)
 #   08 opt-out: the shipped manifest as-is (httpd enabled=false) boots
 #      to the seat with no svc: start for it
+#   09 M209a: --admin over TLS with NO httpd-admin store row -> the
+#      section does not exist (404); the run then stages SECRETS.TXT
+#   10 M209a: --admin over TLS with the row: one connection carries the
+#      whole suite — procs 200 (GOHTTPD.ELF in the table), grants 200
+#      (rows or the named unknown), wrong creds 401, GET /SECRETS.TXT
+#      404 while the file is armed (the card's first check, pinned),
+#      unknown admin path 404, index 200
+#   11 M209a: --admin over plaintext -> 403 'admin requires tls'
 #
 # The kernel's child_limit=2 bounds simultaneous children and every
 # --net-tcp-connect client fires on its own dispatch queue at the same
@@ -177,7 +185,12 @@ if b"VirelaiOS" not in body:
 sys.exit(0)
 EOF
 
+# script-1.txt's `net ip` matters here too: SocketListen refuses ENXIO
+# until the guest carries an IP (leg 07's comment names the rule), and
+# without this line the legs raced autonomous DHCP — observed failing as
+# 'httpd: listen failed' under a loaded host (2026-10-27).
 vgate_file script-tls.txt <<'EOF'
+net ip 10.0.0.1
 exec GOHTTPD.ELF --tls /host/TLS.CRT /host/TLS.SEED 8443
 echo tls-launched
 EOF
@@ -235,6 +248,7 @@ shutil.copy(os.path.join(share, "TLS.CRT"), os.path.join(run, "TLS.CRT"))
 
 import stat
 os.chmod(os.path.join(run, "tlscli.py"), 0o755)
+os.chmod(os.path.join(run, "admincli.py"), 0o755)
 PY
 
 # ---- 01: passive open (the kept M71l leg) --------------------------------
@@ -515,3 +529,279 @@ assert not re.search(r"procs: [^\n]*name=GOHTTPD.ELF", ser), \
     "a disabled service is on the process table"
 print("opt-out boot: the shipped disabled httpd row never leaves the manifest")
 PY
+
+# ---- M209a (#3825): the opt-in /admin/ section -------------------------
+# Legs 09-11 cover the card's auth lattice end to end. Leg 09 boots with
+# NO SECRETS.TXT on the share (leg 08's tail cleanup enforces it, which
+# also keeps the shape under vgate_repeat), so StoreGet finds no
+# httpd-admin row and even correct credentials answer 404 — locked by
+# default means the section does not exist. That run's tail assert then
+# stages the uid_user row legs 10/11 authenticate against; the token is
+# asserted serial-absent everywhere — creds never reach a marker or the
+# log (only request targets are logged, never headers).
+
+vgate_file script-admin-tls.txt <<'EOF'
+net ip 10.0.0.1
+exec GOHTTPD.ELF --tls /host/TLS.CRT /host/TLS.SEED --admin 8443
+echo admin-tls-launched
+EOF
+
+vgate_file script-admin-plain.txt <<'EOF'
+net ip 10.0.0.1
+exec GOHTTPD.ELF --admin
+echo admin-plain-launched
+EOF
+
+# Leg 11's payload: correct credentials on a PLAINTEXT request — the 403
+# named refusal fires before the credential is ever looked at.
+vgate_file req-admin-plain.txt <<'EOF'
+GET /admin/procs HTTP/1.1
+Authorization: Basic YWRtaW46bTIwOWEtZ2F0ZS10b2tlbg==
+Connection: close
+
+EOF
+
+# Legs 09/10's client: TLS 1.3 over the runner's byte relay (tlscli.py's
+# shape), then the /admin/ suite on ONE keep-alive connection.
+# argv: CERT_DER GOOD_B64 BAD_B64 [norow] — the *_B64 args are base64'd
+# Basic user:pass pairs; "norow" runs only the procs request (leg 09).
+# stderr carries "ADMINCLI <tag> <status>" plus ADMINCLI-BODY blocks.
+vgate_file admincli.py <<'EOF'
+#!/usr/bin/env python3
+import os, ssl, sys
+
+cert_path, good, bad = sys.argv[1], sys.argv[2], sys.argv[3]
+mode = sys.argv[4] if len(sys.argv) > 4 else "full"
+
+ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+ctx.check_hostname = False
+ctx.verify_mode = ssl.CERT_NONE
+ctx.minimum_version = ssl.TLSVersion.TLSv1_3
+ctx.maximum_version = ssl.TLSVersion.TLSv1_3
+
+inbio = ssl.MemoryBIO()
+outbio = ssl.MemoryBIO()
+so = ctx.wrap_bio(inbio, outbio, server_side=False)
+
+def flush():
+    while True:
+        b = outbio.read()
+        if not b:
+            return
+        os.write(1, b)
+
+ok = False
+while True:
+    try:
+        so.do_handshake()
+        ok = True
+        break
+    except ssl.SSLWantReadError:
+        flush()
+        block = os.read(0, 65536)
+        if not block:
+            break
+        inbio.write(block)
+    except ssl.SSLWantWriteError:
+        flush()
+    except ssl.SSLError as e:
+        sys.stderr.write("ADMINCLI: handshake ssl error %r\n" % (e,))
+        break
+    flush()
+
+if not ok:
+    sys.exit(2)
+
+def pump_read():
+    # Feed stdin ciphertext until the TLS layer takes it or the relay ends.
+    block = os.read(0, 65536)
+    if not block:
+        return False
+    inbio.write(block)
+    return True
+
+def send_all(data):
+    # A post-handshake write can want a read (KeyUpdate and friends): feed
+    # stdin on WantRead, flush pending records on WantWrite, else send.
+    while data:
+        try:
+            so.write(data)
+            data = b""
+        except ssl.SSLWantWriteError:
+            flush()
+        except ssl.SSLWantReadError:
+            if not pump_read():
+                raise
+    flush()
+
+def complete(buf):
+    head, sep, body = buf.partition(b"\r\n\r\n")
+    if not sep:
+        return False
+    for line in head.split(b"\r\n")[1:]:
+        if line.lower().startswith(b"content-length:"):
+            want = int(line.split(b":", 1)[1].strip())
+            return len(body) >= want
+    return True  # every response here carries Content-Length
+
+def http_get(path, cred, last):
+    req = "GET %s HTTP/1.1\r\n" % path
+    if cred:
+        req += "Authorization: Basic %s\r\n" % cred
+    req += "Connection: %s\r\n\r\n" % ("close" if last else "keep-alive")
+    send_all(req.encode())
+    buf = b""
+    while not complete(buf):
+        try:
+            d = so.read(4096)
+            if not d:
+                break
+            buf += d
+        except ssl.SSLWantReadError:
+            # Read stdin ONLY when the TLS layer wants ciphertext —
+            # blocking on stdin with a complete buffered response was the
+            # run-10 deadlock.
+            if not pump_read():
+                break
+        except ssl.SSLWantWriteError:
+            flush()
+        except ssl.SSLError as e:
+            sys.stderr.write("ADMINCLI: read err %r\n" % (e,))
+            break
+    return buf
+
+seq = [("procs", "/admin/procs", good)]
+if mode != "norow":
+    seq += [
+        ("grants", "/admin/grants", good),
+        ("badcred", "/admin/procs", bad),
+        # The card's first check, observed: SECRETS.TXT is armed on the
+        # share this boot and the share fallback still cannot serve it
+        # (secret-class by construction, ADR 0024 D8 -> FileOpen EACCES).
+        ("secrets", "/SECRETS.TXT", good),
+        ("noadmin", "/admin/nope", good),
+        ("index", "/admin/", good),
+    ]
+for i, (tag, path, cred) in enumerate(seq):
+    try:
+        r = http_get(path, cred, i == len(seq) - 1)
+    except Exception as e:
+        sys.stderr.write("ADMINCLI %s client error %r\n" % (tag, e))
+        r = b""
+    status = r.split(b"\r\n", 1)[0].decode(errors="replace") if r else "NO-RESPONSE"
+    sys.stderr.write("ADMINCLI %s %s\n" % (tag, status))
+    sys.stderr.write("ADMINCLI-BODY %s\n%s\nADMINCLI-END %s\n"
+                     % (tag, r.decode(errors="replace"), tag))
+sys.exit(0)
+EOF
+
+# Leg 09's no-row boot precondition, owned by the run before it so the
+# order is honest under vgate_repeat too.
+vgate_assert 08 python <<'PY'
+import os, pathlib
+p = pathlib.Path(os.environ["VG_SHARE"]) / "SECRETS.TXT"
+p.unlink(missing_ok=True)
+print("live-httpd: SECRETS.TXT absent for leg 09's no-row boot")
+PY
+
+# ---- 09: --admin over TLS, no httpd-admin row -> the section is 404 ----
+vgate_run 09 -- --net '$RUN_DIR/cap9.bin' --net-arp-respond 10.0.0.2 \
+    --net-tcp-connect '10.0.0.1:8443' \
+    --net-tcp-connect-stream '$RUN_DIR/admincli.py' \
+    --net-tcp-connect-stream-arg '$RUN_DIR/TLS.CRT' \
+    --net-tcp-connect-stream-arg 'YWRtaW46bTIwOWEtZ2F0ZS10b2tlbg==' \
+    --net-tcp-connect-stream-arg 'YWRtaW46d3JvbmctdG9rZW4=' \
+    --net-tcp-connect-stream-arg 'norow' \
+    --net-tcp-connect-after 'httpd: listening on port 8443' \
+    --script '$RUN_DIR/script-admin-tls.txt' \
+    --script2 '$RUN_DIR/script-tls-kill.txt' --script2-after 'httpd: closed' --script2-delay 3 \
+    --script-expect 'tls-killed' --timeout 90
+
+vgate_assert 09 serial-contains 'httpd: listening on port 8443'
+vgate_assert 09 serial-contains 'httpd: request /admin/procs'
+vgate_assert 09 output-contains 'ADMINCLI procs HTTP/1.1 404'
+vgate_assert 09 serial-absent 'm209a-gate-token'
+vgate_assert 09 serial-absent 'YWRtaW46bTIwOWEtZ2F0ZS10b2tlbg=='
+vgate_assert 09 serial-absent 'httpd: tls alert'
+vgate_assert 09 serial-absent '[EXC] parking:'
+vgate_assert 09 python <<'PY'
+import os, pathlib
+# Stage the credential legs 10/11 authenticate with: a uid_user row,
+# `key<TAB>uid<TAB>value` — uid-scope only, no app binding (the gate's
+# GOHTTPD is an ordinary EL0 process).
+pathlib.Path(os.environ["VG_SHARE"], "SECRETS.TXT").write_text(
+    "#v1\nhttpd-admin\t1000\tm209a-gate-token\n")
+print("live-httpd: staged SECRETS.TXT httpd-admin row for legs 10/11")
+PY
+
+# ---- 10: --admin over TLS with the row -> the whole suite --------------
+vgate_run 10 -- --net '$RUN_DIR/cap10.bin' --net-arp-respond 10.0.0.2 \
+    --net-tcp-connect '10.0.0.1:8443' \
+    --net-tcp-connect-stream '$RUN_DIR/admincli.py' \
+    --net-tcp-connect-stream-arg '$RUN_DIR/TLS.CRT' \
+    --net-tcp-connect-stream-arg 'YWRtaW46bTIwOWEtZ2F0ZS10b2tlbg==' \
+    --net-tcp-connect-stream-arg 'YWRtaW46d3JvbmctdG9rZW4=' \
+    --net-tcp-connect-after 'httpd: listening on port 8443' \
+    --script '$RUN_DIR/script-admin-tls.txt' \
+    --script2 '$RUN_DIR/script-tls-kill.txt' --script2-after 'httpd: closed' --script2-delay 3 \
+    --script-expect 'tls-killed' --timeout 90
+
+vgate_assert 10 serial-contains 'httpd: listening on port 8443'
+vgate_assert 10 serial-contains 'httpd: request /admin/procs'
+vgate_assert 10 serial-contains 'httpd: request /admin/grants'
+vgate_assert 10 serial-contains 'httpd: request /SECRETS.TXT'
+vgate_assert 10 output-contains 'ADMINCLI procs HTTP/1.1 200'
+vgate_assert 10 output-contains 'ADMINCLI grants HTTP/1.1 200'
+vgate_assert 10 output-contains 'ADMINCLI badcred HTTP/1.1 401'
+vgate_assert 10 output-contains 'ADMINCLI secrets HTTP/1.1 404'
+vgate_assert 10 output-contains 'ADMINCLI noadmin HTTP/1.1 404'
+vgate_assert 10 output-contains 'ADMINCLI index HTTP/1.1 200'
+vgate_assert 10 output-contains 'WWW-Authenticate: Basic'
+# The first-check pin: the armed share carries SECRETS.TXT this boot AND
+# the fallback still answered 404 for it — it can never be served.
+vgate_assert 10 share-contains SECRETS.TXT 'httpd-admin'
+vgate_assert 10 serial-absent 'm209a-gate-token'
+vgate_assert 10 serial-absent 'YWRtaW46bTIwOWEtZ2F0ZS10b2tlbg=='
+vgate_assert 10 serial-absent 'httpd: tls alert'
+vgate_assert 10 serial-absent 'httpd: tls error'
+vgate_assert 10 serial-absent '[EXC] parking:'
+vgate_assert 10 python <<'PY'
+import os, re, sys
+out = open(os.path.join(os.environ["RUN_DIR"], "run-10.out"),
+           errors="replace").read()
+def body(tag):
+    m = re.search(r"ADMINCLI-BODY %s\n(.*?)ADMINCLI-END %s" % (tag, tag),
+                  out, re.S)
+    return m.group(1) if m else ""
+procs = body("procs")
+if "GOHTTPD.ELF" not in procs:
+    sys.exit("procs page did not list GOHTTPD.ELF")
+if "sampled t=" not in procs:
+    sys.exit("procs page missing the timestamp")
+grants = body("grants")
+if "unknown (" not in grants and "<td>" not in grants:
+    sys.exit("grants page shows neither rows nor the named unknown")
+if "WWW-Authenticate: Basic" not in body("badcred"):
+    sys.exit("401 response carried no Basic challenge")
+if "m209a-gate-token" in body("secrets"):
+    sys.exit("SECRETS.TXT content reached the wire")
+print("admin suite: procs 200 + GOHTTPD.ELF + timestamp, grants rows-or-"
+      "unknown, 401+challenge, SECRETS.TXT 404 while armed")
+PY
+
+# ---- 11: --admin over plaintext -> 403 'admin requires tls' ------------
+vgate_run 11 -- --net '$RUN_DIR/cap11.bin' --net-arp-respond 10.0.0.2 \
+    --net-tcp-connect '10.0.0.1:8080:$RUN_DIR/req-admin-plain.txt' \
+    --net-tcp-connect-after 'httpd: listening on port 8080' \
+    --net-tcp-connect-close-after 'Connection: close' \
+    --script '$RUN_DIR/script-admin-plain.txt' \
+    --script2 '$RUN_DIR/script-3.txt' --script2-after 'httpd: closed' --script2-delay 3 \
+    --script-expect 'httpd-killed' --timeout 90
+
+vgate_assert 11 serial-contains 'httpd: listening on port 8080'
+vgate_assert 11 serial-contains 'httpd: request /admin/procs'
+vgate_assert 11 output-contains 'HTTP/1.1 403'
+vgate_assert 11 output-contains 'admin requires tls'
+vgate_assert 11 serial-absent 'm209a-gate-token'
+vgate_assert 11 serial-absent 'YWRtaW46bTIwOWEtZ2F0ZS10b2tlbg=='
+vgate_assert 11 serial-absent '[EXC] parking:'

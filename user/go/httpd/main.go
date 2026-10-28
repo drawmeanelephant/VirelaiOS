@@ -51,6 +51,7 @@ const maxPinnedBytes = 256 * 1024
 func main() {
 	args := vi.Args()
 	cfg := parseArgs(args)
+	adminEnabled = cfg.admin
 	vi.ConsoleLine(markerStarting)
 
 	// M198b (#3361): --advertise is validated BEFORE the listener binds —
@@ -111,10 +112,10 @@ func main() {
 				vi.ConsoleLine(markerClosed)
 				continue
 			}
-			serveConn(tc)
+			serveConn(tc, true)
 			_ = tc.Close()
 		} else {
-			serveConn(viStream{child})
+			serveConn(viStream{child}, false)
 			_ = child.Close()
 		}
 		vi.ConsoleLine(markerClosed)
@@ -146,7 +147,10 @@ func (s viStream) Write(p []byte) (int, error) { return s.c.Send(p) }
 // keep-alive. A parse failure is answered 400 and closed; a 405 likewise
 // closes (the request's body extent is unknowable, so the stream cannot be
 // trusted to resync). Read failures end the session, never the daemon.
-func serveConn(c connStream) {
+// secure is whether the stream rides TLS — the /admin/ section refuses
+// plaintext by name (M209a).
+func serveConn(c connStream, secure bool) {
+	adminSecure = secure
 	buf := make([]byte, 0, maxRequestBytes)
 	chunk := make([]byte, vi.TCPPayloadMax)
 	for {
@@ -197,13 +201,15 @@ func answerAndClose(c connStream, resp response) {
 // config is the parsed argv: plaintext on defaultPort, or --tls <cert>
 // <seed> on defaultTLSPort (both loadable share files). M198b:
 // `--advertise NAME` publishes the share as NAME._http._tcp.local over
-// mDNS while it serves.
+// mDNS while it serves. M209a: `--admin` enables the read-only /admin/
+// section (TLS + the httpd-admin credential still gate every page).
 type config struct {
 	port      uint16
 	tls       bool
 	certPath  string
 	seedPath  string
 	advertise string
+	admin     bool
 }
 
 func parseArgs(args []string) config {
@@ -226,6 +232,10 @@ func parseArgs(args []string) config {
 				cfg.advertise = args[i+1]
 				i++
 			}
+			continue
+		}
+		if args[i] == "--admin" {
+			cfg.admin = true
 			continue
 		}
 		if p, ok := atoiPort(args[i]); ok {
