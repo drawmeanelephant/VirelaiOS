@@ -7,8 +7,11 @@
 # convenience; the verdicts (serial lines + comparisons) are all here.
 
 vgate_name live-net-tx "virtio-net TX: transport + byte-exact host capture"
+vgate_repeat 3 BOOTS
 vgate_note "p1: netsend 32 -> capture == 46-byte known frame"
 vgate_note "p2: netsend 32/32/3000 -> 46+46+1514 layout, frames=3"
+vgate_note "h1 (M206a #3813): --mac 02:00:00:00:00:0a + --net-hub owner, no peer -> capture carries the overridden src MAC; K=3 via vgate_repeat"
+vgate_note "r1 (M206a): --net-hub + --net-vmnet refuses by name; r2: --mac multicast refuses by name"
 
 vgate_file script-1.txt <<'EOF'
 net
@@ -32,10 +35,25 @@ open(rd+"/live-net-tx-fixture.bin","wb").write(fixture)
 big = bytes([0xff]*6) + bytes([0x02,0,0,0,0,1]) + bytes([0x08,0]) + bytes(i & 0xff for i in range(1500))
 assert len(big) == 1514, len(big)
 open(rd+"/live-net-tx-fixture-big.bin","wb").write(big)
+# M206a (#3813): the h1 leg's fixture — the same 46-byte frame with the
+# --mac-overridden source address.
+hub = bytes([0xff]*6) + bytes([0x02,0,0,0,0,0x0a]) + bytes([0x08,0]) + bytes(range(32))
+assert len(hub) == 46, len(hub)
+open(rd+"/live-net-tx-fixture-hub.bin","wb").write(hub)
 PY
 
 vgate_run p1 -- --net '$RUN_DIR/cap-1.bin' --script '$RUN_DIR/script-1.txt' --script-expect net-tx-ok --timeout 40
 vgate_run p2 -- --net '$RUN_DIR/cap-2.bin' --script '$RUN_DIR/script-2.txt' --script-expect net-tx-ok --timeout 40
+# M206a (#3813): one-VM hub leg — this runner binds the hub path (first
+# runner owns the segment switch), no peer attaches, the overridden MAC
+# must land on the wire byte-exact.
+vgate_run h1 -- --net '$RUN_DIR/cap-hub.bin' --mac 02:00:00:00:00:0a --net-hub '$RUN_DIR/nethub.sock' --script '$RUN_DIR/script-1.txt' --script-expect net-tx-ok --timeout 40
+# The named refusals: --net-hub alongside --net-vmnet (one network
+# device), and --mac with a group address — both fail before any boot.
+vgate_run r1 -- --net '$RUN_DIR/cap-r1.bin' --net-hub '$RUN_DIR/nethub-r1.sock' --net-vmnet --timeout 20
+vgate_allow_rc r1 1
+vgate_run r2 -- --net '$RUN_DIR/cap-r2.bin' --mac 01:00:5e:00:00:fb --timeout 20
+vgate_allow_rc r2 1
 
 vgate_assert p1 serial-contains 'net: did=0x0000000000001041 class=0x0000000000020000 dev=1'
 vgate_assert p1 serial-contains 'net: mac=02:00:00:00:00:01 source=feature'
@@ -98,3 +116,34 @@ if not (len(cap) == 1606 and cap[:46] == f1 and cap[46:92] == f1 and cap[92:] ==
     sys.exit("FAIL: p2 capture layout not 46+46+1514 (len=%d)" % len(cap))
 print("p2 capture layout ok: 46+46+1514")
 PY
+
+# M206a (#3813): h1 — the overridden MAC on the wire, the hub owned,
+# the capture byte-exact under --net-hub.
+vgate_assert h1 serial-contains 'net: mac=02:00:00:00:00:0a source=feature'
+vgate_assert h1 serial-contains 'netsend: tx ok'
+vgate_assert h1 serial-contains 'net-tx-ok'
+vgate_assert h1 output-contains 'NET-HUB: bound hub socket'
+vgate_assert h1 python <<'PY'
+import os, sys
+def _v4only(cap):
+    out = bytearray(); i = 0
+    while i < len(cap):
+        et = cap[i+12:i+14]
+        if et == b"\x86\xdd":
+            i += 14 + 40 + ((cap[i+18] << 8) | cap[i+19])
+        elif et == b"\x08\x06":
+            out += cap[i:i+42]; i += 42
+        else:
+            fl = 14 + ((cap[i+16] << 8) | cap[i+17])
+            out += cap[i:i+fl]; i += fl
+    return bytes(out)
+rd = os.environ["RUN_DIR"]
+cap = _v4only(open(rd+"/cap-hub.bin","rb").read())
+want = open(rd+"/live-net-tx-fixture-hub.bin","rb").read()
+if cap != want:
+    sys.exit("FAIL: hub-leg tx capture != --mac fixture (v6-filtered)")
+print("hub-leg tx byte-exact: src 02:00:00:00:00:0a (v6-filtered)")
+PY
+
+vgate_assert r1 output-contains "--net-hub is mutually exclusive with --net-vmnet"
+vgate_assert r2 output-contains "--mac requires a unicast address"

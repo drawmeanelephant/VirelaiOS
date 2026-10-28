@@ -471,7 +471,10 @@ let netTcpCliPort: UInt16 = 12345
 
 let netTcpCliSrcIP: [UInt8] = [10, 0, 0, 2]
 
-let netTcpGuestMAC: [UInt8] = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01]
+// M206a (#3813): a var so --mac can move the guest's MAC off the
+// pinned default — the host-initiated client's frames must carry the
+// address the guest actually owns.
+var netTcpGuestMAC: [UInt8] = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01]
 
 let netTcpGuestSrvIsn: UInt32 = 0x54321098
 

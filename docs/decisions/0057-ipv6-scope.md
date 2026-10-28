@@ -494,3 +494,97 @@ keep these sets serial anyway.
 - **DNS over v6 / AAAA.** Literal-only dialing is scoped; if a real
   need shows up, extending `dns.zig` is a later card against this
   ADR's D8 marshalling seam.
+
+## Amendment A — M206a (#3813): the `--mac` override and the `--net-hub` L2 segment
+
+Date: 2026-10-27. Card: **#3813** (M206 index **#3812**), card 1 of 3.
+Two runner flags that let two VMs share one Ethernet segment without
+restricted entitlements.
+
+### Grounding — the vmnet two-runner measurement (observed, this host, macOS 27.2)
+
+Two runners were started with `--net-vmnet --net-vmnet-subnet
+192.168.80.0/24` (distinct `--mac` each). **Observed:**
+
+- While the first runner held the network, the second's
+  `vmnet_network_create` returned `VMNET_FAILURE` (1001) on **three
+  consecutive attempts** — the second runner cannot even create a
+  network on the same /24, let alone exchange frames.
+- With the first runner exited, the same second-runner invocation
+  succeeded on the same /24.
+- A lone runner's ARP requests for a peer on its vmnet network go
+  unanswered (`arp: req=2,repl=0,learn=0`, `entries=0`).
+
+Two runners therefore **cannot** share an L2 segment via
+`--net-vmnet` at all on this host — the daemon refuses the second
+create, not merely the traffic. This is the measurement the card
+required; it is not a gate path.
+
+### D14. `--mac <addr>` — the guest-MAC override
+
+`--mac` replaces the pinned guest MAC `02:00:00:00:00:01` on **any**
+network attachment (`--net`, `--net-hub`, `--net-nat`, `--net-bridged`,
+`--net-vmnet`). The guest reads it through `VIRTIO_NET_F_MAC`
+(`kernel/src/virtio_net.zig:510`), so no guest-side change exists —
+`net: mac=<addr> source=feature` reports the override. Only a
+**locally administered unicast** address is accepted: a malformed
+string, a multicast/group address (dst[0] bit0 — broadcast included),
+or a universally administered address (u/l bit clear) each `fail()`s
+naming the shape. `--mac` with no attachment refuses by name. The
+host-initiated `--net-tcp-connect` client's dst MAC follows the
+override; every request-driven responder already derives dst from the
+guest's observed src. Default unchanged.
+
+### D15. `--net-hub <path>` — the first-runner-binds learning switch
+
+The first runner to bind the UNIX datagram socket `<path>` **owns the
+hub in-process**: a learning switch (`NetHubSwitch`, bounded 16-entry
+MAC table, drop-oldest — the `arp.zig` shape). Each guest TX datagram
+is relayed to the hub; hub deliveries are written into the runner's
+end of the **same** `--net` attachment socketpair (VZ reads `fds[0]`,
+so the guest receives them). The `--net <capture>` stays byte-exact:
+the capture file holds only the guest→host direction, hub frames
+travel the host→guest direction and never touch it.
+
+- **Learning:** src-MAC → sender sockaddr, learned on ingress. A port
+  that has never transmitted is unreachable — honest learning-switch
+  semantics.
+- **Forward:** known unicast → that port only; a unicast resolving to
+  the sender's own port is dropped (drop-to-self).
+- **Flood:** broadcast and every multicast (dst[0] bit0 —
+  `01:00:5e:00:00:fb` and `33:33:00:00:00:fb` ride it, no
+  special-casing) plus unknown unicasts → every learned port except
+  the sender.
+- **Clients:** a later runner binds `<path>.cli-<pid>` and `sendto`s
+  the hub path; everything on its socket is a hub delivery.
+- **Stale sockets** (a killed owner leaves the file): `connect()`
+  refuses `ECONNREFUSED` on a stale UNIX datagram path but succeeds on
+  a live one — **observed** on macOS 27.2 — so attach unlinks and
+  retakes instead of silently joining a dead segment. The owner also
+  unlinks at exit.
+- **Refusals:** `--net-hub` requires `--net`; it is mutually exclusive
+  by name with `--net-nat`, `--net-bridged`, and `--net-vmnet` (the
+  one-device bound stands) and with `--net-dhcp-respond` (D16).
+
+### D16. Addressing on the segment: the hub owns DHCP
+
+The hub-side DHCP responder — the claimant's choice, pinned here —
+reuses the `--net-dhcp-respond` machinery (`isDhcpDatagram`,
+`dhcpMessageType`, `buildDhcpReply`): every DHCP client message on
+the segment is answered with **one lease per source MAC** out of the
+bounded pool `10.0.0.16`–`10.0.0.31` (16 entries, drop-oldest; the
+gateway stays `10.0.0.1`, mask `255.255.255.0`, lease `3600`), so two
+guests `net dhcp` into distinct deterministic leases. The reply goes
+back to the requester's port only. Because the hub is the segment's
+DHCP server, `--net-dhcp-respond` refuses by name under `--net-hub` —
+two servers answering one broadcast is the failure mode the refusal
+prevents.
+
+### Non-goals added
+
+| Non-goal | Where it stands |
+|---|---|
+| Two-VM proof on the hub | M206b — this card's gate is the one-VM `--mac`/`--net-hub` leg plus unit tests |
+| vmnet as a two-guest path | Measured and refused by the daemon (Grounding above) — `vmnet` stays a single-guest attachment |
+| A hub outside a runner | First-runner-binds is the design: no separate host tool, no new target; a dead owner's socket heals on the next attach |
+| Fixed guest addresses | Rejected — the hub DHCP gives distinct deterministic leases per MAC with no per-runner coordination |
