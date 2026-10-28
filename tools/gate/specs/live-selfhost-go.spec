@@ -176,7 +176,7 @@ vgate_assert 02 serial-absent 'cannot allocate memory'
 
 # ---------------------------------------------------------------------------
 # M112a (#2413) run 03 — the fleet leg. One boot, one driver run: the pinned
-# 19-row list, per-ELF named refusals (never a silently widened allowlist),
+# fleet list, per-ELF named refusals (never a silently widened allowlist),
 # the FLEET.MF manifest on the share, and a bounded smoke exec per product.
 # wm=none keeps every EL0 task slot free for toolchain children.
 
@@ -214,14 +214,19 @@ shutil.copy("user/go/gobuild/fleet.txt", os.path.join(share, "FLEET.TXT"))
 open(os.path.join(share, "SETTINGS.TXT"), "w").write("#v2\nwm=none\n")
 
 # --- the pinned fleet rows --------------------------------------------------
+# The count is derived, never typed (M207a): a fleet row addition edits
+# fleet.txt, not this spec. What stays pinned is the refusal table — every
+# table name must be a row, so a dropped refusal row is caught here.
 rows = []
 for line in open("user/go/gobuild/fleet.txt"):
     line = line.strip()
     if line and not line.startswith("#"):
         name, src = line.split()
         rows.append((name, src))
-if len(rows) != 19:
-    sys.exit("fleet.txt pins %d rows, expected 19" % len(rows))
+want_refused = {"GOSTALGIA.ELF", "GOFILES.ELF", "PULSE.ELF", "GOHELP.ELF", "WEB.ELF"}
+missing = want_refused - {n for n, _ in rows}
+if missing:
+    sys.exit("fleet.txt dropped pinned refusal rows: %s" % sorted(missing))
 
 # --- host-built reference ELFs -> REF/ (the manifest's host= column) --------
 os.makedirs(os.path.join(share, "REF"), exist_ok=True)
@@ -241,6 +246,7 @@ print("staged %d host reference ELFs under REF/" % n_ref)
 # untouched and the manifest's src= column covers them.
 MODVER = {
     "charm.land/bubbletea/v2": "v2.0.9",
+    "charm.land/lipgloss/v2": "v2.0.6",
     "github.com/aymanbagabas/go-osc52/v2": "v2.0.1",
     "github.com/charmbracelet/colorprofile": "v0.4.3",
     "github.com/charmbracelet/lipgloss": "v1.1.0",
@@ -514,7 +520,7 @@ vgate_assert 03 serial-contains 'fleet: GOCALC.ELF built sha256='
 vgate_assert 03 serial-contains 'fleet: NOTE.ELF built sha256='
 vgate_assert 03 serial-contains 'fleet: GOEDIT.ELF built sha256='
 vgate_assert 03 serial-contains 'fleet: GOTERM.ELF built sha256='
-vgate_assert 03 serial-contains 'fleet: WEB.ELF built sha256='
+vgate_assert 03 serial-contains 'fleet: WEB.ELF refused dep_unsupported'
 vgate_assert 03 serial-contains 'fleet: GOSH.ELF built sha256='
 vgate_assert 03 serial-contains 'fleet: GOTOP.ELF built sha256='
 vgate_assert 03 serial-contains 'fleet: GOSET.ELF built sha256='
@@ -532,7 +538,20 @@ vgate_assert 03 serial-contains 'fleet: GOSTALGIA.ELF refused external_tree'
 vgate_assert 03 serial-contains 'fleet: smoke GOCALC.ELF'
 vgate_assert 03 serial-contains 'fleet: smoke GOBUILD.ELF'
 vgate_assert 03 serial-contains 'fleet: manifest -> /host/FLEET.MF'
-vgate_assert 03 serial-contains 'fleet: fleet OK built=15 refused=4'
+# The OK line's counts are derived (M207a): built = fleet.txt rows minus
+# the pinned refusal table. serial-contains takes fixed strings only, so
+# the expected line is computed here instead.
+vgate_assert 03 python <<'PY'
+import os, sys
+ser = open(os.environ["VG_SER"], errors="replace").read()
+rows = [l.split()[0] for l in open("user/go/gobuild/fleet.txt")
+        if l.strip() and not l.startswith("#")]
+refused = {"GOSTALGIA.ELF", "GOFILES.ELF", "PULSE.ELF", "GOHELP.ELF", "WEB.ELF"}
+want = "fleet: fleet OK built=%d refused=%d" % (
+    len(rows) - len(refused), len(refused))
+if want not in ser:
+    sys.exit("FAIL: serial lacks %r" % want)
+PY
 vgate_assert 03 serial-absent 'fleet: fleet INCOMPLETE'
 vgate_assert 03 serial-absent '[EXC] parking:'
 vgate_assert 03 serial-absent 'cannot allocate memory'
@@ -552,8 +571,11 @@ mf = os.path.join(share, "FLEET.MF")
 if not os.path.exists(mf):
     sys.exit("FAIL: no FLEET.MF on the share")
 lines = [l for l in open(mf).read().splitlines() if l and not l.startswith("#")]
-if len(lines) != 19:
-    sys.exit("FAIL: FLEET.MF has %d rows, want 19" % len(lines))
+fleet = [l.split()[0] for l in open("user/go/gobuild/fleet.txt")
+         if l.strip() and not l.startswith("#")]
+if len(lines) != len(fleet):
+    sys.exit("FAIL: FLEET.MF has %d rows, fleet.txt pins %d"
+             % (len(lines), len(fleet)))
 
 built, refused, failed = [], [], []
 for line in lines:
@@ -586,17 +608,14 @@ for line in lines:
     else:
         failed.append(name)
 
-# The pinned list says exactly which of the 19 build; a drift either way is
-# a spec-level finding, not a shrug. GOFILES/PULSE/GOHELP refuse
+# The fleet minus the pinned refusal table is what builds; a drift either
+# way is a spec-level finding, not a shrug. GOFILES/PULSE/GOHELP refuse
 # dep_unsupported: their closure needs image/color, which M107b's table
 # deliberately does not stage (the card's "never silently widen" means the
 # refusal is the answer, not a wider allowlist). GOSTALGIA's sources are a
 # host-side pin — external_tree.
-want_built = {"GOCALC.ELF", "NOTE.ELF", "GOEDIT.ELF", "GOTERM.ELF",
-              "WEB.ELF", "GOSH.ELF", "GOTOP.ELF", "GOSET.ELF", "GODIFF.ELF",
-              "GOVIEW.ELF", "GOSOUND.ELF", "FLINT.ELF", "STORE.ELF",
-              "AGENTD.ELF", "GOBUILD.ELF"}
-want_refused = {"GOSTALGIA.ELF", "GOFILES.ELF", "PULSE.ELF", "GOHELP.ELF"}
+want_refused = {"GOSTALGIA.ELF", "GOFILES.ELF", "PULSE.ELF", "GOHELP.ELF", "WEB.ELF"}
+want_built = set(fleet) - want_refused
 if set(built) != want_built:
     sys.exit("FAIL: built set drifted: missing=%s extra=%s"
              % (sorted(want_built - set(built)), sorted(set(built) - want_built)))

@@ -27,6 +27,7 @@ import (
 // fleetModVer mirrors the spec's pinned module set: module path -> version.
 var fleetModVer = map[string]string{
 	"charm.land/bubbletea/v2":               "v2.0.9",
+	"charm.land/lipgloss/v2":                "v2.0.6",
 	"github.com/aymanbagabas/go-osc52/v2":   "v2.0.1",
 	"github.com/charmbracelet/colorprofile": "v0.4.3",
 	"github.com/charmbracelet/lipgloss":     "v1.1.0",
@@ -287,11 +288,22 @@ func TestFleetRealTreeEndToEnd(t *testing.T) {
 	if rc != 0 {
 		t.Fatalf("fleet rehearsal rc=%d\nmanifest:\n%s", rc, mfb)
 	}
-	// The card's bar on the host twin: 15 build end to end; GOSTALGIA
-	// refuses external_tree (host-pinned sources), and the three Charm apps
-	// refuse on out-of-allowlist deps — image/color is deliberately
-	// unstaged in tools/go/pkg-table.txt and the card's "never silently
-	// widen" makes the named refusal the answer, not a wider allowlist.
+	// The card's bar on the host twin: every fleet row that is not a
+	// pinned refusal builds end to end. The refusals are pinned by name —
+	// GOSTALGIA refuses external_tree (host-pinned sources) and the three
+	// Charm apps refuse on out-of-allowlist deps: image/color is
+	// deliberately unstaged in tools/go/pkg-table.txt and the card's
+	// "never silently widen" makes the named refusal the answer, not a
+	// wider allowlist. WEB's in-guest dep_unsupported on hash/crc32
+	// (virelai/webrender's PNG encoder, M162b) is pinned in the specs'
+	// refusal tables, NOT here: the rehearsal's go-list export archives
+	// resolve it on the host — only the guest lacks the staged archive.
+	wantRefused := map[string]string{
+		"GOSTALGIA.ELF": "external_tree",
+		"GOFILES.ELF":   "dep_unsupported", // image/color: unstaged, by policy
+		"PULSE.ELF":     "dep_unsupported",
+		"GOHELP.ELF":    "dep_unsupported",
+	}
 	var builtN int
 	refused := map[string]string{}
 	for _, l := range strings.Split(string(mfb), "\n") {
@@ -312,14 +324,9 @@ func TestFleetRealTreeEndToEnd(t *testing.T) {
 			refused[f[0]] = code
 		}
 	}
-	if builtN != 15 {
-		t.Fatalf("rehearsal built=%d, want 15\n%s", builtN, mfb)
-	}
-	wantRefused := map[string]string{
-		"GOSTALGIA.ELF": "external_tree",
-		"GOFILES.ELF":   "dep_unsupported", // image/color: unstaged, by policy
-		"PULSE.ELF":     "dep_unsupported",
-		"GOHELP.ELF":    "dep_unsupported",
+	if want := len(rows) - len(wantRefused); builtN != want {
+		t.Fatalf("rehearsal built=%d, want %d (fleet rows minus pinned "+
+			"refusals)\n%s", builtN, want, mfb)
 	}
 	if len(refused) != len(wantRefused) {
 		t.Fatalf("refusals = %v, want %v\n%s", refused, wantRefused, mfb)

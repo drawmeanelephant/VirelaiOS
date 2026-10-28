@@ -137,8 +137,13 @@ for line in open("user/go/gobuild/fleet.txt"):
     if line and not line.startswith("#"):
         name, src = line.split()
         rows.append((name, src))
-if len(rows) != 19:
-    sys.exit("fleet.txt pins %d rows, expected 19" % len(rows))
+# The count is derived, never typed (M207a): a fleet row addition edits
+# fleet.txt, not this spec. What stays pinned is the refusal table —
+# every table name must be a row.
+want_refused = {"GOSTALGIA.ELF", "GOFILES.ELF", "PULSE.ELF", "GOHELP.ELF", "WEB.ELF"}
+missing = want_refused - {n for n, _ in rows}
+if missing:
+    sys.exit("fleet.txt dropped pinned refusal rows: %s" % sorted(missing))
 os.makedirs(os.path.join(share, "REF"), exist_ok=True)
 n_ref = 0
 for name, _ in rows:
@@ -154,6 +159,7 @@ print("staged %d host reference ELFs under REF/" % n_ref)
 # declare (THIRD-PARTY.txt) — under their import path, minus the @version.
 MODVER = {
     "charm.land/bubbletea/v2": "v2.0.9",
+    "charm.land/lipgloss/v2": "v2.0.6",
     "github.com/aymanbagabas/go-osc52/v2": "v2.0.1",
     "github.com/charmbracelet/colorprofile": "v0.4.3",
     "github.com/charmbracelet/lipgloss": "v1.1.0",
@@ -421,7 +427,7 @@ vgate_assert 01 serial-contains 'fleet: GOCALC.ELF built sha256='
 vgate_assert 01 serial-contains 'fleet: NOTE.ELF built sha256='
 vgate_assert 01 serial-contains 'fleet: GOEDIT.ELF built sha256='
 vgate_assert 01 serial-contains 'fleet: GOTERM.ELF built sha256='
-vgate_assert 01 serial-contains 'fleet: WEB.ELF built sha256='
+vgate_assert 01 serial-contains 'fleet: WEB.ELF refused dep_unsupported'
 vgate_assert 01 serial-contains 'fleet: GOSH.ELF built sha256='
 vgate_assert 01 serial-contains 'fleet: GOTOP.ELF built sha256='
 vgate_assert 01 serial-contains 'fleet: GOSET.ELF built sha256='
@@ -440,7 +446,20 @@ vgate_assert 01 serial-contains 'fleet: PULSE.ELF refused dep_unsupported'
 vgate_assert 01 serial-contains 'fleet: GOHELP.ELF refused dep_unsupported'
 vgate_assert 01 serial-contains 'fleet: GOSTALGIA.ELF refused external_tree'
 vgate_assert 01 serial-contains 'fleet: STORE.ELF built sha256='
-vgate_assert 01 serial-contains 'fleet: fleet OK built=15 refused=4'
+# The OK line's counts are derived (M207a): built = fleet.txt rows minus
+# the pinned refusal table. serial-contains takes fixed strings only, so
+# the expected line is computed here instead.
+vgate_assert 01 python <<'PY'
+import os, sys
+ser = open(os.environ["VG_SER"], errors="replace").read()
+rows = [l.split()[0] for l in open("user/go/gobuild/fleet.txt")
+        if l.strip() and not l.startswith("#")]
+refused = {"GOSTALGIA.ELF", "GOFILES.ELF", "PULSE.ELF", "GOHELP.ELF", "WEB.ELF"}
+want = "fleet: fleet OK built=%d refused=%d" % (
+    len(rows) - len(refused), len(refused))
+if want not in ser:
+    sys.exit("FAIL: serial lacks %r" % want)
+PY
 vgate_assert 01 serial-absent 'fleet: fleet INCOMPLETE'
 vgate_assert 01 serial-absent 'release: FAIL'
 vgate_assert 01 serial-absent '[EXC] parking:'
@@ -457,7 +476,19 @@ vgate_assert 02 serial-contains 'VirelaiOS kernel has seized control.'
 vgate_assert 02 serial-contains 'exec: loaded GORELEASE.ELF'
 vgate_assert 02 serial-contains 'release: inputs BOOTAA64.EFI sha256='
 vgate_assert 02 serial-contains 'release: inputs KERNEL.BIN sha256='
-vgate_assert 02 serial-contains 'release: fleet built=15 refused=4'
+# Same derivation as run 01's fleet OK line, on the release driver's own
+# report.
+vgate_assert 02 python <<'PY'
+import os, sys
+ser = open(os.environ["VG_SER"], errors="replace").read()
+rows = [l.split()[0] for l in open("user/go/gobuild/fleet.txt")
+        if l.strip() and not l.startswith("#")]
+refused = {"GOSTALGIA.ELF", "GOFILES.ELF", "PULSE.ELF", "GOHELP.ELF", "WEB.ELF"}
+want = "release: fleet built=%d refused=%d" % (
+    len(rows) - len(refused), len(refused))
+if want not in ser:
+    sys.exit("FAIL: serial lacks %r" % want)
+PY
 vgate_assert 02 serial-contains 'release: bundle '
 vgate_assert 02 serial-contains 'release: image RELEASE.IMG bytes='
 vgate_assert 02 serial-contains 'release: manifest RELEASE.MF rows='

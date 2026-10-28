@@ -1,9 +1,12 @@
 # fleet.txt -- M112a (#2413): the pinned fleet GOBUILD builds in-guest.
 #
-# The fleet is pinned, not discovered: the fifteen `.ELF` rows of
-# image/apps.txt (ZC.BIN and TABWM.BIN are Zig, out of scope) plus the four
-# Go ELFs that are not apps.txt rows — FLINT, STORE, AGENTD and GOBUILD
-# itself. image/apps.txt is not edited and does not name this list.
+# The fleet is pinned, not discovered: the fourteen `.ELF` rows of
+# image/apps.txt the drift test does not hold pending (ZC.BIN and
+# TABWM.BIN are Zig, out of scope) plus the five Go ELFs that are not
+# apps.txt rows — GODIFF, FLINT, STORE, AGENTD and GOBUILD itself.
+# image/apps.txt is not edited and does not name this list; apps.txt rows
+# awaiting their M207 card are pending in fleet_drift_test.go, not rows
+# here.
 #
 # Format: <NAME.ELF> <source dir under the fleet root> — the driver's
 # /host/SRC/<dir> must hold a `package main`. `external:<what>` marks a row
