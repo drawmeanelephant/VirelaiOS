@@ -177,7 +177,7 @@ func TestConvCodecRoundTrip(t *testing.T) {
 
 func TestConvCodecRefuses(t *testing.T) {
 	cases := map[string]string{
-		"bad magic":  "GOASSIST-CHAT v3\n@@user\nhi\n",
+		"bad magic":  "GOASSIST-CHAT v4\n@@user\nhi\n",
 		"bad role":   "GOASSIST-CHAT v1\n@@system\nhi\n",
 		"empty role": "GOASSIST-CHAT v1\n@@\nhi\n",
 		"body first": "GOASSIST-CHAT v1\nhi\n@@user\nx\n",
