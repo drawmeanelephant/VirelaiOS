@@ -35,13 +35,32 @@ type measurer func(kind rlineKind, s string) int
 // renderConv rebuilds the display lines for c at pane width px. User
 // turns carry the "you>" prefix; assistant text wraps on words; a line
 // beginning with ``` toggles the code kind (fences themselves are not
-// painted).
+// painted). Act records paint as their own lines — "call> proc.list",
+// "consent> deny", "result> refuse:denied" — muted headers with the
+// args/output body in the code face, distinct from chat turns.
 func renderConv(c *conversation, px int, m measurer) []rline {
 	if px < 40 {
 		px = 40
 	}
 	var out []rline
 	for _, t := range c.turns {
+		switch t.role {
+		case roleCall, roleResult:
+			head := "call> "
+			if t.role == roleResult {
+				head = "result> "
+			}
+			out = appendWrapped(out, head+t.arg, rlMeta, px, m)
+			if t.text != "" {
+				for _, ln := range strings.Split(t.text, "\n") {
+					out = appendWrapped(out, ln, rlCode, px, m)
+				}
+			}
+			continue
+		case roleConsent:
+			out = appendWrapped(out, "consent> "+t.arg, rlMeta, px, m)
+			continue
+		}
 		kind := rlModel
 		prefix := ""
 		switch t.role {
