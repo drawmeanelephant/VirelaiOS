@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strings"
 
+	"virelai/agentverbs"
 	"virelai/appkit"
 	uidraw "virelai/draw"
 	"virelai/gpu3d"
@@ -116,11 +117,18 @@ type view struct {
 
 	// Modal state: the picker owns input while non-nil (a new conversation
 	// choosing its preset), the dialog while open (rename prompt, delete
-	// confirm). Only one is ever up.
+	// confirm, act consent). Only one is ever up.
 	pick        *presetPick
 	dlg         *appkit.Dialog
 	dlgName     string // the conversation the open dialog acts on
 	pendingSend string // send text parked behind the preset picker
+
+	// The act loop (M205c): act is the call parked behind an open consent
+	// dialog — non-nil also marks WHICH dialog is the consent — and verbs
+	// is the in-process dispatcher built on first use against this boot's
+	// store dir.
+	act   *pendingAct
+	verbs *agentverbs.Dispatcher
 
 	busy     bool       // a generation is streaming
 	genIds   []int      // ids produced by the in-flight answer
@@ -402,6 +410,18 @@ func (v *view) sendText(text string) {
 	v.scroll = v.maxScroll()
 	v.repaint()
 
+	// The stub persona's deterministic driver (M205c): a preset's @@system
+	// turn carrying `@emit <text>` makes the emitted tail the answer — the
+	// gate's fixed call lands without spending a compute session.
+	if fixed, ok := v.emittedAnswer(); ok {
+		v.busy = false
+		v.cur.turns = append(v.cur.turns, turn{role: roleModel, text: fixed})
+		v.h.ConsoleLine(markerEmit)
+		v.actPass()
+		v.finishSend()
+		return
+	}
+
 	if err := v.eng.ensure(v.h); err != nil {
 		v.busy = false
 		switch {
@@ -436,8 +456,23 @@ func (v *view) sendText(text string) {
 		v.note("(generate failed: " + errName(err) + ")")
 	default:
 		v.h.ConsoleLine(markerAnswer + is(len(ids)) + " ids=" + idlist(ids))
+		v.actPass()
 	}
-	v.status = "ready"
+	v.finishSend()
+}
+
+// finishSend is sendText's shared tail: the turn — and any act records
+// actPass spawned — commits crash-safe. A standing consent dialog keeps
+// its own status line until the answer lands (consentResolve re-enters
+// here); the rewrap keeps emitted answers and act records painted.
+func (v *view) finishSend() {
+	if v.act == nil {
+		v.status = "ready"
+	}
+	v.rewrap()
+	if v.follow {
+		v.scroll = v.maxScroll()
+	}
 	v.saveConv()
 	v.postState()
 	v.h.ConsoleLine(markerCommit + v.cur.name)
@@ -619,10 +654,17 @@ func (v *view) askDelete(name string) {
 }
 
 // applyDialog lands a closed dialog's result. PromptDialog is the rename;
-// ConfirmDialog the delete. A cancelled dialog changes nothing.
+// ConfirmDialog the delete — or the act consent whenever a call is
+// parked (one dialog is ever up, so a parked act can only be waiting on
+// this one). A cancelled dialog changes nothing; a cancelled consent is
+// the deny.
 func (v *view) applyDialog() {
 	d := v.dlg
 	v.dlg = nil
+	if v.act != nil {
+		v.consentResolve(d.Result == "Yes")
+		return
+	}
 	name := v.dlgName
 	switch d.Kind {
 	case appkit.PromptDialog:
