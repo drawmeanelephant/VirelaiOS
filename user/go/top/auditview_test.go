@@ -11,8 +11,11 @@ import (
 	"virelai/vi"
 )
 
-// agentTestKey is the lane key the fixtures are signed with.
+// agentTestKey is the lane key the fixtures are signed with;
+// assistTestKey signs the M205d assist lane's fixtures under the
+// second row GOTOP also reads.
 var agentTestKey = []byte("a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5")
+var assistTestKey = []byte("b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5")
 
 // rcptBody renders a staged receipt file: line 1 verbatim plus the MAC the
 // writer would have emitted under key (or a forged one when forge=true).
@@ -34,23 +37,35 @@ func rcptBody(key []byte, line1 string, forge bool) []byte {
 }
 
 // fakeAgentLane installs the view's seams over an in-memory share: files
-// maps "/host/AGENT/AUDIT/<name>" to bodies; listed=false makes the
-// directory read fail like a missing lane.
+// maps "/host/AGENT/AUDIT/<name>" (and "/host/ASSIST/AUDIT/<name>" for
+// the M205d lane) to bodies; listed=false makes the agent lane's read
+// fail like a missing lane, and the assist lane lists only when the
+// map carries its files. The assist key is served unless a test
+// overrides agentKeyFn itself.
 func fakeAgentLane(t *testing.T, files map[string][]byte, key []byte, listed bool) {
 	t.Helper()
 	prevL, prevR, prevK, prevD := agentListFn, agentReadFn, agentKeyFn, agentDenialsFn
 	agentListFn = func(dir string) ([]vi.DirItem, error) {
-		if dir != agentCanon {
+		var pfx string
+		switch dir {
+		case agentCanon:
+			if !listed {
+				return nil, vi.ErrPeerGone
+			}
+			pfx = agentHostDir
+		case assistCanon:
+			pfx = assistHostDir
+		default:
 			t.Fatalf("ListDirAt(%q)", dir)
-		}
-		if !listed {
-			return nil, vi.ErrPeerGone
 		}
 		var items []vi.DirItem
 		for p := range files {
-			if strings.HasPrefix(p, agentHostDir) {
-				items = append(items, vi.DirItem{Name: p[len(agentHostDir):]})
+			if strings.HasPrefix(p, pfx) {
+				items = append(items, vi.DirItem{Name: p[len(pfx):]})
 			}
+		}
+		if dir == assistCanon && len(items) == 0 {
+			return nil, vi.ErrPeerGone // no staged lane reads as a missing lane
 		}
 		return items, nil
 	}
@@ -65,10 +80,16 @@ func fakeAgentLane(t *testing.T, files map[string][]byte, key []byte, listed boo
 		return append([]byte(nil), b...), int64(len(b))
 	}
 	agentKeyFn = func(name string, out []byte) int {
-		if name != agentSecret || key == nil {
-			return -1
+		switch name {
+		case agentSecret:
+			if key == nil {
+				return -1
+			}
+			return copy(out, key)
+		case assistSecret:
+			return copy(out, assistTestKey)
 		}
-		return copy(out, key)
+		return -1
 	}
 	// The ring defaults to the unprivileged answer: slot 89's gate is the
 	// seat / CAP_PROC_ADMIN, so a plain GOTOP reads -EACCES. Tests that
@@ -140,7 +161,7 @@ func TestAgentViewRendersReceipts(t *testing.T) {
 		t.Fatalf("marker = %q", m)
 	}
 	rm, ok := v.RowMarker(3)
-	if !ok || rm != "top: agent rcpt agent=viewer verb=fs.read result=cap_required:file mark=v" {
+	if !ok || rm != "top: agent rcpt lane=agent agent=viewer verb=fs.read result=cap_required:file mark=v" {
 		t.Fatalf("row marker = %q ok=%v", rm, ok)
 	}
 	text := strings.Join(v.Lines(), "\n")
@@ -154,6 +175,109 @@ func TestAgentViewRendersReceipts(t *testing.T) {
 	}
 	if !strings.Contains(text, "rm -rf /") {
 		t.Fatalf("cmd arg summary missing:\n%s", text)
+	}
+}
+
+// --- M205d (#3811): the second lane -------------------------------------------
+
+// assistRcptLine renders an assist-lane receipt line 1: the agentd
+// shape plus the caller field GOASSIST writes.
+func assistRcptLine(seq, agent, caller, verb, args, result string) string {
+	return `{"seq":` + seq + `,"epoch":"10111213","agent":"` + agent +
+		`","caller":"` + caller + `","verb":"` + verb + `","args":` + args +
+		`,"ts":1761234567,"mono":42,"result":"` + result + `"}`
+}
+
+// The second lane reads beside the first: the assist receipts verify
+// under assist-hmac (never agent-hmac), each row names its lane and its
+// caller, and a one-byte tamper marks forged like any other planting.
+func TestAgentViewAssistLane(t *testing.T) {
+	tampered := assistRcptLine("2", "C0001", "GOASSIST.ELF", "proc.list", `{}`, "ok")
+	tampered = tampered[:20] + "X" + tampered[21:] // one-byte edit, MAC intact
+	files := map[string][]byte{
+		agentHostDir + "RCPT-01020304-00000001": rcptBody(agentTestKey,
+			rcptLine("1", "-", "session", `{"event":"open"}`, "ok"), false),
+		assistHostDir + "RCPT-10111213-00000001": rcptBody(assistTestKey,
+			assistRcptLine("1", "C0001", "GOASSIST.ELF", "proc.list", `{}`, "ok"), false),
+		assistHostDir + "RCPT-10111213-00000002": rcptBody(assistTestKey, tampered, false),
+		assistHostDir + "NOISE.TXT":              []byte("x\n"),
+	}
+	fakeAgentLane(t, files, agentTestKey, true)
+	v := NewAgentView()
+	v.Refresh()
+	if !v.alisted || len(v.arows) != 2 {
+		t.Fatalf("assist lane: listed=%v rows=%d", v.alisted, len(v.arows))
+	}
+	// Newest first: the tampered seq-2 receipt leads, seq-1 verifies.
+	if v.arows[0].mark != markForged || v.arows[1].mark != markVerified {
+		t.Fatalf("assist marks = %c %c", v.arows[0].mark, v.arows[1].mark)
+	}
+	if v.anVerif != 1 || v.anBad != 1 {
+		t.Fatalf("assist verdicts = %d/%d", v.anVerif, v.anBad)
+	}
+	// The assist lane's own key, not agent-hmac: a body MAC'd under the
+	// agent key would be forged here, and these verify.
+	m := v.Marker()
+	if !strings.Contains(m, "assist n=2 verified=1 bad=1 akey=yes") {
+		t.Fatalf("marker = %q", m)
+	}
+	rm, ok := v.RowMarker(1) // row 0 is the agent lane's
+	if !ok || !strings.Contains(rm, "lane=assist") || !strings.Contains(rm, "mark=!") {
+		t.Fatalf("tampered assist row marker = %q ok=%v", rm, ok)
+	}
+	rm, ok = v.RowMarker(2)
+	if !ok || rm != "top: agent rcpt lane=assist agent=C0001 caller=GOASSIST.ELF verb=proc.list result=ok mark=v" {
+		t.Fatalf("assist row marker = %q ok=%v", rm, ok)
+	}
+	text := strings.Join(v.Lines(), "\n")
+	for _, want := range []string{"assist lane", "assist C0001", "user"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("lines missing %q:\n%s", want, text)
+		}
+	}
+	// The principal filter groups assist rows with the user's activity:
+	// filter=agent hides them, filter=user keeps them.
+	v.CycleFilter() // user
+	if rm, ok = v.RowMarker(0); !ok || !strings.Contains(rm, "lane=assist") {
+		t.Fatalf("user filter row0 = %q ok=%v", rm, ok)
+	}
+	v.CycleFilter() // agent
+	if rm, ok = v.RowMarker(0); !ok || !strings.Contains(rm, "lane=agent") {
+		t.Fatalf("agent filter row0 = %q ok=%v", rm, ok)
+	}
+	if _, ok = v.RowMarker(1); ok {
+		t.Fatal("agent filter must hide the assist rows")
+	}
+}
+
+// An unserved assist-hmac row downgrades the assist marks to '?' — the
+// agent lane's verdicts are untouched (each key stands alone).
+func TestAgentViewAssistNoKey(t *testing.T) {
+	files := map[string][]byte{
+		agentHostDir + "RCPT-01020304-00000001": rcptBody(agentTestKey,
+			rcptLine("1", "devin", "proc.list", `{}`, "ok"), false),
+		assistHostDir + "RCPT-10111213-00000001": rcptBody(assistTestKey,
+			assistRcptLine("1", "C0001", "GOASSIST.ELF", "proc.list", `{}`, "ok"), false),
+	}
+	fakeAgentLane(t, files, agentTestKey, true)
+	prev := agentKeyFn
+	agentKeyFn = func(name string, out []byte) int {
+		if name == agentSecret {
+			return copy(out, agentTestKey)
+		}
+		return -1
+	}
+	t.Cleanup(func() { agentKeyFn = prev })
+	v := NewAgentView()
+	v.Refresh()
+	if len(v.arows) != 1 || v.arows[0].mark != markUnknownKey {
+		t.Fatalf("assist rows = %+v", v.arows)
+	}
+	if v.rows[0].mark != markVerified {
+		t.Fatalf("agent row = %+v", v.rows[0])
+	}
+	if !strings.Contains(v.Marker(), "akey=no") {
+		t.Fatalf("marker = %q", v.Marker())
 	}
 }
 

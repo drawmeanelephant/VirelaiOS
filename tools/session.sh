@@ -621,6 +621,12 @@ printf '%s\n' "$clock_secs" > "$SHARE/.clock"
 #               since M173d (#3159): uid_agent for AGENTD.ELF, uid_user
 #               for GOTOP.ELF's receipt verification (the sys_secret_get
 #               uid scope, the live-hostint.spec split).
+#   assist-hmac GOASSIST's receipt key (M205d #3811, ADR 0052 amendment)
+#               — ONE row on a two-app allowlist, uid_user for
+#               GOASSIST.ELF and GOTOP.ELF. Not the M173d two-row split:
+#               the kernel store dedupes on (name,uid), so a second
+#               uid-1000 row would overwrite this row's binding and
+#               GOASSIST would never be served. AGENTD never holds it.
 #   host-int    the M108 lanes' VHI1 HMAC key, bound to GOTABWM.ELF
 #               (M114c, ADR 0051) — provisioned only under --host-int.
 # Every bound row also needs its app named uid_system-owned in OWNERS.TXT
@@ -702,9 +708,13 @@ ensure_secret os-update 1000 GOUPD.ELF
 ensure_secret_uid agent-hmac 2000 AGENTD.ELF
 ensure_secret agent-hmac 2000 AGENTD.ELF
 ensure_secret_uid agent-hmac 1000 GOTOP.ELF
+# M205d (#3811): GOASSIST's receipt lane keys under its own credential —
+# the channel's agent-hmac row stays AGENTD's alone (ADR 0044).
+ensure_secret assist-hmac 1000 GOASSIST.ELF,GOTOP.ELF
 ensure_owner GOUPD.ELF
 ensure_owner GOTOP.ELF
 ensure_owner AGENTD.ELF
+ensure_owner GOASSIST.ELF
 if [ "$HOST_INT" = "1" ]; then
     ensure_secret host-int 1000 GOTABWM.ELF
     ensure_owner GOTABWM.ELF

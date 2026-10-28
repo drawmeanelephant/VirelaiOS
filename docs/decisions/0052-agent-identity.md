@@ -568,3 +568,42 @@ implementation of a verb.
   receipt lane in this card; `uid_agent` is untouched. The
   deterministic driver — a preset `@@system` turn carrying
   `@emit <text>` — is a stub-persona test hook, not a capability.
+
+## Amendment (2026-10-28, card #3811 / index #3807): the GOASSIST receipt lane
+
+Card d of M205 closes the loop card c opened: every act GOASSIST
+resolves leaves a verifiable receipt in a lane the channel's daemon
+never holds.
+
+- **The lane.** `<store>/AUDIT/` — `/host/ASSIST/AUDIT/` on the
+  default root, `/disk/ASSIST/AUDIT/` under the data_root opt-in. The
+  same two-line record as D4 (`RCPT-<epoch:8hex>-<seq:8hex>`, JSON +
+  HMAC-SHA256 line), plus a `caller` field naming `GOASSIST.ELF`;
+  `agent` names the open conversation (`C0001`, `-` when none). Bound
+  `auditFileMax` 64 with the same earlier-epoch-first rotation. Files
+  under `AUDIT/` stay unreachable through `fs.*` — the flat NAME
+  grammar still has no `/`. GOASSIST creates the dir itself
+  (`MkdirShare`); a refused create or write dead-marks the lane.
+- **The key.** `assist-hmac` — one `uid_user` SECRETS.TXT row on the
+  two-app allowlist `GOASSIST.ELF,GOTOP.ELF`, minted by
+  `tools/session.sh`. **Not** the M173d two-row split: the kernel
+  secret store dedupes on `(name,uid)` (`secret.zig set_internal`), so
+  a second uid-1000 row would overwrite the first row's binding and
+  GOASSIST would never be served — the comma allowlist is the
+  pre-M173d shape, correct whenever both readers share a uid. AGENTD
+  holds neither row (`uid_agent` sees nothing scoped 1000); the
+  channel's `agent-hmac` stays AGENTD's alone (ADR 0044).
+- **Fail closed.** The lane gate runs after the cap check and before
+  the consent dialog: no row `no_receipt_key`, no entropy
+  `no_entropy`, a dead lane `audit_full` — the act refuses by name and
+  nothing runs. Every resolved outcome receipts: allow's
+  `ok`/`refuse:<code>`, deny's `declined`, and a cap-gated call's
+  `cap_required:<word>` when the lane is armed to write it.
+- **The reader.** GOTOP's agent tab lists both lanes; each row names
+  its lane (`agent`/`assist`), its `caller` when the receipt carries
+  one, and one of verified / bad-mac / no-key under the lane's own
+  row. Assist rows class `user` for the principal filter — GOASSIST is
+  `uid_user`.
+- **Residual.** A `/disk` store puts the lane where GOTOP's paged
+  listing (host-share only) cannot read it — the act still receipts,
+  the second-party view is share-only. Recorded, not solved.
