@@ -30,6 +30,10 @@ type request struct {
 	Path      string // canonical "/a/b"; "" when a ".." segment blocked it
 	Version   string // "HTTP/1.1" or "HTTP/1.0"
 	KeepAlive bool   // resolved Connection semantics for this version
+	// Authorization is the verbatim Authorization header value — the only
+	// header whose value is kept, and only for the /admin/ Basic check.
+	// It is never logged (the log names RawTarget, not headers).
+	Authorization string
 }
 
 // wantClose reports whether the connection must close after this request's
@@ -41,11 +45,16 @@ type response struct {
 	Status      int
 	ContentType string
 	Body        []byte
+	// Extra carries additional whole header lines ("Name: value"), emitted
+	// between Content-Type and Content-Length (the 401 Basic challenge).
+	Extra []string
 }
 
 var statusText = map[int]string{
 	200: "OK",
 	400: "Bad Request",
+	401: "Unauthorized",
+	403: "Forbidden",
 	404: "Not Found",
 	405: "Method Not Allowed",
 }
@@ -151,6 +160,7 @@ func parseRequest(head []byte) (request, bool) {
 	method := string(line[:sp1])
 	target := string(rest[:sp2])
 	version := string(rest[sp2+1:])
+	var authorization string
 	var keepAlive bool
 	switch version {
 	case "HTTP/1.1":
@@ -185,6 +195,8 @@ func parseRequest(head []byte) (request, bool) {
 			}
 		case "transfer-encoding":
 			return request{}, false
+		case "authorization":
+			authorization = strings.TrimSpace(string(value))
 		}
 	}
 	if !strings.HasPrefix(target, "/") {
@@ -194,7 +206,8 @@ func parseRequest(head []byte) (request, bool) {
 	if blocked {
 		canon = ""
 	}
-	return request{Method: method, RawTarget: target, Path: canon, Version: version, KeepAlive: keepAlive}, true
+	return request{Method: method, RawTarget: target, Path: canon, Version: version,
+		KeepAlive: keepAlive, Authorization: authorization}, true
 }
 
 // serveTurn is one iteration of serveConn's request loop, expressed over
@@ -232,6 +245,14 @@ func route(req request, readFile func(rel string) []byte) response {
 	case "/healthz":
 		return response{Status: 200, ContentType: "application/json", Body: healthBody()}
 	default:
+		// M209a: under --admin the /admin/ section routes BEFORE the
+		// share fallback, so no share path can shadow it. Every other
+		// target (including "/SECRETS.TXT", which the file ABI refuses
+		// to open for any actor — secret-class by construction, ADR
+		// 0024 D8) resolves under shareRoot as before.
+		if adminEnabled && isAdminPath(req.Path) {
+			return routeAdmin(req)
+		}
 		body := readFile(shareRoot + req.Path)
 		if body == nil {
 			return notFound()
@@ -255,6 +276,10 @@ func formatResponse(r response, headOnly bool, keepAlive bool) []byte {
 	b = append(b, text...)
 	b = append(b, "\r\nServer: VirelaiOS\r\nContent-Type: "...)
 	b = append(b, r.ContentType...)
+	for _, h := range r.Extra {
+		b = append(b, "\r\n"...)
+		b = append(b, h...)
+	}
 	b = append(b, "\r\nContent-Length: "...)
 	b = append(b, strconv.Itoa(len(r.Body))...)
 	if keepAlive {

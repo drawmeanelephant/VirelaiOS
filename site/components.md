@@ -82,7 +82,7 @@ not ride in one.
 | Git client | tool | GOTGIT.ELF | ver 1.0.0 | tools/gate/specs/go-git.spec | staged |
 | SSH client | tool | GOSSH.ELF | ver 1.0.0 | tools/gate/specs/live-ssh-endpoint.spec | staged |
 | SSH server | tool | GOSSHD.ELF | ver 1.0.0 | tools/gate/specs/live-ssh-server.spec | staged |
-| HTTP server | tool | GOHTTPD.ELF | ver 1.0.0 | tools/gate/specs/live-httpd.spec | staged |
+| HTTP server | tool | GOHTTPD.ELF | ver 1.1.0 | tools/gate/specs/live-httpd.spec | staged |
 | WASM runtime | tool | WASM.BIN | ver 1.0.0 | docs/wasm-import-contract.md, tools/gate/specs/live-wasm.spec | staged |
 | QuickJS engine (now session-staged, was gate-only) | tool | QJS.BIN | ADR 0039, ver 1.0.0 | ADR 0039, tools/gate/specs/live-quickjs.spec | staged |
 | App-manifest report script (card d / index #3334) | script | SCRIPTS/REPORT.JS | ADR 0039, ver 1.0.0 | tools/gate/specs/live-quickjs.spec | staged |

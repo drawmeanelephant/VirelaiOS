@@ -12,4 +12,4 @@ order: 130
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| HTTP server | tool | GOHTTPD.ELF | ver 1.0.0 | tools/gate/specs/live-httpd.spec | staged |
+| HTTP server | tool | GOHTTPD.ELF | ver 1.1.0 | tools/gate/specs/live-httpd.spec | staged |
