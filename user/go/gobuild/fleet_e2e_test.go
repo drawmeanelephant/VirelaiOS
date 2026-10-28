@@ -295,9 +295,8 @@ func TestFleetRealTreeEndToEnd(t *testing.T) {
 	// deliberately unstaged in tools/go/pkg-table.txt and the card's
 	// "never silently widen" makes the named refusal the answer, not a
 	// wider allowlist. WEB's in-guest dep_unsupported on hash/crc32
-	// (virelai/webrender's PNG encoder, M162b) is pinned in the specs'
-	// refusal tables, NOT here: the rehearsal's go-list export archives
-	// resolve it on the host — only the guest lacks the staged archive.
+	// (virelai/webrender's PNG encoder, M162b) ended with #3819: the
+	// archive is staged now, so it builds on both sides of the seam.
 	wantRefused := map[string]string{
 		"GOSTALGIA.ELF": "external_tree",
 		"GOFILES.ELF":   "dep_unsupported", // image/color: unstaged, by policy
