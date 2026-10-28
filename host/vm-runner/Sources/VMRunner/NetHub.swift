@@ -18,6 +18,23 @@
 // connect() returning ECONNREFUSED — observed on macOS 27.2 — so attach
 // unlinks and rebinds instead of silently joining a dead segment.
 //
+// Queue depth (the mid-run wedge fixed here): every hop on the relay is a
+// UNIX datagram socket whose default SO_RCVBUF is 4096 bytes on macOS
+// 27.2 — measured: ~2-3 datagrams of ~1400 B fit before the sender's
+// send fails ENOBUFS. Bursts that outrun a momentarily-slow consumer
+// (VZ's lazy ring drain, a guest busy in an app) therefore dropped
+// silently at every hop; one-shot exchanges (ICMP, an ARP request)
+// eventually slip through but multi-round-trip establishment (an ARP
+// reply inside the guest's ~0.5 s learn window, a TCP three-way
+// handshake) collapses under sustained load — the observed wedge,
+// where replies to pings still landed but SYNs produced no inbound
+// activity. The bound hub sockets ask for netHubRcvBufBytes (1 MiB ≈
+// 700+ datagrams); the LAST hop — the attachment socketpair VZ reads —
+// takes a bounded userspace queue instead (NetGuestQueue), because
+// deepening that pair's SO_RCVBUF visibly broke VZ delivery (observed:
+// a guest received exactly one frame, then none). Backpressure becomes
+// queueing delay everywhere, never silent loss.
+//
 // Addressing on the segment (the ADR's pinned scheme): the hub owns
 // DHCP. The owner answers every DHCP client message on the segment —
 // its own guest's and clients' — with one lease per source MAC out of a
@@ -110,6 +127,115 @@ final class NetHubSwitch {
         if let p = macToPort[dst] { return p == port ? [] : [p] }
         return ports.filter { $0 != port }
     }
+}
+
+/// The receive queue every hub-side socket asks for: 1 MiB ≈ 700+
+/// datagrams of 1400 B (measured on macOS 27.2 — the 4096-byte default
+/// holds ~2-3). A peer that stops draining entirely still reaches
+/// ENOBUFS at the bound; the queue's job is to absorb bursts, not to be
+/// infinite.
+let netHubRcvBufBytes: Int32 = 1 << 20
+
+/// The deep host->guest queue in front of the VZ attachment socketpair
+/// (fds[1] writes deliver to fds[0], which VZ reads into the guest's rx
+/// ring). The pair's kernel queue is the 4096-byte default (~2-3
+/// datagrams) and VZ's ring drain lags bursts by design — the wedge was
+/// the writes into it failing ENOBUFS and being swallowed. Deepening
+/// the pair's SO_RCVBUF is NOT an option — observed on the live gate:
+/// with a 1 MiB SO_RCVBUF set, a guest received exactly one frame and
+/// never another, so VZ's attachment misbehaves on a deepened buffer.
+/// The deep queue therefore lives here in userspace: up to `limit`
+/// frames ride until the pair admits them, every writer flushes first,
+/// MSG_DONTWAIT keeps each send a drop rather than a parked relay
+/// thread, and overflow is a counted drop — never a silent one.
+final class NetGuestQueue {
+    static let limit = 512 // ~0.75 MiB worst case of queued frames
+    /// Above this pending depth, new broadcast/multicast frames are
+    /// shed instead of queued — unicast gets the whole budget.
+    static let mcastShed = 128
+
+    private var frames: [[UInt8]] = []
+    private var head = 0
+    private var drops = 0
+    private var mcastSheds = 0
+    private let lock = NSLock()
+
+    /// Append + flush. Every host->guest writer rides the one queue —
+    /// hub deliveries and the hermetic responders — so ordering holds.
+    /// Under pressure the queue sheds FLOOD traffic first (dst[0]
+    /// bit0 — broadcast/multicast is best-effort on a real switch, and
+    /// storm control is the same trade): a congested guest's shallow
+    /// rx fifo must be spent on the unicasts its protocols need.
+    func send(_ frame: [UInt8]) {
+        lock.lock()
+        defer { lock.unlock() }
+        flushLocked()
+        let pending = frames.count - head
+        if pending >= Self.limit {
+            noteDrop()
+            return
+        }
+        if pending >= Self.mcastShed, frame.count > 0, frame[0] & 0x01 != 0 {
+            mcastSheds += 1
+            if mcastSheds <= 4 || mcastSheds % 256 == 0 {
+                FileHandle.standardError.write(Data("NET-HUB: flood frame shed under pressure — \(mcastSheds) sheds, \(pending) queued\n".utf8))
+            }
+            return
+        }
+        frames.append(frame)
+        flushLocked()
+    }
+
+    /// Write every queued frame the pair currently accepts. Called on
+    /// each rx-loop wake so a full queue drains as VZ makes room, not
+    /// only when the next frame arrives.
+    func flush() {
+        lock.lock()
+        defer { lock.unlock() }
+        flushLocked()
+    }
+
+    private func flushLocked() {
+        guard let wfd = netCaptureReadSocket?.fileDescriptor else {
+            frames.removeAll()
+            head = 0
+            return
+        }
+        while head < frames.count {
+            let frame = frames[head]
+            let n = frame.withUnsafeBufferPointer { bp in
+                Darwin.send(wfd, bp.baseAddress, bp.count, MSG_DONTWAIT | MSG_NOSIGNAL)
+            }
+            if n >= 0 { head += 1; continue }
+            let e = errno
+            if e == EINTR { continue }
+            if e == EAGAIN || e == ENOBUFS { break } // peer full — stay queued
+            head += 1 // dead fd etc. — this frame is undeliverable
+            noteDrop()
+        }
+        if head == frames.count {
+            frames.removeAll()
+            head = 0
+        }
+    }
+
+    private func noteDrop() {
+        drops += 1
+        if drops <= 4 || drops % 256 == 0 {
+            FileHandle.standardError.write(Data("NET-HUB: host->guest frame dropped (queue full) — \(drops) drops total\n".utf8))
+        }
+    }
+}
+
+let netGuestQueue = NetGuestQueue()
+
+/// The rx loop's break verdict — one case per errno worth stopping for.
+/// Everything that is not "the fd is gone" is transient on this socket:
+/// the loop must ride it (and count it), because an rx thread that exits
+/// silently takes a whole relay direction with it while every other path
+/// keeps working — the wedge's exact asymmetry.
+func netHubRecvFatal(_ e: Int32) -> Bool {
+    e == EBADF || e == ENOTSOCK
 }
 
 /// The hub's DHCP lease pool — one lease per source MAC out of
@@ -228,8 +354,9 @@ final class NetHub {
     /// liveness with connect() — observed on macOS 27.2: a stale file
     /// refuses (ECONNREFUSED), a live hub accepts. Stale -> unlink and
     /// retake as owner; live -> bind <path>.cli-<pid> and relay to the
-    /// hub. The bound socket gets a 250 ms receive timeout so `stop`
-    /// exits the RX thread cleanly at teardown.
+    /// hub. The bound socket asks for the deep receive queue
+    /// (netHubRcvBufBytes) and keeps the 250 ms receive timeout so the
+    /// RX thread exits cleanly on `stop` — the mid-run-wedge fix.
     static func attach(path: String) throws -> NetHub {
         guard let hubAddr = unixAddr(path) else { throw NetHubError.pathTooLong }
         let fd = Darwin.socket(AF_UNIX, SOCK_DGRAM, 0)
@@ -238,6 +365,8 @@ final class NetHub {
         func finishOwner() throws -> NetHub {
             var tv = timeval(tv_sec: 0, tv_usec: 250_000)
             setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+            var rcvbuf = netHubRcvBufBytes
+            setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, socklen_t(MemoryLayout<Int32>.size))
             return NetHub(path: path, boundPath: path, role: .owner, fd: fd, hubAddr: hubAddr)
         }
 
@@ -278,6 +407,8 @@ final class NetHub {
         guard bindFd(fd, clientAddr) == 0 else { close(fd); throw NetHubError.bindFailed(errno) }
         var tv = timeval(tv_sec: 0, tv_usec: 250_000)
         setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+        var rcvbuf = netHubRcvBufBytes
+        setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, socklen_t(MemoryLayout<Int32>.size))
         return NetHub(path: path, boundPath: clientPath, role: .client, fd: fd, hubAddr: hubAddr)
     }
 
@@ -291,20 +422,39 @@ final class NetHub {
     /// The bound socket's recv loop. Owner role: each inbound datagram
     /// is a client's frame — run the switch. Client role: each inbound
     /// datagram is a hub delivery for the local guest — write it into
-    /// the attachment socketpair (VZ reads fds[0]).
+    /// the attachment socketpair (VZ reads fds[0]). The socket is
+    /// blocking with a 250 ms receive timeout (attach) — the kernel
+    /// wakes the read on arrival and the timeout lets `stop` exit the
+    /// thread cleanly. The loop exits only on stop or a dead fd
+    /// (netHubRecvFatal); its exit is logged, and unexpected errnos are
+    /// counted and logged, because an rx thread that dies silently
+    /// takes a whole relay direction with it.
     func startRx() {
         rxThread = Thread {
             var buf = [UInt8](repeating: 0, count: 4096)
             var sender = sockaddr_storage()
             var senderLen = socklen_t(MemoryLayout<sockaddr_storage>.size)
+            var transientErrs = 0
             while !self.stop {
+                // Every wake — a datagram or the 250 ms timeout — also
+                // drains the host->guest queue as the pair makes room.
+                netGuestQueue.flush()
                 let n = withUnsafeMutablePointer(to: &sender) { sp in
                     sp.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
                         recvfrom(self.fd, &buf, buf.count, 0, sa, &senderLen)
                     }
                 }
-                if n < 0 && (errno == EAGAIN || errno == EINTR) { continue }
-                if n <= 0 { break }
+                if n < 0 {
+                    let e = errno
+                    if e == EAGAIN || e == EINTR { continue }
+                    if netHubRecvFatal(e) { break }
+                    transientErrs += 1
+                    if transientErrs <= 4 || transientErrs % 256 == 0 {
+                        FileHandle.standardError.write(Data("NET-HUB: recvfrom on \(self.boundPath) returned errno \(e) (\(transientErrs) transient) — continuing\n".utf8))
+                    }
+                    continue
+                }
+                if n == 0 { continue }
                 let frame = Array(buf[0..<n])
                 if self.role == .client {
                     self.deliver(Self.selfPort, frame)
@@ -312,6 +462,7 @@ final class NetHub {
                     self.ingress(frame, from: port)
                 }
             }
+            FileHandle.standardError.write(Data("NET-HUB: rx loop on \(self.boundPath) exited (stop=\(self.stop))\n".utf8))
         }
         rxThread?.start()
     }
@@ -374,18 +525,34 @@ final class NetHub {
     }
 
     /// Deliver one frame to a port: the owning runner's own guest (into
-    /// the attachment socketpair) or a client's bound socket.
+    /// the NetGuestQueue feeding the attachment socketpair — the deep
+    /// queue is userspace because deepening the pair's SO_RCVBUF broke
+    /// VZ delivery) or a client's bound socket. A failed sendto (ENOBUFS
+    /// while the peer's queue is full, a client path whose runner is
+    /// gone) is a drop — counted and logged bounded, never silently
+    /// swallowed like the wedge hid behind.
+    private var sendDrops = 0
+
+    private func noteDrop(_ port: String, _ e: Int32) {
+        sendDrops += 1
+        if sendDrops <= 4 || sendDrops % 256 == 0 {
+            let dst = port == Self.selfPort ? "the local guest" : port
+            FileHandle.standardError.write(Data("NET-HUB: delivery to \(dst) dropped (errno \(e)) — \(sendDrops) drops total\n".utf8))
+        }
+    }
+
     func deliver(_ port: String, _ frame: [UInt8]) {
         if port == Self.selfPort {
-            try? netCaptureReadSocket?.write(contentsOf: Data(frame))
+            netGuestQueue.send(frame)
             return
         }
         guard var addr = Self.unixAddr(port) else { return }
-        _ = withUnsafePointer(to: &addr) { p in
+        let rc = withUnsafePointer(to: &addr) { p in
             p.withMemoryRebound(to: sockaddr.self, capacity: 1) {
                 sendto(fd, frame, frame.count, 0, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
             }
         }
+        if rc < 0 { noteDrop(port, errno) }
     }
 }
 
