@@ -54,11 +54,11 @@ func cliArgs(raw []string) []string {
 	return raw
 }
 
-const usageLine = "store: usage: store ls [--remote=<r>] [--channel=<dir|http://ip:port/base>] [--search=<s>] [--category=<c>] | store info <name> [--remote=<r>] [--channel=<dir|http://ip:port/base>] | store install <stream> [--remote=<r>] [--channel=<dir|http://ip:port/base>] | store update <name> [--remote=<r>] [--channel=<dir|http://ip:port/base>] | store rollback <name> | store pin <name|stream> [<head>] [--remote=<r>] [--channel=<dir|http://ip:port/base>] | store remove <name> | store consent <name> | store decline <name> | store publish <NAME> <elf> --src=<dir> --version=<v> --stream=<s> [--channel=<dir>] [--row=<row>] [--summary=<s>] [--category=<c>] [--depends=<csv>]"
+const usageLine = "store: usage: store ls [--remote=<r>] [--channel=<dir|http://ip:port/base>] [--search=<s>] [--category=<c>] | store info <name> [--remote=<r>] [--channel=<dir|http://ip:port/base>] | store install <stream> [--remote=<r>] [--channel=<dir|http://ip:port/base>] | store update <name> [--remote=<r>] [--channel=<dir|http://ip:port/base>] | store rollback <name> | store pin <name|stream> [<head>] [--remote=<r>] [--channel=<dir|http://ip:port/base>] | store remove <name> | store consent <name> | store decline <name> | store publish <NAME> <elf> --src=<dir> --version=<v> --stream=<s> [--channel=<dir>] [--row=<row>] [--summary=<s>] [--category=<c>] [--depends=<csv>] [--caps=<csv>]"
 
 // publishUsage is the one verb whose flag vocabulary the shared loop
 // below would reject as unknown, so publish parses its own args.
-const publishUsage = "store: usage: store publish <NAME> <elf> --src=<dir> --version=<v> --stream=<s> [--channel=<dir>] [--row=<row>] [--summary=<s>] [--category=<c>] [--depends=<csv>]"
+const publishUsage = "store: usage: store publish <NAME> <elf> --src=<dir> --version=<v> --stream=<s> [--channel=<dir>] [--row=<row>] [--summary=<s>] [--category=<c>] [--depends=<csv>] [--caps=<csv>]"
 
 func runPublish(args []string) int {
 	var a store.PublishArgs
@@ -81,6 +81,8 @@ func runPublish(args []string) int {
 			a.Category = f[len("--category="):]
 		case strings.HasPrefix(f, "--depends="):
 			a.Depends = f[len("--depends="):]
+		case strings.HasPrefix(f, "--caps="):
+			a.Caps = f[len("--caps="):]
 		case strings.HasPrefix(f, "-"):
 			store.ConsoleFn(publishUsage)
 			return 2

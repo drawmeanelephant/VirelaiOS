@@ -24,6 +24,7 @@ type PublishArgs struct {
 	Summary  string // --summary=<s>: optional ADR 0055 ReleaseSummary
 	Category string // --category=<c>: optional ADR 0055 ReleaseCategory
 	Depends  string // --depends=<csv>: optional ADR 0055 D8 ReleaseDepends
+	Caps     string // --caps=<csv>: optional ADR 0054 D10 ReleaseCaps
 }
 
 // Publish implements `store publish <NAME> <elf> --src=<dir> --version=<v>
@@ -100,6 +101,13 @@ func Publish(fs FS, root string, a PublishArgs) int {
 		}
 		rel.Depends = deps
 	}
+	if a.Caps != "" {
+		caps, err := parseReleaseCaps(a.Caps)
+		if err != nil {
+			return runErr(err)
+		}
+		rel.Caps = caps
+	}
 
 	// Render canonically and round-trip: the file that lands is exactly
 	// the file parseRelease certifies.
@@ -111,6 +119,7 @@ func Publish(fs FS, root string, a PublishArgs) int {
 	if parsed.Name != rel.Name || parsed.Version != rel.Version ||
 		parsed.ELFSHA256 != rel.ELFSHA256 || parsed.ManifestRow != rel.ManifestRow ||
 		parsed.Summary != rel.Summary || parsed.Category != rel.Category ||
+		strings.Join(parsed.Caps, ",") != strings.Join(rel.Caps, ",") ||
 		strings.Join(parsed.Depends, ",") != strings.Join(rel.Depends, ",") {
 		return runErr(refuse("release_malformed", ""))
 	}
@@ -279,6 +288,9 @@ func renderRelease(r *release) []byte {
 	}
 	if r.Category != "" {
 		emit("ReleaseCategory", r.Category)
+	}
+	if len(r.Caps) > 0 {
+		emit("ReleaseCaps", strings.Join(r.Caps, ","))
 	}
 	if len(r.Depends) > 0 {
 		emit("ReleaseDepends", strings.Join(r.Depends, ","))
