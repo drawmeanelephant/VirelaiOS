@@ -41,8 +41,9 @@ func TestParseFleet(t *testing.T) {
 	if _, d := parseFleet("nonsense\n"); d.Code != "bad_fleet" {
 		t.Fatalf("malformed row must refuse by name: %+v", d)
 	}
-	// The committed list pins exactly the 15 apps.txt .ELF rows plus the
-	// four non-row Go ELFs, in one parseable file.
+	// The committed list parses in one file with no repeated names. Row
+	// membership and count are derived host-side by the drift test
+	// (fleet_drift_test.go) — this check is what the in-guest run can see.
 	committed, err := os.ReadFile("fleet.txt")
 	if err != nil {
 		t.Fatal(err)
@@ -51,21 +52,15 @@ func TestParseFleet(t *testing.T) {
 	if d.Code != "" {
 		t.Fatalf("committed fleet.txt must parse: %+v", d)
 	}
-	if len(rows) != 19 {
-		t.Fatalf("fleet.txt rows = %d, want 19", len(rows))
+	if len(rows) == 0 {
+		t.Fatal("fleet.txt parsed to zero rows")
 	}
 	names := map[string]bool{}
 	for _, r := range rows {
-		names[r.Name] = true
-	}
-	for _, want := range []string{"GOCALC.ELF", "NOTE.ELF", "GOEDIT.ELF",
-		"GOFILES.ELF", "GOTERM.ELF", "WEB.ELF", "PULSE.ELF", "GOSH.ELF",
-		"GOHELP.ELF", "GOTOP.ELF", "GOSET.ELF", "GODIFF.ELF", "GOVIEW.ELF",
-		"GOSOUND.ELF", "GOSTALGIA.ELF", "FLINT.ELF", "STORE.ELF",
-		"AGENTD.ELF", "GOBUILD.ELF"} {
-		if !names[want] {
-			t.Fatalf("fleet.txt missing %s", want)
+		if names[r.Name] {
+			t.Fatalf("fleet.txt repeats %s", r.Name)
 		}
+		names[r.Name] = true
 	}
 }
 
