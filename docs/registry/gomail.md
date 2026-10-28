@@ -12,4 +12,4 @@ order: 300
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
-| Mail | app | GOMAIL.ELF | ver 1.1.0 | tools/gate/specs/go-mail.spec | shipped |
+| Mail | app | GOMAIL.ELF | ver 1.2.0 | tools/gate/specs/go-mail.spec | shipped |

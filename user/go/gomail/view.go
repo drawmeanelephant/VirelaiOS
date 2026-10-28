@@ -73,9 +73,15 @@ type mailView struct {
 	pane   int         // focused pane
 	status string      // the status strip's line — marker text by name
 
+	// M208b: the compose pane ('c') and the attachment ring ('o').
+	comp     composeModel
+	attachAt int // next attachment of the picked message 'o' opens
+
 	// fetchFn is the wire seam: runFetch on the guest, a stub in tests
-	// so the view model runs without a socket.
+	// so the view model runs without a socket. sendFn is the same seam
+	// for compose's submit — runSend on the guest.
 	fetchFn func(cfg Config, box string, seqs []int) error
+	sendFn  func(cfg Config, o options) error
 }
 
 func (v *mailView) curBox() string {
@@ -168,6 +174,25 @@ func (v *mailView) loadBody() {
 	if len(v.body) > bodyLineMax {
 		v.body = v.body[:bodyLineMax]
 	}
+	v.attachRows()
+}
+
+// attachRows appends the picked message's saved attachments to the body
+// pane — the ATTACH index rows fetch wrote, painted like text so 'o'
+// has something honest to act on. A message with no saved rows shows
+// nothing — never an invented list.
+func (v *mailView) attachRows() {
+	h, ok := v.curHdr()
+	if !ok {
+		return
+	}
+	for _, r := range attachFor(v.curBox(), h.seq) {
+		if len(v.body) >= bodyLineMax {
+			return
+		}
+		v.body = append(v.body, "attach: "+r.saved+" ("+r.mt+")")
+	}
+	v.attachAt = 0
 }
 
 // move steps the focused pane's selection by d (clamped): the box list,
@@ -305,12 +330,89 @@ func (u *mailUI) layout() (head, rail, hdrs, body, status widgets.Rect) {
 	return
 }
 
+// openAttach is the 'o' key: open the picked message's next saved
+// attachment through the opens= route — each press steps the ring so a
+// multi-attachment message reaches them all. The outcome (handler, or
+// the named refusal) lands in the status strip by name.
+func (v *mailView) openAttach() {
+	h, ok := v.curHdr()
+	if !ok {
+		v.status = "gomail: no message"
+		return
+	}
+	rows := attachFor(v.curBox(), h.seq)
+	if len(rows) == 0 {
+		v.status = "gomail: no attachments " + v.curBox() + " " + itoa(int64(h.seq))
+		return
+	}
+	if v.attachAt >= len(rows) {
+		v.attachAt = 0
+	}
+	r := rows[v.attachAt]
+	v.attachAt++
+	err := openAttach(r.orig)
+	if err != nil {
+		v.status = err.Error()
+		return
+	}
+	v.status = "gomail: open " + r.orig
+}
+
+// composeStart opens the compose pane — a fresh draft each time (a
+// cancelled or sent draft never resurrects; drafts are out of scope).
+func (v *mailView) composeStart() {
+	v.comp = composeModel{live: true}
+	say("gomail: compose")
+}
+
+// composeSend submits the pane's fields through runSend — the same
+// path the `send` verb drives, so the markers it emits land on serial
+// AND in the status line (the sayTap seam, fetch's pattern). A success
+// closes the pane; a refusal names itself and the draft stays.
+func (v *mailView) composeSend() {
+	o := options{
+		to:      v.comp.recipients(),
+		subject: string(v.comp.subject),
+		body:    string(v.comp.body),
+	}
+	last := ""
+	sayTap = func(s string) { last = s }
+	err := v.sendFn(v.cfg, o)
+	sayTap = nil
+	if err != nil {
+		s := err.Error()
+		if !strings.HasPrefix(s, "gomail:") {
+			s = "gomail: error " + s
+		}
+		v.status = s
+		return
+	}
+	v.comp = composeModel{}
+	v.status = last
+	say("gomail: compose sent")
+}
+
 // key routes one EvKeyDown. True means the frame changed.
 func (u *mailUI) key(ev vi.Event) bool {
+	v := &u.v
+	// The compose pane owns the keyboard while it lives — Ctrl-S
+	// included, so it intercepts before the ModCtrl early-out.
+	if v.comp.live {
+		switch v.comp.composeKey(ev.Arg0, ev.Arg1, ev.Flags&vi.ModCtrl != 0) {
+		case compCancel:
+			v.status = "gomail: compose cancelled"
+			return true
+		case compSend:
+			v.composeSend()
+			return true
+		case compEdit:
+			return true
+		}
+		return false
+	}
 	if ev.Flags&vi.ModCtrl != 0 {
 		return false
 	}
-	v := &u.v
 	switch ev.Arg0 {
 	case keyLeft:
 		v.setPane(v.pane - 1)
@@ -345,6 +447,12 @@ func (u *mailUI) key(ev vi.Event) bool {
 		return false
 	case 'f', 'F':
 		v.fetch()
+		return true
+	case 'c', 'C':
+		v.composeStart()
+		return true
+	case 'o', 'O':
+		v.openAttach()
 		return true
 	case 'j', 'J':
 		v.move(1)
@@ -452,8 +560,21 @@ func (u *mailUI) draw() {
 		widgets.DrawText(cv, hdrsR.Inset(tok.PadXS+2), hint+")", uidraw.Opaque(tok.Muted))
 	}
 
-	// The message pane.
+	// The message pane — or the compose face while it lives: it owns the
+	// same two-strip area (headers + body), painted as field rows.
 	cv.FillRect(bodyR, uidraw.Opaque(tok.Bg))
+	if v.comp.live {
+		cv.FillRect(hdrsR, uidraw.Opaque(tok.Bg))
+		lines := v.comp.composeLines()
+		both := widgets.Rect{X: hdrsR.X, Y: hdrsR.Y, W: hdrsR.W, H: hdrsR.H + bodyR.H}
+		for i, line := range lines {
+			if i >= both.H/viewRowH {
+				break
+			}
+			r := widgets.Rect{X: both.X, Y: both.Y + i*viewRowH, W: both.W, H: viewRowH}
+			widgets.DrawText(cv, r.Inset(tok.PadXS+2), line, uidraw.Opaque(tok.Text))
+		}
+	} else {
 	rows := bodyR.H / viewRowH
 	for i := 0; i < rows && i+v.bodyAt < len(v.body); i++ {
 		line := v.body[i+v.bodyAt]
@@ -467,13 +588,14 @@ func (u *mailUI) draw() {
 		}
 		widgets.DrawText(cv, bodyR.Inset(tok.PadXS+2), hint, uidraw.Opaque(tok.Muted))
 	}
+	}
 
 	// The status strip — the last named line: a fetch marker or refusal,
 	// a cache-miss, or the navigation hint when nothing has spoken yet.
 	cv.FillRect(statusR, uidraw.Opaque(tok.ChromeBg))
 	status := v.status
 	if status == "" {
-		status = "tab/left/right panes · up/down select · f fetch · q quit"
+		status = "panes · f fetch · c compose · o attach · q quit"
 	}
 	widgets.DrawText(cv, statusR.Inset(tok.PadXS+2), status, uidraw.Opaque(tok.InkMuted))
 }
@@ -485,6 +607,7 @@ func runView(cfg Config) {
 	u := &mailUI{}
 	u.v.cfg = cfg
 	u.v.fetchFn = fetchRun
+	u.v.sendFn = runSend
 	ta := tabapp.Init(tabapp.Config{
 		Name: appName,
 		// The declare title is the executable's own name — the seat's

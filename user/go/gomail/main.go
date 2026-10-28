@@ -19,7 +19,8 @@
 //	  read [mbox] <seq>        BODYSTRUCTURE + readable part / attachments
 //	  search <q>               substring over the local cache (no dial)
 //	  send                     --to A [...] --subject S --body T|--body-file P
-//	  open <name>              named refusal: attachments do not open
+//	  open <name>              saved attachment -> opens= handler; named
+//	                          refusal for unknown names / unrouted types
 //	  <out-of-scope verb>      named refusal (idle notify copy move
 //	                          delete append store subscribe oauth render)
 //
@@ -50,6 +51,14 @@
 // message's text/plain body, all read from the MAIL/ cache with no
 // dial; an explicit Fetch key runs the existing fetch path (view.go).
 //
+// M208b (#3823): fetched attachments save under MAIL/ with sanitized
+// names (attach.go) instead of an unconditional refuse; `open <name>`
+// routes a saved attachment through the manifest's opens= contract —
+// text/calendar lands on GOCLOCK's headless import, text/vcard on
+// GOFILES' contact face, unrouted types refuse by name and nothing is
+// ever executed — and the window grows a compose pane ('c') that
+// submits through the same runSend path (compose.go).
+//
 // Serial markers (one per line, grep-able):
 //
 //	gomail: account <path>           gomail: dial <host> <port> tls|plain
@@ -58,7 +67,9 @@
 //	gomail: use <box> exists=<n>     gomail: use <box> cached
 //	gomail: hdr <seq> <from>: <subj> gomail: body <seq> <type> bytes=<n>
 //	gomail: html-stripped <seq>      gomail: text <line>
-//	gomail: attach <seq> <name> <type>  gomail: refuse attachment <name>
+//	gomail: attach <seq> <name> <type>  gomail: saved <path>
+//	gomail: attach-fail <name> <why>    gomail: open <name> handler=<bin>
+//	gomail: refuse open <name> [<type>] gomail: refuse attachment <name>
 //	gomail: cache <path>             gomail: cache-fail <path> <err>
 //	gomail: offline <verb> …         gomail: cache-miss <ref>
 //	gomail: hit <box> <seq> <from>: <subj> [(body)]
@@ -112,7 +123,7 @@ func usage() {
 	vi.ConsoleLine("                  [--from A] [--sni NAME] [--tls] [--plain] [--max N]")
 	vi.ConsoleLine("                  fetch <mbox> [seq ...] | boxes | use <box> |")
 	vi.ConsoleLine("                  headers [mbox] | read [mbox] <seq> | search <q> |")
-	vi.ConsoleLine("                  send --to A --subject S --body T")
+	vi.ConsoleLine("                  send --to A --subject S --body T | open <name>")
 }
 
 // cliArgs drops argv[0] when it is the image name (the kernel's ELF gap
@@ -396,8 +407,9 @@ func main() {
 	}
 
 	cfg := loadConfig(o)
-	// 'search' never dials, so it never needs the account's host.
-	if cfg.Host == "" && o.verb != "search" {
+	// 'search' and 'open' never dial, so they never need the account's
+	// host — the cache corpus and the saved attachments are local files.
+	if cfg.Host == "" && o.verb != "search" && o.verb != "open" {
 		say("gomail: account missing host")
 		say("gomail: closed")
 		vi.Exit(exitError)
@@ -469,13 +481,11 @@ func main() {
 		}
 		err = runSearch(strings.Join(o.args, " "))
 	case "open":
-		if len(o.args) < 1 {
+		if len(o.args) != 1 {
 			usage()
 			vi.Exit(exitUsage)
 		}
-		say("gomail: refuse attachment " + o.args[0])
-		say("gomail: closed")
-		vi.Exit(exitError)
+		err = runOpen(o.args[0])
 	case "send":
 		err = runSend(cfg, o)
 	default:
@@ -565,20 +575,19 @@ func printHdrs(hdrs []Header) {
 }
 
 // readOne renders one message: BODYSTRUCTURE, the readable part (or the
-// named refusal), and the attachment list + refuse-to-open rows. On a
-// rendered body it returns the mime + bytes so the caller can remember
-// them; a refusal or error returns "", nil, err.
-func readOne(c *imapClient, seq int) (string, []byte, error) {
+// named refusal), and the attachment half — M208b saves each part under
+// MAIL/ instead of refusing it, so `open` and the window can act on the
+// file the wire just proved. On a rendered body it returns the mime +
+// bytes so the caller can remember them; a refusal or error returns
+// "", nil, err.
+func readOne(c *imapClient, mbox string, seq int) (string, []byte, error) {
 	root, err := c.structure(seq)
 	if err != nil {
 		return "", nil, err
 	}
 	body := pickBody(root)
 	if body == nil {
-		for _, a := range attachments(root) {
-			say("gomail: attach " + vsys.Itoa64(int64(seq)) + " " + a.attachName() + " " + a.mimeType())
-			say("gomail: refuse attachment " + a.attachName())
-		}
+		saveAttachments(c, mbox, seq, root)
 		return "", nil, protoErr("refuse ", itoa(int64(seq))+" no readable text")
 	}
 	if body.encoding == "base64" || body.encoding == "quoted-printable" {
@@ -592,10 +601,7 @@ func readOne(c *imapClient, seq int) (string, []byte, error) {
 		data = data[:bodyByteMax]
 	}
 	printBodyRows(seq, body.mimeType(), body.sub == "html", data)
-	for _, a := range attachments(root) {
-		say("gomail: attach " + vsys.Itoa64(int64(seq)) + " " + a.attachName() + " " + a.mimeType())
-		say("gomail: refuse attachment " + a.attachName())
-	}
+	saveAttachments(c, mbox, seq, root)
 	return body.mimeType(), data, nil
 }
 
@@ -633,7 +639,7 @@ func runFetch(cfg Config, mbox string, seqs []int, full bool) error {
 		if seq > exists {
 			return protoErr("refuse ", itoa(int64(seq))+" past exists")
 		}
-		mime, data, err := readOne(c, seq)
+		mime, data, err := readOne(c, mbox, seq)
 		if err != nil {
 			return err
 		}
@@ -672,13 +678,20 @@ func runRead(cfg Config, mbox string, seq int) error {
 	if seq > exists {
 		return protoErr("refuse ", itoa(int64(seq))+" past exists")
 	}
-	mime, data, err := readOne(c, seq)
+	mime, data, err := readOne(c, mbox, seq)
 	if err != nil {
 		return err
 	}
 	cacheSaveUse(mbox)
 	cachePutBody(mbox, seq, mime, data)
 	return nil
+}
+
+// runOpen is the CLI half of attach.go's contract: `open <name>` acts
+// on a saved attachment by name — the opens= route for routed types,
+// the named refusal otherwise.
+func runOpen(name string) error {
+	return openAttach(name)
 }
 
 // runSearch answers 'search <q>' over the cache only — it never dials:
