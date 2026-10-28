@@ -23,21 +23,6 @@ import (
 // pendingFleet maps each apps.txt .ELF row that is not yet a fleet row to
 // the M207 card that adds it. Landing a card removes its names here.
 var pendingFleet = map[string]string{
-	// M207b (#3818): the zero-std-gap apps.
-	"GOA11Y.ELF":    "#3818",
-	"GOASSIST.ELF":  "#3818",
-	"GOCLOCK.ELF":   "#3818",
-	"GOEMOJI.ELF":   "#3818",
-	"GOINFER.ELF":   "#3818",
-	"GOIRC.ELF":     "#3818",
-	"GOMAIL.ELF":    "#3818",
-	"GOMINE.ELF":    "#3818",
-	"GOREC.ELF":     "#3818",
-	"GOSHEET.ELF":   "#3818",
-	"GOSNAP.ELF":    "#3818",
-	"GOSOL.ELF":     "#3818",
-	"GOSTORE.ELF":   "#3818",
-	"GOWELCOME.ELF": "#3818",
 	// M207c (#3819): need hash/crc32 in the staged std surface.
 	"GOPAINT.ELF":  "#3819",
 	"GOREADER.ELF": "#3819",
