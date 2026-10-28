@@ -47,7 +47,7 @@ func seamScope(t *testing.T) {
 		func() { scanoutFn = scanoutSave },
 		func() { agentInputKeyFn = agentKeySave },
 		func() { agentInputPtrFn = agentPtrSave },
-		func() { agentWindow = -1 },
+		func() { verbLib.ResetWindow() },
 		func() { secretGetFn = secretSave },
 		func() { principalFn = principalSave },
 		func() { randomFn = randomSave },

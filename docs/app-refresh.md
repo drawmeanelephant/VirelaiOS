@@ -175,6 +175,7 @@ it does for the app table, and `--stale` prints all three tables.
 | Guest linker | tool | user/go/gobuild | #2767 | 2026-10-20 | one inflater — promote hardened reader to user/go/flate |
 | Release pipeline | tool | user/go/release | #2651 | 2026-10-18 | argv-block residuals: dead pads/asserts, stale 32-byte bound, census re-pin |
 | Store install CLI | tool | user/go/store/main | #3188 | 2026-10-23 | store pin — signed-head rollback + ReleaseDepends |
+| agentverbs | lib | user/go/agentverbs | — | 2026-10-28 | M205a — verb table + cap check lifted into a library; AGENTD is a caller |
 | appkit | lib | user/go/appkit | #3348 | 2026-10-25 | wire the staged art's seated and raster surfaces |
 | art | lib | user/go/art | #3338 | 2026-10-24 | adopt the f-artcraft drop — stage the six sets, wire the open seams |
 | chords | lib | user/go/chords | #3252 | 2026-10-23 | GOEDIT quick-open — ctrl+p palette over recents + subtree |

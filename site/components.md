@@ -215,6 +215,7 @@ to where one exists.
 
 | name | kind | binary | version | owning spec / contract | state |
 |------|------|--------|---------|------------------------|-------|
+| agentverbs | lib | — | ver 1.0.0 | tools/gate/specs/go-agentd.spec, ADR 0044 | staged |
 | appkit | lib | — | ver 1.0.0 | ADR 0011 | shipped |
 | art | lib | — | ver 1.0.0 | — | shipped |
 | chords | lib | — | ver 1.0.0 | — | shipped |
