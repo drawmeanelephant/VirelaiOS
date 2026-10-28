@@ -1,6 +1,6 @@
 # fleet.txt -- M112a (#2413): the pinned fleet GOBUILD builds in-guest.
 #
-# The fleet is pinned, not discovered: the fourteen `.ELF` rows of
+# The fleet is pinned, not discovered: the twenty-eight `.ELF` rows of
 # image/apps.txt the drift test does not hold pending (ZC.BIN and
 # TABWM.BIN are Zig, out of scope) plus the five Go ELFs that are not
 # apps.txt rows — GODIFF, FLINT, STORE, AGENTD and GOBUILD itself.
@@ -21,6 +21,7 @@ WEB.ELF virelai/browser
 PULSE.ELF virelai/pulse
 GOSH.ELF virelai/sh
 GOHELP.ELF virelai/help
+GOWELCOME.ELF virelai/welcome
 GOTOP.ELF virelai/top
 GOSET.ELF virelai/goset
 GODIFF.ELF virelai/godiff
@@ -30,6 +31,19 @@ GOSOUND.ELF virelai/sound
 # overlay trees (tools/go/build-gostalgia.sh): its sources are not part of
 # this tree and the pin is not a share-visible input.
 GOSTALGIA.ELF external:gostalgia
+GOSTORE.ELF virelai/gostore
+GOINFER.ELF virelai/goinfer
+GOREC.ELF virelai/gorec
+GOSNAP.ELF virelai/gosnap
+GOASSIST.ELF virelai/goassist
+GOSHEET.ELF virelai/gosheet
+GOCLOCK.ELF virelai/goclock
+GOMINE.ELF virelai/gomine
+GOSOL.ELF virelai/gosol
+GOEMOJI.ELF virelai/goemoji
+GOIRC.ELF virelai/goirc
+GOMAIL.ELF virelai/gomail
+GOA11Y.ELF virelai/goa11y
 FLINT.ELF virelai/flint
 # M110c (#2405) split virelai/store into a library package plus a thin CLI
 # at store/main — the row names the main package, not the library.
