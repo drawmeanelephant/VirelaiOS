@@ -395,6 +395,26 @@
 //          29-gate aggregate — stays byte-identical. The injected bytes are
 //          the KNOWN raw Ethernet frame the guest's net recv must print
 //          byte-exact; the guest's netsend echo proves the round trip.)
+//         [--mac <addr>] (M206a, issue #3813, ADR 0057: replace the pinned
+//          guest MAC 02:00:00:00:00:01 on ANY net attachment — the guest's
+//          VIRTIO_NET_F_MAC read reports it, so two guests on one segment
+//          can carry distinct addresses with no guest-side change. Locally
+//          administered unicast only: a multicast or universally
+//          administered address refuses by name. Requires a network
+//          attachment. Default unchanged.)
+//         [--net-hub <path>] (M206a, issue #3813, ADR 0057: relay each
+//          guest TX datagram to a host-side L2 learning switch on the
+//          UNIX datagram socket <path>, and write the hub's deliveries
+//          back into the same attachment socketpair. The first runner to
+//          bind <path> owns the hub in-process (learn src->port, unicast
+//          forward, broadcast + multicast flood — 01:00:5e:* and
+//          33:33:* ride dst[0] bit0); later runners bind <path>.cli-<pid>
+//          as clients. A stale socket file is named by connect()
+//          refusing, then unlinked and retaken. The hub owns DHCP on the
+//          segment — one lease per source MAC out of 10.0.0.16..31 — so
+//          --net-dhcp-respond refuses by name under it. Requires --net;
+//          the capture stays byte-exact. Mutually exclusive with
+//          --net-nat/--net-bridged/--net-vmnet.)
 //
 // * --custom-virtio (macOS 27 spike, audit step 3): attaches one
 //   default-off VZCustomVirtioDeviceConfiguration so the guest's PCI
@@ -1032,6 +1052,27 @@ while idx < arguments.count {
         fail("--gpu3d-test-mode requires a mode (want \(GPU3DRunnerConfiguration.TestMode.allCases.map(\.rawValue).joined(separator: "|")))")
     } else if arg == "--net", idx + 1 < arguments.count {
         netCapturePath = arguments[idx + 1]
+        idx += 2
+    } else if arg == "--mac", idx + 1 < arguments.count {
+        // M206a (#3813, ADR 0057): replace the pinned guest MAC. Locally
+        // administered unicast only — each other shape refuses by name.
+        let token = arguments[idx + 1]
+        switch netMacParse(token) {
+        case .ok(let mac):
+            netMacOverride = mac
+            netTcpGuestMAC = mac
+        case .malformed:
+            fail("--mac requires a MAC address like 02:00:00:00:00:0a (six colon-separated hex octets), got '\(token)'.")
+        case .multicast:
+            fail("--mac requires a unicast address (the multicast bit is set in '\(token)').")
+        case .notLocal:
+            fail("--mac requires a locally administered address (the u/l bit is clear in '\(token)').")
+        }
+        idx += 2
+    } else if arg == "--net-hub", idx + 1 < arguments.count {
+        // M206a (#3813): relay guest TX to the host-side L2 hub at this
+        // UNIX datagram socket; hub frames come back into the socketpair.
+        netHubPath = arguments[idx + 1]
         idx += 2
     } else if arg == "--net-inject", idx + 1 < arguments.count {
         netInjectPath = arguments[idx + 1]
@@ -2269,6 +2310,30 @@ if netTcpConnectSSHMode {
     }
     print("NET-TCP-CONNECT-SSH: cipher self-check ok (OpenSSH PROTOCOL.chacha20poly1305 pinned vector, seq 7, tag \(SSHFixtures.opensshVectorTagHex))")
 }
+// M206a (#3813, ADR 0057): `--net-hub` rides the --net attachment — the
+// hub relays the same socketpair's guest TX datagrams and writes its
+// deliveries back the host->guest way. It composes with --net (the
+// capture stays byte-exact) and refuses by name alongside every other
+// attachment and alongside --net-dhcp-respond (the hub owns DHCP on the
+// segment — one lease per source MAC).
+if netHubPath != nil, netCapturePath == nil {
+    fail("--net-hub requires --net <capture-file> (the hub relays the same attachment's datagrams).")
+}
+if netHubPath != nil, netNatEnabled {
+    fail("--net-hub is mutually exclusive with --net-nat (one network device per guest for now).")
+}
+if netHubPath != nil, netBridgedInterface != nil {
+    fail("--net-hub is mutually exclusive with --net-bridged (one network device per guest for now).")
+}
+if netHubPath != nil, netVmnetEnabled {
+    fail("--net-hub is mutually exclusive with --net-vmnet (one network device per guest for now).")
+}
+if netHubPath != nil, netDhcpRespondLeaseIP != nil {
+    fail("--net-hub is mutually exclusive with --net-dhcp-respond (the hub owns DHCP on the segment — one lease per MAC).")
+}
+if netMacOverride != nil, netCapturePath == nil, !netNatEnabled, netBridgedInterface == nil, !netVmnetEnabled {
+    fail("--mac requires a network attachment (--net, --net-nat, --net-bridged or --net-vmnet).")
+}
 // Milestone five card N7 (claim 4678): `--net-nat` is mutually exclusive
 // with `--net` — one network device per guest for now (the flag
 // validation shape: a clear fail, like the responder requirements above).
@@ -2513,6 +2578,24 @@ if let netCapturePath {
     }
     netCaptureSocket = FileHandle(fileDescriptor: fds[0], closeOnDealloc: true)
     netCaptureReadSocket = FileHandle(fileDescriptor: fds[1], closeOnDealloc: true)
+    // M206a (#3813): attach the hub BEFORE the capture thread so the
+    // relay exists for the guest's first TX. First-runner-binds: a live
+    // hub at <path> makes this runner a client; a stale file (connect()
+    // refusing — observed) is unlinked and retaken as owner. The RX
+    // thread writes hub deliveries into the runner's socket end — the
+    // host->guest direction, so the capture file stays guest-TX-only.
+    if let hubPath = netHubPath {
+        do {
+            netHub = try NetHub.attach(path: hubPath)
+        } catch let err as NetHubError {
+            fail("--net-hub '\(hubPath)': \(err.message).")
+        } catch {
+            fail("--net-hub '\(hubPath)': \(error).")
+        }
+        netHub?.startRx()
+        atexit { netHub?.unlinkBoundPaths() }
+        print("NET-HUB: \(netHub!.role == .owner ? "bound hub socket \(hubPath) — this runner owns the segment hub" : "attached to hub \(hubPath) as client \(netHub!.boundPath)")")
+    }
     // Reader thread: drain the runner's socket end into the capture file.
     // One datagram per read (SOCK_DGRAM); a 4096-byte buffer covers the
     // largest N1 frame (1514 B) with headroom.
@@ -2528,6 +2611,12 @@ if let netCapturePath {
             if n < 0 && errno == EINTR { continue }
             if n <= 0 { break }
             try? netCaptureFile.write(contentsOf: Data(bytes: buf, count: n))
+            // M206a (#3813): the capture above is byte-exact and FIRST;
+            // the hub relay then carries the same datagram to the
+            // segment (owner: in-process switch; client: sendto the hub
+            // path). Hub->guest frames travel the other socket direction
+            // and never touch the capture.
+            netHub?.guestTx(Array(buf[0..<n]))
             // Card N3: if the guest asked an ARP request, answer it from
             // the host. The reply is written into the runner's socket end
             // (fds[1]) — the card-N2 host→guest direction (VZ reads
@@ -2973,7 +3062,7 @@ if let netCapturePath {
     let netAttachment = VZFileHandleNetworkDeviceAttachment(fileHandle: netCaptureSocket!)
     let netConfig = VZVirtioNetworkDeviceConfiguration()
     netConfig.attachment = netAttachment
-    guard let fixedMAC = VZMACAddress(string: "02:00:00:00:00:01") else {
+    guard let fixedMAC = VZMACAddress(string: netMacText(netEffectiveMAC())) else {
         fail("Could not parse the fixed net MAC address.")
     }
     netConfig.macAddress = fixedMAC
@@ -2990,7 +3079,7 @@ if let netCapturePath {
     let natAttachment = VZNATNetworkDeviceAttachment()
     let natConfig = VZVirtioNetworkDeviceConfiguration()
     natConfig.attachment = natAttachment
-    guard let fixedMAC = VZMACAddress(string: "02:00:00:00:00:01") else {
+    guard let fixedMAC = VZMACAddress(string: netMacText(netEffectiveMAC())) else {
         fail("Could not parse the fixed net MAC address.")
     }
     natConfig.macAddress = fixedMAC
@@ -3004,7 +3093,7 @@ if let netCapturePath {
     let bridgedAttachment = VZBridgedNetworkDeviceAttachment(interface: bridgedIface)
     let bridgedConfig = VZVirtioNetworkDeviceConfiguration()
     bridgedConfig.attachment = bridgedAttachment
-    guard let fixedMAC = VZMACAddress(string: "02:00:00:00:00:01") else {
+    guard let fixedMAC = VZMACAddress(string: netMacText(netEffectiveMAC())) else {
         fail("Could not parse the fixed net MAC address.")
     }
     bridgedConfig.macAddress = fixedMAC
@@ -3018,7 +3107,7 @@ if let netCapturePath {
     let vmnetAttachment = VZVmnetNetworkDeviceAttachment(network: netVmnetNetwork!)
     let vmnetNetConfig = VZVirtioNetworkDeviceConfiguration()
     vmnetNetConfig.attachment = vmnetAttachment
-    guard let fixedMAC = VZMACAddress(string: "02:00:00:00:00:01") else {
+    guard let fixedMAC = VZMACAddress(string: netMacText(netEffectiveMAC())) else {
         fail("Could not parse the fixed net MAC address.")
     }
     vmnetNetConfig.macAddress = fixedMAC
@@ -3307,7 +3396,7 @@ if hostCaptureKeys {
     print("  host-capture-keys: ENABLED (M114b #2455) — capture-keys dispatches on the HostCommand bus once the machine view exists; the host-ui: receipt is the same one ⌥⌘K / the toolbar pill emit")
 }
 if let netCapturePath {
-    print("  net: ENABLED (milestone five card N1, claim 1373) — virtio-net device attached, guest TX frames captured byte-exactly to \(netCapturePath), fixed MAC 02:00:00:00:00:01")
+    print("  net: ENABLED (milestone five card N1, claim 1373) — virtio-net device attached, guest TX frames captured byte-exactly to \(netCapturePath), MAC \(netMacText(netEffectiveMAC()))\(netMacOverride != nil ? " (--mac override)" : " (fixed)")")
 }
 if displayMode {
     print("  display: ENABLED (milestone six card G1, claim 6053) — virtio-gpu device attached, 1280x720 scanout window shown for the session")
