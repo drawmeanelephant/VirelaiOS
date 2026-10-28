@@ -934,16 +934,17 @@ test "sexiburger manifest: the real image/apps.txt decodes whole under the v1 fo
     // The dock set is what the mirrors claim about this file. WND.BIN's
     // god-menu selection test says "8 dock + dup stems past the cutoff" and
     // the kernel dock renderer says "first 5 from image/apps.txt" — the
-    // first number is only true while this file has exactly 9 docked rows,
-    // so it is pinned here against the real file rather than left to a
-    // synthetic 22-entry fixture that can drift from it unnoticed.
+    // first number is only true while this file has exactly 10 docked rows
+    // (GOMAIL.ELF docked in M208a), so it is pinned here against the real
+    // file rather than left to a synthetic 22-entry fixture that can drift
+    // from it unnoticed.
     var dock: usize = 0;
     for (out[0..n]) |app| {
         if (app.dock) dock += 1;
         try std.testing.expect(app.name.len > 0);
         try std.testing.expect(app.desc.len > 0);
     }
-    try std.testing.expectEqual(@as(usize, 9), dock);
+    try std.testing.expectEqual(@as(usize, 10), dock);
 
     // The manifest's own contract: a v2 row declares its version in field 5,
     // which no reader above looks at, and every row still has a name and a
