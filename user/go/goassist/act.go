@@ -286,6 +286,20 @@ func (v *view) actPass() {
 	v.cur.turns = append(v.cur.turns,
 		turn{role: roleCall, arg: call.verb, text: call.args})
 	if code := capGate(call.verb, assistCaps()); code != "" {
+		// A refused call receipts its named refusal when the lane can
+		// write — the arm is what lets it; a missing key just leaves
+		// the refusal unreceipted (nothing was going to run anyway).
+		v.assistLaneArm()
+		v.actReceipt(call.verb, call.fields, code)
+		v.h.ConsoleLine(markerCallRefused + call.verb + " " + code)
+		v.cur.turns = append(v.cur.turns,
+			turn{role: roleResult, arg: "refuse:" + code})
+		return
+	}
+	// The M205d receipt lane is the pre-consent half of the gate: an
+	// act that cannot be receipted refuses by name before the dialog —
+	// no key row, no entropy, or a dead lane (fail closed, audit_full).
+	if code := v.assistLaneArm(); code != "" {
 		v.h.ConsoleLine(markerCallRefused + call.verb + " " + code)
 		v.cur.turns = append(v.cur.turns,
 			turn{role: roleResult, arg: "refuse:" + code})
@@ -326,6 +340,7 @@ func (v *view) consentResolve(allow bool) {
 	v.act = nil
 	if !allow {
 		v.h.ConsoleLine(markerConsent + "deny " + a.verb)
+		v.actReceipt(a.verb, a.fields, refuseDeclined)
 		v.cur.turns = append(v.cur.turns,
 			turn{role: roleConsent, arg: "deny"},
 			turn{role: roleResult, arg: "refuse:" + refuseDeclined})
@@ -335,10 +350,12 @@ func (v *view) consentResolve(allow bool) {
 			turn{role: roleConsent, arg: "allow"})
 		out, code := v.actDispatch(a)
 		if code != "" {
+			v.actReceipt(a.verb, a.fields, code)
 			v.h.ConsoleLine(markerActRefused + a.verb + " " + code)
 			v.cur.turns = append(v.cur.turns,
 				turn{role: roleResult, arg: "refuse:" + code})
 		} else {
+			v.actReceipt(a.verb, a.fields, "ok")
 			v.h.ConsoleLine(markerActOK + a.verb)
 			v.cur.turns = append(v.cur.turns,
 				turn{role: roleResult, arg: "ok", text: cutResultBody(out)})

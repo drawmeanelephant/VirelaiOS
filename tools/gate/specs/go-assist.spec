@@ -55,6 +55,14 @@
 #       agent-keyring word with no caps= spelling, so the seat's
 #       agent_input_denied is unreachable in-process and the refusal
 #       lands one layer earlier, still a named refusal with no dialog.
+#   15  (M205d #3811) the no-key leg: SECRETS.TXT carries no assist-hmac
+#       row, so the same call refuses no_receipt_key BEFORE the consent
+#       dialog — nothing runs, no receipt lands.
+#
+# M205d's receipts ride legs 11-14 too: every resolved act leaves one
+# RCPT file in the assist lane (allow's ok, deny's declined, the two
+# cap-gated refusals), MAC'd under assist-hmac — the python asserts
+# count the lane per leg and verify the newest receipt's MAC + result.
 #
 # The act legs stage their PRESETS.TXT in the previous leg's tail hook
 # (leg 10's for leg 11, leg 12's for 13, leg 13's for 14): the file must
@@ -180,7 +188,18 @@ if not os.path.exists(kd):
 shutil.copy(kd, os.path.join(share, "KANADICT.BIN"))
 with open(os.path.join(share, "SETTINGS.TXT"), "w") as f:
     f.write("#v2\nwm=none\n")
-print("staged Go seat + GOASSIST.ELF + FONTS.TXT/NOTOCJK.TTF/KANADICT.BIN, wm=none")
+# M205d (#3811): the receipt legs' credential + owner rows. assist-hmac
+# is ONE uid_user row on a two-app allowlist — GOASSIST writes the lane,
+# GOTOP verifies it, AGENTD holds neither (the kernel store dedupes on
+# name+uid, so the M173d two-row split cannot apply at same-uid). The
+# kernel serves it to GOASSIST.ELF only while the image is
+# uid_system-owned, hence the OWNERS.TXT row.
+ASSIST_KEY = "b5" * 32
+open(os.path.join(share, "SECRETS.TXT"), "w").write(
+    "#v1\nassist-hmac\t1000\t" + ASSIST_KEY + "\tGOASSIST.ELF,GOTOP.ELF\n")
+open(os.path.join(share, "OWNERS.TXT"), "w").write(
+    "#v1\nGOASSIST.ELF\t644\t0\t-\n")
+print("staged Go seat + GOASSIST.ELF + FONTS.TXT/NOTOCJK.TTF/KANADICT.BIN, wm=none, assist-hmac row")
 PY
 
 # The model VIW (M111c #2410's owner-approved SmolLM2-135M-Instruct,
@@ -888,6 +907,25 @@ for want in ("GOASSIST-CHAT v3", "@@system\n@emit @call proc.list\n",
         sys.exit("C0001.CHAT missing %r\n%s" % (want, body))
 print("v3 records: call + consent allow + ok result with the proc table")
 PY
+# M205d (#3811): the allowed act left exactly one new RCPT file in the
+# assist lane, MAC'd under assist-hmac — the card's own acceptance.
+vgate_assert 11 serial-contains 'goassist: rcpt RCPT-'
+vgate_assert 11 python <<'PY'
+import hashlib, hmac, os, sys
+adir = os.path.join(os.environ["VG_SHARE"], "ASSIST", "AUDIT")
+names = [n for n in os.listdir(adir) if n.startswith("RCPT-")]
+if len(names) != 1:
+    sys.exit("assist lane holds %d receipts, want exactly 1: %r" % (len(names), names))
+lines = open(os.path.join(adir, names[0]), "rb").read().decode().splitlines()
+want = hmac.new(("b5" * 32).encode(), lines[0].encode(), hashlib.sha256).hexdigest()
+if lines[1] != want:
+    sys.exit("assist receipt MAC does not verify under assist-hmac")
+for field in ('"verb":"proc.list"', '"caller":"GOASSIST.ELF"',
+              '"agent":"C0001"', '"result":"ok"'):
+    if field not in lines[0]:
+        sys.exit("assist receipt missing %s\n%s" % (field, lines[0]))
+print("assist lane: 1 new RCPT, MAC verifies under assist-hmac, caller GOASSIST.ELF")
+PY
 # Iteration hygiene: C0001 stays — leg 12's boot must reload this v3
 # file (its own @@system turn carries the driver), so clearing here
 # would erase the evidence, not just the state.
@@ -950,6 +988,22 @@ if not body.endswith("@@result refuse:declined\n\n"):
     sys.exit("the declined result is not the empty-bodied tail\n%s" % body)
 print("reload held leg 11's records; deny appended refuse:declined, no body")
 PY
+# M205d: the declined act receipted too — the lane holds both verdicts.
+vgate_assert 12 python <<'PY'
+import hashlib, hmac, os, sys
+adir = os.path.join(os.environ["VG_SHARE"], "ASSIST", "AUDIT")
+names = sorted(n for n in os.listdir(adir) if n.startswith("RCPT-"))
+if len(names) != 2:
+    sys.exit("assist lane holds %d receipts, want 2 (allow + decline): %r" % (len(names), names))
+line = open(os.path.join(adir, names[-1]), "rb").read().decode().splitlines()[0]
+want = hmac.new(("b5" * 32).encode(), line.encode(), hashlib.sha256).hexdigest()
+mac = open(os.path.join(adir, names[-1]), "rb").read().decode().splitlines()[1]
+if mac != want:
+    sys.exit("deny receipt MAC does not verify")
+if '"result":"declined"' not in line:
+    sys.exit("the newest receipt does not name declined\n%s" % line)
+print("assist lane: 2 receipts (ok + declined), newest MAC verifies")
+PY
 # Iteration hygiene + next-leg staging: the gosh.run leg wants a fresh
 # store AND its own driver persona.
 vgate_assert 12 python <<'PY'
@@ -1004,6 +1058,19 @@ for want in ("@@call gosh.run\ncmd=ls\n", "@@result refuse:cap_required:term\n")
 if "@@consent" in body:
     sys.exit("a consent record landed for a cap-refused call\n%s" % body)
 print("gosh.run: @@call + refuse:cap_required:term, no consent record")
+PY
+# M205d: the cap-gated call receipted its named refusal too.
+vgate_assert 13 python <<'PY'
+import hashlib, hmac, os, sys
+adir = os.path.join(os.environ["VG_SHARE"], "ASSIST", "AUDIT")
+names = sorted(n for n in os.listdir(adir) if n.startswith("RCPT-"))
+if len(names) != 3:
+    sys.exit("assist lane holds %d receipts, want 3: %r" % (len(names), names))
+lines = open(os.path.join(adir, names[-1]), "rb").read().decode().splitlines()
+want = hmac.new(("b5" * 32).encode(), lines[0].encode(), hashlib.sha256).hexdigest()
+if lines[1] != want or '"result":"cap_required:term"' not in lines[0]:
+    sys.exit("gosh.run receipt wrong: %s" % lines[0])
+print("assist lane: 3 receipts, cap_required:term verifies")
 PY
 # Iteration hygiene + staging: the ui.input leg's own store and driver.
 vgate_assert 13 python <<'PY'
@@ -1062,9 +1129,23 @@ if "@@consent" in body:
     sys.exit("a consent record landed for a cap-refused call\n%s" % body)
 print("ui.input: @@call + refuse:cap_required:input, no consent record")
 PY
-# Iteration hygiene, last act leg: remove the driver persona and the
-# convs so the NEXT vgate_repeat's legs 01-10 see the picker-less store
-# they were written for — PRESETS.TXT must not leak across an iteration.
+# M205d: the ui.input refusal receipted as well — four files now.
+vgate_assert 14 python <<'PY'
+import hashlib, hmac, os, sys
+adir = os.path.join(os.environ["VG_SHARE"], "ASSIST", "AUDIT")
+names = sorted(n for n in os.listdir(adir) if n.startswith("RCPT-"))
+if len(names) != 4:
+    sys.exit("assist lane holds %d receipts, want 4: %r" % (len(names), names))
+lines = open(os.path.join(adir, names[-1]), "rb").read().decode().splitlines()
+want = hmac.new(("b5" * 32).encode(), lines[0].encode(), hashlib.sha256).hexdigest()
+if lines[1] != want or '"result":"cap_required:input"' not in lines[0]:
+    sys.exit("ui.input receipt wrong: %s" % lines[0])
+print("assist lane: 4 receipts, cap_required:input verifies")
+PY
+# Iteration hygiene + next-leg staging: leg 15 is the M205d no-key leg —
+# it wants a fresh store, its own driver persona, AND a SECRETS.TXT
+# with no assist-hmac row (leg 15's tail restores the row for the next
+# iteration). The lane's files stay: they are legs 11-14's evidence.
 vgate_assert 14 python <<'PY'
 import glob, os
 share = os.environ["VG_SHARE"]
@@ -1072,8 +1153,83 @@ n = 0
 for f in glob.glob(os.path.join(share, "ASSIST", "*.CHAT")):
     os.remove(f)
     n += 1
+with open(os.path.join(share, "ASSIST", "PRESETS.TXT"), "w") as f:
+    f.write("GOASSIST-PRESETS v1\n@@callnokey\n@emit @call proc.list\n")
+sp = os.path.join(share, "SECRETS.TXT")
+rows = [l for l in open(sp).read().splitlines()
+        if not l.startswith("assist-hmac\t")]
+open(sp, "w").write("\n".join(rows) + "\n")
+print("store cleared (%d); callnokey driver staged; assist-hmac row stripped for leg 15" % n)
+PY
+
+# --- leg 15 (M205d #3811): no key row — the act refuses before consent --
+# The emit driver lands '@call proc.list' as always, the cap gate
+# passes (process is a floor word GOASSIST holds), but the lane gate
+# finds no assist-hmac row: the act refuses no_receipt_key BEFORE the
+# consent dialog — nothing runs, no dialog, no receipt.
+vgate_file script-rx15.txt <<'EOF'
+echo rx-assist-15-ok
+EOF
+
+vgate_run 15 -- \
+    --screen '$RUN_DIR/screen-15' \
+    --gpu3d-metal --via-virtio \
+    --script '$RUN_DIR/script-seat.txt' \
+    --script2 '$RUN_DIR/script-stub.txt' \
+    --script2-after 'gotabwm: holding seat' \
+    --input-chords 'h,i,return,down,return' \
+    --input-chords-after 'goassist: present' \
+    --script3 '$RUN_DIR/script-rx15.txt' \
+    --script3-after 'goassist: call refused proc.list no_receipt_key' \
+    --script-expect 'rx-assist-15-ok' --timeout 300
+
+vgate_assert 15 serial-contains 'goassist: conv new C0001 preset=callnokey'
+vgate_assert 15 serial-contains 'goassist: emit'
+vgate_assert 15 serial-contains 'goassist: call proc.list'
+vgate_assert 15 serial-contains 'goassist: call refused proc.list no_receipt_key'
+vgate_assert 15 serial-contains 'goassist: committed conv=C0001'
+vgate_assert 15 serial-absent 'goassist: consent'
+vgate_assert 15 serial-absent 'goassist: act ok'
+vgate_assert 15 serial-absent 'goassist: rcpt'
+vgate_assert 15 serial-absent 'goassist: error'
+vgate_assert 15 serial-absent '[EXC] parking:'
+vgate_assert 15 python <<'PY'
+import os, sys
+share = os.environ["VG_SHARE"]
+# Nothing ran and nothing receipted: legs 11-14's four receipts stand,
+# but no fifth landed for the keyless act.
+adir = os.path.join(share, "ASSIST", "AUDIT")
+names = [n for n in os.listdir(adir)] if os.path.isdir(adir) else []
+if len(names) != 4:
+    sys.exit("lane count moved on a keyless act: %r" % names)
+body = open(os.path.join(share, "ASSIST", "C0001.CHAT"), "rb").read().decode("utf-8", "replace")
+for want in ("@@call proc.list\n", "@@result refuse:no_receipt_key\n"):
+    if want not in body:
+        sys.exit("no-key act missing %r\n%s" % (want, body))
+if "@@consent" in body:
+    sys.exit("a consent record landed for a keyless act\n%s" % body)
+print("no-key leg: named refusal before consent, no dispatch, no receipt")
+PY
+# Iteration hygiene, last act leg: restore the assist-hmac row, drop the
+# driver persona and the convs, and clear the lane so the NEXT
+# vgate_repeat's legs start clean — PRESETS.TXT must not leak across an
+# iteration.
+vgate_assert 15 python <<'PY'
+import glob, os
+share = os.environ["VG_SHARE"]
+sp = os.path.join(share, "SECRETS.TXT")
+rows = open(sp).read()
+if "assist-hmac\t" not in rows:
+    open(sp, "w").write(
+        rows + "assist-hmac\t1000\t" + "b5" * 32 + "\tGOASSIST.ELF,GOTOP.ELF\n")
+n = 0
+for f in glob.glob(os.path.join(share, "ASSIST", "*.CHAT")):
+    os.remove(f)
+    n += 1
+for f in glob.glob(os.path.join(share, "ASSIST", "AUDIT", "RCPT-*")):
+    os.remove(f)
 p = os.path.join(share, "ASSIST", "PRESETS.TXT")
 if os.path.exists(p):
     os.remove(p)
-print("store cleared (%d); PRESETS.TXT removed for the next iteration" % n)
+print("assist-hmac restored; store + lane cleared (%d) for the next iteration" % n)
 PY

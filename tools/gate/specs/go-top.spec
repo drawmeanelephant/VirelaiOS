@@ -160,8 +160,13 @@ print("staged PULSE.ELF into share (%d bytes)" % os.path.getsize(os.path.join(sh
 # app-bound row to be served, hence the OWNERS.TXT entry).
 import hashlib as _hashlib, hmac as _hmac
 KEY = "a5" * 32
+# M205d (#3811): the second lane's own row — assist-hmac, one uid_user
+# credential on the GOASSIST.ELF,GOTOP.ELF allowlist. AGENTD holds
+# neither; GOTOP verifies both lanes with two different keys.
+AKEY = "b5" * 32
 open(os.path.join(share, "SECRETS.TXT"), "w").write(
-    "#v1\n" + "agent-hmac\t1000\t" + KEY + "\tAGENTD.ELF,GOTOP.ELF\n")
+    "#v1\n" + "agent-hmac\t1000\t" + KEY + "\tAGENTD.ELF,GOTOP.ELF\n" +
+    "assist-hmac\t1000\t" + AKEY + "\tGOASSIST.ELF,GOTOP.ELF\n")
 open(os.path.join(share, "OWNERS.TXT"), "w").write(
     "#v1\nGOTOP.ELF\t644\t0\t-\n")
 adir = os.path.join(share, "AGENT", "AUDIT")
@@ -201,6 +206,30 @@ open(os.path.join(adir, "RCPT-01020304-00000008"), "wb").write(
 open(os.path.join(adir, "RCPT-01020304-0000000~"), "wb").write(b"tmp\n")
 open(os.path.join(adir, "OTHER.TXT"), "wb").write(b"x\n")
 print("staged audit lane (6 receipts, 1 forged, 1 replayed, + noise files)")
+# M205d (#3811): GOASSIST's act lane — the same record shape under its
+# own store, MAC'd under assist-hmac, plus the caller field naming
+# GOASSIST.ELF. One receipt verifies; one carries a one-byte tamper of
+# line 1 under its intact MAC (bad-mac).
+sdir = os.path.join(share, "ASSIST", "AUDIT")
+os.makedirs(sdir, exist_ok=True)
+
+
+def arcpt(seq, agent, verb, args, result, tamper=False, epoch="10111213"):
+    line = ('{"seq":%d,"epoch":"%s","agent":"%s","caller":"GOASSIST.ELF",'
+            '"verb":"%s","args":%s,"ts":1761234567,"mono":42,"result":"%s"}'
+            % (seq, epoch, agent, verb, args, result))
+    mac = _hmac.new(AKEY.encode(), line.encode(), _hashlib.sha256).hexdigest()
+    if tamper:
+        line = line[:20] + "X" + line[21:]
+    return (line + "\n" + mac + "\n").encode()
+
+
+open(os.path.join(sdir, "RCPT-10111213-00000001"), "wb").write(
+    arcpt(1, "C0001", "proc.list", '{}', "ok"))
+open(os.path.join(sdir, "RCPT-10111213-00000002"), "wb").write(
+    arcpt(2, "C0001", "fs.read", '{"path":"C0001.CHAT"}', "ok", tamper=True))
+open(os.path.join(sdir, "NOISE.TXT"), "wb").write(b"x\n")
+print("staged assist lane (2 receipts, 1 tampered, + noise)")
 # M111d run 06: GPUTRIANGLE.ELF is the compute-submit fixture — its `gemm`
 # journey is the real slot-90 workload whose counters the gpu tab must show.
 trsrc = os.path.join(".build", "go", "GPUTRIANGLE.ELF")
@@ -594,19 +623,25 @@ vgate_run 05 -- \
     --input-string 'g' \
     --input-string-after 'top: ready' \
     --script3 '$RUN_DIR/script5a.txt' \
-    --script3-after 'top: agent rcpt agent=- verb=session result=ok mark=v' \
+    --script3-after 'top: agent rcpt lane=agent agent=- verb=session result=ok mark=v' \
     --script-expect 'rx-gotop-agent-ok' --timeout 150
 
 vgate_assert 05 serial-contains 'exec: loaded GOTOP.ELF'
 vgate_assert 05 serial-contains 'top: ready'
 vgate_assert 05 serial-contains 'top: tab=agent'
 vgate_assert 05 serial-contains 'top: agent n=6 verified=4 bad=2 key=yes'
-vgate_assert 05 serial-contains 'top: agent rcpt agent=viewer verb=fs.read result=cap_required:file mark=v'
+vgate_assert 05 serial-contains 'top: agent rcpt lane=agent agent=viewer verb=fs.read result=cap_required:file mark=v'
 # #3391 F4: the replayed seq-2 body under the seq-8 name marks forged.
-vgate_assert 05 serial-contains 'top: agent rcpt agent=devin verb=fs.write result=ok mark=!'
-vgate_assert 05 serial-contains 'top: agent rcpt agent=mallory verb=gosh.run result=ok mark=!'
-vgate_assert 05 serial-contains 'top: agent rcpt agent=ghost verb=proc.list result=ok mark=v'
-vgate_assert 05 serial-contains 'top: agent rcpt agent=- verb=session result=ok mark=v'
+vgate_assert 05 serial-contains 'top: agent rcpt lane=agent agent=devin verb=fs.write result=ok mark=!'
+vgate_assert 05 serial-contains 'top: agent rcpt lane=agent agent=mallory verb=gosh.run result=ok mark=!'
+vgate_assert 05 serial-contains 'top: agent rcpt lane=agent agent=ghost verb=proc.list result=ok mark=v'
+vgate_assert 05 serial-contains 'top: agent rcpt lane=agent agent=- verb=session result=ok mark=v'
+# M205d (#3811): the second lane lists beside the first — the assist
+# receipt verified under assist-hmac, its one-byte tamper marked
+# bad-mac, and the summary carries both lanes' verdicts + key postures.
+vgate_assert 05 serial-contains 'assist n=2 verified=1 bad=1 akey=yes'
+vgate_assert 05 serial-contains 'top: agent rcpt lane=assist agent=C0001 caller=GOASSIST.ELF verb=proc.list result=ok mark=v'
+vgate_assert 05 serial-contains 'top: agent rcpt lane=assist agent=C0001 caller=GOASSIST.ELF verb=fs.read result=ok mark=!'
 vgate_assert 05 serial-contains 'top: win_close'
 vgate_assert 05 serial-contains 'top: exiting 43'
 vgate_assert 05 serial-contains 'rx-gotop-agent-ok'

@@ -336,11 +336,20 @@ class SessionAppsTest(unittest.TestCase):
         self.assertEqual(agent["2000"][3], "AGENTD.ELF")
         self.assertEqual(agent["1000"][3], "GOTOP.ELF")
         self.assertEqual(agent["2000"][2], agent["1000"][2])
+        # M205d (#3811): assist-hmac is ONE uid_user row on a two-app
+        # allowlist — GOASSIST writes the lane, GOTOP verifies it, and
+        # AGENTD holds neither row. (Not a two-row split: the kernel
+        # store dedupes on (name,uid).)
+        self.assertEqual(len(rows["assist-hmac"]), 1)
+        self.assertEqual(rows["assist-hmac"][0][1], "1000")
+        self.assertEqual(rows["assist-hmac"][0][3], "GOASSIST.ELF,GOTOP.ELF")
+        self.assertNotEqual(rows["assist-hmac"][0][2], agent["1000"][2])
         self.assertEqual(rows["host-int"][0][1], "1000")
         self.assertEqual(rows["host-int"][0][3], "GOTABWM.ELF")
         self.assertIn("GOUPD.ELF", self.owner_rows())
         self.assertIn("GOTOP.ELF", self.owner_rows())
         self.assertIn("AGENTD.ELF", self.owner_rows())
+        self.assertIn("GOASSIST.ELF", self.owner_rows())
         self.assertIn("GOTABWM.ELF", self.owner_rows())
         # The update pin is the os-update row's own public half.
         sys.path.insert(0, str(self.root / "tools/agentctl"))

@@ -6,6 +6,13 @@
 // receipt verified, forged-or-edited, or unverifiable — and a receipt the
 // MAC cannot back is shown as untrusted, never dropped silently.
 //
+// M205d (#3811) adds the second lane: GOASSIST's act receipts in
+// /host/ASSIST/AUDIT/, the same two-line record shape MAC'd under
+// `assist-hmac` — the row bound to GOASSIST.ELF,GOTOP.ELF that AGENTD
+// never holds. The tab reads both lanes with the one verifier; each
+// row names its lane and its caller, and a missing assist lane is a
+// missing lane, not an empty one.
+//
 // M173c (#3044) adds the kernel's half of the trail: the M161a
 // denial-receipt ring (slot 89 op 2, the same surface the trust tab
 // drains) renders below the lane rows, one row per receipt, with a
@@ -31,6 +38,12 @@ const (
 	agentHostDir = "/host/AGENT/AUDIT/"
 	// agentSecret is the SECRETS.TXT row both ends read: the receipt key.
 	agentSecret = "agent-hmac"
+	// The M205d second lane (#3811): GOASSIST's act receipts under its
+	// own store, verified under assist-hmac — a different key, a
+	// different principal, the same record shape.
+	assistCanon   = "/ASSIST/AUDIT"
+	assistHostDir = "/host/ASSIST/AUDIT/"
+	assistSecret  = "assist-hmac"
 	// receiptMax bounds one receipt file read (the writer's ceiling is
 	// ≈600 bytes; the bound exists so a foreign file cannot stretch the
 	// read).
@@ -58,7 +71,9 @@ const (
 
 // agentRow is one decoded receipt for display.
 type agentRow struct {
+	lane      string // "agent" (AGENTD's) or "assist" (GOASSIST's)
 	agent     string
+	caller    string // the caller field when the receipt carries one ("" on AGENTD's)
 	verb      string
 	arg       string // the bounded summary: path, cmd, event or ""
 	result    string
@@ -94,15 +109,23 @@ const (
 	filtAgent
 )
 
-// AgentView is the agent-activity tab state.
+// AgentView is the agent-activity tab state: the two lanes and the
+// kernel ring, each sampled independently — a missing lane marks its
+// own section, never the other's.
 type AgentView struct {
 	key           []byte
 	hasKey        bool
 	rows          []agentRow
+	akey          []byte
+	hasAKey       bool
+	arows         []agentRow
 	krows         []krcpt
-	listed        bool // the lane directory answered
+	listed        bool // the agent lane directory answered
+	alisted       bool // the assist lane directory answered
 	nVerif        int
 	nBad          int
+	anVerif       int
+	anBad         int
 	denialsErr    int64  // the op-2 errno, 0 when the ring was served
 	denialDropped uint64 // receipts the ring evicted unread
 	filter        auditFilter
@@ -136,6 +159,14 @@ func (v *AgentView) Refresh() {
 		v.key = nil
 		v.hasKey = false
 	}
+	var ab [agentKeyMax]byte
+	if n := agentKeyFn(assistSecret, ab[:]); n > 0 {
+		v.akey = append(v.akey[:0], ab[:n]...)
+		v.hasAKey = true
+	} else {
+		v.akey = nil
+		v.hasAKey = false
+	}
 	// The kernel's half drains independently of the lane — cursor 0
 	// re-reads the whole ring ("recent denials" is the ring's bound, not
 	// a growing ledger; the trust tab's drain keeps the same contract).
@@ -157,12 +188,25 @@ func (v *AgentView) Refresh() {
 			}
 		}
 	}
-	items, err := agentListFn(agentCanon)
+	v.listed = v.readLane(agentCanon, agentHostDir, v.key, v.hasKey,
+		"agent", "agent", &v.rows, &v.nVerif, &v.nBad)
+	v.alisted = v.readLane(assistCanon, assistHostDir, v.akey, v.hasAKey,
+		"assist", "user", &v.arows, &v.anVerif, &v.anBad)
+}
+
+// readLane samples one receipt lane: the RCPT-* names newest-first,
+// then each file's decode + MAC verdict under the lane's own key.
+// Assist rows class "user" — GOASSIST runs uid_user, so the principal
+// column says who held the key, and the `u` filter groups them with
+// the human's own activity. A directory that will not list reports
+// listed=false — the tab says the lane is missing rather than painting
+// an empty one.
+func (v *AgentView) readLane(canon, hostDir string, key []byte, hasKey bool,
+	lane, principal string, rows *[]agentRow, nVerif, nBad *int) bool {
+	items, err := agentListFn(canon)
 	if err != nil {
-		v.listed = false
-		return
+		return false
 	}
-	v.listed = true
 	var names []string
 	for _, it := range items {
 		if it.IsDir || !receiptNameOK(it.Name) {
@@ -181,24 +225,26 @@ func (v *AgentView) Refresh() {
 	if len(names) > agentRowMax {
 		names = names[:agentRowMax]
 	}
-	v.rows = v.rows[:0]
-	v.nVerif, v.nBad = 0, 0
+	*rows = (*rows)[:0]
+	*nVerif, *nBad = 0, 0
 	for _, name := range names {
-		row := v.readOne(name)
+		row := v.readOne(hostDir, name, key, hasKey, lane, principal)
 		switch row.mark {
 		case markVerified:
-			v.nVerif++
+			*nVerif++
 		case markForged, markMalformed:
-			v.nBad++
+			*nBad++
 		}
-		v.rows = append(v.rows, row)
+		*rows = append(*rows, row)
 	}
+	return true
 }
 
-// readOne decodes one receipt file and verifies it.
-func (v *AgentView) readOne(name string) agentRow {
-	row := agentRow{agent: "?", verb: "?", result: "?", mark: markMalformed, principal: "agent"}
-	b, r := agentReadFn(agentHostDir+name, receiptMax+1)
+// readOne decodes one receipt file and verifies it under the lane's key.
+func (v *AgentView) readOne(hostDir, name string, key []byte, hasKey bool,
+	lane, principal string) agentRow {
+	row := agentRow{lane: lane, agent: "?", verb: "?", result: "?", mark: markMalformed, principal: principal}
+	b, r := agentReadFn(hostDir+name, receiptMax+1)
 	if r < 0 || b == nil || len(b) > receiptMax {
 		row.result = "missing"
 		return row
@@ -217,14 +263,15 @@ func (v *AgentView) readOne(name string) agentRow {
 		return row
 	}
 	row.agent = fieldStr(fields, "agent", "?")
+	row.caller = fieldStr(fields, "caller", "")
 	row.verb = fieldStr(fields, "verb", "?")
 	row.result = fieldStr(fields, "result", "?")
 	row.seq = fieldStr(fields, "seq", "")
 	row.ts = fieldInt(fields, "ts")
 	row.arg = argsSummary(fields["args"])
 	row.mark = markUnknownKey
-	if v.hasKey {
-		mac := shlib.HMACSHA256(v.key, line)
+	if hasKey {
+		mac := shlib.HMACSHA256(key, line)
 		// F4 (#3391): the filename binds to the receipt's own epoch+seq —
 		// a MAC-verified body under a fresh name is a replayed receipt,
 		// flagged forged like any other planting.
@@ -239,8 +286,11 @@ func (v *AgentView) readOne(name string) agentRow {
 }
 
 // agentRowLabel renders one receipt row for the list (bounded; guest-safe).
+// The LANE column names which store the receipt came from — AGENTD's or
+// GOASSIST's — so a verified row also says whose act it proves.
 func agentRowLabel(r agentRow) string {
-	return padRight(clip(r.agent, 8), 9) + padRight(clip(r.principal, 9), 10) +
+	return padRight(clip(r.lane, 6), 7) + padRight(clip(r.agent, 8), 9) +
+		padRight(clip(r.principal, 9), 10) +
 		padRight(clip(r.verb, 13), 14) + padRight(clip(r.arg, 18), 19) +
 		padRight(clip(r.result, 17), 18) +
 		string(r.mark) + " " + clockText(r.ts)
@@ -277,8 +327,15 @@ func clockText(ts int64) string {
 	return two(s/3600) + ":" + two((s%3600)/60) + ":" + two(s%60)
 }
 
-// Lines is the tab's text, one entry per row: the lane section, then
-// the kernel receipts — both narrowed by the principal filter.
+// laneHead is the receipt table's column header — shared by both
+// lane sections (one record shape, one verifier).
+var laneHead = padRight("LANE", 7) + padRight("AGENT", 9) +
+	padRight("PRINCIPAL", 10) + padRight("VERB", 14) +
+	padRight("ARG", 19) + padRight("RESULT", 18) + "V TIME"
+
+// Lines is the tab's text, one entry per row: the AGENTD lane, the
+// GOASSIST lane, then the kernel receipts — all narrowed by the
+// principal filter.
 func (v *AgentView) Lines() []string {
 	if !v.refreshed {
 		return []string{"agent: not sampled"}
@@ -294,10 +351,26 @@ func (v *AgentView) Lines() []string {
 				"  key="+keyText(v.hasKey)+
 				"  filter="+v.filter.name(),
 			"",
-			padRight("AGENT", 9)+padRight("PRINCIPAL", 10)+padRight("VERB", 14)+
-				padRight("ARG", 19)+padRight("RESULT", 18)+"V TIME",
+			laneHead,
 		)
 		for _, r := range v.rows {
+			if v.filter.admits(r.principal) {
+				out = append(out, r.display)
+			}
+		}
+	}
+	if !v.alisted {
+		out = append(out, "", "assist: no receipt lane (/host/ASSIST/AUDIT missing)")
+	} else {
+		out = append(out, "",
+			"assist lane  receipts="+vi.Itoa64(int64(len(v.arows)))+
+				"  verified="+vi.Itoa64(int64(v.anVerif))+
+				"  bad="+vi.Itoa64(int64(v.anBad))+
+				"  key="+keyText(v.hasAKey),
+			"",
+			laneHead,
+		)
+		for _, r := range v.arows {
 			if v.filter.admits(r.principal) {
 				out = append(out, r.display)
 			}
@@ -329,9 +402,10 @@ func keyText(ok bool) string {
 	return "no"
 }
 
-// Marker is the serial line the gate asserts: the row count, the MAC
-// verdicts, whether the key row was served at all, the kernel-receipt
-// drain ("?" when the ring refused), and the principal filter in force.
+// Marker is the serial line the gate asserts: both lanes' row counts
+// and MAC verdicts, whether each key row was served at all, the
+// kernel-receipt drain ("?" when the ring refused), and the principal
+// filter in force.
 func (v *AgentView) Marker() string {
 	kr := "?"
 	if v.denialsErr == 0 {
@@ -342,23 +416,35 @@ func (v *AgentView) Marker() string {
 		" bad=" + vi.Itoa64(int64(v.nBad)) +
 		" key=" + keyText(v.hasKey) +
 		" krcpts=" + kr +
-		" filter=" + v.filter.name()
+		" filter=" + v.filter.name() +
+		" assist n=" + vi.Itoa64(int64(len(v.arows))) +
+		" verified=" + vi.Itoa64(int64(v.anVerif)) +
+		" bad=" + vi.Itoa64(int64(v.anBad)) +
+		" akey=" + keyText(v.hasAKey)
 }
 
 // RowMarker is one visible row's serial line (bounded callers cap the
-// count): filtered lane rows first, then the filtered kernel receipts —
-// so a narrowing filter narrows the marker dump too.
+// count): filtered agent-lane rows, then the filtered assist rows,
+// then the filtered kernel receipts — so a narrowing filter narrows
+// the marker dump too. Lane rows name their lane, and the caller when
+// the receipt carries one (GOASSIST's records name GOASSIST.ELF).
 func (v *AgentView) RowMarker(i int) (string, bool) {
 	n := 0
-	for _, r := range v.rows {
-		if !v.filter.admits(r.principal) {
-			continue
+	for _, rows := range [][]agentRow{v.rows, v.arows} {
+		for _, r := range rows {
+			if !v.filter.admits(r.principal) {
+				continue
+			}
+			if n == i {
+				m := "top: agent rcpt lane=" + r.lane + " agent=" + r.agent
+				if r.caller != "" {
+					m += " caller=" + r.caller
+				}
+				return m + " verb=" + r.verb +
+					" result=" + r.result + " mark=" + string(r.mark), true
+			}
+			n++
 		}
-		if n == i {
-			return "top: agent rcpt agent=" + r.agent + " verb=" + r.verb +
-				" result=" + r.result + " mark=" + string(r.mark), true
-		}
-		n++
 	}
 	for _, r := range v.krows {
 		if !v.filter.admits(r.class) {
