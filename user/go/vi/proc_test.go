@@ -194,3 +194,48 @@ func TestWaitDeadlineIsWallClock(t *testing.T) {
 		t.Fatalf("Wait returned after %v; the budget is not wall-clock", elapsed)
 	}
 }
+
+// fakeProcsBounded mirrors the kernel's whole-row truncation
+// (handle_procs): the snapshot is marshalled over every non-free row and
+// the copy is floored to what the caller's buffer holds, so a target past
+// the buffer's row capacity is genuinely invisible — the #3836 shape the
+// 16-row Probe produced on a >16-row registry.
+func fakeProcsBounded(t *testing.T, rows *[]ProcRow) func(num uintptr, a0, a1, a2, a3 uintptr) int64 {
+	return func(num uintptr, a0, a1, a2, a3 uintptr) int64 {
+		if num != SlotProcs {
+			t.Fatalf("unexpected slot %d", num)
+		}
+		buf := unsafe.Slice((*byte)(unsafe.Pointer(a0)), a1)
+		n := 0
+		for _, r := range *rows {
+			if (n+1)*ProcRowSize > len(buf) {
+				break
+			}
+			emitProcRow(buf, n, r.PID, r.State, r.ExitStatus)
+			n++
+		}
+		return int64(n)
+	}
+}
+
+// Issue #3836: the registry is 64 descriptors (M129b) and an exited row
+// stays non-free until a full registry recycles it, so sequential children
+// push the target's row past index 15 — a scan bounded to 16 rows reports
+// the child Absent forever and the wait burns its whole budget
+// (`wait: target not waitable` in the live-selfhost-go fleet leg). Probe
+// must see the whole table: a target at row 20 is found, not polled
+// Absent. Mutation-checked: a 16-row Probe buffer makes this ProbeAbsent.
+func TestProbeSeesPastRow16(t *testing.T) {
+	rows := make([]ProcRow, 0, 64)
+	for i := 0; i < 20; i++ {
+		rows = append(rows, ProcRow{PID: uint64(i), State: ProcExited, ExitStatus: 0})
+	}
+	rows[17].State = ProcRunning // the live child deep in the table
+	installHook(t, fakeProcsBounded(t, &rows))
+	if _, state := Probe(17); state != ProbeRunning {
+		t.Fatalf("Probe(17) state = %d, want ProbeRunning — the scan stopped early", state)
+	}
+	if st, state := Probe(19); state != ProbeExited || st != 0 {
+		t.Fatalf("Probe(19) = (%d, %d), want (0, ProbeExited)", st, state)
+	}
+}

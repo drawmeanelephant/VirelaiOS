@@ -48,7 +48,14 @@ func Probe(pid int64) (int64, int) {
 	if pid < 0 {
 		return -1, ProbeAbsent
 	}
-	var rows [16]ProcRow
+	// The scan must cover the WHOLE registry — kernel/src/process.zig
+	// max_processes is 64 since M129b (#2611), and an exited descriptor
+	// stays non-free until the full registry recycles it, so a fleet of
+	// sequential children quickly pushes a live row past index 15. A
+	// 16-row buffer reads a truncated snapshot and reports the target
+	// Absent forever — the live-selfhost-go `wait: target not waitable`
+	// wedge (issue #3836).
+	var rows [64]ProcRow
 	n, rc := Procs(rows[:])
 	if rc < 0 {
 		return -1, ProbeRunning // transient read failure: keep waiting
