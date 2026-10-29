@@ -2,8 +2,10 @@
 // switch (learn, unicast forward, broadcast + multicast flood, drop to
 // self, the bounded MAC table), the hub DHCP lease pool (one lease per
 // MAC, bounded, never reissuing a held lease), and the --mac parser's
-// named refusals. Runs WITHOUT a VM or a bound socket — NetHubSwitch /
-// NetHubDhcp / netMacParse are pure state.
+// named refusals. Everything runs WITHOUT a VM — NetHubSwitch /
+// NetHubDhcp / netMacParse / netHubRecvFatal are pure state; only the
+// burst-regression test binds real sockets (under /tmp, self-cleaning).
+import Darwin
 import XCTest
 
 @testable import VMRunner
@@ -128,6 +130,93 @@ final class NetHubTests: XCTestCase {
         for ip in held {
             XCTAssertTrue(ip[3] >= NetHubDhcp.poolFirst)
             XCTAssertTrue(Int(ip[3]) < Int(NetHubDhcp.poolFirst) + NetHubDhcp.poolLimit)
+        }
+    }
+
+    // The wedge regression at socket level (real bound sockets in /tmp —
+    // the rest of this suite is pure state): a bound hub socket must
+    // absorb a burst far past the 4096-byte default SO_RCVBUF (~2
+    // datagrams of 1400 B before the sender's sendto fails ENOBUFS). 48
+    // frames of 1200 B sent while the owner is not draining must all
+    // queue; the pre-fix socket refused the burst at sendto, which is how
+    // hub-transiting legs lost frames silently mid-run.
+    func testHubSocketAbsorbsBurst() throws {
+        let dir = "/tmp/nethub-test-\(getpid())"
+        try? FileManager.default.removeItem(atPath: dir)
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let owner = try NetHub.attach(path: dir + "/h.sock")
+        defer { owner.unlinkBoundPaths(); close(owner.fd) }
+        // The queue the socket actually got: far past the 4 KiB default.
+        var rcv: Int32 = 0
+        var rcvLen = socklen_t(MemoryLayout<Int32>.size)
+        XCTAssertEqual(getsockopt(owner.fd, SOL_SOCKET, SO_RCVBUF, &rcv, &rcvLen), 0)
+        XCTAssertGreaterThan(rcv, 64 * 1024, "SO_RCVBUF must be deepened, got \(rcv)")
+        // A bound sender (macOS wants a name on unix datagram sockets).
+        let sender = socket(AF_UNIX, SOCK_DGRAM, 0)
+        XCTAssertGreaterThanOrEqual(sender, 0)
+        defer { close(sender); unlink(dir + "/s.sock") }
+        guard var senderAddr = NetHub.unixAddr(dir + "/s.sock") else { return XCTFail("sender path") }
+        let bindRC = withUnsafePointer(to: &senderAddr) { p in
+            p.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.bind(sender, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
+        XCTAssertEqual(bindRC, 0)
+        var addr = owner.hubAddr
+        let frame = [UInt8](repeating: 0x5a, count: 1200)
+        var sent = 0
+        for _ in 0..<48 {
+            let rc = withUnsafePointer(to: &addr) { p in
+                p.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                    sendto(sender, frame, frame.count, 0, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+                }
+            }
+            if rc >= 0 { sent += 1 }
+        }
+        XCTAssertEqual(sent, 48, "the hub socket must queue the whole burst (old default failed at ~2)")
+        var buf = [UInt8](repeating: 0, count: 2048)
+        var got = 0
+        while recv(owner.fd, &buf, buf.count, 0) > 0 { got += 1 }
+        XCTAssertEqual(got, 48, "every queued datagram must be deliverable, not dropped")
+    }
+
+    // The host->guest userspace queue (the socketpair-side half of the
+    // wedge fix — the pair keeps its 4096-byte kernel buffer because
+    // deepening SO_RCVBUF broke VZ delivery): sends past the kernel
+    // queue must hold in userspace and flush in order, not drop.
+    func testGuestQueueHoldsBurstInOrder() throws {
+        var fds: [Int32] = [0, 0]
+        XCTAssertEqual(socketpair(AF_UNIX, SOCK_DGRAM, 0, &fds), 0)
+        let saved = netCaptureReadSocket
+        netCaptureReadSocket = FileHandle(fileDescriptor: fds[1], closeOnDealloc: true)
+        defer { netCaptureReadSocket = saved; close(fds[0]) }
+        let q = NetGuestQueue()
+        // 24 frames of 1000 B: the pair admits ~3-4, the rest queue.
+        for i in 0..<24 { q.send([UInt8](repeating: UInt8(i), count: 1000)) }
+        var buf = [UInt8](repeating: 0, count: 2048)
+        var got = [Int]()
+        // Interleave reads with flushes — the queue must cough up every
+        // held frame as space frees.
+        for _ in 0..<64 {
+            var tv = timeval(tv_sec: 0, tv_usec: 10_000)
+            setsockopt(fds[0], SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+            let n = recv(fds[0], &buf, buf.count, 0)
+            if n > 0 { got.append(Int(buf[0])) } else { q.flush() }
+            if got.count == 24 { break }
+        }
+        XCTAssertEqual(got, Array(0..<24), "every queued frame must arrive, in send order")
+    }
+
+    // The rx loop's break verdict (the mid-run-wedge fix): only a dead fd
+    // stops the loop — every other errno is transient and must be ridden,
+    // because a silently exited rx thread takes a whole relay direction
+    // down while the rest of the runner keeps working.
+    func testRecvFatalVerdict() {
+        XCTAssertTrue(netHubRecvFatal(EBADF))
+        XCTAssertTrue(netHubRecvFatal(ENOTSOCK))
+        for e in [EAGAIN, EINTR, ECONNREFUSED, ENOBUFS, ENOENT, ETIMEDOUT, EMSGSIZE, ENOMEM] {
+            XCTAssertFalse(netHubRecvFatal(e), "errno \(e) must be ridden, not fatal")
         }
     }
 
