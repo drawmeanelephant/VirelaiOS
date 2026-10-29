@@ -23,9 +23,6 @@ import (
 // pendingFleet maps each apps.txt .ELF row that is not yet a fleet row to
 // the M207 card that adds it. Landing a card removes its names here.
 var pendingFleet = map[string]string{
-	// M207c (#3819): need hash/crc32 in the staged std surface.
-	"GOPAINT.ELF":  "#3819",
-	"GOREADER.ELF": "#3819",
 	// M207d (#3820): the crypto set.
 	"GOVAULT.ELF": "#3820",
 }

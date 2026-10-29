@@ -1,6 +1,6 @@
 # fleet.txt -- M112a (#2413): the pinned fleet GOBUILD builds in-guest.
 #
-# The fleet is pinned, not discovered: the twenty-eight `.ELF` rows of
+# The fleet is pinned, not discovered: the thirty `.ELF` rows of
 # image/apps.txt the drift test does not hold pending (ZC.BIN and
 # TABWM.BIN are Zig, out of scope) plus the five Go ELFs that are not
 # apps.txt rows — GODIFF, FLINT, STORE, AGENTD and GOBUILD itself.
@@ -37,6 +37,7 @@ GOREC.ELF virelai/gorec
 GOSNAP.ELF virelai/gosnap
 GOASSIST.ELF virelai/goassist
 GOSHEET.ELF virelai/gosheet
+GOREADER.ELF virelai/goreader
 GOCLOCK.ELF virelai/goclock
 GOMINE.ELF virelai/gomine
 GOSOL.ELF virelai/gosol
@@ -44,6 +45,7 @@ GOEMOJI.ELF virelai/goemoji
 GOIRC.ELF virelai/goirc
 GOMAIL.ELF virelai/gomail
 GOA11Y.ELF virelai/goa11y
+GOPAINT.ELF virelai/gopaint
 FLINT.ELF virelai/flint
 # M110c (#2405) split virelai/store into a library package plus a thin CLI
 # at store/main — the row names the main package, not the library.

@@ -140,7 +140,7 @@ for line in open("user/go/gobuild/fleet.txt"):
 # The count is derived, never typed (M207a): a fleet row addition edits
 # fleet.txt, not this spec. What stays pinned is the refusal table —
 # every table name must be a row.
-want_refused = {"GOSTALGIA.ELF", "GOFILES.ELF", "PULSE.ELF", "GOHELP.ELF", "WEB.ELF"}
+want_refused = {"GOSTALGIA.ELF", "GOFILES.ELF", "PULSE.ELF", "GOHELP.ELF"}
 missing = want_refused - {n for n, _ in rows}
 if missing:
     sys.exit("fleet.txt dropped pinned refusal rows: %s" % sorted(missing))
@@ -427,7 +427,7 @@ vgate_assert 01 serial-contains 'fleet: GOCALC.ELF built sha256='
 vgate_assert 01 serial-contains 'fleet: NOTE.ELF built sha256='
 vgate_assert 01 serial-contains 'fleet: GOEDIT.ELF built sha256='
 vgate_assert 01 serial-contains 'fleet: GOTERM.ELF built sha256='
-vgate_assert 01 serial-contains 'fleet: WEB.ELF refused dep_unsupported'
+vgate_assert 01 serial-contains 'fleet: WEB.ELF built sha256='
 vgate_assert 01 serial-contains 'fleet: GOSH.ELF built sha256='
 vgate_assert 01 serial-contains 'fleet: GOTOP.ELF built sha256='
 vgate_assert 01 serial-contains 'fleet: GOSET.ELF built sha256='
@@ -454,7 +454,7 @@ import os, sys
 ser = open(os.environ["VG_SER"], errors="replace").read()
 rows = [l.split()[0] for l in open("user/go/gobuild/fleet.txt")
         if l.strip() and not l.startswith("#")]
-refused = {"GOSTALGIA.ELF", "GOFILES.ELF", "PULSE.ELF", "GOHELP.ELF", "WEB.ELF"}
+refused = {"GOSTALGIA.ELF", "GOFILES.ELF", "PULSE.ELF", "GOHELP.ELF"}
 want = "fleet: fleet OK built=%d refused=%d" % (
     len(rows) - len(refused), len(refused))
 if want not in ser:
@@ -483,7 +483,7 @@ import os, sys
 ser = open(os.environ["VG_SER"], errors="replace").read()
 rows = [l.split()[0] for l in open("user/go/gobuild/fleet.txt")
         if l.strip() and not l.startswith("#")]
-refused = {"GOSTALGIA.ELF", "GOFILES.ELF", "PULSE.ELF", "GOHELP.ELF", "WEB.ELF"}
+refused = {"GOSTALGIA.ELF", "GOFILES.ELF", "PULSE.ELF", "GOHELP.ELF"}
 want = "release: fleet built=%d refused=%d" % (
     len(rows) - len(refused), len(refused))
 if want not in ser:
