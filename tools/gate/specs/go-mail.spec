@@ -1140,6 +1140,11 @@ PY
 # GOFILES' contact face, and payload.bin refuses by type — saved,
 # never executed. The leg's own script clears ATTACH, the saved names,
 # and GOCLOCK.ALARM first so all three runs are byte-identical.
+# exec spawns async (the shell does not wait), so each leg runs under
+# `&` and the following `fg` lines hold it: one fg waits up to ~5 ticks
+# on the latest background job, so the run of fgs gives the fetch its
+# whole window before the opens read MAIL/ATTACH — without the wait
+# the opens race the fetch and refuse on the missing index.
 vgate_file script-m.txt <<'EOF'
 net ip 10.0.0.1
 net arp 10.0.0.2
@@ -1164,9 +1169,45 @@ exec GOMAIL.ELF
 EOF
 
 vgate_file script3-m.txt <<'EOF'
-exec GOMAIL.ELF --tls fetch Attach 1 2 3
-exec GOMAIL.ELF open invite.ics
-exec GOMAIL.ELF open card.vcf
+exec GOMAIL.ELF --tls fetch Attach 1 2 3 &
+fg
+fg
+fg
+fg
+fg
+fg
+fg
+fg
+fg
+fg
+fg
+fg
+fg
+fg
+fg
+fg
+fg
+fg
+fg
+fg
+exec GOMAIL.ELF open invite.ics &
+fg
+fg
+fg
+fg
+fg
+fg
+fg
+fg
+exec GOMAIL.ELF open card.vcf &
+fg
+fg
+fg
+fg
+fg
+fg
+fg
+fg
 exec GOMAIL.ELF open payload.bin
 EOF
 

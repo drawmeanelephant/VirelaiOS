@@ -127,6 +127,17 @@ final class NetHubSwitch {
         if let p = macToPort[dst] { return p == port ? [] : [p] }
         return ports.filter { $0 != port }
     }
+
+    /// A port whose socket is gone (its runner exited — sendto names it
+    /// ENOENT/ECONNREFUSED): stop flooding to it and drop every MAC
+    /// learned against it, so a guest that rejoins with the same MAC on
+    /// a new port re-learns instead of resolving to the dead one.
+    func forget(_ port: String) {
+        ports.removeAll { $0 == port }
+        let gone = macToPort.filter { $0.value == port }.map(\.key)
+        for k in gone { macToPort.removeValue(forKey: k) }
+        learnOrder.removeAll { gone.contains($0) }
+    }
 }
 
 /// The receive queue every hub-side socket asks for: 1 MiB ≈ 700+
@@ -355,15 +366,19 @@ final class NetHub {
     /// refuses (ECONNREFUSED), a live hub accepts. Stale -> unlink and
     /// retake as owner; live -> bind <path>.cli-<pid> and relay to the
     /// hub. The bound socket asks for the deep receive queue
-    /// (netHubRcvBufBytes) and keeps the 250 ms receive timeout so the
-    /// RX thread exits cleanly on `stop` — the mid-run-wedge fix.
+    /// (netHubRcvBufBytes) and keeps a short receive timeout so the
+    /// RX thread exits cleanly on `stop` and re-flushes the host->guest
+    /// queue every wake — #3849 tightened it 250 ms -> 25 ms: a queued
+    /// frame must wait at most one wake on the pair making room, and the
+    /// guest's ARP learn window is only ~2 s, so 250 ms of queueing delay
+    /// per hop was eating the whole budget on a loaded host.
     static func attach(path: String) throws -> NetHub {
         guard let hubAddr = unixAddr(path) else { throw NetHubError.pathTooLong }
         let fd = Darwin.socket(AF_UNIX, SOCK_DGRAM, 0)
         guard fd >= 0 else { throw NetHubError.socketFailed(errno) }
 
         func finishOwner() throws -> NetHub {
-            var tv = timeval(tv_sec: 0, tv_usec: 250_000)
+            var tv = timeval(tv_sec: 0, tv_usec: 25_000)
             setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
             var rcvbuf = netHubRcvBufBytes
             setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, socklen_t(MemoryLayout<Int32>.size))
@@ -405,7 +420,7 @@ final class NetHub {
         guard let clientAddr = unixAddr(clientPath) else { close(fd); throw NetHubError.pathTooLong }
         unlink(clientPath) // our own pid namespace — a leftover is stale
         guard bindFd(fd, clientAddr) == 0 else { close(fd); throw NetHubError.bindFailed(errno) }
-        var tv = timeval(tv_sec: 0, tv_usec: 250_000)
+        var tv = timeval(tv_sec: 0, tv_usec: 25_000)
         setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
         var rcvbuf = netHubRcvBufBytes
         setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, socklen_t(MemoryLayout<Int32>.size))
@@ -423,7 +438,7 @@ final class NetHub {
     /// is a client's frame — run the switch. Client role: each inbound
     /// datagram is a hub delivery for the local guest — write it into
     /// the attachment socketpair (VZ reads fds[0]). The socket is
-    /// blocking with a 250 ms receive timeout (attach) — the kernel
+    /// blocking with a 25 ms receive timeout (attach) — the kernel
     /// wakes the read on arrival and the timeout lets `stop` exit the
     /// thread cleanly. The loop exits only on stop or a dead fd
     /// (netHubRecvFatal); its exit is logged, and unexpected errnos are
@@ -436,7 +451,7 @@ final class NetHub {
             var senderLen = socklen_t(MemoryLayout<sockaddr_storage>.size)
             var transientErrs = 0
             while !self.stop {
-                // Every wake — a datagram or the 250 ms timeout — also
+                // Every wake — a datagram or the 25 ms timeout — also
                 // drains the host->guest queue as the pair makes room.
                 netGuestQueue.flush()
                 let n = withUnsafeMutablePointer(to: &sender) { sp in
@@ -528,9 +543,10 @@ final class NetHub {
     /// the NetGuestQueue feeding the attachment socketpair — the deep
     /// queue is userspace because deepening the pair's SO_RCVBUF broke
     /// VZ delivery) or a client's bound socket. A failed sendto (ENOBUFS
-    /// while the peer's queue is full, a client path whose runner is
-    /// gone) is a drop — counted and logged bounded, never silently
-    /// swallowed like the wedge hid behind.
+    /// while the peer's queue is full) is a drop — counted and logged
+    /// bounded, never silently swallowed like the wedge hid behind. A
+    /// client path whose runner is gone leaves the segment instead: it
+    /// is not a loss, and flooding to it forever made it look like one.
     private var sendDrops = 0
 
     private func noteDrop(_ port: String, _ e: Int32) {
@@ -552,7 +568,15 @@ final class NetHub {
                 sendto(fd, frame, frame.count, 0, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
             }
         }
-        if rc < 0 { noteDrop(port, errno) }
+        if rc < 0 {
+            let e = errno
+            if e == ENOENT || e == ECONNREFUSED {
+                sw.forget(port)
+                FileHandle.standardError.write(Data("NET-HUB: client \(port) is gone (errno \(e)) — removed from the segment\n".utf8))
+                return
+            }
+            noteDrop(port, e)
+        }
     }
 }
 

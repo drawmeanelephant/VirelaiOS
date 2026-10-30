@@ -103,6 +103,19 @@ final class NetHubTests: XCTestCase {
         XCTAssertFalse(dests.contains("/h.cli-0"))
     }
 
+    // A departed port leaves the segment: no more floods to it, and its
+    // MAC re-learns on the port the same guest rejoins from.
+    func testForgetDepartedPort() {
+        let sw = NetHubSwitch()
+        _ = sw.ingress(frame(dst: bcast, src: macA), from: "/h.cli-1")
+        _ = sw.ingress(frame(dst: bcast, src: macB), from: "/h.cli-2")
+        sw.forget("/h.cli-1")
+        XCTAssertEqual(sw.ports, ["/h.cli-2"])
+        XCTAssertEqual(sw.ingress(frame(dst: bcast, src: macB), from: "/h.cli-2"), [])
+        _ = sw.ingress(frame(dst: bcast, src: macA), from: "/h.cli-3")
+        XCTAssertEqual(sw.ingress(frame(dst: macA, src: macB), from: "/h.cli-2"), ["/h.cli-3"])
+    }
+
     // The DHCP pool hands one lease per MAC, distinct per requester,
     // and a re-ask returns the same lease.
     func testDhcpLeasePerMac() {

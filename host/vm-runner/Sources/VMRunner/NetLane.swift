@@ -225,6 +225,19 @@ var netTcpRespondHostIP: [UInt8]?
 
 var netTcpRespondHostPort: UInt16?
 
+// Each --net-tcp-respond flag is one target the responder answers; a
+// --net-tcp-respond-relay names the upstream of the target declared just
+// before it (one boot can relay IMAP and SMTP to two fixture servers).
+// The mode suffix stays runner-wide.
+struct NetTcpRespondTarget {
+    let ip: [UInt8]
+    let port: UInt16
+    var relayPort: UInt16?
+    var relayHost: String?
+}
+
+var netTcpRespondTargets: [NetTcpRespondTarget] = []
+
 // Card N11 (claim 5357): the optional `:handshake` responder mode —
 // answer the SYN with a SYN-ACK, then go SILENT on data/FIN (a
 // deterministic data black hole for the gate's retransmission-bound
@@ -320,8 +333,8 @@ var netTcpSrvConns: [String: NetTcpSrvConn] = [:]
 /// refused with an RST (the same honesty the guest's table applies).
 let netTcpSrvConnLimit = 16
 
-func netTcpConnKey(_ guestIP: [UInt8], _ guestPort: UInt16) -> String {
-    "\(guestIP[0]).\(guestIP[1]).\(guestIP[2]).\(guestIP[3]):\(guestPort)"
+func netTcpConnKey(_ guestIP: [UInt8], _ guestPort: UInt16, _ hostPort: UInt16) -> String {
+    "\(guestIP[0]).\(guestIP[1]).\(guestIP[2]).\(guestIP[3]):\(guestPort)>\(hostPort)"
 }
 
 // M117c (#2475): the v6 connection key — the v6 address rendered
@@ -346,7 +359,7 @@ func netTcp6SrvConn(for buf: [UInt8]) -> NetTcpSrvConn {
 /// segment reaches the per-connection state machine (byte-identical with
 /// today's always-on scalar for the single-connection case).
 func netTcpSrvConn(for buf: [UInt8]) -> NetTcpSrvConn {
-    let key = netTcpConnKey([UInt8](buf[26..<30]), (UInt16(buf[34]) << 8) | UInt16(buf[35]))
+    let key = netTcpConnKey([UInt8](buf[26..<30]), (UInt16(buf[34]) << 8) | UInt16(buf[35]), (UInt16(buf[36]) << 8) | UInt16(buf[37]))
     if let conn = netTcpSrvConns[key] { return conn }
     let conn = NetTcpSrvConn()
     netTcpSrvConns[key] = conn
