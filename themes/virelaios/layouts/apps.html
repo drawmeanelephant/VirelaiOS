@@ -14,12 +14,14 @@
 
   <header class="site-header">
     <div class="site-header__inner">
-      <div class="brand">
-        <p class="brand__kicker">A from-scratch AArch64 operating system</p>
-        <p class="brand__name"><a href="../index.html">VirelaiOS</a></p>
-        <p class="brand__tagline">Not Linux, not Unix, not QEMU — real UEFI firmware on Apple silicon, and someone is taking the engineering very seriously.</p>
+      <div class="site-header__masthead">
+        <div class="brand">
+          <p class="brand__kicker">A from-scratch AArch64 operating system</p>
+          <p class="brand__name"><a href="../index.html">VirelaiOS</a></p>
+          <p class="brand__tagline">Not Linux, not Unix, not QEMU — real UEFI firmware on Apple silicon, and someone is taking the engineering very seriously.</p>
+        </div>
       </div>
-      <nav class="primary-nav" aria-label="Primary">
+      <nav class="primary-nav" aria-label="Project sections">
         <ul>
           <li><a href="../index.html">Home</a></li>
           <li><a href="../getting-started.html">Getting started</a></li>
@@ -48,12 +50,12 @@
       {{metadata}}
     </main>
 
-    <aside class="sidebar">
-      <div class="sidebar__block">
+    <aside class="sidebar" aria-label="Documentation navigation">
+      <div class="sidebar__block sidebar__block--map">
         <h2 class="sidebar__title">Site map</h2>
         {{nav}}
       </div>
-      <div class="sidebar__block">
+      <div class="sidebar__block sidebar__block--toc">
         <h2 class="sidebar__title">On this page</h2>
         {{toc}}
       </div>
