@@ -1144,7 +1144,12 @@ PY
 # `&` and the following `fg` lines hold it: one fg waits up to ~5 ticks
 # on the latest background job, so the run of fgs gives the fetch its
 # whole window before the opens read MAIL/ATTACH — without the wait
-# the opens race the fetch and refuse on the missing index.
+# the opens race the fetch and refuse on the missing index. The opened
+# handlers are grandchildren — fg waits only for the gomail job that
+# spawned them — so the leg's --script-expect-tail holds the VM 30 s
+# past the payload.bin refuse marker: GOFILES.ELF streams 3.5 MiB and
+# Go-inits before its contact markers print, which the default 1.5 s
+# tail cut off (#3858).
 vgate_file script-m.txt <<'EOF'
 net ip 10.0.0.1
 net arp 10.0.0.2
@@ -1222,7 +1227,7 @@ vgate_run m1 -- \
     --input-chords 'c,b,o,b,tab,g,a,t,e,space,s,y,n,c,tab,g,a,t,e,space,m,a,i,l,ctrl-s,q' \
     --input-chords-after 'gomail: window' \
     --script3 '$RUN_DIR/script3-m.txt' --script3-after 'gomail: closed' \
-    --script-expect 'gomail: refuse open payload.bin application/octet-stream' --timeout 300
+    --script-expect 'gomail: refuse open payload.bin application/octet-stream' --script-expect-tail 30 --timeout 300
 
 vgate_assert m1 serial-contains 'exec: loaded GOTABWM.ELF'
 vgate_assert m1 serial-contains 'gotabwm: mode live'
@@ -1292,7 +1297,7 @@ vgate_run m2 -- \
     --input-chords 'c,b,o,b,tab,g,a,t,e,space,s,y,n,c,tab,g,a,t,e,space,m,a,i,l,ctrl-s,q' \
     --input-chords-after 'gomail: window' \
     --script3 '$RUN_DIR/script3-m.txt' --script3-after 'gomail: closed' \
-    --script-expect 'gomail: refuse open payload.bin application/octet-stream' --timeout 300
+    --script-expect 'gomail: refuse open payload.bin application/octet-stream' --script-expect-tail 30 --timeout 300
 
 vgate_assert m2 serial-contains 'gomail: window'
 vgate_assert m2 serial-contains 'gomail: compose'
@@ -1334,7 +1339,7 @@ vgate_run m3 -- \
     --input-chords 'c,b,o,b,tab,g,a,t,e,space,s,y,n,c,tab,g,a,t,e,space,m,a,i,l,ctrl-s,q' \
     --input-chords-after 'gomail: window' \
     --script3 '$RUN_DIR/script3-m.txt' --script3-after 'gomail: closed' \
-    --script-expect 'gomail: refuse open payload.bin application/octet-stream' --timeout 300
+    --script-expect 'gomail: refuse open payload.bin application/octet-stream' --script-expect-tail 30 --timeout 300
 
 vgate_assert m3 serial-contains 'gomail: window'
 vgate_assert m3 serial-contains 'gomail: compose'
