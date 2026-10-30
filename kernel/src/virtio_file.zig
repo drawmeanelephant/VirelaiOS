@@ -714,10 +714,20 @@ pub fn list(raw_path: []const u8, out: *ListResult) u8 {
     // uses out.count as the page offset, so a stale count would page past
     // the new snapshot's rows and serve the previous listing.
     vf_list_scratch.count = 0;
-    const status = if (prefer_fuse())
+    const fuse = prefer_fuse();
+    const status = if (fuse)
         virtio_fs.snapshot(path, &vf_list_scratch)
     else
         snapshot_exchange_seq(path, &vf_list_scratch);
+    // #3846: a directory past directory.entry_max refuses dir_open with
+    // st_limit — a complete snapshot cannot exist, but this caller's ABI
+    // is the legacy first-rows window (file_table.dir_list clamps the
+    // answer to 16 rows; there is no cursor), so the window still comes
+    // from the truncating LIST op every pre-M134a listing rode. Only
+    // st_limit falls back: st_path_limit (a name the row cannot carry)
+    // and the rest keep their named refusals, and the FUSE backend has
+    // no LIST op to fall back to.
+    if (status == st_limit and !fuse) return legacy_list(path, out);
     out.status = status;
     if (status != st_ok) return status;
     for (vf_list_scratch.entries[0..vf_list_scratch.count]) |entry| {
@@ -733,6 +743,24 @@ pub fn list(raw_path: []const u8, out: *ListResult) u8 {
         e.type = if (entry.is_dir != 0) dir_type_dir else dir_type_file;
         e.size = entry.size;
         out.entries[out.count] = e;
+        out.count += 1;
+    }
+    return st_ok;
+}
+
+/// The truncating LIST op (0x01) every pre-M134a listing rode: the host
+/// answers the first ≤list_max_entries 40-byte rows, sorted. Kept for the
+/// one directory shape the snapshot protocol cannot complete — more than
+/// directory.entry_max entries, where dir_open's st_limit is the honest
+/// whole-snapshot answer but the window ABI only ever asked for a prefix.
+/// Caller holds vf_lock.
+fn legacy_list(path: []const u8, out: *ListResult) u8 {
+    const rep = snapshot_exchange(op_list, path) orelse return st_host_error;
+    out.status = rep.status;
+    if (rep.status != st_ok) return rep.status;
+    var off: usize = 0;
+    while (off + entry_row_len <= rep.data.len and out.count < list_max_entries) : (off += entry_row_len) {
+        out.entries[out.count] = decode_entry_row(rep.data[off .. off + entry_row_len]);
         out.count += 1;
     }
     return st_ok;
@@ -2397,4 +2425,49 @@ test "virtio_file: #2853 — every snapshot sequence starts paging at row 0" {
     r.used.idx = 2;
     try testing.expectEqual(st_not_found, snapshot_exchange_seq("MISSING", &dirty));
     try testing.expectEqual(@as(usize, 0), dirty.count);
+}
+
+test "virtio_file: #3846 — a st_limit dir_open falls back to the truncating LIST op" {
+    // A share dir past directory.entry_max refuses dir_open (st_limit):
+    // the complete snapshot cannot exist, but the window ABI this
+    // serves only ever asked for a prefix — the pre-M134a truncating
+    // LIST op answers it. The staged st_limit frame is re-read by the
+    // fallback exchange too, so the second consumed used-ring entry IS
+    // the fallback op going out; without it list() returns after one
+    // exchange and every share-dir Stat reads ENOENT (observed on
+    // live-selfhost-go leg 04 as `mkdir /host/TESTOUT: no such device`).
+    const head = arm_test_transport();
+    defer disarm_test_transport();
+    const r = &virtio_custom.cv_rings[virtio_custom.file_qidx];
+    vf_reply_buf[0] = st_limit;
+    write_le_u16(&vf_reply_buf, 1, 0);
+    r.used.ring[0] = .{ .id = head, .len = reply_hdr_len };
+    r.used.ring[1] = .{ .id = head, .len = reply_hdr_len };
+    r.used.idx = 2;
+    var res: ListResult = .{};
+    try testing.expectEqual(st_limit, list("", &res));
+    try testing.expectEqual(@as(u16, 2), r.used.idx);
+}
+
+test "virtio_file: #3846 — legacy_list decodes the truncating LIST reply" {
+    // The fallback's row shape: [status][dlen][40-byte rows]. One staged
+    // exchange answers st_ok + one file row; the decode is the pre-M134a
+    // path verbatim.
+    const head = arm_test_transport();
+    defer disarm_test_transport();
+    const r = &virtio_custom.cv_rings[virtio_custom.file_qidx];
+    var row: [entry_row_len]u8 = @splat(0);
+    @memcpy(row[0..7], "DIR.TXT");
+    row[31] = dir_type_file;
+    write_le_u64(&row, 32, 99);
+    vf_reply_buf[0] = st_ok;
+    write_le_u16(&vf_reply_buf, 1, entry_row_len);
+    @memcpy(vf_reply_buf[reply_hdr_len..][0..entry_row_len], &row);
+    r.used.ring[0] = .{ .id = head, .len = reply_hdr_len + entry_row_len };
+    r.used.idx = 1;
+    var res: ListResult = .{};
+    try testing.expectEqual(st_ok, legacy_list("", &res));
+    try testing.expectEqual(@as(usize, 1), res.count);
+    try testing.expectEqualStrings("DIR.TXT", res.entries[0].name[0..res.entries[0].name_len]);
+    try testing.expectEqual(@as(u64, 99), res.entries[0].size);
 }
