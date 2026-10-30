@@ -875,6 +875,16 @@ if ! tag_has "$F/runtime/netpoll.go" virelai; then
     edits=$((edits+1)); log "patched runtime/netpoll.go (enable poller core for virelai)"
 fi
 
+# --- 3i. testing/testing.go: t.TempDir name bound (issue #3854) --------
+# The guest share caps a path component at 31 bytes (the frozen Dirent
+# row); a TempDir name is the test's full name plus MkdirTemp's random
+# digits, and stock's 64-rune pattern limit fits nothing. tempDirNameMax
+# is the per-GOOS bound (overlay/testing/).
+if ! have "$F/testing/testing.go" 'tempDirNameMax'; then
+    gsed -i 's/pattern = pattern\[:min(len(pattern), 64)\]/pattern = pattern[:min(len(pattern), tempDirNameMax)]/' "$F/testing/testing.go"
+    edits=$((edits+1)); log "patched testing/testing.go (TempDir name bound)"
+fi
+
 # --- 4. commit the delta ----------------------------------------------
 if [ "$edits" -gt 0 ]; then
     ( cd "$FORK_DIR" && git add -A &&

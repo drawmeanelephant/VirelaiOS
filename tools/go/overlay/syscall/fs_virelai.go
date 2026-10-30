@@ -30,7 +30,10 @@
 //     port change — filed against #1525.
 package syscall
 
-import "unsafe"
+import (
+	"strings"
+	"unsafe"
+)
 
 // dirFdBase is where synthetic directory fds start. It is above any real
 // handle (the kernel's table is 8 entries) and above 0/1/2, so no caller can
@@ -1151,9 +1154,11 @@ func stagedAbs(path string, staging *[virPathMax + 1]byte) int {
 	return stagedPath(abs, staging)
 }
 
-// resolvePath makes path absolute against the port's cwd. ".." is resolved
-// lexically, which is what the guest's own shell does and is the only thing
-// available without a way to walk upward in the kernel.
+// resolvePath makes path absolute against the port's cwd. "." and ".." are
+// resolved lexically, which is what the guest's own shell does and is the
+// only thing available without a way to walk upward in the kernel — the
+// kernel refuses both components outright, so the port collapses them
+// here: ".." pops the last component and clamps at the root.
 func resolvePath(path string) (string, error) {
 	if len(path) == 0 {
 		return "", ENOENT
@@ -1166,18 +1171,18 @@ func resolvePath(path string) (string, error) {
 			path = base + "/" + path
 		}
 	}
-	out := make([]byte, 0, len(path))
-	for i := 0; i < len(path); i++ {
-		if path[i] != '/' {
-			out = append(out, path[i])
+	parts := make([]string, 0, 8)
+	for _, c := range strings.Split(path, "/") {
+		switch c {
+		case "", ".":
 			continue
-		}
-		if len(out) == 0 || out[len(out)-1] != '/' {
-			out = append(out, '/')
+		case "..":
+			if len(parts) > 0 {
+				parts = parts[:len(parts)-1]
+			}
+		default:
+			parts = append(parts, c)
 		}
 	}
-	if len(out) > 1 && out[len(out)-1] == '/' {
-		out = out[:len(out)-1]
-	}
-	return string(out), nil
+	return "/" + strings.Join(parts, "/"), nil
 }

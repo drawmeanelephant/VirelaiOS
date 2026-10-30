@@ -44,6 +44,7 @@ virelai/heap
 virelai/hostint
 virelai/httpd
 virelai/icons
+virelai/ime
 virelai/init
 virelai/layout
 virelai/logfixture
