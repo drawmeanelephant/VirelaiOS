@@ -989,19 +989,27 @@ if not body.endswith("@@result refuse:declined\n\n"):
 print("reload held leg 11's records; deny appended refuse:declined, no body")
 PY
 # M205d: the declined act receipted too — the lane holds both verdicts.
+# The leg's own receipt is the name its rcpt marker printed, never
+# names[-1]: lexical order is chronological only within one epoch (the
+# VHI1 contract), and a fresh boot's random epoch can sort below the
+# last boot's.
+vgate_assert 12 serial-contains 'goassist: rcpt RCPT-'
 vgate_assert 12 python <<'PY'
-import hashlib, hmac, os, sys
+import hashlib, hmac, os, re, sys
 adir = os.path.join(os.environ["VG_SHARE"], "ASSIST", "AUDIT")
 names = sorted(n for n in os.listdir(adir) if n.startswith("RCPT-"))
 if len(names) != 2:
     sys.exit("assist lane holds %d receipts, want 2 (allow + decline): %r" % (len(names), names))
-line = open(os.path.join(adir, names[-1]), "rb").read().decode().splitlines()[0]
-want = hmac.new(("b5" * 32).encode(), line.encode(), hashlib.sha256).hexdigest()
-mac = open(os.path.join(adir, names[-1]), "rb").read().decode().splitlines()[1]
-if mac != want:
+ser = open(os.environ["VG_SER"], errors="replace").read()
+wrote = re.findall(r"goassist: rcpt (RCPT-\S+)", ser)
+if not wrote or wrote[-1] not in names:
+    sys.exit("this leg's rcpt marker %r is not in the lane: %r" % (wrote, names))
+lines = open(os.path.join(adir, wrote[-1]), "rb").read().decode().splitlines()
+want = hmac.new(("b5" * 32).encode(), lines[0].encode(), hashlib.sha256).hexdigest()
+if lines[1] != want:
     sys.exit("deny receipt MAC does not verify")
-if '"result":"declined"' not in line:
-    sys.exit("the newest receipt does not name declined\n%s" % line)
+if '"result":"declined"' not in lines[0]:
+    sys.exit("this leg's receipt does not name declined\n%s" % lines[0])
 print("assist lane: 2 receipts (ok + declined), newest MAC verifies")
 PY
 # Iteration hygiene + next-leg staging: the gosh.run leg wants a fresh
@@ -1059,14 +1067,21 @@ if "@@consent" in body:
     sys.exit("a consent record landed for a cap-refused call\n%s" % body)
 print("gosh.run: @@call + refuse:cap_required:term, no consent record")
 PY
-# M205d: the cap-gated call receipted its named refusal too.
+# M205d: the cap-gated call receipted its named refusal too — picked by
+# this leg's rcpt marker (the epoch draw is random per boot, so the new
+# receipt can sort anywhere in the lane).
+vgate_assert 13 serial-contains 'goassist: rcpt RCPT-'
 vgate_assert 13 python <<'PY'
-import hashlib, hmac, os, sys
+import hashlib, hmac, os, re, sys
 adir = os.path.join(os.environ["VG_SHARE"], "ASSIST", "AUDIT")
 names = sorted(n for n in os.listdir(adir) if n.startswith("RCPT-"))
 if len(names) != 3:
     sys.exit("assist lane holds %d receipts, want 3: %r" % (len(names), names))
-lines = open(os.path.join(adir, names[-1]), "rb").read().decode().splitlines()
+ser = open(os.environ["VG_SER"], errors="replace").read()
+wrote = re.findall(r"goassist: rcpt (RCPT-\S+)", ser)
+if not wrote or wrote[-1] not in names:
+    sys.exit("this leg's rcpt marker %r is not in the lane: %r" % (wrote, names))
+lines = open(os.path.join(adir, wrote[-1]), "rb").read().decode().splitlines()
 want = hmac.new(("b5" * 32).encode(), lines[0].encode(), hashlib.sha256).hexdigest()
 if lines[1] != want or '"result":"cap_required:term"' not in lines[0]:
     sys.exit("gosh.run receipt wrong: %s" % lines[0])
@@ -1129,14 +1144,20 @@ if "@@consent" in body:
     sys.exit("a consent record landed for a cap-refused call\n%s" % body)
 print("ui.input: @@call + refuse:cap_required:input, no consent record")
 PY
-# M205d: the ui.input refusal receipted as well — four files now.
+# M205d: the ui.input refusal receipted as well — four files now. Same
+# rcpt-marker pick as leg 13 (random per-boot epoch, so not names[-1]).
+vgate_assert 14 serial-contains 'goassist: rcpt RCPT-'
 vgate_assert 14 python <<'PY'
-import hashlib, hmac, os, sys
+import hashlib, hmac, os, re, sys
 adir = os.path.join(os.environ["VG_SHARE"], "ASSIST", "AUDIT")
 names = sorted(n for n in os.listdir(adir) if n.startswith("RCPT-"))
 if len(names) != 4:
     sys.exit("assist lane holds %d receipts, want 4: %r" % (len(names), names))
-lines = open(os.path.join(adir, names[-1]), "rb").read().decode().splitlines()
+ser = open(os.environ["VG_SER"], errors="replace").read()
+wrote = re.findall(r"goassist: rcpt (RCPT-\S+)", ser)
+if not wrote or wrote[-1] not in names:
+    sys.exit("this leg's rcpt marker %r is not in the lane: %r" % (wrote, names))
+lines = open(os.path.join(adir, wrote[-1]), "rb").read().decode().splitlines()
 want = hmac.new(("b5" * 32).encode(), lines[0].encode(), hashlib.sha256).hexdigest()
 if lines[1] != want or '"result":"cap_required:input"' not in lines[0]:
     sys.exit("ui.input receipt wrong: %s" % lines[0])

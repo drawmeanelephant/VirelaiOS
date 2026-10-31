@@ -1304,6 +1304,7 @@ while idx < arguments.count {
         }
         netTcpRespondHostIP = parts
         netTcpRespondHostPort = port
+        netTcpRespondTargets.append(NetTcpRespondTarget(ip: parts, port: port))
         idx += 2
     } else if arg == "--net-tcp-respond-payload", idx + 1 < arguments.count {
         // M51 SSH1 (#1168): the byte payload the `:packet` mode paces out.
@@ -1364,6 +1365,10 @@ while idx < arguments.count {
         }
         netTcpRespondRelayHost = String(halves[0])
         netTcpRespondRelayPort = port
+        if !netTcpRespondTargets.isEmpty {
+            netTcpRespondTargets[netTcpRespondTargets.count - 1].relayHost = String(halves[0])
+            netTcpRespondTargets[netTcpRespondTargets.count - 1].relayPort = port
+        }
         idx += 2
     } else if arg == "--net-tcp-connect", idx + 1 < arguments.count {
         // SH7 (#1083, ADR 0020 Amendment B): the host-initiated inbound TCP
@@ -2284,6 +2289,10 @@ if netTcpRespondSSHMode {
 if netTcpRespondRelayMode, netTcpRespondRelayPort == nil {
     fail("--net-tcp-respond :relay requires --net-tcp-respond-relay <host-ip>:<host-port> (the real upstream TCP server).")
 }
+if netTcpRespondRelayMode, netTcpRespondTargets.count > 1,
+   let bare = netTcpRespondTargets.first(where: { $0.relayPort == nil }) {
+    fail("--net-tcp-respond \(bare.ip.map(String.init).joined(separator: ".")):\(bare.port):relay needs its own --net-tcp-respond-relay after it when several targets are declared.")
+}
 if netTcpConnectGuestIP != nil, netCapturePath == nil {
     fail("--net-tcp-connect requires --net (the client frames are written into the SAME attachment's socket).")
 }
@@ -2578,6 +2587,19 @@ if let netCapturePath {
     }
     netCaptureSocket = FileHandle(fileDescriptor: fds[0], closeOnDealloc: true)
     netCaptureReadSocket = FileHandle(fileDescriptor: fds[1], closeOnDealloc: true)
+    // The runner's socket end wakes on a 25 ms receive timeout (the hub
+    // sockets' shape, #3849 tightened from 250 ms): every wake — a
+    // datagram or the timeout — also drains the host->guest NetGuestQueue
+    // as the pair makes room, so a queued frame never waits on the next
+    // guest TX in a --net-only run (with --net-hub the hub RX thread's
+    // wakes already do this). The timeout surfaces as read() == -1/EAGAIN,
+    // which the reader thread rides as a wake below.
+    var capTv = timeval(tv_sec: 0, tv_usec: 25_000)
+    setsockopt(fds[1], SOL_SOCKET, SO_RCVTIMEO, &capTv, socklen_t(MemoryLayout<timeval>.size))
+    // Host->guest depth is NOT a socket option: deepening this pair's
+    // SO_RCVBUF broke VZ delivery on the live gate (a guest got exactly
+    // one frame, then none). The deep queue is NetGuestQueue (userspace)
+    // — every writer below and the hub's selfPort deliveries ride it.
     // M206a (#3813): attach the hub BEFORE the capture thread so the
     // relay exists for the guest's first TX. First-runner-binds: a live
     // hub at <path> makes this runner a client; a stale file (connect()
@@ -2606,10 +2628,43 @@ if let netCapturePath {
         // gate-assertable.
         let arpHostMAC: [UInt8] = [0x02, 0x00, 0x00, 0x00, 0x00, 0x02]
         var buf = [UInt8](repeating: 0, count: 4096)
+        var capTransientErrs = 0
         while !netCaptureStop {
             let n = read(netCaptureReadSocket!.fileDescriptor, &buf, buf.count)
-            if n < 0 && errno == EINTR { continue }
-            if n <= 0 { break }
+            if n < 0 {
+                let e = errno
+                if e == EINTR { continue }
+                if e == EAGAIN || e == EWOULDBLOCK {
+                    // The 25 ms receive timeout fired — a wake, not an
+                    // error: drain the host->guest queue as the pair makes
+                    // room (the hub RX loop's wake does the same).
+                    netGuestQueue.flush()
+                    continue
+                }
+                // Ride every transient errno instead of exiting — a
+                // reader thread that dies silently takes the guest-TX ->
+                // host direction (and with it every responder) down while
+                // the rest of the runner keeps working. Only a dead fd
+                // stops the loop, and its exit is logged, never silent.
+                if netHubRecvFatal(e) {
+                    if !netCaptureStop {
+                        FileHandle.standardError.write(Data("NET-CAP: capture loop on the net attachment exited (errno \(e)) — guest TX no longer reaches the host\n".utf8))
+                    }
+                    break
+                }
+                capTransientErrs += 1
+                if capTransientErrs <= 4 || capTransientErrs % 256 == 0 {
+                    FileHandle.standardError.write(Data("NET-CAP: read on the net attachment returned errno \(e) (\(capTransientErrs) transient) — continuing\n".utf8))
+                }
+                netGuestQueue.flush()
+                continue
+            }
+            if n == 0 {
+                if !netCaptureStop {
+                    FileHandle.standardError.write(Data("NET-CAP: capture loop read 0 (attachment peer closed) — exiting; guest TX no longer reaches the host\n".utf8))
+                }
+                break
+            }
             try? netCaptureFile.write(contentsOf: Data(bytes: buf, count: n))
             // M206a (#3813): the capture above is byte-exact and FIRST;
             // the hub relay then carries the same datagram to the
@@ -2617,6 +2672,10 @@ if let netCapturePath {
             // path). Hub->guest frames travel the other socket direction
             // and never touch the capture.
             netHub?.guestTx(Array(buf[0..<n]))
+            // Guest TX implies the peer is draining: also flush the
+            // host->guest queue so queued frames don't wait on the rx
+            // thread's 25 ms wake.
+            netGuestQueue.flush()
             // Card N3: if the guest asked an ARP request, answer it from
             // the host. The reply is written into the runner's socket end
             // (fds[1]) — the card-N2 host→guest direction (VZ reads
@@ -2625,7 +2684,7 @@ if let netCapturePath {
             if let hostIP = netArpRespondHostIP, isArpRequest(buf, n) {
                 var reply = [UInt8](repeating: 0, count: 42)
                 buildArpReply(&reply, buf, n, arpHostMAC, hostIP)
-                try? netCaptureReadSocket?.write(contentsOf: Data(reply))
+                netGuestQueue.send(reply)
                 print("NET-ARP: answered the guest's ARP request for \(buf[28]).\(buf[29]).\(buf[30]).\(buf[31]) with host MAC 02:00:00:00:00:02")
             }
             // Card N4: if the guest pinged our address, echo it back from
@@ -2634,7 +2693,7 @@ if let netCapturePath {
             if let hostIP = netIcmpRespondHostIP, isIcmpEchoRequest(buf, n, hostIP) {
                 var reply = [UInt8](repeating: 0, count: n)
                 buildIcmpEchoReply(&reply, buf, n, arpHostMAC, hostIP)
-                try? netCaptureReadSocket?.write(contentsOf: Data(reply))
+                netGuestQueue.send(reply)
                 print("NET-ICMP: answered the guest's echo request for \(hostIP[0]).\(hostIP[1]).\(hostIP[2]).\(hostIP[3]) (id \(reply[38] << 8 | reply[39]), seq \(reply[40] << 8 | reply[41]))")
             }
             // M117b (#2474, ADR 0057 D10): the three v6 responders — the
@@ -2650,19 +2709,19 @@ if let netCapturePath {
             if let pfx = netRaRespondPrefix, isRouterSolicitation(buf, n) {
                 var reply = [UInt8](repeating: 0, count: 102)
                 buildRouterAdvertisement(&reply, arpHostMAC, pfx)
-                try? netCaptureReadSocket?.write(contentsOf: Data(reply))
+                netGuestQueue.send(reply)
                 print("NET-RA: answered the guest's router solicitation with an RA advertising \(v6Text(pfx))/64 from fe80::ff:fe00:2")
             }
             if isNeighborSolicitation(buf, n), let target = ndpRespondTarget(buf, n) {
                 var reply = [UInt8](repeating: 0, count: 86)
                 buildNeighborAdvertisement(&reply, buf, n, arpHostMAC, target)
-                try? netCaptureReadSocket?.write(contentsOf: Data(reply))
+                netGuestQueue.send(reply)
                 print("NET-NDP: answered the guest's neighbor solicitation for \(v6Text(target)) (NA S=1 O=1, host MAC 02:00:00:00:00:02)")
             }
             if let addr = netIcmp6RespondAddr, isIcmp6EchoRequest(buf, n, addr) {
                 var reply = [UInt8](repeating: 0, count: n)
                 buildIcmp6EchoReply(&reply, buf, n, arpHostMAC)
-                try? netCaptureReadSocket?.write(contentsOf: Data(reply))
+                netGuestQueue.send(reply)
                 print("NET-ICMP6: answered the guest's echo request for \(v6Text(addr)) (id \(reply[58] << 8 | reply[59]), seq \(reply[60] << 8 | reply[61]))")
             }
             // M117c (#2475, ADR 0057): the v6 transport responders — the
@@ -2673,7 +2732,7 @@ if let netCapturePath {
                isUdp6Datagram(buf, n, addr, port) {
                 var reply = [UInt8](repeating: 0, count: n)
                 buildUdp6Reply(&reply, buf, n, arpHostMAC, addr, port)
-                try? netCaptureReadSocket?.write(contentsOf: Data(reply))
+                netGuestQueue.send(reply)
                 let srcPort = (UInt16(buf[54]) << 8) | UInt16(buf[55])
                 print("NET-UDP6: answered the guest's datagram for [\(v6Text(addr))]:\(port) (reply to guest src port \(srcPort), \(n - 62) payload bytes)")
             }
@@ -2695,19 +2754,19 @@ if let netCapturePath {
                 } else if isSyn {
                     if !netTcpSrvAdmit(connKey) {
                         let replyLen = buildTcp6Reply(&reply, buf, n, arpHostMAC, port, 0, seq &+ 1, 0x14, [])
-                        try? netCaptureReadSocket?.write(contentsOf: Data(reply[0..<replyLen]))
+                        netGuestQueue.send(Array(reply[0..<replyLen]))
                         print("NET-TCP6: refused the guest's SYN (seq 0x\(hex32(seq))); \(netTcpSrvConnLimit) connections already live")
                     } else {
                         let conn = NetTcpSrvConn()
                         netTcpSrvConns[connKey] = conn
                         let replyLen = buildTcp6Reply(&reply, buf, n, arpHostMAC, port, netTcpSrvIsn, seq &+ 1, 0x12, [])
-                        try? netCaptureReadSocket?.write(contentsOf: Data(reply[0..<replyLen]))
+                        netGuestQueue.send(Array(reply[0..<replyLen]))
                         print("NET-TCP6: answered the guest's SYN (seq 0x\(hex32(seq))) with a SYN-ACK (seq 0x\(hex32(netTcpSrvIsn)), ack 0x\(hex32(seq &+ 1)))")
                     }
                 } else if isFin {
                     let conn = netTcp6SrvConn(for: buf)
                     let replyLen = buildTcp6Reply(&reply, buf, n, arpHostMAC, port, conn.srvNxt, seq &+ 1, 0x11, payload)
-                    try? netCaptureReadSocket?.write(contentsOf: Data(reply[0..<replyLen]))
+                    netGuestQueue.send(Array(reply[0..<replyLen]))
                     conn.closed = true
                     print("NET-TCP6: answered the guest's FIN (seq 0x\(hex32(seq))) with a FIN-ACK (seq 0x\(hex32(conn.srvNxt)), ack 0x\(hex32(seq &+ 1)))")
                 } else if !payload.isEmpty {
@@ -2720,7 +2779,7 @@ if let netCapturePath {
                         responsePayload = Array(httpBody.utf8)
                     }
                     let replyLen = buildTcp6Reply(&reply, buf, n, arpHostMAC, port, conn.srvNxt, seq &+ UInt32(payload.count), 0x10, responsePayload)
-                    try? netCaptureReadSocket?.write(contentsOf: Data(reply[0..<replyLen]))
+                    netGuestQueue.send(Array(reply[0..<replyLen]))
                     if isGet || port == 80 {
                         print("NET-TCP6: answered the guest's HTTP request with 200 OK (\(responsePayload.count) bytes)")
                     } else {
@@ -2740,7 +2799,7 @@ if let netCapturePath {
                isUdpDatagram(buf, n, hostIP, hostPort) {
                 var reply = [UInt8](repeating: 0, count: n)
                 buildUdpReply(&reply, buf, n, arpHostMAC, hostIP, hostPort)
-                try? netCaptureReadSocket?.write(contentsOf: Data(reply))
+                netGuestQueue.send(reply)
                 let srcPort = (UInt16(buf[34]) << 8) | UInt16(buf[35])
                 print("NET-UDP: answered the guest's datagram for \(hostIP[0]).\(hostIP[1]).\(hostIP[2]).\(hostIP[3]):\(hostPort) (reply to guest src port \(srcPort), \(n - 42) payload bytes)")
             }
@@ -2759,7 +2818,7 @@ if let netCapturePath {
                                              answers: answers, ttl: netDnsTTL, truncate: false,
                                              forgeSrcIP: [10, 0, 0, 9])
                     if flen > 0 {
-                        try? netCaptureReadSocket?.write(contentsOf: Data(forged[0..<flen]))
+                        netGuestQueue.send(Array(forged[0..<flen]))
                         print("NET-DNS: injected a reply forged from 10.0.0.9 for '\(qname)' (the guest must drop it)")
                     }
                 }
@@ -2769,7 +2828,7 @@ if let netCapturePath {
                                              answers: answers, ttl: netDnsTTL, truncate: false,
                                              corruptQuestion: true)
                     if wlen > 0 {
-                        try? netCaptureReadSocket?.write(contentsOf: Data(wq[0..<wlen]))
+                        netGuestQueue.send(Array(wq[0..<wlen]))
                         print("NET-DNS: injected a corrupted-question reply for '\(qname)' (the guest must drop it)")
                     }
                 }
@@ -2777,7 +2836,7 @@ if let netCapturePath {
                 let replyLen = buildDnsReply(&reply, buf, n, arpHostMAC, hostIP, netDnsRespondHostPort,
                                              answers: answers, ttl: netDnsTTL, truncate: netDnsTruncate)
                 if replyLen > 0 {
-                    try? netCaptureReadSocket?.write(contentsOf: Data(reply[0..<replyLen]))
+                    netGuestQueue.send(Array(reply[0..<replyLen]))
                     if netDnsTruncate {
                         print("NET-DNS: answered the guest's DNS query for '\(qname)' qtype=\(qtype) with TC=1 ANCOUNT=0 (reply to guest src port \(srcPort); the guest must refuse truncation)")
                     } else {
@@ -2787,7 +2846,7 @@ if let netCapturePath {
             }
             // M83b (#1775): SNTP responder
             if let sntp = netSntpResponder, let answer = sntp.answer(buf, n) {
-                try? netCaptureReadSocket?.write(contentsOf: Data(answer.frame))
+                netGuestQueue.send(answer.frame)
                 let originate = answer.originate.map { String(format: "%02x", $0) }.joined()
                 print("NET-SNTP: answered \(answer.guestIP.map(String.init).joined(separator: ".")):\(answer.guestPort) served_unix=\(answer.servedUnix) skew=\(sntp.skew) originate=\(originate)")
             }
@@ -2821,7 +2880,7 @@ if let netCapturePath {
                 } else {
                 var reply = [UInt8](repeating: 0, count: 4096)
                 let replyLen = buildDhcpReply(&reply, buf, n, arpHostMAC, leaseIP, netDhcpRespondLeaseSecs, mtype)
-                try? netCaptureReadSocket?.write(contentsOf: Data(reply[0..<replyLen]))
+                netGuestQueue.send(Array(reply[0..<replyLen]))
                 // The xid hex built manually (Swift's String(format:) vararg
                 // bridge mismatches %x with UInt8/UInt32 — the same reason
                 // the N5 responder prints ports as arithmetic).
@@ -2841,8 +2900,10 @@ if let netCapturePath {
             // ACK + the payload ECHOED byte-exact, FIN -> FIN-ACK, the
             // final ACK -> observed. The reply is a fresh frame in the
             // same socket direction as the other responders.
-            if let hostIP = netTcpRespondHostIP, let hostPort = netTcpRespondHostPort,
-               isTcpSegment(buf, n, hostIP, hostPort) {
+            if let target = netTcpRespondTargets.first(where: { isTcpSegment(buf, n, $0.ip, $0.port) }) {
+                let hostPort = target.port
+                let relayHost = target.relayHost ?? netTcpRespondRelayHost
+                let relayPort = target.relayPort ?? netTcpRespondRelayPort
                 let flags = tcpFlags(buf)
                 let seq = tcpSeq(buf)
                 let ack = tcpAck(buf)
@@ -2860,7 +2921,7 @@ if let netCapturePath {
                 // guest's src IP:port — several guest connections are
                 // answered concurrently; a SYN on a live key restarts
                 // only that connection.
-                let connKey = netTcpConnKey([UInt8](buf[26..<30]), (UInt16(buf[34]) << 8) | UInt16(buf[35]))
+                let connKey = netTcpConnKey([UInt8](buf[26..<30]), (UInt16(buf[34]) << 8) | UInt16(buf[35]), hostPort)
                 if isRst {
                     // The guest aborted — the connection is dead; observe.
                     let conn = netTcpSrvConn(for: buf)
@@ -2878,26 +2939,26 @@ if let netCapturePath {
                         // The bounded server table is full — the honest
                         // refusal, the same one the guest's table sends.
                         let replyLen = buildTcpReply(&reply, buf, n, arpHostMAC, hostPort, 0, seq &+ 1, 0x14, [])
-                        try? netCaptureReadSocket?.write(contentsOf: Data(reply[0..<replyLen]))
+                        netGuestQueue.send(Array(reply[0..<replyLen]))
                         print("NET-TCP: refused the guest's SYN (seq 0x\(hex32(seq))); \(netTcpSrvConnLimit) connections already live")
                     } else {
                     let conn = NetTcpSrvConn()
                     if let old = netTcpSrvConns[connKey] { old.relay.shutdown(suppressFin: true) }
                     netTcpSrvConns[connKey] = conn
-                    if netTcpRespondRelayMode, netTcpRespondRelayPort != nil {
+                    if netTcpRespondRelayMode, let relayPort {
                         // M51 interop (#1209): a fresh connection dials the
                         // real upstream NOW — real sshd sends its banner
                         // before the guest's version line, so the first
                         // paced chunk is already buffered.
-                        print("NET-TCP-RELAY: connection accepted (guest SYN seq 0x\(hex32(seq))); dialing upstream \(netTcpRespondRelayHost):\(netTcpRespondRelayPort!)")
+                        print("NET-TCP-RELAY: connection accepted (guest SYN seq 0x\(hex32(seq))); dialing upstream \(relayHost):\(relayPort)")
                         conn.relay.hostMAC = arpHostMAC
                         conn.relay.hostPort = hostPort
                         conn.relay.serverIsn = netTcpSrvIsn
                         conn.relay.onFrame = { frame in
-                            try? netCaptureReadSocket?.write(contentsOf: Data(frame))
+                            netGuestQueue.send(frame)
                         }
                         conn.relay.begin(synFrame: buf, n)
-                        conn.relay.start(netTcpRespondRelayHost, netTcpRespondRelayPort!)
+                        conn.relay.start(relayHost, relayPort)
                     } else if netTcpRespondSSHMode {
                         // M51 SSH5 (#1172): a fresh connection gets a fresh
                         // server state machine and an empty paced TX stream.
@@ -2915,7 +2976,7 @@ if let netCapturePath {
                     }
                     let synAckOpts: [UInt8] = netTcpRespondOptionsMode ? netTcpOptionsSynAck : []
                     let replyLen = buildTcpReply(&reply, buf, n, arpHostMAC, hostPort, netTcpSrvIsn, seq &+ 1, 0x12, payload, options: synAckOpts)
-                    try? netCaptureReadSocket?.write(contentsOf: Data(reply[0..<replyLen]))
+                    netGuestQueue.send(Array(reply[0..<replyLen]))
                     print("NET-TCP: answered the guest's SYN (seq 0x\(hex32(seq))) with a SYN-ACK (seq 0x\(hex32(netTcpSrvIsn)), ack 0x\(hex32(seq &+ 1))\(netTcpRespondOptionsMode ? ", options mss/sackp/ws/ts" : ""))")
                     }
                 } else if isFin {
@@ -2933,7 +2994,7 @@ if let netCapturePath {
                         // the conn's own srvNxt never moved.
                         let finSeq = netTcpRespondRelayMode ? conn.relay.currentSeqAck().seq : conn.srvNxt
                         let replyLen = buildTcpReply(&reply, buf, n, arpHostMAC, hostPort, finSeq, seq &+ 1, 0x11, payload, options: finOpts)
-                        try? netCaptureReadSocket?.write(contentsOf: Data(reply[0..<replyLen]))
+                        netGuestQueue.send(Array(reply[0..<replyLen]))
                         conn.closed = true
                         if netTcpRespondRelayMode {
                             conn.relay.shutdown(suppressFin: true)
@@ -2967,7 +3028,7 @@ if let netCapturePath {
                             // dropped/ahead segment is NOT covered.
                             let sa = conn.relay.currentSeqAck()
                             let replyLen = buildTcpReply(&reply, buf, n, arpHostMAC, hostPort, sa.seq, sa.ack, 0x10, [])
-                            try? netCaptureReadSocket?.write(contentsOf: Data(reply[0..<replyLen]))
+                            netGuestQueue.send(Array(reply[0..<replyLen]))
                         }
                     } else if netTcpRespondSSHMode {
                         // M51 SSH5 (#1172): feed the SSH server with the
@@ -2979,7 +3040,7 @@ if let netCapturePath {
                         }
                         if !netTcpRespondSSHSendChunk(conn, &reply, buf, n, arpHostMAC, hostPort, seq, payload.count) {
                             let replyLen = buildTcpReply(&reply, buf, n, arpHostMAC, hostPort, conn.srvNxt, seq &+ UInt32(payload.count), 0x10, [])
-                            try? netCaptureReadSocket?.write(contentsOf: Data(reply[0..<replyLen]))
+                            netGuestQueue.send(Array(reply[0..<replyLen]))
                         }
                     } else if netTcpRespondPacketMode {
                         // M51 SSH1 (#1168): a trigger/keepalive — ACK it bare
@@ -2987,7 +3048,7 @@ if let netCapturePath {
                         // the SSH packet stream, not an echo surface).
                         if !netTcpSendPacketChunk(conn, &reply, buf, n, arpHostMAC, hostPort, seq, payload.count) {
                             let replyLen = buildTcpReply(&reply, buf, n, arpHostMAC, hostPort, conn.srvNxt, seq &+ UInt32(payload.count), 0x10, [])
-                            try? netCaptureReadSocket?.write(contentsOf: Data(reply[0..<replyLen]))
+                            netGuestQueue.send(Array(reply[0..<replyLen]))
                         }
                     } else if netTcpRespondHandshakeOnly {
                         print("NET-TCP: handshake-only — ignoring the guest's \(payload.count)-byte data (black hole)")
@@ -3001,7 +3062,7 @@ if let netCapturePath {
                         }
                         let dataOpts: [UInt8] = netTcpRespondOptionsMode ? netTcpOptionsData : []
                         let replyLen = buildTcpReply(&reply, buf, n, arpHostMAC, hostPort, conn.srvNxt, seq &+ UInt32(payload.count), 0x10, responsePayload, options: dataOpts)
-                        try? netCaptureReadSocket?.write(contentsOf: Data(reply[0..<replyLen]))
+                        netGuestQueue.send(Array(reply[0..<replyLen]))
                         if isGet || hostPort == 80 {
                             print("NET-TCP: answered the guest's HTTP request with 200 OK (\(responsePayload.count) bytes)")
                         } else {
@@ -3509,6 +3570,10 @@ if let leaseIP = netDhcpRespondLeaseIP {
 if let hostIP = netTcpRespondHostIP, let hostPort = netTcpRespondHostPort {
     let ipText = hostIP.map(String.init).joined(separator: ".")
     print("  net-tcp-respond: ENABLED (milestone five card N10, claim 7026) + card N11 (claim 5357) — the host answers the guest's bounded TCP client on \(ipText):\(hostPort) (host MAC 02:00:00:00:00:02, server ISN 0x\(hex32(netTcpSrvIsn))) via the capture thread (deterministic, request-driven)")
+    for target in netTcpRespondTargets.dropLast() {
+        let relayText = target.relayPort.map { " -> relay \(target.relayHost ?? netTcpRespondRelayHost):\($0)" } ?? ""
+        print("  net-tcp-respond: ENABLED additional target \(target.ip.map(String.init).joined(separator: ".")):\(target.port)\(relayText)")
+    }
     if netTcpRespondHandshakeOnly {
         print("  net-tcp-respond mode: handshake-only (card N11) — the SYN is answered with a SYN-ACK, then data/FIN go unanswered (the deterministic black hole for the retransmission-bound run)")
     }

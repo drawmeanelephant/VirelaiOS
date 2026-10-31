@@ -54,6 +54,10 @@ allow go/parser
 allow go/scanner
 allow go/token
 allow hash
+# M207c (#3819): GOPAINT and GOREADER need crc32 via virelai/webrender's
+# PNG encoder (GOVIEW, GOSOUND and WEB ride the same import). Go std,
+# BSD-3-Clause like everything staged.
+allow hash/crc32
 allow hash/fnv
 allow io
 allow io/fs

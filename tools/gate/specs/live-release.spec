@@ -140,7 +140,7 @@ for line in open("user/go/gobuild/fleet.txt"):
 # The count is derived, never typed (M207a): a fleet row addition edits
 # fleet.txt, not this spec. What stays pinned is the refusal table —
 # every table name must be a row.
-want_refused = {"GOSTALGIA.ELF", "GOFILES.ELF", "PULSE.ELF", "GOHELP.ELF", "WEB.ELF"}
+want_refused = {"GOSTALGIA.ELF", "GOFILES.ELF", "PULSE.ELF", "GOHELP.ELF"}
 missing = want_refused - {n for n, _ in rows}
 if missing:
     sys.exit("fleet.txt dropped pinned refusal rows: %s" % sorted(missing))
@@ -427,7 +427,7 @@ vgate_assert 01 serial-contains 'fleet: GOCALC.ELF built sha256='
 vgate_assert 01 serial-contains 'fleet: NOTE.ELF built sha256='
 vgate_assert 01 serial-contains 'fleet: GOEDIT.ELF built sha256='
 vgate_assert 01 serial-contains 'fleet: GOTERM.ELF built sha256='
-vgate_assert 01 serial-contains 'fleet: WEB.ELF refused dep_unsupported'
+vgate_assert 01 serial-contains 'fleet: WEB.ELF built sha256='
 vgate_assert 01 serial-contains 'fleet: GOSH.ELF built sha256='
 vgate_assert 01 serial-contains 'fleet: GOTOP.ELF built sha256='
 vgate_assert 01 serial-contains 'fleet: GOSET.ELF built sha256='
@@ -454,7 +454,7 @@ import os, sys
 ser = open(os.environ["VG_SER"], errors="replace").read()
 rows = [l.split()[0] for l in open("user/go/gobuild/fleet.txt")
         if l.strip() and not l.startswith("#")]
-refused = {"GOSTALGIA.ELF", "GOFILES.ELF", "PULSE.ELF", "GOHELP.ELF", "WEB.ELF"}
+refused = {"GOSTALGIA.ELF", "GOFILES.ELF", "PULSE.ELF", "GOHELP.ELF"}
 want = "fleet: fleet OK built=%d refused=%d" % (
     len(rows) - len(refused), len(refused))
 if want not in ser:
@@ -483,7 +483,7 @@ import os, sys
 ser = open(os.environ["VG_SER"], errors="replace").read()
 rows = [l.split()[0] for l in open("user/go/gobuild/fleet.txt")
         if l.strip() and not l.startswith("#")]
-refused = {"GOSTALGIA.ELF", "GOFILES.ELF", "PULSE.ELF", "GOHELP.ELF", "WEB.ELF"}
+refused = {"GOSTALGIA.ELF", "GOFILES.ELF", "PULSE.ELF", "GOHELP.ELF"}
 want = "release: fleet built=%d refused=%d" % (
     len(rows) - len(refused), len(refused))
 if want not in ser:
@@ -629,6 +629,23 @@ if "GORELEASE.ELF" not in rows or rows["GORELEASE.ELF"]["kind"] != "driver":
     sys.exit("FAIL: bundle lacks the GORELEASE.ELF driver row")
 PY
 
+# R4-F1 (#3390): AGENTD.ELF is the principal-binding name — exec refuses
+# name_unprovisioned (EACCES) unless the armed share's OWNERS.TXT pins it
+# uid_system-owned with no non-owner write bit. The bundle is wholly
+# guest-built, so the provision is staged host-side here — the operator,
+# not the artifact, authors the metadata system_owned_key trusts (the
+# same row go-agentd's alt shares carry).
+vgate_assert 02 python <<'PY'
+import os, sys
+share = os.environ.get("VG_SHARE") or os.path.join(os.environ["RUN_DIR"], "share")
+bundle = os.path.join(share, "BUNDLE")
+if not os.path.exists(os.path.join(bundle, "AGENTD.ELF")):
+    sys.exit("FAIL: bundle lacks AGENTD.ELF")
+own = os.path.join(bundle, "OWNERS.TXT")
+open(own, "w").write("#v1\nAGENTD.ELF\t644\t0\t-\n")
+print("provisioned bundle OWNERS.TXT: AGENTD.ELF uid_system 0644 (R4-F1)")
+PY
+
 # Run 03: the host boots what the guest built — the image as the overlay
 # base and the bundle as the armed share. The driver runs its smoke verb
 # against the bundle's fleet rows: spawn, bounded wait, verdict per ELF.
@@ -640,6 +657,11 @@ vgate_assert 03 serial-contains 'release: smoke GOCALC.ELF'
 vgate_assert 03 serial-contains 'release: smoke GOSH.ELF'
 vgate_assert 03 serial-contains 'release: smoke GOBUILD.ELF'
 vgate_assert 03 serial-contains 'release: smoke AGENTD.ELF'
+# The provisioned row must land: the guest-built image measured + exec'd
+# as the agent principal — never the EACCES the unprovisioned name earns.
+vgate_assert 03 serial-contains 'verdict=measured name=AGENTD.ELF uid=2000'
+vgate_assert 03 serial-absent 'release: smoke AGENTD.ELF spawn='
+vgate_assert 03 serial-absent 'verdict=refused:name_unprovisioned'
 vgate_assert 03 serial-contains 'release: smoke OK ran='
 vgate_assert 03 serial-absent 'release: FAIL'
 vgate_assert 03 serial-absent '[EXC] parking:'

@@ -1629,6 +1629,23 @@ pub fn request_kill(id: usize) KillResult {
     // neither may be force-terminated.
     if (id == idle_id or id == 0) return .refused;
     tasks[id].kill_pending = true;
+    kill_armed_count +%= 1;
+    // Kill takes precedence over EVERY wait shape, so a parked target
+    // wakes NOW, not at the next timekeeping beat: wake_expired's scan is
+    // a try-gated core-0 beat that contention can skip outright, and a
+    // "wait forever" block (futex/wait_pid/wait_event) has no deadline to
+    // expire at all — the armed kill would sit off-ring indefinitely.
+    // The sentinel skips an unpublished exec build (register's "wait
+    // forever" marks a half-built task, not a real wait).
+    if (tasks[id].state == .blocked and tasks[id].wakeup_tick != std.math.maxInt(u64)) {
+        wake_killed_task_locked(id);
+    }
+    // A monitor-kill arm IS an outstanding exit request for the process —
+    // engage the same diagnostic the sibling-arm path sets, so a parked
+    // target that never converts reports itself after the bound.
+    if (process.find_by_task(id)) |pid| {
+        if (process_exit_tick[pid] == null) process_exit_tick[pid] = tick_count;
+    }
     return .ok;
 }
 
@@ -2018,6 +2035,46 @@ fn convert_kill(c: usize, lk: RingLockPair, next: usize) void {
     }
 }
 
+/// Kill-path diagnostics: stage counters between an armed kill and its
+/// conversion, drained from the shell idle loop (`tasks kill-diag`). Each
+/// names the hop the park dies at — arm, force-wake, claim sighting,
+/// prefix defer, service-lock defer (with the packed holder snapshot:
+/// 3 bits per domain in canonical file/net/win/ev/kernel order, 4 = free),
+/// exit refusal, conversion.
+var kill_armed_count: u64 = 0;
+var kill_wake_count: u64 = 0;
+var kill_seen_count: u64 = 0;
+var kill_defer_prefix_count: u64 = 0;
+var kill_defer_locks_count: u64 = 0;
+var kill_defer_owners: u64 = 0;
+var kill_exit_refused: u64 = 0;
+var kill_converted_count: u64 = 0;
+var kill_spun_count: u64 = 0;
+var kill_diag_printed: u64 = 0;
+
+/// The kill conversion's bounded wait on contended service domains
+/// (iterations of the `try_take` probe, with a WFE-friendly pause between
+/// probes). Cross-core holds are bounded by construction — IRQ-masked
+/// holders run to completion — so a short wait converts on THIS
+/// selection instead of deferring the kill a whole scheduling epoch per
+/// sighting, which under a churning seat starved a parked target ~40+
+/// ticks before a lucky gap (the go-assist leg-03 livelock). A
+/// same-core-held non-prefix bit can never clear here (the interrupted
+/// hold resumes only when this context unwinds), but the prefix guard
+/// already deferred that shape before this loop runs; every refusal the
+/// loop sees is an other-core hold or a try collision, both transient.
+const kill_convert_spin_bound: usize = 1 << 15;
+
+fn lock_owners_snapshot() u64 {
+    var m: u64 = 0;
+    m |= @as(u64, @intCast(svclock.file.holder & 0x7));
+    m |= @as(u64, @intCast(svclock.net.holder & 0x7)) << 3;
+    m |= @as(u64, @intCast(svclock.win.holder & 0x7)) << 6;
+    m |= @as(u64, @intCast(svclock.ev.holder & 0x7)) << 9;
+    m |= @as(u64, @intCast(svclock.kernel.holder & 0x7)) << 12;
+    return m;
+}
+
 /// Shared selection/secondary-tick seam. No ring or scheduler lock may be
 /// held. A non-prefix outer syscall hold defers rather than taking an earlier
 /// service domain out of order; the next IRQ runs after that hold is released.
@@ -2025,13 +2082,50 @@ fn convert_kill(c: usize, lk: RingLockPair, next: usize) void {
 pub fn convert_pending_kill() bool {
     const id = current[smp.core_id()];
     if (!tasks[id].kill_pending) return false;
-    if (!svclock.file.held() and (svclock.net.held() or svclock.win.held() or svclock.ev.held() or svclock.kernel.held())) return false;
-    if (!svclock.net.held() and (svclock.win.held() or svclock.ev.held() or svclock.kernel.held())) return false;
-    if (!svclock.win.held() and (svclock.ev.held() or svclock.kernel.held())) return false;
-    if (!svclock.ev.held() and svclock.kernel.held()) return false;
-    const taken = svclock.try_take(svclock.all_bits) orelse return false;
-    defer svclock.release_set(taken);
-    return exit_current_locked(tasks[id].kill_pending_status, true);
+    kill_seen_count +%= 1;
+    if (!svclock.file.held() and (svclock.net.held() or svclock.win.held() or svclock.ev.held() or svclock.kernel.held())) {
+        kill_defer_prefix_count +%= 1;
+        kill_defer_owners = lock_owners_snapshot() | (@as(u64, svclock.held_bits()) << 16);
+        return false;
+    }
+    if (!svclock.net.held() and (svclock.win.held() or svclock.ev.held() or svclock.kernel.held())) {
+        kill_defer_prefix_count +%= 1;
+        kill_defer_owners = lock_owners_snapshot() | (@as(u64, svclock.held_bits()) << 16);
+        return false;
+    }
+    if (!svclock.win.held() and (svclock.ev.held() or svclock.kernel.held())) {
+        kill_defer_prefix_count +%= 1;
+        kill_defer_owners = lock_owners_snapshot() | (@as(u64, svclock.held_bits()) << 16);
+        return false;
+    }
+    if (!svclock.ev.held() and svclock.kernel.held()) {
+        kill_defer_prefix_count +%= 1;
+        kill_defer_owners = lock_owners_snapshot() | (@as(u64, svclock.held_bits()) << 16);
+        return false;
+    }
+    var spun: usize = 0;
+    var taken: ?u5 = null;
+    while (taken == null) {
+        taken = svclock.try_take(svclock.all_bits);
+        if (taken != null) break;
+        if (spun >= kill_convert_spin_bound) {
+            kill_defer_locks_count +%= 1;
+            kill_defer_owners = lock_owners_snapshot() | (@as(u64, svclock.held_bits()) << 16);
+            return false;
+        }
+        spun += 1;
+        if (comptime !builtin.is_test and builtin.cpu.arch == .aarch64) {
+            asm volatile ("yield");
+        }
+    }
+    if (spun != 0) kill_spun_count +%= 1;
+    defer svclock.release_set(taken.?);
+    if (exit_current_locked(tasks[id].kill_pending_status, true)) {
+        kill_converted_count +%= 1;
+        return true;
+    }
+    kill_exit_refused +%= 1;
+    return false;
 }
 
 pub fn switch_context(frame_sp: u64, elr: u64, spsr: u64, sp_el0: u64) void {
@@ -3033,6 +3127,7 @@ fn wake_expired() void {
 }
 
 fn wake_killed_task_locked(id: usize) void {
+    kill_wake_count +%= 1;
     _ = futex_clear_for(id);
     tasks[id].futex_waiting = false;
     tasks[id].wakeup_tick = 0;
@@ -4048,6 +4143,21 @@ pub fn maybe_report(con: *console.Console) void {
             entry.pid, entry.task, state_name(entry.state), entry.kill_pending, entry.futex_waiting, entry.wakeup_tick, entry.rings, entry.age,
         }) catch continue;
         con.puts(line);
+    }
+    // Kill-path diagnostics: one line per drain while any stage counter
+    // moved — names the hop an armed kill stalls at under contention.
+    // Live-boot observability only: the byte-exact host-test consoles
+    // never see it (the counters still run under tests).
+    if (comptime !builtin.is_test) {
+        const kill_diag_total = kill_armed_count +% kill_wake_count +% kill_seen_count +% kill_defer_prefix_count +% kill_defer_locks_count +% kill_exit_refused +% kill_spun_count +% kill_converted_count;
+        if (kill_diag_total != kill_diag_printed) {
+            kill_diag_printed = kill_diag_total;
+            var buf: [320]u8 = undefined;
+            const line = std.fmt.bufPrint(&buf, "tasks kill-diag armed={d} woken={d} seen={d} defer_prefix={d} defer_locks={d} owners=0x{x} spun={d} exit_refused={d} converted={d}\n", .{
+                kill_armed_count, kill_wake_count, kill_seen_count, kill_defer_prefix_count, kill_defer_locks_count, kill_defer_owners, kill_spun_count, kill_exit_refused, kill_converted_count,
+            }) catch return;
+            con.puts(line);
+        }
     }
     // B7: bounded PCM completions/deadlines and deferred owner-death cleanup.
     // No audio control exchange runs from the IRQ scheduler.

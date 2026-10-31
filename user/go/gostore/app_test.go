@@ -505,6 +505,11 @@ func TestInstallDoneStandsCelebratePose(t *testing.T) {
 		t.Fatalf("non-install status moved the line: %+v", got)
 	}
 	art.Reset()
+	// Absence is pinned, not ambient: a seeded share carries the real
+	// MSC_CELB.QOI (/host/ART/), so Reset alone would let Load re-decode
+	// it — a nil stage is the latched-refusal state the degrade contract
+	// tests.
+	art.Stage(art.MascotCelebrate, nil)
 	buf2 := make([]byte, 200*40*4)
 	c2, err := draw.BytesCanvas(buf2, 200, 40)
 	if err != nil {
