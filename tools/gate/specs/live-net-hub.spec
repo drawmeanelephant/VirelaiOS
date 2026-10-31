@@ -115,20 +115,29 @@ EOF
 # drains between requests give the hub round trip time to land replies —
 # the ARP reply names B's --mac in the table dump, and the icmp counters
 # after the pings show both directions (req= A's echoes, repl= echoes A
-# answered from B, pong= replies A got back). The five spaced `net arp`
-# attempts are the go-clock idiom for the async learn race: the reply
-# lands whenever the rx drain pulls it, and a reply only learns inside a
-# live pending window (arp.pending_wait_ticks), so each re-request
-# re-opens a window instead of leaving one burst to expire.
+# answered from B, pong= replies A got back). The `net arp`/`net ping
+# 10.0.0.2` alternation paces the async learn race: a reply only learns
+# inside a live pending window (arp.pending_wait_ticks, 2 ticks), and
+# the reply lands whenever the rx drain pulls it — observed late by
+# minutes under gate load. Each arp re-opens the window; each .2 ping
+# (forged-responded instantly, no ICMP answer — the bounded wait is the
+# pacer) buys real seconds so SOMETHING's window is open whenever the
+# late reply arrives.
 vgate_file vma-s2.txt <<'EOF'
 net arp 10.0.0.17
-net
+net ping 10.0.0.2
 net arp 10.0.0.17
-net
+net ping 10.0.0.2
 net arp 10.0.0.17
-net
+net ping 10.0.0.2
 net arp 10.0.0.17
-net
+net ping 10.0.0.2
+net arp 10.0.0.17
+net ping 10.0.0.2
+net arp 10.0.0.17
+net ping 10.0.0.2
+net arp 10.0.0.17
+net ping 10.0.0.2
 net arp 10.0.0.17
 net
 net ping 10.0.0.17
@@ -304,7 +313,7 @@ open(os.path.join(bshare, "FLINT", "TRUSTED.TXT"), "w").write(
     "#v1\nkey=" + GUEST_KEY + " name=storelan\n")
 open(os.path.join(bshare, "GRANTS.TXT"), "w").write("#v1 mode=enforce\n")
 open(os.path.join(bshare, "JB.SH"), "w").write(
-    "STORE.ELF install main --remote=10.0.0.2:4853 --channel=http://10.0.0.16:8080/DROPBAD\n"
+    "STORE.ELF install main --remote=10.0.0.2:4853 --channel=http://10.0.0.16:8080/DROPBAD || sleep 1 ; STORE.ELF install main --remote=10.0.0.2:4853 --channel=http://10.0.0.16:8080/DROPBAD\n"
     "STORE.ELF install main --remote=10.0.0.2:4853 --channel=http://10.0.0.16:8080/DROP || sleep 1 ; STORE.ELF install main --remote=10.0.0.2:4853 --channel=http://10.0.0.16:8080/DROP\n"
     "echo JB-DONE\n")
 # JB2.SH is the ADMIN half — the -u0 gosh the third client types:
