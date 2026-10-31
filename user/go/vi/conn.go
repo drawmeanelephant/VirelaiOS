@@ -29,10 +29,10 @@ import (
 // goroutines really can each hold a live connect); Recv is
 // blocking-with-poll — probe the HANDLE's readiness mask (op 5), take
 // the bytes when readable, otherwise check the deadline and PARK one
-// scheduler tick (slot 4) before re-probing. A parked Recv therefore
-// never starves its peers. Every wait is bounded (the deadline or
-// DefaultRecvBudgetNs): a peer that goes dark fails closed instead of
-// parking forever.
+// deadline-overlay tick (slot 94, ~1 ms) before re-probing. A parked
+// Recv therefore never starves its peers. Every wait is bounded (the
+// deadline or DefaultRecvBudgetNs): a peer that goes dark fails closed
+// instead of parking forever.
 
 const (
 	// TCPPayloadMax is tcp.payload_max (kernel/src/tcp.zig): the largest
@@ -41,9 +41,23 @@ const (
 	// DefaultRecvBudgetNs is the bounded-wait ceiling used when no recv
 	// deadline is set. An unbounded wait is deliberately not expressible.
 	DefaultRecvBudgetNs = 30_000_000_000
+	// sockParkNs is the wait-loop park: slot 94's deadline overlay (~1 ms
+	// granularity, ADR 0060 D2). It used to be one scheduler tick (slot
+	// 4, 1 s on VZ) — a fine poll cadence for idle sockets but a per-
+	// segment floor under the socket table's stop-and-wait contract
+	// (one segment in flight; the ACK that frees the TX slot lands on
+	// the same polled drain). At ~0.5-1 s of park granularity per
+	// segment, a ~256 KiB body needed ~90-180 s against the store
+	// channel's 5 s absolute recv deadline — the live-net-hub
+	// channel_malformed tears (#3863). 1 ms keeps every bounded wait
+	// responsive without measurable CPU cost: the loop still sleeps
+	// between probes.
+	sockParkNs = 1_000_000
 	// maxRecvPolls is a belt-and-braces iteration bound: even with a clock
-	// that never advances, the recv loop still terminates.
-	maxRecvPolls = 3600
+	// that never advances, the recv loop still terminates. Sized so the
+	// nanosecond deadline stays the dominant bound (3600 s at the
+	// sockParkNs cadence, as before).
+	maxRecvPolls = 3_600_000
 )
 
 // Slot-80 socket ops (kernel/src/syscall.zig handle_socket dispatch).
@@ -389,7 +403,7 @@ func (c *Conn) Accept() error {
 			if Nanos() >= deadline || polls >= maxRecvPolls {
 				return errno(ErrETIMEDOUT)
 			}
-			svc1(SlotSleep, 1)
+			svc1(SlotSleepNs, sockParkNs)
 		}
 	}
 	if c.serve != 0 {
@@ -442,7 +456,7 @@ func (c *Conn) AcceptConn() (*Conn, error) {
 		if Nanos() >= deadline || polls >= maxRecvPolls {
 			return nil, errno(ErrETIMEDOUT)
 		}
-		svc1(SlotSleep, 1)
+		svc1(SlotSleepNs, sockParkNs)
 	}
 }
 
@@ -570,7 +584,7 @@ func (c *Conn) Send(p []byte) (int, error) {
 				if Nanos() >= deadline {
 					return sent, errno(ErrETIMEDOUT)
 				}
-				svc1(SlotSleep, 1)
+				svc1(SlotSleepNs, sockParkNs)
 				continue
 			}
 			if e := c.deadErr(r); e != nil {
@@ -676,9 +690,10 @@ func (c *Conn) Recv(p []byte) (int, error) {
 		if Nanos() >= deadline || polls >= maxRecvPolls {
 			return 0, errno(ErrETIMEDOUT)
 		}
-		// The park point: one scheduler tick, so other goroutines run. The
-		// loop resumes, re-probes, and re-checks the deadline.
-		svc1(SlotSleep, 1)
+		// The park point: ~1 ms on the deadline overlay, so other
+		// goroutines run. The loop resumes, re-probes, and re-checks the
+		// deadline.
+		svc1(SlotSleepNs, sockParkNs)
 	}
 }
 
@@ -721,7 +736,7 @@ func finRelease(h uint64, graceful bool) {
 			if r := sock(SockOpShutdown, uintptr(h), 0, 0); r != -ErrEAGAIN {
 				break
 			}
-			svc1(SlotSleep, 1)
+			svc1(SlotSleepNs, sockParkNs)
 		}
 	}
 	_ = sock(SockOpClose, uintptr(h), 0, 0)

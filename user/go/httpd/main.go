@@ -43,8 +43,11 @@ const (
 )
 
 // maxPinnedBytes caps one published file. The share is the host's, so the
-// server does not trust it to be small.
-const maxPinnedBytes = 256 * 1024
+// server does not trust it to be small. The bound must admit a shipped Go
+// ELF whole — the live-net-hub store lane publishes a ~1.1 MiB HUBAPP.ELF
+// and a truncated body installs as an honest elf_mismatch (#3863) —
+// while still refusing to pin an unbounded share blob.
+const maxPinnedBytes = 4 * 1024 * 1024
 
 // -------------------------------------------------------------------------
 
