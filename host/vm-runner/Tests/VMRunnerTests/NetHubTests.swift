@@ -221,6 +221,34 @@ final class NetHubTests: XCTestCase {
         XCTAssertEqual(got, Array(0..<24), "every queued frame must arrive, in send order")
     }
 
+    // #3863: with a live sampleable pair (both ends attached, nobody
+    // reading) the queue writes exactly ONE datagram — the edge-per-
+    // frame pacing — and holds the rest in userspace. Draining the pair
+    // + flushing then delivers the remainder in order.
+    func testGuestQueuePacesOnePerEmptyPair() throws {
+        var fds: [Int32] = [0, 0]
+        XCTAssertEqual(socketpair(AF_UNIX, SOCK_DGRAM, 0, &fds), 0)
+        let savedR = netCaptureReadSocket
+        let savedV = netCaptureSocket
+        netCaptureReadSocket = FileHandle(fileDescriptor: fds[1], closeOnDealloc: true)
+        netCaptureSocket = FileHandle(fileDescriptor: fds[0], closeOnDealloc: false)
+        defer { netCaptureReadSocket = savedR; netCaptureSocket = savedV; close(fds[0]) }
+        let q = NetGuestQueue()
+        for i in 0..<8 { q.send([UInt8](repeating: UInt8(i + 1), count: 1000)) }
+        XCTAssertEqual(q.pendingCount(), 7,
+                       "the pair takes one datagram per fully-empty state; the other 7 must hold in userspace")
+        var tv = timeval(tv_sec: 0, tv_usec: 10_000)
+        setsockopt(fds[0], SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+        var buf = [UInt8](repeating: 0, count: 2048)
+        var got = [Int]()
+        for _ in 0..<32 {
+            let n = recv(fds[0], &buf, buf.count, 0)
+            if n > 0 { got.append(Int(buf[0])) } else { q.flush() }
+            if got.count == 8 { break }
+        }
+        XCTAssertEqual(got, Array(1...8), "every held frame must still arrive, in send order")
+    }
+
     // The rx loop's break verdict (the mid-run-wedge fix): only a dead fd
     // stops the loop — every other errno is transient and must be ridden,
     // because a silently exited rx thread takes a whole relay direction
