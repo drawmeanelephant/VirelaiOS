@@ -126,22 +126,39 @@ EOF
 vgate_file vma-s2.txt <<'EOF'
 net arp 10.0.0.17
 net ping 10.0.0.2
-net arp 10.0.0.17
-net ping 10.0.0.2
-net arp 10.0.0.17
-net ping 10.0.0.2
-net arp 10.0.0.17
-net ping 10.0.0.2
-net arp 10.0.0.17
-net ping 10.0.0.2
-net arp 10.0.0.17
-net ping 10.0.0.2
-net arp 10.0.0.17
-net ping 10.0.0.2
-net arp 10.0.0.17
-net
 net ping 10.0.0.17
-net
+net arp 10.0.0.17
+net ping 10.0.0.2
+net ping 10.0.0.17
+net arp 10.0.0.17
+net ping 10.0.0.2
+net ping 10.0.0.17
+net arp 10.0.0.17
+net ping 10.0.0.2
+net ping 10.0.0.17
+net arp 10.0.0.17
+net ping 10.0.0.2
+net ping 10.0.0.17
+net arp 10.0.0.17
+net ping 10.0.0.2
+net ping 10.0.0.17
+net arp 10.0.0.17
+net ping 10.0.0.2
+net ping 10.0.0.17
+net arp 10.0.0.17
+net ping 10.0.0.2
+net ping 10.0.0.17
+net arp 10.0.0.17
+net ping 10.0.0.2
+net ping 10.0.0.17
+net arp 10.0.0.17
+net ping 10.0.0.2
+net ping 10.0.0.17
+net arp 10.0.0.17
+net ping 10.0.0.2
+net ping 10.0.0.17
+net arp 10.0.0.17
+net ping 10.0.0.2
 net ping 10.0.0.17
 net arp
 net
