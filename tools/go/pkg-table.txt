@@ -36,6 +36,16 @@ allow bufio
 allow bytes
 allow cmp
 allow context
+# M207d (#3820): GOVAULT's crypto set — virelai/vaultlib seals records
+# with aes-GCM + pbkdf2 and the TOTP verb is hmac-sha1. Closure measured
+# 2026-10-28: the whole fips140 tree already stages via crypto/sha256; the
+# five rows add only their own archives. crypto/sha3 is not in GOVAULT's
+# set and stays unstaged.
+allow crypto/aes
+allow crypto/cipher
+allow crypto/hmac
+allow crypto/pbkdf2
+allow crypto/sha1
 allow crypto/sha256
 allow encoding
 allow encoding/base32

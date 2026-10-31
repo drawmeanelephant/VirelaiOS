@@ -46,6 +46,7 @@ GOIRC.ELF virelai/goirc
 GOMAIL.ELF virelai/gomail
 GOA11Y.ELF virelai/goa11y
 GOPAINT.ELF virelai/gopaint
+GOVAULT.ELF virelai/govault
 FLINT.ELF virelai/flint
 # M110c (#2405) split virelai/store into a library package plus a thin CLI
 # at store/main — the row names the main package, not the library.
