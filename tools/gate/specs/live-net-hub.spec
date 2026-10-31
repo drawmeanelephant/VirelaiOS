@@ -268,7 +268,7 @@ open(os.path.join(share, "JA.SH"), "w").write(
     "STORE.ELF publish HUBAPP /host/HUBAPP.ELF --src=/host/WS --version=1.0.0 --stream=main --caps=file,memory,process,debug,net || sleep 1 ; STORE.ELF publish HUBAPP /host/HUBAPP.ELF --src=/host/WS --version=1.0.0 --stream=main --caps=file,memory,process,debug,net\n"
     "FLINT.ELF push --remote=10.0.0.2:4853 --stream=main || sleep 1 ; FLINT.ELF push --remote=10.0.0.2:4853 --stream=main\n"
     "echo JA-DONE\n"
-    "while true; do GOHTTPD.ELF --advertise v206b ; done\n")
+    "while true; do GOHTTPD.ELF ; done\n")
 
 # vm-b's share: the browse + fetch verbs; wm=none keeps the seat's EL0
 # slots for the discover/fetch children.
@@ -402,16 +402,22 @@ legs += ["net ping 10.0.0.16", "net", "net ping 10.0.0.16", "net",
 open(os.path.join(rd, "vmb-legs.txt"), "w").write("\n".join(legs) + "\n")
 
 # vm-b's M206c leg file — typed by the SECOND run-a client once 'flint:
-# push ' lands on A's serial. One monitor line: the plain (uid_user)
-# gosh sources JB.SH, whose children run sequentially — the live-
-# dev-loop-proven shape for the install legs (the flint-remote secret
-# serves the uid-1000 lane).
+# push ' lands on A's serial. TWO monitor execs (both async spawns): a
+# detached gosh loops `GOFETCH ... /healthz` — the keep-alive traffic
+# that keeps whichever GOHTTPD instance is bound from hitting its 30 s
+# AcceptConn expiry mid-install (JA.SH's restart loop only covers the
+# publish gap; a served conn resets the window, so a live instance stays
+# bound for the whole leg) — and the plain (uid_user) gosh that sources
+# JB.SH, whose children run sequentially — the live-dev-loop-proven
+# shape for the install legs (the flint-remote secret serves the
+# uid-1000 lane).
 open(os.path.join(rd, "vmb-store-legs.txt"), "w").write(
     "net arp 10.0.0.2\n"
     "net\n"
     "net arp 10.0.0.16\n"
     "net\n"
     "net arp 10.0.0.2\n"
+    'exec GOSH.ELF -c "while true; do GOFETCH.ELF http://10.0.0.16:8080/healthz ; done"\n'
     'exec GOSH.ELF -c "source /host/JB.SH"\n'
     "net recv\n")
 # Third leg file — the admin half, typed by the THIRD client once B's
