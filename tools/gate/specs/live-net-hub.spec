@@ -115,11 +115,20 @@ EOF
 # drains between requests give the hub round trip time to land replies —
 # the ARP reply names B's --mac in the table dump, and the icmp counters
 # after the pings show both directions (req= A's echoes, repl= echoes A
-# answered from B, pong= replies A got back).
+# answered from B, pong= replies A got back). The five spaced `net arp`
+# attempts are the go-clock idiom for the async learn race: the reply
+# lands whenever the rx drain pulls it, and a reply only learns inside a
+# live pending window (arp.pending_wait_ticks), so each re-request
+# re-opens a window instead of leaving one burst to expire.
 vgate_file vma-s2.txt <<'EOF'
 net arp 10.0.0.17
 net
 net arp 10.0.0.17
+net
+net arp 10.0.0.17
+net
+net arp 10.0.0.17
+net
 net arp 10.0.0.17
 net
 net ping 10.0.0.17
@@ -240,11 +249,26 @@ open(os.path.join(share, "WS", "NOTE.TXT"), "w").write("m206c publisher workspac
 # idempotently). Iteration 1 lands FRESH + 'flint: push ok changes=1';
 # iterations 2+ take EXISTS + 'push up to date' — client-2 waits only on
 # the 'flint: push ' prefix both print.
+# The trailing while-loop is load-bearing, not decoration: GOHTTPD's
+# AcceptConn is a bounded 30 s wait (vi.DefaultRecvBudgetNs) — an idle
+# listener lets it expire and the daemon exits cleanly, observed live as
+# 'httpd: advertise goodbye sent' + 'httpd: bye' mid-run, after which
+# B's :8080 fetches die on a dead port ('store: refuse channel_missing'
+# — the failure this card's first run named a hub wedge and was not:
+# injected probes proved delivery both ways while :8080 stayed silent).
+# Card b never noticed because its fetch window is seconds; the publish
+# lane is minutes. The loop keeps SOME listener bound for the whole
+# install window: each instance serves >=30 s idle, exits, and the next
+# binds (a bind failure against the still-live stage-1 listener just
+# retries — the old one's own expiry frees :8080 inside 30 s). gosh's
+# while caps at 256 iterations — hours of coverage; the gate tears the
+# VM down first.
 open(os.path.join(share, "JA.SH"), "w").write(
     "FLINT.ELF init --name=hubws --src=/host/WS && echo JA-INIT-FRESH || echo JA-INIT-EXISTS\n"
     "STORE.ELF publish HUBAPP /host/HUBAPP.ELF --src=/host/WS --version=1.0.0 --stream=main --caps=file,memory,process,debug,net || sleep 1 ; STORE.ELF publish HUBAPP /host/HUBAPP.ELF --src=/host/WS --version=1.0.0 --stream=main --caps=file,memory,process,debug,net\n"
     "FLINT.ELF push --remote=10.0.0.2:4853 --stream=main || sleep 1 ; FLINT.ELF push --remote=10.0.0.2:4853 --stream=main\n"
-    "echo JA-DONE\n")
+    "echo JA-DONE\n"
+    "while true; do GOHTTPD.ELF --advertise v206b ; done\n")
 
 # vm-b's share: the browse + fetch verbs; wm=none keeps the seat's EL0
 # slots for the discover/fetch children.
@@ -513,7 +537,7 @@ vgate_run a -- --net '$RUN_DIR/a.cap' --net-hub '$RUN_DIR/nethub.sock' --mac 02:
     --net-arp-respond 10.0.0.2 --net-tcp-respond 10.0.0.2:4853:relay --net-tcp-respond-relay 127.0.0.1:4853 \
     --virtio-fs '$RUN_DIR/share' \
     --script '$RUN_DIR/vma-s1.txt' \
-    --script2 '$RUN_DIR/vma-s2.txt' --script2-after 'httpd: request /healthz' --script2-delay 3 \
+    --script2 '$RUN_DIR/vma-s2.txt' --script2-after 'httpd: request /healthz' --script2-delay 10 \
     --script3 '$RUN_DIR/vma-s3.txt' --script3-after 'vma-legs-done' \
     --script-expect 'httpd: request /DROP/main/HUBAPP.ELF' --script-expect-tail 45 --timeout 600
 
