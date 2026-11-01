@@ -992,6 +992,25 @@ const steal_run_name_cap = 16;
 var steal_run_names: [steal_run_name_cap][]const u8 = undefined;
 var steal_run_froms: [steal_run_name_cap]usize = undefined;
 var steal_run_names_count: usize = 0;
+/// #3863: wall-clock bound on the secondary/steal evidence drains —
+/// the unthrottled per-run lines flooded the console under load
+/// (~570k lines on one gate run) until the host console-tcp bridge
+/// dropped the client on its 2 s emit-stall bound. Each drain emits at
+/// most one line per gap naming the latest sampled run; skipped runs
+/// still count into the printed watermark. 0 disables the throttle's
+/// memory (first due drain prints regardless of the gap).
+const smp_report_gap_ns: u64 = 100_000_000;
+var secondary_report_last_ns: u64 = 0;
+var steal_report_last_ns: u64 = 0;
+/// The newest sampled run awaiting its gap — recording survives the
+/// backlog walk so a throttled window still emits its latest sample.
+var secondary_report_pending: bool = false;
+var secondary_report_n: u64 = 0;
+var secondary_report_name: []const u8 = "";
+var steal_report_pending: bool = false;
+var steal_report_n: u64 = 0;
+var steal_report_name: []const u8 = "";
+var steal_report_from: usize = 0;
 /// Secondary-core WFE-park capture (claim 2369): the location of the WFE
 /// loop's saved frame on the secondary stack + its ELR/SPSR, captured by
 /// `tick` the moment it starts a task from the parked state. A running
@@ -1262,6 +1281,13 @@ pub fn init() usize {
     steal_runs = 0;
     steal_runs_printed = 0;
     steal_run_names_count = 0;
+    secondary_runs = 0;
+    secondary_runs_printed = 0;
+    secondary_run_names_count = 0;
+    secondary_report_last_ns = 0;
+    steal_report_last_ns = 0;
+    secondary_report_pending = false;
+    steal_report_pending = false;
     user_timer_preemptions = 0;
     tick_count = 0;
     process_exit_tick = @splat(null);
@@ -4171,13 +4197,33 @@ pub fn maybe_report(con: *console.Console) void {
     // self-rotations can run at yield cadence, not tick cadence. Snapshot
     // once and skip overwritten names rather than reconstructing millions
     // of discarded reports and starving monitor handback forever.
+    // #3863: the per-run line flood is a live-console killer — under a
+    // loaded lane this printed ~570k lines (~23 MB of one gate serial),
+    // outrunning the console-tcp client's drain until the bridge's
+    // emit-stall bound dropped the session. Wall-clock bound instead:
+    // at most one line per `smp_report_gap_ns`, naming the LATEST
+    // retained run — skipped runs still advance the watermark and the
+    // printed runs= count, so the evidence shape (prefix + monotonic
+    // count + task name) survives and the count's jump proves the
+    // skips. Clock-less contexts (timer.now_ns()==0: pre-init boots,
+    // host tests) keep the one-line-per-run drain.
     const secondary_end = secondary_runs;
     const secondary_first = secondary_end - @min(secondary_end, secondary_run_names_count);
     secondary_runs_printed = @max(secondary_runs_printed, secondary_first);
+    const smp_now = timer.now_ns();
     while (secondary_runs_printed < secondary_end) {
         const index = secondary_runs_printed - secondary_first;
         secondary_runs_printed += 1;
         const name = secondary_run_names[index];
+        if (smp_now != 0) {
+            // Throttled path: record the newest sampled run and emit it
+            // once the gap below elapses — the sample survives across
+            // calls even when the backlog walks in a skipped window.
+            secondary_report_pending = true;
+            secondary_report_n = secondary_runs_printed;
+            secondary_report_name = name;
+            continue;
+        }
         // ONE write per line (claim 881 slice 4): a secondary-core
         // sys_write can land between the vtable writes of a multi-put
         // line, splitting it (observed: `smp: secondary runs=` / `111` /
@@ -4188,6 +4234,16 @@ pub fn maybe_report(con: *console.Console) void {
         const line = std.fmt.bufPrint(&buf, "smp: secondary runs={d} task={s}\n", .{ secondary_runs_printed, name }) catch continue;
         con.puts(line);
     }
+    if (secondary_report_pending and
+        smp_now -| secondary_report_last_ns >= smp_report_gap_ns)
+    {
+        var buf: [160]u8 = undefined;
+        if (std.fmt.bufPrint(&buf, "smp: secondary runs={d} task={s}\n", .{ secondary_report_n, secondary_report_name })) |line| {
+            con.puts(line);
+            secondary_report_pending = false;
+            secondary_report_last_ns = smp_now;
+        } else |_| {}
+    }
     // The migration buffer has the same drop-oldest, bounded-drain rule.
     const steal_end = steal_runs;
     const steal_first = steal_end - @min(steal_end, steal_run_names_count);
@@ -4197,9 +4253,26 @@ pub fn maybe_report(con: *console.Console) void {
         steal_runs_printed += 1;
         const sname = steal_run_names[index];
         const sfrom = steal_run_froms[index];
+        if (smp_now != 0) {
+            steal_report_pending = true;
+            steal_report_n = steal_runs_printed;
+            steal_report_name = sname;
+            steal_report_from = sfrom;
+            continue;
+        }
         var buf: [160]u8 = undefined;
         const line = std.fmt.bufPrint(&buf, "smp: steal runs={d} task={s} from={d}\n", .{ steal_runs_printed, sname, sfrom }) catch continue;
         con.puts(line);
+    }
+    if (steal_report_pending and
+        smp_now -| steal_report_last_ns >= smp_report_gap_ns)
+    {
+        var buf: [160]u8 = undefined;
+        if (std.fmt.bufPrint(&buf, "smp: steal runs={d} task={s} from={d}\n", .{ steal_report_n, steal_report_name, steal_report_from })) |line| {
+            con.puts(line);
+            steal_report_pending = false;
+            steal_report_last_ns = smp_now;
+        } else |_| {}
     }
     var i: usize = 0;
     while (i < max_tasks) : (i += 1) {
@@ -4301,6 +4374,63 @@ test "scheduler: self-rotation report backlogs drain only retained names (#1965)
     mock.reset();
     maybe_report(&con);
     try std.testing.expectEqual(@as(usize, 0), mock.contents().len);
+}
+
+test "scheduler: smp evidence drains bound to one line per wall gap (#3863)" {
+    _ = init();
+    secondary_runs = 1_000_000;
+    secondary_runs_printed = 0;
+    secondary_run_names_count = secondary_run_name_cap;
+    secondary_run_names = @splat("user-el0");
+    steal_runs = 1_000_000;
+    steal_runs_printed = 0;
+    steal_run_names_count = steal_run_name_cap;
+    steal_run_names = @splat("user-el0");
+    steal_run_froms = @splat(1);
+    var now: u64 = 1_000_000_000;
+    const Hook = struct {
+        var t: *u64 = undefined;
+        fn f() u64 {
+            return t.*;
+        }
+    };
+    Hook.t = &now;
+    timer.now_ns_hook = Hook.f;
+    defer {
+        timer.now_ns_hook = null;
+        secondary_runs = 0;
+        secondary_runs_printed = 0;
+        secondary_run_names_count = 0;
+        steal_runs = 0;
+        steal_runs_printed = 0;
+        steal_run_names_count = 0;
+        secondary_report_last_ns = 0;
+        steal_report_last_ns = 0;
+    }
+    var mock = console.MockConsole(8192){};
+    var con = mock.console();
+    maybe_report(&con);
+    // One line each, naming the LATEST retained run — the retained
+    // backlog collapses into the newest sample, not a line per run.
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, mock.contents(), "smp: secondary runs="));
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, mock.contents(), "smp: steal runs="));
+    try std.testing.expect(std.mem.indexOf(u8, mock.contents(), "smp: secondary runs=1000000 task=user-el0") != null);
+    // Inside the same wall window the next drain writes nothing — but
+    // the watermark still walks the new runs (the count proves them).
+    secondary_runs += 5;
+    secondary_run_names_count = 5;
+    secondary_run_names = @splat("worker");
+    mock.reset();
+    maybe_report(&con);
+    try std.testing.expectEqual(@as(usize, 0), mock.contents().len);
+    try std.testing.expectEqual(secondary_runs, secondary_runs_printed);
+    // Past the gap: one line naming the newest run — the skipped four
+    // show only as the runs= jump.
+    now += smp_report_gap_ns;
+    mock.reset();
+    maybe_report(&con);
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, mock.contents(), "smp: secondary runs="));
+    try std.testing.expect(std.mem.indexOf(u8, mock.contents(), "smp: secondary runs=1000005 task=worker") != null);
 }
 
 // ---------------------------------------------------------------------------

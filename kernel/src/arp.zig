@@ -7,10 +7,11 @@
 //! Honest bounds: IPv4 ONLY (ptype 0x0800) — no IPv6/other; ONE bounded 4-slot
 //! table (fixed BSS, no heap, no allocation); no cache expiry (an entry
 //! lives until it is replaced — documented, not assumed); the
-//! `pending_reply` learn window IS bounded — `pending_wait_ticks` on the
-//! stamped tick (issue #3400: an unanswered request does not leave the
-//! slot open forever); a request for an address we do not own is dropped
-//! with a counter (we only answer for our own protocol address).
+//! `pending` solicitation table IS bounded — `pending_wait_ticks`
+//! on the stamped tick (issue #3400: an unanswered request does not
+//! leave the slot open forever); a request for an address we do not own
+//! is dropped with a counter (we only answer for our own protocol
+//! address).
 //!
 //! Next-hop (the off-subnet card): `lookup` answers the MAC of the NEXT
 //! HOP toward the queried address, not only the peer itself. A peer that
@@ -74,30 +75,68 @@ pub var table: [table_slots]ArpEntry = @as([table_slots]ArpEntry, @splat(@as(Arp
 /// `pub` for the cross-module wiring tests (virtio_net resets it).
 pub var table_cursor: usize = 0;
 
-/// The protocol address an ARP request is outstanding for — set by
+/// One outstanding solicitation — the protocol address a request asked
+/// for, the `now_ticks` stamp of its last transmission, how many
+/// re-requests the poll path has already sent, and polls since the
+/// last send (the retransmit cadence — sub-tick, because a leg that
+/// paces resolutions in seconds cannot wait a whole tick per retry).
+pub const Pending = struct {
+    valid: bool = false,
+    target: [4]u8 = .{ 0, 0, 0, 0 },
+    tick: u64 = 0,
+    retries: u8 = 0,
+    retry_polls: u32 = 0,
+};
+
+/// The bounded solicitation table — one slot per recently-requested
+/// target (fixed BSS, drop-most-stale, the `table` shape). Set by
 /// `build_request` (the ONE wire-request funnel: every request we send
 /// asks "who has THIS address", so the built tpa is the pending target,
 /// already the NEXT-HOP resolution for an off-subnet destination) and
 /// cleared when its matching reply is learned or the bounded wait
-/// elapses. `null` = no request outstanding. M97e-F3 (#2102): a reply
-/// is learned ONLY against this — an unsolicited reply can never create
-/// or overwrite an entry (an on-link host could otherwise overwrite the
-/// gateway mapping and redirect every off-subnet flow). ONE slot: a
-/// second request supersedes the first, matching the
-/// single-request-at-a-time senders. #3400: `pending_reply_tick`
+/// elapses. M97e-F3 (#2102): a reply is learned ONLY against a slot
+/// here — an unsolicited reply can never create or overwrite an entry
+/// (an on-link host could otherwise overwrite the gateway mapping and
+/// redirect every off-subnet flow). This is a TABLE, not the former
+/// single slot: #3863 observed a request for a second address steal the
+/// one slot and turn an earlier target's on-the-wire reply into a
+/// spurious "unsolicited" drop — interleaved resolutions are legitimate,
+/// so each target keeps its own bounded slot. #3400: the stamped tick
 /// bounds the learn window — an unanswered request does not leave the
 /// slot open forever.
-pub var pending_reply: ?[4]u8 = null;
+pub const pending_slots: usize = 4;
+pub var pending: [pending_slots]Pending = @as([pending_slots]Pending, @splat(@as(Pending, .{})));
 
 /// The 1 Hz tick clock — stamped by the caller each poll (the
 /// `dhcp.now_ticks`/`ndp.now_ticks` precedent; `net_ndp_poll` shares
-/// the NDP stamp). It bounds the `pending_reply` learn window.
+/// the NDP stamp). It bounds the `pending` learn window.
 pub var now_ticks: u64 = 0;
-/// The tick `build_request` last opened the pending slot.
-pub var pending_reply_tick: u64 = 0;
 /// The bounded learn window: a matching reply learns only while
-/// `now_ticks - pending_reply_tick <= pending_wait_ticks`.
-pub const pending_wait_ticks: u64 = 2;
+/// `now_ticks - slot.tick <= pending_wait_ticks`. The bound is sized
+/// for the observed transport, not for a fast LAN: on a cold two-VM hub
+/// segment a solicited reply rides the same delivery path every other
+/// frame does and can land tens of seconds late (#3863 — VZ
+/// pair->ring servicing is not kick-synchronous at first boot), where
+/// the previous 2-tick window dropped provably-solicited answers and
+/// left resolves permanently missed. A late answer is still solicited
+/// — the request was broadcast for exactly this spa — so the M97e-F3
+/// check is "did we ask", never "was the peer quick". Still bounded:
+/// a request nobody answers is forgotten minutes out, so a forged
+/// reply cannot ride a stale slot indefinitely.
+pub const pending_wait_ticks: u64 = 240;
+
+/// The retransmit cadence: an unanswered solicitation is re-requested
+/// once per `retransmit_polls` polls, up to `max_retries` re-sends —
+/// the caller (the virtio_net tick-seam poll) drives it. The cadence
+/// counts POLLS not ticks: the 1 Hz stamp is too coarse to keep a
+/// request train alive inside a leg window of seconds. Real stacks
+/// re-ask a handful of times instead of declaring failure on one lost
+/// or slow answer; here each re-request is also a fresh TX, which on
+/// this transport is a fresh kick at the host attachment's
+/// pair->ring servicing (#3863 — not kick-synchronous at first boot).
+/// The bound keeps a dead target from transmitting forever.
+pub const retransmit_polls: u32 = 64;
+pub const max_retries: u8 = 8;
 
 /// ARP counters (the `net`/`net arp` reports).
 pub var requests_sent: u64 = 0; // ARP requests we transmitted (a resolve miss)
@@ -328,14 +367,45 @@ pub fn is_reply(frame: []const u8) bool {
     return op(frame) == op_reply;
 }
 
+/// Record `target` as an outstanding solicitation: re-stamp the
+/// matching slot, else take the first free slot, else evict the most
+/// stale (fixed `pending_slots` bound, never a heap). Re-requesting the
+/// same target refreshes the slot — a reply landing inside any
+/// re-opened window still learns.
+fn note_request(target: [4]u8) void {
+    var free: ?*Pending = null;
+    var stale: ?*Pending = null;
+    for (&pending) |*s| {
+        if (!s.valid) {
+            if (free == null) free = s;
+            continue;
+        }
+        if (std.mem.eql(u8, &s.target, &target)) {
+            s.tick = now_ticks;
+            return;
+        }
+        if (stale == null or s.tick < stale.?.tick) stale = s;
+    }
+    const s = free orelse stale.?;
+    s.* = .{ .valid = true, .target = target, .tick = now_ticks };
+}
+
+/// Whether a request for `target` is currently outstanding — the
+/// cross-module wiring tests' read of the pending table.
+pub fn pendingFor(target: [4]u8) bool {
+    for (&pending) |*s| {
+        if (s.valid and std.mem.eql(u8, &s.target, &target)) return true;
+    }
+    return false;
+}
+
 /// Build an ARP REQUEST (broadcast dst, our MAC/IP as sender, zeroed
 /// target hardware, target protocol = `target_ip`) into `buf` (must hold
 /// >= `arp_frame_len` bytes). Returns the frame length (42).
 pub fn build_request(buf: []u8, own_mac: *const [6]u8, own_ip_addr: [4]u8, target_ip: [4]u8) usize {
     @memset(buf[0..arp_frame_len], 0);
     @memset(buf[0..6], 0xff); // broadcast dst
-    pending_reply = target_ip; // a request for `target_ip` is now outstanding (M97e-F3)
-    pending_reply_tick = now_ticks; // the learn window bounds at this instant (#3400)
+    note_request(target_ip); // a request for `target_ip` is now outstanding (M97e-F3); the learn window bounds at this instant (#3400)
     @memcpy(buf[6..12], own_mac); // src
     buf[12] = 0x08;
     buf[13] = 0x06; // ethertype ARP
@@ -394,22 +464,21 @@ pub fn handle_rx(frame: []const u8, own_mac: *const [6]u8, reply_buf: []u8) ?usi
         // e.g. an on-link host racing to overwrite the gateway entry) is
         // dropped and counted, never upserted.
         const spa = sender_ip(frame);
-        if (pending_reply) |p| {
-            if (std.mem.eql(u8, &spa, &p)) {
-                // #3400: the learn window is bounded — a reply landing
-                // after `pending_wait_ticks` cannot learn; the slot
-                // closes instead of staying open forever (the NDP
-                // `na_wait_ticks` shape — the F4 solicited-race twin).
-                if (now_ticks -| pending_reply_tick > pending_wait_ticks) {
-                    pending_reply = null;
-                    dropped += 1;
-                    return null;
-                }
-                upsert(spa, sender_mac(frame));
-                replies_learned += 1;
-                pending_reply = null;
+        for (&pending) |*s| {
+            if (!s.valid or !std.mem.eql(u8, &spa, &s.target)) continue;
+            // #3400: the learn window is bounded — a reply landing
+            // after `pending_wait_ticks` cannot learn; the slot
+            // closes instead of staying open forever (the NDP
+            // `na_wait_ticks` shape — the F4 solicited-race twin).
+            if (now_ticks -| s.tick > pending_wait_ticks) {
+                s.valid = false;
+                dropped += 1;
                 return null;
             }
+            upsert(spa, sender_mac(frame));
+            replies_learned += 1;
+            s.valid = false; // the request was consumed
+            return null;
         }
         dropped += 1;
         return null;
@@ -584,9 +653,9 @@ test "arp: handle_rx — answer for us, learn a reply, drop the rest" {
     replies_learned = 0;
     dropped = 0;
     reply_tx_fail = 0;
-    pending_reply = null;
+    pending = @as([pending_slots]Pending, @splat(@as(Pending, .{})));
     defer own_ip = .{ 0, 0, 0, 0 };
-    defer pending_reply = null;
+    defer pending = @as([pending_slots]Pending, @splat(@as(Pending, .{})));
 
     var reply_buf: [arp_frame_len]u8 = undefined;
 
@@ -595,7 +664,7 @@ test "arp: handle_rx — answer for us, learn a reply, drop the rest" {
     // it; this frame is the HOST's request, not ours.)
     var req: [arp_frame_len]u8 = undefined;
     _ = build_request(&req, &host_mac, ip_host, ip_guest);
-    pending_reply = null;
+    pending = @as([pending_slots]Pending, @splat(@as(Pending, .{})));
     const rn = handle_rx(&req, &test_mac, &reply_buf).?;
     try std.testing.expectEqual(@as(usize, 42), rn);
     try std.testing.expectEqualSlices(u8, &host_mac, reply_buf[0..6]); // dst = requester
@@ -607,7 +676,7 @@ test "arp: handle_rx — answer for us, learn a reply, drop the rest" {
     // A request for a DIFFERENT address: dropped, no reply.
     var req_other: [arp_frame_len]u8 = undefined;
     _ = build_request(&req_other, &host_mac, ip_host, .{ 10, 0, 0, 99 });
-    pending_reply = null;
+    pending = @as([pending_slots]Pending, @splat(@as(Pending, .{})));
     try std.testing.expect(handle_rx(&req_other, &test_mac, &reply_buf) == null);
     try std.testing.expectEqual(@as(u64, 1), dropped);
 
@@ -624,13 +693,13 @@ test "arp: handle_rx — answer for us, learn a reply, drop the rest" {
 
     var our_req: [arp_frame_len]u8 = undefined;
     _ = build_request(&our_req, &test_mac, ip_guest, ip_host);
-    try std.testing.expectEqualSlices(u8, &ip_host, &pending_reply.?);
+    try std.testing.expect(pendingFor(ip_host));
 
     var rep: [arp_frame_len]u8 = undefined;
     _ = build_reply(&rep, &host_mac, ip_host, test_mac, ip_guest);
     try std.testing.expect(handle_rx(&rep, &test_mac, &reply_buf) == null);
     try std.testing.expectEqual(@as(u64, 1), replies_learned);
-    try std.testing.expect(pending_reply == null); // the outstanding request was consumed
+    try std.testing.expect(!pendingFor(ip_host)); // the outstanding request was consumed
     try std.testing.expectEqualSlices(u8, &host_mac, &lookup(ip_host).?);
 
     // A reply for an address we did NOT just request is still refused
@@ -664,10 +733,10 @@ test "arp: the solicited-reply learn is bounded — a stale pending cannot learn
     table_cursor = 0;
     replies_learned = 0;
     dropped = 0;
-    pending_reply = null;
+    pending = @as([pending_slots]Pending, @splat(@as(Pending, .{})));
     now_ticks = 0;
     defer own_ip = .{ 0, 0, 0, 0 };
-    defer pending_reply = null;
+    defer pending = @as([pending_slots]Pending, @splat(@as(Pending, .{})));
     defer now_ticks = 0;
 
     var reply_buf: [arp_frame_len]u8 = undefined;
@@ -677,10 +746,10 @@ test "arp: the solicited-reply learn is bounded — a stale pending cannot learn
 
     // The fresh window: a reply inside `pending_wait_ticks` learns.
     _ = build_request(&req, &test_mac, ip_guest, ip_host);
-    now_ticks = pending_reply_tick + pending_wait_ticks; // the window edge
+    now_ticks = pending[0].tick + pending_wait_ticks; // the window edge
     try std.testing.expect(handle_rx(&rep, &test_mac, &reply_buf) == null);
     try std.testing.expectEqual(@as(u64, 1), replies_learned);
-    try std.testing.expect(pending_reply == null);
+    try std.testing.expect(!pendingFor(ip_host));
 
     // Past the wait: the matching reply cannot learn — the slot closes
     // on sight (the NDP `na_wait_ticks` shape, issue #3400).
@@ -688,12 +757,51 @@ test "arp: the solicited-reply learn is bounded — a stale pending cannot learn
     var rep2: [arp_frame_len]u8 = undefined;
     _ = build_reply(&rep2, &host_mac, other_ip, test_mac, ip_guest);
     _ = build_request(&req, &test_mac, ip_guest, other_ip);
-    now_ticks = pending_reply_tick + pending_wait_ticks + 1;
+    now_ticks = pending[0].tick + pending_wait_ticks + 1;
     try std.testing.expect(handle_rx(&rep2, &test_mac, &reply_buf) == null);
     try std.testing.expectEqual(@as(u64, 1), replies_learned); // unchanged
     try std.testing.expectEqual(@as(u64, 1), dropped);
-    try std.testing.expect(pending_reply == null);
+    try std.testing.expect(!pendingFor(other_ip));
     try std.testing.expect(lookup(other_ip) == null);
+}
+
+test "arp: the solicitation table keeps each target's window — a second request does not steal the first's" {
+    own_ip = ip_guest;
+    table = @as([table_slots]ArpEntry, @splat(@as(ArpEntry, .{})));
+    table_cursor = 0;
+    replies_learned = 0;
+    dropped = 0;
+    pending = @as([pending_slots]Pending, @splat(@as(Pending, .{})));
+    now_ticks = 0;
+    defer own_ip = .{ 0, 0, 0, 0 };
+    defer pending = @as([pending_slots]Pending, @splat(@as(Pending, .{})));
+    defer now_ticks = 0;
+
+    var reply_buf: [arp_frame_len]u8 = undefined;
+    var req: [arp_frame_len]u8 = undefined;
+    var rep: [arp_frame_len]u8 = undefined;
+
+    // #3863: resolve ip_host, then other_ip — the second request must
+    // not turn ip_host's on-the-wire reply into an unsolicited drop.
+    _ = build_request(&req, &test_mac, ip_guest, ip_host);
+    _ = build_request(&req, &test_mac, ip_guest, .{ 10, 0, 0, 7 });
+    try std.testing.expect(pendingFor(ip_host));
+    try std.testing.expect(pendingFor(.{ 10, 0, 0, 7 }));
+    _ = build_reply(&rep, &host_mac, ip_host, test_mac, ip_guest);
+    try std.testing.expect(handle_rx(&rep, &test_mac, &reply_buf) == null);
+    try std.testing.expectEqual(@as(u64, 1), replies_learned);
+    try std.testing.expect(!pendingFor(ip_host));
+    try std.testing.expect(pendingFor(.{ 10, 0, 0, 7 }));
+
+    // Re-requesting the same target re-stamps its window, not a new slot.
+    _ = build_request(&req, &test_mac, ip_guest, .{ 10, 0, 0, 7 });
+    now_ticks += 1;
+    _ = build_request(&req, &test_mac, ip_guest, .{ 10, 0, 0, 7 });
+    var open: usize = 0;
+    for (&pending) |*s| {
+        if (s.valid) open += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), open);
 }
 
 // ---------------------------------------------------------------------------
@@ -706,7 +814,7 @@ fn reset_route_state() void {
     gateway = .{ 0, 0, 0, 0 };
     table = @as([table_slots]ArpEntry, @splat(@as(ArpEntry, .{})));
     table_cursor = 0;
-    pending_reply = null;
+    pending = @as([pending_slots]Pending, @splat(@as(Pending, .{})));
 }
 
 test "arp: on_link — subnet membership under the /24 bound and a wider mask" {
