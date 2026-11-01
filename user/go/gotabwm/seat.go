@@ -601,6 +601,10 @@ func main() {
 		}
 		e, ok := vi.PollEvent()
 		if !ok {
+			// #3882: pay any paint debt marked outside the event drain
+			// (RFB/agent input rides consumeSeatEvent directly) before
+			// blocking — otherwise it waits for the next arbitrary event.
+			flushComposite()
 			// #2260: block on the event queue instead of parking a whole
 			// scheduler tick (~1 s at the 1 Hz tick) per empty poll. The
 			// kernel wakes event waiters on every push, so input drains at
@@ -1052,7 +1056,13 @@ func drainSeatEvents(first vi.Event, poll func() (vi.Event, bool), consume func(
 			service()
 		}
 		if !consume(e) {
-			if heldDebt > 0 {
+			// #3882: consume may have marked a paint debt on a non-tick
+			// event (input feedback, mirrors) — open the held window so
+			// the drain-end payPaint lands it instead of stranding it
+			// behind the next heartbeat.
+			if heldDebt == 0 && pendingComposite {
+				heldDebt = 1
+			} else if heldDebt > 0 {
 				heldDebt++
 				if heldDebt >= drainPaintStride {
 					payPaint()
@@ -1097,7 +1107,17 @@ func drainSeatEvents(first vi.Event, poll func() (vi.Event, bool), consume func(
 // rail (M63c). Window mirrors are dropped; client-area clicks are ignored.
 // Any other kind is the pre-M63a ignore-non-tick path. Only
 // EvCompositeTick returns true.
+//
+// #3882: every event that is not a flags-0 heartbeat can change the
+// composed frame — pointer/key feedback (the kernel stamps the cursor
+// into the frame only at present), registry mirrors, the card #3034
+// damage tick — so the paint debt is owed HERE, at consume, rather than
+// left for the next 1 Hz heartbeat. The drain's heldDebt hook pays it
+// once per batch (an interactive present cadence), never per event.
 func consumeSeatEvent(e vi.Event) bool {
+	if !(e.Kind == vi.EvCompositeTick && e.Flags&vi.WmTickDamage == 0) {
+		pendingComposite = true
+	}
 	launcherWindowEvent(e)
 	// M102e (#2169): the kind-20 registry mirror also feeds the GPU3D
 	// publish geometry table — the seat's only legible live-rect source
