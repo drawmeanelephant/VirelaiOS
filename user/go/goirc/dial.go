@@ -91,6 +91,8 @@ func (t tlsDial) SetReadDeadline(at int64)    { t.c.SetDeadline(at) }
 
 // dialGuest is the production Dialer: TLS via tls.Dial with ServerName
 // (or the host when unset), plaintext via vi.Dial only under AllowPlain.
+// cfg.WS (M212c) upgrades whichever transport to a WebSocket session —
+// the byte conn is built first, then the handshake runs on it.
 func dialGuest(cfg Config) Dialer {
 	return func() (WireConn, error) {
 		if cfg.TLS {
@@ -102,7 +104,11 @@ func dialGuest(cfg Config) Dialer {
 			if err != nil {
 				return nil, err
 			}
-			return tlsDial{c: c}, nil
+			wire := WireConn(tlsDial{c: c})
+			if cfg.WS {
+				return wsDial(wire, cfg)
+			}
+			return wire, nil
 		}
 		if !cfg.AllowPlain {
 			return nil, fatalError{err: ircError(errPlainRefused)}
@@ -111,7 +117,11 @@ func dialGuest(cfg Config) Dialer {
 		if err != nil {
 			return nil, err
 		}
-		return plainDial{c: c}, nil
+		wire := WireConn(plainDial{c: c})
+		if cfg.WS {
+			return wsDial(wire, cfg)
+		}
+		return wire, nil
 	}
 }
 
