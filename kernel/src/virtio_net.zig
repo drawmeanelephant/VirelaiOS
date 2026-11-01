@@ -1533,15 +1533,16 @@ pub fn net_ndp_poll() NdpPoll {
     // `pending` learn window the RX drain checks.
     arp.now_ticks = ndp.now_ticks;
     if (!net_ready) return ev;
-    // #3863: bounded RX doorbell — once per stamped tick while the queue
-    // is armed, post the reserved poke descriptor when it is free (a
-    // real avail-ring advance) and kick queue 0. The VZ attachment
-    // reads the host->guest pair only when the device model is poked
-    // (the observed cold-boot stall class); the poke keeps a pending
-    // datagram at most one tick from a service point — one MMIO write
-    // per tick, never a notify storm.
-    if (rx_armed and ndp.now_ticks != rx_poke_tick) {
-        rx_poke_tick = ndp.now_ticks;
+    // #3863: bounded RX doorbell — the VZ attachment reads the
+    // host->guest pair only when the device model is poked (the
+    // observed cold-boot stall class). While the queue is armed, every
+    // poll posts the reserved poke descriptor when it is free — each
+    // post is a REAL avail-ring advance, self-clocking at the device's
+    // fill rate (a device that services the pair only on new posts
+    // then gets a service point at every drain cycle); the bare
+    // once-per-tick kick covers a device that drains the socket on any
+    // notify without needing fresh buffers.
+    if (rx_armed) {
         const dev = &net_dev;
         if ((rx_posted_mask >> @intCast(rx_poke_desc)) & 1 == 0) {
             dev.rx_desc[rx_poke_desc] = .{
@@ -1556,9 +1557,13 @@ pub fn net_ndp_poll() NdpPoll {
             net_ops.clean(@intFromPtr(&dev.rx_desc), @sizeOf([queue_size]VirtqDesc));
             net_ops.clean(@intFromPtr(&dev.rx_avail), @sizeOf(VirtqAvail));
             rx_posted +%= 1;
+            net_ops.notify(0);
+            rx_pokes +%= 1;
+        } else if (ndp.now_ticks != rx_poke_tick) {
+            net_ops.notify(0);
+            rx_pokes +%= 1;
         }
-        net_ops.notify(0);
-        rx_pokes +%= 1;
+        rx_poke_tick = ndp.now_ticks;
     }
     // #3863: bounded ARP retransmit — an unanswered solicitation is
     // re-requested every `arp.retransmit_polls` polls up to
