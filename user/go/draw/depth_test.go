@@ -231,6 +231,85 @@ func TestBlitScaledRatios(t *testing.T) {
 	}
 }
 
+// TestBlitScaledBoxDownscale pins #3881: a both-axes downscale is the exact
+// area mean of each dst pixel's footprint — the defect was bilinear's four
+// taps undersampling footprints wider than one texel (row icons at 4:1, the
+// emblem at 16:1), which read as speckle on the desk.
+func TestBlitScaledBoxDownscale(t *testing.T) {
+	// Alternating opaque rows: every 4x4 footprint is half white, half
+	// black, so all four dst pixels are the same mid-gray. The bilinear
+	// path landed each dst center on a single row and produced a
+	// black/white stripe pair instead.
+	src := canvas(8, 8, 0)
+	for y := 0; y < 8; y++ {
+		row := uint32(0xff000000)
+		if y%2 == 0 {
+			row = 0xffffffff
+		}
+		for x := 0; x < 8; x++ {
+			src.Pix[y*8+x] = row
+		}
+	}
+	c := canvas(2, 2, 0xff102030)
+	BlitScaled(c, src, rect(0, 0, 2, 2))
+	for y := 0; y < 2; y++ {
+		for x := 0; x < 2; x++ {
+			p := at(c, x, y)
+			if p>>24 != 0xff {
+				t.Fatalf("opaque footprint composited alpha %02x at (%d,%d)", p>>24, x, y)
+			}
+			for sh := uint(0); sh <= 16; sh += 8 {
+				if v := int(p >> sh & 0xff); v < 126 || v > 130 {
+					t.Fatalf("4x4 mean = %02x at (%d,%d) shift %d, want ~0x80", v, x, y, sh)
+				}
+			}
+		}
+	}
+	// A 2x2 of distinct opaque colors to one pixel is the plain mean.
+	src2 := &BufferCanvas{W: 2, H: 2, Pix: []uint32{
+		0xffff0000, 0xff00ff00, 0xff0000ff, 0xffffffff,
+	}}
+	c2 := canvas(3, 3, 0xff102030)
+	BlitScaled(c2, src2, rect(1, 1, 1, 1))
+	if got := at(c2, 1, 1); got>>16&0xff < 126 || got>>16&0xff > 130 ||
+		got>>8&0xff < 126 || got>>8&0xff > 130 || got&0xff < 126 || got&0xff > 130 {
+		t.Fatalf("2x2 mean = %08x, want ~0xff808080", got)
+	}
+	// Translucent texels keep the premultiplied convention: a half-alpha
+	// white beside transparent empties lands at quarter ink, not the
+	// NaN-crash or darkened color of an unpremultiplied mean.
+	src3 := &BufferCanvas{W: 4, H: 4, Pix: make([]uint32, 16)}
+	src3.Pix[0] = 0x80ffffff
+	c3 := canvas(2, 2, 0xff102030)
+	BlitScaled(c3, src3, rect(0, 0, 2, 2))
+	top := at(c3, 0, 0)
+	if top == 0xff102030 {
+		t.Fatal("the one faint texel's footprint painted nothing")
+	}
+	if at(c3, 1, 0) != 0xff102030 || at(c3, 0, 1) != 0xff102030 || at(c3, 1, 1) != 0xff102030 {
+		t.Fatal("faint texel leaked past its footprint")
+	}
+	// Mixed-axis blits stay bilinear: an x-only 4:1 shrink keeps the
+	// center-mapping tap pair (columns 1,2 = green,blue → teal), where the
+	// box path would average the whole 4-column footprint to gray.
+	srcX := canvas(8, 8, 0)
+	cols := []uint32{0xffff0000, 0xff00ff00, 0xff0000ff, 0xffffffff,
+		0xff000000, 0xff000000, 0xff000000, 0xff000000}
+	for y := 0; y < 8; y++ {
+		for x := 0; x < 8; x++ {
+			srcX.Pix[y*8+x] = cols[x]
+		}
+	}
+	c4 := canvas(2, 8, 0)
+	BlitScaled(c4, srcX, rect(0, 0, 2, 8))
+	if got := at(c4, 0, 0); got>>16&0xff > 4 {
+		t.Fatalf("x-only downscale took the box mean %08x — bilinear path lost", got)
+	}
+	if at(c4, 1, 0) != 0xff000000 {
+		t.Fatal("x-only downscale diverged from the bilinear tap pair")
+	}
+}
+
 func TestArcSweepsAndClamps(t *testing.T) {
 	r := rect(2, 2, 20, 20)
 	// sweep 0 and weight 0 paint nothing.
@@ -360,11 +439,15 @@ func TestDepthHotPathsNoAllocations(t *testing.T) {
 	c := canvas(64, 64, 0xff101010)
 	r := rect(4, 4, 24, 20)
 	src := canvas(8, 8, 0x80ffffff)
+	srcBig := canvas(32, 32, 0x80ffffff)
 	for name, fn := range map[string]func(){
 		"shadow":   func() { FillShadow(c, r, 4, 8, 4, 0x40000000) },
 		"gradient": func() { FillLinearGradient(c, r, 0xff102030, 0xff405060) },
 		"blitScaled": func() {
 			BlitScaled(c, src, rect(8, 8, 14, 10))
+		},
+		"blitScaledDown": func() {
+			BlitScaled(c, srcBig, rect(40, 40, 8, 8))
 		},
 		"fillArc":   func() { FillArc(c, r, 30, 200, 0xff102030) },
 		"strokeArc": func() { StrokeArc(c, r, 3, 30, 200, 0xff102030) },
