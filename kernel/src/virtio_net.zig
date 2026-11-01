@@ -1984,7 +1984,6 @@ pub fn net_ndp_poll() NdpPoll {
         {
             rx_reset_tick = ndp.now_ticks;
             rx_reset_ns = rx_now_ns;
-            rx_silent_polls = 0;
             if (@popCount(rx_hold_mask) != 0 and !rx_epoch_probed) {
                 // #3863: unlatch PROBE before paying for the device
                 // reset — spend the reserved held descriptor (one real
@@ -1994,6 +1993,13 @@ pub fn net_ndp_poll() NdpPoll {
                 // that eats the leg window; one probe per epoch
                 // (`rx_epoch_probed`), and still-silent at the next
                 // qualifying poll falls through to the reset below.
+                // Session 9: the probe gets ~one poll of grace, NOT a
+                // re-qualified bound — the a-02/a-03 artifacts showed
+                // its old full-window deferral outliving the whole
+                // ~50 ms leg (probe fired, reset never reached). The
+                // silence count and the wall stamp stay untouched here
+                // so the next qualifying poll is the reset; a probe
+                // that actually unlatched ends the silence on its own.
                 const d: u16 = @intCast(@ctz(rx_hold_mask));
                 rx_hold_mask &= ~(@as(u32, 1) << @intCast(d));
                 rx_post_desc(&net_ops, dev, d);
@@ -2021,17 +2027,19 @@ pub fn net_ndp_poll() NdpPoll {
                     ev.rxq_reset_fail = true;
                     net_log.log_fmt("RXQ reset failed", .{});
                 }
+                // Silence + the wall stamp restart at the RESET, never
+                // at the probe (see the probe comment) — the retry
+                // below still spaces by `stall_reset_ns` from this
+                // attempt, and post-reset silence measures fresh.
+                rx_silent_polls = 0;
+                rx_progress_tick = ndp.now_ticks;
+                rx_progress_ns = rx_now_ns;
             }
             // Read the used index as it stands: 0 after a real reset,
             // the stalled value after a failed attempt — silence then
             // continues counting from the attempt, never a spurious
             // "completion" that would re-arm the epoch.
             rx_silent_seen = dev.rx_used.idx;
-            // Post-reset silence measures fresh from the attempt —
-            // the recovery itself gets `stall_reset_ns` to produce
-            // a completion before the next retry.
-            rx_progress_tick = ndp.now_ticks;
-            rx_progress_ns = rx_now_ns;
         }
     }
     // #3863: bounded ARP retransmit — an unanswered solicitation is
@@ -3301,10 +3309,12 @@ test "virtio_net: #3863 RXQ stall reset — silent ring + owed solicitation fire
     try std.testing.expectEqual(@as(u16, queue_size - edge_pool_reserve), net_dev.rx_avail.idx);
 
     // The same silence past the silent bound IS the wedge — the first
-    // qualifying window spends the reserved descriptor as the unlatch
-    // PROBE (a cheap avail edge). The probe re-stamps the silence
-    // clock, so the reset is deferred one full silence bound — the
-    // probe's window to work.
+    // qualifying poll spends the reserved descriptor as the unlatch
+    // PROBE (a cheap avail edge), and the NEXT qualifying poll — the
+    // silence was never cleared — pays for the device reset. The probe
+    // gets ~one poll of grace, not a re-qualified bound (the a-02/a-03
+    // artifacts showed the old full-window deferral outliving a ~50 ms
+    // leg).
     ndp.now_ticks += stall_silent_ticks;
     arp.now_ticks = ndp.now_ticks;
     rx_now_ns += stall_silent_ns;
@@ -3316,21 +3326,6 @@ test "virtio_net: #3863 RXQ stall reset — silent ring + owed solicitation fire
     }
     try std.testing.expect(probed);
     try std.testing.expectEqual(@as(u64, 1), rx_edge_probes);
-    try std.testing.expect(!fired);
-    try std.testing.expectEqual(@as(u64, 0), rx_resets);
-    try std.testing.expectEqual(@as(u16, 0), rx_hold_depth()); // the probe spent the reserve
-
-    // Still silent a whole bound later — the probe didn't unlatch (the
-    // mock never completes), so NOW the device reset fires.
-    ndp.now_ticks += stall_silent_ticks;
-    arp.now_ticks = ndp.now_ticks;
-    rx_now_ns += stall_silent_ns;
-    i = 0;
-    while (i < stall_reset_polls) : (i += 1) {
-        const ev = net_ndp_poll();
-        fired = fired or ev.rxq_reset;
-        probed = probed or ev.rxq_probe;
-    }
     try std.testing.expect(fired);
     try std.testing.expectEqual(@as(u64, 1), rx_resets);
     try std.testing.expect(rx_armed);
@@ -3573,7 +3568,6 @@ test "virtio_net: #3863 loss reset — an exhausted train under a progressing ri
     rx_silent_polls = 0;
     rx_progress_tick = 0;
     rx_reset_tick = 0;
-    rx_reset_n = 0;
     rx_resets = 0;
     ndp.now_ticks = 1;
     arp.now_ticks = 1;
