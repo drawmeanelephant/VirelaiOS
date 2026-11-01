@@ -1,9 +1,11 @@
 package main
 
 import (
+	"errors"
 	"strings"
 	"time"
 
+	"virelai/h2"
 	"virelai/httpc"
 	"virelai/tls"
 	"virelai/vi"
@@ -108,11 +110,19 @@ func (a *app) connectPage(u webrender.URL) (*vi.Conn, string) {
 // bound to the origin that produced it (the kernel's per-process table is
 // small and the legacy shim resolves to the only live conn, so holding a
 // second connection would misroute the raw slots the loader drives).
+// h2c is non-nil only when ALPN negotiated "h2" (M212b): sequential
+// exchanges then ride streams on this one connection — the h2 analogue
+// of h1 keep-alive reuse.
 type pooledConn struct {
 	origin string
 	conn   *vi.Conn
 	secure *tls.TLSConn
+	h2c    *h2.Conn
 }
+
+// alpnOffer is the desk's protocol menu (M212b): h2 first, http/1.1 as
+// the floor. A peer that answers nothing keeps the h1 engine.
+var alpnOffer = []string{"h2", "http/1.1"}
 
 func originKey(u webrender.URL) string {
 	return u.Scheme + "://" + u.Host + ":" + itoa(int(u.Port))
@@ -151,7 +161,7 @@ func (a *app) acquireConn(u webrender.URL) (*pooledConn, bool, string) {
 	if u.Scheme != "https" {
 		return &pooledConn{origin: key, conn: conn}, false, ""
 	}
-	secured, err := tls.Handshake(conn, u.Host, a.stageEnd(10_000_000_000))
+	secured, err := tls.HandshakeALPN(conn, u.Host, a.stageEnd(10_000_000_000), alpnOffer)
 	if a.cancelBetweenReads() {
 		if secured != nil {
 			_ = secured.Close()
@@ -162,7 +172,24 @@ func (a *app) acquireConn(u webrender.URL) (*pooledConn, bool, string) {
 		return nil, false, tlsErrorKind(err) // Handshake owns failure cleanup
 	}
 	vi.ConsoleLine("web: tls " + u.Host + " " + tls.TrustVersion())
-	return &pooledConn{origin: key, secure: secured}, false, ""
+	// M212b: the ALPN pick selects the wire engine. An unknown pick
+	// cannot arrive — the TLS layer refuses an unoffered protocol — but
+	// fails closed rather than silently downgrading the negotiated name.
+	proto, ok := httpc.Select(secured.ALPN())
+	if !ok {
+		_ = secured.Close()
+		return nil, false, "tls"
+	}
+	shown := secured.ALPN()
+	if shown == "" {
+		shown = "none"
+	}
+	vi.ConsoleLine("web: alpn " + shown)
+	p := &pooledConn{origin: key, secure: secured}
+	if proto == httpc.ProtoH2 {
+		p.h2c = h2.NewConn(secured)
+	}
+	return p, false, ""
 }
 
 func (a *app) dropConn(p *pooledConn) {
@@ -239,6 +266,9 @@ func (a *app) fetchNetwork(u webrender.URL, capn int, mainPage bool) (string, []
 }
 
 func (a *app) exchange(p *pooledConn, u webrender.URL, capn int, mainPage bool) (string, []byte, bool, bool, string) {
+	if p.h2c != nil {
+		return a.exchangeH2(p, u, capn, mainPage)
+	}
 	request := []byte(formatPageRequest(u, a.cookieHeaderFor(u.Host, u.Path)))
 	end := a.stageEnd(5_000_000_000)
 	if p.secure != nil {
@@ -251,7 +281,7 @@ func (a *app) exchange(p *pooledConn, u webrender.URL, capn int, mainPage bool) 
 			return "", nil, false, false, "tcp"
 		}
 	}
-	vi.ConsoleLine(markerFetch + u.Host + u.Path)
+	vi.ConsoleLine(markerFetch + u.Host + u.Path + " proto=http/1.1")
 	raw := make([]byte, 0, min(capn+maxHTTPHeaders, 16384))
 	var scan headScan
 	var frame responseFrame
@@ -381,6 +411,70 @@ func (a *app) frameDone(frame responseFrame, raw []byte, dec *httpc.Chunked, dec
 		}
 		return false, nil, false, ""
 	}
+}
+
+// exchangeH2 is the M212b negotiated-h2 exchange: HEADERS+DATA on the
+// next stream of the pooled connection, the same page/request budgets as
+// the h1 path, the same content-decoded result shape through
+// httpc.H2Result. A completed stream means the connection is reusable —
+// the next fetch rides a fresh stream id, and the marker names both so
+// the gate can see the reuse. Every codec refusal surfaces by its own
+// name; nothing downgrades past the negotiated protocol.
+func (a *app) exchangeH2(p *pooledConn, u webrender.URL, capn int, mainPage bool) (string, []byte, bool, bool, string) {
+	if a.cancelBetweenReads() {
+		return "", nil, false, false, "cancelled"
+	}
+	if p.secure != nil {
+		p.secure.SetDeadline(a.stageEnd(5_000_000_000))
+	}
+	extra := []h2.Field{{Name: "accept-encoding", Value: "gzip"}}
+	if cookie := a.cookieHeaderFor(u.Host, u.Path); cookie != "" &&
+		len(cookie)+8 <= maxHTTPLine && !strings.ContainsAny(cookie, "\x00\r\n") {
+		extra = append(extra, h2.Field{Name: "cookie", Value: cookie})
+	}
+	// The codec's per-response DATA bound is the h1 path's wire slack —
+	// a gzip body decodes larger than its wire form.
+	p.h2c.MaxBody = capn + 64*1024
+	vi.ConsoleLine(markerFetch + u.Host + u.Path +
+		" proto=h2 stream=" + itoa(int(p.h2c.NextStreamID())))
+	resp, err := p.h2c.GetWith(urlAuthority(u), u.Path, extra)
+	if a.cancelBetweenReads() {
+		return "", nil, false, false, "cancelled"
+	}
+	if err != nil {
+		kind := h2ErrorKind(err)
+		if kind == "h2-refused" {
+			vi.ConsoleLine("web: h2-refuse " + err.Error())
+		}
+		return "", nil, false, false, kind
+	}
+	head, body, truncated, rerr := httpc.H2Result(resp, capn)
+	if rerr != "" {
+		return "", nil, false, false, rerr
+	}
+	if truncated && !mainPage {
+		return "", nil, false, false, "http-body-limit"
+	}
+	return head, body, truncated, true, ""
+}
+
+// h2ErrorKind maps an h2 exchange failure onto the consumer's refusal
+// kinds: the transport's own timeout/close keep their h1 names, the
+// codec's body bound shares the h1 name, and every "h2: ... refused" the
+// codec names is one kind — the wire name rides the h2-refuse marker the
+// line above prints.
+func h2ErrorKind(err error) string {
+	switch {
+	case tls.IsTimeout(err):
+		return "timeout"
+	case tls.IsPeerClosed(err):
+		return "http-premature-eof"
+	case errors.Is(err, h2.ErrBodyTooLarge):
+		return "http-body-limit"
+	case strings.HasPrefix(err.Error(), "h2: "):
+		return "h2-refused"
+	}
+	return "tls"
 }
 
 func (a *app) fetchResource(target string, capn int) ([]byte, string) {

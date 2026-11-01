@@ -934,7 +934,7 @@ func (a *app) startHTTP(u webrender.URL) {
 	a.loading = true
 	a.loadEnd = a.stageEnd(5_000_000_000)
 	a.loadIdle = a.loadEnd
-	vi.ConsoleLine(markerFetch + u.Host + u.Path)
+	vi.ConsoleLine(markerFetch + u.Host + u.Path + " proto=http/1.1")
 }
 
 // startHTTPS dials in-process (tls.Dial over vi.Dial), sends the GET, and
@@ -2074,6 +2074,8 @@ func errorMessage(kind, target string) string {
 		return "The certificate chain has no trusted root."
 	case "http-framing-unsupported":
 		return "Transfer or content coding is not supported; identity framing is required."
+	case "h2-refused":
+		return "The HTTP/2 peer violated the negotiated protocol; the exchange was refused by name."
 	case "http-framing-invalid", "http-premature-eof", "chunked-malformed",
 		"gzip-crc", "gzip-too-large", "gzip-malformed":
 		return "The response framing is invalid, the chunked stream malformed, or the gzip body failed its check."
