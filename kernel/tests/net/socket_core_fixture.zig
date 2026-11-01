@@ -152,7 +152,12 @@ fn scenarios() !void {
     // Drop the already queued ACK so the next capture is the data packet.
     try drain();
     try check(try c.send(7, first, input[0..length], 0) == length);
+    // M213b: the bound is the send window now — shrink cwnd to the
+    // in-flight span and the next write still meets WouldBlock honestly.
+    const first_conn = &c.children[(first.value & core.slot_mask) - core.conn_slot_base].?;
+    first_conn.cwnd = @intCast(length);
     try expected(error.WouldBlock, c.send(7, first, "overwrite", 0));
+    first_conn.cwnd = core.send_window;
     refuse_tx = true;
     try check(c.flush(null, transmit) == .refused);
     refuse_tx = false;
@@ -280,7 +285,8 @@ fn scenarios() !void {
     _ = try c.send(7, pending, "hold", 0);
     try drain();
     try inject(remote, 11, 105, wire.flag_syn | wire.flag_ack, "", 0);
-    try check(c.children[0].?.tx_len == 24 and !(try c.ready(7, pending)).write);
+    try check(c.children[0].?.tpool.segs[c.children[0].?.tx_head].len == 24 and
+        c.children[0].?.tx_count == 1);
     print("socket-core: retry ceiling unexpected SYN-ACK guards ok\n");
 
     checkpoint = "deadlines";
@@ -306,7 +312,7 @@ fn scenarios() !void {
         const timed = handle orelse try c.accept(7, listener);
         try check(try c.status(7, timed) == .timeout);
         try expected(error.TimedOut, c.read(7, timed, &output, expires));
-        try check(c.liveChildren() == 1 and c.children[0].?.tx_len == 0 and c.children[0].?.rx_len == 0);
+        try check(c.liveChildren() == 1 and c.children[0].?.tx_count == 0 and c.children[0].?.rx_len == 0);
         try c.close(7, timed);
         try check(c.liveChildren() == 0);
     }

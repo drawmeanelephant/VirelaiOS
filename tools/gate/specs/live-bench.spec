@@ -178,6 +178,7 @@ def measure(row_id, ser):
         "timer-jitter": r"timertest: jitter n=\d+ max_late_us=(\d+)",
         "net-rx": r"gonetrate: rate dir=rx bytes=\d+ us=\d+ kib_s=(\d+)",
         "net-tx": r"gonetrate: rate dir=tx bytes=\d+ us=\d+ kib_s=(\d+)",
+        "net-tx-bulk": r"gonetrate: rate dir=tx bytes=\d+ us=\d+ kib_s=(\d+)",
     }
     found = re.findall(patterns[row_id], ser)
     if not found:
@@ -336,15 +337,18 @@ vgate_setup_python <<'PY'
 import os, subprocess, sys, time
 rd = os.environ["RUN_DIR"]
 netrate = os.path.join(rd, "netrate.py")
-for port in (24660, 24661):
+for port in (24660, 24661, 24662):
     subprocess.run(["sh", "-c", "lsof -ti tcp:%d | xargs kill -9" % port],
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 time.sleep(0.2)
-for mode, port in (("serve", 24660), ("sink", 24661)):
+for mode, port in (("serve", 24660), ("sink", 24661), ("sink2", 24662)):
     out = open(os.path.join(rd, "netrate-%s.out" % mode), "wb")
-    argv = [sys.executable, netrate, mode, str(port), "8"]
+    argv = [sys.executable, netrate,
+            "sink" if mode.startswith("sink") else mode, str(port), "8"]
     if mode == "sink":
         argv.append(os.path.join(rd, "netsink.log"))
+    if mode == "sink2":
+        argv.append(os.path.join(rd, "netsink-bulk.log"))
     proc = subprocess.Popen(argv, stdout=out, stderr=subprocess.STDOUT,
                             start_new_session=True)
     print("live-bench: netrate %s pid=%d on 127.0.0.1:%d"
@@ -1272,6 +1276,11 @@ net ip 10.0.0.1
 net arp 10.0.0.2
 exec GONETRATE.ELF tx 24661
 EOF
+vgate_file script-nettxb.txt <<'EOF'
+net ip 10.0.0.1
+net arp 10.0.0.2
+exec GONETRATE.ELF txb 24662
+EOF
 
 vgate_run netrxa -- --net '$RUN_DIR/netrxa.bin' --net-arp-respond 10.0.0.2 \
     --net-tcp-respond 10.0.0.2:24660:relay --net-tcp-respond-relay 127.0.0.1:24660 \
@@ -1534,6 +1543,178 @@ for p in sorted(glob.glob(os.path.join(os.environ["RUN_DIR"],
     if v is not None:
         samples.append(v)
 benchlib.leg_verdict("net-tx", samples)
+PY
+# --- runs 13a: net-tx-bulk (M213b #3877, K=3 samples) --------------------
+# The windowed upload row: GONETRATE.ELF txb streams the same pinned 4 MiB
+# to a second sink (127.0.0.1:24662) with NO pacing sleep — the send
+# window's burst shape, where net-tx's 1 ms cadence stays a one-segment
+# rhythm. The verdict is the direction-aware best of three samples.
+vgate_run nettxbulka -- --net '$RUN_DIR/nettxbulka.bin' --net-arp-respond 10.0.0.2 \
+    --net-tcp-respond 10.0.0.2:24662:relay --net-tcp-respond-relay 127.0.0.1:24662 \
+    --script '$RUN_DIR/script-nettxb.txt' \
+    --script-expect 'gonetrate: GONETRATE OK' --timeout 300
+
+vgate_assert nettxbulka serial-contains 'VirelaiOS kernel has seized control.'
+vgate_assert nettxbulka serial-contains 'exec: loaded GONETRATE.ELF'
+vgate_assert nettxbulka serial-absent 'gonetrate: FAIL'
+vgate_assert nettxbulka serial-absent '[EXC]'
+vgate_assert nettxbulka python <<'PY'
+import os, re, sys, time
+sys.path.insert(0, os.environ["RUN_DIR"])
+import benchlib, netrate
+ser = open(os.environ["VG_SER"], errors="replace").read()
+v = benchlib.measure("net-tx-bulk", ser)
+if v is None:
+    sys.exit("bench: no `gonetrate: rate` line — a hung stream is a bug, "
+             "not a retryable flake")
+m = re.search(r"gonetrate: fnv 0x([0-9a-f]{16})", ser)
+if not m:
+    sys.exit("bench: no `gonetrate: fnv` line — the checksum never printed")
+if m.group(1) != netrate.expected_hex():
+    sys.exit("bench: tx fnv %s != pattern fnv %s — the guest hashed bytes "
+             "that are not the stream" % (m.group(1), netrate.expected_hex()))
+idx = {"nettxbulka": 1, "nettxbulkb": 2, "nettxbulkc": 3}.get(
+    os.environ["VG_TAG"].split("-")[0], 1)
+logp = os.path.join(os.environ["RUN_DIR"], "netsink-bulk.log")
+deadline = time.time() + 60
+while True:
+    receipts = []
+    if os.path.exists(logp):
+        receipts = [l for l in open(logp).read().splitlines()
+                    if l.startswith("netsink:")]
+    if len(receipts) >= idx:
+        break
+    if time.time() > deadline:
+        sys.exit("bench: bulk sink logged %d receipt(s); this leg is #%d "
+                 "— the upload never reached the host" % (len(receipts), idx))
+    time.sleep(1)
+r = receipts[idx - 1]
+want = "bytes=%d" % netrate.SIZE
+if want not in r:
+    sys.exit("bench: sink receipt for this leg is not the pinned stream: " + r)
+if ("fnv=0x%s" % netrate.expected_hex()) not in r:
+    sys.exit("bench: sink checksum mismatch — the bytes on the wire are "
+             "not the stream: " + r)
+benchlib.receipt("net-tx-bulk", v, "sample", run=os.environ["VG_TAG"])
+PY
+# --- runs 13b: net-tx-bulk (M213b #3877, K=3 samples) --------------------
+# The windowed upload row: GONETRATE.ELF txb streams the same pinned 4 MiB
+# to a second sink (127.0.0.1:24662) with NO pacing sleep — the send
+# window's burst shape, where net-tx's 1 ms cadence stays a one-segment
+# rhythm. The verdict is the direction-aware best of three samples.
+vgate_run nettxbulkb -- --net '$RUN_DIR/nettxbulkb.bin' --net-arp-respond 10.0.0.2 \
+    --net-tcp-respond 10.0.0.2:24662:relay --net-tcp-respond-relay 127.0.0.1:24662 \
+    --script '$RUN_DIR/script-nettxb.txt' \
+    --script-expect 'gonetrate: GONETRATE OK' --timeout 300
+
+vgate_assert nettxbulkb serial-contains 'VirelaiOS kernel has seized control.'
+vgate_assert nettxbulkb serial-contains 'exec: loaded GONETRATE.ELF'
+vgate_assert nettxbulkb serial-absent 'gonetrate: FAIL'
+vgate_assert nettxbulkb serial-absent '[EXC]'
+vgate_assert nettxbulkb python <<'PY'
+import os, re, sys, time
+sys.path.insert(0, os.environ["RUN_DIR"])
+import benchlib, netrate
+ser = open(os.environ["VG_SER"], errors="replace").read()
+v = benchlib.measure("net-tx-bulk", ser)
+if v is None:
+    sys.exit("bench: no `gonetrate: rate` line — a hung stream is a bug, "
+             "not a retryable flake")
+m = re.search(r"gonetrate: fnv 0x([0-9a-f]{16})", ser)
+if not m:
+    sys.exit("bench: no `gonetrate: fnv` line — the checksum never printed")
+if m.group(1) != netrate.expected_hex():
+    sys.exit("bench: tx fnv %s != pattern fnv %s — the guest hashed bytes "
+             "that are not the stream" % (m.group(1), netrate.expected_hex()))
+idx = {"nettxbulka": 1, "nettxbulkb": 2, "nettxbulkc": 3}.get(
+    os.environ["VG_TAG"].split("-")[0], 1)
+logp = os.path.join(os.environ["RUN_DIR"], "netsink-bulk.log")
+deadline = time.time() + 60
+while True:
+    receipts = []
+    if os.path.exists(logp):
+        receipts = [l for l in open(logp).read().splitlines()
+                    if l.startswith("netsink:")]
+    if len(receipts) >= idx:
+        break
+    if time.time() > deadline:
+        sys.exit("bench: bulk sink logged %d receipt(s); this leg is #%d "
+                 "— the upload never reached the host" % (len(receipts), idx))
+    time.sleep(1)
+r = receipts[idx - 1]
+want = "bytes=%d" % netrate.SIZE
+if want not in r:
+    sys.exit("bench: sink receipt for this leg is not the pinned stream: " + r)
+if ("fnv=0x%s" % netrate.expected_hex()) not in r:
+    sys.exit("bench: sink checksum mismatch — the bytes on the wire are "
+             "not the stream: " + r)
+benchlib.receipt("net-tx-bulk", v, "sample", run=os.environ["VG_TAG"])
+PY
+# --- runs 13c: net-tx-bulk (M213b #3877, K=3 samples) --------------------
+# The windowed upload row: GONETRATE.ELF txb streams the same pinned 4 MiB
+# to a second sink (127.0.0.1:24662) with NO pacing sleep — the send
+# window's burst shape, where net-tx's 1 ms cadence stays a one-segment
+# rhythm. The verdict is the direction-aware best of three samples.
+vgate_run nettxbulkc -- --net '$RUN_DIR/nettxbulkc.bin' --net-arp-respond 10.0.0.2 \
+    --net-tcp-respond 10.0.0.2:24662:relay --net-tcp-respond-relay 127.0.0.1:24662 \
+    --script '$RUN_DIR/script-nettxb.txt' \
+    --script-expect 'gonetrate: GONETRATE OK' --timeout 300
+
+vgate_assert nettxbulkc serial-contains 'VirelaiOS kernel has seized control.'
+vgate_assert nettxbulkc serial-contains 'exec: loaded GONETRATE.ELF'
+vgate_assert nettxbulkc serial-absent 'gonetrate: FAIL'
+vgate_assert nettxbulkc serial-absent '[EXC]'
+vgate_assert nettxbulkc python <<'PY'
+import os, re, sys, time
+sys.path.insert(0, os.environ["RUN_DIR"])
+import benchlib, netrate
+ser = open(os.environ["VG_SER"], errors="replace").read()
+v = benchlib.measure("net-tx-bulk", ser)
+if v is None:
+    sys.exit("bench: no `gonetrate: rate` line — a hung stream is a bug, "
+             "not a retryable flake")
+m = re.search(r"gonetrate: fnv 0x([0-9a-f]{16})", ser)
+if not m:
+    sys.exit("bench: no `gonetrate: fnv` line — the checksum never printed")
+if m.group(1) != netrate.expected_hex():
+    sys.exit("bench: tx fnv %s != pattern fnv %s — the guest hashed bytes "
+             "that are not the stream" % (m.group(1), netrate.expected_hex()))
+idx = {"nettxbulka": 1, "nettxbulkb": 2, "nettxbulkc": 3}.get(
+    os.environ["VG_TAG"].split("-")[0], 1)
+logp = os.path.join(os.environ["RUN_DIR"], "netsink-bulk.log")
+deadline = time.time() + 60
+while True:
+    receipts = []
+    if os.path.exists(logp):
+        receipts = [l for l in open(logp).read().splitlines()
+                    if l.startswith("netsink:")]
+    if len(receipts) >= idx:
+        break
+    if time.time() > deadline:
+        sys.exit("bench: bulk sink logged %d receipt(s); this leg is #%d "
+                 "— the upload never reached the host" % (len(receipts), idx))
+    time.sleep(1)
+r = receipts[idx - 1]
+want = "bytes=%d" % netrate.SIZE
+if want not in r:
+    sys.exit("bench: sink receipt for this leg is not the pinned stream: " + r)
+if ("fnv=0x%s" % netrate.expected_hex()) not in r:
+    sys.exit("bench: sink checksum mismatch — the bytes on the wire are "
+             "not the stream: " + r)
+benchlib.receipt("net-tx-bulk", v, "sample", run=os.environ["VG_TAG"])
+PY
+vgate_assert nettxbulkc python <<'PY'
+import glob, os, sys
+sys.path.insert(0, os.environ["RUN_DIR"])
+import benchlib
+samples = []
+for p in sorted(glob.glob(os.path.join(os.environ["RUN_DIR"],
+                                       "vm-serial-nettxbulk*.log"))):
+    v = benchlib.measure("net-tx-bulk",
+                         open(p, errors="replace").read())
+    if v is not None:
+        samples.append(v)
+benchlib.leg_verdict("net-tx-bulk", samples)
 PY
 
 # --- trend table (#2936) -----------------------------------------------------

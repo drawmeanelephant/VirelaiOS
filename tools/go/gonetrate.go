@@ -90,8 +90,8 @@ func main() {
 	}
 	dir := a[1]
 	port := atoi(a[2])
-	if dir != "rx" && dir != "tx" {
-		fail("bad direction " + dir + " (want rx or tx)")
+	if dir != "rx" && dir != "tx" && dir != "txb" {
+		fail("bad direction " + dir + " (want rx, tx or txb)")
 	}
 	if port <= 0 || port > 65535 {
 		fail("bad port " + a[2])
@@ -105,8 +105,10 @@ func main() {
 
 	if dir == "rx" {
 		runRx(conn)
-	} else {
+	} else if dir == "tx" {
 		runTx(conn)
+	} else {
+		runTxb(conn)
 	}
 }
 
@@ -174,6 +176,12 @@ func recvOnce(conn *vi.Conn, buf []byte) (int, error) {
 // Between sends a probe + short sleep lets the relay's ACK land and free
 // the kernel's one-in-flight TX slot, so Send almost never pays its
 // internal 1-tick park.
+//
+// runTxb (M213b #3877, the net-tx-bulk row) drops the pacing entirely:
+// Conn.Send's own EAGAIN park is the whole cadence — back-to-back sends
+// queue into the send window until the bound refuses, so the row
+// measures the windowed path (several segments in flight), not the
+// ~1 ms syscall cadence runTx's explicit sleep pins.
 func runTx(conn *vi.Conn) {
 	buf := make([]byte, vi.TCPPayloadMax)
 	pat := pattern{s: patternSeed}
@@ -193,6 +201,41 @@ func runTx(conn *vi.Conn) {
 		}
 		_, _ = conn.ReadyMask() // drain: pulls the previous segment's ACK
 		vi.SleepNs(pollNs)
+		n, err := conn.Send(buf[:want])
+		if err != nil {
+			conn.Close()
+			fail("write " + err.Error() + " after " + vi.Itoa64(bytes))
+		}
+		bytes += int64(n)
+	}
+	nanos := vi.Nanos() - t0
+	conn.Close()
+
+	println("gonetrate: fnv 0x" + hex64(hash))
+	report("tx", bytes, nanos)
+}
+
+// runTxb streams the same pattern without the pacing sleep: the window
+// fills, Conn.Send parks on EAGAIN for its own 1 ms budget and the drain
+// admits the ACKs that free it — the consumer shape (GOHTTPD serving a
+// channel, FLINT push, store publish) exactly.
+func runTxb(conn *vi.Conn) {
+	buf := make([]byte, vi.TCPPayloadMax)
+	pat := pattern{s: patternSeed}
+	var bytes int64
+	hash := fnvOffset
+	t0 := vi.Nanos()
+	for bytes < transferSize {
+		want := int64(transferSize) - bytes
+		if want > vi.TCPPayloadMax {
+			want = vi.TCPPayloadMax
+		}
+		for i := int64(0); i < want; i++ {
+			b := pat.next()
+			buf[i] = b
+			hash ^= uint64(b)
+			hash *= fnvPrime
+		}
 		n, err := conn.Send(buf[:want])
 		if err != nil {
 			conn.Close()

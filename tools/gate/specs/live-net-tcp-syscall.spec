@@ -135,9 +135,10 @@ def packet(dst_ip, dst_port, seq, ack, flags, body=b"", window=1460, options=b""
     header = header[:16] + struct.pack("!H", checksum(pseudo + header + options + body)) + header[18:]
     return header + options + body
 assert emitted("intake") == seed and emitted("read") == seed
-# The SYN-ACK advertises our MSS 1460 (M99h) — a 24-byte header.
-assert emitted("synack") == packet("10.0.0.2", 5000, 100, 11, 0x12, options=b"\x02\x04\x05\xb4")
-expected = packet("10.0.0.2", 5000, 101, 11 + len(seed), 0x10, seed)
+# The SYN-ACK advertises our MSS 1460 (M99h) — a 24-byte header; the
+# advertised window is M179d's 16 KiB receive window (rx_free at emit).
+assert emitted("synack") == packet("10.0.0.2", 5000, 100, 11, 0x12, window=16384, options=b"\x02\x04\x05\xb4")
+expected = packet("10.0.0.2", 5000, 101, 11 + len(seed), 0x10, seed, window=16384)
 assert emitted("data") == expected and emitted("retransmit") == expected
 # Different IP, not just another port on the original peer host.
 assert emitted("refusal") == packet("10.0.0.9", 6000, 0, 0, 0x14, window=4096)

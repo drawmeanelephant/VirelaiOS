@@ -20,12 +20,19 @@
 //! The single independently addressed refusal slot drops/counts overflow.
 //! TCP options are parsed and skipped — MSS is honored, malformed option
 //! lists are dropped in their own counter; window scaling, SACK blocks,
-//! timestamps, congestion control and keepalive are NOT implemented.
+//! timestamps and keepalive are NOT implemented.
 //! Received data reassembles inside each connection's bounded window
 //! (16 KiB, bitmap-marked, in a static per-slot pool outside the core);
 //! the advertised window is the real free space. Retransmission uses RFC 6298 adaptive RTO in nanoseconds
 //! (200 ms floor, 60 s ceiling, Karn's rule, backoff). Fragmented IPv4
 //! is still counted and dropped.
+//! Send keeps up to `send_max_segs` segments queued-and-in-flight per
+//! connection (M213b, the M179e draft unheld): built wire bytes in the
+//! static `tx_pool`, released by the peer's cumulative ack, retransmitted
+//! oldest-first on the single RTO. The congestion bound is the smallest
+//! honest cwnd — opens at `send_window` (slow start refused by name),
+//! halves per RTO loss floored at one segment, regrows ~one segment per
+//! round trip; dup-ACK counting, fast retransmit and SACK stay refused.
 const std = @import("std");
 pub const wire = @import("tcp.zig");
 const ipv6 = @import("ipv6.zig"); // M117c (#2475): the family-tagged Endpoint's v6 Addr + is_bad_dst
@@ -75,6 +82,53 @@ pub const retry_limit: u8 = 10;
 /// prefix plus the bitmap-marked out-of-order bytes — always fit inside
 /// it, so the advertised free space is exactly the honest bound.
 pub const recv_window: usize = 16 * 1024;
+/// M213b (#3877): the send window — how many segments one connection may
+/// keep queued-and-in-flight at once (the D10 hold lifted: the hub's
+/// GOHTTPD serving, FLINT `push` and `store publish` all upload). Twelve
+/// slots ≈ the receive window's ~eleven `payload_max` span plus one, so
+/// a FIN can tail a full window of data. The built segments live in
+/// `tx_pool` outside `Core` on `rx_pool`'s D11 precedent — a Connection
+/// stays ~1.7 KiB, the table inside `core_limit`.
+pub const send_max_segs: usize = 12;
+/// M213b (#3877): the congestion window's byte ceiling — the send
+/// window's honest span, the same 16 KiB the receive side advertises.
+/// `cwnd` OPENS at the bound: slow start is refused by name (it is the
+/// "smarter" probing this card declines), so the window halves on loss
+/// and regrows ~one segment per round trip (additive recovery) — the
+/// smallest honest cwnd. Dup-ACK counting, fast retransmit and SACK are
+/// refused by name too: the RTO is the only loss signal.
+pub const send_window: u32 = 16 * 1024;
+/// M213b (#3877): one queued outbound segment — the built wire bytes
+/// plus its (re)transmission state. The ack/window fields are refreshed
+/// at every emit (`refreshWire`): a segment built behind others can
+/// carry a stale ack, and a retransmission MUST NOT advertise an ack
+/// the peer already saw advance — that reads as a duplicate ACK and
+/// invites the fast-retransmit we refuse to implement.
+pub const TxSeg = struct {
+    bytes: [wire.segment_max]u8 = undefined,
+    /// Wire length (header + options + payload).
+    len: u16 = 0,
+    /// The sequence number just past this segment (payload plus the
+    /// SYN/FIN sequence cost). Release happens when the peer's
+    /// cumulative ack reaches it; a partially covered segment stays
+    /// whole and retransmits its already-acked prefix (a legal
+    /// duplicate the peer discards).
+    seq_end: u32 = 0,
+    sent: bool = false,
+    /// A retransmission is owed — the RTO marked it, or a repeated SYN
+    /// asked for the handshake segment again (M135c's early retry).
+    due: bool = false,
+    retries: u8 = 0,
+    last_tx: u64 = 0,
+};
+/// M213b (#3877): the send-side pool — one bounded ring of queued
+/// segments per connection slot, outside `Core` like `rx_pool` (D11):
+/// `send_max_segs` x ~1.5 KiB x `conn_limit` ≈ 72 KiB of BSS, so the
+/// `core_limit` budget is untouched.
+pub const TxPool = struct {
+    segs: [send_max_segs]TxSeg = @splat(.{}),
+};
+var tx_pool: [conn_limit]TxPool = @splat(.{});
 /// The window is a power of two: a held byte's buffer position is its
 /// sequence number masked — the ring never slides or re-bases.
 const recv_mask: usize = recv_window - 1;
@@ -199,12 +253,31 @@ pub const Connection = struct {
     /// consumes, applied when contiguous.
     fin_ooo: u32 = 0,
     fin_ooo_set: bool = false,
-    tx: [wire.segment_max]u8 = undefined,
-    tx_len: usize = 0,
-    tx_due: bool = false,
-    tx_started: bool = false,
-    last_tx: u64 = 0,
-    retries: u8 = 0,
+    /// M213b (#3877): the send window's queue — a ring of built segments
+    /// in `tx_pool` (bound to the table slot at mint exactly like
+    /// `pool`), `tx_head` the oldest live slot, `tx_count` live slots.
+    /// Every byte the peer may still owe an ACK for sits inside the
+    /// ring; a slot counts as in flight once `sent`. `snd_una` tracks
+    /// the peer's highest cumulative ack — it may advance INSIDE the
+    /// head segment (that segment retransmits whole, duplicate prefix
+    /// and all, which the peer legally discards).
+    tpool: *TxPool,
+    tx_head: u8 = 0,
+    tx_count: u8 = 0,
+    /// The highest sequence the wire has actually carried — the top of
+    /// the ACK-accept range (`snd_nxt` already counts queued-not-sent).
+    tx_hi: u32 = 0,
+    /// At least one segment has been transmitted — the pure-ACK seq and
+    /// the half-open ACK-accept arm both need the distinction.
+    tx_wire: bool = false,
+    /// A FIN already occupies the queue (shutdown or the peer-FIN
+    /// close-out queued it — `state` says which). Gates the close-out
+    /// retry in poll/receive.
+    fin_queued: bool = false,
+    /// M213b (#3877): the congestion window in bytes — opens at
+    /// `send_window` (slow start refused by name), halves per RTO loss
+    /// floored at one segment, regrows ~one segment per round trip.
+    cwnd: u32 = send_window,
     /// M99h (#2186, card h3): the RFC 6298 RTT estimators in
     /// nanoseconds. `rtt_valid` is false until the first clean sample —
     /// an ACK covering a segment that was never retransmitted (Karn's
@@ -389,8 +462,10 @@ pub const Core = struct {
                 .remote_mac = remote_mac,
                 .peer_window = 0, // unknown until the peer's SYN-ACK arrives
                 .pool = &rx_pool[index],
+                .tpool = &tx_pool[index],
                 .snd_una = fresh_isn,
                 .snd_nxt = fresh_isn,
+                .tx_hi = fresh_isn,
                 .rcv_nxt = 0,
                 .phase_deadline = deadline(now),
                 .parent = no_parent,
@@ -419,7 +494,7 @@ pub const Core = struct {
         const c = try self.childFor(owner, handle);
         return .{
             .read = c.rx_len != 0 or c.peer_fin or c.state == .terminal,
-            .write = c.state == .established and c.tx_len == 0 and !c.peer_fin and c.peer_window != 0,
+            .write = txWritable(c),
             .terminal = c.state == .terminal,
         };
     }
@@ -442,11 +517,17 @@ pub const Core = struct {
         // its owner kept calling).
         c.read_deadline = deadline(now);
         if (bytes.len == 0) return 0;
-        if (c.state != .established or c.tx_len != 0 or c.peer_window == 0) return error.WouldBlock;
+        // M213b (#3877): the queue admits a segment while BOTH bounds
+        // leave room — a free ring slot AND at least a byte of send
+        // window (the tighter of the peer's advertised window and our
+        // congestion bound). A full window is WouldBlock — the old
+        // one-in-flight law scaled to `send_max_segs` segments.
+        const room = txRoom(c);
+        if (c.state != .established or c.tx_count == send_max_segs or room == 0) return error.WouldBlock;
         // M99h: the peer's advertised MSS bounds the segment too (a peer
         // that sent none keeps the payload_max bound).
         const mss: usize = if (c.peer_mss == 0) wire.payload_max else c.peer_mss;
-        const count = @min(bytes.len, @min(@min(wire.payload_max, c.peer_window), mss));
+        const count = @min(bytes.len, @min(@min(wire.payload_max, room), mss));
         queue(c, wire.flag_ack, bytes[0..count], now);
         c.write_deadline = deadline(now);
         return count;
@@ -485,10 +566,10 @@ pub const Core = struct {
         const c = try self.childFor(owner, handle);
         try self.poll(now);
         try usable(c);
-        if (c.state != .established or c.tx_len != 0) return error.WouldBlock;
-        queue(c, wire.flag_fin | wire.flag_ack, &.{}, now);
-        c.state = .closing;
-        c.phase_deadline = deadline(now);
+        // M213b (#3877): the FIN now TAILS queued data — a pending window
+        // no longer holds shutdown hostage, only a full ring does.
+        if (c.state != .established or c.tx_count == send_max_segs) return error.WouldBlock;
+        queueFin(c, now);
     }
     /// Reclaim a slot without the ownership walk — caller already validated.
     /// Closing a listener reclaims only ITS children (other listeners' and
@@ -621,8 +702,10 @@ pub const Core = struct {
                 .peer_window = p.window,
                 .peer_mss = p.mss, // M99h: the requester's MSS, if it sent one
                 .pool = &rx_pool[i],
+                .tpool = &tx_pool[i],
                 .snd_una = fresh_isn,
                 .snd_nxt = fresh_isn,
+                .tx_hi = fresh_isn,
                 .rcv_nxt = p.seq +% 1,
                 .phase_deadline = deadline(now),
                 .parent = @intCast(parent),
@@ -673,8 +756,7 @@ pub const Core = struct {
                 c.snd_una = p.ack;
                 c.peer_window = p.window;
                 c.peer_mss = p.mss; // M99h: the peer's advertised MSS
-                noteSample(c, self.now); // the SYN-ACK is the first RTT sample
-                clearTx(c);
+                _ = releaseAcked(c, self.now); // frees the SYN; the SYN-ACK is the first RTT sample
                 c.state = .established;
                 c.read_deadline = deadline(self.now);
                 ack(c);
@@ -685,7 +767,7 @@ pub const Core = struct {
         }
         if (p.flags == wire.flag_syn and c.state == .half_open and p.seq +% 1 == c.rcv_nxt and p.payload.len == 0) {
             // Reuse the original SYN-ACK; never allocate another child/ISN.
-            c.tx_due = true;
+            if (c.tx_count != 0) c.tpool.segs[c.tx_head].due = true;
             return;
         }
         if ((p.flags & wire.flag_rst) != 0) {
@@ -742,24 +824,31 @@ pub const Core = struct {
             if (c.state != .half_open) ack(c);
             return;
         }
-        const sent_limit = if (c.tx_started) c.snd_nxt else c.snd_una;
-        if ((p.flags & wire.flag_ack) == 0 or !ackInRange(p.ack, c.snd_una, sent_limit)) {
+        // M213b (#3877): the accept range tops at `tx_hi` — the highest
+        // sequence the wire has actually carried — not `snd_nxt`, which
+        // already counts segments still queued unsent.
+        if ((p.flags & wire.flag_ack) == 0 or !ackInRange(p.ack, c.snd_una, c.tx_hi)) {
             self.counters.malformed +%= 1;
             return;
         }
         c.peer_window = p.window;
         if (c.state == .half_open) {
-            if (!c.tx_started or p.ack != c.snd_nxt) return;
-            noteSample(c, self.now); // the handshake ACK covers our SYN-ACK
-            clearTx(c);
+            if (c.tx_count == 0 or p.ack != c.snd_nxt) return;
             c.snd_una = p.ack;
+            _ = releaseAcked(c, self.now); // frees the SYN-ACK, samples it (Karn)
             c.state = .established;
             c.read_deadline = deadline(self.now);
-        } else if (c.tx_started and p.ack == c.snd_nxt) {
-            noteSample(c, self.now); // Karn's rule keeps retried segments out
-            clearTx(c);
+        } else if (p.ack != c.snd_una) {
+            const acked = p.ack -% c.snd_una;
             c.snd_una = p.ack;
-            if (c.state == .closing and c.peer_fin) {
+            const fresh = releaseAcked(c, self.now); // frees covered segs + the RTT sample
+            // M213b: additive recovery — newly-acked bytes regrow the
+            // congestion window ~one segment per round trip toward the
+            // bound; the RTO backoff lifts only when the ack covered
+            // never-retransmitted data (RFC 6298 §5.5).
+            cwndGrow(c, acked);
+            if (fresh) c.rto_ns_cur = rtoCurrent(c);
+            if (c.state == .closing and c.peer_fin and c.tx_count == 0) {
                 finish(c, .eof);
                 // finish preserves queued clean input; final ACK still goes.
                 ack(c);
@@ -805,22 +894,26 @@ pub const Core = struct {
                 c.fin_ooo_set = true;
             }
             ack(c);
-            if (c.peer_fin and c.tx_len == 0) {
+            if (c.peer_fin) {
                 if (c.state == .closing) {
-                    finish(c, .eof);
-                    ack(c);
-                } else {
-                    queue(c, wire.flag_fin | wire.flag_ack, &.{}, self.now);
-                    c.state = .closing;
-                    c.phase_deadline = deadline(self.now);
+                    // Our FIN only completes once the peer acked the whole
+                    // queue — a pending window delays the close-out, never
+                    // blocks it (the ack arm above finishes .eof).
+                    if (c.tx_count == 0) {
+                        finish(c, .eof);
+                        ack(c);
+                    }
+                } else if (!c.fin_queued and c.tx_count < send_max_segs) {
+                    queueFin(c, self.now);
                 }
             }
-        } else if (c.peer_fin and c.tx_len == 0 and c.state == .established) {
+        } else if (c.peer_fin and !c.fin_queued and c.state == .established and
+            c.tx_count < send_max_segs)
+        {
             // A queued FIN just applied inside `oooAdvance` — the same
-            // close-out as a FIN that arrived contiguous.
-            queue(c, wire.flag_fin | wire.flag_ack, &.{}, self.now);
-            c.state = .closing;
-            c.phase_deadline = deadline(self.now);
+            // close-out as a FIN that arrived contiguous, now tailing any
+            // still-pending data (M213b's send window).
+            queueFin(c, self.now);
         }
     }
     /// Deadlines win at equality, before a same-time retransmission.
@@ -831,7 +924,7 @@ pub const Core = struct {
             const expired = if (c.state == .half_open or c.state == .closing)
                 now >= c.phase_deadline
             else
-                now >= c.read_deadline or (c.tx_len != 0 and now >= c.write_deadline);
+                now >= c.read_deadline or (c.tx_count != 0 and now >= c.write_deadline);
             if (expired) {
                 finish(c, .timeout);
                 self.counters.timed_out +%= 1;
@@ -841,21 +934,32 @@ pub const Core = struct {
             // the estimator value (or the initial bound), doubled toward
             // the 60 s ceiling per retransmission (RFC 6298 §5.5). The
             // 30 s phase/read deadlines still abort a black hole
-            // independently of the retry schedule.
-            if (c.tx_len != 0 and c.tx_started and !c.tx_due and now - c.last_tx >= c.rto_ns_cur) {
-                if (c.retries >= retry_limit) {
-                    finish(c, .timeout);
-                    self.counters.timed_out +%= 1;
-                } else {
-                    c.tx_due = true;
-                    c.rto_ns_cur = @min(rto_ceiling_ns, c.rto_ns_cur *| 2);
+            // independently of the retry schedule. M213b: the single RTO
+            // rides the OLDEST unacknowledged segment — `due` already set
+            // means a retransmit is queued in the ring, not a fresh loss.
+            if (c.tx_count != 0) {
+                const s = &c.tpool.segs[c.tx_head];
+                if (s.sent and !s.due and now - s.last_tx >= c.rto_ns_cur) {
+                    if (s.retries >= retry_limit) {
+                        finish(c, .timeout);
+                        self.counters.timed_out +%= 1;
+                    } else {
+                        s.due = true;
+                        c.rto_ns_cur = @min(rto_ceiling_ns, c.rto_ns_cur *| 2);
+                        // M213b: halve-on-loss, floored at one segment —
+                        // the RTO is the only loss signal (dup-ACK
+                        // counting, SACK, fast retransmit refused).
+                        c.cwnd = @max(smss(c), c.cwnd / 2);
+                    }
                 }
             }
-            // A peer FIN while our data was pending: queue FIN after its ACK.
-            if (c.peer_fin and c.state == .established and c.tx_len == 0) {
-                queue(c, wire.flag_fin | wire.flag_ack, &.{}, now);
-                c.state = .closing;
-                c.phase_deadline = deadline(now);
+            // A peer FIN while our data was pending: the close-out tails
+            // the queue whenever a slot exists — it need not wait for
+            // the whole window to drain first (M213b).
+            if (c.peer_fin and c.state == .established and !c.fin_queued and
+                c.tx_count < send_max_segs)
+            {
+                queueFin(c, now);
             }
         };
     }
@@ -876,15 +980,39 @@ pub const Core = struct {
                 }
             } else if (self.children[slot]) |*c| {
                 const control = c.control_pending;
-                if (!control and !c.tx_due) continue;
-                if (!control and c.tx_started and c.retries >= retry_limit) {
-                    // Repeated SYNs may request early retries, but cannot bypass
-                    // the same bound or overflow the u8 counter.
-                    finish(c, .timeout);
-                    self.counters.timed_out +%= 1;
-                    continue;
+                var seg_idx: usize = 0;
+                if (!control) {
+                    // M213b: the head-most segment owed to the wire — a
+                    // `due` retransmission (it always sits at the head)
+                    // or the oldest never-sent one; a sent-and-quiet
+                    // segment is skipped so pending data still emits
+                    // behind an in-flight head.
+                    var found = false;
+                    var i: usize = c.tx_head;
+                    for (0..c.tx_count) |_| {
+                        const s = &c.tpool.segs[i];
+                        if (!s.sent or s.due) {
+                            seg_idx = i;
+                            found = true;
+                            break;
+                        }
+                        i = (i + 1) % send_max_segs;
+                    }
+                    if (!found) continue;
+                    const s = &c.tpool.segs[seg_idx];
+                    if (s.sent and s.retries >= retry_limit) {
+                        // Repeated SYNs may request early retries, but cannot bypass
+                        // the same bound or overflow the u8 counter.
+                        finish(c, .timeout);
+                        self.counters.timed_out +%= 1;
+                        continue;
+                    }
                 }
-                const bytes = if (control) &c.control else c.tx[0..c.tx_len];
+                const bytes = if (control) &c.control else blk: {
+                    const s = &c.tpool.segs[seg_idx];
+                    refreshWire(c, s);
+                    break :blk s.bytes[0..s.len];
+                };
                 if (!transmit(context, .{ .local = c.local, .remote = c.remote, .remote_mac = c.remote_mac, .bytes = bytes })) {
                     self.counters.tx_refused +%= 1;
                     return .refused;
@@ -892,13 +1020,16 @@ pub const Core = struct {
                 if (control) {
                     c.control_pending = false;
                 } else {
-                    if (c.tx_started) {
-                        c.retries += 1;
+                    const s = &c.tpool.segs[seg_idx];
+                    if (s.sent) {
+                        s.retries += 1;
                         self.counters.retransmitted +%= 1;
                     }
-                    c.tx_due = false;
-                    c.tx_started = true;
-                    c.last_tx = self.now;
+                    s.due = false;
+                    s.sent = true;
+                    s.last_tx = self.now;
+                    c.tx_wire = true;
+                    if (wire.seq_ge(s.seq_end, c.tx_hi)) c.tx_hi = s.seq_end;
                 }
                 return .sent;
             }
@@ -946,12 +1077,84 @@ fn usable(c: *const Connection) Error!void {
     }
     if (c.peer_fin) return error.Closed;
 }
+/// M213b (#3877): the send window's remaining room in bytes — the
+/// tighter of the peer's advertised window and our congestion bound,
+/// minus everything still unacknowledged. `snd_una` tracks the peer's
+/// highest cumulative ack, so an ack that lands inside the head
+/// segment honestly frees its already-covered bytes.
+fn txRoom(c: *const Connection) usize {
+    const bound: u32 = @min(c.peer_window, c.cwnd);
+    const inflight: u32 = c.snd_nxt -% c.snd_una;
+    return if (inflight >= bound) 0 else bound - inflight;
+}
+/// The send predicate shared by `ready` and the native shim's ready
+/// mask: established, no peer FIN, a free ring slot, a byte of window.
+pub fn txWritable(c: *const Connection) bool {
+    return c.state == .established and !c.peer_fin and
+        c.tx_count != send_max_segs and txRoom(c) != 0;
+}
+/// The sender's segment size for the congestion floor — the peer's
+/// advertised MSS, or the wire bound when it sent none (same clamp
+/// `send` applies).
+fn smss(c: *const Connection) u32 {
+    return if (c.peer_mss == 0) wire.payload_max else c.peer_mss;
+}
+/// The RTO the connection would run with no backoff — the estimator's
+/// value, or the initial bound before the first clean sample (the same
+/// shape `queue` used to restore per segment; M213b moves the restore
+/// to the ack that proves the pipe moved, RFC 6298 §5.5's spirit).
+fn rtoCurrent(c: *const Connection) u64 {
+    return if (c.rtt_valid)
+        @min(rto_ceiling_ns, @max(rto_floor_ns, c.srtt_ns +| 4 *| c.rttvar_ns))
+    else
+        rto_ns;
+}
+/// M213b (#3877): additive recovery — every newly-acked byte regrows
+/// the congestion window by `smss/cwnd` of a segment (RFC 5681's
+/// congestion-avoidance shape ≈ one segment per round trip), never
+/// past the named `send_window` bound.
+fn cwndGrow(c: *Connection, acked: u32) void {
+    const grow: u32 = @max(1, (smss(c) *| acked) / c.cwnd);
+    c.cwnd = @min(send_window, c.cwnd +| grow);
+}
 fn clearTx(c: *Connection) void {
-    c.tx_len = 0;
-    c.tx_due = false;
-    c.tx_started = false;
-    c.retries = 0;
+    c.tx_head = 0;
+    c.tx_count = 0;
+    c.fin_queued = false;
     c.write_deadline = 0;
+}
+/// M213b (#3877): free every queued segment the peer's new cumulative
+/// ack covers (`snd_una` already holds it) and take the RTT sample the
+/// newest never-retransmitted one offers — Karn's rule per segment:
+/// the ack of a once-sent segment is a clean sample, a retransmitted
+/// one contributes nothing. True when at least one clean segment was
+/// released — that is RFC 6298 §5.5's "new data acknowledged", the only
+/// event that lifts the RTO backoff (an ack of a retransmission keeps
+/// the backed-off value).
+fn releaseAcked(c: *Connection, now: u64) bool {
+    var sample: u64 = 0;
+    var have_sample = false;
+    while (c.tx_count != 0) {
+        const s = &c.tpool.segs[c.tx_head];
+        if (!wire.seq_ge(c.snd_una, s.seq_end)) break;
+        if (s.retries == 0) {
+            sample = now -| s.last_tx;
+            have_sample = true;
+        }
+        c.tx_head = @intCast((@as(usize, c.tx_head) + 1) % send_max_segs);
+        c.tx_count -= 1;
+    }
+    if (c.tx_count == 0) c.write_deadline = 0;
+    if (have_sample) noteSample(c, sample);
+    return have_sample;
+}
+/// M213b (#3877): queue the connection's FIN and move to closing — the
+/// one place `shutdown` and the peer-FIN close-outs share.
+fn queueFin(c: *Connection, now: u64) void {
+    queue(c, wire.flag_fin | wire.flag_ack, &.{}, now);
+    c.fin_queued = true;
+    c.state = .closing;
+    c.phase_deadline = deadline(now);
 }
 fn finish(c: *Connection, outcome: Outcome) void {
     c.state = .terminal;
@@ -1003,18 +1206,34 @@ fn queue(c: *Connection, flags: u8, payload: []const u8, now: u64) void {
     queueOpts(c, flags, &.{}, payload, now);
 }
 fn queueOpts(c: *Connection, flags: u8, opts: []const u8, payload: []const u8, now: u64) void {
-    c.tx_len = buildOpts(c, &c.tx, c.snd_nxt, flags, opts, payload);
-    c.snd_nxt +%= @intCast(payload.len + @as(usize, if ((flags & (wire.flag_syn | wire.flag_fin)) != 0) 1 else 0));
-    c.tx_due = true;
-    c.tx_started = false;
-    c.retries = 0;
-    c.last_tx = now;
-    // A new segment loses the backoff: the live RTO returns to the
-    // estimator value (or the initial bound before the first sample).
-    c.rto_ns_cur = if (c.rtt_valid)
-        @min(rto_ceiling_ns, @max(rto_floor_ns, c.srtt_ns +| 4 *| c.rttvar_ns))
+    // M213b (#3877): append one built segment at the ring tail — callers
+    // bound it (the window for data, `send_max_segs` for control). The
+    // segment's own `due`/`sent` carry the old TX flags per slot now.
+    const i = (@as(usize, c.tx_head) + c.tx_count) % send_max_segs;
+    var s = &c.tpool.segs[i];
+    s.len = @intCast(buildOpts(c, &s.bytes, c.snd_nxt, flags, opts, payload));
+    s.seq_end = c.snd_nxt +% @as(u32, @intCast(payload.len + @as(usize, if ((flags & (wire.flag_syn | wire.flag_fin)) != 0) 1 else 0)));
+    s.sent = false;
+    s.due = false;
+    s.retries = 0;
+    s.last_tx = now;
+    c.snd_nxt = s.seq_end;
+    c.tx_count += 1;
+}
+/// M213b (#3877): refresh the wire-time fields at every emit — the ack
+/// number and advertised window can go stale between queue and emit,
+/// and a retransmission must never advertise an ack the peer already
+/// saw advance (that reads as a duplicate ACK toward a peer's fast
+/// retransmit). The checksum covers both, so it is redone here.
+fn refreshWire(c: *const Connection, s: *TxSeg) void {
+    std.mem.writeInt(u32, s.bytes[8..12], c.rcv_nxt, .big);
+    std.mem.writeInt(u16, s.bytes[14..16], @intCast(rxFree(c)), .big);
+    @memset(s.bytes[16..18], 0);
+    const ck = if (c.local.family == .v6)
+        wire.checksum_tcp6(&c.local.addr6, &c.remote.addr6, s.bytes[0..s.len])
     else
-        rto_ns;
+        wire.checksum_tcp(c.local.ip, c.remote.ip, s.bytes[0..s.len]);
+    std.mem.writeInt(u16, s.bytes[16..18], ck, .big);
 }
 /// M179d (#3156, D11): the receive window is a ring — sequence `seq`'s
 /// buffer position and bitmap index are both `seq & recv_mask`.
@@ -1097,15 +1316,13 @@ fn oooAdvance(c: *Connection) void {
         c.peer_fin = true;
     }
 }
-/// M99h (#2186, card h3): the RFC 6298 RTT update — called at every
-/// ACK-accept site BEFORE `clearTx`. A sample exists only when the
-/// pending segment was never retransmitted (Karn's algorithm, §5.2):
-/// `tx_started` and zero retries. First sample: SRTT = R, RTTVAR = R/2;
-/// later samples: the §2.3 alpha = 1/8 / beta = 1/4 filters. The live
-/// RTO is SRTT + 4 x RTTVAR clamped [rto_floor_ns, rto_ceiling_ns].
-fn noteSample(c: *Connection, now: u64) void {
-    if (!c.tx_started or c.retries != 0) return;
-    const r = now -| c.last_tx;
+/// M99h (#2186, card h3): the RFC 6298 RTT update — fed one measured
+/// sample `r` by `releaseAcked` (M213b moved the Karn gate out to the
+/// per-segment choice: only a never-retransmitted segment yields one).
+/// First sample: SRTT = R, RTTVAR = R/2; later samples: the §2.3
+/// alpha = 1/8 / beta = 1/4 filters. The live RTO is SRTT + 4 x RTTVAR
+/// clamped [rto_floor_ns, rto_ceiling_ns].
+fn noteSample(c: *Connection, r: u64) void {
     if (!c.rtt_valid) {
         c.srtt_ns = r;
         c.rttvar_ns = r / 2;
@@ -1118,7 +1335,7 @@ fn noteSample(c: *Connection, now: u64) void {
     c.rto_ns_cur = @min(rto_ceiling_ns, @max(rto_floor_ns, c.srtt_ns +| 4 *| c.rttvar_ns));
 }
 fn ack(c: *Connection) void {
-    _ = build(c, &c.control, if (c.tx_started) c.snd_nxt else c.snd_una, wire.flag_ack, &.{});
+    _ = build(c, &c.control, if (c.tx_wire) c.snd_nxt else c.snd_una, wire.flag_ack, &.{});
     c.control_pending = true;
 }
 const Parsed = struct {
