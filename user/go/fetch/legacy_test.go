@@ -270,6 +270,23 @@ func TestParseLegacyArgsSelectsModes(t *testing.T) {
 	if a, legacy := parseLegacyArgs([]string{"GOFETCH.ELF", "-h"}); !legacy || !a.help {
 		t.Errorf("-h = %+v legacy=%v", a, legacy)
 	}
+	// --http2 is the windowed consumer's flag (M212a): it claims the argv
+	// in every position — even next to a cleartext URL, whose refusal is
+	// the windowed path's named h2c, never the legacy dial.
+	for _, args := range [][]string{
+		{"GOFETCH.ELF", "--http2"},
+		{"GOFETCH.ELF", "--http2", "https://10.0.0.2:24554/"},
+		{"GOFETCH.ELF", "--http2", "http://10.0.0.2/"},
+		{"GOFETCH.ELF", "https://10.0.0.2:24554/", "--http2"},
+	} {
+		if _, legacy := parseLegacyArgs(args); legacy {
+			t.Errorf("parseLegacyArgs(%q) claimed the legacy path past --http2", args)
+		}
+	}
+	// --download pairs with cleartext only; --download --http2 is a misuse.
+	if a, legacy := parseLegacyArgs([]string{"GOFETCH.ELF", "--download", "--http2"}); !legacy || !a.usage {
+		t.Errorf("--download --http2 = %+v legacy=%v want usage", a, legacy)
+	}
 }
 
 // TestPreflightOfflineExitsThree drives runPlain through a fake net-stats

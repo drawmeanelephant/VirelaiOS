@@ -131,6 +131,7 @@ type legacyArgs struct {
 	url      string
 	dest     string
 	download bool
+	http2    bool
 	help     bool
 	usage    bool
 }
@@ -151,6 +152,8 @@ func parseLegacyArgs(args []string) (legacyArgs, bool) {
 			a.help = true
 		case arg == "--download" || arg == "-d":
 			a.download = true
+		case arg == "--http2":
+			a.http2 = true
 		case strings.HasPrefix(arg, "-"):
 			a.usage = true
 		default:
@@ -161,9 +164,21 @@ func parseLegacyArgs(args []string) (legacyArgs, bool) {
 		return a, true
 	}
 	// An unknown flag is a usage error on either path (the TLS consumer
-	// takes no flags at all), so it never falls through to the window.
+	// takes --http2 and nothing else), so it never falls through to the
+	// window.
 	if a.usage {
 		return a, true
+	}
+	// --http2 is the windowed consumer's flag (M212a): it claims the argv
+	// before any cleartext test so `GOFETCH --http2 http://...` reaches the
+	// named h2c refusal instead of the legacy dial. --download pairs with
+	// cleartext only — that combination is a misuse, not a fetch.
+	if a.http2 {
+		if a.download {
+			a.usage = true
+			return a, true
+		}
+		return a, false
 	}
 	if len(positional) > 0 {
 		a.url = positional[0]
