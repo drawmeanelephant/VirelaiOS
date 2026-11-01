@@ -533,6 +533,11 @@ var rx_epoch_probed: bool = false;
 const edge_pool_target: u16 = 4;
 const edge_pool_reserve: u16 = 1;
 const edge_poll_gap: u32 = 64;
+/// #3880: the doorbell keepalive cadence — the every-poll kick was
+/// ~30-50k MMIO writes/s at racing poll rates (the wedge suspect under
+/// test): a sparse keepalive keeps the cold-boot poke alive at ~30/s
+/// there without an exit storm.
+const kick_gap: u32 = 1024;
 pub var rx_edge_posts: u64 = 0;
 pub var rx_edge_probes: u64 = 0;
 
@@ -1925,10 +1930,12 @@ pub fn net_ndp_poll() NdpPoll {
     }
     // #3863: bounded RX doorbell — the VZ attachment reads the
     // host->guest pair only when the device model is poked (the
-    // observed cold-boot stall class). While the queue is armed, every
-    // poll rings the queue-0 notify — the maximum-cadence kick the
-    // guest can offer; the measured cost is one 2-byte MMIO write per
-    // idle-loop iteration.
+    // observed cold-boot stall class). #3880: the every-poll kick was
+    // measured at 29-53k MMIO writes per live-net-hub run — ~30-50k VM
+    // exits per second while the idle loop races, a starvation poison
+    // candidate for the attachment's own pair->ring service. The kick
+    // now rides only real avail advances (the measured service
+    // trigger) plus a sparse keepalive every `kick_gap` polls.
     if (rx_armed) {
         const dev = &net_dev;
         // #3863 latch prevention: spend the held edge pool — post ONE
@@ -1955,9 +1962,15 @@ pub fn net_ndp_poll() NdpPoll {
             rx_posted +%= 1;
             rx_edge_posts +%= 1;
             rx_edge_polls = 0;
+            net_ops.notify(0);
+            rx_pokes +%= 1;
+        } else if (rx_edge_polls >= kick_gap) {
+            // Sparse keepalive only — not per-poll (see the block
+            // comment: the kick flood is itself a wedge suspect).
+            rx_edge_polls = 0;
+            net_ops.notify(0);
+            rx_pokes +%= 1;
         }
-        net_ops.notify(0);
-        rx_pokes +%= 1;
         net_ops.invalidate(@intFromPtr(&dev.rx_used), @sizeOf(VirtqUsed));
         if (dev.rx_used.idx != rx_silent_seen) {
             rx_silent_seen = dev.rx_used.idx;
@@ -3153,7 +3166,7 @@ test "virtio_net: RX burst — 12 back-to-back frames drain in order, every desc
     try std.testing.expectEqual(@as(usize, 0), fifo_occupancy());
 }
 
-test "virtio_net: #3863 RX doorbell — one queue-0 notify per poll while armed" {
+test "virtio_net: #3880 RX doorbell — kicks ride avail advances + a sparse keepalive, not every poll" {
     const saved_ops = net_ops;
     net_ops = mock_ops();
     net_ready = true;
@@ -3200,23 +3213,41 @@ test "virtio_net: #3863 RX doorbell — one queue-0 notify per poll while armed"
     try std.testing.expectEqual(@as(u16, queue_size - edge_pool_target), net_dev.rx_avail.idx);
     try std.testing.expectEqual(@as(u16, 1), mock_kicks);
 
-    // Every poll rings the doorbell once while the queue is armed — the
-    // maximum-cadence kick, tick-bounded or not (the measured live-gate
-    // evidence: a stalled pair->ring hop does not recover on a 1 Hz
-    // bare kick).
+    // #3880: the every-poll kick is gone — it measured 29-53k MMIO
+    // writes per live-net-hub run and is the wedge's starvation-poison
+    // suspect. Polls now ring ONLY on a real avail advance (an
+    // edge-pool spend) or once per `kick_gap` polls as a keepalive —
+    // the first kick_gap-1 polls ring nothing.
     _ = net_ndp_poll();
+    try std.testing.expectEqual(@as(u64, 0), rx_pokes);
+    try std.testing.expectEqual(@as(u16, 1), mock_kicks);
+    _ = net_ndp_poll();
+    try std.testing.expectEqual(@as(u64, 0), rx_pokes);
+    try std.testing.expectEqual(@as(u16, 1), mock_kicks);
+
+    // The keepalive: the poll that reaches `kick_gap` rings once.
+    var i: u32 = 2;
+    while (i < kick_gap) : (i += 1) _ = net_ndp_poll();
     try std.testing.expectEqual(@as(u64, 1), rx_pokes);
     try std.testing.expectEqual(@as(u16, 2), mock_kicks);
-    _ = net_ndp_poll();
-    try std.testing.expectEqual(@as(u64, 2), rx_pokes);
-    try std.testing.expectEqual(@as(u16, 3), mock_kicks);
 
     // No inbound is expected (no solicitation, no socket), so the edge
-    // pool stays held — the bare doorbell never touches the avail ring.
+    // pool stays held — the keepalive never touches the avail ring.
     try std.testing.expectEqual(@as(u16, queue_size - edge_pool_target), net_dev.rx_avail.idx);
     try std.testing.expectEqual(@as(u16, queue_size - edge_pool_target), rx_posted_depth());
     try std.testing.expectEqual(edge_pool_target, rx_hold_depth());
     try std.testing.expectEqual(@as(u64, 0), rx_edge_posts);
+
+    // An outstanding solicitation feeds the edge pool: every
+    // `edge_poll_gap` polls spends one held descriptor — a real avail
+    // advance — and THAT spend rings the kick it rides.
+    arp.pending[0] = .{ .valid = true, .target = .{ 10, 0, 0, 0x17 }, .tick = 0 };
+    arp.now_ticks = 0;
+    i = 0;
+    while (i < edge_poll_gap) : (i += 1) _ = net_ndp_poll();
+    try std.testing.expectEqual(@as(u64, 1), rx_edge_posts);
+    try std.testing.expectEqual(@as(u64, 2), rx_pokes);
+    try std.testing.expectEqual(@as(u16, queue_size - edge_pool_target + 1), net_dev.rx_avail.idx);
 }
 
 test "virtio_net: #3863 RXQ stall reset — silent ring + owed solicitation fires the bounded device reset" {
@@ -3414,8 +3445,11 @@ test "virtio_net: #3863 RXQ stall reset — silent ring + owed solicitation fire
     // silence window and the reset bound alike.
     const epoch_end_frame = @as([42]u8, @splat(0xaa));
     mock_rx_enqueue(&epoch_end_frame);
-    // One poll does both halves: the kick fills a posted buffer, the
+    // The mock device delivers only on a kick; #3880 throttled the
+    // doorbell to avail advances + a `kick_gap` keepalive, so arm the
+    // keepalive for THIS poll: the kick fills a posted buffer, the
     // invalidate then replays used.idx = 1 — silence ends that poll.
+    rx_edge_polls = kick_gap - 1;
     _ = net_ndp_poll();
     try std.testing.expectEqual(@as(u8, 0), rx_reset_n);
     try std.testing.expectEqual(@as(u32, 0), rx_silent_polls);
