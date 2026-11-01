@@ -488,6 +488,16 @@ var rx_silent_seen: u16 = 0;
 pub var rx_silent_polls: u32 = 0; // sampled by the `net` report (#3863)
 var rx_progress_tick: u64 = 0;
 var rx_reset_tick: u64 = 0;
+/// The same two stamps in wall ns — `timer.ticks` is a sparse
+/// heartbeat count on this platform (~5-9 per whole vm-a gate run
+/// observed, a-01 session 9: 26k silent polls inside the wait window
+/// and the 2-tick silence bound still never opened), so the wedge
+/// bounds below run on `rx_now_ns`. The tick copies stay stamped for
+/// the test-side assertions that read them.
+var rx_progress_ns: u64 = 0;
+var rx_reset_ns: u64 = 0;
+const stall_silent_ns: u64 = 2_000_000_000;
+const stall_reset_ns: u64 = 8_000_000_000;
 var rx_reset_n: u8 = 0;
 var rxq_stall_logged: bool = false;
 const stall_reset_polls: u32 = 512;
@@ -1940,6 +1950,7 @@ pub fn net_ndp_poll() NdpPoll {
             rx_epoch_probed = false;
             rxq_stall_logged = false;
             rx_progress_tick = ndp.now_ticks;
+            rx_progress_ns = rx_now_ns;
         } else {
             rx_silent_polls +%= 1;
         }
@@ -1961,19 +1972,18 @@ pub fn net_ndp_poll() NdpPoll {
             // that fired resets on every quiet flicker under a
             // permanently-owed solicitation. A wedged hop stays silent
             // for whole leg windows; a healthy one completes inside
-            // each gap — the tick bound is the wedge discriminator.
-            ndp.now_ticks -| rx_progress_tick >= stall_silent_ticks and
+            // each gap — the wall bound is the wedge discriminator.
+            rx_now_ns -| rx_progress_ns >= stall_silent_ns and
             rx_reset_n < stall_reset_max and
-            // The first attempt is ungated — `stall_reset_ticks` spaces
-            // RETRIES only. Gating the first on `now_ticks >= 8` made it
-            // unreachable on the gate: timer.ticks counts heartbeat
-            // services (~5 per whole run), not wall seconds — the a-01
-            // sampler showed owed=1 sil=2972 and the attempt still
-            // never ran.
+            // The first attempt is ungated — `stall_reset_ns` spaces
+            // RETRIES only. Gating the first on an aged stamp made it
+            // unreachable on the gate (the a-01 sampler showed owed=1
+            // sil=2972 and the attempt still never ran).
             (rx_reset_n == 0 or
-                ndp.now_ticks -| rx_reset_tick >= stall_reset_ticks))
+                rx_now_ns -| rx_reset_ns >= stall_reset_ns))
         {
             rx_reset_tick = ndp.now_ticks;
+            rx_reset_ns = rx_now_ns;
             rx_silent_polls = 0;
             if (@popCount(rx_hold_mask) != 0 and !rx_epoch_probed) {
                 // #3863: unlatch PROBE before paying for the device
@@ -2018,9 +2028,10 @@ pub fn net_ndp_poll() NdpPoll {
             // "completion" that would re-arm the epoch.
             rx_silent_seen = dev.rx_used.idx;
             // Post-reset silence measures fresh from the attempt —
-            // the recovery itself gets `stall_reset_ticks` to produce
+            // the recovery itself gets `stall_reset_ns` to produce
             // a completion before the next retry.
             rx_progress_tick = ndp.now_ticks;
+            rx_progress_ns = rx_now_ns;
         }
     }
     // #3863: bounded ARP retransmit — an unanswered solicitation is
@@ -3201,6 +3212,8 @@ test "virtio_net: #3863 RXQ stall reset — silent ring + owed solicitation fire
         rx_reset_n = 0;
         rx_loss_resets = 0;
         rx_owed_open = false;
+        rx_progress_ns = 0;
+        rx_reset_ns = 0;
     }
     net_dev = .{};
     net_mac = fallback_mac;
@@ -3222,14 +3235,14 @@ test "virtio_net: #3863 RXQ stall reset — silent ring + owed solicitation fire
     rx_pokes = 0;
     rx_edge_posts = 0;
     rx_edge_probes = 0;
-    rx_loss_resets = 0;
+    rx_loss_resets = loss_reset_max; // this test exercises the
+    // watchdog only — the loss path must stay capped/inert
     rx_owed_open = false;
-    // #3863: freeze the wall clock — the buffer-scan/overdue path ages
-    // the owed epoch in ns; this test's domain is the tick-based
-    // silent-epoch watchdog, so the ns bounds must stay inert.
     rx_now_ns = 0;
     rx_scan_ns = 0;
     rx_loss_reset_ns = 0;
+    rx_progress_ns = 0;
+    rx_reset_ns = 0;
     rx_silent_seen = 0;
     rx_silent_polls = 0;
     rx_progress_tick = 0;
@@ -3294,6 +3307,7 @@ test "virtio_net: #3863 RXQ stall reset — silent ring + owed solicitation fire
     // probe's window to work.
     ndp.now_ticks += stall_silent_ticks;
     arp.now_ticks = ndp.now_ticks;
+    rx_now_ns += stall_silent_ns;
     i = 0;
     while (i < stall_reset_polls * 2) : (i += 1) {
         const ev = net_ndp_poll();
@@ -3310,6 +3324,7 @@ test "virtio_net: #3863 RXQ stall reset — silent ring + owed solicitation fire
     // mock never completes), so NOW the device reset fires.
     ndp.now_ticks += stall_silent_ticks;
     arp.now_ticks = ndp.now_ticks;
+    rx_now_ns += stall_silent_ns;
     i = 0;
     while (i < stall_reset_polls) : (i += 1) {
         const ev = net_ndp_poll();
@@ -3325,12 +3340,13 @@ test "virtio_net: #3863 RXQ stall reset — silent ring + owed solicitation fire
     try std.testing.expectEqual(@as(u16, queue_size - edge_pool_reserve), net_dev.rx_avail.idx);
     try std.testing.expectEqual(edge_pool_reserve, rx_hold_depth());
 
-    // A continued silent window inside `stall_reset_ticks` of the
+    // A continued silent window inside `stall_reset_ns` of the
     // attempt must NOT refire — the silence bound passes again, but
-    // retry spacing is the longer `stall_reset_ticks`, and the
+    // retry spacing is the longer `stall_reset_ns`, and the
     // post-reset silence clock restarts at the attempt.
     ndp.now_ticks += stall_silent_ticks;
     arp.now_ticks = ndp.now_ticks;
+    rx_now_ns += stall_silent_ns;
     fired = false;
     probed = false;
     i = 0;
@@ -3349,6 +3365,7 @@ test "virtio_net: #3863 RXQ stall reset — silent ring + owed solicitation fire
     // refilled pool can't delay the reset ladder.
     ndp.now_ticks += stall_reset_ticks;
     arp.now_ticks = ndp.now_ticks;
+    rx_now_ns += stall_reset_ns;
     fired = false;
     probed = false;
     i = 0;
@@ -3548,6 +3565,10 @@ test "virtio_net: #3863 loss reset — an exhausted train under a progressing ri
     rx_scan_ns = 0;
     rx_now_ns = 0;
     rx_loss_reset_ns = 0;
+    rx_progress_ns = 0;
+    rx_reset_ns = 0;
+    rx_reset_n = stall_reset_max; // the loss path's test — the
+    // watchdog stays capped/inert
     rx_silent_seen = 0;
     rx_silent_polls = 0;
     rx_progress_tick = 0;
