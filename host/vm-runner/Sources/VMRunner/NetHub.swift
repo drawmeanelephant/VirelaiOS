@@ -186,6 +186,15 @@ final class NetGuestQueue {
     /// backlog waits on VZ. Sub-millisecond so the delivered rate is
     /// bounded by VZ's service rate, not the poll cadence.
     static let drainPollSeconds = 0.0005
+    /// #3863: the write-side pace — after a datagram lands in the pair,
+    /// hold the NEXT write this long. VZ provably reads every datagram
+    /// (SO_NREAD clears each) yet drops them before any DMA on wedged
+    /// boots; if its model reads greedily into a small staging depth
+    /// faster than it can post to the ring, the gap between reads is
+    /// the only thing that bounds the staging pressure — the pair
+    /// still edges once per frame, the experiment just widens the
+    /// space between the edges.
+    static let drainPaceSeconds = 0.002
 
     /// One queued frame and when it arrived — the enqueue->pair-send
     /// delay is the measurement that names WHERE the host->guest lag
@@ -314,6 +323,12 @@ final class NetGuestQueue {
                         // legacy send-until-ENOBUFS drain — yield before
                         // re-checking instead of spinning on sends.
                         Thread.sleep(forTimeInterval: Self.drainPollSeconds)
+                    } else {
+                        // A write just landed (pair was empty) — pace
+                        // the next one: VZ reads greedily, and its
+                        // staging needs a beat to post the frame to the
+                        // ring before the next datagram arrives.
+                        Thread.sleep(forTimeInterval: Self.drainPaceSeconds)
                     }
                 }
             }
