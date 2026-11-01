@@ -554,6 +554,11 @@ const loss_reset_max: u8 = 2;
 /// bounded reset answers.
 var rx_owed_open: bool = false;
 var rx_owed_ns: u64 = 0;
+/// The owed-epoch open stamp for the monitor's `ag=` field (0 when no
+/// epoch is open).
+pub fn rx_owed_ns_pub() u64 {
+    return if (rx_owed_open) rx_owed_ns else rx_now_ns;
+}
 pub var rx_buf_claims: u64 = 0;
 pub var rx_claim_desc: u16 = 0; // buffer index of the last claim (serial evidence)
 pub var rx_claim_st: u8 = '?'; // its descriptor state: p/h/f — see the RXB line

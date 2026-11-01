@@ -296,6 +296,10 @@ pub fn cmd_net(m: *Monitor, args: []const []const u8) ExecError {
     m.console.print_u64(virtio_net.rx_buf_claims);
     m.console.puts(" lr=");
     m.console.print_u64(virtio_net.rx_loss_resets);
+    // Diagnostic: the owed-epoch age in ms — answers whether the
+    // wall-clock bound even opens (0 = no open epoch or no ns clock).
+    m.console.puts(" ag=");
+    m.console.print_u64((virtio_net.rx_now_ns -| virtio_net.rx_owed_ns_pub()) / 1_000_000);
     m.console.puts("\n");
     // The claim-time observation record: the last device-written length +
     // the first 16 bytes pin the RX-header question (12 zero bytes + dst
