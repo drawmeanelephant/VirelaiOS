@@ -1632,7 +1632,7 @@ pub fn net_ndp_poll() NdpPoll {
             // sampler showed owed=1 sil=2972 and the attempt still
             // never ran.
             (rx_reset_n == 0 or
-             ndp.now_ticks -| rx_reset_tick >= stall_reset_ticks))
+                ndp.now_ticks -| rx_reset_tick >= stall_reset_ticks))
         {
             rx_reset_tick = ndp.now_ticks;
             rx_silent_polls = 0;
