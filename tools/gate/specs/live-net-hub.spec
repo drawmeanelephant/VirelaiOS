@@ -114,8 +114,8 @@ net dhcp
 net dhcp
 net dhcp
 net dhcp
-net
 net arp 10.0.0.99
+net
 exec GOHTTPD.ELF --advertise v206b
 echo vma-s1-done
 EOF
@@ -498,12 +498,13 @@ if "this runner owns the segment hub" not in log_text:
 # evidence. The repetition makes the cold first iteration reliable — each
 # `net arp` reopens the ~0.5 s learn window and the drains pull whatever
 # has landed; once .16 resolves the entry carries ping and the fetch.
-legs = ["net dhcp"] * 5
-# The same watchdog arm as vm-a's s1: an unanswered .99 solicitation keeps
-# a pending slot valid for B's whole session (B's runner spans all runs),
-# so B's rxq stall-reset stays armed through the browse AND the install
-# legs — where a mid-transfer wedge would otherwise tear the channel.
-legs += ["net arp 10.0.0.99"]
+# The watchdog arm leads the legs, before even dhcp: an unanswered .99
+# solicitation keeps a pending slot valid for B's whole session (B's
+# runner spans all runs) — observed live: a stall during the dhcp legs
+# killed every pump unanswered with owed=0, reset never armed. Armed
+# first, the rxq stall-reset stays live through dhcp, the browse AND
+# the install legs — where a mid-transfer wedge would otherwise tear.
+legs = ["net arp 10.0.0.99", "net dhcp"] * 5
 legs += ["exec GONETSTAT.ELF discover _http._tcp", "net recv"]
 for _ in range(40):
     legs += ["net arp 10.0.0.16", "net", "net ping 10.0.0.16",
