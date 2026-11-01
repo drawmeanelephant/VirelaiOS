@@ -572,9 +572,11 @@ pub var rx_now_ns: u64 = 0;
 const scan_gap_ns: u64 = 250_000_000;
 var rx_scan_ns: u64 = 0;
 /// How long an owed epoch may run with every buffer scanned empty
-/// before the verdict is a VZ-side drop — a healthy reply lands far
-/// inside this; it is also the retry spacing for the reset itself.
-const loss_due_ns: u64 = 4_000_000_000;
+/// before the verdict is a VZ-side drop — a healthy reply lands inside
+/// a few ms over the hub; the gate's typed legs stream in ~1-3 s
+/// total, so the bound must open while a later solicitation can still
+/// benefit. Retry spacing for the reset itself stays wider.
+const loss_due_ns: u64 = 1_000_000_000;
 const loss_spacing_ns: u64 = 4_000_000_000;
 var rx_loss_reset_ns: u64 = 0;
 
