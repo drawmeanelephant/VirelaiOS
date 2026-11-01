@@ -134,6 +134,7 @@ pub fn cmd_net(m: *Monitor, args: []const []const u8) ExecError {
         if (std.mem.eql(u8, args[0], "status")) return cmd_net_status(m, args[1..]);
         if (std.mem.eql(u8, args[0], "route")) return cmd_net_route(m, args[1..]);
         if (std.mem.eql(u8, args[0], "log")) return cmd_net_log(m, args[1..]);
+        if (std.mem.eql(u8, args[0], "rxtrace")) return cmd_net_rxtrace(m, args[1..]);
         print_usage(m, lookup("net").?);
         return .usage;
     }
@@ -279,6 +280,14 @@ pub fn cmd_net(m: *Monitor, args: []const []const u8) ExecError {
         }
         m.console.print_u64(o);
     }
+    // #3863: the held edge pool at this instant — ed= cadence spends,
+    // pr= watchdog probes, hd= descriptors still held for future edges.
+    m.console.puts(" ed=");
+    m.console.print_u64(virtio_net.rx_edge_posts);
+    m.console.puts(" pr=");
+    m.console.print_u64(virtio_net.rx_edge_probes);
+    m.console.puts(" hd=");
+    m.console.print_u64(@intCast(virtio_net.rx_hold_depth()));
     m.console.puts("\n");
     // The claim-time observation record: the last device-written length +
     // the first 16 bytes pin the RX-header question (12 zero bytes + dst
@@ -603,6 +612,17 @@ pub fn net_ndp_autonomous(m: *Monitor) void {
         // a missing reset/reset-fail line after this means the tick or
         // epoch bound refused, not that the stall was never seen.
         m.console.puts("net: rxq stall u=");
+        m.console.print_u64(@intCast(virtio_net.net_dev.rx_used.idx));
+        m.console.puts(" a=");
+        m.console.print_u64(@intCast(virtio_net.net_dev.rx_avail.idx));
+        m.console.puts("\n");
+    }
+    if (ev.rxq_probe) {
+        // #3863: the held-pool unlatch probe fired — one avail edge
+        // spent instead of a device reset. The serial evidence pair is
+        // probe-then-completion (cheap recovery, no `rxq reset`) vs
+        // probe-then-reset (edges can't unlatch this latch class).
+        m.console.puts("net: rxq probe u=");
         m.console.print_u64(@intCast(virtio_net.net_dev.rx_used.idx));
         m.console.puts(" a=");
         m.console.print_u64(@intCast(virtio_net.net_dev.rx_avail.idx));
@@ -1067,6 +1087,27 @@ fn cmd_net_log(m: *Monitor, args: []const []const u8) ExecError {
             m.console.puts("\n");
         }
     }
+    return .none;
+}
+
+/// #3863: `net rxtrace [on|off]` — the opt-in per-completion used-ring
+/// trace (RXD drain summaries + RXC/RXA per-element lines in net_log).
+/// Off by default: the volume floods the 128-entry ring on loaded
+/// lanes. Bare `net rxtrace` reports the state.
+fn cmd_net_rxtrace(m: *Monitor, args: []const []const u8) ExecError {
+    if (args.len > 0) {
+        if (std.mem.eql(u8, args[0], "on")) {
+            virtio_net.rx_trace = true;
+        } else if (std.mem.eql(u8, args[0], "off")) {
+            virtio_net.rx_trace = false;
+        } else {
+            print_usage(m, lookup("net").?);
+            return .usage;
+        }
+    }
+    m.console.puts("net rxtrace: ");
+    m.console.puts(if (virtio_net.rx_trace) "on" else "off");
+    m.console.puts("\n");
     return .none;
 }
 
