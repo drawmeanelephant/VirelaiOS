@@ -52,6 +52,11 @@ const Session = struct {
     peak_files: usize = 0,
     peak_resources: usize = 4,
     metadata: [768]u8 = undefined,
+    // M211a (#3867): the --dom-rpc worker's per-eval reply capture — the
+    // output a script's print()/completion emits, bounded and clipped.
+    rpc_out: []u8 = &.{},
+    rpc_out_len: usize = 0,
+    rpc_clipped: bool = false,
 
     fn resources(self: *Session) !void {
         const files = sdk.filesystem().liveFiles() + @intFromBool(self.tty != null);
@@ -350,7 +355,147 @@ const Session = struct {
         var message: [64]u8 = undefined;
         try self.notice(try std.fmt.bufPrint(&message, "qjs: ready eval={d}\n", .{self.runtime.control.evals}));
     }
+
+    /// M211a (#3867): the `QJS.BIN --dom-rpc` worker session — reads JSON-lines
+    /// ops, writes exactly one reply line per op on fd-1. With an argv ops
+    /// path the ops come from the share (the direct-drive form a monitor
+    /// exec or gate leg uses); without it they arrive on the inherited fd-0
+    /// endpoint the stream-bound parent staged. fd-2 stays console, so the
+    /// reply stream carries JSON only and `qjs:` diagnostics never pollute it.
+    fn domRpc(self: *Session, ops_path: ?[]const u8) !void {
+        const ops = try self.runtime.allocate(qjs.domrpc.ops_max);
+        defer self.runtime.release(ops);
+        const out = try self.runtime.allocate(qjs.domrpc.out_max);
+        defer self.runtime.release(out);
+        self.rpc_out = out;
+        var len: usize = 0;
+        if (ops_path) |name| {
+            len = try rpcReadOpsFile(name, ops);
+        } else {
+            len = try rpcReadStdin(ops);
+        }
+        var greeted = false;
+        var rest = ops[0..len];
+        while (rest.len > 0) {
+            const nl = @min(std.mem.indexOfScalar(u8, rest, '\n') orelse rest.len, rest.len);
+            // Trim in place — the mutable slice is what parseOp decodes into.
+            var line = rest[0..nl];
+            while (line.len > 0 and (line[0] == ' ' or line[0] == '\t' or line[0] == '\r')) line = line[1..];
+            while (line.len > 0 and (line[line.len - 1] == ' ' or line[line.len - 1] == '\t' or line[line.len - 1] == '\r')) line = line[0 .. line.len - 1];
+            rest = rest[@min(nl + 1, rest.len)..];
+            if (line.len == 0) continue;
+            try self.rpcOp(line, &greeted);
+        }
+    }
+
+    fn rpcWrite(self: *Session, bytes: []const u8) !void {
+        try sdk.console.writeAll(sdk.native.consoleChunk, bytes);
+        try self.mirror('O', bytes);
+    }
+
+    fn rpcError(self: *Session, name: ?[]const u8, word: []const u8) !void {
+        var buf: [384]u8 = undefined;
+        const line = if (name) |n|
+            try std.fmt.bufPrint(&buf, "{{\"op\":\"{s}\",\"ok\":false,\"error\":\"{s}\"}}\n", .{ n, word })
+        else
+            try std.fmt.bufPrint(&buf, "{{\"op\":null,\"ok\":false,\"error\":\"{s}\"}}\n", .{word});
+        try self.rpcWrite(line);
+    }
+
+    fn rpcOp(self: *Session, line: []u8, greeted: *bool) !void {
+        const op = qjs.domrpc.parseOp(line) catch
+            return self.rpcError(null, "dom_rpc_parse");
+        if (std.mem.eql(u8, op.name, "hello")) {
+            var buf: [256]u8 = undefined;
+            if (op.version != null and op.version.? == qjs.domrpc.version) {
+                greeted.* = true;
+                return self.rpcWrite(try std.fmt.bufPrint(&buf, "{{\"op\":\"hello\",\"ok\":true,\"version\":{d}}}\n", .{qjs.domrpc.version}));
+            }
+            return self.rpcWrite(try std.fmt.bufPrint(&buf, "{{\"op\":\"hello\",\"ok\":false,\"error\":\"dom_rpc_version\",\"version\":{d},\"got\":{d}}}\n", .{ qjs.domrpc.version, op.version orelse 0 }));
+        }
+        if (!greeted.*)
+            return self.rpcError(op.name, "dom_rpc_hello");
+        if (!std.mem.eql(u8, op.name, "eval"))
+            return self.rpcError(op.name, "dom_rpc_op");
+        const src = op.src orelse return self.rpcError("eval", "dom_rpc_parse");
+        return self.rpcEval(src);
+    }
+
+    fn rpcEval(self: *Session, src: []const u8) !void {
+        self.rpc_out_len = 0;
+        self.rpc_clipped = false;
+        const result = try self.runtime.eval(src, "dom-rpc", self.rpcSink(), true);
+        if (sdk.stackHighWater() > qjs.limits.stack) return error.StackLimit;
+        if (result.failure) |failure| {
+            var buf: [320]u8 = undefined;
+            const line = try std.fmt.bufPrint(&buf, "{{\"op\":\"eval\",\"ok\":false,\"error\":\"{s}\"{s}}}\n", .{ @errorName(failure), if (result.context_reset) ",\"reset\":true" else "" });
+            return self.rpcWrite(line);
+        }
+        var buf: [qjs.domrpc.reply_max]u8 = undefined;
+        var used = (try std.fmt.bufPrint(&buf, "{{\"op\":\"eval\",\"ok\":true,\"out\":\"", .{})).len;
+        used += qjs.domrpc.escape(buf[used..], self.rpc_out[0..self.rpc_out_len]);
+        const tail: []const u8 = if (self.rpc_clipped) "\",\"clipped\":true}\n" else "\"}\n";
+        @memcpy(buf[used..][0..tail.len], tail);
+        used += tail.len;
+        try self.rpcWrite(buf[0..used]);
+    }
+
+    fn rpcCapture(context: *anyopaque, bytes: []const u8) anyerror!usize {
+        const self: *Session = @ptrCast(@alignCast(context));
+        const take = @min(self.rpc_out.len - self.rpc_out_len, bytes.len);
+        @memcpy(self.rpc_out[self.rpc_out_len..][0..take], bytes[0..take]);
+        self.rpc_out_len += take;
+        if (take < bytes.len) self.rpc_clipped = true;
+        return bytes.len;
+    }
+
+    fn rpcSink(self: *Session) qjs.Sink {
+        return .{ .context = self, .write = rpcCapture, .diagnostic = diagnostic };
+    }
 };
+
+/// The kernel stream endpoint index fd-0 binds (file_table.zig stream_base).
+const dom_rpc_stdin: u64 = 0x100;
+
+/// Reads the argv-named ops spool through the generic file ABI (slots
+/// 23/24/26), not the contained API — the contained pin only answers on the
+/// custom-virtio channel, and the direct-drive form must work on whatever
+/// share the caller armed. The path was already policy-checked at argv.
+fn rpcReadOpsFile(name: []const u8, ops: []u8) !usize {
+    const fd = sdk.native.call(23, .{ @intFromPtr(name.ptr), name.len, 1, 0, 0, 0 });
+    if (fd < 0) return error.DomRpcOps;
+    defer _ = sdk.native.call(26, .{ @as(u64, @intCast(fd)), 0, 0, 0, 0, 0 });
+    var used: usize = 0;
+    while (used < ops.len) {
+        const n = sdk.native.call(24, .{ @as(u64, @intCast(fd)), @intFromPtr(ops.ptr + used), ops.len - used, 0, 0, 0 });
+        if (n < 0) return error.DomRpcOps;
+        if (n == 0) return used;
+        used += @intCast(n);
+    }
+    var probe: [1]u8 = undefined;
+    const n = sdk.native.call(24, .{ @as(u64, @intCast(fd)), @intFromPtr(&probe), 1, 0, 0, 0 });
+    if (n < 0) return error.DomRpcOps;
+    if (n > 0) return error.DomRpcOpsLimit;
+    return used;
+}
+
+/// Drains the inherited fd-0 endpoint — the ops spool a stream-bound parent
+/// staged — to EOF. Filling the wire bound without EOF is a named refusal,
+/// not a line a parser never sees.
+fn rpcReadStdin(ops: []u8) !usize {
+    var used: usize = 0;
+    while (used < ops.len) {
+        const n = sdk.native.call(24, .{ dom_rpc_stdin, @intFromPtr(ops.ptr + used), ops.len - used, 0, 0, 0 });
+        if (n < 0) return error.DomRpcRead;
+        if (n == 0) return used;
+        used += @intCast(n);
+    }
+    var probe: [1]u8 = undefined;
+    const n = sdk.native.call(24, .{ dom_rpc_stdin, @intFromPtr(&probe), 1, 0, 0, 0 });
+    if (n < 0) return error.DomRpcRead;
+    if (n > 0) return error.DomRpcOpsLimit;
+    return used;
+}
 
 fn run(args: *const sdk.startup.Startup) !void {
     const options = policy.parse(args.args[0..args.argc], args.env[0..args.envc]) catch |err|
@@ -378,7 +523,12 @@ fn run(args: *const sdk.startup.Startup) !void {
         alive = false;
         fail(@errorName(err), 70);
     };
-    const operation = if (options.repl) session.repl() else session.evalFile(options.script.?);
+    const operation = if (options.domrpc)
+        session.domRpc(options.ops)
+    else if (options.repl)
+        session.repl()
+    else
+        session.evalFile(options.script.?);
     operation catch |err| {
         status = 70;
         var message: [96]u8 = undefined;

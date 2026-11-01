@@ -8,6 +8,7 @@ pub const Clock = policy.Clock;
 pub const nativeClock = @import("clock.zig").native;
 pub const limits = policy.limits;
 pub const math = @import("math.zig");
+pub const domrpc = @import("domrpc.zig");
 
 const Engine = opaque {};
 extern fn qjs_engine_create() callconv(.c) ?*Engine;

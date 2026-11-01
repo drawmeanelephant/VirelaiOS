@@ -135,6 +135,10 @@ const (
 	// the content frame when no page is loaded and no load failed.
 	markerEmpty = "web: empty "
 	markerQuit  = "web: quit"
+	// M211a (#3867): the DOM-RPC worker markers — launch, per-reply rc,
+	// teardown. The card's pinned shapes are `web: script rc=…` and
+	// `web: script worker gone`.
+	markerScript = "web: script "
 	// M121c (#2566): the '?' overlay's receipts — `hints n=` the registry
 	// row count on the painted frame, one `hints row` per plate row (the
 	// serial-readable copy), `hints close` after the restored frame.
@@ -348,6 +352,9 @@ type app struct {
 	// write is in flight AND while its completion plate is up (the plate's
 	// Open/Folder chips keep a target through a.dl).
 	dl *download
+	// M211a (#3867): the page's QJS.BIN --dom-rpc worker — non-nil while a
+	// stream-bound child is in flight; domrpc.go owns the wire.
+	rpc *scriptWorker
 	// M125d (#2589): the decoded session blob parked by noteState, consumed
 	// once by applyState on the first laid-out page after restore.
 	pend *webState
@@ -676,6 +683,9 @@ func (a *app) loop() {
 			}
 			a.dlStep()
 		}
+		// M211a (#3867): the page's script worker advances here — replies
+		// drain and teardown markers print from the same poll cadence.
+		a.pollScripts()
 		ev, raw, ok := vi.Event{}, int64(0), false
 		if len(a.pendingEvents) > 0 {
 			ev, ok = a.pendingEvents[0], true
@@ -697,7 +707,7 @@ func (a *app) loop() {
 			// tasks leave the shell's idle loop (which paces the composite
 			// and services the scanout snapshot) room to run on this
 			// single-user machine.
-			if a.loading || a.urlEditing || a.target == "" ||
+			if a.loading || a.urlEditing || a.target == "" || a.rpc != nil ||
 				(a.dl != nil && a.dl.active) {
 				vi.Sleep(1)
 				continue
@@ -751,6 +761,9 @@ func (a *app) loop() {
 	if a.dl != nil && a.dl.active {
 		a.cancelDownload()
 	}
+	// M211a: a live worker is killed and reaped before the window goes —
+	// ordered teardown leaves no zombie behind.
+	a.closeScripts()
 	vi.ConsoleLine(markerQuit)
 	vi.WinClose(a.win)
 	vi.Exit(0)
@@ -791,6 +804,7 @@ func (a *app) navigate(target, from string) {
 	}
 	a.blank = false // any navigation retires the start surface
 	a.closeLoad()
+	a.closeScripts() // a new page retires the previous one's worker
 	a.loading = false
 	a.tNav0 = vi.Nanos()
 	a.tBody = 0
@@ -1215,6 +1229,9 @@ func (a *app) afterLoad(from string) {
 	} else {
 		a.settleIfNeeded()
 	}
+	// M211a (#3867): the page is fully painted before the worker seam
+	// starts — script ops can never hold up the frame they describe.
+	a.startScripts()
 }
 
 // finishError renders the error page for a failed load and records the visit.

@@ -42,6 +42,7 @@
 vgate_name live-web "WEB: bounded CSS browser, exact M93 presentation, DNS/SNI/GET navigation and fail-closed TLS"
 vgate_share seed
 vgate_runner_flags -Xswiftc -DSPIKE
+vgate_repeat 3 BOOTS
 
 vgate_file script-local.txt <<'EOF'
 exec WEB.ELF /host/PAGE.HTML
@@ -4047,3 +4048,97 @@ vgate_assert 61 serial-contains 'web: hints n=40'
 vgate_assert 61 serial-contains 'rx-web-menu-ok'
 vgate_assert 61 serial-absent '[EXC] parking:'
 vgate_assert 61 serial-absent 'exited status=139'
+
+# --- M211a (#3867): the DOM-RPC worker seam. Leg 62's scripted page execs
+# QJS.BIN --dom-rpc over the inherited-fd wire after the frame is painted;
+# 63 direct-drives the worker over an argv ops spool for the protocol's
+# named refusals; 64 removes the binary so the refused exec lands
+# 'web: script worker gone' while the page still paints. K=3 rides the
+# spec-level vgate_repeat.
+vgate_file script-domrpc.txt <<'EOFS'
+exec WEB.ELF /host/SCRIPTED.HTML
+EOFS
+
+vgate_file script-rpcops.txt <<'EOFS'
+exec QJS.BIN --dom-rpc /host/RPCOPS.BAD
+EOFS
+
+vgate_file script-rpcdead.txt <<'EOFS'
+vf rm QJS.BIN
+exec WEB.ELF /host/SCRIPTED.HTML
+EOFS
+
+vgate_setup_python <<'PY'
+# Stage the worker and the two fixtures the legs drive. SCRIPTED.HTML
+# carries two inline <script> bodies — the eval round-trip asserts both
+# rc=0 markers. RPCOPS.BAD is the protocol-negative ops stream the
+# direct-drive leg feeds: eval-before-hello, a good hello, a good eval,
+# an unknown op, a bad version and a malformed line, one refusal each.
+import os, pathlib, shutil, sys
+share = pathlib.Path(os.environ.get("VG_SHARE") or os.path.join(os.environ["RUN_DIR"], "share"))
+qjs = pathlib.Path(".build/js-client/QJS.BIN")
+if not qjs.is_file():
+    sys.exit("QJS.BIN missing — build it first: python3 tools/js-client/build.py build --work .build/js-client/work --output .build/js-client/QJS.BIN")
+shutil.copy(qjs, share / "QJS.BIN")
+(share / "SCRIPTED.HTML").write_text(
+    "<!doctype html><html><body>"
+    "<h1>scripted seam page</h1><p>the page always paints</p>"
+    "<script>1+2</script>"
+    "<script>var seam=4*5;seam</script>"
+    "</body></html>\n")
+(share / "RPCOPS.BAD").write_text(
+    '{"op":"eval","src":"5"}\n'
+    '{"op":"hello","version":1}\n'
+    '{"op":"eval","src":"1+2"}\n'
+    '{"op":"bogus"}\n'
+    '{"op":"hello","version":99}\n'
+    '{"not json"}\n')
+print("staged QJS.BIN + SCRIPTED.HTML + RPCOPS.BAD for the dom-rpc legs")
+PY
+
+# --- boot 62: the eval round-trip — page paints, worker runs to done ----
+vgate_run 62 -- \
+    --screen '$RUN_DIR/screen-rpc' \
+    --via-virtio --cvc-snap \
+    --script '$RUN_DIR/script-domrpc.txt' \
+    --script-expect 'web: script done' --timeout 120
+
+vgate_assert 62 serial-contains 'web: ready'
+vgate_assert 62 serial-contains 'web: script n='
+vgate_assert 62 serial-contains 'web: script worker pid='
+vgate_assert 62 serial-contains 'web: script hello version=1'
+vgate_assert 62 serial-count 'web: script rc=0' 2
+vgate_assert 62 serial-contains 'web: script done'
+vgate_assert 62 serial-absent 'web: script worker gone'
+vgate_assert 62 serial-absent 'web: script stage-fail'
+vgate_assert 62 serial-absent 'web: error'
+vgate_assert 62 serial-absent '[EXC] parking:'
+vgate_assert 62 share-contains 'WEBRPC.OUT~' '"out":"3'
+vgate_assert 62 share-contains 'WEBRPC.OUT~' '"out":"20'
+
+# --- boot 63: the protocol's named refusals, direct-drive ---------------
+vgate_run 63 -- \
+    --script '$RUN_DIR/script-rpcops.txt' \
+    --script-expect 'qjs: clean' --timeout 120
+
+vgate_assert 63 serial-contains 'dom_rpc_hello'
+vgate_assert 63 serial-contains '"op":"hello","ok":true,"version":1'
+vgate_assert 63 serial-contains '"out":"3'
+vgate_assert 63 serial-contains 'dom_rpc_op'
+vgate_assert 63 serial-contains 'dom_rpc_version'
+vgate_assert 63 serial-contains 'dom_rpc_parse'
+vgate_assert 63 serial-contains 'qjs: clean'
+vgate_assert 63 serial-absent '[EXC] parking:'
+
+# --- boot 64: worker-death — no binary, page still paints ---------------
+vgate_run 64 -- \
+    --screen '$RUN_DIR/screen-dead' \
+    --via-virtio --cvc-snap \
+    --script '$RUN_DIR/script-rpcdead.txt' \
+    --script-expect 'web: script worker gone' --timeout 120
+
+vgate_assert 64 serial-contains 'web: ready'
+vgate_assert 64 serial-contains 'web: script n='
+vgate_assert 64 serial-contains 'web: script worker gone'
+vgate_assert 64 serial-absent 'web: script done'
+vgate_assert 64 serial-absent '[EXC] parking:'
