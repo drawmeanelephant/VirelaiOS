@@ -602,8 +602,17 @@ vgate_client a -- --addr '127.0.0.1:24720' --after 'flint: push ' --after-timeou
 # behind client-2's session so the -u0 consent line only reaches the
 # console after JB.SH's install legs have fully run. JB2-DONE is the
 # capture's last needed line. Last-declared => its rc is enforced.
-vgate_client a -- --addr '127.0.0.1:24720' --after 'httpd: request /DROP/main/HUBAPP.ELF' --after-timeout 480 \
-    --connect-timeout 120 --retry-busy --send-file '$RUN_DIR/vmb-consent-legs.txt' \
+#
+# Sizing: every client's --after clock starts at run launch, so the
+# marker wait must cover the whole chain to the ELF GET — boot, card
+# b's legs, A's paced arp stage, JA.SH publish+push, then B's DROPBAD
+# refusals + DROP clone before the fetch. That marker is also run-a's
+# own --script-expect under --timeout 600, so --after-timeout 620 can
+# never lap it inside a run that could still pass. The post-marker
+# busy window ends when client-2's session does — bounded by ITS 480 s
+# read deadline — so --connect-timeout 540 covers the worst queue.
+vgate_client a -- --addr '127.0.0.1:24720' --after 'httpd: request /DROP/main/HUBAPP.ELF' --after-timeout 620 \
+    --connect-timeout 540 --retry-busy --send-file '$RUN_DIR/vmb-consent-legs.txt' \
     --expect 'JB2-DONE' --timeout 240 --out '$RUN_DIR/client-a-consent.out'
 
 # --- vm-a asserts (the foreground run's serial + runner stdout) --------------
