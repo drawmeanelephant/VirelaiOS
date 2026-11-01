@@ -197,6 +197,25 @@ func (s *Session) Handshake() (shared bool, err error) {
 			}
 		}
 	}
+	return s.clientInit()
+}
+
+// HandshakeEstablished resumes a session whose version exchange and
+// security negotiation an outer layer already completed on the streams —
+// the seat's VeNCrypt termination (M213c) runs the security phase itself,
+// then hands the codec the authenticated channel at ClientInit. The
+// codec's own security offer is unchanged: it still advertises None only.
+func (s *Session) HandshakeEstablished() (shared bool, err error) {
+	if s.version != 0 || s.ready {
+		return false, fmt.Errorf("%w: repeated handshake", ErrProtocol)
+	}
+	s.version = 8 // post-handshake the negotiated version no longer matters
+	return s.clientInit()
+}
+
+// clientInit is the handshake tail both entries share: ClientInit, then
+// ServerInit, then ready.
+func (s *Session) clientInit() (shared bool, err error) {
 	var init [1]byte
 	if _, err := io.ReadFull(s.r, init[:]); err != nil {
 		return false, err

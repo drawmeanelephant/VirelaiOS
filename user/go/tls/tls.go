@@ -328,6 +328,16 @@ func (c *TLSConn) SetDeadline(deadline int64) {
 	}
 }
 
+// Buffered reports unread decrypted application bytes the record layer
+// already holds — a poll-driven caller (the RFB seat's session loop) must
+// treat a nonzero answer as readable even when the socket itself is quiet.
+func (c *TLSConn) Buffered() int {
+	if c == nil || c.sess == nil {
+		return 0
+	}
+	return len(c.sess.pending)
+}
+
 // IsTimeout distinguishes a stream deadline from certificate/record errors.
 func IsTimeout(err error) bool { return err == errStreamTimeout }
 
