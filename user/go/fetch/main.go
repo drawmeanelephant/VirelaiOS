@@ -33,6 +33,8 @@ const (
 	markerDial       = "gofetch: dial "
 	markerHandshake  = "gofetch: handshake ok"
 	markerHSErr      = "gofetch: handshake error "
+	markerALPN       = "gofetch: alpn "
+	markerRefuse     = "gofetch: refuse "
 	markerFailClosed = "gofetch: fail-closed "
 	markerSent       = "gofetch: request sent"
 	markerBody       = "gofetch: body complete"
@@ -60,6 +62,7 @@ type app struct {
 	url    string
 	sni    string
 	expect string
+	http2  bool
 	status string
 	title  widgets.Text
 	body   widgets.Text
@@ -86,8 +89,8 @@ func main() {
 		vi.ConsoleLine("gofetch: declare refused")
 	}
 
-	url, sni, expect := startArgs()
-	a := &app{ta: ta, url: url, sni: sni, expect: expect, status: "starting"}
+	url, sni, expect, http2 := startArgs()
+	a := &app{ta: ta, url: url, sni: sni, expect: expect, http2: http2, status: "starting"}
 	vi.ConsoleLine(markerURL + a.url)
 	a.draw()
 	a.ta.Present()
@@ -123,23 +126,40 @@ func main() {
 	}
 }
 
-func startArgs() (url, sni, expect string) {
-	args := vi.Args()
+// startArgs splits the windowed consumer's argv: --http2 is the M212a
+// flag (negotiate h2 via ALPN, fall back to HTTP/1.1); the remaining
+// positionals are [url [sni [expect-fail]]] as before.
+func startArgs() (url, sni, expect string, http2 bool) {
+	var pos []string
+	for _, arg := range vi.Args()[1:] {
+		if arg == "--http2" {
+			http2 = true
+			continue
+		}
+		pos = append(pos, arg)
+	}
 	url = "https://10.0.0.2/"
-	if len(args) > 1 && args[1] != "" {
-		url = args[1]
+	if len(pos) > 0 && pos[0] != "" {
+		url = pos[0]
 	}
-	if len(args) > 2 {
-		sni = args[2]
+	if len(pos) > 1 {
+		sni = pos[1]
 	}
-	if len(args) > 3 {
-		expect = args[3]
+	if len(pos) > 2 {
+		expect = pos[2]
 	}
-	return url, sni, expect
+	return url, sni, expect, http2
 }
 
 func (a *app) runFetch() {
 	tgt := Classify(a.url)
+	if a.http2 && WouldSendCleartext(tgt) {
+		// M212a: h2c (cleartext HTTP/2 Upgrade) is refused by name — h2
+		// is only ever a negotiated ALPN protocol on the TLS stream.
+		vi.ConsoleLine(markerRefuse + "h2c")
+		a.status = "refuse h2c"
+		return
+	}
 	if WouldSendCleartext(tgt) {
 		a.fail(KindHTTP, "cleartext refused")
 		return
@@ -153,7 +173,7 @@ func (a *app) runFetch() {
 		plan.SNI = a.sni
 	}
 	vi.ConsoleLine(markerDial + plan.Addr + " " + portString(plan.Port) + " " + plan.SNI)
-	conn, err := httpsDial(plan.Addr, plan.Port, plan.SNI)
+	conn, err := httpsDial(plan.Addr, plan.Port, plan.SNI, a.http2)
 	if err != nil {
 		vi.ConsoleLine(markerHSErr + err.Error())
 		if failClosedMatches(a.expect, err) {
@@ -170,11 +190,33 @@ func (a *app) runFetch() {
 		return
 	}
 	vi.ConsoleLine(markerHandshake)
-	body, err := httpsGetOn(conn, plan.SNI, plan.Path)
-	_ = conn.Close()
-	if err != nil {
-		a.fail("tls", err.Error())
-		return
+	// --http2 offers h2,http/1.1 and dispatches on the negotiated pick; a
+	// peer that answers nothing ("none") or picks http/1.1 stays on the
+	// h1 engine — the ALPN marker pins which path ran.
+	var body []byte
+	if a.http2 {
+		proto := conn.ALPN()
+		shown := proto
+		if shown == "" {
+			shown = "none"
+		}
+		vi.ConsoleLine(markerALPN + shown)
+	}
+	if a.http2 && conn.ALPN() == "h2" {
+		body, err = h2GetOn(conn, plan.SNI, plan.Port, plan.Path)
+		_ = conn.Close()
+		if err != nil {
+			vi.ConsoleLine(markerError + "h2 " + err.Error())
+			a.status = "h2 " + err.Error()
+			return
+		}
+	} else {
+		body, err = httpsGetOn(conn, plan.SNI, plan.Path)
+		_ = conn.Close()
+		if err != nil {
+			a.fail("tls", err.Error())
+			return
+		}
 	}
 	vi.ConsoleLine(markerSent)
 	writeBody(body)
