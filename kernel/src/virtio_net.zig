@@ -429,6 +429,25 @@ pub fn rx_posted_depth() u16 {
     return @popCount(rx_posted_mask);
 }
 
+/// #3863: descriptor `queue_size - 1` is RESERVED for the RX poke —
+/// held out of `net_rx_arm`'s normal post/repost pool so the
+/// tick-cadence poke in `net_ndp_poll` can always offer a real
+/// avail-ring advance (a fresh buffer), even while every other
+/// descriptor is already posted to the device. The VZ file-handle
+/// attachment does not service the host->guest socketpair on a reliable
+/// cadence at cold boot (the observed stall: a reply datagram sits
+/// UNREAD in the pair for whole leg windows — runner NET-GQ
+/// unread=42B, host queue clean — until the device model is poked); the
+/// queue-0 notify is the guest's only RX-direction doorbell. A bare
+/// kick covers a device that drains the socket on any notify; the fresh
+/// buffer covers one that services the pair only on new posts.
+pub const rx_poke_desc: u16 = queue_size - 1;
+/// The last stamped tick a poke fired on (`maxInt` = never, so the
+/// first stamped poll always pokes); `rx_pokes` counts the doorbells —
+/// the evidence counter a later `net` report card can surface.
+var rx_poke_tick: u64 = std.math.maxInt(u64);
+pub var rx_pokes: u64 = 0;
+
 pub var net_dev: Device = .{};
 pub var net_ops: Ops = .{
     .dev_read32 = real_dev_read32,
@@ -1177,7 +1196,8 @@ pub fn net_send_frame(requested: usize, out_len: *usize) SendResult {
 
 /// Supply queue-0 RX buffers: post EVERY descriptor not already posted
 /// (M179b, #3148 — one device-WRITE buffer each, `rx_posted_mask` tracks
-/// which), then kick once so the device knows buffers are available.
+/// which) except the reserved `rx_poke_desc` (#3863 — the ndp-poll poke
+/// posts it), then kick once so the device knows buffers are available.
 /// Called after the post-exit re-arm and again after every drain to
 /// re-post the descriptors the drain consumed. Returns false when the
 /// transport is unarmed.
@@ -1190,6 +1210,7 @@ pub fn net_rx_arm() bool {
     var posted: u16 = 0;
     var i: u16 = 0;
     while (i < queue_size) : (i += 1) {
+        if (i == rx_poke_desc) continue; // #3863: reserved — the ndp-poll poke posts it
         if ((rx_posted_mask >> @intCast(i)) & 1 != 0) continue;
         dev.rx_desc[i] = .{
             .addr = ops.to_phys(@intFromPtr(rx_bufs[i])),
@@ -1512,6 +1533,33 @@ pub fn net_ndp_poll() NdpPoll {
     // `pending` learn window the RX drain checks.
     arp.now_ticks = ndp.now_ticks;
     if (!net_ready) return ev;
+    // #3863: bounded RX doorbell — once per stamped tick while the queue
+    // is armed, post the reserved poke descriptor when it is free (a
+    // real avail-ring advance) and kick queue 0. The VZ attachment
+    // reads the host->guest pair only when the device model is poked
+    // (the observed cold-boot stall class); the poke keeps a pending
+    // datagram at most one tick from a service point — one MMIO write
+    // per tick, never a notify storm.
+    if (rx_armed and ndp.now_ticks != rx_poke_tick) {
+        rx_poke_tick = ndp.now_ticks;
+        const dev = &net_dev;
+        if ((rx_posted_mask >> @intCast(rx_poke_desc)) & 1 == 0) {
+            dev.rx_desc[rx_poke_desc] = .{
+                .addr = net_ops.to_phys(@intFromPtr(rx_bufs[rx_poke_desc])),
+                .len = rx_buf_len,
+                .flags = virtq_f_write,
+                .next = 0xffff,
+            };
+            dev.rx_avail.ring[dev.rx_avail.idx % queue_size] = rx_poke_desc;
+            dev.rx_avail.idx +%= 1;
+            rx_posted_mask |= @as(u32, 1) << @intCast(rx_poke_desc);
+            net_ops.clean(@intFromPtr(&dev.rx_desc), @sizeOf([queue_size]VirtqDesc));
+            net_ops.clean(@intFromPtr(&dev.rx_avail), @sizeOf(VirtqAvail));
+            rx_posted +%= 1;
+        }
+        net_ops.notify(0);
+        rx_pokes +%= 1;
+    }
     // #3863: bounded ARP retransmit — an unanswered solicitation is
     // re-requested every `arp.retransmit_polls` polls up to
     // `arp.max_retries` sends. A solicited reply that rides the
@@ -2289,21 +2337,23 @@ test "virtio_net: RX supply + used-ring drain + filter + FIFO over a mock" {
     while (i < 32) : (i += 1) delivered[rx_hdr_len + 14 + i] = @truncate(i);
     mock_rx_enqueue(delivered[0 .. rx_hdr_len + 46]); // header + 46-byte frame
 
-    // Arm: EVERY queue-0 descriptor is posted with its own buffer (M179b)
-    // and the kick delivers the pending frame into rx_bufs[0] — the used
-    // ring advances one element (device-written len = 58).
+    // Arm: EVERY queue-0 descriptor except the reserved rx_poke_desc
+    // (#3863) is posted with its own buffer (M179b) and the kick
+    // delivers the pending frame into rx_bufs[0] — the used ring
+    // advances one element (device-written len = 58).
     try std.testing.expect(net_rx_arm());
     try std.testing.expect(rx_armed);
     try std.testing.expectEqual(@as(u16, 1), mock_kicks);
-    try std.testing.expectEqual(@as(u16, queue_size), net_dev.rx_avail.idx);
-    try std.testing.expectEqual(@as(u16, queue_size), rx_posted_depth());
-    try std.testing.expectEqual(@as(u64, queue_size), rx_posted);
+    try std.testing.expectEqual(@as(u16, queue_size - 1), net_dev.rx_avail.idx);
+    try std.testing.expectEqual(@as(u16, queue_size - 1), rx_posted_depth());
+    try std.testing.expectEqual(@as(u64, queue_size - 1), rx_posted);
 
     // Drain: the completion is accounted, the frame passes the broadcast
     // filter, and lands in the FIFO (raw device-written bytes — header
-    // included). The drain's re-arm re-posts descriptor 0, so all
-    // queue_size buffers stay supplied (the pending list is empty — the
-    // re-delivered avail entry is held by the device, not completed).
+    // included). The drain's re-arm re-posts descriptor 0 (still not the
+    // reserved poke descriptor), so all non-reserved buffers stay
+    // supplied (the pending list is empty — the re-delivered avail entry
+    // is held by the device, not completed).
     net_rx_drain();
     try std.testing.expectEqual(@as(u64, 1), rx_frames);
     try std.testing.expectEqual(@as(u64, 58), rx_bytes);
@@ -2311,9 +2361,9 @@ test "virtio_net: RX supply + used-ring drain + filter + FIFO over a mock" {
     try std.testing.expectEqual(@as(u64, 0), rx_overflow);
     try std.testing.expectEqual(@as(u32, 58), rx_last_len);
     try std.testing.expectEqual(@as(usize, 1), fifo_occupancy());
-    try std.testing.expectEqual(@as(u16, queue_size + 1), net_dev.rx_avail.idx); // re-armed
-    try std.testing.expectEqual(@as(u16, queue_size), rx_posted_depth());
-    try std.testing.expectEqual(@as(u64, queue_size + 1), rx_posted);
+    try std.testing.expectEqual(@as(u16, queue_size), net_dev.rx_avail.idx); // re-armed
+    try std.testing.expectEqual(@as(u16, queue_size - 1), rx_posted_depth());
+    try std.testing.expectEqual(@as(u64, queue_size), rx_posted);
 
     // net recv consumes the FIFO frame: the exact device-written bytes.
     const frame = fifo_peek().?;
@@ -2498,11 +2548,12 @@ test "virtio_net: RX burst — 12 back-to-back frames drain in order, every desc
         mock_rx_enqueue(b[0..]);
     }
 
-    // Arm: all queue_size descriptors post with their own buffer; the
-    // single kick fills 12 of them — the device holds the other 4.
+    // Arm: all queue_size-1 descriptors post with their own buffer (the
+    // reserved rx_poke_desc is held for the ndp-poll poke, #3863); the
+    // single kick fills 12 of them — the device holds the other 3.
     try std.testing.expect(net_rx_arm());
-    try std.testing.expectEqual(@as(u16, queue_size), net_dev.rx_avail.idx);
-    try std.testing.expectEqual(@as(u16, queue_size), rx_posted_depth());
+    try std.testing.expectEqual(@as(u16, queue_size - 1), net_dev.rx_avail.idx);
+    try std.testing.expectEqual(@as(u16, queue_size - 1), rx_posted_depth());
     try std.testing.expectEqual(@as(u16, 1), mock_kicks);
 
     // ONE drain consumes all 12 completions, in used-ring order: every
@@ -2514,9 +2565,9 @@ test "virtio_net: RX burst — 12 back-to-back frames drain in order, every desc
     try std.testing.expectEqual(@as(u64, 0), rx_filtered);
     try std.testing.expectEqual(@as(u64, 0), rx_overflow);
     try std.testing.expectEqual(@as(usize, 12), fifo_occupancy());
-    try std.testing.expectEqual(@as(u16, queue_size), rx_posted_depth()); // all re-armed
-    try std.testing.expectEqual(@as(u16, queue_size + 12), net_dev.rx_avail.idx);
-    try std.testing.expectEqual(@as(u64, queue_size + 12), rx_posted);
+    try std.testing.expectEqual(@as(u16, queue_size - 1), rx_posted_depth()); // all non-reserved re-armed
+    try std.testing.expectEqual(@as(u16, queue_size + 11), net_dev.rx_avail.idx);
+    try std.testing.expectEqual(@as(u64, queue_size + 11), rx_posted);
 
     // In-order and byte-exact: pop all 12, checking the tag each time.
     var i: usize = 0;
@@ -2528,6 +2579,94 @@ test "virtio_net: RX burst — 12 back-to-back frames drain in order, every desc
         fifo_pop_advance();
     }
     try std.testing.expectEqual(@as(usize, 0), fifo_occupancy());
+}
+
+test "virtio_net: #3863 RX poke — one queue-0 doorbell per tick, reserved descriptor" {
+    const saved_ops = net_ops;
+    net_ops = mock_ops();
+    net_ready = true;
+    defer {
+        net_ops = saved_ops;
+        net_ready = false;
+    }
+    net_dev = .{};
+    net_mac = fallback_mac;
+    rx_fifo_head = 0;
+    rx_fifo_count = 0;
+    rx_frames = 0;
+    rx_bytes = 0;
+    rx_filtered = 0;
+    rx_mcast = 0;
+    rx_mdns = 0;
+    rx_mcast_filtered = 0;
+    rx_overflow = 0;
+    rx_posted_mask = 0;
+    rx_posted = 0;
+    rx_armed = false;
+    rx_poke_tick = std.math.maxInt(u64);
+    rx_pokes = 0;
+    ndp.now_ticks = 0;
+    arp.now_ticks = 0;
+    arp.pending = @as([arp.pending_slots]arp.Pending, @splat(@as(arp.Pending, .{})));
+    ipv6.link_local_state = .none; // no RS train / DAD probe this poll
+    mock_used_idx = 0;
+    mock_tx_used_idx = 0;
+    mock_rx_head = 0;
+    mock_rx_n = 0;
+    mock_rx_seen = 0;
+    mock_kicks = 0;
+
+    // Arm posts every non-reserved descriptor — the poke descriptor is
+    // held for the tick-cadence doorbell.
+    try std.testing.expect(net_rx_arm());
+    try std.testing.expectEqual(@as(u16, queue_size - 1), net_dev.rx_avail.idx);
+    try std.testing.expectEqual(@as(u16, 1), mock_kicks);
+
+    // First stamped poll: the poke posts the reserved descriptor (a real
+    // avail-ring advance) and kicks — one doorbell.
+    ndp.now_ticks = 1;
+    _ = net_ndp_poll();
+    try std.testing.expectEqual(@as(u64, 1), rx_pokes);
+    try std.testing.expectEqual(@as(u16, queue_size), net_dev.rx_avail.idx);
+    try std.testing.expectEqual(@as(u16, queue_size), rx_posted_depth());
+    try std.testing.expectEqual(@as(u16, 2), mock_kicks);
+
+    // Same tick, second poll: no doorbell — the tick bound held.
+    _ = net_ndp_poll();
+    try std.testing.expectEqual(@as(u64, 1), rx_pokes);
+    try std.testing.expectEqual(@as(u16, queue_size), net_dev.rx_avail.idx);
+    try std.testing.expectEqual(@as(u16, 2), mock_kicks);
+
+    // Next tick: the descriptor is already posted, so this poke is a
+    // bare kick — the doorbell still rings once per tick.
+    ndp.now_ticks = 2;
+    _ = net_ndp_poll();
+    try std.testing.expectEqual(@as(u64, 2), rx_pokes);
+    try std.testing.expectEqual(@as(u16, queue_size), net_dev.rx_avail.idx);
+    try std.testing.expectEqual(@as(u16, 3), mock_kicks);
+
+    // The device fills the poke buffer: the mock consumes the posted
+    // reserved descriptor — the drain then returns it to the poke
+    // reserve (arm skips it), so the NEXT tick's poke can advance the
+    // avail ring again.
+    var delivered: [rx_buf_len]u8 = @splat(0);
+    delivered[10] = 0x01; // virtio_net_hdr num_buffers = 1 (observed)
+    const bcast = [6]u8{ 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
+    const src = [6]u8{ 0x02, 0x00, 0x00, 0x00, 0x00, 0x03 };
+    @memcpy(delivered[rx_hdr_len .. rx_hdr_len + 6], &bcast);
+    @memcpy(delivered[rx_hdr_len + 6 .. rx_hdr_len + 12], &src);
+    delivered[rx_hdr_len + 12] = 0x08;
+    delivered[rx_hdr_len + 13] = 0x00;
+    mock_rx_enqueue(delivered[0 .. rx_hdr_len + 46]);
+    mock_rx_seen = net_dev.rx_avail.idx - 1; // earlier posts already consumed
+    mock_notify(0); // the device consumes the reserved descriptor's post
+    net_rx_drain();
+    try std.testing.expectEqual(@as(u16, queue_size - 1), rx_posted_depth());
+    ndp.now_ticks = 3;
+    _ = net_ndp_poll();
+    try std.testing.expectEqual(@as(u64, 3), rx_pokes);
+    try std.testing.expectEqual(@as(u16, queue_size), rx_posted_depth());
+    try std.testing.expectEqual(@as(u16, queue_size + 1), net_dev.rx_avail.idx);
 }
 
 test "virtio_net: RX ARP request is answered — byte-exact reply on TX over a mock" {

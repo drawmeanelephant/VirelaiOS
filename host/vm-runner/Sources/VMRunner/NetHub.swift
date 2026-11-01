@@ -210,6 +210,11 @@ final class NetGuestQueue {
     private var slowSent = 0
     private var maxDelay: TimeInterval = 0
     private var stallTicks = 0
+    /// #3863: when a non-empty queue first finds the pair unread — the
+    /// open of one stall episode. The stall report carries the age, and
+    /// the drain that finally moves logs the whole window, so the gate
+    /// evidence names VZ's un-serviced bound instead of a guess.
+    private var stallSince: TimeInterval? = nil
 
     /// The first pending datagram's length on VZ's end of the attachment
     /// socketpair — the pair's occupancy (SO_NREAD; 0 = empty, the only
@@ -358,12 +363,23 @@ final class NetGuestQueue {
         // pairUnread names VZ's own backlog beside it.
         let pending = frames.count - head
         if pending > 0 && !sentThisPass {
+            if stallSince == nil { stallSince = Date().timeIntervalSince1970 }
             stallTicks += 1
+            let stalled = Date().timeIntervalSince1970 - stallSince!
             if stallTicks <= 4 || stallTicks % 64 == 0 {
-                FileHandle.standardError.write(Data("NET-GQ: \(pending) queued, pair unread=\(pairUnread())B, sent=\(sent) (slow=\(slowSent), max=\(String(format: "%.2f", maxDelay))s) drops=\(drops)\n".utf8))
+                FileHandle.standardError.write(Data("NET-GQ: \(pending) queued, pair unread=\(pairUnread())B, sent=\(sent) (slow=\(slowSent), max=\(String(format: "%.2f", maxDelay))s) drops=\(drops) stalled=\(String(format: "%.1f", stalled))s\n".utf8))
             }
         }
         if head == frames.count {
+            // The stall cleared — name the whole window (VZ's un-serviced
+            // bound) once, bounded: only episodes over half a second.
+            if let since = stallSince {
+                let window = Date().timeIntervalSince1970 - since
+                if window > 0.5 {
+                    FileHandle.standardError.write(Data("NET-GQ: pair serviced after \(String(format: "%.1f", window))s unread (stallTicks=\(stallTicks))\n".utf8))
+                }
+            }
+            stallSince = nil
             frames.removeAll()
             head = 0
         }
