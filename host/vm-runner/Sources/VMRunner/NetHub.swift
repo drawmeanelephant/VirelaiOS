@@ -344,6 +344,18 @@ final class NetGuestQueue {
                 head += 1
                 sent += 1
                 sentThisPass = true
+                // #3863: name every ARP datagram written into the pair —
+                // the guest's used-ring trace (RXC/RXA in `net log`)
+                // correlates seq -> completion, so a datagram VZ read
+                // (unread cleared) that never completes is observed lost
+                // inside the pair->ring hop rather than guessed.
+                if q.frame.count >= 42, q.frame[12] == 0x08, q.frame[13] == 0x06 {
+                    let op = Int(q.frame[20]) << 8 | Int(q.frame[21])
+                    let spa = "\(q.frame[28]).\(q.frame[29]).\(q.frame[30]).\(q.frame[31])"
+                    let tpa = "\(q.frame[38]).\(q.frame[39]).\(q.frame[40]).\(q.frame[41])"
+                    let dst = q.frame[0..<6].map { String(format: "%02x", $0) }.joined(separator: ":")
+                    FileHandle.standardError.write(Data("NET-GQ-TX: n=\(sent) len=\(q.frame.count) arp op=\(op) spa=\(spa) tpa=\(tpa) dst=\(dst)\n".utf8))
+                }
                 let delay = Date().timeIntervalSince1970 - q.enq
                 if delay > maxDelay { maxDelay = delay }
                 if delay > 0.1 { slowSent += 1 }
