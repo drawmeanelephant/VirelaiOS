@@ -159,17 +159,75 @@ let netHubRcvBufBytes: Int32 = 1 << 20
 /// frames ride until the pair admits them, every writer flushes first,
 /// MSG_DONTWAIT keeps each send a drop rather than a parked relay
 /// thread, and overflow is a counted drop — never a silent one.
+///
+/// #3863 — the delivery LAG behind the same wedge class. The bisected
+/// deep-buffer failure (one frame, then none) only makes sense if VZ's
+/// attachment read is readiness-edge driven: a datagram that lands
+/// while the pair is still non-empty produces no NEW edge, so a writer
+/// that keeps the pair occupied starves the very read it needs. With a
+/// 1 MiB buffer the first burst filled it and the socket never returned
+/// to empty — no further edges, no further reads. The shallow pair hits
+/// the same trap under sustained load: back-to-back sends leave it
+/// permanently non-empty, so host->guest delivery degrades to whatever
+/// other cadence pokes VZ (the observed multi-second-to-minute spikes
+/// and the "one request late" ARP staleness). The queue therefore paces
+/// the last hop: ONE datagram is written per fully-empty pair state
+/// (SO_NREAD == 0), so every frame is a fresh empty->nonempty edge and
+/// delivery self-clocks at VZ's real service rate. A dedicated drainer
+/// polls the empty state while backlog exists (the 25 ms rx-loop wake
+/// alone would cap throughput at ~40 fps); a socket that cannot be
+/// sampled (-1) keeps the legacy send-until-ENOBUFS pacing.
 final class NetGuestQueue {
     static let limit = 512 // ~0.75 MiB worst case of queued frames
     /// Above this pending depth, new broadcast/multicast frames are
     /// shed instead of queued — unicast gets the whole budget.
     static let mcastShed = 128
+    /// How long the drainer sleeps between empty-state polls while a
+    /// backlog waits on VZ. Sub-millisecond so the delivered rate is
+    /// bounded by VZ's service rate, not the poll cadence.
+    static let drainPollSeconds = 0.0005
 
-    private var frames: [[UInt8]] = []
+    /// One queued frame and when it arrived — the enqueue->pair-send
+    /// delay is the measurement that names WHERE the host->guest lag
+    /// sits (#3863): a frame sent promptly that lands late blames the
+    /// pair (VZ's read), a frame sent late blames this queue's flush.
+    private struct Queued {
+        let frame: [UInt8]
+        let enq: TimeInterval
+    }
+
+    private var frames: [Queued] = []
     private var head = 0
     private var drops = 0
     private var mcastSheds = 0
     private let lock = NSLock()
+    private let work = NSCondition()
+    private var drainerStarted = false
+    // #3863 diagnostics (bounded logs): sent/slowSent count deliveries,
+    // maxDelay is the worst enqueue->send wait observed, stallTicks the
+    // flush passes that moved nothing.
+    private var sent = 0
+    private var slowSent = 0
+    private var maxDelay: TimeInterval = 0
+    private var stallTicks = 0
+    /// #3863: when a non-empty queue first finds the pair unread — the
+    /// open of one stall episode. The stall report carries the age, and
+    /// the drain that finally moves logs the whole window, so the gate
+    /// evidence names VZ's un-serviced bound instead of a guess.
+    private var stallSince: TimeInterval? = nil
+
+    /// The first pending datagram's length on VZ's end of the attachment
+    /// socketpair — the pair's occupancy (SO_NREAD; 0 = empty, the only
+    /// state the pacing sends into). -1 = the pair can't be sampled
+    /// (--net-inject and the tests run queue-less) and pacing falls back
+    /// to send-until-ENOBUFS.
+    private func pairUnread() -> Int {
+        guard let vfd = netCaptureSocket?.fileDescriptor else { return -1 }
+        var n: Int32 = 0
+        var len = socklen_t(MemoryLayout<Int32>.size)
+        if getsockopt(vfd, SOL_SOCKET, SO_NREAD, &n, &len) != 0 { return -1 }
+        return Int(n)
+    }
 
     /// Append + flush. Every host->guest writer rides the one queue —
     /// hub deliveries and the hermetic responders — so ordering holds.
@@ -193,17 +251,75 @@ final class NetGuestQueue {
             }
             return
         }
-        frames.append(frame)
+        frames.append(Queued(frame: frame, enq: Date().timeIntervalSince1970))
         flushLocked()
+        work.lock()
+        work.signal()
+        work.unlock()
+        kickDrainer()
     }
 
-    /// Write every queued frame the pair currently accepts. Called on
-    /// each rx-loop wake so a full queue drains as VZ makes room, not
-    /// only when the next frame arrives.
-    func flush() {
+    /// Queued-but-unsent depth — the test seam for the #3863 pacing
+    /// (the wire can't distinguish "1 in flight" from "N in flight" —
+    /// SO_NREAD reports only the first pending datagram's length).
+    func pendingCount() -> Int {
         lock.lock()
         defer { lock.unlock() }
+        return frames.count - head
+    }
+
+    /// Attempt to move the queue toward the pair now. Called on each
+    /// rx-loop wake and each capture-loop read so the backlog never
+    /// waits solely on the drainer's poll cadence.
+    func flush() {
+        lock.lock()
         flushLocked()
+        lock.unlock()
+    }
+
+    /// The drainer thread: while the queue is non-empty, poll VZ's end
+    /// of the pair at the sub-ms cadence and write the next frame the
+    /// instant the pair returns to empty — the edge-per-frame pacing.
+    /// Sleeps on `work` when the queue is empty (the wait is timed: a
+    /// signal that raced the wake self-heals in one interval, and the
+    /// send() that raced it already flushed the frame itself). Started
+    /// lazily on the first queued frame; lives for the process — the
+    /// queue is a process-lifetime singleton.
+    private func kickDrainer() {
+        if drainerStarted { return }
+        drainerStarted = true
+        let t = Thread {
+            while true {
+                self.work.lock()
+                _ = self.work.wait(until: Date().addingTimeInterval(0.05))
+                self.work.unlock()
+                while true {
+                    self.lock.lock()
+                    if self.head == self.frames.count {
+                        self.lock.unlock()
+                        break
+                    }
+                    let unread = self.pairUnread()
+                    self.lock.unlock()
+                    if unread > 0 {
+                        // VZ hasn't emptied the pair — poll, not block:
+                        // SO_NREAD has no waitable peer (the pair's
+                        // POLLOUT fires on ANY room, not on empty).
+                        Thread.sleep(forTimeInterval: Self.drainPollSeconds)
+                        continue
+                    }
+                    self.flush()
+                    if unread < 0 {
+                        // Unsampleable pair: the flush already ran the
+                        // legacy send-until-ENOBUFS drain — yield before
+                        // re-checking instead of spinning on sends.
+                        Thread.sleep(forTimeInterval: Self.drainPollSeconds)
+                    }
+                }
+            }
+        }
+        t.name = "net-guest-queue-drainer"
+        t.start()
     }
 
     private func flushLocked() {
@@ -212,19 +328,70 @@ final class NetGuestQueue {
             head = 0
             return
         }
+        var sentThisPass = false
         while head < frames.count {
-            let frame = frames[head]
-            let n = frame.withUnsafeBufferPointer { bp in
+            // #3863: write ONLY into a fully-empty pair — each datagram
+            // is then a fresh empty->nonempty readiness edge for VZ's
+            // read. -1 (unsampleable) falls back to the legacy
+            // send-until-ENOBUFS pacing.
+            let unread = pairUnread()
+            if unread > 0 { break }
+            let q = frames[head]
+            let n = q.frame.withUnsafeBufferPointer { bp in
                 Darwin.send(wfd, bp.baseAddress, bp.count, MSG_DONTWAIT | MSG_NOSIGNAL)
             }
-            if n >= 0 { head += 1; continue }
+            if n >= 0 {
+                head += 1
+                sent += 1
+                sentThisPass = true
+                // #3863: name every ARP datagram written into the pair —
+                // the guest's used-ring trace (RXC/RXA in `net log`)
+                // correlates seq -> completion, so a datagram VZ read
+                // (unread cleared) that never completes is observed lost
+                // inside the pair->ring hop rather than guessed.
+                if q.frame.count >= 42, q.frame[12] == 0x08, q.frame[13] == 0x06 {
+                    let op = Int(q.frame[20]) << 8 | Int(q.frame[21])
+                    let spa = "\(q.frame[28]).\(q.frame[29]).\(q.frame[30]).\(q.frame[31])"
+                    let tpa = "\(q.frame[38]).\(q.frame[39]).\(q.frame[40]).\(q.frame[41])"
+                    let dst = q.frame[0..<6].map { String(format: "%02x", $0) }.joined(separator: ":")
+                    FileHandle.standardError.write(Data("NET-GQ-TX: n=\(sent) len=\(q.frame.count) arp op=\(op) spa=\(spa) tpa=\(tpa) dst=\(dst)\n".utf8))
+                }
+                let delay = Date().timeIntervalSince1970 - q.enq
+                if delay > maxDelay { maxDelay = delay }
+                if delay > 0.1 { slowSent += 1 }
+                if delay > 0.5 {
+                    FileHandle.standardError.write(Data("NET-GQ: frame sent after \(String(format: "%.2f", delay))s queued (pair unread=\(pairUnread())B, pending=\(frames.count - head), slow=\(slowSent))\n".utf8))
+                }
+                if unread == 0 { break } // one frame per empty state; -1 keeps draining
+                continue
+            }
             let e = errno
             if e == EINTR { continue }
             if e == EAGAIN || e == ENOBUFS { break } // peer full — stay queued
             head += 1 // dead fd etc. — this frame is undeliverable
             noteDrop()
         }
+        // A non-empty queue the pair refuses is the stall record —
+        // pairUnread names VZ's own backlog beside it.
+        let pending = frames.count - head
+        if pending > 0 && !sentThisPass {
+            if stallSince == nil { stallSince = Date().timeIntervalSince1970 }
+            stallTicks += 1
+            let stalled = Date().timeIntervalSince1970 - stallSince!
+            if stallTicks <= 4 || stallTicks % 64 == 0 {
+                FileHandle.standardError.write(Data("NET-GQ: \(pending) queued, pair unread=\(pairUnread())B, sent=\(sent) (slow=\(slowSent), max=\(String(format: "%.2f", maxDelay))s) drops=\(drops) stalled=\(String(format: "%.1f", stalled))s\n".utf8))
+            }
+        }
         if head == frames.count {
+            // The stall cleared — name the whole window (VZ's un-serviced
+            // bound) once, bounded: only episodes over half a second.
+            if let since = stallSince {
+                let window = Date().timeIntervalSince1970 - since
+                if window > 0.5 {
+                    FileHandle.standardError.write(Data("NET-GQ: pair serviced after \(String(format: "%.1f", window))s unread (stallTicks=\(stallTicks))\n".utf8))
+                }
+            }
+            stallSince = nil
             frames.removeAll()
             head = 0
         }

@@ -238,7 +238,7 @@ func (f *connFake) hook(num uintptr, a0, a1, a2, a3 uintptr) int64 {
 			return f.probeScript(f.probeCalls)
 		}
 		return f.probeMask
-	case SlotSleep:
+	case SlotSleep, SlotSleepNs:
 		f.sleeps++
 		return 0
 	}

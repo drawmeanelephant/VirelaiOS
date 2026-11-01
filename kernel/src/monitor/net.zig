@@ -264,6 +264,22 @@ pub fn cmd_net(m: *Monitor, args: []const []const u8) ExecError {
     m.console.puts(" armed=");
     m.console.print_u64(if (virtio_net.rx_armed) 1 else 0);
     m.console.puts("\n");
+    // #3863: the stall-watchdog operands at this instant — each `net`
+    // sample shows whether polls run (pk), silence accumulates (sil),
+    // and a solicitation is owed (the reset guard's three operands).
+    m.console.puts("net: rx-polls pk=");
+    m.console.print_u64(virtio_net.rx_pokes);
+    m.console.puts(" sil=");
+    m.console.print_u64(virtio_net.rx_silent_polls);
+    m.console.puts(" owed=");
+    {
+        var o: u64 = 0;
+        for (&virtio_net.arp.pending) |*s| {
+            if (s.valid) o += 1;
+        }
+        m.console.print_u64(o);
+    }
+    m.console.puts("\n");
     // The claim-time observation record: the last device-written length +
     // the first 16 bytes pin the RX-header question (12 zero bytes + dst
     // MAC = header present; dst MAC at 0 = none). Recorded even when the
@@ -572,6 +588,32 @@ pub fn net_ndp_autonomous(m: *Monitor) void {
         // stage marker ('net: v6 rs=3').
         m.console.puts("net: v6 rs=");
         m.console.print_u64(virtio_net.ndp.rs_sent);
+        m.console.puts("\n");
+    }
+    if (ev.rxq_reset) {
+        // #3863: one bounded line per stall-recovery device reset — the
+        // gate's serial sees whether the pair->ring recovery fired
+        // (net_log's RXQ line needs a `net log` leg the spec lacks).
+        m.console.puts("net: rxq reset n=");
+        m.console.print_u64(virtio_net.rx_resets);
+        m.console.puts("\n");
+    }
+    if (ev.rxq_stall) {
+        // Once per silent epoch — proves owed+silent>=512 was observed;
+        // a missing reset/reset-fail line after this means the tick or
+        // epoch bound refused, not that the stall was never seen.
+        m.console.puts("net: rxq stall u=");
+        m.console.print_u64(@intCast(virtio_net.net_dev.rx_used.idx));
+        m.console.puts(" a=");
+        m.console.print_u64(@intCast(virtio_net.net_dev.rx_avail.idx));
+        m.console.puts("\n");
+    }
+    if (ev.rxq_reset_fail) {
+        // The attempt fired and transport_init refused — `net_fail`
+        // names the exact step, the serial shows it without a `net
+        // log` leg.
+        m.console.puts("net: rxq reset-fail ");
+        m.console.puts(virtio_net.net_fail);
         m.console.puts("\n");
     }
     if (virtio_net.ndp.last_conflict) |c| {

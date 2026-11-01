@@ -429,6 +429,49 @@ pub fn rx_posted_depth() u16 {
     return @popCount(rx_posted_mask);
 }
 
+/// #3863: `rx_pokes` counts the queue-0 doorbells rung by
+/// `net_ndp_poll` — the evidence counter a later `net` report card can
+/// surface. The doorbell is the guest's only RX-direction poke at the
+/// VZ file-handle attachment, which does not service the host->guest
+/// socketpair on a reliable cadence (the observed stall class: a
+/// datagram sits UNREAD in the pair — runner NET-GQ unread=42B — until
+/// the device model is kicked). An earlier scheme reserved one
+/// descriptor for a self-clocking avail-ring repost; the used-ring
+/// trace showed the reserved descriptor's reposts DEADLOCKED on the
+/// first missed completion — it only reposted "when free", so a device
+/// that stopped consuming also stopped every avail advance, leaving a
+/// 1 Hz kick that the gate showed is not a service trigger.
+pub var rx_pokes: u64 = 0;
+
+/// #3863: pair->ring stall recovery — measured on the live gate: the VZ
+/// attachment can enter a state where it READS the socketpair (SO_NREAD
+/// clears — the pacing queue only writes into an empty pair) but never
+/// posts a used completion, while every descriptor stays posted (mask
+/// ffff) and ~29k queue-0 doorbells ring. Recovery is a FULL device
+/// reset (`transport_init`, the proven post-EBS rearm sequence): a
+/// per-queue disable + re-setup leaves the device's internal
+/// avail/used positions counting from their stalled values while the
+/// rewritten rings index from 0 — reposted buffers could sit where the
+/// device never looks. Only a device reset returns both sides to 0.
+/// It fires only while a solicitation is outstanding (a reply is
+/// provably owed — the honest loss signal) and the used ring has
+/// stayed silent for `stall_reset_polls`, at most `stall_reset_max`
+/// times per silent epoch (`rx_reset_n` re-arms on any completion)
+/// and `stall_reset_ticks` ticks apart — a true platform floor then
+/// fails bounded, not looping. `rx_reset_tick` starts at 0 (never
+/// maxInt — the `now_ticks -| tick` saturation made the first
+/// comparison permanently false on c81b96dc; the a-01 artifacts
+/// showed the reset could not have fired).
+var rx_silent_seen: u16 = 0;
+pub var rx_silent_polls: u32 = 0; // sampled by the `net` report (#3863)
+var rx_reset_tick: u64 = 0;
+var rx_reset_n: u8 = 0;
+var rxq_stall_logged: bool = false;
+const stall_reset_polls: u32 = 512;
+const stall_reset_ticks: u64 = 8;
+const stall_reset_max: u8 = 4;
+pub var rx_resets: u64 = 0;
+
 pub var net_dev: Device = .{};
 pub var net_ops: Ops = .{
     .dev_read32 = real_dev_read32,
@@ -1315,6 +1358,14 @@ pub fn net_rx_drain() void {
     const report = drain_delta(last, dev.rx_used.idx, &dev.rx_used.ring);
     dev.rx_last_used = dev.rx_used.idx;
     if (report.completed == 0) return;
+    // #3863: used-ring completion trace — one drain summary (last->idx,
+    // avail idx, posted mask, pokes) then one line per consumed element
+    // naming slot/descriptor/device-len/ethertype; ARP frames also name
+    // op+spa+tpa. `net log` dumps the ring: a solicited reply that never
+    // lands an RXC line died between the host pair and the used ring,
+    // one that lands without a learn is a guest-side drop — observed,
+    // not inferred.
+    net_log.log_fmt("RXD u{d}>{d} a{d} m{x:0>4} pk{d}", .{ last, dev.rx_used.idx, dev.rx_avail.idx, rx_posted_mask, rx_pokes });
 
     var c: u16 = 0;
     while (c < report.completed) : (c += 1) {
@@ -1322,13 +1373,37 @@ pub fn net_rx_drain() void {
         // The used element's id names the descriptor the device filled —
         // its buffer is rx_bufs[id] (the observed per-descriptor write).
         const id: usize = elem.id;
-        if (id >= queue_size) continue; // non-conforming device; skip honestly
+        if (id >= queue_size) {
+            net_log.log_fmt("RXC s{d} id{d} BADID l{d}", .{ (last +% c) % queue_size, elem.id, elem.len });
+            continue; // non-conforming device; skip honestly
+        }
         rx_posted_mask &= ~(@as(u32, 1) << @intCast(id));
         const buf = rx_bufs[id];
         ops.invalidate(@intFromPtr(buf), rx_buf_len);
         // The RX used-element `len` is the DEVICE-WRITTEN length (N1's TX
         // `len` was ~0).
         const dev_len: usize = @intCast(elem.len);
+        {
+            const et: u16 = if (dev_len >= rx_hdr_len + eth_hdr_len)
+                (@as(u16, buf[rx_hdr_len + 12]) << 8) | buf[rx_hdr_len + 13]
+            else
+                0;
+            net_log.log_fmt("RXC s{d} id{d} l{d} et{x:0>4}", .{ (last +% c) % queue_size, id, dev_len, et });
+            if (et == arp.ethertype_arp and dev_len >= rx_hdr_len + arp.arp_frame_len) {
+                const o = rx_hdr_len;
+                net_log.log_fmt("RXA op{d} spa{d}.{d}.{d}.{d} tpa{d}.{d}.{d}.{d}", .{
+                    (@as(u16, buf[o + 20]) << 8) | buf[o + 21],
+                    buf[o + 28],
+                    buf[o + 29],
+                    buf[o + 30],
+                    buf[o + 31],
+                    buf[o + 38],
+                    buf[o + 39],
+                    buf[o + 40],
+                    buf[o + 41],
+                });
+            }
+        }
         if (dev_len > rx_buf_len) {
             // Device overran the bound — honest record, drop, re-arm.
             rx_filtered +%= 1;
@@ -1503,15 +1578,104 @@ pub const NdpPoll = struct {
     promoted_ll: bool = false,
     promoted_g6: bool = false,
     rs_sent: bool = false, // a Router Solicitation went out this poll
+    rxq_reset: bool = false, // #3863: the stall recovery fired this poll
+    rxq_reset_fail: bool = false, // it fired and transport_init refused
+    rxq_stall: bool = false, // owed+silent window observed (once per epoch)
 };
 
 pub fn net_ndp_poll() NdpPoll {
     var ev: NdpPoll = .{};
     // Issue #3400: ARP shares the stamped tick — the caller stamps
     // `ndp.now_ticks` before this poll, and the same clock bounds the
-    // `pending_reply` learn window the RX drain checks.
+    // `pending` learn window the RX drain checks.
     arp.now_ticks = ndp.now_ticks;
     if (!net_ready) return ev;
+    // #3863: bounded RX doorbell — the VZ attachment reads the
+    // host->guest pair only when the device model is poked (the
+    // observed cold-boot stall class). While the queue is armed, every
+    // poll rings the queue-0 notify — the maximum-cadence kick the
+    // guest can offer; the measured cost is one 2-byte MMIO write per
+    // idle-loop iteration.
+    if (rx_armed) {
+        net_ops.notify(0);
+        rx_pokes +%= 1;
+        const dev = &net_dev;
+        net_ops.invalidate(@intFromPtr(&dev.rx_used), @sizeOf(VirtqUsed));
+        if (dev.rx_used.idx != rx_silent_seen) {
+            rx_silent_seen = dev.rx_used.idx;
+            rx_silent_polls = 0;
+            rx_reset_n = 0; // a completion ends the silent epoch
+            rxq_stall_logged = false;
+        } else {
+            rx_silent_polls +%= 1;
+        }
+        var owed = false;
+        for (&arp.pending) |*s| {
+            if (s.valid) {
+                owed = true;
+                break;
+            }
+        }
+        if (owed and rx_silent_polls >= stall_reset_polls and !rxq_stall_logged) {
+            // Once per silent epoch: prove the observable conditions
+            // were seen — the reset line (or its absence) then names
+            // the gate as tick/cap vs never-opened.
+            rxq_stall_logged = true;
+            ev.rxq_stall = true;
+        }
+        if (owed and rx_silent_polls >= stall_reset_polls and
+            rx_reset_n < stall_reset_max and
+            // The first attempt is ungated — `stall_reset_ticks` spaces
+            // RETRIES only. Gating the first on `now_ticks >= 8` made it
+            // unreachable on the gate: timer.ticks counts heartbeat
+            // services (~5 per whole run), not wall seconds — the a-01
+            // sampler showed owed=1 sil=2972 and the attempt still
+            // never ran.
+            (rx_reset_n == 0 or
+                ndp.now_ticks -| rx_reset_tick >= stall_reset_ticks))
+        {
+            rx_reset_tick = ndp.now_ticks;
+            rx_silent_polls = 0;
+            net_log.log_fmt("RXQ reset u={d} a={d}", .{ dev.rx_used.idx, dev.rx_avail.idx });
+            // Full device reset — the only recovery that also returns
+            // the DEVICE's internal avail/used positions to 0 (see the
+            // vars block). ARP/DHCP state lives outside the device
+            // structs, so the outstanding solicitation stays owed and
+            // a recovered reply still matches its slot.
+            rx_reset_n += 1; // the epoch bound counts attempts
+            if (transport_init(&net_ops, &net_dev, true)) {
+                rx_resets +%= 1;
+                ev.rxq_reset = true;
+                _ = net_rx_arm();
+            } else {
+                ev.rxq_reset_fail = true;
+                net_log.log_fmt("RXQ reset failed", .{});
+            }
+            // Read the used index as it stands: 0 after a real reset,
+            // the stalled value after a failed attempt — silence then
+            // continues counting from the attempt, never a spurious
+            // "completion" that would re-arm the epoch.
+            rx_silent_seen = dev.rx_used.idx;
+        }
+    }
+    // #3863: bounded ARP retransmit — an unanswered solicitation is
+    // re-requested every `arp.retransmit_polls` polls up to
+    // `arp.max_retries` sends. A solicited reply that rides the
+    // cold-segment delivery lag is still owed; re-asking keeps the
+    // request train alive (and each TX is a fresh kick at the
+    // attachment's pair->ring servicing).
+    for (&arp.pending) |*s| {
+        if (!s.valid) continue;
+        if (s.retries >= arp.max_retries) continue;
+        s.retry_polls += 1;
+        if (s.retry_polls < arp.retransmit_polls) continue;
+        s.retry_polls = 0;
+        var rlen: usize = 0;
+        // `note_request` inside build_request re-stamps the slot's
+        // window; `retries` is the bound, bumped send-or-fail.
+        if (net_arp_request(s.target, &rlen) == .ok) arp.requests_sent += 1;
+        s.retries += 1;
+    }
     while (ndp.dad_due()) |addr| {
         if (ipv6.promote(&addr)) {
             if (std.mem.eql(u8, &addr, &ipv6.link_local)) {
@@ -2271,9 +2435,9 @@ test "virtio_net: RX supply + used-ring drain + filter + FIFO over a mock" {
     while (i < 32) : (i += 1) delivered[rx_hdr_len + 14 + i] = @truncate(i);
     mock_rx_enqueue(delivered[0 .. rx_hdr_len + 46]); // header + 46-byte frame
 
-    // Arm: EVERY queue-0 descriptor is posted with its own buffer (M179b)
-    // and the kick delivers the pending frame into rx_bufs[0] — the used
-    // ring advances one element (device-written len = 58).
+    // Arm: EVERY queue-0 descriptor is posted with its own buffer
+    // (M179b) and the kick delivers the pending frame into rx_bufs[0] —
+    // the used ring advances one element (device-written len = 58).
     try std.testing.expect(net_rx_arm());
     try std.testing.expect(rx_armed);
     try std.testing.expectEqual(@as(u16, 1), mock_kicks);
@@ -2284,7 +2448,7 @@ test "virtio_net: RX supply + used-ring drain + filter + FIFO over a mock" {
     // Drain: the completion is accounted, the frame passes the broadcast
     // filter, and lands in the FIFO (raw device-written bytes — header
     // included). The drain's re-arm re-posts descriptor 0, so all
-    // queue_size buffers stay supplied (the pending list is empty — the
+    // buffers stay supplied (the pending list is empty — the
     // re-delivered avail entry is held by the device, not completed).
     net_rx_drain();
     try std.testing.expectEqual(@as(u64, 1), rx_frames);
@@ -2512,6 +2676,187 @@ test "virtio_net: RX burst — 12 back-to-back frames drain in order, every desc
     try std.testing.expectEqual(@as(usize, 0), fifo_occupancy());
 }
 
+test "virtio_net: #3863 RX doorbell — one queue-0 notify per poll while armed" {
+    const saved_ops = net_ops;
+    net_ops = mock_ops();
+    net_ready = true;
+    defer {
+        net_ops = saved_ops;
+        net_ready = false;
+    }
+    net_dev = .{};
+    net_mac = fallback_mac;
+    rx_fifo_head = 0;
+    rx_fifo_count = 0;
+    rx_frames = 0;
+    rx_bytes = 0;
+    rx_filtered = 0;
+    rx_mcast = 0;
+    rx_mdns = 0;
+    rx_mcast_filtered = 0;
+    rx_overflow = 0;
+    rx_posted_mask = 0;
+    rx_posted = 0;
+    rx_armed = false;
+    rx_pokes = 0;
+    ndp.now_ticks = 0;
+    arp.now_ticks = 0;
+    arp.pending = @as([arp.pending_slots]arp.Pending, @splat(@as(arp.Pending, .{})));
+    ipv6.link_local_state = .none; // no RS train / DAD probe this poll
+    mock_used_idx = 0;
+    mock_tx_used_idx = 0;
+    mock_rx_head = 0;
+    mock_rx_n = 0;
+    mock_rx_seen = 0;
+    mock_kicks = 0;
+
+    // Arm posts EVERY descriptor — no reserved poke descriptor: the
+    // repost scheme deadlocked on the first missed completion (no
+    // completion -> no repost -> no avail advance -> no service).
+    try std.testing.expect(net_rx_arm());
+    try std.testing.expectEqual(@as(u16, queue_size), net_dev.rx_avail.idx);
+    try std.testing.expectEqual(@as(u16, 1), mock_kicks);
+
+    // Every poll rings the doorbell once while the queue is armed — the
+    // maximum-cadence kick, tick-bounded or not (the measured live-gate
+    // evidence: a stalled pair->ring hop does not recover on a 1 Hz
+    // bare kick).
+    _ = net_ndp_poll();
+    try std.testing.expectEqual(@as(u64, 1), rx_pokes);
+    try std.testing.expectEqual(@as(u16, 2), mock_kicks);
+    _ = net_ndp_poll();
+    try std.testing.expectEqual(@as(u64, 2), rx_pokes);
+    try std.testing.expectEqual(@as(u16, 3), mock_kicks);
+
+    // The doorbell never touches the avail ring — buffers post and
+    // repost only through arm/drain.
+    try std.testing.expectEqual(@as(u16, queue_size), net_dev.rx_avail.idx);
+    try std.testing.expectEqual(@as(u16, queue_size), rx_posted_depth());
+}
+
+test "virtio_net: #3863 RXQ stall reset — silent ring + owed solicitation fires the bounded device reset" {
+    const saved_ops = net_ops;
+    net_ops = mock_ops();
+    net_ready = true;
+    const saved_common = net_common;
+    net_common = 1; // transport_init bails on 0
+    defer {
+        net_ops = saved_ops;
+        net_ready = false;
+        net_common = saved_common;
+        arp.pending = @as([arp.pending_slots]arp.Pending, @splat(@as(arp.Pending, .{})));
+        rx_silent_seen = 0;
+        rx_silent_polls = 0;
+        rx_reset_tick = 0;
+        rx_reset_n = 0;
+    }
+    net_dev = .{};
+    net_mac = fallback_mac;
+    rx_fifo_head = 0;
+    rx_fifo_count = 0;
+    rx_frames = 0;
+    rx_bytes = 0;
+    rx_filtered = 0;
+    rx_mcast = 0;
+    rx_mdns = 0;
+    rx_mcast_filtered = 0;
+    rx_overflow = 0;
+    rx_posted_mask = 0;
+    rx_posted = 0;
+    rx_armed = false;
+    rx_pokes = 0;
+    rx_silent_seen = 0;
+    rx_silent_polls = 0;
+    rx_reset_tick = 0;
+    rx_reset_n = 0;
+    rx_resets = 0;
+    // Ticks start below stall_reset_ticks — the live gate's observed
+    // scale (timer.ticks counts heartbeat services, ~5 per whole run):
+    // the FIRST attempt must still fire — retry spacing is tick-bound.
+    ndp.now_ticks = 5;
+    arp.now_ticks = 5;
+    arp.pending = @as([arp.pending_slots]arp.Pending, @splat(@as(arp.Pending, .{})));
+    arp.replies_learned = 0;
+    ipv6.link_local_state = .none; // no RS train / DAD probe this poll
+    mock_used_idx = 0;
+    mock_tx_used_idx = 0;
+    mock_rx_head = 0;
+    mock_rx_n = 0;
+    mock_rx_seen = 0;
+    mock_kicks = 0;
+    mock_cfg = @splat(0);
+    // The fake device's config space: offer VIRTIO_F_VERSION_1 (the
+    // feature word reads the same for both selectors, so low bit 0
+    // lands bit 32 in the high word) and queue_size for both queues,
+    // so transport_init's ladder/setup/DRIVER_OK all pass.
+    mock_cfg[0x04] = 0x01;
+    mock_cfg[0x18] = @truncate(queue_size);
+
+    try std.testing.expect(net_rx_arm());
+    // An outstanding solicitation — a reply is provably owed.
+    arp.pending[0] = .{ .valid = true, .target = .{ 10, 0, 0, 0x17 }, .tick = 5 };
+
+    // Silence accumulates under the mock (the device never completes);
+    // the reset must fire once the 512-poll window fills. c81b96dc's
+    // guard made this dead code: `now_ticks -| maxInt` saturates to 0,
+    // so the tick comparison was permanently false — the a-01 stall
+    // was unrecoverable by construction.
+    var fired = false;
+    var i: u32 = 0;
+    while (i < stall_reset_polls) : (i += 1) {
+        fired = fired or net_ndp_poll().rxq_reset;
+    }
+    try std.testing.expect(fired);
+    try std.testing.expectEqual(@as(u64, 1), rx_resets);
+    try std.testing.expect(rx_armed);
+    try std.testing.expectEqual(@as(u16, queue_size), net_dev.rx_avail.idx);
+
+    // The same silent window inside `stall_reset_ticks` must NOT
+    // refire — the bound is per tick, not per poll.
+    fired = false;
+    i = 0;
+    while (i < stall_reset_polls) : (i += 1) {
+        fired = fired or net_ndp_poll().rxq_reset;
+    }
+    try std.testing.expect(!fired);
+    try std.testing.expectEqual(@as(u64, 1), rx_resets);
+
+    // A full reset interval later the epoch bound allows another try.
+    ndp.now_ticks += stall_reset_ticks;
+    arp.now_ticks = ndp.now_ticks;
+    fired = false;
+    i = 0;
+    while (i < stall_reset_polls) : (i += 1) {
+        fired = fired or net_ndp_poll().rxq_reset;
+    }
+    try std.testing.expect(fired);
+    try std.testing.expectEqual(@as(u64, 2), rx_resets);
+
+    // The epoch cap bounds a true platform floor: exhausted retries
+    // stay silent without another reset until a completion lands.
+    rx_reset_n = stall_reset_max;
+    ndp.now_ticks += stall_reset_ticks;
+    arp.now_ticks = ndp.now_ticks;
+    fired = false;
+    i = 0;
+    while (i < stall_reset_polls * 2) : (i += 1) {
+        fired = fired or net_ndp_poll().rxq_reset;
+    }
+    try std.testing.expect(!fired);
+    try std.testing.expectEqual(@as(u64, 2), rx_resets);
+
+    // And a real completion ends the epoch — a device that starts
+    // completing again (post-reset recovery IS the goal) re-arms the
+    // silence window and the reset bound alike.
+    const epoch_end_frame = @as([42]u8, @splat(0xaa));
+    mock_rx_enqueue(&epoch_end_frame);
+    // One poll does both halves: the kick fills a posted buffer, the
+    // invalidate then replays used.idx = 1 — silence ends that poll.
+    _ = net_ndp_poll();
+    try std.testing.expectEqual(@as(u8, 0), rx_reset_n);
+    try std.testing.expectEqual(@as(u32, 0), rx_silent_polls);
+}
+
 test "virtio_net: RX ARP request is answered — byte-exact reply on TX over a mock" {
     const saved_ops = net_ops;
     net_ops = mock_ops();
@@ -2602,10 +2947,10 @@ test "virtio_net: RX ARP reply is learned into the bounded table" {
     arp.replies_learned = 0;
     arp.dropped = 0;
     arp.reply_tx_fail = 0;
-    arp.pending_reply = null;
+    arp.pending = @as([arp.pending_slots]arp.Pending, @splat(@as(arp.Pending, .{})));
     defer {
         arp.own_ip = .{ 0, 0, 0, 0 };
-        arp.pending_reply = null;
+        arp.pending = @as([arp.pending_slots]arp.Pending, @splat(@as(arp.Pending, .{})));
     }
     rx_fifo_head = 0;
     rx_fifo_count = 0;
@@ -2649,7 +2994,7 @@ test "virtio_net: RX ARP reply is learned into the bounded table" {
     // wire target) and its matching reply IS learned — no reply is sent.
     var out_len: usize = 0;
     try std.testing.expectEqual(SendResult.ok, net_arp_request(host_ip, &out_len));
-    try std.testing.expectEqualSlices(u8, &host_ip, &arp.pending_reply.?);
+    try std.testing.expect(arp.pendingFor(host_ip));
 
     // M179b: the descriptors all stay posted, so the reply's arrival is
     // an ASYNC device fill of an already-posted buffer — the mock's
@@ -2661,7 +3006,7 @@ test "virtio_net: RX ARP reply is learned into the bounded table" {
     try std.testing.expectEqual(@as(u64, 2), rx_frames);
     try std.testing.expectEqual(@as(u64, 0), arp.replies_sent); // no reply to a reply
     try std.testing.expectEqual(@as(u64, 1), arp.replies_learned);
-    try std.testing.expect(arp.pending_reply == null); // the request was consumed
+    try std.testing.expect(!arp.pendingFor(host_ip)); // the request was consumed
     try std.testing.expectEqual(@as(u64, 1), net_dev.tx_frames); // our request only
     try std.testing.expectEqualSlices(u8, &host_mac, &arp.lookup(host_ip).?);
 }
@@ -2825,6 +3170,18 @@ fn mock_cfg_read32(off: u32) u32 {
 }
 fn mock_cfg_write8(off: u32, value: u8) void {
     mock_cfg[off] = value;
+    // A device reset (status = 0) clears the fake device's per-queue
+    // positions too — #3863's whole premise is that only a DEVICE
+    // reset returns both sides to 0: without this the fake's used/seen
+    // indices keep counting from the stalled epoch while the driver
+    // re-initializes its rings from 0, and every post-reset send
+    // wedges in wait_tx_completion on a completion that already
+    // happened (used == last_used, avail rewound behind it).
+    if (off == 0x14 and value == 0) {
+        mock_used_idx = 0;
+        mock_tx_used_idx = 0;
+        mock_rx_seen = 0;
+    }
 }
 fn mock_cfg_write16(off: u32, value: u16) void {
     mock_cfg[off] = @truncate(value);
