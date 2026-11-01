@@ -583,15 +583,17 @@ pub var rx_claim_st: u8 = '?'; // its descriptor state: p/h/f — see the RXB li
 /// windows at every cadence.
 pub var rx_now_ns: u64 = 0;
 /// Scan cadence while a solicitation is owed — timely pickup without a
-/// per-poll DMA-buffer scan at racing poll rates.
-const scan_gap_ns: u64 = 250_000_000;
+/// per-poll DMA-buffer scan at racing poll rates. The typed legs run
+/// ~20-100 ms end to end (session-9 `ag=` evidence), so the cadence
+/// must sit inside that window.
+const scan_gap_ns: u64 = 25_000_000;
 var rx_scan_ns: u64 = 0;
 /// How long an owed epoch may run with every buffer scanned empty
 /// before the verdict is a VZ-side drop — a healthy reply lands inside
-/// a few ms over the hub; the gate's typed legs stream in ~1-3 s
-/// total, so the bound must open while a later solicitation can still
-/// benefit. Retry spacing for the reset itself stays wider.
-const loss_due_ns: u64 = 1_000_000_000;
+/// ~1-10 ms over the hub; 50 ms of provable absence is the loss. The
+/// scan-first ordering keeps it honest: a reply that landed between
+/// evals is claimed, never reset on. Retry spacing stays wider.
+const loss_due_ns: u64 = 50_000_000;
 const loss_spacing_ns: u64 = 4_000_000_000;
 var rx_loss_reset_ns: u64 = 0;
 
@@ -1751,6 +1753,19 @@ fn rx_scan_claim_reply(target: [4]u8) ?u16 {
 /// epoch budget (the caller bounds it); `rx_loss_reset_ns` spaces the
 /// attempts in wall time. Post-reset accounting measures fresh from
 /// the attempt.
+/// After a recovered channel there is no reply left to land — the
+/// frames that died are gone (session 9, a-03: probe+reset fired and
+/// learn stayed 0 because every request had already been sent). Re-ask
+/// every outstanding solicitation once per reset; the count is bounded
+/// by the reset budgets themselves.
+fn rx_resend_owed() void {
+    for (&arp.pending) |*s| {
+        if (!s.valid) continue;
+        var rlen: usize = 0;
+        if (net_arp_request(s.target, &rlen) == .ok) arp.requests_sent += 1;
+    }
+}
+
 fn rx_loss_reset(ev: *NdpPoll) void {
     net_log.log_fmt("RXQ loss-reset u={d} a={d}", .{ net_dev.rx_used.idx, net_dev.rx_avail.idx });
     rx_loss_reset_ns = rx_now_ns;
@@ -1759,6 +1774,7 @@ fn rx_loss_reset(ev: *NdpPoll) void {
         rx_resets +%= 1;
         ev.rxq_reset = true;
         _ = net_rx_arm();
+        rx_resend_owed();
     } else {
         ev.rxq_reset_fail = true;
         net_log.log_fmt("RXQ loss-reset failed", .{});
@@ -2023,6 +2039,7 @@ pub fn net_ndp_poll() NdpPoll {
                     rx_resets +%= 1;
                     ev.rxq_reset = true;
                     _ = net_rx_arm();
+                    rx_resend_owed();
                 } else {
                     ev.rxq_reset_fail = true;
                     net_log.log_fmt("RXQ reset failed", .{});
