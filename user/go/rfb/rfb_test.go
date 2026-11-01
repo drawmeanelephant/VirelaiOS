@@ -109,6 +109,31 @@ func TestHandshakeVectors(t *testing.T) {
 	}
 }
 
+// M213c: an outer VeNCrypt layer completes version+security itself and
+// hands the codec the authenticated channel at ClientInit. The resumed
+// write is ServerInit only — banner, security bytes, and SecurityResult
+// were the outer layer's to send.
+func TestHandshakeEstablishedResumesAtClientInit(t *testing.T) {
+	s, out := session(t, []byte("\x01"), 4, 2)
+	shared, err := s.HandshakeEstablished()
+	if err != nil || !shared {
+		t.Fatalf("HandshakeEstablished = %v, %v", shared, err)
+	}
+	pf := DefaultPixelFormat.wire()
+	want := append([]byte{0, 4, 0, 2}, pf[:]...)
+	want = append(want, 0, 0, 0, 7)
+	want = append(want, "Virelai"...)
+	if got := out.Bytes(); !bytes.Equal(got, want) {
+		t.Fatalf("resumed server write %x, want %x", got, want)
+	}
+	if _, err := s.Handshake(); !errors.Is(err, ErrProtocol) {
+		t.Fatalf("Handshake after resume: %v", err)
+	}
+	if _, err := s.HandshakeEstablished(); !errors.Is(err, ErrProtocol) {
+		t.Fatalf("repeated resume: %v", err)
+	}
+}
+
 func TestRefusalVector(t *testing.T) {
 	s, out := session(t, []byte("RFB 003.008\n\x02"), 4, 2)
 	if _, err := s.Handshake(); !errors.Is(err, ErrProtocol) {
