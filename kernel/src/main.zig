@@ -1535,73 +1535,50 @@ fn serial_lock_release() void {
     serial_lock.unlock(serial_lock_daif[smp.core_id()]);
 }
 
-/// Whether the serial cursor sits at the start of a line right now. Every
-/// byte reaches the TX through `uart_putc`, so tracking the delimiter here
-/// captures all output (the kernel banner, the shell's prompt, process
-/// stdout, tracer lines) from one choke point. A process launched by an
-/// async exec can write while the shell is idle at a live prompt (`virelai> `
-/// drawn, cursor mid-line); `uart_write_as` consults this flag so foreign
-/// output starts on its own line instead of merging onto the prompt (which
-/// swallowed the `elf: hello from HELLO.ELF` marker in the strace gate).
-var serial_at_bol: bool = true;
-
-/// WHOSE content the open (mid-line) serial line belongs to — `.kernel`
-/// for shell/monitor/kernel output written through `uart_puts`, `.proc(pid)`
-/// for a user program's sys_write through `process_stdout`. #2649 (the
-/// M119f K-pass console/marker defects): a write arriving while a
-/// DIFFERENT writer's line is mid-composition must close that line with a
-/// newline first — bytes injected into a foreign open line fuse
-/// irreversibly (no boundary to rejoin on; observed as `smp:` drain tails
-/// fused onto an app's open line and marker halves fused when two writers
-/// shared one physical line), while closing it keeps every physical line
-/// a clean, recoverable unit.
+/// M213d (issue #3879): per-writer line assembly for the whole serial path.
+/// Every public write — `uart_puts`, `process_stdout`, the standalone
+/// `uart_putc` — appends to the writer's stage in `serial_lines` instead of
+/// the byte sink; a line reaches the wire ONLY when it completes, atomically
+/// inside this call's serial_lock hold, so a foreign write lands BETWEEN the
+/// writer's lines and never inside one (the #1972 residual: kernel lines
+/// inside a process's multi-`puts` write, a whole line inside the prompt's
+/// pieces). A staged partial (the prompt, typed echo) is published whole by
+/// `serial_flush_partials` at the idle seams — never by a foreign write —
+/// and keeps the #2649 open-line ownership rule once on the wire.
 ///
-/// This generalizes the claim-1714 fresh-line prepend, which only guarded
-/// process-vs-prompt writes (and only through `process_stdout`): kernel
-/// report lines used to land mid-composition on an app's open line
-/// because nothing checked ownership on the kernel side. Owner identity
-/// keeps the earlier pid rule's subtleties: a program composing one line
-/// across several sys_write calls keeps its line open (the USER.BIN argv
-/// preamble; the un-gated prepend split it, breaking verify-live-args), a
-/// DIFFERENT pid must fresh-line (the HF4APP.ELF marker → DESKTOP.BIN
-/// merge), a newline always clears ownership (a terminated line never
-/// continues), and a kernel-side partial write (the prompt) owns the line
-/// so the next process write fresh-lines.
-const SerialLineOwner = union(enum) {
-    kernel,
-    proc: usize,
-};
-var serial_line_owner: ?SerialLineOwner = null;
+/// WHOSE content an open line belongs to — `.kernel` for shell/monitor/
+/// kernel output written through `uart_puts`, `.proc(pid)` for a user
+/// program's sys_write through `process_stdout`. Owner identity keeps the
+/// earlier pid rule's subtleties: a program composing one line across
+/// several sys_write calls keeps its line open (the USER.BIN argv
+/// preamble), a DIFFERENT pid must fresh-line (the HF4APP.ELF marker →
+/// DESKTOP.BIN merge), a newline always clears ownership (a terminated
+/// line never continues), and a kernel-side partial write (the prompt)
+/// owns the line so the next process write fresh-lines.
+const SerialLineOwner = virtio_console.LineOwner;
 
-fn serial_owner_is(a: ?SerialLineOwner, b: SerialLineOwner) bool {
-    const o = a orelse return false;
-    if (std.meta.activeTag(o) != std.meta.activeTag(b)) return false;
-    return switch (o) {
-        .kernel => true,
-        .proc => |p| p == b.proc,
-    };
-}
+/// The staging table itself (unit + host tests live in virtio_console.zig).
+/// `smp.max_cores` kernel stages — one per core, never contended — plus 8
+/// process stages; a process whose line cannot claim a slot is dropped
+/// whole and counted (`serial: line-dropped total=`).
+var serial_lines = virtio_console.SerialLines(smp.max_cores, 8, virtio_console.line_stage_cap){};
 
 fn uart_putc(byte: u8) void {
-    // Cross-core serial TX (SMP user tasks): a standalone putc (uart_hex
-    // and friends) is a kernel-class one-byte write and takes the lock +
-    // open-line rule through uart_write_as; calls already under a held
-    // lock (the uart_write_as byte loop) go straight to the sink. The
-    // standalone form does NOT tail-flush — per-byte writers rely on the
-    // leaf's own newline/buffer-full flush (16 flushed descriptors per
-    // hex digit would be the regression).
-    if (!serial_lock_held()) {
-        uart_write_as_mode(.kernel, &[_]u8{byte}, false);
-        return;
-    }
+    // A standalone putc (uart_hex and friends) is a kernel-class write and
+    // stages like any other — the byte joins the caller's in-progress line
+    // and reaches the wire when that line completes (or at the idle-seam
+    // partial flush).
+    uart_write_as(.kernel, &[_]u8{byte});
+}
+
+/// The byte sink under the line stage: called ONLY through `serial_emit`
+/// while the serial lock is held, for bytes the stage has decided to emit.
+/// Runs post-staging, so the bytes here are the emitted stream — the same
+/// content tombstones and the console tee always captured.
+fn uart_sink_putc(byte: u8) void {
     // Arc5 #243: capture every serial byte into the ring buffer so
     // crash tombstones can include the last 512 bytes of serial output.
     serial_ring.append(&[_]u8{byte});
-    if (byte == '\n' or byte == '\r') {
-        serial_at_bol = true;
-    } else {
-        serial_at_bol = false;
-    }
     // Claim 0680 (issue #523 item 3): when the host armed the structured
     // console, every console byte is DUPLICATED onto custom-virtio queue 1
     // (line-buffered; partial lines flush from the idle seam). One cheap
@@ -1657,6 +1634,9 @@ fn sealPromptWrite(_: ?*anyopaque, bytes: []const u8) void {
 
 fn sealPromptRead(_: ?*anyopaque) ?u8 {
     if (console_kind != .virtio) return null;
+    // Publish staged partials — the unseal prompt itself has no newline —
+    // before polling for the byte it waits on.
+    serial_flush_partials(true);
     return virtio_console.virtio_read_byte();
 }
 
@@ -1777,49 +1757,57 @@ fn blk_probe_fail(stage: []const u8, e: virtio_blk.BlkError) void {
 }
 
 pub fn uart_puts(text: []const u8) void {
-    uart_write_as_mode(.kernel, text, true);
+    uart_write_as(.kernel, text);
 }
 
+/// One serial write under the TX lock, carrying the writer's identity into
+/// the line stage (see `serial_lines`). The whole call — stage append, any
+/// completed line's emission, the closing-newline and ownership rules the
+/// stage applies — is one critical section, so writers on different cores
+/// interleave only at line boundaries: a line reaches the wire whole or is
+/// counted-dropped whole. A write that ends mid-line stays staged; nothing
+/// foreign can land inside it. Reentrant calls (a nested puts under a held
+/// lock) append in place — the outer write owns the line state.
 fn uart_write_as(owner: SerialLineOwner, text: []const u8) void {
-    uart_write_as_mode(owner, text, true);
-}
-
-/// One serial write under the TX lock, carrying the writer's identity so
-/// the open-line ownership rule applies uniformly: a write that arrives
-/// while a DIFFERENT writer's line is mid-composition closes that line
-/// with a newline first — foreign bytes can then never fuse into it
-/// (see `serial_line_owner`). The check, the close, the bytes, and the
-/// ownership update all run inside one critical section, so writers on
-/// different cores interleave only at line boundaries. A write that ends
-/// mid-line leaves ownership to its writer; one that ends a line frees it.
-/// Reentrant calls (a nested puts under a held lock) append in place —
-/// the outer write owns the line state, and closing it mid-composition
-/// would split the very write being interrupted. `tail_flush` carries the
-/// claim-0013 prompt rule (a newline-less write must still reach the
-/// host); standalone `uart_putc` passes false so per-byte callers stay on
-/// the leaf's own newline/buffer-full flush cadence.
-fn uart_write_as_mode(owner: SerialLineOwner, text: []const u8, tail_flush: bool) void {
-    // The whole write is one critical section so a secondary core's
-    // output never interleaves byte-wise with core 0's (holder-tracked:
-    // a fault dump or nested puts on the same core proceeds).
     const reentrant = serial_lock_held();
     if (!reentrant) serial_lock_acquire();
     defer if (!reentrant) serial_lock_release();
-    if (!reentrant and text.len > 0 and !serial_at_bol and !serial_owner_is(serial_line_owner, owner)) uart_putc('\n');
-    for (text) |byte| uart_putc(byte);
-    if (!reentrant and text.len > 0) {
-        serial_line_owner = switch (text[text.len - 1]) {
-            '\n', '\r' => null,
-            else => owner,
-        };
+    serial_lines.write(.{ .owner = owner, .core = smp.core_id() }, text, null, serial_emit);
+    serial_dev_flush();
+}
+
+/// The emit callback the stage drives: emitted bursts push to the byte
+/// sink under the held lock. Claim 0013's prompt rule lives here — a
+/// newline-less published burst still reaches the host because
+/// `serial_dev_flush` runs after every stage call.
+fn serial_emit(_: ?*anyopaque, bytes: []const u8) void {
+    for (bytes) |byte| uart_sink_putc(byte);
+}
+
+/// Push any device-buffered emitted bytes to the host. In nvram-console
+/// builds the virtio transport is never touched; the NVRAM sink does its
+/// own newline/buffer-flush batching.
+fn serial_dev_flush() void {
+    if (comptime build_options.nvram_console) {
+        nvram_console.flush();
+        return;
     }
-    // Claim 0013: a virtio-console line without a trailing newline (e.g. the
-    // shell's prompt) must still reach the host — flush any buffered bytes.
-    // In nvram-console builds the virtio transport is never touched; the
-    // NVRAM sink does its own newline/buffer-flush batching.
-    if (comptime !build_options.nvram_console) {
-        if (tail_flush and console_kind == .virtio and virtio_console.vp_tx_len > 0) virtio_console.virtio_pci_flush();
-    }
+    if (console_kind == .virtio and virtio_console.vp_tx_len > 0) virtio_console.virtio_pci_flush();
+}
+
+/// Publish every staged partial as the wire's open line — the idle-seam
+/// flush. `include_shell_core` false skips the shell's own core-0 kernel
+/// stage: the idle task calls it that way so a core-0 composition
+/// preempted mid-line never has its partial published by another task —
+/// core-0 partials publish only from the shell task's own seams
+/// (readByteFn, sealPromptRead, the park path), which cannot run while
+/// that task is mid-composition.
+fn serial_flush_partials(include_shell_core: bool) void {
+    const reentrant = serial_lock_held();
+    if (!reentrant) serial_lock_acquire();
+    defer if (!reentrant) serial_lock_release();
+    serial_lines.flush_partials(if (include_shell_core) null else @as(?usize, 0), null, serial_emit);
+    serial_dev_flush();
 }
 
 /// M20-U11: serial side of the missing-glyph debug log (the framebuffer
@@ -1878,6 +1866,9 @@ fn layout_name(kind: Kind) []const u8 {
 }
 
 fn halt_forever() noreturn {
+    // Park-path safety net: publish any staged partial (a banner tail, the
+    // no-RX prompt) so the last writes are never stranded in staging.
+    serial_flush_partials(true);
     while (true) asm volatile ("wfe");
 }
 
@@ -2012,6 +2003,11 @@ fn cv_idle_input_pump() void {
 fn idle_pump() void {
     virtio_balloon.balloon_poll();
     cv_idle_input_pump();
+    // Publish staged partials — but NOT the shell's own core-0 kernel
+    // stage: this runs on the idle task, which can interleave with a
+    // core-0 composition the shell task is still assembling. Core-0
+    // partials publish from the shell task's own seams instead.
+    serial_flush_partials(false);
 }
 
 fn cv_input_dispatch(rep: []const u8) void {
@@ -2600,8 +2596,10 @@ const M15Console = struct {
                 self.script_pos += 1;
                 return byte;
             }
-            // Script exhausted: persist any buffered output (the trailing
-            // prompt has no newline) on the first idle poll, then stay idle.
+            // Script exhausted: publish staged partials (the trailing
+            // prompt has no newline) on the first idle poll, then persist
+            // any buffered output, then stay idle.
+            serial_flush_partials(true);
             nvram_console.flush();
             return null;
         }
@@ -2622,6 +2620,10 @@ const M15Console = struct {
         // input pump so the freshest composite is what ships.
         if (virtio_custom.snap_pending) virtio_custom.service_snapshot();
         virtio_custom.console_tee_flush_partial();
+        // Publish staged partials (the drawn prompt, echoed input) — this
+        // runs ON the shell task, so the core-0 kernel stage is safe to
+        // include: the shell can never poll while it is mid-composition.
+        serial_flush_partials(true);
         if (console_kind == .virtio) return virtio_console.virtio_read_byte();
         return null;
     }
