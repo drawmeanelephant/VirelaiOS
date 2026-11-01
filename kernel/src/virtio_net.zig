@@ -1625,7 +1625,14 @@ pub fn net_ndp_poll() NdpPoll {
         }
         if (owed and rx_silent_polls >= stall_reset_polls and
             rx_reset_n < stall_reset_max and
-            ndp.now_ticks -| rx_reset_tick >= stall_reset_ticks)
+            // The first attempt is ungated — `stall_reset_ticks` spaces
+            // RETRIES only. Gating the first on `now_ticks >= 8` made it
+            // unreachable on the gate: timer.ticks counts heartbeat
+            // services (~5 per whole run), not wall seconds — the a-01
+            // sampler showed owed=1 sil=2972 and the attempt still
+            // never ran.
+            (rx_reset_n == 0 or
+             ndp.now_ticks -| rx_reset_tick >= stall_reset_ticks))
         {
             rx_reset_tick = ndp.now_ticks;
             rx_silent_polls = 0;
@@ -2763,8 +2770,11 @@ test "virtio_net: #3863 RXQ stall reset — silent ring + owed solicitation fire
     rx_reset_tick = 0;
     rx_reset_n = 0;
     rx_resets = 0;
-    ndp.now_ticks = 64;
-    arp.now_ticks = 64;
+    // Ticks start below stall_reset_ticks — the live gate's observed
+    // scale (timer.ticks counts heartbeat services, ~5 per whole run):
+    // the FIRST attempt must still fire — retry spacing is tick-bound.
+    ndp.now_ticks = 5;
+    arp.now_ticks = 5;
     arp.pending = @as([arp.pending_slots]arp.Pending, @splat(@as(arp.Pending, .{})));
     arp.replies_learned = 0;
     ipv6.link_local_state = .none; // no RS train / DAD probe this poll
@@ -2784,7 +2794,7 @@ test "virtio_net: #3863 RXQ stall reset — silent ring + owed solicitation fire
 
     try std.testing.expect(net_rx_arm());
     // An outstanding solicitation — a reply is provably owed.
-    arp.pending[0] = .{ .valid = true, .target = .{ 10, 0, 0, 0x17 }, .tick = 64 };
+    arp.pending[0] = .{ .valid = true, .target = .{ 10, 0, 0, 0x17 }, .tick = 5 };
 
     // Silence accumulates under the mock (the device never completes);
     // the reset must fire once the 512-poll window fills. c81b96dc's
