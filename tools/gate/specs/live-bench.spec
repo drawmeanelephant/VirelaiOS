@@ -1567,13 +1567,13 @@ v = benchlib.measure("net-tx-bulk", ser)
 if v is None:
     sys.exit("bench: no `gonetrate: rate` line — a hung stream is a bug, "
              "not a retryable flake")
-m = re.search(r"gonetrate: fnv 0x([0-9a-f]{{16}})", ser)
+m = re.search(r"gonetrate: fnv 0x([0-9a-f]{16})", ser)
 if not m:
     sys.exit("bench: no `gonetrate: fnv` line — the checksum never printed")
 if m.group(1) != netrate.expected_hex():
     sys.exit("bench: tx fnv %s != pattern fnv %s — the guest hashed bytes "
              "that are not the stream" % (m.group(1), netrate.expected_hex()))
-idx = {{"nettxbulka": 1, "nettxbulkb": 2, "nettxbulkc": 3}}.get(
+idx = {"nettxbulka": 1, "nettxbulkb": 2, "nettxbulkc": 3}.get(
     os.environ["VG_TAG"].split("-")[0], 1)
 logp = os.path.join(os.environ["RUN_DIR"], "netsink-bulk.log")
 deadline = time.time() + 60
@@ -1620,13 +1620,13 @@ v = benchlib.measure("net-tx-bulk", ser)
 if v is None:
     sys.exit("bench: no `gonetrate: rate` line — a hung stream is a bug, "
              "not a retryable flake")
-m = re.search(r"gonetrate: fnv 0x([0-9a-f]{{16}})", ser)
+m = re.search(r"gonetrate: fnv 0x([0-9a-f]{16})", ser)
 if not m:
     sys.exit("bench: no `gonetrate: fnv` line — the checksum never printed")
 if m.group(1) != netrate.expected_hex():
     sys.exit("bench: tx fnv %s != pattern fnv %s — the guest hashed bytes "
              "that are not the stream" % (m.group(1), netrate.expected_hex()))
-idx = {{"nettxbulka": 1, "nettxbulkb": 2, "nettxbulkc": 3}}.get(
+idx = {"nettxbulka": 1, "nettxbulkb": 2, "nettxbulkc": 3}.get(
     os.environ["VG_TAG"].split("-")[0], 1)
 logp = os.path.join(os.environ["RUN_DIR"], "netsink-bulk.log")
 deadline = time.time() + 60
@@ -1673,13 +1673,13 @@ v = benchlib.measure("net-tx-bulk", ser)
 if v is None:
     sys.exit("bench: no `gonetrate: rate` line — a hung stream is a bug, "
              "not a retryable flake")
-m = re.search(r"gonetrate: fnv 0x([0-9a-f]{{16}})", ser)
+m = re.search(r"gonetrate: fnv 0x([0-9a-f]{16})", ser)
 if not m:
     sys.exit("bench: no `gonetrate: fnv` line — the checksum never printed")
 if m.group(1) != netrate.expected_hex():
     sys.exit("bench: tx fnv %s != pattern fnv %s — the guest hashed bytes "
              "that are not the stream" % (m.group(1), netrate.expected_hex()))
-idx = {{"nettxbulka": 1, "nettxbulkb": 2, "nettxbulkc": 3}}.get(
+idx = {"nettxbulka": 1, "nettxbulkb": 2, "nettxbulkc": 3}.get(
     os.environ["VG_TAG"].split("-")[0], 1)
 logp = os.path.join(os.environ["RUN_DIR"], "netsink-bulk.log")
 deadline = time.time() + 60
