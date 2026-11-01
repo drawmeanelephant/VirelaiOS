@@ -586,6 +586,10 @@ pub fn print_ip6_or_dash(m: *Monitor, addr: virtio_net.ipv6.Addr, set: bool) voi
 /// the DAD promotes + conflicts as they happen, one line per event —
 /// the live gate's deterministic stage markers.
 pub fn net_ndp_autonomous(m: *Monitor) void {
+    // #3863: stamp the RX path's wall clock — the buffer-scan cadence
+    // and the loss-reset bounds measure real nanoseconds (the tick
+    // clock is a sparse heartbeat count on this platform).
+    virtio_net.rx_now_ns = timer.now_ns();
     const ev = virtio_net.net_ndp_poll();
     var buf: [39]u8 = undefined;
     if (ev.promoted_ll) {

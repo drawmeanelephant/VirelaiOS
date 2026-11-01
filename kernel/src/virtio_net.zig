@@ -547,31 +547,36 @@ pub var rx_edge_probes: u64 = 0;
 /// way.
 pub var rx_loss_resets: u8 = 0;
 const loss_reset_max: u8 = 2;
-/// The owed epoch's used-ring stamp: `net_ndp_poll` records used.idx
-/// when the first solicitation opens and clears on the last close. A
-/// wedge under TOTAL silence belongs to the stall watchdog above; the
-/// exhausted-train reset is for the PARTIAL signature — the ring kept
-/// completing other frames while the solicited reply never landed, so
-/// it fires only when used.idx moved inside this epoch.
+/// The owed epoch's wall-clock stamp: `net_ndp_poll` records
+/// `rx_now_ns` when the first solicitation opens and clears the flag
+/// on the last close. `rx_owed_ns` ages the epoch — an epoch past
+/// `loss_due_ns` with buffers scanned empty is the provable loss the
+/// bounded reset answers.
 var rx_owed_open: bool = false;
-var rx_owed_used: u16 = 0;
+var rx_owed_ns: u64 = 0;
 pub var rx_buf_claims: u64 = 0;
 pub var rx_claim_desc: u16 = 0; // buffer index of the last claim (serial evidence)
 pub var rx_claim_st: u8 = '?'; // its descriptor state: p/h/f — see the RXB line
-/// Scan + overdue-reset cadence: once per stamped tick while a
-/// solicitation is owed. Poll-count cadence cannot be trusted — the
-/// a-01 artifacts show the poll loop running ~once per typed console
-/// line during the s2 legs (pk advanced ~1 per `net` report), so a
-/// 64-poll retransmit boundary may never exist inside a leg window,
-/// while the reply it should claim sits in a buffer the used ring
-/// never named. Wall-time matches the leg windows; the same stamp
-/// gates the overdue reset below.
-var rx_scan_tick: u64 = 0;
-/// How long a solicitation may outlive its last send before the
-/// buffers-scanned-empty verdict calls it a VZ-side drop — a healthy
-/// reply lands well inside one tick; `loss_due_ticks` is far past it
-/// and far inside the 240-tick pending window.
-const loss_due_ticks: u64 = 6;
+/// The wall-clock the caller stamps each poll (the `ndp.now_ticks`
+/// pattern — `timer.now_ns()` on the real path). The tick clock cannot
+/// be trusted here: `timer.ticks` counts sparse heartbeat services —
+/// ~5-9 in a whole vm-a gate run observed — so a bound in ticks may
+/// never open inside a leg window. Poll-count cadence cannot be
+/// trusted either: the a-01 artifacts show polls running ~once per
+/// typed console line during the s2 legs (pk advanced ~1 per `net`
+/// report) and ~30k/s during idle waits. Wall ns matches the leg
+/// windows at every cadence.
+pub var rx_now_ns: u64 = 0;
+/// Scan cadence while a solicitation is owed — timely pickup without a
+/// per-poll DMA-buffer scan at racing poll rates.
+const scan_gap_ns: u64 = 250_000_000;
+var rx_scan_ns: u64 = 0;
+/// How long an owed epoch may run with every buffer scanned empty
+/// before the verdict is a VZ-side drop — a healthy reply lands far
+/// inside this; it is also the retry spacing for the reset itself.
+const loss_due_ns: u64 = 4_000_000_000;
+const loss_spacing_ns: u64 = 4_000_000_000;
+var rx_loss_reset_ns: u64 = 0;
 
 /// #3863: opt-in per-completion net_log trace (`net rxtrace on|off`).
 /// The RXD/RXC/RXA forensic lines earned their keep isolating the
@@ -1726,12 +1731,12 @@ fn rx_scan_claim_reply(target: [4]u8) ?u16 {
 /// #3863: the miss-half recovery — the bounded bookkeeping reset for a
 /// solicitation whose replies provably never landed anywhere the guest
 /// can see (buffers scanned empty). `rx_loss_resets` is the per-owed-
-/// epoch budget (the caller bounds it); `rx_reset_tick` is the shared
-/// retry stamp so the silent-epoch and loss triggers space each other
-/// too. Post-reset accounting measures fresh from the attempt.
+/// epoch budget (the caller bounds it); `rx_loss_reset_ns` spaces the
+/// attempts in wall time. Post-reset accounting measures fresh from
+/// the attempt.
 fn rx_loss_reset(ev: *NdpPoll) void {
     net_log.log_fmt("RXQ loss-reset u={d} a={d}", .{ net_dev.rx_used.idx, net_dev.rx_avail.idx });
-    rx_reset_tick = ndp.now_ticks;
+    rx_loss_reset_ns = rx_now_ns;
     rx_loss_resets +%= 1;
     if (transport_init(&net_ops, &net_dev, true)) {
         rx_resets +%= 1;
@@ -1877,15 +1882,13 @@ pub fn net_ndp_poll() NdpPoll {
     // permanent wedge cannot re-qualify forever (the rx_reset_n
     // re-arm-on-any-completion bound would, which is exactly why the
     // partial-loss class needs its own counter). The open stamps the
-    // used ring so the exhausted-train reset can tell partial loss
-    // (completions flowed inside the epoch) from total silence (the
-    // watchdog's case).
+    // wall clock so the overdue bound ages the whole epoch.
     if (!owed) {
         rx_loss_resets = 0;
         rx_owed_open = false;
     } else if (!rx_owed_open) {
         rx_owed_open = true;
-        rx_owed_used = net_dev.rx_used.idx;
+        rx_owed_ns = rx_now_ns;
     }
     // #3863: bounded RX doorbell — the VZ attachment reads the
     // host->guest pair only when the device model is poked (the
@@ -2050,39 +2053,29 @@ pub fn net_ndp_poll() NdpPoll {
         // miss half of the partial-loss class: VZ dropped the frames
         // before any DMA. The full transport_init reset is the proven
         // coherent recovery for a wedge in its bookkeeping, bounded
-        // `loss_reset_max` per owed epoch and spaced `stall_reset_ticks`
-        // like the silent-epoch retries (the session-7 lesson — resets
-        // under a live ring eat read-but-uncompleted datagrams, so the
-        // budget is per-epoch, not per-completion). The used-moved gate
-        // keeps total silence for the watchdog above: this trigger is
-        // the PARTIAL signature only (other frames completed inside the
-        // owed epoch while the solicited one never landed).
+        // `loss_reset_max` per owed epoch and spaced `loss_spacing_ns`
+        // in wall time (the session-7 lesson — resets under a live ring
+        // eat read-but-uncompleted datagrams, so the budget is
+        // per-epoch, not per-completion).
         if (rx_armed and rx_loss_resets < loss_reset_max and
-            net_dev.rx_used.idx != rx_owed_used and
-            // First attempt ungated — `rx_reset_tick` starts at 0, so
-            // `now_ticks -| 0 >= 8` would make the trigger unreachable
-            // while `timer.ticks` is still small early in boot (the
-            // session-6 dead-guard class). The shared stamp spaces
-            // retries against BOTH reset triggers.
+            rx_now_ns -| rx_owed_ns >= loss_due_ns and
             (rx_loss_resets == 0 or
-                ndp.now_ticks -| rx_reset_tick >= stall_reset_ticks))
+                rx_now_ns -| rx_loss_reset_ns >= loss_spacing_ns))
         {
             rx_loss_reset(&ev);
         }
     }
-    // #3863: the crawl-cadence pickup — at console-typed leg rates the
-    // poll loop runs ~once per processed line (the a-01 artifacts' pk
-    // deltas), so the 64-poll retransmit boundary may never exist
-    // inside a leg window while solicited replies still die between
-    // the pair read and the used ring. Once per stamped tick, scan
-    // every outstanding slot AND evaluate the overdue miss-half bound —
-    // wall-time cadence, matching the leg windows. `s.tick` re-stamps
-    // on every send, so `now_ticks -| s.tick` measures silence since
-    // the last request — a healthy reply lands inside one tick;
-    // `loss_due_ticks` of nothing anywhere (not the ring, not a
-    // buffer) is the provable loss.
-    if (owed and ndp.now_ticks != rx_scan_tick) {
-        rx_scan_tick = ndp.now_ticks;
+    // #3863: the wall-clock pickup — poll cadence varies four orders of
+    // magnitude inside one leg (~1 poll per typed console line vs
+    // ~30k/s in idle waits, the a-01 pk deltas) and `timer.ticks` is a
+    // sparse heartbeat count on this platform (~5-9 in a whole vm-a
+    // run), so neither counts anything reliably. Every `scan_gap_ns`
+    // while a solicitation is owed, scan every outstanding slot AND
+    // evaluate the overdue bound — the epoch aged `loss_due_ns` with
+    // buffers scanned empty is the provable VZ-side loss at any poll
+    // cadence.
+    if (owed and rx_now_ns -| rx_scan_ns >= scan_gap_ns) {
+        rx_scan_ns = rx_now_ns;
         for (&arp.pending) |*s| {
             if (!s.valid) continue;
             if (rx_scan_claim_reply(s.target)) |k| {
@@ -2090,11 +2083,10 @@ pub fn net_ndp_poll() NdpPoll {
                 ev.rxb_claim = true;
                 continue;
             }
-            if (ndp.now_ticks -| s.tick >= loss_due_ticks and
+            if (rx_now_ns -| rx_owed_ns >= loss_due_ns and
                 rx_armed and rx_loss_resets < loss_reset_max and
-                net_dev.rx_used.idx != rx_owed_used and
                 (rx_loss_resets == 0 or
-                    ndp.now_ticks -| rx_reset_tick >= stall_reset_ticks))
+                    rx_now_ns -| rx_loss_reset_ns >= loss_spacing_ns))
             {
                 rx_loss_reset(&ev);
             }
@@ -3200,6 +3192,8 @@ test "virtio_net: #3863 RXQ stall reset — silent ring + owed solicitation fire
         rx_progress_tick = 0;
         rx_reset_tick = 0;
         rx_reset_n = 0;
+        rx_loss_resets = 0;
+        rx_owed_open = false;
     }
     net_dev = .{};
     net_mac = fallback_mac;
@@ -3221,6 +3215,14 @@ test "virtio_net: #3863 RXQ stall reset — silent ring + owed solicitation fire
     rx_pokes = 0;
     rx_edge_posts = 0;
     rx_edge_probes = 0;
+    rx_loss_resets = 0;
+    rx_owed_open = false;
+    // #3863: freeze the wall clock — the buffer-scan/overdue path ages
+    // the owed epoch in ns; this test's domain is the tick-based
+    // silent-epoch watchdog, so the ns bounds must stay inert.
+    rx_now_ns = 0;
+    rx_scan_ns = 0;
+    rx_loss_reset_ns = 0;
     rx_silent_seen = 0;
     rx_silent_polls = 0;
     rx_progress_tick = 0;
@@ -3398,7 +3400,9 @@ test "virtio_net: #3863 rxb claim — a solicited reply DMA'd where the used rin
         rx_loss_resets = 0;
         rx_owed_open = false;
         rx_buf_claims = 0;
-        rx_scan_tick = 0;
+        rx_scan_ns = 0;
+        rx_now_ns = 0;
+        rx_loss_reset_ns = 0;
     }
     net_dev = .{};
     net_mac = [6]u8{ 0x02, 0x00, 0x00, 0x00, 0x00, 0x0a };
@@ -3429,8 +3433,9 @@ test "virtio_net: #3863 rxb claim — a solicited reply DMA'd where the used rin
     rx_loss_resets = 0;
     rx_owed_open = false;
     rx_buf_claims = 0;
-    rx_scan_tick = 1; // = now_ticks: the tick-scan stays quiet, this test
-    // exercises the retransmit-boundary pickup
+    rx_scan_ns = 0;
+    rx_now_ns = 0; // ns clock frozen: the tick-scan stays quiet,
+    // this test exercises the retransmit-boundary pickup
     rx_silent_seen = 0;
     rx_silent_polls = 0;
     rx_progress_tick = 0;
@@ -3507,7 +3512,9 @@ test "virtio_net: #3863 loss reset — an exhausted train under a progressing ri
         rx_loss_resets = 0;
         rx_owed_open = false;
         rx_buf_claims = 0;
-        rx_scan_tick = 0;
+        rx_scan_ns = 0;
+        rx_now_ns = 0;
+        rx_loss_reset_ns = 0;
         rx_silent_seen = 0;
         rx_silent_polls = 0;
         rx_progress_tick = 0;
@@ -3531,7 +3538,9 @@ test "virtio_net: #3863 loss reset — an exhausted train under a progressing ri
     rx_loss_resets = 0;
     rx_owed_open = false;
     rx_buf_claims = 0;
-    rx_scan_tick = 0;
+    rx_scan_ns = 0;
+    rx_now_ns = 0;
+    rx_loss_reset_ns = 0;
     rx_silent_seen = 0;
     rx_silent_polls = 0;
     rx_progress_tick = 0;
@@ -3555,15 +3564,13 @@ test "virtio_net: #3863 loss reset — an exhausted train under a progressing ri
     // An exhausted solicitation — its whole train is already spent.
     arp.pending[0] = .{ .valid = true, .target = .{ 10, 0, 0, 0x17 }, .tick = 1, .retries = arp.max_retries };
 
-    // Open the owed epoch at used=0, then progress the ring (the a-01
-    // signature: OTHER frames completed while the reply never landed).
+    // Open the owed epoch.
     _ = net_ndp_poll();
     try std.testing.expect(rx_owed_open);
-    mock_used_idx = 1; // a completion elsewhere on the queue
-    _ = net_ndp_poll();
+    rx_now_ns = loss_due_ns; // the epoch is provably stale already
 
-    // The first exhausted-boundary after progress fires the loss reset:
-    // full transport_init + re-arm, once, ungated.
+    // The first exhausted-boundary past the overdue bound fires the
+    // loss reset: full transport_init + re-arm, once, ungated.
     var fired = false;
     var i: u32 = 0;
     while (i < arp.retransmit_polls) : (i += 1) {
@@ -3587,11 +3594,9 @@ test "virtio_net: #3863 loss reset — an exhausted train under a progressing ri
     try std.testing.expect(!fired);
     try std.testing.expectEqual(@as(u8, 1), rx_loss_resets);
 
-    // A whole reset interval + fresh ring progress later, the second
+    // A whole reset interval later, the second
     // (final) budgeted attempt fires.
-    ndp.now_ticks += stall_reset_ticks;
-    arp.now_ticks = ndp.now_ticks;
-    mock_used_idx = 1;
+    rx_now_ns += loss_spacing_ns;
     fired = false;
     i = 0;
     while (i < arp.retransmit_polls * 2) : (i += 1) {
@@ -3604,9 +3609,7 @@ test "virtio_net: #3863 loss reset — an exhausted train under a progressing ri
 
     // The epoch cap holds — a persistent wedge fails bounded, not
     // oscillating (the session-7 lesson).
-    ndp.now_ticks += stall_reset_ticks;
-    arp.now_ticks = ndp.now_ticks;
-    mock_used_idx = 1;
+    rx_now_ns += loss_spacing_ns;
     fired = false;
     i = 0;
     while (i < arp.retransmit_polls * 4) : (i += 1) {
@@ -3639,7 +3642,9 @@ test "virtio_net: #3863 tick-scan — the claim + overdue reset fire on the tick
         rx_loss_resets = 0;
         rx_owed_open = false;
         rx_buf_claims = 0;
-        rx_scan_tick = 0;
+        rx_scan_ns = 0;
+        rx_now_ns = 0;
+        rx_loss_reset_ns = 0;
         rx_silent_seen = 0;
         rx_silent_polls = 0;
         rx_progress_tick = 0;
@@ -3667,7 +3672,9 @@ test "virtio_net: #3863 tick-scan — the claim + overdue reset fire on the tick
     rx_loss_resets = 0;
     rx_owed_open = false;
     rx_buf_claims = 0;
-    rx_scan_tick = 0;
+    rx_scan_ns = 0;
+    rx_now_ns = 0;
+    rx_loss_reset_ns = 0;
     rx_silent_seen = 0;
     rx_silent_polls = 0;
     rx_progress_tick = 0;
@@ -3703,8 +3710,7 @@ test "virtio_net: #3863 tick-scan — the claim + overdue reset fire on the tick
     _ = arp.build_reply(&reply, &[6]u8{ 0x02, 0, 0, 0, 0, 0x0b }, .{ 10, 0, 0, 0x17 }, net_mac, arp.own_ip);
     rx_bufs[4][10] = 0x01;
     @memcpy(rx_bufs[4][rx_hdr_len .. rx_hdr_len + reply.len], &reply);
-    ndp.now_ticks += 1;
-    arp.now_ticks = ndp.now_ticks;
+    rx_now_ns += scan_gap_ns;
     const ev = net_ndp_poll();
     try std.testing.expect(ev.rxb_claim);
     try std.testing.expectEqual(@as(u64, 1), rx_buf_claims);
@@ -3713,15 +3719,12 @@ test "virtio_net: #3863 tick-scan — the claim + overdue reset fire on the tick
     try std.testing.expectEqual(@as(u64, 0), arp.requests_sent);
 
     // The miss half on the same cadence: a fresh slot for .19 stays
-    // unanswered past `loss_due_ticks` while the ring progresses —
-    // the overdue reset fires on the tick boundary, no train needed.
-    arp.pending[0] = .{ .valid = true, .target = .{ 10, 0, 0, 0x19 }, .tick = ndp.now_ticks };
-    _ = net_ndp_poll(); // epoch re-opens at the post-claim used idx
-    mock_used_idx +%= 1; // other frames keep completing
-    _ = net_ndp_poll();
+    // unanswered past `loss_due_ns` — the overdue reset fires on the
+    // scan boundary, no train needed.
+    arp.pending[0] = .{ .valid = true, .target = .{ 10, 0, 0, 0x19 }, .tick = 1 };
+    _ = net_ndp_poll(); // epoch re-opens at the post-claim wall stamp
     var fired = false;
-    ndp.now_ticks += loss_due_ticks;
-    arp.now_ticks = ndp.now_ticks;
+    rx_now_ns += loss_due_ns;
     var i: u32 = 0;
     while (i < arp.retransmit_polls) : (i += 1) {
         const ev2 = net_ndp_poll();
