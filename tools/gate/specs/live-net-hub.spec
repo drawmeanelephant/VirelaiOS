@@ -175,28 +175,62 @@ EOF
 # the script3 stage ends on; the client-2 --after marker is the earlier
 # 'flint: push ' line, which proves the stream is on flintd AND the drop
 # is served.
+#
+# The .17 verify legs live HERE, not in stage 2: a solicited ARP reply
+# rides the same pair->ring delivery lag everything else does, and on
+# the live gate it lands ~a minute after stage 2's paced loop ends —
+# observed twice: entries=0 at the s2 dump, learn=2 by the first s3
+# counter. The pending slot never lapses inside a run (the learn window
+# counts heartbeat ticks, of which a run sees a handful), so the reply
+# ALWAYS learns eventually — the only question is whether a `net ping`
+# + `net arp` still run afterwards. Stage 2 stays the solicitation
+# train that keeps re-asking; this block paces on .2 (forged-instant,
+# the bounded-wait pacer) while re-trying .17, so the first reply that
+# lands is followed by more .17 pings, the arp dump that pins the entry,
+# and a late `net` for the icmp counters — all before JA.SH starts.
 vgate_file vma-s3.txt <<'EOF'
 net arp 10.0.0.2
-net
-net arp 10.0.0.2
+net ping 10.0.0.17
+net ping 10.0.0.2
+net ping 10.0.0.17
+net ping 10.0.0.2
+net ping 10.0.0.17
+net ping 10.0.0.2
+net ping 10.0.0.17
+net ping 10.0.0.2
+net ping 10.0.0.17
+net ping 10.0.0.2
+net ping 10.0.0.17
+net ping 10.0.0.2
+net ping 10.0.0.17
+net ping 10.0.0.2
+net ping 10.0.0.17
+net ping 10.0.0.2
+net ping 10.0.0.17
+net ping 10.0.0.2
+net ping 10.0.0.17
+net ping 10.0.0.2
+net ping 10.0.0.17
+net arp
 net
 exec GOSH.ELF -c "source /host/JA.SH"
 EOF
 
-# The payload app vm-a publishes and vm-b installs + runs. Deliberately
-# minimal — the marker is the whole contract (the consent row, the
-# elf_mismatch refusal, and the APPS.TXT/STORE.TXT records are the
-# evidence, all host-pinnable).
-vgate_file hubapp.go <<'EOF'
-package main
-
-import "virelai/vsys"
-
-func main() {
-	vsys.Println("hubapp: m206c-ok")
-	vsys.Exit(0)
-}
-EOF
+# The payload app vm-a publishes and vm-b installs + runs — GENERATED in
+# the setup hook (below) as a minimal statically-linked AArch64 ELF the
+# same shape tools/mkhello-elf.py emits (one PT_LOAD, direct syscalls —
+# write(1, "hubapp: m206c-ok") + exit(0)). Deliberately TINY, and the
+# size is load-bearing, not cosmetic: the store channel bounds one
+# request/response exchange to a 5 s absolute recv deadline
+# (user/go/store/channel.go httpTimeoutNs), and the guest TCP stack is
+# stop-and-wait — one 1460-byte segment in flight per connection. A
+# ~1.1 MiB Go ELF is ~780 segments; over the hub's measured per-segment
+# latency under gate load that misses the bound EVERY time and installs
+# refuse 'store: refuse channel_malformed body' instead of proving the
+# card's elf_mismatch pin. ~150 bytes is ONE segment — the fetch lands
+# whole inside any reachable window, so the tamper refusal names the
+# sha gate, not the transport. The marker is still the whole contract
+# (consent row, elf_mismatch, APPS.TXT/STORE.TXT all host-pinned).
 
 # vm-b's leg file — typed over --console-tcp by the run-a client. The file
 # is GENERATED in the setup hook (below) because its shape is load-bearing
@@ -219,7 +253,7 @@ EOF
 # the hub-side DHCP responder for the whole gate; it must be provably at
 # the monitor prompt before run a is allowed to race it.
 vgate_setup_python <<'PY'
-import os, shutil, subprocess, sys, time
+import os, shutil, struct, subprocess, sys, time
 rd = os.environ["RUN_DIR"]
 repo = os.getcwd()
 share = os.path.join(rd, "share")       # the armed gate share (vm-a)
@@ -249,15 +283,43 @@ for name, how in (("STORE.ELF", "build-store.sh"),
         sys.exit(name + " missing (expected " + src + ") - build it first: "
                  "bash tools/go/" + how)
     shutil.copy(src, os.path.join(share, name))
-hub_build = os.path.join(rd, "hubapp-build")
-os.makedirs(hub_build, exist_ok=True)
-subprocess.run(
-    ["bash", "tools/go/build-go.sh", os.path.join(rd, "hubapp.go")],
-    env={**os.environ, "TMPDIR": hub_build, "GO_BUILD_OUT": hub_build,
-         "GO_BUILD_NAME": "HUBAPP", "GO_LDFLAGS_VALUE": "-s -w"},
-    check=True)
-shutil.copy(os.path.join(hub_build, "HUBAPP.ELF"),
-            os.path.join(share, "HUBAPP.ELF"))
+# HUBAPP.ELF — a one-segment payload (see the sizing note above): the
+# tools/mkhello-elf.py image shape, a 52-byte ELF32 header + one 32-byte
+# PT_LOAD phdr + eight instructions + the marker, write(1)+exit(0) on
+# the kernel's direct-syscall contract (elf.zig text_base 0x400000).
+def movz(rd, imm16):
+    return 0xD2800000 | (imm16 << 5) | rd
+
+def adr(rd, rel):
+    return 0x10000000 | ((rel & 0x3) << 29) | (((rel >> 2) & 0x7FFFF) << 5) | rd
+
+MSG = b"hubapp: m206c-ok\n"
+code = b"".join(struct.pack("<I", w) for w in [
+    movz(8, 1),            # x8 = 1 (sys_write)
+    movz(0, 1),            # x0 = fd 1
+    adr(1, 8 * 4 - 8),     # x1 = &msg (follows the 8-instruction block)
+    movz(2, len(MSG)),     # x2 = len
+    0xD4000001,            # svc #0
+    movz(0, 0),            # x0 = exit status 0
+    movz(8, 3),            # x8 = 3 (sys_exit)
+    0xD4000001,            # svc #0
+]) + MSG
+ehsize, phentsize, phnum = 52, 32, 1
+code_off = ehsize + phnum * phentsize
+ehdr = struct.pack(
+    "<4s5B7xHHIIIIIHHHHHH",
+    b"\x7fELF", 1, 1, 1, 0, 0,
+    2, 0xB7, 1,            # ET_EXEC, EM_AARCH64, version
+    0x400000, ehsize, 0, 0,
+    ehsize, phentsize, phnum, 0, 0, 0)
+phdr = struct.pack(
+    "<8I",
+    1,                     # PT_LOAD
+    code_off, 0x400000, 0x400000,
+    len(code), len(code),
+    5,                     # PF_R | PF_X (W^X)
+    0x1000)
+open(os.path.join(share, "HUBAPP.ELF"), "wb").write(ehdr + phdr + code)
 sig_dir = os.path.join("user", "go", "flint", "testdata", "sig")
 SEED_HEX = open(os.path.join(sig_dir, "seed.hex")).read().strip()
 open(os.path.join(share, "SECRETS.TXT"), "w").write(
@@ -571,7 +633,7 @@ vgate_run a -- --net '$RUN_DIR/a.cap' --net-hub '$RUN_DIR/nethub.sock' --mac 02:
     --script '$RUN_DIR/vma-s1.txt' \
     --script2 '$RUN_DIR/vma-s2.txt' --script2-after 'httpd: request /healthz' --script2-delay 10 \
     --script3 '$RUN_DIR/vma-s3.txt' --script3-after 'vma-legs-done' \
-    --script-expect 'httpd: request /DROP/main/HUBAPP.ELF' --script-expect-tail 45 --timeout 600
+    --script-expect 'httpd: request /DROP/main/HUBAPP.ELF' --script-expect-tail 45 --timeout 720
 
 # The run-a client: waits for A's DHCP bind — deliberately ~2-4 s BEFORE
 # 'httpd: advertise sent', not after it. GOHTTPD's advertiser is
@@ -592,7 +654,7 @@ vgate_client a -- --addr '127.0.0.1:24720' --after 'net: dhcp bound ip=10.0.0.16
 # needed line (the asserts judge each leg, so the expect just bounds
 # the chain). Second client => own --out and --retry-busy against
 # client-1's tail; last-declared, so its rc is the enforced one.
-vgate_client a -- --addr '127.0.0.1:24720' --after 'flint: push ' --after-timeout 480 \
+vgate_client a -- --addr '127.0.0.1:24720' --after 'flint: push ' --after-timeout 620 \
     --connect-timeout 60 --retry-busy --send-file '$RUN_DIR/vmb-store-legs.txt' \
     --expect 'JB-DONE' --timeout 480 --out '$RUN_DIR/client-a-store.out'
 
@@ -605,13 +667,14 @@ vgate_client a -- --addr '127.0.0.1:24720' --after 'flint: push ' --after-timeou
 #
 # Sizing: every client's --after clock starts at run launch, so the
 # marker wait must cover the whole chain to the ELF GET — boot, card
-# b's legs, A's paced arp stage, JA.SH publish+push, then B's DROPBAD
-# refusals + DROP clone before the fetch. That marker is also run-a's
-# own --script-expect under --timeout 600, so --after-timeout 620 can
-# never lap it inside a run that could still pass. The post-marker
-# busy window ends when client-2's session does — bounded by ITS 480 s
-# read deadline — so --connect-timeout 540 covers the worst queue.
-vgate_client a -- --addr '127.0.0.1:24720' --after 'httpd: request /DROP/main/HUBAPP.ELF' --after-timeout 620 \
+# b's legs, A's paced arp stage, the s3 verify pace, JA.SH publish+push,
+# then B's DROPBAD refusals + DROP clone before the fetch. That marker
+# is also run-a's own --script-expect under --timeout 720, so
+# --after-timeout 740 can never lap it inside a run that could still
+# pass. The post-marker busy window ends when client-2's session does —
+# bounded by ITS 480 s read deadline — so --connect-timeout 540 covers
+# the worst queue.
+vgate_client a -- --addr '127.0.0.1:24720' --after 'httpd: request /DROP/main/HUBAPP.ELF' --after-timeout 740 \
     --connect-timeout 540 --retry-busy --send-file '$RUN_DIR/vmb-consent-legs.txt' \
     --expect 'JB2-DONE' --timeout 240 --out '$RUN_DIR/client-a-consent.out'
 
