@@ -1512,6 +1512,24 @@ pub fn net_ndp_poll() NdpPoll {
     // `pending` learn window the RX drain checks.
     arp.now_ticks = ndp.now_ticks;
     if (!net_ready) return ev;
+    // #3863: bounded ARP retransmit — an unanswered solicitation is
+    // re-requested every `arp.retransmit_polls` polls up to
+    // `arp.max_retries` sends. A solicited reply that rides the
+    // cold-segment delivery lag is still owed; re-asking keeps the
+    // request train alive (and each TX is a fresh kick at the
+    // attachment's pair->ring servicing).
+    for (&arp.pending) |*s| {
+        if (!s.valid) continue;
+        if (s.retries >= arp.max_retries) continue;
+        s.retry_polls += 1;
+        if (s.retry_polls < arp.retransmit_polls) continue;
+        s.retry_polls = 0;
+        var rlen: usize = 0;
+        // `note_request` inside build_request re-stamps the slot's
+        // window; `retries` is the bound, bumped send-or-fail.
+        if (net_arp_request(s.target, &rlen) == .ok) arp.requests_sent += 1;
+        s.retries += 1;
+    }
     while (ndp.dad_due()) |addr| {
         if (ipv6.promote(&addr)) {
             if (std.mem.eql(u8, &addr, &ipv6.link_local)) {

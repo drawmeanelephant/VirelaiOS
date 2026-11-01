@@ -76,11 +76,16 @@ pub var table: [table_slots]ArpEntry = @as([table_slots]ArpEntry, @splat(@as(Arp
 pub var table_cursor: usize = 0;
 
 /// One outstanding solicitation — the protocol address a request asked
-/// for and the `now_ticks` stamp of its last transmission.
+/// for, the `now_ticks` stamp of its last transmission, how many
+/// re-requests the poll path has already sent, and polls since the
+/// last send (the retransmit cadence — sub-tick, because a leg that
+/// paces resolutions in seconds cannot wait a whole tick per retry).
 pub const Pending = struct {
     valid: bool = false,
     target: [4]u8 = .{ 0, 0, 0, 0 },
     tick: u64 = 0,
+    retries: u8 = 0,
+    retry_polls: u32 = 0,
 };
 
 /// The bounded solicitation table — one slot per recently-requested
@@ -119,6 +124,19 @@ pub var now_ticks: u64 = 0;
 /// a request nobody answers is forgotten minutes out, so a forged
 /// reply cannot ride a stale slot indefinitely.
 pub const pending_wait_ticks: u64 = 240;
+
+/// The retransmit cadence: an unanswered solicitation is re-requested
+/// once per `retransmit_polls` polls, up to `max_retries` re-sends —
+/// the caller (the virtio_net tick-seam poll) drives it. The cadence
+/// counts POLLS not ticks: the 1 Hz stamp is too coarse to keep a
+/// request train alive inside a leg window of seconds. Real stacks
+/// re-ask a handful of times instead of declaring failure on one lost
+/// or slow answer; here each re-request is also a fresh TX, which on
+/// this transport is a fresh kick at the host attachment's
+/// pair->ring servicing (#3863 — not kick-synchronous at first boot).
+/// The bound keeps a dead target from transmitting forever.
+pub const retransmit_polls: u32 = 64;
+pub const max_retries: u8 = 8;
 
 /// ARP counters (the `net`/`net arp` reports).
 pub var requests_sent: u64 = 0; // ARP requests we transmitted (a resolve miss)
