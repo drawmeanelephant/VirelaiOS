@@ -496,7 +496,7 @@ legs = ["net dhcp"] * 5
 # legs — where a mid-transfer wedge would otherwise tear the channel.
 legs += ["net arp 10.0.0.99"]
 legs += ["exec GONETSTAT.ELF discover _http._tcp", "net recv"]
-for _ in range(12):
+for _ in range(20):
     legs += ["net arp 10.0.0.16", "net", "net ping 10.0.0.16",
              "net", "net recv"]
 legs += ["net dhcp", "net dhcp", "net arp"]
@@ -660,7 +660,7 @@ vgate_run a -- --net '$RUN_DIR/a.cap' --net-hub '$RUN_DIR/nethub.sock' --mac 02:
 # 'fetch: done' is the capture's last needed line; the discover tail
 # continues into B's serial.
 vgate_client a -- --addr '127.0.0.1:24720' --after 'net: dhcp bound ip=10.0.0.16' --after-timeout 120 \
-    --connect-timeout 30 --send-file '$RUN_DIR/vmb-legs.txt' --expect 'fetch: done' --timeout 90
+    --connect-timeout 30 --send-file '$RUN_DIR/vmb-legs.txt' --expect 'fetch: done' --timeout 360
 
 # The M206c client: waits for A's 'flint: push ' receipt — the marker
 # that guarantees BOTH halves B needs are armed: hubd holds stream
