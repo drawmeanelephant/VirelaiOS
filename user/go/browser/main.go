@@ -139,6 +139,11 @@ const (
 	// teardown. The card's pinned shapes are `web: script rc=…` and
 	// `web: script worker gone`.
 	markerScript = "web: script "
+	// M211b (#3868): `web: dom` is one answered DOM request's outcome —
+	// `web: dom <op> ok|dom_op_refused|dom_op_unknown`; `web: console` is
+	// a script's console.log line reaching serial, clipped single-line.
+	markerDom     = "web: dom "
+	markerConsole = "web: console "
 	// M121c (#2566): the '?' overlay's receipts — `hints n=` the registry
 	// row count on the painted frame, one `hints row` per plate row (the
 	// serial-readable copy), `hints close` after the restored frame.
@@ -934,7 +939,7 @@ func (a *app) startHTTP(u webrender.URL) {
 	a.loading = true
 	a.loadEnd = a.stageEnd(5_000_000_000)
 	a.loadIdle = a.loadEnd
-	vi.ConsoleLine(markerFetch + u.Host + u.Path)
+	vi.ConsoleLine(markerFetch + u.Host + u.Path + " proto=http/1.1")
 }
 
 // startHTTPS dials in-process (tls.Dial over vi.Dial), sends the GET, and
@@ -2074,6 +2079,8 @@ func errorMessage(kind, target string) string {
 		return "The certificate chain has no trusted root."
 	case "http-framing-unsupported":
 		return "Transfer or content coding is not supported; identity framing is required."
+	case "h2-refused":
+		return "The HTTP/2 peer violated the negotiated protocol; the exchange was refused by name."
 	case "http-framing-invalid", "http-premature-eof", "chunked-malformed",
 		"gzip-crc", "gzip-too-large", "gzip-malformed":
 		return "The response framing is invalid, the chunked stream malformed, or the gzip body failed its check."

@@ -23,6 +23,10 @@ const (
 	domRpcBin       = "QJS.BIN"
 	domRpcOpsPath   = "/host/WEBRPC.OPS"
 	domRpcReplyPath = "/host/WEBRPC.OUT"
+	// domRpcAnsPath (M211b #3868) is the parent→worker half of a DOM
+	// request: WEB publishes each answer atomically here, the worker
+	// re-opens it per poll (the share clamps reads to open-time size).
+	domRpcAnsPath   = "/host/WEBRPC.ANS"
 	// domRpcSrcMax is one eval op's source bound; domRpcOpsMax the staged
 	// ops stream's bound — it mirrors domrpc.ops_max in the worker so the
 	// wire can never carry an op the protocol will not accept.
@@ -31,6 +35,16 @@ const (
 	domRpcReplyMax  = 262144
 	domRpcMaxScripts = 32
 	domRpcBudgetNs  = int64(60) * 1_000_000_000
+	// domRpcVersion is the wire handshake (domrpc.version worker-side).
+	// v2 adds worker→parent DOM request lines on the reply stream and
+	// their answers on WEBRPC.ANS.
+	domRpcVersion   = 2
+	// domValueMax mirrors domrpc.value_max — one answered value's clip.
+	domValueMax     = 2048
+	// markerDomNamesClip bounds how much of a console.log line reaches
+	// the serial marker — the op's payload bound is the wire's, not the
+	// console's.
+	domConsoleClip  = 240
 )
 
 // The exec stream-request ABI (kernel/src/file_table.zig StreamRequest):
@@ -61,11 +75,17 @@ func strPtr(s string) uintptr {
 
 // scriptWorker is the one in-flight worker: pid from the stream-bound exec,
 // ops the number of op lines staged (one hello + one eval per shipped
-// script), deadline the kill point. A worker is done when the process exits
-// AND every op got its reply — anything short is "worker gone".
+// script), reps the hello/eval reply lines seen, off the reply-spool drain
+// cursor (mid-run reads re-open the file so appended bytes stay visible),
+// domOps the DOM requests served, deadline the kill point. A worker is done
+// when the process exits AND every op got its reply — anything short is
+// "worker gone".
 type scriptWorker struct {
 	pid      int64
 	ops      int
+	reps     int
+	off      int
+	domOps   int
 	deadline int64
 }
 
@@ -125,7 +145,7 @@ type domRpcOp struct {
 // marker rather than carry a line the worker's parser must refuse.
 func (a *app) stageDomRpcOps(srcs [][]byte) (int, bool) {
 	var buf bytes.Buffer
-	hello, _ := json.Marshal(domRpcOp{Op: "hello", Version: 1})
+	hello, _ := json.Marshal(domRpcOp{Op: "hello", Version: domRpcVersion})
 	buf.Write(hello)
 	buf.WriteByte('\n')
 	shipped := 0
@@ -179,6 +199,15 @@ func (a *app) startScripts() {
 		vi.ConsoleLine(markerScript + "stage-fail")
 		return
 	}
+	// M211b: arm the answer rendezvous before exec — the seq-0 sentinel
+	// overwrites any previous page's last answer, so a fresh worker's
+	// seq-1 request can never match a stale line.
+	if vi.WriteFileSafe(domRpcAnsPath, []byte("{\"seq\":0}\n")) < 0 {
+		vi.FileClose(uint32(hOps))
+		vi.FileClose(uint32(hReply))
+		vi.ConsoleLine(markerScript + "stage-fail")
+		return
+	}
 	var argv [8 * 256]byte
 	copy(argv[:], "--dom-rpc")
 	req := streamRequest{version: 1,
@@ -198,21 +227,35 @@ func (a *app) startScripts() {
 	vi.ConsoleLine(markerScript + "worker pid=" + itoa64(pid))
 }
 
+// The reply stream's line vocabulary: hello/eval replies carry ok/error/
+// version (and M211b's per-eval DOM op count); a DOM request line from
+// the worker carries seq plus the generic a/b args — seq is what tells a
+// request apart from a reply.
 type domRpcReply struct {
 	Op      string `json:"op"`
 	OK      bool   `json:"ok"`
 	Error   string `json:"error"`
 	Version int    `json:"version"`
+	Seq     *int64 `json:"seq"`
+	A       string `json:"a"`
+	B       string `json:"b"`
+	Ops     int    `json:"ops"`
 }
 
-// noteScriptReply turns one reply line into its marker — `web: script rc=`
-// is the eval round-trip line the card pins.
-func (a *app) noteScriptReply(line []byte) {
+// noteWireLine routes one appended reply-spool line: a seq line is a DOM
+// request to answer mid-run, anything else is a reply to a staged op and
+// counts toward "every op got its reply".
+func (a *app) noteWireLine(w *scriptWorker, line []byte) {
 	var r domRpcReply
 	if err := json.Unmarshal(line, &r); err != nil {
 		vi.ConsoleLine(markerScript + "reply malformed")
 		return
 	}
+	if r.Seq != nil {
+		a.serveDom(w, r.Op, *r.Seq, r.A, r.B)
+		return
+	}
+	w.reps++
 	switch r.Op {
 	case "hello":
 		if r.OK {
@@ -222,7 +265,7 @@ func (a *app) noteScriptReply(line []byte) {
 		}
 	case "eval":
 		if r.OK {
-			vi.ConsoleLine(markerScript + "rc=0")
+			vi.ConsoleLine(markerScript + "rc=0 ops=" + itoa(r.Ops))
 		} else {
 			vi.ConsoleLine(markerScript + "rc=70 error=" + r.Error)
 		}
@@ -231,27 +274,128 @@ func (a *app) noteScriptReply(line []byte) {
 	}
 }
 
-// drainReplies reads the reply spool after the worker is gone and emits one
-// marker per reply line. The count answers "did every op get its reply".
-func (a *app) drainReplies() int {
+// serviceReplies drains the reply spool's appended lines at the poll
+// cadence — while the worker runs this is what makes a DOM request a
+// round trip rather than a deadlock; after it exits the same pass is the
+// final drain. A partial trailing line waits for its newline rather than
+// being parsed half-written.
+func (a *app) serviceReplies(w *scriptWorker) {
 	body, rc := vi.ReadFileAll(domRpcReplyPath+"~", domRpcReplyMax)
-	if rc < 0 {
-		return -1
+	if rc < 0 || len(body) < w.off {
+		return
 	}
-	reps := 0
-	for _, line := range bytes.Split(body, []byte("\n")) {
-		if len(bytes.TrimSpace(line)) == 0 {
-			continue
+	rest := body[w.off:]
+	for {
+		nl := bytes.IndexByte(rest, '\n')
+		if nl < 0 {
+			return
 		}
-		reps++
-		a.noteScriptReply(line)
+		line := bytes.TrimSpace(rest[:nl])
+		w.off += nl + 1
+		rest = rest[nl+1:]
+		if len(line) > 0 {
+			a.noteWireLine(w, line)
+		}
 	}
-	return reps
 }
 
-// pollScripts is the event-loop service: it costs nothing while the worker
-// runs, and on exit (or the kill deadline) drains the reply spool and names
-// the teardown — `web: script done` when every op was answered and the
+// domOpRefused names the op vocabulary the wire knows but v1 does not
+// admit — card c's writes, traversal, timers, fetch. A name outside even
+// that answers dom_op_unknown.
+var domOpRefused = map[string]bool{
+	"node.setText": true, "field.setValue": true,
+	"nodes.byTag": true, "nodes.byClass": true, "node.query": true,
+	"doc.write": true, "timer.set": true, "net.fetch": true,
+}
+
+// domAnswer is one answer line for WEBRPC.ANS — value stays a pointer so
+// an absent node or attribute publishes JSON null, not an empty string.
+type domAnswer struct {
+	Op      string  `json:"op"`
+	Seq     int64   `json:"seq"`
+	OK      bool    `json:"ok"`
+	Value   *string `json:"value"`
+	Error   string  `json:"error,omitempty"`
+	Clipped bool    `json:"clipped,omitempty"`
+}
+
+// clipDomValue bounds one answered value at the wire's dom_value_max.
+func clipDomValue(s string) (*string, bool) {
+	if len(s) <= domValueMax {
+		return &s, false
+	}
+	v := s[:domValueMax]
+	return &v, true
+}
+
+// domClipMarker bounds a console.log line for the serial marker — one
+// line, no embedded newlines, clipped at the console's own bound.
+func domClipMarker(s string) string {
+	s = strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\r' {
+			return ' '
+		}
+		return r
+	}, s)
+	if len(s) > domConsoleClip {
+		return s[:domConsoleClip]
+	}
+	return s
+}
+
+// serveDom answers one DOM request line against the page's own state —
+// the ops read the retained node tree, never a copy: doc.title answers
+// the <title> element, node.text/node.attr the id-addressed node
+// (ByID is the seam the parse keeps), console.log prints its serial
+// marker and acks. Every outcome also lands on the wire as an answer
+// line — refused and unknown alike — and on serial as `web: dom`.
+func (a *app) serveDom(w *scriptWorker, op string, seq int64, arg, barg string) {
+	w.domOps++
+	ans := domAnswer{Op: op, Seq: seq}
+	outcome := "ok"
+	switch op {
+	case "doc.title":
+		title := docTitle(a.doc)
+		ans.OK, ans.Value = true, &title
+	case "node.text":
+		if n := a.doc.ByID(arg); n != nil {
+			ans.OK = true
+			ans.Value, ans.Clipped = clipDomValue(webrender.TextContent(n))
+		} else {
+			ans.OK = true
+		}
+	case "node.attr":
+		if n := a.doc.ByID(arg); n != nil && n.HasAttr(barg) {
+			ans.OK = true
+			ans.Value, ans.Clipped = clipDomValue(n.Attr(barg))
+		} else {
+			ans.OK = true
+		}
+	case "console.log":
+		vi.ConsoleLine(markerConsole + domClipMarker(arg))
+		ans.OK = true
+		empty := ""
+		ans.Value = &empty
+	default:
+		if domOpRefused[op] {
+			outcome = "dom_op_refused"
+		} else {
+			outcome = "dom_op_unknown"
+		}
+		ans.Error = outcome
+	}
+	if op != "console.log" {
+		vi.ConsoleLine(markerDom + op + " " + outcome)
+	}
+	if line, err := json.Marshal(&ans); err == nil {
+		vi.WriteFileSafe(domRpcAnsPath, append(line, '\n'))
+	}
+}
+
+// pollScripts is the event-loop service: while the worker runs it
+// services the reply spool on the poll cadence (M211b's DOM round trips),
+// and on exit (or the kill deadline) drains it once more and names the
+// teardown — `web: script done` when every op was answered and the
 // worker left cleanly, `web: script worker gone` otherwise.
 func (a *app) pollScripts() {
 	w := a.rpc
@@ -261,17 +405,21 @@ func (a *app) pollScripts() {
 	st, state := vi.Probe(w.pid)
 	if state == vi.ProbeRunning {
 		if vi.Nanos() < w.deadline {
+			// M211b: a running worker can block on a DOM request — the
+			// reply spool's appended lines are serviced on this cadence,
+			// so an ask is a round trip, never a deadlock.
+			a.serviceReplies(w)
 			return
 		}
 		vi.Kill(uint64(w.pid)) // wedged: armed, exit lands on its own
 	}
 	a.rpc = nil
-	reps := a.drainReplies()
+	a.serviceReplies(w)
 	if state != vi.ProbeExited && state != vi.ProbeAbsent {
 		vi.WaitBudget(w.pid, int64(2)*1_000_000_000) // let the armed kill land
 	}
-	if reps == w.ops && (state == vi.ProbeExited && st == 0 || state == vi.ProbeAbsent) {
-		vi.ConsoleLine(markerScript + "done")
+	if w.reps == w.ops && (state == vi.ProbeExited && st == 0 || state == vi.ProbeAbsent) {
+		vi.ConsoleLine(markerScript + "done ops=" + itoa(w.domOps))
 	} else {
 		vi.ConsoleLine(markerScript + "worker gone")
 	}
@@ -291,6 +439,6 @@ func (a *app) closeScripts() {
 		vi.Kill(uint64(w.pid))
 		vi.WaitBudget(w.pid, int64(2)*1_000_000_000)
 	}
-	a.drainReplies()
+	a.serviceReplies(w)
 	vi.ConsoleLine(markerScript + "worker gone")
 }

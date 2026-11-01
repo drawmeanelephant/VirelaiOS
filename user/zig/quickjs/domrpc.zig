@@ -10,7 +10,9 @@ const std = @import("std");
 
 /// The protocol version `hello` negotiates. An op carrying a newer or older
 /// version is refused `dom_rpc_version`; bumping this is an ADR question.
-pub const version: u64 = 1;
+/// v2 (M211b, #3868) adds the worker→parent DOM request lines and their
+/// answers on the WEBRPC.ANS rendezvous.
+pub const version: u64 = 2;
 
 /// One op line's bound: the 1 MiB per-eval source ceiling plus a fixed
 /// envelope for the JSON framing it may carry. The staged ops stream (every
@@ -25,8 +27,37 @@ pub const ops_max: usize = op_max;
 pub const out_max: usize = 2_048;
 
 /// One reply line's bound: 2,048 output bytes escape to at most 12,288
-/// plus the envelope.
+/// plus the envelope. DOM request lines and answer lines share the bound —
+/// they ride the same JSON-lines envelope the replies do.
 pub const reply_max: usize = 16_384;
+
+/// M211b (#3868): the per-script DOM budgets. `script_ops_max` counts every
+/// DOM op one eval issues — reads and `console.log` alike — and the wall
+/// budget is the engine's own four-second eval deadline, so a script that
+/// spins in JS or waits on unanswered ops dies at the same named bound.
+/// `arg_max` clips one request argument (id, attribute name, log text);
+/// `value_max` clips one answered value.
+pub const script_ops_max: u32 = 64;
+pub const arg_max: usize = 4_096;
+pub const value_max: usize = 2_048;
+
+/// The host-dom callback's null sentinel: an answered op whose value is
+/// JSON `null` (an absent node or attribute), distinct from a refusal.
+pub const dom_null: usize = std.math.maxInt(usize);
+
+/// `name` reports whether `op` is a wire-legal DOM op name — the same
+/// charset the ops parser enforces, so a name that could never be quoted
+/// back is refused `dom_op_unknown` without a round trip.
+pub fn nameOk(op: []const u8) bool {
+    if (op.len == 0 or op.len > 32) return false;
+    for (op) |c| {
+        switch (c) {
+            'a'...'z', 'A'...'Z', '0'...'9', '_', '.', '-' => continue,
+            else => return false,
+        }
+    }
+    return true;
+}
 
 pub const Op = struct {
     /// The decoded op name — present on every successful parse, restricted
@@ -82,6 +113,92 @@ pub fn parseOp(line: []u8) Error!Op {
         }
     }
     return op;
+}
+
+/// One decoded answer line from the WEBRPC.ANS rendezvous — the parent's
+/// half of a DOM request. `seq` correlates the answer to the request the
+/// worker last wrote; anything else is ignored as stale.
+pub const Answer = struct {
+    seq: u64,
+    ok: bool,
+    /// `value` carries the answered bytes; `has_value` distinguishes a
+    /// present member from an absent one, and `value == null` (JSON null)
+    /// means an absent node/attribute — JS sees null either way.
+    value: ?[]const u8 = null,
+    has_value: bool = false,
+    /// The named refusal when `ok` is false — verbatim, the worker quotes
+    /// it back to JS as the exception name.
+    err: ?[]const u8 = null,
+};
+
+/// `line` is decoded IN PLACE like parseOp. An answer missing `seq` or
+/// `ok`, or a trailing byte, is malformed — the caller keeps polling
+/// rather than mistake a half-published line for a refusal.
+pub fn parseAnswer(line: []u8) Error!Answer {
+    var p: Parser = .{ .s = line };
+    p.ws();
+    try p.expect('{');
+    var a: Answer = .{ .seq = 0, .ok = false };
+    var has_seq = false;
+    var has_ok = false;
+    p.ws();
+    if (!p.eat('}')) {
+        while (true) {
+            p.ws();
+            const key = try p.string();
+            p.ws();
+            try p.expect(':');
+            p.ws();
+            if (std.mem.eql(u8, key, "seq")) {
+                a.seq = try p.integer();
+                has_seq = true;
+            } else if (std.mem.eql(u8, key, "ok")) {
+                a.ok = try p.boolean();
+                has_ok = true;
+            } else if (std.mem.eql(u8, key, "value")) {
+                a.value = try p.nullString();
+                a.has_value = true;
+            } else if (std.mem.eql(u8, key, "error")) {
+                a.err = try p.string();
+            } else {
+                try p.value(8);
+            }
+            p.ws();
+            if (p.eat(',')) continue;
+            try p.expect('}');
+            break;
+        }
+    }
+    p.ws();
+    if (p.i != p.s.len or !has_seq or !has_ok) return error.DomRpcParse;
+    if (a.err) |word| {
+        if (!nameOk(word)) return error.DomRpcParse;
+    }
+    return a;
+}
+
+/// Writes one DOM request line into `dst` —
+/// `{"op":"<op>","seq":N,"a":"..","b":".."}` — returning the bytes used
+/// including the trailing newline. `op` must already pass nameOk; `a`/`b`
+/// are clipped to `arg_max` so a request can never outgrow `reply_max`.
+/// The caller sizes `dst` from `reply_max`; the same trap rule as `escape`
+/// applies.
+pub fn request(dst: []u8, op: []const u8, seq: u64, a: []const u8, b: []const u8) usize {
+    var w = (std.fmt.bufPrint(dst, "{{\"op\":\"{s}\",\"seq\":{d}", .{ op, seq }) catch unreachable).len;
+    const args = [_]struct { k: []const u8, v: []const u8 }{
+        .{ .k = "a", .v = a[0..@min(a.len, arg_max)] },
+        .{ .k = "b", .v = b[0..@min(b.len, arg_max)] },
+    };
+    for (args) |arg| {
+        if (arg.v.len == 0) continue;
+        w += (std.fmt.bufPrint(dst[w..], ",\"{s}\":\"", .{arg.k}) catch unreachable).len;
+        w += escape(dst[w..], arg.v);
+        dst[w] = '"';
+        w += 1;
+    }
+    dst[w] = '}';
+    dst[w + 1] = '\n';
+    return w + 2;
 }
 
 /// Writes `bytes` JSON-string-escaped into `dst`, returning the bytes used.
@@ -270,6 +387,27 @@ const Parser = struct {
         return v;
     }
 
+    /// A JSON `true`/`false` member — an answer's `ok` must never silently
+    /// accept another kind.
+    fn boolean(self: *Parser) Error!bool {
+        if (self.peek() == 't') {
+            try self.literal("true");
+            return true;
+        }
+        try self.literal("false");
+        return false;
+    }
+
+    /// A member that is either a JSON string or literal `null` — an
+    /// answer's `value` carries both.
+    fn nullString(self: *Parser) Error!?[]const u8 {
+        if (self.peek() == 'n') {
+            try self.literal("null");
+            return null;
+        }
+        return try self.string();
+    }
+
     /// Validates one JSON number's grammar without keeping it (members the
     /// protocol does not read are parsed and discarded, not refused).
     fn number(self: *Parser) Error!void {
@@ -372,9 +510,8 @@ test "hello and eval ops parse, unknown members are skipped" {
 
 test "malformed ops refuse by name, never crash" {
     const cases = [_][]const u8{
-        "", "not json", "{}", "{\"op\":1}", "{\"op\":\"eval\",\"src\":[1]}",
-        "{\"op\":\"hi\",\"version\":1.5}", "{\"op\":\"hi\",}", "{\"op\":\"hi",
-        "{\"op\":\"a b\"}", "{\"op\":\"eval\",\"src\":\"\\uD800\"}",
+        "",                                "not json",         "{}",           "{\"op\":1}",       "{\"op\":\"eval\",\"src\":[1]}",
+        "{\"op\":\"hi\",\"version\":1.5}", "{\"op\":\"hi\",}", "{\"op\":\"hi", "{\"op\":\"a b\"}", "{\"op\":\"eval\",\"src\":\"\\uD800\"}",
         "{\"op\":\"x\",\"extra\":{{{",
     };
     for (cases) |c| {
@@ -388,4 +525,64 @@ test "escaped output appends bounded JSON" {
     var storage: [64]u8 = undefined;
     const used = escape(&storage, "a\"b\\c\nd\x01");
     try std.testing.expectEqualStrings("a\\\"b\\\\c\\nd\\u0001", storage[0..used]);
+}
+
+test "dom requests emit op, seq and bounded args" {
+    var buf: [reply_max]u8 = undefined;
+    const used = request(&buf, "node.attr", 7, "lead", "data-note");
+    try std.testing.expectEqualStrings("{\"op\":\"node.attr\",\"seq\":7,\"a\":\"lead\",\"b\":\"data-note\"}\n", buf[0..used]);
+    const bare = request(&buf, "doc.title", 2, "", "");
+    try std.testing.expectEqualStrings("{\"op\":\"doc.title\",\"seq\":2}\n", buf[0..bare]);
+    // args clip at arg_max and escape like any JSON string
+    var big: [arg_max + 8]u8 = @splat('x');
+    big[arg_max] = '"';
+    const clipped = request(&buf, "console.log", 1, &big, "");
+    try std.testing.expect(clipped < reply_max);
+    const head = "{\"op\":\"console.log\",\"seq\":1,\"a\":\"";
+    try std.testing.expectEqualStrings(head ++ @as([arg_max]u8, @splat('x')) ++ "\"}\n", buf[0..clipped]);
+}
+
+test "answers parse value, null and named refusals" {
+    var line: [128]u8 = undefined;
+    const ok_text = "{\"op\":\"node.text\",\"seq\":7,\"ok\":true,\"value\":\"alpha\"}";
+    @memcpy(line[0..ok_text.len], ok_text);
+    const ok = try parseAnswer(line[0..ok_text.len]);
+    try std.testing.expect(ok.ok and ok.seq == 7 and ok.has_value);
+    try std.testing.expectEqualStrings("alpha", ok.value.?);
+
+    var nbuf: [96]u8 = undefined;
+    const null_text = "{\"op\":\"node.attr\",\"seq\":8,\"ok\":true,\"value\":null}";
+    @memcpy(nbuf[0..null_text.len], null_text);
+    const n = try parseAnswer(nbuf[0..null_text.len]);
+    try std.testing.expect(n.ok and n.has_value and n.value == null);
+
+    var ebuf: [96]u8 = undefined;
+    const err_text = "{\"op\":\"node.setText\",\"seq\":9,\"ok\":false,\"error\":\"dom_op_refused\"}";
+    @memcpy(ebuf[0..err_text.len], err_text);
+    const e = try parseAnswer(ebuf[0..err_text.len]);
+    try std.testing.expect(!e.ok and e.seq == 9);
+    try std.testing.expectEqualStrings("dom_op_refused", e.err.?);
+}
+
+test "malformed or incomplete answers refuse, never crash" {
+    const cases = [_][]const u8{
+        "",                                              "not json",             "{}",                                  "{\"seq\":1}",                                "{\"ok\":true}",
+        "{\"seq\":\"1\",\"ok\":true}",                   "{\"seq\":1,\"ok\":1}", "{\"seq\":1,\"ok\":true,\"value\":4}", "{\"seq\":1,\"ok\":false,\"error\":\"a b\"}", "{\"seq\":1,\"ok\":true} trailing",
+        "{\"seq\":1,\"ok\":true,\"value\":\"\\uD800\"}",
+    };
+    for (cases) |c| {
+        var buf: [128]u8 = undefined;
+        @memcpy(buf[0..c.len], c);
+        try std.testing.expectError(error.DomRpcParse, parseAnswer(buf[0..c.len]));
+    }
+}
+
+test "dom op names follow the wire charset" {
+    try std.testing.expect(nameOk("doc.title"));
+    try std.testing.expect(nameOk("node.attr"));
+    try std.testing.expect(nameOk("console.log"));
+    try std.testing.expect(!nameOk(""));
+    try std.testing.expect(!nameOk("a b"));
+    try std.testing.expect(!nameOk("a\"b"));
+    try std.testing.expect(!nameOk(&@as([33]u8, @splat('x'))));
 }

@@ -37,6 +37,12 @@ pub const Host = struct {
     writeFile: *const fn (*anyopaque, []const u8, []const u8) anyerror!void,
     /// JS-visible argv, already policy-bounded by the adapter.
     args: []const []const u8 = &.{},
+    /// ADR 0039 amendment (M211b, #3868): one bounded DOM op per call —
+    /// op name plus two string args in, the answered value into `out` or
+    /// `domrpc.dom_null` for a JSON-null answer. A refusal stores its wire
+    /// name through host_failure verbatim. Only the `--dom-rpc` worker
+    /// arms it; every other session refuses `dom_op_refused`.
+    dom: ?*const fn (*anyopaque, []const u8, []const u8, []const u8, []u8) anyerror!usize = null,
 };
 
 pub const Result = struct {
@@ -440,6 +446,52 @@ export fn qjs_native_host_write(path: [*]const u8, path_len: usize, data: [*]con
         return -1;
     }
     return 0;
+}
+
+/// M211b (#3868): `virelai.dom` — the adapter serves one bounded DOM op.
+/// The answered bytes borrow `host_buffer` exactly like `host_read`; a
+/// JSON-null answer returns `dom_null` in `out_len`, and a refusal stores
+/// the wire's name verbatim for `qjs_native_host_failure`.
+export fn qjs_native_host_dom(op: [*]const u8, op_len: usize, a: [*]const u8, a_len: usize, b: [*]const u8, b_len: usize, out_len: *usize) ?[*]const u8 {
+    const self = current orelse return null;
+    self.host_failure = null;
+    const host = self.host orelse {
+        hostRefusal(self, "AccessDenied");
+        return null;
+    };
+    const dom = host.dom orelse {
+        hostRefusal(self, "dom_op_refused");
+        return null;
+    };
+    if (op_len == 0 or op_len > 32 or a_len > domrpc.arg_max or b_len > domrpc.arg_max) {
+        hostRefusal(self, "dom_op_bounds");
+        return null;
+    }
+    if (self.control.failure) |failure| {
+        hostRefusal(self, @errorName(failure));
+        return null;
+    }
+    if (self.host_buffer) |previous| {
+        self.host_buffer = null;
+        self.release(previous);
+    }
+    const buffer = self.allocate(domrpc.value_max) catch {
+        hostRefusal(self, "OutOfMemory");
+        return null;
+    };
+    const count = dom(host.context, op[0..op_len], a[0..a_len], b[0..b_len], buffer) catch |err| {
+        self.release(buffer);
+        if (self.host_failure == null) self.host_failure = @errorName(err);
+        return null;
+    };
+    self.host_buffer = buffer;
+    if (count == domrpc.dom_null) {
+        out_len.* = domrpc.dom_null;
+        return buffer.ptr;
+    }
+    std.debug.assert(count <= buffer.len);
+    out_len.* = count;
+    return buffer.ptr;
 }
 
 export fn qjs_native_host_failure() ?[*:0]const u8 {

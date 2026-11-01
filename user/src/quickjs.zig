@@ -57,6 +57,15 @@ const Session = struct {
     rpc_out: []u8 = &.{},
     rpc_out_len: usize = 0,
     rpc_clipped: bool = false,
+    // M211b (#3868): the v2 DOM half of the wire. A script's DOM ask
+    // becomes a request line on fd-1 (`rpc_seq` correlates the answer);
+    // `rpc_ops` is the per-script op count the `script_budget_ops`
+    // refusal names; `rpc_ans` is the rendezvous read scratch.
+    rpc_seq: u64 = 0,
+    rpc_ops: u32 = 0,
+    rpc_ans: []u8 = &.{},
+    dom_ready: bool = false,
+    dom_failure: [64:0]u8 = undefined,
 
     fn resources(self: *Session) !void {
         const files = sdk.filesystem().liveFiles() + @intFromBool(self.tty != null);
@@ -367,7 +376,10 @@ const Session = struct {
         defer self.runtime.release(ops);
         const out = try self.runtime.allocate(qjs.domrpc.out_max);
         defer self.runtime.release(out);
+        const ans = try self.runtime.allocate(qjs.domrpc.reply_max);
+        defer self.runtime.release(ans);
         self.rpc_out = out;
+        self.rpc_ans = ans;
         var len: usize = 0;
         if (ops_path) |name| {
             len = try rpcReadOpsFile(name, ops);
@@ -421,18 +433,134 @@ const Session = struct {
         return self.rpcEval(src);
     }
 
+    /// M211b (#3868): the DOM surface is adapter-owned source, not C
+    /// bindings — `virelai.dom` is the only native it rides. `document`
+    /// covers the v1 op set (`doc.title`, `node.text`, `node.attr`) and
+    /// `console.log` becomes a wire op, so a script's log is a serial
+    /// marker the parent prints, not buffered `out`. The refused stub
+    /// names are the known-but-not-admitted op vocabulary; each still
+    /// crosses the wire so the parent's `dom_op_refused` answers it.
+    const dom_prologue =
+        \\var __domops = virelai.dom;
+        \\var document = {};
+        \\document.getElementById = function(id) {
+        \\  var node = {};
+        \\  var sid = String(id);
+        \\  Object.defineProperty(node, "id", { value: sid });
+        \\  Object.defineProperty(node, "textContent", {
+        \\    get: function() { return __domops("node.text", sid); }
+        \\  });
+        \\  node.getAttribute = function(name) {
+        \\    return __domops("node.attr", sid, String(name));
+        \\  };
+        \\  return node;
+        \\};
+        \\Object.defineProperty(document, "title", {
+        \\  get: function() { var t = __domops("doc.title"); return t === null ? "" : t; }
+        \\});
+        \\document.getElementsByTagName = function() { return __domops("nodes.byTag", "x"); };
+        \\document.getElementsByClassName = function() { return __domops("nodes.byClass", "x"); };
+        \\document.querySelector = function() { return __domops("node.query", "x"); };
+        \\document.querySelectorAll = function() { return __domops("node.query", "x"); };
+        \\document.createElement = function() { return __domops("doc.write", "x"); };
+        \\document.write = function() { return __domops("doc.write", "x"); };
+        \\console.log = function() {
+        \\  var parts = [];
+        \\  for (var i = 0; i < arguments.length; i++) parts.push(String(arguments[i]));
+        \\  __domops("console.log", parts.join(" "));
+        \\};
+        \\var setTimeout = function() { return __domops("timer.set", "x"); };
+        \\var setInterval = setTimeout;
+        \\var fetch = function() { return __domops("net.fetch", "x"); };
+        \\var XMLHttpRequest = fetch;
+    ;
+
+    /// Installs the DOM surface once per context — a context reset (a
+    /// budget or refusal that poisoned the graph) drops `dom_ready` so
+    /// the next eval re-installs into the fresh context. A failed
+    /// prologue is a named diagnostic, never a silent half-surface.
+    fn rpcPrologue(self: *Session) void {
+        self.dom_ready = true;
+        const result = self.runtime.eval(dom_prologue, "dom-prologue", self.rpcSink(), false) catch {
+            self.notice("qjs: DomPrologue\n") catch {};
+            return;
+        };
+        if (result.context_reset) self.dom_ready = false;
+        if (result.failure) |failure| {
+            var message: [96]u8 = undefined;
+            self.notice(std.fmt.bufPrint(&message, "qjs: DomPrologue {s}\n", .{@errorName(failure)}) catch "qjs: DomPrologue\n") catch {};
+        }
+    }
+
+    /// One bounded DOM op: name + two args become a request line on fd-1,
+    /// and the poll reads the rendezvous until the matching `seq` answer
+    /// or the script's own deadlines refuse by name. The wait IS the
+    /// script's wall budget — a parent that never answers costs the
+    /// eval's deadline, not the seat's patience.
+    fn hostDom(context: *anyopaque, op: []const u8, a: []const u8, b: []const u8, out: []u8) anyerror!usize {
+        const self: *Session = @ptrCast(@alignCast(context));
+        if (!qjs.domrpc.nameOk(op)) return self.domFail("dom_op_unknown");
+        const clock = self.runtime.control.clock;
+        if (clock.counter(clock.context) -% self.runtime.control.start >= clock.frequency * 4)
+            return self.domFail("script_budget_time");
+        if (self.rpc_ops >= qjs.domrpc.script_ops_max) return self.domFail("script_budget_ops");
+        self.rpc_ops += 1;
+        self.rpc_seq += 1;
+        var line: [qjs.domrpc.reply_max]u8 = undefined;
+        const used = qjs.domrpc.request(&line, op, self.rpc_seq, a, b);
+        self.rpcWrite(line[0..used]) catch return self.domFail("dom_op_wire");
+        while (true) {
+            if (clock.counter(clock.context) -% self.runtime.control.start >= clock.frequency * 4)
+                return self.domFail("script_budget_time");
+            if (!self.runtime.control.poll())
+                return self.domFail(@errorName(self.runtime.control.failure orelse error.Cancelled));
+            const n = rpcReadAnswer(self.rpc_ans) catch 0;
+            if (n > 0) {
+                if (qjs.domrpc.parseAnswer(self.rpc_ans[0..n])) |answer| {
+                    if (answer.seq == self.rpc_seq) {
+                        if (!answer.ok) return self.domFail(answer.err orelse "dom_op_refused");
+                        const value = answer.value orelse return qjs.domrpc.dom_null;
+                        if (value.len > out.len) return self.domFail("dom_op_bounds");
+                        @memcpy(out[0..value.len], value);
+                        return value.len;
+                    }
+                } else |_| {}
+            }
+            // The parent services the request stream on its own ~1 ms
+            // event-loop cadence; a 1 ms sleep keeps the wait inside
+            // the same envelope without spinning the core.
+            _ = sdk.native.call(94, .{ 1_000_000, 0, 0, 0, 0, 0 });
+        }
+    }
+
+    /// Stores a refusal name verbatim — the wire's word or the adapter's
+    /// own — so `qjs_native_host_failure` hands it to JS untouched.
+    fn domFail(self: *Session, word: []const u8) anyerror {
+        const take = @min(word.len, self.dom_failure.len - 1);
+        @memcpy(self.dom_failure[0..take], word[0..take]);
+        self.dom_failure[take] = 0;
+        self.runtime.host_failure = self.dom_failure[0..take :0];
+        return error.DomOpRefused;
+    }
+
     fn rpcEval(self: *Session, src: []const u8) !void {
+        if (!self.dom_ready) self.rpcPrologue();
         self.rpc_out_len = 0;
         self.rpc_clipped = false;
+        self.rpc_ops = 0;
         const result = try self.runtime.eval(src, "dom-rpc", self.rpcSink(), true);
+        if (result.context_reset) self.dom_ready = false;
         if (sdk.stackHighWater() > qjs.limits.stack) return error.StackLimit;
         if (result.failure) |failure| {
-            var buf: [320]u8 = undefined;
-            const line = try std.fmt.bufPrint(&buf, "{{\"op\":\"eval\",\"ok\":false,\"error\":\"{s}\"{s}}}\n", .{ @errorName(failure), if (result.context_reset) ",\"reset\":true" else "" });
+            // M211b: in the worker the engine's wall deadline IS the
+            // per-script time budget — the reply names it.
+            const word: []const u8 = if (failure == error.EvaluationDeadline) "script_budget_time" else @errorName(failure);
+            var buf: [384]u8 = undefined;
+            const line = try std.fmt.bufPrint(&buf, "{{\"op\":\"eval\",\"ok\":false,\"error\":\"{s}\",\"ops\":{d}{s}}}\n", .{ word, self.rpc_ops, if (result.context_reset) ",\"reset\":true" else "" });
             return self.rpcWrite(line);
         }
         var buf: [qjs.domrpc.reply_max]u8 = undefined;
-        var used = (try std.fmt.bufPrint(&buf, "{{\"op\":\"eval\",\"ok\":true,\"out\":\"", .{})).len;
+        var used = (try std.fmt.bufPrint(&buf, "{{\"op\":\"eval\",\"ok\":true,\"ops\":{d},\"out\":\"", .{self.rpc_ops})).len;
         used += qjs.domrpc.escape(buf[used..], self.rpc_out[0..self.rpc_out_len]);
         const tail: []const u8 = if (self.rpc_clipped) "\",\"clipped\":true}\n" else "\"}\n";
         @memcpy(buf[used..][0..tail.len], tail);
@@ -456,6 +584,31 @@ const Session = struct {
 
 /// The kernel stream endpoint index fd-0 binds (file_table.zig stream_base).
 const dom_rpc_stdin: u64 = 0x100;
+
+/// M211b (#3868): the parent→worker half of a DOM request — WEB publishes
+/// each answer atomically here (WriteFileSafe's delete-then-rename), so an
+/// absent or half-published read is simply "not yet", never torn input.
+/// The path is a protocol constant, not argv, so it needs no policy pass.
+const dom_ans_path = "/host/WEBRPC.ANS";
+
+/// Reads the whole rendezvous file through the same generic file ABI the
+/// argv ops path uses (slots 23/24/26) — a fresh open per poll is what
+/// lets the worker see a file the parent REPLACES: the share clamps reads
+/// to the open-time size, so only a new open observes the new answer.
+/// Absent file, torn read or a stale `seq` all return to the poll loop.
+fn rpcReadAnswer(out: []u8) !usize {
+    const fd = sdk.native.call(23, .{ @intFromPtr(dom_ans_path.ptr), dom_ans_path.len, 1, 0, 0, 0 });
+    if (fd < 0) return error.DomRpcAns;
+    defer _ = sdk.native.call(26, .{ @as(u64, @intCast(fd)), 0, 0, 0, 0, 0 });
+    var used: usize = 0;
+    while (used < out.len) {
+        const n = sdk.native.call(24, .{ @as(u64, @intCast(fd)), @intFromPtr(out.ptr + used), out.len - used, 0, 0, 0 });
+        if (n < 0) return error.DomRpcAns;
+        if (n == 0) return used;
+        used += @intCast(n);
+    }
+    return out.len;
+}
 
 /// Reads the argv-named ops spool through the generic file ABI (slots
 /// 23/24/26), not the contained API — the contained pin only answers on the
@@ -514,6 +667,9 @@ fn run(args: *const sdk.startup.Startup) !void {
         .readFile = Session.hostReadFile,
         .writeFile = Session.hostWriteFile,
         .args = args.args[0..args.argc],
+        // M211b: the DOM dispatch exists only on the dom-rpc wire —
+        // every other session's virelai.dom refuses dom_op_refused.
+        .dom = if (options.domrpc) Session.hostDom else null,
     };
     var status: u8 = 0;
     if (options.receipt) |name| session.openReceipt(name) catch |err| {
