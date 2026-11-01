@@ -3106,7 +3106,7 @@ vgate_assert 53 serial-absent 'web: error'
 vgate_assert 53 serial-absent '[EXC] parking:'
 vgate_assert 53 python <<'PY'
 import os, sys
-run = open(os.path.join(os.environ["RUN_DIR"], "run-53.out"), errors="replace").read()
+run = open(os.path.join(os.environ["RUN_DIR"], "run-" + os.environ["VG_TAG"] + ".out"), errors="replace").read()
 n = run.count("answered the guest's SYN")
 if n != 1:
     sys.exit("FAIL: keep-alive leg accepted %d connections, want 1" % n)
@@ -3436,7 +3436,7 @@ vgate_assert 54 output-contains 'NET-TCP-CONNECT: the guest refused the connecti
 vgate_assert 54 python <<'PY'
 import os, sys
 ser = open(os.environ["VG_SER"], errors="replace").read()
-out = open(os.path.join(os.environ["RUN_DIR"], "run-54.out"), errors="replace").read()
+out = open(os.path.join(os.environ["RUN_DIR"], "run-" + os.environ["VG_TAG"] + ".out"), errors="replace").read()
 # Leg 1: the host TLS 1.3 client completed the handshake against the
 # guest's own stack, matched the peer DER to the staged fixture, and read
 # the index page body back over the record layer.
@@ -3563,7 +3563,7 @@ vgate_assert 55 output-contains 'NET-TCP-CONNECT: the guest refused the connecti
 vgate_assert 55 python <<'PY'
 import os, sys
 ser = open(os.environ["VG_SER"], errors="replace").read()
-out = open(os.path.join(os.environ["RUN_DIR"], "run-55.out"), errors="replace").read()
+out = open(os.path.join(os.environ["RUN_DIR"], "run-" + os.environ["VG_TAG"] + ".out"), errors="replace").read()
 # Leg 1: the host TLS 1.3 client completed the handshake against the
 # guest's own stack, matched the peer DER to the staged fixture, and read
 # the index page body back over the record layer.
@@ -3690,7 +3690,7 @@ vgate_assert 56 output-contains 'NET-TCP-CONNECT: the guest refused the connecti
 vgate_assert 56 python <<'PY'
 import os, sys
 ser = open(os.environ["VG_SER"], errors="replace").read()
-out = open(os.path.join(os.environ["RUN_DIR"], "run-56.out"), errors="replace").read()
+out = open(os.path.join(os.environ["RUN_DIR"], "run-" + os.environ["VG_TAG"] + ".out"), errors="replace").read()
 # Leg 1: the host TLS 1.3 client completed the handshake against the
 # guest's own stack, matched the peer DER to the staged fixture, and read
 # the index page body back over the record layer.
