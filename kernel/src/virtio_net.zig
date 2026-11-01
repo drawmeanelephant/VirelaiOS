@@ -1509,7 +1509,7 @@ pub fn net_ndp_poll() NdpPoll {
     var ev: NdpPoll = .{};
     // Issue #3400: ARP shares the stamped tick — the caller stamps
     // `ndp.now_ticks` before this poll, and the same clock bounds the
-    // `pending_reply` learn window the RX drain checks.
+    // `pending` learn window the RX drain checks.
     arp.now_ticks = ndp.now_ticks;
     if (!net_ready) return ev;
     while (ndp.dad_due()) |addr| {
@@ -2602,10 +2602,10 @@ test "virtio_net: RX ARP reply is learned into the bounded table" {
     arp.replies_learned = 0;
     arp.dropped = 0;
     arp.reply_tx_fail = 0;
-    arp.pending_reply = null;
+    arp.pending = @as([arp.pending_slots]arp.Pending, @splat(@as(arp.Pending, .{})));
     defer {
         arp.own_ip = .{ 0, 0, 0, 0 };
-        arp.pending_reply = null;
+        arp.pending = @as([arp.pending_slots]arp.Pending, @splat(@as(arp.Pending, .{})));
     }
     rx_fifo_head = 0;
     rx_fifo_count = 0;
@@ -2649,7 +2649,7 @@ test "virtio_net: RX ARP reply is learned into the bounded table" {
     // wire target) and its matching reply IS learned — no reply is sent.
     var out_len: usize = 0;
     try std.testing.expectEqual(SendResult.ok, net_arp_request(host_ip, &out_len));
-    try std.testing.expectEqualSlices(u8, &host_ip, &arp.pending_reply.?);
+    try std.testing.expect(arp.pendingFor(host_ip));
 
     // M179b: the descriptors all stay posted, so the reply's arrival is
     // an ASYNC device fill of an already-posted buffer — the mock's
@@ -2661,7 +2661,7 @@ test "virtio_net: RX ARP reply is learned into the bounded table" {
     try std.testing.expectEqual(@as(u64, 2), rx_frames);
     try std.testing.expectEqual(@as(u64, 0), arp.replies_sent); // no reply to a reply
     try std.testing.expectEqual(@as(u64, 1), arp.replies_learned);
-    try std.testing.expect(arp.pending_reply == null); // the request was consumed
+    try std.testing.expect(!arp.pendingFor(host_ip)); // the request was consumed
     try std.testing.expectEqual(@as(u64, 1), net_dev.tx_frames); // our request only
     try std.testing.expectEqualSlices(u8, &host_mac, &arp.lookup(host_ip).?);
 }
