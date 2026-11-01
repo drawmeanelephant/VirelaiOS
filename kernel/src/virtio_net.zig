@@ -1578,6 +1578,7 @@ pub const NdpPoll = struct {
     promoted_g6: bool = false,
     rs_sent: bool = false, // a Router Solicitation went out this poll
     rxq_reset: bool = false, // #3863: the stall recovery fired this poll
+    rxq_reset_fail: bool = false, // it fired and transport_init refused
 };
 
 pub fn net_ndp_poll() NdpPoll {
@@ -1630,6 +1631,7 @@ pub fn net_ndp_poll() NdpPoll {
                 ev.rxq_reset = true;
                 _ = net_rx_arm();
             } else {
+                ev.rxq_reset_fail = true;
                 net_log.log_fmt("RXQ reset failed", .{});
             }
             // Read the used index as it stands: 0 after a real reset,

@@ -582,6 +582,14 @@ pub fn net_ndp_autonomous(m: *Monitor) void {
         m.console.print_u64(virtio_net.rx_resets);
         m.console.puts("\n");
     }
+    if (ev.rxq_reset_fail) {
+        // The attempt fired and transport_init refused — `net_fail`
+        // names the exact step, the serial shows it without a `net
+        // log` leg.
+        m.console.puts("net: rxq reset-fail ");
+        m.console.puts(virtio_net.net_fail);
+        m.console.puts("\n");
+    }
     if (virtio_net.ndp.last_conflict) |c| {
         const n = virtio_net.ipv6.format_ip6(c, &buf);
         m.console.puts("net: v6 dad-conflict ");
