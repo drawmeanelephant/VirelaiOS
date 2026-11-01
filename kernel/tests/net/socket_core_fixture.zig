@@ -154,7 +154,7 @@ fn scenarios() !void {
     try check(try c.send(7, first, input[0..length], 0) == length);
     // M213b: the bound is the send window now — shrink cwnd to the
     // in-flight span and the next write still meets WouldBlock honestly.
-    const first_conn = c.children[(first.value & core.slot_mask) - core.conn_slot_base].?;
+    const first_conn = &c.children[(first.value & core.slot_mask) - core.conn_slot_base].?;
     first_conn.cwnd = @intCast(length);
     try expected(error.WouldBlock, c.send(7, first, "overwrite", 0));
     first_conn.cwnd = core.send_window;
