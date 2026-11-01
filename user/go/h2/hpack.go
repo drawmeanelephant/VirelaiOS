@@ -283,8 +283,12 @@ func hpackString(block []byte, pos *int) (string, error) {
 // encodeRequest renders the one request header shape the fetch path
 // sends: indexed static entries where the table carries an exact match,
 // literal-without-indexing for :authority and :path — no dynamic-table
-// writes, no Huffman, so the block is byte-deterministic.
-func encodeRequest(authority, path string) []byte {
+// writes, no Huffman, so the block is byte-deterministic. extra fields
+// (the consumers' h1 parity headers) ride as literal-without-indexing
+// literal names; a name that is not a lowercase token or a value carrying
+// a control byte is refused by name — the h2 grammar forbids uppercase
+// names outright (RFC 9113 §8.2.1) and the h1 hygiene rules still apply.
+func encodeRequest(authority, path string, extra []Field) ([]byte, error) {
 	dst := appendHpackIndex(nil, 7, 0x80, 2) // :method GET
 	dst = appendHpackIndex(dst, 7, 0x80, 7)  // :scheme https
 	// :authority — literal, indexed name (static index 1).
@@ -293,7 +297,43 @@ func encodeRequest(authority, path string) []byte {
 	// :path — literal, indexed name (static index 4).
 	dst = appendHpackIndex(dst, 4, 0x00, 4)
 	dst = appendHpackString(dst, path)
-	return dst
+	for _, f := range extra {
+		if !validFieldName(f.Name) || !validFieldValue(f.Value) {
+			return nil, ErrHeaderBlock
+		}
+		dst = appendHpackIndex(dst, 4, 0x00, 0) // literal, new name
+		dst = appendHpackString(dst, f.Name)
+		dst = appendHpackString(dst, f.Value)
+	}
+	return dst, nil
+}
+
+// validFieldName is the h2 request-field bound: a nonempty lowercase
+// token (RFC 9113 §8.2.1 fields are lowercase by definition).
+func validFieldName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for _, c := range name {
+		if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' ||
+			c == '!' || c == '#' || c == '$' || c == '%' || c == '&' ||
+			c == '\'' || c == '*' || c == '+' || c == '-' || c == '.' ||
+			c == '^' || c == '_' || c == '`' || c == '|' || c == '~') {
+			return false
+		}
+	}
+	return true
+}
+
+// validFieldValue refuses the bytes that could not ride an HTTP/1.1
+// field — NUL, CR, LF — so the two engines keep one hygiene bar.
+func validFieldValue(value string) bool {
+	for _, c := range value {
+		if c == 0 || c == '\r' || c == '\n' {
+			return false
+		}
+	}
+	return true
 }
 
 // appendHpackInt appends an N-bit-prefix integer whose first byte already

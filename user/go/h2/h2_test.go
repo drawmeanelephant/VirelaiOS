@@ -89,6 +89,74 @@ func TestGetRoundTrip(t *testing.T) {
 	}
 }
 
+// GetWith appends the parity headers as literal new-name fields; the
+// request block stays byte-deterministic.
+func TestGetWithExtraFields(t *testing.T) {
+	s := &scriptStream{in: okTranscript("ok")}
+	c := NewConn(s)
+	extra := []Field{
+		{Name: "accept-encoding", Value: "gzip"},
+		{Name: "cookie", Value: "a=b"},
+	}
+	resp, err := c.GetWith("a", "/", extra)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Status != 200 {
+		t.Fatalf("status %d", resp.Status)
+	}
+	// The tail of the request HEADERS block carries the two literal
+	// fields, new-name without indexing: 0x00 name-len name val-len val.
+	tail := []byte{0x00, 15}
+	tail = append(tail, "accept-encoding"...)
+	tail = append(tail, 4, 'g', 'z', 'i', 'p')
+	tail = append(tail, 0x00, 6)
+	tail = append(tail, "cookie"...)
+	tail = append(tail, 3, 'a', '=', 'b')
+	if !bytes.Contains(s.out, tail) {
+		t.Fatalf("request block missing extra fields: %x", s.out)
+	}
+}
+
+func TestGetWithRefusedField(t *testing.T) {
+	for _, f := range []Field{
+		{Name: "Cookie", Value: "a=b"},   // uppercase names are malformed h2
+		{Name: "cookie", Value: "a\r\nb"}, // h1 hygiene on the h2 wire
+		{Name: "", Value: "x"},
+	} {
+		s := &scriptStream{in: okTranscript("ok")}
+		_, err := NewConn(s).GetWith("a", "/", []Field{f})
+		if !errors.Is(err, ErrHeaderBlock) {
+			t.Fatalf("field %+v: err %v, want ErrHeaderBlock", f, err)
+		}
+	}
+}
+
+// Sequential requests on one connection ride 1, 3, 5 — the marker the
+// consumers print to prove stream reuse.
+func TestNextStreamIDSequence(t *testing.T) {
+	in := append(settings(), okTranscript("one")[len(settings()):]...)
+	in = append(in, fr(frameHEADERS, flagEndHeaders, 3, []byte{0x88})...)
+	in = append(in, fr(frameDATA, flagEndStream, 3, []byte("two"))...)
+	s := &scriptStream{in: in}
+	c := NewConn(s)
+	if c.NextStreamID() != 1 {
+		t.Fatalf("first stream id %d", c.NextStreamID())
+	}
+	if _, err := c.Get("a", "/1"); err != nil {
+		t.Fatal(err)
+	}
+	if c.NextStreamID() != 3 {
+		t.Fatalf("second stream id %d", c.NextStreamID())
+	}
+	if _, err := c.Get("a", "/2"); err != nil {
+		t.Fatal(err)
+	}
+	if c.NextStreamID() != 5 {
+		t.Fatalf("third stream id %d", c.NextStreamID())
+	}
+}
+
 func TestPushPromiseRefused(t *testing.T) {
 	pp := fr(framePUSHPROMISE, flagEndHeaders, 1, append([]byte{0, 0, 0, 2}, 0x88))
 	head := fr(frameHEADERS, flagEndHeaders, 1, []byte{0x88})
