@@ -104,5 +104,5 @@ seat-mbox-burst	>=	24	32	-8	#2487; ring bound, measured post-fix on this host
 seat-key-latency	<=	73876	36938	x2	#3882; re-pinned post-input-paint fix — worst observed input->present across postures was 36,938 (session devices + concurrent VM); corpus shape 3,094/3,967 avg/max on this host
 timer-jitter	<=	23480	4696	x5	#3040; new leg, best observed of four boots (tail: 17823)
 net-rx	>=	4955.5	19822	-75%	#3156; re-pinned post-M179d 16 KiB receive window, best of K=3 samples 19822/17664/17266 on this host
-net-tx-bulk	>=	83	332	-75%	#3877; provisional — pinned from stop-and-wait net-tx until the windowed leg is measured on this host
+net-tx-bulk	>=	1737	6948	-75%	#3877; measured 2026-11-01 on this host (K=3 samples [5038,6948,—] best=6948, same -75% margin as the other rows)
 net-tx	>=	83	332	-75%	#3147; best of 6 same-shape samples across two runs on this host (71/139/176/193/302/332 — ~4.7x spread)
