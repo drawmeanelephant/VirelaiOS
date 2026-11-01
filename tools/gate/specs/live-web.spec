@@ -2263,6 +2263,7 @@ PY
 # evidence was produced at — so the 42,95 click does not depend on the
 # settings row an earlier boot happened to leave (boot 43 sets large).
 vgate_file script-dl.txt <<'EOF'
+vf rm WEB-DOWNLOADS.TXT
 settings set font_size medium
 exec WEB.ELF /host/DLPAGE.HTML
 EOF
