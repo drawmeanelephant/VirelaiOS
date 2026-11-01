@@ -49,10 +49,10 @@ exec WEB.ELF /host/PAGE.HTML
 EOF
 
 # M211a (#3867): vgate_repeat iteration hygiene — the armed share persists
-# across iterations, so a leg that asserts accumulated FLINT state must
-# start each boot from the K=1 baseline. Leg 40 owns the bookmark chain's
-# head: its script drops the atoms file before exec so iterations 2+ see
-# an empty store (leg 41 deliberately keeps the residue — it loads it).
+# across iterations, so the bookmark chain's head (leg 40) drops the atoms
+# file before exec; legs 41 and 46-48 deliberately keep the residue — the
+# chain's expected state IS leg 40's surviving atom plus each leg's own
+# adds, exactly as at K=1.
 vgate_file script-local40.txt <<'EOF'
 vf rm FLINT/ws/bookmarks/ATOMS.jsonl
 exec WEB.ELF /host/PAGE.HTML
@@ -2422,7 +2422,6 @@ PY
 # approved golden whatever settings row boot 43 left.
 
 vgate_file script-journey.txt <<'EOF'
-vf rm FLINT/ws/bookmarks/ATOMS.jsonl
 settings set font_size medium
 exec WEB.ELF /host/PAGE.HTML
 EOF
