@@ -455,19 +455,43 @@ pub var rx_pokes: u64 = 0;
 /// device never looks. Only a device reset returns both sides to 0.
 /// It fires only while a solicitation is outstanding (a reply is
 /// provably owed — the honest loss signal) and the used ring has
-/// stayed silent for `stall_reset_polls`, at most `stall_reset_max`
-/// times per silent epoch (`rx_reset_n` re-arms on any completion)
-/// and `stall_reset_ticks` ticks apart — a true platform floor then
+/// stayed silent for `stall_reset_polls` polls AND
+/// `stall_reset_ticks` ticks, at most `stall_reset_max` times per
+/// silent epoch (`rx_reset_n` re-arms on any completion) and
+/// `stall_reset_ticks` ticks apart — a true platform floor then
 /// fails bounded, not looping. `rx_reset_tick` starts at 0 (never
 /// maxInt — the `now_ticks -| tick` saturation made the first
 /// comparison permanently false on c81b96dc; the a-01 artifacts
 /// showed the reset could not have fired).
+///
+/// The tick term is load-bearing (#3863 session 7): polls run at the
+/// idle-loop rate — ~10-50k/s measured while the console is
+/// relinquished or an EL0 app owns the shell (`pk` reached 12M in one
+/// gate run) — so a 512-poll silence is ~10-50 ms, an ordinary
+/// inter-frame gap, not a wedge. With a permanently-armed
+/// solicitation (#3815's .99 watchdog arm keeps `owed` set for the
+/// whole run) every quiet flicker fired a full device reset, each one
+/// eating whatever datagrams VZ had read-but-not-completed — the
+/// 22-reset oscillation that starved multi-segment transfers on the
+/// store lanes. A real wedge persists for whole leg windows
+/// (observed: minutes of used-ring silence); a healthy network
+/// completes inside every inter-frame gap, so the silence bound must
+/// be wall-clock, not poll count. `rx_progress_tick` stamps the last
+/// observed completion (and each reset, so post-reset silence is
+/// measured fresh). `stall_silent_ticks` is the bound: ~1-3 s of
+/// observed silence — far past any healthy inter-frame gap (the
+/// stop-and-wait socket paces segments at ~1-100 ms) yet still inside
+/// the store channel's 5 s recv bound, so a real wedge mid-transfer
+/// is recovered soon enough for the leg to survive. The retry
+/// spacing stays `stall_reset_ticks`.
 var rx_silent_seen: u16 = 0;
 pub var rx_silent_polls: u32 = 0; // sampled by the `net` report (#3863)
+var rx_progress_tick: u64 = 0;
 var rx_reset_tick: u64 = 0;
 var rx_reset_n: u8 = 0;
 var rxq_stall_logged: bool = false;
 const stall_reset_polls: u32 = 512;
+const stall_silent_ticks: u64 = 2;
 const stall_reset_ticks: u64 = 8;
 const stall_reset_max: u8 = 4;
 pub var rx_resets: u64 = 0;
@@ -1606,6 +1630,7 @@ pub fn net_ndp_poll() NdpPoll {
             rx_silent_polls = 0;
             rx_reset_n = 0; // a completion ends the silent epoch
             rxq_stall_logged = false;
+            rx_progress_tick = ndp.now_ticks;
         } else {
             rx_silent_polls +%= 1;
         }
@@ -1619,11 +1644,23 @@ pub fn net_ndp_poll() NdpPoll {
         if (owed and rx_silent_polls >= stall_reset_polls and !rxq_stall_logged) {
             // Once per silent epoch: prove the observable conditions
             // were seen — the reset line (or its absence) then names
-            // the gate as tick/cap vs never-opened.
+            // the gate as tick/cap vs never-opened. The marker alone is
+            // NOT a wedge: at racing-poll rates 512 silent polls is
+            // tens of ms of ordinary inter-frame quiet — only a marker
+            // followed by `rxq reset` (the tick-bound guard below) was
+            // sustained silence.
             rxq_stall_logged = true;
             ev.rxq_stall = true;
         }
         if (owed and rx_silent_polls >= stall_reset_polls and
+            // #3863 session 7: the silence must ALSO persist in wall
+            // time. Polls race at the idle-loop rate — 512 silent
+            // polls is ~10-50 ms there, an ordinary inter-frame gap
+            // that fired resets on every quiet flicker under a
+            // permanently-owed solicitation. A wedged hop stays silent
+            // for whole leg windows; a healthy one completes inside
+            // each gap — the tick bound is the wedge discriminator.
+            ndp.now_ticks -| rx_progress_tick >= stall_silent_ticks and
             rx_reset_n < stall_reset_max and
             // The first attempt is ungated — `stall_reset_ticks` spaces
             // RETRIES only. Gating the first on `now_ticks >= 8` made it
@@ -1656,6 +1693,10 @@ pub fn net_ndp_poll() NdpPoll {
             // continues counting from the attempt, never a spurious
             // "completion" that would re-arm the epoch.
             rx_silent_seen = dev.rx_used.idx;
+            // Post-reset silence measures fresh from the attempt —
+            // the recovery itself gets `stall_reset_ticks` to produce
+            // a completion before the next retry.
+            rx_progress_tick = ndp.now_ticks;
         }
     }
     // #3863: bounded ARP retransmit — an unanswered solicitation is
@@ -2747,6 +2788,7 @@ test "virtio_net: #3863 RXQ stall reset — silent ring + owed solicitation fire
         arp.pending = @as([arp.pending_slots]arp.Pending, @splat(@as(arp.Pending, .{})));
         rx_silent_seen = 0;
         rx_silent_polls = 0;
+        rx_progress_tick = 0;
         rx_reset_tick = 0;
         rx_reset_n = 0;
     }
@@ -2767,14 +2809,12 @@ test "virtio_net: #3863 RXQ stall reset — silent ring + owed solicitation fire
     rx_pokes = 0;
     rx_silent_seen = 0;
     rx_silent_polls = 0;
+    rx_progress_tick = 0;
     rx_reset_tick = 0;
     rx_reset_n = 0;
     rx_resets = 0;
-    // Ticks start below stall_reset_ticks — the live gate's observed
-    // scale (timer.ticks counts heartbeat services, ~5 per whole run):
-    // the FIRST attempt must still fire — retry spacing is tick-bound.
-    ndp.now_ticks = 5;
-    arp.now_ticks = 5;
+    ndp.now_ticks = 1;
+    arp.now_ticks = 1;
     arp.pending = @as([arp.pending_slots]arp.Pending, @splat(@as(arp.Pending, .{})));
     arp.replies_learned = 0;
     ipv6.link_local_state = .none; // no RS train / DAD probe this poll
@@ -2796,13 +2836,25 @@ test "virtio_net: #3863 RXQ stall reset — silent ring + owed solicitation fire
     // An outstanding solicitation — a reply is provably owed.
     arp.pending[0] = .{ .valid = true, .target = .{ 10, 0, 0, 0x17 }, .tick = 5 };
 
-    // Silence accumulates under the mock (the device never completes);
-    // the reset must fire once the 512-poll window fills. c81b96dc's
-    // guard made this dead code: `now_ticks -| maxInt` saturates to 0,
-    // so the tick comparison was permanently false — the a-01 stall
-    // was unrecoverable by construction.
+    // Silence accumulates under the mock (the device never completes).
+    // #3863 session 7 — the new discriminator: 512 silent polls inside
+    // `stall_silent_ticks` ticks is ordinary inter-frame quiet at
+    // racing-poll rates and must NOT fire (a permanently-owed
+    // solicitation turned it into the 22-reset oscillation on the
+    // store lanes). Silence must persist in wall time, not poll count.
     var fired = false;
     var i: u32 = 0;
+    while (i < stall_reset_polls) : (i += 1) {
+        fired = fired or net_ndp_poll().rxq_reset;
+    }
+    try std.testing.expect(!fired);
+    try std.testing.expectEqual(@as(u64, 0), rx_resets);
+
+    // The same silence past the silent bound IS the wedge — fire.
+    ndp.now_ticks += stall_silent_ticks;
+    arp.now_ticks = ndp.now_ticks;
+    fired = false;
+    i = 0;
     while (i < stall_reset_polls) : (i += 1) {
         fired = fired or net_ndp_poll().rxq_reset;
     }
@@ -2811,8 +2863,12 @@ test "virtio_net: #3863 RXQ stall reset — silent ring + owed solicitation fire
     try std.testing.expect(rx_armed);
     try std.testing.expectEqual(@as(u16, queue_size), net_dev.rx_avail.idx);
 
-    // The same silent window inside `stall_reset_ticks` must NOT
-    // refire — the bound is per tick, not per poll.
+    // A continued silent window inside `stall_reset_ticks` of the
+    // attempt must NOT refire — the silence bound passes again, but
+    // retry spacing is the longer `stall_reset_ticks`, and the
+    // post-reset silence clock restarts at the attempt.
+    ndp.now_ticks += stall_silent_ticks;
+    arp.now_ticks = ndp.now_ticks;
     fired = false;
     i = 0;
     while (i < stall_reset_polls) : (i += 1) {
@@ -2855,6 +2911,9 @@ test "virtio_net: #3863 RXQ stall reset — silent ring + owed solicitation fire
     _ = net_ndp_poll();
     try std.testing.expectEqual(@as(u8, 0), rx_reset_n);
     try std.testing.expectEqual(@as(u32, 0), rx_silent_polls);
+    // The completion also re-stamps the silence clock — a fresh quiet
+    // stretch measures from it, not from the stale epoch.
+    try std.testing.expectEqual(ndp.now_ticks, rx_progress_tick);
 }
 
 test "virtio_net: RX ARP request is answered — byte-exact reply on TX over a mock" {
