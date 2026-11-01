@@ -240,9 +240,17 @@ func edgeIndex(i, last int64) (int64, int64) {
 // upscale/downscale path for images and icons. Bilinear with 16.16 weights,
 // channels lerped premultiplied so thin alpha edges do not darken, then
 // composited by the §3.3.2 shape rule. An empty dst or invalid src is a
-// no-op.
+// no-op. A blit that shrinks BOTH axes takes blitBox's exact area filter
+// instead: bilinear's four taps undersample a footprint wider than one
+// source pixel and speckle — #3881 measured 64px icon masters painted at
+// 16px rows and the 256px emblem at the 16px god-menu slot. A blit that
+// shrinks only one axis keeps the bilinear path.
 func BlitScaled(c *BufferCanvas, src *BufferCanvas, dst widgets.Rect) {
 	if !valid(c) || !valid(src) || dst.W <= 0 || dst.H <= 0 {
+		return
+	}
+	if dst.W < src.W && dst.H < src.H {
+		blitBox(c, src, dst)
 		return
 	}
 	x0, y0, x1, y1 := clipRect(c, dst)
@@ -284,6 +292,76 @@ func BlitScaled(c *BufferCanvas, src *BufferCanvas, dst widgets.Rect) {
 			// Un-premultiply the weighted channel sums; pa>0 here.
 			channel := func(pm int64) uint32 {
 				pm = (pm + 1<<31) >> 32
+				return uint32(min((pm+pa/2)/pa, 255))
+			}
+			rgb := uint32(pa)<<24 | channel(pr)<<16 | channel(pg)<<8 | channel(pb)
+			i := y*c.W + x
+			c.Pix[i] = blend(c.Pix[i], rgb, samples)
+		}
+	}
+}
+
+// axisWeight normalizes a 16.16 footprint share to the bilinear path's
+// 2^16-per-axis convention: v·65536/span for v ≤ span. The 128-bit product
+// keeps the divide exact at any source size.
+func axisWeight(v, span int64) int64 {
+	hi, lo := bits.Mul64(uint64(v), 1<<16)
+	q, _ := bits.Div64(hi, lo, uint64(span))
+	return int64(q)
+}
+
+// blitBox is BlitScaled's both-axes downscale half: an exact area filter —
+// each dst pixel accumulates every source texel under its [x0,x1)×[y0,y1)
+// footprint, premultiplied, with tap weights normalized to the 16.16-per-
+// axis convention so the unpremultiply and composite rules are the
+// bilinear path's own. Footprints tile the source exactly, so the tap
+// range never needs edgeIndex's clamp.
+func blitBox(c *BufferCanvas, src *BufferCanvas, dst widgets.Rect) {
+	x0, y0, x1, y1 := clipRect(c, dst)
+	sw, sh := int64(src.W), int64(src.H)
+	dw, dh := int64(dst.W), int64(dst.H)
+	for y := y0; y < y1; y++ {
+		fy0 := (int64(y) - int64(dst.Y)) * sh * 65536 / dh
+		fy1 := (int64(y) - int64(dst.Y) + 1) * sh * 65536 / dh
+		spanY := fy1 - fy0
+		if spanY <= 0 {
+			continue
+		}
+		jy0, jy1 := fy0>>16, (fy1-1)>>16
+		for x := x0; x < x1; x++ {
+			fx0 := (int64(x) - int64(dst.X)) * sw * 65536 / dw
+			fx1 := (int64(x) - int64(dst.X) + 1) * sw * 65536 / dw
+			spanX := fx1 - fx0
+			if spanX <= 0 {
+				continue
+			}
+			var pa, pr, pg, pb, wsum int64
+			for jy := jy0; jy <= jy1; jy++ {
+				wy := min(fy1, (jy+1)<<16) - max(fy0, jy<<16)
+				wyn := axisWeight(wy, spanY)
+				row := jy * sw
+				for jx := fx0>>16; jx <= (fx1-1)>>16; jx++ {
+					wx := min(fx1, (jx+1)<<16) - max(fx0, jx<<16)
+					w := axisWeight(wx, spanX) * wyn
+					p := src.Pix[row+jx]
+					a := int64(p >> 24)
+					pa += a * w
+					pr += a * int64(p>>16&0xff) * w
+					pg += a * int64(p>>8&0xff) * w
+					pb += a * int64(p&0xff) * w
+					wsum += w
+				}
+			}
+			if wsum == 0 {
+				continue
+			}
+			pa = (pa + wsum/2) / wsum
+			if pa == 0 {
+				continue
+			}
+			// Un-premultiply the weighted channel sums; pa>0 here.
+			channel := func(pm int64) uint32 {
+				pm = (pm + wsum/2) / wsum
 				return uint32(min((pm+pa/2)/pa, 255))
 			}
 			rgb := uint32(pa)<<24 | channel(pr)<<16 | channel(pg)<<8 | channel(pb)
