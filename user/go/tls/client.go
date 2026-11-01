@@ -51,6 +51,7 @@ const (
 	extServerName          = 0
 	extSupportedGroups     = 10
 	extSignatureAlgorithms = 13
+	extALPN                = 16
 	extSupportedVersions   = 43
 	extKeyShare            = 51
 	extPSKKeyExchangeModes = 45
@@ -153,6 +154,12 @@ type client struct {
 	leafDER           []byte
 	intermediates     [][]byte
 	pendingClientCert bool
+
+	// alpn is the offered ProtocolNameList (RFC 7301); empty means no ALPN
+	// extension is sent at all. alpnNegotiated is the server's pick from
+	// EncryptedExtensions — "" when the peer negotiated nothing.
+	alpn            []string
+	alpnNegotiated  string
 
 	// negotiated
 	lastValidation validationResult
@@ -311,6 +318,21 @@ func (c *client) buildClientHello(random, sessionID, x25519Pub [32]byte) []byte 
 		w.patch16(at)
 	}
 
+	// application_layer_protocol_negotiation (RFC 7301), sent only when the
+	// caller offered a list — absent otherwise, so the no-ALPN ClientHello
+	// keeps its byte shape.
+	if len(c.alpn) > 0 {
+		w.u16(extALPN)
+		at := w.reserve16()
+		inner := w.reserve16() // ProtocolNameList
+		for _, p := range c.alpn {
+			w.u8(byte(len(p)))
+			w.raw([]byte(p))
+		}
+		w.patch16(inner)
+		w.patch16(at)
+	}
+
 	w.patch16(extAt)
 	// Back-patch the handshake header length (hdrLenAt is the u24 field).
 	bodyLen := w.len - hdrLenAt - 3
@@ -416,9 +438,17 @@ func (c *client) processMessage(msgType byte, msg []byte, priv [32]byte) error {
 		if c.state != stateReceivedServerHello {
 			return ErrUnexpectedState
 		}
-		if err := parseEncryptedExtensions(body); err != nil {
+		alpn, err := parseEncryptedExtensions(body)
+		if err != nil {
 			return err
 		}
+		// RFC 7301: the server may answer only with a protocol the client
+		// offered, and may not send ALPN at all when none was offered. A
+		// pick outside the list is a negotiation violation — fail closed.
+		if alpn != "" && !offeredALPN(c.alpn, alpn) {
+			return ErrALPNProtocol
+		}
+		c.alpnNegotiated = alpn
 		c.transcript.write(msg)
 		c.state = stateReceivedEncryptedExtensions
 	case hsCertificate:
@@ -541,22 +571,51 @@ func parseServerHello(body []byte) (uint16, [32]byte, bool, error) {
 	return suite, peer, ok, nil
 }
 
-func parseEncryptedExtensions(body []byte) error {
+// parseEncryptedExtensions walks the extension list and extracts the ALPN
+// pick ("" when the extension is absent). The ALPN extension carries one
+// ProtocolNameList holding exactly the selected name.
+func parseEncryptedExtensions(body []byte) (string, error) {
 	r := newWireReader(body)
 	exts, err := r.vec16()
 	if err != nil {
-		return err
+		return "", err
 	}
+	alpn := ""
 	er := newWireReader(exts)
 	for !er.atEnd() {
-		if _, err := er.u16(); err != nil {
-			return err
+		at, err := er.u16()
+		if err != nil {
+			return "", err
 		}
-		if _, err := er.vec16(); err != nil {
-			return err
+		b2, err := er.vec16()
+		if err != nil {
+			return "", err
+		}
+		if at != extALPN {
+			continue
+		}
+		ar := newWireReader(b2)
+		list, err := ar.vec16()
+		if err != nil || !ar.atEnd() {
+			return "", errExtension
+		}
+		lr := newWireReader(list)
+		name, err := lr.vec8()
+		if err != nil || !lr.atEnd() || len(name) == 0 {
+			return "", errExtension
+		}
+		alpn = string(name)
+	}
+	return alpn, nil
+}
+
+func offeredALPN(offered []string, picked string) bool {
+	for _, p := range offered {
+		if p == picked {
+			return true
 		}
 	}
-	return nil
+	return false
 }
 
 func parseCertificateVerify(body []byte) (uint16, []byte, error) {
