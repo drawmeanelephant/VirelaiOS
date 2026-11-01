@@ -91,6 +91,15 @@ def main():
     if not tag and "VG_SER" not in os.environ:
         raise SystemExit("cannot identify snapshot boot")
     serial_path = os.environ.get("VG_SER") or str(Path(sys.argv[1]).parent / ("vm-serial-" + tag[1] + ".log"))
+    if not Path(serial_path).is_file():
+        # M211a: under vgate_repeat the harness tags serials
+        # vm-serial-<leg>-<iter>.log; the snapshot assert's env carries no
+        # VG_SER, and the assert for the just-finished iteration wants the
+        # newest matching serial.
+        cands = sorted(Path(sys.argv[1]).parent.glob("vm-serial-" + tag[1] + "-*.log"),
+                       key=lambda p: p.stat().st_mtime)
+        if cands:
+            serial_path = str(cands[-1])
     serial = Path(serial_path).read_text(errors="replace")
     rows = re.findall(r"^web: viewport css=1280x720 x=(\d+) y=(\d+) w=(\d+) h=(\d+) s=(\d+)$",
                       serial, re.MULTILINE)
