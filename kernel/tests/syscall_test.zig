@@ -3939,7 +3939,7 @@ test "B6 syscall: native routing two handles ownership EFAULT partial reads rese
         native_inject(port, tcp.flag_syn, 10, 0, "");
         _ = dispatch(80, .{ 5, listen, 0, 0, 0, 0 }, &frame);
         const c = ns.sockets.children[i].?;
-        try std.testing.expect(c.tx_started);
+        try std.testing.expect(c.tx_wire);
         native_inject(port, tcp.flag_ack, 11, c.snd_nxt, "abcdef");
     }
     const a = dispatch(80, .{ 1, listen, 0, 0, 0, 0 }, &frame);
@@ -4020,20 +4020,23 @@ test "syscall: sys_tcp_send waits a bounded drain for the TX slot's ACK — no E
     native_inject_to(c.local.port, 9999, tcp.flag_syn | tcp.flag_ack, 77, c.snd_nxt, "");
     try std.testing.expect(c.state == .established);
 
-    // The first send commits and holds the bounded TX slot in flight —
-    // exactly the occupant that used to make the next send return -11.
+    // The first send commits and holds a segment in flight — under
+    // M213b's send window that is one queued slot of twelve, not the
+    // lone in-flight occupant, so window room already admits the next.
     try std.testing.expectEqual(@as(u64, 6), dispatch(sys_tcp_send, .{ @intFromPtr(&sendbuf), 6, 0, 0, 0, 0 }, &frame));
-    try std.testing.expect(c.tx_len != 0);
-    try std.testing.expect(c.tx_started);
+    try std.testing.expect(c.tx_count != 0);
+    try std.testing.expect(c.tx_wire);
 
-    // The peer's ACK arrives while the slot is occupied: the handler's
+    // The peer's ACK arrives while data is in flight: the handler's
     // drain admits it mid-call and the send commits instead of EAGAIN.
     native_prime_rx(c.local.port, 9999, tcp.flag_ack, c.rcv_nxt, c.snd_nxt, "");
     try std.testing.expectEqual(@as(u64, 6), dispatch(sys_tcp_send, .{ @intFromPtr(&sendbuf), 6, 0, 0, 0, 0 }, &frame));
-    try std.testing.expect(c.tx_len != 0); // the new segment is the occupant now
+    try std.testing.expect(c.tx_count != 0); // the new segment is the occupant now
 
-    // Nothing inbound ever frees the slot: the wait is bounded and the
-    // seam's honest EAGAIN row survives only at the bound.
+    // Fill the send window itself — cwnd shrunk to the in-flight span is
+    // the honest bound now — and nothing inbound frees it: the wait is
+    // bounded and the seam's honest EAGAIN row survives only at the bound.
+    c.cwnd = @intCast(c.snd_nxt -% c.snd_una);
     try std.testing.expectEqual(error_result(.eagain), dispatch(sys_tcp_send, .{ @intFromPtr(&sendbuf), 6, 0, 0, 0, 0 }, &frame));
 }
 

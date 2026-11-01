@@ -2477,6 +2477,14 @@ fn sock_diag_watch() void {
         if (entry.*) |*c| {
             // Keep a live snapshot so a straight release can still name
             // the conn's last shape (the fields are gone by then).
+            // M213b (#3877): the TX state lives per queued segment now —
+            // the tombstone reports the ring's shape: live slots, the
+            // oldest unacknowledged segment's retry count and its last
+            // transmit stamp.
+            const head: ?*const native_socket.core.TxSeg = if (c.tx_count != 0)
+                &c.tpool.segs[c.tx_head]
+            else
+                null;
             diag_child_tomb[i] = .{
                 .slot = i,
                 .outcome = c.outcome,
@@ -2484,13 +2492,13 @@ fn sock_diag_watch() void {
                 .local_port = c.local.port,
                 .remote_port = c.remote.port,
                 .owner = c.owner,
-                .retries = c.retries,
-                .tx_len = c.tx_len,
+                .retries = if (head) |h| h.retries else 0,
+                .tx_len = c.tx_count,
                 .rx_len = c.rx_len,
                 .peer_window = c.peer_window,
                 .in_flight = c.snd_nxt -% c.snd_una,
                 .rto_ms = c.rto_ns_cur / 1_000_000,
-                .last_tx_age_ms = (now -| c.last_tx) / 1_000_000,
+                .last_tx_age_ms = if (head) |h| (now -| h.last_tx) / 1_000_000 else 0,
                 .tx_poll_timeouts = tx_poll_timeouts,
             };
             diag_child_state[i] = c.state;
@@ -2543,7 +2551,10 @@ pub fn net_diag_counters() ?struct { c: native_socket.core.Counters, tpt: u64, r
 /// NET lock held. Bounded maintenance even with no application traffic.
 pub fn net_socket_poll() void {
     native_socket.poll();
-    for (0..native_socket.core.conn_limit * 2 + 1) |_| {
+    // M213b (#3877): the flush budget tracks the send window — one call
+    // emits one segment, so a poll must be able to drain a full queue
+    // per connection plus the control/refusal extras, not two segments.
+    for (0..native_socket.core.conn_limit * native_socket.core.send_max_segs + 2) |_| {
         if (native_socket.sockets.flush(null, socket_transmit) != .sent) break;
     }
     sock_diag_watch();
