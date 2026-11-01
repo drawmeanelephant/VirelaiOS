@@ -1072,8 +1072,9 @@ if len(blobs) != 2:
 
 def ircstate(b):
     # v2 is the M147b layout; v3 (M152e #2919) appends the /hl rule set —
-    # a u16 count of u16-prefixed words after the chan records.
-    if b[0] not in (2, 3):
+    # a u16 count of u16-prefixed words after the chan records; v4
+    # (M212c #3874) appends the ws request path as one u16-prefixed str.
+    if b[0] not in (2, 3, 4):
         sys.exit("ircState ver %d" % b[0])
     o = 2
     def u16():
@@ -1095,10 +1096,13 @@ def ircstate(b):
     if b[0] >= 3:
         for _ in range(u16()):
             rules.append(s())
+    wspath = ""
+    if b[0] >= 4:
+        wspath = s()
     if o != len(b):
         sys.exit("trailing blob bytes %d" % (len(b) - o))
     return dict(flags=b[1], host=host, port=port, sni=sni, nick=nick,
-                focus=focus, chans=chans, rules=rules)
+                focus=focus, chans=chans, rules=rules, wspath=wspath)
 
 states = [ircstate(b) for _, _, b in blobs]
 # One port carries both transports — discriminate by the flags word
