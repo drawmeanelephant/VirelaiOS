@@ -574,6 +574,14 @@ pub fn net_ndp_autonomous(m: *Monitor) void {
         m.console.print_u64(virtio_net.ndp.rs_sent);
         m.console.puts("\n");
     }
+    if (ev.rxq_reset) {
+        // #3863: one bounded line per stall-recovery device reset — the
+        // gate's serial sees whether the pair->ring recovery fired
+        // (net_log's RXQ line needs a `net log` leg the spec lacks).
+        m.console.puts("net: rxq reset n=");
+        m.console.print_u64(virtio_net.rx_resets);
+        m.console.puts("\n");
+    }
     if (virtio_net.ndp.last_conflict) |c| {
         const n = virtio_net.ipv6.format_ip6(c, &buf);
         m.console.puts("net: v6 dad-conflict ");

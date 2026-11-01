@@ -447,17 +447,28 @@ pub var rx_pokes: u64 = 0;
 /// attachment can enter a state where it READS the socketpair (SO_NREAD
 /// clears — the pacing queue only writes into an empty pair) but never
 /// posts a used completion, while every descriptor stays posted (mask
-/// ffff) and ~29k queue-0 doorbells ring. A queue-0 disable + re-setup
-/// resets the device's per-queue bookkeeping — the deepest guest-side
-/// lever short of a whole-device reset. It fires only while a
-/// solicitation is outstanding (a reply is provably owed — the honest
-/// loss signal) and the used ring has stayed silent for
-/// `stall_reset_polls`, at most once per `stall_reset_ticks` ticks.
+/// ffff) and ~29k queue-0 doorbells ring. Recovery is a FULL device
+/// reset (`transport_init`, the proven post-EBS rearm sequence): a
+/// per-queue disable + re-setup leaves the device's internal
+/// avail/used positions counting from their stalled values while the
+/// rewritten rings index from 0 — reposted buffers could sit where the
+/// device never looks. Only a device reset returns both sides to 0.
+/// It fires only while a solicitation is outstanding (a reply is
+/// provably owed — the honest loss signal) and the used ring has
+/// stayed silent for `stall_reset_polls`, at most `stall_reset_max`
+/// times per silent epoch (`rx_reset_n` re-arms on any completion)
+/// and `stall_reset_ticks` ticks apart — a true platform floor then
+/// fails bounded, not looping. `rx_reset_tick` starts at 0 (never
+/// maxInt — the `now_ticks -| tick` saturation made the first
+/// comparison permanently false on c81b96dc; the a-01 artifacts
+/// showed the reset could not have fired).
 var rx_silent_seen: u16 = 0;
 var rx_silent_polls: u32 = 0;
-var rx_reset_tick: u64 = std.math.maxInt(u64);
+var rx_reset_tick: u64 = 0;
+var rx_reset_n: u8 = 0;
 const stall_reset_polls: u32 = 512;
 const stall_reset_ticks: u64 = 8;
+const stall_reset_max: u8 = 4;
 pub var rx_resets: u64 = 0;
 
 pub var net_dev: Device = .{};
@@ -1566,6 +1577,7 @@ pub const NdpPoll = struct {
     promoted_ll: bool = false,
     promoted_g6: bool = false,
     rs_sent: bool = false, // a Router Solicitation went out this poll
+    rxq_reset: bool = false, // #3863: the stall recovery fired this poll
 };
 
 pub fn net_ndp_poll() NdpPoll {
@@ -1589,6 +1601,7 @@ pub fn net_ndp_poll() NdpPoll {
         if (dev.rx_used.idx != rx_silent_seen) {
             rx_silent_seen = dev.rx_used.idx;
             rx_silent_polls = 0;
+            rx_reset_n = 0; // a completion ends the silent epoch
         } else {
             rx_silent_polls +%= 1;
         }
@@ -1600,23 +1613,30 @@ pub fn net_ndp_poll() NdpPoll {
             }
         }
         if (owed and rx_silent_polls >= stall_reset_polls and
+            rx_reset_n < stall_reset_max and
             ndp.now_ticks -| rx_reset_tick >= stall_reset_ticks)
         {
             rx_reset_tick = ndp.now_ticks;
             rx_silent_polls = 0;
-            rx_resets +%= 1;
             net_log.log_fmt("RXQ reset u={d} a={d}", .{ dev.rx_used.idx, dev.rx_avail.idx });
-            net_ops.cfg_write16(0x16, 0); // queue_select = 0
-            net_ops.cfg_write16(0x1c, 0); // queue_enable = 0
-            dev.rx_avail = .{ .flags = 0, .idx = 0, .ring = @splat(0) };
-            dev.rx_used = .{ .flags = 0, .idx = 0, .ring = @as([queue_size]VirtqUsedElem, @splat(@as(VirtqUsedElem, .{ .id = 0, .len = 0 }))) };
-            dev.rx_last_used = 0;
-            rx_posted_mask = 0;
-            net_ops.clean(@intFromPtr(&dev.rx_avail), @sizeOf(VirtqAvail));
-            net_ops.clean(@intFromPtr(&dev.rx_used), @sizeOf(VirtqUsed));
-            _ = setup_queue(&net_ops, 0, &dev.rx_desc, &dev.rx_avail, &dev.rx_used);
-            rx_silent_seen = 0;
-            _ = net_rx_arm();
+            // Full device reset — the only recovery that also returns
+            // the DEVICE's internal avail/used positions to 0 (see the
+            // vars block). ARP/DHCP state lives outside the device
+            // structs, so the outstanding solicitation stays owed and
+            // a recovered reply still matches its slot.
+            rx_reset_n += 1; // the epoch bound counts attempts
+            if (transport_init(&net_ops, &net_dev, true)) {
+                rx_resets +%= 1;
+                ev.rxq_reset = true;
+                _ = net_rx_arm();
+            } else {
+                net_log.log_fmt("RXQ reset failed", .{});
+            }
+            // Read the used index as it stands: 0 after a real reset,
+            // the stalled value after a failed attempt — silence then
+            // continues counting from the attempt, never a spurious
+            // "completion" that would re-arm the epoch.
+            rx_silent_seen = dev.rx_used.idx;
         }
     }
     // #3863: bounded ARP retransmit — an unanswered solicitation is
@@ -2695,6 +2715,126 @@ test "virtio_net: #3863 RX doorbell — one queue-0 notify per poll while armed"
     try std.testing.expectEqual(@as(u16, queue_size), rx_posted_depth());
 }
 
+test "virtio_net: #3863 RXQ stall reset — silent ring + owed solicitation fires the bounded device reset" {
+    const saved_ops = net_ops;
+    net_ops = mock_ops();
+    net_ready = true;
+    const saved_common = net_common;
+    net_common = 1; // transport_init bails on 0
+    defer {
+        net_ops = saved_ops;
+        net_ready = false;
+        net_common = saved_common;
+        arp.pending = @as([arp.pending_slots]arp.Pending, @splat(@as(arp.Pending, .{})));
+        rx_silent_seen = 0;
+        rx_silent_polls = 0;
+        rx_reset_tick = 0;
+        rx_reset_n = 0;
+    }
+    net_dev = .{};
+    net_mac = fallback_mac;
+    rx_fifo_head = 0;
+    rx_fifo_count = 0;
+    rx_frames = 0;
+    rx_bytes = 0;
+    rx_filtered = 0;
+    rx_mcast = 0;
+    rx_mdns = 0;
+    rx_mcast_filtered = 0;
+    rx_overflow = 0;
+    rx_posted_mask = 0;
+    rx_posted = 0;
+    rx_armed = false;
+    rx_pokes = 0;
+    rx_silent_seen = 0;
+    rx_silent_polls = 0;
+    rx_reset_tick = 0;
+    rx_reset_n = 0;
+    rx_resets = 0;
+    ndp.now_ticks = 64;
+    arp.now_ticks = 64;
+    arp.pending = @as([arp.pending_slots]arp.Pending, @splat(@as(arp.Pending, .{})));
+    arp.replies_learned = 0;
+    ipv6.link_local_state = .none; // no RS train / DAD probe this poll
+    mock_used_idx = 0;
+    mock_tx_used_idx = 0;
+    mock_rx_head = 0;
+    mock_rx_n = 0;
+    mock_rx_seen = 0;
+    mock_kicks = 0;
+    mock_cfg = @splat(0);
+    // The fake device's config space: offer VIRTIO_F_VERSION_1 (the
+    // feature word reads the same for both selectors, so low bit 0
+    // lands bit 32 in the high word) and queue_size for both queues,
+    // so transport_init's ladder/setup/DRIVER_OK all pass.
+    mock_cfg[0x04] = 0x01;
+    mock_cfg[0x18] = @truncate(queue_size);
+
+    try std.testing.expect(net_rx_arm());
+    // An outstanding solicitation — a reply is provably owed.
+    arp.pending[0] = .{ .valid = true, .target = .{ 10, 0, 0, 0x17 }, .tick = 64 };
+
+    // Silence accumulates under the mock (the device never completes);
+    // the reset must fire once the 512-poll window fills. c81b96dc's
+    // guard made this dead code: `now_ticks -| maxInt` saturates to 0,
+    // so the tick comparison was permanently false — the a-01 stall
+    // was unrecoverable by construction.
+    var fired = false;
+    var i: u32 = 0;
+    while (i < stall_reset_polls) : (i += 1) {
+        fired = fired or net_ndp_poll().rxq_reset;
+    }
+    try std.testing.expect(fired);
+    try std.testing.expectEqual(@as(u64, 1), rx_resets);
+    try std.testing.expect(rx_armed);
+    try std.testing.expectEqual(@as(u16, queue_size), net_dev.rx_avail.idx);
+
+    // The same silent window inside `stall_reset_ticks` must NOT
+    // refire — the bound is per tick, not per poll.
+    fired = false;
+    i = 0;
+    while (i < stall_reset_polls) : (i += 1) {
+        fired = fired or net_ndp_poll().rxq_reset;
+    }
+    try std.testing.expect(!fired);
+    try std.testing.expectEqual(@as(u64, 1), rx_resets);
+
+    // A full reset interval later the epoch bound allows another try.
+    ndp.now_ticks += stall_reset_ticks;
+    arp.now_ticks = ndp.now_ticks;
+    fired = false;
+    i = 0;
+    while (i < stall_reset_polls) : (i += 1) {
+        fired = fired or net_ndp_poll().rxq_reset;
+    }
+    try std.testing.expect(fired);
+    try std.testing.expectEqual(@as(u64, 2), rx_resets);
+
+    // The epoch cap bounds a true platform floor: exhausted retries
+    // stay silent without another reset until a completion lands.
+    rx_reset_n = stall_reset_max;
+    ndp.now_ticks += stall_reset_ticks;
+    arp.now_ticks = ndp.now_ticks;
+    fired = false;
+    i = 0;
+    while (i < stall_reset_polls * 2) : (i += 1) {
+        fired = fired or net_ndp_poll().rxq_reset;
+    }
+    try std.testing.expect(!fired);
+    try std.testing.expectEqual(@as(u64, 2), rx_resets);
+
+    // And a real completion ends the epoch — a device that starts
+    // completing again (post-reset recovery IS the goal) re-arms the
+    // silence window and the reset bound alike.
+    const epoch_end_frame = @as([42]u8, @splat(0xaa));
+    mock_rx_enqueue(&epoch_end_frame);
+    // One poll does both halves: the kick fills a posted buffer, the
+    // invalidate then replays used.idx = 1 — silence ends that poll.
+    _ = net_ndp_poll();
+    try std.testing.expectEqual(@as(u8, 0), rx_reset_n);
+    try std.testing.expectEqual(@as(u32, 0), rx_silent_polls);
+}
+
 test "virtio_net: RX ARP request is answered — byte-exact reply on TX over a mock" {
     const saved_ops = net_ops;
     net_ops = mock_ops();
@@ -3008,6 +3148,18 @@ fn mock_cfg_read32(off: u32) u32 {
 }
 fn mock_cfg_write8(off: u32, value: u8) void {
     mock_cfg[off] = value;
+    // A device reset (status = 0) clears the fake device's per-queue
+    // positions too — #3863's whole premise is that only a DEVICE
+    // reset returns both sides to 0: without this the fake's used/seen
+    // indices keep counting from the stalled epoch while the driver
+    // re-initializes its rings from 0, and every post-reset send
+    // wedges in wait_tx_completion on a completion that already
+    // happened (used == last_used, avail rewound behind it).
+    if (off == 0x14 and value == 0) {
+        mock_used_idx = 0;
+        mock_tx_used_idx = 0;
+        mock_rx_seen = 0;
+    }
 }
 fn mock_cfg_write16(off: u32, value: u16) void {
     mock_cfg[off] = @truncate(value);
