@@ -14,7 +14,9 @@ const std = @import("std");
 
 pub const Options = struct {
     repl: bool = false,
+    domrpc: bool = false,
     script: ?[]const u8 = null,
+    ops: ?[]const u8 = null,
     receipt: ?[]const u8 = null,
 };
 
@@ -43,21 +45,29 @@ pub fn parse(args: []const []const u8, env: []const []const u8) !Options {
     var result: Options = .{};
     for (args[1..]) |arg| {
         if (std.mem.eql(u8, arg, "--repl")) {
-            if (result.repl or result.script != null) return error.Usage;
+            if (result.repl or result.domrpc or result.script != null) return error.Usage;
             result.repl = true;
+        } else if (std.mem.eql(u8, arg, "--dom-rpc")) {
+            // ADR 0039 M211a: the worker mode — JSON-lines ops in, one reply
+            // per op on fd-1. An optional /host/ ops-path names the spool a
+            // direct-drive caller staged; bare --dom-rpc reads inherited
+            // fd-0 instead. Either way it never mixes with --repl/script.
+            if (result.repl or result.domrpc or result.script != null) return error.Usage;
+            result.domrpc = true;
         } else if (std.mem.startsWith(u8, arg, "--receipt=")) {
             if (result.receipt != null) return error.Usage;
             const name = arg["--receipt=".len..];
             try path(name);
             result.receipt = name;
         } else {
-            if (result.repl or result.script != null or std.mem.startsWith(u8, arg, "--"))
+            if (result.repl or result.script != null or result.ops != null or
+                std.mem.startsWith(u8, arg, "--"))
                 return error.Usage;
             try path(arg);
-            result.script = arg;
+            if (result.domrpc) result.ops = arg else result.script = arg;
         }
     }
-    if (!result.repl and result.script == null) return error.Usage;
+    if (!result.repl and result.script == null and !result.domrpc) return error.Usage;
     return result;
 }
 
@@ -79,4 +89,12 @@ test "usage never clips or invents argv and env" {
     try std.testing.expectError(error.EnvironmentLimit, parse(&.{"QJS.BIN"}, &(@as([17][]const u8, @splat(@as([]const u8, "A=B"))))));
     try std.testing.expectError(error.EnvironmentLimit, parse(&.{"QJS.BIN"}, &.{"A=" ++ &@as([126:0]u8, @splat("x"[0]))}));
     _ = try parse(&.{ "QJS.BIN", "/host/F" }, &(@as([16][]const u8, @splat(max_env_entry()))));
+    const rpc = try parse(&.{ "QJS.BIN", "--dom-rpc", "/host/OPS" }, &.{});
+    try std.testing.expect(rpc.domrpc and std.mem.eql(u8, rpc.ops.?, "/host/OPS"));
+    const bare = try parse(&.{ "QJS.BIN", "--dom-rpc" }, &.{});
+    try std.testing.expect(bare.domrpc and bare.ops == null);
+    try std.testing.expectError(error.Usage, parse(&.{ "QJS.BIN", "--dom-rpc", "--repl" }, &.{}));
+    try std.testing.expectError(error.Usage, parse(&.{ "QJS.BIN", "--dom-rpc", "/host/A", "/host/B" }, &.{}));
+    try std.testing.expectError(error.Usage, parse(&.{ "QJS.BIN", "/host/F", "--dom-rpc" }, &.{}));
+    try std.testing.expectError(error.AccessDenied, parse(&.{ "QJS.BIN", "--dom-rpc", "/usb/O" }, &.{}));
 }

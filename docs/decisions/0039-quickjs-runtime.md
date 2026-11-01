@@ -21,8 +21,9 @@ The closed four-workload A1 exception does not already admit QuickJS;
 the A2 amendment is necessary. No implementation starts until
 owner approval and the design's landing.
 
-This is not a browser or another shell. **WEB.ELF never executes JS.**
-ADR 0028 D2 and the negative JS-in-WASM decision stand; no WASM caps,
+This is not a browser or another shell. **WEB.ELF never executes JS
+in its own address space.** ADR 0028 D2 and the negative JS-in-WASM
+decision stand; no WASM caps,
 WASI, wasm EH, renderer, kernel ABI or boot default change. No general
 libc/POSIX layer, DOM, web APIs, fetch, npm, JIT, C-to-Go transpilation,
 Go/C embedding or host-command authority.
@@ -644,3 +645,60 @@ verb — no readdir/stat/remove/rename/mkdir/open, no terminal access, no
 byte- or stream-oriented file API. File path values are the only file
 authority JS holds; handles, argv packing and the `/host/` policy stay
 adapter-side.
+
+## Amendment (M211a / #3867) — the bounded DOM-RPC consumer
+
+Directed by the milestone index #3866 ("the wire is the whole
+capability"), this amendment admits exactly one bounded JavaScript
+consumer — **WEB** — over exactly one wire: the JSON-lines **DOM-RPC
+channel** to a `QJS.BIN --dom-rpc` worker process. The §1 sentence now
+reads "WEB.ELF never executes JS in its own address space": no JS
+bytecode, runtime state or engine object ever enters WEB's process —
+the worker is a separate EL0 process, and a wedged worker can only take
+down its own wire. The window-surface fence stands everywhere else: a
+second consumer (GOASSIST tool-use, another app, a second channel) is a
+new ADR question, not an extension of this one.
+
+**The wire.** WEB stages a JSON-lines ops spool on `/host/` and execs
+`QJS.BIN --dom-rpc` with the exec stream request binding the spool's
+read handle to the worker's fd-0 and a reply spool's write handle to
+the worker's fd-1; fd-2 inherits the console, so `qjs:` diagnostics
+stay on serial and the reply stream carries JSON only. The kernel pipe
+is not the channel (it is per-process scratch since M97g and cannot be
+inherited); the stream-bound file endpoints are — the same mechanism
+GOSH's pipeline model hands a stage's stdin. For direct drive (a
+monitor exec cannot bind streams) the argv admits one optional ops
+path: `QJS.BIN --dom-rpc [/host/OPS]`, replies still on fd-1. Ops and
+replies are JSON text only — **file, net, window and process handles
+never cross the wire**, so "JS owns no native handles" is unchanged in
+substance: the worker still holds no capability the adapter did not
+already own.
+
+**Protocol v1.** One op line → one reply line, in order. `hello`
+negotiates `domrpc.version` (currently **1**); a newer or older
+`version` is refused `dom_rpc_version`. `eval` runs the op's `src` in
+the worker's single context (state persists across eval ops of one
+session) and replies `ok` plus the bounded captured output, or `ok:false`
+with the engine's refusal word verbatim. Ops before `hello` are refused
+`dom_rpc_hello`, unknown op names `dom_rpc_op`, malformed lines
+`dom_rpc_parse`, an over-bound line `dom_rpc_line`, and a wire that
+fills the bound without EOF `DomRpcOpsLimit` (session error). Refusals
+are reply lines, never crashes. EOF on the ops stream is the ordered
+teardown: the worker exits 0. DOM ops beyond `hello`/`eval` —
+reads, writes, reflow, timers, events — are explicitly the later cards'
+questions and are refused `dom_rpc_op` today.
+
+**Bounds.** The staged ops stream is at most **1,114,112 B**
+(`domrpc.ops_max`, the per-eval source ceiling plus a fixed envelope),
+one reply line at most **16,384 B**, captured eval output at most
+**2,048 B** per reply (`clipped` marks truncation). WEB ships at most
+32 scripts per page and kills a worker that outlives its deadline; a
+navigation or window close kills and reaps it — no zombie, and the page
+always paints regardless of worker state because the seam starts only
+after the frame's ready markers print.
+
+**Everything else stays refused, by name:** a second consumer or wire,
+DOM/browser APIs inside the worker, JS executed in WEB's address space,
+event listeners/`on*` attributes, XHR/`fetch` from JS (the `net` grant
+word stays out), `document.write`, storage, DOM traversal and mutation,
+and every §3 inventory entry unchanged.
