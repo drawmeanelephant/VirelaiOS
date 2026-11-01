@@ -171,6 +171,15 @@ net ping 10.0.0.17
 net arp 10.0.0.17
 net ping 10.0.0.2
 net ping 10.0.0.17
+net arp 10.0.0.17
+net ping 10.0.0.2
+net ping 10.0.0.17
+net arp 10.0.0.17
+net ping 10.0.0.2
+net ping 10.0.0.17
+net arp 10.0.0.17
+net ping 10.0.0.2
+net ping 10.0.0.17
 net arp
 net
 echo vma-legs-done
@@ -496,7 +505,7 @@ legs = ["net dhcp"] * 5
 # legs — where a mid-transfer wedge would otherwise tear the channel.
 legs += ["net arp 10.0.0.99"]
 legs += ["exec GONETSTAT.ELF discover _http._tcp", "net recv"]
-for _ in range(20):
+for _ in range(40):
     legs += ["net arp 10.0.0.16", "net", "net ping 10.0.0.16",
              "net", "net recv"]
 legs += ["net dhcp", "net dhcp", "net arp"]
