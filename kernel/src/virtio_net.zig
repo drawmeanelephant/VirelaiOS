@@ -526,6 +526,53 @@ const edge_poll_gap: u32 = 64;
 pub var rx_edge_posts: u64 = 0;
 pub var rx_edge_probes: u64 = 0;
 
+/// #3863: the partial-loss wedge — the a-01 class the silence watchdog
+/// cannot reach. VZ read the solicited ARP replies off the host pair
+/// (the SO_NREAD pacing proves each datagram was consumed — NET-GQ-TX
+/// n=29..39) yet the used ring never completed them, while OTHER frames
+/// completed around the same window (used=28, all accounted by non-ARP
+/// deliveries). Intermittent progress keeps `rx_silent_polls` at 0, so
+/// neither the probe nor the reset ever qualifies. Two sub-cases split
+/// on whether VZ DMA'd the frame somewhere the used ring never named:
+/// `rx_scan_claim_reply` answers that directly — a hit is claimed
+/// through the normal accept path (the surgical recovery), a miss means
+/// the frame was dropped before any DMA and the exhausted solicitation
+/// takes the bookkeeping reset below. `rx_loss_resets` bounds the
+/// miss-half resets per owed epoch — it re-arms only when NO
+/// solicitation is outstanding, so a persistent wedge fails bounded
+/// (the session-7 oscillation lesson: `rx_reset_n` re-arms on ANY
+/// completion, exactly the state this class lives in, so it cannot be
+/// the bound here). Spacing shares `rx_reset_tick`/`stall_reset_ticks`
+/// with the silent-epoch retries — the MMIO pacing is the same either
+/// way.
+pub var rx_loss_resets: u8 = 0;
+const loss_reset_max: u8 = 2;
+/// The owed epoch's used-ring stamp: `net_ndp_poll` records used.idx
+/// when the first solicitation opens and clears on the last close. A
+/// wedge under TOTAL silence belongs to the stall watchdog above; the
+/// exhausted-train reset is for the PARTIAL signature — the ring kept
+/// completing other frames while the solicited reply never landed, so
+/// it fires only when used.idx moved inside this epoch.
+var rx_owed_open: bool = false;
+var rx_owed_used: u16 = 0;
+pub var rx_buf_claims: u64 = 0;
+pub var rx_claim_desc: u16 = 0; // buffer index of the last claim (serial evidence)
+pub var rx_claim_st: u8 = '?'; // its descriptor state: p/h/f — see the RXB line
+/// Scan + overdue-reset cadence: once per stamped tick while a
+/// solicitation is owed. Poll-count cadence cannot be trusted — the
+/// a-01 artifacts show the poll loop running ~once per typed console
+/// line during the s2 legs (pk advanced ~1 per `net` report), so a
+/// 64-poll retransmit boundary may never exist inside a leg window,
+/// while the reply it should claim sits in a buffer the used ring
+/// never named. Wall-time matches the leg windows; the same stamp
+/// gates the overdue reset below.
+var rx_scan_tick: u64 = 0;
+/// How long a solicitation may outlive its last send before the
+/// buffers-scanned-empty verdict calls it a VZ-side drop — a healthy
+/// reply lands well inside one tick; `loss_due_ticks` is far past it
+/// and far inside the 240-tick pending window.
+const loss_due_ticks: u64 = 6;
+
 /// #3863: opt-in per-completion net_log trace (`net rxtrace on|off`).
 /// The RXD/RXC/RXA forensic lines earned their keep isolating the
 /// pair->ring wedge; left always-on they flood the 128-entry ring on
@@ -1532,72 +1579,170 @@ pub fn net_rx_drain() void {
                 });
             }
         }
-        if (dev_len > rx_buf_len) {
-            // Device overran the bound — honest record, drop, re-arm.
-            rx_filtered +%= 1;
-            rx_last_len = rx_buf_len;
-            continue;
-        }
-        rx_last_len = @intCast(dev_len);
-        // The claim-time rx-obs record: the first 16 device-written bytes
-        // pin the RX-header question (12 zero bytes + dst MAC = header
-        // present; dst MAC at 0 = none). Recorded even when the filter
-        // drops, so a drop is distinguishable from a failed delivery.
-        const n16 = @min(dev_len, 16);
-        var i: usize = 0;
-        while (i < n16) : (i += 1) rx_first16[i] = buf[i];
-
-        // MAC filter: the frame starts at `rx_hdr_len` (the claim-time
-        // constant — a wrong guess shows as filtered=1 + a distinctive
-        // rx-obs, and is corrected like tx_hdr_len was).
-        if (!mac_accept(rx_hdr_len, buf[0..dev_len], &net_mac)) {
-            rx_filtered +%= 1;
-            // M198a: a multicast frame the filter refused still proves
-            // the device DELIVERED one — the probe distinguishes "no
-            // delivery" from "delivered but not admitted".
-            if (dev_len >= rx_hdr_len + 6 and
-                is_mcast_dst(buf[rx_hdr_len..][0..6])) rx_mcast_filtered +%= 1;
-            continue;
-        }
-        _ = fifo_push(buf[0..dev_len]);
-        rx_frames +%= 1;
-        rx_bytes +%= dev_len;
-        if (is_mcast_dst(buf[rx_hdr_len..][0..6])) {
-            rx_mcast +%= 1;
-            const dst = buf[rx_hdr_len..][0..6];
-            var mdns4 = true;
-            var mdns6 = true;
-            var mi: usize = 0;
-            while (mi < 6) : (mi += 1) {
-                if (dst[mi] != mdns_mac_v4[mi]) mdns4 = false;
-                if (dst[mi] != mdns_mac_v6[mi]) mdns6 = false;
-            }
-            if (mdns4 or mdns6) rx_mdns +%= 1;
-        }
-        // Card N3 (claim 7293): ARP dispatch — the frame's Ethernet
-        // header starts at `rx_hdr_len` (the observed RX-header
-        // contract). A request for our static IP is answered (the reply
-        // is built in tx_staging and transmitted on the N1 TX path,
-        // one-request-at-a-time); a reply is learned into the bounded
-        // table. The raw frame ALSO stays in the FIFO for `net recv`
-        // observation — the N2 seam is unchanged.
-        rx_arp(buf[rx_hdr_len..dev_len]);
-        // Card N4 (claim 0148): IPv4/ICMP dispatch — an echo request
-        // for our static IP is answered byte-exact; an echo reply is
-        // observed (`pongs_observed`); fragments / bad checksums /
-        // foreign addresses are counted and dropped (N4 does NOT
-        // reassemble — honest bound). The raw frame stays in the FIFO
-        // for `net recv` observation, same seam.
-        rx_ipv4(buf[rx_hdr_len..dev_len]);
-        // M117b (#2474, ADR 0057 D1): the 0x86dd leaf on the same demux
-        // seam — self-filters on ethertype like the ARP/IPv4 handlers;
-        // NDP answers (NA) and ICMPv6 echo replies are built into
-        // tx_staging and transmitted on the same TX path. The raw frame
-        // stays in the FIFO for `net recv` observation.
-        rx_ipv6(buf[rx_hdr_len..dev_len]);
+        rx_accept_frame(buf, dev_len);
     }
     // Re-post every descriptor this drain consumed (one kick covers all).
     _ = net_rx_arm();
+}
+
+/// The drain's accept tail, factored so the #3863 buffer-scan claim
+/// (`rx_scan_claim_reply`) runs a frame through the same path a used-ring
+/// completion would have: bound check, rx-obs record, MAC filter, FIFO
+/// push + counters, then the ARP/IPv4/IPv6 demux (each self-filters on
+/// ethertype — a claimed ARP reply reaches only the ARP layer).
+fn rx_accept_frame(buf: *const [rx_buf_len]u8, dev_len: usize) void {
+    if (dev_len > rx_buf_len) {
+        // Device overran the bound — honest record, drop, re-arm.
+        rx_filtered +%= 1;
+        rx_last_len = rx_buf_len;
+        return;
+    }
+    rx_last_len = @intCast(dev_len);
+    // The claim-time rx-obs record: the first 16 device-written bytes
+    // pin the RX-header question (12 zero bytes + dst MAC = header
+    // present; dst MAC at 0 = none). Recorded even when the filter
+    // drops, so a drop is distinguishable from a failed delivery.
+    const n16 = @min(dev_len, 16);
+    var i: usize = 0;
+    while (i < n16) : (i += 1) rx_first16[i] = buf[i];
+
+    // MAC filter: the frame starts at `rx_hdr_len` (the claim-time
+    // constant — a wrong guess shows as filtered=1 + a distinctive
+    // rx-obs, and is corrected like tx_hdr_len was).
+    if (!mac_accept(rx_hdr_len, buf[0..dev_len], &net_mac)) {
+        rx_filtered +%= 1;
+        // M198a: a multicast frame the filter refused still proves
+        // the device DELIVERED one — the probe distinguishes "no
+        // delivery" from "delivered but not admitted".
+        if (dev_len >= rx_hdr_len + 6 and
+            is_mcast_dst(buf[rx_hdr_len..][0..6])) rx_mcast_filtered +%= 1;
+        return;
+    }
+    _ = fifo_push(buf[0..dev_len]);
+    rx_frames +%= 1;
+    rx_bytes +%= dev_len;
+    if (is_mcast_dst(buf[rx_hdr_len..][0..6])) {
+        rx_mcast +%= 1;
+        const dst = buf[rx_hdr_len..][0..6];
+        var mdns4 = true;
+        var mdns6 = true;
+        var mi: usize = 0;
+        while (mi < 6) : (mi += 1) {
+            if (dst[mi] != mdns_mac_v4[mi]) mdns4 = false;
+            if (dst[mi] != mdns_mac_v6[mi]) mdns6 = false;
+        }
+        if (mdns4 or mdns6) rx_mdns +%= 1;
+    }
+    // Card N3 (claim 7293): ARP dispatch — the frame's Ethernet
+    // header starts at `rx_hdr_len` (the observed RX-header
+    // contract). A request for our static IP is answered (the reply
+    // is built in tx_staging and transmitted on the N1 TX path,
+    // one-request-at-a-time); a reply is learned into the bounded
+    // table. The raw frame ALSO stays in the FIFO for `net recv`
+    // observation — the N2 seam is unchanged.
+    rx_arp(buf[rx_hdr_len..dev_len]);
+    // Card N4 (claim 0148): IPv4/ICMP dispatch — an echo request
+    // for our static IP is answered byte-exact; an echo reply is
+    // observed (`pongs_observed`); fragments / bad checksums /
+    // foreign addresses are counted and dropped (N4 does NOT
+    // reassemble — honest bound). The raw frame stays in the FIFO
+    // for `net recv` observation, same seam.
+    rx_ipv4(buf[rx_hdr_len..dev_len]);
+    // M117b (#2474, ADR 0057 D1): the 0x86dd leaf on the same demux
+    // seam — self-filters on ethertype like the ARP/IPv4 handlers;
+    // NDP answers (NA) and ICMPv6 echo replies are built into
+    // tx_staging and transmitted on the same TX path. The raw frame
+    // stays in the FIFO for `net recv` observation.
+    rx_ipv6(buf[rx_hdr_len..dev_len]);
+}
+
+/// The drain's own RXA signature: an ARP reply (ethertype 0x0806,
+/// op=2) with spa = the solicited target, tpa = our IP, and eth dst +
+/// target-hardware = our MAC — a reply addressed to us for an address
+/// we asked about. `f` is the 42-byte Ethernet frame wherever it was
+/// found (header-offset or buffer-start).
+fn rx_is_solicited_reply(f: []const u8, target: *const [4]u8) bool {
+    return f[12] == 0x08 and f[13] == 0x06 and
+        f[20] == 0 and f[21] == 0x02 and
+        std.mem.eql(u8, f[28..32], target) and
+        std.mem.eql(u8, f[38..42], &arp.own_ip) and
+        std.mem.eql(u8, f[0..6], &net_mac) and
+        std.mem.eql(u8, f[32..38], &net_mac);
+}
+
+/// #3863: scan the RX DMA buffers for a solicited-but-never-completed
+/// ARP reply — the partial-loss recovery for the a-01 class (see the
+/// `rx_loss_resets` block). The used ring cannot see a frame VZ wrote
+/// into a buffer it never named in a used element, but the DMA target
+/// itself holds the bytes — scan for the drain's own RXA signature at
+/// BOTH observed frame placements (the pinned 12-byte header offset,
+/// and buffer-start in case a delivery drops the header). On a match
+/// the frame takes the normal accept path: the learn consumes the
+/// pending slot, and a late used element for the same descriptor just
+/// redelivers already-learned content (counted unsolicited, never
+/// fatal — the buffer state is left untouched for exactly that
+/// reason). The RXB line records WHERE VZ wrote it — 'p' posted (a
+/// lost used element), 'h' held (an avail entry the guest never
+/// posted — bookkeeping diverged), 'f' free, 'n' the no-header
+/// placement — which half of VZ's hop failed. Returns the claimed
+/// buffer index; null means every buffer missed — the frame was
+/// dropped inside VZ before any DMA, the caller's bounded reset is
+/// the recovery for that half.
+fn rx_scan_claim_reply(target: [4]u8) ?u16 {
+    if (!rx_armed) return null;
+    var k: u16 = 0;
+    while (k < queue_size) : (k += 1) {
+        const buf = rx_bufs[k];
+        // The device DMA-writes the buffer — invalidate the header
+        // window's cache lines before reading (the drain's own
+        // discipline; these buffers are never guest-written, so the
+        // invalidate discards nothing of ours).
+        net_ops.invalidate(@intFromPtr(buf), rx_hdr_len + arp.arp_frame_len);
+        var st: u8 = 0;
+        if (rx_is_solicited_reply(buf[rx_hdr_len..], &target)) {
+            st = if ((rx_posted_mask >> @intCast(k)) & 1 != 0)
+                'p'
+            else if ((rx_hold_mask >> @intCast(k)) & 1 != 0)
+                'h'
+            else
+                'f';
+        } else if (rx_is_solicited_reply(buf[0..], &target)) {
+            // The frame landed without the 12-byte header — shift it
+            // into the hdr'd position the accept path parses.
+            st = 'n';
+            var tmp: [arp.arp_frame_len]u8 = undefined;
+            @memcpy(&tmp, buf[0..arp.arp_frame_len]);
+            @memcpy(buf[rx_hdr_len .. rx_hdr_len + arp.arp_frame_len], &tmp);
+        } else continue;
+        net_log.log_fmt("RXB claim k{d} {c} op2 spa{d}.{d}.{d}.{d}", .{ k, st, target[0], target[1], target[2], target[3] });
+        rx_buf_claims +%= 1;
+        rx_claim_st = st;
+        rx_accept_frame(buf, rx_hdr_len + arp.arp_frame_len);
+        return k;
+    }
+    return null;
+}
+
+/// #3863: the miss-half recovery — the bounded bookkeeping reset for a
+/// solicitation whose replies provably never landed anywhere the guest
+/// can see (buffers scanned empty). `rx_loss_resets` is the per-owed-
+/// epoch budget (the caller bounds it); `rx_reset_tick` is the shared
+/// retry stamp so the silent-epoch and loss triggers space each other
+/// too. Post-reset accounting measures fresh from the attempt.
+fn rx_loss_reset(ev: *NdpPoll) void {
+    net_log.log_fmt("RXQ loss-reset u={d} a={d}", .{ net_dev.rx_used.idx, net_dev.rx_avail.idx });
+    rx_reset_tick = ndp.now_ticks;
+    rx_loss_resets +%= 1;
+    if (transport_init(&net_ops, &net_dev, true)) {
+        rx_resets +%= 1;
+        ev.rxq_reset = true;
+        _ = net_rx_arm();
+    } else {
+        ev.rxq_reset_fail = true;
+        net_log.log_fmt("RXQ loss-reset failed", .{});
+    }
+    rx_silent_seen = net_dev.rx_used.idx;
+    rx_progress_tick = ndp.now_ticks;
 }
 
 /// Card N3 (claim 7293): dispatch one accepted Ethernet frame to the ARP
@@ -1710,6 +1855,7 @@ pub const NdpPoll = struct {
     rxq_reset_fail: bool = false, // it fired and transport_init refused
     rxq_stall: bool = false, // owed+silent window observed (once per epoch)
     rxq_probe: bool = false, // the held-pool unlatch probe fired this poll
+    rxb_claim: bool = false, // the buffer scan claimed a solicited reply this poll
 };
 
 pub fn net_ndp_poll() NdpPoll {
@@ -1719,6 +1865,28 @@ pub fn net_ndp_poll() NdpPoll {
     // `pending` learn window the RX drain checks.
     arp.now_ticks = ndp.now_ticks;
     if (!net_ready) return ev;
+    var owed = false;
+    for (&arp.pending) |*s| {
+        if (s.valid) {
+            owed = true;
+            break;
+        }
+    }
+    // #3863: the owed epoch is the loss-reset budget's lifetime —
+    // re-arm it only when no solicitation is outstanding at all, so a
+    // permanent wedge cannot re-qualify forever (the rx_reset_n
+    // re-arm-on-any-completion bound would, which is exactly why the
+    // partial-loss class needs its own counter). The open stamps the
+    // used ring so the exhausted-train reset can tell partial loss
+    // (completions flowed inside the epoch) from total silence (the
+    // watchdog's case).
+    if (!owed) {
+        rx_loss_resets = 0;
+        rx_owed_open = false;
+    } else if (!rx_owed_open) {
+        rx_owed_open = true;
+        rx_owed_used = net_dev.rx_used.idx;
+    }
     // #3863: bounded RX doorbell — the VZ attachment reads the
     // host->guest pair only when the device model is poked (the
     // observed cold-boot stall class). While the queue is armed, every
@@ -1727,13 +1895,6 @@ pub fn net_ndp_poll() NdpPoll {
     // idle-loop iteration.
     if (rx_armed) {
         const dev = &net_dev;
-        var owed = false;
-        for (&arp.pending) |*s| {
-            if (s.valid) {
-                owed = true;
-                break;
-            }
-        }
         // #3863 latch prevention: spend the held edge pool — post ONE
         // held descriptor every `edge_poll_gap` polls while inbound is
         // expected, so avail.idx keeps ADVANCING while the device owes
@@ -1860,15 +2021,84 @@ pub fn net_ndp_poll() NdpPoll {
     // attachment's pair->ring servicing).
     for (&arp.pending) |*s| {
         if (!s.valid) continue;
-        if (s.retries >= arp.max_retries) continue;
         s.retry_polls += 1;
         if (s.retry_polls < arp.retransmit_polls) continue;
         s.retry_polls = 0;
-        var rlen: usize = 0;
-        // `note_request` inside build_request re-stamps the slot's
-        // window; `retries` is the bound, bumped send-or-fail.
-        if (net_arp_request(s.target, &rlen) == .ok) arp.requests_sent += 1;
-        s.retries += 1;
+        // #3863: before spending a re-send, scan the DMA buffers for the
+        // solicited reply — the a-01 partial-loss class has VZ reading
+        // replies off the pair and DMAing them somewhere the used ring
+        // never names, while other frames complete around it (the
+        // silence watchdog can't qualify). A claim lands the learn for
+        // free; a miss narrows the loss to inside VZ. The cadence stays
+        // `retransmit_polls` for the slot's whole valid life — a
+        // late-DMA'd reply is still claimed; the bound is the slot's
+        // own expiry.
+        if (rx_scan_claim_reply(s.target)) |k| {
+            rx_claim_desc = k;
+            ev.rxb_claim = true;
+            continue; // the learn inside rx_accept_frame consumed the slot
+        }
+        if (s.retries < arp.max_retries) {
+            var rlen: usize = 0;
+            // `note_request` inside build_request re-stamps the slot's
+            // window; `retries` is the bound, bumped send-or-fail.
+            if (net_arp_request(s.target, &rlen) == .ok) arp.requests_sent += 1;
+            s.retries += 1;
+            continue;
+        }
+        // Train spent, reply still owed, buffers scanned empty — the
+        // miss half of the partial-loss class: VZ dropped the frames
+        // before any DMA. The full transport_init reset is the proven
+        // coherent recovery for a wedge in its bookkeeping, bounded
+        // `loss_reset_max` per owed epoch and spaced `stall_reset_ticks`
+        // like the silent-epoch retries (the session-7 lesson — resets
+        // under a live ring eat read-but-uncompleted datagrams, so the
+        // budget is per-epoch, not per-completion). The used-moved gate
+        // keeps total silence for the watchdog above: this trigger is
+        // the PARTIAL signature only (other frames completed inside the
+        // owed epoch while the solicited one never landed).
+        if (rx_armed and rx_loss_resets < loss_reset_max and
+            net_dev.rx_used.idx != rx_owed_used and
+            // First attempt ungated — `rx_reset_tick` starts at 0, so
+            // `now_ticks -| 0 >= 8` would make the trigger unreachable
+            // while `timer.ticks` is still small early in boot (the
+            // session-6 dead-guard class). The shared stamp spaces
+            // retries against BOTH reset triggers.
+            (rx_loss_resets == 0 or
+                ndp.now_ticks -| rx_reset_tick >= stall_reset_ticks))
+        {
+            rx_loss_reset(&ev);
+        }
+    }
+    // #3863: the crawl-cadence pickup — at console-typed leg rates the
+    // poll loop runs ~once per processed line (the a-01 artifacts' pk
+    // deltas), so the 64-poll retransmit boundary may never exist
+    // inside a leg window while solicited replies still die between
+    // the pair read and the used ring. Once per stamped tick, scan
+    // every outstanding slot AND evaluate the overdue miss-half bound —
+    // wall-time cadence, matching the leg windows. `s.tick` re-stamps
+    // on every send, so `now_ticks -| s.tick` measures silence since
+    // the last request — a healthy reply lands inside one tick;
+    // `loss_due_ticks` of nothing anywhere (not the ring, not a
+    // buffer) is the provable loss.
+    if (owed and ndp.now_ticks != rx_scan_tick) {
+        rx_scan_tick = ndp.now_ticks;
+        for (&arp.pending) |*s| {
+            if (!s.valid) continue;
+            if (rx_scan_claim_reply(s.target)) |k| {
+                rx_claim_desc = k;
+                ev.rxb_claim = true;
+                continue;
+            }
+            if (ndp.now_ticks -| s.tick >= loss_due_ticks and
+                rx_armed and rx_loss_resets < loss_reset_max and
+                net_dev.rx_used.idx != rx_owed_used and
+                (rx_loss_resets == 0 or
+                    ndp.now_ticks -| rx_reset_tick >= stall_reset_ticks))
+            {
+                rx_loss_reset(&ev);
+            }
+        }
     }
     while (ndp.dad_due()) |addr| {
         if (ipv6.promote(&addr)) {
@@ -3154,6 +3384,353 @@ test "virtio_net: #3863 RXQ stall reset — silent ring + owed solicitation fire
     // The completion also re-stamps the silence clock — a fresh quiet
     // stretch measures from it, not from the stale epoch.
     try std.testing.expectEqual(ndp.now_ticks, rx_progress_tick);
+}
+
+test "virtio_net: #3863 rxb claim — a solicited reply DMA'd where the used ring never names it is claimed at the resend boundary" {
+    const saved_ops = net_ops;
+    net_ops = mock_ops();
+    net_ready = true;
+    defer {
+        net_ops = saved_ops;
+        net_ready = false;
+        arp.pending = @as([arp.pending_slots]arp.Pending, @splat(@as(arp.Pending, .{})));
+        arp.own_ip = .{ 0, 0, 0, 0 };
+        rx_loss_resets = 0;
+        rx_owed_open = false;
+        rx_buf_claims = 0;
+        rx_scan_tick = 0;
+    }
+    net_dev = .{};
+    net_mac = [6]u8{ 0x02, 0x00, 0x00, 0x00, 0x00, 0x0a };
+    arp.own_ip = .{ 10, 0, 0, 16 };
+    arp.table = @as([arp.table_slots]arp.ArpEntry, @splat(@as(arp.ArpEntry, .{})));
+    arp.table_cursor = 0;
+    arp.replies_learned = 0;
+    arp.requests_sent = 0;
+    arp.dropped = 0;
+    rx_fifo_head = 0;
+    rx_fifo_count = 0;
+    rx_frames = 0;
+    rx_bytes = 0;
+    rx_filtered = 0;
+    rx_mcast = 0;
+    rx_mdns = 0;
+    rx_mcast_filtered = 0;
+    rx_overflow = 0;
+    rx_posted_mask = 0;
+    rx_hold_mask = 0;
+    rx_edge_polls = 0;
+    rx_epoch_probed = false;
+    rx_posted = 0;
+    rx_armed = false;
+    rx_pokes = 0;
+    rx_edge_posts = 0;
+    rx_edge_probes = 0;
+    rx_loss_resets = 0;
+    rx_owed_open = false;
+    rx_buf_claims = 0;
+    rx_scan_tick = 1; // = now_ticks: the tick-scan stays quiet, this test
+    // exercises the retransmit-boundary pickup
+    rx_silent_seen = 0;
+    rx_silent_polls = 0;
+    rx_progress_tick = 0;
+    rx_reset_tick = 0;
+    rx_reset_n = 0;
+    rx_resets = 0;
+    ndp.now_ticks = 1;
+    arp.now_ticks = 1;
+    arp.pending = @as([arp.pending_slots]arp.Pending, @splat(@as(arp.Pending, .{})));
+    ipv6.link_local_state = .none;
+    mock_used_idx = 0;
+    mock_tx_used_idx = 0;
+    mock_rx_head = 0;
+    mock_rx_n = 0;
+    mock_rx_seen = 0;
+    mock_kicks = 0;
+    for (rx_bufs) |b| @memset(b[0..64], 0); // no stale ARP-shaped bytes anywhere
+
+    try std.testing.expect(net_rx_arm());
+    // Two outstanding solicitations — the scan claims each against its
+    // own target.
+    arp.pending[0] = .{ .valid = true, .target = .{ 10, 0, 0, 0x17 }, .tick = 1 };
+    arp.pending[1] = .{ .valid = true, .target = .{ 10, 0, 0, 0x18 }, .tick = 1 };
+
+    // The wedge, modelled directly: VZ DMA'd both replies into buffers
+    // (descriptor 4 = a POSTED one — a lost used element; descriptor 0
+    // = a HELD one — an avail entry the guest never posted) and the
+    // used ring never named either. memcpy into the DMA buffer IS the
+    // device write — no used element, no drain involvement.
+    var reply17: [arp.arp_frame_len]u8 = undefined;
+    var reply18: [arp.arp_frame_len]u8 = undefined;
+    _ = arp.build_reply(&reply17, &[6]u8{ 0x02, 0, 0, 0, 0, 0x0b }, .{ 10, 0, 0, 0x17 }, net_mac, arp.own_ip);
+    _ = arp.build_reply(&reply18, &[6]u8{ 0x02, 0, 0, 0, 0, 0x0c }, .{ 10, 0, 0, 0x18 }, net_mac, arp.own_ip);
+    rx_bufs[4][10] = 0x01;
+    @memcpy(rx_bufs[4][rx_hdr_len .. rx_hdr_len + reply17.len], &reply17);
+    rx_bufs[0][10] = 0x01;
+    @memcpy(rx_bufs[0][rx_hdr_len .. rx_hdr_len + reply18.len], &reply18);
+
+    // One retransmit boundary per slot: both replies are claimed out of
+    // the buffers — learned through the normal accept path, the slots
+    // consumed, zero re-sends needed. (Both slots hit the same boundary
+    // poll — the flag is per-poll, the counter is per-claim.)
+    var claimed = false;
+    var i: u32 = 0;
+    while (i < arp.retransmit_polls) : (i += 1) {
+        const ev = net_ndp_poll();
+        claimed = claimed or ev.rxb_claim;
+    }
+    try std.testing.expect(claimed);
+    try std.testing.expectEqual(@as(u64, 2), rx_buf_claims);
+    try std.testing.expectEqual(@as(u64, 2), arp.replies_learned);
+    try std.testing.expect(!arp.pendingFor(.{ 10, 0, 0, 0x17 }));
+    try std.testing.expect(!arp.pendingFor(.{ 10, 0, 0, 0x18 }));
+    try std.testing.expectEqualSlices(u8, &[6]u8{ 0x02, 0, 0, 0, 0, 0x0b }, &arp.lookup(.{ 10, 0, 0, 0x17 }).?);
+    // The frames rode the whole accept path: fifo + counters too.
+    try std.testing.expectEqual(@as(u64, 2), rx_frames);
+    try std.testing.expectEqual(@as(usize, 2), fifo_occupancy());
+    // And no request train was spent on a reply that already landed.
+    try std.testing.expectEqual(@as(u64, 0), arp.requests_sent);
+}
+
+test "virtio_net: #3863 loss reset — an exhausted train under a progressing ring fires the bounded bookkeeping reset" {
+    const saved_ops = net_ops;
+    net_ops = mock_ops();
+    net_ready = true;
+    const saved_common = net_common;
+    net_common = 1; // transport_init bails on 0
+    defer {
+        net_ops = saved_ops;
+        net_ready = false;
+        net_common = saved_common;
+        arp.pending = @as([arp.pending_slots]arp.Pending, @splat(@as(arp.Pending, .{})));
+        arp.own_ip = .{ 0, 0, 0, 0 };
+        rx_loss_resets = 0;
+        rx_owed_open = false;
+        rx_buf_claims = 0;
+        rx_scan_tick = 0;
+        rx_silent_seen = 0;
+        rx_silent_polls = 0;
+        rx_progress_tick = 0;
+        rx_reset_tick = 0;
+        rx_reset_n = 0;
+    }
+    net_dev = .{};
+    net_mac = [6]u8{ 0x02, 0x00, 0x00, 0x00, 0x00, 0x0a };
+    arp.own_ip = .{ 10, 0, 0, 16 };
+    arp.pending = @as([arp.pending_slots]arp.Pending, @splat(@as(arp.Pending, .{})));
+    ipv6.link_local_state = .none;
+    rx_fifo_head = 0;
+    rx_fifo_count = 0;
+    rx_posted_mask = 0;
+    rx_hold_mask = 0;
+    rx_edge_polls = 0;
+    rx_epoch_probed = false;
+    rx_posted = 0;
+    rx_armed = false;
+    rx_pokes = 0;
+    rx_loss_resets = 0;
+    rx_owed_open = false;
+    rx_buf_claims = 0;
+    rx_scan_tick = 0;
+    rx_silent_seen = 0;
+    rx_silent_polls = 0;
+    rx_progress_tick = 0;
+    rx_reset_tick = 0;
+    rx_reset_n = 0;
+    rx_resets = 0;
+    ndp.now_ticks = 1;
+    arp.now_ticks = 1;
+    mock_used_idx = 0;
+    mock_tx_used_idx = 0;
+    mock_rx_head = 0;
+    mock_rx_n = 0;
+    mock_rx_seen = 0;
+    mock_kicks = 0;
+    mock_cfg = @splat(0);
+    mock_cfg[0x04] = 0x01;
+    mock_cfg[0x18] = @truncate(queue_size);
+    for (rx_bufs) |b| @memset(b[0..64], 0); // VZ DMA'd nothing — the miss half
+
+    try std.testing.expect(net_rx_arm());
+    // An exhausted solicitation — its whole train is already spent.
+    arp.pending[0] = .{ .valid = true, .target = .{ 10, 0, 0, 0x17 }, .tick = 1, .retries = arp.max_retries };
+
+    // Open the owed epoch at used=0, then progress the ring (the a-01
+    // signature: OTHER frames completed while the reply never landed).
+    _ = net_ndp_poll();
+    try std.testing.expect(rx_owed_open);
+    mock_used_idx = 1; // a completion elsewhere on the queue
+    _ = net_ndp_poll();
+
+    // The first exhausted-boundary after progress fires the loss reset:
+    // full transport_init + re-arm, once, ungated.
+    var fired = false;
+    var i: u32 = 0;
+    while (i < arp.retransmit_polls) : (i += 1) {
+        const ev = net_ndp_poll();
+        fired = fired or ev.rxq_reset;
+    }
+    try std.testing.expect(fired);
+    try std.testing.expectEqual(@as(u8, 1), rx_loss_resets);
+    try std.testing.expectEqual(@as(u64, 1), rx_resets);
+    try std.testing.expect(rx_armed); // re-armed
+
+    // Inside the retry spacing the same exhausted slot cannot refire —
+    // the mock's used.idx rewound to 0 on reset, so progress is
+    // measured fresh anyway.
+    fired = false;
+    i = 0;
+    while (i < arp.retransmit_polls * 2) : (i += 1) {
+        const ev = net_ndp_poll();
+        fired = fired or ev.rxq_reset;
+    }
+    try std.testing.expect(!fired);
+    try std.testing.expectEqual(@as(u8, 1), rx_loss_resets);
+
+    // A whole reset interval + fresh ring progress later, the second
+    // (final) budgeted attempt fires.
+    ndp.now_ticks += stall_reset_ticks;
+    arp.now_ticks = ndp.now_ticks;
+    mock_used_idx = 1;
+    fired = false;
+    i = 0;
+    while (i < arp.retransmit_polls * 2) : (i += 1) {
+        const ev = net_ndp_poll();
+        fired = fired or ev.rxq_reset;
+    }
+    try std.testing.expect(fired);
+    try std.testing.expectEqual(@as(u8, 2), rx_loss_resets);
+    try std.testing.expectEqual(@as(u64, 2), rx_resets);
+
+    // The epoch cap holds — a persistent wedge fails bounded, not
+    // oscillating (the session-7 lesson).
+    ndp.now_ticks += stall_reset_ticks;
+    arp.now_ticks = ndp.now_ticks;
+    mock_used_idx = 1;
+    fired = false;
+    i = 0;
+    while (i < arp.retransmit_polls * 4) : (i += 1) {
+        const ev = net_ndp_poll();
+        fired = fired or ev.rxq_reset;
+    }
+    try std.testing.expect(!fired);
+    try std.testing.expectEqual(@as(u8, 2), rx_loss_resets);
+
+    // The owed epoch ending (slot consumed/expired — nothing owed) is
+    // the only re-arm: the budget never re-arms on mere progress.
+    arp.pending = @as([arp.pending_slots]arp.Pending, @splat(@as(arp.Pending, .{})));
+    _ = net_ndp_poll();
+    try std.testing.expectEqual(@as(u8, 0), rx_loss_resets);
+    try std.testing.expect(!rx_owed_open);
+}
+
+test "virtio_net: #3863 tick-scan — the claim + overdue reset fire on the tick cadence when polls crawl" {
+    const saved_ops = net_ops;
+    net_ops = mock_ops();
+    net_ready = true;
+    const saved_common = net_common;
+    net_common = 1;
+    defer {
+        net_ops = saved_ops;
+        net_ready = false;
+        net_common = saved_common;
+        arp.pending = @as([arp.pending_slots]arp.Pending, @splat(@as(arp.Pending, .{})));
+        arp.own_ip = .{ 0, 0, 0, 0 };
+        rx_loss_resets = 0;
+        rx_owed_open = false;
+        rx_buf_claims = 0;
+        rx_scan_tick = 0;
+        rx_silent_seen = 0;
+        rx_silent_polls = 0;
+        rx_progress_tick = 0;
+        rx_reset_tick = 0;
+        rx_reset_n = 0;
+    }
+    net_dev = .{};
+    net_mac = [6]u8{ 0x02, 0x00, 0x00, 0x00, 0x00, 0x0a };
+    arp.own_ip = .{ 10, 0, 0, 16 };
+    arp.table = @as([arp.table_slots]arp.ArpEntry, @splat(@as(arp.ArpEntry, .{})));
+    arp.table_cursor = 0;
+    arp.replies_learned = 0;
+    arp.requests_sent = 0;
+    arp.pending = @as([arp.pending_slots]arp.Pending, @splat(@as(arp.Pending, .{})));
+    ipv6.link_local_state = .none;
+    rx_fifo_head = 0;
+    rx_fifo_count = 0;
+    rx_posted_mask = 0;
+    rx_hold_mask = 0;
+    rx_edge_polls = 0;
+    rx_epoch_probed = false;
+    rx_posted = 0;
+    rx_armed = false;
+    rx_pokes = 0;
+    rx_loss_resets = 0;
+    rx_owed_open = false;
+    rx_buf_claims = 0;
+    rx_scan_tick = 0;
+    rx_silent_seen = 0;
+    rx_silent_polls = 0;
+    rx_progress_tick = 0;
+    rx_reset_tick = 0;
+    rx_reset_n = 0;
+    rx_resets = 0;
+    ndp.now_ticks = 1;
+    arp.now_ticks = 1;
+    mock_used_idx = 0;
+    mock_tx_used_idx = 0;
+    mock_rx_head = 0;
+    mock_rx_n = 0;
+    mock_rx_seen = 0;
+    mock_kicks = 0;
+    mock_cfg = @splat(0);
+    mock_cfg[0x04] = 0x01;
+    mock_cfg[0x18] = @truncate(queue_size);
+    for (rx_bufs) |b| @memset(b[0..64], 0);
+
+    try std.testing.expect(net_rx_arm());
+    // Outstanding solicitation, last sent at tick 1 — the crawl-cadence
+    // case (a-01's pk advanced ~1 per typed line, so retransmit
+    // boundaries do not exist inside the leg window).
+    arp.pending[0] = .{ .valid = true, .target = .{ 10, 0, 0, 0x17 }, .tick = 1 };
+    _ = net_ndp_poll(); // opens the owed epoch at used=0
+    try std.testing.expect(rx_owed_open);
+
+    // VZ DMA'd the reply into a posted buffer — no used element, no
+    // drain. A single tick advance runs the tick-scan: the claim lands
+    // WITHOUT a single retransmit boundary having elapsed (retries and
+    // retry_polls are untouched).
+    var reply: [arp.arp_frame_len]u8 = undefined;
+    _ = arp.build_reply(&reply, &[6]u8{ 0x02, 0, 0, 0, 0, 0x0b }, .{ 10, 0, 0, 0x17 }, net_mac, arp.own_ip);
+    rx_bufs[4][10] = 0x01;
+    @memcpy(rx_bufs[4][rx_hdr_len .. rx_hdr_len + reply.len], &reply);
+    ndp.now_ticks += 1;
+    arp.now_ticks = ndp.now_ticks;
+    const ev = net_ndp_poll();
+    try std.testing.expect(ev.rxb_claim);
+    try std.testing.expectEqual(@as(u64, 1), rx_buf_claims);
+    try std.testing.expectEqual(@as(u64, 1), arp.replies_learned);
+    try std.testing.expect(!arp.pendingFor(.{ 10, 0, 0, 0x17 }));
+    try std.testing.expectEqual(@as(u64, 0), arp.requests_sent);
+
+    // The miss half on the same cadence: a fresh slot for .19 stays
+    // unanswered past `loss_due_ticks` while the ring progresses —
+    // the overdue reset fires on the tick boundary, no train needed.
+    arp.pending[0] = .{ .valid = true, .target = .{ 10, 0, 0, 0x19 }, .tick = ndp.now_ticks };
+    _ = net_ndp_poll(); // epoch re-opens at the post-claim used idx
+    mock_used_idx +%= 1; // other frames keep completing
+    _ = net_ndp_poll();
+    var fired = false;
+    ndp.now_ticks += loss_due_ticks;
+    arp.now_ticks = ndp.now_ticks;
+    var i: u32 = 0;
+    while (i < arp.retransmit_polls) : (i += 1) {
+        const ev2 = net_ndp_poll();
+        fired = fired or ev2.rxq_reset;
+    }
+    try std.testing.expect(fired);
+    try std.testing.expectEqual(@as(u8, 1), rx_loss_resets);
+    try std.testing.expectEqual(@as(u64, 1), rx_resets);
+    try std.testing.expect(rx_armed);
 }
 
 test "virtio_net: RX ARP request is answered — byte-exact reply on TX over a mock" {

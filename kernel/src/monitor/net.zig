@@ -288,6 +288,14 @@ pub fn cmd_net(m: *Monitor, args: []const []const u8) ExecError {
     m.console.print_u64(virtio_net.rx_edge_probes);
     m.console.puts(" hd=");
     m.console.print_u64(@intCast(virtio_net.rx_hold_depth()));
+    // #3863: the partial-loss instruments — cb= solicited replies
+    // claimed out of the DMA buffers (VZ wrote them where the used ring
+    // never named), lr= exhausted-train bookkeeping resets fired this
+    // owed epoch.
+    m.console.puts(" cb=");
+    m.console.print_u64(virtio_net.rx_buf_claims);
+    m.console.puts(" lr=");
+    m.console.print_u64(virtio_net.rx_loss_resets);
     m.console.puts("\n");
     // The claim-time observation record: the last device-written length +
     // the first 16 bytes pin the RX-header question (12 zero bytes + dst
@@ -634,6 +642,17 @@ pub fn net_ndp_autonomous(m: *Monitor) void {
         // log` leg.
         m.console.puts("net: rxq reset-fail ");
         m.console.puts(virtio_net.net_fail);
+        m.console.puts("\n");
+    }
+    if (ev.rxb_claim) {
+        // #3863: the buffer scan claimed a solicited reply that never
+        // got a used completion — the serial evidence for the
+        // partial-loss class (st= the descriptor's state: p posted /
+        // h held / f free — which half of VZ's hop failed).
+        m.console.puts("net: rxb claim k=");
+        m.console.print_u64(virtio_net.rx_claim_desc);
+        m.console.puts(" st=");
+        m.console.puts(&[_]u8{virtio_net.rx_claim_st});
         m.console.puts("\n");
     }
     if (virtio_net.ndp.last_conflict) |c| {
