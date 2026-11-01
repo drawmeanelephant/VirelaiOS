@@ -466,6 +466,7 @@ var rx_silent_seen: u16 = 0;
 var rx_silent_polls: u32 = 0;
 var rx_reset_tick: u64 = 0;
 var rx_reset_n: u8 = 0;
+var rxq_stall_logged: bool = false;
 const stall_reset_polls: u32 = 512;
 const stall_reset_ticks: u64 = 8;
 const stall_reset_max: u8 = 4;
@@ -1579,6 +1580,7 @@ pub const NdpPoll = struct {
     rs_sent: bool = false, // a Router Solicitation went out this poll
     rxq_reset: bool = false, // #3863: the stall recovery fired this poll
     rxq_reset_fail: bool = false, // it fired and transport_init refused
+    rxq_stall: bool = false, // owed+silent window observed (once per epoch)
 };
 
 pub fn net_ndp_poll() NdpPoll {
@@ -1603,6 +1605,7 @@ pub fn net_ndp_poll() NdpPoll {
             rx_silent_seen = dev.rx_used.idx;
             rx_silent_polls = 0;
             rx_reset_n = 0; // a completion ends the silent epoch
+            rxq_stall_logged = false;
         } else {
             rx_silent_polls +%= 1;
         }
@@ -1612,6 +1615,13 @@ pub fn net_ndp_poll() NdpPoll {
                 owed = true;
                 break;
             }
+        }
+        if (owed and rx_silent_polls >= stall_reset_polls and !rxq_stall_logged) {
+            // Once per silent epoch: prove the observable conditions
+            // were seen — the reset line (or its absence) then names
+            // the gate as tick/cap vs never-opened.
+            rxq_stall_logged = true;
+            ev.rxq_stall = true;
         }
         if (owed and rx_silent_polls >= stall_reset_polls and
             rx_reset_n < stall_reset_max and

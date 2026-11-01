@@ -582,6 +582,16 @@ pub fn net_ndp_autonomous(m: *Monitor) void {
         m.console.print_u64(virtio_net.rx_resets);
         m.console.puts("\n");
     }
+    if (ev.rxq_stall) {
+        // Once per silent epoch — proves owed+silent>=512 was observed;
+        // a missing reset/reset-fail line after this means the tick or
+        // epoch bound refused, not that the stall was never seen.
+        m.console.puts("net: rxq stall u=");
+        m.console.print_u64(@intCast(virtio_net.net_dev.rx_used.idx));
+        m.console.puts(" a=");
+        m.console.print_u64(@intCast(virtio_net.net_dev.rx_avail.idx));
+        m.console.puts("\n");
+    }
     if (ev.rxq_reset_fail) {
         // The attempt fired and transport_init refused — `net_fail`
         // names the exact step, the serial shows it without a `net
