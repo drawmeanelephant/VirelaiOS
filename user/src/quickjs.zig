@@ -552,9 +552,10 @@ const Session = struct {
         if (result.context_reset) self.dom_ready = false;
         if (sdk.stackHighWater() > qjs.limits.stack) return error.StackLimit;
         if (result.failure) |failure| {
-            // M211b: in the worker the engine's wall deadline IS the
-            // per-script time budget — the reply names it.
-            const word: []const u8 = if (failure == error.EvaluationDeadline) "script_budget_time" else @errorName(failure);
+            // M211b: in the worker the engine's execution bounds — the
+            // four-second wall deadline and the work-site budget — ARE
+            // the per-script time budget; the reply names one refusal.
+            const word: []const u8 = if (failure == error.EvaluationDeadline or failure == error.WorkLimit) "script_budget_time" else @errorName(failure);
             var buf: [384]u8 = undefined;
             const line = try std.fmt.bufPrint(&buf, "{{\"op\":\"eval\",\"ok\":false,\"error\":\"{s}\",\"ops\":{d}{s}}}\n", .{ word, self.rpc_ops, if (result.context_reset) ",\"reset\":true" else "" });
             return self.rpcWrite(line);
