@@ -863,6 +863,267 @@ pub fn rx_pushback(b: u8) bool {
 }
 
 // ---------------------------------------------------------------------------
+// M213d (issue #3879): per-writer line assembly — the serial line discipline
+// above the byte sinks. #1972 made the DEVICE side whole-line (tx_unit
+// above); the residual it left is cross-WRITER interleave: a whole kernel
+// line from another core landed inside a process's multi-`puts` write (the
+// heartbeat's 7 puts; process_stdout's own "\n"), and a kernel line split a
+// prompt drawn in pieces. Every gate that matches markers reads that stream.
+//
+// Here a "writer" is (owner, core): the kernel writes as `.kernel` with ONE
+// stage per core (a kernel line from another core is a different writer — the
+// `open: id=4` line that split the prompt draw), a process writes as
+// `.proc = pid` (a pid runs on one core at a time, so its line follows it
+// across migration). Writes append to the writer's stage; a line emits to the
+// wire ONLY when it completes — atomically, under the caller's serial lock —
+// so a foreign write can land BETWEEN the writer's lines, never inside one.
+// A staged partial (the prompt, typed echo) is published whole by the
+// idle-seam `flush_partials` — never by a foreign write — and becomes the
+// wire's open line under the same ownership rule as before (a different
+// owner's next emission still closes it with a newline first).
+//
+// The staging bound is `line_stage_cap` per writer; a line that outgrows it
+// is dropped whole through its newline and counted — the #1972 contract,
+// "whole lines or counted drops". The boot-total is announced once per
+// change by one `serial: line-dropped total=<n>` line on a fresh line before
+// the next emitted content, mirroring `tx_drop_notice` below.
+//
+// The unit holds no lock and no device state: the caller (main.zig's uart
+// path) serializes it under serial_lock and supplies `emit`, which pushes an
+// emitted burst to the byte sink. Host tests drive it over a recording sink.
+// ---------------------------------------------------------------------------
+
+/// Writer identity for line assembly — the same partition the old
+/// `serial_line_owner` rule used for wire ownership, now also the staging
+/// key (kernel writers are additionally split per core).
+pub const LineOwner = union(enum) {
+    kernel,
+    proc: usize,
+};
+
+pub const LineWriter = struct {
+    owner: LineOwner,
+    core: usize,
+};
+
+/// The named staging bound: one writer's line may stage at most this many
+/// bytes before it is counted-dropped whole. Sized for the longest kernel
+/// report lines (~110 B for the `prof:` row); 512 B leaves headroom without
+/// turning the BSS table into a liability.
+pub const line_stage_cap: usize = 512;
+/// The greppable drop notice prefix — distinct from `tx_drop_notice`, which
+/// counts device-side unit drops (a different mechanism).
+pub const line_drop_notice = "serial: line-dropped total=";
+const line_notice_cap = 64;
+
+/// The emit callback: pushes one emitted burst to the wire sink. Called with
+/// the caller's serial lock held, so each call's bytes are contiguous on the
+/// wire — a whole staged line, a partial published at the seam, the closing
+/// newline of a foreign open line, or a drop notice.
+pub const SerialEmit = *const fn (ctx: ?*anyopaque, bytes: []const u8) void;
+
+fn line_owner_is(a: ?LineOwner, b: LineOwner) bool {
+    const o = a orelse return false;
+    if (std.meta.activeTag(o) != std.meta.activeTag(b)) return false;
+    return switch (o) {
+        .kernel => true,
+        .proc => |p| p == b.proc,
+    };
+}
+
+pub fn SerialLines(comptime cores: usize, comptime proc_writers: usize, comptime cap: usize) type {
+    return struct {
+        const Self = @This();
+
+        const Stage = struct {
+            buf: [cap]u8 = undefined,
+            len: usize = 0,
+            /// The in-progress line overflowed the bound: discard bytes
+            /// through its newline, then clear (#1972's "a line that loses
+            /// a unit loses the rest of it" rule, moved up into staging).
+            dropping: bool = false,
+        };
+        const ProcStage = struct {
+            pid: usize = 0,
+            stage: Stage = .{},
+            fn free(s: *const ProcStage) bool {
+                return s.stage.len == 0 and !s.stage.dropping;
+            }
+        };
+
+        kernel: [cores]Stage = @splat(.{}),
+        proc: [proc_writers]ProcStage = @splat(.{}),
+        /// Pids whose in-progress line is being counted-dropped because no
+        /// proc slot was free; their bytes discard through the line's '\n'.
+        blocked: [proc_writers]usize = @splat(0),
+        blocked_len: usize = 0,
+        /// Wire state — what the emitted stream looks like, not what is
+        /// staged. `open_owner` is the owner of an unterminated wire line.
+        at_bol: bool = true,
+        open_owner: ?LineOwner = null,
+        /// Lines counted-dropped this boot, and the total the last notice
+        /// announced (`line_drop_notice`).
+        dropped: u32 = 0,
+        reported: u32 = 0,
+
+        fn stage_for(self: *Self, key: LineWriter) ?*Stage {
+            switch (key.owner) {
+                .kernel => return &self.kernel[key.core % self.kernel.len],
+                .proc => |pid| {
+                    var free: ?*ProcStage = null;
+                    for (&self.proc) |*ps| {
+                        if (ps.free()) {
+                            if (free == null) free = ps;
+                            continue;
+                        }
+                        if (ps.pid == pid) return &ps.stage;
+                    }
+                    if (free) |ps| {
+                        ps.pid = pid;
+                        return &ps.stage;
+                    }
+                    return null;
+                },
+            }
+        }
+
+        fn blocked_has(self: *const Self, pid: usize) bool {
+            for (self.blocked[0..self.blocked_len]) |p| {
+                if (p == pid) return true;
+            }
+            return false;
+        }
+
+        fn blocked_remove(self: *Self, pid: usize) void {
+            for (self.blocked[0..self.blocked_len], 0..) |p, i| {
+                if (p == pid) {
+                    self.blocked_len -= 1;
+                    self.blocked[i] = self.blocked[self.blocked_len];
+                    return;
+                }
+            }
+        }
+
+        /// A proc line that could not claim a staging slot: drop it whole
+        /// through its newline and count it once. When the blocked table
+        /// itself is full the count grows per discarded write instead —
+        /// still a visible, honest count.
+        fn note_blocked(self: *Self, key: LineWriter) void {
+            self.dropped +|= 1;
+            if (self.blocked_len < self.blocked.len) {
+                self.blocked[self.blocked_len] = key.owner.proc;
+                self.blocked_len += 1;
+            }
+        }
+
+        /// Push `bytes` to the wire honoring the open-line ownership rule
+        /// (the claim-1714/#2649 contract, unchanged): emission while a
+        /// DIFFERENT writer's line is open closes that line with a newline
+        /// first, so foreign bytes can never fuse into it.
+        fn emit_chunk(self: *Self, owner: LineOwner, bytes: []const u8, ctx: ?*anyopaque, emit: SerialEmit) void {
+            if (bytes.len == 0) return;
+            if (!self.at_bol and !line_owner_is(self.open_owner, owner)) emit(ctx, "\n");
+            emit(ctx, bytes);
+            self.at_bol = switch (bytes[bytes.len - 1]) {
+                '\n', '\r' => true,
+                else => false,
+            };
+            self.open_owner = if (self.at_bol) null else owner;
+        }
+
+        /// The drop notice is a line of its own for the gates that grep it:
+        /// always opened on a fresh line even when the wire's open line is
+        /// kernel-owned (where emit_chunk would fuse it).
+        fn emit_notice(self: *Self, ctx: ?*anyopaque, emit: SerialEmit) void {
+            if (self.dropped == self.reported) return;
+            var buf: [line_notice_cap]u8 = undefined;
+            const line = std.fmt.bufPrint(&buf, "{s}{d}\n", .{ line_drop_notice, self.dropped }) catch unreachable;
+            if (!self.at_bol) emit(ctx, "\n");
+            emit(ctx, line);
+            self.at_bol = true;
+            self.open_owner = null;
+            self.reported = self.dropped;
+        }
+
+        /// Emit one completed stage (its last byte is the line terminator).
+        fn emit_stage(self: *Self, st: *Stage, owner: LineOwner, ctx: ?*anyopaque, emit: SerialEmit) void {
+            self.emit_notice(ctx, emit);
+            self.emit_chunk(owner, st.buf[0..st.len], ctx, emit);
+            st.len = 0;
+        }
+
+        /// Append `text` to the writer's stage; each completed line emits
+        /// atomically before this call returns. A partial tail STAYS staged
+        /// — it is published whole by `flush_partials`, never by a foreign
+        /// write, which is what keeps another core's line from landing
+        /// inside this writer's composition. Bytes of a line that outgrew
+        /// `cap` discard through its '\n' and count once.
+        pub fn write(self: *Self, key: LineWriter, text: []const u8, ctx: ?*anyopaque, emit: SerialEmit) void {
+            var rest = text;
+            while (rest.len > 0) {
+                if (key.owner == .proc and self.blocked_has(key.owner.proc)) {
+                    const nl = std.mem.indexOfScalar(u8, rest, '\n') orelse return;
+                    self.blocked_remove(key.owner.proc);
+                    rest = rest[nl + 1 ..];
+                    continue;
+                }
+                const st = self.stage_for(key) orelse {
+                    self.note_blocked(key);
+                    continue;
+                };
+                var i: usize = 0;
+                while (i < rest.len) : (i += 1) {
+                    const b = rest[i];
+                    if (st.dropping) {
+                        if (b == '\n') {
+                            st.dropping = false;
+                            st.len = 0;
+                        }
+                        continue;
+                    }
+                    if (st.len == st.buf.len) {
+                        self.dropped +|= 1;
+                        st.dropping = true;
+                        continue;
+                    }
+                    st.buf[st.len] = b;
+                    st.len += 1;
+                    if (b == '\n' or b == '\r') self.emit_stage(st, key.owner, ctx, emit);
+                }
+                return;
+            }
+        }
+
+        /// Publish every staged partial as the wire's (open) line — the
+        /// idle-seam flush: the prompt, typed echo, and any process's
+        /// unterminated write reach the host whole instead of never. The
+        /// caller may exclude ONE kernel stage by core: the idle task uses
+        /// this to leave the shell's own core-0 composition untouched — a
+        /// core-0 kernel partial flushes only from the shell task's own
+        /// readByte/exit seams, which can never run while that task is
+        /// mid-composition (it is the same call stack).
+        pub fn flush_partials(self: *Self, skip_kernel_core: ?usize, ctx: ?*anyopaque, emit: SerialEmit) void {
+            self.emit_notice(ctx, emit);
+            for (&self.kernel, 0..) |*st, c| {
+                if (skip_kernel_core != null and c == skip_kernel_core.?) continue;
+                self.flush_stage(st, .kernel, ctx, emit);
+            }
+            for (&self.proc) |*ps| {
+                if (ps.stage.len == 0) continue;
+                self.emit_chunk(.{ .proc = ps.pid }, ps.stage.buf[0..ps.stage.len], ctx, emit);
+                ps.stage.len = 0;
+            }
+        }
+
+        fn flush_stage(self: *Self, st: *Stage, owner: LineOwner, ctx: ?*anyopaque, emit: SerialEmit) void {
+            if (st.len == 0) return;
+            self.emit_chunk(owner, st.buf[0..st.len], ctx, emit);
+            st.len = 0;
+        }
+    };
+}
+
+// ---------------------------------------------------------------------------
 // Claim 0017 diagnostic: PRE-EXIT virtio-pci TX experiment. Answers whether
 // the current transport can transmit a known string while Boot Services and
 // the firmware address space are still active. Uses the SAME discovered
@@ -1252,4 +1513,304 @@ test "virtio_console: random device latency never splices and accounts for every
     try std.testing.expect(notices > 0);
     try std.testing.expectEqual(s.reported, last_total);
     try std.testing.expect(std.mem.endsWith(u8, sim.received(), "\n"));
+}
+
+// ---------------------------------------------------------------------------
+// Host tests (#3879): SerialLines over a recording sink. The corpus shapes
+// come straight out of #1972's closing comment ("the branch's 7
+// interleaves"): the prompt split by `open: id=4`, the 7-`puts` heartbeat
+// cut by process_stdout's own "\n", and `uaccess:` inside a multi-put
+// kernel line.
+// ---------------------------------------------------------------------------
+
+const LineSink = struct {
+    host: [1 << 20]u8 = undefined,
+    host_len: usize = 0,
+    burst_start: [1 << 16]usize = undefined,
+    bursts: usize = 0,
+
+    fn emit(ctx: ?*anyopaque, bytes: []const u8) void {
+        const self: *LineSink = @ptrCast(@alignCast(ctx.?));
+        self.burst_start[self.bursts] = self.host_len;
+        self.bursts += 1;
+        @memcpy(self.host[self.host_len..][0..bytes.len], bytes);
+        self.host_len += bytes.len;
+    }
+
+    fn received(self: *const LineSink) []const u8 {
+        return self.host[0..self.host_len];
+    }
+
+    fn burst(self: *const LineSink, i: usize) []const u8 {
+        const end = if (i + 1 < self.bursts) self.burst_start[i + 1] else self.host_len;
+        return self.host[self.burst_start[i]..end];
+    }
+};
+
+const TestLines = SerialLines(4, 4, line_stage_cap);
+const k0: LineWriter = .{ .owner = .kernel, .core = 0 };
+const k1: LineWriter = .{ .owner = .kernel, .core = 1 };
+const p7: LineWriter = .{ .owner = .{ .proc = 7 }, .core = 1 };
+const p8: LineWriter = .{ .owner = .{ .proc = 8 }, .core = 2 };
+
+test "serial_lines: the heartbeat's pieces emit whole between foreign lines" {
+    // The corpus shape: maybe_heartbeat's 7 puts with whole process lines
+    // arriving between them. The heartbeat emits as ONE burst at its
+    // newline; the foreign lines land between lines, never inside.
+    var lines: TestLines = .{};
+    var sink: LineSink = .{};
+    lines.write(k0, "timer heartbeat ticks=", &sink, LineSink.emit);
+    lines.write(p7, "gosh: tty\n", &sink, LineSink.emit);
+    lines.write(k0, "5 irq=", &sink, LineSink.emit);
+    lines.write(p7, "gosh: attached\n", &sink, LineSink.emit);
+    lines.write(k0, "5 poll=0\n", &sink, LineSink.emit);
+    try std.testing.expectEqualStrings(
+        "gosh: tty\ngosh: attached\ntimer heartbeat ticks=5 irq=5 poll=0\n",
+        sink.received(),
+    );
+    try std.testing.expectEqualStrings(
+        "timer heartbeat ticks=5 irq=5 poll=0\n",
+        sink.burst(sink.bursts - 1),
+    );
+}
+
+test "serial_lines: the prompt draw publishes whole after a foreign kernel line" {
+    // The corpus shape: `open: id=4 …` landed between the prompt's pieces.
+    // The pieces stage; the foreign line emits at beginning-of-line; the
+    // draw publishes as ONE open wire line at the idle seam.
+    var lines: TestLines = .{};
+    var sink: LineSink = .{};
+    lines.write(k0, "\x1b[32m", &sink, LineSink.emit);
+    lines.write(k1, "open: id=4 owner=3 rect=0,0 64x23 ws=0\n", &sink, LineSink.emit);
+    lines.write(k0, "virelai> ", &sink, LineSink.emit);
+    lines.write(k0, "\x1b[0m", &sink, LineSink.emit);
+    lines.flush_partials(null, &sink, LineSink.emit);
+    try std.testing.expectEqualStrings(
+        "open: id=4 owner=3 rect=0,0 64x23 ws=0\n\x1b[32mvirelai> \x1b[0m",
+        sink.received(),
+    );
+    try std.testing.expectEqualStrings("\x1b[32mvirelai> \x1b[0m", sink.burst(sink.bursts - 1));
+    try std.testing.expect(!lines.at_bol);
+    try std.testing.expect(std.meta.activeTag(lines.open_owner.?) == .kernel);
+}
+
+test "serial_lines: a multi-put kernel line survives a process write inside it" {
+    // The corpus shape: `uaccess: efault ok n=8` inside the multi-put
+    // `userspace:` line.
+    var lines: TestLines = .{};
+    var sink: LineSink = .{};
+    lines.write(k0, "userspace: el0=1 svc=", &sink, LineSink.emit);
+    lines.write(k0, "2 roundtrips=", &sink, LineSink.emit);
+    lines.write(p7, "uaccess: efault ok n=8\n", &sink, LineSink.emit);
+    lines.write(k0, "1 arg=2\n", &sink, LineSink.emit);
+    try std.testing.expectEqualStrings(
+        "uaccess: efault ok n=8\nuserspace: el0=1 svc=2 roundtrips=1 arg=2\n",
+        sink.received(),
+    );
+}
+
+test "serial_lines: process output opens a fresh line over a foreign open line" {
+    // The process_stdout ordering contract: a process write while the wire
+    // sits mid-line on a DIFFERENT owner closes that line first.
+    var lines: TestLines = .{};
+    var sink: LineSink = .{};
+    lines.write(k0, "virelai> ", &sink, LineSink.emit);
+    lines.flush_partials(null, &sink, LineSink.emit);
+    lines.write(p7, "gosh: tty\n", &sink, LineSink.emit);
+    try std.testing.expectEqualStrings("virelai> \ngosh: tty\n", sink.received());
+    try std.testing.expect(lines.at_bol);
+}
+
+test "serial_lines: a writer continues its own published open line" {
+    var lines: TestLines = .{};
+    var sink: LineSink = .{};
+    lines.write(k0, "virelai> ", &sink, LineSink.emit);
+    lines.flush_partials(null, &sink, LineSink.emit);
+    lines.write(k0, "ls\n", &sink, LineSink.emit);
+    try std.testing.expectEqualStrings("virelai> ls\n", sink.received());
+}
+
+test "serial_lines: same-owner kernel lines still fuse onto an open line" {
+    // The pre-existing owner rule, unchanged: kernel is ONE wire owner, so
+    // another core's line continues a kernel-open wire line without a
+    // closing newline.
+    var lines: TestLines = .{};
+    var sink: LineSink = .{};
+    lines.write(k0, "virelai> ", &sink, LineSink.emit);
+    lines.flush_partials(null, &sink, LineSink.emit);
+    lines.write(k1, "open: id=4\n", &sink, LineSink.emit);
+    try std.testing.expectEqualStrings("virelai> open: id=4\n", sink.received());
+}
+
+test "serial_lines: a line over the staging bound drops whole and counts once" {
+    var lines: SerialLines(4, 4, 32) = .{};
+    var sink: LineSink = .{};
+    lines.write(k0, "this line is far too long to", &sink, LineSink.emit);
+    lines.write(k0, " ever fit the stage\n", &sink, LineSink.emit);
+    try std.testing.expectEqual(@as(u32, 1), lines.dropped);
+    try std.testing.expectEqualStrings("", sink.received());
+    try std.testing.expect(!lines.kernel[0].dropping);
+    lines.write(k1, "next ok\n", &sink, LineSink.emit);
+    try std.testing.expectEqualStrings(
+        line_drop_notice ++ "1\nnext ok\n",
+        sink.received(),
+    );
+    try std.testing.expectEqual(@as(u32, 1), lines.reported);
+}
+
+test "serial_lines: a dropped line's continuation is discarded through its newline" {
+    var lines: SerialLines(4, 4, 16) = .{};
+    var sink: LineSink = .{};
+    lines.write(k0, "0123456789abcdef", &sink, LineSink.emit); // fills the stage exactly
+    lines.write(k0, "GARBAGE", &sink, LineSink.emit); // over the bound: drop
+    lines.write(k0, "more\n", &sink, LineSink.emit); // same line: all discarded
+    lines.write(k0, "ok\n", &sink, LineSink.emit); // the next line survives
+    try std.testing.expectEqual(@as(u32, 1), lines.dropped);
+    try std.testing.expectEqualStrings(
+        line_drop_notice ++ "1\nok\n",
+        sink.received(),
+    );
+}
+
+test "serial_lines: proc slot exhaustion drops the line whole, once" {
+    var lines: SerialLines(4, 2, 64) = .{};
+    var sink: LineSink = .{};
+    const p9: LineWriter = .{ .owner = .{ .proc = 9 }, .core = 0 };
+    lines.write(p7, "p7 open ", &sink, LineSink.emit); // claims proc slot 0
+    lines.write(p8, "p8 open ", &sink, LineSink.emit); // claims proc slot 1
+    lines.write(p9, "lost ", &sink, LineSink.emit); // no free slot: drop
+    lines.write(p9, "still lost\n", &sink, LineSink.emit); // same line: silent
+    try std.testing.expectEqual(@as(u32, 1), lines.dropped);
+    try std.testing.expectEqualStrings("", sink.received());
+    lines.flush_partials(null, &sink, LineSink.emit); // publishes + frees slots
+    lines.write(p9, "now fits\n", &sink, LineSink.emit);
+    try std.testing.expectEqualStrings(
+        line_drop_notice ++ "1\np7 open \np8 open \nnow fits\n",
+        sink.received(),
+    );
+    try std.testing.expectEqual(@as(u32, 1), lines.reported);
+}
+
+test "serial_lines: the idle seam can leave the shell's core-0 stage untouched" {
+    // A core-0 kernel writer preempted mid-composition must NOT have its
+    // partial published by the idle task — the flush excludes that one
+    // stage and the line still emits whole when the writer resumes.
+    var lines: TestLines = .{};
+    var sink: LineSink = .{};
+    lines.write(k0, "timer heartbeat ticks=5 irq=", &sink, LineSink.emit);
+    lines.write(p7, "p7 partial", &sink, LineSink.emit);
+    lines.flush_partials(0, &sink, LineSink.emit); // the idle task's pass
+    try std.testing.expectEqualStrings("p7 partial", sink.received());
+    lines.write(k0, "5 poll=0\n", &sink, LineSink.emit);
+    try std.testing.expectEqualStrings(
+        "p7 partial\ntimer heartbeat ticks=5 irq=5 poll=0\n",
+        sink.received(),
+    );
+}
+
+test "serial_lines: the drop notice always opens on a fresh line" {
+    var lines: SerialLines(4, 4, 16) = .{};
+    var sink: LineSink = .{};
+    lines.write(k0, "virelai> ", &sink, LineSink.emit);
+    lines.flush_partials(null, &sink, LineSink.emit); // kernel open line
+    lines.write(k0, "0123456789abcdefOVER\n", &sink, LineSink.emit); // drop over bound
+    lines.write(k1, "next\n", &sink, LineSink.emit); // notice precedes it
+    try std.testing.expectEqualStrings(
+        "virelai> \n" ++ line_drop_notice ++ "1\nnext\n",
+        sink.received(),
+    );
+}
+
+test "serial_lines: random writers never mix owners inside one wire line" {
+    var prng = std.Random.DefaultPrng.init(0x3879);
+    const r = prng.random();
+    var lines: SerialLines(4, 4, 96) = .{};
+    var sink: LineSink = .{};
+    const writers = [_]LineWriter{ k0, k1, p7, p8 };
+    // Disjoint byte alphabets per writer key; the kernel writers share ONE
+    // owner, so the legal sets are {k0,k1}, {p7}, {p8}.
+    const alpha = [4][]const u8{ "AB", "CD", "g", "k" };
+    var issued: [4][16384]u8 = undefined;
+    var issued_len: [4]usize = .{ 0, 0, 0, 0 };
+    var composing: [4]bool = .{ false, false, false, false };
+    var steps: usize = 0;
+    while (steps < 4000) : (steps += 1) {
+        switch (r.uintLessThan(u8, 10)) {
+            0 => lines.flush_partials(null, &sink, LineSink.emit),
+            1 => lines.flush_partials(0, &sink, LineSink.emit),
+            else => {
+                const w = r.uintLessThan(u8, 4);
+                var piece: [24]u8 = undefined;
+                var n: usize = 0;
+                const count = 1 + r.uintLessThan(u8, 8);
+                var i: usize = 0;
+                while (i < count) : (i += 1) {
+                    const a = alpha[w];
+                    piece[n] = a[r.uintLessThan(u8, @intCast(a.len))];
+                    n += 1;
+                }
+                composing[w] = true;
+                if (r.uintLessThan(u8, 4) == 0) {
+                    piece[n] = '\n';
+                    n += 1;
+                    composing[w] = false;
+                }
+                @memcpy(issued[w][issued_len[w]..][0..n], piece[0..n]);
+                issued_len[w] += n;
+                lines.write(writers[w], piece[0..n], &sink, LineSink.emit);
+            },
+        }
+    }
+    lines.flush_partials(null, &sink, LineSink.emit);
+    // Invariant one: no physical wire line mixes two owners' alphabets.
+    var it = std.mem.splitScalar(u8, sink.received(), '\n');
+    while (it.next()) |line| {
+        if (line.len == 0) continue;
+        if (std.mem.startsWith(u8, line, line_drop_notice)) continue;
+        var has_kernel = false;
+        var has_p7 = false;
+        var has_p8 = false;
+        for (line) |b| {
+            if (b == '\n' or b == '\r') continue;
+            const k = (b >= 'A' and b <= 'D') or (b >= 'a' and b <= 'f');
+            const q7 = b >= 'g' and b <= 'j';
+            const q8 = b >= 'k' and b <= 'o';
+            if (!k and !q7 and !q8) continue; // close-newline artifacts: none expected
+            has_kernel = has_kernel or k;
+            has_p7 = has_p7 or q7;
+            has_p8 = has_p8 or q8;
+        }
+        try std.testing.expect(@as(u8, @intFromBool(has_kernel)) +
+            @as(u8, @intFromBool(has_p7)) +
+            @as(u8, @intFromBool(has_p8)) <= 1);
+    }
+    // Invariant two: per writer key, every issued byte arrived in order
+    // (drops are impossible under this test's bound — asserted here so the
+    // equivalence stays honest rather than assumed).
+    try std.testing.expectEqual(@as(u32, 0), lines.dropped);
+    for (0..4) |w| {
+        var want: [16384]u8 = undefined;
+        var wlen: usize = 0;
+        for (issued[w][0..issued_len[w]]) |b| {
+            if (b != '\n') {
+                want[wlen] = b;
+                wlen += 1;
+            }
+        }
+        var got: [16384]u8 = undefined;
+        var glen: usize = 0;
+        for (sink.received()) |b| {
+            const owned = switch (w) {
+                0 => b >= 'A' and b <= 'B',
+                1 => b >= 'C' and b <= 'D',
+                2 => b == 'g',
+                else => b == 'k',
+            };
+            if (owned) {
+                got[glen] = b;
+                glen += 1;
+            }
+        }
+        try std.testing.expectEqualStrings(want[0..wlen], got[0..glen]);
+    }
 }
