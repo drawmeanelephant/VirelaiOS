@@ -91,7 +91,10 @@ def bridge_busy(s):
     except socket.timeout:
         return False
     except OSError:
-        return False
+        # A refused client can be RST before the 'busy' line it was sent
+        # is readable (a loaded bridge closes fast): a dead socket right
+        # after a successful connect is not-us, so queue like a busy.
+        return True
     finally:
         s.settimeout(None)
     if head.startswith(BUSY_LINE):
