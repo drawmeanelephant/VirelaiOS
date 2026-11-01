@@ -264,6 +264,22 @@ pub fn cmd_net(m: *Monitor, args: []const []const u8) ExecError {
     m.console.puts(" armed=");
     m.console.print_u64(if (virtio_net.rx_armed) 1 else 0);
     m.console.puts("\n");
+    // #3863: the stall-watchdog operands at this instant — each `net`
+    // sample shows whether polls run (pk), silence accumulates (sil),
+    // and a solicitation is owed (the reset guard's three operands).
+    m.console.puts("net: rx-polls pk=");
+    m.console.print_u64(virtio_net.rx_pokes);
+    m.console.puts(" sil=");
+    m.console.print_u64(virtio_net.rx_silent_polls);
+    m.console.puts(" owed=");
+    {
+        var o: u64 = 0;
+        for (&virtio_net.arp.pending) |*s| {
+            if (s.valid) o += 1;
+        }
+        m.console.print_u64(o);
+    }
+    m.console.puts("\n");
     // The claim-time observation record: the last device-written length +
     // the first 16 bytes pin the RX-header question (12 zero bytes + dst
     // MAC = header present; dst MAC at 0 = none). Recorded even when the

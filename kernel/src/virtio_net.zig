@@ -463,7 +463,7 @@ pub var rx_pokes: u64 = 0;
 /// comparison permanently false on c81b96dc; the a-01 artifacts
 /// showed the reset could not have fired).
 var rx_silent_seen: u16 = 0;
-var rx_silent_polls: u32 = 0;
+pub var rx_silent_polls: u32 = 0; // sampled by the `net` report (#3863)
 var rx_reset_tick: u64 = 0;
 var rx_reset_n: u8 = 0;
 var rxq_stall_logged: bool = false;
