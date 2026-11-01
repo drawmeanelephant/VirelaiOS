@@ -93,6 +93,16 @@ vgate_note "a->b arp/ping on vm-a serial; b->a arp/ping + mDNS browse + /healthz
 
 # vm-a stage 1: bind the hub lease, then advertise. The bare `net` after the
 # pump pins the --mac override + bound counter line on this VM's serial.
+# `net arp 10.0.0.99` is the watchdog arm, NOT a resolution the gate needs:
+# the rxq stall-reset (kernel virtio_net #3863) only fires while an ARP
+# solicitation is outstanding (`owed`), and a permanently-unanswered target
+# keeps a pending slot valid for the whole run — the learn window counts
+# heartbeat ticks, of which a run sees a handful — so ANY later pair->ring
+# wedge is recoverable instead of fatal. Observed live: a run where the
+# attachment stalled at sil=pk=25654 with owed=0 and delivered nothing for
+# the whole 720 s; with this arm the reset fires inside 512 silent polls.
+# A learned target cannot arm it (`net arp` prints 'is at' and re-sends
+# nothing), and .17 resolves mid-run — .99 never does, by construction.
 vgate_file vma-s1.txt <<'EOF'
 net dhcp
 net dhcp
@@ -105,6 +115,7 @@ net dhcp
 net dhcp
 net dhcp
 net
+net arp 10.0.0.99
 exec GOHTTPD.ELF --advertise v206b
 echo vma-s1-done
 EOF
@@ -479,6 +490,11 @@ if "this runner owns the segment hub" not in log_text:
 # `net arp` reopens the ~0.5 s learn window and the drains pull whatever
 # has landed; once .16 resolves the entry carries ping and the fetch.
 legs = ["net dhcp"] * 5
+# The same watchdog arm as vm-a's s1: an unanswered .99 solicitation keeps
+# a pending slot valid for B's whole session (B's runner spans all runs),
+# so B's rxq stall-reset stays armed through the browse AND the install
+# legs — where a mid-transfer wedge would otherwise tear the channel.
+legs += ["net arp 10.0.0.99"]
 legs += ["exec GONETSTAT.ELF discover _http._tcp", "net recv"]
 for _ in range(12):
     legs += ["net arp 10.0.0.16", "net", "net ping 10.0.0.16",
