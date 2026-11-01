@@ -48,6 +48,16 @@ vgate_file script-local.txt <<'EOF'
 exec WEB.ELF /host/PAGE.HTML
 EOF
 
+# M211a (#3867): vgate_repeat iteration hygiene — the armed share persists
+# across iterations, so a leg that asserts accumulated FLINT state must
+# start each boot from the K=1 baseline. Leg 40 owns the bookmark chain's
+# head: its script drops the atoms file before exec so iterations 2+ see
+# an empty store (leg 41 deliberately keeps the residue — it loads it).
+vgate_file script-local40.txt <<'EOF'
+vf rm FLINT/ws/bookmarks/ATOMS.jsonl
+exec WEB.ELF /host/PAGE.HTML
+EOF
+
 vgate_file script-nav.txt <<'EOF'
 exec WEB.ELF /host/PAGE.HTML
 EOF
@@ -1884,7 +1894,7 @@ vgate_assert v6 output-contains 'NET-TCP6: answered'
 vgate_run 40 -- \
     --screen '$RUN_DIR/screen' --via-virtio --cvc-snap \
     --snapshot-out '$RUN_DIR/snap-40' \
-    --script '$RUN_DIR/script-local.txt' \
+    --script '$RUN_DIR/script-local40.txt' \
     --input-chords 'ctrl-d,ctrl-l,/,h,o,s,t,/,N,E,X,T,.,H,T,M,L,return,ctrl-d,ctrl-b,return,delete,escape,ctrl-shift-b' --input-chords-after 'web: ready' \
     --snapshot-after 'web: bookmarks n=2' \
     --script-expect 'web: bookmarks n=1' --timeout 240
@@ -2412,6 +2422,7 @@ PY
 # approved golden whatever settings row boot 43 left.
 
 vgate_file script-journey.txt <<'EOF'
+vf rm FLINT/ws/bookmarks/ATOMS.jsonl
 settings set font_size medium
 exec WEB.ELF /host/PAGE.HTML
 EOF
@@ -4056,15 +4067,17 @@ vgate_assert 61 serial-absent 'exited status=139'
 # 'web: script worker gone' while the page still paints. K=3 rides the
 # spec-level vgate_repeat.
 vgate_file script-domrpc.txt <<'EOFS'
+vf mv QJSHELD.BIN QJS.BIN
 exec WEB.ELF /host/SCRIPTED.HTML
 EOFS
 
 vgate_file script-rpcops.txt <<'EOFS'
+vf mv QJSHELD.BIN QJS.BIN
 exec QJS.BIN --dom-rpc /host/RPCOPS.BAD
 EOFS
 
 vgate_file script-rpcdead.txt <<'EOFS'
-vf rm QJS.BIN
+vf mv QJS.BIN QJSHELD.BIN
 exec WEB.ELF /host/SCRIPTED.HTML
 EOFS
 
