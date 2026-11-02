@@ -139,6 +139,11 @@ const (
 	// teardown. The card's pinned shapes are `web: script rc=…` and
 	// `web: script worker gone`.
 	markerScript = "web: script "
+	// M211b (#3868): `web: dom` is one answered DOM request's outcome —
+	// `web: dom <op> ok|dom_op_refused|dom_op_unknown`; `web: console` is
+	// a script's console.log line reaching serial, clipped single-line.
+	markerDom     = "web: dom "
+	markerConsole = "web: console "
 	// M121c (#2566): the '?' overlay's receipts — `hints n=` the registry
 	// row count on the painted frame, one `hints row` per plate row (the
 	// serial-readable copy), `hints close` after the restored frame.

@@ -15,6 +15,11 @@ void qjs_native_check_alloca(size_t);
  * qjs_native_host_failure, never partial data. */
 const char *qjs_native_host_read(const char *, size_t, size_t *);
 int qjs_native_host_write(const char *, size_t, const char *, size_t);
+/* ADR 0039 amendment (M211b): one bounded DOM op per call — op name plus
+ * two string args in, the answered value in *out (SIZE_MAX for JSON null).
+ * NULL names its refusal through qjs_native_host_failure verbatim. */
+const char *qjs_native_host_dom(const char *, size_t, const char *, size_t,
+                                const char *, size_t, size_t *);
 const char *qjs_native_host_failure(void);
 size_t qjs_native_host_arg_count(void);
 long qjs_native_host_arg(size_t, char *, size_t);

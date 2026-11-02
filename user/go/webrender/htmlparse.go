@@ -54,6 +54,36 @@ type Document struct {
 	Nodes     int  // total nodes kept
 	TextBytes int  // decoded text bytes kept
 	Truncated bool // a cap was hit: the remainder was dropped visibly
+	byID      map[string]*Node
+}
+
+// ByID returns the first element node in document order carrying the
+// given id= attribute, or nil (M211b #3868): the dom-rpc id-addressed
+// read seam. The index builds lazily on first use — a page whose script
+// never asks pays no map. Duplicate ids resolve first-wins, the same
+// order a browser's getElementById observes.
+func (d *Document) ByID(id string) *Node {
+	if d == nil || d.Root == nil || id == "" {
+		return nil
+	}
+	if d.byID == nil {
+		d.byID = make(map[string]*Node, 64)
+		var walk func(*Node)
+		walk = func(n *Node) {
+			if n.Kind == KindElement {
+				if v := n.Attr("id"); v != "" {
+					if _, seen := d.byID[v]; !seen {
+						d.byID[v] = n
+					}
+				}
+			}
+			for _, c := range n.Children {
+				walk(c)
+			}
+		}
+		walk(d.Root)
+	}
+	return d.byID[id]
 }
 
 // Parser caps. Every cap is a project decision (ADR 0028 D6): a page that

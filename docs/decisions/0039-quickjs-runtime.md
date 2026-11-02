@@ -702,3 +702,48 @@ DOM/browser APIs inside the worker, JS executed in WEB's address space,
 event listeners/`on*` attributes, XHR/`fetch` from JS (the `net` grant
 word stays out), `document.write`, storage, DOM traversal and mutation,
 and every §3 inventory entry unchanged.
+
+## Amendment (M211b / #3868) — bounded DOM read ops
+
+Directed by card b of the same index, the wire bumps to protocol
+**v2** and grows the read half of the DOM. The channel shape is
+unchanged — ops spool on fd-0, reply spool on fd-1 — plus one
+rendezvous file, `/host/WEBRPC.ANS`, the parent→worker answer half a
+synchronous ask needs. Still JSON text only: the values a script may
+learn cross the wire, the node tree's handles and authority never do.
+
+**Op set v1 (exactly this):** `doc.title`, `node.text` (by id),
+`node.attr` (by id+name), `console.log`. A script's ask is a request
+line on the reply spool — `{"op":"<dom-op>","seq":N,"a":..,"b":..}` —
+and WEB answers it on WEBRPC.ANS mid-run off its existing poll
+cadence, so a read is a round trip, never a deadlock and never a held
+frame. `console.log` prints a clipped `web: console` serial marker.
+`doc.title` answers the `<title>` element's text; the id-addressed ops
+read the retained node tree through a lazily-built `ByID` index —
+an absent node or attribute answers JSON `null`, not a refusal.
+
+**Refusals, named:** `dom_op_refused` for a known-but-not-admitted op
+(card c's `node.setText`/`field.setValue`, traversal `nodes.byTag`/
+`nodes.byClass`/`node.query`, `doc.write`, `timer.set`, `net.fetch`);
+`dom_op_unknown` for a name outside even that vocabulary;
+`dom_op_bounds` for an over-bound arg or answer; `dom_op_wire` for a
+request that cannot be written. Every refusal reaches JS as an
+exception whose name is the wire's word verbatim.
+
+**Per-script budgets:** at most **32** DOM ops per eval
+(`script_budget_ops`) and the engine's existing four-second wall
+deadline, reported `script_budget_time` — a script that spins in JS
+or waits on an unanswered ask dies at the same named bound, not at
+the seat's patience. The per-eval reply carries `"ops":N`; WEB's
+`web: script rc=`/`done` markers print the counts.
+
+**The JS surface is adapter source, not C bindings.** The worker
+evals a fixed prologue once per context that builds `document`
+(`title` getter, `getElementById` → `textContent`/`getAttribute`) and
+rebinds `console.log` over `virelai.dom(op, a, b)` — the one new
+native, riding the M200c host-callback seam verbatim. A context
+reset re-installs the prologue on the next eval.
+
+**Still refused, by name:** everything the M211a fence named, plus
+DOM traversal beyond id addressing, mutation (card c), events, and
+any op outside the v1 set — refused on the wire, not silently.

@@ -4105,11 +4105,42 @@ shutil.copy(qjs, share / "QJS.BIN")
     "</body></html>\n")
 (share / "RPCOPS.BAD").write_text(
     '{"op":"eval","src":"5"}\n'
-    '{"op":"hello","version":1}\n'
+    '{"op":"hello","version":2}\n'
     '{"op":"eval","src":"1+2"}\n'
     '{"op":"bogus"}\n'
     '{"op":"hello","version":99}\n'
     '{"not json"}\n')
+# M211b (#3868): DOM read-op fixture pages. DOMREAD's script reads the
+# title element, an id'd node's textContent and an attribute, plus a
+# missing id (null answer); DOMREF exercises the refusal vocabulary —
+# a known-but-unadmitted op (query -> dom_op_refused, node.setText the
+# same) and a name outside the vocabulary (dom_op_unknown); DOMSPIN
+# burns the engine's 4s eval deadline; DOMSTORM exceeds the 64-op
+# per-script budget on console.log round trips.
+(share / "DOMREAD.HTML").write_text(
+    "<!doctype html><html><head><title>Dom Reads Page</title></head><body>"
+    "<h1>reads</h1><p id=\"lead\" data-note=\"pinned\">alpha lead text</p>"
+    "<script>"
+    "console.log(\"title=\" + document.title);"
+    "console.log(\"text=\" + document.getElementById(\"lead\").textContent);"
+    "console.log(\"attr=\" + document.getElementById(\"lead\").getAttribute(\"data-note\"));"
+    "console.log(\"missing=\" + document.getElementById(\"nope\").textContent);"
+    "</script></body></html>\n")
+(share / "DOMREF.HTML").write_text(
+    "<!doctype html><html><body><p>refusals</p>"
+    "<script>"
+    "try { document.querySelector(\"p\"); } catch (e) { console.log(\"refused=\" + e.name); }"
+    "try { virelai.dom(\"node.setText\", \"lead\", \"x\"); } catch (e) { console.log(\"set=\" + e.name); }"
+    "try { virelai.dom(\"bogus.op\"); } catch (e) { console.log(\"unknown=\" + e.name); }"
+    "</script></body></html>\n")
+(share / "DOMSPIN.HTML").write_text(
+    "<!doctype html><html><body><p>spinner</p>"
+    "<script>while (1) {}</script></body></html>\n")
+(share / "DOMSTORM.HTML").write_text(
+    "<!doctype html><html><body><p>storm</p>"
+    "<script>for (var i = 0; i < 200; i++) { console.log(\"x\"); }</script>"
+    "</body></html>\n")
+print("staged DOM fixture pages for the M211b legs")
 print("staged QJS.BIN + SCRIPTED.HTML + RPCOPS.BAD for the dom-rpc legs")
 PY
 
@@ -4123,7 +4154,7 @@ vgate_run 62 -- \
 vgate_assert 62 serial-contains 'web: ready'
 vgate_assert 62 serial-contains 'web: script n='
 vgate_assert 62 serial-contains 'web: script worker pid='
-vgate_assert 62 serial-contains 'web: script hello version=1'
+vgate_assert 62 serial-contains 'web: script hello version=2'
 vgate_assert 62 serial-count 'web: script rc=0' 2
 vgate_assert 62 serial-contains 'web: script done'
 vgate_assert 62 serial-absent 'web: script worker gone'
@@ -4139,7 +4170,7 @@ vgate_run 63 -- \
     --script-expect 'qjs: clean' --timeout 120
 
 vgate_assert 63 serial-contains 'dom_rpc_hello'
-vgate_assert 63 serial-contains '"op":"hello","ok":true,"version":1'
+vgate_assert 63 serial-contains '"op":"hello","ok":true,"version":2'
 vgate_assert 63 serial-contains '"out":"3'
 vgate_assert 63 serial-contains 'dom_rpc_op'
 vgate_assert 63 serial-contains 'dom_rpc_version'
@@ -4683,3 +4714,102 @@ assert band > 30, "h1 band absent (band=%d)" % band
 print("live-web 66: fallback page on the scanout over HTTP/1.1 "
       "(bg=%d band=%d)" % (bg, band))
 PY
+# --- boots 67-70 (M211b #3868): bounded DOM read ops over the wire -----
+# 67: a real script reads the page it rode in on — <title>, an id'd
+# node's textContent, an attribute, a missing id's null — and logs the
+# values to serial through console.log's own wire op. 68: an op outside
+# the v1 set is refused by name — node.query/node.setText get
+# dom_op_refused, an unknown name dom_op_unknown, each reaching JS as a
+# catchable exception. 69: a console.log storm hits the 64-op per-script
+# budget — the refusal lands on serial from the worker's exception
+# diagnostic and every served op's marker precedes it. 70: a pure-JS
+# spin dies at the script's wall budget — the eval reply names
+# script_budget_time. Each restocks QJS.BIN the way leg 62 does.
+vgate_file script-domread.txt <<'EOFS'
+vf mv QJSHELD.BIN QJS.BIN
+exec WEB.ELF /host/DOMREAD.HTML
+EOFS
+
+vgate_file script-domref.txt <<'EOFS'
+vf mv QJSHELD.BIN QJS.BIN
+exec WEB.ELF /host/DOMREF.HTML
+EOFS
+
+vgate_file script-domstorm.txt <<'EOFS'
+vf mv QJSHELD.BIN QJS.BIN
+exec WEB.ELF /host/DOMSTORM.HTML
+EOFS
+
+vgate_file script-domspin.txt <<'EOFS'
+vf mv QJSHELD.BIN QJS.BIN
+exec WEB.ELF /host/DOMSPIN.HTML
+EOFS
+
+# --- boot 67: title + id-addressed reads, console.log -> serial -------
+vgate_run 67 -- \
+    --screen '$RUN_DIR/screen-domread' \
+    --via-virtio --cvc-snap \
+    --script '$RUN_DIR/script-domread.txt' \
+    --script-expect 'web: script done' --timeout 120
+
+vgate_assert 67 serial-contains 'web: ready'
+vgate_assert 67 serial-contains 'web: script hello version=2'
+vgate_assert 67 serial-contains 'web: dom doc.title ok'
+vgate_assert 67 serial-count 'web: dom node.text ok' 2
+vgate_assert 67 serial-contains 'web: dom node.attr ok'
+vgate_assert 67 serial-contains 'web: console title=Dom Reads Page'
+vgate_assert 67 serial-contains 'web: console text=alpha lead text'
+vgate_assert 67 serial-contains 'web: console attr=pinned'
+vgate_assert 67 serial-contains 'web: console missing=null'
+vgate_assert 67 serial-contains 'web: script rc=0 ops=8'
+vgate_assert 67 serial-contains 'web: script done ops=8'
+vgate_assert 67 serial-absent 'web: script worker gone'
+vgate_assert 67 serial-absent 'dom_op_'
+vgate_assert 67 serial-absent '[EXC] parking:'
+
+# --- boot 68: refusals name their op, on the wire and in JS -----------
+vgate_run 68 -- \
+    --screen '$RUN_DIR/screen-domref' \
+    --via-virtio --cvc-snap \
+    --script '$RUN_DIR/script-domref.txt' \
+    --script-expect 'web: script done' --timeout 120
+
+vgate_assert 68 serial-contains 'web: ready'
+vgate_assert 68 serial-contains 'web: dom node.query dom_op_refused'
+vgate_assert 68 serial-contains 'web: dom node.setText dom_op_refused'
+vgate_assert 68 serial-contains 'web: dom bogus.op dom_op_unknown'
+vgate_assert 68 serial-contains 'web: console refused=dom_op_refused'
+vgate_assert 68 serial-contains 'web: console set=dom_op_refused'
+vgate_assert 68 serial-contains 'web: console unknown=dom_op_unknown'
+vgate_assert 68 serial-contains 'web: script rc=0 ops=6'
+vgate_assert 68 serial-contains 'web: script done ops=6'
+vgate_assert 68 serial-absent 'web: script worker gone'
+vgate_assert 68 serial-absent '[EXC] parking:'
+
+# --- boot 69: the 64-op per-script budget refuses script_budget_ops ---
+vgate_run 69 -- \
+    --screen '$RUN_DIR/screen-domstorm' \
+    --via-virtio --cvc-snap \
+    --script '$RUN_DIR/script-domstorm.txt' \
+    --script-expect 'web: script done' --timeout 120
+
+vgate_assert 69 serial-contains 'web: ready'
+vgate_assert 69 serial-contains 'web: console x'
+vgate_assert 69 serial-contains 'script_budget_ops'
+vgate_assert 69 serial-contains 'web: script rc=70 error=JSException'
+vgate_assert 69 serial-contains 'web: script done ops=32'
+vgate_assert 69 serial-absent 'web: script worker gone'
+vgate_assert 69 serial-absent '[EXC] parking:'
+
+# --- boot 70: a pure-JS spin dies at the wall budget ------------------
+vgate_run 70 -- \
+    --screen '$RUN_DIR/screen-domspin' \
+    --via-virtio --cvc-snap \
+    --script '$RUN_DIR/script-domspin.txt' \
+    --script-expect 'web: script done' --timeout 120
+
+vgate_assert 70 serial-contains 'web: ready'
+vgate_assert 70 serial-contains 'web: script rc=70 error=script_budget_time'
+vgate_assert 70 serial-contains 'web: script done'
+vgate_assert 70 serial-absent 'web: script worker gone'
+vgate_assert 70 serial-absent '[EXC] parking:'
