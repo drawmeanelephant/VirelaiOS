@@ -6,10 +6,13 @@
 # (the M108 lane shape: one record per file, bounded, signed).
 # class-B: the agent control channel. Run 01 is the full journey on a
 # live seat under virelai-agent/2: the Ed25519 handshake names agent
-# devin, all seven verbs green (fs depth, streamed gosh.run, the
-# ui.screenshot stream), the whole in-session refusal matrix, the
-# gosh.run kill path, and a second peer's SYN refused while the session
-# stays intact. Runs 02-04 are the auth negatives (bad signature,
+# devin, all the verbs green (fs depth, streamed gosh.run, the
+# ui.screenshot stream, the gosh.spawn non-blocking launch — a spawned
+# `sleep 20` answering its pid at once and an `exec GOEDIT.ELF` desk-app
+# launch landing the Edit row, card #3900), the whole in-session
+# refusal matrix, the gosh.run kill path, and a second peer's SYN
+# refused while the session stays intact. Runs 02-04 are the auth
+# negatives (bad signature,
 # pre-auth verb, mute client); run 05 is --allow-exec off with no seat
 # (verb_disabled + seat_absent); runs 06-08 are the v1 startup postures
 # (privileged, no credential, no sandbox root). Run 09 is the cap-absent
@@ -292,6 +295,7 @@ vgate_assert 01 serial-contains 'agentd: req id='
 vgate_assert 01 serial-contains 'verb=proc.list ok'
 vgate_assert 01 serial-contains 'verb=ui.windows ok'
 vgate_assert 01 serial-contains 'verb=ui.screenshot ok'
+vgate_assert 01 serial-contains 'verb=gosh.spawn ok'
 vgate_assert 01 serial-contains 'agentd: spawn pid='
 vgate_assert 01 serial-contains 'agentd: reap pid='
 vgate_assert 01 serial-contains 'code=path_rejected'
@@ -305,6 +309,8 @@ vgate_assert 01 output-contains 'NET-TCP-STREAM: ENABLED'
 vgate_assert 01 output-contains 'NET-TCP-INTRUDER: sent a second SYN from port'
 vgate_assert 01 output-contains 'AGENTCTL: ok fs-depth'
 vgate_assert 01 output-contains 'AGENTCTL: ok gosh-stream'
+vgate_assert 01 output-contains 'AGENTCTL: ok gosh-spawn'
+vgate_assert 01 output-contains 'AGENTCTL: ok gosh-spawn-desk'
 vgate_assert 01 output-contains 'AGENTCTL: ok ui.screenshot'
 vgate_assert 01 output-contains 'AGENTCTL: PASS full'
 vgate_assert 01 output-contains 'NET-TCP-STREAM: probe exited status=0'
@@ -382,6 +388,7 @@ for need in (
     ("devin", "fs.write", "ok"),
     ("devin", "fs.read", "path_rejected"),
     ("devin", "gosh.run", "timed_out"),
+    ("devin", "gosh.spawn", "ok"),
 ):
     if need not in seen:
         sys.exit("FAIL: no %r receipt; saw %r" % (need, sorted(seen)))

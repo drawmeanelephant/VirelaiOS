@@ -31,6 +31,7 @@ var wantTable = []struct {
 	{"ui.input", "input", CapInput},
 	{"ui.geometry", "window", CapWindow},
 	{"gosh.run", "term", CapTerm},
+	{"gosh.spawn", "term", CapTerm},
 }
 
 func TestVerbCapTable(t *testing.T) {
@@ -87,14 +88,15 @@ func TestAdvertisedOrder(t *testing.T) {
 			t.Fatalf("Advertised[%d] = %q want %q", i, got[i], e.verb)
 		}
 	}
-	// The exec kill switch drops gosh.run alone.
+	// The exec kill switch drops the term-cap verbs — the whole exec
+	// family — and nothing else.
 	got = Advertised(allCaps, false)
 	for _, v := range got {
-		if v == "gosh.run" {
-			t.Fatal("gosh.run advertised with exec off")
+		if v == "gosh.run" || v == "gosh.spawn" {
+			t.Fatalf("%s advertised with exec off", v)
 		}
 	}
-	if len(got) != len(wantTable)-1 {
+	if len(got) != len(wantTable)-2 {
 		t.Fatalf("Advertised no-exec = %v", got)
 	}
 	// A cap absent drops exactly its verbs.

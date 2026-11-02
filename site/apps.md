@@ -133,7 +133,7 @@ store, and the agent channel.
 | `GODIFF.ELF` | A unified context diff — and the self-host capstone: it was authored in GOEDIT, compiled by GOBUILD, run, committed and pushed by FLINT entirely in-guest. `-i` opens an interactive side-by-side viewer. Gates: `go-godiff`, `live-godiff-loop`. |
 | `FLINT.ELF` | The agent-native SCM — files become Atoms, staged Ops form signed Changes on Streams (Ed25519), a semantic three-way merge, and FLINT-SYNC/1 (`clone`/`pull`/`push`/`ls-remote`) against a host `flintd`. Gate: `go-flint`. |
 | `STORE.ELF` / `GOSTORE.ELF` | The install seam and its GUI — `ls`/`install`/`remove`/`update`/`rollback` re-authenticate the signed release manifest, sha256 the fetched ELF, publish through WriteFileSafe with a `.prev` rollback target, and stand an install-time consent modal. GOSTORE browses the signed catalog in a tab and drives the same legs in-process. Gate: `go-gostore`. |
-| `AGENTD.ELF` | The agent control channel — JSON Lines on guest TCP 4747 behind an Ed25519 challenge, verbs from `proc.list`/`fs.read` to `ui.windows`/`ui.input`/`gosh.run`, fail-closed and audited. Gate: `go-agentd`. |
+| `AGENTD.ELF` | The agent control channel — JSON Lines on guest TCP 4747 behind an Ed25519 challenge, verbs from `proc.list`/`fs.read` to `ui.windows`/`ui.input`/`gosh.run`/`gosh.spawn`, fail-closed and audited. Gate: `go-agentd`. |
 
 ## Games
 
