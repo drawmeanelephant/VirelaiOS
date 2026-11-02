@@ -494,9 +494,13 @@ const Session = struct {
 
     /// One bounded DOM op: name + two args become a request line on fd-1,
     /// and the poll reads the rendezvous until the matching `seq` answer
-    /// or the script's own deadlines refuse by name. The wait IS the
-    /// script's wall budget — a parent that never answers costs the
-    /// eval's deadline, not the seat's patience.
+    /// or a named bound refuses. Waiting on the parent is the parent's
+    /// clock, not the script's — each slept span shifts the eval's
+    /// deadline origin forward, so only JS-side execution counts against
+    /// the four-second script budget. A parent that never answers meets
+    /// the wire's own bound, `dom_op_wire`, not the eval's deadline.
+    const dom_wait_sites: u64 = 10;
+
     fn hostDom(context: *anyopaque, op: []const u8, a: []const u8, b: []const u8, out: []u8) anyerror!usize {
         const self: *Session = @ptrCast(@alignCast(context));
         if (!qjs.domrpc.nameOk(op)) return self.domFail("dom_op_unknown");
@@ -509,9 +513,10 @@ const Session = struct {
         var line: [qjs.domrpc.reply_max]u8 = undefined;
         const used = qjs.domrpc.request(&line, op, self.rpc_seq, a, b);
         self.rpcWrite(line[0..used]) catch return self.domFail("dom_op_wire");
+        const wait_start = clock.counter(clock.context);
         while (true) {
-            if (clock.counter(clock.context) -% self.runtime.control.start >= clock.frequency * 4)
-                return self.domFail("script_budget_time");
+            if (clock.counter(clock.context) -% wait_start >= clock.frequency * dom_wait_sites)
+                return self.domFail("dom_op_wire");
             if (!self.runtime.control.poll())
                 return self.domFail(@errorName(self.runtime.control.failure orelse error.Cancelled));
             const n = rpcReadAnswer(self.rpc_ans) catch 0;
@@ -526,10 +531,9 @@ const Session = struct {
                     }
                 } else |_| {}
             }
-            // The parent services the request stream on its own ~1 ms
-            // event-loop cadence; a 1 ms sleep keeps the wait inside
-            // the same envelope without spinning the core.
+            const before = clock.counter(clock.context);
             _ = sdk.native.call(94, .{ 1_000_000, 0, 0, 0, 0, 0 });
+            self.runtime.control.start +%= clock.counter(clock.context) -% before;
         }
     }
 
