@@ -43,32 +43,56 @@ const maxFontBytes = 512 * 1024
 // maxImageBytes bounds one <img> read from the share.
 const maxImageBytes = webstyle.MaxImageBytes
 
+// readScratch is the process-lifetime staging buffer the count pass reads
+// through: reused across files, it never grows the live heap and produces
+// no garbage for the collector to chase (#3898 — the byte-growth loop it
+// replaced allocated ~1 MiB of abandoned buffers per face, and the GC
+// cycles those buffers provoked were the measured bulk of WEB's startup).
+var readScratch [32 * 1024]byte
+
 // readWholeFile reads up to max bytes of a share file. It is the browser's own
 // reader rather than vi.ReadFileAll because that helper clamps every request to
 // vi.MaxFileBytes (see maxFontBytes).
+//
+// Two passes keep the retained allocation exact while allocating nothing
+// else: pass 1 counts the file through readScratch (a file past max stops
+// early and still yields a bounded buffer), pass 2 reads straight into the
+// one exact-size result slice — no append growth, no per-chunk copies, no
+// garbage. The cost is a second open and a second read pass over a channel
+// that measured ~1 ms per 32 KiB round trip live (#3898) — tens of
+// milliseconds against the ~1 s of collector churn the growth loop spent.
 func readWholeFile(path string, max int) []byte {
 	h, rc := vi.FileOpen(path, vi.ModeRead)
 	if rc < 0 || h < 0 {
 		return nil
 	}
-	defer vi.FileClose(uint32(h))
-	out := make([]byte, 0, 64*1024)
-	buf := make([]byte, 16*1024)
-	for len(out) < max {
-		n, rr := vi.FileRead(uint32(h), buf)
+	total := 0
+	for total < max {
+		n, rr := vi.FileRead(uint32(h), readScratch[:])
 		if rr < 0 || n <= 0 {
 			break
 		}
-		take := n
-		if len(out)+take > max {
-			take = max - len(out)
-		}
-		out = append(out, buf[:take]...)
-		if take < n {
+		total += n
+	}
+	vi.FileClose(uint32(h))
+	if total > max {
+		total = max
+	}
+	out := make([]byte, total)
+	h, rc = vi.FileOpen(path, vi.ModeRead)
+	if rc < 0 || h < 0 {
+		return nil
+	}
+	defer vi.FileClose(uint32(h))
+	got := 0
+	for got < total {
+		n, rr := vi.FileRead(uint32(h), out[got:])
+		if rr < 0 || n <= 0 {
 			break
 		}
+		got += n
 	}
-	return out
+	return out[:got]
 }
 
 // faceState is the per-role half of the `web: fonts` marker pair.
@@ -94,7 +118,21 @@ func loadRegistryEngine() (webrender.Fonts, string, bool) {
 		return webrender.Fonts{}, "manifest=malformed " + err.Error(), false
 	}
 	reg := ttf.NewRegistry(specs, func(file string) (*ttf.Face, error) {
-		return ttf.Parse(readWholeFile("/host/"+file, maxFontBytes))
+		// #3898: per-face load cost on the serial line — the font stage's
+		// own attribution, so one slow face names itself rather than hiding
+		// inside the aggregate `web: stages fonts=` span. read covers both
+		// passes' syscalls (count + fill); parse is ttf.Parse alone.
+		t := vi.Nanos()
+		tRead := vi.Nanos()
+		data := readWholeFile("/host/"+file, maxFontBytes)
+		readNs := vi.Nanos() - tRead
+		tParse := vi.Nanos()
+		f, err := ttf.Parse(data)
+		vi.ConsoleLine("fonts: face " + file +
+			" read=" + itoa(int(readNs/ms)) +
+			" parse=" + itoa(int((vi.Nanos()-tParse)/ms)) +
+			" total=" + itoa(int((vi.Nanos()-t)/ms)) + "ms")
+		return f, err
 	})
 	// The card's `fonts: notdef=N` marker: every rune that exhausted its
 	// chain increments the count on the serial line.

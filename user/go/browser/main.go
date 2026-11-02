@@ -149,6 +149,10 @@ const (
 	// serial-readable copy), `hints close` after the restored frame.
 	markerHints    = "web: hints "
 	markerHintsRow = "web: hints row "
+	// #3898: the startup window's stage breakdown — `web: stages` names in
+	// milliseconds where the tStart->tNav0 span went, so "startup is slow"
+	// is a measured attribution printed once per run, never an inference.
+	markerStages = "web: stages "
 	// The typography probes. They carry measurable facts (engine name,
 	// per-glyph advances, line heights) rather than adjectives, so a silent
 	// regression to the 8x8 bitmap fails the class-B gate instead of only
@@ -445,9 +449,15 @@ const (
 	// the number at ~10048ms and printed a budget-over line in every WEB boot
 	// (13 of the 14; boot 12 launches GOFETCH) while only three boots asserted
 	// its absence. The same four faces read 3027ms before that retry existed.
-	// 4000ms stays the loose bar for four faces: a structural regression (faces
-	// read twice, a fetch on the render path) still trips it, with ~1s of
-	// headroom over the measured cost. parse/layout/paint budgets are unchanged.
+	//
+	// #3898 re-measured the span with `web: stages`: the read cap is 32 KiB
+	// now, the six manifest primaries cost ~10-20ms each through the file
+	// channel, and ~90% of the observed 1.4-3s was the reader's own append-
+	// growth churn inside the Go runtime — ~1 MiB of abandoned buffers per
+	// face feeding the collector (the issue's 7917ms was the same loop under
+	// a busier session). The two-pass reader ended it: measured startup
+	// 1443ms -> 223ms on a scripted class-B boot (fonts 1365 -> 94). 4000ms
+	// stays the loose bar — a structural regression still trips it.
 	budgetStartupMs = 4000
 	budgetRenderMs  = 400 // parse + layout + paint of a page
 	budgetParseMs   = 120
@@ -499,6 +509,7 @@ func main() {
 			target = urlFromHandoff(b)
 		}
 	}
+	tArgv := vi.Nanos()
 
 	id, rc := vi.WinOpen(winX, winY, winW, winH)
 	if rc < 0 || id < 0 {
@@ -508,10 +519,16 @@ func main() {
 	a := &app{win: id, hist: newHistory(), tStart: t0, zoomPct: 100}
 	a.bindCanvas(winW, winH)
 	a.buildMenus()
+	tWin := vi.Nanos()
+
 	engine, uiState, monoState, serifState := loadTextEngine()
 	a.text = engine
+	tFonts := vi.Nanos()
+
 	vi.ConsoleLine(markerFonts + engine.Name() + " ui=" + uiState + " mono=" + monoState + " serif=" + serifState)
 	vi.ConsoleLine(markerText + textProbeString(engine))
+	tProbe := vi.Nanos()
+
 	// M126d (#2596): the GOSET font_size row sets the default web text
 	// size; read it once at startup, then subscribe so a live seat's
 	// notices re-apply it. A shim boot has no seat — the subscribe just
@@ -522,13 +539,17 @@ func main() {
 	// rung — read once at startup, then subscribed beside font_size.
 	a.textScale = textScaleRead()
 	a.fontBase = scaledFontBase(fontPx, a.textScale)
+	tSettings := vi.Nanos()
+
 	vi.ConsoleLine(markerFontSize + fontVal + " base=" + itoa(a.fontBase))
 	vi.ConsoleLine(markerTextScale + itoa(a.textScale) + " base=" + itoa(a.fontBase))
 	vi.ConsoleLine(markerOpen + itoa(id))
 	// Fullscreen eligibility uses the existing seat RPC. With no responding
 	// seat, retain the raw shim; resize events determine the presentation.
 	vi.WmMailRequest(vi.WmRpcKindAttachTab, uint32(id), 0, 0, 0, 0, appTitle, appName)
+	tAttach := vi.Nanos()
 	vi.WmMailRequest(vi.WmRpcKindDeclareFullscreen, uint32(id), 0, 0, 0, 0, appTitle, appName)
+	tDeclare := vi.Nanos()
 	// M125d (#2589): the tab row exists now, so the seat can answer a
 	// kind-21 restore. A re-exec'd WEB gets no argv — a stored blob is the
 	// only place its URL survives; ask BEFORE navigating so the restored
@@ -536,20 +557,45 @@ func main() {
 	if v, blob, ok := vi.RequestStateRestore(uint32(id), appName); ok {
 		a.noteState(v, blob)
 	}
+	tRestore := vi.Nanos()
 	a.settingsWatch = settings.Subscribe("font_size", uint32(id), appName)
+	tSubFont := vi.Nanos()
 	// The text_scale ask goes only to a Go seat — the settings bus' home.
 	// A legacy seat never acks kind-13, so this ask would double the
 	// bounded ack stall font_size already pays there (M177a #3142).
 	if peers := vi.WmPeers(appName); peers.Go {
 		a.settingsWatch = settings.Subscribe(settings.A11yTextScaleKey, uint32(id), appName) || a.settingsWatch
 	}
+	tSubScale := vi.Nanos()
 	// The store inventory is read from disk at boot: it is how the gate sees
 	// that a previous run's rows persisted. The bookmark atoms load first so
 	// the count in this line is the on-disk truth, not a later cache.
 	a.loadBookmarks()
+	tBooks := vi.Nanos()
 	vi.ConsoleLine(a.storeSummary())
 	vi.ConsoleLine(markerBmStore + "ws=" + bookWSName + " atoms=" + itoa(len(a.books)) +
 		" migrated=" + itoa(a.booksMigrated) + " error=" + bmErrText(a.booksErr))
+	tStores := vi.Nanos()
+
+	// The startup budget's own accounting: reportBudget prints the whole
+	// tStart->tNav0 span later; this line attributes it per stage so a slow
+	// start names its owner instead of looking like one undifferentiated
+	// cost (#3898). RPC legs are split — a bounded ack stall hides inside
+	// any one of them.
+	msSince := func(t int64) string { return itoa(int((vi.Nanos() - t) / ms)) }
+	stages := "argv=" + itoa(int((tArgv-t0)/ms)) +
+		" win=" + itoa(int((tWin-tArgv)/ms)) +
+		" fonts=" + itoa(int((tFonts-tWin)/ms)) +
+		" probe=" + itoa(int((tProbe-tFonts)/ms)) +
+		" settings=" + itoa(int((tSettings-tProbe)/ms)) +
+		" attach=" + itoa(int((tAttach-tSettings)/ms)) +
+		" declare=" + itoa(int((tDeclare-tAttach)/ms)) +
+		" restore=" + itoa(int((tRestore-tDeclare)/ms)) +
+		" subfont=" + itoa(int((tSubFont-tRestore)/ms)) +
+		" subscale=" + itoa(int((tSubScale-tSubFont)/ms)) +
+		" books=" + itoa(int((tBooks-tSubScale)/ms)) +
+		" stores=" + msSince(tStores)
+	vi.ConsoleLine(markerStages + stages)
 
 	if a.pend != nil && a.pend.url != "" {
 		a.navigate(a.pend.url, "")
