@@ -276,6 +276,16 @@ func (c *Conn) applySettings(p []byte) error {
 // frames until the stream's END_STREAM closes it. Sequential — a second
 // call reuses the connection on a fresh stream id.
 func (c *Conn) Get(authority, path string) (*Response, error) {
+	return c.GetWith(authority, path, nil)
+}
+
+// GetWith is Get plus literal trailing request fields (cookie,
+// accept-encoding — the consumers' h1 parity headers). A field whose
+// name is not a lowercase token or whose value carries a byte that could
+// not ride an HTTP/1.1 header is refused by name before the HEADERS
+// frame leaves — the h2 wire has no CRLF to forge, but the refusal keeps
+// the two engines' request hygiene identical.
+func (c *Conn) GetWith(authority, path string, extra []Field) (*Response, error) {
 	if err := c.start(); err != nil {
 		return nil, err
 	}
@@ -288,16 +298,26 @@ func (c *Conn) Get(authority, path string) (*Response, error) {
 	if path == "" {
 		path = "/"
 	}
+	block, err := encodeRequest(authority, path, extra)
+	if err != nil {
+		return nil, err
+	}
 	st := &stream{id: c.nextID, state: stHalfClosedLocal, sendWin: c.initSendWin, recvWin: windowInit}
 	c.nextID += 2
 	c.cur = st
 
-	block := encodeRequest(authority, path)
 	hdr := frameHeader(frameHEADERS, flagEndHeaders|flagEndStream, st.id, len(block))
 	if err := c.writeAll(append(hdr, block...)); err != nil {
 		return nil, err
 	}
 	return c.pump(st)
+}
+
+// NextStreamID reports the stream identifier the next GetWith rides —
+// the value consumers print on wire-truth markers to prove sequential
+// requests share one connection.
+func (c *Conn) NextStreamID() uint32 {
+	return c.nextID
 }
 
 // pump reads frames until the request stream closes, interleaving the

@@ -31,6 +31,10 @@
 # byte relay, WEB pulls a gzip page plus two linked stylesheets off the host
 # packet responder on ONE keep-alive connection, and a third simultaneous
 # SYN past the plain listener's child bound draws the named refusal.
+# 65-66 (M212b #3873): the negotiated-h2 leg — ALPN picks h2, the page and
+# two stylesheets ride streams 1/3/5 on ONE connection, a >64 KiB body
+# forces WINDOW_UPDATE credit — and the ALPN-less fallback paints the same
+# routes over HTTP/1.1.
 # v6 (M117f #2478, ADR 0057): vi.Dial v6 connect+GET to the hermetic
 # responder; WEB.ELF's named v6-literal URL refusal beside it — no v6 URL
 # grammar or TLS-over-v6 responder exists yet. No public-internet access,
@@ -4155,3 +4159,527 @@ vgate_assert 64 serial-contains 'web: script n='
 vgate_assert 64 serial-contains 'web: script worker gone'
 vgate_assert 64 serial-absent 'web: script done'
 vgate_assert 64 serial-absent '[EXC] parking:'
+
+# --- boots 65-66 (M212b #3873): negotiated h2 and the h1 fallback ------
+# 65: WEB dials leaf.example.com over the runner relay to an ALPN-h2 peer.
+# The whole keep-alive journey rides ONE connection — page on stream 1,
+# ka-a.css on 3, ka-b.css on 5 — and ka-b.css is padded past the 65535-
+# byte receive window so the peer cannot finish it until the guest
+# returns WINDOW_UPDATE credit (the flow-control leg). 66: the same
+# routes on a TLS peer with no ALPN configured — the negotiated pick is
+# "none", the wire speaks HTTP/1.1, and the same page paints.
+
+vgate_file script-h2page.txt <<'EOF'
+net ip 10.0.0.1
+net arp 93.184.216.34
+exec WEB.ELF --dns=93.184.216.34 https://leaf.example.com:24570/
+EOF
+
+vgate_file script-h2page-h1.txt <<'EOF'
+net ip 10.0.0.1
+net arp 93.184.216.34
+exec WEB.ELF --dns=93.184.216.34 https://leaf.example.com:24571/
+EOF
+
+# The snapshot's deterministic present window (see boot 65 note): echo a
+# marker 3 s after 'web: ready', and arm the snapshot on THAT marker.
+vgate_file h2-done.txt <<'EOF'
+echo h2-page-done
+EOF
+
+vgate_file h2page.py <<'EOF'
+#!/usr/bin/env python3
+"""M212b (#3873) hermetic h2 page server for the live-web legs.
+
+One script, two wire shapes on the same three routes:
+
+- --proto h2: TLS 1.3 + ALPN "h2". Requests arrive as HEADERS on odd
+  stream ids; the page and its two stylesheets answer on ONE connection
+  (streams 1, 3, 5). ka-b.css is padded past the guest's 65535-byte
+  receive window, so the server literally cannot finish the body until
+  the guest returns WINDOW_UPDATE credit — the block-and-wait in
+  send_body is the leg's flow-control evidence.
+- --proto h1: the same TLS listener with NO ALPN configured, so the
+  negotiated pick is "none" and the same routes answer over HTTP/1.1
+  keep-alive — the clean fallback leg.
+
+The wire is hand-rolled on purpose (the h2responder.py discipline): the
+codec's whole test surface is the frame grammar, and an h2 library
+would be a second implementation of the thing under test. Every accept,
+stream, and window update writes a receipt line the gate counts.
+"""
+import argparse
+import gzip
+import socket
+import ssl
+import sys
+import time
+
+FRAME_DATA, FRAME_HEADERS, FRAME_RST = 0x0, 0x1, 0x3
+FRAME_SETTINGS, FRAME_PING, FRAME_GOAWAY = 0x4, 0x6, 0x7
+FRAME_WINDOW = 0x8
+FLAG_ACK, FLAG_END_STREAM, FLAG_END_HEADERS = 0x1, 0x1, 0x4
+
+PAGE = (b'<html><head><link rel="stylesheet" href="/ka-a.css">'
+        b'<link rel="stylesheet" href="/ka-b.css"></head>'
+        b'<body><h1>h2 keep-alive journey</h1>'
+        b'<p>three fetches, one connection, negotiated h2</p></body></html>')
+# ~78 KiB — past the 65535-byte client receive window, so the body can
+# only complete once the guest returns credit.
+CSS_B = (b"h1 { background-color: #b58900; }\n/*" + b"x" * 80000 + b"*/")
+
+ROUTES = {
+    "/": (gzip.compress(PAGE, mtime=0), True),
+    "/ka-a.css": (b"body { background-color: #7fdbff; }", False),
+    "/ka-b.css": (CSS_B, False),
+}
+
+
+def frame(typ, flags, sid, payload):
+    return len(payload).to_bytes(3, "big") + bytes([typ, flags]) + \
+        sid.to_bytes(4, "big") + payload
+
+
+def read_exact(s, n):
+    b = b""
+    while len(b) < n:
+        chunk = s.recv(n - len(b))
+        if not chunk:
+            raise EOFError("short read at %d/%d" % (len(b), n))
+        b += chunk
+    return b
+
+
+def read_frame(s):
+    hdr = read_exact(s, 9)
+    ln = int.from_bytes(hdr[:3], "big")
+    return hdr[3], hdr[4], \
+        int.from_bytes(hdr[5:9], "big") & 0x7FFFFFFF, read_exact(s, ln)
+
+
+def rstr(block, i):
+    n = block[i] & 0x7f
+    huff = block[i] & 0x80
+    i += 1
+    if n == 0x7f:
+        n, shift = 0, 0
+        while True:
+            c = block[i]
+            i += 1
+            n |= (c & 0x7f) << shift
+            shift += 7
+            if not c & 0x80:
+                break
+    raw = block[i:i + n]
+    i += n
+    if huff:
+        raise ValueError("huffman-coded request field")
+    return raw.decode("utf-8", "replace"), i
+
+
+def hpack_fields(block):
+    """The minimal decode of THIS client's request block: indexed static
+    entries, plus literal fields with 4- or 6-bit name prefixes."""
+    static = {1: ":authority", 2: ":method", 4: ":path", 7: ":scheme"}
+    fields = {}
+    i = 0
+    while i < len(block):
+        b = block[i]
+        i += 1
+        if b & 0x80:
+            continue  # indexed static (":method GET", ":scheme https")
+        if b & 0x40:
+            nidx = b & 0x3f
+            if nidx == 0x3f:
+                v, shift = 0, 0
+                while True:
+                    c = block[i]
+                    i += 1
+                    v |= (c & 0x7f) << shift
+                    shift += 7
+                    if not c & 0x80:
+                        break
+                nidx = 63 + v
+        else:
+            nidx = b & 0x0f
+            if nidx == 0x0f:
+                v, shift = 0, 0
+                while True:
+                    c = block[i]
+                    i += 1
+                    v |= (c & 0x7f) << shift
+                    shift += 7
+                    if not c & 0x80:
+                        break
+                nidx = 15 + v
+        if nidx == 0:
+            name, i = rstr(block, i)
+        else:
+            name = static.get(nidx, "idx%d" % nidx)
+        value, i = rstr(block, i)
+        fields[name] = value
+    return fields
+
+
+def hstr(s):
+    raw = s.encode()
+    return bytes([len(raw)]) + raw
+
+
+def serve_h2(s, cid, out):
+    preface = read_exact(s, 24)
+    if preface != b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n":
+        raise ValueError("bad client preface: %r" % preface)
+    typ, flags, sid, payload = read_frame(s)
+    if typ != FRAME_SETTINGS or sid != 0:
+        raise ValueError("first client frame not SETTINGS: %d" % typ)
+    s.sendall(frame(FRAME_SETTINGS, 0, 0, b""))
+    s.sendall(frame(FRAME_SETTINGS, FLAG_ACK, 0, b""))
+    conn_win = 65535
+    stream_win = {}
+
+    def apply_window(fsid, payload):
+        nonlocal conn_win
+        inc = int.from_bytes(payload, "big") & 0x7FFFFFFF
+        if fsid == 0:
+            conn_win += inc
+        else:
+            stream_win[fsid] = stream_win.get(fsid, 65535) + inc
+        out.write("h2page: conn=%d window-update sid=%d inc=%d\n"
+                  % (cid, fsid, inc))
+
+    def await_credit(sid):
+        nonlocal conn_win
+        while stream_win.get(sid, 65535) <= 0 or conn_win <= 0:
+            out.write("h2page: conn=%d blocked sid=%d conn_win=%d "
+                      "stream_win=%d\n"
+                      % (cid, sid, conn_win, stream_win.get(sid, -1)))
+            typ, flags, fsid, payload = read_frame(s)
+            if typ == FRAME_WINDOW:
+                apply_window(fsid, payload)
+            elif typ == FRAME_PING:
+                s.sendall(frame(FRAME_PING, FLAG_ACK, 0, payload))
+            else:
+                out.write("h2page: conn=%d ignored type=%d sid=%d "
+                          "while blocked\n" % (cid, typ, fsid))
+
+    def send_body(sid, body):
+        nonlocal conn_win
+        off = 0
+        while off < len(body):
+            n = min(16384, len(body) - off, conn_win, stream_win[sid])
+            if n <= 0:
+                await_credit(sid)
+                continue
+            flags = FLAG_END_STREAM if off + n == len(body) else 0
+            s.sendall(frame(FRAME_DATA, flags, sid, body[off:off + n]))
+            off += n
+            conn_win -= n
+            stream_win[sid] -= n
+
+    while True:
+        typ, flags, sid, payload = read_frame(s)
+        if typ == FRAME_HEADERS:
+            fields = hpack_fields(payload)
+            path = fields.get(":path", "/")
+            stream_win[sid] = 65535
+            out.write("h2page: conn=%d stream=%d path=%s\n" % (cid, sid, path))
+            body, gz = ROUTES.get(path, (b"not found", False))
+            head = bytes([0x88 if path in ROUTES else 0x8d])
+            head += b"\x0f\x0d" + hstr(str(len(body)))  # content-length (28)
+            if gz:
+                head += b"\x0f\x0b" + hstr("gzip")     # content-encoding (26)
+            s.sendall(frame(FRAME_HEADERS, FLAG_END_HEADERS, sid, head))
+            send_body(sid, body)
+        elif typ == FRAME_WINDOW:
+            apply_window(sid, payload)
+        elif typ == FRAME_PING:
+            s.sendall(frame(FRAME_PING, FLAG_ACK, 0, payload))
+        elif typ == FRAME_SETTINGS:
+            continue  # an unexpected re-SETTINGS is dropped, not fatal
+        elif typ == FRAME_RST:
+            stream_win.pop(sid, None)
+            out.write("h2page: conn=%d rst sid=%d\n" % (cid, sid))
+        elif typ == FRAME_GOAWAY:
+            out.write("h2page: conn=%d goaway\n" % cid)
+            return
+        else:
+            out.write("h2page: conn=%d ignored type=%d sid=%d\n"
+                      % (cid, typ, sid))
+
+
+def serve_h1(s, cid, out):
+    buf = b""
+    while True:
+        while b"\r\n\r\n" not in buf:
+            chunk = s.recv(65536)
+            if not chunk:
+                return
+            buf += chunk
+            if len(buf) > 16384:
+                raise ValueError("request head over bound")
+        head, buf = buf.split(b"\r\n\r\n", 1)
+        line = head.split(b"\r\n")[0].decode("ascii", "replace")
+        out.write("h2page: conn=%d req=%s\n" % (cid, line))
+        parts = line.split()
+        path = parts[1] if len(parts) == 3 else ""
+        body, gz = ROUTES.get(path, (b"not found", False))
+        status = b"200 OK" if path in ROUTES else b"404 Not Found"
+        resp = (b"HTTP/1.1 " + status + b"\r\nContent-Length: " +
+                str(len(body)).encode() +
+                (b"\r\nContent-Encoding: gzip" if gz else b"") +
+                b"\r\nConnection: keep-alive\r\n\r\n" + body)
+        s.sendall(resp)
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--port", type=int, required=True)
+    ap.add_argument("--cert", required=True, help="PEM chain, leaf first")
+    ap.add_argument("--key", required=True)
+    ap.add_argument("--proto", choices=("h2", "h1"), required=True)
+    ap.add_argument("--accept", type=int, default=1)
+    ap.add_argument("--host", default="127.0.0.1")
+    ap.add_argument("--timeout", type=float, default=30.0)
+    a = ap.parse_args()
+
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_3
+    ctx.maximum_version = ssl.TLSVersion.TLSv1_3
+    if a.proto == "h2":
+        ctx.set_alpn_protocols(["h2"])
+    # h1 mode configures NO ALPN at all: the negotiated pick is "none",
+    # the clean-fallback shape the leg pins.
+    try:
+        ctx.load_cert_chain(a.cert, a.key)
+    except Exception as e:
+        sys.stderr.write("h2page: cannot load %s: %s\n" % (a.cert, e))
+        return 2
+
+    ls = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    ls.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    ls.bind((a.host, a.port))
+    ls.listen(8)
+    sys.stdout.write("h2page: listening on %s:%d proto=%s\n"
+                     % (a.host, a.port, a.proto))
+    sys.stdout.flush()
+
+    conn_id = 0
+    deadline = time.monotonic() + a.timeout
+    while conn_id < a.accept:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        ls.settimeout(remaining)
+        try:
+            raw, _ = ls.accept()
+        except socket.timeout:
+            break
+        conn_id += 1
+        try:
+            # The handshake read must be bounded BEFORE wrap: an accepted
+            # conn whose handshake never lands would otherwise park the
+            # whole accept loop behind it and every later leg's dial
+            # would stall at 'web: error tls'.
+            raw.settimeout(30)
+            with ctx.wrap_socket(raw, server_side=True) as s:
+                s.settimeout(60)
+                alpn = s.selected_alpn_protocol() or "none"
+                sys.stdout.write("h2page: conn=%d alpn=%s\n" % (conn_id, alpn))
+                sys.stdout.flush()
+                if a.proto == "h2":
+                    serve_h2(s, conn_id, sys.stdout)
+                else:
+                    serve_h1(s, conn_id, sys.stdout)
+                sys.stdout.write("h2page: conn=%d done\n" % conn_id)
+                sys.stdout.flush()
+        except (ssl.SSLError, OSError, EOFError, ValueError) as e:
+            sys.stdout.write("h2page: conn=%d refused: %s\n" % (conn_id, e))
+            sys.stdout.flush()
+        finally:
+            try:
+                raw.close()
+            except OSError:
+                pass
+    ls.close()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+EOF
+
+vgate_setup_python <<'PY'
+# Boots 65-66 peers (M212b): h2page.py on 24570 speaks ALPN h2; the same
+# script on 24571 runs TLS with no ALPN — the ALPN-less fallback peer.
+# leaf.example.com verifies under the vendored gate roots the same way
+# leg 12's GOFETCH peer does.
+import os, subprocess, sys
+sys.path.insert(0, os.path.abspath(os.path.join("user", "go", "browser")))
+import peer_guard
+rd = os.environ["RUN_DIR"]
+cfx = os.path.join("user", "src", "lib", "tls", "vectors", "fx")
+chain = os.path.join(cfx, "chain-ec.pem")
+key = os.path.join(cfx, "leaf-ec.key")
+watch = os.path.join("user", "go", "browser", "peer_watch.py")
+peer = os.path.join(rd, "h2page.py")
+for port, proto in ((24570, "h2"), (24571, "h1")):
+    peer_guard.claim(port, "h2page.py")
+    log = open(os.path.join(rd, "h2page-%d.log" % port), "wb")
+    cmd = [sys.executable, peer, "--host", "127.0.0.1", "--port", str(port),
+           "--cert", chain, "--key", key, "--proto", proto,
+           "--accept", "6", "--timeout", "3600"]
+    proc = subprocess.Popen([sys.executable, watch, str(os.getppid())] + cmd,
+                            stdout=log, stderr=subprocess.STDOUT,
+                            start_new_session=True)
+    peer_guard.await_ready(log.name, "listening", proc)
+    print("live-web 65-66: h2page pid=%d on 127.0.0.1:%d proto=%s"
+          % (proc.pid, port, proto))
+PY
+
+vgate_run 65 -- \
+    --screen '$RUN_DIR/screen' --via-virtio --cvc-snap \
+    --snapshot-out '$RUN_DIR/snap-65' \
+    --net '$RUN_DIR/cap65.bin' --net-arp-respond 93.184.216.34 \
+    --net-dns-respond 93.184.216.34 \
+    --net-tcp-respond 93.184.216.34:24570:relay --net-tcp-respond-relay 127.0.0.1:24570 \
+    --script '$RUN_DIR/script-h2page.txt' \
+    --script3 '$RUN_DIR/h2-done.txt' --script3-after 'web: ready' --script3-delay 3 \
+    --snapshot-after 'h2-page-done' \
+    --script-expect 'h2-page-done' --timeout 180
+
+vgate_assert 65 serial-contains 'net ip: ip=10.0.0.1'
+vgate_assert 65 serial-contains 'web: dns leaf.example.com 93.184.216.34'
+vgate_assert 65 serial-contains 'web: tls leaf.example.com virelai-gate-roots-2026-09-14'
+vgate_assert 65 serial-contains 'web: alpn h2'
+vgate_assert 65 serial-contains 'web: fetch leaf.example.com/ proto=h2 stream=1'
+vgate_assert 65 serial-contains 'web: fetch leaf.example.com/ka-a.css proto=h2 stream=3'
+vgate_assert 65 serial-contains 'web: fetch leaf.example.com/ka-b.css proto=h2 stream=5'
+vgate_assert 65 serial-contains 'web: settled'
+vgate_assert 65 serial-contains 'web: ready'
+vgate_assert 65 serial-contains 'h2-page-done'
+vgate_assert 65 serial-absent 'web: error'
+vgate_assert 65 serial-absent 'web: h2-refuse'
+vgate_assert 65 serial-absent 'GET / HTTP'
+vgate_assert 65 serial-absent '[EXC] parking:'
+vgate_assert 65 python <<'PY'
+import os, sys
+path = os.path.join(os.environ["RUN_DIR"], "h2page-24570.log")
+peer = open(path).read()
+assert "h2page: conn=" in peer, "no connection accepted"
+assert " alpn=h2" in peer, "server did not negotiate h2"
+# The peer log is CUMULATIVE across the spec's iterations, and a refused
+# conn writes no "alpn=" line — cross-check this boot's own serial so a
+# stale earlier receipt cannot stand in for a connection that never
+# happened (observed: a wedged accept loop failed a whole leg at TLS
+# while the assert read the previous iteration's receipt).
+ser = open(os.environ["VG_SER"], errors="replace").read()
+assert "web: alpn h2" in ser, "this boot's serial shows no h2 negotiation"
+assert "proto=h2 stream=5" in ser, "this boot's serial shows no reuse"
+# The LAST accepted connection carried the whole journey: streams 1, 3,
+# 5 in order, each its own path — the reuse the stream= markers assert.
+# (rsplit on the "alpn=" line: the conn's trailing "done"/"refused"
+# line would otherwise truncate the receipt.)
+conns = [l for l in peer.splitlines() if " alpn=" in l]
+cid = conns[-1].split("conn=", 1)[1].split(" ", 1)[0]
+last = "\n".join(l for l in peer.splitlines()
+                 if l.startswith("h2page: conn=%s " % cid))
+streams = [l for l in last.splitlines() if " stream=" in l]
+paths = [l.split("path=", 1)[1] for l in streams]
+assert paths == ["/", "/ka-a.css", "/ka-b.css"], "paths %r" % paths
+sids = [int(l.split("stream=", 1)[1].split(" ", 1)[0]) for l in streams]
+assert sids == [1, 3, 5], "stream ids %r" % sids
+# Flow control: ka-b.css is ~78 KiB over a 65535-byte window, so the
+# server had to block and the guest had to return credit.
+assert "blocked" in last, "ka-b.css fit the window — pad drifted under it"
+assert "window-update" in last, "guest never returned WINDOW_UPDATE credit"
+print("live-web 65: h2 conn=%s streams=%s, flow-control credit returned"
+      % (cid, sids))
+PY
+vgate_assert 65 snapshot 'snap-65-*.raw' <<'PY'
+import sys
+# Both stylesheets applied over h2: css_a paints the page background
+# #7fdbff, css_b paints the h1 band #b58900 — the subresources rendered,
+# not just fetched.
+data = open(sys.argv[1], "rb").read()
+assert len(data) == 1280*720*4, "scanout size %d" % len(data)
+def px(x, y):
+    k = (y*1280+x)*4
+    return (data[k+2], data[k+1], data[k])
+bg = band = 0
+for yy in range(92, 380):
+    for xx in range(40, 552, 2):
+        c = px(xx, yy)
+        if c == (0x7f, 0xdb, 0xff):
+            bg += 1
+        elif c == (0xb5, 0x89, 0x00):
+            band += 1
+assert bg > 2000, "page background absent (bg=%d)" % bg
+assert band > 30, "h1 band absent (band=%d)" % band
+print("live-web 65: both stylesheets on the scanout over h2 (bg=%d band=%d)"
+      % (bg, band))
+PY
+
+# --- boot 66: ALPN-less peer — the same routes over HTTP/1.1 ----------
+vgate_run 66 -- \
+    --screen '$RUN_DIR/screen' --via-virtio --cvc-snap \
+    --snapshot-out '$RUN_DIR/snap-66' \
+    --net '$RUN_DIR/cap66.bin' --net-arp-respond 93.184.216.34 \
+    --net-dns-respond 93.184.216.34 \
+    --net-tcp-respond 93.184.216.34:24571:relay --net-tcp-respond-relay 127.0.0.1:24571 \
+    --script '$RUN_DIR/script-h2page-h1.txt' \
+    --script3 '$RUN_DIR/h2-done.txt' --script3-after 'web: ready' --script3-delay 3 \
+    --snapshot-after 'h2-page-done' \
+    --script-expect 'h2-page-done' --timeout 180
+
+vgate_assert 66 serial-contains 'web: dns leaf.example.com 93.184.216.34'
+vgate_assert 66 serial-contains 'web: tls leaf.example.com virelai-gate-roots-2026-09-14'
+vgate_assert 66 serial-contains 'web: alpn none'
+vgate_assert 66 serial-contains 'web: fetch leaf.example.com/ proto=http/1.1'
+vgate_assert 66 serial-contains 'web: fetch leaf.example.com/ka-a.css proto=http/1.1'
+vgate_assert 66 serial-contains 'web: fetch leaf.example.com/ka-b.css proto=http/1.1'
+vgate_assert 66 serial-contains 'web: settled'
+vgate_assert 66 serial-contains 'web: ready'
+vgate_assert 66 serial-contains 'h2-page-done'
+vgate_assert 66 serial-absent 'proto=h2'
+vgate_assert 66 serial-absent 'web: error'
+vgate_assert 66 serial-absent 'web: h2-refuse'
+vgate_assert 66 serial-absent '[EXC] parking:'
+vgate_assert 66 python <<'PY'
+import os, sys
+path = os.path.join(os.environ["RUN_DIR"], "h2page-24571.log")
+peer = open(path).read()
+assert " alpn=none" in peer, "server negotiated ALPN — leg is not a fallback"
+ser = open(os.environ["VG_SER"], errors="replace").read()
+assert "web: alpn none" in ser, "this boot's serial shows a negotiated ALPN"
+assert "proto=http/1.1" in ser, "this boot's serial shows no h1 fallback"
+conns = [l for l in peer.splitlines() if " alpn=" in l]
+cid = conns[-1].split("conn=", 1)[1].split(" ", 1)[0]
+last = "\n".join(l for l in peer.splitlines()
+                 if l.startswith("h2page: conn=%s " % cid))
+reqs = [l for l in last.splitlines() if " req=" in l]
+want = ["GET / HTTP/1.1", "GET /ka-a.css HTTP/1.1", "GET /ka-b.css HTTP/1.1"]
+got = [r.split("req=", 1)[1] for r in reqs]
+assert got == want, "h1 fallback receipt %r" % got
+print("live-web 66: ALPN-less peer, 3 requests on 1 keep-alive connection")
+PY
+vgate_assert 66 snapshot 'snap-66-*.raw' <<'PY'
+import sys
+data = open(sys.argv[1], "rb").read()
+assert len(data) == 1280*720*4, "scanout size %d" % len(data)
+def px(x, y):
+    k = (y*1280+x)*4
+    return (data[k+2], data[k+1], data[k])
+bg = band = 0
+for yy in range(92, 380):
+    for xx in range(40, 552, 2):
+        c = px(xx, yy)
+        if c == (0x7f, 0xdb, 0xff):
+            bg += 1
+        elif c == (0xb5, 0x89, 0x00):
+            band += 1
+assert bg > 2000, "page background absent (bg=%d)" % bg
+assert band > 30, "h1 band absent (band=%d)" % band
+print("live-web 66: fallback page on the scanout over HTTP/1.1 "
+      "(bg=%d band=%d)" % (bg, band))
+PY
