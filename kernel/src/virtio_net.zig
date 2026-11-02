@@ -1288,6 +1288,57 @@ pub fn net_status() u8 {
     return net_ops.cfg_read8(0x14);
 }
 
+/// #3895: the host-driven dead-RX recovery seam (`net rxreset`). The
+/// host's dead-RX detector proves the VZ dead state from its own side —
+/// replies written into the socketpair, VZ reading every one, and the
+/// guest re-sending the identical solicitation because nothing ever
+/// completes — and writes this console command. The recovery is the
+/// same full transport_init + re-arm the stall watchdog runs (the only
+/// re-init VZ provably honors on a healthy device — #3880's
+/// discriminating experiment). One reset per call, and the per-boot
+/// `rxreset_max` bound refuses by name past it: the host bounds its own
+/// requests, this bound keeps any caller from reset-storming the
+/// device. Post-reset accounting mirrors the watchdog's reset tail —
+/// silence measures fresh from the new used index, and outstanding
+/// solicitations re-send once (rx_resend_owed: a recovered channel has
+/// no reply left to land, so the owed frames are re-asked).
+pub const RxResetResult = union(enum) {
+    ok: struct { avail: u16, used: u16 },
+    /// No device, or the transport never initialized.
+    not_ready,
+    /// The per-boot forced-reset bound is spent — the named refusal.
+    refused,
+    /// transport_init refused mid-ladder.
+    failed,
+};
+
+var rxreset_n: u8 = 0;
+const rxreset_max: u8 = 8;
+/// Forced resets via `net rxreset` — counted separately from the
+/// watchdog's `rx_resets` so a `net` report can tell host-driven
+/// recoveries from silent-epoch ones.
+pub var rx_host_resets: u64 = 0;
+
+pub fn net_rxreset() RxResetResult {
+    if (!net_ready) return .not_ready;
+    if (rxreset_n >= rxreset_max) return .refused;
+    rxreset_n += 1;
+    net_log.log_fmt("RXQ host-reset u={d} a={d}", .{ net_dev.rx_used.idx, net_dev.rx_avail.idx });
+    if (!transport_init(&net_ops, &net_dev, true)) {
+        net_log.log_fmt("RXQ host-reset failed", .{});
+        return .failed;
+    }
+    rx_resets +%= 1;
+    rx_host_resets +%= 1;
+    _ = net_rx_arm();
+    rx_resend_owed();
+    rx_silent_seen = net_dev.rx_used.idx;
+    rx_silent_polls = 0;
+    rx_progress_tick = ndp.now_ticks;
+    rx_progress_ns = rx_now_ns;
+    return .{ .ok = .{ .avail = net_dev.rx_avail.idx, .used = net_dev.rx_used.idx } };
+}
+
 // ---------------------------------------------------------------------------
 // TX path (queue 1, polled used-ring completion — claim-6420 shape)
 // ---------------------------------------------------------------------------
