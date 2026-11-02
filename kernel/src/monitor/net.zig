@@ -135,6 +135,7 @@ pub fn cmd_net(m: *Monitor, args: []const []const u8) ExecError {
         if (std.mem.eql(u8, args[0], "route")) return cmd_net_route(m, args[1..]);
         if (std.mem.eql(u8, args[0], "log")) return cmd_net_log(m, args[1..]);
         if (std.mem.eql(u8, args[0], "rxtrace")) return cmd_net_rxtrace(m, args[1..]);
+        if (std.mem.eql(u8, args[0], "rxreset")) return cmd_net_rxreset(m, args[1..]);
         print_usage(m, lookup("net").?);
         return .usage;
     }
@@ -1135,6 +1136,34 @@ fn cmd_net_rxtrace(m: *Monitor, args: []const []const u8) ExecError {
     m.console.puts("net rxtrace: ");
     m.console.puts(if (virtio_net.rx_trace) "on" else "off");
     m.console.puts("\n");
+    return .none;
+}
+
+/// #3895: `net rxreset` — the host-driven dead-RX recovery seam. The
+/// host's dead-RX detector writes this command when it proves the VZ
+/// attachment dead (replies consumed off the socketpair, zero RX
+/// completions); here it runs the same bounded transport_init + re-arm
+/// the stall watchdog uses and reports the fresh queue shape. The
+/// per-boot bound and every failure refuse by name — a forced reset is
+/// never silent.
+fn cmd_net_rxreset(m: *Monitor, args: []const []const u8) ExecError {
+    _ = args;
+    switch (virtio_net.net_rxreset()) {
+        .ok => |r| {
+            m.console.puts("net rxreset: ok avail=");
+            m.console.print_u64(r.avail);
+            m.console.puts(" used=");
+            m.console.print_u64(r.used);
+            m.console.puts("\n");
+        },
+        .not_ready => {
+            m.console.puts("net rxreset: no virtio-net device (");
+            m.console.puts(if (virtio_net.net_fail.len > 0) virtio_net.net_fail else "DID 0x1041 not found on bus 0");
+            m.console.puts(")\n");
+        },
+        .refused => m.console.puts("net rxreset: refusing — the per-boot forced-reset bound is spent\n"),
+        .failed => m.console.puts("net rxreset: transport_init refused\n"),
+    }
     return .none;
 }
 

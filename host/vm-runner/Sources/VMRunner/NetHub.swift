@@ -225,6 +225,18 @@ final class NetGuestQueue {
     /// evidence names VZ's un-serviced bound instead of a guess.
     private var stallSince: TimeInterval? = nil
 
+    /// #3895: the frame written into a sampleable pair but not yet
+    /// proven consumed — VZ's read clears SO_NREAD back to 0 and the
+    /// next flush sample credits it (with its bytes, so the detector
+    /// can match a delivered reply to its solicitation). An
+    /// unsampleable pair (pairUnread -1) can never prove consumption,
+    /// so nothing is credited there.
+    private var inflight: [UInt8]?
+    /// The dead-RX detector — armed by the runner under --net, nil in
+    /// the queue-less/inject shapes (a nil detector just never fires).
+    /// Touched only under `lock`.
+    var deadRx: NetDeadRx?
+
     /// The first pending datagram's length on VZ's end of the attachment
     /// socketpair — the pair's occupancy (SO_NREAD; 0 = empty, the only
     /// state the pacing sends into). -1 = the pair can't be sampled
@@ -286,6 +298,14 @@ final class NetGuestQueue {
         lock.unlock()
     }
 
+    /// #3895: feed the dead-RX detector one guest-TX datagram — the
+    /// capture loop's per-datagram call.
+    func observeGuestTx(_ frame: [UInt8]) {
+        lock.lock()
+        deadRx?.noteGuestTx(frame, now: Date().timeIntervalSince1970)
+        lock.unlock()
+    }
+
     /// The drainer thread: while the queue is non-empty, poll VZ's end
     /// of the pair at the sub-ms cadence and write the next frame the
     /// instant the pair returns to empty — the edge-per-frame pacing.
@@ -338,20 +358,47 @@ final class NetGuestQueue {
     }
 
     private func flushLocked() {
+        let now = Date().timeIntervalSince1970
+        defer { deadRx?.tick(now) }
         guard let wfd = netCaptureReadSocket?.fileDescriptor else {
             frames.removeAll()
             head = 0
             return
         }
         var sentThisPass = false
+        // #3895: an empty pair with writes outstanding means VZ drained
+        // them — the consumed deliveries the dead-RX detector counts.
+        // Outside the loop so an EMPTY queue still credits the last
+        // write's drain on the next wake instead of waiting for the
+        // next queued frame.
+        if pairUnread() == 0, let f = inflight {
+            deadRx?.noteConsumed(1, frame: f, now: now)
+            inflight = nil
+        }
         while head < frames.count {
             // #3863: write ONLY into a fully-empty pair — each datagram
             // is then a fresh empty->nonempty readiness edge for VZ's
             // read. -1 (unsampleable) falls back to the legacy
             // send-until-ENOBUFS pacing.
             let unread = pairUnread()
+            if unread == 0, let f = inflight {
+                deadRx?.noteConsumed(1, frame: f, now: now)
+                inflight = nil
+            }
             if unread > 0 { break }
             let q = frames[head]
+            if netRxDeadArmed {
+                // #3895 fault seam: swallow the frame at the last hop
+                // but count it sent AND consumed-without-completion —
+                // the observed wedge signature (VZ reads every
+                // datagram, nothing completes). frame: nil — a reply
+                // the guest provably never received is no answer.
+                head += 1
+                sent += 1
+                sentThisPass = true
+                deadRx?.noteConsumed(1, frame: nil, now: now)
+                continue
+            }
             let n = q.frame.withUnsafeBufferPointer { bp in
                 Darwin.send(wfd, bp.baseAddress, bp.count, MSG_DONTWAIT | MSG_NOSIGNAL)
             }
@@ -359,6 +406,7 @@ final class NetGuestQueue {
                 head += 1
                 sent += 1
                 sentThisPass = true
+                if unread == 0 { inflight = q.frame }
                 // #3863: name every ARP datagram written into the pair —
                 // the guest's used-ring trace (RXC/RXA in `net log`)
                 // correlates seq -> completion, so a datagram VZ read
@@ -417,6 +465,298 @@ final class NetGuestQueue {
         if drops <= 4 || drops % 256 == 0 {
             FileHandle.standardError.write(Data("NET-HUB: host->guest frame dropped (queue full) — \(drops) drops total\n".utf8))
         }
+    }
+}
+
+/// #3895: the bounded dead-RX detector — the host-visible signature of
+/// the VZ attachment's pair->ring dead state #3880 root-caused: the
+/// host writes replies into the attachment socketpair and VZ READS
+/// every one (a consumed delivery — SO_NREAD clears back to 0), yet the
+/// guest re-sends the identical solicitation because nothing ever
+/// completes to its RX ring. Pure state, no sockets — NetHubTests
+/// drives it without a VM.
+///
+/// The signals, all host-observable:
+///   * a SOLICITATION — a request-shaped guest-TX frame whose re-send
+///     is the honest "reply never landed" evidence: an ARP request, an
+///     ICMPv6 neighbor solicitation, a DHCP client datagram, or a TCP
+///     SYN without ACK. Unsolicited periodic frames (mDNS announces,
+///     RAs) are not solicitations — their identical repeats prove
+///     nothing and are never counted;
+///   * a CONSUMED DELIVERY — NetGuestQueue wrote a host->guest frame
+///     into the pair and later sampled the pair EMPTY again (VZ read
+///     it). An unsampleable pair (SO_NREAD failing) can never prove
+///     consumption, so the detector cannot fire there;
+///   * the WINDOW — repeat sightings count only inside `windowSeconds`.
+///
+/// The verdict fires when ONE solicitation reaches `repeatBound`
+/// re-sends EACH preceded by at least one consumed delivery: N
+/// provably-delivered replies producing zero RX completions is the dead
+/// state — not loss before VZ. The false-positive bound is exactly that
+/// requirement: honest retransmits follow replies that were NOT
+/// consumed (still queued, shed under pressure, dropped at the bound),
+/// so a healthy link can only reach the bound when VZ demonstrably
+/// swallowed N replies in a row while the solicitation stayed open.
+///
+/// Recovery is bounded and named at every step: on the verdict the
+/// runner writes `net rxreset` into the guest console (the guest runs
+/// the proven transport_init + re-arm — #3880 observed VZ re-observing
+/// queue setup on a healthy device) at most `recoverMax` times spaced
+/// `recoverWindowSeconds` apart; a post-attempt solicitation that gets
+/// a consumed reply and then stays quiet `quietSeconds` is a COMPLETED
+/// exchange — delivery resumed, the `NET-RECOVER: rx delivery restored`
+/// marker. A window that produces no completed exchange retries or
+/// ends at the named refusal — never a silent reset loop.
+final class NetDeadRx {
+    struct Limits {
+        var windowSeconds: TimeInterval = 20
+        var repeatBound = 3 // re-sends (the 4th identical sighting fires)
+        var recoverMax = 2
+        var recoverWindowSeconds: TimeInterval = 12
+        var quietSeconds: TimeInterval = 5
+        var tableLimit = 64 // bounded solicitation memory
+    }
+
+    enum Phase {
+        case watching
+        case recovering(attempt: Int, since: TimeInterval)
+        case refused
+    }
+
+    let limits: Limits
+    /// The recovery dispatch — returns false when the guest console
+    /// channel is not attached or the write fails; the detector then
+    /// names the refusal instead of pretending a command was delivered.
+    var onRequestReinit: (() -> Bool)?
+    /// Where the named markers go — runner stdout by default so gate
+    /// legs assert them with output-contains; tests inject a capture.
+    var mark: (String) -> Void = { print($0) }
+
+    private(set) var phase: Phase = .watching
+    private(set) var attempts = 0 // re-init requests dispatched (telemetry)
+
+    private struct Entry {
+        var first: TimeInterval
+        var last: TimeInterval
+        var repeats: Int // consumed-backed re-sends inside the window
+        var consumedAtLast: Int // consumedTotal at the last sighting
+        /// A reply MATCHING this solicitation was consumed by VZ — the
+        /// stamp is the delivery, and a last-sighting at-or-before it
+        /// followed by quiet is the completed exchange (the guest
+        /// provably stopped asking because the answer landed). A
+        /// consumed reply that does NOT match can never set this, so
+        /// retry-exhaustion quiet alone can never mark delivery
+        /// restored.
+        var answeredAt: TimeInterval?
+    }
+
+    private var consumedTotal = 0
+    private var solicits: [[UInt8]: Entry] = [:]
+
+    init(limits: Limits = .init()) { self.limits = limits }
+
+    /// Is `f` a request-shaped frame whose identical re-send proves an
+    /// unanswered solicitation? ARP request, ICMPv6 NS, DHCP client
+    /// datagram, TCP SYN-without-ACK — bounded, and deliberately blind
+    /// to everything else (a periodic mDNS announce can never
+    /// false-fire, however often it repeats).
+    static func isSolicitation(_ f: [UInt8]) -> Bool {
+        guard f.count >= 42 else { return false }
+        let et = Int(f[12]) << 8 | Int(f[13])
+        switch et {
+        case 0x0806: // ARP: op 1 (request) only
+            return f[20] == 0x00 && f[21] == 0x01
+        case 0x86dd: // IPv6: next-header ICMPv6, type 135 (NS)
+            guard f.count >= 14 + 40 + 4 else { return false }
+            return f[14 + 6] == 58 && f[14 + 40] == 135
+        case 0x0800: // IPv4
+            let ihl = Int(f[14] & 0x0f) * 4
+            guard ihl >= 20, f.count >= 14 + ihl + 4 else { return false }
+            switch f[14 + 9] {
+            case 17: // UDP: DHCP client port pair 68 -> 67
+                let sp = Int(f[14 + ihl]) << 8 | Int(f[14 + ihl + 1])
+                let dp = Int(f[14 + ihl + 2]) << 8 | Int(f[14 + ihl + 3])
+                return sp == 68 && dp == 67
+            case 6: // TCP: SYN set, ACK clear (a connect solicitation)
+                guard f.count >= 14 + ihl + 14 else { return false }
+                let flags = f[14 + ihl + 13]
+                return flags & 0x12 == 0x02
+            default:
+                return false
+            }
+        default:
+            return false
+        }
+    }
+
+    /// The queue's consumed-delivery feed — n frames written into the
+    /// pair were just sampled drained (VZ read them). `frame` is the
+    /// delivered reply when the credit carries its bytes (the real
+    /// pair drain); the fault seam passes nil — a consumed frame the
+    /// guest provably never received must never mark a solicitation
+    /// answered.
+    func noteConsumed(_ n: Int, frame: [UInt8]?, now: TimeInterval) {
+        consumedTotal += n
+        guard let frame else { return }
+        for (key, var e) in solicits {
+            if Self.replyAnswers(reply: frame, solicitation: key) {
+                e.answeredAt = now
+                solicits[key] = e
+            }
+        }
+    }
+
+    /// Does the delivered `reply` answer `solicitation`? Matched per
+    /// family: ARP reply (op 2) whose spa is the request's tpa and tha
+    /// its sha; NDP NA (type 136) with the NS's target; DHCP server
+    /// datagram (67->68) with the client's xid; TCP SYN-ACK (0x12) on
+    /// the reversed tuple acknowledging ISN+1.
+    static func replyAnswers(reply f: [UInt8], solicitation s: [UInt8]) -> Bool {
+        guard f.count >= 42, s.count >= 42 else { return false }
+        let ret = Int(f[12]) << 8 | Int(f[13])
+        let set = Int(s[12]) << 8 | Int(s[13])
+        if set == 0x0806, ret == 0x0806 {
+            // ARP: reply spa(28-31) == request tpa(38-41), tha(32-37) ==
+            // request sha(22-27).
+            return f[20] == 0 && f[21] == 2 &&
+                f[28..<32].elementsEqual(s[38..<42]) &&
+                f[32..<38].elementsEqual(s[22..<28])
+        }
+        if set == 0x86dd, ret == 0x86dd {
+            guard f.count >= 78, s.count >= 78 else { return false }
+            return f[20] == 58 && f[54] == 136 &&
+                f[62..<78].elementsEqual(s[62..<78])
+        }
+        guard set == 0x0800, ret == 0x0800 else { return false }
+        let sihl = Int(s[14] & 0x0f) * 4, rihl = Int(f[14] & 0x0f) * 4
+        guard sihl >= 20, rihl >= 20 else { return false }
+        if s[14 + 9] == 17, f[14 + 9] == 17 {
+            // DHCP OFFER/ACK 67->68 echoing the client's xid (BOOTP
+            // bytes 4-7 of the UDP payload).
+            guard f.count >= 14 + rihl + 8 + 8, s.count >= 14 + sihl + 8 + 8 else { return false }
+            let sdp = Int(f[14 + rihl + 2]) << 8 | Int(f[14 + rihl + 3])
+            let ddp = Int(f[14 + rihl]) << 8 | Int(f[14 + rihl + 1])
+            guard sdp == 68, ddp == 67 else { return false }
+            return f[(14 + rihl + 8 + 4)..<(14 + rihl + 8 + 8)]
+                .elementsEqual(s[(14 + sihl + 8 + 4)..<(14 + sihl + 8 + 8)])
+        }
+        if s[14 + 9] == 6, f[14 + 9] == 6 {
+            // SYN-ACK: flags 0x12, reversed ports, ack == SYN seq + 1.
+            guard f.count >= 14 + rihl + 20, s.count >= 14 + sihl + 20 else { return false }
+            guard f[14 + rihl + 13] & 0x12 == 0x12 else { return false }
+            let ssp = Int(s[14 + sihl]) << 8 | Int(s[14 + sihl + 1])
+            let sdp = Int(s[14 + sihl + 2]) << 8 | Int(s[14 + sihl + 3])
+            let rsp = Int(f[14 + rihl]) << 8 | Int(f[14 + rihl + 1])
+            let rdp = Int(f[14 + rihl + 2]) << 8 | Int(f[14 + rihl + 3])
+            guard rsp == sdp, rdp == ssp else { return false }
+            var sseq: UInt32 = 0, rack: UInt32 = 0
+            for i in 0..<4 {
+                sseq = sseq << 8 | UInt32(s[14 + sihl + 4 + i])
+                rack = rack << 8 | UInt32(f[14 + rihl + 8 + i])
+            }
+            return rack == sseq &+ 1
+        }
+        return false
+    }
+
+    /// One guest-TX datagram (the capture loop's feed). Only
+    /// solicitation sightings mutate state.
+    func noteGuestTx(_ frame: [UInt8], now: TimeInterval) {
+        guard Self.isSolicitation(frame) else { return }
+        if var e = solicits[frame], now - e.last <= limits.windowSeconds {
+            // A re-send inside the window: it counts only when at least
+            // one delivery was consumed since the LAST sighting — a
+            // re-send behind an unconsumed reply is honest loss before
+            // VZ, not dead-rx.
+            if consumedTotal > e.consumedAtLast { e.repeats += 1 }
+            e.last = now
+            e.consumedAtLast = consumedTotal
+            solicits[frame] = e
+            if case .watching = phase, e.repeats >= limits.repeatBound {
+                dispatchAttempt(1, now,
+                    "a solicitation re-sent \(e.repeats)x behind consumed replies inside \(fmt(limits.windowSeconds))s — TX flows, zero RX completions")
+            }
+            return
+        }
+        // First sighting — or the window expired and this is a fresh one.
+        if solicits[frame] == nil, solicits.count >= limits.tableLimit {
+            evictOldest()
+        }
+        solicits[frame] = Entry(first: now, last: now, repeats: 0, consumedAtLast: consumedTotal)
+    }
+
+    /// Drive the post-attempt window — called on every queue flush (the
+    /// rx-loop and capture-loop wakes) so recovery/refusal timing never
+    /// waits on traffic.
+    func tick(_ now: TimeInterval) {
+        guard case .recovering(let n, let since) = phase else { return }
+        // A post-attempt solicitation whose MATCHING reply was consumed,
+        // then quiet `quietSeconds`, is a completed exchange — the
+        // delivery-resumed evidence. A straggler re-send in flight when
+        // its answer lands bumps `last` past `answeredAt` but does not
+        // un-answer it; a reply that dies inside VZ keeps the re-sends
+        // coming (last stays fresh), and retry-exhaustion quiet alone
+        // has no answeredAt — neither can false-restore.
+        for (_, e) in solicits where e.answeredAt != nil && now - e.last >= limits.quietSeconds {
+            mark("NET-RECOVER: rx delivery restored after re-init attempt \(n) (a solicitation's reply completed, quiet \(fmt(limits.quietSeconds))s)")
+            phase = .watching
+            solicits.removeAll()
+            return
+        }
+        if now - since >= limits.recoverWindowSeconds {
+            if n < limits.recoverMax {
+                dispatchAttempt(n + 1, now,
+                    "attempt \(n) produced no completed exchange inside \(fmt(limits.recoverWindowSeconds))s")
+            } else {
+                mark("NET-RECOVER: refusing further attachment re-inits — \(n) bounded attempts left RX delivery dead")
+                phase = .refused
+            }
+        }
+    }
+
+    private func dispatchAttempt(_ n: Int, _ now: TimeInterval, _ reason: String) {
+        attempts += 1
+        mark("NET-RECOVER: dead-rx — \(reason); requesting guest transport re-init (attempt \(n)/\(limits.recoverMax))")
+        solicits.removeAll() // post-attempt sightings start a fresh epoch
+        guard let req = onRequestReinit, req() else {
+            mark("NET-RECOVER: refusing — no guest console channel, or the re-init write failed; the dead-rx signature stands")
+            phase = .refused
+            return
+        }
+        phase = .recovering(attempt: n, since: now)
+    }
+
+    private func evictOldest() {
+        if let oldest = solicits.min(by: { $0.value.first < $1.value.first }) {
+            solicits.removeValue(forKey: oldest.key)
+        }
+    }
+
+    private func fmt(_ t: TimeInterval) -> String {
+        String(format: "%.0f", t)
+    }
+}
+
+/// #3895: the recovery dispatch — write `net rxreset` into the guest
+/// console (the same host->guest serial path --script forwards
+/// through). Returns false when no console input is attached (plain
+/// evidence runs) or the write fails — the detector names that refusal
+/// instead of pretending a command was delivered.
+func netRecoverRequestReinit() -> Bool {
+    if netRxDeadMode == .untilReset && netRxDeadArmed {
+        // The fault seam's recovery half: disarm at the dispatch so the
+        // leg's post-attempt deliveries reach VZ again — the injected
+        // wedge ends exactly where a real one would.
+        netRxDeadArmed = false
+        FileHandle.standardError.write(Data("NET-RECOVER-FAULT: dead-rx fault cleared on the re-init dispatch\n".utf8))
+    }
+    guard netConsoleInputAttached else { return false }
+    do {
+        try consoleInputPipe.fileHandleForWriting.write(contentsOf: Data("net rxreset\n".utf8))
+        return true
+    } catch {
+        FileHandle.standardError.write(Data("NET-RECOVER: re-init write to the guest console failed: \(error)\n".utf8))
+        return false
     }
 }
 
