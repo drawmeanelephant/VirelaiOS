@@ -499,7 +499,7 @@ const Session = struct {
     /// deadline origin forward, so only JS-side execution counts against
     /// the four-second script budget. A parent that never answers meets
     /// the wire's own bound, `dom_op_wire`, not the eval's deadline.
-    const dom_wait_sites: u64 = 10;
+    const dom_wait_s: u64 = 10;
 
     fn hostDom(context: *anyopaque, op: []const u8, a: []const u8, b: []const u8, out: []u8) anyerror!usize {
         const self: *Session = @ptrCast(@alignCast(context));
@@ -515,7 +515,12 @@ const Session = struct {
         self.rpcWrite(line[0..used]) catch return self.domFail("dom_op_wire");
         const wait_start = clock.counter(clock.context);
         while (true) {
-            if (clock.counter(clock.context) -% wait_start >= clock.frequency * dom_wait_sites)
+            // Everything in a poll iteration — the rendezvous read, the
+            // parse, the nap — is the parent's clock: shift the deadline
+            // origin by the iteration's whole span so only the request's
+            // emit and the script's own work count against the budget.
+            const iter = clock.counter(clock.context);
+            if (iter -% wait_start >= clock.frequency * dom_wait_s)
                 return self.domFail("dom_op_wire");
             if (!self.runtime.control.poll())
                 return self.domFail(@errorName(self.runtime.control.failure orelse error.Cancelled));
@@ -531,9 +536,8 @@ const Session = struct {
                     }
                 } else |_| {}
             }
-            const before = clock.counter(clock.context);
             _ = sdk.native.call(94, .{ 1_000_000, 0, 0, 0, 0, 0 });
-            self.runtime.control.start +%= clock.counter(clock.context) -% before;
+            self.runtime.control.start +%= clock.counter(clock.context) -% iter;
         }
     }
 
