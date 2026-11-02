@@ -221,6 +221,10 @@ const (
 	EvWinClose  uint16 = 8
 	EvTimer     uint16 = 9
 	EvWinResize uint16 = 10
+	// EvIpcMail (#3901) notifies a mailbox delivery — the kernel pushes one
+	// into the target's event FIFO on every successful sys_ipc_send, so a
+	// wait_event-blocked consumer wakes on the next scheduler pass.
+	EvIpcMail uint16 = 23
 )
 
 // Event modifier and button bits.

@@ -35,6 +35,7 @@ pub const COMPOSITE_TICK = abi.COMPOSITE_TICK;
 pub const DirEntry = abi.DirEntry;
 pub const EVENT_TIMER = abi.EVENT_TIMER;
 pub const Event = abi.Event;
+pub const IPC_MAIL = abi.IPC_MAIL;
 pub const KEY_DOWN = abi.KEY_DOWN;
 pub const KEY_UP = abi.KEY_UP;
 pub const MAP_ANONYMOUS = abi.MAP_ANONYMOUS;

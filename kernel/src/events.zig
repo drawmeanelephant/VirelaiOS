@@ -113,6 +113,18 @@ pub const WM_KEY: u16 = 21;
 /// fan drives the delivery there instead).
 pub const WM_DRAG: u16 = 22;
 
+/// #3901: mailbox-delivery notification. Every successful `mailbox.send`
+/// (any sender — `sys_ipc_send`, kernel-internal posts) pushes one of
+/// these into the TARGET's event FIFO, so a `sys_wait_event`-blocked
+/// consumer wakes on the next scheduler pass instead of the next 1 Hz
+/// COMPOSITE_TICK (#3898 measured ~1 s per missed WM_RPC). `arg0` = the
+/// ring's pending depth after the enqueue; `arg1` = 0 (reserved). The
+/// push itself fires `on_event_pushed` — the wake rides the existing
+/// event machinery; the queued event is what lets the woken consumer's
+/// re-executed `svc` return 1 instead of re-blocking on an empty queue.
+/// Ordinary (unrestricted) kind: any process may receive IPC.
+pub const IPC_MAIL: u16 = 23;
+
 /// Modifier bitmasks (flags bits 0..7).
 pub const MOD_SHIFT: u16 = 0x0001;
 pub const MOD_CTRL: u16 = 0x0002;
