@@ -340,6 +340,48 @@ func trunc(s string, n int) string {
 	return s[:n] + "…"
 }
 
+// TestScriptedCorpusPages pins the M211d (#3870) scripted corpus rows'
+// renderer-side contract: each parses, its static text lays out, its
+// <script> stays inert in the paint (no JS in the renderer — the ops a
+// row's script issues are the live-web spec's evidence, not this test's),
+// and the row paints ink. No goldens: the rows are authored fixtures, so
+// a text assertion carries the same signal a pinned image would.
+func TestScriptedCorpusPages(t *testing.T) {
+	cases := []struct {
+		html string
+		want []string
+	}{
+		{"scripted-reads.html", []string{"scripted reads row", "corpus lead paragraph"}},
+		{"scripted-compute.html", []string{"computed content row", "starts EMPTY"}},
+		{"scripted-form.html", []string{"form fill row", "pending"}},
+		{"scripted-timer.html", []string{"timed update row", "starts EMPTY"}},
+		{"scripted-refused.html", []string{"named refusal row", "pending"}},
+		{"scripted-storm.html", []string{"op storm row", "script_budget_ops"}},
+		{"scripted-kill.html", []string{"mid-op kill row", "worker parks"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.html, func(t *testing.T) {
+			l, f := renderCorpus(t, tc.html, 512, 384)
+			got := layoutText(l)
+			for _, want := range tc.want {
+				if !strings.Contains(got, want) {
+					t.Fatalf("scripted corpus %s lost %q; laid out %q", tc.html, want, trunc(got, 400))
+				}
+			}
+			// The script body is raw text on its node but must never reach
+			// the laid-out text — a leak here would paint source as prose.
+			for _, leak := range []string{"console.log", "setTimeout", "virelai.dom"} {
+				if strings.Contains(got, leak) {
+					t.Fatalf("scripted corpus %s leaked script source %q into layout", tc.html, leak)
+				}
+			}
+			if ink := f.count(func(v uint32) bool { return v != ColorPageBg }); ink < 80 {
+				t.Fatalf("scripted corpus %s painted too little ink: %d", tc.html, ink)
+			}
+		})
+	}
+}
+
 func TestPaintCSSBorders(t *testing.T) {
 	doc := ParseHTML([]byte("<div></div>"))
 	px := func(n int32) webstyle.Length { return webstyle.Length{Kind: webstyle.LengthPx, Value: n} }

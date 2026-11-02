@@ -1,0 +1,15 @@
+<!doctype html>
+<html><head><title>Scripted Reads Corpus Row</title></head>
+<body>
+<h1>scripted reads row</h1>
+<p id="lead" data-note="pinned-7">corpus lead paragraph</p>
+<p>this row's script only reads: title, one id'd node's text and
+attribute, one missing id. every value reaches serial through the
+console marker's own wire op.</p>
+<script>
+console.log("title=" + document.title);
+console.log("text=" + document.getElementById("lead").textContent);
+console.log("attr=" + document.getElementById("lead").getAttribute("data-note"));
+console.log("missing=" + document.getElementById("nope").textContent);
+</script>
+</body></html>

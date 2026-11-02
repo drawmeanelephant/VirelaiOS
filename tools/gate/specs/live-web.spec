@@ -35,6 +35,11 @@
 # two stylesheets ride streams 1/3/5 on ONE connection, a >64 KiB body
 # forces WINDOW_UPDATE credit — and the ALPN-less fallback paints the same
 # routes over HTTP/1.1.
+# 62-73 (M211a-c): the dom-rpc seam, read ops, refusals and budgets, the
+# write ops + timer pair. 74-81 (M211d #3870): the scripted corpus rows
+# end to end — every landed op on committed fixtures, the refused row
+# reaching the page itself, and the negatives (oversize pre-exec refusal,
+# mid-op kill, op-storm budget).
 # v6 (M117f #2478, ADR 0057): vi.Dial v6 connect+GET to the hermetic
 # responder; WEB.ELF's named v6-literal URL refusal beside it — no v6 URL
 # grammar or TLS-over-v6 responder exists yet. No public-internet access,
@@ -4173,6 +4178,27 @@ shutil.copy(qjs, share / "QJS.BIN")
     "</script></body></html>\n")
 print("staged DOM fixture pages for the M211b/M211c legs")
 print("staged QJS.BIN + SCRIPTED.HTML + RPCOPS.BAD for the dom-rpc legs")
+# M211d (#3870): the scripted corpus rows ride the same staging — the
+# committed fixtures are copied verbatim (no spec-side authoring), so
+# the gate drives exactly the bytes the corpus pins. SCRIPTOVR is the
+# oversize negative: an inline script past the 256 KiB per-eval source
+# bound AND a src= fetch past the same cap, so both pre-exec refusals
+# print their own words on one painted page.
+corpus = os.path.join("user", "go", "webrender", "testdata", "corpus")
+for name in ("scripted-reads", "scripted-compute", "scripted-form",
+             "scripted-timer", "scripted-refused", "scripted-storm",
+             "scripted-kill"):
+    shutil.copy(os.path.join(corpus, name + ".html"),
+                os.path.join(str(share), name.upper() + ".HTML"))
+big = "// " + "x" * 280_000 + "\n"
+(share / "SCRIPTOVR.HTML").write_text(
+    "<!doctype html><html><body><h1>oversize row</h1>"
+    "<p>the page paints; neither script ever execs.</p>"
+    "<script>" + big + "</script>"
+    "<script src=\"/host/QJSBIG.JS\"></script>"
+    "</body></html>\n")
+(share / "QJSBIG.JS").write_text("// " + "y" * 280_000 + "\n")
+print("staged scripted corpus rows + SCRIPTOVR.HTML/QJSBIG.JS for the M211d legs")
 PY
 
 # --- boot 62: the eval round-trip — page paints, worker runs to done ----
@@ -4958,3 +4984,220 @@ for y in range(64, 352):
 assert bright > 20, "DOMTIMER scanout shows no fired text (bright=%d)" % bright
 print("live-web 73: the timer callback's write observed on the scanout (bright=%d)" % bright)
 PY
+
+# --- boots 74-81 (M211d #3870): the scripted corpus, end to end --------
+# The corpus rows are COMMITTED fixtures (webrender/testdata/corpus,
+# staged verbatim in setup) — the acceptance verdict on whether the v3
+# op set moves pages. 74-77 exercise every landed op: reads (title,
+# text, attr, missing-id null, console.log), computed content written
+# into an empty node and read back over the same wire, a two-field form
+# fill, and a setTimeout whose parked timer.next the app timer answers.
+# 78 is the refused row: query/fetch/setAttr name dom_op_refused, an
+# unknown name dom_op_unknown — and the caught words are written INTO
+# the page, so the refusal reaches the user as page text, not a gap.
+# 79 is the oversize negative: an inline script over the per-eval source
+# bound and a src= fetch over the same cap refuse before exec with the
+# admission policy's own words — no worker ever spawns. 80 kills the
+# worker mid-op: the script's timer.next ask parks unanswered on the
+# wire, the monitor's kill lands inside the eval, and the page stays
+# responsive after `web: script worker gone`. 81 is the op-storm: the
+# 32-op per-script budget refuses script_budget_ops. Each restocks
+# QJS.BIN the way leg 62 does.
+vgate_file script-sreads.txt <<'EOFS'
+vf mv QJSHELD.BIN QJS.BIN
+exec WEB.ELF /host/SCRIPTED-READS.HTML
+EOFS
+
+vgate_file script-scompute.txt <<'EOFS'
+vf mv QJSHELD.BIN QJS.BIN
+exec WEB.ELF /host/SCRIPTED-COMPUTE.HTML
+EOFS
+
+vgate_file script-sform.txt <<'EOFS'
+vf mv QJSHELD.BIN QJS.BIN
+exec WEB.ELF /host/SCRIPTED-FORM.HTML
+EOFS
+
+vgate_file script-stimer.txt <<'EOFS'
+vf mv QJSHELD.BIN QJS.BIN
+exec WEB.ELF /host/SCRIPTED-TIMER.HTML
+EOFS
+
+vgate_file script-srefused.txt <<'EOFS'
+vf mv QJSHELD.BIN QJS.BIN
+exec WEB.ELF /host/SCRIPTED-REFUSED.HTML
+EOFS
+
+vgate_file script-sovr.txt <<'EOFS'
+vf mv QJSHELD.BIN QJS.BIN
+exec WEB.ELF /host/SCRIPTOVR.HTML
+EOFS
+
+vgate_file script-skill.txt <<'EOFS'
+vf mv QJSHELD.BIN QJS.BIN
+exec WEB.ELF /host/SCRIPTED-KILL.HTML
+EOFS
+
+vgate_file script-skillkill.txt <<'EOFS'
+kill QJS.BIN
+EOFS
+
+vgate_file script-sstorm.txt <<'EOFS'
+vf mv QJSHELD.BIN QJS.BIN
+exec WEB.ELF /host/SCRIPTED-STORM.HTML
+EOFS
+
+# --- boot 74: reads row — title/text/attr/null + console.log ----------
+vgate_run 74 -- \
+    --screen '$RUN_DIR/screen-sreads' \
+    --via-virtio --cvc-snap \
+    --script '$RUN_DIR/script-sreads.txt' \
+    --script-expect 'web: script done' --timeout 120
+
+vgate_assert 74 serial-contains 'web: ready'
+vgate_assert 74 serial-contains 'web: script hello version=3'
+vgate_assert 74 serial-contains 'web: dom doc.title ok'
+vgate_assert 74 serial-count 'web: dom node.text ok' 2
+vgate_assert 74 serial-contains 'web: dom node.attr ok'
+vgate_assert 74 serial-contains 'web: console title=Scripted Reads Corpus Row'
+vgate_assert 74 serial-contains 'web: console text=corpus lead paragraph'
+vgate_assert 74 serial-contains 'web: console attr=pinned-7'
+vgate_assert 74 serial-contains 'web: console missing=null'
+vgate_assert 74 serial-contains 'web: script rc=0 ops=8'
+vgate_assert 74 serial-contains 'web: script done ops=8'
+vgate_assert 74 serial-absent 'web: script worker gone'
+vgate_assert 74 serial-absent 'dom_op_'
+vgate_assert 74 serial-absent '[EXC] parking:'
+
+# --- boot 75: compute row — computed content written + read back ------
+vgate_run 75 -- \
+    --screen '$RUN_DIR/screen-scompute' \
+    --via-virtio --cvc-snap \
+    --script '$RUN_DIR/script-scompute.txt' \
+    --script-expect 'web: script done' --timeout 120
+
+vgate_assert 75 serial-contains 'web: ready'
+vgate_assert 75 serial-contains 'web: script hello version=3'
+vgate_assert 75 serial-contains 'web: dom node.setText ok'
+vgate_assert 75 serial-contains 'web: dom node.text ok'
+vgate_assert 75 serial-contains 'web: console readback=fib(25)=75025'
+vgate_assert 75 serial-contains 'web: dom reflow'
+vgate_assert 75 serial-contains 'web: script rc=0 ops=3'
+vgate_assert 75 serial-contains 'web: script done ops=3'
+vgate_assert 75 serial-absent 'web: script worker gone'
+vgate_assert 75 serial-absent 'dom_op_'
+vgate_assert 75 serial-absent '[EXC] parking:'
+
+# --- boot 76: form row — two field fills + a status write -------------
+vgate_run 76 -- \
+    --screen '$RUN_DIR/screen-sform' \
+    --via-virtio --cvc-snap \
+    --script '$RUN_DIR/script-sform.txt' \
+    --script-expect 'web: script done' --timeout 120
+
+vgate_assert 76 serial-contains 'web: ready'
+vgate_assert 76 serial-contains 'web: script hello version=3'
+vgate_assert 76 serial-count 'web: dom field.setValue ok' 2
+vgate_assert 76 serial-contains 'web: dom node.setText ok'
+vgate_assert 76 serial-contains 'web: console who=page-user'
+vgate_assert 76 serial-contains 'web: console status=filled'
+vgate_assert 76 serial-contains 'web: dom reflow'
+vgate_assert 76 serial-contains 'web: script rc=0 ops=7'
+vgate_assert 76 serial-contains 'web: script done ops=7'
+vgate_assert 76 serial-absent 'web: script worker gone'
+vgate_assert 76 serial-absent 'dom_op_'
+vgate_assert 76 serial-absent '[EXC] parking:'
+
+# --- boot 77: timer row — the parked drain answers, the write paints --
+vgate_run 77 -- \
+    --screen '$RUN_DIR/screen-stimer' \
+    --via-virtio --cvc-snap \
+    --script '$RUN_DIR/script-stimer.txt' \
+    --script-expect 'web: script done' --timeout 120
+
+vgate_assert 77 serial-contains 'web: ready'
+vgate_assert 77 serial-contains 'web: dom timer.set ok'
+vgate_assert 77 serial-contains 'web: console armed title=Scripted Timer Corpus Row'
+vgate_assert 77 serial-contains 'web: dom timer.next wait'
+vgate_assert 77 serial-contains 'web: dom timer.next ok'
+vgate_assert 77 serial-contains 'web: script fire id=1 rc=0 ops=2'
+vgate_assert 77 serial-contains 'web: console cb=fired'
+vgate_assert 77 serial-contains 'web: dom node.setText ok'
+vgate_assert 77 serial-contains 'web: dom reflow'
+vgate_assert 77 serial-contains 'web: script rc=0 ops=3'
+vgate_assert 77 serial-contains 'web: script done ops=6'
+vgate_assert 77 serial-absent 'web: script worker gone'
+vgate_assert 77 serial-absent '[EXC] parking:'
+
+# --- boot 78: refused row — named refusals reach the page itself ------
+vgate_run 78 -- \
+    --screen '$RUN_DIR/screen-srefused' \
+    --via-virtio --cvc-snap \
+    --script '$RUN_DIR/script-srefused.txt' \
+    --script-expect 'web: script done' --timeout 120
+
+vgate_assert 78 serial-contains 'web: ready'
+vgate_assert 78 serial-contains 'web: dom node.query dom_op_refused'
+vgate_assert 78 serial-contains 'web: dom net.fetch dom_op_refused'
+vgate_assert 78 serial-contains 'web: dom node.setAttr dom_op_refused'
+vgate_assert 78 serial-contains 'web: dom bogus.op dom_op_unknown'
+vgate_assert 78 serial-contains 'web: dom node.setText ok'
+vgate_assert 78 serial-contains 'web: dom node.text ok'
+vgate_assert 78 serial-contains 'web: console page=refused:dom_op_refused,dom_op_refused,dom_op_refused,dom_op_unknown'
+vgate_assert 78 serial-contains 'web: script rc=0 ops=7'
+vgate_assert 78 serial-contains 'web: script done ops=7'
+vgate_assert 78 serial-absent 'web: script worker gone'
+vgate_assert 78 serial-absent '[EXC] parking:'
+
+# --- boot 79: oversize negative — refused before exec, page paints ----
+vgate_run 79 -- \
+    --screen '$RUN_DIR/screen-sovr' \
+    --via-virtio --cvc-snap \
+    --script '$RUN_DIR/script-sovr.txt' \
+    --script-expect 'web: script skip http-body-limit' --timeout 120
+
+vgate_assert 79 serial-contains 'web: ready'
+vgate_assert 79 serial-contains 'web: script skip src-limit'
+vgate_assert 79 serial-contains 'web: script skip http-body-limit'
+vgate_assert 79 serial-absent 'web: script n='
+vgate_assert 79 serial-absent 'web: script worker'
+vgate_assert 79 serial-absent 'web: script done'
+vgate_assert 79 serial-absent 'dom_op_'
+vgate_assert 79 serial-absent '[EXC] parking:'
+
+# --- boot 80: mid-op kill — worker dies parked, page stays live -------
+vgate_run 80 -- \
+    --screen '$RUN_DIR/screen-skill' \
+    --via-virtio --cvc-snap \
+    --script '$RUN_DIR/script-skill.txt' \
+    --script2 '$RUN_DIR/script-skillkill.txt' --script2-after 'web: dom timer.next wait' \
+    --input-chords 'ctrl-l' --input-chords-after 'web: script worker gone' \
+    --script-expect 'web: url-focus' --timeout 120
+
+vgate_assert 80 serial-contains 'web: ready'
+vgate_assert 80 serial-contains 'web: script hello version=3'
+vgate_assert 80 serial-contains 'web: console armed=kill'
+vgate_assert 80 serial-contains 'web: dom timer.set ok'
+vgate_assert 80 serial-contains 'web: dom timer.next wait'
+vgate_assert 80 serial-contains 'kill: QJS.BIN armed'
+vgate_assert 80 serial-contains 'procs QJS.BIN exited status=137'
+vgate_assert 80 serial-contains 'web: script worker gone'
+vgate_assert 80 serial-contains 'web: url-focus'
+vgate_assert 80 serial-absent 'web: script rc=0'
+vgate_assert 80 serial-absent 'web: script done'
+vgate_assert 80 serial-absent '[EXC] parking:'
+
+# --- boot 81: storm row — the 32-op budget refuses script_budget_ops --
+vgate_run 81 -- \
+    --screen '$RUN_DIR/screen-sstorm' \
+    --via-virtio --cvc-snap \
+    --script '$RUN_DIR/script-sstorm.txt' \
+    --script-expect 'web: script done' --timeout 120
+
+vgate_assert 81 serial-contains 'web: ready'
+vgate_assert 81 serial-contains 'web: console drop'
+vgate_assert 81 serial-contains 'script_budget_ops'
+vgate_assert 81 serial-contains 'web: script rc=70 error=JSException'
+vgate_assert 81 serial-contains 'web: script done ops=32'
+vgate_assert 81 serial-absent 'web: script worker gone'
+vgate_assert 81 serial-absent '[EXC] parking:'
