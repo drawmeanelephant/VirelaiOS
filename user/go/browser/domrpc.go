@@ -81,12 +81,13 @@ func strPtr(s string) uintptr {
 // when the process exits AND every op got its reply — anything short is
 // "worker gone".
 type scriptWorker struct {
-	pid      int64
-	ops      int
-	reps     int
-	off      int
-	domOps   int
-	deadline int64
+	pid       int64
+	ops       int
+	reps      int
+	off       int
+	domOps    int
+	lastDrain int64
+	deadline  int64
 }
 
 // collectScripts walks the loaded document in document order and returns
@@ -274,12 +275,20 @@ func (a *app) noteWireLine(w *scriptWorker, line []byte) {
 	}
 }
 
+// drainInterval paces mid-run servicing: a full ReadFileAll on the host
+// share costs tens of ms, so draining on every 1ms pass pegs WEB at 100%
+// CPU and starves the servicing itself (observed: ~1 op/sec storms). At
+// ~20ms a request round trip still lands in a frame or two. The final
+// drain after worker exit is unconditional — nothing waits there.
+const drainInterval = int64(20) * 1_000_000
+
 // serviceReplies drains the reply spool's appended lines at the poll
 // cadence — while the worker runs this is what makes a DOM request a
 // round trip rather than a deadlock; after it exits the same pass is the
 // final drain. A partial trailing line waits for its newline rather than
 // being parsed half-written.
 func (a *app) serviceReplies(w *scriptWorker) {
+	w.lastDrain = vi.Nanos()
 	body, rc := vi.ReadFileAll(domRpcReplyPath+"~", domRpcReplyMax)
 	if rc < 0 || len(body) < w.off {
 		return
@@ -407,8 +416,12 @@ func (a *app) pollScripts() {
 		if vi.Nanos() < w.deadline {
 			// M211b: a running worker can block on a DOM request — the
 			// reply spool's appended lines are serviced on this cadence,
-			// so an ask is a round trip, never a deadlock.
-			a.serviceReplies(w)
+			// so an ask is a round trip, never a deadlock. The drain is
+			// throttled: a share read per 1ms pass costs more than it
+			// serves.
+			if vi.Nanos()-w.lastDrain >= drainInterval {
+				a.serviceReplies(w)
+			}
 			return
 		}
 		vi.Kill(uint64(w.pid)) // wedged: armed, exit lands on its own
