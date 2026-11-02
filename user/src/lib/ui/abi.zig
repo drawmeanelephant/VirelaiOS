@@ -196,6 +196,11 @@ pub const WIN_UNSAVED: u16 = 17;
 /// registered WM server; reserved until the WMS2 kernel push path exists
 /// (kernel mirror: kernel/src/events.zig).
 pub const COMPOSITE_TICK: u16 = 18;
+/// #3901: mailbox-delivery notification — every successful sys_ipc_send
+/// into this process's ring also queues one of these, so a blocked
+/// `wait_event` returns on delivery instead of the next heartbeat.
+/// `arg0` = the ring's pending depth (kernel mirror: kernel/src/events.zig).
+pub const IPC_MAIL: u16 = 23;
 
 pub const MOD_SHIFT: u16 = 0x0001;
 pub const MOD_CTRL: u16 = 0x0002;

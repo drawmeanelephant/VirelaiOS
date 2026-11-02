@@ -4477,6 +4477,11 @@ def main():
             break
         conn_id += 1
         try:
+            # The handshake read must be bounded BEFORE wrap: an accepted
+            # conn whose handshake never lands would otherwise park the
+            # whole accept loop behind it and every later leg's dial
+            # would stall at 'web: error tls'.
+            raw.settimeout(30)
             with ctx.wrap_socket(raw, server_side=True) as s:
                 s.settimeout(60)
                 alpn = s.selected_alpn_protocol() or "none"
@@ -4563,6 +4568,14 @@ path = os.path.join(os.environ["RUN_DIR"], "h2page-24570.log")
 peer = open(path).read()
 assert "h2page: conn=" in peer, "no connection accepted"
 assert " alpn=h2" in peer, "server did not negotiate h2"
+# The peer log is CUMULATIVE across the spec's iterations, and a refused
+# conn writes no "alpn=" line — cross-check this boot's own serial so a
+# stale earlier receipt cannot stand in for a connection that never
+# happened (observed: a wedged accept loop failed a whole leg at TLS
+# while the assert read the previous iteration's receipt).
+ser = open(os.environ["VG_SER"], errors="replace").read()
+assert "web: alpn h2" in ser, "this boot's serial shows no h2 negotiation"
+assert "proto=h2 stream=5" in ser, "this boot's serial shows no reuse"
 # The LAST accepted connection carried the whole journey: streams 1, 3,
 # 5 in order, each its own path — the reuse the stream= markers assert.
 # (rsplit on the "alpn=" line: the conn's trailing "done"/"refused"
@@ -4637,6 +4650,9 @@ import os, sys
 path = os.path.join(os.environ["RUN_DIR"], "h2page-24571.log")
 peer = open(path).read()
 assert " alpn=none" in peer, "server negotiated ALPN — leg is not a fallback"
+ser = open(os.environ["VG_SER"], errors="replace").read()
+assert "web: alpn none" in ser, "this boot's serial shows a negotiated ALPN"
+assert "proto=http/1.1" in ser, "this boot's serial shows no h1 fallback"
 conns = [l for l in peer.splitlines() if " alpn=" in l]
 cid = conns[-1].split("conn=", 1)[1].split(" ", 1)[0]
 last = "\n".join(l for l in peer.splitlines()

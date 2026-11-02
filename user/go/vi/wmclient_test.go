@@ -344,7 +344,7 @@ func (f *wmMailFake) hook(num uintptr, a0, a1, a2, a3 uintptr) int64 {
 			return int64(len(reply))
 		}
 		return 0
-	case SlotSleep:
+	case SlotSleep, SlotSleepNs:
 		f.sleepCalls++
 		return 0
 	}
@@ -367,10 +367,16 @@ func startWmMailFake(t *testing.T) *wmMailFake {
 	return f
 }
 
-func TestWmMailWaitTicksIsATickBound(t *testing.T) {
-	// A two-million-iteration yield loop is not a tick bound (#1489).
-	if wmMailWaitTicks < 2 || wmMailWaitTicks > 32 {
-		t.Fatalf("wmMailWaitTicks = %d want a small scheduler-tick budget", wmMailWaitTicks)
+func TestWmMailWaitBudgetIsBounded(t *testing.T) {
+	// A two-million-iteration yield loop is not a bound (#1489), and the
+	// #3901 ns park must keep the same order of seconds the 8-tick budget
+	// had — not shrink the refusal window to milliseconds.
+	const budgetNs = uint64(wmMailWaitPolls) * wmMailParkNs
+	if budgetNs < 2_000_000_000 || budgetNs > 16_000_000_000 {
+		t.Fatalf("ack-wait budget = %d ns want a few seconds", budgetNs)
+	}
+	if wmMailParkNs <= 0 || wmMailParkNs >= 1_000_000_000 {
+		t.Fatalf("wmMailParkNs = %d want a sub-tick park", wmMailParkNs)
 	}
 }
 
@@ -618,11 +624,11 @@ func TestWmMailRequestSilentSeatRefuses(t *testing.T) {
 	if f.sendCalls != 1 || f.sendTarget != 3 {
 		t.Fatalf("send = %d to pid %d, want 1 to WM pid 3", f.sendCalls, f.sendTarget)
 	}
-	if f.recvCalls != wmMailWaitTicks {
-		t.Fatalf("recv probes = %d want %d (one per tick)", f.recvCalls, wmMailWaitTicks)
+	if f.recvCalls != wmMailWaitPolls {
+		t.Fatalf("recv probes = %d want %d (one per tick)", f.recvCalls, wmMailWaitPolls)
 	}
-	if f.sleepCalls != wmMailWaitTicks-1 {
-		t.Fatalf("parks = %d want %d (sys_sleep between probes, not after the last)", f.sleepCalls, wmMailWaitTicks-1)
+	if f.sleepCalls != wmMailWaitPolls-1 {
+		t.Fatalf("parks = %d want %d (sys_sleep between probes, not after the last)", f.sleepCalls, wmMailWaitPolls-1)
 	}
 	if DeclareFullscreen(4, "T", "NOTE.ELF") {
 		t.Fatal("DeclareFullscreen must surface the refusal")
@@ -683,9 +689,9 @@ func TestPollNavSilentSeatRefuses(t *testing.T) {
 	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
 		t.Fatalf("silent PollNav hung: %v", elapsed)
 	}
-	if f.recvCalls != wmMailWaitTicks || f.sleepCalls != wmMailWaitTicks-1 {
+	if f.recvCalls != wmMailWaitPolls || f.sleepCalls != wmMailWaitPolls-1 {
 		t.Fatalf("PollNav wait = %d probes / %d parks, want %d / %d",
-			f.recvCalls, f.sleepCalls, wmMailWaitTicks, wmMailWaitTicks-1)
+			f.recvCalls, f.sleepCalls, wmMailWaitPolls, wmMailWaitPolls-1)
 	}
 }
 

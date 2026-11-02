@@ -1947,6 +1947,32 @@ pub fn build(b: *std.Build) void {
     tabhold_step.dependOn(&install_tabhold.step);
     b.getInstallStep().dependOn(&install_tabhold.step);
 
+    // IPCWAKE.BIN. Issue #3901 IPC-wake live-gate consumer: arms a 4-tick
+    // app timer, blocks in sys_wait_event, and proves the kind-23 IPC_MAIL
+    // notification (pushed by every successful mailbox.send) wakes the
+    // blocked consumer sub-tick — a wake-less kernel can only return the
+    // TIMER event, which the program reports as `ipcwake: tick-waited`.
+    // COUNTER.BIN is the sender (exec IPCWAKE.BIN first → pid 1).
+    const ipcwake_prog = b.addExecutable(.{
+        .name = "user-ipcwake",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("user/src/ipcwake.zig"),
+            .target = kernel_target,
+            .optimize = .ReleaseSmall,
+        }),
+    });
+    ipcwake_prog.linker_script = b.path("user/linker-segmented.ld");
+    const ipcwake_step = b.step("ipcwake", "Build the #3901 IPC-wake proof program (zig-out/bin/IPCWAKE.BIN)");
+    const ipcwake_elf2bin = b.addSystemCommand(&.{ "python3", "tools/elf2bin.py", "--segments" });
+    ipcwake_elf2bin.addFileArg(ipcwake_prog.getEmittedBin());
+    const ipcwake_bin = ipcwake_elf2bin.addOutputFileArg("IPCWAKE.BIN");
+    ipcwake_elf2bin.has_side_effects = true;
+    ipcwake_elf2bin.stdio = .inherit;
+    ipcwake_step.dependOn(&ipcwake_elf2bin.step);
+    const install_ipcwake = b.addInstallFileWithDir(ipcwake_bin, .bin, "IPCWAKE.BIN");
+    ipcwake_step.dependOn(&install_ipcwake.step);
+    b.getInstallStep().dependOn(&install_ipcwake.step);
+
     // ------------------------------------------------------------------
     // Top-level steps. System-command steps are marked as having side
     // effects (and inherit stdio) so they always execute instead of being

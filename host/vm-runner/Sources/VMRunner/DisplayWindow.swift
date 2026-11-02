@@ -104,12 +104,32 @@ func setupDisplayWindow() {
         view.registerForDraggedTypes([.fileURL])
         view.dropHandler = { urls in hostDrop?.drop(urls: urls) }
     }
-    // VIRELAI_WINDOW_BG=1 keeps gate/test windows out of the user's face:
-    // the view still exists (scanout, screenshots, drop lanes all work)
-    // but the window is ordered behind everything and no activation is
-    // attempted. Pointer-script and native-input runs may still want a
-    // key window for synthesized key events — the knob is opt-in.
-    let windowBackground = ProcessInfo.processInfo.environment["VIRELAI_WINDOW_BG"] != nil
+    // Gate/evidence windows default to the back of the z-order with no
+    // activation: the view still exists (scanout, screenshots, drop lanes
+    // all work — ScreenCaptureKit captures the window by ID regardless of
+    // z-order) and a fleet run never steals focus. Only runs that
+    // provably need a key/frontmost window order in front:
+    //   - the bundled session and interactive/native-input runs
+    //   - view-posted input: --input-key/--input-string always post
+    //     NSEvents into the view; --input-chords does too when the
+    //     cv-input transport is off or --chords-view forces it
+    //   - --pointer scripts: every route (window/app/cg) needs a
+    //     known-frontmost target — cg especially would click the user's
+    //     real apps otherwise. --pointer-virtio rides cv-input and is exempt.
+    //   - --host-cmd-after / --host-capture-keys verb legs, which act on
+    //     window state directly
+    //   - a bare human --display watch (no scripts, no evidence, no input)
+    // VIRELAI_WINDOW_BG stays the explicit override: any non-"0" value
+    // forces background even for a key-needing run; "0" forces foreground.
+    let chordsOnView = (inputChords != nil || inputChords2 != nil) && (!viaVirtioEnabled || chordsViaView)
+    let viewPostedInput = inputKeyCode != nil || inputString != nil || chordsOnView
+    let bareDisplay = displayMode && scriptPath == nil && script2Path == nil && script3Path == nil
+        && screenshotPath == nil && !wantPointer && !nativeInput && !viewPostedInput
+        && pointerVirtioScript == nil && hostCmdTriggers.isEmpty && !hostCaptureKeys
+    let needsKeyWindow = hostSessionMode || nativeInput || wantPointer || viewPostedInput
+        || !hostCmdTriggers.isEmpty || hostCaptureKeys || bareDisplay
+    let windowBackground = ProcessInfo.processInfo.environment["VIRELAI_WINDOW_BG"].map { $0 != "0" }
+        ?? !needsKeyWindow
     if windowBackground {
         window.orderBack(nil)
     } else {

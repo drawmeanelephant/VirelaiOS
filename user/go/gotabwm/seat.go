@@ -336,7 +336,7 @@ const drainPaintStride = 32
 
 // drainServiceStride bounds how many events may pass between mailbox
 // services inside one drain: a WM_RPC's bounded-poll ack window
-// (wmMailWaitTicks) cannot outlast a deep queue otherwise — observed on
+// (wmMailWaitPolls) cannot outlast a deep queue otherwise — observed on
 // go-dogfood boot 08: `gofiles: drag refused seat` while the seat chewed
 // a 6-deep tick backlog with the DragBegin un-served in its mailbox.
 const drainServiceStride = 8
