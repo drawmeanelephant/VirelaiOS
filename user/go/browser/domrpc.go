@@ -34,7 +34,11 @@ const (
 	domRpcOpsMax    = 1_114_112
 	domRpcReplyMax  = 262144
 	domRpcMaxScripts = 32
-	domRpcBudgetNs  = int64(60) * 1_000_000_000
+	// domRpcBudgetNs is the worker's kill deadline. M211b: a DOM request
+	// round trip rides share-latency reads on both ends (~1s/ask worst
+	// case); a 64-op script can legitimately need ~70s inside the wire's
+	// own budgets. Two minutes stays bounded and covers the envelope.
+	domRpcBudgetNs  = int64(120) * 1_000_000_000
 	// domRpcVersion is the wire handshake (domrpc.version worker-side).
 	// v2 adds worker→parent DOM request lines on the reply stream and
 	// their answers on WEBRPC.ANS.
