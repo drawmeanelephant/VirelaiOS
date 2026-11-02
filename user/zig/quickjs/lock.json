@@ -34,7 +34,7 @@
     "user/zig/quickjs/clock.zig": "7c0c302fe1d43b7de64fe729ca27ea94ccf2f8eb1171381d634673d7db0669bd",
     "user/zig/quickjs/contract.zig": "b4ea1770077527a6b01d107e6bb1532efb4393cdb15c75dabbfc8d2e18952ba4",
     "user/zig/quickjs/control.zig": "db0eb1e8ba8f8925f1ffa6827e1677862acefb45732ff1662c71206e9a304f77",
-    "user/zig/quickjs/domrpc.zig": "59f4514dc9211951c17c141b4c14948e210a623262b8dd8e0bd4713297b02a76",
+    "user/zig/quickjs/domrpc.zig": "9e555edfbb0ff658ab334284ecfb8e3a1d2fd5d34bb9fcb60aadfbc7ecb7afa8",
     "user/zig/quickjs/fatal_fixture.zig": "38f9669502f8a2d795825b88a6c53a9af2f2dc32b973b63a2f471a1785669d25",
     "user/zig/quickjs/fatal_probe.c": "2330cad217f3b9982240ca06ff3741d6fd35bf242fe8d65e03d5f8507721c150",
     "user/zig/quickjs/format.c": "75f363fc59a9f154fa6be553788ff89ab5c3cd93835287bd83f7788bb74cf4c7",

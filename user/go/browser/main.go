@@ -248,6 +248,10 @@ type app struct {
 	lastFills  int
 	logPaint   bool
 	loggedPoll bool
+	// mutated is the dom-rpc write ops' dirty flag (M211c #3869): a
+	// served setText/setValue marks the tree dirty; the next drain-pass
+	// end runs one batched reflow + repaint through the normal pipeline.
+	mutated    bool
 	// dogfoodPage is the once-only latch for markerDogfoodPage (M69a #1528).
 	dogfoodPage bool
 
@@ -747,6 +751,11 @@ func (a *app) loop() {
 			a.click(int(ev.Arg0), int(ev.Arg1))
 		case vi.EvMouseMove:
 			a.move(int(ev.Arg0), int(ev.Arg1))
+		case vi.EvTimer:
+			// M211c (#3869): the process's one app timer rides for the
+			// script worker's granted setTimeouts — the fan-out moves
+			// due ids and answers a parked `timer.next` ask.
+			a.onScriptTimer()
 		case 12: // Existing ADR 0009 MOUSE_SCROLL; SDK has no named alias.
 			if ev.Arg0&0x4000 == 0 {
 				step := int(ev.Arg0&0x3fff) * 40
