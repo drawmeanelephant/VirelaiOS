@@ -2508,12 +2508,20 @@ dui
 echo rx-m121f-ok
 EOF
 
+# The three plate snaps arm on `launcher presented`, never the
+# open/filter markers: those print BEFORE the palette's present (the
+# markers are state, not pixels), and under #3899 the staged copy freezes
+# the frame at service time — an armed-but-pre-paint request ships the
+# desktop that was up when the marker printed ("not the plate", observed
+# 2026-11-01). `launcher presented` is the seat's own post-present
+# receipt, so the parked copies all land inside the dwell the down x8
+# strokes hold open.
 vgate_run 09 -- \
     --via-virtio --cvc-snap \
     --screen '$RUN_DIR/screen-09' \
     --snapshot-out '$RUN_DIR/snap-09' \
-    --snapshot-after 'gotabwm: palette open n=' \
-    --snapshot-after 'gotabwm: palette filter q=sett n=' \
+    --snapshot-after 'gotabwm: launcher presented' \
+    --snapshot-after 'gotabwm: launcher presented' \
     --snapshot-after 'gotabwm: launcher presented' \
     --snapshot-after 'goedit: state restored' \
     --snapshot-after 'rx-m121f-ok' \
