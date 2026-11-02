@@ -747,3 +747,47 @@ reset re-installs the prologue on the next eval.
 **Still refused, by name:** everything the M211a fence named, plus
 DOM traversal beyond id addressing, mutation (card c), events, and
 any op outside the v1 set — refused on the wire, not silently.
+
+## Amendment (M211c / #3869) — bounded DOM write ops + timers
+
+Directed by card c of the same index, the wire bumps to protocol
+**v3** and grows the write half of the DOM plus one deferred-eval
+seam. The channel shape is unchanged — the same request/answer pair
+M211b froze carries the new ops; nothing new crosses in either
+direction.
+
+**Op set v3 adds (exactly this):** `node.setText` (by id) replaces an
+element's children with one text node; `field.setValue` (by id)
+writes a form control's `value` attribute. Each served write dirties
+the subtree and the page re-enters the EXISTING layout→paint
+pipeline — the same whole-tree `relayout()` a zoom change drives,
+batched once per drain pass; there is no second render path. An
+absent node (or a non-control for `field.setValue`) answers JSON
+`null`, the read ops' contract, and spends no mutation budget.
+`timer.set` grants a small integer id synchronously; `timer.next`
+is the worker's drain ask — it answers a fired id at once, parks
+when timers are pending but none due, and answers `null` when
+nothing could ever fire. The parked answer lands off the page's own
+M14-era app timer (`sys_timer_set_ns` → `EvTimer`), the seam every
+app already rides — one kernel timer, re-armed at the earliest
+deadline. A granted timer's callback runs in the worker's own
+context as its own bounded eval (`__virelai_fire(id)`), receipted
+on the reply stream as a `fire` line — a marker, never a staged op.
+
+**Refusals, named, new this amendment:** `script_budget_mut` for a
+write past the per-script mutation bound (**16** served writes per
+eval); `script_budget_timers` for a `timer.set` past **8**
+granted-but-unfired timers; `dom_op_bounds` for a delay over
+**5,000 ms** — kept under the wire's 10 s rendezvous wait so a
+parked `timer.next` answer always lands inside the worker's own
+patience. `setInterval`/`requestAnimationFrame` refuse
+`dom_op_refused` via `timer.interval`/`timer.raf`, and attribute or
+style writes refuse via `node.setAttr` — the card's corpus decides
+whether any of them earn a later wave. A script-consumed
+`timer.next` or a dead timer id is the script's own problem, bounded
+by the same caps.
+
+**Still refused, by name:** everything the M211a/M211b fences named,
+plus DOM traversal beyond id addressing, `doc.write`, events,
+storage, `net.fetch`, mutation observers, and any op outside the
+v3 set — refused on the wire, not silently.

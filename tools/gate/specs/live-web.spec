@@ -4105,7 +4105,7 @@ shutil.copy(qjs, share / "QJS.BIN")
     "</body></html>\n")
 (share / "RPCOPS.BAD").write_text(
     '{"op":"eval","src":"5"}\n'
-    '{"op":"hello","version":2}\n'
+    '{"op":"hello","version":3}\n'
     '{"op":"eval","src":"1+2"}\n'
     '{"op":"bogus"}\n'
     '{"op":"hello","version":99}\n'
@@ -4113,10 +4113,11 @@ shutil.copy(qjs, share / "QJS.BIN")
 # M211b (#3868): DOM read-op fixture pages. DOMREAD's script reads the
 # title element, an id'd node's textContent and an attribute, plus a
 # missing id (null answer); DOMREF exercises the refusal vocabulary —
-# a known-but-unadmitted op (query -> dom_op_refused, node.setText the
-# same) and a name outside the vocabulary (dom_op_unknown); DOMSPIN
-# burns the engine's 4s eval deadline; DOMSTORM exceeds the 64-op
-# per-script budget on console.log round trips.
+# a known-but-unadmitted op (query -> dom_op_refused; M211c moved the
+# write slot to doc.write when the write ops were admitted) and a name
+# outside the vocabulary (dom_op_unknown); DOMSPIN burns the engine's
+# 4s eval deadline; DOMSTORM exceeds the 32-op per-script budget on
+# console.log round trips.
 (share / "DOMREAD.HTML").write_text(
     "<!doctype html><html><head><title>Dom Reads Page</title></head><body>"
     "<h1>reads</h1><p id=\"lead\" data-note=\"pinned\">alpha lead text</p>"
@@ -4130,7 +4131,7 @@ shutil.copy(qjs, share / "QJS.BIN")
     "<!doctype html><html><body><p>refusals</p>"
     "<script>"
     "try { document.querySelector(\"p\"); } catch (e) { console.log(\"refused=\" + e.name); }"
-    "try { virelai.dom(\"node.setText\", \"lead\", \"x\"); } catch (e) { console.log(\"set=\" + e.name); }"
+    "try { virelai.dom(\"doc.write\", \"x\"); } catch (e) { console.log(\"set=\" + e.name); }"
     "try { virelai.dom(\"bogus.op\"); } catch (e) { console.log(\"unknown=\" + e.name); }"
     "</script></body></html>\n")
 (share / "DOMSPIN.HTML").write_text(
@@ -4140,7 +4141,37 @@ shutil.copy(qjs, share / "QJS.BIN")
     "<!doctype html><html><body><p>storm</p>"
     "<script>for (var i = 0; i < 200; i++) { console.log(\"x\"); }</script>"
     "</body></html>\n")
-print("staged DOM fixture pages for the M211b legs")
+# M211c (#3869): DOM write/timer fixture pages. DOMWRITE's targets start
+# EMPTY — the text the scanout proves can only be the script's own write
+# (a timestamp line plus a filled field); DOMMUT storms node.setText past
+# the 16-mutation per-script budget; DOMTIMER arms a setTimeout whose
+# callback writes and exercises the setInterval named refusal.
+(share / "DOMWRITE.HTML").write_text(
+    "<!doctype html><html><body>"
+    "<p id=\"clock\"></p><input id=\"fld\" type=\"text\">"
+    "<script>"
+    "document.getElementById(\"clock\").textContent = \"stamp-2026-11-02\";"
+    "document.getElementById(\"fld\").value = \"filled-by-js\";"
+    "console.log(\"wrote=2\");"
+    "</script></body></html>\n")
+(share / "DOMMUT.HTML").write_text(
+    "<!doctype html><html><body><p id=\"x\">y</p>"
+    "<script>"
+    "try { for (var i = 0; i < 20; i++) { document.getElementById(\"x\").textContent = \"v\" + i; } }"
+    "catch (e) { console.log(\"mut=\" + e.name); }"
+    "console.log(\"muts=done\");"
+    "</script></body></html>\n")
+(share / "DOMTIMER.HTML").write_text(
+    "<!doctype html><html><body><p id=\"t\"></p>"
+    "<script>"
+    "console.log(\"armed=1\");"
+    "try { setInterval(function() {}, 10); } catch (e) { console.log(\"iv=\" + e.name); }"
+    "setTimeout(function() {"
+    "  document.getElementById(\"t\").textContent = \"fired\";"
+    "  console.log(\"cb=ran\");"
+    "}, 2000);"
+    "</script></body></html>\n")
+print("staged DOM fixture pages for the M211b/M211c legs")
 print("staged QJS.BIN + SCRIPTED.HTML + RPCOPS.BAD for the dom-rpc legs")
 PY
 
@@ -4154,7 +4185,7 @@ vgate_run 62 -- \
 vgate_assert 62 serial-contains 'web: ready'
 vgate_assert 62 serial-contains 'web: script n='
 vgate_assert 62 serial-contains 'web: script worker pid='
-vgate_assert 62 serial-contains 'web: script hello version=2'
+vgate_assert 62 serial-contains 'web: script hello version=3'
 vgate_assert 62 serial-count 'web: script rc=0' 2
 vgate_assert 62 serial-contains 'web: script done'
 vgate_assert 62 serial-absent 'web: script worker gone'
@@ -4170,7 +4201,7 @@ vgate_run 63 -- \
     --script-expect 'qjs: clean' --timeout 120
 
 vgate_assert 63 serial-contains 'dom_rpc_hello'
-vgate_assert 63 serial-contains '"op":"hello","ok":true,"version":2'
+vgate_assert 63 serial-contains '"op":"hello","ok":true,"version":3'
 vgate_assert 63 serial-contains '"out":"3'
 vgate_assert 63 serial-contains 'dom_rpc_op'
 vgate_assert 63 serial-contains 'dom_rpc_version'
@@ -4718,7 +4749,7 @@ PY
 # 67: a real script reads the page it rode in on — <title>, an id'd
 # node's textContent, an attribute, a missing id's null — and logs the
 # values to serial through console.log's own wire op. 68: an op outside
-# the v1 set is refused by name — node.query/node.setText get
+# the v3 set is refused by name — node.query/doc.write get
 # dom_op_refused, an unknown name dom_op_unknown, each reaching JS as a
 # catchable exception. 69: a console.log storm hits the 64-op per-script
 # budget — the refusal lands on serial from the worker's exception
@@ -4753,7 +4784,7 @@ vgate_run 67 -- \
     --script-expect 'web: script done' --timeout 120
 
 vgate_assert 67 serial-contains 'web: ready'
-vgate_assert 67 serial-contains 'web: script hello version=2'
+vgate_assert 67 serial-contains 'web: script hello version=3'
 vgate_assert 67 serial-contains 'web: dom doc.title ok'
 vgate_assert 67 serial-count 'web: dom node.text ok' 2
 vgate_assert 67 serial-contains 'web: dom node.attr ok'
@@ -4776,7 +4807,7 @@ vgate_run 68 -- \
 
 vgate_assert 68 serial-contains 'web: ready'
 vgate_assert 68 serial-contains 'web: dom node.query dom_op_refused'
-vgate_assert 68 serial-contains 'web: dom node.setText dom_op_refused'
+vgate_assert 68 serial-contains 'web: dom doc.write dom_op_refused'
 vgate_assert 68 serial-contains 'web: dom bogus.op dom_op_unknown'
 vgate_assert 68 serial-contains 'web: console refused=dom_op_refused'
 vgate_assert 68 serial-contains 'web: console set=dom_op_refused'
@@ -4813,3 +4844,117 @@ vgate_assert 70 serial-contains 'web: script rc=70 error=script_budget_time'
 vgate_assert 70 serial-contains 'web: script done'
 vgate_assert 70 serial-absent 'web: script worker gone'
 vgate_assert 70 serial-absent '[EXC] parking:'
+# --- boots 71-73 (M211c #3869): DOM write ops + reflow, bounded timers --
+# 71: a real script's writes land on the scanout — the page's targets
+# start EMPTY, so text pixels after `web: dom reflow` can only be the
+# writes; the field's scripted value rides the value attribute through
+# the same re-layout a typed value takes. 72: a setText storm hits the
+# 16-mutation per-script budget — worker-side the refusal never crosses
+# the wire, JS catches the named exception and the script finishes.
+# 73: setTimeout arms through the app's one kernel timer, `timer.next`
+# parks, EvTimer answers it, and the callback's own write paints;
+# setInterval names its refusal. Each restocks QJS.BIN the way 62 does.
+vgate_file script-domwrite.txt <<'EOFI'
+vf mv QJSHELD.BIN QJS.BIN
+exec WEB.ELF /host/DOMWRITE.HTML
+EOFI
+
+vgate_file script-dommut.txt <<'EOFI'
+vf mv QJSHELD.BIN QJS.BIN
+exec WEB.ELF /host/DOMMUT.HTML
+EOFI
+
+vgate_file script-domtimer.txt <<'EOFI'
+vf mv QJSHELD.BIN QJS.BIN
+exec WEB.ELF /host/DOMTIMER.HTML
+EOFI
+
+# --- boot 71: text + field writes reflow and paint on the scanout -----
+vgate_run 71 -- \
+    --screen '$RUN_DIR/screen-domwrite' \
+    --via-virtio --cvc-snap \
+    --snapshot-out '$RUN_DIR/snap71' \
+    --snapshot-after 'web: dom reflow' \
+    --script '$RUN_DIR/script-domwrite.txt' \
+    --script-expect 'web: script done' --timeout 120
+
+vgate_assert 71 serial-contains 'web: ready'
+vgate_assert 71 serial-contains 'web: script hello version=3'
+vgate_assert 71 serial-contains 'web: dom node.setText ok'
+vgate_assert 71 serial-contains 'web: dom field.setValue ok'
+vgate_assert 71 serial-contains 'web: console wrote=2'
+vgate_assert 71 serial-contains 'web: dom reflow'
+vgate_assert 71 serial-contains 'web: script rc=0 ops=3'
+vgate_assert 71 serial-contains 'web: script done ops=3'
+vgate_assert 71 serial-absent 'web: script worker gone'
+vgate_assert 71 serial-absent 'dom_op_'
+vgate_assert 71 serial-absent '[EXC] parking:'
+vgate_assert 71 snapshot 'snap71-*.raw' <<'PY'
+import sys
+data = open(sys.argv[1], "rb").read()
+assert len(data) == 1280*720*4
+# The targets started empty: bright text pixels inside the content crop
+# can only be the script's own stamp + field value after the reflow.
+bright = 0
+for y in range(64, 352):
+    for x in range(0, 512):
+        i = (y*1280+x)*4
+        if min(data[i+2], data[i+1], data[i]) > 150:
+            bright += 1
+assert bright > 40, "DOMWRITE scanout shows no scripted text (bright=%d)" % bright
+print("live-web 71: scripted writes observed on the scanout (bright=%d)" % bright)
+PY
+
+# --- boot 72: the 16-mutation budget refuses script_budget_mut ---------
+vgate_run 72 -- \
+    --screen '$RUN_DIR/screen-dommut' \
+    --via-virtio --cvc-snap \
+    --script '$RUN_DIR/script-dommut.txt' \
+    --script-expect 'web: script done' --timeout 120
+
+vgate_assert 72 serial-contains 'web: ready'
+vgate_assert 72 serial-count 'web: dom node.setText ok' 16
+vgate_assert 72 serial-contains 'web: console mut=script_budget_mut'
+vgate_assert 72 serial-contains 'web: console muts=done'
+vgate_assert 72 serial-contains 'web: script rc=0 ops=18'
+vgate_assert 72 serial-contains 'web: script done ops=18'
+vgate_assert 72 serial-absent 'web: script worker gone'
+vgate_assert 72 serial-absent '[EXC] parking:'
+
+# --- boot 73: setTimeout fires through the app timer; its write paints -
+vgate_run 73 -- \
+    --screen '$RUN_DIR/screen-domtimer' \
+    --via-virtio --cvc-snap \
+    --snapshot-out '$RUN_DIR/snap73' \
+    --snapshot-after 'web: dom reflow' \
+    --script '$RUN_DIR/script-domtimer.txt' \
+    --script-expect 'web: script done' --timeout 120
+
+vgate_assert 73 serial-contains 'web: ready'
+vgate_assert 73 serial-contains 'web: dom timer.set ok'
+vgate_assert 73 serial-contains 'web: console armed=1'
+vgate_assert 73 serial-contains 'web: dom timer.interval dom_op_refused'
+vgate_assert 73 serial-contains 'web: console iv=dom_op_refused'
+vgate_assert 73 serial-contains 'web: dom timer.next wait'
+vgate_assert 73 serial-contains 'web: dom timer.next ok'
+vgate_assert 73 serial-contains 'web: script fire id=1 rc=0 ops=2'
+vgate_assert 73 serial-contains 'web: console cb=ran'
+vgate_assert 73 serial-contains 'web: dom node.setText ok'
+vgate_assert 73 serial-contains 'web: dom reflow'
+vgate_assert 73 serial-contains 'web: script rc=0 ops=4'
+vgate_assert 73 serial-contains 'web: script done ops=7'
+vgate_assert 73 serial-absent 'web: script worker gone'
+vgate_assert 73 serial-absent '[EXC] parking:'
+vgate_assert 73 snapshot 'snap73-*.raw' <<'PY'
+import sys
+data = open(sys.argv[1], "rb").read()
+assert len(data) == 1280*720*4
+bright = 0
+for y in range(64, 352):
+    for x in range(0, 512):
+        i = (y*1280+x)*4
+        if min(data[i+2], data[i+1], data[i]) > 150:
+            bright += 1
+assert bright > 20, "DOMTIMER scanout shows no fired text (bright=%d)" % bright
+print("live-web 73: the timer callback's write observed on the scanout (bright=%d)" % bright)
+PY

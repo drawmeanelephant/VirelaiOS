@@ -12,10 +12,12 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"unsafe"
 
 	"virelai/vi"
+	"virelai/vsys"
 	"virelai/webrender"
 )
 
@@ -40,11 +42,21 @@ const (
 	// own budgets. Two minutes stays bounded and covers the envelope.
 	domRpcBudgetNs  = int64(120) * 1_000_000_000
 	// domRpcVersion is the wire handshake (domrpc.version worker-side).
-	// v2 adds worker→parent DOM request lines on the reply stream and
-	// their answers on WEBRPC.ANS.
-	domRpcVersion   = 2
+	// v3 admits the write ops and the timer pair: `timer.set` grants an
+	// id synchronously, `timer.next` parks until an app-timer fire makes
+	// an id due (M211c #3869).
+	domRpcVersion   = 3
 	// domValueMax mirrors domrpc.value_max — one answered value's clip.
 	domValueMax     = 2048
+	// The v3 bounds mirror domrpc.script_mut_max / timer_pending_max /
+	// timer_delay_max_ms: mutations per script refuse `script_budget_mut`,
+	// granted-but-unfired timers refuse `script_budget_timers`, an
+	// over-bound delay refuses `dom_op_bounds`. The delay bound stays
+	// under the worker's 10s rendezvous wait so a parked `timer.next`
+	// answer always lands inside the wire's own patience.
+	domRpcMaxMut      = 16
+	domRpcMaxTimers   = 8
+	domRpcTimerMaxMs  = 5000
 	// markerDomNamesClip bounds how much of a console.log line reaches
 	// the serial marker — the op's payload bound is the wire's, not the
 	// console's.
@@ -81,17 +93,33 @@ func strPtr(s string) uintptr {
 // ops the number of op lines staged (one hello + one eval per shipped
 // script), reps the hello/eval reply lines seen, off the reply-spool drain
 // cursor (mid-run reads re-open the file so appended bytes stay visible),
-// domOps the DOM requests served, deadline the kill point. A worker is done
-// when the process exits AND every op got its reply — anything short is
-// "worker gone".
+// domOps the DOM requests served, deadline the kill point. M211c adds the
+// write/timer half: mut the served writes in the current per-script
+// window, timers the granted-but-unfired set, due the fired ids awaiting
+// a `timer.next` ask, waitSeq/waitParked the parked ask itself, nextTimer
+// the id counter. A worker is done when the process exits AND every op
+// got its reply — anything short is "worker gone".
 type scriptWorker struct {
-	pid       int64
-	ops       int
-	reps      int
-	off       int
-	domOps    int
-	lastDrain int64
-	deadline  int64
+	pid        int64
+	ops        int
+	reps       int
+	off        int
+	domOps     int
+	lastDrain  int64
+	deadline   int64
+	mut        int
+	timers     []scriptTimer
+	due        []int
+	waitSeq    int64
+	waitParked bool
+	nextTimer  int
+}
+
+// scriptTimer is one granted setTimeout: the id the worker's JS table
+// keys on and the deadline the app timer posts EvTimer at.
+type scriptTimer struct {
+	id  int
+	due int64
 }
 
 // collectScripts walks the loaded document in document order and returns
@@ -260,6 +288,18 @@ func (a *app) noteWireLine(w *scriptWorker, line []byte) {
 		a.serveDom(w, r.Op, *r.Seq, r.A, r.B)
 		return
 	}
+	// M211c: a `fire` line is a timer callback's receipt, not a staged
+	// op's reply — it never counts toward "every op got its reply". Its
+	// arrival also closes a per-script mutation window, same as an eval.
+	if r.Op == "fire" {
+		w.mut = 0
+		if r.OK {
+			vi.ConsoleLine(markerScript + "fire id=" + r.A + " rc=0 ops=" + itoa(r.Ops))
+		} else {
+			vi.ConsoleLine(markerScript + "fire id=" + r.A + " error=" + r.Error)
+		}
+		return
+	}
 	w.reps++
 	switch r.Op {
 	case "hello":
@@ -269,6 +309,9 @@ func (a *app) noteWireLine(w *scriptWorker, line []byte) {
 			vi.ConsoleLine(markerScript + "hello refused " + r.Error)
 		}
 	case "eval":
+		// M211c: the reply closes the script — the mutation window resets
+		// so the next eval (or fire) starts a fresh per-script budget.
+		w.mut = 0
 		if r.OK {
 			vi.ConsoleLine(markerScript + "rc=0 ops=" + itoa(r.Ops))
 		} else {
@@ -294,31 +337,51 @@ const drainInterval = int64(20) * 1_000_000
 func (a *app) serviceReplies(w *scriptWorker) {
 	w.lastDrain = vi.Nanos()
 	body, rc := vi.ReadFileAll(domRpcReplyPath+"~", domRpcReplyMax)
-	if rc < 0 || len(body) < w.off {
-		return
+	if rc >= 0 && len(body) >= w.off {
+		rest := body[w.off:]
+		for {
+			nl := bytes.IndexByte(rest, '\n')
+			if nl < 0 {
+				break
+			}
+			line := bytes.TrimSpace(rest[:nl])
+			w.off += nl + 1
+			rest = rest[nl+1:]
+			if len(line) > 0 {
+				a.noteWireLine(w, line)
+			}
+		}
 	}
-	rest := body[w.off:]
-	for {
-		nl := bytes.IndexByte(rest, '\n')
-		if nl < 0 {
-			return
-		}
-		line := bytes.TrimSpace(rest[:nl])
-		w.off += nl + 1
-		rest = rest[nl+1:]
-		if len(line) > 0 {
-			a.noteWireLine(w, line)
-		}
+	// M211c: writes batch — one reflow + repaint per drain pass, never a
+	// re-layout per op. `web: dom reflow` lands AFTER the present so a
+	// gate snapshot-on-marker sees the mutated frame on the scanout.
+	if a.mutated {
+		a.mutated = false
+		a.flushScriptMutations()
 	}
 }
 
-// domOpRefused names the op vocabulary the wire knows but v1 does not
-// admit — card c's writes, traversal, timers, fetch. A name outside even
-// that answers dom_op_unknown.
+// flushScriptMutations re-enters the existing layout→paint pipeline on
+// the mutated document: relayout() is the same whole-tree reflow a zoom
+// change drives — there is no second render path for scripted writes —
+// then render() presents the new frame. An absent document or layout
+// (an error page mid-load) just drops the flag.
+func (a *app) flushScriptMutations() {
+	if a.doc == nil || a.lay == nil {
+		return
+	}
+	a.relayout()
+	a.render()
+	vi.ConsoleLine(markerDom + "reflow")
+}
+
+// domOpRefused names the op vocabulary the wire knows but v3 does not
+// admit — traversal, doc.write, attribute/style writes, interval/raf
+// timers, fetch. A name outside even that answers dom_op_unknown.
 var domOpRefused = map[string]bool{
-	"node.setText": true, "field.setValue": true,
 	"nodes.byTag": true, "nodes.byClass": true, "node.query": true,
-	"doc.write": true, "timer.set": true, "net.fetch": true,
+	"doc.write": true, "node.setAttr": true,
+	"timer.interval": true, "timer.raf": true, "net.fetch": true,
 }
 
 // domAnswer is one answer line for WEBRPC.ANS — value stays a pointer so
@@ -389,6 +452,87 @@ func (a *app) serveDom(w *scriptWorker, op string, seq int64, arg, barg string) 
 		ans.OK = true
 		empty := ""
 		ans.Value = &empty
+	// M211c (#3869): the write half. A served write mutates the retained
+	// tree and sets the dirty flag — the batched reflow+repaint runs at
+	// the end of the drain pass through the existing pipeline. An absent
+	// target answers null (the read ops' contract), not a refusal, and
+	// spends no mutation budget.
+	case "node.setText":
+		if w.mut >= domRpcMaxMut {
+			outcome = "script_budget_mut"
+			ans.Error = outcome
+			break
+		}
+		if n := a.doc.ByID(arg); n != nil {
+			n.SetText(barg)
+			a.doc.InvalidateIndex()
+			w.mut++
+			a.mutated = true
+			ans.OK = true
+			empty := ""
+			ans.Value = &empty
+		} else {
+			ans.OK = true
+		}
+	case "field.setValue":
+		if w.mut >= domRpcMaxMut {
+			outcome = "script_budget_mut"
+			ans.Error = outcome
+			break
+		}
+		// The value lands on the node's attribute — the same place the
+		// form scan re-reads after the reflow's initForms, so a scripted
+		// value survives exactly like a typed one.
+		if n := a.doc.ByID(arg); n != nil && webrender.FormControl(n.Tag) {
+			n.SetAttr("value", barg)
+			w.mut++
+			a.mutated = true
+			ans.OK = true
+			empty := ""
+			ans.Value = &empty
+		} else {
+			ans.OK = true
+		}
+	// M211c: `timer.set` grants an id and arms the app's one kernel timer
+	// at the earliest deadline; `timer.next` is the worker's drain ask —
+	// it answers a fired id at once, parks when timers are pending but
+	// none due, and answers null when nothing could ever fire.
+	case "timer.set":
+		ms, ok := timerDelayMs(arg)
+		switch {
+		case !ok:
+			outcome = "dom_op_bounds"
+			ans.Error = outcome
+		case len(w.timers)+len(w.due) >= domRpcMaxTimers:
+			outcome = "script_budget_timers"
+			ans.Error = outcome
+		default:
+			w.nextTimer++
+			w.timers = append(w.timers, scriptTimer{
+				id:  w.nextTimer,
+				due: vi.Nanos() + ms*1_000_000,
+			})
+			a.armScriptTimer()
+			ans.OK = true
+			id := itoa(w.nextTimer)
+			ans.Value = &id
+		}
+	case "timer.next":
+		if len(w.due) > 0 {
+			id := w.due[0]
+			w.due = w.due[1:]
+			ans.OK = true
+			v := itoa(id)
+			ans.Value = &v
+		} else if len(w.timers) == 0 {
+			ans.OK = true // nothing pending — the drain ends on null
+		} else {
+			// Parked: the answer publishes from the EvTimer path when a
+			// timer comes due, or never — the kill deadline bounds both.
+			w.waitSeq, w.waitParked = seq, true
+			vi.ConsoleLine(markerDom + op + " wait")
+			return
+		}
 	default:
 		if domOpRefused[op] {
 			outcome = "dom_op_refused"
@@ -403,6 +547,78 @@ func (a *app) serveDom(w *scriptWorker, op string, seq int64, arg, barg string) 
 	if line, err := json.Marshal(&ans); err == nil {
 		vi.WriteFileSafe(domRpcAnsPath, append(line, '\n'))
 	}
+}
+
+// timerDelayMs parses one `timer.set` delay argument: a bare non-negative
+// millisecond count inside the wire's delay bound, nothing else.
+func timerDelayMs(s string) (int64, bool) {
+	ms, err := strconv.ParseInt(strings.TrimSpace(s), 10, 32)
+	if err != nil || ms < 0 || ms > domRpcTimerMaxMs {
+		return 0, false
+	}
+	return ms, true
+}
+
+// armScriptTimer points the process's ONE app timer (vsys.TimerSetNs,
+// slot 95) at the earliest granted deadline — re-arming replaces the
+// pending arm, so the queue of script timers rides the single kernel
+// timer rather than needing one each. Nothing pending disarms it.
+func (a *app) armScriptTimer() {
+	w := a.rpc
+	if w == nil || len(w.timers) == 0 {
+		vsys.TimerCancel()
+		return
+	}
+	earliest := w.timers[0].due
+	for _, t := range w.timers[1:] {
+		if t.due < earliest {
+			earliest = t.due
+		}
+	}
+	d := earliest - vi.Nanos()
+	if d < 1_000_000 {
+		d = 1_000_000
+	}
+	vsys.TimerSetNs(uint64(d))
+}
+
+// onScriptTimer is the EvTimer fan-out: due timers move to the due queue,
+// a parked `timer.next` ask takes the first of them as its answer, and
+// the app timer re-arms at whatever deadline remains. Fired ids sit in
+// the queue until the worker's drain asks for them — the set is bounded
+// by timer_pending_max either way.
+func (a *app) onScriptTimer() {
+	w := a.rpc
+	if w == nil {
+		return
+	}
+	now := vi.Nanos()
+	keep := w.timers[:0]
+	for _, t := range w.timers {
+		if t.due <= now {
+			w.due = append(w.due, t.id)
+		} else {
+			keep = append(keep, t)
+		}
+	}
+	w.timers = keep
+	if w.waitParked && len(w.due) > 0 {
+		a.answerTimerWait(w, w.due[0])
+		w.due = w.due[1:]
+	}
+	a.armScriptTimer()
+}
+
+// answerTimerWait publishes the parked `timer.next` answer — the same
+// answer shape serveDom writes, delivered late off the timer event.
+func (a *app) answerTimerWait(w *scriptWorker, id int) {
+	w.waitParked = false
+	v := itoa(id)
+	ans := domAnswer{Op: "timer.next", Seq: w.waitSeq, OK: true, Value: &v}
+	if line, err := json.Marshal(&ans); err == nil {
+		vi.WriteFileSafe(domRpcAnsPath, append(line, '\n'))
+	}
+	vi.ConsoleLine(markerDom + "timer.next ok")
 }
 
 // pollScripts is the event-loop service: while the worker runs it
@@ -431,6 +647,7 @@ func (a *app) pollScripts() {
 		vi.Kill(uint64(w.pid)) // wedged: armed, exit lands on its own
 	}
 	a.rpc = nil
+	vsys.TimerCancel() // the worker's granted timers retire with it
 	a.serviceReplies(w)
 	if state != vi.ProbeExited && state != vi.ProbeAbsent {
 		vi.WaitBudget(w.pid, int64(2)*1_000_000_000) // let the armed kill land
@@ -444,9 +661,11 @@ func (a *app) pollScripts() {
 
 // closeScripts is the ordered-teardown half: a navigation or a quit retires
 // the page's worker — kill it if live, let the armed exit land, then name
-// what its replies showed.
+// what its replies showed. The app timer goes with the worker: a pending
+// arm must never fire into the next page's queue.
 func (a *app) closeScripts() {
 	w := a.rpc
+	vsys.TimerCancel()
 	if w == nil {
 		return
 	}

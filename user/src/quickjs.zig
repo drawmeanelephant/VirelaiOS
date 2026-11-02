@@ -64,6 +64,11 @@ const Session = struct {
     rpc_seq: u64 = 0,
     rpc_ops: u32 = 0,
     rpc_ans: []u8 = &.{},
+    // M211c (#3869): `rpc_mut` is the per-eval count of SERVED writes the
+    // `script_budget_mut` refusal names; `rpc_timers` counts granted,
+    // unfired timer ids the drain waits out after the eval reply.
+    rpc_mut: u32 = 0,
+    rpc_timers: u32 = 0,
     dom_ready: bool = false,
     dom_failure: [64:0]u8 = undefined,
 
@@ -440,19 +445,31 @@ const Session = struct {
     /// marker the parent prints, not buffered `out`. The refused stub
     /// names are the known-but-not-admitted op vocabulary; each still
     /// crosses the wire so the parent's `dom_op_refused` answers it.
+    /// M211c (#3869): `textContent`'s setter and `value`'s setter are the
+    /// write ops; `setTimeout` grants through `timer.set` and stores the
+    /// callback in `__timers`, which `__virelai_fire` pops by id when the
+    /// drain hands it a due id — `setInterval`/`requestAnimationFrame`
+    /// stay named refusals.
     const dom_prologue =
         \\var __domops = virelai.dom;
+        \\var __timers = {};
         \\var document = {};
         \\document.getElementById = function(id) {
         \\  var node = {};
         \\  var sid = String(id);
         \\  Object.defineProperty(node, "id", { value: sid });
         \\  Object.defineProperty(node, "textContent", {
-        \\    get: function() { return __domops("node.text", sid); }
+        \\    get: function() { return __domops("node.text", sid); },
+        \\    set: function(v) { __domops("node.setText", sid, String(v)); }
+        \\  });
+        \\  Object.defineProperty(node, "value", {
+        \\    get: function() { return __domops("node.attr", sid, "value"); },
+        \\    set: function(v) { __domops("field.setValue", sid, String(v)); }
         \\  });
         \\  node.getAttribute = function(name) {
         \\    return __domops("node.attr", sid, String(name));
         \\  };
+        \\  node.setAttribute = function(name, v) { return __domops("node.setAttr", sid, String(name)); };
         \\  return node;
         \\};
         \\Object.defineProperty(document, "title", {
@@ -469,8 +486,19 @@ const Session = struct {
         \\  for (var i = 0; i < arguments.length; i++) parts.push(String(arguments[i]));
         \\  __domops("console.log", parts.join(" "));
         \\};
-        \\var setTimeout = function() { return __domops("timer.set", "x"); };
-        \\var setInterval = setTimeout;
+        \\var setTimeout = function(fn, ms) {
+        \\  var id = __domops("timer.set", String(ms));
+        \\  if (id === null) return null;
+        \\  __timers[id] = fn;
+        \\  return id;
+        \\};
+        \\var setInterval = function() { return __domops("timer.interval"); };
+        \\var requestAnimationFrame = function() { return __domops("timer.raf"); };
+        \\var __virelai_fire = function(id) {
+        \\  var f = __timers[String(id)];
+        \\  delete __timers[String(id)];
+        \\  if (f) f();
+        \\};
         \\var fetch = function() { return __domops("net.fetch", "x"); };
         \\var XMLHttpRequest = fetch;
     ;
@@ -508,7 +536,29 @@ const Session = struct {
         if (clock.counter(clock.context) -% self.runtime.control.start >= clock.frequency * 4)
             return self.domFail("script_budget_time");
         if (self.rpc_ops >= qjs.domrpc.script_ops_max) return self.domFail("script_budget_ops");
+        // M211c: the mutation budget refuses before the wire — a write
+        // that would trip it never spends a request line.
+        if (qjs.domrpc.isWrite(op) and self.rpc_mut >= qjs.domrpc.script_mut_max)
+            return self.domFail("script_budget_mut");
         self.rpc_ops += 1;
+        const n = try self.rpcAsk(op, a, b, out);
+        if (n != qjs.domrpc.dom_null) {
+            // Only a SERVED write spends the mutation budget — an absent
+            // target answers null and mutates nothing.
+            if (qjs.domrpc.isWrite(op)) self.rpc_mut += 1;
+            if (std.mem.eql(u8, op, "timer.set")) self.rpc_timers += 1;
+        }
+        return n;
+    }
+
+    /// The request/answer round trip both hostDom and the timer drain
+    /// ride: emit one request line, poll the rendezvous until the
+    /// matching seq answer or a named bound. `timer.next` is the same
+    /// shape with the answer parked parent-side until an app-timer id
+    /// comes due — the delay_max/dom_wait contract keeps the parked ask
+    /// inside the wire's own patience.
+    fn rpcAsk(self: *Session, op: []const u8, a: []const u8, b: []const u8, out: []u8) anyerror!usize {
+        const clock = self.runtime.control.clock;
         self.rpc_seq += 1;
         var line: [qjs.domrpc.reply_max]u8 = undefined;
         const used = qjs.domrpc.request(&line, op, self.rpc_seq, a, b);
@@ -556,8 +606,12 @@ const Session = struct {
         self.rpc_out_len = 0;
         self.rpc_clipped = false;
         self.rpc_ops = 0;
+        self.rpc_mut = 0;
         const result = try self.runtime.eval(src, "dom-rpc", self.rpcSink(), true);
-        if (result.context_reset) self.dom_ready = false;
+        if (result.context_reset) {
+            self.dom_ready = false;
+            self.rpc_timers = 0; // the context the callbacks lived in is gone
+        }
         if (sdk.stackHighWater() > qjs.limits.stack) return error.StackLimit;
         if (result.failure) |failure| {
             // M211b: in the worker the engine's execution bounds — the
@@ -575,6 +629,60 @@ const Session = struct {
         @memcpy(buf[used..][0..tail.len], tail);
         used += tail.len;
         try self.rpcWrite(buf[0..used]);
+        // M211c: a script whose timers outlive its eval waits them out —
+        // each fire is its own bounded eval in the same context.
+        try self.rpcDrainTimers();
+    }
+
+    /// M211c (#3869): `setTimeout` defers a callback behind the parent's
+    /// app timer. Each granted id counts into `rpc_timers`; after the
+    /// eval reply the worker asks `timer.next` and waits — the answer
+    /// lands only when a timer comes due — then runs the callback as its
+    /// own bounded eval and receipts it as a `fire` line on the reply
+    /// stream (a marker the parent prints, not a staged op). A null
+    /// answer, a refusal or a context reset ends the drain; the parent's
+    /// kill deadline bounds the whole stay either way.
+    fn rpcDrainTimers(self: *Session) !void {
+        var id_buf: [qjs.domrpc.value_max]u8 = undefined;
+        while (self.rpc_timers > 0) {
+            const n = self.rpcAsk("timer.next", "", "", &id_buf) catch break;
+            if (n == qjs.domrpc.dom_null) {
+                self.rpc_timers = 0;
+                break;
+            }
+            const id = id_buf[0..n];
+            var digits = id.len > 0 and id.len <= 8;
+            for (id) |c| {
+                if (c < '0' or c > '9') digits = false;
+            }
+            if (!digits) break;
+            self.rpc_timers -= 1;
+            try self.rpcFire(id);
+        }
+    }
+
+    /// One timer callback's bounded eval: `__virelai_fire(<id>)` pops the
+    /// stored function out of the prologue's table and runs it with a
+    /// fresh per-script op/mutation budget, then receipts the outcome.
+    /// A context reset wipes `__timers` too, so the drain stops asking.
+    fn rpcFire(self: *Session, id: []const u8) !void {
+        var src: [80]u8 = undefined;
+        const call = std.fmt.bufPrint(&src, "__virelai_fire({s})", .{id}) catch unreachable;
+        self.rpc_out_len = 0;
+        self.rpc_clipped = false;
+        self.rpc_ops = 0;
+        self.rpc_mut = 0;
+        const result = try self.runtime.eval(call, "dom-timer", self.rpcSink(), false);
+        if (result.context_reset) {
+            self.dom_ready = false;
+            self.rpc_timers = 0;
+        }
+        var buf: [384]u8 = undefined;
+        const line = if (result.failure) |failure| blk: {
+            const word: []const u8 = if (failure == error.EvaluationDeadline or failure == error.WorkLimit) "script_budget_time" else @errorName(failure);
+            break :blk try std.fmt.bufPrint(&buf, "{{\"op\":\"fire\",\"a\":\"{s}\",\"ok\":false,\"error\":\"{s}\"}}\n", .{ id, word });
+        } else try std.fmt.bufPrint(&buf, "{{\"op\":\"fire\",\"a\":\"{s}\",\"ok\":true,\"ops\":{d}}}\n", .{ id, self.rpc_ops });
+        try self.rpcWrite(line);
     }
 
     fn rpcCapture(context: *anyopaque, bytes: []const u8) anyerror!usize {

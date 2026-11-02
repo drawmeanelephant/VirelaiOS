@@ -11,8 +11,12 @@ const std = @import("std");
 /// The protocol version `hello` negotiates. An op carrying a newer or older
 /// version is refused `dom_rpc_version`; bumping this is an ADR question.
 /// v2 (M211b, #3868) adds the worker→parent DOM request lines and their
-/// answers on the WEBRPC.ANS rendezvous.
-pub const version: u64 = 2;
+/// answers on the WEBRPC.ANS rendezvous. v3 (M211c, #3869) admits the
+/// write half — `node.setText`/`field.setValue` — and the timer pair:
+/// `timer.set` answers an id synchronously, `timer.next` parks until the
+/// parent's app timer makes an id due. `timer.interval`/`timer.raf`
+/// remain named refusals.
+pub const version: u64 = 3;
 
 /// One op line's bound: the 1 MiB per-eval source ceiling plus a fixed
 /// envelope for the JSON framing it may carry. The staged ops stream (every
@@ -40,6 +44,25 @@ pub const reply_max: usize = 16_384;
 pub const script_ops_max: u32 = 32;
 pub const arg_max: usize = 4_096;
 pub const value_max: usize = 2_048;
+
+/// M211c (#3869): the per-script mutation budget. `script_mut_max` counts
+/// one eval's SERVED writes (`isWrite` ops that answered with a value —
+/// an absent target answers null and spends nothing); the refusal is
+/// `script_budget_mut`. `timer_pending_max` bounds the timers one worker
+/// may hold granted-but-unfired (`script_budget_timers`); `timer_delay_max_ms`
+/// bounds one `timer.set` delay (`dom_op_bounds`) and MUST stay under the
+/// adapter's rendezvous wait, so a `timer.next` answer always lands inside
+/// the wire's own patience.
+pub const script_mut_max: u32 = 16;
+pub const timer_pending_max: u32 = 8;
+pub const timer_delay_max_ms: u32 = 5_000;
+
+/// `op` is one of the v3 DOM writes — a served write is what spends the
+/// mutation budget on both ends of the wire.
+pub fn isWrite(op: []const u8) bool {
+    return std.mem.eql(u8, op, "node.setText") or
+        std.mem.eql(u8, op, "field.setValue");
+}
 
 /// The host-dom callback's null sentinel: an answered op whose value is
 /// JSON `null` (an absent node or attribute), distinct from a refusal.
@@ -585,4 +608,18 @@ test "dom op names follow the wire charset" {
     try std.testing.expect(!nameOk("a b"));
     try std.testing.expect(!nameOk("a\"b"));
     try std.testing.expect(!nameOk(&@as([33]u8, @splat('x'))));
+}
+
+test "the v3 op vocabulary sorts write, timer and refused names" {
+    try std.testing.expect(isWrite("node.setText"));
+    try std.testing.expect(isWrite("field.setValue"));
+    try std.testing.expect(!isWrite("node.text"));
+    try std.testing.expect(!isWrite("timer.set"));
+    try std.testing.expect(!isWrite("timer.next"));
+    // every protocol name fits the wire charset and the 32-byte bound
+    for ([_][]const u8{ "node.setText", "field.setValue", "timer.set", "timer.next", "timer.interval", "timer.raf" }) |op| {
+        try std.testing.expect(nameOk(op));
+    }
+    // the timer bounds keep a parked timer.next inside the wire wait
+    try std.testing.expect(timer_delay_max_ms < 10_000);
 }
