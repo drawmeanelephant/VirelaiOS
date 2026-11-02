@@ -1,0 +1,19 @@
+<!doctype html>
+<html><head><title>Scripted Form Corpus Row</title></head>
+<body>
+<h1>form fill row</h1>
+<form>
+<input id="who" type="text">
+<input id="quest" type="text">
+</form>
+<p id="status">pending</p>
+<p>both inputs start empty: the values a reader sees are the script's own
+form fill, and the status line's flip is its third write.</p>
+<script>
+document.getElementById("who").value = "page-user";
+document.getElementById("quest").value = "seek the grail";
+document.getElementById("status").textContent = "filled";
+console.log("who=" + document.getElementById("who").value);
+console.log("status=" + document.getElementById("status").textContent);
+</script>
+</body></html>

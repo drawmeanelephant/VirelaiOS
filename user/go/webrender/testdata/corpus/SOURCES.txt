@@ -33,3 +33,22 @@ NON-GOALS (cascade and/or renderer-side JS — not worked around):
   https://news.ycombinator.com/
       Table layout is in-model, but the homepage mutates hourly and was
       not pinned as a golden.
+
+SCRIPTED (authored in-repo 2026-11-02, M211d #3870 — the ADR 0039 v3
+wire's corpus rows; hermetic fixtures, not fetched pages. Scripts run in
+the QJS.BIN --dom-rpc worker, never the renderer; the live-web spec's
+scripted legs drive each row in-guest):
+
+  scripted-reads.html     doc.title / node.text / node.attr reads, one
+                          missing id's null, console.log -> serial
+  scripted-compute.html   computed content (fib(25)) written into an
+                          empty node and read back over the wire
+  scripted-form.html      field.setValue form fill plus a status write
+  scripted-timer.html     setTimeout callback writes after the parked
+                          timer.next drain answers
+  scripted-refused.html   refused ops (query/fetch/setAttr/unknown) —
+                          each caught name is written into the page, so
+                          the refusal reaches the user, not a silent gap
+  scripted-storm.html     console.log storm crosses script_budget_ops
+  scripted-kill.html      a parked mid-op worker for the kill leg — the
+                          page stays stable, only the worker dies
