@@ -1306,6 +1306,7 @@ pub fn init() usize {
     mailbox.init();
     events.init();
     events.on_event_pushed = wake_event_waiters;
+    mailbox.on_message_sent = ipc_mail_delivered;
     app_timers.init();
     wm_server.init();
     // M170a #3033: the deadline overlay resets with the pool — no stale
@@ -3039,6 +3040,26 @@ pub fn wait_event_current(pid: usize) bool {
     }
     apply_pending();
     return true;
+}
+
+/// #3901: a `mailbox.send` just delivered to `pid` — post the kind-23
+/// IPC_MAIL notification into the target's event FIFO. The push itself
+/// fires `on_event_pushed` → `wake_event_waiters`, so a
+/// `sys_wait_event`-blocked consumer (the Go seat's serve loop is the
+/// measured case — ~1 s per missed WM_RPC at the 1 Hz tick, #3898) is
+/// scheduled on the next pass and its re-executed `svc` pops a real
+/// event instead of re-blocking on an empty queue. `arg0` carries the
+/// ring depth after the enqueue. The hook fires from SVC contexts and
+/// potentially sched_lock-held paths (same call shape as the kernel's
+/// own event pushes — `wake_event_waiters` already handles both).
+fn ipc_mail_delivered(pid: usize) void {
+    events.push(pid, .{
+        .kind = events.IPC_MAIL,
+        .flags = 0,
+        .seq = 0,
+        .arg0 = @intCast(@min(mailbox.pending(pid), std.math.maxInt(u32))),
+        .arg1 = 0,
+    });
 }
 
 /// Milestone 9 (claim 1016): wake any task blocked in `sys_wait_event` for `pid`.
