@@ -19,10 +19,10 @@ const wmRpcKindWindowsQuery uint8 = 16
 // the 8-slot mailbox ring).
 const wmQueryPageSize = 4
 
-// wmQueryTicks bounds the WHOLE paged exchange: one budget shared across
+// wmQueryPolls bounds the WHOLE paged exchange: one budget shared across
 // every page and any bind round-trips so a pathological seat cannot
 // stretch the caller past the daemon's seat_timeout bound.
-const wmQueryTicks = wmMailWaitTicks + 1
+const wmQueryPolls = wmMailWaitPolls + 1
 
 // The two refusal shapes ui.windows distinguishes (ADR 0044 D3/D4):
 // unsupported is the seat answering applied=0 (a Zig seat, or a strip that
@@ -73,7 +73,7 @@ func WmWindows(winID uint32, selfName string) ([]WmWindowRow, error) {
 	if !peers.Go {
 		// Legacy seat: it cannot bind, so the bare request is all it gets —
 		// unknown kinds answer applied=0, which is the unsupported shape.
-		budget := wmQueryTicks
+		budget := wmQueryPolls
 		req := wqRequest(id, 0, peers)
 		if IpcSend(peers.WM, req.Encode()) < 0 {
 			return nil, ErrSeatSilent
@@ -83,7 +83,7 @@ func WmWindows(winID uint32, selfName string) ([]WmWindowRow, error) {
 		}
 		return nil, ErrSeatUnsupported
 	}
-	budget := wmQueryTicks
+	budget := wmQueryPolls
 	var rows []WmWindowRow
 	for start := 0; start <= 15; {
 		page, count, st := wqPage(id, start, peers, &budget)
@@ -213,9 +213,9 @@ func titleTail(m WmRpc) string {
 }
 
 // waitWmReply16 waits for one kind-16 reply frame matching seq+reply_to,
-// spending from the caller's shared tick budget. Foreign replies are queued
+// spending from the caller's shared poll budget. Foreign replies are queued
 // for their own consumers, exactly as waitWmRpcAck does.
-func waitWmReply16(seq, replyTo uint8, ticks *int) (WmRpc, bool) {
+func waitWmReply16(seq, replyTo uint8, polls *int) (WmRpc, bool) {
 	matches := func(m WmRpc) bool {
 		return m.Kind == wmRpcKindWindowsQuery|WmRpcReplyFlag &&
 			m.Seq == seq && m.ReplyTo == replyTo
@@ -231,10 +231,10 @@ func waitWmReply16(seq, replyTo uint8, ticks *int) (WmRpc, bool) {
 			enqueueWmMessage(m)
 			continue
 		}
-		if *ticks <= 0 {
+		if *polls <= 0 {
 			return WmRpc{}, false
 		}
-		*ticks--
-		_ = svc1(SlotSleep, 1)
+		*polls--
+		_ = svc1(SlotSleepNs, wmMailParkNs)
 	}
 }

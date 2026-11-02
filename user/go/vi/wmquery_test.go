@@ -323,7 +323,7 @@ func TestWmWindowsSilentSeat(t *testing.T) {
 	if _, err := WmWindows(7, "NOTE.ELF"); err != ErrSeatSilent {
 		t.Fatalf("silent seat err = %v want ErrSeatSilent", err)
 	}
-	if f.sleepCalls == 0 || f.sleepCalls > wmQueryTicks+2 {
+	if f.sleepCalls == 0 || f.sleepCalls > wmQueryPolls+2 {
 		t.Fatalf("sleepCalls = %d want a small tick bound", f.sleepCalls)
 	}
 }

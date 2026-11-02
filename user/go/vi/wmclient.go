@@ -223,12 +223,17 @@ func (m WmRpc) TitleString() string {
 	return string(m.Title[:n])
 }
 
-// wmMailWaitTicks bounds one WM_RPC ack wait. Each miss parks one scheduler
-// tick (slot 4 sys_sleep; 1 s on VZ) so a silent seat cannot burn millions
-// of yield-spins inside tabapp.Init (#1489). The first probe is immediate —
-// a WM that has already replied never sleeps. Expiry is false (honest
-// refusal; DeclareFullscreen callers already handle it).
-const wmMailWaitTicks = 8
+// wmMailWaitPolls bounds one WM_RPC ack wait. Each miss parks a bounded
+// slice (slot 94 sys_sleep_ns, wmMailParkNs) so a silent seat cannot burn
+// millions of yield-spins inside tabapp.Init (#1489). #3901 cut the park
+// from a whole 1 Hz tick (slot 4): IPC delivery now wakes the seat's
+// sys_wait_event block on the next scheduler pass, so the ack lands ~ms
+// after the send and a per-miss ~1 s park was the whole remaining tax.
+// The first probe is immediate — a WM that has already replied never
+// sleeps. Expiry is false (honest refusal; DeclareFullscreen callers
+// already handle it). polls*parkNs keeps the old 8-tick worst case.
+const wmMailWaitPolls = 400
+const wmMailParkNs = 20_000_000
 
 // wmSeq is process-local because the package-level helpers are the client
 // surface: there is no Client object to own the counter. Atomic allocation
@@ -355,7 +360,7 @@ func waitWmRpcAck(seq, replyTo uint8, accept func(WmRpc) bool) (WmRpc, bool) {
 	matches := func(m WmRpc) bool {
 		return m.Kind&WmRpcReplyFlag != 0 && m.Seq == seq && m.ReplyTo == replyTo
 	}
-	for tick := uint64(0); tick < wmMailWaitTicks; tick++ {
+	for poll := uint64(0); poll < wmMailWaitPolls; poll++ {
 		for {
 			m, ok := takePendingWmMessage(matches)
 			if !ok {
@@ -374,10 +379,10 @@ func waitWmRpcAck(seq, replyTo uint8, accept func(WmRpc) bool) (WmRpc, bool) {
 			}
 			enqueueWmMessage(m)
 		}
-		if tick+1 >= wmMailWaitTicks {
+		if poll+1 >= wmMailWaitPolls {
 			return WmRpc{}, false
 		}
-		_ = svc1(SlotSleep, 1)
+		_ = svc1(SlotSleepNs, wmMailParkNs)
 	}
 	return WmRpc{}, false
 }
@@ -387,22 +392,22 @@ func waitWmRpcAck(seq, replyTo uint8, accept func(WmRpc) bool) (WmRpc, bool) {
 // round-trip.
 const wmBindMaxRounds = 3
 
-// wmSendRetries bounds the full-mailbox resend: the seat's ring is 8 deep
-// and drains once per composite pass, so a frame that hits ENOSPC under a
-// burst fits one tick later (#2260 — a one-shot send turned a momentarily
-// full seat mailbox into an instant `refused` while the request was
-// otherwise servable).
+// wmSendRetries bounds the full-mailbox resend: the seat's ring drains
+// per delivery now (#3901 — the send wakes the seat's wait_event block),
+// so a frame that hits ENOSPC under a burst fits one drain pass later
+// (#2260 — a one-shot send turned a momentarily full seat mailbox into
+// an instant `refused` while the request was otherwise servable).
 const wmSendRetries = 4
 
 // wmSend posts one request frame to the seat, retrying only the transient
-// ENOSPC (ring full) for a few scheduler ticks. Every other error —
+// ENOSPC (ring full) for a few drain passes. Every other error —
 // EINVAL for a dead seat, EFAULT — fails at once.
 func wmSend(target uint32, b []byte) int64 {
 	for i := 0; i < wmSendRetries; i++ {
 		if r := IpcSend(target, b); r != -ErrENOSPC {
 			return r
 		}
-		_ = svc1(SlotSleep, 1)
+		_ = svc1(SlotSleepNs, wmMailParkNs)
 	}
 	return IpcSend(target, b)
 }
