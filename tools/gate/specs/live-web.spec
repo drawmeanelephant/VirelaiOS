@@ -4270,7 +4270,7 @@ vgate_assert 69 serial-contains 'web: ready'
 vgate_assert 69 serial-contains 'web: console x'
 vgate_assert 69 serial-contains 'script_budget_ops'
 vgate_assert 69 serial-contains 'web: script rc=70 error=JSException'
-vgate_assert 69 serial-contains 'web: script done ops=64'
+vgate_assert 69 serial-contains 'web: script done ops=32'
 vgate_assert 69 serial-absent 'web: script worker gone'
 vgate_assert 69 serial-absent '[EXC] parking:'
 

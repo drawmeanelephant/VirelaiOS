@@ -37,7 +37,7 @@ pub const reply_max: usize = 16_384;
 /// spins in JS or waits on unanswered ops dies at the same named bound.
 /// `arg_max` clips one request argument (id, attribute name, log text);
 /// `value_max` clips one answered value.
-pub const script_ops_max: u32 = 64;
+pub const script_ops_max: u32 = 32;
 pub const arg_max: usize = 4_096;
 pub const value_max: usize = 2_048;
 

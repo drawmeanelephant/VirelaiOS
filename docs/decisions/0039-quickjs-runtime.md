@@ -730,7 +730,7 @@ an absent node or attribute answers JSON `null`, not a refusal.
 request that cannot be written. Every refusal reaches JS as an
 exception whose name is the wire's word verbatim.
 
-**Per-script budgets:** at most **64** DOM ops per eval
+**Per-script budgets:** at most **32** DOM ops per eval
 (`script_budget_ops`) and the engine's existing four-second wall
 deadline, reported `script_budget_time` — a script that spins in JS
 or waits on an unanswered ask dies at the same named bound, not at
