@@ -102,7 +102,10 @@ two small exported helpers in `shlib`, one gate spec, docs rows.
 - No LAN or remote exposure, no TLS, no session encryption, no multiple
   clients. No new syscall, no runner flag, no kernel change.
 - No subdirectories, file listing, delete, rename, or append in the
-  sandbox. No streaming exec output, stdin to commands, or background jobs.
+  sandbox. No streaming exec output or stdin to commands. **Amended
+  (card #3900):** the no-background-jobs scope broke the moment an
+  agent needed to launch a desk app — `gosh.spawn` is the bounded form
+  of that (the shell line runs without the wait; see D3).
 - Not on the boot path: no `SERVICES.JSON` row, no `apps.txt` row, no
   autostart.
 
@@ -166,7 +169,7 @@ and exits 1 **before** `vi.Listen`:
 4. Listen on 4747. Failure (for example, TCP held by another process)
    prints `agentd: refuse listen errno=<name>`.
 
-`--allow-exec` is the only flag. Without it, `gosh.run` returns
+`--allow-exec` is the only flag. Without it, the gosh verbs return
 `verb_disabled`. Any other argv token prints `agentd: refuse argv` and exits
 1.
 
@@ -184,7 +187,7 @@ S: {"ok":true,"session":"ready","verbs":["proc.list","proc.get","fs.read","fs.wr
   challenge[32])`. This domain differs from `VIRELAIOS-AUTH/1`, so a GOSH
   `net` MAC can never answer this server. Compare in constant time. Wipe the
   key, challenge and reply buffers after the verdict.
-- `verbs` lists only enabled verbs (`gosh.run` is absent without
+- `verbs` lists only enabled verbs (the gosh verbs are absent without
   `--allow-exec`).
 - Failures send one error line and then close: a wrong MAC, or any first
   line other than exactly `{"auth":"<64 hex>"}`, is `auth_failed`. A first
@@ -203,12 +206,12 @@ on peer FIN/RST, or on `line_too_long`.
 **Authority ceiling:** `uid_user`, no caps. Exactly that much and no more:
 
 - `fs.*` can only reach flat names in `/host/AGENT/` (D3).
-- `gosh.run` is **explicitly an escape hatch from that bound**. It runs
-  arbitrary GOSH as `uid_user`, so it can reach every `/host` path a
-  `uid_user` process can. That is why it is opt-in. The kernel still denies
-  secret-class reads, writes to paths owned by `uid_system`, and kills
-  across principals (ADR 0024 D3–D5, D8). A per-process path jail is cut
-  (E3).
+- The gosh verbs are **explicitly an escape hatch from that bound**. They
+  run arbitrary GOSH as `uid_user`, so they can reach every `/host` path a
+  `uid_user` process can. That is why they are opt-in. The kernel still
+  denies secret-class reads, writes to paths owned by `uid_system`, and
+  kills across principals (ADR 0024 D3–D5, D8). A per-process path jail is
+  cut (E3).
 
 **Not provided** (stated, not hidden):
 
@@ -255,6 +258,7 @@ the first byte is alphanumeric, and it is never `.` or `..`. It resolves to
 | `ui.screenshot` | `scale`: int 1\|8, default 8 (card #2977) | `{"w":W,"h":H,"format":"rgb565le","bytes":N}` — the scanout's RGB565 little-endian pixels arrive as stream chunks ahead of the result |
 | `ui.geometry` | `win`: int ≥ 0; `op`: `"query"\|"move"\|"sash"`; `move` takes `space`: int 0-255, `sash` takes `percent`: int 0-255 (card #2985; `window` cap for `query`, `input` for the mutations, D5c) | `query` → `{"space":N,"pane":N\|null,"split":"none"\|"h"\|"v","rect":{"x":N,"y":N,"w":N,"h":N}}`; `move` → `{"space":N}`; `sash` → `{"percent":N}` |
 | `gosh.run` | `cmd`: string; `timeout_ms`: int 1..30000, default 10000 | `{"exit_status":N,"stdout_b64":S,"truncated":B}` |
+| `gosh.spawn` | `cmd`: string (card #3900) | `{"pid":N}` |
 
 Verb semantics that are binding:
 
@@ -355,6 +359,25 @@ Verb semantics that are binding:
     `shlib/agentline_observed_test.go`.
   - The working directory is GOSH's default `/host`, **not** `/host/AGENT`.
   - `AGENTD.OUT` lives outside the sandbox on purpose.
+- **`gosh.spawn`** (card #3900) is the same line without the wait — the
+  bounded non-blocking launch `gosh.run` could never offer a GUI app,
+  because `exec GOFILES.ELF` keeps the `-c` child alive for the app's
+  whole lifetime and the request therefore always ended `timed_out`.
+  The `cmd` rule is identical to `gosh.run`'s in every particular —
+  byte range, `CheckAgentLine`, the `&`/`>`/`>>`/`#` refusals — and
+  `timeout_ms` is a `bad_request` (there is no budget to spend). The
+  daemon spawns `vi.Exec("GOSH.ELF", "-c", cmd)` with no appended
+  redirect — there is nothing to capture — answers `{"pid":N}`, and
+  never touches `AGENTD.OUT`. The pid is the shell's own and stays live
+  for the line's whole run: `exec X` is the desk-app form (`&` stays
+  refused — under spawn the whole line is already off the wait path,
+  and a shell-backgrounded job would only orphan the pid the caller was
+  just handed). `proc.get`/`proc.list`/`ui.windows` are how the caller
+  watches the child from there; there is no kill verb and no output
+  channel — a spawned builtin's stdout goes to the serial console, the
+  same place an external's fd 1 lands under `gosh.run`. A spawn error is
+  `spawn_failed`, the intent receipt fires before the spawn exactly as
+  under run, and both receipts name `gosh.spawn`.
 
 ## D4. Out-of-bounds requests and the error model
 
@@ -373,8 +396,8 @@ Only codes marked *fatal* close it.
 | `access_denied` | EACCES from the kernel (trust policy) | no |
 | `not_a_file` | the name is a directory | no |
 | `too_large` | file or body > 4096 bytes, or `cmd` > 192 bytes | no |
-| `cmd_rejected` | `cmd` fails the byte rule or `CheckAgentLine` | no |
-| `verb_disabled` | `gosh.run` without `--allow-exec` | no |
+| `cmd_rejected` | `cmd` fails the byte rule or `CheckAgentLine` (both gosh verbs) | no |
+| `verb_disabled` | a gosh verb without `--allow-exec` | no |
 | `spawn_failed` | `vi.Exec` of `GOSH.ELF` failed | no |
 | `timed_out` | `gosh.run` budget exhausted; the child was killed | no |
 | `seat_unsupported` / `seat_timeout` | see `ui.windows` | no |
@@ -716,6 +739,7 @@ tolerance.
 | `fs.read` | `SEED.TXT` exact bytes; `HELLO.TXT` round-trip | `../SECRETS.TXT`, `/host/SECRETS.TXT`, `SUB/X`, `.`, `..`, `""`, 32-byte name, `X~`, `A\u0000B` → `path_rejected`; `NOPE.TXT` → `not_found`; `BIG.BIN` → `too_large` |
 | `fs.write` | `HELLO.TXT` (payload sentinel) → `share-equals` | 4097 bytes → `too_large`; `"data_b64":"@@"` → `bad_request`; `../X` → `path_rejected`; share root unchanged |
 | `gosh.run` | `echo hello` → `hello\n`, 0; `cat NOPE.TXT` → `ok:true`, status ≠ 0; `cat /host/SECRETS.TXT` → `ok:true`, status ≠ 0, stdout lacks key (ceiling evidence) | `echo a > X`, `echo a #c`, `echo a &`, `echo 'a`, `"echo a\nls"` → `cmd_rejected`; 193 bytes → `too_large`; `timeout_ms:0` / `30001` → `bad_request`; `sleep 5` + `timeout_ms:1000` → `timed_out` + `agentd: reap`; run 05 → `verb_disabled` |
+| `gosh.spawn` (card #3900) | `sleep 20` → `{"pid":N}` at once, `proc.get` finds the GOSH child running; `exec GOEDIT.ELF` → `{"pid":N}` and the `Edit` row lands focused | `echo a > X`, `echo a #c`, `exec GOFILES.ELF &` → `cmd_rejected`; `timeout_ms` → `bad_request`; run 05 → `verb_disabled`; run 09 `process`-only → `cap_required:term` |
 | `ui.windows` | `gotabwm`, ≥ 1 `Calc` row, one focused; run 05 `none` | extra key → `bad_request`; `seat_unsupported`/`seat_timeout` class A |
 | `ui.screenshot` (runs 01/15/16) | default/`scale:8` → 160x90 `rgb565le` 28,800 B; `scale:1` → 1280x720, 1,843,200 B, downsamples to the same run's thumbnail within tolerance | `scale` ∉ {1,8} or mistyped → `bad_request`; second `scale:1` inside 2 s → `rate_limited`; bound lapse → captures again; no seat → `seat_absent` (run 05) |
 | `ui.input` (run 15) | `{"type":"key","usage":0x0B/0x0C}` + a `ptr` press/release → `{"sent":4}`, typed text repaints the next `ui.screenshot` | `win` ≠ focused → `agent_input_no_focus`; 65 events → `too_large`; malformed/missing fields → `bad_request`; `window`-only cap → `cap_required:input` (run 09) |

@@ -769,11 +769,11 @@ host->guest, `AGENTCTL:` evidence rides stderr into the run log).
 
 | run | proves |
 |-----|--------|
-| 01 | seat + `--allow-exec` + Calc (Calc execs on the first `ui.windows` request — the 16-slot task pool cannot hold four Go runtimes at once, so it is staged after the journey's `gosh.run` calls): the `agent=devin` handshake, caps resolved per session, all seven verbs green — `fs.read`/`fs.write` through a staged `SUB/` directory, `gosh.run` answering a multi-chunk stream + truncation, `ui.screenshot` streaming the 160x90 RGB565 thumbnail through slot 88 — plus the whole in-session refusal matrix, the `gosh.run` kill path, a second peer's SYN refused while the session stays up, and `line_too_long` ending it. `ui.windows` rides the M97g-F2 bind (`gotabwm: rpc bind id=` is the serial proof) |
+| 01 | seat + `--allow-exec` + Calc (Calc execs on the first `ui.windows` request — the 16-slot task pool cannot hold four Go runtimes at once, so it is staged after the journey's `gosh.run` calls): the `agent=devin` handshake, caps resolved per session, every verb green — `fs.read`/`fs.write` through a staged `SUB/` directory, `gosh.run` answering a multi-chunk stream + truncation, `gosh.spawn` answering a spawned `sleep 20`'s pid at once and launching `exec GOEDIT.ELF` onto the strip (#3900), `ui.screenshot` streaming the 160x90 RGB565 thumbnail through slot 88 — plus the whole in-session refusal matrix, the `gosh.run` kill path, a second peer's SYN refused while the session stays up, and `line_too_long` ending it. `ui.windows` rides the M97g-F2 bind (`gotabwm: rpc bind id=` is the serial proof) |
 | 02 | wrong signature -> `auth_failed`, the 1 s damping, and an honest relisten |
 | 03 | a `verb` line before auth -> `auth_required`, no request runs |
 | 04 | a silent client -> `auth_timeout` inside 15 s |
-| 05 | no `--allow-exec` and no seat: `gosh.run` absent from `verbs` -> `verb_disabled`, `ui.windows` -> `seat:"none"`, `ui.screenshot` -> `seat_absent` |
+| 05 | no `--allow-exec` and no seat: `gosh.run`/`gosh.spawn` absent from `verbs` -> `verb_disabled`, `ui.windows` -> `seat:"none"`, `ui.screenshot` -> `seat_absent` |
 | 06–08 | startup posture: `exec -u0` -> `refuse privileged`, a store with no `agent-hmac` row -> `refuse no-credential`, no `AGENT/` directory -> `refuse no-root` — each before any `listen` |
 | 09 | `agent=viewer` (caps `process` only): the ready line advertises the two proc verbs, every other verb refuses `cap_required:<cap>` by name, `proc.list` still serves |
 | 10 | `agent=bobby` listed-and-revoked: a valid signature refuses `agent_revoked` (revocation wins over listing) |

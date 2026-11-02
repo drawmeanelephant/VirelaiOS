@@ -80,13 +80,15 @@ type verbEnt struct {
 // ready line advertises: proc verbs take `process`, fs takes `file`,
 // ui.windows/ui.screenshot take `window`, ui.input takes `input` — a
 // DISTINCT grant, because an observer that may only read the desktop
-// must not get to drive it (M139b) — and gosh.run takes `term` (AND-ed
-// with the exec kill switch inside the verb — the daemon flag is the
-// operator's switch, the cap is the per-agent grant). ui.geometry
+// must not get to drive it (M139b) — and the gosh verbs take `term`
+// (AND-ed with the exec kill switch inside each verb — the daemon flag
+// is the operator's switch, the cap is the per-agent grant). ui.geometry
 // (card #2985) splits the same rule BY OP: the verb gate is `window`
 // so a read-only observer can query, and the verb itself refuses
 // move/sash cap_required:input before touching the seat — they drive
-// the desktop, so they take the drive grant.
+// the desktop, so they take the drive grant. gosh.spawn (card #3900) is
+// the same escape hatch minus the wait: it runs the line and answers
+// the pid instead of holding the request for the child's lifetime.
 var table = []verbEnt{
 	{"proc.list", CapProcess},
 	{"proc.get", CapProcess},
@@ -97,6 +99,7 @@ var table = []verbEnt{
 	{"ui.input", CapInput},
 	{"ui.geometry", CapWindow},
 	{"gosh.run", CapTerm},
+	{"gosh.spawn", CapTerm},
 }
 
 var verbCap = func() map[string]Caps {
@@ -108,15 +111,15 @@ var verbCap = func() map[string]Caps {
 }()
 
 // Advertised is a session's resolved grant set: a verb appears iff its
-// cap is on the bitmask (D2), and gosh.run also only when the caller's
-// exec flag is on.
+// cap is on the bitmask (D2), and the term-cap verbs — the exec family —
+// also only when the caller's exec flag is on.
 func Advertised(caps Caps, allowExec bool) []string {
 	var out []string
 	for _, e := range table {
 		if caps&e.cap == 0 {
 			continue
 		}
-		if e.name == "gosh.run" && !allowExec {
+		if e.cap == CapTerm && !allowExec {
 			continue
 		}
 		out = append(out, e.name)
@@ -154,8 +157,9 @@ type Seams struct {
 // Config is one daemon's dispatch identity: the fs.* sandbox root (the
 // verbs only ever reach beneath it), the gosh.run capture path inside
 // the audit lane, the first path segment the sandbox grammar reserves,
-// the shell image gosh.run spawns, the image name the WM_RPC peer scan
-// resolves, and the serial marker prefix the spawn/reap lines print.
+// the shell image the gosh verbs spawn, the image name the WM_RPC peer
+// scan resolves, and the serial marker prefix the spawn/reap lines
+// print.
 // AGENTD configures "/host/AGENT", "/host/AGENT/AUDIT/AGENTD.OUT",
 // "AUDIT", "GOSH.ELF", "AGENTD.ELF" and "agentd".
 type Config struct {
@@ -270,6 +274,11 @@ func (d *Dispatcher) Dispatch(s *Session, req *Request) (string, string) {
 			return "", "bad_request"
 		}
 		return d.GoshRun(req, s)
+	case "gosh.spawn":
+		if !req.hasArgs("cmd") {
+			return "", "bad_request"
+		}
+		return d.GoshSpawn(req, s)
 	}
 	return "", "unknown_verb"
 }

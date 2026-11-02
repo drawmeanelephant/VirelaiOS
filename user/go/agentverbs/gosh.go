@@ -1,6 +1,8 @@
-// gosh.run: spawn the shell image with the command redirected into the
-// audit-lane capture file, wait it out inside the caller's budget, then
-// stream the capture back in bounded chunks (ADR 0044 D3, M109b).
+// The gosh verbs: gosh.run spawns the shell image with the command
+// redirected into the audit-lane capture file, waits it out inside the
+// caller's budget, then streams the capture back in bounded chunks
+// (ADR 0044 D3, M109b); gosh.spawn (card #3900) runs the same line
+// without the wait or the capture and answers the child's pid.
 package agentverbs
 
 import (
@@ -50,19 +52,7 @@ func (d *Dispatcher) GoshRun(req *Request, s *Session) (string, string) {
 	if s.AuditIntent != nil {
 		s.AuditIntent()
 	}
-	// The task pool is bounded; a just-exited child's slots stay zombies
-	// until the idle task reaps them, so a back-to-back spawn can land
-	// ENOSPC. That refusal is transient — yield and retry a bounded
-	// window before reporting spawn_failed (real refusals fail on the
-	// first try).
-	pid, err := d.cfg.Seams.Exec(d.cfg.GoshBin, "-c", cmd+" > "+d.cfg.OutPath)
-	for spinNs := d.cfg.Seams.Nanos(); err != nil && err.Error() == "ENOSPC"; {
-		if d.cfg.Seams.Nanos()-spinNs >= spawnRetryNs {
-			break
-		}
-		d.cfg.Seams.Yield()
-		pid, err = d.cfg.Seams.Exec(d.cfg.GoshBin, "-c", cmd+" > "+d.cfg.OutPath)
-	}
+	pid, err := d.spawnGosh("-c", cmd+" > "+d.cfg.OutPath)
 	if err != nil {
 		return "", "spawn_failed"
 	}
@@ -106,6 +96,66 @@ func (d *Dispatcher) GoshRun(req *Request, s *Session) (string, string) {
 	sb.WriteString(jbool(truncated))
 	sb.WriteByte('}')
 	return sb.String(), ""
+}
+
+// GoshSpawn answers gosh.spawn (card #3900): the same agent line
+// gosh.run accepts, run WITHOUT the wait — the bounded non-blocking
+// launch a desk app needs. There is no capture and no appended
+// redirect: the child is spawned exactly as written, the answer is its
+// pid, and proc.get/ui.windows are how the caller watches it from
+// there. The returned pid is the shell's own — it lives for the line's
+// whole run, so `exec GOFILES.ELF` keeps a live pid for the app's
+// lifetime where `exec X &` would only orphan the job (one more reason
+// the grammar's `&` refusal stands: under spawn the whole line is
+// already off the wait path). Validation, the exec flag and the intent
+// receipt are identical to run's — spawn is run minus the wait, not a
+// weaker gate.
+func (d *Dispatcher) GoshSpawn(req *Request, s *Session) (string, string) {
+	if !s.AllowExec {
+		return "", "verb_disabled"
+	}
+	cmd, present, ok := req.argStr("cmd")
+	if !present || !ok {
+		return "", "bad_request"
+	}
+	if len(cmd) == 0 || len(cmd) > CmdMax {
+		return "", "too_large"
+	}
+	for i := 0; i < len(cmd); i++ {
+		if cmd[i] < 0x20 || cmd[i] > 0x7e {
+			return "", "cmd_rejected"
+		}
+	}
+	if !shlib.CheckAgentLine(cmd) {
+		return "", "cmd_rejected"
+	}
+	if s.AuditIntent != nil {
+		s.AuditIntent()
+	}
+	pid, err := d.spawnGosh("-c", cmd)
+	if err != nil {
+		return "", "spawn_failed"
+	}
+	d.log(d.cfg.Mark + ": spawn pid=" + vi.Itoa64(pid))
+	return `{"pid":` + vi.Itoa64(pid) + `}`, ""
+}
+
+// spawnGosh execs the shell image with the bounded ENOSPC yield-retry
+// both gosh verbs share: the task pool is bounded, a just-exited
+// child's slots stay zombies until the idle task reaps them, so a
+// back-to-back spawn can land ENOSPC. That refusal is transient —
+// yield and retry a bounded window before reporting spawn_failed (real
+// refusals fail on the first try).
+func (d *Dispatcher) spawnGosh(args ...string) (int64, error) {
+	pid, err := d.cfg.Seams.Exec(d.cfg.GoshBin, args...)
+	for spinNs := d.cfg.Seams.Nanos(); err != nil && err.Error() == "ENOSPC"; {
+		if d.cfg.Seams.Nanos()-spinNs >= spawnRetryNs {
+			break
+		}
+		d.cfg.Seams.Yield()
+		pid, err = d.cfg.Seams.Exec(d.cfg.GoshBin, args...)
+	}
+	return pid, err
 }
 
 // settleChild yield-polls Probe until the child's descriptor recycles
