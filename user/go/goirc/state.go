@@ -13,6 +13,7 @@ package main
 //	u8  flags            and returns StateVersion verbatim, so the blob
 //	     bit0: tls          also tags itself
 //	     bit1: consent
+//	     bit2: ws           v4 only — M212c's WebSocket gateway transport
 //	u16 hostLen | host
 //	u16 port
 //	u16 sniLen  | sni      TLS verify/SNI name ("" = host); a bare reexec
@@ -24,6 +25,9 @@ package main
 //	     { u16 nameLen | name | u32 scrollUp }
 //	u16 nRules  | nRules x  v3 only (M152e #2919): the /hl highlight
 //	     { u16 wordLen | word }   words — "rules ride the blob"
+//	u16 pathLen | path    v4 only (M212c #3874): the ws gateway's
+//	                        request path; flags bit2 marks the ws
+//	                        transport itself
 //
 // Every bound is hard and every declared length is checked: a stale,
 // short, over-declared or trailing-garbage blob is refused WHOLE — the
@@ -32,7 +36,7 @@ package main
 // empty); v1 and future formats refuse.
 
 const (
-	ircStateVersion uint8 = 3 // current format; 2 is the M147b legacy
+	ircStateVersion uint8 = 4 // current format; 2/3 are the live legacies
 	ircStateMinVer  uint8 = 2 // oldest blob decode still accepts
 
 	stateHostMax  = 255
@@ -64,6 +68,8 @@ type ircState struct {
 	sni      string
 	tls      bool
 	consent  bool
+	ws       bool
+	wspath   string
 	nick     string
 	focus    string
 	chans    []stateChan
@@ -93,6 +99,9 @@ func (s *ircState) encode(u *uiApp) []byte {
 	}
 	if u.cfg.AllowPlain {
 		flags |= 2
+	}
+	if u.cfg.WS {
+		flags |= 4
 	}
 	out := make([]byte, 0, 64)
 	sni := u.cfg.ServerName
@@ -143,6 +152,13 @@ func (s *ircState) encode(u *uiApp) []byte {
 		out = appendU16(out, uint16(len(w)))
 		out = append(out, w...)
 	}
+	// v4: the ws gateway's request path ("" for a bare / or TCP session).
+	path := u.cfg.WSPath
+	if len(path) > stateHostMax {
+		path = path[:stateHostMax]
+	}
+	out = appendU16(out, uint16(len(path)))
+	out = append(out, path...)
 	return out
 }
 
@@ -150,14 +166,15 @@ func (s *ircState) encode(u *uiApp) []byte {
 // never partial state. The decoded fields land on s only on success.
 func (s *ircState) decode(b []byte) bool {
 	var d struct {
-		host  string
-		port  uint16
-		sni   string
-		flags byte
-		nick  string
-		focus string
-		chans []stateChan
-		rules []string
+		host   string
+		port   uint16
+		sni    string
+		flags  byte
+		wspath string
+		nick   string
+		focus  string
+		chans  []stateChan
+		rules  []string
 	}
 	if len(b) < 14 || b[0] < ircStateMinVer || b[0] > ircStateVersion {
 		return false
@@ -239,6 +256,15 @@ func (s *ircState) decode(b []byte) bool {
 			d.rules = append(d.rules, w)
 		}
 	}
+	if ver >= 4 {
+		// v4's tail: the ws gateway request path — empty or a '/'
+		// leader, same bound as a host field.
+		path, ok := str(stateHostMax)
+		if !ok || (path != "" && path[0] != '/') {
+			return false
+		}
+		d.wspath = path
+	}
 	if off != len(b) {
 		return false
 	}
@@ -258,6 +284,8 @@ func (s *ircState) decode(b []byte) bool {
 	s.host, s.port, s.sni = d.host, d.port, d.sni
 	s.tls = d.flags&1 != 0
 	s.consent = d.flags&2 != 0
+	s.ws = d.flags&4 != 0
+	s.wspath = d.wspath
 	s.nick, s.focus = d.nick, d.focus
 	s.chans = d.chans
 	s.rules = d.rules
