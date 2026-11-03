@@ -14,7 +14,9 @@
 #         and excludes it from the overlap check (a closed issue is done)
 #
 # Checks:
-#   1. Every open claim has an Owner line with a backticked branch.
+#   1. Every open claim has an Owner line with a backticked branch and a
+#      parseable Touches line — a missing or misspelled bullet silently
+#      exempts the claim from check 2, so it is an error, not a warning.
 #   2. Two open claims from different branches declaring overlapping Touches
 #      fail the gate (one editor per file). ⛔ blocked claims are skipped.
 #      GENERATED artifacts (machine-rendered; see `is_generated`) are exempt:
@@ -89,8 +91,11 @@ is_generated() {
 
 # tokens_overlap A B -- do two Touches tokens collide?
 # Exact match, or either side is a `prefix*` glob matching the other.
+# A bare path token also covers everything beneath it ('tools/gate' means
+# 'tools/gate/*'), so it collides with the glob and any deeper literal —
+# but not with a sibling like 'tools/gatekeeper': the '/' boundary holds.
 tokens_overlap() {
-    x="$1"; y="$2"
+    x="${1%/}"; y="${2%/}"
     [ "$x" = "$y" ] && return 0
     case "$x" in
         *\*) p="${x%\*}"; case "$y" in "$p"*) return 0 ;; esac ;;
@@ -98,17 +103,23 @@ tokens_overlap() {
     case "$y" in
         *\*) p="${y%\*}"; case "$x" in "$p"*) return 0 ;; esac ;;
     esac
+    case "$x" in "$y"/*) return 0 ;; esac
+    case "$y" in "$x"/*) return 0 ;; esac
     return 1
 }
 
 # iso_epoch ISO8601 -- gh's updatedAt ("2026-09-02T18:12:34Z", possibly with
-# fractional seconds) -> unix epoch. python3 is already a project toolchain
-# dependency (disk-image + gate tooling).
+# fractional seconds) -> unix epoch. The stamp is UTC: a naive
+# strptime().timestamp() would read it as host-local time and shift the
+# staleness age by the host's UTC offset, so pin tzinfo=timezone.utc.
+# python3 is already a project toolchain dependency (disk-image + gate
+# tooling).
 iso_epoch() {
     python3 -c '
 import sys, datetime
 s = sys.argv[1].split(".")[0].rstrip("Z")
-print(int(datetime.datetime.strptime(s, "%Y-%m-%dT%H:%M:%S").timestamp()))
+dt = datetime.datetime.strptime(s, "%Y-%m-%dT%H:%M:%S")
+print(int(dt.replace(tzinfo=datetime.timezone.utc).timestamp()))
 ' "$1"
 }
 
@@ -154,6 +165,10 @@ while IFS= read -r rec; do
     esac
 
     touches="$(sed -n 's/^- \*\*Touches:\*\* //p' "$tmp/body-$num.md" | head -1 | tr ',' ' ')"
+    if [ -z "${touches//[[:space:]]/}" ]; then
+        bad "claim #$num ($title): no parseable '- **Touches:** <paths>' line — a missing or misspelled bullet silently exempts the claim from the overlap check"
+        continue
+    fi
     for t in $touches; do
         if is_generated "$t"; then
             generated_exempt=$((generated_exempt + 1))
