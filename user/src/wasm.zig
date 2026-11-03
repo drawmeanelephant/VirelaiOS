@@ -3424,7 +3424,7 @@ comptime {
     // links its own _start entry (Darwin enters via main), so the
     // export collides there. Drop it under builtin.is_test.
     if (!builtin.is_test) {
-        @export(_start, .{ .name = "_start" });
+        @export(&_start, .{ .name = "_start" });
     }
 }
 
