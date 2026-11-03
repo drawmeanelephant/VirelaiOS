@@ -14,8 +14,11 @@
 ## Classes
 
 - **A — portable / build CI.** Deterministic, no Apple silicon, no VZ VM.
-  Runs in GitHub CI (`.github/workflows/ci.yml`) and as `just verify-portable`.
-  A green CI badge means exactly these passed and nothing else.
+  Runs in GitHub CI (`.github/workflows/ci.yml`) and as `just verify-portable`
+  (CI splits it across an `ubuntu-latest` `verify-portable-core` lane and a
+  `macos-latest` `verify-portable-swift` lane; `just verify-portable`
+  composes both locally). A green CI badge means exactly these passed and
+  nothing else.
 - **B — Apple-silicon Virtualization.framework hardware gate.** Boots a real
   VZ VM on Apple silicon. GitHub-hosted CI does **not** run these and cannot
   prove them; the fleet runs in `.github/workflows/vz-gates.yml` (sharded

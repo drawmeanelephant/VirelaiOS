@@ -1,10 +1,19 @@
 # CI proves ONLY the portable/build gate set — class A in
 # docs/gate-inventory.md. The set is defined once, as `just verify-portable`
-# (justfile), and this workflow delegates to that recipe instead of
-# hand-copying its steps: a copied list drifted twice (three gates silently
-# local-only, issue #1186), and the parity guard that policed the drift is
-# gone with the copy. `tools/lint-workflows.sh` asserts the delegation is
-# present. It does NOT run the Apple-silicon
+# (justfile), which is a pure composition of two lane recipes this workflow
+# delegates to instead of hand-copying steps — a copied list drifted twice
+# (three gates silently local-only, issue #1186), and the parity guard that
+# policed the drift is gone with the copy:
+#
+#   verify-portable-core   — ubuntu-latest: everything that runs on stock
+#                            Ubuntu + the GNU toolchain (zig builds, Go and
+#                            python tests, the bash gate scripts)
+#   verify-portable-swift  — macos-latest: the Swift host launcher build +
+#                            tests and the file-channel parity gate, which
+#                            need the macOS SDK
+#
+# `tools/lint-workflows.sh` asserts both the delegation and that the two
+# lanes cover the full set. This workflow does NOT run the Apple-silicon
 # Virtualization.framework hardware gates (class B) — those live behind
 # `just verify-vz` on Apple silicon. The `vz-gates` workflow
 # (.github/workflows/vz-gates.yml) is a not-enforced placeholder that only
@@ -40,9 +49,16 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build-and-test-macos:
-    name: Build (macOS + Swift Launcher)
-    runs-on: macos-latest
+  # --- Class A, portable lane: everything that runs on stock Ubuntu ----
+  # `just verify-portable-core` IS the portable half of the class-A gate
+  # set (docs/testing.md): formatting, unit tests, transcript mock test,
+  # guest/image builds, inspect, context generation, workflow lint, and
+  # the coordination gates. One step, so CI can never drift from local
+  # again. Needs GH_TOKEN: the coordination gate reads the live `claim`
+  # issues via `gh`, like it does locally. The Swift lane is the macOS job.
+  build-and-test-ubuntu:
+    name: Build (Ubuntu — portable core)
+    runs-on: ubuntu-latest
     # The coordination gate reads open `claim` issues from the GitHub API
     # (gh issue list); the job-level token needs issues: read for that.
     permissions:
@@ -67,20 +83,34 @@ jobs:
           # go.sum to key a cache on.
           cache: false
 
-      # --- Class A: the whole portable set, via the recipe devs run -----
-      # `just verify-portable` IS the class-A gate set (docs/testing.md):
-      # formatting, unit tests, transcript mock test, guest/image builds,
-      # inspect, Swift runner build, context generation, workflow lint,
-      # and the coordination gates. One step, so CI can never drift from
-      # local again. Needs GH_TOKEN: the coordination gate reads the live
-      # `claim` issues via `gh`, like it does locally.
-
+      # just is not preinstalled on ubuntu-latest (no brew); gh/jq/python3
+      # are, and nothing in the core path needs yq.
       - name: Ensure just is available
-        run: command -v just >/dev/null || brew install just
+        run: |
+          if ! command -v just >/dev/null; then
+            mkdir -p "$HOME/.local/bin"
+            curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh \
+              | bash -s -- --to "$HOME/.local/bin"
+            echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          fi
 
-      - name: Run the portable gate set (class A — just verify-portable)
+      # verify-bss-budget.sh needs llvm-readelf ($LLVM_READELF override);
+      # ubuntu-latest ships versioned binaries (llvm-readelf-18 &c.) but
+      # not necessarily the unversioned name.
+      - name: Ensure llvm-readelf is available (verify-bss-budget)
+        run: |
+          if ! command -v llvm-readelf >/dev/null; then
+            bin="$(compgen -c | grep -E '^llvm-readelf-[0-9]+$' | sort -t- -k2 -n | tail -1 || true)"
+            if [ -n "$bin" ]; then
+              echo "LLVM_READELF=$(command -v "$bin")" >> "$GITHUB_ENV"
+            else
+              sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends llvm
+            fi
+          fi
+
+      - name: Run the portable core gate set (class A — just verify-portable-core)
         id: portable
-        run: just verify-portable
+        run: just verify-portable-core
         env:
           GH_TOKEN: ${{ github.token }}
 
@@ -92,7 +122,7 @@ jobs:
         if: always() && steps.portable.outcome != 'skipped'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: test-timings-macos-${{ github.run_id }}-${{ github.run_attempt }}
+          name: test-timings-ubuntu-${{ github.run_id }}-${{ github.run_attempt }}
           path: artifacts/test-timings/
           retention-days: 90
           if-no-files-found: error
@@ -109,6 +139,45 @@ jobs:
           # issue #940): tools/gate/fleet.sh list is the machine-readable
           # source `just verify-vz` consumes on Apple silicon.
           bash tools/gate/fleet.sh list | awk -F'\t' '{printf "  - [%s] %s\n", $1, $2}'
+
+      - name: Upload Build Artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: virelaios-artifacts-ubuntu
+          path: |
+            zig-out/
+            artifacts/
+
+  # --- Class A, Swift lane: only what needs the macOS SDK -------------
+  # `just verify-portable-swift` is the macOS half: the host launcher
+  # build + tests (Virtualization.framework, CryptoKit, AppKit) and the
+  # M34 file-channel parity gate — verify-vf-class-a.sh reruns the zig
+  # fmt/build/image/unit checks itself, so the zig toolchain is kept.
+  build-and-test-macos:
+    name: Build (macOS — Swift launcher lane)
+    runs-on: macos-latest
+    permissions:
+      contents: read
+      issues: read  # verify-vf-class-a runs verify-issue-coordination.sh
+      actions: write  # upload-artifact
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      # verify-vf-class-a.sh reruns zig fmt/build/image/test itself.
+      - name: Setup Zig 0.17.0
+        uses: drawmeanelephant/zig-zouave@2d8510d62b517fa786279562cf8b1bdcf0c47b9f
+        with:
+          version: 0.17.0
+
+      - name: Ensure just is available
+        run: command -v just >/dev/null || brew install just
+
+      - name: Run the Swift lane of the portable set (class A — just verify-portable-swift)
+        run: just verify-portable-swift
+        env:
+          GH_TOKEN: ${{ github.token }}
 
       - name: Upload Build Artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
