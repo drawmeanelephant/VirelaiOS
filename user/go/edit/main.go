@@ -109,15 +109,14 @@
 //     compiler's 1-based byte column, clamped into the line), the
 //     next/prev chords stay Ctrl-N/Ctrl-P from this file's keymap, and
 //     the status line carries `err=I/N` while a list is loaded.
-//   - format-on-save, with the card's probe verdict landed. go/format
-//     links under GOOS=virelai but the image comes out over
-//     exec_program_max (format.go's header has the numbers), so the
-//     shipped build prints the card's named refusal on a .go save —
-//     `edit: format unavailable (go/format not guest-safe)` — and
-//     `-tags editfmt` is the opt-in seam for a future cap bump. The
-//     contract is pinned either way: an applied format is one undoable
-//     op, a parse error leaves the buffer alone, prints `format error
-//     <diag>` and raises the error strip, and the publish still writes.
+//   - format-on-save, shipped. go/format is linked into the default
+//     build — the M138b probe's `exec_program_max` refusal was stale
+//     (#3916): a gap-layout static ELF is bounded by `exec_image_max`
+//     (32 MiB) and `elf.map_max` (64 MiB), so the image streams and
+//     execs. The contract is pinned either way: an applied format is
+//     one undoable op, a parse error leaves the buffer alone, prints
+//     `format error <diag>` and raises the error strip, and the
+//     publish still writes.
 //
 // What this is NOT: EDIT.BIN's feature list. No syntax highlighting, no
 // tab strip or split view over the M166a buffer ring, no LSP, no
@@ -2198,9 +2197,8 @@ func (e *editor) markDirty() {
 // decide whether they may report a clean exit.
 func (e *editor) save() bool {
 	// M138b: format-on-save — a .go buffer is formatted before the publish
-	// (a format error leaves it alone and shows the diagnostic); a build
-	// without go/format prints the named refusal. Either way the write
-	// below still decides the save.
+	// (a format error leaves it alone and shows the diagnostic). Either
+	// way the write below still decides the save.
 	e.formatGo()
 	if rc := e.ensureLease(); rc < 0 {
 		vi.ConsoleLine(markerSaveErr + e.path + " " + vi.Itoa64(rc))
