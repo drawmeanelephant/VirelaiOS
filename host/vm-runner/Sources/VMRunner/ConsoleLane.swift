@@ -260,6 +260,15 @@ func startConsoleStreams() {
 // #1066 Stage 0 (issue #1066) + M70g G2 (#1459, ADR 0022 D2 amendment): the
 // TCP console bridge. Still ONE client at a time, but the policy is now
 // explicit and every open end is bounded:
+//   * #3910: socket setup (socket/bind/listen) runs SYNCHRONOUSLY in
+//     startTCPConsoleBridge — before the accept loop is queued — so a bind
+//     or listen failure is FATAL to the run (`fail`, exit 1, naming the
+//     port and errno; the peer_guard.claim posture). The old shape ran the
+//     setup on the serial queue and only WARNING'd: the runner booted on
+//     with no listener, the gate's vgate_client burned its connect-timeout
+//     on ECONNREFUSED, or — the sharp edge — connected to a CONCURRENT
+//     gate's listener on the same port and landed client fixtures in the
+//     wrong VM;
 //   * the accept loop keeps accepting while a client is served and answers
 //     every extra connection `console-tcp: busy` + close (it no longer hangs
 //     in the listen backlog); serving runs on its own serial queue;
@@ -454,38 +463,59 @@ func consoleTCPServe(_ c: Int32) {
     consoleTCPSay("client disconnected" + (midLine ? " mid-line (partial line cancelled with ^C)" : "") + " (still listening)")
 }
 
+/// #3910: the --console-tcp listener's socket setup, run SYNCHRONOUSLY by
+/// startTCPConsoleBridge — before the accept loop is queued — so a bind or
+/// listen failure is FATAL to the run (the verdict propagates) instead of
+/// living as a stderr WARNING on a serial queue the run never waits on.
+/// Returns the bound+listening fd on success; on failure fd = -1 with
+/// `stage` ("socket"/"bind"/"listen") and `err` (errno captured before
+/// close() can clobber it) for the caller's fatal message, which also
+/// names the port.
+func consoleTCPBindListen(port: UInt16, bindHost: String) -> (fd: Int32, stage: String, err: Int32) {
+    let s = socket(AF_INET, SOCK_STREAM, 0)
+    guard s >= 0 else { return (-1, "socket", errno) }
+    var reuse: Int32 = 1
+    _ = setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &reuse, socklen_t(MemoryLayout<Int32>.size))
+    var addr = sockaddr_in()
+    addr.sin_family = sa_family_t(AF_INET)
+    addr.sin_port = port.bigEndian
+    if inet_pton(AF_INET, bindHost, &addr.sin_addr) != 1 {
+        addr.sin_addr.s_addr = inet_addr("127.0.0.1")
+    }
+    let bindRC = withUnsafePointer(to: &addr) { p in
+        p.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(s, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
+    }
+    guard bindRC == 0 else {
+        let e = errno
+        close(s)
+        return (-1, "bind", e)
+    }
+    // Backlog > 1 so concurrent connectors are ACCEPTED and refused
+    // explicitly (`busy`) instead of silently SYN-dropped.
+    guard listen(s, 4) == 0 else {
+        let e = errno
+        close(s)
+        return (-1, "listen", e)
+    }
+    return (s, "", 0)
+}
+
 func startTCPConsoleBridge(port: UInt16, bindHost: String) {
+    // #3910 (peer_guard.claim posture — user/go/browser): a --console-tcp
+    // bind/listen failure is FATAL to the run. The setup executes here on
+    // the caller's thread — main, inside startConsoleStreams, before
+    // NativeInput.run — so `fail` exits the process non-zero, naming the
+    // host:port and errno, instead of the old WARNING-and-boot-on that
+    // left a gate's vgate_client to burn its connect-timeout on
+    // ECONNREFUSED or land on a CONCURRENT gate's listener on the same port.
+    let setup = consoleTCPBindListen(port: port, bindHost: bindHost)
+    guard setup.fd >= 0 else {
+        fail("--console-tcp: \(setup.stage) \(bindHost):\(port) failed (errno=\(setup.err): \(String(cString: strerror(setup.err))))")
+    }
+    let s = setup.fd
+    consoleTCPSay("listening on \(bindHost):\(port) — connect with `nc \(bindHost) \(port)`")
     let listenQueue = DispatchQueue(label: "virelaios.console-tcp")
     listenQueue.async {
-        let s = socket(AF_INET, SOCK_STREAM, 0)
-        guard s >= 0 else {
-            FileHandle.standardError.write(Data("WARNING: --console-tcp: socket() failed (errno=\(errno))\n".utf8))
-            return
-        }
-        var reuse: Int32 = 1
-        _ = setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &reuse, socklen_t(MemoryLayout<Int32>.size))
-        var addr = sockaddr_in()
-        addr.sin_family = sa_family_t(AF_INET)
-        addr.sin_port = port.bigEndian
-        if inet_pton(AF_INET, bindHost, &addr.sin_addr) != 1 {
-            addr.sin_addr.s_addr = inet_addr("127.0.0.1")
-        }
-        let bindRC = withUnsafePointer(to: &addr) { p in
-            p.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(s, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
-        }
-        guard bindRC == 0 else {
-            FileHandle.standardError.write(Data("WARNING: --console-tcp: bind \(bindHost):\(port) failed (errno=\(errno))\n".utf8))
-            close(s)
-            return
-        }
-        // Backlog > 1 so concurrent connectors are ACCEPTED and refused
-        // explicitly (`busy`) instead of silently SYN-dropped.
-        guard listen(s, 4) == 0 else {
-            FileHandle.standardError.write(Data("WARNING: --console-tcp: listen failed (errno=\(errno))\n".utf8))
-            close(s)
-            return
-        }
-        consoleTCPSay("listening on \(bindHost):\(port) — connect with `nc \(bindHost) \(port)`")
         while true {
             var caddr = sockaddr()
             var clen = socklen_t(MemoryLayout<sockaddr>.size)
