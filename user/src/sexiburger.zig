@@ -199,7 +199,16 @@ pub const AppState = struct {
 
 var global_app: AppState = undefined;
 
-pub export fn _start() callconv(.c) noreturn {
+comptime {
+    // #3927: _start only outside `zig test` — a Linux test executable
+    // links its own _start entry (Darwin enters via main), so the
+    // export collides there. Drop it under builtin.is_test.
+    if (!@import("builtin").is_test) {
+        @export(&_start, .{ .name = "_start" });
+    }
+}
+
+pub fn _start() callconv(.c) noreturn {
     global_app = AppState.init();
     const app = &global_app;
 
