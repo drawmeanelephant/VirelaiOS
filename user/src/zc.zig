@@ -8,6 +8,7 @@
 //! /host/MAIN.Z to /host/MAIN.ELF.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const asmenc = @import("lib/asmenc.zig");
 
 // Encoders and constants from asmenc
@@ -2922,7 +2923,16 @@ pub fn compileFiles(sources: []const []const u8) !usize {
 // word is the output; every word before it is a source (up to MAX_FILES).
 // Backward compatible: `zc a.z` compiles one source to the default output,
 // and no args compiles /host/MAIN.Z -> /host/MAIN.ELF.
-pub export fn _start(argc: usize, argv: ?[*]const [256]u8) callconv(.c) noreturn {
+comptime {
+    // #3927: _start only outside `zig test` — a Linux test executable
+    // links its own _start entry (Darwin enters via main), so the
+    // export collides there. Drop it under builtin.is_test.
+    if (!builtin.is_test) {
+        @export(_start, .{ .name = "_start" });
+    }
+}
+
+pub fn _start(argc: usize, argv: ?[*]const [256]u8) callconv(.c) noreturn {
     var src_path_bufs: [MAX_FILES][40]u8 = @as([MAX_FILES][40]u8, @splat(@as([40]u8, @as([40]u8, @splat(@as(u8, 0))))));
     var src_lens: [MAX_FILES]usize = @as([MAX_FILES]usize, @splat(@as(usize, 0)));
     var src_paths: [MAX_FILES][]const u8 = undefined;

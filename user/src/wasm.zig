@@ -19,6 +19,7 @@
 //! so the EL0 stack never carries it.
 
 const std = @import("std");
+const builtin = @import("builtin");
 // Contract v2 delivery admission (§9.2) verifies the manifest row's SHA-256
 // against the module bytes. The in-tree hash is the same one lib/ssh uses.
 const sha256 = @import("lib/crypto/sha256.zig");
@@ -3418,7 +3419,16 @@ fn entryExport(m: *const Module) ?u32 {
     return main orelse start;
 }
 
-pub export fn _start(argc: usize, argv: ?[*]const [256]u8) callconv(.c) noreturn {
+comptime {
+    // #3927: _start only outside `zig test` — a Linux test executable
+    // links its own _start entry (Darwin enters via main), so the
+    // export collides there. Drop it under builtin.is_test.
+    if (!builtin.is_test) {
+        @export(_start, .{ .name = "_start" });
+    }
+}
+
+pub fn _start(argc: usize, argv: ?[*]const [256]u8) callconv(.c) noreturn {
     if (argc < 1 or argv == null) fail("wasm: usage: exec WASM.BIN <module.wasm>\n", 2);
     const slot = argv.?[0];
     const name_len = std.mem.indexOfScalar(u8, &slot, 0) orelse slot.len;
