@@ -58,7 +58,12 @@ jobs:
   # issues via `gh`, like it does locally. The Swift lane is the macOS job.
   build-and-test-ubuntu:
     name: Build (Ubuntu — portable core)
-    runs-on: ubuntu-latest
+    # arm64, not x86_64, on purpose: the kernel module unit tests carry
+    # AArch64 inline asm (mmu.zig `dc`, exceptions.zig `msr`/`mrs`), so the
+    # portable set is portable across aarch64 hosts, not across arches.
+    # `zig test` targets native — on x86_64 ubuntu those modules fail to
+    # compile. ubuntu-24.04-arm is GitHub's free arm64 Linux image.
+    runs-on: ubuntu-24.04-arm
     # The coordination gate reads open `claim` issues from the GitHub API
     # (gh issue list); the job-level token needs issues: read for that.
     permissions:
