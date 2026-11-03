@@ -6,16 +6,16 @@ import (
 	"testing"
 )
 
-// format_test.go pins M138b (#2776) format-on-save. The shipped build
-// carries no go/format (the probe's size refusal — format.go's header has
-// the numbers), so formatSource is nil by default: the tests that drive
-// the real formatter install format.Source on the seam, exactly what the
-// `-tags editfmt` build wires at compile time. The refusal, the
-// format-error contract and the save() integration are pinned regardless
-// of which side ships.
+// format_test.go pins M138b (#2776) format-on-save. go/format is the
+// shipped default (#3916: the probe's exec_program_max refusal named the
+// wrong bound — a gap-layout ELF is bounded by exec_image_max), so
+// formatSource is format.Source by default: useFmt installs it again on
+// the seam anyway, the same swap point tests used when the tag gated it.
+// The format-error contract and the save() integration are pinned
+// regardless.
 
-// useFmt installs the real formatter on the seam — the editfmt build's
-// compile-time wiring, run as a test substitute.
+// useFmt installs the real formatter on the seam — the shipped value,
+// run as a test substitute so tests can swap implementations.
 func useFmt(t *testing.T) {
 	t.Helper()
 	old := formatSource
@@ -101,25 +101,7 @@ func TestFormatGoSkipsNonGo(t *testing.T) {
 	}
 }
 
-// TestFormatUnavailableRefusal: the shipped build's shape — the seam is
-// nil and a .go save prints the card's named refusal, leaving the buffer.
-func TestFormatUnavailableRefusal(t *testing.T) {
-	old := formatSource
-	formatSource = nil
-	t.Cleanup(func() { formatSource = old })
-	src := "package main\nfunc  main(){}\n"
-	e := usEditor(src)
-	e.path = "/host/W/main.go"
-	e.formatGo()
-	if string(e.buf) != src {
-		t.Fatalf("the refusal path touched the buffer: %q", e.buf)
-	}
-	if formatUnavailable != "edit: format unavailable (go/format not guest-safe)" {
-		t.Fatalf("refusal text drifted: %q", formatUnavailable)
-	}
-}
-
-// TestSaveFormatsGoFile: the end-to-end contract on the editfmt side —
+// TestSaveFormatsGoFile: the end-to-end contract on the shipped side —
 // save() on a .go path writes the FORMATTED bytes to the share.
 func TestSaveFormatsGoFile(t *testing.T) {
 	useFmt(t)
@@ -151,24 +133,6 @@ func TestSaveFormatErrorStillPublishes(t *testing.T) {
 	}
 	if !e.banner.Open {
 		t.Fatal("the strip must show the format diagnostic")
-	}
-}
-
-// TestSaveRefusalStillPublishes: the shipped shape — a .go save without a
-// formatter prints the refusal and writes the buffer verbatim.
-func TestSaveRefusalStillPublishes(t *testing.T) {
-	old := formatSource
-	formatSource = nil
-	t.Cleanup(func() { formatSource = old })
-	const target = "/host/W/raw.go"
-	k := installEditKernel(t, 1000)
-	src := "package main\nfunc  main(){}\n"
-	e := &editor{doc: doc{path: target, buf: []byte(src)}}
-	if !e.save() {
-		t.Fatal("the refusal must not block the save")
-	}
-	if got := string(k.files[target]); got != src {
-		t.Fatalf("published = %q want the verbatim %q", got, src)
 	}
 }
 
