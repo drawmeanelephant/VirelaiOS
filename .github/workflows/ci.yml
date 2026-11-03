@@ -94,8 +94,17 @@ jobs:
         run: |
           if ! command -v just >/dev/null; then
             mkdir -p "$HOME/.local/bin"
-            curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh \
-              | bash -s -- --to "$HOME/.local/bin"
+            # install.sh resolves the latest tag through GitHub's
+            # unauthenticated releases API — a shared-IP rate-limit flake
+            # on hosted runners — so retry the whole download.
+            for attempt in 1 2 3; do
+              if curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh \
+                  | bash -s -- --to "$HOME/.local/bin"; then
+                break
+              fi
+              [ "$attempt" = 3 ] && { echo "just install failed after 3 attempts" >&2; exit 1; }
+              sleep 10
+            done
             echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           fi
 
