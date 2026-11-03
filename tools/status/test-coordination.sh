@@ -237,7 +237,12 @@ run_case "bare dir does not collide on a sibling prefix" 0
 # UTC-behind host zone: correct math warns; the local-tz bug reads the stamp
 # ~7-8h later, computes ~13d22h, and stays silent.
 
-boundary="$(date -u -v-14d -v-6H +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d '14 days 6 hours ago' +%Y-%m-%dT%H:%M:%SZ)"
+# Epoch math: GNU `date -d '14 days 6 hours ago'` binds "ago" to the
+# last item only (yielding +14d −6h), and BSD -v rejects a single 342h
+# adjustment — so compute seconds and format portably (-r is BSD,
+# -d @epoch is GNU).
+boundary_epoch=$(( $(date -u +%s) - 1227600 ))  # 14*86400 + 6*3600
+boundary="$(date -u -r "$boundary_epoch" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d "@$boundary_epoch" +%Y-%m-%dT%H:%M:%SZ)"
 jq -s '.' \
     <(claim_json 851 "agent/a/one" "$boundary" "kernel/src/a.zig") \
     > "$TMP/fixture.json"
