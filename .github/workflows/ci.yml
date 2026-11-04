@@ -168,7 +168,11 @@ jobs:
   # M34 file-channel parity gate — verify-vf-class-a.sh reruns the zig
   # fmt/build/image/unit checks itself, so the zig toolchain is kept.
   build-and-test-macos:
-    name: Build (macOS — Swift launcher lane)
+    # The ruleset's required check is "Build (macOS + Swift Launcher)"
+    # (the pre-split job name). Renaming it would leave merges stuck on
+    # "Expected" — keep the legacy context until the ruleset is updated
+    # to require both lane names.
+    name: Build (macOS + Swift Launcher)
     runs-on: macos-latest
     permissions:
       contents: read
