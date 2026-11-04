@@ -1031,10 +1031,11 @@ fi
 echo
 echo "── the shipped probe (no stubs) ──"
 
-if command -v clang >/dev/null 2>&1; then
+if [ "$(uname -s)" = "Darwin" ] && command -v clang >/dev/null 2>&1; then
     # The REAL codesign, not the stub: this section builds and signs the shipped
     # probe for real. (Left stubbed, it silently produced an unsigned probe that
-    # reported HV_DENIED -- the stub caught itself.)
+    # reported HV_DENIED -- the stub caught itself.) Darwin-gated: Ubuntu's
+    # clang exists but has no Hypervisor.framework/codesign (#3927).
     PATH="$ORIG_PATH"
     # The default source/entitlement paths, a throwaway binary.
     export VZ_HV_PROBE_SRC VZ_HV_PROBE_ENT
@@ -1061,7 +1062,7 @@ if command -v clang >/dev/null 2>&1; then
         bad "the shipped probe failed to build"
     fi
 else
-    echo "  skip  clang not available; the shipped probe was not built here"
+    echo "  skip  not macOS or clang unavailable; the shipped probe was not built here"
 fi
 
 # Restore the stub for any later cases.

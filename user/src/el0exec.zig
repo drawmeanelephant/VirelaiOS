@@ -467,7 +467,16 @@ fn oom_reap() noreturn {
     exit(2);
 }
 
-export fn _start(argc: u64, argv_va: u64) callconv(.c) noreturn {
+comptime {
+    // #3927: _start only outside `zig test` — a Linux test executable
+    // links its own _start entry (Darwin enters via main), so the
+    // export collides there. Drop it under builtin.is_test.
+    if (!builtin.is_test) {
+        @export(&_start, .{ .name = "_start" });
+    }
+}
+
+fn _start(argc: u64, argv_va: u64) callconv(.c) noreturn {
     if (argc >= 1 and argv_va != 0) {
         const first = arg_slot(argv_va, 0);
         if (eql(first, "fuzz")) run_fuzz(argc, argv_va);
