@@ -45,6 +45,12 @@ allow crypto/aes
 allow crypto/cipher
 allow crypto/hmac
 allow crypto/pbkdf2
+# #3820 fixup: GOIRC's RFC 6455 mask keys. The fork's
+# internal/syscall/unix/getrandom_virelai.go forwards unix.GetRandom to
+# syscall.Getrandom (ADR 0007 slot 72, the kernel's own generator), so this
+# is a real entropy path, not a stub. M212c's ws client imports it at package
+# level even when a caller injects vi.Random.
+allow crypto/rand
 allow crypto/sha1
 allow crypto/sha256
 allow encoding
@@ -60,6 +66,12 @@ allow errors
 allow fmt
 allow go/ast
 allow go/build/constraint
+# #3820 fixup: GOEDIT ships format-on-save unconditionally since #3931
+# (format.go owns format.Source; the editfmt tag and its named refusal are
+# gone), so the in-guest fleet row needs this archive to link. 70-package
+# closure, pure computation, no OS hooks. This is go/format the library, not
+# the GOFMT binary M207's index keeps out of scope.
+allow go/format
 allow go/parser
 allow go/scanner
 allow go/token
