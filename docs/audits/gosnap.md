@@ -22,12 +22,34 @@ Observed (code, `user/go/gosnap/`):
 
 ## Observed defects
 
-Two failure shapes observed (likely host contention — three other agents' class-B VMs were running concurrently — but recorded honestly since they reproduced across legs):
+Both shapes below were attributed to host contention (three other agents'
+class-B VMs running concurrently) but recorded honestly, since they reproduced
+across legs. **Idle-host discrimination run 2026-11-06: neither reproduces.**
+`BOOTS=1 just gate go-snap` on an otherwise idle host gave **PASS 14/14**, and
+every previously-silent leg took its *named* path instead of the silent one
+(evidence below). That is the attribution the original observation asked for:
+host contention, not a defect in post-restore serial recovery and not GOSNAP
+code. The two shapes are kept here as the record of what load does to these
+legs.
 
-- **`ld` and `ld-crash` (the `--resume` rewind legs) FAIL**: `SUSPEND-RESUME: restored state.vzsave` prints — the rewind lands — then the guest emits **zero serial bytes for 120s** (`log=0 bytes`, `expected transcript 'gosnap-ld-done' not observed`). The spec's named bound (VZErrorDomain Code=12 refusal) is *not* what happened: the restore succeeded, the guest just never spoke again. `capld`, the third resume leg, PASSED, so resume is not universally broken. If this reproduces on an idle host it is a real defect in post-restore serial/console recovery, not an app bug — the app markers all fired before the rewind.
-- **`cap` FAIL**: the eviction sequence stalled mid-chain — `WINBASE.vzsave` and `CAP0.vzsave` evicted, then nothing more; `gosnap: save CAP9 ok` never arrived in 480s while the kernel emitted only scheduler heartbeat chatter. Each snapshot is ~15 MB over vsock; plausibly load-induced, but unproven.
+- **`ld` and `ld-crash` (the `--resume` rewind legs) FAILED under load**:
+  `SUSPEND-RESUME: restored state.vzsave` prints — the rewind lands — then the
+  guest emits **zero serial bytes for 120s** (`log=0 bytes`, `expected
+  transcript 'gosnap-ld-done' not observed`). The spec's named bound
+  (VZErrorDomain Code=12 refusal) is *not* what happened under load: the restore
+  succeeded, the guest just never spoke again. `capld`, the third resume leg,
+  PASSED even under load, so resume was never universally broken. On the idle
+  host all three fire the named bound (`bound: restoreMachineStateFrom ->
+  VZErrorDomain Code=12 (M119e)`) and PASS.
+- **`cap` FAILED under load**: the eviction sequence stalled mid-chain —
+  `WINBASE.vzsave` and `CAP0.vzsave` evicted, then nothing more; `gosnap: save
+  CAP9 ok` never arrived in 480s while the kernel emitted only scheduler
+  heartbeat chatter. Each snapshot is ~15 MB over vsock. On the idle host the
+  whole chain completes: `evicted WINBASE/CAP0/CAP1`, `saved CAP9.vzsave`,
+  `gosnap: save CAP9 ok`.
 
-No defects found in the GOSNAP.ELF code or its own legs — every `gosnap:` marker asserted by the spec fired correctly on the 11 green legs.
+No defects found in the GOSNAP.ELF code or its own legs — every `gosnap:` marker
+asserted by the spec fired correctly on the 11 legs that passed under load.
 
 ## Improvement candidates
 
@@ -43,4 +65,5 @@ No defects found in the GOSNAP.ELF code or its own legs — every `gosnap:` mark
 - `gh issue list --search "Snapshots GOSNAP" --state open` → no existing audit issue.
 - `bash tools/go/build-gosnap.sh` (GO_FORK_DIR=/Users/tbuddy/dev/VirelaiOS/go-virelai-40900d1c) → GOSNAP.ELF 1,441,952 B.
 - `BOOTS=1 just gate go-snap` → `vgate go-snap: FAILED (11/14 runs; see artifacts/go-snap-report.txt)`. Per-leg verdicts and serial logs in `artifacts/go-snap-run-*.txt`, `artifacts/go-snap-serial-*.log`.
+- **Idle-host discrimination (2026-11-06, worktree `virelaios`, branch `agent/droid/gosnap-idle`, HEAD `1c52270c`, no other class-B gate running)**: `bash tools/go/build-gosnap.sh`, `bash tools/go/build-gotabwm.sh`, `bash tools/go/build-tabapp.sh`, then `BOOTS=1 just gate go-snap` **twice** → `vgate go-snap: PASS (14/14 runs)` in 110s and again in 107s. The three legs that had been silent each report their named bound and PASS on both runs: `ld: runner-rc=1`, `output-contains [SUSPEND-RESUME: armed state=]=1`, `bound: restoreMachineStateFrom -> VZErrorDomain Code=12 (M119e)`; the same for `ld-crash` and `capld`. `cap` completes its chain on both runs (`snapshot evicted WINBASE/CAP0/CAP1.vzsave`, `snapshot saved CAP9.vzsave`, `gosnap: save CAP9 ok`). So the silence and the stalled eviction are load-induced, and the legs' expected outcome includes the Code=12 refusal — a leg that prints `SUSPEND-RESUME: restored` and then goes quiet is the load failure, not the pass path.
 - Interface description read from `user/go/gosnap/main.go` (verbs, consent, markers) and `user/go/gosnap/view.go` (window layout, arm/disarm, 1 Hz poll) — marked observed; pixel-level appearance inferred from widget code, not eyeballed (gate snapshot legs assert chrome, not app art).
