@@ -21,11 +21,11 @@ import (
 )
 
 // pendingFleet maps each apps.txt .ELF row that is not yet a fleet row to
-// the M207 card that adds it. Landing a card removes its names here.
-var pendingFleet = map[string]string{
-	// M207d (#3820): the crypto set.
-	"GOVAULT.ELF": "#3820",
-}
+// the M207 card that adds it. M207d (#3820) emptied the list: every
+// apps.txt Go row is now a fleet row, and this map stays empty — a new
+// pending entry is only lawful while its card is open, and the drift
+// findings above flag a stale one.
+var pendingFleet = map[string]string{}
 
 // nonAppsFleet pins the Go ELFs that hold a fleet row without being
 // apps.txt rows — GODIFF is a named tool (M201b), the other four are the
