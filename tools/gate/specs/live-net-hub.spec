@@ -615,8 +615,18 @@ flintd_store = os.path.join(rd, "hubd-store")
 subprocess.check_call([flintd, "init", "--store=" + flintd_store])
 auth_key_file = os.path.join(rd, "flint-auth.key")
 open(auth_key_file, "w").write(AUTH_KEY_HEX + "\n")
-subprocess.run(["sh", "-c", "lsof -ti tcp:4853 | xargs kill -9"],
-               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+# Lane claim (issue #3909): this hook used to sweep 4853 with
+# `lsof -ti tcp:4853 | xargs kill -9`, which kills ANY holder. 4853 is this
+# spec's own lane, but a second worktree running this same spec is normal in
+# the multiagent model, and the sweep would SIGKILL that run's hubd mid-gate.
+# tools/lib/port_guard.py leases the lane instead: a LIVE sibling is refused
+# by name (exit 3, nothing signaled), while a dead run's leftover hubd is
+# reaped — the #3731 self-heal this sweep was reaching for, without the
+# collateral. check=True because a refusal must fail setup, not be swallowed.
+subprocess.run([sys.executable,
+                os.path.join("tools", "lib", "port_guard.py"),
+                "4853"],
+               check=True)
 time.sleep(0.2)
 flintd_log = open(os.path.join(rd, "hubd.log"), "wb")
 # No --auth-key: the daemon serves without an auth challenge. The
