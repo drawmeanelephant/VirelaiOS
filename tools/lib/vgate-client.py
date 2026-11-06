@@ -94,6 +94,11 @@ def bridge_busy(s):
         # A refused client can be RST before the 'busy' line it was sent
         # is readable (a loaded bridge closes fast): a dead socket right
         # after a successful connect is not-us, so queue like a busy.
+        # Close here too: connect() retries a busy socket every 0.25 s and
+        # never closes it itself (the BUSY_LINE path above does the same
+        # close), so returning without this leaks ~4 fds/s for the whole
+        # wait and can reach the default 256-fd limit mid-gate.
+        s.close()
         return True
     finally:
         s.settimeout(None)
