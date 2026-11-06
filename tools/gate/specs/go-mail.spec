@@ -515,8 +515,10 @@ if not os.path.exists(chain) or not os.path.exists(mailkey):
 procs = []
 for mode, port in (("imap-tls", 26993), ("smtp-tls", 26465),
                    ("imap-plain", 26143)):
-    subprocess.run(["sh", "-c", "lsof -ti tcp:%d | xargs kill -9" % port],
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.run([sys.executable,
+                    os.path.join("tools", "lib", "port_guard.py"),
+                    str(port)],
+                   check=True)
     logpath = os.path.join(run, "maild-%d.log" % port)
     log = open(logpath, "w")
     log.close()

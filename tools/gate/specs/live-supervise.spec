@@ -9,6 +9,8 @@
 # supervisor, 2-7 restart child, 8 never child); the python assert pins that.
 # exec-order: assert-proven -- external monitor clients wait on supervisor
 # readiness markers; program completion and receipts, not echoes, grade the run.
+# Lanes: --console-tcp 24792 since #3909 (was 24788, which is live-quickjs's
+# evals seat — two gates on one console port cannot both run).
 vgate_name live-supervise "M92c/d: retry policies and receipts; GOSET live, deferred and corrupt reload"
 vgate_share arm
 vgate_runner_flags -Xswiftc -DSPIKE
@@ -40,29 +42,29 @@ outcome=restart=0/0 status=137 backoff_s=0
 last-log:
 EOF
 
-vgate_run 01 -- --console-tcp '127.0.0.1:24788' --timeout 180
-vgate_client 01 -- --addr '127.0.0.1:24788' --after 'virelai>' \
+vgate_run 01 -- --console-tcp '127.0.0.1:24792' --timeout 180
+vgate_client 01 -- --addr '127.0.0.1:24792' --after 'virelai>' \
     --send-text 'exec SVFIX.ELF' --expect 'svfixture: ready mode=restart n=1' \
     --timeout 30 --out '$RUN_DIR/client-launch.out'
-vgate_client 01 -- --addr '127.0.0.1:24788' --after 'svfixture: ready mode=restart n=1' --retry-busy \
+vgate_client 01 -- --addr '127.0.0.1:24792' --after 'svfixture: ready mode=restart n=1' --retry-busy \
     --send-text 'kill 2' --expect 'svc: backoff name=SVFIX-RESTART k=1 ' \
     --after-timeout 170 --timeout 30 --out '$RUN_DIR/client-kill1.out'
-vgate_client 01 -- --addr '127.0.0.1:24788' --after 'svfixture: ready mode=restart n=2' --retry-busy \
+vgate_client 01 -- --addr '127.0.0.1:24792' --after 'svfixture: ready mode=restart n=2' --retry-busy \
     --send-text 'kill 3' --expect 'svc: backoff name=SVFIX-RESTART k=2 ' \
     --after-timeout 170 --timeout 30 --out '$RUN_DIR/client-kill2.out'
-vgate_client 01 -- --addr '127.0.0.1:24788' --after 'svfixture: ready mode=restart n=3' --retry-busy \
+vgate_client 01 -- --addr '127.0.0.1:24792' --after 'svfixture: ready mode=restart n=3' --retry-busy \
     --send-text 'kill 4' --expect 'svc: backoff name=SVFIX-RESTART k=3 ' \
     --after-timeout 170 --timeout 30 --out '$RUN_DIR/client-kill3.out'
-vgate_client 01 -- --addr '127.0.0.1:24788' --after 'svfixture: ready mode=restart n=4' --retry-busy \
+vgate_client 01 -- --addr '127.0.0.1:24792' --after 'svfixture: ready mode=restart n=4' --retry-busy \
     --send-text 'kill 5' --expect 'svc: backoff name=SVFIX-RESTART k=4 ' \
     --after-timeout 170 --timeout 30 --out '$RUN_DIR/client-kill4.out'
-vgate_client 01 -- --addr '127.0.0.1:24788' --after 'svfixture: ready mode=restart n=5' --retry-busy \
+vgate_client 01 -- --addr '127.0.0.1:24792' --after 'svfixture: ready mode=restart n=5' --retry-busy \
     --send-text 'kill 6' --expect 'svc: backoff name=SVFIX-RESTART k=5 ' \
     --after-timeout 170 --timeout 30 --out '$RUN_DIR/client-kill5.out'
-vgate_client 01 -- --addr '127.0.0.1:24788' --after 'svfixture: ready mode=restart n=6' --retry-busy \
+vgate_client 01 -- --addr '127.0.0.1:24792' --after 'svfixture: ready mode=restart n=6' --retry-busy \
     --send-text 'kill 7' --expect 'svc: failed name=SVFIX-RESTART reason=restart-limit ' \
     --after-timeout 170 --timeout 30 --out '$RUN_DIR/client-kill6.out'
-vgate_client 01 -- --addr '127.0.0.1:24788' --after 'svfixture: ready mode=never n=1' --retry-busy \
+vgate_client 01 -- --addr '127.0.0.1:24792' --after 'svfixture: ready mode=never n=1' --retry-busy \
     --send-text 'kill 8' --expect 'svfixture: complete' \
     --after-timeout 170 --timeout 30 --out '$RUN_DIR/client-never.out'
 

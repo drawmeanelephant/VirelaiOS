@@ -243,10 +243,10 @@ with open(os.path.join(flintd_store, "streams", ch["stream"] + ".json"), "w") as
          "created": ch["ts"], "forked_from": None},
         separators=(",", ":")) + "\n")
 
-subprocess.run(
-    ["sh", "-c", "lsof -ti tcp:4879 | xargs kill -9"],
-    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-)
+subprocess.run([sys.executable,
+                os.path.join("tools", "lib", "port_guard.py"),
+                "4879"],
+               check=True)
 time.sleep(0.2)
 flintd_log = open(os.path.join(run, "flintd.log"), "wb")
 flintd_proc = subprocess.Popen(

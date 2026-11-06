@@ -307,9 +307,13 @@ echo "run dir: $RUN_DIR"
 for i in "${!VGATE_FILE_NAMES[@]}"; do
     printf '%s' "${VGATE_FILE_BODIES[$i]}" > "$RUN_DIR/${VGATE_FILE_NAMES[$i]}"
 done
+# VIRELAI_GATE_PID lets tools/lib/port_guard.py bound a lane lease to THIS
+# gate's life. The setup hook is not a usable guardian: it exits right after
+# spawning the host server, so a lease keyed on it would release instantly and
+# a second run of the same spec would reap a live server (#3909).
 for i in "${!VGATE_SETUP_PY[@]}"; do
     printf '%s' "${VGATE_SETUP_PY[$i]}" > "$RUN_DIR/setup-$i.py"
-    RUN_DIR="$RUN_DIR" python3 "$RUN_DIR/setup-$i.py"
+    RUN_DIR="$RUN_DIR" VIRELAI_GATE_PID=$$ python3 "$RUN_DIR/setup-$i.py"
 done
 
 : > "$REPORT"
