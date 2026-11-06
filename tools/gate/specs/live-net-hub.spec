@@ -561,13 +561,26 @@ open(os.path.join(rd, "vmb-legs.txt"), "w").write("\n".join(legs) + "\n")
 # JB.SH, whose children run sequentially — the live-dev-loop-proven
 # shape for the install legs (the flint-remote secret serves the
 # uid-1000 lane).
+#
+# The keep-alive is PACED, and that is load-bearing. vm-b is one
+# long-lived peer_watch runner across all of vgate_repeat's iterations,
+# so this line is typed once per iteration into the SAME shell and the
+# loops stack: an unpaced `while true; do GOFETCH ...; done` spins a new
+# TCP connection with no gap, and by iterations 2-3 two or three of them
+# were churning the guest's bounded client-slot table against STORE's
+# own two connections. Observed on the 2026-11-06 reference run: 200
+# keep-alive fetches connected and only 6 EOFs, while the four installs
+# in iterations 2-3 were refused `store: refuse channel_missing` and A
+# never saw their GETs at all (`httpd: request /DROP*` = 0). `sleep 20`
+# holds the 30 s window open with one fetch per loop per 20 s, i.e. the
+# same coverage at ~100x less socket churn.
 open(os.path.join(rd, "vmb-store-legs.txt"), "w").write(
     "net arp 10.0.0.2\n"
     "net\n"
     "net arp 10.0.0.16\n"
     "net\n"
     "net arp 10.0.0.2\n"
-    'exec GOSH.ELF -c "while true; do GOFETCH.ELF http://10.0.0.16:8080/healthz ; done"\n'
+    'exec GOSH.ELF -c "while true; do GOFETCH.ELF http://10.0.0.16:8080/healthz ; sleep 20 ; done"\n'
     'exec GOSH.ELF -c "source /host/JB.SH"\n'
     "net recv\n")
 # Third leg file — the admin half, typed by the THIRD client once B's
