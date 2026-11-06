@@ -629,6 +629,23 @@ if "GORELEASE.ELF" not in rows or rows["GORELEASE.ELF"]["kind"] != "driver":
     sys.exit("FAIL: bundle lacks the GORELEASE.ELF driver row")
 PY
 
+# R4-F1 (#3390): AGENTD.ELF is the principal-binding name — exec refuses
+# name_unprovisioned (EACCES) unless the armed share's OWNERS.TXT pins it
+# uid_system-owned with no non-owner write bit. The bundle is wholly
+# guest-built, so the provision is staged host-side here — the operator,
+# not the artifact, authors the metadata system_owned_key trusts (the
+# same row go-agentd's alt shares carry).
+vgate_assert 02 python <<'PY'
+import os, sys
+share = os.environ.get("VG_SHARE") or os.path.join(os.environ["RUN_DIR"], "share")
+bundle = os.path.join(share, "BUNDLE")
+if not os.path.exists(os.path.join(bundle, "AGENTD.ELF")):
+    sys.exit("FAIL: bundle lacks AGENTD.ELF")
+own = os.path.join(bundle, "OWNERS.TXT")
+open(own, "w").write("#v1\nAGENTD.ELF\t644\t0\t-\n")
+print("provisioned bundle OWNERS.TXT: AGENTD.ELF uid_system 0644 (R4-F1)")
+PY
+
 # Run 03: the host boots what the guest built — the image as the overlay
 # base and the bundle as the armed share. The driver runs its smoke verb
 # against the bundle's fleet rows: spawn, bounded wait, verdict per ELF.
@@ -640,6 +657,11 @@ vgate_assert 03 serial-contains 'release: smoke GOCALC.ELF'
 vgate_assert 03 serial-contains 'release: smoke GOSH.ELF'
 vgate_assert 03 serial-contains 'release: smoke GOBUILD.ELF'
 vgate_assert 03 serial-contains 'release: smoke AGENTD.ELF'
+# The provisioned row must land: the guest-built image measured + exec'd
+# as the agent principal — never the EACCES the unprovisioned name earns.
+vgate_assert 03 serial-contains 'verdict=measured name=AGENTD.ELF uid=2000'
+vgate_assert 03 serial-absent 'release: smoke AGENTD.ELF spawn='
+vgate_assert 03 serial-absent 'verdict=refused:name_unprovisioned'
 vgate_assert 03 serial-contains 'release: smoke OK ran='
 vgate_assert 03 serial-absent 'release: FAIL'
 vgate_assert 03 serial-absent '[EXC] parking:'

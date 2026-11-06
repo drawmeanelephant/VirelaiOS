@@ -693,6 +693,20 @@ os.makedirs(os.path.join(share, "TESTTMP"), exist_ok=True)
 shutil.copyfile("user/go/gobuild/testpkgs.txt",
                 os.path.join(share, "TESTPKGS.TXT"))
 
+# Repo-relative fixtures the run-row tests reach through ../..: /host/SRC/
+# virelai/<pkg> mirrors user/go/<pkg>, so /host mirrors the repo root and
+# ../../../image/kanadict/KANADICT.BIN (virelai/layout, virelai/ime) plus
+# ../../../.build/go/selfhost/GOPKGS.TXT (virelai/gobuild's roundtrip leg)
+# resolve to these copies in-guest exactly as they do on the host.
+for rel in ("image/kanadict/KANADICT.BIN", ".build/go/selfhost/GOPKGS.TXT"):
+    src = os.path.join(repo, *rel.split("/"))
+    if not os.path.exists(src):
+        sys.exit("%s missing — required by the leg-04 test legs" % rel)
+    dst = os.path.join(share, *rel.split("/"))
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    shutil.copyfile(src, dst)
+    print("staged fixture %s -> /host/%s" % (rel, rel))
+
 rows, excluded = [], []
 for line in open("user/go/gobuild/testpkgs.txt"):
     line = line.strip()

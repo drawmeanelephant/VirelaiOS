@@ -433,7 +433,7 @@ pub fn legacyReady(owner: u64) core.Error!u64 {
     c.read_deadline = now() +| core.deadline_ns;
     var mask: u64 = 0;
     if (c.rx_len != 0 or c.peer_fin or c.state == .terminal or c.state == .closing) mask |= 1;
-    if (c.state == .established and c.tx_len == 0) mask |= 2;
+    if (core.txWritable(c)) mask |= 2;
     if (mask & 1 != 0) {
         ready_mask1_count +%= 1;
         ready_mask1_probe = .{

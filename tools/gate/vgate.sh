@@ -438,7 +438,13 @@ vg_assert_one() {
             if [ -n "$snap" ] && [ -f "$snap" ]; then
                 vg_note_evidence "$(basename "$snap")"
                 printf '%s' "$body" > "$RUN_DIR/snap-check.py"
-                if python3 - "$snap" < "$RUN_DIR/snap-check.py" > "$RUN_DIR/snap-check.out" 2>&1; then
+                # The probes the body shells out to (pixel_probe.py,
+                # web-proof/compare.py) locate the run's serial through
+                # VG_SER — the python assert kind already exports it, and
+                # under vgate_repeat the tag-derived fallback name
+                # (vm-serial-LEG.log) does not exist, only LEG-ITER does.
+                if RUN_DIR="$RUN_DIR" VG_SER="$VG_SER" VG_TAG="$VG_TAG" \
+                        python3 - "$snap" < "$RUN_DIR/snap-check.py" > "$RUN_DIR/snap-check.out" 2>&1; then
                     ok=1; detail="snapshot [$a1] PASS ($(basename "$snap"))"
                 else
                     detail="snapshot [$a1] FAIL ($(basename "$snap"); see $VGATE_NAME run $VG_TAG)"

@@ -419,9 +419,10 @@ vgate_assert 01 serial-absent 'gobuild: build OK'
 # loads, ctrl-n jumps the first row to its line:col (the helper.AnswerPlusOne
 # selector on line 5), the status stamp carries the M138b err= count, and
 # the bracket chord round-trips `)`->`(`->`)` before `home` parks on a
-# non-bracket for the named `match none`. Ctrl-S then takes the shipped
-# build's named format refusal and still publishes — the python assert
-# checks the landed bytes against whichever path the binary took.
+# non-bracket for the named `match none`. Ctrl-S then formats and
+# publishes (#3916: go/format ships — the scaffold is gofmt-dirty) — the
+# python assert checks the landed bytes against whichever path the binary
+# took.
 vgate_assert 01 serial-contains 'exec: loaded GOEDIT.ELF'
 vgate_assert 01 serial-contains 'goedit: read /host/LOOP/main.go n='
 vgate_assert 01 serial-contains 'goedit: present'
@@ -431,7 +432,7 @@ vgate_assert 01 serial-contains 'goedit: status line=5/'
 vgate_assert 01 serial-contains ' err=1/'
 vgate_assert 01 serial-count 'goedit: match jump off=' 2
 vgate_assert 01 serial-contains 'goedit: match none'
-vgate_assert 01 serial-contains 'edit: format unavailable (go/format not guest-safe)'
+vgate_assert 01 serial-contains 'goedit: format n='
 vgate_assert 01 serial-contains 'goedit: saved /host/LOOP/main.go'
 vgate_assert 01 serial-absent '[EXC] parking:'
 vgate_assert 01 serial-absent 'exited status=139'

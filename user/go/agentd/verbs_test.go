@@ -102,6 +102,7 @@ type fakeKernel struct {
 	writeErr  int64
 	spawnErr  error
 	spawnPID  int64
+	waited    bool
 	waitErr   error
 	waitSt    int64
 	seatPid   int64
@@ -186,6 +187,7 @@ func (k *fakeKernel) install() {
 		return k.spawnPID, nil
 	}
 	waitFn = func(pid int64, budgetNs int64) (int64, error) {
+		k.waited = true
 		if k.waitErr != nil {
 			return -1, k.waitErr
 		}
@@ -649,6 +651,88 @@ func TestGoshRunLifecycle(t *testing.T) {
 		`{"id":1,"verb":"gosh.run","cmd":"cat NOPE.TXT"}`), testSess(true, nil, "term"))
 	if code != "" || !strings.Contains(res, `"exit_status":3`) {
 		t.Fatalf("nonzero status = %q code %q", res, code)
+	}
+}
+
+// --- gosh.spawn ----------------------------------------------------------------
+
+func TestGoshSpawnValidation(t *testing.T) {
+	seamScope(t)
+	k := &fakeKernel{dirs: map[string][]vi.DirEntry{sandboxDir: {}}}
+	k.install()
+
+	// Disabled daemon: verb_disabled before anything runs.
+	if _, code := verbGoshSpawn(mustReq(t,
+		`{"id":1,"verb":"gosh.spawn","cmd":"exec GOFILES.ELF"}`), testSess(false, nil, "term")); code != "verb_disabled" {
+		t.Fatalf("noexec code = %q", code)
+	}
+	if len(k.execArgv) != 0 {
+		t.Fatal("disabled gosh.spawn spawned")
+	}
+
+	for _, tc := range []struct{ line, code string }{
+		{`{"id":1,"verb":"gosh.spawn"}`, "bad_request"},
+		{`{"id":1,"verb":"gosh.spawn","cmd":"echo hi","timeout_ms":100}`, "bad_request"},
+		{`{"id":1,"verb":"gosh.spawn","cmd":5}`, "bad_request"},
+		{`{"id":1,"verb":"gosh.spawn","cmd":""}`, "too_large"},
+		{`{"id":1,"verb":"gosh.spawn","cmd":"` + strings.Repeat("x", 193) + `"}`, "too_large"},
+		{`{"id":1,"verb":"gosh.spawn","cmd":"echo a > X"}`, "cmd_rejected"},
+		{`{"id":1,"verb":"gosh.spawn","cmd":"echo a #c"}`, "cmd_rejected"},
+		{`{"id":1,"verb":"gosh.spawn","cmd":"exec GOFILES.ELF &"}`, "cmd_rejected"},
+		{`{"id":1,"verb":"gosh.spawn","cmd":"echo 'a"}`, "cmd_rejected"},
+		{`{"id":1,"verb":"gosh.spawn","cmd":"echo a\nls"}`, "cmd_rejected"},
+	} {
+		if _, code := dispatch(mustReq(t, tc.line), testSess(true, nil, allCaps...)); code != tc.code {
+			t.Fatalf("%s: code = %q want %q", tc.line, code, tc.code)
+		}
+		if len(k.execArgv) != 0 {
+			t.Fatalf("%s spawned", tc.line)
+		}
+	}
+}
+
+func TestGoshSpawnLifecycle(t *testing.T) {
+	seamScope(t)
+	var logs []string
+	consoleFn = func(s string) { logs = append(logs, s) }
+	k := &fakeKernel{
+		dirs:     map[string][]vi.DirEntry{sandboxDir: {}},
+		spawnPID: 77,
+	}
+	k.install()
+
+	res, code := verbGoshSpawn(mustReq(t,
+		`{"id":1,"verb":"gosh.spawn","cmd":"exec GOFILES.ELF"}`), testSess(true, nil, "term"))
+	if code != "" {
+		t.Fatal(code)
+	}
+	if res != `{"pid":77}` {
+		t.Fatalf("gosh.spawn = %q", res)
+	}
+	// The spawn is the bare line: no appended capture redirect, no wait,
+	// and the audit-lane capture file is never touched.
+	if len(k.execArgv) != 3 || k.execArgv[0] != "GOSH.ELF" ||
+		k.execArgv[1] != "-c" || k.execArgv[2] != "exec GOFILES.ELF" {
+		t.Fatalf("exec argv = %v", k.execArgv)
+	}
+	if k.waited {
+		t.Fatal("gosh.spawn waited on the child")
+	}
+	for _, p := range k.deleted {
+		if p == outPath {
+			t.Fatal("gosh.spawn touched the capture file")
+		}
+	}
+	if !hasLine(logs, "agentd: spawn pid=77") {
+		t.Fatalf("markers = %v", logs)
+	}
+
+	// A spawn refusal is spawn_failed — the same answer run gives.
+	k.spawnErr = errors.New("ENOENT")
+	k.execArgv = nil
+	if _, code = verbGoshSpawn(mustReq(t,
+		`{"id":1,"verb":"gosh.spawn","cmd":"exec GOFILES.ELF"}`), testSess(true, nil, "term")); code != "spawn_failed" {
+		t.Fatalf("spawn error code = %q", code)
 	}
 }
 

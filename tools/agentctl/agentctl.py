@@ -417,7 +417,7 @@ def journey_full(s, cred):
             raise Fail("gosh.run is not advertised with --allow-exec")
         for v in (
             "proc.list", "proc.get", "fs.read", "fs.write",
-            "ui.windows", "ui.screenshot",
+            "ui.windows", "ui.screenshot", "gosh.spawn",
         ):
             if v not in verbs:
                 raise Fail("missing advertised verb " + v)
@@ -564,6 +564,50 @@ def journey_full(s, cred):
             lambda: s.call("gosh.run", cmd="sleep 5", timeout_ms=1000), "timed_out"
         )
 
+    def gosh_spawn():
+        # Card #3900: the bounded non-blocking launch — the request
+        # answers the child's pid instead of holding for its lifetime.
+        # A 20 s sleep proves it end-to-end: the call returns at once
+        # while proc.get still finds the spawned GOSH running, and the
+        # grammar refusals are run's (& stays rejected — under spawn
+        # the whole line is already off the wait path).
+        started = time.monotonic()
+        res = s.call("gosh.spawn", cmd="sleep 20")
+        if time.monotonic() - started > 5:
+            raise Fail("gosh.spawn held the request for the child")
+        pid = res.get("pid")
+        if not isinstance(pid, int) or pid <= 0:
+            raise Fail("gosh.spawn did not answer a pid: %r" % (res,))
+        deadline = time.monotonic() + 15
+        row = {}
+        while True:
+            try:
+                row = s.call("proc.get", pid=pid)
+            except Refused:
+                pass  # the row can lag the exec by a tick — keep polling
+            if row.get("name") == "GOSH.ELF" and row.get("state") == "running":
+                break
+            if time.monotonic() >= deadline:
+                raise Fail("the spawned child is not a running GOSH.ELF: %r" % (row,))
+            time.sleep(0.5)
+        for cmd in ("echo a > X", "echo a #c", "exec GOFILES.ELF &"):
+            expect_refused(lambda c=cmd: s.call("gosh.spawn", cmd=c), "cmd_rejected")
+        expect_refused(
+            lambda: s.call("gosh.spawn", cmd="echo hi", timeout_ms=1000),
+            "bad_request",
+        )
+
+    def gosh_spawn_desk():
+        # The desk-app launch the card named: `exec GOEDIT.ELF` under
+        # gosh.run waited on the app's lifetime and refused timed_out
+        # while the window opened anyway. Under spawn the request
+        # answers ok with a pid at once and the Edit row lands on the
+        # strip — run after ui.windows so Calc owns focus first.
+        res = s.call("gosh.spawn", cmd="exec GOEDIT.ELF")
+        if not isinstance(res.get("pid"), int) or res.get("pid") <= 0:
+            raise Fail("desk-app spawn did not answer a pid: %r" % (res,))
+        wait_for_app(s, "Edit")
+
     def ui_windows():
         # The gate stages GOCALC.ELF only after the first ui.windows
         # request (the task pool cannot seat four Go runtimes at once —
@@ -625,7 +669,9 @@ def journey_full(s, cred):
         ("gosh-stream", gosh_stream),
         ("gosh-reds", gosh_reds),
         ("gosh-timeout", gosh_timeout),
+        ("gosh-spawn", gosh_spawn),
         ("ui.windows", ui_windows),
+        ("gosh-spawn-desk", gosh_spawn_desk),
         ("ui.screenshot", ui_screenshot),
         ("framing-reds", framing_reds),
         ("line-too-long", too_long),
@@ -690,11 +736,14 @@ def journey_noexec(s, cred):
         verbs = s.connect(cred[0], cred[1])
         if "gosh.run" in verbs:
             raise Fail("gosh.run is advertised without --allow-exec")
+        if "gosh.spawn" in verbs:
+            raise Fail("gosh.spawn is advertised without --allow-exec")
         if s.agent != cred[0] or "term" not in s.caps:
             raise Fail("the session did not resolve the agent's caps")
 
     def disabled():
         expect_refused(lambda: s.call("gosh.run", cmd="echo x"), "verb_disabled")
+        expect_refused(lambda: s.call("gosh.spawn", cmd="echo x"), "verb_disabled")
 
     def no_seat():
         res = s.call("ui.windows")
@@ -949,6 +998,7 @@ def journey_capsneg(s, cred):
             ("ui.input", {"win": 0, "events": [{"type": "key", "usage": 4}]},
              "input"),
             ("gosh.run", {"cmd": "echo hi"}, "term"),
+            ("gosh.spawn", {"cmd": "echo hi"}, "term"),
         ):
             expect_refused(
                 lambda v=verb, a=args: s.call(v, **a), "cap_required"

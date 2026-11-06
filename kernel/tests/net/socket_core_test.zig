@@ -111,8 +111,9 @@ test "socket core: two children, third refusal uses its own address and counts o
     try t.expectEqual(@as(usize, 4), try c.send(7, one, "hold", 0));
     cap.drain(&c);
     var saved: [wire.segment_max]u8 = undefined;
-    const len = c.children[0].?.tx_len;
-    @memcpy(saved[0..len], c.children[0].?.tx[0..len]);
+    const held = &c.children[0].?.tpool.segs[c.children[0].?.tx_head];
+    const len = held.len;
+    @memcpy(saved[0..len], held.bytes[0..len]);
     const third: core.Endpoint = .{ .ip = .{ 10, 0, 0, 9 }, .port = 6000 };
     var frame = Frame.init(third, 0xffffffff, 0, wire.flag_syn, "");
     try frame.inject(&c, 0);
@@ -125,7 +126,7 @@ test "socket core: two children, third refusal uses its own address and counts o
     try t.expectEqualSlices(u8, &peer_mac, &cap.mac);
     try t.expectEqual(@as(u32, 0), std.mem.readInt(u32, cap.bytes[8..12], .big));
     try t.expectEqual(@as(u8, wire.flag_rst | wire.flag_ack), cap.bytes[13]);
-    try t.expectEqualSlices(u8, saved[0..len], c.children[0].?.tx[0..len]);
+    try t.expectEqualSlices(u8, saved[0..len], c.children[0].?.tpool.segs[c.children[0].?.tx_head].bytes[0..len]);
     try c.close(7, two);
     frame = Frame.init(third, 30, 0, wire.flag_syn, "");
     try frame.inject(&c, 0);
@@ -361,29 +362,41 @@ test "socket core: full IPv4 tuple and malformed packets cannot mutate a child" 
     var buf: [8]u8 = undefined;
     try t.expectEqual(@as(usize, 4), try c.read(7, h, &buf, 0));
 }
-test "socket core: send enforces backpressure and short counts without replacing pending data" {
+test "socket core: send enforces window backpressure and short counts without replacing pending data" {
     var c: core.Core = .{};
     _ = try init(&c);
     var cap: Capture = .{};
     const h = try establish(&c, &cap, remote, 0);
     const body: [wire.payload_max + 1]u8 = @splat('z');
+    // M213b (#3877): the send window — not a lone in-flight segment — is
+    // the backpressure bound. The injected peer advertises wire.window
+    // (4096), tighter than cwnd: two full segments and a 1176-byte
+    // partial fill it; the edge short-counts, then the bound refuses.
     try t.expectEqual(@as(usize, wire.payload_max), try c.send(7, h, &body, 0));
+    try t.expect((try c.ready(7, h)).write);
+    try t.expectEqual(@as(usize, wire.payload_max), try c.send(7, h, &body, 0));
+    try t.expectEqual(@as(usize, 4096 - 2 * wire.payload_max), try c.send(7, h, &body, 0));
     try t.expect(!(try c.ready(7, h)).write);
     try t.expectError(error.WouldBlock, c.send(7, h, "overwrite", 0));
-    try t.expectError(error.WouldBlock, c.shutdown(7, h, 0));
     cap.fail = true;
     try t.expectEqual(core.Flush.refused, c.flush(&cap, Capture.transmit));
-    try t.expect(!c.children[0].?.tx_started);
+    try t.expect(!c.children[0].?.tpool.segs[c.children[0].?.tx_head].sent);
     cap.fail = false;
     cap.drain(&c);
+    // A mid-segment ack honestly frees its already-covered bytes — the
+    // window opens before the whole segment retires.
     var frame = Frame.init(remote, 11, 101 + wire.payload_max - 1, wire.flag_ack, "");
     try frame.inject(&c, 0);
-    try t.expect(!(try c.ready(7, h)).write);
-    frame = Frame.init(remote, 11, 101 + wire.payload_max + 1, wire.flag_ack, "");
-    try frame.inject(&c, 0);
-    try t.expect(!(try c.ready(7, h)).write);
+    try t.expect((try c.ready(7, h)).write);
+    // Cover the first segment: its ring slot retires.
     frame = Frame.init(remote, 11, 101 + wire.payload_max, wire.flag_ack, "");
     try frame.inject(&c, 0);
+    try t.expectEqual(@as(u8, 2), c.children[0].?.tx_count);
+    try t.expect((try c.ready(7, h)).write);
+    // Cover the whole queue: the window reopens whole.
+    frame = Frame.init(remote, 11, 101 + 4096, wire.flag_ack, "");
+    try frame.inject(&c, 0);
+    try t.expectEqual(@as(u8, 0), c.children[0].?.tx_count);
     try t.expect((try c.ready(7, h)).write);
 }
 test "socket core: byte-identical retransmission and ACK stop, failed TX retries fairly" {
@@ -404,7 +417,7 @@ test "socket core: byte-identical retransmission and ACK stop, failed TX retries
     try c.poll(core.rto_floor_ns);
     cap.fail = true;
     try t.expectEqual(core.Flush.refused, c.flush(&cap, Capture.transmit));
-    try t.expectEqual(@as(u8, 0), c.children[0].?.retries);
+    try t.expectEqual(@as(u8, 0), c.children[0].?.tpool.segs[c.children[0].?.tx_head].retries);
     cap.fail = false;
     cap.drain(&c);
     try t.expectEqualSlices(u8, original[0..len], cap.bytes[0..cap.len]);
@@ -456,7 +469,7 @@ test "socket core: read/write/close deadlines expire without a transport or sche
         try c.poll(expires);
         try t.expect((try c.ready(7, h)).terminal);
         try t.expectEqual(core.Outcome.timeout, try c.status(7, h));
-        try t.expectEqual(@as(usize, 0), c.children[0].?.tx_len);
+        try t.expectEqual(@as(u8, 0), c.children[0].?.tx_count);
         try t.expectEqual(@as(usize, 1), c.liveChildren());
         c.closeOwner(7);
         try t.expectEqual(@as(usize, 0), c.liveChildren());
@@ -587,11 +600,16 @@ test "socket core: stalled TX does not block other child or refusal progress" {
     cap.fail = false;
     try t.expectEqual(core.Flush.sent, c.flush(&cap, Capture.transmit));
     try t.expectEqualDeep(other, cap.endpoint);
-    try t.expect(!c.children[0].?.tx_started and c.children[1].?.tx_started);
+    try t.expect(!c.children[0].?.tpool.segs[c.children[0].?.tx_head].sent and
+        c.children[1].?.tpool.segs[c.children[1].?.tx_head].sent);
     var frame = Frame.init(other, 11, 109, wire.flag_ack, "");
     try frame.inject(&c, 0);
     try t.expect((try c.ready(7, second)).write);
-    try t.expect(!(try c.ready(7, first)).write);
+    // M213b: the stalled child's segment still occupies its slot — the
+    // sibling's ack freed nothing of ITS queue (its window has room, so
+    // write-readiness is not the hold-up; the failed transmit is).
+    try t.expectEqual(@as(u8, 1), c.children[0].?.tx_count);
+    try t.expect(!c.children[0].?.tpool.segs[c.children[0].?.tx_head].sent);
 }
 test "socket core: repeated close/death fully recovers bounded capacity without token aliasing" {
     var c: core.Core = .{};
@@ -642,7 +660,7 @@ test "socket core: peer zero-window backpressure and short-window writes are exp
     // An ACK must not retire data before the transport accepted it.
     frame = Frame.init(remote, 11, 103, wire.flag_ack, "");
     try frame.inject(&c, 0);
-    try t.expectEqual(@as(usize, 22), c.children[0].?.tx_len);
+    try t.expectEqual(@as(u16, 22), c.children[0].?.tpool.segs[c.children[0].?.tx_head].len);
     cap.drain(&c);
     try frame.inject(&c, 0);
     try t.expect((try c.ready(7, h)).write);
@@ -680,8 +698,8 @@ test "socket core: unexpected SYN-ACK cannot retire established pending data" {
     cap.drain(&c);
     var frame = Frame.init(remote, 11, 105, wire.flag_syn | wire.flag_ack, "");
     try frame.inject(&c, 0);
-    try t.expectEqual(@as(usize, 24), c.children[0].?.tx_len);
-    try t.expect(!(try c.ready(7, h)).write);
+    try t.expectEqual(@as(u16, 24), c.children[0].?.tpool.segs[c.children[0].?.tx_head].len);
+    try t.expectEqual(@as(u8, 1), c.children[0].?.tx_count);
 }
 
 test "socket core: checksum-valid fragments and reserved IPv4 flags are refused" {
@@ -1100,4 +1118,120 @@ test "socket core: pool slots are reclaimed on close and on reset" {
     const h3 = try establish(&c, &cap, remote, 0);
     try t.expectEqual(@as(u16, core.recv_window), std.mem.readInt(u16, cap.bytes[14..16], .big));
     try t.expectError(error.WouldBlock, c.read(7, h3, &buf, 0));
+}
+
+// --- M213b (#3877): the send window + the smallest honest cwnd ---
+
+test "socket core: the send window pipelines segments and frees them by cumulative ack" {
+    var c: core.Core = .{};
+    _ = try init(&c);
+    var cap: Capture = .{};
+    const h = try establish(&c, &cap, remote, 0);
+    // Raise the peer's advertised window past cwnd so the CONGESTION
+    // bound — not the peer — is the limiter being measured.
+    var frame = Frame.init(remote, 11, 101, wire.flag_ack, "");
+    frame.window(64000);
+    try frame.inject(&c, 0);
+    // Three segments queue back-to-back and emit without an ack between
+    // — the stop-and-wait law is gone inside the window.
+    const body: [wire.payload_max]u8 = @splat('p');
+    for (0..3) |_| try t.expectEqual(@as(usize, wire.payload_max), try c.send(7, h, &body, 0));
+    try t.expectEqual(@as(u8, 3), c.children[0].?.tx_count);
+    var seqs: [3]u32 = undefined;
+    for (0..3) |i| {
+        try t.expectEqual(core.Flush.sent, c.flush(&cap, Capture.transmit));
+        seqs[i] = std.mem.readInt(u32, cap.bytes[4..8], .big);
+    }
+    try t.expectEqual(@as(u32, 101), seqs[0]);
+    try t.expectEqual(@as(u32, 101 + wire.payload_max), seqs[1]);
+    try t.expectEqual(@as(u32, 101 + 2 * wire.payload_max), seqs[2]);
+    try t.expectEqual(core.Flush.empty, c.flush(&cap, Capture.transmit));
+    // A cumulative ack covering the first two releases exactly them.
+    frame = Frame.init(remote, 11, 101 + 2 * wire.payload_max, wire.flag_ack, "");
+    frame.window(64000);
+    try frame.inject(&c, 0);
+    try t.expectEqual(@as(u8, 1), c.children[0].?.tx_count);
+    try t.expectEqual(@as(u32, 101 + 2 * wire.payload_max), c.children[0].?.snd_una);
+    // The ring fills its twelve slots and wraps onto the freed head —
+    // then the segment bound itself refuses, honestly. (The SYN-ACK
+    // held slot 0; the head sits one past the last queued index.)
+    for (0..11) |_| _ = try c.send(7, h, &body, 0);
+    try t.expectError(error.WouldBlock, c.send(7, h, &body, 0));
+    try t.expectEqual(@as(u8, core.send_max_segs), c.children[0].?.tx_count);
+    try t.expectEqual(@as(u8, 3), c.children[0].?.tx_head);
+}
+
+test "socket core: RTO halves cwnd and clean acks regrow it additively" {
+    var c: core.Core = .{};
+    _ = try init(&c);
+    var cap: Capture = .{};
+    const h = try establish(&c, &cap, remote, 0);
+    const conn = &c.children[0].?;
+    // The injected peer advertises 4096 < send_window: shrink cwnd into
+    // the test's reach — loss halves it, clean acks regrow it.
+    conn.cwnd = 2 * wire.payload_max;
+    const body: [wire.payload_max]u8 = @splat('w');
+    _ = try c.send(7, h, &body, 0);
+    _ = try c.send(7, h, &body, 0);
+    try t.expectError(error.WouldBlock, c.send(7, h, &body, 0)); // cwnd full
+    cap.drain(&c);
+    // Loss: the RTO marks the head due and halves the window — the
+    // second segment stays out until room returns.
+    const rto = conn.rto_ns_cur;
+    try c.poll(rto);
+    try t.expectEqual(@as(u32, wire.payload_max), conn.cwnd);
+    try t.expect(conn.tpool.segs[conn.tx_head].due);
+    cap.drain(&c);
+    try t.expectEqual(@as(u64, 1), c.counters.retransmitted);
+    // Recovery is additive per newly-acked byte, ~smss^2/cwnd each —
+    // the ack of the retransmitted segment already regrows one segment
+    // (the pipe demonstrably moved), the next clean ack adds a fraction.
+    var frame = Frame.init(remote, 11, 101 + wire.payload_max, wire.flag_ack, "");
+    try frame.inject(&c, rto + 1);
+    try t.expectEqual(@as(u32, 2 * wire.payload_max), conn.cwnd);
+    frame = Frame.init(remote, 11, 101 + 2 * wire.payload_max, wire.flag_ack, "");
+    try frame.inject(&c, rto + 2);
+    try t.expectEqual(@as(u8, 0), conn.tx_count);
+    // 2920 + 1460*1460/2920 = 3650: additive, well under doubling.
+    try t.expectEqual(@as(u32, 3650), conn.cwnd);
+    // And never past the named bound.
+    conn.cwnd = core.send_window;
+    frame = Frame.init(remote, 11, 101 + 2 * wire.payload_max, wire.flag_ack, "x");
+    try frame.inject(&c, rto + 2);
+    try t.expectEqual(@as(u32, core.send_window), conn.cwnd);
+}
+
+test "socket core: shutdown FIN tails pending data; peer-FIN close-out queues behind the window" {
+    var c: core.Core = .{};
+    _ = try init(&c);
+    var cap: Capture = .{};
+    const h = try establish(&c, &cap, remote, 0);
+    _ = try c.send(7, h, "tail", 0);
+    // The old one-slot law WouldBlocked here; now the FIN takes a slot.
+    try c.shutdown(7, h, 0);
+    try t.expectEqual(@as(u8, 2), c.children[0].?.tx_count);
+    try t.expect(c.children[0].?.fin_queued);
+    try t.expectEqual(core.State.closing, c.children[0].?.state);
+    cap.drain(&c);
+    try t.expectEqual(@as(u8, wire.flag_fin | wire.flag_ack), cap.bytes[13]);
+    // The peer's ack of everything plus its own FIN completes .eof.
+    var frame = Frame.init(remote, 11, 101 + 5, wire.flag_ack | wire.flag_fin, "");
+    try frame.inject(&c, 0);
+    try t.expectEqual(core.Outcome.eof, try c.status(7, h));
+
+    const h2 = try establish(&c, &cap, other, 0);
+    _ = try c.send(7, h2, "hold", 0);
+    // A peer FIN while our data is in flight: the close-out FIN tails
+    // the queue immediately — no waiting for the drain first.
+    frame = Frame.init(other, 11, 101, wire.flag_ack | wire.flag_fin, "");
+    try frame.inject(&c, 0);
+    try t.expect(c.children[1].?.fin_queued);
+    try t.expectEqual(core.State.closing, c.children[1].?.state);
+    try t.expectEqual(@as(u8, 2), c.children[1].?.tx_count);
+    // Only the full cumulative ack finishes the dance — and the peer's
+    // ack only counts once the queue actually reached the wire.
+    cap.drain(&c);
+    frame = Frame.init(other, 12, 101 + 5, wire.flag_ack, "");
+    try frame.inject(&c, 0);
+    try t.expectEqual(core.Outcome.eof, try c.status(7, h2));
 }

@@ -558,6 +558,35 @@ func TestGoshRunReceiptPair(t *testing.T) {
 	}
 }
 
+// gosh.spawn leaves the same intent + outcome pair — and the receipts
+// name spawn, not run (card #3900).
+func TestGoshSpawnReceiptPair(t *testing.T) {
+	seamScope(t)
+	k := &fakeKernel{spawnPID: 77}
+	k.install()
+	sessShare = map[string][]byte{}
+	files := sessShare
+	sessionSeams(t, keyringBody())
+	c := &fakeConn{chunks: [][]byte{[]byte(
+		authLine(t, pinnedAgent) + "\n" +
+			`{"id":1,"verb":"gosh.spawn","cmd":"exec GOFILES.ELF"}` + "\n"),
+	}, recvErr: errPeerGoneTest}
+	session(c, true)
+	names := receiptNames(files)
+	// open + intent + outcome + close.
+	if len(names) != 4 {
+		t.Fatalf("receipts = %v", names)
+	}
+	for _, n := range names[1:3] {
+		if got := receiptField(t, receiptLine1(t, files, n), "verb").str; got != "gosh.spawn" {
+			t.Fatalf("receipt verb = %q", got)
+		}
+	}
+	if got := receiptField(t, receiptLine1(t, files, names[2]), "result").str; got != "ok" {
+		t.Fatalf("outcome result = %q", got)
+	}
+}
+
 func jvalHas(membs []jmember, key string) bool {
 	for _, m := range membs {
 		if m.key == key {

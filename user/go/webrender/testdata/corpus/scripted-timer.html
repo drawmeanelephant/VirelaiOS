@@ -1,0 +1,15 @@
+<!doctype html>
+<html><head><title>Scripted Timer Corpus Row</title></head>
+<body>
+<h1>timed update row</h1>
+<p id="tick"></p>
+<p>the tick paragraph starts EMPTY: its text can only be the timer
+callback's write after the drain answered the parked timer.next ask.</p>
+<script>
+console.log("armed title=" + document.title);
+setTimeout(function() {
+  document.getElementById("tick").textContent = "tock-1200";
+  console.log("cb=fired");
+}, 1200);
+</script>
+</body></html>

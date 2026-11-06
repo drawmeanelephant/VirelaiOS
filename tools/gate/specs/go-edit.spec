@@ -43,6 +43,10 @@
 #   M138b (#2776) adds run 13: bracket matching — caret on `{`, the `}`
 #      match under-painted teal (pixel probe on the captured frame), and
 #      Ctrl-B jumping caret->match->caret->`match none` on a non-bracket.
+#   #3916 runs 20-22: format-on-save is the shipped build — three tagged
+#      legs, one unformatted .go seed each, asserting the gofmt receipt
+#      (`format n=41`), the named refusal's absence, and the formatted
+#      bytes on the share.
 #
 # HOST PREREQUISITE (fails the gate honestly when missing):
 #   bash tools/go/build-goedit.sh   ->  .build/go/GOEDIT.ELF
@@ -1624,3 +1628,81 @@ vgate_assert 19 serial-contains 'goedit: qopen cancel'
 vgate_assert 19 serial-contains 'rx-goedit-qopen-ok'
 vgate_assert 19 serial-absent '[EXC] parking:'
 vgate_assert 19 serial-absent 'exited status=139'
+
+# --- #3916 runs 20-22: format-on-save is the shipped build ---------------
+# The M138b probe refused the editfmt image against exec_program_max — the
+# wrong bound: a gap-layout static ELF streams past the staging buffer,
+# bounded by exec_image_max (32 MiB)/elf.map_max (64 MiB). The 2,556,064
+# byte image fits and execs, so the default build carries go/format and
+# the named refusal is gone from the binary AND the serial.
+# The card's K=3 is three tagged legs (the live-ssh-server run-04 pattern —
+# vgate_repeat would triple the whole 19-run spec and re-read mutated
+# seeds). Each leg opens its own 42-byte unformatted .go seed, Ctrl-S
+# formats in place (one op -> `goedit: dirty`), the receipt pins the gofmt
+# length (n=41), and the host assert byte-compares the canonical output.
+
+vgate_setup_python <<'PY'
+import os
+share = os.environ.get("VG_SHARE") or os.path.join(os.environ["RUN_DIR"], "share")
+ed = os.path.join(share, "EDIT")
+os.makedirs(ed, exist_ok=True)
+for name in ("FMT1.GO", "FMT2.GO", "FMT3.GO"):
+    with open(os.path.join(ed, name), "wb") as f:
+        f.write(b"package main\nfunc  main( ) { println(1) }\n")
+PY
+
+vgate_file script2-20.txt <<'EOF'
+exec GOEDIT.ELF /host/EDIT/FMT1.GO
+EOF
+
+vgate_file script2-21.txt <<'EOF'
+exec GOEDIT.ELF /host/EDIT/FMT2.GO
+EOF
+
+vgate_file script2-22.txt <<'EOF'
+exec GOEDIT.ELF /host/EDIT/FMT3.GO
+EOF
+
+vgate_file script3-fmt.txt <<'EOF'
+dui close 2
+echo rx-goedit-fmt-ok
+EOF
+
+for leg in 20 21 22; do
+    n=$((leg - 19))
+    vgate_run "$leg" -- \
+        --screen "\$RUN_DIR/screen-$leg" \
+        --via-virtio \
+        --script '$RUN_DIR/script.txt' \
+        --script2 "\$RUN_DIR/script2-$leg.txt" \
+        --script2-after 'tabwm: sidebar-rendered' \
+        --input-chords 'ctrl-s' \
+        --input-chords-after 'goedit: present' \
+        --script3 '$RUN_DIR/script3-fmt.txt' \
+        --script3-after 'goedit: saved ' \
+        --script-expect 'rx-goedit-fmt-ok' --timeout 240
+
+    vgate_assert "$leg" serial-contains 'exec: loaded GOEDIT.ELF'
+    vgate_assert "$leg" serial-contains "goedit: read /host/EDIT/FMT$n.GO n=42"
+    vgate_assert "$leg" serial-contains 'goedit: present'
+    vgate_assert "$leg" serial-contains 'goedit: format n=41'
+    vgate_assert "$leg" serial-absent 'edit: format unavailable'
+    vgate_assert "$leg" serial-contains 'goedit: dirty'
+    vgate_assert "$leg" serial-contains "goedit: saved /host/EDIT/FMT$n.GO n=41"
+    vgate_assert "$leg" serial-contains 'goedit: close'
+    vgate_assert "$leg" serial-contains 'rx-goedit-fmt-ok'
+    vgate_assert "$leg" serial-absent '[EXC] parking:'
+    vgate_assert "$leg" serial-absent 'exited status=139'
+
+    vgate_assert "$leg" python <<PY
+import os
+share = os.environ["VG_SHARE"]
+path = os.path.join(share, "EDIT", "FMT$n.GO")
+want = b"package main\n\nfunc main() { println(1) }\n"
+got = open(path, "rb").read()
+if got != want:
+    print("FORMAT SAVE MISMATCH: got %r want %r" % (got, want))
+    raise SystemExit(1)
+print("formatted save verified on the host: %r (%d bytes)" % (got, len(got)))
+PY
+done

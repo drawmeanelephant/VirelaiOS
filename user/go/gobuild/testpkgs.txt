@@ -42,8 +42,8 @@ virelai/gsport/sig
 virelai/gsport/vfs
 virelai/heap
 virelai/hostint
-virelai/httpd
 virelai/icons
+virelai/ime
 virelai/init
 virelai/layout
 virelai/logfixture
@@ -114,6 +114,7 @@ excluded virelai/gsport/ipc dep_unsupported: needs net+netip+internal/singleflig
 excluded virelai/flint/parser dep_unsupported: parser_test drives os/exec corpus tooling
 excluded virelai/proffixture dep_unsupported: needs os/exec
 excluded virelai/svfixture dep_unsupported: gate_test needs os/exec
+excluded virelai/httpd dep_unsupported: screen_test decodes golden PNGs via image/png (M107b table does not stage it)
 excluded virelai/charmhello module_closure: charm.land/bubbletea test closure
 excluded virelai/files module_closure: bubbletea test closure
 excluded virelai/gitui module_closure: bubbletea test closure

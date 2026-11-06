@@ -144,10 +144,14 @@ func TestSaveAttachDecodesAndIndexes(t *testing.T) {
 
 // --- the opens= route -----------------------------------------------------
 
+// The row order is the REAL manifest's (image/apps.txt): NOTE's bare
+// opens=text row precedes the subtype rows, exactly where it claimed
+// text/calendar and text/vcard on the gate before the route preferred
+// the exact subtype spelling (#3858).
 const testAppsTxt = `# test manifest
-GOCLOCK.ELF | Clock | k | dock=false | v=2 | opens=text/calendar
-GOFILES.ELF | Files | f | dock=true | v=2 | opens=text/vcard
 NOTE.ELF | Text Editor | n | dock=true | v=2 | opens=text
+GOFILES.ELF | Files | f | dock=true | v=2 | opens=text/vcard
+GOCLOCK.ELF | Clock | k | dock=false | v=2 | opens=text/calendar
 `
 
 // swapAttachSeams installs a fake manifest read and a recording exec.
@@ -208,6 +212,21 @@ func TestOpenAttachRoutes(t *testing.T) {
 	if err := openAttach("ghost.zip"); err == nil ||
 		err.Error() != "gomail: refuse open ghost.zip" {
 		t.Fatalf("ghost %v", err)
+	}
+}
+
+// A type with no exact acceptor still falls back to the first
+// bare-family acceptor in manifest order — the subtype preference narrows
+// the dispatch, it never removes a family route.
+func TestOpenAttachFamilyFallback(t *testing.T) {
+	f := swapCache(t)
+	f.put("ATTACH", "Attach\t1\tnotes.txt\ttext/plain\tnotes.txt\n")
+	calls := swapAttachSeams(t, testAppsTxt)
+	if err := openAttach("notes.txt"); err != nil {
+		t.Fatalf("txt open %v", err)
+	}
+	if got := (*calls)[0]; got != "NOTE.ELF /host/MAIL/notes.txt" {
+		t.Fatalf("txt exec %q", got)
 	}
 }
 

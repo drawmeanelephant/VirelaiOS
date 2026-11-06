@@ -405,11 +405,25 @@ func opensAccepts(opens []string, mt string) bool {
 }
 
 // attRoute resolves the declared mime spelling against the live
-// manifest, first acceptor in manifest order — the dispatch the seat's
-// open-with rows and GOFILES' submenu compute for the same spelling.
+// manifest. An exact type/subtype acceptor outranks a bare-family one —
+// the subtype spelling is the narrower claim ('a subtype spelling takes
+// only itself', the apps.txt header's own words), so text/calendar lands
+// on GOCLOCK even though NOTE's opens=text row sits earlier in the
+// manifest and also accepts it. Manifest order decides inside each
+// class; a spelling with no exact acceptor falls back to the first
+// family acceptor exactly as before.
 func attRoute(mt string) (attAppEntry, bool) {
-	for _, e := range attApps() {
-		if opensAccepts(e.opens, lowerASCII(mt)) {
+	mt = lowerASCII(mt)
+	apps := attApps()
+	for _, e := range apps {
+		for _, o := range e.opens {
+			if o == mt {
+				return e, true
+			}
+		}
+	}
+	for _, e := range apps {
+		if opensAccepts(e.opens, mt) {
 			return e, true
 		}
 	}

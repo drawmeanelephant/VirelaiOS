@@ -43,6 +43,12 @@
 # bare, and the picker's stored row connects with no prompt and no
 # consent re-ask.
 #
+# M212c (#3874) adds runs 14-16, the WebSocket wave: run 14 is the
+# codec's echo leg (WSECHO.ELF vs wsd.py's echo mode -- text, binary,
+# ping/pong, fragmented text, close); run 15 is the consumer leg
+# (GOIRC's --ws gateway transport, ircv3 line-per-message framing);
+# run 16 dials five conn-indexed poisons for the named refusals.
+#
 # M147c (#2803) is the K=3 acceptance: vgate_repeat 3 replays every leg.
 # Run 07 is the scripted conversation the card names -- TLS first,
 # plaintext only after the stored consent, a mention toast with a real
@@ -72,7 +78,7 @@
 # asserts. Run 07's TLS leg wraps the same pinned leaf.example.com
 # chain go-fetch-https serves (user/src/lib/tls/vectors/fx).
 
-vgate_name go-irc "M147a+b+c #2801/#2802/#2803: GOIRC.ELF core (register/join/recv/drop/reconnect, consent refusal, 433) + UI legs (mention toast click-through, consent dialog) + K=3 journey (TLS first, consent-stored plaintext, toast, snapshot, restore) + M152e #2919 run 09 (/hl toast, /log share file tail) + M196c #3380 runs 10-11 (slot-70 stored SASL + procs no-secret-on-argv, sasl-argv refusal) + #3779 runs 12-13 (first-run connect face: server+nick prompts + GOIRC.TXT persist, saved-server picker)"
+vgate_name go-irc "M147a+b+c #2801/#2802/#2803: GOIRC.ELF core (register/join/recv/drop/reconnect, consent refusal, 433) + UI legs (mention toast click-through, consent dialog) + K=3 journey (TLS first, consent-stored plaintext, toast, snapshot, restore) + M152e #2919 run 09 (/hl toast, /log share file tail) + M196c #3380 runs 10-11 (slot-70 stored SASL + procs no-secret-on-argv, sasl-argv refusal) + #3779 runs 12-13 (first-run connect face: server+nick prompts + GOIRC.TXT persist, saved-server picker) + M212c #3874 runs 14-16 (WSECHO echo leg, GOIRC --ws consumer leg, five named ws refusals)"
 vgate_share seed
 vgate_runner_flags -Xswiftc -DSPIKE
 vgate_repeat 3 BOOTS
@@ -1066,8 +1072,9 @@ if len(blobs) != 2:
 
 def ircstate(b):
     # v2 is the M147b layout; v3 (M152e #2919) appends the /hl rule set —
-    # a u16 count of u16-prefixed words after the chan records.
-    if b[0] not in (2, 3):
+    # a u16 count of u16-prefixed words after the chan records; v4
+    # (M212c #3874) appends the ws request path as one u16-prefixed str.
+    if b[0] not in (2, 3, 4):
         sys.exit("ircState ver %d" % b[0])
     o = 2
     def u16():
@@ -1089,10 +1096,13 @@ def ircstate(b):
     if b[0] >= 3:
         for _ in range(u16()):
             rules.append(s())
+    wspath = ""
+    if b[0] >= 4:
+        wspath = s()
     if o != len(b):
         sys.exit("trailing blob bytes %d" % (len(b) - o))
     return dict(flags=b[1], host=host, port=port, sni=sni, nick=nick,
-                focus=focus, chans=chans, rules=rules)
+                focus=focus, chans=chans, rules=rules, wspath=wspath)
 
 states = [ircstate(b) for _, _, b in blobs]
 # One port carries both transports — discriminate by the flags word
@@ -1557,4 +1567,441 @@ if opens < it:
     missing.append("opens %d < iteration %d" % (opens, it))
 if missing:
     sys.exit("picker fixture missing: %r\n%s" % (missing, log))
+PY
+
+# ===========================================================================
+# M212c (#3874) runs 14-16: the WebSocket legs. The consumer is GOIRC's
+# --ws gateway transport (ircv3's line-per-message convention); wsd.py is
+# the ws-speaking fixture — an echo peer for the codec's hermetic leg, an
+# IRC-over-ws endpoint for the consumer leg, and a conn-indexed poisoner
+# for the refusal leg. WSECHO.ELF is the codec's own driver (gate-only
+# binary; the codec's unit tests live in user/go/ws).
+#
+#   run 14 -- echo leg: WSECHO round-trips text + binary + ping/pong,
+#             reassembles the fixture's fragmented text, answers the
+#             fixture's ping, and runs the close handshake.
+#   run 15 -- consumer leg: GOIRC --ws --plain registers + joins +
+#             receives over ws text messages; 'goirc: dial ... ws' is the
+#             frame-path marker and the fixture log proves the frame
+#             traffic carried the IRC lines.
+#   run 16 -- refusal leg: WSECHO --refuse dials five poisoned conns and
+#             names ws_opcode_bad / ws_server_masked / ws_frame_too_large
+#             / ws_accept_bad / ws_extension_unnegotiated.
+#
+# HOST PREREQUISITE: bash tools/go/build-wsecho.sh -> .build/go/WSECHO.ELF
+
+vgate_file script-14.txt <<'EOF'
+net ip 10.0.0.1
+net arp 10.0.0.2
+vf rm GOTABWM.DEMO
+vf rm SESSION.TABS
+vf rm NOTIFY.HIST
+exec WSECHO.ELF 10.0.0.2 8081
+EOF
+
+vgate_file script-15.txt <<'EOF'
+net ip 10.0.0.1
+net arp 10.0.0.2
+vf rm GOTABWM.DEMO
+vf rm SESSION.TABS
+vf rm NOTIFY.HIST
+exec GOIRC.ELF --host=10.0.0.2 --port=8080 --nick=gate --join '#goirc' --ws --plain
+EOF
+
+vgate_file script-16.txt <<'EOF'
+net ip 10.0.0.1
+net arp 10.0.0.2
+vf rm GOTABWM.DEMO
+vf rm SESSION.TABS
+vf rm NOTIFY.HIST
+exec WSECHO.ELF 10.0.0.2 8082 --refuse
+EOF
+
+vgate_setup_python <<'PY'
+import os, shutil, subprocess, sys, time
+
+run = os.environ["RUN_DIR"]
+share = os.environ.get("VG_SHARE") or os.path.join(run, "share")
+os.makedirs(share, exist_ok=True)
+
+wsecho = os.path.join(".build", "go", "WSECHO.ELF")
+if not os.path.exists(wsecho):
+    sys.exit("WSECHO.ELF missing (expected " + wsecho + ") - build it "
+             "first: bash tools/go/build-wsecho.sh")
+shutil.copy(wsecho, os.path.join(share, "WSECHO.ELF"))
+print("go-irc: staged WSECHO.ELF (%d)" % os.path.getsize(os.path.join(share, "WSECHO.ELF")))
+
+# wsd.py -- the ws fixture: Upgrade handshake + frame codec in stdlib
+# python. echo/wsirc/refuse modes; one process per port, conn-indexed.
+wsd = os.path.join(run, "wsd.py")
+with open(wsd, "w") as f:
+    f.write('''
+import base64, hashlib, socket, sys, time
+
+mode, port, logpath = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+logf = open(logpath, "w", buffering=1)
+
+def log(s):
+    logf.write(s + "\\n")
+
+GUID = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+
+srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+srv.bind(("127.0.0.1", port))
+srv.listen(4)
+srv.settimeout(1800)
+log("listening mode=" + mode)
+
+def ws_key(head):
+    for line in head.split(b"\\r\\n")[1:]:
+        if line.lower().startswith(b"sec-websocket-key:"):
+            return line.split(b":", 1)[1].strip()
+    return None
+
+def ws_accept(key):
+    return base64.b64encode(hashlib.sha1(key + GUID).digest())
+
+def ws_handshake(conn, poison=None):
+    """Read the request head; answer 101 unless poison says otherwise.
+    Returns the post-head leftover bytes, or None on failure."""
+    buf = b""
+    while b"\\r\\n\\r\\n" not in buf:
+        chunk = conn.recv(4096)
+        if not chunk:
+            return None
+        buf += chunk
+        if len(buf) > 8192:
+            return None
+    head, buf = buf.split(b"\\r\\n\\r\\n", 1)
+    log("hs " + head.split(b"\\r\\n", 1)[0].decode("utf-8", "replace"))
+    key = ws_key(head)
+    if key is None:
+        return None
+    if poison == "badaccept":
+        acc = b"AAAAAAAAAAAAAAAAAAAAAAAAAAA="
+    else:
+        acc = ws_accept(key)
+    extra = b""
+    if poison == "extension":
+        extra = b"\\r\\nSec-WebSocket-Extensions: permessage-deflate"
+    conn.sendall(b"HTTP/1.1 101 Switching Protocols\\r\\n"
+                 b"Upgrade: websocket\\r\\nConnection: Upgrade\\r\\n"
+                 b"Sec-WebSocket-Accept: " + acc + extra + b"\\r\\n\\r\\n")
+    return buf
+
+def ws_send(conn, op, payload, fin=True, masked=False, declare=None):
+    b0 = (0x80 if fin else 0) | op
+    n = len(payload) if declare is None else declare
+    out = bytes([b0])
+    mb = 0x80 if masked else 0
+    if n < 126:
+        out += bytes([mb | n])
+    elif n <= 0xFFFF:
+        out += bytes([mb | 126, (n >> 8) & 0xFF, n & 0xFF])
+    else:
+        out += bytes([mb | 127]) + n.to_bytes(8, "big")
+    if masked:
+        key = b"\\x11\\x22\\x33\\x44"
+        out += key
+        payload = bytes(c ^ key[i % 4] for i, c in enumerate(payload))
+    conn.sendall(out + payload)
+
+def ws_recv(conn, buf):
+    """Return (fin, op, payload, buf) or (None, None, None, buf) on EOF.
+    Client frames arrive masked; server-intended traffic never is."""
+    while True:
+        if len(buf) >= 2:
+            b0, b1 = buf[0], buf[1]
+            n = b1 & 0x7F
+            off = 2
+            if n == 126:
+                if len(buf) >= 4:
+                    n = (buf[2] << 8) | buf[3]
+                    off = 4
+                else:
+                    n = None
+            elif n == 127:
+                if len(buf) >= 10:
+                    n = int.from_bytes(buf[2:10], "big")
+                    off = 10
+                else:
+                    n = None
+            if n is not None:
+                mask = None
+                if b1 & 0x80 and len(buf) >= off + 4:
+                    mask = buf[off:off + 4]
+                    off += 4
+                if not (b1 & 0x80) or mask is not None:
+                    if len(buf) >= off + n:
+                        payload = bytes(buf[off:off + n])
+                        if mask is not None:
+                            payload = bytes(c ^ mask[i % 4] for i, c in enumerate(payload))
+                        return b0 & 0x80, b0 & 0x0F, payload, buf[off + n:]
+        chunk = conn.recv(4096)
+        if not chunk:
+            return None, None, None, buf
+        buf += chunk
+
+def ws_send_line(conn, line):
+    ws_send(conn, 0x1, line.encode())
+    log("tx " + line)
+
+def wsirc_session(conn, idx, buf):
+    """One IRC line per ws text message — the ircv3 gateway framing."""
+    nick, user = None, False
+    deadline = time.time() + 90
+    while time.time() < deadline:
+        try:
+            fin, op, payload, buf = ws_recv(conn, buf)
+        except Exception:
+            return
+        if op is None:
+            return
+        if op == 0x8:
+            ws_send(conn, 0x8, payload)
+            log("c%d ws rx close" % idx)
+            return
+        if op == 0x9:
+            ws_send(conn, 0xA, payload)
+            continue
+        if op not in (0x1, 0x2):
+            continue
+        line = payload.decode("utf-8", "replace").rstrip("\\r\\n")
+        log("c%d ws rx text %s" % (idx, line))
+        parts = line.split()
+        if not parts:
+            continue
+        cmd = parts[0].upper()
+        if cmd == "NICK" and len(parts) > 1:
+            nick = parts[1]
+        elif cmd == "USER":
+            user = True
+        elif cmd == "PING":
+            ws_send_line(conn, ":srv PONG srv :" + (parts[1] if len(parts) > 1 else ""))
+        elif cmd == "JOIN" and len(parts) > 1:
+            ch = parts[1].lstrip(":")
+            ws_send_line(conn, ":%s!u@h JOIN %s" % (nick, ch))
+            ws_send_line(conn, ":alice!u@h PRIVMSG %s :ws-hello" % ch)
+        elif cmd == "PRIVMSG" and len(parts) > 2:
+            ws_send_line(conn, ":alice!u@h PRIVMSG %s :thanks ws" % parts[1])
+        elif cmd == "QUIT":
+            return
+        if nick and user:
+            ws_send_line(conn, ":srv 001 %s :Welcome to the ws net" % nick)
+            nick, user = nick, False  # 001 once
+    return
+
+def echo_session(conn, idx, buf):
+    """The codec leg: fragmented text + a server ping up front, then
+    echo data frames, pong the pings, answer the close."""
+    ws_send(conn, 0x1, b"wsecho-frag-head", fin=False)
+    ws_send(conn, 0x0, b"-tail", fin=True)
+    ws_send(conn, 0x9, b"srvx")
+    log("c%d ws tx frag+ping" % idx)
+    deadline = time.time() + 90
+    while time.time() < deadline:
+        try:
+            fin, op, payload, buf = ws_recv(conn, buf)
+        except Exception:
+            return
+        if op is None:
+            return
+        if op == 0x1:
+            log("c%d ws rx text %s" % (idx, payload.decode("utf-8", "replace")))
+            ws_send(conn, 0x1, payload)
+        elif op == 0x2:
+            log("c%d ws rx bin %d" % (idx, len(payload)))
+            ws_send(conn, 0x2, payload)
+        elif op == 0x9:
+            log("c%d ws rx ping" % idx)
+            ws_send(conn, 0xA, payload)
+        elif op == 0xA:
+            log("c%d ws rx pong %s" % (idx, payload.decode("utf-8", "replace")))
+        elif op == 0x8:
+            log("c%d ws rx close" % idx)
+            ws_send(conn, 0x8, payload)
+            return
+    return
+
+def refuse_session(conn, idx):
+    """Conn-indexed poison: the client's five named refusals in order."""
+    which = idx % 5
+    if which == 3:
+        buf = ws_handshake(conn, poison="badaccept")
+    elif which == 4:
+        buf = ws_handshake(conn, poison="extension")
+    else:
+        buf = ws_handshake(conn)
+    if buf is None:
+        log("c%d poison handshake-read failed" % idx)
+        return
+    if which == 0:
+        log("c%d poison opcode" % idx)
+        ws_send(conn, 0x3, b"x")
+    elif which == 1:
+        log("c%d poison masked" % idx)
+        ws_send(conn, 0x1, b"x", masked=True)
+    elif which == 2:
+        log("c%d poison oversize" % idx)
+        ws_send(conn, 0x1, b"", declare=70000)  # head only
+    else:
+        log("c%d poison %s" % (idx, "badaccept" if which == 3 else "extension"))
+    time.sleep(0.3)
+    try:
+        conn.close()
+    except Exception:
+        pass
+
+budget = {"echo": 4, "wsirc": 4, "refuse": 16}[mode]
+for idx in range(budget):
+    try:
+        conn, _ = srv.accept()
+    except socket.timeout:
+        log("accept timeout at conn %d" % idx)
+        break
+    conn.settimeout(60)
+    log("c%d open" % idx)
+    try:
+        if mode == "refuse":
+            refuse_session(conn, idx)
+        else:
+            buf = ws_handshake(conn)
+            if buf is not None:
+                if mode == "echo":
+                    echo_session(conn, idx, buf)
+                elif mode == "wsirc":
+                    wsirc_session(conn, idx, buf)
+    except Exception as e:
+        log("c%d serve %s" % (idx, e))
+    try:
+        conn.close()
+    except Exception:
+        pass
+    log("c%d close" % idx)
+
+srv.close()
+log("fixture done")
+''')
+
+procs = []
+for mode, port in (("echo", 26676), ("wsirc", 26677), ("refuse", 26678)):
+    subprocess.run(["sh", "-c", "lsof -ti tcp:%d | xargs kill -9" % port],
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    logpath = os.path.join(run, "wsd-%d.log" % port)
+    open(logpath, "w").close()
+    proc = subprocess.Popen([sys.executable, wsd, mode, str(port), logpath],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT,
+                            start_new_session=True)
+    procs.append(proc)
+    print("go-irc: ws fixture %s pid=%d on 127.0.0.1:%d" % (mode, proc.pid, port))
+
+time.sleep(0.4)
+for proc in procs:
+    if proc.poll() is not None:
+        sys.exit("go-irc: ws fixture exited early rc=%s" % proc.returncode)
+PY
+
+# Run 14 -- the echo leg: text + binary + ping/pong + fragmentation +
+# close in one session against the ws fixture over :relay.
+vgate_run 14 -- \
+    --screen '$RUN_DIR/screen' \
+    --via-virtio \
+    --net '$RUN_DIR/cap14.bin' --net-arp-respond 10.0.0.2 \
+    --net-tcp-respond 10.0.0.2:8081:relay --net-tcp-respond-relay 127.0.0.1:26676 \
+    --script '$RUN_DIR/script-14.txt' --script-expect 'wsecho: done' --timeout 180
+
+vgate_assert 14 serial-contains 'wsecho: dial 10.0.0.2 8081'
+vgate_assert 14 serial-contains 'wsecho: handshake ok'
+vgate_assert 14 serial-contains 'wsecho: text ok'
+vgate_assert 14 serial-contains 'wsecho: binary ok'
+vgate_assert 14 serial-contains 'wsecho: frag ok'
+vgate_assert 14 serial-contains 'wsecho: ping srv'
+vgate_assert 14 serial-contains 'wsecho: pong ok'
+vgate_assert 14 serial-contains 'wsecho: close ok'
+vgate_assert 14 serial-contains 'wsecho: done'
+vgate_assert 14 serial-absent 'wsecho: error'
+vgate_assert 14 serial-absent 'wsecho: refuse'
+vgate_assert 14 serial-absent '[EXC] parking:'
+vgate_assert 14 python <<'PY'
+import os, sys
+tag = os.environ["VG_TAG"]
+it = int(tag.rsplit("-", 1)[-1]) if "-" in tag else 1
+log = open(os.path.join(os.environ["RUN_DIR"], "wsd-26676.log")).read()
+need = ["hs GET / HTTP/1.1", "ws tx frag+ping", "ws rx text wsecho-text-7",
+        "ws rx bin 4", "ws rx ping", "ws rx close"]
+missing = [n for n in need if n not in log]
+# The auto-pong for the fixture's 'srvx' ping must be on the transcript —
+# that is the client's RFC pong, not a script artifact.
+if "ws rx pong srvx" not in log:
+    missing.append("ws rx pong srvx")
+opens = sum(1 for l in log.splitlines() if "hs GET" in l)
+if opens < it:
+    missing.append("handshakes %d < iteration %d" % (opens, it))
+if missing:
+    sys.exit("ws echo transcript missing: %r\n%s" % (missing, log))
+PY
+
+# Run 15 -- the consumer leg: GOIRC's --ws transport carries register +
+# join + a received PRIVMSG; 'goirc: dial ... ws' names the frame path.
+vgate_run 15 -- \
+    --screen '$RUN_DIR/screen' \
+    --via-virtio \
+    --net '$RUN_DIR/cap15.bin' --net-arp-respond 10.0.0.2 \
+    --net-tcp-respond 10.0.0.2:8080:relay --net-tcp-respond-relay 127.0.0.1:26677 \
+    --script '$RUN_DIR/script-15.txt' --script-expect 'goirc: msg #goirc alice ws-hello' --timeout 240
+
+vgate_assert 15 serial-contains 'goirc: dial 10.0.0.2 8080 ws'
+vgate_assert 15 serial-contains 'goirc: registered nick=gate'
+vgate_assert 15 serial-contains 'goirc: join #goirc'
+vgate_assert 15 serial-contains 'goirc: msg #goirc alice ws-hello'
+vgate_assert 15 serial-absent 'goirc: refuse plaintext'
+vgate_assert 15 serial-absent 'ws_'
+vgate_assert 15 serial-absent '[EXC] parking:'
+vgate_assert 15 python <<'PY'
+import os, sys
+tag = os.environ["VG_TAG"]
+it = int(tag.rsplit("-", 1)[-1]) if "-" in tag else 1
+log = open(os.path.join(os.environ["RUN_DIR"], "wsd-26677.log")).read()
+# The frame-path proof: the IRC register rode ws text messages, not a
+# byte tunnel — each 'ws rx text' names one frame's line.
+need = ["hs GET / HTTP/1.1", "ws rx text NICK gate", "ws rx text USER",
+        "tx :srv 001 gate", "ws rx text JOIN #goirc", "ws-hello"]
+missing = [n for n in need if n not in log]
+regs = sum(1 for l in log.splitlines() if "ws rx text NICK" in l)
+if regs < it:
+    missing.append("NICK frames %d < iteration %d" % (regs, it))
+if missing:
+    sys.exit("wsirc transcript missing: %r\n%s" % (missing, log))
+PY
+
+# Run 16 -- the refusal leg: five poisoned conns, five named refusals.
+vgate_run 16 -- \
+    --screen '$RUN_DIR/screen' \
+    --via-virtio \
+    --net '$RUN_DIR/cap16.bin' --net-arp-respond 10.0.0.2 \
+    --net-tcp-respond 10.0.0.2:8082:relay --net-tcp-respond-relay 127.0.0.1:26678 \
+    --script '$RUN_DIR/script-16.txt' --script-expect 'wsecho: refuse done' --timeout 240
+
+vgate_assert 16 serial-contains 'wsecho: refuse ws_opcode_bad'
+vgate_assert 16 serial-contains 'wsecho: refuse ws_server_masked'
+vgate_assert 16 serial-contains 'wsecho: refuse ws_frame_too_large'
+vgate_assert 16 serial-contains 'wsecho: refuse ws_accept_bad'
+vgate_assert 16 serial-contains 'wsecho: refuse ws_extension_unnegotiated'
+vgate_assert 16 serial-contains 'wsecho: refuse done'
+vgate_assert 16 serial-absent 'wsecho: refuse-miss'
+vgate_assert 16 serial-absent 'wsecho: error'
+vgate_assert 16 serial-absent '[EXC] parking:'
+vgate_assert 16 python <<'PY'
+import os, sys
+tag = os.environ["VG_TAG"]
+it = int(tag.rsplit("-", 1)[-1]) if "-" in tag else 1
+log = open(os.path.join(os.environ["RUN_DIR"], "wsd-26678.log")).read()
+for want in ["poison opcode", "poison masked", "poison oversize",
+             "poison badaccept", "poison extension"]:
+    if want not in log:
+        sys.exit("fixture never served %r\n%s" % (want, log))
+served = sum(1 for l in log.splitlines() if "poison" in l)
+if served < 5 * it:
+    sys.exit("iteration %d: only %d poisons served\n%s" % (it, served, log))
 PY

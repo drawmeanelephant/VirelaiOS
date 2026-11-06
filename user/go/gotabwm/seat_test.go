@@ -381,6 +381,9 @@ func TestDrainSeatEventsDefersPaintBehindQueuedInput(t *testing.T) {
 // drainPaintStride events — the input keeps its lead, the scanout keeps a
 // bounded cadence, and no gratuitous flush runs at the drain's tail.
 func TestDrainSeatEventsPaysOwedPaintAtStride(t *testing.T) {
+	saved := pendingComposite
+	defer func() { pendingComposite = saved }()
+	pendingComposite = false
 	queue := make([]vi.Event, 0, drainPaintStride+4)
 	for i := 0; i < drainPaintStride+4; i++ {
 		queue = append(queue, vi.Event{Kind: vi.EvWmKey, Arg0: uint32(i)})
@@ -518,6 +521,75 @@ func TestConsumeSeatEventDamageTickOwesComposite(t *testing.T) {
 	}
 	if pendingComposite {
 		t.Fatal("a heartbeat's paint is owed by the tick accounting, not consume")
+	}
+}
+
+// #3882: an input/mirror event owes the composite like a damage tick — the
+// drain pays it at queue end, so seat-owned feedback (cursor, hover,
+// drags, menus) presents at input cadence, not the 1 Hz heartbeat.
+func TestConsumeSeatEventInputOwesComposite(t *testing.T) {
+	saved := pendingComposite
+	savedBtn := prevPtrButtons
+	savedDrag := railDragFrom
+	defer func() {
+		pendingComposite = saved
+		prevPtrButtons = savedBtn
+		railDragFrom = savedDrag
+	}()
+	prevPtrButtons = 0
+	railDragFrom = -1
+	for _, k := range []uint16{vi.EvWmPointer, vi.EvWmKey, vi.EvKeyDown, 20} {
+		pendingComposite = false
+		consumeSeatEvent(vi.Event{Kind: k, Arg0: 10 | (20 << 16)})
+		if !pendingComposite {
+			t.Fatalf("kind %d must owe the composite the drain flushes", k)
+		}
+	}
+}
+
+// #3882: the drain pays a consume-marked debt at queue end even when no
+// tick-kind event ever arrived — the paint is not stranded behind the
+// next heartbeat.
+func TestDrainSeatEventsPaysInputMarkedPaint(t *testing.T) {
+	saved := pendingComposite
+	defer func() { pendingComposite = saved }()
+	pendingComposite = false
+	queue := []vi.Event{
+		{Kind: vi.EvWmPointer, Arg0: 1},
+		{Kind: vi.EvWmKey, Arg0: 2},
+	}
+	var order []string
+	poll := func() (vi.Event, bool) {
+		if len(queue) == 0 {
+			return vi.Event{}, false
+		}
+		e := queue[0]
+		queue = queue[1:]
+		return e, true
+	}
+	consume := func(e vi.Event) bool {
+		if e.Kind == vi.EvCompositeTick {
+			return true
+		}
+		order = append(order, "ev")
+		pendingComposite = true // the real consume marks on input kinds
+		return false
+	}
+	flush := func() {
+		order = append(order, "flush")
+		pendingComposite = false
+	}
+	if n := drainSeatEvents(vi.Event{Kind: vi.EvWmKey, Arg0: 0}, poll, consume, 10, nil, nil, flush); n != 3 {
+		t.Fatalf("drained %d events, want 3", n)
+	}
+	want := []string{"ev", "ev", "ev", "flush"}
+	if len(order) != len(want) {
+		t.Fatalf("drain order = %v, want %v", order, want)
+	}
+	for i := range want {
+		if order[i] != want[i] {
+			t.Fatalf("drain order = %v, want %v", order, want)
+		}
 	}
 }
 

@@ -47,6 +47,30 @@ func (n *Node) HasAttr(name string) bool {
 	return false
 }
 
+// SetAttr upserts the named attribute (M211c #3869): the dom-rpc field
+// write stores its value where the form scan re-reads it, so a scripted
+// value survives the same re-layout a typed one does.
+func (n *Node) SetAttr(name, value string) {
+	for i := range n.Attrs {
+		if n.Attrs[i].Name == name {
+			n.Attrs[i].Value = value
+			return
+		}
+	}
+	n.Attrs = append(n.Attrs, Attr{Name: name, Value: value})
+}
+
+// SetText replaces the node's children with a single text node — the
+// textContent write's semantics (M211c #3869): element children are
+// dropped wholesale, an empty string leaves no children at all.
+func (n *Node) SetText(s string) {
+	if s == "" {
+		n.Children = nil
+		return
+	}
+	n.Children = []*Node{{Kind: KindText, Text: s}}
+}
+
 // Document is a parsed page. Root is a synthetic "document" element whose
 // children are the top-level nodes.
 type Document struct {
@@ -54,6 +78,43 @@ type Document struct {
 	Nodes     int  // total nodes kept
 	TextBytes int  // decoded text bytes kept
 	Truncated bool // a cap was hit: the remainder was dropped visibly
+	byID      map[string]*Node
+}
+
+// ByID returns the first element node in document order carrying the
+// given id= attribute, or nil (M211b #3868): the dom-rpc id-addressed
+// read seam. The index builds lazily on first use — a page whose script
+// never asks pays no map. Duplicate ids resolve first-wins, the same
+// order a browser's getElementById observes.
+func (d *Document) ByID(id string) *Node {
+	if d == nil || d.Root == nil || id == "" {
+		return nil
+	}
+	if d.byID == nil {
+		d.byID = make(map[string]*Node, 64)
+		var walk func(*Node)
+		walk = func(n *Node) {
+			if n.Kind == KindElement {
+				if v := n.Attr("id"); v != "" {
+					if _, seen := d.byID[v]; !seen {
+						d.byID[v] = n
+					}
+				}
+			}
+			for _, c := range n.Children {
+				walk(c)
+			}
+		}
+		walk(d.Root)
+	}
+	return d.byID[id]
+}
+
+// InvalidateIndex drops the lazily-built id index (M211c #3869): a
+// mutation can orphan element children whose ids the index still names,
+// so the next ByID rebuilds against the tree as it stands.
+func (d *Document) InvalidateIndex() {
+	d.byID = nil
 }
 
 // Parser caps. Every cap is a project decision (ADR 0028 D6): a page that

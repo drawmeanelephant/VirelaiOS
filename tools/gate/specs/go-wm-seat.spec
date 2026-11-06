@@ -873,6 +873,11 @@ dui
 echo rx-gotabwm-notify-ok
 EOF
 
+# The dismiss click waits on the stream's completion receipt (`cvspike:
+# snap n=1`), never the paint marker it snapshots: under #3899 the frame
+# is frozen at service time, and a click riding the same drain as the
+# request can dismiss+repaint before the copy runs — the same race run
+# 07's wake press had.
 vgate_run 06 -- \
     --screen '$RUN_DIR/screen-06' \
     --via-virtio --cvc-snap \
@@ -884,7 +889,7 @@ vgate_run 06 -- \
     --input-string $'jck\np' \
     --input-string-after 'gofiles: ready' \
     --pointer-virtio '112,702,d;112,702,u;1198,702,d;1198,702,u;400,227,d;400,227,u;880,227,d;880,227,u' \
-    --pointer-virtio-after 'gotabwm: notify paint id=' \
+    --pointer-virtio-after 'cvspike: snap n=1' \
     --script3 '$RUN_DIR/script3-06.txt' \
     --script3-after 'gotabwm: notify center dismiss' \
     --script-expect 'rx-gotabwm-notify-ok' --timeout 360
@@ -1098,6 +1103,12 @@ PY
 # normal share has no GOTABWM.IDLE.TEST. Dim at tick 2, curtain at tick 4;
 # one pointer event wakes. The seat announces transitions only AFTER a
 # successful present. A kind-4 snapshot probes the curtain on the scanout.
+# The wake press waits on the stream's completion receipt (`cvspike: snap
+# n=1` — the live-term-depth run-03 anchor), never the lock marker: the
+# snapshot's stage copy is frozen at service time (#3899), and a press
+# that rides the same drain as the request can repaint the wake frame
+# before the copy runs — observed 2026-11-01 as a post-wake desktop in
+# snap-idle-0.raw.
 # `vf rm SESSION.TABS` keeps earlier legs' session rows from reexec'ing
 # three client tabs into a leg whose timing is measured in single ticks.
 vgate_file script-07.txt <<'EOF'
@@ -1127,7 +1138,7 @@ vgate_run 07 -- \
     --script2 '$RUN_DIR/script2-07.txt' \
     --script2-after 'gotabwm: win focus' \
     --pointer-virtio '600,360,d;600,360,u' \
-    --pointer-virtio-after 'gotabwm: idle lock' \
+    --pointer-virtio-after 'cvspike: snap n=1' \
     --script3 '$RUN_DIR/script3-07.txt' \
     --script3-after 'gotabwm: idle wake' \
     --script-expect 'rx-gotabwm-idle-ok' --timeout 300

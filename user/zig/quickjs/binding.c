@@ -134,6 +134,45 @@ static JSValue virelai_write_file(JSContext *context, JSValueConst self, int cou
     return JS_UNDEFINED;
 }
 
+/* M211b (#3868): virelai.dom(op, a, b) — one bounded DOM op over the
+ * dom-rpc wire. The answered string returns verbatim, a JSON null answer
+ * returns null, and a refusal throws with the wire's name verbatim —
+ * doc.title/node.text/node.attr/console.log in v1, everything else the
+ * parent names. */
+static JSValue virelai_dom(JSContext *context, JSValueConst self, int count, JSValueConst *values)
+{
+    (void)self;
+    size_t op_len = 0, a_len = 0, b_len = 0, length = 0;
+    qjs_native_step();
+    const char *op = JS_ToCStringLen(context, &op_len, count ? values[0] : JS_UNDEFINED);
+    if (!op)
+        return JS_EXCEPTION;
+    const char *a = count > 1 ? JS_ToCStringLen(context, &a_len, values[1]) : NULL;
+    if (count > 1 && !a) {
+        JS_FreeCString(context, op);
+        return JS_EXCEPTION;
+    }
+    const char *b = count > 2 ? JS_ToCStringLen(context, &b_len, values[2]) : NULL;
+    if (count > 2 && !b) {
+        JS_FreeCString(context, a);
+        JS_FreeCString(context, op);
+        return JS_EXCEPTION;
+    }
+    const char *data = qjs_native_host_dom(op, op_len,
+        a ? a : "", a_len, b ? b : "", b_len, &length);
+    JS_FreeCString(context, op);
+    if (a) JS_FreeCString(context, a);
+    if (b) JS_FreeCString(context, b);
+    qjs_native_step();
+    if (!data)
+        return host_error(context);
+    if (length == SIZE_MAX)
+        return JS_NULL;
+    JSValue result = JS_NewStringLen(context, data, length);
+    qjs_native_step();
+    return result;
+}
+
 static JSValue virelai_args_get(JSContext *context, JSValueConst self)
 {
     (void)self;
@@ -212,6 +251,7 @@ QjsEngine *qjs_engine_create(void)
     if (defined < 0 ||
         JS_SetPropertyStr(context, virelai, "readFile", JS_NewCFunction(context, virelai_read_file, "readFile", 1)) < 0 ||
         JS_SetPropertyStr(context, virelai, "writeFile", JS_NewCFunction(context, virelai_write_file, "writeFile", 2)) < 0 ||
+        JS_SetPropertyStr(context, virelai, "dom", JS_NewCFunction(context, virelai_dom, "dom", 1)) < 0 ||
         JS_SetPropertyStr(context, global, "virelai", virelai) < 0) {
         JS_FreeValue(context, virelai);
         JS_FreeValue(context, console);

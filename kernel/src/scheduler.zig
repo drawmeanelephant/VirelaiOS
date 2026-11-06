@@ -992,6 +992,25 @@ const steal_run_name_cap = 16;
 var steal_run_names: [steal_run_name_cap][]const u8 = undefined;
 var steal_run_froms: [steal_run_name_cap]usize = undefined;
 var steal_run_names_count: usize = 0;
+/// #3863: wall-clock bound on the secondary/steal evidence drains —
+/// the unthrottled per-run lines flooded the console under load
+/// (~570k lines on one gate run) until the host console-tcp bridge
+/// dropped the client on its 2 s emit-stall bound. Each drain emits at
+/// most one line per gap naming the latest sampled run; skipped runs
+/// still count into the printed watermark. 0 disables the throttle's
+/// memory (first due drain prints regardless of the gap).
+const smp_report_gap_ns: u64 = 100_000_000;
+var secondary_report_last_ns: u64 = 0;
+var steal_report_last_ns: u64 = 0;
+/// The newest sampled run awaiting its gap — recording survives the
+/// backlog walk so a throttled window still emits its latest sample.
+var secondary_report_pending: bool = false;
+var secondary_report_n: u64 = 0;
+var secondary_report_name: []const u8 = "";
+var steal_report_pending: bool = false;
+var steal_report_n: u64 = 0;
+var steal_report_name: []const u8 = "";
+var steal_report_from: usize = 0;
 /// Secondary-core WFE-park capture (claim 2369): the location of the WFE
 /// loop's saved frame on the secondary stack + its ELR/SPSR, captured by
 /// `tick` the moment it starts a task from the parked state. A running
@@ -1262,6 +1281,13 @@ pub fn init() usize {
     steal_runs = 0;
     steal_runs_printed = 0;
     steal_run_names_count = 0;
+    secondary_runs = 0;
+    secondary_runs_printed = 0;
+    secondary_run_names_count = 0;
+    secondary_report_last_ns = 0;
+    steal_report_last_ns = 0;
+    secondary_report_pending = false;
+    steal_report_pending = false;
     user_timer_preemptions = 0;
     tick_count = 0;
     process_exit_tick = @splat(null);
@@ -1280,6 +1306,7 @@ pub fn init() usize {
     mailbox.init();
     events.init();
     events.on_event_pushed = wake_event_waiters;
+    mailbox.on_message_sent = ipc_mail_delivered;
     app_timers.init();
     wm_server.init();
     // M170a #3033: the deadline overlay resets with the pool — no stale
@@ -1629,6 +1656,23 @@ pub fn request_kill(id: usize) KillResult {
     // neither may be force-terminated.
     if (id == idle_id or id == 0) return .refused;
     tasks[id].kill_pending = true;
+    kill_armed_count +%= 1;
+    // Kill takes precedence over EVERY wait shape, so a parked target
+    // wakes NOW, not at the next timekeeping beat: wake_expired's scan is
+    // a try-gated core-0 beat that contention can skip outright, and a
+    // "wait forever" block (futex/wait_pid/wait_event) has no deadline to
+    // expire at all — the armed kill would sit off-ring indefinitely.
+    // The sentinel skips an unpublished exec build (register's "wait
+    // forever" marks a half-built task, not a real wait).
+    if (tasks[id].state == .blocked and tasks[id].wakeup_tick != std.math.maxInt(u64)) {
+        wake_killed_task_locked(id);
+    }
+    // A monitor-kill arm IS an outstanding exit request for the process —
+    // engage the same diagnostic the sibling-arm path sets, so a parked
+    // target that never converts reports itself after the bound.
+    if (process.find_by_task(id)) |pid| {
+        if (process_exit_tick[pid] == null) process_exit_tick[pid] = tick_count;
+    }
     return .ok;
 }
 
@@ -2018,6 +2062,46 @@ fn convert_kill(c: usize, lk: RingLockPair, next: usize) void {
     }
 }
 
+/// Kill-path diagnostics: stage counters between an armed kill and its
+/// conversion, drained from the shell idle loop (`tasks kill-diag`). Each
+/// names the hop the park dies at — arm, force-wake, claim sighting,
+/// prefix defer, service-lock defer (with the packed holder snapshot:
+/// 3 bits per domain in canonical file/net/win/ev/kernel order, 4 = free),
+/// exit refusal, conversion.
+var kill_armed_count: u64 = 0;
+var kill_wake_count: u64 = 0;
+var kill_seen_count: u64 = 0;
+var kill_defer_prefix_count: u64 = 0;
+var kill_defer_locks_count: u64 = 0;
+var kill_defer_owners: u64 = 0;
+var kill_exit_refused: u64 = 0;
+var kill_converted_count: u64 = 0;
+var kill_spun_count: u64 = 0;
+var kill_diag_printed: u64 = 0;
+
+/// The kill conversion's bounded wait on contended service domains
+/// (iterations of the `try_take` probe, with a WFE-friendly pause between
+/// probes). Cross-core holds are bounded by construction — IRQ-masked
+/// holders run to completion — so a short wait converts on THIS
+/// selection instead of deferring the kill a whole scheduling epoch per
+/// sighting, which under a churning seat starved a parked target ~40+
+/// ticks before a lucky gap (the go-assist leg-03 livelock). A
+/// same-core-held non-prefix bit can never clear here (the interrupted
+/// hold resumes only when this context unwinds), but the prefix guard
+/// already deferred that shape before this loop runs; every refusal the
+/// loop sees is an other-core hold or a try collision, both transient.
+const kill_convert_spin_bound: usize = 1 << 15;
+
+fn lock_owners_snapshot() u64 {
+    var m: u64 = 0;
+    m |= @as(u64, @intCast(svclock.file.holder & 0x7));
+    m |= @as(u64, @intCast(svclock.net.holder & 0x7)) << 3;
+    m |= @as(u64, @intCast(svclock.win.holder & 0x7)) << 6;
+    m |= @as(u64, @intCast(svclock.ev.holder & 0x7)) << 9;
+    m |= @as(u64, @intCast(svclock.kernel.holder & 0x7)) << 12;
+    return m;
+}
+
 /// Shared selection/secondary-tick seam. No ring or scheduler lock may be
 /// held. A non-prefix outer syscall hold defers rather than taking an earlier
 /// service domain out of order; the next IRQ runs after that hold is released.
@@ -2025,13 +2109,50 @@ fn convert_kill(c: usize, lk: RingLockPair, next: usize) void {
 pub fn convert_pending_kill() bool {
     const id = current[smp.core_id()];
     if (!tasks[id].kill_pending) return false;
-    if (!svclock.file.held() and (svclock.net.held() or svclock.win.held() or svclock.ev.held() or svclock.kernel.held())) return false;
-    if (!svclock.net.held() and (svclock.win.held() or svclock.ev.held() or svclock.kernel.held())) return false;
-    if (!svclock.win.held() and (svclock.ev.held() or svclock.kernel.held())) return false;
-    if (!svclock.ev.held() and svclock.kernel.held()) return false;
-    const taken = svclock.try_take(svclock.all_bits) orelse return false;
-    defer svclock.release_set(taken);
-    return exit_current_locked(tasks[id].kill_pending_status, true);
+    kill_seen_count +%= 1;
+    if (!svclock.file.held() and (svclock.net.held() or svclock.win.held() or svclock.ev.held() or svclock.kernel.held())) {
+        kill_defer_prefix_count +%= 1;
+        kill_defer_owners = lock_owners_snapshot() | (@as(u64, svclock.held_bits()) << 16);
+        return false;
+    }
+    if (!svclock.net.held() and (svclock.win.held() or svclock.ev.held() or svclock.kernel.held())) {
+        kill_defer_prefix_count +%= 1;
+        kill_defer_owners = lock_owners_snapshot() | (@as(u64, svclock.held_bits()) << 16);
+        return false;
+    }
+    if (!svclock.win.held() and (svclock.ev.held() or svclock.kernel.held())) {
+        kill_defer_prefix_count +%= 1;
+        kill_defer_owners = lock_owners_snapshot() | (@as(u64, svclock.held_bits()) << 16);
+        return false;
+    }
+    if (!svclock.ev.held() and svclock.kernel.held()) {
+        kill_defer_prefix_count +%= 1;
+        kill_defer_owners = lock_owners_snapshot() | (@as(u64, svclock.held_bits()) << 16);
+        return false;
+    }
+    var spun: usize = 0;
+    var taken: ?u5 = null;
+    while (taken == null) {
+        taken = svclock.try_take(svclock.all_bits);
+        if (taken != null) break;
+        if (spun >= kill_convert_spin_bound) {
+            kill_defer_locks_count +%= 1;
+            kill_defer_owners = lock_owners_snapshot() | (@as(u64, svclock.held_bits()) << 16);
+            return false;
+        }
+        spun += 1;
+        if (comptime !builtin.is_test and builtin.cpu.arch == .aarch64) {
+            asm volatile ("yield");
+        }
+    }
+    if (spun != 0) kill_spun_count +%= 1;
+    defer svclock.release_set(taken.?);
+    if (exit_current_locked(tasks[id].kill_pending_status, true)) {
+        kill_converted_count +%= 1;
+        return true;
+    }
+    kill_exit_refused +%= 1;
+    return false;
 }
 
 pub fn switch_context(frame_sp: u64, elr: u64, spsr: u64, sp_el0: u64) void {
@@ -2921,6 +3042,26 @@ pub fn wait_event_current(pid: usize) bool {
     return true;
 }
 
+/// #3901: a `mailbox.send` just delivered to `pid` — post the kind-23
+/// IPC_MAIL notification into the target's event FIFO. The push itself
+/// fires `on_event_pushed` → `wake_event_waiters`, so a
+/// `sys_wait_event`-blocked consumer (the Go seat's serve loop is the
+/// measured case — ~1 s per missed WM_RPC at the 1 Hz tick, #3898) is
+/// scheduled on the next pass and its re-executed `svc` pops a real
+/// event instead of re-blocking on an empty queue. `arg0` carries the
+/// ring depth after the enqueue. The hook fires from SVC contexts and
+/// potentially sched_lock-held paths (same call shape as the kernel's
+/// own event pushes — `wake_event_waiters` already handles both).
+fn ipc_mail_delivered(pid: usize) void {
+    events.push(pid, .{
+        .kind = events.IPC_MAIL,
+        .flags = 0,
+        .seq = 0,
+        .arg0 = @intCast(@min(mailbox.pending(pid), std.math.maxInt(u32))),
+        .arg1 = 0,
+    });
+}
+
 /// Milestone 9 (claim 1016): wake any task blocked in `sys_wait_event` for `pid`.
 pub fn wake_event_waiters(pid: usize) void {
     // The events.push hook fires from SVC contexts AND from inside
@@ -3033,6 +3174,7 @@ fn wake_expired() void {
 }
 
 fn wake_killed_task_locked(id: usize) void {
+    kill_wake_count +%= 1;
     _ = futex_clear_for(id);
     tasks[id].futex_waiting = false;
     tasks[id].wakeup_tick = 0;
@@ -4049,6 +4191,21 @@ pub fn maybe_report(con: *console.Console) void {
         }) catch continue;
         con.puts(line);
     }
+    // Kill-path diagnostics: one line per drain while any stage counter
+    // moved — names the hop an armed kill stalls at under contention.
+    // Live-boot observability only: the byte-exact host-test consoles
+    // never see it (the counters still run under tests).
+    if (comptime !builtin.is_test) {
+        const kill_diag_total = kill_armed_count +% kill_wake_count +% kill_seen_count +% kill_defer_prefix_count +% kill_defer_locks_count +% kill_exit_refused +% kill_spun_count +% kill_converted_count;
+        if (kill_diag_total != kill_diag_printed) {
+            kill_diag_printed = kill_diag_total;
+            var buf: [320]u8 = undefined;
+            const line = std.fmt.bufPrint(&buf, "tasks kill-diag armed={d} woken={d} seen={d} defer_prefix={d} defer_locks={d} owners=0x{x} spun={d} exit_refused={d} converted={d}\n", .{
+                kill_armed_count, kill_wake_count, kill_seen_count, kill_defer_prefix_count, kill_defer_locks_count, kill_defer_owners, kill_spun_count, kill_exit_refused, kill_converted_count,
+            }) catch return;
+            con.puts(line);
+        }
+    }
     // B7: bounded PCM completions/deadlines and deferred owner-death cleanup.
     // No audio control exchange runs from the IRQ scheduler.
     virtio_snd.snd_stream_poll();
@@ -4061,13 +4218,33 @@ pub fn maybe_report(con: *console.Console) void {
     // self-rotations can run at yield cadence, not tick cadence. Snapshot
     // once and skip overwritten names rather than reconstructing millions
     // of discarded reports and starving monitor handback forever.
+    // #3863: the per-run line flood is a live-console killer — under a
+    // loaded lane this printed ~570k lines (~23 MB of one gate serial),
+    // outrunning the console-tcp client's drain until the bridge's
+    // emit-stall bound dropped the session. Wall-clock bound instead:
+    // at most one line per `smp_report_gap_ns`, naming the LATEST
+    // retained run — skipped runs still advance the watermark and the
+    // printed runs= count, so the evidence shape (prefix + monotonic
+    // count + task name) survives and the count's jump proves the
+    // skips. Clock-less contexts (timer.now_ns()==0: pre-init boots,
+    // host tests) keep the one-line-per-run drain.
     const secondary_end = secondary_runs;
     const secondary_first = secondary_end - @min(secondary_end, secondary_run_names_count);
     secondary_runs_printed = @max(secondary_runs_printed, secondary_first);
+    const smp_now = timer.now_ns();
     while (secondary_runs_printed < secondary_end) {
         const index = secondary_runs_printed - secondary_first;
         secondary_runs_printed += 1;
         const name = secondary_run_names[index];
+        if (smp_now != 0) {
+            // Throttled path: record the newest sampled run and emit it
+            // once the gap below elapses — the sample survives across
+            // calls even when the backlog walks in a skipped window.
+            secondary_report_pending = true;
+            secondary_report_n = secondary_runs_printed;
+            secondary_report_name = name;
+            continue;
+        }
         // ONE write per line (claim 881 slice 4): a secondary-core
         // sys_write can land between the vtable writes of a multi-put
         // line, splitting it (observed: `smp: secondary runs=` / `111` /
@@ -4078,6 +4255,16 @@ pub fn maybe_report(con: *console.Console) void {
         const line = std.fmt.bufPrint(&buf, "smp: secondary runs={d} task={s}\n", .{ secondary_runs_printed, name }) catch continue;
         con.puts(line);
     }
+    if (secondary_report_pending and
+        smp_now -| secondary_report_last_ns >= smp_report_gap_ns)
+    {
+        var buf: [160]u8 = undefined;
+        if (std.fmt.bufPrint(&buf, "smp: secondary runs={d} task={s}\n", .{ secondary_report_n, secondary_report_name })) |line| {
+            con.puts(line);
+            secondary_report_pending = false;
+            secondary_report_last_ns = smp_now;
+        } else |_| {}
+    }
     // The migration buffer has the same drop-oldest, bounded-drain rule.
     const steal_end = steal_runs;
     const steal_first = steal_end - @min(steal_end, steal_run_names_count);
@@ -4087,9 +4274,26 @@ pub fn maybe_report(con: *console.Console) void {
         steal_runs_printed += 1;
         const sname = steal_run_names[index];
         const sfrom = steal_run_froms[index];
+        if (smp_now != 0) {
+            steal_report_pending = true;
+            steal_report_n = steal_runs_printed;
+            steal_report_name = sname;
+            steal_report_from = sfrom;
+            continue;
+        }
         var buf: [160]u8 = undefined;
         const line = std.fmt.bufPrint(&buf, "smp: steal runs={d} task={s} from={d}\n", .{ steal_runs_printed, sname, sfrom }) catch continue;
         con.puts(line);
+    }
+    if (steal_report_pending and
+        smp_now -| steal_report_last_ns >= smp_report_gap_ns)
+    {
+        var buf: [160]u8 = undefined;
+        if (std.fmt.bufPrint(&buf, "smp: steal runs={d} task={s} from={d}\n", .{ steal_report_n, steal_report_name, steal_report_from })) |line| {
+            con.puts(line);
+            steal_report_pending = false;
+            steal_report_last_ns = smp_now;
+        } else |_| {}
     }
     var i: usize = 0;
     while (i < max_tasks) : (i += 1) {
@@ -4191,6 +4395,63 @@ test "scheduler: self-rotation report backlogs drain only retained names (#1965)
     mock.reset();
     maybe_report(&con);
     try std.testing.expectEqual(@as(usize, 0), mock.contents().len);
+}
+
+test "scheduler: smp evidence drains bound to one line per wall gap (#3863)" {
+    _ = init();
+    secondary_runs = 1_000_000;
+    secondary_runs_printed = 0;
+    secondary_run_names_count = secondary_run_name_cap;
+    secondary_run_names = @splat("user-el0");
+    steal_runs = 1_000_000;
+    steal_runs_printed = 0;
+    steal_run_names_count = steal_run_name_cap;
+    steal_run_names = @splat("user-el0");
+    steal_run_froms = @splat(1);
+    var now: u64 = 1_000_000_000;
+    const Hook = struct {
+        var t: *u64 = undefined;
+        fn f() u64 {
+            return t.*;
+        }
+    };
+    Hook.t = &now;
+    timer.now_ns_hook = Hook.f;
+    defer {
+        timer.now_ns_hook = null;
+        secondary_runs = 0;
+        secondary_runs_printed = 0;
+        secondary_run_names_count = 0;
+        steal_runs = 0;
+        steal_runs_printed = 0;
+        steal_run_names_count = 0;
+        secondary_report_last_ns = 0;
+        steal_report_last_ns = 0;
+    }
+    var mock = console.MockConsole(8192){};
+    var con = mock.console();
+    maybe_report(&con);
+    // One line each, naming the LATEST retained run — the retained
+    // backlog collapses into the newest sample, not a line per run.
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, mock.contents(), "smp: secondary runs="));
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, mock.contents(), "smp: steal runs="));
+    try std.testing.expect(std.mem.indexOf(u8, mock.contents(), "smp: secondary runs=1000000 task=user-el0") != null);
+    // Inside the same wall window the next drain writes nothing — but
+    // the watermark still walks the new runs (the count proves them).
+    secondary_runs += 5;
+    secondary_run_names_count = 5;
+    secondary_run_names = @splat("worker");
+    mock.reset();
+    maybe_report(&con);
+    try std.testing.expectEqual(@as(usize, 0), mock.contents().len);
+    try std.testing.expectEqual(secondary_runs, secondary_runs_printed);
+    // Past the gap: one line naming the newest run — the skipped four
+    // show only as the runs= jump.
+    now += smp_report_gap_ns;
+    mock.reset();
+    maybe_report(&con);
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, mock.contents(), "smp: secondary runs="));
+    try std.testing.expect(std.mem.indexOf(u8, mock.contents(), "smp: secondary runs=1000005 task=worker") != null);
 }
 
 // ---------------------------------------------------------------------------

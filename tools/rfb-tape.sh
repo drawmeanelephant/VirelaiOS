@@ -8,6 +8,11 @@
 # never completes the RFB handshake, instead of producing an empty tape.
 # The host bridge's one-shot VNC password crosses a private FIFO, not the
 # VMRunner's captured stderr (runner.log); the guest still speaks None.
+# M213c (#3878): this tape stays a VNC-auth-type-2 bridge — Screen Sharing
+# speaks nothing else, so it can never be the VeNCrypt verifier. The
+# verifier for the guest's --rfb-vencrypt lane is the same probe's
+# -mode=vencrypt (tools/go/rfbprobe/vencrypt.go), exercised by
+# tools/gate/specs/live-rfb.spec's VeNCrypt legs, not by this tape.
 
 set -euo pipefail
 

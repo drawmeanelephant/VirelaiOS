@@ -92,6 +92,13 @@ type Config struct {
 	ServerName string // SNI/verify name; empty takes Host
 	AllowPlain bool
 
+	// WS (M212c #3874) selects the WebSocket gateway transport: the
+	// RFC 6455 Upgrade runs over the dialed transport and each IRC line
+	// rides one text message (the ircv3 gateway convention). WS+TLS is
+	// wss; WS alone is cleartext and still needs the AllowPlain bit.
+	WS     bool
+	WSPath string // the Upgrade's request path; "/" when empty
+
 	SASL *SASLConfig // optional
 
 	Channels []string // joined after every 001

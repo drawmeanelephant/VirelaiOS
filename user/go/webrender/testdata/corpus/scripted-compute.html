@@ -1,0 +1,13 @@
+<!doctype html>
+<html><head><title>Scripted Compute Corpus Row</title></head>
+<body>
+<h1>computed content row</h1>
+<p id="out"></p>
+<p>the out paragraph starts EMPTY: its text can only be the script's own
+computed content, read back over the same wire.</p>
+<script>
+function fib(n) { var a = 0, b = 1; for (var i = 0; i < n; i++) { var t = a + b; a = b; b = t; } return a; }
+document.getElementById("out").textContent = "fib(25)=" + fib(25);
+console.log("readback=" + document.getElementById("out").textContent);
+</script>
+</body></html>

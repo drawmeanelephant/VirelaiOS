@@ -19,8 +19,9 @@ func fileTimes(path string) (mt, ct int64, mtOK, ctOK bool) {
 	}
 	mt = st.ModTime().UnixNano()
 	if sb, ok := st.Sys().(*syscall.Stat_t); ok {
-		ct = sb.Ctimespec.Sec*1e9 + sb.Ctimespec.Nsec
-		ctOK = ct != 0
+		var hasCT bool
+		ct, hasCT = statCtime(sb)
+		ctOK = hasCT && ct != 0
 	}
 	return mt, ct, mt != 0, ctOK
 }

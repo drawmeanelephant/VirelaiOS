@@ -521,3 +521,38 @@ func findTag(n *Node, tag string) *Node {
 	}
 	return nil
 }
+
+// M211c (#3869): the dom-rpc write ops' tree primitives — SetText replaces
+// children wholesale, SetAttr upserts, and a mutation drops the id index
+// so a detached subtree can never answer a lookup.
+func TestSetTextSetAttrInvalidateIndex(t *testing.T) {
+	doc := ParseHTML([]byte(`<p id="lead"><b id="inner">old</b></p><input id="fld">`))
+	lead := doc.ByID("lead")
+	if lead == nil || doc.ByID("inner") == nil {
+		t.Fatal("ByID did not resolve parsed ids")
+	}
+	lead.SetText("new text")
+	if len(lead.Children) != 1 || lead.Children[0].Kind != KindText || lead.Children[0].Text != "new text" {
+		t.Fatalf("SetText children = %+v", lead.Children)
+	}
+	doc.InvalidateIndex()
+	if got := doc.ByID("inner"); got != nil {
+		t.Fatal("ByID answered a node detached by SetText")
+	}
+	if got := doc.ByID("lead"); got != lead {
+		t.Fatal("ByID lost the live node after invalidation")
+	}
+	lead.SetText("")
+	if len(lead.Children) != 0 {
+		t.Fatal("SetText(\"\") left children")
+	}
+	fld := doc.ByID("fld")
+	fld.SetAttr("value", "filled")
+	fld.SetAttr("value", "replaced")
+	if got := fld.Attr("value"); got != "replaced" {
+		t.Fatalf("SetAttr value = %q", got)
+	}
+	if n := len(fld.Attrs); n != 2 {
+		t.Fatalf("SetAttr duplicated the attribute (attrs=%d)", n)
+	}
+}

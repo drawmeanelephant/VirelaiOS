@@ -55,6 +55,14 @@ var sent_counts: [process.max_processes]u64 = @as([process.max_processes]u64, @s
 /// Messages dequeued from each process's ring (by that process's recv).
 var recv_counts: [process.max_processes]u64 = @as([process.max_processes]u64, @splat(@as(u64, 0)));
 
+/// Hook for scheduler wakeup (#3901 — mirrors `events.on_event_pushed`).
+/// Fires with the TARGET pid after each successful enqueue, so the wiring
+/// layer can notify a `sys_wait_event`-blocked consumer on the next
+/// scheduler pass instead of leaving it parked for the next 1 Hz
+/// COMPOSITE_TICK. A refused (full-ring) or defensive no-op send does not
+/// fire — nothing was delivered.
+pub var on_message_sent: ?*const fn (usize) void = null;
+
 fn in_range(pid: usize) bool {
     return pid < process.max_processes;
 }
@@ -97,6 +105,9 @@ pub fn send(pid: usize, bytes: []const u8) SendResult {
     lens[pid][slot] = @intCast(bytes.len);
     count[pid] += 1;
     sent_counts[pid] +%= 1;
+    if (on_message_sent) |hook| {
+        hook(pid);
+    }
     return .ok;
 }
 

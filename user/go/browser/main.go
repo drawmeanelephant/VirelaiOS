@@ -135,11 +135,24 @@ const (
 	// the content frame when no page is loaded and no load failed.
 	markerEmpty = "web: empty "
 	markerQuit  = "web: quit"
+	// M211a (#3867): the DOM-RPC worker markers — launch, per-reply rc,
+	// teardown. The card's pinned shapes are `web: script rc=…` and
+	// `web: script worker gone`.
+	markerScript = "web: script "
+	// M211b (#3868): `web: dom` is one answered DOM request's outcome —
+	// `web: dom <op> ok|dom_op_refused|dom_op_unknown`; `web: console` is
+	// a script's console.log line reaching serial, clipped single-line.
+	markerDom     = "web: dom "
+	markerConsole = "web: console "
 	// M121c (#2566): the '?' overlay's receipts — `hints n=` the registry
 	// row count on the painted frame, one `hints row` per plate row (the
 	// serial-readable copy), `hints close` after the restored frame.
 	markerHints    = "web: hints "
 	markerHintsRow = "web: hints row "
+	// #3898: the startup window's stage breakdown — `web: stages` names in
+	// milliseconds where the tStart->tNav0 span went, so "startup is slow"
+	// is a measured attribution printed once per run, never an inference.
+	markerStages = "web: stages "
 	// The typography probes. They carry measurable facts (engine name,
 	// per-glyph advances, line heights) rather than adjectives, so a silent
 	// regression to the 8x8 bitmap fails the class-B gate instead of only
@@ -239,6 +252,10 @@ type app struct {
 	lastFills  int
 	logPaint   bool
 	loggedPoll bool
+	// mutated is the dom-rpc write ops' dirty flag (M211c #3869): a
+	// served setText/setValue marks the tree dirty; the next drain-pass
+	// end runs one batched reflow + repaint through the normal pipeline.
+	mutated    bool
 	// dogfoodPage is the once-only latch for markerDogfoodPage (M69a #1528).
 	dogfoodPage bool
 
@@ -348,6 +365,9 @@ type app struct {
 	// write is in flight AND while its completion plate is up (the plate's
 	// Open/Folder chips keep a target through a.dl).
 	dl *download
+	// M211a (#3867): the page's QJS.BIN --dom-rpc worker — non-nil while a
+	// stream-bound child is in flight; domrpc.go owns the wire.
+	rpc *scriptWorker
 	// M125d (#2589): the decoded session blob parked by noteState, consumed
 	// once by applyState on the first laid-out page after restore.
 	pend *webState
@@ -433,9 +453,15 @@ const (
 	// the number at ~10048ms and printed a budget-over line in every WEB boot
 	// (13 of the 14; boot 12 launches GOFETCH) while only three boots asserted
 	// its absence. The same four faces read 3027ms before that retry existed.
-	// 4000ms stays the loose bar for four faces: a structural regression (faces
-	// read twice, a fetch on the render path) still trips it, with ~1s of
-	// headroom over the measured cost. parse/layout/paint budgets are unchanged.
+	//
+	// #3898 re-measured the span with `web: stages`: the read cap is 32 KiB
+	// now, the six manifest primaries cost ~10-20ms each through the file
+	// channel, and ~90% of the observed 1.4-3s was the reader's own append-
+	// growth churn inside the Go runtime — ~1 MiB of abandoned buffers per
+	// face feeding the collector (the issue's 7917ms was the same loop under
+	// a busier session). The two-pass reader ended it: measured startup
+	// 1443ms -> 223ms on a scripted class-B boot (fonts 1365 -> 94). 4000ms
+	// stays the loose bar — a structural regression still trips it.
 	budgetStartupMs = 4000
 	budgetRenderMs  = 400 // parse + layout + paint of a page
 	budgetParseMs   = 120
@@ -487,6 +513,7 @@ func main() {
 			target = urlFromHandoff(b)
 		}
 	}
+	tArgv := vi.Nanos()
 
 	id, rc := vi.WinOpen(winX, winY, winW, winH)
 	if rc < 0 || id < 0 {
@@ -496,10 +523,16 @@ func main() {
 	a := &app{win: id, hist: newHistory(), tStart: t0, zoomPct: 100}
 	a.bindCanvas(winW, winH)
 	a.buildMenus()
+	tWin := vi.Nanos()
+
 	engine, uiState, monoState, serifState := loadTextEngine()
 	a.text = engine
+	tFonts := vi.Nanos()
+
 	vi.ConsoleLine(markerFonts + engine.Name() + " ui=" + uiState + " mono=" + monoState + " serif=" + serifState)
 	vi.ConsoleLine(markerText + textProbeString(engine))
+	tProbe := vi.Nanos()
+
 	// M126d (#2596): the GOSET font_size row sets the default web text
 	// size; read it once at startup, then subscribe so a live seat's
 	// notices re-apply it. A shim boot has no seat — the subscribe just
@@ -510,13 +543,17 @@ func main() {
 	// rung — read once at startup, then subscribed beside font_size.
 	a.textScale = textScaleRead()
 	a.fontBase = scaledFontBase(fontPx, a.textScale)
+	tSettings := vi.Nanos()
+
 	vi.ConsoleLine(markerFontSize + fontVal + " base=" + itoa(a.fontBase))
 	vi.ConsoleLine(markerTextScale + itoa(a.textScale) + " base=" + itoa(a.fontBase))
 	vi.ConsoleLine(markerOpen + itoa(id))
 	// Fullscreen eligibility uses the existing seat RPC. With no responding
 	// seat, retain the raw shim; resize events determine the presentation.
 	vi.WmMailRequest(vi.WmRpcKindAttachTab, uint32(id), 0, 0, 0, 0, appTitle, appName)
+	tAttach := vi.Nanos()
 	vi.WmMailRequest(vi.WmRpcKindDeclareFullscreen, uint32(id), 0, 0, 0, 0, appTitle, appName)
+	tDeclare := vi.Nanos()
 	// M125d (#2589): the tab row exists now, so the seat can answer a
 	// kind-21 restore. A re-exec'd WEB gets no argv — a stored blob is the
 	// only place its URL survives; ask BEFORE navigating so the restored
@@ -524,20 +561,45 @@ func main() {
 	if v, blob, ok := vi.RequestStateRestore(uint32(id), appName); ok {
 		a.noteState(v, blob)
 	}
+	tRestore := vi.Nanos()
 	a.settingsWatch = settings.Subscribe("font_size", uint32(id), appName)
+	tSubFont := vi.Nanos()
 	// The text_scale ask goes only to a Go seat — the settings bus' home.
 	// A legacy seat never acks kind-13, so this ask would double the
 	// bounded ack stall font_size already pays there (M177a #3142).
 	if peers := vi.WmPeers(appName); peers.Go {
 		a.settingsWatch = settings.Subscribe(settings.A11yTextScaleKey, uint32(id), appName) || a.settingsWatch
 	}
+	tSubScale := vi.Nanos()
 	// The store inventory is read from disk at boot: it is how the gate sees
 	// that a previous run's rows persisted. The bookmark atoms load first so
 	// the count in this line is the on-disk truth, not a later cache.
 	a.loadBookmarks()
+	tBooks := vi.Nanos()
 	vi.ConsoleLine(a.storeSummary())
 	vi.ConsoleLine(markerBmStore + "ws=" + bookWSName + " atoms=" + itoa(len(a.books)) +
 		" migrated=" + itoa(a.booksMigrated) + " error=" + bmErrText(a.booksErr))
+	tStores := vi.Nanos()
+
+	// The startup budget's own accounting: reportBudget prints the whole
+	// tStart->tNav0 span later; this line attributes it per stage so a slow
+	// start names its owner instead of looking like one undifferentiated
+	// cost (#3898). RPC legs are split — a bounded ack stall hides inside
+	// any one of them.
+	msSince := func(t int64) string { return itoa(int((vi.Nanos() - t) / ms)) }
+	stages := "argv=" + itoa(int((tArgv-t0)/ms)) +
+		" win=" + itoa(int((tWin-tArgv)/ms)) +
+		" fonts=" + itoa(int((tFonts-tWin)/ms)) +
+		" probe=" + itoa(int((tProbe-tFonts)/ms)) +
+		" settings=" + itoa(int((tSettings-tProbe)/ms)) +
+		" attach=" + itoa(int((tAttach-tSettings)/ms)) +
+		" declare=" + itoa(int((tDeclare-tAttach)/ms)) +
+		" restore=" + itoa(int((tRestore-tDeclare)/ms)) +
+		" subfont=" + itoa(int((tSubFont-tRestore)/ms)) +
+		" subscale=" + itoa(int((tSubScale-tSubFont)/ms)) +
+		" books=" + itoa(int((tBooks-tSubScale)/ms)) +
+		" stores=" + msSince(tStores)
+	vi.ConsoleLine(markerStages + stages)
 
 	if a.pend != nil && a.pend.url != "" {
 		a.navigate(a.pend.url, "")
@@ -676,6 +738,9 @@ func (a *app) loop() {
 			}
 			a.dlStep()
 		}
+		// M211a (#3867): the page's script worker advances here — replies
+		// drain and teardown markers print from the same poll cadence.
+		a.pollScripts()
 		ev, raw, ok := vi.Event{}, int64(0), false
 		if len(a.pendingEvents) > 0 {
 			ev, ok = a.pendingEvents[0], true
@@ -697,7 +762,7 @@ func (a *app) loop() {
 			// tasks leave the shell's idle loop (which paces the composite
 			// and services the scanout snapshot) room to run on this
 			// single-user machine.
-			if a.loading || a.urlEditing || a.target == "" ||
+			if a.loading || a.urlEditing || a.target == "" || a.rpc != nil ||
 				(a.dl != nil && a.dl.active) {
 				vi.Sleep(1)
 				continue
@@ -732,6 +797,11 @@ func (a *app) loop() {
 			a.click(int(ev.Arg0), int(ev.Arg1))
 		case vi.EvMouseMove:
 			a.move(int(ev.Arg0), int(ev.Arg1))
+		case vi.EvTimer:
+			// M211c (#3869): the process's one app timer rides for the
+			// script worker's granted setTimeouts — the fan-out moves
+			// due ids and answers a parked `timer.next` ask.
+			a.onScriptTimer()
 		case 12: // Existing ADR 0009 MOUSE_SCROLL; SDK has no named alias.
 			if ev.Arg0&0x4000 == 0 {
 				step := int(ev.Arg0&0x3fff) * 40
@@ -751,6 +821,9 @@ func (a *app) loop() {
 	if a.dl != nil && a.dl.active {
 		a.cancelDownload()
 	}
+	// M211a: a live worker is killed and reaped before the window goes —
+	// ordered teardown leaves no zombie behind.
+	a.closeScripts()
 	vi.ConsoleLine(markerQuit)
 	vi.WinClose(a.win)
 	vi.Exit(0)
@@ -791,6 +864,7 @@ func (a *app) navigate(target, from string) {
 	}
 	a.blank = false // any navigation retires the start surface
 	a.closeLoad()
+	a.closeScripts() // a new page retires the previous one's worker
 	a.loading = false
 	a.tNav0 = vi.Nanos()
 	a.tBody = 0
@@ -920,7 +994,7 @@ func (a *app) startHTTP(u webrender.URL) {
 	a.loading = true
 	a.loadEnd = a.stageEnd(5_000_000_000)
 	a.loadIdle = a.loadEnd
-	vi.ConsoleLine(markerFetch + u.Host + u.Path)
+	vi.ConsoleLine(markerFetch + u.Host + u.Path + " proto=http/1.1")
 }
 
 // startHTTPS dials in-process (tls.Dial over vi.Dial), sends the GET, and
@@ -1215,6 +1289,9 @@ func (a *app) afterLoad(from string) {
 	} else {
 		a.settleIfNeeded()
 	}
+	// M211a (#3867): the page is fully painted before the worker seam
+	// starts — script ops can never hold up the frame they describe.
+	a.startScripts()
 }
 
 // finishError renders the error page for a failed load and records the visit.
@@ -2057,6 +2134,8 @@ func errorMessage(kind, target string) string {
 		return "The certificate chain has no trusted root."
 	case "http-framing-unsupported":
 		return "Transfer or content coding is not supported; identity framing is required."
+	case "h2-refused":
+		return "The HTTP/2 peer violated the negotiated protocol; the exchange was refused by name."
 	case "http-framing-invalid", "http-premature-eof", "chunked-malformed",
 		"gzip-crc", "gzip-too-large", "gzip-malformed":
 		return "The response framing is invalid, the chunked stream malformed, or the gzip body failed its check."

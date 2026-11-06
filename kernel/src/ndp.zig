@@ -247,8 +247,9 @@ pub fn build_rs(buf: []u8, own_mac: *const [6]u8, src_ll: *const ipv6.Addr) usiz
 /// dst the target's solicited-node group (33:33:ff:xx:xx:xx /
 /// ff02::1:ffXX:XXXX), src our link-local, hop 255, the target field,
 /// SLLA = our MAC. Sets `pending_na` — the ONE outstanding solicitation
-/// (a second request supersedes the first, the `arp.pending_reply`
-/// precedent). Returns the frame length (86).
+/// (a second request supersedes the first — unlike `arp.pending`'s
+/// per-target table this layer keeps the single-slot shape). Returns
+/// the frame length (86).
 pub fn build_ns(buf: []u8, own_mac: *const [6]u8, src_ll: *const ipv6.Addr, target: *const ipv6.Addr) usize {
     const dst_ip = ipv6.snm_addr(target);
     const dst_mac = ipv6.snm_mac(target);

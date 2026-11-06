@@ -123,6 +123,17 @@ func applyConnectConfig(body []byte) (Config, bool) {
 				return Config{}, false
 			}
 			cfg.AllowPlain = on
+		case "ws":
+			on, ok := cfgOnOff(val)
+			if !ok {
+				return Config{}, false
+			}
+			cfg.WS = on
+		case "wspath":
+			if val == "" || val[0] != '/' {
+				return Config{}, false
+			}
+			cfg.WSPath = val
 		default:
 			return Config{}, false
 		}
@@ -139,13 +150,19 @@ func (c Config) connectBody() []byte {
 		}
 		return "off"
 	}
-	return []byte("#v1\n" +
+	body := "#v1\n" +
 		"host=" + c.Host + "\n" +
 		"port=" + vsys.Itoa64(int64(c.Port)) + "\n" +
 		"nick=" + c.Nick + "\n" +
 		"tls=" + on(c.TLS) + "\n" +
 		"sni=" + c.ServerName + "\n" +
-		"plain=" + on(c.AllowPlain) + "\n")
+		"plain=" + on(c.AllowPlain) + "\n" +
+		"ws=" + on(c.WS) + "\n"
+	if c.WSPath != "" {
+		// The strict decoder refuses an empty path — omit, not spell.
+		body += "wspath=" + c.WSPath + "\n"
+	}
+	return []byte(body)
 }
 
 // loadConnectConfig reads the saved server; a missing or refused file is
@@ -366,6 +383,8 @@ func (u *uiApp) pickChoose() {
 	u.cfg.TLS = saved.TLS
 	u.cfg.ServerName = saved.ServerName
 	u.cfg.AllowPlain = saved.AllowPlain
+	u.cfg.WS = saved.WS
+	u.cfg.WSPath = saved.WSPath
 	vi.ConsoleLine("goirc: connect saved")
 	u.fromFace = true
 	u.beginSession()

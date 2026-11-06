@@ -1,0 +1,18 @@
+<!doctype html>
+<html><head><title>Scripted Refused Corpus Row</title></head>
+<body>
+<h1>named refusal row</h1>
+<p id="out">pending</p>
+<p>this row's script needs ops v3 refuses: traversal, fetch and attribute
+writes. each refusal's own word is caught in JS and written into the out
+paragraph — the refusal reaches the page as text, not a silent gap.</p>
+<script>
+var names = [];
+try { document.querySelector("#out"); } catch (e) { names.push(e.name); }
+try { fetch("https://x.invalid/"); } catch (e) { names.push(e.name); }
+try { document.getElementById("out").setAttribute("data-x", "1"); } catch (e) { names.push(e.name); }
+try { virelai.dom("bogus.op"); } catch (e) { names.push(e.name); }
+document.getElementById("out").textContent = "refused:" + names.join(",");
+console.log("page=" + document.getElementById("out").textContent);
+</script>
+</body></html>

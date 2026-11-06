@@ -159,7 +159,8 @@ func capBits(caps map[string]bool) agentverbs.Caps {
 
 // libSess lifts the session context into the library's Session. The
 // audit intent hook keeps the D4 pre-spawn receipt in the daemon's own
-// lane — it is the one piece of gosh.run that is audit, not verb.
+// lane — it is the one piece of the gosh verbs that is audit, not verb,
+// and it names the request's verb so a spawn receipt reads gosh.spawn.
 func libSess(sess *sessionCtx, req *request) *agentverbs.Session {
 	return &agentverbs.Session{
 		Caps:           capBits(sess.caps),
@@ -167,7 +168,7 @@ func libSess(sess *sessionCtx, req *request) *agentverbs.Session {
 		Emit:           sess.emit,
 		NextFullShotNs: sess.nextFullShotNs,
 		AuditIntent: func() {
-			lane.emit(sess.agentID, "gosh.run", auditArgs(req, "", "intent"), "ok")
+			lane.emit(sess.agentID, req.verb, auditArgs(req, "", "intent"), "ok")
 		},
 	}
 }
@@ -295,6 +296,10 @@ func verbUIGeometry(req *request, sess *sessionCtx) (string, string) {
 
 func verbGoshRun(req *request, sess *sessionCtx) (string, string) {
 	return verbLib.GoshRun(libReq(req), libSess(sess, req))
+}
+
+func verbGoshSpawn(req *request, sess *sessionCtx) (string, string) {
+	return verbLib.GoshSpawn(libReq(req), libSess(sess, req))
 }
 
 // dirExists is the startup /host/AGENT probe (posture check 3).

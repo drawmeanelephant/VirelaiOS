@@ -19,8 +19,10 @@ import (
 const (
 	frameW = 1280
 	frameH = 720
-	patchX = 80
-	patchY = 150
+	// Fully inside Calc's first idle button ("C", leftmost top button row)
+	// and clear of its label glyph at the button's top-left.
+	patchX = 200
+	patchY = 225
 	patchW = 16
 	patchH = 16
 
@@ -57,11 +59,25 @@ var modes = map[string]func(io.Reader, io.Writer) error{
 	"die-focus": probeDieFocus,
 }
 
+var (
+	vencryptCert = flag.String("vencrypt-cert", "", "fixture DER certificate the X509Plain peer must present (vencrypt mode)")
+	vencryptUser = flag.String("vencrypt-user", "", "X509Plain username (vencrypt mode)")
+	vencryptPass = flag.String("vencrypt-pass", "", "X509Plain password (vencrypt mode)")
+	vencryptName = flag.String("vencrypt-name", defaultVerifyName, "TLS ServerName the fixture cert is verified against (vencrypt mode)")
+)
+
 func main() {
 	mode := flag.String("mode", "pixels", "probe mode")
 	bridge := flag.String("bridge", "", "loopback host:port for one real viewer (tape only)")
 	passwordFIFO := flag.String("bridge-password-fifo", "", "named pipe for the one-shot bridge password (tape only)")
 	flag.Parse()
+	if *mode == "vencrypt" {
+		if err := probeVencrypt(os.Stdin, os.Stdout, *vencryptCert, *vencryptUser, *vencryptPass, *vencryptName); err != nil {
+			fmt.Fprintln(os.Stderr, "RFBPROBE: FAIL:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if *bridge != "" {
 		if err := runBridge(*bridge, *passwordFIFO, os.Stdin, os.Stdout); err != nil {
 			fmt.Fprintln(os.Stderr, "RFBPROBE: FAIL:", err)
@@ -122,25 +138,35 @@ func negotiate(r io.Reader, w io.Writer) error {
 	if err := write(w, []byte{1}); err != nil {
 		return err
 	}
+	name, err := readServerInit(r)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "RFBPROBE: RFB 3.8 None %dx%d %s\n", frameW, frameH, name)
+	return nil
+}
+
+// readServerInit reads and checks the ServerInit message: the seat's
+// 1280x720 geometry and its 32bpp/depth-24 little-endian true-color format.
+func readServerInit(r io.Reader) (string, error) {
 	var init [24]byte
 	if _, err := io.ReadFull(r, init[:]); err != nil {
-		return fmt.Errorf("ServerInit: %w", err)
+		return "", fmt.Errorf("ServerInit: %w", err)
 	}
 	if binary.BigEndian.Uint16(init[0:2]) != frameW || binary.BigEndian.Uint16(init[2:4]) != frameH ||
 		init[4] != 32 || init[5] != 24 || init[6] != 0 || init[7] != 1 ||
 		init[14] != 16 || init[15] != 8 || init[16] != 0 {
-		return fmt.Errorf("ServerInit dimensions or pixel format: %x", init[:20])
+		return "", fmt.Errorf("ServerInit dimensions or pixel format: %x", init[:20])
 	}
 	n := binary.BigEndian.Uint32(init[20:24])
 	if n > 255 {
-		return fmt.Errorf("server name length %d", n)
+		return "", fmt.Errorf("server name length %d", n)
 	}
 	name := make([]byte, n)
 	if _, err := io.ReadFull(r, name); err != nil {
-		return fmt.Errorf("server name: %w", err)
+		return "", fmt.Errorf("server name: %w", err)
 	}
-	fmt.Fprintf(os.Stderr, "RFBPROBE: RFB 3.8 None %dx%d %s\n", frameW, frameH, name)
-	return nil
+	return string(name), nil
 }
 
 func readBanner(r io.Reader) error {
@@ -173,14 +199,58 @@ func probe(r io.Reader, w io.Writer) error {
 	// for a 16x16 region fully inside Calc's first idle button, where its
 	// token is dark BtnIdle #2d3748. The empty desktop is #182026, so a
 	// passing comparison cannot come from the seat's blank frame alone.
-	// SetEncodings and the request go out as one write: one TCP segment.
-	req := append([]byte{2, 0, 0, 1, 0, 0, 0, 0}, 3, 0, 0, patchX, 0, patchY, 0, patchW, 0, patchH)
-	if err := write(w, req); err != nil {
+	// 'gocalc: present' is the app's marker; the seat's composite of that
+	// window lands on its own frame clock. One settle gives it a pass
+	// before the first request reads real button pixels.
+	time.Sleep(settle)
+	if err := requestCalcPatch(r, w); err != nil {
 		return err
 	}
+	// Ctrl+Space opens the seat launcher. A left press OUTSIDE its strip
+	// dismisses it. They traverse the same kind-21/19 path as local input.
+	return write(w, concat(
+		key(true, 0xffe3), key(true, ' '), key(false, ' '), key(false, 0xffe3),
+		pointer(1, dismissX, dismissY), pointer(0, dismissX, dismissY),
+	))
+}
+
+// requestCalcPatch asks for the Calc-button patch, retrying a frame that
+// is still the empty desktop or an uncomposited blank — the seat paints
+// 'gocalc: present' on its own frame clock and a viewer's repaint
+// request is exactly how a real client recovers. A wrong-colored pixel
+// fails on the spot: the seat served a frame, just not Calc's.
+func requestCalcPatch(r io.Reader, w io.Writer) error {
+	// SetEncodings and the request go out as one write: one TCP segment.
+	req := append([]byte{2, 0, 0, 1, 0, 0, 0, 0}, 3, 0, 0, patchX, 0, patchY, 0, patchW, 0, patchH)
+	var last error
+	for attempt := 0; attempt < 8; attempt++ {
+		if attempt > 0 {
+			time.Sleep(settle)
+		}
+		if err := write(w, req); err != nil {
+			return err
+		}
+		retry, err := readCalcPatch(r)
+		if err == nil {
+			return nil
+		}
+		if !retry {
+			return err
+		}
+		last = err
+	}
+	return last
+}
+
+// readCalcPatch reads one raw FramebufferUpdate covering the 16x16 Calc
+// button region and verifies the BtnIdle pixels — the frame half of any
+// probe mode's evidence. The bool reports a retryable answer: a patch
+// that is uniformly the empty desktop or unwritten framebuffer means the
+// seat's composite has not landed yet, not that the pixels are wrong.
+func readCalcPatch(r io.Reader) (bool, error) {
 	var header [16]byte
 	if _, err := io.ReadFull(r, header[:]); err != nil {
-		return fmt.Errorf("FramebufferUpdate: %w", err)
+		return false, fmt.Errorf("FramebufferUpdate: %w", err)
 	}
 	if header[0] != 0 || binary.BigEndian.Uint16(header[2:4]) != 1 ||
 		binary.BigEndian.Uint16(header[4:6]) != patchX ||
@@ -188,27 +258,34 @@ func probe(r io.Reader, w io.Writer) error {
 		binary.BigEndian.Uint16(header[8:10]) != patchW ||
 		binary.BigEndian.Uint16(header[10:12]) != patchH ||
 		binary.BigEndian.Uint32(header[12:16]) != 0 {
-		return fmt.Errorf("raw rectangle header: %x", header)
+		return false, fmt.Errorf("raw rectangle header: %x", header)
 	}
 	pixels := make([]byte, patchW*patchH*4)
 	if _, err := io.ReadFull(r, pixels); err != nil {
-		return fmt.Errorf("raw pixels: %w", err)
+		return false, fmt.Errorf("raw pixels: %w", err)
 	}
 	const wantB, wantG, wantR = 0x48, 0x37, 0x2d
+	blank, desktop := true, true
+	for i := 0; i < len(pixels); i += 4 {
+		if pixels[i] != 0 || pixels[i+1] != 0 || pixels[i+2] != 0 || pixels[i+3] != 0 {
+			blank = false
+		}
+		if pixels[i] != 0x26 || pixels[i+1] != 0x20 || pixels[i+2] != 0x18 || pixels[i+3] != 0 {
+			desktop = false
+		}
+	}
+	if blank || desktop {
+		return true, fmt.Errorf("Calc patch still %s at (%d,%d)",
+			map[bool]string{true: "blank", false: "desktop"}[blank], patchX, patchY)
+	}
 	for i := 0; i < len(pixels); i += 4 {
 		if pixels[i] != wantB || pixels[i+1] != wantG || pixels[i+2] != wantR || pixels[i+3] != 0 {
-			return fmt.Errorf("Calc button pixel (%d,%d) = %x want BGR0 48372d00",
+			return false, fmt.Errorf("Calc button pixel (%d,%d) = %x want BGR0 48372d00",
 				patchX+(i/4)%patchW, patchY+(i/4)/patchW, pixels[i:i+4])
 		}
 	}
 	fmt.Fprintln(os.Stderr, "RFBPROBE: Calc BtnIdle 16x16 pixels = #2d3748")
-
-	// Ctrl+Space opens the seat launcher. A left press OUTSIDE its strip
-	// dismisses it. They traverse the same kind-21/19 path as local input.
-	return write(w, concat(
-		key(true, 0xffe3), key(true, ' '), key(false, ' '), key(false, 0xffe3),
-		pointer(1, dismissX, dismissY), pointer(0, dismissX, dismissY),
-	))
+	return false, nil
 }
 
 // probeSecurityRefused asks for VNC authentication (type 2), which the
@@ -321,10 +398,20 @@ func probeDieFocus(r io.Reader, w io.Writer) error {
 	if err := write(w, concat(
 		key(true, 0xffe3), key(true, ' '), key(false, ' '), key(false, 0xffe3),
 		key(true, 'c'),
+		// FIFO: a served update means the seat read everything before it —
+		// the launcher chord included — so the death lands on a routed
+		// key, not on bytes still queued under the RST.
+		[]byte{3, 0, 0, 0, 0, 0, frameW >> 8, frameW & 0xff, frameH >> 8, frameH & 0xff},
 	)); err != nil {
 		return err
 	}
-	time.Sleep(settle)
+	var header [16]byte
+	if _, err := io.ReadFull(r, header[:]); err != nil {
+		return fmt.Errorf("post-input FramebufferUpdate: %w", err)
+	}
+	if header[0] != 0 {
+		return fmt.Errorf("post-input update header: %x", header)
+	}
 	return errDied("mid-focus with the launcher open and 'c' held")
 }
 

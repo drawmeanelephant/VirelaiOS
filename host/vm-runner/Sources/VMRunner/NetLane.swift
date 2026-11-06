@@ -225,6 +225,19 @@ var netTcpRespondHostIP: [UInt8]?
 
 var netTcpRespondHostPort: UInt16?
 
+// Each --net-tcp-respond flag is one target the responder answers; a
+// --net-tcp-respond-relay names the upstream of the target declared just
+// before it (one boot can relay IMAP and SMTP to two fixture servers).
+// The mode suffix stays runner-wide.
+struct NetTcpRespondTarget {
+    let ip: [UInt8]
+    let port: UInt16
+    var relayPort: UInt16?
+    var relayHost: String?
+}
+
+var netTcpRespondTargets: [NetTcpRespondTarget] = []
+
 // Card N11 (claim 5357): the optional `:handshake` responder mode —
 // answer the SYN with a SYN-ACK, then go SILENT on data/FIN (a
 // deterministic data black hole for the gate's retransmission-bound
@@ -320,8 +333,8 @@ var netTcpSrvConns: [String: NetTcpSrvConn] = [:]
 /// refused with an RST (the same honesty the guest's table applies).
 let netTcpSrvConnLimit = 16
 
-func netTcpConnKey(_ guestIP: [UInt8], _ guestPort: UInt16) -> String {
-    "\(guestIP[0]).\(guestIP[1]).\(guestIP[2]).\(guestIP[3]):\(guestPort)"
+func netTcpConnKey(_ guestIP: [UInt8], _ guestPort: UInt16, _ hostPort: UInt16) -> String {
+    "\(guestIP[0]).\(guestIP[1]).\(guestIP[2]).\(guestIP[3]):\(guestPort)>\(hostPort)"
 }
 
 // M117c (#2475): the v6 connection key — the v6 address rendered
@@ -346,7 +359,7 @@ func netTcp6SrvConn(for buf: [UInt8]) -> NetTcpSrvConn {
 /// segment reaches the per-connection state machine (byte-identical with
 /// today's always-on scalar for the single-connection case).
 func netTcpSrvConn(for buf: [UInt8]) -> NetTcpSrvConn {
-    let key = netTcpConnKey([UInt8](buf[26..<30]), (UInt16(buf[34]) << 8) | UInt16(buf[35]))
+    let key = netTcpConnKey([UInt8](buf[26..<30]), (UInt16(buf[34]) << 8) | UInt16(buf[35]), (UInt16(buf[36]) << 8) | UInt16(buf[37]))
     if let conn = netTcpSrvConns[key] { return conn }
     let conn = NetTcpSrvConn()
     netTcpSrvConns[key] = conn
@@ -598,6 +611,27 @@ var netCaptureThread: Thread?
 
 var netCaptureDone = DispatchSemaphore(value: 0)
 
+// #3895: the dead-RX fault-injection seam — `--net-rx-dead <mode>` arms
+// a wedge replay at the last hop: every host->guest frame is counted
+// sent AND consumed by the pair while never reaching VZ — the exact
+// signature #3880 measured on the real dead state (SO_NREAD cleared,
+// zero completions). `until-reset` disarms on the first re-init
+// dispatch (the recovery exercised end to end); `stall` never disarms
+// (the named-refusal leg). `--net-rx-dead-after <marker>` arms when the
+// marker lands in the serial log (the net-inject trigger shape);
+// without it the fault is armed at attach. Requires --net.
+enum NetRxDeadMode { case stall, untilReset }
+var netRxDeadMode: NetRxDeadMode?
+var netRxDeadAfter: String?
+var netRxDeadArmed = false
+
+// #3895: whether the guest console input channel exists on this run
+// (the duplex serial attachment — console/script mode, vzRestore, or
+// hostSession). The dead-RX recovery writes `net rxreset` there; when
+// absent the detector's refusal is named instead of silently
+// undeliverable.
+var netConsoleInputAttached = false
+
 let netSntpResponder: SNTPResponder? = netSntpRespondHostIP.map {
     SNTPResponder(hostIP: $0, hostPort: netSntpRespondHostPort, skew: netSntpSkew ?? 0,
                   clock: { Date().timeIntervalSince1970 })
@@ -715,6 +749,32 @@ func startNetInject() {
         if !sent {
             FileHandle.standardError.write(Data("ERROR: guest did not emit net-inject marker '\(marker)' within 40s; injection not sent\n".utf8))
         }
+    }
+}
+
+// #3895: arm the dead-RX fault seam — `--net-rx-dead <mode>` without
+// --net-rx-dead-after arms at attach; with it, poll the serial log for
+// the marker then arm (the net-inject trigger shape). No-op without
+// the flag.
+func startNetRxDead() {
+    guard netRxDeadMode != nil else { return }
+    guard let marker = netRxDeadAfter else {
+        netRxDeadArmed = true
+        FileHandle.standardError.write(Data("NET-RECOVER-FAULT: dead-rx fault armed at attach (\(netRxDeadMode!))\n".utf8))
+        return
+    }
+    DispatchQueue(label: "virelaios.netrxdead").async {
+        let waitDeadline = Date().addingTimeInterval(60)
+        while Date() < waitDeadline {
+            if let text = try? String(contentsOf: serialURL, encoding: .utf8),
+               text.contains(marker) {
+                netRxDeadArmed = true
+                FileHandle.standardError.write(Data("NET-RECOVER-FAULT: dead-rx fault armed after \"\(marker)\" (\(netRxDeadMode!))\n".utf8))
+                return
+            }
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        FileHandle.standardError.write(Data("ERROR: guest did not emit net-rx-dead marker '\(marker)' within 60s; fault not armed\n".utf8))
     }
 }
 
