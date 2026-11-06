@@ -18,7 +18,22 @@ alias verify := verify-portable
 
 # Run the full portable/build gate set (class A; mirrors CI). Does NOT run
 # the Apple-silicon VZ hardware gates (class B) — that is `just verify-vz`.
-verify-portable:
+#
+# verify-portable is PURELY the composition of the two lane recipes CI runs
+# on separate runners: `verify-portable-core` (ubuntu-latest — everything
+# that works on stock Ubuntu + the GNU toolchain) plus `verify-portable-swift`
+# (macos-latest — the Swift host launcher build/tests and the file-channel
+# parity gate, which need the macOS SDK). Keep it a pure composition with no
+# commands of its own: tools/lint-workflows.sh asserts the two lanes cover
+# the full set, and a command added directly here would run locally but be
+# invisible to both CI lanes — the #1186 drift shape.
+verify-portable: verify-portable-core verify-portable-swift
+
+# The portable lane of the class-A set: every class-A check that runs on
+# stock Ubuntu + the GNU toolchain (bash >= 4.4 and GNU sed natively — no
+# Homebrew, no Apple-only tools in this path). This is exactly what the CI
+# ubuntu-latest job executes.
+verify-portable-core:
     python3 tools/test-timing.py init
     zig fmt --check boot/src/*.zig kernel/src/*.zig user/src/*.zig build.zig
     python3 tools/test-timing.py run timing-reporter -- python3 -m unittest discover -s tools/tests -p test_test_timing.py
@@ -29,8 +44,6 @@ verify-portable:
     zig build
     zig build image
     zig build inspect
-    swift build --package-path host/vm-runner
-    python3 tools/test-timing.py run swift-host -- swift test --package-path host/vm-runner
     python3 tools/test-timing.py run go-user -- go -C user/go test -count=1 ./...
     python3 tools/test-timing.py run go-vlfs -- go -C tools/go/vlfs test -count=1 ./...
     zig build context
@@ -43,11 +56,23 @@ verify-portable:
     bash tools/verify-ttf-fonts.sh
     bash tools/verify-mutations.sh
     bash tools/verify-bss-budget.sh
-    bash tools/verify-vf-class-a.sh
     python3 tools/test-timing.py run gate-runner -- bash tools/gate/test-gate-run.sh
     python3 tools/test-timing.py run benchmark-checker -- python3 tools/gate/bench-check.py
     python3 tools/test-timing.py run guest-elf -- bash tools/go/test-ensure-guest-elf.sh
     python3 tools/test-timing.py finish
+
+# The macOS-only lane of the class-A set: the Swift host launcher build +
+# tests, and the M34 host file-channel parity gate (its S1–S10 half is
+# `swift test`; the script also reruns the zig build/image/unit checks
+# itself). This is exactly what the CI macos-latest job executes.
+#
+# `swift test` runs unwrapped on purpose: the test-timing report is owned
+# by the core lane's init/finish — a `run` before `init` fails outright,
+# and an `init` here would erase the core suites under `just verify-portable`.
+verify-portable-swift:
+    swift build --package-path host/vm-runner
+    swift test --package-path host/vm-runner
+    bash tools/verify-vf-class-a.sh
 
 # The class-B fleet is DISCOVERED, not listed (M40 GF5): every spec in
 # tools/gate/specs/ plus the four legacy class-B scripts (bad-handoff,

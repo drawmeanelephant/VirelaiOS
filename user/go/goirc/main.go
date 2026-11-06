@@ -86,7 +86,7 @@ type options struct {
 
 func usage() {
 	vi.ConsoleLine("usage: GOIRC.ELF --host H --nick N [--port P] [--join '#a,#b']")
-	vi.ConsoleLine("                  [--tls [--sni NAME]] [--sasl acct] [--plain] [--ui]")
+	vi.ConsoleLine("                  [--tls [--sni NAME]] [--sasl acct] [--plain] [--ws [--wspath P]] [--ui]")
 	vi.ConsoleLine("                  [--retries N] [--backoff-ms N] [--idle-ms N] [--pong-ms N] [--max-ms N]")
 	vi.ConsoleLine("       GOIRC.ELF <host> <nick> [#chan ...]")
 }
@@ -227,6 +227,14 @@ func parseArgs(args []string) (options, bool) {
 			}
 		case "--plain":
 			o.cfg.AllowPlain = true
+		case "--ws":
+			o.cfg.WS = true
+		case "--wspath":
+			v, ok := next()
+			if !ok || v == "" || v[0] != '/' {
+				return o, false
+			}
+			o.cfg.WSPath = v
 		case "--ui":
 			o.ui = true
 		case "--retries":
@@ -308,6 +316,12 @@ func logEvent(cfg Config, e Event) {
 			scheme := "plain"
 			if cfg.TLS {
 				scheme = "tls"
+			}
+			if cfg.WS {
+				scheme = "ws"
+				if cfg.TLS {
+					scheme = "wss"
+				}
 			}
 			vi.ConsoleLine("goirc: dial " + cfg.Host + " " + vsys.Itoa64(int64(cfg.Port)) + " " + scheme)
 		case StateClosed:

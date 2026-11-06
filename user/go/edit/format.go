@@ -1,33 +1,34 @@
 package main
 
-// format.go — M138b (#2776): format-on-save for .go buffers, and the
-// card's probe result recorded in the code it shaped.
+// format.go — M138b (#2776): format-on-save for .go buffers. #3916 ships
+// go/format as the default build: the M138b probe's recorded blocker was
+// stale — it named the wrong bound.
 //
-// The probe (2026-10-20, this worktree): go/format LINKS cleanly under
-// GOOS=virelai, but GOEDIT with it linked measures 2,556,064 bytes —
-// 458,912 over kernel/src/exec.zig's exec_program_max (2,097,152). The
-// kernel loader refuses an image that size, so "guest-safe" fails on
-// size, not on linking. The go/format import therefore lives behind the
-// opt-in `editfmt` build tag (format_gofmt.go): the shipped binary is
-// the format_nofmt.go side, formatSource stays nil, and every .go save
-// prints the named refusal. `-tags editfmt` rebuilds the real seam for
-// whoever next raises the cap or shrinks the import closure.
+// The probe (2026-10-20) measured GOEDIT+go/format at 2,556,064 bytes and
+// refused it against kernel/src/exec.zig's exec_program_max (2,097,152).
+// exec.zig's loader contract bounds a gap-layout static ELF — every
+// GOOS=virelai Go binary — by exec_image_max (32 MiB) on the file and
+// elf.map_max (64 MiB) on what it maps; it streams past the staging
+// buffer, so exec_program_max never applies (exec.zig:753's check is
+// gated on !gap_layout). Measured against the real bound the editfmt
+// image fits with ~29.5 MiB to spare, so the opt-in tag, the nil seam
+// and the named refusal are all gone: the shipped binary always formats.
 //
-// A format error never blocks the publish either: the buffer is left
-// alone, the error strip shows the diagnostic by name, and the save
-// writes the unformatted bytes.
+// A format error never blocks the publish: the buffer is left alone, the
+// error strip shows the diagnostic by name, and the save writes the
+// unformatted bytes.
 
 import (
 	"bytes"
+	"go/format"
 	"strings"
 
 	"virelai/vi"
 )
 
-// formatUnavailable is the card's named refusal, printed verbatim on a
-// .go save when the binary was built without go/format — which is every
-// shipped build until the image fits exec_program_max again.
-const formatUnavailable = "edit: format unavailable (go/format not guest-safe)"
+// formatSource is the seam the host tests swap (useFmt); the shipped
+// value is go/format's own.
+var formatSource = format.Source
 
 // isGoPath reports whether p names a Go source file. The suffix check is
 // case-insensitive — the share carries both cases.
@@ -40,14 +41,9 @@ func isGoPath(p string) bool {
 // formatted. An applied format is ONE composite undoable op covering the
 // whole buffer — Ctrl-Z restores the pre-format bytes. The receipts:
 // `format n=` on apply (the formatted length, also the already-clean
-// no-op's receipt), `format error <diag>` when the parser refused, and the
-// card's named refusal when the build carries no formatter.
+// no-op's receipt) and `format error <diag>` when the parser refused.
 func (e *editor) formatGo() {
 	if !isGoPath(e.path) {
-		return
-	}
-	if formatSource == nil {
-		vi.ConsoleLine(formatUnavailable)
 		return
 	}
 	out, err := formatSource(e.buf)

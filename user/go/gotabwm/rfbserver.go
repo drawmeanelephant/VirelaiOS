@@ -1,12 +1,17 @@
 package main
 
 import (
+	"crypto/subtle"
+	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
+	"strings"
 	"sync"
 	"sync/atomic"
 
 	"virelai/rfb"
+	"virelai/tls"
 	"virelai/vi"
 )
 
@@ -14,20 +19,32 @@ import (
 // None authenticates nobody. There is no LAN/remote deployment mode here:
 // ADR 0037 D6 requires an authenticated transport for that. The kernel TCP
 // machine owns only one connection system-wide while this listener is open.
+// The "--rfb-vencrypt" lane terminates VeNCrypt 0.2 / X509Plain on the same
+// attachment: the M135 TLS 1.3 server half authenticates the seat's Ed25519
+// certificate, then a staged credential inside the channel authenticates the
+// viewer. X509Vnc is refused — guest-side DES is rejected (ADR 0037 D6), so
+// Plain-over-TLS is the smallest honest X509 subtype.
 const (
 	rfbPort       = 5900
 	rfbInputLimit = 16
 )
 
 const (
-	markerRFBListen  = "gotabwm: rfb listen 5900 (None; hermetic only)"
-	markerRFBReady   = "gotabwm: rfb ready"
-	markerRFBFrame   = "gotabwm: rfb frame"
-	markerRFBKey     = "gotabwm: rfb key usage="
-	markerRFBPointer = "gotabwm: rfb pointer x="
-	markerRFBRelease = "gotabwm: rfb release x="
-	markerRFBDrop    = "gotabwm: rfb drop "
-	markerRFBDone    = "gotabwm: rfb done"
+	rfbSecVeNCrypt       = 19
+	vencryptSubX509Plain = 262
+	vencryptCredMax      = 1024
+)
+
+const (
+	markerRFBListen    = "gotabwm: rfb listen 5900 (None; hermetic only)"
+	markerRFBListenTLS = "gotabwm: rfb listen 5900 (VeNCrypt X509Plain; hermetic only)"
+	markerRFBReady     = "gotabwm: rfb ready"
+	markerRFBFrame     = "gotabwm: rfb frame"
+	markerRFBKey       = "gotabwm: rfb key usage="
+	markerRFBPointer   = "gotabwm: rfb pointer x="
+	markerRFBRelease   = "gotabwm: rfb release x="
+	markerRFBDrop      = "gotabwm: rfb drop "
+	markerRFBDone      = "gotabwm: rfb done"
 )
 
 // Drop reasons name why the one session ended, so a gate can tell the
@@ -66,33 +83,64 @@ type rfbServer struct {
 	lastButtons uint8
 }
 
-func rfbRequested(args []string) bool {
-	return len(args) == 2 && args[1] == "--rfb-hermetic"
+// rfbConfig is the parsed RFB opt-in: the plain None lane, or the VeNCrypt
+// lane with its staged credential paths (share files the run sets up).
+type rfbConfig struct {
+	vencrypt           bool
+	certPath, seedPath string
+	credPath           string
+}
+
+// rfbRequested parses the operator's opt-in. Exactly "--rfb-hermetic" is
+// the None lane; "--rfb-vencrypt CERT SEED CRED" is the TLS lane. Neither
+// is ever implied — no argument, no listener.
+func rfbRequested(args []string) *rfbConfig {
+	switch {
+	case len(args) == 2 && args[1] == "--rfb-hermetic":
+		return &rfbConfig{}
+	case len(args) == 5 && args[1] == "--rfb-vencrypt":
+		return &rfbConfig{vencrypt: true, certPath: args[2], seedPath: args[3], credPath: args[4]}
+	}
+	return nil
 }
 
 func startRFB(args []string, scan []byte) *rfbServer {
-	if !rfbRequested(args) {
+	cfg := rfbRequested(args)
+	if cfg == nil {
 		return nil
 	}
 	if len(scan) != vi.ScanoutFbBytes {
 		vi.ConsoleLine("gotabwm: rfb scanout refused")
 		return nil
 	}
-	conn, err := vi.Listen(rfbPort)
+	var conn *vi.Conn
+	var err error
+	if cfg.vencrypt {
+		// The TLS lane rides the per-handle socket ABI: the legacy
+		// listener's slot-76 probe does not drain the virtio RX ring, and
+		// tls.Server is defined on a SocketListen child.
+		conn, err = vi.SocketListen(rfbPort)
+	} else {
+		conn, err = vi.Listen(rfbPort)
+	}
 	if err != nil {
 		vi.ConsoleLine("gotabwm: rfb listen refused " + err.Error())
 		return nil
 	}
 	s := &rfbServer{scan: scan, input: make(chan remoteInput, rfbInputLimit)}
-	vi.ConsoleLine(markerRFBListen)
-	go s.serve(conn)
+	if cfg.vencrypt {
+		vi.ConsoleLine(markerRFBListenTLS)
+	} else {
+		vi.ConsoleLine(markerRFBListen)
+	}
+	go s.serve(conn, cfg)
 	return s
 }
 
 // One bounded connection and one bounded frame cache. A failed negotiation,
 // malformed message, peer death, or stalled read closes the socket. No
 // reconnect loop silently re-exposes None after the explicit invocation.
-func (s *rfbServer) serve(conn *vi.Conn) {
+func (s *rfbServer) serve(conn *vi.Conn, cfg *rfbConfig) {
 	reason := rfbDropIO
 	defer func() {
 		_ = conn.Close()
@@ -109,6 +157,34 @@ func (s *rfbServer) serve(conn *vi.Conn) {
 			reason = rfbDropPanic
 		}
 	}()
+	if cfg.vencrypt {
+		child, err := conn.AcceptConn()
+		if err != nil {
+			vi.ConsoleLine("gotabwm: rfb accept refused " + err.Error())
+			reason = "accept"
+			return
+		}
+		tc, err := vencryptServe(child, cfg)
+		if err != nil {
+			_ = child.Close()
+			reason = "handshake " + rfbDropReason(err)
+			vi.ConsoleLine("gotabwm: rfb handshake refused " + err.Error())
+			return
+		}
+		defer func() { _ = tc.Close() }()
+		session, err := rfb.NewSession(tc, tc, vi.ScanoutWidth, vi.ScanoutHeight, "VirelaiOS")
+		if err != nil {
+			return
+		}
+		if _, err = session.HandshakeEstablished(); err != nil {
+			reason = "handshake " + rfbDropReason(err)
+			vi.ConsoleLine("gotabwm: rfb handshake refused")
+			return
+		}
+		vi.ConsoleLine(markerRFBReady)
+		reason = s.run(session, tlsReady(tc, child), func() { vi.Sleep(1) })
+		return
+	}
 	if err := conn.Accept(); err != nil {
 		vi.ConsoleLine("gotabwm: rfb accept refused " + err.Error())
 		reason = "accept"
@@ -126,6 +202,231 @@ func (s *rfbServer) serve(conn *vi.Conn) {
 	}
 	vi.ConsoleLine(markerRFBReady)
 	reason = s.run(session, stream.poll, stream.idle)
+}
+
+// tlsReady is the TLS session loop's readiness probe on the accepted
+// handle: socket-readable, or decrypted plaintext the record layer already
+// holds (a record can carry more RFB messages than one ReadMessage
+// consumes).
+func tlsReady(tc *tls.TLSConn, conn *vi.Conn) func() (int64, int64) {
+	return func() (int64, int64) {
+		mask, err := conn.ReadyMask()
+		if err != nil {
+			return 0, -1
+		}
+		if tc.Buffered() > 0 {
+			mask |= 1
+		}
+		return mask, 0
+	}
+}
+
+// vencryptStream adapts the accepted child to the pre-TLS negotiation:
+// sends pace on the one-pending-segment rule AND drain the RX ring — a
+// pending segment's ACK (and any early viewer bytes) only leaves the ring
+// when drained, so two back-to-back writes without a drain wedge. The
+// drain here is the handle child's own recv, deadline-armed into a poll.
+func vencryptStream(child *vi.Conn) *rfbStream {
+	return &rfbStream{
+		conn: child,
+		ready: func() (int64, int64) {
+			mask, err := child.ReadyMask()
+			if err != nil {
+				return 0, -1
+			}
+			return mask, 0
+		},
+		idle:     func() { vi.Sleep(1) },
+		sendIdle: vi.Yield,
+		drain: func(p []byte) (int, int64) {
+			child.SetRecvDeadline(1)
+			defer child.SetRecvDeadline(0)
+			n, err := child.Recv(p)
+			switch {
+			case err == nil:
+				return n, 0
+			case err.Error() == "ETIMEDOUT":
+				return 0, 0
+			default:
+				return n, -1
+			}
+		},
+		stallNs: vi.DefaultRecvBudgetNs,
+	}
+}
+
+// vencryptServe runs the VeNCrypt security phase end to end: the plaintext
+// offer/version/subtype exchange (vencryptHello), then the M135 TLS 1.3
+// server half on the same socket, then the X509Plain credential check and
+// SecurityResult inside the established channel. The codec resumes at
+// ClientInit (HandshakeEstablished) on the returned connection.
+func vencryptServe(conn *vi.Conn, cfg *rfbConfig) (*tls.TLSConn, error) {
+	tlsCfg, cred, err := loadVeNCrypt(cfg)
+	if err != nil {
+		return nil, err
+	}
+	ns := vencryptStream(conn)
+	if err := vencryptHello(ns, ns); err != nil {
+		return nil, err
+	}
+	if ns.heldN != 0 {
+		// A viewer that pipelined past the subtype selection would strand
+		// drained bytes the TLS layer still expects: refuse, don't lose.
+		return nil, fmt.Errorf("%w: bytes pipelined past the subtype", rfb.ErrProtocol)
+	}
+	tc, err := tls.Server(conn, *tlsCfg)
+	if err != nil {
+		return nil, err
+	}
+	if err := x509plainCheck(tc, tc, cred); err != nil {
+		_ = tc.Close()
+		return nil, err
+	}
+	return tc, nil
+}
+
+// loadVeNCrypt reads the staged TLS.CRT (DER), TLS.SEED (raw 32-byte
+// Ed25519 seed), and RFB.CRED ("user\npassword\n") share files.
+func loadVeNCrypt(cfg *rfbConfig) (*tls.ServerConfig, [2][]byte, error) {
+	var cred [2][]byte
+	certDER, rc := vi.ReadFileAll(cfg.certPath, 4096)
+	seedBytes, rc2 := vi.ReadFileAll(cfg.seedPath, 64)
+	if rc < 0 || rc2 < 0 || len(seedBytes) != 32 {
+		return nil, cred, errors.New("rfb: vencrypt credential load")
+	}
+	raw, rc3 := vi.ReadFileAll(cfg.credPath, vencryptCredMax)
+	if rc3 < 0 {
+		return nil, cred, errors.New("rfb: vencrypt credential load")
+	}
+	lines := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
+	if len(lines) != 2 || len(lines[0]) == 0 || len(lines[1]) == 0 ||
+		len(lines[0]) > 255 || len(lines[1]) > 255 {
+		return nil, cred, errors.New("rfb: vencrypt credential shape")
+	}
+	cred[0], cred[1] = []byte(lines[0]), []byte(lines[1])
+	var seed [32]byte
+	copy(seed[:], seedBytes)
+	return &tls.ServerConfig{Chain: [][]byte{certDER}, Ed25519Seed: seed}, cred, nil
+}
+
+// vencryptHello is the plaintext half of VeNCrypt 0.2 (rfbproto §7.2.4):
+// the {19} security offer, the version exchange, and the X509Plain subtype
+// offer. Each stage that has a refusal spelling writes it; a bad subtype
+// selection ends the connection the way the spec leaves it — closed.
+// This lane is RFB 3.8 only: 3.3 cannot select a security type and 3.7
+// gains nothing here.
+func vencryptHello(r io.Reader, w io.Writer) error {
+	if err := rfbWriteAll(w, []byte("RFB 003.008\n")); err != nil {
+		return fmt.Errorf("vencrypt banner write: %w", err)
+	}
+	var banner [12]byte
+	if _, err := io.ReadFull(r, banner[:]); err != nil {
+		return fmt.Errorf("vencrypt banner read: %w", err)
+	}
+	if string(banner[:]) != "RFB 003.008\n" {
+		return fmt.Errorf("%w: vencrypt requires RFB 3.8", rfb.ErrProtocol)
+	}
+	if err := rfbWriteAll(w, []byte{1, rfbSecVeNCrypt}); err != nil {
+		return fmt.Errorf("vencrypt offer write: %w", err)
+	}
+	var sel [1]byte
+	if _, err := io.ReadFull(r, sel[:]); err != nil {
+		return fmt.Errorf("vencrypt select read: %w", err)
+	}
+	if sel[0] != rfbSecVeNCrypt {
+		return rfbSecurityFail(w, "rfb: VeNCrypt lane offers type 19 only")
+	}
+	if err := rfbWriteAll(w, []byte{0, 2}); err != nil { // VeNCrypt 0.2
+		return fmt.Errorf("vencrypt version write: %w", err)
+	}
+	var version [2]byte
+	if _, err := io.ReadFull(r, version[:]); err != nil {
+		return fmt.Errorf("vencrypt version read: %w", err)
+	}
+	if version != [2]byte{0, 2} {
+		_ = rfbWriteAll(w, []byte{0xff}) // version refusal, then close
+		return fmt.Errorf("%w: vencrypt version", rfb.ErrProtocol)
+	}
+	var offer [6]byte
+	offer[0] = 0 // version accepted
+	offer[1] = 1 // one subtype
+	binary.BigEndian.PutUint32(offer[2:], vencryptSubX509Plain)
+	if err := rfbWriteAll(w, offer[:]); err != nil {
+		return fmt.Errorf("vencrypt subtype write: %w", err)
+	}
+	var subtype [4]byte
+	if _, err := io.ReadFull(r, subtype[:]); err != nil {
+		return fmt.Errorf("vencrypt subtype read: %w", err)
+	}
+	if binary.BigEndian.Uint32(subtype[:]) != vencryptSubX509Plain {
+		return fmt.Errorf("%w: vencrypt subtype", rfb.ErrProtocol)
+	}
+	return nil
+}
+
+// rfbSecurityFail writes SecurityResult=failed + u32-length reason and
+// returns the refusal as an error — the same spelling the codec's own
+// security refusal uses.
+func rfbSecurityFail(w io.Writer, why string) error {
+	reply := make([]byte, 8+len(why))
+	binary.BigEndian.PutUint32(reply[:4], 1)
+	binary.BigEndian.PutUint32(reply[4:8], uint32(len(why)))
+	copy(reply[8:], why)
+	_ = rfbWriteAll(w, reply)
+	return fmt.Errorf("%w: %s", rfb.ErrProtocol, why)
+}
+
+// x509plainCheck answers the X509Plain credential exchange inside the
+// established channel: u32 user-length, user, u32 password-length,
+// password, then SecurityResult. The compare is constant-time; the
+// credential is the hermetic fixture, never logged.
+func x509plainCheck(r io.Reader, w io.Writer, cred [2][]byte) error {
+	readField := func() ([]byte, error) {
+		var n [4]byte
+		if _, err := io.ReadFull(r, n[:]); err != nil {
+			return nil, err
+		}
+		l := binary.BigEndian.Uint32(n[:])
+		if l == 0 || l > 255 {
+			return nil, fmt.Errorf("%w: vencrypt credential field", rfb.ErrProtocol)
+		}
+		b := make([]byte, l)
+		if _, err := io.ReadFull(r, b); err != nil {
+			return nil, err
+		}
+		return b, nil
+	}
+	refuse := func(err error) error {
+		_ = rfbSecurityFail(w, "rfb: X509Plain credential refused")
+		return err
+	}
+	user, err := readField()
+	if err != nil {
+		return refuse(err)
+	}
+	pass, err := readField()
+	if err != nil {
+		return refuse(err)
+	}
+	if subtle.ConstantTimeCompare(user, cred[0]) == 1 &&
+		subtle.ConstantTimeCompare(pass, cred[1]) == 1 {
+		return rfbWriteAll(w, []byte{0, 0, 0, 0})
+	}
+	return rfbSecurityFail(w, "rfb: X509Plain credential refused")
+}
+
+func rfbWriteAll(w io.Writer, b []byte) error {
+	for len(b) > 0 {
+		n, err := w.Write(b)
+		if err != nil {
+			return err
+		}
+		if n <= 0 {
+			return io.ErrShortWrite
+		}
+		b = b[n:]
+	}
+	return nil
 }
 
 // run is the post-handshake session loop. It returns the drop reason. The
@@ -227,7 +528,8 @@ func rfbDropReason(err error) string {
 	case errors.Is(err, rfb.ErrProtocol), errors.Is(err, rfb.ErrUnsupported):
 		return rfbDropMalformed
 	case errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF),
-		errors.Is(err, vi.ErrPeerGone), errors.Is(err, vi.ErrConnClosed):
+		errors.Is(err, vi.ErrPeerGone), errors.Is(err, vi.ErrConnClosed),
+		tls.IsPeerClosed(err):
 		return rfbDropPeer
 	case errors.Is(err, errRFBSendStalled):
 		return rfbDropStalled
@@ -235,6 +537,8 @@ func rfbDropReason(err error) string {
 		return rfbDropFlood
 	case errors.Is(err, errRFBSocket):
 		return rfbDropSocket
+	case tls.IsTimeout(err):
+		return rfbDropTimeout
 	case err != nil && err.Error() == "ETIMEDOUT": // vi keeps its errno type private
 		return rfbDropTimeout
 	}

@@ -31,6 +31,15 @@
 # byte relay, WEB pulls a gzip page plus two linked stylesheets off the host
 # packet responder on ONE keep-alive connection, and a third simultaneous
 # SYN past the plain listener's child bound draws the named refusal.
+# 65-66 (M212b #3873): the negotiated-h2 leg — ALPN picks h2, the page and
+# two stylesheets ride streams 1/3/5 on ONE connection, a >64 KiB body
+# forces WINDOW_UPDATE credit — and the ALPN-less fallback paints the same
+# routes over HTTP/1.1.
+# 62-73 (M211a-c): the dom-rpc seam, read ops, refusals and budgets, the
+# write ops + timer pair. 74-81 (M211d #3870): the scripted corpus rows
+# end to end — every landed op on committed fixtures, the refused row
+# reaching the page itself, and the negatives (oversize pre-exec refusal,
+# mid-op kill, op-storm budget).
 # v6 (M117f #2478, ADR 0057): vi.Dial v6 connect+GET to the hermetic
 # responder; WEB.ELF's named v6-literal URL refusal beside it — no v6 URL
 # grammar or TLS-over-v6 responder exists yet. No public-internet access,
@@ -42,8 +51,19 @@
 vgate_name live-web "WEB: bounded CSS browser, exact M93 presentation, DNS/SNI/GET navigation and fail-closed TLS"
 vgate_share seed
 vgate_runner_flags -Xswiftc -DSPIKE
+vgate_repeat 3 BOOTS
 
 vgate_file script-local.txt <<'EOF'
+exec WEB.ELF /host/PAGE.HTML
+EOF
+
+# M211a (#3867): vgate_repeat iteration hygiene — the armed share persists
+# across iterations, so the bookmark chain's head (leg 40) drops the atoms
+# file before exec; legs 41 and 46-48 deliberately keep the residue — the
+# chain's expected state IS leg 40's surviving atom plus each leg's own
+# adds, exactly as at K=1.
+vgate_file script-local40.txt <<'EOF'
+vf rm FLINT/ws/bookmarks/ATOMS.jsonl
 exec WEB.ELF /host/PAGE.HTML
 EOF
 
@@ -1883,7 +1903,7 @@ vgate_assert v6 output-contains 'NET-TCP6: answered'
 vgate_run 40 -- \
     --screen '$RUN_DIR/screen' --via-virtio --cvc-snap \
     --snapshot-out '$RUN_DIR/snap-40' \
-    --script '$RUN_DIR/script-local.txt' \
+    --script '$RUN_DIR/script-local40.txt' \
     --input-chords 'ctrl-d,ctrl-l,/,h,o,s,t,/,N,E,X,T,.,H,T,M,L,return,ctrl-d,ctrl-b,return,delete,escape,ctrl-shift-b' --input-chords-after 'web: ready' \
     --snapshot-after 'web: bookmarks n=2' \
     --script-expect 'web: bookmarks n=1' --timeout 240
@@ -2252,6 +2272,7 @@ PY
 # evidence was produced at — so the 42,95 click does not depend on the
 # settings row an earlier boot happened to leave (boot 43 sets large).
 vgate_file script-dl.txt <<'EOF'
+vf rm WEB-DOWNLOADS.TXT
 settings set font_size medium
 exec WEB.ELF /host/DLPAGE.HTML
 EOF
@@ -3105,7 +3126,7 @@ vgate_assert 53 serial-absent 'web: error'
 vgate_assert 53 serial-absent '[EXC] parking:'
 vgate_assert 53 python <<'PY'
 import os, sys
-run = open(os.path.join(os.environ["RUN_DIR"], "run-53.out"), errors="replace").read()
+run = open(os.path.join(os.environ["RUN_DIR"], "run-" + os.environ["VG_TAG"] + ".out"), errors="replace").read()
 n = run.count("answered the guest's SYN")
 if n != 1:
     sys.exit("FAIL: keep-alive leg accepted %d connections, want 1" % n)
@@ -3435,7 +3456,7 @@ vgate_assert 54 output-contains 'NET-TCP-CONNECT: the guest refused the connecti
 vgate_assert 54 python <<'PY'
 import os, sys
 ser = open(os.environ["VG_SER"], errors="replace").read()
-out = open(os.path.join(os.environ["RUN_DIR"], "run-54.out"), errors="replace").read()
+out = open(os.path.join(os.environ["RUN_DIR"], "run-" + os.environ["VG_TAG"] + ".out"), errors="replace").read()
 # Leg 1: the host TLS 1.3 client completed the handshake against the
 # guest's own stack, matched the peer DER to the staged fixture, and read
 # the index page body back over the record layer.
@@ -3562,7 +3583,7 @@ vgate_assert 55 output-contains 'NET-TCP-CONNECT: the guest refused the connecti
 vgate_assert 55 python <<'PY'
 import os, sys
 ser = open(os.environ["VG_SER"], errors="replace").read()
-out = open(os.path.join(os.environ["RUN_DIR"], "run-55.out"), errors="replace").read()
+out = open(os.path.join(os.environ["RUN_DIR"], "run-" + os.environ["VG_TAG"] + ".out"), errors="replace").read()
 # Leg 1: the host TLS 1.3 client completed the handshake against the
 # guest's own stack, matched the peer DER to the staged fixture, and read
 # the index page body back over the record layer.
@@ -3689,7 +3710,7 @@ vgate_assert 56 output-contains 'NET-TCP-CONNECT: the guest refused the connecti
 vgate_assert 56 python <<'PY'
 import os, sys
 ser = open(os.environ["VG_SER"], errors="replace").read()
-out = open(os.path.join(os.environ["RUN_DIR"], "run-56.out"), errors="replace").read()
+out = open(os.path.join(os.environ["RUN_DIR"], "run-" + os.environ["VG_TAG"] + ".out"), errors="replace").read()
 # Leg 1: the host TLS 1.3 client completed the handshake against the
 # guest's own stack, matched the peer DER to the staged fixture, and read
 # the index page body back over the record layer.
@@ -4047,3 +4068,1136 @@ vgate_assert 61 serial-contains 'web: hints n=40'
 vgate_assert 61 serial-contains 'rx-web-menu-ok'
 vgate_assert 61 serial-absent '[EXC] parking:'
 vgate_assert 61 serial-absent 'exited status=139'
+
+# --- M211a (#3867): the DOM-RPC worker seam. Leg 62's scripted page execs
+# QJS.BIN --dom-rpc over the inherited-fd wire after the frame is painted;
+# 63 direct-drives the worker over an argv ops spool for the protocol's
+# named refusals; 64 removes the binary so the refused exec lands
+# 'web: script worker gone' while the page still paints. K=3 rides the
+# spec-level vgate_repeat.
+vgate_file script-domrpc.txt <<'EOFS'
+vf mv QJSHELD.BIN QJS.BIN
+exec WEB.ELF /host/SCRIPTED.HTML
+EOFS
+
+vgate_file script-rpcops.txt <<'EOFS'
+vf mv QJSHELD.BIN QJS.BIN
+exec QJS.BIN --dom-rpc /host/RPCOPS.BAD
+EOFS
+
+vgate_file script-rpcdead.txt <<'EOFS'
+vf mv QJS.BIN QJSHELD.BIN
+exec WEB.ELF /host/SCRIPTED.HTML
+EOFS
+
+vgate_setup_python <<'PY'
+# Stage the worker and the two fixtures the legs drive. SCRIPTED.HTML
+# carries two inline <script> bodies — the eval round-trip asserts both
+# rc=0 markers. RPCOPS.BAD is the protocol-negative ops stream the
+# direct-drive leg feeds: eval-before-hello, a good hello, a good eval,
+# an unknown op, a bad version and a malformed line, one refusal each.
+import os, pathlib, shutil, sys
+share = pathlib.Path(os.environ.get("VG_SHARE") or os.path.join(os.environ["RUN_DIR"], "share"))
+qjs = pathlib.Path(".build/js-client/QJS.BIN")
+if not qjs.is_file():
+    sys.exit("QJS.BIN missing — build it first: python3 tools/js-client/build.py build --work .build/js-client/work --output .build/js-client/QJS.BIN")
+shutil.copy(qjs, share / "QJS.BIN")
+(share / "SCRIPTED.HTML").write_text(
+    "<!doctype html><html><body>"
+    "<h1>scripted seam page</h1><p>the page always paints</p>"
+    "<script>1+2</script>"
+    "<script>var seam=4*5;seam</script>"
+    "</body></html>\n")
+(share / "RPCOPS.BAD").write_text(
+    '{"op":"eval","src":"5"}\n'
+    '{"op":"hello","version":3}\n'
+    '{"op":"eval","src":"1+2"}\n'
+    '{"op":"bogus"}\n'
+    '{"op":"hello","version":99}\n'
+    '{"not json"}\n')
+# M211b (#3868): DOM read-op fixture pages. DOMREAD's script reads the
+# title element, an id'd node's textContent and an attribute, plus a
+# missing id (null answer); DOMREF exercises the refusal vocabulary —
+# a known-but-unadmitted op (query -> dom_op_refused; M211c moved the
+# write slot to doc.write when the write ops were admitted) and a name
+# outside the vocabulary (dom_op_unknown); DOMSPIN burns the engine's
+# 4s eval deadline; DOMSTORM exceeds the 32-op per-script budget on
+# console.log round trips.
+(share / "DOMREAD.HTML").write_text(
+    "<!doctype html><html><head><title>Dom Reads Page</title></head><body>"
+    "<h1>reads</h1><p id=\"lead\" data-note=\"pinned\">alpha lead text</p>"
+    "<script>"
+    "console.log(\"title=\" + document.title);"
+    "console.log(\"text=\" + document.getElementById(\"lead\").textContent);"
+    "console.log(\"attr=\" + document.getElementById(\"lead\").getAttribute(\"data-note\"));"
+    "console.log(\"missing=\" + document.getElementById(\"nope\").textContent);"
+    "</script></body></html>\n")
+(share / "DOMREF.HTML").write_text(
+    "<!doctype html><html><body><p>refusals</p>"
+    "<script>"
+    "try { document.querySelector(\"p\"); } catch (e) { console.log(\"refused=\" + e.name); }"
+    "try { virelai.dom(\"doc.write\", \"x\"); } catch (e) { console.log(\"set=\" + e.name); }"
+    "try { virelai.dom(\"bogus.op\"); } catch (e) { console.log(\"unknown=\" + e.name); }"
+    "</script></body></html>\n")
+(share / "DOMSPIN.HTML").write_text(
+    "<!doctype html><html><body><p>spinner</p>"
+    "<script>while (1) {}</script></body></html>\n")
+(share / "DOMSTORM.HTML").write_text(
+    "<!doctype html><html><body><p>storm</p>"
+    "<script>for (var i = 0; i < 200; i++) { console.log(\"x\"); }</script>"
+    "</body></html>\n")
+# M211c (#3869): DOM write/timer fixture pages. DOMWRITE's targets start
+# EMPTY — the text the scanout proves can only be the script's own write
+# (a timestamp line plus a filled field); DOMMUT storms node.setText past
+# the 16-mutation per-script budget; DOMTIMER arms a setTimeout whose
+# callback writes and exercises the setInterval named refusal.
+(share / "DOMWRITE.HTML").write_text(
+    "<!doctype html><html><body>"
+    "<p id=\"clock\"></p><input id=\"fld\" type=\"text\">"
+    "<script>"
+    "document.getElementById(\"clock\").textContent = \"stamp-2026-11-02\";"
+    "document.getElementById(\"fld\").value = \"filled-by-js\";"
+    "console.log(\"wrote=2\");"
+    "</script></body></html>\n")
+(share / "DOMMUT.HTML").write_text(
+    "<!doctype html><html><body><p id=\"x\">y</p>"
+    "<script>"
+    "try { for (var i = 0; i < 20; i++) { document.getElementById(\"x\").textContent = \"v\" + i; } }"
+    "catch (e) { console.log(\"mut=\" + e.name); }"
+    "console.log(\"muts=done\");"
+    "</script></body></html>\n")
+(share / "DOMTIMER.HTML").write_text(
+    "<!doctype html><html><body><p id=\"t\"></p>"
+    "<script>"
+    "console.log(\"armed=1\");"
+    "try { setInterval(function() {}, 10); } catch (e) { console.log(\"iv=\" + e.name); }"
+    "setTimeout(function() {"
+    "  document.getElementById(\"t\").textContent = \"fired\";"
+    "  console.log(\"cb=ran\");"
+    "}, 2000);"
+    "</script></body></html>\n")
+print("staged DOM fixture pages for the M211b/M211c legs")
+print("staged QJS.BIN + SCRIPTED.HTML + RPCOPS.BAD for the dom-rpc legs")
+# M211d (#3870): the scripted corpus rows ride the same staging — the
+# committed fixtures are copied verbatim (no spec-side authoring), so
+# the gate drives exactly the bytes the corpus pins. SCRIPTOVR is the
+# oversize negative: an inline script past the 256 KiB per-eval source
+# bound AND a src= fetch past the same cap, so both pre-exec refusals
+# print their own words on one painted page.
+corpus = os.path.join("user", "go", "webrender", "testdata", "corpus")
+for name in ("scripted-reads", "scripted-compute", "scripted-form",
+             "scripted-timer", "scripted-refused", "scripted-storm",
+             "scripted-kill"):
+    shutil.copy(os.path.join(corpus, name + ".html"),
+                os.path.join(str(share), name.upper() + ".HTML"))
+big = "// " + "x" * 280_000 + "\n"
+(share / "SCRIPTOVR.HTML").write_text(
+    "<!doctype html><html><body><h1>oversize row</h1>"
+    "<p>the page paints; neither script ever execs.</p>"
+    "<script>" + big + "</script>"
+    "<script src=\"/host/QJSBIG.JS\"></script>"
+    "</body></html>\n")
+(share / "QJSBIG.JS").write_text("// " + "y" * 280_000 + "\n")
+print("staged scripted corpus rows + SCRIPTOVR.HTML/QJSBIG.JS for the M211d legs")
+PY
+
+# --- boot 62: the eval round-trip — page paints, worker runs to done ----
+vgate_run 62 -- \
+    --screen '$RUN_DIR/screen-rpc' \
+    --via-virtio --cvc-snap \
+    --script '$RUN_DIR/script-domrpc.txt' \
+    --script-expect 'web: script done' --timeout 120
+
+vgate_assert 62 serial-contains 'web: ready'
+vgate_assert 62 serial-contains 'web: script n='
+vgate_assert 62 serial-contains 'web: script worker pid='
+vgate_assert 62 serial-contains 'web: script hello version=3'
+vgate_assert 62 serial-count 'web: script rc=0' 2
+vgate_assert 62 serial-contains 'web: script done'
+vgate_assert 62 serial-absent 'web: script worker gone'
+vgate_assert 62 serial-absent 'web: script stage-fail'
+vgate_assert 62 serial-absent 'web: error'
+vgate_assert 62 serial-absent '[EXC] parking:'
+vgate_assert 62 share-contains 'WEBRPC.OUT~' '"out":"3'
+vgate_assert 62 share-contains 'WEBRPC.OUT~' '"out":"20'
+
+# --- boot 63: the protocol's named refusals, direct-drive ---------------
+vgate_run 63 -- \
+    --script '$RUN_DIR/script-rpcops.txt' \
+    --script-expect 'qjs: clean' --timeout 120
+
+vgate_assert 63 serial-contains 'dom_rpc_hello'
+vgate_assert 63 serial-contains '"op":"hello","ok":true,"version":3'
+vgate_assert 63 serial-contains '"out":"3'
+vgate_assert 63 serial-contains 'dom_rpc_op'
+vgate_assert 63 serial-contains 'dom_rpc_version'
+vgate_assert 63 serial-contains 'dom_rpc_parse'
+vgate_assert 63 serial-contains 'qjs: clean'
+vgate_assert 63 serial-absent '[EXC] parking:'
+
+# --- boot 64: worker-death — no binary, page still paints ---------------
+vgate_run 64 -- \
+    --screen '$RUN_DIR/screen-dead' \
+    --via-virtio --cvc-snap \
+    --script '$RUN_DIR/script-rpcdead.txt' \
+    --script-expect 'web: script worker gone' --timeout 120
+
+vgate_assert 64 serial-contains 'web: ready'
+vgate_assert 64 serial-contains 'web: script n='
+vgate_assert 64 serial-contains 'web: script worker gone'
+vgate_assert 64 serial-absent 'web: script done'
+vgate_assert 64 serial-absent '[EXC] parking:'
+
+# --- boots 65-66 (M212b #3873): negotiated h2 and the h1 fallback ------
+# 65: WEB dials leaf.example.com over the runner relay to an ALPN-h2 peer.
+# The whole keep-alive journey rides ONE connection — page on stream 1,
+# ka-a.css on 3, ka-b.css on 5 — and ka-b.css is padded past the 65535-
+# byte receive window so the peer cannot finish it until the guest
+# returns WINDOW_UPDATE credit (the flow-control leg). 66: the same
+# routes on a TLS peer with no ALPN configured — the negotiated pick is
+# "none", the wire speaks HTTP/1.1, and the same page paints.
+
+vgate_file script-h2page.txt <<'EOF'
+net ip 10.0.0.1
+net arp 93.184.216.34
+exec WEB.ELF --dns=93.184.216.34 https://leaf.example.com:24570/
+EOF
+
+vgate_file script-h2page-h1.txt <<'EOF'
+net ip 10.0.0.1
+net arp 93.184.216.34
+exec WEB.ELF --dns=93.184.216.34 https://leaf.example.com:24571/
+EOF
+
+# The snapshot's deterministic present window (see boot 65 note): echo a
+# marker 3 s after 'web: ready', and arm the snapshot on THAT marker.
+vgate_file h2-done.txt <<'EOF'
+echo h2-page-done
+EOF
+
+vgate_file h2page.py <<'EOF'
+#!/usr/bin/env python3
+"""M212b (#3873) hermetic h2 page server for the live-web legs.
+
+One script, two wire shapes on the same three routes:
+
+- --proto h2: TLS 1.3 + ALPN "h2". Requests arrive as HEADERS on odd
+  stream ids; the page and its two stylesheets answer on ONE connection
+  (streams 1, 3, 5). ka-b.css is padded past the guest's 65535-byte
+  receive window, so the server literally cannot finish the body until
+  the guest returns WINDOW_UPDATE credit — the block-and-wait in
+  send_body is the leg's flow-control evidence.
+- --proto h1: the same TLS listener with NO ALPN configured, so the
+  negotiated pick is "none" and the same routes answer over HTTP/1.1
+  keep-alive — the clean fallback leg.
+
+The wire is hand-rolled on purpose (the h2responder.py discipline): the
+codec's whole test surface is the frame grammar, and an h2 library
+would be a second implementation of the thing under test. Every accept,
+stream, and window update writes a receipt line the gate counts.
+"""
+import argparse
+import gzip
+import socket
+import ssl
+import sys
+import time
+
+FRAME_DATA, FRAME_HEADERS, FRAME_RST = 0x0, 0x1, 0x3
+FRAME_SETTINGS, FRAME_PING, FRAME_GOAWAY = 0x4, 0x6, 0x7
+FRAME_WINDOW = 0x8
+FLAG_ACK, FLAG_END_STREAM, FLAG_END_HEADERS = 0x1, 0x1, 0x4
+
+PAGE = (b'<html><head><link rel="stylesheet" href="/ka-a.css">'
+        b'<link rel="stylesheet" href="/ka-b.css"></head>'
+        b'<body><h1>h2 keep-alive journey</h1>'
+        b'<p>three fetches, one connection, negotiated h2</p></body></html>')
+# ~78 KiB — past the 65535-byte client receive window, so the body can
+# only complete once the guest returns credit.
+CSS_B = (b"h1 { background-color: #b58900; }\n/*" + b"x" * 80000 + b"*/")
+
+ROUTES = {
+    "/": (gzip.compress(PAGE, mtime=0), True),
+    "/ka-a.css": (b"body { background-color: #7fdbff; }", False),
+    "/ka-b.css": (CSS_B, False),
+}
+
+
+def frame(typ, flags, sid, payload):
+    return len(payload).to_bytes(3, "big") + bytes([typ, flags]) + \
+        sid.to_bytes(4, "big") + payload
+
+
+def read_exact(s, n):
+    b = b""
+    while len(b) < n:
+        chunk = s.recv(n - len(b))
+        if not chunk:
+            raise EOFError("short read at %d/%d" % (len(b), n))
+        b += chunk
+    return b
+
+
+def read_frame(s):
+    hdr = read_exact(s, 9)
+    ln = int.from_bytes(hdr[:3], "big")
+    return hdr[3], hdr[4], \
+        int.from_bytes(hdr[5:9], "big") & 0x7FFFFFFF, read_exact(s, ln)
+
+
+def rstr(block, i):
+    n = block[i] & 0x7f
+    huff = block[i] & 0x80
+    i += 1
+    if n == 0x7f:
+        n, shift = 0, 0
+        while True:
+            c = block[i]
+            i += 1
+            n |= (c & 0x7f) << shift
+            shift += 7
+            if not c & 0x80:
+                break
+    raw = block[i:i + n]
+    i += n
+    if huff:
+        raise ValueError("huffman-coded request field")
+    return raw.decode("utf-8", "replace"), i
+
+
+def hpack_fields(block):
+    """The minimal decode of THIS client's request block: indexed static
+    entries, plus literal fields with 4- or 6-bit name prefixes."""
+    static = {1: ":authority", 2: ":method", 4: ":path", 7: ":scheme"}
+    fields = {}
+    i = 0
+    while i < len(block):
+        b = block[i]
+        i += 1
+        if b & 0x80:
+            continue  # indexed static (":method GET", ":scheme https")
+        if b & 0x40:
+            nidx = b & 0x3f
+            if nidx == 0x3f:
+                v, shift = 0, 0
+                while True:
+                    c = block[i]
+                    i += 1
+                    v |= (c & 0x7f) << shift
+                    shift += 7
+                    if not c & 0x80:
+                        break
+                nidx = 63 + v
+        else:
+            nidx = b & 0x0f
+            if nidx == 0x0f:
+                v, shift = 0, 0
+                while True:
+                    c = block[i]
+                    i += 1
+                    v |= (c & 0x7f) << shift
+                    shift += 7
+                    if not c & 0x80:
+                        break
+                nidx = 15 + v
+        if nidx == 0:
+            name, i = rstr(block, i)
+        else:
+            name = static.get(nidx, "idx%d" % nidx)
+        value, i = rstr(block, i)
+        fields[name] = value
+    return fields
+
+
+def hstr(s):
+    raw = s.encode()
+    return bytes([len(raw)]) + raw
+
+
+def serve_h2(s, cid, out):
+    preface = read_exact(s, 24)
+    if preface != b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n":
+        raise ValueError("bad client preface: %r" % preface)
+    typ, flags, sid, payload = read_frame(s)
+    if typ != FRAME_SETTINGS or sid != 0:
+        raise ValueError("first client frame not SETTINGS: %d" % typ)
+    s.sendall(frame(FRAME_SETTINGS, 0, 0, b""))
+    s.sendall(frame(FRAME_SETTINGS, FLAG_ACK, 0, b""))
+    conn_win = 65535
+    stream_win = {}
+
+    def apply_window(fsid, payload):
+        nonlocal conn_win
+        inc = int.from_bytes(payload, "big") & 0x7FFFFFFF
+        if fsid == 0:
+            conn_win += inc
+        else:
+            stream_win[fsid] = stream_win.get(fsid, 65535) + inc
+        out.write("h2page: conn=%d window-update sid=%d inc=%d\n"
+                  % (cid, fsid, inc))
+
+    def await_credit(sid):
+        nonlocal conn_win
+        while stream_win.get(sid, 65535) <= 0 or conn_win <= 0:
+            out.write("h2page: conn=%d blocked sid=%d conn_win=%d "
+                      "stream_win=%d\n"
+                      % (cid, sid, conn_win, stream_win.get(sid, -1)))
+            typ, flags, fsid, payload = read_frame(s)
+            if typ == FRAME_WINDOW:
+                apply_window(fsid, payload)
+            elif typ == FRAME_PING:
+                s.sendall(frame(FRAME_PING, FLAG_ACK, 0, payload))
+            else:
+                out.write("h2page: conn=%d ignored type=%d sid=%d "
+                          "while blocked\n" % (cid, typ, fsid))
+
+    def send_body(sid, body):
+        nonlocal conn_win
+        off = 0
+        while off < len(body):
+            n = min(16384, len(body) - off, conn_win, stream_win[sid])
+            if n <= 0:
+                await_credit(sid)
+                continue
+            flags = FLAG_END_STREAM if off + n == len(body) else 0
+            s.sendall(frame(FRAME_DATA, flags, sid, body[off:off + n]))
+            off += n
+            conn_win -= n
+            stream_win[sid] -= n
+
+    while True:
+        typ, flags, sid, payload = read_frame(s)
+        if typ == FRAME_HEADERS:
+            fields = hpack_fields(payload)
+            path = fields.get(":path", "/")
+            stream_win[sid] = 65535
+            out.write("h2page: conn=%d stream=%d path=%s\n" % (cid, sid, path))
+            body, gz = ROUTES.get(path, (b"not found", False))
+            head = bytes([0x88 if path in ROUTES else 0x8d])
+            head += b"\x0f\x0d" + hstr(str(len(body)))  # content-length (28)
+            if gz:
+                head += b"\x0f\x0b" + hstr("gzip")     # content-encoding (26)
+            s.sendall(frame(FRAME_HEADERS, FLAG_END_HEADERS, sid, head))
+            send_body(sid, body)
+        elif typ == FRAME_WINDOW:
+            apply_window(sid, payload)
+        elif typ == FRAME_PING:
+            s.sendall(frame(FRAME_PING, FLAG_ACK, 0, payload))
+        elif typ == FRAME_SETTINGS:
+            continue  # an unexpected re-SETTINGS is dropped, not fatal
+        elif typ == FRAME_RST:
+            stream_win.pop(sid, None)
+            out.write("h2page: conn=%d rst sid=%d\n" % (cid, sid))
+        elif typ == FRAME_GOAWAY:
+            out.write("h2page: conn=%d goaway\n" % cid)
+            return
+        else:
+            out.write("h2page: conn=%d ignored type=%d sid=%d\n"
+                      % (cid, typ, sid))
+
+
+def serve_h1(s, cid, out):
+    buf = b""
+    while True:
+        while b"\r\n\r\n" not in buf:
+            chunk = s.recv(65536)
+            if not chunk:
+                return
+            buf += chunk
+            if len(buf) > 16384:
+                raise ValueError("request head over bound")
+        head, buf = buf.split(b"\r\n\r\n", 1)
+        line = head.split(b"\r\n")[0].decode("ascii", "replace")
+        out.write("h2page: conn=%d req=%s\n" % (cid, line))
+        parts = line.split()
+        path = parts[1] if len(parts) == 3 else ""
+        body, gz = ROUTES.get(path, (b"not found", False))
+        status = b"200 OK" if path in ROUTES else b"404 Not Found"
+        resp = (b"HTTP/1.1 " + status + b"\r\nContent-Length: " +
+                str(len(body)).encode() +
+                (b"\r\nContent-Encoding: gzip" if gz else b"") +
+                b"\r\nConnection: keep-alive\r\n\r\n" + body)
+        s.sendall(resp)
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--port", type=int, required=True)
+    ap.add_argument("--cert", required=True, help="PEM chain, leaf first")
+    ap.add_argument("--key", required=True)
+    ap.add_argument("--proto", choices=("h2", "h1"), required=True)
+    ap.add_argument("--accept", type=int, default=1)
+    ap.add_argument("--host", default="127.0.0.1")
+    ap.add_argument("--timeout", type=float, default=30.0)
+    a = ap.parse_args()
+
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_3
+    ctx.maximum_version = ssl.TLSVersion.TLSv1_3
+    if a.proto == "h2":
+        ctx.set_alpn_protocols(["h2"])
+    # h1 mode configures NO ALPN at all: the negotiated pick is "none",
+    # the clean-fallback shape the leg pins.
+    try:
+        ctx.load_cert_chain(a.cert, a.key)
+    except Exception as e:
+        sys.stderr.write("h2page: cannot load %s: %s\n" % (a.cert, e))
+        return 2
+
+    ls = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    ls.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    ls.bind((a.host, a.port))
+    ls.listen(8)
+    sys.stdout.write("h2page: listening on %s:%d proto=%s\n"
+                     % (a.host, a.port, a.proto))
+    sys.stdout.flush()
+
+    conn_id = 0
+    deadline = time.monotonic() + a.timeout
+    while conn_id < a.accept:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        ls.settimeout(remaining)
+        try:
+            raw, _ = ls.accept()
+        except socket.timeout:
+            break
+        conn_id += 1
+        try:
+            # The handshake read must be bounded BEFORE wrap: an accepted
+            # conn whose handshake never lands would otherwise park the
+            # whole accept loop behind it and every later leg's dial
+            # would stall at 'web: error tls'.
+            raw.settimeout(30)
+            with ctx.wrap_socket(raw, server_side=True) as s:
+                s.settimeout(60)
+                alpn = s.selected_alpn_protocol() or "none"
+                sys.stdout.write("h2page: conn=%d alpn=%s\n" % (conn_id, alpn))
+                sys.stdout.flush()
+                if a.proto == "h2":
+                    serve_h2(s, conn_id, sys.stdout)
+                else:
+                    serve_h1(s, conn_id, sys.stdout)
+                sys.stdout.write("h2page: conn=%d done\n" % conn_id)
+                sys.stdout.flush()
+        except (ssl.SSLError, OSError, EOFError, ValueError) as e:
+            sys.stdout.write("h2page: conn=%d refused: %s\n" % (conn_id, e))
+            sys.stdout.flush()
+        finally:
+            try:
+                raw.close()
+            except OSError:
+                pass
+    ls.close()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+EOF
+
+vgate_setup_python <<'PY'
+# Boots 65-66 peers (M212b): h2page.py on 24570 speaks ALPN h2; the same
+# script on 24571 runs TLS with no ALPN — the ALPN-less fallback peer.
+# leaf.example.com verifies under the vendored gate roots the same way
+# leg 12's GOFETCH peer does.
+import os, subprocess, sys
+sys.path.insert(0, os.path.abspath(os.path.join("user", "go", "browser")))
+import peer_guard
+rd = os.environ["RUN_DIR"]
+cfx = os.path.join("user", "src", "lib", "tls", "vectors", "fx")
+chain = os.path.join(cfx, "chain-ec.pem")
+key = os.path.join(cfx, "leaf-ec.key")
+watch = os.path.join("user", "go", "browser", "peer_watch.py")
+peer = os.path.join(rd, "h2page.py")
+for port, proto in ((24570, "h2"), (24571, "h1")):
+    peer_guard.claim(port, "h2page.py")
+    log = open(os.path.join(rd, "h2page-%d.log" % port), "wb")
+    cmd = [sys.executable, peer, "--host", "127.0.0.1", "--port", str(port),
+           "--cert", chain, "--key", key, "--proto", proto,
+           "--accept", "6", "--timeout", "3600"]
+    proc = subprocess.Popen([sys.executable, watch, str(os.getppid())] + cmd,
+                            stdout=log, stderr=subprocess.STDOUT,
+                            start_new_session=True)
+    peer_guard.await_ready(log.name, "listening", proc)
+    print("live-web 65-66: h2page pid=%d on 127.0.0.1:%d proto=%s"
+          % (proc.pid, port, proto))
+PY
+
+vgate_run 65 -- \
+    --screen '$RUN_DIR/screen' --via-virtio --cvc-snap \
+    --snapshot-out '$RUN_DIR/snap-65' \
+    --net '$RUN_DIR/cap65.bin' --net-arp-respond 93.184.216.34 \
+    --net-dns-respond 93.184.216.34 \
+    --net-tcp-respond 93.184.216.34:24570:relay --net-tcp-respond-relay 127.0.0.1:24570 \
+    --script '$RUN_DIR/script-h2page.txt' \
+    --script3 '$RUN_DIR/h2-done.txt' --script3-after 'web: ready' --script3-delay 3 \
+    --snapshot-after 'h2-page-done' \
+    --script-expect 'h2-page-done' --timeout 180
+
+vgate_assert 65 serial-contains 'net ip: ip=10.0.0.1'
+vgate_assert 65 serial-contains 'web: dns leaf.example.com 93.184.216.34'
+vgate_assert 65 serial-contains 'web: tls leaf.example.com virelai-gate-roots-2026-09-14'
+vgate_assert 65 serial-contains 'web: alpn h2'
+vgate_assert 65 serial-contains 'web: fetch leaf.example.com/ proto=h2 stream=1'
+vgate_assert 65 serial-contains 'web: fetch leaf.example.com/ka-a.css proto=h2 stream=3'
+vgate_assert 65 serial-contains 'web: fetch leaf.example.com/ka-b.css proto=h2 stream=5'
+vgate_assert 65 serial-contains 'web: settled'
+vgate_assert 65 serial-contains 'web: ready'
+vgate_assert 65 serial-contains 'h2-page-done'
+vgate_assert 65 serial-absent 'web: error'
+vgate_assert 65 serial-absent 'web: h2-refuse'
+vgate_assert 65 serial-absent 'GET / HTTP'
+vgate_assert 65 serial-absent '[EXC] parking:'
+vgate_assert 65 python <<'PY'
+import os, sys
+path = os.path.join(os.environ["RUN_DIR"], "h2page-24570.log")
+peer = open(path).read()
+assert "h2page: conn=" in peer, "no connection accepted"
+assert " alpn=h2" in peer, "server did not negotiate h2"
+# The peer log is CUMULATIVE across the spec's iterations, and a refused
+# conn writes no "alpn=" line — cross-check this boot's own serial so a
+# stale earlier receipt cannot stand in for a connection that never
+# happened (observed: a wedged accept loop failed a whole leg at TLS
+# while the assert read the previous iteration's receipt).
+ser = open(os.environ["VG_SER"], errors="replace").read()
+assert "web: alpn h2" in ser, "this boot's serial shows no h2 negotiation"
+assert "proto=h2 stream=5" in ser, "this boot's serial shows no reuse"
+# The LAST accepted connection carried the whole journey: streams 1, 3,
+# 5 in order, each its own path — the reuse the stream= markers assert.
+# (rsplit on the "alpn=" line: the conn's trailing "done"/"refused"
+# line would otherwise truncate the receipt.)
+conns = [l for l in peer.splitlines() if " alpn=" in l]
+cid = conns[-1].split("conn=", 1)[1].split(" ", 1)[0]
+last = "\n".join(l for l in peer.splitlines()
+                 if l.startswith("h2page: conn=%s " % cid))
+streams = [l for l in last.splitlines() if " stream=" in l]
+paths = [l.split("path=", 1)[1] for l in streams]
+assert paths == ["/", "/ka-a.css", "/ka-b.css"], "paths %r" % paths
+sids = [int(l.split("stream=", 1)[1].split(" ", 1)[0]) for l in streams]
+assert sids == [1, 3, 5], "stream ids %r" % sids
+# Flow control: ka-b.css is ~78 KiB over a 65535-byte window, so the
+# server had to block and the guest had to return credit.
+assert "blocked" in last, "ka-b.css fit the window — pad drifted under it"
+assert "window-update" in last, "guest never returned WINDOW_UPDATE credit"
+print("live-web 65: h2 conn=%s streams=%s, flow-control credit returned"
+      % (cid, sids))
+PY
+vgate_assert 65 snapshot 'snap-65-*.raw' <<'PY'
+import sys
+# Both stylesheets applied over h2: css_a paints the page background
+# #7fdbff, css_b paints the h1 band #b58900 — the subresources rendered,
+# not just fetched.
+data = open(sys.argv[1], "rb").read()
+assert len(data) == 1280*720*4, "scanout size %d" % len(data)
+def px(x, y):
+    k = (y*1280+x)*4
+    return (data[k+2], data[k+1], data[k])
+bg = band = 0
+for yy in range(92, 380):
+    for xx in range(40, 552, 2):
+        c = px(xx, yy)
+        if c == (0x7f, 0xdb, 0xff):
+            bg += 1
+        elif c == (0xb5, 0x89, 0x00):
+            band += 1
+assert bg > 2000, "page background absent (bg=%d)" % bg
+assert band > 30, "h1 band absent (band=%d)" % band
+print("live-web 65: both stylesheets on the scanout over h2 (bg=%d band=%d)"
+      % (bg, band))
+PY
+
+# --- boot 66: ALPN-less peer — the same routes over HTTP/1.1 ----------
+vgate_run 66 -- \
+    --screen '$RUN_DIR/screen' --via-virtio --cvc-snap \
+    --snapshot-out '$RUN_DIR/snap-66' \
+    --net '$RUN_DIR/cap66.bin' --net-arp-respond 93.184.216.34 \
+    --net-dns-respond 93.184.216.34 \
+    --net-tcp-respond 93.184.216.34:24571:relay --net-tcp-respond-relay 127.0.0.1:24571 \
+    --script '$RUN_DIR/script-h2page-h1.txt' \
+    --script3 '$RUN_DIR/h2-done.txt' --script3-after 'web: ready' --script3-delay 3 \
+    --snapshot-after 'h2-page-done' \
+    --script-expect 'h2-page-done' --timeout 180
+
+vgate_assert 66 serial-contains 'web: dns leaf.example.com 93.184.216.34'
+vgate_assert 66 serial-contains 'web: tls leaf.example.com virelai-gate-roots-2026-09-14'
+vgate_assert 66 serial-contains 'web: alpn none'
+vgate_assert 66 serial-contains 'web: fetch leaf.example.com/ proto=http/1.1'
+vgate_assert 66 serial-contains 'web: fetch leaf.example.com/ka-a.css proto=http/1.1'
+vgate_assert 66 serial-contains 'web: fetch leaf.example.com/ka-b.css proto=http/1.1'
+vgate_assert 66 serial-contains 'web: settled'
+vgate_assert 66 serial-contains 'web: ready'
+vgate_assert 66 serial-contains 'h2-page-done'
+vgate_assert 66 serial-absent 'proto=h2'
+vgate_assert 66 serial-absent 'web: error'
+vgate_assert 66 serial-absent 'web: h2-refuse'
+vgate_assert 66 serial-absent '[EXC] parking:'
+vgate_assert 66 python <<'PY'
+import os, sys
+path = os.path.join(os.environ["RUN_DIR"], "h2page-24571.log")
+peer = open(path).read()
+assert " alpn=none" in peer, "server negotiated ALPN — leg is not a fallback"
+ser = open(os.environ["VG_SER"], errors="replace").read()
+assert "web: alpn none" in ser, "this boot's serial shows a negotiated ALPN"
+assert "proto=http/1.1" in ser, "this boot's serial shows no h1 fallback"
+conns = [l for l in peer.splitlines() if " alpn=" in l]
+cid = conns[-1].split("conn=", 1)[1].split(" ", 1)[0]
+last = "\n".join(l for l in peer.splitlines()
+                 if l.startswith("h2page: conn=%s " % cid))
+reqs = [l for l in last.splitlines() if " req=" in l]
+want = ["GET / HTTP/1.1", "GET /ka-a.css HTTP/1.1", "GET /ka-b.css HTTP/1.1"]
+got = [r.split("req=", 1)[1] for r in reqs]
+assert got == want, "h1 fallback receipt %r" % got
+print("live-web 66: ALPN-less peer, 3 requests on 1 keep-alive connection")
+PY
+vgate_assert 66 snapshot 'snap-66-*.raw' <<'PY'
+import sys
+data = open(sys.argv[1], "rb").read()
+assert len(data) == 1280*720*4, "scanout size %d" % len(data)
+def px(x, y):
+    k = (y*1280+x)*4
+    return (data[k+2], data[k+1], data[k])
+bg = band = 0
+for yy in range(92, 380):
+    for xx in range(40, 552, 2):
+        c = px(xx, yy)
+        if c == (0x7f, 0xdb, 0xff):
+            bg += 1
+        elif c == (0xb5, 0x89, 0x00):
+            band += 1
+assert bg > 2000, "page background absent (bg=%d)" % bg
+assert band > 30, "h1 band absent (band=%d)" % band
+print("live-web 66: fallback page on the scanout over HTTP/1.1 "
+      "(bg=%d band=%d)" % (bg, band))
+PY
+# --- boots 67-70 (M211b #3868): bounded DOM read ops over the wire -----
+# 67: a real script reads the page it rode in on — <title>, an id'd
+# node's textContent, an attribute, a missing id's null — and logs the
+# values to serial through console.log's own wire op. 68: an op outside
+# the v3 set is refused by name — node.query/doc.write get
+# dom_op_refused, an unknown name dom_op_unknown, each reaching JS as a
+# catchable exception. 69: a console.log storm hits the 64-op per-script
+# budget — the refusal lands on serial from the worker's exception
+# diagnostic and every served op's marker precedes it. 70: a pure-JS
+# spin dies at the script's wall budget — the eval reply names
+# script_budget_time. Each restocks QJS.BIN the way leg 62 does.
+vgate_file script-domread.txt <<'EOFS'
+vf mv QJSHELD.BIN QJS.BIN
+exec WEB.ELF /host/DOMREAD.HTML
+EOFS
+
+vgate_file script-domref.txt <<'EOFS'
+vf mv QJSHELD.BIN QJS.BIN
+exec WEB.ELF /host/DOMREF.HTML
+EOFS
+
+vgate_file script-domstorm.txt <<'EOFS'
+vf mv QJSHELD.BIN QJS.BIN
+exec WEB.ELF /host/DOMSTORM.HTML
+EOFS
+
+vgate_file script-domspin.txt <<'EOFS'
+vf mv QJSHELD.BIN QJS.BIN
+exec WEB.ELF /host/DOMSPIN.HTML
+EOFS
+
+# --- boot 67: title + id-addressed reads, console.log -> serial -------
+vgate_run 67 -- \
+    --screen '$RUN_DIR/screen-domread' \
+    --via-virtio --cvc-snap \
+    --script '$RUN_DIR/script-domread.txt' \
+    --script-expect 'web: script done' --timeout 120
+
+vgate_assert 67 serial-contains 'web: ready'
+vgate_assert 67 serial-contains 'web: script hello version=3'
+vgate_assert 67 serial-contains 'web: dom doc.title ok'
+vgate_assert 67 serial-count 'web: dom node.text ok' 2
+vgate_assert 67 serial-contains 'web: dom node.attr ok'
+vgate_assert 67 serial-contains 'web: console title=Dom Reads Page'
+vgate_assert 67 serial-contains 'web: console text=alpha lead text'
+vgate_assert 67 serial-contains 'web: console attr=pinned'
+vgate_assert 67 serial-contains 'web: console missing=null'
+vgate_assert 67 serial-contains 'web: script rc=0 ops=8'
+vgate_assert 67 serial-contains 'web: script done ops=8'
+vgate_assert 67 serial-absent 'web: script worker gone'
+vgate_assert 67 serial-absent 'dom_op_'
+vgate_assert 67 serial-absent '[EXC] parking:'
+
+# --- boot 68: refusals name their op, on the wire and in JS -----------
+vgate_run 68 -- \
+    --screen '$RUN_DIR/screen-domref' \
+    --via-virtio --cvc-snap \
+    --script '$RUN_DIR/script-domref.txt' \
+    --script-expect 'web: script done' --timeout 120
+
+vgate_assert 68 serial-contains 'web: ready'
+vgate_assert 68 serial-contains 'web: dom node.query dom_op_refused'
+vgate_assert 68 serial-contains 'web: dom doc.write dom_op_refused'
+vgate_assert 68 serial-contains 'web: dom bogus.op dom_op_unknown'
+vgate_assert 68 serial-contains 'web: console refused=dom_op_refused'
+vgate_assert 68 serial-contains 'web: console set=dom_op_refused'
+vgate_assert 68 serial-contains 'web: console unknown=dom_op_unknown'
+vgate_assert 68 serial-contains 'web: script rc=0 ops=6'
+vgate_assert 68 serial-contains 'web: script done ops=6'
+vgate_assert 68 serial-absent 'web: script worker gone'
+vgate_assert 68 serial-absent '[EXC] parking:'
+
+# --- boot 69: the 64-op per-script budget refuses script_budget_ops ---
+vgate_run 69 -- \
+    --screen '$RUN_DIR/screen-domstorm' \
+    --via-virtio --cvc-snap \
+    --script '$RUN_DIR/script-domstorm.txt' \
+    --script-expect 'web: script done' --timeout 120
+
+vgate_assert 69 serial-contains 'web: ready'
+vgate_assert 69 serial-contains 'web: console x'
+vgate_assert 69 serial-contains 'script_budget_ops'
+vgate_assert 69 serial-contains 'web: script rc=70 error=JSException'
+vgate_assert 69 serial-contains 'web: script done ops=32'
+vgate_assert 69 serial-absent 'web: script worker gone'
+vgate_assert 69 serial-absent '[EXC] parking:'
+
+# --- boot 70: a pure-JS spin dies at the wall budget ------------------
+vgate_run 70 -- \
+    --screen '$RUN_DIR/screen-domspin' \
+    --via-virtio --cvc-snap \
+    --script '$RUN_DIR/script-domspin.txt' \
+    --script-expect 'web: script done' --timeout 120
+
+vgate_assert 70 serial-contains 'web: ready'
+vgate_assert 70 serial-contains 'web: script rc=70 error=script_budget_time'
+vgate_assert 70 serial-contains 'web: script done'
+vgate_assert 70 serial-absent 'web: script worker gone'
+vgate_assert 70 serial-absent '[EXC] parking:'
+# --- boots 71-73 (M211c #3869): DOM write ops + reflow, bounded timers --
+# 71: a real script's writes land on the scanout — the page's targets
+# start EMPTY, so text pixels after `web: dom reflow` can only be the
+# writes; the field's scripted value rides the value attribute through
+# the same re-layout a typed value takes. 72: a setText storm hits the
+# 16-mutation per-script budget — worker-side the refusal never crosses
+# the wire, JS catches the named exception and the script finishes.
+# 73: setTimeout arms through the app's one kernel timer, `timer.next`
+# parks, EvTimer answers it, and the callback's own write paints;
+# setInterval names its refusal. Each restocks QJS.BIN the way 62 does.
+vgate_file script-domwrite.txt <<'EOFI'
+vf mv QJSHELD.BIN QJS.BIN
+exec WEB.ELF /host/DOMWRITE.HTML
+EOFI
+
+vgate_file script-dommut.txt <<'EOFI'
+vf mv QJSHELD.BIN QJS.BIN
+exec WEB.ELF /host/DOMMUT.HTML
+EOFI
+
+vgate_file script-domtimer.txt <<'EOFI'
+vf mv QJSHELD.BIN QJS.BIN
+exec WEB.ELF /host/DOMTIMER.HTML
+EOFI
+
+# --- boot 71: text + field writes reflow and paint on the scanout -----
+vgate_run 71 -- \
+    --screen '$RUN_DIR/screen-domwrite' \
+    --via-virtio --cvc-snap \
+    --snapshot-out '$RUN_DIR/snap71' \
+    --snapshot-after 'web: dom reflow' \
+    --script '$RUN_DIR/script-domwrite.txt' \
+    --script-expect 'web: script done' --timeout 120
+
+vgate_assert 71 serial-contains 'web: ready'
+vgate_assert 71 serial-contains 'web: script hello version=3'
+vgate_assert 71 serial-contains 'web: dom node.setText ok'
+vgate_assert 71 serial-contains 'web: dom field.setValue ok'
+vgate_assert 71 serial-contains 'web: console wrote=2'
+vgate_assert 71 serial-contains 'web: dom reflow'
+vgate_assert 71 serial-contains 'web: script rc=0 ops=3'
+vgate_assert 71 serial-contains 'web: script done ops=3'
+vgate_assert 71 serial-absent 'web: script worker gone'
+vgate_assert 71 serial-absent 'dom_op_'
+vgate_assert 71 serial-absent '[EXC] parking:'
+vgate_assert 71 snapshot 'snap71-*.raw' <<'PY'
+import sys
+data = open(sys.argv[1], "rb").read()
+assert len(data) == 1280*720*4
+# The targets started empty: bright text pixels inside the content crop
+# can only be the script's own stamp + field value after the reflow.
+bright = 0
+for y in range(64, 352):
+    for x in range(0, 512):
+        i = (y*1280+x)*4
+        if min(data[i+2], data[i+1], data[i]) > 150:
+            bright += 1
+assert bright > 40, "DOMWRITE scanout shows no scripted text (bright=%d)" % bright
+print("live-web 71: scripted writes observed on the scanout (bright=%d)" % bright)
+PY
+
+# --- boot 72: the 16-mutation budget refuses script_budget_mut ---------
+vgate_run 72 -- \
+    --screen '$RUN_DIR/screen-dommut' \
+    --via-virtio --cvc-snap \
+    --script '$RUN_DIR/script-dommut.txt' \
+    --script-expect 'web: script done' --timeout 120
+
+vgate_assert 72 serial-contains 'web: ready'
+vgate_assert 72 serial-count 'web: dom node.setText ok' 16
+vgate_assert 72 serial-contains 'web: console mut=script_budget_mut'
+vgate_assert 72 serial-contains 'web: console muts=done'
+vgate_assert 72 serial-contains 'web: script rc=0 ops=18'
+vgate_assert 72 serial-contains 'web: script done ops=18'
+vgate_assert 72 serial-absent 'web: script worker gone'
+vgate_assert 72 serial-absent '[EXC] parking:'
+
+# --- boot 73: setTimeout fires through the app timer; its write paints -
+vgate_run 73 -- \
+    --screen '$RUN_DIR/screen-domtimer' \
+    --via-virtio --cvc-snap \
+    --snapshot-out '$RUN_DIR/snap73' \
+    --snapshot-after 'web: dom reflow' \
+    --script '$RUN_DIR/script-domtimer.txt' \
+    --script-expect 'web: script done' --timeout 120
+
+vgate_assert 73 serial-contains 'web: ready'
+vgate_assert 73 serial-contains 'web: dom timer.set ok'
+vgate_assert 73 serial-contains 'web: console armed=1'
+vgate_assert 73 serial-contains 'web: dom timer.interval dom_op_refused'
+vgate_assert 73 serial-contains 'web: console iv=dom_op_refused'
+vgate_assert 73 serial-contains 'web: dom timer.next wait'
+vgate_assert 73 serial-contains 'web: dom timer.next ok'
+vgate_assert 73 serial-contains 'web: script fire id=1 rc=0 ops=2'
+vgate_assert 73 serial-contains 'web: console cb=ran'
+vgate_assert 73 serial-contains 'web: dom node.setText ok'
+vgate_assert 73 serial-contains 'web: dom reflow'
+vgate_assert 73 serial-contains 'web: script rc=0 ops=4'
+vgate_assert 73 serial-contains 'web: script done ops=7'
+vgate_assert 73 serial-absent 'web: script worker gone'
+vgate_assert 73 serial-absent '[EXC] parking:'
+vgate_assert 73 snapshot 'snap73-*.raw' <<'PY'
+import sys
+data = open(sys.argv[1], "rb").read()
+assert len(data) == 1280*720*4
+bright = 0
+for y in range(64, 352):
+    for x in range(0, 512):
+        i = (y*1280+x)*4
+        if min(data[i+2], data[i+1], data[i]) > 150:
+            bright += 1
+assert bright > 20, "DOMTIMER scanout shows no fired text (bright=%d)" % bright
+print("live-web 73: the timer callback's write observed on the scanout (bright=%d)" % bright)
+PY
+
+# --- boots 74-81 (M211d #3870): the scripted corpus, end to end --------
+# The corpus rows are COMMITTED fixtures (webrender/testdata/corpus,
+# staged verbatim in setup) — the acceptance verdict on whether the v3
+# op set moves pages. 74-77 exercise every landed op: reads (title,
+# text, attr, missing-id null, console.log), computed content written
+# into an empty node and read back over the same wire, a two-field form
+# fill, and a setTimeout whose parked timer.next the app timer answers.
+# 78 is the refused row: query/fetch/setAttr name dom_op_refused, an
+# unknown name dom_op_unknown — and the caught words are written INTO
+# the page, so the refusal reaches the user as page text, not a gap.
+# 79 is the oversize negative: an inline script over the per-eval source
+# bound and a src= fetch over the same cap refuse before exec with the
+# admission policy's own words — no worker ever spawns. 80 kills the
+# worker mid-op: the script's timer.next ask parks unanswered on the
+# wire, the monitor's kill lands inside the eval, and the page stays
+# responsive after `web: script worker gone`. 81 is the op-storm: the
+# 32-op per-script budget refuses script_budget_ops. Each restocks
+# QJS.BIN the way leg 62 does.
+vgate_file script-sreads.txt <<'EOFS'
+vf mv QJSHELD.BIN QJS.BIN
+exec WEB.ELF /host/SCRIPTED-READS.HTML
+EOFS
+
+vgate_file script-scompute.txt <<'EOFS'
+vf mv QJSHELD.BIN QJS.BIN
+exec WEB.ELF /host/SCRIPTED-COMPUTE.HTML
+EOFS
+
+vgate_file script-sform.txt <<'EOFS'
+vf mv QJSHELD.BIN QJS.BIN
+exec WEB.ELF /host/SCRIPTED-FORM.HTML
+EOFS
+
+vgate_file script-stimer.txt <<'EOFS'
+vf mv QJSHELD.BIN QJS.BIN
+exec WEB.ELF /host/SCRIPTED-TIMER.HTML
+EOFS
+
+vgate_file script-srefused.txt <<'EOFS'
+vf mv QJSHELD.BIN QJS.BIN
+exec WEB.ELF /host/SCRIPTED-REFUSED.HTML
+EOFS
+
+vgate_file script-sovr.txt <<'EOFS'
+vf mv QJSHELD.BIN QJS.BIN
+exec WEB.ELF /host/SCRIPTOVR.HTML
+EOFS
+
+vgate_file script-skill.txt <<'EOFS'
+vf mv QJSHELD.BIN QJS.BIN
+exec WEB.ELF /host/SCRIPTED-KILL.HTML
+EOFS
+
+vgate_file script-skillkill.txt <<'EOFS'
+kill QJS.BIN
+EOFS
+
+vgate_file script-sstorm.txt <<'EOFS'
+vf mv QJSHELD.BIN QJS.BIN
+exec WEB.ELF /host/SCRIPTED-STORM.HTML
+EOFS
+
+# --- boot 74: reads row — title/text/attr/null + console.log ----------
+vgate_run 74 -- \
+    --screen '$RUN_DIR/screen-sreads' \
+    --via-virtio --cvc-snap \
+    --script '$RUN_DIR/script-sreads.txt' \
+    --script-expect 'web: script done' --timeout 120
+
+vgate_assert 74 serial-contains 'web: ready'
+vgate_assert 74 serial-contains 'web: script hello version=3'
+vgate_assert 74 serial-contains 'web: dom doc.title ok'
+vgate_assert 74 serial-count 'web: dom node.text ok' 2
+vgate_assert 74 serial-contains 'web: dom node.attr ok'
+vgate_assert 74 serial-contains 'web: console title=Scripted Reads Corpus Row'
+vgate_assert 74 serial-contains 'web: console text=corpus lead paragraph'
+vgate_assert 74 serial-contains 'web: console attr=pinned-7'
+vgate_assert 74 serial-contains 'web: console missing=null'
+vgate_assert 74 serial-contains 'web: script rc=0 ops=8'
+vgate_assert 74 serial-contains 'web: script done ops=8'
+vgate_assert 74 serial-absent 'web: script worker gone'
+vgate_assert 74 serial-absent 'dom_op_'
+vgate_assert 74 serial-absent '[EXC] parking:'
+
+# --- boot 75: compute row — computed content written + read back ------
+vgate_run 75 -- \
+    --screen '$RUN_DIR/screen-scompute' \
+    --via-virtio --cvc-snap \
+    --script '$RUN_DIR/script-scompute.txt' \
+    --script-expect 'web: script done' --timeout 120
+
+vgate_assert 75 serial-contains 'web: ready'
+vgate_assert 75 serial-contains 'web: script hello version=3'
+vgate_assert 75 serial-contains 'web: dom node.setText ok'
+vgate_assert 75 serial-contains 'web: dom node.text ok'
+vgate_assert 75 serial-contains 'web: console readback=fib(25)=75025'
+vgate_assert 75 serial-contains 'web: dom reflow'
+vgate_assert 75 serial-contains 'web: script rc=0 ops=3'
+vgate_assert 75 serial-contains 'web: script done ops=3'
+vgate_assert 75 serial-absent 'web: script worker gone'
+vgate_assert 75 serial-absent 'dom_op_'
+vgate_assert 75 serial-absent '[EXC] parking:'
+
+# --- boot 76: form row — two field fills + a status write -------------
+vgate_run 76 -- \
+    --screen '$RUN_DIR/screen-sform' \
+    --via-virtio --cvc-snap \
+    --script '$RUN_DIR/script-sform.txt' \
+    --script-expect 'web: script done' --timeout 120
+
+vgate_assert 76 serial-contains 'web: ready'
+vgate_assert 76 serial-contains 'web: script hello version=3'
+vgate_assert 76 serial-count 'web: dom field.setValue ok' 2
+vgate_assert 76 serial-contains 'web: dom node.setText ok'
+vgate_assert 76 serial-contains 'web: console who=page-user'
+vgate_assert 76 serial-contains 'web: console status=filled'
+vgate_assert 76 serial-contains 'web: dom reflow'
+vgate_assert 76 serial-contains 'web: script rc=0 ops=7'
+vgate_assert 76 serial-contains 'web: script done ops=7'
+vgate_assert 76 serial-absent 'web: script worker gone'
+vgate_assert 76 serial-absent 'dom_op_'
+vgate_assert 76 serial-absent '[EXC] parking:'
+
+# --- boot 77: timer row — the parked drain answers, the write paints --
+vgate_run 77 -- \
+    --screen '$RUN_DIR/screen-stimer' \
+    --via-virtio --cvc-snap \
+    --script '$RUN_DIR/script-stimer.txt' \
+    --script-expect 'web: script done' --timeout 120
+
+vgate_assert 77 serial-contains 'web: ready'
+vgate_assert 77 serial-contains 'web: dom timer.set ok'
+vgate_assert 77 serial-contains 'web: console armed title=Scripted Timer Corpus Row'
+vgate_assert 77 serial-contains 'web: dom timer.next wait'
+vgate_assert 77 serial-contains 'web: dom timer.next ok'
+vgate_assert 77 serial-contains 'web: script fire id=1 rc=0 ops=2'
+vgate_assert 77 serial-contains 'web: console cb=fired'
+vgate_assert 77 serial-contains 'web: dom node.setText ok'
+vgate_assert 77 serial-contains 'web: dom reflow'
+vgate_assert 77 serial-contains 'web: script rc=0 ops=3'
+vgate_assert 77 serial-contains 'web: script done ops=6'
+vgate_assert 77 serial-absent 'web: script worker gone'
+vgate_assert 77 serial-absent '[EXC] parking:'
+
+# --- boot 78: refused row — named refusals reach the page itself ------
+vgate_run 78 -- \
+    --screen '$RUN_DIR/screen-srefused' \
+    --via-virtio --cvc-snap \
+    --script '$RUN_DIR/script-srefused.txt' \
+    --script-expect 'web: script done' --timeout 120
+
+vgate_assert 78 serial-contains 'web: ready'
+vgate_assert 78 serial-contains 'web: dom node.query dom_op_refused'
+vgate_assert 78 serial-contains 'web: dom net.fetch dom_op_refused'
+vgate_assert 78 serial-contains 'web: dom node.setAttr dom_op_refused'
+vgate_assert 78 serial-contains 'web: dom bogus.op dom_op_unknown'
+vgate_assert 78 serial-contains 'web: dom node.setText ok'
+vgate_assert 78 serial-contains 'web: dom node.text ok'
+vgate_assert 78 serial-contains 'web: console page=refused:dom_op_refused,dom_op_refused,dom_op_refused,dom_op_unknown'
+vgate_assert 78 serial-contains 'web: script rc=0 ops=7'
+vgate_assert 78 serial-contains 'web: script done ops=7'
+vgate_assert 78 serial-absent 'web: script worker gone'
+vgate_assert 78 serial-absent '[EXC] parking:'
+
+# --- boot 79: oversize negative — refused before exec, page paints ----
+vgate_run 79 -- \
+    --screen '$RUN_DIR/screen-sovr' \
+    --via-virtio --cvc-snap \
+    --script '$RUN_DIR/script-sovr.txt' \
+    --script-expect 'web: script skip http-body-limit' --timeout 120
+
+vgate_assert 79 serial-contains 'web: ready'
+vgate_assert 79 serial-contains 'web: script skip src-limit'
+vgate_assert 79 serial-contains 'web: script skip http-body-limit'
+vgate_assert 79 serial-absent 'web: script n='
+vgate_assert 79 serial-absent 'web: script worker'
+vgate_assert 79 serial-absent 'web: script done'
+vgate_assert 79 serial-absent 'dom_op_'
+vgate_assert 79 serial-absent '[EXC] parking:'
+
+# --- boot 80: mid-op kill — worker dies parked, page stays live -------
+vgate_run 80 -- \
+    --screen '$RUN_DIR/screen-skill' \
+    --via-virtio --cvc-snap \
+    --script '$RUN_DIR/script-skill.txt' \
+    --script2 '$RUN_DIR/script-skillkill.txt' --script2-after 'web: dom timer.next wait' \
+    --input-chords 'ctrl-l' --input-chords-after 'web: script worker gone' \
+    --script-expect 'web: url-focus' --timeout 120
+
+vgate_assert 80 serial-contains 'web: ready'
+vgate_assert 80 serial-contains 'web: script hello version=3'
+vgate_assert 80 serial-contains 'web: console armed=kill'
+vgate_assert 80 serial-contains 'web: dom timer.set ok'
+vgate_assert 80 serial-contains 'web: dom timer.next wait'
+vgate_assert 80 serial-contains 'kill: QJS.BIN armed'
+vgate_assert 80 serial-contains 'procs QJS.BIN exited status=137'
+vgate_assert 80 serial-contains 'web: script worker gone'
+vgate_assert 80 serial-contains 'web: url-focus'
+vgate_assert 80 serial-absent 'web: script rc=0'
+vgate_assert 80 serial-absent 'web: script done'
+vgate_assert 80 serial-absent '[EXC] parking:'
+
+# --- boot 81: storm row — the 32-op budget refuses script_budget_ops --
+vgate_run 81 -- \
+    --screen '$RUN_DIR/screen-sstorm' \
+    --via-virtio --cvc-snap \
+    --script '$RUN_DIR/script-sstorm.txt' \
+    --script-expect 'web: script done' --timeout 120
+
+vgate_assert 81 serial-contains 'web: ready'
+vgate_assert 81 serial-contains 'web: console drop'
+vgate_assert 81 serial-contains 'script_budget_ops'
+vgate_assert 81 serial-contains 'web: script rc=70 error=JSException'
+vgate_assert 81 serial-contains 'web: script done ops=32'
+vgate_assert 81 serial-absent 'web: script worker gone'
+vgate_assert 81 serial-absent '[EXC] parking:'

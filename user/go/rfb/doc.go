@@ -29,6 +29,10 @@
 // with ServerInit: width:u16, height:u16, pixel format:16 bytes,
 // name length:u32, then name bytes. All multibyte wire fields are
 // big-endian except pixel values requested little-endian by SetPixelFormat.
+// HandshakeEstablished is the entry point for an outer security layer
+// that completed the version exchange and security negotiation itself
+// (the seat's VeNCrypt termination): it resumes the session at ClientInit
+// on the established channel.
 //
 // The initial pixel format is 32 bpp / depth 24, little-endian true color,
 // RGB maxima 255/255/255 and shifts 16/8/0. Thus each wire pixel is

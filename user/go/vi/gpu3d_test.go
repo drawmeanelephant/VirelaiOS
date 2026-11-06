@@ -377,9 +377,9 @@ func TestGpu3dExchangeSilentSeatTimesOut(t *testing.T) {
 	if _, _, _, outcome := Gpu3dExchange(4, 4, payload, "NOTE.ELF"); outcome != Gpu3dOutcomeTimeout {
 		t.Fatalf("silent-seat outcome = %d want Timeout", outcome)
 	}
-	if f.recvCalls != wmMailWaitTicks || f.sleepCalls != wmMailWaitTicks-1 {
+	if f.recvCalls != wmMailWaitPolls || f.sleepCalls != wmMailWaitPolls-1 {
 		t.Fatalf("wait = %d probes / %d parks, want bounded %d / %d",
-			f.recvCalls, f.sleepCalls, wmMailWaitTicks, wmMailWaitTicks-1)
+			f.recvCalls, f.sleepCalls, wmMailWaitPolls, wmMailWaitPolls-1)
 	}
 }
 

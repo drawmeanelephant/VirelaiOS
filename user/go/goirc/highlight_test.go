@@ -137,11 +137,11 @@ func TestStateV2BlobDecodes(t *testing.T) {
 	u := testUI()
 	b := (&ircState{}).encode(u)
 	b[0] = 2
-	// Strip the v3 tail: u16 nRules + the rule records. The v2 layout
-	// ends after the chan records — find the tail by re-encoding a
-	// no-rules app and measuring the delta.
+	// Strip the v3+v4 tails: u16 nRules + the rule records, then v4's
+	// u16 path. The v2 layout ends after the chan records — find the
+	// tail by re-encoding a no-rules app and dropping both empties.
 	nr := (&ircState{}).encode(testUI())
-	v2 := b[:len(nr)-2] // drop 'u16 0'
+	v2 := b[:len(nr)-4] // drop 'u16 0' rules + 'u16 0' path
 	v2[0] = 2
 	st := &ircState{}
 	if !st.decode(v2) {

@@ -107,6 +107,7 @@ const mmu = @import("mmu.zig");
 const pci = @import("pci.zig");
 const evidence = @import("evidence.zig");
 const virtio_gpu = @import("virtio_gpu.zig");
+const alloc = @import("alloc.zig"); // #3899: the snapshot stage's page-pool pages
 const spinlock = @import("spinlock.zig"); // #990 (claim #997): the console tee's TX lock
 const klog = @import("klog.zig"); // snap completion receipt (run-03 serialization anchor)
 
@@ -1480,6 +1481,35 @@ var snap_chunk_hdr_buf: [12]u8 align(16) = undefined;
 var snap_done_buf: [16]u8 align(16) = undefined;
 var snap_ack_buf: [32]u8 align(16) = undefined;
 
+/// #3899: the staged scanout the stream ships. gpu_fb stays LIVE for the
+/// whole 113-chunk round trip — the compositor and the seam-B seat keep
+/// painting it — so a descriptor read can race a paint: the host then
+/// checksums bytes the guest never summed (wm-seat run 07's "chunk seq 64
+/// cksum mismatch") or assembles a T0/T1 blend that fails the done frame
+/// cksum (dogfood run 08). Either way the host drops the assembly and NO
+/// .raw lands — the fleet's biggest source of red noise. The stage
+/// freezes the frame once, so every cksum and every descriptor read the
+/// same bytes and the stream verifies by construction. Allocated once
+/// from the page pool on first use (fb_size is an exact page multiple)
+/// and kept for the run's later snapshots — a static second 3.5 MiB
+/// framebuffer would double the BSS footprint of every boot, snapshot
+/// channel or not.
+var snap_stage: ?[*]u8 = null;
+const snap_stage_pages: u64 = virtio_gpu.fb_size / alloc.page_size;
+/// Most copy retries before the staged frame ships as-is: the checksums
+/// cover the staged bytes either way, so even a continuously-dirty fb
+/// still verifies — the bound only keeps that fb from spinning the copy.
+pub const snap_copy_max_attempts: u32 = 4;
+
+fn snapStage() ?[*]u8 {
+    if (snap_stage) |s| return s;
+    if (comptime builtin.is_test) return null;
+    const pa = alloc.alloc_pages(snap_stage_pages) orelse return null;
+    const p: [*]u8 = @ptrFromInt(mmu.to_kva(pa));
+    snap_stage = p;
+    return p;
+}
+
 /// RFC 1071 one's-complement Internet checksum, big-endian word semantics
 /// (mirrors ipv4.checksum; kept local so this module stays self-contained
 /// and testable without importing the network stack). The accumulator is
@@ -1611,7 +1641,26 @@ pub fn service_snapshot() void {
         return;
     }
     const total = virtio_gpu.fb_size;
-    const frame_cksum = checksum1071(virtio_gpu.gpu_fb[0..]);
+    // #3899: freeze the scanout before streaming (see snap_stage) — the
+    // stream must ship bytes nothing else can write. A seat paint that
+    // lands inside the memcpy still leaves a torn copy, so bound a retry:
+    // matching cksums of the live fb before and after the pass mean the
+    // bytes were still for the whole copy. Ship the last attempt either
+    // way — the staged bytes are what the host verifies.
+    const stage = snapStage() orelse {
+        snap_fail_count += 1;
+        return;
+    };
+    const fb = virtio_gpu.gpu_fb[0..];
+    var attempt: u32 = 0;
+    while (true) {
+        const before = checksum1071(fb);
+        @memcpy(stage[0..total], fb);
+        const after = checksum1071(fb);
+        attempt += 1;
+        if (before == after or attempt >= snap_copy_max_attempts) break;
+    }
+    const frame_cksum = checksum1071(stage[0..total]);
     const chunks: u16 = @intCast((total + snap_chunk_len - 1) / snap_chunk_len);
 
     snap_hdr_buf = build_snap_header(virtio_gpu.fb_width, virtio_gpu.fb_height, virtio_gpu.fb_bpp, @intCast(total), @intCast(snap_chunk_len));
@@ -1628,10 +1677,10 @@ pub fn service_snapshot() void {
         seq += 1;
     }) {
         const n: usize = @min(snap_chunk_len, total - off);
-        const cks = checksum1071(virtio_gpu.gpu_fb[off..][0..n]);
+        const cks = checksum1071(stage[off..][0..n]);
         snap_chunk_hdr_buf = build_snap_chunk(seq, @intCast(n), cks);
         cv_scatter[0] = snap_chunk_hdr_buf[0..];
-        cv_scatter[1] = virtio_gpu.gpu_fb[off..][0..n];
+        cv_scatter[1] = stage[off..][0..n];
         if (!snap_submit(cv_scatter[0..2])) {
             snap_fail_count += 1;
             return;

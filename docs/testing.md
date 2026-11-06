@@ -36,8 +36,10 @@ Every verification command belongs to exactly one class (canonical inventory:
 
 ## Test duration tracking
 
-`just verify-portable` measures the Zig, console-transcript, Swift, Go and
-test-tooling suites with a monotonic clock. It writes
+`just verify-portable` measures the Zig, console-transcript, Go and
+test-tooling suites with a monotonic clock (the report is owned by
+`verify-portable-core`'s init/finish — the Swift lane's `swift test`
+runs unwrapped). It writes
 `artifacts/test-timings/report.json` (versioned schema, commit, CI run/attempt,
 runner platform, command, start time, elapsed seconds and exit code) and
 `summary.md` (combined suite time and a slowest-first table). Each invocation
@@ -45,7 +47,7 @@ starts a fresh report. Go tests use `-count=1` so cached pass results cannot
 masquerade as test execution.
 
 CI publishes the table in its job summary and retains the dedicated
-`test-timings-macos-<run-id>-<attempt>` artifact for 90 days, including failed
+`test-timings-ubuntu-<run-id>-<attempt>` artifact for 90 days, including failed
 and cancelled runs that reached the portable step. Review the slowest suites
 when CI gets slower; download reports from the affected and earlier `main`
 runs and compare matching suite names on the same runner platform. These are
@@ -769,11 +771,11 @@ host->guest, `AGENTCTL:` evidence rides stderr into the run log).
 
 | run | proves |
 |-----|--------|
-| 01 | seat + `--allow-exec` + Calc (Calc execs on the first `ui.windows` request — the 16-slot task pool cannot hold four Go runtimes at once, so it is staged after the journey's `gosh.run` calls): the `agent=devin` handshake, caps resolved per session, all seven verbs green — `fs.read`/`fs.write` through a staged `SUB/` directory, `gosh.run` answering a multi-chunk stream + truncation, `ui.screenshot` streaming the 160x90 RGB565 thumbnail through slot 88 — plus the whole in-session refusal matrix, the `gosh.run` kill path, a second peer's SYN refused while the session stays up, and `line_too_long` ending it. `ui.windows` rides the M97g-F2 bind (`gotabwm: rpc bind id=` is the serial proof) |
+| 01 | seat + `--allow-exec` + Calc (Calc execs on the first `ui.windows` request — the 16-slot task pool cannot hold four Go runtimes at once, so it is staged after the journey's `gosh.run` calls): the `agent=devin` handshake, caps resolved per session, every verb green — `fs.read`/`fs.write` through a staged `SUB/` directory, `gosh.run` answering a multi-chunk stream + truncation, `gosh.spawn` answering a spawned `sleep 20`'s pid at once and launching `exec GOEDIT.ELF` onto the strip (#3900), `ui.screenshot` streaming the 160x90 RGB565 thumbnail through slot 88 — plus the whole in-session refusal matrix, the `gosh.run` kill path, a second peer's SYN refused while the session stays up, and `line_too_long` ending it. `ui.windows` rides the M97g-F2 bind (`gotabwm: rpc bind id=` is the serial proof) |
 | 02 | wrong signature -> `auth_failed`, the 1 s damping, and an honest relisten |
 | 03 | a `verb` line before auth -> `auth_required`, no request runs |
 | 04 | a silent client -> `auth_timeout` inside 15 s |
-| 05 | no `--allow-exec` and no seat: `gosh.run` absent from `verbs` -> `verb_disabled`, `ui.windows` -> `seat:"none"`, `ui.screenshot` -> `seat_absent` |
+| 05 | no `--allow-exec` and no seat: `gosh.run`/`gosh.spawn` absent from `verbs` -> `verb_disabled`, `ui.windows` -> `seat:"none"`, `ui.screenshot` -> `seat_absent` |
 | 06–08 | startup posture: `exec -u0` -> `refuse privileged`, a store with no `agent-hmac` row -> `refuse no-credential`, no `AGENT/` directory -> `refuse no-root` — each before any `listen` |
 | 09 | `agent=viewer` (caps `process` only): the ready line advertises the two proc verbs, every other verb refuses `cap_required:<cap>` by name, `proc.list` still serves |
 | 10 | `agent=bobby` listed-and-revoked: a valid signature refuses `agent_revoked` (revocation wins over listing) |
@@ -1039,7 +1041,9 @@ not work with 0.17.0 (maker/configurer split) — known issue, do not file.
     byte-identical transcripts; evidence `artifacts/live-transcript-*`).
 
 > The full class-A (portable, no-VM) gate set runs as `just verify-portable`
-> (legacy alias `just verify`) and in CI (`.github/workflows/ci.yml`).
+> (legacy alias `just verify`) and in CI (`.github/workflows/ci.yml`), where
+> it splits across an `ubuntu-latest` `verify-portable-core` job and a
+> `macos-latest` `verify-portable-swift` job.
 > **CI proves only this class** — a green badge says nothing about the
 > Apple-silicon VZ hardware gates (class B).
 >
@@ -1144,8 +1148,9 @@ it are load-bearing rather than incidental:
   spec-order and locale invariance; it does not require the snapshot to
   match. Adding a spec under `tools/gate/specs/` registers it via
   `tools/gate/fleet.sh` with zero list edits.
-  `tools/lint-workflows.sh` asserts that every command in the
-  `just verify-portable` recipe appears in `.github/workflows/ci.yml`, so a
+  `tools/lint-workflows.sh` asserts that `verify-portable` purely composes
+  the two lane recipes and that every command of `verify-portable-core` and
+  `verify-portable-swift` appears in `.github/workflows/ci.yml`, so a
   portable gate cannot go local-only again without failing that lint.
 - `docs/gate-inventory.md` defines the class A/B/C/D policy only; the
   archive detail file (`docs/archive/gate-inventory-detail.md`) is frozen

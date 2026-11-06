@@ -134,6 +134,8 @@ pub fn cmd_net(m: *Monitor, args: []const []const u8) ExecError {
         if (std.mem.eql(u8, args[0], "status")) return cmd_net_status(m, args[1..]);
         if (std.mem.eql(u8, args[0], "route")) return cmd_net_route(m, args[1..]);
         if (std.mem.eql(u8, args[0], "log")) return cmd_net_log(m, args[1..]);
+        if (std.mem.eql(u8, args[0], "rxtrace")) return cmd_net_rxtrace(m, args[1..]);
+        if (std.mem.eql(u8, args[0], "rxreset")) return cmd_net_rxreset(m, args[1..]);
         print_usage(m, lookup("net").?);
         return .usage;
     }
@@ -279,6 +281,26 @@ pub fn cmd_net(m: *Monitor, args: []const []const u8) ExecError {
         }
         m.console.print_u64(o);
     }
+    // #3863: the held edge pool at this instant — ed= cadence spends,
+    // pr= watchdog probes, hd= descriptors still held for future edges.
+    m.console.puts(" ed=");
+    m.console.print_u64(virtio_net.rx_edge_posts);
+    m.console.puts(" pr=");
+    m.console.print_u64(virtio_net.rx_edge_probes);
+    m.console.puts(" hd=");
+    m.console.print_u64(@intCast(virtio_net.rx_hold_depth()));
+    // #3863: the partial-loss instruments — cb= solicited replies
+    // claimed out of the DMA buffers (VZ wrote them where the used ring
+    // never named), lr= exhausted-train bookkeeping resets fired this
+    // owed epoch.
+    m.console.puts(" cb=");
+    m.console.print_u64(virtio_net.rx_buf_claims);
+    m.console.puts(" lr=");
+    m.console.print_u64(virtio_net.rx_loss_resets);
+    // Diagnostic: the owed-epoch age in ms — answers whether the
+    // wall-clock bound even opens (0 = no open epoch or no ns clock).
+    m.console.puts(" ag=");
+    m.console.print_u64((virtio_net.rx_now_ns -| virtio_net.rx_owed_ns_pub()) / 1_000_000);
     m.console.puts("\n");
     // The claim-time observation record: the last device-written length +
     // the first 16 bytes pin the RX-header question (12 zero bytes + dst
@@ -569,6 +591,10 @@ pub fn print_ip6_or_dash(m: *Monitor, addr: virtio_net.ipv6.Addr, set: bool) voi
 /// the DAD promotes + conflicts as they happen, one line per event —
 /// the live gate's deterministic stage markers.
 pub fn net_ndp_autonomous(m: *Monitor) void {
+    // #3863: stamp the RX path's wall clock — the buffer-scan cadence
+    // and the loss-reset bounds measure real nanoseconds (the tick
+    // clock is a sparse heartbeat count on this platform).
+    virtio_net.rx_now_ns = timer.now_ns();
     const ev = virtio_net.net_ndp_poll();
     var buf: [39]u8 = undefined;
     if (ev.promoted_ll) {
@@ -608,12 +634,34 @@ pub fn net_ndp_autonomous(m: *Monitor) void {
         m.console.print_u64(@intCast(virtio_net.net_dev.rx_avail.idx));
         m.console.puts("\n");
     }
+    if (ev.rxq_probe) {
+        // #3863: the held-pool unlatch probe fired — one avail edge
+        // spent instead of a device reset. The serial evidence pair is
+        // probe-then-completion (cheap recovery, no `rxq reset`) vs
+        // probe-then-reset (edges can't unlatch this latch class).
+        m.console.puts("net: rxq probe u=");
+        m.console.print_u64(@intCast(virtio_net.net_dev.rx_used.idx));
+        m.console.puts(" a=");
+        m.console.print_u64(@intCast(virtio_net.net_dev.rx_avail.idx));
+        m.console.puts("\n");
+    }
     if (ev.rxq_reset_fail) {
         // The attempt fired and transport_init refused — `net_fail`
         // names the exact step, the serial shows it without a `net
         // log` leg.
         m.console.puts("net: rxq reset-fail ");
         m.console.puts(virtio_net.net_fail);
+        m.console.puts("\n");
+    }
+    if (ev.rxb_claim) {
+        // #3863: the buffer scan claimed a solicited reply that never
+        // got a used completion — the serial evidence for the
+        // partial-loss class (st= the descriptor's state: p posted /
+        // h held / f free — which half of VZ's hop failed).
+        m.console.puts("net: rxb claim k=");
+        m.console.print_u64(virtio_net.rx_claim_desc);
+        m.console.puts(" st=");
+        m.console.puts(&[_]u8{virtio_net.rx_claim_st});
         m.console.puts("\n");
     }
     if (virtio_net.ndp.last_conflict) |c| {
@@ -1066,6 +1114,55 @@ fn cmd_net_log(m: *Monitor, args: []const []const u8) ExecError {
             m.console.puts(entry.getText());
             m.console.puts("\n");
         }
+    }
+    return .none;
+}
+
+/// #3863: `net rxtrace [on|off]` — the opt-in per-completion used-ring
+/// trace (RXD drain summaries + RXC/RXA per-element lines in net_log).
+/// Off by default: the volume floods the 128-entry ring on loaded
+/// lanes. Bare `net rxtrace` reports the state.
+fn cmd_net_rxtrace(m: *Monitor, args: []const []const u8) ExecError {
+    if (args.len > 0) {
+        if (std.mem.eql(u8, args[0], "on")) {
+            virtio_net.rx_trace = true;
+        } else if (std.mem.eql(u8, args[0], "off")) {
+            virtio_net.rx_trace = false;
+        } else {
+            print_usage(m, lookup("net").?);
+            return .usage;
+        }
+    }
+    m.console.puts("net rxtrace: ");
+    m.console.puts(if (virtio_net.rx_trace) "on" else "off");
+    m.console.puts("\n");
+    return .none;
+}
+
+/// #3895: `net rxreset` — the host-driven dead-RX recovery seam. The
+/// host's dead-RX detector writes this command when it proves the VZ
+/// attachment dead (replies consumed off the socketpair, zero RX
+/// completions); here it runs the same bounded transport_init + re-arm
+/// the stall watchdog uses and reports the fresh queue shape. The
+/// per-boot bound and every failure refuse by name — a forced reset is
+/// never silent.
+fn cmd_net_rxreset(m: *Monitor, args: []const []const u8) ExecError {
+    _ = args;
+    switch (virtio_net.net_rxreset()) {
+        .ok => |r| {
+            m.console.puts("net rxreset: ok avail=");
+            m.console.print_u64(r.avail);
+            m.console.puts(" used=");
+            m.console.print_u64(r.used);
+            m.console.puts("\n");
+        },
+        .not_ready => {
+            m.console.puts("net rxreset: no virtio-net device (");
+            m.console.puts(if (virtio_net.net_fail.len > 0) virtio_net.net_fail else "DID 0x1041 not found on bus 0");
+            m.console.puts(")\n");
+        },
+        .refused => m.console.puts("net rxreset: refusing — the per-boot forced-reset bound is spent\n"),
+        .failed => m.console.puts("net rxreset: transport_init refused\n"),
     }
     return .none;
 }

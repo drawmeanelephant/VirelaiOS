@@ -22,7 +22,7 @@ Observed from `user/go/edit/main.go` + `go-edit.spec`:
 - Optional `-minimap` argv flag reserves a right-edge minimap column (one pixel row per line, click jumps the caret); `-heap`, `--diags=`, `--prof=` are fixture flags.
 - Light/dark themes from `virelai/theme`; subscribes to the settings `theme` key and repaints live; the caret amber and bracket teal are fixed accents.
 - Mouse: the minimap column takes presses; **the document body takes no mouse input** (header comment `main.go:141-142`) — no click-to-caret, no drag-select.
-- Named non-features (header `main.go:118-119`): no syntax highlighting, no tab strip/split view over the buffer ring, no LSP, no auto-indent. Format-on-save ships a named refusal — `edit: format unavailable (go/format not guest-safe)` — because `go/format` pushes the image over `exec_program_max`; `-tags editfmt` is the opt-in seam.
+- Named non-features (header `main.go:118-119`): no syntax highlighting, no tab strip/split view over the buffer ring, no LSP, no auto-indent. Format-on-save ships in the default build (#3916): `go/format` is linked — the probe's `exec_program_max` refusal was stale (a gap-layout ELF streams under `exec_image_max`).
 - Publishes the M197d a11y outline (`a11y.go`).
 
 ## Coverage
@@ -36,7 +36,7 @@ None observed in the app — all 19 runs passed with clean serial logs. One gate
 ## Improvement candidates
 
 - **Syntax highlighting is the headline gap** — explicitly out of scope today (`main.go:118`); the `.go` scanner already exists for bracket matching (skips string/rune/comment spans, `brackets.go`), so a first pass could reuse that lexer for keyword/comment/string tinting without a full grammar.
-- **Format-on-save is a shipped refusal.** Every `.go` Ctrl-S prints `format unavailable (go/format not guest-safe)` — the cap bump the seam (`format.go`, `-tags editfmt`) anticipates is the real fix.
+- **Format-on-save ships (#3916).** Every `.go` Ctrl-S runs `go/format` (`format n=` / `format error <diag>`) — the opt-in `editfmt` tag and the named refusal are gone.
 - **Document body is keyboard-only.** No click-to-caret or pointer selection (`main.go:141-142`); the minimap is the only pointer surface. Click-to-position + drag-select is the daily-driver gap.
 - **No case-sensitivity toggle or match highlight in find** (deliberate deltas from the Zig app, `main.go:47-58`) — worth revisiting in a refresh card; a find hit is selected but unmarked elsewhere in the viewport.
 - **No word-wrap option** — `exportWrap` exists only for PDF export; the document view clips like NOTE's.

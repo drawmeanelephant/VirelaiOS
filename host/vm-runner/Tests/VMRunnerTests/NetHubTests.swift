@@ -274,6 +274,238 @@ final class NetHubTests: XCTestCase {
         XCTAssertEqual(netEffectiveMAC(), netDefaultMAC) // no override -> fixed default
     }
 
+    // --- #3895: the dead-RX detector -------------------------------
+    // Pure state: solicitation sightings (guest TX) + consumed
+    // deliveries (the pair drained) + an injected clock. The
+    // false-positive bound is the tested surface: the detector may fire
+    // ONLY on repeats each backed by a consumed delivery.
+
+    private func arpRequest(_ tpa: UInt8 = 2) -> [UInt8] {
+        // 42-byte ARP request: bcast dst, guest src, op 1, tpa = 10.0.0.tpa
+        return [0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0x02, 0x00, 0x00, 0x00, 0x00, 0x01,
+                0x08, 0x06,
+                0x00, 0x01, 0x08, 0x00, 0x06, 0x04,
+                0x00, 0x01,
+                0x02, 0x00, 0x00, 0x00, 0x00, 0x01, 10, 0, 0, 1,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 10, 0, 0, tpa]
+    }
+
+    private func arpReply() -> [UInt8] {
+        var f = arpRequest()
+        f[21] = 0x02 // op 2 — a reply is not a solicitation
+        return f
+    }
+
+    // The reply answering `req` per the detector's matcher: op 2,
+    // spa = the request's tpa, tha = the request's sha.
+    private func arpReplyTo(_ req: [UInt8]) -> [UInt8] {
+        var f = arpReply()
+        f[28..<32] = req[38..<42] // spa <- tpa
+        f[32..<38] = req[22..<28] // tha <- sha
+        return f
+    }
+
+    private func mdnsAnnounce() -> [UInt8] {
+        // A multicast UDP frame — periodic, identical, NOT a
+        // solicitation (mDNS-shaped: 224.0.0.251:5353).
+        var f = [UInt8](repeating: 0, count: 60)
+        f[0...5] = [0x01, 0x00, 0x5e, 0x00, 0x00, 0xfb]
+        f[6...11] = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01]
+        f[12] = 0x08; f[13] = 0x00
+        f[14] = 0x45 // v4, ihl 20
+        f[23] = 17   // UDP
+        f[34] = 0x14; f[35] = 0xe9 // src 5353
+        f[36] = 0x14; f[37] = 0xe9 // dst 5353
+        return f
+    }
+
+    private func tcpSyn() -> [UInt8] {
+        var f = [UInt8](repeating: 0, count: 54)
+        f[6...11] = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01]
+        f[12] = 0x08; f[13] = 0x00
+        f[14] = 0x45; f[23] = 6
+        f[34] = 0xc0; f[35] = 0x01; f[36] = 0x00; f[37] = 0x50
+        f[47] = 0x02 // SYN, no ACK
+        return f
+    }
+
+    private final class DeadRxProbe {
+        var lines: [String] = []
+        var requests = 0
+        var canReinit = true
+    }
+
+    private func makeDetector(_ probe: DeadRxProbe,
+                              window: TimeInterval = 20, bound: Int = 3,
+                              rmax: Int = 2, rwin: TimeInterval = 12,
+                              quiet: TimeInterval = 5) -> NetDeadRx {
+        var l = NetDeadRx.Limits()
+        l.windowSeconds = window; l.repeatBound = bound
+        l.recoverMax = rmax; l.recoverWindowSeconds = rwin
+        l.quietSeconds = quiet
+        let d = NetDeadRx(limits: l)
+        d.mark = { probe.lines.append($0) }
+        d.onRequestReinit = { probe.requests += 1; return probe.canReinit }
+        return d
+    }
+
+    // The wedge signature: the same solicitation re-sent behind a
+    // consumed delivery each time — fires once at the bound.
+    func testDeadRxFiresOnConsumedRepeats() {
+        let probe = DeadRxProbe()
+        let d = makeDetector(probe)
+        let req = arpRequest()
+        d.noteGuestTx(req, now: 0)
+        for i in 1...3 {
+            d.noteConsumed(1, frame: nil, now: TimeInterval(i))
+            d.noteGuestTx(req, now: TimeInterval(i))
+        }
+        XCTAssertEqual(probe.requests, 1)
+        XCTAssertTrue(probe.lines.contains { $0.hasPrefix("NET-RECOVER: dead-rx") }, "\(probe.lines)")
+        // And the phase is recovering — the marker names the attempt.
+        XCTAssertTrue(probe.lines[0].contains("attempt 1/2"), "\(probe.lines)")
+    }
+
+    // The false-positive bound: identical re-sends WITHOUT any consumed
+    // delivery (honest loss before VZ) must never fire.
+    func testDeadRxSilentWithoutConsumed() {
+        let probe = DeadRxProbe()
+        let d = makeDetector(probe)
+        let req = arpRequest()
+        d.noteGuestTx(req, now: 0)
+        for i in 1...10 {
+            d.noteGuestTx(req, now: TimeInterval(i))
+        }
+        XCTAssertEqual(probe.requests, 0)
+        XCTAssertTrue(probe.lines.isEmpty, "\(probe.lines)")
+    }
+
+    // Re-sends of DIFFERENT solicitations never sum to the bound —
+    // repeat accounting is per-frame.
+    func testDeadRxDistinctSolicitations() {
+        let probe = DeadRxProbe()
+        let d = makeDetector(probe)
+        for i in 0..<8 {
+            let req = arpRequest(UInt8(2 + (i % 3))) // 3 distinct targets
+            d.noteConsumed(1, frame: nil, now: TimeInterval(i))
+            d.noteGuestTx(req, now: TimeInterval(i))
+        }
+        XCTAssertEqual(probe.requests, 0)
+        XCTAssertTrue(probe.lines.isEmpty, "\(probe.lines)")
+    }
+
+    // A periodic multicast announce repeated identically behind
+    // consumed deliveries is not a solicitation — it can never fire.
+    func testDeadRxIgnoresNonSolicitationRepeats() {
+        let probe = DeadRxProbe()
+        let d = makeDetector(probe)
+        let ann = mdnsAnnounce()
+        for i in 0..<10 {
+            d.noteConsumed(1, frame: nil, now: TimeInterval(i))
+            d.noteGuestTx(ann, now: TimeInterval(i))
+        }
+        XCTAssertEqual(probe.requests, 0)
+        XCTAssertTrue(probe.lines.isEmpty, "\(probe.lines)")
+    }
+
+    // Repeats spread past the window don't accumulate.
+    func testDeadRxWindowExpiry() {
+        let probe = DeadRxProbe()
+        let d = makeDetector(probe, window: 10)
+        let req = arpRequest()
+        var t: TimeInterval = 0
+        d.noteGuestTx(req, now: t)
+        for _ in 0..<6 {
+            t += 15 // each re-send lands past the window
+            d.noteConsumed(1, frame: nil, now: t)
+            d.noteGuestTx(req, now: t)
+        }
+        XCTAssertEqual(probe.requests, 0)
+        XCTAssertTrue(probe.lines.isEmpty, "\(probe.lines)")
+    }
+
+    // Recovery evidence: a post-attempt solicitation that gets a
+    // consumed reply and stays quiet is a completed exchange.
+    func testDeadRxRecoveryCompletedExchange() {
+        let probe = DeadRxProbe()
+        let d = makeDetector(probe)
+        let req = arpRequest()
+        d.noteGuestTx(req, now: 0)
+        for i in 1...3 { d.noteConsumed(1, frame: nil, now: TimeInterval(i)); d.noteGuestTx(req, now: TimeInterval(i)) }
+        XCTAssertEqual(probe.requests, 1)
+        // Post-attempt: a fresh solicitation completes (consumed reply,
+        // then quiet past quietSeconds).
+        let req2 = arpRequest(9)
+        d.noteGuestTx(req2, now: 10)
+        d.noteConsumed(1, frame: arpReplyTo(req2), now: 11)
+        d.tick(20) // 9s quiet past the matched reply > 5s quietSeconds
+        XCTAssertTrue(probe.lines.contains { $0.hasPrefix("NET-RECOVER: rx delivery restored") }, "\(probe.lines)")
+        // Back to watching: the detector can fire again on a new wedge.
+        d.noteGuestTx(req2, now: 25)
+        for i in 26...28 { d.noteConsumed(1, frame: nil, now: TimeInterval(i)); d.noteGuestTx(req2, now: TimeInterval(i)) }
+        XCTAssertEqual(probe.requests, 2)
+    }
+
+    // The named refusal: bounded attempts, then never again.
+    func testDeadRxRefusalAfterBound() {
+        let probe = DeadRxProbe()
+        let d = makeDetector(probe)
+        let req = arpRequest()
+        d.noteGuestTx(req, now: 0)
+        for i in 1...3 { d.noteConsumed(1, frame: nil, now: TimeInterval(i)); d.noteGuestTx(req, now: TimeInterval(i)) }
+        XCTAssertEqual(probe.requests, 1)
+        // Attempt 1's window lapses with no completed exchange → retry.
+        d.tick(20)
+        XCTAssertEqual(probe.requests, 2)
+        // Attempt 2's window lapses → the named refusal, latched.
+        d.tick(40)
+        XCTAssertTrue(probe.lines.contains { $0.hasPrefix("NET-RECOVER: refusing further attachment re-inits") }, "\(probe.lines)")
+        // And it stays latched — further dead-rx evidence dispatches
+        // nothing more (no silent reset loop).
+        let before = probe.requests
+        for i in 50...60 { d.noteConsumed(1, frame: nil, now: TimeInterval(i)); d.noteGuestTx(req, now: TimeInterval(i)); d.tick(TimeInterval(i)) }
+        XCTAssertEqual(probe.requests, before)
+    }
+
+    // No console channel / a failed write: the refusal is named on the
+    // first dispatch, not retried silently.
+    func testDeadRxNoConsoleNamedRefusal() {
+        let probe = DeadRxProbe(); probe.canReinit = false
+        let d = makeDetector(probe)
+        let req = arpRequest()
+        d.noteGuestTx(req, now: 0)
+        for i in 1...3 { d.noteConsumed(1, frame: nil, now: TimeInterval(i)); d.noteGuestTx(req, now: TimeInterval(i)) }
+        XCTAssertTrue(probe.lines.contains { $0.hasPrefix("NET-RECOVER: refusing") }, "\(probe.lines)")
+        XCTAssertEqual(probe.requests, 1) // attempted exactly once
+    }
+
+    // The solicitation predicate: request-shapes admit, replies and
+    // non-solicitations refuse.
+    func testDeadRxSolicitationPredicate() {
+        XCTAssertTrue(NetDeadRx.isSolicitation(arpRequest()))
+        XCTAssertTrue(NetDeadRx.isSolicitation(tcpSyn()))
+        var synAck = tcpSyn(); synAck[47] = 0x12
+        XCTAssertFalse(NetDeadRx.isSolicitation(synAck))
+        XCTAssertFalse(NetDeadRx.isSolicitation(arpReply()))
+        XCTAssertFalse(NetDeadRx.isSolicitation(mdnsAnnounce()))
+        XCTAssertFalse(NetDeadRx.isSolicitation([UInt8](repeating: 0, count: 20))) // too short
+        // NDP NS: v6 + ICMPv6 type 135.
+        var ns = [UInt8](repeating: 0, count: 14 + 40 + 32)
+        ns[12] = 0x86; ns[13] = 0xdd; ns[20] = 58; ns[54] = 135
+        XCTAssertTrue(NetDeadRx.isSolicitation(ns))
+        // An ICMPv6 echo (type 128) is not.
+        ns[54] = 128
+        XCTAssertFalse(NetDeadRx.isSolicitation(ns))
+        // DHCP client: v4 UDP 68 -> 67.
+        var dhcp = [UInt8](repeating: 0, count: 14 + 20 + 8 + 240)
+        dhcp[12] = 0x08; dhcp[13] = 0x00; dhcp[14] = 0x45; dhcp[23] = 17
+        dhcp[34] = 0; dhcp[35] = 68; dhcp[36] = 0; dhcp[37] = 67
+        XCTAssertTrue(NetDeadRx.isSolicitation(dhcp))
+        dhcp[37] = 68 // 68->68 is not the client pair
+        XCTAssertFalse(NetDeadRx.isSolicitation(dhcp))
+    }
+
     func testMacParseRefusals() {
         // Malformed: wrong count, bad octet, long octet.
         if case .malformed = netMacParse("02:00:00:00:00") {} else { XCTFail("5 octets must refuse malformed") }

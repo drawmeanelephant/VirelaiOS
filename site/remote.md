@@ -221,6 +221,7 @@ The verbs, gated individually:
 | `ui.screenshot` | Read the scanout through the bounded slot-88 copy — a 160×90 thumbnail or the full 1280×720 frame in RGB565, rate-bound |
 | `ui.geometry` | Query, move, and split-settle a window the way the seat arranges it |
 | `gosh.run` | Run one GOSH line and read back its output — the escape hatch from the sandbox, opt-in only via `--allow-exec` |
+| `gosh.spawn` | Run one GOSH line without waiting for it — answers the child's pid, the way to launch a desk app (no capture, no timeout budget) |
 
 The posture is fail-closed at startup, before the listener ever binds:
 the daemon must be `uid_user` with zero caps, the `agent-hmac` secret
@@ -231,8 +232,8 @@ answered under a domain string distinct from the console's and the ctl
 channel's, so a MAC captured anywhere else can never answer this
 server. A wrong answer closes with `auth_failed`; the session dies at
 60 seconds idle. The daemon's reach ends where the kernel's trust model
-ends — `gosh.run` can touch everything a `uid_user` process can, which
-is why it alone is flag-gated.
+ends — the gosh verbs can touch everything a `uid_user` process can, which
+is why they alone are flag-gated.
 
 <Aside kind="info">
 

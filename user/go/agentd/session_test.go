@@ -176,7 +176,7 @@ func TestSessionHappyPath(t *testing.T) {
 	for _, want := range []string{
 		`{"ok":true,"session":"ready","agent":"devin"`,
 		`"caps":["file","process","window","term"]`,
-		`"gosh.run"`, `"ui.screenshot"`,
+		`"gosh.run"`, `"gosh.spawn"`, `"ui.screenshot"`,
 	} {
 		if !strings.Contains(lines[1], want) {
 			t.Fatalf("ready missing %s: %q", want, lines[1])
@@ -189,12 +189,16 @@ func TestSessionHappyPath(t *testing.T) {
 		!hasLine(*logs, "agentd: session end reason=client_close") {
 		t.Fatalf("markers = %v", *logs)
 	}
-	// Without --allow-exec the ready line omits gosh.run even though the
-	// agent holds term — the flag is the operator's kill switch (D3).
+	// Without --allow-exec the ready line omits both gosh verbs even
+	// though the agent holds term — the flag is the operator's kill
+	// switch (D3).
 	c = &fakeConn{chunks: [][]byte{[]byte(authLine(t, pinnedAgent) + "\n")}, recvErr: errPeerGoneTest}
 	session(c, false)
 	if strings.Contains(c.sentLines()[1], `"gosh.run"`) {
 		t.Fatalf("noexec ready advertised gosh.run: %q", c.sentLines()[1])
+	}
+	if strings.Contains(c.sentLines()[1], `"gosh.spawn"`) {
+		t.Fatalf("noexec ready advertised gosh.spawn: %q", c.sentLines()[1])
 	}
 }
 

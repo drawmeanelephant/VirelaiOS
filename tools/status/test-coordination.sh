@@ -170,6 +170,89 @@ fi
 printf '[]' > "$TMP/fixture.json"
 run_case "empty tracker passes" 0
 
+# --- case 8b: Owner present but no Touches line at all -> FAIL --------------
+# A claim that never declares Touches holds no files, so it would sail
+# through the overlap check — a missing field must not exempt it (#3911a).
+
+printf '%s' '[
+  {"number": 801, "title": "no touches", "url": "https://github.com/x/y/issues/801",
+   "updatedAt": "2026-09-02T00:00:00Z",
+   "body": "## Claim\n\n- **Owner:** buffy (`agent/buffy/foo`)\n"}
+]' > "$TMP/fixture.json"
+run_case "missing Touches line fails" 1
+
+# --- case 8c: misspelled Touches bullet + a real overlap -> FAIL ------------
+# The original fail-open: `**Touhces:**` parses as nothing, so #811 held no
+# files and the gate printed 'ok' even though #812 touches the same file.
+# Now the malformed claim is itself the error (#3911a).
+
+printf '%s' '[
+  {"number": 811, "title": "typo touches", "url": "https://github.com/x/y/issues/811",
+   "updatedAt": "2026-09-02T00:00:00Z",
+   "body": "## Claim\n\n- **Owner:** buffy (`agent/buffy/foo`)\n- **Touhces:** kernel/src/monitor.zig\n"},
+  {"number": 812, "title": "real overlap", "url": "https://github.com/x/y/issues/812",
+   "updatedAt": "2026-09-02T00:00:00Z",
+   "body": "## Claim\n\n- **Owner:** faith (`agent/faith/bar`)\n- **Touches:** kernel/src/monitor.zig\n"}
+]' > "$TMP/fixture.json"
+rc=0
+out="$(bash "$GATE" --issues-json "$TMP/fixture.json" 2>&1)" || rc=$?
+if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q "claim #811.*Touches"; then
+    pass=$((pass + 1)); printf 'ok   misspelled Touches is a gate error, not a silent pass\n'
+else
+    failn=$((failn + 1)); printf 'FAIL misspelled Touches passed the gate (rc=%d): %s\n' "$rc" "$out" >&2
+fi
+
+# --- case 8d: bare-dir token vs `dir/*` glob -> FAIL ------------------------
+# A bare path token covers everything beneath it: 'tools/gate' means
+# 'tools/gate/*', so it collides with the glob and deeper literals (#3911b).
+
+jq -s '.' \
+    <(claim_json 821 "agent/a/one" "2026-09-02T00:00:00Z" "tools/gate") \
+    <(claim_json 822 "agent/b/two" "2026-09-02T00:00:00Z" "tools/gate/*") \
+    > "$TMP/fixture.json"
+run_case "bare dir vs dir/* glob overlap fails" 1
+
+# --- case 8e: bare-dir token vs a literal file beneath it -> FAIL -----------
+
+jq -s '.' \
+    <(claim_json 831 "agent/a/one" "2026-09-02T00:00:00Z" "kernel/src") \
+    <(claim_json 832 "agent/b/two" "2026-09-02T00:00:00Z" "kernel/src/monitor.zig") \
+    > "$TMP/fixture.json"
+run_case "bare dir vs file beneath it fails" 1
+
+# --- case 8f: bare-dir token vs a sibling prefix -> PASS --------------------
+# 'tools/gate' must NOT collide with 'tools/gatekeeper' — the cover is
+# 'tools/gate/*', a '/' boundary, not a string prefix.
+
+jq -s '.' \
+    <(claim_json 841 "agent/a/one" "2026-09-02T00:00:00Z" "tools/gate") \
+    <(claim_json 842 "agent/b/two" "2026-09-02T00:00:00Z" "tools/gatekeeper/x.sh") \
+    > "$TMP/fixture.json"
+run_case "bare dir does not collide on a sibling prefix" 0
+
+# --- case 8g: staleness is computed in UTC, not the host timezone -----------
+# updatedAt is a UTC instant; a naive strptime().timestamp() reads it as
+# host-local time and shifts the age by the host's UTC offset (#3911c).
+# Stage a claim 14d6h old — just past STALE_DAYS — and run the gate under a
+# UTC-behind host zone: correct math warns; the local-tz bug reads the stamp
+# ~7-8h later, computes ~13d22h, and stays silent.
+
+# Epoch math: GNU `date -d '14 days 6 hours ago'` binds "ago" to the
+# last item only (yielding +14d −6h), and BSD -v rejects a single 342h
+# adjustment — so compute seconds and format portably (-r is BSD,
+# -d @epoch is GNU).
+boundary_epoch=$(( $(date -u +%s) - 1227600 ))  # 14*86400 + 6*3600
+boundary="$(date -u -r "$boundary_epoch" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d "@$boundary_epoch" +%Y-%m-%dT%H:%M:%SZ)"
+jq -s '.' \
+    <(claim_json 851 "agent/a/one" "$boundary" "kernel/src/a.zig") \
+    > "$TMP/fixture.json"
+out="$(TZ=America/Los_Angeles bash "$GATE" --issues-json "$TMP/fixture.json" 2>&1 || true)"
+if printf '%s' "$out" | grep -q "warn: claim #851"; then
+    pass=$((pass + 1)); printf 'ok   staleness uses UTC (host TZ cannot move the boundary)\n'
+else
+    failn=$((failn + 1)); printf 'FAIL stale boundary shifted by host TZ: %s\n' "$out" >&2
+fi
+
 # --- staleness sweep (tools/status/sweep-stale-claims.sh) -------------------
 
 SWEEP="$ROOT/tools/status/sweep-stale-claims.sh"

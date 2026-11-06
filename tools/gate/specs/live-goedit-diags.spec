@@ -333,7 +333,7 @@ vgate_run 04 -- \
     --script2-after 'tabwm: sidebar-rendered' \
     --script3 '$RUN_DIR/script3-04.txt' \
     --script3-after 'gobuild: FAIL' \
-    --input-chords 'ctrl-e,escape,x,ctrl-s,ctrl-e' \
+    --input-chords 'ctrl-e,escape,x,ctrl-s,escape,ctrl-e' \
     --input-chords-after 'goedit: present' \
     --script-expect 'goedit: errors stale' --timeout 300
 
@@ -384,10 +384,11 @@ vgate_assert 05 serial-contains 'goedit: errors jump line=2 col=13'
 # The buffer counts the trailing newline's empty tail as a third line, so
 # the landing status reads 2/3, not 2/2.
 vgate_assert 05 serial-contains 'goedit: status line=2/3 col=13 err=1/1'
-# The shipped probe verdict: go/format is not guest-safe on image size, so
-# Ctrl-S names the refusal and still publishes.
-vgate_assert 05 serial-contains 'edit: format unavailable (go/format not guest-safe)'
-vgate_assert 05 serial-contains 'goedit: saved /host/EDFMT/main.go n=42'
+# #3916: go/format ships in the default build (the probe's exec_program_max
+# bound was stale — a gap-layout ELF streams), so Ctrl-S takes the format
+# receipt and the published bytes are the gofmt output.
+vgate_assert 05 serial-contains 'goedit: format n=41'
+vgate_assert 05 serial-contains 'goedit: saved /host/EDFMT/main.go n=41'
 vgate_assert 05 serial-contains 'rx-edfmt-ok'
 vgate_assert 05 serial-absent '[EXC] parking:'
 vgate_assert 05 serial-absent 'exited status=139'

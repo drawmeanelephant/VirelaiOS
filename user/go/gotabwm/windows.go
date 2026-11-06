@@ -102,7 +102,15 @@ func beginProbeBlur() (int, bool) {
 }
 
 func acquireLauncherFocus() bool {
-	id, r := openInputSink(launchX, launchY, launchW, uint32(launch.panelH()))
+	// The sink allocation fails transiently while the DUI input layer is
+	// still settling — a chord that lands in that window must not be lost
+	// to a one-shot refusal. Bounded: a genuinely wedged sink still meets
+	// the same "Input sink unavailable" refusal after the retries.
+	var id, r = openInputSink(launchX, launchY, launchW, uint32(launch.panelH()))
+	for tries := 0; r < 0 && tries < 120; tries++ {
+		vi.Sleep(2)
+		id, r = openInputSink(launchX, launchY, launchW, uint32(launch.panelH()))
+	}
 	if r < 0 {
 		launch.err = "Input sink unavailable"
 		return false

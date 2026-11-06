@@ -570,6 +570,8 @@ func (u *uiApp) applyRestored() {
 	u.cfg.Host = u.st.host
 	u.cfg.Port = u.st.port
 	u.cfg.TLS = u.st.tls
+	u.cfg.WS = u.st.ws
+	u.cfg.WSPath = u.st.wspath
 	u.cfg.ServerName = u.st.sni
 	if u.st.nick != "" {
 		u.cfg.Nick = u.st.nick

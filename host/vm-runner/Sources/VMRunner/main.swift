@@ -395,6 +395,18 @@
 //          29-gate aggregate — stays byte-identical. The injected bytes are
 //          the KNOWN raw Ethernet frame the guest's net recv must print
 //          byte-exact; the guest's netsend echo proves the round trip.)
+//         [--net-rx-dead <stall|until-reset> [--net-rx-dead-after <text>]]
+//          (#3895: dead-RX fault INJECTION for gate legs — replays the
+//          observed VZ wedge signature at the last hop: host->guest
+//          frames are counted sent and consumed by the pair while never
+//          reaching VZ, so the guest re-sends solicitations and the
+//          dead-RX detector fires. 'until-reset' disarms on the first
+//          re-init dispatch (exercises the recovery end to end); 'stall'
+//          never disarms (exercises the bounded named refusal). The
+//          optional -after marker arms when <text> lands in the serial
+//          log, else the fault arms at attach. Requires --net. The
+//          detector + bounded auto-recovery itself is always on under
+//          --net — this flag only injects the fault.)
 //         [--mac <addr>] (M206a, issue #3813, ADR 0057: replace the pinned
 //          guest MAC 02:00:00:00:00:01 on ANY net attachment — the guest's
 //          VIRTIO_NET_F_MAC read reports it, so two guests on one segment
@@ -1079,6 +1091,19 @@ while idx < arguments.count {
         idx += 2
     } else if arg == "--net-inject-after", idx + 1 < arguments.count {
         netInjectAfter = arguments[idx + 1]
+        idx += 2
+    } else if arg == "--net-rx-dead", idx + 1 < arguments.count {
+        // #3895: the dead-RX fault-injection seam (gate legs only) —
+        // replay the observed wedge signature at the last hop.
+        switch arguments[idx + 1] {
+        case "stall": netRxDeadMode = .stall
+        case "until-reset": netRxDeadMode = .untilReset
+        default:
+            fail("--net-rx-dead requires a mode, 'stall' or 'until-reset', got '\(arguments[idx + 1])'.")
+        }
+        idx += 2
+    } else if arg == "--net-rx-dead-after", idx + 1 < arguments.count {
+        netRxDeadAfter = arguments[idx + 1]
         idx += 2
     } else if arg == "--net-arp-respond", idx + 1 < arguments.count {
         // Parse the dotted-quad host IP now (fail early, like --timeout).
@@ -2149,6 +2174,7 @@ if consoleMode || scriptMode {
         fileHandleForReading: consoleInputPipe.fileHandleForReading,
         fileHandleForWriting: consoleOutputPipe.fileHandleForWriting
     )
+    netConsoleInputAttached = true // #3895: `net rxreset` can reach the guest
 } else {
     // Evidence path: output-only attachment, exactly as before.
     let serialHandle: FileHandle
@@ -2164,6 +2190,7 @@ if consoleMode || scriptMode {
         fileHandleForReading: (vzRestore || hostSessionMode) ? consoleInputPipe.fileHandleForReading : nil,
         fileHandleForWriting: serialHandle
     )
+    netConsoleInputAttached = vzRestore || hostSessionMode
 }
 config.serialPorts = [serialConfig]
 // M97g (#2084): --no-entropy leaves entropyDevices empty — the guest sees
@@ -2225,6 +2252,12 @@ if let usbMsdPath {
 }
 if netInjectPath != nil, netCapturePath == nil {
     fail("--net-inject requires --net (the injection writes into the SAME attachment's socket).")
+}
+if netRxDeadMode != nil, netCapturePath == nil {
+    fail("--net-rx-dead requires --net (the fault injects at the attachment socketpair's last hop).")
+}
+if netRxDeadAfter != nil, netRxDeadMode == nil {
+    fail("--net-rx-dead-after requires --net-rx-dead.")
 }
 if netArpRespondHostIP != nil, netCapturePath == nil {
     fail("--net-arp-respond requires --net (the ARP reply is written into the SAME attachment's socket).")
@@ -2587,6 +2620,13 @@ if let netCapturePath {
     }
     netCaptureSocket = FileHandle(fileDescriptor: fds[0], closeOnDealloc: true)
     netCaptureReadSocket = FileHandle(fileDescriptor: fds[1], closeOnDealloc: true)
+    // #3895: arm the dead-RX detector — it watches the queue's
+    // consumed-delivery evidence and the capture loop's guest-TX stream,
+    // and writes `net rxreset` into the guest console when the wedge
+    // signature holds. Bounded; the named refusal ends every dead
+    // episode that recovery can't fix.
+    netGuestQueue.deadRx = NetDeadRx()
+    netGuestQueue.deadRx?.onRequestReinit = netRecoverRequestReinit
     // The runner's socket end wakes on a 25 ms receive timeout (the hub
     // sockets' shape, #3849 tightened from 250 ms): every wake — a
     // datagram or the timeout — also drains the host->guest NetGuestQueue
@@ -2672,6 +2712,9 @@ if let netCapturePath {
             // path). Hub->guest frames travel the other socket direction
             // and never touch the capture.
             netHub?.guestTx(Array(buf[0..<n]))
+            // #3895: the detector's TX side — a re-sent solicitation is
+            // the guest proving its replies never completed.
+            netGuestQueue.observeGuestTx(Array(buf[0..<n]))
             // Guest TX implies the peer is draining: also flush the
             // host->guest queue so queued frames don't wait on the rx
             // thread's 25 ms wake.
@@ -3120,6 +3163,7 @@ if let netCapturePath {
         netCaptureDone.signal()
     }
     netCaptureThread?.start()
+    startNetRxDead() // #3895: arm the fault seam (no-op without --net-rx-dead)
     let netAttachment = VZFileHandleNetworkDeviceAttachment(fileHandle: netCaptureSocket!)
     let netConfig = VZVirtioNetworkDeviceConfiguration()
     netConfig.attachment = netAttachment
@@ -3512,6 +3556,9 @@ if let script = pointerScript {
 }
 if let netInjectPath {
     print("  net-inject: ENABLED (milestone five card N2, claim 6076) — \(netInjectPath) written into the attachment's socket once after \"\(netInjectAfter ?? "net: rx-armed")\" appears in the serial log (host→guest RX)")
+}
+if let netRxDeadMode {
+    print("  net-rx-dead: FAULT INJECTION (#3895, \(netRxDeadMode)) — host->guest frames die at the pair but count consumed\(netRxDeadAfter.map { " after \"\($0)\" in the serial log" } ?? " from attach"); the dead-RX detector's bounded re-init + named refusal is what the leg asserts")
 }
 if let hostIP = netArpRespondHostIP {
     let ipText = hostIP.map(String.init).joined(separator: ".")

@@ -224,7 +224,7 @@ ADR 0054's grant table. The mapping is fixed:
 | `proc.list`, `proc.get` | `process` | introspection, read-only |
 | `fs.read`, `fs.write` | `file` | one word covers both directions in v1 |
 | `ui.windows`, `ui.screenshot` | `window` | `ui.screenshot` lands with M109b |
-| `gosh.run` | `term` | **and** still AND-ed with `--allow-exec` — the daemon flag is the operator's kill switch, the cap is the per-agent grant |
+| `gosh.run`, `gosh.spawn` | `term` | **and** still AND-ed with `--allow-exec` — the daemon flag is the operator's kill switch, the cap is the per-agent grant (`gosh.spawn` is #3900's wait-free launch) |
 | *(unmapped)* | `audio timer memory debug net` | reserved for M109b+/M113 verbs; naming a verb-less cap in a row is legal |
 
 `term` rather than `process` gates `gosh.run` on purpose: `process`

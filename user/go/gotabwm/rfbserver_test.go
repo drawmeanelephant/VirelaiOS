@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -13,13 +14,22 @@ import (
 
 func TestRFBRequiresExplicitOperatorArgument(t *testing.T) {
 	for _, args := range [][]string{nil, {"GOTABWM.ELF"}, {"GOTABWM.ELF", "anything"},
-		{"GOTABWM.ELF", "--rfb-hermetic", "extra"}} {
-		if rfbRequested(args) {
+		{"GOTABWM.ELF", "--rfb-hermetic", "extra"},
+		{"GOTABWM.ELF", "--rfb-vencrypt"},
+		{"GOTABWM.ELF", "--rfb-vencrypt", "a", "b"},
+		{"GOTABWM.ELF", "--rfb-hermetic", "--rfb-vencrypt", "a", "b", "c"}} {
+		if rfbRequested(args) != nil {
 			t.Fatalf("unexpected RFB listener with argv %q", args)
 		}
 	}
-	if !rfbRequested([]string{"GOTABWM.ELF", "--rfb-hermetic"}) {
+	cfg := rfbRequested([]string{"GOTABWM.ELF", "--rfb-hermetic"})
+	if cfg == nil || cfg.vencrypt {
 		t.Fatal("operator opt-in refused")
+	}
+	cfg = rfbRequested([]string{"GOTABWM.ELF", "--rfb-vencrypt", "/host/TLS.CRT", "/host/TLS.SEED", "/host/RFB.CRED"})
+	if cfg == nil || !cfg.vencrypt || cfg.certPath != "/host/TLS.CRT" ||
+		cfg.seedPath != "/host/TLS.SEED" || cfg.credPath != "/host/RFB.CRED" {
+		t.Fatalf("vencrypt opt-in parse = %+v", cfg)
 	}
 	stream := newRFBStream(nil)
 	if rfbInputLimit > 16 || stream.stallNs <= 0 || stream.idle == nil || stream.sendIdle == nil || stream.drain == nil {
@@ -442,6 +452,92 @@ func TestRFBPeerDeathMidContentDragReleasesCapture(t *testing.T) {
 	}
 	if prevPtrButtons != 0 || contentDown {
 		t.Fatalf("capture survived viewer death: buttons=%d contentDown=%t", prevPtrButtons, contentDown)
+	}
+}
+
+// M213c: the plaintext half of VeNCrypt 0.2 on canned viewer bytes. The
+// server's writes pin the wire: banner, {1,19}, version 0.2, ack + the
+// single X509Plain subtype offer.
+func TestVeNCryptHelloNegotiates(t *testing.T) {
+	client := append([]byte("RFB 003.008\n"), 19, 0, 2, 0, 0, 1, 6)
+	var out bytes.Buffer
+	if err := vencryptHello(bytes.NewReader(client), &out); err != nil {
+		t.Fatal(err)
+	}
+	want := append([]byte("RFB 003.008\n"), 1, 19, 0, 2, 0, 1, 0, 0, 1, 6)
+	if !bytes.Equal(out.Bytes(), want) {
+		t.Fatalf("hello wrote %x, want %x", out.Bytes(), want)
+	}
+}
+
+func TestVeNCryptHelloRefusals(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		viewer []byte
+		want   []byte // the wire tail past the banner
+	}{
+		// A 3.7 viewer is refused before the security offer exists.
+		{"rfb 3.7", []byte("RFB 003.007\n"), nil},
+		// A viewer that picks anything but 19 gets SecurityResult=failed.
+		{"picks vnc auth", append([]byte("RFB 003.008\n"), 2),
+			[]byte{1, 19, 0, 0, 0, 1, 0, 0, 0, byte(len("rfb: VeNCrypt lane offers type 19 only"))}},
+		// A 0.1 client gets the version refusal byte and a close.
+		{"vencrypt 0.1", append([]byte("RFB 003.008\n"), 19, 0, 1),
+			[]byte{1, 19, 0, 2, 0xff}},
+		// A subtype outside the offer ends the exchange silently.
+		{"x509vnc subtype", append([]byte("RFB 003.008\n"), 19, 0, 2, 0, 0, 1, 5),
+			[]byte{1, 19, 0, 2, 0, 1, 0, 0, 1, 6}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			var out bytes.Buffer
+			err := vencryptHello(bytes.NewReader(c.viewer), &out)
+			if err == nil {
+				t.Fatal("refusal accepted")
+			}
+			got := out.Bytes()[12:]
+			if c.name == "picks vnc auth" {
+				wantTail := append(c.want, []byte("rfb: VeNCrypt lane offers type 19 only")...)
+				if !bytes.Equal(got, wantTail) {
+					t.Fatalf("wrote %x, want %x", got, wantTail)
+				}
+				return
+			}
+			if !bytes.Equal(got, c.want) {
+				t.Fatalf("wrote %x, want %x", got, c.want)
+			}
+		})
+	}
+}
+
+func TestX509PlainCheck(t *testing.T) {
+	cred := [2][]byte{[]byte("vncuser"), []byte("RFB-CRED-01")}
+	field := func(s string) []byte {
+		b := make([]byte, 4+len(s))
+		binary.BigEndian.PutUint32(b, uint32(len(s)))
+		copy(b[4:], s)
+		return b
+	}
+	var out bytes.Buffer
+	good := append(field("vncuser"), field("RFB-CRED-01")...)
+	if err := x509plainCheck(bytes.NewReader(good), &out, cred); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(out.Bytes(), []byte{0, 0, 0, 0}) {
+		t.Fatalf("accept wrote %x", out.Bytes())
+	}
+	out.Reset()
+	for _, bad := range [][]byte{
+		append(field("vncuser"), field("RFB-CRED-02")...), // wrong password
+		append(field("root"), field("RFB-CRED-01")...),    // wrong user
+		append(field(""), field("RFB-CRED-01")...),        // empty user field refused
+	} {
+		out.Reset()
+		if err := x509plainCheck(bytes.NewReader(bad), &out, cred); err == nil {
+			t.Fatalf("credential %x accepted", bad)
+		}
+		if len(out.Bytes()) < 8 || binary.BigEndian.Uint32(out.Bytes()[:4]) != 1 {
+			t.Fatalf("refusal wire %x", out.Bytes())
+		}
 	}
 }
 
