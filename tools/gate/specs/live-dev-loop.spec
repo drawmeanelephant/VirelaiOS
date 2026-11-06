@@ -354,8 +354,10 @@ flintd_store = os.path.join(run, "devloopd-store")
 subprocess.check_call([flintd, "init", "--store=" + flintd_store])
 auth_key_file = os.path.join(run, "flint-auth.key")
 open(auth_key_file, "w").write(AUTH_KEY_HEX + "\n")
-subprocess.run(["sh", "-c", "lsof -ti tcp:4748 | xargs kill -9"],
-               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+subprocess.run([sys.executable,
+                os.path.join("tools", "lib", "port_guard.py"),
+                "4748"],
+               check=True)
 time.sleep(0.2)
 flintd_log = open(os.path.join(run, "flintd.log"), "wb")
 flintd_proc = subprocess.Popen(

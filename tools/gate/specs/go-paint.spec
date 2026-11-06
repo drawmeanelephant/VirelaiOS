@@ -492,8 +492,10 @@ with open(os.path.join(flintd_store, "streams", gp_sid + ".jsonl"), "w") as f:
     f.write(gp_line + "\n")
 with open(os.path.join(flintd_store, "streams", gp_sid + ".json"), "w") as f:
     f.write(json.dumps(gp_stream_rec, separators=(",", ":")) + "\n")
-subprocess.run(["sh", "-c", "lsof -ti tcp:4859 | xargs kill -9"],
-               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+subprocess.run([sys.executable,
+                os.path.join("tools", "lib", "port_guard.py"),
+                "4859"],
+               check=True)
 time.sleep(0.2)
 flintd_log = open(os.path.join(run, "flintd.log"), "wb")
 flintd_proc = subprocess.Popen(

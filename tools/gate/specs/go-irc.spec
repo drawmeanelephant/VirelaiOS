@@ -536,8 +536,10 @@ for mode, port in (("rejoin", 26667), ("nickuse", 26668),
                    ("mention", 26669), ("once", 26670),
                    ("journey", 26671), ("logs", 26672), ("sasl", 26673),
                    ("once", 26674), ("once", 26675)):
-    subprocess.run(["sh", "-c", "lsof -ti tcp:%d | xargs kill -9" % port],
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.run([sys.executable,
+                    os.path.join("tools", "lib", "port_guard.py"),
+                    str(port)],
+                   check=True)
     logpath = os.path.join(run, "ircd-%d.log" % port)
     log = open(logpath, "w")
     log.close()
@@ -1886,8 +1888,10 @@ log("fixture done")
 
 procs = []
 for mode, port in (("echo", 26676), ("wsirc", 26677), ("refuse", 26678)):
-    subprocess.run(["sh", "-c", "lsof -ti tcp:%d | xargs kill -9" % port],
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.run([sys.executable,
+                    os.path.join("tools", "lib", "port_guard.py"),
+                    str(port)],
+                   check=True)
     logpath = os.path.join(run, "wsd-%d.log" % port)
     open(logpath, "w").close()
     proc = subprocess.Popen([sys.executable, wsd, mode, str(port), logpath],

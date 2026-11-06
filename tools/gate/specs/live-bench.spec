@@ -338,8 +338,10 @@ import os, subprocess, sys, time
 rd = os.environ["RUN_DIR"]
 netrate = os.path.join(rd, "netrate.py")
 for port in (24660, 24661, 24662):
-    subprocess.run(["sh", "-c", "lsof -ti tcp:%d | xargs kill -9" % port],
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.run([sys.executable,
+                    os.path.join("tools", "lib", "port_guard.py"),
+                    str(port)],
+                   check=True)
 time.sleep(0.2)
 for mode, port in (("serve", 24660), ("sink", 24661), ("sink2", 24662)):
     out = open(os.path.join(rd, "netrate-%s.out" % mode), "wb")

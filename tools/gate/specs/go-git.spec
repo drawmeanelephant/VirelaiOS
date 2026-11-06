@@ -53,8 +53,10 @@ share = os.environ.get("VG_SHARE") or os.path.join(run, "share")
 os.makedirs(share, exist_ok=True)
 # Leftover-listener hygiene on the 24541 pin (see header); the last run's
 # python hook kills this run's listener on the way out.
-subprocess.run(["sh", "-c", "lsof -ti tcp:24541 | xargs kill -9"],
-               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+subprocess.run([sys.executable,
+                os.path.join("tools", "lib", "port_guard.py"),
+                "24541"],
+               check=True)
 time.sleep(0.2)
 
 gogit = os.path.join(".build", "go", "GOTGIT-GATE.ELF")
@@ -423,7 +425,9 @@ vgate_assert 05 serial-absent 'gotgit: fetch '
 # Last hook: retire the leftover listener on the 24541 pin.
 vgate_assert 05 python <<'PY'
 import subprocess
-subprocess.run(["sh", "-c", "lsof -ti tcp:24541 | xargs kill -9"],
-               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+subprocess.run([sys.executable,
+                os.path.join("tools", "lib", "port_guard.py"),
+                "24541"],
+               check=True)
 print("go-git: listener on 24541 retired")
 PY

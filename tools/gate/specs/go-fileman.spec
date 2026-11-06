@@ -2789,8 +2789,10 @@ mailkey = os.path.join(cfx, "leaf-ec.key")
 if not os.path.exists(chain) or not os.path.exists(mailkey):
     sys.exit("pinned fixture chain missing under %s" % cfx)
 
-subprocess.run(["sh", "-c", "lsof -ti tcp:27465 | xargs kill -9"],
-               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+subprocess.run([sys.executable,
+                os.path.join("tools", "lib", "port_guard.py"),
+                "27465"],
+               check=True)
 logpath = os.path.join(run, "chainmaild-27465.log")
 open(logpath, "w").close()
 proc = subprocess.Popen([sys.executable, fixture, "27465", logpath,

@@ -44,8 +44,8 @@
 # uid_user push cannot write FLINT/REMOTE.json). Runs 06/07 stay
 # uid_user by design — the fresh share is the USER's machine pulling
 # what the agent pushed. The hermetic flintd rides this spec's
-# own lane, 127.0.0.1:4750 (a shared port means a sibling gate's
-# lsof-sweep murders the daemon mid-run; go-flint pins 4749 for the same
+# own lane, 127.0.0.1:4750 (a shared port means a sibling gate's claim
+# refuses this run at setup; go-flint pins 4749 for the same
 # reason). Run 05's post-run assert verifies the stream landed
 # byte-verbatim + every Change signed by the guest's agent-sign key,
 # then materializes only the untrusted drop — the fresh share's
@@ -263,8 +263,10 @@ open(os.path.join(run, "flintd-store.txt"), "w").write(
 def serve_flintd():
     store = os.path.join(run, "agentloopd-store")
     subprocess.check_call([flintd, "init", "--store=" + store])
-    subprocess.run(["sh", "-c", "lsof -ti tcp:4750 | xargs kill -9"],
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.run([sys.executable,
+                    os.path.join("tools", "lib", "port_guard.py"),
+                    "4750"],
+                   check=True)
     time.sleep(0.2)
     log = open(os.path.join(run, "flintd.log"), "ab")
     proc = subprocess.Popen(
@@ -763,7 +765,7 @@ for stale in ("AGENTAPP.ELF", "STORE.TXT"):
 shutil.copy(os.path.join("image", "apps.txt"), os.path.join(ishare, "APPS.TXT"))
 
 # flintd: kill THIS RUN's daemon by its store path (pgrep -f matches
-# only the --store arg — immune to pid reuse, and it cannot murder a
+# only the --store arg — immune to pid reuse, and it cannot touch a
 # next gate's daemon the way a port-wide lsof sweep did), re-init the
 # store, relaunch on the same socket.
 store = os.path.join(run, "agentloopd-store")

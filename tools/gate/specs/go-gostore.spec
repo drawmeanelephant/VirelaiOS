@@ -31,7 +31,8 @@
 #   bash tools/go/build-go.sh      -> GOHELLO.ELF
 #   ../flint-server checkout (or FLINT_SERVER_DIR=...): the hook zig-builds
 #   flintd and serves it on 127.0.0.1:4857 (go-gostore's own lane, like
-#   go-flint's 4749 — sibling gates must not share a port).
+#   go-flint's 4749 — sibling gates must not share a port, see the LANES
+#   table in tools/lib/port_guard.py).
 #
 # exec-order: assert-proven -- every phase anchors on a guest marker, and
 # each run ends on a script-owned echo or the killed process's reap line.
@@ -497,10 +498,10 @@ for ch, line, sname in ((rel_change, rel_change_line, "rel"),
              "created": ch["ts"], "forked_from": None},
             separators=(",", ":")) + "\n")
 
-subprocess.run(
-    ["sh", "-c", "lsof -ti tcp:4857 | xargs kill -9"],
-    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-)
+subprocess.run([sys.executable,
+                os.path.join("tools", "lib", "port_guard.py"),
+                "4857"],
+               check=True)
 time.sleep(0.2)
 flintd_log = open(os.path.join(run, "flintd.log"), "wb")
 flintd_proc = subprocess.Popen(
@@ -541,10 +542,10 @@ with open(os.path.join(flintd_store_v2, "streams",
         {"id": rel_stream_id, "name": "rel", "head": rel_v2["id"],
          "created": rel_v2["ts"], "forked_from": None},
         separators=(",", ":")) + "\n")
-subprocess.run(
-    ["sh", "-c", "lsof -ti tcp:4858 | xargs kill -9"],
-    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-)
+subprocess.run([sys.executable,
+                os.path.join("tools", "lib", "port_guard.py"),
+                "4858"],
+               check=True)
 time.sleep(0.2)
 flintd2_proc = subprocess.Popen(
     [flintd, "serve", "--store=" + flintd_store_v2,

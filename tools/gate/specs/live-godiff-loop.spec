@@ -5,6 +5,11 @@
 # the guest-built product runs and diffs, and in-guest FLINT add/diff/
 # commit/push lands the history on flintd.
 #
+# flintd lane: 127.0.0.1:4752 — its own lane since #3909. It used to share
+# 4748 with live-dev-loop and live-flint-loop, whose setup hooks killed the
+# incumbent listener; tools/lib/port_guard.py now reaps only orphans and
+# refuses a live holder by name.
+#
 # Run 09 (M138c #2777): the guest-built GODIFF.ELF's `-i` viewer opens
 # under the seat, an 's' chord toggles the side-by-side mode, and a
 # scanout probe pins the aligned-hunk signature: on every painted row
@@ -227,7 +232,7 @@ open(os.path.join(share, "BUILD.SH"), "w").write(
 open(os.path.join(share, "PUSH.SH"), "w").write(
     "FLINT.ELF status\n"
     "FLINT.ELF log\n"
-    "FLINT.ELF push --remote=10.0.0.2:4748 --stream=main\n"
+    "FLINT.ELF push --remote=10.0.0.2:4752 --stream=main\n"
     "sleep 1\n"
     "FLINT.ELF push\n"
     "echo PUSH-DONE\n")
@@ -333,22 +338,24 @@ flintd_store = os.path.join(run, "loopd-store")
 subprocess.check_call([flintd, "init", "--store=" + flintd_store])
 auth_key_file = os.path.join(run, "flint-auth.key")
 open(auth_key_file, "w").write(AUTH_KEY_HEX + "\n")
-subprocess.run(["sh", "-c", "lsof -ti tcp:4748 | xargs kill -9"],
-               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+subprocess.run([sys.executable,
+                os.path.join("tools", "lib", "port_guard.py"),
+                "4752"],
+               check=True)
 time.sleep(0.2)
 flintd_log = open(os.path.join(run, "flintd.log"), "wb")
 flintd_proc = subprocess.Popen(
     [flintd, "serve", "--store=" + flintd_store,
-     "--listen=127.0.0.1:4748", "--auth-key=" + auth_key_file],
+     "--listen=127.0.0.1:4752", "--auth-key=" + auth_key_file],
     stdout=flintd_log, stderr=subprocess.STDOUT, start_new_session=True)
 for _ in range(100):
     try:
-        s = socket.create_connection(("127.0.0.1", 4748), 0.2)
+        s = socket.create_connection(("127.0.0.1", 4752), 0.2)
         s.close()
         break
     except OSError:
         if flintd_proc.poll() is not None:
-            sys.exit("flintd did not come up on 127.0.0.1:4748")
+            sys.exit("flintd did not come up on 127.0.0.1:4752")
         time.sleep(0.1)
 
 n_chunks = sum(len(v) for v in feeds.values())
@@ -539,7 +546,7 @@ vgate_assert 07 serial-absent '[EXC] parking:'
 # documented in go-shell-polish.spec); only push needs name-faithful listing.
 vgate_run 08 -- \
     --net '$RUN_DIR/cap08.bin' --net-arp-respond 10.0.0.2 \
-    --net-tcp-respond 10.0.0.2:4748:relay --net-tcp-respond-relay 127.0.0.1:4748 \
+    --net-tcp-respond 10.0.0.2:4752:relay --net-tcp-respond-relay 127.0.0.1:4752 \
     --script '$RUN_DIR/script-push.txt' \
     --virtio-fs '$RUN_DIR/share' \
     --script-expect 'PUSH-DONE' --script-expect-tail 4 --timeout 300

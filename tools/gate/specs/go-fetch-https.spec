@@ -219,8 +219,10 @@ print("go-fetch-https: staged GOFETCH.ELF (%d); no Zig TLS helper exists" %
       os.path.getsize(os.path.join(share, "GOFETCH.ELF")))
 
 for port in (24550, 24551, 24552, 24553, 24554, 24555, 24556):
-    subprocess.run(["sh", "-c", "lsof -ti tcp:%d | xargs kill -9" % port],
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.run([sys.executable,
+                    os.path.join("tools", "lib", "port_guard.py"),
+                    str(port)],
+                   check=True)
 time.sleep(0.2)
 
 cfx = os.path.join("user", "src", "lib", "tls", "vectors", "fx")

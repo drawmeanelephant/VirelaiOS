@@ -1248,8 +1248,10 @@ rd = os.environ["RUN_DIR"]
 # leaks a listener that holds this fixed port forever — the fresh
 # server's bind then dies silently into an empty log and every reply
 # comes from the foreign worktree's orphan. Kill the incumbent first.
-subprocess.run(["sh", "-c", "lsof -ti tcp:24080 | xargs kill -9"],
-               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+subprocess.run([sys.executable,
+                os.path.join("tools", "lib", "port_guard.py"),
+                "24080"],
+               check=True)
 time.sleep(0.2)
 subprocess.Popen(
     [sys.executable, os.path.join(rd, "gonetloss-srv.py"), "24080",

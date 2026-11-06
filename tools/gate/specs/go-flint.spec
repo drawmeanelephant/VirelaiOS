@@ -39,11 +39,15 @@
 # flintd, seeds its store with the pinned sync-seed stream, and serves it on
 # 127.0.0.1:4749 with --auth-key. The runner relays guest dials of
 # 10.0.0.2:4749 to it (--net-tcp-respond/-relay). The port is 4749, NOT
-# the fleet's 4748: every FLINT socket spec's setup kills the incumbent
-# listener (`lsof -ti tcp:<port> | xargs kill -9`), so a shared port
-# means sibling-worktree gates murder each other's flintd mid-run —
-# observed: run 15's `store ls` answered by a foreign gate's loopd-store
-# (empty stream list). 4749 is go-flint's own lane. Run 11 proves `flint
+# the fleet's 4748: these setup hooks used to sweep the incumbent with
+# `lsof -ti tcp:<port> | xargs kill -9`, so a shared port meant
+# sibling-worktree gates murdered each other's flintd mid-run — observed:
+# run 15's `store ls` answered by a foreign gate's loopd-store (empty
+# stream list). Since #3909 the sweep is gone: every hook calls
+# tools/lib/port_guard.py, which reaps only an ORPHANED holder and
+# refuses naming a live one. 4749 is go-flint's own lane; a shared lane
+# now fails loudly at setup instead of killing a sibling. Run 11 proves
+# `flint
 # ls-remote` + `clone <addr> <stream>` writing raw-JSONL verbatim into
 # sync-share; run 12 re-boots on the SAME share (the conflict-share pattern)
 # for `verify --all` + M101b `verify --remote` + a REMOTE.json-bound bare
@@ -141,10 +145,10 @@
 # for a foreign publisher's program, built per run by the setup hook so
 # its sha256 always matches the signed manifest). `acme` is served on
 # the same flintd as every other release stream — one remote, one lane:
-# a second listener on its own port is only a second process for a
-# sibling gate's lsof-sweep to murder mid-suite (observed: a foreign
-# gate's flintd answered for this spec's second listener the first time
-# these runs were attempted). Its replica is staged on store-share too
+# a second listener on its own port is only a second process to argue
+# with over a port (observed: a foreign gate's flintd answered for this
+# spec's second listener the first time these runs were attempted). Its
+# replica is staged on store-share too
 # (run 14's catalog now lists the acme publisher's second app, so the
 # 4-entry count is the honest one). tp-share is the fresh consumer —
 # its own APPS.TXT/STORE.TXT, every release replica staged verbatim (the
@@ -680,10 +684,10 @@ AUTH_KEY_HEX = "ab" * 32
 auth_key_file = os.path.join(run, "flint-auth.key")
 open(auth_key_file, "w", encoding="utf-8").write(AUTH_KEY_HEX + "\n")
 
-subprocess.run(
-    ["sh", "-c", "lsof -ti tcp:4749 | xargs kill -9"],
-    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-)
+subprocess.run([sys.executable,
+                os.path.join("tools", "lib", "port_guard.py"),
+                "4749"],
+               check=True)
 time.sleep(0.2)
 flintd_log = open(os.path.join(run, "flintd.log"), "wb")
 flintd_proc = subprocess.Popen(

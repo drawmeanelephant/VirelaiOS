@@ -10,6 +10,11 @@
 # echo/cat are builtins and the one `sleep 1` is go-flint's
 # socket-session spacing. NOT vgate_repeat-safe (share state carries).
 #
+# flintd lane: 127.0.0.1:4751 — its own lane since #3909. It used to share
+# 4748 with live-dev-loop and live-godiff-loop, whose setup hooks killed the
+# incumbent listener; the shared contract in tools/lib/port_guard.py now
+# reaps only orphans and refuses a live holder by name.
+#
 # HOST PREREQ: bash tools/go/build-flint.sh + build-gosh.sh; sibling
 # ../flint-server + ../flint-client checkouts (FLINT_SERVER_DIR /
 # FLINT_CLIENT_DIR overrides) zig-built by the hook — drawmeanelephant
@@ -102,7 +107,7 @@ open(os.path.join(share, "FLINTJ", "02.SH"), "w", encoding="utf-8").write(
     "echo LOOP-COMMITTED\n"
 )
 open(os.path.join(share, "FLINTJ", "03.SH"), "w", encoding="utf-8").write(
-    "FLINT.ELF push --remote=10.0.0.2:4748 --stream=main\n"
+    "FLINT.ELF push --remote=10.0.0.2:4751 --stream=main\n"
     "sleep 1\n"
     "FLINT.ELF push\n"
 )
@@ -134,21 +139,21 @@ subprocess.check_call([flintd, "init", "--store=" + flintd_store])
 auth_key_file = os.path.join(run, "flint-auth.key")
 open(auth_key_file, "w", encoding="utf-8").write(AUTH_KEY_HEX + "\n")
 
-subprocess.run(
-    ["sh", "-c", "lsof -ti tcp:4748 | xargs kill -9"],
-    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-)
+subprocess.run([sys.executable,
+                os.path.join("tools", "lib", "port_guard.py"),
+                "4751"],
+               check=True)
 time.sleep(0.2)
 flintd_log = open(os.path.join(run, "flintd.log"), "wb")
 flintd_proc = subprocess.Popen(
     [flintd, "serve", "--store=" + flintd_store,
-     "--listen=127.0.0.1:4748", "--auth-key=" + auth_key_file],
+     "--listen=127.0.0.1:4751", "--auth-key=" + auth_key_file],
     stdout=flintd_log, stderr=subprocess.STDOUT, start_new_session=True,
 )
 flintd_up = False
 for _ in range(100):
     try:
-        s = socket.create_connection(("127.0.0.1", 4748), 0.2)
+        s = socket.create_connection(("127.0.0.1", 4751), 0.2)
         s.close()
         flintd_up = True
         break
@@ -157,8 +162,8 @@ for _ in range(100):
             break
         time.sleep(0.1)
 if not flintd_up:
-    sys.exit("flintd did not come up on 127.0.0.1:4748 (see flintd.log)")
-print("flintd: serving %s on 127.0.0.1:4748 pid=%d; host client %s"
+    sys.exit("flintd did not come up on 127.0.0.1:4751 (see flintd.log)")
+print("flintd: serving %s on 127.0.0.1:4751 pid=%d; host client %s"
       % (flintd_store, flintd_proc.pid, flint_host))
 PY
 
@@ -198,7 +203,7 @@ vgate_run 03 -- \
     --cvc-file '$RUN_DIR/loop-share' \
     --virtio-fs '$RUN_DIR/loop-share' \
     --net '$RUN_DIR/cap03.bin' --net-arp-respond 10.0.0.2 \
-    --net-tcp-respond 10.0.0.2:4748:relay --net-tcp-respond-relay 127.0.0.1:4748 \
+    --net-tcp-respond 10.0.0.2:4751:relay --net-tcp-respond-relay 127.0.0.1:4751 \
     --script '$RUN_DIR/script-03.txt' \
     --script-expect 'flint: push up to date' \
     --script-expect-tail 3 --timeout 180
@@ -238,7 +243,7 @@ if len(lines) != 2:
 
 # REMOTE.json bound by the first push is what the bare push consumed.
 remote_cfg = open(os.path.join(run, "loop-share", "FLINT", "REMOTE.json")).read()
-if '"remote":"tcp://10.0.0.2:4748"' not in remote_cfg or ('"stream":"%s"' % stream_id) not in remote_cfg:
+if '"remote":"tcp://10.0.0.2:4751"' not in remote_cfg or ('"stream":"%s"' % stream_id) not in remote_cfg:
     sys.exit("REMOTE.json does not bind the push: %r" % remote_cfg)
 
 # The card's acceptance: the real host client verifies every pushed Change.

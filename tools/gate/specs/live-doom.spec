@@ -29,7 +29,9 @@
 # HOST PREREQ (run 02): bash tools/go/build-flint.sh / build-gosh.sh /
 # build-store.sh / build-goset.sh -> .build/go/{FLINT,GOSH,STORE,GOSET}.ELF;
 # ../flint-server checkout (or FLINT_SERVER_DIR=...) — the hook zig-builds
-# flintd and serves the signed doom stream on 127.0.0.1:4749.
+# flintd and serves the signed doom stream on 127.0.0.1:4763.
+# Lane: 4763 since #3909 (was 4749, which is go-flint's flintd — the old
+# `lsof|kill -9` setup sweep let this spec kill a running go-flint gate).
 vgate_name live-doom "M130c: DOOM runs in-guest, input+frames proven"
 vgate_share arm
 vgate_runner_flags -Xswiftc -DSPIKE
@@ -143,18 +145,20 @@ with open(os.path.join(flintd_store, "streams", doom_sid + ".json"), "w") as f:
 AUTH_KEY_HEX = "ab" * 32
 auth_key_file = os.path.join(run, "flint-auth.key")
 open(auth_key_file, "w", encoding="utf-8").write(AUTH_KEY_HEX + "\n")
-subprocess.run(["sh", "-c", "lsof -ti tcp:4749 | xargs kill -9"],
-               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+subprocess.run([sys.executable,
+                os.path.join("tools", "lib", "port_guard.py"),
+                "4763"],
+               check=True)
 time.sleep(0.2)
 flintd_log = open(os.path.join(run, "flintd.log"), "wb")
 flintd_proc = subprocess.Popen(
     [flintd, "serve", "--store=" + flintd_store,
-     "--listen=127.0.0.1:4749", "--auth-key=" + auth_key_file],
+     "--listen=127.0.0.1:4763", "--auth-key=" + auth_key_file],
     stdout=flintd_log, stderr=subprocess.STDOUT, start_new_session=True)
 flintd_up = False
 for _ in range(100):
     try:
-        s = socket.create_connection(("127.0.0.1", 4749), 0.2)
+        s = socket.create_connection(("127.0.0.1", 4763), 0.2)
         s.close()
         flintd_up = True
         break
@@ -163,8 +167,8 @@ for _ in range(100):
             break
         time.sleep(0.1)
 if not flintd_up:
-    sys.exit("flintd did not come up on 127.0.0.1:4749 (see flintd.log)")
-print("flintd: serving %s on 127.0.0.1:4749 pid=%d rev=%s"
+    sys.exit("flintd did not come up on 127.0.0.1:4763 (see flintd.log)")
+print("flintd: serving %s on 127.0.0.1:4763 pid=%d rev=%s"
       % (flintd_store, flintd_proc.pid, flintd_rev))
 
 doom_share = os.path.join(run, "doom-store-share")
@@ -197,8 +201,8 @@ shutil.copy(os.path.join("image", "apps.txt"), os.path.join(doom_share, "APPS.TX
 # output: the signed manifest and every hash-pinned member.
 shutil.copytree(os.path.join(rel_dir, "channel"), os.path.join(doom_share, "DROP"))
 open(os.path.join(doom_share, "FLINTJ", "E.SH"), "w", encoding="utf-8").write(
-    "STORE.ELF ls --remote=10.0.0.2:4749 --channel=/host/DROP\n"
-    "STORE.ELF install doom --remote=10.0.0.2:4749 --channel=/host/DROP\n"
+    "STORE.ELF ls --remote=10.0.0.2:4763 --channel=/host/DROP\n"
+    "STORE.ELF install doom --remote=10.0.0.2:4763 --channel=/host/DROP\n"
     "echo m130e: declared\n"
     "GOSET.ELF\n"
     "DOOM.ELF -iwad /host/DROP/doom/doom1.wad\n"
@@ -272,8 +276,8 @@ open(os.path.join(accept_share, "walk.lmp"), "wb").write(lmp)
 
 open(os.path.join(accept_share, "FLINTJ", "E3.SH"),
      "w", encoding="utf-8").write(
-    "STORE.ELF ls --remote=10.0.0.2:4749 --channel=/host/DROP\n"
-    "STORE.ELF install doom --remote=10.0.0.2:4749 --channel=/host/DROP\n"
+    "STORE.ELF ls --remote=10.0.0.2:4763 --channel=/host/DROP\n"
+    "STORE.ELF install doom --remote=10.0.0.2:4763 --channel=/host/DROP\n"
     "echo m130f: declared\n"
     "STORE.ELF consent DOOM.ELF\n"
     "echo m130f: consented\n"
@@ -472,7 +476,7 @@ vgate_run 02 -- \
     --cvc-file '$RUN_DIR/doom-store-share' \
     --virtio-fs '$RUN_DIR/doom-store-share' \
     --net '$RUN_DIR/cap-doomstore.bin' --net-arp-respond 10.0.0.2 \
-    --net-tcp-respond 10.0.0.2:4749:relay --net-tcp-respond-relay 127.0.0.1:4749 \
+    --net-tcp-respond 10.0.0.2:4763:relay --net-tcp-respond-relay 127.0.0.1:4763 \
     --script '$RUN_DIR/script-store.txt' \
     --script2 '$RUN_DIR/script2-store.txt' \
     --script2-after 'VirelaiOS kernel has seized control.' \
@@ -677,7 +681,7 @@ vgate_run 03 -- \
     --cvc-file '$RUN_DIR/doom-accept-share' \
     --virtio-fs '$RUN_DIR/doom-accept-share' \
     --net '$RUN_DIR/cap-doomaccept.bin' --net-arp-respond 10.0.0.2 \
-    --net-tcp-respond 10.0.0.2:4749:relay --net-tcp-respond-relay 127.0.0.1:4749 \
+    --net-tcp-respond 10.0.0.2:4763:relay --net-tcp-respond-relay 127.0.0.1:4763 \
     --script '$RUN_DIR/script-store.txt' \
     --script2 '$RUN_DIR/script2-accept.txt' \
     --script2-after 'VirelaiOS kernel has seized control.' \
