@@ -297,7 +297,7 @@ Threads and their current state (the tracker is authoritative):
 | Context snapshot | `zig build context` | ✅ |
 | Unit tests | `zig build test` (parallel; host suites across `kernel/`, `user/`, `test/` — the count is not script-derived, and M71i #1568 removed the 21 `lib/html` tests with their module) | ✅ |
 | Class-A portable set | `just verify-portable` | ✅ |
-| Class-B VZ fleet | `just verify-vz` (`bash tools/gate/fleet.sh count` = 317 members; sharded ×4 in CI + nightly once `VZ_RUNNER_LABEL` names a runner) | ✅ on the reference host; ⛔ 0 gates run in CI |
+| Class-B VZ fleet | `just verify-vz` (`bash tools/gate/fleet.sh count`; the generated inventory lists them; sharded ×4 in CI + nightly once `VZ_RUNNER_LABEL` names a runner) | ✅ on the reference host; ⛔ 0 gates run in CI |
 | Bench corpus | `just gate live-bench` — every `tools/gate/bench/corpus.tsv` row measured on VZ against `tools/gate/bench/budgets.tsv` (each budget a measured baseline × a named margin, `tools/gate/bench/README.md`) | ✅ 18/18 at `615229ed` on the dev host (#2490); ⛔ 0 gates run in CI |
 | Coordination gate | `just verify-coordination` + `just test-coordination` | ✅ |
 
