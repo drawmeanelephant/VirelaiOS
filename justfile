@@ -160,6 +160,12 @@ test:
 test-console:
     zig build test-console
 
+# Refresh the checked-in transcript golden from the last mock run (class A; issue #3912).
+# Only for an INTENTIONAL transcript change — `just test-console` names this recipe when it fails.
+regolden-transcript:
+    cp artifacts/m15-mock-transcript.txt tests/transcript-console.txt
+    @echo "regolden-transcript: tests/transcript-console.txt refreshed from artifacts/m15-mock-transcript.txt"
+
 # Boot the VM and save the host-side NVRAM marker ladder (class B mechanism — ADR 0004 D4 fallback, `zig build marker`; Apple silicon only)
 marker:
     zig build marker
