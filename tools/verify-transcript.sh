@@ -27,6 +27,32 @@ zig test kernel/src/shell.zig
 echo "=== transcript gate 2: emitted transcript vs canonical fixture ==="
 [ -f artifacts/m15-mock-transcript.txt ] || { echo "FAIL: artifacts/m15-mock-transcript.txt missing (did the e2e test run?)"; exit 1; }
 [ -f tests/transcript-console.txt ] || { echo "FAIL: tests/transcript-console.txt missing"; exit 1; }
-diff -u tests/transcript-console.txt artifacts/m15-mock-transcript.txt
+
+# The remedy is named on failure (issue #3912). This diff is the recurring
+# "golden fixture drift" red: a shell change that intentionally moves the
+# transcript lands the same way as a real regression, and the raw diff used
+# to leave the reader to re-derive the copy from this file's header.
+if ! diff -u tests/transcript-console.txt artifacts/m15-mock-transcript.txt; then
+    cat >&2 <<'MSG'
+
+verify-transcript: FAIL — the emitted transcript differs from the canonical fixture.
+
+If the transcript change is INTENTIONAL (a shell/help/motd edit moved it), refresh
+the golden with the recipe that names this step:
+
+    just regolden-transcript
+
+which is exactly:
+
+    cp artifacts/m15-mock-transcript.txt tests/transcript-console.txt
+
+Then re-run this gate (`just test-console`) and review the refreshed
+tests/transcript-console.txt in the diff before committing it.
+
+If the change is NOT intentional, it is a product regression: fix the shell
+code rather than the fixture. Re-goldening a regression hides it.
+MSG
+    exit 1
+fi
 
 echo "verify-transcript: PASS — mock transcript is byte-identical to the canonical fixture"
