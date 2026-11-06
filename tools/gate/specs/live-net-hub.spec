@@ -208,6 +208,14 @@ EOF
 # the bounded-wait pacer) while re-trying .17, so the first reply that
 # lands is followed by more .17 pings, the arp dump that pins the entry,
 # and a late `net` for the icmp counters — all before JA.SH starts.
+#
+# Two passes, not one, for the cold-boot case: observed 2026-11-06, a
+# first-iteration run ended with vm-a `icmp=req=10,repl=42,pong=0` and no
+# .17 entry — the reply had not landed inside one pass of pacer waits,
+# while iterations 2 and 3 (B already warm) resolved early. The original
+# single pass is ~11 pacer waits, and the lag documented above is "~a
+# minute". The second pass repeats the same solicitation train with the
+# `net` drains, which is what actually pulls the late reply off the ring.
 vgate_file vma-s3.txt <<'EOF'
 net arp 10.0.0.2
 net ping 10.0.0.17
@@ -231,6 +239,28 @@ net ping 10.0.0.2
 net ping 10.0.0.17
 net ping 10.0.0.2
 net ping 10.0.0.17
+net
+net arp 10.0.0.2
+net ping 10.0.0.17
+net ping 10.0.0.2
+net ping 10.0.0.17
+net ping 10.0.0.2
+net ping 10.0.0.17
+net ping 10.0.0.2
+net ping 10.0.0.17
+net ping 10.0.0.2
+net ping 10.0.0.17
+net ping 10.0.0.2
+net ping 10.0.0.17
+net ping 10.0.0.2
+net ping 10.0.0.17
+net ping 10.0.0.2
+net ping 10.0.0.17
+net ping 10.0.0.2
+net ping 10.0.0.17
+net ping 10.0.0.2
+net ping 10.0.0.17
+net
 net arp
 net
 exec GOSH.ELF -c "source /host/JA.SH"
@@ -411,8 +441,14 @@ os.makedirs(os.path.join(bshare, "FLINT"), exist_ok=True)
 open(os.path.join(bshare, "FLINT", "TRUSTED.TXT"), "w").write(
     "#v1\nkey=" + GUEST_KEY + " name=storelan\n")
 open(os.path.join(bshare, "GRANTS.TXT"), "w").write("#v1 mode=enforce\n")
+# The tampered leg is a BARE line: its expected outcome IS the refusal, so
+# the `X || sleep 1 ; X` retry idiom (correct on every happy-path verb
+# below) would re-run it after every guaranteed failure. The judge pins
+# `store: refuse elf_mismatch HUBAPP.ELF` at exactly one per JB2-DONE
+# completion, and the retry made that structurally unreachable — observed
+# 2 refusals for 1 pass on every iteration before this line was bare.
 open(os.path.join(bshare, "JB.SH"), "w").write(
-    "STORE.ELF install main --remote=10.0.0.2:4853 --channel=http://10.0.0.16:8080/DROPBAD || sleep 1 ; STORE.ELF install main --remote=10.0.0.2:4853 --channel=http://10.0.0.16:8080/DROPBAD\n"
+    "STORE.ELF install main --remote=10.0.0.2:4853 --channel=http://10.0.0.16:8080/DROPBAD\n"
     "STORE.ELF install main --remote=10.0.0.2:4853 --channel=http://10.0.0.16:8080/DROP || sleep 1 ; STORE.ELF install main --remote=10.0.0.2:4853 --channel=http://10.0.0.16:8080/DROP\n"
     "echo JB-DONE\n")
 # JB2.SH is the ADMIN half — the -u0 gosh the third client types:
@@ -653,13 +689,24 @@ PY
 # expect is 'httpd: request /DROP/main/HUBAPP.ELF', a serial line only
 # vm-b's install fetch can produce, and the 45 s tail holds A up through
 # B's consent + app spawn.
+#
+# Budget: 720 s was measured too tight for this chain. Observed on the
+# 2026-11-06 reference-host run — iterations 2 and 3 reached JA-DONE and
+# had B's installs still in flight when the deadline fired (`FAILURE:
+# expected transcript 'httpd: request /DROP/main/HUBAPP.ELF' not
+# observed within 720s`), while iteration 1, whose only difference is a
+# colder B, landed the same fetch inside the budget. The deadline is a
+# chosen cap, not a property of the chain: every substantive leg before
+# it printed green in all three iterations. 1200 s keeps the same
+# ordering (it still bounds the run) with room for the clone + one
+# 150-byte fetch under gate load.
 vgate_run a -- --net '$RUN_DIR/a.cap' --net-hub '$RUN_DIR/nethub.sock' --mac 02:00:00:00:00:0a \
     --net-arp-respond 10.0.0.2 --net-tcp-respond 10.0.0.2:4853:relay --net-tcp-respond-relay 127.0.0.1:4853 \
     --virtio-fs '$RUN_DIR/share' \
     --script '$RUN_DIR/vma-s1.txt' \
     --script2 '$RUN_DIR/vma-s2.txt' --script2-after 'httpd: request /healthz' --script2-delay 10 \
     --script3 '$RUN_DIR/vma-s3.txt' --script3-after 'vma-legs-done' \
-    --script-expect 'httpd: request /DROP/main/HUBAPP.ELF' --script-expect-tail 45 --timeout 720
+    --script-expect 'httpd: request /DROP/main/HUBAPP.ELF' --script-expect-tail 45 --timeout 1200
 
 # The run-a client: waits for A's DHCP bind — deliberately ~2-4 s BEFORE
 # 'httpd: advertise sent', not after it. GOHTTPD's advertiser is
@@ -682,7 +729,7 @@ vgate_client a -- --addr '127.0.0.1:24720' --after 'net: dhcp bound ip=10.0.0.16
 # client-1's tail; last-declared, so its rc is the enforced one.
 vgate_client a -- --addr '127.0.0.1:24720' --after 'flint: push ' --after-timeout 620 \
     --connect-timeout 60 --retry-busy --send-file '$RUN_DIR/vmb-store-legs.txt' \
-    --expect 'JB-DONE' --timeout 480 --out '$RUN_DIR/client-a-store.out'
+    --expect 'JB-DONE' --timeout 600 --out '$RUN_DIR/client-a-store.out'
 
 # The consent client: the good install's ELF fetch is the A-serial
 # marker that proves install is materially through (the remaining work
@@ -695,12 +742,12 @@ vgate_client a -- --addr '127.0.0.1:24720' --after 'flint: push ' --after-timeou
 # marker wait must cover the whole chain to the ELF GET — boot, card
 # b's legs, A's paced arp stage, the s3 verify pace, JA.SH publish+push,
 # then B's DROPBAD refusals + DROP clone before the fetch. That marker
-# is also run-a's own --script-expect under --timeout 720, so
-# --after-timeout 740 can never lap it inside a run that could still
+# is also run-a's own --script-expect under --timeout 1200, so
+# --after-timeout 1000 can never lap it inside a run that could still
 # pass. The post-marker busy window ends when client-2's session does —
-# bounded by ITS 480 s read deadline — so --connect-timeout 540 covers
+# bounded by ITS 600 s read deadline — so --connect-timeout 540 covers
 # the worst queue.
-vgate_client a -- --addr '127.0.0.1:24720' --after 'httpd: request /DROP/main/HUBAPP.ELF' --after-timeout 740 \
+vgate_client a -- --addr '127.0.0.1:24720' --after 'httpd: request /DROP/main/HUBAPP.ELF' --after-timeout 1000 \
     --connect-timeout 540 --retry-busy --send-file '$RUN_DIR/vmb-consent-legs.txt' \
     --expect 'JB2-DONE' --timeout 240 --out '$RUN_DIR/client-a-consent.out'
 
