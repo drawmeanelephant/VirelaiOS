@@ -791,3 +791,96 @@ by the same caps.
 plus DOM traversal beyond id addressing, `doc.write`, events,
 storage, `net.fetch`, mutation observers, and any op outside the
 v3 set — refused on the wire, not silently.
+
+## Amendment (M211d / #3913) — bounded input listeners
+
+Directed by the card the M211d corpus verdict left open ("interactive
+reactivity stays unmeasured by design"), the wire bumps to protocol
+**v4** and admits exactly one user-driven surface: an `input`
+listener on an enabled, ID-addressed `text`/`search` control. The
+channel shape is unchanged — requests and answers ride the same
+spools and the same one-outstanding-ask rendezvous. The M211a–M211c
+`events` refusal is narrowed to this vocabulary; every other event,
+attribute handler and Promise stays refused by name.
+
+**Registration.** `listener.add` (`a` = the target id, `b` = the
+listener kind) is the only new parent-served op. It succeeds only
+for kind `input` and only when the id addresses an enabled `input`
+element whose type is `text` or `search` (type absent means text;
+a disabled ancestor counts as disabled). The answer carries the
+live registration count. `node.addEventListener` in the prologue is
+the JS face of this op — it registers, then stores the callback
+under that id. Duplicate registrations, extra targets and every
+other kind refuse, and the callback table is untouched by a refusal.
+
+**The bounded event surface (exactly this).** An event is
+`{type:"input", target:<the id-addressed node>}`; `.target.value`
+reads the control's LIVE value through the existing `node.attr` op,
+not the original HTML attribute. Before a dispatch the browser
+mirrors the typed control state into that `value` attribute, so a
+callback that reads it — or a later reflow that re-initialises the
+control — sees the edited text. No bubbling or capture phase, no
+`preventDefault`/`stopPropagation`, no `on*` attributes, no
+`document`-level listener, no `click`/`submit`/`change`/`key`, no
+`removeEventListener`, and no Promise: the callback is an ordinary
+synchronous script.
+
+**Refusals, named, new this amendment.** `event_kind_<kind>` names
+an unsupported listener kind verbatim (the kind is sanitised to the
+wire charset; an unnameable kind reports `event_kind`).
+`event_target` is an absent or non-addressable id, `event_control`
+a node that is not an enabled text/search `input`, `event_disabled`
+a disabled control or subtree, `event_duplicate` a second
+registration for the same target/kind, `event_budget_regs` a ninth
+registration, and `event_queue` the refusal that drops a ninth
+queued input event with its own serial marker.
+
+**Bounds.** At most **8** registrations, one per target/kind; at
+most **8** queued but-undelivered input events. Nothing else moves:
+one worker, one outstanding request, `script_ops_max` **32** DOM
+ops and **16** served writes per dispatch, the existing **8**
+granted timers, the **5,000 ms** delay bound, the engine's **4 s**
+wall budget, and the existing 1,114,112 B ops stream / 262,144 B
+reply stream bounds. Per-dispatch budgets (ops, writes, timer
+grants) start at an actual dispatch or timer-fire receipt; an
+over-budget dispatch refuses `script_budget_ops`/`script_budget_mut`
+and the worker continues with the next event.
+
+**One parked drain, shared with timers.** After its staged evals,
+a worker with at least one registration asks `event.next` and
+parks; the parent answers that single ask with either the next
+input event (`{"kind":"input","target":…,"value":…}`) or — when no
+input is queued — a due timer id (`{"kind":"timer","id":…}`), so
+timers and events share one worker, one request slot and one
+answer rendezvous. A dispatch runs as its own bounded eval
+(`__virelai_input(target, value)`), receipted on the reply stream
+as an `input` line; a fired timer keeps its existing `fire` line.
+While parked the worker emits a bounded **idle** receipt at most
+once per **5 s**. The parent treats every wire line and every
+served op as activity: the **120 s** active-work deadline is
+measured from the last receipt, so a healthy parked page is never
+ended by page lifetime — only a silent worker is killed, and a
+worker that reports a full reply stream fails with a named
+`web: script spool-limit` instead of silently truncating.
+
+**Live focus and values through reflow.** A dispatch's writes
+re-enter the existing whole-tree `relayout()` exactly like a
+scripted write or a zoom change. That reflow re-binds form controls
+by node identity and restores the focused control and its edit
+buffer, so later keystrokes reach the surviving control with no
+compensating refocus or reload; the control's live value, not its
+load-time attribute, is what repaints.
+
+**Teardown before reuse.** Navigation first disables old-page
+serving, drops the old registrations, queued events and granted
+timers, then kills and reaps the old worker and drains its replies
+without serving them. Only then may the new page stage the same
+spools and exec its worker. An event or timer queued on the old
+page cannot mutate the new document or repaint old output, and the
+teardown/new-worker serial receipts name both pids.
+
+**Still refused, by name:** everything the M211a–M211c fences named,
+plus every event kind other than `input`, bubbling/capture,
+`removeEventListener`, `on*` attributes, DOM traversal beyond id
+addressing, `doc.write`, storage, `net.fetch`, mutation observers,
+and any op outside the v4 set — refused on the wire, not silently.
