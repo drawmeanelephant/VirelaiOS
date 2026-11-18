@@ -792,6 +792,9 @@ func compositeTick(scan []byte, ticks uint64, presents *int) {
 	// more frame, and so the dismiss marker lands in the same tick the
 	// pixels stop changing.
 	notifyTick(compositeClock)
+	// #3914: the hover-preview dwell rides the HEARTBEAT, before the
+	// frame it may add the card to. A damage-only repaint never ages it.
+	hoverPreviewTick()
 	presented := compositePaint(scan, ticks, presents)
 	if restoreWitnessMode && presented && ticks%8 == 0 {
 		vi.ConsoleLine(restoreWitnessLine())
@@ -895,6 +898,10 @@ func compositePaint(scan []byte, ticks uint64, presents *int) (presented bool) {
 		railPx = paintRail(scan, vi.ScanoutWidth, vi.ScanoutHeight, RailHeight, &tabs, railHover, railCloseHover)
 		markRail()
 	}
+	// #3914: the hover-preview card sits under the rail it belongs to and
+	// over the content, under every other chrome layer (it is suppressed
+	// while a modal/overlay/drag/lock owns the frame anyway).
+	hoverPx := paintHoverPreview(scan, vi.ScanoutWidth, vi.ScanoutHeight)
 	// M108b (#2325): the lane pass runs before the chrome paint so a
 	// host-sourced clipboard write this tick is already badged on the same
 	// presented frame.
@@ -966,6 +973,10 @@ func compositePaint(scan []byte, ticks uint64, presents *int) (presented bool) {
 	if line, once := railPaintMarker(railPx > 0, presented); once {
 		vi.ConsoleLine(line)
 	}
+	// #3914: the hover-preview receipt follows the present for the same
+	// reason — `gotabwm: preview id=` names a card a frame already showed,
+	// and the dismiss line names the first presented frame without it.
+	hoverPreviewPresented(hoverPx > 0, presented)
 	// The paint marker follows the PRESENT, not the fill: "the toast is on
 	// the scanout" is only true once the frame carrying it has been
 	// flushed. A gate that keyed a pixel probe on `gotabwm: notify id=`
