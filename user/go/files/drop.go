@@ -104,6 +104,11 @@ func (m *model) dropArchive(offer tabapp.DragOffer) {
 	case rc == -vi.ErrENAMETOOLONG:
 		refuse("path")
 		return
+	case rc == -vi.ErrENOSYS:
+		// No kernel pid answer means no structural stage ownership; refuse
+		// rather than publish through a name two live windows could share.
+		refuse("identity")
+		return
 	case rc < 0:
 		refuse("write rc=" + vi.Itoa64(rc))
 		return

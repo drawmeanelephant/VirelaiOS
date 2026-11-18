@@ -12,13 +12,16 @@
 // The receiving half dispatches the same MIME in a GOFILES window: the tar is
 // parsed and shape-checked before anything is published, the saved name is
 // derived from the archive's own root member (DragOffer has no filename
-// field), and the bytes land through an independently owned stage plus the
-// kernel's atomic preserve-existing rename. A destination that another
-// writer creates between the free-name probe and that rename is never
-// deleted or replaced: the rename refuses, the drop refuses by name, and the
-// existing read-only archive browser opens only a file this drop saved.
-// Nothing is extracted, and the opens=text/vcard contact drop keeps its own
-// path.
+// field), and the bytes land through a stage this publish alone owns plus the
+// kernel's atomic preserve-existing rename. Ownership is structural: the
+// stage name carries the kernel's own pid (vi.SelfPid) and this process's
+// sequence, so two live GOFILES processes cannot choose the same stage even
+// when their nonce and sequence coincide, and no hidden helper name is ever
+// opened beside the stage. A destination that another writer creates between
+// the free-name probe and that rename is never deleted or replaced: the
+// rename refuses, the drop refuses by name, and the existing read-only
+// archive browser opens only a file this drop saved. Nothing is extracted,
+// and the opens=text/vcard contact drop keeps its own path.
 package main
 
 import (
@@ -44,10 +47,14 @@ const (
 	// carryBaseMax keeps ROOT + "-99.TAR" inside the kernel's per-entry
 	// name cap (maxNameLen = 32).
 	carryBaseMax = maxNameLen - len("-99.TAR")
-	// carryStageNameLen is one publish's staging name: "~" plus eight hex
-	// digits mixing the owner nonce with the per-publish sequence. It is
-	// deliberately not the shared `dest~` candidate WriteFileSafe uses.
-	carryStageNameLen = 9
+	// carryStageNameLen is one publish's staging name: "~" plus the owner's
+	// eight hex pid digits plus eight hex digits mixing the nonce with the
+	// per-publish sequence. Both halves of the owner stay in the name in
+	// full — the pid is what separates live GOFILES processes — so a
+	// directory too short for this refuses by path rather than truncating
+	// either field. It is deliberately not the shared `dest~` candidate
+	// WriteFileSafe would use.
+	carryStageNameLen = 17
 	// carryStageTries bounds re-picking when a leftover stage happens to
 	// hold the mixed value.
 	carryStageTries = 4
@@ -57,29 +64,35 @@ const (
 // guest, a fake tree in host tests (the searchDirList/readHead pattern). The
 // receiver's publication primitives are seams for the same reason: host
 // tests drive the REAL carryPublish over an in-memory share, so the sequence
-// under test is the shipped one (independently owned stage, complete body,
-// then the kernel's atomic non-replacing rename), never a stand-in for it.
+// under test is the shipped one (create the owned stage, write it whole,
+// sync, close, then the kernel's atomic non-replacing rename), never a
+// stand-in for it. They are the primitives, not a bundled WriteFileSafe
+// call: its delete-then-rename and hidden `~` helper are exactly what this
+// publisher must not have.
 var (
 	carryListDir  = vi.ListDirAt
 	carryReadFile = func(path string, max int) ([]byte, int64) { return readHead(path, max) }
 	carryExists   = vi.FileExists
-	// carryWriteFile writes one complete file through the crash-safe
-	// primitive; carryRename is the kernel's preserve-existing publish;
-	// carryDelete removes only a stage this feature owns.
-	carryWriteFile = vi.WriteFileSafe
-	carryRename    = vi.FileRename
-	carryDelete    = vi.FileDelete
-	carryNonce     = carryRandom32
-	carryPublish   = publishCarry
+	carryOpen     = vi.FileOpen
+	carryWriteAll = vi.FileWriteAll
+	carrySync     = vi.FileSync
+	carryClose    = vi.FileClose
+	carryRename   = vi.FileRename
+	carryDelete   = vi.FileDelete
+	carrySelfPid  = vi.SelfPid
+	carryNonce    = carryRandom32
+	carryPublish  = publishCarry
 )
 
 // paddedSize rounds a body length up to the 512-byte archive block grid.
 func paddedSize(n uint64) uint64 { return (n + tarBlock - 1) &^ (tarBlock - 1) }
 
-// carryRandom32 mixes the guest CSPRNG into a stage's owner nonce. A host
-// build reports -ENOSYS to every device syscall, so the per-publish sequence
-// alone still separates stages there; on the guest the nonce keeps two
-// processes apart too.
+// carryRandom32 mixes the guest CSPRNG into a stage's token. It is not the
+// ownership answer: the pid separates live processes and the per-process
+// sequence separates publishes. The nonce only keeps a dead process's
+// leftover stage from being mistaken for this process's next one. A host
+// build reports -ENOSYS to every device syscall, so host tests inject the
+// nonce through the carryStore; production stages never rely on it alone.
 func carryRandom32() uint32 {
 	var b [4]byte
 	if n, err := vi.Random(b[:]); err == nil && n == len(b) {
@@ -443,24 +456,38 @@ func archiveName(root, dir string, list []vi.DirItem) (string, string) {
 }
 
 // carryStageSeq is bumped once per stage attempt, so two publishes in this
-// process can never choose the same name even when the CSPRNG repeats.
+// process can never choose the same name even when the CSPRNG repeats. It is
+// per PROCESS by construction: every GOFILES window is its own task.
 var carryStageSeq uint32
 
+// carryStageName renders one stage's owner. The pid half is the kernel's own
+// answer (vi.SelfPid), which no same-named sibling can spoof, so two live
+// GOFILES processes that happen to draw the same nonce and sequence still
+// own different names. Both fields are fixed-width hex: nothing is
+// abbreviated to make a long directory fit.
+func carryStageName(pid, token uint32) string {
+	return "~" + carryHex8(pid) + carryHex8(token)
+}
+
 // carryStagePath returns a staging path this publish alone owns. The stage
-// must be a sibling: the kernel's rename is same-directory only, and
-// WriteFileSafe appends one byte for its own temp, so the directory has to
-// leave room for the name plus that byte inside maxPath. A directory without
-// that room refuses by path rather than picking a name another writer could
-// also have chosen.
+// must be a sibling: the kernel's rename is same-directory only, so the
+// directory has to leave room for the slash and the full name inside
+// maxPath. A directory without that room refuses by path rather than
+// truncating the owner or picking a name another writer could also have
+// chosen. Without the kernel's own pid there is no structural separation
+// between live processes, so the publish refuses instead of guessing.
 func carryStagePath(dir, dest string) (string, int64) {
-	if maxPath-(len(dir)+2) < carryStageNameLen {
+	pid, ok := carrySelfPid()
+	if !ok {
+		return "", -vi.ErrENOSYS
+	}
+	if len(dir)+1+carryStageNameLen > maxPath {
 		return "", -vi.ErrENAMETOOLONG
 	}
 	for try := 0; try < carryStageTries; try++ {
 		carryStageSeq++
-		name := "~" + carryHex8(carryNonce()+carryStageSeq*0x9e3779b1)
-		stage := dir + "/" + name
-		if stage == dest || stage+"~" == dest {
+		stage := dir + "/" + carryStageName(pid, carryNonce()+carryStageSeq*0x9e3779b1)
+		if stage == dest {
 			continue
 		}
 		if carryExists(stage) {
@@ -482,13 +509,14 @@ func carryHex8(v uint32) string {
 	return string(b[:])
 }
 
-// publishCarry writes data to an independently owned stage in dest's own
+// publishCarry writes data to a stage this publish alone owns in dest's own
 // directory and publishes it with the kernel's atomic preserve-existing
-// rename. It never opens, deletes or renames over dest: a writer that lands
-// the name after the caller's free-name probe keeps its exact bytes, this
-// returns the kernel's -9, and only the losing stage is removed. The old
-// probe-then-WriteFileSafe path deleted such a destination and shared one
-// `name~` candidate between writers.
+// rename. The stage is created and written directly through the file
+// primitives: there is no hidden `stage~` helper to collide with a sentinel
+// or another writer's temp, and only the exact name chosen here is ever
+// opened or removed. It never opens, deletes or renames over dest: a writer
+// that lands the name after the caller's free-name probe keeps its exact
+// bytes, this returns the kernel's -9, and only the losing stage is removed.
 func publishCarry(dest string, data []byte) int64 {
 	slash := strings.LastIndexByte(dest, '/')
 	if slash <= 0 || slash == len(dest)-1 {
@@ -498,12 +526,24 @@ func publishCarry(dest string, data []byte) int64 {
 	if rc < 0 {
 		return rc
 	}
-	if rc := carryWriteFile(stage, data); rc < 0 {
-		_ = carryDelete(stage) // our own stage; dest was never touched
+	h, rc := carryOpen(stage, vi.ModeWrite|vi.ModeCreate)
+	if rc < 0 {
 		return rc
 	}
+	n, wr := carryWriteAll(uint32(h), data)
+	if wr >= 0 && n != len(data) {
+		wr = -vi.ErrENOSPC
+	}
+	if wr >= 0 {
+		wr = carrySync(uint32(h))
+	}
+	carryClose(uint32(h))
+	if wr < 0 {
+		_ = carryDelete(stage) // this publish's stage; dest was never touched
+		return wr
+	}
 	if rc := carryRename(stage, dest); rc < 0 {
-		_ = carryDelete(stage) // our own stage; dest was never touched
+		_ = carryDelete(stage) // this publish's stage; dest was never touched
 		return rc
 	}
 	return 0

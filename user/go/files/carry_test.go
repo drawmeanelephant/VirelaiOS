@@ -1,9 +1,11 @@
 // Host pins for #3915: a directory drag carries a complete bounded tar, and
 // a GOFILES window that receives the archive MIME validates it, saves it
 // without replacing an existing file, and browses it in place. The walk, the
-// read, the collision probe and the publish are the package's seams
-// (carryListDir/carryReadFile/carryExists/carryPublish), so these tests pin
-// the encoder, every bound and the receiver's refusals without a guest.
+// read, the collision probe and the publisher's file primitives are the
+// package's seams (carryListDir/carryReadFile/carryExists/carryOpen/
+// carryWriteAll/carrySync/carryClose/carryRename/carryDelete/carrySelfPid),
+// so these tests pin the encoder, every bound, the structurally owned stage
+// and the receiver's refusals without a guest.
 package main
 
 import (
@@ -581,41 +583,97 @@ func TestVCardDropStillRoutesToContact(t *testing.T) {
 	dropFresh = false
 }
 
-// carryStore is an in-memory host share behind the publisher's own
-// primitives. Tests point carryWriteFile/carryRename/carryDelete/carryNonce/
-// carryExists at it, so a landing runs the SHIPPED carryPublish — the stage
-// write, the no-replace rename and the cleanup are the production sequence,
-// not a replacement for it. A rename over a live name is refused, as the
-// kernel's preserve-existing publish refuses it (-9).
+// carryStore is an in-memory host share behind the publisher's PRIMITIVES —
+// open/create/truncate, chunked write, sync, close, preserve-existing
+// rename, delete and the kernel pid answer — not behind a bundled safe-write
+// call. Tests drive the SHIPPED carryPublish, so the stage write, the
+// no-replace rename and the cleanup are the production sequence rather than
+// a stand-in, and the writer's real behaviour stays under test: a
+// non-append create truncates an existing name, a rename over a live name
+// refuses -9, and every touched path is recorded.
 type carryStore struct {
 	files     map[string][]byte
 	writes    []string
 	renames   [][2]string
 	deletes   []string
 	nonces    []uint32
+	pid       uint32
+	pidOK     bool
+	handles   map[int64]*carryHandle
+	next      int64
 	onWrite   func(path string)
 	onRename  func(from, to string)
 	failWrite int64
 }
 
+type carryHandle struct {
+	path  string
+	off   int
+	wrote bool
+}
+
 func newCarryStore() *carryStore {
-	return &carryStore{files: map[string][]byte{}}
+	return &carryStore{files: map[string][]byte{}, pid: 1, pidOK: true,
+		handles: map[int64]*carryHandle{}, next: 1}
 }
 
 func (s *carryStore) install(t *testing.T) {
 	t.Helper()
-	prevWrite, prevRename := carryWriteFile, carryRename
-	prevDelete, prevNonce, prevExists := carryDelete, carryNonce, carryExists
-	carryWriteFile = func(path string, data []byte) int64 {
-		s.writes = append(s.writes, path)
+	prevOpen, prevWriteAll := carryOpen, carryWriteAll
+	prevSync, prevClose := carrySync, carryClose
+	prevRename, prevDelete, prevExists := carryRename, carryDelete, carryExists
+	prevPid, prevNonce := carrySelfPid, carryNonce
+	carryOpen = func(path string, flags uint32) (int64, int64) {
+		if path == "" {
+			return -1, -vi.ErrEINVAL
+		}
+		body, exists := s.files[path]
+		switch {
+		case flags&vi.ModeCreate != 0:
+			if !exists || flags&vi.ModeWrite != 0 && flags&vi.ModeAppend == 0 {
+				body = nil // the kernel's create-open truncates a non-append write
+			}
+			s.files[path] = body
+			if flags&vi.ModeWrite != 0 {
+				s.writes = append(s.writes, path)
+			}
+		case !exists:
+			return -1, -int64(vi.ErrENOENT)
+		}
+		h := s.next
+		s.next++
+		s.handles[h] = &carryHandle{path: path, off: len(body)}
+		return h, 0
+	}
+	carryWriteAll = func(h uint32, b []byte) (int, int64) {
+		fh, ok := s.handles[int64(h)]
+		if !ok {
+			return 0, -int64(vi.ErrEBADF)
+		}
 		if s.failWrite != 0 {
-			return s.failWrite
+			return 0, s.failWrite
 		}
-		if s.onWrite != nil {
-			s.onWrite(path)
+		cur := s.files[fh.path]
+		s.files[fh.path] = append(cur[:fh.off], append([]byte(nil), b...)...)
+		fh.off += len(b)
+		fh.wrote = true
+		return len(b), 0
+	}
+	carrySync = func(h uint32) int64 {
+		if _, ok := s.handles[int64(h)]; !ok {
+			return -vi.ErrEBADF
 		}
-		s.files[path] = append([]byte(nil), data...)
 		return 0
+	}
+	carryClose = func(h uint32) {
+		fh, ok := s.handles[int64(h)]
+		if !ok {
+			return
+		}
+		delete(s.handles, int64(h))
+		if fh.wrote && s.onWrite != nil {
+			s.onWrite(fh.path)
+		}
 	}
 	carryRename = func(from, to string) int64 {
 		s.renames = append(s.renames, [2]string{from, to})
@@ -650,9 +708,12 @@ func (s *carryStore) install(t *testing.T) {
 		return n
 	}
 	carryExists = func(path string) bool { _, ok := s.files[path]; return ok }
+	carrySelfPid = func() (uint32, bool) { return s.pid, s.pidOK }
 	t.Cleanup(func() {
-		carryWriteFile, carryRename = prevWrite, prevRename
-		carryDelete, carryNonce, carryExists = prevDelete, prevNonce, prevExists
+		carryOpen, carryWriteAll = prevOpen, prevWriteAll
+		carrySync, carryClose = prevSync, prevClose
+		carryRename, carryDelete, carryExists = prevRename, prevDelete, prevExists
+		carrySelfPid, carryNonce = prevPid, prevNonce
 	})
 }
 
@@ -663,6 +724,13 @@ func (s *carryStore) deleted(path string) bool {
 		}
 	}
 	return false
+}
+
+// stageAt is the exact name the publisher must choose for an explicit owner
+// and sequence, so a test can seed the sibling `~` sentinel or a competing
+// actor's stage before the publish runs.
+func stageAt(dir string, pid, nonce, seq uint32) string {
+	return dir + "/" + carryStageName(pid, nonce+seq*0x9e3779b1)
 }
 
 // tarOpenStore points the archive browser at the same in-memory share.
@@ -847,6 +915,200 @@ func TestArchiveDropInterleavedCollisionOwnsStages(t *testing.T) {
 	}
 	if s.deleted(dest) {
 		t.Fatal("an interleaved drop deleted the winner's destination")
+	}
+}
+
+// Two distinct live GOFILES tasks draw the SAME nonce and the same sequence
+// value. The pid is the only structural separator, so the stages must differ:
+// each publish owns its bytes, the first completed rename wins, and the
+// loser neither deletes the winner nor touches the sibling `~` sentinel.
+func TestArchivePublishSeparatesLivePidsAtSameNonceAndSeq(t *testing.T) {
+	blobA := buildTarForTest(t, []testTarEnt{
+		{"SUB", true, nil},
+		{"SUB/A.TXT", false, []byte("pid-alpha\n")},
+	})
+	blobB := buildTarForTest(t, []testTarEnt{
+		{"SUB", true, nil},
+		{"SUB/B.TXT", false, []byte("pid-bravo\n")},
+	})
+	const dest = "/host/FMR/SUB.TAR"
+	const nonce = 0x51ee7
+	fs := newCarryFS()
+	fs.dir("/FMR")
+	fs.install(t)
+	s := newCarryStore()
+	s.pid = 0x1111
+	s.nonces = []uint32{nonce, nonce}
+	s.install(t)
+	carryStageSeq = 0
+	s.tarOpenStore(t)
+	t.Cleanup(func() { dropFresh = false })
+
+	mA := testModel()
+	mA.path = "/host/FMR"
+	mB := testModel()
+	mB.path = "/host/FMR"
+	sentinel := []byte("SIBLING-TEMP-SENTINEL")
+	var stageA string
+	interleaved := false
+	s.onWrite = func(path string) {
+		if interleaved {
+			return
+		}
+		interleaved = true
+		stageA = path
+		s.files[path+"~"] = append([]byte(nil), sentinel...)
+		// Process B draws the same nonce; its own sequence starts over at
+		// the same value A used, so only the kernel pid can separate them.
+		carryStageSeq = 0
+		s.pid = 0x2222
+		mB.dropOffer(tabappOffer("archive", blobB))
+	}
+	mA.dropOffer(tabappOffer("archive", blobA))
+
+	if !bytes.Equal(s.files[dest], blobB) {
+		t.Fatalf("destination is not B's exact archive: %q", s.files[dest])
+	}
+	if len(s.writes) != 2 {
+		t.Fatalf("writes = %v, want two owned stages", s.writes)
+	}
+	stageB := s.writes[1]
+	if stageA == stageB {
+		t.Fatalf("two live pids at one nonce/seq shared stage %q", stageA)
+	}
+	if stageA[len(stageA)-8:] != stageB[len(stageB)-8:] {
+		t.Fatalf("fixture did not hold the token equal: %q %q", stageA, stageB)
+	}
+	base := func(stage string) string { return strings.TrimPrefix(stage, "/host/FMR/") }
+	if base(stageA)[1:9] != "00001111" || base(stageB)[1:9] != "00002222" {
+		t.Fatalf("stages do not name their pids: %q %q", stageA, stageB)
+	}
+	if !bytes.Equal(s.files[stageA+"~"], sentinel) {
+		t.Fatalf("the sibling sentinel changed: %q", s.files[stageA+"~"])
+	}
+	if s.deleted(stageA+"~") || s.deleted(stageB) {
+		t.Fatalf("a publish removed a sibling name: %v", s.deletes)
+	}
+	if _, ok := s.files[stageA]; ok {
+		t.Fatalf("the losing stage %q survived", stageA)
+	}
+	if !strings.Contains(pendingJoined(&mA), markerDropNo+"collision") {
+		t.Fatalf("A did not refuse the collision:\n%s", pendingJoined(&mA))
+	}
+	if mA.tar != nil {
+		t.Fatal("A opened a browser over B's bytes")
+	}
+	if !strings.Contains(pendingJoined(&mB), markerDropSaved+"SUB.TAR bytes=") {
+		t.Fatalf("B did not save:\n%s", pendingJoined(&mB))
+	}
+}
+
+// A pre-existing `stage~` sentinel and another actor's stage are never
+// opened, truncated, renamed or deleted: the publisher touches exactly the
+// owned stage name and then publishes it.
+func TestArchivePublishLeavesStageTildeSentinelAlone(t *testing.T) {
+	const dest = "/host/FMR/SUB.TAR"
+	const pid = 0x3333
+	const nonce = 0x0badf00d
+	const dir = "/host/FMR"
+	stage := stageAt(dir, pid, nonce, 1)
+	other := stageAt(dir, 0x4444, nonce, 1)
+	s := newCarryStore()
+	s.pid = pid
+	s.pidOK = true
+	s.nonces = []uint32{nonce}
+	s.install(t)
+	carryStageSeq = 0
+	sentinel := []byte("PRE-EXISTING-TEMP-BYTES")
+	s.files[stage+"~"] = append([]byte(nil), sentinel...)
+	otherBytes := []byte("OTHER-ACTOR-STAGE")
+	s.files[other] = append([]byte(nil), otherBytes...)
+
+	payload := []byte("OUR-ARCHIVE")
+	if rc := carryPublish(dest, payload); rc != 0 {
+		t.Fatalf("publish rc = %d, want 0", rc)
+	}
+	if !bytes.Equal(s.files[dest], payload) {
+		t.Fatalf("dest bytes = %q", s.files[dest])
+	}
+	if len(s.writes) != 1 || s.writes[0] != stage {
+		t.Fatalf("writes = %v, want only the owned stage %q", s.writes, stage)
+	}
+	if !bytes.Equal(s.files[stage+"~"], sentinel) {
+		t.Fatalf("the S~ sentinel changed: %q", s.files[stage+"~"])
+	}
+	if s.deleted(stage + "~") {
+		t.Fatal("the publisher deleted the S~ sentinel")
+	}
+	if !bytes.Equal(s.files[other], otherBytes) {
+		t.Fatalf("another actor's stage changed: %q", s.files[other])
+	}
+	if s.deleted(other) {
+		t.Fatal("the publisher deleted another actor's stage")
+	}
+	if _, ok := s.files[stage]; ok {
+		t.Fatalf("the owned stage %q survived publication", stage)
+	}
+}
+
+// Without the kernel's own pid answer there is no structural ownership, so
+// the publish refuses before touching the share rather than guessing one.
+func TestArchivePublishRefusesWithoutKernelPid(t *testing.T) {
+	s := newCarryStore()
+	s.pidOK = false
+	s.install(t)
+	if rc := carryPublish("/host/FMR/SUB.TAR", []byte("ARCHIVE")); rc != -vi.ErrENOSYS {
+		t.Fatalf("publish rc = %d, want ENOSYS %d", rc, -vi.ErrENOSYS)
+	}
+	if len(s.writes) != 0 || len(s.renames) != 0 || len(s.deletes) != 0 {
+		t.Fatalf("a pid-less publish touched the share: %v %v %v",
+			s.writes, s.renames, s.deletes)
+	}
+}
+
+// The receiver names the missing-identity refusal instead of claiming a
+// write failure, and publishes nothing.
+func TestArchiveDropRefusesWithoutStageIdentity(t *testing.T) {
+	blob, _ := buildTestCarry(t)
+	fs := newCarryFS()
+	fs.dir("/FMR")
+	fs.install(t)
+	s := newCarryStore()
+	s.pidOK = false
+	s.install(t)
+	t.Cleanup(func() { dropFresh = false })
+
+	m := testModel()
+	m.path = "/host/FMR"
+	m.dropOffer(tabappOffer("archive", blob))
+	frame := pendingJoined(&m)
+	if !strings.Contains(frame, markerDropNo+"identity") {
+		t.Fatalf("missing identity refusal:\n%s", frame)
+	}
+	if m.tar != nil || m.path != "/host/FMR" {
+		t.Fatalf("a refused identity opened a browser: tar=%v path=%q", m.tar, m.path)
+	}
+	if len(s.writes) != 0 {
+		t.Fatalf("a refused identity wrote %v", s.writes)
+	}
+}
+
+// A destination directory with room for a short name but not for the full
+// pid+token owner refuses by path rather than truncating either field.
+func TestArchivePublishRefusesRatherThanTruncatingOwner(t *testing.T) {
+	s := newCarryStore()
+	s.install(t)
+	dir := "/host/" + strings.Repeat("D", 47-len("/host/"))
+	dest := dir + "/A"
+	if len(dest)+1+carryStageNameLen <= maxPath {
+		t.Fatalf("fixture %q leaves room for the full stage owner", dest)
+	}
+	if rc := carryPublish(dest, []byte("ARCHIVE")); rc != -vi.ErrENAMETOOLONG {
+		t.Fatalf("publish rc = %d, want ENAMETOOLONG %d", rc, -vi.ErrENAMETOOLONG)
+	}
+	if len(s.writes) != 0 || len(s.renames) != 0 || len(s.deletes) != 0 {
+		t.Fatalf("a refused owner wrote/renamed/deleted: %v %v %v",
+			s.writes, s.renames, s.deletes)
 	}
 }
 
