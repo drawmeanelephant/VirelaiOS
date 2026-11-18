@@ -89,11 +89,22 @@ func (m *model) dropArchive(offer tabapp.DragOffer) {
 		return
 	}
 	dest, ok := joinPath(m.path, name)
-	if !ok || len(dest)+1 > maxPath {
+	if !ok {
 		refuse("path")
 		return
 	}
-	if rc := carryPublish(dest, offer.Blob); rc < 0 {
+	// Publication is an independently owned stage plus the kernel's atomic
+	// preserve-existing rename. A writer that lands the probed name in
+	// between wins; the rename's EEXIST refuses this drop and only our own
+	// stage is removed.
+	switch rc := carryPublish(dest, offer.Blob); {
+	case rc == vi.ErrFileExists:
+		refuse("collision")
+		return
+	case rc == -vi.ErrENAMETOOLONG:
+		refuse("path")
+		return
+	case rc < 0:
 		refuse("write rc=" + vi.Itoa64(rc))
 		return
 	}

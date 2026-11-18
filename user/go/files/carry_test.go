@@ -383,37 +383,23 @@ func TestDirectoryCarryRefusesInvalidMemberName(t *testing.T) {
 	assertPending(t, &m, markerDragNo+"SUB path")
 }
 
-// saveArchive publishes a valid tar under a root-derived name and opens it
-// with the existing browser. captureArchive publishes the same bytes.
+// A landing publishes a valid tar under a root-derived name and opens it
+// with the existing browser. The real publisher runs over an in-memory
+// share: one independently owned stage, one non-replacing rename, and the
+// pre-existing collision keeps its bytes.
 func TestArchiveDropSavesAndBrowses(t *testing.T) {
 	blob, root := buildTestCarry(t)
 	fs := newCarryFS()
 	fs.dir("/FMR", ditem("SUB.TAR", false, 4), ditem("KEEP.TXT", false, 3))
 	fs.file("/host/FMR/SUB.TAR", []byte("old\n"))
 	fs.install(t)
-
-	published := map[string][]byte{}
-	savedPublish, savedExists := carryPublish, carryExists
-	carryPublish = func(path string, data []byte) int64 {
-		if _, clash := published[path]; clash {
-			t.Fatalf("published %q twice", path)
-		}
-		published[path] = append([]byte(nil), data...)
-		return 0
-	}
-	carryExists = func(path string) bool { _, ok := published[path]; return ok }
-	savedOpen := tarOpenSrc
-	tarOpenSrc = func(path string) (tarSrc, int64) {
-		body, ok := published[path]
-		if !ok {
-			return nil, -int64(vi.ErrENOENT)
-		}
-		return &memTarSrc{buf: body}, 0
-	}
-	t.Cleanup(func() {
-		carryPublish, carryExists, tarOpenSrc = savedPublish, savedExists, savedOpen
-		dropFresh = false
-	})
+	prior := []byte("old\n")
+	s := newCarryStore()
+	s.files["/host/FMR/SUB.TAR"] = append([]byte(nil), prior...)
+	s.files["/host/FMR/KEEP.TXT"] = []byte("keep")
+	s.install(t)
+	s.tarOpenStore(t)
+	t.Cleanup(func() { dropFresh = false })
 
 	m := testModel()
 	m.path = "/host/FMR"
@@ -421,15 +407,25 @@ func TestArchiveDropSavesAndBrowses(t *testing.T) {
 	if !dropFresh {
 		t.Fatal("a landing must earn a repaint")
 	}
-	if len(published) != 1 {
-		t.Fatalf("published %d files, want 1: %v", len(published), published)
-	}
 	dest := "/host/FMR/SUB-1.TAR"
-	if _, ok := published[dest]; !ok {
-		t.Fatalf("saved name %v, want the collision alternative %q", published, dest)
+	if !bytes.Equal(s.files[dest], blob) {
+		t.Fatalf("saved bytes differ from the offered archive (%d files)", len(s.files))
 	}
-	if !bytes.Equal(published[dest], blob) {
-		t.Fatal("saved bytes differ from the offered archive")
+	if !bytes.Equal(s.files["/host/FMR/SUB.TAR"], prior) {
+		t.Fatal("the colliding destination lost its bytes")
+	}
+	if len(s.writes) != 1 {
+		t.Fatalf("writes = %v, want exactly one stage", s.writes)
+	}
+	stage := s.writes[0]
+	if stage == dest || stage == "/host/FMR/SUB.TAR" {
+		t.Fatalf("stage %q aliases a destination", stage)
+	}
+	if _, ok := s.files[stage]; ok {
+		t.Fatalf("the stage %q survived publication", stage)
+	}
+	if len(s.renames) != 1 || s.renames[0] != [2]string{stage, dest} {
+		t.Fatalf("renames = %v, want the stage published to %q", s.renames, dest)
 	}
 	frame := pendingJoined(&m)
 	if !strings.Contains(frame, markerDropSaved+"SUB-1.TAR bytes=") {
@@ -532,23 +528,23 @@ func TestArchiveDropRefusesInvalidTar(t *testing.T) {
 	}
 }
 
-// A failed publication refuses by the kernel's rc and never opens a browser
-// over a destination that does not exist.
+// A failed publication refuses by the kernel's rc, cleans up its own stage
+// and never opens a browser over a destination that does not exist.
 func TestArchiveDropRefusesPublishFailure(t *testing.T) {
 	blob, _ := buildTestCarry(t)
 	fs := newCarryFS()
 	fs.dir("/FMR")
 	fs.install(t)
-	savedPublish, savedOpen := carryPublish, tarOpenSrc
-	carryPublish = func(string, []byte) int64 { return -int64(vi.ErrEIO) }
+	s := newCarryStore()
+	s.failWrite = -int64(vi.ErrEIO)
+	s.install(t)
+	prevOpen := tarOpenSrc
+	opened := 0
 	tarOpenSrc = func(string) (tarSrc, int64) {
-		t.Fatal("a failed publish must not open an archive")
-		return nil, 0
+		opened++
+		return nil, -int64(vi.ErrENOENT)
 	}
-	t.Cleanup(func() {
-		carryPublish, tarOpenSrc = savedPublish, savedOpen
-		dropFresh = false
-	})
+	t.Cleanup(func() { tarOpenSrc = prevOpen; dropFresh = false })
 
 	m := testModel()
 	m.path = "/host/FMR"
@@ -557,8 +553,18 @@ func TestArchiveDropRefusesPublishFailure(t *testing.T) {
 	if !strings.Contains(frame, markerDropNo+"write rc=") {
 		t.Fatalf("missing write refusal:\n%s", frame)
 	}
-	if m.tar != nil || m.path != "/host/FMR" {
-		t.Fatalf("failed publish left the receiver in tar=%v path=%q", m.tar, m.path)
+	if opened != 0 || m.tar != nil || m.path != "/host/FMR" {
+		t.Fatalf("failed publish left the receiver in opened=%d tar=%v path=%q",
+			opened, m.tar, m.path)
+	}
+	if len(s.writes) != 1 {
+		t.Fatalf("writes = %v, want one attempted stage", s.writes)
+	}
+	if len(s.deletes) != 1 || s.deletes[0] != s.writes[0] {
+		t.Fatalf("deletes = %v, want the failed stage %q", s.deletes, s.writes[0])
+	}
+	if len(s.files) != 0 {
+		t.Fatalf("a failed publish left files behind: %v", s.files)
 	}
 }
 
@@ -573,6 +579,297 @@ func TestVCardDropStillRoutesToContact(t *testing.T) {
 		t.Fatalf("vCard drop did not reach the contact face:\n%s", frame)
 	}
 	dropFresh = false
+}
+
+// carryStore is an in-memory host share behind the publisher's own
+// primitives. Tests point carryWriteFile/carryRename/carryDelete/carryNonce/
+// carryExists at it, so a landing runs the SHIPPED carryPublish — the stage
+// write, the no-replace rename and the cleanup are the production sequence,
+// not a replacement for it. A rename over a live name is refused, as the
+// kernel's preserve-existing publish refuses it (-9).
+type carryStore struct {
+	files     map[string][]byte
+	writes    []string
+	renames   [][2]string
+	deletes   []string
+	nonces    []uint32
+	onWrite   func(path string)
+	onRename  func(from, to string)
+	failWrite int64
+}
+
+func newCarryStore() *carryStore {
+	return &carryStore{files: map[string][]byte{}}
+}
+
+func (s *carryStore) install(t *testing.T) {
+	t.Helper()
+	prevWrite, prevRename := carryWriteFile, carryRename
+	prevDelete, prevNonce, prevExists := carryDelete, carryNonce, carryExists
+	carryWriteFile = func(path string, data []byte) int64 {
+		s.writes = append(s.writes, path)
+		if s.failWrite != 0 {
+			return s.failWrite
+		}
+		if s.onWrite != nil {
+			s.onWrite(path)
+		}
+		s.files[path] = append([]byte(nil), data...)
+		return 0
+	}
+	carryRename = func(from, to string) int64 {
+		s.renames = append(s.renames, [2]string{from, to})
+		if s.onRename != nil {
+			s.onRename(from, to)
+		}
+		if _, exists := s.files[to]; exists {
+			return vi.ErrFileExists
+		}
+		body, ok := s.files[from]
+		if !ok {
+			return -int64(vi.ErrENOENT)
+		}
+		s.files[to] = body
+		delete(s.files, from)
+		return 0
+	}
+	carryDelete = func(path string) int64 {
+		s.deletes = append(s.deletes, path)
+		if _, ok := s.files[path]; !ok {
+			return -int64(vi.ErrENOENT)
+		}
+		delete(s.files, path)
+		return 0
+	}
+	carryNonce = func() uint32 {
+		if len(s.nonces) == 0 {
+			return 0
+		}
+		n := s.nonces[0]
+		s.nonces = s.nonces[1:]
+		return n
+	}
+	carryExists = func(path string) bool { _, ok := s.files[path]; return ok }
+	t.Cleanup(func() {
+		carryWriteFile, carryRename = prevWrite, prevRename
+		carryDelete, carryNonce, carryExists = prevDelete, prevNonce, prevExists
+	})
+}
+
+func (s *carryStore) deleted(path string) bool {
+	for _, p := range s.deletes {
+		if p == path {
+			return true
+		}
+	}
+	return false
+}
+
+// tarOpenStore points the archive browser at the same in-memory share.
+func (s *carryStore) tarOpenStore(t *testing.T) {
+	t.Helper()
+	prev := tarOpenSrc
+	tarOpenSrc = func(path string) (tarSrc, int64) {
+		body, ok := s.files[path]
+		if !ok {
+			return nil, -int64(vi.ErrENOENT)
+		}
+		return &memTarSrc{buf: body}, 0
+	}
+	t.Cleanup(func() { tarOpenSrc = prev })
+}
+
+// The publisher itself never touches a live destination. A writer that lands
+// the name first keeps its exact bytes; the losing stage is removed and the
+// caller gets the kernel's EEXIST so it refuses by name.
+func TestArchivePublishCollisionKeepsWinnerBytes(t *testing.T) {
+	const dest = "/host/FMR/SUB.TAR"
+	winner := []byte("COMPETING-WRITER-BYTES\n")
+	s := newCarryStore()
+	s.files[dest] = append([]byte(nil), winner...)
+	s.install(t)
+
+	if rc := carryPublish(dest, []byte("OUR-ARCHIVE")); rc != vi.ErrFileExists {
+		t.Fatalf("publish rc = %d, want the kernel's EEXIST %d", rc, vi.ErrFileExists)
+	}
+	if !bytes.Equal(s.files[dest], winner) {
+		t.Fatalf("the winner's bytes changed: %q", s.files[dest])
+	}
+	if len(s.writes) != 1 {
+		t.Fatalf("writes = %v, want exactly one stage", s.writes)
+	}
+	stage := s.writes[0]
+	if stage == dest || stage == dest+"~" {
+		t.Fatalf("stage %q is the destination or its shared temp", stage)
+	}
+	if !strings.HasPrefix(stage, "/host/FMR/") {
+		t.Fatalf("stage %q is not a sibling of the destination", stage)
+	}
+	if _, ok := s.files[stage]; ok {
+		t.Fatalf("the losing stage %q survived", stage)
+	}
+	if len(s.deletes) != 1 || s.deletes[0] != stage {
+		t.Fatalf("deletes = %v, want only the losing stage %q", s.deletes, stage)
+	}
+	for _, op := range s.renames {
+		if op[0] != stage || op[1] != dest {
+			t.Fatalf("rename %v does not publish exactly the stage to dest", op)
+		}
+	}
+	if s.deleted(dest) {
+		t.Fatal("the publisher deleted the destination")
+	}
+}
+
+// A competing writer that lands the chosen name AFTER the probe wins. The
+// receiver refuses the collision, does not open a browser over another
+// writer's file and leaves no partial archive behind.
+func TestArchiveDropRefusesCollisionAfterProbe(t *testing.T) {
+	blob, _ := buildTestCarry(t)
+	const dest = "/host/FMR/SUB.TAR"
+	competitor := []byte("COMPETITOR-AFTER-PROBE\n")
+	fs := newCarryFS()
+	fs.dir("/FMR")
+	fs.install(t)
+	s := newCarryStore()
+	s.onRename = func(_, to string) {
+		if to == dest {
+			s.files[to] = append([]byte(nil), competitor...)
+		}
+	}
+	s.install(t)
+	opened := 0
+	prevOpen := tarOpenSrc
+	tarOpenSrc = func(string) (tarSrc, int64) {
+		opened++
+		return nil, -int64(vi.ErrENOENT)
+	}
+	t.Cleanup(func() { tarOpenSrc = prevOpen; dropFresh = false })
+
+	m := testModel()
+	m.path = "/host/FMR"
+	m.dropOffer(tabappOffer("archive", blob))
+	frame := pendingJoined(&m)
+	if !strings.Contains(frame, markerDropNo+"collision") {
+		t.Fatalf("missing collision refusal:\n%s", frame)
+	}
+	if strings.Contains(frame, markerDropSaved) || strings.Contains(frame, markerTarOpen) {
+		t.Fatalf("a collision claimed a save or a browse:\n%s", frame)
+	}
+	if opened != 0 || m.tar != nil || m.path != "/host/FMR" {
+		t.Fatalf("collision opened a browser: opened=%d tar=%v path=%q",
+			opened, m.tar, m.path)
+	}
+	if !bytes.Equal(s.files[dest], competitor) {
+		t.Fatalf("the competitor's bytes changed to %q", s.files[dest])
+	}
+	if len(s.writes) != 1 {
+		t.Fatalf("writes = %v, want one stage", s.writes)
+	}
+	if _, ok := s.files[s.writes[0]]; ok {
+		t.Fatalf("the losing stage %q survived", s.writes[0])
+	}
+	if s.deleted(dest) {
+		t.Fatal("the receiver deleted another writer's destination")
+	}
+}
+
+// Two drops that both probed the same free name interleave: each owns a
+// distinct stage, the first completed publish wins with its exact bytes, and
+// the other refuses the collision instead of deleting or overwriting it.
+func TestArchiveDropInterleavedCollisionOwnsStages(t *testing.T) {
+	blobA := buildTarForTest(t, []testTarEnt{
+		{"SUB", true, nil},
+		{"SUB/A.TXT", false, []byte("loser-alpha\n")},
+	})
+	blobB := buildTarForTest(t, []testTarEnt{
+		{"SUB", true, nil},
+		{"SUB/B.TXT", false, []byte("winner-bravo\n")},
+	})
+	const dest = "/host/FMR/SUB.TAR"
+	fs := newCarryFS()
+	fs.dir("/FMR")
+	fs.install(t)
+	s := newCarryStore()
+	s.install(t)
+	s.tarOpenStore(t)
+	mA := testModel()
+	mA.path = "/host/FMR"
+	mB := testModel()
+	mB.path = "/host/FMR"
+	triggered := false
+	// The second drop runs while the first is between its stage write and
+	// its publish, so both name probes see SUB.TAR free.
+	s.onWrite = func(string) {
+		if triggered {
+			return
+		}
+		triggered = true
+		mB.dropOffer(tabappOffer("archive", blobB))
+	}
+	t.Cleanup(func() { dropFresh = false })
+
+	mA.dropOffer(tabappOffer("archive", blobA))
+
+	if !bytes.Equal(s.files[dest], blobB) {
+		t.Fatalf("destination bytes are not the winner's exact archive")
+	}
+	if len(s.writes) != 2 {
+		t.Fatalf("writes = %v, want two independently owned stages", s.writes)
+	}
+	stageA, stageB := s.writes[0], s.writes[1]
+	if stageA == stageB {
+		t.Fatalf("both drops shared one stage: %q", stageA)
+	}
+	for _, stage := range []string{stageA, stageB} {
+		if stage == dest || stage == dest+"~" {
+			t.Fatalf("stage %q aliases the destination or its shared temp", stage)
+		}
+		if _, ok := s.files[stage]; ok {
+			t.Fatalf("stage %q survived the publish", stage)
+		}
+	}
+	if !strings.Contains(pendingJoined(&mB), markerDropSaved+"SUB.TAR bytes=") {
+		t.Fatalf("the winning drop did not save:\n%s", pendingJoined(&mB))
+	}
+	if mB.tar == nil || mB.path != dest+"/" {
+		t.Fatalf("the winning drop did not browse: tar=%v path=%q", mB.tar, mB.path)
+	}
+	loser := pendingJoined(&mA)
+	if !strings.Contains(loser, markerDropNo+"collision") {
+		t.Fatalf("the losing drop did not refuse the collision:\n%s", loser)
+	}
+	if mA.tar != nil || mA.path != "/host/FMR" {
+		t.Fatalf("the losing drop opened a browser: tar=%v path=%q", mA.tar, mA.path)
+	}
+	if len(s.deletes) != 1 || s.deletes[0] != stageA {
+		t.Fatalf("deletes = %v, want only the losing stage %q", s.deletes, stageA)
+	}
+	if s.deleted(dest) {
+		t.Fatal("an interleaved drop deleted the winner's destination")
+	}
+}
+
+// A destination directory with no room for an independently owned stage
+// refuses by path; nothing is written and no live file is touched.
+func TestArchivePublishRefusesExhaustedStageRoom(t *testing.T) {
+	s := newCarryStore()
+	s.install(t)
+	dir := "/host/" + strings.Repeat("D", 54-len("/host/"))
+	dest := dir + "/A"
+	if len(dest) > maxPath {
+		t.Fatalf("fixture dest %q is over the path cap", dest)
+	}
+	if rc := carryPublish(dest, []byte("ARCHIVE")); rc != -vi.ErrENAMETOOLONG {
+		t.Fatalf("publish rc = %d, want ENAMETOOLONG %d", rc, -vi.ErrENAMETOOLONG)
+	}
+	if len(s.writes) != 0 || len(s.deletes) != 0 || len(s.renames) != 0 {
+		t.Fatalf("a refused publish wrote/renamed/deleted: %v %v %v",
+			s.writes, s.renames, s.deletes)
+	}
+	if _, ok := s.files[dest]; ok {
+		t.Fatal("a refused publish created the destination")
+	}
 }
 
 // buildTestCarry runs the real sender over a small tree and returns the
