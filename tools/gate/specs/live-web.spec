@@ -40,6 +40,12 @@
 # end to end — every landed op on committed fixtures, the refused row
 # reaching the page itself, and the negatives (oversize pre-exec refusal,
 # mid-op kill, op-storm budget).
+# 82-87 (M211d #3913): bounded input listeners — a real typed edit reaches
+# the corpus row's callback and repaints with live values, repeated edits
+# keep focus, every admission refusal is named in the page, an over-budget
+# dispatch refuses by name and the next edit runs, a page parked past the
+# 120 s active-work deadline still dispatches, and navigation reaps the
+# old worker before the spools are reused.
 # v6 (M117f #2478, ADR 0057): vi.Dial v6 connect+GET to the hermetic
 # responder; WEB.ELF's named v6-literal URL refusal beside it — no v6 URL
 # grammar or TLS-over-v6 responder exists yet. No public-internet access,
@@ -4259,7 +4265,7 @@ shutil.copy(qjs, share / "QJS.BIN")
     "</body></html>\n")
 (share / "RPCOPS.BAD").write_text(
     '{"op":"eval","src":"5"}\n'
-    '{"op":"hello","version":3}\n'
+    '{"op":"hello","version":4}\n'
     '{"op":"eval","src":"1+2"}\n'
     '{"op":"bogus"}\n'
     '{"op":"hello","version":99}\n'
@@ -4360,7 +4366,7 @@ vgate_run 62 -- \
 vgate_assert 62 serial-contains 'web: ready'
 vgate_assert 62 serial-contains 'web: script n='
 vgate_assert 62 serial-contains 'web: script worker pid='
-vgate_assert 62 serial-contains 'web: script hello version=3'
+vgate_assert 62 serial-contains 'web: script hello version=4'
 vgate_assert 62 serial-count 'web: script rc=0' 2
 vgate_assert 62 serial-contains 'web: script done'
 vgate_assert 62 serial-absent 'web: script worker gone'
@@ -4376,7 +4382,7 @@ vgate_run 63 -- \
     --script-expect 'qjs: clean' --timeout 120
 
 vgate_assert 63 serial-contains 'dom_rpc_hello'
-vgate_assert 63 serial-contains '"op":"hello","ok":true,"version":3'
+vgate_assert 63 serial-contains '"op":"hello","ok":true,"version":4'
 vgate_assert 63 serial-contains '"out":"3'
 vgate_assert 63 serial-contains 'dom_rpc_op'
 vgate_assert 63 serial-contains 'dom_rpc_version'
@@ -4965,7 +4971,7 @@ vgate_run 67 -- \
     --script-expect 'web: script done' --timeout 120
 
 vgate_assert 67 serial-contains 'web: ready'
-vgate_assert 67 serial-contains 'web: script hello version=3'
+vgate_assert 67 serial-contains 'web: script hello version=4'
 vgate_assert 67 serial-contains 'web: dom doc.title ok'
 vgate_assert 67 serial-count 'web: dom node.text ok' 2
 vgate_assert 67 serial-contains 'web: dom node.attr ok'
@@ -5060,7 +5066,7 @@ vgate_run 71 -- \
     --script-expect 'web: script done' --timeout 120
 
 vgate_assert 71 serial-contains 'web: ready'
-vgate_assert 71 serial-contains 'web: script hello version=3'
+vgate_assert 71 serial-contains 'web: script hello version=4'
 vgate_assert 71 serial-contains 'web: dom node.setText ok'
 vgate_assert 71 serial-contains 'web: dom field.setValue ok'
 vgate_assert 71 serial-contains 'web: console wrote=2'
@@ -5210,7 +5216,7 @@ vgate_run 74 -- \
     --script-expect 'web: script done' --timeout 120
 
 vgate_assert 74 serial-contains 'web: ready'
-vgate_assert 74 serial-contains 'web: script hello version=3'
+vgate_assert 74 serial-contains 'web: script hello version=4'
 vgate_assert 74 serial-contains 'web: dom doc.title ok'
 vgate_assert 74 serial-count 'web: dom node.text ok' 2
 vgate_assert 74 serial-contains 'web: dom node.attr ok'
@@ -5232,7 +5238,7 @@ vgate_run 75 -- \
     --script-expect 'web: script done' --timeout 120
 
 vgate_assert 75 serial-contains 'web: ready'
-vgate_assert 75 serial-contains 'web: script hello version=3'
+vgate_assert 75 serial-contains 'web: script hello version=4'
 vgate_assert 75 serial-contains 'web: dom node.setText ok'
 vgate_assert 75 serial-contains 'web: dom node.text ok'
 vgate_assert 75 serial-contains 'web: console readback=fib(25)=75025'
@@ -5251,7 +5257,7 @@ vgate_run 76 -- \
     --script-expect 'web: script done' --timeout 120
 
 vgate_assert 76 serial-contains 'web: ready'
-vgate_assert 76 serial-contains 'web: script hello version=3'
+vgate_assert 76 serial-contains 'web: script hello version=4'
 vgate_assert 76 serial-count 'web: dom field.setValue ok' 2
 vgate_assert 76 serial-contains 'web: dom node.setText ok'
 vgate_assert 76 serial-contains 'web: console who=page-user'
@@ -5330,7 +5336,7 @@ vgate_run 80 -- \
     --script-expect 'web: url-focus' --timeout 120
 
 vgate_assert 80 serial-contains 'web: ready'
-vgate_assert 80 serial-contains 'web: script hello version=3'
+vgate_assert 80 serial-contains 'web: script hello version=4'
 vgate_assert 80 serial-contains 'web: console armed=kill'
 vgate_assert 80 serial-contains 'web: dom timer.set ok'
 vgate_assert 80 serial-contains 'web: dom timer.next wait'
@@ -5356,3 +5362,408 @@ vgate_assert 81 serial-contains 'web: script rc=70 error=JSException'
 vgate_assert 81 serial-contains 'web: script done ops=32'
 vgate_assert 81 serial-absent 'web: script worker gone'
 vgate_assert 81 serial-absent '[EXC] parking:'
+
+# --- boots 82-87 (M211d #3913): bounded input listeners, end to end ----
+# The worker registers ONE `input` listener on an enabled id-addressed
+# text/search control and parks on `event.next`; real seat keystrokes edit
+# the focused control, the browser mirrors the live value into the value
+# attribute and answers the parked ask, the worker calls JS with that
+# value, the callback writes the DOM, and the same reflow repaints while
+# focus rides through. 82 is the committed corpus row's typed edit (live
+# value, echo write, reflow, pixel growth); 83 repeats edits after
+# reflows with no compensating refocus; 84 names every admission refusal
+# in the page itself; 85 refuses one over-budget dispatch and then runs
+# the next edit; 86 parks past the 120 s active-work deadline and still
+# dispatches; 87 navigates from a scripted page, reaps page 1's worker
+# before the spool is reused, and drives the new page's own listener.
+vgate_file script-input.txt <<'EOFS'
+vf mv QJSHELD.BIN QJS.BIN
+exec WEB.ELF /host/SCRIPTED-INPUT.HTML
+EOFS
+
+vgate_file script-input-refuse.txt <<'EOFS'
+vf mv QJSHELD.BIN QJS.BIN
+exec WEB.ELF /host/DOMLISTEN.HTML
+EOFS
+
+vgate_file script-input-budget.txt <<'EOFS'
+vf mv QJSHELD.BIN QJS.BIN
+exec WEB.ELF /host/DOMBUDGET.HTML
+EOFS
+
+vgate_file script-input-idle.txt <<'EOFS'
+vf mv QJSHELD.BIN QJS.BIN
+exec WEB.ELF /host/SCRIPTED-INPUT.HTML
+EOFS
+
+vgate_file script-input-idle2.txt <<'EOFS'
+echo idle-crossed
+EOFS
+
+vgate_file script-input-nav.txt <<'EOFS'
+vf mv QJSHELD.BIN QJS.BIN
+exec WEB.ELF /host/DOMNAV1.HTML
+EOFS
+
+vgate_setup_python <<'PY'
+# Stage the interactive corpus row verbatim and the three spec-authored
+# listener fixtures. DOMLISTEN registers q + t1..t7 (eight admitted), then
+# asks for every refusal in order; the final console line proves the
+# surviving registration still fires. DOMBUDGET's callback overruns the
+# 32-op dispatch budget on a value of exactly "z" and writes normally for
+# anything else. NAV1/NAV2 are two scripted pages with the identical
+# #q/#echo shape so the navigation leg can tell whose callback ran.
+import os, pathlib, shutil
+share = pathlib.Path(os.environ.get("VG_SHARE") or os.path.join(os.environ["RUN_DIR"], "share"))
+corpus = os.path.join("user", "go", "webrender", "testdata", "corpus")
+shutil.copy(os.path.join(corpus, "scripted-input.html"), str(share / "SCRIPTED-INPUT.HTML"))
+(share / "DOMLISTEN.HTML").write_text(
+    "<!doctype html><html><body><h1>listener admissions</h1>"
+    "<p>type here: <input id=\"q\" type=\"text\"></p>"
+    "<input id=\"ck\" type=\"checkbox\"><input id=\"dis\" type=\"text\" disabled>"
+    "<div id=\"dv\">plain</div>"
+    "<input id=\"t1\" type=\"text\"><input id=\"t2\" type=\"text\">"
+    "<input id=\"t3\" type=\"text\"><input id=\"t4\" type=\"text\">"
+    "<input id=\"t5\" type=\"text\"><input id=\"t6\" type=\"text\">"
+    "<input id=\"t7\" type=\"text\"><input id=\"t8\" type=\"text\">"
+    "<script>"
+    "function onInput(e) { console.log(\"live=\" + e.target.value); }"
+    "function add(id, kind, label) {"
+    "  try { document.getElementById(id).addEventListener(kind, onInput);"
+    "    console.log(label + \"=ok\"); }"
+    "  catch (e) { console.log(label + \"=\" + e.name); }"
+    "}"
+    "add(\"q\", \"input\", \"ok\");"
+    "add(\"q\", \"input\", \"dup\");"
+    "add(\"q\", \"click\", \"click\");"
+    "add(\"ck\", \"input\", \"control\");"
+    "add(\"dis\", \"input\", \"disabled\");"
+    "add(\"nope\", \"input\", \"missing\");"
+    "add(\"dv\", \"input\", \"div\");"
+    "add(\"t1\", \"input\", \"t1\");add(\"t2\", \"input\", \"t2\");"
+    "add(\"t3\", \"input\", \"t3\");add(\"t4\", \"input\", \"t4\");"
+    "add(\"t5\", \"input\", \"t5\");add(\"t6\", \"input\", \"t6\");"
+    "add(\"t7\", \"input\", \"t7\");"
+    "add(\"t8\", \"input\", \"budget\");"
+    "console.log(\"listener=ready\");"
+    "</script></body></html>\n")
+(share / "DOMBUDGET.HTML").write_text(
+    "<!doctype html><html><body><h1>dispatch budget</h1>"
+    "<p>type here: <input id=\"q\" type=\"text\"></p><p id=\"echo\"></p>"
+    "<script>"
+    "document.getElementById(\"q\").addEventListener(\"input\", function(e) {"
+    "  var v = e.target.value;"
+    "  if (v === \"z\") { for (var i = 0; i < 40; i++) console.log(\"storm\" + i); }"
+    "  document.getElementById(\"echo\").textContent = \"seen:\" + v;"
+    "  console.log(\"live=\" + v);"
+    "});"
+    "console.log(\"listener=ready\");"
+    "</script></body></html>\n")
+(share / "DOMNAV1.HTML").write_text(
+    "<!doctype html><html><body>"
+    "<p><a href=\"DOMNAV2.HTML\">go to page two</a></p>"
+    "<h1>nav one</h1><p>type here: <input id=\"q\" type=\"text\"></p>"
+    "<p id=\"echo\"></p>"
+    "<script>"
+    "document.getElementById(\"q\").addEventListener(\"input\", function(e) {"
+    "  var v = e.target.value;"
+    "  document.getElementById(\"echo\").textContent = \"old:\" + v;"
+    "  console.log(\"old=\" + v);"
+    "});"
+    "console.log(\"nav1=ready\");"
+    "</script></body></html>\n")
+(share / "DOMNAV2.HTML").write_text(
+    "<!doctype html><html><body>"
+    "<h1>nav two</h1><p>type here: <input id=\"q\" type=\"text\"></p>"
+    "<p id=\"echo\"></p>"
+    "<script>"
+    "document.getElementById(\"q\").addEventListener(\"input\", function(e) {"
+    "  var v = e.target.value;"
+    "  document.getElementById(\"echo\").textContent = \"new:\" + v;"
+    "  console.log(\"fresh=\" + v);"
+    "});"
+    "console.log(\"nav2=ready\");"
+    "</script></body></html>\n")
+print("staged SCRIPTED-INPUT.HTML + DOMLISTEN/DOMBUDGET/DOMNAV1/DOMNAV2 for the M211d listener legs")
+PY
+
+# The frame comparator every listener leg shares: count dark (ink) pixels in
+# the presented page band of one 1280x720 BGRX raw and require the later
+# frame to carry strictly more ink than the earlier one.
+vgate_file ink.py <<'EOFP'
+import glob, os, sys
+
+def frames(tag):
+    found = []
+    for p in glob.glob(os.path.join(os.environ["RUN_DIR"], "snap%s-*.raw" % tag)):
+        n = int(os.path.basename(p).rsplit("-", 1)[1].split(".")[0])
+        found.append((n, p))
+    return [p for _, p in sorted(found)]
+
+# The page paints light text on the dark page band the presentation maps to
+# the scanout (x 0..512, y 64..352). "Ink" is the bright text pixels there.
+def ink(path):
+    data = open(path, "rb").read()
+    assert len(data) == 1280 * 720 * 4, (path, len(data))
+    n = 0
+    for y in range(64, 352):
+        base = y * 1280
+        for x in range(0, 512):
+            i = (base + x) * 4
+            if data[i] > 150 and data[i + 1] > 150 and data[i + 2] > 150:
+                n += 1
+    return n
+
+tag = sys.argv[1]
+paths = frames(tag)
+assert len(paths) == 2, "want two listener frames for snap%s, got %r" % (tag, paths)
+first, second = ink(paths[0]), ink(paths[1])
+assert first > 20 and second > 20, "blank listener frame (ink %d -> %d)" % (first, second)
+assert second > first + 8, "typed edit did not add ink (%d -> %d)" % (first, second)
+print("listener leg %s: ink %d -> %d across the typed edit" % (tag, first, second))
+EOFP
+
+# --- boot 82: a real typed edit reaches the corpus row's listener -----
+vgate_run 82 -- \
+    --screen '$RUN_DIR/screen-input' \
+    --via-virtio --cvc-snap \
+    --snapshot-out '$RUN_DIR/snap82' \
+    --snapshot-after 'web: console listener=ready' \
+    --snapshot-after 'web: dom reflow' \
+    --script '$RUN_DIR/script-input.txt' \
+    --input-chords 'tab,w' --input-chords-after 'web: dom event.next wait' \
+    --script-expect 'web: script input id=q rc=0 ops=3' --timeout 180
+
+vgate_assert 82 serial-contains 'web: ready'
+vgate_assert 82 serial-contains 'web: script hello version=4'
+vgate_assert 82 serial-contains 'web: dom listener.add ok'
+vgate_assert 82 serial-contains 'web: console listener=ready'
+vgate_assert 82 serial-contains 'web: dom event.next wait'
+vgate_assert 82 serial-contains 'web: dom event.next ok target=q'
+vgate_assert 82 serial-exact 'web: console live=w' 1
+vgate_assert 82 serial-contains 'web: console live=w'
+vgate_assert 82 serial-contains 'web: dom node.setText ok'
+vgate_assert 82 serial-count 'web: script input id=q rc=0 ops=3' 1
+vgate_assert 82 serial-count 'web: dom reflow' 1
+vgate_assert 82 serial-absent 'web: script worker gone'
+vgate_assert 82 serial-absent 'dom_op_wire'
+vgate_assert 82 serial-absent '[EXC] parking:'
+vgate_assert 82 python <<'PY'
+import os, subprocess, sys
+print(subprocess.check_output([sys.executable, os.path.join(os.environ["RUN_DIR"], "ink.py"), "82"], text=True).strip())
+PY
+
+# --- boot 83: repeated edits ride the same focus across reflows -------
+vgate_run 83 -- \
+    --screen '$RUN_DIR/screen-input2' \
+    --via-virtio --cvc-snap \
+    --snapshot-out '$RUN_DIR/snap83' \
+    --snapshot-after 'web: console live=your' \
+    --script '$RUN_DIR/script-input.txt' \
+    --input-chords 'tab,y' --input-chords-after 'web: dom event.next wait' \
+    --input-chords2 'o,u,r' --input-chords2-after 'web: script input id=q rc=0 ops=3' \
+    --script-expect 'web: console live=your' --timeout 180
+
+vgate_assert 83 serial-contains 'web: ready'
+vgate_assert 83 serial-contains 'web: dom listener.add ok'
+vgate_assert 83 serial-contains 'web: dom event.next ok target=q'
+vgate_assert 83 serial-exact 'web: console live=y' 1
+vgate_assert 83 serial-contains 'web: console live=your'
+vgate_assert 83 serial-count 'web: script input id=q rc=0 ops=3' 2
+vgate_assert 83 serial-count 'web: dom reflow' 2
+vgate_assert 83 serial-absent 'web: script worker gone'
+vgate_assert 83 serial-absent 'dom_op_wire'
+vgate_assert 83 serial-absent '[EXC] parking:'
+# The typed values only grow: each dispatch's current live value extends the
+# previous one, and the last one is the fully typed string — repeated edits
+# after the earlier reflows, with no refocus between the two bursts.
+vgate_assert 83 python <<'PY'
+import os
+ser = open(os.environ["VG_SER"], "rb").read().decode("utf-8", "replace")
+vals = [l.split("live=", 1)[1].strip() for l in ser.splitlines() if "web: console live=" in l]
+assert vals and vals[0] == "y", vals
+assert vals[-1] == "your", vals
+for a, b in zip(vals, vals[1:]):
+    assert b.startswith(a), (a, b)
+    assert len(b) > len(a), (a, b)
+print("live values after repeated edits: %s" % " -> ".join(vals))
+PY
+vgate_assert 83 snapshot 'snap83-*.raw' <<'PY'
+import sys
+data = open(sys.argv[1], "rb").read()
+assert len(data) == 1280*720*4
+bright = 0
+for y in range(64, 352):
+    for x in range(0, 512):
+        i = (y*1280+x)*4
+        if data[i] > 150 and data[i+1] > 150 and data[i+2] > 150:
+            bright += 1
+assert bright > 20, "the repeated-edit scanout shows no scripted text (bright=%d)" % bright
+print("live-web 83: the repeated-edit frame painted (bright=%d)" % bright)
+PY
+
+# --- boot 84: every admission refusal is named into the page ----------
+vgate_run 84 -- \
+    --screen '$RUN_DIR/screen-listen' \
+    --via-virtio --cvc-snap \
+    --script '$RUN_DIR/script-input-refuse.txt' \
+    --input-chords 'tab,x' --input-chords-after 'web: dom event.next wait' \
+    --script-expect 'web: console live=x' --timeout 180
+
+vgate_assert 84 serial-contains 'web: ready'
+vgate_assert 84 serial-contains 'web: script hello version=4'
+vgate_assert 84 serial-contains 'web: console ok=ok'
+vgate_assert 84 serial-count 'web: dom listener.add ok' 8
+vgate_assert 84 serial-contains 'web: console dup=event_duplicate'
+vgate_assert 84 serial-contains 'web: dom listener.add event_kind_click'
+vgate_assert 84 serial-contains 'web: console click=event_kind_click'
+vgate_assert 84 serial-contains 'web: dom listener.add event_control'
+vgate_assert 84 serial-contains 'web: console control=event_control'
+vgate_assert 84 serial-contains 'web: console div=event_control'
+vgate_assert 84 serial-contains 'web: dom listener.add event_disabled'
+vgate_assert 84 serial-contains 'web: console disabled=event_disabled'
+vgate_assert 84 serial-contains 'web: dom listener.add event_target'
+vgate_assert 84 serial-contains 'web: console missing=event_target'
+vgate_assert 84 serial-contains 'web: dom listener.add event_budget_regs'
+vgate_assert 84 serial-contains 'web: console budget=event_budget_regs'
+vgate_assert 84 serial-contains 'web: console listener=ready'
+vgate_assert 84 serial-contains 'web: dom event.next wait'
+vgate_assert 84 serial-contains 'web: console live=x'
+vgate_assert 84 serial-contains 'web: script input id=q rc=0 ops=2'
+vgate_assert 84 serial-absent 'web: script worker gone'
+vgate_assert 84 serial-absent '[EXC] parking:'
+
+# --- boot 85: an over-budget dispatch refuses, the next edit runs -----
+vgate_run 85 -- \
+    --screen '$RUN_DIR/screen-lbudget' \
+    --via-virtio --cvc-snap \
+    --script '$RUN_DIR/script-input-budget.txt' \
+    --input-chords 'tab,z' --input-chords-after 'web: dom event.next wait' \
+    --input-chords2 'y' --input-chords2-after 'web: script input id=q error=JSException' \
+    --script-expect 'web: console live=zy' --timeout 180
+
+vgate_assert 85 serial-contains 'web: ready'
+vgate_assert 85 serial-contains 'web: dom listener.add ok'
+vgate_assert 85 serial-contains 'web: console listener=ready'
+vgate_assert 85 serial-contains 'web: dom event.next wait'
+vgate_assert 85 serial-contains 'web: console storm30'
+vgate_assert 85 serial-contains 'script_budget_ops'
+vgate_assert 85 serial-contains 'web: script input id=q error=JSException'
+vgate_assert 85 serial-contains 'web: script input id=q rc=0 ops=3'
+vgate_assert 85 serial-contains 'web: console live=zy'
+vgate_assert 85 serial-contains 'web: dom node.setText ok'
+vgate_assert 85 serial-contains 'web: dom reflow'
+vgate_assert 85 serial-count 'web: console live=' 1
+vgate_assert 85 serial-absent 'web: script worker gone'
+vgate_assert 85 serial-absent '[EXC] parking:'
+
+# --- boot 86: parked past 120 s, the page still takes a real edit -----
+vgate_run 86 -- \
+    --screen '$RUN_DIR/screen-lidle' \
+    --via-virtio --cvc-snap \
+    --snapshot-out '$RUN_DIR/snap86' \
+    --snapshot-after 'web: dom reflow' \
+    --script '$RUN_DIR/script-input-idle.txt' \
+    --script2 '$RUN_DIR/script-input-idle2.txt' --script2-after 'web: dom event.next wait' --script2-delay 125 \
+    --input-chords 'tab,t' --input-chords-after 'idle-crossed' \
+    --script-expect 'web: script input id=q rc=0 ops=3' --timeout 260
+
+vgate_assert 86 serial-contains 'web: ready'
+vgate_assert 86 serial-contains 'web: script hello version=4'
+vgate_assert 86 serial-contains 'web: dom listener.add ok'
+vgate_assert 86 serial-contains 'web: dom event.next wait'
+vgate_assert 86 serial-count 'web: script idle' 20
+vgate_assert 86 serial-contains 'idle-crossed'
+vgate_assert 86 serial-contains 'web: console live=t'
+vgate_assert 86 serial-contains 'web: script input id=q rc=0 ops=3'
+vgate_assert 86 serial-contains 'web: dom reflow'
+vgate_assert 86 serial-absent 'web: script worker gone'
+vgate_assert 86 serial-absent 'dom_op_wire'
+vgate_assert 86 serial-absent 'web: script spool-limit'
+vgate_assert 86 serial-absent '[EXC] parking:'
+vgate_assert 86 snapshot 'snap86-*.raw' <<'PY'
+import sys
+data = open(sys.argv[1], "rb").read()
+assert len(data) == 1280*720*4
+bright = 0
+for y in range(64, 352):
+    for x in range(0, 512):
+        i = (y*1280+x)*4
+        if data[i] > 150 and data[i+1] > 150 and data[i+2] > 150:
+            bright += 1
+assert bright > 20, "post-idle scanout shows no scripted text (bright=%d)" % bright
+print("live-web 86: the post-idle edit painted (bright=%d)" % bright)
+PY
+
+# --- boot 87: navigation reaps page 1 before the spools are reused ----
+vgate_run 87 -- \
+    --screen '$RUN_DIR/screen-lnav' \
+    --via-virtio --cvc-snap \
+    --snapshot-out '$RUN_DIR/snap87' \
+    --snapshot-after 'web: console old=a' \
+    --snapshot-after 'web: console fresh=b' \
+    --script '$RUN_DIR/script-input-nav.txt' \
+    --input-chords 'tab,a' --input-chords-after 'web: dom event.next wait' \
+    --pointer-virtio '42,95,c;700,650' --pointer-virtio-after 'web: console old=a' \
+    --input-chords2 'tab,b' --input-chords2-after 'web: console nav2=ready' \
+    --script-expect 'web: console fresh=b' --timeout 300
+
+vgate_assert 87 serial-contains 'web: ready'
+vgate_assert 87 serial-contains 'web: console nav1=ready'
+vgate_assert 87 serial-contains 'web: dom event.next wait'
+vgate_assert 87 serial-contains 'web: console old=a'
+vgate_assert 87 serial-contains 'web: script input id=q rc=0 ops=3'
+vgate_assert 87 serial-contains 'web: script teardown page=1'
+vgate_assert 87 serial-contains 'regs=1 events=0 timers=0'
+vgate_assert 87 serial-contains 'web: script worker gone'
+vgate_assert 87 serial-contains 'web: script page=2'
+vgate_assert 87 serial-count 'web: script worker pid=' 2
+vgate_assert 87 serial-contains 'web: console nav2=ready'
+vgate_assert 87 serial-contains 'web: console fresh=b'
+vgate_assert 87 serial-count 'web: script input id=q rc=0 ops=3' 2
+vgate_assert 87 serial-absent 'web: console old=b'
+vgate_assert 87 serial-absent 'web: console fresh=a'
+vgate_assert 87 serial-absent 'web: script done'
+vgate_assert 87 serial-absent '[EXC] parking:'
+vgate_assert 87 python <<'PY'
+import os, glob, sys
+ser = open(os.environ["VG_SER"], "rb").read().decode("utf-8", "replace")
+def at(s):
+    i = ser.find(s)
+    assert i >= 0, "missing serial line %r" % s
+    return i
+teardown = at("web: script teardown page=1")
+page2 = at("web: script page=2")
+fresh = at("web: console fresh=b")
+assert teardown < page2 < fresh, (teardown, page2, fresh)
+print("live-web 87: teardown page=1 -> page=2 -> fresh=b in order")
+PY
+vgate_assert 87 python <<'PY'
+import glob, os
+paths = {}
+for p in glob.glob(os.path.join(os.environ["RUN_DIR"], "snap87-*.raw")):
+    n = int(os.path.basename(p).rsplit("-", 1)[1].split(".")[0])
+    paths[n] = p
+assert sorted(paths) == [0, 1], paths
+def ink(path):
+    data = open(path, "rb").read()
+    assert len(data) == 1280*720*4, (path, len(data))
+    n = 0
+    for y in range(64, 352):
+        for x in range(0, 512):
+            i = (y*1280+x)*4
+            if data[i] > 150 and data[i+1] > 150 and data[i+2] > 150:
+                n += 1
+    return n
+old_page, new_page = paths[0], paths[1]
+a, b = open(old_page, "rb").read(), open(new_page, "rb").read()
+diff = 0
+for y in range(64, 352):
+    for x in range(0, 512):
+        i = (y*1280+x)*4
+        if a[i:i+3] != b[i:i+3]:
+            diff += 1
+assert ink(new_page) > 20, "new page shows no text"
+assert diff > 300, "page 2 repainted page 1's frame (diff=%d)" % diff
+print("live-web 87: page 2 differs from page 1 (diff=%d, ink=%d)" % (diff, ink(new_page)))
+PY
