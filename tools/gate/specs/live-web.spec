@@ -73,6 +73,18 @@ vf rm FLINT/ws/bookmarks/ATOMS.jsonl
 exec WEB.ELF /host/PAGE.HTML
 EOF
 
+# M211d (#3913): hold the sidebar-open frame before the pick/remove chords.
+# The capture request rides the cv-input queue with the chords, and queued
+# chords are serviced first — OBSERVED snap-40 streamed AFTER the pick had
+# closed the panel (plate pixels 0). Chord 2 is therefore gated on the
+# guest's own stream-completion receipt (`cvspike: snap n=1`, the same
+# anchor live-term-depth/go-wm-seat use), so nothing is queued ahead of
+# the frame. The host's CVC-SNAPSHOT lines are not guest serial and the
+# chord watcher cannot see them.
+vgate_file script-bm-shot.txt <<'EOF'
+echo snap40-go
+EOF
+
 vgate_file script-nav.txt <<'EOF'
 exec WEB.ELF /host/PAGE.HTML
 EOF
@@ -342,13 +354,18 @@ if not os.path.exists(chain):
     sys.exit("pinned fixture chain missing at %s" % chain)
 # #3731: a stale responder holding 127.0.0.1:24533 serves this run's guest
 # while the run's own peer log stays empty. Reap orphans, refuse squatters.
+# #3913: capacity follows the graded boot count — boot 12 dials once per
+# iteration, and the literal 2 left the third iteration with a dead peer
+# (OBSERVED `web: error tls` on 12-03 with dial already succeeded).
+boots = int(os.environ.get("BOOTS") or "1")
 peer_guard.claim(24533, "tlsresponder.py")
 cmd = [
     sys.executable,
     os.path.join("user", "src", "lib", "tls", "vectors", "tlsresponder.py"),
     "--host", "127.0.0.1", "--port", "24533",
     "--cert", chain, "--key", os.path.join(cfx, "leaf-ec.key"),
-    "--body", "live-web-https-ok\n", "--accept", "2", "--timeout", "3600",
+    "--body", "live-web-https-ok\n", "--accept", str(boots + 4),
+    "--timeout", "3600",
 ]
 log = open(os.path.join(rd, "tlsresponder.log"), "wb")
 watch = os.path.join("user", "go", "browser", "peer_watch.py")
@@ -2026,8 +2043,10 @@ vgate_run 40 -- \
     --screen '$RUN_DIR/screen' --via-virtio --cvc-snap \
     --snapshot-out '$RUN_DIR/snap-40' \
     --script '$RUN_DIR/script-local40.txt' \
-    --input-chords 'ctrl-d,ctrl-l,/,h,o,s,t,/,N,E,X,T,.,H,T,M,L,return,ctrl-d,ctrl-b,return,delete,escape,ctrl-shift-b' --input-chords-after 'web: ready' \
-    --snapshot-after 'web: bookmarks n=2' \
+    --script2 '$RUN_DIR/script-bm-shot.txt' --script2-after 'web: bookmarks n=2' --script2-delay 2 \
+    --input-chords 'ctrl-d,ctrl-l,/,h,o,s,t,/,N,E,X,T,.,H,T,M,L,return,ctrl-d,ctrl-b' --input-chords-after 'web: ready' \
+    --input-chords2 'return,delete,escape,ctrl-shift-b' --input-chords2-after 'cvspike: snap n=1' \
+    --snapshot-after 'snap40-go' \
     --script-expect 'web: bookmarks n=1' --timeout 240
 
 vgate_assert 40 serial-absent 'web: budget over'
@@ -4781,12 +4800,17 @@ chain = os.path.join(cfx, "chain-ec.pem")
 key = os.path.join(cfx, "leaf-ec.key")
 watch = os.path.join("user", "go", "browser", "peer_watch.py")
 peer = os.path.join(rd, "h2page.py")
+# #3913: WEB opens several connections per h2 page (initial, retries and
+# stream resets), so a fixed 6 died before the third graded iteration —
+# OBSERVED `NET-TCP-RELAY: upstream connect 127.0.0.1:24570 failed (errno
+# 61)` on 65-03/66-03. Capacity follows the graded boot count.
+boots = int(os.environ.get("BOOTS") or "1")
 for port, proto in ((24570, "h2"), (24571, "h1")):
     peer_guard.claim(port, "h2page.py")
     log = open(os.path.join(rd, "h2page-%d.log" % port), "wb")
     cmd = [sys.executable, peer, "--host", "127.0.0.1", "--port", str(port),
            "--cert", chain, "--key", key, "--proto", proto,
-           "--accept", "6", "--timeout", "3600"]
+           "--accept", str(4 * boots + 6), "--timeout", "3600"]
     proc = subprocess.Popen([sys.executable, watch, str(os.getppid())] + cmd,
                             stdout=log, stderr=subprocess.STDOUT,
                             start_new_session=True)
