@@ -2372,6 +2372,14 @@ PY
 # than reword it under a stationary pointer. Dwell is heartbeat time: the
 # serial check requires at least two `gotabwm: tick` lines between the
 # hover entry and the preview receipt.
+#
+# #3913 baseline repair: the ctrl-tab chord waits for the guest's own
+# stream-completion receipt (`cvspike: snap n=2`, the second capture on
+# this boot), not the preview marker. Armed on the marker, the chord's
+# keystrokes are serviced ahead of the queued kind-4 capture request and
+# the seat dismisses the card first — OBSERVED 24: `gotabwm: preview
+# dismiss id=5` then `cvspike: snap n=2`, so hover-pre-1 held a frame with
+# `card border rows = 0/0`. The dismiss receipt keeps its own arming.
 vgate_file script-m3914.txt <<'EOF'
 set GOMAXPROCS=1
 vf rm GOTABWM.DEMO
@@ -2393,7 +2401,7 @@ vgate_run 24 -- \
     --pointer-virtio '960,10' \
     --pointer-virtio-after 'gotabwm: rail n=2' \
     --input-chords 'ctrl-tab' \
-    --input-chords-after 'gotabwm: preview id=' \
+    --input-chords-after 'cvspike: snap n=2' \
     --script3 '$RUN_DIR/script3.txt' \
     --script3-after 'gotabwm: preview dismiss id=' \
     --script-expect 'rx-gotabwm-hid-ok' --timeout 300
