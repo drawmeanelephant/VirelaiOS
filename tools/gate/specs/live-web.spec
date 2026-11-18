@@ -354,6 +354,12 @@ if not os.path.exists(chain):
     sys.exit("pinned fixture chain missing at %s" % chain)
 # #3731: a stale responder holding 127.0.0.1:24533 serves this run's guest
 # while the run's own peer log stays empty. Reap orphans, refuse squatters.
+# #3913: every host peer's --timeout is its ACCEPT WINDOW, not a leg's
+# deadline. The spec boots ~83 legs three times, so a one-hour window closed
+# before iteration 3 reached these peers (OBSERVED 65-03/66-03 and 12-03
+# `upstream connect ... failed (errno 61)` while the gate was still running).
+# The windows below are four hours: longer than any graded invocation.
+#
 # #3913: capacity follows the graded boot count — boot 12 dials once per
 # iteration, and the literal 2 left the third iteration with a dead peer
 # (OBSERVED `web: error tls` on 12-03 with dial already succeeded).
@@ -365,7 +371,7 @@ cmd = [
     "--host", "127.0.0.1", "--port", "24533",
     "--cert", chain, "--key", os.path.join(cfx, "leaf-ec.key"),
     "--body", "live-web-https-ok\n", "--accept", str(boots + 4),
-    "--timeout", "3600",
+    "--timeout", "14400",
 ]
 log = open(os.path.join(rd, "tlsresponder.log"), "wb")
 watch = os.path.join("user", "go", "browser", "peer_watch.py")
@@ -435,7 +441,7 @@ for port, certificate, negative in (
     peer_guard.claim(port, "standin_responder.py")
     log = open(os.path.join(run, "m93-peer-%d.log" % port), "wb")
     command = [sys.executable, peer, "--port", str(port), "--cert", certificate,
-               "--key", key, "--timeout", "3600"]
+               "--key", key, "--timeout", "14400"]
     if negative:
         command.append("--negative")
     proc = subprocess.Popen([sys.executable, watch, str(os.getppid())] + command,
@@ -4810,7 +4816,7 @@ for port, proto in ((24570, "h2"), (24571, "h1")):
     log = open(os.path.join(rd, "h2page-%d.log" % port), "wb")
     cmd = [sys.executable, peer, "--host", "127.0.0.1", "--port", str(port),
            "--cert", chain, "--key", key, "--proto", proto,
-           "--accept", str(4 * boots + 6), "--timeout", "3600"]
+           "--accept", str(4 * boots + 6), "--timeout", "14400"]
     proc = subprocess.Popen([sys.executable, watch, str(os.getppid())] + cmd,
                             stdout=log, stderr=subprocess.STDOUT,
                             start_new_session=True)
