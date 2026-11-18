@@ -14,9 +14,12 @@ const std = @import("std");
 /// answers on the WEBRPC.ANS rendezvous. v3 (M211c, #3869) admits the
 /// write half — `node.setText`/`field.setValue` — and the timer pair:
 /// `timer.set` answers an id synchronously, `timer.next` parks until the
-/// parent's app timer makes an id due. `timer.interval`/`timer.raf`
-/// remain named refusals.
-pub const version: u64 = 3;
+/// parent's app timer makes an id due. v4 (M211d, #3913) admits one
+/// user-driven surface: `listener.add` on an enabled ID-addressed
+/// text/search control, and the `event.next` parked drain the parent
+/// answers with an input dispatch or a due timer id. Every other listener
+/// kind, event phase and event name remains a named refusal.
+pub const version: u64 = 4;
 
 /// One op line's bound: the 1 MiB per-eval source ceiling plus a fixed
 /// envelope for the JSON framing it may carry. The staged ops stream (every
@@ -56,6 +59,85 @@ pub const value_max: usize = 2_048;
 pub const script_mut_max: u32 = 16;
 pub const timer_pending_max: u32 = 8;
 pub const timer_delay_max_ms: u32 = 5_000;
+
+/// M211d (#3913): the input-listener bounds. `listener_max` registrations
+/// (one per target/kind) and `event_queue_max` undelivered input events;
+/// the parent enforces both and names the refusals (`event_budget_regs`,
+/// `event_queue`). `event_idle_ms` is the worker's bounded parked receipt
+/// cadence — the parent measures its 120 s active-work deadline from the
+/// last receipt, so a healthy parked page is never a page-lifetime limit.
+pub const listener_max: u32 = 8;
+pub const event_queue_max: u32 = 8;
+pub const event_idle_ms: u64 = 5_000;
+
+/// The one admitted listener kind. Everything else refuses
+/// `event_kind_<kind>` parent-side; the wire never carries another kind.
+pub fn listenerKindOk(kind: []const u8) bool {
+    return std.mem.eql(u8, kind, "input");
+}
+
+/// One parked `event.next` answer, decoded from the answer's `value`
+/// string: the parent answers a single ask with either a queued input
+/// event or a due timer id, sharing the one outstanding request slot.
+pub const Event = struct {
+    kind: []const u8,
+    target: ?[]const u8 = null,
+    value: ?[]const u8 = null,
+    id: ?[]const u8 = null,
+};
+
+/// `line` is decoded IN PLACE like parseOp/parseAnswer. `kind` must be
+/// `input` (then `target` and `value` are required) or `timer` (then a
+/// nonempty `id` is required); anything else is malformed, not a
+/// half-understood dispatch.
+pub fn parseEvent(line: []u8) Error!Event {
+    var p: Parser = .{ .s = line };
+    p.ws();
+    try p.expect('{');
+    var ev = Event{ .kind = &.{} };
+    var has_kind = false;
+    p.ws();
+    if (!p.eat('}')) {
+        while (true) {
+            p.ws();
+            const key = try p.string();
+            p.ws();
+            try p.expect(':');
+            p.ws();
+            if (std.mem.eql(u8, key, "kind")) {
+                ev.kind = try p.string();
+                has_kind = true;
+            } else if (std.mem.eql(u8, key, "target")) {
+                ev.target = try p.string();
+            } else if (std.mem.eql(u8, key, "value")) {
+                ev.value = try p.string();
+            } else if (std.mem.eql(u8, key, "id")) {
+                ev.id = try p.string();
+            } else {
+                try p.value(8);
+            }
+            p.ws();
+            if (p.eat(',')) continue;
+            try p.expect('}');
+            break;
+        }
+    }
+    p.ws();
+    if (p.i != p.s.len or !has_kind) return error.DomRpcParse;
+    if (std.mem.eql(u8, ev.kind, "input")) {
+        if (ev.target == null or ev.value == null) return error.DomRpcParse;
+        return ev;
+    }
+    if (std.mem.eql(u8, ev.kind, "timer")) {
+        const id = ev.id orelse return error.DomRpcParse;
+        if (id.len == 0 or id.len > 8) return error.DomRpcParse;
+        for (id) |c| {
+            if (c < '0' or c > '9') return error.DomRpcParse;
+        }
+        return ev;
+    }
+    return error.DomRpcParse;
+}
 
 /// `op` is one of the v3 DOM writes — a served write is what spends the
 /// mutation budget on both ends of the wire.
@@ -622,4 +704,61 @@ test "the v3 op vocabulary sorts write, timer and refused names" {
     }
     // the timer bounds keep a parked timer.next inside the wire wait
     try std.testing.expect(timer_delay_max_ms < 10_000);
+}
+
+test "v4 event payloads carry live values and timer ids" {
+    var input_buf: [128]u8 = undefined;
+    const input_text = "{\"kind\":\"input\",\"target\":\"q\",\"value\":\"live-typed\"}";
+    @memcpy(input_buf[0..input_text.len], input_text);
+    const input = try parseEvent(input_buf[0..input_text.len]);
+    try std.testing.expectEqualStrings("input", input.kind);
+    try std.testing.expectEqualStrings("q", input.target.?);
+    try std.testing.expectEqualStrings("live-typed", input.value.?);
+
+    var empty_buf: [96]u8 = undefined;
+    const empty_text = "{\"kind\":\"input\",\"target\":\"q\",\"value\":\"\"}";
+    @memcpy(empty_buf[0..empty_text.len], empty_text);
+    const empty = try parseEvent(empty_buf[0..empty_text.len]);
+    try std.testing.expectEqualStrings("", empty.value.?);
+
+    var timer_buf: [64]u8 = undefined;
+    const timer_text = "{\"kind\":\"timer\",\"id\":\"3\"}";
+    @memcpy(timer_buf[0..timer_text.len], timer_text);
+    const timer = try parseEvent(timer_buf[0..timer_text.len]);
+    try std.testing.expectEqualStrings("timer", timer.kind);
+    try std.testing.expectEqualStrings("3", timer.id.?);
+}
+
+test "malformed event payloads refuse, never dispatch half an event" {
+    const cases = [_][]const u8{
+        "",
+        "not json",
+        "{}",
+        "{\"kind\":\"input\"}",
+        "{\"kind\":\"input\",\"target\":\"q\"}",
+        "{\"kind\":\"input\",\"value\":\"x\"}",
+        "{\"kind\":\"timer\"}",
+        "{\"kind\":\"timer\",\"id\":\"x\"}",
+        "{\"kind\":\"timer\",\"id\":\"123456789\"}",
+        "{\"kind\":\"click\",\"target\":\"q\"}",
+        "{\"kind\":\"input\",\"target\":\"q\",\"value\":\"x\"} trailing",
+    };
+    for (cases) |c| {
+        var buf: [128]u8 = undefined;
+        @memcpy(buf[0..c.len], c);
+        try std.testing.expectError(error.DomRpcParse, parseEvent(buf[0..c.len]));
+    }
+}
+
+test "the v4 listener vocabulary and bounds are explicit" {
+    try std.testing.expect(listenerKindOk("input"));
+    try std.testing.expect(!listenerKindOk("click"));
+    try std.testing.expect(!listenerKindOk("change"));
+    try std.testing.expect(!listenerKindOk("keydown"));
+    try std.testing.expectEqual(@as(u32, 8), listener_max);
+    try std.testing.expectEqual(@as(u32, 8), event_queue_max);
+    try std.testing.expect(event_idle_ms * 1_000_000 < 120_000_000_000);
+    for ([_][]const u8{ "listener.add", "event.next" }) |op| {
+        try std.testing.expect(nameOk(op));
+    }
 }

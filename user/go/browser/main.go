@@ -368,6 +368,15 @@ type app struct {
 	// M211a (#3867): the page's QJS.BIN --dom-rpc worker — non-nil while a
 	// stream-bound child is in flight; domrpc.go owns the wire.
 	rpc *scriptWorker
+	// M211d (#3913): the page's bounded input-listener side — admitted
+	// registrations, the queued dispatches, and the page serial the
+	// teardown/new-worker receipts name.
+	listeners []domListener
+	queued    []domInput
+	pageSeq   int
+	// detached disables old-page serving during ordered teardown: request
+	// lines still drain, but no old callback can mutate or answer.
+	detached bool
 	// M125d (#2589): the decoded session blob parked by noteState, consumed
 	// once by applyState on the first laid-out page after restore.
 	pend *webState

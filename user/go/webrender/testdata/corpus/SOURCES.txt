@@ -52,3 +52,9 @@ scripted legs drive each row in-guest):
   scripted-storm.html     console.log storm crosses script_budget_ops
   scripted-kill.html      a parked mid-op worker for the kill leg — the
                           page stays stable, only the worker dies
+  scripted-input.html     the one admitted user-driven surface — an
+                          `input` listener on an enabled ID-addressed
+                          search control writes the live edited value
+                          into an empty node; the echo line starts
+                          absent, so keystrokes are the only source of
+                          the painted text (M211d #3913)
