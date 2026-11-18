@@ -2677,7 +2677,10 @@ order = [
     "web: download toast ",
     "web-dl-open",
     "web: download open GOVIEW.ELF /host/WEB-DL-DLPIC.QOI",
-    "web: download open launched pid=",
+    # GOVIEW's own line and WEB's launched-pid line are written by two
+    # processes and interleave either way (OBSERVED 47-03: child first).
+    # Presence of the launched line is asserted above; its position is not
+    # a causal fact.
     "gview: open id=",
     "gview: loaded WEB-DL-DLPIC.QOI 4x4",
     "gview: ready"
@@ -2858,7 +2861,10 @@ order = [
     "web: download toast ",
     "web-dl-open",
     "web: download open GOVIEW.ELF /host/WEB-DL-DLPIC.QOI",
-    "web: download open launched pid=",
+    # GOVIEW's own line and WEB's launched-pid line are written by two
+    # processes and interleave either way (OBSERVED 47-03: child first).
+    # Presence of the launched line is asserted above; its position is not
+    # a causal fact.
     "gview: open id=",
     "gview: loaded WEB-DL-DLPIC.QOI 4x4",
     "gview: ready"
@@ -3039,7 +3045,10 @@ order = [
     "web: download toast ",
     "web-dl-open",
     "web: download open GOVIEW.ELF /host/WEB-DL-DLPIC.QOI",
-    "web: download open launched pid=",
+    # GOVIEW's own line and WEB's launched-pid line are written by two
+    # processes and interleave either way (OBSERVED 47-03: child first).
+    # Presence of the launched line is asserted above; its position is not
+    # a causal fact.
     "gview: open id=",
     "gview: loaded WEB-DL-DLPIC.QOI 4x4",
     "gview: ready"
@@ -4497,6 +4506,15 @@ import socket
 import ssl
 import sys
 import time
+
+# #3913: the gate reads this peer's receipts WHILE the guest connection is
+# still open (leg 66 asserts the last conn's three requests at the
+# h2-page-done marker). Block-buffered stdout hid the request lines until a
+# later flush and the leg read one line out of three: line buffer here.
+try:
+    sys.stdout.reconfigure(line_buffering=True)
+except AttributeError:  # pragma: no cover - pre-3.7 only
+    pass
 
 FRAME_DATA, FRAME_HEADERS, FRAME_RST = 0x0, 0x1, 0x3
 FRAME_SETTINGS, FRAME_PING, FRAME_GOAWAY = 0x4, 0x6, 0x7
