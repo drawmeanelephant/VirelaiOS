@@ -77,6 +77,14 @@ vgate_file script-nav.txt <<'EOF'
 exec WEB.ELF /host/PAGE.HTML
 EOF
 
+# M211d (#3913): the pointer transport's second step (park the OS cursor
+# outside the 512x288 graded crop) lands 2.5 s after the click. Arm the one
+# graded capture on this script marker, 4 s after the navigation, so the
+# frame cannot carry the click-point cursor overlay.
+vgate_file script-navshot.txt <<'EOF'
+echo snap-go
+EOF
+
 vgate_file script-fetch.txt <<'EOF'
 net ip 10.0.0.1
 net arp 10.0.0.2
@@ -170,12 +178,10 @@ EOF
 vgate_file script-m93-expired.txt <<'EOF'
 net ip 10.0.0.1
 net arp 93.184.216.34
-exec WEB.ELF --dns=93.184.216.34 https://en.wikipedia.org:24562/
 EOF
 vgate_file script-m93-production.txt <<'EOF'
 net ip 10.0.0.1
 net arp 93.184.216.34
-exec WEB-PROD.ELF --dns=93.184.216.34 https://en.wikipedia.org:24560/
 EOF
 vgate_file script-m93-largest.txt <<'EOF'
 exec WEB.ELF /host/M93-LARGEST.HTML
@@ -501,9 +507,10 @@ vgate_run 02 -- \
     --via-virtio --cvc-snap \
     --snapshot-out '$RUN_DIR/snap-02' \
     --script '$RUN_DIR/script-nav.txt' \
+    --script2 '$RUN_DIR/script-navshot.txt' --script2-after 'web: navigated' --script2-delay 4 \
     --pointer-virtio "42,95,c ; 700,650" --pointer-virtio-after "web: settled" \
-    --snapshot-after "web: navigated" \
-    --script-expect "web: nav-ready" --timeout 120
+    --snapshot-after 'snap-go' \
+    --script-expect "web: nav-ready" --script-expect-tail 6 --timeout 120
 
 # #1586: EVERY boot that launches WEB asserts the absence, not just the old
 # 01/03/11. The guest printed `web: budget over startup ...` in all thirteen
@@ -1212,8 +1219,13 @@ vgate_run 19 -- \
     --screen '$RUN_DIR/screen' --via-virtio --cvc-snap \
     --net '$RUN_DIR/cap19.bin' --net-arp-respond 93.184.216.34 --net-dns-respond 93.184.216.34 \
     --net-tcp-respond 93.184.216.34:24562:relay --net-tcp-respond-relay 127.0.0.1:24562 \
-    --script '$RUN_DIR/script-m93-expired.txt' --script-expect 'web: ready' --timeout 180
+    --script '$RUN_DIR/script-m93-expired.txt' \
+    --script2 '$RUN_DIR/script-arp-probe.txt' --script2-after 'net arp: request for 93.184.216.34 sent' --script2-delay 1 \
+    --host-cmd-after 'net arp: 93.184.216.34 is at 02:00:00:00:00:02:send-serial' \
+    --host-serial-send 'exec WEB.ELF --dns=93.184.216.34 https://en.wikipedia.org:24562/' \
+    --script-expect 'web: error tls-expired' --timeout 180
 
+vgate_assert 19 serial-contains 'net arp: 93.184.216.34 is at 02:00:00:00:00:02'
 vgate_assert 19 serial-contains 'web: error tls-expired'
 vgate_assert 19 serial-absent 'web: fetch '
 vgate_assert 19 serial-absent 'web: tls '
@@ -1225,9 +1237,14 @@ vgate_run 20 -- \
     --screen '$RUN_DIR/screen' --via-virtio --cvc-snap \
     --net '$RUN_DIR/cap20.bin' --net-arp-respond 93.184.216.34 --net-dns-respond 93.184.216.34 \
     --net-tcp-respond 93.184.216.34:24560:relay --net-tcp-respond-relay 127.0.0.1:24560 \
-    --script '$RUN_DIR/script-m93-production.txt' --script-expect 'web: ready' --timeout 180
+    --script '$RUN_DIR/script-m93-production.txt' \
+    --script2 '$RUN_DIR/script-arp-probe.txt' --script2-after 'net arp: request for 93.184.216.34 sent' --script2-delay 1 \
+    --host-cmd-after 'net arp: 93.184.216.34 is at 02:00:00:00:00:02:send-serial' \
+    --host-serial-send 'exec WEB-PROD.ELF --dns=93.184.216.34 https://en.wikipedia.org:24560/' \
+    --script-expect 'web: error tls-unknown-root' --timeout 180
 
 vgate_assert 20 serial-contains 'tls: roots virelai-nss-15-940706e6f856'
+vgate_assert 20 serial-contains 'net arp: 93.184.216.34 is at 02:00:00:00:00:02'
 vgate_assert 20 serial-contains 'web: error tls-unknown-root'
 vgate_assert 20 serial-absent 'web: fetch '
 vgate_assert 20 serial-absent 'web: tls '
