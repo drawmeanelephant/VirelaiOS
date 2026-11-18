@@ -134,10 +134,32 @@ net ip 10.0.0.1
 net arp 93.184.216.34
 exec WEB.ELF --dns=93.184.216.34
 EOF
+# DNS/ARP sync (boots 18, 65, 66): `net arp <ip>` only TRANSMITS a request.
+# The host's reply (--net-arp-respond, answered from the capture thread) is
+# learned by a later guest RX drain, which the monitor performs on its next
+# `net arp` poll -- an `exec WEB.ELF` in the same burst can outrun it and the
+# app's first DNS send is refused (observed 2026-11-18 on boot 65: "web:
+# dns-error dns: send refused", while the runner logged NET-ARP: answered).
+# The request therefore ends phase 1; phase 2 polls the existing ARP table
+# (each poll drains, and a miss re-sends) and the exact learned-neighbour
+# line arms the exec through the runner's existing send-serial console lane.
+# A neighbour that never learns leaves the exec unforwarded, so the leg's
+# expected outcome marker times out -- an honest FAIL, not a guessed pass.
+# No new net-stack API, app retry or connection bound is added.
+vgate_file script-arp-probe.txt <<'EOF'
+net arp 93.184.216.34
+net arp 93.184.216.34
+net arp 93.184.216.34
+net arp 93.184.216.34
+net arp 93.184.216.34
+net arp 93.184.216.34
+net arp 93.184.216.34
+net arp 93.184.216.34
+EOF
+
 vgate_file script-m93-name.txt <<'EOF'
 net ip 10.0.0.1
 net arp 93.184.216.34
-exec WEB.ELF --dns=93.184.216.34 https://wrong.example.com:24561/
 EOF
 vgate_file script-m93-expired.txt <<'EOF'
 net ip 10.0.0.1
@@ -821,7 +843,65 @@ PY
 # (#1561): paint_scene skips the terminal blit while the seat owns the
 # layer (M71c) but the present must still flush. Skipping the drain
 # outright leaves the pre-seat console frame (measured 1789 green pixels).
+#
+# The +3 s sample is a console-retention re-measure, not a console-speed
+# product gate. WEB owns the foreground and prints its one-line pump, so
+# at +3 s the uncovered band still holds too few rows to reach the pinned
+# M69b band (observed 2026-11-18: 0 green at +3 s, 7.7 % at +20 s). The
+# burst below is an explicit bounded workload -- 48 echo lines of 32 green
+# glyphs -- emitted BEFORE the existing capture marker, so the +3 s frame
+# samples the same retained console rows the +20 s frame does. The 3 s /
+# 17 s delays, the window geometry, the WEB window-paint precondition and
+# the 2-12 % console-green bounds are unchanged.
 vgate_file script-ink-3s.txt <<'EOF'
+echo console-burst-00-pumps=0123456789
+echo console-burst-01-pumps=0123456789
+echo console-burst-02-pumps=0123456789
+echo console-burst-03-pumps=0123456789
+echo console-burst-04-pumps=0123456789
+echo console-burst-05-pumps=0123456789
+echo console-burst-06-pumps=0123456789
+echo console-burst-07-pumps=0123456789
+echo console-burst-08-pumps=0123456789
+echo console-burst-09-pumps=0123456789
+echo console-burst-10-pumps=0123456789
+echo console-burst-11-pumps=0123456789
+echo console-burst-12-pumps=0123456789
+echo console-burst-13-pumps=0123456789
+echo console-burst-14-pumps=0123456789
+echo console-burst-15-pumps=0123456789
+echo console-burst-16-pumps=0123456789
+echo console-burst-17-pumps=0123456789
+echo console-burst-18-pumps=0123456789
+echo console-burst-19-pumps=0123456789
+echo console-burst-20-pumps=0123456789
+echo console-burst-21-pumps=0123456789
+echo console-burst-22-pumps=0123456789
+echo console-burst-23-pumps=0123456789
+echo console-burst-24-pumps=0123456789
+echo console-burst-25-pumps=0123456789
+echo console-burst-26-pumps=0123456789
+echo console-burst-27-pumps=0123456789
+echo console-burst-28-pumps=0123456789
+echo console-burst-29-pumps=0123456789
+echo console-burst-30-pumps=0123456789
+echo console-burst-31-pumps=0123456789
+echo console-burst-32-pumps=0123456789
+echo console-burst-33-pumps=0123456789
+echo console-burst-34-pumps=0123456789
+echo console-burst-35-pumps=0123456789
+echo console-burst-36-pumps=0123456789
+echo console-burst-37-pumps=0123456789
+echo console-burst-38-pumps=0123456789
+echo console-burst-39-pumps=0123456789
+echo console-burst-40-pumps=0123456789
+echo console-burst-41-pumps=0123456789
+echo console-burst-42-pumps=0123456789
+echo console-burst-43-pumps=0123456789
+echo console-burst-44-pumps=0123456789
+echo console-burst-45-pumps=0123456789
+echo console-burst-46-pumps=0123456789
+echo console-burst-47-pumps=0123456789
 echo web-ink-3s
 EOF
 
@@ -843,6 +923,9 @@ vgate_run 13 -- \
 
 vgate_assert 13 serial-absent 'web: budget over'
 vgate_assert 13 serial-contains 'web: settled'
+# The bounded burst really ran before the capture marker (its last line
+# precedes web-ink-3s); the pixel hook below proves those rows painted.
+vgate_assert 13 serial-contains 'console-burst-47-pumps=0123456789'
 vgate_assert 13 serial-contains 'web-ink-3s'
 vgate_assert 13 serial-contains 'web-ink-20s'
 vgate_assert 13 serial-contains 'web-ink-done'
@@ -1098,8 +1181,13 @@ vgate_run 18 -- \
     --screen '$RUN_DIR/screen' --via-virtio --cvc-snap \
     --net '$RUN_DIR/cap18.bin' --net-arp-respond 93.184.216.34 --net-dns-respond 93.184.216.34 \
     --net-tcp-respond 93.184.216.34:24561:relay --net-tcp-respond-relay 127.0.0.1:24561 \
-    --script '$RUN_DIR/script-m93-name.txt' --script-expect 'web: error tls-hostname-mismatch' --timeout 180
+    --script '$RUN_DIR/script-m93-name.txt' \
+    --script2 '$RUN_DIR/script-arp-probe.txt' --script2-after 'net arp: request for 93.184.216.34 sent' --script2-delay 1 \
+    --host-cmd-after 'net arp: 93.184.216.34 is at 02:00:00:00:00:02:send-serial' \
+    --host-serial-send 'exec WEB.ELF --dns=93.184.216.34 https://wrong.example.com:24561/' \
+    --script-expect 'web: error tls-hostname-mismatch' --timeout 180
 
+vgate_assert 18 serial-contains 'net arp: 93.184.216.34 is at 02:00:00:00:00:02'
 vgate_assert 18 serial-contains 'web: error tls-hostname-mismatch'
 vgate_assert 18 serial-contains 'web: ready'
 vgate_assert 18 serial-absent 'web: fetch '
@@ -4321,13 +4409,11 @@ vgate_assert 64 serial-absent '[EXC] parking:'
 vgate_file script-h2page.txt <<'EOF'
 net ip 10.0.0.1
 net arp 93.184.216.34
-exec WEB.ELF --dns=93.184.216.34 https://leaf.example.com:24570/
 EOF
 
 vgate_file script-h2page-h1.txt <<'EOF'
 net ip 10.0.0.1
 net arp 93.184.216.34
-exec WEB.ELF --dns=93.184.216.34 https://leaf.example.com:24571/
 EOF
 
 # The snapshot's deterministic present window (see boot 65 note): echo a
@@ -4693,11 +4779,15 @@ vgate_run 65 -- \
     --net-dns-respond 93.184.216.34 \
     --net-tcp-respond 93.184.216.34:24570:relay --net-tcp-respond-relay 127.0.0.1:24570 \
     --script '$RUN_DIR/script-h2page.txt' \
+    --script2 '$RUN_DIR/script-arp-probe.txt' --script2-after 'net arp: request for 93.184.216.34 sent' --script2-delay 1 \
+    --host-cmd-after 'net arp: 93.184.216.34 is at 02:00:00:00:00:02:send-serial' \
+    --host-serial-send 'exec WEB.ELF --dns=93.184.216.34 https://leaf.example.com:24570/' \
     --script3 '$RUN_DIR/h2-done.txt' --script3-after 'web: ready' --script3-delay 3 \
     --snapshot-after 'h2-page-done' \
     --script-expect 'h2-page-done' --timeout 180
 
 vgate_assert 65 serial-contains 'net ip: ip=10.0.0.1'
+vgate_assert 65 serial-contains 'net arp: 93.184.216.34 is at 02:00:00:00:00:02'
 vgate_assert 65 serial-contains 'web: dns leaf.example.com 93.184.216.34'
 vgate_assert 65 serial-contains 'web: tls leaf.example.com virelai-gate-roots-2026-09-14'
 vgate_assert 65 serial-contains 'web: alpn h2'
@@ -4777,10 +4867,14 @@ vgate_run 66 -- \
     --net-dns-respond 93.184.216.34 \
     --net-tcp-respond 93.184.216.34:24571:relay --net-tcp-respond-relay 127.0.0.1:24571 \
     --script '$RUN_DIR/script-h2page-h1.txt' \
+    --script2 '$RUN_DIR/script-arp-probe.txt' --script2-after 'net arp: request for 93.184.216.34 sent' --script2-delay 1 \
+    --host-cmd-after 'net arp: 93.184.216.34 is at 02:00:00:00:00:02:send-serial' \
+    --host-serial-send 'exec WEB.ELF --dns=93.184.216.34 https://leaf.example.com:24571/' \
     --script3 '$RUN_DIR/h2-done.txt' --script3-after 'web: ready' --script3-delay 3 \
     --snapshot-after 'h2-page-done' \
     --script-expect 'h2-page-done' --timeout 180
 
+vgate_assert 66 serial-contains 'net arp: 93.184.216.34 is at 02:00:00:00:00:02'
 vgate_assert 66 serial-contains 'web: dns leaf.example.com 93.184.216.34'
 vgate_assert 66 serial-contains 'web: tls leaf.example.com virelai-gate-roots-2026-09-14'
 vgate_assert 66 serial-contains 'web: alpn none'
