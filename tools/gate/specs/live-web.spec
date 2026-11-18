@@ -456,13 +456,24 @@ subprocess.check_call([sys.executable, 'user/go/browser/pixel_probe.py', sys.arg
 PY
 
 # --- boot 02: a pointer click on the in-page link replaces the page ------
+# The click lands on the link at the page's top-left; the second step parks
+# the OS cursor at (700,650), outside the 512x288 viewport the exact
+# presentation comparator grades, so the shim's cursor overlay cannot ride
+# into the reference frame. The click itself is unchanged.
+# #3913: exactly ONE capture, armed on the post-navigation marker. Arming a
+# second one on the pre-click `web: settled` made the graded raw depend on a
+# race: the causal settle wait holds a request while the scene is dirty (up
+# to 1 s), the click lands inside that window, and the "initial" capture then
+# streamed the NEXT page with the cursor still on the click point — a frame
+# that was neither of the two states the leg names, and the cursor overlay
+# then cost 135 pixels against `next`. The initial-capture duty is run 01's
+# (page.png exact presentation); this leg grades the replaced page.
 vgate_run 02 -- \
     --screen '$RUN_DIR/screen' \
     --via-virtio --cvc-snap \
     --snapshot-out '$RUN_DIR/snap-02' \
     --script '$RUN_DIR/script-nav.txt' \
-    --pointer-virtio "42,95,c" --pointer-virtio-after "web: settled" \
-    --snapshot-after "web: settled" \
+    --pointer-virtio "42,95,c ; 700,650" --pointer-virtio-after "web: settled" \
     --snapshot-after "web: navigated" \
     --script-expect "web: nav-ready" --timeout 120
 
@@ -1087,7 +1098,7 @@ vgate_run 18 -- \
     --screen '$RUN_DIR/screen' --via-virtio --cvc-snap \
     --net '$RUN_DIR/cap18.bin' --net-arp-respond 93.184.216.34 --net-dns-respond 93.184.216.34 \
     --net-tcp-respond 93.184.216.34:24561:relay --net-tcp-respond-relay 127.0.0.1:24561 \
-    --script '$RUN_DIR/script-m93-name.txt' --script-expect 'web: ready' --timeout 180
+    --script '$RUN_DIR/script-m93-name.txt' --script-expect 'web: error tls-hostname-mismatch' --timeout 180
 
 vgate_assert 18 serial-contains 'web: error tls-hostname-mismatch'
 vgate_assert 18 serial-contains 'web: ready'
@@ -3016,7 +3027,12 @@ vgate_assert 49 serial-absent '[EXC] parking:'
 # --- boots 50-53 (M135b #2764): HTTP/1.1 wire honesty ---------------------
 # The :packet responder streams canned responses, paced one segment per
 # guest ACK: a chunked page, a gzip page, a corrupt gzip body (refused by
-# name), and a keep-alive pair (page + linked stylesheet, one connection).
+# name). Boot 53's keep-alive pair needs a REQUEST-DRIVEN responder instead:
+# :packet streams its blob once per connection and never answers a second
+# request on it, so it cannot prove one connection carried the page and its
+# stylesheets. Boot 53 uses the responder boots 54-56 also use (started by
+# their setup hook, which runs before every run): gzip page + two linked
+# stylesheets, three requests down ONE connection.
 vgate_setup_python <<'PY'
 import gzip, os
 rd = os.environ["RUN_DIR"]
@@ -3039,13 +3055,7 @@ bad = bytearray(gz); bad[len(bad) - 5] ^= 0xff  # corrupt the CRC32 field
 open(os.path.join(rd, "page-gzip-bad.bin"), "wb").write(
     b"HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: " +
     str(len(bad)).encode() + b"\r\n\r\n" + bytes(bad))
-page = (b'<html><head><link rel="stylesheet" href="/ka.css"></head>'
-        b'<body><h1>keep-alive</h1><p>two requests, one connection</p></body></html>')
-css = b"body { background-color: #7fdbff; }"
-open(os.path.join(rd, "page-keepalive.bin"), "wb").write(
-    b"HTTP/1.1 200 OK\r\nContent-Length: " + str(len(page)).encode() + b"\r\n\r\n" + page +
-    b"HTTP/1.1 200 OK\r\nContent-Length: " + str(len(css)).encode() + b"\r\n\r\n" + css)
-print("M135b: staged chunked/gzip/corrupt-gzip/keep-alive payloads")
+print("M135b: staged chunked/gzip/corrupt-gzip payloads")
 PY
 
 # --- boot 50: a chunked page decodes and renders --------------------------
@@ -3113,13 +3123,15 @@ vgate_assert 52 serial-absent '[EXC] parking:'
 vgate_run 53 -- \
     --screen '$RUN_DIR/screen' --via-virtio --cvc-snap \
     --snapshot-out '$RUN_DIR/snap-53' \
+    --snapshot-after 'web: repaint' \
     --net '$RUN_DIR/cap53.bin' --net-arp-respond 10.0.0.2 \
-    --net-tcp-respond '10.0.0.2:80:packet' --net-tcp-respond-payload '$RUN_DIR/page-keepalive.bin' \
+    --net-tcp-respond '10.0.0.2:80:relay' --net-tcp-respond-relay 127.0.0.1:24601 \
     --script '$RUN_DIR/script-fetch.txt' \
     --script-expect "web: ready" --timeout 120
 
 vgate_assert 53 serial-contains 'web: fetch 10.0.0.2/'
-vgate_assert 53 serial-contains 'web: fetch 10.0.0.2/ka.css'
+vgate_assert 53 serial-contains 'web: fetch 10.0.0.2/ka-a.css'
+vgate_assert 53 serial-contains 'web: fetch 10.0.0.2/ka-b.css'
 vgate_assert 53 serial-contains 'web: settled'
 vgate_assert 53 serial-contains 'web: ready'
 vgate_assert 53 serial-absent 'web: error'
@@ -3130,22 +3142,46 @@ run = open(os.path.join(os.environ["RUN_DIR"], "run-" + os.environ["VG_TAG"] + "
 n = run.count("answered the guest's SYN")
 if n != 1:
     sys.exit("FAIL: keep-alive leg accepted %d connections, want 1" % n)
-print("live-web 53: 1 accepted connection served page + stylesheet")
+# The responder's own receipt is the independent count: the page and both
+# stylesheets as three request lines on that SAME conn id.
+receipt = [l for l in open(os.path.join(os.environ["RUN_DIR"], "m135d-httpd.log"),
+                           errors="replace").read().splitlines() if l]
+accepts = [l for l in receipt if l.startswith("accept conn=")]
+reqs = [l for l in receipt if " req=" in l][-3:]
+if len(accepts) < 1:
+    sys.exit("FAIL: responder never accepted the guest connection")
+want = ["GET / HTTP/1.1", "GET /ka-a.css HTTP/1.1", "GET /ka-b.css HTTP/1.1"]
+if [r.split("req=", 1)[1] for r in reqs] != want:
+    sys.exit("FAIL: keep-alive receipt %r, want %r" % (reqs, want))
+conns = {r.split(" ", 1)[0] for r in reqs}
+if len(conns) != 1:
+    sys.exit("FAIL: page + stylesheets rode %d connections, want 1" % len(conns))
+print("live-web 53: 1 accepted connection served page + 2 stylesheets")
 PY
 vgate_assert 53 snapshot 'snap-53-*.raw' <<'PY'
 import sys
-# The linked stylesheet paints the page background #7fdbff: the CSS fetch
-# really arrived and applied, on the same connection as the page.
+# Both linked stylesheets applied on that one connection: css_a paints the
+# page background #7fdbff, css_b paints the h1 band #b58900. The shim frame
+# starts at (40,28), the browser viewport is y=64 inside it, and the
+# three-pixel compositor border sits outside the paint.
 data = open(sys.argv[1], "rb").read()
-w = 1280
+assert len(data) == 1280*720*4, "scanout size %d" % len(data)
 def px(x, y):
-    k = (y * w + x) * 4
-    return (data[k + 2], data[k + 1], data[k])
-hits = sum(1 for yy in range(120, 300, 20) for xx in range(60, 540, 20)
-           if px(xx, yy) == (0x7f, 0xdb, 0xff))
-if hits < 60:
-    sys.exit("FAIL: stylesheet background absent (hits=%d)" % hits)
-print("live-web 53: linked CSS applied (%d samples)" % hits)
+    k = (y*1280+x)*4
+    return (data[k+2], data[k+1], data[k])
+bg = band = 0
+for yy in range(92, 380):
+    for xx in range(40, 552, 2):
+        c = px(xx, yy)
+        if c == (0x7f, 0xdb, 0xff):
+            bg += 1
+        elif c == (0xb5, 0x89, 0x00):
+            band += 1
+if bg < 2000:
+    sys.exit("FAIL: page background absent (bg=%d)" % bg)
+if band < 30:
+    sys.exit("FAIL: h1 band absent (band=%d)" % band)
+print("live-web 53: both stylesheets on the scanout (bg=%d band=%d)" % (bg, band))
 PY
 
 # --- boots 54-56 (M135d #2766): the net acceptance journey, K=3 ---------
@@ -3163,7 +3199,10 @@ PY
 #   3. Three more host SYNs land on the PLAIN listener (8080) at the same
 #      marker; child_limit=2 admits two children and the third draws the
 #      named refusal 'net: listen-saturated port=8080 bound=2' + RST —
-#      the M135c (#2765) surface, run E's shape.
+#      the M135c (#2765) surface, run E's shape. The two rewarded children
+#      send no Connection: close (HTTP/1.1 keep-alive) and the runner holds
+#      its FIN behind a sentinel no reply contains, so they stay ESTABLISHED
+#      while the third SYN meets the bound instead of closing first.
 #
 # The leg-2 responder is a real request-driven HTTP/1.1 server, not the
 # :packet blob: packet mode streams its payload once per connection and
@@ -3204,22 +3243,23 @@ vgate_file m135d-c.txt <<'EOF'
 echo m135d-accept-done
 EOF
 
-# Saturation trio payloads: one GET each, explicit close.
+# Saturation trio payloads: one GET each, no Connection: close. HTTP/1.1
+# defaults to keep-alive, so the two children the bound admits stay
+# ESTABLISHED (the runner holds its FIN until the sentinel below appears in
+# a reply, which never happens) and the third SYN meets a full listener —
+# the genuine bound race, not three sessions that close before it fires.
 vgate_file m135d-req-a.txt <<'EOF'
-GET / HTTP/1.1
-Connection: close
+GET /A HTTP/1.1
 
 EOF
 
 vgate_file m135d-req-b.txt <<'EOF'
 GET /B HTTP/1.1
-Connection: close
 
 EOF
 
 vgate_file m135d-req-c.txt <<'EOF'
 GET /C HTTP/1.1
-Connection: close
 
 EOF
 
@@ -3424,6 +3464,7 @@ vgate_run 54 -- \
     --net-tcp-connect '10.0.0.1:8080:$RUN_DIR/m135d-req-a.txt' \
     --net-tcp-connect '10.0.0.1:8080:$RUN_DIR/m135d-req-b.txt' \
     --net-tcp-connect '10.0.0.1:8080:$RUN_DIR/m135d-req-c.txt' \
+    --net-tcp-connect-close-after 'M135D-HOLD' \
     --net-tcp-connect-after 'httpd: listening on port 8080' \
     --script '$RUN_DIR/m135d-a.txt' \
     --script2 '$RUN_DIR/m135d-b.txt' --script2-after 'httpd: listening on port 8443' \
@@ -3471,8 +3512,14 @@ if "VirelaiOS" not in out:
 n = out.count("the guest refused the connection (RST)")
 if n != 1:
     sys.exit("FAIL: refusals %d, want exactly 1" % n)
-for marker, want in (("httpd: accepted", 3), ("httpd: served", 3),
-                     ("httpd: closed", 3)):
+# Sessions the apps served: the TLS leg (8443) plus the first plain child;
+# the plain httpd accepts serially, so the second child the kernel's bound
+# admitted stays in the accept queue while the first is held. Only the TLS
+# session closes (its client sends Connection: close). A second plain
+# close, or a third plain session, would mean the listener never actually
+# held anyone when the third SYN landed (the old fixture's bug).
+for marker, want in (("httpd: accepted", 2), ("httpd: served", 2),
+                     ("httpd: closed", 1)):
     got = ser.count(marker)
     if got != want:
         sys.exit("FAIL: %r appeared %d times, want %d" % (marker, got, want))
@@ -3551,6 +3598,7 @@ vgate_run 55 -- \
     --net-tcp-connect '10.0.0.1:8080:$RUN_DIR/m135d-req-a.txt' \
     --net-tcp-connect '10.0.0.1:8080:$RUN_DIR/m135d-req-b.txt' \
     --net-tcp-connect '10.0.0.1:8080:$RUN_DIR/m135d-req-c.txt' \
+    --net-tcp-connect-close-after 'M135D-HOLD' \
     --net-tcp-connect-after 'httpd: listening on port 8080' \
     --script '$RUN_DIR/m135d-a.txt' \
     --script2 '$RUN_DIR/m135d-b.txt' --script2-after 'httpd: listening on port 8443' \
@@ -3598,8 +3646,14 @@ if "VirelaiOS" not in out:
 n = out.count("the guest refused the connection (RST)")
 if n != 1:
     sys.exit("FAIL: refusals %d, want exactly 1" % n)
-for marker, want in (("httpd: accepted", 3), ("httpd: served", 3),
-                     ("httpd: closed", 3)):
+# Sessions the apps served: the TLS leg (8443) plus the first plain child;
+# the plain httpd accepts serially, so the second child the kernel's bound
+# admitted stays in the accept queue while the first is held. Only the TLS
+# session closes (its client sends Connection: close). A second plain
+# close, or a third plain session, would mean the listener never actually
+# held anyone when the third SYN landed (the old fixture's bug).
+for marker, want in (("httpd: accepted", 2), ("httpd: served", 2),
+                     ("httpd: closed", 1)):
     got = ser.count(marker)
     if got != want:
         sys.exit("FAIL: %r appeared %d times, want %d" % (marker, got, want))
@@ -3678,6 +3732,7 @@ vgate_run 56 -- \
     --net-tcp-connect '10.0.0.1:8080:$RUN_DIR/m135d-req-a.txt' \
     --net-tcp-connect '10.0.0.1:8080:$RUN_DIR/m135d-req-b.txt' \
     --net-tcp-connect '10.0.0.1:8080:$RUN_DIR/m135d-req-c.txt' \
+    --net-tcp-connect-close-after 'M135D-HOLD' \
     --net-tcp-connect-after 'httpd: listening on port 8080' \
     --script '$RUN_DIR/m135d-a.txt' \
     --script2 '$RUN_DIR/m135d-b.txt' --script2-after 'httpd: listening on port 8443' \
@@ -3725,8 +3780,14 @@ if "VirelaiOS" not in out:
 n = out.count("the guest refused the connection (RST)")
 if n != 1:
     sys.exit("FAIL: refusals %d, want exactly 1" % n)
-for marker, want in (("httpd: accepted", 3), ("httpd: served", 3),
-                     ("httpd: closed", 3)):
+# Sessions the apps served: the TLS leg (8443) plus the first plain child;
+# the plain httpd accepts serially, so the second child the kernel's bound
+# admitted stays in the accept queue while the first is held. Only the TLS
+# session closes (its client sends Connection: close). A second plain
+# close, or a third plain session, would mean the listener never actually
+# held anyone when the third SYN landed (the old fixture's bug).
+for marker, want in (("httpd: accepted", 2), ("httpd: served", 2),
+                     ("httpd: closed", 1)):
     got = ser.count(marker)
     if got != want:
         sys.exit("FAIL: %r appeared %d times, want %d" % (marker, got, want))

@@ -559,14 +559,27 @@ func timerDelayMs(s string) (int64, bool) {
 	return ms, true
 }
 
+var (
+	// The app-timer seam, swappable by the host tests (vsys's gateway is
+	// ENOSYS off-guest). A script worker owns the only arm these touch:
+	// the scriptless paths must not cancel state this page does not own
+	// (#3913).
+	timerCancel = vsys.TimerCancel
+	timerSetNs  = vsys.TimerSetNs
+)
+
 // armScriptTimer points the process's ONE app timer (vsys.TimerSetNs,
 // slot 95) at the earliest granted deadline — re-arming replaces the
 // pending arm, so the queue of script timers rides the single kernel
-// timer rather than needing one each. Nothing pending disarms it.
+// timer rather than needing one each. Nothing pending disarms it; a page
+// with no worker owns no arm, so it disarms nothing.
 func (a *app) armScriptTimer() {
 	w := a.rpc
-	if w == nil || len(w.timers) == 0 {
-		vsys.TimerCancel()
+	if w == nil {
+		return
+	}
+	if len(w.timers) == 0 {
+		timerCancel()
 		return
 	}
 	earliest := w.timers[0].due
@@ -579,7 +592,7 @@ func (a *app) armScriptTimer() {
 	if d < 1_000_000 {
 		d = 1_000_000
 	}
-	vsys.TimerSetNs(uint64(d))
+	timerSetNs(uint64(d))
 }
 
 // onScriptTimer is the EvTimer fan-out: due timers move to the due queue,
@@ -647,7 +660,7 @@ func (a *app) pollScripts() {
 		vi.Kill(uint64(w.pid)) // wedged: armed, exit lands on its own
 	}
 	a.rpc = nil
-	vsys.TimerCancel() // the worker's granted timers retire with it
+	timerCancel() // the worker's granted timers retire with it
 	a.serviceReplies(w)
 	if state != vi.ProbeExited && state != vi.ProbeAbsent {
 		vi.WaitBudget(w.pid, int64(2)*1_000_000_000) // let the armed kill land
@@ -665,10 +678,13 @@ func (a *app) pollScripts() {
 // arm must never fire into the next page's queue.
 func (a *app) closeScripts() {
 	w := a.rpc
-	vsys.TimerCancel()
 	if w == nil {
 		return
 	}
+	// The worker owns the page's only script-timer arm: a scriptless page
+	// (no worker) has no timer to retire, and cancelling there touches
+	// state this app does not own (#3913).
+	timerCancel()
 	a.rpc = nil
 	_, state := vi.Probe(w.pid)
 	if state == vi.ProbeRunning {
