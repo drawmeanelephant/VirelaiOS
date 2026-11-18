@@ -614,7 +614,10 @@ func (a *app) serveDom(w *scriptWorker, op string, seq int64, arg, barg string) 
 		} else {
 			// Parked: the answer publishes from the EvTimer path when a
 			// timer comes due, or never — the kill deadline bounds both.
-			w.waitSeq, w.waitParked = seq, true
+			// M211d: the ask's op is recorded too, so the answer path
+			// names `timer.next ok` (or the shared event payload) from the
+			// same field the input drain uses.
+			w.waitSeq, w.waitOp, w.waitParked = seq, op, true
 			vi.ConsoleLine(markerDom + op + " wait")
 			return
 		}
