@@ -274,9 +274,26 @@ pub fn handle_rx(frame: []const u8, own_mac: *const [6]u8, reply_buf: []u8) ?usi
     // traffic for OTHER addresses on the segment reaches this layer:
     // without this check a UDP listener or a TCP session would ingest a
     // datagram never addressed to this host. Directed broadcast and
-    // multicast are NOT admitted (no consumer — the honest bound).
+    // multicast are NOT admitted (no consumer — the honest bound),
+    // except ONE narrow case (M206b residual, #3814): the mDNS group
+    // 224.0.0.251 for a UDP datagram whose destination port is 5353.
+    // Everything else in 224.0.0.0/4 — and any non-UDP mDNS-group
+    // frame — is still a counted drop here, before a protocol handler.
     const dst = dst_ip(frame);
-    if (!std.mem.eql(u8, &dst, &arp.own_ip) and !std.mem.eql(u8, &dst, &udp.bcast_addr)) {
+    const is_own = std.mem.eql(u8, &dst, &arp.own_ip);
+    const is_bcast = std.mem.eql(u8, &dst, &udp.bcast_addr);
+    var is_mdns = false;
+    if (std.mem.eql(u8, &dst, &udp.mdns_group)) {
+        if (protocol(frame) == udp.protocol_udp and frame.len >= eth_hdr_len + ipv4_hdr_len + udp.udp_hdr_len) {
+            const dst_port = (@as(u16, frame[36]) << 8) | frame[37];
+            is_mdns = dst_port == udp.mdns_port;
+        }
+        if (!is_mdns) {
+            dropped_other += 1; // mDNS group outside its one UDP path
+            return null;
+        }
+    }
+    if (!is_own and !is_bcast and !is_mdns) {
         dropped_other += 1;
         return null;
     }
@@ -606,6 +623,49 @@ test "ipv4: protocol dispatch — UDP (17) is handed to udp, TCP (6) to the tcp 
     udp.reset();
 }
 
+test "ipv4: M206b mDNS group gate admits only UDP :5353" {
+    udp.reset();
+    defer udp.reset();
+    arp.own_ip = ip_guest;
+    defer arp.own_ip = .{ 0, 0, 0, 0 };
+    dropped_other = 0;
+    var reply_buf: [ipv4_frame_min + 64]u8 = undefined;
+    var frame: [udp.frame_max]u8 = undefined;
+
+    // The one admitted shape: UDP dst 224.0.0.251:5353 to an mdns-opted
+    // listener.
+    try std.testing.expect(udp.listen_port_mdns_owned(udp.mdns_port, udp.unowned));
+    const group_mac = [6]u8{ 0x01, 0x00, 0x5e, 0x00, 0x00, 0xfb };
+    var n = udp.build_frame_ex(&frame, group_mac, &host_mac, ip_host, udp.mdns_group, udp.mcast_ttl, udp.mdns_port, udp.mdns_port, "mq");
+    try std.testing.expect(handle_rx(frame[0..n], &test_mac, &reply_buf) == null);
+    try std.testing.expectEqual(@as(u64, 0), dropped_other);
+    try std.testing.expectEqual(@as(u64, 1), udp.received);
+    try std.testing.expect(udp.pop(udp.mdns_port) != null);
+
+    // An unrelated multicast group is still dropped at the gate.
+    n = udp.build_frame_ex(&frame, .{ 0x01, 0x00, 0x5e, 0x7f, 0xff, 0xfa }, &host_mac, ip_host, .{ 239, 255, 255, 250 }, udp.default_ttl, 9999, udp.mdns_port, "ssdp");
+    try std.testing.expect(handle_rx(frame[0..n], &test_mac, &reply_buf) == null);
+    try std.testing.expectEqual(@as(u64, 1), dropped_other);
+    try std.testing.expectEqual(@as(u64, 1), udp.received);
+
+    // The mDNS group for a port other than 5353 is not admitted either.
+    n = udp.build_frame_ex(&frame, group_mac, &host_mac, ip_host, udp.mdns_group, udp.mcast_ttl, 9999, 9999, "x");
+    try std.testing.expect(handle_rx(frame[0..n], &test_mac, &reply_buf) == null);
+    try std.testing.expectEqual(@as(u64, 2), dropped_other);
+
+    // Nor is a non-UDP frame addressed to the group.
+    n = udp.build_frame_ex(&frame, group_mac, &host_mac, ip_host, udp.mdns_group, udp.mcast_ttl, udp.mdns_port, udp.mdns_port, "tcp");
+    frame[23] = 6; // protocol TCP
+    frame[24] = 0;
+    frame[25] = 0;
+    const hc = checksum(frame[14..34]);
+    frame[24] = @truncate(hc >> 8);
+    frame[25] = @truncate(hc);
+    try std.testing.expect(handle_rx(frame[0..n], &test_mac, &reply_buf) == null);
+    try std.testing.expectEqual(@as(u64, 3), dropped_other);
+    try std.testing.expectEqual(@as(u64, 1), udp.received);
+}
+
 test "ipv4: M97e-F2 dst gate — a foreign unicast address is dropped before UDP, broadcast admitted" {
     udp.reset();
     defer udp.reset();
@@ -651,8 +711,8 @@ test "ipv4: M97e-F2 dst gate — a foreign unicast address is dropped before UDP
     try std.testing.expectEqual(@as(u64, 2), udp.received);
     try std.testing.expect(udp.pop(7001) != null);
 
-    // And a directed broadcast / multicast-shaped address is NOT
-    // admitted (no consumer — the honest bound).
+    // And a directed broadcast / a routable multicast address is NOT
+    // admitted (only 224.0.0.251:5353 has a consumer — the honest bound).
     n = udp.build_frame_ex(&frame, .{ 0xff, 0xff, 0xff, 0xff, 0xff, 0xff }, &host_mac, ip_host, .{ 10, 0, 0, 255 }, udp.default_ttl, 9999, 7000, "db");
     try std.testing.expect(handle_rx(frame[0..n], &test_mac, &reply_buf) == null);
     try std.testing.expectEqual(@as(u64, 2), dropped_other);

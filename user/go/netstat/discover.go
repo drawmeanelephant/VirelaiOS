@@ -9,12 +9,11 @@
 //
 // Honest bounds:
 //
-//   - QU=1 is not an optimization; it is the only reply shape this stack
-//     delivers. The IPv4 dst gate (kernel/src/ipv4.zig) admits own-IP
-//     and 255.255.255.255 only — a multicast-addressed reply is counted
-//     at the MAC layer (M198a's rx_mdns) and dropped before EL0. RFC
-//     6762 §5.4/§8.1 license the one-shot unicast-response query; that
-//     is what this verb sends.
+//   - QU=1 asks for the bounded-latency unicast reply (RFC 6762 §5.4).
+//     M206b residual (#3814) also admits the mDNS group at the IPv4 dst
+//     gate for UDP :5353, so a responder that falls back to a multicast
+//     answer (its QU peer has no ARP entry yet) is folded too; both
+//     shapes still arrive only after this query.
 //   - The source port is the bound 5353 — the canonical mDNS shape and
 //     the refusal the verb names when a running --advertise already owns
 //     it (a duplicate bind is EINVAL).

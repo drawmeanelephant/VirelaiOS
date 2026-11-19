@@ -98,11 +98,16 @@ var (
 )
 
 // Question is one decoded or to-be-encoded question. QU is the
-// unicast-response bit a question may set on the wire's class field.
+// unicast-response bit a question may set on the wire's class field;
+// Class is the decoded class (ClassIN for every question this link
+// speaks — a responder must refuse, not answer, anything else). The
+// encoder treats a zero Class as ClassIN so existing callers keep the
+// conventional shape.
 type Question struct {
-	Name string
-	Type uint16
-	QU   bool
+	Name  string
+	Type  uint16
+	Class uint16
+	QU    bool
 }
 
 // SRV is a decoded service record body (RFC 2782): priority, weight,
@@ -134,6 +139,7 @@ type Record struct {
 type Message struct {
 	ID            uint16 // conventionally 0 on the mDNS wire
 	Response      bool   // QR
+	Opcode        int    // bits 11-14 of the flags word (0 = QUERY)
 	Authoritative bool   // AA
 	Truncated     bool   // TC
 	RCode         int    // low nibble of the flags word
@@ -149,7 +155,7 @@ type Message struct {
 // prefers).
 func Query(name string, qtype uint16, qu bool) *Message {
 	return &Message{
-		Questions: []Question{{Name: name, Type: qtype, QU: qu}},
+		Questions: []Question{{Name: name, Type: qtype, Class: ClassIN, QU: qu}},
 	}
 }
 
@@ -220,6 +226,7 @@ func (m *Message) Encode() ([]byte, error) {
 	if m.Response {
 		flags |= 0x8000
 	}
+	flags |= uint16(m.Opcode&0x0f) << 11
 	if m.Authoritative {
 		flags |= 0x0400
 	}
@@ -238,7 +245,11 @@ func (m *Message) Encode() ([]byte, error) {
 			return nil, err
 		}
 		out = append(out, byte(q.Type>>8), byte(q.Type))
-		class := ClassIN
+		class := q.Class
+		if class == 0 {
+			class = ClassIN
+		}
+		class &= 0x7fff
 		if q.QU {
 			class |= bitQU
 		}
@@ -355,10 +366,11 @@ func Decode(pkt []byte) (*Message, error) {
 	if len(pkt) < headerLen {
 		return nil, ErrPacketShort
 	}
-	m := &Message{
-		ID: uint16(pkt[0])<<8 | uint16(pkt[1]),
-	}
 	flags := uint16(pkt[2])<<8 | uint16(pkt[3])
+	m := &Message{
+		ID:     uint16(pkt[0])<<8 | uint16(pkt[1]),
+		Opcode: int(flags>>11) & 0x0f,
+	}
 	m.Response = flags&0x8000 != 0
 	m.Authoritative = flags&0x0400 != 0
 	m.Truncated = flags&0x0200 != 0
@@ -386,6 +398,7 @@ func Decode(pkt []byte) (*Message, error) {
 		q.Type = uint16(pkt[off])<<8 | uint16(pkt[off+1])
 		class := uint16(pkt[off+2])<<8 | uint16(pkt[off+3])
 		q.QU = class&bitQU != 0
+		q.Class = class & 0x7fff
 		off += 4
 		m.Questions = append(m.Questions, q)
 	}

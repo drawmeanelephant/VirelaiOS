@@ -55,6 +55,7 @@ const (
 type advSeam struct {
 	listen func(port uint16) int64                                    // vi.UDPListen
 	send   func(dst [4]byte, dstPort, srcPort uint16, b []byte) int64 // vi.UDPSendFrom
+	recv   func(port uint16, buf []byte) int64                        // vi.UDPRecvFrom
 	close  func(port uint16) int64                                    // vi.UDPClose
 	stats  func() (vi.NetStats, int64)                                // vi.NetStatsSnapshotRC
 	sleep  func(ticks uint64)                                         // vi.Sleep
@@ -65,6 +66,7 @@ func guestAdvSeam() advSeam {
 	return advSeam{
 		listen: vi.UDPListen,
 		send:   vi.UDPSendFrom,
+		recv:   vi.UDPRecvFrom,
 		close:  vi.UDPClose,
 		stats:  vi.NetStatsSnapshotRC,
 		sleep:  vi.Sleep,
@@ -85,6 +87,14 @@ type advertiser struct {
 	seam     advSeam
 	announce []byte // the encoded announce message (TTL = advTTL)
 	goodbye  []byte // the same record set at TTL=0
+	// M206b residual (#3814): the same :5353 bind receives matching
+	// queries through the shared bounded responder. One owner, no second
+	// listener, and the pump is joined before the port is released.
+	responder *mdns.Responder
+	pump      *mdns.Pump
+	stopCh    chan struct{}
+	burstDone chan struct{}
+	started   bool
 }
 
 // validateAdvertiseName bounds the instance label to what the wire can
@@ -203,13 +213,30 @@ func newAdvertiser(name string, port uint16, seam advSeam) *advertiser {
 	}
 	a.announce = msg
 	a.goodbye = bye
+	// The responder description is the same chain the announcement
+	// carries: a peer that missed the burst resolves it by query.
+	r, err := mdns.NewResponder(mdns.Service{
+		Type:     "_http._tcp.local",
+		Instance: name,
+		Host:     a.hostName,
+		Port:     port,
+		IPv4:     a.ip4,
+		IPv6:     a.ip6,
+		TTL:      advTTL,
+		TXT:      []string{"txtvers=1", "path=/"},
+	})
+	if err != nil {
+		seam.log("httpd: advertise encode failed")
+		return nil
+	}
+	a.responder = r
 	return a
 }
 
-// start binds the mDNS port and fires the startup burst; the steady
-// re-announce at TTL/2 runs on its own goroutine while serving. A bind
-// refusal or a refused first send is named, never silent — the daemon
-// exits rather than run unadvertised.
+// start binds the mDNS port, starts the shared query responder, and
+// fires the startup burst; the steady re-announce at TTL/2 runs on its
+// own goroutine while serving. A bind refusal or a refused first send is
+// named, never silent — the daemon exits rather than run unadvertised.
 func (a *advertiser) start() bool {
 	if rc := a.seam.listen(mdns.Port); rc < 0 {
 		if rc == -vi.ErrEACCES {
@@ -219,25 +246,68 @@ func (a *advertiser) start() bool {
 		}
 		return false
 	}
-	a.seam.log("httpd: advertising " + a.svcName + " port=" + vi.Itoa64(int64(a.port)))
-	if !a.emit(a.announce) {
+	a.stopCh = make(chan struct{})
+	a.burstDone = make(chan struct{})
+	a.pump = a.responder.StartPump(mdns.PumpSeam{
+		Recv:  a.seam.recv,
+		Send:  a.seam.send,
+		Sleep: a.seam.sleep,
+		Log:   func(line string) { a.seam.log("httpd: " + line) },
+	})
+	if a.pump == nil {
+		a.seam.log("httpd: advertise responder failed")
+		_ = a.seam.close(mdns.Port)
 		return false
 	}
-	go func() {
-		for i := 1; i < advBurstN; i++ {
-			a.seam.sleep(advBurstTick)
-			if !a.emit(a.announce) {
-				return
-			}
-		}
-		for {
-			a.seam.sleep(advHalfTicks)
-			if !a.emit(a.announce) {
-				return
-			}
-		}
-	}()
+	a.seam.log("httpd: advertising " + a.svcName + " port=" + vi.Itoa64(int64(a.port)))
+	if !a.emit(a.announce) {
+		a.pump.Stop()
+		_ = a.seam.close(mdns.Port)
+		return false
+	}
+	a.started = true
+	go a.runBurst()
 	return true
+}
+
+// wait parks up to `ticks` scheduler quanta, one at a time so Stop is
+// observed promptly instead of after a whole TTL/2 interval. Returns
+// false once the advertiser is stopping.
+func (a *advertiser) wait(ticks uint64) bool {
+	for i := uint64(0); i < ticks; i++ {
+		select {
+		case <-a.stopCh:
+			return false
+		default:
+		}
+		a.seam.sleep(1)
+	}
+	return true
+}
+
+// runBurst is the startup burst (advBurstN emits ~1 s apart) followed by
+// the steady TTL/2 re-announce. The burst-complete marker is the gate's
+// post-burst boundary: a browse that starts after it cannot be credited
+// to the announcements.
+func (a *advertiser) runBurst() {
+	defer close(a.burstDone)
+	for i := 1; i < advBurstN; i++ {
+		if !a.wait(advBurstTick) {
+			return
+		}
+		if !a.emit(a.announce) {
+			return
+		}
+	}
+	a.seam.log("httpd: advertise burst done")
+	for {
+		if !a.wait(advHalfTicks) {
+			return
+		}
+		if !a.emit(a.announce) {
+			return
+		}
+	}
 }
 
 // emit sends one pre-encoded datagram to the mDNS group from the bound
@@ -256,10 +326,22 @@ func (a *advertiser) emit(msg []byte) bool {
 	return true
 }
 
-// stop is the clean-exit half: the TTL=0 goodbye goes out twice
-// back-to-back (lost-packet cover, the startup burst's reason) and the
-// port releases.
+// stop is the clean-exit half: the burst/steady goroutine and the query
+// responder are signalled and JOINED, the TTL=0 goodbye goes out twice
+// back-to-back (lost-packet cover, the startup burst's reason), and the
+// port releases — so a staged next advertiser can bind immediately.
 func (a *advertiser) stop() {
+	if !a.started {
+		return
+	}
+	select {
+	case <-a.stopCh:
+	default:
+		close(a.stopCh)
+	}
+	<-a.burstDone
+	a.pump.Stop()
+	a.started = false
 	for i := 0; i < 2; i++ {
 		if !a.emit(a.goodbye) {
 			break
