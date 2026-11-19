@@ -89,16 +89,3 @@ func listSourceFiles(dir string) ([]string, bool) {
 	sort.Strings(names)
 	return names, true
 }
-
-func canonShareDir(dir string) string {
-	switch {
-	case dir == "" || dir == "/host" || dir == "/host/":
-		return "/"
-	case strings.HasPrefix(dir, "/host/"):
-		return dir[len("/host"):]
-	case strings.HasPrefix(dir, "/"):
-		return dir
-	default:
-		return "/" + dir
-	}
-}
