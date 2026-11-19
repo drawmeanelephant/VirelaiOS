@@ -64,6 +64,11 @@ SERVICE_FLEET = [
     # roster entry (M200b #3280); the row already exists, this just lets
     # `check` see it.
     "GONETSTAT.ELF", "QJS.BIN",
+    # M214c (#3920): FLINTD.ELF is the guest sync daemon (a staged machine
+    # tool, never a manifest row): its own exec needs file (store, secrets)
+    # and net + net-mdns (:4748 listen, :5353 --advertise) rather than the
+    # ambient floor that denies both.
+    "FLINTD.ELF",
     # M132b (#2753): GOPAINT.ELF is store-delivered and self-registers its
     # apps.txt row at install, so it has no manifest row — but grants are
     # name-bound, not manifest-bound, so its reservation row lives here.

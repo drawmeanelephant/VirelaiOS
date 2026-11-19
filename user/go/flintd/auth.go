@@ -27,12 +27,22 @@ func parseAuthKey(raw []byte) ([32]byte, bool) {
 	return decoded, true
 }
 
+// readDetail names why a secret/allowlist read failed (the FS error's path
+// and errno), so the serial tells EACCES from ENOENT instead of only
+// `secret_malformed`. It never carries file content.
+func readDetail(err error) string {
+	if fe, ok := err.(*flintstore.FSError); ok {
+		return fe.Error()
+	}
+	return ""
+}
+
 // loadAuthKeyFile reads --auth-key. The file lives outside the store root so
 // the store stays byte-portable with no secrets inside it.
 func loadAuthKeyFile(fs flintstore.FS, path string) (*[32]byte, error) {
 	raw, err := fs.ReadFile(path, maxAuthKeyFileBytes)
 	if err != nil {
-		return nil, flintstore.Refuse("secret_malformed", "invalid --auth-key file")
+		return nil, flintstore.Refuse("secret_malformed", readDetail(err))
 	}
 	key, ok := parseAuthKey(raw)
 	if !ok {
@@ -63,7 +73,7 @@ func parseAllowAuthor(raw []byte) (map[string]bool, error) {
 func loadAllowAuthorFile(fs flintstore.FS, path string) (map[string]bool, error) {
 	raw, err := fs.ReadFile(path, flintstore.MaxFileReadBytes)
 	if err != nil {
-		return nil, flintstore.Refuse("secret_malformed", "invalid --allow-author file")
+		return nil, flintstore.Refuse("secret_malformed", readDetail(err))
 	}
 	return parseAllowAuthor(raw)
 }

@@ -10,12 +10,18 @@
 // signatures survive transport untouched. Sessions are serialized with one
 // request in flight. The daemon holds no signing key and writes no workspace
 // or key state: it verifies signatures, it never signs.
+//
+// --advertise NAME publishes the listener as "NAME._flint._tcp.local" over
+// the shared bounded mDNS advertiser (M214c, #3920): startup burst, query
+// responder and TTL=0 goodbye on one :5353 owner. HTTPD and FLINTD stage
+// their lifecycles, so a guest never carries two owners.
 package main
 
 import (
 	"fmt"
 
 	"virelai/flintstore"
+	"virelai/mdns"
 	"virelai/vi"
 )
 
@@ -49,6 +55,7 @@ func main() {
 	if cfg.authKeyPath != "" {
 		key, kerr := loadAuthKeyFile(storeFS, cfg.authKeyPath)
 		if kerr != nil {
+			consoleFn("flintd: auth-key " + refusalDetail(kerr))
 			consoleFn("flintd: refuse secret_malformed")
 			exitFn(1)
 			return
@@ -58,12 +65,25 @@ func main() {
 	if cfg.allowAuthorPath != "" {
 		authors, aerr := loadAllowAuthorFile(storeFS, cfg.allowAuthorPath)
 		if aerr != nil {
+			consoleFn("flintd: allow-author " + refusalDetail(aerr))
 			consoleFn("flintd: refuse secret_malformed")
 			exitFn(1)
 			return
 		}
 		cfg.allowAuthors = authors
 	}
+	// The advertisement is validated before either listener binds: a bad
+	// label, a denied grant or a NAT-shaped boot refuses by name and exits
+	// instead of running unadvertised.
+	var adv *mdns.Advertiser
+	if cfg.advertise != "" {
+		adv = newAdv(cfg.advertise, cfg.port, guestAdvSeam())
+		if adv == nil {
+			exitFn(1)
+			return
+		}
+	}
+
 	consoleFn("flintd: starting store=" + root + " port=" + fmt.Sprint(cfg.port))
 
 	ln, lerr := vi.SocketListen(cfg.port)
@@ -73,6 +93,13 @@ func main() {
 		return
 	}
 	consoleFn("flintd: listening port=" + fmt.Sprint(cfg.port))
+
+	// One :5353 owner, staged after HTTPD's lifecycle in the hub journey.
+	if adv != nil && !adv.Start() {
+		_ = ln.Close()
+		exitFn(1)
+		return
+	}
 
 	sessCfg := sessionConfig{root: root, authKey: cfg.authKey, allowAuthors: cfg.allowAuthors}
 	for {
@@ -86,6 +113,9 @@ func main() {
 		consoleFn("flintd: session close")
 	}
 	_ = ln.Close()
+	if adv != nil {
+		adv.Stop()
+	}
 	consoleFn("flintd: bye")
 	exitFn(0)
 }
@@ -105,21 +135,23 @@ func cliArgs(raw []string) []string {
 type config struct {
 	store           string
 	port            uint16
+	advertise       string
 	authKeyPath     string
 	allowAuthorPath string
 	authKey         *[32]byte
 	allowAuthors    map[string]bool
 }
 
-// parseArgs accepts --store=<dir>, --port=<n>, --auth-key=<file> and
-// --allow-author=<file>. Advertising lands with the sync card; it refuses by
-// name instead of silently doing nothing.
+// parseArgs accepts --store=<dir>, --port=<n>, --advertise NAME,
+// --auth-key=<file> and --allow-author=<file>. The advertisement name is
+// validated before either listener binds.
 func parseArgs(args []string) (config, error) {
 	cfg := config{store: flintstore.DefaultStoreRoot, port: defaultPort}
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch {
-		case a == "--store" || a == "--port" || a == "--auth-key" || a == "--allow-author":
+		case a == "--store" || a == "--port" || a == "--advertise" ||
+			a == "--auth-key" || a == "--allow-author":
 			if i+1 >= len(args) {
 				return cfg, flintstore.Refuse("usage", "missing flag value")
 			}
@@ -133,6 +165,11 @@ func parseArgs(args []string) (config, error) {
 					return cfg, flintstore.Refuse("usage", "invalid port")
 				}
 				cfg.port = p
+			case "--advertise":
+				if args[i] == "" {
+					return cfg, flintstore.Refuse("usage", "empty advertise name")
+				}
+				cfg.advertise = args[i]
 			case "--auth-key":
 				cfg.authKeyPath = args[i]
 			case "--allow-author":
@@ -159,8 +196,11 @@ func parseArgs(args []string) (config, error) {
 			if cfg.allowAuthorPath == "" {
 				return cfg, flintstore.Refuse("usage", "empty allow-author path")
 			}
-		case a == "--advertise" || hasPrefix(a, "--advertise="):
-			return cfg, flintstore.Refuse("usage", "advertise not served by this daemon")
+		case hasPrefix(a, "--advertise="):
+			cfg.advertise = a[len("--advertise="):]
+			if cfg.advertise == "" {
+				return cfg, flintstore.Refuse("usage", "empty advertise name")
+			}
 		default:
 			return cfg, flintstore.Refuse("usage", "unknown flag")
 		}
@@ -198,4 +238,15 @@ func refusalName(err error) string {
 		return name
 	}
 	return "usage"
+}
+
+// refusalDetail is the diagnostic half of a refusal: the file read's path
+// and errno when there is one, never file content. The line precedes the
+// pinned `flintd: refuse <name>` so the serial distinguishes a denied read
+// from a malformed file without weakening the contract.
+func refusalDetail(err error) string {
+	if re, ok := err.(*flintstore.RefuseError); ok && re.Detail != "" {
+		return re.Detail
+	}
+	return "malformed"
 }
