@@ -253,8 +253,18 @@ func paintHoverPreview(scan []byte, width, height int) int {
 // card only once the frame carrying it flushed, and announces dismissal
 // only after the first presented frame without it. A new identity cannot
 // reuse the old announcement: `shown` names the exact id last presented.
+//
+// A failed present proves nothing about the scanout: the last successful
+// frame — with or without the card — is still what the user sees. Both
+// the announcement and the dismissal therefore wait for presented=true;
+// a painted-but-unpresented pass cannot reannounce (the visible card is
+// already named) and an unpresented card-free pass cannot dismiss (the
+// visible card is still up).
 func hoverPreviewPresented(painted, presented bool) {
-	if painted && presented {
+	if !presented {
+		return
+	}
+	if painted {
 		if hoverPreview.shown != hoverPreview.id {
 			hoverPreview.shown = hoverPreview.id
 			hoverPreviewLog(MarkerHoverPreview + vi.Itoa64(int64(hoverPreview.id)) +

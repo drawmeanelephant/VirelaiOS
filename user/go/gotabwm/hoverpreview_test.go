@@ -142,11 +142,41 @@ func TestHoverPreviewMarkersFollowPresentation(t *testing.T) {
 	if n := strings.Count(strings.Join(f.logs, "\n"), MarkerHoverPreview); n != 1 {
 		t.Fatalf("preview receipt repeated: n=%d logs=%v", n, f.logs)
 	}
+	if hoverPreview.shown != 4 {
+		t.Fatalf("shown id = %d want 4", hoverPreview.shown)
+	}
 
+	// A failed present is not evidence the announced card left the
+	// scanout: the prior frame still shows it. Both a painted pass and a
+	// card-free pass that failed to present must leave the receipt state
+	// exactly as it was.
+	hoverPreviewPresented(true, false)
+	hoverPreviewPresented(false, false)
+	if hoverPreview.shown != 4 {
+		t.Fatalf("failed present cleared shown: %d", hoverPreview.shown)
+	}
+	if n := strings.Count(strings.Join(f.logs, "\n"), MarkerHoverPreviewDismiss); n != 0 {
+		t.Fatalf("failed present emitted a dismissal: n=%d logs=%v", n, f.logs)
+	}
+
+	// Successful recovery: the announced card is already on the scanout,
+	// so its presented frame must not reannounce it.
+	hoverPreviewPresented(true, true)
+	if n := strings.Count(strings.Join(f.logs, "\n"), MarkerHoverPreview); n != 1 {
+		t.Fatalf("successful recovery reannounced the card: n=%d logs=%v", n, f.logs)
+	}
+
+	// One successfully presented card-free frame dismisses exactly once.
 	hoverPreviewPointer()
 	hoverPreviewPresented(false, true)
 	if !f.contains(t, MarkerHoverPreviewDismiss+"4") {
 		t.Fatalf("missing post-present dismiss receipt: %v", f.logs)
+	}
+	if n := strings.Count(strings.Join(f.logs, "\n"), MarkerHoverPreviewDismiss); n != 1 {
+		t.Fatalf("dismiss receipt count = %d want 1: %v", n, f.logs)
+	}
+	if hoverPreview.shown != 0 {
+		t.Fatalf("shown id after dismissal = %d want 0", hoverPreview.shown)
 	}
 	if strings.Contains(strings.Join(f.logs, "\n"), MarkerHoverPreview+"4 title") == false {
 		t.Fatal("preview receipt lost its title payload")
