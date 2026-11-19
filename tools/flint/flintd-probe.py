@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""tools/flint/flintd-probe.py -- M214a (#3918) host driver for FLINTD.ELF.
+"""tools/flint/flintd-probe.py -- M214a/b (#3918/#3919) host driver for FLINTD.ELF.
 
 Runs as the runner's ``--net-tcp-connect-stream`` child: stdin carries
 guest->host bytes, stdout carries host->guest bytes, and stderr carries the
@@ -15,10 +15,16 @@ The probe deliberately exercises framing beyond one segment: a request over
 100 KiB read reply. Signatures of every served Change are verified client-side
 with the pinned RFC 8032 key, so the gate proves the daemon returned verifiable
 canonical bytes rather than re-serialized JSON.
+
+``--mode=auth`` drives the write half's auth gates instead: a successful
+nonce hello, auth_required before the challenge is answered, a real
+authenticated append, author_not_allowed for a key outside --allow-author,
+and finally auth_failed closing the session.
 """
 
 import argparse
 import hashlib
+import hmac
 import json
 import os
 import struct
@@ -281,19 +287,180 @@ def expect_refuse(wire, obj, want, what):
         raise RuntimeError("%s: want refuse %s, got %r" % (what, want, obj))
 
 
-def main(argv):
+AUTH_DOMAIN = b"FLINT-SYNC-AUTH/1\x00"
+
+
+def auth_hmac(key, nonce_hex):
+    """hex(HMAC-SHA256(key, "FLINT-SYNC-AUTH/1\\x00" || nonce[16]))."""
+    return hmac.new(key, AUTH_DOMAIN + bytes.fromhex(nonce_hex),
+                    hashlib.sha256).hexdigest()
+
+
+def make_change(stream, change_id, parent, ts, message, seed):
+    """Build and sign one empty-ops Change (the probe verifies empty ops)."""
+    rec = {"id": change_id, "parent": parent, "stream": stream, "ts": ts,
+           "author": ed_public_key(seed).hex(), "message": message, "ops": [],
+           "merged": None}
+    rec["sig"] = ed_sign(sig_msg(rec), seed).hex()
+    return rec
+
+
+def raw_change(rec):
+    return json.dumps(rec, separators=(",", ":"))
+
+
+def flip_sig(rec):
+    """Corrupt the last signature nibble: a syntactically valid, wrong sig."""
+    sig = rec["sig"]
+    rec["sig"] = sig[:-1] + ("1" if sig[-1] == "0" else "0")
+    return rec
+
+
+def parse_args(argv):
     ap = argparse.ArgumentParser()
+    ap.add_argument("--mode", choices=("read", "auth"), default="read")
     ap.add_argument("--store", required=True, help="host path of the guest share's FLINT store")
-    ap.add_argument("--seed", required=True, help="host-seeded streams/<id>.jsonl to compare")
+    ap.add_argument("--seed", default=None, help="host-seeded streams/<id>.jsonl to compare")
     ap.add_argument("--seed-file", required=True, help="pinned Ed25519 seed hex file")
-    ap.add_argument("--stream-id", required=True)
+    ap.add_argument("--stream-id", default=None)
     ap.add_argument("--stream-name", default="seed")
-    ap.add_argument("--torn-stream", required=True)
-    ap.add_argument("--big-stream", required=True)
+    ap.add_argument("--torn-stream", default=None)
+    ap.add_argument("--big-stream", default=None)
     ap.add_argument("--transcript", required=True)
-    ap.add_argument("--received", required=True)
+    ap.add_argument("--received", default=None)
+    ap.add_argument("--wire-received", default=None,
+                    help="write the create/append stream's raw lines for comparison")
+    ap.add_argument("--auth-key", default=None,
+                    help="64 lowercase hex chars of the daemon's --auth-key secret")
     ap.add_argument("--page", type=int, default=256)
-    args = ap.parse_args(argv)
+    return ap.parse_args(argv)
+
+
+def auth_mode(args):
+    """Drive the authenticated write half: nonce hello, auth_required,
+    authenticated create/append, author_not_allowed, then auth_failed-close."""
+    if not args.auth_key:
+        fail("--mode=auth needs --auth-key")
+    if args.stream_id is None:
+        fail("--mode=auth needs --stream-id")
+    key = bytes.fromhex(args.auth_key)
+    seed_hex = open(args.seed_file, encoding="utf-8").read().strip()
+    seed = bytes.fromhex(seed_hex)
+    pub_hex = ed_public_key(seed).hex()
+    stream = args.stream_id
+    stream_name = "authw"
+
+    other_seed = bytes([0x22]) * 32
+    other_pub = ed_public_key(other_seed).hex()
+    if other_pub == pub_hex:
+        fail("second author seed duplicates the allowed author")
+
+    wire = Wire(args.transcript)
+    try:
+        # --- successful nonce hello; protected verb refuses auth_required ---
+        _, obj = wire.request({"op": "hello", "proto": "FLINT-SYNC/1"})
+        expect_ok(wire, obj, "auth hello")
+        nonce = obj.get("nonce")
+        if obj.get("proto") != "FLINT-SYNC/1" or obj.get("server") != "flintd":
+            raise RuntimeError("auth hello shape: %r" % obj)
+        if not isinstance(nonce, str) or len(nonce) != 32:
+            raise RuntimeError("hello did not carry a 16-byte nonce: %r" % obj)
+        note("hello challenge nonce=%d bytes" % (len(nonce) // 2))
+
+        _, obj = wire.request({"op": "list"})
+        expect_refuse(wire, obj, "auth_required", "list before auth")
+        note("protected verb refused auth_required")
+
+        # --- answer the challenge; then create + append for real -----------
+        _, obj = wire.request({"op": "auth", "nonce": nonce,
+                               "hmac": auth_hmac(key, nonce)})
+        expect_ok(wire, obj, "auth")
+        note("authenticated")
+
+        rec = {"id": stream, "name": stream_name, "head": None,
+               "created": 1760000000000, "forked_from": None}
+        _, obj = wire.request({"op": "create", "record": rec})
+        expect_ok(wire, obj, "authenticated create")
+        _, obj = wire.request({"op": "create", "record": rec})
+        expect_refuse(wire, obj, "stream_exists", "create collision")
+
+        first = make_change(stream, "0199de2d-dc00-7000-8000-00000000f101",
+                            None, 1760000000100, "authenticated first", seed)
+        _, obj = wire.request({"op": "append", "stream": stream,
+                               "expected_head": None,
+                               "changes": [raw_change(first)]})
+        expect_ok(wire, obj, "authenticated append")
+        if obj.get("head") != first["id"]:
+            raise RuntimeError("append head = %r" % obj.get("head"))
+
+        # --- independent author admission: foreign key refuses ------------
+        foreign = make_change(stream, "0199de2d-dc00-7000-8000-00000000f102",
+                              first["id"], 1760000000200, "foreign author", other_seed)
+        _, obj = wire.request({"op": "append", "stream": stream,
+                               "expected_head": first["id"],
+                               "changes": [raw_change(foreign)]})
+        expect_refuse(wire, obj, "author_not_allowed", "foreign author append")
+        _, obj = wire.request({"op": "read", "stream": stream})
+        expect_ok(wire, obj, "read after author refusal")
+        if len(obj.get("changes") or []) != 1:
+            raise RuntimeError("author_not_allowed changed the log: %r" % obj)
+        note("author_not_allowed left the log unchanged")
+
+        # --- stale head before validation, then the allowed second line ---
+        stale = make_change(stream, "0199de2d-dc00-7000-8000-00000000f103",
+                            first["id"], 1760000000300, "stale", seed)
+        _, obj = wire.request({"op": "append", "stream": stream,
+                               "expected_head": None,
+                               "changes": [raw_change(stale)]})
+        expect_refuse(wire, obj, "stale_head", "stale head")
+        second = make_change(stream, "0199de2d-dc00-7000-8000-00000000f104",
+                             first["id"], 1760000000400, "authenticated second", seed)
+        _, obj = wire.request({"op": "append", "stream": stream,
+                               "expected_head": first["id"],
+                               "changes": [raw_change(second)]})
+        expect_ok(wire, obj, "second authenticated append")
+
+        _, obj = wire.request({"op": "read", "stream": stream})
+        expect_ok(wire, obj, "read authenticated history")
+        got = obj.get("changes") or []
+        if got != [raw_change(first), raw_change(second)]:
+            raise RuntimeError("authenticated raw lines differ: %r" % got)
+        for line in got:
+            if not verify_change(line, pub_hex):
+                raise RuntimeError("authenticated Change failed verification")
+        note("authenticated raw lines verified=%d" % len(got))
+
+        # --- a fresh hello resets auth; a wrong answer fails closed --------
+        _, obj = wire.request({"op": "hello", "proto": "FLINT-SYNC/1"})
+        expect_ok(wire, obj, "second hello")
+        nonce2 = obj.get("nonce")
+        if not isinstance(nonce2, str) or len(nonce2) != 32:
+            raise RuntimeError("second hello carried no nonce: %r" % obj)
+        _, obj = wire.request({"op": "heads"})
+        expect_refuse(wire, obj, "auth_required", "hello reset auth")
+        wrong_key = bytes([0x33]) * 32
+        _, obj = wire.request({"op": "auth", "nonce": nonce2,
+                               "hmac": auth_hmac(wrong_key, nonce2)})
+        expect_refuse(wire, obj, "auth_failed", "wrong hmac")
+        tail = os.read(0, 4096)
+        if tail:
+            raise RuntimeError("auth_failed did not close the session: %r" % tail)
+        note("auth_failed closed the session")
+    finally:
+        wire.close()
+
+    sys.stderr.write("FLINTD-PROBE: PASS auth/author/write gates\n")
+    sys.stderr.flush()
+    return 0
+
+
+def main(argv):
+    args = parse_args(argv)
+    if args.mode == "auth":
+        return auth_mode(args)
+    for name in ("seed", "stream_id", "torn_stream", "big_stream", "received"):
+        if getattr(args, name) is None:
+            fail("--mode=read needs --%s" % name.replace("_", "-"))
 
     seed_hex = open(args.seed_file, encoding="utf-8").read().strip()
     seed = bytes.fromhex(seed_hex)
@@ -413,15 +580,91 @@ def main(argv):
         expect_refuse(wire, obj, "change_missing", "unknown after")
         note("named refusals proto_version usage stream_missing change_missing")
 
-        # --- read-only honesty: create/append/auth refuse, store unchanged --
-        _, obj = wire.request({"op": "append", "stream": stream,
-                               "expected_head": head, "changes": []})
-        expect_refuse(wire, obj, "usage", "append on read-only daemon")
-        if "read-only" not in (obj.get("detail") or ""):
-            raise RuntimeError("append refusal is not honest: %r" % obj)
+        # --- write half: create + append, stale head before validation -----
+        wire_id = "0199de2d-dc00-7000-8000-00000000d010"
+        wire_rec = {"id": wire_id, "name": "wire", "head": None,
+                    "created": 1760000000000, "forked_from": None}
+        _, obj = wire.request({"op": "create", "record": wire_rec})
+        expect_ok(wire, obj, "create")
+        _, obj = wire.request({"op": "create", "record": wire_rec})
+        expect_refuse(wire, obj, "stream_exists", "create id collision")
+        name_clash = {"id": "0199de2d-dc00-7000-8000-00000000d011",
+                      "name": "wire", "head": None,
+                      "created": 1760000000000, "forked_from": None}
+        _, obj = wire.request({"op": "create", "record": name_clash})
+        expect_refuse(wire, obj, "stream_exists", "create name collision")
+        bad_rec = {"id": "0199de2d-dc00-7000-8000-00000000d012",
+                   "name": "Bad_Name", "head": None,
+                   "created": 1760000000000, "forked_from": None}
+        _, obj = wire.request({"op": "create", "record": bad_rec})
+        expect_refuse(wire, obj, "stream_malformed", "create malformed record")
+
+        first = make_change(wire_id, "0199de2d-dc00-7000-8000-00000000d101",
+                            None, 1760000000100, "first wire line", seed)
+        _, obj = wire.request({"op": "append", "stream": wire_id,
+                               "expected_head": None,
+                               "changes": [raw_change(first)]})
+        expect_ok(wire, obj, "append")
+        if obj.get("head") != first["id"]:
+            raise RuntimeError("append head = %r, want %s" % (obj.get("head"), first["id"]))
+
+        # A stale expected head is reported before the malformed batch is
+        # even inspected.
+        _, obj = wire.request({"op": "append", "stream": wire_id,
+                               "expected_head": None, "changes": ["{"]})
+        expect_refuse(wire, obj, "stale_head", "stale head before validation")
+
+        # A syntactically valid but wrongly signed line refuses sig_invalid.
+        bad_sig = flip_sig(make_change(wire_id, "0199de2d-dc00-7000-8000-00000000d102",
+                                       first["id"], 1760000000200, "bad sig", seed))
+        _, obj = wire.request({"op": "append", "stream": wire_id,
+                               "expected_head": first["id"],
+                               "changes": [raw_change(bad_sig)]})
+        expect_refuse(wire, obj, "sig_invalid", "bad signature")
+
+        long_msg = make_change(wire_id, "0199de2d-dc00-7000-8000-00000000d103",
+                               first["id"], 1760000000300, "x" * 513, seed)
+        _, obj = wire.request({"op": "append", "stream": wire_id,
+                               "expected_head": first["id"],
+                               "changes": [raw_change(long_msg)]})
+        expect_refuse(wire, obj, "message_invalid", "513-byte message")
+
+        # A batch whose second line is invalid appends neither line.
+        second = make_change(wire_id, "0199de2d-dc00-7000-8000-00000000d104",
+                             first["id"], 1760000000400, "second wire line", seed)
+        bad_second = flip_sig(make_change(wire_id, "0199de2d-dc00-7000-8000-00000000d105",
+                                          second["id"], 1760000000500, "bad second", seed))
+        _, obj = wire.request({"op": "append", "stream": wire_id,
+                               "expected_head": first["id"],
+                               "changes": [raw_change(second), raw_change(bad_second)]})
+        expect_refuse(wire, obj, "sig_invalid", "atomic batch")
+        _, obj = wire.request({"op": "read", "stream": wire_id})
+        expect_ok(wire, obj, "read after rejected batch")
+        if (obj.get("changes") or []) != [raw_change(first)]:
+            raise RuntimeError("rejected batch left partial history: %r" % obj)
+
+        _, obj = wire.request({"op": "append", "stream": wire_id,
+                               "expected_head": first["id"],
+                               "changes": [raw_change(second)]})
+        expect_ok(wire, obj, "second append")
+        _, obj = wire.request({"op": "read", "stream": wire_id})
+        expect_ok(wire, obj, "read wire history")
+        got = obj.get("changes") or []
+        if got != [raw_change(first), raw_change(second)]:
+            raise RuntimeError("wire raw lines differ: %r" % got)
+        for line in got:
+            if not verify_change(line, pub_hex):
+                raise RuntimeError("appended Change failed verification")
+        if args.wire_received:
+            with open(args.wire_received, "w", encoding="utf-8") as fh:
+                for line in got:
+                    fh.write(line + "\n")
+        note("create/append stale_head sig_invalid message_invalid atomic batch")
+
+        # Without --auth-key the auth verb refuses usage; the session lives.
         _, obj = wire.request({"op": "auth", "nonce": "00" * 16, "hmac": "00" * 32})
-        expect_refuse(wire, obj, "usage", "auth on read-only daemon")
-        note("create/append/auth refuse honestly")
+        expect_refuse(wire, obj, "usage", "auth on unauthenticated daemon")
+        note("auth not enabled refuses usage")
 
         # --- recovery: append a signed suffix without rewriting the record --
         parent = json.loads(raw_all[-1])["id"]

@@ -5,11 +5,19 @@ import (
 	"encoding/json"
 
 	"virelai/flintstore"
+	"virelai/vi"
 )
 
 // storeFS is the daemon's store backend: the guest /host channel in the
 // guest, MemFS in host tests.
 var storeFS flintstore.FS = flintstore.GuestFS{}
+
+// randomFn fills the 16-byte hello nonce. Tests substitute a fixed challenge;
+// the guest uses vi.Random.
+var randomFn = func(b []byte) error {
+	_, err := vi.Random(b)
+	return err
+}
 
 // connStream is the byte stream a session answers on: a *vi.Conn in the
 // guest, a scripted buffer in tests.
@@ -18,18 +26,46 @@ type connStream interface {
 	Send(p []byte) (int, error)
 }
 
-// serveSession runs one connection: accumulate bytes into NDJSON lines, answer
-// each complete line in order, and stop on a framing error, a peer close or a
-// send failure. One request is in flight at a time; coalesced bytes stay
-// buffered for the next turn, so pipelining gains no concurrency.
+// sessionConfig carries the per-daemon write gates. root is the store root;
+// authKey enables the HMAC challenge and allowAuthors enables the independent
+// --allow-author admission check. nil means "not configured".
+type sessionConfig struct {
+	root         string
+	authKey      *[32]byte
+	allowAuthors map[string]bool
+}
+
+// session is one connection's protocol state. A hello under an auth-configured
+// daemon issues a fresh nonce and resets the authenticated bit, exactly like
+// the host oracle.
+type session struct {
+	cfg       sessionConfig
+	log       func(string)
+	nonce     [16]byte
+	nonceHex  string
+	helloDone bool
+	authed    bool
+}
+
+// serveSession runs one unauthenticated connection. Tests use it directly.
 func serveSession(conn connStream, root string, log func(string)) {
+	serveSessionConfig(conn, sessionConfig{root: root}, log)
+}
+
+// serveSessionConfig runs one connection: accumulate bytes into NDJSON lines,
+// answer each complete line in order, and stop on a framing error, a peer
+// close, a send failure or a verb that closes after its refusal (auth_failed).
+// One request is in flight at a time; coalesced bytes stay buffered for the
+// next turn, so pipelining gains no concurrency.
+func serveSessionConfig(conn connStream, cfg sessionConfig, log func(string)) {
+	s := &session{cfg: cfg, log: log}
 	var rx []byte
 	chunk := make([]byte, 1460)
 	for {
 		if i := bytes.IndexByte(rx, '\n'); i >= 0 {
 			line := rx[:i]
 			rx = rx[i+1:]
-			resp, closeAfter := handleLine(line, root, log)
+			resp, closeAfter := s.handleLine(line)
 			if len(resp) > 0 {
 				if _, err := conn.Send(resp); err != nil {
 					return
@@ -59,10 +95,17 @@ func serveSession(conn connStream, root string, log func(string)) {
 	}
 }
 
+// handleLine is the stateless test seam: one request against one fresh
+// unauthenticated session.
+func handleLine(raw []byte, root string, log func(string)) ([]byte, bool) {
+	s := &session{cfg: sessionConfig{root: root}, log: log}
+	return s.handleLine(raw)
+}
+
 // handleLine processes one request line (without '\n'). It returns the exact
 // response bytes, empty when the line must simply be dropped, and whether the
 // session closes after the reply.
-func handleLine(raw []byte, root string, log func(string)) ([]byte, bool) {
+func (s *session) handleLine(raw []byte) ([]byte, bool) {
 	line := raw
 	if len(line) > 0 && line[len(line)-1] == '\r' {
 		line = line[:len(line)-1]
@@ -89,49 +132,169 @@ func handleLine(raw []byte, root string, log func(string)) ([]byte, bool) {
 		return refusalLine(seq, "usage", "missing op"), false
 	}
 
-	if log != nil {
-		log("flintd: request seq=" + itoa64(seq) + " op=" + op)
+	if s.log != nil {
+		s.log("flintd: request seq=" + itoa64(seq) + " op=" + op)
 	}
 
 	var resp []byte
+	closeAfter := false
 	switch op {
 	case "hello":
-		resp = handleHello(seq, obj)
+		resp, closeAfter = s.handleHello(seq, obj)
 	case "auth":
-		resp = refusalLine(seq, "usage", "auth not enabled on this server")
-	case "list":
-		resp = handleList(seq, root)
-	case "heads":
-		resp = handleHeads(seq, root)
-	case "open":
-		resp = handleOpen(seq, obj, root)
-	case "read":
-		resp = handleRead(seq, obj, root)
-	case "create", "append":
-		// Read-only milestone: the verb is known but not served. Say so by
-		// name and write nothing.
-		resp = refusalLine(seq, "usage", op+" unsupported: read-only daemon")
+		resp, closeAfter = s.handleAuth(seq, obj)
 	default:
-		resp = refusalLine(seq, "usage", "unknown op")
+		if s.cfg.authKey != nil && !s.authed {
+			// The challenge was a successful nonce hello; protected verbs
+			// wait for that challenge to be answered.
+			resp = refusalLine(seq, "auth_required", "authentication required")
+			break
+		}
+		switch op {
+		case "list":
+			resp = handleList(seq, s.cfg.root)
+		case "heads":
+			resp = handleHeads(seq, s.cfg.root)
+		case "open":
+			resp = handleOpen(seq, obj, s.cfg.root)
+		case "read":
+			resp = handleRead(seq, obj, s.cfg.root)
+		case "create":
+			resp = s.handleCreate(seq, obj)
+		case "append":
+			resp = s.handleAppend(seq, obj)
+		default:
+			resp = refusalLine(seq, "usage", "unknown op")
+		}
 	}
-	if log != nil {
-		logReply(log, seq, resp)
+	if s.log != nil {
+		logReply(s.log, seq, resp)
 	}
 	if len(resp) > maxLineBytes {
 		resp = refusalLine(seq, "store_too_large", "response line exceeds 4 MiB")
 	}
-	return resp, false
+	return resp, closeAfter
 }
 
-func handleHello(seq uint64, obj map[string]json.RawMessage) []byte {
+func (s *session) handleHello(seq uint64, obj map[string]json.RawMessage) ([]byte, bool) {
 	proto, ok := jsonString(obj["proto"])
 	if !ok {
-		return refusalLine(seq, "proto_version", "missing proto")
+		return refusalLine(seq, "proto_version", "missing proto"), false
 	}
 	if proto != protoVersion {
-		return refusalLine(seq, "proto_version", "expected FLINT-SYNC/1")
+		return refusalLine(seq, "proto_version", "expected FLINT-SYNC/1"), false
 	}
-	return jsonLine(helloResponse{Seq: seq, OK: true, Proto: protoVersion, Server: serverName})
+	s.helloDone = true
+	if s.cfg.authKey == nil {
+		s.authed = true
+		return jsonLine(helloResponse{Seq: seq, OK: true, Proto: protoVersion, Server: serverName}), false
+	}
+	s.authed = false
+	if err := randomFn(s.nonce[:]); err != nil {
+		return refusalLine(seq, "auth_failed", "nonce unavailable"), true
+	}
+	s.nonceHex = encodeHex(s.nonce[:])
+	return jsonLine(helloResponse{
+		Seq: seq, OK: true, Proto: protoVersion, Server: serverName, Nonce: s.nonceHex,
+	}), false
+}
+
+func (s *session) handleAuth(seq uint64, obj map[string]json.RawMessage) ([]byte, bool) {
+	if s.cfg.authKey == nil {
+		return refusalLine(seq, "usage", "auth not enabled on this server"), false
+	}
+	if !s.helloDone {
+		return refusalLine(seq, "auth_failed", "hello required before auth"), true
+	}
+	nonce, ok := jsonString(obj["nonce"])
+	if !ok {
+		return refusalLine(seq, "auth_failed", "missing nonce"), true
+	}
+	if nonce != s.nonceHex {
+		return refusalLine(seq, "auth_failed", "nonce mismatch"), true
+	}
+	hmac, ok := jsonString(obj["hmac"])
+	if !ok {
+		return refusalLine(seq, "auth_failed", "missing hmac"), true
+	}
+	want := computeAuthHMAC(s.cfg.authKey, s.nonce)
+	if !hmacHexEqual(hmac, want) {
+		return refusalLine(seq, "auth_failed", "hmac mismatch"), true
+	}
+	s.authed = true
+	return jsonLine(okResponse{Seq: seq, OK: true}), false
+}
+
+func (s *session) handleCreate(seq uint64, obj map[string]json.RawMessage) []byte {
+	raw, ok := obj["record"]
+	if !ok {
+		return refusalLine(seq, "stream_malformed", "missing record")
+	}
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return refusalLine(seq, "stream_malformed", "record must be an object")
+	}
+	var st flintstore.Stream
+	if err := json.Unmarshal(trimmed, &st); err != nil {
+		return refusalLine(seq, "stream_malformed", "invalid stream record")
+	}
+	if err := flintstore.CreateStream(storeFS, s.cfg.root, &st); err != nil {
+		return refusalForStoreError(seq, err)
+	}
+	return jsonLine(okResponse{Seq: seq, OK: true})
+}
+
+func (s *session) handleAppend(seq uint64, obj map[string]json.RawMessage) []byte {
+	streamID, ok := jsonString(obj["stream"])
+	if !ok {
+		return refusalLine(seq, "usage", "missing stream")
+	}
+	if streamID == "" {
+		return refusalLine(seq, "usage", "empty stream")
+	}
+
+	var expectedHead *string
+	if raw, present := obj["expected_head"]; present {
+		if string(bytes.TrimSpace(raw)) != "null" {
+			var head string
+			if err := json.Unmarshal(raw, &head); err != nil {
+				return refusalLine(seq, "usage", "invalid expected_head")
+			}
+			if head != "" {
+				expectedHead = &head
+			}
+		}
+	}
+
+	rawChanges, present := obj["changes"]
+	if !present {
+		return refusalLine(seq, "usage", "missing changes")
+	}
+	if trimmed := bytes.TrimSpace(rawChanges); len(trimmed) == 0 || trimmed[0] != '[' {
+		return refusalLine(seq, "usage", "changes must be an array")
+	}
+	var items []json.RawMessage
+	if err := json.Unmarshal(rawChanges, &items); err != nil {
+		return refusalLine(seq, "usage", "changes must be an array")
+	}
+	lines := make([][]byte, 0, len(items))
+	for _, item := range items {
+		var line string
+		if err := json.Unmarshal(item, &line); err != nil {
+			return refusalLine(seq, "change_malformed", "change entry must be a raw JSONL string")
+		}
+		lines = append(lines, []byte(line))
+	}
+
+	var allowAuthor func(string) bool
+	if s.cfg.allowAuthors != nil {
+		allowAuthor = func(author string) bool { return s.cfg.allowAuthors[author] }
+	}
+	st, err := flintstore.AppendStreamBatch(storeFS, s.cfg.root, streamID, expectedHead, lines, allowAuthor)
+	if err != nil {
+		return refusalForStoreError(seq, err)
+	}
+	return jsonLine(appendResponse{Seq: seq, OK: true, Head: st.Head})
 }
 
 func handleList(seq uint64, root string) []byte {
@@ -336,6 +499,18 @@ type helloResponse struct {
 	OK     bool   `json:"ok"`
 	Proto  string `json:"proto"`
 	Server string `json:"server"`
+	Nonce  string `json:"nonce,omitempty"`
+}
+
+type okResponse struct {
+	Seq uint64 `json:"seq"`
+	OK  bool   `json:"ok"`
+}
+
+type appendResponse struct {
+	Seq  uint64  `json:"seq"`
+	OK   bool    `json:"ok"`
+	Head *string `json:"head"`
 }
 
 type listResponse struct {
