@@ -63,12 +63,12 @@ pub const timer_delay_max_ms: u32 = 5_000;
 /// M211d (#3913): the input-listener bounds. `listener_max` registrations
 /// (one per target/kind) and `event_queue_max` undelivered input events;
 /// the parent enforces both and names the refusals (`event_budget_regs`,
-/// `event_queue`). `event_idle_ms` is the worker's bounded parked receipt
-/// cadence — the parent measures its 120 s active-work deadline from the
-/// last receipt, so a healthy parked page is never a page-lifetime limit.
+/// `event_queue`). The parked `event.next` ask has no worker-side receipt:
+/// the parent owns idle scheduling from its acknowledged parked state, so
+/// a healthy page's lifetime is not bounded by the active-work deadline
+/// and the worker never appends housekeeping to the capped reply stream.
 pub const listener_max: u32 = 8;
 pub const event_queue_max: u32 = 8;
-pub const event_idle_ms: u64 = 5_000;
 
 /// The one admitted listener kind. Everything else refuses
 /// `event_kind_<kind>` parent-side; the wire never carries another kind.
@@ -757,7 +757,6 @@ test "the v4 listener vocabulary and bounds are explicit" {
     try std.testing.expect(!listenerKindOk("keydown"));
     try std.testing.expectEqual(@as(u32, 8), listener_max);
     try std.testing.expectEqual(@as(u32, 8), event_queue_max);
-    try std.testing.expect(event_idle_ms * 1_000_000 < 120_000_000_000);
     for ([_][]const u8{ "listener.add", "event.next" }) |op| {
         try std.testing.expect(nameOk(op));
     }

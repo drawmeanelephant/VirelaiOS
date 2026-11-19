@@ -596,9 +596,11 @@ const Session = struct {
     /// the answer parked parent-side until an app-timer id comes due —
     /// the delay_max/dom_wait contract keeps the parked ask inside the
     /// wire's own patience. M211d: an `event.next` ask parks with no
-    /// wall-clock patience and emits a bounded `idle` receipt every
-    /// `event_idle_ms`, so the parent's active-work deadline is refreshed
-    /// while the healthy page waits for real input.
+    /// wall-clock patience and writes NOTHING while it waits. Parked idle
+    /// housekeeping belongs to the parent, whose acknowledged `waitParked`
+    /// state schedules the bounded idle marker and exempts that interval
+    /// from the active-work deadline; append-only worker receipts would
+    /// eventually consume the capped reply stream without proving progress.
     fn rpcAsk(self: *Session, op: []const u8, a: []const u8, b: []const u8, out: []u8) anyerror!usize {
         return self.rpcAskMode(op, a, b, out, false);
     }
@@ -610,7 +612,6 @@ const Session = struct {
         const used = qjs.domrpc.request(&line, op, self.rpc_seq, a, b);
         self.rpcWrite(line[0..used]) catch return self.domFail("dom_op_wire");
         const wait_start = clock.counter(clock.context);
-        var last_idle = wait_start;
         while (true) {
             // Everything in a poll iteration — the rendezvous read, the
             // parse, the nap — is the parent's clock: shift the deadline
@@ -619,11 +620,6 @@ const Session = struct {
             const iter = clock.counter(clock.context);
             if (!parked and iter -% wait_start >= clock.frequency * dom_wait_s)
                 return self.domFail("dom_op_wire");
-            if (parked and iter -% last_idle >= clock.frequency * (qjs.domrpc.event_idle_ms / 1000)) {
-                last_idle = iter;
-                self.rpcWrite("{\"op\":\"idle\",\"ok\":true}\n") catch
-                    return self.domFail("dom_op_wire");
-            }
             if (!self.runtime.control.poll())
                 return self.domFail(@errorName(self.runtime.control.failure orelse error.Cancelled));
             const n = rpcReadAnswer(self.rpc_ans) catch 0;

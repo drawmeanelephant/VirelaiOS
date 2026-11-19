@@ -25,9 +25,12 @@ const (
 	// target/kind) and eight queued-but-undelivered input events.
 	domRpcMaxListeners = 8
 	domRpcMaxEvents    = 8
-	// domRpcIdleRefresh mirrors domrpc.event_idle_ms: the worker's parked
-	// receipt cadence. The parent measures its active-work deadline from
-	// the last wire line, so a healthy parked page never ages out.
+	// domRpcIdleRefresh is the parent's bounded parked-idle marker
+	// cadence. The worker writes nothing while it waits on `event.next`;
+	// this side knows the acknowledged waitParked state, schedules the
+	// marker itself, and exempts that interval from the active-work
+	// deadline. The marker is a parent receipt, not worker progress, so
+	// it never refreshes the deadline.
 	domRpcIdleRefresh = int64(5) * 1_000_000_000
 )
 
@@ -175,12 +178,15 @@ func timerAnswer(id int) string {
 }
 
 // publishAnswer writes the parked ask's answer atomically on the existing
-// rendezvous, then clears the parked state. One ask, one answer.
+// rendezvous, then clears the parked state. One ask, one answer. The active
+// deadline is re-armed FIRST: clearing the parked bit drops the idle
+// exemption, so the unparked interval must already have its full budget.
 func (a *app) publishAnswer(w *scriptWorker, value string) {
 	line, err := json.Marshal(domAnswer{Op: w.waitOp, Seq: w.waitSeq, OK: true, Value: &value})
 	if err != nil {
 		return
 	}
+	a.touch(w)
 	w.waitParked = false
 	vi.WriteFileSafe(domRpcAnsPath, append(line, '\n'))
 }
@@ -219,8 +225,9 @@ func clipTarget(id string) string {
 	return id
 }
 
-// touch refreshes the worker's active-work deadline. Every wire line and
-// every served op is activity; only a silent worker ages out.
+// touch refreshes the worker's active-work deadline. Only an actual wire
+// line or a served op is activity; a parked interval is exempt structurally
+// (waitParked), not by pretending the parent's idle marker is progress.
 func (a *app) touch(w *scriptWorker) {
 	w.deadline = nowNanos() + domRpcBudgetNs
 }
@@ -228,15 +235,71 @@ func (a *app) touch(w *scriptWorker) {
 // nowNanos is the deadline clock, swappable by host tests.
 var nowNanos = vi.Nanos
 
+// probeWorker is the process-exit observation, swappable by host tests.
+// It is consulted on every poll pass, parked or not: a vanished worker is
+// retired immediately and its acknowledgments prove nothing.
+var probeWorker = vi.Probe
+
 // workerExpired is the active-work deadline boundary: a worker is alive
-// while now < deadline and killed at the deadline itself. Idle receipts
-// push the deadline forward, so this is never a page-lifetime limit.
+// while now < deadline and killed at the deadline itself.
 func workerExpired(now, deadline int64) bool { return now >= deadline }
 
-// spoolLimited reports whether a drained reply read hit the spool bound
-// without a terminator — a named failure, never a silently clipped line.
-func spoolLimited(body []byte, rc int64) bool {
-	return rc >= domRpcReplyMax && (len(body) == 0 || body[len(body)-1] != '\n')
+// parkedEventIdle reports the one acknowledged idle interval: the worker
+// asked `event.next` and the parent has not answered it yet. Nothing is
+// pending on the worker, so the active-work deadline does not apply.
+func parkedEventIdle(w *scriptWorker) bool {
+	return w != nil && w.waitParked && w.waitOp == "event.next"
+}
+
+// idleMarkDue schedules the parent's bounded parked-idle marker. It fires
+// at most once per domRpcIdleRefresh and never touches the deadline: the
+// serial line says the parent is servicing a parked page, not that the
+// worker ran or made progress.
+func (a *app) idleMarkDue(w *scriptWorker, now int64) bool {
+	if !parkedEventIdle(w) {
+		return false
+	}
+	if w.idleAt == 0 {
+		w.idleAt = now + domRpcIdleRefresh
+		return false
+	}
+	if now < w.idleAt {
+		return false
+	}
+	w.idleAt = now + domRpcIdleRefresh
+	return true
+}
+
+// workerVerdict names whether a RUNNING worker must retire on this pass.
+// Spool exhaustion wins over every liveness rule: it is an immediate named
+// failure, never a truncation and never a wait for the later deadline. A
+// parked event drain is exempt from the active deadline; a silent worker
+// (a stuck callback, an unanswered active op) still expires at it.
+func workerVerdict(w *scriptWorker, now int64) string {
+	if w.spoolLimit {
+		return "spool-limit"
+	}
+	if parkedEventIdle(w) {
+		return ""
+	}
+	if workerExpired(now, w.deadline) {
+		return "deadline"
+	}
+	return ""
+}
+
+// spoolLimited reports whether the reply stream outgrew its bound. Actual
+// exhaustion is named whatever the alignment: a byte past the bound (the
+// prefix may end exactly on a newline) and a partial line still open at
+// the bound are both failures, never a silently truncated prefix.
+func spoolLimited(body []byte, overflow bool) bool {
+	if overflow {
+		return true
+	}
+	if len(body) < domRpcReplyMax {
+		return false
+	}
+	return len(body) == 0 || body[len(body)-1] != '\n'
 }
 
 // controlNode is the retained node for a control's id, if any (used by

@@ -5438,9 +5438,10 @@ vgate_assert 81 serial-absent '[EXC] parking:'
 # value, echo write, reflow, pixel growth); 83 repeats edits after
 # reflows with no compensating refocus; 84 names every admission refusal
 # in the page itself; 85 refuses one over-budget dispatch and then runs
-# the next edit; 86 parks past the 120 s active-work deadline and still
-# dispatches; 87 navigates from a scripted page, reaps page 1's worker
-# before the spool is reused, and drives the new page's own listener.
+# the next edit; 86 parks past the 120 s active-work deadline with only
+# parent-owned idle markers and still dispatches; 87 navigates from a
+# scripted page, reaps page 1's worker before the spool is reused, and
+# drives the new page's own listener.
 vgate_file script-input.txt <<'EOFS'
 vf mv QJSHELD.BIN QJS.BIN
 exec WEB.ELF /host/SCRIPTED-INPUT.HTML
@@ -5723,6 +5724,10 @@ vgate_assert 85 serial-absent 'web: script worker gone'
 vgate_assert 85 serial-absent '[EXC] parking:'
 
 # --- boot 86: parked past 120 s, the page still takes a real edit -----
+# The idle markers are the parent's bounded receipts from the acknowledged
+# waitParked/event.next state; the worker writes nothing while parked, so
+# the reply stream cannot grow its way to a truncated prefix. The marker
+# is not worker progress: the deadline exemption is the parked state.
 vgate_run 86 -- \
     --screen '$RUN_DIR/screen-lidle' \
     --via-virtio --cvc-snap \
@@ -5737,7 +5742,7 @@ vgate_assert 86 serial-contains 'web: ready'
 vgate_assert 86 serial-contains 'web: script hello version=4'
 vgate_assert 86 serial-contains 'web: dom listener.add ok'
 vgate_assert 86 serial-contains 'web: dom event.next wait'
-vgate_assert 86 serial-count 'web: script idle' 20
+vgate_assert 86 serial-count 'web: script idle parked' 20
 vgate_assert 86 serial-contains 'idle-crossed'
 vgate_assert 86 serial-contains 'web: console live=t'
 vgate_assert 86 serial-contains 'web: script input id=q rc=0 ops=3'

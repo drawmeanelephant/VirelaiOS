@@ -855,13 +855,31 @@ timers and events share one worker, one request slot and one
 answer rendezvous. A dispatch runs as its own bounded eval
 (`__virelai_input(target, value)`), receipted on the reply stream
 as an `input` line; a fired timer keeps its existing `fire` line.
-While parked the worker emits a bounded **idle** receipt at most
-once per **5 s**. The parent treats every wire line and every
-served op as activity: the **120 s** active-work deadline is
-measured from the last receipt, so a healthy parked page is never
-ended by page lifetime — only a silent worker is killed, and a
-worker that reports a full reply stream fails with a named
-`web: script spool-limit` instead of silently truncating.
+
+**Parked idle is parent-owned.** While the ask is parked the
+worker writes nothing: no idle receipt, no housekeeping line, no
+append to the capped reply stream. The parent already knows the
+acknowledged `waitParked`/`event.next` state, so it schedules the
+bounded marker itself — at most one `web: script idle parked` line
+per **5 s** — and exempts exactly that acknowledged interval from
+the **120 s** active-work deadline. The marker is a parent receipt,
+not a worker-progress attestation: it does not prove the worker ran
+and it never refreshes the deadline. Every actual wire line or
+served op does refresh it, and every answer path re-arms the active
+deadline **before** clearing the parked bit, so the unparked
+interval always begins with its full budget. A silent active
+worker (a stuck callback, an unanswered active op) still expires at
+the deadline; the process-exit probe runs on every pass, parked or
+not.
+
+**Reply-stream exhaustion.** The worker's append-only reply stream
+has a hard **262,144 B** bound. A stream that has actually grown
+past it fails by name as `web: script spool-limit` and the worker
+is retired at once — whether the readable prefix ends exactly on a
+newline or in the middle of a line. An exactly-full stream that is
+newline-terminated and has not grown further is still complete;
+the parent keeps its 32-op, 16-write, timer, engine and rendezvous
+bounds unchanged.
 
 **Live focus and values through reflow.** A dispatch's writes
 re-enter the existing whole-tree `relayout()` exactly like a

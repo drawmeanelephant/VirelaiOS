@@ -116,9 +116,13 @@ type scriptWorker struct {
 	waitOp     string
 	waitParked bool
 	nextTimer  int
-	// spoolLimit records a reply stream that filled its bound without a
-	// terminating newline — the worker is reported failed, never a
-	// silent "done".
+	// idleAt is the parent's next bounded parked-idle marker. The worker
+	// writes nothing while parked; this side owns idle scheduling from
+	// waitParked/event.next and never treats the marker as progress.
+	idleAt int64
+	// spoolLimit records a reply stream that outgrew its bound — aligned
+	// on a newline or not — so the worker fails by name at once rather
+	// than silently truncating the prefix and waiting for the deadline.
 	spoolLimit bool
 }
 
@@ -299,14 +303,12 @@ func (a *app) noteWireLine(w *scriptWorker, line []byte) {
 		vi.ConsoleLine(markerScript + "reply malformed")
 		return
 	}
-	// M211d: every line the worker emits — reply, request, fire, dispatch
-	// or the bounded parked idle receipt — is activity, so the 120 s
-	// active-work deadline never becomes a page-lifetime limit.
+	// M211d: every wire line the worker emits — reply, request, fire or
+	// dispatch — is activity, so the 120 s active-work deadline never
+	// becomes a page-lifetime limit. A parked interval has no worker
+	// line at all; the parent's own idle marker is not progress and does
+	// not refresh this deadline.
 	a.touch(w)
-	if r.Op == "idle" {
-		vi.ConsoleLine(markerScript + "idle")
-		return
-	}
 	if r.Seq != nil {
 		a.serveDom(w, r.Op, *r.Seq, r.A, r.B)
 		return
@@ -364,17 +366,52 @@ func (a *app) noteWireLine(w *scriptWorker, line []byte) {
 // drain after worker exit is unconditional — nothing waits there.
 const drainInterval = int64(20) * 1_000_000
 
+// readReplySpool drains the worker's append-only reply stream up to the
+// reply bound and reports whether a byte already existed past it. The
+// extra byte is the only way to tell an exactly-full, newline-terminated
+// prefix from a stream that has outgrown the bound: the former is still
+// fully parsed, the latter must fail by name instead of silently waiting
+// on bytes this read can never reach.
+func readReplySpool(path string) (body []byte, rc int64, overflow bool) {
+	h, r := vi.FileOpen(path, vi.ModeRead)
+	if r < 0 {
+		return nil, r, false
+	}
+	defer vi.FileClose(uint32(h))
+	out := make([]byte, 0, 8192)
+	buf := make([]byte, 4096)
+	for {
+		n, rr := vi.FileRead(uint32(h), buf)
+		if rr < 0 {
+			return out, rr, false
+		}
+		if n == 0 {
+			return out, int64(len(out)), false
+		}
+		if len(out)+n > domRpcReplyMax {
+			// Keep exactly one byte past the bound: enough to name the
+			// failure, never enough to accept the over-bound stream.
+			keep := domRpcReplyMax + 1 - len(out)
+			out = append(out, buf[:keep]...)
+			return out, int64(len(out)), true
+		}
+		out = append(out, buf[:n]...)
+	}
+}
+
 // serviceReplies drains the reply spool's appended lines at the poll
 // cadence — while the worker runs this is what makes a DOM request a
 // round trip rather than a deadlock; after it exits the same pass is the
 // final drain. A partial trailing line waits for its newline rather than
-// being parsed half-written.
+// being parsed half-written; a stream past its bound is a named failure.
 func (a *app) serviceReplies(w *scriptWorker) {
 	w.lastDrain = vi.Nanos()
-	body, rc := vi.ReadFileAll(domRpcReplyPath+"~", domRpcReplyMax)
-	if spoolLimited(body, rc) {
-		w.spoolLimit = true
-		vi.ConsoleLine(markerScript + "spool-limit")
+	body, rc, overflow := readReplySpool(domRpcReplyPath + "~")
+	if spoolLimited(body, overflow) {
+		if !w.spoolLimit {
+			w.spoolLimit = true
+			vi.ConsoleLine(markerScript + "spool-limit")
+		}
 	}
 	if rc >= 0 && len(body) >= w.off {
 		rest := body[w.off:]
@@ -532,8 +569,12 @@ func (a *app) serveDom(w *scriptWorker, op string, seq int64, arg, barg string) 
 			ans.OK = true // nothing could ever fire — the drain ends
 		default:
 			// Parked: answered by the input path or the app timer, or
-			// never — teardown kills the worker.
+			// never — teardown kills the worker. The parent schedules its
+			// own bounded idle marker from this state; the worker writes
+			// nothing while it waits and the parked interval is exempt
+			// from the active-work deadline.
 			w.waitSeq, w.waitOp, w.waitParked = seq, op, true
+			w.idleAt = vi.Nanos() + domRpcIdleRefresh
 			vi.ConsoleLine(markerDom + op + " wait")
 			return
 		}
@@ -719,8 +760,11 @@ func (a *app) onScriptTimer() {
 
 // answerTimerWait publishes the parked timer ask's answer — the raw id
 // for `timer.next` (M211c), or the shared `{"kind":"timer","id":N}`
-// payload when the ask was `event.next` (M211d).
+// payload when the ask was `event.next` (M211d). The active deadline is
+// re-armed before the parked state clears, exactly like publishAnswer:
+// once the exemption is gone the full budget must already be in force.
 func (a *app) answerTimerWait(w *scriptWorker, id int) {
+	a.touch(w)
 	w.waitParked = false
 	value := itoa(id)
 	if w.waitOp == "event.next" {
@@ -735,28 +779,41 @@ func (a *app) answerTimerWait(w *scriptWorker, id int) {
 
 // pollScripts is the event-loop service: while the worker runs it
 // services the reply spool on the poll cadence (M211b's DOM round trips),
-// and on exit (or the kill deadline) drains it once more and names the
-// teardown — `web: script done` when every op was answered and the
-// worker left cleanly, `web: script worker gone` otherwise.
+// and on exit (or a named retirement verdict) drains it once more and
+// names the teardown — `web: script done` when every op was answered and
+// the worker left cleanly, `web: script worker gone` otherwise.
 func (a *app) pollScripts() {
 	w := a.rpc
 	if w == nil {
 		return
 	}
-	st, state := vi.Probe(w.pid)
+	st, state := probeWorker(w.pid)
 	if state == vi.ProbeRunning {
-		if !workerExpired(nowNanos(), w.deadline) {
-			// M211b: a running worker can block on a DOM request — the
-			// reply spool's appended lines are serviced on this cadence,
-			// so an ask is a round trip, never a deadlock. The drain is
-			// throttled: a share read per 1ms pass costs more than it
-			// serves.
-			if vi.Nanos()-w.lastDrain >= drainInterval {
-				a.serviceReplies(w)
+		now := nowNanos()
+		// M211b: a running worker can block on a DOM request — the
+		// reply spool's appended lines are serviced on this cadence, so
+		// an ask is a round trip, never a deadlock. The drain is
+		// throttled: a share read per 1ms pass costs more than it serves.
+		if vi.Nanos()-w.lastDrain >= drainInterval {
+			a.serviceReplies(w)
+		}
+		switch workerVerdict(w, now) {
+		case "":
+			// Parked on the shared event drain: mark the interval on the
+			// parent's own clock (never touching the deadline) and keep
+			// the healthy page alive. Process exit was probed above, so
+			// a dead worker never hides behind this exemption.
+			if a.idleMarkDue(w, now) {
+				vi.ConsoleLine(markerScript + "idle parked")
 			}
 			return
+		case "spool-limit":
+			// The reply stream outgrew its bound: fail now, by name,
+			// instead of waiting for the active deadline.
+			vi.Kill(uint64(w.pid))
+		default:
+			vi.Kill(uint64(w.pid)) // wedged: armed, exit lands on its own
 		}
-		vi.Kill(uint64(w.pid)) // wedged: armed, exit lands on its own
 	}
 	a.rpc = nil
 	timerCancel() // the worker's granted timers retire with it
@@ -794,7 +851,7 @@ func (a *app) closeScripts() {
 	vi.ConsoleLine(markerScript + "teardown page=" + itoa(a.pageSeq) +
 		" pid=" + itoa64(w.pid) + " regs=" + itoa(regs) +
 		" events=" + itoa(evs) + " timers=" + itoa(timers))
-	_, state := vi.Probe(w.pid)
+	_, state := probeWorker(w.pid)
 	if state == vi.ProbeRunning {
 		vi.Kill(uint64(w.pid))
 		vi.WaitBudget(w.pid, int64(2)*1_000_000_000)
