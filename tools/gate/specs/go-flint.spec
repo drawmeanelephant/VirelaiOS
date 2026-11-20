@@ -23,15 +23,21 @@
 # `flint: refuse secret_not_found` with no `streams/*.jsonl` written and
 # `STAGE.jsonl` left intact.
 #
-# Runs 05-07 (M103d #2254): on `--cvc-file $RUN_DIR/clean-share`, proves two-VM
-# fork + attach/replay (`init --stream=feature`) + disjoint edits on X and Y +
-# semantic merge on Ops (`flint: merge ok conflicts=0`, `src not materialized
-# files=1`, re-merge `flint: merge up to date`, `verify --all` 4x `sig: verified`).
+# Runs 05-07 (M103d #2254, M215a #3922): on `--cvc-file $RUN_DIR/clean-share`,
+# proves two-VM fork + attach/replay (`init --stream=feature`) + disjoint edits
+# on X and Y + semantic merge on Ops (`flint: merge ok conflicts=0`, `merge
+# materialized files=1` — the merged calc.go lands on disk, re-merge `flint:
+# merge up to date`, `verify --all` 4x `sig: verified`) plus the M215a
+# `flint checkout --stream main --dir` leg emitting the merged tree.
 #
 # Runs 08-10 (M103d #2254): on `--cvc-file $RUN_DIR/conflict-share`, proves two
 # machines editing X differently produce `flint: merge conflict atom=calc.X
 # type=concurrent_modify` and `flint: merge conflicts=1` with `MERGE.json`
 # written and main's stream log and head unchanged.
+#
+# Run 28 (M215a #3922): on `--cvc-file $RUN_DIR/noblob-share`, a stream whose
+# history predates the blobs/ lane refuses `flint: refuse body_missing` on
+# checkout rather than emitting empty files.
 #
 # Runs 11-13 (M101a #2313): FLINT-SYNC/1 remote verbs over hermetic --net.
 # The setup hook locates a sibling ../flint-server checkout (FLINT_SERVER_DIR
@@ -238,7 +244,8 @@
 # rollback restoring it), run 16 ends on `m101e: torn-state legs done`, run
 # 17 ends on `m101e: negatives done`, run 18 ends on `m110b: catalog ls
 # done`, run 19 ends on `m110b: catalog legs done`, run 20 ends on `m110d:
-# install done`, and run 21 ends on `m110d: negatives done`. Runs 22/24
+# install done`, and run 21 ends on `m110d: negatives done`. Run 28 ends on
+# `flint: refuse body_missing`. Runs 22/24
 # end on `goset: grant written name=GOHELLO.ELF`; run 23 ends on `m113d:
 # keep done`; run 25 ends on GOTOP's rendered trust-app marker for the
 # confined GOHELLO.ELF — the last program output in the chain (every
@@ -565,6 +572,7 @@ open(os.path.join(run, "clean-share", "FLINTJ", "07.SH"), "w", encoding="utf-8")
     "FLINT.ELF merge feature\n"
     "FLINT.ELF merge feature\n"
     "FLINT.ELF verify --all\n"
+    "FLINT.ELF checkout --stream=main --dir=/host/CHK\n"
     "FLINT.ELF status --ws=a\n"
 )
 
@@ -623,6 +631,54 @@ open(os.path.join(run, "conflict-share", "FLINTJ", "10.SH"), "w", encoding="utf-
     "FLINT.ELF add /host/SRCA\n"
     "FLINT.ELF commit -m main\n"
     "FLINT.ELF merge feature\n"
+)
+
+# Run 28 (M215a #3922): noblob-share — a stream whose history predates the
+# content lane. A Change JSON line is enough: checkout never verifies the
+# signature on the refusal path, so the seeded add Op needs only the shape
+# replay understands (kind/name/span/hash). streams/<id>.json{,l} is the
+# byte-portable contract the flintd seed uses above.
+noblob = os.path.join(run, "noblob-share")
+for sub in ("FLINT", "FLINTJ"):
+    os.makedirs(os.path.join(noblob, sub), exist_ok=True)
+for name in ("FLINT.ELF", "GOSH.ELF"):
+    shutil.copy(os.path.join(".build", "go", name), os.path.join(noblob, name))
+open(os.path.join(noblob, "OWNERS.TXT"), "w", encoding="utf-8").write(
+    "#v1\nFLINT.ELF\t644\t0\t-\n"
+)
+noblob_stream = "0199de2d-dc00-7000-8000-00000000c010"
+noblob_change = {
+    "id": "0199de2d-dc00-7000-8000-00000000c100",
+    "parent": None,
+    "stream": noblob_stream,
+    "ts": 1760000000000,
+    "author": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+    "message": "pre-content-store history",
+    "ops": [{
+        "type": "add",
+        "atom_id": "0199de2d-dc00-7000-8000-00000000c001",
+        "kind": "fn",
+        "new_name": "m.F",
+        "new_span": {"file": "m.go", "start": 14, "end": 40},
+        "new_hash": "ab" * 32,
+        "new_sig_hash": "cd" * 32,
+    }],
+    "merged": None,
+    "sig": "00" * 64,
+}
+noblob_dir = os.path.join(noblob, "FLINT", "streams")
+os.makedirs(noblob_dir, exist_ok=True)
+open(os.path.join(noblob_dir, noblob_stream + ".jsonl"), "w", encoding="utf-8").write(
+    json.dumps(noblob_change, separators=(",", ":")) + "\n"
+)
+open(os.path.join(noblob_dir, noblob_stream + ".json"), "w", encoding="utf-8").write(
+    json.dumps({
+        "id": noblob_stream, "name": "main", "head": noblob_change["id"],
+        "created": noblob_change["ts"], "forked_from": None,
+    }, separators=(",", ":")) + "\n"
+)
+open(os.path.join(noblob, "FLINTJ", "28.SH"), "w", encoding="utf-8").write(
+    "FLINT.ELF checkout --stream=main --dir=/host/OUT\n"
 )
 
 # ---- M101a (#2313): host flintd for the hermetic --net sync runs ------------
@@ -1743,8 +1799,9 @@ vgate_run 07 -- \
     --script-expect-tail 3 --timeout 180
 
 vgate_assert 07 serial-contains 'flint: merge ok conflicts=0 ops=1 id='
-vgate_assert 07 serial-contains 'flint: merge src not materialized files=1'
+vgate_assert 07 serial-contains 'flint: merge materialized files=1'
 vgate_assert 07 serial-contains 'flint: merge up to date'
+vgate_assert 07 serial-contains 'flint: checkout ok stream=main files=1'
 vgate_assert 07 serial-count 'sig: verified' 4
 vgate_assert 07 serial-absent '9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60'
 vgate_assert 07 serial-absent '[EXC] parking:'
@@ -1781,7 +1838,29 @@ if last_change.get("parent") != prev_change.get("id"):
     sys.exit("last main change parent=%r != previous main head=%r" % (last_change.get("parent"), prev_change.get("id")))
 if main_rec.get("head") != last_change.get("id"):
     sys.exit("main record head=%r != last main change id=%r" % (main_rec.get("head"), last_change.get("id")))
-print("run-07 clean merge log + head verified (merged=%s parent=%s)" % (last_change.get("merged"), last_change.get("parent")))
+
+# M215a: the merge materialized calc.go on machine A (X:=10 from feature,
+# Y:=20 from main), and `flint checkout --dir=/host/CHK` emitted the same
+# tree from the replayed head. blobs/ holds the bodies both paths used.
+merged_src = (
+    "package calc\n\n"
+    "func X() int {\n"
+    "\treturn 10\n"
+    "}\n\n"
+    "func Y() int {\n"
+    "\treturn 20\n"
+    "}\n"
+)
+for rel in ("SRCA/calc.go", "CHK/calc.go"):
+    p = os.path.join(clean, rel)
+    if not os.path.isfile(p):
+        sys.exit("expected materialized file %s" % p)
+    if open(p).read() != merged_src:
+        sys.exit("materialized %s differs from merged source" % p)
+blobs = os.path.join(clean, "FLINT", "blobs")
+if not os.path.isdir(blobs) or len(os.listdir(blobs)) == 0:
+    sys.exit("expected blobs/ lane populated on clean-share")
+print("run-07 clean merge log + head + materialization verified (merged=%s)" % last_change.get("merged"))
 PY
 
 # ---- 08: M103d conflict-share machine A base commit + fork main -> feature ---
@@ -2660,6 +2739,7 @@ vgate_run 25 -- \
     --script2-after 'VirelaiOS kernel has seized control.' \
     --input-chords 'g,r,a,n,t,s,return,g,r,a,n,t,space,G,O,H,E,L,L,O,.,E,L,F,return,return,return,escape,down,up,down,up,down,up,down,up,down,up,down,up,down,up,down,up,down,up,down,up,down,up,down,up,down,up,down,up,down,up,down,up,down,up,down,up,down,up,down,up,down,up,down,up,down,up,down,up,down,up,down,up,down,up,down,up,down,up,down,up,down,up,down,up,down,up,down,up,t' \
     --input-chords-after 'goset: ready ' \
+    --input --input-string 't' --input-string-after 'top: ready' \
     --script-expect 'top: trust app name=GOHELLO.ELF' --timeout 300
 
 # declared: the signed ReleaseCaps survived verify + publish, and the ask
@@ -2777,6 +2857,10 @@ vgate_file script-27.txt <<'EOF'
 exec GOSH.ELF -c "source /host/FLINTJ/27.SH"
 EOF
 
+vgate_file script-28.txt <<'EOF'
+exec GOSH.ELF -c "source /host/FLINTJ/28.SH"
+EOF
+
 vgate_run 26 -- \
     --cvc-file '$RUN_DIR/hist-share' \
     --virtio-fs '$RUN_DIR/hist-share' \
@@ -2834,4 +2918,24 @@ rows = [json.loads(l) for l in open(p) if l.strip()]
 if rows != []:
     sys.exit("TAGS.jsonl should be empty after tag -d v1: %r" % rows)
 print("run-27 verified: tag persisted across the reboot, -d emptied TAGS.jsonl")
+PY
+
+# ---- 28: M215a checkout on a pre-content-store stream refuses body_missing --
+vgate_run 28 -- \
+    --cvc-file '$RUN_DIR/noblob-share' \
+    --virtio-fs '$RUN_DIR/noblob-share' \
+    --script '$RUN_DIR/script-28.txt' \
+    --script-expect 'flint: refuse body_missing' \
+    --script-expect-tail 3 --timeout 180
+
+vgate_assert 28 serial-contains 'flint: refuse body_missing m.go m.F'
+vgate_assert 28 serial-absent 'flint: checkout ok'
+vgate_assert 28 serial-absent '[EXC] parking:'
+vgate_assert 28 python <<'PY'
+import os, sys
+run = os.environ["RUN_DIR"]
+out_dir = os.path.join(run, "noblob-share", "OUT")
+if os.path.exists(os.path.join(out_dir, "m.go")):
+    sys.exit("body_missing refusal must not write partial files")
+print("run-28 body_missing refusal verified (no partial emit)")
 PY

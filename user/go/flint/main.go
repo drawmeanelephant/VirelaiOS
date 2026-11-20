@@ -66,6 +66,8 @@ func run(args []string) int {
 		return runErr(cmdFork(activeFS, storeRoot, defaultUUIDGen, args[1:]))
 	case "merge":
 		return cmdMerge(activeFS, storeRoot, defaultUUIDGen, args[1:])
+	case "checkout":
+		return runErr(cmdCheckout(activeFS, storeRoot, args[1:]))
 	case "clone":
 		return runErr(cmdClone(activeFS, storeRoot, args[1:]))
 	case "pull":

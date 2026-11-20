@@ -34,7 +34,11 @@ should serve this protocol so guest and host are interchangeable endpoints.
   off the server must load in the client and in the guest implementation,
   and `flint verify`/`FLINT.ELF verify` must pass on it. The server never
   writes `ws/` (workspaces are per-host) or `keys/` (the server holds no
-  secrets — it verifies signatures, it does not sign).
+  secrets — it verifies signatures, it does not sign). The M215a
+  amendment adds `blobs/<hex64>` and its `blobs.count` sibling (Atom and
+  file bodies, keyed by content hash — ADR 0049 §Store): additive,
+  ignored by the verbs in this spec; blob transport is §7's named
+  deferred work, not a verb here.
 - **Changes cross the wire as raw JSONL line bytes, verbatim.** The server
   never re-serializes a Change for transport; a pulled `.jsonl` written
   from those bytes is byte-identical to the pushed original, so canonical

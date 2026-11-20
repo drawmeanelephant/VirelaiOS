@@ -1380,8 +1380,19 @@ func TestForkInitStreamReplayMergeAndSrcBehind(t *testing.T) {
 	if !strings.HasPrefix(logs[0], "flint: merge ok conflicts=0 ops=1 id=") {
 		t.Fatalf("unexpected merge line 0: %s", logs[0])
 	}
-	if logs[1] != "flint: merge src not materialized files=1" {
+	if logs[1] != "flint: merge materialized files=1" {
 		t.Fatalf("unexpected merge line 1: %s", logs[1])
+	}
+
+	// M215a: the merge materialized the merged tree — /host/SRCA/calc.go now
+	// holds the merged source (X from feature, Y from main).
+	mergedSrc := []byte("package calc\n\nfunc X() int {\n\treturn 10\n}\n\nfunc Y() int {\n\treturn 20\n}\n")
+	onDisk, err := h.fs.ReadFile("/host/SRCA/calc.go", MaxFileReadBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(onDisk, mergedSrc) {
+		t.Fatalf("merged src not materialized, got:\n%s", onDisk)
 	}
 
 	// Verify the signed merge Change on `main` (`parent == preMergeMainHead`, `merged == featHead`).
@@ -1425,8 +1436,9 @@ func TestForkInitStreamReplayMergeAndSrcBehind(t *testing.T) {
 		}
 	}
 
-	// 7. `src_behind` guard: `calc.X` in workspace `a` is marked `origin: merge`,
-	// while `/host/SRCA/calc.go` still has the old `X() { return 1 }` on disk.
+	// 7. `src_behind` guard: `calc.X` in workspace `a` is marked `origin: merge`.
+	// M215a materialized the merged source above, so the guard is exercised by
+	// first diverging the working copy (X := 99 disagrees with the merged Atom).
 	atomsAfterMerge, err := LoadWorkspaceAtoms(h.fs, h.root, "a")
 	if err != nil {
 		t.Fatal(err)
@@ -1441,6 +1453,10 @@ func TestForkInitStreamReplayMergeAndSrcBehind(t *testing.T) {
 		t.Fatalf("expected calc.X to have origin=merge, got %+v", atomsAfterMerge)
 	}
 
+	divergedSrc := []byte("package calc\n\nfunc X() int {\n\treturn 99\n}\n\nfunc Y() int {\n\treturn 20\n}\n")
+	if err := h.fs.WriteFileSafe("/host/SRCA/calc.go", divergedSrc); err != nil {
+		t.Fatal(err)
+	}
 	rc, logs = h.runCmd("add", "/host/SRCA")
 	if rc != 1 || len(logs) != 1 || logs[0] != "flint: refuse src_behind calc.go" {
 		t.Fatalf("expected src_behind calc.go, got rc=%d logs=%v", rc, logs)
@@ -1449,9 +1465,8 @@ func TestForkInitStreamReplayMergeAndSrcBehind(t *testing.T) {
 		t.Fatal("STAGE.jsonl must not exist after src_behind refusal")
 	}
 
-	// Once `/host/SRCA/calc.go` is updated on disk so `X` matches the merged hash,
+	// Once `/host/SRCA/calc.go` is restored so `X` matches the merged hash,
 	// `add` succeeds and clears `origin: merge`!
-	mergedSrc := []byte("package calc\n\nfunc X() int {\n\treturn 10\n}\n\nfunc Y() int {\n\treturn 20\n}\n")
 	if err := h.fs.WriteFileSafe("/host/SRCA/calc.go", mergedSrc); err != nil {
 		t.Fatal(err)
 	}
