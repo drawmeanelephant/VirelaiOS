@@ -48,25 +48,26 @@
 # canvas->scanout is +32,+32 exactly like run 01.
 #
 # M145c (#2798) runs 04+05: the K=3 acceptance (vgate_repeat 3). The
-# seat owns the pointer stream, so "play" is the reachable input path
-# — keys routed to the focused tab. Run 04 seats GOTABWM (staged as
-# SEATWM.ELF so the wm=gotabwm autostart cannot seat the shim legs) and
-# execs GOMINE (rail cell 0) then GOSOL (cell 1, steals focus). One
-# chords batch plays both tables part way — 'd' draw-mode 3, 'n' fresh
-# deal, 'alt-tab' to GOMINE, '2' the 16x16 intermediate board — and the
-# trailing 'ctrl-shift-s' arms the seat snapshot, whose own quiet window
-# defers the ask until every repaint has composited. The pointer batch
-# then hovers rail cell 1: the FIRST 'rail-hover' marker is taken while
-# GOMINE is still focused (snap-04-0 = its mid-board), the click focuses
-# GOSOL with the cursor parked on the rail, and 'state ask' fires
-# snap-04-1 on the GOSOL table. Run 05 boots the session restore — the
-# share's GOTABWM.ELF autostarts the seat, which re-execs both rows from
-# their blobs — delayed echoes give the ~1 Hz composite tick a full
-# window before each kind-4 snapshot, alt-tab flips focus for the
-# second, and the python compares the restored tables byte-for-byte
-# (GOSOL (0,22)-(512,384), GOMINE's 16x16 grid) after proving each raw
-# is fresh to its own iteration. The per-iteration GOMINE win completes
-# in run 01's seeded win leg.
+# seat owns the pointer stream but forwards it into the focused bound
+# app (#2878), so "play" is keys routed to the focused tab plus the
+# forwarded pointer batch. Run 04 seats GOTABWM (staged as SEATWM.ELF
+# so the wm=gotabwm autostart cannot seat the shim legs) and execs
+# GOMINE (rail cell 0) then GOSOL (cell 1, steals focus). Pointer clicks
+# play GOMINE's beginner board to a win, '2' reseeds the 16x16
+# intermediate board, and one chords batch on 'gosol: ready' plays
+# GOSOL part way ('d' draw-mode 3, 'n' fresh deal) then 'alt-tab's
+# focus back to GOMINE while both full-viewport surfaces still
+# overlap — snap-04-0 pins the focused-last compose (#3940). A second
+# chords batch splits V and arms the seat snapshot, whose own quiet
+# window defers the ask until every repaint has composited; snap-04-1
+# is the settled two-pane frame the run-05 python byte-compares
+# against the restore boot. Run 05 boots the session restore — the
+# share's GOTABWM.ELF autostarts the seat, which re-execs both rows
+# from their blobs and rebuilds the saved pane tree — delayed echoes
+# give the ~1 Hz composite tick a full window before the kind-4
+# snapshot, and the python compares the restored tables byte-for-byte
+# after proving each raw is fresh to its own iteration. The
+# per-iteration GOMINE win completes in run 01's seeded win leg.
 #
 # exec-order: assert-proven -- runs 04/05 end on markers only the seat
 # or apps print ('gotabwm: snapshot saved') or on script echoes anchored
@@ -362,37 +363,47 @@ PY
 
 
 # --- run 04 (M145c #2798): the play + snapshot boot, seat-hosted -------------
-# Under GOTABWM apps receive keyboard input only — the seat owns the pointer
-# stream and delivers none of it to bound apps (#2878), so "play" here is
-# the reachable input path: keys, routed to the focused tab.
+# Under GOTABWM the seat owns the pointer stream but #2878's content
+# forward DOES deliver pointer into the focused bound app — the earlier
+# note here predates that fix; the true model (pointer forwarded, keys
+# routed to the focused tab) is what the choreography below rides.
 #
-# Visibility model (observed, pinned honestly): the seat composites EVERY
-# live shared surface in DECLARE order — a full-viewport tab covers every
-# earlier one and focus never restacks, so exactly one table is visible at
-# a time unless the windows are TILED. 'ctrl-shift-v' (split V) proposes
-# pane rects through wmctlSetWindowRect; the windows take them, the
-# surfaces relayout to pane size, and composeSurfaces draws each at its
-# mirrored rect — both tables in one scanout.
+# Visibility model (#3940): every undevided tab is proposed the full
+# viewport, so live shared surfaces OVERLAP everywhere. composeSurfaces
+# blits the focused tab's surface LAST — the same precedence
+# regionWindowAt gives the pointer hit test — while non-overlapping
+# tiled panes still each paint inside their own mirrored rect.
+# 'ctrl-shift-v' (split cycle) proposes pane rects through
+# wmctlSetWindowRect; the windows take them, the surfaces relayout to
+# pane size, and composeSurfaces draws each at its mirrored rect — both
+# tables in one scanout.
 #
 # Choreography: GOMINE execs first and is PLAYED TO A WIN while it's the
-# only tab — #2878's content forward delivers pointer into the lone
-# full-viewport pane, so the same seed-1 beginner cell list as run 01
-# (re-mapped to pane coords: canvas is the whole 1280x720 surface, cells
-# 28px on a grid at (514,256) -> scanout (528+28x, 270+28y)) drives the
-# real reveal path. The win records beginner's best time; input-string
-# '2' then reseeds the 16x16 intermediate board — the record stays in
-# the process and the snapshot's blob carries it, which is what run 05's
-# restore shows surviving.
-# GOSOL execs second, steals focus on declare; ONE late chords batch on
+# only tab — the forwarded clicks drive the same seed-1 beginner cell
+# list as run 01 (re-mapped to the full-viewport surface: canvas is the
+# whole 1280x720 surface, cells 28px on a grid at (514,256) -> scanout
+# (528+28x, 270+28y)). The win records beginner's best time;
+# input-string '2' then reseeds the 16x16 intermediate board — the
+# record stays in the process and the snapshot's blob carries it, which
+# is what run 05's restore shows surviving.
+# GOSOL execs second, steals focus on declare; ONE chords batch on
 # 'gosol: ready' does 'd' -> draw-mode 3, 'n' -> a fresh deal, then
-# 'ctrl-shift-v' splits the FOCUSED (Solitaire's) pane — Solitaire keeps
-# its leaf, Mines fills the other — and 'ctrl-shift-s' arms the state
-# ask. 'snapshot saved bytes=' anchors snap-04-0 — the bundle write
+# 'alt-tab' returns focus to GOMINE — the FIRST-declared tab — while
+# both surfaces still cover the whole viewport. The first
+# --snapshot-after ('gotabwm: alt-tab id=') captures snap-04-0 THERE:
+# with focus on the first-declared table, whose surface record sits
+# earlier in the handoff pool than GOSOL's, only a focused-last compose
+# puts GOMINE's CELL plates on the scanout — the red-then-green pin for
+# #3940 (pre-fix the later record wins and GOSOL's felt covers the
+# grid). A second chords batch then runs 'ctrl-shift-v' — splitting the
+# now-focused Mines pane, Mines keeps its leaf, Solitaire fills the
+# other — and 'ctrl-shift-s' arms the state ask. 'snapshot saved
+# bytes=' anchors snap-04-1 on the split frame — the bundle write
 # follows both state saves, deep enough past the split's WIN_RESIZE +
 # repaint that the frame is settled (anchoring on 'state ask' raced the
 # repaint once — a black band in the pane, observed). The save records
-# focus on Solitaire, which makes the restore boot split the SAME pane
-# (see run 05).
+# focus on Mines; run 05's restore rebuilds the same pane tree from the
+# SESSION.PANES sidecar regardless of which tab held focus.
 vgate_file script-04.txt <<'EOF'
 vf rm GOTABWM.DEMO
 vf rm SESSION.TABS
@@ -424,8 +435,11 @@ vgate_run 04 -- \
     --input-string-after 'gomine: chime' \
     --script3 '$RUN_DIR/script3-04.txt' --script3-after 'size=intermediate' \
     --script3-delay 3 \
-    --input-chords 'd,n,ctrl-shift-v,ctrl-shift-s' \
+    --input-chords 'd,n,alt-tab' \
     --input-chords-after 'gosol: ready' \
+    --input-chords2 'ctrl-shift-v,ctrl-shift-s' \
+    --input-chords2-after 'gotabwm: alt-tab id=' \
+    --snapshot-after 'gotabwm: alt-tab id=' \
     --snapshot-after 'gotabwm: snapshot saved bytes=' \
     --script-expect 'gotabwm: snapshot saved bytes=' --timeout 420
 
@@ -450,6 +464,9 @@ vgate_assert 04 serial-contains 'gosol: ready'
 vgate_assert 04 serial-contains 'size=intermediate'
 vgate_assert 04 serial-contains 'gosol: draw-mode 3'
 vgate_assert 04 serial-count 'gosol: deal seed=' 2
+# alt-tab returned focus to the first-declared tab while both surfaces
+# still covered the viewport — the frame snap-04-0 captured.
+vgate_assert 04 serial-contains 'gotabwm: alt-tab id='
 vgate_assert 04 serial-contains 'gotabwm: split v'
 vgate_assert 04 serial-count 'gotabwm: state ask id=' 2
 vgate_assert 04 serial-contains 'gomine: state saved len='
@@ -461,12 +478,45 @@ vgate_assert 04 serial-absent 'gomine: boom'
 vgate_assert 04 serial-absent '[EXC] parking:'
 vgate_assert 04 serial-absent 'exited status=139'
 
-# snap-04-0: the split-V frame — Solitaire's focused pane divided
+# snap-04-0: the focused-full-viewport frame — 'alt-tab' landed focus on
+# GOMINE (the FIRST-declared tab) while GOSOL's surface still covered the
+# same 1280x720 rect. composeSurfaces must blit the focused record last,
+# so GOMINE's 16x16 intermediate board owns every overlapped pixel.
+# Cell (8,8)'s face plate sits at canvas (641,383)-(666,408) -> scanout
+# identical (full-viewport mirror at 0,0); its interior is CELL plates.
+# GOSOL's palette — felt Bg, Accent backs, card faces — holds no CELL,
+# so pre-fix (record order: GOSOL declared second and blits last) this
+# block reads ~0 and the assert goes red; post-fix it is all CELL.
+vgate_assert 04 snapshot 'snap-04-0.raw' <<'PY'
+import sys
+W, H = 1280, 720
+raw = open(sys.argv[1], "rb").read()
+if len(raw) < W * H * 4:
+    sys.exit("snapshot is %d bytes, want %d" % (len(raw), W * H * 4))
+
+def px(x, y):
+    off = (y * W + x) * 4
+    return (raw[off + 2], raw[off + 1], raw[off])
+
+CELL = (0x2d, 0x37, 0x48)  # GOMINE hidden-cell plate
+
+# Interior of cell (8,8): face rect x 641..666, y 383..408; the top two
+# rows are the Border highlight, so probe y 390..401 x 646..657.
+block = [px(x, y) for y in range(390, 402) for x in range(646, 658)]
+n = sum(1 for c in block if c == CELL)
+if n * 4 < len(block) * 3:
+    sys.exit("focused GOMINE lost the overlap: %d/%d CELL px in the "
+             "shared-viewport probe" % (n, len(block)))
+print("focused-last: GOMINE's CELL plate covers the shared viewport "
+      "(%d/%d px)" % (n, len(block)))
+PY
+
+# snap-04-1: the split-V frame — the now-focused Mines pane divided
 # left/right; one pane holds the dealt GOSOL table (Accent backs at
 # (17,72)-(492,156) measured) and the other GOMINE's 16x16 board (CELL
 # plates). The probe just proves both games painted somewhere in the
 # interior rows; the byte-exact pairing lives in the run-05 compare.
-vgate_assert 04 snapshot 'snap-04-0.raw' <<'PY'
+vgate_assert 04 snapshot 'snap-04-1.raw' <<'PY'
 import sys
 W, H = 1280, 720
 raw = open(sys.argv[1], "rb").read()
@@ -501,9 +551,9 @@ PY
 # SESSION.TABS itself — the restore IS the leg. Both rows re-exec with
 # their blobs in the recorded order AND the saved pane tree — the
 # restore rebuilds run 04's split-V itself, so both surfaces tile to
-# the same pane rects (the seat stacks full-viewport surfaces by
-# declare order; without the saved split only the last-declared would
-# ever be visible). script3 echoes rx-sol-up 14 s after 'session
+# the same pane rects (two full-viewport surfaces would overlap
+# completely — the focused one wins the scanout — so without the saved
+# split only one table would ever be visible). script3 echoes rx-sol-up 14 s after 'session
 # live n=2' — past the reexec, relayout and repaint — and snap-05-0
 # lands both restored tables in one frame. The boot script's `vf mv`
 # puts SEATWM.ELF back unconditionally so the next iteration's
@@ -560,10 +610,9 @@ vgate_assert 05 serial-absent 'gomine: boom'
 vgate_assert 05 serial-absent '[EXC] parking:'
 vgate_assert 05 serial-absent 'exited status=139'
 
-# The exact-restore compare. The split-V frame holds one game per pane
-# (the seat's surface stacking makes a stacked capture impossible —
-# observed: the last-declared surface always covers earlier ones, and
-# the live order between the two restored apps is racy). Each side is
+# The exact-restore compare. The split-V frame holds one game per pane —
+# the pane-sized rects are disjoint, so compose order cannot hide either
+# table the way two full-viewport surfaces would. Each side is
 # identified by signature (CELL plates = GOMINE, Accent backs = GOSOL),
 # then its interior is byte-compared against the same side of the OTHER
 # boot's frame — same pane rect, so byte-exact means a restored table
@@ -592,12 +641,12 @@ def fresh(raw_name, ser_name):
                  % (raw_name, m, ser_name, born))
     return open(rp, "rb").read()
 
-pre  = fresh("snap-04-0.raw", "vm-serial-04-%s.log" % it)
+pre  = fresh("snap-04-1.raw", "vm-serial-04-%s.log" % it)
 post = fresh("snap-05-0.raw", os.path.basename(os.environ["VG_SER"]))
 
 W, H = 1280, 720
 need = W * H * 4
-for name, r in (("snap-04-0", pre), ("snap-05-0", post)):
+for name, r in (("snap-04-1", pre), ("snap-05-0", post)):
     if len(r) < need:
         sys.exit("%s is %d bytes, want %d" % (name, len(r), need))
 
