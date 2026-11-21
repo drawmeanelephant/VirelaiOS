@@ -188,3 +188,81 @@ func TestPowerMenuLockRow(t *testing.T) {
 		t.Fatal("the Lock row did not engage the curtain")
 	}
 }
+
+// M216m (#3952): with every user window taken the sink seam has nothing to
+// hand out, and the lock still engages on a window the seat already owns —
+// the reserve first, even while another modal borrows it, else the chrome
+// window. The shared window is never closed on unlock.
+func TestLockSharesASeatWindowAtTheCeiling(t *testing.T) {
+	for _, c := range []struct {
+		name            string
+		reserve, button uint32
+		want            uint32
+	}{
+		{"the lent reserve", 2, 3, 2},
+		{"the chrome window", 0, 3, 3},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			lockReset(t)
+			raised, closed := lockTestSeams(t)
+			oldRead, oldReserve, oldButton := lockReadFile, reserveWin, buttonPixels
+			t.Cleanup(func() { lockReadFile, reserveWin, buttonPixels = oldRead, oldReserve, oldButton })
+			lockReadFile = func(string, int) ([]byte, int64) { return lockTestVault(t), 0 }
+			openInputSink = func(x, y, w, h uint32) (int, int64) { return -1, -vi.ErrENOSPC }
+			queryWindow = func(int) ([8]uint32, int64) { return [8]uint32{}, 0 } // not focused yet
+			reserveWin.id, reserveWin.lent = c.reserve, c.reserve != 0
+			buttonPixels = windowPixels{id: int(c.button)}
+
+			requestLock()
+			if !lockActive || lockSink != c.want || *raised != c.want {
+				t.Fatalf("lock: active=%v sink=%d raised=%d want %d", lockActive, lockSink, *raised, c.want)
+			}
+			typeLock(t, string(lockTestPass))
+			lockKeyDown(vi.Event{Kind: vi.EvKeyDown, Arg0: 0x28})
+			if lockActive || lockSink != 0 {
+				t.Fatalf("unlock: active=%v sink=%d", lockActive, lockSink)
+			}
+			if *closed != 0 {
+				t.Fatalf("unlock closed the shared window %d", *closed)
+			}
+		})
+	}
+}
+
+// The refusal survives for the one case left: the seat owns no window.
+func TestLockRefusedWhenTheSeatOwnsNoWindow(t *testing.T) {
+	lockReset(t)
+	lockTestSeams(t)
+	oldRead, oldReserve, oldButton := lockReadFile, reserveWin, buttonPixels
+	t.Cleanup(func() { lockReadFile, reserveWin, buttonPixels = oldRead, oldReserve, oldButton })
+	lockReadFile = func(string, int) ([]byte, int64) { return lockTestVault(t), 0 }
+	openInputSink = func(x, y, w, h uint32) (int, int64) { return -1, -vi.ErrENOSPC }
+	reserveWin.id, reserveWin.lent = 0, false
+	buttonPixels = windowPixels{}
+
+	requestLock()
+	if lockActive || lockSink != 0 {
+		t.Fatalf("lock engaged with no window: active=%v sink=%d", lockActive, lockSink)
+	}
+}
+
+// The Enter that chose the PWR menu's Lock row reaches the curtain too. On
+// an empty field it must not spend an attempt or disturb the lock.
+func TestLockIgnoresEnterOnAnEmptyField(t *testing.T) {
+	lockReset(t)
+	_, closed := lockTestSeams(t)
+	old := lockReadFile
+	lockReadFile = func(string, int) ([]byte, int64) { return lockTestVault(t), 0 }
+	t.Cleanup(func() { lockReadFile = old })
+
+	requestLock()
+	lockKeyDown(vi.Event{Kind: vi.EvKeyDown, Arg0: 0x28})
+	if !lockActive || *closed != 0 {
+		t.Fatalf("empty Enter: active=%v closed=%d", lockActive, *closed)
+	}
+	typeLock(t, string(lockTestPass))
+	lockKeyDown(vi.Event{Kind: vi.EvKeyDown, Arg0: 0x28})
+	if lockActive {
+		t.Fatal("the right pass no longer unlocks")
+	}
+}

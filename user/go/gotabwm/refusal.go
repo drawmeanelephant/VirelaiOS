@@ -188,7 +188,8 @@ func seatRefusal(rc int64, ctx, payload string) {
 // seatRefusalErr is seatRefusalName for an errno-typed error (the
 // execApp return shape).
 func seatRefusalErr(err error, ctx, payload string) {
-	if err == nil {
+	// M216m (#3952): the window-ceiling guard raises its own notice.
+	if err == nil || err == errWindowLimit {
 		return
 	}
 	seatRefusalName(err.Error(), ctx, payload)
