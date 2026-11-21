@@ -172,8 +172,9 @@ vgate_run workflow --from-checkpoint qjs -- --script '$RUN_DIR/workflow.txt' --s
 # virtio-fs share, and the script itself round-trips /host/ through the
 # virelai namespace and refuses outside it by name. --screen attaches
 # the virtio-gpu scanout the window composites into.
-# warm-cold: journey (D1) — --via-virtio arms a VZCustomVirtioDevice,
-# unsaveable; statically cold, never attempted.
+# Cold by device: journey passes --via-virtio, which arms a
+# VZCustomVirtioDevice — unsaveable (ADR 0059 D1), so it is statically
+# cold and never a checkpoint candidate.
 # Teardown ordering is load-bearing: check.py wants the last
 # `tasks … reaped` BEFORE the last `pages:` and wants both pages samples
 # equal — so GOFILES must be gone, not just QJS. `dui close 2` fires on
