@@ -138,6 +138,17 @@ Rules:
   with its checkpoint's device flags + its original script flags — no base
   boot runs, and the receipt records `warm=cold`. M131c's parity check and
   the cold-vs-warm wall-clock numbers need it on the same revision.
+- `VGATE_ONLY=<tag>[,<tag>…]` (M216i): boot only the named `vgate_run`
+  legs (base tags, comma-separated; under `vgate_repeat` the filter
+  applies to every iteration). Every other leg prints
+  `<tag>: SKIP (VGATE_ONLY)` and never counts; a `vgate_checkpoint` base
+  boot runs only when a selected leg names it with `--from-checkpoint`;
+  and the result is `PARTIAL` / `PARTIAL: p/t`, never `PASS: p/t` —
+  `fleet.sh run` refuses more than one member under the filter and
+  `verify-vz` refuses outright. A filtered run is for iteration only and
+  is **never K=3 evidence**. A leg declared `# warm-cold: … (f)` depends
+  on a sibling leg's side effects, so choosing its siblings is the
+  caller's job — the filter does not work dependencies out for you.
 - **Warm legs (ADR 0059, M131b #2639).** A `vgate_checkpoint` boot pauses
   at a quiescent prompt and persists a bundle — `state.vzsave`,
   `overlay.asif`, `machine-id.bin`, a pinned `efi-vars.bin`, and `share/`
