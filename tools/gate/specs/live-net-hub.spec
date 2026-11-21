@@ -84,6 +84,28 @@
 # pushes `main` to it after every publish, so vm-b's local `main` is a
 # prefix of the host's and the existing install fast-forwards.
 #
+# M217 (#3921): run b is the supervised boot the card names. vm-a boots
+# the SHIPPED manifest (flintd disabled: `init: manifest ok n=1`, the
+# seat is the only started row), then a marker-driven between-runs switch
+# writes the SAME shipped manifest with the flintd row enabled — an
+# ordinary reload, not a schema/restart-policy/admission change and not a
+# test-only fault hook. INIT starts FLINTD.ELF, publishes
+# `flint._flint._tcp.local`, and supervises it. vm-b (its launcher now
+# arms the same `--cvc-file` share the harness gives vm-a, so OWNERS.TXT
+# loads and the app-bound `flint-remote`/`agent-sign` rows bind — the
+# uid_agent 2000 negative is preserved) discovers after the burst, clones,
+# pulls, commits, pushes and verifies; vm-a advances the stream and
+# verifies; then vm-a kills the supervisor-recorded pid during vm-b's
+# two-pass push train, INIT restarts it (status=137 -> named backoff ->
+# new pid), vm-b records the interrupted attempt, and the fault stream is
+# either a verified complete suffix or an explicit `stream_torn` — never a
+# silent repair. The daemon is persistent by default: the 40 s idle gap in
+# vm-a's stage 2 exercises the accept timeout while the same pid serves
+# vm-b's later pull, and only the staged run-a phases pass `--idle-exit`.
+# Cold K=3 is three BOOTS=1 invocations (services.yaml gate_hub): vm-b's
+# store outlives vgate_repeat's iterations, so the in-spec loop is not
+# isolated enough for the card's K3 on its own.
+#
 # HOST PREREQS (the setup hook fails honestly when absent):
 #   bash tools/go/build-gohttpd.sh -> .build/go/GOHTTPD.ELF
 #   bash tools/go/build-netdiag.sh -> .build/go/GONETSTAT.ELF
@@ -92,12 +114,14 @@
 #   bash tools/go/build-flint.sh   -> .build/go/FLINT.ELF
 #   bash tools/go/build-flintd.sh  -> .build/go/FLINTD.ELF
 #   bash tools/go/build-gosh.sh    -> .build/go/GOSH.ELF
+#   bash tools/go/build-init.sh    -> .build/go/INIT.ELF
+#   bash tools/go/build-gotabwm.sh -> .build/go/GOTABWM.ELF
 #   ../flint-server checkout (or FLINT_SERVER_DIR=...): hubd serves the
 #   release stream on 127.0.0.1:4853 (this spec's own lane) — the M181
 #   trust shape: stream history from the canonical remote, payload bytes
 #   from the untrusted channel.
 
-vgate_name live-net-hub "M206b #3814 + M206c #3815 + M214c #3920: two concurrent VMs on one --net-hub — ARP+ping both ways; vm-b browses vm-a's GOHTTPD _http._tcp over mDNS and fetches /healthz; vm-a advertises _flint._tcp and vm-b discovers, clones/pulls/pushes signed history directly guest-to-guest (literal stale_head/author_not_allowed/auth_required); then vm-a publishes+serves a signed release and vm-b installs it over the hub (tamper refuses elf_mismatch), consents, and runs it; K=3"
+vgate_name live-net-hub "M206b #3814 + M206c #3815 + M214c #3920: two concurrent VMs on one --net-hub — ARP+ping both ways; vm-b browses vm-a's GOHTTPD _http._tcp over mDNS and fetches /healthz; vm-a advertises _flint._tcp and vm-b discovers, clones/pulls/pushes signed history directly guest-to-guest (literal stale_head/author_not_allowed/auth_required); then vm-a publishes+serves a signed release and vm-b installs it over the hub (tamper refuses elf_mismatch), consents, and runs it; M217 #3921: run b boots the shipped manifest, opts the FLINTD row in by reload, and INIT restarts a mid-sync kill on the two-desk journey; K=3"
 vgate_share seed
 vgate_runner_flags -Xswiftc -DSPIKE
 vgate_repeat 3 BOOTS
@@ -105,6 +129,7 @@ vgate_note "K=3 consecutive green runs is the M206b (#3814) acceptance record (B
 vgate_note "vm-a (run a): --mac 02:00:00:00:00:0a, hub CLIENT, dhcp-binds 10.0.0.16, serves GOHTTPD --advertise v206b on :8080"
 vgate_note "vm-b (peer_watch-spawned runner, --console-tcp 127.0.0.1:24720): --mac 02:00:00:00:00:0b, hub OWNER, dhcp-binds 10.0.0.17, browses + fetches vm-a"
 vgate_note "a->b arp/ping on vm-a serial; b->a arp/ping + mDNS browse + /healthz fetch on the client capture and vm-b serial"
+vgate_note "run b: shipped manifest boots seat-only; a marker switch enables the flintd row by ordinary reload; the recorded supervised pid is killed mid-push and INIT restarts it"
 
 # vm-a stage 1: bind the hub lease, then advertise. The bare `net` after the
 # pump pins the --mac override + bound counter line on this VM's serial.
@@ -331,6 +356,19 @@ if not os.path.isfile(src):
              "bash tools/go/build-gohttpd.sh")
 shutil.copy(src, os.path.join(share, "GOHTTPD.ELF"))
 
+# M217 (#3921) — the supervised boot's own binaries: INIT (the ordinary
+# supervisor) and the GO seat its manifest starts. The manifest itself
+# is staged by the between-runs step below (the SHIPPED one first, so
+# the default boot proves the flintd row disabled; the opt-in copy is
+# switched in only after the run-a evidence is in).
+for name, how in (("INIT.ELF", "build-init.sh"),
+                  ("GOTABWM.ELF", "build-gotabwm.sh")):
+    src = os.path.join(".build", "go", name)
+    if not os.path.isfile(src):
+        sys.exit(name + " missing (expected " + src + ") - build it first: "
+                 "bash tools/go/" + how)
+    shutil.copy(src, os.path.join(share, name))
+
 # M206c — vm-a's publish lane: the store/shell ELFs, the payload app
 # (built here from this spec's vgate_file'd hubapp.go), an empty FLINT
 # workspace, the journey script, and the signer credentials (agent-sign
@@ -411,7 +449,13 @@ open(os.path.join(share, "WS", "NOTE.TXT"), "w").write("m206c publisher workspac
 for rel, body in (
         ("WS/a1.go", "package demo\n\nfunc A1() string { return \"a1\" }\n"),
         ("WS/a2.go", "package demo\n\nfunc A2() string { return \"a2\" }\n"),
-        ("WS2/x.go", "package demo\n\nfunc LineA() string { return \"line-a\" }\n")):
+        ("WS2/x.go", "package demo\n\nfunc LineA() string { return \"line-a\" }\n"),
+        # M217 (#3921): the supervised journey's own atoms. WSV opens the
+        # stream vm-b clones; WSVA is the advance it pulls while the
+        # daemon is live; WSF opens the stream the kill interrupts.
+        ("WSV/x.go", "package demo\n\nfunc SupA() string { return \"sup-a\" }\n"),
+        ("WSV/x2.go", "package demo\n\nfunc SupA2() string { return \"sup-a2\" }\n"),
+        ("WSF/f.go", "package demo\n\nfunc FaultA() string { return \"fault-a\" }\n")):
     p = os.path.join(share, rel)
     os.makedirs(os.path.dirname(p), exist_ok=True)
     open(p, "w").write(body)
@@ -433,10 +477,23 @@ open(os.path.join(share, "ALLOW-A.TXT"), "w").write(GUEST_KEY + "\n")
 open(os.path.join(share, "SEQ"), "w").write("a\n")
 # FA.SH: the M214c staged lifecycle. One GOSH, sequential children (the
 # live-dev-loop-proven shape): a1/a2 + the signed drop and host push on
-# stream `main`, then FOUR bounded FLINTD phases. FLINTD's AcceptConn is
-# the same 30 s idle budget GOHTTPD has, so each phase exits on its own
-# after vm-b's last connection and the next command runs — one :5353
-# owner at a time, no second responder, no added admission.
+# stream `main`, then FOUR bounded FLINTD phases. A daemon started by
+# INIT is a long-lived service: its accept loop treats the bounded
+# AcceptConn idle timeout as a routine interval and keeps listening (the
+# staged phases below therefore pass the optional `--idle-exit` so a phase
+# still ends deterministically after vm-b's last connection and the next
+# command runs — one :5353 owner at a time, no second responder, no added
+# admission). Phase 1 gets 120 s: its window must outlive vm-b's discovery
+# train plus the clone before the first session resets it, and a 30 s
+# window is measurably too tight under gate load (observed
+# `flint: refuse stream_missing la` when phase 1 ended before F1's push).
+# Phases 2-4 only wait for a push that starts within ~15 s, so 60 s is
+# ample. Each daemon is started as a background job and waited with `fg`:
+# the shell's foreground wait has a 120 s budget, so a longer phase would
+# return `gosh: wait failed` and leave the daemon owning :4748 for every
+# later phase (observed `flintd: listen failed port=4748` cascades), while
+# the job table reaps by polling and has no such budget. The shipped row
+# does NOT pass the flag: the supervised daemon is persistent by default.
 #   phase 1  auth + allowlist A,B — vm-b discovers/clones/pulls and pushes
 #            its `l<N>` fork (accepted: the signed change lands in A).
 #   after 1  A advances `l<N>` with its own signed Change.
@@ -462,24 +519,101 @@ open(os.path.join(share, "JA.SH"), "w").write(
     "FLINT.ELF push --remote=10.0.0.2:4853 --stream=main || sleep 1 ; FLINT.ELF push --remote=10.0.0.2:4853 --stream=main\n"
     "echo JA-DONE\n"
     "echo VMA-FLINTD1\n"
-    "FLINTD.ELF --advertise hubflint --auth-key=/host/AUTH.key --allow-author=/host/ALLOW-AB.TXT\n"
+    "FLINTD.ELF --advertise hubflint --idle-exit=30 --auth-key=/host/AUTH.key --allow-author=/host/ALLOW-AB.TXT\n"
     "echo VMA-FLINTD1-DONE\n"
     "FLINT.ELF init --name=lws$N --src=/host/WS2 --stream=l$N || echo A-LWS-EXISTS\n"
     "FLINT.ELF add /host/WS2/x.go || true\n"
     "FLINT.ELF commit --ws=lws$N -m \"line-$N\" || echo A-LINE-UP-TO-DATE\n"
     "echo VMA-FLINTD2\n"
-    "FLINTD.ELF --advertise hubflint --auth-key=/host/AUTH.key --allow-author=/host/ALLOW-AB.TXT\n"
+    "sleep 2\n"
+    "FLINTD.ELF --advertise hubflint --idle-exit=30 --auth-key=/host/AUTH.key --allow-author=/host/ALLOW-AB.TXT\n"
     "echo VMA-FLINTD2-DONE\n"
     "echo VMA-FLINTD3\n"
-    "FLINTD.ELF --advertise hubflint --auth-key=/host/AUTH.key --allow-author=/host/ALLOW-A.TXT\n"
+    "sleep 2\n"
+    "FLINTD.ELF --advertise hubflint --idle-exit=30 --auth-key=/host/AUTH.key --allow-author=/host/ALLOW-A.TXT\n"
     "echo VMA-FLINTD3-DONE\n"
     "echo VMA-FLINTD4\n"
-    "FLINTD.ELF --advertise hubflint --auth-key=/host/AUTH.key --allow-author=/host/ALLOW-AB.TXT\n"
+    "sleep 2\n"
+    "FLINTD.ELF --advertise hubflint --idle-exit=30 --auth-key=/host/AUTH.key --allow-author=/host/ALLOW-AB.TXT\n"
     "echo VMA-FLINTD4-DONE\n"
     "FLINT.ELF verify --all\n"
     "echo VMA-FA-DONE\n"
     "while true; do GOHTTPD.ELF ; done\n")
 
+# M217 (#3921) — vm-a's supervised journey scripts, sourced by the run-b
+# monitor stages. Nothing here edits INIT's schema, restart policy or
+# admission: the daemon is started by the SHIPPED manifest row once the
+# between-runs switch enables it, and the supervisor's own receipts
+# (`svc: start`, `svc: exit status=137`, `svc: backoff`, the next start)
+# are the lifecycle evidence. `CURA` pins the iteration token once, so an
+# INIT reload or a later stage cannot re-read a rotated `/host/SEQB`.
+open(os.path.join(share, "SEQB"), "w").write("a\n")
+# Stage 1: open the stream vm-b clones, then print the opt-in marker. The
+# marker is the LAST line so the stream exists before any client can be
+# gated on the daemon's post-burst boundary.
+open(os.path.join(share, "SUPSTART.SH"), "w").write(
+    "set N=$(cat /host/SEQB)\n"
+    "echo $N > /host/CURA\n"
+    "FLINT.ELF fork main sv$N || echo A-SUP-FORK-EXISTS\n"
+    "FLINT.ELF init --name=wsv$N --src=/host/WSV --stream=sv$N || echo A-SUP-INIT-EXISTS\n"
+    "FLINT.ELF add /host/WSV/x.go || true\n"
+    "FLINT.ELF commit --ws=wsv$N -m \"a-sup-$N\" || echo A-SUP-UP-TO-DATE\n"
+    "echo VMA-SUP-STREAM-READY\n"
+    "echo VMA-SUP-OPTOUT\n")
+# Stage 2 (after the supervisor restarted the daemon): advance the cloned
+# stream while it is live, open the stream the kill interrupts, pull
+# `main` and verify every signature the store holds — the same
+# discover/clone/commit/push/pull/verify journey the M214c phases carry,
+# now through a supervised daemon. The 40 s pause is a DELIBERATE idle
+# window, not readiness: the daemon's bounded accept wait always expires
+# at 30 s, and vm-b's next pull (gated on VMA-SUP-ADVANCED, a marker)
+# must be served by the SAME supervised pid — the proof that the timeout
+# is a routine interval and not a reason to exit.
+open(os.path.join(share, "SUPADV.SH"), "w").write(
+    "set N=$(cat /host/CURA)\n"
+    "FLINT.ELF init --name=wsv2$N --src=/host/WSV --stream=sv$N || echo A-SUPA-INIT-EXISTS\n"
+    "FLINT.ELF add /host/WSV/x2.go || true\n"
+    "FLINT.ELF commit --ws=wsv2$N -m \"a-sup-advance-$N\" || echo A-SUPA-UP-TO-DATE\n"
+    "FLINT.ELF fork main fv$N || echo A-SUPF-FORK-EXISTS\n"
+    "FLINT.ELF init --name=wsvf$N --src=/host/WSF --stream=fv$N || echo A-SUPF-INIT-EXISTS\n"
+    "FLINT.ELF add /host/WSF/f.go || true\n"
+    "FLINT.ELF commit --ws=wsvf$N -m \"a-fault-$N\" || echo A-SUPF-UP-TO-DATE\n"
+    "sleep 40\n"
+    "FLINT.ELF pull --stream=main --remote=10.0.0.2:4853 || sleep 1 ; FLINT.ELF pull --stream=main --remote=10.0.0.2:4853\n"
+    "FLINT.ELF verify --all\n"
+    "echo VMA-SUP-ADVANCED\n"
+    "echo VMA-SUP-JOURNEY-DONE\n"
+    "echo VMA-SUP-FAULT-READY\n"
+    'exec GOSH.ELF -c "source /host/SUPKILL.SH"\n')
+# The killer runs on the supervised guest: it signals the pid INIT
+# recorded for the daemon (`svc: start name=flintd pid=`, captured by the
+# marker-driven switch into /host/SUPPID). 70 s is measured from
+# VMA-SUP-FAULT-READY, which is before sup2's pull+verify and sup3's
+# clone/fork/init, so it lands inside sup3's ~100 s push train on every
+# observed run instead of racing the train's start.
+open(os.path.join(share, "SUPKILL.SH"), "w").write(
+    "sleep 40\n"
+    "sleep 30\n"
+    "set P=$(cat /host/SUPPID)\n"
+    "echo VMA-SUP-KILL-PID=$P\n"
+    "kill $P\n"
+    "echo VMA-SUP-KILLED\n")
+# Stage 2's tail is the fault hand-off. It prints VMA-SUP-FAULT-READY
+# ("advance and pull are done") and then launches SUPKILL.SH with `exec`,
+# which returns at once: the killer runs as its own task in THIS guest —
+# the guest whose INIT recorded the daemon pid — so its `kill` reaches the
+# supervised process, and the two desks plus the killing desk all overlap
+# without racing for the console bridge. The killer's lead is sized
+# against the fault leg's sequence (sup2's pull+verify, then sup3's clone,
+# fork and init) so it lands mid-train; because every attempt carries a
+# real Change and only 1 s separates them, a lead that lands between two
+# pushes still meets the daemon inside its 2 s on-failure backoff window.
+# A push that succeeds before the kill is real progress; one that meets
+# the down window prints VMB-SUP-INTERRUPTED, and the leg then reports its
+# real recovery outcome — VMB-SUP-RECOVERED only when the restarted daemon
+# served the push again, otherwise VMB-SUP-RETRY-FAILED with the store
+# left as an unrepaired verifiable prefix. It never claims a success it
+# did not get.
 # vm-b's share: the browse + fetch verbs; wm=none keeps the seat's EL0
 # slots for the discover/fetch children.
 os.makedirs(bshare, exist_ok=True)
@@ -526,18 +660,18 @@ for name in ("STORE.ELF", "FLINT.ELF", "GOSH.ELF"):
 # client never runs (observed: `refused:file_denied name=FLINTU.ELF`).
 open(os.path.join(bshare, "OWNERS.TXT"), "w").write(
     "#v1\nFLINT.ELF\t644\t0\t-\nSTORE.ELF\t644\t0\t-\n")
-# M214c (#3920): vm-b's rows are UID-scoped, not app-bound. This launcher
-# boots WITHOUT the queue-5 virtio-fs probe (`vf: probe ...` is absent from
-# vm-b's serial, `cvspike: init failed`), and `OWNERS.TXT` is loaded only on
-# that arming path — so on vm-b the metadata table never carries the
-# uid_system rows `trust.system_owned_key` needs and an app-bound row stays
-# invisible to every reader (observed: `flint: debug secretlist=0/0` on
-# vm-b against `2/216` on vm-a, and the client refused `auth_required` on
-# every verb). uid scope is the binding this boot can enforce: uid_user
-# (1000) owns both rows and no other principal reads them.
+# M214c (#3920) review fix (#3921): vm-b's rows are app-bound to
+# FLINT.ELF, exactly like vm-a's, and vm-b's launcher now arms the
+# queue-5 virtio-fs probe (`--cvc-file bshare`, above) so OWNERS.TXT is
+# loaded and `trust.system_owned_key` can see the uid_system row an
+# app-bound secret needs. The previous UID-scoped shape was a
+# consequence of the missing probe, not a deliberate trust decision —
+# with OWNERS loaded the app-bound row, not the uid, is the binding this
+# boot enforces. The uid_agent (2000) leg still reads no secret and
+# refuses auth_required: that negative is preserved unchanged.
 open(os.path.join(bshare, "SECRETS.TXT"), "w").write(
-    "#v1\nflint-remote\t1000\t" + AUTH_KEY_HEX + "\n"
-    "agent-sign\t1000\t" + BGUEST_SEED + "\n")
+    "#v1\nflint-remote\t1000\t" + AUTH_KEY_HEX + "\tFLINT.ELF\n"
+    "agent-sign\t1000\t" + BGUEST_SEED + "\tFLINT.ELF\n")
 # vm-b's source atoms for the streams it forks/pushes. One file per
 # phase so an add stages exactly the intended Change.
 for rel, body in (
@@ -548,6 +682,25 @@ for rel, body in (
     p = os.path.join(bshare, rel)
     os.makedirs(os.path.dirname(p), exist_ok=True)
     open(p, "w").write(body)
+# M217 (#3921): vm-b's fault-leg atoms — eight distinct files, one
+# add/commit/push each, so every pre-kill attempt carries a REAL Change
+# and the interruption always has accepted history to protect.
+os.makedirs(os.path.join(bshare, "BWSF"), exist_ok=True)
+for _i in range(1, 9):
+    open(os.path.join(bshare, "BWSF", "f%d.go" % _i), "w").write(
+        "package demo\n\nfunc FaultB%d() string { return \"fault-b%d\" }\n"
+        % (_i, _i))
+# The alternate corpus: same paths, different bytes. The fault leg adds one
+# pass of each corpus in turn, so every attempt carries a real Change
+# (`new` on the first pass, `modified` after) instead of an up-to-date
+# no-op — a train of no-op pushes has nothing in flight for the kill to
+# split, which is how an honest fault leg degrades into a vacuous pass.
+os.makedirs(os.path.join(bshare, "FWS"), exist_ok=True)
+for _i in range(1, 9):
+    open(os.path.join(bshare, "FWS", "f%d.go" % _i), "w").write(
+        "package demo\n\nfunc FaultW%d() string { return \"fault-w%d\" }\n"
+        % (_i, _i))
+open(os.path.join(bshare, "SEQB"), "w").write("a\n")
 open(os.path.join(bshare, "SEQ"), "w").write("a\n")
 os.makedirs(os.path.join(bshare, "FLINT"), exist_ok=True)
 open(os.path.join(bshare, "FLINT", "TRUSTED.TXT"), "w").write(
@@ -590,7 +743,6 @@ open(os.path.join(bshare, "F1.SH"), "w").write(
     "if [ \"$N\" = \"a\" ]; then echo b > /host/SEQ; fi\n"
     "if [ \"$N\" = \"b\" ]; then echo c > /host/SEQ; fi\n"
     "if [ \"$N\" = \"c\" ]; then echo d > /host/SEQ; fi\n"
-    "GONETSTAT.ELF discover _flint._tcp\n"
     "FLINT.ELF clone 10.0.0.16:4748 main || sleep 1 ; FLINT.ELF clone 10.0.0.16:4748 main\n"
     "FLINT.ELF pull --stream=main || sleep 1 ; FLINT.ELF pull --stream=main\n"
     "FLINT.ELF log --stream=main\n"
@@ -607,6 +759,7 @@ open(os.path.join(bshare, "F1.SH"), "w").write(
 # client-side skip.
 open(os.path.join(bshare, "F2.SH"), "w").write(
     "set N=$(cat /host/CUR)\n"
+    "GONETSTAT.ELF discover _flint._tcp\n"
     "sleep 5\n"
     "FLINT.ELF add /host/BWSL/b.go || true\n"
     "FLINT.ELF commit --ws=bl$N -m \"b-line-2-$N\" || true\n"
@@ -671,6 +824,11 @@ proc = subprocess.Popen(
      "--vars", os.path.join(rd, "efi-vars-vmb.bin"),
      "--serial", ser_b,
      "--virtio-fs", bshare,
+     # M217 (#3921): arm the queue-5 probe on vm-b's OWN share too. This
+     # is the launcher configuration vm-a has always had (the harness
+     # appends --cvc-file for its run); without it OWNERS.TXT never
+     # loads and no app-bound secret can bind on vm-b.
+     "--cvc-file", bshare,
      "--net", os.path.join(rd, "vmb.cap"),
      "--net-hub", os.path.join(rd, "nethub.sock"),
      "--mac", "02:00:00:00:00:0b",
@@ -830,6 +988,58 @@ for _ph in (1, 2, 3, 4):
     open(os.path.join(rd, "vmb-f%d.txt" % _ph), "w").write(
         'exec%s GOSH.ELF -c "source /host/F%d.SH"\n'
         % (" -u2000" if _ph == 4 else "", _ph))
+
+# M217 (#3921) — vm-b's supervised journey. Two GOSH legs, one console
+# session each, both gated on markers the DAEMON's guest prints to its
+# serial (a desk's own markers arrive on the console bridge's client
+# capture, not in a serial file, so they cannot gate the next desk):
+#   SUP1  discover the supervised daemon's instance after its burst,
+#         clone the stream vm-a opened, pull it, author a signed fork and
+#         push it back — the ordinary journey.
+#   SUP2  one session for the rest: pull + verify --all after vm-a
+#         advanced the cloned stream, then the fault leg — clone vm-a's
+#         `fv<N>` and push a REAL multi-Change suffix in a dense push
+#         train of four passes alternating the /host/BWSF and /host/FWS
+#         byte variants of the same paths, so every add is new-or-modified
+#         and every push carries bytes. A's stage 2 has already launched
+#         SUPKILL.SH in its own guest, and its lead lands inside this
+#         train; the failed push prints VMB-SUP-INTERRUPTED and the
+#         retries after the restart finish the stream. The pull after the
+#         restart is honest either way: it either recovers the verified
+#         complete suffix or refuses stream_torn (recorded as
+#         VMB-SUP-TORN) — no silent repair, no fabricated success.
+open(os.path.join(bshare, "SUP1.SH"), "w").write(
+    "set N=$(cat /host/SEQB)\n"
+    "echo $N > /host/CURB\n"
+    "GONETSTAT.ELF discover _flint._tcp\n"
+    "FLINT.ELF clone 10.0.0.16:4748 sv$N || sleep 1 ; FLINT.ELF clone 10.0.0.16:4748 sv$N\n"
+    "FLINT.ELF pull --stream=sv$N || sleep 1 ; FLINT.ELF pull --stream=sv$N\n"
+    "FLINT.ELF fork sv$N bsv$N || echo B-SUP-FORK-EXISTS\n"
+    "FLINT.ELF init --name=bwsv$N --src=/host/BWSL --stream=bsv$N || echo B-SUP-INIT-EXISTS\n"
+    "FLINT.ELF add /host/BWSL/a.go || true\n"
+    "FLINT.ELF commit --ws=bwsv$N -m \"b-sup-$N\" || echo B-SUP-COMMIT-UP-TO-DATE\n"
+    "FLINT.ELF push --remote=10.0.0.16:4748 --stream=bsv$N || sleep 1 ; FLINT.ELF push --remote=10.0.0.16:4748 --stream=bsv$N\n"
+    "FLINT.ELF verify --all\n"
+    "echo VMB-SUP-JOURNEY-DONE\n")
+open(os.path.join(bshare, "SUP2.SH"), "w").write(
+    "set N=$(cat /host/CURB)\n"
+    "FLINT.ELF pull --stream=sv$N || sleep 1 ; FLINT.ELF pull --stream=sv$N\n"
+    "FLINT.ELF verify --all\n"
+    "echo VMB-SUP-VERIFIED\n"
+    "FLINT.ELF clone 10.0.0.16:4748 fv$N || sleep 1 ; FLINT.ELF clone 10.0.0.16:4748 fv$N\n"
+    "FLINT.ELF fork fv$N bf$N || echo B-SUPF-FORK-EXISTS\n"
+    "FLINT.ELF init --name=bfw$N --src=/host/BWSF --stream=bf$N || echo B-SUPF-INIT-EXISTS\n"
+    "for i in 1 2 3 4 5 6 7 8; do FLINT.ELF add --ws=bfw$N /host/BWSF/f$i.go || true ; FLINT.ELF commit --ws=bfw$N -m \"fault-b1-$i-$N\" || true ; FLINT.ELF push --remote=10.0.0.16:4748 --stream=bf$N || echo VMB-SUP-INTERRUPTED ; sleep 1 ; done\n"
+    "for i in 1 2 3 4 5 6 7 8; do FLINT.ELF add --ws=bfw$N /host/FWS/f$i.go || true ; FLINT.ELF commit --ws=bfw$N -m \"fault-w1-$i-$N\" || true ; FLINT.ELF push --remote=10.0.0.16:4748 --stream=bf$N || echo VMB-SUP-INTERRUPTED ; sleep 1 ; done\n"
+    "for i in 1 2 3 4 5 6 7 8; do FLINT.ELF add --ws=bfw$N /host/BWSF/f$i.go || true ; FLINT.ELF commit --ws=bfw$N -m \"fault-b2-$i-$N\" || true ; FLINT.ELF push --remote=10.0.0.16:4748 --stream=bf$N || echo VMB-SUP-INTERRUPTED ; sleep 1 ; done\n"
+    "for i in 1 2 3 4 5 6 7 8; do FLINT.ELF add --ws=bfw$N /host/FWS/f$i.go || true ; FLINT.ELF commit --ws=bfw$N -m \"fault-w2-$i-$N\" || true ; FLINT.ELF push --remote=10.0.0.16:4748 --stream=bf$N || echo VMB-SUP-INTERRUPTED ; sleep 1 ; done\n"
+    "FLINT.ELF push --remote=10.0.0.16:4748 --stream=bf$N && echo VMB-SUP-RECOVERED || echo VMB-SUP-RETRY-FAILED\n"
+    "FLINT.ELF pull --remote=10.0.0.16:4748 --stream=bf$N || echo VMB-SUP-TORN\n"
+    "FLINT.ELF verify --all\n"
+    "echo VMB-SUP-FAULT-DONE\n")
+for _n in (1, 2):
+    open(os.path.join(rd, "vmb-sup%d.txt" % _n), "w").write(
+        'exec GOSH.ELF -c "source /host/SUP%d.SH"\n' % _n)
 # Third leg file — the admin half, typed by the THIRD client once B's
 # good-install fetch prints on A's serial ('httpd: request
 # /DROP/main/HUBAPP.ELF'). --retry-busy holds it behind client-2's
@@ -1452,4 +1662,374 @@ if want_row not in rows:
     sys.exit("FAIL: consent wrote no hash-bound row: %r" % rows)
 print("m206c: %d JB pass(es) — elf_mismatch x%d, install ok, consent row "
       "landed, app ran; sha256=%s" % (n_jb, n_ref, have[:16]))
+PY
+
+# --- M217 (#3921): the opt-in supervised boot, staged between the runs ------
+# Run a left the shares in their M206c/M214c shape. Run b is the ordinary
+# supervised boot: INIT autostarts from the SHIPPED manifest (seat only),
+# then a marker-driven switch writes the SAME shipped manifest with the
+# flintd row enabled — an ordinary reload of an ordinary row. No schema,
+# restart-policy, admission or device change, and no test-only fault
+# switch: the default boot itself is the disabled-by-default evidence.
+#
+# The switch also records the supervisor's own `svc: start name=flintd
+# pid=` line, so the kill stage can only ever signal a pid INIT reported
+# (never a name lookup, never another gate's process).
+vgate_assert a python <<'PY'
+import json, os, pathlib, subprocess, sys
+rd = os.environ["RUN_DIR"]
+share = pathlib.Path(os.environ["VG_SHARE"])
+bshare = pathlib.Path(rd) / "share-vmb"
+
+shipped = pathlib.Path("user/go/init/SERVICES.JSON").read_bytes()
+m = json.loads(shipped)
+row = [s for s in m["services"] if s["name"] == "flintd"]
+if len(row) != 1:
+    sys.exit("FAIL: the shipped manifest has no single flintd row")
+if row[0].get("enabled") is not False:
+    sys.exit("FAIL: the shipped flintd row is not disabled by default")
+if row[0].get("class") != "on-demand":
+    sys.exit("FAIL: the shipped flintd row is not on-demand")
+(share / "INIT").mkdir(exist_ok=True)
+(share / "INIT/SERVICES.JSON").write_bytes(shipped)
+enabled = json.loads(shipped)
+for s in enabled["services"]:
+    if s["name"] == "flintd":
+        s["enabled"] = True
+(share.parent / "INIT-ENABLED.JSON").write_text(json.dumps(enabled))
+(share / "SETTINGS.TXT").write_text("#v2\nwm=gotabwm\n")
+
+def rotate(p):
+    v = p.read_text().strip() if p.is_file() else "a"
+    p.write_text({"a": "b", "b": "c", "c": "d"}.get(v, v) + "\n")
+
+rotate(share / "SEQB")
+rotate(bshare / "SEQB")
+
+watch = '''import os, re, shutil, sys, time
+ser, share, enabled, pidpath = sys.argv[1:5]
+def note(msg):
+    # The pid file must live in the share (the guest reads it); the host
+    # log belongs beside the run dir, never inside the guest's filesystem.
+    open(os.path.join(os.path.dirname(os.path.dirname(pidpath)),
+                      "supswitch.log"), "a").write(msg + "\\n")
+seen_opt = False
+deadline = time.time() + 900
+while time.time() < deadline:
+    try:
+        s = open(ser, errors="replace").read()
+    except OSError:
+        s = ""
+    m = re.search(r"svc: start name=flintd pid=(\\d+)", s)
+    if m and not os.path.exists(pidpath):
+        open(pidpath, "w").write(m.group(1) + "\\n")
+        note("switch: supervisor start recorded pid=" + m.group(1))
+    if (not seen_opt) and "VMA-SUP-OPTOUT" in s:
+        seen_opt = True
+        shutil.copyfile(enabled, os.path.join(share, "INIT", "SERVICES.JSON"))
+        note("switch: enabled copy of the shipped row written (ordinary reload)")
+        # Keep watching for the pid: the reload needs a tick to start it.
+        grace = time.time() + 120
+        while time.time() < grace:
+            try:
+                s2 = open(ser, errors="replace").read()
+            except OSError:
+                s2 = ""
+            m2 = re.search(r"svc: start name=flintd pid=(\\d+)", s2)
+            if m2:
+                open(pidpath, "w").write(m2.group(1) + "\\n")
+                note("switch: supervised flintd pid=" + m2.group(1))
+                sys.exit(0)
+            time.sleep(0.25)
+        note("switch: no supervised flintd start after opt-in")
+        sys.exit(1)
+    time.sleep(0.25)
+note("switch: VMA-SUP-OPTOUT never observed")
+sys.exit(1)
+'''
+(share.parent / "supswitch.py").write_text(watch)
+log = open(os.path.join(rd, "supswitch.out"), "wb")
+subprocess.Popen([sys.executable, str(share.parent / "supswitch.py"),
+                  os.path.join(rd, "vm-serial-b.log"), str(share),
+                  str(share.parent / "INIT-ENABLED.JSON"),
+                  str(share / "SUPPID")],
+                 stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+log.close()
+print("m217: staged the shipped manifest (flintd disabled) + the marker-driven "
+      "opt-in switch for run b; token rotated")
+PY
+
+# --- M217 run b: one ordinary supervised boot, one two-desk journey ---------
+# Stage 1 pumps DHCP/ARP and prints the default-boot process table BEFORE
+# any opt-in: `procs` shows the seat and no FLINTD. It then sources
+# SUPSTART.SH (open the stream) and prints VMA-SUP-OPTOUT, which is the
+# ONLY thing that enables the shipped row — the between-runs watcher writes
+# it. Stage 2 runs after vm-b's first push created its stream (the daemon's
+# own `op=create` receipt) and advances the journey through the supervised
+# daemon, then prints the fault marker, waits its lead and kills the pid
+# the supervisor reported (stage 2's tail — no third script).
+vgate_file vma-sup-s1.txt <<'EOF'
+net dhcp
+net dhcp
+net dhcp
+net dhcp
+net dhcp
+net arp 10.0.0.99
+net
+procs
+exec GOSH.ELF -c "source /host/SUPSTART.SH"
+EOF
+vgate_file vma-sup-s2.txt <<'EOF'
+exec GOSH.ELF -c "source /host/SUPADV.SH"
+EOF
+
+# The host-flintd relay (10.0.0.2:4853 through THIS runner) is the same
+# lane run a carried: A's `main` pull in stage 2 needs it, and the host
+# daemon holds the stream run a pushed. The arp responder gives A the
+# forged .2 peer the relay answers for.
+vgate_run b -- --screen '$RUN_DIR/screen-sup' --net '$RUN_DIR/b.cap' --net-hub '$RUN_DIR/nethub.sock' \
+    --mac 02:00:00:00:00:0a \
+    --net-arp-respond 10.0.0.2 --net-tcp-respond 10.0.0.2:4853:relay --net-tcp-respond-relay 127.0.0.1:4853 \
+    --virtio-fs '$RUN_DIR/share' \
+    --script '$RUN_DIR/vma-sup-s1.txt' --script-after 'init: seated' \
+    --script2 '$RUN_DIR/vma-sup-s2.txt' --script2-after 'op=create' \
+    --script-expect 'VMA-SUP-KILLED' --script-expect-tail 300 --timeout 660
+
+# The two desks are gated only on markers the daemon's own guest prints to
+# its serial, and each desk is one console session: a desk's own markers
+# arrive on the console bridge's client capture, never in a serial file,
+# so a marker printed by one desk cannot gate the next. (Two desks gated
+# on markers that became true within a millisecond raced for the one
+# bridge; the loser spent its whole connect budget on `console-tcp: busy`
+# and wrote `<connect failed>`.)
+vgate_client b -- --addr '127.0.0.1:24720' --after 'flintd: advertise burst done' --after-timeout 240 \
+    --connect-timeout 120 --retry-busy --send-file '$RUN_DIR/vmb-sup1.txt' \
+    --expect 'VMB-SUP-JOURNEY-DONE' --timeout 300 --out '$RUN_DIR/client-b-sup1.out'
+vgate_client b -- --addr '127.0.0.1:24720' --after 'VMA-SUP-ADVANCED' --after-timeout 400 \
+    --connect-timeout 120 --retry-busy --send-file '$RUN_DIR/vmb-sup2.txt' \
+    --expect 'VMB-SUP-FAULT-DONE' --timeout 600 --out '$RUN_DIR/client-b-sup2.out'
+
+# The default boot is the disabled-by-default evidence: INIT reports one
+# enabled row (the seat), starts it, and the process table before the
+# opt-in carries no FLINTD. The reload is the ordinary manifest wait.
+vgate_assert b serial-contains 'init: autostart INIT.ELF (settings init=on)'
+vgate_assert b serial-contains 'init: manifest ok n=1'
+vgate_assert b serial-contains 'init: start name=seat order=1'
+vgate_assert b serial-contains 'init: seated'
+vgate_assert b serial-contains 'VMA-SUP-OPTOUT'
+vgate_assert b serial-contains 'init: reload applied'
+vgate_assert b serial-contains 'init: start name=flintd'
+vgate_assert b serial-contains 'svc: start name=flintd pid='
+vgate_assert b serial-contains 'flintd: listening port=4748'
+vgate_assert b serial-contains 'flintd: advertising flint._flint._tcp.local port=4748'
+vgate_assert b serial-contains 'flintd: advertise burst done'
+vgate_assert b serial-contains 'flintd: mdns query _flint._tcp.local'
+vgate_assert b serial-contains 'flintd: mdns answer flint._flint._tcp.local addr=10.0.0.16 port=4748'
+vgate_assert b serial-contains 'flintd: request seq='
+vgate_assert b serial-contains 'op=create'
+vgate_assert b serial-contains 'VMA-SUP-STREAM-READY'
+vgate_assert b serial-contains 'VMA-SUP-ADVANCED'
+vgate_assert b serial-contains 'VMA-SUP-JOURNEY-DONE'
+vgate_assert b serial-contains 'VMA-SUP-FAULT-READY'
+vgate_assert b serial-contains 'VMA-SUP-KILL-PID='
+vgate_assert b serial-contains 'VMA-SUP-KILLED'
+vgate_assert b serial-contains 'svc: exit name=flintd status=137'
+vgate_assert b serial-contains 'svc: backoff name=flintd k='
+# Persistent by default: the supervised daemon never takes the optional
+# idle exit (only the staged run-a phases pass --idle-exit), never dies on
+# the bounded AcceptConn timeout, and never gives up the port.
+vgate_assert b serial-absent 'flintd: idle exit'
+vgate_assert b serial-absent 'flintd: accept failed'
+vgate_assert b serial-absent 'flintd: advertise bind failed'
+vgate_assert b serial-absent 'httpd:'
+vgate_assert b serial-absent '[EXC]'
+
+vgate_assert b python <<'PY'
+import json, os, pathlib, shutil, sys
+rd = os.environ["RUN_DIR"]
+share = pathlib.Path(os.environ["VG_SHARE"])
+bshare = pathlib.Path(rd) / "share-vmb"
+suffix = os.environ.get("VIRELAI_GATE_SUFFIX", "")
+ser = open(os.environ["VG_SER"], errors="replace").read()
+ser_b_path = os.path.join(rd, "vm-serial-vmb.log")
+ser_b = open(ser_b_path, errors="replace").read() if os.path.isfile(ser_b_path) else ""
+os.makedirs("artifacts", exist_ok=True)
+for n in (1, 2):
+    p = os.path.join(rd, "client-b-sup%d.out" % n)
+    if os.path.isfile(p):
+        shutil.copyfile(p, "artifacts/live-net-hub-sup%d%s.out" % (n, suffix))
+
+fail = []
+# --- the default boot owns no FLINTD ---------------------------------------
+if "init: seated" not in ser or "VMA-SUP-OPTOUT" not in ser:
+    sys.exit("FAIL: run b serial has no seated boot or opt-in marker")
+seat = ser.index("init: seated")
+opt = ser.index("VMA-SUP-OPTOUT")
+if seat > opt:
+    fail.append("the opt-in marker preceded the seated boot")
+boot_seg = ser[:opt]
+if "FLINTD" in boot_seg:
+    fail.append("the default boot named FLINTD before the opt-in")
+for line in boot_seg.splitlines():
+    if line.startswith("svc: start") and "name=seat" not in line:
+        fail.append("a non-seat service started before the opt-in: " + line)
+first_start = ser.find("svc: start name=flintd")
+reload_at = ser.find("init: reload applied")
+if first_start < 0 or reload_at < 0 or reload_at > first_start:
+    fail.append("flintd did not start from the post-reload manifest")
+
+# --- the supervisor's own lifecycle: start -> 137 -> backoff -> start ------
+import re
+starts = re.findall(r"svc: start name=flintd pid=(\d+) t_ns=(\d+)", ser)
+if len(starts) < 2:
+    fail.append("only %d supervised flintd start(s) - the kill was not "
+                "followed by a restart" % len(starts))
+else:
+    pids = [p for p, _ in starts]
+    if len(set(pids)) != len(pids):
+        fail.append("the supervised restart reused a pid: %r" % pids)
+    kill_pid = re.search(r"VMA-SUP-KILL-PID=(\d+)", ser)
+    if not kill_pid:
+        fail.append("no recorded kill pid")
+    elif kill_pid.group(1) != pids[0]:
+        fail.append("kill pid %s is not the supervisor's first pid %s"
+                    % (kill_pid.group(1), pids[0]))
+    seg = ser[ser.index("VMA-SUP-KILL-PID="):]
+    for s in ("svc: exit name=flintd status=137",
+              "svc: backoff name=flintd k=",
+              "svc: start name=flintd pid="):
+        if s not in seg:
+            fail.append("post-kill supervisor receipt missing: " + s)
+    if "flintd: idle exit" in seg:
+        fail.append("the supervised daemon used the optional idle exit")
+
+# --- one pid served every pre-kill connection ------------------------------
+# The supervised daemon must survive the bounded accept wait expiring
+# (the deliberate 40 s idle window in stage 2) and then serve vm-b's
+# later pull on the SAME pid. Any exit before the kill means the timeout
+# still ended the service.
+if "VMA-SUP-KILL-PID=" in ser:
+    pre = ser[:ser.index("VMA-SUP-KILL-PID=")]
+    if "svc: exit name=flintd" in pre:
+        fail.append("the daemon exited before the kill (the idle accept "
+                    "timeout was not treated as routine)")
+    if pre.count("flintd: accepted") < 3:
+        fail.append("the supervised daemon served fewer than three "
+                    "connections before the kill")
+
+# --- the desk: a real discovery, the journey, an interrupted push ----------
+# The second desk's console is the harness console bridge, and the bridge
+# hands the guest's output to the attached client: on this leg the bytes
+# arrive in the client captures, not in the spawned runner's serial file.
+# Both are guest output, so the judging text is the desk's own captured
+# console (plus the serial when the runner also mirrored it there, which it
+# does on other legs).
+desk = ser_b
+for _n in (1, 2):
+    _p = os.path.join(rd, "client-b-sup%d.out" % _n)
+    if os.path.isfile(_p):
+        desk += open(_p, errors="replace").read()
+if not re.search(r"netstat: discover service flint\._flint\._tcp\.local "
+                 r"host=flint\.local port=4748 addr=10\.0\.0\.16", desk):
+    fail.append("the desk never resolved the supervised instance")
+for s in ("flint: clone ok", "flint: push ", "flint: pull ",
+          "flint: verify ", "VMB-SUP-JOURNEY-DONE", "VMB-SUP-VERIFIED",
+          "VMB-SUP-INTERRUPTED", "VMB-SUP-FAULT-DONE"):
+    if s not in desk:
+        fail.append("the desk's console never showed: " + s)
+if "sig_invalid" in desk:
+    fail.append("a signature failed to verify on the desk")
+i_fail = desk.find("VMB-SUP-INTERRUPTED")
+i_done = desk.find("VMB-SUP-FAULT-DONE")
+if i_fail < 0 or i_done < 0 or i_fail > i_done:
+    fail.append("the interrupted push is not recorded before the fault leg "
+                "completed")
+if "VMB-SUP-TORN" in desk and "flint: refuse stream_torn" not in desk:
+    fail.append("VMB-SUP-TORN appeared without a stream_torn refusal")
+# The leg states its real recovery outcome: a push the restarted daemon
+# served, or an honest failure. It may not report both, and it may not
+# stay silent.
+recovered = "VMB-SUP-RECOVERED" in desk
+retry_failed = "VMB-SUP-RETRY-FAILED" in desk
+if recovered and retry_failed:
+    fail.append("the fault leg reported both recovery and failure")
+if not recovered and not retry_failed:
+    fail.append("the fault leg never reported its recovery outcome")
+# No premature success: inside the desk's own stream the outcome and the
+# completion marker follow the interruption that the kill caused.
+for _m, _txt in (("VMB-SUP-RECOVERED", "recovery"),
+                 ("VMB-SUP-RETRY-FAILED", "failed recovery")):
+    _i = desk.find(_m)
+    if _i >= 0 and i_fail >= 0 and _i < i_fail:
+        fail.append("the leg reported " + _txt + " before the interruption")
+# The kill must split a REAL sync: the fault train stages new bytes on its
+# first pass and modified bytes on the next two (the /host/BWSF and
+# /host/FWS variants of the same paths), and each of those pushes carries a
+# Change to bf<N>. A train of up-to-date no-ops would have nothing in
+# flight, so this is the assertion that keeps the fault leg from passing
+# vacuously.
+real_adds = (desk.count("flint: add files=1 new=1")
+             + desk.count("flint: add files=1 new=0 modified=1"))
+fault_pushes = len(re.findall(r"flint: push ok stream=bf", desk))
+if real_adds < 4:
+    fail.append("the fault leg staged no real byte changes")
+if fault_pushes < 4:
+    fail.append("the fault leg pushed no real Change before the kill")
+
+# --- the store outcome is honest: complete-and-verified, or stream_torn ----
+n_token = (share / "SEQB").read_text().strip()
+def record(root, name):
+    streams = root / "FLINT" / "streams"
+    for p in streams.glob("*.json"):
+        try:
+            rec = json.loads(p.read_text())
+        except (OSError, ValueError):
+            continue
+        if rec.get("name") == name:
+            logp = streams / (rec.get("id", "") + ".jsonl")
+            body = logp.read_bytes() if logp.is_file() else b""
+            return rec, body
+    return None, b""
+
+rec, body = record(share, "bf" + n_token)
+complete = False
+if rec is None:
+    fail.append("vm-a's supervised store has no fault stream bf%s" % n_token)
+else:
+    lines = body.split(b"\n")
+    complete = bool(lines) and lines[-1] == b""
+    if complete:
+        lines = lines[:-1]
+    parsed = []
+    for ln in lines:
+        try:
+            parsed.append(json.loads(ln))
+        except ValueError:
+            complete = False
+            break
+    if complete and parsed:
+        if not all(c.get("id") for c in parsed):
+            fail.append("a recovered Change has no id")
+        elif rec.get("head") != parsed[-1].get("id"):
+            fail.append("the recovered fault log's last Change is not the "
+                        "recorded head")
+    elif complete:
+        fail.append("the fault stream holds no Change at all")
+    elif "flint: refuse stream_torn" not in ser_b and not retry_failed:
+        fail.append("the fault log is torn but vm-b reported neither "
+                    "stream_torn nor a failed recovery (no silent repair)")
+    if recovered and not complete:
+        fail.append("the leg claimed recovery but the fault log is torn")
+if not any("flint: verify " in l for l in ser.splitlines()):
+    fail.append("vm-a never verified the supervised store")
+
+if fail:
+    sys.exit("FAIL: m217 supervised journey:\n  " + "\n  ".join(fail))
+print("m217: default boot n=1 (seat only, no FLINTD); opt-in reload started "
+      "flintd; kill of pid %s -> status=137 -> backoff k=1 -> restart; "
+      "vm-b cloned/pulled/pushed/verified; fault stream bf%s is %s and the "
+      "leg reported %s"
+      % (starts[0][0] if starts else "?", n_token,
+         "complete and verified" if complete else "honestly torn",
+         "recovery" if recovered else "an honest failed recovery"))
 PY
