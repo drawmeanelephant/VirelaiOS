@@ -1144,6 +1144,9 @@ func consumeSeatEvent(e vi.Event) bool {
 	// #3126: the mirror's focused bit tracks the kernel's focused user
 	// window — the routed-chord repair in applyUndo reads it.
 	noteKernelFocus(e)
+	// M216e (#3944): the same mirror's unsaved bit (12) marks the tab's
+	// rail dot and arms the close-time Reopen toast.
+	noteUnsavedMirror(e)
 	// #2703: live input re-arms the demo strip hold. hidChordHold's job is
 	// to keep the two-tab choreography's destructive steps (swap→pin→
 	// split→closePinnedFirst/closeHosted) behind in-flight scripted input;

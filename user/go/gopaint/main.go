@@ -171,6 +171,11 @@ type app struct {
 
 	pend    *paintState // decoded restore blob, applied after first load
 	pendBad bool
+
+	// M216e (#3944): the window's kind-20 unsaved bit — syncUnsaved diffs
+	// the document's dirty flag once per loop pass and spends the slot-53
+	// syscall only on a transition, never per stamp.
+	unsavedSent bool
 }
 
 type modeID uint8
@@ -252,6 +257,7 @@ func main() {
 // user's rect. False means the window is gone; the caller prints the
 // close markers and exits.
 func (a *app) step() bool {
+	a.syncUnsaved()
 	ev, r, ok := pollEvent()
 	if !ok {
 		if r < 0 {
@@ -281,6 +287,18 @@ func (a *app) step() bool {
 		}
 	}
 	return true
+}
+
+// syncUnsaved pushes the document's dirty flag to the window's slot-53
+// unsaved bit — the rail dot and the seat's close-time Reopen toast read
+// the kind-20 mirror it fans. The diff latch keeps the syscall off the
+// gesture path: a quiet pass costs one compare, a transition one call.
+func (a *app) syncUnsaved() {
+	if a.ta == nil || a.d == nil || a.d.dirty == a.unsavedSent {
+		return
+	}
+	a.unsavedSent = a.d.dirty
+	vi.WinSetUnsaved(a.ta.Win, a.d.dirty)
 }
 
 func (a *app) eventLoop() {

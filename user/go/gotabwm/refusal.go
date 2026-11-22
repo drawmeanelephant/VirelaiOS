@@ -132,6 +132,8 @@ func refusalActionName(action uint8) string {
 		return "restore"
 	case notifyActionDropOpen:
 		return "drop-open"
+	case notifyActionUnsavedReopen:
+		return "reopen"
 	}
 	return "none"
 }
@@ -310,6 +312,11 @@ func runNotifyAction(action uint8, payload string, size uint64) {
 		refusalCopy(payload)
 	case notifyActionDropOpen:
 		dropOpen(payload, size)
+	case notifyActionUnsavedReopen:
+		// M216e (#3944): the dirty-close toast's click IS the reopen —
+		// applyReopen pops the LIFO the close just fed and re-execs the
+		// bin with its state blob, printing its own markers.
+		_ = applyReopen()
 	}
 }
 

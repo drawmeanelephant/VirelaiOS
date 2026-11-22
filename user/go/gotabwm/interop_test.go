@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 
 	"virelai/settings"
@@ -545,5 +546,96 @@ func TestServiceRPCShortFrameDoesNotEndPass(t *testing.T) {
 	}
 	if next != len(frames) {
 		t.Fatalf("drained %d of %d queued frames", next, len(frames))
+	}
+}
+
+// M216e (#3944): closing a tab whose kind-20 unsaved bit is set queues
+// the Reopen action toast — `unsaved: <title>` inside the 24-byte budget
+// — and the toast's own click runs applyReopen, the same LIFO pop
+// ctrl+shift+t takes. A clean tab's close queues nothing.
+func TestCloseDirtyTabOffersReopenToast(t *testing.T) {
+	defer saveSeatState()()
+	resetNotify(t)
+	resetRefusal(t)
+	f := &stateFixture{}
+	f.install(t)
+	l := &sessionWriteLog{}
+	l.install(t)
+
+	if !tabs.OpenTab(9, "Edit") {
+		t.Fatal("OpenTab")
+	}
+	if !tabs.SetTitle(9, "Edit SEED.TXT") {
+		t.Fatal("SetTitle")
+	}
+	if !tabs.SetUnsaved(9, true) {
+		t.Fatal("SetUnsaved")
+	}
+	execs, restore := execRecorder()
+	defer restore()
+
+	if !closeTabByID(9) {
+		t.Fatal("closeTabByID")
+	}
+	if n := notifyCount(); n != 1 {
+		t.Fatalf("notifyCount = %d want the one Reopen toast", n)
+	}
+	toast := notifyQueue[0]
+	if toast.action != notifyActionUnsavedReopen {
+		t.Fatalf("toast action = %d want notifyActionUnsavedReopen", toast.action)
+	}
+	if toast.text != "unsaved: Edit SEED.TXT" {
+		t.Fatalf("toast text = %q want the bounded unsaved line", toast.text)
+	}
+	// The toast's click IS the undo: applyReopen pops the LIFO this
+	// close fed and re-execs the recorded bin.
+	if got := notifyClicked(112, 702); got != 1 {
+		t.Fatalf("notifyClicked = %d want the toast consumed", got)
+	}
+	if len(*execs) != 1 || (*execs)[0] != "GOEDIT.ELF" {
+		t.Fatalf("reopen execs = %v want [GOEDIT.ELF]", *execs)
+	}
+}
+
+// The 24-byte budget is hard: a long title truncates inside it, and a
+// clean close stays silent — no toast, no marker arm.
+func TestCloseDirtyTabToastTruncatesAndCleanStaysSilent(t *testing.T) {
+	defer saveSeatState()()
+	resetNotify(t)
+	resetRefusal(t)
+	f := &stateFixture{}
+	f.install(t)
+	l := &sessionWriteLog{}
+	l.install(t)
+
+	if !tabs.OpenTab(9, "Edit") {
+		t.Fatal("OpenTab")
+	}
+	if !tabs.SetTitle(9, strings.Repeat("T", 40)) {
+		t.Fatal("SetTitle")
+	}
+	if !tabs.SetUnsaved(9, true) {
+		t.Fatal("SetUnsaved")
+	}
+	if !closeTabByID(9) {
+		t.Fatal("closeTabByID")
+	}
+	if n := notifyCount(); n != 1 {
+		t.Fatalf("notifyCount = %d want 1", n)
+	}
+	if got := notifyQueue[0].text; len(got) != refusalTextMax || got[:9] != "unsaved: " {
+		t.Fatalf("toast text = %q (%d bytes) want %d-byte bounded line", got, len(got), refusalTextMax)
+	}
+
+	// A clean close queues nothing.
+	resetNotify(t)
+	if !tabs.OpenTab(10, "Calc") {
+		t.Fatal("OpenTab clean")
+	}
+	if !closeTabByID(10) {
+		t.Fatal("closeTabByID clean")
+	}
+	if n := notifyCount(); n != 0 {
+		t.Fatalf("clean close queued %d toasts", n)
 	}
 }

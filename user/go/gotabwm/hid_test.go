@@ -2078,3 +2078,43 @@ func TestFocusCycleQueuedActions(t *testing.T) {
 		t.Fatalf("freeze must land on the post-cycle tab: %+v", tabs.tabs)
 	}
 }
+
+// M216e (#3944): the kind-20 mirror's unsaved bit (flags bit 12) lands on
+// the tab row through noteUnsavedMirror — set, replayed, released-mirror
+// ignored, cleared — and the marker transition is SetUnsaved's own edge.
+func TestNoteUnsavedMirror(t *testing.T) {
+	saved := tabs
+	defer func() { tabs = saved }()
+	tabs = TabStrip{}
+	if !tabs.OpenTab(3, "Edit") {
+		t.Fatal("OpenTab")
+	}
+	mirror := func(flags uint16) {
+		noteUnsavedMirror(vi.Event{Kind: vi.EvWmWindow, Flags: flags})
+	}
+	// A non-window event is ignored outright.
+	noteUnsavedMirror(vi.Event{Kind: vi.EvCompositeTick, Flags: 3 | 1<<12})
+	if tabs.At(0).Unsaved {
+		t.Fatal("a tick set the unsaved bit")
+	}
+	mirror(3 | 1<<12)
+	if !tabs.At(0).Unsaved {
+		t.Fatal("bit-12 mirror did not mark the tab unsaved")
+	}
+	mirror(3 | 1<<12) // replay: same state, still set
+	if !tabs.At(0).Unsaved {
+		t.Fatal("replayed on-mirror cleared the bit")
+	}
+	// The released mirror belongs to the dying row — it must not clear
+	// the bit the close path still has to read for its Reopen toast.
+	mirror(3 | 1<<12 | 1<<13)
+	if !tabs.At(0).Unsaved {
+		t.Fatal("released mirror cleared the bit before the close read it")
+	}
+	mirror(3)
+	if tabs.At(0).Unsaved {
+		t.Fatal("bit-12 clear mirror did not clear the tab")
+	}
+	// An id with no row is a silent no-op, not a panic.
+	mirror(9 | 1<<12)
+}
