@@ -674,7 +674,7 @@ func handleWmKey(e vi.Event) {
 	// ordinary app keystrokes when the overlay is closed.
 	if notifyCenterOpen && e.Arg0 == 0x29 && e.Flags&(vi.ModCtrl|vi.ModShift|vi.ModAlt) == 0 {
 		notifyCenterOpen = false
-		notifyCenterPainted = false
+		notifyCenterReceipt.arm()
 		vi.ConsoleLine(MarkerNotifyCenterClose)
 		return
 	}

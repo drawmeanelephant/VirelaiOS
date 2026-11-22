@@ -808,10 +808,10 @@ func TestDemoTickLimit(t *testing.T) {
 // both painted AND presented the rail — the line a snapshot anchor may
 // read the rail on (run 10's snap-10-0 flake; claim #3116).
 func TestRailPaintMarkerFiresOnceAfterPaintedPresent(t *testing.T) {
-	savedLatch, savedTabs := railPainted, tabs
-	defer func() { railPainted, tabs = savedLatch, savedTabs }()
+	savedLatch, savedTabs := railReceipt, tabs
+	defer func() { railReceipt, tabs = savedLatch, savedTabs }()
 
-	railPainted = false
+	railReceipt = presentReceipt{}
 	tabs = TabStrip{}
 	// An empty strip paints no rail: silent even when the pass presents.
 	if line, once := railPaintMarker(false, true); once || line != "" {

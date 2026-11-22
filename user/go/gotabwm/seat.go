@@ -982,7 +982,7 @@ func compositePaint(scan []byte, ticks uint64, presents *int) (presented bool) {
 	// the scanout" is only true once the frame carrying it has been
 	// flushed. A gate that keyed a pixel probe on `gotabwm: notify id=`
 	// would be reading a frame the seat had not presented yet.
-	if line, once := notifyPaintMarker(painted > 0 && presented); once {
+	if line, once := notifyPaintMarker(painted > 0, presented); once {
 		vi.ConsoleLine(line)
 	}
 	if line, once := notifyCenterPaintMarker(centerPainted > 0, presented); once {
@@ -1002,8 +1002,10 @@ func compositePaint(scan []byte, ticks uint64, presents *int) (presented bool) {
 	// M82d2 (#1785): AFTER the present, so the fsync'd publish never delays a
 	// frame, and BEFORE the live-mode early return below.
 	flushNotifyHistory()
-	if launch.open && presented && launch.painted {
-		vi.ConsoleLine("gotabwm: launcher presented")
+	// M216g (#3946): once per DISTINCT launcher frame — the open, then
+	// each filter/selection/scroll/row-count change — never per repaint.
+	if launch.open && presented && launch.painted && launch.presentedFrame() {
+		vi.ConsoleLine(MarkerLauncherPresented)
 	}
 	// M197a (#3381): the seat's own a11y outline republishes on the frame
 	// cadence — gated on presented like every chrome marker above, so the
@@ -1325,10 +1327,11 @@ func markRail() {
 		vi.Itoa64(int64(f)) + " space=" + spaces[spaceCur].Name)
 }
 
-// railPainted latches MarkerRailPaint — once per boot is the whole
-// contract: the gate wants the FIRST scanout the rail is already on, and
-// markRail above already narrates every later transition (pre-present).
-var railPainted bool
+// railReceipt is the presentReceipt behind MarkerRailPaint — once per
+// boot is the whole contract: the gate wants the FIRST scanout the rail
+// is already on, and markRail above already narrates every later
+// transition (pre-present).
+var railReceipt presentReceipt
 
 // railPaintMarker returns the presented-rail marker for the first frame
 // that both painted the rail (paintRail wrote pixels) and presented it —
@@ -1336,10 +1339,9 @@ var railPainted bool
 // this line reads a scanout the rail is already on. The n/focus/space
 // payload mirrors markRail's line so the two reads diff cleanly.
 func railPaintMarker(painted, presented bool) (string, bool) {
-	if !painted || !presented || railPainted {
+	if !railReceipt.feed(painted, presented) {
 		return "", false
 	}
-	railPainted = true
 	f, _ := tabs.Focused()
 	return MarkerRailPaint + "n=" + vi.Itoa64(int64(tabs.Count())) +
 		" focus=" + vi.Itoa64(int64(f)) + " space=" + spaces[spaceCur].Name, true

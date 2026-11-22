@@ -70,9 +70,10 @@ type dragSession struct {
 // because exactly one pointer can be held.
 var drag dragSession
 
-// dragGhostPainted latches the presented-ghost marker for THIS drag (the
-// notifyPainted burst discipline); armed at each drag_begin.
-var dragGhostPainted bool
+// dragGhostReceipt is the presentReceipt behind MarkerDragGhost — it
+// latches the presented-ghost marker for THIS drag (the notifyReceipt
+// burst discipline); armed at each drag_begin.
+var dragGhostReceipt presentReceipt
 
 // The protocol's seams — appstate.go's pattern: the vi calls all cross
 // the raw syscall gateway (-ENOSYS off the guest), so the vars are the
@@ -127,7 +128,7 @@ func serveDragBegin(req vi.WmRpc) bool {
 		staged:  raw,
 		catalog: dragCatalog(),
 	}
-	dragGhostPainted = false
+	dragGhostReceipt.arm()
 	// An app starting a gesture is still hosted — the demo close
 	// countdown restarts like every other RPC arm.
 	hostTicksLeft = hostTicks
@@ -420,9 +421,8 @@ func paintDragGhost(scan []byte) int {
 // the scanout, and the marker lands only after the frame carrying it
 // flushed.
 func dragGhostPaintMarker(ghostPainted, presented bool) (string, bool) {
-	if !ghostPainted || !presented || dragGhostPainted {
+	if !dragGhostReceipt.feed(ghostPainted, presented) {
 		return "", false
 	}
-	dragGhostPainted = true
 	return MarkerDragGhost + vi.Itoa64(int64(drag.src)), true
 }

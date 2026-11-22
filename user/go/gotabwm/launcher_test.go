@@ -856,3 +856,59 @@ func TestLauncherVerbDisarmsOnSelectionMove(t *testing.T) {
 		t.Fatal("disarmed verb must not commit")
 	}
 }
+
+// M216g (#3946): `gotabwm: launcher presented` prints once per DISTINCT
+// frame — the open, then each filter/selection/scroll/row-count change —
+// and stays silent on a repaint of identical content. The marker's
+// multiplicity is the gate's snapshot-arm contract, so it is pinned here.
+func TestLauncherPresentedPrintsOncePerDistinctFrame(t *testing.T) {
+	defer saveSeatState()()
+	launch = launcherState{open: true}
+	launch.filtered = []int{0, 1, 2}
+
+	// The open frame earns the marker; an unchanged repaint does not.
+	if !launch.presentedFrame() {
+		t.Fatal("the open frame earned no presented marker")
+	}
+	if launch.presentedFrame() {
+		t.Fatal("a repaint of the same frame reprinted the marker")
+	}
+	// A selection move is a new frame.
+	launch.sel = 1
+	if !launch.presentedFrame() {
+		t.Fatal("a selection change earned no marker")
+	}
+	if launch.presentedFrame() {
+		t.Fatal("the selection frame reprinted on repaint")
+	}
+	// A scroll offset is a new frame.
+	launch.first = 1
+	if !launch.presentedFrame() {
+		t.Fatal("a scroll change earned no marker")
+	}
+	// A filter change is a new frame.
+	launch.filter = "calc"
+	if !launch.presentedFrame() {
+		t.Fatal("a filter change earned no marker")
+	}
+	// A row-count change is a new frame.
+	launch.filtered = launch.filtered[:2]
+	if !launch.presentedFrame() {
+		t.Fatal("a row-count change earned no marker")
+	}
+	// The palette face is a different frame even at identical geometry.
+	launch.palette = true
+	if !launch.presentedFrame() {
+		t.Fatal("a face change earned no marker")
+	}
+	// Dismiss re-arms: the next open prints even on an identical frame.
+	finishLauncher()
+	if launch.presentedMarked {
+		t.Fatal("finishLauncher left the dedup armed")
+	}
+	launch = launcherState{open: true}
+	launch.filtered = []int{0, 1, 2}
+	if !launch.presentedFrame() {
+		t.Fatal("a reopened strip earned no presented marker")
+	}
+}

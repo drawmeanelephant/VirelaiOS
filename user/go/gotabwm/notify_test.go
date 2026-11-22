@@ -25,10 +25,10 @@ func resetNotify(t *testing.T) {
 	saved := notifyQueue
 	savedDropped := notifyDropped
 	savedTick := seatTick
-	savedPainted := notifyPainted
+	savedPainted := notifyReceipt
 	savedCenter := notifyCenter
 	savedCenterOpen := notifyCenterOpen
-	savedCenterPainted := notifyCenterPainted
+	savedCenterPainted := notifyCenterReceipt
 	savedCenterNextID := notifyCenterNextID
 	savedFocusNotifySource := focusNotifySource
 	savedDND := notifyDND
@@ -76,21 +76,21 @@ func resetNotify(t *testing.T) {
 	}
 	notifyQueue = nil
 	notifyDropped = 0
-	notifyPainted = false
+	notifyReceipt = presentReceipt{}
 	seatTick = 0
 	notifyCenter = nil
 	notifyCenterOpen = false
-	notifyCenterPainted = false
+	notifyCenterReceipt = presentReceipt{}
 	notifyCenterNextID = 0
 	focusNotifySource = focusHosted
 	t.Cleanup(func() {
 		notifyQueue = saved
 		notifyDropped = savedDropped
-		notifyPainted = savedPainted
+		notifyReceipt = savedPainted
 		seatTick = savedTick
 		notifyCenter = savedCenter
 		notifyCenterOpen = savedCenterOpen
-		notifyCenterPainted = savedCenterPainted
+		notifyCenterReceipt = savedCenterPainted
 		notifyCenterNextID = savedCenterNextID
 		focusNotifySource = savedFocusNotifySource
 		notifyDND = savedDND
@@ -684,30 +684,29 @@ func TestNotifyPaintMarkerIsOneShotAndOnlyOnAPaintedPresentedTick(t *testing.T) 
 	resetNotify(t)
 
 	// Nothing queued, nothing painted: silent.
-	if line, ok := notifyPaintMarker(false); ok || line != "" {
+	if line, ok := notifyPaintMarker(false, true); ok || line != "" {
 		t.Fatalf("an unpainted tick produced %q,%v", line, ok)
 	}
-	// A paint that was never presented is still not "on the scanout": the
-	// caller passes painted && presented, and this is the presented=false
-	// case reaching the helper as painted=false.
+	// A paint that was never presented is still not "on the scanout":
+	// the helper takes the frame's (painted, presented) pair.
 	notifyPush(7, "copied KNOWN.TXT", 0)
-	if line, ok := notifyPaintMarker(false); ok {
+	if line, ok := notifyPaintMarker(true, false); ok {
 		t.Fatalf("an unpresented tick produced %q", line)
 	}
-	line, ok := notifyPaintMarker(true)
+	line, ok := notifyPaintMarker(true, true)
 	if !ok || line != MarkerNotifyPaint+"7" {
 		t.Fatalf("paint marker = %q,%v want %q7,true", line, ok, MarkerNotifyPaint)
 	}
 	// One-shot within a burst: the toast is painted on every tick of its
 	// life.
-	if _, ok := notifyPaintMarker(true); ok {
+	if _, ok := notifyPaintMarker(true, true); ok {
 		t.Fatal("the paint marker fired twice in one burst")
 	}
 	// A second toast joins the SAME burst and must not re-announce: the user
 	// has already been told a toast reached the screen, and the gate greps
 	// the transition, not a per-tick (or per-toast) flood.
 	notifyPush(9, "second", 0)
-	if _, ok := notifyPaintMarker(true); ok {
+	if _, ok := notifyPaintMarker(true, true); ok {
 		t.Fatal("the paint marker fired again while the first burst was still up")
 	}
 	// Per BURST, not per process: expiry drains the strip and the latch
@@ -718,22 +717,22 @@ func TestNotifyPaintMarkerIsOneShotAndOnlyOnAPaintedPresentedTick(t *testing.T) 
 	if notifyCount() != 0 {
 		t.Fatalf("expiry at tick %d left %d toasts up", NotifyTicks, notifyCount())
 	}
-	if notifyPainted {
-		t.Fatal("the paint-marker latch is still armed on an empty strip")
+	if notifyReceipt.fired {
+		t.Fatal("the paint-marker receipt is still claimed on an empty strip")
 	}
 	// And the next burst names the NEWEST entry, not the oldest.
 	notifyPush(9, "second", 0)
 	notifyPush(10, "third", 0)
-	if line, ok := notifyPaintMarker(true); !ok || line != MarkerNotifyPaint+"10" {
+	if line, ok := notifyPaintMarker(true, true); !ok || line != MarkerNotifyPaint+"10" {
 		t.Fatalf("the first toast of a new burst produced %q,%v want %q10,true", line, ok, MarkerNotifyPaint)
 	}
-	if _, ok := notifyPaintMarker(true); ok {
+	if _, ok := notifyPaintMarker(true, true); ok {
 		t.Fatal("the paint marker fired twice in the new burst")
 	}
 	// A click that empties the strip re-arms it as well.
 	notifyDismissByIndex(0)
 	notifyDismissByIndex(0)
-	if notifyPainted {
+	if notifyReceipt.fired {
 		t.Fatal("clicking the last toast did not re-arm the paint marker")
 	}
 }
