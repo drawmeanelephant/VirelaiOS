@@ -270,17 +270,19 @@ func TestRailMenuRectTracksItsTab(t *testing.T) {
 func TestRailNotifPlateGeometry(t *testing.T) {
 	// The badge sits inside the cell's left band, clear of the close
 	// zone, and drops entirely on a cell too narrow for it.
-	r, ok := railNotifPlate(0, 640, RailHeight)
-	if !ok || r.X <= 4 || r.H != railNotifH || r.Y+r.H > RailHeight {
+	// M216b: the signature is now (slotX, cellRight, stripH) — the lane
+	// origin the pin/icon/badge share, and the cell's right edge.
+	r, ok := railNotifPlate(7, 640, RailHeight)
+	if !ok || r.X != 7 || r.H != railNotifH || r.Y+r.H > RailHeight {
 		t.Fatalf("plate = %+v ok=%v", r, ok)
 	}
 	if r.X+r.W > 640-railCloseW {
 		t.Fatalf("plate intrudes into the close zone: right=%d", r.X+r.W)
 	}
-	if _, ok := railNotifPlate(0, 20, RailHeight); ok {
+	if _, ok := railNotifPlate(7, 20, RailHeight); ok {
 		t.Fatal("a 20px cell must not carry the badge")
 	}
-	if _, ok := railNotifPlate(0, 640, 10); ok {
+	if _, ok := railNotifPlate(7, 640, 10); ok {
 		t.Fatal("a 10px strip must not carry the badge")
 	}
 }

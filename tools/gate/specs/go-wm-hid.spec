@@ -2499,6 +2499,27 @@ if row_accents(Y) >= 40 or row_accents(Y + CH - 1) >= 40:
     sys.exit("a preview card border is already painted before the dwell")
 print("before dwell: no accent card border over cell 1 (preview absent)")
 PY
+# M216b (#3941): the rail cell carries its tab's title. Cell 0 is GOEDIT's
+# "Edit" — the bitmap 'E' row 0 is 0x7f, seven lit px starting at the
+# title origin x=27 (contentX 7 + icon slot 16 + gap 4), band y=7..14.
+# The seat stages no FONTS.TXT, so this is the 8px degrade face; the ink
+# is Ink focused / InkMuted idle, so either token's bytes count.
+vgate_assert 24 snapshot 'hover-24-0.raw' <<'PY'
+import sys
+W, H = 1280, 720
+raw = open(sys.argv[1], "rb").read()
+if len(raw) != W * H * 4:
+    sys.exit("missing full guest scanout")
+inks = {bytes([0xf3, 0xed, 0xe6]), bytes([0xa5, 0x98, 0x8b])}  # Ink / InkMuted BGRA
+lit = 0
+for x in range(27, 34):
+    p = (7 * W + x) * 4
+    if raw[p:p+3] in inks:
+        lit += 1
+if lit < 5:
+    sys.exit("cell 0's 'E' title row has %d ink px at y=7, want >= 5" % lit)
+print("rail title: cell 0 'Edit' glyph present (%d ink px at y=7)" % lit)
+PY
 vgate_assert 24 snapshot 'hover-24-1.raw' <<'PY'
 import sys
 W, H = 1280, 720

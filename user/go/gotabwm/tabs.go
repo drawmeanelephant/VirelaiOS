@@ -76,6 +76,20 @@ const (
 	railPillMarginR = 4
 )
 
+// M216b (#3941): the rail cell's title run and pinned mark. railTitleGap
+// splits the leading icon/badge slot from the text; a cell too narrow
+// for railTitleMinGlyph glyphs of advance draws no title at all.
+// railPinW/H is the design master's rail_pin_0 diamond (seat-shell
+// V1R00: a 10x8 rhombus at the cell's leading slot, #94a3b8 = Muted);
+// railPinGap splits it from the icon/badge slot it displaces.
+const (
+	railTitleGap      = 4
+	railTitleMinGlyph = 3
+	railPinW          = 10
+	railPinH          = 8
+	railPinGap        = 4
+)
+
 // Tab is one strip entry. ID is the kernel window id the client declared.
 type Tab struct {
 	ID     uint32
@@ -1499,27 +1513,17 @@ func paintRail(scan []byte, width, height, stripH int, ts *TabStrip, hover, clos
 	stripH = c.H
 	// Trough behind the cells (matches the blank desktop so a gap is a gap).
 	written := seatFill(c, widgets.Rect{X: 0, Y: 0, W: width, H: stripH}, railGapRGB())
-	cellW := width / n
-	if cellW < 48 {
-		cellW = 48
-	}
+	// M216b (#3941): railLayout owns the cell-width rule and the pill
+	// reservation — the painted rects ARE the hit-test's geometry.
+	l := railLayout(width, n, stripH)
 	focus, _ := ts.Focused()
 	tok := theme.Current
 	railIcons := 0
-	for i := 0; i < n; i++ {
-		x := i * cellW
-		w := cellW
-		if x >= width {
-			break
-		}
-		if x+w > width {
-			w = width - x
-		}
-		if w <= 1 {
-			continue
-		}
+	for i := 0; i < l.n; i++ {
+		x, w := l.rect(i).X, l.rect(i).W
+		t := ts.At(i)
 		cell := widgets.Rect{X: x + 1, Y: 0, W: w - 1, H: stripH}
-		if ts.At(i).ID == focus {
+		if t.ID == focus {
 			// §2.3.6: the selected cell is a Selection fill carrying the
 			// 3px Accent marker the Zig tab chrome drew as a 3x22 bar.
 			written += seatFill(c, cell, tok.Selection)
@@ -1537,7 +1541,7 @@ func paintRail(scan []byte, width, height, stripH int, ts *TabStrip, hover, clos
 		// M71e (#1564): the frozen badge, inset at the cell's right edge and
 		// painted after the cell fill so it reads on both idle and focused
 		// cells. A badge only — nothing about the tab's behaviour changes.
-		if ts.At(i).Frozen {
+		if t.Frozen {
 			bw := railBadgeW
 			if bw > w-2 {
 				bw = w - 2
@@ -1546,16 +1550,31 @@ func paintRail(scan []byte, width, height, stripH int, ts *TabStrip, hover, clos
 				written += seatFill(c, widgets.Rect{X: x + w - 1 - bw, Y: railBadgeInset, W: bw, H: stripH - 2*railBadgeInset}, railFrozenRGB())
 			}
 		}
+		// M216b (#3941): the pinned mark — the design master's rail_pin_0
+		// diamond at the leading content slot — and contentX, the lane's
+		// origin the badge, icon and title all measure from. The diamond
+		// displaces them right by railPinW+railPinGap when it paints.
+		contentX := x + 1 + seatMarkerW + 3
+		if t.Pinned {
+			if pr, ok := railPinSlot(x, w, stripH); ok {
+				draw.FillPolygon(c, railPinPoints(pr), draw.Opaque(tok.Muted))
+				written++
+				contentX = pr.X + railPinW + railPinGap
+			}
+		}
 		// M190c (#3238): the unread badge — the count of this tab's
 		// undismissed center entries posted since it last took focus
 		// (railBadgeCount). A small Danger plate at the cell's left edge
 		// carrying the digit; it clears when the tab takes focus again,
 		// not when the toast fades.
-		if n := railBadgeCount(ts.At(i).ID); n > 0 {
-			if r, ok := railNotifPlate(x, w, stripH); ok {
+		var badgeR widgets.Rect
+		badge := false
+		if bn := railBadgeCount(t.ID); bn > 0 {
+			if r, ok := railNotifPlate(contentX, x+w, stripH); ok {
+				badgeR, badge = r, true
 				draw.FillRoundedRect(c, r, radiusControl, draw.Opaque(tok.Danger))
 				written += seatArea(c, r)
-				digit := vi.Itoa64(int64(n))
+				digit := vi.Itoa64(int64(bn))
 				seatText(c, cell, r.X+(r.W-seatTextWidth(digit, seatSmallPx))/2,
 					r.Y+(r.H-8)/2, seatSmallPx, digit, tok.OnAccent)
 				written++
@@ -1565,8 +1584,10 @@ func paintRail(scan []byte, width, height, stripH int, ts *TabStrip, hover, clos
 		// glyph, and the identifier the cells never had. The unread badge
 		// owns this slot when it posts; a bin with no catalog row (or a
 		// share without the raster) leaves the cell exactly as before.
-		if w >= railIconMinW && railBadgeCount(ts.At(i).ID) == 0 {
-			ir := widgets.Rect{X: x + 1 + seatMarkerW + 3,
+		iconSlot := w >= railIconMinW && railBadgeCount(t.ID) == 0 &&
+			contentX+railIconPx <= railContentRight(x, w, stripH)
+		if iconSlot {
+			ir := widgets.Rect{X: contentX,
 				Y: (stripH - railIconPx) / 2,
 				W: railIconPx, H: railIconPx}
 			spun := false
@@ -1577,7 +1598,7 @@ func paintRail(scan []byte, width, height, stripH int, ts *TabStrip, hover, clos
 			// swaps the placeholder id for the live window's and the
 			// icon returns; an absent sheet keeps the icon the whole
 			// wait.
-			if reexecPendingID(ts.At(i).ID) {
+			if reexecPendingID(t.ID) {
 				spin := appkit.Spinner{R: ir, Sheet: art.SpinnerArc,
 					Frame: int(compositeClock)}
 				if spin.Frames() > 0 {
@@ -1595,13 +1616,38 @@ func paintRail(scan []byte, width, height, stripH int, ts *TabStrip, hover, clos
 				}
 			}
 			if !spun {
-				if name := iconForBin(ts.At(i).Bin); name != "" {
+				if name := iconForBin(t.Bin); name != "" {
 					if ic := art.Load(name); ic != nil {
 						draw.BlitScaled(c, ic, ir)
 						written++
 						railIcons++
 					}
 				}
+			}
+		}
+		// M216b (#3941): the title run — drawn after the icon/badge slot,
+		// clipped before the close zone, seatFitText-truncated, and
+		// skipped when the cell cannot hold three glyphs. The focused
+		// cell takes Ink, the rest InkMuted.
+		if title := railTitleText(t); title != "" {
+			clipRight := railContentRight(x, w, stripH)
+			titleX := contentX + railTitleGap
+			switch {
+			case badge:
+				titleX = badgeR.X + badgeR.W + railTitleGap
+			case iconSlot:
+				titleX = contentX + railIconPx + railTitleGap
+			}
+			maxW := clipRight - titleX
+			if maxW >= railTitleProbe(title) {
+				ink := tok.InkMuted
+				if t.ID == focus {
+					ink = tok.Ink
+				}
+				seatText(c, widgets.Rect{X: titleX, Y: 0, W: maxW, H: stripH},
+					titleX, (stripH-8)/2, seatTextPx,
+					seatFitText(title, maxW, seatTextPx), ink)
+				written++
 			}
 		}
 		// M79b (#1705): the close glyph — VirelaiChrome's window-close,
@@ -1623,6 +1669,21 @@ func paintRail(scan []byte, width, height, stripH int, ts *TabStrip, hover, clos
 				x+w-railCloseW+railCloseInset, (stripH-8)/2)
 			written++
 		}
+	}
+	// M216b (#3941): the cell lane ends at avail; the pill strip keeps
+	// the LAST cell's face behind the pills — the M151b "gap shows the
+	// cell behind" read, and the same answer railCellAt's remainder
+	// rule gives those columns. An idle last cell is BtnIdle, a focused
+	// one Selection, a hovered one railHoverRGB.
+	if l.avail < width && l.n > 0 {
+		lt := ts.At(l.n - 1)
+		echo := railIdleRGB()
+		if lt.ID == focus {
+			echo = tok.Selection
+		} else if l.n-1 == hover {
+			echo = railHoverRGB()
+		}
+		written += seatFill(c, widgets.Rect{X: l.avail, Y: 0, W: width - l.avail, H: stripH}, echo)
 	}
 	if railIcons > 0 && !railIconsMarked {
 		railIconsMarked = true
@@ -1658,22 +1719,79 @@ func paintRail(scan []byte, width, height, stripH int, ts *TabStrip, hover, clos
 }
 
 // railNotifPlate is the M190c badge's rect inside one painted cell: a
-// plate against the focus marker's slot, vertically centred, wide enough
-// for the single digit the NotifyCenterMax bound allows. False when the
-// cell is too narrow to carry it left of the close zone — the count
-// still reports on the marker line, only the pill drops.
+// plate against the content lane's origin, vertically centred, wide
+// enough for the single digit the NotifyCenterMax bound allows. False
+// when the lane is too narrow to carry it left of the close zone — the
+// count still reports on the marker line, only the pill drops.
 const (
 	railNotifH    = 14
 	railNotifPadX = 4
 )
 
-func railNotifPlate(cellX, cellW, stripH int) (widgets.Rect, bool) {
+func railNotifPlate(slotX, cellRight, stripH int) (widgets.Rect, bool) {
 	w := seatTextWidth("8", seatSmallPx) + 2*railNotifPadX
-	x := cellX + 1 + seatMarkerW + 3
-	if stripH < railNotifH || x+w > cellX+cellW-railCloseW {
+	x := slotX
+	if stripH < railNotifH || x+w > cellRight-railCloseW {
 		return widgets.Rect{}, false
 	}
 	return widgets.Rect{X: x, Y: (stripH - railNotifH) / 2, W: w, H: railNotifH}, true
+}
+
+// railContentRight is the leading lane's right bound: the close zone's
+// left edge when the glyph paints, else the cell's last painted column.
+func railContentRight(x, w, stripH int) int {
+	if w >= railCloseW && stripH >= 8 {
+		return x + w - railCloseW
+	}
+	return x + w - 1
+}
+
+// railPinSlot is the M216b pinned mark's rect: the design master's
+// rail_pin_0 diamond inscribed in a railPinW x railPinH box at the
+// cell's leading content slot, vertically centred. False when the slot
+// cannot hold it left of the close zone — narrow cells stay unmarked
+// rather than paint a mark over the close-x.
+func railPinSlot(x, w, stripH int) (widgets.Rect, bool) {
+	sx := x + 1 + seatMarkerW + 3
+	if stripH < railPinH+2 || sx+railPinW > railContentRight(x, w, stripH) {
+		return widgets.Rect{}, false
+	}
+	return widgets.Rect{X: sx, Y: (stripH - railPinH) / 2, W: railPinW, H: railPinH}, true
+}
+
+// railPinPoints inscribes the master's diamond in r — top, right,
+// bottom, left vertices, the SVG's M/L path order.
+func railPinPoints(r widgets.Rect) []draw.Point {
+	cx, cy := r.X+r.W/2, r.Y+r.H/2
+	return []draw.Point{
+		{X: cx, Y: r.Y},
+		{X: r.X + r.W, Y: cy},
+		{X: cx, Y: r.Y + r.H},
+		{X: r.X, Y: cy},
+	}
+}
+
+// railTitleText is the cell's title run: the declared title, else the
+// executable, else nothing (an empty cell draws no run).
+func railTitleText(t Tab) string {
+	if s := strings.TrimSpace(t.Title); s != "" {
+		return s
+	}
+	return strings.TrimSpace(t.Bin)
+}
+
+// railTitleProbe is the advance of the title's first
+// railTitleMinGlyph runes — the narrowest cell that still earns a
+// title. A shorter title probes its own full width.
+func railTitleProbe(s string) int {
+	n := 0
+	for i := range s {
+		if n == railTitleMinGlyph {
+			return seatTextWidth(s[:i], seatTextPx)
+		}
+		n++
+	}
+	return seatTextWidth(s, seatTextPx)
 }
 
 // paintRailMenu paints the open M190c button-2 menu over the rail — the
@@ -1738,4 +1856,83 @@ func spacePillRects(width, stripH int) ([MaxSpaces]widgets.Rect, int) {
 		x -= railPillGap
 	}
 	return rects, spaceN
+}
+
+// railCells is railLayout's answer: the cell lane's geometry — cellW
+// (avail/n floored at 48), avail (the lane's right edge; the space pills
+// own [avail, width) while they are up), stripH, and n, the count of
+// painted cells. Cells are a PREFIX of the strip: cell i sits at
+// i*cellW and is painted only while its slot fits inside avail, so rect
+// derives every cell on demand and any n the callers pass stays honest.
+// With one space avail == width and the geometry is the old full-width
+// rule byte for byte.
+type railCells struct {
+	cellW  int
+	avail  int
+	stripH int
+	n      int
+}
+
+// rect is cell i's painted slot, or the zero rect when i is past the
+// painted prefix or its slot would cross avail.
+func (l railCells) rect(i int) widgets.Rect {
+	if i < 0 || i >= l.n {
+		return widgets.Rect{}
+	}
+	x := i * l.cellW
+	w := l.cellW
+	if x+w > l.avail {
+		w = l.avail - x
+	}
+	return widgets.Rect{X: x, Y: 0, W: w, H: l.stripH}
+}
+
+// railLayout is the ONLY place the rail's cell-width rule lives:
+// avail/n, floored at 48, the last cell clamped to avail. paintRail
+// draws exactly these rects and hid.go's railCellAt / railCloseZoneAt /
+// railMenuRect hit-test against them, so paint and hit-test agree per
+// pixel column. avail is width minus the pill strip's width — the
+// leftmost pill's edge from spacePillRects, the same function the pills
+// paint and spacePillAt hits from — so no pill can cover a cell or a
+// close zone. One space reserves nothing.
+func railLayout(width, n, stripH int) railCells {
+	var out railCells
+	out.avail = width
+	out.stripH = stripH
+	if n <= 0 || width <= 0 {
+		return out
+	}
+	if pills, pn := spacePillRects(width, stripH); pn > 0 {
+		minX := width
+		for i := 0; i < pn; i++ {
+			if pills[i].W > 0 && pills[i].X < minX {
+				minX = pills[i].X
+			}
+		}
+		// minX == 0 means the pills truncated across the whole rail —
+		// degenerate; keep the full-width lane rather than paint no
+		// cells under a rail that is all pills.
+		if minX > 0 && minX < out.avail {
+			out.avail = minX
+		}
+	}
+	out.cellW = out.avail / n
+	if out.cellW < 48 {
+		out.cellW = 48
+	}
+	for i := 0; i < n; i++ {
+		x := i * out.cellW
+		if x >= out.avail {
+			break
+		}
+		w := out.cellW
+		if x+w > out.avail {
+			w = out.avail - x
+		}
+		if w <= 1 {
+			break
+		}
+		out.n = i + 1
+	}
+	return out
 }

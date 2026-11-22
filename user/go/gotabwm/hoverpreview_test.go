@@ -495,3 +495,49 @@ func TestHoverPreviewOneCardOnly(t *testing.T) {
 		}
 	}
 }
+
+// M216b (#3941): the card anchors under the cell's PAINTED left edge —
+// railLayout's rect — so the pill reservation moves the anchor with the
+// paint and hit tests, and an unpainted tail cell shows no card.
+func TestHoverPreviewAnchorsToRailLayout(t *testing.T) {
+	defer saveSeatState()()
+	stubSeatRegistry(t, nil)
+	newHoverPreviewFixture(t, 3, 4, 5)
+	resetSpaces()
+	spaceN, spaceCur = 3, 0
+
+	for cell := 0; cell < 3; cell++ {
+		railHover = cell
+		seatTick = 5
+		hoverPreviewPointer()
+		hoverPreviewTick()
+		seatTick = 7
+		hoverPreviewTick()
+		rect, ok := hoverPreviewRect(1280, 720)
+		if !ok {
+			t.Fatalf("cell %d: no card rect", cell)
+		}
+		l := railLayout(1280, 3, RailHeight)
+		if want := l.rect(cell).X; rect.X != want {
+			t.Fatalf("cell %d: card x=%d want layout x=%d", cell, rect.X, want)
+		}
+		hoverPreview.visible = false
+		hoverPreview.cell = -1
+	}
+
+	// Single space: byte-identical anchor — cell 2 at 2*(1280/3).
+	spaceN, spaceCur = 1, 0
+	railHover = 2
+	seatTick = 5
+	hoverPreviewPointer()
+	hoverPreviewTick()
+	seatTick = 7
+	hoverPreviewTick()
+	rect, ok := hoverPreviewRect(1280, 720)
+	if !ok {
+		t.Fatal("single-space: no card rect")
+	}
+	if want := 2 * (1280 / 3); rect.X != want {
+		t.Fatalf("single-space card x=%d want %d", rect.X, want)
+	}
+}
