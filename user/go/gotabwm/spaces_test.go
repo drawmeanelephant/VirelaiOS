@@ -583,4 +583,13 @@ func TestHandleWmPointerSpacePillSwitches(t *testing.T) {
 	if railDragFrom != -1 || len(closed) != 0 {
 		t.Fatalf("live-pill click leaked: drag=%d closed=%v", railDragFrom, closed)
 	}
+	// M216d (#3943): a MIDDLE press on the pill is not the cell close —
+	// the pill keeps its prior fate (no switch, no close, no drag).
+	prevPtrButtons = 0
+	handleWmPointer(ptrEvent(cx, cy, hidBtnMiddle))
+	handleWmPointer(ptrEvent(cx, cy, 0))
+	if spaceCur != 1 || len(closed) != 0 || railDragFrom != -1 {
+		t.Fatalf("pill middle-click leaked: cur=%d closed=%v drag=%d",
+			spaceCur, closed, railDragFrom)
+	}
 }

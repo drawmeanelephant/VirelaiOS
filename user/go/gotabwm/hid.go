@@ -1288,14 +1288,13 @@ func handleWmPointer(e vi.Event) {
 		// M216d (#3943): a middle press on a rail cell closes that tab
 		// through the close-x's own seam — the whole cell is the target,
 		// not just the 16 px zone. A space pill keeps its left-click
-		// meaning and a middle press on it does nothing; off the rail
-		// the sample keeps its M124e primary-paste fate below.
-		if _, ok := spacePillAt(px, py, vi.ScanoutWidth, RailHeight); ok {
-			return
-		}
-		if i, ok := railCellAt(px, py, vi.ScanoutWidth, tabs.Count(), RailHeight); ok {
-			applyRailClose(i)
-			return
+		// meaning and the client area keeps its M124e primary-paste
+		// fate: both fall through untouched.
+		if _, onPill := spacePillAt(px, py, vi.ScanoutWidth, RailHeight); !onPill {
+			if i, ok := railCellAt(px, py, vi.ScanoutWidth, tabs.Count(), RailHeight); ok {
+				applyRailClose(i)
+				return
+			}
 		}
 	}
 	if down {
