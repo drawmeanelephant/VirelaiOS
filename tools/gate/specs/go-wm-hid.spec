@@ -1090,6 +1090,14 @@ vgate_assert 08 serial-contains 'gotabwm: chord ctrl+shift+p owner=seat scope=se
 vgate_assert 08 serial-contains 'gotabwm: chord ctrl+s owner=GOEDIT.ELF scope=app/GOEDIT.ELF'
 vgate_assert 08 serial-contains 'gotabwm: chord ctrl+shift+s owner=seat scope=seat'
 vgate_assert 08 serial-contains 'gotabwm: chord ctrl+shift+h owner=GOSET.ELF scope=app/GOSET.ELF'
+# M216d (#3943): the six new seat rows dump with the table — the
+# triple-modifier spellings the sash nudge and move-to-space chords own.
+vgate_assert 08 serial-contains 'gotabwm: chord ctrl+shift+alt+left owner=seat scope=seat'
+vgate_assert 08 serial-contains 'gotabwm: chord ctrl+shift+alt+right owner=seat scope=seat'
+vgate_assert 08 serial-contains 'gotabwm: chord ctrl+shift+alt+up owner=seat scope=seat'
+vgate_assert 08 serial-contains 'gotabwm: chord ctrl+shift+alt+down owner=seat scope=seat'
+vgate_assert 08 serial-contains 'gotabwm: chord ctrl+shift+alt+pageup owner=seat scope=seat'
+vgate_assert 08 serial-contains 'gotabwm: chord ctrl+shift+alt+pagedown owner=seat scope=seat'
 # The one-seat probe still ran after the prologue; the seat still came up.
 vgate_assert 08 serial-contains 'gotabwm: seat-taken'
 vgate_assert 08 serial-contains 'dogfood: seat'
@@ -2571,4 +2579,122 @@ def row_accents(y):
 if row_accents(Y) >= 40 or row_accents(Y + CH - 1) >= 40:
     sys.exit("the dismissed card is still painted")
 print("after dismissal: the card border is gone from the presented scanout")
+PY
+
+# ---------------------------------------------------------------------------
+# Run 25 (M216d / #3943): the pointer-only gestures' keyboard/pointer
+# halves that run 16 does not already pin.
+#
+# Same three-client boot as runs 07/16: the last-declared client owns rail
+# cell 2 on arrival, so cell 0 is an UNFOCUSED tab — the honest target for
+# a close that must not move focus.
+#
+#   pointer (after 'rail n=3'):  100,10,mc — a MIDDLE press on cell 0's
+#     body (x=100 is nowhere near the 16px close-x zone, and middle is
+#     not left: no rail-click, no drag arm, no focus change). The press
+#     closes cell 0's tab through applyRailClose — the close-x's own
+#     seam, so 'host close id=' / 'tab close id=' and 'rail n=2' follow.
+#   chords  (after 'rail n=2'):  ctrl-shift-n pins the focused tab (the
+#     M216d toggle's first half), ctrl-shift-n again UNPINS it through
+#     the rail menu's own path — 'pin id=<focus> on' then ' off', and
+#     the order line's pin bits all read 0 afterwards.
+vgate_run 25 -- \
+    --screen '$RUN_DIR/screen-25' \
+    --via-virtio \
+    --script '$RUN_DIR/script-m79f.txt' \
+    --script2 '$RUN_DIR/script2-m79f.txt' \
+    --script2-after 'gotabwm: win focus' \
+    --pointer-virtio '100,10,mc' \
+    --pointer-virtio-after 'gotabwm: rail n=3' \
+    --input-chords 'ctrl-shift-n,ctrl-shift-n' \
+    --input-chords-after 'gotabwm: rail n=2' \
+    --script3 '$RUN_DIR/script3.txt' \
+    --script3-after 'wm: unregistered, shim resumed' \
+    --script-expect 'rx-gotabwm-hid-ok' --timeout 420
+
+vgate_assert 25 serial-contains 'VirelaiOS kernel has seized control.'
+vgate_assert 25 serial-contains 'exec: loaded GOTABWM.ELF'
+vgate_assert 25 serial-contains 'exec: loaded GOEDIT.ELF'
+vgate_assert 25 serial-contains 'exec: loaded GOTERM.ELF'
+vgate_assert 25 serial-contains 'exec: loaded GOCALC.ELF'
+vgate_assert 25 serial-contains 'gotabwm: registered'
+vgate_assert 25 serial-contains 'gotabwm: rail n=3'
+# M216d: the middle press closes through the shared close pair — and a
+# middle press is never a rail-click (that marker is left-button only).
+vgate_assert 25 serial-contains 'gotabwm: host close id='
+vgate_assert 25 serial-contains 'gotabwm: tab close id='
+vgate_assert 25 serial-contains 'gotabwm: rail n=2'
+# The toggle: pin on, then the SAME chord unpins off.
+vgate_assert 25 serial-contains 'gotabwm: pin id='
+vgate_assert 25 serial-contains ' on'
+vgate_assert 25 serial-contains ' off'
+vgate_assert 25 serial-contains 'gotabwm: close'
+vgate_assert 25 serial-contains 'gotabwm OK'
+vgate_assert 25 serial-contains 'wm: unregistered, shim resumed'
+vgate_assert 25 serial-contains 'rx-gotabwm-hid-ok'
+vgate_assert 25 serial-absent 'gotabwm: rail-click id='
+vgate_assert 25 serial-absent '[EXC] parking:'
+vgate_assert 25 serial-absent 'exited status=139'
+vgate_assert 25 python <<'PY'
+import os, re, sys
+ser = open(os.environ["VG_SER"], errors="replace").read().splitlines()
+
+def first_after(prefix, start=0):
+    for i in range(start, len(ser)):
+        if ser[i].startswith(prefix):
+            return i
+    sys.exit("missing %s after %d" % (prefix, start))
+
+def first_match(rx, start=0):
+    for i in range(start, len(ser)):
+        m = rx.match(ser[i])
+        if m:
+            return i, m
+    sys.exit("missing /%s/ after %d" % (rx.pattern, start))
+
+rail3_re = re.compile(r"^gotabwm: rail n=3 focus=(\d+) space=\d+$")
+order_re = re.compile(
+    r"^gotabwm: order ids=(\d+),(\d+) pin=(\d),(\d) focus=(\d+)$")
+open_re = re.compile(r"^gotabwm: tab open id=(\d+)$")
+
+rail3_i, rail3_m = first_match(rail3_re, 0)
+focus_id = rail3_m.group(1)
+# Cell 0's tab is the FIRST tab-open on the seat's declare chain — the
+# strip order, not the clients' own marker order (the execs race, run
+# 07's note). The middle click must close exactly that id.
+opened = []
+for l in ser:
+    m = open_re.match(l)
+    if m:
+        opened.append(m.group(1))
+    if len(opened) == 3:
+        break
+if len(set(opened)) != 3:
+    sys.exit("seat tab-open chain is not three distinct ids: %s" % opened)
+cell0_id = opened[0]
+if cell0_id == focus_id:
+    sys.exit("cell 0 holds the focused tab — the leg needs an unfocused "
+             "close target")
+host_i = first_after("gotabwm: host close id=" + cell0_id, rail3_i)
+close_i = first_after("gotabwm: tab close id=" + cell0_id, host_i)
+rail2_i = first_after("gotabwm: rail n=2", close_i)
+# Between the rail and the close there is no focus move and no rail
+# click — a middle press closes a CELL, it does not select it.
+for i in range(rail3_i, host_i):
+    if ser[i].startswith(("gotabwm: rail-click id=", "gotabwm: tab focus id=",
+                          "gotabwm: host focus id=")):
+        sys.exit("middle-click moved focus before the close (line %d: %s)"
+                 % (i, ser[i]))
+# The toggle pair names the focused tab: on, then off, in that order.
+pin_on_i = first_after("gotabwm: pin id=" + focus_id + " on", rail2_i)
+pin_off_i = first_after("gotabwm: pin id=" + focus_id + " off", pin_on_i)
+# The order line after the unpin carries every pin bit down.
+o_i, o_m = first_match(order_re, pin_off_i)
+if o_m.group(3) != "0" or o_m.group(4) != "0" or o_m.group(5) != focus_id:
+    sys.exit("post-unpin order line wrong: %s" % o_m.group(0))
+if not (rail3_i < host_i < close_i < rail2_i < pin_on_i < pin_off_i < o_i):
+    sys.exit("leg order wrong: rail3@%d close@%d n2@%d on@%d off@%d order@%d" % (
+        rail3_i, host_i, rail2_i, pin_on_i, pin_off_i, o_i))
+print("M216d: mc closed cell0 id=%s (unfocused), toggle on@%d off@%d "
+      "focus %s" % (cell0_id, pin_on_i, pin_off_i, focus_id))
 PY

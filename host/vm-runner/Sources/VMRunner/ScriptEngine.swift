@@ -237,6 +237,14 @@ func macChord(_ token: String) -> (UInt16, NSEvent.ModifierFlags, String)? {
     case "ctrl-alt-right": return (0x7C, [.control, .option], "\u{F703}")
     case "ctrl-alt-pageup": return (0x74, [.control, .option], "\u{F72C}")
     case "ctrl-alt-pagedown": return (0x79, [.control, .option], "\u{F72D}")
+    // M216d (#3943): the seat's sash-nudge and move-to-space chords — the
+    // M137a/c ctrl-alt nav block one modifier deeper (view path).
+    case "ctrl-shift-alt-left": return (0x7B, [.control, .shift, .option], "\u{F702}")
+    case "ctrl-shift-alt-right": return (0x7C, [.control, .shift, .option], "\u{F703}")
+    case "ctrl-shift-alt-up": return (0x7E, [.control, .shift, .option], "\u{F700}")
+    case "ctrl-shift-alt-down": return (0x7D, [.control, .shift, .option], "\u{F701}")
+    case "ctrl-shift-alt-pageup": return (0x74, [.control, .shift, .option], "\u{F72C}")
+    case "ctrl-shift-alt-pagedown": return (0x79, [.control, .shift, .option], "\u{F72D}")
     case "up": return (0x7E, [], "\u{F700}")
     case "down": return (0x7D, [], "\u{F701}")
     case "left": return (0x7B, [], "\u{F702}")

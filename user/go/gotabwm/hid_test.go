@@ -241,14 +241,23 @@ func TestHandleWmKeyPinFocused(t *testing.T) {
 	if !ok || id != 4 {
 		t.Fatalf("focus after pin = %d ok=%v want 4", id, ok)
 	}
-	// Already pinned: Pin() is false, no second mutation.
+	// M216d (#3943): the chord is a TOGGLE through the rail menu's path —
+	// the second press unpins. Unpin clears the bit and re-partitions;
+	// it does not restore the pre-pin position, so the order stays
+	// [4,3] with every pin bit down.
 	handleWmKey(vi.Event{
 		Kind:  vi.EvWmKey,
 		Flags: vi.ModCtrl | vi.ModShift,
 		Arg0:  uint32(hidUsageN),
 	})
-	if tabs.At(1).Pinned {
-		t.Fatal("second ctrl-shift-n must not pin the other tab")
+	if tabs.At(0).Pinned || tabs.At(0).ID != 4 {
+		t.Fatalf("unpin left the tab pinned or moved: %+v", tabs.At(0))
+	}
+	if tabs.At(1).Pinned || tabs.At(1).ID != 3 {
+		t.Fatalf("unpin moved the other tab: %+v", tabs.At(1))
+	}
+	if id, ok := tabs.Focused(); !ok || id != 4 {
+		t.Fatalf("focus after unpin = %d ok=%v want 4", id, ok)
 	}
 }
 
@@ -826,6 +835,138 @@ func TestHandleWmPointerCloseXClosesWithoutFocusOrDrag(t *testing.T) {
 	}
 	if railDragFrom != -1 {
 		t.Fatalf("close-x armed a drag: %d", railDragFrom)
+	}
+}
+
+// M216d (#3943): a middle press on a rail cell closes that tab through
+// applyRailClose — the close-x's own seam, so the same `host close` /
+// `tab close` markers and the same no-focus-change rule. The whole cell
+// is the target (not just the 16 px zone), a middle press on the client
+// area keeps its M124e primary-paste fate, and no drag arms.
+func TestHandleWmPointerMiddleClickClosesRailCell(t *testing.T) {
+	saved := tabs
+	savedHosted := hostedApp
+	savedBtn := prevPtrButtons
+	savedDrag := railDragFrom
+	savedHover := railHover
+	savedSash := sashDragging
+	savedContent := contentDown
+	closed := []uint32{}
+	raises := 0
+	prevClose, prevRaise := closeWin, focusRaise
+	closeWin = func(id uint32) int64 {
+		closed = append(closed, id)
+		return 0
+	}
+	focusRaise = func(id uint32) int64 {
+		raises++
+		return 0
+	}
+	defer func() {
+		tabs = saved
+		hostedApp = savedHosted
+		prevPtrButtons = savedBtn
+		railDragFrom = savedDrag
+		railHover = savedHover
+		sashDragging = savedSash
+		contentDown = savedContent
+		closeWin, focusRaise = prevClose, prevRaise
+	}()
+	tabs = TabStrip{}
+	hostedApp = 0
+	prevPtrButtons = 0
+	railDragFrom = -1
+	railHover = -1
+	sashDragging = false
+	contentDown = false
+	if !tabs.OpenTab(3, "A") || !tabs.OpenTab(4, "B") {
+		t.Fatal("OpenTab")
+	}
+	_ = tabs.FocusTab(4)
+	// The cell BODY — x=320 is nowhere near the close-x zone — still
+	// closes: middle-click's target is the cell, not the glyph.
+	handleWmPointer(ptrEvent(320, 10, hidBtnMiddle))
+	if len(closed) != 1 || closed[0] != 3 {
+		t.Fatalf("middle-click on cell 0 closed %v want [3]", closed)
+	}
+	if raises != 0 {
+		t.Fatalf("middle-click close must not focus: raised %d time(s)", raises)
+	}
+	if tabs.Count() != 1 || tabs.At(0).ID != 4 {
+		t.Fatalf("strip after middle-click holds %+v, want only id 4", tabs.At(0))
+	}
+	if id, _ := tabs.Focused(); id != 4 {
+		t.Fatalf("focus moved to %d; middle-click close must not change focus", id)
+	}
+	if railDragFrom != -1 || sashDragging {
+		t.Fatal("middle-click must not arm a rail drag or a sash")
+	}
+	// Client area: the middle press keeps its content fate — no close,
+	// no rail state.
+	handleWmPointer(ptrEvent(320, 360, hidBtnMiddle))
+	handleWmPointer(ptrEvent(320, 360, 0))
+	if len(closed) != 1 {
+		t.Fatalf("client-area middle press closed %v", closed)
+	}
+	if tabs.Count() != 1 {
+		t.Fatal("client-area middle press mutated the strip")
+	}
+}
+
+// M216d (#3943): the sash drag's keyboard half. ctrl+alt+shift+arrows
+// step the focused pane's NEAREST ancestor sash of that orientation by
+// 32 px through applySashDrag — the same clamp/marker/commit the pointer
+// release takes. A split-free strip and a missing orientation are honest
+// no-ops.
+func TestSashNudgeChord(t *testing.T) {
+	defer saveSeatState()()
+	openTwoTabs(t)
+	launch.open = false
+	prevPtrButtons = 0
+	chord := func(usage uint8) {
+		handleWmKey(vi.Event{
+			Kind:  vi.EvWmKey,
+			Flags: vi.ModCtrl | vi.ModShift | vi.ModAlt,
+			Arg0:  uint32(usage),
+		})
+	}
+	// No tree: every nudge is a silent no-op.
+	chord(hidUsageLeft)
+	chord(hidUsageUp)
+	if tabs.treeN != 0 {
+		t.Fatal("a split-free strip must not grow a tree on a nudge")
+	}
+	_, restore := rectRecorder()
+	defer restore()
+	if !applySplit(SplitVert) {
+		t.Fatal("applySplit v")
+	}
+	// Vertical sash: midpoint x=640 -> 608 on sash-left, back on right.
+	chord(hidUsageLeft)
+	if tabs.tree[0].sash != 608 {
+		t.Fatalf("sash-left: sash = %d want 608", tabs.tree[0].sash)
+	}
+	chord(hidUsageRight)
+	if tabs.tree[0].sash != 640 {
+		t.Fatalf("sash-right: sash = %d want 640", tabs.tree[0].sash)
+	}
+	// No horizontal ancestor: up/down stay silent.
+	chord(hidUsageUp)
+	chord(hidUsageDown)
+	if tabs.tree[0].sash != 640 {
+		t.Fatalf("h nudges moved the vertical sash: %d", tabs.tree[0].sash)
+	}
+	// Rotate the root to horizontal: midpoint y=360 -> 328 on sash-up.
+	if !tabs.RotatePane(uint32(vi.ScanoutWidth), uint32(vi.ScanoutHeight)) {
+		t.Fatal("RotatePane")
+	}
+	chord(hidUsageUp)
+	if tabs.tree[0].sash != 328 {
+		t.Fatalf("sash-up: sash = %d want 328", tabs.tree[0].sash)
+	}
+	chord(hidUsageDown)
+	if tabs.tree[0].sash != 360 {
+		t.Fatalf("sash-down: sash = %d want 360", tabs.tree[0].sash)
 	}
 }
 
@@ -1474,7 +1615,9 @@ func TestChordSummaryCounts(t *testing.T) {
 	// M190e (#3240): n=69→70, seat=39→40 — the lock chord.
 	// M191a (#3242): n=70→71, app=18→19 — GOTERM's scrollback-find row.
 	// #3701: n=72→76, app=20→24 — GOCALC's four radix-row chords.
-	want := "gotabwm: chords n=76 seat=40 kernel=12 app=24"
+	// M216d (#3943): n=76→82, seat=40→46 — the sash-nudge quartet and
+	// the move-to-space pair.
+	want := "gotabwm: chords n=82 seat=46 kernel=12 app=24"
 	if got != want {
 		t.Fatalf("chordSummary = %q want %q", got, want)
 	}

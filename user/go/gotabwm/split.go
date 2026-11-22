@@ -285,6 +285,41 @@ func applySplitCycle() bool {
 	}
 }
 
+// applySashNudge is the M216d (#3943) keyboard half of the sash drag:
+// dir steps the focused pane's NEAREST ancestor sash of the matching
+// orientation by sashNudgePx through applySashDrag, so the clamp, the
+// relayout, the marker, the dump and the session write are the drag's
+// own. No matching ancestor (or no placed pane) is an honest no-op.
+const sashNudgePx = 32
+
+func applySashNudge(kind SplitKind, dir int) bool {
+	fid, ok := tabs.Focused()
+	if !ok {
+		return false
+	}
+	ni := -1
+	for cur := tabs.leafOf(fid); cur >= 0; {
+		p := tabs.parentOf(cur)
+		if p < 0 {
+			break
+		}
+		if tabs.tree[p].kind == kind {
+			ni = p
+			break
+		}
+		cur = p
+	}
+	if ni < 0 {
+		return false
+	}
+	scanW, scanH := uint32(vi.ScanoutWidth), uint32(vi.ScanoutHeight)
+	from := tabs.nodeSashCenter(ni, scanW, scanH)
+	if from < 0 {
+		return false
+	}
+	return applySashDrag(ni, from+sashNudgePx*dir)
+}
+
 // noticeSplitRefusal posts the toast for a refused split attempt:
 // splitRefusalCtx names the bound the strip hit in SplitPane's own
 // predicate order; "" leaves the refusal silent.

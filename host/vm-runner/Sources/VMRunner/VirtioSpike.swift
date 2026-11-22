@@ -244,6 +244,15 @@ enum CustomVirtioSpike {
         case "ctrl-alt-right": return (hidModCtrl | hidModAlt, 0x4F)
         case "ctrl-alt-pageup": return (hidModCtrl | hidModAlt, 0x4B)
         case "ctrl-alt-pagedown": return (hidModCtrl | hidModAlt, 0x4E)
+        // M216d (#3943): the seat's sash-nudge and move-to-space chords —
+        // the M137a/c ctrl-alt nav block one modifier deeper, named
+        // outright for the same reason ctrl-shift-alt-r is.
+        case "ctrl-shift-alt-left": return (hidModCtrl | hidModShift | hidModAlt, 0x50)
+        case "ctrl-shift-alt-right": return (hidModCtrl | hidModShift | hidModAlt, 0x4F)
+        case "ctrl-shift-alt-up": return (hidModCtrl | hidModShift | hidModAlt, 0x52)
+        case "ctrl-shift-alt-down": return (hidModCtrl | hidModShift | hidModAlt, 0x51)
+        case "ctrl-shift-alt-pageup": return (hidModCtrl | hidModShift | hidModAlt, 0x4B)
+        case "ctrl-shift-alt-pagedown": return (hidModCtrl | hidModShift | hidModAlt, 0x4E)
         // WM2 mission-control overview (Self-hosting Lane 1, issue #707
         // card 2, port of the #971 exploration): the overview hotkey —
         // LCtrl modifier + USB HID F12 usage (0x45). The guest kind-21
