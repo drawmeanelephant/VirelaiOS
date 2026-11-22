@@ -462,11 +462,14 @@ PY
 #                             'space switch 1->2', visiting GOCALC's space
 #     1248,11,c               pill "1" ([1240,1256)): 'space pick 1' +
 #                             'space switch 2->1' — the card's come-home
-#     1278,8,c                cell-1 close zone is [1264,1280) but pill "2"
-#                             covers [1260,1276): 1278 is the 4px strip
-#                             where the close-x outranks the pill — closes
-#                             the focused NOTE, 'focus restore' names
-#                             GOEDIT off the MRU ring
+#     1232,8,c                M216b's railLayout truncates the cell lane at
+#                             the pill lane's left edge (avail=1240), so
+#                             cell-1's close zone is [1224,1240) — 1232
+#                             closes the focused NOTE, 'focus restore'
+#                             names GOEDIT off the MRU ring. (The old
+#                             1278 targeted the pre-railLayout full-width
+#                             zone; it now lands in the 4px right margin
+#                             dead strip — OBSERVED red on main.)
 #   script3 (after 'focus restore'): dui focus 0 parks the console for the
 #     staged restore; clients die before their seat (run-01 discipline).
 #   input-string (after 'wm: unregistered'): SNAPSHOT.RESTORE one-shot,
@@ -506,7 +509,7 @@ vgate_run 02 -- \
     --script2-after 'gotabwm: win focus' \
     --input-chords 'ctrl-shift-v,ctrl-shift-p,z,o,o,m,space,p,a,n,e,return,ctrl-shift-p,r,e,s,t,o,r,e,space,p,a,n,e,s,return,ctrl-alt-pagedown,ctrl-alt-pageup,ctrl-2,ctrl-shift-p,m,o,v,e,space,t,o,space,2,return,ctrl-shift-s' \
     --input-chords-after 'gotabwm: rail n=3' \
-    --pointer-virtio '960,8,d;1000,400,u;1268,11,c;1248,11,c;1278,8,c' \
+    --pointer-virtio '960,8,d;1000,400,u;1268,11,c;1248,11,c;1232,8,c' \
     --pointer-virtio-after 'gotabwm: snapshot saved' \
     --screenshot-after 'gotabwm: space pick 2' \
     --screenshot-after-delay 2 \
