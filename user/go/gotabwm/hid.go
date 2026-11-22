@@ -814,6 +814,9 @@ func applyFreezeToggle() bool {
 func applyReopen() bool {
 	c, ok := tabs.ReopenLastClosed()
 	if !ok {
+		// M216c: an empty LIFO is a refusal the user can see — the
+		// chord did nothing, so the toast says why.
+		seatNotice(noticeReopenEmpty)
 		return false
 	}
 	pid, err := execApp(c.Bin)
@@ -854,7 +857,7 @@ func applyDuplicate() bool {
 // marker names the route, never the revert — the revert is the app's own
 // marker or silence. With no tab focused the strip owns undo: the seat's
 // own answer is the reopen LIFO (applyReopen prints its own marker, and
-// an empty LIFO stays the honest silent no-op). A session placeholder
+// an empty LIFO answers with the reopen notice, M216c). A session placeholder
 // row is not a live client — nothing routes and nothing reopens.
 func applyUndo() bool {
 	id, ok := tabs.Focused()

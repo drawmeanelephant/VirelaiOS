@@ -84,6 +84,8 @@ func TestSpaceSwitchCreatesAndParks(t *testing.T) {
 
 func TestSpaceCapIsFour(t *testing.T) {
 	defer saveSeatState()()
+	resetNotify(t)
+	resetRefusal(t)
 	resetSpaces()
 	tabs = TabStrip{}
 	_, restore := visRecorder()
@@ -101,6 +103,24 @@ func TestSpaceCapIsFour(t *testing.T) {
 	}
 	if spaceN != MaxSpaces || spaceCur != MaxSpaces-1 {
 		t.Fatalf("cap: n=%d cur=%d", spaceN, spaceCur)
+	}
+	// M216c: the cap refusal is a named notice now — one toast, and the
+	// PageUp clamp stays the silent no-op it always was.
+	if n := notifyCount(); n != 1 || notifyQueue[0].text != noticeSpacesLimit ||
+		notifyQueue[0].action != notifyActionNone {
+		t.Fatalf("cap notice: %+v", notifyQueue)
+	}
+	// Walk home, then one more PageUp clamps at space "1" — silent.
+	for i := 0; i < MaxSpaces-1; i++ {
+		if !applySpaceSwitch(-1) {
+			t.Fatalf("pageup %d", i)
+		}
+	}
+	if applySpaceSwitch(-1) {
+		t.Fatal("pageup clamp")
+	}
+	if n := notifyCount(); n != 1 {
+		t.Fatalf("clamp pushed a notice: %d", n)
 	}
 }
 

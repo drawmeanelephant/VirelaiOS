@@ -248,6 +248,181 @@ func TestEngineRefusalReachesArmedLaneWatch(t *testing.T) {
 	}
 }
 
+// M216c (#3942): seatNotice is the refusal lane's action-free half — a
+// plain toast carrying the context verbatim, deduped through the same
+// refusalSeen table an errno refusal uses.
+func TestSeatNoticePushesPlainToast(t *testing.T) {
+	resetNotify(t)
+	resetRefusal(t)
+	seatTick = 10
+	seatNotice("split: one tab")
+	if n := notifyCount(); n != 1 {
+		t.Fatalf("notifyCount = %d want 1", n)
+	}
+	toast := notifyQueue[0]
+	if toast.action != notifyActionNone || toast.text != "split: one tab" {
+		t.Fatalf("toast = %+v want a plain split: one tab", toast)
+	}
+	if len(notifyCenter) != 1 || notifyCenter[0].action != notifyActionNone ||
+		notifyCenter[0].text != "split: one tab" {
+		t.Fatalf("center row = %+v", notifyCenter[0])
+	}
+	seatNotice("")
+	if n := notifyCount(); n != 1 {
+		t.Fatalf("empty ctx pushed: %d", n)
+	}
+}
+
+func TestSeatNoticeDedupesInsideWindow(t *testing.T) {
+	resetNotify(t)
+	resetRefusal(t)
+	seatTick = 10
+	seatNotice("spaces: limit 4")
+	seatNotice("spaces: limit 4")
+	seatNotice("spaces: limit 4")
+	if n := notifyCount(); n != 1 {
+		t.Fatalf("notifyCount = %d want 1 toast for the storm", n)
+	}
+	if refusalDeduped != 2 {
+		t.Fatalf("refusalDeduped = %d want 2", refusalDeduped)
+	}
+	// A different context is a different notice, not a repeat — and a
+	// notice signature never collides with an errno refusal's.
+	seatNotice("reopen: nothing closed")
+	seatRefusalName("ENOENT", "exec X.ELF", "X.ELF")
+	if n := notifyCount(); n != 3 {
+		t.Fatalf("notifyCount = %d want 3", n)
+	}
+	// Past the window the same notice reports again.
+	seatTick += refusalDedupeTicks + 1
+	seatNotice("spaces: limit 4")
+	if n := notifyCount(); n != 4 {
+		t.Fatalf("notifyCount = %d want 4 after the window", n)
+	}
+}
+
+// TestSplitRefusalContexts pins the notice vocabulary against the strip's
+// own predicate order — one case per reason splitRefusalCtx can name,
+// plus the silent boundaries (an unplaced focused pane).
+func TestSplitRefusalContexts(t *testing.T) {
+	defer saveSeatState()()
+	scanW, scanH := uint32(scanoutW), uint32(scanoutH)
+
+	// one tab: fewer than two strip tabs can never split.
+	tabs = TabStrip{}
+	if !tabs.OpenTab(3, "A") {
+		t.Fatal("OpenTab")
+	}
+	if got := splitRefusalCtx(SplitVert, scanW, scanH); got != noticeSplitOneTab {
+		t.Fatalf("one tab: %q want %q", got, noticeSplitOneTab)
+	}
+
+	// too small: the empty tree's full-viewport split cannot tile a
+	// scanout under the pane floor.
+	tabs = TabStrip{}
+	if !tabs.OpenTab(3, "A") || !tabs.OpenTab(4, "B") {
+		t.Fatal("OpenTab")
+	}
+	if got := splitRefusalCtx(SplitVert, 200, 200); got != noticeSplitSmall {
+		t.Fatalf("tiny scanout: %q want %q", got, noticeSplitSmall)
+	}
+
+	// no tab left: every strip tab already holds a pane.
+	tabs = TabStrip{}
+	openNTabs(&tabs, 2)
+	if !tabs.SplitPane(SplitVert, scanW, scanH) {
+		t.Fatal("seed split")
+	}
+	if got := splitRefusalCtx(SplitVert, scanW, scanH); got != noticeSplitNoTab {
+		t.Fatalf("all placed: %q want %q", got, noticeSplitNoTab)
+	}
+
+	// pane limit: eight placed leaves — the cap SplitPane enforces.
+	// (The depth bound above it is unenforced upstream: treeDepth
+	// reports -1 for every non-root node, so no state produces
+	// noticeSplitDepth today — the branch mirrors SplitPane's own
+	// check and names it the day the bound works again.)
+	tabs = TabStrip{}
+	openNTabs(&tabs, 9)
+	if !tabs.FocusTab(4) || !tabs.SplitPane(SplitVert, scanW, scanH) {
+		t.Fatal("seed split")
+	}
+	// Spread the splits across leaves — one lineage hits the pane
+	// floor long before the cap.
+	for tabs.leafCount() < MaxPanes {
+		done := true
+		for i := 0; i < tabs.count; i++ {
+			id := tabs.At(i).ID
+			if tabs.leafOf(id) < 0 {
+				continue
+			}
+			_ = tabs.FocusTab(id)
+			if tabs.SplitPane(SplitVert, scanW, scanH) {
+				done = false
+				break
+			}
+		}
+		if done {
+			t.Fatalf("stuck at %d leaves", tabs.leafCount())
+		}
+	}
+	if got := splitRefusalCtx(SplitVert, scanW, scanH); got != noticeSplitPane {
+		t.Fatalf("pane cap: %q want %q", got, noticeSplitPane)
+	}
+
+	// Silent boundaries: an unplaced focused pane has no split reason
+	// the vocabulary names.
+	tabs = TabStrip{}
+	openNTabs(&tabs, 3)
+	if !tabs.SplitPane(SplitVert, scanW, scanH) {
+		t.Fatal("seed split")
+	}
+	if !tabs.FocusTab(6) {
+		t.Fatal("FocusTab unplaced")
+	}
+	if got := splitRefusalCtx(SplitVert, scanW, scanH); got != "" {
+		t.Fatalf("unplaced focused pane must stay silent, got %q", got)
+	}
+}
+
+// The chord end to end: a refused press queues the notice (and dedupes
+// its repeat), a successful press queues nothing.
+func TestApplySplitCycleNoticesRefusal(t *testing.T) {
+	defer saveSeatState()()
+	resetNotify(t)
+	resetRefusal(t)
+	seatTick = 10
+	tabs = TabStrip{}
+	if !tabs.OpenTab(3, "A") {
+		t.Fatal("OpenTab")
+	}
+	calls, restore := rectRecorder()
+	defer restore()
+	if applySplitCycle() {
+		t.Fatal("one-tab split must refuse")
+	}
+	if n := notifyCount(); n != 1 || notifyQueue[0].text != noticeSplitOneTab ||
+		notifyQueue[0].action != notifyActionNone {
+		t.Fatalf("queue = %+v want one plain %q toast", notifyQueue, noticeSplitOneTab)
+	}
+	applySplitCycle()
+	if n := notifyCount(); n != 1 || refusalDeduped != 1 {
+		t.Fatalf("repeat must dedupe: n=%d deduped=%d", n, refusalDeduped)
+	}
+	if !tabs.OpenTab(4, "B") {
+		t.Fatal("OpenTab")
+	}
+	if !applySplitCycle() {
+		t.Fatal("two-tab split must apply")
+	}
+	if n := notifyCount(); n != 1 {
+		t.Fatalf("a successful split pushed a notice: %d", n)
+	}
+	if len(*calls) == 0 {
+		t.Fatal("the applied split proposed no rects")
+	}
+}
+
 type testErrno string
 
 func (e testErrno) Error() string { return string(e) }
