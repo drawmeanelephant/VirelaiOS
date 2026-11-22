@@ -680,8 +680,11 @@ pub fn scanout_bind(pid: usize, pinfo: process.ProcessInfo) u64 {
     scanout_va = va;
     scanout_pages = pages;
     // The WM now owns the migrated user layer: paint_scene skips
-    // surface-backed windows (their bytes land here via compose-N).
+    // surface-backed windows (their bytes land here via compose-N) and —
+    // M216o — seat-owned windows entirely (the seat paints them into this
+    // same framebuffer; a kernel write is a mid-pass tear).
     driving_award.wm_owns_user_layer = true;
+    driving_award.seat_pid = pid;
     driving_award.splash_hold = false;
     driving_award.presentation_trace_arm();
     return va;
@@ -716,6 +719,7 @@ pub fn scanout_teardown() void {
     scanout_va = 0;
     scanout_pages = 0;
     driving_award.wm_owns_user_layer = false;
+    driving_award.seat_pid = null;
     // Tick-side rendering consumed fixed-layer damage while the seat owned
     // scanout. Recovery must repaint that layer, not retain the dead seat.
     for (driving_award.windows[0..driving_award.win_count]) |*w| w.dirty = true;

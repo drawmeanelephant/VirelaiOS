@@ -520,6 +520,15 @@ pub fn render_terminal_screen(dst: [*]u8, w: *const Window, scr: *const terminal
 /// text layer straight into the scanout framebuffer; the clock renders its
 /// back-buffer and blits it over the terminal.
 pub fn paint(w: *Window) void {
+    // M216o (#3954): a user window OWNED BY THE SEAT is painted by the seat
+    // into this same shared scanout — the kbuf mirror it keeps is for
+    // non-scanout consumers (overlay previews), not for a kernel blit.
+    // Blitting it writes kbuf content into the live fb mid-seat-pass: that
+    // write is the scanout tear a raw capture can straddle, and the
+    // upload→damage→paint loop it feeds is the launcher repaint storm.
+    // An unmigrated HOSTED window (owner != seat) still blits.
+    if (w.kind == .user and w.owner != null and da.seat_pid != null and
+        w.owner.? == da.seat_pid.?) return;
     switch (w.kind) {
         .terminal => fbtext.render(fb_canvas()),
         .clock => {
