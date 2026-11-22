@@ -16,6 +16,10 @@
 #                      vouches the tree is already built + imaged).
 #   BOOTS / VIRELAI_GATE_SUFFIX / VIRELAI_KEEP_RUN / VIRELAI_RUN_DIR_BASE
 #                      honored exactly like the legacy scripts.
+#   VGATE_ONLY=tag[,tag…]  boot only the named vgate_run legs (base tags);
+#                      every other leg is skipped and the result reports
+#                      PARTIAL, never PASS — iteration only, not gate
+#                      evidence (tools/gate/SPEC.md).
 #
 set -euo pipefail
 
@@ -205,6 +209,35 @@ vgate_client() {
 source "$SPEC"
 [ -n "$VGATE_NAME" ] || { echo "vgate: spec sets no vgate_name" >&2; exit 2; }
 [ "${#VGATE_RUN_TAGS[@]}" -gt 0 ] || { echo "vgate: spec declares no vgate_run" >&2; exit 2; }
+
+# --- VGATE_ONLY: boot a subset of the declared legs (M216i) -----------------
+# VGATE_ONLY=<tag>[,<tag>…] names BASE vgate_run tags (never the -NN names
+# vgate_repeat mints). Every unselected leg prints `<tag>: SKIP
+# (VGATE_ONLY)`, never boots, and never counts; a vgate_checkpoint base
+# boot runs only when a selected leg names it with --from-checkpoint; and
+# the result block reports PARTIAL — `PASS: p/t` can never appear in a
+# filtered report, so a partial run cannot pose as gate evidence.
+VGATE_ONLY="${VGATE_ONLY:-}"
+VGATE_ONLY_TAGS=()
+if [ -n "$VGATE_ONLY" ]; then
+    # Whitespace is not significant; commas are the only separators.
+    VGATE_ONLY="$(printf '%s' "$VGATE_ONLY" | tr -d '[:space:]')"
+    mapfile -t VGATE_ONLY_TAGS < <(printf '%s' "$VGATE_ONLY" | tr ',' '\n')
+    for _t in "${VGATE_ONLY_TAGS[@]}"; do
+        [ -n "$_t" ] || { echo "vgate: VGATE_ONLY has an empty tag" >&2; exit 2; }
+        _found=0
+        for _rt in "${VGATE_RUN_TAGS[@]}"; do [ "$_rt" = "$_t" ] && _found=1; done
+        [ "$_found" = 1 ] || { echo "vgate: VGATE_ONLY names no such run: $_t" >&2; exit 2; }
+    done
+fi
+vgate_only_selected() {
+    # $1 = base vgate_run tag -> 0 when the leg boots under VGATE_ONLY
+    # (always 0 when the filter is unset, keeping the default path identical).
+    [ "${#VGATE_ONLY_TAGS[@]}" -eq 0 ] && return 0
+    local _t
+    for _t in "${VGATE_ONLY_TAGS[@]}"; do [ "$_t" = "$1" ] && return 0; done
+    return 1
+}
 
 # --- warm-leg spec-load refusals (ADR 0059 D1/D8: the static Code=2 class) --
 # These are decided from spec text and never attempted:
@@ -487,13 +520,24 @@ fi
 # clones (D3). VGATE_WARM=off skips base boots entirely — every
 # --from-checkpoint leg then runs cold with its checkpoint's flags and its
 # ORIGINAL script flags, and the receipt records warm=cold.
-PASS=0 TOTAL=0 n=0
+PASS=0 TOTAL=0 SKIPPED=0 n=0
 VGATE_WARM="${VGATE_WARM:-on}"
 CKPT_OK=" "
 if [ "$VGATE_WARM" != "off" ]; then
 for ci in "${!VGATE_CKPT_TAGS[@]}"; do
     ctag="${VGATE_CKPT_TAGS[$ci]}"
     settle="${VGATE_CKPT_SETTLE[$ci]}"
+    # VGATE_ONLY: a base boot runs only when a SELECTED leg restores it.
+    # (Filter unset: every declared checkpoint boots, as before.)
+    if [ "${#VGATE_ONLY_TAGS[@]}" -gt 0 ]; then
+        _ck_needed=0
+        for _i in "${!VGATE_RUN_TAGS[@]}"; do
+            if [ "${VGATE_RUN_FROM_CKPT[$_i]}" = "$ctag" ] && vgate_only_selected "${VGATE_RUN_TAGS[$_i]}"; then
+                _ck_needed=1
+            fi
+        done
+        [ "$_ck_needed" = 1 ] || continue
+    fi
     ckdir="$RUN_DIR/ckpt-$ctag"
     mkdir -p "$ckdir"
     TOTAL=$((TOTAL + 1))
@@ -535,9 +579,22 @@ done
 fi
 ARMED_SHARE="${SHARE:-}"
 
+# VGATE_ONLY: resolve the leg set once, before the repeat loop. The filter
+# is iteration-invariant, so a skipped leg's SKIP line is emitted here —
+# once, not per iteration — and it never enters the run loop at all.
+RUN_IDXS=()
+for i in "${!VGATE_RUN_TAGS[@]}"; do
+    if vgate_only_selected "${VGATE_RUN_TAGS[$i]}"; then
+        RUN_IDXS+=("$i")
+    else
+        echo "${VGATE_RUN_TAGS[$i]}: SKIP (VGATE_ONLY)" | tee -a "$REPORT"
+        SKIPPED=$((SKIPPED + 1))
+    fi
+done
+
 while [ "$n" -lt "$REPEAT" ]; do
     n=$((n + 1))
-    for i in "${!VGATE_RUN_TAGS[@]}"; do
+    for i in "${RUN_IDXS[@]}"; do
         base="${VGATE_RUN_TAGS[$i]}"
         from_ckpt="${VGATE_RUN_FROM_CKPT[$i]}"
         strict="${VGATE_RUN_STRICT[$i]}"
@@ -735,8 +792,13 @@ VGATE_COMPLETED=1
 
 echo; echo "=== result ==="
 if [ "$PASS" = "$TOTAL" ]; then
-    echo "vgate $VGATE_NAME: PASS ($PASS/$TOTAL runs)"
-    echo "PASS: $PASS/$TOTAL" >> "$REPORT"
+    if [ "${#VGATE_ONLY_TAGS[@]}" -gt 0 ]; then
+        echo "vgate $VGATE_NAME: PARTIAL PASS ($PASS/$TOTAL selected runs, $SKIPPED skipped by VGATE_ONLY)"
+        echo "PARTIAL: $PASS/$TOTAL" >> "$REPORT"
+    else
+        echo "vgate $VGATE_NAME: PASS ($PASS/$TOTAL runs)"
+        echo "PASS: $PASS/$TOTAL" >> "$REPORT"
+    fi
     exit 0
 fi
 echo "vgate $VGATE_NAME: FAILED ($PASS/$TOTAL runs; see $REPORT)"

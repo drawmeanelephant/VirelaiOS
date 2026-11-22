@@ -37,7 +37,11 @@
 #                     vgate.sh exactly as documented in tools/gate/SPEC.md.
 #
 # Environment: VIRELAI_GATE_SUFFIX, VGATE_NO_BUILD, BOOTS honored by
-# vgate.sh. Before running selected specs, fleet.sh hash-checks (and
+# vgate.sh; VGATE_ONLY=<tag>[,<tag>…] (M216i) filters legs WITHIN one
+# spec — `run` refuses more than one selected member under it and
+# `verify-vz` refuses outright, and a passing member/summary reports
+# PARTIAL, never PASS (a filtered run is not gate evidence). Before
+# running selected specs, fleet.sh hash-checks (and
 # rebuilds if needed) .build/go/GOSH.ELF / GOSSHD.ELF once per invocation
 # (issue #1503) so a leftover hand-built binary cannot reach a guest.
 #
@@ -176,6 +180,12 @@ fleet_run() {
     done
     local total=${#sel[@]}
     [ "$total" -gt 0 ] || { echo "fleet: nothing selected" >&2; return 2; }
+    # VGATE_ONLY names legs inside ONE spec — tags are per-spec, so a
+    # multi-member selection under the filter is meaningless (M216i).
+    if [ -n "${VGATE_ONLY:-}" ] && [ "$total" -gt 1 ]; then
+        echo "fleet: VGATE_ONLY selects legs within ONE spec — $total members selected; name a single id (or pattern resolving to one)" >&2
+        return 2
+    fi
 
     local failed=() n=0 rc start
     echo "=== fleet run: $total member(s): ${sel[*]}"
@@ -190,7 +200,11 @@ fleet_run() {
         rc=$?
         set -e
         if [ "$rc" -eq 0 ]; then
-            echo "--- [$n/$total] PASS $id ($((SECONDS - start))s)"
+            if [ -n "${VGATE_ONLY:-}" ]; then
+                echo "--- [$n/$total] PARTIAL $id (VGATE_ONLY=$VGATE_ONLY)"
+            else
+                echo "--- [$n/$total] PASS $id ($((SECONDS - start))s)"
+            fi
         else
             echo "--- [$n/$total] FAIL $id rc=$rc ($((SECONDS - start))s)"
             failed+=("$id")
@@ -198,14 +212,28 @@ fleet_run() {
     done
     echo
     if [ "${#failed[@]}" -gt 0 ]; then
-        echo "FLEET RESULT: $((total - ${#failed[@]}))/$total PASS — failed:${failed[*]/#/ }"
+        if [ -n "${VGATE_ONLY:-}" ]; then
+            echo "FLEET RESULT: PARTIAL (VGATE_ONLY=$VGATE_ONLY) — not gate evidence — failed:${failed[*]/#/ }"
+        else
+            echo "FLEET RESULT: $((total - ${#failed[@]}))/$total PASS — failed:${failed[*]/#/ }"
+        fi
         return 1
     fi
-    echo "FLEET RESULT: $total/$total PASS"
+    if [ -n "${VGATE_ONLY:-}" ]; then
+        echo "FLEET RESULT: PARTIAL (VGATE_ONLY=$VGATE_ONLY) — not gate evidence"
+    else
+        echo "FLEET RESULT: $total/$total PASS"
+    fi
 }
 
 fleet_verify_vz() {
     # The whole fleet, in canonical (sorted) order.
+    # VGATE_ONLY cannot apply: the filter names legs within ONE spec, and
+    # verify-vz runs every member (M216i).
+    if [ -n "${VGATE_ONLY:-}" ]; then
+        echo "fleet: VGATE_ONLY cannot run verify-vz — it filters legs within one spec; use 'fleet run <id>' for a single member" >&2
+        return 2
+    fi
     local ids=() id
     while IFS= read -r id; do ids+=("$id"); done < <(fleet_ids)
     fleet_run "${ids[@]}"

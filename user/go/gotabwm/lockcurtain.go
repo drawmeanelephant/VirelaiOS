@@ -45,9 +45,12 @@ const (
 var (
 	lockActive bool
 	lockSink   uint32
-	lockPrior  uint32
-	lockFile   []byte
-	lockPass   []byte
+	// lockSinkShared is true when lockSink is a window the seat already
+	// owned (M216m #3952) — it is focused for the lock and never closed.
+	lockSinkShared bool
+	lockPrior      uint32
+	lockFile       []byte
+	lockPass       []byte
 
 	// lockMascotShown latches the one-time decode marker for the locked
 	// pose (the emblem pattern: report what the share carried, once).
@@ -94,16 +97,24 @@ func requestLock() {
 	// focuses, so its owner's queue — this seat's — receives the KEY_DOWN
 	// fan-out and no hosted app does. 1x1 parked in the corner: the curtain
 	// itself is painted straight onto the scanout, not uploaded.
+	//
+	// M216m (#3952): the lock must not fail for want of a window. The sink
+	// seam already falls back to the seat's reserve; when another modal
+	// holds that, the curtain shares any window the seat owns — it needs
+	// kernel focus on the seat's queue and paints nothing into the window.
+	lockSinkShared = false
 	id, r := openInputSink(uint32(vi.ScanoutWidth-1), uint32(vi.ScanoutHeight-1), 1, 1)
 	if r < 0 {
-		vi.ConsoleLine(MarkerLockRefused + "no_sink")
-		return
+		if id = int(seatOwnedWindow()); id == 0 {
+			vi.ConsoleLine(MarkerLockRefused + "no_sink")
+			return
+		}
+		lockSinkShared = true
 	}
 	lockSink = uint32(id)
 	st, qr := queryWindow(int(lockSink))
 	if qr < 0 || (st[5] == 0 && focusRaise(lockSink) != 0) {
-		_ = closeWin(lockSink)
-		lockSink = 0
+		releaseLockSink()
 		vi.ConsoleLine(MarkerLockRefused + "no_sink")
 		return
 	}
@@ -115,6 +126,15 @@ func requestLock() {
 	lockPass = lockPass[:0]
 	lockActive = true
 	vi.ConsoleLine(MarkerLocked)
+}
+
+// releaseLockSink gives the sink back: a window opened for the lock is
+// closed, a shared one is left to its owner.
+func releaseLockSink() {
+	if lockSink != 0 && !lockSinkShared {
+		_ = closeWin(lockSink)
+	}
+	lockSink, lockSinkShared = 0, false
 }
 
 // unlockTry verifies the typed passphrase against the frame the lock read.
@@ -131,10 +151,7 @@ func unlockTry() {
 		vi.ConsoleLine(MarkerUnlockFailed)
 		return
 	}
-	if lockSink != 0 {
-		_ = closeWin(lockSink)
-		lockSink = 0
-	}
+	releaseLockSink()
 	lockFile = nil
 	lockActive = false
 	lastInputTick = seatTick
@@ -156,7 +173,13 @@ func unlockTry() {
 func lockKeyDown(e vi.Event) {
 	switch e.Arg0 {
 	case 0x28: // Enter
-		unlockTry()
+		// An empty field is not an attempt. The Enter that picks the PWR
+		// menu's Lock row also arrives here as a kind-1 KEY_DOWN, after
+		// the curtain is up (observed, M216m #3952: `locked` then at once
+		// `unlock failed`).
+		if len(lockPass) > 0 {
+			unlockTry()
+		}
 		return
 	case 0x2A: // Backspace
 		if n := len(lockPass); n > 0 {

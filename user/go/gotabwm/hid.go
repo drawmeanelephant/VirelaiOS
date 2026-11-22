@@ -54,10 +54,11 @@
 // Markers print only after the mutation/syscall that made them true.
 // Ctrl+W is not bound (it collides with the editor — a GOSH.ELF row in the
 // registry says so); M121b's close chord rides ctrl+shift+w.
-// M79b (#1705): the rail's close-x and hover highlight live here, and the
-// dwell preview is hoverpreview.go (#3914). Client-area is not ignored:
-// samples that survive the chrome checks forward to the pane's owner
-// through forwardContentPointer (#2878).
+// M79b (#1705): the rail's close-x and hover highlight live here. #3914's
+// hover-preview card lives in hoverpreview.go: the same pointer samples
+// reset its dwell, and the seat paints the card with the composite pass.
+// Client-area is not ignored: samples that survive the chrome checks
+// forward to the pane's owner through forwardContentPointer (#2878).
 //
 // M79c (#1706): the sash drag and the split-cycle chord live here too. No
 // keyboard equivalent for the drag itself: a divider is a pointer target,
@@ -1091,6 +1092,11 @@ func sashCursorShape(ni int) uint64 {
 }
 
 func handleWmPointer(e vi.Event) {
+	// #3914: every pointer sample is a gesture, not rest. The rail dwell
+	// resets here — before any chrome early-return — so same-cell motion,
+	// a press/release, and a leave all dismiss a visible preview and
+	// restart the pending dwell.
+	hoverPreviewPointer()
 	// M190a (#3236): the pointer path is an observation point too — a
 	// copy made by a click-driven app lands in the ring inside the
 	// gesture stream, not up to a tick later.
