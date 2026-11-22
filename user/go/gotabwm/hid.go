@@ -57,7 +57,8 @@
 // M79b (#1705): the rail's close-x and hover highlight live here. #3914's
 // hover-preview card lives in hoverpreview.go: the same pointer samples
 // reset its dwell, and the seat paints the card with the composite pass.
-// Client-area is ignored.
+// Client-area is not ignored: samples that survive the chrome checks
+// forward to the pane's owner through forwardContentPointer (#2878).
 //
 // M79c (#1706): the sash drag and the split-cycle chord live here too. No
 // keyboard equivalent for the drag itself: a divider is a pointer target,

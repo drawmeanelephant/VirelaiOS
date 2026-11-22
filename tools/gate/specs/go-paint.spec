@@ -3,9 +3,10 @@
 # Three legs, two boot shapes — driven by the kernel's own input rules:
 #
 #   01  SHIM (no seat): the kernel hit-tests every pointer sample and pushes
-#       MOUSE_* to the window in LOCAL coords (the go-calc pad-leg shape — a
-#       seat's content forward is terminal-only, so canvas apps under GOTABWM
-#       never see the pointer). A scripted gesture set exercises all five
+#       MOUSE_* to the window in LOCAL coords (the go-calc pad-leg shape —
+#       the kernel's own no-seat pointer path; under GOTABWM the seat's
+#       content forward delivers the same window MOUSE_* since #2878).
+#       A scripted gesture set exercises all five
 #       tools; ctrl-z twice reverts the newest two ops; ctrl-s raises the
 #       save picker, a typed name lands /host/PAINT1.QOI, 'x' then exports
 #       /host/PAINT1.PNG (issue #2976 — one keyDown through --input-key),

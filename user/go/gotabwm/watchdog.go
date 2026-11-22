@@ -504,9 +504,9 @@ func watchdogPress(id uint32, act int) {
 }
 
 // paintWatchdog draws every flagged pane's banner and returns the pixels
-// written — the paintNotify contract. Banners sit under the launcher,
-// power menu, toasts, drag ghost and the idle curtain (the pointer path
-// hits them in the same order).
+// written — the paintNotify contract. Banners sit under the launcher and
+// every modal menu, the toasts, drag ghost and the idle curtain (the
+// pointer path hits them in the same order).
 func paintWatchdog(scan []byte, width, height int) int {
 	if width <= 0 || height <= 0 || len(scan) < 4 {
 		return 0

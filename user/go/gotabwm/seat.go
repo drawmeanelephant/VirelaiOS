@@ -910,6 +910,11 @@ func compositePaint(scan []byte, ticks uint64, presents *int) (presented bool) {
 	// session receipt seen this tick is badged on the same frame.
 	agentSeatTick()
 	chromeTick(scan, ticks)
+	// M161b (#2974): not-responding banners paint over their panes and
+	// under the modal chrome — the pointer path hit-tests them in the
+	// same order (the menus below already consumed the press), so the
+	// banner must lose pixels to an open menu, not cover it.
+	_ = paintWatchdog(scan, vi.ScanoutWidth, vi.ScanoutHeight)
 	if launch.open {
 		_ = paintLauncher(scan, vi.ScanoutWidth, vi.ScanoutHeight)
 	}
@@ -929,10 +934,6 @@ func compositePaint(scan []byte, ticks uint64, presents *int) (presented bool) {
 	if railMenuOpen {
 		_ = paintRailMenu(scan, vi.ScanoutWidth, vi.ScanoutHeight)
 	}
-	// M161b (#2974): not-responding banners paint over their panes and
-	// under the toasts/ghost/curtain — the pointer path hit-tests them in
-	// the same order (the modal menus above already consumed the press).
-	_ = paintWatchdog(scan, vi.ScanoutWidth, vi.ScanoutHeight)
 	// M125f (#2591): a crash receipt's deferred re-exec runs here — off
 	// the teardown event and clear of crashSave's whole-VM save.
 	crashRestartTick()
@@ -1115,7 +1116,9 @@ func drainSeatEvents(first vi.Event, poll func() (vi.Event, bool), consume func(
 
 // consumeSeatEvent handles one non-empty poll. Pointer and key log their
 // markers and return false (not a tick). Kind 19 also hit-tests the top
-// rail (M63c). Window mirrors are dropped; client-area clicks are ignored.
+// rail (M63c). Window mirrors are dropped; client-area clicks forward to
+// the pane's owner (forwardContentPointer — #2878 delivers them as window
+// MOUSE_*).
 // Any other kind is the pre-M63a ignore-non-tick path. Only
 // EvCompositeTick returns true.
 //
