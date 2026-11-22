@@ -2594,10 +2594,15 @@ PY
 #     not left: no rail-click, no drag arm, no focus change). The press
 #     closes cell 0's tab through applyRailClose — the close-x's own
 #     seam, so 'host close id=' / 'tab close id=' and 'rail n=2' follow.
-#   chords  (after 'rail n=2'):  ctrl-shift-n pins the focused tab (the
-#     M216d toggle's first half), ctrl-shift-n again UNPINS it through
-#     the rail menu's own path — 'pin id=<focus> on' then ' off', and
-#     the order line's pin bits all read 0 afterwards.
+#   chords  (after 'tab close id='):  ctrl-shift-n pins the focused tab
+#     (the M216d toggle's first half), ctrl-shift-n again UNPINS it
+#     through the rail menu's own path — 'pin id=<focus> on' then ' off',
+#     and the order line's pin bits all read 0 afterwards. The trigger is
+#     the close marker, NOT 'rail n=2': the three-client declare prints a
+#     TRANSIENT n=2 while the third app is still landing, and a substring
+#     watcher fires on its first hit — the chords then land before the
+#     middle click, the pin fronts cell 0, and the click closes the wrong
+#     tab (observed flaky on unmodified main, M216e fixup).
 vgate_run 25 -- \
     --screen '$RUN_DIR/screen-25' \
     --via-virtio \
@@ -2607,7 +2612,7 @@ vgate_run 25 -- \
     --pointer-virtio '100,10,mc' \
     --pointer-virtio-after 'gotabwm: rail n=3' \
     --input-chords 'ctrl-shift-n,ctrl-shift-n' \
-    --input-chords-after 'gotabwm: rail n=2' \
+    --input-chords-after 'gotabwm: tab close id=' \
     --script3 '$RUN_DIR/script3.txt' \
     --script3-after 'wm: unregistered, shim resumed' \
     --script-expect 'rx-gotabwm-hid-ok' --timeout 420
