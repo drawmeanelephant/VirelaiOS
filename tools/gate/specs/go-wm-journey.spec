@@ -1142,3 +1142,129 @@ for p in stale:
 print("restaged SETTINGS.TXT + SETTINGS.HC; dropped %d stale A11Y.* "
       "outline(s)" % len(stale))
 PY
+
+# ===========================================================================
+# Run 04 (M216d / #3943): the pointer gestures' keyboard halves, live mode.
+# GOCALC + NOTE open as two tabs (NOTE declares last, so it is focused);
+# one chord burst drives every new seat row end to end:
+#
+#   ctrl-shift-v              split v — leaves {NOTE, GOCALC}, sash x=640
+#   ctrl-shift-alt-left       sash-left  — 'sash v from=640 to=608'
+#   ctrl-shift-alt-right      sash-right — 'sash v from=608 to=640'
+#   ctrl-shift-v              the cycle's rotate step: root V -> H, sash y=360
+#   ctrl-shift-alt-up         sash-up    — 'sash h from=360 to=328'
+#   ctrl-shift-alt-down       sash-down  — 'sash h from=328 to=360'
+#   ctrl-shift-alt-pagedown   space-move-next — creates dormant space "2"
+#                             and carries the focused tab (NOTE) onto it:
+#                             'space new name=2' + 'space move id= to=2',
+#                             NO switch — the live strip keeps GOCALC
+#   ctrl-alt-pagedown         space-next — 'space switch 1->2', visiting
+#                             NOTE's new home (the R5 chord, unchanged)
+#   ctrl-shift-alt-pageup     space-move-prev — carries NOTE back to "1":
+#                             'space move id= to=1'
+#   ctrl-alt-pageup           space-prev — 'space switch 2->1' home
+#
+# The sash markers pin the 32 px step and the from/to centres; the space
+# markers pin create-dormant vs switch — the two halves the palette move
+# and the switch chord already own, now reachable without the pointer.
+vgate_file script-04.txt <<'EOF'
+vf rm GOTABWM.DEMO
+vf rm SESSION.TABS
+vf rm SESSION.PANES
+vf rm SNAPSHOT.BUNDLE
+vf rm SNAPSHOT.RESTORE
+set GOMAXPROCS=1
+wm
+exec GOTABWM.ELF
+EOF
+
+vgate_file script2-04.txt <<'EOF'
+dui focus 0
+exec GOCALC.ELF
+exec NOTE.ELF
+EOF
+
+vgate_file script3-04.txt <<'EOF'
+wm
+dui
+echo rx-gotabwm-m216d-ok
+EOF
+
+vgate_run 04 -- \
+    --screen '$RUN_DIR/screen-04' \
+    --via-virtio \
+    --script '$RUN_DIR/script-04.txt' \
+    --script2 '$RUN_DIR/script2-04.txt' \
+    --script2-after 'gotabwm: win focus' \
+    --input-chords 'ctrl-shift-v,ctrl-shift-alt-left,ctrl-shift-alt-right,ctrl-shift-v,ctrl-shift-alt-up,ctrl-shift-alt-down,ctrl-shift-alt-pagedown,ctrl-alt-pagedown,ctrl-shift-alt-pageup,ctrl-alt-pageup' \
+    --input-chords-after 'gotabwm: rail n=2' \
+    --script3 '$RUN_DIR/script3-04.txt' \
+    --script3-after 'gotabwm: space switch 2->1' \
+    --script-expect 'rx-gotabwm-m216d-ok' --timeout 300
+
+vgate_assert 04 serial-contains 'VirelaiOS kernel has seized control.'
+vgate_assert 04 serial-contains 'exec: loaded GOTABWM.ELF'
+vgate_assert 04 serial-contains 'exec: loaded GOCALC.ELF'
+vgate_assert 04 serial-contains 'exec: loaded NOTE.ELF'
+vgate_assert 04 serial-contains 'gotabwm: registered'
+vgate_assert 04 serial-contains 'gotabwm: mode live'
+vgate_assert 04 serial-contains 'gotabwm: rail n=2'
+# --- the split, the rotate, and the four 32 px sash nudges --------------
+vgate_assert 04 serial-contains 'gotabwm: split v'
+vgate_assert 04 serial-contains 'gotabwm: sash v from=640 to=608'
+vgate_assert 04 serial-contains 'gotabwm: sash v from=608 to=640'
+vgate_assert 04 serial-contains 'gotabwm: split h'
+vgate_assert 04 serial-contains 'gotabwm: sash h from=360 to=328'
+vgate_assert 04 serial-contains 'gotabwm: sash h from=328 to=360'
+# --- the move-to-space chords: create-dormant, visit, carry home --------
+vgate_assert 04 serial-contains 'gotabwm: space new name=2'
+vgate_assert 04 serial-contains 'gotabwm: space move id='
+vgate_assert 04 serial-contains ' to=2'
+vgate_assert 04 serial-contains 'gotabwm: space switch 1->2'
+vgate_assert 04 serial-contains ' to=1'
+vgate_assert 04 serial-contains 'gotabwm: space switch 2->1'
+vgate_assert 04 serial-contains 'rx-gotabwm-m216d-ok'
+vgate_assert 04 serial-absent '[EXC] parking:'
+vgate_assert 04 serial-absent 'exited status=139'
+vgate_assert 04 python <<'PY'
+import os, re, sys
+ser = open(os.environ["VG_SER"], errors="replace").read()
+
+# Leg order: the v nudges precede the rotate, the h nudges precede the
+# move-next, and the two switches bracket the carry-home.
+want = ["gotabwm: sash v from=640 to=608",
+        "gotabwm: sash v from=608 to=640",
+        "gotabwm: split h",
+        "gotabwm: sash h from=360 to=328",
+        "gotabwm: sash h from=328 to=360",
+        "gotabwm: space new name=2",
+        "gotabwm: space move id=",
+        "gotabwm: space switch 1->2",
+        "gotabwm: space move id=",
+        "gotabwm: space switch 2->1"]
+pos = []
+cur = 0
+for w in want:
+    i = ser.find(w, cur)
+    if i < 0:
+        sys.exit("missing %r after %d" % (w, cur))
+    pos.append(i)
+    cur = i + 1
+# The two moves name the SAME tab id — the focused NOTE carried next and
+# prev. The destination names differ ("2" out, "1" back).
+move_ids = re.findall(r"gotabwm: space move id=(\d+) to=(\d)", ser)
+if len(move_ids) != 2 or move_ids[0][1] != "2" or move_ids[1][1] != "1":
+    sys.exit("space moves = %r want [(id,2),(id,1)] same id" % move_ids)
+if move_ids[0][0] != move_ids[1][0]:
+    sys.exit("move-next and move-prev named different tabs: %r" % move_ids)
+# The carry-home move lands BEFORE the switch back — the tab is already
+# dormant on "1" when the live strip returns.
+i_mv2 = ser.find("gotabwm: space move id=")
+i_mv1 = ser.find("gotabwm: space move id=", i_mv2 + 1)
+i_sw21 = ser.find("gotabwm: space switch 2->1")
+if not (i_mv2 < i_mv1 < i_sw21):
+    sys.exit("move/switch order wrong: mv-next@%d mv-prev@%d switch@%d"
+             % (i_mv2, i_mv1, i_sw21))
+print("M216d journey: sash v 640->608->640, rotate h, sash h 360->328->360, "
+      "move id=%s 1->2->1" % move_ids[0][0])
+PY

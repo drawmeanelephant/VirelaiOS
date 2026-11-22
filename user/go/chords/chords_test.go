@@ -204,6 +204,9 @@ func TestSeatRowsAreTheSeatSurface(t *testing.T) {
 		"pane-focus-left": 1, "pane-focus-right": 1, "pane-focus-up": 1,
 		"pane-focus-down": 1, "space-prev": 1, "space-next": 1,
 		"summon-emoji": 1,
+		// M216d (#3943): the pointer gestures' keyboard halves.
+		"sash-left": 1, "sash-right": 1, "sash-up": 1, "sash-down": 1,
+		"space-move-prev": 1, "space-move-next": 1,
 	}
 	got := map[string]int{}
 	for _, r := range Global.SeatRows() {
@@ -327,6 +330,40 @@ func TestM132aReservedChordPicks(t *testing.T) {
 	for c, action := range want {
 		if got[c] != action {
 			t.Errorf("reserved seat chord %s: action %q want %q", c, got[c], action)
+		}
+	}
+}
+
+// TestM216dChordPicks pins the card's spellings: the sash nudge rides the
+// M137a pane-focus block one modifier deeper (ctrl+alt+shift+arrows) and
+// the move-to-space pair rides the R5 space-switch block the same way
+// (ctrl+alt+shift+pageup/pagedown). The collision half of the acceptance
+// is TestGlobalValidates — these rows exist because they pass it.
+func TestM216dChordPicks(t *testing.T) {
+	want := map[Chord]string{
+		{ModCtrl | ModAlt | ModShift, UsageLeft}:     "sash-left",
+		{ModCtrl | ModAlt | ModShift, UsageRight}:    "sash-right",
+		{ModCtrl | ModAlt | ModShift, UsageUp}:       "sash-up",
+		{ModCtrl | ModAlt | ModShift, UsageDown}:     "sash-down",
+		{ModCtrl | ModAlt | ModShift, UsagePageUp}:   "space-move-prev",
+		{ModCtrl | ModAlt | ModShift, UsagePageDown}: "space-move-next",
+	}
+	got := map[Chord]string{}
+	for _, r := range Global.SeatRows() {
+		got[r.Chord] = r.Action
+	}
+	for c, action := range want {
+		if got[c] != action {
+			t.Errorf("seat chord %s: action %q want %q", c, got[c], action)
+		}
+	}
+	// The two-modifier parents stay theirs: ctrl+alt+arrows remain
+	// pane-focus and ctrl+alt+paging remains space-switch.
+	for _, c := range []Chord{
+		{ModCtrl | ModAlt, UsageLeft}, {ModCtrl | ModAlt, UsagePageDown},
+	} {
+		if got[c] == "" {
+			t.Errorf("the M137a/c parent chord %s lost its row", c)
 		}
 	}
 }

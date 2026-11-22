@@ -234,11 +234,16 @@ func TestSessionNoOpMutationWritesNothing(t *testing.T) {
 	if applyRailReorder(1, 1) {
 		t.Fatal("a same-cell reorder must be a no-op")
 	}
-	if applyHidPin() {
-		t.Fatal("pinning an already-pinned tab must be a no-op")
-	}
 	if len(log.writes) != want {
 		t.Fatalf("no-op mutations wrote %d extra files", len(log.writes)-want)
+	}
+	// M216d (#3943): the pin chord is a toggle — the second press UNPINS,
+	// a real mutation that must persist exactly like the first.
+	if !applyHidPin() {
+		t.Fatal("the toggle's unpin half must land")
+	}
+	if len(log.writes) != want+1 {
+		t.Fatalf("unpin wrote %d files, want exactly one more", len(log.writes)-want)
 	}
 }
 

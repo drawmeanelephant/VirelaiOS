@@ -250,6 +250,34 @@ func applySpaceMove(id uint32, name string) bool {
 	return true
 }
 
+// applySpaceMoveStep is the M216d (#3943) chord half of the palette move
+// row: dir steps the FOCUSED tab to the neighbouring space through
+// applySpaceMove itself. Next at the last space opens the next slot
+// first — the same create-on-demand applySpaceSwitch uses — so the move
+// is reachable at the rail's end; prev at the first space clamps. An
+// empty strip has no focused tab and no-ops.
+func applySpaceMoveStep(dir int) bool {
+	fid, ok := tabs.Focused()
+	if !ok {
+		return false
+	}
+	dst := spaceCur + dir
+	if dst < 0 {
+		return false
+	}
+	if dst >= spaceN {
+		if dir <= 0 || spaceN >= MaxSpaces {
+			return false
+		}
+		si, ok := spaceEnsure(spaces[spaceN].Name)
+		if !ok {
+			return false
+		}
+		dst = si
+	}
+	return applySpaceMove(fid, spaces[dst].Name)
+}
+
 // applySummonEmoji is the ctrl+shift+E dispatch (ADR 0007 R6): focus
 // GOEMOJI.ELF's tab wherever it lives — a dormant space's tab switches
 // the desktop to it — or exec it by name. While the app is absent the

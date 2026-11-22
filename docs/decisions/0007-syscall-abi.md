@@ -3012,3 +3012,17 @@ unchanged: with no seat registered the kernel's own pointer-path hit-test
 fan drives the delivery record byte-identically — `sys_drag_start`
 branches on `wm_owns_input`, never on which program bound. Each accepted
 submission increments the `drag` counter in the `wm` monitor report.
+
+### Amendment (2026-11-22, card #3943 — M216d seat-chord spellings)
+
+M216d lands six seat rows in `user/go/chords/table.go` — the registry is
+the claim, no ABI surface moves: `ctrl+alt+shift+Left/Right/Up/Down` →
+`sash-left/right/up/down` (the M137a `ctrl+alt+arrows` pane-focus block
+one modifier deeper) and `ctrl+alt+shift+PageUp/PageDown` →
+`space-move-prev/next` (the R5 `ctrl+alt+PageUp/PageDown` space-switch
+block one modifier deeper). The spellings were free at claim time — no
+kernel row, app row, or earlier seat row holds any of the six — and the
+registry's one-owner-per-(Chord, Scope) rule is the enforcement, so no
+reservation row was needed here. `ctrl+shift+n` stays bound; M216d
+changes only what the action does (pin becomes a toggle through the
+rail menu's path), not the chord.

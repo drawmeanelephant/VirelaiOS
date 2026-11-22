@@ -13,8 +13,9 @@
 //	ctrl-1..9     -> focus the Nth rail cell; out-of-range is a no-op (M79f)
 //	ctrl-shift-p  -> the M121a command palette (palette.go; was Pin until
 //	                 #2564 took the chord)
-//	ctrl-shift-n  -> Pin() the focused tab (M121a: re-homed off
-//	                 ctrl+shift+p)
+//	ctrl-shift-n  -> toggle Pin/Unpin on the focused tab (M121a: re-homed
+//	                 off ctrl+shift+p; M216d made it a toggle through the
+//	                 rail menu's own path and marker)
 //	ctrl-shift-t  -> reopen the most recently closed tab (re-exec its bin)
 //	ctrl-shift-d  -> duplicate the focused tab (re-exec its bin)
 //	ctrl-shift-w  -> close the focused tab (M121b; ctrl+w stays the
@@ -45,10 +46,16 @@
 //	rail click    -> top strip, equal-width cells, same TASKBAR+FocusTab
 //	rail drag     -> press/release over different cells → existing Reorder()
 //	rail close-x  -> the cell's rightmost railCloseW px: close that tab (M79b)
+//	rail middle   -> a middle press on any rail cell closes that tab through
+//	                 applyRailClose (M216d); pills and content unaffected
 //	rail hover    -> the cell under the pointer tints; entry marker (M79b)
 //	sash drag     -> press-drag-release on the split divider re-proportions
 //	                 the panes through applySashDrag (M79c); motion while
 //	                 armed is chrome, never content
+//	ctrl-alt-shift-arrows -> nudge the focused pane's nearest ancestor sash
+//	                 of that orientation 32 px through applySashDrag (M216d)
+//	ctrl-alt-shift-pgup/pgdn -> move the focused tab to the neighbouring
+//	                 space through applySpaceMove (M216d)
 //	ordinary keys -> ignored here (ADR 0009: KEY_DOWN still reaches the app)
 //
 // Markers print only after the mutation/syscall that made them true.
@@ -57,10 +64,11 @@
 // M79b (#1705): the rail's close-x and hover highlight live here. Hover-
 // preview stays a later card. Client-area is ignored.
 //
-// M79c (#1706): the sash drag and the split-cycle chord live here too. No
-// keyboard equivalent for the drag itself: a divider is a pointer target,
-// and the cycle chord is the keyboard story, stated here rather than
-// discovered later.
+// M79c (#1706): the sash drag and the split-cycle chord live here too.
+// M216d (#3943) added the keyboard half the drag never had: the
+// ctrl+alt+shift+arrow chords nudge the focused pane's nearest ancestor
+// sash of that orientation, and the split-cycle chord stays the keyboard
+// story for creating and collapsing panes.
 //
 // M71d pick: Ctrl+Shift+T / Ctrl+Shift+D are Zig TABWM's own BT1 bindings
 // (user/src/tabwm.zig:151/:427). They are free on GOTABWM — the only
@@ -613,6 +621,22 @@ func runSeatAction(action string, c chords.Chord) {
 		// M190e (#3240): ctrl+shift+l drops the vault-credential lock
 		// curtain (lockcurtain.go).
 		requestLock()
+	case "sash-left":
+		// M216d (#3943): the sash drag's keyboard half — 32 px through
+		// the same applySashDrag commit a pointer release takes.
+		_ = applySashNudge(SplitVert, -1)
+	case "sash-right":
+		_ = applySashNudge(SplitVert, 1)
+	case "sash-up":
+		_ = applySashNudge(SplitHoriz, -1)
+	case "sash-down":
+		_ = applySashNudge(SplitHoriz, 1)
+	case "space-move-prev":
+		// M216d (#3943): the palette move row's chord — the focused tab
+		// to the neighbouring space.
+		_ = applySpaceMoveStep(-1)
+	case "space-move-next":
+		_ = applySpaceMoveStep(1)
 	}
 }
 
@@ -943,22 +967,16 @@ func altTabNext(count, focus int, shift bool) (int, bool) {
 	return (cur + 1) % count, true
 }
 
+// applyHidPin is the M216d (#3943) pin chord: a TOGGLE through the rail
+// menu's own path — pin and unpin are one state change with one marker
+// shape, so the chord can never disagree with the menu about what the
+// bit means.
 func applyHidPin() bool {
 	id, ok := tabs.Focused()
 	if !ok {
 		return false
 	}
-	restorePaneZoom() // M151a: pin re-partitions + relinks leaves
-	if !tabs.Pin(id) {
-		return false
-	}
-	vi.ConsoleLine(MarkerPin + "id=" + vi.Itoa64(int64(id)) + " on")
-	dumpOrder()
-	// M79g (#1718): Pin() re-partitions the strip (pinned left), so the
-	// file has to be rewritten — an already-pinned tab returns false above
-	// and costs nothing.
-	noteSessionMutation()
-	return true
+	return railMenuPinToggle(id)
 }
 
 // focusByIndex is the shared success path for Alt+Tab, Ctrl+Tab, and
@@ -1252,6 +1270,20 @@ func handleWmPointer(e vi.Event) {
 		// through to the content forward exactly as before.
 		if i, ok := railCellAt(px, py, vi.ScanoutWidth, tabs.Count(), RailHeight); ok {
 			openRailMenu(i)
+			return
+		}
+	}
+	if midDown {
+		// M216d (#3943): a middle press on a rail cell closes that tab
+		// through the close-x's own seam — the whole cell is the target,
+		// not just the 16 px zone. A space pill keeps its left-click
+		// meaning and a middle press on it does nothing; off the rail
+		// the sample keeps its M124e primary-paste fate below.
+		if _, ok := spacePillAt(px, py, vi.ScanoutWidth, RailHeight); ok {
+			return
+		}
+		if i, ok := railCellAt(px, py, vi.ScanoutWidth, tabs.Count(), RailHeight); ok {
+			applyRailClose(i)
 			return
 		}
 	}
@@ -1856,26 +1888,29 @@ func railMenuDuplicate(id uint32) {
 // railMenuPinToggle is the Pin/Unpin row: the ctrl+shift+n state change
 // by tab id — pin re-partitions and relinks the pane leaves exactly like
 // the chord, so the zoom restore and the session write ride along.
-func railMenuPinToggle(id uint32) {
+// M216d (#3943): the chord dispatches through this same function, so it
+// returns whether a mutation landed.
+func railMenuPinToggle(id uint32) bool {
 	i := tabs.index(id)
 	if i < 0 {
-		return
+		return false
 	}
 	restorePaneZoom() // M151a: pin re-partitions + relinks leaves
 	if tabs.At(i).Pinned {
 		if !tabs.Unpin(id) {
-			return
+			return false
 		}
 		vi.ConsoleLine(MarkerPin + "id=" + vi.Itoa64(int64(id)) + " off")
 	} else {
 		if !tabs.Pin(id) {
-			return
+			return false
 		}
 		vi.ConsoleLine(MarkerPin + "id=" + vi.Itoa64(int64(id)) + " on")
 	}
 	dumpOrder()
 	// M79g (#1718): the pin bit is part of the session either way.
 	noteSessionMutation()
+	return true
 }
 
 // applyRailReorder is Zig TABWM reorder_tab: Reorder() then the existing

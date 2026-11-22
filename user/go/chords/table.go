@@ -184,6 +184,30 @@ var Global = Table{
 	{Chord{ModCtrl | ModShift, UsageL}, "seat", ScopeSeat, "lock",
 		"drop the lock curtain — unlock re-auths the vault passphrase",
 		"#3240 (M190e)", false},
+	// M216d (#3943): the pointer-only gestures' keyboard halves. The
+	// sash nudge rides the M137a pane-focus block one modifier deeper —
+	// ctrl+alt+shift+arrows move the focused pane's nearest ancestor
+	// sash of that orientation 32 px through the drag's own commit
+	// path; ctrl+alt+shift+pageup/pagedown carry the focused tab to the
+	// neighbouring space through the palette move's applySpaceMove.
+	{Chord{ModCtrl | ModAlt | ModShift, UsageLeft}, "seat", ScopeSeat, "sash-left",
+		"nudge the focused pane's nearest vertical sash 32 px left",
+		"#3943 (M216d)", false},
+	{Chord{ModCtrl | ModAlt | ModShift, UsageRight}, "seat", ScopeSeat, "sash-right",
+		"nudge the focused pane's nearest vertical sash 32 px right",
+		"#3943 (M216d)", false},
+	{Chord{ModCtrl | ModAlt | ModShift, UsageUp}, "seat", ScopeSeat, "sash-up",
+		"nudge the focused pane's nearest horizontal sash 32 px up",
+		"#3943 (M216d)", false},
+	{Chord{ModCtrl | ModAlt | ModShift, UsageDown}, "seat", ScopeSeat, "sash-down",
+		"nudge the focused pane's nearest horizontal sash 32 px down",
+		"#3943 (M216d)", false},
+	{Chord{ModCtrl | ModAlt | ModShift, UsagePageUp}, "seat", ScopeSeat, "space-move-prev",
+		"move the focused tab to the previous space",
+		"#3943 (M216d)", false},
+	{Chord{ModCtrl | ModAlt | ModShift, UsagePageDown}, "seat", ScopeSeat, "space-move-next",
+		"move the focused tab to the next space (creates it at the end)",
+		"#3943 (M216d)", false},
 
 	// --- apps: each app's own chords, live while that app is focused
 	// (ADR 0009 KEY_DOWN). GOSH's are the shlib line editor's
