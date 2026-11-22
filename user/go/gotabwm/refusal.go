@@ -59,6 +59,11 @@ const (
 	// re-exec, the grant pane's open, or the clipboard write — carrying
 	// the outcome: the pid/ok or the errno that refused the action too.
 	MarkerRefusalAct = "gotabwm: refusal act "
+	// MarkerNotice is printed AFTER a seat notice's toast is queued —
+	// the action-free half of the refusal lane (M216c): a refused split,
+	// a space at the cap, an empty reopen names its reason the same way
+	// an errno refusal does, minus the Retry/Grant/Copy arm.
+	MarkerNotice = "gotabwm: notice "
 
 	// gosetBin is the settings panel the grant action opens (its grants
 	// view is the ADR 0054 consent surface).
@@ -74,6 +79,18 @@ const (
 	refusalTableMax = 8
 	// refusalTextMax bounds the toast text — the crashSnapToast width.
 	refusalTextMax = 24
+)
+
+// The notice contexts (M216c) — each IS the toast text, and every one
+// fits the refusalTextMax budget (the longest is 22 bytes).
+const (
+	noticeSplitOneTab = "split: one tab"
+	noticeSplitPane   = "split: pane limit"
+	noticeSplitDepth  = "split: depth limit"
+	noticeSplitSmall  = "split: too small"
+	noticeSplitNoTab  = "split: no tab left"
+	noticeSpacesLimit = "spaces: limit 4"
+	noticeReopenEmpty = "reopen: nothing closed"
 )
 
 // refusalSeen is the bounded dedupe table: (errno-name + context) → the
@@ -132,6 +149,54 @@ func refusalText(name, ctx string) string {
 	return t
 }
 
+// refusalSeenHit records key's signature at seatTick and reports whether
+// the press is a repeat inside the dedupe window — an absorbed repeat
+// still names itself on serial through the counted dedupe line. False
+// means the caller pushes its toast (a fresh signature or an expired
+// window); the table insert/refresh already ran either way.
+func refusalSeenHit(key, ctx string) bool {
+	oldest := 0
+	for i := 0; i < refusalSeenN; i++ {
+		if refusalSeen[i].tick < refusalSeen[oldest].tick {
+			oldest = i
+		}
+		if refusalSeen[i].key == key {
+			if seatTick-refusalSeen[i].tick < refusalDedupeTicks {
+				refusalSeen[i].tick = seatTick
+				refusalDeduped++
+				vi.ConsoleLine(MarkerRefusalDedupe + ctx +
+					" total=" + vi.Itoa64(int64(refusalDeduped)))
+				return true
+			}
+			refusalSeen[i].tick = seatTick
+			return false
+		}
+	}
+	if refusalSeenN < refusalTableMax {
+		refusalSeen[refusalSeenN].key = key
+		refusalSeen[refusalSeenN].tick = seatTick
+		refusalSeenN++
+	} else {
+		refusalSeen[oldest].key = key
+		refusalSeen[oldest].tick = seatTick
+	}
+	return false
+}
+
+// seatNotice is the refusal lane's action-free sibling (M216c): a seat
+// refusal that names a LIMIT rather than a kernel errno — a refused
+// split, a space at the cap, an empty reopen — still gets a face. The
+// toast carries the context verbatim through notifyPush (no action arm:
+// there is nothing to retry, grant or copy), the same dedupe table
+// absorbs repeats, and the marker prints AFTER the toast is queued.
+func seatNotice(ctx string) {
+	if ctx == "" || refusalSeenHit("notice|"+ctx, ctx) {
+		return
+	}
+	notifyPush(0, ctx, compositeClock)
+	vi.ConsoleLine(MarkerNotice + ctx)
+}
+
 // seatRefusalName converts one refusal into an actionable toast (or absorbs
 // it into the dedupe window). `name` is the errno name — or a lane reason
 // — `ctx` the short site label ("exec MISSING.ELF", "clipboard",
@@ -144,33 +209,9 @@ func seatRefusalName(name, ctx, payload string) {
 	if action == notifyActionCopy && payload == "" {
 		payload = name + " " + ctx
 	}
-	key := name + "|" + ctx
-	oldest := 0
-	for i := 0; i < refusalSeenN; i++ {
-		if refusalSeen[i].tick < refusalSeen[oldest].tick {
-			oldest = i
-		}
-		if refusalSeen[i].key == key {
-			if seatTick-refusalSeen[i].tick < refusalDedupeTicks {
-				refusalSeen[i].tick = seatTick
-				refusalDeduped++
-				vi.ConsoleLine(MarkerRefusalDedupe + ctx +
-					" total=" + vi.Itoa64(int64(refusalDeduped)))
-				return
-			}
-			refusalSeen[i].tick = seatTick
-			goto push
-		}
+	if refusalSeenHit(name+"|"+ctx, ctx) {
+		return
 	}
-	if refusalSeenN < refusalTableMax {
-		refusalSeen[refusalSeenN].key = key
-		refusalSeen[refusalSeenN].tick = seatTick
-		refusalSeenN++
-	} else {
-		refusalSeen[oldest].key = key
-		refusalSeen[oldest].tick = seatTick
-	}
-push:
 	text := refusalText(name, ctx)
 	notifyPushAction(0, text, compositeClock, action, payload, 0)
 	vi.ConsoleLine(MarkerRefusal + name + " " + ctx +

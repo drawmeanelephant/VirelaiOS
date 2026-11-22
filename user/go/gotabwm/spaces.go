@@ -180,7 +180,13 @@ func applySpaceSwitch(dir int) bool {
 		return false
 	}
 	if dst >= spaceN {
-		if dir <= 0 || spaceN >= MaxSpaces {
+		if dir <= 0 {
+			return false
+		}
+		if spaceN >= MaxSpaces {
+			// M216c: the cap refusal gets a face — PageUp's first-space
+			// clamp above stays the silent no-op it always was.
+			seatNotice(noticeSpacesLimit)
 			return false
 		}
 		si, ok := spaceEnsure(spaces[spaceN].Name)
