@@ -900,10 +900,11 @@ vgate_run 12 -- \
 
 vgate_assert 12 serial-contains 'goedit: present'
 # The app's five rows (ctrl+s/z/f/g + M192g's ctrl+p quick-open — the
-# undo row is M121e's) + every seat row (40 in the shipped table) = 45;
+# undo row is M121e's) + every seat row (46 since M216d's pin/sash/space
+# chords) = 51;
 # NO kernel-terminal rows — this window is not a tty front-end, so
 # those chords do not answer here.
-vgate_assert 12 serial-contains 'goedit: hints n=45'
+vgate_assert 12 serial-contains 'goedit: hints n=51'
 vgate_assert 12 serial-contains 'goedit: hints row ctrl+s publish the buffer (save)'
 vgate_assert 12 serial-contains 'goedit: hints row ctrl+f '
 vgate_assert 12 serial-contains 'goedit: hints row ctrl+g '

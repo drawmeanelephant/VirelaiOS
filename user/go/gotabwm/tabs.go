@@ -113,6 +113,12 @@ type Tab struct {
 	// has no frozen check anywhere in its close path, so GOTABWM refuses
 	// nothing on a frozen tab either. The badge just rides the rail.
 	Frozen bool
+	// M216e (#3944): the window's kind-20 unsaved bit (flags bit 12,
+	// sys_win_set_unsaved) — the app says its document holds edits the
+	// close would lose. The rail paints the dot and closeTabByID offers
+	// the Reopen toast from it. Seat-held only: it is never written to
+	// .tabs, and a fresh declare starts clean.
+	Unsaved bool
 	// M125a (#2586): the app's serialized state — a blob the seat asked
 	// for (or the app pushed) and stores verbatim, at most vi.AppStateMax
 	// bytes, tagged with the app's own format version. It rides the Tab
@@ -283,6 +289,11 @@ const (
 	// — the rail's "this tab is coming back" mark while the re-exec'd
 	// pid's declare is awaited. One-shot, like MarkerRailIcons.
 	MarkerRailSpin = "gotabwm: rail spinner qoi "
+	// M216e (#3944): the unsaved bit's two receipts. `unsaved id=` fires
+	// on each kind-20 bit-12 transition (`on`/`off`); `unsaved close`
+	// prints after a dirty tab's close queued its Reopen toast.
+	MarkerUnsaved      = "gotabwm: unsaved id="
+	MarkerUnsavedClose = "gotabwm: unsaved close id="
 )
 
 // mruMax is the M151a focus-ring bound — the card's eight ids.
@@ -347,6 +358,29 @@ func (s *TabStrip) Thaw(id uint32) bool {
 	}
 	s.tabs[i].Frozen = false
 	return true
+}
+
+// SetUnsaved records id's kind-20 bit-12 state on its row. False when id
+// is missing or the bit already reads `on` — the caller prints the
+// transition marker only on a real change, so a mirror replay stays
+// silent the way the kernel's own no-op fan does.
+func (s *TabStrip) SetUnsaved(id uint32, on bool) bool {
+	i := s.index(id)
+	if i < 0 || s.tabs[i].Unsaved == on {
+		return false
+	}
+	s.tabs[i].Unsaved = on
+	return true
+}
+
+// Peek returns id's row without mutating it — the close path reads the
+// dirty bit and title BEFORE CloseTab shifts the row out.
+func (s *TabStrip) Peek(id uint32) (Tab, bool) {
+	i := s.index(id)
+	if i < 0 {
+		return Tab{}, false
+	}
+	return s.tabs[i], true
 }
 
 // FrozenCount is how many tabs carry the frozen badge (the restore line's n).
@@ -1625,12 +1659,25 @@ func paintRail(scan []byte, width, height, stripH int, ts *TabStrip, hover, clos
 				}
 			}
 		}
+		// M216e (#3944): the unsaved dot — Zig's 4x4 accent square just
+		// left of the close-x (tabwm.zig:3326-3344), the rail's "this
+		// tab holds edits a close would lose" mark. Painted on every
+		// cell state like the frozen badge; the title run clips short
+		// of it through railUnsavedSlot's bound.
+		unsavedSlot, unsavedOK := railUnsavedSlot(x, w, stripH)
+		dotPainted := t.Unsaved && unsavedOK
+		if dotPainted {
+			written += seatFill(c, unsavedSlot, tok.Accent)
+		}
 		// M216b (#3941): the title run — drawn after the icon/badge slot,
 		// clipped before the close zone, seatFitText-truncated, and
 		// skipped when the cell cannot hold three glyphs. The focused
 		// cell takes Ink, the rest InkMuted.
 		if title := railTitleText(t); title != "" {
 			clipRight := railContentRight(x, w, stripH)
+			if dotPainted {
+				clipRight = unsavedSlot.X - railTitleGap
+			}
 			titleX := contentX + railTitleGap
 			switch {
 			case badge:
@@ -1757,6 +1804,24 @@ func railPinSlot(x, w, stripH int) (widgets.Rect, bool) {
 		return widgets.Rect{}, false
 	}
 	return widgets.Rect{X: sx, Y: (stripH - railPinH) / 2, W: railPinW, H: railPinH}, true
+}
+
+// M216e (#3944): the unsaved dot's geometry — Zig's 4x4 accent square,
+// vertically centred just left of the close zone (the close-x's own
+// inset gap separates them). railContentRight is the bound, so a cell
+// too narrow for the dot drops it rather than paint over the close-x.
+const (
+	railUnsavedW     = 4
+	railUnsavedInset = 2
+)
+
+func railUnsavedSlot(x, w, stripH int) (widgets.Rect, bool) {
+	right := railContentRight(x, w, stripH)
+	dx := right - railUnsavedW - railUnsavedInset
+	if stripH < railUnsavedW || dx < x+1 {
+		return widgets.Rect{}, false
+	}
+	return widgets.Rect{X: dx, Y: (stripH - railUnsavedW) / 2, W: railUnsavedW, H: railUnsavedW}, true
 }
 
 // railPinPoints inscribes the master's diamond in r — top, right,

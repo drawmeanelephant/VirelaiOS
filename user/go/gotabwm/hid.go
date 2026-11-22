@@ -222,6 +222,28 @@ func noteKernelFocus(e vi.Event) {
 	}
 }
 
+// noteUnsavedMirror folds one kind-20 registry mirror's unsaved bit
+// (flags bit 12 — sys_win_set_unsaved, fanned by the kernel on every
+// change) into the tab row. Released mirrors are skipped: the row is
+// already leaving through CloseTab, which reads the bit for its Reopen
+// toast before the mirror drains. The marker names each real transition;
+// a replayed mirror is silent inside SetUnsaved.
+func noteUnsavedMirror(e vi.Event) {
+	if e.Kind != vi.EvWmWindow || e.Flags&(1<<13) != 0 {
+		return
+	}
+	id := uint32(e.Flags & 0xff)
+	on := e.Flags&(1<<12) != 0
+	if !tabs.SetUnsaved(id, on) {
+		return
+	}
+	suffix := " off"
+	if on {
+		suffix = " on"
+	}
+	vi.ConsoleLine(MarkerUnsaved + vi.Itoa64(int64(id)) + suffix)
+}
+
 // hidChordHold is how many composite ticks the two-tab choreography waits
 // after first seeing n>=2, so a rail click (3×2.5 s), a press/release drag
 // (pointerDragHold), `--input-string` into GOEDIT, and `--input-chords`

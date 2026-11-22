@@ -123,6 +123,9 @@ const (
 	notifyActionGrant     uint8 = 3
 	notifyActionCopy      uint8 = 4
 	notifyActionDropOpen  uint8 = 5
+	// M216e (#3944): the dirty-close offer — its click runs applyReopen,
+	// the same LIFO pop ctrl+shift+t takes, so the toast IS the undo.
+	notifyActionUnsavedReopen uint8 = 6
 )
 
 // notifyToast is one queued notification. tabID is the SENDER (the window

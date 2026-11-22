@@ -2594,10 +2594,15 @@ PY
 #     not left: no rail-click, no drag arm, no focus change). The press
 #     closes cell 0's tab through applyRailClose — the close-x's own
 #     seam, so 'host close id=' / 'tab close id=' and 'rail n=2' follow.
-#   chords  (after 'rail n=2'):  ctrl-shift-n pins the focused tab (the
-#     M216d toggle's first half), ctrl-shift-n again UNPINS it through
-#     the rail menu's own path — 'pin id=<focus> on' then ' off', and
-#     the order line's pin bits all read 0 afterwards.
+#   chords  (after 'tab close id='):  ctrl-shift-n pins the focused tab
+#     (the M216d toggle's first half), ctrl-shift-n again UNPINS it
+#     through the rail menu's own path — 'pin id=<focus> on' then ' off',
+#     and the order line's pin bits all read 0 afterwards. The trigger is
+#     the close marker, NOT 'rail n=2': the three-client declare prints a
+#     TRANSIENT n=2 while the third app is still landing, and a substring
+#     watcher fires on its first hit — the chords then land before the
+#     middle click, the pin fronts cell 0, and the click closes the wrong
+#     tab (observed flaky on unmodified main, M216e fixup).
 vgate_run 25 -- \
     --screen '$RUN_DIR/screen-25' \
     --via-virtio \
@@ -2607,7 +2612,7 @@ vgate_run 25 -- \
     --pointer-virtio '100,10,mc' \
     --pointer-virtio-after 'gotabwm: rail n=3' \
     --input-chords 'ctrl-shift-n,ctrl-shift-n' \
-    --input-chords-after 'gotabwm: rail n=2' \
+    --input-chords-after 'gotabwm: tab close id=' \
     --script3 '$RUN_DIR/script3.txt' \
     --script3-after 'wm: unregistered, shim resumed' \
     --script-expect 'rx-gotabwm-hid-ok' --timeout 420
@@ -2697,4 +2702,112 @@ if not (rail3_i < host_i < close_i < rail2_i < pin_on_i < pin_off_i < o_i):
         rail3_i, host_i, rail2_i, pin_on_i, pin_off_i, o_i))
 print("M216d: mc closed cell0 id=%s (unfocused), toggle on@%d off@%d "
       "focus %s" % (cell0_id, pin_on_i, pin_off_i, focus_id))
+PY
+
+# ---------------------------------------------------------------------------
+# Run 26 (M216e / #3944): the dirty tab's dot and its Reopen toast.
+#
+# Live seat + ONE GOEDIT on /host/EDIT/M87.TXT — the two-runtime boot the
+# #1449 wall allows (script-m87 is the live-seat script: no demo
+# choreography to close the tab underneath the leg). 'XY' types into the
+# buffer; GOEDIT's slot-53 bit fans the kind-20 mirror and the seat marks
+# the row `gotabwm: unsaved id=<id> on` — the rail dot's own receipt.
+# ctrl-shift-w then closes the dirty tab: the close-time state ask already
+# fed the reopen LIFO, and the seat queues the `unsaved: <title>` action
+# toast (`gotabwm: unsaved close id=`). The pointer click at the toast's
+# centre IS the undo — applyReopen re-execs GOEDIT.ELF, the blob replays
+# the undo ring, and the follow-up ctrl-s saves the restored bytes
+# exactly: M87.TXT is 10 bytes, 'XY' makes 12.
+vgate_run 26 -- \
+    --screen '$RUN_DIR/screen-26' \
+    --via-virtio \
+    --script '$RUN_DIR/script-m87.txt' \
+    --script2 '$RUN_DIR/script2-m87-edit.txt' \
+    --script2-after 'gotabwm: win focus' \
+    --input-string 'XY' \
+    --input-string-after 'goedit: present' \
+    --input-chords 'ctrl-shift-w' \
+    --input-chords-after 'gotabwm: unsaved id=' \
+    --pointer-virtio '112,702,c' \
+    --pointer-virtio-after 'gotabwm: notify paint id=' \
+    --input-chords2 'ctrl-s' \
+    --input-chords2-after 'goedit: state restored' \
+    --script3 '$RUN_DIR/script3-m87.txt' \
+    --script3-after 'goedit: saved /host/EDIT/M87.TXT n=12' \
+    --script-expect 'rx-gotabwm-menu-ok' --timeout 300
+
+vgate_assert 26 serial-contains 'VirelaiOS kernel has seized control.'
+vgate_assert 26 serial-contains 'exec: loaded GOTABWM.ELF'
+vgate_assert 26 serial-contains 'exec: loaded GOEDIT.ELF'
+vgate_assert 26 serial-contains 'gotabwm: registered'
+vgate_assert 26 serial-contains 'gotabwm: mode live'
+vgate_assert 26 serial-contains 'gotabwm: rail n=1'
+vgate_assert 26 serial-contains 'goedit: present'
+vgate_assert 26 serial-contains 'goedit: dirty'
+# The kind-20 bit-12 mirror marked the row — the rail dot's receipt.
+vgate_assert 26 serial-contains 'gotabwm: unsaved id='
+vgate_assert 26 serial-contains ' on'
+# The dirty close queued the Reopen toast and named itself.
+vgate_assert 26 serial-contains 'gotabwm: host close id='
+vgate_assert 26 serial-contains 'gotabwm: tab close id='
+vgate_assert 26 serial-contains 'gotabwm: unsaved close id='
+vgate_assert 26 serial-contains 'gotabwm: notify paint id='
+vgate_assert 26 serial-contains 'gotabwm: notify dismiss id='
+# The click ran applyReopen: the LIFO supplied the bin, the blob restored
+# the typed bytes, and the save proves them (10 seed + 2 typed = 12).
+vgate_assert 26 serial-contains 'gotabwm: reopen GOEDIT.ELF'
+vgate_assert 26 serial-contains 'gotabwm: tab open id='
+vgate_assert 26 serial-contains 'goedit: state restored'
+vgate_assert 26 serial-contains 'goedit: saved /host/EDIT/M87.TXT n=12'
+vgate_assert 26 serial-contains 'rx-gotabwm-menu-ok'
+vgate_assert 26 serial-absent '[EXC] parking:'
+vgate_assert 26 serial-absent 'exited status=139'
+vgate_assert 26 python <<'PY'
+import os, re, sys
+ser = open(os.environ["VG_SER"], errors="replace").read().splitlines()
+
+def first_after(prefix, start=0):
+    for i in range(start, len(ser)):
+        if ser[i].startswith(prefix):
+            return i
+    sys.exit("missing %s after %d" % (prefix, start))
+
+def first_match_after(rx, start):
+    for i in range(start, len(ser)):
+        m = rx.match(ser[i])
+        if m:
+            return i, m
+    sys.exit("missing /%s/ after %d" % (rx.pattern, start))
+
+# The bit-12 mirror marked the SAME window id the close then dropped, and
+# the 'on' edge precedes the close markers.
+open_i, open_m = first_match_after(re.compile(r"^gotabwm: tab open id=(\d+)$"), 0)
+uns_i, uns_m = first_match_after(
+    re.compile(r"^gotabwm: unsaved id=(\d+) on$"), open_i)
+if uns_m.group(1) != open_m.group(1):
+    sys.exit("unsaved on id=%s is not the opened tab id=%s" % (
+        uns_m.group(1), open_m.group(1)))
+close_i = first_after("gotabwm: tab close id=" + uns_m.group(1), uns_i)
+uc_i = first_after("gotabwm: unsaved close id=" + uns_m.group(1), close_i)
+paint_i = first_after("gotabwm: notify paint id=", uc_i)
+dism_i = first_after("gotabwm: notify dismiss id=", paint_i)
+reop_i = first_after("gotabwm: reopen GOEDIT.ELF", dism_i)
+rest_i = first_after("goedit: state restored", reop_i)
+save_i = first_after("goedit: saved /host/EDIT/M87.TXT n=12", rest_i)
+if not (uns_i < close_i < uc_i < paint_i < dism_i < reop_i < rest_i < save_i):
+    sys.exit("M216e leg out of order: on@%d close@%d uc@%d paint@%d "
+             "dismiss@%d reopen@%d restored@%d saved@%d" % (
+                 uns_i, close_i, uc_i, paint_i, dism_i, reop_i, rest_i, save_i))
+# The reopened tab is a NEW window id — its own dirty cycle re-marks it,
+# and the save's clear is the 'off' edge on that id.
+new_open_i, new_open_m = first_match_after(
+    re.compile(r"^gotabwm: tab open id=(\d+)$"), reop_i)
+new_uns_i, new_uns_m = first_match_after(
+    re.compile(r"^gotabwm: unsaved id=(\d+) on$"), new_open_i)
+if new_uns_m.group(1) != new_open_m.group(1):
+    sys.exit("reopened tab's unsaved id=%s is not its window id=%s" % (
+        new_uns_m.group(1), new_open_m.group(1)))
+print("M216e: dirty id=%s on@%d close@%d toast@%d dismiss@%d reopen@%d "
+      "restored@%d saved-n12@%d" % (
+          uns_m.group(1), uns_i, close_i, uc_i, dism_i, reop_i, rest_i, save_i))
 PY

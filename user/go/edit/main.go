@@ -578,6 +578,11 @@ type editor struct {
 	pend    []*editState
 	pendBad bool
 
+	// M216e (#3944): the window's kind-20 unsaved bit mirrors the RING's
+	// dirty state, not just the active doc's — syncUnsaved diffs it once
+	// per loop pass and spends the slot-53 syscall only on a transition.
+	unsavedSent bool
+
 	// M124b (#2581): the shared picker and the discard-confirm dialog.
 	// pickOpenAsk marks that the open dialog's Yes answer means "now open
 	// the picker" — the replace flow is the only one that can destroy
@@ -828,6 +833,10 @@ func main() {
 		// M124a-2: seat drag frames for this window — a delivered drop runs
 		// DropTarget (which repaints itself) here, one poll per loop turn.
 		ta.PollDrag()
+		// M216e: the ring's dirty aggregate is the window's unsaved bit —
+		// a switch to a clean buffer must not clear it while a parked doc
+		// still holds edits, and a save on the last dirty doc must.
+		e.syncUnsaved()
 		// M124e (#2584): seat primary-selection deliveries land the same
 		// way; and a selection the user just changed publishes itself the
 		// same pass (publishSel diffs, so a quiet pass costs a compare).
@@ -2172,6 +2181,25 @@ func (e *editor) markDirty() {
 	}
 	e.dirty = true
 	vi.ConsoleLine(markerDirty)
+}
+
+// syncUnsaved pushes the ring's dirty aggregate to the window's slot-53
+// unsaved bit — ON while any open buffer holds edits, OFF when the last
+// one saves or closes. The diff latch keeps the syscall off the keystroke
+// path: a quiet pass costs one slice walk, a transition costs one call.
+func (e *editor) syncUnsaved() {
+	on := false
+	for _, d := range e.docList() {
+		if d.dirty {
+			on = true
+			break
+		}
+	}
+	if on == e.unsavedSent {
+		return
+	}
+	e.unsavedSent = on
+	vi.WinSetUnsaved(int(e.winID()), on)
 }
 
 // save publishes the whole buffer to the path and reports whether the bytes

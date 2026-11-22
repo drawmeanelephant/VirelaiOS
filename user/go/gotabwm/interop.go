@@ -797,6 +797,9 @@ func closeTabByID(id uint32) bool {
 	if id <= 255 && (wdWedged[id] || wdBusy[id]) {
 		wdLog(MarkerWatchdogClosed + "id=" + vi.Itoa64(int64(id)) + " how=close")
 	}
+	// M216e (#3944): the dirty bit and title are read BEFORE CloseTab
+	// shifts the row out — the Reopen toast below names what was lost.
+	peek, _ := tabs.Peek(id)
 	closed := tabs.CloseTab(id)
 	syncHostedFromStrip()
 	if closed {
@@ -807,6 +810,23 @@ func closeTabByID(id uint32) bool {
 		// the file keeps the previous contents rather than publishing an
 		// empty session.
 		noteSessionMutation()
+		// M216e (#3944): a dirty close is recoverable — the save ask
+		// above already fed the reopen LIFO — but until now nothing
+		// told the user. The action toast names the loss inside the
+		// 24-byte budget and its click IS the undo: applyReopen pops
+		// the LIFO this close just wrote.
+		if peek.Unsaved {
+			name := peek.Title
+			if name == "" {
+				name = peek.Bin
+			}
+			text := "unsaved: " + name
+			if len(text) > refusalTextMax {
+				text = text[:refusalTextMax]
+			}
+			notifyPushAction(0, text, compositeClock, notifyActionUnsavedReopen, "", 0)
+			vi.ConsoleLine(MarkerUnsavedClose + vi.Itoa64(int64(id)))
+		}
 	}
 	if nid, ok := tabs.Focused(); ok {
 		// Closing one side of a split leaves a single tab: restore

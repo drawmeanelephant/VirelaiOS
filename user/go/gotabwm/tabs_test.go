@@ -1486,3 +1486,103 @@ func TestPaintRailPinnedMark(t *testing.T) {
 		t.Fatal("pinned title painted at the unpinned origin")
 	}
 }
+
+// M216e (#3944): the kind-20 unsaved bit rides the tab row — SetUnsaved
+// records transitions only (a replayed mirror is a no-op), Peek reads the
+// row the close path is about to lose, and the bit never enters the
+// session file's shape (tabFlags has no arm for it).
+func TestSetUnsavedTransitions(t *testing.T) {
+	var s TabStrip
+	if !s.OpenTab(3, "Edit") {
+		t.Fatal("OpenTab")
+	}
+	if s.At(0).Unsaved {
+		t.Fatal("a fresh tab opened dirty")
+	}
+	if !s.SetUnsaved(3, true) {
+		t.Fatal("SetUnsaved on")
+	}
+	if s.SetUnsaved(3, true) {
+		t.Fatal("a replayed on-mirror reported a transition")
+	}
+	if s.SetUnsaved(9, true) || s.SetUnsaved(9, false) {
+		t.Fatal("SetUnsaved on a missing id reported a transition")
+	}
+	if !s.SetUnsaved(3, false) {
+		t.Fatal("SetUnsaved off")
+	}
+	if s.SetUnsaved(3, false) {
+		t.Fatal("a replayed off-mirror reported a transition")
+	}
+	// Peek hands the close path the row before CloseTab shifts it out.
+	if !s.SetUnsaved(3, true) {
+		t.Fatal("SetUnsaved on again")
+	}
+	p, ok := s.Peek(3)
+	if !ok || !p.Unsaved || p.Title != "Edit" {
+		t.Fatalf("Peek = %+v ok=%v", p, ok)
+	}
+	if _, ok := s.Peek(9); ok {
+		t.Fatal("Peek on a missing id")
+	}
+	// The session flags byte has no unsaved arm — tabFlags stays 0/1/3.
+	if f := tabFlags(s.At(0)); f != 0 {
+		t.Fatalf("tabFlags = %#x want 0 — Unsaved must not persist", f)
+	}
+}
+
+// M216e (#3944): the rail's dirty dot — Zig's 4x4 accent square just
+// left of the close-x (tabwm.zig:3326), painted on the unsaved cell only
+// and clipped out of the title run's way.
+func TestPaintRailUnsavedDot(t *testing.T) {
+	tok := theme.Current
+	theme.Current = theme.Dark
+	t.Cleanup(func() { theme.Current = tok })
+	stubSeatRegistry(t, nil)
+
+	const w, h = 200, 40
+	var s TabStrip
+	if !s.OpenTab(3, "Edit") {
+		t.Fatal("OpenTab")
+	}
+	clean := make([]byte, w*h*4)
+	paintRail(clean, w, h, RailHeight, &s, -1, -1)
+	cleanPix := asUint32(clean)
+
+	slot, ok := railUnsavedSlot(0, w, RailHeight)
+	if !ok {
+		t.Fatal("railUnsavedSlot refused a 200px cell")
+	}
+	if slot.W != railUnsavedW || slot.H != railUnsavedW {
+		t.Fatalf("dot slot = %+v want %dx%d", slot, railUnsavedW, railUnsavedW)
+	}
+	// The slot sits left of the close zone's left edge.
+	if right := railContentRight(0, w, RailHeight); slot.X+slot.W > right {
+		t.Fatalf("dot right edge %d crosses the close bound %d", slot.X+slot.W, right)
+	}
+	for y := slot.Y; y < slot.Y+slot.H; y++ {
+		for x := slot.X; x < slot.X+slot.W; x++ {
+			if cleanPix[y*w+x]&0xffffff == theme.Current.Accent {
+				t.Fatalf("clean cell painted accent at (%d,%d)", x, y)
+			}
+		}
+	}
+
+	if !s.SetUnsaved(3, true) {
+		t.Fatal("SetUnsaved")
+	}
+	dirty := make([]byte, w*h*4)
+	paintRail(dirty, w, h, RailHeight, &s, -1, -1)
+	dirtyPix := asUint32(dirty)
+	lit := 0
+	for y := slot.Y; y < slot.Y+slot.H; y++ {
+		for x := slot.X; x < slot.X+slot.W; x++ {
+			if dirtyPix[y*w+x]&0xffffff == theme.Current.Accent {
+				lit++
+			}
+		}
+	}
+	if lit != railUnsavedW*railUnsavedW {
+		t.Fatalf("unsaved dot painted %d accent px, want %d", lit, railUnsavedW*railUnsavedW)
+	}
+}
