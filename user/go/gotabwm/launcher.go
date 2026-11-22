@@ -46,7 +46,7 @@ const (
 	MarkerLaunchEmblem  = "gotabwm: launcher emblem "
 	// MarkerLaunchIcons latches the first paint pass that put a staged
 	// raster icon on a result row — the icon= seam's painted half.
-	MarkerLaunchIcons   = "gotabwm: launcher icons n="
+	MarkerLaunchIcons = "gotabwm: launcher icons n="
 	// M123b (#2576): the zero-match empty state — printed once per filter
 	// change from the frame that painted the shared plate, not per paint.
 	MarkerLaunchEmpty = "gotabwm: launcher empty"
@@ -355,6 +355,9 @@ func openLauncher() {
 		launch.prior, _ = tabs.Focused()
 		if !acquireLauncherFocus() {
 			vi.ConsoleLine("gotabwm: launcher unavailable " + launch.err)
+			if launch.err == windowLimitText {
+				noteWindowLimit("")
+			}
 			// Never claim a modal menu while an app still owns keyboard focus.
 			// The always-visible button paints the failed-open error instead.
 			launch.open = launch.sink != 0
@@ -506,11 +509,7 @@ func (l *launcherState) execManifestRow() {
 	// Preserve the manifest's fixed argv; v1 rows still launch with argc=0.
 	_, err := execApp(bin, e.Args...)
 	if err != nil {
-		vi.ConsoleLine(MarkerLaunchMissing + e.Bin)
-		launch.err = "Launch failed: " + bin
-		// M123a (#2575): the serial marker keeps its job; the toast
-		// gives the refusal a face with a per-errno action.
-		seatRefusalErr(err, "exec "+bin, bin)
+		launch.launchFailed(bin, err)
 		return
 	}
 	// M188a: the marker reports the declared ceiling the kernel now
@@ -528,6 +527,21 @@ func (l *launcherState) execManifestRow() {
 	if releaseLauncherFocus(false) {
 		finishLauncher()
 	}
+}
+
+// launchFailed is the launcher's face for a refused exec. M216m (#3952):
+// the window ceiling is not a missing binary — the guard already printed
+// its marker and raised the notice, so the strip only names the limit.
+func (l *launcherState) launchFailed(bin string, err error) {
+	if err == errWindowLimit {
+		l.err = windowLimitText
+		return
+	}
+	vi.ConsoleLine(MarkerLaunchMissing + bin)
+	l.err = "Launch failed: " + bin
+	// M123a (#2575): the serial marker keeps its job; the toast
+	// gives the refusal a face with a per-errno action.
+	seatRefusalErr(err, "exec "+bin, bin)
 }
 
 // joinSpace renders a decoded argv for the marker. It is the inverse of the
@@ -784,9 +798,7 @@ func (l *launcherState) execVerbRow(ci int) {
 		return
 	}
 	if _, err := execApp(v.bin, v.argv...); err != nil {
-		vi.ConsoleLine(MarkerLaunchMissing + v.bin)
-		l.err = "Launch failed: " + v.bin
-		seatRefusalErr(err, "exec "+v.bin, v.bin)
+		l.launchFailed(v.bin, err)
 		return
 	}
 	vi.ConsoleLine(MarkerLaunchExec + v.bin + " argv=" + joinSpace(v.argv))
@@ -805,9 +817,7 @@ func launchExecSearch(q string) bool {
 		return false
 	}
 	if _, err := execApp(gofilesBin, "--search", q); err != nil {
-		vi.ConsoleLine(MarkerLaunchMissing + gofilesBin)
-		launch.err = "Launch failed: " + gofilesBin
-		seatRefusalErr(err, "exec "+gofilesBin, gofilesBin)
+		launch.launchFailed(gofilesBin, err)
 		return false
 	}
 	vi.ConsoleLine(MarkerLaunchSearch + q)
@@ -1149,7 +1159,7 @@ func paintLauncher(scan []byte, width, height int) int {
 		tx := x + 6
 		if name := launch.catalog[ci].IconArt; name != "" {
 			if ic := art.Load(name); ic != nil {
-				ir := widgets.Rect{X: x + 4, Y: y + (rh - launchIconPx) / 2,
+				ir := widgets.Rect{X: x + 4, Y: y + (rh-launchIconPx)/2,
 					W: launchIconPx, H: launchIconPx}
 				draw.BlitScaled(c, ic, ir)
 				tx = ir.Right() + 4

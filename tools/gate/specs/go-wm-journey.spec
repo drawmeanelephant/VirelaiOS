@@ -1143,8 +1143,78 @@ print("restaged SETTINGS.TXT + SETTINGS.HC; dropped %d stale A11Y.* "
       "outline(s)" % len(stale))
 PY
 
+
 # ===========================================================================
-# Run 04 (M216d / #3943): the pointer gestures' keyboard halves, live mode.
+# Run 04 (M216c / #3942): a refusal has a face. One tab open, the split
+# chord refuses 'split: one tab'; four PageDowns mint spaces "2"-"4" and
+# the press at the cap refuses 'spaces: limit 4'. Each repeat inside the
+# dedupe window prints the counted 'refusal dedupe' line instead of a
+# second toast — the notice lane's absorption, pinned on serial. The leg
+# mutates nothing the other runs assert: it never splits, never moves a
+# tab, and its spaces die with the boot.
+vgate_file script-04.txt <<'EOF'
+vf rm GOTABWM.DEMO
+vf rm SESSION.TABS
+vf rm SESSION.PANES
+vf rm SNAPSHOT.BUNDLE
+vf rm SNAPSHOT.RESTORE
+set GOMAXPROCS=1
+wm
+exec GOTABWM.ELF
+EOF
+
+vgate_file script2-04.txt <<'EOF'
+dui focus 0
+exec GOCALC.ELF
+EOF
+
+vgate_run 04 -- \
+    --screen '$RUN_DIR/screen-04' \
+    --via-virtio --cvc-snap \
+    --script '$RUN_DIR/script-04.txt' \
+    --script2 '$RUN_DIR/script2-04.txt' \
+    --script2-after 'gotabwm: win focus' \
+    --input-chords 'ctrl-shift-v,ctrl-shift-v,ctrl-alt-pagedown,ctrl-alt-pagedown,ctrl-alt-pagedown,ctrl-alt-pagedown,ctrl-alt-pagedown' \
+    --input-chords-after 'gotabwm: rail n=1' \
+    --script-expect 'gotabwm: refusal dedupe spaces: limit 4' --script-expect-tail 20 --timeout 300
+
+# --- the opt-in seat, live mode ------------------------------------------
+vgate_assert 04 serial-contains 'VirelaiOS kernel has seized control.'
+vgate_assert 04 serial-contains 'exec: loaded GOTABWM.ELF'
+vgate_assert 04 serial-contains 'gotabwm: registered'
+vgate_assert 04 serial-contains 'gotabwm: mode live'
+vgate_assert 04 serial-contains 'exec: loaded GOCALC.ELF'
+vgate_assert 04 serial-contains 'gotabwm: rail n=1'
+# --- the refused split names its reason; the repeat dedupes ---------------
+vgate_assert 04 serial-contains 'gotabwm: notice split: one tab'
+vgate_assert 04 serial-contains 'gotabwm: refusal dedupe split: one tab'
+# --- the space cap: three PageDowns mint "2"-"4", the fourth refuses ------
+vgate_assert 04 serial-contains 'gotabwm: space new name=2'
+vgate_assert 04 serial-contains 'gotabwm: space new name=3'
+vgate_assert 04 serial-contains 'gotabwm: space new name=4'
+vgate_assert 04 serial-contains 'gotabwm: space switch 3->4'
+vgate_assert 04 serial-contains 'gotabwm: notice spaces: limit 4'
+vgate_assert 04 serial-contains 'gotabwm: refusal dedupe spaces: limit 4'
+vgate_assert 04 serial-absent '[EXC] parking:'
+vgate_assert 04 serial-absent 'exited status=139'
+# Order, not just presence: the cap notice can only print after the
+# fourth space exists, and each dedupe line follows its notice.
+vgate_assert 04 python <<'PY'
+import os, sys
+ser = open(os.environ["VG_SER"], errors="replace").read()
+i_n4 = ser.find("gotabwm: space new name=4")
+i_ns = ser.find("gotabwm: notice spaces: limit 4")
+i_nd = ser.find("gotabwm: refusal dedupe spaces: limit 4")
+i_st = ser.find("gotabwm: notice split: one tab")
+i_sd = ser.find("gotabwm: refusal dedupe split: one tab")
+if not (0 <= i_st < i_sd and 0 <= i_n4 < i_ns < i_nd):
+    sys.exit("notice order wrong: %d %d %d %d %d"
+             % (i_st, i_sd, i_n4, i_ns, i_nd))
+print("refusals ordered: split notice<dedupe; space4<notice<dedupe")
+PY
+
+# ===========================================================================
+# Run 05 (M216d / #3943): the pointer gestures' keyboard halves, live mode.
 # GOCALC + NOTE open as two tabs (NOTE declares last, so it is focused);
 # one chord burst drives every new seat row end to end:
 #
@@ -1167,7 +1237,7 @@ PY
 # The sash markers pin the 32 px step and the from/to centres; the space
 # markers pin create-dormant vs switch — the two halves the palette move
 # and the switch chord already own, now reachable without the pointer.
-vgate_file script-04.txt <<'EOF'
+vgate_file script-05.txt <<'EOF'
 vf rm GOTABWM.DEMO
 vf rm SESSION.TABS
 vf rm SESSION.PANES
@@ -1178,55 +1248,55 @@ wm
 exec GOTABWM.ELF
 EOF
 
-vgate_file script2-04.txt <<'EOF'
+vgate_file script2-05.txt <<'EOF'
 dui focus 0
 exec GOCALC.ELF
 exec NOTE.ELF
 EOF
 
-vgate_file script3-04.txt <<'EOF'
+vgate_file script3-05.txt <<'EOF'
 wm
 dui
 echo rx-gotabwm-m216d-ok
 EOF
 
-vgate_run 04 -- \
-    --screen '$RUN_DIR/screen-04' \
+vgate_run 05 -- \
+    --screen '$RUN_DIR/screen-05' \
     --via-virtio \
-    --script '$RUN_DIR/script-04.txt' \
-    --script2 '$RUN_DIR/script2-04.txt' \
+    --script '$RUN_DIR/script-05.txt' \
+    --script2 '$RUN_DIR/script2-05.txt' \
     --script2-after 'gotabwm: win focus' \
     --input-chords 'ctrl-shift-v,ctrl-shift-alt-left,ctrl-shift-alt-right,ctrl-shift-v,ctrl-shift-alt-up,ctrl-shift-alt-down,ctrl-shift-alt-pagedown,ctrl-alt-pagedown,ctrl-shift-alt-pageup,ctrl-alt-pageup' \
     --input-chords-after 'gotabwm: rail n=2' \
-    --script3 '$RUN_DIR/script3-04.txt' \
+    --script3 '$RUN_DIR/script3-05.txt' \
     --script3-after 'gotabwm: space switch 2->1' \
     --script-expect 'rx-gotabwm-m216d-ok' --timeout 300
 
-vgate_assert 04 serial-contains 'VirelaiOS kernel has seized control.'
-vgate_assert 04 serial-contains 'exec: loaded GOTABWM.ELF'
-vgate_assert 04 serial-contains 'exec: loaded GOCALC.ELF'
-vgate_assert 04 serial-contains 'exec: loaded NOTE.ELF'
-vgate_assert 04 serial-contains 'gotabwm: registered'
-vgate_assert 04 serial-contains 'gotabwm: mode live'
-vgate_assert 04 serial-contains 'gotabwm: rail n=2'
+vgate_assert 05 serial-contains 'VirelaiOS kernel has seized control.'
+vgate_assert 05 serial-contains 'exec: loaded GOTABWM.ELF'
+vgate_assert 05 serial-contains 'exec: loaded GOCALC.ELF'
+vgate_assert 05 serial-contains 'exec: loaded NOTE.ELF'
+vgate_assert 05 serial-contains 'gotabwm: registered'
+vgate_assert 05 serial-contains 'gotabwm: mode live'
+vgate_assert 05 serial-contains 'gotabwm: rail n=2'
 # --- the split, the rotate, and the four 32 px sash nudges --------------
-vgate_assert 04 serial-contains 'gotabwm: split v'
-vgate_assert 04 serial-contains 'gotabwm: sash v from=640 to=608'
-vgate_assert 04 serial-contains 'gotabwm: sash v from=608 to=640'
-vgate_assert 04 serial-contains 'gotabwm: split h'
-vgate_assert 04 serial-contains 'gotabwm: sash h from=360 to=328'
-vgate_assert 04 serial-contains 'gotabwm: sash h from=328 to=360'
+vgate_assert 05 serial-contains 'gotabwm: split v'
+vgate_assert 05 serial-contains 'gotabwm: sash v from=640 to=608'
+vgate_assert 05 serial-contains 'gotabwm: sash v from=608 to=640'
+vgate_assert 05 serial-contains 'gotabwm: split h'
+vgate_assert 05 serial-contains 'gotabwm: sash h from=360 to=328'
+vgate_assert 05 serial-contains 'gotabwm: sash h from=328 to=360'
 # --- the move-to-space chords: create-dormant, visit, carry home --------
-vgate_assert 04 serial-contains 'gotabwm: space new name=2'
-vgate_assert 04 serial-contains 'gotabwm: space move id='
-vgate_assert 04 serial-contains ' to=2'
-vgate_assert 04 serial-contains 'gotabwm: space switch 1->2'
-vgate_assert 04 serial-contains ' to=1'
-vgate_assert 04 serial-contains 'gotabwm: space switch 2->1'
-vgate_assert 04 serial-contains 'rx-gotabwm-m216d-ok'
-vgate_assert 04 serial-absent '[EXC] parking:'
-vgate_assert 04 serial-absent 'exited status=139'
-vgate_assert 04 python <<'PY'
+vgate_assert 05 serial-contains 'gotabwm: space new name=2'
+vgate_assert 05 serial-contains 'gotabwm: space move id='
+vgate_assert 05 serial-contains ' to=2'
+vgate_assert 05 serial-contains 'gotabwm: space switch 1->2'
+vgate_assert 05 serial-contains ' to=1'
+vgate_assert 05 serial-contains 'gotabwm: space switch 2->1'
+vgate_assert 05 serial-contains 'rx-gotabwm-m216d-ok'
+vgate_assert 05 serial-absent '[EXC] parking:'
+vgate_assert 05 serial-absent 'exited status=139'
+vgate_assert 05 python <<'PY'
 import os, re, sys
 ser = open(os.environ["VG_SER"], errors="replace").read()
 

@@ -558,6 +558,10 @@ pub fn draw_chrome() void {
     while (i < da.win_count) : (i += 1) {
         const w = &da.windows[i];
         if (w.kind != .user or !w.visible) continue;
+        // M216o (#3954): the seat paints its own windows' look into the
+        // shared scanout; kernel chrome over a seat-owned window is a
+        // mid-pass write on the live fb (the same tear+storm as the blit).
+        if (w.owner != null and da.seat_pid != null and w.owner.? == da.seat_pid.?) continue;
         // Arc4 #241: skip chrome for windows not in the current workspace.
         if (!workspace_visible(w)) continue;
         // M69g (#1558): a fully covered window is not visible, so its chrome
@@ -1030,6 +1034,45 @@ test "hosted chrome: explicit seat chrome and the unbound shim retain their look
     virtio_gpu.fill_framebuffer(0x182026);
     draw_chrome();
     try std.testing.expectEqual(@as(u8, 0xf6), virtio_gpu.gpu_fb[0]);
+}
+
+test "hosted chrome: a seat-owned window earns no kernel blit or chrome on the shared scanout" {
+    arm();
+    clear_wm_chrome();
+    da.wm_owns_user_layer = true;
+    da.seat_pid = 7;
+    defer {
+        da.wm_owns_user_layer = false;
+        da.seat_pid = null;
+    }
+    // The seat's own chrome sink (its launcher strip): owner == seat_pid.
+    // The seat paints it straight into the scanout, so neither the pool
+    // back-buffer blit nor the border may write the live fb — the mid-pass
+    // write was the M216o tear and repaint storm.
+    const mine = switch (user_open(0, 0, 264, 720, 7)) {
+        .opened => |opened| opened,
+        else => return error.TestUnexpectedResult,
+    };
+    var desc = geom.chrome_parity_policy();
+    desc.kind = geom.chrome_border;
+    try std.testing.expect(set_window_chrome(mine, desc));
+    // A hosted app's window (owner != seat) keeps the kernel paint path.
+    const theirs = switch (user_open(400, 100, 200, 100, 9)) {
+        .opened => |opened| opened,
+        else => return error.TestUnexpectedResult,
+    };
+    virtio_gpu.fill_framebuffer(0x182026);
+    try std.testing.expectEqual(virtio_gpu.CmdResult.ok, paint_scene());
+    // Seat-owned interior + border edge stay at the fill — nothing written.
+    const inside = (360 * virtio_gpu.fb_width + 100) * 4;
+    const edge = (5 * virtio_gpu.fb_width + 1) * 4;
+    try std.testing.expectEqualSlices(u8, &.{ 0x26, 0x20, 0x18, 0xff }, virtio_gpu.gpu_fb[inside..][0..4]);
+    try std.testing.expectEqualSlices(u8, &.{ 0x26, 0x20, 0x18, 0xff }, virtio_gpu.gpu_fb[edge..][0..4]);
+    // Hosted client interior DID take a kernel write (the back-buffer blit,
+    // fade-blended over the fill) — only seat-owned windows skip it.
+    const client = (150 * virtio_gpu.fb_width + 500) * 4;
+    try std.testing.expect(!std.mem.eql(u8, &.{ 0x26, 0x20, 0x18, 0xff }, virtio_gpu.gpu_fb[client..][0..4]));
+    _ = theirs;
 }
 
 test "hosted chrome: zero broadcast is refused without changing existing policy" {

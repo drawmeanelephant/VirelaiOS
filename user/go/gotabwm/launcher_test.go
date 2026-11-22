@@ -520,6 +520,56 @@ func TestLauncherFocusFailureNeverClaimsModalOwnership(t *testing.T) {
 	}
 }
 
+// M216m (#3952): ENOSPC from the sink seam is every user window taken and
+// the reserve out — permanent for this gesture. The open asks once (the
+// retry loop it used to enter stalled the seat for 240 ticks), names the
+// limit on the button, and raises the notice.
+func TestLauncherRefusesAtOnceWhenNoWindowIsLeft(t *testing.T) {
+	defer saveSeatState()()
+	stubLauncherWindows(t)
+	resetNotify(t)
+	oldNoticed := limitNoticed
+	limitNoticed = false
+	defer func() { limitNoticed = oldNoticed }()
+	launch = launcherState{}
+	asks := 0
+	openInputSink = func(uint32, uint32, uint32, uint32) (int, int64) {
+		asks++
+		return -1, -vi.ErrENOSPC
+	}
+	openLauncher()
+	if asks != 1 {
+		t.Fatalf("the sink was asked %d times, want 1", asks)
+	}
+	if launch.open || launch.sink != 0 || launch.err != windowLimitText {
+		t.Fatalf("open=%v sink=%d err=%q", launch.open, launch.sink, launch.err)
+	}
+	if n := notifyCount(); n != 1 || notifyQueue[0].text != windowLimitText {
+		t.Fatalf("notice = %+v", notifyQueue)
+	}
+}
+
+// A row launched into a full desk keeps the launcher open and names the
+// limit — the binary is not missing, and the guard's notice is the only one.
+func TestLauncherRowAtTheCeilingNamesTheLimit(t *testing.T) {
+	defer saveSeatState()()
+	stubLauncherWindows(t)
+	resetNotify(t)
+	resetRefusal(t)
+	launch = launcherState{}
+	openLauncher()
+	oldExec := execApp
+	defer func() { execApp = oldExec }()
+	execApp = func(string, ...string) (int64, error) { return 0, errWindowLimit }
+	execSelected()
+	if !launch.open || launch.launching || launch.err != windowLimitText {
+		t.Fatalf("open=%v launching=%v err=%q", launch.open, launch.launching, launch.err)
+	}
+	if n := notifyCount(); n != 0 {
+		t.Fatalf("the launcher toasted the guard's refusal again: %d", n)
+	}
+}
+
 func TestLauncherLaunchCloseRetryNeverExecutesTwice(t *testing.T) {
 	defer saveSeatState()()
 	stubLauncherWindows(t)

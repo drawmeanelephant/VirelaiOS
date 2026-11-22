@@ -61,8 +61,11 @@
 // Markers print only after the mutation/syscall that made them true.
 // Ctrl+W is not bound (it collides with the editor — a GOSH.ELF row in the
 // registry says so); M121b's close chord rides ctrl+shift+w.
-// M79b (#1705): the rail's close-x and hover highlight live here. Hover-
-// preview stays a later card. Client-area is ignored.
+// M79b (#1705): the rail's close-x and hover highlight live here. #3914's
+// hover-preview card lives in hoverpreview.go: the same pointer samples
+// reset its dwell, and the seat paints the card with the composite pass.
+// Client-area is not ignored: samples that survive the chrome checks
+// forward to the pane's owner through forwardContentPointer (#2878).
 //
 // M79c (#1706): the sash drag and the split-cycle chord live here too.
 // M216d (#3943) added the keyboard half the drag never had: the
@@ -838,6 +841,9 @@ func applyFreezeToggle() bool {
 func applyReopen() bool {
 	c, ok := tabs.ReopenLastClosed()
 	if !ok {
+		// M216c: an empty LIFO is a refusal the user can see — the
+		// chord did nothing, so the toast says why.
+		seatNotice(noticeReopenEmpty)
 		return false
 	}
 	pid, err := execApp(c.Bin)
@@ -878,7 +884,7 @@ func applyDuplicate() bool {
 // marker names the route, never the revert — the revert is the app's own
 // marker or silence. With no tab focused the strip owns undo: the seat's
 // own answer is the reopen LIFO (applyReopen prints its own marker, and
-// an empty LIFO stays the honest silent no-op). A session placeholder
+// an empty LIFO answers with the reopen notice, M216c). A session placeholder
 // row is not a live client — nothing routes and nothing reopens.
 func applyUndo() bool {
 	id, ok := tabs.Focused()
@@ -1107,6 +1113,11 @@ func sashCursorShape(ni int) uint64 {
 }
 
 func handleWmPointer(e vi.Event) {
+	// #3914: every pointer sample is a gesture, not rest. The rail dwell
+	// resets here — before any chrome early-return — so same-cell motion,
+	// a press/release, and a leave all dismiss a visible preview and
+	// restart the pending dwell.
+	hoverPreviewPointer()
 	// M190a (#3236): the pointer path is an observation point too — a
 	// copy made by a click-driven app lands in the ring inside the
 	// gesture stream, not up to a tick later.
@@ -1444,20 +1455,19 @@ func railCloseZoneAt(px, py uint32, width, n, stripH int) (int, bool) {
 	if !ok {
 		return 0, false
 	}
-	cellW := width / n
-	if cellW < 48 {
-		cellW = 48
+	// M216b (#3941): railLayout owns the geometry — the zone is the
+	// PAINTED cell's rightmost railCloseW px, so the hit target can
+	// never disagree with the painted glyph.
+	l := railLayout(width, n, stripH)
+	if i >= l.n {
+		return 0, false
 	}
-	x := i * cellW
-	w := cellW
-	if x+w > width {
-		w = width - x
-	}
-	// The zone is the PAINTED cell's rightmost railCloseW px. The upper
-	// bound matters for railCellAt's remainder rule: pixels past n*cellW
-	// resolve to the last cell but sit outside its paint, so they stay
-	// click/drag territory and are never a close-x target.
-	if w < railCloseW || int(px) < x+w-railCloseW || int(px) >= x+w {
+	r := l.rect(i)
+	// The upper bound matters for railCellAt's remainder rule: pixels
+	// past the last painted cell's right edge resolve to it but sit
+	// outside its paint, so they stay click/drag territory and are
+	// never a close-x target.
+	if r.W < railCloseW || int(px) < r.X+r.W-railCloseW || int(px) >= r.X+r.W {
 		return 0, false
 	}
 	return i, true
@@ -1500,26 +1510,31 @@ func applyRailClose(i int) bool {
 	return closeTabByID(tabs.At(i).ID)
 }
 
-// railCellAt is the top-strip hit-test (M63c). Equal-width cells matching
-// paintRail (`cellW = width/n`, min 48). py must be in the rail; the rail
-// wins over any pane whose rect includes y=0. Close-x is not a target —
-// the cell body is the click/drag target (railCloseZoneAt takes the zone).
+// railCellAt is the top-strip hit-test (M63c). M216b (#3941): the cell
+// rects are railLayout's — the same ones paintRail draws — so the hit
+// test agrees with the paint per pixel column. py must be in the rail;
+// the rail wins over any pane whose rect includes y=0. Close-x is not a
+// target — the cell body is the click/drag target (railCloseZoneAt
+// takes the zone).
 func railCellAt(px, py uint32, width, n, stripH int) (int, bool) {
 	if n <= 0 || width <= 0 || stripH <= 0 || py >= uint32(stripH) {
 		return 0, false
 	}
-	cellW := width / n
-	if cellW < 48 {
-		cellW = 48
-	}
-	i := int(px) / cellW
-	if i < 0 {
+	l := railLayout(width, n, stripH)
+	if l.n == 0 {
 		return 0, false
 	}
-	if i >= n {
-		i = n - 1
+	for i := 0; i < l.n; i++ {
+		r := l.rect(i)
+		if int(px) >= r.X && int(px) < r.X+r.W {
+			return i, true
+		}
 	}
-	return i, true
+	// The remainder rule, kept from the old n*cellW tail: pixels right
+	// of the last painted cell — the sub-cellW remainder, or the whole
+	// pill strip — resolve to it, so the rail band stays chrome end to
+	// end and never forwards to content.
+	return l.n - 1, true
 }
 
 // spacePillAt is the M151b (#2913) pill-strip hit test: the space index
@@ -1648,11 +1663,14 @@ func railMenuRect(width, height int) (x, y, w, h int) {
 		return 0, 0, 0, 0
 	}
 	w, h = railMenuW, railActN*railMenuRowH+2*railMenuPadY
-	cellW := width / n
-	if cellW < 48 {
-		cellW = 48
+	// M216b (#3941): anchor under the cell's PAINTED left edge — the
+	// pill reservation shifts the lane, and the menu must follow it.
+	// An unpainted tail tab anchors at the rail's right edge, which the
+	// clamp below lands exactly where the old cellW math did.
+	x = width
+	if l := railLayout(width, n, RailHeight); i < l.n {
+		x = l.rect(i).X
 	}
-	x = i * cellW
 	if x+w+chromeInset > width {
 		x = width - w - chromeInset
 	}

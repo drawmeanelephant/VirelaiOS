@@ -3,13 +3,13 @@
 # opens that pane, Esc backs out to Settings before quitting, and the
 # toggled row persists into the share's SETTINGS.TXT.
 #
-# No seat is staged on purpose: under gotabwm the seat's content forward
-# (wmctl cmd 15) reaches the kernel's LOCAL path only — terminal selection
-# and mouse reports — and a hosted app's window never sees MOUSE_* (the
-# pointer_tick early-return under wm_owns_input). The shim's own
-# pointer_tick hit-tests and pushes window-local MOUSE_DOWN/UP, the same
-# path go-calc run 04 pins, so this leg can only exist in a shim boot.
-# `goset: declare refused` is load-bearing evidence for it.
+# No seat is staged on purpose: this leg pins the kernel's own no-seat
+# pointer path — the shim's pointer_tick hit-tests and pushes
+# window-local MOUSE_DOWN/UP, the same path go-calc run 04 pins. (Under
+# gotabwm the seat's content forward, wmctl cmd 15, delivers the same
+# window MOUSE_* to the hit user window since #2878 — pointer reach is
+# no longer why the leg is shim-only.) `goset: declare refused` is
+# load-bearing evidence for it.
 #
 # HOST PREREQUISITE:
 #   bash tools/go/build-goset.sh  ->  .build/go/GOSET.ELF

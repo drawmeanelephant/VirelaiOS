@@ -102,6 +102,9 @@ func execRecorder() (*[]string, func()) {
 }
 
 func TestHandleWmKeyReopenChordReexecsLastClosed(t *testing.T) {
+	defer saveSeatState()()
+	resetNotify(t)
+	resetRefusal(t)
 	saved := tabs
 	defer func() { tabs = saved }()
 	tabs = TabStrip{}
@@ -119,10 +122,14 @@ func TestHandleWmKeyReopenChordReexecsLastClosed(t *testing.T) {
 		t.Fatalf("ctrl-shift-t execs = %v want [GOCALC.ELF]", *execs)
 	}
 	// The LIFO is drained by the reopen: a second press is an honest no-op,
-	// not a second exec.
+	// not a second exec — the M216c notice names the empty ring.
 	handleWmKey(vi.Event{Kind: vi.EvWmKey, Flags: vi.ModCtrl | vi.ModShift, Arg0: uint32(hidUsageT)})
 	if len(*execs) != 1 {
 		t.Fatalf("second ctrl-shift-t must not exec again: %v", *execs)
+	}
+	if n := notifyCount(); n != 1 || notifyQueue[0].text != noticeReopenEmpty ||
+		notifyQueue[0].action != notifyActionNone {
+		t.Fatalf("empty-reopen notice: %+v", notifyQueue)
 	}
 	// Ctrl+Shift+T must not have re-opened the tab on the strip by itself:
 	// the reopened app declares and joins as a fresh tab (D1, a re-exec).
@@ -1157,9 +1164,12 @@ func openTwoTabs(t *testing.T) {
 
 // M79c (#1706): ctrl-shift-v cycles none -> V -> H -> none through the same
 // apply* paths the choreography uses, so the markers and dumps are shapes
-// the gates already pin. Fewer than two tabs is a silent no-op.
+// the gates already pin. Fewer than two tabs proposes no rects — the M216c
+// notice toast is the refusal's face, not a layout change.
 func TestSplitCycleChord(t *testing.T) {
 	defer saveSeatState()()
+	resetNotify(t)
+	resetRefusal(t)
 	tabs = TabStrip{}
 	if !tabs.OpenTab(3, "Calc") {
 		t.Fatal("OpenTab")
@@ -1172,7 +1182,10 @@ func TestSplitCycleChord(t *testing.T) {
 	launch.open = false
 	chord()
 	if tabs.Split() != SplitNone || len(*calls) != 0 {
-		t.Fatalf("one tab: split=%s rects=%d (must be a silent no-op)", tabs.Split(), len(*calls))
+		t.Fatalf("one tab: split=%s rects=%d (must propose nothing)", tabs.Split(), len(*calls))
+	}
+	if n := notifyCount(); n != 1 || notifyQueue[0].text != noticeSplitOneTab {
+		t.Fatalf("one-tab refusal notice: %+v", notifyQueue)
 	}
 	if !tabs.OpenTab(4, "Edit") {
 		t.Fatal("OpenTab")
@@ -1782,6 +1795,8 @@ func TestContentForwardEchoesModifierStamp(t *testing.T) {
 // state consequences.
 func TestHandleWmKeyUndoChordDispatches(t *testing.T) {
 	defer saveSeatState()()
+	resetNotify(t)
+	resetRefusal(t)
 	saved := tabs
 	defer func() { tabs = saved }()
 

@@ -17,7 +17,7 @@ Observed from `user/go/gopaint/{main,doc,state}.go` + spec geometry:
 - One window, native 832x600 at (24,24). 24 px title band (`GOPAINT` or `<file> *` for dirty), a 56 px left toolbar (B/L/R/F/E glyph buttons, two size swatches, the 4x4 palette grid of 11 px cells), the document viewport at (64,32) over an alpha checkerboard, and a 16 px status bar (`brush  size=4  color=8  unsaved`).
 - Declared title is deliberately `GOPAINT.ELF` (the seat resolves drop-admission and session re-exec through the recorded bin); `SetTabTitle` repaints the rail label "Paint".
 - Keyboard: `b/l/r/f/e` tools, `1-8` palette, `[/]` color step, `-`/`=` size step, `x` PNG export, ctrl-o open (dirty canvas first asks discard-confirm), ctrl-s save picker, ctrl-z undo (routed via tabapp's undo action), `q`/Esc quit.
-- Pointer: press-drag-release gestures; line/rect rubber-band preview (display-only — the undo ring sees committed ops alone); fill commits on press. NOTE: pointer input only reaches the canvas under the bare shim — under GOTABWM the seat's content forward is terminal-only, so the app is effectively keyboard-only when docked in a tab.
+- Pointer: press-drag-release gestures; line/rect rubber-band preview (display-only — the undo ring sees committed ops alone); fill commits on press. NOTE: pointer input reaches the canvas under the seat too — #2878's content forward delivers window MOUSE_* to hosted apps — though the gate's draw legs still boot shim-mode.
 - File flow: QOI save/open + PNG export sibling-path (`PAINT1.QOI`→`PAINT1.PNG`); reads are bounded (4 MiB); big QOI retries through the app's own canvas cap; drop offers decode QOI/PNG/SVG and confirm before replacing.
 
 ## Coverage
@@ -34,7 +34,7 @@ Observed from `user/go/gopaint/{main,doc,state}.go` + spec geometry:
 
 - No `icon=` raster — the only audited app still on a rune tile; a paint-bucket/palette tile is an easy f-artcraft win (#3341).
 - No `caps=` either — declare `file,window` like its peers for the enforce-mode ceiling.
-- Pointer-dead under the seat: drawing inside a tabbed session is impossible (the seat's content forward is terminal-only). Until the seat forwards pointer events to canvas apps, Paint is a shim-mode citizen — that's the single biggest UX gap; either fix the forward or document the limitation on the showcase page.
+- Pointer under the seat: resolved by #2878 — the content forward delivers window MOUSE_* to hosted apps, so drawing inside a tabbed session works; the spec's draw legs still run shim-mode to pin the kernel's own no-seat path.
 - Tool buttons show letter glyphs (B/L/R/F/E), not tool icons — 8x8 pictograms would read better; the status bar already names the tool.
 - Two brush sizes only (`brushSizes`); a slider or a third size is cheap since size swatches are already drawn as glyph-is-size squares.
 - No redo — the undo ring is one-directional.

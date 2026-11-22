@@ -12,10 +12,11 @@
 //     arm), and both the M124a drop admission (opens= lookup by bin) and the
 //     M125a reopen re-exec resolve through it. SetTabTitle repaints the rail
 //     label "Paint" after the declare — the recorded bin stays GOPAINT.ELF.
-//   - Pointer input only reaches a canvas window under the bare shim (the
-//     seat's content forward is terminal-only), so the draw/save/undo legs
-//     of the go-paint gate run shim-mode like go-calc's pad leg; the drop
-//     and session legs run under GOTABWM where those paths live.
+//   - Pointer input reaches a canvas window under the seat too — #2878's
+//     content forward delivers window MOUSE_* to the hit user window —
+//     but the draw/save/undo legs of the go-paint gate still run shim-mode
+//     like go-calc's pad leg, pinning the kernel's own no-seat path; the
+//     drop and session legs run under GOTABWM where those paths live.
 //
 // Every marker prints only AFTER the syscall it reports returned, so the
 // gate's asserts can only pass if the app actually ran.

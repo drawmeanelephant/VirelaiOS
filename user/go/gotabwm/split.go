@@ -230,9 +230,13 @@ func applySashDrag(ni, pos int) bool {
 // unreachable outside a gate. Each step reuses the apply* path it lands
 // on, so the markers and dumps are the same shapes the choreography
 // already prints; a step the strip refuses (one tab, a pane at the
-// depth/pane/floor bound, no unplaced tab to host) is silent, like every
-// other chord no-op.
+// depth/pane/floor bound, no unplaced tab to host) now NAMES its reason
+// through seatNotice (M216c) where the old silent no-op left the press
+// unexplained. The H->none collapse names no split reason and stays
+// silent, as do the refusals the notice vocabulary does not cover (an
+// unplaced focused pane, a kernel rect refusal).
 func applySplitCycle() bool {
+	scanW, scanH := uint32(vi.ScanoutWidth), uint32(vi.ScanoutHeight)
 	switch tabs.FocusedPaneKind() {
 	case SplitVert:
 		// State V presses H — on the focused pane: a nested split when
@@ -243,19 +247,41 @@ func applySplitCycle() bool {
 				tabs.treeDepth(leaf) <= MaxTreeDepth &&
 				tabs.leafCount() < MaxPanes {
 				if _, unplaced := tabs.nextUnplaced(tabs.index(fid)); unplaced {
-					r, _ := tabs.rectOf(fid,
-						uint32(vi.ScanoutWidth), uint32(vi.ScanoutHeight))
+					r, _ := tabs.rectOf(fid, scanW, scanH)
 					if _, _, ok := splitRectIn(SplitHoriz, r, 0); ok {
-						return applySplit(SplitHoriz)
+						leaves := tabs.leafCount()
+						if applySplit(SplitHoriz) {
+							return true
+						}
+						// applyTreeRects can refuse AFTER the tree
+						// mutated — a grown leaf count means the split
+						// landed and no split reason applies.
+						if tabs.leafCount() == leaves {
+							noticeSplitRefusal(SplitHoriz)
+						}
+						return false
 					}
 				}
 			}
 		}
-		return applyPaneRotate()
+		if applyPaneRotate() {
+			return true
+		}
+		if ctx := paneRotateRefusal(scanW, scanH); ctx != "" {
+			seatNotice(ctx)
+		}
+		return false
 	case SplitHoriz:
 		return applyPaneUnsplit()
 	default:
-		return applySplit(SplitVert)
+		leaves := tabs.leafCount()
+		if applySplit(SplitVert) {
+			return true
+		}
+		if tabs.leafCount() == leaves {
+			noticeSplitRefusal(SplitVert)
+		}
+		return false
 	}
 }
 
@@ -292,6 +318,96 @@ func applySashNudge(kind SplitKind, dir int) bool {
 		return false
 	}
 	return applySashDrag(ni, from+sashNudgePx*dir)
+}
+
+// noticeSplitRefusal posts the toast for a refused split attempt:
+// splitRefusalCtx names the bound the strip hit in SplitPane's own
+// predicate order; "" leaves the refusal silent.
+func noticeSplitRefusal(kind SplitKind) {
+	if ctx := splitRefusalCtx(kind,
+		uint32(vi.ScanoutWidth), uint32(vi.ScanoutHeight)); ctx != "" {
+		seatNotice(ctx)
+	}
+}
+
+// splitRefusalCtx names why SplitPane(kind) would refuse the focused
+// pane right now — the notice's reason is read off the same bounds the
+// mutation checks, in the same order, never guessed after the fact.
+// "" means the refusal is one the notice lane does not name: no focused
+// tab, an unplaced focused pane, or a kernel-side rect refusal the
+// predicates cannot see.
+func splitRefusalCtx(kind SplitKind, scanW, scanH uint32) string {
+	if kind == SplitNone {
+		return ""
+	}
+	if tabs.Count() < 2 {
+		return noticeSplitOneTab
+	}
+	fid, ok := tabs.Focused()
+	if !ok {
+		return ""
+	}
+	focusIdx := tabs.index(fid)
+	if tabs.treeN == 0 {
+		if _, ok := tabs.nextUnplaced(focusIdx); !ok {
+			return noticeSplitNoTab
+		}
+		if _, _, ok := splitRectIn(kind, FullRect(scanW, scanH), 0); !ok {
+			return noticeSplitSmall
+		}
+		return ""
+	}
+	leaf := tabs.leafOf(fid)
+	if leaf < 0 {
+		return ""
+	}
+	// SplitPane's bound order: the depth ceiling, then the pane cap.
+	if tabs.treeDepth(leaf) > MaxTreeDepth {
+		return noticeSplitDepth
+	}
+	if tabs.leafCount() >= MaxPanes {
+		return noticeSplitPane
+	}
+	if _, ok := tabs.nextUnplaced(focusIdx); !ok {
+		return noticeSplitNoTab
+	}
+	r, placed := tabs.rectOf(fid, scanW, scanH)
+	if !placed {
+		return noticeSplitSmall
+	}
+	if _, _, ok := splitRectIn(kind, r, 0); !ok {
+		return noticeSplitSmall
+	}
+	return ""
+}
+
+// paneRotateRefusal names the one refusal the cycle's V->H rotate can
+// hit that the notice lane owns: the rotated split does not tile the
+// pane's rect at the floor — RotatePane's own geometry check, mirrored.
+// Structural refusals cannot occur behind FocusedPaneKind==SplitVert,
+// and a kernel rect refusal leaves every predicate green; both stay
+// silent.
+func paneRotateRefusal(scanW, scanH uint32) string {
+	fid, ok := tabs.Focused()
+	if !ok {
+		return ""
+	}
+	leaf := tabs.leafOf(fid)
+	if leaf < 0 {
+		return ""
+	}
+	p := tabs.parentOf(leaf)
+	if p < 0 {
+		return ""
+	}
+	next := SplitHoriz
+	if tabs.tree[p].kind == SplitHoriz {
+		next = SplitVert
+	}
+	if _, _, ok := splitRectIn(next, tabs.nodeRect(p, scanW, scanH), 0); !ok {
+		return noticeSplitSmall
+	}
+	return ""
 }
 
 // applyPaneFocus is the M137a directional chord: ctrl+alt+arrows move
