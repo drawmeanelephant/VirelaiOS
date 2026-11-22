@@ -628,6 +628,16 @@ pub var wm_owns_input: bool = false;
 /// WM's compose-N stores (written between the COMPOSITE_TICK and the final
 /// present), so a kernel blit would double-draw them.
 pub var wm_owns_user_layer: bool = false;
+/// M216o (#3954): the bound seat's pid, set with `wm_owns_user_layer` and
+/// cleared at scanout_teardown. A user window OWNED BY THE SEAT is painted
+/// by the seat straight into the same shared scanout (the seat mirrors it
+/// into the window back-buffer so non-scanout consumers — overlay previews —
+/// still see content). paint_scene must not blit it and draw_chrome must
+/// not paint it: those writes land mid-seat-pass on the live framebuffer,
+/// which both tears presented frames (and any raw snapshot that straddles
+/// the pass) and feeds a damage→upload→damage loop — the launcher repaint
+/// storm. null = no bound seat = no seat-owned windows.
+pub var seat_pid: ?usize = null;
 /// M33 SB6 (claim 6864): how many `.user` windows paint_scene actually
 /// BLITTED (the pre-seam-B composite cost) vs how many surface-backed
 /// (migrated) windows were SKIPPED while the WM owns the user layer (the
