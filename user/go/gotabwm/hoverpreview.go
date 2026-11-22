@@ -157,11 +157,14 @@ func hoverPreviewRect(width, height int) (widgets.Rect, bool) {
 	if int(tabs.At(hoverPreview.cell).ID) != int(hoverPreview.id) {
 		return widgets.Rect{}, false
 	}
-	cellW := width / n
-	if cellW < 48 {
-		cellW = 48
+	// M216b (#3941): the card anchors under the cell's PAINTED left edge
+	// — railLayout's rects, the same geometry paintRail and the hit
+	// tests share, so the pill reservation moves the anchor with it.
+	l := railLayout(width, n, RailHeight)
+	if hoverPreview.cell >= l.n {
+		return widgets.Rect{}, false
 	}
-	x := hoverPreview.cell * cellW
+	x := l.rect(hoverPreview.cell).X
 	w := hoverPreviewW
 	if x+w > width {
 		w = width - x
