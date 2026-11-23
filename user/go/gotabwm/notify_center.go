@@ -72,7 +72,7 @@ var (
 	notifyCenter        []centerNotification
 	notifyCenterOpen    bool
 	notifyCenterNextID  uint32
-	notifyCenterPainted bool
+	notifyCenterReceipt presentReceipt
 	// centerSpotShown latches the one-time decode marker for the empty
 	// band's staged spot — the same latch shape the mascot markers keep.
 	centerSpotShown   bool
@@ -266,7 +266,7 @@ func notifyCenterClick(px, py uint32) bool {
 			return false
 		}
 		notifyCenterOpen = true
-		notifyCenterPainted = false
+		notifyCenterReceipt.arm()
 		vi.ConsoleLine(MarkerNotifyCenterOpen)
 		return true
 	}
@@ -274,20 +274,20 @@ func notifyCenterClick(px, py uint32) bool {
 	x, y, w, h := notifyCenterRect(vi.ScanoutWidth, vi.ScanoutHeight)
 	if w <= 0 || h <= 0 {
 		notifyCenterOpen = false
-		notifyCenterPainted = false
+		notifyCenterReceipt.arm()
 		vi.ConsoleLine(MarkerNotifyCenterClose)
 		return true
 	}
 	pxi, pyi := int(px), int(py)
 	if !notifyCenterHit(px, py, vi.ScanoutWidth, vi.ScanoutHeight) {
 		notifyCenterOpen = false
-		notifyCenterPainted = false
+		notifyCenterReceipt.arm()
 		vi.ConsoleLine(MarkerNotifyCenterClose)
 		return true
 	}
 	if pyi < y+notifyHeaderH && pxi >= x+w-42 {
 		notifyCenterOpen = false
-		notifyCenterPainted = false
+		notifyCenterReceipt.arm()
 		vi.ConsoleLine(MarkerNotifyCenterClose)
 		return true
 	}
@@ -567,10 +567,9 @@ func noteRailBadges() {
 }
 
 func notifyCenterPaintMarker(painted, presented bool) (string, bool) {
-	if !notifyCenterOpen || !painted || !presented || notifyCenterPainted {
+	if !notifyCenterOpen || !notifyCenterReceipt.feed(painted, presented) {
 		return "", false
 	}
-	notifyCenterPainted = true
 	return MarkerNotifyCenterPaint, true
 }
 

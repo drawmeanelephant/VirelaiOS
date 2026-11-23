@@ -38,12 +38,17 @@ import (
 )
 
 const (
-	MarkerLaunchOpen    = "gotabwm: launcher open n="
-	MarkerLaunchFilter  = "gotabwm: launcher filter q="
-	MarkerLaunchExec    = "gotabwm: launcher exec "
-	MarkerLaunchDismiss = "gotabwm: launcher dismiss"
-	MarkerLaunchMissing = "gotabwm: launcher missing "
-	MarkerLaunchEmblem  = "gotabwm: launcher emblem "
+	MarkerLaunchOpen = "gotabwm: launcher open n="
+	// MarkerLauncherPresented is the post-present receipt (seat.go):
+	// once per DISTINCT launcher frame — the open, then each change to
+	// the filter, selection, scroll position or row count — never per
+	// repaint of identical content (M216g #3946).
+	MarkerLauncherPresented = "gotabwm: launcher presented"
+	MarkerLaunchFilter      = "gotabwm: launcher filter q="
+	MarkerLaunchExec        = "gotabwm: launcher exec "
+	MarkerLaunchDismiss     = "gotabwm: launcher dismiss"
+	MarkerLaunchMissing     = "gotabwm: launcher missing "
+	MarkerLaunchEmblem      = "gotabwm: launcher emblem "
 	// MarkerLaunchIcons latches the first paint pass that put a staged
 	// raster icon on a result row — the icon= seam's painted half.
 	MarkerLaunchIcons = "gotabwm: launcher icons n="
@@ -150,6 +155,11 @@ type launcherState struct {
 	// first pass a raster actually blits (the decode receipt already
 	// reports declared rows; this one says pixels made the strip).
 	iconsShown bool
+	// M216g (#3946): the presented-frame dedup behind
+	// MarkerLauncherPresented — the signature of the last frame the
+	// marker named, and whether one has been named this open.
+	presentedSig    launcherPresentedSig
+	presentedMarked bool
 
 	// M191b: the filename hits. filtered rows encoded <= launchFileIdx0
 	// index into hits; hitsVisit is the entries the last walk counted
@@ -200,6 +210,34 @@ type launchVerb struct {
 	name string
 	bin  string
 	argv []string
+}
+
+// launcherPresentedSig is everything MarkerLauncherPresented's "distinct
+// frame" means: which face is up, the typed filter, the selected row,
+// the scroll offset, and the row count. A repaint of identical content
+// keeps the signature; any change the user can see moves it.
+type launcherPresentedSig struct {
+	palette bool
+	filter  string
+	sel     int
+	first   int
+	rows    int
+}
+
+// presentedFrame reports whether this presented pass carries a launcher
+// frame the marker has not named yet. It runs only behind the
+// open+painted+presented gate in compositePaint, so a failed present
+// never consumes a signature — the next successful frame still prints.
+func (l *launcherState) presentedFrame() bool {
+	sig := launcherPresentedSig{
+		palette: l.palette, filter: l.filter,
+		sel: l.sel, first: l.first, rows: len(l.filtered),
+	}
+	if l.presentedMarked && sig == l.presentedSig {
+		return false
+	}
+	l.presentedSig, l.presentedMarked = sig, true
+	return true
 }
 
 var launch launcherState
@@ -433,6 +471,7 @@ func finishLauncher() {
 	launch.palette = false
 	launch.filter = ""
 	launch.painted = false
+	launch.presentedMarked = false
 	vi.ConsoleLine(marker)
 }
 

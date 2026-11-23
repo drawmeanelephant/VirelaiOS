@@ -94,21 +94,21 @@ const (
 // at the 8px face advance (24*8 = 192) plus the 2px accent rule, the gaps
 // and a right margin, so no bounded message is ever clipped by the panel.
 const (
-	NotifyMax       = 4           // queue depth; the oldest is dropped beyond it
-	NotifyTicks     = 8           // lifetime in composite ticks (~8s at the 1Hz tick)
+	NotifyMax   = 4 // queue depth; the oldest is dropped beyond it
+	NotifyTicks = 8 // lifetime in composite ticks (~8s at the 1Hz tick)
 	// Actionable toasts dwell twice as long: the offer is useless if the
 	// user cannot read the refusal and reach the action inside the window.
 	// Observed go-wm-seat run 17: the scripted Retry click landed one
 	// composite tick after expiry (born t8, down at t17 > expires t16) —
 	// the press fell through to the launcher and the retry never ran.
 	NotifyActionTicks = 16
-	notifyFadeTicks = 3           // ramp length: the last N ticks step toward Bg
-	NotifyW         = 208         // panel width: 24 chars * 8 + rule + pads
-	NotifyH         = ChromeH     // same band as the clock panel: 8px face + pads
-	notifyGap       = 4           // vertical gap between stacked toasts
-	notifyInset     = chromeInset // clears the capture frame, like the clock panel
-	notifyRuleW     = 2           // the accent rule, one seat identity
-	notifyTextPad   = 6           // text origin past the panel's left edge
+	notifyFadeTicks   = 3           // ramp length: the last N ticks step toward Bg
+	NotifyW           = 208         // panel width: 24 chars * 8 + rule + pads
+	NotifyH           = ChromeH     // same band as the clock panel: 8px face + pads
+	notifyGap         = 4           // vertical gap between stacked toasts
+	notifyInset       = chromeInset // clears the capture frame, like the clock panel
+	notifyRuleW       = 2           // the accent rule, one seat identity
+	notifyTextPad     = 6           // text origin past the panel's left edge
 )
 
 // notifyAction marks a toast whose click is a seat action, not a sender
@@ -188,11 +188,12 @@ func refreshReduceMotion() {
 	notifyReduceMotion = on
 }
 
-// notifyPainted guards the one-shot MarkerNotifyPaint (the chromeTick
-// one-shot discipline, for the same reason: the gate greps the transition,
-// not a per-tick flood) — per BURST, not per process: notifyQueueSet
-// re-arms it when the strip drains, so the next toast is announced again.
-var notifyPainted bool
+// notifyReceipt is the presentReceipt behind MarkerNotifyPaint (the
+// chromeTick one-shot discipline, for the same reason: the gate greps
+// the transition, not a per-tick flood) — per BURST, not per process:
+// notifyQueueSet re-arms it when the strip drains, so the next toast is
+// announced again.
+var notifyReceipt presentReceipt
 
 // notifyQueueSet installs a new queue and re-arms the one-shot paint
 // marker whenever the strip drains to empty. Every removal path (expiry,
@@ -202,7 +203,7 @@ var notifyPainted bool
 func notifyQueueSet(q []notifyToast) {
 	notifyQueue = q
 	if len(notifyQueue) == 0 {
-		notifyPainted = false
+		notifyReceipt.arm()
 	}
 }
 
@@ -537,11 +538,10 @@ func paintNotify(scan []byte, width, height int, ticks uint64) int {
 // the scanout, not how many frames it covered. `painted` is false on an
 // empty strip (nothing was drawn, so there is nothing to claim) and on
 // every tick after the first.
-func notifyPaintMarker(painted bool) (string, bool) {
-	if !painted || notifyPainted || len(notifyQueue) == 0 {
+func notifyPaintMarker(painted, presented bool) (string, bool) {
+	if len(notifyQueue) == 0 || !notifyReceipt.feed(painted, presented) {
 		return "", false
 	}
-	notifyPainted = true
 	// The NEWEST entry's sender: the one the user is being told about.
 	return MarkerNotifyPaint + vi.Itoa64(int64(notifyQueue[len(notifyQueue)-1].tabID)), true
 }

@@ -18,7 +18,7 @@ func (f *regionFixture) install(t *testing.T) {
 	t.Helper()
 	oldTabs, oldBind := tabs, rpcBindings
 	oldXY, oldRects := surfaceXY, gpu3dRects
-	oldDrag, oldGhost := drag, dragGhostPainted
+	oldDrag, oldGhost := drag, dragGhostReceipt
 	oldSash, oldSashNode, oldRail := sashDragging, sashDragNode, railDragFrom
 	oldLaunch, oldPower, oldRailMenu := launch, powerMenuOpen, railMenuOpen
 	oldSecret, oldClip := secretAskModal, clipMenuOpen
@@ -27,7 +27,7 @@ func (f *regionFixture) install(t *testing.T) {
 	t.Cleanup(func() {
 		tabs, rpcBindings = oldTabs, oldBind
 		surfaceXY, gpu3dRects = oldXY, oldRects
-		drag, dragGhostPainted = oldDrag, oldGhost
+		drag, dragGhostReceipt = oldDrag, oldGhost
 		sashDragging, sashDragNode, railDragFrom = oldSash, oldSashNode, oldRail
 		launch, powerMenuOpen, railMenuOpen = oldLaunch, oldPower, oldRailMenu
 		secretAskModal, clipMenuOpen = oldSecret, oldClip
@@ -37,7 +37,7 @@ func (f *regionFixture) install(t *testing.T) {
 	tabs = TabStrip{}
 	rpcBindings = [256]rpcBinding{}
 	surfaceXY, gpu3dRects = [256]uint32{}, [256]uint32{}
-	drag, dragGhostPainted = dragSession{}, false
+	drag, dragGhostReceipt = dragSession{}, presentReceipt{}
 	sashDragging, sashDragNode, railDragFrom = false, -1, -1
 	launch, powerMenuOpen, railMenuOpen = launcherState{}, false, false
 	secretAskModal, clipMenuOpen = secretAsk{}, false

@@ -42,6 +42,7 @@ func (f *dragFixture) install(t *testing.T) {
 	oldApps := readAppsFile
 	oldXY, oldRects := surfaceXY, gpu3dRects
 	oldDrag := drag
+	oldGhost := dragGhostReceipt
 	t.Cleanup(func() {
 		dragFileRead, dragFileWrite, dragFileDelete = oldRead, oldWrite, oldDel
 		dragOutWrite, dragOutDelete, dragOutExists = oldOutW, oldOutD, oldOutE
@@ -51,6 +52,7 @@ func (f *dragFixture) install(t *testing.T) {
 		readAppsFile = oldApps
 		surfaceXY, gpu3dRects = oldXY, oldRects
 		drag = oldDrag
+		dragGhostReceipt = oldGhost
 	})
 	dragFileRead = func(path string, max int) ([]byte, int64) {
 		b, ok := f.files[path]
@@ -101,6 +103,7 @@ func (f *dragFixture) install(t *testing.T) {
 	rpcBindings = [256]rpcBinding{}
 	surfaceXY, gpu3dRects = [256]uint32{}, [256]uint32{}
 	drag = dragSession{}
+	dragGhostReceipt = presentReceipt{}
 }
 
 func (f *dragFixture) hasLog(sub string) bool {
@@ -523,7 +526,7 @@ func TestDragOutEdgeHandsOffToHost(t *testing.T) {
 	if !ok || name != "GuestDrag.txt" || size != uint64(len(blob)) {
 		t.Fatalf("payload = %q %d %v", name, size, ok)
 	}
-	if !h.hasLog(MarkerHostintDragOut+"seq=1 name=GuestDrag.txt") {
+	if !h.hasLog(MarkerHostintDragOut + "seq=1 name=GuestDrag.txt") {
 		t.Fatalf("no emit marker: %v", h.logs)
 	}
 	// The source's receipt: Seq=1, applied=0 — delivered to no guest

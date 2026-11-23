@@ -16,13 +16,13 @@ import (
 func saveA11yState() func() {
 	unlock := saveSeatState()
 	lk, il := lockActive, idleState
-	nq, np := notifyQueue, notifyPainted
+	nq, np := notifyQueue, notifyReceipt
 	rm, sa, cm := railMenuOpen, secretAskModal, clipMenuOpen
 	last := seatA11yLast
 	return func() {
 		unlock()
 		lockActive, idleState = lk, il
-		notifyQueue, notifyPainted = nq, np
+		notifyQueue, notifyReceipt = nq, np
 		railMenuOpen, secretAskModal, clipMenuOpen = rm, sa, cm
 		seatA11yLast = last
 	}

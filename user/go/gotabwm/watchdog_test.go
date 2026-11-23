@@ -348,12 +348,12 @@ func TestWatchdogProbeGate(t *testing.T) {
 		ok        bool
 		armed     bool
 	}{
-		{vi.UidUser, 0, true, true},                  // same-uid hosted apps
-		{vi.UidUser, wdCapProcAdmin, true, true},     // user + cap
-		{vi.UidAgent, 0, true, true},                 // agent-hosted apps
-		{vi.UidSystem, wdCapProcAdmin, true, true},   // admin reaches all
-		{vi.UidSystem, 0, true, false},               // system w/o cap: nothing hosted
-		{0, 0, false, false},                         // no identity: fail closed
+		{vi.UidUser, 0, true, true},                // same-uid hosted apps
+		{vi.UidUser, wdCapProcAdmin, true, true},   // user + cap
+		{vi.UidAgent, 0, true, true},               // agent-hosted apps
+		{vi.UidSystem, wdCapProcAdmin, true, true}, // admin reaches all
+		{vi.UidSystem, 0, true, false},             // system w/o cap: nothing hosted
+		{0, 0, false, false},                       // no identity: fail closed
 	}
 	for _, c := range cases {
 		w.uid, w.caps, w.prinOK = c.uid, c.caps, c.ok
@@ -363,8 +363,8 @@ func TestWatchdogProbeGate(t *testing.T) {
 				c.uid, c.caps, c.ok, wdKillOK, c.armed)
 		}
 	}
-	if !w.hasLog(MarkerWatchdogForceQuit + "armed") ||
-		!w.hasLog(MarkerWatchdogForceQuit + "off") {
+	if !w.hasLog(MarkerWatchdogForceQuit+"armed") ||
+		!w.hasLog(MarkerWatchdogForceQuit+"off") {
 		t.Fatalf("probe verdict lines: %v", f.logs)
 	}
 }
@@ -412,14 +412,14 @@ func TestWatchdogPressVerbs(t *testing.T) {
 	if len(w.kills) != 1 || w.kills[0] != 33 {
 		t.Fatalf("kill = %v", w.kills)
 	}
-	if !wdKilled[11] || !w.hasLog(MarkerWatchdogClosed + "id=11 how=kill") {
+	if !wdKilled[11] || !w.hasLog(MarkerWatchdogClosed+"id=11 how=kill") {
 		t.Fatalf("kill arm: killed=%v logs=%v", wdKilled[11], f.logs)
 	}
 	// A refused kill reports the errno and latches nothing.
 	openBoundTab(t, 12, 44, "Stubborn")
 	w.killRC = -vi.ErrEACCES
 	watchdogPress(12, wdActForce)
-	if wdKilled[12] || !w.hasLog(MarkerWatchdogRefused + "id=12 how=kill err=EACCES") {
+	if wdKilled[12] || !w.hasLog(MarkerWatchdogRefused+"id=12 how=kill err=EACCES") {
 		t.Fatalf("refused kill: killed=%v logs=%v", wdKilled[12], f.logs)
 	}
 	// Probe off: the verb is unreachable — a stray dispatch is a no-op
@@ -493,7 +493,7 @@ func TestWatchdogBannerPaintsUnderPowerMenu(t *testing.T) {
 	oldSecret, oldClip := secretAskModal, clipMenuOpen
 	oldRailMenu := railMenuOpen
 	oldCenterOpen, oldQueue, oldCenter := notifyCenterOpen, notifyQueue, notifyCenter
-	oldDrag, oldGhost := drag, dragGhostPainted
+	oldDrag, oldGhost := drag, dragGhostReceipt
 	oldLock, oldIdle := lockActive, idleState
 	oldRestart, oldDirty := crashRestartPending, notifyHistDirty
 	oldTheme := theme.Current
@@ -502,14 +502,14 @@ func TestWatchdogBannerPaintsUnderPowerMenu(t *testing.T) {
 		secretAskModal, clipMenuOpen = oldSecret, oldClip
 		railMenuOpen = oldRailMenu
 		notifyCenterOpen, notifyQueue, notifyCenter = oldCenterOpen, oldQueue, oldCenter
-		drag, dragGhostPainted = oldDrag, oldGhost
+		drag, dragGhostReceipt = oldDrag, oldGhost
 		lockActive, idleState = oldLock, oldIdle
 		crashRestartPending, notifyHistDirty = oldRestart, oldDirty
 		theme.Current = oldTheme
 	})
 	secretAskModal, clipMenuOpen, railMenuOpen = secretAsk{}, false, false
 	notifyCenterOpen, notifyQueue, notifyCenter = false, nil, nil
-	drag, dragGhostPainted = dragSession{}, false
+	drag, dragGhostReceipt = dragSession{}, presentReceipt{}
 	lockActive, idleState = false, idleActive
 	crashRestartPending, notifyHistDirty = false, false
 	theme.Current = theme.Dark

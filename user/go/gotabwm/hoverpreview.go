@@ -64,6 +64,9 @@ type hoverPreviewState struct {
 	shown   uint32 // id of the card whose presentation was last announced
 	sig     string // title/identity/status the dwell was armed against
 	block   int    // cell whose card was dismissed by a truth change, or -1
+	// receipt is the presentReceipt behind the announce marker: armed on
+	// every card-free feed, so each presented card earns its line once.
+	receipt presentReceipt
 }
 
 var hoverPreview = hoverPreviewState{cell: -1, block: -1}
@@ -264,16 +267,24 @@ func paintHoverPreview(scan []byte, width, height int) int {
 // already named) and an unpresented card-free pass cannot dismiss (the
 // visible card is still up).
 func hoverPreviewPresented(painted, presented bool) {
+	if !painted {
+		// A card-free feed ends the card's episode even when its present
+		// failed — the next painted card is a new receipt, matching the
+		// shown!=id reannounce the latch-free code allowed.
+		hoverPreview.receipt.arm()
+	}
 	if !presented {
 		return
 	}
 	if painted {
 		if hoverPreview.shown != hoverPreview.id {
 			hoverPreview.shown = hoverPreview.id
-			hoverPreviewLog(MarkerHoverPreview + vi.Itoa64(int64(hoverPreview.id)) +
-				" title=" + hoverPreviewMarkerText(hoverPreviewTitle()) +
-				" bin=" + hoverPreviewMarkerText(tabs.At(hoverPreview.cell).Bin) +
-				" status=" + hoverPreviewStatus(hoverPreview.id))
+			if hoverPreview.receipt.feed(painted, presented) {
+				hoverPreviewLog(MarkerHoverPreview + vi.Itoa64(int64(hoverPreview.id)) +
+					" title=" + hoverPreviewMarkerText(hoverPreviewTitle()) +
+					" bin=" + hoverPreviewMarkerText(tabs.At(hoverPreview.cell).Bin) +
+					" status=" + hoverPreviewStatus(hoverPreview.id))
+			}
 		}
 		return
 	}
