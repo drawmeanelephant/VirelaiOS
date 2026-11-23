@@ -1058,6 +1058,36 @@ func (e *editor) scrollBy(delta int) bool {
 	return true
 }
 
+// caretVisLine is the caret's row in visible (non-folded) lines — the
+// coordinate scrollTop counts.
+func (e *editor) caretVisLine() int {
+	n, start := 0, 0
+	for i := 0; i < e.cur && i < len(e.buf); i++ {
+		if e.buf[i] != '\n' {
+			continue
+		}
+		if !e.lineHidden(start) {
+			n++
+		}
+		start = i + 1
+	}
+	return n
+}
+
+// revealCaret pulls the view back over the caret after a wheel scroll parked
+// it elsewhere: every caret-moving path calls here so the next arrow, edit,
+// find or goto never lands on a line the window is not showing.
+func (e *editor) revealCaret() {
+	cl := e.caretVisLine()
+	if cl < e.scrollTop {
+		e.scrollTop = cl
+		return
+	}
+	if cl >= e.scrollTop+e.viewLines() {
+		e.scrollTop = cl - e.viewLines() + 1
+	}
+}
+
 func (e *editor) handleScroll(ev vi.Event) bool {
 	if e.banner.Open || e.mbar.Active || e.mbar.Open {
 		return false
@@ -1686,6 +1716,7 @@ func (e *editor) runFind() {
 	e.cur = off
 	vi.ConsoleLine(findMarker(pat, ordinal, total))
 	e.unfoldAt(off, "find")
+	e.revealCaret()
 }
 
 // runGoto runs the goto bar's Return: move the caret to 1-based line n and
@@ -1709,6 +1740,7 @@ func (e *editor) runGoto() {
 	e.cur = off
 	vi.ConsoleLine(gotoMarker(n, off))
 	e.unfoldAt(off, "goto")
+	e.revealCaret()
 }
 
 // unsavedExit answers the unsaved-changes dialog: arg0 == 0 is the Save choice
@@ -1834,6 +1866,7 @@ func (e *editor) moveCaret(to int, extend bool, reason string) {
 	}
 	e.cur = to
 	e.unfoldAt(to, reason)
+	e.revealCaret()
 }
 
 // selectAll is Ctrl-A in the document: anchor at 0, caret at the end.
@@ -1841,6 +1874,7 @@ func (e *editor) selectAll() {
 	e.hist.breakRun()
 	e.sel, e.selSet, e.markOn = 0, true, false
 	e.cur = len(e.buf)
+	e.revealCaret()
 }
 
 // toggleMark is Ctrl-Shift-M: with the mark set, plain arrows extend the
@@ -1867,6 +1901,7 @@ func (e *editor) applyOp(o editOp, cur int) {
 	e.shiftFolds(o.sp, false)
 	e.heatDone = false // M166c: splices move declarations; remap on next paint
 	e.cur = cur
+	e.revealCaret()
 	e.hist.push(o)
 	e.selSet, e.markOn = false, false
 	e.markDirty()
@@ -1890,6 +1925,7 @@ func (e *editor) undo() {
 	vi.ConsoleLine(markerUndo + "n=" + vi.Itoa64(int64(len(e.hist.undo))) +
 		" cur=" + vi.Itoa64(int64(e.cur)))
 	e.unfoldAt(e.cur, "undo")
+	e.revealCaret()
 }
 
 // redo reapplies the newest undone op, caret after its inserted text.
@@ -1915,6 +1951,7 @@ func (e *editor) redo() {
 	vi.ConsoleLine(markerRedo + "n=" + vi.Itoa64(int64(len(e.hist.redo))) +
 		" cur=" + vi.Itoa64(int64(e.cur)))
 	e.unfoldAt(e.cur, "redo")
+	e.revealCaret()
 }
 
 // --- clipboard ------------------------------------------------------------

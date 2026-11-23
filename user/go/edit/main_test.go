@@ -508,3 +508,31 @@ func TestWheelScrollAndPageKeyNoDoubleScroll(t *testing.T) {
 		t.Fatalf("after synthesized scroll: scrollTop=%d want 3", e.scrollTop)
 	}
 }
+
+// Wheel scrolling parks the view away from the caret; the next caret command
+// must pull the band back over it rather than editing blind.
+func TestCaretMoveRevealsAfterWheelScroll(t *testing.T) {
+	var body []byte
+	for i := 0; i < 80; i++ {
+		body = append(body, "line\n"...)
+	}
+	e := usEditor(string(body))
+	e.ta = &tabapp.TabApp{W: natW, H: natH}
+	e.cur = 0
+
+	if !e.handle(vi.Event{Kind: vi.EvMouseScroll, Flags: vi.ScrollWheel, Arg0: 0x800a}) {
+		t.Fatal("wheel down must scroll document")
+	}
+	if e.scrollTop != 10 {
+		t.Fatalf("after wheel +10: scrollTop=%d want 10", e.scrollTop)
+	}
+	e.key(usDown(usageRight, 0, 0))
+	if e.scrollTop != 0 {
+		t.Fatalf("after caret move: scrollTop=%d want 0 (caret back in view)", e.scrollTop)
+	}
+
+	e.moveCaret(len(e.buf), false, "test")
+	if cl := e.caretVisLine(); e.scrollTop > cl || cl >= e.scrollTop+e.viewLines() {
+		t.Fatalf("caret line %d outside band [%d,%d)", cl, e.scrollTop, e.scrollTop+e.viewLines())
+	}
+}
