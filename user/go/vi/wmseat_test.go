@@ -84,3 +84,18 @@ func TestErrnoOf(t *testing.T) {
 		t.Fatalf("ErrnoOf(-ENXIO) = %d want %d", ErrnoOf(-ErrENXIO), ErrENXIO)
 	}
 }
+
+func TestWmctlContentScrollConstantsAndHostDegrades(t *testing.T) {
+	if EvMouseScroll != 12 {
+		t.Fatalf("EvMouseScroll = %d want 12", EvMouseScroll)
+	}
+	if ScrollWheel != 0x1000 {
+		t.Fatalf("ScrollWheel = %#x want 0x1000", ScrollWheel)
+	}
+	if ScrollWheel&(ModShift|ModCtrl|ModAlt|ModCmd) != 0 {
+		t.Fatal("ScrollWheel collided with modifier flags")
+	}
+	if r := WmctlContentScroll(640, 360, 0x8001, 0); r != -ErrENOSYS {
+		t.Fatalf("host WmctlContentScroll = %d want -ENOSYS (%d)", r, -ErrENOSYS)
+	}
+}

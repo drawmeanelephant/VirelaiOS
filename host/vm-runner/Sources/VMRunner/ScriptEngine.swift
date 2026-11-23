@@ -497,14 +497,112 @@ func startPointerInject() {
     }
 }
 
+// M216k (#3950): pure-Swift custom-virtio pointer/wheel step model, parser,
+// and kind-5 wire encoder — compiled with and without -DSPIKE so class-A
+// `swift test` pins the grammar and wire bytes without a VM or macOS 27 SDK.
+let customVirtioInputMsgLen = 16
+let customVirtioInputKindWheel: UInt8 = 5
+let customVirtioInputWheelReportLen = 8
+let customVirtioWheelMaxLines = 8191
+
+struct PointerVirtioStep: Equatable {
+    enum Mode: Equatable {
+        case move, click, down, up, rightClick, middleClick
+        case wheel(dx: Int16, dy: Int16)
+    }
+
+    let x: UInt16
+    let y: UInt16
+    let mode: Mode
+    var label: String { "mode=\(mode) x=\(x) y=\(y)" }
+}
+
+/// Build the fixed 16-byte kind-5 wheel message:
+/// [kind=5][flags=0][len=8 LE][x_lo, x_hi, y_lo, y_hi, dy_lo, dy_hi, dx_lo, dx_hi][0,0,0,0].
+/// Positive dy = scroll down, positive dx = scroll right (units: text lines).
+func buildVirtioWheelMessage(x: UInt16, y: UInt16, dx: Int16, dy: Int16) -> Data {
+    var msg = Data(repeating: 0, count: customVirtioInputMsgLen)
+    msg[0] = customVirtioInputKindWheel
+    msg[2] = UInt8(customVirtioInputWheelReportLen & 0xff)
+    msg[4] = UInt8(x & 0xff)
+    msg[5] = UInt8((x >> 8) & 0xff)
+    msg[6] = UInt8(y & 0xff)
+    msg[7] = UInt8((y >> 8) & 0xff)
+    let udy = UInt16(bitPattern: dy)
+    let udx = UInt16(bitPattern: dx)
+    msg[8] = UInt8(udy & 0xff)
+    msg[9] = UInt8((udy >> 8) & 0xff)
+    msg[10] = UInt8(udx & 0xff)
+    msg[11] = UInt8((udx >> 8) & 0xff)
+    return msg
+}
+
+struct PointerVirtioParseError: Error, Equatable {
+    let message: String
+}
+
+/// Parse `--pointer-virtio` steps: `<x>,<y>[,c|d|u|rc|mc|w<±n>|h<±n>];…`
+/// with 0<=x<=1280, 0<=y<=720 and 1<=|n|<=8191 for wheel steps.
+func parsePointerVirtioSteps(_ script: String) -> Result<[PointerVirtioStep], PointerVirtioParseError> {
+    let parts = script.split(separator: ";", omittingEmptySubsequences: false)
+    guard !script.trimmingCharacters(in: .whitespaces).isEmpty else {
+        return .failure(PointerVirtioParseError(message: "ERROR: --pointer-virtio script is empty"))
+    }
+    var steps: [PointerVirtioStep] = []
+    for rawPart in parts {
+        let part = rawPart.trimmingCharacters(in: .whitespaces)
+        if part.isEmpty {
+            return .failure(PointerVirtioParseError(message: "ERROR: --pointer-virtio contains an empty step"))
+        }
+        let fields = part.split(separator: ",", omittingEmptySubsequences: false)
+            .map { String($0).trimmingCharacters(in: .whitespaces) }
+        guard fields.count == 2 || fields.count == 3,
+              let gx = Double(fields[0]), let gy = Double(fields[1]),
+              gx >= 0, gy >= 0, gx <= 1280, gy <= 720 else {
+            return .failure(PointerVirtioParseError(message: "ERROR: --pointer-virtio step '\(part)' is not <x>,<y>[,c|d|u|rc|mc|w<±n>|h<±n>] with 0<=x<=1280, 0<=y<=720"))
+        }
+        let mode: PointerVirtioStep.Mode
+        if fields.count == 2 || fields[2].isEmpty {
+            mode = .move
+        } else {
+            let tok = fields[2]
+            switch tok {
+            case "d", "2": mode = .down
+            case "u", "3": mode = .up
+            case "c", "1": mode = .click
+            case "rc": mode = .rightClick
+            case "mc": mode = .middleClick
+            default:
+                if tok.hasPrefix("w") || tok.hasPrefix("h") {
+                    let isHoriz = tok.hasPrefix("h")
+                    let numStr = String(tok.dropFirst())
+                    guard let n = Int(numStr), n != 0, abs(n) <= customVirtioWheelMaxLines else {
+                        return .failure(PointerVirtioParseError(message: "ERROR: --pointer-virtio step '\(part)' has invalid wheel delta '\(tok)' (want w<±n> or h<±n> with 1<=|n|<=\(customVirtioWheelMaxLines))"))
+                    }
+                    mode = isHoriz ? .wheel(dx: Int16(n), dy: 0) : .wheel(dx: 0, dy: Int16(n))
+                } else {
+                    return .failure(PointerVirtioParseError(message: "ERROR: --pointer-virtio step '\(part)' has unknown mode '\(tok)' (want c|d|u|rc|mc|w<±n>|h<±n>)"))
+                }
+            }
+        }
+        // Guest pixels -> HID absolute logical (the inverse of
+        // driving_award.map_pointer_axis on the 1280x720 fb).
+        let lx = UInt16(min(32767, Int((gx * 32768.0 / 1280.0).rounded())))
+        let ly = UInt16(min(32767, Int((gy * 32768.0 / 720.0).rounded())))
+        steps.append(PointerVirtioStep(x: lx, y: ly, mode: mode))
+    }
+    return .success(steps)
+}
+
 // Claim 9367: the --pointer-virtio sequence — pointer injection over the
-// custom-virtio INPUT queue (kind-2 absolute-pointer messages), HEADLESS:
+// custom-virtio INPUT queue (kind-2 absolute-pointer messages; M216k adds
+// kind-5 wheel steps), HEADLESS:
 // no view, no window, no NSEvent/CGEvent anywhere. Same step grammar and
-// guest-pixel coordinate space as --pointer ("x,y[,c]" steps, 0<=x<=1280,
-// 0<=y<=720); each pixel coord is converted to the HID absolute 0..32767
-// logical space the guest's map_pointer_axis expects. The sequence is
-// scheduled once `--pointer-virtio-after <marker>` appears in the serial
-// log (deterministic choreography, not a sleep).
+// guest-pixel coordinate space as --pointer ("x,y[,c|d|u|rc|mc|w<±n>|h<±n>]"
+// steps, 0<=x<=1280, 0<=y<=720); each pixel coord is converted to the HID
+// absolute 0..32767 logical space the guest's map_pointer_axis expects. The
+// sequence is scheduled once `--pointer-virtio-after <marker>` appears in the
+// serial log (deterministic choreography, not a sleep).
 func startPointerVirtioInject() {
     guard let script = pointerVirtioScript else { return }
     let q = DispatchQueue(label: "virelaios.ptrcv")
@@ -521,45 +619,12 @@ func startPointerVirtioInject() {
                 }
                 // Resolve every step up front; a malformed step aborts
                 // before any message fires (fail honestly, invent nothing).
-                var steps: [CustomVirtioSpike.PtrStep] = []
-                for part in script.split(separator: ";") {
-                    let fields = part.split(separator: ",", omittingEmptySubsequences: false).map { String($0).trimmingCharacters(in: .whitespaces) }
-                    guard fields.count >= 2, let gx = Double(fields[0]), let gy = Double(fields[1]), gx >= 0, gy >= 0, gx <= 1280, gy <= 720 else {
-                        FileHandle.standardError.write(Data("ERROR: --pointer-virtio step '\(part)' is not <x>,<y>[,c|d|u|rc] with 0<=x<=1280, 0<=y<=720\n".utf8))
-                        steps = []
-                        break
-                    }
-                    // Grammar: bare = move (buttons 0); `c`/`1` = click
-                    // (down+up at one point, the claim 9367 shape); `d`/`2`
-                    // = press-and-hold (down); `u`/`3` = release (up);
-                    // `rc` = right-click (buttons bit1 down+up, M124d's
-                    // context-menu leg). The WMS5 drag choreography is
-                    // `<title>,d ; x1,y1 ; x2,y2 ; ...,u` — held moves
-                    // between down and up.
-                    let mode: CustomVirtioSpike.PtrStep.Mode
-                    if fields.count >= 3 && (fields[2] == "d" || fields[2] == "2") {
-                        mode = .down
-                    } else if fields.count >= 3 && (fields[2] == "u" || fields[2] == "3") {
-                        mode = .up
-                    } else if fields.count >= 3 && (fields[2] == "c" || fields[2] == "1") {
-                        mode = .click
-                    } else if fields.count >= 3 && fields[2] == "rc" {
-                        mode = .rightClick
-                    } else if fields.count >= 3 && fields[2] == "mc" {
-                        mode = .middleClick
-                    } else {
-                        mode = .move
-                    }
-                    // Guest pixels -> HID absolute logical (the inverse of
-                    // driving_award.map_pointer_axis on the 1280x720 fb).
-                    let lx = UInt16(min(32767, Int((gx * 32768.0 / 1280.0).rounded())))
-                    let ly = UInt16(min(32767, Int((gy * 32768.0 / 720.0).rounded())))
-                    steps.append(CustomVirtioSpike.PtrStep(x: lx, y: ly, mode: mode))
-                }
-                if !steps.isEmpty {
+                switch parsePointerVirtioSteps(script) {
+                case .success(let steps):
                     FileHandle.standardOutput.write(Data("PTR-CV-SEQ: \(steps.count) pointer steps scheduled after \"\(marker)\" transport=cv-input\n".utf8))
                     CustomVirtioSpike.injectPointerSteps(steps, sequenceTag: "ptr-seq")
-                } else {
+                case .failure(let err):
+                    FileHandle.standardError.write(Data("\(err.message)\n".utf8))
                     FileHandle.standardOutput.write(Data("PTR-CV-SEQ: aborted (malformed step) ok=false\n".utf8))
                 }
                 sent = true

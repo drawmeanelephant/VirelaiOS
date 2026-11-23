@@ -2038,6 +2038,14 @@ fn cv_pointer_dispatch(rep: []const u8) void {
     }
 }
 
+/// M216k (#3950): the input channel's WHEEL decode hook. Kind-5 payloads are
+/// 8-byte wheel reports [x, y, dy, dx]; decode and route to the registered WM
+/// (kind 19 arg1[31:16]) or directly to the hit window when unseated.
+fn cv_wheel_dispatch(rep: []const u8) void {
+    const w = input.decode_wheel_report(rep) orelse return;
+    driving_award.dispatch_wheel(w.x, w.y, w.dy, w.dx, input.report().kb_mods);
+}
+
 /// Drive the spike device: init (probe + negotiate + DRIVER_OK + both
 /// queues armed), arm the SPI window, then run the transport experiment:
 /// (1) claim 4374 — two batches of four CONCURRENT in-flight exchanges on
@@ -2327,6 +2335,7 @@ fn custom_virtio_spike() void {
     // (scheduler.on_idle_pass), NOT the shell idle loop's RX seam.
     virtio_custom.on_input_report = &cv_input_dispatch;
     virtio_custom.on_pointer_report = &cv_pointer_dispatch;
+    virtio_custom.on_wheel_report = &cv_wheel_dispatch;
     // Claim 1747: the drain rides the scheduler's idle pass, not the
     // console reader — one owner for the ring, and input liveness no
     // longer depends on the shell idle loop running. M183b: it is the

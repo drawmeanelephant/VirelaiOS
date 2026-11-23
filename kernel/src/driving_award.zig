@@ -650,6 +650,9 @@ pub var migrated_skips: u64 = 0;
 /// byte live at the sample's decode (the capture-time snapshot the seat
 /// echoes back through slot-65 cmd 15 — #2896); the WM edge-detects.
 pub var wm_pointer_hook: ?*const fn (x: u32, y: u32, buttons: u8, mods: u8) void = null;
+/// M216k (#3950): the scroll-wheel fan-out (set by wm_server at REGISTER time;
+/// null when no WM). Packs kind-19 WM_POINTER with `scroll` in arg1[31:16].
+pub var wm_wheel_hook: ?*const fn (x: u32, y: u32, scroll: u16, mods: u8) void = null;
 /// The window-registry mirror fan-out (set by wm_server at REGISTER time;
 /// null when no WM). Callback gets the id + full rect + state; wm_server
 /// packs kind 20 WM_WINDOW. Called from the user-window mutation points.
@@ -1391,10 +1394,12 @@ pub const effective_chrome = chrome_mod.effective_chrome;
 pub const draw_chrome = chrome_mod.draw_chrome;
 const pointer_mod = @import("driving_award/pointer.zig");
 pub const wm_fan_pointer = pointer_mod.wm_fan_pointer;
+pub const dispatch_wheel = pointer_mod.dispatch_wheel;
 pub const TermHit = pointer_mod.TermHit;
 pub const terminalHitAt = pointer_mod.terminalHitAt;
 pub const mouse_buttons_to_flags = pointer_mod.mouse_buttons_to_flags;
 pub const wm_content_pointer = pointer_mod.wm_content_pointer;
+pub const wm_content_scroll = pointer_mod.wm_content_scroll;
 pub const pointer_tick = pointer_mod.pointer_tick;
 pub const map_pointer_axis = pointer_mod.map_pointer_axis;
 pub const cursor_pos = pointer_mod.cursor_pos;

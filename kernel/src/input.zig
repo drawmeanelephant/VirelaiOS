@@ -90,10 +90,21 @@ var kb_held: [6]u8 = @as([6]u8, @splat(@as(u8, 0)));
 var kb_last_usage: u8 = 0;
 var kb_last_byte: u8 = 0;
 
+/// M216k (#3950): decoded custom-virtio kind-5 wheel report.
+/// x, y are HID absolute logical coordinates (0..32767); dy > 0 scrolls down,
+/// dx > 0 scrolls right (units: text lines).
+pub const WheelReport = struct {
+    x: u16,
+    y: u16,
+    dy: i16,
+    dx: i16,
+};
+
 var ptr_buttons: u8 = 0;
 var ptr_x: u16 = 0;
 var ptr_y: u16 = 0;
 var ptr_reports: usize = 0;
+var ptr_wheel_reports: usize = 0;
 /// Card U4 (claim 4993): the pointer became observable (at least one
 /// report) and the click edge (buttons 0 -> nonzero) latches here until
 /// the window manager consumes it via `take_click`.
@@ -1159,6 +1170,25 @@ pub fn decode_pointer_report(rep: []const u8) void {
     }
 }
 
+/// M216k (#3950): canonical custom-virtio kind-5 wheel payload:
+/// [x_lo, x_hi, y_lo, y_hi, dy_lo, dy_hi, dx_lo, dx_hi] (8 bytes).
+/// Rejects out-of-range HID coordinates (> 32767) and wrong lengths.
+pub fn decode_wheel_report(rep: []const u8) ?WheelReport {
+    if (rep.len != 8) return null;
+    const x: u16 = @as(u16, rep[0]) | (@as(u16, rep[1]) << 8);
+    const y: u16 = @as(u16, rep[2]) | (@as(u16, rep[3]) << 8);
+    if (x > 32767 or y > 32767) return null;
+    const udy: u16 = @as(u16, rep[4]) | (@as(u16, rep[5]) << 8);
+    const udx: u16 = @as(u16, rep[6]) | (@as(u16, rep[7]) << 8);
+    ptr_wheel_reports += 1;
+    return .{
+        .x = x,
+        .y = y,
+        .dy = @bitCast(udy),
+        .dx = @bitCast(udx),
+    };
+}
+
 fn usb_pointer_payload(d: xhci.EnumDevice, rep: []const u8) ?[]const u8 {
     // VZ's non-boot tablet prefixes report ID 1. Normalize only this
     // device; the canonical custom-virtio pointer ABI has no report ID.
@@ -2127,4 +2157,20 @@ test "input: a hygiene chord is consumed before the tty queue — the app never 
     decode_keyboard_report(&[_]u8{ 0, 0, 0, 0, 0, 0, 0, 0 }); // release
     _ = driving_award.user_close(win_id);
     for (&terminal.terminals) |*t2| t2.reset();
+}
+
+test "input: decode_wheel_report decodes 8-byte kind-5 payload and rejects bad frames (M216k)" {
+    // x=0x4000 (16384), y=0x1234 (4660), dy=-3 (0xfffd), dx=+2 (0x0002)
+    const rep = [_]u8{ 0x00, 0x40, 0x34, 0x12, 0xfd, 0xff, 0x02, 0x00 };
+    const w = decode_wheel_report(&rep) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(u16, 0x4000), w.x);
+    try std.testing.expectEqual(@as(u16, 0x1234), w.y);
+    try std.testing.expectEqual(@as(i16, -3), w.dy);
+    try std.testing.expectEqual(@as(i16, 2), w.dx);
+
+    // Wrong length (5-byte pointer payload) rejected.
+    try std.testing.expect(decode_wheel_report(rep[0..5]) == null);
+    // Out-of-range HID absolute coordinate (> 32767) rejected.
+    const bad_x = [_]u8{ 0x00, 0x80, 0x00, 0x40, 0x01, 0x00, 0x00, 0x00 };
+    try std.testing.expect(decode_wheel_report(&bad_x) == null);
 }

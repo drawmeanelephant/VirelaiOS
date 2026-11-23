@@ -68,7 +68,7 @@ milestone 32's WMS1):
 | 7 | `WIN_BLUR` | Window lost focus | Window ID (`2..3`) | Newly focused window ID | 0 |
 | 8 | `WIN_CLOSE` | Close requested | Window ID (`2..3`) | 0 | 0 |
 | 18 | `COMPOSITE_TICK` | Composite/present cadence tick, delivered ONLY to the registered WM server's process queue (ADR 0015 D3). | Present sequence (monotonic, wraps at 2³²) | 0 (reserved) | 0 |
-| 19 | `WM_POINTER` | Raw absolute-pointer sample, delivered ONLY to the registered WM server (M32 WMS5, issue #625). | X \| (Y << 16) in framebuffer pixels (top-left origin) | Raw HID keyboard modifier byte live at the sample's decode (#2896; was reserved 0 — the capture-time snapshot the seat echoes back on the WMCTL cmd-15 forward) | Low byte = the raw HID button byte (0x01 left, 0x02 right, 0x04 middle) |
+| 19 | `WM_POINTER` | Raw absolute-pointer / wheel sample, delivered ONLY to the registered WM server (M32 WMS5, issue #625; wheel M216k, #3950). | X \| (Y << 16) in framebuffer pixels (top-left origin) | Bits 0–7 = raw HID keyboard modifier byte live at the sample's decode (#2896); bits 8–15 = 0; bits 16–31 = packed 16-bit `MOUSE_SCROLL` word on wheel samples (M216k, #3950; 0 on ordinary pointer motion/button samples) | Low byte = raw HID button byte (0x01 left, 0x02 right, 0x04 middle; 0 on wheel samples) |
 | 20 | `WM_WINDOW` | Window-registry mirror — one kernel window row fanned out so the registered WM can hit-test (M32 WMS5, issue #625). | X \| (Y << 16) | W \| (H << 16) | Low byte = window id; bit 8 = visible; bit 9 = focused; bits 10–11 = workspace |
 | 21 | `WM_KEY` | Raw keyboard sample, delivered ONLY to the registered WM server on key-DOWN edges (M32 WMS5 Gate 2, issue #625, claim 4278). | HID usage (or decoded key byte) | 0 (reserved) | ADR 0009 modifier bits (`MOD_SHIFT`/`MOD_CTRL`/`MOD_ALT`) |
 
@@ -109,6 +109,9 @@ The `flags` field contains bitmasks for keyboard modifiers and mouse button stat
 - `BTN_LEFT   = 0x0100` (Left button pressed)
 - `BTN_RIGHT  = 0x0200` (Right button pressed)
 - `BTN_MIDDLE = 0x0400` (Middle button pressed)
+
+#### Scroll Source (bit 12, M216k / #3950)
+- `SCROLL_WHEEL = 0x1000` (set on wheel-sourced `MOUSE_SCROLL` kind-12 events; `0` on PageUp/PageDown-synthesized kind-12 events)
 
 For convenience in user programs, low-byte button aliases (`BTN_LEFT_BIT = 0x01`, `BTN_RIGHT_BIT = 0x02`, `BTN_MIDDLE_BIT = 0x04`) are provided when checking button-only reports.
 
@@ -206,3 +209,42 @@ allows, and it keeps ADR 0009's queue semantics exactly as specified.
 Consequences for this document: no new event kind is defined, `Event` stays
 16 bytes with kinds 1–21, and `sys_poll_event` / `sys_wait_event` are
 untouched. ADR 0009's "Syscall seam" row (D7) is unaffected.
+
+---
+
+### Amendment (2026-11-23, M216k / #3950 — Scroll wheel on kind 19 `WM_POINTER` and `SCROLL_WHEEL`)
+
+**Append-only.** Records the event-wire decisions for scroll-wheel delivery:
+
+1. **Seat routing rides spare bits of kind 19 (`WM_POINTER`).** Rather than
+   allocating a new routing-restricted kind, wheel samples ride kind 19 with
+   `arg0 = x | (y << 16)` (framebuffer pixels, top-left origin), `flags = 0`,
+   `arg1[7:0]` = capture-time HID keyboard modifier byte, `arg1[15:8] = 0`,
+   and `arg1[31:16]` = packed 16-bit `MOUSE_SCROLL` word (nonzero on wheel
+   samples; `0` on ordinary pointer motion/button samples). Wheel fan-out
+   bypasses `wm_fan_pointer`'s coordinate deduplication so repeated notches at
+   the same cursor position are all delivered.
+2. **Chrome and overlays swallow wheel silently.** The seat checks `arg1 >> 16`
+   before updating button-edge or hover state (`prevPtrButtons`, `railHover`,
+   cursor shape). Any wheel over the rail band (`y < RailHeight`), empty strip
+   start surface, modal overlays (lock curtain, secret-ask, launcher, power /
+   clipboard / rail menus), active gestures (drag, menu gesture, sash drag),
+   notification center, toasts, watchdog banner, god/power buttons, or split
+   sashes is swallowed with no per-event serial marker. Client-area wheel
+   samples forward through `sys_wmctl` cmd 15 (`a3 = scroll`, ADR 0015).
+3. **Target and no-seat behavior.** The kernel posts kind-12 `MOUSE_SCROLL` to
+   the topmost visible user window containing `(x, y)` (the window under the
+   pointer, not keyboard focus). With no seat registered (`!wm_owns_input` and
+   `armed_global`), `driving_award.dispatch_wheel` delivers kind-12
+   `MOUSE_SCROLL` directly in the kernel's local path using the same hit-test
+   helper.
+4. **Source flag (`SCROLL_WHEEL = 0x1000`).** Wheel-sourced `MOUSE_SCROLL`
+   events set bit 12 (`SCROLL_WHEEL`, disjoint from `MOD_*` bits 0–7 and
+   `BTN_*` bits 8–11) OR'd with capture-time modifier flags, and carry
+   window-local pointer position `local_x | (local_y << 16)` in `arg1`.
+   PageUp/PageDown-synthesized `MOUSE_SCROLL` events remain `flags = 0`,
+   `arg1 = 0` (see ADR 0013 amendment).
+5. **Later work (explicitly deferred).** AGENTD `wheel` input frames (WM_RPC
+   kind 29 / unallocated kinds ≥ 31) and RFB pointer buttons 4 and 5
+   (`user/go/gotabwm/rfbserver.go`) are out of scope here and remain future
+   follow-ups.

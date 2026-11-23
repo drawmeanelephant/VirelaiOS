@@ -391,6 +391,63 @@ fn deliver_window_pointer(
     }
 }
 
+/// M216k (#3950): post one wheel-sourced kind-12 MOUSE_SCROLL event to the
+/// topmost visible user window under `(nx, ny)` (never keyboard focus).
+/// Sets `SCROLL_WHEEL` (0x1000) OR'd with capture-time modifiers in `flags`
+/// and packs window-local pointer coordinates `local_x | (local_y << 16)` in
+/// `arg1`, distinguishing wheel events from PageUp/PageDown synthesis
+/// (`flags = 0, arg1 = 0`).
+fn deliver_window_scroll(nx: u32, ny: u32, scroll: u16, mods: u8) void {
+    const raw_mag = scroll & 0x3fff;
+    if (raw_mag == 0) return;
+    const mag: u16 = @min(raw_mag, 8191);
+    const clamped_scroll: u16 = (scroll & 0xc000) | mag;
+    const hit_id = hit_test(nx, ny) orelse return;
+    const w = find_user_window(hit_id) orelse return;
+    const owner_pid = w.owner orelse return;
+    const local_x: u32 = if (nx >= w.x) @min(nx - w.x, w.w - 1) else 0;
+    const local_y: u32 = if (ny >= w.y) @min(ny - w.y, w.h - 1) else 0;
+    events.push(owner_pid, .{
+        .kind = events.MOUSE_SCROLL,
+        .flags = events.SCROLL_WHEEL | input.hid_modifiers_to_flags(mods),
+        .seq = 0,
+        .arg0 = clamped_scroll,
+        .arg1 = local_x | (local_y << 16),
+    });
+}
+
+/// M216k (#3950, slot-65 cmd 15 a3 != 0): the registered seat forwarded one
+/// content wheel event after hit-testing chrome/overlays. Does not touch
+/// button/motion history (`wm_fwd_prev_*`), so scrolling never synthesizes
+/// spurious MOUSE_MOVE or MOUSE_UP edges. Dormant when no seat owns input.
+pub fn wm_content_scroll(x: u32, y: u32, scroll: u16, mods: u8) void {
+    if (!da.wm_owns_input) return;
+    deliver_window_scroll(x, y, scroll, mods);
+}
+
+/// M216k (#3950): route one decoded kind-5 wheel report.
+/// Under a registered seat (`wm_owns_input`), fans vertical and/or horizontal
+/// scroll words to the seat via `wm_wheel_hook` (bypassing pointer dedup so
+/// repeated notches at the same coordinates all arrive). With no seat
+/// registered (`!wm_owns_input` and `armed_global`), delivers directly in the
+/// kernel's local path to the window under the pointer.
+pub fn dispatch_wheel(x: u16, y: u16, dy: i16, dx: i16, mods: u8) void {
+    const nx = map_pointer_axis(x, virtio_gpu.fb_width);
+    const ny = map_pointer_axis(y, virtio_gpu.fb_height);
+    const vword = events.pack_scroll_arg0(dy, false);
+    const hword = events.pack_scroll_arg0(dx, true);
+    if (da.wm_owns_input) {
+        if (da.wm_wheel_hook) |hook| {
+            if (vword != 0) hook(nx, ny, vword, mods);
+            if (hword != 0) hook(nx, ny, hword, mods);
+        }
+        return;
+    }
+    if (!da.armed_global) return;
+    if (vword != 0) deliver_window_scroll(nx, ny, vword, mods);
+    if (hword != 0) deliver_window_scroll(nx, ny, hword, mods);
+}
+
 /// #1688 (slot-65 cmd 15, wm_server.wmctl_content_ptr): the registered
 /// seat forwarded one pointer sample for the kernel's LOCAL content path —
 /// terminal text selection and mouse-tracking reports. Chrome the seat
@@ -1320,4 +1377,105 @@ test "wm content forward: the seat delivers pointer events to the hit window (#2
     wm_content_pointer(100, 100, 0x01, 0);
     wm_content_pointer(100, 100, 0x00, 0);
     try std.testing.expect(events.pop(9) == null);
+}
+
+test "wm_content_scroll: targets window under pointer (not focus), sets SCROLL_WHEEL + local coords (M216k)" {
+    arm();
+    da.wm_owns_input = true;
+    defer {
+        da.wm_owns_input = false;
+        wm_fwd_prev_buttons = 0;
+        wm_fwd_prev_x = 0;
+        wm_fwd_prev_y = 0;
+    }
+    // Two disjoint windows: pid 8 on the left, pid 9 on the right (focused).
+    const id_left = switch (user_open(40, 40, 300, 300, 8)) {
+        .opened => |i| i,
+        else => return error.TestUnexpectedResult,
+    };
+    defer _ = user_close(id_left);
+    const id_right = switch (user_open(400, 40, 300, 300, 9)) {
+        .opened => |i| i,
+        else => return error.TestUnexpectedResult,
+    };
+    defer _ = user_close(id_right);
+    _ = focus(id_right);
+    while (events.pop(8) != null) {}
+    while (events.pop(9) != null) {}
+
+    // Scroll over the UNFOCUSED left window while Shift (0x02) is held:
+    // pid 8 receives kind-12 MOUSE_SCROLL; focused pid 9 receives nothing.
+    wm_content_scroll(140, 100, 0x8003, 0x02);
+    try std.testing.expect(events.pop(9) == null);
+    const ev = events.pop(8) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(events.MOUSE_SCROLL, ev.kind);
+    try std.testing.expectEqual(events.SCROLL_WHEEL | events.MOD_SHIFT, ev.flags);
+    try std.testing.expectEqual(@as(u32, 0x8003), ev.arg0);
+    // Window-local coords: (140 - 40, 100 - 40) = (100, 60).
+    try std.testing.expectEqual(@as(u32, 100 | (60 << 16)), ev.arg1);
+    try std.testing.expect(events.pop(8) == null);
+
+    // Scrolling while a button is held in wm_fwd_prev_buttons does not emit a
+    // spurious MOUSE_UP or MOUSE_MOVE.
+    wm_fwd_prev_buttons = 0x01;
+    wm_fwd_prev_x = 450;
+    wm_fwd_prev_y = 100;
+    wm_content_scroll(460, 120, 0x0002, 0);
+    const ev2 = events.pop(9) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(events.MOUSE_SCROLL, ev2.kind);
+    try std.testing.expectEqual(@as(u8, 0x01), wm_fwd_prev_buttons);
+    try std.testing.expect(events.pop(9) == null);
+
+    // Dormant when no seat owns input.
+    da.wm_owns_input = false;
+    wm_content_scroll(140, 100, 0x8001, 0);
+    try std.testing.expect(events.pop(8) == null);
+}
+
+test "dispatch_wheel: fans to seat when seated and delivers locally when unseated (M216k)" {
+    const S = struct {
+        var count: usize = 0;
+        var last_scroll: u16 = 0;
+        var last_mods: u8 = 0;
+        fn hook(_: u32, _: u32, scroll: u16, mods: u8) void {
+            count += 1;
+            last_scroll = scroll;
+            last_mods = mods;
+        }
+    };
+    arm();
+    const id = switch (user_open(0, 0, 1280, 720, 10)) {
+        .opened => |i| i,
+        else => return error.TestUnexpectedResult,
+    };
+    defer _ = user_close(id);
+    while (events.pop(10) != null) {}
+
+    // Seated path: routes to wm_wheel_hook, bypassing pointer dedup across
+    // repeated ticks at the same coordinates, and does not push directly.
+    da.wm_owns_input = true;
+    da.wm_wheel_hook = &S.hook;
+    defer {
+        da.wm_owns_input = false;
+        da.wm_wheel_hook = null;
+    }
+    S.count = 0;
+    dispatch_wheel(16384, 16384, 2, 0, 0x01);
+    dispatch_wheel(16384, 16384, 2, 0, 0x01);
+    try std.testing.expectEqual(@as(usize, 2), S.count);
+    try std.testing.expectEqual(@as(u16, 0x8002), S.last_scroll);
+    try std.testing.expectEqual(@as(u8, 0x01), S.last_mods);
+    try std.testing.expect(events.pop(10) == null);
+
+    // No-seat path: delivers kind-12 MOUSE_SCROLL directly to hit window.
+    da.wm_owns_input = false;
+    da.wm_wheel_hook = null;
+    dispatch_wheel(16384, 16384, 1, -2, 0);
+    const v_ev = events.pop(10) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(events.MOUSE_SCROLL, v_ev.kind);
+    try std.testing.expectEqual(events.SCROLL_WHEEL, v_ev.flags);
+    try std.testing.expectEqual(@as(u32, 0x8001), v_ev.arg0);
+    const h_ev = events.pop(10) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(events.MOUSE_SCROLL, h_ev.kind);
+    try std.testing.expectEqual(@as(u32, 0x4002), h_ev.arg0);
 }

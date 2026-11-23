@@ -75,6 +75,19 @@ const (
 	ScanoutFbBytes = ScanoutWidth * ScanoutHeight * ScanoutBPP // 3,686,400
 )
 
+// EvMouseScroll is event kind 12 (ADR 0013 D2, M216k #3950): mouse wheel or
+// PageUp/PageDown-synthesized scroll. arg0 packs magnitude in bits 0..13
+// (1..8191; magnitude 1 = one text line), horizontal in bit 14, and sign in
+// bit 15 (1 = down/right, 0 = up/left). Wheel-sourced events set ScrollWheel
+// in Flags (OR'd with capture-time modifier bits) and pack window-local
+// pointer position local_x | (local_y << 16) in Arg1; PageUp/PageDown
+// synthesis keeps Flags = 0, Arg1 = 0.
+const EvMouseScroll uint16 = 12
+
+// ScrollWheel is Flags bit 12 on EvMouseScroll (M216k #3950), distinguishing
+// wheel-sourced scroll events from PageUp/PageDown-synthesized ones.
+const ScrollWheel uint16 = 0x1000
+
 // EvCompositeTick is event kind 18 (ADR 0009 numbering, reserved by WMS1): the
 // pacing tick delivered ONLY to the registered WM's process event queue, once
 // per scheduler tick.
@@ -96,9 +109,11 @@ const WmTickDamage uint16 = 0x1
 const (
 	// EvWmPointer is kind 19: raw absolute pointer. arg0 = x|(y<<16) in
 	// framebuffer pixels, flags low byte = HID button byte (0x01 left),
-	// arg1 = the HID keyboard modifier byte live at the kernel's decode
-	// of this sample (#2896 — the capture-time snapshot the seat echoes
-	// back through WmctlContentPtr; opaque to the seat itself).
+	// arg1 low byte = the HID keyboard modifier byte live at the kernel's
+	// decode of this sample (#2896 — the capture-time snapshot the seat
+	// echoes back through WmctlContentPtr; opaque to the seat itself),
+	// arg1 bits 16..31 = packed 16-bit MOUSE_SCROLL word on wheel samples
+	// (M216k #3950; 0 on ordinary pointer samples).
 	EvWmPointer uint16 = 19
 	// EvWmWindow is kind 20: a window-registry mirror (id / rect / focus).
 	EvWmWindow uint16 = 20
@@ -139,6 +154,18 @@ func WmctlSeatPid() int64 { return svc1(SlotWmctl, uintptr(WmctlSeatPidCmd)) }
 func WmctlContentPtr(x, y uint32, buttons, mods uint8) int64 {
 	return syscall6(SlotWmctl, uintptr(WmctlContentPtrCmd),
 		uintptr(uint32(x)|(y<<16)), uintptr(buttons), uintptr(mods), 0, 0)
+}
+
+// WmctlContentScroll forwards one scroll-wheel sample through slot-65 cmd 15's
+// spare argument a3 (M216k #3950, ADR 0015 additive). `scroll` is the packed
+// 16-bit MOUSE_SCROLL word (bits 0..13 magnitude 1..8191 in text lines, bit 14
+// horizontal, bit 15 sign 1=down/right). The kernel posts kind-12 MOUSE_SCROLL
+// (with ScrollWheel set in flags and window-local pointer coords in arg1) to
+// the hit user window without perturbing button/motion history. Host-safe:
+// degrades to -ENOSYS off the guest like the rest of the SDK.
+func WmctlContentScroll(x, y uint32, scroll uint16, mods uint8) int64 {
+	return syscall6(SlotWmctl, uintptr(WmctlContentPtrCmd),
+		uintptr(uint32(x)|(y<<16)), 0, uintptr(mods), uintptr(scroll), 0)
 }
 
 // WmctlContentKey forwards one agent-injected key press for the kernel's
