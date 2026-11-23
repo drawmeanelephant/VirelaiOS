@@ -255,7 +255,7 @@ type app struct {
 	// mutated is the dom-rpc write ops' dirty flag (M211c #3869): a
 	// served setText/setValue marks the tree dirty; the next drain-pass
 	// end runs one batched reflow + repaint through the normal pipeline.
-	mutated    bool
+	mutated bool
 	// dogfoodPage is the once-only latch for markerDogfoodPage (M69a #1528).
 	dogfoodPage bool
 
@@ -802,14 +802,8 @@ func (a *app) loop() {
 			// script worker's granted setTimeouts — the fan-out moves
 			// due ids and answers a parked `timer.next` ask.
 			a.onScriptTimer()
-		case 12: // Existing ADR 0009 MOUSE_SCROLL; SDK has no named alias.
-			if ev.Arg0&0x4000 == 0 {
-				step := int(ev.Arg0&0x3fff) * 40
-				if ev.Arg0&0x8000 == 0 {
-					step = -step
-				}
-				a.scrollBy(step)
-			}
+		case vi.EvMouseScroll:
+			a.scrollEvent(ev)
 		}
 		if a.dirty {
 			a.render()
@@ -1725,6 +1719,14 @@ func (a *app) reload() {
 	a.status = "reloading"
 	vi.ConsoleLine(markerReload + " " + a.target)
 	a.navigate(a.target, "")
+}
+
+func (a *app) scrollEvent(ev vi.Event) {
+	s := vi.DecodeScroll(ev)
+	if !s.Wheel || s.Axis != vi.ScrollVertical || s.Delta == 0 {
+		return
+	}
+	a.scrollBy(s.Delta * 40)
 }
 
 func (a *app) scrollBy(d int) {

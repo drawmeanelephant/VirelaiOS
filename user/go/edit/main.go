@@ -952,6 +952,7 @@ func (e *editor) load() {
 	}
 	e.buf = b
 	e.cur = len(b)
+	e.scrollTop = 0
 	e.base = b
 	e.diskLen = len(b)
 	e.diskHash = fnv1a64(b)
@@ -996,7 +997,83 @@ func (e *editor) handle(ev vi.Event) bool {
 		e.mbar.OnClick(int(ev.Arg0), int(ev.Arg1))
 		return true
 	}
+	if ev.Kind == vi.EvMouseScroll {
+		return e.handleScroll(ev)
+	}
 	return e.key(ev)
+}
+
+func (e *editor) visibleLines() int {
+	n, start := 0, 0
+	for i := 0; i <= len(e.buf); i++ {
+		if i != len(e.buf) && e.buf[i] != '\n' {
+			continue
+		}
+		if !e.lineHidden(start) {
+			n++
+		}
+		start = i + 1
+	}
+	return n
+}
+
+func (e *editor) viewLines() int {
+	h := natH
+	if e.ta != nil && int(e.ta.H) > 0 {
+		h = int(e.ta.H)
+	}
+	n := (h - chromeH - 4) / lineH
+	if n < 1 {
+		n = 1
+	}
+	if n > maxLines {
+		n = maxLines
+	}
+	return n
+}
+
+func (e *editor) maxScrollTop() int {
+	m := e.visibleLines() - e.viewLines()
+	if m < 0 {
+		return 0
+	}
+	return m
+}
+
+func (e *editor) scrollBy(delta int) bool {
+	if delta == 0 {
+		return false
+	}
+	next := e.scrollTop + delta
+	if next < 0 {
+		next = 0
+	}
+	if m := e.maxScrollTop(); next > m {
+		next = m
+	}
+	if next == e.scrollTop {
+		return false
+	}
+	e.scrollTop = next
+	return true
+}
+
+func (e *editor) handleScroll(ev vi.Event) bool {
+	if e.banner.Open || e.mbar.Active || e.mbar.Open {
+		return false
+	}
+	s := vi.DecodeScroll(ev)
+	if !s.Wheel || s.Axis != vi.ScrollVertical || s.Delta == 0 {
+		return false
+	}
+	switch e.mode {
+	case modeHints:
+		return e.hints.Move(s.Delta)
+	case modeEdit:
+		return e.scrollBy(s.Delta)
+	default:
+		return false
+	}
 }
 
 // key runs one key-down through the dead-key stage and then, unless the stage
@@ -2375,7 +2452,14 @@ func (e *editor) draw() {
 	// M166b: line is the painted (visible) row; hidden fold lines are
 	// skipped without consuming a row, so a folded block reads as its
 	// opening line plus a `{...}` tail and the close line follows it.
-	line, start := 0, 0
+	top := e.scrollTop
+	if maxTop := e.maxScrollTop(); top > maxTop {
+		top = maxTop
+	}
+	if top < 0 {
+		top = 0
+	}
+	visIdx, line, start := 0, 0, 0
 	caretRow, caretCol := -1, 0
 	for i := 0; i <= len(e.buf); i++ {
 		if i != len(e.buf) && e.buf[i] != '\n' {
@@ -2385,6 +2469,12 @@ func (e *editor) draw() {
 			start = i + 1
 			continue
 		}
+		if visIdx < top {
+			visIdx++
+			start = i + 1
+			continue
+		}
+		visIdx++
 		if line >= maxLines {
 			break
 		}

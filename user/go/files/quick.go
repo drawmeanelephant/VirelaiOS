@@ -390,6 +390,19 @@ func (m *model) qlScroll(delta int) {
 	}
 }
 
+func (m *model) qlHandleScroll(ev vi.Event) bool {
+	if m.mode != modeQuickLook || m.ql.ct != nil || m.ql.kind != qlText {
+		return false
+	}
+	s := vi.DecodeScroll(ev)
+	if !s.Wheel || s.Axis != vi.ScrollVertical || s.Delta == 0 {
+		return false
+	}
+	before := m.ql.scroll
+	m.qlScroll(s.Delta)
+	return m.ql.scroll != before
+}
+
 // armImage is the image arm's load: decode, scale inside the bank bound,
 // encode once. ok=false leaves kind at qlCard — an image that will not
 // decode or encode is still named type=image on the card, never painted

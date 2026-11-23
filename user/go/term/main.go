@@ -587,6 +587,12 @@ func hintsSession(ta *tabapp.TabApp, ts *termState, fd uint32, editor *shlib.Edi
 			paint()
 		}
 		if ev, r, ok := vi.PollEventRaw(); ok {
+			if ev.Kind == vi.EvMouseScroll {
+				if hintsHandleScroll(&h, ev) {
+					paint()
+				}
+				continue
+			}
 			if ta.Dispatch(ev) == tabapp.ActionClosed {
 				shutdown(ta, fd, 0)
 			}
@@ -689,7 +695,7 @@ const findOpenByte = 0x07
 // findLayout is one content window over the hit rows.
 type findLayout struct {
 	rows []int // hit rows in corpus order
-	top  int  // index into rows of the first shown content row
+	top  int   // index into rows of the first shown content row
 }
 
 func findSession(ta *tabapp.TabApp, ts *termState, fd uint32, editor *shlib.Editor) {
@@ -702,7 +708,7 @@ func findSession(ta *tabapp.TabApp, ts *termState, fd uint32, editor *shlib.Edit
 	f.Scan = func(pat string) int { return countHits(doc, pat) }
 	f.Show = func(i int) {
 		if r := hitDocRow(doc, f.Pattern(), i); r >= 0 {
-			lay.rows, lay.top = hitRowWindow(doc, f.Pattern(), r, vis), 0
+			lay.rows, lay.top = hitRowLayout(doc, f.Pattern(), r, vis)
 			edited = false
 			vi.ConsoleLine(markerFindHit + findHitText(f, doc, r, lay))
 		}
@@ -811,6 +817,12 @@ func findSession(ta *tabapp.TabApp, ts *termState, fd uint32, editor *shlib.Edit
 			paint()
 		}
 		if ev, r, ok := vi.PollEventRaw(); ok {
+			if ev.Kind == vi.EvMouseScroll {
+				if findHandleScroll(&lay, vis, ev) {
+					paint()
+				}
+				continue
+			}
 			if ta.Dispatch(ev) == tabapp.ActionClosed {
 				shutdown(ta, fd, 0)
 			}
@@ -822,26 +834,54 @@ func findSession(ta *tabapp.TabApp, ts *termState, fd uint32, editor *shlib.Edit
 	}
 }
 
-// findScroll steps the content window over the hit rows.
-func findScroll(l *findLayout, delta int) {
+func hintsHandleScroll(h *appkit.ChordHints, ev vi.Event) bool {
+	s := vi.DecodeScroll(ev)
+	if !s.Wheel || s.Axis != vi.ScrollVertical || s.Delta == 0 {
+		return false
+	}
+	return h.Move(s.Delta)
+}
+
+func findHandleScroll(l *findLayout, vis int, ev vi.Event) bool {
+	s := vi.DecodeScroll(ev)
+	if !s.Wheel || s.Axis != vi.ScrollVertical || s.Delta == 0 {
+		return false
+	}
+	before := l.top
+	findScrollVis(l, vis, s.Delta)
+	return l.top != before
+}
+
+func findScrollVis(l *findLayout, vis, delta int) {
+	body := vis - 2
+	if body < 1 {
+		body = 1
+	}
 	l.top += delta
-	if l.top > len(l.rows)-(visMin-2) {
-		l.top = len(l.rows) - (visMin - 2)
+	if max := len(l.rows) - body; l.top > max {
+		l.top = max
 	}
 	if l.top < 0 {
 		l.top = 0
 	}
 }
 
+// findScroll steps the content window over the hit rows.
+func findScroll(l *findLayout, delta int) {
+	findScrollVis(l, visMin, delta)
+}
+
 // visMin is the smallest window findScroll clamps against.
 const visMin = 4
 
-// hitRowWindow centers hit row r's neighbourhood: the rows around the
-// hit that fit the window, in corpus order.
-func hitRowWindow(doc *streamDoc, pat string, r, vis int) []int {
+func hitRowLayout(doc *streamDoc, pat string, r, vis int) ([]int, int) {
 	all := hitDocRows(doc, pat)
-	if len(all) <= vis-2 {
-		return all
+	body := vis - 2
+	if body < 1 {
+		body = 1
+	}
+	if len(all) <= body {
+		return all, 0
 	}
 	pos := 0
 	for i, row := range all {
@@ -850,14 +890,25 @@ func hitRowWindow(doc *streamDoc, pat string, r, vis int) []int {
 			break
 		}
 	}
-	top := pos - (vis-2)/2
+	top := pos - body/2
 	if top < 0 {
 		top = 0
 	}
-	if top > len(all)-(vis-2) {
-		top = len(all) - (vis - 2)
+	if top > len(all)-body {
+		top = len(all) - body
 	}
-	return all[top : top+vis-2]
+	return all, top
+}
+
+// hitRowWindow centers hit row r's neighbourhood: the rows around the
+// hit that fit the window, in corpus order.
+func hitRowWindow(doc *streamDoc, pat string, r, vis int) []int {
+	all, top := hitRowLayout(doc, pat, r, vis)
+	body := vis - 2
+	if body < 1 || len(all) <= body {
+		return all
+	}
+	return all[top : top+body]
 }
 
 // findHitText is the hit marker's body: cur/total, then the hit's corpus
@@ -871,7 +922,14 @@ func findHitText(f appkit.Find, doc *streamDoc, row int, lay findLayout) string 
 	s := " cur=" + vi.Itoa64(int64(cur)) + "/" + vi.Itoa64(int64(f.Total)) +
 		" row=" + vi.Itoa64(int64(row-fold))
 	if len(lay.rows) > 0 {
-		s += " top=" + vi.Itoa64(int64(lay.rows[0]-fold))
+		top := lay.top
+		if top < 0 {
+			top = 0
+		}
+		if top >= len(lay.rows) {
+			top = len(lay.rows) - 1
+		}
+		s += " top=" + vi.Itoa64(int64(lay.rows[top]-fold))
 	}
 	return s
 }
@@ -936,7 +994,14 @@ func findPaint(f appkit.Find, doc *streamDoc, lay findLayout, vis int) []byte {
 	}
 	rows := lay.rows
 	if len(rows) > body {
-		rows = rows[lay.top : lay.top+body]
+		top := lay.top
+		if top > len(rows)-body {
+			top = len(rows) - body
+		}
+		if top < 0 {
+			top = 0
+		}
+		rows = rows[top : top+body]
 	}
 	sixel := map[int]bool{}
 	for _, s := range doc.sixels {

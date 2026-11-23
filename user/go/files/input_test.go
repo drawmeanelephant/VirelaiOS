@@ -1,9 +1,11 @@
 package main
 
 import (
+	"fmt"
 	"testing"
 
 	"virelai/rss/keys"
+	"virelai/vi"
 )
 
 func TestNavKeysMoveSelection(t *testing.T) {
@@ -93,5 +95,47 @@ func TestKeyLabelsUseChordVocabulary(t *testing.T) {
 		if got := keyLabel(ev); got != want {
 			t.Errorf("keyLabel(%v) = %q, want %q", ev, got, want)
 		}
+	}
+}
+
+func TestListWheelScrollAndPageKeyNoDoubleScroll(t *testing.T) {
+	entries := make([]vi.DirEntry, 35)
+	for i := range entries {
+		entries[i] = entry(fmt.Sprintf("F%02d.TXT", i), false)
+	}
+	m := testModel(entries...)
+	m.setSize(64, 14) // bodyRows() == 10
+
+	// Wheel down (+12 lines) moves selection and scrolls top past 0.
+	if !m.handleScroll(vi.Event{Kind: vi.EvMouseScroll, Flags: vi.ScrollWheel, Arg0: 0x800c}) {
+		t.Fatal("wheel down must scroll list")
+	}
+	if m.sel != 12 || m.top == 0 {
+		t.Fatalf("after wheel +12: sel=%d top=%d want sel=12 top>0", m.sel, m.top)
+	}
+	// Wheel up (-3 lines) moves back up.
+	if !m.handleScroll(vi.Event{Kind: vi.EvMouseScroll, Flags: vi.ScrollWheel, Arg0: 0x0003}) {
+		t.Fatal("wheel up must scroll list")
+	}
+	if m.sel != 9 {
+		t.Fatalf("after wheel -3: sel=%d want 9", m.sel)
+	}
+	// Horizontal wheel is ignored.
+	if m.handleScroll(vi.Event{Kind: vi.EvMouseScroll, Flags: vi.ScrollWheel, Arg0: 0xc002}) {
+		t.Fatal("horizontal wheel must be ignored")
+	}
+
+	// PageDown key + synthesized EvMouseScroll (Flags=0): no double scroll.
+	beforeSel, beforeTop := m.sel, m.top
+	m.handleKey(keys.Event{Key: keys.KeyPageDown})
+	afterSel, afterTop := m.sel, m.top
+	if afterSel <= beforeSel || afterTop <= beforeTop {
+		t.Fatalf("PageDown did not scroll: before=(%d,%d) after=(%d,%d)", beforeSel, beforeTop, afterSel, afterTop)
+	}
+	if m.handleScroll(vi.Event{Kind: vi.EvMouseScroll, Flags: 0, Arg0: 0x8001}) {
+		t.Fatal("synthesized PageDown EvMouseScroll must be ignored")
+	}
+	if m.sel != afterSel || m.top != afterTop {
+		t.Fatalf("synthesized EvMouseScroll double-scrolled: got (%d,%d) want (%d,%d)", m.sel, m.top, afterSel, afterTop)
 	}
 }

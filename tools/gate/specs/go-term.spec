@@ -1069,7 +1069,7 @@ vgate_run 09 -- \
 
 vgate_assert 09 serial-contains 'exec: loaded GOTERM.ELF'
 vgate_assert 09 serial-contains 'goterm: menubar open'
-vgate_assert 09 serial-contains 'goterm: hints n=53'
+vgate_assert 09 serial-contains 'goterm: hints n=59'
 vgate_assert 09 serial-contains 'goterm: close'
 vgate_assert 09 serial-contains 'rx-goterm-menu-ok'
 vgate_assert 09 serial-absent '[EXC] parking:'
@@ -1146,8 +1146,12 @@ vgate_run 06 -- --display --input \
     --input-string-after 'goterm: prompt' \
     --input-chords 'ctrl-shift-g' \
     --input-chords-after 'goterm: done status=0' \
-    --input-chords2 's,e,e,d,1,9,1,a,return,n,N,escape' \
+    --input-chords2 's,e,e,d,1,9,1,a,return,n,N,tab,tab,tab,tab,tab,tab,tab,tab,tab,tab,tab,tab,tab,tab,tab,tab,tab,tab,tab,tab,tab,tab,tab,tab,tab,tab,tab,tab,escape' \
     --input-chords2-after 'goterm: find open' \
+    --pointer-virtio '320,200;320,200,w+5' \
+    --pointer-virtio-after 'goterm: find hit  cur=2/60' \
+    --screenshot-after 'goterm: find hit  cur=2/60' \
+    --screenshot-after-delay 5 \
     --script3 '$RUN_DIR/script3-06.txt' \
     --script3-after 'goterm: find close' \
     --script-expect 'rx-goterm-find-ok' --timeout 300
@@ -1219,6 +1223,98 @@ if int(hit3.group(1)) != 1:
 closed = at(r"(?m)^goterm: find close$", "find close", hit3.end())
 rx     = at(r"(?m)^rx-goterm-find-ok$", "run receipt", closed.end())
 print("find chain OK: open -> n=%d live -> hit 1/60 row=%d (below fold, "
-      "in window top=%d) -> n 2/60 -> N 1/60 -> close -> receipt"
+      "in window top=%d) -> n 2/60 -> N 1/60 -> wheel -> close -> receipt"
       % (counts[-1], row1, top1))
+PY
+# M216j (#3949): wheel-down +5 over the scrollback find overlay scrolled row 0
+# (seed191a-00, the only row carrying the SGR 7 reverse-video highlight) off the
+# top of the viewport. Theme-invariant check (works under both dark and light
+# profiles left by earlier legs): sample the reverse-video header bar's modal
+# colour `bar_rgb` (grid row 0, logical y=20..32) and plain body row 2's modal
+# colour `bg_rgb` (logical y=64..80); on an un-scrolled frame body row 0
+# (logical y=32..48, x=0..64) is ~80% `bar_rgb` (SGR 7 highlight block), while
+# after wheel-down +5 it is plain text (~10% `bar_rgb`).
+vgate_assert 06 snapshot 'screen-06-after' <<'PY'
+import struct, sys, zlib
+
+d = open(sys.argv[1], "rb").read()
+assert d[:8] == b"\x89PNG\r\n\x1a\n", "not a PNG scanout"
+pos = 8
+idat = b""
+w = h = ct = 0
+while pos < len(d):
+    n, typ = struct.unpack(">I4s", d[pos:pos + 8])
+    chunk = d[pos + 8:pos + 8 + n]
+    if typ == b"IHDR":
+        w, h, depth, ct = struct.unpack(">IIBB", chunk[:10])
+        assert depth == 8
+    elif typ == b"IDAT":
+        idat += chunk
+    pos += 12 + n
+bpp = 4 if ct == 6 else 3
+raw = zlib.decompress(idat)
+stride = w * bpp
+out = bytearray()
+prev = bytearray(stride)
+i = 0
+for _ in range(h):
+    filt = raw[i]
+    i += 1
+    row = bytearray(raw[i:i + stride])
+    i += stride
+    if filt == 1:
+        for x in range(bpp, stride):
+            row[x] = (row[x] + row[x - bpp]) & 0xff
+    elif filt == 2:
+        for x in range(stride):
+            row[x] = (row[x] + prev[x]) & 0xff
+    elif filt == 3:
+        for x in range(stride):
+            left = row[x - bpp] if x >= bpp else 0
+            row[x] = (row[x] + ((left + prev[x]) >> 1)) & 0xff
+    elif filt == 4:
+        for x in range(stride):
+            left = row[x - bpp] if x >= bpp else 0
+            up = prev[x]
+            up_left = prev[x - bpp] if x >= bpp else 0
+            p = left + up - up_left
+            pa, pb, pc = abs(p - left), abs(p - up), abs(p - up_left)
+            pred = (left if pa <= pb and pa <= pc else up if pb <= pc else up_left)
+            row[x] = (row[x] + pred) & 0xff
+    out += row
+    prev = row
+
+def modal_rgb(x0, x1, y0, y1):
+    hist = {}
+    for y in range(y0, y1):
+        for x in range(x0, x1):
+            k = (y * w + x) * bpp
+            px = (out[k], out[k + 1], out[k + 2])
+            hist[px] = hist.get(px, 0) + 1
+    return max(hist, key=hist.get)
+
+def dist(a, b):
+    return abs(a[0] - b[0]) + abs(a[1] - b[1]) + abs(a[2] - b[2])
+
+sx = w // 1280
+sy = h // 720
+bar_rgb = modal_rgb(64 * sx, 128 * sx, 20 * sy, 32 * sy)
+bg_rgb = modal_rgb(0, 64 * sx, 64 * sy, 80 * sy)
+sep = dist(bar_rgb, bg_rgb)
+bar_like = 0
+total = 0
+for y in range(32 * sy, 48 * sy):
+    for x in range(0, 64 * sx):
+        k = (y * w + x) * bpp
+        px = (out[k], out[k + 1], out[k + 2])
+        if dist(px, bar_rgb) < dist(px, bg_rgb):
+            bar_like += 1
+        total += 1
+frac = bar_like / total
+print("go-term 06 wheel snapshot (%dx%d): bar_rgb=%s bg_rgb=%s sep=%d row0_bar_like=%d/%d (%.3f)"
+      % (w, h, bar_rgb, bg_rgb, sep, bar_like, total, frac))
+if sep < 120:
+    sys.exit("find header bar not distinct from body bg (bar=%s bg=%s sep=%d) — overlay not visible?" % (bar_rgb, bg_rgb, sep))
+if frac > 0.35:
+    sys.exit("body row 0 still carries SGR 7 reverse-video highlight (frac=%.3f > 0.35) — wheel did not scroll" % frac)
 PY

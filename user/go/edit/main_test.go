@@ -469,3 +469,42 @@ func TestNavKeysMoveTheCaret(t *testing.T) {
 		t.Fatalf("fwd del = %q", e.buf)
 	}
 }
+
+func TestWheelScrollAndPageKeyNoDoubleScroll(t *testing.T) {
+	var body []byte
+	for i := 0; i < 80; i++ {
+		body = append(body, "line\n"...)
+	}
+	e := usEditor(string(body))
+	e.ta = &tabapp.TabApp{W: natW, H: natH}
+
+	// Wheel down (+5 lines) moves scrollTop to 5.
+	if !e.handle(vi.Event{Kind: vi.EvMouseScroll, Flags: vi.ScrollWheel, Arg0: 0x8005}) {
+		t.Fatal("wheel down must scroll document")
+	}
+	if e.scrollTop != 5 {
+		t.Fatalf("after wheel +5: scrollTop=%d want 5", e.scrollTop)
+	}
+	// Wheel up (-2 lines) moves scrollTop to 3.
+	if !e.handle(vi.Event{Kind: vi.EvMouseScroll, Flags: vi.ScrollWheel, Arg0: 0x0002}) {
+		t.Fatal("wheel up must scroll document")
+	}
+	if e.scrollTop != 3 {
+		t.Fatalf("after wheel -2: scrollTop=%d want 3", e.scrollTop)
+	}
+	// Horizontal wheel is ignored.
+	if e.handle(vi.Event{Kind: vi.EvMouseScroll, Flags: vi.ScrollWheel, Arg0: 0xc003}) {
+		t.Fatal("horizontal wheel must be ignored")
+	}
+	if e.scrollTop != 3 {
+		t.Fatalf("after horizontal wheel: scrollTop=%d want 3", e.scrollTop)
+	}
+
+	// Synthesized PageDown scroll (Flags=0) must be ignored (no spurious/double scroll).
+	if e.handle(vi.Event{Kind: vi.EvMouseScroll, Flags: 0, Arg0: 0x8001}) {
+		t.Fatal("synthesized PageDown EvMouseScroll must be ignored")
+	}
+	if e.scrollTop != 3 {
+		t.Fatalf("after synthesized scroll: scrollTop=%d want 3", e.scrollTop)
+	}
+}

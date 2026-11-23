@@ -1,6 +1,11 @@
 package main
 
-import "testing"
+import (
+	"testing"
+
+	"virelai/tabapp"
+	"virelai/vi"
+)
 
 func TestPagerBounds(t *testing.T) {
 	p := pager{page: 0, pages: 3}
@@ -326,5 +331,53 @@ func TestCopyName(t *testing.T) {
 	}
 	if got := dirname("BARE.PDF"); got != "/host" {
 		t.Fatalf("dirname bare = %q", got)
+	}
+}
+
+func TestWheelScrollHonorsMagnitudeAndPageKeysDoNotDoubleScroll(t *testing.T) {
+	a := &app{
+		ta:      &tabapp.TabApp{W: windowW, H: windowH},
+		st:      loadOkay,
+		pg:      pager{page: 0, pages: 1},
+		pw:      600,
+		ph:      2000,
+		zoomIdx: zoomDefaultIdx,
+	}
+	vp := viewportRect(a.ta.W, a.ta.H, false)
+	step := scrollStep(vp.H, a.zoom())
+
+	// Wheel down with magnitude 3 advances 3 ticks.
+	if !a.handle(vi.Event{Kind: vi.EvMouseScroll, Flags: vi.ScrollWheel, Arg0: 0x8003}) {
+		t.Fatal("wheel down must move scroll offset")
+	}
+	if a.oy != 3*step {
+		t.Fatalf("after wheel +3: oy=%d want %d", a.oy, 3*step)
+	}
+	// Wheel up with magnitude 2 retreats 2 ticks.
+	if !a.handle(vi.Event{Kind: vi.EvMouseScroll, Flags: vi.ScrollWheel, Arg0: 0x0002}) {
+		t.Fatal("wheel up must move scroll offset")
+	}
+	if a.oy != step {
+		t.Fatalf("after wheel -2: oy=%d want %d", a.oy, step)
+	}
+	// Horizontal wheel is ignored.
+	if a.handle(vi.Event{Kind: vi.EvMouseScroll, Flags: vi.ScrollWheel, Arg0: 0xc002}) {
+		t.Fatal("horizontal wheel must be ignored")
+	}
+	if a.oy != step {
+		t.Fatalf("after horizontal wheel: oy=%d want %d", a.oy, step)
+	}
+
+	// PageDown arrives as KEY_DOWN (ignored by goreader) + synthesized EvMouseScroll (Flags=0):
+	// together they must scroll exactly once (1 tick), never twice.
+	before := a.oy
+	if a.handle(vi.Event{Kind: vi.EvKeyDown, Arg0: keyPgDn}) {
+		t.Fatal("PageDown KEY_DOWN must defer to synthesized EvMouseScroll")
+	}
+	if !a.handle(vi.Event{Kind: vi.EvMouseScroll, Flags: 0, Arg0: 0x8001}) {
+		t.Fatal("synthesized PageDown EvMouseScroll must scroll")
+	}
+	if a.oy != before+step {
+		t.Fatalf("after PageDown pair: oy=%d want %d (double scroll?)", a.oy, before+step)
 	}
 }

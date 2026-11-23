@@ -482,6 +482,12 @@ func (u *uiApp) handleEvent(ev vi.Event) {
 		if i := u.railHit(x, y); i >= 0 {
 			u.focusName(u.bufs[i])
 		}
+	case vi.EvMouseScroll:
+		s := vi.DecodeScroll(ev)
+		if !s.Wheel || s.Axis != vi.ScrollVertical || s.Delta == 0 {
+			return
+		}
+		u.scrollBy(-s.Delta)
 	case vi.EvWinFocus:
 		u.winFocus = true
 		// Click-through: the seat refocused this window because a toast

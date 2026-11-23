@@ -880,6 +880,14 @@ func (v *view) handle(ev vi.Event) bool {
 		if ev.Flags&vi.BtnLeft != 0 {
 			return v.click(int(ev.Arg0), int(ev.Arg1))
 		}
+	case vi.EvMouseScroll:
+		s := vi.DecodeScroll(ev)
+		if !s.Wheel || s.Axis != vi.ScrollVertical || s.Delta == 0 {
+			return false
+		}
+		before := v.scroll
+		v.scrollBy(s.Delta)
+		return v.scroll != before
 	}
 	return false
 }

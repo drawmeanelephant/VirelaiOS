@@ -580,3 +580,50 @@ func TestOpenContactArgvFace(t *testing.T) {
 		t.Fatalf("esc must close the face to the listing: mode=%d", m.mode)
 	}
 }
+
+func TestQuickLookWheelScrollAndPageKeyNoDoubleScroll(t *testing.T) {
+	var body strings.Builder
+	for i := 1; i <= 45; i++ {
+		body.WriteString("line-of-text\n")
+	}
+	fileBacker(t, map[string][]byte{"/host/FM/WORDS.TXT": []byte(body.String())})
+	m := testModel(entry("WORDS.TXT", false))
+	m.setSize(64, 14) // bodyRows() == 10
+	m.handleKey(runeKey(' '))
+	if m.mode != modeQuickLook || m.ql.kind != qlText {
+		t.Fatalf("expected text QuickLook, mode=%d kind=%d", m.mode, m.ql.kind)
+	}
+
+	// Wheel down (+4 lines) moves QuickLook scroll offset.
+	if !m.handleScroll(vi.Event{Kind: vi.EvMouseScroll, Flags: vi.ScrollWheel, Arg0: 0x8004}) {
+		t.Fatal("wheel down must scroll QuickLook text")
+	}
+	if m.ql.scroll != 4 {
+		t.Fatalf("after wheel +4: scroll=%d want 4", m.ql.scroll)
+	}
+	// Wheel up (-2 lines) retreats.
+	if !m.handleScroll(vi.Event{Kind: vi.EvMouseScroll, Flags: vi.ScrollWheel, Arg0: 0x0002}) {
+		t.Fatal("wheel up must scroll QuickLook text")
+	}
+	if m.ql.scroll != 2 {
+		t.Fatalf("after wheel -2: scroll=%d want 2", m.ql.scroll)
+	}
+	// Horizontal wheel is ignored.
+	if m.handleScroll(vi.Event{Kind: vi.EvMouseScroll, Flags: vi.ScrollWheel, Arg0: 0xc002}) {
+		t.Fatal("horizontal wheel must be ignored in QuickLook")
+	}
+
+	// PageDown key + synthesized EvMouseScroll (Flags=0): no double scroll.
+	before := m.ql.scroll
+	m.handleKey(keys.Event{Key: keys.KeyPageDown})
+	afterKey := m.ql.scroll
+	if afterKey <= before {
+		t.Fatalf("PageDown did not scroll QuickLook: before=%d after=%d", before, afterKey)
+	}
+	if m.handleScroll(vi.Event{Kind: vi.EvMouseScroll, Flags: 0, Arg0: 0x8001}) {
+		t.Fatal("synthesized PageDown EvMouseScroll must be ignored in QuickLook")
+	}
+	if m.ql.scroll != afterKey {
+		t.Fatalf("synthesized EvMouseScroll double-scrolled QuickLook: got %d want %d", m.ql.scroll, afterKey)
+	}
+}
