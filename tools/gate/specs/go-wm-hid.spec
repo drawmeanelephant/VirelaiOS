@@ -2377,9 +2377,10 @@ PY
 # receipt (the 240x60 card under cell 1), and hover-pre-2 follows the
 # post-present dismiss receipt after ctrl-tab moves focus: the hovered
 # tab's status line would go stale, so the seat dismisses the card rather
-# than reword it under a stationary pointer. Dwell is heartbeat time: the
-# serial check requires at least two `gotabwm: tick` lines between the
-# hover entry and the preview receipt.
+# than reword it under a stationary pointer. M216n (#3953): dwell rides
+# a 500 ms ADR 0060 deadline on slot 95 through the seat's timer queue,
+# not heartbeat counts, so at most one `gotabwm: tick` line can fall
+# between the hover entry and the preview receipt.
 #
 # #3913 baseline repair: the ctrl-tab chord waits for the guest's own
 # stream-completion receipt (`cvspike: snap n=2`, the second capture on
@@ -2456,12 +2457,14 @@ if m.group(4) not in ("active", "focused", "pinned", "frozen",
                       "pinned+frozen", "focused+pinned+frozen"):
     sys.exit("preview status is not a seat-held status: %r" % m.group(4))
 
-# Dwell is heartbeat time: at least the configured two consumed
-# heartbeats separate the hover entry from the card's presented frame.
+# M216n (#3953): dwell rides a 500 ms ADR 0060 deadline on slot 95 through
+# the seat's timer queue, not the 1 Hz heartbeat. Depending on heartbeat
+# phase at hover entry, 0 or 1 `gotabwm: tick` line can land before the
+# preview receipt, never >= 2.
 ticks_before_hover = sum(1 for l in ser[:hover_i] if l == "gotabwm: tick")
 ticks_before_preview = sum(1 for l in ser[:prev_i] if l == "gotabwm: tick")
-if ticks_before_preview - ticks_before_hover < 2:
-    sys.exit("preview appeared %d heartbeats after hover, want >= 2" % (
+if ticks_before_preview - ticks_before_hover > 1:
+    sys.exit("preview appeared %d heartbeats after hover, want <= 1" % (
         ticks_before_preview - ticks_before_hover))
 
 dismiss_i = first_after("gotabwm: preview dismiss id=", prev_i + 1)

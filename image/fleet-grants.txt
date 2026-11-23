@@ -46,7 +46,7 @@ GODIFF.ELF	memory,process,debug	file,memory,process,debug	declared caps=file; a 
 GOVIEW.ELF	window,memory,process,debug	file,window,audio,timer,memory,process,debug	opens=image handler contract; no image was handed in the audit window; surface: TimerSetNs playback arm + EvTimer dispatch + AudioStream* mixer seat for MOV soun playback (user/go/view/main.go) — M202b (#3385) landed the track without the word (#3778)
 GOSOUND.ELF	window,memory,process,debug	file,window,audio,memory,process,debug	declared caps=file,window,audio + opens=audio; playback was not exercised
 GOSTORE.ELF	window,memory,process,debug	file,window,memory,process,debug,net	declared caps=file,net; the install/fetch path (Dial + WriteFileSafe) was not exercised
-GOTABWM.ELF	window,memory,process,debug	file,window,audio,memory,process,debug,net	surface: the seat reads /host/APPS.TXT + settings (File*/ReadFileAll), drives AudioStream*, and holds the Listen/TCP* remote lane (user/go/gotabwm)
+GOTABWM.ELF	window,memory,process,debug	file,window,audio,timer,memory,process,debug,net	surface: the seat reads /host/APPS.TXT + settings (File*/ReadFileAll), drives AudioStream*, arms the slot-95 app timer queue for hover dwell (TimerSetNs/TimerCancel, M216n #3953), and holds the Listen/TCP* remote lane (user/go/gotabwm)
 GOSTALGIA.ELF	window,memory,process,debug	file,window,memory,process,debug,term	declared caps=file,window,term,process; argv=shell --root /host/GS reads ROM files and the tty win_open was refused under the no-seat shim
 GOFETCH.ELF	memory,process,debug,net	file,memory,process,debug,net	surface: WriteFileSafe output path (user/go/fetch)
 GOPING.ELF	memory,process,debug,net	memory,process,debug,net	-

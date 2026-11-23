@@ -148,6 +148,10 @@ func captureSeatDefaults() {
 		seatDefaults["saveNotifyDND"] = saveNotifyDND
 		seatDefaults["seatA11yDelete"] = seatA11yDelete
 		seatDefaults["seatA11yWrite"] = seatA11yWrite
+		seatDefaults["seatTimerCancel"] = seatTimerCancel
+		seatDefaults["seatTimerLog"] = seatTimerLog
+		seatDefaults["seatTimerNow"] = seatTimerNow
+		seatDefaults["seatTimerSetNs"] = seatTimerSetNs
 		seatDefaults["secretAskCommit"] = secretAskCommit
 		seatDefaults["secretAskDrop"] = secretAskDrop
 		seatDefaults["secretAskList"] = secretAskList
@@ -351,6 +355,7 @@ func applySeatReset() {
 	zeroSeatVar(&seatFonts)
 	zeroSeatVar(&seatSinks)
 	zeroSeatVar(&seatTick)
+	zeroSeatVar(&seatTimers)
 	zeroSeatVar(&secretAskModal)
 	zeroSeatVar(&serviceRPCBuf)
 	zeroSeatVar(&sessionDirty)
@@ -496,6 +501,10 @@ func applySeatReset() {
 	setSeatVar(&saveNotifyDND, seatDefaults["saveNotifyDND"])
 	setSeatVar(&seatA11yDelete, seatDefaults["seatA11yDelete"])
 	setSeatVar(&seatA11yWrite, seatDefaults["seatA11yWrite"])
+	setSeatVar(&seatTimerCancel, seatDefaults["seatTimerCancel"])
+	setSeatVar(&seatTimerLog, seatDefaults["seatTimerLog"])
+	setSeatVar(&seatTimerNow, seatDefaults["seatTimerNow"])
+	setSeatVar(&seatTimerSetNs, seatDefaults["seatTimerSetNs"])
 	setSeatVar(&secretAskCommit, seatDefaults["secretAskCommit"])
 	setSeatVar(&secretAskDrop, seatDefaults["secretAskDrop"])
 	setSeatVar(&secretAskList, seatDefaults["secretAskList"])

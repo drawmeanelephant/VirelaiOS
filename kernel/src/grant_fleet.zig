@@ -29,7 +29,7 @@ pub const rows = [_]grant.BaseRow{
     .{ .name = "GOVIEW.ELF", .sha256 = null, .words = grant.word_file | grant.word_window | grant.word_audio | grant.word_timer | grant.word_memory | grant.word_process | grant.word_debug },
     .{ .name = "GOSOUND.ELF", .sha256 = null, .words = grant.word_file | grant.word_window | grant.word_audio | grant.word_memory | grant.word_process | grant.word_debug },
     .{ .name = "GOSTORE.ELF", .sha256 = null, .words = grant.word_file | grant.word_window | grant.word_memory | grant.word_process | grant.word_debug | grant.word_net },
-    .{ .name = "GOTABWM.ELF", .sha256 = null, .words = grant.word_file | grant.word_window | grant.word_audio | grant.word_memory | grant.word_process | grant.word_debug | grant.word_net },
+    .{ .name = "GOTABWM.ELF", .sha256 = null, .words = grant.word_file | grant.word_window | grant.word_audio | grant.word_timer | grant.word_memory | grant.word_process | grant.word_debug | grant.word_net },
     .{ .name = "GOSTALGIA.ELF", .sha256 = null, .words = grant.word_file | grant.word_window | grant.word_memory | grant.word_process | grant.word_debug | grant.word_term },
     .{ .name = "GOFETCH.ELF", .sha256 = null, .words = grant.word_file | grant.word_memory | grant.word_process | grant.word_debug | grant.word_net },
     .{ .name = "GOPING.ELF", .sha256 = null, .words = grant.word_memory | grant.word_process | grant.word_debug | grant.word_net },
