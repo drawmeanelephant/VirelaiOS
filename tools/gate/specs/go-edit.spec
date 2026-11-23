@@ -1281,7 +1281,7 @@ vgate_run 15 -- \
     --script2 '$RUN_DIR/script2-15.txt' \
     --script2-after 'gotabwm: mode live' \
     --script3 '$RUN_DIR/script3-15.txt' \
-    --script3-after 'goedit: settings subscribed key=theme' \
+    --script3-after 'gotabwm: ptr' \
     --pointer-virtio '400,300' \
     --pointer-virtio-after 'gotabwm: region id=' \
     --input-string $'theme=light\n' \
@@ -1316,9 +1316,10 @@ vgate_assert 15 serial-contains 'goedit: settings repaint key=theme value=light'
 # `gotabwm: region id=` the seat's — and the bare hover at (400,300),
 # anchored on the seat's apply, picks the staged i-beam. The receipt
 # prints once, after the kernel accepts the pick (the go-wm-tabs run 07
-# discipline). The move lands while GOEDIT is still the only hosted
-# window: GOSET's exec is typed at 'settings subscribed' but its
-# win_open reaches the mirror seconds after the hover sample does.
+# discipline). The move must land while GOEDIT is still the only hosted
+# window, so GOSET's exec is gated on `gotabwm: ptr` — the seat's own
+# receipt for the hover sample — rather than the earlier subscription
+# line whose GOSET win_open could beat the sample to the mirror.
 vgate_assert 15 serial-contains 'goedit: regions txt'
 vgate_assert 15 serial-contains 'gotabwm: region id='
 vgate_assert 15 serial-contains 'gotabwm: cursor shape txt'
