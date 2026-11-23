@@ -878,9 +878,12 @@ PY
 
 # The single --input-chords burst drives the picker (ctrl-shift-s is
 # unreachable any other way); GOREADER#1's landing is the seeded pos
-# row, its bookmark + quit are --input-string's 'b'/'q', and the
-# snapshot anchors on `bookmark on page=2` — the post-repaint marker
-# leaves the window up while the probe composites. script3's exec is the reopen: `pos page=2 z=100 bm=2`
+# row, its bookmark is --input-string's 'b', and the snapshot anchors
+# on `bookmark on page=2` — the post-repaint marker. The quit is
+# --input-chords2's 'q' gated on `cvspike: snap n=1`, the kernel's own
+# snap-stream receipt: a same-burst 'bq' lets the window die before
+# the kind-4 request reaches the scanout, and the capture then reads
+# the post-close frame. script3's exec is the reopen: `pos page=2 z=100 bm=2`
 # is both the proof and the terminal marker (the 1.5 s tail still
 # catches the second lifetime's present/ready/pos-saved lines).
 vgate_run 05 -- \
@@ -893,7 +896,8 @@ vgate_run 05 -- \
     --script2 '$RUN_DIR/script2-05.txt' \
     --script2-after 'edit: export pdf /host/EXPORT.PDF' \
     --snapshot-after 'goreader: bookmark on page=2 n=1' \
-    --input-string 'bq' --input-string-after 'goreader: ready' \
+    --input-string 'b' --input-string-after 'goreader: ready' \
+    --input-chords2 'q' --input-chords2-after 'cvspike: snap n=1' \
     --script3 '$RUN_DIR/script3-05.txt' \
     --script3-after 'goreader: quit' \
     --script-expect 'goreader: pos page=2 z=100 bm=2' --timeout 300
