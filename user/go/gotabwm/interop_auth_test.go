@@ -86,9 +86,9 @@ func decodeAcks(t *testing.T, acks [][]byte) []vi.WmRpc {
 }
 
 func TestServiceRPCRefusesUnauthenticatedFrame(t *testing.T) {
+	resetSeatForTest(t)
 	savedTabs := tabs
 	defer func() { tabs = savedTabs }()
-	tabs = TabStrip{}
 	if !tabs.OpenTab(4, "x") {
 		t.Fatal("OpenTab")
 	}
@@ -114,9 +114,9 @@ func TestServiceRPCRefusesUnauthenticatedFrame(t *testing.T) {
 // The honest handshake end to end: challenge → title proof → echo → bound
 // applied ack — and the session token then guards the window.
 func TestServiceRPCBindHandshake(t *testing.T) {
+	resetSeatForTest(t)
 	savedTabs := tabs
 	defer func() { tabs = savedTabs }()
-	tabs = TabStrip{}
 	if !tabs.OpenTab(4, "x") {
 		t.Fatal("OpenTab")
 	}
@@ -215,9 +215,9 @@ func TestServiceRPCBindHandshake(t *testing.T) {
 // sequence bound the attacker: the title read `wrpc:<challenge>` for any
 // reply_to, so the first echo to land won the session.
 func TestServiceRPCForgedEchoCannotStealBind(t *testing.T) {
+	resetSeatForTest(t)
 	savedTabs := tabs
 	defer func() { tabs = savedTabs }()
-	tabs = TabStrip{}
 	if !tabs.OpenTab(4, "x") {
 		t.Fatal("OpenTab")
 	}
@@ -281,9 +281,9 @@ func TestServiceRPCForgedEchoCannotStealBind(t *testing.T) {
 // The binding dies with the window: after the tab closes, the id's old token
 // must open nothing — the next frame walks the challenge again.
 func TestServiceRPCBindingDiesWithWindow(t *testing.T) {
+	resetSeatForTest(t)
 	savedTabs := tabs
 	defer func() { tabs = savedTabs }()
-	tabs = TabStrip{}
 	if !tabs.OpenTab(4, "x") {
 		t.Fatal("OpenTab")
 	}
@@ -314,9 +314,9 @@ func TestServiceRPCBindingDiesWithWindow(t *testing.T) {
 // post included) starved forever. The seat now answers an unauthed frame
 // on a bound id with a fresh challenge; the title-proven echo rebinds.
 func TestServiceRPCReChallengesBoundIdWithNoCredentials(t *testing.T) {
+	resetSeatForTest(t)
 	savedTabs := tabs
 	defer func() { tabs = savedTabs }()
-	tabs = TabStrip{}
 	if !tabs.OpenTab(4, "x") {
 		t.Fatal("OpenTab")
 	}
@@ -377,9 +377,9 @@ func TestServiceRPCReChallengesBoundIdWithNoCredentials(t *testing.T) {
 // is neither the session token nor the pending challenge still draws the
 // bare refusal — no challenge oracle for credential guessing.
 func TestServiceRPCStillRefusesWrongTokenOnBoundId(t *testing.T) {
+	resetSeatForTest(t)
 	savedTabs := tabs
 	defer func() { tabs = savedTabs }()
-	tabs = TabStrip{}
 	if !tabs.OpenTab(4, "x") {
 		t.Fatal("OpenTab")
 	}

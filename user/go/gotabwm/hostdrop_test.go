@@ -21,6 +21,7 @@ func (f *hostintFixture) plantDrop(epoch, seq uint32, name string, size uint64) 
 }
 
 func TestHostdropConsumeToasts(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	f := newHostintFixture(t, strings.Repeat("b7", 32))
 	hostintSeatInit()
@@ -66,6 +67,7 @@ func TestHostdropConsumeToasts(t *testing.T) {
 }
 
 func TestHostdropBadPayloadRefused(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	f := newHostintFixture(t, strings.Repeat("b7", 32))
 	hostintSeatInit()
@@ -89,6 +91,7 @@ func TestHostdropBadPayloadRefused(t *testing.T) {
 // a delivery — its toast text ("host drop: <name>") would otherwise sail
 // past the strip's text budget.
 func TestHostdropOverBoundNameRefused(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	f := newHostintFixture(t, strings.Repeat("b7", 32))
 	hostintSeatInit()
@@ -112,6 +115,7 @@ func TestHostdropOverBoundNameRefused(t *testing.T) {
 }
 
 func TestHostdropConsentDeniedWithoutLaneBit(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	f := newHostintFixture(t, strings.Repeat("b7", 32))
 	hostintSeatInit()
@@ -133,6 +137,7 @@ func TestHostdropConsentDeniedWithoutLaneBit(t *testing.T) {
 // it would split the line the class-B gate greps. The sanitizer maps
 // <0x20 and DEL to '?'; the toast text shares the sanitized string.
 func TestHostdropNameSanitized(t *testing.T) {
+	resetSeatForTest(t)
 	name, size, ok := dropPayload([]byte("\x05A\nB\x7fC\x01\x00\x00\x00\x00\x00\x00\x00"))
 	if !ok || name != "A?B?C" || size != 1 {
 		t.Fatalf("dropPayload = %q %d %v", name, size, ok)
@@ -159,6 +164,7 @@ func TestHostdropNameSanitized(t *testing.T) {
 }
 
 func TestDropPayloadDecode(t *testing.T) {
+	resetSeatForTest(t)
 	name, size, ok := dropPayload([]byte("\x03ABC\x01\x00\x00\x00\x00\x00\x00\x00"))
 	if !ok || name != "ABC" || size != 1 {
 		t.Fatalf("dropPayload = %q %d %v", name, size, ok)

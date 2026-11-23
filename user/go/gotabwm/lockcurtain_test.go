@@ -63,6 +63,7 @@ func lockReset(t *testing.T) {
 }
 
 func TestLockRefusedNoCredential(t *testing.T) {
+	resetSeatForTest(t)
 	lockReset(t)
 	lockTestSeams(t)
 	old := lockReadFile
@@ -76,6 +77,7 @@ func TestLockRefusedNoCredential(t *testing.T) {
 }
 
 func TestLockRefusedBadCredential(t *testing.T) {
+	resetSeatForTest(t)
 	lockReset(t)
 	lockTestSeams(t)
 	old := lockReadFile
@@ -91,6 +93,7 @@ func TestLockRefusedBadCredential(t *testing.T) {
 // The whole leg: a staged vault engages the curtain, a wrong passphrase is
 // refused, the right one unlocks and restores the pre-lock focus.
 func TestLockUnlockRoundTrip(t *testing.T) {
+	resetSeatForTest(t)
 	lockReset(t)
 	raised, closed := lockTestSeams(t)
 	old := lockReadFile
@@ -149,6 +152,7 @@ func typeLock(t *testing.T, s string) {
 // While locked the seat's dispatch is dead: a registered chord must not
 // fire, and the focused tab must not see the key either.
 func TestLockSwallowsSeatChords(t *testing.T) {
+	resetSeatForTest(t)
 	lockReset(t)
 	lockTestSeams(t)
 	old := lockReadFile
@@ -174,6 +178,7 @@ func TestLockSwallowsSeatChords(t *testing.T) {
 
 // The PWR menu's Lock row dispatches the same request the chord does.
 func TestPowerMenuLockRow(t *testing.T) {
+	resetSeatForTest(t)
 	lockReset(t)
 	lockTestSeams(t)
 	old := lockReadFile
@@ -194,6 +199,7 @@ func TestPowerMenuLockRow(t *testing.T) {
 // the reserve first, even while another modal borrows it, else the chrome
 // window. The shared window is never closed on unlock.
 func TestLockSharesASeatWindowAtTheCeiling(t *testing.T) {
+	resetSeatForTest(t)
 	for _, c := range []struct {
 		name            string
 		reserve, button uint32
@@ -231,6 +237,7 @@ func TestLockSharesASeatWindowAtTheCeiling(t *testing.T) {
 
 // The refusal survives for the one case left: the seat owns no window.
 func TestLockRefusedWhenTheSeatOwnsNoWindow(t *testing.T) {
+	resetSeatForTest(t)
 	lockReset(t)
 	lockTestSeams(t)
 	oldRead, oldReserve, oldButton := lockReadFile, reserveWin, buttonPixels
@@ -249,6 +256,7 @@ func TestLockRefusedWhenTheSeatOwnsNoWindow(t *testing.T) {
 // The Enter that chose the PWR menu's Lock row reaches the curtain too. On
 // an empty field it must not spend an attempt or disturb the lock.
 func TestLockIgnoresEnterOnAnEmptyField(t *testing.T) {
+	resetSeatForTest(t)
 	lockReset(t)
 	_, closed := lockTestSeams(t)
 	old := lockReadFile

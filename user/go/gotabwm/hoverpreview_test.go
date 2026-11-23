@@ -76,6 +76,7 @@ func (f *hoverPreviewFixture) contains(t *testing.T, want string) bool {
 // passes: repeated ticks at the same heartbeat do not age it, and a
 // coalesced jump of two heartbeats does.
 func TestHoverPreviewDwellUsesHeartbeatTime(t *testing.T) {
+	resetSeatForTest(t)
 	_ = newHoverPreviewFixture(t, 3, 4)
 	railHover = 1
 	seatTick = 10
@@ -120,6 +121,7 @@ func TestHoverPreviewDwellUsesHeartbeatTime(t *testing.T) {
 // marker for the presented frame, and dismissal only after a frame
 // without the card actually flushed.
 func TestHoverPreviewMarkersFollowPresentation(t *testing.T) {
+	resetSeatForTest(t)
 	f := newHoverPreviewFixture(t, 3, 4)
 	railHover = 1
 	seatTick = 5
@@ -186,6 +188,7 @@ func TestHoverPreviewMarkersFollowPresentation(t *testing.T) {
 // Motion — including same-cell motion — and leaving the rail dismiss a
 // visible card and restart the pending dwell.
 func TestHoverPreviewMotionAndLeaveResetDwell(t *testing.T) {
+	resetSeatForTest(t)
 	_ = newHoverPreviewFixture(t, 3, 4)
 	railHover = 1
 	seatTick = 5
@@ -231,6 +234,7 @@ func TestHoverPreviewMotionAndLeaveResetDwell(t *testing.T) {
 // Reordering or replacing a tab cannot transfer a dwell to a different
 // identity, and closing the target removes its card.
 func TestHoverPreviewIdentityChangeAndCloseReset(t *testing.T) {
+	resetSeatForTest(t)
 	_ = newHoverPreviewFixture(t, 3, 4, 5)
 	railHover = 1
 	seatTick = 5
@@ -286,6 +290,7 @@ func TestHoverPreviewIdentityChangeAndCloseReset(t *testing.T) {
 // on screen, and no heartbeat resurrects it. Only fresh motion restarts
 // a truthful dwell.
 func TestHoverPreviewTruthChangeDismissesUntilMotion(t *testing.T) {
+	resetSeatForTest(t)
 	f := newHoverPreviewFixture(t, 3, 4)
 	if !tabs.FocusTab(4) {
 		t.Fatal("FocusTab(4)")
@@ -339,6 +344,7 @@ func TestHoverPreviewTruthChangeDismissesUntilMotion(t *testing.T) {
 // Overlay, drag and lock states suppress both a pending and a visible
 // card; clearing the state cannot resurrect the stale one.
 func TestHoverPreviewConflictingStatesSuppress(t *testing.T) {
+	resetSeatForTest(t)
 	cases := []struct {
 		name string
 		set  func(bool)
@@ -409,6 +415,7 @@ func TestHoverPreviewConflictingStatesSuppress(t *testing.T) {
 // The painted card is the bounded plate under the hovered cell: one
 // 240x60 card, accent border, nothing outside its rect.
 func TestHoverPreviewPaintsBoundedCard(t *testing.T) {
+	resetSeatForTest(t)
 	newHoverPreviewFixture(t, 3, 4)
 	railHover = 1
 	seatTick = 5
@@ -460,6 +467,7 @@ func TestHoverPreviewPaintsBoundedCard(t *testing.T) {
 // The card must not paint when there is no visible target, and exactly
 // one card exists even with many rail cells.
 func TestHoverPreviewOneCardOnly(t *testing.T) {
+	resetSeatForTest(t)
 	newHoverPreviewFixture(t, 3, 4, 5)
 	railHover = 2
 	seatTick = 5
@@ -500,6 +508,7 @@ func TestHoverPreviewOneCardOnly(t *testing.T) {
 // railLayout's rect — so the pill reservation moves the anchor with the
 // paint and hit tests, and an unpainted tail cell shows no card.
 func TestHoverPreviewAnchorsToRailLayout(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	stubSeatRegistry(t, nil)
 	newHoverPreviewFixture(t, 3, 4, 5)

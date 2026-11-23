@@ -416,6 +416,7 @@ func compScanout(w, h int, desktop uint32, ws []compWin) []uint32 {
 // reach the broker — invalid token, a reply_to the binding did not prove,
 // an unbound window, and a binding the window's death retired.
 func TestGpu3dForgedFramesNeverReachBroker(t *testing.T) {
+	resetSeatForTest(t)
 	b := newFakeBroker(nil)
 	stubGpu3d(t, b)
 	stubAuthSeams(t, func(uint8) (string, bool) { return "", false })
@@ -467,6 +468,7 @@ func TestGpu3dForgedFramesNeverReachBroker(t *testing.T) {
 // A malformed payload on a valid binding is a named refusal, still zero
 // broker calls.
 func TestGpu3dMalformedPayloadIsNamedRefusal(t *testing.T) {
+	resetSeatForTest(t)
 	b := newFakeBroker(nil)
 	s := stubGpu3d(t, b)
 	s.bind(4, 7, 0x5afe)
@@ -503,6 +505,7 @@ func packWH(w, h uint32) uint32 { return w | h<<16 }
 // full OPEN→CLEAR→TRIANGLE→PRESENT→POLL flow, then a second POLL that sees
 // the same staged frame must not re-copy it.
 func TestGpu3dPublishOnceThenSteady(t *testing.T) {
+	resetSeatForTest(t)
 	win := newFakeWin(64, 48, 0xff101010)
 	b := newFakeBroker(map[uint32]*fakeGpuWin{4: win})
 	s := stubGpu3d(t, b)
@@ -578,6 +581,7 @@ func countPresented(logs []string) int {
 // Pending, errored and never-completed polls never publish — the surface
 // keeps the last completed frame.
 func TestGpu3dPendingAndErrorsKeepLastFrame(t *testing.T) {
+	resetSeatForTest(t)
 	win := newFakeWin(64, 48, 0xff101010)
 	b := newFakeBroker(map[uint32]*fakeGpuWin{4: win})
 	s := stubGpu3d(t, b)
@@ -619,6 +623,7 @@ func TestGpu3dPendingAndErrorsKeepLastFrame(t *testing.T) {
 // resize carries the new rect, the kernel clips the bounded image into it,
 // and a stale capture is a named refusal that paints nothing.
 func TestGpu3dLayoutChangeClipsBoundedImage(t *testing.T) {
+	resetSeatForTest(t)
 	win := newFakeWin(64, 48, 0xff101010)
 	b := newFakeBroker(map[uint32]*fakeGpuWin{4: win})
 	s := stubGpu3d(t, b)
@@ -668,6 +673,7 @@ func TestGpu3dLayoutChangeClipsBoundedImage(t *testing.T) {
 // chrome band above the client, and every guard pixel outside the
 // destination rectangles unchanged.
 func TestGpu3dComposesBesideAndBehind2D(t *testing.T) {
+	resetSeatForTest(t)
 	const (
 		desktop = 0xff0c0c14
 		fill2D  = 0xff303050
@@ -773,6 +779,7 @@ func TestGpu3dComposesBesideAndBehind2D(t *testing.T) {
 // Exhausted refusal with zero broker calls, and the live contexts still
 // drive.
 func TestGpu3dThirdContextIsRefused(t *testing.T) {
+	resetSeatForTest(t)
 	b := newFakeBroker(map[uint32]*fakeGpuWin{
 		4: newFakeWin(32, 24, 0),
 		5: newFakeWin(32, 24, 0),
@@ -806,9 +813,9 @@ func TestGpu3dThirdContextIsRefused(t *testing.T) {
 // Closing the focused 3D window drops the binding, closes the context
 // through the broker, and returns focus to the remaining tab.
 func TestGpu3dCloseReleasesContextAndRestoresFocus(t *testing.T) {
+	resetSeatForTest(t)
 	savedTabs := tabs
 	defer func() { tabs = savedTabs }()
-	tabs = TabStrip{}
 	if !tabs.OpenTab(5, "other") || !tabs.OpenTab(4, "gpu") {
 		t.Fatal("OpenTab")
 	}
@@ -844,9 +851,9 @@ func TestGpu3dCloseReleasesContextAndRestoresFocus(t *testing.T) {
 // A released-mirror event (the kernel's own window teardown) runs the same
 // funnel: rect forgotten, context closed.
 func TestGpu3dReleasedMirrorClosesContext(t *testing.T) {
+	resetSeatForTest(t)
 	savedTabs := tabs
 	defer func() { tabs = savedTabs }()
-	tabs = TabStrip{}
 
 	b := newFakeBroker(map[uint32]*fakeGpuWin{4: newFakeWin(32, 24, 0)})
 	s := stubGpu3d(t, b)
@@ -867,6 +874,7 @@ func TestGpu3dReleasedMirrorClosesContext(t *testing.T) {
 // record, and the stale staged frame in the dead kernel context never
 // paints the new window's surface.
 func TestGpu3dReusedIDCannotPaintStaleFrame(t *testing.T) {
+	resetSeatForTest(t)
 	win := newFakeWin(32, 24, 0xff101010)
 	b := newFakeBroker(map[uint32]*fakeGpuWin{4: win})
 	s := stubGpu3d(t, b)
@@ -898,6 +906,7 @@ func TestGpu3dReusedIDCannotPaintStaleFrame(t *testing.T) {
 // exists: the broker hands back a new handle and the seat's record drives
 // only it.
 func TestGpu3dExtentChangeRegenerates(t *testing.T) {
+	resetSeatForTest(t)
 	win := newFakeWin(64, 48, 0)
 	b := newFakeBroker(map[uint32]*fakeGpuWin{4: win})
 	s := stubGpu3d(t, b)
@@ -925,6 +934,7 @@ func TestGpu3dExtentChangeRegenerates(t *testing.T) {
 // An extent-change re-open that fails leaves the old generation revoked —
 // the record dies and further ops are named BadHandle without broker calls.
 func TestGpu3dFailedReopenDropsDeadRecord(t *testing.T) {
+	resetSeatForTest(t)
 	b := newFakeBroker(map[uint32]*fakeGpuWin{4: newFakeWin(64, 48, 0)})
 	s := stubGpu3d(t, b)
 	s.bind(4, 7, 0x5afe)
@@ -948,6 +958,7 @@ func TestGpu3dFailedReopenDropsDeadRecord(t *testing.T) {
 
 // WM shutdown closes every live context.
 func TestGpu3dShutdownClosesAll(t *testing.T) {
+	resetSeatForTest(t)
 	b := newFakeBroker(map[uint32]*fakeGpuWin{
 		4: newFakeWin(32, 24, 0),
 		5: newFakeWin(32, 24, 0),
@@ -973,6 +984,7 @@ func TestGpu3dShutdownClosesAll(t *testing.T) {
 
 // Unsupported extents are the seat's named refusal — zero broker calls.
 func TestGpu3dUnsupportedExtentRefused(t *testing.T) {
+	resetSeatForTest(t)
 	b := newFakeBroker(map[uint32]*fakeGpuWin{4: newFakeWin(64, 48, 0)})
 	s := stubGpu3d(t, b)
 	s.bind(4, 7, 0x5afe)

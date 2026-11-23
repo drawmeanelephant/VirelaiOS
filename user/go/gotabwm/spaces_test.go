@@ -31,9 +31,9 @@ func boolUint(b bool) uint32 {
 }
 
 func TestSpaceSwitchCreatesAndParks(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	resetSpaces()
-	tabs = TabStrip{}
 	if !tabs.OpenTab(3, "A") || !tabs.OpenTab(4, "B") || !tabs.FocusTab(4) {
 		t.Fatal("seed")
 	}
@@ -83,11 +83,11 @@ func TestSpaceSwitchCreatesAndParks(t *testing.T) {
 }
 
 func TestSpaceCapIsFour(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	resetNotify(t)
 	resetRefusal(t)
 	resetSpaces()
-	tabs = TabStrip{}
 	_, restore := visRecorder()
 	defer restore()
 	for i := 0; i < 3; i++ {
@@ -125,9 +125,9 @@ func TestSpaceCapIsFour(t *testing.T) {
 }
 
 func TestSpaceMoveCarriesTab(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	resetSpaces()
-	tabs = TabStrip{}
 	if !tabs.OpenTab(3, "Calc") || !tabs.OpenTab(4, "Edit") || !tabs.FocusTab(4) {
 		t.Fatal("seed")
 	}
@@ -187,9 +187,9 @@ func TestSpaceMoveCarriesTab(t *testing.T) {
 // chord's own create-on-demand); prev at the first clamps; an empty strip
 // has no focused tab and no-ops.
 func TestSpaceMoveStepCarriesFocusedTab(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	resetSpaces()
-	tabs = TabStrip{}
 	if !tabs.OpenTab(3, "Calc") || !tabs.OpenTab(4, "Edit") || !tabs.FocusTab(4) {
 		t.Fatal("seed")
 	}
@@ -244,9 +244,9 @@ func TestSpaceMoveStepCarriesFocusedTab(t *testing.T) {
 }
 
 func TestSummonEmojiFocusesThenExecs(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	resetSpaces()
-	tabs = TabStrip{}
 	_, restoreVis := visRecorder()
 	defer restoreVis()
 	execs, restoreExec := execRecorder()
@@ -282,9 +282,9 @@ func TestSummonEmojiFocusesThenExecs(t *testing.T) {
 }
 
 func TestSpacesSessionRoundTrip(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	resetSpaces()
-	tabs = TabStrip{}
 	if !tabs.OpenTab(3, "Calc") || !tabs.OpenTab(4, "Note") || !tabs.FocusTab(3) {
 		t.Fatal("seed space 1")
 	}
@@ -350,9 +350,9 @@ func TestSpacesSessionRoundTrip(t *testing.T) {
 }
 
 func TestPanesSpacesRoundTrip(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	resetSpaces()
-	tabs = TabStrip{}
 	if !tabs.OpenTab(3, "A") || !tabs.OpenTab(4, "B") {
 		t.Fatal("seed")
 	}
@@ -413,9 +413,9 @@ func TestPanesSpacesRoundTrip(t *testing.T) {
 }
 
 func TestV1PanesSidecarStillReads(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	resetSpaces()
-	tabs = TabStrip{}
 	if !tabs.OpenTab(3, "A") || !tabs.OpenTab(4, "B") {
 		t.Fatal("seed")
 	}
@@ -436,6 +436,7 @@ func TestV1PanesSidecarStillReads(t *testing.T) {
 }
 
 func TestRailMarkerCarriesSpaceName(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	resetSpaces()
 	_, restore := visRecorder()
@@ -469,9 +470,9 @@ func TestRailMarkerCarriesSpaceName(t *testing.T) {
 // below-band and left-of-strip misses, and the two refusal shapes (a
 // single-space desktop paints no pills; an empty strip paints no rail).
 func TestSpacePillAtMirrorsPaint(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	resetSpaces()
-	tabs = TabStrip{}
 	if !tabs.OpenTab(3, "A") || !tabs.OpenTab(4, "B") {
 		t.Fatal("OpenTab")
 	}
@@ -522,9 +523,9 @@ func TestSpacePillAtMirrorsPaint(t *testing.T) {
 // LIVE space's pill is the consumed no-op: the pick marker prints (the
 // gesture happened), the switch refuses. No rail drag arms either way.
 func TestHandleWmPointerSpacePillSwitches(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	resetSpaces()
-	tabs = TabStrip{}
 	prevPtrButtons = 0
 	railDragFrom = -1
 	hostedApp = 0

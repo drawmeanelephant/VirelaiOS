@@ -77,6 +77,7 @@ func (f *hostintFixture) printRecords() []hostint.Record {
 }
 
 func TestHostprintEmitsSignedRecord(t *testing.T) {
+	resetSeatForTest(t)
 	f := newHostintFixture(t, strings.Repeat("c1", 32))
 	o := newPqFixture(t)
 	hostintSeatInit()
@@ -112,6 +113,7 @@ func TestHostprintEmitsSignedRecord(t *testing.T) {
 }
 
 func TestHostprintRefusals(t *testing.T) {
+	resetSeatForTest(t)
 	for _, c := range []struct {
 		name  string
 		setup func(o *pqFixture)
@@ -150,6 +152,7 @@ func TestHostprintRefusals(t *testing.T) {
 }
 
 func TestHostprintLaneOffIsSilent(t *testing.T) {
+	resetSeatForTest(t)
 	f := newHostintFixture(t, strings.Repeat("c1", 32))
 	o := newPqFixture(t)
 	hostintSeatInit()

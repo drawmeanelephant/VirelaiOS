@@ -54,6 +54,7 @@ func aliveNo(uint32, []byte) (int, int64)  { return 0, -vi.ErrEINVAL }
 // A bound owner's request registers the surface and the tick blits it into
 // the scanout at the mirrored rect.
 func TestSurfaceShareComposesAtMirrorRect(t *testing.T) {
+	resetSeatForTest(t)
 	const w, h = 4, 3
 	surf := make([]byte, w*h*4)
 	for i := range surf {
@@ -94,6 +95,7 @@ func TestSurfaceShareComposesAtMirrorRect(t *testing.T) {
 // The refused shapes: empty geometry, an over-scanout extent, a failed
 // attach, and a full record pool — none register.
 func TestSurfaceShareRefusals(t *testing.T) {
+	resetSeatForTest(t)
 	stubSurface(t, func(uint32, int) ([]byte, error) {
 		return nil, nil
 	}, aliveYes)
@@ -123,6 +125,7 @@ func TestSurfaceShareRefusals(t *testing.T) {
 // A zero handle drops the window's handoff — the release path the app uses
 // before its window dies.
 func TestSurfaceShareZeroHandleDrops(t *testing.T) {
+	resetSeatForTest(t)
 	stubSurface(t, func(uint32, int) ([]byte, error) {
 		return make([]byte, 48), nil
 	}, aliveYes)
@@ -142,6 +145,7 @@ func TestSurfaceShareZeroHandleDrops(t *testing.T) {
 // The compose never touches a dead window's pages: the name probe answers
 // EINVAL and the record is dropped instead of blitted.
 func TestSurfaceComposeDropsDeadWindow(t *testing.T) {
+	resetSeatForTest(t)
 	surf := make([]byte, 48)
 	stubSurface(t, func(uint32, int) ([]byte, error) {
 		return surf, nil
@@ -167,6 +171,7 @@ func TestSurfaceComposeDropsDeadWindow(t *testing.T) {
 // released mirror) retires the handoff exactly like the token and the
 // gpu3d context.
 func TestSurfaceDropRidesBinding(t *testing.T) {
+	resetSeatForTest(t)
 	stubSurface(t, func(uint32, int) ([]byte, error) {
 		return make([]byte, 48), nil
 	}, aliveYes)
@@ -186,6 +191,7 @@ func TestSurfaceDropRidesBinding(t *testing.T) {
 // The mirror feeds the compose rect: x|y lands in arg0, the released bit
 // clears it.
 func TestSurfaceMirrorTracksPosition(t *testing.T) {
+	resetSeatForTest(t)
 	stubSurface(t, func(uint32, int) ([]byte, error) { return nil, nil }, aliveYes)
 	surfaceNoteMirror(vi.Event{Kind: vi.EvWmWindow, Flags: 5, Arg0: 30 | 40<<16})
 	if surfaceXY[5] != 30|40<<16 {
@@ -201,6 +207,7 @@ func TestSurfaceMirrorTracksPosition(t *testing.T) {
 // path: gateRPC admits it, serveSurfaceShare attaches, and the ack reports
 // applied.
 func TestSurfaceShareEndToEnd(t *testing.T) {
+	resetSeatForTest(t)
 	stubSurface(t, func(uint32, int) ([]byte, error) {
 		return make([]byte, 48), nil
 	}, aliveYes)
@@ -242,6 +249,7 @@ func scanByte(scan []byte, x, y int) byte {
 // Two full-viewport surfaces overlap everywhere; the focused tab's pixels
 // must win the scanout the way regionWindowAt gives it the pointer (#3940).
 func TestSurfaceComposeFocusBlitsLast(t *testing.T) {
+	resetSeatForTest(t)
 	stubSurface(t, func(uint32, int) ([]byte, error) { return nil, nil }, aliveYes)
 	seedComposeRec(0, 5, vi.ScanoutWidth, vi.ScanoutHeight, 0x11)
 	seedComposeRec(1, 6, vi.ScanoutWidth, vi.ScanoutHeight, 0x22)
@@ -267,6 +275,7 @@ func TestSurfaceComposeFocusBlitsLast(t *testing.T) {
 // With no focused tab the compose keeps today's array order: the later
 // record still wins the overlap.
 func TestSurfaceComposeNoFocusKeepsArrayOrder(t *testing.T) {
+	resetSeatForTest(t)
 	stubSurface(t, func(uint32, int) ([]byte, error) { return nil, nil }, aliveYes)
 	seedComposeRec(0, 5, vi.ScanoutWidth, vi.ScanoutHeight, 0x11)
 	seedComposeRec(1, 6, vi.ScanoutWidth, vi.ScanoutHeight, 0x22)
@@ -281,6 +290,7 @@ func TestSurfaceComposeNoFocusKeepsArrayOrder(t *testing.T) {
 // Disjoint pane rects never overlap, so the focused-last pass changes
 // nothing: both surfaces land where their mirrors put them.
 func TestSurfaceComposeDisjointPanesUnaffected(t *testing.T) {
+	resetSeatForTest(t)
 	stubSurface(t, func(uint32, int) ([]byte, error) { return nil, nil }, aliveYes)
 	seedComposeRec(0, 5, 4, 4, 0x11)
 	seedComposeRec(1, 6, 4, 4, 0x22)

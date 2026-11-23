@@ -49,12 +49,12 @@ func paletteChord() vi.Event {
 // TestPaletteSummonsFromTheRegistryChord: ctrl+shift+p dispatches through
 // the table's "palette" row — the same walk every other seat chord takes.
 func TestPaletteSummonsFromTheRegistryChord(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	stubLauncherWindows(t)
 	stubPaletteSources(t, "", nil)
 	savedTabs := tabs
 	defer func() { tabs = savedTabs }()
-	tabs = TabStrip{}
 	tabs.OpenTab(3, "Calc")
 
 	launch = launcherState{}
@@ -82,12 +82,12 @@ func TestPaletteSummonsFromTheRegistryChord(t *testing.T) {
 // reach a Settings row (whose Enter launches GOSET) and 'edit' must reach
 // an open Edit tab (whose Enter focuses it).
 func TestPaletteRankSettAndEdit(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	stubLauncherWindows(t)
 	stubPaletteSources(t, "", nil)
 	savedTabs := tabs
 	defer func() { tabs = savedTabs }()
-	tabs = TabStrip{}
 	tabs.OpenTab(3, "Calc")
 	tabs.OpenTab(4, "Edit")
 
@@ -110,12 +110,12 @@ func TestPaletteRankSettAndEdit(t *testing.T) {
 // TestPaletteEnterExecsTheSettingsPanel: Enter on a Settings row launches
 // GOSET.ELF through the same exec seam the launcher uses, and closes.
 func TestPaletteEnterExecsTheSettingsPanel(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	stubLauncherWindows(t)
 	stubPaletteSources(t, "", nil)
 	savedTabs := tabs
 	defer func() { tabs = savedTabs }()
-	tabs = TabStrip{}
 
 	launch = launcherState{}
 	openPalette()
@@ -140,12 +140,12 @@ func TestPaletteEnterExecsTheSettingsPanel(t *testing.T) {
 // TestPaletteEnterFocusesTheTab: Enter on a tab row focuses it through the
 // focusHosted seam — the palette's 'edit' leg.
 func TestPaletteEnterFocusesTheTab(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	stubLauncherWindows(t)
 	stubPaletteSources(t, "", nil)
 	savedTabs := tabs
 	defer func() { tabs = savedTabs }()
-	tabs = TabStrip{}
 	tabs.OpenTab(3, "Calc")
 	tabs.OpenTab(4, "Edit")
 
@@ -170,6 +170,7 @@ func TestPaletteEnterFocusesTheTab(t *testing.T) {
 // TestPaletteRecentFileOpensInTheEditor: the vi recent log's newest row is
 // a result, and Enter carries its path to GOEDIT's argv.
 func TestPaletteRecentFileOpensInTheEditor(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	stubLauncherWindows(t)
 	// 1|delete|<16-hex id>|hex("/host/EDIT/SEED.TXT")
@@ -211,12 +212,12 @@ func TestPaletteRecentFileOpensInTheEditor(t *testing.T) {
 // row's action — "pin" here, with the palette already closed so the
 // action acts on the desktop's focused tab.
 func TestPaletteChordRowRunsTheSeatAction(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	stubLauncherWindows(t)
 	stubPaletteSources(t, "", nil)
 	savedTabs := tabs
 	defer func() { tabs = savedTabs }()
-	tabs = TabStrip{}
 	tabs.OpenTab(3, "Calc")
 	tabs.FocusTab(3)
 
@@ -240,12 +241,12 @@ func TestPaletteChordRowRunsTheSeatAction(t *testing.T) {
 // TestPaletteNonSeatChordOpensThePanel: a kernel/app chord row is not
 // dispatchable by the seat — Enter opens GOSET's shortcuts view instead.
 func TestPaletteNonSeatChordOpensThePanel(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	stubLauncherWindows(t)
 	stubPaletteSources(t, "", nil)
 	savedTabs := tabs
 	defer func() { tabs = savedTabs }()
-	tabs = TabStrip{}
 
 	launch = launcherState{}
 	openPalette()
@@ -271,12 +272,12 @@ func TestPaletteNonSeatChordOpensThePanel(t *testing.T) {
 // TestPaletteChordTogglesDismiss: the summon chord is a toggle in both
 // directions — open while closed, dismiss while open.
 func TestPaletteChordTogglesDismiss(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	stubLauncherWindows(t)
 	stubPaletteSources(t, "", nil)
 	savedTabs := tabs
 	defer func() { tabs = savedTabs }()
-	tabs = TabStrip{}
 
 	launch = launcherState{}
 	handleWmKey(paletteChord())
@@ -292,12 +293,12 @@ func TestPaletteChordTogglesDismiss(t *testing.T) {
 // TestPaletteCrossesFromTheLauncher: ctrl+shift+p over an open launcher
 // swaps the strip's contents to the palette without dropping the sink.
 func TestPaletteCrossesFromTheLauncher(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	stubLauncherWindows(t)
 	stubPaletteSources(t, "", nil)
 	savedTabs := tabs
 	defer func() { tabs = savedTabs }()
-	tabs = TabStrip{}
 
 	launch = launcherState{}
 	openLauncher()
@@ -319,13 +320,13 @@ func TestPaletteCrossesFromTheLauncher(t *testing.T) {
 // TestPaletteEscapeTwoStep: the launcher's Esc discipline applies —
 // non-empty filter clears first, empty filter dismisses.
 func TestPaletteEscapeTwoStep(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	stubLauncherWindows(t)
 	resetNotify(t)
 	stubPaletteSources(t, "", nil)
 	savedTabs := tabs
 	defer func() { tabs = savedTabs }()
-	tabs = TabStrip{}
 
 	launch = launcherState{}
 	openPalette()
@@ -344,12 +345,12 @@ func TestPaletteEscapeTwoStep(t *testing.T) {
 // TestPaletteRpcKindSummons: the WM_RPC kind-19 request opens the palette
 // — the additive kind the card adds for app-side summons.
 func TestPaletteRpcKindSummons(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	stubLauncherWindows(t)
 	stubPaletteSources(t, "", nil)
 	savedTabs := tabs
 	defer func() { tabs = savedTabs }()
-	tabs = TabStrip{}
 
 	launch = launcherState{}
 	req := vi.WmRpc{Kind: wmKindPalette, ID: 4}
@@ -363,6 +364,7 @@ func TestPaletteRpcKindSummons(t *testing.T) {
 
 // TestPaletteHexDecode pins the recent-log path column's decode.
 func TestPaletteHexDecode(t *testing.T) {
+	resetSeatForTest(t)
 	got, ok := paletteHexDecode("2f686f73742f454449542e545854")
 	if !ok || got != "/host/EDIT.TXT" {
 		t.Fatalf("hex decode = %q ok=%v", got, ok)
@@ -378,11 +380,11 @@ func TestPaletteHexDecode(t *testing.T) {
 // per dormant space, none for the live one, and none needing a focused
 // tab. Enter on one runs spaceSwitchTo with the palette already closed.
 func TestPaletteSwitchSpaceRows(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	stubLauncherWindows(t)
 	stubPaletteSources(t, "", nil)
 	resetSpaces()
-	tabs = TabStrip{}
 	tabs.OpenTab(3, "Calc")
 	tabs.FocusTab(3)
 	spaceEnsure("2")
@@ -479,6 +481,7 @@ func stubPaletteExec(t *testing.T) (*[][2]string, func()) {
 // launcher's own APPS.TXT decode — one row per entry, seated after the
 // tab rows and before the recent-file rows.
 func TestPaletteAppRowsSitBetweenTabsAndRecents(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	stubLauncherWindows(t)
 	hexPath := ""
@@ -528,13 +531,13 @@ func TestPaletteAppRowsSitBetweenTabsAndRecents(t *testing.T) {
 // and Enter launches GOCALC.ELF through the exec seam, closing the strip —
 // the launcher's own dispatch.
 func TestPaletteEnterLaunchesTheAppRow(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	stubLauncherWindows(t)
 	stubPaletteSources(t, "", nil)
 	stubPaletteStaged(t)
 	savedTabs := tabs
 	defer func() { tabs = savedTabs }()
-	tabs = TabStrip{}
 
 	got, restore := stubPaletteExec(t)
 	defer restore()
@@ -559,6 +562,7 @@ func TestPaletteEnterLaunchesTheAppRow(t *testing.T) {
 // TestPaletteAppRowCarriesArgv: a v2 row's `argv=` rides the exec exactly
 // as the launcher face rides it.
 func TestPaletteAppRowCarriesArgv(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	stubLauncherWindows(t)
 	stubPaletteSources(t, "", nil)
@@ -566,7 +570,6 @@ func TestPaletteAppRowCarriesArgv(t *testing.T) {
 	stubPaletteStaged(t)
 	savedTabs := tabs
 	defer func() { tabs = savedTabs }()
-	tabs = TabStrip{}
 
 	got, restore := stubPaletteExec(t)
 	defer restore()
@@ -589,6 +592,7 @@ func TestPaletteAppRowCarriesArgv(t *testing.T) {
 // survives the palette face — a seat bin and an unstaged binary both stay
 // open and name their reason instead of execing.
 func TestPaletteAppRowRefusalsAreNamed(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	stubLauncherWindows(t)
 	stubPaletteSources(t, "", nil)
@@ -596,7 +600,6 @@ func TestPaletteAppRowRefusalsAreNamed(t *testing.T) {
 	stubPaletteStaged(t, "MISSING.ELF")
 	savedTabs := tabs
 	defer func() { tabs = savedTabs }()
-	tabs = TabStrip{}
 
 	got, restore := stubPaletteExec(t)
 	defer restore()
@@ -631,12 +634,12 @@ func TestPaletteAppRowRefusalsAreNamed(t *testing.T) {
 // row — "Search files for '<q>'" — after every ranked result, and Enter
 // hands the query to GOFILES --search.
 func TestPaletteSearchRowIsTheLastRow(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	stubLauncherWindows(t)
 	stubPaletteSources(t, "", nil)
 	savedTabs := tabs
 	defer func() { tabs = savedTabs }()
-	tabs = TabStrip{}
 
 	got, restore := stubPaletteExec(t)
 	defer restore()
@@ -667,12 +670,12 @@ func TestPaletteSearchRowIsTheLastRow(t *testing.T) {
 // fallback — 'calc' still ranks the app row first and offers the search
 // hand-off last.
 func TestPaletteSearchRowMatchesToo(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	stubLauncherWindows(t)
 	stubPaletteSources(t, "", nil)
 	savedTabs := tabs
 	defer func() { tabs = savedTabs }()
-	tabs = TabStrip{}
 
 	launch = launcherState{}
 	openPalette()
@@ -690,12 +693,12 @@ func TestPaletteSearchRowMatchesToo(t *testing.T) {
 // TestPaletteNoSearchRowOnEmptyQuery: the synthetic row exists only while
 // a query stands — the fresh palette's catalog is the sources alone.
 func TestPaletteNoSearchRowOnEmptyQuery(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	stubLauncherWindows(t)
 	stubPaletteSources(t, "", nil)
 	savedTabs := tabs
 	defer func() { tabs = savedTabs }()
-	tabs = TabStrip{}
 
 	launch = launcherState{}
 	openPalette()
@@ -714,12 +717,12 @@ func TestPaletteNoSearchRowOnEmptyQuery(t *testing.T) {
 // a wider query is refused by name and the strip stays open, exactly like
 // a refused exec.
 func TestPaletteSearchQueryBound(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	stubLauncherWindows(t)
 	stubPaletteSources(t, "", nil)
 	savedTabs := tabs
 	defer func() { tabs = savedTabs }()
-	tabs = TabStrip{}
 
 	got, restore := stubPaletteExec(t)
 	defer restore()
@@ -758,11 +761,11 @@ func TestPaletteSearchQueryBound(t *testing.T) {
 // needs no focused tab, so the rows are the keyboard's only jump while
 // the live space holds nothing to move.
 func TestPaletteSwitchRowsOnEmptyStrip(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	stubLauncherWindows(t)
 	stubPaletteSources(t, "", nil)
 	resetSpaces()
-	tabs = TabStrip{}
 	spaceEnsure("2")
 
 	launch = launcherState{}

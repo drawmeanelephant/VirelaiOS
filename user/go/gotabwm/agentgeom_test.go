@@ -60,6 +60,7 @@ func geomAck(t *testing.T, sent *[][]byte) vi.WmRpc {
 // op is even weighed — the marker and the ack title both carry
 // win_geometry_denied.
 func TestAgentGeomDeniedNotAgentd(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	sent := geomSwap(t, "GOEDIT.ELF")
 	serveAgentGeom(geomReq(agentGeomOpQuery, 3, 0), 0)
@@ -74,6 +75,7 @@ func TestAgentGeomDeniedNotAgentd(t *testing.T) {
 // the layout dump prints — plus the space, the pane index, and the
 // parent split's kind.
 func TestAgentGeomQueryTwoPanes(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	openTwoTabs(t)
 	_, restore := rectRecorder()
@@ -110,6 +112,7 @@ func TestAgentGeomQueryTwoPanes(t *testing.T) {
 // stack, split=none and the unplaced pane sentinel rather than a pane
 // number.
 func TestAgentGeomQueryUnplaced(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	openTwoTabs(t)
 	sent := geomSwap(t, "AGENTD.ELF")
@@ -130,6 +133,7 @@ func TestAgentGeomQueryUnplaced(t *testing.T) {
 // release path: percent maps onto the node rect, the tree stores the
 // clamped centre, and every pane's rect goes through the kernel seam.
 func TestAgentGeomSash(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	openTwoTabs(t)
 	calls, restore := rectRecorder()
@@ -163,6 +167,7 @@ func TestAgentGeomSash(t *testing.T) {
 // the named space's strip, its window hides through the kernel seam,
 // and a next query reports the new space index.
 func TestAgentGeomMove(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	openTwoTabs(t)
 	var hidden []uint32
@@ -201,6 +206,7 @@ func TestAgentGeomMove(t *testing.T) {
 // Every malformed or inapplicable op is bad_op; an id no strip row
 // holds is no_window. Each refusal still answers — the ack names it.
 func TestAgentGeomRefusals(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	openTwoTabs(t)
 	sent := geomSwap(t, "AGENTD.ELF")

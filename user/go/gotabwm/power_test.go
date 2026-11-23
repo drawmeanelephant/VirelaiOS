@@ -12,6 +12,7 @@ import (
 )
 
 func TestPowerButtonPaintAndHitAgree(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	for _, n := range []int{0, 1, 4} {
 		tabs = TabStrip{}
@@ -51,6 +52,7 @@ func TestPowerButtonPaintAndHitAgree(t *testing.T) {
 }
 
 func TestPowerMenuRectAndRow(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	x, y, w, h := powerMenuRect(vi.ScanoutWidth, vi.ScanoutHeight)
 	if w != powerMenuW || h != powerMenuH {
@@ -83,6 +85,7 @@ func TestPowerMenuRectAndRow(t *testing.T) {
 }
 
 func TestPowerMenuPointerFlow(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	prev := openInputSink
 	openInputSink = func(x, y, w, h uint32) (int, int64) { return 91, 0 }
@@ -144,6 +147,7 @@ func TestPowerMenuPointerFlow(t *testing.T) {
 // manager's verbs are process-wide, so a second window is never the
 // honest answer. Both halves ride the execApp/powerFocus seams.
 func TestPowerSnapshotExecsWithoutATab(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	prevE := execApp
 	var bins []string
@@ -152,7 +156,6 @@ func TestPowerSnapshotExecsWithoutATab(t *testing.T) {
 		return 42, nil
 	}
 	defer func() { execApp = prevE }()
-	tabs = TabStrip{}
 	requestSnapshot()
 	if len(bins) != 1 || bins[0] != gosnapBin {
 		t.Fatalf("execs = %v", bins)
@@ -160,6 +163,7 @@ func TestPowerSnapshotExecsWithoutATab(t *testing.T) {
 }
 
 func TestPowerSnapshotFocusesAnOpenTab(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	prevE := execApp
 	execApp = func(name string, args ...string) (int64, error) {
@@ -174,7 +178,6 @@ func TestPowerSnapshotFocusesAnOpenTab(t *testing.T) {
 		return true
 	}
 	defer func() { powerFocus = prevF }()
-	tabs = TabStrip{}
 	tabs.OpenTab(7, "Snapshots") // guessBin records GOSNAP.ELF
 	requestSnapshot()
 	if len(focused) != 1 || focused[0] != 7 {
@@ -185,6 +188,7 @@ func TestPowerSnapshotFocusesAnOpenTab(t *testing.T) {
 // A refused focus still closes the gesture honestly — the marker names
 // it and no exec follows (the running window keeps its verbs).
 func TestPowerSnapshotFocusRefused(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	prevE := execApp
 	execApp = func(name string, args ...string) (int64, error) {
@@ -195,7 +199,6 @@ func TestPowerSnapshotFocusRefused(t *testing.T) {
 	prevF := powerFocus
 	powerFocus = func(id uint32) bool { return false }
 	defer func() { powerFocus = prevF }()
-	tabs = TabStrip{}
 	tabs.OpenTab(7, "Snapshots")
 	requestSnapshot() // must not panic; the marker carries the refusal
 }
@@ -203,6 +206,7 @@ func TestPowerSnapshotFocusRefused(t *testing.T) {
 // The keyboard path: Down moves the highlight to Snapshot, Enter runs
 // the highlighted row — pointer and keys reach the same dispatch.
 func TestPowerKeysSelectSnapshot(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	prev := openInputSink
 	openInputSink = func(x, y, w, h uint32) (int, int64) { return 91, 0 }
@@ -220,7 +224,6 @@ func TestPowerKeysSelectSnapshot(t *testing.T) {
 		return 42, nil
 	}
 	defer func() { execApp = prevE }()
-	tabs = TabStrip{}
 
 	openPowerMenu()
 	if powerSel != 0 {
@@ -257,6 +260,7 @@ func TestPowerKeysSelectSnapshot(t *testing.T) {
 // refusal's ADR 0056 code otherwise; the verdict string is the suffix of
 // MarkerSuspendVerdict the gate greps.
 func TestRequestSuspendVerdicts(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	prev := vsockCtlRequest
 	defer func() { vsockCtlRequest = prev }()

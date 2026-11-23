@@ -25,6 +25,7 @@ func resetRefusal(t *testing.T) {
 }
 
 func TestRefusalActionMap(t *testing.T) {
+	resetSeatForTest(t)
 	cases := []struct {
 		name string
 		want uint8
@@ -45,6 +46,7 @@ func TestRefusalActionMap(t *testing.T) {
 }
 
 func TestSeatRefusalPushesActionToast(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	resetRefusal(t)
 	seatTick = 10
@@ -68,6 +70,7 @@ func TestSeatRefusalPushesActionToast(t *testing.T) {
 }
 
 func TestSeatRefusalDedupesInsideWindow(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	resetRefusal(t)
 	seatTick = 10
@@ -97,6 +100,7 @@ func TestSeatRefusalDedupesInsideWindow(t *testing.T) {
 }
 
 func TestSeatRefusalRawRc(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	resetRefusal(t)
 	seatRefusal(-vi.ErrEACCES, "clipboard", "")
@@ -111,6 +115,7 @@ func TestSeatRefusalRawRc(t *testing.T) {
 }
 
 func TestRefusalDispatchRetryGrantCopy(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	resetRefusal(t)
 	var execs []string
@@ -140,6 +145,7 @@ func TestRefusalDispatchRetryGrantCopy(t *testing.T) {
 }
 
 func TestNotifyClickedRunsRefusalAction(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	resetRefusal(t)
 	var execs []string
@@ -166,6 +172,7 @@ func TestNotifyClickedRunsRefusalAction(t *testing.T) {
 }
 
 func TestCenterRowClickRunsRefusalAction(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	resetRefusal(t)
 	var execs []string
@@ -193,6 +200,7 @@ func TestCenterRowClickRunsRefusalAction(t *testing.T) {
 }
 
 func TestSeatLaneRefusalMapsConsentToGrant(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	resetRefusal(t)
 	seatTick = 3
@@ -230,6 +238,7 @@ func TestSeatLaneRefusalMapsConsentToGrant(t *testing.T) {
 // The Log seam now calls the var indirectly, so an engine refusal after
 // the watch arms must reach the toast path.
 func TestEngineRefusalReachesArmedLaneWatch(t *testing.T) {
+	resetSeatForTest(t)
 	newHostintFixture(t, strings.Repeat("b7", 32))
 	resetNotify(t)
 	resetRefusal(t)
@@ -252,6 +261,7 @@ func TestEngineRefusalReachesArmedLaneWatch(t *testing.T) {
 // plain toast carrying the context verbatim, deduped through the same
 // refusalSeen table an errno refusal uses.
 func TestSeatNoticePushesPlainToast(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	resetRefusal(t)
 	seatTick = 10
@@ -274,6 +284,7 @@ func TestSeatNoticePushesPlainToast(t *testing.T) {
 }
 
 func TestSeatNoticeDedupesInsideWindow(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	resetRefusal(t)
 	seatTick = 10
@@ -305,6 +316,7 @@ func TestSeatNoticeDedupesInsideWindow(t *testing.T) {
 // own predicate order — one case per reason splitRefusalCtx can name,
 // plus the silent boundaries (an unplaced focused pane).
 func TestSplitRefusalContexts(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	scanW, scanH := uint32(scanoutW), uint32(scanoutH)
 
@@ -388,11 +400,11 @@ func TestSplitRefusalContexts(t *testing.T) {
 // The chord end to end: a refused press queues the notice (and dedupes
 // its repeat), a successful press queues nothing.
 func TestApplySplitCycleNoticesRefusal(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	resetNotify(t)
 	resetRefusal(t)
 	seatTick = 10
-	tabs = TabStrip{}
 	if !tabs.OpenTab(3, "A") {
 		t.Fatal("OpenTab")
 	}

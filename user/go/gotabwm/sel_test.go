@@ -109,6 +109,7 @@ func selReq(id uint32, kind uint8) vi.WmRpc {
 }
 
 func TestSelPublishStores(t *testing.T) {
+	resetSeatForTest(t)
 	f := &selFixture{}
 	f.install(t)
 	f.hostTab(5, "GOEDIT.ELF", 0, 22, 640, 698)
@@ -128,6 +129,7 @@ func TestSelPublishStores(t *testing.T) {
 }
 
 func TestSelPublishRefusals(t *testing.T) {
+	resetSeatForTest(t)
 	f := &selFixture{}
 	f.install(t)
 	f.hostTab(5, "GOEDIT.ELF", 0, 22, 640, 698)
@@ -171,6 +173,7 @@ func TestSelPublishRefusals(t *testing.T) {
 }
 
 func TestSelDeliversOnMiddleClickAndChord(t *testing.T) {
+	resetSeatForTest(t)
 	f := &selFixture{}
 	f.install(t)
 	f.hostTab(5, "GOEDIT.ELF", 0, 22, 640, 698)
@@ -209,6 +212,7 @@ func TestSelDeliversOnMiddleClickAndChord(t *testing.T) {
 }
 
 func TestSelDeliveryRefusals(t *testing.T) {
+	resetSeatForTest(t)
 	f := &selFixture{}
 	f.install(t)
 	f.hostTab(5, "GOEDIT.ELF", 0, 22, 640, 698)
@@ -250,6 +254,7 @@ func TestSelDeliveryRefusals(t *testing.T) {
 }
 
 func TestDropSelWindowCleansStage(t *testing.T) {
+	resetSeatForTest(t)
 	f := &selFixture{}
 	f.install(t)
 	f.files[vi.SelPath(7)] = []byte("leftover")

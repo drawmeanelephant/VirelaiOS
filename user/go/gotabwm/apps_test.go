@@ -9,6 +9,7 @@ import (
 )
 
 func TestParseAppsTXTSkipsCommentsAndCaps(t *testing.T) {
+	resetSeatForTest(t)
 	text := "# VirelaiOS app manifest\n" +
 		"GOCALC.ELF | 64-bit Calc | c | dock=true\n" +
 		"\n" +
@@ -29,6 +30,7 @@ func TestParseAppsTXTSkipsCommentsAndCaps(t *testing.T) {
 }
 
 func TestParseAppsTXTRefusesDeletedNamesInHonestFixture(t *testing.T) {
+	resetSeatForTest(t)
 	// The honest image/apps.txt must not list these; this pins the parser
 	// still seeing them if a test feeds a lie.
 	text := "NOTEPAD.ELF | Editor | n\nCALC.BIN | Calc | c\n"
@@ -39,6 +41,7 @@ func TestParseAppsTXTRefusesDeletedNamesInHonestFixture(t *testing.T) {
 }
 
 func TestHonestImageAppsTxt(t *testing.T) {
+	resetSeatForTest(t)
 	b, err := os.ReadFile("../../../image/apps.txt")
 	if err != nil {
 		t.Fatalf("read image/apps.txt: %v", err)
@@ -70,6 +73,7 @@ func TestHonestImageAppsTxt(t *testing.T) {
 }
 
 func TestFilterAppsSubstring(t *testing.T) {
+	resetSeatForTest(t)
 	cat := []AppEntry{
 		{Bin: "GOCALC.ELF", Label: "64-bit Calc"},
 		{Bin: "NOTE.ELF", Label: "Text Editor"},
@@ -103,6 +107,7 @@ func TestFilterAppsSubstring(t *testing.T) {
 // the same entry, with no version and no trailing fields. A parser that grew
 // a required v2 field would fail this line, which is the point.
 func TestParseAppsTXTV1LineIsUnchangedByTheSchema(t *testing.T) {
+	resetSeatForTest(t)
 	got := parseAppsTXT("GOCALC.ELF | 64-bit Calc | c | dock=true\n")
 	if len(got) != 1 {
 		t.Fatalf("v1 row n=%d want 1", len(got))
@@ -117,6 +122,7 @@ func TestParseAppsTXTV1LineIsUnchangedByTheSchema(t *testing.T) {
 }
 
 func TestParseAppsTXTDecodesTheV2Tail(t *testing.T) {
+	resetSeatForTest(t)
 	got := parseAppsTXT("WEB.ELF | Web | w | dock=true | v=2 | caps=net | opens=http,https\n")
 	if len(got) != 1 {
 		t.Fatalf("n=%d want 1", len(got))
@@ -148,6 +154,7 @@ func TestParseAppsTXTDecodesTheV2Tail(t *testing.T) {
 }
 
 func TestParseAppsTXTAargvIsSpaceSeparatedAndBounded(t *testing.T) {
+	resetSeatForTest(t)
 	got := parseAppsTXT("APP.ELF | App | a | v=2 | argv=--mode fast --tag x\n")
 	if len(got) != 1 {
 		t.Fatalf("n=%d", len(got))
@@ -171,6 +178,7 @@ func TestParseAppsTXTAargvIsSpaceSeparatedAndBounded(t *testing.T) {
 }
 
 func TestParseAppsTXTIgnoresUnknownKeysAndJunkTails(t *testing.T) {
+	resetSeatForTest(t)
 	// A row from a NEWER schema still launches: the positional fields are
 	// what the seat needs, and the keys this build does not know are not a
 	// reason to hide an app the user can see on the dock.
@@ -187,6 +195,7 @@ func TestParseAppsTXTIgnoresUnknownKeysAndJunkTails(t *testing.T) {
 }
 
 func TestParseAppsTXTRefusesAnUnreadableVersion(t *testing.T) {
+	resetSeatForTest(t)
 	// The one field that must be legible. A `v=` that is not a positive
 	// number is a row whose version cannot be read, and a guessed version is
 	// a silently misread manifest — so the row is refused, like any other
@@ -216,6 +225,7 @@ func TestParseAppsTXTRefusesAnUnreadableVersion(t *testing.T) {
 // declares a version. This is the boundary the additive claim rests on, and it
 // is why `v=` belongs in the tail and not beside the positional fields.
 func TestParseAppsTXTFourthFieldIsStillTheDockFlag(t *testing.T) {
+	resetSeatForTest(t)
 	got := parseAppsTXT("OK.ELF | Ok | o | v=2\n")
 	if len(got) != 1 {
 		t.Fatalf("n=%d want 1", len(got))
@@ -229,6 +239,7 @@ func TestParseAppsTXTFourthFieldIsStillTheDockFlag(t *testing.T) {
 }
 
 func TestSummarizeAppsCountsRowsAndTheHighestVersion(t *testing.T) {
+	resetSeatForTest(t)
 	b, err := os.ReadFile("../../../image/apps.txt")
 	if err != nil {
 		t.Fatalf("read image/apps.txt: %v", err)
@@ -275,6 +286,7 @@ func TestSummarizeAppsCountsRowsAndTheHighestVersion(t *testing.T) {
 // #3357: the icon= key decodes to IconArt, and a v2 row without it keeps
 // the field empty — the rune in field 3 stays the degrade either way.
 func TestParseAppsTXTDecodesIconKey(t *testing.T) {
+	resetSeatForTest(t)
 	got := parseAppsTXT("GOCALC.ELF | 64-bit Calc | c | dock=true | v=2 | icon=ICONCALC\n")
 	if len(got) != 1 {
 		t.Fatalf("n=%d want 1", len(got))
@@ -294,6 +306,7 @@ func TestParseAppsTXTDecodesIconKey(t *testing.T) {
 // asset or a typo'd share name from reaching the share and silently
 // degrading every row to runes.
 func TestManifestIconsAreStagedArtNames(t *testing.T) {
+	resetSeatForTest(t)
 	src, err := os.ReadFile("../../../image/art/ART.TXT")
 	if err != nil {
 		t.Fatalf("read ART.TXT: %v", err)
@@ -332,6 +345,7 @@ func TestManifestIconsAreStagedArtNames(t *testing.T) {
 // table is read from its source rather than copied here, so this test fails
 // if a future card renames an ID — the manifest has to follow it.
 func TestManifestOpenTypesAreMimeTableNames(t *testing.T) {
+	resetSeatForTest(t)
 	src, err := os.ReadFile("../mime/mime.go")
 	if err != nil {
 		t.Fatalf("read mime.go: %v", err)
@@ -411,6 +425,7 @@ func keys(m map[string]bool) string {
 // are the WASM import contract's Cap names, so one word means one thing
 // across manifests; `net` and `term` are this manifest's additions.
 func TestManifestCapsAreTheDeclaredVocabulary(t *testing.T) {
+	resetSeatForTest(t)
 	declared := strings.Fields("file window audio timer memory process debug net term")
 	known := map[string]bool{}
 	for _, w := range declared {
@@ -496,6 +511,7 @@ var windowMarkers = []string{
 }
 
 func TestManifestHonestyRowsOpenAWindowOrAreSeatBound(t *testing.T) {
+	resetSeatForTest(t)
 	// The reserved rows' probe must answer "not staged": stub the file
 	// seam to ENOENT so the pin holds on a host that has no /host share
 	// rather than depending on the ambient filesystem's accidents.

@@ -13,6 +13,7 @@ import (
 // The gate greps these exact strings; a drift is a host-test failure rather
 // than a live run that silently asserts nothing.
 func TestMarkerShapes(t *testing.T) {
+	resetSeatForTest(t)
 	cases := []struct{ got, want string }{
 		{MarkerRegistered, "gotabwm: registered"},
 		{MarkerSeatTaken, "gotabwm: seat-taken"},
@@ -49,6 +50,7 @@ func TestMarkerShapes(t *testing.T) {
 }
 
 func TestIdleThresholdsAndInputWake(t *testing.T) {
+	resetSeatForTest(t)
 	savedAfter, savedLast := idleAfter, lastInputTick
 	savedState, savedPresented, savedWake := idleState, idlePresented, idleWakePending
 	savedTick := seatTick
@@ -108,6 +110,7 @@ func TestIdleThresholdsAndInputWake(t *testing.T) {
 // reaching the dim threshold regressed the still-covered frame, the wake
 // marker never printed, and the seat re-locked instead of waking.
 func TestIdleWakeSurvivesDeferredCompositeBatch(t *testing.T) {
+	resetSeatForTest(t)
 	savedAfter, savedLast := idleAfter, lastInputTick
 	savedState, savedPresented, savedWake := idleState, idlePresented, idleWakePending
 	savedTick := seatTick
@@ -147,6 +150,7 @@ func TestIdleWakeSurvivesDeferredCompositeBatch(t *testing.T) {
 }
 
 func TestIdleInvalidSettingFallsBackToFiveMinutes(t *testing.T) {
+	resetSeatForTest(t)
 	savedAfter := idleAfter
 	defer func() { idleAfter = savedAfter }()
 	configureIdle(settings.File{Rows: []settings.Setting{{Key: "idle_minutes", Val: "0"}}, State: settings.StateOK}, 60)
@@ -156,6 +160,7 @@ func TestIdleInvalidSettingFallsBackToFiveMinutes(t *testing.T) {
 }
 
 func TestRestoreWitnessCapturesResumedSeatState(t *testing.T) {
+	resetSeatForTest(t)
 	oldTabs, oldTheme, oldWM := tabs, theme.Current, restoreSettingsWM
 	oldEcho := sessionEcho
 	defer func() {
@@ -184,6 +189,7 @@ func TestRestoreWitnessCapturesResumedSeatState(t *testing.T) {
 }
 
 func TestBlankColourIs24Bit(t *testing.T) {
+	resetSeatForTest(t)
 	if blankRGB()&0xFF000000 != 0 {
 		t.Fatalf("blankRGB %#x sets the X byte; the scanout is B8G8R8X8", blankRGB())
 	}
@@ -193,6 +199,7 @@ func TestBlankColourIs24Bit(t *testing.T) {
 }
 
 func TestLoopBounds(t *testing.T) {
+	resetSeatForTest(t)
 	if maxTicks <= 0 {
 		t.Fatalf("maxTicks = %d: an unbounded loop can hang a boot", maxTicks)
 	}
@@ -222,6 +229,7 @@ func TestLoopBounds(t *testing.T) {
 // X=0, which the host display honours as alpha and hides every seat pixel), so
 // a 6-hex token comes back with 0xff in the top byte.
 func TestPaintBlankFillsEveryPixel(t *testing.T) {
+	resetSeatForTest(t)
 	const pix = 1024
 	const token = 0x112233
 	const want = token | 0xff000000
@@ -238,6 +246,7 @@ func TestPaintBlankFillsEveryPixel(t *testing.T) {
 }
 
 func TestPaintBlankEdgeCases(t *testing.T) {
+	resetSeatForTest(t)
 	if got := paintBlank(nil, 1); got != 0 {
 		t.Fatalf("paintBlank(nil) = %d want 0", got)
 	}
@@ -253,6 +262,7 @@ func TestPaintBlankEdgeCases(t *testing.T) {
 // empty poll (kind 0), a composite tick, a window mirror, or app-side
 // MOUSE_*/KEY_* events (the ignore-non-tick regression).
 func TestHidMarkerOnlyAfterRealEvent(t *testing.T) {
+	resetSeatForTest(t)
 	if hidMarker(vi.EvWmPointer) != MarkerPtr {
 		t.Fatalf("kind 19 marker = %q want %q", hidMarker(vi.EvWmPointer), MarkerPtr)
 	}
@@ -268,6 +278,7 @@ func TestHidMarkerOnlyAfterRealEvent(t *testing.T) {
 }
 
 func TestDrainSeatEventsConsumesWholeBurstInArrivalOrder(t *testing.T) {
+	resetSeatForTest(t)
 	queue := []vi.Event{
 		{Kind: vi.EvWmKey, Arg0: 2},
 		{Kind: vi.EvCompositeTick},
@@ -305,6 +316,7 @@ func TestDrainSeatEventsConsumesWholeBurstInArrivalOrder(t *testing.T) {
 }
 
 func TestDrainSeatEventsStopsAtTickLimit(t *testing.T) {
+	resetSeatForTest(t)
 	queue := []vi.Event{{Kind: vi.EvWmKey, Arg0: 1}}
 	poll := func() (vi.Event, bool) {
 		if len(queue) == 0 {
@@ -335,6 +347,7 @@ func TestDrainSeatEventsStopsAtTickLimit(t *testing.T) {
 // queued behind it — one flush pays however many ticks the batch held, and
 // it lands after every queued event, not at the tick's own position.
 func TestDrainSeatEventsDefersPaintBehindQueuedInput(t *testing.T) {
+	resetSeatForTest(t)
 	queue := []vi.Event{
 		{Kind: vi.EvWmKey, Arg0: 2},
 		{Kind: vi.EvCompositeTick},
@@ -381,6 +394,7 @@ func TestDrainSeatEventsDefersPaintBehindQueuedInput(t *testing.T) {
 // drainPaintStride events — the input keeps its lead, the scanout keeps a
 // bounded cadence, and no gratuitous flush runs at the drain's tail.
 func TestDrainSeatEventsPaysOwedPaintAtStride(t *testing.T) {
+	resetSeatForTest(t)
 	saved := pendingComposite
 	defer func() { pendingComposite = saved }()
 	pendingComposite = false
@@ -412,6 +426,7 @@ func TestDrainSeatEventsPaysOwedPaintAtStride(t *testing.T) {
 // #2730: the mailbox is serviced every drainServiceStride events inside the
 // drain — a deep queue cannot park a WM_RPC past its bounded-poll window.
 func TestDrainSeatEventsServicesMailboxAtStride(t *testing.T) {
+	resetSeatForTest(t)
 	const nkeys = 21
 	queue := make([]vi.Event, 0, nkeys)
 	for i := 0; i < nkeys; i++ {
@@ -442,6 +457,7 @@ func TestDrainSeatEventsServicesMailboxAtStride(t *testing.T) {
 // still pays — but onTick (the heartbeat accounting) is never invoked for
 // it. A heartbeat queued beside it keeps its own accounting.
 func TestDrainSeatEventsDamageTickSkipsOnTick(t *testing.T) {
+	resetSeatForTest(t)
 	saved := pendingComposite
 	defer func() { pendingComposite = saved }()
 	pendingComposite = false
@@ -498,6 +514,7 @@ func TestDrainSeatEventsDamageTickSkipsOnTick(t *testing.T) {
 // flags-bit0 damage tick (the drain skips the accounting that owes it for
 // heartbeats), while a flags-0 heartbeat leaves the debt to onTick.
 func TestConsumeSeatEventDamageTickOwesComposite(t *testing.T) {
+	resetSeatForTest(t)
 	saved := pendingComposite
 	savedBtn := prevPtrButtons
 	savedDrag := railDragFrom
@@ -528,6 +545,7 @@ func TestConsumeSeatEventDamageTickOwesComposite(t *testing.T) {
 // drain pays it at queue end, so seat-owned feedback (cursor, hover,
 // drags, menus) presents at input cadence, not the 1 Hz heartbeat.
 func TestConsumeSeatEventInputOwesComposite(t *testing.T) {
+	resetSeatForTest(t)
 	saved := pendingComposite
 	savedBtn := prevPtrButtons
 	savedDrag := railDragFrom
@@ -551,6 +569,7 @@ func TestConsumeSeatEventInputOwesComposite(t *testing.T) {
 // tick-kind event ever arrived — the paint is not stranded behind the
 // next heartbeat.
 func TestDrainSeatEventsPaysInputMarkedPaint(t *testing.T) {
+	resetSeatForTest(t)
 	saved := pendingComposite
 	defer func() { pendingComposite = saved }()
 	pendingComposite = false
@@ -594,10 +613,10 @@ func TestDrainSeatEventsPaysInputMarkedPaint(t *testing.T) {
 }
 
 func TestSweepHostedStopsWhenCloseFails(t *testing.T) {
+	resetSeatForTest(t)
 	savedTabs := tabs
 	defer func() { tabs = savedTabs }()
 
-	tabs = TabStrip{}
 	if !tabs.OpenTab(4, "web") || !tabs.OpenTab(5, "calc") {
 		t.Fatal("OpenTab")
 	}
@@ -615,10 +634,10 @@ func TestSweepHostedStopsWhenCloseFails(t *testing.T) {
 }
 
 func TestSweepHostedDiscardsRestoredPlaceholders(t *testing.T) {
+	resetSeatForTest(t)
 	savedTabs := tabs
 	defer func() { tabs = savedTabs }()
 
-	tabs = TabStrip{}
 	if !tabs.OpenTab(sessionIDBase, "restored") || !tabs.OpenTab(4, "live") {
 		t.Fatal("OpenTab")
 	}
@@ -640,6 +659,7 @@ func TestSweepHostedDiscardsRestoredPlaceholders(t *testing.T) {
 }
 
 func TestConsumeSeatEventIgnoreNonTick(t *testing.T) {
+	resetSeatForTest(t)
 	savedBtn := prevPtrButtons
 	savedDrag := railDragFrom
 	defer func() {
@@ -677,6 +697,7 @@ func TestConsumeSeatEventIgnoreNonTick(t *testing.T) {
 // /host/GOTABWM.DEMO through the openFile seam -- found -> demo, any open
 // error (including the host's -ENOSYS) -> live. Content is irrelevant.
 func TestDetectDemoIsPresenceProbe(t *testing.T) {
+	resetSeatForTest(t)
 	saved := openFile
 	defer func() { openFile = saved }()
 
@@ -699,6 +720,7 @@ func TestDetectDemoIsPresenceProbe(t *testing.T) {
 // auto-closes -- two composite ticks of proof per behavior, with the demo
 // path as the control that still arms.
 func TestLiveModeNeverChoreographs(t *testing.T) {
+	resetSeatForTest(t)
 	savedTabs := tabs
 	savedDemo := demoMode
 	savedSaw := stripSawTwo
@@ -727,7 +749,6 @@ func TestLiveModeNeverChoreographs(t *testing.T) {
 
 	// Live, two tabs: no reorder/pin/split choreography arms, nothing closes.
 	demoMode = false
-	tabs = TabStrip{}
 	if !tabs.OpenTab(4, "a") || !tabs.OpenTab(5, "b") {
 		t.Fatal("OpenTab")
 	}
@@ -778,6 +799,7 @@ func TestLiveModeNeverChoreographs(t *testing.T) {
 // lastActivity + demoTeardownHold, and the cap binds a stream that never
 // quiets.
 func TestDemoTickLimit(t *testing.T) {
+	resetSeatForTest(t)
 	saved := lastActivityTick
 	defer func() { lastActivityTick = saved }()
 
@@ -808,6 +830,7 @@ func TestDemoTickLimit(t *testing.T) {
 // both painted AND presented the rail — the line a snapshot anchor may
 // read the rail on (run 10's snap-10-0 flake; claim #3116).
 func TestRailPaintMarkerFiresOnceAfterPaintedPresent(t *testing.T) {
+	resetSeatForTest(t)
 	savedLatch, savedTabs := railReceipt, tabs
 	defer func() { railReceipt, tabs = savedLatch, savedTabs }()
 
@@ -838,6 +861,7 @@ func TestRailPaintMarkerFiresOnceAfterPaintedPresent(t *testing.T) {
 // leaves the fill byte-identical — the caller then skips the present
 // and the boot is exactly the pre-card one.
 func TestBootPlatePaintsStagedAndDegrades(t *testing.T) {
+	resetSeatForTest(t)
 	art.Reset()
 	defer art.Reset()
 	const w, h = 64, 36

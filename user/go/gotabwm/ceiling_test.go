@@ -148,12 +148,14 @@ func procRow(pid uint64, name string, state, status uint64) vi.ProcRow {
 }
 
 func TestWindowLimitTextNamesTheKernelCap(t *testing.T) {
+	resetSeatForTest(t)
 	if want := "windows: limit " + vi.Itoa64(userWinMax); windowLimitText != want {
 		t.Fatalf("notice %q does not name the cap, want %q", windowLimitText, want)
 	}
 }
 
 func TestAppSlotsCountWindowsPendingAndNotSinks(t *testing.T) {
+	resetSeatForTest(t)
 	k := ceilSetup(t)
 	k.fill(2, 3, 4, 5)
 	if got := appSlotsUsed(); got != 4 {
@@ -175,6 +177,7 @@ func TestAppSlotsCountWindowsPendingAndNotSinks(t *testing.T) {
 }
 
 func TestLaunchGuardRefusesAtTheCeilingBeforeExec(t *testing.T) {
+	resetSeatForTest(t)
 	k := ceilSetup(t)
 	seatAtCeiling(k)
 	execs := 0
@@ -200,6 +203,7 @@ func TestLaunchGuardRefusesAtTheCeilingBeforeExec(t *testing.T) {
 }
 
 func TestLaunchGuardCountsLaunchesThatHaveNoWindowYet(t *testing.T) {
+	resetSeatForTest(t)
 	k := ceilSetup(t)
 	k.fill(2, 3, 4, 5, 6, 7) // two slots free
 	next := int64(20)
@@ -246,6 +250,7 @@ func TestLaunchGuardCountsLaunchesThatHaveNoWindowYet(t *testing.T) {
 }
 
 func TestLaunchGuardPassesAnExecFailureThrough(t *testing.T) {
+	resetSeatForTest(t)
 	ceilSetup(t)
 	boom := errors.New("ENOENT")
 	launchApp := ceilingExec(func(string, ...string) (int64, error) { return 0, boom })
@@ -255,6 +260,7 @@ func TestLaunchGuardPassesAnExecFailureThrough(t *testing.T) {
 }
 
 func TestLaunchFromAModalWithItsOwnSinkIsNotRefused(t *testing.T) {
+	resetSeatForTest(t)
 	k := ceilSetup(t)
 	k.fill(2, 3, 4, 5, 6, 7, 8) // five apps: one slot left
 	if _, r := openSeatSink(0, 0, 10, 10); r < 0 || userWindowsLive() != userWinMax {
@@ -267,6 +273,7 @@ func TestLaunchFromAModalWithItsOwnSinkIsNotRefused(t *testing.T) {
 }
 
 func TestSeatRefusalSkipsTheWindowLimit(t *testing.T) {
+	resetSeatForTest(t)
 	ceilSetup(t)
 	resetRefusal(t)
 	seatRefusalErr(errWindowLimit, "exec GOCALC.ELF", "GOCALC.ELF")
@@ -276,6 +283,7 @@ func TestSeatRefusalSkipsTheWindowLimit(t *testing.T) {
 }
 
 func TestWindowlessLaunchAtTheCeilingIsNamed(t *testing.T) {
+	resetSeatForTest(t)
 	k := ceilSetup(t)
 	seatAtCeiling(k)
 	rpcBindings[4].pid = 2
@@ -309,6 +317,7 @@ func TestWindowlessLaunchAtTheCeilingIsNamed(t *testing.T) {
 }
 
 func TestExitWatchIgnoresWhatIsNotAWindowlessLaunch(t *testing.T) {
+	resetSeatForTest(t)
 	k := ceilSetup(t)
 	seatAtCeiling(k)
 	rpcBindings[4].pid = 2
@@ -341,6 +350,7 @@ func TestExitWatchIgnoresWhatIsNotAWindowlessLaunch(t *testing.T) {
 }
 
 func TestSinkSeamLendsTheReserveOnlyAtTheCeiling(t *testing.T) {
+	resetSeatForTest(t)
 	k := ceilSetup(t)
 	k.fill(2, 3, 4)
 	k.own[2] = true
@@ -389,6 +399,7 @@ func TestSinkSeamLendsTheReserveOnlyAtTheCeiling(t *testing.T) {
 }
 
 func TestSinkSeamKeepsOtherRefusalsAndADeadReserve(t *testing.T) {
+	resetSeatForTest(t)
 	k := ceilSetup(t)
 	seatAtCeiling(k)
 	rc := -vi.ErrEINVAL

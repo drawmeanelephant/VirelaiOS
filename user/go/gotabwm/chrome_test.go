@@ -22,6 +22,7 @@ import (
 )
 
 func TestGodMenuButtonPaintAndHitAgree(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	for _, n := range []int{0, 1, 4} {
 		tabs = TabStrip{}
@@ -66,6 +67,7 @@ func TestGodMenuButtonPaintAndHitAgree(t *testing.T) {
 }
 
 func TestParseClockEpoch(t *testing.T) {
+	resetSeatForTest(t)
 	ok := []struct {
 		in   string
 		want uint32
@@ -94,6 +96,7 @@ func TestParseClockEpoch(t *testing.T) {
 // The clock contract is shared with Zig TABWM (tabwm.zig clock_hms): an epoch
 // makes it time-of-day wrapping at 24h, no epoch makes it uptime past 24.
 func TestClockHMS(t *testing.T) {
+	resetSeatForTest(t)
 	cases := []struct {
 		elapsed   uint64
 		epoch     uint32
@@ -119,6 +122,7 @@ func TestClockHMS(t *testing.T) {
 }
 
 func TestFormatClock(t *testing.T) {
+	resetSeatForTest(t)
 	cases := []struct {
 		h, m, s int
 		want    string
@@ -140,6 +144,7 @@ func TestFormatClock(t *testing.T) {
 }
 
 func TestChromeRect(t *testing.T) {
+	resetSeatForTest(t)
 	x, y, w, h := chromeRect(1280, 720)
 	if w != ChromeW || h != ChromeH {
 		t.Fatalf("chromeRect size = %dx%d want %dx%d", w, h, ChromeW, ChromeH)
@@ -165,6 +170,7 @@ func TestChromeRect(t *testing.T) {
 // degrade, byte-identical to the drawText8 it replaced: same 8x8 face,
 // same origin, same advance. This is the never-blank rule pinned locally.
 func TestSeatTextDegradeRepaintsTheBitmapFace(t *testing.T) {
+	resetSeatForTest(t)
 	const w, h = 1280, 720
 	scan := make([]byte, w*h*4)
 	c, err := draw.BytesCanvas(scan, w, h)
@@ -209,6 +215,7 @@ func TestSeatTextDegradeRepaintsTheBitmapFace(t *testing.T) {
 // token chrome colour, an accent rule, and ink/muted glyphs — and nothing
 // outside the rect.
 func TestPaintChromeStaysInsideTheRectAndUsesTokens(t *testing.T) {
+	resetSeatForTest(t)
 	const w, h = 1280, 720
 	scan := make([]byte, w*h*4)
 	tok := theme.Current
@@ -274,6 +281,7 @@ func TestPaintChromeStaysInsideTheRectAndUsesTokens(t *testing.T) {
 // M71e (#1564): the empty-strip start surface. Pure half: geometry, tokens,
 // and the click target — no guest call.
 func TestStartSurfaceRectAndHit(t *testing.T) {
+	resetSeatForTest(t)
 	if MarkerStartSurface != "gotabwm: start-surface" {
 		t.Fatalf("MarkerStartSurface = %q", MarkerStartSurface)
 	}
@@ -312,6 +320,7 @@ func TestStartSurfaceRectAndHit(t *testing.T) {
 }
 
 func TestPaintStartSurfaceUsesTokens(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()() // the start surface lazily decodes the emblem now
 	const w, h = 1280, 720
 	scan := make([]byte, w*h*4)
@@ -369,6 +378,7 @@ func TestPaintStartSurfaceUsesTokens(t *testing.T) {
 }
 
 func TestIdleDimBlendsEveryPixelAndKeepsScanoutOpaque(t *testing.T) {
+	resetSeatForTest(t)
 	const w, h = 3, 2
 	scan := make([]byte, w*h*4)
 	pix := asUint32(scan)
@@ -389,6 +399,7 @@ func TestIdleDimBlendsEveryPixelAndKeepsScanoutOpaque(t *testing.T) {
 }
 
 func TestIdleCurtainCoversScanoutAndNamesNoAuthentication(t *testing.T) {
+	resetSeatForTest(t)
 	const w, h = 320, 160
 	scan := make([]byte, w*h*4)
 	if got := paintIdleCurtain(scan, w, h); got < w*h {
@@ -426,6 +437,7 @@ func TestIdleCurtainCoversScanoutAndNamesNoAuthentication(t *testing.T) {
 }
 
 func TestPaintChromeRefusesDegenerateScanouts(t *testing.T) {
+	resetSeatForTest(t)
 	if n := paintChrome(nil, 0, 0, "00:00:00"); n != 0 {
 		t.Errorf("nil scanout painted %d pixels", n)
 	}
@@ -451,6 +463,7 @@ func saveBadgeState() func() {
 }
 
 func TestFocusRect(t *testing.T) {
+	resetSeatForTest(t)
 	x, y, w, h := focusRect(1280, 720)
 	cx, cy, _, _ := chromeRect(1280, 720)
 	if w != FocusW || h != ChromeH {
@@ -483,6 +496,7 @@ func TestFocusRect(t *testing.T) {
 // names the bins observed calling vi.TtyAttachWindow, on the stem so a
 // bare declared title classifies like the canonical ELF name.
 func TestTerminalFrontEndBin(t *testing.T) {
+	resetSeatForTest(t)
 	term := []string{
 		"GOTERM.ELF", "GOFILES.ELF", "GOSH.ELF", "GOHELP.ELF", "GOGITUI.ELF",
 		"RSS.ELF", "IMGCAT.ELF", "imgcat", "BTMATH.ELF", "CHARMHELLO.ELF",
@@ -502,9 +516,9 @@ func TestTerminalFrontEndBin(t *testing.T) {
 }
 
 func TestFocusBadgeStateTransitions(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	// Empty strip: the seat's own chords answer.
-	tabs = TabStrip{}
 	if v := focusBadgeState(); v.scope != "seat" || v.title != "" {
 		t.Fatalf("empty strip = %+v want scope=seat", v)
 	}
@@ -552,6 +566,7 @@ func TestFocusBadgeStateTransitions(t *testing.T) {
 }
 
 func TestFocusBadgeMarkerTransitions(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	defer saveBadgeState()()
 	badgeReported = focusBadgeView{}
@@ -596,6 +611,7 @@ func TestFocusBadgeMarkerTransitions(t *testing.T) {
 }
 
 func TestPaintFocusBadgeUsesTokens(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	defer saveBadgeState()()
 	const w, h = 1280, 720
@@ -662,20 +678,20 @@ func paintGoldenBadge(t *testing.T) []byte {
 	x, y, w, h := focusRect(vi.ScanoutWidth, vi.ScanoutHeight)
 	out := make([]byte, w*h*4)
 	for row := 0; row < h; row++ {
-		src := ((y + row) * vi.ScanoutWidth + x) * 4
+		src := ((y+row)*vi.ScanoutWidth + x) * 4
 		copy(out[row*w*4:], scan[src:src+w*4])
 	}
 	return out
 }
 
 func TestFocusBadgeGolden(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	defer saveBadgeState()()
 	tok := theme.Current
 	theme.Current = theme.Dark
 	t.Cleanup(func() { theme.Current = tok })
 	stubSeatRegistry(t, seatRegistryFromRepo(t))
-	tabs = TabStrip{}
 	if !tabs.OpenTab(10, "Edit") {
 		t.Fatal("OpenTab")
 	}
@@ -683,13 +699,13 @@ func TestFocusBadgeGolden(t *testing.T) {
 }
 
 func TestFocusBadgeGoldenDegrade(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	defer saveBadgeState()()
 	tok := theme.Current
 	theme.Current = theme.Dark
 	t.Cleanup(func() { theme.Current = tok })
 	stubSeatRegistry(t, nil)
-	tabs = TabStrip{}
 	if !tabs.OpenTab(10, "Term") {
 		t.Fatal("OpenTab")
 	}
@@ -713,6 +729,7 @@ func saveClockSeam() func() {
 // offset at that instant — so the seat face agrees with `date`. Epoch
 // 1792497600 is 2026-10-20 12:00:00 UTC; Berlin is still CEST (+02:00).
 func TestClockNowAppliesTheTimezoneRow(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveClockSeam()()
 	kernelTime = func() int64 { return 1792497600 }
 	berlin, ok := clockfmt.Parse("Europe/Berlin")
@@ -743,6 +760,7 @@ func TestClockNowAppliesTheTimezoneRow(t *testing.T) {
 // is read once per displayed minute — a `settings set` lands within a
 // minute without a settings-bus subscription — and never twice inside one.
 func TestClockZoneRereadsOnMinuteRollover(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveClockSeam()()
 	loads := 0
 	clockZoneLoad = func() clockfmt.Zone { loads++; return clockfmt.UTC }
@@ -761,6 +779,7 @@ func TestClockZoneRereadsOnMinuteRollover(t *testing.T) {
 // #3348 (#1250): the staged sleep pose stands centred on the dim veil at
 // full ink; an absent asset keeps the uniform half-brightness degrade.
 func TestIdleDimPaintsStagedMascotAndDegrades(t *testing.T) {
+	resetSeatForTest(t)
 	art.Reset()
 	defer art.Reset()
 	saved := idleMascotShown

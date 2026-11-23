@@ -11,6 +11,7 @@ import (
 )
 
 func TestTabMarkerShapes(t *testing.T) {
+	resetSeatForTest(t)
 	cases := []struct{ got, want string }{
 		{MarkerTabOpen, "gotabwm: tab open id="},
 		{MarkerTabFocus, "gotabwm: tab focus id="},
@@ -40,6 +41,7 @@ func TestTabMarkerShapes(t *testing.T) {
 }
 
 func TestGuessBinShippingTitles(t *testing.T) {
+	resetSeatForTest(t)
 	cases := []struct{ title, want string }{
 		{"Calc", "GOCALC.ELF"},
 		{"Notepad", "NOTE.ELF"},
@@ -88,6 +90,7 @@ func TestGuessBinShippingTitles(t *testing.T) {
 // `bin=` token — a space, '=' or newline would inject extra key=value
 // fields into the LAYOUT.txt / serial dump line.
 func TestBinTokenSanitizesTitle(t *testing.T) {
+	resetSeatForTest(t)
 	cases := []struct{ in, want string }{
 		{"GOCALC.ELF", "GOCALC.ELF"}, // filename set passes through
 		{"evil focus=1", "evil_focus_1"},
@@ -119,6 +122,7 @@ func TestBinTokenSanitizesTitle(t *testing.T) {
 // The emit surface re-sanitizes: a bin planted by a crafted .tabs record
 // never reaches the gate line raw.
 func TestLayoutLineSanitizesBin(t *testing.T) {
+	resetSeatForTest(t)
 	line := layoutLine(5, "evil focus=1", Rect{640, 0, 640, 720}, true, SplitVert)
 	want := "tab=5 bin=evil_focus_1 x=640 y=0 w=640 h=720 focus=1 split=v"
 	if line != want {
@@ -127,6 +131,7 @@ func TestLayoutLineSanitizesBin(t *testing.T) {
 }
 
 func TestSetTitlePreservesBinAndSession(t *testing.T) {
+	resetSeatForTest(t)
 	var live TabStrip
 	if !live.OpenTab(4, "Notepad") {
 		t.Fatal("OpenTab")
@@ -158,6 +163,7 @@ func TestSetTitlePreservesBinAndSession(t *testing.T) {
 }
 
 func TestOpenCloseFocusMachine(t *testing.T) {
+	resetSeatForTest(t)
 	var s TabStrip
 	if s.Count() != 0 {
 		t.Fatalf("zero strip count = %d", s.Count())
@@ -226,6 +232,7 @@ func TestOpenCloseFocusMachine(t *testing.T) {
 }
 
 func TestCloseNonFocusedKeepsFocus(t *testing.T) {
+	resetSeatForTest(t)
 	var s TabStrip
 	s.OpenTab(1, "a")
 	s.OpenTab(2, "b")
@@ -239,6 +246,7 @@ func TestCloseNonFocusedKeepsFocus(t *testing.T) {
 }
 
 func TestCloseFirstOfTwoFocusesNeighbour(t *testing.T) {
+	resetSeatForTest(t)
 	var s TabStrip
 	s.OpenTab(1, "a")
 	s.OpenTab(2, "b")
@@ -252,6 +260,7 @@ func TestCloseFirstOfTwoFocusesNeighbour(t *testing.T) {
 }
 
 func TestMaxTabsCap(t *testing.T) {
+	resetSeatForTest(t)
 	var s TabStrip
 	for i := 1; i <= MaxTabs; i++ {
 		if !s.OpenTab(uint32(i), "t") {
@@ -267,6 +276,7 @@ func TestMaxTabsCap(t *testing.T) {
 }
 
 func TestReopenRingRecordsAndReopensLIFO(t *testing.T) {
+	resetSeatForTest(t)
 	var s TabStrip
 	if _, ok := s.ReopenLastClosed(); ok {
 		t.Fatal("an empty ring must not reopen")
@@ -304,6 +314,7 @@ func TestReopenRingRecordsAndReopensLIFO(t *testing.T) {
 }
 
 func TestReopenRingIsBounded(t *testing.T) {
+	resetSeatForTest(t)
 	var s TabStrip
 	for i := 0; i < MaxTabs+3; i++ {
 		id := uint32(100 + i)
@@ -341,6 +352,7 @@ func TestReopenRingIsBounded(t *testing.T) {
 }
 
 func TestReopenSkipsUnreopenableEntries(t *testing.T) {
+	resetSeatForTest(t)
 	var s TabStrip
 	// OpenTab with an empty title records no bin (guessBin("") == ""), which
 	// is Zig's "a tab this WM never spawned" entry.
@@ -361,6 +373,7 @@ func TestReopenSkipsUnreopenableEntries(t *testing.T) {
 }
 
 func TestDuplicateFocusedHonestNoop(t *testing.T) {
+	resetSeatForTest(t)
 	var s TabStrip
 	if _, ok := s.DuplicateFocused(); ok {
 		t.Fatal("an empty strip must not duplicate")
@@ -389,6 +402,7 @@ func TestDuplicateFocusedHonestNoop(t *testing.T) {
 }
 
 func TestFreezeMarkerShapes(t *testing.T) {
+	resetSeatForTest(t)
 	cases := []struct{ got, want string }{
 		{MarkerFreeze, "gotabwm: freeze id="},
 		{MarkerThaw, "gotabwm: thaw id="},
@@ -404,6 +418,7 @@ func TestFreezeMarkerShapes(t *testing.T) {
 // M71e (#1564): Freeze/Thaw are a flag machine on an existing tab (D1), and
 // deliberately NOT a lock — Zig checks `frozen` nowhere in its close path.
 func TestFreezeThawMachine(t *testing.T) {
+	resetSeatForTest(t)
 	var s TabStrip
 	if s.Freeze(1) {
 		t.Fatal("Freeze on an empty strip must be false")
@@ -454,6 +469,7 @@ func TestFreezeThawMachine(t *testing.T) {
 // The frozen badge rides the rail: the frozen cell carries Warning pixels and
 // a thawed one carries none.
 func TestPaintRailFrozenBadge(t *testing.T) {
+	resetSeatForTest(t)
 	const w, h = 200, 40
 	scan := make([]byte, w*h*4)
 	pix := asUint32(scan)
@@ -512,6 +528,7 @@ func countRGB(pix []uint32, width, rows int, rgb uint32) int {
 // and focus), focus wins over hover, and every cell carries the close-x glyph
 // in its close zone.
 func TestPaintRailHoverTintAndCloseGlyph(t *testing.T) {
+	resetSeatForTest(t)
 	const w, h = 256, 32
 	buf := make([]byte, w*h*4)
 	pix := asUint32(buf)
@@ -583,6 +600,7 @@ func TestPaintRailHoverTintAndCloseGlyph(t *testing.T) {
 }
 
 func TestNextIDWraps(t *testing.T) {
+	resetSeatForTest(t)
 	var s TabStrip
 	if _, ok := s.NextID(); ok {
 		t.Fatal("empty NextID")
@@ -600,6 +618,7 @@ func TestNextIDWraps(t *testing.T) {
 }
 
 func TestMaxTabsMatchesSessionCap(t *testing.T) {
+	resetSeatForTest(t)
 	if MaxTabs != 16 {
 		t.Fatalf("MaxTabs = %d want 16 (ADR 0033 / .tabs v2)", MaxTabs)
 	}
@@ -609,6 +628,7 @@ func TestMaxTabsMatchesSessionCap(t *testing.T) {
 }
 
 func TestPaintRailFillsStripOnly(t *testing.T) {
+	resetSeatForTest(t)
 	const w, h, strip = 256, 32, 8
 	buf := make([]byte, w*h*4)
 	var s TabStrip
@@ -657,6 +677,7 @@ func TestPaintRailFillsStripOnly(t *testing.T) {
 }
 
 func TestPaintRailScanoutGeometry(t *testing.T) {
+	resetSeatForTest(t)
 	if vi.ScanoutWidth != 1280 || vi.ScanoutHeight != 720 {
 		t.Fatalf("scanout %dx%d; rail layout assumes 1280x720", vi.ScanoutWidth, vi.ScanoutHeight)
 	}
@@ -666,6 +687,7 @@ func TestPaintRailScanoutGeometry(t *testing.T) {
 }
 
 func TestSplitHVUnsplitMachine(t *testing.T) {
+	resetSeatForTest(t)
 	var s TabStrip
 	if s.SplitH() || s.SplitV() {
 		t.Fatal("split with no tabs")
@@ -707,6 +729,7 @@ func TestSplitHVUnsplitMachine(t *testing.T) {
 }
 
 func TestSplitRectsIntegerAndMin(t *testing.T) {
+	resetSeatForTest(t)
 	if PaneMinW != 160 || PaneMinH != 120 {
 		t.Fatalf("pane min %dx%d want 160x120 (ADR 0033)", PaneMinW, PaneMinH)
 	}
@@ -748,6 +771,7 @@ func TestSplitRectsIntegerAndMin(t *testing.T) {
 }
 
 func TestLayoutFileBodyTwoPane(t *testing.T) {
+	resetSeatForTest(t)
 	var s TabStrip
 	if !s.OpenTab(3, "Calc") || !s.OpenTab(4, "Notepad") {
 		t.Fatal("OpenTab")
@@ -784,6 +808,7 @@ func TestLayoutFileBodyTwoPane(t *testing.T) {
 }
 
 func TestLayoutLineAndDumpMatch(t *testing.T) {
+	resetSeatForTest(t)
 	line := layoutLine(5, "Calc", Rect{640, 0, 640, 720}, true, SplitVert)
 	want := "tab=5 bin=Calc x=640 y=0 w=640 h=720 focus=1 split=v"
 	if line != want {
@@ -812,6 +837,7 @@ func TestLayoutLineAndDumpMatch(t *testing.T) {
 }
 
 func TestPaneRectsNeedTwoTabs(t *testing.T) {
+	resetSeatForTest(t)
 	var s TabStrip
 	s.OpenTab(1, "a")
 	if _, _, ok := s.PaneRects(1280, 720); ok {
@@ -826,6 +852,7 @@ func TestPaneRectsNeedTwoTabs(t *testing.T) {
 }
 
 func TestPinSortsLeftAndSurvivesFocus(t *testing.T) {
+	resetSeatForTest(t)
 	if FlagPinned != 0x01 {
 		t.Fatalf("FlagPinned = %#x want 0x01 (tabcodec.FlagPinned)", FlagPinned)
 	}
@@ -862,6 +889,7 @@ func TestPinSortsLeftAndSurvivesFocus(t *testing.T) {
 }
 
 func TestReorderMatchesMoveTab(t *testing.T) {
+	resetSeatForTest(t)
 	var s TabStrip
 	s.OpenTab(2, "A")
 	s.OpenTab(3, "B")
@@ -896,6 +924,7 @@ func TestReorderMatchesMoveTab(t *testing.T) {
 }
 
 func TestClosePinnedIsAllowed(t *testing.T) {
+	resetSeatForTest(t)
 	var s TabStrip
 	s.OpenTab(2, "A")
 	s.OpenTab(3, "B")
@@ -915,6 +944,7 @@ func TestClosePinnedIsAllowed(t *testing.T) {
 // sash <= 0 must be byte-identical to SplitRects, gutterless, so every
 // pre-M79c gate assertion still holds.
 func TestSplitRectsSashUnsetIsLegacy(t *testing.T) {
+	resetSeatForTest(t)
 	for _, kind := range []SplitKind{SplitVert, SplitHoriz, SplitNone} {
 		for _, sash := range []int{0, -5} {
 			a, b, oka := SplitRectsSash(kind, 1280, 720, sash)
@@ -935,6 +965,7 @@ func TestSplitRectsSashUnsetIsLegacy(t *testing.T) {
 // M79c (#1706): a set sash centres the SashWidth gutter on the clamped
 // divider — the visible divider zone, as geometry the gate can grep.
 func TestSplitRectsSashGutter(t *testing.T) {
+	resetSeatForTest(t)
 	if SashWidth != 6 {
 		t.Fatalf("SashWidth = %d want 6", SashWidth)
 	}
@@ -964,6 +995,7 @@ func TestSplitRectsSashGutter(t *testing.T) {
 // floor parks at it, and a scanout too small for two minima plus the
 // gutter refuses.
 func TestSplitRectsSashClamp(t *testing.T) {
+	resetSeatForTest(t)
 	a, b, ok := SplitRectsSash(SplitVert, 1280, 720, 10)
 	if !ok || a.W != 160 || b.X != 166 || b.W != 1280-166 {
 		t.Fatalf("clamp low SplitV: %+v %+v ok=%v", a, b, ok)
@@ -992,6 +1024,7 @@ func TestSplitRectsSashClamp(t *testing.T) {
 // no-op on the position already held, and reset by Unsplit and by any
 // close that drops the strip below two tabs.
 func TestSetSashGuards(t *testing.T) {
+	resetSeatForTest(t)
 	var s TabStrip
 	s.OpenTab(3, "Calc")
 	if s.SetSash(800, 1280, 720) {
@@ -1042,6 +1075,7 @@ func TestSetSashGuards(t *testing.T) {
 // M79c (#1706): the divider hit test. Half the SashWidth around the
 // centre, below the rail, clear of the bottom chrome; SplitNone never hits.
 func TestSashZoneAt(t *testing.T) {
+	resetSeatForTest(t)
 	v := SplitVert
 	if !sashZoneAt(640, 100, v, 640, 1280, 720) {
 		t.Fatal("dead centre must hit")
@@ -1082,6 +1116,7 @@ func TestSashZoneAt(t *testing.T) {
 // M79c (#1706): the sash rides into LAYOUT.txt's x=/w= fields — no new
 // field (ADR 0033 pins the line format); the pane x/w ARE the sash.
 func TestLayoutFileBodySash(t *testing.T) {
+	resetSeatForTest(t)
 	var s TabStrip
 	if !s.OpenTab(3, "Calc") || !s.OpenTab(4, "Notepad") {
 		t.Fatal("OpenTab")
@@ -1107,6 +1142,7 @@ func TestLayoutFileBodySash(t *testing.T) {
 // rail's "coming back" mark. The declare returns the static icon, and an
 // absent sheet keeps the icon for the whole wait: the pre-card cell.
 func TestPaintRailRestoreSpinner(t *testing.T) {
+	resetSeatForTest(t)
 	savedPend, savedN := reexecPending, reexecN
 	savedSpin, savedIcons := railSpinMarked, railIconsMarked
 	savedMap, savedRead := iconByBin, readAppsFile
@@ -1200,6 +1236,7 @@ func TestPaintRailRestoreSpinner(t *testing.T) {
 // last cell clamped to avail, cells a prefix of the strip. Single-space
 // geometry is the old full-width rule byte for byte.
 func TestRailLayoutSingleSpace(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	resetSpaces()
 	for _, width := range []int{1280, 640, 300, 200, 97, 64} {
@@ -1241,6 +1278,7 @@ func TestRailLayoutSingleSpace(t *testing.T) {
 // cell rect may reach into the pill strip, and avail shrinks exactly by
 // the strip's width.
 func TestRailLayoutPillsReserve(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	stubSeatRegistry(t, nil)
 	resetSpaces()
@@ -1289,6 +1327,7 @@ func TestRailLayoutPillsReserve(t *testing.T) {
 // pill-strip tail resolve to the last painted cell; the close zone is
 // exactly each rect's rightmost railCloseW px.
 func TestRailCellHitTestAgreesWithLayout(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	stubSeatRegistry(t, nil)
 	resetSpaces()
@@ -1345,6 +1384,7 @@ func TestRailCellHitTestAgreesWithLayout(t *testing.T) {
 // focused, clipped before the close zone, skipped when the cell cannot
 // hold three glyphs, seatFitText-truncated when it cannot hold the run.
 func TestPaintRailTitles(t *testing.T) {
+	resetSeatForTest(t)
 	tok := theme.Current
 	theme.Current = theme.Dark
 	t.Cleanup(func() { theme.Current = tok })
@@ -1416,6 +1456,7 @@ func TestPaintRailTitles(t *testing.T) {
 // seatFitText truncates the run; railTitleProbe is the three-glyph
 // floor the skip rule measures against.
 func TestRailTitleFitAndProbe(t *testing.T) {
+	resetSeatForTest(t)
 	stubSeatRegistry(t, nil)
 	if got := railTitleProbe("Edit"); got != 24 {
 		t.Fatalf("probe(Edit) = %d want 24 (3 glyphs x 8px)", got)
@@ -1434,6 +1475,7 @@ func TestRailTitleFitAndProbe(t *testing.T) {
 // The pinned mark is the design master's rail_pin_0 diamond — Muted
 // ink at the leading slot — and it displaces the icon/title lane right.
 func TestPaintRailPinnedMark(t *testing.T) {
+	resetSeatForTest(t)
 	tok := theme.Current
 	theme.Current = theme.Dark
 	t.Cleanup(func() { theme.Current = tok })
@@ -1492,6 +1534,7 @@ func TestPaintRailPinnedMark(t *testing.T) {
 // row the close path is about to lose, and the bit never enters the
 // session file's shape (tabFlags has no arm for it).
 func TestSetUnsavedTransitions(t *testing.T) {
+	resetSeatForTest(t)
 	var s TabStrip
 	if !s.OpenTab(3, "Edit") {
 		t.Fatal("OpenTab")
@@ -1535,6 +1578,7 @@ func TestSetUnsavedTransitions(t *testing.T) {
 // left of the close-x (tabwm.zig:3326), painted on the unsaved cell only
 // and clipped out of the title run's way.
 func TestPaintRailUnsavedDot(t *testing.T) {
+	resetSeatForTest(t)
 	tok := theme.Current
 	theme.Current = theme.Dark
 	t.Cleanup(func() { theme.Current = tok })

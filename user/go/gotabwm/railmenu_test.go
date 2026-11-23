@@ -54,6 +54,7 @@ func railMenuFixture(t *testing.T, ids ...uint32) func() {
 }
 
 func TestRailBadgeCountsAndClearsOnFocus(t *testing.T) {
+	resetSeatForTest(t)
 	defer railMenuFixture(t, 3, 4)()
 	if got := railBadgeCount(4); got != 0 {
 		t.Fatalf("fresh tab badges %d want 0", got)
@@ -111,6 +112,7 @@ func TestRailBadgeCountsAndClearsOnFocus(t *testing.T) {
 }
 
 func TestRailMenuOpenRightPressOnCell(t *testing.T) {
+	resetSeatForTest(t)
 	defer railMenuFixture(t, 3, 4)()
 	// Right press on cell 1 (id 4) opens the menu targeting it — not the
 	// focused cell (id 3).
@@ -144,6 +146,7 @@ func TestRailMenuOpenRightPressOnCell(t *testing.T) {
 }
 
 func TestRailMenuQuitKillsTargetCell(t *testing.T) {
+	resetSeatForTest(t)
 	defer railMenuFixture(t, 3, 4)()
 	closed := []uint32{}
 	prevClose, prevRaise := closeWin, focusRaise
@@ -182,6 +185,7 @@ func TestRailMenuQuitKillsTargetCell(t *testing.T) {
 }
 
 func TestRailMenuPinDuplicateFocusVerbs(t *testing.T) {
+	resetSeatForTest(t)
 	defer railMenuFixture(t, 3, 4)()
 	prevRaise := focusRaise
 	focusRaise = func(id uint32) int64 { return 0 }
@@ -228,6 +232,7 @@ func TestRailMenuPinDuplicateFocusVerbs(t *testing.T) {
 }
 
 func TestRailMenuKeyHandling(t *testing.T) {
+	resetSeatForTest(t)
 	defer railMenuFixture(t, 3, 4)()
 	prevRaise := focusRaise
 	focusRaise = func(id uint32) int64 { return 0 }
@@ -246,6 +251,7 @@ func TestRailMenuKeyHandling(t *testing.T) {
 }
 
 func TestRailMenuRectTracksItsTab(t *testing.T) {
+	resetSeatForTest(t)
 	defer railMenuFixture(t, 3, 4)()
 	railMenuTab = 4
 	x0, y, w, h := railMenuRect(1280, 720)
@@ -268,6 +274,7 @@ func TestRailMenuRectTracksItsTab(t *testing.T) {
 }
 
 func TestRailNotifPlateGeometry(t *testing.T) {
+	resetSeatForTest(t)
 	// The badge sits inside the cell's left band, clear of the close
 	// zone, and drops entirely on a cell too narrow for it.
 	// M216b: the signature is now (slotX, cellRight, stripH) — the lane

@@ -67,6 +67,7 @@ func withSum(body []byte) []byte {
 }
 
 func TestNotifyHistoryCodecRoundTrip(t *testing.T) {
+	resetSeatForTest(t)
 	enc := encodeNotifyHistory(sampleHistory())
 	got, ok := decodeNotifyHistory(enc)
 	if !ok || len(got) != 3 {
@@ -88,6 +89,7 @@ func TestNotifyHistoryCodecRoundTrip(t *testing.T) {
 }
 
 func TestNotifyHistoryCodecBoundsAreEnforcedOnWrite(t *testing.T) {
+	resetSeatForTest(t)
 	var many []centerNotification
 	long := strings.Repeat("x", 200)
 	for i := 0; i < NotifyCenterMax+5; i++ {
@@ -119,6 +121,7 @@ func TestNotifyHistoryCodecBoundsAreEnforcedOnWrite(t *testing.T) {
 // prefix. Every single-bit flip and every truncation of a valid file is
 // refused; so is trailing garbage.
 func TestNotifyHistoryDecodeRefusesWholeOnAnyDamage(t *testing.T) {
+	resetSeatForTest(t)
 	enc := encodeNotifyHistory(sampleHistory())
 	for i := range enc {
 		for bit := 0; bit < 8; bit++ {
@@ -148,6 +151,7 @@ func TestNotifyHistoryDecodeRefusesWholeOnAnyDamage(t *testing.T) {
 // The structural checks stand on their own: a forged body with a VALID
 // checksum still fails when its records are not what the seat would write.
 func TestNotifyHistoryDecodeRefusesForgedButChecksummedBodies(t *testing.T) {
+	resetSeatForTest(t)
 	head := []byte(notifyHistMagic)
 	cases := []struct {
 		name string
@@ -176,6 +180,7 @@ func TestNotifyHistoryDecodeRefusesForgedButChecksummedBodies(t *testing.T) {
 }
 
 func TestNotifyHistoryFileBoundCoversTheLargestHistory(t *testing.T) {
+	resetSeatForTest(t)
 	var most []centerNotification
 	for i := 0; i < NotifyCenterMax; i++ {
 		most = append(most, centerNotification{
@@ -192,6 +197,7 @@ func TestNotifyHistoryFileBoundCoversTheLargestHistory(t *testing.T) {
 }
 
 func TestNotifyPolicyMarkerShapes(t *testing.T) {
+	resetSeatForTest(t)
 	cases := []struct{ got, want string }{
 		{MarkerNotifyDND, "gotabwm: notify dnd="},
 		{MarkerNotifyHeld, "gotabwm: notify held id="},
@@ -226,6 +232,7 @@ func openNotifyTab(t *testing.T, id uint32, title string) {
 // The whole point: DND never loses a notice. It lands in the center, raises
 // no toast, and the kind-12 ack is still applied so the app cannot tell.
 func TestNotifyDNDHoldsTheToastButKeepsTheNotice(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	openNotifyTab(t, 4, "files")
 	seatTick = 5
@@ -257,6 +264,7 @@ func TestNotifyDNDHoldsTheToastButKeepsTheNotice(t *testing.T) {
 }
 
 func TestNotifyDNDFloodKeepsTheNewestHistoryAndNoToasts(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	openNotifyTab(t, 4, "files")
 	notifyDND = true
@@ -279,6 +287,7 @@ func TestNotifyDNDFloodKeepsTheNewestHistoryAndNoToasts(t *testing.T) {
 // DND is a gate on NEW toasts only: what is already on the strip runs out
 // normally, and turning DND off resumes toasts without replaying held ones.
 func TestNotifyDNDLeavesShownToastsAndResumesOnOff(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	notifyPush(4, "before", 0)
 	notifyDND = true
@@ -302,6 +311,7 @@ func TestNotifyDNDLeavesShownToastsAndResumesOnOff(t *testing.T) {
 }
 
 func TestConfigureNotifyDNDReadsOnlyAnIntactExactOn(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	on := []settings.Setting{{Key: settings.NotifyDNDKey, Val: "on"}}
 	cases := []struct {
@@ -330,6 +340,7 @@ func TestConfigureNotifyDNDReadsOnlyAnIntactExactOn(t *testing.T) {
 // origin; the other two origins (boot read, GOSET publish) do NOT write the
 // file again, because they already have it.
 func TestNotifyDNDPersistsOnlyForTheSeatControl(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	var saved []bool
 	saveNotifyDND = func(on bool) bool {
@@ -359,6 +370,7 @@ func TestNotifyDNDPersistsOnlyForTheSeatControl(t *testing.T) {
 }
 
 func TestNotifyDNDSeatControlSurvivesAFailedSave(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	saveNotifyDND = func(bool) bool { return false }
 	toggleNotifyDND()
@@ -370,6 +382,7 @@ func TestNotifyDNDSeatControlSurvivesAFailedSave(t *testing.T) {
 // GOSET's publish path: the value is on the bus and in the file, and the seat
 // applies it live, no restart.
 func TestSettingsPublishAppliesDND(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	savedTabs := tabs
 	savedLoad, savedSend := loadSettingsForBus, sendSettingsNotice
@@ -420,6 +433,7 @@ func TestSettingsPublishAppliesDND(t *testing.T) {
 // The seat control (the center's header toggle) and the drawn control use one
 // rect, so what is painted is what is clickable.
 func TestNotifyCenterHeaderToggleClickTogglesAndPersists(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	var saved []bool
 	saveNotifyDND = func(on bool) bool { saved = append(saved, on); return true }
@@ -455,6 +469,7 @@ func TestNotifyCenterHeaderToggleClickTogglesAndPersists(t *testing.T) {
 
 // The control must not shadow the close X, the rows or the footer.
 func TestNotifyCenterHeaderToggleLeavesTheOtherControlsAlone(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	notifyPush(4, "first", 0)
 	notifyCenterOpen = true
@@ -478,6 +493,7 @@ func TestNotifyCenterHeaderToggleLeavesTheOtherControlsAlone(t *testing.T) {
 }
 
 func TestNotifyCenterHeaderToggleIsAbsentOnAPanelTooNarrowForIt(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	notifyCenterOpen = true
 	narrow := notifyDNDMinW - 1 + 2*chromeInset
@@ -495,6 +511,7 @@ func TestNotifyCenterHeaderToggleIsAbsentOnAPanelTooNarrowForIt(t *testing.T) {
 }
 
 func TestNotifyCenterHeaderShowsTheModeAtAGlance(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	notifyCenterOpen = true
 	const w, h = 800, 600
@@ -550,6 +567,7 @@ func TestNotifyCenterHeaderShowsTheModeAtAGlance(t *testing.T) {
 // already reads it: the clock panel's hint is the observable, and the panel's
 // rows are there the instant the user opens it.
 func TestLoadNotifyHistoryRestoresBeforeTheFirstPaint(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	share := fakeNotifyFiles(t)
 	share.data, share.present = encodeNotifyHistory(sampleHistory()), true
@@ -601,6 +619,7 @@ func TestLoadNotifyHistoryRestoresBeforeTheFirstPaint(t *testing.T) {
 }
 
 func TestLoadNotifyHistoryMissingFileIsSilentAndUntouched(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	share := fakeNotifyFiles(t)
 	if state := loadNotifyHistory(settings.File{}); state != notifyHistMissing {
@@ -616,6 +635,7 @@ func TestLoadNotifyHistoryMissingFileIsSilentAndUntouched(t *testing.T) {
 // happen to parse), and the seat heals it with a valid empty file at once, so
 // the boot after finds nothing wrong.
 func TestLoadNotifyHistoryCorruptIsRefusedWholeAndHeals(t *testing.T) {
+	resetSeatForTest(t)
 	good := encodeNotifyHistory(sampleHistory())
 	torn := good[:len(good)-6] // a crash that lost the tail of the file
 	flipped := append([]byte(nil), good...)
@@ -660,6 +680,7 @@ func TestLoadNotifyHistoryCorruptIsRefusedWholeAndHeals(t *testing.T) {
 }
 
 func TestLoadNotifyHistoryCorruptWithAFailingShareStaysDirtyAndRetries(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	share := fakeNotifyFiles(t)
 	share.data, share.present, share.failing = []byte("junk"), true, true
@@ -683,6 +704,7 @@ func TestLoadNotifyHistoryCorruptWithAFailingShareStaysDirtyAndRetries(t *testin
 // Mutations only mark the history dirty; the tick publishes ONCE however many
 // landed. A flood of notices costs one fsync'd write per tick, not one each.
 func TestNotifyHistoryPublishIsCoalescedToTheTick(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	share := fakeNotifyFiles(t)
 	flushNotifyHistory()
@@ -730,6 +752,7 @@ func TestNotifyHistoryPublishIsCoalescedToTheTick(t *testing.T) {
 // The closed latch and a toast's expiry are not history mutations: they are
 // not persisted, so they must not cost a write.
 func TestNotifyHistoryIsNotRepublishedForEphemeralChanges(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	share := fakeNotifyFiles(t)
 	openNotifyTab(t, 7, "Files")
@@ -745,6 +768,7 @@ func TestNotifyHistoryIsNotRepublishedForEphemeralChanges(t *testing.T) {
 }
 
 func TestNotifyHistoryFailedPublishRetriesAndReportsOnce(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	share := fakeNotifyFiles(t)
 	share.failing = true
@@ -767,6 +791,7 @@ func TestNotifyHistoryFailedPublishRetriesAndReportsOnce(t *testing.T) {
 // A notice that arrives under DND is durable across a restart: it is the
 // promise "suppressed is not lost", end to end through the codec.
 func TestHeldNoticeSurvivesARestart(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	share := fakeNotifyFiles(t)
 	openNotifyTab(t, 4, "files")
@@ -792,6 +817,7 @@ func TestHeldNoticeSurvivesARestart(t *testing.T) {
 // compositeTick is where the seat publishes, after the present and before the
 // live-mode early return: a tick in live mode still flushes.
 func TestCompositeTickPublishesTheHistoryOnce(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	share := fakeNotifyFiles(t)
 	savedTabs, savedDemo := tabs, demoMode
@@ -826,6 +852,7 @@ func TestCompositeTickPublishesTheHistoryOnce(t *testing.T) {
 // Off the guest the file seams degrade rather than panic: the default seams
 // are the real vi calls, which return ENOSYS on the host.
 func TestNotifyHistoryDefaultSeamsDegradeOffGuest(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	readNotifyFile, writeNotifyFile = vi.ReadFileAll, func(path string, data []byte) bool {
 		return vi.WriteFileSafe(path, data) == 0
@@ -861,6 +888,7 @@ func chimePush(t *testing.T) *int {
 // refused push and none for a held one — the policy's DND ordering is what
 // makes "held" silent without the chime path knowing why.
 func TestNotifyPushCallsTheChimeForAcceptedToasts(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	plays := chimePush(t)
 	if _, ok, _ := notifyPush(4, "ding", 0); !ok || *plays != 1 {
@@ -892,6 +920,7 @@ func TestNotifyPushCallsTheChimeForAcceptedToasts(t *testing.T) {
 // notify_sound seeds the bus value the live read uses, and on the host the
 // device probe honestly reports itself unavailable rather than pretending.
 func TestConfigureNotifySoundSeedsTheSwitchAndStaysHonest(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	configureNotifyDND(settings.File{State: settings.StateOK,
 		Rows: []settings.Setting{{Key: settings.NotifySoundKey, Val: "off"}}})
@@ -929,6 +958,7 @@ func TestConfigureNotifySoundSeedsTheSwitchAndStaysHonest(t *testing.T) {
 // still lands, and the (host-absent) device is named unavailable — never a
 // boot failure.
 func TestConfigureNotifySoundOnACorruptFileDefaultsOn(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	configureNotifyDND(settings.File{State: settings.StateCorrupt})
 	if !notifySoundOn() {
@@ -940,6 +970,7 @@ func TestConfigureNotifySoundOnACorruptFileDefaultsOn(t *testing.T) {
 // notify_sound row that is not in the value table is a publish refused, so
 // the seed exists for the update path, not for the boot read alone.
 func TestNotifySoundBusValueTakesThePublishPath(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	seedNotifySoundBusValue("on")
 	if !notifySoundOn() {
@@ -962,6 +993,7 @@ func TestNotifySoundBusValueTakesThePublishPath(t *testing.T) {
 // playNotifyChime counts a refused open and keeps the seat's tick: the guest
 // gate sees the skip marker; the host sees the counter and the early exits.
 func TestPlayNotifyChimeCountsRefusalsAndHonoursTheSwitch(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	notifySoundChime = make([]byte, 8)
 	// The host's open is ENOSYS: a refusal, counted — the toast stands
@@ -986,6 +1018,7 @@ func TestPlayNotifyChimeCountsRefusalsAndHonoursTheSwitch(t *testing.T) {
 // Status call fails, which is the unconfirmed-drain path — the seat clears
 // the seat and counts it rather than claiming a play it cannot prove.
 func TestNotifySoundTickClearsAnUnconfirmableDrain(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	notifySoundPending = &vi.AudioStream{}
 	notifySoundBytes = 8
@@ -1013,6 +1046,7 @@ func s32le(b []byte) int32 {
 // that cannot fit is a chime that must not exist. The worst tuple (FLOAT
 // stereo 48 kHz) is the bound's own witness.
 func TestSynthNotifyChimeFitsThePrefillEverywhere(t *testing.T) {
+	resetSeatForTest(t)
 	worst := synthNotifyChime(vi.AudioInfo{Ready: 1, Format: vi.AudioFmtFloat, Rate: 7, Channels: 2})
 	if len(worst) == 0 || len(worst) > notifyChimeMaxBytes {
 		t.Fatalf("FLOAT stereo 48 kHz chime = %d bytes, bound %d", len(worst), notifyChimeMaxBytes)
@@ -1042,6 +1076,7 @@ func TestSynthNotifyChimeFitsThePrefillEverywhere(t *testing.T) {
 // A tuple the synth cannot encode returns nothing — the caller reports the
 // path unavailable rather than opening the stream on a buffer of zeros.
 func TestSynthNotifyChimeRefusesTuplesItCannotEncode(t *testing.T) {
+	resetSeatForTest(t)
 	for _, info := range []vi.AudioInfo{
 		{Ready: 1, Format: vi.AudioFmtNone, Rate: 7, Channels: 2}, // no negotiated format
 		{Ready: 1, Format: 1, Rate: 7, Channels: 2},               // U8: not a stream format
@@ -1061,6 +1096,7 @@ func TestSynthNotifyChimeRefusesTuplesItCannotEncode(t *testing.T) {
 // silence, and mono duplicated across every channel — the f32 readback is
 // the same bytes the device would get.
 func TestSynthNotifyChimeEnvelopeAndChannels(t *testing.T) {
+	resetSeatForTest(t)
 	pcm := synthNotifyChime(vi.AudioInfo{Ready: 1, Format: vi.AudioFmtFloat, Rate: 7, Channels: 2})
 	frames := len(pcm) / 8
 	first := f32le(pcm[0:4])
@@ -1107,6 +1143,7 @@ func TestSynthNotifyChimeEnvelopeAndChannels(t *testing.T) {
 // The synth's two approximations: the sine's known anchors, and the decay's
 // endpoints (e^-x lands at 1 for x<=0 and at silence past the tail).
 func TestChimeApproximationsHitTheirAnchors(t *testing.T) {
+	resetSeatForTest(t)
 	for _, p := range []struct {
 		x, want float64
 	}{
@@ -1142,6 +1179,7 @@ func TestChimeApproximationsHitTheirAnchors(t *testing.T) {
 // a set-but-absent disk keeps the share path. The resolver seam is stubbed;
 // the file seams still see whatever path the resolution chose.
 func TestNotifyHistoryFollowsTheDataRoot(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	notifyDataRoot = func(f settings.File) (string, bool) { return "/disk", false }
 	var reads, writes []string
@@ -1170,6 +1208,7 @@ func TestNotifyHistoryFollowsTheDataRoot(t *testing.T) {
 }
 
 func TestNotifyHistoryDataRootFallback(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	notifyDataRoot = func(f settings.File) (string, bool) { return "/host", true }
 	var readPath string

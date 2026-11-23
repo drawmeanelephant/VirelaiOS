@@ -29,8 +29,8 @@ func saveA11yState() func() {
 }
 
 func TestSeatOutlineRailNamesLiveTabs(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveA11yState()()
-	tabs = TabStrip{}
 	tabs.OpenTab(3, "Calc")
 	tabs.OpenTab(4, "Edit")
 	out := seatA11yOutline()
@@ -62,8 +62,8 @@ func TestSeatOutlineRailNamesLiveTabs(t *testing.T) {
 }
 
 func TestSeatOutlineLauncherOwnsTheKeys(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveA11yState()()
-	tabs = TabStrip{}
 	tabs.OpenTab(3, "Calc")
 	launch = launcherState{
 		open: true,
@@ -114,6 +114,7 @@ func TestSeatOutlineLauncherOwnsTheKeys(t *testing.T) {
 }
 
 func TestSeatOutlinePaletteFace(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveA11yState()()
 	launch = launcherState{
 		open:    true,
@@ -137,6 +138,7 @@ func TestSeatOutlinePaletteFace(t *testing.T) {
 }
 
 func TestSeatOutlineEmptyAndErrorRows(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveA11yState()()
 	launch = launcherState{open: true, filter: "zz"}
 	out := seatA11yOutline()
@@ -154,6 +156,7 @@ func TestSeatOutlineEmptyAndErrorRows(t *testing.T) {
 }
 
 func TestSeatOutlineToasts(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveA11yState()()
 	notifyQueue = []notifyToast{
 		{tabID: 3, text: "older"},
@@ -170,8 +173,8 @@ func TestSeatOutlineToasts(t *testing.T) {
 }
 
 func TestSeatOutlineCurtainCoversEverything(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveA11yState()()
-	tabs = TabStrip{}
 	tabs.OpenTab(3, "Calc")
 	notifyQueue = []notifyToast{{tabID: 3, text: "secret"}}
 	lockActive = true
@@ -198,6 +201,7 @@ func TestSeatOutlineCurtainCoversEverything(t *testing.T) {
 }
 
 func TestSeatA11yPublishDedupAndSeam(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveA11yState()()
 	var gotPath string
 	var gotBody []byte
@@ -211,7 +215,6 @@ func TestSeatA11yPublishDedupAndSeam(t *testing.T) {
 	}
 	defer func() { seatA11yWrite = old }()
 
-	tabs = TabStrip{}
 	tabs.OpenTab(3, "Calc")
 	seatA11yPublish(false)
 	if writes != 0 {

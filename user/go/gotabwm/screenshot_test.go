@@ -107,6 +107,7 @@ func (e *shotEnv) hasLog(sub string) bool {
 // full-width rect bands at the agentd card's own 12 rows (720 is a
 // multiple of it), a window rect on its own row width.
 func TestShotBandRows(t *testing.T) {
+	resetSeatForTest(t)
 	if got := shotBandRows(1280); got != 12 {
 		t.Fatalf("shotBandRows(1280) = %d want 12 (61,440 B under the 64 KiB cap)", got)
 	}
@@ -122,6 +123,7 @@ func TestShotBandRows(t *testing.T) {
 // band and every word is the opaque BGRX→ARGB conversion of the pixel
 // the coordinate named.
 func TestShotCaptureBandsAndConverts(t *testing.T) {
+	resetSeatForTest(t)
 	e := &shotEnv{}
 	defer e.swapShotEnv(t)()
 	pix, why := shotCapture(10, 20, 40, 30)
@@ -144,6 +146,7 @@ func TestShotCaptureBandsAndConverts(t *testing.T) {
 // 1280x720 frame lands in exactly 60 twelve-row bands and every word
 // converts — the ~3.6 MB buffer the card names its memory bound.
 func TestShotCaptureFullFrameBanding(t *testing.T) {
+	resetSeatForTest(t)
 	e := &shotEnv{}
 	defer e.swapShotEnv(t)()
 	pix, why := shotCapture(0, 0, vi.ScanoutWidth, vi.ScanoutHeight)
@@ -170,6 +173,7 @@ func TestShotCaptureFullFrameBanding(t *testing.T) {
 // TestShotCaptureRefusals: a rect the scanout cannot frame and a read
 // the kernel refused are named, never silently dropped.
 func TestShotCaptureRefusals(t *testing.T) {
+	resetSeatForTest(t)
 	e := &shotEnv{}
 	defer e.swapShotEnv(t)()
 	for _, r := range [][4]uint32{{0, 0, 0, 10}, {0, 0, 10, 0}, {0, 0, 1281, 1}, {0, 720, 1, 1}} {
@@ -188,6 +192,7 @@ func TestShotCaptureRefusals(t *testing.T) {
 // shape, the marker carries path+mode+geometry, and the toast names the
 // file.
 func TestShotFullChordPublishes(t *testing.T) {
+	resetSeatForTest(t)
 	e := &shotEnv{mount: true, now: 1761234567}
 	defer e.swapShotEnv(t)()
 	shotChord(false)
@@ -272,6 +277,7 @@ func stdPNGDecode(data []byte) (*webrender.Image, error) {
 // focused tab's applied rect — here a real split pane, so the read
 // coordinates and the PNG shape are the pane's, not the frame's.
 func TestShotWindowChordUsesFocusedRect(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	e := &shotEnv{mount: true, now: 42}
 	defer e.swapShotEnv(t)()
@@ -337,10 +343,10 @@ func paneRectOf(id uint32) (Rect, bool) {
 // TestShotWindowChordRefusesUnfocusedStrip: the window chord on an
 // empty strip names no_window — and publishes nothing.
 func TestShotWindowChordRefusesUnfocusedStrip(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	e := &shotEnv{mount: true, now: 7}
 	defer e.swapShotEnv(t)()
-	tabs = TabStrip{}
 	shotChord(true)
 	if len(e.writes) != 0 || len(e.reads) != 0 {
 		t.Fatalf("no-window refusal still wrote: writes=%v reads=%v", e.writes, e.reads)
@@ -354,6 +360,7 @@ func TestShotWindowChordRefusesUnfocusedStrip(t *testing.T) {
 // reports its own name on the marker AND the toast, and nothing is
 // ever published on a refusal.
 func TestShotRefusalsAreNamed(t *testing.T) {
+	resetSeatForTest(t)
 	for _, c := range []struct {
 		name  string
 		mount bool
@@ -390,6 +397,7 @@ func TestShotRefusalsAreNamed(t *testing.T) {
 // a ctrl+shift+3 WM_KEY reaches shotChord through handleWmKey's
 // registry walk, the end-to-end the gate re-runs live.
 func TestShotChordDispatchesFromRegistry(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	e := &shotEnv{mount: true, now: 5}
 	defer e.swapShotEnv(t)()

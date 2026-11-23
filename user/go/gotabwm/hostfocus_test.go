@@ -50,6 +50,7 @@ func focusRecorder(t *testing.T, ok bool) *[]uint32 {
 }
 
 func TestHostFocusClickThroughFocusesTab(t *testing.T) {
+	resetSeatForTest(t)
 	f := newHostintFixture(t, strings.Repeat("d4", 32))
 	focused := focusRecorder(t, true)
 	hostintSeatInit()
@@ -70,6 +71,7 @@ func TestHostFocusClickThroughFocusesTab(t *testing.T) {
 }
 
 func TestHostFocusDeadSenderIsGone(t *testing.T) {
+	resetSeatForTest(t)
 	// The tab closed between banner and click: focusHosted's false is
 	// the named `gone` refusal, and the record is still consumed.
 	f := newHostintFixture(t, strings.Repeat("d4", 32))
@@ -92,6 +94,7 @@ func TestHostFocusDeadSenderIsGone(t *testing.T) {
 }
 
 func TestHostFocusSenderZeroIsBadRecord(t *testing.T) {
+	resetSeatForTest(t)
 	// A signed sender-0 NFOCUS cannot be produced by a lawful encoder —
 	// the header is the whole payload, so its absence is bad_record, not
 	// "focus nothing".
@@ -112,6 +115,7 @@ func TestHostFocusSenderZeroIsBadRecord(t *testing.T) {
 }
 
 func TestHostFocusLaneOffIsConsentDenied(t *testing.T) {
+	resetSeatForTest(t)
 	// NOTIFY_FOCUS rides lane_notify: an ARMED naming only clip leaves
 	// the record signed but unconsented — the engine's posture, before
 	// this file's route is ever asked.
@@ -132,6 +136,7 @@ func TestHostFocusLaneOffIsConsentDenied(t *testing.T) {
 }
 
 func TestHostFocusConsumeIsBounded(t *testing.T) {
+	resetSeatForTest(t)
 	// Like every inbound tag: ≤ 1 record per seat tick, in seq order —
 	// the second waits for the next Poll.
 	f := newHostintFixture(t, strings.Repeat("d4", 32))
