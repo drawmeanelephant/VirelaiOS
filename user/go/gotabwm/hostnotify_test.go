@@ -61,6 +61,7 @@ func (f *hostintFixture) drainNotify() {
 }
 
 func TestHostNotifyEmitsOnToast(t *testing.T) {
+	resetSeatForTest(t)
 	f := newNotifyFixture(t, strings.Repeat("c8", 32))
 	hostintSeatInit()
 	f.plantArmed(7, hostint.LaneNotify)
@@ -98,6 +99,7 @@ func TestHostNotifyEmitsOnToast(t *testing.T) {
 }
 
 func TestHostNotifyOneRecordPerTick(t *testing.T) {
+	resetSeatForTest(t)
 	f := newNotifyFixture(t, strings.Repeat("c8", 32))
 	hostintSeatInit()
 	f.plantArmed(7, hostint.LaneNotify)
@@ -127,6 +129,7 @@ func TestHostNotifyOneRecordPerTick(t *testing.T) {
 }
 
 func TestHostNotifyBackpressuredHolds(t *testing.T) {
+	resetSeatForTest(t)
 	f := newNotifyFixture(t, strings.Repeat("c8", 32))
 	hostintSeatInit()
 	f.plantArmed(7, hostint.LaneNotify)
@@ -159,6 +162,7 @@ func TestHostNotifyBackpressuredHolds(t *testing.T) {
 }
 
 func TestHostNotifyOverflowDropsOldest(t *testing.T) {
+	resetSeatForTest(t)
 	f := newNotifyFixture(t, strings.Repeat("c8", 32))
 	hostintSeatInit()
 	f.plantArmed(7, hostint.LaneNotify)
@@ -191,6 +195,7 @@ func TestHostNotifyOverflowDropsOldest(t *testing.T) {
 }
 
 func TestHostNotifyLaneMaskGate(t *testing.T) {
+	resetSeatForTest(t)
 	f := newNotifyFixture(t, strings.Repeat("c8", 32))
 	hostintSeatInit()
 	// ARMED names only the clip lane — the consent posture has no notify bit.
@@ -211,6 +216,7 @@ func TestHostNotifyLaneMaskGate(t *testing.T) {
 }
 
 func TestHostNotifyBeforeArmed(t *testing.T) {
+	resetSeatForTest(t)
 	f := newNotifyFixture(t, strings.Repeat("c8", 32))
 	hostintSeatInit()
 	// The credential exists but no ARMED has verified: toasts stay local.
@@ -222,6 +228,7 @@ func TestHostNotifyBeforeArmed(t *testing.T) {
 }
 
 func TestHostNotifyDNDNeverCrosses(t *testing.T) {
+	resetSeatForTest(t)
 	f := newNotifyFixture(t, strings.Repeat("c8", 32))
 	hostintSeatInit()
 	f.plantArmed(7, hostint.LaneNotify)
@@ -241,6 +248,7 @@ func TestHostNotifyDNDNeverCrosses(t *testing.T) {
 }
 
 func TestHostNotifyRevokedMaskClearsStaging(t *testing.T) {
+	resetSeatForTest(t)
 	f := newNotifyFixture(t, strings.Repeat("c8", 32))
 	hostintSeatInit()
 	f.plantArmed(7, hostint.LaneNotify)
@@ -264,6 +272,7 @@ func TestHostNotifyRevokedMaskClearsStaging(t *testing.T) {
 }
 
 func TestHostNotifyTooLargeDropsEntryKeepsQueue(t *testing.T) {
+	resetSeatForTest(t)
 	// A staged toast over the wire's 512-byte payload bound draws
 	// payload_too_large — a defect of THAT entry, not a lane posture:
 	// the poll drops the head alone and the queue behind it survives.
@@ -294,6 +303,7 @@ func TestHostNotifyTooLargeDropsEntryKeepsQueue(t *testing.T) {
 }
 
 func TestHostNotifySeatToastSendsSenderZero(t *testing.T) {
+	resetSeatForTest(t)
 	// V2-D3: a seat-originated toast (tab id 0 — a host drop, an agent
 	// milestone, an action toast) crosses with sender 0. A click on its
 	// banner raises the runner's window and emits no record.

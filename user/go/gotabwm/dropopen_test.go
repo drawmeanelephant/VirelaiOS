@@ -54,6 +54,7 @@ func dropOpenFixture(t *testing.T, heads map[string][]byte) *[][2]string {
 }
 
 func TestDropNameOK(t *testing.T) {
+	resetSeatForTest(t)
 	for _, name := range []string{
 		"PHOTO.QOI", "odd_name_.qoi", "DUP-2.QOI", "A", "9.txt",
 		strings.Repeat("N", 48),
@@ -73,6 +74,7 @@ func TestDropNameOK(t *testing.T) {
 }
 
 func TestDropOpenRoutesBySniff(t *testing.T) {
+	resetSeatForTest(t)
 	f := newHostintFixture(t, strings.Repeat("b7", 32))
 	heads := map[string][]byte{
 		"/host/INBOX/PHOTO.QOI": []byte("qoif" + strings.Repeat("x", 12)),
@@ -107,6 +109,7 @@ func TestDropOpenRoutesBySniff(t *testing.T) {
 }
 
 func TestDropOpenNoHandlerFallsBackToGofiles(t *testing.T) {
+	resetSeatForTest(t)
 	f := newHostintFixture(t, strings.Repeat("b7", 32))
 	heads := map[string][]byte{
 		// An ELF payload: the binary type has no registered handler.
@@ -131,6 +134,7 @@ func TestDropOpenNoHandlerFallsBackToGofiles(t *testing.T) {
 }
 
 func TestDropOpenGoneWhenUnreadable(t *testing.T) {
+	resetSeatForTest(t)
 	f := newHostintFixture(t, strings.Repeat("b7", 32))
 	// The heads map is empty: every read is ENOENT — the file the record
 	// announced vanished between drop and click.
@@ -145,6 +149,7 @@ func TestDropOpenGoneWhenUnreadable(t *testing.T) {
 }
 
 func TestDropOpenNameRejected(t *testing.T) {
+	resetSeatForTest(t)
 	f := newHostintFixture(t, strings.Repeat("b7", 32))
 	execs := dropOpenFixture(t, map[string][]byte{
 		"/host/INBOX/A.QOI": []byte("qoif" + strings.Repeat("x", 12)),
@@ -170,6 +175,7 @@ func TestDropOpenNameRejected(t *testing.T) {
 // announced file through the mime table — and resolves the report on
 // both surfaces, like every action toast.
 func TestDropToastClickOpens(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	resetRefusal(t)
 	f := newHostintFixture(t, strings.Repeat("b7", 32))
@@ -212,6 +218,7 @@ func TestDropToastClickOpens(t *testing.T) {
 // Enter on the notify-center row runs the same dispatch — the row and the
 // toast share one binding, so a DND-held notice stays actionable.
 func TestDropCenterRowOpensHeldNotice(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	resetRefusal(t)
 	f := newHostintFixture(t, strings.Repeat("b7", 32))
@@ -256,6 +263,7 @@ func TestDropCenterRowOpensHeldNotice(t *testing.T) {
 // size too; a live entry that no longer matches refuses `changed` and
 // never reaches mime.Open.
 func TestDropToastClickRefusesSubstituted(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	resetRefusal(t)
 	f := newHostintFixture(t, strings.Repeat("b7", 32))
@@ -293,6 +301,7 @@ func TestDropToastClickRefusesSubstituted(t *testing.T) {
 // The same substitution through the center row's arm — one binding, one
 // check, whichever surface carries the click.
 func TestDropCenterRowRefusesSubstituted(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	resetRefusal(t)
 	f := newHostintFixture(t, strings.Repeat("b7", 32))
@@ -322,6 +331,7 @@ func TestDropCenterRowRefusesSubstituted(t *testing.T) {
 // An exec refusal keeps its serial marker and earns the M123a errno
 // toast — the dispatch reported what the kernel answered.
 func TestDropOpenExecRefusedToasts(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	resetRefusal(t)
 	f := newHostintFixture(t, strings.Repeat("b7", 32))

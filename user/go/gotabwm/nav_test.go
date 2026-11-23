@@ -58,6 +58,7 @@ func declare(t *testing.T, id uint32, path string) bool {
 // classic ring bug — it would silently make back-step useless exactly when
 // a user has a long history.
 func TestNavHistoryIsBoundedAndEvictsOldest(t *testing.T) {
+	resetSeatForTest(t)
 	resetNav()
 	tabs.OpenTab(5, "Files")
 	for i := 0; i < navHistMax+6; i++ {
@@ -124,6 +125,7 @@ func itoa(i int) string {
 // string it was handed — otherwise poll returns a path the app never
 // declared and the round trip is a lie.
 func TestNavPathTruncatesToTheWireField(t *testing.T) {
+	resetSeatForTest(t)
 	resetNav()
 	tabs.OpenTab(5, "Files")
 	long := "/host/this/path/is/far/longer/than/twenty/four"
@@ -148,6 +150,7 @@ func TestNavPathTruncatesToTheWireField(t *testing.T) {
 // re-announces its path on every repaint must not grow the history, and
 // must not be reported as a change (which is what silences the marker).
 func TestNavDeclareDedupesConsecutive(t *testing.T) {
+	resetSeatForTest(t)
 	resetNav()
 	tabs.OpenTab(5, "Files")
 	if !declare(t, 5, "/host/a") {
@@ -179,6 +182,7 @@ func TestNavDeclareDedupesConsecutive(t *testing.T) {
 // After stepping back, a NEW declare must drop the forward stack: the user
 // navigated somewhere else, so the entries ahead are unreachable.
 func TestNavDeclareDropsForwardStack(t *testing.T) {
+	resetSeatForTest(t)
 	resetNav()
 	tabs.OpenTab(5, "Files")
 	declare(t, 5, "/host/a")
@@ -204,6 +208,7 @@ func TestNavDeclareDropsForwardStack(t *testing.T) {
 // The pending slot is ONE deep and poll-once: the first poll drains it and
 // the second finds nothing.
 func TestPendingNavIsPollOnce(t *testing.T) {
+	resetSeatForTest(t)
 	resetNav()
 	tabs.OpenTab(5, "Files")
 	declare(t, 5, "/host/a")
@@ -224,6 +229,7 @@ func TestPendingNavIsPollOnce(t *testing.T) {
 // A target queued for one window is never handed to another. This is the
 // property that keeps two hosted tabs from stealing each other's back/forward.
 func TestPendingNavIsIdMatched(t *testing.T) {
+	resetSeatForTest(t)
 	resetNav()
 	tabs.OpenTab(5, "Files")
 	tabs.OpenTab(6, "Other")
@@ -246,6 +252,7 @@ func TestPendingNavIsIdMatched(t *testing.T) {
 // the id would otherwise receive a dead tab's navigation. Zig leaks this
 // slot; GOTABWM clears it at the strip's one close choke point.
 func TestClosedTabDropsItsQueuedTarget(t *testing.T) {
+	resetSeatForTest(t)
 	resetNav()
 	tabs.OpenTab(5, "Files")
 	declare(t, 5, "/host/a")
@@ -266,6 +273,7 @@ func TestClosedTabDropsItsQueuedTarget(t *testing.T) {
 // queues, and the poll ARM hands the target to the ack title — the exact
 // bytes vi.PollNav reads on the client.
 func TestNavPollArmCarriesTargetInAckTitle(t *testing.T) {
+	resetSeatForTest(t)
 	resetNav()
 	tabs.OpenTab(5, "Files")
 	tabs.FocusTab(5)
@@ -317,6 +325,7 @@ func TestNavPollArmCarriesTargetInAckTitle(t *testing.T) {
 // An unknown window id is refused by both arms, and refused HONESTLY: no
 // history recorded, and applied=0 so the client sees the refusal.
 func TestNavArmsRefuseUnknownTab(t *testing.T) {
+	resetSeatForTest(t)
 	resetNav()
 	if applyRPC(navRPC(vi.WmRpcKindNavDeclare, 99, "/host/ghost")) {
 		t.Fatal("nav-declare accepted a tab that is not on the strip")
@@ -332,6 +341,7 @@ func TestNavArmsRefuseUnknownTab(t *testing.T) {
 // A refused poll (nothing queued) must not leave a payload behind for the
 // next reply.
 func TestRefusedPollLeavesNoPayload(t *testing.T) {
+	resetSeatForTest(t)
 	resetNav()
 	tabs.OpenTab(5, "Files")
 	if applyRPC(navRPC(vi.WmRpcKindNavPoll, 5, "")) {
@@ -346,6 +356,7 @@ func TestRefusedPollLeavesNoPayload(t *testing.T) {
 // history — including leaving an ALREADY QUEUED target alone, so a refused
 // step cannot swallow what an accepted step is waiting to deliver.
 func TestNavChordIsFocusedTabAndSilentAtTheEnds(t *testing.T) {
+	resetSeatForTest(t)
 	resetNav()
 	tabs.OpenTab(5, "Files")
 	tabs.OpenTab(6, "Other")
@@ -395,6 +406,7 @@ func TestNavChordIsFocusedTabAndSilentAtTheEnds(t *testing.T) {
 
 // The bounds themselves are the wire's, not arbitrary numbers.
 func TestNavBoundsMatchTheWire(t *testing.T) {
+	resetSeatForTest(t)
 	if navPathMax != 24 {
 		t.Fatalf("navPathMax = %d, want the 24-byte WM_RPC title field", navPathMax)
 	}
@@ -409,6 +421,7 @@ func TestNavBoundsMatchTheWire(t *testing.T) {
 // lands mid round trip: observed go-wm-tabs run 08 lost the queued target
 // when the countdown fired four ticks after the chord.
 func TestNavActivityReArmsDemoClose(t *testing.T) {
+	resetSeatForTest(t)
 	resetNav()
 	defer func() { hostTicksLeft = 0 }()
 	tabs.OpenTab(5, "Files")

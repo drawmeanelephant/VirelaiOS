@@ -9,6 +9,7 @@ import "testing"
 // --- Zoom -----------------------------------------------------------------
 
 func TestZoomFocusedRefusals(t *testing.T) {
+	resetSeatForTest(t)
 	var s TabStrip
 	openNTabs(&s, 2)
 	// No tree: the focused tab holds no leaf.
@@ -43,6 +44,7 @@ func TestZoomFocusedRefusals(t *testing.T) {
 }
 
 func TestZoomAutoRestoreOnMutations(t *testing.T) {
+	resetSeatForTest(t)
 	// Every tree mutation restores the zoom — the zoomed flag clears on
 	// the state machine itself so a parked pane is never re-laid under.
 	cases := []struct {
@@ -92,6 +94,7 @@ func TestZoomAutoRestoreOnMutations(t *testing.T) {
 // --- Drag into a pane -----------------------------------------------------
 
 func TestLeafHitAt(t *testing.T) {
+	resetSeatForTest(t)
 	var s TabStrip
 	openNTabs(&s, 2)
 	// No tree: nothing is a drop target.
@@ -127,6 +130,7 @@ func TestLeafHitAt(t *testing.T) {
 }
 
 func TestPaneDropSwapAndDisplace(t *testing.T) {
+	resetSeatForTest(t)
 	var s TabStrip
 	openNTabs(&s, 3)
 	if !s.SplitPane(SplitVert, scanoutW, scanoutH) {
@@ -163,6 +167,7 @@ func TestPaneDropSwapAndDisplace(t *testing.T) {
 // --- MRU focus ring -------------------------------------------------------
 
 func TestMRURingOrderAndBound(t *testing.T) {
+	resetSeatForTest(t)
 	var s TabStrip
 	openNTabs(&s, 9) // ids 4..12 — one more than mruMax
 	// Focus 5..12 in order: the ring holds the eight most recent.
@@ -194,6 +199,7 @@ func TestMRURingOrderAndBound(t *testing.T) {
 }
 
 func TestFocusRestoreOnCloseMRU(t *testing.T) {
+	resetSeatForTest(t)
 	var s TabStrip
 	openNTabs(&s, 3) // 4,5,6; focus starts on 4 (ring: [4])
 	if !s.FocusTab(5) || !s.FocusTab(6) || !s.FocusTab(4) {
@@ -218,6 +224,7 @@ func TestFocusRestoreOnCloseMRU(t *testing.T) {
 }
 
 func TestFocusRestoreFallback(t *testing.T) {
+	resetSeatForTest(t)
 	// An empty ring (strip seeded without focus events on the
 	// survivors) falls back to the rail-index neighbour.
 	var s TabStrip
@@ -236,6 +243,7 @@ func TestFocusRestoreFallback(t *testing.T) {
 }
 
 func TestFocusRecentOnUnsplit(t *testing.T) {
+	resetSeatForTest(t)
 	var s TabStrip
 	openNTabs(&s, 2)
 	if !s.FocusTab(5) {

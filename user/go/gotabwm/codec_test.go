@@ -50,6 +50,7 @@ func stripToTabcodec(s TabStrip) tabcodec.State {
 // guest encoder matches tabcodec.Encode for Prefs=0 and in-range focus
 // (this fixture: Seq=1, Prefs=0).
 func TestSessionRoundTripTabcodec(t *testing.T) {
+	resetSeatForTest(t)
 	if FlagPinned != tabcodec.FlagPinned {
 		t.Fatalf("FlagPinned = %#x tabcodec.FlagPinned = %#x", FlagPinned, tabcodec.FlagPinned)
 	}
@@ -90,6 +91,7 @@ func TestSessionRoundTripTabcodec(t *testing.T) {
 }
 
 func TestApplyStateRestoresTitlesPinActive(t *testing.T) {
+	resetSeatForTest(t)
 	s := pinnedCalcNotepad(t)
 	raw, _, ok := s.encodeTabsV2(7)
 	if !ok {
@@ -124,6 +126,7 @@ func TestApplyStateRestoresTitlesPinActive(t *testing.T) {
 }
 
 func TestApplyPreservesEmptyBin(t *testing.T) {
+	resetSeatForTest(t)
 	st := tabcodec.State{Tabs: []tabcodec.Tab{{Title: "Calc"}}}
 	raw, err := tabcodec.Encode(st)
 	if err != nil {
@@ -153,6 +156,7 @@ func TestApplyPreservesEmptyBin(t *testing.T) {
 // BOTH directions — the guest must write it where tabcodec reads it, and it
 // must come back when a writer set it.
 func TestFrozenBadgeRoundTripsTabcodec(t *testing.T) {
+	resetSeatForTest(t)
 	if FlagFrozen != tabcodec.FlagFrozen {
 		t.Fatalf("FlagFrozen = %#x tabcodec.FlagFrozen = %#x", FlagFrozen, tabcodec.FlagFrozen)
 	}
@@ -225,6 +229,7 @@ func TestFrozenBadgeRoundTripsTabcodec(t *testing.T) {
 }
 
 func TestCorruptSessionFailsClosed(t *testing.T) {
+	resetSeatForTest(t)
 	cases := [][]byte{
 		{},
 		{2},

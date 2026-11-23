@@ -180,6 +180,7 @@ func (f *agentFixture) count(sub string) int {
 // nothing ever reaches the log — receipts may even exist; they are not
 // the seat's to read.
 func TestAgentWatchFlagsOffByteSilent(t *testing.T) {
+	resetSeatForTest(t)
 	f := newAgentFixture(t, "")
 	f.stage("RCPT-b0000001-00000001", "devin", "session", `{"event":"open"}`, "ok")
 	agentSeatInit()
@@ -205,6 +206,7 @@ func TestAgentWatchFlagsOffByteSilent(t *testing.T) {
 // Armed with an empty lane: the armed marker, then the catch-up summary
 // on the first poll — the "the lane loop actually ran" anchor.
 func TestAgentWatchArmedEmptyLane(t *testing.T) {
+	resetSeatForTest(t)
 	f := newAgentFixture(t, agentTestKey)
 	agentSeatInit()
 	if !f.has("gotabwm: agent watch") {
@@ -226,6 +228,7 @@ func TestAgentWatchArmedEmptyLane(t *testing.T) {
 
 // A live session open lights the badge; the close takes it back off.
 func TestAgentWatchSessionIndicator(t *testing.T) {
+	resetSeatForTest(t)
 	f := newAgentFixture(t, agentTestKey)
 	agentSeatInit()
 	agentSeatTick() // catch-up on an empty lane
@@ -259,6 +262,7 @@ func TestAgentWatchSessionIndicator(t *testing.T) {
 
 // The three card milestones toast only on verified ok+exit0 receipts.
 func TestAgentWatchMilestones(t *testing.T) {
+	resetSeatForTest(t)
 	f := newAgentFixture(t, agentTestKey)
 	agentSeatInit()
 	agentSeatTick()
@@ -293,6 +297,7 @@ func TestAgentWatchMilestones(t *testing.T) {
 // milestone: nonzero exit, refused result, and the intent receipt (no
 // exit_status at all) all stay off the strip.
 func TestAgentWatchNoMilestoneOnFailure(t *testing.T) {
+	resetSeatForTest(t)
 	f := newAgentFixture(t, agentTestKey)
 	agentSeatInit()
 	agentSeatTick()
@@ -320,6 +325,7 @@ func TestAgentWatchNoMilestoneOnFailure(t *testing.T) {
 // state — an open still standing lights the badge — but never toasts,
 // and the summary names the verified/bad split.
 func TestAgentWatchCatchUpNoToasts(t *testing.T) {
+	resetSeatForTest(t)
 	f := newAgentFixture(t, agentTestKey)
 	f.stage("RCPT-b0000001-00000001", "devin", "session", `{"event":"open"}`, "ok")
 	f.stage("RCPT-b0000001-00000002", "devin", "gosh.run",
@@ -360,6 +366,7 @@ func TestAgentWatchCatchUpNoToasts(t *testing.T) {
 // A forged live receipt is named once and moves nothing — the MAC is
 // the gate, so a planted "session close" cannot hide a live session.
 func TestAgentWatchForgedReceiptRefused(t *testing.T) {
+	resetSeatForTest(t)
 	f := newAgentFixture(t, agentTestKey)
 	agentSeatInit()
 	agentSeatTick()
@@ -390,6 +397,7 @@ func TestAgentWatchForgedReceiptRefused(t *testing.T) {
 // filename must recompute from the receipt's own epoch+seq or the file
 // is refused like any other planting, milestones and toasts included.
 func TestAgentWatchReplayRefused(t *testing.T) {
+	resetSeatForTest(t)
 	f := newAgentFixture(t, agentTestKey)
 	agentSeatInit()
 	agentSeatTick()
@@ -421,6 +429,7 @@ func TestAgentWatchReplayRefused(t *testing.T) {
 // A transient listing error keeps the catch-up open and stays silent —
 // the lane announces itself once it actually lists.
 func TestAgentWatchListErrorSilent(t *testing.T) {
+	resetSeatForTest(t)
 	f := newAgentFixture(t, agentTestKey)
 	f.listRC = -1
 	agentSeatInit()
@@ -438,6 +447,7 @@ func TestAgentWatchListErrorSilent(t *testing.T) {
 // --- the small units --------------------------------------------------------
 
 func TestAgentRcptName(t *testing.T) {
+	resetSeatForTest(t)
 	good := "RCPT-b0000001-00000002"
 	if !agentRcptName(good) {
 		t.Fatalf("%q refused", good)
@@ -458,6 +468,7 @@ func TestAgentRcptName(t *testing.T) {
 }
 
 func TestAgentMilestoneVocabulary(t *testing.T) {
+	resetSeatForTest(t)
 	args := func(cmd string, st int) string {
 		s := `{"cmd":` + jq(cmd) + `,"timeout_ms":10000`
 		if st >= 0 {
@@ -491,6 +502,7 @@ func TestAgentMilestoneVocabulary(t *testing.T) {
 }
 
 func TestAgentValueScanner(t *testing.T) {
+	resetSeatForTest(t)
 	line := []byte(`{"seq":1,"epoch":"b0000001","agent":"devin","verb":"gosh.run","args":{"cmd":"FLINT.ELF commit -m \"x\"","exit_status":0},"ts":1,"mono":2,"result":"ok"}`)
 	if v, ok := agentField(line, "verb"); !ok || v != "gosh.run" {
 		t.Fatalf("verb = %q ok=%v", v, ok)

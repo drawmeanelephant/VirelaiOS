@@ -6,6 +6,7 @@ import "testing"
 // exactly once per episode, and re-arms only through arm() — a painted
 // frame that failed to present, or an unpainted pass, never claims it.
 func TestPresentReceiptFiresOncePerEpisode(t *testing.T) {
+	resetSeatForTest(t)
 	var r presentReceipt
 	for _, p := range [][2]bool{{false, true}, {true, false}, {false, false}} {
 		if r.feed(p[0], p[1]) {

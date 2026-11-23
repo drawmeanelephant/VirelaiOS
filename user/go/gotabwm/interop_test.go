@@ -12,6 +12,7 @@ import (
 // The gate greps these exact strings; a drift is a host-test failure rather
 // than a live run that silently asserts nothing.
 func TestInteropMarkerShapes(t *testing.T) {
+	resetSeatForTest(t)
 	cases := []struct{ got, want string }{
 		{MarkerRpcDeclare, "gotabwm: rpc declare id="},
 		{MarkerRpcRaise, "gotabwm: rpc raise id="},
@@ -67,6 +68,7 @@ func TestInteropMarkerShapes(t *testing.T) {
 // record left that this boot hosted anything. A request the seat refuses must
 // not latch it, or a boot that hosted nothing could still claim the beat.
 func TestDogfoodHostedLatch(t *testing.T) {
+	resetSeatForTest(t)
 	savedChrome := configureHostedChrome
 	configureHostedChrome = func(uint32) bool { return true }
 	defer func() { configureHostedChrome = savedChrome }()
@@ -101,6 +103,7 @@ func TestDogfoodHostedLatch(t *testing.T) {
 }
 
 func TestHostedChromePrecedesTabPublication(t *testing.T) {
+	resetSeatForTest(t)
 	savedChrome, savedTabs := configureHostedChrome, tabs
 	savedHosted, savedLatch, savedTicks := hostedApp, dogfoodHosted, hostTicksLeft
 	savedStep, savedHold := stripStep, stripHoldLeft
@@ -136,9 +139,9 @@ func TestHostedChromePrecedesTabPublication(t *testing.T) {
 
 // Set-title is a strip mutation, not a rename of executable identity.
 func TestApplySetTitlePreservesTabState(t *testing.T) {
+	resetSeatForTest(t)
 	saved := tabs
 	defer func() { tabs = saved }()
-	tabs = TabStrip{}
 	if !tabs.OpenTab(4, "Notepad") {
 		t.Fatal("OpenTab")
 	}
@@ -163,6 +166,7 @@ func TestApplySetTitlePreservesTabState(t *testing.T) {
 // The ack MUST set the reply bit and mirror id/seq, or an unmodified Zig app
 // ignores it and falls back to its legacy rect (the interop silently no-ops).
 func TestBuildReplyWire(t *testing.T) {
+	resetSeatForTest(t)
 	req := vi.WmRpc{Kind: vi.WmRpcKindDeclareFullscreen, ID: 7, Seq: 5, ReplyTo: 3}
 	req.SetTitle("Calc")
 	rep := buildReply(req, true, "", vi.WmRpcPadBound, 0x1122334455667788)
@@ -202,6 +206,7 @@ func TestBuildReplyWire(t *testing.T) {
 // A hosted app is closed after hostTicks ticks - the budget the composite loop
 // counts down.
 func TestHostTickBudget(t *testing.T) {
+	resetSeatForTest(t)
 	if hostTicks <= 0 {
 		t.Fatalf("hostTicks = %d: an app would never be closed", hostTicks)
 	}
@@ -225,13 +230,13 @@ func TestHostTickBudget(t *testing.T) {
 // The seat must not repaint the blank desktop while a tab is hosted, or the
 // compose-N target (above the kernel's window layer) would overpaint the client.
 func TestHostedSuppressesBlankPaint(t *testing.T) {
+	resetSeatForTest(t)
 	savedTabs := tabs
 	savedHosted := hostedApp
 	defer func() {
 		tabs = savedTabs
 		hostedApp = savedHosted
 	}()
-	tabs = TabStrip{}
 	hostedApp = 0
 	if tabs.Count() != 0 {
 		t.Fatal("strip should start empty")
@@ -246,6 +251,7 @@ func TestHostedSuppressesBlankPaint(t *testing.T) {
 }
 
 func TestLateOpenTabClearsStripDone(t *testing.T) {
+	resetSeatForTest(t)
 	savedTabs := tabs
 	savedDone, savedTwo, savedOne, savedStep := stripDone, stripSawTwo, stripClosedOne, stripStep
 	defer func() {
@@ -287,6 +293,7 @@ func TestLateOpenTabClearsStripDone(t *testing.T) {
 }
 
 func TestAttachSyncsHostState(t *testing.T) {
+	resetSeatForTest(t)
 	savedTabs := tabs
 	savedHosted := hostedApp
 	savedTicks := hostTicksLeft
@@ -296,7 +303,6 @@ func TestAttachSyncsHostState(t *testing.T) {
 		hostTicksLeft = savedTicks
 	}()
 
-	tabs = TabStrip{}
 	hostedApp = 0
 	hostTicksLeft = 0
 	if !tabs.OpenTab(7, "attached") {
@@ -317,6 +323,7 @@ func TestAttachSyncsHostState(t *testing.T) {
 // so a drift is a host-test failure rather than a live run that asserts
 // nothing.
 func TestNotifyMarkerShapes(t *testing.T) {
+	resetSeatForTest(t)
 	cases := []struct{ got, want string }{
 		{MarkerNotify, "gotabwm: notify id="},
 		{MarkerNotifyDismiss, "gotabwm: notify dismiss id="},
@@ -335,6 +342,7 @@ func TestNotifyMarkerShapes(t *testing.T) {
 // applied=0 (so the client's own ack is the honest answer), and the queue
 // bound drops the oldest.
 func TestApplyRpcNotify(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	savedTabs, savedStep, savedHold := tabs, stripStep, stripHoldLeft
 	savedDone, savedCount := stripDone, hostTicksLeft
@@ -395,6 +403,7 @@ func TestApplyRpcNotify(t *testing.T) {
 }
 
 func TestSettingsSubscribeAndBroadcastDispatch(t *testing.T) {
+	resetSeatForTest(t)
 	savedTabs := tabs
 	savedLoad, savedSend := loadSettingsForBus, sendSettingsNotice
 	savedSubs := settingsSubscriptions
@@ -479,10 +488,10 @@ func countSettingsSubscriptions() int {
 // Closing a tab takes its toasts with it, through the same CloseTab choke
 // point every close path uses (the M79e clearPendingNav rule).
 func TestClosingTheSenderDropsItsToasts(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	savedTabs := tabs
 	t.Cleanup(func() { tabs = savedTabs })
-	tabs = TabStrip{}
 	tabs.OpenTab(4, "a")
 	tabs.OpenTab(5, "b")
 	notifyPush(4, "from four", 0)
@@ -500,9 +509,9 @@ func TestClosingTheSenderDropsItsToasts(t *testing.T) {
 // mailbox served one request per pass — 1 Hz when the tick is 1 s. Now the
 // pass drains past it and the per-pass count lands on the console once.
 func TestServiceRPCShortFrameDoesNotEndPass(t *testing.T) {
+	resetSeatForTest(t)
 	savedTabs := tabs
 	t.Cleanup(func() { tabs = savedTabs })
-	tabs = TabStrip{}
 	if !tabs.OpenTab(4, "x") {
 		t.Fatal("OpenTab")
 	}
@@ -554,6 +563,7 @@ func TestServiceRPCShortFrameDoesNotEndPass(t *testing.T) {
 // — and the toast's own click runs applyReopen, the same LIFO pop
 // ctrl+shift+t takes. A clean tab's close queues nothing.
 func TestCloseDirtyTabOffersReopenToast(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	resetNotify(t)
 	resetRefusal(t)
@@ -600,6 +610,7 @@ func TestCloseDirtyTabOffersReopenToast(t *testing.T) {
 // The 24-byte budget is hard: a long title truncates inside it, and a
 // clean close stays silent — no toast, no marker arm.
 func TestCloseDirtyTabToastTruncatesAndCleanStaysSilent(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	resetNotify(t)
 	resetRefusal(t)

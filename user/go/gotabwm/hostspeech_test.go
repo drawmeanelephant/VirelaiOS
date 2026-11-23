@@ -75,6 +75,7 @@ func (f *hostintFixture) speakRecords() []hostint.Record {
 }
 
 func TestHostspeechEmitsSignedRecord(t *testing.T) {
+	resetSeatForTest(t)
 	f := newHostintFixture(t, strings.Repeat("b7", 32))
 	s := newSayFixture(t)
 	hostintSeatInit()
@@ -108,6 +109,7 @@ func TestHostspeechEmitsSignedRecord(t *testing.T) {
 }
 
 func TestHostspeechRefusals(t *testing.T) {
+	resetSeatForTest(t)
 	cases := []struct {
 		name    string
 		setup   func(s *sayFixture)
@@ -148,6 +150,7 @@ func TestHostspeechRefusals(t *testing.T) {
 }
 
 func TestHostspeechOneMarkerPerTick(t *testing.T) {
+	resetSeatForTest(t)
 	f := newHostintFixture(t, strings.Repeat("b7", 32))
 	s := newSayFixture(t)
 	hostintSeatInit()
@@ -166,6 +169,7 @@ func TestHostspeechOneMarkerPerTick(t *testing.T) {
 }
 
 func TestHostspeechSilentWithoutLaneBit(t *testing.T) {
+	resetSeatForTest(t)
 	f := newHostintFixture(t, strings.Repeat("b7", 32))
 	s := newSayFixture(t)
 	hostintSeatInit()
@@ -186,6 +190,7 @@ func TestHostspeechSilentWithoutLaneBit(t *testing.T) {
 }
 
 func TestHostspeechBackpressuredMarkerWaits(t *testing.T) {
+	resetSeatForTest(t)
 	f := newHostintFixture(t, strings.Repeat("b7", 32))
 	s := newSayFixture(t)
 	hostintSeatInit()

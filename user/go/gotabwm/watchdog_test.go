@@ -99,6 +99,7 @@ func answer(id uint8) { watchdogNoteAnswer(id) }
 // TestWatchdogDiscoveryAsk: a fresh bound pane gets exactly one discovery
 // ask, on the first heartbeat that sees it.
 func TestWatchdogDiscoveryAsk(t *testing.T) {
+	resetSeatForTest(t)
 	f := &stateFixture{}
 	f.install(t)
 	w := &wdFixture{}
@@ -127,6 +128,7 @@ func TestWatchdogDiscoveryAsk(t *testing.T) {
 // pool; two consecutive unanswered asks wedge it, and the marker names
 // the window, the app and the round count.
 func TestWatchdogSweepRounds(t *testing.T) {
+	resetSeatForTest(t)
 	f := &stateFixture{}
 	f.install(t)
 	w := &wdFixture{}
@@ -163,6 +165,7 @@ func TestWatchdogSweepRounds(t *testing.T) {
 // prints the recovered line — silently, meaning no re-wedge on the answer
 // itself and the round counter reset.
 func TestWatchdogRecovery(t *testing.T) {
+	resetSeatForTest(t)
 	f := &stateFixture{}
 	f.install(t)
 	w := &wdFixture{}
@@ -189,6 +192,7 @@ func TestWatchdogRecovery(t *testing.T) {
 // not a modulo — a batched heartbeat step over a %10 boundary still earns
 // its round.
 func TestWatchdogTickCadence(t *testing.T) {
+	resetSeatForTest(t)
 	f := &stateFixture{}
 	f.install(t)
 	w := &wdFixture{}
@@ -219,6 +223,7 @@ func TestWatchdogTickCadence(t *testing.T) {
 // a below-threshold sample clears it, and losing focus freezes the
 // streak where it stood.
 func TestWatchdogBusyArm(t *testing.T) {
+	resetSeatForTest(t)
 	f := &stateFixture{}
 	f.install(t)
 	w := &wdFixture{}
@@ -270,6 +275,7 @@ func TestWatchdogBusyArm(t *testing.T) {
 // protocol is the liveness arm's problem — the busy sampler never scores
 // it, hot or not.
 func TestWatchdogBusyNeedsProtocolLess(t *testing.T) {
+	resetSeatForTest(t)
 	f := &stateFixture{}
 	f.install(t)
 	w := &wdFixture{}
@@ -294,6 +300,7 @@ func TestWatchdogBusyNeedsProtocolLess(t *testing.T) {
 // the test pins that a point inside a painted button names its verb and
 // a point off the strip names nothing.
 func TestWatchdogLayoutAndHit(t *testing.T) {
+	resetSeatForTest(t)
 	f := &stateFixture{}
 	f.install(t)
 	w := &wdFixture{}
@@ -338,6 +345,7 @@ func TestWatchdogLayoutAndHit(t *testing.T) {
 // TestWatchdogProbeGate: the startup probe reads the seat principal and
 // evaluates the kernel's kill-gate rule for hosted apps.
 func TestWatchdogProbeGate(t *testing.T) {
+	resetSeatForTest(t)
 	f := &stateFixture{}
 	f.install(t)
 	w := &wdFixture{}
@@ -373,6 +381,7 @@ func TestWatchdogProbeGate(t *testing.T) {
 // and names how=close, Force arms sys_kill on the bound pid — and a
 // refused kill is reported, never claimed.
 func TestWatchdogPressVerbs(t *testing.T) {
+	resetSeatForTest(t)
 	f := &stateFixture{}
 	f.install(t)
 	w := &wdFixture{}
@@ -435,6 +444,7 @@ func TestWatchdogPressVerbs(t *testing.T) {
 // TestWatchdogDropClears: teardown forgets every bit — a reused window id
 // is never born wedged, never holds a dead app's kill latch.
 func TestWatchdogDropClears(t *testing.T) {
+	resetSeatForTest(t)
 	f := &stateFixture{}
 	f.install(t)
 	w := &wdFixture{}
@@ -457,6 +467,7 @@ func TestWatchdogDropClears(t *testing.T) {
 // queue a restart. Pinned at the seatCrashStatus level: the window's
 // bound owner exits 137 and the row still does not read as a crash.
 func TestWatchdogKillSuppressesCrashArm(t *testing.T) {
+	resetSeatForTest(t)
 	f := &stateFixture{}
 	f.install(t)
 	w := &wdFixture{}
@@ -485,6 +496,7 @@ func TestWatchdogKillSuppressesCrashArm(t *testing.T) {
 // bottom pane's banner strip across the menu's top edge, so the overlap
 // is real pixels, not a mocked layer order.
 func TestWatchdogBannerPaintsUnderPowerMenu(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	f := &wdFixture{}
 	f.install(t)

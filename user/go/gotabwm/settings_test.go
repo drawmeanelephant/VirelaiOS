@@ -20,6 +20,7 @@ import (
 // The seat's markers are gate grep targets: the corrupt line names itself,
 // the good line carries the decoded seat.
 func TestSettingsMarkerShapes(t *testing.T) {
+	resetSeatForTest(t)
 	if MarkerSettingsBad != "gotabwm: settings bad" {
 		t.Fatalf("bad marker = %q", MarkerSettingsBad)
 	}
@@ -36,6 +37,7 @@ func TestSettingsMarkerShapes(t *testing.T) {
 // a11y rows leaves the boot default untouched, so the token probe go-wm-hid
 // pins keeps its shape.
 func TestLoadSettingsAppliesContrast(t *testing.T) {
+	resetSeatForTest(t)
 	savedLoad := loadSettingsFile
 	savedTheme, savedContrast := theme.Current, theme.Contrast()
 	savedValues := settingsBusValues
@@ -89,6 +91,7 @@ func TestLoadSettingsAppliesContrast(t *testing.T) {
 // M177a (#3142): a GOSET publish of a11y.contrast applies to the seat live
 // AND reaches its subscribers — the same door `theme=` already used.
 func TestSettingsPublishAppliesContrast(t *testing.T) {
+	resetSeatForTest(t)
 	savedTabs := tabs
 	savedLoad, savedSend := loadSettingsForBus, sendSettingsNotice
 	savedSubs := settingsSubscriptions

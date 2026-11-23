@@ -15,10 +15,10 @@ func progressRPC(id uint8, op uint8, pct int, label string) vi.WmRpc {
 }
 
 func TestProgressReportCreatesAndUpdatesOneRow(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	oldTabs := tabs
 	t.Cleanup(func() { tabs = oldTabs })
-	tabs = TabStrip{}
 	tabs.OpenTab(4, "Files")
 	if !applyRPC(progressRPC(4, 1, 10, "Copying")) {
 		t.Fatal("first report refused")
@@ -50,10 +50,10 @@ func TestProgressReportCreatesAndUpdatesOneRow(t *testing.T) {
 }
 
 func TestProgressReportRefusals(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	oldTabs := tabs
 	t.Cleanup(func() { tabs = oldTabs })
-	tabs = TabStrip{}
 	tabs.OpenTab(4, "Files")
 	if applyRPC(progressRPC(99, 1, 5, "ghost")) {
 		t.Fatal("an unknown sender's report applied")
@@ -73,11 +73,11 @@ func TestProgressReportRefusals(t *testing.T) {
 }
 
 func TestProgressRowCancelPushesKind22AndDropsTheRow(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	oldTabs := tabs
 	oldSend := sendProgressNotice
 	t.Cleanup(func() { tabs = oldTabs; sendProgressNotice = oldSend })
-	tabs = TabStrip{}
 	tabs.OpenTab(4, "Files")
 	var sentPid uint32
 	var sentFrame vi.WmRpc
@@ -112,11 +112,11 @@ func TestProgressRowCancelPushesKind22AndDropsTheRow(t *testing.T) {
 }
 
 func TestProgressRowCancelOnClosedSourceIsPlainDismiss(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	oldTabs := tabs
 	oldSend := sendProgressNotice
 	t.Cleanup(func() { tabs = oldTabs; sendProgressNotice = oldSend })
-	tabs = TabStrip{}
 	tabs.OpenTab(4, "Files")
 	sends := 0
 	sendProgressNotice = func(uint32, []byte) int64 { sends++; return 0 }
@@ -139,11 +139,11 @@ func TestProgressRowCancelOnClosedSourceIsPlainDismiss(t *testing.T) {
 }
 
 func TestProgressDoneRowDismissesWithoutCancel(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	oldTabs := tabs
 	oldSend := sendProgressNotice
 	t.Cleanup(func() { tabs = oldTabs; sendProgressNotice = oldSend })
-	tabs = TabStrip{}
 	tabs.OpenTab(4, "Files")
 	sends := 0
 	sendProgressNotice = func(uint32, []byte) int64 { sends++; return 0 }
@@ -160,10 +160,10 @@ func TestProgressDoneRowDismissesWithoutCancel(t *testing.T) {
 }
 
 func TestProgressRowsAreNotPersisted(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	oldTabs := tabs
 	t.Cleanup(func() { tabs = oldTabs })
-	tabs = TabStrip{}
 	tabs.OpenTab(4, "Files")
 	notifyPush(4, "a notice", 0)
 	applyRPC(progressRPC(4, 1, 50, "Copying"))
@@ -184,6 +184,7 @@ func TestProgressRowsAreNotPersisted(t *testing.T) {
 }
 
 func TestProgressSweepIsATriangleWave(t *testing.T) {
+	resetSeatForTest(t)
 	const w = 100
 	seg := w / 4
 	prev, _ := notifyProgressSweep(0, w)
@@ -207,10 +208,10 @@ func TestProgressSweepIsATriangleWave(t *testing.T) {
 }
 
 func TestProgressRowPaintsBarAndCancel(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	oldTabs := tabs
 	t.Cleanup(func() { tabs = oldTabs })
-	tabs = TabStrip{}
 	tabs.OpenTab(4, "Files")
 	notifyCenterOpen = true
 	applyRPC(progressRPC(4, 1, 50, "Copying"))

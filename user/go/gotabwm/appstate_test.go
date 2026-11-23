@@ -119,6 +119,7 @@ func saveReq(id uint32) vi.WmRpc {
 }
 
 func TestServeStateSaveStoresAndRepublishes(t *testing.T) {
+	resetSeatForTest(t)
 	f := &stateFixture{}
 	f.install(t)
 	l := &sessionWriteLog{}
@@ -153,6 +154,7 @@ func TestServeStateSaveStoresAndRepublishes(t *testing.T) {
 }
 
 func TestServeStateSaveRefusalsAreNamed(t *testing.T) {
+	resetSeatForTest(t)
 	cases := []struct {
 		name    string
 		setup   func(f *stateFixture, id uint32)
@@ -195,6 +197,7 @@ func TestServeStateSaveRefusalsAreNamed(t *testing.T) {
 }
 
 func TestServeStateRestoreHandsBackConsumeOnce(t *testing.T) {
+	resetSeatForTest(t)
 	f := &stateFixture{}
 	f.install(t)
 	l := &sessionWriteLog{}
@@ -236,6 +239,7 @@ func TestServeStateRestoreHandsBackConsumeOnce(t *testing.T) {
 }
 
 func TestAskCollectLifecycle(t *testing.T) {
+	resetSeatForTest(t)
 	f := &stateFixture{}
 	f.install(t)
 
@@ -296,6 +300,7 @@ func TestAskCollectLifecycle(t *testing.T) {
 }
 
 func TestCloseCapturesStateIntoLIFO(t *testing.T) {
+	resetSeatForTest(t)
 	f := &stateFixture{}
 	f.install(t)
 	l := &sessionWriteLog{}
@@ -324,6 +329,7 @@ func TestCloseCapturesStateIntoLIFO(t *testing.T) {
 }
 
 func TestReopenStagesPendingState(t *testing.T) {
+	resetSeatForTest(t)
 	f := &stateFixture{}
 	f.install(t)
 	l := &sessionWriteLog{}
@@ -371,6 +377,7 @@ func TestReopenStagesPendingState(t *testing.T) {
 }
 
 func TestClearAppStateDiesWithBinding(t *testing.T) {
+	resetSeatForTest(t)
 	f := &stateFixture{}
 	f.install(t)
 	stateAskPend[9] = true
@@ -392,6 +399,7 @@ func TestClearAppStateDiesWithBinding(t *testing.T) {
 // a save landing before its own restore request can only report defaults
 // and must not overwrite the recorded session.
 func TestAdoptedBlobSurvivesPreRestoreSave(t *testing.T) {
+	resetSeatForTest(t)
 	f := &stateFixture{}
 	f.install(t)
 
@@ -443,6 +451,7 @@ func TestAdoptedBlobSurvivesPreRestoreSave(t *testing.T) {
 }
 
 func TestSessionStateRoundTripDrops(t *testing.T) {
+	resetSeatForTest(t)
 	f := &stateFixture{}
 	f.install(t)
 

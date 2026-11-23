@@ -158,6 +158,7 @@ func dragCancelReq(id uint32) vi.WmRpc {
 // republishes the envelope under the target's own rendezvous path and
 // posts its Seq=0 delivery notice; the source gets the Seq=1 receipt.
 func TestDragDropRoutesPlainTextToGoEdit(t *testing.T) {
+	resetSeatForTest(t)
 	f := &dragFixture{}
 	f.install(t)
 
@@ -228,6 +229,7 @@ func TestDragDropRoutesPlainTextToGoEdit(t *testing.T) {
 
 // image/png rides the same leg to GOVIEW (opens=image).
 func TestDragDropRoutesPNGToGoView(t *testing.T) {
+	resetSeatForTest(t)
 	f := &dragFixture{}
 	f.install(t)
 
@@ -261,6 +263,7 @@ func TestDragDropRoutesPNGToGoView(t *testing.T) {
 // A release over a window whose opens= refuses the mime delivers nothing:
 // the kind-24 notice reports the undelivered ending and no staging moves.
 func TestDragRefuseDeliversNothing(t *testing.T) {
+	resetSeatForTest(t)
 	f := &dragFixture{}
 	f.install(t)
 
@@ -296,6 +299,7 @@ func TestDragRefuseDeliversNothing(t *testing.T) {
 
 // A release over chrome (the rail) is an undelivered ending too.
 func TestDragReleaseOverRailIsEmpty(t *testing.T) {
+	resetSeatForTest(t)
 	f := &dragFixture{}
 	f.install(t)
 	f.hostTab(7, "GOFILES.ELF", 0, RailHeight, 400, 300)
@@ -315,6 +319,7 @@ func TestDragReleaseOverRailIsEmpty(t *testing.T) {
 // A mismatched envelope mime, a missing stage, an unhosted source, and a
 // second arm while one is armed are all refusals named by marker.
 func TestDragBeginRefusalsAreNamed(t *testing.T) {
+	resetSeatForTest(t)
 	cases := []struct {
 		name    string
 		setup   func(f *dragFixture)
@@ -356,6 +361,7 @@ func TestDragBeginRefusalsAreNamed(t *testing.T) {
 
 // One armed drag at a time — a second begin while armed is refused.
 func TestDragBeginBusyRefuses(t *testing.T) {
+	resetSeatForTest(t)
 	f := &dragFixture{}
 	f.install(t)
 	f.hostTab(7, "GOFILES.ELF", 0, RailHeight, 400, 300)
@@ -374,6 +380,7 @@ func TestDragBeginBusyRefuses(t *testing.T) {
 // The source's own cancel aborts the armed drag; a different window's
 // cancel is refused.
 func TestDragCancelRequest(t *testing.T) {
+	resetSeatForTest(t)
 	f := &dragFixture{}
 	f.install(t)
 	f.hostTab(7, "GOFILES.ELF", 0, RailHeight, 400, 300)
@@ -405,6 +412,7 @@ func TestDragCancelRequest(t *testing.T) {
 // A dead source's armed drag ends silently with the binding teardown —
 // no ghost, no delivery, and its staging slot cannot leak to a reused id.
 func TestDragDiesWithTheSourceWindow(t *testing.T) {
+	resetSeatForTest(t)
 	f := &dragFixture{}
 	f.install(t)
 	f.hostTab(7, "GOFILES.ELF", 0, RailHeight, 400, 300)
@@ -427,6 +435,7 @@ func TestDragDiesWithTheSourceWindow(t *testing.T) {
 // opensAccepts is the admission vocabulary: a bare family word takes any
 // subtype under it; a subtype spelling takes only itself.
 func TestOpensAcceptsVocabulary(t *testing.T) {
+	resetSeatForTest(t)
 	cases := []struct {
 		opens []string
 		mime  string
@@ -452,6 +461,7 @@ func TestOpensAcceptsVocabulary(t *testing.T) {
 
 // A hosted tab with no manifest row (or no opens=) refuses by omission.
 func TestDragTargetWithoutOpensRefuses(t *testing.T) {
+	resetSeatForTest(t)
 	f := &dragFixture{}
 	f.install(t)
 	f.hostTab(7, "GOFILES.ELF", 0, RailHeight, 400, 300)
@@ -469,6 +479,7 @@ func TestDragTargetWithoutOpensRefuses(t *testing.T) {
 // the hover verdict — the pixels are the same plate primitives every
 // other seat popover uses.
 func TestDragGhostPaints(t *testing.T) {
+	resetSeatForTest(t)
 	scan := make([]byte, vi.ScanoutWidth*vi.ScanoutHeight*4)
 	if paintDragGhost(scan) != 0 {
 		t.Fatal("ghost painted with no armed drag")
@@ -491,6 +502,7 @@ func TestDragGhostPaints(t *testing.T) {
 // OUTBOX/ under a minted name, signs a DRAGOUT record on the outbox
 // lane, and receipts the source delivered (applied=0: no guest window).
 func TestDragOutEdgeHandsOffToHost(t *testing.T) {
+	resetSeatForTest(t)
 	f := &dragFixture{}
 	f.install(t)
 	h := newHostintFixture(t, strings.Repeat("b7", 32))
@@ -541,6 +553,7 @@ func TestDragOutEdgeHandsOffToHost(t *testing.T) {
 // Every boundary pixel counts as the edge: left column, top row, right
 // column, bottom row.
 func TestDragOutAtEdgeBounds(t *testing.T) {
+	resetSeatForTest(t)
 	for _, p := range [][2]uint32{{0, 400}, {400, 0},
 		{vi.ScanoutWidth - 1, 400}, {400, vi.ScanoutHeight - 1}} {
 		if !dragOutAtEdge(p[0], p[1]) {
@@ -559,6 +572,7 @@ func TestDragOutAtEdgeBounds(t *testing.T) {
 // silence holds (nothing staged, nothing emitted), the source gets the
 // cancel notice.
 func TestDragOutEdgeWithoutLaneAborts(t *testing.T) {
+	resetSeatForTest(t)
 	f := &dragFixture{}
 	f.install(t)
 	oldEng := hostintEngine
@@ -589,6 +603,7 @@ func TestDragOutEdgeWithoutLaneAborts(t *testing.T) {
 // An armed mask without lane_outbox: the emit refuses lane_disabled and
 // the staged payload is deleted before the abort — no partial file.
 func TestDragOutEdgeLaneDisabledCleansStage(t *testing.T) {
+	resetSeatForTest(t)
 	f := &dragFixture{}
 	f.install(t)
 	h := newHostintFixture(t, strings.Repeat("b7", 32))
@@ -622,6 +637,7 @@ func TestDragOutEdgeLaneDisabledCleansStage(t *testing.T) {
 // A name already parked in OUTBOX/ (an in-flight REQ export) gets the
 // landing suffix — the staged payload can never clobber it.
 func TestDragOutNameCollisionSuffixes(t *testing.T) {
+	resetSeatForTest(t)
 	f := &dragFixture{}
 	f.install(t)
 	h := newHostintFixture(t, strings.Repeat("b7", 32))

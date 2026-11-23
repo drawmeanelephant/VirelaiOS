@@ -78,6 +78,7 @@ func (f *hostintFixture) outboxRecords() []hostint.Record {
 }
 
 func TestHostoutboxEmitsSignedRecord(t *testing.T) {
+	resetSeatForTest(t)
 	f := newHostintFixture(t, strings.Repeat("b7", 32))
 	o := newObxFixture(t)
 	hostintSeatInit()
@@ -104,7 +105,7 @@ func TestHostoutboxEmitsSignedRecord(t *testing.T) {
 	if !ok || name != "HELLO.TXT" || size != 11 {
 		t.Fatalf("payload decode = %q %d %v", name, size, ok)
 	}
-	if !f.hasLog(MarkerHostintOutbox+"seq=1 name=HELLO.TXT size=11") {
+	if !f.hasLog(MarkerHostintOutbox + "seq=1 name=HELLO.TXT size=11") {
 		t.Fatalf("missing outbox marker: %v", f.logs)
 	}
 	if o.has("REQ-00000001") {
@@ -113,6 +114,7 @@ func TestHostoutboxEmitsSignedRecord(t *testing.T) {
 }
 
 func TestHostoutboxRefusals(t *testing.T) {
+	resetSeatForTest(t)
 	cases := []struct {
 		name    string
 		setup   func(o *obxFixture)
@@ -157,6 +159,7 @@ func TestHostoutboxRefusals(t *testing.T) {
 }
 
 func TestHostoutboxOneReqPerTick(t *testing.T) {
+	resetSeatForTest(t)
 	f := newHostintFixture(t, strings.Repeat("b7", 32))
 	o := newObxFixture(t)
 	hostintSeatInit()
@@ -177,6 +180,7 @@ func TestHostoutboxOneReqPerTick(t *testing.T) {
 }
 
 func TestHostoutboxSilentWithoutLaneBit(t *testing.T) {
+	resetSeatForTest(t)
 	f := newHostintFixture(t, strings.Repeat("b7", 32))
 	o := newObxFixture(t)
 	hostintSeatInit()
@@ -201,6 +205,7 @@ func TestHostoutboxSilentWithoutLaneBit(t *testing.T) {
 // refuses lane_disabled — the same answer an unclaimed tag always got.
 // (M127c bound the hook for real, so the test unbinds it explicitly.)
 func TestNotifyFocusDefaultsToLaneDisabled(t *testing.T) {
+	resetSeatForTest(t)
 	prev := hostfocusConsume
 	hostfocusConsume = nil
 	t.Cleanup(func() { hostfocusConsume = prev })
@@ -210,6 +215,7 @@ func TestNotifyFocusDefaultsToLaneDisabled(t *testing.T) {
 }
 
 func TestHostoutboxBackpressuredReqWaits(t *testing.T) {
+	resetSeatForTest(t)
 	f := newHostintFixture(t, strings.Repeat("b7", 32))
 	o := newObxFixture(t)
 	hostintSeatInit()

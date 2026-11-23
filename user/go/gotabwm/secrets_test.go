@@ -18,6 +18,7 @@ func stubSecrets(t *testing.T, list func(uint32, []byte) (int, int64), commit, d
 }
 
 func TestSecretAskLifecycleGrantAndDecline(t *testing.T) {
+	resetSeatForTest(t)
 	var commitID, dropID uint32
 	var log []string
 	oldLog := secretLog
@@ -79,6 +80,7 @@ func TestSecretAskLifecycleGrantAndDecline(t *testing.T) {
 }
 
 func TestSecretAskParseAndRefusalMarker(t *testing.T) {
+	resetSeatForTest(t)
 	a, ok := parseSecretAskLine("1\t41\t1000\tA.ELF\tk\tnew\tAPPS")
 	if !ok || a.replaces || a.apps != "APPS" {
 		t.Fatalf("valid line: ok=%v ask=%+v", ok, a)
@@ -123,6 +125,7 @@ func TestSecretAskParseAndRefusalMarker(t *testing.T) {
 // carries `replace` so the consent gesture is asked with the decisive
 // fact instead of presenting a clobber as an ordinary add.
 func TestSecretAskReplaceMarker(t *testing.T) {
+	resetSeatForTest(t)
 	var log []string
 	oldLog := secretLog
 	secretLog = func(s string) { log = append(log, s) }

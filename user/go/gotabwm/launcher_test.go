@@ -75,6 +75,7 @@ func countLaunchInk(scan []byte, x, y, w, h int, rgb uint32) int {
 }
 
 func TestLauncherPaintsLabelsQueryAndUnavailableState(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	launch = launcherState{
 		open: true, filter: "term", sel: 0,
@@ -153,6 +154,7 @@ func TestLauncherPaintsLabelsQueryAndUnavailableState(t *testing.T) {
 // strip owns the scanout's left edge for its full height. The centred panel
 // it replaces (x=240, content-height) fails every clause.
 func TestLauncherStripIsDockedToTheLeftEdge(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	if launchX != 0 || launchY != 0 {
 		t.Fatal("the strip must dock the scanout's top-left corner")
@@ -170,6 +172,7 @@ func TestLauncherStripIsDockedToTheLeftEdge(t *testing.T) {
 // composite exactly, transparent corners leave the Surface showing — the
 // real raster, not a rect-drawn stand-in (AC-B1).
 func TestLauncherHeaderCarriesTheEmblemRaster(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	// Other suites paint the chrome first and may have already spent the
 	// one-shot decode on the real (absent) share; the fresh launcherState
@@ -229,6 +232,7 @@ func TestLauncherHeaderCarriesTheEmblemRaster(t *testing.T) {
 // (catalog, query) refreshes to the identical order every time. The old
 // manifest-order filter leaves row 0 first — this fails on it.
 func TestLauncherRanksPrefixSubstringThenFuzzy(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	launch = launcherState{open: true}
 	launch.catalog = parseAppsTXT(
@@ -255,9 +259,9 @@ func TestLauncherRanksPrefixSubstringThenFuzzy(t *testing.T) {
 // TestLauncherEscapeClearsTheFilterFirst is AC-C4: with a non-empty filter
 // Esc edits the query, not the panel. Only an already-clear Esc dismisses.
 func TestLauncherEscapeClearsTheFilterFirst(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	stubLauncherWindows(t)
-	tabs = TabStrip{}
 	tabs.OpenTab(3, "Edit")
 	launch = launcherState{}
 	openLauncher()
@@ -280,9 +284,9 @@ func TestLauncherEscapeClearsTheFilterFirst(t *testing.T) {
 // TestLauncherChordDismissesAnOpenStrip is AC-A2: the same chord that
 // summons the strip dismisses it — one front door, both directions.
 func TestLauncherChordDismissesAnOpenStrip(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	stubLauncherWindows(t)
-	tabs = TabStrip{}
 	tabs.OpenTab(3, "Edit")
 	launch = launcherState{}
 	openLauncher()
@@ -296,6 +300,7 @@ func TestLauncherChordDismissesAnOpenStrip(t *testing.T) {
 }
 
 func TestLauncherHitRejectsHeaderPaddingAndUnpaintedRows(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	launch = launcherState{open: true}
 	for i := 0; i < appsMax; i++ {
@@ -341,6 +346,7 @@ func TestLauncherHitRejectsHeaderPaddingAndUnpaintedRows(t *testing.T) {
 }
 
 func TestGodMenuFocusRestoresOrLaunches(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	raises, closes, live := stubLauncherWindows(t)
 	tabs = TabStrip{}
@@ -403,10 +409,10 @@ func TestGodMenuFocusRestoresOrLaunches(t *testing.T) {
 }
 
 func TestLauncherPointerExecOnce(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	stubLauncherWindows(t)
 	launch = launcherState{}
-	tabs = TabStrip{}
 	prevPtrButtons, menuGesture = 0, false
 	openLauncher()
 	launch.catalog = parseAppsTXT("GOCALC.ELF | Calculator | c | dock=true\n")
@@ -450,6 +456,7 @@ func TestLauncherPointerExecOnce(t *testing.T) {
 }
 
 func TestLauncherSelectionBoundedAndScrolls(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	stubLauncherWindows(t)
 	launch = launcherState{open: true, sink: 9}
@@ -480,6 +487,7 @@ func TestLauncherSelectionBoundedAndScrolls(t *testing.T) {
 }
 
 func TestLauncherUnavailableAndSeatEntriesNeverExec(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	stubLauncherWindows(t)
 	openFile = func(string, uint32) (int64, int64) { return -1, -vi.ErrENOENT }
@@ -502,6 +510,7 @@ func TestLauncherUnavailableAndSeatEntriesNeverExec(t *testing.T) {
 }
 
 func TestLauncherFocusFailureNeverClaimsModalOwnership(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	stubLauncherWindows(t)
 	launch = launcherState{}
@@ -525,6 +534,7 @@ func TestLauncherFocusFailureNeverClaimsModalOwnership(t *testing.T) {
 // retry loop it used to enter stalled the seat for 240 ticks), names the
 // limit on the button, and raises the notice.
 func TestLauncherRefusesAtOnceWhenNoWindowIsLeft(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	stubLauncherWindows(t)
 	resetNotify(t)
@@ -552,6 +562,7 @@ func TestLauncherRefusesAtOnceWhenNoWindowIsLeft(t *testing.T) {
 // A row launched into a full desk keeps the launcher open and names the
 // limit — the binary is not missing, and the guard's notice is the only one.
 func TestLauncherRowAtTheCeilingNamesTheLimit(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	stubLauncherWindows(t)
 	resetNotify(t)
@@ -571,9 +582,9 @@ func TestLauncherRowAtTheCeilingNamesTheLimit(t *testing.T) {
 }
 
 func TestLauncherLaunchCloseRetryNeverExecutesTwice(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	stubLauncherWindows(t)
-	tabs = TabStrip{}
 	tabs.OpenTab(3, "Edit")
 	launch = launcherState{}
 	openLauncher()
@@ -599,6 +610,7 @@ func TestLauncherLaunchCloseRetryNeverExecutesTwice(t *testing.T) {
 }
 
 func TestLauncherEscapeRestoresFocusWithoutInterpretingSinkCopies(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	raises, closes, _ := stubLauncherWindows(t)
 	tabs = TabStrip{}
@@ -670,6 +682,7 @@ func stubLaunchTree(t *testing.T, tree map[string][]vi.DirEntry, files map[strin
 }
 
 func TestLauncherFilenameHitsJoinTheResults(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	stubLaunchTree(t, map[string][]vi.DirEntry{
 		"/host":    {dirEnt("LV", true), dirEnt("GOCALC.ELF", false)},
@@ -697,6 +710,7 @@ func TestLauncherFilenameHitsJoinTheResults(t *testing.T) {
 }
 
 func TestLauncherWalkNamesItsBounds(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	// The hits bound: more matching files than the entry cap, spread
 	// over two dirs — the kernel's own 16-row dir_list window bounds
@@ -747,6 +761,7 @@ func TestLauncherWalkNamesItsBounds(t *testing.T) {
 }
 
 func TestLauncherVerbsCycleAndDispatch(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	stubLauncherWindows(t)
 	stubLaunchTree(t, map[string][]vi.DirEntry{
@@ -787,6 +802,7 @@ func TestLauncherVerbsCycleAndDispatch(t *testing.T) {
 }
 
 func TestLauncherFileOpenFallsBackToReveal(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	// An unreadable head (or a type with no handler) opens GOFILES at
 	// the containing folder — the drop-open precedent, not a dead verb.
@@ -807,6 +823,7 @@ func TestLauncherFileOpenFallsBackToReveal(t *testing.T) {
 }
 
 func TestLauncherHandOffRowExecsGofilesSearch(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	stubLauncherWindows(t)
 	stubLaunchTree(t, map[string][]vi.DirEntry{"/host": {}}, nil)
@@ -833,6 +850,7 @@ func TestLauncherHandOffRowExecsGofilesSearch(t *testing.T) {
 }
 
 func TestLauncherVerbDisarmsOnSelectionMove(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	stubLaunchTree(t, map[string][]vi.DirEntry{
 		"/host":    {dirEnt("LV", true)},
@@ -862,6 +880,7 @@ func TestLauncherVerbDisarmsOnSelectionMove(t *testing.T) {
 // and stays silent on a repaint of identical content. The marker's
 // multiplicity is the gate's snapshot-arm contract, so it is pinned here.
 func TestLauncherPresentedPrintsOncePerDistinctFrame(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	launch = launcherState{open: true}
 	launch.filtered = []int{0, 1, 2}

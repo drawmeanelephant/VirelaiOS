@@ -13,6 +13,7 @@ import (
 )
 
 func TestRFBRequiresExplicitOperatorArgument(t *testing.T) {
+	resetSeatForTest(t)
 	for _, args := range [][]string{nil, {"GOTABWM.ELF"}, {"GOTABWM.ELF", "anything"},
 		{"GOTABWM.ELF", "--rfb-hermetic", "extra"},
 		{"GOTABWM.ELF", "--rfb-vencrypt"},
@@ -93,6 +94,7 @@ func rfbFakeStream(f *rfbFakeSocket, stallNs int64) *rfbStream {
 // ACK pacing must not park the worker for a full guest scheduler tick.
 // The quiet session loop still uses idle; this send path uses sendIdle.
 func TestRFBStreamSendYieldsBetweenSegments(t *testing.T) {
+	resetSeatForTest(t)
 	f := &rfbFakeSocket{acked: true, ackOn: 2}
 	s := rfbFakeStream(f, 3600_000_000_000)
 	s.idle = func() { t.Fatal("a frame send used the quiet-session sleep") }
@@ -109,6 +111,7 @@ func TestRFBStreamSendYieldsBetweenSegments(t *testing.T) {
 // ring. The slot-32 drain advances the kernel TCP state, then readiness
 // admits the next segment without waiting for the monitor's idle poll.
 func TestRFBStreamSendDrainsACKAndHoldsInput(t *testing.T) {
+	resetSeatForTest(t)
 	f := &rfbFakeSocket{acked: true, ackOn: -1}
 	s := rfbFakeStream(f, 3600_000_000_000)
 	s.idle = func() { t.Fatal("a send slept for a scheduler tick") }
@@ -137,6 +140,7 @@ func TestRFBStreamSendDrainsACKAndHoldsInput(t *testing.T) {
 }
 
 func TestRFBStreamDrainRefusesInputOverflow(t *testing.T) {
+	resetSeatForTest(t)
 	f := &rfbFakeSocket{ackOn: -1}
 	s := rfbFakeStream(f, 3600_000_000_000)
 	s.heldN = len(s.held)
@@ -149,6 +153,7 @@ func TestRFBStreamDrainRefusesInputOverflow(t *testing.T) {
 // A viewer that dies while a frame waits on its ACK ends the send at once:
 // the stall budget (an hour here) is for a live viewer that stopped ACKing.
 func TestRFBStreamSendSeesPeerReset(t *testing.T) {
+	resetSeatForTest(t)
 	for _, rx := range [][][]byte{nil, {[]byte("k")}} {
 		f := &rfbFakeSocket{rx: rx, reset: true, ackOn: -1}
 		s := rfbFakeStream(f, 3600_000_000_000)
@@ -162,6 +167,7 @@ func TestRFBStreamSendSeesPeerReset(t *testing.T) {
 // Input that arrives while a send waits is held for the session loop, in
 // order, not consumed by the check for a dead peer.
 func TestRFBStreamHoldsInputDuringSend(t *testing.T) {
+	resetSeatForTest(t)
 	press := rfbPress(1, 300, 400)
 	f := &rfbFakeSocket{rx: [][]byte{press}, ackOn: 1}
 	s := rfbFakeStream(f, 3600_000_000_000)
@@ -184,6 +190,7 @@ func TestRFBStreamHoldsInputDuringSend(t *testing.T) {
 }
 
 func TestRFBStreamSendStallIsBounded(t *testing.T) {
+	resetSeatForTest(t)
 	f := &rfbFakeSocket{ackOn: -1}
 	if _, err := rfbFakeStream(f, 1).Write([]byte("x")); rfbDropReason(err) != rfbDropStalled {
 		t.Fatalf("unACKed send ended as %v", err)
@@ -191,6 +198,7 @@ func TestRFBStreamSendStallIsBounded(t *testing.T) {
 }
 
 func TestRFBInputUsesWmEventWires(t *testing.T) {
+	resetSeatForTest(t)
 	var m rfbModifiers
 	// Modifier presses are state, not extra WM_KEY events. Unknown keysyms
 	// from the codec cannot turn into a usage-zero seat chord.
@@ -218,6 +226,7 @@ func TestRFBInputUsesWmEventWires(t *testing.T) {
 }
 
 func TestRFBButtonOrderingMatchesSeat(t *testing.T) {
+	resetSeatForTest(t)
 	for _, c := range []struct{ wire, seat uint8 }{
 		{0, 0}, {1, 1}, {2, 4}, {4, 2}, {7, 7},
 		{8, 0}, {9, 1}, {0xff, 7},
@@ -229,6 +238,7 @@ func TestRFBButtonOrderingMatchesSeat(t *testing.T) {
 }
 
 func TestRFBDecoderAcceptsWheelButton(t *testing.T) {
+	resetSeatForTest(t)
 	client := append([]byte("RFB 003.008\n\x01\x01"), 5, 8, 0, 100, 2, 88)
 	s, err := rfb.NewSession(bytes.NewReader(client), io.Discard,
 		vi.ScanoutWidth, vi.ScanoutHeight, "VirelaiOS")
@@ -246,6 +256,7 @@ func TestRFBDecoderAcceptsWheelButton(t *testing.T) {
 }
 
 func TestRFBDecoderRejectsPointerOutsideSeat(t *testing.T) {
+	resetSeatForTest(t)
 	for _, pointer := range [][]byte{
 		{5, 1, 0xea, 0x60, 0, 16}, // x=60000
 		{5, 1, 0, 16, 2, 0xd0},    // y=720
@@ -266,6 +277,7 @@ func TestRFBDecoderRejectsPointerOutsideSeat(t *testing.T) {
 }
 
 func TestRFBInputQueueIsFinite(t *testing.T) {
+	resetSeatForTest(t)
 	s := &rfbServer{input: make(chan remoteInput, rfbInputLimit)}
 	for i := 0; i < rfbInputLimit; i++ {
 		if !s.enqueue(remoteInput{kind: rfb.PointerInput}) {
@@ -278,6 +290,7 @@ func TestRFBInputQueueIsFinite(t *testing.T) {
 }
 
 func TestRFBDeathReleasesHeldPointer(t *testing.T) {
+	resetSeatForTest(t)
 	oldButtons := prevPtrButtons
 	defer func() { prevPtrButtons = oldButtons }()
 	prevPtrButtons = 1
@@ -322,6 +335,7 @@ func rfbPress(buttons uint8, x, y uint16) []byte {
 }
 
 func TestRFBDropReasons(t *testing.T) {
+	resetSeatForTest(t)
 	for _, c := range []struct {
 		err  error
 		want string
@@ -365,6 +379,7 @@ var rfbHostileCases = []struct {
 }
 
 func TestRFBHostileClientsFailClosed(t *testing.T) {
+	resetSeatForTest(t)
 	for _, c := range rfbHostileCases {
 		s := rfbTestServer()
 		reason := s.run(rfbTestSession(t, c.wire), rfbReadable, func() {})
@@ -376,6 +391,7 @@ func TestRFBHostileClientsFailClosed(t *testing.T) {
 }
 
 func TestRFBRepeatedRequestsCoalesce(t *testing.T) {
+	resetSeatForTest(t)
 	a := rfb.Request{Incremental: true, Rectangle: rfb.Rectangle{X: 10, Y: 20, Width: 30, Height: 40}}
 	b := rfb.Request{Incremental: true, Rectangle: rfb.Rectangle{X: 100, Y: 5, Width: 16, Height: 16}}
 	want := rfb.Request{Incremental: true, Rectangle: rfb.Rectangle{X: 10, Y: 5, Width: 106, Height: 55}}
@@ -396,6 +412,7 @@ func TestRFBRepeatedRequestsCoalesce(t *testing.T) {
 }
 
 func TestRFBInputFloodDropsSession(t *testing.T) {
+	resetSeatForTest(t)
 	var wire []byte
 	for i := 0; i <= rfbInputLimit; i++ {
 		wire = append(wire, rfbPress(0, uint16(i), 10)...)
@@ -413,6 +430,7 @@ func TestRFBInputFloodDropsSession(t *testing.T) {
 // the press AND a release at the last point, and the seat's capture state
 // is idle for the next local click.
 func TestRFBPeerDeathMidContentDragReleasesCapture(t *testing.T) {
+	resetSeatForTest(t)
 	savedTabs, savedForward := tabs, forwardContentPointer
 	savedButtons, savedContent, savedDrag := prevPtrButtons, contentDown, railDragFrom
 	savedLaunch := launch
@@ -459,6 +477,7 @@ func TestRFBPeerDeathMidContentDragReleasesCapture(t *testing.T) {
 // server's writes pin the wire: banner, {1,19}, version 0.2, ack + the
 // single X509Plain subtype offer.
 func TestVeNCryptHelloNegotiates(t *testing.T) {
+	resetSeatForTest(t)
 	client := append([]byte("RFB 003.008\n"), 19, 0, 2, 0, 0, 1, 6)
 	var out bytes.Buffer
 	if err := vencryptHello(bytes.NewReader(client), &out); err != nil {
@@ -471,6 +490,7 @@ func TestVeNCryptHelloNegotiates(t *testing.T) {
 }
 
 func TestVeNCryptHelloRefusals(t *testing.T) {
+	resetSeatForTest(t)
 	for _, c := range []struct {
 		name   string
 		viewer []byte
@@ -510,6 +530,7 @@ func TestVeNCryptHelloRefusals(t *testing.T) {
 }
 
 func TestX509PlainCheck(t *testing.T) {
+	resetSeatForTest(t)
 	cred := [2][]byte{[]byte("vncuser"), []byte("RFB-CRED-01")}
 	field := func(s string) []byte {
 		b := make([]byte, 4+len(s))
@@ -547,6 +568,7 @@ func FuzzRFBSessionLoop(f *testing.F) {
 	}
 	f.Add([]byte{3, 1, 0, 0, 0, 0, 0, 16, 0, 16, 4, 1, 0, 0, 0, 0, 0xff, 0xe3})
 	f.Fuzz(func(t *testing.T, wire []byte) {
+		resetSeatForTest(t)
 		s := rfbTestServer()
 		reason := s.run(rfbTestSession(t, wire), rfbReadable, func() {})
 		if reason == "" || len(s.input) > rfbInputLimit {

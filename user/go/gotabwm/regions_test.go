@@ -72,6 +72,7 @@ func regionReq(id uint32, slot uint8, shape uint64, x, y, w, h uint16) vi.WmRpc 
 }
 
 func TestRegionDeclareStoresAndClears(t *testing.T) {
+	resetSeatForTest(t)
 	f := &regionFixture{}
 	f.install(t)
 	f.hostTab(5, "GOEDIT.ELF", 0, 0, 1280, 720)
@@ -100,6 +101,7 @@ func TestRegionDeclareStoresAndClears(t *testing.T) {
 }
 
 func TestRegionDeclareRefusals(t *testing.T) {
+	resetSeatForTest(t)
 	f := &regionFixture{}
 	f.install(t)
 	f.hostTab(5, "GOEDIT.ELF", 0, 0, 1280, 720)
@@ -132,6 +134,7 @@ func TestRegionDeclareRefusals(t *testing.T) {
 }
 
 func TestRegionPickFollowsTheDeclaredZone(t *testing.T) {
+	resetSeatForTest(t)
 	f := &regionFixture{}
 	f.install(t)
 	f.hostTab(5, "GOEDIT.ELF", 0, 0, 1280, 720)
@@ -160,6 +163,7 @@ func TestRegionPickFollowsTheDeclaredZone(t *testing.T) {
 }
 
 func TestRegionPickTranslatesPaneOrigin(t *testing.T) {
+	resetSeatForTest(t)
 	f := &regionFixture{}
 	f.install(t)
 	// A split's second pane: the window sits at (660,0), so a sample at
@@ -183,6 +187,7 @@ func TestRegionPickTranslatesPaneOrigin(t *testing.T) {
 }
 
 func TestRegionPickYieldsToSeatOwnership(t *testing.T) {
+	resetSeatForTest(t)
 	f := &regionFixture{}
 	f.install(t)
 	f.hostTab(5, "GOEDIT.ELF", 0, 0, 1280, 720)
