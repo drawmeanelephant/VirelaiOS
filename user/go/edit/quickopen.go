@@ -50,9 +50,11 @@ type qoItem struct {
 	tag  string
 }
 
-// qoDirList is the walk's directory seam — vi.DirList in the guest,
-// swapped by the host tests (the launchDirList/bufRead pattern).
-var qoDirList = vi.DirList
+// qoListDir is the walk's directory seam — vi.ListDirAt in the guest,
+// swapped by the host tests (the launchDirList/bufRead pattern). The
+// paged listing, not the legacy 16-row sys_dir_list window: a directory
+// past that bound must page, not silently drop its tail.
+var qoListDir = vi.ListDirAt
 
 // pushRecent records path in the MRU: an existing entry moves back to
 // the front, the list never outgrows recentCap. The callers are the
@@ -119,12 +121,11 @@ type qoWalker struct {
 // GOFILES' own order, so a too-deep directory cannot cut off same-depth
 // files the bound still covers.
 func (w *qoWalker) walk(dir string, depth int, items *[]qoItem) {
-	var ents [vi.MaxDirEntries]vi.DirEntry
-	n, rc := qoDirList(dir, ents[:])
-	if rc < 0 {
+	ents, err := qoListDir(dir)
+	if err != nil {
 		return // an unreadable dir contributes nothing — its parent still counts
 	}
-	for i := 0; i < n; i++ {
+	for _, e := range ents {
 		if w.trunc != "" {
 			return
 		}
@@ -133,10 +134,10 @@ func (w *qoWalker) walk(dir string, depth int, items *[]qoItem) {
 			return
 		}
 		w.visit++
-		if ents[i].Dir() {
+		if e.IsDir {
 			continue
 		}
-		path := dir + "/" + ents[i].NameString()
+		path := dir + "/" + e.Name
 		if w.seen[path] {
 			continue
 		}
@@ -148,22 +149,21 @@ func (w *qoWalker) walk(dir string, depth int, items *[]qoItem) {
 		w.files++
 		*items = append(*items, qoItem{path: path, tag: "file"})
 	}
-	for i := 0; i < n; i++ {
+	for _, e := range ents {
 		if w.trunc != "" {
 			return
 		}
-		if !ents[i].Dir() {
+		if !e.IsDir {
 			continue
 		}
 		if depth+1 > qoMaxDepth {
 			w.trunc = "depth"
 			return
 		}
-		name := ents[i].NameString()
-		if name == "" || name == "." || name == ".." {
+		if e.Name == "" || e.Name == "." || e.Name == ".." {
 			continue
 		}
-		w.walk(dir+"/"+name, depth+1, items)
+		w.walk(dir+"/"+e.Name, depth+1, items)
 	}
 }
 
