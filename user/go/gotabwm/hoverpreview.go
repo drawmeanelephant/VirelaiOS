@@ -30,9 +30,12 @@ import (
 )
 
 const (
-	// hoverPreviewDelay is the dwell threshold in heartbeats. Zig TABWM's
-	// hover_preview_delay is 2 composite ticks (user/src/tabwm.zig:738);
-	// this seat uses the same visible-to-the-user interval.
+	// hoverPreviewDwellNs is the sub-second hover dwell on the seat's
+	// ADR 0060 timer queue (slot 95 sys_timer_set_ns, M216n #3953).
+	hoverPreviewDwellNs = 500 * 1_000_000
+
+	// hoverPreviewDelay is the heartbeat-counted fallback threshold used
+	// only when slot 95 is refused (an image without the `timer` grant).
 	hoverPreviewDelay = 2
 
 	// The card is a fixed, bounded plate: 240x60 at most, one at a time.
@@ -79,44 +82,59 @@ func hoverPreviewSignature(cell int, id uint32) string {
 	return hoverPreviewTitle() + "\x00" + hoverPreviewIdentity(id) + "\x00" + hoverPreviewStatus(id)
 }
 
+// hoverPreviewCancel clears any pending dwell, dismisses a visible card,
+// and disarms the hover entry in the seat timer queue.
+func hoverPreviewCancel() {
+	hoverPreview.armed = false
+	hoverPreview.visible = false
+	hoverPreview.block = -1
+	seatTimers.Cancel(timerKindHoverDwell)
+}
+
 // hoverPreviewPointer is called for EVERY pointer sample, before any
 // chrome early-return. Motion resets the dwell even inside one cell; a
 // press/release is a gesture, not rest. Dismissal is immediate — the next
 // composite pass paints without the card and the post-present dismiss
 // receipt follows that frame.
 func hoverPreviewPointer() {
-	hoverPreview.armed = false
-	hoverPreview.visible = false
-	hoverPreview.block = -1
+	hoverPreviewCancel()
+}
+
+// hoverPreviewAfterPointer runs right after handleWmPointer has updated
+// railHover and any drag/modal state. A bare pointer sample resting on a
+// rail cell arms a fresh sub-second dwell immediately; held buttons stay
+// disarmed until release.
+func hoverPreviewAfterPointer(btn uint8) {
+	if btn != 0 {
+		hoverPreviewCancel()
+		return
+	}
+	hoverPreviewReconcile()
 }
 
 // hoverPreviewSuppressed reports the desktop states that own the frame
-// instead of a hover card: modal chrome, an armed drag, or the lock.
+// instead of a hover card: modal chrome, an armed drag, lock, or idle.
 func hoverPreviewSuppressed() bool {
-	if lockActive || launch.open || powerMenuOpen || clipMenuOpen ||
+	if lockActive || idleState != idleActive || launch.open || powerMenuOpen || clipMenuOpen ||
 		railMenuOpen || secretAskModal.open || notifyCenterOpen {
 		return true
 	}
 	return drag.armed || railDragFrom >= 0 || sashDragging
 }
 
-// hoverPreviewTick advances the dwell once per HEARTBEAT. It is called
-// from compositeTick (never from compositePaint), so damage-only repaints
-// cannot count as dwell. Visible is derived from the seatTick difference,
-// so paint coalescing cannot slow the threshold down.
-func hoverPreviewTick() {
+// hoverPreviewReconcile keeps the dwell state honest against rail target,
+// tab identity, truth signature, and desktop suppression. When an eligible
+// cell is not yet armed, it schedules timerKindHoverDwell on the seat
+// timer queue (or anchors armTick for the refusal fallback).
+func hoverPreviewReconcile() {
 	n := tabs.Count()
 	if hoverPreviewSuppressed() || railHover < 0 || railHover >= n {
-		hoverPreview.armed = false
-		hoverPreview.visible = false
-		hoverPreview.block = -1
+		hoverPreviewCancel()
 		return
 	}
 	id := tabs.At(railHover).ID
 	if id == 0 {
-		hoverPreview.armed = false
-		hoverPreview.visible = false
-		hoverPreview.block = -1
+		hoverPreviewCancel()
 		return
 	}
 	if hoverPreview.block >= 0 && hoverPreview.block != railHover {
@@ -125,6 +143,7 @@ func hoverPreviewTick() {
 	if hoverPreview.block == railHover {
 		hoverPreview.armed = false
 		hoverPreview.visible = false
+		seatTimers.Cancel(timerKindHoverDwell)
 		return
 	}
 	if !hoverPreview.armed || hoverPreview.id != id || hoverPreview.cell != railHover {
@@ -134,6 +153,40 @@ func hoverPreviewTick() {
 		hoverPreview.armed = true
 		hoverPreview.visible = false
 		hoverPreview.sig = hoverPreviewSignature(railHover, id)
+		if !seatTimers.Refused() {
+			_ = seatTimers.Set(timerKindHoverDwell, hoverPreviewDwellNs)
+		}
+		return
+	}
+	if hoverPreview.sig != hoverPreviewSignature(railHover, id) {
+		hoverPreview.armed = false
+		hoverPreview.visible = false
+		hoverPreview.block = railHover
+		seatTimers.Cancel(timerKindHoverDwell)
+		return
+	}
+}
+
+// hoverPreviewFire is the seat timer queue handler for timerKindHoverDwell.
+// It re-validates suppression, identity, and signature before marking the
+// card visible for the non-heartbeat paint/present pass.
+func hoverPreviewFire() {
+	n := tabs.Count()
+	if hoverPreviewSuppressed() || railHover < 0 || railHover >= n {
+		hoverPreviewCancel()
+		return
+	}
+	id := tabs.At(railHover).ID
+	if id == 0 {
+		hoverPreviewCancel()
+		return
+	}
+	if !hoverPreview.armed || hoverPreview.cell != railHover || hoverPreview.id != id {
+		return
+	}
+	if hoverPreview.block == railHover {
+		hoverPreview.armed = false
+		hoverPreview.visible = false
 		return
 	}
 	if hoverPreview.sig != hoverPreviewSignature(railHover, id) {
@@ -142,7 +195,19 @@ func hoverPreviewTick() {
 		hoverPreview.block = railHover
 		return
 	}
-	if seatTick >= hoverPreview.armTick+hoverPreviewDelay {
+	hoverPreview.visible = true
+}
+
+// hoverPreviewTick runs on each HEARTBEAT. It reconciles hover state
+// against tab/suppression/truth changes, and drives the heartbeat-counted
+// dwell ONLY when slot 95 was refused (fallback path). Under normal
+// operation, dwell expiry comes exclusively from hoverPreviewFire.
+func hoverPreviewTick() {
+	wasArmed := hoverPreview.armed && hoverPreview.cell == railHover &&
+		railHover >= 0 && railHover < tabs.Count() && tabs.At(railHover).ID == hoverPreview.id
+	hoverPreviewReconcile()
+	if seatTimers.Refused() && wasArmed && hoverPreview.armed &&
+		seatTick >= hoverPreview.armTick+hoverPreviewDelay {
 		hoverPreview.visible = true
 	}
 }

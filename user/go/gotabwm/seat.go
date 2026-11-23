@@ -183,6 +183,9 @@ func idleAdvance(ticks uint64) {
 	default:
 		idleState = idleActive
 	}
+	if idleState != idleActive {
+		hoverPreviewCancel()
+	}
 }
 
 // The waking edge is consumed by the seat instead of activating its chrome.
@@ -671,6 +674,7 @@ func main() {
 	// closed cleanly, pure timing variance). Sweep whatever remains so
 	// every hosted app still observes its close on the way out; a strip
 	// the choreography or countdown already emptied is a no-op.
+	seatTimers.CancelAll()
 	dismissLauncher()
 	sweepHosted(closeHosted)
 	// M102e (#2169): WM shutdown closes every GPU3D context — the kernel's
@@ -1147,7 +1151,7 @@ func drainSeatEvents(first vi.Event, poll func() (vi.Event, bool), consume func(
 // left for the next 1 Hz heartbeat. The drain's heldDebt hook pays it
 // once per batch (an interactive present cadence), never per event.
 func consumeSeatEvent(e vi.Event) bool {
-	if !(e.Kind == vi.EvCompositeTick && e.Flags&vi.WmTickDamage == 0) {
+	if !(e.Kind == vi.EvCompositeTick && e.Flags&vi.WmTickDamage == 0) && e.Kind != vi.EvTimer {
 		pendingComposite = true
 	}
 	launcherWindowEvent(e)
@@ -1184,8 +1188,16 @@ func consumeSeatEvent(e vi.Event) bool {
 	// run budget re-arms on it so a still-running chain cannot be swept
 	// mid-leg (the kind-20 mirror above counts too: an app resizing is
 	// activity whether or not a key is flying).
-	if e.Kind != vi.EvCompositeTick {
+	if e.Kind != vi.EvCompositeTick && e.Kind != vi.EvTimer {
 		lastActivityTick = seatTick
+	}
+	// M216n (#3953): kind-9 EvTimer drives the seat's deadline queue
+	// (slot 95). A fired entry marks pendingComposite for the same
+	// non-heartbeat paint/present path pointer events use, prints no
+	// MarkerTick, and moves no heartbeat counter.
+	if e.Kind == vi.EvTimer {
+		seatTimerFire()
+		return false
 	}
 	// M190e (#3240): while the lock curtain is up every input kind feeds
 	// the curtain or nothing at all — the kind-1 KEY_DOWN lands here
@@ -1201,12 +1213,15 @@ func consumeSeatEvent(e vi.Event) bool {
 		vi.ConsoleLine(MarkerPtr)
 		if lockActive {
 			lastInputTick = seatTick
+			hoverPreviewCancel()
 			return false
 		}
 		if idleInput(seatTick) {
+			hoverPreviewCancel()
 			return false
 		}
 		handleWmPointer(e)
+		hoverPreviewAfterPointer(uint8(e.Flags & 0xff))
 		noteBadgeTransition()
 		noteRailBadges()
 		return false
@@ -1215,12 +1230,15 @@ func consumeSeatEvent(e vi.Event) bool {
 		vi.ConsoleLine(MarkerKey)
 		if lockActive {
 			lastInputTick = seatTick
+			hoverPreviewCancel()
 			return false
 		}
 		if idleInput(seatTick) {
+			hoverPreviewCancel()
 			return false
 		}
 		handleWmKey(e)
+		hoverPreviewReconcile()
 		noteBadgeTransition()
 		noteRailBadges()
 		// M107e (#2322): poll the host-integration lane on the input path,

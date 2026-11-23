@@ -1,6 +1,8 @@
-// Host tests for #3914's rail hover-preview. The card is seat state:
-// dwell is heartbeat time, the target is a tab identity, and every
-// conflicting desktop state clears both the pending dwell and the card.
+// Host tests for #3914 / M216n (#3953) rail hover-preview. The card is
+// seat state: dwell rides the 500 ms ADR 0060 deadline on the seat timer
+// queue (with heartbeat fallback when slot 95 is refused), the target is
+// a tab identity, and every conflicting desktop state (including lock and
+// idle) cancels both the pending timer and the card.
 
 package main
 
@@ -11,10 +13,15 @@ import (
 	"virelai/vi"
 )
 
-// hoverPreviewFixture isolates the preview state and every desktop-state
-// flag the suppression predicate reads, restoring them after the test.
+// hoverPreviewFixture isolates the preview state, timer queue seams, and
+// every desktop-state flag the suppression predicate reads.
 type hoverPreviewFixture struct {
-	logs []string
+	now       int64
+	armedNs   []uint64
+	cancels   int
+	armRC     int64
+	logs      []string
+	timerLogs []string
 }
 
 func newHoverPreviewFixture(t *testing.T, ids ...uint32) *hoverPreviewFixture {
@@ -24,14 +31,18 @@ func newHoverPreviewFixture(t *testing.T, ids ...uint32) *hoverPreviewFixture {
 	savedLog := hoverPreviewLog
 	savedLaunch, savedPower, savedClip := launch, powerMenuOpen, clipMenuOpen
 	savedRailMenu, savedSecret, savedCenter := railMenuOpen, secretAskModal, notifyCenterOpen
-	savedLock, savedDrag, savedRailDrag, savedSash := lockActive, drag, railDragFrom, sashDragging
+	savedLock, savedIdle, savedDrag, savedRailDrag, savedSash := lockActive, idleState, drag, railDragFrom, sashDragging
+	savedTimers := seatTimers
+	savedNow, savedSetNs, savedCancel, savedTLog := seatTimerNow, seatTimerSetNs, seatTimerCancel, seatTimerLog
 	t.Cleanup(func() {
 		tabs, railHover, seatTick = savedTabs, savedHover, savedTick
 		hoverPreview = savedState
 		hoverPreviewLog = savedLog
 		launch, powerMenuOpen, clipMenuOpen = savedLaunch, savedPower, savedClip
 		railMenuOpen, secretAskModal, notifyCenterOpen = savedRailMenu, savedSecret, savedCenter
-		lockActive, drag, railDragFrom, sashDragging = savedLock, savedDrag, savedRailDrag, savedSash
+		lockActive, idleState, drag, railDragFrom, sashDragging = savedLock, savedIdle, savedDrag, savedRailDrag, savedSash
+		seatTimers = savedTimers
+		seatTimerNow, seatTimerSetNs, seatTimerCancel, seatTimerLog = savedNow, savedSetNs, savedCancel, savedTLog
 	})
 	tabs = TabStrip{}
 	railHover = -1
@@ -44,11 +55,23 @@ func newHoverPreviewFixture(t *testing.T, ids ...uint32) *hoverPreviewFixture {
 	secretAskModal = secretAsk{}
 	notifyCenterOpen = false
 	lockActive = false
+	idleState = idleActive
 	drag = dragSession{}
 	railDragFrom = -1
 	sashDragging = false
-	f := &hoverPreviewFixture{}
+	seatTimers = seatTimerQueue{}
+	f := &hoverPreviewFixture{now: 1_000_000_000}
 	hoverPreviewLog = func(line string) { f.logs = append(f.logs, line) }
+	seatTimerNow = func() int64 { return f.now }
+	seatTimerSetNs = func(ns uint64) int64 {
+		f.armedNs = append(f.armedNs, ns)
+		return f.armRC
+	}
+	seatTimerCancel = func() int64 {
+		f.cancels++
+		return 1
+	}
+	seatTimerLog = func(line string) { f.timerLogs = append(f.timerLogs, line) }
 	for _, id := range ids {
 		if !tabs.OpenTab(id, "Tab "+vi.Itoa64(int64(id))) {
 			t.Fatalf("OpenTab(%d)", id)
@@ -57,9 +80,26 @@ func newHoverPreviewFixture(t *testing.T, ids ...uint32) *hoverPreviewFixture {
 	return f
 }
 
-// viPointer builds the WM_POINTER event handleWmPointer consumes.
+// viPointer builds the WM_POINTER event handleWmPointer/consumeSeatEvent consumes.
 func viPointer(x, y uint32) vi.Event {
 	return vi.Event{Kind: vi.EvWmPointer, Arg0: x | y<<16, Flags: 0}
+}
+
+func (f *hoverPreviewFixture) advanceAndFire(ns int64) {
+	f.now += ns
+	consumeSeatEvent(vi.Event{Kind: vi.EvTimer})
+}
+
+func (f *hoverPreviewFixture) dwellToVisible(t *testing.T) {
+	t.Helper()
+	hoverPreviewReconcile()
+	if hoverPreview.visible {
+		t.Fatal("card appeared before the 500ms dwell elapsed")
+	}
+	f.advanceAndFire(hoverPreviewDwellNs)
+	if !hoverPreview.visible {
+		t.Fatal("card did not appear when the 500ms dwell fired")
+	}
 }
 
 func (f *hoverPreviewFixture) contains(t *testing.T, want string) bool {
@@ -72,23 +112,73 @@ func (f *hoverPreviewFixture) contains(t *testing.T, want string) bool {
 	return false
 }
 
-// Dwell is a difference of seatTick counts, not a count of composite
-// passes: repeated ticks at the same heartbeat do not age it, and a
-// coalesced jump of two heartbeats does.
-func TestHoverPreviewDwellUsesHeartbeatTime(t *testing.T) {
+// Dwell runs on the 500 ms ADR 0060 deadline queue, independent of the
+// 1 Hz heartbeat: heartbeats alone do not reveal the card, and firing
+// EvTimer at 500 ms reveals it without advancing seatTick.
+func TestHoverPreviewDwellUsesTimerQueue(t *testing.T) {
 	resetSeatForTest(t)
-	_ = newHoverPreviewFixture(t, 3, 4)
+	f := newHoverPreviewFixture(t, 3, 4)
 	railHover = 1
 	seatTick = 10
 	hoverPreviewPointer()
 
-	hoverPreviewTick() // arms at heartbeat 10
+	hoverPreviewReconcile()
+	if hoverPreview.visible {
+		t.Fatal("card appeared immediately on arm")
+	}
+	if len(f.armedNs) != 1 || f.armedNs[0] != uint64(hoverPreviewDwellNs) {
+		t.Fatalf("armedNs = %v want [%d]", f.armedNs, hoverPreviewDwellNs)
+	}
+
+	// Passing heartbeats do not reveal the card while slot 95 is healthy.
+	seatTick = 12
+	hoverPreviewTick()
+	if hoverPreview.visible {
+		t.Fatal("heartbeat revealed card while timer queue was healthy")
+	}
+
+	// Early EvTimer (499ms) does not reveal the card.
+	f.advanceAndFire(hoverPreviewDwellNs - 1_000_000)
+	if hoverPreview.visible {
+		t.Fatal("card appeared 1ms early")
+	}
+
+	// Reaching 500ms reveals the card without changing seatTick.
+	f.advanceAndFire(1_000_000)
+	if !hoverPreview.visible {
+		t.Fatal("card did not appear at the 500ms deadline")
+	}
+	if hoverPreview.id != 4 {
+		t.Fatalf("preview target id = %d want 4", hoverPreview.id)
+	}
+	if seatTick != 12 {
+		t.Fatalf("EvTimer moved seatTick to %d want 12", seatTick)
+	}
+}
+
+// When slot 95 is refused (an image without the `timer` grant), the seat
+// logs one named refusal marker and falls back to the 2-heartbeat dwell.
+func TestHoverPreviewRefusalFallsBackToHeartbeatDwell(t *testing.T) {
+	resetSeatForTest(t)
+	f := newHoverPreviewFixture(t, 3, 4)
+	f.armRC = -vi.ErrEACCES
+	railHover = 1
+	seatTick = 10
+	hoverPreviewPointer()
+
+	hoverPreviewTick() // tries slot 95, gets refused, arms at heartbeat 10
+	if !seatTimers.Refused() {
+		t.Fatal("queue did not latch refusal")
+	}
+	if len(f.timerLogs) != 1 || !strings.HasPrefix(f.timerLogs[0], MarkerTimerRefused) {
+		t.Fatalf("timer refusal logs = %v want one %q line", f.timerLogs, MarkerTimerRefused)
+	}
 	if hoverPreview.visible {
 		t.Fatal("card appeared on the arming heartbeat")
 	}
-	hoverPreviewTick() // a second PAINT at the same heartbeat is not dwell
+	hoverPreviewTick() // same heartbeat repetition must not age dwell
 	if hoverPreview.visible {
-		t.Fatal("paint-frequency repetition aged the dwell")
+		t.Fatal("paint-frequency repetition aged the fallback dwell")
 	}
 	seatTick = 11
 	hoverPreviewTick()
@@ -98,14 +188,14 @@ func TestHoverPreviewDwellUsesHeartbeatTime(t *testing.T) {
 	seatTick = 12
 	hoverPreviewTick()
 	if !hoverPreview.visible {
-		t.Fatal("card did not appear at the heartbeat threshold")
+		t.Fatal("card did not appear at the heartbeat fallback threshold")
 	}
 	if hoverPreview.id != 4 {
 		t.Fatalf("preview target id = %d want 4", hoverPreview.id)
 	}
 
-	// Coalesced heartbeats: the drain consumed 10 and 11 while one paint
-	// was owed; the single pass at 12 must still reach the threshold.
+	// Coalesced heartbeats in refusal mode still reach the threshold, and
+	// the refusal marker is never repeated.
 	hoverPreview = hoverPreviewState{cell: -1, block: -1}
 	seatTick = 20
 	hoverPreviewPointer()
@@ -113,7 +203,10 @@ func TestHoverPreviewDwellUsesHeartbeatTime(t *testing.T) {
 	seatTick = 22
 	hoverPreviewTick()
 	if !hoverPreview.visible {
-		t.Fatal("a coalesced two-heartbeat jump did not reach the dwell threshold")
+		t.Fatal("coalesced two-heartbeat jump did not reach the fallback dwell threshold")
+	}
+	if len(f.timerLogs) != 1 {
+		t.Fatalf("refusal marker repeated: %v", f.timerLogs)
 	}
 }
 
@@ -124,14 +217,8 @@ func TestHoverPreviewMarkersFollowPresentation(t *testing.T) {
 	resetSeatForTest(t)
 	f := newHoverPreviewFixture(t, 3, 4)
 	railHover = 1
-	seatTick = 5
 	hoverPreviewPointer()
-	hoverPreviewTick()
-	seatTick = 7
-	hoverPreviewTick()
-	if !hoverPreview.visible {
-		t.Fatal("fixture did not reach the dwell threshold")
-	}
+	f.dwellToVisible(t)
 	hoverPreviewPresented(true, false) // paint failed to present
 	if len(f.logs) != 0 {
 		t.Fatalf("marker before a present: %v", f.logs)
@@ -149,9 +236,7 @@ func TestHoverPreviewMarkersFollowPresentation(t *testing.T) {
 	}
 
 	// A failed present is not evidence the announced card left the
-	// scanout: the prior frame still shows it. Both a painted pass and a
-	// card-free pass that failed to present must leave the receipt state
-	// exactly as it was.
+	// scanout: the prior frame still shows it.
 	hoverPreviewPresented(true, false)
 	hoverPreviewPresented(false, false)
 	if hoverPreview.shown != 4 {
@@ -161,8 +246,7 @@ func TestHoverPreviewMarkersFollowPresentation(t *testing.T) {
 		t.Fatalf("failed present emitted a dismissal: n=%d logs=%v", n, f.logs)
 	}
 
-	// Successful recovery: the announced card is already on the scanout,
-	// so its presented frame must not reannounce it.
+	// Successful recovery: the announced card is already on the scanout.
 	hoverPreviewPresented(true, true)
 	if n := strings.Count(strings.Join(f.logs, "\n"), MarkerHoverPreview); n != 1 {
 		t.Fatalf("successful recovery reannounced the card: n=%d logs=%v", n, f.logs)
@@ -186,48 +270,43 @@ func TestHoverPreviewMarkersFollowPresentation(t *testing.T) {
 }
 
 // Motion — including same-cell motion — and leaving the rail dismiss a
-// visible card and restart the pending dwell.
+// visible card and restart/cancel the pending deadline.
 func TestHoverPreviewMotionAndLeaveResetDwell(t *testing.T) {
 	resetSeatForTest(t)
-	_ = newHoverPreviewFixture(t, 3, 4)
+	f := newHoverPreviewFixture(t, 3, 4)
 	railHover = 1
-	seatTick = 5
 	hoverPreviewPointer()
-	hoverPreviewTick()
-	seatTick = 7
-	hoverPreviewTick()
-	if !hoverPreview.visible {
-		t.Fatal("fixture did not show the card")
-	}
+	f.dwellToVisible(t)
 
-	// Same-cell motion: the rail cell does not change, the dwell does.
-	handleWmPointer(viPointer(1000, 10))
-	if hoverPreview.visible || hoverPreview.armed {
-		t.Fatal("same-cell motion did not reset the dwell")
+	// Same-cell motion through consumeSeatEvent dismisses the card and
+	// starts a fresh 500ms deadline from the new pointer sample.
+	consumeSeatEvent(viPointer(1000, 10))
+	if hoverPreview.visible {
+		t.Fatal("same-cell motion left the card visible")
 	}
 	if railHover != 1 {
 		t.Fatalf("same-cell motion moved the hover: %d", railHover)
 	}
-	seatTick = 20
-	hoverPreviewTick()
-	if hoverPreview.visible {
-		t.Fatal("card resurrected instantly after same-cell motion")
+	if !seatTimers.Pending(timerKindHoverDwell) {
+		t.Fatal("same-cell motion did not re-arm the 500ms dwell")
 	}
-	seatTick = 22
-	hoverPreviewTick()
+	f.advanceAndFire(hoverPreviewDwellNs / 2)
+	if hoverPreview.visible {
+		t.Fatal("card resurrected before the fresh 500ms dwell elapsed")
+	}
+	f.advanceAndFire(hoverPreviewDwellNs / 2)
 	if !hoverPreview.visible {
-		t.Fatal("a fresh dwell after motion did not show the card")
+		t.Fatal("a fresh 500ms dwell after motion did not show the card")
 	}
 
-	// Leaving the rail clears the card at the next heartbeat.
-	handleWmPointer(viPointer(1000, 360))
-	if hoverPreview.visible {
-		t.Fatal("rail leave left the card visible")
+	// Leaving the rail clears the card and cancels the timer entry.
+	consumeSeatEvent(viPointer(1000, 360))
+	if hoverPreview.visible || hoverPreview.armed || seatTimers.Pending(timerKindHoverDwell) {
+		t.Fatal("rail leave left the dwell or card active")
 	}
-	seatTick = 30
-	hoverPreviewTick()
-	if hoverPreview.armed || hoverPreview.visible {
-		t.Fatal("dwell survived a rail leave")
+	f.advanceAndFire(hoverPreviewDwellNs)
+	if hoverPreview.visible {
+		t.Fatal("dwell fired after a rail leave")
 	}
 }
 
@@ -235,15 +314,12 @@ func TestHoverPreviewMotionAndLeaveResetDwell(t *testing.T) {
 // identity, and closing the target removes its card.
 func TestHoverPreviewIdentityChangeAndCloseReset(t *testing.T) {
 	resetSeatForTest(t)
-	_ = newHoverPreviewFixture(t, 3, 4, 5)
+	f := newHoverPreviewFixture(t, 3, 4, 5)
 	railHover = 1
-	seatTick = 5
 	hoverPreviewPointer()
-	hoverPreviewTick()
-	seatTick = 7
-	hoverPreviewTick()
-	if !hoverPreview.visible || hoverPreview.id != 4 {
-		t.Fatalf("fixture card = id %d visible=%v want 4", hoverPreview.id, hoverPreview.visible)
+	f.dwellToVisible(t)
+	if hoverPreview.id != 4 {
+		t.Fatalf("fixture card id = %d want 4", hoverPreview.id)
 	}
 
 	// Move cell 1's tab elsewhere: a different identity now sits under
@@ -251,28 +327,23 @@ func TestHoverPreviewIdentityChangeAndCloseReset(t *testing.T) {
 	if !tabs.Reorder(1, 2) {
 		t.Fatal("Reorder")
 	}
-	seatTick = 8
 	hoverPreviewTick()
 	if hoverPreview.visible {
 		t.Fatal("reorder kept the old identity's card")
 	}
-	if !hoverPreview.armed || hoverPreview.id != tabs.At(1).ID {
+	if !hoverPreview.armed || hoverPreview.id != tabs.At(1).ID || !seatTimers.Pending(timerKindHoverDwell) {
 		t.Fatalf("dwell did not re-arm for the current identity: armed=%v id=%d", hoverPreview.armed, hoverPreview.id)
 	}
-	seatTick = 10
-	hoverPreviewTick()
+	f.advanceAndFire(hoverPreviewDwellNs)
 	if !hoverPreview.visible || hoverPreview.id != tabs.At(1).ID {
 		t.Fatalf("later dwell did not show only the current target: id=%d", hoverPreview.id)
 	}
 
-	// Close the target: the card leaves immediately (the index no longer
-	// names that identity); a dwell may re-arm for whatever now sits
-	// under the pointer, but never for the closed tab.
+	// Close the target: the card leaves immediately.
 	target := hoverPreview.id
 	if !tabs.CloseTab(target) {
 		t.Fatal("CloseTab")
 	}
-	seatTick = 11
 	hoverPreviewTick()
 	if hoverPreview.visible {
 		t.Fatal("closed target kept its preview visible")
@@ -287,8 +358,8 @@ func TestHoverPreviewIdentityChangeAndCloseReset(t *testing.T) {
 
 // A truth change while the pointer is still — focus moving elsewhere,
 // a pin, a retitle — dismisses the card instead of leaving stale words
-// on screen, and no heartbeat resurrects it. Only fresh motion restarts
-// a truthful dwell.
+// on screen, and no timer or heartbeat resurrects it. Only fresh motion
+// restarts a truthful dwell.
 func TestHoverPreviewTruthChangeDismissesUntilMotion(t *testing.T) {
 	resetSeatForTest(t)
 	f := newHoverPreviewFixture(t, 3, 4)
@@ -296,14 +367,8 @@ func TestHoverPreviewTruthChangeDismissesUntilMotion(t *testing.T) {
 		t.Fatal("FocusTab(4)")
 	}
 	railHover = 1
-	seatTick = 5
 	hoverPreviewPointer()
-	hoverPreviewTick()
-	seatTick = 7
-	hoverPreviewTick()
-	if !hoverPreview.visible {
-		t.Fatal("fixture did not show the card")
-	}
+	f.dwellToVisible(t)
 	hoverPreviewPresented(true, true)
 	if !f.contains(t, "status=focused") {
 		t.Fatalf("fixture card did not say focused: %v", f.logs)
@@ -313,9 +378,14 @@ func TestHoverPreviewTruthChangeDismissesUntilMotion(t *testing.T) {
 	if !tabs.FocusTab(3) {
 		t.Fatal("FocusTab")
 	}
+	hoverPreviewReconcile()
+	if hoverPreview.visible || seatTimers.Pending(timerKindHoverDwell) {
+		t.Fatal("stale card survived focus change")
+	}
 	for tick := uint64(8); tick <= 16; tick++ {
 		seatTick = tick
 		hoverPreviewTick()
+		f.advanceAndFire(hoverPreviewDwellNs)
 		if hoverPreview.visible {
 			t.Fatalf("stale card resurfaced at heartbeat %d after the focus change", tick)
 		}
@@ -327,11 +397,8 @@ func TestHoverPreviewTruthChangeDismissesUntilMotion(t *testing.T) {
 
 	// Fresh motion is a new gesture: the card is allowed again, with the
 	// status it now reads.
-	handleWmPointer(viPointer(700, 10))
-	seatTick = 17
-	hoverPreviewTick()
-	seatTick = 19
-	hoverPreviewTick()
+	consumeSeatEvent(viPointer(700, 10))
+	f.advanceAndFire(hoverPreviewDwellNs)
 	if !hoverPreview.visible {
 		t.Fatal("motion did not restart an eligible dwell")
 	}
@@ -341,8 +408,8 @@ func TestHoverPreviewTruthChangeDismissesUntilMotion(t *testing.T) {
 	}
 }
 
-// Overlay, drag and lock states suppress both a pending and a visible
-// card; clearing the state cannot resurrect the stale one.
+// Overlay, drag, lock, and idle states suppress both a pending timer and
+// a visible card; clearing the state cannot resurrect the stale one.
 func TestHoverPreviewConflictingStatesSuppress(t *testing.T) {
 	resetSeatForTest(t)
 	cases := []struct {
@@ -356,6 +423,18 @@ func TestHoverPreviewConflictingStatesSuppress(t *testing.T) {
 		{"secret-ask", func(on bool) { secretAskModal.open = on }},
 		{"notify-center", func(on bool) { notifyCenterOpen = on }},
 		{"lock", func(on bool) { lockActive = on }},
+		{"idle-dim", func(on bool) {
+			idleState = idleActive
+			if on {
+				idleState = idleDim
+			}
+		}},
+		{"idle-curtain", func(on bool) {
+			idleState = idleActive
+			if on {
+				idleState = idleCurtain
+			}
+		}},
 		{"guest-drag", func(on bool) { drag.armed = on }},
 		{"rail-drag", func(on bool) {
 			railDragFrom = 0
@@ -369,20 +448,13 @@ func TestHoverPreviewConflictingStatesSuppress(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newHoverPreviewFixture(t, 3, 4)
 			railHover = 1
-			seatTick = 5
 			hoverPreviewPointer()
-			hoverPreviewTick()
-			seatTick = 7
-			hoverPreviewTick()
-			if !hoverPreview.visible {
-				t.Fatal("fixture did not show the card")
-			}
+			f.dwellToVisible(t)
 			hoverPreviewPresented(true, true)
 			tc.set(true)
-			seatTick = 8
 			hoverPreviewTick()
-			if hoverPreview.visible {
-				t.Fatal("conflicting state left the card visible")
+			if hoverPreview.visible || seatTimers.Pending(timerKindHoverDwell) {
+				t.Fatal("conflicting state left the card or timer active")
 			}
 			hoverPreviewPresented(false, true)
 			if !f.contains(t, MarkerHoverPreviewDismiss+"4") {
@@ -390,20 +462,16 @@ func TestHoverPreviewConflictingStatesSuppress(t *testing.T) {
 			}
 
 			// Clearing the state must not resurrect the card: the dwell
-			// starts over and the card waits for the full threshold again.
+			// starts over and waits for the full 500ms deadline again.
 			tc.set(false)
-			seatTick = 9
 			hoverPreviewTick()
 			if hoverPreview.visible {
 				t.Fatal("clearing the conflict resurrected the stale card")
 			}
-			seatTick = 11
-			hoverPreviewTick()
+			f.advanceAndFire(hoverPreviewDwellNs)
 			if !hoverPreview.visible {
 				t.Fatal("an eligible new dwell did not show the card")
 			}
-			// The fresh card needs its own presented frame; the marker
-			// rule is the same honest post-present rule.
 			hoverPreviewPresented(true, true)
 			if !f.contains(t, MarkerHoverPreview+"4 ") {
 				t.Fatalf("new dwell earned no preview receipt: %v", f.logs)
@@ -416,16 +484,10 @@ func TestHoverPreviewConflictingStatesSuppress(t *testing.T) {
 // 240x60 card, accent border, nothing outside its rect.
 func TestHoverPreviewPaintsBoundedCard(t *testing.T) {
 	resetSeatForTest(t)
-	newHoverPreviewFixture(t, 3, 4)
+	f := newHoverPreviewFixture(t, 3, 4)
 	railHover = 1
-	seatTick = 5
 	hoverPreviewPointer()
-	hoverPreviewTick()
-	seatTick = 7
-	hoverPreviewTick()
-	if !hoverPreview.visible {
-		t.Fatal("fixture did not show the card")
-	}
+	f.dwellToVisible(t)
 	rect, ok := hoverPreviewRect(1280, 720)
 	if !ok {
 		t.Fatal("no card rect")
@@ -445,19 +507,16 @@ func TestHoverPreviewPaintsBoundedCard(t *testing.T) {
 		p := (y*1280 + x) * 4
 		return scan[p : p+4]
 	}
-	// The accent border is the card's visible signature (BGRX, dark table).
 	edge := pixel(rect.X, rect.Y+rect.H/2)
 	if edge[0] != 0xf6 || edge[1] != 0x82 || edge[2] != 0x3b || edge[3] != 0xff {
 		t.Fatalf("card edge = % x want the accent border", edge)
 	}
-	// Bounded: nothing outside the rect changed.
 	if out := pixel(rect.X-1, rect.Y+rect.H/2); out[3] != 0 {
 		t.Fatalf("card painted left of its rect: % x", out)
 	}
 	if out := pixel(rect.X+rect.W, rect.Y+rect.H/2); out[3] != 0 {
 		t.Fatalf("card painted right of its rect: % x", out)
 	}
-	// The surface fill is the truthful plate body.
 	if body := pixel(rect.X+rect.W/2, rect.Y+rect.H/2); body[3] != 0xff ||
 		body[0] != 0x35 || body[1] != 0x2d || body[2] != 0x22 {
 		t.Fatalf("card body = % x want the theme surface", body)
@@ -468,16 +527,14 @@ func TestHoverPreviewPaintsBoundedCard(t *testing.T) {
 // one card exists even with many rail cells.
 func TestHoverPreviewOneCardOnly(t *testing.T) {
 	resetSeatForTest(t)
-	newHoverPreviewFixture(t, 3, 4, 5)
+	f := newHoverPreviewFixture(t, 3, 4, 5)
 	railHover = 2
-	seatTick = 5
 	hoverPreviewPointer()
-	hoverPreviewTick()
+	hoverPreviewReconcile()
 	if _, ok := hoverPreviewRect(1280, 720); ok {
 		t.Fatal("pending dwell painted a card")
 	}
-	seatTick = 7
-	hoverPreviewTick()
+	f.advanceAndFire(hoverPreviewDwellNs)
 	rect, ok := hoverPreviewRect(1280, 720)
 	if !ok {
 		t.Fatal("no card rect after dwell")
@@ -489,8 +546,6 @@ func TestHoverPreviewOneCardOnly(t *testing.T) {
 	scan := make([]byte, 1280*720*4)
 	paintHoverPreview(scan, 1280, 720)
 	if again := paintHoverPreview(scan, 1280, 720); again != 0 {
-		// Repainting the same card is idempotent; a SECOND identity must
-		// not paint a second plate.
 		t.Logf("second paint area = %d (same rect, one card)", again)
 	}
 	for x := 0; x < 1280; x += 64 {
@@ -511,17 +566,14 @@ func TestHoverPreviewAnchorsToRailLayout(t *testing.T) {
 	resetSeatForTest(t)
 	defer saveSeatState()()
 	stubSeatRegistry(t, nil)
-	newHoverPreviewFixture(t, 3, 4, 5)
+	f := newHoverPreviewFixture(t, 3, 4, 5)
 	resetSpaces()
 	spaceN, spaceCur = 3, 0
 
 	for cell := 0; cell < 3; cell++ {
 		railHover = cell
-		seatTick = 5
 		hoverPreviewPointer()
-		hoverPreviewTick()
-		seatTick = 7
-		hoverPreviewTick()
+		f.dwellToVisible(t)
 		rect, ok := hoverPreviewRect(1280, 720)
 		if !ok {
 			t.Fatalf("cell %d: no card rect", cell)
@@ -537,11 +589,8 @@ func TestHoverPreviewAnchorsToRailLayout(t *testing.T) {
 	// Single space: byte-identical anchor — cell 2 at 2*(1280/3).
 	spaceN, spaceCur = 1, 0
 	railHover = 2
-	seatTick = 5
 	hoverPreviewPointer()
-	hoverPreviewTick()
-	seatTick = 7
-	hoverPreviewTick()
+	f.dwellToVisible(t)
 	rect, ok := hoverPreviewRect(1280, 720)
 	if !ok {
 		t.Fatal("single-space: no card rect")
