@@ -381,6 +381,9 @@ func (l *launcherState) selected() (AppEntry, bool) {
 }
 
 func openLauncher() {
+	if overlayBlocksModal(overlayLauncher) {
+		return
+	}
 	// M124a (#2580): seat chrome taking the gesture ends any armed drag
 	// — the release the drag waited on is now a menu click.
 	dragAbort("chrome")
@@ -388,6 +391,7 @@ func openLauncher() {
 		dismissLauncher()
 		return
 	}
+	closeDismissibleModals(overlayLauncher)
 	if !launch.open {
 		launch.err = ""
 		launch.prior, _ = tabs.Focused()

@@ -290,10 +290,10 @@ func syncSeatChrome(scan []byte) {
 	}
 	if buttonPixels.id == 0 {
 		// Opening an ordinary window focuses it. Restore the live hosted
-		// destination immediately, including the menu sink if it is open.
+		// destination immediately, including any open overlay sink.
 		focus := hostedApp
-		if launch.open {
-			focus = launch.sink
+		if sink := overlayFocusSink(overlayCount); sink != 0 {
+			focus = sink
 		}
 		id, r := vi.WinOpen(uint32(x), uint32(y), uint32(w), uint32(h))
 		if r < 0 {
@@ -407,12 +407,7 @@ func launcherWindowEvent(e vi.Event) {
 	// A delayed mirror can name a reused id. Only a failed query proves
 	// the current sink is gone; ordinary sink KEY_DOWN/BLUR events drain
 	// on the same seat queue and are intentionally ignored.
-	if id == launch.sink {
-		if _, r := queryWindow(int(id)); r < 0 {
-			launch.sink = 0
-			dismissLauncher()
-		}
-	}
+	reapOverlaySink(id)
 }
 
 // deathMirrorStale reports whether a released registry mirror naming id is

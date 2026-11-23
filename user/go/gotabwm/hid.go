@@ -674,37 +674,7 @@ func handleWmKey(e vi.Event) {
 	// clipboard ring — a copy lands in history inside the gesture that
 	// made it, not up to a tick later.
 	cliphistPoll()
-	// Escape dismisses the seat-owned notification center without stealing
-	// ordinary app keystrokes when the overlay is closed.
-	if notifyCenterOpen && e.Arg0 == 0x29 && e.Flags&(vi.ModCtrl|vi.ModShift|vi.ModAlt) == 0 {
-		notifyCenterOpen = false
-		notifyCenterReceipt.arm()
-		vi.ConsoleLine(MarkerNotifyCenterClose)
-		return
-	}
-	// M196a (#3351): a standing secret-ask is chrome-modal like the
-	// power menu — its g/d/Esc are the seat's alone. M216l (#3951): it is
-	// checked FIRST among the modals — the plate paints over the power
-	// menu, so key order has to agree with paint order (a 'g' must reach
-	// the prompt, not a menu hiding under it).
-	if handleSecretAskKey(e) {
-		return
-	}
-	// M115d (#2463): the open power menu's keys are the seat's alone —
-	// the sink window holds focus, so a hosted app sees nothing anyway.
-	if handlePowerKey(e) {
-		return
-	}
-	if handleLauncherKey(e) {
-		return
-	}
-	// M190a (#3236): the open paste menu is chrome-modal like the power
-	// menu — its arrows/Enter/Esc are the seat's, never the app's.
-	if handleClipMenuKey(e) {
-		return
-	}
-	// M190c (#3238): the rail menu's keys are the seat's while it is up.
-	if handleRailMenuKey(e) {
+	if dispatchOverlayKey(e) {
 		return
 	}
 	// M82c (#1770): dispatch IS the registry walk — one exact (mods, usage)
@@ -1092,9 +1062,9 @@ func updateCursorShape(px, py uint32) {
 // declared regions (the WM_RPC kind-31 half — text/link/busy zones only
 // the app can name); everything else is the arrow.
 func pickCursorShape(px, py uint32) uint64 {
-	// M216l (#3951): while a consent stands nothing is grabbable —
-	// every chrome shape would promise a gesture the modal swallows.
-	if secretAskModal.open {
+	// M216l/M216p: a modal outranking drag-ghost (lock or secret-ask)
+	// owns every sample and keeps the arrow even over an armed drag.
+	if overlayBlocksDragCursor() {
 		return vi.CursorPtr
 	}
 	switch {
@@ -1110,6 +1080,11 @@ func pickCursorShape(px, py uint32) uint64 {
 		return sashCursorShape(sashDragNode)
 	case railDragFrom >= 0:
 		return vi.CursorGrg
+	}
+	// Any open modal menu swallows sash/rail/content clicks, so keep the
+	// arrow instead of promising a gesture the modal will consume.
+	if seatChromeModal() {
+		return vi.CursorPtr
 	}
 	if ni, _, ok := tabs.sashHitAt(px, py,
 		uint32(vi.ScanoutWidth), uint32(vi.ScanoutHeight)); ok {
@@ -1175,320 +1150,137 @@ func handleWmPointer(e vi.Event) {
 	// (the armed-drag early return included) so it always sees the
 	// post-handler gesture state.
 	defer updateCursorShape(px, py)
-	down := pointerDownEdge(btn, prevPtrButtons)
-	up := pointerUpEdge(btn, prevPtrButtons)
-	// M124e (#2584): the middle-button's own down edge — the primary-paste
-	// gesture. It never starts a chrome path (those all key on the left
-	// edge), so it reaches the content tail where the delivery happens.
-	midDown := btn&hidBtnMiddle != 0 && prevPtrButtons&hidBtnMiddle == 0
-	// M190c (#3238): the right button's own down edge — the rail menu's
-	// open press. It never keys a chrome path on the left edge, so off the
-	// rail it keeps its old fate: the content forward below still sees it.
-	rightDown := btn&hidBtnRight != 0 && prevPtrButtons&hidBtnRight == 0
+	p := ptrSample{
+		px:        px,
+		py:        py,
+		btn:       btn,
+		mods:      mods,
+		down:      pointerDownEdge(btn, prevPtrButtons),
+		up:        pointerUpEdge(btn, prevPtrButtons),
+		midDown:   btn&hidBtnMiddle != 0 && prevPtrButtons&hidBtnMiddle == 0,
+		rightDown: btn&hidBtnRight != 0 && prevPtrButtons&hidBtnRight == 0,
+	}
 	prevPtrButtons = btn
-	// M216l (#3951): a standing secret-ask is modal to the pointer — the
-	// strongest modal the seat owns, ahead of even an armed drag. A press
-	// on a plate button answers it (Grant obeys the same arm delay as
-	// 'g'); a press on the plate or anywhere else is swallowed whole and
-	// dismisses NOTHING — an unanswered consent is not a background state.
-	// Motion, release and non-left presses are swallowed the same way, so
-	// nothing reaches rail hover, a toast, another modal or content while
-	// the prompt stands.
-	if secretAskModal.open {
-		if down {
-			handleSecretAskPointer(px, py)
-		}
+	if dispatchOverlayPointer(p) {
 		return
 	}
-	// M124a (#2580): an armed guest drag owns every pointer sample —
-	// motion feeds the ghost's hit-test, the release edge settles the
-	// drop, and no chrome (toast, rail, sash, launcher) can see a click
-	// mid-drag while nothing forwards to content. The press that armed
-	// it already went through the normal content path before the
-	// drag_begin RPC landed; serveDragBegin clears its latches.
-	if drag.armed {
-		if up {
-			contentDown, railDragFrom, sashDragging = false, -1, false
-		}
-		handleDragPointer(px, py, up)
+	if handleRailSashPanePointer(p) {
 		return
 	}
-	if menuGesture {
-		if btn == 0 {
-			menuGesture = false
-		}
-		return
-	}
-	// M79k (#1720): the notify strip is chrome, so a press on a toast is
-	// consumed HERE — it dismisses the toast and focuses its SENDER, and
-	// it never reaches the content forward below (a stray content drag
-	// inside a hosted pane would outlive the toast). The HIT decides
-	// consumption, not whether the focus leg then succeeded: a press is
-	// either on the toast or it is not.
-	//
-	// It comes FIRST, ahead of the launcher's own block below, because the
-	// strip is painted LAST (compositeTick) and the pointer path has to
-	// agree with the paint order: what is on top has to be what the click
-	// finds. The launcher's block returns early for every button, so a
-	// press on a toast that fired while the launcher was open used to be
-	// swallowed there — it neither clicked the toast nor reached content,
-	// it just closed the launcher under a toast the user could see. With
-	// the #2054 left-edge strip the two rects DO overlap (the strip is
-	// x<launchW, the toast column x<216), which makes the order load-
-	// bearing rather than a coincidence: the toast is painted last, so
-	// the press finds it first. TestToastHitPrecedesTheLauncher pins it.
-	if down {
-		if notifyCenterClick(px, py) {
-			return
-		}
-	}
-	// The center is painted over the content, so every pointer sample inside
-	// its panel belongs to it, not to the app underneath. Down edges are
-	// handled above; this also consumes motion and release samples.
-	if notifyCenterHit(px, py, vi.ScanoutWidth, vi.ScanoutHeight) {
-		return
-	}
-	if down {
-		if _, onToast := notifyHit(px, py, vi.ScanoutWidth, vi.ScanoutHeight); onToast {
-			notifyClicked(px, py)
-			if launch.open {
-				menuGesture = true
-				_ = ensureLauncherFocus()
-			}
-			return
-		}
-	}
-	// M115d (#2463): the open power menu is chrome-modal the same way
-	// the launcher is — a press on its row runs the verb, a press
-	// anywhere else dismisses it, and nothing reaches content either
-	// way.
-	if powerMenuOpen {
-		if down {
-			dismissPowerMenu()
-			if r := powerMenuRowAt(px, py, vi.ScanoutWidth, vi.ScanoutHeight); r >= 0 {
-				powerSel = r
-				runPowerRow(r)
-			}
-		}
-		return
-	}
-	// M190a (#3236): the open paste menu is chrome-modal the same way —
-	// a press on a row picks it through the Enter path, a press anywhere
-	// else dismisses it, and nothing reaches content either way.
-	if clipMenuOpen {
-		if down {
-			if r := clipMenuRowAt(px, py, vi.ScanoutWidth, vi.ScanoutHeight); r >= 0 {
-				clipMenuSel = r
-				applyClipMenuPick(r)
-			} else {
-				dismissClipMenu()
-			}
-		}
-		return
-	}
-	// M190c (#3238): the rail menu is chrome-modal like the power and
-	// paste menus — a press on a row picks it (either button), a press
-	// anywhere else dismisses it, and nothing reaches content either way.
-	if railMenuOpen {
-		if down || rightDown {
-			r := railMenuRowAt(px, py, vi.ScanoutWidth, vi.ScanoutHeight)
-			// A right press off the panel but on another cell retargets
-			// the menu rather than dismissing it — the cell's own menu
-			// gesture, like a desktop's context-click on a second icon.
-			if r < 0 && rightDown {
-				if i, ok := railCellAt(px, py, vi.ScanoutWidth, tabs.Count(), RailHeight); ok {
-					openRailMenu(i)
-					return
-				}
-			}
-			if r >= 0 {
-				railMenuSel = r
-				applyRailMenuPick(r)
-			} else {
-				dismissRailMenu()
-			}
-		}
-		return
-	}
-	if launch.open {
-		if btn != 0 {
-			menuGesture = true
-			railDragFrom, contentDown, sashDragging = -1, false, false
-		}
-		if down {
-			i, ok := launchRowAt(px, py)
-			if !ok {
-				x, y := int(px), int(py)
-				if x < launchX || x >= launchX+launchW || y < launchY || y >= launchY+launch.panelH() {
-					dismissLauncher()
-				}
-				return
-			}
-			launch.sel = i
-			execSelected()
-		}
-		return
-	}
-	if rightDown {
-		// M190c (#3238): a right press on a rail cell opens that tab's
-		// menu. The rail already swallows its chrome samples, so the only
-		// new behaviour is the open itself; off the rail the sample falls
-		// through to the content forward exactly as before.
-		if i, ok := railCellAt(px, py, vi.ScanoutWidth, tabs.Count(), RailHeight); ok {
+	forwardClientPointer(p)
+}
+
+// handleRailSashPanePointer handles non-overlay seat chrome: bottom-band
+// buttons, the clock panel's notification-center trigger, the empty-strip
+// start surface, the top rail (right/middle/left clicks, pills, close-x,
+// drag-reorder, hover), and split sashes / pane drops. Returns true when
+// the sample was consumed as seat chrome and must not forward to content.
+func handleRailSashPanePointer(p ptrSample) bool {
+	if p.rightDown {
+		if i, ok := railCellAt(p.px, p.py, vi.ScanoutWidth, tabs.Count(), RailHeight); ok {
 			openRailMenu(i)
-			return
+			return true
 		}
 	}
-	if midDown {
-		// M216d (#3943): a middle press on a rail cell closes that tab
-		// through the close-x's own seam — the whole cell is the target,
-		// not just the 16 px zone. A space pill keeps its left-click
-		// meaning and the client area keeps its M124e primary-paste
-		// fate: both fall through untouched.
-		if _, onPill := spacePillAt(px, py, vi.ScanoutWidth, RailHeight); !onPill {
-			if i, ok := railCellAt(px, py, vi.ScanoutWidth, tabs.Count(), RailHeight); ok {
+	if p.midDown {
+		if _, onPill := spacePillAt(p.px, p.py, vi.ScanoutWidth, RailHeight); !onPill {
+			if i, ok := railCellAt(p.px, p.py, vi.ScanoutWidth, tabs.Count(), RailHeight); ok {
 				applyRailClose(i)
-				return
+				return true
 			}
 		}
 	}
-	if down {
-		// M161b (#2974): a not-responding banner is chrome over its pane —
-		// painted under the toasts and modal menus (checked above) but
-		// over the app's content, so its press is consumed here and never
-		// forwarded. The hit decides consumption like the toast's does.
-		if wid, act := watchdogHit(px, py, vi.ScanoutWidth, vi.ScanoutHeight); wid != 0 {
-			watchdogPress(wid, act)
-			return
-		}
-		if powerBtnHit(px, py, vi.ScanoutWidth, vi.ScanoutHeight) {
+	if p.down {
+		if powerBtnHit(p.px, p.py, vi.ScanoutWidth, vi.ScanoutHeight) {
 			menuGesture = true
 			railDragFrom, contentDown, sashDragging = -1, false, false
 			openPowerMenu()
-			return
+			return true
 		}
-		if godMenuHit(px, py, vi.ScanoutWidth, vi.ScanoutHeight) {
+		if godMenuHit(p.px, p.py, vi.ScanoutWidth, vi.ScanoutHeight) {
 			menuGesture = true
 			railDragFrom, contentDown, sashDragging = -1, false, false
 			openLauncher()
-			return
+			return true
 		}
-		// M71e (#1564): on an empty strip the start surface is the click
-		// target. Checked before the rail so it cannot be shadowed by a
-		// rail cell that happens to span the point (the rail has no cells
-		// when the strip is empty, so this is belt-and-braces).
-		if tabs.Count() == 0 && startSurfaceHit(px, py) {
+		if notifyCenterClockHit(p.px, p.py, vi.ScanoutWidth, vi.ScanoutHeight) {
+			openNotifyCenter()
+			return true
+		}
+		if tabs.Count() == 0 && startSurfaceHit(p.px, p.py) {
 			menuGesture = true
 			openLauncher()
-			return
+			return true
 		}
-		// M79b (#1705): the close-x zone is its own hit target — it closes
-		// the cell's tab and never focuses, never starts a drag, and never
-		// reaches content (hit-test honesty). The rest of the cell keeps
-		// the click/drag behaviour below, byte for byte.
-		updateRailHover(px, py, false)
-		// M151b (#2913): a space pill is its own click target — the pills
-		// paint last, over the cells (and the last cell's close zone) at
-		// the rail's right edge, so what is on top is what the click
-		// finds. The press is consumed whole: the pick's marker names
-		// the gesture, the shared switch path runs, and no rail drag
-		// arms (a release on a pill is still rail territory for an
-		// already-armed drag — a dropped tab reorders, it does not
-		// jump spaces; that arc is out of scope).
-		if si, ok := spacePillAt(px, py, vi.ScanoutWidth, RailHeight); ok {
+		updateRailHover(p.px, p.py, false)
+		if si, ok := spacePillAt(p.px, p.py, vi.ScanoutWidth, RailHeight); ok {
 			railDragFrom = -1
 			applySpacePick(si)
-			return
+			return true
 		}
-		if i, ok := railCloseZoneAt(px, py, vi.ScanoutWidth, tabs.Count(), RailHeight); ok {
+		if i, ok := railCloseZoneAt(p.px, p.py, vi.ScanoutWidth, tabs.Count(), RailHeight); ok {
 			railDragFrom = -1
 			applyRailClose(i)
-			return
+			return true
 		}
-		// M79c (#1706): the sash is chrome between the rail and the
-		// content forward. A down on the divider arms the drag and
-		// consumes the press: no rail drag, no click/focus change, no
-		// content forward (a stray selection drag inside a pane would
-		// otherwise shadow the resize). The rail (y < RailHeight) and
-		// the divider zone are disjoint by construction (sashZoneAt),
-		// so the order against beginRailDrag below cannot matter — but
-		// the armed latch must be set before any of those run.
-		if ni, _, ok := tabs.sashHitAt(px, py,
+		if ni, _, ok := tabs.sashHitAt(p.px, p.py,
 			uint32(vi.ScanoutWidth), uint32(vi.ScanoutHeight)); ok {
 			railDragFrom = -1
 			sashDragging = true
 			sashDragNode = ni
-			return
+			return true
 		}
-		beginRailDrag(px, py)
-		_, onRail := railCellAt(px, py, vi.ScanoutWidth, tabs.Count(), RailHeight)
-		_ = applyRailClick(px, py)
-		if !onRail {
-			// #1688: not chrome — content for the kernel's local path
-			// (terminal text selection, mouse-tracking reports). The
-			// kernel derives press/release edges from this serialized
-			// stream itself; consumed chrome is never forwarded.
-			contentDown = true
-			forwardContentPointer(px, py, btn, mods)
-		}
-		return
+		beginRailDrag(p.px, p.py)
+		_, onRail := railCellAt(p.px, p.py, vi.ScanoutWidth, tabs.Count(), RailHeight)
+		_ = applyRailClick(p.px, p.py)
+		return onRail
 	}
-	if up {
-		updateRailHover(px, py, false)
-		// M79c (#1706): the sash release edge. The divider position is
-		// the release point (an x for a vertical split, a y for a
-		// horizontal one); applySashDrag clamps it into the pane minima
-		// and refuses a release on the armed position. A sash press
-		// never armed the rail drag and never set contentDown, so
-		// neither fires here — return with the drag consumed.
+	if p.up {
+		updateRailHover(p.px, p.py, false)
 		if sashDragging {
 			sashDragging = false
-			pos := int(px)
+			pos := int(p.px)
 			if ni := sashDragNode; ni >= 0 && ni < tabs.treeN &&
 				tabs.tree[ni].kind == SplitHoriz {
-				pos = int(py)
+				pos = int(p.py)
 			}
 			_ = applySashDrag(sashDragNode, pos)
-			return
+			return true
 		}
-		_ = endRailDrag(px, py)
+		_ = endRailDrag(p.px, p.py)
+		return false
+	}
+	updateRailHover(p.px, p.py, true)
+	if sashDragging {
+		return true
+	}
+	if godMenuHit(p.px, p.py, vi.ScanoutWidth, vi.ScanoutHeight) {
+		return true
+	}
+	_, onRail := railCellAt(p.px, p.py, vi.ScanoutWidth, tabs.Count(), RailHeight)
+	return onRail
+}
+
+// forwardClientPointer forwards a non-chrome pointer sample to the hosted
+// client pane under the pointer, tracking left-button press/release state
+// and running primary-selection paste on middle-down.
+func forwardClientPointer(p ptrSample) {
+	if p.down {
+		contentDown = true
+		forwardContentPointer(p.px, p.py, p.btn, p.mods)
+		return
+	}
+	if p.up {
 		if contentDown {
-			forwardContentPointer(px, py, btn, mods)
+			forwardContentPointer(p.px, p.py, p.btn, p.mods)
 			contentDown = false
 		}
 		return
 	}
-	// #1688: motion is content too, unless it rides the rail chrome —
-	// the only pointer consumer here besides the launcher above.
-	// M79b (#1705): motion over the rail is hover — the tint follows the
-	// pointer and the entry marker prints on cell transitions only.
-	updateRailHover(px, py, true)
-	// M79c (#1706): motion with a sash armed is an in-progress resize, not
-	// content. Swallow it: forwarding held-button motion to the kernel's
-	// local path would start a selection drag inside the pane under the
-	// pointer. No live preview either (the seat paints no content-area
-	// chrome); the rects move once, on the release edge above.
-	if sashDragging {
-		return
+	if p.midDown {
+		applySelPasteAt(p.px, p.py)
 	}
-	if godMenuHit(px, py, vi.ScanoutWidth, vi.ScanoutHeight) {
-		return
-	}
-	if _, onToast := notifyHit(px, py, vi.ScanoutWidth, vi.ScanoutHeight); onToast {
-		// Chrome under the pointer, like the rail: not content. A drag
-		// that starts on a toast is the toast's, not a content forward.
-		return
-	}
-	if _, onRail := railCellAt(px, py, vi.ScanoutWidth, tabs.Count(), RailHeight); !onRail {
-		if midDown {
-			// M124e (#2584): a middle press inside a hosted pane pastes
-			// the seat's primary selection into that window. The sample
-			// still forwards as content — the click is real, the paste
-			// is the seat's.
-			applySelPasteAt(px, py)
-		}
-		forwardContentPointer(px, py, btn, mods)
-	}
+	forwardContentPointer(p.px, p.py, p.btn, p.mods)
 }
 
 func pointerDownEdge(btn, prev uint8) bool {
@@ -1507,16 +1299,7 @@ func pointerUpEdge(btn, prev uint8) bool {
 // (a3 = scroll) so the kernel posts kind-12 MOUSE_SCROLL to the window
 // under the pointer.
 func handleWmWheel(px, py uint32, scroll uint16, mods uint8) {
-	if seatChromeModal() || drag.armed || menuGesture || sashDragging {
-		return
-	}
-	if notifyCenterHit(px, py, vi.ScanoutWidth, vi.ScanoutHeight) {
-		return
-	}
-	if _, onToast := notifyHit(px, py, vi.ScanoutWidth, vi.ScanoutHeight); onToast {
-		return
-	}
-	if wid, _ := watchdogHit(px, py, vi.ScanoutWidth, vi.ScanoutHeight); wid != 0 {
+	if overlaySwallowsWheel(px, py) || menuGesture || sashDragging {
 		return
 	}
 	if powerBtnHit(px, py, vi.ScanoutWidth, vi.ScanoutHeight) ||
@@ -1863,6 +1646,9 @@ func restoreRailMenuFocus() {
 // cell while it is open retargets rather than toggling — the open marker
 // reprints so the serial names the current target.
 func openRailMenu(i int) {
+	if overlayBlocksModal(overlayRailMenu) {
+		return
+	}
 	dragAbort("chrome") // M124a: the modal menu takes the gesture
 	railDragFrom, contentDown, sashDragging = -1, false, false
 	if i < 0 || i >= tabs.Count() {
@@ -1872,6 +1658,7 @@ func openRailMenu(i int) {
 	if railMenuOpen && railMenuTab == id {
 		return
 	}
+	closeDismissibleModals(overlayRailMenu)
 	if !railMenuOpen {
 		railMenuPrior = 0
 		if fid, ok := tabs.Focused(); ok && fid < sessionIDBase {

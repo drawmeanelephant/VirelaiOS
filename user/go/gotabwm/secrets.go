@@ -158,6 +158,9 @@ func openSecretAsk(a secretAsk) {
 	dragAbort("chrome")
 	railDragFrom, contentDown, sashDragging = -1, false, false
 	railHover, railCloseHover, godButtonHover = -1, -1, false
+	// M216p (#3955): close any dismissible modal before acquiring the
+	// consent sink so a modal borrowing the reserve parks it first.
+	closeDismissibleModals(overlaySecretAsk)
 	secretAskModal = a
 	secretAskModal.open = true
 	secretAskModal.sink = 0

@@ -63,17 +63,13 @@ const lockPassMax = 64 // govault's passphrase field bound, mirrored
 // fixture in host tests (the execApp/openFile pattern).
 var lockReadFile = vi.ReadFileAll
 
-// lockFocusTarget is the id focus returns to on unlock: the open launcher's
-// sink while it is up (its own ensure-refocus owns that window), then a
-// standing secret-ask's sink (M216l #3951 — a consent is a modal ahead of
-// the strip, and its sink is a seat window the tab index cannot name),
+// lockFocusTarget is the id focus returns to on unlock: the highest-
+// priority open overlay below lock that holds an input sink (derived from
+// seatOverlays, so a standing secret-ask outranks everything beneath it),
 // else the seat's focused tab.
 func lockFocusTarget() uint32 {
-	if launch.open && launch.sink != 0 {
-		return launch.sink
-	}
-	if secretAskModal.open && secretAskModal.sink != 0 {
-		return secretAskModal.sink
+	if sink := overlayFocusSink(overlayLock); sink != 0 {
+		return sink
 	}
 	if id, ok := tabs.Focused(); ok {
 		return id
@@ -98,6 +94,10 @@ func requestLock() {
 		vi.ConsoleLine(MarkerLockRefused + "bad_credential")
 		return
 	}
+	// M216p (#3955): lock outranks dismissible modals — close them before
+	// taking the sink so a modal borrowing the reserve parks it first.
+	// Secret-ask is never dismissed and keeps standing behind the curtain.
+	closeDismissibleModals(overlayLock)
 	// The sink is the power.go pattern: a seat-owned window the kernel
 	// focuses, so its owner's queue — this seat's — receives the KEY_DOWN
 	// fan-out and no hosted app does. 1x1 parked in the corner: the curtain
@@ -166,12 +166,12 @@ func unlockTry() {
 		hostedApp = id
 	}
 	lockPrior = 0
-	// M216l (#3951): a consent that stood through the lock — or opened
-	// behind it — owns the keys again: its sink is the hand-back target,
-	// never a hosted window, or the first keystroke after unlock types
-	// the answer into the asker's own window.
-	if secretAskModal.open && secretAskModal.sink != 0 {
-		_ = focusRaise(secretAskModal.sink)
+	// M216l/M216p: a standing sink-holding overlay beneath the lock (most
+	// notably a secret-ask consent that stood through or opened behind it)
+	// owns the keys again — hand kernel focus to the highest-priority open
+	// overlay sink instead of leaving it on a hosted window.
+	if sink := overlayFocusSink(overlayLock); sink != 0 {
+		_ = focusRaise(sink)
 	}
 	vi.ConsoleLine(MarkerUnlocked)
 }

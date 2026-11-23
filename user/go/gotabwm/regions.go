@@ -57,13 +57,10 @@ func serveRegionDeclare(req vi.WmRpc) bool {
 // surface or a chrome overlay covering the point keeps the arrow rather
 // than picking a region it occludes.
 func regionShapeAt(px, py uint32) (uint64, bool) {
-	if seatChromeModal() || notifyCenterOpen {
+	if overlaySuppressesRegion(px, py) {
 		return 0, false
 	}
 	if godMenuHit(px, py, vi.ScanoutWidth, vi.ScanoutHeight) {
-		return 0, false
-	}
-	if _, onToast := notifyHit(px, py, vi.ScanoutWidth, vi.ScanoutHeight); onToast {
 		return 0, false
 	}
 	id, lx, ly, ok := regionWindowAt(px, py)

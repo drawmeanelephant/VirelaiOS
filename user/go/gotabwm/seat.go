@@ -584,24 +584,7 @@ func main() {
 				remote = nil
 			}
 		}
-		if launch.open && launch.sink != 0 && !ensureLauncherFocus() {
-			dismissLauncher()
-		}
-		// M115d (#2463): the power menu's sink is reaped on the same
-		// dead-window discipline as the launcher's.
-		if powerMenuOpen && powerSink != 0 && !ensurePowerFocus() {
-			dismissPowerMenu()
-		}
-		// M196a (#3351): the consent sink is reaped on the same
-		// dead-window discipline — a vanished sink must not strand a
-		// prompt whose keys are the seat's alone.
-		if secretAskModal.open && secretAskModal.sink != 0 && !ensureSecretFocus() {
-			closeSecretAsk()
-		}
-		// M190c (#3238): the rail menu's sink on the same discipline.
-		if railMenuOpen && railMenuSink != 0 && !ensureRailMenuFocus() {
-			dismissRailMenu()
-		}
+		reapOverlays()
 		e, ok := vi.PollEvent()
 		if !ok {
 			// #3882: pay any paint debt marked outside the event drain
@@ -907,10 +890,6 @@ func compositePaint(scan []byte, ticks uint64, presents *int) (presented bool) {
 		railPx = paintRail(scan, vi.ScanoutWidth, vi.ScanoutHeight, RailHeight, &tabs, railHover, railCloseHover)
 		markRail()
 	}
-	// #3914: the hover-preview card sits under the rail it belongs to and
-	// over the content, under every other chrome layer (it is suppressed
-	// while a modal/overlay/drag/lock owns the frame anyway).
-	hoverPx := paintHoverPreview(scan, vi.ScanoutWidth, vi.ScanoutHeight)
 	// M108b (#2325): the lane pass runs before the chrome paint so a
 	// host-sourced clipboard write this tick is already badged on the same
 	// presented frame.
@@ -919,58 +898,15 @@ func compositePaint(scan []byte, ticks uint64, presents *int) (presented bool) {
 	// session receipt seen this tick is badged on the same frame.
 	agentSeatTick()
 	chromeTick(scan, ticks)
-	// M161b (#2974): not-responding banners paint over their panes and
-	// under the modal chrome — the pointer path hit-tests them in the
-	// same order (the menus below already consumed the press), so the
-	// banner must lose pixels to an open menu, not cover it.
-	_ = paintWatchdog(scan, vi.ScanoutWidth, vi.ScanoutHeight)
-	if launch.open {
-		_ = paintLauncher(scan, vi.ScanoutWidth, vi.ScanoutHeight)
-	}
-	// M115d (#2463): the power menu floats above the rail and under the
-	// toasts, matching its pointer priority (the toast hit test runs
-	// first).
-	if powerMenuOpen {
-		_ = paintPowerMenu(scan, vi.ScanoutWidth, vi.ScanoutHeight)
-	}
-	// M196a (#3351): the secret-ask prompt floats with the modal chrome —
-	// above the rail, under the toasts, names only (never the value).
-	askPx := 0
-	if secretAskModal.open {
-		askPx = paintSecretAsk(scan, vi.ScanoutWidth, vi.ScanoutHeight)
-	}
-	// M190c (#3238): the button-2 rail menu floats with the other modal
-	// chrome — above the rail it opened from, under the toasts.
-	if railMenuOpen {
-		_ = paintRailMenu(scan, vi.ScanoutWidth, vi.ScanoutHeight)
-	}
 	// M125f (#2591): a crash receipt's deferred re-exec runs here — off
 	// the teardown event and clear of crashSave's whole-VM save.
 	crashRestartTick()
-	painted := paintNotify(scan, vi.ScanoutWidth, vi.ScanoutHeight, compositeClock)
-	centerPainted := paintNotifyCenter(scan, vi.ScanoutWidth, vi.ScanoutHeight)
-	// M124a (#2580): the drag ghost paints over every other chrome layer
-	// — the gesture owns the frame while the button is held — and under
-	// the idle curtain like the rest (the curtain is visual, not input).
-	// M216l (#3951): not over a standing consent — a drag armed after the
-	// prompt opened would otherwise paint app imagery across the answer
-	// buttons, which is the asker's own pixels covering its own ask.
-	ghostPainted := 0
-	if !secretAskModal.open {
-		ghostPainted = paintDragGhost(scan)
-	}
-	// M190e (#3240): the lock curtain is the topmost layer and owns the
-	// frame outright while it is up — the idle overlay never paints under it.
-	if lockActive {
-		_ = paintLockCurtain(scan, vi.ScanoutWidth, vi.ScanoutHeight)
-	} else {
-		switch idleState {
-		case idleDim:
-			_ = paintIdleDim(scan, vi.ScanoutWidth, vi.ScanoutHeight)
-		case idleCurtain:
-			_ = paintIdleCurtain(scan, vi.ScanoutWidth, vi.ScanoutHeight)
-		}
-	}
+	ovPx := paintOverlays(scan, vi.ScanoutWidth, vi.ScanoutHeight)
+	hoverPx := ovPx[overlayHoverPreview]
+	askPx := ovPx[overlaySecretAsk]
+	painted := ovPx[overlayNotify]
+	centerPainted := ovPx[overlayNotifyCenter]
+	ghostPainted := ovPx[overlayDragGhost]
 	if !demoMode {
 		syncSeatChrome(scan)
 	}
