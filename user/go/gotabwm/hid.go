@@ -170,6 +170,10 @@ var execApp = vi.Exec
 // host tests assert which pointer samples reach an app without a guest kernel.
 var forwardContentPointer = vi.WmctlContentPtr
 
+// forwardContentScroll is the content-wheel syscall (M216k #3950, slot-65
+// cmd 15 a3 = scroll). Swappable in host tests like forwardContentPointer.
+var forwardContentScroll = vi.WmctlContentScroll
+
 // #3348 (the cursor-context seam): the seat owns the PICK, the kernel owns
 // the stamp — slot-65 cmd 24 (vi.WmctlCursorShape) selects which staged
 // mask of the f-artcraft #1249 set is drawn over the composed frame.
@@ -1160,6 +1164,13 @@ func handleWmPointer(e vi.Event) {
 	// judges the press on what was held when it was captured, not on a
 	// drain-time read a concurrent chord burst may have changed.
 	mods := uint8(e.Arg1)
+	// M216k (#3950): wheel events ride kind 19 with the packed 16-bit
+	// MOUSE_SCROLL word in arg1[31:16]. Handled before button-edge state so
+	// scrolling never mutates prevPtrButtons, railHover, or cursor shape.
+	if scroll := uint16(e.Arg1 >> 16); scroll != 0 {
+		handleWmWheel(px, py, scroll, mods)
+		return
+	}
 	// #3348: the cursor pick re-evaluates on EVERY sample's exit path
 	// (the armed-drag early return included) so it always sees the
 	// post-handler gesture state.
@@ -1486,6 +1497,40 @@ func pointerDownEdge(btn, prev uint8) bool {
 
 func pointerUpEdge(btn, prev uint8) bool {
 	return btn&hidBtnLeft == 0 && prev&hidBtnLeft != 0
+}
+
+// handleWmWheel routes one wheel-carrying kind-19 WM_POINTER sample
+// (M216k #3950). Any modal overlay, active gesture, or chrome zone
+// (rail band, start surface, toasts, watchdog banner, god/power buttons,
+// split sash) swallows the wheel silently — no per-event serial marker.
+// Everywhere else over the client area forwards through slot-65 cmd 15
+// (a3 = scroll) so the kernel posts kind-12 MOUSE_SCROLL to the window
+// under the pointer.
+func handleWmWheel(px, py uint32, scroll uint16, mods uint8) {
+	if seatChromeModal() || drag.armed || menuGesture || sashDragging {
+		return
+	}
+	if notifyCenterHit(px, py, vi.ScanoutWidth, vi.ScanoutHeight) {
+		return
+	}
+	if _, onToast := notifyHit(px, py, vi.ScanoutWidth, vi.ScanoutHeight); onToast {
+		return
+	}
+	if wid, _ := watchdogHit(px, py, vi.ScanoutWidth, vi.ScanoutHeight); wid != 0 {
+		return
+	}
+	if powerBtnHit(px, py, vi.ScanoutWidth, vi.ScanoutHeight) ||
+		godMenuHit(px, py, vi.ScanoutWidth, vi.ScanoutHeight) {
+		return
+	}
+	if py < uint32(RailHeight) || tabs.Count() == 0 {
+		return
+	}
+	if _, _, onSash := tabs.sashHitAt(px, py,
+		uint32(vi.ScanoutWidth), uint32(vi.ScanoutHeight)); onSash {
+		return
+	}
+	forwardContentScroll(px, py, scroll, mods)
 }
 
 // railCloseZoneAt is the M79b (#1705) close-x hit test: the cell's rightmost

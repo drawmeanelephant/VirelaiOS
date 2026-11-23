@@ -93,6 +93,7 @@
 # replays identically.
 #
 # HOST PREREQUISITES (fail the gate honestly when missing):
+#   bash tools/go/build-gotabwm.sh              ->  .build/go/GOTABWM.ELF
 #   bash tools/go/build-goreader.sh             ->  .build/go/GOREADER.ELF
 #   bash tools/go/build-goedit.sh               ->  .build/go/GOEDIT.ELF
 #   bash tools/go/build-files.sh                ->  .build/go/GOFILES.ELF
@@ -1084,4 +1085,112 @@ print("go-reader 05: EXPORT.PDF structure ok (%d bytes, %d xref objs, "
       "pages=3); pos row page=1 bm=1 restored to seed; cgrender page 2 "
       "vs scanout crop (mismatch %.4f%%, mean %.2f/255, tol %d)"
       % (len(data), n, frac * 100, mean, TOL))
+PY
+
+# --- run 06 (M216k #3950): wheel-on-the-wire under GOTABWM -----------------
+# Seated boot on a run-scoped share: GOTABWM hosts GOREADER on PAGES.PDF.
+# After `goreader: ready`, --pointer-virtio injects wheel-down (+1 line) over
+# GOREADER's client area (640,360) -- advancing from page 1 to page 2/3 --
+# followed by wheel-down (+1 line) over the top rail (320,10), which the seat
+# must swallow so GOREADER stays on page 2/3 and never reaches page 3/3.
+# Pressing 'q' after the delay flushes GOREADER.POS, proving the changed page
+# position on disk as well as in the serial marker.
+
+vgate_file script-06.txt <<'EOF'
+exec GOTABWM.ELF
+EOF
+
+vgate_file script2-06.txt <<'EOF'
+exec GOREADER.ELF /host/READER/PAGES.PDF
+EOF
+
+vgate_file script3-06.txt <<'EOF'
+echo rx-reader-wheel-ok
+EOF
+
+vgate_setup_python <<'PY'
+import os, shutil, sys
+
+rd = os.environ["RUN_DIR"]
+share = os.environ.get("VG_SHARE") or os.path.join(rd, "share")
+wshare = os.path.join(rd, "wheel-share")
+os.makedirs(os.path.join(wshare, "READER"), exist_ok=True)
+
+for dst, src, build in (
+    ("GOTABWM.ELF", os.path.join(".build", "go", "GOTABWM.ELF"),
+     "bash tools/go/build-gotabwm.sh"),
+    ("GOREADER.ELF", os.path.join(".build", "go", "GOREADER.ELF"),
+     "bash tools/go/build-goreader.sh"),
+):
+    if not os.path.exists(src):
+        sys.exit(dst + " missing (expected " + src + ") - build it first: " + build)
+    shutil.copy(src, os.path.join(wshare, dst))
+
+shutil.copy(os.path.join(share, "READER", "PAGES.PDF"),
+            os.path.join(wshare, "READER", "PAGES.PDF"))
+with open(os.path.join(wshare, "SETTINGS.TXT"), "w") as fh:
+    fh.write("#v2\nwm=none\n")
+print("wheel-share staged: GOTABWM.ELF + GOREADER.ELF + PAGES.PDF")
+PY
+
+vgate_run 06 -- \
+    --screen '$RUN_DIR/screen-06' \
+    --via-virtio \
+    --cvc-file '$RUN_DIR/wheel-share' \
+    --script '$RUN_DIR/script-06.txt' \
+    --script2 '$RUN_DIR/script2-06.txt' \
+    --script2-after 'gotabwm: present' \
+    --pointer-virtio '640,360,w+1;320,10,w+1' \
+    --pointer-virtio-after 'goreader: ready' \
+    --script3 '$RUN_DIR/script3-06.txt' \
+    --script3-after 'goreader: ready' \
+    --script3-delay 15 \
+    --input-string 'q' \
+    --input-string-after 'rx-reader-wheel-ok' \
+    --script-expect 'procs GOREADER.ELF exited status=0' --timeout 240
+
+vgate_assert 06 serial-contains 'VirelaiOS kernel has seized control.'
+vgate_assert 06 serial-contains 'exec: loaded GOTABWM.ELF'
+vgate_assert 06 serial-contains 'gotabwm: registered'
+vgate_assert 06 serial-contains 'exec: loaded GOREADER.ELF'
+vgate_assert 06 serial-contains 'goreader: tab-aware'
+vgate_assert 06 serial-contains 'goreader: loaded PAGES.PDF pages=3 128x96'
+vgate_assert 06 serial-contains 'goreader: ready'
+# Wheel-down over GOREADER's client area flipped to page 2/3.
+vgate_assert 06 serial-contains 'goreader: page 2/3'
+# Wheel-down over the top rail was swallowed by the seat (no flip to page 3/3).
+vgate_assert 06 serial-absent 'goreader: page 3/3'
+vgate_assert 06 serial-contains 'rx-reader-wheel-ok'
+vgate_assert 06 serial-contains 'goreader: quit'
+vgate_assert 06 serial-contains 'goreader: pos saved n=1'
+vgate_assert 06 serial-contains 'procs GOREADER.ELF exited status=0'
+vgate_assert 06 serial-absent '[EXC] parking:'
+vgate_assert 06 serial-absent 'exited status=139'
+
+vgate_assert 06 python <<'PY'
+import os, sys
+
+rd = os.environ["RUN_DIR"]
+wshare = os.path.join(rd, "wheel-share")
+pos = os.path.join(wshare, "GOREADER.POS")
+if not os.path.exists(pos):
+    sys.exit("GOREADER.POS was not written after wheel scroll")
+rows = [l for l in open(pos, errors="replace").read().splitlines()
+        if l and not l.startswith("#")]
+if not rows:
+    sys.exit("GOREADER.POS has no rows")
+hexpath = "/host/READER/PAGES.PDF".encode().hex()
+match = [r for r in rows if r.endswith("\t" + hexpath)]
+if not match:
+    sys.exit("no GOREADER.POS row for PAGES.PDF")
+f = match[0].split("\t")
+if len(f) != 7:
+    sys.exit("row shape %r" % match[0])
+if f[2] != "1":
+    sys.exit("stored page %r (want 0-based 1 = page 2/3 after 1 content wheel + 1 swallowed rail wheel)" % f[2])
+for clean in ("GOREADER.POS", "WINDOWS.SAV", "SESSION.TABS"):
+    p = os.path.join(wshare, clean)
+    if os.path.exists(p):
+        os.unlink(p)
+print("go-reader 06: wheel scrolled to page 2/3 (stored page=1); rail wheel swallowed")
 PY

@@ -211,6 +211,28 @@ it (the render server already separates policy from blit).
   shim stamps the arrow and every pre-seat gate stays byte-identical.
   Backs the #3348 cursor-context seam: staged shapes could not be drawn
   until a seat-gated selection channel existed.
+- 2026-11-23 — M216k (#3950): **additive `a3` on subcommand 15 (`CONTENT_PTR`)
+  for scroll-wheel forwarding.**
+  `CONTENT_PTR` (`wmctl(cmd=15, x|(y<<16), buttons, mods, scroll, 0)`) uses
+  spare argument `a3` (`scroll`, `u16`) to carry a packed 16-bit
+  `MOUSE_SCROLL` word (bits 0–13 magnitude `1..8191` where `1` = one text
+  line, bit 14 horizontal, bit 15 sign `1 = down/right`). Existing pointer
+  callers pass `a3 = 0` and take the byte-identical pointer/selection path.
+  When `a3 != 0`, the kernel validates `a3 <= 0xffff` and magnitude in
+  `1..8191` (refusing invalid words with `EINVAL`) and runs the scroll branch
+  (`driving_award.wm_content_scroll`), posting kind-12 `MOUSE_SCROLL`
+  (`flags = SCROLL_WHEEL (0x1000) | MOD_*`, `arg0 = scroll`,
+  `arg1 = local_x | (local_y << 16)`) to the topmost visible user window
+  containing `(x, y)` (the window under the pointer, not keyboard focus),
+  without touching pointer button/motion history (`wm_fwd_prev_*`). The Go SDK
+  exposes this as the host-safe sibling call
+  `vi.WmctlContentScroll(x, y, scroll, mods)`. Under a seat, chrome and
+  overlays (rail band, empty start surface, modals, active gestures,
+  notification center, toasts, watchdog banner, god/power buttons, split
+  sashes) swallow wheel samples without emitting a per-event serial marker;
+  with no seat registered, the kernel delivers wheel reports directly in its
+  local path. AGENTD `wheel` input frames and RFB buttons 4 and 5 are named as
+  later work and not implemented here.
 
 ## Open issues (left to implementing claims)
 

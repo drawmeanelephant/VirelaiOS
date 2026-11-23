@@ -629,6 +629,7 @@ pub fn register(pid: usize) bool {
     // register, nulled at unregister — null hook = no WM = no-op).
     driving_award.wm_owns_input = true;
     driving_award.wm_pointer_hook = fan_pointer;
+    driving_award.wm_wheel_hook = fan_wheel;
     driving_award.wm_window_hook = fan_window;
     // M32 WMS5 Gate 2 (claim 4278): the keyboard half of the input seam —
     // the raw key stream fans out to the WM (the shell idle's keyboard
@@ -754,6 +755,7 @@ pub fn unregister(pid: usize) bool {
     // consuming pointer geometry (shim fallback, byte-identical to pre-WMS5).
     driving_award.wm_owns_input = false;
     driving_award.wm_pointer_hook = null;
+    driving_award.wm_wheel_hook = null;
     driving_award.wm_window_hook = null;
     driving_award.wm_key_hook = null;
     // #3348: a dead seat's last cursor-shape pick dies with it — the
@@ -1033,6 +1035,8 @@ pub fn note_gpu3d() void {
 
 /// Total WM_POINTER raw-stream events fanned out to the registered WM.
 var pointer_fan_count: u64 = 0;
+/// Total WM_POINTER wheel events fanned out to the registered WM (M216k).
+var wheel_fan_count: u64 = 0;
 /// Total WM_WINDOW registry-mirror events fanned out to the registered WM.
 var window_mirror_count: u64 = 0;
 /// Total WM_KEY raw-keyboard events fanned out to the registered WM (WMS5
@@ -1062,6 +1066,25 @@ pub fn fan_pointer(x: u32, y: u32, buttons: u8, mods: u8) void {
         .seq = 0,
         .arg0 = x | (y << 16),
         .arg1 = mods,
+    });
+}
+
+/// M216k (#3950): fan ONE scroll-wheel event to the registered WM on kind 19
+/// (`WM_POINTER`), packing the 16-bit `MOUSE_SCROLL` word in `arg1` bits 16..31
+/// alongside the capture-time HID modifier byte in bits 0..7 (`flags = 0`,
+/// `arg0 = x | (y << 16)` in framebuffer pixels). No-op when unregistered or dead.
+pub fn fan_wheel(x: u32, y: u32, scroll: u16, mods: u8) void {
+    if (scroll == 0) return;
+    const pid = wm_pid orelse return;
+    if (seat_dead(pid)) return;
+    note_input();
+    wheel_fan_count +%= 1;
+    events.push(pid, .{
+        .kind = events.WM_POINTER,
+        .flags = 0,
+        .seq = 0,
+        .arg0 = (x & 0xffff) | ((y & 0xffff) << 16),
+        .arg1 = @as(u32, mods) | (@as(u32, scroll) << 16),
     });
 }
 
@@ -1888,4 +1911,30 @@ test "wm_server: card #3034 damage tick is never routed to a dead seat" {
 
     try std.testing.expect(unregister(seat));
     process.init();
+}
+
+test "wm_server: fan_wheel packs scroll in kind-19 arg1[31:16] and respects seat lifecycle (M216k)" {
+    events.init();
+    process.init();
+    init();
+    events.on_event_pushed = null;
+    // Unregistered: no-op.
+    fan_wheel(640, 360, 0x8003, 0x02);
+    try std.testing.expectEqual(@as(usize, 0), events.pending(1));
+
+    try std.testing.expect(register(1));
+    try std.testing.expect(driving_award.wm_wheel_hook != null);
+    fan_wheel(640, 360, 0x8003, 0x02);
+    const ev = events.pop(1) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(events.WM_POINTER, ev.kind);
+    try std.testing.expectEqual(@as(u16, 0), ev.flags);
+    try std.testing.expectEqual(@as(u32, 640 | (360 << 16)), ev.arg0);
+    try std.testing.expectEqual(@as(u32, 0x02 | (@as(u32, 0x8003) << 16)), ev.arg1);
+
+    // Zero scroll word is ignored.
+    fan_wheel(640, 360, 0, 0);
+    try std.testing.expect(events.pop(1) == null);
+
+    try std.testing.expect(unregister(1));
+    try std.testing.expect(driving_award.wm_wheel_hook == null);
 }

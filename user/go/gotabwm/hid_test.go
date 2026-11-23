@@ -2147,3 +2147,113 @@ func TestNoteUnsavedMirror(t *testing.T) {
 	// An id with no row is a silent no-op, not a panic.
 	mirror(9 | 1<<12)
 }
+
+func TestWheelForwardClientAreaAndSwallowChromeOverlays(t *testing.T) {
+	resetSeatForTest(t)
+	defer saveSeatState()()
+	resetNotify(t)
+
+	oldPtr, oldScroll := forwardContentPointer, forwardContentScroll
+	defer func() {
+		forwardContentPointer = oldPtr
+		forwardContentScroll = oldScroll
+	}()
+
+	type scrollCall struct {
+		x, y   uint32
+		scroll uint16
+		mods   uint8
+	}
+	var scrolls []scrollCall
+	ptrCalls := 0
+	forwardContentPointer = func(uint32, uint32, uint8, uint8) int64 {
+		ptrCalls++
+		return 0
+	}
+	forwardContentScroll = func(x, y uint32, scroll uint16, mods uint8) int64 {
+		scrolls = append(scrolls, scrollCall{x, y, scroll, mods})
+		return 0
+	}
+
+	wheelEvent := func(x, y uint32, scroll uint16, mods uint8) vi.Event {
+		return vi.Event{
+			Kind: vi.EvWmPointer,
+			Arg0: x | (y << 16),
+			Arg1: uint32(mods) | (uint32(scroll) << 16),
+		}
+	}
+
+	// Empty strip (start surface): wheel is swallowed.
+	handleWmPointer(wheelEvent(640, 360, 0x8001, 0))
+	if len(scrolls) != 0 {
+		t.Fatalf("empty strip forwarded wheel: %+v", scrolls)
+	}
+
+	if !tabs.OpenTab(4, "Reader") {
+		t.Fatal("OpenTab")
+	}
+
+	// Client area: wheel forwards coords, packed scroll word, and capture-time
+	// modifiers without invoking forwardContentPointer or altering button state.
+	prevPtrButtons = hidBtnLeft
+	railHover = -1
+	handleWmPointer(wheelEvent(640, 360, 0x8003, 0x02))
+	if len(scrolls) != 1 || scrolls[0] != (scrollCall{640, 360, 0x8003, 0x02}) {
+		t.Fatalf("client wheel = %+v want [{640 360 0x8003 0x02}]", scrolls)
+	}
+	if ptrCalls != 0 {
+		t.Fatalf("wheel invoked forwardContentPointer %d times", ptrCalls)
+	}
+	if prevPtrButtons != hidBtnLeft {
+		t.Fatalf("wheel mutated prevPtrButtons to %#x", prevPtrButtons)
+	}
+	if railHover != -1 {
+		t.Fatalf("wheel mutated railHover to %d", railHover)
+	}
+
+	// Top rail band: swallowed, railHover untouched.
+	scrolls = nil
+	handleWmPointer(wheelEvent(320, 10, 0x8001, 0))
+	if len(scrolls) != 0 || railHover != -1 {
+		t.Fatalf("rail wheel leaked: scrolls=%+v railHover=%d", scrolls, railHover)
+	}
+
+	// Bottom chrome buttons (god menu + power button): swallowed.
+	gx, gy, gw, gh := godMenuRect(vi.ScanoutWidth, vi.ScanoutHeight)
+	handleWmPointer(wheelEvent(uint32(gx+gw/2), uint32(gy+gh/2), 0x8001, 0))
+	px, py, pw, ph := powerBtnRect(vi.ScanoutWidth, vi.ScanoutHeight)
+	handleWmPointer(wheelEvent(uint32(px+pw/2), uint32(py+ph/2), 0x8001, 0))
+	if len(scrolls) != 0 {
+		t.Fatalf("chrome button wheel leaked: %+v", scrolls)
+	}
+
+	// Seat modal overlays and active gestures: every one swallows the wheel.
+	modals := []struct {
+		name  string
+		arm   func()
+		clear func()
+	}{
+		{"launcher", func() { launch.open = true }, func() { launch.open = false }},
+		{"powerMenu", func() { powerMenuOpen = true }, func() { powerMenuOpen = false }},
+		{"clipMenu", func() { clipMenuOpen = true }, func() { clipMenuOpen = false }},
+		{"railMenu", func() { railMenuOpen = true }, func() { railMenuOpen = false }},
+		{"secretAsk", func() { secretAskModal.open = true }, func() { secretAskModal.open = false }},
+		{"drag", func() { drag.armed = true }, func() { drag.armed = false }},
+		{"menuGesture", func() { menuGesture = true }, func() { menuGesture = false }},
+		{"sashDrag", func() { sashDragging = true }, func() { sashDragging = false }},
+	}
+	for _, m := range modals {
+		m.arm()
+		handleWmPointer(wheelEvent(640, 360, 0x8001, 0))
+		m.clear()
+		if len(scrolls) != 0 {
+			t.Fatalf("overlay %s leaked wheel: %+v", m.name, scrolls)
+		}
+	}
+
+	// After overlays clear, client area forwards again.
+	handleWmPointer(wheelEvent(640, 360, 0x4002, 0))
+	if len(scrolls) != 1 || scrolls[0] != (scrollCall{640, 360, 0x4002, 0}) {
+		t.Fatalf("post-overlay horizontal wheel = %+v", scrolls)
+	}
+}

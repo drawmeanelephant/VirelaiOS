@@ -39,10 +39,13 @@ pub const TIMER: u16 = 9;
 pub const WIN_RESIZE: u16 = 10;
 /// Arc2 W2 (claim 1757, ADR 0013 D2): right-click — `arg0 = local x`, `arg1 = local y` (kind 12 is MOUSE_SCROLL for #236).
 pub const MOUSE_RIGHT_DOWN: u16 = 11;
-/// Arc4 #236 (ADR 0013 D2): mouse wheel / scroll event.
-/// `arg0` packed: bits 0–13 magnitude (1..8191), bit 14 = horizontal
-/// (shift+scroll), bit 15 = sign (1 = down/right, 0 = up/left).
-/// `arg1 = 0` (reserved).
+/// Arc4 #236 (ADR 0013 D2) + M216k (#3950): mouse wheel / scroll event.
+/// `arg0` packed: bits 0–13 magnitude (1..8191; magnitude 1 = one text line),
+/// bit 14 = horizontal, bit 15 = sign (1 = down/right, 0 = up/left).
+/// PageUp/PageDown-synthesized events keep `flags = 0`, `arg1 = 0`.
+/// Wheel-sourced events set `SCROLL_WHEEL` (0x1000) in `flags` (OR'd with
+/// capture-time `MOD_*` bits) and pack window-local pointer position
+/// `local_x | (local_y << 16)` in `arg1`.
 pub const MOUSE_SCROLL: u16 = 12;
 pub const MOUSE_RIGHT_UP: u16 = 13;
 /// Arc4 #237 (ADR 0013 D2): pointer entered a window during active drag.
@@ -69,11 +72,13 @@ pub const COMPOSITE_TICK: u16 = 18;
 /// the registered WM — the input-seam handover. `arg0` = x|(y<<16) in
 /// framebuffer pixels (top-left origin), `flags` low byte = the raw HID
 /// button byte (0x01 = left, 0x02 = right, 0x04 = middle — the same bits
-/// the XHCI pointer report carries), `arg1` = the raw HID keyboard
+/// the XHCI pointer report carries), `arg1` low byte = the raw HID keyboard
 /// modifier byte live at the sample's decode (#2896: the capture-time
 /// snapshot the seat echoes back on the slot-65 cmd-15 forward, so the
 /// kernel judges the sample on what was held at capture, not on a
-/// drain-time read a concurrent chord burst may have changed).
+/// drain-time read a concurrent chord burst may have changed), and `arg1`
+/// bits 16–31 = packed 16-bit `MOUSE_SCROLL` word on wheel samples (M216k,
+/// #3950; 0 on ordinary pointer motion/button samples).
 /// Routing-restricted like kind 18: pushed ONLY to the registered WM's
 /// queue, once per shell-idle pass when the pointer state changed; never
 /// generated in shim mode. The WM — not the kernel — hit-tests and
@@ -140,6 +145,26 @@ pub const BTN_MIDDLE: u16 = 0x0400;
 pub const BTN_LEFT_BIT: u8 = 0x01;
 pub const BTN_RIGHT_BIT: u8 = 0x02;
 pub const BTN_MIDDLE_BIT: u8 = 0x04;
+
+/// M216k (#3950): MOUSE_SCROLL flags bit 12 — marks a wheel-sourced scroll
+/// event as distinct from PageUp/PageDown-synthesized kind-12 events
+/// (which keep flags = 0, arg1 = 0). Disjoint from MOD_* (bits 0..7) and
+/// BTN_* (bits 8..11).
+pub const SCROLL_WHEEL: u16 = 0x1000;
+
+/// Pack one signed scroll delta (positive = down/right, negative = up/left,
+/// units = text lines) into the 16-bit MOUSE_SCROLL arg0 layout:
+/// bits 0..13 magnitude (1..8191), bit 14 horizontal, bit 15 sign (1=down/right).
+/// Returns 0 when delta == 0.
+pub fn pack_scroll_arg0(delta: i16, horizontal: bool) u16 {
+    if (delta == 0) return 0;
+    const down_or_right = delta > 0;
+    const abs_mag: u32 = if (delta < 0) @intCast(-@as(i32, delta)) else @intCast(@as(i32, delta));
+    var word: u16 = @intCast(@min(abs_mag, 8191));
+    if (horizontal) word |= 0x4000;
+    if (down_or_right) word |= 0x8000;
+    return word;
+}
 
 /// The normative 16-byte event wire format (ADR 0009 D1).
 pub const Event = extern struct {
@@ -481,4 +506,20 @@ test "events: out-of-range PIDs and invalid kinds are defensive no-ops" {
     // Kind 0 is invalid / no-op
     push(0, .{ .kind = 0, .flags = 0, .seq = 0, .arg0 = 0, .arg1 = 0 });
     try std.testing.expectEqual(@as(usize, 0), pending(0));
+}
+
+test "events: pack_scroll_arg0 encodes sign, axis, magnitude clamp, and SCROLL_WHEEL bit (M216k)" {
+    try std.testing.expectEqual(@as(u16, 0), pack_scroll_arg0(0, false));
+    try std.testing.expectEqual(@as(u16, 0), pack_scroll_arg0(0, true));
+    // Vertical down (+1) matches PageDown synthesis (0x8001); up (-1) matches PageUp (0x0001).
+    try std.testing.expectEqual(@as(u16, 0x8001), pack_scroll_arg0(1, false));
+    try std.testing.expectEqual(@as(u16, 0x0001), pack_scroll_arg0(-1, false));
+    // Horizontal right (+3) sets bit 14 and bit 15; left (-2) sets bit 14 only.
+    try std.testing.expectEqual(@as(u16, 0xc003), pack_scroll_arg0(3, true));
+    try std.testing.expectEqual(@as(u16, 0x4002), pack_scroll_arg0(-2, true));
+    // Clamps magnitude to ADR 0013's 8191 ceiling without overflowing into bits 14..15.
+    try std.testing.expectEqual(@as(u16, 0x8000 | 8191), pack_scroll_arg0(20000, false));
+    try std.testing.expectEqual(@as(u16, 8191), pack_scroll_arg0(-20000, false));
+    // SCROLL_WHEEL does not collide with modifier or mouse-button bits.
+    try std.testing.expectEqual(@as(u16, 0), SCROLL_WHEEL & (MOD_SHIFT | MOD_CTRL | MOD_ALT | MOD_CMD | BTN_LEFT | BTN_RIGHT | BTN_MIDDLE));
 }
