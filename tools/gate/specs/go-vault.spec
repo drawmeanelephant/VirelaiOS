@@ -24,7 +24,15 @@
 # ask), GOIRC resolves the just-granted row into its dial boundary,
 # GOMAIL reads the mail-gate row run 08 persisted earlier in the same
 # iteration, and an unprovisioned mail-ghost names secret_not_found —
-# all in the same boot, K=3.
+# all in the same boot, K=3. M216l (runs 10/11) pins the consent surface's
+# new input rules: run 10 answers a standing ask through the Grant
+# button's pointer press (gated on 'gotabwm: secret armed' — the arm
+# delay's post-window), and run 11 proves the prompt is modal to the
+# pointer — a press inside the plate off the buttons and a press on the
+# rail are both swallowed (no tab-focus marker in the standing window),
+# the prompt survives them, and a Deny press answers it. Run 08's early
+# 'g' is the type-through probe: a grant may never precede the armed
+# marker (the order assert is the red half on an unarmed-seat build).
 #
 # REPEAT SEMANTICS: vgate_repeat 3 re-runs EVERY leg, and the armed share
 # persists across iterations — so each leg must be iteration-safe. Run 01
@@ -53,7 +61,7 @@
 #   bash tools/go/build-gomail.sh   ->  .build/go/GOMAIL.ELF
 #   bash tools/go/build-goirc.sh    ->  .build/go/GOIRC.ELF
 
-vgate_name go-vault "M148a #2804 + M148b #2805 + M196d #3433 + M196e #3445: PBKDF2/AES-GCM vault — masked unlock, entry store, per-entry reveal, copy-with-expiry on the seat selection, idle lock, named refusals, receipts file + Receipts view; K=3, + the slot-96 provision leg: 'p' asks, the seat consents, GOMAIL reads the bound row back, + the acceptance journey: two consent-provisioned rows (GOMAIL+GOIRC consume, ghost names secret_not_found)"
+vgate_name go-vault "M148a #2804 + M148b #2805 + M196d #3433 + M196e #3445 + M216l #3951: PBKDF2/AES-GCM vault — masked unlock, entry store, per-entry reveal, copy-with-expiry on the seat selection, idle lock, named refusals, receipts file + Receipts view; K=3, + the slot-96 provision leg: 'p' asks, the seat consents, GOMAIL reads the bound row back, + the acceptance journey: two consent-provisioned rows (GOMAIL+GOIRC consume, ghost names secret_not_found), + the secret-ask arm delay: no grant before armed, pointer Grant/Deny answers, outside presses swallowed"
 vgate_share seed
 vgate_runner_flags -Xswiftc -DSPIKE
 vgate_repeat 3
@@ -718,10 +726,19 @@ PY
 # --- run 08 (M196d / #3433): 'p' provisions through the slot-96 ask seam --
 # The vault entry IS the store row: name mail-gate (the M196b convention,
 # bound to GOMAIL.ELF by provisionApps), secret pw-gate-7. 'p' stages the
-# ask; the seat's modal stands on 'gotabwm: secret-ask ... key=mail-gate';
-# the 'g' chord is the consent gesture — the grant lands the entry AND
-# persists SECRETS.TXT. GOVAULT's once-per-pass status read reports the
-# verdict ('govault: provision-grant'), and the consumer is the read-back:
+# ask; the seat's modal stands on 'gotabwm: secret-ask ... key=mail-gate'.
+# M216l (#3951): the consent cannot be typed through — 'g' is dead until
+# the first heartbeat after a presented prompt frame ('gotabwm: secret
+# armed'). The 'g' chord is injected the moment the ask stands — the
+# type-through probe: on an unarmed prompt it is swallowed whole, on an
+# already-armed one it is a legitimate consent — and the Grant button's
+# pointer press is gated on the armed marker, so a grant lands in either
+# timing but never before armed. (The post-arm answer is a click, not a
+# second 'g': an early 'g' that lands post-arm grants and closes the
+# prompt, and a keystroke injected after that would stray into the
+# terminal — a pointer press on the button's old seat just falls on hosted
+# content, inert.) GOVAULT's once-per-pass status read reports the verdict
+# ('govault: provision-grant'), and the consumer is the read-back:
 # GOMAIL's `boxes` resolves mail-gate out of slot 70 ('gomail: secret
 # mail-gate') before its dial — script-expect ends the run there, so the
 # dead 10.0.0.2 transport is never the verdict. Iteration-safe: iteration
@@ -755,6 +772,8 @@ vgate_run 08 -- \
     --input-string-after 'govault: new vault' \
     --input-chords 'g' \
     --input-chords-after 'gotabwm: secret-ask name=GOVAULT.ELF key=mail-gate' \
+    --pointer-virtio '710,45,c' \
+    --pointer-virtio-after 'gotabwm: secret armed name=GOVAULT.ELF key=mail-gate' \
     --script3 '$RUN_DIR/script3-08.txt' \
     --script3-after 'govault: provision-grant mail-gate' \
     --script-expect 'gomail: secret mail-gate' --timeout 240
@@ -768,6 +787,7 @@ vgate_assert 08 serial-contains 'govault: added'
 vgate_assert 08 serial-contains 'govault: provision mail-gate'
 vgate_assert 08 serial-contains 'gotabwm: secret-ask name=GOVAULT.ELF key=mail-gate'
 vgate_assert 08 serial-contains 'apps=GOMAIL.ELF'
+vgate_assert 08 serial-contains 'gotabwm: secret armed name=GOVAULT.ELF key=mail-gate'
 vgate_assert 08 serial-contains 'gotabwm: secret grant name=GOVAULT.ELF key=mail-gate'
 # The asker's own verdict read, then the consumer's slot-70 read-back in
 # the same boot.
@@ -779,6 +799,25 @@ vgate_assert 08 serial-contains 'gomail: secret mail-gate'
 vgate_assert 08 serial-absent 'pw-gate-7'
 vgate_assert 08 serial-absent '[EXC] parking:'
 vgate_assert 08 serial-absent 'exited status=139'
+# M216l: no grant may precede the arm — the early 'g' is a live-fire
+# type-through probe and the armed marker is the only line that can open
+# the window. On an unarmed-seat build this fails red (the marker does not
+# exist), which is exactly the red half of the card's evidence.
+vgate_assert 08 python <<'PY'
+import os, sys
+ser = open(os.environ["VG_SER"], "rb").read().decode("utf-8", "replace")
+prev = -1
+for m in ("gotabwm: secret-ask name=GOVAULT.ELF key=mail-gate",
+          "gotabwm: secret armed name=GOVAULT.ELF key=mail-gate",
+          "gotabwm: secret grant name=GOVAULT.ELF key=mail-gate",
+          "govault: provision-grant mail-gate"):
+    i = ser.find(m, prev + 1)
+    if i < 0:
+        sys.exit("provision arc broke — %r missing after position %d"
+                 % (m, prev))
+    prev = i
+print("provision arc ordered: ask -> armed -> grant -> verdict")
+PY
 # The receipts file carries the ask AND the verdict — the audit surface
 # the card asks for.
 vgate_assert 08 share-contains GOVAULT/RECEIPTS.TXT 'provision mail-gate'
@@ -805,7 +844,9 @@ PY
 # face never saw them). The journey therefore exercises ONE consent per
 # boot and picks the bind arm run 08 never touched: 'p' stages the entry
 # irc-gate, the seat's modal names GOVAULT.ELF + the GOIRC.ELF binding it
-# would grant, 'g' commits it, and the kernel persists SECRETS.TXT.
+# would grant, 'g' commits it — gated on 'gotabwm: secret armed' since
+# M216l (#3951), the leg's deterministic post-arm grant — and the kernel
+# persists SECRETS.TXT.
 # mail-gate needs no second consent — run 08's own provision earlier in
 # the SAME iteration already persists it (the file ABI cannot delete
 # SECRETS.TXT), so the mail side of the arc rides the store's
@@ -857,7 +898,7 @@ vgate_run 09 -- \
     --input-string $'hunter2\nhunter2\nairc-gate\nsasl-gate-9\n\n\np' \
     --input-string-after 'govault: new vault' \
     --input-chords 'g' \
-    --input-chords-after 'gotabwm: secret-ask name=GOVAULT.ELF key=irc-gate' \
+    --input-chords-after 'gotabwm: secret armed name=GOVAULT.ELF key=irc-gate' \
     --script3 '$RUN_DIR/script3-09.txt' \
     --script3-after 'govault: provision-grant irc-gate' \
     --script-expect 'goirc: closed' --timeout 300
@@ -872,6 +913,7 @@ vgate_assert 09 serial-contains 'govault: added'
 vgate_assert 09 serial-contains 'govault: provision irc-gate'
 vgate_assert 09 serial-contains 'gotabwm: secret-ask name=GOVAULT.ELF key=irc-gate'
 vgate_assert 09 serial-contains 'apps=GOIRC.ELF'
+vgate_assert 09 serial-contains 'gotabwm: secret armed name=GOVAULT.ELF key=irc-gate'
 vgate_assert 09 serial-contains 'gotabwm: secret grant name=GOVAULT.ELF key=irc-gate'
 vgate_assert 09 serial-contains 'govault: provision-grant irc-gate'
 # mail-gate is NOT re-staged this boot — its row persists from run 08's
@@ -906,6 +948,7 @@ ser = open(os.environ["VG_SER"], "rb").read().decode("utf-8", "replace")
 prev = -1
 for m in ("govault: provision irc-gate",
           "gotabwm: secret-ask name=GOVAULT.ELF key=irc-gate",
+          "gotabwm: secret armed name=GOVAULT.ELF key=irc-gate",
           "gotabwm: secret grant name=GOVAULT.ELF key=irc-gate",
           "govault: provision-grant irc-gate"):
     i = ser.find(m, prev + 1)
@@ -940,3 +983,172 @@ for want in ("mail-gate\t1000\tpw-gate-7\tGOMAIL.ELF",
                          % (want, data))
 print("SECRETS.TXT persisted: mail-gate->GOMAIL.ELF, irc-gate->GOIRC.ELF")
 PY
+
+# --- run 10 (M216l / #3951): the consent answers to the pointer ----------
+# The pointer answer leg: 'p' stages the entry mail-ptr (bound to
+# GOMAIL.ELF by the same M196b convention, consumed through --user ptr),
+# and the Grant button's press lands through --pointer-virtio at its plate
+# coordinates — (710,45) is the Grant rect's center on the 1280x720
+# layout, shared with the hit-test's own geometry. The press is gated on
+# 'gotabwm: secret armed' so pointer-grant is exercised post-arm, the same
+# window 'g' answers to.
+vgate_file script-10.txt <<'EOF'
+set GOMAXPROCS=1
+vf rm GOTABWM.DEMO
+vf rm SESSION.TABS
+vf rm GOVAULT/VAULT.BIN
+wm
+exec GOTABWM.ELF
+EOF
+
+vgate_file script2-10.txt <<'EOF'
+dui focus 0
+exec GOVAULT.ELF
+EOF
+
+vgate_file script3-10.txt <<'EOF'
+exec GOMAIL.ELF --user ptr boxes
+EOF
+
+vgate_run 10 -- \
+    --screen '$RUN_DIR/vault-screen-10' \
+    --via-virtio \
+    --script '$RUN_DIR/script-10.txt' \
+    --script2 '$RUN_DIR/script2-10.txt' \
+    --script2-after 'gotabwm: registered' \
+    --input-string $'hunter2\nhunter2\namail-ptr\npw-ptr-3\n\n\np' \
+    --input-string-after 'govault: new vault' \
+    --pointer-virtio '710,45,c' \
+    --pointer-virtio-after 'gotabwm: secret armed name=GOVAULT.ELF key=mail-ptr' \
+    --script3 '$RUN_DIR/script3-10.txt' \
+    --script3-after 'govault: provision-grant mail-ptr' \
+    --script-expect 'gomail: secret mail-ptr' --timeout 240
+
+vgate_assert 10 serial-contains 'gotabwm: registered'
+vgate_assert 10 serial-contains 'exec: loaded GOVAULT.ELF'
+vgate_assert 10 serial-contains 'govault: new vault'
+vgate_assert 10 serial-contains 'govault: added'
+vgate_assert 10 serial-contains 'govault: provision mail-ptr'
+vgate_assert 10 serial-contains 'gotabwm: secret-ask name=GOVAULT.ELF key=mail-ptr'
+vgate_assert 10 serial-contains 'gotabwm: secret armed name=GOVAULT.ELF key=mail-ptr'
+vgate_assert 10 serial-contains 'gotabwm: secret grant name=GOVAULT.ELF key=mail-ptr'
+vgate_assert 10 serial-contains 'govault: provision-grant mail-ptr'
+vgate_assert 10 serial-contains 'exec: loaded GOMAIL.ELF'
+vgate_assert 10 serial-contains 'gomail: secret mail-ptr'
+vgate_assert 10 serial-absent 'pw-ptr-3'
+vgate_assert 10 serial-absent '[EXC] parking:'
+vgate_assert 10 serial-absent 'exited status=139'
+# The pointer answer lands where the keyboard one did: armed strictly
+# before grant — a click can consent only inside the same window 'g' can.
+vgate_assert 10 python <<'PY'
+import os, sys
+ser = open(os.environ["VG_SER"], "rb").read().decode("utf-8", "replace")
+prev = -1
+for m in ("gotabwm: secret-ask name=GOVAULT.ELF key=mail-ptr",
+          "gotabwm: secret armed name=GOVAULT.ELF key=mail-ptr",
+          "gotabwm: secret grant name=GOVAULT.ELF key=mail-ptr",
+          "govault: provision-grant mail-ptr"):
+    i = ser.find(m, prev + 1)
+    if i < 0:
+        sys.exit("pointer arc broke — %r missing after position %d"
+                 % (m, prev))
+    prev = i
+print("pointer arc ordered: ask -> armed -> click grant -> verdict")
+PY
+vgate_assert 10 share-contains GOVAULT/RECEIPTS.TXT 'provision mail-ptr'
+vgate_assert 10 share-contains GOVAULT/RECEIPTS.TXT 'provision-grant mail-ptr'
+vgate_assert 10 python <<'PY'
+import os
+share = os.environ["VG_SHARE"]
+data = open(os.path.join(share, "SECRETS.TXT"), "rb").read().decode("utf-8", "replace")
+want = "mail-ptr\t1000\tpw-ptr-3\tGOMAIL.ELF"
+if want not in data:
+    raise SystemExit("SECRETS.TXT lacks the provisioned row %r: %r" % (want, data))
+print("SECRETS.TXT persisted: mail-ptr bound to GOMAIL.ELF")
+PY
+
+# --- run 11 (M216l / #3951): an outside press is swallowed, not a dismiss -
+# The modal leg for the pointer: 'p' stages mail-out, then four presses
+# ride --pointer-virtio in order — (490,45) is INSIDE the plate but off
+# the buttons, (100,11) is the rail's first cell, (338,702) is the PWR
+# chrome button, and (772,45) is Deny. The first three must be swallowed
+# whole: on an unmodal build the rail press moves focus and the PWR press
+# prints `gotabwm: power open` — the escapes the window assert names —
+# nothing beneath the plate answers, and the prompt still stands, proven
+# by the Deny press itself landing `secret decline`. The asker's verdict
+# read reports the denial and GOMAIL names the row's absence: --user out
+# resolves mail-out to secret_not_found.
+vgate_file script-11.txt <<'EOF'
+set GOMAXPROCS=1
+vf rm GOTABWM.DEMO
+vf rm SESSION.TABS
+vf rm GOVAULT/VAULT.BIN
+wm
+exec GOTABWM.ELF
+EOF
+
+vgate_file script2-11.txt <<'EOF'
+dui focus 0
+exec GOVAULT.ELF
+EOF
+
+vgate_file script3-11.txt <<'EOF'
+exec GOMAIL.ELF --user out boxes
+EOF
+
+vgate_run 11 -- \
+    --screen '$RUN_DIR/vault-screen-11' \
+    --via-virtio \
+    --script '$RUN_DIR/script-11.txt' \
+    --script2 '$RUN_DIR/script2-11.txt' \
+    --script2-after 'gotabwm: registered' \
+    --input-string $'hunter2\nhunter2\namail-out\npw-out-4\n\n\np' \
+    --input-string-after 'govault: new vault' \
+    --pointer-virtio '490,45,c;100,11,c;338,702,c;772,45,c' \
+    --pointer-virtio-after 'gotabwm: secret-ask name=GOVAULT.ELF key=mail-out' \
+    --script3 '$RUN_DIR/script3-11.txt' \
+    --script3-after 'govault: provision-deny mail-out' \
+    --script-expect 'gomail: refuse secret_not_found mail-out' --timeout 240
+
+vgate_assert 11 serial-contains 'gotabwm: registered'
+vgate_assert 11 serial-contains 'exec: loaded GOVAULT.ELF'
+vgate_assert 11 serial-contains 'govault: new vault'
+vgate_assert 11 serial-contains 'govault: added'
+vgate_assert 11 serial-contains 'govault: provision mail-out'
+vgate_assert 11 serial-contains 'gotabwm: secret-ask name=GOVAULT.ELF key=mail-out'
+vgate_assert 11 serial-contains 'gotabwm: secret armed name=GOVAULT.ELF key=mail-out'
+vgate_assert 11 serial-contains 'gotabwm: secret decline name=GOVAULT.ELF key=mail-out'
+vgate_assert 11 serial-contains 'govault: provision-deny mail-out'
+vgate_assert 11 serial-contains 'exec: loaded GOMAIL.ELF'
+vgate_assert 11 serial-contains 'gomail: refuse secret_not_found mail-out'
+# The swallowed presses produced no answer: no grant marker for mail-out
+# anywhere in the boot.
+vgate_assert 11 serial-absent 'gotabwm: secret grant name=GOVAULT.ELF key=mail-out'
+vgate_assert 11 serial-absent 'pw-out-4'
+vgate_assert 11 serial-absent '[EXC] parking:'
+vgate_assert 11 serial-absent 'exited status=139'
+# The off-plate presses must not have moved anything: no focus or
+# chrome-open transition may appear between the ask marker and the
+# decline — and on an unmodal build (where the decline never lands, so
+# the window runs to the log's end) the escaped press's own marker is the
+# failure the assert names, the card's second red half.
+vgate_assert 11 python <<'PY'
+import os, sys
+ser = open(os.environ["VG_SER"], "rb").read().decode("utf-8", "replace")
+ask = ser.find("gotabwm: secret-ask name=GOVAULT.ELF key=mail-out")
+deny = ser.find("gotabwm: secret decline name=GOVAULT.ELF key=mail-out")
+if ask < 0:
+    sys.exit("the ask never stood — decline at %d" % deny)
+window = ser[ask:deny if deny >= 0 else len(ser)]
+for m in ("gotabwm: tab focus id=", "gotabwm: win focus",
+          "gotabwm: rail menu", "gotabwm: power open"):
+    if m in window:
+        sys.exit("an outside press escaped the prompt: %r landed in "
+                 "the standing window" % m)
+if deny < 0:
+    sys.exit("the prompt did not stand for the Deny press — no decline")
+print("outside presses swallowed: no focus/rail/power marker while the "
+      "prompt stood; the Deny press answered it")
+PY
+vgate_assert 11 share-contains GOVAULT/RECEIPTS.TXT 'provision mail-out'
+vgate_assert 11 share-contains GOVAULT/RECEIPTS.TXT 'provision-deny mail-out'

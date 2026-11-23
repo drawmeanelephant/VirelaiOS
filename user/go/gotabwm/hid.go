@@ -678,14 +678,17 @@ func handleWmKey(e vi.Event) {
 		vi.ConsoleLine(MarkerNotifyCenterClose)
 		return
 	}
+	// M196a (#3351): a standing secret-ask is chrome-modal like the
+	// power menu — its g/d/Esc are the seat's alone. M216l (#3951): it is
+	// checked FIRST among the modals — the plate paints over the power
+	// menu, so key order has to agree with paint order (a 'g' must reach
+	// the prompt, not a menu hiding under it).
+	if handleSecretAskKey(e) {
+		return
+	}
 	// M115d (#2463): the open power menu's keys are the seat's alone —
 	// the sink window holds focus, so a hosted app sees nothing anyway.
 	if handlePowerKey(e) {
-		return
-	}
-	// M196a (#3351): a standing secret-ask is chrome-modal like the
-	// power menu — its g/d/Esc are the seat's alone.
-	if handleSecretAskKey(e) {
 		return
 	}
 	if handleLauncherKey(e) {
@@ -1085,6 +1088,11 @@ func updateCursorShape(px, py uint32) {
 // declared regions (the WM_RPC kind-31 half — text/link/busy zones only
 // the app can name); everything else is the arrow.
 func pickCursorShape(px, py uint32) uint64 {
+	// M216l (#3951): while a consent stands nothing is grabbable —
+	// every chrome shape would promise a gesture the modal swallows.
+	if secretAskModal.open {
+		return vi.CursorPtr
+	}
 	switch {
 	case drag.armed:
 		// The armed drag owns the pointer outright; the verdict is the
@@ -1167,6 +1175,20 @@ func handleWmPointer(e vi.Event) {
 	// rail it keeps its old fate: the content forward below still sees it.
 	rightDown := btn&hidBtnRight != 0 && prevPtrButtons&hidBtnRight == 0
 	prevPtrButtons = btn
+	// M216l (#3951): a standing secret-ask is modal to the pointer — the
+	// strongest modal the seat owns, ahead of even an armed drag. A press
+	// on a plate button answers it (Grant obeys the same arm delay as
+	// 'g'); a press on the plate or anywhere else is swallowed whole and
+	// dismisses NOTHING — an unanswered consent is not a background state.
+	// Motion, release and non-left presses are swallowed the same way, so
+	// nothing reaches rail hover, a toast, another modal or content while
+	// the prompt stands.
+	if secretAskModal.open {
+		if down {
+			handleSecretAskPointer(px, py)
+		}
+		return
+	}
 	// M124a (#2580): an armed guest drag owns every pointer sample —
 	// motion feeds the ghost's hit-test, the release edge settles the
 	// drop, and no chrome (toast, rail, sash, launcher) can see a click

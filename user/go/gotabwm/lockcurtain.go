@@ -64,11 +64,16 @@ const lockPassMax = 64 // govault's passphrase field bound, mirrored
 var lockReadFile = vi.ReadFileAll
 
 // lockFocusTarget is the id focus returns to on unlock: the open launcher's
-// sink while it is up (its own ensure-refocus owns that window), else the
-// seat's focused tab.
+// sink while it is up (its own ensure-refocus owns that window), then a
+// standing secret-ask's sink (M216l #3951 — a consent is a modal ahead of
+// the strip, and its sink is a seat window the tab index cannot name),
+// else the seat's focused tab.
 func lockFocusTarget() uint32 {
 	if launch.open && launch.sink != 0 {
 		return launch.sink
+	}
+	if secretAskModal.open && secretAskModal.sink != 0 {
+		return secretAskModal.sink
 	}
 	if id, ok := tabs.Focused(); ok {
 		return id
@@ -161,6 +166,13 @@ func unlockTry() {
 		hostedApp = id
 	}
 	lockPrior = 0
+	// M216l (#3951): a consent that stood through the lock — or opened
+	// behind it — owns the keys again: its sink is the hand-back target,
+	// never a hosted window, or the first keystroke after unlock types
+	// the answer into the asker's own window.
+	if secretAskModal.open && secretAskModal.sink != 0 {
+		_ = focusRaise(secretAskModal.sink)
+	}
 	vi.ConsoleLine(MarkerUnlocked)
 }
 
