@@ -901,7 +901,7 @@ vgate_run 09 -- \
     --input-chords-after 'gotabwm: secret armed name=GOVAULT.ELF key=irc-gate' \
     --script3 '$RUN_DIR/script3-09.txt' \
     --script3-after 'govault: provision-grant irc-gate' \
-    --script-expect 'goirc: closed' --timeout 300
+    --script-expect 'gomail: secret mail-gate' --timeout 300
 
 vgate_assert 09 serial-contains 'gotabwm: registered'
 vgate_assert 09 serial-contains 'exec: loaded GOVAULT.ELF'
