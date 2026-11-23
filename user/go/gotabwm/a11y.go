@@ -67,6 +67,13 @@ func seatA11yOutline() []appkit.Node {
 	if launch.open {
 		nodes = append(nodes, launch.a11yNodes(1)...)
 	}
+	// M216l (#3951): the consent plate describes itself like the
+	// launcher's strip does — the prompt holds 'f' while its sink owns
+	// the keys, and the tree carries both buttons (Grant 'd' until the
+	// arm delay passes, matching the dimmed paint).
+	if secretAskModal.open {
+		nodes = append(nodes, secretAskA11yNodes(1)...)
+	}
 	nodes = append(nodes, toastA11yNodes(1)...)
 	return nodes
 }

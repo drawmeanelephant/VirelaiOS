@@ -795,6 +795,11 @@ func compositeTick(scan []byte, ticks uint64, presents *int) {
 	// #3914: the hover-preview dwell rides the HEARTBEAT, before the
 	// frame it may add the card to. A damage-only repaint never ages it.
 	hoverPreviewTick()
+	// M216l (#3951): the consent arm delay lands HERE — the first
+	// heartbeat after a presented frame carrying the prompt flips grant
+	// gestures live. It runs before the paint so this pass's own present
+	// cannot arm what it is about to show for the first time.
+	armSecretAsk()
 	presented := compositePaint(scan, ticks, presents)
 	if restoreWitnessMode && presented && ticks%8 == 0 {
 		vi.ConsoleLine(restoreWitnessLine())
@@ -926,8 +931,9 @@ func compositePaint(scan []byte, ticks uint64, presents *int) (presented bool) {
 	}
 	// M196a (#3351): the secret-ask prompt floats with the modal chrome —
 	// above the rail, under the toasts, names only (never the value).
+	askPx := 0
 	if secretAskModal.open {
-		_ = paintSecretAsk(scan, vi.ScanoutWidth, vi.ScanoutHeight)
+		askPx = paintSecretAsk(scan, vi.ScanoutWidth, vi.ScanoutHeight)
 	}
 	// M190c (#3238): the button-2 rail menu floats with the other modal
 	// chrome — above the rail it opened from, under the toasts.
@@ -942,7 +948,13 @@ func compositePaint(scan []byte, ticks uint64, presents *int) (presented bool) {
 	// M124a (#2580): the drag ghost paints over every other chrome layer
 	// — the gesture owns the frame while the button is held — and under
 	// the idle curtain like the rest (the curtain is visual, not input).
-	ghostPainted := paintDragGhost(scan)
+	// M216l (#3951): not over a standing consent — a drag armed after the
+	// prompt opened would otherwise paint app imagery across the answer
+	// buttons, which is the asker's own pixels covering its own ask.
+	ghostPainted := 0
+	if !secretAskModal.open {
+		ghostPainted = paintDragGhost(scan)
+	}
 	// M190e (#3240): the lock curtain is the topmost layer and owns the
 	// frame outright while it is up — the idle overlay never paints under it.
 	if lockActive {
@@ -965,6 +977,10 @@ func compositePaint(scan []byte, ticks uint64, presents *int) (presented bool) {
 			vi.ConsoleLine(MarkerPresent)
 		}
 	}
+	// M216l (#3951): the arm delay's presented-frame half — only a frame
+	// that actually flushed counts, and only where the prompt was really
+	// on it (noteSecretFrame excludes the curtain-covered cases itself).
+	noteSecretFrame(askPx, presented)
 	// markRail's post-present twin: `gotabwm: rail n=` proves the strip
 	// painted, this marker proves a frame carrying it actually flushed —
 	// the earliest scanout a pixel probe may read the rail on. Run 10's

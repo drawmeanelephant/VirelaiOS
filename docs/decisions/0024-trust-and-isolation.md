@@ -412,6 +412,49 @@ value), and the pending table holds values only in kernel memory — never
 on a channel another party reads. The serial-echo problem the deferral
 named is why the seat, not a shell verb, owns the gesture.
 
+**M216l amendment (2026-11-22, #3951 — the consent cannot be typed or
+clicked through).** The #3351 amendment made the seat the consent surface
+but left two holes in the gesture itself, both consequences of who picks
+the moment: the ask arrives when the *app* stages it, not when the user
+asks for it — so a `g` typed into the focused app in the instant before
+the prompt could be read would land on the prompt's grant key, and a
+pointer press aimed at the rail or the hosted window could land under
+(or through) the plate. The consent surface now behaves like the consent
+it is, not like a background dialog:
+
+* **Arm delay.** Grant gestures — the `g` key and a press on the Grant
+  button — are dead until the first heartbeat after a frame carrying the
+  prompt actually presented (`gotabwm: secret armed name=` marks it).
+  "Presented" excludes frames covered by the lock or idle curtain: a
+  frame the user could not have seen does not start the window. The
+  seat's only clock is the 1 Hz heartbeat, so that is the honest bound;
+  card n's sub-second timer may tighten it later. Until armed, Grant
+  paints dimmed — the dimming IS the affordance, and the a11y outline
+  marks the button disabled to match. **Decline is live from the first
+  input**: refusing a prompt you have not read is always safe, so `d`,
+  Escape, an unaimed Enter, and the Deny button never wait for the arm.
+* **The answers.** `g` remains the grant key once armed (habit and the
+  gates ride it); Tab cycles the two buttons and Enter runs the focused
+  one. Deny is the default focus — an unaimed Enter is the direction
+  that cannot commit a write.
+* **Pointer modality.** Grant and Deny are real buttons inside the
+  plate; a press on the plate off the buttons is swallowed, and a press
+  anywhere outside the plate is swallowed *and dismisses nothing* — an
+  unanswered consent is not a background state. Rail hover and the hover
+  preview are suppressed while the prompt stands, and the cursor keeps
+  its normal shape.
+* **Chord policy.** While the ask stands, every seat chord is swallowed
+  except **lock** — a physical-safety gesture cannot wait behind a
+  consent drain. The ask's key handling runs before the power menu's
+  (matching paint order), the prompt's sink owns kernel focus, and the
+  lock curtain's unlock hands focus back to a still-standing ask rather
+  than to a hosted window.
+* The four answer markers are byte-identical; `gotabwm: secret armed
+  name=` is the one new line. go-vault runs 08–11 are the gate: a `g`
+  fired the instant the ask stands must never produce a grant before the
+  armed marker, a Grant press answers post-arm, and presses off the
+  buttons reach neither rail nor app.
+
 **M113a note (2026-10-16, #2417 — ADR 0054):** `GRANTS.TXT` joins the
 secret class as the second member. Its contents are policy, not a secret —
 the class is taken for *integrity*: secret-class-by-construction is the
