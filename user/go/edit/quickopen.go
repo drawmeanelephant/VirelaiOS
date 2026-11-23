@@ -19,6 +19,7 @@
 package main
 
 import (
+	"strings"
 	"unicode/utf8"
 
 	"virelai/find"
@@ -53,8 +54,16 @@ type qoItem struct {
 // qoListDir is the walk's directory seam — vi.ListDirAt in the guest,
 // swapped by the host tests (the launchDirList/bufRead pattern). The
 // paged listing, not the legacy 16-row sys_dir_list window: a directory
-// past that bound must page, not silently drop its tail.
-var qoListDir = vi.ListDirAt
+// past that bound must page, not silently drop its tail. The walk works
+// in kernel paths (/host/...); ListDirAt takes the canonical form where
+// "/" is the share root, so the conversion lives here.
+var qoListDir = func(dir string) ([]vi.DirItem, error) {
+	canon := strings.TrimPrefix(dir, "/host")
+	if canon == "" {
+		canon = "/"
+	}
+	return vi.ListDirAt(canon)
+}
 
 // pushRecent records path in the MRU: an existing entry moves back to
 // the front, the list never outgrows recentCap. The callers are the
