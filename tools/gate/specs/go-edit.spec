@@ -959,10 +959,10 @@ vgate_run 13 -- \
     --via-virtio \
     --snapshot-out '$RUN_DIR/snap-13' \
     --script '$RUN_DIR/script-13.txt' \
-    --input-chords 'ctrl-shift-o,F,O,L,D,.,G,O,return,ctrl-g,3,return,ctrl-k,ctrl-g,5,return,ctrl-k,ctrl-g,7,return,ctrl-k,left,left,left,left,left,left,ctrl-w,home,ctrl-b,ctrl-b,right,ctrl-b,home' \
+    --input-chords 'ctrl-shift-o,F,O,L,D,.,G,O,return,ctrl-g,3,return,ctrl-k,ctrl-g,5,return,ctrl-k,ctrl-g,7,return,ctrl-k,end,left,left,left,left,left,left,left,left,left,left,right,right,right,right,right,ctrl-w,home,ctrl-b,ctrl-b,right,ctrl-b,home' \
     --input-chords-after 'goedit: present' \
     --snapshot-after 'rx-goedit-match-ok' \
-    --snapshot-after 'goedit: status line=5/15 col=10 fold=1' \
+    --snapshot-after 'goedit: status line=5/15 col=11 fold=1' \
     --script3 '$RUN_DIR/script3-13.txt' \
     --script3-after 'goedit: match none' \
     --script3-delay 5 \
@@ -1002,12 +1002,12 @@ vgate_assert 13 serial-absent 'exited status=139'
 # caret's amber block (2x8) must sit exactly 7 cells (56 px) to its left
 # on the same row.
 # M166b: snap-13-0 is the end-of-run bracket probe frame like before.
-# snap-13-1 is the mid-run folded frame, fired on the SECOND fold-on's
-# status — the first fold is unfolded by the next goto (the leg proves
-# reason=goto), so anchoring on the earlier fold status races a window
-# where the document rows are unfolded again. The trailing caret-left
-# chords repaint without touching the fold, holding the folded state
-# across the kind-4 round trip before the buffer switch drops FOLD.GO.
+# snap-13-1 is the mid-run folded frame: the first fold is unfolded by
+# the next goto (the leg proves reason=goto), so the anchor is `end`'s
+# unique col=11 status after the second fold-on, and the caret moves
+# that follow repaint without touching the fold — holding folded rows
+# on screen across the kind-4 round trip plus the composite lag before
+# the buffer switch drops FOLD.GO.
 vgate_assert 13 snapshot 'snap-13-0.raw' <<'PY'
 import sys
 
