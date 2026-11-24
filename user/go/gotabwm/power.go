@@ -163,10 +163,14 @@ func releasePowerFocus() {
 }
 
 func openPowerMenu() {
+	if overlayBlocksModal(overlayPowerMenu) {
+		return
+	}
 	dragAbort("chrome") // M124a: the modal menu takes the gesture
 	if powerMenuOpen {
 		return
 	}
+	closeDismissibleModals(overlayPowerMenu)
 	powerMenuOpen = true
 	powerSel = 0
 	if !acquirePowerFocus() {

@@ -78,12 +78,11 @@ func seatA11yOutline() []appkit.Node {
 	return nodes
 }
 
-// seatChromeModal reports whether a seat-owned surface holds kernel
-// focus through its input sink — while one does, the rail's focused
-// cell is the strip's selection ('s'), not the keys' owner ('f').
+// seatChromeModal reports whether a seat-owned modal overlay holds
+// exclusive seat input (derived from seatOverlays) — while one does, the
+// rail's focused cell is the strip's selection ('s'), not the keys' owner ('f').
 func seatChromeModal() bool {
-	return launch.open || powerMenuOpen || railMenuOpen ||
-		secretAskModal.open || clipMenuOpen
+	return overlayHasModal()
 }
 
 // seatA11yPublish stages the outline on a presented frame — like the

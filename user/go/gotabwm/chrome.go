@@ -105,10 +105,6 @@ func chromeTick(scan []byte, ticks uint64) {
 	_ = paintGodMenuButton(scan, vi.ScanoutWidth, vi.ScanoutHeight)
 	// M115d (#2463): the PWR button sits on the same band, right of Apps.
 	_ = paintPowerButton(scan, vi.ScanoutWidth, vi.ScanoutHeight)
-	// M190a (#3236): the paste menu paints over the rail and content and
-	// under the launcher, the power menu and the toasts — the layer the
-	// M115d panel claimed.
-	_ = paintClipMenu(scan, vi.ScanoutWidth, vi.ScanoutHeight)
 	if chromeLogged {
 		return
 	}
@@ -488,13 +484,12 @@ func terminalFrontEndBin(bin string) bool {
 	return false
 }
 
-// seatModalFocus reports whether a seat-owned modal currently holds the
-// input sink — the launcher/palette strip or the power menu. While one
-// does, keystrokes dispatch at seat scope no matter which tab the rail
-// calls focused.
+// seatModalFocus reports whether any open seat overlay currently holds
+// kernel focus through its input sink (derived from seatOverlays). While
+// one does, keystrokes dispatch at seat scope no matter which tab the
+// rail calls focused.
 func seatModalFocus() bool {
-	return (launch.open && launch.sink != 0) ||
-		(powerMenuOpen && powerSink != 0)
+	return overlayHasModalSink()
 }
 
 // focusBadgeState is the indicator's current claim, read from live state:

@@ -113,13 +113,13 @@ func hoverPreviewAfterPointer(btn uint8) {
 }
 
 // hoverPreviewSuppressed reports the desktop states that own the frame
-// instead of a hover card: modal chrome, an armed drag, lock, or idle.
+// instead of a hover card: overlays in seatOverlays that suppress hover,
+// plus active rail/sash gestures.
 func hoverPreviewSuppressed() bool {
-	if lockActive || idleState != idleActive || launch.open || powerMenuOpen || clipMenuOpen ||
-		railMenuOpen || secretAskModal.open || notifyCenterOpen {
+	if overlaySuppressesHover() {
 		return true
 	}
-	return drag.armed || railDragFrom >= 0 || sashDragging
+	return railDragFrom >= 0 || sashDragging
 }
 
 // hoverPreviewReconcile keeps the dwell state honest against rail target,

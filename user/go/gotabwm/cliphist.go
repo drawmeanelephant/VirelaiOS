@@ -280,6 +280,9 @@ func restoreClipMenuFocus() {
 // the list this press shows), then the modal open — or the honest
 // `empty` when the ring holds nothing.
 func applyClipMenu() {
+	if overlayBlocksModal(overlayClipMenu) {
+		return
+	}
 	cliphistPoll()
 	if clipHistN == 0 {
 		vi.ConsoleLine(MarkerClipMenu + "empty")
@@ -289,6 +292,7 @@ func applyClipMenu() {
 		return
 	}
 	dragAbort("chrome") // M124a: the modal menu takes the gesture
+	closeDismissibleModals(overlayClipMenu)
 	clipMenuOpen = true
 	clipMenuSel = 0
 	clipMenuPrior = 0
