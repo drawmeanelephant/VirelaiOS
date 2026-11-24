@@ -381,7 +381,7 @@ vgate_assert 01 serial-absent 'exited status=139'
 # read: the staged share's APPS.TXT, decoded on the host with the same rules
 # the Go parser uses. What this proves is deliberately narrow — the manifest
 # the seat boots on is the v2 file, its positional fields are intact, and the
-# dock set is the 8 rows the Zig mirrors' comments claim. The v2 tail's
+# dock set is the 10 rows the sexiburger manifest pin claims. The v2 tail's
 # SEMANTICS (argv/caps/opens) are host-tested in user/go/gotabwm/apps_test.go
 # and read live by go-dogfood; this is the share-side half.
 vgate_assert 01 python <<'PY'
@@ -394,7 +394,8 @@ if len(rows) != 32:
     sys.exit("manifest has %d rows, want 32 (the pin went stale at 29: "
              "M132b #2753's nine reservation rows, then #3192 GOMAIL and "
              "#3212 GOA11Y shipped unpinned, and M201d #3455 adds "
-             "GOPAINT's row; dock is 9 since GOA11Y)" % len(rows))
+             "GOPAINT's row; dock is 10 since M208a #3822 docked "
+             "GOMAIL)" % len(rows))
 dock = 0
 v2 = 0
 for ln in rows:
@@ -423,8 +424,9 @@ for ln in rows:
                 sys.exit("unexpected row version: %r" % ln)
             v2 += 1
 if dock != 10:
-    sys.exit("dock rows = %d, want 10 (GOMAIL docked at #3822, on top of "
-             "GOA11Y's #3212 — the count the sexiburger pin claims)" % dock)
+    sys.exit("dock rows = %d, want 10 (the pin went stale at 9: M208a "
+             "#3822 docked GOMAIL — the count the sexiburger pin "
+             "claims)" % dock)
 if v2 == 0:
     sys.exit("no row declares v=2: this is the v1 file, not the v2 schema")
 print("share APPS.TXT: %d rows, %d docked, %d rows at v=2, %d bytes"
@@ -1612,7 +1614,7 @@ vgate_run 21 -- \
 vgate_assert 21 serial-contains 'wm: autostart gotabwm (settings wm=gotabwm)'
 vgate_assert 21 serial-contains 'gotabwm: mode live'
 # The live decode: all 32 manifest rows — shipped and reserved — are in
-# the seat's catalog, schema v2, 9 docked (the host-side APPS.TXT check
+# the seat's catalog, schema v2, 10 docked (the host-side APPS.TXT check
 # on boot 01 pins the file half).
 vgate_assert 21 serial-contains 'gotabwm: apps decode n=32 v=2 schema=2'
 vgate_assert 21 serial-contains 'gotabwm: launcher open n=32'
