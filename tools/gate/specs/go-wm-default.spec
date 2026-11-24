@@ -95,12 +95,20 @@ vgate_file script.txt <<'EOF'
 dui focus 0
 EOF
 
-# Boot 01, stage 2: after the first-boot GOSH prompt has had four seconds to
+# Boot 01, stage 2: after the first-boot GOSH prompt has had six seconds to
 # reach scanout, capture it and launch the settings panel. GOSH and GOSET share
 # the seat's proven two-client envelope; the seat closes both before stage 3.
+# The capture window is two-sided and the host-side dispatch JITTER spans it
+# both ways. `gosh: prompt` serial-prints BEFORE the first paint, and the
+# runner's screenshot path (SCShareableContent failure -> cacheDisplay
+# fallback) has been observed at ~0.5 s AND ~4 s from marker to frame read —
+# at 0.5 s the prompt has not painted (0 green pixels); at 4 s anchored on a
+# late marker it lands past GOSET's tab-open `host focus` swap (0 pixels).
+# --screenshot-after-delay 4 pins the read to prompt+4.5..8 s — the prompt is
+# long painted, and the swap is held at prompt+~12 s by script2-delay 6 +
+# `sleep 5` before the exec.
 vgate_file script2.txt <<'EOF'
-echo M76B_FIRSTBOOT_CAPTURE
-echo M76B_FIRSTBOOT_CAPTURE
+sleep 5
 set GOMAXPROCS=1
 wm
 exec GOSET.ELF
@@ -279,12 +287,12 @@ EOF
 # window -- which is GOSET, because its declare takes focus over the starter.
 vgate_run 01 -- \
     --screen '$RUN_DIR/screen' \
-    --screenshot-after 'M76B_FIRSTBOOT_CAPTURE' \
+    --screenshot-after 'gosh: prompt' --screenshot-after-delay 4 \
     --via-virtio \
     --script '$RUN_DIR/script.txt' \
     --script-after 'gotabwm: win focus' \
     --script2 '$RUN_DIR/script2.txt' \
-    --script2-after 'gosh: prompt' --script2-delay 4 \
+    --script2-after 'gosh: prompt' --script2-delay 6 \
     --input-string $'wm=tabwm\n' \
     --input-string-after 'goset: ready ' \
     --input-chords 'space,space,space,space,space,space,space,space,space,space,space,space,k,e,y,b,o,a,r,d,_,l,a,y,o,u,t,=,d,e,return' \
@@ -1029,6 +1037,25 @@ if not re.search(r"gotabwm: settings broadcast key=theme listeners=1", ser):
 print("settings publication reached one live subscriber and repainted without restart")
 PY
 
+# Between-run pin for boot 11 (#3972): the typed GOSET leg must meet a
+# session WITHOUT a Settings row — a session-restored GOSET prints its own
+# `goset: ready` during the restore fan-out, re-arms the typist early, and
+# the scripted exec's later focus steal drops leading strokes (observed:
+# `goset: discard dle_minutes=7`). One Calc row — boot 10's pin bytes —
+# makes the restore deterministic AND guarantees `session live` fires for
+# script2's re-anchored gate.
+vgate_assert 10 python <<'PY'
+import os
+share = os.environ["VG_SHARE"]
+session = (bytes([2, 1, 1, 0, 0, 0]) +
+           b"Calc".ljust(32, b"\0") + bytes([0]) + bytes(12) +
+           b"GOCALC.ELF".ljust(24, b"\0"))
+with open(os.path.join(share, "SESSION.TABS"), "wb") as f:
+    f.write(session)
+print("between-run pin: SESSION.TABS = one Calc row for boot 11 "
+      "(no session-restored GOSET to race the typed panel)")
+PY
+
 # M83f (#1779): one typed GOSET edit, one safe publish, then a fresh boot
 # reads the value. Boot 01 keeps its proven wm/layout choreography; running a
 # second HID line there loses the first stroke on this input transport. This
@@ -1042,18 +1069,24 @@ set GOMAXPROCS=1
 exec GOSET.ELF
 EOF
 
+# The panel exec waits on `session live`, not `win gone`: the restore
+# fan-out runs BETWEEN those markers, so an exec gated on win gone lands
+# mid-restore — ahead of the settle's focus raise, beside any restored
+# row (#3972). `session live` is the post-settle marker: the scripted
+# GOSET declares after it as the strip's last, focused declare.
 vgate_run 11 -- \
     --screen '$RUN_DIR/screen-11' \
     --via-virtio \
     --script '$RUN_DIR/script-11-focus.txt' \
     --script-after 'gotabwm: win focus' \
     --script2 '$RUN_DIR/script-11-panel.txt' \
-    --script2-after 'gotabwm: win gone' \
+    --script2-after 'gotabwm: session live n=' \
     --input-string $'idle_minutes=7\n' \
     --input-string-after 'goset: ready ' \
     --script-expect 'goset: saved keys=13 wm=gotabwm theme=light' \
     --script-expect-tail 10 --timeout 300
 
+vgate_assert 11 serial-contains 'gotabwm: session live n='
 vgate_assert 11 serial-contains 'goset: ready keys=13 wm=gotabwm theme=light mode=rw'
 vgate_assert 11 serial-contains 'goset: set idle_minutes=7'
 vgate_assert 11 serial-contains 'goset: saved keys=13 wm=gotabwm theme=light'
@@ -1076,6 +1109,22 @@ vgate_assert 12 share-contains SETTINGS.TXT 'idle_minutes=7'
 vgate_assert 12 serial-contains 'rx-m83f-persisted'
 vgate_assert 12 serial-absent '[EXC] parking:'
 vgate_assert 12 serial-absent 'exited status=139'
+
+# Between-run pin for boot 13 (#3972): same contract as boot 11 — the
+# typed GOSET leg needs a session with no Settings row (a restored GOSET
+# would re-arm the typist mid-fan-out) and a deterministic `session
+# live` for the panel exec's gate.
+vgate_assert 12 python <<'PY'
+import os
+share = os.environ["VG_SHARE"]
+session = (bytes([2, 1, 1, 0, 0, 0]) +
+           b"Calc".ljust(32, b"\0") + bytes([0]) + bytes(12) +
+           b"GOCALC.ELF".ljust(24, b"\0"))
+with open(os.path.join(share, "SESSION.TABS"), "wb") as f:
+    f.write(session)
+print("between-run pin: SESSION.TABS = one Calc row for boot 13 "
+      "(no session-restored GOSET to race the typed panel)")
+PY
 
 # --- M82d2 (#1785): notifications policy, the persisted halves --------------
 # Boots 13-16 prove what a restart must not lose or resurrect wrongly.
@@ -1129,12 +1178,13 @@ vgate_run 13 -- \
     --script '$RUN_DIR/script-13-focus.txt' \
     --script-after 'gotabwm: win focus' \
     --script2 '$RUN_DIR/script-13-panel.txt' \
-    --script2-after 'gotabwm: win gone' \
+    --script2-after 'gotabwm: session live n=' \
     --input-string $'notify_dnd=on\n' \
     --input-string-after 'goset: ready ' \
     --script-expect 'gotabwm: notify dnd=on via=settings' \
     --script-expect-tail 10 --timeout 300
 
+vgate_assert 13 serial-contains 'gotabwm: session live n='
 vgate_assert 13 serial-contains 'goset: ready keys=13 wm=gotabwm theme=light mode=rw'
 vgate_assert 13 serial-contains 'goset: set notify_dnd=on'
 vgate_assert 13 serial-contains 'goset: saved keys=13 wm=gotabwm theme=light'
@@ -1298,6 +1348,22 @@ vgate_assert 16 serial-absent '[EXC] parking:'
 vgate_assert 16 serial-absent 'exited status=139'
 vgate_assert 16 share-equals NOTIFY.HIST notify-empty.expected
 
+# Between-run pin for boot 17 (#3972): same contract as boots 11/13 —
+# the typed GOSET leg needs a session with no Settings row (a restored
+# GOSET would re-arm the typist mid-fan-out) and a deterministic
+# `session live` for the panel exec's gate.
+vgate_assert 16 python <<'PY'
+import os
+share = os.environ["VG_SHARE"]
+session = (bytes([2, 1, 1, 0, 0, 0]) +
+           b"Calc".ljust(32, b"\0") + bytes([0]) + bytes(12) +
+           b"GOCALC.ELF".ljust(24, b"\0"))
+with open(os.path.join(share, "SESSION.TABS"), "wb") as f:
+    f.write(session)
+print("between-run pin: SESSION.TABS = one Calc row for boot 17 "
+      "(no session-restored GOSET to race the typed panel)")
+PY
+
 # --- M83c (#1776): the timezone row persists -------------------------------
 # Boots 17/18 are the idle_minutes pair's shape: one typed GOSET edit, one
 # safe publish, then a fresh boot reads the row back through the kernel's
@@ -1320,12 +1386,13 @@ vgate_run 17 -- \
     --script '$RUN_DIR/script-17-focus.txt' \
     --script-after 'gotabwm: win focus' \
     --script2 '$RUN_DIR/script-17-panel.txt' \
-    --script2-after 'gotabwm: win gone' \
+    --script2-after 'gotabwm: session live n=' \
     --input-string $'timezone=UTC+05:30\n' \
     --input-string-after 'goset: ready ' \
     --script-expect 'goset: saved keys=13 wm=gotabwm theme=light' \
     --script-expect-tail 10 --timeout 300
 
+vgate_assert 17 serial-contains 'gotabwm: session live n='
 vgate_assert 17 serial-contains 'goset: ready keys=13 wm=gotabwm theme=light mode=rw'
 vgate_assert 17 serial-contains 'goset: set timezone=UTC+05:30'
 vgate_assert 17 serial-contains 'goset: saved keys=13 wm=gotabwm theme=light'

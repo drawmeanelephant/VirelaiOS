@@ -17,11 +17,18 @@
 #   goa11y: announce  ->  goa11y: say queued  ->  gotabwm: hostint speak
 #   ->  host-speech: speak (runner stdout, the decode -> synth hand-off)
 #
-# Exec order inside script2 is load-bearing (go-wm-journey run 03's
-# rule): GOA11Y execs first so GODEMO's declare + self-raise is the last
-# focus event the seat sees — a late GOA11Y declare would steal the
-# keyboard and the chords would land on a window that ignores input by
-# contract.
+# Declare order, not exec order, is what the leg needs: GODEMO must
+# declare LAST so its self-raise is the last focus event the seat sees —
+# a late GOA11Y declare would steal the keyboard and the chords would
+# land on a window that ignores input by contract. exec order inside a
+# script burst is NOT declare order (#3972: the kernel runs the exec'd
+# procs concurrently and their declares land unsequenced — a GODEMO-first
+# boot left GOA11Y focused forever, `no outline win=` until timeout). So
+# script2 carries only `dui focus 0` + GOA11Y, and GODEMO's exec is
+# marker-gated on the ordering evidence itself:
+# `--host-cmd-after 'goa11y: declare accepted:send-serial'` injects
+# `exec GODEMO.ELF` the moment GOA11Y's rail cell exists — the accepted
+# declare, not a positional guess.
 #
 # The drive is run 03's key sequence verbatim through Return: escape,
 # F10, down/right/right (File open -> Edit -> View), e (&Expand All
@@ -62,7 +69,6 @@ EOF
 vgate_file script2-01.txt <<'EOF'
 dui focus 0
 exec GOA11Y.ELF -announce -say
-exec GODEMO.ELF
 EOF
 
 vgate_file script3-01.txt <<'EOF'
@@ -109,6 +115,8 @@ vgate_run 01 -- \
     --script '$RUN_DIR/script-01.txt' \
     --script2 '$RUN_DIR/script2-01.txt' \
     --script2-after 'gotabwm: hostint armed' \
+    --host-serial-send 'exec GODEMO.ELF' \
+    --host-cmd-after 'goa11y: declare accepted:send-serial' \
     --input-chords 'escape,f10,down,right,right,e,tab,down,down,right,return' \
     --input-chords-after 'godialog: painted' \
     --script3 '$RUN_DIR/script3-01.txt' \
@@ -127,6 +135,9 @@ vgate_assert 01 serial-contains 'exec: loaded GOA11Y.ELF'
 vgate_assert 01 serial-contains 'goa11y: open id='
 vgate_assert 01 serial-contains 'goa11y: declare accepted'
 vgate_assert 01 serial-contains 'goa11y: present'
+# GODEMO's exec rode the host serial-send seam, fired by the reader's own
+# accepted declare — the leg's ordering pin, receipt on stdout (#3972).
+vgate_assert 01 output-contains 'host-ui: cmd=send-serial vm=1 state=performed sent=1'
 vgate_assert 01 serial-contains 'exec: loaded GODEMO.ELF'
 vgate_assert 01 serial-contains 'godialog: painted'
 vgate_assert 01 serial-contains 'goa11y: focus win='
@@ -171,6 +182,10 @@ if i0 < 0:
 anns = [ln[len("goa11y: announce "):]
         for ln in ser[i0:].splitlines()
         if ln.startswith("goa11y: announce ")]
+# Unchanged-focus repeats are benign: a refocus poll or a re-published
+# identical outline re-announces the same utterance — consecutive, no new
+# narration step (#3972). Collapse them before the order walk.
+anns = [t for i, t in enumerate(anns) if i == 0 or t != anns[i - 1]]
 canonical = ["Tree", "File", "Open", "Edit", "Expand All",
              "Tree", "row 1 of 64", "row 2 of 64", "row 3 of 64"]
 ci = 0
@@ -214,21 +229,49 @@ PY
 #                run 01 (the vf rm sweep drops any session/snapshot state a
 #                prior iteration left before the seat can restore it).
 #   script2-02   on `gotabwm: hostint armed`: dui focus 0 parks the console,
-#                then GOA11Y -announce -say, GOEDIT, GOVIEW -play, GODEMO —
-#                GODEMO execs last so its declare + self-raise is the last
-#                focus event and the chords land on the demo (the run-01
-#                exec-order rule). GOEDIT's own declare may hold focus long
-#                enough to announce `document` mid-startup: harmless — the
-#                audits below scope to windows, never to order across them.
-#   chords       on `godialog: painted`: run 01's menu drive verbatim,
-#                ending on return — announces Tree -> File -> Open -> Edit
-#                -> Expand All -> row 1..3 of 64 on GODEMO.
-#   script3-02   on `goa11y: announce row 3 of 64` — the drive's own end
-#                utterance, so every announce and every speak receipt the
-#                drive produced is already in serial: exec GOSET.ELF — the
-#                last declare, so the panel holds the keyboard when the
-#                typed lines arrive (the go-settings run-05 posture without
-#                GOSH).
+#                then exec GODEMO.ELF ALONE. Exec order is not declare
+#                order (#3972) but bind order follows it closely enough to
+#                matter: every windowed app binds a scanout-sized shared
+#                surface, each bind + review consumes one row of the seat's
+#                16-row mmap mirror table, and a late binder loses the last
+#                rows (observed: `surface failed ENOMEM`, seat regions=16,
+#                when GODEMO's exec was marker-gated behind rail n=3).
+#                tabapp callers degrade on a refused bind and keep running;
+#                godialog exits — so the demo gets a solo bind window while
+#                the table is nearly empty, and `godialog: painted` below
+#                is its bind evidence.
+#   script3-02   on `godialog: painted`: the three tabapp apps exec as one
+#                burst — GOA11Y -announce -say, GOEDIT, GOVIEW -play. Their
+#                binds contend for the seat's leftover rows and degrade on
+#                refusal; every leg below reads evidence that survives a
+#                degraded surface (declared rail cells, announces, outlines
+#                over the share, the settings broadcast) — none needs these
+#                windows composited.
+#   chords       on `gotabwm: rail n=4` — all four apps declared, so no
+#                declare can still steal focus — then ctrl-shift-p + type
+#                `dialog` + return: the palette's palTab row is labelled by
+#                the declared title, so the demo takes focus by name
+#                whatever strip slot it opened at. The rest is run 01's
+#                menu drive verbatim, ending on return — announces Tree ->
+#                File -> Open -> Edit -> Expand All -> row 1..3 of 64 on
+#                GODEMO.
+#   send-serial  on `godemo: table activate r=2 c=1` — the drive's own
+#                synchronous end receipt, printed when the last injected
+#                key is consumed: exec GOSET.ELF. The announce gate was
+#                tried first and lost: GOA11Y's 500 ms poll can utter
+#                `row 3 of 64` while `right`/`return` are still in the
+#                chord queue, and GOSET's declare steals focus fast enough
+#                to eat them (observed — the seat forwarded the tail keys
+#                to id=8 and `table activate` never printed). The activate
+#                marker postdates every key; the `row 3 of 64` announce is
+#                already in serial by then (the poll fires within 500 ms
+#                of the row-3 selection, GOSET's declare lands ~1 s+ after
+#                the send). GOSET's declare self-raise holds the keyboard
+#                when the typed lines arrive (the go-settings run-05
+#                posture without GOSH), and its surface bind degrading on
+#                a full seat-mirror table is harmless — every goset:
+#                marker is RPC-driven, not surface-driven (observed: bind
+#                ENOMEM, all markers printed).
 #   input-string on `goset: ready `: `access` opens the a11y pane, then
 #                `a11y.reduce_motion=on` is apply+save+notify on Enter —
 #                the run-05 typed pair verbatim.
@@ -269,14 +312,13 @@ EOF
 
 vgate_file script2-02.txt <<'EOF'
 dui focus 0
-exec GOA11Y.ELF -announce -say
-exec GOEDIT.ELF
-exec GOVIEW.ELF -play /host/PLAY.GIF
 exec GODEMO.ELF
 EOF
 
 vgate_file script3-02.txt <<'EOF'
-exec GOSET.ELF
+exec GOA11Y.ELF -announce -say
+exec GOEDIT.ELF
+exec GOVIEW.ELF -play /host/PLAY.GIF
 EOF
 
 vgate_setup_python <<'PY'
@@ -306,10 +348,12 @@ vgate_run 02 -- \
     --script '$RUN_DIR/script-02.txt' \
     --script2 '$RUN_DIR/script2-02.txt' \
     --script2-after 'gotabwm: hostint armed' \
-    --input-chords 'escape,f10,down,right,right,e,tab,down,down,right,return' \
-    --input-chords-after 'godialog: painted' \
+    --input-chords 'ctrl-shift-p,d,i,a,l,o,g,return,escape,f10,down,right,right,e,tab,down,down,right,return' \
+    --input-chords-after 'gotabwm: rail n=4' \
     --script3 '$RUN_DIR/script3-02.txt' \
-    --script3-after 'goa11y: announce row 3 of 64' \
+    --script3-after 'godialog: painted' \
+    --host-serial-send 'exec GOSET.ELF' \
+    --host-cmd-after 'godemo: table activate r=2 c=1:send-serial' \
     --input-string $'access\na11y.reduce_motion=on\n' \
     --input-string-after 'goset: ready ' \
     --script-expect 'gview: motion reduced' --timeout 420
@@ -329,6 +373,9 @@ vgate_assert 02 serial-contains 'exec: loaded GOEDIT.ELF'
 vgate_assert 02 serial-contains 'exec: loaded GOVIEW.ELF'
 vgate_assert 02 serial-contains 'exec: loaded GODEMO.ELF'
 vgate_assert 02 serial-contains 'exec: loaded GOSET.ELF'
+# GOSET's exec rode the host serial-send seam, fired by the drive's own
+# end announce — #3972's pin: ordering evidence, not exec order.
+vgate_assert 02 output-contains 'host-ui: cmd=send-serial vm=1 state=performed sent=1'
 vgate_assert 02 serial-contains 'godialog: painted'
 # --- the key drive landed (leg b's substrate) --------------------------------
 vgate_assert 02 serial-contains 'godemo: menu expand-all'
@@ -383,6 +430,13 @@ for ln in ser[i0:].splitlines():
         cur = ln.split("win=", 1)[1].split(" ", 1)[0]
     elif ln.startswith("goa11y: announce ") and cur is not None:
         anns.setdefault(cur, []).append(ln[len("goa11y: announce "):])
+
+# Unchanged-focus repeats are benign — a refocus poll or a re-published
+# identical outline re-announces the same utterance under the same win
+# (#3972). Collapse consecutive repeats per window before the order walk.
+for w in anns:
+    ts = anns[w]
+    anns[w] = [t for i, t in enumerate(ts) if i == 0 or t != ts[i - 1]]
 
 demo = None
 for w, ts in anns.items():
