@@ -48,6 +48,6 @@ m = re.search(r'wnd: god-menu apps=([0-9]+)', ser)
 assert m, "apps marker missing"
 n = int(m.group(1))
 # The bound is "the dynamic catalog loaded", not a pinned row count —
-# it drifts with APPS.TXT (19 rows now, 8 dock=true, menu_apps_max=16).
+# it drifts with APPS.TXT (32 rows now, 10 dock=true, menu_apps_max=16).
 assert n >= 1, f"dynamic apps count {n}: catalog failed to load"
 PY
