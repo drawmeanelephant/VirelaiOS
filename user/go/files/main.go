@@ -428,6 +428,17 @@ func main() {
 				break
 			}
 			progress = true
+			if ev.Kind == vi.EvMouseScroll {
+				if m.handleScroll(ev) {
+					if !paint(fd, m) {
+						shutdown(ta, fd, 4)
+					}
+					vi.Sleep(1)
+					flush(&m, ta)
+					vi.ConsoleLine(markerRepaint)
+				}
+				continue
+			}
 			switch ta.Dispatch(ev) {
 			case tabapp.ActionClosed:
 				shutdown(ta, fd, 0)

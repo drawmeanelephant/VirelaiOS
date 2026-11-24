@@ -47,12 +47,6 @@ const (
 	keyUp      = 0x52
 )
 
-// evScroll is kernel event kind 12 (events.zig MOUSE_SCROLL): arg0 packs
-// bits 0–13 magnitude, bit 14 horizontal, bit 15 sign (1 = down). PageUp/
-// PageDown key presses generate their KEY_DOWN plus one of these — the
-// reader consumes the scroll half so the wheel path and the keys agree.
-const evScroll uint16 = 12
-
 // Layout geometry inside the window: the kernel's own 16px title band
 // covers canvas rows 0–15 on the degrade path, the status bar sits at the
 // bottom, and the page viewport is everything between.

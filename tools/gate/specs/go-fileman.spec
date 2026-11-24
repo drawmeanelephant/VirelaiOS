@@ -1339,7 +1339,7 @@ vgate_run 14 -- \
     --script-expect 'gofiles OK' --timeout 240
 
 vgate_assert 14 serial-contains 'gofiles: ready'
-vgate_assert 14 serial-contains 'gofiles: hints n=53'
+vgate_assert 14 serial-contains 'gofiles: hints n=59'
 vgate_assert 14 serial-contains 'gofiles: hints row ctrl+shift+p summon the command palette'
 vgate_assert 14 serial-contains 'gofiles: hints row ctrl+shift+c copy the terminal selection'
 vgate_assert 14 serial-contains 'gofiles: hints row ctrl+shift+k clear the terminal scrollback'
@@ -1683,8 +1683,11 @@ vgate_run 17 -- \
     --input-chords 'j,j,space,space,k,return,j,space,space,d,h' \
     --input-chords-after 'gofiles: ready' \
     --screenshot-after 'gofiles: quicklook WORDS.TXT kind=text' \
+    --pointer-virtio '120,120,w+2' \
+    --pointer-virtio-after 'gofiles: cd /host/FMQ' \
     --script2 '$RUN_DIR/script2-17.txt' \
     --script2-after 'gofiles: cd /host/FMQ' \
+    --script2-delay 6 \
     --script-expect 'gofiles OK' --timeout 240
 
 vgate_assert 17 serial-contains 'exec: loaded GOFILES.ELF'
@@ -1709,6 +1712,20 @@ vgate_assert 17 serial-contains 'gofiles: quicklook INNER.TXT kind=text'
 vgate_assert 17 serial-contains 'gofiles: tar read-only delete'
 vgate_assert 17 serial-contains 'gofiles: tar close SAMPLE.TAR'
 vgate_assert 17 serial-contains 'gofiles: cd /host/FMQ'
+
+# M216j (#3949): after `h` returns to /host/FMQ (sel=0 on LOOK.QOI), wheel-down
+# +2 over the list client area moves selection to WORDS.TXT and loads its preview.
+vgate_assert 17 python <<'PY'
+import os, sys
+ser = open(os.environ["VG_SER"], errors="replace").read()
+cd_pos = ser.find("gofiles: cd /host/FMQ")
+if cd_pos < 0:
+    sys.exit("missing 'gofiles: cd /host/FMQ'")
+tail = ser[cd_pos:]
+if "gofiles: view WORDS.TXT bytes=" not in tail:
+    sys.exit("wheel step 120,120,w+2 after cd /host/FMQ did not scroll list to WORDS.TXT")
+print("go-fileman 17 wheel: scrolled from LOOK.QOI to WORDS.TXT after cd /host/FMQ")
+PY
 
 vgate_assert 17 serial-contains 'gofiles: close'
 vgate_assert 17 serial-contains 'gofiles OK'
