@@ -47,12 +47,14 @@ kernel-anchored action journal:
   that ordinary input routing already has such a registry.
 - **Some object identities are already fixed-size.** Settings keys are at
   most 32 bytes (`kernel/src/settings.zig`, `user/go/settings`). Kernel
-  file metadata already has binary filesystem/inode identity and u64
-  generation-width precedent; socket handles already carry generation
-  bits. Path names are not object identity: they can be long, nested,
-  case-folded, and changed by rename. Fixed-size object evidence is
-  therefore possible without a variable-length journal or interner, but
-  only when each object kind uses its binary instance identity.
+  file metadata already has binary filesystem/inode identity, and the FUSE
+  lookup wire format exposes u64 generation, but that generation is not yet
+  carried through the adopted metadata object model; file lifecycle cannot
+  be wired until it is. Socket handles already carry generation bits. Path
+  names are not object identity: they can be long, nested, case-folded,
+  and changed by rename. Fixed-size object evidence is therefore possible
+  without a variable-length journal or interner, but only when each object
+  kind uses its binary instance identity.
 
 The missing abstraction is not “more logging”. It is a bounded,
 structured, kernel-anchored record of meaningful ownership transitions and
@@ -85,9 +87,12 @@ object ownership, durable state, or socket ownership:
 - window/surface ownership transfer, capture, focus-seat routing, and
   clipboard or drag payload publication;
 - socket ownership transitions: bind, listen, connect, accept, close, and
-  the permission decision attached to them. The audited object is the
-  socket instance. Peer address tuples are connection metadata, not a
-  substitute for socket identity;
+  the permission decision attached to them. Once created, the audited
+  object is the socket instance. A pre-creation permission denial instead
+  uses the fixed network-namespace object; there is no honest socket
+  instance to name before the operation would have minted one. Peer
+  address tuples are connection metadata, not a substitute for either
+  identity;
 - kernel-visible file-object mutations: create, delete, and rename. The
   journal records the kernel mutation that occurred. It does not infer
   that a rename is the logical completion of a userland helper such as
@@ -106,9 +111,11 @@ profiling, counters, or bounded workload sessions.
 
 Dedicated diagnostic/audit lanes are excluded from file-mutation auditing
 when auditing them would recurse or duplicate an existing contract:
-`/host/APPLOG`, `/host/CRASH`, `/host/AGENT/AUDIT`,
-`/host/ASSIST/AUDIT`, and the future journal export lane. Their own
-bounded receipt/log rules remain the evidence contract for those writes.
+`/host/APPLOG`, `/host/CRASH`, `/host/AGENT/AUDIT`, the GOASSIST receipt
+lane under either `/host/ASSIST/AUDIT` or `/disk/ASSIST/AUDIT`, and the
+future journal export lane. Their own bounded receipt/log rules remain the
+evidence contract for those writes.
+
 Journal export is accounted by export watermarks and counters, not by
 auditing the export file mutation as another journal event; otherwise
 every batch would create the event the next batch had to export.
@@ -120,9 +127,9 @@ bytes rather than as a native struct layout:
 
 - 8 bytes: global sequence;
 - 8 bytes: timestamp in the kernel monotonic nanoseconds-since-boot clock;
-- 8 bytes: actor process-instance token;
+- 8 bytes: actor principal token;
 - 8 bytes: owner principal token;
-- 8 bytes: packed authority kind + authority/handle/grant id;
+- 8 bytes: packed authority kind + authority/grant/capability id;
 - 8 bytes: object generation;
 - 8 bytes: charge delta;
 - 8 bytes: coalesced-input count, or 1 for an uncoalesced record;
@@ -136,23 +143,33 @@ cap, but it may not become variable-length.
 
 Principal tokens are compact typed identities. Their high bits name the
 principal kind and their low bits carry the kind-specific id or instance
-bits. Actor tokens always name a process instance. Owner tokens may name a
-process instance, uid, kernel, seat, or service. That distinction matters
-because file ownership is uid-shaped, while window and session ownership is
-process-shaped. The exact bit split belongs to the envelope card.
+bits. Actor and owner tokens may name a process instance, uid, kernel,
+seat, service, or boot/system principal. That distinction matters because
+file ownership is uid-shaped, window and session ownership is often
+process-shaped, and boot, monitor, reaper, host-integration, and kernel
+work may have no responsible EL0 process. The exact bit split belongs to
+the envelope card.
 
 The fields mean:
 
-1. **Actor** — the kernel process-instance performing the action. A
-   process-instance token must be reuse-resistant; if the current pid
-   namespace lacks a generation or instance sequence, the wiring card must
-   add or derive one before claiming process identity evidence.
+1. **Actor** — the kernel-attributed principal performing the action. For
+   a process act this is a process-instance token. A process-instance token
+   must be reuse-resistant; if the current pid namespace lacks a generation
+   or instance sequence, the wiring card must add or derive one before
+   claiming process identity evidence. Kernel, service, boot/system, and
+   uid acts must use their own typed principal rather than being falsely
+   attributed to whatever process happened to be nearby.
 2. **Owner** — the lifecycle/charging principal for the object at the time
    of the event, derived from the kernel/service object graph. Costs are
    charged to this owner. The owner is never self-reported text.
-3. **Authority** — the capability, grant, handle, seat role, or kernel
-   invariant that made the action legitimate, or the missing authority for
-   a denial.
+3. **Authority** — the capability, grant, seat role, or kernel invariant
+   that made the action legitimate, or the missing authority for a denial.
+   Raw object handles are object identity, not authority; when a handle is
+   the relevant object it appears in the object identity fields rather than
+   needing a second full-width copy plus a kind discriminant in this packed
+   field. No raw 64-bit object handle is an authority value; an authority
+   type that cannot fit this compact representation is not wired until the
+   encoding is explicitly amended.
 4. **Object** — `(object kind, object generation, canonical object key)`.
    The key is binary or canonical bounded identity bytes, not a formatted
    diagnostic string:
@@ -163,7 +180,8 @@ The fields mean:
      identity plus reuse-resistant generation is not wired;
    - socket objects use their generation-tagged binary socket handle.
      Local and peer address tuples do not fit the key and are not initial
-     identity evidence;
+     identity evidence. Pre-creation network permission denials use the
+     fixed network-namespace object key instead;
    - process, window, surface, grant, session, and snapshot objects use
      their binary instance/id bytes;
    - content-addressed objects use their digest bytes.
@@ -173,19 +191,28 @@ The fields mean:
 7. **Coalescing** — the count of input events represented by this record.
    The count is 1 for a normal record and greater than 1 for a coalesced
    summary. Events may coalesce only when actor, owner, authority, plane,
-   object, verb, result, and charge kind are identical; differing fields
-   are what prevent coalescing.
+   object, verb, result, and charge kind are identical. The charge delta is
+   then the aggregate sum across the represented events and is updated with
+   the count. If that sum would overflow, the events do not coalesce.
 8. **Ordering** — one global journal sequence plus one named monotonic
    clock domain.
 
 Object types whose identities can be deleted and reused must provide a
-reuse-resistant generation representable in u64 before they are wired. A
-type that cannot provide generation is not audited yet; guessing identity
-from a reused integer, path, or name is worse than omitting that type. A
-rename is one mutation of the same file-object identity, not a compound
-pair of path identities. If a later object type genuinely involves multiple
-audited objects, it emits one fixed-size record per object; readers use the
-global sequence and shared actor/authority to correlate them.
+reuse-resistant generation representable in u64 before they are wired.
+Reuse resistance is scoped to one boot/journal epoch unless the object
+type provides a wider epoch; persistent export batch metadata must carry
+the boot/journal epoch so exported records are not compared across boots
+as if object keys were globally unique. A type that cannot provide
+generation is not audited yet; guessing identity from a reused integer,
+path, or name is worse than omitting that type.
+
+A non-replacing rename is one mutation of the same file-object identity. A
+replacing rename involves a second object whose deletion/replacement must
+also be identified. If the filesystem cannot prove both object identities
+atomically with the mutation, replacing rename is not wired for that
+backend. If a later object type genuinely involves multiple audited
+objects, it emits one fixed-size record per object; readers use the global
+sequence and shared actor/authority to correlate them.
 
 ### D4. Kernel-owned bounded rings are the mandatory kernel write path
 
@@ -281,7 +308,7 @@ These are initial acceptance ceilings, **not measured results**:
 | recorded write | added mean ≤ **500 ns/event**, p95 ≤ **2 µs/event**, measured with CNTPCT/CNTFRQ on the reference host |
 | non-event guard on an uncovered hot path | added mean ≤ **100 ns/call**, same measurement method |
 | sustained 1,000 audited events/s during fixed work | median CPU-time overhead **<1%**, 5 off + 5 on runs; the cost gate must name the fixed workload before claiming this budget |
-| batch export of 256 records | ≤ **1 ms** per drain on the reference host, measured separately from guest workload cost |
+| batch export of up to 192 records from one plane | ≤ **1 ms** per drain on the reference host, measured separately from guest workload cost |
 
 A slice that cannot measure against the relevant budget has not satisfied
 the design. Budgets may be revised only by explicit amendment with measured
@@ -358,7 +385,7 @@ This decision is accepted when, for each object type explicitly wired at
 that point, the tree can answer from structured evidence rather than prose
 inference:
 
-- which actor process-instance acted;
+- which typed actor principal acted;
 - which owner was charged;
 - which authority or grant permitted or refused the action;
 - which typed object key and generation was acted on;
