@@ -157,12 +157,22 @@ const (
 	// M124a-2 (#2677): the drag source's receipts. `drag arm` follows the
 	// seat's acked kind-24 (the payload is already staged under the source's
 	// /host/DRAG.<id>); `drag refused` names why no arm happened — no row, a
-	// volume/dir row, over the DragMax cap, a read rc, or the seat's own
-	// refusal; `drag end` is the seat's kind-25 outcome notice for an armed
-	// drag — `delivered win=<peer>` or `cancelled`.
+	// volume row, a pseudo-listing, an incomplete/over-cap directory carry
+	// (#3915), an over-DragMax file, a read rc, or the seat's own refusal;
+	// `drag end` is the seat's kind-25 outcome notice for an armed drag —
+	// `delivered win=<peer>` or `cancelled`.
 	markerDragArm = "gofiles: drag arm "
 	markerDragNo  = "gofiles: drag refused "
 	markerDragEnd = "gofiles: drag end "
+
+	// #3915: the receiving half of the archive MIME. `drop saved <name>
+	// bytes=<n> entries=<m> root=<member>` follows a validated tar's
+	// non-overwriting publication in the current real directory; the
+	// archive browser's own `tar open` marker follows it. `drop refused
+	// <reason>` names why nothing was saved (invalid/incomplete/root tar,
+	// a pseudo or archive destination, name exhaustion, or the write rc).
+	markerDropSaved = "gofiles: drop saved "
+	markerDropNo    = "gofiles: drop refused "
 
 	// M149a (#2806): the spacebar QuickLook pane. `quicklook <name>
 	// kind=…` is the open receipt — it states which arm the sniff chose
