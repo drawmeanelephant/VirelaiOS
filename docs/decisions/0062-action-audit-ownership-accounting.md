@@ -45,11 +45,14 @@ kernel-anchored action journal:
   one owner and dispatch point per chord (`docs/app-authoring.md` §9).
   That is evidence for one-owner-per-object as a design rule, not proof
   that ordinary input routing already has such a registry.
-- **Object names are bounded in the places this ADR first cares about.**
-  Settings keys are at most 32 bytes (`kernel/src/settings.zig`,
-  `user/go/settings`), and flat host-share names fit the existing NAME
-  grammar. Fixed-size object evidence is therefore possible without a
-  variable-length journal or interner for those object classes.
+- **Some object identities are already fixed-size.** Settings keys are at
+  most 32 bytes (`kernel/src/settings.zig`, `user/go/settings`). Kernel
+  file metadata already has binary filesystem/inode identity and u64
+  generation-width precedent; socket handles already carry generation
+  bits. Path names are not object identity: they can be long, nested,
+  case-folded, and changed by rename. Fixed-size object evidence is
+  therefore possible without a variable-length journal or interner, but
+  only when each object kind uses its binary instance identity.
 
 The missing abstraction is not “more logging”. It is a bounded,
 structured, kernel-anchored record of meaningful ownership transitions and
@@ -75,22 +78,27 @@ read time; correlation is a reader concern, not journal ownership.
 ### D2. Audit ownership boundaries, not activity
 
 The audit stream records transitions and decisions that change authority,
-object ownership, durable state, or externally visible endpoint ownership:
+object ownership, durable state, or socket ownership:
 
 - process creation/exit and image identity transitions;
 - capability, grant, measurement, credential, and denial decisions;
 - window/surface ownership transfer, capture, focus-seat routing, and
   clipboard or drag payload publication;
-- endpoint ownership transitions: bind, listen, connect, accept, close,
-  and the permission decision attached to them;
-- durable publication boundaries for files: create, delete, rename, and a
-  crash-safe publish/commit such as `WriteFileSafe` completing;
+- socket ownership transitions: bind, listen, connect, accept, close, and
+  the permission decision attached to them. The audited object is the
+  socket instance. Peer address tuples are connection metadata, not a
+  substitute for socket identity;
+- kernel-visible file-object mutations: create, delete, and rename. The
+  journal records the kernel mutation that occurred. It does not infer
+  that a rename is the logical completion of a userland helper such as
+  `WriteFileSafe`; a future publication ABI or explicit convention would
+  be required before claiming that higher-level meaning;
 - settings mutation commits and their publication to subscribers;
 - session restore, snapshot, resume, and machine-state lifecycle;
 - privileged seat/service operations and host-integration requests.
 
 A file write byte stream is activity; the audited file event is the
-object-lifecycle or publication boundary, not every write. Network payload
+object-mutation boundary, not every write. Network payload
 flow is activity; no send, receive, packet, or byte-counting path is in the
 mandatory journal. Ordinary rendering, syscall frequency, memory traffic,
 scheduling, input micro-events, and packet flow likewise remain in tracing,
@@ -98,30 +106,40 @@ profiling, counters, or bounded workload sessions.
 
 Dedicated diagnostic/audit lanes are excluded from file-mutation auditing
 when auditing them would recurse or duplicate an existing contract:
-`/host/APPLOG`, `/host/CRASH`, `/host/AGENT/AUDIT`, and
-`/host/ASSIST/AUDIT`. Their own bounded receipt/log rules remain the
-evidence contract for those writes.
+`/host/APPLOG`, `/host/CRASH`, `/host/AGENT/AUDIT`,
+`/host/ASSIST/AUDIT`, and the future journal export lane. Their own
+bounded receipt/log rules remain the evidence contract for those writes.
+Journal export is accounted by export watermarks and counters, not by
+auditing the export file mutation as another journal event; otherwise
+every batch would create the event the next batch had to export.
 
 ### D3. The record is a fixed-size ownership fact
 
-The initial journal record is budgeted at **96 bytes**, conceptually:
+The initial journal record is budgeted at **104 bytes**, encoded as packed
+bytes rather than as a native struct layout:
 
 - 8 bytes: global sequence;
-- 8 bytes: one named kernel monotonic clock domain;
+- 8 bytes: timestamp in the kernel monotonic nanoseconds-since-boot clock;
 - 8 bytes: actor process-instance token;
-- 8 bytes: owner process-instance token or a small kernel/seat/service
-  sentinel;
+- 8 bytes: owner principal token;
 - 8 bytes: packed authority kind + authority/handle/grant id;
+- 8 bytes: object generation;
 - 8 bytes: charge delta;
-- 4 bytes: object generation;
+- 8 bytes: coalesced-input count, or 1 for an uncoalesced record;
 - 8 bytes: packed plane, object kind, verb, result, charge kind, key
   length, and flags;
-- 32 bytes: canonical object key;
-- 4 bytes: padding/alignment reserve.
+- 32 bytes: canonical object key.
 
-This is an encoding budget, not a syscall ABI commitment. The first card
-may choose a tighter layout inside the same cap, but it may not become
-variable-length.
+The fields sum to 104 bytes. This is an encoding budget, not a syscall ABI
+commitment. The envelope card may choose a tighter layout inside the same
+cap, but it may not become variable-length.
+
+Principal tokens are compact typed identities. Their high bits name the
+principal kind and their low bits carry the kind-specific id or instance
+bits. Actor tokens always name a process instance. Owner tokens may name a
+process instance, uid, kernel, seat, or service. That distinction matters
+because file ownership is uid-shaped, while window and session ownership is
+process-shaped. The exact bit split belongs to the envelope card.
 
 The fields mean:
 
@@ -131,33 +149,43 @@ The fields mean:
    add or derive one before claiming process identity evidence.
 2. **Owner** — the lifecycle/charging principal for the object at the time
    of the event, derived from the kernel/service object graph. Costs are
-   charged to this owner. The owner is never self-reported text. Kernel,
-   seat, and system-service ownership use explicit sentinel values.
+   charged to this owner. The owner is never self-reported text.
 3. **Authority** — the capability, grant, handle, seat role, or kernel
    invariant that made the action legitimate, or the missing authority for
    a denial.
 4. **Object** — `(object kind, object generation, canonical object key)`.
    The key is binary or canonical bounded identity bytes, not a formatted
    diagnostic string:
-   - settings keys use their exact key bytes (already ≤ 32 bytes);
-   - flat host-share names use canonical NAME bytes;
-   - endpoints use packed binary address/port/scope data;
+   - settings keys use their exact key bytes, already ≤ 32 bytes;
+   - file objects use the binary `(filesystem, inode)` identity in the
+     key, with the object generation field carried separately. Path names
+     are not object identity. A filesystem that cannot prove stable binary
+     identity plus reuse-resistant generation is not wired;
+   - socket objects use their generation-tagged binary socket handle.
+     Local and peer address tuples do not fit the key and are not initial
+     identity evidence;
    - process, window, surface, grant, session, and snapshot objects use
      their binary instance/id bytes;
    - content-addressed objects use their digest bytes.
 5. **Action/result** — small enums for plane, verb, and outcome.
 6. **Charge** — `(charge kind, charge delta)`, charged to the owner. The
    delta is zero when no meaningful cost unit exists.
-7. **Ordering** — one global journal sequence plus one named monotonic
+7. **Coalescing** — the count of input events represented by this record.
+   The count is 1 for a normal record and greater than 1 for a coalesced
+   summary. Events may coalesce only when actor, owner, authority, plane,
+   object, verb, result, and charge kind are identical; differing fields
+   are what prevent coalescing.
+8. **Ordering** — one global journal sequence plus one named monotonic
    clock domain.
 
 Object types whose identities can be deleted and reused must provide a
-monotonically increasing generation before they are wired. A type that
-cannot provide generation is not audited yet; guessing identity from a
-reused integer or name is worse than omitting that type. Compound actions
-such as rename emit one fixed-size record per object identity involved;
-readers use the global sequence and shared actor/authority to correlate
-them.
+reuse-resistant generation representable in u64 before they are wired. A
+type that cannot provide generation is not audited yet; guessing identity
+from a reused integer, path, or name is worse than omitting that type. A
+rename is one mutation of the same file-object identity, not a compound
+pair of path identities. If a later object type genuinely involves multiple
+audited objects, it emits one fixed-size record per object; readers use the
+global sequence and shared actor/authority to correlate them.
 
 ### D4. Kernel-owned bounded rings are the mandatory kernel write path
 
@@ -170,10 +198,12 @@ formatting, or host I/O. Each ring has:
 - a suppressed/rate-limited-event counter when a writer is in overload;
 - a bounded snapshot/export operation.
 
-The first plane split is security decisions, object lifecycle, durable
-effects, and input/window routing. Noise in one plane cannot evict evidence
-from another plane. Export is batch/read-watermark based, never one host
-write per event.
+The first plane split is authority/grant decisions, denial decisions,
+object lifecycle, durable effects, and input/window routing. Denial noise
+therefore cannot overwrite grant/authority changes, and noise in one plane
+cannot evict evidence from another plane. Export is batch/read-watermark
+based, never one host write per event. Ring capacities in D7 are aggregate
+across any per-core shards, not per core.
 
 Every accepted record receives a global sequence from one atomic journal
 counter. That sequence is the total order of **journal acceptance**, not a
@@ -188,14 +218,15 @@ No bounded journal can preserve all important evidence under unbounded
 adversarial noise. This design does not claim that impossible property. It
 requires containment, preferential retention, and visible loss:
 
-- security-decision noise is confined to the security plane; it cannot
-  overwrite lifecycle or durable-effect evidence;
+- denial noise is confined to the denial plane; it cannot overwrite
+  authority/grant, lifecycle, or durable-effect evidence;
 - repeated identical success events are the first candidates for
   coalescing;
 - repeated denial events are coalesced or rate-limited per actor/verb/result
-  so a denial storm cannot write one record per protest indefinitely;
+  so a denial storm cannot write one record per protest indefinitely, and
+  denials live outside the authority/grant plane;
 - ownership transfers, grant/authority changes, restore/snapshot lifecycle,
-  and durable publication commits are never intentionally sampled for
+  and file-object mutations are never intentionally sampled for
   convenience;
 - every overwrite, coalescing action, suppression, and rate-limit decision
   increments an explicit counter;
@@ -238,18 +269,18 @@ The journal publishes events written, coalesced, overwritten, suppressed,
 exported, bytes retained, and writer-cost measurements. Reader access
 requires a new audit-reader grant/capability added through the ADR 0054
 grant-model amendment path; this ADR does not pretend that capability
-already exists. Audit-reader denials are security-plane events, subject to
+already exists. Audit-reader denials are denial-plane events, subject to
 D5's anti-flood coalescing.
 
 These are initial acceptance ceilings, **not measured results**:
 
 | Path | Budget and method |
 |---|---|
-| journal record encoding | ≤ **96 bytes/record** |
-| default ring payload | ≤ **4 planes × 256 records × 96 bytes** (≤ 96 KiB), plus bounded control state; total resident audit state ≤ **128 KiB** |
+| journal record encoding | ≤ **104 bytes/record** |
+| default ring payload | ≤ **5 planes × 192 records × 104 bytes** = **99,840 bytes** (97.5 KiB), aggregate across per-core shards, plus bounded control state; total resident audit state ≤ **128 KiB** |
 | recorded write | added mean ≤ **500 ns/event**, p95 ≤ **2 µs/event**, measured with CNTPCT/CNTFRQ on the reference host |
 | non-event guard on an uncovered hot path | added mean ≤ **100 ns/call**, same measurement method |
-| sustained 1,000 audited events/s during fixed work | median overhead **<1%**, 5 off + 5 on runs |
+| sustained 1,000 audited events/s during fixed work | median CPU-time overhead **<1%**, 5 off + 5 on runs; the cost gate must name the fixed workload before claiming this budget |
 | batch export of 256 records | ≤ **1 ms** per drain on the reference host, measured separately from guest workload cost |
 
 A slice that cannot measure against the relevant budget has not satisfied
@@ -262,7 +293,7 @@ evidence, not silently missed.
   cost on all software regardless of risk, and produces mostly noise. The
   syscall tracer already exists for scoped investigation.
 - **Audit every network send or file write.** Those are byte/packet-flow
-  activity. The journal covers endpoint ownership and durable publication
+  activity. The journal covers socket ownership and file-object mutation
   boundaries instead.
 - **Replace ADR 0052 receipts.** The agent/assist lanes carry authenticated
   channel-specific evidence and are already accepted. The kernel journal is
@@ -287,29 +318,39 @@ evidence, not silently missed.
 
 ## Card split
 
-1. **#3979 — fixed ownership event envelope and bounded rings.** Define
-   the fixed event envelope, plane/object/verb/result enums, global
-   sequence/clock fields, ring overwrite/coalesce/suppression counters,
-   and host/unit tests for encoding, ordering, overwrite accounting, and
-   denial-flood containment. No syscall ABI, reader UI, persistent export,
-   or live security semantics. Touches should stay inside kernel audit
-   scaffolding/tests.
-2. **Object identity and first live writers.** Add any missing
+1. **#3979 — bounded ring mechanics only.** Generic fixed-size record
+   storage, per-ring sequence/read watermarks, overwrite/drop counters,
+   retained-byte accounting, and host/unit tests. No event taxonomy, object
+   identity model, owner/charging model, coalescing policy, syscall ABI,
+   reader UI, persistent export, or live writer. Touches:
+   `kernel/src/audit_ring.zig`, `build.zig`, and directly related tests.
+2. **Event envelope and taxonomy.** Define the ≤104-byte packed encoding,
+   principal/object/authority tokens, plane/object/verb/result/charge enums,
+   global sequence/clock insertion, coalesced-count semantics, and encoding
+   tests. Depends on #3979. Touches the audit envelope module and its tests.
+3. **Object identity and first live writers.** Add any missing
    process/object generation needed by D3, then wire exactly one or two
-   low-frequency kernel lifecycle or grant/denial decisions. Depends on
-   #3979. Touches the audit scaffold plus the specific decision sites only.
-3. **Batch reader surface.** Add the audit-reader grant amendment and a
-   bounded batch read into GOTOP or a small audit CLI. Depends on card 2.
+   low-frequency kernel lifecycle or authority/denial decisions whose object
+   identity already fits D3. Depends on card 2. Touches the audit scaffold
+   plus the specific decision sites only.
+4. **Loss policy and denial-flood proof.** Implement coalescing/rate-limit
+   policy and tests proving a denial flood is confined to the denial plane,
+   counted, and unable to evict authority/lifecycle/durable evidence.
+   Depends on card 3. Touches the audit writer/policy module and tests.
+5. **Batch reader surface.** Add the audit-reader grant amendment and a
+   bounded batch read into GOTOP or a small audit CLI. Depends on card 3.
    Touches the grant model, syscall ABI if required, and the chosen reader.
-4. **Durable-effect planes.** Wire settings publication and selected
-   host-file/object lifecycle events after their generation semantics are
-   defined. Depends on card 2. Touches settings/file publication sites.
-5. **Cost gate.** Add the synthetic writer/overhead benchmark and a
-   declarative gate proving the D7 budgets. May start after #3979 but cannot
-   close until the first live writer exists.
-6. **Later lanes.** Clipboard/drag, snapshot/restore, endpoint ownership,
-   input/window routing, host integration, and any bug-report bundle are
-   separate cards only after the earlier reader evidence exists.
+6. **Durable-effect planes.** Wire settings publication and selected file
+   object lifecycle events only after their binary identity and generation
+   semantics are proven. Depends on card 3. Touches settings/file mutation
+   sites.
+7. **Cost gate.** Add the synthetic writer/overhead benchmark and a
+   declarative gate proving the D7 budgets. May start after card 2 but
+   cannot close until the first live writer exists.
+8. **Later lanes.** Socket ownership, clipboard/drag, snapshot/restore,
+   input/window routing, host integration, richer endpoint metadata, and any
+   bug-report bundle are separate cards only after the earlier reader
+   evidence exists.
 
 ## Acceptance
 
