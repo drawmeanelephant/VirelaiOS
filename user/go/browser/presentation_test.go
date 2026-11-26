@@ -1,9 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"image"
+	"image/png"
 	"os"
 	"path/filepath"
 	"testing"
@@ -114,12 +117,13 @@ func TestIntegratedPipelineMatchesApprovedReferencePixels(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var presentationManifest struct {
+	type presentationReferenceManifest struct {
 		Version       int
 		Width, Height int
 		Verdict       string
 		Fixtures      map[string]struct{ Hash string }
 	}
+	var presentationManifest presentationReferenceManifest
 	if err := json.Unmarshal(presentationData, &presentationManifest); err != nil {
 		t.Fatal(err)
 	}
@@ -128,6 +132,10 @@ func TestIntegratedPipelineMatchesApprovedReferencePixels(t *testing.T) {
 		t.Fatal("missing filtered reference presentation approval")
 	}
 	fonts := browserFonts(t)
+	stage := os.Getenv("M93G_STAGE_REFERENCE_PRESENTATION")
+	staged := presentationReferenceManifest{Version: 1, Width: 512, Height: 288,
+		Verdict:  "Approve footprint-filtered reference presentation expectations",
+		Fixtures: map[string]struct{ Hash string }{}}
 	for name, expected := range manifest.Images {
 		t.Run(name, func(t *testing.T) {
 			path := filepath.Join("../../../tests/fixtures/web/reference", name+".html")
@@ -145,16 +153,43 @@ func TestIntegratedPipelineMatchesApprovedReferencePixels(t *testing.T) {
 			}
 			sampled := make([]uint32, 512*288)
 			a.sampleFrame(virender{pix: sampled, w: 512, h: 288}, presentation{0, 0, 512, 288})
-			wantPresentation, ok := presentationManifest.Fixtures[name]
-			if !ok {
-				t.Fatalf("missing filtered presentation expectation for %s", name)
+			if stage != "" {
+				if err := os.MkdirAll(stage, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				im := image.NewNRGBA(image.Rect(0, 0, 512, 288))
+				for i, p := range sampled {
+					im.Pix[i*4], im.Pix[i*4+1], im.Pix[i*4+2], im.Pix[i*4+3] = byte(p>>16), byte(p>>8), byte(p), 255
+				}
+				var out bytes.Buffer
+				if err := png.Encode(&out, im); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(stage, name+".png"), out.Bytes(), 0o644); err != nil {
+					t.Fatal(err)
+				}
 			}
-			if got := frameHash(sampled); got != wantPresentation.Hash {
-				t.Fatalf("presentation hash=%s want=%s", got, wantPresentation.Hash)
+			got := frameHash(sampled)
+			if stage != "" {
+				staged.Fixtures[name] = struct{ Hash string }{Hash: got}
+			} else {
+				wantPresentation, ok := presentationManifest.Fixtures[name]
+				if !ok {
+					t.Fatalf("missing filtered presentation expectation for %s", name)
+				}
+				if got != wantPresentation.Hash {
+					t.Fatalf("presentation hash=%s want=%s", got, wantPresentation.Hash)
+				}
 			}
 			if len(a.nativePix)*4 != webstyle.ViewportWidth*webstyle.ViewportHeight*4 {
 				t.Fatal("native frame geometry changed")
 			}
 		})
+	}
+	if stage != "" {
+		data, _ := json.MarshalIndent(staged, "", "  ")
+		if err := os.WriteFile(filepath.Join(stage, "reference-presentation.json"), append(data, '\n'), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
