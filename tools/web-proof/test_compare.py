@@ -143,16 +143,18 @@ class CompareTests(unittest.TestCase):
             (_, golden, manifest, presentation_manifest, goldens, fonts, serial, raw, _, w, h) = make_fixture(tmp)
             burn(raw, golden)
             out = self.run_compare(raw, serial, manifest, presentation_manifest, goldens, fonts,
-                                   Path(tmp) / "d0", expect_actual="f" * 64)
+                                   Path(tmp) / "d0", expect_actual="7e6d860f4ffd705f541bb5c99499f6ce44e41e20d25406f226e795490230d18c")
             self.assertEqual(out["sha256"],
                              hashlib.sha256(compare.composite_border(golden, w, h)).hexdigest())
             raw[(92 * compare.SCAN_W + 40) * 4 + 2] ^= 1  # diverge from reference
-            divergent_hash = hashlib.sha256(
-                compare.crop_bgrx(bytes(raw), 40, 92, w, h)).hexdigest()
             with self.assertRaises(compare.CompareError) as ctx:
                 self.run_compare(raw, serial, manifest, presentation_manifest, goldens, fonts,
-                                 Path(tmp) / "d1", expect_actual=divergent_hash)
+                                 Path(tmp) / "d1", expect_actual="7e6d860f4ffd705f541bb5c99499f6ce44e41e20d25406f226e795490230d18c")
             self.assertIn("mismatch", str(ctx.exception))
+            with self.assertRaises(compare.CompareError) as ctx:
+                self.run_compare(raw, serial, manifest, presentation_manifest, goldens, fonts,
+                                 Path(tmp) / "d2", expect_actual="f" * 64)
+            self.assertIn("approved legacy pin", str(ctx.exception))
             with self.assertRaises(compare.CompareError) as ctx:
                 self.run_compare(raw, serial, manifest, presentation_manifest, goldens, fonts,
                                  Path(tmp) / "d3", expect_actual="nothex")

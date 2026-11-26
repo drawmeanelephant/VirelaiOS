@@ -103,9 +103,10 @@ open(os.path.join(share, "BIDI.HTML"), "wb").write(
     b"<p>abc &#x5D2;&#x5D1;&#x5D0; (1) def</p>"
     b"<p>(&#x5D0;)</p>"
     b"<p>(x)</p>"
+    b"<p>W</p>"
     b"<p>&#x628;&#x62D;&#x631;</p>"
     b"<p>&#xFE91;&#xFEA4;&#xFEAE;</p>"
-    b"<p>&#xFEAE;&#xFEA4;&#xFE91;</p>"
+    b"<p>&#xFEAE;&#xFEA4;&#xFE91;W</p>"
     b"<p>&#x644;&#x627;</p>"
     b"<p>&#xFEFB;</p>"
     b"<p>&#x644;&#x200C;&#x627;</p></div>")
@@ -415,7 +416,12 @@ PY
 # is the shared widgets.EmptyState plate through the fill-only virender
 # (icon, headline, chord hints), not a fetched page, so `web: empty start`
 # prints and the settle arc still lands (`repaint items=0` is the honest
-# count for a surface that owns no layout).
+# count for a surface that owns no layout). Unlike a fetched page, the start
+# surface intentionally skips the post-composite settle sleeps, so `ready`
+# is not a scanout-safe capture beat. The harmless c/k/d cache/history key
+# sequence below supplies input-driven repaints after ready; the scanout is
+# requested on the middle marker, after the first forced repaint, while the
+# final marker keeps the VM up until the framebuffer stream finishes.
 vgate_file script-empty.txt <<'EOS'
 exec WEB.ELF
 EOS
@@ -424,8 +430,10 @@ vgate_run 08 -- \
     --screen '$RUN_DIR/screen-08' --via-virtio --cvc-snap \
     --snapshot-out '$RUN_DIR/snap-08' \
     --script '$RUN_DIR/script-empty.txt' \
-    --snapshot-after 'web: ready' \
-    --script-expect 'web: ready' --timeout 120
+    --input-chords 'c,k,d' \
+    --input-chords-after 'web: ready' \
+    --snapshot-after 'web: cleared cache' \
+    --script-expect 'web: cleared history-entry' --timeout 120
 
 vgate_assert 08 serial-contains 'exec: loaded WEB.ELF'
 vgate_assert 08 serial-contains 'web: open id='
@@ -433,6 +441,9 @@ vgate_assert 08 serial-contains 'web: empty start'
 vgate_assert 08 serial-contains 'web: settled'
 vgate_assert 08 serial-contains 'web: repaint items=0'
 vgate_assert 08 serial-contains 'web: ready'
+vgate_assert 08 serial-contains 'web: cleared cookies'
+vgate_assert 08 serial-contains 'web: cleared cache'
+vgate_assert 08 serial-contains 'web: cleared history-entry'
 vgate_assert 08 serial-contains 'web: budget startup-ms='
 vgate_assert 08 serial-absent 'web: error'
 vgate_assert 08 serial-absent 'web: budget over'
@@ -563,7 +574,7 @@ if len(raw) != 1280 * 720 * 4:
 # used an absolute bright-ink sum (>300), but correct 1280x720 -> 512x288
 # area filtering distributes each thin glyph stroke over the destination
 # footprint. Measurements of the filtered BIDI page show background sums at
-# 94, blank scan rows exactly at background, and every one of the 14 text
+# 94, blank scan rows exactly at background, and every one of the 15 text
 # rows retaining core pixels at least 67 above background; background+24 is
 # therefore measured ink evidence, not a relaxation toward noise.
 def intensity(yy, xx):
@@ -612,9 +623,9 @@ for b in bands[1:]:
 bands = [b for b in merged if b[1] - b[0] >= 3]
 print("run10 filtered ink measurement: background=%d threshold=%d bands=%d %s"
       % (background, ink_threshold, len(bands), bands))
-# h4 + seven <p> lines + six M186b Arabic <p> lines
-if len(bands) != 14:
-    sys.exit("want 14 text bands, found %d: %s" % (len(bands), bands))
+# h4 + seven Hebrew/bidi <p> lines + one W reference + six M186b Arabic lines
+if len(bands) != 15:
+    sys.exit("want 15 text bands, found %d: %s" % (len(bands), bands))
 
 def excess(yy, xx):
     return max(0, intensity(yy, xx) - background)
@@ -660,9 +671,9 @@ tx0 = CX0 + tlive[0]
 tx1 = CX0 + tlive[-1] + 1
 template = band_matrix(tband, tx0, tx1)
 
-def template_score(b, dx, dy):
+def template_score(tmplt, b, dx, dy):
     num = ta = ba = 0
-    for yy, row in enumerate(template):
+    for yy, row in enumerate(tmplt):
         for xx, tv in enumerate(row):
             vx, vy = dx + xx, dy + yy
             vv = excess(vy, vx) if CX0 <= vx < CX1 and CY0 <= vy < CY1 else 0
@@ -676,7 +687,7 @@ def template_score(b, dx, dy):
 def best_alef(b, xlo, xhi):
     best = (0, xlo)
     for dx in range(xlo, xhi):
-        score = max(template_score(b, dx, b[0] + dy) for dy in (-1, 0, 1))
+        score = max(template_score(template, b, dx, b[0] + dy) for dy in (-1, 0, 1))
         if score > best[0]:
             best = (score, dx)
     return best
@@ -742,63 +753,52 @@ print("run10 bracket correlations: direct=%.3f mirror-control=%.3f"
 if paren_direct < 0.75 or paren_direct - paren_mirror < 0.25:
     sys.exit("RTL bracket line does not carry the mirrored '(' shape")
 
-# Arabic visual-order reversal, bands[8]/[10]. Column mass integrates away
-# the vertical resampling phase; a ±1-column best shift accounts for the
-# horizontal footprint phase. The same-orientation control bands[8]/[9]
-# correlates at 0.999993. Against visual-order-reversed band 10 the reversed
-# band-8 profile correlates at 0.761 versus 0.621 unreversed, while an
-# unrelated lam profile is below 0.50. Thus requiring both a high reversed
-# score and a positive reversal margin is measured orientation evidence, not
-# a nearest-neighbor mask resurrected with tolerance.
-def correlation(a, b):
-    width = max(len(a), len(b))
-    aa = list(a) + [0] * (width - len(a))
-    bb = list(b) + [0] * (width - len(b))
-    ma = sum(aa) / width
-    mb = sum(bb) / width
-    num = sum((va - ma) * (vb - mb) for va, vb in zip(aa, bb))
-    da = sum((va - ma) ** 2 for va in aa)
-    db = sum((vb - mb) ** 2 for vb in bb)
-    if not da or not db:
-        return 0
-    return num / ((da * db) ** 0.5)
-
-def shifted_correlation(a, b):
-    best = 0
-    for shift in (-1, 0, 1):
-        left_a = [0] * max(0, -shift) + list(a) + [0] * max(0, shift)
-        left_b = [0] * max(0, shift) + list(b) + [0] * max(0, -shift)
-        width = max(len(left_a), len(left_b))
-        left_a += [0] * (width - len(left_a))
-        left_b += [0] * (width - len(left_b))
-        best = max(best, correlation(left_a, left_b))
-    return best
-
+# Arabic visual-order reversal, bands[9]/[11]. A mirror comparison between
+# two Arabic lines cannot prove direction here: correct RTL and omitted
+# reversal preserve the same mirror relation. The probe therefore uses a
+# direction-known Latin anchor instead. bands[8] is an isolated W in the
+# same body face/size; bands[11] appends W to the explicit presentation
+# forms without whitespace. UAX #9 orders that fragment as
+# W,beh-initial,hah-medial,reh-final, so the W template must match the
+# LEFT edge. Measured filtered output scores 0.985 at x=1 relative to the
+# content crop, with the next positions below 0.75. If AL->R reversal were
+# omitted, the input-final W would remain at the right edge.
 def line_profile(b):
     return trim_profile(column_profile(b, CX0, CX0 + 80))
 
-arab8 = line_profile(bands[8])
-arab9 = line_profile(bands[9])
-arab10 = line_profile(bands[10])
-arab_same = shifted_correlation(arab8, arab9)
-arab_reversed = shifted_correlation(list(reversed(arab8)), arab10)
-arab_unreversed = shifted_correlation(arab8, arab10)
-print("run10 arabic order correlations: same-control=%.4f reversed=%.4f unreversed=%.4f"
-      % (arab_same, arab_reversed, arab_unreversed))
-if arab_same < 0.95:
-    sys.exit("same-order Arabic control lost its column-mass correlation")
-if arab_reversed < 0.70 or arab_reversed - arab_unreversed < 0.08:
-    sys.exit("Arabic visual-order reversal evidence is absent")
+wband = bands[8]
+wprof = column_profile(wband, CX0, CX0 + 24)
+wlive = [i for i, v in enumerate(wprof) if v > 20]
+if not wlive:
+    sys.exit("isolated W reference is blank")
+wx0 = CX0 + wlive[0]
+wx1 = CX0 + wlive[-1] + 1
+w_template = band_matrix(wband, wx0, wx1)
+
+def best_w(b, xlo, xhi):
+    best = (0, xlo)
+    for dx in range(xlo, xhi):
+        score = max(template_score(w_template, b, dx, b[0] + dy) for dy in (-1, 0, 1))
+        if score > best[0]:
+            best = (score, dx)
+    return best
+
+w_score, w_at = best_w(bands[11], CX0, CX0 + 22)
+print("run10 arabic W anchor: score=%.3f x=%d" % (w_score, w_at - CX0))
+if w_score < 0.80:
+    sys.exit("Latin W anchor is absent from the Arabic visual-order line")
+if w_at > CX0 + 3:
+    sys.exit("Latin W anchor did not move left of the Arabic visual run")
 
 # Arabic shaping and lam-alef ligation are order-preserving comparisons, so
 # their normalized column mass is nearly invariant under the resampling
-# phase. Measured filtered host values are 0.003 for shaped-vs-literal forms
-# and 0.001 for lam+alef-vs-ligature, while the ZWNJ control differs by
-# 0.629; 0.08/0.20 are therefore wide separations, not tolerance-funded
+# phase. Measured filtered values are 0.0012 for shaped-vs-literal forms
+# and 0.0023 for lam+alef-vs-ligature, while the ZWNJ control differs by
+# 0.7121; 0.08/0.20 are therefore wide separations, not tolerance-funded
 # approvals of arbitrary pixels.
-forms_error = profile_error(line_profile(bands[8]), line_profile(bands[9]))
-lam_error = profile_error(line_profile(bands[11]), line_profile(bands[12]))
-zwnj_error = profile_error(line_profile(bands[11]), line_profile(bands[13]))
+forms_error = profile_error(line_profile(bands[9]), line_profile(bands[10]))
+lam_error = profile_error(line_profile(bands[12]), line_profile(bands[13]))
+zwnj_error = profile_error(line_profile(bands[12]), line_profile(bands[14]))
 print("run10 profile errors: forms=%.4f lam=%.4f zwnj-control=%.4f"
       % (forms_error, lam_error, zwnj_error))
 if forms_error >= 0.08:
@@ -810,6 +810,6 @@ if zwnj_error < 0.20:
 
 print("bidi run 10: alef template positions prove the Hebrew RTL reversals "
       "in simple and mixed lines; brackets carry the mirrored shape; Arabic "
-      "visual order reverses, presentation-form and ligature column mass "
-      "match, and the ZWNJ control remains distinct")
+      "visual order reverses with its W anchor leftmost, presentation-form "
+      "and ligature column mass match, and the ZWNJ control remains distinct")
 PY

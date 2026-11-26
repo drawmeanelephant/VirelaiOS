@@ -49,6 +49,14 @@ PRESENTATION_DIR = Path("user/go/browser/testdata/reference-presentation")
 FONT_DIR = Path("image/fonts")
 ARTIFACT_DIR = Path("artifacts/m93g/diffs")
 
+# The only owner-approved pre-migration guest pin still carried by an
+# immutable gate spec is live-web.spec boot 32 forms. Do not let arbitrary
+# hex strings acquire the same authority merely because they parse.
+LEGACY_EXPECT_ACTUAL_PINS = {
+    "7e6d860f4ffd705f541bb5c99499f6ce44e41e20d25406f226e795490230d18c":
+        "live-web.spec boot 32 forms",
+}
+
 
 class CompareError(Exception):
     pass
@@ -162,6 +170,8 @@ def compare(scanout_path, serial, name, manifest_path=MANIFEST,
             artifact_dir=ARTIFACT_DIR, expect_actual=None):
     if expect_actual is not None and not re.fullmatch(r"[0-9a-fA-F]{64}", expect_actual):
         raise CompareError("--expect-actual must be a SHA-256 hex digest")
+    if expect_actual is not None and expect_actual.lower() not in LEGACY_EXPECT_ACTUAL_PINS:
+        raise CompareError("--expect-actual is not an approved legacy pin")
     raw = Path(scanout_path).read_bytes()
     if len(raw) != SCAN_W * SCAN_H * 4:
         raise CompareError("scanout size %d, want %d"
@@ -207,8 +217,8 @@ def compare(scanout_path, serial, name, manifest_path=MANIFEST,
     actual = crop_bgrx(raw, x, y, w, h)
     actual_hash, want_hash = sha256(actual), sha256(expected)
     if expect_actual is not None:
-        print("M93g reference %s: legacy expect-actual %s superseded by browser-owned filtered reference"
-              % (name, expect_actual.lower()))
+        print("M93g reference %s: legacy expect-actual %s (%s) superseded by browser-owned filtered reference"
+              % (name, expect_actual.lower(), LEGACY_EXPECT_ACTUAL_PINS[expect_actual.lower()]))
     print("M93g reference %s: crop=%d,%d %dx%d s=%d actual=%s want=%s"
           % (name, x, y, w, h, scroll, actual_hash, want_hash))
     if actual_hash == want_hash:
