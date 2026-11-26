@@ -2130,6 +2130,9 @@ pub fn build(b: *std.Build) void {
         // tampered-tag refusal (class A).
         "kernel/src/aead.zig",
         "kernel/src/alloc.zig",
+        // ADR 0062 mechanical scaffold: fixed-size bounded ring storage and
+        // sequence/watermark/loss-counter behavior (no event taxonomy yet).
+        "kernel/src/audit_ring.zig",
         "kernel/src/app_timers.zig",
         "kernel/src/arp.zig",
         "kernel/src/console.zig",
