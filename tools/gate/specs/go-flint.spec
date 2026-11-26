@@ -808,21 +808,27 @@ REL_SUMMARY = "Go Hello greets VirelaiOS"
 REL_DESCRIPTION = ("Go Hello prints a greeting over the serial console.\n"
                    "It is the fleet's smallest signed release.")
 REL_CATEGORY = "demo"
+# Every generation, including the first, writes into the run-private fixture
+# directory. Without STORE_FIXTURE_DIR the env-gated generator defaults to the
+# tracked user/go/store/testdata/ and a normal gate run would mutate shared
+# source/hash inputs; the later tagged generations already pass it.
+fixture_dir = os.path.join(run, "fixtures")
+os.makedirs(fixture_dir, exist_ok=True)
 gen = subprocess.run(
     ["go", "test", "./store", "-run", "TestGenReleaseFixture", "-count=1"],
     cwd="user/go",
     env={**os.environ, "STORE_GEN_FIXTURE": "1",
+         "STORE_FIXTURE_DIR": fixture_dir,
          "STORE_FIXTURE_SUMMARY": REL_SUMMARY,
          "STORE_FIXTURE_DESCRIPTION": REL_DESCRIPTION,
          "STORE_FIXTURE_CATEGORY": REL_CATEGORY},
     capture_output=True, text=True)
 if gen.returncode != 0:
     sys.exit("release fixture generation failed:\n" + gen.stdout[-2000:] + gen.stderr[-2000:])
-rel_change_line = open(os.path.join("user", "go", "store", "testdata",
-                                    "release-stream.jsonl"),
+rel_change_line = open(os.path.join(fixture_dir, "release-stream.jsonl"),
                        "r", encoding="utf-8").read().strip()
 rel_change = json.loads(rel_change_line)
-release_go = open(os.path.join("user", "go", "store", "testdata", "release.go"),
+release_go = open(os.path.join(fixture_dir, "release.go"),
                   "r", encoding="utf-8").read()
 REL_ROW = "GOHELLO.ELF | Go Hello | g | dock=false"
 
@@ -915,8 +921,6 @@ if elf_bytes.count(mark_v1) != 1:
              % (mark_v1, elf_bytes.count(mark_v1)))
 elf_v2 = elf_bytes.replace(mark_v1, mark_v2)
 
-fixture_dir = os.path.join(run, "fixtures")
-os.makedirs(fixture_dir, exist_ok=True)
 open(os.path.join(fixture_dir, "gohello-v2.elf"), "wb").write(elf_v2)
 
 
@@ -2834,15 +2838,17 @@ if rows != []:
 print("run-27 verified: tag persisted across the reboot, -d emptied TAGS.jsonl")
 PY
 
-# ---- 28: M214a (#3918) — FLINTD.ELF serves the read half to a real host ----
+# ---- 28: M214a/b (#3918/#3919) — FLINTD.ELF serves read + write to a host ----
 # The daemon runs on the guest's slot-80 listener (port 4748) over a private
 # share; the host probe rides the runner's --net-tcp-connect-stream path and
 # speaks FLINT-SYNC/1: hello/list/heads/open/read, 256/1024 pagination,
 # coalesced and >1460-byte fragmented requests, a ~100 KiB reply, client-side
-# Ed25519 verification of every served raw Change line, named refusals, the
-# read-only create/append/auth posture, full-suffix head recovery after a
-# simulated crash, torn-log refusal, and the 4 MiB store-file bound. The
-# received raw JSONL is byte-compared with the host-seeded log.
+# Ed25519 verification of every served raw Change line, named refusals, real
+# create/append with stale_head/sig_invalid/message_invalid negatives and
+# single-batch atomicity, full-suffix head recovery after a simulated crash,
+# torn-log refusal, and the 4 MiB store-file bound. This share configures no
+# auth; run 29 drives the authenticated/author-gated half. The received raw
+# JSONL is byte-compared with the host-seeded log.
 vgate_file script-28.txt <<'EOF'
 net ip 10.0.0.1
 net arp 10.0.0.2
@@ -2935,6 +2941,7 @@ vgate_run 28 -- \
     --net-tcp-connect-stream-arg '--big-stream=0199de2d-dc00-7000-8000-00000000c010' \
     --net-tcp-connect-stream-arg '--transcript=$RUN_DIR/flintd-transcript.txt' \
     --net-tcp-connect-stream-arg '--received=$RUN_DIR/flintd-received.jsonl' \
+    --net-tcp-connect-stream-arg '--wire-received=$RUN_DIR/flintd-wire.jsonl' \
     --net-tcp-connect-after 'flintd: listening port=4748' \
     --script '$RUN_DIR/script-28.txt' \
     --script-expect 'flintd: session close' --script-expect-tail 0 --timeout 300
@@ -2950,6 +2957,10 @@ vgate_assert 28 serial-contains ' name=change_missing'
 vgate_assert 28 serial-contains ' name=stream_missing'
 vgate_assert 28 serial-contains ' name=stream_torn'
 vgate_assert 28 serial-contains ' name=store_too_large'
+vgate_assert 28 serial-contains ' name=stream_exists'
+vgate_assert 28 serial-contains ' name=stale_head'
+vgate_assert 28 serial-contains ' name=sig_invalid'
+vgate_assert 28 serial-contains ' name=message_invalid'
 vgate_assert 28 serial-contains 'flintd: session close'
 vgate_assert 28 serial-absent '[EXC] parking:'
 vgate_assert 28 serial-absent '9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60'
@@ -2963,7 +2974,8 @@ vgate_assert 28 output-contains 'FLINTD-PROBE: ok read paged raw=300 verified=30
 vgate_assert 28 output-contains 'FLINTD-PROBE: ok coalesced two requests one write'
 vgate_assert 28 output-contains 'FLINTD-PROBE: ok fragmented request bytes='
 vgate_assert 28 output-contains 'FLINTD-PROBE: ok recovered contiguous suffix and record head='
-vgate_assert 28 output-contains 'FLINTD-PROBE: ok create/append/auth refuse honestly'
+vgate_assert 28 output-contains 'FLINTD-PROBE: ok create/append stale_head sig_invalid message_invalid atomic batch'
+vgate_assert 28 output-contains 'FLINTD-PROBE: ok auth not enabled refuses usage'
 vgate_assert 28 output-contains 'FLINTD-PROBE: ok 4 MiB store file bound refused store_too_large'
 vgate_assert 28 output-contains 'FLINTD-PROBE: ok torn history refused stream_torn'
 vgate_assert 28 output-contains 'FLINTD-PROBE: ok session alive after refusals'
@@ -3004,13 +3016,177 @@ if not torn.endswith(b'{"id":"torn'):
 if os.path.exists(os.path.join(share, "FLINT", "streams",
                                "0199de2d-dc00-7000-8000-00000000c010.jsonl")):
     sys.exit("the >4 MiB probe file was not cleaned up")
+
+# The wire-written stream carries exactly the two accepted raw lines the
+# probe received back; the rejected batch added neither.
+wire_id = "0199de2d-dc00-7000-8000-00000000d010"
+wire_log = open(os.path.join(share, "FLINT", "streams", wire_id + ".jsonl"),
+                "r", encoding="utf-8").read().splitlines()
+wire_recv = open(os.path.join(run, "flintd-wire.jsonl"),
+                 "r", encoding="utf-8").read().splitlines()
+if len(wire_log) != 2 or wire_log != wire_recv:
+    sys.exit("wire stream log differs from the two accepted raw lines: %r" % wire_log)
+if json.loads(wire_log[0]).get("parent") is not None:
+    sys.exit("first wire Change must have a null parent")
+if json.loads(wire_log[1]).get("parent") != json.loads(wire_log[0]).get("id"):
+    sys.exit("wire Changes do not chain")
+wire_record = json.load(open(os.path.join(share, "FLINT", "streams", wire_id + ".json")))
+if wire_record.get("name") != "wire" or wire_record.get("head") != json.loads(wire_log[1]).get("id"):
+    sys.exit("wire stream record/head is wrong: %r" % wire_record)
 transcript = open(os.path.join(run, "flintd-transcript.txt"), "r", encoding="utf-8").read()
 for needle in ('"op":"read"', '"refuse":"change_missing"', '"refuse":"stream_torn"',
-               '"refuse":"store_too_large"', '"op":"append"'):
+               '"refuse":"store_too_large"', '"op":"append"', '"op":"create"',
+               '"refuse":"stale_head"', '"refuse":"sig_invalid"',
+               '"refuse":"message_invalid"', '"refuse":"stream_exists"'):
     if needle not in transcript:
         sys.exit("transcript missing %s" % needle)
 if "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60" in transcript:
     sys.exit("the signing seed leaked into the transcript")
 print("run-28 verified: raw JSONL round trip, 300/300 signatures, recovery, "
       "torn and 4 MiB refusals")
+PY
+
+# ---- 29: M214b (#3919) — FLINTD.ELF authenticates a real write session ----
+# The daemon runs with --auth-key and --allow-author (both outside the store
+# root). A successful nonce hello is followed by auth_required on protected
+# verbs, the HMAC challenge admits the session, a real create/append lands and
+# reads back byte-identically, a second author refuses author_not_allowed, a
+# stale expected head refuses stale_head, and a fresh hello plus a wrong HMAC
+# refuses auth_failed and closes the session. No key or workspace state is
+# written under the store.
+vgate_file script-29.txt <<'EOF'
+net ip 10.0.0.1
+net arp 10.0.0.2
+exec FLINTD.ELF --store=/host/FLINT --port=4748 --auth-key=/host/flint-auth.key --allow-author=/host/flint-authors.txt
+EOF
+
+vgate_setup_python <<'PY'
+import importlib.util, json, os, shutil, sys
+
+run = os.environ["RUN_DIR"]
+share = os.path.join(run, "flintd-auth-share")
+store = os.path.join(share, "FLINT")
+streams = os.path.join(store, "streams")
+os.makedirs(streams, exist_ok=True)
+
+for name in ("FLINTD.ELF", "GOSH.ELF"):
+    elf = os.path.join(".build", "go", name)
+    if not os.path.isfile(elf):
+        sys.exit(name + " missing (expected " + elf + ")")
+    shutil.copy(elf, os.path.join(share, name))
+open(os.path.join(share, "OWNERS.TXT"), "w", encoding="utf-8").write(
+    "#v1\nFLINTD.ELF\t644\t0\t-\nGOSH.ELF\t644\t0\t-\n")
+
+spec = importlib.util.spec_from_file_location(
+    "flintd_probe", os.path.join("tools", "flint", "flintd-probe.py"))
+probe = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(probe)
+
+sig_dir = os.path.join("user", "go", "flint", "testdata", "sig")
+seed_hex = open(os.path.join(sig_dir, "seed.hex"), encoding="utf-8").read().strip()
+shutil.copyfile(os.path.join(sig_dir, "seed.hex"), os.path.join(run, "flintd-auth-seed.hex"))
+pub = probe.ed_public_key(bytes.fromhex(seed_hex)).hex()
+
+# The HMAC secret and the author allowlist live at the share root, outside
+# the FLINT store, so the store stays byte-portable with no secrets inside.
+auth_key = "ab" * 32
+open(os.path.join(share, "flint-auth.key"), "w", encoding="utf-8").write(auth_key + "\n")
+open(os.path.join(share, "flint-authors.txt"), "w", encoding="utf-8").write(
+    "# allowed publishers\n" + pub + "\n")
+print("staged flintd auth share: key outside store, allowlist=" + pub[:16])
+PY
+
+vgate_run 29 -- \
+    --net '$RUN_DIR/cap-auth.bin' --net-arp-respond 10.0.0.2 \
+    --cvc-file '$RUN_DIR/flintd-auth-share' \
+    --virtio-fs '$RUN_DIR/flintd-auth-share' \
+    --net-tcp-connect 10.0.0.1:4748 \
+    --net-tcp-connect-stream 'tools/flint/flintd-probe.py' \
+    --net-tcp-connect-stream-arg '--mode=auth' \
+    --net-tcp-connect-stream-arg '--store=$RUN_DIR/flintd-auth-share/FLINT' \
+    --net-tcp-connect-stream-arg '--seed-file=$RUN_DIR/flintd-auth-seed.hex' \
+    --net-tcp-connect-stream-arg '--auth-key=abababababababababababababababababababababababababababababababab' \
+    --net-tcp-connect-stream-arg '--stream-id=0199de2d-dc00-7000-8000-00000000f010' \
+    --net-tcp-connect-stream-arg '--transcript=$RUN_DIR/flintd-auth-transcript.txt' \
+    --net-tcp-connect-after 'flintd: listening port=4748' \
+    --script '$RUN_DIR/script-29.txt' \
+    --script-expect 'flintd: session close' --script-expect-tail 0 --timeout 300
+
+vgate_assert 29 serial-contains 'flintd: starting store=/host/FLINT port=4748'
+vgate_assert 29 serial-contains 'flintd: listening port=4748'
+vgate_assert 29 serial-contains 'flintd: accepted'
+vgate_assert 29 serial-contains ' name=auth_required'
+vgate_assert 29 serial-contains ' name=auth_failed'
+vgate_assert 29 serial-contains ' name=author_not_allowed'
+vgate_assert 29 serial-contains ' name=stale_head'
+vgate_assert 29 serial-contains ' name=stream_exists'
+vgate_assert 29 serial-contains 'flintd: session close'
+vgate_assert 29 serial-absent '[EXC] parking:'
+vgate_assert 29 output-contains 'NET-TCP-STREAM: ENABLED'
+vgate_assert 29 output-contains 'FLINTD-PROBE: ok hello challenge nonce=16 bytes'
+vgate_assert 29 output-contains 'FLINTD-PROBE: ok protected verb refused auth_required'
+vgate_assert 29 output-contains 'FLINTD-PROBE: ok authenticated'
+vgate_assert 29 output-contains 'FLINTD-PROBE: ok author_not_allowed left the log unchanged'
+vgate_assert 29 output-contains 'FLINTD-PROBE: ok authenticated raw lines verified=2'
+vgate_assert 29 output-contains 'FLINTD-PROBE: ok auth_failed closed the session'
+vgate_assert 29 output-contains 'FLINTD-PROBE: PASS auth/author/write gates'
+vgate_assert 29 output-contains 'NET-TCP-STREAM: probe exited status=0'
+vgate_assert 29 python <<'PY'
+import importlib.util, json, os, sys
+run = os.environ["RUN_DIR"]
+share = os.path.join(run, "flintd-auth-share")
+store = os.path.join(share, "FLINT")
+stream = "0199de2d-dc00-7000-8000-00000000f010"
+
+spec = importlib.util.spec_from_file_location(
+    "flintd_probe", os.path.join("tools", "flint", "flintd-probe.py"))
+probe = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(probe)
+seed = bytes.fromhex(open(os.path.join(run, "flintd-auth-seed.hex"),
+                          encoding="utf-8").read().strip())
+pub = probe.ed_public_key(seed).hex()
+
+log = open(os.path.join(store, "streams", stream + ".jsonl"),
+           "r", encoding="utf-8").read().splitlines()
+if len(log) != 2:
+    sys.exit("authenticated append log has %d lines, want 2" % len(log))
+first, second = (json.loads(line) for line in log)
+if first.get("parent") is not None or second.get("parent") != first.get("id"):
+    sys.exit("authenticated Changes do not chain: %r / %r" % (first, second))
+for line in log:
+    c = json.loads(line)
+    if c.get("author") != pub:
+        sys.exit("authenticated log carries a foreign author: %r" % c.get("author"))
+    if not probe.verify_change(line, pub):
+        sys.exit("authenticated log line fails verification")
+if any(json.loads(line).get("id") == "0199de2d-dc00-7000-8000-00000000f102" for line in log):
+    sys.exit("the author_not_allowed Change was published")
+record = json.load(open(os.path.join(store, "streams", stream + ".json")))
+if record.get("name") != "authw" or record.get("head") != second.get("id"):
+    sys.exit("authenticated stream record/head is wrong: %r" % record)
+
+# The store carries history only: no key file, allowlist, workspace or
+# signing state inside it.
+if sorted(os.listdir(store)) != ["streams"]:
+    sys.exit("store root carries non-store state: %r" % sorted(os.listdir(store)))
+if sorted(os.listdir(os.path.join(store, "streams"))) != [stream + ".json", stream + ".jsonl"]:
+    sys.exit("store streams dir carries unexpected files")
+key_hex = "ab" * 32
+for path in (os.path.join(run, "flintd-auth-transcript.txt"),
+             os.path.join(store, "streams", stream + ".json"),
+             os.path.join(store, "streams", stream + ".jsonl")):
+    if key_hex in open(path, encoding="utf-8", errors="replace").read():
+        sys.exit("the HMAC secret leaked into " + path)
+
+transcript = open(os.path.join(run, "flintd-auth-transcript.txt"),
+                  encoding="utf-8").read()
+for needle in ('"op":"auth"', '"refuse":"auth_required"', '"refuse":"auth_failed"',
+               '"refuse":"author_not_allowed"', '"refuse":"stale_head"',
+               '"op":"create"', '"op":"append"'):
+    if needle not in transcript:
+        sys.exit("auth transcript missing %s" % needle)
+if "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60" in transcript:
+    sys.exit("the signing seed leaked into the transcript")
+print("run-29 verified: nonce hello, authenticated raw append, author gate, "
+      "auth_failed close, no store-resident secrets")
 PY

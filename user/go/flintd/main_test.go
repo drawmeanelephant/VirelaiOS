@@ -388,69 +388,355 @@ func TestReadRefusals(t *testing.T) {
 	}
 }
 
-// TestWriteAndAuthRefuseHonestly proves this milestone's read-only posture:
-// create/append/auth refuse by name and no store byte changes.
-func TestWriteAndAuthRefuseHonestly(t *testing.T) {
+// serveWithCfg runs one scripted connection through a configured session.
+func serveWithCfg(cfg sessionConfig, requests ...string) *scriptConn {
+	conn := &scriptConn{chunks: [][]byte{[]byte(strings.Join(requests, "\n") + "\n")}}
+	serveSessionConfig(conn, cfg, nil)
+	return conn
+}
+
+func lineString(t *testing.T, c flintstore.Change) string {
+	t.Helper()
+	b, err := flintstore.MarshalChangeLine(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(bytes.TrimSuffix(b, []byte{'\n'}))
+}
+
+func changeLineJSON(t *testing.T, c flintstore.Change) string {
+	t.Helper()
+	return string(mustJSON(t, lineString(t, c)))
+}
+
+func mustJSON(t *testing.T, s string) []byte {
+	t.Helper()
+	b, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+// TestCreateAndAppendWire proves the daemon's write half over its real wire
+// shapes: create validates and refuses collisions, append publishes one
+// batch and returns its head, stale_head wins over an invalid batch, and
+// rejected batches leave log bytes and the record head unchanged.
+func TestCreateAndAppendWire(t *testing.T) {
+	st := seedStore(t, 2)
+	streamID := "0199de2d-dc00-7000-8000-00000000a010"
+	newID := "0199de2d-dc00-7000-8000-00000000d010"
+	seed := testSeed(t)
+
+	// create: a fresh stream writes the record only.
+	rec := `{"id":"` + newID + `","name":"wire","head":null,"created":1760000000000,"forked_from":null}`
+	conn := serveWithCfg(sessionConfig{root: st.root},
+		`{"op":"create","seq":1,"record":`+rec+`}`,
+		`{"op":"create","seq":2,"record":`+rec+`}`,
+		`{"op":"create","seq":3,"record":`+`{"id":"`+newID+`","name":"Bad_Name","head":null,"created":1,"forked_from":null}`+`}`,
+	)
+	resps := conn.responses(t)
+	if len(resps) != 3 {
+		t.Fatalf("create responses = %d", len(resps))
+	}
+	if !boolField(t, resps[0], "ok") {
+		t.Fatalf("create refused: %s", resps[0]["refuse"])
+	}
+	if got := strField(t, resps[1], "refuse"); got != "stream_exists" {
+		t.Fatalf("duplicate create = %q, want stream_exists", got)
+	}
+	if got := strField(t, resps[2], "refuse"); got != "stream_malformed" {
+		t.Fatalf("malformed create = %q, want stream_malformed", got)
+	}
+	if !st.fs.Exists(flintstore.StreamRecordPath(st.root, newID)) {
+		t.Fatal("create did not write the new stream record")
+	}
+	if st.fs.Exists(flintstore.StreamLogPath(st.root, newID)) {
+		t.Fatal("create must leave the .jsonl to the first append")
+	}
+
+	mk := func(id string, parent *string, msg string) flintstore.Change {
+		return signedChange(t, seed, flintstore.Change{
+			ID: id, Parent: parent, Stream: newID, TS: 1760000001000,
+			Message: msg, Ops: []flintstore.Op{},
+		})
+	}
+	first := mk("0199de2d-dc00-7000-8000-00000000d101", nil, "first wire change")
+	second := mk("0199de2d-dc00-7000-8000-00000000d102", &first.ID, "second wire change")
+
+	// Valid append through the wire, then a stale-head append carrying a
+	// malformed line: stale_head must come before change_malformed.
+	validReq := `{"op":"append","seq":10,"stream":"` + newID +
+		`","expected_head":null,"changes":[` + changeLineJSON(t, first) + `]}`
+	staleReq := `{"op":"append","seq":11,"stream":"` + newID +
+		`","expected_head":null,"changes":["{"]}`
+	conn = serveWithCfg(sessionConfig{root: st.root}, validReq, staleReq)
+	resps = conn.responses(t)
+	if !boolField(t, resps[0], "ok") {
+		t.Fatalf("append refused: %s", resps[0]["refuse"])
+	}
+	if got := strField(t, resps[0], "head"); got != first.ID {
+		t.Fatalf("append head = %q, want %q", got, first.ID)
+	}
+	if got := strField(t, resps[1], "refuse"); got != "stale_head" {
+		t.Fatalf("stale append = %q, want stale_head", got)
+	}
+
+	logBefore, _ := st.fs.ReadFile(flintstore.StreamLogPath(st.root, newID), flintstore.MaxFileReadBytes)
+	if string(logBefore) != lineString(t, first)+"\n" {
+		t.Fatalf("append log bytes = %q", logBefore)
+	}
+
+	// A batch whose second line has a bad signature appends nothing.
+	bad := signedChange(t, seed, flintstore.Change{
+		ID: "0199de2d-dc00-7000-8000-00000000d103", Parent: &second.ID,
+		Stream: newID, TS: 1760000002000, Message: "bad signature",
+		Ops: []flintstore.Op{},
+	})
+	lastChar := bad.Sig[len(bad.Sig)-1]
+	if lastChar == '0' {
+		bad.Sig = bad.Sig[:len(bad.Sig)-1] + "1"
+	} else {
+		bad.Sig = bad.Sig[:len(bad.Sig)-1] + "0"
+	}
+	badBatch := `{"op":"append","seq":12,"stream":"` + newID +
+		`","expected_head":"` + first.ID + `","changes":[` + changeLineJSON(t, second) + `,` + changeLineJSON(t, bad) + `]}`
+	badMsg := signedChange(t, seed, flintstore.Change{
+		ID: "0199de2d-dc00-7000-8000-00000000d104", Parent: &first.ID,
+		Stream: newID, TS: 1760000002000, Message: strings.Repeat("x", 513),
+		Ops: []flintstore.Op{},
+	})
+	msgReq := `{"op":"append","seq":13,"stream":"` + newID +
+		`","expected_head":"` + first.ID + `","changes":[` + changeLineJSON(t, badMsg) + `]}`
+	conn = serveWithCfg(sessionConfig{root: st.root}, badBatch, msgReq)
+	resps = conn.responses(t)
+	if got := strField(t, resps[0], "refuse"); got != "sig_invalid" {
+		t.Fatalf("bad batch = %q, want sig_invalid", got)
+	}
+	if got := strField(t, resps[1], "refuse"); got != "message_invalid" {
+		t.Fatalf("long message = %q, want message_invalid", got)
+	}
+	logAfter, _ := st.fs.ReadFile(flintstore.StreamLogPath(st.root, newID), flintstore.MaxFileReadBytes)
+	if !bytes.Equal(logBefore, logAfter) {
+		t.Fatal("a rejected batch changed the log")
+	}
+	recBytes, _ := st.fs.ReadFile(flintstore.StreamRecordPath(st.root, newID), flintstore.MaxFileReadBytes)
+	if !bytes.Contains(recBytes, []byte(first.ID)) {
+		t.Fatalf("rejected batches moved the record head: %s", recBytes)
+	}
+
+	// Existing stream + stale head refuses before touching the batch.
+	staleExisting := `{"op":"append","seq":14,"stream":"` + streamID +
+		`","expected_head":"0199de2d-dc00-7000-8000-000000000001","changes":["{"]}`
+	conn = serveWithCfg(sessionConfig{root: st.root}, staleExisting)
+	resps = conn.responses(t)
+	if got := strField(t, resps[0], "refuse"); got != "stale_head" {
+		t.Fatalf("seeded stale head = %q, want stale_head", got)
+	}
+
+	// A non-array changes field is a usage error, not an empty batch.
+	conn = serveWithCfg(sessionConfig{root: st.root},
+		`{"op":"append","seq":20,"stream":"`+newID+`","expected_head":null,"changes":null}`)
+	if got := conn.responses(t); len(got) != 1 || strField(t, got[0], "refuse") != "usage" {
+		t.Fatalf("null changes: %q", conn.out.String())
+	}
+}
+
+// TestAuthChallengeGoldenAndGating pins the successful-nonce hello the host
+// oracle emits under --auth-key: hello stays ok and carries a 16-byte hex
+// challenge, protected verbs refuse auth_required until auth answers it, a
+// wrong answer refuses auth_failed and closes the session.
+func TestAuthChallengeGoldenAndGating(t *testing.T) {
 	st := seedStore(t, 1)
-	before := snapshot(t, st.fs)
-	for _, line := range []string{
-		`{"op":"create","seq":1,"record":{"id":"0199de2d-dc00-7000-8000-00000000f010","name":"new","head":null,"created":1,"forked_from":null}}`,
-		`{"op":"append","seq":2,"stream":"0199de2d-dc00-7000-8000-00000000a010","expected_head":null,"changes":[]}`,
-		`{"op":"auth","seq":3,"nonce":"000102030405060708090a0b0c0d0e0f","hmac":"00"}`,
-	} {
-		resp, closeAfter := handleLine([]byte(line), st.root, nil)
-		if closeAfter {
-			t.Fatalf("write/auth refusal closed the session: %s", resp)
+	key := testSeed(t)
+	oldRandom := randomFn
+	t.Cleanup(func() { randomFn = oldRandom })
+	randomFn = func(b []byte) error {
+		for i := range b {
+			b[i] = byte(i)
 		}
-		var obj map[string]json.RawMessage
-		if err := json.Unmarshal(resp, &obj); err != nil {
+		return nil
+	}
+	cfg := sessionConfig{root: st.root, authKey: &key}
+
+	hello := `{"op":"hello","seq":1,"proto":"FLINT-SYNC/1"}`
+	conn := serveWithCfg(cfg, hello, `{"op":"list","seq":2}`)
+	resps := conn.responses(t)
+	wantHello := `{"seq":1,"ok":true,"proto":"FLINT-SYNC/1","server":"flintd","nonce":"000102030405060708090a0b0c0d0e0f"}`
+	if lines := strings.Split(strings.TrimSuffix(conn.out.String(), "\n"), "\n"); lines[0] != wantHello {
+		t.Fatalf("hello golden mismatch:\n got: %s\nwant: %s", lines[0], wantHello)
+	}
+	if got := strField(t, resps[1], "refuse"); got != "auth_required" {
+		t.Fatalf("list before auth = %q, want auth_required", got)
+	}
+
+	// A wrong HMAC refuses auth_failed and closes: the session emits no
+	// answer for a following request.
+	wrong := serveWithCfg(cfg, hello,
+		`{"op":"auth","seq":2,"nonce":"000102030405060708090a0b0c0d0e0f","hmac":"`+strings.Repeat("00", 32)+`"}`,
+		`{"op":"list","seq":3}`)
+	resps = wrong.responses(t)
+	if len(resps) != 2 {
+		t.Fatalf("auth_failed session answered %d requests, want 2 (close after refusal)", len(resps))
+	}
+	if got := strField(t, resps[1], "refuse"); got != "auth_failed" {
+		t.Fatalf("wrong hmac = %q, want auth_failed", got)
+	}
+
+	// auth before hello also fails closed by name.
+	early := serveWithCfg(cfg,
+		`{"op":"auth","seq":1,"nonce":"000102030405060708090a0b0c0d0e0f","hmac":"`+strings.Repeat("00", 32)+`"}`)
+	if got := early.responses(t); len(got) != 1 || strField(t, got[0], "refuse") != "auth_failed" {
+		t.Fatalf("auth before hello: %q", early.out.String())
+	}
+
+	// The correct HMAC admits the session; a later hello resets it.
+	var nonce [16]byte
+	for i := range nonce {
+		nonce[i] = byte(i)
+	}
+	hmac := computeAuthHMAC(&key, nonce)
+	good := serveWithCfg(cfg,
+		`{"op":"hello","seq":1,"proto":"FLINT-SYNC/1"}`,
+		`{"op":"auth","seq":2,"nonce":"000102030405060708090a0b0c0d0e0f","hmac":"`+hmac+`"}`,
+		`{"op":"list","seq":3}`,
+		`{"op":"hello","seq":4,"proto":"FLINT-SYNC/1"}`,
+		`{"op":"heads","seq":5}`,
+	)
+	resps = good.responses(t)
+	if !boolField(t, resps[1], "ok") || !boolField(t, resps[2], "ok") {
+		t.Fatalf("authenticated session refused: %s / %s", resps[1], resps[2])
+	}
+	if got := strField(t, resps[4], "refuse"); got != "auth_required" {
+		t.Fatalf("hello did not reset auth: %q", got)
+	}
+}
+
+// TestAuthorGateIsIndependent proves --allow-author is an admission check
+// distinct from authentication and signature verification.
+func TestAuthorGateIsIndependent(t *testing.T) {
+	st := seedStore(t, 1)
+	streamID := "0199de2d-dc00-7000-8000-00000000a010"
+	seed := testSeed(t)
+	var other [32]byte
+	for i := range other {
+		other[i] = 0x22
+	}
+	allowedAuthor := signedChange(t, seed, flintstore.Change{
+		ID: "0199de2d-dc00-7000-8000-0000000000aa", Stream: streamID,
+		TS: 1, Message: "author", Ops: []flintstore.Op{},
+	}).Author
+	cfg := sessionConfig{root: st.root, allowAuthors: map[string]bool{allowedAuthor: true}}
+
+	head := "0199de2d-dc00-7000-8000-000000000001"
+	allowed := signedChange(t, seed, flintstore.Change{
+		ID: "0199de2d-dc00-7000-8000-0000000000b1", Parent: &head,
+		Stream: streamID, TS: 1760000001000, Message: "allowed", Ops: []flintstore.Op{},
+	})
+	foreign := signedChange(t, other, flintstore.Change{
+		ID: "0199de2d-dc00-7000-8000-0000000000b2", Parent: &head,
+		Stream: streamID, TS: 1760000001000, Message: "foreign", Ops: []flintstore.Op{},
+	})
+	req := func(seq int, c flintstore.Change) string {
+		return `{"op":"append","seq":` + fmt.Sprint(seq) + `,"stream":"` + streamID +
+			`","expected_head":"` + head + `","changes":[` + changeLineJSON(t, c) + `]}`
+	}
+	conn := serveWithCfg(cfg, req(1, foreign), req(2, allowed))
+	resps := conn.responses(t)
+	if got := strField(t, resps[0], "refuse"); got != "author_not_allowed" {
+		t.Fatalf("foreign author = %q, want author_not_allowed", got)
+	}
+	if !boolField(t, resps[1], "ok") {
+		t.Fatalf("allowed author refused: %s", resps[1]["refuse"])
+	}
+
+	head2 := allowed.ID
+	foreignBad := signedChange(t, other, flintstore.Change{
+		ID: "0199de2d-dc00-7000-8000-0000000000b3", Parent: &head2,
+		Stream: streamID, TS: 1760000002000, Message: "foreign bad sig",
+		Ops: []flintstore.Op{},
+	})
+	last := foreignBad.Sig[len(foreignBad.Sig)-1]
+	if last == '0' {
+		foreignBad.Sig = foreignBad.Sig[:len(foreignBad.Sig)-1] + "1"
+	} else {
+		foreignBad.Sig = foreignBad.Sig[:len(foreignBad.Sig)-1] + "0"
+	}
+	badReq := `{"op":"append","seq":3,"stream":"` + streamID +
+		`","expected_head":"` + head2 + `","changes":[` + changeLineJSON(t, foreignBad) + `]}`
+	conn = serveWithCfg(cfg, badReq)
+	if got := conn.responses(t); len(got) != 1 || strField(t, got[0], "refuse") != "sig_invalid" {
+		t.Fatalf("bad signature under allowlist: %q", conn.out.String())
+	}
+}
+
+// TestAuthConfigFiles proves the key/allowlist file formats §3.2 names.
+func TestAuthConfigFiles(t *testing.T) {
+	fs := flintstore.NewMemFS()
+	keyHex := strings.Repeat("ab", 32)
+	if err := fs.WriteFileSafe("/host/auth.key", []byte(keyHex+"\n")); err != nil {
+		t.Fatal(err)
+	}
+	key, err := loadAuthKeyFile(fs, "/host/auth.key")
+	if err != nil {
+		t.Fatalf("load key: %v", err)
+	}
+	if got := sshlib.EncodeHex(key[:]); got != keyHex {
+		t.Fatalf("key = %s, want %s", got, keyHex)
+	}
+	for name, body := range map[string]string{
+		"short":     "ab\n",
+		"uppercase": strings.Repeat("AB", 32) + "\n",
+		"garbage":   "not hex\n",
+	} {
+		if err := fs.WriteFileSafe("/host/"+name+".key", []byte(body)); err != nil {
 			t.Fatal(err)
 		}
-		if got := strField(t, obj, "refuse"); got != "usage" {
-			t.Fatalf("refuse = %q, want usage (%s)", got, resp)
-		}
-		if !strings.Contains(strField(t, obj, "detail"), "read-only daemon") &&
-			!strings.Contains(strField(t, obj, "detail"), "auth not enabled") {
-			t.Fatalf("refusal detail must be honest about the milestone: %s", resp)
+		if _, err := loadAuthKeyFile(fs, "/host/"+name+".key"); flintstore.RefusalName(err) != "secret_malformed" {
+			t.Fatalf("%s key: want secret_malformed, got %v", name, err)
 		}
 	}
-	if after := snapshot(t, st.fs); !equalSnapshots(before, after) {
-		t.Fatal("read-only refusals changed the store")
+	if _, err := loadAuthKeyFile(fs, "/host/missing.key"); flintstore.RefusalName(err) != "secret_malformed" {
+		t.Fatalf("missing key: want secret_malformed, got %v", err)
+	}
+
+	author := strings.Repeat("cd", 32)
+	if err := fs.WriteFileSafe("/host/authors.txt", []byte("# trusted\n\n  "+author+"  \n")); err != nil {
+		t.Fatal(err)
+	}
+	authors, err := loadAllowAuthorFile(fs, "/host/authors.txt")
+	if err != nil {
+		t.Fatalf("load allowlist: %v", err)
+	}
+	if len(authors) != 1 || !authors[author] {
+		t.Fatalf("allowlist = %v", authors)
+	}
+	if err := fs.WriteFileSafe("/host/bad-authors.txt", []byte(author+"\nzz\n")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadAllowAuthorFile(fs, "/host/bad-authors.txt"); flintstore.RefusalName(err) != "secret_malformed" {
+		t.Fatalf("bad allowlist: want secret_malformed, got %v", err)
 	}
 }
 
-type snap struct {
-	files map[string][]byte
-	dirs  map[string]bool
-}
-
-func snapshot(t *testing.T, fs *flintstore.MemFS) snap {
-	t.Helper()
-	s := snap{files: map[string][]byte{}, dirs: map[string]bool{}}
-	for p, b := range fs.Files {
-		s.files[p] = append([]byte(nil), b...)
+// TestParseArgsWriteFlags proves the daemon accepts the two write gates and
+// still refuses advertising (the sync card owns it).
+func TestParseArgsWriteFlags(t *testing.T) {
+	cfg, err := parseArgs([]string{"--store=/host/FLINT", "--port", "4750",
+		"--auth-key=/host/auth.key", "--allow-author", "/host/authors.txt"})
+	if err != nil {
+		t.Fatalf("parseArgs: %v", err)
 	}
-	for p := range fs.Dirs {
-		s.dirs[p] = true
+	if cfg.store != "/host/FLINT" || cfg.port != 4750 ||
+		cfg.authKeyPath != "/host/auth.key" || cfg.allowAuthorPath != "/host/authors.txt" {
+		t.Fatalf("cfg = %+v", cfg)
 	}
-	return s
-}
-
-func equalSnapshots(a, b snap) bool {
-	if len(a.files) != len(b.files) || len(a.dirs) != len(b.dirs) {
-		return false
+	if _, err := parseArgs([]string{"--advertise=_flint._tcp"}); flintstore.RefusalName(err) != "usage" {
+		t.Fatalf("advertise: want usage, got %v", err)
 	}
-	for p, av := range a.files {
-		if !bytes.Equal(av, b.files[p]) {
-			return false
-		}
+	if _, err := parseArgs([]string{"--auth-key="}); flintstore.RefusalName(err) != "usage" {
+		t.Fatalf("empty auth path: want usage, got %v", err)
 	}
-	for p := range a.dirs {
-		if !b.dirs[p] {
-			return false
-		}
-	}
-	return true
 }
 
 // TestReadRecoversStaleHead proves the served history is complete after a
