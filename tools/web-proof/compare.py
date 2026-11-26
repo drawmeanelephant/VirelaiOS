@@ -3,9 +3,11 @@
 
 Crops the guest's raw BGRX scanout to the content viewport printed by WEB's
 `web: viewport` marker, converts to row-major RGB8, and compares against the
-owner-approved presentation hash in the M93 reference manifest. Geometry comes
-from the marker and must match the manifest's recorded size and scroll; the
-crop is never re-blessed from a guest capture.
+browser-owned filtered presentation reference. The webrender M93 manifest still
+owns native paint truth, font provenance, geometry and owner verdicts; browser
+testdata owns the pixels produced by the browser's intentional presentation
+resampling. Geometry comes from the marker and must match the recorded size and
+scroll; the crop is never re-blessed from a guest capture.
 
 Usage: compare.py SCANOUT.RAW NAME [--expect-actual HASH]
   NAME is a reference page key in the manifest (e.g. wikipedia). The serial
@@ -13,12 +15,14 @@ Usage: compare.py SCANOUT.RAW NAME [--expect-actual HASH]
   way pixel_probe.py does. On mismatch, the actual PNG, a red diff PNG and the
   mismatched-pixel count are written under artifacts/m93g/diffs/.
 
-  --expect-actual HASH is the owner-authorized exception path: instead of the
-  composited golden, the crop must equal HASH, a previously observed guest
-  render pinned by the gate spec. Every manifest, geometry and font check
-  still runs; only the expected-pixel source changes. Used for `forms`, whose
-  approved M93e golden predates M93f's intentional `[x]` checkbox overlay —
-  see #1999 and live-web.spec boot 32.
+  --expect-actual HASH names a legacy pre-migration guest pin. Once a page
+  has a browser-owned filtered reference, that reference is the single pixel
+  truth and the legacy pin is explicitly superseded: it is validated and
+  reported, but never substituted for the reference. This keeps the immutable
+  #3913-owned live-web.spec boot-32 `forms` pin audible without making it a
+  second contradictory truth; the browser reference itself now includes the
+  real updateControlPaint `[x]` checkbox mutation. A malformed pin still
+  fails because it is not evidence at all.
 """
 import hashlib
 import json
@@ -40,9 +44,18 @@ BORDER_RGB = b"\x3b\x82\xf6"
 BORDER_W = 3
 
 MANIFEST = Path("user/go/webrender/testdata/golden/m93-reference.json")
-GOLDEN_DIR = Path("user/go/webrender/testdata/golden")
+PRESENTATION_MANIFEST = Path("user/go/browser/testdata/reference-presentation.json")
+PRESENTATION_DIR = Path("user/go/browser/testdata/reference-presentation")
 FONT_DIR = Path("image/fonts")
 ARTIFACT_DIR = Path("artifacts/m93g/diffs")
+
+# The only owner-approved pre-migration guest pin still carried by an
+# immutable gate spec is live-web.spec boot 32 forms. Do not let arbitrary
+# hex strings acquire the same authority merely because they parse.
+LEGACY_EXPECT_ACTUAL_PINS = {
+    "7e6d860f4ffd705f541bb5c99499f6ce44e41e20d25406f226e795490230d18c":
+        "live-web.spec boot 32 forms",
+}
 
 
 class CompareError(Exception):
@@ -152,10 +165,13 @@ def composite_border(rgb, w, h):
 
 
 def compare(scanout_path, serial, name, manifest_path=MANIFEST,
-            golden_dir=GOLDEN_DIR, font_dir=FONT_DIR,
+            presentation_manifest_path=PRESENTATION_MANIFEST,
+            presentation_dir=PRESENTATION_DIR, font_dir=FONT_DIR,
             artifact_dir=ARTIFACT_DIR, expect_actual=None):
     if expect_actual is not None and not re.fullmatch(r"[0-9a-fA-F]{64}", expect_actual):
         raise CompareError("--expect-actual must be a SHA-256 hex digest")
+    if expect_actual is not None and expect_actual.lower() not in LEGACY_EXPECT_ACTUAL_PINS:
+        raise CompareError("--expect-actual is not an approved legacy pin")
     raw = Path(scanout_path).read_bytes()
     if len(raw) != SCAN_W * SCAN_H * 4:
         raise CompareError("scanout size %d, want %d"
@@ -179,16 +195,30 @@ def compare(scanout_path, serial, name, manifest_path=MANIFEST,
     x, y = SHIM_X + wx, SHIM_Y + wy
     if x < 0 or y < 0 or x + w > SCAN_W or y + h > SCAN_H:
         raise CompareError("crop %d,%d %dx%d escapes the scanout" % (x, y, w, h))
-    golden_rgb, gw, gh = decode_png_rgb(Path(golden_dir) / ("m93-%s-presentation.png" % name))
+    presentation_manifest = json.loads(Path(presentation_manifest_path).read_text())
+    if presentation_manifest.get("Version") != 1:
+        raise CompareError("browser presentation manifest version is not 1")
+    if presentation_manifest.get("Verdict") != "Approve footprint-filtered reference presentation expectations":
+        raise CompareError("browser presentation references lack filtered-output approval")
+    presentation_entry = presentation_manifest.get("Fixtures", {}).get(name)
+    if presentation_entry is None:
+        raise CompareError("no browser-owned filtered presentation entry for %r" % name)
+    if (presentation_manifest.get("Width"), presentation_manifest.get("Height")) != (entry["Width"], entry["Height"]):
+        raise CompareError("browser presentation geometry %sx%s does not match manifest %sx%s"
+                           % (presentation_manifest.get("Width"), presentation_manifest.get("Height"),
+                              entry["Width"], entry["Height"]))
+    presentation_rgb, gw, gh = decode_png_rgb(Path(presentation_dir) / (name + ".png"))
     if (gw, gh) != (entry["Width"], entry["Height"]):
-        raise CompareError("golden size %dx%d, want %dx%d" % (gw, gh, entry["Width"], entry["Height"]))
-    if sha256(golden_rgb) != entry["Presentation"]:
-        raise CompareError("golden PNG does not match approved manifest hash for %r" % name)
-    expected = composite_border(golden_rgb, w, h)
+        raise CompareError("browser presentation PNG size %dx%d, want %dx%d"
+                           % (gw, gh, entry["Width"], entry["Height"]))
+    if sha256(presentation_rgb) != presentation_entry["Hash"]:
+        raise CompareError("browser presentation PNG does not match its approved hash for %r" % name)
+    expected = composite_border(presentation_rgb, w, h)
     actual = crop_bgrx(raw, x, y, w, h)
     actual_hash, want_hash = sha256(actual), sha256(expected)
     if expect_actual is not None:
-        want_hash = expect_actual.lower()
+        print("M93g reference %s: legacy expect-actual %s (%s) superseded by browser-owned filtered reference"
+              % (name, expect_actual.lower(), LEGACY_EXPECT_ACTUAL_PINS[expect_actual.lower()]))
     print("M93g reference %s: crop=%d,%d %dx%d s=%d actual=%s want=%s"
           % (name, x, y, w, h, scroll, actual_hash, want_hash))
     if actual_hash == want_hash:
