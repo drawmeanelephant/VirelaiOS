@@ -1346,6 +1346,14 @@ fn handle_udp_listen(args: Args, _: *exceptions.VectorFrame) u64 {
     // two distinct refusals so an ephemeral-port allocator can retry a
     // collision but must not spin on a full table.
     if (udp.owner_of(@truncate(port)) != null) return error_result(.einval);
+    // M206b residual (#3814): the ONE :5353 bind is also the receive
+    // opt-in for the mDNS group (224.0.0.251). Every other port keeps
+    // the plain unicast/broadcast-isolated shape; no new syscall and no
+    // widened table, just the narrow group admission this port needs.
+    if (@as(u16, @truncate(port)) == udp.mdns_port) {
+        if (!udp.listen_port_mdns_owned(udp.mdns_port, owner)) return error_result(.enospc);
+        return 0;
+    }
     if (!udp.listen_port_owned(@truncate(port), owner)) return error_result(.enospc);
     return 0;
 }

@@ -20,16 +20,20 @@
 #
 # Legs (each names the VM it asserts):
 #   * s1 on vm-a: dhcp pump -> `net: dhcp bound ip=10.0.0.16` ->
-#     `exec GOHTTPD.ELF --advertise v206b`. 'httpd: advertise sent' is both
-#     A's announce receipt AND the client's --after marker (the listener is
-#     already bound when it prints — the fetch can connect immediately).
+#     `exec GOHTTPD.ELF --advertise v206b`. 'httpd: advertise sent' is A's
+#     announce receipt; 'httpd: advertise burst done' (after the third emit)
+#     is the client's --after marker — the post-burst discovery boundary.
 #   * client on run a (the vgate_client pattern, vgate.sh :189/:580): waits
-#     for 'httpd: advertise sent' in A's serial, then drives VM B's console
-#     over the TCP bridge: dhcp pump (B binds 10.0.0.17 — the second lease),
-#     arp + ping VM A, `exec GONETSTAT.ELF discover _http._tcp` (browses the
-#     flooded mDNS announcements), `exec GOFETCH.ELF
-#     http://10.0.0.16:8080/healthz`. The capture lands in client-a.out;
-#     every line also lands in B's serial.
+#     for A's 'httpd: advertise burst done' — the post-burst boundary — then
+#     drives VM B's console over the TCP bridge: dhcp pump (B binds 10.0.0.17
+#     — the second lease), a paced ARP settle and the B->A ARP/ping train,
+#     then ONE sequential GOSH whose children are `GONETSTAT.ELF discover
+#     _http._tcp` (a real query: A's responder answers after the burst has
+#     finished; B's browse folds the reply into the exact service/IP/port
+#     line) and `GOFETCH.ELF http://10.0.0.16:8080/healthz` — the fetch
+#     cannot start before the browse prints its resolution. The capture
+#     lands in client-a.out, stopped at GOSH's own post-chain marker so the
+#     resolved line is present; every line also lands in B's serial.
 #   * s2 on vm-a is gated on 'httpd: request /healthz' — a marker only B's
 #     fetch can produce, so B is provably bound — then A arps + pings B and
 #     echoes the run's end marker. The 3 s forward delay lets B's fetch
@@ -529,11 +533,35 @@ if "this runner owns the segment hub" not in log_text:
     sys.exit("vm-b is not the hub owner — first-runner-binds violated; "
              "runner log tail: " + log_text[-2000:])
 
-# vm-b's leg file (see the note above the run section): a long repeated
-# ARP+ping cycle with RX drains between, ending on the fetch + trailing
-# evidence. The repetition makes the cold first iteration reliable — each
-# `net arp` reopens the ~0.5 s learn window and the drains pull whatever
-# has landed; once .16 resolves the entry carries ping and the fetch.
+# vm-b's leg file: dhcp, the paced ARP settle + B->A ping train, then ONE
+# GOSH whose children browse and fetch sequentially.
+#
+# The settle is load-bearing and is why the train cannot simply be typed
+# after the browse. The kernel learns a peer's MAC only from an ARP reply
+# for an outstanding solicitation, the pending slot never lapses inside a
+# run, but the FIRST reply can trickle in tens of seconds after the guest
+# binds (observed live: 42 `net ping` attempts errored 'peer not in ARP
+# table' while the same guest resolved the entry a minute later, and
+# another run learned .16 only after ~20 s of pacer waits). GOFETCH refuses
+# an unresolved peer outright ('no route ... resolve first'), so a fetch
+# immediately after the browse fails on a cold B. Each cycle therefore
+# sends `net ping 10.0.0.2` first — the runner's --net-arp-respond target
+# gets no ICMP answer, so the monitor's bounded wait is a real ~1 s
+# delay — then re-opens the .16 solicitation and pings it. The train is a
+# settle, not the acceptance: five cycles plus the paced browse is enough
+# on the observed runs, and the B->A echo itself is typed by its own
+# client only after A logs the fetch (vmb-ping-legs.txt), so a reply that
+# trails the train can no longer fail the run. Only then does the browse
+# run — after A's burst, as the client's --after boundary requires.
+#
+# GOSH's children run sequentially, so the fetch cannot start until
+# GONETSTAT's bounded window has closed and its resolved service line has
+# printed. That ordering is the card's acceptance (M206b residual, #3814):
+# a monitor `exec` browse is asynchronous, so a fetch typed after it raced
+# the browse and could reach /healthz before B had folded the answer. Each
+# child runs with its OWN manifest row's words (GONETSTAT: net + net-mdns;
+# GOFETCH: net), the same shape JB.SH's STORE/FLINT children rely on.
+#
 # The watchdog arm leads the legs, before even dhcp: an unanswered .99
 # solicitation keeps a pending slot valid for B's whole session (B's
 # runner spans all runs) — observed live: a stall during the dhcp legs
@@ -541,19 +569,38 @@ if "this runner owns the segment hub" not in log_text:
 # first, the rxq stall-reset stays live through dhcp, the browse AND
 # the install legs — where a mid-transfer wedge would otherwise tear.
 legs = ["net arp 10.0.0.99", "net dhcp"] * 5
-legs += ["exec GONETSTAT.ELF discover _http._tcp", "net recv"]
-for _ in range(40):
-    legs += ["net arp 10.0.0.16", "net", "net ping 10.0.0.16",
-             "net", "net recv"]
-legs += ["net dhcp", "net dhcp", "net arp"]
-legs += ["exec GOFETCH.ELF http://10.0.0.16:8080/healthz"]
-legs += ["net ping 10.0.0.16", "net", "net ping 10.0.0.16", "net",
-         "net arp", "net recv"]
+legs += ["net arp 10.0.0.16", "net arp 10.0.0.2"]
+for _ in range(5):
+    legs += ["net ping 10.0.0.2", "net arp 10.0.0.16",
+             "net ping 10.0.0.16", "net", "net recv"]
+# The marker is written `vmb-browse-fetch""-done` so the CONSOLE ECHO of the
+# typed line does not contain the marker the client waits for (observed: a
+# plain echo made the capture stop at the typed line, before any output).
+# GOSH concatenates the empty quoted segment, so the OUTPUT is the clean
+# `vmb-browse-fetch-done` that can only appear after the children finish.
+legs += ['exec GOSH.ELF -c "GONETSTAT.ELF discover _http._tcp ; '
+         'GOFETCH.ELF http://10.0.0.16:8080/healthz ; '
+         'echo vmb-browse-fetch""-done"']
 open(os.path.join(rd, "vmb-legs.txt"), "w").write("\n".join(legs) + "\n")
 
-# vm-b's M206c leg file — typed by the SECOND run-a client once 'flint:
+# vm-b's B->A echo legs, typed by a SECOND run-a client gated on A's
+# 'httpd: request /healthz' — that line means B already resolved and used
+# `10.0.0.16` for the health fetch. A monitor `exec` is asynchronous, so a
+# ping typed right after the browse raced GOFETCH's ARP resolution: on cold
+# boots A's solicited reply can trail the whole monitor-paced train, and the
+# ping ran before `.16` was in B's table (`error: peer not in ARP table`).
+# Waiting for A's request line makes the order deterministic: discovery
+# folded the answer, the fetch resolved and used `10.0.0.16`, and only then
+# does this leg solicit, resolve (the `is at` line) and echo. The split
+# marker string keeps the console echo of the typed line from matching.
+open(os.path.join(rd, "vmb-ping-legs.txt"), "w").write(
+    "net arp 10.0.0.16\n"
+    "net ping 10.0.0.16\n"
+    'exec GOSH.ELF -c "echo vmb-ping""-done"\n')
+
+# vm-b's M206c leg file — typed by the M206c run-a client once 'flint:
 # push ' lands on A's serial. TWO monitor execs (both async spawns): a
-# detached gosh loops `GOFETCH ... /healthz` — the keep-alive traffic
+# detached gosh loops `GOFETCH ... /keepalive` — the keep-alive traffic
 # that keeps whichever GOHTTPD instance is bound from hitting its 30 s
 # AcceptConn expiry mid-install (JA.SH's restart loop only covers the
 # publish gap; a served conn resets the window, so a live instance stays
@@ -562,25 +609,39 @@ open(os.path.join(rd, "vmb-legs.txt"), "w").write("\n".join(legs) + "\n")
 # shape for the install legs (the flint-remote secret serves the
 # uid-1000 lane).
 #
-# The keep-alive is PACED, and that is load-bearing. vm-b is one
-# long-lived peer_watch runner across all of vgate_repeat's iterations,
-# so this line is typed once per iteration into the SAME shell and the
-# loops stack: an unpaced `while true; do GOFETCH ...; done` spins a new
-# TCP connection with no gap, and by iterations 2-3 two or three of them
-# were churning the guest's bounded client-slot table against STORE's
-# own two connections. Observed on the 2026-11-06 reference run: 200
-# keep-alive fetches connected and only 6 EOFs, while the four installs
-# in iterations 2-3 were refused `store: refuse channel_missing` and A
-# never saw their GETs at all (`httpd: request /DROP*` = 0). `sleep 20`
-# holds the 30 s window open with one fetch per loop per 20 s, i.e. the
-# same coverage at ~100x less socket churn.
+# The keep-alive is PACED and BOUNDED, and both are load-bearing. vm-b is
+# one long-lived peer_watch runner across all of vgate_repeat's
+# iterations, so this line is typed once per iteration into the SAME
+# shell and the loops stack: an unpaced `while true; do GOFETCH ...; done`
+# spins a new TCP connection with no gap, and by iterations 2-3 two or
+# three of them were churning the guest's bounded client-slot table
+# against STORE's own two connections. Observed on the 2026-11-06
+# reference run: 200 keep-alive fetches connected and only 6 EOFs, while
+# the four installs in iterations 2-3 were refused `store: refuse
+# channel_missing` and A never saw their GETs at all (`httpd: request
+# /DROP*` = 0). `sleep 20` holds the 30 s window open with one fetch per
+# loop per 20 s, i.e. the same coverage at ~100x less socket churn. The
+# 10-iteration bound (~200 s, longer than any one M206c leg) then ends
+# the loop instead of leaving a `while true` running to the end of the
+# whole K=3 run — observed 2026-11-19 a-03: with three unbounded loops
+# the guest logged `net: rxq reset n=89`, A's ARP repl froze at 0 and
+# the install refused channel_missing.
+#
+# The keep-alive hits /keepalive, NOT /healthz: A's stage-2 (the A->B
+# ARP/ping proof) and the B->A echo client both gate on 'httpd: request
+# /healthz', which must mean "vm-b's browse fetch just landed". A stacked
+# keep-alive from an earlier iteration printing /healthz made that marker
+# fire mid-train in iterations 2-3; A's 21 pings then arrived while B's
+# rxq was stalled, B's icmp repl froze, and A's pong stayed 0 (observed
+# 2026-11-19, a-02: A req=40/repl=11/pong=0, B repl frozen at 42). Any
+# served path keeps the connection window open, so /keepalive is enough.
 open(os.path.join(rd, "vmb-store-legs.txt"), "w").write(
     "net arp 10.0.0.2\n"
     "net\n"
     "net arp 10.0.0.16\n"
     "net\n"
     "net arp 10.0.0.2\n"
-    'exec GOSH.ELF -c "while true; do GOFETCH.ELF http://10.0.0.16:8080/healthz ; sleep 20 ; done"\n'
+    'exec GOSH.ELF -c "for i in 1 2 3 4 5 6 7 8 9 10; do GOFETCH.ELF http://10.0.0.16:8080/keepalive ; sleep 20 ; done"\n'
     'exec GOSH.ELF -c "source /host/JB.SH"\n'
     "net recv\n")
 # Third leg file — the admin half, typed by the THIRD client once B's
@@ -731,16 +792,29 @@ vgate_run a -- --net '$RUN_DIR/a.cap' --net-hub '$RUN_DIR/nethub.sock' --mac 02:
     --script3 '$RUN_DIR/vma-s3.txt' --script3-after 'vma-legs-done' \
     --script-expect 'httpd: request /DROP/main/HUBAPP.ELF' --script-expect-tail 45 --timeout 1200
 
-# The run-a client: waits for A's DHCP bind — deliberately ~2-4 s BEFORE
-# 'httpd: advertise sent', not after it. GOHTTPD's advertiser is
-# announce-only: 3 burst emits ~1 s apart, then one per TTL/2 (60 s —
-# longer than a run lives). The only announces B's ~6 s browse window can
-# catch are the burst emits, so the browse must open before/while the
-# burst fires: --after on A's bind puts B's discover exec inside it.
-# 'fetch: done' is the capture's last needed line; the discover tail
-# continues into B's serial.
-vgate_client a -- --addr '127.0.0.1:24720' --after 'net: dhcp bound ip=10.0.0.16' --after-timeout 120 \
-    --connect-timeout 30 --send-file '$RUN_DIR/vmb-legs.txt' --expect 'fetch: done' --timeout 360
+# The run-a client: waits for A's 'httpd: advertise burst done' — the
+# post-burst boundary (M206b residual, #3814). Earlier cards browsed DURING
+# the burst because GOHTTPD was announce-only; after the shared responder
+# landed, a browse after the burst must be answered by a real query. The
+# ordering is load-bearing: the browse and its resolution cannot be credited
+# to the startup announcements. The legs type the ARP settle + train and
+# then the GOSH; GOSH's own 'vmb-browse-fetch-done' echo is the only safe
+# stop marker — 'fetch: done' also prints from the M206c keep-alive client,
+# and a monitor-typed marker executes before the async GOSH finishes.
+vgate_client a -- --addr '127.0.0.1:24720' --after 'httpd: advertise burst done' --after-timeout 240 \
+    --connect-timeout 30 --send-file '$RUN_DIR/vmb-legs.txt' --expect 'vmb-browse-fetch-done' --timeout 600
+
+# The B->A echo client: gated on A's 'httpd: request /healthz' — the fetch
+# only prints that line after B resolved 10.0.0.16 and connected, so the
+# echo cannot race the browse's own ARP resolution (the client's --after
+# watches A's serial, not B's). --retry-busy queues it behind the browse
+# client's session, which holds the console until the GOSH marker. Its
+# capture is its own file (the browse capture is the one the client-contains
+# asserts read), so the echo evidence is judged on B's serial in the python
+# block below.
+vgate_client a -- --addr '127.0.0.1:24720' --after 'httpd: request /healthz' --after-timeout 400 \
+    --connect-timeout 60 --retry-busy --send-file '$RUN_DIR/vmb-ping-legs.txt' \
+    --expect 'vmb-ping-done' --timeout 150 --out '$RUN_DIR/client-a-ping.out'
 
 # The M206c client: waits for A's 'flint: push ' receipt — the marker
 # that guarantees BOTH halves B needs are armed: hubd holds stream
@@ -780,6 +854,9 @@ vgate_assert a serial-contains 'net: mac=02:00:00:00:00:0a'
 vgate_assert a serial-contains 'net: dhcp bound ip=10.0.0.16'
 vgate_assert a serial-contains 'httpd: listening on port 8080'
 vgate_assert a serial-contains 'httpd: advertise sent'
+vgate_assert a serial-contains 'httpd: advertise burst done'
+vgate_assert a serial-contains 'httpd: mdns query _http._tcp.local'
+vgate_assert a serial-contains 'httpd: mdns answer v206b._http._tcp.local addr=10.0.0.16 port=8080'
 vgate_assert a serial-contains 'httpd: request /healthz'
 vgate_assert a serial-contains 'httpd: served'
 vgate_assert a serial-contains 'net arp: 10.0.0.17 -> 02:00:00:00:00:0b'
@@ -799,11 +876,15 @@ vgate_assert a serial-contains 'JA-DONE'
 vgate_assert a serial-absent '[EXC]'
 
 # --- vm-b asserts on the client capture (the B->A half) ----------------------
+# One capture: the ARP settle/train precedes the browse, and the GOSH's
+# post-chain marker stops it after the resolution and the fetch response.
+# The B->A echo is not in this capture (the ping client has its own --out by
+# construction); the python block below judges it on vm-b's serial.
 vgate_assert a client-contains 'net: dhcp bound ip=10.0.0.17'
-vgate_assert a client-contains 'net ping: echo request to 10.0.0.16 sent'
 vgate_assert a client-contains 'fetch: connected'
 vgate_assert a client-contains 'fetch: done'
 vgate_assert a client-contains '"status":"ok"'
+vgate_assert a client-contains 'netstat: discover service v206b._http._tcp.local host=v206b.local port=8080 addr=10.0.0.16'
 
 # --- vm-b's serial, the counters, and the artifacts ---------------------------
 # The browse window can outlive the client capture (it closes at 'fetch:
@@ -811,34 +892,33 @@ vgate_assert a client-contains '"status":"ok"'
 # it can also outlive the run end. Both VMs' serials + B's runner stdout are
 # lifted into artifacts/ here (the run dir is deleted at gate_end).
 #
-# mDNS truth, observed + documented: the card asks for 'discover service
-# v206b._http._tcp.local ... addr=10.0.0.16' on B. That line is
-# ARCHITECTURALLY UNREACHABLE between two VirelaiOS guests today —
-# kernel/src/ipv4.zig's dst gate admits only own_ip and 255.255.255.255
-# ("multicast are NOT admitted — no consumer — the honest bound",
-# M97e-F2), so A's 224.0.0.251-dst announces are dropped before any
-# socket sees them, and the discover's own design (user/go/netstat/
-# discover.go:12-16) says a unicast QU reply is "the only reply shape
-# this stack delivers". GOHTTPD's advertiser is announce-only and never
-# answers queries, so between two guests no unicast reply exists. What
-# IS honest evidence here: B's browse runs the real QU query out onto
-# the segment, A's announce frames cross the hub and are admitted at
-# B's MAC layer (the rx `mdns=` counter grows) — asserted below — and
-# the drop happens at the IPv4 gate, a deliberate stack bound the card
-# cannot lift without touching kernel or GOHTTPD (both out of scope).
+# mDNS truth after the M206b residual (#3814): the IPv4 dst gate now admits
+# 224.0.0.251 for UDP :5353, and GOHTTPD's :5353 owner runs the shared
+# bounded responder. B's browse therefore starts ONLY after A's burst has
+# completed (the client above is gated on 'httpd: advertise burst done'),
+# sends a real QU query, and must fold A's matching reply into the exact
+# DNS-SD chain: service v206b._http._tcp.local, host v206b.local, port
+# 8080, addr 10.0.0.16. A's serial pins its side of that exchange (query
+# receipt + answer line). The ordering below is the point: a browse that
+# overlapped the burst, or a resolved-looking fetch with no prior answer,
+# cannot pass.
 vgate_assert a python <<'PY'
 import os, re, shutil, sys, time
 rd = os.environ["RUN_DIR"]
 suffix = os.environ.get("VIRELAI_GATE_SUFFIX", "")
 ser_b_path = os.path.join(rd, "vm-serial-vmb.log")
-deadline = time.time() + 45
+deadline = time.time() + 120
 ser_b = ""
 while time.time() < deadline:
     try:
         ser_b = open(ser_b_path, errors="replace").read()
     except OSError:
         ser_b = ""
-    if "netstat: discover done" in ser_b and "fetch: done" in ser_b:
+    # The B->A echo legs are typed by a client gated on the browse marker,
+    # so they land AFTER the discover/fetch lines: wait for all three or a
+    # fast discover/fetch read would race the echo client and fail `need`.
+    if ("netstat: discover done" in ser_b and "fetch: done" in ser_b
+            and "net ping: echo request to 10.0.0.16 sent" in ser_b):
         break
     time.sleep(0.5)
 # Artifacts FIRST: the run dir is deleted at gate_end, so both VMs' serials
@@ -850,6 +930,9 @@ if os.path.isfile(ser_b_path):
 rlog_path = os.path.join(rd, "vmb-runner.log")
 if os.path.isfile(rlog_path):
     shutil.copy(rlog_path, "artifacts/live-net-hub-run-vmb%s.txt" % suffix)
+ser_a = open(os.environ["VG_SER"], errors="replace").read()
+resolved = ("netstat: discover service v206b._http._tcp.local "
+            "host=v206b.local port=8080 addr=10.0.0.16")
 need = [
     "virelai> ",
     "net: mac=02:00:00:00:00:0b",
@@ -857,6 +940,7 @@ need = [
     "net ping: echo request to 10.0.0.16 sent",
     "netstat: discover _http._tcp.local",
     "netstat: discover query _http._tcp.local",
+    resolved,
     "netstat: discover done",
     "fetch: connected",
     "fetch: done",
@@ -865,16 +949,30 @@ need = [
 missing = [n for n in need if n not in ser_b]
 if missing:
     sys.exit("FAIL: vm-b serial missing legs: " + " | ".join(missing))
-# The strongest honest mDNS evidence available (see the comment above):
-# A's announce frames were admitted at B's MAC layer — rx_mdns counts any
-# frame whose dst is an mDNS group MAC (01:00:5e:00:00:fb/33:33::fb),
-# and the only mDNS sender on the segment is A's advertiser.
+
+def ordered(text, first, second, where):
+    a = text.find(first)
+    b = text.find(second)
+    if a < 0 or b < 0 or a >= b:
+        sys.exit("FAIL: %s ordering: %r (at %d) must precede %r (at %d)"
+                 % (where, first, a, second, b))
+
+# A announced first, then answered the later query.
+ordered(ser_a, "httpd: advertise burst done", "httpd: mdns query _http._tcp.local", "vm-a burst/query")
+ordered(ser_a, "httpd: mdns query _http._tcp.local", "httpd: mdns answer v206b._http._tcp.local", "vm-a query/answer")
+if "httpd: mdns answer v206b._http._tcp.local addr=10.0.0.16 port=8080" not in ser_a:
+    sys.exit("FAIL: vm-a's answer line does not name the resolved identity")
+# B bound, browsed (after the burst by client construction), resolved the
+# service, and only then fetched.
+ordered(ser_b, "net: dhcp bound ip=10.0.0.17", "netstat: discover query _http._tcp.local", "vm-b bind/query")
+ordered(ser_b, "netstat: discover query _http._tcp.local", resolved, "vm-b query/resolved")
+ordered(ser_b, resolved, "fetch: connected", "vm-b resolved/fetch")
+ordered(ser_b, "netstat: discover done", "fetch: connected", "vm-b done/fetch")
 mdns_hits = [int(m) for m in re.findall(r"mdns=(\d+)", ser_b)]
 if not any(m >= 1 for m in mdns_hits):
-    sys.exit("FAIL: vm-b's rx_mdns never counted an announce frame from vm-a")
-print("vm-b mDNS evidence: rx_mdns grew to %d — announce frames crossed "
-      "the hub into vm-b's stack (the IPv4 dst gate then drops them; "
-      "see the spec comment)" % max(mdns_hits))
+    sys.exit("FAIL: vm-b's rx_mdns never counted an mDNS frame from vm-a")
+print("vm-b mDNS evidence: query -> %s -> fetch; rx_mdns grew to %d"
+      % (resolved, max(mdns_hits)))
 # vm-b resolved vm-a's MAC — either print form counts (the direct `is at`
 # reply line or the table dump).
 if ("net arp: 10.0.0.16 is at 02:00:00:00:00:0a" not in ser_b
