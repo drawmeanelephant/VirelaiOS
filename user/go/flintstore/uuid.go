@@ -1,4 +1,4 @@
-package main
+package flintstore
 
 import (
 	"encoding/hex"
@@ -17,7 +17,8 @@ type UUIDGen struct {
 	seq    uint16
 }
 
-func newUUIDGen(now func() int64, rand func([]byte) error) *UUIDGen {
+// NewUUIDGen builds a UUIDv7 source over the given clock and randomness.
+func NewUUIDGen(now func() int64, rand func([]byte) error) *UUIDGen {
 	return &UUIDGen{
 		now:    now,
 		rand:   rand,
@@ -25,19 +26,18 @@ func newUUIDGen(now func() int64, rand func([]byte) error) *UUIDGen {
 	}
 }
 
-func guestRandom(b []byte) error {
+// GuestRandom fills b from the guest's vi.Random.
+func GuestRandom(b []byte) error {
 	_, err := vi.Random(b)
 	return err
 }
-
-var defaultUUIDGen = newUUIDGen(vi.Now, guestRandom)
 
 // NowMs returns the current Unix timestamp in milliseconds (`Now()*1000`),
 // or refuses with `clock_unset` when `Now() < 0`.
 func (g *UUIDGen) NowMs() (int64, error) {
 	sec := g.now()
 	if sec < 0 {
-		return 0, refuse("clock_unset", "")
+		return 0, Refuse("clock_unset", "")
 	}
 	return sec * 1000, nil
 }

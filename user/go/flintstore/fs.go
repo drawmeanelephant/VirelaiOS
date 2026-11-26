@@ -1,4 +1,4 @@
-package main
+package flintstore
 
 import (
 	"bytes"
@@ -15,7 +15,7 @@ type DirEntry struct {
 }
 
 // FS abstracts the guest /host file channel for FLINT and provides an
-// in-memory implementation (memFS) for deterministic class-A tests.
+// in-memory implementation (MemFS) for deterministic class-A tests.
 type FS interface {
 	ReadFile(path string, max int) ([]byte, error)
 	WriteFileSafe(path string, data []byte) error
@@ -62,16 +62,21 @@ func (e *RefuseError) Error() string {
 	return "flint: refuse " + e.Code + " " + e.Detail
 }
 
-func refuse(code, detail string) error {
-	return &RefuseError{Code: code, Detail: detail}
+// Refuse builds a named refusal.
+func Refuse(code, detail string) error { return &RefuseError{Code: code, Detail: detail} }
+
+// RefusalName returns the named refusal code carried by err, or "".
+func RefusalName(err error) string {
+	if re, ok := err.(*RefuseError); ok {
+		return re.Code
+	}
+	return ""
 }
 
-// guestFS implements FS over the VirelaiOS `vi` syscall package.
-type guestFS struct{}
+// GuestFS implements FS over the VirelaiOS `vi` syscall package.
+type GuestFS struct{}
 
-var activeFS FS = guestFS{}
-
-func (guestFS) ReadFile(path string, max int) ([]byte, error) {
+func (GuestFS) ReadFile(path string, max int) ([]byte, error) {
 	if max <= 0 {
 		max = MaxFileReadBytes
 	}
@@ -81,7 +86,7 @@ func (guestFS) ReadFile(path string, max int) ([]byte, error) {
 			return nil, newFSErr("read", path, rc)
 		}
 		if len(b) > max {
-			return nil, refuse("store_too_large", "file")
+			return nil, Refuse("store_too_large", "file")
 		}
 		return b, nil
 	}
@@ -92,7 +97,7 @@ func (guestFS) ReadFile(path string, max int) ([]byte, error) {
 	}
 	if len(b) < vi.MaxFileBytes {
 		if len(b) > max {
-			return nil, refuse("store_too_large", "file")
+			return nil, Refuse("store_too_large", "file")
 		}
 		return b, nil
 	}
@@ -120,19 +125,19 @@ func (guestFS) ReadFile(path string, max int) ([]byte, error) {
 		out = append(out, buf[:take]...)
 	}
 	if len(out) > max {
-		return nil, refuse("store_too_large", "file")
+		return nil, Refuse("store_too_large", "file")
 	}
 	return out, nil
 }
 
-func (guestFS) WriteFileSafe(path string, data []byte) error {
+func (GuestFS) WriteFileSafe(path string, data []byte) error {
 	if rc := vi.WriteFileSafe(path, data); rc < 0 {
 		return newFSErr("write", path, rc)
 	}
 	return nil
 }
 
-func (guestFS) AppendSync(path string, data []byte) error {
+func (GuestFS) AppendSync(path string, data []byte) error {
 	h, rc := vi.FileOpen(path, vi.ModeWrite|vi.ModeCreate|vi.ModeAppend)
 	if rc < 0 {
 		return newFSErr("open", path, rc)
@@ -154,7 +159,7 @@ func (guestFS) AppendSync(path string, data []byte) error {
 	return nil
 }
 
-func (guestFS) Mkdir(path string) error {
+func (GuestFS) Mkdir(path string) error {
 	h, rc := vi.FileOpen(path, vi.ModeWrite|vi.ModeCreate|vi.ModeDir)
 	if rc == vi.ErrFileExists {
 		return nil
@@ -166,8 +171,8 @@ func (guestFS) Mkdir(path string) error {
 	return nil
 }
 
-func (guestFS) List(dir string) ([]DirEntry, error) {
-	if items, err := vi.ListDirAt(canonShareDir(dir)); err == nil {
+func (GuestFS) List(dir string) ([]DirEntry, error) {
+	if items, err := vi.ListDirAt(CanonShareDir(dir)); err == nil {
 		out := make([]DirEntry, 0, len(items))
 		for _, it := range items {
 			out = append(out, DirEntry{Name: it.Name, IsDir: it.IsDir})
@@ -191,14 +196,14 @@ func (guestFS) List(dir string) ([]DirEntry, error) {
 	return out, nil
 }
 
-func (guestFS) Remove(path string) error {
+func (GuestFS) Remove(path string) error {
 	if rc := vi.FileDelete(path); rc < 0 {
 		return newFSErr("remove", path, rc)
 	}
 	return nil
 }
 
-func (guestFS) Exists(path string) bool {
+func (GuestFS) Exists(path string) bool {
 	h, rc := vi.FileOpen(path, vi.ModeRead)
 	if rc >= 0 {
 		vi.FileClose(uint32(h))
@@ -212,21 +217,25 @@ func (guestFS) Exists(path string) bool {
 	return drc >= 0
 }
 
-// memFS is an in-memory FS implementation for host unit tests.
-type memFS struct {
-	files       map[string][]byte
-	dirs        map[string]bool
-	beforeWrite func(op, path string) error
+// MemFS is an in-memory FS implementation for host unit tests.
+type MemFS struct {
+	Files map[string][]byte
+	Dirs  map[string]bool
+	// BeforeWrite, when set, runs before each mutating operation. Tests use
+	// it to inject a deterministic crash window between store writes.
+	BeforeWrite func(op, path string) error
 }
 
-func newMemFS() *memFS {
-	return &memFS{
-		files: map[string][]byte{},
-		dirs:  map[string]bool{"/host": true},
+// NewMemFS returns an empty in-memory FS with /host present.
+func NewMemFS() *MemFS {
+	return &MemFS{
+		Files: map[string][]byte{},
+		Dirs:  map[string]bool{"/host": true},
 	}
 }
 
-func cleanMemPath(p string) string {
+// CleanPath trims redundant trailing slashes from a guest path.
+func CleanPath(p string) string {
 	if p == "" {
 		return ""
 	}
@@ -236,23 +245,38 @@ func cleanMemPath(p string) string {
 	return p
 }
 
-func (m *memFS) markParents(p string) {
+// CanonShareDir maps a /host path to the custom-virtio share's root-relative
+// path used by vi.ListDirAt (slot 79).
+func CanonShareDir(dir string) string {
+	switch {
+	case dir == "" || dir == "/host" || dir == "/host/":
+		return "/"
+	case strings.HasPrefix(dir, "/host/"):
+		return dir[len("/host"):]
+	case strings.HasPrefix(dir, "/"):
+		return dir
+	default:
+		return "/" + dir
+	}
+}
+
+func (m *MemFS) markParents(p string) {
 	for {
 		idx := strings.LastIndexByte(p, '/')
 		if idx <= 0 {
 			break
 		}
 		p = p[:idx]
-		m.dirs[p] = true
+		m.Dirs[p] = true
 	}
 }
 
-func (m *memFS) ReadFile(path string, max int) ([]byte, error) {
-	path = cleanMemPath(path)
-	if m.dirs[path] {
+func (m *MemFS) ReadFile(path string, max int) ([]byte, error) {
+	path = CleanPath(path)
+	if m.Dirs[path] {
 		return nil, newFSErr("read", path, vi.ErrFileIsDir)
 	}
-	b, ok := m.files[path]
+	b, ok := m.Files[path]
 	if !ok {
 		return nil, newFSErr("read", path, vi.ErrFileNotFound)
 	}
@@ -260,74 +284,74 @@ func (m *memFS) ReadFile(path string, max int) ([]byte, error) {
 		max = MaxFileReadBytes
 	}
 	if len(b) > max {
-		return nil, refuse("store_too_large", "file")
+		return nil, Refuse("store_too_large", "file")
 	}
 	return bytes.Clone(b), nil
 }
 
-func (m *memFS) WriteFileSafe(path string, data []byte) error {
-	path = cleanMemPath(path)
+func (m *MemFS) WriteFileSafe(path string, data []byte) error {
+	path = CleanPath(path)
 	if path == "" {
 		return newFSErr("write", path, -vi.ErrEINVAL)
 	}
-	if m.beforeWrite != nil {
-		if err := m.beforeWrite("write", path); err != nil {
+	if m.BeforeWrite != nil {
+		if err := m.BeforeWrite("write", path); err != nil {
 			return err
 		}
 	}
-	if m.dirs[path] {
+	if m.Dirs[path] {
 		return newFSErr("write", path, vi.ErrFileIsDir)
 	}
 	m.markParents(path)
-	m.files[path] = bytes.Clone(data)
+	m.Files[path] = bytes.Clone(data)
 	return nil
 }
 
-func (m *memFS) AppendSync(path string, data []byte) error {
-	path = cleanMemPath(path)
+func (m *MemFS) AppendSync(path string, data []byte) error {
+	path = CleanPath(path)
 	if path == "" {
 		return newFSErr("append", path, -vi.ErrEINVAL)
 	}
-	if m.beforeWrite != nil {
-		if err := m.beforeWrite("append", path); err != nil {
+	if m.BeforeWrite != nil {
+		if err := m.BeforeWrite("append", path); err != nil {
 			return err
 		}
 	}
-	if m.dirs[path] {
+	if m.Dirs[path] {
 		return newFSErr("append", path, vi.ErrFileIsDir)
 	}
 	m.markParents(path)
-	m.files[path] = append(m.files[path], data...)
+	m.Files[path] = append(m.Files[path], data...)
 	return nil
 }
 
-func (m *memFS) Mkdir(path string) error {
-	path = cleanMemPath(path)
+func (m *MemFS) Mkdir(path string) error {
+	path = CleanPath(path)
 	if path == "" {
 		return newFSErr("mkdir", path, -vi.ErrEINVAL)
 	}
-	if m.beforeWrite != nil {
-		if err := m.beforeWrite("mkdir", path); err != nil {
+	if m.BeforeWrite != nil {
+		if err := m.BeforeWrite("mkdir", path); err != nil {
 			return err
 		}
 	}
-	if _, isFile := m.files[path]; isFile {
+	if _, isFile := m.Files[path]; isFile {
 		return newFSErr("mkdir", path, vi.ErrFileExists)
 	}
 	m.markParents(path)
-	m.dirs[path] = true
+	m.Dirs[path] = true
 	return nil
 }
 
-func (m *memFS) List(dir string) ([]DirEntry, error) {
-	dir = cleanMemPath(dir)
-	if _, isFile := m.files[dir]; isFile {
+func (m *MemFS) List(dir string) ([]DirEntry, error) {
+	dir = CleanPath(dir)
+	if _, isFile := m.Files[dir]; isFile {
 		return nil, newFSErr("list", dir, -vi.ErrEINVAL)
 	}
 	prefix := dir + "/"
 	children := map[string]bool{} // name -> isDir
-	foundDir := m.dirs[dir]
-	for p := range m.dirs {
+	foundDir := m.Dirs[dir]
+	for p := range m.Dirs {
 		if strings.HasPrefix(p, prefix) {
 			foundDir = true
 			rest := p[len(prefix):]
@@ -341,7 +365,7 @@ func (m *memFS) List(dir string) ([]DirEntry, error) {
 			}
 		}
 	}
-	for p := range m.files {
+	for p := range m.Files {
 		if strings.HasPrefix(p, prefix) {
 			foundDir = true
 			rest := p[len(prefix):]
@@ -350,8 +374,10 @@ func (m *memFS) List(dir string) ([]DirEntry, error) {
 			}
 			if i := strings.IndexByte(rest, '/'); i >= 0 {
 				children[rest[:i]] = true
-			} else if _, exists := children[rest]; !exists {
-				children[rest] = false
+			} else {
+				if _, ok := children[rest]; !ok {
+					children[rest] = false
+				}
 			}
 		}
 	}
@@ -366,62 +392,43 @@ func (m *memFS) List(dir string) ([]DirEntry, error) {
 	return out, nil
 }
 
-func (m *memFS) Remove(path string) error {
-	path = cleanMemPath(path)
-	if m.beforeWrite != nil {
-		if err := m.beforeWrite("remove", path); err != nil {
+func (m *MemFS) Remove(path string) error {
+	path = CleanPath(path)
+	if m.BeforeWrite != nil {
+		if err := m.BeforeWrite("remove", path); err != nil {
 			return err
 		}
 	}
-	if _, ok := m.files[path]; !ok {
-		return newFSErr("remove", path, vi.ErrFileNotFound)
-	}
-	delete(m.files, path)
-	return nil
-}
-
-func (m *memFS) Exists(path string) bool {
-	path = cleanMemPath(path)
-	if _, ok := m.files[path]; ok {
-		return true
-	}
-	if m.dirs[path] {
-		return true
-	}
-	prefix := path + "/"
-	for k := range m.files {
-		if strings.HasPrefix(k, prefix) {
-			return true
+	if _, ok := m.Files[path]; !ok {
+		if !m.Dirs[path] {
+			return newFSErr("remove", path, vi.ErrFileNotFound)
 		}
-	}
-	for k := range m.dirs {
-		if strings.HasPrefix(k, prefix) {
-			return true
-		}
-	}
-	return false
-}
-
-// ensureDirAll creates path and every parent directory under /host.
-func ensureDirAll(fs FS, path string) error {
-	path = cleanMemPath(path)
-	if path == "" || path == "/host" {
+		delete(m.Dirs, path)
 		return nil
 	}
-	if !strings.HasPrefix(path, "/host/") {
-		return fs.Mkdir(path)
+	delete(m.Files, path)
+	return nil
+}
+
+func (m *MemFS) Exists(path string) bool {
+	path = CleanPath(path)
+	if m.Dirs[path] {
+		return true
 	}
-	rel := path[len("/host/"):]
-	parts := strings.Split(rel, "/")
-	cur := "/host"
-	for _, p := range parts {
-		if p == "" {
-			continue
-		}
-		cur += "/" + p
-		if err := fs.Mkdir(cur); err != nil {
+	_, ok := m.Files[path]
+	return ok
+}
+
+// EnsureDirAll creates path and its missing parents.
+func EnsureDirAll(fs FS, path string) error {
+	path = CleanPath(path)
+	if path == "" || fs.Exists(path) {
+		return nil
+	}
+	if i := strings.LastIndexByte(path, '/'); i > 0 {
+		if err := EnsureDirAll(fs, path[:i]); err != nil {
 			return err
 		}
 	}
-	return nil
+	return fs.Mkdir(path)
 }
