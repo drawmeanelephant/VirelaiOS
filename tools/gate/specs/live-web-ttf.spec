@@ -95,7 +95,7 @@ for src, dst in (("image/fonts/fonts.txt", "BAK-FONTS.TXT"),
 # lam-alef vs its ligature vs a ZWNJ-broken pair (one glyph iff it ligated).
 # Numeric entities keep the fixture ASCII.
 open(os.path.join(share, "BIDI.HTML"), "wb").write(
-    b"<h4>bidi</h4>"
+    b"<div style=\"margin-left:12px\"><h4>bidi</h4>"
     b"<p>&#x5D0;&#x5D1;&#x5D2;&#x5D3;&#x5D4;</p>"
     b"<p>&#x5D4;&#x5D3;&#x5D2;&#x5D1;&#x5D0;</p>"
     b"<p>&#x5D0;</p>"
@@ -108,7 +108,7 @@ open(os.path.join(share, "BIDI.HTML"), "wb").write(
     b"<p>&#xFEAE;&#xFEA4;&#xFE91;</p>"
     b"<p>&#x644;&#x627;</p>"
     b"<p>&#xFEFB;</p>"
-    b"<p>&#x644;&#x200C;&#x627;</p>")
+    b"<p>&#x644;&#x200C;&#x627;</p></div>")
 colors = [(0x11, 0x7f, 0x33), (0xd0, 0x33, 0x99),
           (0x22, 0x66, 0xdd), (0xee, 0xcc, 0x00)]
 qoi = bytearray(b"qoif") + struct.pack(">II", 32, 32) + bytes([4, 0])
@@ -158,7 +158,7 @@ vgate_run 01 -- \
     --screen '$RUN_DIR/screen' --via-virtio --cvc-snap \
     --snapshot-out '$RUN_DIR/snap-01' \
     --script '$RUN_DIR/script-oliver.txt' \
-    --snapshot-after 'web: settled' --snapshot-after 'web: repaint' \
+    --snapshot-after 'web: ready' \
     --script-expect 'web: ready' --timeout 120
 
 vgate_assert 01 serial-contains 'web: open id='
@@ -199,7 +199,7 @@ PY
 vgate_run 02 -- \
     --screen '$RUN_DIR/screen' --via-virtio --cvc-snap \
     --snapshot-out '$RUN_DIR/snap-02' --script '$RUN_DIR/script-depth.txt' \
-    --snapshot-after 'web: settled' --snapshot-after 'web: repaint' \
+    --snapshot-after 'web: ready' \
     --script-expect 'web: ready' --timeout 120
 
 vgate_assert 02 serial-absent 'web: budget over'
@@ -230,7 +230,7 @@ PY
 vgate_run 03 -- \
     --screen '$RUN_DIR/screen' --via-virtio --cvc-snap \
     --snapshot-out '$RUN_DIR/snap-03' --script '$RUN_DIR/script-cover.txt' \
-    --snapshot-after 'web: settled' --snapshot-after 'web: repaint' \
+    --snapshot-after 'web: ready' \
     --script-expect 'web: ready' --timeout 120
 
 vgate_assert 03 serial-absent 'web: budget over'
@@ -300,7 +300,7 @@ PY
 vgate_run 04 -- \
     --screen '$RUN_DIR/screen' --via-virtio --cvc-snap \
     --snapshot-out '$RUN_DIR/snap-04' --script '$RUN_DIR/script-cover-noface.txt' \
-    --snapshot-after 'web: settled' --snapshot-after 'web: repaint' \
+    --snapshot-after 'web: ready' \
     --script-expect 'web: ready' --timeout 120
 
 vgate_assert 04 serial-absent 'web: budget over'
@@ -342,7 +342,7 @@ PY
 vgate_run 05 -- \
     --screen '$RUN_DIR/screen' --via-virtio --cvc-snap \
     --snapshot-out '$RUN_DIR/snap-05' --script '$RUN_DIR/script-nofont.txt' \
-    --snapshot-after 'web: settled' --snapshot-after 'web: repaint' \
+    --snapshot-after 'web: ready' \
     --script-expect 'web: ready' --timeout 120
 
 vgate_assert 05 serial-absent 'web: budget over'
@@ -373,7 +373,7 @@ PY
 vgate_run 06 -- \
     --screen '$RUN_DIR/screen' --via-virtio --cvc-snap \
     --snapshot-out '$RUN_DIR/snap-06' --script '$RUN_DIR/script-lists.txt' \
-    --snapshot-after 'web: repaint' \
+    --snapshot-after 'web: ready' \
     --script-expect 'web: ready' --timeout 120
 
 vgate_assert 06 serial-absent 'web: budget over'
@@ -393,7 +393,7 @@ PY
 vgate_run 07 -- \
     --screen '$RUN_DIR/screen' --via-virtio --cvc-snap \
     --snapshot-out '$RUN_DIR/snap-07' --script '$RUN_DIR/script-png.txt' \
-    --snapshot-after 'web: repaint' \
+    --snapshot-after 'web: ready' \
     --script-expect 'web: ready' --timeout 120
 
 vgate_assert 07 serial-contains 'web: url /host/PNG.HTML'
@@ -424,7 +424,7 @@ vgate_run 08 -- \
     --screen '$RUN_DIR/screen-08' --via-virtio --cvc-snap \
     --snapshot-out '$RUN_DIR/snap-08' \
     --script '$RUN_DIR/script-empty.txt' \
-    --snapshot-after 'web: repaint' \
+    --snapshot-after 'web: ready' \
     --script-expect 'web: ready' --timeout 120
 
 vgate_assert 08 serial-contains 'exec: loaded WEB.ELF'
@@ -531,7 +531,7 @@ EOS
 vgate_run 10 -- \
     --screen '$RUN_DIR/screen-10' --via-virtio --cvc-snap \
     --snapshot-out '$RUN_DIR/snap-10' --script '$RUN_DIR/script-bidi.txt' \
-    --snapshot-after 'web: settled' --snapshot-after 'web: repaint' \
+    --snapshot-after 'web: ready' \
     --script-expect 'web: ready' --timeout 120
 
 vgate_assert 10 serial-absent 'web: budget over'
@@ -573,9 +573,14 @@ def intensity(yy, xx):
 
 VX, VY = 40 + x, 28 + y
 X0, X1, Y0, Y1 = VX, VX + w, VY, VY + h
+# The compositor owns a three-pixel blue border inside the scanout crop.
+# Exclude those continuous vertical poles but compare the text itself inside
+# the same presented viewport.
+CX0, CX1 = X0 + 3, X1 - 3
+CY0, CY1 = Y0 + 3, Y1 - 3
 counts = {}
-for yy in range(Y0, Y1):
-    for xx in range(X0, X1):
+for yy in range(CY0, CY1):
+    for xx in range(CX0, CX1):
         v = intensity(yy, xx)
         counts[v] = counts.get(v, 0) + 1
 background = max(counts.items(), key=lambda item: item[1])[0]
@@ -588,14 +593,14 @@ def ink(yy, xx):
 # of scanning a generous box that includes chrome: every comparison below is
 # inside the presented page viewport itself.
 bands, cur = [], -1
-for yy in range(Y0, Y1):
-    if any(ink(yy, xx) for xx in range(X0, X1)):
+for yy in range(CY0, CY1):
+    if any(ink(yy, xx) for xx in range(CX0, CX1)):
         if cur < 0:
             cur = yy
     elif cur >= 0:
         bands.append((cur, yy)); cur = -1
 if cur >= 0:
-    bands.append((cur, Y1))
+    bands.append((cur, CY1))
 # Merge only a one-row rasterization hole. The measured filtered line pitch
 # compresses adjacent paragraph gaps to three rows, so the old three-row
 # merge joined distinct text lines and destroyed the row alignment.
@@ -648,12 +653,12 @@ def band_matrix(b, x0, x1):
 # reverse (alef at the LEFT); the same test inside the mixed Latin lines puts
 # the best matches at x=15 and x=10 respectively.
 tband = bands[3]
-tprof = column_profile(tband, X0, X0 + 24)
+tprof = column_profile(tband, CX0, CX0 + 24)
 tlive = [i for i, v in enumerate(tprof) if v > 20]
 if not tlive:
     sys.exit("single-alef reference is blank")
-tx0 = X0 + tlive[0]
-tx1 = X0 + tlive[-1] + 1
+tx0 = CX0 + tlive[0]
+tx1 = CX0 + tlive[-1] + 1
 template = band_matrix(tband, tx0, tx1)
 
 def template_score(b, dx, dy):
@@ -661,7 +666,7 @@ def template_score(b, dx, dy):
     for yy, row in enumerate(template):
         for xx, tv in enumerate(row):
             vx, vy = dx + xx, dy + yy
-            vv = excess(vy, vx) if X0 <= vx < X1 and Y0 <= vy < Y1 else 0
+            vv = excess(vy, vx) if CX0 <= vx < CX1 and CY0 <= vy < CY1 else 0
             num += tv * vv
             ta += tv * tv
             ba += vv * vv
@@ -679,7 +684,7 @@ def best_alef(b, xlo, xhi):
 
 def expect_alef_position(b, xlo, xhi, want_high, label):
     score, at = best_alef(b, xlo, xhi)
-    print("run10 alef template %s: score=%.3f x=%d" % (label, score, at - VX))
+    print("run10 alef template %s: score=%.3f x=%d" % (label, score, at - CX0))
     if score < 0.75:
         sys.exit(label + " alef template is absent")
     if want_high and at < xlo + 5:
@@ -690,10 +695,10 @@ def expect_alef_position(b, xlo, xhi, want_high, label):
 # Logical ABCDH carries alef to the right in RTL visual order; its logical
 # reverse leaves alef at the left. The mixed Latin lines repeat the same
 # directional evidence inside a bidi run.
-expect_alef_position(bands[1], VX, VX + 18, True, "simple RTL word")
-expect_alef_position(bands[2], VX, VX + 18, False, "reversed RTL word")
-expect_alef_position(bands[4], VX + 9, VX + 20, True, "mixed RTL word")
-expect_alef_position(bands[5], VX + 9, VX + 20, False, "mixed reversed word")
+expect_alef_position(bands[1], CX0, CX0 + 18, True, "simple RTL word")
+expect_alef_position(bands[2], CX0, CX0 + 18, False, "reversed RTL word")
+expect_alef_position(bands[4], CX0 + 9, CX0 + 20, True, "mixed RTL word")
+expect_alef_position(bands[5], CX0 + 9, CX0 + 20, False, "mixed reversed word")
 
 # Arabic shaping and lam-alef ligation are order-preserving comparisons, so
 # their normalized column mass is nearly invariant under the resampling
@@ -702,7 +707,7 @@ expect_alef_position(bands[5], VX + 9, VX + 20, False, "mixed reversed word")
 # 0.629; 0.08/0.20 are therefore wide separations, not tolerance-funded
 # approvals of arbitrary pixels.
 def line_profile(b):
-    return trim_profile(column_profile(b, X0, X0 + 80))
+    return trim_profile(column_profile(b, CX0, CX0 + 80))
 
 forms_error = profile_error(line_profile(bands[8]), line_profile(bands[9]))
 lam_error = profile_error(line_profile(bands[11]), line_profile(bands[12]))
