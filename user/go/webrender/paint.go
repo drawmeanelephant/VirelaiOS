@@ -3,6 +3,7 @@ package webrender
 import (
 	"strings"
 	"unicode/utf8"
+	"virelai/imgscale"
 	"virelai/ttf"
 	"virelai/webrender/font"
 	"virelai/webstyle"
@@ -218,23 +219,21 @@ func fillClipped(s Surface, c Clip, x, y, w, h int, rgb uint32) {
 	s.Fill(x0, y0, x1-x0, y1-y0, rgb)
 }
 
-// drawImage blits a decoded raster into its box, nearest-neighbour scaled, with
-// horizontally identical pixels merged into one span (the fill syscall takes a
-// rect, so runs are how an image reaches the scanout at all). Anything outside
-// the clip is dropped.
+// drawImage blits a decoded raster into its box through imgscale's
+// footprint-aware filter, with horizontally identical pixels merged into one
+// span (the fill syscall takes a rect, so runs are how an image reaches the
+// scanout at all). Anything outside the clip is dropped.
 func drawImage(s Surface, c Clip, x, y int, it Item) {
 	img := it.Img
 	if img == nil || it.W <= 0 || it.H <= 0 {
 		return
 	}
+	scale := imgscale.New(img.Width, img.Height, it.W, it.H)
+	_, alphaCapable := s.(MaskSink)
 	for row := 0; row < it.H; row++ {
 		py := y + row
 		if py < c.Y || py >= c.Y+c.H {
 			continue
-		}
-		sy := row * img.Height / it.H
-		if sy >= img.Height {
-			sy = img.Height - 1
 		}
 		runStart, runLen := 0, 0
 		var runColor uint32
@@ -267,15 +266,11 @@ func drawImage(s Surface, c Clip, x, y int, it Item) {
 			runStart = end
 		}
 		for col := 0; col < it.W; col++ {
-			sx := col * img.Width / it.W
-			if sx >= img.Width {
-				sx = img.Width - 1
-			}
-			col8 := img.Pix[sy*img.Width+sx]
-			if img.png && it.Box == nil {
+			col8 := scale.Pixel(img.Pix, col, row)
+			if img.png && it.Box == nil && !alphaCapable {
 				// Compatibility goldens used image/png's premultiplied
 				// channels on a Fill-only sink. Decode stays straight RGBA;
-				// only this legacy presentation retains those RGB bytes.
+				// only that legacy presentation retains those RGB bytes.
 				a := col8 >> 24
 				r := ((col8 >> 16 & 255) * 257 * a / 255) >> 8
 				g := ((col8 >> 8 & 255) * 257 * a / 255) >> 8
