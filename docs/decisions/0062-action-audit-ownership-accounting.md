@@ -156,14 +156,20 @@ The fields mean:
    a process act this is a process-instance token. A process-instance token
    must be reuse-resistant; if the current pid namespace lacks a generation
    or instance sequence, the wiring card must add or derive one before
-   claiming process identity evidence. Kernel, service, boot/system, and
-   uid acts must use their own typed principal rather than being falsely
-   attributed to whatever process happened to be nearby.
-2. **Owner** — the lifecycle/charging principal for the object at the time
-   of the event, derived from the kernel/service object graph. Costs are
+   claiming process identity evidence. Kernel, service, boot/system, uid, and
+   seat acts must use their own typed principal rather than being
+   falsely attributed to whatever process happened to be nearby.
+2. **Owner** — the lifecycle/charging principal derived from the
+   kernel/service object graph. For a successful ownership transfer this is
+   the post-transition owner; for a denied or failed transfer it is the
+   pre-transition owner; for destruction it is the last owner. Costs are
    charged to this owner. The owner is never self-reported text.
-3. **Authority** — the capability, grant, seat role, or kernel invariant
-   that made the action legitimate, or the missing authority for a denial.
+3. **Authority** — the compact decision basis that made the action
+   legitimate, or the missing authority for a denial: a permission word,
+   capability bit, seat role, or kernel invariant. This is not a stable
+   grant-row identity; the current grant model has no compact reuse-safe row
+   id or revision. Grant-row provenance/revision is a future extension, not
+   part of the initial authority acceptance contract.
    Raw object handles are object identity, not authority; when a handle is
    the relevant object it appears in the object identity fields rather than
    needing a second full-width copy plus a kind discriminant in this packed
@@ -179,11 +185,13 @@ The fields mean:
      are not object identity. A filesystem that cannot prove stable binary
      identity plus reuse-resistant generation is not wired;
    - socket objects use their generation-tagged binary socket handle.
-     Local and peer address tuples do not fit the key and are not initial
-     identity evidence. Pre-creation network permission denials use the
-     fixed network-namespace object key instead;
-   - process, window, surface, grant, session, and snapshot objects use
-     their binary instance/id bytes;
+     Local and peer address tuples are connection metadata, not socket
+     instance identity. Pre-creation network permission denials use the
+     fixed singleton network-namespace object for the current boot, whose
+     generation is 0 because it is not a reusable instance;
+   - process, window, surface, session, and snapshot objects use their
+     binary instance/id bytes when those namespaces provide reuse-safe
+     instances;
    - content-addressed objects use their digest bytes.
 5. **Action/result** — small enums for plane, verb, and outcome.
 6. **Charge** — `(charge kind, charge delta)`, charged to the owner. The
@@ -205,6 +213,11 @@ the boot/journal epoch so exported records are not compared across boots
 as if object keys were globally unique. A type that cannot provide
 generation is not audited yet; guessing identity from a reused integer,
 path, or name is worse than omitting that type.
+
+Creation and open-time denials use the containing namespace or authority
+object, never the nonexistent child object. A successfully created child
+object appears only in the success record. This is the general form of the
+socket pre-creation rule.
 
 A non-replacing rename is one mutation of the same file-object identity. A
 replacing rename involves a second object whose deletion/replacement must
@@ -285,6 +298,12 @@ The existing split is retained:
 - **Crash receipts:** frozen post-mortem tails and tombstones.
 - **Counters/snapshots:** point-in-time accounting such as `sys_procs` v2.
 
+The existing 32-entry textual denial ring remains a compatibility and
+live-diagnostics surface for GOTOP until readers migrate. It is not the
+authoritative ownership journal and does not satisfy the structured audit
+acceptance contract; duplication during migration is intentional and
+bounded.
+
 A crash receipt may embed the relevant audit tail, but the receipt is not
 the journal. GOTOP/OBSERVE may read the journal, but they do not own its
 write path. This prevents the unified model from collapsing the audiences
@@ -308,7 +327,7 @@ These are initial acceptance ceilings, **not measured results**:
 | recorded write | added mean ≤ **500 ns/event**, p95 ≤ **2 µs/event**, measured with CNTPCT/CNTFRQ on the reference host |
 | non-event guard on an uncovered hot path | added mean ≤ **100 ns/call**, same measurement method |
 | sustained 1,000 audited events/s during fixed work | median CPU-time overhead **<1%**, 5 off + 5 on runs; the cost gate must name the fixed workload before claiming this budget |
-| batch export of up to 192 records from one plane | ≤ **1 ms** per drain on the reference host, measured separately from guest workload cost |
+| full 192-record drain from one plane | ≤ **1 ms** per drain on the reference host, measured separately from guest workload cost |
 
 A slice that cannot measure against the relevant budget has not satisfied
 the design. Budgets may be revised only by explicit amendment with measured
@@ -382,18 +401,24 @@ evidence, not silently missed.
 ## Acceptance
 
 This decision is accepted when, for each object type explicitly wired at
-that point, the tree can answer from structured evidence rather than prose
-inference:
+that point, every retained or exported journal record provides structured
+evidence rather than prose inference:
 
 - which typed actor principal acted;
 - which owner was charged;
-- which authority or grant permitted or refused the action;
+- which compact authority basis permitted or refused the action;
 - which typed object key and generation was acted on;
-- whether the action was allowed, refused, coalesced, suppressed, exported,
-  or overwritten after first being recorded;
-- what cost/unit delta the action charged;
-- where the record sits in the global journal-acceptance order;
-- what the audit machinery itself cost against D7's numeric budgets.
+- whether the record represents one action or a coalesced aggregate;
+- whether the represented decision was allowed or refused;
+- what cost/unit delta the record charged;
+- where the record sits in the global journal-acceptance order.
+
+For suppressed, coalesced-away, or overwritten input, the journal must
+instead expose counters, coalesced counts, watermarks, and sequence gaps
+that bound the loss. It must not claim to recover per-action actor, object,
+authority, or charge facts that were never retained or were evicted before
+export. The implementation must also show what the audit machinery itself
+cost against D7's numeric budgets.
 
 The journal must also answer whether its visible tail is complete. When it
 is incomplete, counters and global-sequence gaps must bound and expose that
