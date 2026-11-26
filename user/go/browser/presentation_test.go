@@ -151,6 +151,9 @@ func TestIntegratedPipelineMatchesApprovedReferencePixels(t *testing.T) {
 			if got := frameHash(a.nativePix); got != expected.Native {
 				t.Fatalf("native hash=%s want=%s", got, expected.Native)
 			}
+			native.Fill(0, 0, 1280, 720, webrender.ColorPageBg)
+			a.updateControlPaint()
+			webrender.Paint(a.lay, native, 0, 0, 1280, 720, 0)
 			sampled := make([]uint32, 512*288)
 			a.sampleFrame(virender{pix: sampled, w: 512, h: 288}, presentation{0, 0, 512, 288})
 			if stage != "" {

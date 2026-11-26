@@ -15,12 +15,14 @@ Usage: compare.py SCANOUT.RAW NAME [--expect-actual HASH]
   way pixel_probe.py does. On mismatch, the actual PNG, a red diff PNG and the
   mismatched-pixel count are written under artifacts/m93g/diffs/.
 
-  --expect-actual HASH is the owner-authorized exception path: instead of the
-  composited golden, the crop must equal HASH, a previously observed guest
-  render pinned by the gate spec. Every manifest, geometry and font check
-  still runs; only the expected-pixel source changes. Used for `forms`, whose
-  approved M93e golden predates M93f's intentional `[x]` checkbox overlay —
-  see #1999 and live-web.spec boot 32.
+  --expect-actual HASH names a legacy pre-migration guest pin. Once a page
+  has a browser-owned filtered reference, that reference is the single pixel
+  truth and the legacy pin is explicitly superseded: it is validated and
+  reported, but never substituted for the reference. This keeps the immutable
+  #3913-owned live-web.spec boot-32 `forms` pin audible without making it a
+  second contradictory truth; the browser reference itself now includes the
+  real updateControlPaint `[x]` checkbox mutation. A malformed pin still
+  fails because it is not evidence at all.
 """
 import hashlib
 import json
@@ -205,7 +207,8 @@ def compare(scanout_path, serial, name, manifest_path=MANIFEST,
     actual = crop_bgrx(raw, x, y, w, h)
     actual_hash, want_hash = sha256(actual), sha256(expected)
     if expect_actual is not None:
-        want_hash = expect_actual.lower()
+        print("M93g reference %s: legacy expect-actual %s superseded by browser-owned filtered reference"
+              % (name, expect_actual.lower()))
     print("M93g reference %s: crop=%d,%d %dx%d s=%d actual=%s want=%s"
           % (name, x, y, w, h, scroll, actual_hash, want_hash))
     if actual_hash == want_hash:

@@ -135,22 +135,23 @@ class CompareTests(unittest.TestCase):
                 self.run_compare(raw, serial, manifest, presentation_manifest, goldens, fonts, Path(tmp) / "d")
             self.assertIn("does not match manifest", str(ctx.exception))
 
-    def test_expect_actual_pins_guest_render(self):
-        # The owner-authorized exception path: the crop must equal a pinned
-        # hash even when it differs from the composited golden, and a wrong
-        # pin must still go red.
+    def test_legacy_expect_actual_is_superseded(self):
+        # A migrated browser-owned reference is the only pixel truth. Even a
+        # pin matching a divergent guest crop cannot bless that crop, while a
+        # stale pin must not fail the correct filtered reference.
         with tempfile.TemporaryDirectory() as tmp:
             (_, golden, manifest, presentation_manifest, goldens, fonts, serial, raw, _, w, h) = make_fixture(tmp)
             burn(raw, golden)
-            raw[(92 * compare.SCAN_W + 40) * 4 + 2] ^= 1  # diverge from golden
-            actual_hash = hashlib.sha256(
-                compare.crop_bgrx(bytes(raw), 40, 92, w, h)).hexdigest()
             out = self.run_compare(raw, serial, manifest, presentation_manifest, goldens, fonts,
-                                   Path(tmp) / "d1", expect_actual=actual_hash)
-            self.assertEqual(out["sha256"], actual_hash)
+                                   Path(tmp) / "d0", expect_actual="f" * 64)
+            self.assertEqual(out["sha256"],
+                             hashlib.sha256(compare.composite_border(golden, w, h)).hexdigest())
+            raw[(92 * compare.SCAN_W + 40) * 4 + 2] ^= 1  # diverge from reference
+            divergent_hash = hashlib.sha256(
+                compare.crop_bgrx(bytes(raw), 40, 92, w, h)).hexdigest()
             with self.assertRaises(compare.CompareError) as ctx:
                 self.run_compare(raw, serial, manifest, presentation_manifest, goldens, fonts,
-                                 Path(tmp) / "d2", expect_actual="f" * 64)
+                                 Path(tmp) / "d1", expect_actual=divergent_hash)
             self.assertIn("mismatch", str(ctx.exception))
             with self.assertRaises(compare.CompareError) as ctx:
                 self.run_compare(raw, serial, manifest, presentation_manifest, goldens, fonts,

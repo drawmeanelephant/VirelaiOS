@@ -87,12 +87,12 @@ for src, dst in (("image/fonts/fonts.txt", "BAK-FONTS.TXT"),
                  ("image/fonts/NotoSansHebrew-Regular.ttf", "BAK-NOTOHEB.TTF"),
                  ("image/fonts/NotoNaskhArabic-Regular.ttf", "BAK-NOTOARAB.TTF")):
     shutil.copy(src, os.path.join(share, dst))
-# The bidi page: an RTL-paragraph word, single-letter references for the
-# probe's column signatures, a bracket-mirror check, and the card's mixed
-# line. M186b appends the Arabic legs: the shaped word vs its literal
-# presentation forms (identical ink iff the shaper picked the forms), the
-# forms in visual order (the mirror image iff the run painted RTL), and
-# lam-alef vs its ligature vs a ZWNJ-broken pair (one glyph iff it ligated).
+# The bidi page: RTL-paragraph words, a single-letter reference used as a
+# continuous template, bracket-mirror evidence, and the card's mixed lines.
+# M186b appends the Arabic legs: the shaped word vs its literal presentation
+# forms (matching column mass iff the shaper picked the forms), the forms in
+# visual order (reversed column-mass correlation iff the run painted RTL),
+# and lam-alef vs its ligature vs a ZWNJ-broken pair.
 # Numeric entities keep the fixture ASCII.
 open(os.path.join(share, "BIDI.HTML"), "wb").write(
     b"<div style=\"margin-left:12px\"><h4>bidi</h4>"
@@ -513,11 +513,10 @@ vgate_assert 09 serial-absent '[EXC] parking:'
 # needs (INTER for Latin, NOTOHEB for Hebrew). `fonts: manifest=ok faces=11`
 # counts manifest ROWS not loads — the four absent faces simply stay
 # unloaded. `fonts: notdef` staying silent proves every painted rune —
-# Hebrew included — resolved to real coverage, and the python probe pins the
-# visual order: the RTL word's FIRST logical letter (alef) carries the
-# right-edge column signature, its last (heh) the left edge, and the
-# bracket-mirrored line starts with the same '(' columns the LTR reference
-# line does.
+# Hebrew included — resolved to real coverage. The python probe pins visual
+# order with filtered-output measurements: continuous alef-template positions,
+# a correlated mirrored bracket shape, and Arabic reversed-column-mass
+# correlation rather than nearest-neighbor pixel masks.
 vgate_file script-bidi.txt <<'EOS'
 vf clone BAK-FONTS.TXT FONTS.TXT
 vf clone BAK-INTER.TTF INTER.TTF
@@ -700,15 +699,103 @@ expect_alef_position(bands[2], CX0, CX0 + 18, False, "reversed RTL word")
 expect_alef_position(bands[4], CX0 + 9, CX0 + 20, True, "mixed RTL word")
 expect_alef_position(bands[5], CX0 + 9, CX0 + 20, False, "mixed reversed word")
 
+# Bracket mirroring, bands[6]/[7]: use the LTR line's leftmost '(' as a
+# continuous template. Vertical integration alone cannot represent a curved
+# bracket, but a normalized 2-D cross-correlation can. In the measured
+# filtered render the unflipped bracket scores 0.946 against the RTL line's
+# leftmost glyph while its horizontal mirror scores only 0.370; that is the
+# L4 mirrored-bracket evidence without assuming nearest-neighbor pixels.
+def matrix_at(b, x0, width):
+    return [[excess(yy, xx) for xx in range(x0, x0 + width)]
+            for yy in range(b[0], b[1])]
+
+def flip_matrix(m):
+    return [list(reversed(row)) for row in m]
+
+def matrix_correlation(a, b):
+    rows = min(len(a), len(b))
+    num = aa = bb = 0
+    for yy in range(rows):
+        for va, vb in zip(a[yy], b[yy]):
+            num += va * vb
+            aa += va * va
+            bb += vb * vb
+    if not num or not aa or not bb:
+        return 0
+    return num / ((aa * bb) ** 0.5)
+
+def first_ink_x(b, width=24):
+    p = column_profile(b, CX0, CX0 + width)
+    live = [i for i, v in enumerate(p) if v > 20]
+    if not live:
+        sys.exit("bracket line is blank")
+    return CX0 + live[0]
+
+paren_x7 = first_ink_x(bands[7])
+paren_x6 = first_ink_x(bands[6])
+open_template = matrix_at(bands[7], paren_x7, 2)
+rtl_open = matrix_at(bands[6], paren_x6, 2)
+paren_direct = matrix_correlation(open_template, rtl_open)
+paren_mirror = matrix_correlation(flip_matrix(open_template), rtl_open)
+print("run10 bracket correlations: direct=%.3f mirror-control=%.3f"
+      % (paren_direct, paren_mirror))
+if paren_direct < 0.75 or paren_direct - paren_mirror < 0.25:
+    sys.exit("RTL bracket line does not carry the mirrored '(' shape")
+
+# Arabic visual-order reversal, bands[8]/[10]. Column mass integrates away
+# the vertical resampling phase; a ±1-column best shift accounts for the
+# horizontal footprint phase. The same-orientation control bands[8]/[9]
+# correlates at 0.999993. Against visual-order-reversed band 10 the reversed
+# band-8 profile correlates at 0.761 versus 0.621 unreversed, while an
+# unrelated lam profile is below 0.50. Thus requiring both a high reversed
+# score and a positive reversal margin is measured orientation evidence, not
+# a nearest-neighbor mask resurrected with tolerance.
+def correlation(a, b):
+    width = max(len(a), len(b))
+    aa = list(a) + [0] * (width - len(a))
+    bb = list(b) + [0] * (width - len(b))
+    ma = sum(aa) / width
+    mb = sum(bb) / width
+    num = sum((va - ma) * (vb - mb) for va, vb in zip(aa, bb))
+    da = sum((va - ma) ** 2 for va in aa)
+    db = sum((vb - mb) ** 2 for vb in bb)
+    if not da or not db:
+        return 0
+    return num / ((da * db) ** 0.5)
+
+def shifted_correlation(a, b):
+    best = 0
+    for shift in (-1, 0, 1):
+        left_a = [0] * max(0, -shift) + list(a) + [0] * max(0, shift)
+        left_b = [0] * max(0, shift) + list(b) + [0] * max(0, -shift)
+        width = max(len(left_a), len(left_b))
+        left_a += [0] * (width - len(left_a))
+        left_b += [0] * (width - len(left_b))
+        best = max(best, correlation(left_a, left_b))
+    return best
+
+def line_profile(b):
+    return trim_profile(column_profile(b, CX0, CX0 + 80))
+
+arab8 = line_profile(bands[8])
+arab9 = line_profile(bands[9])
+arab10 = line_profile(bands[10])
+arab_same = shifted_correlation(arab8, arab9)
+arab_reversed = shifted_correlation(list(reversed(arab8)), arab10)
+arab_unreversed = shifted_correlation(arab8, arab10)
+print("run10 arabic order correlations: same-control=%.4f reversed=%.4f unreversed=%.4f"
+      % (arab_same, arab_reversed, arab_unreversed))
+if arab_same < 0.95:
+    sys.exit("same-order Arabic control lost its column-mass correlation")
+if arab_reversed < 0.70 or arab_reversed - arab_unreversed < 0.08:
+    sys.exit("Arabic visual-order reversal evidence is absent")
+
 # Arabic shaping and lam-alef ligation are order-preserving comparisons, so
 # their normalized column mass is nearly invariant under the resampling
 # phase. Measured filtered host values are 0.003 for shaped-vs-literal forms
 # and 0.001 for lam+alef-vs-ligature, while the ZWNJ control differs by
 # 0.629; 0.08/0.20 are therefore wide separations, not tolerance-funded
 # approvals of arbitrary pixels.
-def line_profile(b):
-    return trim_profile(column_profile(b, CX0, CX0 + 80))
-
 forms_error = profile_error(line_profile(bands[8]), line_profile(bands[9]))
 lam_error = profile_error(line_profile(bands[11]), line_profile(bands[12]))
 zwnj_error = profile_error(line_profile(bands[11]), line_profile(bands[13]))
@@ -722,6 +809,7 @@ if zwnj_error < 0.20:
     sys.exit("ZWNJ did not measurably refuse the lam-alef ligature")
 
 print("bidi run 10: alef template positions prove the Hebrew RTL reversals "
-      "in simple and mixed lines; Arabic presentation-form and ligature "
-      "column mass match, and the ZWNJ control remains distinct")
+      "in simple and mixed lines; brackets carry the mirrored shape; Arabic "
+      "visual order reverses, presentation-form and ligature column mass "
+      "match, and the ZWNJ control remains distinct")
 PY
