@@ -118,12 +118,24 @@
 # `procs QJS.BIN exited status=0` is the kernel's own third reporter —
 # the engine really ran to completion.
 #
+# #3915 adds run 24: a directory drag carries. Two GOFILES windows under an
+# explicit GOTABWM split v — the sender in FMC over SUB/ (a nested file, a
+# deeper file, an EMPTY directory and a parent-level OUTSIDE.TXT), the
+# receiver in FMDROP over a pre-existing SUB.TAR. One real HID drag off SUB's
+# row arms `archive len=4608` at the sender, the seat admits it against the
+# receiver's opens=text/vcard,archive row, and the receiver validates the
+# tar, saves SUB-1.TAR (non-overwriting collision alternate), refreshes and
+# opens it in the existing archive browser. ctrl-2 + Return descends the
+# saved root so DEEP/EMPTY/INNER.TXT list without extraction; the host-side
+# assertions read the saved bytes with Python's tarfile and confirm the
+# colliding destination kept its original bytes.
+#
 # exec-order: assert-proven -- each run ends on its own `rx-go-fileman-*`
 # marker, which only its closing script prints, and that script waits on the
 # app's own marker; an app that never ran, never renamed, never settled or
 # never refused cannot pass.
 
-vgate_name go-fileman "M74a + M81a #1761 + M125c #2588 + M124b #2581 + M124d #2583 + M134b #2760 + M149a #2806 + M155a #2929 + M155b #2930 + M155c #2931 + M155d #2932 + M167a #2989 + M167b #2992 + M167c #2993 + M160c #2994 + M192e #3250 + M193c #3255 + M193d #3256: GOFILES navigates, previews, renames, trashes, restores, opens files, picks paths, resumes its session, opens with the right-click menu, lists the kernel mount table, spacebar-QuickLooks image, text and a PDF's page one, answers file properties with its ctime, birth, on-disk bytes and volume free facts, batch-moves and batch-deletes a marked set, and content-searches a seeded subtree within bounds, and runs the props + batch-move + search journey three times over, and toggles a thumbnail grid of cell-mosaic tiles with the focused image as a real sixel, and pins folders into FILES.FAV favorites that list with gone pins named missing, and browses a .tar in place as a read-only virtual directory with QuickLook on its members, and routes a .vcf through the opens=text/vcard manifest row into a painted contact-card face whose email row hands off to GOMAIL's send --to — the chain leg carrying an account so the exec'd argv completes a real SMTP+TLS submit, and runs a staged .js through the Script mime dispatch to QJS.BIN — M200b #3384 — the script's print output landing on the named console sink"
+vgate_name go-fileman "M74a + M81a #1761 + M125c #2588 + M124b #2581 + M124d #2583 + M134b #2760 + M149a #2806 + M155a #2929 + M155b #2930 + M155c #2931 + M155d #2932 + M167a #2989 + M167b #2992 + M167c #2993 + M160c #2994 + M192e #3250 + M193c #3255 + M193d #3256 + #3915: GOFILES navigates, previews, renames, trashes, restores, opens files, picks paths, resumes its session, opens with the right-click menu, lists the kernel mount table, spacebar-QuickLooks image, text and a PDF's page one, answers file properties with its ctime, birth, on-disk bytes and volume free facts, batch-moves and batch-deletes a marked set, and content-searches a seeded subtree within bounds, and runs the props + batch-move + search journey three times over, and toggles a thumbnail grid of cell-mosaic tiles with the focused image as a real sixel, and pins folders into FILES.FAV favorites that list with gone pins named missing, and browses a .tar in place as a read-only virtual directory with QuickLook on its members, and carries a dragged directory as a complete bounded tar into a second GOFILES window that saves it without overwrite and browses its nested files and empty directory, and routes a .vcf through the opens=text/vcard manifest row into a painted contact-card face whose email row hands off to GOMAIL's send --to — the chain leg carrying an account so the exec'd argv completes a real SMTP+TLS submit, and runs a staged .js through the Script mime dispatch to QJS.BIN — M200b #3384 — the script's print output landing on the named console sink"
 vgate_share seed
 vgate_runner_flags -Xswiftc -DSPIKE
 
@@ -3098,3 +3110,221 @@ vgate_assert 23 serial-absent 'gofiles: open refused HELLO.JS'
 vgate_assert 23 serial-absent 'gofiles: open launch refused'
 vgate_assert 23 serial-absent '[EXC] parking:'
 vgate_assert 23 serial-absent 'exited status=139'
+
+# --- #3915: run 24 — a directory drag carries, a second GOFILES receives ---
+# Two real GOFILES windows under an explicit GOTABWM, split v. The sender
+# sits in FMC over a folder with a nested file, a deeper file, and an EMPTY
+# directory (plus OUTSIDE.TXT that must NOT ride along); the receiver sits in
+# FMDROP over a pre-existing SUB.TAR whose bytes must survive. One HID drag off
+# the SUB row carries `archive`; the seat admits it against the receiver's
+# expanded opens= row, the receiver validates and saves SUB-1.TAR (the
+# root-derived name takes the collision alternate), refreshes, and opens it
+# in the existing archive browser. The chord lane waits on the RECEIVER's own
+# first listing, so both windows are registered and the collision is visible
+# before the split. ctrl-2 (the dogfood dwell: the seat's focus lands on its
+# queue drain, not on the injection) focuses the receiver, Return descends the
+# saved archive's root member — the listed DEEP/EMPTY/INNER.TXT rows are the
+# no-extraction proof.
+vgate_setup_python <<'PY'
+import os, sys
+share = os.environ.get("VG_SHARE") or os.path.join(os.environ["RUN_DIR"], "share")
+fmc = os.path.join(share, "FMC")
+sub = os.path.join(fmc, "SUB")
+deep = os.path.join(sub, "DEEP")
+empty = os.path.join(sub, "EMPTY")
+os.makedirs(deep, exist_ok=True)
+os.makedirs(empty, exist_ok=True)
+with open(os.path.join(sub, "INNER.TXT"), "w") as f:
+    f.write("carry-inner-alpha\n")
+with open(os.path.join(deep, "NESTED.TXT"), "w") as f:
+    f.write("nested-carry\n")
+# Outside the dragged subtree: a complete carry must not sweep the parent.
+with open(os.path.join(fmc, "OUTSIDE.TXT"), "w") as f:
+    f.write("outside-the-carry\n")
+fmdrop = os.path.join(share, "FMDROP")
+os.makedirs(fmdrop, exist_ok=True)
+with open(os.path.join(fmdrop, "SUB.TAR"), "wb") as f:
+    f.write(b"PRIOR-DESTINATION-MUST-SURVIVE\n")
+# The archive length is fixed by the seeded bytes: 2 terminator blocks +
+# five headers (SUB, DEEP, EMPTY and the two files) + the two 512-byte
+# padded file bodies. INNER.TXT is 18 B, NESTED.TXT 13 B.
+want = 1024 + 5 * 512 + 512 + 512
+print("staged FMC/SUB{DEEP/NESTED.TXT,EMPTY,INNER.TXT} + FMDROP/SUB.TAR; "
+      "expected archive bytes=%d" % want)
+PY
+
+vgate_file script-24.txt <<'EOF'
+set GOMAXPROCS=1
+vf rm GOTABWM.DEMO
+vf rm SESSION.TABS
+wm
+exec GOTABWM.ELF
+EOF
+
+vgate_file script2-24.txt <<'EOF'
+dui focus 0
+exec GOFILES.ELF /host/FMC
+EOF
+
+vgate_file script3-24.txt <<'EOF'
+exec GOFILES.ELF /host/FMDROP
+EOF
+
+vgate_run 24 -- \
+    --screen '$RUN_DIR/fileman-carry-screen' \
+    --via-virtio \
+    --script '$RUN_DIR/script-24.txt' \
+    --script2 '$RUN_DIR/script2-24.txt' \
+    --script2-after 'gotabwm: win focus' \
+    --script3 '$RUN_DIR/script3-24.txt' \
+    --script3-after 'gofiles: ready' \
+    --input-chords 'ctrl-1,ctrl-shift-v' \
+    --input-chords-after 'gofiles: list /host/FMDROP n=1' \
+    --pointer-virtio '40,62,d;200,200;320,240;480,280;900,360,u' \
+    --pointer-virtio-after 'gotabwm: split v' \
+    --input-chords2 'ctrl-2,ctrl-2,ctrl-2,ctrl-2,ctrl-2,ctrl-2,ctrl-2,ctrl-2,ctrl-2,return' \
+    --input-chords2-after 'gofiles: tar open SUB-1.TAR entries=5' \
+    --screenshot-after 'gofiles: entry INNER.TXT file' \
+    --script-expect 'gofiles: entry INNER.TXT file' --script-expect-tail 8 --timeout 300
+
+vgate_assert 24 serial-contains 'exec: loaded GOTABWM.ELF'
+vgate_assert 24 serial-contains 'gotabwm: registered'
+vgate_assert 24 serial-contains 'exec: loaded GOFILES.ELF'
+vgate_assert 24 serial-contains 'gotabwm: split v'
+vgate_assert 24 serial-contains 'x=640 y=0 w=640 h=720'
+# The sender: SUB is a dirs-first row 0, and the held move armed the archive
+# offer with the complete encoded length.
+vgate_assert 24 serial-contains 'gofiles: list /host/FMC n=2'
+vgate_assert 24 serial-contains 'gofiles: entry SUB dir'
+vgate_assert 24 serial-contains 'gofiles: entry OUTSIDE.TXT file'
+vgate_assert 24 serial-contains 'gofiles: drag arm SUB archive len=4608'
+# The seat's half: the archive MIME is admitted by the receiver's opens= row
+# and delivered with the same staged bytes.
+vgate_assert 24 serial-contains 'gotabwm: drag arm id='
+vgate_assert 24 serial-contains ' mime=archive len=4608'
+vgate_assert 24 serial-contains 'gotabwm: drag over id='
+vgate_assert 24 serial-contains 'accept=1'
+vgate_assert 24 serial-contains 'gotabwm: drag drop id='
+vgate_assert 24 serial-contains ' mime=archive'
+vgate_assert 24 serial-contains 'gofiles: drag end delivered win='
+# The receiver: the collision took SUB-1.TAR, the archive opened in place,
+# and descending its root listed the nested file and the empty directory.
+vgate_assert 24 serial-contains 'gofiles: list /host/FMDROP n=1'
+vgate_assert 24 serial-contains 'gofiles: drop saved SUB-1.TAR bytes=4608 entries=5 root=SUB'
+vgate_assert 24 serial-contains 'gofiles: list /host/FMDROP n=2'
+vgate_assert 24 serial-contains 'gofiles: tar open SUB-1.TAR entries=5'
+vgate_assert 24 serial-contains 'gofiles: cd /host/FMDROP/SUB-1.TAR/SUB/'
+vgate_assert 24 serial-contains 'gofiles: entry DEEP dir'
+vgate_assert 24 serial-contains 'gofiles: entry EMPTY dir'
+vgate_assert 24 serial-contains 'gofiles: entry INNER.TXT file'
+# No refusal and no extraction: the sender carried, nothing was torn down.
+vgate_assert 24 serial-absent 'gofiles: drag refused SUB'
+vgate_assert 24 serial-absent 'gofiles: drop refused'
+vgate_assert 24 serial-absent 'gofiles: tar refused SUB-1.TAR'
+vgate_assert 24 serial-absent '[EXC] parking:'
+vgate_assert 24 serial-absent 'exited status=139'
+
+# The share is the byte-level proof: the pre-existing SUB.TAR kept its bytes,
+# the saved SUB-1.TAR is a readable archive with exactly the seeded members,
+# and no member was extracted beside it.
+vgate_assert 24 python <<'PY'
+import os, sys, tarfile
+share = os.environ["VG_SHARE"]
+fmdrop = os.path.join(share, "FMDROP")
+prior = open(os.path.join(fmdrop, "SUB.TAR"), "rb").read()
+if prior != b"PRIOR-DESTINATION-MUST-SURVIVE\n":
+    sys.exit("colliding destination was rewritten: %r" % prior)
+saved = os.path.join(fmdrop, "SUB-1.TAR")
+data = open(saved, "rb").read()
+if len(data) != 1024 + 5 * 512 + 512 + 512:
+    sys.exit("saved archive length %d" % len(data))
+with tarfile.open(saved, "r:") as tf:
+    members = tf.getmembers()
+    names = [m.name for m in members]
+    want = ["SUB", "SUB/DEEP", "SUB/DEEP/NESTED.TXT",
+            "SUB/EMPTY", "SUB/INNER.TXT"]
+    if names != want:
+        sys.exit("saved archive members %r != %r" % (names, want))
+    kinds = {m.name: ("dir" if m.isdir() else "file") for m in members}
+    if kinds["SUB"] != "dir" or kinds["SUB/EMPTY"] != "dir":
+        sys.exit("directory members lost their kind: %r" % kinds)
+    body = {m.name: tf.extractfile(m).read() for m in members if m.isfile()}
+    if body["SUB/INNER.TXT"] != b"carry-inner-alpha\n":
+        sys.exit("INNER.TXT bytes %r" % body["SUB/INNER.TXT"])
+    if body["SUB/DEEP/NESTED.TXT"] != b"nested-carry\n":
+        sys.exit("NESTED.TXT bytes %r" % body["SUB/DEEP/NESTED.TXT"])
+    if "SUB/OUTSIDE.TXT" in names or "OUTSIDE.TXT" in names:
+        sys.exit("the carry swept the parent: %r" % names)
+listing = sorted(os.listdir(fmdrop))
+if listing != ["SUB-1.TAR", "SUB.TAR"]:
+    sys.exit("receiver directory holds extracted/extra entries: %r" % listing)
+print("carry bytes: prior SUB.TAR intact, SUB-1.TAR %d bytes, members %r, "
+      "no extraction" % (len(data), names))
+PY
+
+# The receiver pane really paints the opened archive (not just a serial
+# receipt): count ink in the right pane's body band of the real scanout.
+# The split's hosted pane starts at the scanout top (layout y=0), so the
+# 2x capture puts the title/toolbar at y=44..90 and the rows just below;
+# the band spans the pane's client rows, not the rail.
+vgate_assert 24 snapshot 'fileman-carry-screen-after' <<'PY'
+import struct, sys, zlib
+
+d = open(sys.argv[1], "rb").read()
+assert d[:8] == b"\x89PNG\r\n\x1a\n", "not a PNG scanout"
+pos = 8
+idat = b""
+w = h = ct = 0
+while pos < len(d):
+    n, typ = struct.unpack(">I4s", d[pos:pos + 8])
+    chunk = d[pos + 8:pos + 8 + n]
+    if typ == b"IHDR":
+        w, h, depth, ct = struct.unpack(">IIBB", chunk[:10])
+        assert depth == 8, "unexpected PNG depth"
+    elif typ == b"IDAT":
+        idat += chunk
+    pos += 12 + n
+assert (w, h) == (2560, 1440), "wanted 2560x1440 scanout, got %dx%d" % (w, h)
+bpp = 4 if ct == 6 else 3
+raw = zlib.decompress(idat)
+stride = w * bpp
+out = bytearray()
+prev = bytearray(stride)
+i = 0
+for _ in range(h):
+    filt = raw[i]
+    i += 1
+    row = bytearray(raw[i:i + stride])
+    i += stride
+    if filt == 1:
+        for x in range(bpp, stride):
+            row[x] = (row[x] + row[x - bpp]) & 0xff
+    elif filt == 2:
+        for x in range(stride):
+            row[x] = (row[x] + prev[x]) & 0xff
+    elif filt == 3:
+        for x in range(stride):
+            left = row[x - bpp] if x >= bpp else 0
+            row[x] = (row[x] + ((left + prev[x]) >> 1)) & 0xff
+    elif filt == 4:
+        for x in range(stride):
+            left = row[x - bpp] if x >= bpp else 0
+            up = prev[x]
+            up_left = prev[x - bpp] if x >= bpp else 0
+            p = left + up - up_left
+            pa, pb, pc = abs(p - left), abs(p - up), abs(p - up_left)
+            pred = (left if pa <= pb and pa <= pc else up if pb <= pc else up_left)
+            row[x] = (row[x] + pred) & 0xff
+    out += row
+    prev = row
+
+ink = 0
+for y in range(88, 600):
+    for x in range(1290, 2540):
+        k = (y * w + x) * bpp
+        r, g, b = out[k], out[k + 1], out[k + 2]
+        if max(r, g, b) >= 120 and r + g + b >= 320:
+            ink += 1
+print("directory-carry receiver paint: ink pixels=%d" % ink)
+assert ink >= 150, "the receiver pane painted no archive rows"
+PY

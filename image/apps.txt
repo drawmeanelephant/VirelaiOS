@@ -38,7 +38,7 @@
 GOCALC.ELF | 64-bit Calc | c | dock=true | v=2 | icon=ICONCALC
 NOTE.ELF | Text Editor | n | dock=true | v=2 | opens=text | icon=ICONNOTE
 GOEDIT.ELF | Code Editor | e | dock=true | v=2 | opens=text,binary | selection=primary | icon=ICONEDIT
-GOFILES.ELF | Files | f | dock=true | v=2 | caps=file,window | opens=text/vcard | icon=ICONFILE
+GOFILES.ELF | Files | f | dock=true | v=2 | caps=file,window | opens=text/vcard,archive | icon=ICONFILE
 GOTERM.ELF | Terminal | t | dock=true | v=2 | selection=primary | icon=ICONTERM
 WEB.ELF | Web | w | dock=true | v=2 | caps=file,window,net | opens=http,https | icon=ICONWEB
 PULSE.ELF | Pulse | u | dock=true | v=2 | icon=ICONPULS
