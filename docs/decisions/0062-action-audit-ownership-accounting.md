@@ -64,8 +64,8 @@ security-relevant decisions, with cost accounting of its own.
 
 ### D1. The kernel journal is parallel to, not a replacement for, existing receipt lanes
 
-The AGENTD `/host/AGENT/AUDIT/` and GOASSIST `/host/ASSIST/AUDIT/` lanes
-remain authoritative for their control-plane acts. They carry channel- and
+The AGENTD `/host/AGENT/AUDIT/` lane and the store-dependent GOASSIST
+`/host/ASSIST/AUDIT/` or `/disk/ASSIST/AUDIT/` lane remain authoritative for their control-plane acts. They carry channel- and
 act-specific metadata, payload digests, and HMAC verification that the
 kernel journal deliberately does not duplicate. They are neither superseded
 nor migrated by this ADR.
@@ -129,7 +129,7 @@ bytes rather than as a native struct layout:
 - 8 bytes: timestamp in the kernel monotonic nanoseconds-since-boot clock;
 - 8 bytes: actor principal token;
 - 8 bytes: owner principal token;
-- 8 bytes: packed authority kind + authority/grant/capability id;
+- 8 bytes: packed authority kind + authority/capability id;
 - 8 bytes: object generation;
 - 8 bytes: charge delta;
 - 8 bytes: coalesced-input count, or 1 for an uncoalesced record;
