@@ -389,7 +389,7 @@ func X() int {
 	utilOtherY := `package other
 
 func Y() int {
-	return 2
+	return 20
 }
 `
 	if err := h.fs.WriteFileSafe("/host/SRCA/calc.go", []byte(calcWithoutY)); err != nil {
@@ -415,11 +415,17 @@ func Y() int {
 			ren = &stage[i]
 		}
 	}
-	if len(stage) != 2 || mv == nil || ren == nil || mv.AtomID != before.ID || ren.AtomID != before.ID || ren.NewName != "other.Y" {
-		t.Fatalf("cross-package move must stage move+rename on one id: %+v", stage)
+	var mod *Op
+	for i := range stage {
+		if stage[i].Type == "modify" {
+			mod = &stage[i]
+		}
+	}
+	if len(stage) != 3 || mv == nil || ren == nil || mod == nil || mv.AtomID != before.ID || ren.AtomID != before.ID || mod.AtomID != before.ID || ren.NewName != "other.Y" {
+		t.Fatalf("cross-package move must stage move+rename+modify on one id: %+v", stage)
 	}
 	after := atomByName(t, h, "a", "other.Y")
-	if after.ID != before.ID || after.Hash != before.Hash || after.Span.File != "util.go" {
+	if after.ID != before.ID || after.Hash == before.Hash || after.Span.File != "util.go" {
 		t.Fatalf("cross-package move identity: before %+v after %+v", before, after)
 	}
 }
@@ -510,6 +516,31 @@ func TestRenameMergeConflictsEndToEnd(t *testing.T) {
 		}
 		if rc != 2 || strings.Join(logs, "\n") != strings.Join(want, "\n") {
 			t.Fatalf("concurrent_rename merge: rc=%d logs=%v", rc, logs)
+		}
+	})
+
+	t.Run("rename_into_independent_add", func(t *testing.T) {
+		h := newTestHarness(t)
+		setupRenameMergeFork(t, h)
+		commitFeatureRename(t, h, "Z", "calc.Z")
+
+		mainSrc := renameBaseGo + "\nfunc Z() int {\n\treturn 30\n}\n"
+		if err := h.fs.WriteFileSafe("/host/SRCA/calc.go", []byte(mainSrc)); err != nil {
+			t.Fatal(err)
+		}
+		if rc, logs := h.runCmd("add", "/host/SRCA"); rc != 0 {
+			t.Fatalf("main add: %v", logs)
+		}
+		if rc, logs := h.runCmd("commit", "-m", "main add Z"); rc != 0 {
+			t.Fatalf("main commit: %v", logs)
+		}
+		rc, logs := h.runCmd("merge", "feature")
+		want := []string{
+			"flint: merge conflict atom=calc.Z type=concurrent_add",
+			"flint: merge conflicts=1",
+		}
+		if rc != 2 || strings.Join(logs, "\n") != strings.Join(want, "\n") {
+			t.Fatalf("rename/add final-name collision merge: rc=%d logs=%v", rc, logs)
 		}
 	})
 }

@@ -171,9 +171,12 @@ span carries several Atoms; renaming one name can therefore change the
 canonical hash of its siblings, and the verb stages the sibling `modify`
 Ops needed to keep the whole shared declaration truthful. When a move
 changes a language-derived qualified name (a Go package clause or Zig
-file stem), hash equality is used only to locate the unique same-shaped
-declaration inside the explicitly named target file; ambiguity refuses,
-and no other file is searched. A byte-offset shift inside the same file
+file stem), the verb locates the unique declaration
+with the same language-local path (the qualified name with its leading
+package or file-stem component removed) inside the explicitly named target
+file. That local-path match is lookup validation, not rename inference: the
+user named both the Atom and the target file, ambiguity refuses, and no
+other file is searched. A byte-offset shift inside the same file
 is not an Op: the working table updates the span silently.
 
 ## Store (owner ruling: flat files + an in-memory index)
@@ -343,6 +346,13 @@ sig       = sshlib.EdSign(sig_msg, seed)
      facing an untouched side, merges **clean**.
    - Cross names are the two field names sorted (`delete < modify < move <
      rename`), so `merge a←b` and `merge b←a` report the same type.
+
+   After the pairwise result is clean, the candidate merged Atom table is
+   validated as a final state: no two live Atoms may occupy the same
+   `(kind, name)`. A collision is reported as `concurrent_add` even when
+   one side reached the name by rename/move rather than an `add` Op;
+   checking only the final table keeps a name reusable when the same merge
+   vacates it.
    - When several rules apply to one Atom, priority is: `delete_*` first,
      then `concurrent_*`, then cross-field (first in sorted order).
 4. **Clean result.** FLINT signs and appends a Change on `into` with

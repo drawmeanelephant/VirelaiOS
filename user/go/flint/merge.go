@@ -342,11 +342,57 @@ func MergeOps(baseAtoms []StoredAtom, intoChanges, fromChanges [][]Op) MergeResu
 	}
 
 	sortOps(mergeOps)
+	if identityConflicts := finalIdentityConflicts(baseAtoms, intoChanges, mergeOps); len(identityConflicts) > 0 {
+		sortMergeConflicts(identityConflicts)
+		return MergeResult{
+			Clean:     false,
+			Ops:       nil,
+			Conflicts: identityConflicts,
+		}
+	}
 	return MergeResult{
 		Clean:     true,
 		Ops:       mergeOps,
 		Conflicts: nil,
 	}
+}
+
+func finalIdentityConflicts(baseAtoms []StoredAtom, intoChanges [][]Op, mergeOps []Op) []MergeConflict {
+	atomsByID := make(map[string]StoredAtom, len(baseAtoms))
+	for _, a := range baseAtoms {
+		atomsByID[a.ID] = a
+	}
+	for _, ops := range intoChanges {
+		ApplyOpsToAtomMap(atomsByID, ops, false)
+	}
+	ApplyOpsToAtomMap(atomsByID, mergeOps, false)
+
+	byIdentity := make(map[AddKey][]string)
+	for _, a := range atomsByID {
+		byIdentity[AddKey{Kind: a.Kind, Name: a.Name}] = append(byIdentity[AddKey{Kind: a.Kind, Name: a.Name}], a.ID)
+	}
+	keys := make([]AddKey, 0, len(byIdentity))
+	for key := range byIdentity {
+		keys = append(keys, key)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].Name != keys[j].Name {
+			return keys[i].Name < keys[j].Name
+		}
+		return keys[i].Kind < keys[j].Kind
+	})
+	var out []MergeConflict
+	for _, key := range keys {
+		ids := byIdentity[key]
+		if len(ids) < 2 {
+			continue
+		}
+		sort.Strings(ids)
+		for _, id := range ids[1:] {
+			out = append(out, MergeConflict{AtomID: id, Name: key.Name, Type: ConflictConcurrentAdd})
+		}
+	}
+	return out
 }
 
 // emitFromEffectOps re-expresses `from`'s AtomEffect as Ops on `into`, dropping

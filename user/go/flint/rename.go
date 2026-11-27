@@ -164,6 +164,13 @@ func writeRefactorState(fs FS, root, wsName string, atoms []StoredAtom, stage, i
 	return WriteWorkspaceStage(fs, root, wsName, folded)
 }
 
+func localQName(qname string) string {
+	if i := strings.IndexByte(qname, '.'); i >= 0 {
+		return qname[i+1:]
+	}
+	return qname
+}
+
 func loadRenameWorkspace(fs FS, root, wsFlag string) (*Workspace, []StoredAtom, []Op, error) {
 	idx, err := LoadStoreIndex(fs, root)
 	if err != nil {
@@ -341,7 +348,7 @@ func cmdMv(fs FS, root string, args []string) error {
 	if target == nil {
 		var candidates []*parser.Atom
 		for i := range targetDecls {
-			if targetDecls[i].Kind == old.Kind && sameHash(old.Hash, targetDecls[i].Hash) {
+			if targetDecls[i].Kind == old.Kind && localQName(targetDecls[i].Name) == localQName(old.Name) {
 				candidates = append(candidates, &targetDecls[i])
 			}
 		}
