@@ -215,6 +215,15 @@ func cmdLog(fs FS, root string, args []string) error {
 		return logGraph(fs, root, idx, seeds)
 	}
 
+	headAtoms, _, err := ReplayStreamAtoms(st.Head, changes)
+	if err != nil {
+		return err
+	}
+	headByID := make(map[string]StoredAtom, len(headAtoms))
+	for _, a := range headAtoms {
+		headByID[a.ID] = a
+	}
+
 	const logCap = 64
 	printed := 0
 	for i := len(changes) - 1; i >= 0 && printed < logCap; i-- {
@@ -232,6 +241,25 @@ func cmdLog(fs FS, root string, args []string) error {
 			" ops=" + vi.Itoa64(int64(len(c.Ops))) +
 			" author=" + authorPrefix +
 			" msg=" + firstMessageLine(c.Message))
+		for _, op := range c.Ops {
+			if op.Type != "rename" && op.Type != "move" {
+				continue
+			}
+			name := op.NewName
+			file := ""
+			if op.NewSpan != nil {
+				file = op.NewSpan.File
+			}
+			if a, ok := headByID[op.AtomID]; ok {
+				if name == "" {
+					name = a.Name
+				}
+				if file == "" {
+					file = a.Span.File
+				}
+			}
+			consoleFn("flint: change-op " + op.Type + " " + file + " " + name)
+		}
 		printed++
 	}
 	return nil

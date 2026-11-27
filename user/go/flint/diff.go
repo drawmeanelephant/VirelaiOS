@@ -13,7 +13,7 @@ import (
 // what a dev reviews between `flint add` and `flint commit` in the guest
 // loop. Output:
 //
-//	flint: diff ws=<n> stream=<s> files=<f> staged=<n> add=<a> modify=<m> delete=<d>
+//	flint: diff ws=<n> stream=<s> files=<f> staged=<n> add=<a> modify=<m> delete=<d> move=<v> rename=<r>
 //	flint: diff <type> <file> <qualified-name>   (one per staged Op, cap 64)
 //	flint: diff … +<n>                           (overflow)
 //
@@ -63,7 +63,7 @@ func cmdDiff(fs FS, root string, args []string) error {
 	}
 	files := make(map[string]bool, len(stage))
 	lines := make([]diffLine, 0, len(stage))
-	var countAdd, countMod, countDel int
+	var countAdd, countMod, countDel, countMove, countRename int
 	var history map[string]StoredAtom
 	for _, op := range stage {
 		var file, name string
@@ -71,6 +71,11 @@ func cmdDiff(fs FS, root string, args []string) error {
 		case op.NewSpan != nil:
 			file = op.NewSpan.File
 			name = op.NewName
+			if name == "" {
+				if a, ok := atomsByID[op.AtomID]; ok {
+					name = a.Name
+				}
+			}
 		default:
 			if a, ok := atomsByID[op.AtomID]; ok {
 				file, name = a.Span.File, a.Name
@@ -98,6 +103,10 @@ func cmdDiff(fs FS, root string, args []string) error {
 			countMod++
 		case "delete":
 			countDel++
+		case "move":
+			countMove++
+		case "rename":
+			countRename++
 		}
 		lines = append(lines, diffLine{file: file, typ: op.Type, name: name})
 	}
@@ -117,7 +126,9 @@ func cmdDiff(fs FS, root string, args []string) error {
 		" staged=" + vi.Itoa64(int64(len(stage))) +
 		" add=" + vi.Itoa64(int64(countAdd)) +
 		" modify=" + vi.Itoa64(int64(countMod)) +
-		" delete=" + vi.Itoa64(int64(countDel)))
+		" delete=" + vi.Itoa64(int64(countDel)) +
+		" move=" + vi.Itoa64(int64(countMove)) +
+		" rename=" + vi.Itoa64(int64(countRename)))
 
 	const diffCap = 64
 	limit := len(lines)

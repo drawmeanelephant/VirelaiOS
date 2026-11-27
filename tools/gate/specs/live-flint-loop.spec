@@ -190,8 +190,8 @@ vgate_run 02 -- \
     --script-expect 'LOOP-COMMITTED' \
     --script-expect-tail 3 --timeout 180
 
-vgate_assert 02 serial-contains 'flint: status ws=loop stream=main atoms=3 staged=2 add=1 modify=1 delete=0 duplicates=0'
-vgate_assert 02 serial-contains 'flint: diff ws=loop stream=main files=1 staged=2 add=1 modify=1 delete=0'
+vgate_assert 02 serial-contains 'flint: status ws=loop stream=main atoms=3 staged=2 add=1 modify=1 delete=0 move=0 rename=0 duplicates=0'
+vgate_assert 02 serial-contains 'flint: diff ws=loop stream=main files=1 staged=2 add=1 modify=1 delete=0 move=0 rename=0'
 vgate_assert 02 serial-contains 'flint: diff modify prog.go loop.Answer'
 vgate_assert 02 serial-contains 'flint: diff add prog.go loop.Sub'
 vgate_assert 02 serial-contains 'flint: commit ok id='

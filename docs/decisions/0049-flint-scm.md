@@ -153,14 +153,21 @@ Workspace {                    // /host/FLINT/ws/<name>/
 A **refactor** is `rename` + `modify` on one Atom in one Change. That is
 legal and clean. M103 has no `policy_ref` and no `Policy` (FLINT M1).
 
-**Ops M103 produces.** Diffing the working tree produces only
-`add`/`modify`/`delete`. `rename` and `move` (a move means the Atom's
-*file* changed) are part of the data model, the canonical bytes and the
-merge algorithm, and the merge fixtures exercise them. The verbs that
-produce them, `flint rename` and `flint mv`, are FLINT M1. Until then, a
-renamed or moved declaration shows up as `delete` + `add`. A byte-offset
-shift inside the same file is not an Op: the working table updates the
-span silently.
+**Ops the verbs produce.** Diffing the working tree through `flint add`
+produces only `add`/`modify`/`delete`; it never guesses that a delete/add
+pair was a rename. `rename` and `move` (a move means the Atom's *file*
+changed) are explicit user intent. M215b adds `flint rename <atom>
+<new-name>` and `flint mv <atom> <new-file>`: the user edits the source,
+then the verb validates the edited declaration, stages the explicit Op,
+and preserves the Atom id. `rename` may accompany a same-Change `modify`
+(the refactor pair above); `mv` may accompany `rename`/`modify` when the
+target file's language qualification or edited body requires it. The
+verbs refuse `atom_missing` when the named pre-state or edited target is
+absent, `duplicate_decl` when the target identity is occupied,
+`span_conflict` when the old declaration still exists or the target is
+ambiguous, and `src_behind` when unrelated source drift would be swept
+into the same stage. A byte-offset shift inside the same file is not an
+Op: the working table updates the span silently.
 
 ## Store (owner ruling: flat files + an in-memory index)
 
@@ -179,14 +186,20 @@ span silently.
 **M215a amendment — the content lane.** `flint add` writes bodies under
 `blobs/` for every touched file, two classes sharing the lane:
 
-- **Atom bodies** — `blobs/<atom.hash>` holds the raw span bytes
-  `src[span.start:span.end]` of that Atom version. An Atom's canonical
-  hash names its body; canonically identical bodies share one blob.
+- **Atom bodies** — `blobs/<atomBodyKey>` holds the raw span bytes
+  `src[span.start:span.end]` of that Atom version. M215a used the bare
+  canonical hash as the key; M215b writes
+  `SHA-256("FLINT-ATOM-BODY/2\x00" || str(name) || hash)` because a pure
+  rename deliberately keeps the canonical hash while changing the raw
+  declaration bytes. Readers try the v2 key first and fall back to the
+  M215a hash-only key for pre-rename stores.
 - **File bodies** — `blobs/<fileKey>` holds the complete source file
-  bytes of one file version, where `fileKey = SHA-256("FLINT-SRC/1\x00"
-  || str(rel) || u32le(n) || hash_1 || … || hash_n)` over the file's Atom
-  hashes in table order. The file's `new_hash`es name its body, so a
-  replayed head locates it with no Change/Op schema change.
+  bytes of one file version, where `fileKey = SHA-256("FLINT-SRC/2\x00"
+  || str(rel) || u32le(n) || str(name_1) || hash_1 || … || str(name_n) ||
+  hash_n)` over the file's Atoms in table order. M215a's FLINT-SRC/1
+  tuple omitted names for the same reason and remains a read fallback.
+  The file's Atom identities name its body, so a replayed head locates it
+  with no Change/Op schema change.
 
 Materialization (`flint checkout`, and `flint merge`'s merged tree) emits
 the verbatim file body when the tuple's blob exists — byte-exact, so the
@@ -283,14 +296,14 @@ sig       = sshlib.EdSign(sig_msg, seed)
 - **Staging folds.** A new Op on an Atom that already has a staged Op
   composes with it under §2 step 2's fold rules (add + modify → add with
   the new hash; add + delete → nothing staged). So the stage is always one
-  net Op per Atom (or a rename + modify pair, once FLINT M1 can produce
-  renames).
+  net Op per Atom, except that an explicit refactor may carry the
+  rename/move/modify companion Ops permitted by the Op rules.
 - **Why not content hashes?** Identity would change on every body edit.
 - **Why not names?** Names change, collide, and are only unique per
   package.
 - **Trade-off.** Renames are not detected heuristically. Intent is captured
-  explicitly (FLINT M1 verbs). Until then, a rename is a delete plus an add,
-  which is honest but noisy.
+  explicitly by the M215b verbs; `flint add` still reports an unrecorded
+  rename as delete plus add rather than guessing.
 
 ### 2. Semantic merge on Ops
 
@@ -413,7 +426,7 @@ Go scanner to agree with it on every `.zig` file in the corpus.
 |---|---|
 | SQL, any query engine, any new dependency | FLINT M1 query layer over the flat files, only if needed |
 | Content store, checkout, materializing merged source | landed in M215a (amendment above) |
-| `flint rename` / `flint mv`; heuristic rename detection (never) | FLINT M1 verbs |
+| heuristic rename detection (never) | rejected explicitly; M215b verbs landed |
 | Push/pull over the agent channel (ADR 0044) | FLINT M1 |
 | Policy (WASM), `policy_ref`, trust roots for `author` | FLINT M1 |
 | `FLINTD.ELF` daemon under INIT; GOSELF test runs per commit; RFB review | FLINT M1+ |
@@ -514,7 +527,7 @@ docs/status.md                   (the M103 row)
 ## Future arcs
 
 - **FLINT M1:** content store + checkout (landed in M215a);
-  `rename`/`mv` verbs; push/pull over ADR 0044; WASM policy and trust
+  push/pull over ADR 0044; WASM policy and trust
   roots; `FLINTD.ELF` under INIT; leases; a query layer if the flat files
   are too slow.
 - **FLINT M2:** nested Atoms, dep graph, lazy materialization,

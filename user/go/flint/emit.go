@@ -83,6 +83,20 @@ func verifyFileBody(rel string, body []byte, atoms []StoredAtom) error {
 	return nil
 }
 
+// readAtomBody reads the M215b name-aware body first, then the M215a
+// hash-only key as a compatibility fallback for pre-rename stores.
+func readAtomBody(fs FS, root string, a StoredAtom) ([]byte, error) {
+	key, err := atomBodyKey(a)
+	if err != nil {
+		return nil, err
+	}
+	body, err := readBlob(fs, root, key)
+	if err != nil || body != nil {
+		return body, err
+	}
+	return readBlob(fs, root, a.Hash)
+}
+
 // emitCanonicalFile synthesizes a parseable source file carrying exactly
 // `atoms`: the language's package clause (Go only — derived from the
 // qualified names, which the table always carries) plus every Atom body,
@@ -123,7 +137,7 @@ func emitCanonicalFile(fs FS, root, rel string, atoms []StoredAtom) ([]byte, err
 		return ""
 	}
 	bodyOf := func(a StoredAtom) ([]byte, error) {
-		body, err := readBlob(fs, root, a.Hash)
+		body, err := readAtomBody(fs, root, a)
 		if err != nil {
 			return nil, err
 		}
@@ -209,6 +223,18 @@ func planFileMaterialization(fs FS, root, rel string, atoms []StoredAtom) ([]byt
 	body, err := readBlob(fs, root, key)
 	if err != nil {
 		return nil, err
+	}
+	if body == nil {
+		// M215a stores used the name-insensitive FLINT-SRC/1 tuple. Read it
+		// only as a compatibility fallback; new writes always use the v2 key.
+		legacyKey, kerr := fileBlobKeyV1(rel, atoms)
+		if kerr != nil {
+			return nil, kerr
+		}
+		body, err = readBlob(fs, root, legacyKey)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if body != nil {
 		if err := verifyFileBody(rel, body, atoms); err != nil {

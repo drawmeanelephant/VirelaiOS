@@ -32,30 +32,76 @@ import (
 // must reproduce every expected Atom (`body_mismatch`).
 
 const srcBlobDomain = "FLINT-SRC/1\x00"
+const srcBlobDomainV2 = "FLINT-SRC/2\x00"
+const atomBodyBlobDomainV2 = "FLINT-ATOM-BODY/2\x00"
 
 func blobsDir(root string) string      { return root + "/blobs" }
 func blobPath(root, key string) string { return blobsDir(root) + "/" + key }
 
-// fileBlobKey derives the content id of one file version: SHA-256 over
-// "FLINT-SRC/1\x00" || str(rel) || u32le(n) || hash_1 || … || hash_n, where
-// hash_i is the decoded canonical hash of each of the file's Atoms in Atom
-// table order (file, start, kind, name, id).
-func fileBlobKey(rel string, atoms []StoredAtom) (string, error) {
-	buf := make([]byte, 0, len(srcBlobDomain)+4+len(rel)+4+len(atoms)*32)
-	buf = append(buf, srcBlobDomain...)
+func blobString(buf []byte, s string) []byte {
 	var le [4]byte
-	binary.LittleEndian.PutUint32(le[:], uint32(len(rel)))
+	binary.LittleEndian.PutUint32(le[:], uint32(len(s)))
 	buf = append(buf, le[:]...)
-	buf = append(buf, rel...)
+	return append(buf, s...)
+}
+
+func atomHashBytes(a StoredAtom) ([]byte, error) {
+	hb, err := hex.DecodeString(a.Hash)
+	if err != nil || len(hb) != 32 {
+		return nil, refuse("atom_malformed", a.Name)
+	}
+	return hb, nil
+}
+
+// fileBlobKeyV1 is the M215a key derivation, retained only as a read
+// fallback for stores written before M215b.
+func fileBlobKeyV1(rel string, atoms []StoredAtom) (string, error) {
+	buf := append([]byte(srcBlobDomain), blobString(nil, rel)...)
+	var le [4]byte
 	binary.LittleEndian.PutUint32(le[:], uint32(len(atoms)))
 	buf = append(buf, le[:]...)
 	for _, a := range atoms {
-		hb, err := hex.DecodeString(a.Hash)
-		if err != nil || len(hb) != 32 {
-			return "", refuse("atom_malformed", a.Name)
+		hb, err := atomHashBytes(a)
+		if err != nil {
+			return "", err
 		}
 		buf = append(buf, hb...)
 	}
+	sum := sshlib.SHA256Sum(buf)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+// fileBlobKey derives the content id of one file version. M215b uses
+// FLINT-SRC/2 and includes each Atom's name beside its hash: ADR 0049
+// deliberately excludes names from canonical hashes, so the M215a tuple
+// could not distinguish a renamed declaration's file version.
+func fileBlobKey(rel string, atoms []StoredAtom) (string, error) {
+	buf := append([]byte(srcBlobDomainV2), blobString(nil, rel)...)
+	var le [4]byte
+	binary.LittleEndian.PutUint32(le[:], uint32(len(atoms)))
+	buf = append(buf, le[:]...)
+	for _, a := range atoms {
+		hb, err := atomHashBytes(a)
+		if err != nil {
+			return "", err
+		}
+		buf = blobString(buf, a.Name)
+		buf = append(buf, hb...)
+	}
+	sum := sshlib.SHA256Sum(buf)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+// atomBodyKey is the M215b name-aware Atom body key. The legacy key was the
+// canonical hash alone; a pure rename keeps that hash but changes the raw
+// declaration bytes, so the old key cannot name both bodies.
+func atomBodyKey(a StoredAtom) (string, error) {
+	hb, err := atomHashBytes(a)
+	if err != nil {
+		return "", err
+	}
+	buf := append([]byte(atomBodyBlobDomainV2), blobString(nil, a.Name)...)
+	buf = append(buf, hb...)
 	sum := sshlib.SHA256Sum(buf)
 	return hex.EncodeToString(sum[:]), nil
 }
@@ -160,11 +206,15 @@ func storeFileBodies(fs FS, root, rel string, src []byte, atoms []StoredAtom) er
 		if int(a.Span.End) > len(src) || a.Span.Start >= a.Span.End {
 			return refuse("atom_malformed", rel+" "+a.Name)
 		}
-		if seen[a.Hash] {
+		bodyKey, err := atomBodyKey(a)
+		if err != nil {
+			return err
+		}
+		if seen[bodyKey] {
 			continue
 		}
-		seen[a.Hash] = true
-		if err := putBlob(fs, root, a.Hash, src[a.Span.Start:a.Span.End], &m); err != nil {
+		seen[bodyKey] = true
+		if err := putBlob(fs, root, bodyKey, src[a.Span.Start:a.Span.End], &m); err != nil {
 			return err
 		}
 	}

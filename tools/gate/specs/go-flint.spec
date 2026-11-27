@@ -39,6 +39,10 @@
 # history predates the blobs/ lane refuses `flint: refuse body_missing` on
 # checkout rather than emitting empty files.
 #
+# Run 31 (M215b #3923): on rename-share, the explicit rename/mv verbs stage
+# identity Ops after the user edits source, commit them, render them in
+# status/diff/log, and checkout round-trips the renamed/moved file bodies.
+#
 # Runs 11-13 (M101a #2313): FLINT-SYNC/1 remote verbs over hermetic --net.
 # The setup hook locates a sibling ../flint-server checkout (FLINT_SERVER_DIR
 # override, Zig 0.17 — same recovery pattern as GO_FORK_DIR), `zig build`s
@@ -680,6 +684,65 @@ open(os.path.join(noblob_dir, noblob_stream + ".json"), "w", encoding="utf-8").w
 )
 open(os.path.join(noblob, "FLINTJ", "30.SH"), "w", encoding="utf-8").write(
     "FLINT.ELF checkout --stream=main --dir=/host/OUT\n"
+)
+
+# Run 31 (M215b #3923): rename-share. The guest script edits the tree first,
+# then uses the explicit verbs to record identity intent; the fixture is small
+# enough that checkout compares exact bytes host-side.
+rename_share = os.path.join(run, "rename-share")
+for sub in ("SRC", "FLINTJ"):
+    os.makedirs(os.path.join(rename_share, sub), exist_ok=True)
+for name in ("FLINT.ELF", "GOSH.ELF"):
+    shutil.copy(os.path.join(".build", "go", name), os.path.join(rename_share, name))
+open(os.path.join(rename_share, "SECRETS.TXT"), "w", encoding="utf-8").write(
+    "#v1\nagent-sign\t1000\t" + SEED_HEX + "\tFLINT.ELF\n"
+)
+open(os.path.join(rename_share, "OWNERS.TXT"), "w", encoding="utf-8").write(
+    "#v1\nFLINT.ELF\t644\t0\t-\n"
+)
+rename_base = (
+    "package calc\n\n"
+    "func X() int {\n"
+    "\treturn 1\n"
+    "}\n\n"
+    "func Y() int {\n"
+    "\treturn 2\n"
+    "}\n"
+)
+rename_renamed = rename_base.replace("func X()", "func Z()")
+rename_moved_calc = (
+    "package calc\n\n"
+    "func Z() int {\n"
+    "\treturn 1\n"
+    "}\n"
+)
+rename_moved_util = (
+    "package calc\n\n"
+    "func Y() int {\n"
+    "\treturn 2\n"
+    "}\n"
+)
+open(os.path.join(rename_share, "SRC", "calc.go"), "w", encoding="utf-8").write(rename_base)
+open(os.path.join(rename_share, "FLINTJ", "renamed.go"), "w", encoding="utf-8").write(rename_renamed)
+open(os.path.join(rename_share, "FLINTJ", "moved-calc.go"), "w", encoding="utf-8").write(rename_moved_calc)
+open(os.path.join(rename_share, "FLINTJ", "moved-util.go"), "w", encoding="utf-8").write(rename_moved_util)
+open(os.path.join(rename_share, "FLINTJ", "31.SH"), "w", encoding="utf-8").write(
+    "FLINT.ELF init --name=r --src=/host/SRC\n"
+    "FLINT.ELF add /host/SRC\n"
+    "FLINT.ELF commit -m base\n"
+    "cat /host/FLINTJ/renamed.go > /host/SRC/calc.go\n"
+    "FLINT.ELF rename calc.X calc.Z\n"
+    "FLINT.ELF status\n"
+    "FLINT.ELF diff\n"
+    "FLINT.ELF commit -m rename\n"
+    "cat /host/FLINTJ/moved-calc.go > /host/SRC/calc.go\n"
+    "cat /host/FLINTJ/moved-util.go > /host/SRC/util.go\n"
+    "FLINT.ELF mv calc.Y util.go\n"
+    "FLINT.ELF status\n"
+    "FLINT.ELF commit -m move\n"
+    "FLINT.ELF log\n"
+    "FLINT.ELF checkout --stream=main --dir=/host/ROUT\n"
+    "echo M215B-DONE\n"
 )
 
 # ---- M101a (#2313): host flintd for the hermetic --net sync runs ------------
@@ -1633,7 +1696,7 @@ vgate_assert 02 serial-contains 'flint: init ok ws=w stream=main'
 vgate_assert 02 serial-contains 'flint: add files=100 new=245 modified=0 deleted=0 unchanged=0'
 vgate_assert 02 serial-contains 'flint: add files=100 new=0 modified=0 deleted=0 unchanged=245'
 vgate_assert 02 serial-contains 'flint: add files=100 new=0 modified=1 deleted=1 unchanged=243'
-vgate_assert 02 serial-contains 'flint: status ws=w stream=main atoms=244 staged=244 add=244 modify=0 delete=0 duplicates=0'
+vgate_assert 02 serial-contains 'flint: status ws=w stream=main atoms=244 staged=244 add=244 modify=0 delete=0 move=0 rename=0 duplicates=0'
 vgate_assert 02 share-contains FLINT/ws/w/WORKSPACE.json '"name":"w"'
 vgate_assert 02 serial-absent '9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60'
 vgate_assert 02 serial-absent '[EXC] parking:'
@@ -2862,6 +2925,10 @@ vgate_file script-30.txt <<'EOF'
 exec GOSH.ELF -c "source /host/FLINTJ/30.SH"
 EOF
 
+vgate_file script-31.txt <<'EOF'
+exec GOSH.ELF -c "source /host/FLINTJ/31.SH"
+EOF
+
 vgate_run 26 -- \
     --cvc-file '$RUN_DIR/hist-share' \
     --virtio-fs '$RUN_DIR/hist-share' \
@@ -3292,4 +3359,49 @@ out_dir = os.path.join(run, "noblob-share", "OUT")
 if os.path.exists(os.path.join(out_dir, "m.go")):
     sys.exit("body_missing refusal must not write partial files")
 print("run-30 body_missing refusal verified (no partial emit)")
+PY
+
+# ---- 31: M215b explicit rename/mv verbs and checkout round-trip ------------
+vgate_run 31 -- \
+    --cvc-file '$RUN_DIR/rename-share' \
+    --virtio-fs '$RUN_DIR/rename-share' \
+    --script '$RUN_DIR/script-31.txt' \
+    --script-expect 'M215B-DONE' \
+    --script-expect-tail 3 --timeout 180
+
+vgate_assert 31 serial-contains 'flint: rename ok calc.X calc.Z'
+vgate_assert 31 serial-contains 'staged=1 add=0 modify=0 delete=0 move=0 rename=1'
+vgate_assert 31 serial-contains 'flint: diff rename calc.go calc.Z'
+vgate_assert 31 serial-contains 'flint: mv ok calc.Y util.go'
+vgate_assert 31 serial-contains 'staged=1 add=0 modify=0 delete=0 move=1 rename=0'
+vgate_assert 31 serial-contains 'flint: change-op rename calc.go calc.Z'
+vgate_assert 31 serial-contains 'flint: change-op move util.go calc.Y'
+vgate_assert 31 serial-contains 'flint: checkout ok stream=main files=2'
+vgate_assert 31 serial-absent '[EXC] parking:'
+vgate_assert 31 python <<'PY'
+import os, sys
+run = os.environ["RUN_DIR"]
+share = os.path.join(run, "rename-share")
+want_calc = (
+    "package calc\n\n"
+    "func Z() int {\n"
+    "\treturn 1\n"
+    "}\n"
+)
+want_util = (
+    "package calc\n\n"
+    "func Y() int {\n"
+    "\treturn 2\n"
+    "}\n"
+)
+for rel, want in (("ROUT/calc.go", want_calc), ("ROUT/util.go", want_util)):
+    path = os.path.join(share, rel)
+    if not os.path.isfile(path):
+        sys.exit("missing checked-out " + rel)
+    if open(path, encoding="utf-8").read() != want:
+        sys.exit("checked-out " + rel + " is not byte-exact")
+out = open(os.path.join(run, "run-31.out"), errors="replace").read()
+if "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60" in out:
+    sys.exit("FAIL: signing seed hex reached run-31.out")
+print("run-31 rename/mv stage, render, commit, and checkout round-trip verified")
 PY

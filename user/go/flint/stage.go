@@ -13,67 +13,99 @@ import (
 //   - modify + modify -> modify (first old_hash -> last new_hash)
 //   - modify + delete -> delete (first old_hash)
 func FoldStageOps(existing []Op, incoming []Op, currentAtoms []StoredAtom) []Op {
-	byAtom := make(map[string]Op, len(existing)+len(incoming))
-	for _, op := range existing {
-		byAtom[op.AtomID] = op
+	byAtom := make(map[string]map[string]Op, len(existing)+len(incoming))
+	put := func(op Op) {
+		ops := byAtom[op.AtomID]
+		if ops == nil {
+			ops = map[string]Op{}
+			byAtom[op.AtomID] = ops
+		}
+		ops[op.Type] = op
 	}
+	for _, op := range existing {
+		put(op)
+	}
+
+	earliestOldHash := func(ops map[string]Op, fallback string) string {
+		for _, typ := range []string{"modify", "move", "rename", "delete"} {
+			if op, ok := ops[typ]; ok && op.OldHash != "" {
+				return op.OldHash
+			}
+		}
+		return fallback
+	}
+
+	for _, op := range incoming {
+		ops := byAtom[op.AtomID]
+		if ops == nil {
+			ops = map[string]Op{}
+			byAtom[op.AtomID] = ops
+		}
+
+		if op.Type == "delete" {
+			if _, wasAdd := ops["add"]; wasAdd {
+				delete(byAtom, op.AtomID)
+				continue
+			}
+			oldHash := earliestOldHash(ops, op.OldHash)
+			byAtom[op.AtomID] = map[string]Op{
+				"delete": {Type: "delete", AtomID: op.AtomID, OldHash: oldHash},
+			}
+			continue
+		}
+
+		if add, wasAdd := ops["add"]; wasAdd && op.Type != "add" {
+			switch op.Type {
+			case "modify":
+				add.NewHash = op.NewHash
+				add.NewSigHash = op.NewSigHash
+				if op.NewSpan != nil {
+					sp := *op.NewSpan
+					add.NewSpan = &sp
+				}
+			case "rename":
+				add.NewName = op.NewName
+			case "move":
+				add.NewSpan = op.NewSpan
+			}
+			ops["add"] = add
+			continue
+		}
+
+		if prev, same := ops[op.Type]; same {
+			switch op.Type {
+			case "modify":
+				if prev.OldHash != "" {
+					op.OldHash = prev.OldHash
+				}
+			case "move", "rename":
+				if prev.OldHash != "" {
+					op.OldHash = prev.OldHash
+				}
+			}
+		}
+		ops[op.Type] = op
+	}
+
 	spanByID := make(map[string]Span, len(currentAtoms))
 	for _, a := range currentAtoms {
 		spanByID[a.ID] = a.Span
 	}
-
-	for _, op := range incoming {
-		prev, hasPrev := byAtom[op.AtomID]
-		if !hasPrev {
-			byAtom[op.AtomID] = op
-			continue
-		}
-		switch prev.Type {
-		case "add":
-			switch op.Type {
-			case "modify":
-				prev.NewHash = op.NewHash
-				prev.NewSigHash = op.NewSigHash
-				if sp, ok := spanByID[op.AtomID]; ok {
-					spCopy := sp
-					prev.NewSpan = &spCopy
-				}
-				byAtom[op.AtomID] = prev
-			case "delete":
-				delete(byAtom, op.AtomID)
-			}
-		case "modify":
-			switch op.Type {
-			case "modify":
-				prev.NewHash = op.NewHash
-				prev.NewSigHash = op.NewSigHash
-				byAtom[op.AtomID] = prev
-			case "delete":
-				byAtom[op.AtomID] = Op{
-					Type:    "delete",
-					AtomID:  op.AtomID,
-					OldHash: prev.OldHash,
-				}
-			}
-		default:
-			byAtom[op.AtomID] = op
-		}
-	}
-
-	// Also refresh NewSpan on staged adds whose span shifted on an unchanged re-add.
-	for id, op := range byAtom {
-		if op.Type == "add" {
+	for id, ops := range byAtom {
+		if add, ok := ops["add"]; ok {
 			if sp, ok := spanByID[id]; ok {
 				spCopy := sp
-				op.NewSpan = &spCopy
-				byAtom[id] = op
+				add.NewSpan = &spCopy
+				ops["add"] = add
 			}
 		}
 	}
 
 	out := make([]Op, 0, len(byAtom))
-	for _, op := range byAtom {
-		out = append(out, op)
+	for _, ops := range byAtom {
+		for _, op := range ops {
+			out = append(out, op)
+		}
 	}
 	sortOps(out)
 	return out
@@ -125,7 +157,7 @@ func cmdStatus(fs FS, root string, args []string) error {
 		streamName = st.Name
 	}
 
-	var countAdd, countMod, countDel int
+	var countAdd, countMod, countDel, countMove, countRename int
 	for _, op := range stage {
 		switch op.Type {
 		case "add":
@@ -134,6 +166,10 @@ func cmdStatus(fs FS, root string, args []string) error {
 			countMod++
 		case "delete":
 			countDel++
+		case "move":
+			countMove++
+		case "rename":
+			countRename++
 		}
 	}
 
@@ -144,6 +180,8 @@ func cmdStatus(fs FS, root string, args []string) error {
 		" add=" + vi.Itoa64(int64(countAdd)) +
 		" modify=" + vi.Itoa64(int64(countMod)) +
 		" delete=" + vi.Itoa64(int64(countDel)) +
+		" move=" + vi.Itoa64(int64(countMove)) +
+		" rename=" + vi.Itoa64(int64(countRename)) +
 		" duplicates=" + vi.Itoa64(int64(duplicates)))
 
 	sortOps(stage)

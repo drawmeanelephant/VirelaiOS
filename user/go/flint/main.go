@@ -48,6 +48,10 @@ func run(args []string) int {
 		return runErr(cmdInit(activeFS, storeRoot, defaultUUIDGen, args[1:]))
 	case "add":
 		return runErr(cmdAdd(activeFS, storeRoot, defaultUUIDGen, args[1:]))
+	case "rename":
+		return runErr(cmdRename(activeFS, storeRoot, args[1:]))
+	case "mv":
+		return runErr(cmdMv(activeFS, storeRoot, args[1:]))
 	case "status":
 		return runErr(cmdStatus(activeFS, storeRoot, args[1:]))
 	case "diff":
