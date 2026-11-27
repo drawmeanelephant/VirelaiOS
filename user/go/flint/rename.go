@@ -336,6 +336,12 @@ func cmdMv(fs FS, root string, args []string) error {
 				return refuse("span_conflict", oldRel)
 			}
 		}
+	} else {
+		for _, a := range atoms {
+			if a.ID != old.ID && a.Span.File == oldRel {
+				return refuse("src_behind", oldRel)
+			}
+		}
 	}
 
 	for _, a := range atoms {

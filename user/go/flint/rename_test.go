@@ -513,3 +513,27 @@ func TestRenameMergeConflictsEndToEnd(t *testing.T) {
 		}
 	})
 }
+
+func TestMvRefusesDeletedSourceFileWithOtherAtoms(t *testing.T) {
+	h := newTestHarness(t)
+	writeRenameFixture(t, h)
+	utilWithY := `package calc
+
+func Y() int {
+	return 2
+}
+`
+	if err := h.fs.Remove("/host/SRCA/calc.go"); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.fs.WriteFileSafe("/host/SRCA/util.go", []byte(utilWithY)); err != nil {
+		t.Fatal(err)
+	}
+	rc, logs := h.runCmd("mv", "calc.Y", "util.go")
+	if rc != 1 || len(logs) != 1 || logs[0] != "flint: refuse src_behind calc.go" {
+		t.Fatalf("expected src_behind calc.go, got rc=%d logs=%v", rc, logs)
+	}
+	if h.fs.Exists(workspaceStagePath(h.root, "a")) {
+		t.Fatal("refused move must not write STAGE.jsonl")
+	}
+}
