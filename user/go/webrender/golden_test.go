@@ -358,6 +358,7 @@ func TestScriptedCorpusPages(t *testing.T) {
 		{"scripted-refused.html", []string{"named refusal row", "pending"}},
 		{"scripted-storm.html", []string{"op storm row", "script_budget_ops"}},
 		{"scripted-kill.html", []string{"mid-op kill row", "worker parks"}},
+		{"scripted-input.html", []string{"input row", "search box starts with the HTML value x"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.html, func(t *testing.T) {

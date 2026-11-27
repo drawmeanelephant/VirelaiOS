@@ -307,7 +307,7 @@ pub fn present_completed(owner: []const u8) virtio_gpu.CmdResult {
     return result;
 }
 
-/// The shim composite: paint the scene, then transfer+flush the scanout
+/// Shim composite: paint the scene, then transfer+flush the scanout
 /// (the G1 seam). When the scene is clean, nothing is flushed (pre-SB5
 /// behavior). The transfer/flush half runs `dc ivac` cache-maintenance asm
 /// — EL0-illegal in host test binaries — so the flush half keeps the
@@ -478,6 +478,34 @@ test "splash hold: composite refuses kernel presents while held" {
     // before paint_scene, so this is host-test safe with no device).
     try std.testing.expect(composite() == .ok);
     try std.testing.expect(da.presents == before);
+}
+
+test "composite_pending: dirty user damage pends; a hold or seat owner does not" {
+    // #3913: the kind-4 snapshot seam reads this predicate AFTER the
+    // shell drain. A dirty visible window is the one state the drain can
+    // still change, so the stream must wait for it; under the splash hold
+    // or a bound seat the kernel drain cannot paint, so waiting would only
+    // burn the bound and ship the same frame late.
+    arm();
+    const saved_hold = da.splash_hold;
+    const saved_owned = da.wm_owns_user_layer;
+    defer {
+        da.splash_hold = saved_hold;
+        da.wm_owns_user_layer = saved_owned;
+    }
+    da.splash_hold = false;
+    da.wm_owns_user_layer = false;
+    const id = switch (user_open(64, 48, 640, 400, 9)) {
+        .opened => |i| i,
+        else => return error.TestUnexpectedResult,
+    };
+    defer _ = user_close(id);
+    try std.testing.expect(composite_pending());
+    da.splash_hold = true;
+    try std.testing.expect(!composite_pending());
+    da.splash_hold = false;
+    da.wm_owns_user_layer = true;
+    try std.testing.expect(!composite_pending());
 }
 
 test "compositor: a bound WM keeps exclusive paint and present ownership" {

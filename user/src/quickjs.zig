@@ -69,6 +69,13 @@ const Session = struct {
     // unfired timer ids the drain waits out after the eval reply.
     rpc_mut: u32 = 0,
     rpc_timers: u32 = 0,
+    // M211d (#3913): `rpc_listeners` is the number of admitted input
+    // registrations — while it is nonzero the drain parks on `event.next`
+    // (which the parent may answer with an input dispatch or a due timer).
+    // `rpc_js` is the dispatch source scratch, allocated once per session
+    // so one event's JSON-escaped arguments never sit on the C stack.
+    rpc_listeners: u32 = 0,
+    rpc_js: []u8 = &.{},
     dom_ready: bool = false,
     dom_failure: [64:0]u8 = undefined,
 
@@ -385,6 +392,13 @@ const Session = struct {
         defer self.runtime.release(ans);
         self.rpc_out = out;
         self.rpc_ans = ans;
+        // One dispatch's `__virelai_input("<target>", "<value>")` source:
+        // both arguments are JSON-escaped (worst case six bytes per input
+        // byte) and the id/name bounds are the wire's own.
+        const js_max = qjs.domrpc.arg_max * 6 + qjs.domrpc.value_max * 6 + 128;
+        const js = try self.runtime.allocate(js_max);
+        defer self.runtime.release(js);
+        self.rpc_js = js;
         var len: usize = 0;
         if (ops_path) |name| {
             len = try rpcReadOpsFile(name, ops);
@@ -403,6 +417,11 @@ const Session = struct {
             if (line.len == 0) continue;
             try self.rpcOp(line, &greeted);
         }
+        // M211c/M211d: after every staged op, one drain waits out granted
+        // timers and — once a listener is registered — parks on the
+        // parent's `event.next` ask. Draining here, not inside each eval,
+        // keeps a multi-script page's later evals ahead of callbacks.
+        try self.rpcDrain();
     }
 
     fn rpcWrite(self: *Session, bytes: []const u8) !void {
@@ -449,10 +468,15 @@ const Session = struct {
     /// write ops; `setTimeout` grants through `timer.set` and stores the
     /// callback in `__timers`, which `__virelai_fire` pops by id when the
     /// drain hands it a due id — `setInterval`/`requestAnimationFrame`
-    /// stay named refusals.
+    /// stay named refusals. M211d (#3913): `addEventListener` is the one
+    /// admitted listener face — `listener.add` validates the target and
+    /// kind parent-side, and the stored callback is driven by
+    /// `__virelai_input` with `{type:"input", target:<node>}` while the
+    /// node's `value` getter keeps reading the live control state.
     const dom_prologue =
         \\var __domops = virelai.dom;
         \\var __timers = {};
+        \\var __listeners = {};
         \\var document = {};
         \\document.getElementById = function(id) {
         \\  var node = {};
@@ -470,6 +494,12 @@ const Session = struct {
         \\    return __domops("node.attr", sid, String(name));
         \\  };
         \\  node.setAttribute = function(name, v) { return __domops("node.setAttr", sid, String(name)); };
+        \\  node.addEventListener = function(kind, fn) {
+        \\    var k = String(kind);
+        \\    __domops("listener.add", sid, k);
+        \\    if (!__listeners[sid]) __listeners[sid] = {};
+        \\    __listeners[sid][k] = fn;
+        \\  };
         \\  return node;
         \\};
         \\Object.defineProperty(document, "title", {
@@ -498,6 +528,13 @@ const Session = struct {
         \\  var f = __timers[String(id)];
         \\  delete __timers[String(id)];
         \\  if (f) f();
+        \\};
+        \\var __virelai_input = function(target, value) {
+        \\  var t = String(target);
+        \\  var f = __listeners[t] ? __listeners[t].input : null;
+        \\  if (!f) return 0;
+        \\  f({ type: "input", target: document.getElementById(t) });
+        \\  return 1;
         \\};
         \\var fetch = function() { return __domops("net.fetch", "x"); };
         \\var XMLHttpRequest = fetch;
@@ -547,17 +584,28 @@ const Session = struct {
             // target answers null and mutates nothing.
             if (qjs.domrpc.isWrite(op)) self.rpc_mut += 1;
             if (std.mem.eql(u8, op, "timer.set")) self.rpc_timers += 1;
+            // M211d: a served registration arms the parked event drain.
+            if (std.mem.eql(u8, op, "listener.add")) self.rpc_listeners += 1;
         }
         return n;
     }
 
-    /// The request/answer round trip both hostDom and the timer drain
-    /// ride: emit one request line, poll the rendezvous until the
-    /// matching seq answer or a named bound. `timer.next` is the same
-    /// shape with the answer parked parent-side until an app-timer id
-    /// comes due — the delay_max/dom_wait contract keeps the parked ask
-    /// inside the wire's own patience.
+    /// The request/answer round trip both hostDom and the timer/event drain
+    /// ride: emit one request line, poll the rendezvous until the matching
+    /// seq answer or a named bound. `timer.next` is the same shape with
+    /// the answer parked parent-side until an app-timer id comes due —
+    /// the delay_max/dom_wait contract keeps the parked ask inside the
+    /// wire's own patience. M211d: an `event.next` ask parks with no
+    /// wall-clock patience and writes NOTHING while it waits. Parked idle
+    /// housekeeping belongs to the parent, whose acknowledged `waitParked`
+    /// state schedules the bounded idle marker and exempts that interval
+    /// from the active-work deadline; append-only worker receipts would
+    /// eventually consume the capped reply stream without proving progress.
     fn rpcAsk(self: *Session, op: []const u8, a: []const u8, b: []const u8, out: []u8) anyerror!usize {
+        return self.rpcAskMode(op, a, b, out, false);
+    }
+
+    fn rpcAskMode(self: *Session, op: []const u8, a: []const u8, b: []const u8, out: []u8, parked: bool) anyerror!usize {
         const clock = self.runtime.control.clock;
         self.rpc_seq += 1;
         var line: [qjs.domrpc.reply_max]u8 = undefined;
@@ -570,7 +618,7 @@ const Session = struct {
             // origin by the iteration's whole span so only the request's
             // emit and the script's own work count against the budget.
             const iter = clock.counter(clock.context);
-            if (iter -% wait_start >= clock.frequency * dom_wait_s)
+            if (!parked and iter -% wait_start >= clock.frequency * dom_wait_s)
                 return self.domFail("dom_op_wire");
             if (!self.runtime.control.poll())
                 return self.domFail(@errorName(self.runtime.control.failure orelse error.Cancelled));
@@ -611,6 +659,7 @@ const Session = struct {
         if (result.context_reset) {
             self.dom_ready = false;
             self.rpc_timers = 0; // the context the callbacks lived in is gone
+            self.rpc_listeners = 0;
         }
         if (sdk.stackHighWater() > qjs.limits.stack) return error.StackLimit;
         if (result.failure) |failure| {
@@ -629,28 +678,40 @@ const Session = struct {
         @memcpy(buf[used..][0..tail.len], tail);
         used += tail.len;
         try self.rpcWrite(buf[0..used]);
-        // M211c: a script whose timers outlive its eval waits them out —
-        // each fire is its own bounded eval in the same context.
-        try self.rpcDrainTimers();
     }
 
-    /// M211c (#3869): `setTimeout` defers a callback behind the parent's
-    /// app timer. Each granted id counts into `rpc_timers`; after the
-    /// eval reply the worker asks `timer.next` and waits — the answer
-    /// lands only when a timer comes due — then runs the callback as its
-    /// own bounded eval and receipts it as a `fire` line on the reply
-    /// stream (a marker the parent prints, not a staged op). A null
-    /// answer, a refusal or a context reset ends the drain; the parent's
-    /// kill deadline bounds the whole stay either way.
-    fn rpcDrainTimers(self: *Session) !void {
-        var id_buf: [qjs.domrpc.value_max]u8 = undefined;
-        while (self.rpc_timers > 0) {
-            const n = self.rpcAsk("timer.next", "", "", &id_buf) catch break;
+    /// M211c (#3869) + M211d (#3913): the post-eval drain. A worker with
+    /// a registration parks on `event.next` and the parent arbitrates
+    /// between the next input dispatch and a due timer id over that one
+    /// ask; with only timers pending it asks `timer.next` as before. Each
+    /// dispatch/fire is its own bounded eval in the same context, and a
+    /// null answer (nothing could ever fire), a refusal or a context
+    /// reset ends the drain.
+    fn rpcDrain(self: *Session) !void {
+        // One event payload carries an id (arg_max) and its live value,
+        // both JSON-framed — the answer-line bound, not value_max.
+        var buf: [qjs.domrpc.reply_max]u8 = undefined;
+        while (true) {
+            if (self.rpc_listeners > 0) {
+                const n = self.rpcAskMode("event.next", "", "", &buf, true) catch break;
+                if (n == qjs.domrpc.dom_null) break;
+                const ev = qjs.domrpc.parseEvent(buf[0..n]) catch break;
+                if (std.mem.eql(u8, ev.kind, "timer")) {
+                    const id = ev.id orelse break;
+                    if (self.rpc_timers > 0) self.rpc_timers -= 1;
+                    try self.rpcFire(id);
+                } else {
+                    try self.rpcDispatch(ev.target.?, ev.value.?);
+                }
+                continue;
+            }
+            if (self.rpc_timers == 0) break;
+            const n = self.rpcAsk("timer.next", "", "", &buf) catch break;
             if (n == qjs.domrpc.dom_null) {
                 self.rpc_timers = 0;
                 break;
             }
-            const id = id_buf[0..n];
+            const id = buf[0..n];
             var digits = id.len > 0 and id.len <= 8;
             for (id) |c| {
                 if (c < '0' or c > '9') digits = false;
@@ -676,6 +737,7 @@ const Session = struct {
         if (result.context_reset) {
             self.dom_ready = false;
             self.rpc_timers = 0;
+            self.rpc_listeners = 0;
         }
         var buf: [384]u8 = undefined;
         const line = if (result.failure) |failure| blk: {
@@ -683,6 +745,63 @@ const Session = struct {
             break :blk try std.fmt.bufPrint(&buf, "{{\"op\":\"fire\",\"a\":\"{s}\",\"ok\":false,\"error\":\"{s}\"}}\n", .{ id, word });
         } else try std.fmt.bufPrint(&buf, "{{\"op\":\"fire\",\"a\":\"{s}\",\"ok\":true,\"ops\":{d}}}\n", .{ id, self.rpc_ops });
         try self.rpcWrite(line);
+    }
+
+    /// M211d (#3913): one input listener's bounded eval —
+    /// `__virelai_input(<target>, <value>)` looks the callback up in the
+    /// prologue's table and calls it with `{type:"input", target:<node>}`;
+    /// the node's `value` getter reads the live control state over the
+    /// wire. The call starts a fresh per-dispatch op/mutation window and
+    /// receipts as an `input` line, whether it succeeded or refused
+    /// `script_budget_ops`/`script_budget_mut`; a refused dispatch never
+    /// kills the parked page.
+    fn rpcDispatch(self: *Session, target: []const u8, value: []const u8) !void {
+        var w: usize = 0;
+        const head = "__virelai_input(";
+        @memcpy(self.rpc_js[0..head.len], head);
+        w = head.len;
+        w += jsString(self.rpc_js[w..], target);
+        self.rpc_js[w] = ',';
+        w += 1;
+        w += jsString(self.rpc_js[w..], value);
+        self.rpc_js[w] = ')';
+        w += 1;
+        self.rpc_out_len = 0;
+        self.rpc_clipped = false;
+        self.rpc_ops = 0;
+        self.rpc_mut = 0;
+        // The serial-facing label is bounded: an id longer than this is
+        // still resolved in full, it just does not bloat the receipt.
+        const label = target[0..@min(target.len, 64)];
+        const result = self.runtime.eval(self.rpc_js[0..w], "dom-input", self.rpcSink(), false) catch |err| {
+            // A refused eval is still this dispatch's receipt; the worker
+            // keeps the page and its remaining registrations alive.
+            return self.rpcReceipt(label, false, @errorName(err), 0);
+        };
+        if (result.context_reset) {
+            self.dom_ready = false;
+            self.rpc_timers = 0;
+            self.rpc_listeners = 0;
+        }
+        if (result.failure) |failure| {
+            const word: []const u8 = if (failure == error.EvaluationDeadline or failure == error.WorkLimit) "script_budget_time" else @errorName(failure);
+            return self.rpcReceipt(label, false, word, 0);
+        }
+        return self.rpcReceipt(label, true, "", self.rpc_ops);
+    }
+
+    /// One dispatch receipt: `{"op":"input","a":"<id>","ok":true,"ops":N}`
+    /// or its refusal twin. The id is JSON-escaped like every wire string.
+    fn rpcReceipt(self: *Session, target: []const u8, ok: bool, word: []const u8, ops: u32) !void {
+        var line: [768]u8 = undefined;
+        var w = (std.fmt.bufPrint(&line, "{{\"op\":\"input\",\"a\":\"", .{}) catch unreachable).len;
+        w += qjs.domrpc.escape(line[w..], target);
+        const tail = if (ok)
+            std.fmt.bufPrint(line[w..], "\",\"ok\":true,\"ops\":{d}}}\n", .{ops}) catch unreachable
+        else
+            std.fmt.bufPrint(line[w..], "\",\"ok\":false,\"error\":\"{s}\"}}\n", .{word}) catch unreachable;
+        w += tail.len;
+        try self.rpcWrite(line[0..w]);
     }
 
     fn rpcCapture(context: *anyopaque, bytes: []const u8) anyerror!usize {
@@ -698,6 +817,17 @@ const Session = struct {
         return .{ .context = self, .write = rpcCapture, .diagnostic = diagnostic };
     }
 };
+
+/// Writes `s` as a quoted JSON string into `dst` — also a valid JS string
+/// literal, which is how a dispatch's target/value reach the prologue.
+/// The caller sizes `dst` from the wire bounds; a short buffer is a caller
+/// bug and traps inside `escape` rather than emitting a clipped literal.
+fn jsString(dst: []u8, s: []const u8) usize {
+    dst[0] = '"';
+    const n = qjs.domrpc.escape(dst[1..], s);
+    dst[1 + n] = '"';
+    return n + 2;
+}
 
 /// The kernel stream endpoint index fd-0 binds (file_table.zig stream_base).
 const dom_rpc_stdin: u64 = 0x100;

@@ -259,9 +259,17 @@ func (a *app) controlKey(ev vi.Event) bool {
 	default:
 		switch c.kind {
 		case "text", "search":
+			before := c.value
 			if a.controlEdit.key(ev.Arg0, ev.Arg1, ev.Flags) {
 				c.value = a.controlEdit.text
 				c.changed = true
+				// M211d: mirror the live edit into the DOM's value
+				// attribute (what `e.target.value` reads and what a
+				// reflow re-initialises from) and dispatch `input` when
+				// the text actually changed.
+				if c.value != before {
+					a.noteControlInput(c)
+				}
 			}
 		case "checkbox":
 			if ev.Arg0 == 0x2c {

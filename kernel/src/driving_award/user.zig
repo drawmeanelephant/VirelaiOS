@@ -281,6 +281,16 @@ pub fn user_fill(id: u8, x: u32, y: u32, w: u32, h: u32, rgb: u32) bool {
 pub fn user_present(id: u8) bool {
     const win = find_user_window(id) orelse return false;
     win.dirty = true;
+    // A present publishes the WHOLE back-buffer, so it supersedes any
+    // rect-granular damage the fills since the last composite recorded: the
+    // next composite must blit the full window, not just that union rect.
+    // Without this the shim can repaint a narrow rect over a surface the app
+    // has since rewritten everywhere — the observed shape was a cursor
+    // overlay left inside the page's title band after a click (live-web boot
+    // 02), because the post-click render's whole-surface pixels never
+    // reached the scanout. The rect stays for the fill-only path the SB4
+    // gate pins (`last=8,8,108,68`), where no present follows the fills.
+    win.damaged = false;
     // #3731: a seatless boot's first user present ends the splash hold —
     // the app's own frame is the honest successor content, the same
     // one-frame handoff shape as the seat bind (splash -> app frame, zero
