@@ -224,6 +224,33 @@ single-writer semantics, preserved. No leases, no locking protocol.
   store is the client's job: `flint verify --all --store <dir>`.)
 - No UUIDv7 minting — stream IDs and Change IDs are client-generated.
 
+### 3.5 In-guest daemon discovery (`FLINTD.ELF --advertise`)
+
+The in-guest daemon serves the same FLINT-SYNC/1 protocol but takes the
+guest CLI: `--store` (default `/host/FLINT`), `--port` (default 4748),
+`--advertise=<NAME>`, `--auth-key=<file>` and `--allow-author=<file>`. It
+has no `init`/`serve` verb; the store must already exist.
+
+`--advertise NAME` publishes `NAME._flint._tcp.local` through the shared
+bounded mDNS responder: PTR + SRV + TXT (`txtvers=1`,
+`proto=FLINT-SYNC/1`) answers, the served port in SRV, the guest's hub
+IPv4 as the A record and its link-local IPv6 as AAAA. The lifecycle is
+the HTTPD one: a three-announce startup burst (~1 s apart), a bounded
+post-burst query responder on the same :5353 bind, a TTL/2 re-announce
+(TTL 120 s) and a TTL=0 goodbye on clean exit. HTTPD and FLINTD stage
+their lifecycles, so a guest carries at most one :5353 owner at a time
+and no service admission grows.
+
+Discovery is the client's: `GONETSTAT discover _flint._tcp` issues a real
+mDNS query and prints the resolved `host`, `port` and `addr`; the FLINT
+client then dials that endpoint. A hardcoded dial is not discovery.
+
+The daemon's exec must carry `file` (store, secret and allowlist reads),
+`net` (:4748 listen/dial) and `net-mdns` (:5353) grants. Refusals name
+themselves on the serial: `advertise bad name`, `advertise needs net`,
+`advertise needs bridged`, `advertise needs net-mdns` and
+`advertise bind failed` (a second :5353 owner).
+
 ## 4. Client deltas (defined here, landed in flint-client)
 
 The client gains remote verbs under its own milestone (cards below).

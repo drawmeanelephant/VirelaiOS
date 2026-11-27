@@ -50,8 +50,9 @@
 # 'vma-legs-done') runs JA.SH — flint init, `store publish` (the new
 # --caps flag signing an install-time ask), `flint push` to a HOST flintd
 # through run-a's own --net-tcp-respond relay (10.0.0.2:4853). VM B then
-# proves the peer's channel is usable end to end: a second client waits
-# on the 'flint: push ' receipt on A's serial and types `exec -u0
+# proves the peer's channel is usable end to end: a later client waits
+# on the 'VMA-FA-DONE' marker on A's serial (after the FLINTD phases and
+# A's verify) and types `exec -u0
 # GOSH.ELF -c "source /host/JB.SH"` — gosh's sequential children, run as
 # the admin principal so `store consent` can land the row:
 #   * `store install main --remote=10.0.0.2:4853 --channel=http://
@@ -64,15 +65,24 @@
 #     grant propose` stands the signed ask — then `store consent` writes
 #     the hash-bound row through slot 89 and HUBAPP.ELF prints its
 #     marker.
-# The stream's signed Changes are the trust plane (clone/verify — FLINT
-# sync between guests is the index's explicit non-goal, so the canonical
-# remote stays the host flintd both runners reach through their own
-# relays); every payload byte that matters — release.go and the ELF —
-# arrives guest-to-guest. Run a ends on 'httpd: request
-# /DROP/main/HUBAPP.ELF' — a marker only B's install can produce — plus
-# a hold tail so B's consent+run finishes while both serials still
-# stream; the python leg polls B's serial for JB-DONE and pins
-# GRANTS.TXT / APPS.TXT / STORE.TXT host-side.
+# M214c (#3920): the direct guest-to-guest FLINT legs, staged so the
+# existing journey survives. vm-a's stage 3 now runs a lifecycle script:
+# a1/a2 + the signed drop and the host push (unchanged), then four
+# bounded FLINTD.ELF phases on :5353 — vm-b genuinely discovers the
+# advertised `_flint._tcp` instance after its burst, clones/pulls, and
+# pushes signed history straight back to vm-a (no host daemon, no file
+# copy). Each phase is gated by its own B client on an A-serial marker,
+# so no sleep races the store. The refusals are the wire's own words:
+# stale_head (vm-a advanced the same fork after B's push), author_not_allowed
+# (a fresh fork pushed while vm-a's allowlist is vm-a only), auth_required
+# (the same FLINT.ELF client run as uid_agent, where no flint-remote row
+# binds, is challenged and refuses client-side). FLINTD exits on the same
+# 30 s idle budget GOHTTPD has, so
+# only one :5353 owner exists at a time; when the last phase is done the
+# GOHTTPD restart loop retakes the port and the M206c install/consent/run
+# lane proceeds unchanged. The host flintd stays the STORE remote: vm-a
+# pushes `main` to it after every publish, so vm-b's local `main` is a
+# prefix of the host's and the existing install fast-forwards.
 #
 # HOST PREREQS (the setup hook fails honestly when absent):
 #   bash tools/go/build-gohttpd.sh -> .build/go/GOHTTPD.ELF
@@ -80,13 +90,14 @@
 #   bash tools/go/build-gofetch.sh -> .build/go/GOFETCH.ELF
 #   bash tools/go/build-store.sh   -> .build/go/STORE.ELF
 #   bash tools/go/build-flint.sh   -> .build/go/FLINT.ELF
+#   bash tools/go/build-flintd.sh  -> .build/go/FLINTD.ELF
 #   bash tools/go/build-gosh.sh    -> .build/go/GOSH.ELF
 #   ../flint-server checkout (or FLINT_SERVER_DIR=...): hubd serves the
 #   release stream on 127.0.0.1:4853 (this spec's own lane) — the M181
 #   trust shape: stream history from the canonical remote, payload bytes
 #   from the untrusted channel.
 
-vgate_name live-net-hub "M206b #3814 + M206c #3815: two concurrent VMs on one --net-hub — ARP+ping both ways; vm-b browses vm-a's GOHTTPD _http._tcp over mDNS and fetches /healthz; then vm-a publishes+serves a signed release and vm-b installs it over the hub (tamper refuses elf_mismatch), consents, and runs it; K=3"
+vgate_name live-net-hub "M206b #3814 + M206c #3815 + M214c #3920: two concurrent VMs on one --net-hub — ARP+ping both ways; vm-b browses vm-a's GOHTTPD _http._tcp over mDNS and fetches /healthz; vm-a advertises _flint._tcp and vm-b discovers, clones/pulls/pushes signed history directly guest-to-guest (literal stale_head/author_not_allowed/auth_required); then vm-a publishes+serves a signed release and vm-b installs it over the hub (tamper refuses elf_mismatch), consents, and runs it; K=3"
 vgate_share seed
 vgate_runner_flags -Xswiftc -DSPIKE
 vgate_repeat 3 BOOTS
@@ -329,8 +340,16 @@ shutil.copy(src, os.path.join(share, "GOHTTPD.ELF"))
 # measured, so A's seat stays off too.
 AUTH_KEY_HEX = "ab" * 32
 GUEST_KEY = "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
+# M214c (#3920): vm-b's own signer is RFC 8032 TEST 2. It can author its
+# own Changes (that is what a direct guest-to-guest push means) while
+# still being unable to forge vm-a's release: vm-a's TRUSTED.TXT pins
+# both keys, the wire secret stays vm-a's, and each side's verify still
+# walks the raw publisher signature.
+BGUEST_SEED = "4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb"
+BGUEST_KEY = "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c"
 for name, how in (("STORE.ELF", "build-store.sh"),
                   ("FLINT.ELF", "build-flint.sh"),
+                  ("FLINTD.ELF", "build-flintd.sh"),
                   ("GOSH.ELF", "build-gosh.sh")):
     src = os.path.join(".build", "go", name)
     if not os.path.isfile(src):
@@ -385,31 +404,80 @@ open(os.path.join(share, "OWNERS.TXT"), "w").write(
 open(os.path.join(share, "SETTINGS.TXT"), "w").write("#v2\nwm=none\n")
 os.makedirs(os.path.join(share, "WS"), exist_ok=True)
 open(os.path.join(share, "WS", "NOTE.TXT"), "w").write("m206c publisher workspace\n")
-# JA.SH: the M138d retry idiom ('X || sleep 1 ; X' — gosh sleep is
-# mis-scaled ~100:1, so it only pays off as failure-path backoff against
-# the virtiofs exec-lookup race; on the happy path each verb reruns
-# idempotently). Iteration 1 lands FRESH + 'flint: push ok changes=1';
-# iterations 2+ take EXISTS + 'push up to date' — client-2 waits only on
-# the 'flint: push ' prefix both print.
-# The trailing while-loop is load-bearing, not decoration: GOHTTPD's
-# AcceptConn is a bounded 30 s wait (vi.DefaultRecvBudgetNs) — an idle
-# listener lets it expire and the daemon exits cleanly, observed live as
-# 'httpd: advertise goodbye sent' + 'httpd: bye' mid-run, after which
-# B's :8080 fetches die on a dead port ('store: refuse channel_missing'
-# — the failure this card's first run named a hub wedge and was not:
-# injected probes proved delivery both ways while :8080 stayed silent).
-# Card b never noticed because its fetch window is seconds; the publish
-# lane is minutes. The loop keeps SOME listener bound for the whole
-# install window: each instance serves >=30 s idle, exits, and the next
-# binds (a bind failure against the still-live stage-1 listener just
-# retries — the old one's own expiry frees :8080 inside 30 s). gosh's
-# while caps at 256 iterations — hours of coverage; the gate tears the
-# VM down first.
+# M214c (#3920) — the source atoms the sync history carries. a1/a2 are
+# ordinary workspace files; WS2/x.go is the change vm-a authors on the
+# fork stream vm-b pushes (the stale_head leg). One Go decl per file: the
+# FLINT parser keys Atoms by (file, kind, name).
+for rel, body in (
+        ("WS/a1.go", "package demo\n\nfunc A1() string { return \"a1\" }\n"),
+        ("WS/a2.go", "package demo\n\nfunc A2() string { return \"a2\" }\n"),
+        ("WS2/x.go", "package demo\n\nfunc LineA() string { return \"line-a\" }\n")):
+    p = os.path.join(share, rel)
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    open(p, "w").write(body)
+# The FLINT store trust anchor + wire secrets and author allowlists.
+os.makedirs(os.path.join(share, "FLINT"), exist_ok=True)
+open(os.path.join(share, "FLINT", "TRUSTED.TXT"), "w").write(
+    "#v1\nkey=" + GUEST_KEY + " name=hub-a\nkey=" + BGUEST_KEY + " name=hub-b\n")
+open(os.path.join(share, "AUTH.key"), "w").write(AUTH_KEY_HEX + "\n")
+open(os.path.join(share, "ALLOW-AB.TXT"), "w").write(
+    GUEST_KEY + "\n" + BGUEST_KEY + "\n")
+open(os.path.join(share, "ALLOW-A.TXT"), "w").write(GUEST_KEY + "\n")
+# Per-iteration token. The shares (and vm-b's store) outlive vgate_repeat's
+# iterations, but fork/workspace names must be fresh each boot. Both
+# guests start at "a" and rotate once per iteration, so the names below
+# cannot collide with the previous iteration's streams. `main` itself is
+# never rewritten after the first publish: it stays byte-identical to the
+# host flintd's copy, which is what lets the existing install lane
+# fast-forward instead of colliding on a persistent local stream.
+open(os.path.join(share, "SEQ"), "w").write("a\n")
+# FA.SH: the M214c staged lifecycle. One GOSH, sequential children (the
+# live-dev-loop-proven shape): a1/a2 + the signed drop and host push on
+# stream `main`, then FOUR bounded FLINTD phases. FLINTD's AcceptConn is
+# the same 30 s idle budget GOHTTPD has, so each phase exits on its own
+# after vm-b's last connection and the next command runs — one :5353
+# owner at a time, no second responder, no added admission.
+#   phase 1  auth + allowlist A,B — vm-b discovers/clones/pulls and pushes
+#            its `l<N>` fork (accepted: the signed change lands in A).
+#   after 1  A advances `l<N>` with its own signed Change.
+#   phase 2  auth + allowlist A,B — vm-b's stale push on `l<N>` refuses
+#            stale_head, then its `e<N>` push is accepted.
+#   phase 3  auth + allowlist A only — vm-b's `d<N>` push refuses
+#            author_not_allowed.
+#   phase 4  auth + allowlist A,B — the same client as uid_agent (no
+#            flint-remote row binds) refuses auth_required.
+# Only then does the GOHTTPD restart loop take :5353 for the store lane.
+# JA-DONE stays the first-phase receipt the older asserts name.
 open(os.path.join(share, "JA.SH"), "w").write(
-    "FLINT.ELF init --name=hubws --src=/host/WS && echo JA-INIT-FRESH || echo JA-INIT-EXISTS\n"
+    "set N=$(cat /host/SEQ)\n"
+    "if [ \"$N\" = \"a\" ]; then echo b > /host/SEQ; fi\n"
+    "if [ \"$N\" = \"b\" ]; then echo c > /host/SEQ; fi\n"
+    "if [ \"$N\" = \"c\" ]; then echo d > /host/SEQ; fi\n"
+    "FLINT.ELF init --name=hubws --src=/host/WS || echo A-INIT-EXISTS\n"
+    "FLINT.ELF add /host/WS/a1.go || true\n"
+    "FLINT.ELF commit --ws=hubws -m \"a1-$N\" || echo A-A1-UP-TO-DATE\n"
+    "FLINT.ELF add /host/WS/a2.go || true\n"
+    "FLINT.ELF commit --ws=hubws -m \"a2-$N\" || echo A-A2-UP-TO-DATE\n"
     "STORE.ELF publish HUBAPP /host/HUBAPP.ELF --src=/host/WS --version=1.0.0 --stream=main --caps=file,memory,process,debug,net || sleep 1 ; STORE.ELF publish HUBAPP /host/HUBAPP.ELF --src=/host/WS --version=1.0.0 --stream=main --caps=file,memory,process,debug,net\n"
     "FLINT.ELF push --remote=10.0.0.2:4853 --stream=main || sleep 1 ; FLINT.ELF push --remote=10.0.0.2:4853 --stream=main\n"
     "echo JA-DONE\n"
+    "echo VMA-FLINTD1\n"
+    "FLINTD.ELF --advertise hubflint --auth-key=/host/AUTH.key --allow-author=/host/ALLOW-AB.TXT\n"
+    "echo VMA-FLINTD1-DONE\n"
+    "FLINT.ELF init --name=lws$N --src=/host/WS2 --stream=l$N || echo A-LWS-EXISTS\n"
+    "FLINT.ELF add /host/WS2/x.go || true\n"
+    "FLINT.ELF commit --ws=lws$N -m \"line-$N\" || echo A-LINE-UP-TO-DATE\n"
+    "echo VMA-FLINTD2\n"
+    "FLINTD.ELF --advertise hubflint --auth-key=/host/AUTH.key --allow-author=/host/ALLOW-AB.TXT\n"
+    "echo VMA-FLINTD2-DONE\n"
+    "echo VMA-FLINTD3\n"
+    "FLINTD.ELF --advertise hubflint --auth-key=/host/AUTH.key --allow-author=/host/ALLOW-A.TXT\n"
+    "echo VMA-FLINTD3-DONE\n"
+    "echo VMA-FLINTD4\n"
+    "FLINTD.ELF --advertise hubflint --auth-key=/host/AUTH.key --allow-author=/host/ALLOW-AB.TXT\n"
+    "echo VMA-FLINTD4-DONE\n"
+    "FLINT.ELF verify --all\n"
+    "echo VMA-FA-DONE\n"
     "while true; do GOHTTPD.ELF ; done\n")
 
 # vm-b's share: the browse + fetch verbs; wm=none keeps the seat's EL0
@@ -423,27 +491,68 @@ for name, how in (("GONETSTAT.ELF", "build-netdiag.sh"),
                  "bash tools/go/" + how)
     shutil.copy(src, os.path.join(bshare, name))
 open(os.path.join(bshare, "SETTINGS.TXT"), "w").write("#v2\nwm=none\n")
+# The browse leg lives in a script, not one -c chain: gosh caps a chain at
+# four commands. One line per bounded step keeps each chain inside the cap
+# and still orders discover -> fetch -> marker. A retry around discover is
+# NOT safe here: each bounded discover window is seconds long, and vm-a's
+# HTTPD exits 30 s after it starts accepting, so a second discover pushed
+# the fetch past that window (observed: `fetch: connect failed EINVAL`
+# after the HTTPD's `bye`). The committed single-discover timing is the
+# one inside the window.
+open(os.path.join(bshare, "BROWSE.SH"), "w").write(
+    "GONETSTAT.ELF discover _http._tcp\n"
+    "GOFETCH.ELF http://10.0.0.16:8080/healthz\n"
+    "echo vmb-browse-fetch-done\n")
 
 # M206c — vm-b's consumer side: STORE/FLINT/GOSH for the install chain,
-# OWNERS.TXT making FLINT.ELF/STORE.ELF uid_system-owned (app-bound
-# secrets are invisible without it), a SECRETS.TXT carrying ONLY
-# flint-remote at both uids (NO agent-sign: vm-b verifies and installs
-# but cannot sign — the live-dev-loop trust split), a keyring pinning
-# only vm-a's public key, an enforce-mode GRANTS.TXT the consent row
-# lands in, and JB.SH — the install script the -u0 gosh sources:
+# OWNERS.TXT naming the two system images, a SECRETS.TXT carrying
+# flint-remote plus vm-b's own agent-sign seed at uid_user (uid-scoped:
+# see the note at the write below for why app-binding cannot bind on this
+# launcher), a keyring pinning only vm-a's public key, an enforce-mode
+# GRANTS.TXT the consent row lands in, and JB.SH — the install script the
+# -u0 gosh sources:
 # tampered drop refuses elf_mismatch first (bare line, pinned by count),
 # the honest drop verifies + installs + stands the signed ask, consent
 # writes the row, the app runs.
 for name in ("STORE.ELF", "FLINT.ELF", "GOSH.ELF"):
     shutil.copy(os.path.join(".build", "go", name), os.path.join(bshare, name))
+# M214c (#3920): vm-b authors its own signed Changes now, so it carries
+# its OWN RFC 8032 TEST 2 agent-sign seed (never vm-a's), still bound to
+# FLINT.ELF only. The auth phase runs the SAME binary under uid_agent
+# (2000), where no `flint-remote` row binds: it reads no wire secret and
+# the client refuses auth_required when the daemon challenges. A renamed
+# copy of FLINT.ELF (FLINTU) cannot stand in for that — an unknown image
+# name lands on the ambient floor, which denies `file` at exec, so the
+# client never runs (observed: `refused:file_denied name=FLINTU.ELF`).
 open(os.path.join(bshare, "OWNERS.TXT"), "w").write(
     "#v1\nFLINT.ELF\t644\t0\t-\nSTORE.ELF\t644\t0\t-\n")
+# M214c (#3920): vm-b's rows are UID-scoped, not app-bound. This launcher
+# boots WITHOUT the queue-5 virtio-fs probe (`vf: probe ...` is absent from
+# vm-b's serial, `cvspike: init failed`), and `OWNERS.TXT` is loaded only on
+# that arming path — so on vm-b the metadata table never carries the
+# uid_system rows `trust.system_owned_key` needs and an app-bound row stays
+# invisible to every reader (observed: `flint: debug secretlist=0/0` on
+# vm-b against `2/216` on vm-a, and the client refused `auth_required` on
+# every verb). uid scope is the binding this boot can enforce: uid_user
+# (1000) owns both rows and no other principal reads them.
 open(os.path.join(bshare, "SECRETS.TXT"), "w").write(
-    "#v1\nflint-remote\t1000\t" + AUTH_KEY_HEX + "\tFLINT.ELF,STORE.ELF\n"
-    "flint-remote\t0\t" + AUTH_KEY_HEX + "\tFLINT.ELF,STORE.ELF\n")
+    "#v1\nflint-remote\t1000\t" + AUTH_KEY_HEX + "\n"
+    "agent-sign\t1000\t" + BGUEST_SEED + "\n")
+# vm-b's source atoms for the streams it forks/pushes. One file per
+# phase so an add stages exactly the intended Change.
+for rel, body in (
+        ("BWSL/a.go", "package demo\n\nfunc LineB1() string { return \"line-b1\" }\n"),
+        ("BWSL/b.go", "package demo\n\nfunc LineB2() string { return \"line-b2\" }\n"),
+        ("BWSE/a.go", "package demo\n\nfunc EdgeB() string { return \"edge-b\" }\n"),
+        ("BWSD/a.go", "package demo\n\nfunc DenyB() string { return \"deny-b\" }\n")):
+    p = os.path.join(bshare, rel)
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    open(p, "w").write(body)
+open(os.path.join(bshare, "SEQ"), "w").write("a\n")
 os.makedirs(os.path.join(bshare, "FLINT"), exist_ok=True)
 open(os.path.join(bshare, "FLINT", "TRUSTED.TXT"), "w").write(
-    "#v1\nkey=" + GUEST_KEY + " name=storelan\n")
+    "#v1\nkey=" + GUEST_KEY + " name=storelan\n"
+    "key=" + BGUEST_KEY + " name=m214c-b\n")
 open(os.path.join(bshare, "GRANTS.TXT"), "w").write("#v1 mode=enforce\n")
 # The tampered leg is a BARE line: its expected outcome IS the refusal, so
 # the `X || sleep 1 ; X` retry idiom (correct on every happy-path verb
@@ -463,6 +572,77 @@ open(os.path.join(bshare, "JB2.SH"), "w").write(
     "STORE.ELF consent HUBAPP || STORE.ELF consent HUBAPP\n"
     "HUBAPP.ELF || sleep 1 ; HUBAPP.ELF\n"
     "echo JB2-DONE\n")
+
+# M214c (#3920) — vm-b's direct-sync legs, one bounded script per FLINTD
+# phase. Each is sourced by a monitor `GOSH.ELF -c` (foreground, so the
+# console bridge stays busy until the script's marker; the next phase's
+# client queues behind it with --retry-busy). N is the per-iteration
+# token both shares rotate; stream names `l$N`/`e$N`/`d$N` are therefore
+# fresh even though vm-b's store survives vgate_repeat's iterations.
+#
+# F1: discover AFTER vm-a's announce burst (the client is gated on
+# 'flintd: advertise burst done'), then clone/pull `main` and push the
+# `l<N>` fork the stale leg advances later. `flint log` is the raw-history
+# receipt on B; verify --all re-walks every signature against TRUSTED.
+open(os.path.join(bshare, "F1.SH"), "w").write(
+    "set N=$(cat /host/SEQ)\n"
+    "echo $N > /host/CUR\n"
+    "if [ \"$N\" = \"a\" ]; then echo b > /host/SEQ; fi\n"
+    "if [ \"$N\" = \"b\" ]; then echo c > /host/SEQ; fi\n"
+    "if [ \"$N\" = \"c\" ]; then echo d > /host/SEQ; fi\n"
+    "GONETSTAT.ELF discover _flint._tcp\n"
+    "FLINT.ELF clone 10.0.0.16:4748 main || sleep 1 ; FLINT.ELF clone 10.0.0.16:4748 main\n"
+    "FLINT.ELF pull --stream=main || sleep 1 ; FLINT.ELF pull --stream=main\n"
+    "FLINT.ELF log --stream=main\n"
+    "FLINT.ELF fork main l$N\n"
+    "FLINT.ELF init --name=bl$N --src=/host/BWSL --stream=l$N\n"
+    "FLINT.ELF add /host/BWSL/a.go\n"
+    "FLINT.ELF commit --ws=bl$N -m \"b-line-1-$N\"\n"
+    "FLINT.ELF push --remote=10.0.0.16:4748 --stream=l$N || sleep 1 ; FLINT.ELF push --remote=10.0.0.16:4748 --stream=l$N\n"
+    "FLINT.ELF verify --all\n"
+    "echo VMB-F1-DONE\n")
+# F2: the stale push (vm-a advanced l<N> after phase 1), the pull that
+# catches main up, and the accepted `e<N>` push. The local l<N> log keeps
+# the refused sibling; that is the proof of a real head check, not a
+# client-side skip.
+open(os.path.join(bshare, "F2.SH"), "w").write(
+    "set N=$(cat /host/CUR)\n"
+    "sleep 5\n"
+    "FLINT.ELF add /host/BWSL/b.go || true\n"
+    "FLINT.ELF commit --ws=bl$N -m \"b-line-2-$N\" || true\n"
+    "FLINT.ELF push --remote=10.0.0.16:4748 --stream=l$N\n"
+    "FLINT.ELF pull --stream=main || sleep 1 ; FLINT.ELF pull --stream=main\n"
+    "FLINT.ELF fork main e$N\n"
+    "FLINT.ELF init --name=be$N --src=/host/BWSE --stream=e$N\n"
+    "FLINT.ELF add /host/BWSE/a.go\n"
+    "FLINT.ELF commit --ws=be$N -m \"b-edge-$N\"\n"
+    "FLINT.ELF push --remote=10.0.0.16:4748 --stream=e$N || sleep 1 ; FLINT.ELF push --remote=10.0.0.16:4748 --stream=e$N\n"
+    "FLINT.ELF ls-remote 10.0.0.16:4748\n"
+    "echo VMB-F2-DONE\n")
+# F3: main catches up to 1.<N>.2, then a fresh fork `d<N>` carries a
+# signed Change to a daemon whose allowlist is vm-a only.
+open(os.path.join(bshare, "F3.SH"), "w").write(
+    "set N=$(cat /host/CUR)\n"
+    "sleep 5\n"
+    "FLINT.ELF pull --stream=main || sleep 1 ; FLINT.ELF pull --stream=main\n"
+    "FLINT.ELF fork main d$N\n"
+    "FLINT.ELF init --name=bd$N --src=/host/BWSD --stream=d$N\n"
+    "FLINT.ELF add /host/BWSD/a.go\n"
+    "FLINT.ELF commit --ws=bd$N -m \"b-denied-$N\"\n"
+    "FLINT.ELF push --remote=10.0.0.16:4748 --stream=d$N\n"
+    "echo VMB-F3-DONE\n")
+# F4: the same push as uid_agent, where no flint-remote row binds. The
+# client reads no wire secret, the daemon answers hello with a nonce, and
+# the client refuses auth_required itself — the literal line the card
+# asks for. Bare, not the retry idiom: the refusal IS the expected
+# outcome, and a retry would print it twice.
+open(os.path.join(bshare, "F4.SH"), "w").write(
+    "set N=$(cat /host/CUR)\n"
+    "sleep 5\n"
+    "FLINT.ELF push --remote=10.0.0.16:4748 --stream=d$N\n"
+    "FLINT.ELF verify --all\n"
+    "FLINT.ELF ls-remote 10.0.0.16:4748\n"
+    "echo VMB-F4-DONE\n")
 
 # A private runner copy for vm-b — the same #3689 defense the harness gives
 # its own boots: a concurrent build + re-sign must not move the shared
@@ -573,14 +753,9 @@ legs += ["net arp 10.0.0.16", "net arp 10.0.0.2"]
 for _ in range(5):
     legs += ["net ping 10.0.0.2", "net arp 10.0.0.16",
              "net ping 10.0.0.16", "net", "net recv"]
-# The marker is written `vmb-browse-fetch""-done` so the CONSOLE ECHO of the
-# typed line does not contain the marker the client waits for (observed: a
-# plain echo made the capture stop at the typed line, before any output).
-# GOSH concatenates the empty quoted segment, so the OUTPUT is the clean
-# `vmb-browse-fetch-done` that can only appear after the children finish.
-legs += ['exec GOSH.ELF -c "GONETSTAT.ELF discover _http._tcp ; '
-         'GOFETCH.ELF http://10.0.0.16:8080/healthz ; '
-         'echo vmb-browse-fetch""-done"']
+# The browse script's marker prints only when its last line runs; the typed
+# `source` line carries no marker, so no console-echo trick is needed.
+legs += ['exec GOSH.ELF -c "source /host/BROWSE.SH"']
 open(os.path.join(rd, "vmb-legs.txt"), "w").write("\n".join(legs) + "\n")
 
 # vm-b's B->A echo legs, typed by a SECOND run-a client gated on A's
@@ -644,6 +819,17 @@ open(os.path.join(rd, "vmb-store-legs.txt"), "w").write(
     'exec GOSH.ELF -c "for i in 1 2 3 4 5 6 7 8 9 10; do GOFETCH.ELF http://10.0.0.16:8080/keepalive ; sleep 20 ; done"\n'
     'exec GOSH.ELF -c "source /host/JB.SH"\n'
     "net recv\n")
+# M214c (#3920): one GOSH per FLINTD phase, typed with a busy-retry
+# client so no two sync scripts race the store. Phase 4 is the auth leg:
+# uid_agent (2000) has no `flint-remote` row, so the same FLINT.ELF
+# client is challenged and refuses auth_required. `exec -u2000` only
+# spells the principal; the secret split, not a renamed binary, is what
+# makes the client keyless (a renamed copy lands on the ambient floor and
+# is refused at exec before it can run — observed `refused:file_denied`).
+for _ph in (1, 2, 3, 4):
+    open(os.path.join(rd, "vmb-f%d.txt" % _ph), "w").write(
+        'exec%s GOSH.ELF -c "source /host/F%d.SH"\n'
+        % (" -u2000" if _ph == 4 else "", _ph))
 # Third leg file — the admin half, typed by the THIRD client once B's
 # good-install fetch prints on A's serial ('httpd: request
 # /DROP/main/HUBAPP.ELF'). --retry-busy holds it behind client-2's
@@ -790,7 +976,7 @@ vgate_run a -- --net '$RUN_DIR/a.cap' --net-hub '$RUN_DIR/nethub.sock' --mac 02:
     --script '$RUN_DIR/vma-s1.txt' \
     --script2 '$RUN_DIR/vma-s2.txt' --script2-after 'httpd: request /healthz' --script2-delay 10 \
     --script3 '$RUN_DIR/vma-s3.txt' --script3-after 'vma-legs-done' \
-    --script-expect 'httpd: request /DROP/main/HUBAPP.ELF' --script-expect-tail 45 --timeout 1200
+    --script-expect 'httpd: request /DROP/main/HUBAPP.ELF' --script-expect-tail 60 --timeout 1800
 
 # The run-a client: waits for A's 'httpd: advertise burst done' — the
 # post-burst boundary (M206b residual, #3814). Earlier cards browsed DURING
@@ -816,16 +1002,37 @@ vgate_client a -- --addr '127.0.0.1:24720' --after 'httpd: request /healthz' --a
     --connect-timeout 60 --retry-busy --send-file '$RUN_DIR/vmb-ping-legs.txt' \
     --expect 'vmb-ping-done' --timeout 150 --out '$RUN_DIR/client-a-ping.out'
 
-# The M206c client: waits for A's 'flint: push ' receipt — the marker
-# that guarantees BOTH halves B needs are armed: hubd holds stream
-# `main` (the trust plane) and /host/DROP/ is served by A's GOHTTPD (the
-# untrusted payload, with dropwatch's DROPBAD beside it). Its one typed
-# line starts the -u0 gosh on JB.SH; 'JB-DONE' is the capture's last
-# needed line (the asserts judge each leg, so the expect just bounds
-# the chain). Second client => own --out and --retry-busy against
-# client-1's tail; last-declared, so its rc is the enforced one.
-vgate_client a -- --addr '127.0.0.1:24720' --after 'flint: push ' --after-timeout 620 \
-    --connect-timeout 60 --retry-busy --send-file '$RUN_DIR/vmb-store-legs.txt' \
+# M214c (#3920) — the direct guest-to-guest FLINT clients. Each waits on
+# the FLINTD phase marker that only stage 3 (FA.SH) prints, connects, and
+# types ONE foreground GOSH. --retry-busy queues a phase's client behind
+# the previous phase's session, so vm-b's console runs one sync script at
+# a time. F1 is gated on 'flintd: advertise burst done' — the shared
+# responder's post-burst boundary — so discovery can never be credited to
+# the startup announcements.
+vgate_client a -- --addr '127.0.0.1:24720' --after 'flintd: advertise burst done' --after-timeout 1000 \
+    --connect-timeout 180 --retry-busy --send-file '$RUN_DIR/vmb-f1.txt' \
+    --expect 'VMB-F1-DONE' --timeout 400 --out '$RUN_DIR/client-a-flint1.out'
+vgate_client a -- --addr '127.0.0.1:24720' --after 'VMA-FLINTD2' --after-timeout 1300 \
+    --connect-timeout 180 --retry-busy --send-file '$RUN_DIR/vmb-f2.txt' \
+    --expect 'VMB-F2-DONE' --timeout 400 --out '$RUN_DIR/client-a-flint2.out'
+vgate_client a -- --addr '127.0.0.1:24720' --after 'VMA-FLINTD3' --after-timeout 1500 \
+    --connect-timeout 180 --retry-busy --send-file '$RUN_DIR/vmb-f3.txt' \
+    --expect 'VMB-F3-DONE' --timeout 400 --out '$RUN_DIR/client-a-flint3.out'
+vgate_client a -- --addr '127.0.0.1:24720' --after 'VMA-FLINTD4' --after-timeout 1700 \
+    --connect-timeout 180 --retry-busy --send-file '$RUN_DIR/vmb-f4.txt' \
+    --expect 'VMB-F4-DONE' --timeout 400 --out '$RUN_DIR/client-a-flint4.out'
+
+# The M206c client: waits for A's VMA-FA-DONE — the marker stage 3 prints
+# after the LAST FLINTD phase has exited, its own verify passed, and the
+# GOHTTPD restart loop is about to bind :8080. That guarantees BOTH
+# halves B needs are armed: hubd holds stream `main` (the trust plane,
+# pushed after every publish) and /host/DROP/ is served by A's GOHTTPD
+# (the untrusted payload, with dropwatch's DROPBAD beside it). It must
+# NOT gate on 'flint: push ' any more: stage 3 pushes several times while
+# the FLINTD phases still own :5353. Its one typed line starts the -u0
+# gosh on JB.SH; 'JB-DONE' is the capture's last needed line.
+vgate_client a -- --addr '127.0.0.1:24720' --after 'VMA-FA-DONE' --after-timeout 1750 \
+    --connect-timeout 120 --retry-busy --send-file '$RUN_DIR/vmb-store-legs.txt' \
     --expect 'JB-DONE' --timeout 600 --out '$RUN_DIR/client-a-store.out'
 
 # The consent client: the good install's ELF fetch is the A-serial
@@ -844,7 +1051,7 @@ vgate_client a -- --addr '127.0.0.1:24720' --after 'flint: push ' --after-timeou
 # pass. The post-marker busy window ends when client-2's session does —
 # bounded by ITS 600 s read deadline — so --connect-timeout 540 covers
 # the worst queue.
-vgate_client a -- --addr '127.0.0.1:24720' --after 'httpd: request /DROP/main/HUBAPP.ELF' --after-timeout 1000 \
+vgate_client a -- --addr '127.0.0.1:24720' --after 'httpd: request /DROP/main/HUBAPP.ELF' --after-timeout 1780 \
     --connect-timeout 540 --retry-busy --send-file '$RUN_DIR/vmb-consent-legs.txt' \
     --expect 'JB2-DONE' --timeout 240 --out '$RUN_DIR/client-a-consent.out'
 
@@ -873,6 +1080,24 @@ vgate_assert a serial-contains 'flint: push '
 vgate_assert a serial-contains 'httpd: request /DROPBAD/main/HUBAPP.ELF'
 vgate_assert a serial-contains 'httpd: request /DROP/main/HUBAPP.ELF'
 vgate_assert a serial-contains 'JA-DONE'
+# M214c (#3920): the staged FLINTD lifecycle — four bounded :5353
+# owners, each advertising the SAME configured instance and answering
+# vm-b's post-burst query; the server side of the two refusals; and the
+# final verify before GOHTTPD retakes the port.
+vgate_assert a serial-contains 'flintd: listening port=4748'
+vgate_assert a serial-contains 'flintd: advertising hubflint._flint._tcp.local port=4748'
+vgate_assert a serial-contains 'flintd: advertise sent'
+vgate_assert a serial-contains 'flintd: advertise burst done'
+vgate_assert a serial-contains 'flintd: mdns query _flint._tcp.local'
+vgate_assert a serial-contains 'flintd: mdns answer hubflint._flint._tcp.local addr=10.0.0.16 port=4748'
+vgate_assert a serial-contains 'flintd: refuse seq='
+vgate_assert a serial-contains 'name=stale_head'
+vgate_assert a serial-contains 'name=author_not_allowed'
+vgate_assert a serial-contains 'flint: verify '
+vgate_assert a serial-contains 'VMA-FA-DONE'
+vgate_assert a serial-absent 'flintd: advertise bind failed'
+vgate_assert a serial-absent '9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60'
+vgate_assert a serial-absent '4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb'
 vgate_assert a serial-absent '[EXC]'
 
 # --- vm-b asserts on the client capture (the B->A half) ----------------------
@@ -996,6 +1221,140 @@ if "this runner owns the segment hub" not in rlog:
 print("vm-b serial + runner log kept in artifacts/; both directions observed")
 PY
 
+# --- M214c (#3920): the direct guest-to-guest FLINT evidence --------------
+# What must hold, read off the two guests' own logs and stores (never a
+# host daemon or a file copy):
+#   * B discovered `_flint._tcp` AFTER the announce burst and the answer
+#     names the configured instance, vm-a's address and the ACTUAL port;
+#   * B cloned/pulled vm-a's `main` and both sides verified the signed
+#     raw history (verify --all prints sig: verified, never sig_invalid);
+#   * B's accepted push (`e<N>`) has the SAME head and the SAME raw JSONL
+#     bytes in vm-a's store and vm-b's;
+#   * the stale leg left two sibling heads on `l<N>` — vm-a's log still
+#     contains the raw Change B pushed, but its head moved on;
+#   * the denied leg's signed Change is in vm-b's store and NOT in
+#     vm-a's, while vm-a's serial names the wire refusals.
+# Each of the four phases is judged by its own client capture as well.
+vgate_assert a python <<'PY'
+import glob, json, os, shutil, sys
+rd = os.environ["RUN_DIR"]
+suffix = os.environ.get("VIRELAI_GATE_SUFFIX", "")
+share_a = os.environ["VG_SHARE"]
+share_b = os.path.join(rd, "share-vmb")
+ser_a = open(os.environ["VG_SER"], errors="replace").read()
+ser_b_path = os.path.join(rd, "vm-serial-vmb.log")
+ser_b = open(ser_b_path, errors="replace").read() if os.path.isfile(ser_b_path) else ""
+os.makedirs("artifacts", exist_ok=True)
+for n in (1, 2, 3, 4):
+    cap = os.path.join(rd, "client-a-flint%d.out" % n)
+    if os.path.isfile(cap):
+        shutil.copy(cap, "artifacts/live-net-hub-flint%d%s.out" % (n, suffix))
+
+discovered = ("netstat: discover service hubflint._flint._tcp.local "
+              "host=hubflint.local port=4748 addr=10.0.0.16")
+if discovered not in ser_b:
+    sys.exit("FAIL: vm-b never resolved the FLINT advertisement: %r" % discovered)
+if "flint: clone ok" not in ser_b:
+    sys.exit("FAIL: vm-b serial has no successful clone")
+if "flint: pull ok" not in ser_b and "flint: pull up to date" not in ser_b:
+    sys.exit("FAIL: vm-b serial has no completed pull")
+if "flint: push ok" not in ser_b:
+    sys.exit("FAIL: vm-b serial has no accepted push")
+for line in ("flint: refuse stale_head", "flint: refuse author_not_allowed",
+             "flint: refuse auth_required"):
+    if line not in ser_b:
+        sys.exit("FAIL: vm-b serial lacks the literal client refusal %r" % line)
+for marker in ("VMB-F1-DONE", "VMB-F2-DONE", "VMB-F3-DONE", "VMB-F4-DONE"):
+    if marker not in ser_b:
+        sys.exit("FAIL: vm-b serial lacks phase marker " + marker)
+if "sig_invalid" in ser_b:
+    sys.exit("FAIL: vm-b verify --all found an invalid signature")
+# The server side is judged on THIS iteration's vm-a serial.
+need_a = [
+    "flintd: listening port=4748",
+    "flintd: advertising hubflint._flint._tcp.local port=4748",
+    "flintd: advertise burst done",
+    "flintd: mdns query _flint._tcp.local",
+    "flintd: mdns answer hubflint._flint._tcp.local addr=10.0.0.16 port=4748",
+    "flintd: refuse seq=",
+    "name=stale_head",
+    "name=author_not_allowed",
+    "flint: verify ",
+    "VMA-FA-DONE",
+]
+missing = [x for x in need_a if x not in ser_a]
+if missing:
+    sys.exit("FAIL: vm-a serial missing FLINTD/sync lines: " + " | ".join(missing))
+if "flintd: advertise bind failed" in ser_a:
+    sys.exit("FAIL: a second :5353 owner was attempted in vm-a")
+if ser_a.count("flintd: advertising hubflint._flint._tcp.local") < 4:
+    sys.exit("FAIL: fewer than four staged FLINTD lifecycles on vm-a")
+if "sig_invalid" in ser_a:
+    sys.exit("FAIL: vm-a verify --all found an invalid signature")
+
+def load_streams(root):
+    out = {}
+    for p in glob.glob(os.path.join(root, "streams", "*.json")):
+        try:
+            rec = json.load(open(p))
+        except (OSError, ValueError):
+            continue
+        name, sid, head = rec.get("name"), rec.get("id"), rec.get("head")
+        logp = os.path.join(root, "streams", sid + ".jsonl")
+        log = open(logp, "rb").read() if os.path.isfile(logp) else b""
+        out[name] = (head, log)
+    return out
+
+a = load_streams(os.path.join(share_a, "FLINT"))
+b = load_streams(os.path.join(share_b, "FLINT"))
+if "main" not in a or "main" not in b:
+    sys.exit("FAIL: main stream missing from one side (a=%s b=%s)"
+             % (sorted(a), sorted(b)))
+if a["main"] != b["main"]:
+    sys.exit("FAIL: main head/raw history differs between the guests")
+if not a["main"][1]:
+    sys.exit("FAIL: main stream carries no raw signed history")
+# B's accepted push: same stream name, same head, byte-identical JSONL.
+edge = [n for n in b if n.startswith("e")]
+if not edge:
+    sys.exit("FAIL: vm-b has no accepted fork stream (e*)")
+if not any(n in a and a[n] == b[n] for n in edge):
+    sys.exit("FAIL: no accepted push has byte-identical history on both sides "
+             "(a=%s b=%s)" % (sorted(a), sorted(b)))
+# The stale leg: vm-a advanced the same stream, so heads differ while the
+# raw Change B pushed is still verbatim in vm-a's log.
+stale = [n for n in b if n.startswith("l") and n in a]
+if not stale:
+    sys.exit("FAIL: no stale-leg stream exists on both sides")
+healed = False
+for n in stale:
+    bhead, blog = b[n]
+    ahead, alog = a[n]
+    first = blog.split(b"\n", 1)[0] + b"\n"
+    if ahead != bhead and first in alog:
+        healed = True
+if not healed:
+    sys.exit("FAIL: stale leg did not leave an advanced head with B's raw Change")
+# The denied leg: B's signed Change exists only on B.
+denied = [n for n in b if n.startswith("d")]
+if not denied:
+    sys.exit("FAIL: vm-b has no denied fork stream (d*)")
+ok_denied = False
+for n in denied:
+    bhead, blog = b[n]
+    if not blog:
+        continue
+    first = blog.split(b"\n", 1)[0] + b"\n"
+    ahead, alog = a.get(n, (None, b""))
+    if first not in alog:
+        ok_denied = True
+if not ok_denied:
+    sys.exit("FAIL: the author-refused Change reached vm-a's store")
+print("m214c: discovered %s; main bytes equal (%d B); accepted push bytes "
+      "equal; stale advanced with B's raw Change; denied Change stayed on B"
+      % (discovered, len(a["main"][1])))
+PY
+
 # --- M206c: vm-b's install chain, judged on its serial + host files ----
 # B's serial accumulates ALL iterations (one peer_watch runner for the
 # gate), so counts are pinned against JB-DONE completions: every pass
@@ -1062,8 +1421,21 @@ if "name=HUBAPP.ELF" not in state \
         or "caps=file,memory,process,debug,net" not in state:
     sys.exit("FAIL: vm-b STORE.TXT lost the install or the ask: %r" % state)
 secrets = open(os.path.join(bshare, "SECRETS.TXT")).read()
-if "agent-sign" in secrets:
-    sys.exit("FAIL: vm-b SECRETS.TXT must not carry agent-sign")
+# M214c (#3920): vm-b now signs its own sync Changes, so it MUST carry an
+# agent-sign seed — its own RFC 8032 TEST 2 seed, never vm-a's. That is
+# the trust split this card preserves: B can author its own history, but
+# it cannot forge vm-a's release, and B's TRUSTED pins both publishers.
+if "agent-sign" not in secrets:
+    sys.exit("FAIL: vm-b SECRETS.TXT lost its own agent-sign seed")
+if "4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb" not in secrets:
+    sys.exit("FAIL: vm-b agent-sign is not the distinct TEST 2 seed")
+if "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60" in secrets:
+    sys.exit("FAIL: vm-b holds vm-a's signing seed")
+trusted_b = open(os.path.join(bshare, "FLINT", "TRUSTED.TXT")).read()
+for k in ("d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+          "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c"):
+    if k not in trusted_b:
+        sys.exit("FAIL: vm-b TRUSTED.TXT is missing a publisher key " + k[:16])
 m = re.search(r"store: published HUBAPP 1\.0\.0 sha256=([0-9a-f]{64})",
               open(os.environ["VG_SER"], errors="replace").read())
 if not m:

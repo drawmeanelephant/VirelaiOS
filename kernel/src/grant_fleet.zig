@@ -38,6 +38,7 @@ pub const rows = [_]grant.BaseRow{
     .{ .name = "GOSSHD.ELF", .sha256 = null, .words = grant.word_file | grant.word_memory | grant.word_process | grant.word_debug | grant.word_net },
     .{ .name = "GOBUILD.ELF", .sha256 = null, .words = grant.word_file | grant.word_memory | grant.word_process | grant.word_debug },
     .{ .name = "FLINT.ELF", .sha256 = null, .words = grant.word_file | grant.word_memory | grant.word_process | grant.word_debug | grant.word_net },
+    .{ .name = "FLINTD.ELF", .sha256 = null, .words = grant.word_file | grant.word_memory | grant.word_process | grant.word_debug | grant.word_net | grant.word_net_mdns },
     .{ .name = "STORE.ELF", .sha256 = null, .words = grant.word_file | grant.word_memory | grant.word_process | grant.word_debug | grant.word_net },
     .{ .name = "AGENTD.ELF", .sha256 = null, .words = grant.word_file | grant.word_window | grant.word_memory | grant.word_process | grant.word_debug | grant.word_net },
     .{ .name = "INIT.ELF", .sha256 = null, .words = grant.word_file | grant.word_memory | grant.word_process | grant.word_debug },

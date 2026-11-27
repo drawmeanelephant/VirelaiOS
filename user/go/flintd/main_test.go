@@ -698,6 +698,10 @@ func TestAuthConfigFiles(t *testing.T) {
 	}
 	if _, err := loadAuthKeyFile(fs, "/host/missing.key"); flintstore.RefusalName(err) != "secret_malformed" {
 		t.Fatalf("missing key: want secret_malformed, got %v", err)
+	} else if !strings.Contains(err.Error(), "/host/missing.key") {
+		t.Fatalf("missing key detail lost the path: %v", err)
+	} else if refusalDetail(err) == "malformed" {
+		t.Fatalf("missing key refusalDetail fell back to malformed")
 	}
 
 	author := strings.Repeat("cd", 32)
@@ -719,20 +723,29 @@ func TestAuthConfigFiles(t *testing.T) {
 	}
 }
 
-// TestParseArgsWriteFlags proves the daemon accepts the two write gates and
-// still refuses advertising (the sync card owns it).
+// TestParseArgsWriteFlags proves the daemon accepts the write gates and the
+// advertisement name in both spellings, and still refuses empty values.
 func TestParseArgsWriteFlags(t *testing.T) {
 	cfg, err := parseArgs([]string{"--store=/host/FLINT", "--port", "4750",
+		"--advertise", "hubflint",
 		"--auth-key=/host/auth.key", "--allow-author", "/host/authors.txt"})
 	if err != nil {
 		t.Fatalf("parseArgs: %v", err)
 	}
 	if cfg.store != "/host/FLINT" || cfg.port != 4750 ||
+		cfg.advertise != "hubflint" ||
 		cfg.authKeyPath != "/host/auth.key" || cfg.allowAuthorPath != "/host/authors.txt" {
 		t.Fatalf("cfg = %+v", cfg)
 	}
-	if _, err := parseArgs([]string{"--advertise=_flint._tcp"}); flintstore.RefusalName(err) != "usage" {
-		t.Fatalf("advertise: want usage, got %v", err)
+	cfg, err = parseArgs([]string{"--advertise=hubflint"})
+	if err != nil || cfg.advertise != "hubflint" {
+		t.Fatalf("--advertise= form: cfg=%+v err=%v", cfg, err)
+	}
+	if _, err := parseArgs([]string{"--advertise="}); flintstore.RefusalName(err) != "usage" {
+		t.Fatalf("empty advertise: want usage, got %v", err)
+	}
+	if _, err := parseArgs([]string{"--advertise"}); flintstore.RefusalName(err) != "usage" {
+		t.Fatalf("dangling advertise: want usage, got %v", err)
 	}
 	if _, err := parseArgs([]string{"--auth-key="}); flintstore.RefusalName(err) != "usage" {
 		t.Fatalf("empty auth path: want usage, got %v", err)
