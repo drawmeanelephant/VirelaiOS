@@ -55,6 +55,7 @@ GONETSTAT.ELF	-	memory,process,debug,net,net-mdns	not audited — staged machine
 GOSSHD.ELF	memory,process,debug	file,memory,process,debug,net	audit note: exit 1 — refuses before bind without hostkey, so SocketListen (net) and ReadFileAll/FileDelete (file) never ran
 GOBUILD.ELF	memory,process,debug	file,memory,process,debug	audit note: usage exit — startup words only; the build path opens sources and writes objects (FileOpen)
 FLINT.ELF	memory,process,debug	file,memory,process,debug,net	audit note: usage exit — startup words only; workspace File* ops and Dial remote streams (user/go/flint)
+FLINTD.ELF	-	file,memory,process,debug,net,net-mdns	not audited — guest daemon (#3919/#3920); surface: store/secret File* reads (file), SocketListen + Dial on :4748 (net), UDPListen/UDPSendFrom on :5353 — --advertise (user/go/flintd/advertise.go)
 STORE.ELF	memory,process,debug	file,memory,process,debug,net	audit note: usage exit — startup words only; the install path is Dial + WriteFileSafe (user/go/store)
 AGENTD.ELF	memory,process,debug	file,window,memory,process,debug,net	audit note: refuse no-credential — startup words only; Listen/TCP* lanes, File* verb ops, WinOpen session UI (user/go/agentd)
 INIT.ELF	memory,process,debug	file,memory,process,debug	audit note: argv-refusal path — startup words only; ReadFileAll config read (user/go/init)

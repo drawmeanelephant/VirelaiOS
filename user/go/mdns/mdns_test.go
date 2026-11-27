@@ -53,6 +53,23 @@ func TestQueryRoundTrip(t *testing.T) {
 	if q.Name != "_http._tcp.local" || q.Type != TypePTR || !q.QU {
 		t.Fatalf("question = %+v", q)
 	}
+	if q.Class != ClassIN || got.Opcode != 0 {
+		t.Fatalf("class/opcode = %#x/%d, want IN/0", q.Class, got.Opcode)
+	}
+
+	// The responder's refusals need the decoded class and opcode, not a
+	// guessed IN/0: a CH-class question and a STATUS opcode survive the
+	// codec so a responder can refuse them by name.
+	wire := append([]byte{0, 0, 0x28, 0x00}, header(1, 0, 0, 0)[4:]...) // opcode 5, one question
+	wire = append(wire, qname("_http._tcp.local")...)
+	wire = append(wire, 0, byte(TypePTR), 0, 3) // class CH
+	odd, err := Decode(wire)
+	if err != nil {
+		t.Fatalf("decode odd query: %v", err)
+	}
+	if odd.Opcode != 5 || odd.Questions[0].Class != 3 || odd.Questions[0].QU {
+		t.Fatalf("odd query decoded opcode=%d q=%+v", odd.Opcode, odd.Questions[0])
+	}
 }
 
 func TestResponseRoundTrip(t *testing.T) {

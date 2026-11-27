@@ -67,6 +67,15 @@ pub const frame_max: usize = eth_hdr_len + ipv4_hdr_len + udp_hdr_len + payload_
 /// delivers a broadcast-dst datagram ONLY to a listener that opted in
 /// to group delivery (or the port-68 DHCP divert ahead of it).
 pub const bcast_addr: [4]u8 = .{ 255, 255, 255, 255 };
+/// M206b residual (#3814): the ONE multicast group this stack receives —
+/// RFC 6762's IPv4 mDNS group. The ipv4 dst gate admits it only for a
+/// UDP datagram whose destination port is `mdns_port`, and `handle_rx`
+/// delivers it only to a listener whose EL0 :5353 bind opted in
+/// (`listen_port_mdns_owned`). No general multicast routing exists.
+pub const mdns_group: [4]u8 = .{ 224, 0, 0, 251 };
+/// RFC 6762's mDNS UDP port — both the destination and the required
+/// source port (a responder only answers a datagram from :5353).
+pub const mdns_port: u16 = 5353;
 /// M117c: the largest v6 frame — Ethernet + the 40-byte fixed v6 header +
 /// header + the bounded payload (a 512-byte payload fits the 1280-byte
 /// minimum-MTU envelope, so no PMTUD machinery is needed — D6).
@@ -90,6 +99,11 @@ pub var dropped_len: u64 = 0; // length < 8 or exceeding the frame's remaining b
 /// Sev-C (#3401): a broadcast-dst datagram for a port whose listener
 /// did not opt in to group delivery (incl. a port with NO listener).
 pub var dropped_bcast: u64 = 0;
+/// M206b residual (#3814): a 224.0.0.251-dst datagram refused before
+/// delivery — wrong destination/source port, a non-unicast/self source,
+/// or no listener that opted in to mDNS group delivery. Unrelated
+/// multicast never reaches this layer (the ipv4 dst gate drops it).
+pub var dropped_mdns: u64 = 0;
 /// M99i (#2187): listen-table seats reclaimed from exited owners by the
 /// syscall layer (a program that exits without sys_udp_close).
 pub var stale_reclaimed: u64 = 0;
@@ -127,6 +141,11 @@ pub const ListenEntry = struct {
     /// this flag (`listen_port_group`; a plain `listen_port` bind never
     /// sees one). v6 delivery never consults it.
     group: bool = false,
+    /// M206b residual (#3814): the bind opted IN to the mDNS group
+    /// (224.0.0.251:5353) — only the EL0 :5353 bind carries it
+    /// (`listen_port_mdns_owned`). Broadcast-dst delivery never
+    /// consults it, so the two opt-ins stay isolated.
+    mdns: bool = false,
     valid: bool = false,
 };
 
@@ -235,14 +254,14 @@ pub fn listen_port(port: u16) bool {
 /// `unowned` for kernel callers). Duplicate port or full table → false,
 /// the same honest bool `listen_port` always returned.
 pub fn listen_port_owned(port: u16, owner: u64) bool {
-    return listen_family(port, owner, false, false);
+    return listen_family(port, owner, false, false, false);
 }
 
 /// M117c (#2475): bind `port` as a v6 listener (the `net udp6 listen`
 /// path — kernel-owned, never EL0). A port may hold ONE bind per family;
 /// a same-family duplicate or a full table is refused.
 pub fn listen_port6(port: u16) bool {
-    return listen_family(port, unowned, true, false);
+    return listen_family(port, unowned, true, false, false);
 }
 
 /// Sev-C (#3401): bind `port` opting IN to group-addressed delivery —
@@ -251,16 +270,25 @@ pub fn listen_port6(port: u16) bool {
 /// the port-68 DHCP divert runs ahead of the check, so the client
 /// carries no flag.
 pub fn listen_port_group(port: u16) bool {
-    return listen_family(port, unowned, false, true);
+    return listen_family(port, unowned, false, true, false);
 }
 
-fn listen_family(port: u16, owner: u64, v6: bool, group: bool) bool {
+/// M206b residual (#3814): the EL0 :5353 bind's shape — it opted in to
+/// the mDNS group (224.0.0.251) ONLY. It is deliberately not the
+/// broadcast `group` shape: a broadcast-dst datagram still refuses, and
+/// no other port can opt in.
+pub fn listen_port_mdns_owned(port: u16, owner: u64) bool {
+    if (port != mdns_port) return false;
+    return listen_family(port, owner, false, false, true);
+}
+
+fn listen_family(port: u16, owner: u64, v6: bool, group: bool, mdns: bool) bool {
     for (&listen) |*e| {
         if (e.valid and e.port == port and e.v6 == v6) return false; // duplicate
     }
     for (&listen) |*e| {
         if (!e.valid) {
-            e.* = .{ .port = port, .owner = owner, .v6 = v6, .group = group, .valid = true };
+            e.* = .{ .port = port, .owner = owner, .v6 = v6, .group = group, .mdns = mdns, .valid = true };
             return true;
         }
     }
@@ -355,6 +383,7 @@ pub fn reset() void {
     dropped_closed = 0;
     dropped_len = 0;
     dropped_bcast = 0;
+    dropped_mdns = 0;
     received6 = 0;
     sent6 = 0;
     dropped6_len = 0;
@@ -475,6 +504,16 @@ fn frame_dst_ip(frame: []const u8) [4]u8 {
     return ip;
 }
 
+/// M206b residual (#3814): the mDNS source must be a real unicast host —
+/// not 0.0.0.0/8, not the limited broadcast, not the 224.0.0.0/4
+/// multicast block, and not this guest's own address (a looped-back
+/// frame is not a peer query). The UDP source port is checked by the
+/// caller; shape/checksum/dst checks stayed in ipv4.
+fn mdns_source_ok(src: [4]u8) bool {
+    if (src[0] == 0 or src[0] == 255 or src[0] >= 224) return false;
+    return !std.mem.eql(u8, &src, &arp.own_ip);
+}
+
 /// Process one validated IPv4 frame with protocol 17. Delivers the
 /// datagram to the listener for its dst port (or drops it, counted).
 /// Returns nothing — the N5 guest does not answer UDP.
@@ -504,6 +543,29 @@ pub fn handle_rx(frame: []const u8) void {
         // listen` table (invisible to `net udp recv`; no listener slot
         // consumed). The datagram was ALREADY checksum-validated above.
         _ = dhcp.handle_rx(datagram);
+        return;
+    }
+    if (std.mem.eql(u8, &dst, &mdns_group)) {
+        // M206b residual (#3814): the ONE admitted multicast path.
+        // Retain every bound the unicast path has (the ipv4 gate already
+        // validated length/checksum/fragment and admitted this group
+        // only for UDP :5353). Here: the source port must be :5353
+        // (RFC 6762 §6 — a responder answers only a peer that speaks
+        // mDNS), the source must be a unicast host address (never the
+        // group, broadcast, zero/self), and only a listener that opted
+        // in to group delivery receives it. Every refusal is counted;
+        // nothing is silently accepted.
+        const src_port = (@as(u16, frame[34]) << 8) | frame[35];
+        if (src_port != mdns_port or !mdns_source_ok(src)) {
+            dropped_mdns += 1;
+            return;
+        }
+        const slot = find_listener(dst_port);
+        if (slot == null or !listen[slot.?].mdns) {
+            dropped_mdns += 1;
+            return;
+        }
+        deliver(dst_port, src, datagram);
         return;
     }
     if (std.mem.eql(u8, &dst, &bcast_addr)) {
@@ -844,6 +906,62 @@ test "udp: handle_rx — deliver to a listener, drop badsum / closed / short" {
     frame[39] = 0x04;
     handle_rx(&frame);
     try std.testing.expectEqual(@as(u64, 1), dropped_len);
+}
+
+test "udp: M206b mDNS group admission is narrow and isolated" {
+    reset();
+    defer reset();
+
+    // Only the :5353 shape can opt in to the group.
+    try std.testing.expect(!listen_port_mdns_owned(5354, unowned));
+    try std.testing.expect(listen_port_mdns_owned(mdns_port, unowned));
+
+    const group_mac = [6]u8{ 0x01, 0x00, 0x5e, 0x00, 0x00, 0xfb };
+    const own_mac = [6]u8{ 0x02, 0x00, 0x00, 0x00, 0x00, 0x0a };
+    var frame: [64]u8 = @splat(0);
+    var n = build_frame_ex(&frame, group_mac, &own_mac, .{ 10, 0, 0, 17 }, mdns_group, mcast_ttl, mdns_port, mdns_port, &.{ 1, 2, 3, 4 });
+    handle_rx(frame[0..n]);
+    try std.testing.expectEqual(@as(u64, 1), received);
+    try std.testing.expect(pop(mdns_port) != null);
+
+    // A source port other than :5353 is not an mDNS peer.
+    n = build_frame_ex(&frame, group_mac, &own_mac, .{ 10, 0, 0, 17 }, mdns_group, mcast_ttl, 7000, mdns_port, &.{ 1, 2, 3, 4 });
+    handle_rx(frame[0..n]);
+    try std.testing.expectEqual(@as(u64, 1), dropped_mdns);
+    try std.testing.expect(pop(mdns_port) == null);
+
+    // Zero/self/group/broadcast sources are refused as well.
+    for ([_][4]u8{
+        .{ 0, 0, 0, 0 },
+        .{ 224, 0, 0, 251 },
+        .{ 255, 255, 255, 255 },
+    }) |src| {
+        n = build_frame_ex(&frame, group_mac, &own_mac, src, mdns_group, mcast_ttl, mdns_port, mdns_port, &.{});
+        handle_rx(frame[0..n]);
+    }
+    try std.testing.expectEqual(@as(u64, 4), dropped_mdns);
+
+    // The mDNS opt-in is NOT the broadcast opt-in: a broadcast-dst
+    // datagram to :5353 is still refused.
+    n = build_frame_ex(&frame, .{ 0xff, 0xff, 0xff, 0xff, 0xff, 0xff }, &own_mac, .{ 10, 0, 0, 17 }, bcast_addr, default_ttl, 9999, mdns_port, &.{});
+    handle_rx(frame[0..n]);
+    try std.testing.expectEqual(@as(u64, 1), dropped_bcast);
+
+    // A PLAIN :5353 bind (the old shape) receives no group datagram.
+    reset();
+    try std.testing.expect(listen_port(mdns_port));
+    n = build_frame_ex(&frame, group_mac, &own_mac, .{ 10, 0, 0, 17 }, mdns_group, mcast_ttl, mdns_port, mdns_port, &.{});
+    handle_rx(frame[0..n]);
+    try std.testing.expectEqual(@as(u64, 1), dropped_mdns);
+    try std.testing.expect(pop(mdns_port) == null);
+
+    // Ordinary unicast to the same owner still lands unchanged.
+    reset();
+    try std.testing.expect(listen_port_mdns_owned(mdns_port, unowned));
+    n = build_frame_ex(&frame, own_mac, &own_mac, .{ 10, 0, 0, 17 }, .{ 10, 0, 0, 1 }, default_ttl, mdns_port, mdns_port, &.{ 9, 9 });
+    handle_rx(frame[0..n]);
+    try std.testing.expectEqual(@as(u64, 1), received);
+    try std.testing.expectEqual(@as(u64, 0), dropped_mdns);
 }
 
 test "udp: Sev-C broadcast dst — only an opted-in listener receives it" {

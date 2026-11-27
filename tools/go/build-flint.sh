@@ -29,10 +29,15 @@ fi
 
 # ADR 0049 Grounding: FLINT uses sshlib.SHA256Sum / sshlib.EdSign /
 # sshlib.EdVerify in-tree and must not import crypto/* in non-test files.
-if (cd "$REPO/user/go" && grep -rEn '"crypto/' flint --include='*.go' | grep -v '_test\.go'); then
-    log "FAIL: user/go/flint imports a banned crypto/* package"
-    exit 1
-fi
+# The shared core now lives in virelai/flintstore (and fuels FLINTD.ELF), so
+# the guard covers every production package that carries that code
+# (VAL-READ-001).
+for pkg in flint flintstore flintd; do
+    if (cd "$REPO/user/go" && grep -rEn '"crypto/' "$pkg" --include='*.go' | grep -v '_test\.go'); then
+        log "FAIL: user/go/$pkg imports a banned crypto/* package"
+        exit 1
+    fi
+done
 
 GOPATH_DIR="$(mktemp -d "${TMPDIR:-/tmp}/virelai-gopath.XXXXXX")"
 trap 'rm -rf "$GOPATH_DIR"' EXIT

@@ -38,16 +38,8 @@ import (
 
 const (
 	// advTTL is the record TTL (RFC 6762 §10's recommended 120 s for the
-	// names-as-labels records); the steady re-announce fires at half it.
-	advTTL       = 120
-	advBurstN    = 3 // startup announcements, ~1 s apart
-	advBurstTick = 4 // ~1 s at the 250 ms scheduler quantum
-	advHalfTicks = advTTL / 2 * 4
-	// natSubnetByte2/3 pin the VZ NAT attachment's observed subnet —
-	// 192.168.64.0/24, the one attachment with no reachable LAN segment.
-	natSubnetByte0 = 192
-	natSubnetByte1 = 168
-	natSubnetByte2 = 64
+	// names-as-labels records); the shared advertiser re-announces at half it.
+	advTTL = mdns.AdvTTL
 )
 
 // advSeam is the syscall surface the advertiser drives — injected so host
@@ -55,6 +47,7 @@ const (
 type advSeam struct {
 	listen func(port uint16) int64                                    // vi.UDPListen
 	send   func(dst [4]byte, dstPort, srcPort uint16, b []byte) int64 // vi.UDPSendFrom
+	recv   func(port uint16, buf []byte) int64                        // vi.UDPRecvFrom
 	close  func(port uint16) int64                                    // vi.UDPClose
 	stats  func() (vi.NetStats, int64)                                // vi.NetStatsSnapshotRC
 	sleep  func(ticks uint64)                                         // vi.Sleep
@@ -65,6 +58,7 @@ func guestAdvSeam() advSeam {
 	return advSeam{
 		listen: vi.UDPListen,
 		send:   vi.UDPSendFrom,
+		recv:   vi.UDPRecvFrom,
 		close:  vi.UDPClose,
 		stats:  vi.NetStatsSnapshotRC,
 		sleep:  vi.Sleep,
@@ -85,28 +79,18 @@ type advertiser struct {
 	seam     advSeam
 	announce []byte // the encoded announce message (TTL = advTTL)
 	goodbye  []byte // the same record set at TTL=0
+	// M206b residual (#3814) / M214c (#3920): the shared mdns.Advertiser
+	// owns the one :5353 bind, the burst, the bounded query responder and
+	// the synchronized goodbye/close. HTTPD supplies only the service
+	// description and its console markers.
+	responder *mdns.Responder
+	adv       *mdns.Advertiser
+	started   bool
 }
 
-// validateAdvertiseName bounds the instance label to what the wire can
-// carry and a browser can show: a non-empty DNS name, every label
-// non-empty and ≤ 63 octets, total under the 255-octet name bound
-// (mdns.appendName enforces the same bounds on encode — this check exists
-// so a bad flag refuses by name before anything binds).
-func validateAdvertiseName(name string) bool {
-	if name == "" || len(name) > mdns.MaxNameWire {
-		return false
-	}
-	start := 0
-	for i := 0; i <= len(name); i++ {
-		if i == len(name) || name[i] == '.' {
-			if i-start == 0 || i-start > 63 {
-				return false
-			}
-			start = i + 1
-		}
-	}
-	return true
-}
+// validateAdvertiseName is the shared DNS-SD instance-label bound (kept as
+// the HTTPD-local spelling its tests and call sites use).
+func validateAdvertiseName(name string) bool { return mdns.ValidInstance(name) }
 
 // onNatAttachment is the in-guest observable bound for "--advertise":
 // the snapshot carries no own IPv4 at all, or the own address sits inside
@@ -118,51 +102,18 @@ func onNatAttachment(snap vi.NetStats, ok bool) bool {
 	if !ok || snap.OwnIP == [4]byte{} {
 		return true
 	}
-	return snap.OwnIP[0] == natSubnetByte0 && snap.OwnIP[1] == natSubnetByte1 && snap.OwnIP[2] == natSubnetByte2
+	return mdns.OnNatSubnet(snap.OwnIP)
 }
 
 // linkLocal6 derives the guest's link-local v6 the way the kernel does —
 // fe80:: + the MAC's modified-EUI-64 IID (ipv6.iid_from_mac). The kernel
 // forms it when the net device arms, so the address exists on every
 // attachment this daemon serves on.
-func linkLocal6(mac [6]byte) [16]byte {
-	var a [16]byte
-	a[0] = 0xfe
-	a[1] = 0x80
-	a[8] = mac[0] ^ 0x02
-	a[9] = mac[1]
-	a[10] = mac[2]
-	a[11] = 0xff
-	a[12] = 0xfe
-	a[13] = mac[3]
-	a[14] = mac[4]
-	a[15] = mac[5]
-	return a
-}
-
-// advertiseRecords is the announce/goodbye record set at TTL ttl: the
-// service PTR in the answer section with the instance's SRV + TXT, the
-// host's A/AAAA as additionals — the RFC 6763 chain a browser resolves
-// the instance through. cache-flush marks the instance/host records
-// unique (they are — the fixed guest MAC makes the name ours alone).
-func advertiseRecords(svcName, hostName string, port uint16, ip4 [4]byte, ip6 [16]byte, ttl uint32) (answers, additionals []mdns.Record) {
-	answers = []mdns.Record{
-		{Name: "_http._tcp.local", Type: mdns.TypePTR, TTL: ttl, PTR: svcName},
-		{Name: svcName, Type: mdns.TypeSRV, TTL: ttl, Flush: true,
-			SRV: mdns.SRV{Priority: 0, Weight: 0, Port: port, Target: hostName}},
-		{Name: svcName, Type: mdns.TypeTXT, TTL: ttl, Flush: true,
-			TXT: []string{"txtvers=1", "path=/"}},
-	}
-	additionals = []mdns.Record{
-		{Name: hostName, Type: mdns.TypeA, TTL: ttl, Flush: true, A: ip4},
-		{Name: hostName, Type: mdns.TypeAAAA, TTL: ttl, Flush: true, AAAA: ip6},
-	}
-	return answers, additionals
-}
+func linkLocal6(mac [6]byte) [16]byte { return mdns.LinkLocal6(mac) }
 
 // newAdvertiser validates the name, snapshots the attachment check, and
-// pre-encodes both messages. A nil result is always preceded by its named
-// console refusal — the caller exits.
+// hands the service description to the shared mdns advertiser. A nil
+// result is always preceded by its named console refusal — the caller exits.
 func newAdvertiser(name string, port uint16, seam advSeam) *advertiser {
 	if !validateAdvertiseName(name) {
 		seam.log("httpd: advertise bad name")
@@ -189,82 +140,50 @@ func newAdvertiser(name string, port uint16, seam advSeam) *advertiser {
 		ip6:      linkLocal6(snap.MAC),
 		seam:     seam,
 	}
-	ans, add := advertiseRecords(a.svcName, a.hostName, port, a.ip4, a.ip6, advTTL)
-	msg, err := (&mdns.Message{Response: true, Authoritative: true, Answers: ans, Additionals: add}).Encode()
-	if err != nil {
-		seam.log("httpd: advertise encode failed")
+	adv := mdns.NewAdvertiser(mdns.Service{
+		Type:     "_http._tcp.local",
+		Instance: name,
+		Host:     a.hostName,
+		Port:     port,
+		IPv4:     a.ip4,
+		IPv6:     a.ip6,
+		TTL:      advTTL,
+		TXT:      []string{"txtvers=1", "path=/"},
+	}, mdns.AdvSeam{
+		Listen: seam.listen,
+		Send:   seam.send,
+		Recv:   seam.recv,
+		Close:  seam.close,
+		Sleep:  seam.sleep,
+		Log:    func(line string) { seam.log("httpd: " + line) },
+	})
+	if adv == nil {
 		return nil
 	}
-	ans, add = advertiseRecords(a.svcName, a.hostName, port, a.ip4, a.ip6, 0)
-	bye, err := (&mdns.Message{Response: true, Authoritative: true, Answers: ans, Additionals: add}).Encode()
-	if err != nil {
-		seam.log("httpd: advertise encode failed")
-		return nil
-	}
-	a.announce = msg
-	a.goodbye = bye
+	a.adv = adv
+	a.responder = adv.Responder()
+	a.announce = adv.Announce()
+	a.goodbye = adv.Goodbye()
 	return a
 }
 
-// start binds the mDNS port and fires the startup burst; the steady
-// re-announce at TTL/2 runs on its own goroutine while serving. A bind
-// refusal or a refused first send is named, never silent — the daemon
-// exits rather than run unadvertised.
+// start binds the mDNS port through the shared advertiser, which starts
+// the bounded query responder and the startup burst; the steady
+// re-announce at TTL/2 runs on its own goroutine while serving.
 func (a *advertiser) start() bool {
-	if rc := a.seam.listen(mdns.Port); rc < 0 {
-		if rc == -vi.ErrEACCES {
-			a.seam.log("httpd: advertise needs net-mdns")
-		} else {
-			a.seam.log("httpd: advertise bind failed")
-		}
+	if a.adv == nil || !a.adv.Start() {
 		return false
 	}
-	a.seam.log("httpd: advertising " + a.svcName + " port=" + vi.Itoa64(int64(a.port)))
-	if !a.emit(a.announce) {
-		return false
-	}
-	go func() {
-		for i := 1; i < advBurstN; i++ {
-			a.seam.sleep(advBurstTick)
-			if !a.emit(a.announce) {
-				return
-			}
-		}
-		for {
-			a.seam.sleep(advHalfTicks)
-			if !a.emit(a.announce) {
-				return
-			}
-		}
-	}()
+	a.started = true
 	return true
 }
 
-// emit sends one pre-encoded datagram to the mDNS group from the bound
-// port; a refusal is logged with its errno, never dropped silently.
-func (a *advertiser) emit(msg []byte) bool {
-	rc := a.seam.send(mdns.Group4Bytes, mdns.Port, mdns.Port, msg)
-	if rc < 0 {
-		if rc == -vi.ErrEACCES {
-			a.seam.log("httpd: advertise needs net-mdns")
-		} else {
-			a.seam.log("httpd: advertise send rc=" + vi.Itoa64(rc))
-		}
-		return false
-	}
-	a.seam.log("httpd: advertise sent")
-	return true
-}
-
-// stop is the clean-exit half: the TTL=0 goodbye goes out twice
-// back-to-back (lost-packet cover, the startup burst's reason) and the
-// port releases.
+// stop is the clean-exit half: the shared advertiser joins its burst and
+// responder, sends the TTL=0 goodbye pair and releases the port.
 func (a *advertiser) stop() {
-	for i := 0; i < 2; i++ {
-		if !a.emit(a.goodbye) {
-			break
-		}
+	if !a.started || a.adv == nil {
+		return
 	}
-	a.seam.log("httpd: advertise goodbye sent")
-	_ = a.seam.close(mdns.Port)
+	a.adv.Stop()
+	a.started = false
 }
