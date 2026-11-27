@@ -537,3 +537,208 @@ func Y() int {
 		t.Fatal("refused move must not write STAGE.jsonl")
 	}
 }
+
+func TestCleanRenameMergeMaterializesRenamedSource(t *testing.T) {
+	h := newTestHarness(t)
+	setupRenameMergeFork(t, h)
+	commitFeatureRename(t, h, "Z", "calc.Z")
+
+	rc, logs := h.runCmd("merge", "feature")
+	if rc != 0 || len(logs) != 2 || !strings.HasPrefix(logs[0], "flint: merge ok conflicts=0 ops=1 id=") || logs[1] != "flint: merge materialized files=1" {
+		t.Fatalf("clean rename merge: rc=%d logs=%v", rc, logs)
+	}
+	got, err := h.fs.ReadFile("/host/SRCA/calc.go", MaxFileReadBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(got, []byte("func Z() int")) || bytes.Contains(got, []byte("func X() int")) {
+		t.Fatalf("rename merge materialized wrong source:\n%s", got)
+	}
+	headAtoms := replayHeadAtoms(t, h, "main")
+	found := false
+	for _, a := range headAtoms {
+		if a.Name == "calc.Z" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("merged head lacks calc.Z: %+v", headAtoms)
+	}
+}
+
+func TestCleanMoveMergeMaterializesSourceAndTargetFiles(t *testing.T) {
+	h := newTestHarness(t)
+	setupRenameMergeFork(t, h)
+
+	calcWithoutY := `package calc
+
+func X() int {
+	return 1
+}
+`
+	utilWithY := `package calc
+
+func Y() int {
+	return 2
+}
+`
+	if err := h.fs.WriteFileSafe("/host/SRCB/calc.go", []byte(calcWithoutY)); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.fs.WriteFileSafe("/host/SRCB/util.go", []byte(utilWithY)); err != nil {
+		t.Fatal(err)
+	}
+	if rc, logs := h.runCmd("mv", "--ws=b", "calc.Y", "util.go"); rc != 0 {
+		t.Fatalf("feature mv: %v", logs)
+	}
+	if rc, logs := h.runCmd("commit", "--ws=b", "-m", "feature move"); rc != 0 {
+		t.Fatalf("feature commit: %v", logs)
+	}
+
+	rc, logs := h.runCmd("merge", "feature")
+	if rc != 0 || len(logs) != 2 || !strings.HasPrefix(logs[0], "flint: merge ok conflicts=0 ops=1 id=") || logs[1] != "flint: merge materialized files=2" {
+		t.Fatalf("clean move merge: rc=%d logs=%v", rc, logs)
+	}
+	gotCalc, err := h.fs.ReadFile("/host/SRCA/calc.go", MaxFileReadBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotUtil, err := h.fs.ReadFile("/host/SRCA/util.go", MaxFileReadBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(gotCalc, []byte("func Y() int")) || !bytes.Contains(gotUtil, []byte("func Y() int")) {
+		t.Fatalf("move merge materialized wrong source:\ncalc:\n%s\nutil:\n%s", gotCalc, gotUtil)
+	}
+	headAtoms := replayHeadAtoms(t, h, "main")
+	found := false
+	for _, a := range headAtoms {
+		if a.Name == "calc.Y" && a.Span.File == "util.go" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("merged head lacks moved calc.Y: %+v", headAtoms)
+	}
+}
+
+func TestRenameInSharedConstSpecStagesSiblingModify(t *testing.T) {
+	h := newTestHarness(t)
+	base := []byte(`package calc
+
+const A, B = 1, 2
+`)
+	if err := h.fs.WriteFileSafe("/host/SRCA/calc.go", base); err != nil {
+		t.Fatal(err)
+	}
+	if rc, logs := h.runCmd("init", "--name=a", "--src=/host/SRCA"); rc != 0 {
+		t.Fatalf("init: %v", logs)
+	}
+	if rc, logs := h.runCmd("add", "/host/SRCA"); rc != 0 {
+		t.Fatalf("add: %v", logs)
+	}
+	if rc, logs := h.runCmd("commit", "-m", "base"); rc != 0 {
+		t.Fatalf("commit: %v", logs)
+	}
+	beforeB := atomByName(t, h, "a", "calc.B")
+	beforeA := atomByName(t, h, "a", "calc.A")
+
+	renamed := []byte(`package calc
+
+const A, C = 1, 2
+`)
+	if err := h.fs.WriteFileSafe("/host/SRCA/calc.go", renamed); err != nil {
+		t.Fatal(err)
+	}
+	rc, logs := h.runCmd("rename", "calc.B", "calc.C")
+	if rc != 0 || len(logs) != 1 || logs[0] != "flint: rename ok calc.B calc.C" {
+		t.Fatalf("shared-spec rename: rc=%d logs=%v", rc, logs)
+	}
+
+	stage, err := LoadWorkspaceStage(h.fs, h.root, "a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var renameB, modifyA bool
+	for _, op := range stage {
+		if op.Type == "rename" && op.AtomID == beforeB.ID && op.NewName == "calc.C" {
+			renameB = true
+		}
+		if op.Type == "modify" && op.AtomID == beforeA.ID && op.OldHash == beforeA.Hash {
+			modifyA = true
+		}
+	}
+	if !renameB || !modifyA {
+		t.Fatalf("shared-spec rename must stage rename(B)+modify(A): %+v", stage)
+	}
+	afterA := atomByName(t, h, "a", "calc.A")
+	if afterA.ID != beforeA.ID || afterA.Hash == beforeA.Hash {
+		t.Fatalf("sibling A must keep id and gain a modified hash: before %+v after %+v", beforeA, afterA)
+	}
+
+	if rc, logs := h.runCmd("commit", "-m", "rename shared const"); rc != 0 {
+		t.Fatalf("commit: %v", logs)
+	}
+	rc, logs = h.runCmd("checkout", "--stream=main", "--dir=/host/OUT")
+	if rc != 0 {
+		t.Fatalf("checkout: rc=%d logs=%v", rc, logs)
+	}
+	got, err := h.fs.ReadFile("/host/OUT/calc.go", MaxFileReadBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, renamed) {
+		t.Fatalf("shared-spec checkout did not round-trip:\n%s", got)
+	}
+}
+
+func TestMvZigAcrossFileStemsStagesMoveRenamePair(t *testing.T) {
+	h := newTestHarness(t)
+	base := []byte("pub fn add(a: i32, b: i32) i32 {\n    return a + b;\n}\n\npub fn keep() i32 {\n    return 1;\n}\n")
+	if err := h.fs.WriteFileSafe("/host/SRCA/sample.zig", base); err != nil {
+		t.Fatal(err)
+	}
+	if rc, logs := h.runCmd("init", "--name=a", "--src=/host/SRCA"); rc != 0 {
+		t.Fatalf("init: %v", logs)
+	}
+	if rc, logs := h.runCmd("add", "/host/SRCA"); rc != 0 {
+		t.Fatalf("add: %v", logs)
+	}
+	if rc, logs := h.runCmd("commit", "-m", "base"); rc != 0 {
+		t.Fatalf("commit: %v", logs)
+	}
+	before := atomByName(t, h, "a", "sample.add")
+
+	withoutAdd := []byte("pub fn keep() i32 {\n    return 1;\n}\n")
+	util := []byte("pub fn add(a: i32, b: i32) i32 {\n    return a + b;\n}\n")
+	if err := h.fs.WriteFileSafe("/host/SRCA/sample.zig", withoutAdd); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.fs.WriteFileSafe("/host/SRCA/util.zig", util); err != nil {
+		t.Fatal(err)
+	}
+	rc, logs := h.runCmd("mv", "sample.add", "util.zig")
+	if rc != 0 || len(logs) != 1 || logs[0] != "flint: mv ok sample.add util.zig" {
+		t.Fatalf("zig mv: rc=%d logs=%v", rc, logs)
+	}
+	stage, err := LoadWorkspaceStage(h.fs, h.root, "a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mv, ren *Op
+	for i := range stage {
+		switch stage[i].Type {
+		case "move":
+			mv = &stage[i]
+		case "rename":
+			ren = &stage[i]
+		}
+	}
+	if len(stage) != 2 || mv == nil || ren == nil || ren.NewName != "util.add" || mv.NewSpan == nil || mv.NewSpan.File != "util.zig" {
+		t.Fatalf("zig file-stem move must stage move+rename: %+v", stage)
+	}
+	after := atomByName(t, h, "a", "util.add")
+	if after.ID != before.ID || after.Hash != before.Hash {
+		t.Fatalf("zig move identity: before %+v after %+v", before, after)
+	}
+}

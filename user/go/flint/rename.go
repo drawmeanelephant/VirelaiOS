@@ -87,7 +87,7 @@ func sameHash(hashHex string, digest [32]byte) bool {
 // in one parsed file and refuses src_behind when the explicit verb is being
 // asked to sweep unrelated adds/modifies/deletes into the same stage. Allowed
 // missing/extra keys are the two ends of the explicit move/rename itself.
-func reconcileUnaffectedAtoms(atoms []StoredAtom, decls []parser.Atom, rel string, allowMissing, allowExtra map[AtomKey]bool) error {
+func reconcileUnaffectedAtoms(atoms []StoredAtom, decls []parser.Atom, rel string, allowMissing, allowExtra, allowChanged map[AtomKey]bool) error {
 	declByKey := make(map[AtomKey]parser.Atom, len(decls))
 	for _, d := range decls {
 		k := declKey(rel, d)
@@ -112,7 +112,11 @@ func reconcileUnaffectedAtoms(atoms []StoredAtom, decls []parser.Atom, rel strin
 			return refuse("src_behind", rel)
 		}
 		if !sameHash(a.Hash, d.Hash) || !sameHash(a.SigHash, d.SigHash) {
-			return refuse("src_behind", rel)
+			if !allowChanged[k] {
+				return refuse("src_behind", rel)
+			}
+			a.Hash = hex.EncodeToString(d.Hash[:])
+			a.SigHash = hex.EncodeToString(d.SigHash[:])
 		}
 		a.Span = Span{File: rel, Start: d.Start, End: d.End}
 	}
@@ -180,6 +184,33 @@ func loadRenameWorkspace(fs FS, root, wsFlag string) (*Workspace, []StoredAtom, 
 	return ws, atoms, stage, nil
 }
 
+func sharedSpanAtoms(atoms []StoredAtom, old StoredAtom) (map[AtomKey]bool, map[AtomKey]StoredAtom) {
+	allow := make(map[AtomKey]bool)
+	before := make(map[AtomKey]StoredAtom)
+	for _, a := range atoms {
+		if a.ID == old.ID || a.Span.File != old.Span.File || a.Span.Start != old.Span.Start || a.Span.End != old.Span.End {
+			continue
+		}
+		k := atomKey(a)
+		allow[k] = true
+		before[k] = a
+	}
+	return allow, before
+}
+
+func appendSharedModifyOps(incoming []Op, atoms []StoredAtom, before map[AtomKey]StoredAtom) []Op {
+	for _, pre := range before {
+		for _, a := range atoms {
+			if a.ID != pre.ID || a.Hash == pre.Hash {
+				continue
+			}
+			incoming = append(incoming, Op{Type: "modify", AtomID: a.ID, NewHash: a.Hash, NewSigHash: a.SigHash, OldHash: pre.Hash})
+			break
+		}
+	}
+	return incoming
+}
+
 // cmdRename implements `flint rename [--ws=<name>] <atom> <new-name>`.
 func cmdRename(fs FS, root string, args []string) error {
 	wsFlag, positional, err := parseRenameArgs(args, 2)
@@ -229,8 +260,9 @@ func cmdRename(fs FS, root string, args []string) error {
 
 	oldKey := atomKey(old)
 	newKey := AtomKey{File: rel, Kind: old.Kind, Name: newName}
+	sharedChanged, sharedBefore := sharedSpanAtoms(atoms, old)
 	if err := reconcileUnaffectedAtoms(atoms, decls, rel,
-		map[AtomKey]bool{oldKey: true}, map[AtomKey]bool{newKey: true}); err != nil {
+		map[AtomKey]bool{oldKey: true}, map[AtomKey]bool{newKey: true}, sharedChanged); err != nil {
 		return err
 	}
 
@@ -250,6 +282,7 @@ func cmdRename(fs FS, root string, args []string) error {
 			OldHash:    old.Hash,
 		})
 	}
+	incoming = appendSharedModifyOps(incoming, atoms, sharedBefore)
 	replaceAtom(atoms, updated)
 	if err := writeRefactorState(fs, root, ws.Name, atoms, stage, incoming, []string{rel}, map[string][]byte{rel: src}); err != nil {
 		return err
@@ -352,14 +385,15 @@ func cmdMv(fs FS, root string, args []string) error {
 
 	oldKey := atomKey(old)
 	targetKey := declKey(targetRel, *target)
+	sharedChanged, sharedBefore := sharedSpanAtoms(atoms, old)
 	if oldSrc != nil {
 		if err := reconcileUnaffectedAtoms(atoms, oldDecls, oldRel,
-			map[AtomKey]bool{oldKey: true}, nil); err != nil {
+			map[AtomKey]bool{oldKey: true}, nil, sharedChanged); err != nil {
 			return err
 		}
 	}
 	if err := reconcileUnaffectedAtoms(atoms, targetDecls, targetRel,
-		nil, map[AtomKey]bool{targetKey: true}); err != nil {
+		nil, map[AtomKey]bool{targetKey: true}, nil); err != nil {
 		return err
 	}
 
@@ -377,6 +411,7 @@ func cmdMv(fs FS, root string, args []string) error {
 	if updated.Hash != old.Hash || updated.SigHash != old.SigHash {
 		incoming = append(incoming, Op{Type: "modify", AtomID: old.ID, NewHash: updated.Hash, NewSigHash: updated.SigHash, OldHash: old.Hash})
 	}
+	incoming = appendSharedModifyOps(incoming, atoms, sharedBefore)
 	replaceAtom(atoms, updated)
 	files := []string{targetRel}
 	sources := map[string][]byte{targetRel: targetSrc}

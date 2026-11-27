@@ -166,8 +166,15 @@ verbs refuse `atom_missing` when the named pre-state or edited target is
 absent, `duplicate_decl` when the target identity is occupied,
 `span_conflict` when the old declaration still exists or the target is
 ambiguous, and `src_behind` when unrelated source drift would be swept
-into the same stage. A byte-offset shift inside the same file is not an
-Op: the working table updates the span silently.
+into the same stage. For a Go multi-name `const`/`var` spec, one raw
+span carries several Atoms; renaming one name can therefore change the
+canonical hash of its siblings, and the verb stages the sibling `modify`
+Ops needed to keep the whole shared declaration truthful. When a move
+changes a language-derived qualified name (a Go package clause or Zig
+file stem), hash equality is used only to locate the unique same-shaped
+declaration inside the explicitly named target file; ambiguity refuses,
+and no other file is searched. A byte-offset shift inside the same file
+is not an Op: the working table updates the span silently.
 
 ## Store (owner ruling: flat files + an in-memory index)
 
