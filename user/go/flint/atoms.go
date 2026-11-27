@@ -92,12 +92,14 @@ func cmdAdd(fs FS, root string, uuidGen *UUIDGen, args []string) error {
 	// Step 1: Parse every file on disk first (all-or-nothing: any syntax,
 	// parse_unsupported, or duplicate_decl error refuses before staging).
 	parsedByFile := make(map[string][]parser.Atom, len(diskFiles))
+	srcByFile := make(map[string][]byte, len(diskFiles))
 	for _, rel := range diskFiles {
 		full := ws.Src + "/" + rel
 		src, err := fs.ReadFile(full, MaxFileReadBytes)
 		if err != nil {
 			return err
 		}
+		srcByFile[rel] = src
 		pr, ok := parser.ForPath(rel)
 		if !ok {
 			continue
@@ -251,6 +253,18 @@ func cmdAdd(fs FS, root string, uuidGen *UUIDGen, args []string) error {
 	if len(foldedStage) > MaxAtoms {
 		return refuse("store_too_large", "atoms")
 	}
+
+	// Step 3b (M215a): write the blob lane before the stage references it —
+	// every Atom body (blobs/<atom.hash>) plus the complete file body keyed
+	// by the file's Atom-hash tuple, for each touched file still on disk.
+	for _, rel := range diskFiles {
+		atoms := fileAtomGroup(newAtoms, rel)
+		sortStoredAtoms(atoms)
+		if err := storeFileBodies(fs, root, rel, srcByFile[rel], atoms); err != nil {
+			return err
+		}
+	}
+
 	if err := WriteWorkspaceAtoms(fs, root, ws.Name, newAtoms); err != nil {
 		return err
 	}

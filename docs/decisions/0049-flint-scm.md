@@ -172,7 +172,42 @@ span silently.
   ws/<name>/ATOMS.jsonl         the working Atom table; rewritten with WriteFileSafe
   ws/<name>/STAGE.jsonl         staged Ops; rewritten with WriteFileSafe; removed by commit
   ws/<name>/MERGE.json          the last conflicted merge (M103d)
+  blobs/<hex64>                 content bodies (M215a amendment below)
+  blobs.count                   blob-lane entry count (M215a)
 ```
+
+**M215a amendment — the content lane.** `flint add` writes bodies under
+`blobs/` for every touched file, two classes sharing the lane:
+
+- **Atom bodies** — `blobs/<atom.hash>` holds the raw span bytes
+  `src[span.start:span.end]` of that Atom version. An Atom's canonical
+  hash names its body; canonically identical bodies share one blob.
+- **File bodies** — `blobs/<fileKey>` holds the complete source file
+  bytes of one file version, where `fileKey = SHA-256("FLINT-SRC/1\x00"
+  || str(rel) || u32le(n) || hash_1 || … || hash_n)` over the file's Atom
+  hashes in table order. The file's `new_hash`es name its body, so a
+  replayed head locates it with no Change/Op schema change.
+
+Materialization (`flint checkout`, and `flint merge`'s merged tree) emits
+the verbatim file body when the tuple's blob exists — byte-exact, so the
+re-parse reproduces spans identically — and otherwise synthesizes the
+canonical form: the package clause (Go; derived from the qualified
+names) plus every Atom body in Span order, all `const` Atoms in one group
+so a valueless spec keeps its iota index. Synthesized bytes are stored
+under the tuple, so the next materialization is byte-stable. Named
+refusals: `body_missing <file> <atom>` when a needed body is absent
+(every stream committed before the lane existed), `body_corrupt <file>`
+when a stored body fails re-parse verification, `body_mismatch <file>`
+when synthesis cannot reproduce the table, `path_unsafe <rel>` for a
+stored file name that escapes the destination, and `src_behind <file>`
+when the destination's Atoms match neither the target table nor the
+allowed base table (checkout: none; merge: the pre-merge workspace
+table). Bounds are the store's own: each body ≤ 4 MiB, the lane ≤ 4096
+entries (`store_too_large`). The lane bound is kept in `blobs.count`, a
+plain-integer sibling of `blobs/` — never a directory listing, since the
+guest's paged snapshot stops at 256 entries and the lane can legitimately
+reach 4096. The count is bumped after bodies land, so a crash undercounts
+and loosens, never tightens, the bound.
 
 - **Index.** Every invocation scans `streams/` and its own workspace into
   Go maps: Changes by id, Streams by id and by name, Atoms by id and by
@@ -303,14 +338,18 @@ sig       = sshlib.EdSign(sig_msg, seed)
 FLINT never runs a three-way AST diff. Conflict resolution is out of scope:
 an agent resolves by committing on one side and merging again.
 
-**FLINT stores structure, not text.** A Change carries hashes, not source.
-So `merge` updates history and the workspace's Atom table, but **it cannot
-rewrite source files**. It prints `merge: src not materialized files=<n>`
-and marks the merged Atoms `origin: merge` in `ATOMS.jsonl`. If a later
-`flint add` finds such an Atom missing or different on disk, it refuses
-`src_behind <file>` rather than staging a silent revert. The mark clears
-once disk matches. A content store (blobs keyed by hash), checkout and
-materialization are **FLINT M1**.
+**FLINT stores structure, not text** — until M215a. A Change carries
+hashes, not source; before the content lane landed, `merge` updated
+history and the workspace's Atom table but could not rewrite source
+files. It printed `merge: src not materialized files=<n>` and marked the
+merged Atoms `origin: merge` in `ATOMS.jsonl`. If a later `flint add`
+finds such an Atom missing or different on disk, it refuses
+`src_behind <file>` rather than staging a silent revert; the mark clears
+once disk matches. M215a added `blobs/` and the materialization rules
+above: merge now writes the merged tree and prints `merge materialized
+files=<n>` — or refuses by name — while `flint checkout --stream <s>
+[--dir <d>]` emits a stream head's replayed table as source under the
+same `src_behind` guard.
 
 ### 3. Parsing: what becomes an Atom, and the canonical forms
 
@@ -373,7 +412,7 @@ Go scanner to agree with it on every `.zig` file in the corpus.
 | Non-goal | Where it goes |
 |---|---|
 | SQL, any query engine, any new dependency | FLINT M1 query layer over the flat files, only if needed |
-| Content store, checkout, materializing merged source | FLINT M1 |
+| Content store, checkout, materializing merged source | landed in M215a (amendment above) |
 | `flint rename` / `flint mv`; heuristic rename detection (never) | FLINT M1 verbs |
 | Push/pull over the agent channel (ADR 0044) | FLINT M1 |
 | Policy (WASM), `policy_ref`, trust roots for `author` | FLINT M1 |
@@ -474,9 +513,10 @@ docs/status.md                   (the M103 row)
 
 ## Future arcs
 
-- **FLINT M1:** content store + checkout; `rename`/`mv` verbs;
-  push/pull over ADR 0044; WASM policy and trust roots; `FLINTD.ELF` under
-  INIT; leases; a query layer if the flat files are too slow.
+- **FLINT M1:** content store + checkout (landed in M215a);
+  `rename`/`mv` verbs; push/pull over ADR 0044; WASM policy and trust
+  roots; `FLINTD.ELF` under INIT; leases; a query layer if the flat files
+  are too slow.
 - **FLINT M2:** nested Atoms, dep graph, lazy materialization,
   chunked storage.
 - **FLINT M3:** federated identity, signed policy distribution.

@@ -670,14 +670,15 @@ func cmdMerge(fs FS, root string, uuidGen *UUIDGen, args []string) int {
 		atomsByID[a.ID] = a
 	}
 
-	// Count distinct files affected by the merged Ops before/after applying them.
-	unmaterializedFiles := make(map[string]bool)
+	// Collect the distinct files the merged Ops touch; M215a materializes
+	// them instead of reporting them.
+	affectedFiles := make(map[string]bool)
 	for _, op := range c.Ops {
 		if a, ok := atomsByID[op.AtomID]; ok && a.Span.File != "" {
-			unmaterializedFiles[a.Span.File] = true
+			affectedFiles[a.Span.File] = true
 		}
 		if op.NewSpan != nil && op.NewSpan.File != "" {
-			unmaterializedFiles[op.NewSpan.File] = true
+			affectedFiles[op.NewSpan.File] = true
 		}
 	}
 
@@ -686,11 +687,40 @@ func cmdMerge(fs FS, root string, uuidGen *UUIDGen, args []string) int {
 	for _, a := range atomsByID {
 		updatedAtoms = append(updatedAtoms, a)
 	}
+	sortStoredAtoms(updatedAtoms)
 	if len(updatedAtoms) > MaxAtoms {
 		return runErr(refuse("store_too_large", "atoms"))
 	}
 
+	// Materialization checks run before the signed Change lands: a merge
+	// either writes the merged tree or refuses by name (`src_behind`,
+	// `body_missing`, `body_corrupt`, `body_mismatch`) without mutating
+	// history. The guard's base is the pre-merge workspace table — the
+	// working copy's last-known state.
+	byFile, files := groupAtomsByFile(updatedAtoms)
+	var mergeFiles []string
+	for _, rel := range files {
+		if affectedFiles[rel] {
+			mergeFiles = append(mergeFiles, rel)
+		}
+	}
+	for rel := range affectedFiles {
+		if _, ok := byFile[rel]; !ok {
+			mergeFiles = append(mergeFiles, rel)
+		}
+	}
+	sort.Strings(mergeFiles)
+	baseByFile, _ := groupAtomsByFile(existingAtoms)
+	plans, err := planMaterialization(fs, root, ws.Src, byFile, mergeFiles, baseByFile)
+	if err != nil {
+		return runErr(err)
+	}
+
 	if _, err := AppendStreamChange(fs, root, intoSt.ID, expectedHead, c); err != nil {
+		return runErr(err)
+	}
+	written, err := execMaterialization(fs, plans)
+	if err != nil {
 		return runErr(err)
 	}
 	if err := WriteWorkspaceAtoms(fs, root, ws.Name, updatedAtoms); err != nil {
@@ -701,6 +731,6 @@ func cmdMerge(fs FS, root string, uuidGen *UUIDGen, args []string) int {
 	}
 
 	consoleFn("flint: merge ok conflicts=0 ops=" + vi.Itoa64(int64(len(c.Ops))) + " id=" + c.ID)
-	consoleFn("flint: merge src not materialized files=" + vi.Itoa64(int64(len(unmaterializedFiles))))
+	consoleFn("flint: merge materialized files=" + vi.Itoa64(int64(written)))
 	return 0
 }
