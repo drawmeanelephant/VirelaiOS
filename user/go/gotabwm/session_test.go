@@ -9,6 +9,7 @@ import (
 )
 
 func TestRestoreSessionBranchesAndFirstBootWorkspace(t *testing.T) {
+	resetSeatForTest(t)
 	seed := TabStrip{}
 	if !seed.OpenTab(0x41, "Sh") {
 		t.Fatal("OpenTab")
@@ -143,6 +144,7 @@ func twoTabStrip(t *testing.T) {
 // mutation the user can make publishes the strip it produced, and the LAST
 // mutation is the one on disk.
 func TestSessionWriteThroughMutationChain(t *testing.T) {
+	resetSeatForTest(t)
 	var log sessionWriteLog
 	log.install(t)
 	twoTabStrip(t)
@@ -221,6 +223,7 @@ func TestSessionWriteThroughMutationChain(t *testing.T) {
 // count bounded": the guard is on CHANGE, so a drag that lands on its own
 // cell and a pin of an already-pinned tab cost no file write.
 func TestSessionNoOpMutationWritesNothing(t *testing.T) {
+	resetSeatForTest(t)
 	var log sessionWriteLog
 	log.install(t)
 	twoTabStrip(t)
@@ -234,11 +237,16 @@ func TestSessionNoOpMutationWritesNothing(t *testing.T) {
 	if applyRailReorder(1, 1) {
 		t.Fatal("a same-cell reorder must be a no-op")
 	}
-	if applyHidPin() {
-		t.Fatal("pinning an already-pinned tab must be a no-op")
-	}
 	if len(log.writes) != want {
 		t.Fatalf("no-op mutations wrote %d extra files", len(log.writes)-want)
+	}
+	// M216d (#3943): the pin chord is a toggle — the second press UNPINS,
+	// a real mutation that must persist exactly like the first.
+	if !applyHidPin() {
+		t.Fatal("the toggle's unpin half must land")
+	}
+	if len(log.writes) != want+1 {
+		t.Fatalf("unpin wrote %d files, want exactly one more", len(log.writes)-want)
 	}
 }
 
@@ -246,6 +254,7 @@ func TestSessionNoOpMutationWritesNothing(t *testing.T) {
 // never a re-exec'd app, so it is not written back. Without this the file
 // grows a ghost row per boot (restore two, open one, reboot -> three).
 func TestSessionWriteSkipsRestoredPlaceholders(t *testing.T) {
+	resetSeatForTest(t)
 	var log sessionWriteLog
 	log.install(t)
 
@@ -304,6 +313,7 @@ func TestSessionWriteSkipsRestoredPlaceholders(t *testing.T) {
 // so a relaunch cannot re-exec it (observed: session load n=3 restoring
 // Welcome beside [Sh, Term], go-wm-default run 20).
 func TestSessionWriteSkipsTourRow(t *testing.T) {
+	resetSeatForTest(t)
 	var log sessionWriteLog
 	log.install(t)
 
@@ -326,6 +336,7 @@ func TestSessionWriteSkipsTourRow(t *testing.T) {
 // TestSessionWriteFailureStaysDirty: a failed publish must not be recorded
 // as an up-to-date file — the next mutation retries.
 func TestSessionWriteFailureStaysDirty(t *testing.T) {
+	resetSeatForTest(t)
 	var log sessionWriteLog
 	log.install(t)
 	twoTabStrip(t)
@@ -349,6 +360,7 @@ func TestSessionWriteFailureStaysDirty(t *testing.T) {
 // strip, publish it, decode it, and compare every field the v2 record can
 // carry. The truncated-record case is the fail-closed half.
 func TestMutatedStripRoundTrips(t *testing.T) {
+	resetSeatForTest(t)
 	var s TabStrip
 	if !s.OpenTab(3, "Calc") || !s.OpenTab(4, "Notepad") {
 		t.Fatal("OpenTab")
@@ -403,6 +415,7 @@ func TestMutatedStripRoundTrips(t *testing.T) {
 // declared with, so reopen and duplicate still name the real app (the M79d
 // interaction the card calls out).
 func TestSessionTitleKeepsBin(t *testing.T) {
+	resetSeatForTest(t)
 	var s TabStrip
 	if !s.OpenTab(4, "Notepad") {
 		t.Fatal("OpenTab")
@@ -426,6 +439,7 @@ func TestSessionTitleKeepsBin(t *testing.T) {
 }
 
 func TestHasLiveGuestELF(t *testing.T) {
+	resetSeatForTest(t)
 	row := func(state uint64, name string) vi.ProcRow {
 		r := vi.ProcRow{State: state}
 		copy(r.NameBuf[:], name)
@@ -539,6 +553,7 @@ func reexecDeclare(t *testing.T, pid uint8, winID uint32, title string) bool {
 // SPEC.md), and the rows are adopted in place so order, pin, frozen and the
 // recorded focus all survive.
 func TestSessionReexecAdoptsBackedRows(t *testing.T) {
+	resetSeatForTest(t)
 	var log sessionWriteLog
 	log.install(t)
 	raw := seedSessionFile(t, 2,
@@ -622,6 +637,7 @@ func TestSessionReexecAdoptsBackedRows(t *testing.T) {
 // re-exec'd — it is dropped by name while the backed row waits for its
 // declare.
 func TestSessionReexecMixedUnbacked(t *testing.T) {
+	resetSeatForTest(t)
 	var log sessionWriteLog
 	log.install(t)
 	raw := seedSessionFile(t, 1,
@@ -652,6 +668,7 @@ func TestSessionReexecMixedUnbacked(t *testing.T) {
 // refuses (pool full, or a bin that is not a file) is dropped by name; the
 // rows that did exec still wait for their declares.
 func TestSessionReexecExecFailureDropsRow(t *testing.T) {
+	resetSeatForTest(t)
 	var log sessionWriteLog
 	log.install(t)
 	raw := seedSessionFile(t, 1,
@@ -680,6 +697,7 @@ func TestSessionReexecExecFailureDropsRow(t *testing.T) {
 // restore leaves no live row, and the starter shell is NOT suppressed —
 // the state reads sessionEmpty and firstBootWorkspace fires.
 func TestSessionReexecAllUnbackedFallsBack(t *testing.T) {
+	resetSeatForTest(t)
 	var log sessionWriteLog
 	log.install(t)
 	raw := seedSessionFile(t, 0,
@@ -705,6 +723,7 @@ func TestSessionReexecAllUnbackedFallsBack(t *testing.T) {
 // expires drops its row; a declare that arrives afterwards joins as an
 // ordinary new tab, never resurrecting the placeholder.
 func TestSessionReexecLateDeclareWindow(t *testing.T) {
+	resetSeatForTest(t)
 	var log sessionWriteLog
 	log.install(t)
 	raw := seedSessionFile(t, 0,
@@ -748,6 +767,7 @@ func TestSessionReexecLateDeclareWindow(t *testing.T) {
 // reaped on the next composite tick — the row is dropped rather than
 // waiting out the hold.
 func TestSessionReexecDeadPidReaped(t *testing.T) {
+	resetSeatForTest(t)
 	var log sessionWriteLog
 	log.install(t)
 	raw := seedSessionFile(t, 1,
@@ -780,6 +800,7 @@ func TestSessionReexecDeadPidReaped(t *testing.T) {
 // never exec'd is an ordinary tab — it appends, takes focus, and leaves the
 // pending rows alone.
 func TestSessionReexecUnknownPidOpensNewTab(t *testing.T) {
+	resetSeatForTest(t)
 	var log sessionWriteLog
 	log.install(t)
 	raw := seedSessionFile(t, 0, Tab{Title: "Calc", Bin: "GOCALC.ELF"})
@@ -806,6 +827,7 @@ func TestSessionReexecUnknownPidOpensNewTab(t *testing.T) {
 // even after the re-exec fan-out mutated the strip — and an absent file
 // echoes the empty strip exactly as before.
 func TestSessionEchoPinsTheFile(t *testing.T) {
+	resetSeatForTest(t)
 	var log sessionWriteLog
 	log.install(t)
 	raw := seedSessionFile(t, 1,

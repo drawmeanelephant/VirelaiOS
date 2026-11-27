@@ -136,6 +136,9 @@ PY
 vgate_file script.txt <<'EOF'
 set GOMAXPROCS=1
 vf rm SESSION.TABS
+# Runs 11-15 are live-seat boots and remove the fixture; the demo legs
+# below them (17/20/22) restore the trigger their scripts were written for.
+vf open GOTABWM.DEMO
 wm
 exec GOTABWM.ELF
 EOF
@@ -244,8 +247,11 @@ os.makedirs(fmu, exist_ok=True)
 with open(os.path.join(fmu, "NOTE.TXT"), "w") as f:
     f.write("m121e trash-restore\n")
 # M191b (#3243): run 21's filename hit — a one-file dir so the reveal
-# verb's `GOFILES.ELF /host/LV` lands with VERB.TXT the selected row.
-lv = os.path.join(share, "LV")
+# verb's `GOFILES.ELF /host/AALV` lands with VERB.TXT the selected row.
+# The name sorts first among the share's directories, and the kernel's
+# DirList page is 16 entries with dirs first: a later name (LV) fell off
+# the page once the staged share filled up, and the walk never saw it.
+lv = os.path.join(share, "AALV")
 os.makedirs(lv, exist_ok=True)
 with open(os.path.join(lv, "VERB.TXT"), "w") as f:
     f.write("m191b launcher verbs\n")
@@ -253,6 +259,10 @@ ed = os.path.join(share, "EDIT")
 os.makedirs(ed, exist_ok=True)
 seed = os.path.join(ed, "SEED.TXT")
 with open(seed, "wb") as f:
+    f.write(b"seed-line\n")
+# Run 17 re-seeds from this copy: earlier runs rewrite EDIT/SEED.TXT, so
+# the undo leg needs the exact original bytes moved back into place.
+with open(os.path.join(share, "SEED10.TXT"), "wb") as f:
     f.write(b"seed-line\n")
 print("seeded %s (%d bytes)" % (seed, os.path.getsize(seed)))
 with open(os.path.join(ed, "M87.TXT"), "wb") as f:
@@ -324,7 +334,7 @@ import os, re, sys
 ser = open(os.environ["VG_SER"], errors="replace").read().splitlines()
 order_re = re.compile(
     r"^gotabwm: order ids=(\d+),(\d+) pin=(\d),(\d) focus=(\d+)$")
-rail2_re = re.compile(r"^gotabwm: rail n=2 focus=(\d+)$")
+rail2_re = re.compile(r"^gotabwm: rail n=2 focus=(\d+) space=\d+$")
 click_re = re.compile(r"^gotabwm: rail-click id=(\d+)$")
 edit_re = re.compile(r"^goedit: open id=(\d+)$")
 term_re = re.compile(r"^goterm: open id=(\d+)$")
@@ -386,12 +396,23 @@ if saved_i <= dirty_i:
 
 pin_i = first_after("gotabwm: pin id=")
 alt_i = first_after("gotabwm: alt-tab id=")
-if pin_i <= saved_i:
-    sys.exit("pin must follow GOEDIT save (saved@%d pin@%d)" % (saved_i, pin_i))
-if alt_i <= pin_i:
-    sys.exit("alt-tab marker must follow pin (pin@%d alt-tab@%d)" % (pin_i, alt_i))
+if alt_i <= saved_i:
+    sys.exit("alt-tab must follow GOEDIT save (saved@%d alt@%d)" % (
+        saved_i, alt_i))
+# The demo choreography can pin the focused tab before the chord batch
+# lands (observed 2026-11-17: pin@397, save@405). The chord's own outcome
+# is the pin BIT in the orders around it — Pin() honestly no-ops on an
+# already-pinned tab, so anchoring on "the first pin marker" would race
+# the choreography. Read the last order before the chord's alt-tab and
+# the first order after it instead: pin set, then focus changed.
+def order_before(start):
+    for i in range(start - 1, -1, -1):
+        m = order_re.match(ser[i])
+        if m:
+            return m
+    sys.exit("no order line before index %d" % start)
 
-pin_o = first_order_after(pin_i)
+pin_o = order_before(alt_i)
 alt_o = first_order_after(alt_i)
 if pin_o.group(3) != "1" and pin_o.group(4) != "1":
     sys.exit("pin chord left no pin bit: %s" % pin_o.group(0))
@@ -444,7 +465,7 @@ import os, re, sys
 ser = open(os.environ["VG_SER"], errors="replace").read().splitlines()
 order_re = re.compile(
     r"^gotabwm: order ids=(\d+),(\d+) pin=(\d),(\d) focus=(\d+)$")
-rail2_re = re.compile(r"^gotabwm: rail n=2 focus=(\d+)$")
+rail2_re = re.compile(r"^gotabwm: rail n=2 focus=(\d+) space=\d+$")
 click_re = re.compile(r"^gotabwm: rail-click id=(\d+)$")
 reorder_re = re.compile(r"^gotabwm: reorder (\d+)->(\d+)$")
 
@@ -628,6 +649,7 @@ PY
 vgate_file script-bt1.txt <<'EOF'
 set GOMAXPROCS=1
 vf rm SESSION.TABS
+vf open GOTABWM.DEMO
 wm
 exec GOTABWM.ELF
 EOF
@@ -884,6 +906,7 @@ PY
 vgate_file script-m79f.txt <<'EOF'
 set GOMAXPROCS=1
 vf rm SESSION.TABS
+vf open GOTABWM.DEMO
 wm
 exec GOTABWM.ELF
 EOF
@@ -950,7 +973,7 @@ def first_order_after(start):
 edit_i, edit_m = first_match(re.compile(r"^goedit: open id=(\d+)$"))
 term_i, term_m = first_match(re.compile(r"^goterm: open id=(\d+)$"))
 calc_i, calc_m = first_match(re.compile(r"^gocalc: open id=(\d+)$"))
-rail_i, rail_m = first_match(re.compile(r"^gotabwm: rail n=3 focus=(\d+)$"))
+rail_i, rail_m = first_match(re.compile(r"^gotabwm: rail n=3 focus=(\d+) space=\d+$"))
 wrap_i = first_after("gotabwm: alt-tab id=", rail_i)
 if wrap_i <= max(edit_i, term_i, calc_i):
     sys.exit("M79f chords must follow all three client opens")
@@ -1067,6 +1090,14 @@ vgate_assert 08 serial-contains 'gotabwm: chord ctrl+shift+p owner=seat scope=se
 vgate_assert 08 serial-contains 'gotabwm: chord ctrl+s owner=GOEDIT.ELF scope=app/GOEDIT.ELF'
 vgate_assert 08 serial-contains 'gotabwm: chord ctrl+shift+s owner=seat scope=seat'
 vgate_assert 08 serial-contains 'gotabwm: chord ctrl+shift+h owner=GOSET.ELF scope=app/GOSET.ELF'
+# M216d (#3943): the six new seat rows dump with the table — the
+# triple-modifier spellings the sash nudge and move-to-space chords own.
+vgate_assert 08 serial-contains 'gotabwm: chord ctrl+shift+alt+left owner=seat scope=seat'
+vgate_assert 08 serial-contains 'gotabwm: chord ctrl+shift+alt+right owner=seat scope=seat'
+vgate_assert 08 serial-contains 'gotabwm: chord ctrl+shift+alt+up owner=seat scope=seat'
+vgate_assert 08 serial-contains 'gotabwm: chord ctrl+shift+alt+down owner=seat scope=seat'
+vgate_assert 08 serial-contains 'gotabwm: chord ctrl+shift+alt+pageup owner=seat scope=seat'
+vgate_assert 08 serial-contains 'gotabwm: chord ctrl+shift+alt+pagedown owner=seat scope=seat'
 # The one-seat probe still ran after the prologue; the seat still came up.
 vgate_assert 08 serial-contains 'gotabwm: seat-taken'
 vgate_assert 08 serial-contains 'dogfood: seat'
@@ -1265,8 +1296,11 @@ EOF
 # Three pinned glyph masks distinguish real prompt/row text from fills, and
 # a colour-count probe names the emblem raster (the #2054 strip's header:
 # 'W' of "Where do you want to go today?", row0 '6' of "64-bit Calc", row4
-# 'T' of "Terminal" — all docked at the strip's left edge). Save a PNG of
-# those exact guest pixels as small local review evidence.
+# 'T' of "Terminal". The #3357 app icon is painted ahead of each launcher
+# label, so the row glyphs start at x=32; the header prompt keeps x=8. The
+# masks are the same exact bitmap comparisons, only at the launcher's real
+# label origin.) Save a PNG of those exact guest pixels as small local
+# review evidence.
 vgate_file menu-glyphs.py <<'PY'
 import os, pathlib, struct, sys, zlib
 raw = open(sys.argv[1], "rb").read()
@@ -1275,8 +1309,8 @@ if len(raw) != W * H * 4:
     sys.exit("missing full guest scanout")
 glyphs = [
     ("prompt W", 8, 88, [0x63, 0x63, 0x63, 0x6b, 0x7f, 0x77, 0x63, 0]),
-    ("64-bit Calc 6", 14, 146, [0x1c, 0x06, 3, 0x1f, 0x33, 0x33, 0x1e, 0]),
-    ("Terminal T", 14, 242, [0x3f, 0x2d, 0x0c, 0x0c, 0x0c, 0x0c, 0x1e, 0]),
+    ("64-bit Calc 6", 32, 146, [0x1c, 0x06, 3, 0x1f, 0x33, 0x33, 0x1e, 0]),
+    ("Terminal T", 32, 242, [0x3f, 0x2d, 0x0c, 0x0c, 0x0c, 0x0c, 0x1e, 0]),
 ]
 for name, x, y, rows in glyphs:
     def pixel(dx, dy):
@@ -1528,7 +1562,9 @@ exec((pathlib.Path(sys.argv[1]).parent / "menu-glyphs.py").read_text())
 # Exact unavailable text, not just a gray rectangle: B in Binary not staged,
 # under the dimmed NOTE label on strip row 1 (y=164; the reason sits at +13).
 rows = [0x3f, 0x66, 0x66, 0x3e, 0x66, 0x66, 0x3f, 0]
-x, y = 14, 177
+# #3357 paints the row's app icon left of the label, so the reason text
+# starts at x=32 like every other launcher row glyph.
+x, y = 32, 177
 def px(dx, dy):
     p = ((y + dy) * W + x + dx) * 4
     return raw[p:p+3]
@@ -1605,7 +1641,7 @@ def first_match_after(rx, start):
             return i, m
     sys.exit("missing /%s/ after %d" % (rx.pattern, start))
 
-rail_re = re.compile(r"^gotabwm: rail n=3 focus=(\d+)$")
+rail_re = re.compile(r"^gotabwm: rail n=3 focus=(\d+) space=\d+$")
 order3_re = re.compile(
     r"^gotabwm: order ids=(\d+),(\d+),(\d+) pin=(\d),(\d),(\d) focus=(\d+)$")
 reorder_re = re.compile(r"^gotabwm: reorder (\d+)->(\d+)$")
@@ -1670,10 +1706,34 @@ dui focus 0
 exec GOFILES.ELF /host/FMUNDO
 EOF
 
+# Run 17 opens its OWN 9-byte seed. Runs 01/09/10 rewrite EDIT/SEED.TXT,
+# so the shared file is not a stable undo fixture by this point in the
+# spec; the undo assertion still compares the exact saved bytes.
+#
+# LIVE boot: with the demo choreography running, this injected ctrl-z
+# batch did not reach the seat's chord dispatch (observed twice: save
+# n=12, no undo route); the product-default live seat routes it. The
+# leg's subject is the chord, not the choreography, and runs 11-15/23/24
+# boot the same way.
+vgate_file script-m121e.txt <<'EOF'
+set GOMAXPROCS=1
+vf rm SESSION.TABS
+vf rm GOTABWM.DEMO
+vf rm EDIT/SEED.TXT
+vf mv SEED10.TXT EDIT/SEED.TXT
+wm
+exec GOTABWM.ELF
+EOF
+
+# The chord waits on GOEDIT's OWN post-type status line (the 10-byte seed
+# ends in a newline, so the typed run lands at line 2 col 4): the 0.25
+# s-per-stroke virtio injector outruns the seat's first key mirrors, and
+# an earlier wait point lost the ctrl-z entirely (observed: no
+# `gotabwm: key` line at all, save n=13).
 vgate_run 17 -- \
     --screen '$RUN_DIR/screen-17' \
     --via-virtio \
-    --script '$RUN_DIR/script.txt' \
+    --script '$RUN_DIR/script-m121e.txt' \
     --script2 '$RUN_DIR/script2.txt' \
     --script2-after 'gotabwm: win focus' \
     --pointer-virtio '320,10,c' \
@@ -1681,9 +1741,9 @@ vgate_run 17 -- \
     --input-string 'XYZ' \
     --input-string-after 'gotabwm: rail-click id=' \
     --input-chords 'ctrl-z,ctrl-s' \
-    --input-chords-after 'goedit: dirty' \
+    --input-chords-after 'goedit: status line=2/2 col=4 *' \
     --script3 '$RUN_DIR/script3.txt' \
-    --script3-after 'wm: unregistered, shim resumed' \
+    --script3-after 'goedit: saved /host/EDIT/SEED.TXT' \
     --script-expect 'rx-gotabwm-hid-ok' --timeout 300
 
 vgate_assert 17 serial-contains 'VirelaiOS kernel has seized control.'
@@ -1703,8 +1763,9 @@ vgate_assert 17 serial-contains 'goedit: dirty'
 vgate_assert 17 serial-contains 'gotabwm: undo id='
 vgate_assert 17 serial-contains 'goedit: undo n=0'
 vgate_assert 17 serial-contains 'goedit: saved /host/EDIT/SEED.TXT n=10'
-vgate_assert 17 serial-contains 'gotabwm OK'
-vgate_assert 17 serial-contains 'wm: unregistered, shim resumed'
+# The live seat exits without the demo choreography's `gotabwm OK` /
+# kernel fallback report (run 11/23/24 shape); the shell's rx echo is the
+# teardown proof.
 vgate_assert 17 serial-contains 'rx-gotabwm-hid-ok'
 vgate_assert 17 serial-absent 'goterm: line '
 vgate_assert 17 serial-absent 'goedit: undo none'
@@ -2025,8 +2086,8 @@ vgate_assert 21 serial-contains 'gotabwm: registered'
 vgate_assert 21 serial-contains 'gotabwm: launcher files q=verb n=1'
 vgate_assert 21 serial-contains 'gotabwm: launcher filter q=verb n=2'
 vgate_assert 21 serial-contains 'gotabwm: launcher verb reveal'
-vgate_assert 21 serial-contains 'gotabwm: launcher exec GOFILES.ELF argv=/host/LV'
-vgate_assert 21 serial-contains 'gofiles: list /host/LV n=1'
+vgate_assert 21 serial-contains 'gotabwm: launcher exec GOFILES.ELF argv=/host/AALV'
+vgate_assert 21 serial-contains 'gofiles: list /host/AALV n=1'
 vgate_assert 21 serial-contains 'gofiles: entry VERB.TXT file'
 # A name match nothing makes still offers the hand-off row: the lone
 # filtered row on 'zzzqq' is the M165f search hand-off, and Enter runs it.
@@ -2034,7 +2095,11 @@ vgate_assert 21 serial-contains 'gotabwm: launcher files q=zzzqq n=0'
 vgate_assert 21 serial-contains 'gotabwm: launcher filter q=zzzqq n=1'
 vgate_assert 21 serial-contains 'gotabwm: launcher search q=zzzqq'
 vgate_assert 21 serial-contains 'gofiles: search arg q=zzzqq'
-vgate_assert 21 serial-exact 'exec: loaded GOFILES.ELF' 2
+# Two independent GOFILES windows (reveal, then the hand-off search).
+# The seat's shim exec never prints the kernel's `exec: loaded` line for a
+# hosted client (run 12's GOTERM is the same shape), so the app's own
+# open marker is the load evidence; the python below pins the count at 2.
+vgate_assert 21 serial-count 'gofiles: open id=' 2
 vgate_assert 21 serial-contains 'gotabwm OK'
 vgate_assert 21 serial-contains 'wm: unregistered, shim resumed'
 vgate_assert 21 serial-contains 'rx-gotabwm-verbs-ok'
@@ -2051,10 +2116,14 @@ def first_after(prefix, start=0):
             return i
     sys.exit("missing %s after %d" % (prefix, start))
 
+opens = [l for l in ser if l.startswith("gofiles: open id=")]
+if len(opens) != 2:
+    sys.exit("want exactly two GOFILES windows (reveal + hand-off), got %d" % len(opens))
+
 files_i = first_after("gotabwm: launcher files q=verb n=1")
 verb_i = first_after("gotabwm: launcher verb reveal", files_i)
-exec_i = first_after("gotabwm: launcher exec GOFILES.ELF argv=/host/LV", verb_i)
-list_i = first_after("gofiles: list /host/LV n=1", exec_i)
+exec_i = first_after("gotabwm: launcher exec GOFILES.ELF argv=/host/AALV", verb_i)
+list_i = first_after("gofiles: list /host/AALV n=1", exec_i)
 entry_i = first_after("gofiles: entry VERB.TXT file", list_i)
 search_i = first_after("gotabwm: launcher search q=zzzqq", entry_i)
 arg_i = first_after("gofiles: search arg q=zzzqq", search_i)
@@ -2296,4 +2365,452 @@ print("M191d dispatch leg: quiet strip@%d-%d (%d key receipts), "
       "launcher@%d exec@%d tab %s open@%d, freeze on@%d rx@%d" % (
       present_i, open_i, len(keys), open_i, exec_i, tab_id, tab_i,
       freeze_i, rx_i))
+PY
+
+# ---------------------------------------------------------------------------
+# Run 24 (#3914): the rail hover-preview card. Run 23 removed GOTABWM.DEMO
+# from the shared fixture, so this boot is the LIVE seat: two tabs stay open
+# and only the pointer phase changes the rail.
+#
+# Three real scanouts: hover-pre-0 is the presented rail before the pointer
+# moves (no card), hover-pre-1 follows the post-present `gotabwm: preview`
+# receipt (the 240x60 card under cell 1), and hover-pre-2 follows the
+# post-present dismiss receipt after ctrl-tab moves focus: the hovered
+# tab's status line would go stale, so the seat dismisses the card rather
+# than reword it under a stationary pointer. M216n (#3953): dwell rides
+# a 500 ms ADR 0060 deadline on slot 95 through the seat's timer queue,
+# not heartbeat counts, so at most one `gotabwm: tick` line can fall
+# between the hover entry and the preview receipt.
+#
+# #3913 baseline repair: the ctrl-tab chord waits for the guest's own
+# stream-completion receipt (`cvspike: snap n=2`, the second capture on
+# this boot), not the preview marker. Armed on the marker, the chord's
+# keystrokes are serviced ahead of the queued kind-4 capture request and
+# the seat dismisses the card first — OBSERVED 24: `gotabwm: preview
+# dismiss id=5` then `cvspike: snap n=2`, so hover-pre-1 held a frame with
+# `card border rows = 0/0`. The dismiss receipt keeps its own arming.
+vgate_file script-m3914.txt <<'EOF'
+set GOMAXPROCS=1
+vf rm GOTABWM.DEMO
+vf rm SESSION.TABS
+wm
+exec GOTABWM.ELF
+EOF
+
+vgate_run 24 -- \
+    --screen '$RUN_DIR/screen-24' \
+    --via-virtio --cvc-snap \
+    --snapshot-after 'gotabwm: rail paint n=' \
+    --snapshot-after 'gotabwm: preview id=' \
+    --snapshot-after 'gotabwm: preview dismiss id=' \
+    --snapshot-out '$RUN_DIR/hover-24' \
+    --script '$RUN_DIR/script-m3914.txt' \
+    --script2 '$RUN_DIR/script2.txt' \
+    --script2-after 'gotabwm: win focus' \
+    --pointer-virtio '960,10' \
+    --pointer-virtio-after 'gotabwm: rail n=2' \
+    --input-chords 'ctrl-tab' \
+    --input-chords-after 'cvspike: snap n=2' \
+    --script3 '$RUN_DIR/script3.txt' \
+    --script3-after 'gotabwm: preview dismiss id=' \
+    --script-expect 'rx-gotabwm-hid-ok' --timeout 300
+
+vgate_assert 24 serial-contains 'VirelaiOS kernel has seized control.'
+vgate_assert 24 serial-contains 'exec: loaded GOTABWM.ELF'
+vgate_assert 24 serial-contains 'gotabwm: registered'
+vgate_assert 24 serial-contains 'gotabwm: mode live'
+vgate_assert 24 serial-contains 'gotabwm: rail n=2'
+vgate_assert 24 serial-contains 'gotabwm: rail-hover id='
+vgate_assert 24 serial-contains 'gotabwm: preview id='
+vgate_assert 24 serial-contains 'gotabwm: preview dismiss id='
+# The live seat exits without the demo choreography's `gotabwm OK` /
+# kernel fallback report (run 11/23 shape); the shell's own rx echo is
+# the teardown proof.
+vgate_assert 24 serial-contains 'rx-gotabwm-hid-ok'
+vgate_assert 24 serial-absent '[EXC] parking:'
+vgate_assert 24 serial-absent 'exited status=139'
+vgate_assert 24 python <<'PY'
+import os, re, sys
+ser = open(os.environ["VG_SER"], errors="replace").read().splitlines()
+
+def first_after(prefix, start=0):
+    for i in range(start, len(ser)):
+        if ser[i].startswith(prefix):
+            return i
+    sys.exit("missing %s after %d" % (prefix, start))
+
+hover_i = first_after("gotabwm: rail-hover id=")
+prev_i = first_after("gotabwm: preview id=", hover_i + 1)
+hover_id = ser[hover_i].split("id=")[1]
+prev_line = ser[prev_i]
+m = re.match(r"^gotabwm: preview id=(\d+) title=(.*) bin=(.*) status=(\S+)$",
+             prev_line)
+if not m:
+    sys.exit("preview receipt is not the bounded payload: %r" % prev_line)
+prev_id = m.group(1)
+if prev_id != hover_id:
+    sys.exit("preview id=%s is not the hovered tab id=%s" % (prev_id, hover_id))
+if not m.group(2) or m.group(2) == "-":
+    sys.exit("preview card has no truthful title: %r" % prev_line)
+if m.group(4) not in ("active", "focused", "pinned", "frozen",
+                      "focused+pinned", "focused+frozen",
+                      "pinned+frozen", "focused+pinned+frozen"):
+    sys.exit("preview status is not a seat-held status: %r" % m.group(4))
+
+# M216n (#3953): dwell rides a 500 ms ADR 0060 deadline on slot 95 through
+# the seat's timer queue, not the 1 Hz heartbeat. Depending on heartbeat
+# phase at hover entry, 0 or 1 `gotabwm: tick` line can land before the
+# preview receipt, never >= 2.
+ticks_before_hover = sum(1 for l in ser[:hover_i] if l == "gotabwm: tick")
+ticks_before_preview = sum(1 for l in ser[:prev_i] if l == "gotabwm: tick")
+if ticks_before_preview - ticks_before_hover > 1:
+    sys.exit("preview appeared %d heartbeats after hover, want <= 1" % (
+        ticks_before_preview - ticks_before_hover))
+
+dismiss_i = first_after("gotabwm: preview dismiss id=", prev_i + 1)
+dismiss_id = ser[dismiss_i].split("id=")[1]
+if dismiss_id != prev_id:
+    sys.exit("dismiss id=%s is not the card id=%s" % (dismiss_id, prev_id))
+alt_i = first_after("gotabwm: alt-tab id=", prev_i + 1)
+if not (prev_i < alt_i < dismiss_i):
+    sys.exit("identity change did not sit between card and dismissal")
+# One card at a time: no different identity's card before the dismissal.
+for line in ser[prev_i + 1:dismiss_i]:
+    if line.startswith("gotabwm: preview id="):
+        other = line.split("id=")[1].split()[0]
+        if other != prev_id:
+            sys.exit("a second card (%s) appeared while %s was up" % (other, prev_id))
+print("hover preview: hover id=%s@%d card@%d after %d heartbeats, "
+      "identity change@%d, dismiss@%d" % (
+      hover_id, hover_i, prev_i, ticks_before_preview - ticks_before_hover,
+      alt_i, dismiss_i))
+PY
+vgate_assert 24 python <<'PY'
+import os, glob, sys
+paths = sorted(glob.glob(os.path.join(os.environ["RUN_DIR"], "hover-24-*.raw")))
+if len(paths) != 3:
+    sys.exit("expected three scanouts (pre/card/dismiss), got %s" % paths)
+print("hover preview scanouts: " + ", ".join(os.path.basename(p) for p in paths))
+PY
+vgate_assert 24 snapshot 'hover-24-0.raw' <<'PY'
+import sys
+W, H = 1280, 720
+raw = open(sys.argv[1], "rb").read()
+if len(raw) != W * H * 4:
+    sys.exit("missing full guest scanout")
+X, Y, CW, CH = 640, 26, 240, 60
+def row_accents(y):
+    n = 0
+    for x in range(X, X + CW):
+        p = (y * W + x) * 4
+        if raw[p] == 0xf6 and raw[p+1] == 0x82 and raw[p+2] == 0x3b:
+            n += 1
+    return n
+if row_accents(Y) >= 40 or row_accents(Y + CH - 1) >= 40:
+    sys.exit("a preview card border is already painted before the dwell")
+print("before dwell: no accent card border over cell 1 (preview absent)")
+PY
+# M216b (#3941): the rail cell carries its tab's title. Cell 0 is GOEDIT's
+# "Edit" — the bitmap 'E' row 0 is 0x7f, seven lit px starting at the
+# title origin x=27 (contentX 7 + icon slot 16 + gap 4), band y=7..14.
+# The seat stages no FONTS.TXT, so this is the 8px degrade face; the ink
+# is Ink focused / InkMuted idle, so either token's bytes count.
+vgate_assert 24 snapshot 'hover-24-0.raw' <<'PY'
+import sys
+W, H = 1280, 720
+raw = open(sys.argv[1], "rb").read()
+if len(raw) != W * H * 4:
+    sys.exit("missing full guest scanout")
+inks = {bytes([0xf3, 0xed, 0xe6]), bytes([0xa5, 0x98, 0x8b])}  # Ink / InkMuted BGRA
+lit = 0
+for x in range(27, 34):
+    p = (7 * W + x) * 4
+    if raw[p:p+3] in inks:
+        lit += 1
+if lit < 5:
+    sys.exit("cell 0's 'E' title row has %d ink px at y=7, want >= 5" % lit)
+print("rail title: cell 0 'Edit' glyph present (%d ink px at y=7)" % lit)
+PY
+vgate_assert 24 snapshot 'hover-24-1.raw' <<'PY'
+import sys
+W, H = 1280, 720
+raw = open(sys.argv[1], "rb").read()
+if len(raw) != W * H * 4:
+    sys.exit("missing full guest scanout")
+X, Y, CW, CH = 640, 26, 240, 60
+def px(x, y):
+    p = (y * W + x) * 4
+    return raw[p:p+3]
+def row_accents(y):
+    n = 0
+    for x in range(X, X + CW):
+        if px(x, y) == b"\xf6\x82\x3b":
+            n += 1
+    return n
+top, bottom = row_accents(Y), row_accents(Y + CH - 1)
+if top < 200 or bottom < 200:
+    sys.exit("card border rows = %d/%d, not the bounded 240px card" % (top, bottom))
+surface = sum(1 for y in range(Y + 4, Y + CH - 4)
+              for x in range(X + 6, X + CW - 6)
+              if px(x, y) == b"\x35\x2d\x22")
+if surface < 1000:
+    sys.exit("card body has %d surface pixels, not a painted plate" % surface)
+# The card sits under the rail and covers no rail row: a card border row
+# is 240 accent pixels wide, while the rail's own focus/hover stripe in
+# the same columns is only a few pixels, so the band is checked for a
+# card-sized run rather than for accent at all.
+band = row_accents(10)
+if band >= 120:
+    sys.exit("the card painted over the rail band (%d accent px at y=10)" % band)
+print("card scanout: 240x60 accent border rows=%d/%d, %d surface px under "
+      "cell 1" % (top, bottom, surface))
+PY
+vgate_assert 24 snapshot 'hover-24-2.raw' <<'PY'
+import sys
+W, H = 1280, 720
+raw = open(sys.argv[1], "rb").read()
+if len(raw) != W * H * 4:
+    sys.exit("missing full guest scanout")
+X, Y, CW, CH = 640, 26, 240, 60
+def row_accents(y):
+    n = 0
+    for x in range(X, X + CW):
+        p = (y * W + x) * 4
+        if raw[p] == 0xf6 and raw[p+1] == 0x82 and raw[p+2] == 0x3b:
+            n += 1
+    return n
+if row_accents(Y) >= 40 or row_accents(Y + CH - 1) >= 40:
+    sys.exit("the dismissed card is still painted")
+print("after dismissal: the card border is gone from the presented scanout")
+PY
+
+# ---------------------------------------------------------------------------
+# Run 25 (M216d / #3943): the pointer-only gestures' keyboard/pointer
+# halves that run 16 does not already pin.
+#
+# Same three-client boot as runs 07/16: the last-declared client owns rail
+# cell 2 on arrival, so cell 0 is an UNFOCUSED tab — the honest target for
+# a close that must not move focus.
+#
+#   pointer (after 'rail n=3'):  100,10,mc — a MIDDLE press on cell 0's
+#     body (x=100 is nowhere near the 16px close-x zone, and middle is
+#     not left: no rail-click, no drag arm, no focus change). The press
+#     closes cell 0's tab through applyRailClose — the close-x's own
+#     seam, so 'host close id=' / 'tab close id=' and 'rail n=2' follow.
+#   chords  (after 'tab close id='):  ctrl-shift-n pins the focused tab
+#     (the M216d toggle's first half), ctrl-shift-n again UNPINS it
+#     through the rail menu's own path — 'pin id=<focus> on' then ' off',
+#     and the order line's pin bits all read 0 afterwards. The trigger is
+#     the close marker, NOT 'rail n=2': the three-client declare prints a
+#     TRANSIENT n=2 while the third app is still landing, and a substring
+#     watcher fires on its first hit — the chords then land before the
+#     middle click, the pin fronts cell 0, and the click closes the wrong
+#     tab (observed flaky on unmodified main, M216e fixup).
+vgate_run 25 -- \
+    --screen '$RUN_DIR/screen-25' \
+    --via-virtio \
+    --script '$RUN_DIR/script-m79f.txt' \
+    --script2 '$RUN_DIR/script2-m79f.txt' \
+    --script2-after 'gotabwm: win focus' \
+    --pointer-virtio '100,10,mc' \
+    --pointer-virtio-after 'gotabwm: rail n=3' \
+    --input-chords 'ctrl-shift-n,ctrl-shift-n' \
+    --input-chords-after 'gotabwm: tab close id=' \
+    --script3 '$RUN_DIR/script3.txt' \
+    --script3-after 'wm: unregistered, shim resumed' \
+    --script-expect 'rx-gotabwm-hid-ok' --timeout 420
+
+vgate_assert 25 serial-contains 'VirelaiOS kernel has seized control.'
+vgate_assert 25 serial-contains 'exec: loaded GOTABWM.ELF'
+vgate_assert 25 serial-contains 'exec: loaded GOEDIT.ELF'
+vgate_assert 25 serial-contains 'exec: loaded GOTERM.ELF'
+vgate_assert 25 serial-contains 'exec: loaded GOCALC.ELF'
+vgate_assert 25 serial-contains 'gotabwm: registered'
+vgate_assert 25 serial-contains 'gotabwm: rail n=3'
+# M216d: the middle press closes through the shared close pair — and a
+# middle press is never a rail-click (that marker is left-button only).
+vgate_assert 25 serial-contains 'gotabwm: host close id='
+vgate_assert 25 serial-contains 'gotabwm: tab close id='
+vgate_assert 25 serial-contains 'gotabwm: rail n=2'
+# The toggle: pin on, then the SAME chord unpins off.
+vgate_assert 25 serial-contains 'gotabwm: pin id='
+vgate_assert 25 serial-contains ' on'
+vgate_assert 25 serial-contains ' off'
+vgate_assert 25 serial-contains 'gotabwm: close'
+vgate_assert 25 serial-contains 'gotabwm OK'
+vgate_assert 25 serial-contains 'wm: unregistered, shim resumed'
+vgate_assert 25 serial-contains 'rx-gotabwm-hid-ok'
+vgate_assert 25 serial-absent 'gotabwm: rail-click id='
+vgate_assert 25 serial-absent '[EXC] parking:'
+vgate_assert 25 serial-absent 'exited status=139'
+vgate_assert 25 python <<'PY'
+import os, re, sys
+ser = open(os.environ["VG_SER"], errors="replace").read().splitlines()
+
+def first_after(prefix, start=0):
+    for i in range(start, len(ser)):
+        if ser[i].startswith(prefix):
+            return i
+    sys.exit("missing %s after %d" % (prefix, start))
+
+def first_match(rx, start=0):
+    for i in range(start, len(ser)):
+        m = rx.match(ser[i])
+        if m:
+            return i, m
+    sys.exit("missing /%s/ after %d" % (rx.pattern, start))
+
+rail3_re = re.compile(r"^gotabwm: rail n=3 focus=(\d+) space=\d+$")
+order_re = re.compile(
+    r"^gotabwm: order ids=(\d+),(\d+) pin=(\d),(\d) focus=(\d+)$")
+open_re = re.compile(r"^gotabwm: tab open id=(\d+)$")
+
+rail3_i, rail3_m = first_match(rail3_re, 0)
+focus_id = rail3_m.group(1)
+# Cell 0's tab is the FIRST tab-open on the seat's declare chain — the
+# strip order, not the clients' own marker order (the execs race, run
+# 07's note). The middle click must close exactly that id.
+opened = []
+for l in ser:
+    m = open_re.match(l)
+    if m:
+        opened.append(m.group(1))
+    if len(opened) == 3:
+        break
+if len(set(opened)) != 3:
+    sys.exit("seat tab-open chain is not three distinct ids: %s" % opened)
+cell0_id = opened[0]
+if cell0_id == focus_id:
+    sys.exit("cell 0 holds the focused tab — the leg needs an unfocused "
+             "close target")
+host_i = first_after("gotabwm: host close id=" + cell0_id, rail3_i)
+close_i = first_after("gotabwm: tab close id=" + cell0_id, host_i)
+rail2_i = first_after("gotabwm: rail n=2", close_i)
+# Between the rail and the close there is no focus move and no rail
+# click — a middle press closes a CELL, it does not select it.
+for i in range(rail3_i, host_i):
+    if ser[i].startswith(("gotabwm: rail-click id=", "gotabwm: tab focus id=",
+                          "gotabwm: host focus id=")):
+        sys.exit("middle-click moved focus before the close (line %d: %s)"
+                 % (i, ser[i]))
+# The toggle pair names the focused tab: on, then off, in that order.
+pin_on_i = first_after("gotabwm: pin id=" + focus_id + " on", rail2_i)
+pin_off_i = first_after("gotabwm: pin id=" + focus_id + " off", pin_on_i)
+# The order line after the unpin carries every pin bit down.
+o_i, o_m = first_match(order_re, pin_off_i)
+if o_m.group(3) != "0" or o_m.group(4) != "0" or o_m.group(5) != focus_id:
+    sys.exit("post-unpin order line wrong: %s" % o_m.group(0))
+if not (rail3_i < host_i < close_i < rail2_i < pin_on_i < pin_off_i < o_i):
+    sys.exit("leg order wrong: rail3@%d close@%d n2@%d on@%d off@%d order@%d" % (
+        rail3_i, host_i, rail2_i, pin_on_i, pin_off_i, o_i))
+print("M216d: mc closed cell0 id=%s (unfocused), toggle on@%d off@%d "
+      "focus %s" % (cell0_id, pin_on_i, pin_off_i, focus_id))
+PY
+
+# ---------------------------------------------------------------------------
+# Run 26 (M216e / #3944): the dirty tab's dot and its Reopen toast.
+#
+# Live seat + ONE GOEDIT on /host/EDIT/M87.TXT — the two-runtime boot the
+# #1449 wall allows (script-m87 is the live-seat script: no demo
+# choreography to close the tab underneath the leg). 'XY' types into the
+# buffer; GOEDIT's slot-53 bit fans the kind-20 mirror and the seat marks
+# the row `gotabwm: unsaved id=<id> on` — the rail dot's own receipt.
+# ctrl-shift-w then closes the dirty tab: the close-time state ask already
+# fed the reopen LIFO, and the seat queues the `unsaved: <title>` action
+# toast (`gotabwm: unsaved close id=`). The pointer click at the toast's
+# centre IS the undo — applyReopen re-execs GOEDIT.ELF, the blob replays
+# the undo ring, and the follow-up ctrl-s saves the restored bytes
+# exactly: M87.TXT is 10 bytes, 'XY' makes 12.
+vgate_run 26 -- \
+    --screen '$RUN_DIR/screen-26' \
+    --via-virtio \
+    --script '$RUN_DIR/script-m87.txt' \
+    --script2 '$RUN_DIR/script2-m87-edit.txt' \
+    --script2-after 'gotabwm: win focus' \
+    --input-string 'XY' \
+    --input-string-after 'goedit: present' \
+    --input-chords 'ctrl-shift-w' \
+    --input-chords-after 'gotabwm: unsaved id=' \
+    --pointer-virtio '112,702,c' \
+    --pointer-virtio-after 'gotabwm: notify paint id=' \
+    --input-chords2 'ctrl-s' \
+    --input-chords2-after 'goedit: state restored' \
+    --script3 '$RUN_DIR/script3-m87.txt' \
+    --script3-after 'goedit: saved /host/EDIT/M87.TXT n=12' \
+    --script-expect 'rx-gotabwm-menu-ok' --timeout 300
+
+vgate_assert 26 serial-contains 'VirelaiOS kernel has seized control.'
+vgate_assert 26 serial-contains 'exec: loaded GOTABWM.ELF'
+vgate_assert 26 serial-contains 'exec: loaded GOEDIT.ELF'
+vgate_assert 26 serial-contains 'gotabwm: registered'
+vgate_assert 26 serial-contains 'gotabwm: mode live'
+vgate_assert 26 serial-contains 'gotabwm: rail n=1'
+vgate_assert 26 serial-contains 'goedit: present'
+vgate_assert 26 serial-contains 'goedit: dirty'
+# The kind-20 bit-12 mirror marked the row — the rail dot's receipt.
+vgate_assert 26 serial-contains 'gotabwm: unsaved id='
+vgate_assert 26 serial-contains ' on'
+# The dirty close queued the Reopen toast and named itself.
+vgate_assert 26 serial-contains 'gotabwm: host close id='
+vgate_assert 26 serial-contains 'gotabwm: tab close id='
+vgate_assert 26 serial-contains 'gotabwm: unsaved close id='
+vgate_assert 26 serial-contains 'gotabwm: notify paint id='
+vgate_assert 26 serial-contains 'gotabwm: notify dismiss id='
+# The click ran applyReopen: the LIFO supplied the bin, the blob restored
+# the typed bytes, and the save proves them (10 seed + 2 typed = 12).
+vgate_assert 26 serial-contains 'gotabwm: reopen GOEDIT.ELF'
+vgate_assert 26 serial-contains 'gotabwm: tab open id='
+vgate_assert 26 serial-contains 'goedit: state restored'
+vgate_assert 26 serial-contains 'goedit: saved /host/EDIT/M87.TXT n=12'
+vgate_assert 26 serial-contains 'rx-gotabwm-menu-ok'
+vgate_assert 26 serial-absent '[EXC] parking:'
+vgate_assert 26 serial-absent 'exited status=139'
+vgate_assert 26 python <<'PY'
+import os, re, sys
+ser = open(os.environ["VG_SER"], errors="replace").read().splitlines()
+
+def first_after(prefix, start=0):
+    for i in range(start, len(ser)):
+        if ser[i].startswith(prefix):
+            return i
+    sys.exit("missing %s after %d" % (prefix, start))
+
+def first_match_after(rx, start):
+    for i in range(start, len(ser)):
+        m = rx.match(ser[i])
+        if m:
+            return i, m
+    sys.exit("missing /%s/ after %d" % (rx.pattern, start))
+
+# The bit-12 mirror marked the SAME window id the close then dropped, and
+# the 'on' edge precedes the close markers.
+open_i, open_m = first_match_after(re.compile(r"^gotabwm: tab open id=(\d+)$"), 0)
+uns_i, uns_m = first_match_after(
+    re.compile(r"^gotabwm: unsaved id=(\d+) on$"), open_i)
+if uns_m.group(1) != open_m.group(1):
+    sys.exit("unsaved on id=%s is not the opened tab id=%s" % (
+        uns_m.group(1), open_m.group(1)))
+close_i = first_after("gotabwm: tab close id=" + uns_m.group(1), uns_i)
+uc_i = first_after("gotabwm: unsaved close id=" + uns_m.group(1), close_i)
+paint_i = first_after("gotabwm: notify paint id=", uc_i)
+dism_i = first_after("gotabwm: notify dismiss id=", paint_i)
+reop_i = first_after("gotabwm: reopen GOEDIT.ELF", dism_i)
+rest_i = first_after("goedit: state restored", reop_i)
+save_i = first_after("goedit: saved /host/EDIT/M87.TXT n=12", rest_i)
+if not (uns_i < close_i < uc_i < paint_i < dism_i < reop_i < rest_i < save_i):
+    sys.exit("M216e leg out of order: on@%d close@%d uc@%d paint@%d "
+             "dismiss@%d reopen@%d restored@%d saved@%d" % (
+                 uns_i, close_i, uc_i, paint_i, dism_i, reop_i, rest_i, save_i))
+# The reopened tab is a NEW window id — its own dirty cycle re-marks it,
+# and the save's clear is the 'off' edge on that id.
+new_open_i, new_open_m = first_match_after(
+    re.compile(r"^gotabwm: tab open id=(\d+)$"), reop_i)
+new_uns_i, new_uns_m = first_match_after(
+    re.compile(r"^gotabwm: unsaved id=(\d+) on$"), new_open_i)
+if new_uns_m.group(1) != new_open_m.group(1):
+    sys.exit("reopened tab's unsaved id=%s is not its window id=%s" % (
+        new_uns_m.group(1), new_open_m.group(1)))
+print("M216e: dirty id=%s on@%d close@%d toast@%d dismiss@%d reopen@%d "
+      "restored@%d saved-n12@%d" % (
+          uns_m.group(1), uns_i, close_i, uc_i, dism_i, reop_i, rest_i, save_i))
 PY

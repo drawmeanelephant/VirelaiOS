@@ -22,6 +22,7 @@ func openNTabs(s *TabStrip, n int) {
 }
 
 func TestSplitPaneDepthOneMatchesSplitRects(t *testing.T) {
+	resetSeatForTest(t)
 	var s TabStrip
 	openNTabs(&s, 2)
 	if !s.SplitPane(SplitVert, scanoutW, scanoutH) {
@@ -41,6 +42,7 @@ func TestSplitPaneDepthOneMatchesSplitRects(t *testing.T) {
 }
 
 func TestSplitPaneThreeLeaves(t *testing.T) {
+	resetSeatForTest(t)
 	var s TabStrip
 	openNTabs(&s, 3)
 	if !s.SplitPane(SplitVert, scanoutW, scanoutH) {
@@ -68,6 +70,7 @@ func TestSplitPaneThreeLeaves(t *testing.T) {
 }
 
 func TestSplitPaneBounds(t *testing.T) {
+	resetSeatForTest(t)
 	var s TabStrip
 	openNTabs(&s, MaxPanes+2)
 	if !s.SplitPane(SplitVert, scanoutW, scanoutH) {
@@ -112,6 +115,7 @@ func TestSplitPaneBounds(t *testing.T) {
 }
 
 func TestPaneFocusMoveGeometry(t *testing.T) {
+	resetSeatForTest(t)
 	var s TabStrip
 	openNTabs(&s, 3)
 	if !s.SplitPane(SplitVert, scanoutW, scanoutH) {
@@ -159,6 +163,7 @@ func scanW(v int) uint32 { return uint32(v) }
 func scanH(v int) uint32 { return uint32(v) }
 
 func TestPaneSidecarRoundTrip(t *testing.T) {
+	resetSeatForTest(t)
 	var s TabStrip
 	openNTabs(&s, 3)
 	if !s.SplitPane(SplitVert, scanoutW, scanoutH) {
@@ -197,6 +202,7 @@ func TestPaneSidecarRoundTrip(t *testing.T) {
 }
 
 func TestPaneSidecarBadBytesRefuse(t *testing.T) {
+	resetSeatForTest(t)
 	var s TabStrip
 	openNTabs(&s, 2)
 	if s.decodePanes([]byte("garbage")) {
@@ -224,6 +230,7 @@ func TestPaneSidecarBadBytesRefuse(t *testing.T) {
 }
 
 func TestPaneSidecarWriteDelete(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	openTwoTabs(t)
 	calls, restore := rectRecorder()
@@ -268,6 +275,7 @@ func TestPaneSidecarWriteDelete(t *testing.T) {
 // request from a pid whose proc name is not AGENTD.ELF is refused with
 // the R2 marker and the denial rides the ack title.
 func TestAgentInputDeniedNotAgentd(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	savedName := agentProcName
 	t.Cleanup(func() { agentProcName = savedName })
@@ -306,6 +314,7 @@ func TestAgentInputDeniedNotAgentd(t *testing.T) {
 // TestAgentInputNoFocus covers the other R2 refusal: a well-formed
 // request from AGENTD with no live focused pane.
 func TestAgentInputNoFocus(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	savedName := agentProcName
 	t.Cleanup(func() { agentProcName = savedName })
@@ -345,6 +354,7 @@ func TestAgentInputNoFocus(t *testing.T) {
 // AGENTD key lands on consumeSeatEvent's own dispatch — observable as a
 // pane-focus chord actually moving focus.
 func TestAgentInputDeliversChord(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	openTwoTabs(t)
 	calls, restore := rectRecorder()
@@ -383,6 +393,7 @@ func TestAgentInputDeliversChord(t *testing.T) {
 // chord dispatch — kind-21 is a fan-out, so the seat echoes the press
 // through WmctlContentKey before consumeSeatEvent runs.
 func TestAgentInputForwardsContentKey(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	openTwoTabs(t)
 	savedName := agentProcName

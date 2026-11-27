@@ -25,10 +25,10 @@ func resetNotify(t *testing.T) {
 	saved := notifyQueue
 	savedDropped := notifyDropped
 	savedTick := seatTick
-	savedPainted := notifyPainted
+	savedPainted := notifyReceipt
 	savedCenter := notifyCenter
 	savedCenterOpen := notifyCenterOpen
-	savedCenterPainted := notifyCenterPainted
+	savedCenterPainted := notifyCenterReceipt
 	savedCenterNextID := notifyCenterNextID
 	savedFocusNotifySource := focusNotifySource
 	savedDND := notifyDND
@@ -76,21 +76,21 @@ func resetNotify(t *testing.T) {
 	}
 	notifyQueue = nil
 	notifyDropped = 0
-	notifyPainted = false
+	notifyReceipt = presentReceipt{}
 	seatTick = 0
 	notifyCenter = nil
 	notifyCenterOpen = false
-	notifyCenterPainted = false
+	notifyCenterReceipt = presentReceipt{}
 	notifyCenterNextID = 0
 	focusNotifySource = focusHosted
 	t.Cleanup(func() {
 		notifyQueue = saved
 		notifyDropped = savedDropped
-		notifyPainted = savedPainted
+		notifyReceipt = savedPainted
 		seatTick = savedTick
 		notifyCenter = savedCenter
 		notifyCenterOpen = savedCenterOpen
-		notifyCenterPainted = savedCenterPainted
+		notifyCenterReceipt = savedCenterPainted
 		notifyCenterNextID = savedCenterNextID
 		focusNotifySource = savedFocusNotifySource
 		notifyDND = savedDND
@@ -115,6 +115,7 @@ func resetNotify(t *testing.T) {
 // Dropping the newest instead would mean the seat stops showing the thing
 // the user most recently asked it to show.
 func TestNotifyQueueBoundDropsOldest(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	for i := 0; i < NotifyMax+2; i++ {
 		if _, ok, dropped := notifyPush(uint32(4+i), "msg", uint64(i)); !ok {
@@ -150,6 +151,7 @@ func TestNotifyQueueBoundDropsOldest(t *testing.T) {
 // One tick either way is the difference between "fades after N ticks" and
 // something else, and the gate waits on the dismiss marker.
 func TestNotifyExpiryIsExactlyNTicks(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	const born = 10
 	if _, ok, _ := notifyPush(4, "copied x", born); !ok {
@@ -185,6 +187,7 @@ func TestNotifyExpiryIsExactlyNTicks(t *testing.T) {
 // scripted toast click falling through to content, no focus pair / no
 // refusal act marker).
 func TestDamagePassDoesNotAgeToasts(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	savedTabs, savedDemo := tabs, demoMode
 	savedDone, savedCount := stripDone, hostTicksLeft
@@ -224,6 +227,7 @@ func TestDamagePassDoesNotAgeToasts(t *testing.T) {
 // ticks — and the last step IS Bg, which is why a spent toast is already
 // invisible one tick before the queue drops it.
 func TestNotifyFadeRampHasThreeExactSteps(t *testing.T) {
+	resetSeatForTest(t)
 	tok := theme.Current
 	if got := notifyRamp(NotifyTicks); got != 0 {
 		t.Fatalf("ramp at full lifetime = %d want 0 (untouched panel)", got)
@@ -281,6 +285,7 @@ func TestNotifyFadeRampHasThreeExactSteps(t *testing.T) {
 // bottom-left because that is the one corner the seat's other chrome does not
 // occupy.
 func TestNotifyRectIsBottomLeftStacked(t *testing.T) {
+	resetSeatForTest(t)
 	const w, h = 1280, 720
 	// One toast: the band is one panel, flush with the bottom inset.
 	x, y, pw, ph := notifyRect(w, h, 0, 1)
@@ -357,6 +362,7 @@ func TestNotifyRectIsBottomLeftStacked(t *testing.T) {
 // order is the belt; this is the braces — an overlap here would make the
 // two chrome elements fight for the same pixels every tick.
 func TestNotifyRectClearsTheSeatsOtherChrome(t *testing.T) {
+	resetSeatForTest(t)
 	sizes := [][2]int{{1280, 720}, {1024, 768}, {800, 600}, {640, 480}}
 	for _, s := range sizes {
 		w, h := s[0], s[1]
@@ -390,6 +396,7 @@ func TestNotifyRectClearsTheSeatsOtherChrome(t *testing.T) {
 // paint drew, one pixel in or out, and the resolved index is the toast the
 // user is pointing at.
 func TestNotifyHitZoneIsExactlyThePaintedRect(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	const w, h = 1280, 720
 	if _, ok := notifyHit(10, 10, w, h); ok {
@@ -443,6 +450,7 @@ func TestNotifyHitZoneIsExactlyThePaintedRect(t *testing.T) {
 // TestDismissByIndexReturnsTheSendersTabID pins what the dismiss marker and
 // the focus path both read: the SENDER's window id, not the queue slot.
 func TestDismissByIndexReturnsTheSendersTabID(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	notifyPush(4, "a", 0)
 	notifyPush(5, "b", 0)
@@ -470,6 +478,7 @@ func TestDismissByIndexReturnsTheSendersTabID(t *testing.T) {
 // toast whose tab is gone can never be clicked back to anything, so closing
 // the tab takes its toasts with it — and only its own.
 func TestClearNotifyDropsOnlyTheClosedTabsToasts(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	notifyPush(4, "a", 0)
 	notifyPush(5, "b", 0)
@@ -489,6 +498,7 @@ func TestClearNotifyDropsOnlyTheClosedTabsToasts(t *testing.T) {
 // paintChrome already holds: the strip writes only inside its own rects,
 // and writes them from theme tokens with nothing clipping the text.
 func TestPaintNotifyStaysInsideTheRectAndUsesTokens(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	const w, h = 1280, 720
 	if paintNotify(make([]byte, w*h*4), w, h, 0) != 0 {
@@ -557,6 +567,7 @@ const font8Advance = 8
 // i draws queue entry i, so the newest is nearest the bottom edge and the
 // oldest is the one that has been there longest at the top.
 func TestNotifyPaintStacksOldestOnTop(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	const w, h = 1280, 720
 	// Two toasts with distinguishable one-glyph texts, painted on frames
@@ -598,6 +609,7 @@ func TestNotifyPaintStacksOldestOnTop(t *testing.T) {
 // there — the toast is the LAST write of a tick, so nothing the seat
 // paints afterwards can erase it.
 func TestToastSurvivesTheRestOfTheTick(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	savedTabs, savedLaunch, savedDemo := tabs, launch, demoMode
 	savedDone, savedCount := stripDone, hostTicksLeft
@@ -649,6 +661,7 @@ func TestToastSurvivesTheRestOfTheTick(t *testing.T) {
 // is the tick the last paint pass ran at, so a toast born between ticks is
 // timed from a tick that actually happened.
 func TestSeatTickTracksCompositeTick(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	savedTabs, savedDemo := tabs, demoMode
 	savedDone, savedCount := stripDone, hostTicksLeft
@@ -681,33 +694,33 @@ func TestSeatTickTracksCompositeTick(t *testing.T) {
 // path — a test that pokes the latch directly would keep passing if the
 // re-arm itself broke.
 func TestNotifyPaintMarkerIsOneShotAndOnlyOnAPaintedPresentedTick(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 
 	// Nothing queued, nothing painted: silent.
-	if line, ok := notifyPaintMarker(false); ok || line != "" {
+	if line, ok := notifyPaintMarker(false, true); ok || line != "" {
 		t.Fatalf("an unpainted tick produced %q,%v", line, ok)
 	}
-	// A paint that was never presented is still not "on the scanout": the
-	// caller passes painted && presented, and this is the presented=false
-	// case reaching the helper as painted=false.
+	// A paint that was never presented is still not "on the scanout":
+	// the helper takes the frame's (painted, presented) pair.
 	notifyPush(7, "copied KNOWN.TXT", 0)
-	if line, ok := notifyPaintMarker(false); ok {
+	if line, ok := notifyPaintMarker(true, false); ok {
 		t.Fatalf("an unpresented tick produced %q", line)
 	}
-	line, ok := notifyPaintMarker(true)
+	line, ok := notifyPaintMarker(true, true)
 	if !ok || line != MarkerNotifyPaint+"7" {
 		t.Fatalf("paint marker = %q,%v want %q7,true", line, ok, MarkerNotifyPaint)
 	}
 	// One-shot within a burst: the toast is painted on every tick of its
 	// life.
-	if _, ok := notifyPaintMarker(true); ok {
+	if _, ok := notifyPaintMarker(true, true); ok {
 		t.Fatal("the paint marker fired twice in one burst")
 	}
 	// A second toast joins the SAME burst and must not re-announce: the user
 	// has already been told a toast reached the screen, and the gate greps
 	// the transition, not a per-tick (or per-toast) flood.
 	notifyPush(9, "second", 0)
-	if _, ok := notifyPaintMarker(true); ok {
+	if _, ok := notifyPaintMarker(true, true); ok {
 		t.Fatal("the paint marker fired again while the first burst was still up")
 	}
 	// Per BURST, not per process: expiry drains the strip and the latch
@@ -718,22 +731,22 @@ func TestNotifyPaintMarkerIsOneShotAndOnlyOnAPaintedPresentedTick(t *testing.T) 
 	if notifyCount() != 0 {
 		t.Fatalf("expiry at tick %d left %d toasts up", NotifyTicks, notifyCount())
 	}
-	if notifyPainted {
-		t.Fatal("the paint-marker latch is still armed on an empty strip")
+	if notifyReceipt.fired {
+		t.Fatal("the paint-marker receipt is still claimed on an empty strip")
 	}
 	// And the next burst names the NEWEST entry, not the oldest.
 	notifyPush(9, "second", 0)
 	notifyPush(10, "third", 0)
-	if line, ok := notifyPaintMarker(true); !ok || line != MarkerNotifyPaint+"10" {
+	if line, ok := notifyPaintMarker(true, true); !ok || line != MarkerNotifyPaint+"10" {
 		t.Fatalf("the first toast of a new burst produced %q,%v want %q10,true", line, ok, MarkerNotifyPaint)
 	}
-	if _, ok := notifyPaintMarker(true); ok {
+	if _, ok := notifyPaintMarker(true, true); ok {
 		t.Fatal("the paint marker fired twice in the new burst")
 	}
 	// A click that empties the strip re-arms it as well.
 	notifyDismissByIndex(0)
 	notifyDismissByIndex(0)
-	if notifyPainted {
+	if notifyReceipt.fired {
 		t.Fatal("clicking the last toast did not re-arm the paint marker")
 	}
 }
@@ -744,6 +757,7 @@ func TestNotifyPaintMarkerIsOneShotAndOnlyOnAPaintedPresentedTick(t *testing.T) 
 // sitting at full Surface/Ink until it expires outright. The value is
 // re-read per push, so a cleared or absent row restores the fade.
 func TestNotifyReduceMotionCollapsesTheRamp(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	notifySettingsLoad = func() settings.File {
 		return settings.File{State: settings.StateOK,
@@ -814,6 +828,7 @@ func TestNotifyReduceMotionCollapsesTheRamp(t *testing.T) {
 // The fade-off marker is a gate-facing literal; pin the exact shape the
 // way the other seat markers are pinned.
 func TestNotifyFadeOffMarkerShape(t *testing.T) {
+	resetSeatForTest(t)
 	if MarkerNotifyFadeOff != "gotabwm: notify fade=off" {
 		t.Fatalf("marker = %q", MarkerNotifyFadeOff)
 	}
@@ -822,6 +837,7 @@ func TestNotifyFadeOffMarkerShape(t *testing.T) {
 // #3348 (#1250): the crash-snap offer's toast carries the staged oops
 // pose as a trailing badge; an ordinary toast carries none.
 func TestCrashOfferToastPaintsMascotBadge(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	art.Reset()
 	defer art.Reset()

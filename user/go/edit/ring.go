@@ -27,20 +27,21 @@ import (
 // session state that belongs to the file — the M81d lease, the disk
 // fingerprint, the undo ring and the find/goto histories.
 type doc struct {
-	path     string
-	buf      []byte
-	base     []byte
-	dirty    bool
-	cur      int
-	sel      int
-	selSet   bool
-	markOn   bool
-	hist     history
-	lease    *vi.FileLease
-	diskLen  int
-	diskHash uint64
-	findHist [][]byte
-	gotoHist []int
+	path      string
+	buf       []byte
+	base      []byte
+	dirty     bool
+	cur       int
+	scrollTop int
+	sel       int
+	selSet    bool
+	markOn    bool
+	hist      history
+	lease     *vi.FileLease
+	diskLen   int
+	diskHash  uint64
+	findHist  [][]byte
+	gotoHist  []int
 	// emptyShown is the M123b marker latch, per buffer: `goedit: empty`
 	// prints once per transition into an empty buffer.
 	emptyShown bool

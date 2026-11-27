@@ -14,32 +14,21 @@ import (
 
 // qoDirFixture substitutes the walk's directory seam with a fixed
 // listing per directory, the errRead/bufRead pattern.
-func qoDirFixture(t *testing.T, listing map[string][]vi.DirEntry) {
+func qoDirFixture(t *testing.T, listing map[string][]vi.DirItem) {
 	t.Helper()
-	old := qoDirList
-	qoDirList = func(path string, buf []vi.DirEntry) (int, int64) {
-		ents := listing[path]
-		n := len(ents)
-		if n > len(buf) {
-			n = len(buf)
-		}
-		copy(buf, ents[:n])
-		return n, int64(n)
+	old := qoListDir
+	qoListDir = func(path string) ([]vi.DirItem, error) {
+		return listing[path], nil
 	}
-	t.Cleanup(func() { qoDirList = old })
+	t.Cleanup(func() { qoListDir = old })
 }
 
-func qoEntry(name string, isDir bool) vi.DirEntry {
-	var e vi.DirEntry
-	copy(e.Name[:], name)
-	if isDir {
-		e.IsDir = 1
-	}
-	return e
+func qoEntry(name string, isDir bool) vi.DirItem {
+	return vi.DirItem{Name: name, IsDir: isDir}
 }
 
 func TestCtrlPSummonsQuickOpen(t *testing.T) {
-	qoDirFixture(t, map[string][]vi.DirEntry{
+	qoDirFixture(t, map[string][]vi.DirItem{
 		"/host/EDIT": {qoEntry("SEED.TXT", false), qoEntry("OTHER.TXT", false)},
 	})
 	e := &editor{doc: doc{path: "/host/EDIT/SEED.TXT"}}
@@ -60,7 +49,7 @@ func TestCtrlPSummonsQuickOpen(t *testing.T) {
 }
 
 func TestQuickOpenFilterIsIncremental(t *testing.T) {
-	qoDirFixture(t, map[string][]vi.DirEntry{
+	qoDirFixture(t, map[string][]vi.DirItem{
 		"/host/EDIT": {qoEntry("SEED.TXT", false), qoEntry("OTHER.TXT", false), qoEntry("SEXT.TXT", false)},
 	})
 	e := &editor{doc: doc{path: "/host/EDIT/SEED.TXT"}}
@@ -84,7 +73,7 @@ func TestQuickOpenFilterIsIncremental(t *testing.T) {
 }
 
 func TestQuickOpenNoHitNamesZero(t *testing.T) {
-	qoDirFixture(t, map[string][]vi.DirEntry{
+	qoDirFixture(t, map[string][]vi.DirItem{
 		"/host/EDIT": {qoEntry("SEED.TXT", false)},
 	})
 	e := &editor{doc: doc{path: "/host/EDIT/SEED.TXT"}}
@@ -110,7 +99,7 @@ func TestQuickOpenEnterOpensThroughTheRing(t *testing.T) {
 		return []byte("x"), 1
 	}
 	t.Cleanup(func() { bufRead = old })
-	qoDirFixture(t, map[string][]vi.DirEntry{
+	qoDirFixture(t, map[string][]vi.DirItem{
 		"/host/EDIT": {qoEntry("SEED.TXT", false), qoEntry("OTHER.TXT", false)},
 	})
 	e := &editor{doc: doc{path: "/host/EDIT/SEED.TXT"}}
@@ -135,7 +124,7 @@ func TestQuickOpenEnterOpensThroughTheRing(t *testing.T) {
 }
 
 func TestQuickOpenBufferHitSwitchesNotReopens(t *testing.T) {
-	qoDirFixture(t, map[string][]vi.DirEntry{
+	qoDirFixture(t, map[string][]vi.DirItem{
 		"/host/EDIT": {qoEntry("SEED.TXT", false), qoEntry("OTHER.TXT", false)},
 	})
 	e := &editor{doc: doc{path: "/host/EDIT/SEED.TXT"}}
@@ -152,7 +141,7 @@ func TestQuickOpenBufferHitSwitchesNotReopens(t *testing.T) {
 }
 
 func TestQuickOpenEscapeCancels(t *testing.T) {
-	qoDirFixture(t, map[string][]vi.DirEntry{"/host/EDIT": {qoEntry("SEED.TXT", false)}})
+	qoDirFixture(t, map[string][]vi.DirItem{"/host/EDIT": {qoEntry("SEED.TXT", false)}})
 	e := &editor{doc: doc{path: "/host/EDIT/SEED.TXT"}}
 	e.handleKey(usDown(0x13, modCtrl, 'p'))
 	e.handleKey(usDown(0x29, 0, 0x1b))
@@ -164,7 +153,7 @@ func TestQuickOpenEscapeCancels(t *testing.T) {
 func TestQuickOpenRecentOnlyHit(t *testing.T) {
 	// A recent outside the walked subtree still matches — the MRU is the
 	// pool, not the directory.
-	qoDirFixture(t, map[string][]vi.DirEntry{
+	qoDirFixture(t, map[string][]vi.DirItem{
 		"/host/EDIT": {qoEntry("SEED.TXT", false)},
 	})
 	e := &editor{doc: doc{path: "/host/EDIT/SEED.TXT"}}
@@ -185,11 +174,11 @@ func TestQuickOpenRecentOnlyHit(t *testing.T) {
 func TestQuickOpenWalkBoundsNamed(t *testing.T) {
 	// A directory deeper than qoMaxDepth is never listed; the walk names
 	// the bound that stopped it.
-	qoDirFixture(t, map[string][]vi.DirEntry{
-		"/host/EDIT": {qoEntry("SEED.TXT", false), qoEntry("D1", true)},
-		"/host/EDIT/D1": {qoEntry("D2", true)},
-		"/host/EDIT/D1/D2": {qoEntry("D3", true)},
-		"/host/EDIT/D1/D2/D3": {qoEntry("D4", true)},
+	qoDirFixture(t, map[string][]vi.DirItem{
+		"/host/EDIT":             {qoEntry("SEED.TXT", false), qoEntry("D1", true)},
+		"/host/EDIT/D1":          {qoEntry("D2", true)},
+		"/host/EDIT/D1/D2":       {qoEntry("D3", true)},
+		"/host/EDIT/D1/D2/D3":    {qoEntry("D4", true)},
 		"/host/EDIT/D1/D2/D3/D4": {qoEntry("D5", true)},
 	})
 	e := &editor{doc: doc{path: "/host/EDIT/SEED.TXT"}}
@@ -201,6 +190,27 @@ func TestQuickOpenWalkBoundsNamed(t *testing.T) {
 		if it.path == "/host/EDIT/D1/D2/D3/D4/D5" {
 			t.Fatal("the beyond-depth directory was walked")
 		}
+	}
+}
+
+func TestQuickOpenWalkSeesPastTheLegacyWindow(t *testing.T) {
+	// The gate's EDIT dir overflows the 16-row sys_dir_list window: the
+	// paged listing must still surface every file (leg 19's QO2/QO3).
+	var ents []vi.DirItem
+	ents = append(ents, qoEntry("SEED.TXT", false))
+	for i := 0; i < 20; i++ {
+		ents = append(ents, qoEntry(string(rune('A'+i))+".TXT", false))
+	}
+	ents = append(ents, qoEntry("QO2.TXT", false), qoEntry("QO3.TXT", false))
+	qoDirFixture(t, map[string][]vi.DirItem{"/host/EDIT": ents})
+	e := &editor{doc: doc{path: "/host/EDIT/SEED.TXT"}}
+	e.handleKey(usDown(0x13, modCtrl, 'p'))
+	hits := map[string]bool{}
+	for _, it := range e.qo {
+		hits[baseOf(it.path)] = true
+	}
+	if !hits["QO2.TXT"] || !hits["QO3.TXT"] {
+		t.Fatalf("the walk must reach past the 16-entry window: %v", hits)
 	}
 }
 

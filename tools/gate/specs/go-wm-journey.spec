@@ -75,12 +75,19 @@ exec GODEMO.ELF
 EOF
 
 # The restore drill inside the same boot: the bundle is already published
-# (script3 rides on `snapshot saved`), `dui focus 0` parks keyboard focus
-# on the kernel console so the --input-string restore commands land there,
-# and the clients die first so no stale window outlives the seat that
-# hosted it. The staging + re-exec itself rides --input-string gated on
-# 'wm: unregistered' — kill arms asynchronously, and an exec that beats
-# the teardown gets refused (observed: `register failed -7`).
+# (script3 rides on `snapshot saved`), and the clients die first so no
+# stale window outlives the seat that hosted it. The staging + re-exec
+# rides --host-serial-send gated on 'wm: unregistered' — kill arms
+# asynchronously, and an exec that beats the teardown gets refused
+# (observed: `register failed -7`). It does NOT ride --input-string:
+# those keys travel the cv-input queue routed by kernel focus, and the
+# post-kill focus re-arm races `shim resumed` — observed whole-string
+# loss on 02-02 (keys typed, zero guest echo, restore never ran, 420 s
+# timeout). `dui focus 0`'s park does not survive the seat's death.
+# send-serial writes GOSH's serial stdin instead — the bytes wait in the
+# pipe until the resumed shim reads them (#3972's seam: delivery ordered
+# on evidence, not on focus luck). send-serial takes ONE line, so the
+# three restore steps ride a `&&` chain — each gated on the last.
 vgate_file script3.txt <<'EOF'
 dui focus 0
 kill GOCALC.ELF
@@ -179,8 +186,8 @@ vgate_run 01 -- \
     --screenshot-after-delay 2 \
     --script3 '$RUN_DIR/script3.txt' \
     --script3-after 'gotabwm: snapshot saved' \
-    --input-string $'vf open SNAPSHOT.RESTORE\nvf write 0 1\nexec GOTABWM.ELF\n' \
-    --input-string-after 'wm: unregistered, shim resumed' \
+    --host-serial-send 'vf open SNAPSHOT.RESTORE && vf write 0 1 && exec GOTABWM.ELF' \
+    --host-cmd-after 'wm: unregistered, shim resumed:send-serial' \
     --script-expect 'gotabwm: session live n=4' --script-expect-tail 20 --timeout 420
 
 # --- the opt-in seat, live mode ------------------------------------------
@@ -218,6 +225,9 @@ vgate_assert 01 serial-contains 'gotabwm: session spaces n=2'
 vgate_assert 01 serial-contains 'gotabwm: snapshot saved'
 # The seat died cleanly between the two execs.
 vgate_assert 01 serial-contains 'wm: unregistered, shim resumed'
+# The restore lines rode the serial pipe (send-serial), not the HID
+# queue — receipt on stdout is the delivery pin (#3972).
+vgate_assert 01 output-contains 'host-ui: cmd=send-serial vm=1 state=performed sent=1'
 vgate_assert 01 serial-contains 'gotabwm: snapshot restore'
 vgate_assert 01 serial-contains 'gotabwm: session load n=4 mode=restore'
 vgate_assert 01 serial-contains 'gotabwm: panes load n=2'
@@ -462,15 +472,21 @@ PY
 #                             'space switch 1->2', visiting GOCALC's space
 #     1248,11,c               pill "1" ([1240,1256)): 'space pick 1' +
 #                             'space switch 2->1' — the card's come-home
-#     1278,8,c                cell-1 close zone is [1264,1280) but pill "2"
-#                             covers [1260,1276): 1278 is the 4px strip
-#                             where the close-x outranks the pill — closes
-#                             the focused NOTE, 'focus restore' names
-#                             GOEDIT off the MRU ring
+#     1232,8,c                M216b's railLayout truncates the cell lane at
+#                             the pill lane's left edge (avail=1240), so
+#                             cell-1's close zone is [1224,1240) — 1232
+#                             closes the focused NOTE, 'focus restore'
+#                             names GOEDIT off the MRU ring. (The old
+#                             1278 targeted the pre-railLayout full-width
+#                             zone; it now lands in the 4px right margin
+#                             dead strip — OBSERVED red on main.)
 #   script3 (after 'focus restore'): dui focus 0 parks the console for the
 #     staged restore; clients die before their seat (run-01 discipline).
-#   input-string (after 'wm: unregistered'): SNAPSHOT.RESTORE one-shot,
-#     then the seat re-execs -> 'session live n=3' ends the run.
+#   send-serial (after 'wm: unregistered'): SNAPSHOT.RESTORE one-shot,
+#     then the seat re-execs -> 'session live n=3' ends the run. Serial,
+#     not --input-string: HID keys ride the post-kill focus re-arm and can
+#     land on a dead route (observed whole-string loss); the serial pipe
+#     buffers until the resumed GOSH reads it.
 vgate_file script-02.txt <<'EOF'
 set GOMAXPROCS=1
 vf rm GOTABWM.DEMO
@@ -506,14 +522,14 @@ vgate_run 02 -- \
     --script2-after 'gotabwm: win focus' \
     --input-chords 'ctrl-shift-v,ctrl-shift-p,z,o,o,m,space,p,a,n,e,return,ctrl-shift-p,r,e,s,t,o,r,e,space,p,a,n,e,s,return,ctrl-alt-pagedown,ctrl-alt-pageup,ctrl-2,ctrl-shift-p,m,o,v,e,space,t,o,space,2,return,ctrl-shift-s' \
     --input-chords-after 'gotabwm: rail n=3' \
-    --pointer-virtio '960,8,d;1000,400,u;1268,11,c;1248,11,c;1278,8,c' \
+    --pointer-virtio '960,8,d;1000,400,u;1268,11,c;1248,11,c;1232,8,c' \
     --pointer-virtio-after 'gotabwm: snapshot saved' \
     --screenshot-after 'gotabwm: space pick 2' \
     --screenshot-after-delay 2 \
     --script3 '$RUN_DIR/script3-02.txt' \
     --script3-after 'gotabwm: focus restore' \
-    --input-string $'vf open SNAPSHOT.RESTORE\nvf write 0 1\nexec GOTABWM.ELF\n' \
-    --input-string-after 'wm: unregistered, shim resumed' \
+    --host-serial-send 'vf open SNAPSHOT.RESTORE && vf write 0 1 && exec GOTABWM.ELF' \
+    --host-cmd-after 'wm: unregistered, shim resumed:send-serial' \
     --script-expect 'gotabwm: session live n=3' --script-expect-tail 20 --timeout 420
 
 # --- the opt-in seat, live mode ------------------------------------------
@@ -549,6 +565,9 @@ vgate_assert 02 serial-contains ' why=close'
 # --- snapshot, kill, restore ----------------------------------------------
 vgate_assert 02 serial-contains 'gotabwm: snapshot saved'
 vgate_assert 02 serial-contains 'wm: unregistered, shim resumed'
+# The restore lines rode the serial pipe (send-serial), not the HID
+# queue — receipt on stdout is the delivery pin (#3972).
+vgate_assert 02 output-contains 'host-ui: cmd=send-serial vm=1 state=performed sent=1'
 vgate_assert 02 serial-contains 'gotabwm: snapshot restore'
 vgate_assert 02 serial-contains 'gotabwm: session load n=3 mode=restore'
 vgate_assert 02 serial-contains 'gotabwm: session spaces n=2'
@@ -807,10 +826,18 @@ PY
 # reading the plain file because a trailing python assert re-stages both
 # after the run (the armed share persists across vgate_repeat boots).
 #
-# Exec order inside script2 is load-bearing the same way run 01's is:
-# GOA11Y execs first so GODEMO's declare + self-raise is the last focus
-# event the seat sees — a late GOA11Y declare would steal the keyboard
-# and the chords would land on a window that ignores input by contract.
+# Declare order, not exec order, is what the leg needs — and this run
+# needs it twice over: GODEMO must declare last so its self-raise is the
+# last focus event the seat sees, AND ctrl-2 / ctrl-3 address rail cells
+# POSITIONALLY, so the rail must read [A11y, Edit, Dialog] exactly. exec
+# order inside a script burst is NOT declare order (#3972: concurrent
+# execs declare unsequenced — a reordered burst lands ctrl-2 on the
+# wrong cell and the six `down` chords overshoot to `row 4/6/8 of 64`).
+# So each exec waits on the previous app's own declare evidence:
+# script2 runs `dui focus 0` + GOA11Y, script3 rides
+# `goa11y: declare accepted` for GOEDIT, and
+# `--host-cmd-after 'goedit: declare accepted:send-serial'` injects
+# `exec GODEMO.ELF` — rail order pinned, GODEMO focused at the drive.
 # M197d (#3416) seats GOEDIT between them: the adopted app's outline is
 # staged from boot, the drive's ctrl-2 detour focuses its rail cell long
 # enough for the 500 ms poll to read it, and ctrl-3 returns to GODEMO so
@@ -843,8 +870,10 @@ EOF
 vgate_file script2-03.txt <<'EOF'
 dui focus 0
 exec GOA11Y.ELF
+EOF
+
+vgate_file script3-03.txt <<'EOF'
 exec GOEDIT.ELF
-exec GODEMO.ELF
 EOF
 
 vgate_setup_python <<'PY'
@@ -881,6 +910,10 @@ vgate_run 03 -- \
     --script '$RUN_DIR/script-03.txt' \
     --script2 '$RUN_DIR/script2-03.txt' \
     --script2-after 'gotabwm: win focus' \
+    --script3 '$RUN_DIR/script3-03.txt' \
+    --script3-after 'goa11y: declare accepted' \
+    --host-serial-send 'exec GODEMO.ELF' \
+    --host-cmd-after 'goedit: declare accepted:send-serial' \
     --input-chords 'escape,f10,down,right,right,e,tab,down,down,right,return,ctrl-2,down,down,down,down,down,down,ctrl-3' \
     --input-chords-after 'godialog: painted' \
     --script-expect 'row 3 of 64' --script-expect-tail 20 --timeout 300
@@ -902,6 +935,12 @@ vgate_assert 03 serial-contains 'goa11y: declare accepted'
 vgate_assert 03 serial-contains 'goa11y: present'
 vgate_assert 03 serial-contains 'exec: loaded GOEDIT.ELF'
 vgate_assert 03 serial-contains 'exec: loaded GODEMO.ELF'
+# The serialized execs pinned declare order, not burst order: script3's
+# GOEDIT rode GOA11Y's accepted declare, and the host serial-send fired
+# GODEMO's exec on GOEDIT's (#3972). The rail is [A11y, Edit, Dialog] by
+# construction — ctrl-2/ctrl-3 name their cells deterministically.
+vgate_assert 03 serial-contains 'goedit: declare accepted'
+vgate_assert 03 output-contains 'host-ui: cmd=send-serial vm=1 state=performed sent=1'
 vgate_assert 03 serial-contains 'goa11y: focus win='
 vgate_assert 03 serial-contains 'gotabwm: rail n=3'
 # --- the same key drive run 01 makes --------------------------------------
@@ -982,6 +1021,12 @@ for w, ns in blocks:
             menubar.append("e" in state)
         if "f" in state:
             focused.append((role, name))
+
+# Unchanged-focus repeats are benign: the refocus poll after ctrl-3
+# returns to GODEMO re-reads the unchanged row-3 outline and re-stages the
+# same (role, name) — consecutive, no new focus step (#3972). Collapse
+# them before the order walk.
+focused = [f for i, f in enumerate(focused) if i == 0 or f != focused[i - 1]]
 
 canonical = [("tree", "Tree"), ("menu", "File"),
              ("menuitem", "Open"), ("menu", "Edit"),
@@ -1141,4 +1186,200 @@ for p in stale:
     os.remove(p)
 print("restaged SETTINGS.TXT + SETTINGS.HC; dropped %d stale A11Y.* "
       "outline(s)" % len(stale))
+PY
+
+
+# ===========================================================================
+# Run 04 (M216c / #3942): a refusal has a face. One tab open, the split
+# chord refuses 'split: one tab'; four PageDowns mint spaces "2"-"4" and
+# the press at the cap refuses 'spaces: limit 4'. Each repeat inside the
+# dedupe window prints the counted 'refusal dedupe' line instead of a
+# second toast — the notice lane's absorption, pinned on serial. The leg
+# mutates nothing the other runs assert: it never splits, never moves a
+# tab, and its spaces die with the boot.
+vgate_file script-04.txt <<'EOF'
+vf rm GOTABWM.DEMO
+vf rm SESSION.TABS
+vf rm SESSION.PANES
+vf rm SNAPSHOT.BUNDLE
+vf rm SNAPSHOT.RESTORE
+set GOMAXPROCS=1
+wm
+exec GOTABWM.ELF
+EOF
+
+vgate_file script2-04.txt <<'EOF'
+dui focus 0
+exec GOCALC.ELF
+EOF
+
+vgate_run 04 -- \
+    --screen '$RUN_DIR/screen-04' \
+    --via-virtio --cvc-snap \
+    --script '$RUN_DIR/script-04.txt' \
+    --script2 '$RUN_DIR/script2-04.txt' \
+    --script2-after 'gotabwm: win focus' \
+    --input-chords 'ctrl-shift-v,ctrl-shift-v,ctrl-alt-pagedown,ctrl-alt-pagedown,ctrl-alt-pagedown,ctrl-alt-pagedown,ctrl-alt-pagedown' \
+    --input-chords-after 'gotabwm: rail n=1' \
+    --script-expect 'gotabwm: refusal dedupe spaces: limit 4' --script-expect-tail 20 --timeout 300
+
+# --- the opt-in seat, live mode ------------------------------------------
+vgate_assert 04 serial-contains 'VirelaiOS kernel has seized control.'
+vgate_assert 04 serial-contains 'exec: loaded GOTABWM.ELF'
+vgate_assert 04 serial-contains 'gotabwm: registered'
+vgate_assert 04 serial-contains 'gotabwm: mode live'
+vgate_assert 04 serial-contains 'exec: loaded GOCALC.ELF'
+vgate_assert 04 serial-contains 'gotabwm: rail n=1'
+# --- the refused split names its reason; the repeat dedupes ---------------
+vgate_assert 04 serial-contains 'gotabwm: notice split: one tab'
+vgate_assert 04 serial-contains 'gotabwm: refusal dedupe split: one tab'
+# --- the space cap: three PageDowns mint "2"-"4", the fourth refuses ------
+vgate_assert 04 serial-contains 'gotabwm: space new name=2'
+vgate_assert 04 serial-contains 'gotabwm: space new name=3'
+vgate_assert 04 serial-contains 'gotabwm: space new name=4'
+vgate_assert 04 serial-contains 'gotabwm: space switch 3->4'
+vgate_assert 04 serial-contains 'gotabwm: notice spaces: limit 4'
+vgate_assert 04 serial-contains 'gotabwm: refusal dedupe spaces: limit 4'
+vgate_assert 04 serial-absent '[EXC] parking:'
+vgate_assert 04 serial-absent 'exited status=139'
+# Order, not just presence: the cap notice can only print after the
+# fourth space exists, and each dedupe line follows its notice.
+vgate_assert 04 python <<'PY'
+import os, sys
+ser = open(os.environ["VG_SER"], errors="replace").read()
+i_n4 = ser.find("gotabwm: space new name=4")
+i_ns = ser.find("gotabwm: notice spaces: limit 4")
+i_nd = ser.find("gotabwm: refusal dedupe spaces: limit 4")
+i_st = ser.find("gotabwm: notice split: one tab")
+i_sd = ser.find("gotabwm: refusal dedupe split: one tab")
+if not (0 <= i_st < i_sd and 0 <= i_n4 < i_ns < i_nd):
+    sys.exit("notice order wrong: %d %d %d %d %d"
+             % (i_st, i_sd, i_n4, i_ns, i_nd))
+print("refusals ordered: split notice<dedupe; space4<notice<dedupe")
+PY
+
+# ===========================================================================
+# Run 05 (M216d / #3943): the pointer gestures' keyboard halves, live mode.
+# GOCALC + NOTE open as two tabs (NOTE declares last, so it is focused);
+# one chord burst drives every new seat row end to end:
+#
+#   ctrl-shift-v              split v — leaves {NOTE, GOCALC}, sash x=640
+#   ctrl-shift-alt-left       sash-left  — 'sash v from=640 to=608'
+#   ctrl-shift-alt-right      sash-right — 'sash v from=608 to=640'
+#   ctrl-shift-v              the cycle's rotate step: root V -> H, sash y=360
+#   ctrl-shift-alt-up         sash-up    — 'sash h from=360 to=328'
+#   ctrl-shift-alt-down       sash-down  — 'sash h from=328 to=360'
+#   ctrl-shift-alt-pagedown   space-move-next — creates dormant space "2"
+#                             and carries the focused tab (NOTE) onto it:
+#                             'space new name=2' + 'space move id= to=2',
+#                             NO switch — the live strip keeps GOCALC
+#   ctrl-alt-pagedown         space-next — 'space switch 1->2', visiting
+#                             NOTE's new home (the R5 chord, unchanged)
+#   ctrl-shift-alt-pageup     space-move-prev — carries NOTE back to "1":
+#                             'space move id= to=1'
+#   ctrl-alt-pageup           space-prev — 'space switch 2->1' home
+#
+# The sash markers pin the 32 px step and the from/to centres; the space
+# markers pin create-dormant vs switch — the two halves the palette move
+# and the switch chord already own, now reachable without the pointer.
+vgate_file script-05.txt <<'EOF'
+vf rm GOTABWM.DEMO
+vf rm SESSION.TABS
+vf rm SESSION.PANES
+vf rm SNAPSHOT.BUNDLE
+vf rm SNAPSHOT.RESTORE
+set GOMAXPROCS=1
+wm
+exec GOTABWM.ELF
+EOF
+
+vgate_file script2-05.txt <<'EOF'
+dui focus 0
+exec GOCALC.ELF
+exec NOTE.ELF
+EOF
+
+vgate_file script3-05.txt <<'EOF'
+wm
+dui
+echo rx-gotabwm-m216d-ok
+EOF
+
+vgate_run 05 -- \
+    --screen '$RUN_DIR/screen-05' \
+    --via-virtio \
+    --script '$RUN_DIR/script-05.txt' \
+    --script2 '$RUN_DIR/script2-05.txt' \
+    --script2-after 'gotabwm: win focus' \
+    --input-chords 'ctrl-shift-v,ctrl-shift-alt-left,ctrl-shift-alt-right,ctrl-shift-v,ctrl-shift-alt-up,ctrl-shift-alt-down,ctrl-shift-alt-pagedown,ctrl-alt-pagedown,ctrl-shift-alt-pageup,ctrl-alt-pageup' \
+    --input-chords-after 'gotabwm: rail n=2' \
+    --script3 '$RUN_DIR/script3-05.txt' \
+    --script3-after 'gotabwm: space switch 2->1' \
+    --script-expect 'rx-gotabwm-m216d-ok' --timeout 300
+
+vgate_assert 05 serial-contains 'VirelaiOS kernel has seized control.'
+vgate_assert 05 serial-contains 'exec: loaded GOTABWM.ELF'
+vgate_assert 05 serial-contains 'exec: loaded GOCALC.ELF'
+vgate_assert 05 serial-contains 'exec: loaded NOTE.ELF'
+vgate_assert 05 serial-contains 'gotabwm: registered'
+vgate_assert 05 serial-contains 'gotabwm: mode live'
+vgate_assert 05 serial-contains 'gotabwm: rail n=2'
+# --- the split, the rotate, and the four 32 px sash nudges --------------
+vgate_assert 05 serial-contains 'gotabwm: split v'
+vgate_assert 05 serial-contains 'gotabwm: sash v from=640 to=608'
+vgate_assert 05 serial-contains 'gotabwm: sash v from=608 to=640'
+vgate_assert 05 serial-contains 'gotabwm: split h'
+vgate_assert 05 serial-contains 'gotabwm: sash h from=360 to=328'
+vgate_assert 05 serial-contains 'gotabwm: sash h from=328 to=360'
+# --- the move-to-space chords: create-dormant, visit, carry home --------
+vgate_assert 05 serial-contains 'gotabwm: space new name=2'
+vgate_assert 05 serial-contains 'gotabwm: space move id='
+vgate_assert 05 serial-contains ' to=2'
+vgate_assert 05 serial-contains 'gotabwm: space switch 1->2'
+vgate_assert 05 serial-contains ' to=1'
+vgate_assert 05 serial-contains 'gotabwm: space switch 2->1'
+vgate_assert 05 serial-contains 'rx-gotabwm-m216d-ok'
+vgate_assert 05 serial-absent '[EXC] parking:'
+vgate_assert 05 serial-absent 'exited status=139'
+vgate_assert 05 python <<'PY'
+import os, re, sys
+ser = open(os.environ["VG_SER"], errors="replace").read()
+
+# Leg order: the v nudges precede the rotate, the h nudges precede the
+# move-next, and the two switches bracket the carry-home.
+want = ["gotabwm: sash v from=640 to=608",
+        "gotabwm: sash v from=608 to=640",
+        "gotabwm: split h",
+        "gotabwm: sash h from=360 to=328",
+        "gotabwm: sash h from=328 to=360",
+        "gotabwm: space new name=2",
+        "gotabwm: space move id=",
+        "gotabwm: space switch 1->2",
+        "gotabwm: space move id=",
+        "gotabwm: space switch 2->1"]
+pos = []
+cur = 0
+for w in want:
+    i = ser.find(w, cur)
+    if i < 0:
+        sys.exit("missing %r after %d" % (w, cur))
+    pos.append(i)
+    cur = i + 1
+# The two moves name the SAME tab id — the focused NOTE carried next and
+# prev. The destination names differ ("2" out, "1" back).
+move_ids = re.findall(r"gotabwm: space move id=(\d+) to=(\d)", ser)
+if len(move_ids) != 2 or move_ids[0][1] != "2" or move_ids[1][1] != "1":
+    sys.exit("space moves = %r want [(id,2),(id,1)] same id" % move_ids)
+if move_ids[0][0] != move_ids[1][0]:
+    sys.exit("move-next and move-prev named different tabs: %r" % move_ids)
+# The carry-home move lands BEFORE the switch back — the tab is already
+# dormant on "1" when the live strip returns.
+i_mv2 = ser.find("gotabwm: space move id=")
+i_mv1 = ser.find("gotabwm: space move id=", i_mv2 + 1)
+i_sw21 = ser.find("gotabwm: space switch 2->1")
+if not (i_mv2 < i_mv1 < i_sw21):
+    sys.exit("move/switch order wrong: mv-next@%d mv-prev@%d switch@%d"
+             % (i_mv2, i_mv1, i_sw21))
+print("M216d journey: sash v 640->608->640, rotate h, sash h 360->328->360, "
+      "move id=%s 1->2->1" % move_ids[0][0])
 PY

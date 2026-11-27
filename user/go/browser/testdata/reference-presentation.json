@@ -1,0 +1,59 @@
+{
+  "Version": 1,
+  "Width": 512,
+  "Height": 288,
+  "Verdict": "Approve footprint-filtered reference presentation expectations",
+  "Fixtures": {
+    "borders": {
+      "Hash": "a6bc9334ed0594398bddb23f0270f592cdf0a07eea56325259d9cd446b74aa58"
+    },
+    "box-model": {
+      "Hash": "1bbc198b2d3798562efcecee0d47c5a8827f121a1f874ab04790729be9a1f38b"
+    },
+    "boxes-block": {
+      "Hash": "c499e90166e56b96c396b2239bafac322d4eeecb0fded043217aa63cb15c442f"
+    },
+    "boxes-collapse": {
+      "Hash": "02dffb6f688b7d9e3f7aaf008c79fe90fb33799f7aeed286857ce4e86f0aa5c2"
+    },
+    "boxes-flex": {
+      "Hash": "02dffb6f688b7d9e3f7aaf008c79fe90fb33799f7aeed286857ce4e86f0aa5c2"
+    },
+    "colors": {
+      "Hash": "1ad489c51cc3d5a589d010c8eb88c6237af85feab44416adf4dcf72f366ffe55"
+    },
+    "degradation": {
+      "Hash": "a5d6b76a316912370f4064edb0f0a9e811d23e05ae2c9ee6aaa03f658530f35b"
+    },
+    "display-tables": {
+      "Hash": "afb3f7cfcb5673a7e1e08b79f18d709fb1d859d0ee9764bd681e74445573bdb4"
+    },
+    "flex": {
+      "Hash": "0f1ece662079fa718099f3b0c35d3895f9a21aceb4621a91090220f8528a4779"
+    },
+    "fonts": {
+      "Hash": "bc569ce89d573840250f767625304accaef8e8b767303799a1bfeaa23a5b9fad"
+    },
+    "fonts-family": {
+      "Hash": "5091cef517bbb595838c995024599856d43307a7a4ac369832cd7119a0e0a4ff"
+    },
+    "fonts-size": {
+      "Hash": "50629d8773684e02cb7f17bc186606f3e2302dfe63e9f9b70d157069756a7525"
+    },
+    "forms": {
+      "Hash": "ca262d1a5c62dd5bb4640acd2f5db3062672360ed304ef674d35176b4009527c"
+    },
+    "github": {
+      "Hash": "a9293338fc07dfe809a2aca8a42ea6dc9735f3813a3bedad87c8d4bba9a729d0"
+    },
+    "mdn": {
+      "Hash": "8881e3c34f0aa2df86b839eb0c0455957bf5affc6a0edc8be15d19facc827468"
+    },
+    "selectors": {
+      "Hash": "09d9482cea953024a66bffffa495eec9b08495b656edc27312138a125626bcab"
+    },
+    "wikipedia": {
+      "Hash": "4709e695f5f19ec19a2302e10707c38d6f44226c7eb6edaa35593fb58c370baa"
+    }
+  }
+}

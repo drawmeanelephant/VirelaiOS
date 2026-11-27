@@ -130,6 +130,7 @@ func hasLine(lines []string, prefix string) bool {
 // a still-running or unreadable row is nothing, and an unbound window has
 // no attributable owner at all.
 func TestSeatCrashStatus(t *testing.T) {
+	resetSeatForTest(t)
 	resetCrashState(t)
 	rpcBindings[7] = rpcBinding{pid: 42, token: 0xAA}
 
@@ -170,6 +171,7 @@ func TestSeatCrashStatus(t *testing.T) {
 // names in order, wrapping, a stale slot deleted before the save, and
 // LAST written only after an ok verdict.
 func TestCrashSnapSaveRotationAndLast(t *testing.T) {
+	resetSeatForTest(t)
 	resetCrashState(t)
 	fs := fakeCrashShare(t)
 	lines := crashMarkerLog(t)
@@ -216,6 +218,7 @@ func TestCrashSnapSaveRotationAndLast(t *testing.T) {
 // itself in the marker, the stale slot delete still ran (the attempt was
 // real), and LAST is never written for a save that did not park.
 func TestCrashSnapSaveRefused(t *testing.T) {
+	resetSeatForTest(t)
 	resetCrashState(t)
 	fs := fakeCrashShare(t)
 	lines := crashMarkerLog(t)
@@ -245,6 +248,7 @@ func TestCrashSnapSaveRefused(t *testing.T) {
 // empty, oversized and invalid content are all "no offer"; a good line is
 // trimmed at its newline and validated as a NAME.
 func TestCrashSnapOfferName(t *testing.T) {
+	resetSeatForTest(t)
 	resetCrashState(t)
 	fs := fakeCrashShare(t)
 
@@ -269,6 +273,7 @@ func TestCrashSnapOfferName(t *testing.T) {
 // TestCrashSnapOffer pins the boot half: a parked LAST becomes an
 // action-carrying toast naming the slot, and absent LAST posts nothing.
 func TestCrashSnapOffer(t *testing.T) {
+	resetSeatForTest(t)
 	resetCrashState(t)
 	resetNotify(t)
 	fs := fakeCrashShare(t)
@@ -302,6 +307,7 @@ func TestCrashSnapOffer(t *testing.T) {
 // the ctl `restore` stage and consumes the matching LAST; Dismiss only
 // consumes. A LAST a newer crash rewrote survives a stale toast's click.
 func TestCrashSnapRestoreAndDismiss(t *testing.T) {
+	resetSeatForTest(t)
 	resetCrashState(t)
 	fs := fakeCrashShare(t)
 	lines := crashMarkerLog(t)
@@ -344,6 +350,7 @@ func TestCrashSnapRestoreAndDismiss(t *testing.T) {
 // the host named its verdict, and the one-shot file is gone so no later
 // boot re-offers a refused restore.
 func TestCrashSnapRestoreRefused(t *testing.T) {
+	resetSeatForTest(t)
 	resetCrashState(t)
 	fs := fakeCrashShare(t)
 	lines := crashMarkerLog(t)
@@ -364,6 +371,7 @@ func TestCrashSnapRestoreRefused(t *testing.T) {
 // and the marker names the binary. The once-per-binary bound refuses the
 // second restart with its own marker.
 func TestCrashRestartStagesBlob(t *testing.T) {
+	resetSeatForTest(t)
 	resetCrashState(t)
 	defer saveSeatState()()
 	lines := crashMarkerLog(t)
@@ -376,7 +384,6 @@ func TestCrashRestartStagesBlob(t *testing.T) {
 	}
 	t.Cleanup(func() { execApp = oldExec })
 
-	tabs = TabStrip{}
 	if !tabs.OpenTab(9, "App") {
 		t.Fatal("OpenTab")
 	}
@@ -414,6 +421,7 @@ func TestCrashRestartStagesBlob(t *testing.T) {
 // TestCrashRestartEmpty covers the honest no-ops: nothing recorded (a tab
 // with no bin) execs nothing and prints nothing.
 func TestCrashRestartEmpty(t *testing.T) {
+	resetSeatForTest(t)
 	resetCrashState(t)
 	defer saveSeatState()()
 	var execs []string
@@ -441,6 +449,7 @@ func TestCrashRestartEmpty(t *testing.T) {
 // republish second (the crashed row still recorded), slot save last —
 // by landing every seam's arrival in one recorder.
 func TestCrashSaveOrder(t *testing.T) {
+	resetSeatForTest(t)
 	resetCrashState(t)
 	defer saveSeatState()()
 	fs := fakeCrashShare(t)
@@ -478,7 +487,6 @@ func TestCrashSaveOrder(t *testing.T) {
 		vsockCtlRequest = oldCtl
 	})
 
-	tabs = TabStrip{}
 	if !tabs.OpenTab(9, "App") {
 		t.Fatal("OpenTab")
 	}
@@ -505,6 +513,7 @@ func TestCrashSaveOrder(t *testing.T) {
 // TestNotifyClickedCrashSnapRestores pins the toast's action arm: a click
 // on the offer runs the staged restore and never tries to focus sender 0.
 func TestNotifyClickedCrashSnapRestores(t *testing.T) {
+	resetSeatForTest(t)
 	resetCrashState(t)
 	resetNotify(t)
 	fs := fakeCrashShare(t)
@@ -545,6 +554,7 @@ func TestNotifyClickedCrashSnapRestores(t *testing.T) {
 // row's body click is the same Restore arm, and the resolved offer's
 // toast retires with the row.
 func TestNotifyCenterSnapRowRestores(t *testing.T) {
+	resetSeatForTest(t)
 	resetCrashState(t)
 	resetNotify(t)
 	fs := fakeCrashShare(t)
@@ -577,13 +587,13 @@ func TestNotifyCenterSnapRowRestores(t *testing.T) {
 // TestNotifyClickedOrdinaryStillFocuses is the regression guard: a
 // non-action toast's click keeps its sender-focus contract.
 func TestNotifyClickedOrdinaryStillFocuses(t *testing.T) {
+	resetSeatForTest(t)
 	resetCrashState(t)
 	resetNotify(t)
 	var calls []string
 	fakeCtl(t, &calls, 0, "")
 	lines := crashMarkerLog(t)
 
-	tabs = TabStrip{}
 	if !tabs.OpenTab(4, "files") {
 		t.Fatal("OpenTab")
 	}
@@ -608,6 +618,7 @@ func TestNotifyClickedOrdinaryStillFocuses(t *testing.T) {
 // TestCrashSnapToastExpiryLeavesOffer pins expiry-is-not-dismissal: a
 // faded offer keeps LAST and its center row, so the next boot re-posts.
 func TestCrashSnapToastExpiryLeavesOffer(t *testing.T) {
+	resetSeatForTest(t)
 	resetCrashState(t)
 	resetNotify(t)
 	fs := fakeCrashShare(t)
@@ -632,6 +643,7 @@ func toastExpiresAt() uint64 { return notifyQueue[0].expires }
 // TestDismissNotifyCenterEntryResolvesSnap pins the row-X dismiss arm:
 // the offer is resolved as dismissed and LAST consumed.
 func TestDismissNotifyCenterEntryResolvesSnap(t *testing.T) {
+	resetSeatForTest(t)
 	resetCrashState(t)
 	resetNotify(t)
 	fs := fakeCrashShare(t)
@@ -660,6 +672,7 @@ func TestDismissNotifyCenterEntryResolvesSnap(t *testing.T) {
 // TestClearNotifyCenterResolvesSnap pins clear-all: every pending offer
 // inside it resolves as dismissed, not dropped silently.
 func TestClearNotifyCenterResolvesSnap(t *testing.T) {
+	resetSeatForTest(t)
 	resetCrashState(t)
 	resetNotify(t)
 	fs := fakeCrashShare(t)

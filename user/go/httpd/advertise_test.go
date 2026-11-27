@@ -3,6 +3,7 @@ package main
 import (
 	"sync"
 	"testing"
+	"time"
 
 	"virelai/mdns"
 	"virelai/vi"
@@ -179,6 +180,7 @@ func TestAdvertiserStartStopSeam(t *testing.T) {
 	seam := advSeam{
 		log:    func(string) {},
 		listen: func(p uint16) int64 { binds = append(binds, p); return 0 },
+		recv:   func(uint16, []byte) int64 { return 0 },
 		close:  func(p uint16) int64 { closes = append(closes, p); return 0 },
 		send: func(dst [4]byte, dp, sp uint16, b []byte) int64 {
 			if dst != mdns.Group4Bytes || dp != mdns.Port || sp != mdns.Port {
@@ -194,10 +196,10 @@ func TestAdvertiserStartStopSeam(t *testing.T) {
 		stats: func() (vi.NetStats, int64) {
 			return vi.NetStats{OwnIP: [4]byte{192, 168, 78, 5}}, vi.NetStatsBytes
 		},
-		// Every sleep parks — the cadence goroutine blocks at its first
-		// burst wait and never emits again, so the sends list is
-		// deterministic: announce, then the goodbye pair.
-		sleep: func(uint64) { select {} },
+		// A quantum long enough that stop() (called immediately below)
+		// closes the stop channel before the burst completes: the emitted
+		// set is announce + the goodbye pair, deterministic.
+		sleep: func(uint64) { time.Sleep(200 * time.Millisecond) },
 	}
 	a := newAdvertiser("v198b", 8080, seam)
 	if a == nil {
@@ -233,6 +235,137 @@ func TestAdvertiserStartStopSeam(t *testing.T) {
 			if r.TTL != 0 {
 				t.Fatal("a goodbye datagram carries a nonzero TTL")
 			}
+		}
+	}
+}
+
+// M206b residual (#3814): the advertiser's own :5353 bind also serves
+// matching queries — a QU browse gets a bounded unicast answer on the
+// same owner, and the console names the query and answer.
+func TestAdvertiseAnswersQuery(t *testing.T) {
+	var mu sync.Mutex
+	var logs []string
+	type sent struct {
+		dst [4]byte
+		pkt []byte
+	}
+	var sends []sent
+	q, err := mdns.Query("_http._tcp.local", mdns.TypePTR, true).Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	peer := [4]byte{10, 0, 0, 17}
+	record := make([]byte, 4+8+len(q))
+	copy(record[0:4], peer[:])
+	record[4], record[5] = 0x14, 0xe9 // source port 5353
+	record[6], record[7] = 0, 0
+	record[8] = byte((8 + len(q)) >> 8)
+	record[9] = byte(8 + len(q))
+	copy(record[12:], q)
+	pending := [][]byte{record}
+	seam := advSeam{
+		log:    func(l string) { mu.Lock(); logs = append(logs, l); mu.Unlock() },
+		listen: func(uint16) int64 { return 0 },
+		recv: func(_ uint16, buf []byte) int64 {
+			mu.Lock()
+			defer mu.Unlock()
+			if len(pending) == 0 {
+				return 0
+			}
+			d := pending[0]
+			pending = pending[1:]
+			return int64(copy(buf, d))
+		},
+		close: func(uint16) int64 { return 0 },
+		send: func(dst [4]byte, dp, sp uint16, b []byte) int64 {
+			if dp != mdns.Port || sp != mdns.Port {
+				return -1
+			}
+			mu.Lock()
+			sends = append(sends, sent{dst: dst, pkt: append([]byte(nil), b...)})
+			mu.Unlock()
+			return int64(len(b))
+		},
+		stats: func() (vi.NetStats, int64) {
+			return vi.NetStats{OwnIP: [4]byte{10, 0, 0, 16}}, vi.NetStatsBytes
+		},
+		sleep: func(uint64) {},
+	}
+	a := newAdvertiser("v206b", 8080, seam)
+	if a == nil {
+		t.Fatal("newAdvertiser refused")
+	}
+	if a.responder == nil {
+		t.Fatal("advertiser has no query responder")
+	}
+	if !a.start() {
+		t.Fatal("start failed")
+	}
+	found := false
+	for i := 0; i < 2000 && !found; i++ {
+		mu.Lock()
+		for _, s := range sends {
+			if s.dst == peer {
+				found = true
+			}
+		}
+		mu.Unlock()
+		if !found {
+			time.Sleep(time.Millisecond)
+		}
+	}
+	burstDone := false
+	for i := 0; i < 2000 && !burstDone; i++ {
+		mu.Lock()
+		for _, l := range logs {
+			if l == "httpd: advertise burst done" {
+				burstDone = true
+			}
+		}
+		mu.Unlock()
+		if !burstDone {
+			time.Sleep(time.Millisecond)
+		}
+	}
+	a.stop()
+	if !found {
+		t.Fatal("no unicast answer reached the querying peer")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	var answered *mdns.Message
+	for _, s := range sends {
+		if s.dst != peer {
+			continue
+		}
+		m, err := mdns.Decode(s.pkt)
+		if err != nil {
+			t.Fatalf("answer decode: %v", err)
+		}
+		answered = m
+	}
+	if answered == nil || !answered.Response || len(answered.Answers) == 0 {
+		t.Fatalf("answer message = %+v", answered)
+	}
+	if answered.Answers[0].Type != mdns.TypePTR ||
+		answered.Answers[0].PTR != "v206b._http._tcp.local" {
+		t.Fatalf("answer PTR = %+v", answered.Answers[0])
+	}
+	need := []string{
+		"httpd: mdns query _http._tcp.local",
+		"httpd: mdns answer v206b._http._tcp.local addr=10.0.0.16 port=8080 unicast=1",
+		"httpd: advertise burst done",
+		"httpd: advertise goodbye sent",
+	}
+	for _, wantLine := range need {
+		ok := false
+		for _, l := range logs {
+			if l == wantLine {
+				ok = true
+			}
+		}
+		if !ok {
+			t.Fatalf("missing log %q in %v", wantLine, logs)
 		}
 	}
 }

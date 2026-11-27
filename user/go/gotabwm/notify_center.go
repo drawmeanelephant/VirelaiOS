@@ -72,7 +72,7 @@ var (
 	notifyCenter        []centerNotification
 	notifyCenterOpen    bool
 	notifyCenterNextID  uint32
-	notifyCenterPainted bool
+	notifyCenterReceipt presentReceipt
 	// centerSpotShown latches the one-time decode marker for the empty
 	// band's staged spot — the same latch shape the mascot markers keep.
 	centerSpotShown   bool
@@ -257,6 +257,28 @@ func notifyCenterHit(px, py uint32, width, height int) bool {
 		int(py) >= y && int(py) < y+h
 }
 
+func openNotifyCenter() {
+	if overlayBlocksModal(overlayNotifyCenter) {
+		return
+	}
+	if notifyCenterOpen {
+		return
+	}
+	closeDismissibleModals(overlayNotifyCenter)
+	notifyCenterOpen = true
+	notifyCenterReceipt.arm()
+	vi.ConsoleLine(MarkerNotifyCenterOpen)
+}
+
+func closeNotifyCenter() {
+	if !notifyCenterOpen {
+		return
+	}
+	notifyCenterOpen = false
+	notifyCenterReceipt.arm()
+	vi.ConsoleLine(MarkerNotifyCenterClose)
+}
+
 // notifyCenterClick handles a pointer press in the center or its clock-panel
 // affordance. A source click focuses the sender but leaves the center open;
 // row X dismisses just that item, while the footer clears the full history.
@@ -265,30 +287,22 @@ func notifyCenterClick(px, py uint32) bool {
 		if !notifyCenterClockHit(px, py, vi.ScanoutWidth, vi.ScanoutHeight) {
 			return false
 		}
-		notifyCenterOpen = true
-		notifyCenterPainted = false
-		vi.ConsoleLine(MarkerNotifyCenterOpen)
-		return true
+		openNotifyCenter()
+		return notifyCenterOpen
 	}
 
 	x, y, w, h := notifyCenterRect(vi.ScanoutWidth, vi.ScanoutHeight)
 	if w <= 0 || h <= 0 {
-		notifyCenterOpen = false
-		notifyCenterPainted = false
-		vi.ConsoleLine(MarkerNotifyCenterClose)
+		closeNotifyCenter()
 		return true
 	}
 	pxi, pyi := int(px), int(py)
 	if !notifyCenterHit(px, py, vi.ScanoutWidth, vi.ScanoutHeight) {
-		notifyCenterOpen = false
-		notifyCenterPainted = false
-		vi.ConsoleLine(MarkerNotifyCenterClose)
+		closeNotifyCenter()
 		return true
 	}
 	if pyi < y+notifyHeaderH && pxi >= x+w-42 {
-		notifyCenterOpen = false
-		notifyCenterPainted = false
-		vi.ConsoleLine(MarkerNotifyCenterClose)
+		closeNotifyCenter()
 		return true
 	}
 	if dx, dy, dw, dh := notifyCenterDNDRect(vi.ScanoutWidth, vi.ScanoutHeight); dw > 0 &&
@@ -567,10 +581,9 @@ func noteRailBadges() {
 }
 
 func notifyCenterPaintMarker(painted, presented bool) (string, bool) {
-	if !notifyCenterOpen || !painted || !presented || notifyCenterPainted {
+	if !notifyCenterOpen || !notifyCenterReceipt.feed(painted, presented) {
 		return "", false
 	}
-	notifyCenterPainted = true
 	return MarkerNotifyCenterPaint, true
 }
 

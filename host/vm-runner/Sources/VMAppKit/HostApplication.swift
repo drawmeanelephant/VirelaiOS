@@ -43,6 +43,59 @@ public protocol HostKeyCapturing: AnyObject {
     var capturesSystemKeys: Bool { get set }
 }
 
+/// M216k (#3950): accumulates AppKit scroll-wheel deltas into guest whole-line
+/// integer ticks. Magnitude 1 = one text line; positive dy = scroll down,
+/// positive dx = scroll right (opposite AppKit's scrollingDelta sign, which is
+/// negative for scrolling down/right). Precise trackpad deltas accumulate in
+/// points (12 pt per line); notched wheel deltas are already in lines. Momentum
+/// phases are ignored (out of scope).
+public struct HostWheelAccumulator {
+    public static let pointsPerLine: Double = 12.0
+    public static let maxLinesPerTick: Int16 = 8191
+
+    private var remX: Double = 0
+    private var remY: Double = 0
+
+    public init() {}
+
+    public mutating func reset() {
+        remX = 0
+        remY = 0
+    }
+
+    public mutating func consume(
+        deltaX: Double,
+        deltaY: Double,
+        hasPreciseDeltas: Bool,
+        phase: NSEvent.Phase,
+        momentumPhase: NSEvent.Phase
+    ) -> (dx: Int16, dy: Int16) {
+        if !momentumPhase.isEmpty {
+            return (0, 0)
+        }
+        if phase == .began {
+            reset()
+        }
+        let factor = hasPreciseDeltas ? 1.0 : Self.pointsPerLine
+        remX += (-deltaX) * factor
+        remY += (-deltaY) * factor
+
+        let rawX = trunc(remX / Self.pointsPerLine)
+        let rawY = trunc(remY / Self.pointsPerLine)
+        remX -= rawX * Self.pointsPerLine
+        remY -= rawY * Self.pointsPerLine
+
+        if phase == .ended || phase == .cancelled {
+            reset()
+        }
+
+        let limit = Double(Self.maxLinesPerTick)
+        let dx = Int16(max(-limit, min(limit, rawX)))
+        let dy = Int16(max(-limit, min(limit, rawY)))
+        return (dx, dy)
+    }
+}
+
 /// The session front door. Gate windows do not use this controller.
 public final class HostApplication: NSObject, NSApplicationDelegate, NSWindowDelegate, NSToolbarDelegate {
     public let lifecycle = HostLifecycle()
@@ -53,6 +106,11 @@ public final class HostApplication: NSObject, NSApplicationDelegate, NSWindowDel
     public let commandBus = HostCommandBus()
     public let window: NSWindow
     public var onStop: (String, Int32) -> Void = { _, _ in }
+    /// M216k (#3950): live scroll-wheel hook — (hidX, hidY, dxLines, dyLines),
+    /// with positive dy = scroll down, positive dx = scroll right. Nil when the
+    /// custom-virtio input queue is not attached.
+    public var onScrollWheel: ((UInt16, UInt16, Int16, Int16) -> Void)?
+    private var wheelAccumulator = HostWheelAccumulator()
     /// M114d (#2457): the drawer model — owned by the runner, injected
     /// here so the window's split pane, the bus verbs and the headless
     /// `--host-cmd-after` mirror all act on the ONE instance.
@@ -370,6 +428,9 @@ public final class HostApplication: NSObject, NSApplicationDelegate, NSWindowDel
                            .otherMouseDown, .scrollWheel]
             ) { [weak self] event in
                 self?.commandBus.machine.noteActivity()
+                if event.type == .scrollWheel {
+                    self?.handleScrollWheel(event)
+                }
                 return event
             }
         }
@@ -498,6 +559,44 @@ public final class HostApplication: NSObject, NSApplicationDelegate, NSWindowDel
             self.inspector.isOpen.toggle()
             return .performed
         })
+    }
+
+    /// M216k (#3950): map a point in the guest view's coordinate space into the
+    /// HID absolute 0..32767 logical range (top-left origin), or nil if outside.
+    public static func guestWheelPoint(
+        viewPoint: NSPoint,
+        viewBounds: NSRect,
+        isFlipped: Bool
+    ) -> (x: UInt16, y: UInt16)? {
+        guard viewBounds.width > 0, viewBounds.height > 0,
+              viewBounds.contains(viewPoint) else { return nil }
+        let normX = (viewPoint.x - viewBounds.minX) / viewBounds.width
+        let rawY = viewPoint.y - viewBounds.minY
+        let topY = isFlipped ? rawY : (viewBounds.height - rawY)
+        let normY = topY / viewBounds.height
+        let lx = UInt16(min(32767, max(0, Int((normX * 32768.0).rounded()))))
+        let ly = UInt16(min(32767, max(0, Int((normY * 32768.0).rounded()))))
+        return (lx, ly)
+    }
+
+    private func handleScrollWheel(_ event: NSEvent) {
+        guard event.window === window,
+              let gv = guestView, !gv.isHidden,
+              let handler = onScrollWheel else { return }
+        let pt = gv.convert(event.locationInWindow, from: nil)
+        guard let (lx, ly) = Self.guestWheelPoint(
+            viewPoint: pt, viewBounds: gv.bounds, isFlipped: gv.isFlipped
+        ) else { return }
+        let (dx, dy) = wheelAccumulator.consume(
+            deltaX: event.scrollingDeltaX,
+            deltaY: event.scrollingDeltaY,
+            hasPreciseDeltas: event.hasPreciseScrollingDeltas,
+            phase: event.phase,
+            momentumPhase: event.momentumPhase
+        )
+        if dx != 0 || dy != 0 {
+            handler(lx, ly, dx, dy)
+        }
     }
 
     /// The visible affordance of the drawer — the class-A seam tests

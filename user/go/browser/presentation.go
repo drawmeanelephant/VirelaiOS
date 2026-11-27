@@ -1,6 +1,7 @@
 package main
 
 import (
+	"virelai/imgscale"
 	"virelai/ttf"
 	"virelai/vi"
 	"virelai/webrender"
@@ -67,21 +68,22 @@ func (a *app) sampleFrame(dst virender, p presentation) {
 	if p.W <= 0 || p.H <= 0 {
 		return
 	}
+	scale := imgscale.New(webstyle.ViewportWidth, webstyle.ViewportHeight, p.W, p.H)
 	for y := 0; y < p.H; y++ {
-		sy := (2*y + 1) * webstyle.ViewportHeight / (2 * p.H)
+		color := scale.PixelOpaque(a.nativePix, 0, y)
 		for x := 0; x < p.W; {
-			sx := (2*x + 1) * webstyle.ViewportWidth / (2 * p.W)
-			color := a.nativePix[sy*webstyle.ViewportWidth+sx] & 0xffffff
 			end := x + 1
+			var next uint32
 			for end < p.W {
-				sx = (2*end + 1) * webstyle.ViewportWidth / (2 * p.W)
-				if a.nativePix[sy*webstyle.ViewportWidth+sx]&0xffffff != color {
+				next = scale.PixelOpaque(a.nativePix, end, y)
+				if next != color {
 					break
 				}
 				end++
 			}
-			dst.Fill(p.X+x, p.Y+y, end-x, 1, color)
+			dst.Fill(p.X+x, p.Y+y, end-x, 1, color&0xffffff)
 			x = end
+			color = next
 		}
 	}
 }

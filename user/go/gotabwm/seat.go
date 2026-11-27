@@ -183,6 +183,9 @@ func idleAdvance(ticks uint64) {
 	default:
 		idleState = idleActive
 	}
+	if idleState != idleActive {
+		hoverPreviewCancel()
+	}
 }
 
 // The waking edge is consumed by the seat instead of activating its chrome.
@@ -581,24 +584,7 @@ func main() {
 				remote = nil
 			}
 		}
-		if launch.open && launch.sink != 0 && !ensureLauncherFocus() {
-			dismissLauncher()
-		}
-		// M115d (#2463): the power menu's sink is reaped on the same
-		// dead-window discipline as the launcher's.
-		if powerMenuOpen && powerSink != 0 && !ensurePowerFocus() {
-			dismissPowerMenu()
-		}
-		// M196a (#3351): the consent sink is reaped on the same
-		// dead-window discipline — a vanished sink must not strand a
-		// prompt whose keys are the seat's alone.
-		if secretAskModal.open && secretAskModal.sink != 0 && !ensureSecretFocus() {
-			closeSecretAsk()
-		}
-		// M190c (#3238): the rail menu's sink on the same discipline.
-		if railMenuOpen && railMenuSink != 0 && !ensureRailMenuFocus() {
-			dismissRailMenu()
-		}
+		reapOverlays()
 		e, ok := vi.PollEvent()
 		if !ok {
 			// #3882: pay any paint debt marked outside the event drain
@@ -671,6 +657,7 @@ func main() {
 	// closed cleanly, pure timing variance). Sweep whatever remains so
 	// every hosted app still observes its close on the way out; a strip
 	// the choreography or countdown already emptied is a no-op.
+	seatTimers.CancelAll()
 	dismissLauncher()
 	sweepHosted(closeHosted)
 	// M102e (#2169): WM shutdown closes every GPU3D context — the kernel's
@@ -792,6 +779,14 @@ func compositeTick(scan []byte, ticks uint64, presents *int) {
 	// more frame, and so the dismiss marker lands in the same tick the
 	// pixels stop changing.
 	notifyTick(compositeClock)
+	// #3914: the hover-preview dwell rides the HEARTBEAT, before the
+	// frame it may add the card to. A damage-only repaint never ages it.
+	hoverPreviewTick()
+	// M216l (#3951): the consent arm delay lands HERE — the first
+	// heartbeat after a presented frame carrying the prompt flips grant
+	// gestures live. It runs before the paint so this pass's own present
+	// cannot arm what it is about to show for the first time.
+	armSecretAsk()
 	presented := compositePaint(scan, ticks, presents)
 	if restoreWitnessMode && presented && ticks%8 == 0 {
 		vi.ConsoleLine(restoreWitnessLine())
@@ -903,50 +898,15 @@ func compositePaint(scan []byte, ticks uint64, presents *int) (presented bool) {
 	// session receipt seen this tick is badged on the same frame.
 	agentSeatTick()
 	chromeTick(scan, ticks)
-	if launch.open {
-		_ = paintLauncher(scan, vi.ScanoutWidth, vi.ScanoutHeight)
-	}
-	// M115d (#2463): the power menu floats above the rail and under the
-	// toasts, matching its pointer priority (the toast hit test runs
-	// first).
-	if powerMenuOpen {
-		_ = paintPowerMenu(scan, vi.ScanoutWidth, vi.ScanoutHeight)
-	}
-	// M196a (#3351): the secret-ask prompt floats with the modal chrome —
-	// above the rail, under the toasts, names only (never the value).
-	if secretAskModal.open {
-		_ = paintSecretAsk(scan, vi.ScanoutWidth, vi.ScanoutHeight)
-	}
-	// M190c (#3238): the button-2 rail menu floats with the other modal
-	// chrome — above the rail it opened from, under the toasts.
-	if railMenuOpen {
-		_ = paintRailMenu(scan, vi.ScanoutWidth, vi.ScanoutHeight)
-	}
-	// M161b (#2974): not-responding banners paint over their panes and
-	// under the toasts/ghost/curtain — the pointer path hit-tests them in
-	// the same order (the modal menus above already consumed the press).
-	_ = paintWatchdog(scan, vi.ScanoutWidth, vi.ScanoutHeight)
 	// M125f (#2591): a crash receipt's deferred re-exec runs here — off
 	// the teardown event and clear of crashSave's whole-VM save.
 	crashRestartTick()
-	painted := paintNotify(scan, vi.ScanoutWidth, vi.ScanoutHeight, compositeClock)
-	centerPainted := paintNotifyCenter(scan, vi.ScanoutWidth, vi.ScanoutHeight)
-	// M124a (#2580): the drag ghost paints over every other chrome layer
-	// — the gesture owns the frame while the button is held — and under
-	// the idle curtain like the rest (the curtain is visual, not input).
-	ghostPainted := paintDragGhost(scan)
-	// M190e (#3240): the lock curtain is the topmost layer and owns the
-	// frame outright while it is up — the idle overlay never paints under it.
-	if lockActive {
-		_ = paintLockCurtain(scan, vi.ScanoutWidth, vi.ScanoutHeight)
-	} else {
-		switch idleState {
-		case idleDim:
-			_ = paintIdleDim(scan, vi.ScanoutWidth, vi.ScanoutHeight)
-		case idleCurtain:
-			_ = paintIdleCurtain(scan, vi.ScanoutWidth, vi.ScanoutHeight)
-		}
-	}
+	ovPx := paintOverlays(scan, vi.ScanoutWidth, vi.ScanoutHeight)
+	hoverPx := ovPx[overlayHoverPreview]
+	askPx := ovPx[overlaySecretAsk]
+	painted := ovPx[overlayNotify]
+	centerPainted := ovPx[overlayNotifyCenter]
+	ghostPainted := ovPx[overlayDragGhost]
 	if !demoMode {
 		syncSeatChrome(scan)
 	}
@@ -957,6 +917,10 @@ func compositePaint(scan []byte, ticks uint64, presents *int) (presented bool) {
 			vi.ConsoleLine(MarkerPresent)
 		}
 	}
+	// M216l (#3951): the arm delay's presented-frame half — only a frame
+	// that actually flushed counts, and only where the prompt was really
+	// on it (noteSecretFrame excludes the curtain-covered cases itself).
+	noteSecretFrame(askPx, presented)
 	// markRail's post-present twin: `gotabwm: rail n=` proves the strip
 	// painted, this marker proves a frame carrying it actually flushed —
 	// the earliest scanout a pixel probe may read the rail on. Run 10's
@@ -966,11 +930,15 @@ func compositePaint(scan []byte, ticks uint64, presents *int) (presented bool) {
 	if line, once := railPaintMarker(railPx > 0, presented); once {
 		vi.ConsoleLine(line)
 	}
+	// #3914: the hover-preview receipt follows the present for the same
+	// reason — `gotabwm: preview id=` names a card a frame already showed,
+	// and the dismiss line names the first presented frame without it.
+	hoverPreviewPresented(hoverPx > 0, presented)
 	// The paint marker follows the PRESENT, not the fill: "the toast is on
 	// the scanout" is only true once the frame carrying it has been
 	// flushed. A gate that keyed a pixel probe on `gotabwm: notify id=`
 	// would be reading a frame the seat had not presented yet.
-	if line, once := notifyPaintMarker(painted > 0 && presented); once {
+	if line, once := notifyPaintMarker(painted > 0, presented); once {
 		vi.ConsoleLine(line)
 	}
 	if line, once := notifyCenterPaintMarker(centerPainted > 0, presented); once {
@@ -990,8 +958,10 @@ func compositePaint(scan []byte, ticks uint64, presents *int) (presented bool) {
 	// M82d2 (#1785): AFTER the present, so the fsync'd publish never delays a
 	// frame, and BEFORE the live-mode early return below.
 	flushNotifyHistory()
-	if launch.open && presented && launch.painted {
-		vi.ConsoleLine("gotabwm: launcher presented")
+	// M216g (#3946): once per DISTINCT launcher frame — the open, then
+	// each filter/selection/scroll/row-count change — never per repaint.
+	if launch.open && presented && launch.painted && launch.presentedFrame() {
+		vi.ConsoleLine(MarkerLauncherPresented)
 	}
 	// M197a (#3381): the seat's own a11y outline republishes on the frame
 	// cadence — gated on presented like every chrome marker above, so the
@@ -1104,7 +1074,9 @@ func drainSeatEvents(first vi.Event, poll func() (vi.Event, bool), consume func(
 
 // consumeSeatEvent handles one non-empty poll. Pointer and key log their
 // markers and return false (not a tick). Kind 19 also hit-tests the top
-// rail (M63c). Window mirrors are dropped; client-area clicks are ignored.
+// rail (M63c). Window mirrors are dropped; client-area clicks forward to
+// the pane's owner (forwardContentPointer — #2878 delivers them as window
+// MOUSE_*).
 // Any other kind is the pre-M63a ignore-non-tick path. Only
 // EvCompositeTick returns true.
 //
@@ -1115,7 +1087,7 @@ func drainSeatEvents(first vi.Event, poll func() (vi.Event, bool), consume func(
 // left for the next 1 Hz heartbeat. The drain's heldDebt hook pays it
 // once per batch (an interactive present cadence), never per event.
 func consumeSeatEvent(e vi.Event) bool {
-	if !(e.Kind == vi.EvCompositeTick && e.Flags&vi.WmTickDamage == 0) {
+	if !(e.Kind == vi.EvCompositeTick && e.Flags&vi.WmTickDamage == 0) && e.Kind != vi.EvTimer {
 		pendingComposite = true
 	}
 	launcherWindowEvent(e)
@@ -1130,6 +1102,9 @@ func consumeSeatEvent(e vi.Event) bool {
 	// #3126: the mirror's focused bit tracks the kernel's focused user
 	// window — the routed-chord repair in applyUndo reads it.
 	noteKernelFocus(e)
+	// M216e (#3944): the same mirror's unsaved bit (12) marks the tab's
+	// rail dot and arms the close-time Reopen toast.
+	noteUnsavedMirror(e)
 	// #2703: live input re-arms the demo strip hold. hidChordHold's job is
 	// to keep the two-tab choreography's destructive steps (swap→pin→
 	// split→closePinnedFirst/closeHosted) behind in-flight scripted input;
@@ -1149,8 +1124,16 @@ func consumeSeatEvent(e vi.Event) bool {
 	// run budget re-arms on it so a still-running chain cannot be swept
 	// mid-leg (the kind-20 mirror above counts too: an app resizing is
 	// activity whether or not a key is flying).
-	if e.Kind != vi.EvCompositeTick {
+	if e.Kind != vi.EvCompositeTick && e.Kind != vi.EvTimer {
 		lastActivityTick = seatTick
+	}
+	// M216n (#3953): kind-9 EvTimer drives the seat's deadline queue
+	// (slot 95). A fired entry marks pendingComposite for the same
+	// non-heartbeat paint/present path pointer events use, prints no
+	// MarkerTick, and moves no heartbeat counter.
+	if e.Kind == vi.EvTimer {
+		seatTimerFire()
+		return false
 	}
 	// M190e (#3240): while the lock curtain is up every input kind feeds
 	// the curtain or nothing at all — the kind-1 KEY_DOWN lands here
@@ -1166,12 +1149,15 @@ func consumeSeatEvent(e vi.Event) bool {
 		vi.ConsoleLine(MarkerPtr)
 		if lockActive {
 			lastInputTick = seatTick
+			hoverPreviewCancel()
 			return false
 		}
 		if idleInput(seatTick) {
+			hoverPreviewCancel()
 			return false
 		}
 		handleWmPointer(e)
+		hoverPreviewAfterPointer(uint8(e.Flags & 0xff))
 		noteBadgeTransition()
 		noteRailBadges()
 		return false
@@ -1180,12 +1166,15 @@ func consumeSeatEvent(e vi.Event) bool {
 		vi.ConsoleLine(MarkerKey)
 		if lockActive {
 			lastInputTick = seatTick
+			hoverPreviewCancel()
 			return false
 		}
 		if idleInput(seatTick) {
+			hoverPreviewCancel()
 			return false
 		}
 		handleWmKey(e)
+		hoverPreviewReconcile()
 		noteBadgeTransition()
 		noteRailBadges()
 		// M107e (#2322): poll the host-integration lane on the input path,
@@ -1308,10 +1297,11 @@ func markRail() {
 		vi.Itoa64(int64(f)) + " space=" + spaces[spaceCur].Name)
 }
 
-// railPainted latches MarkerRailPaint — once per boot is the whole
-// contract: the gate wants the FIRST scanout the rail is already on, and
-// markRail above already narrates every later transition (pre-present).
-var railPainted bool
+// railReceipt is the presentReceipt behind MarkerRailPaint — once per
+// boot is the whole contract: the gate wants the FIRST scanout the rail
+// is already on, and markRail above already narrates every later
+// transition (pre-present).
+var railReceipt presentReceipt
 
 // railPaintMarker returns the presented-rail marker for the first frame
 // that both painted the rail (paintRail wrote pixels) and presented it —
@@ -1319,10 +1309,9 @@ var railPainted bool
 // this line reads a scanout the rail is already on. The n/focus/space
 // payload mirrors markRail's line so the two reads diff cleanly.
 func railPaintMarker(painted, presented bool) (string, bool) {
-	if !painted || !presented || railPainted {
+	if !railReceipt.feed(painted, presented) {
 		return "", false
 	}
-	railPainted = true
 	f, _ := tabs.Focused()
 	return MarkerRailPaint + "n=" + vi.Itoa64(int64(tabs.Count())) +
 		" focus=" + vi.Itoa64(int64(f)) + " space=" + spaces[spaceCur].Name, true

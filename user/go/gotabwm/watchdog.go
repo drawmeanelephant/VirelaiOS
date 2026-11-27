@@ -337,6 +337,17 @@ func watchdogBannerUp(id uint32) bool {
 	return id < 256 && (wdWedged[id] || wdBusy[id])
 }
 
+// watchdogAnyBannerUp reports whether any live tab currently shows a
+// not-responding banner.
+func watchdogAnyBannerUp() bool {
+	for i := 0; i < tabs.count; i++ {
+		if watchdogBannerUp(tabs.tabs[i].ID) {
+			return true
+		}
+	}
+	return false
+}
+
 // watchdogProbeKillGate is the startup probe named in the card: read the
 // seat's own principal once and evaluate the kill-gate rule for the apps
 // this seat will host. uid_user/uid_agent seats always pass same-uid kills
@@ -504,9 +515,9 @@ func watchdogPress(id uint32, act int) {
 }
 
 // paintWatchdog draws every flagged pane's banner and returns the pixels
-// written — the paintNotify contract. Banners sit under the launcher,
-// power menu, toasts, drag ghost and the idle curtain (the pointer path
-// hits them in the same order).
+// written — the paintNotify contract. Banners sit under the launcher and
+// every modal menu, the toasts, drag ghost and the idle curtain (the
+// pointer path hits them in the same order).
 func paintWatchdog(scan []byte, width, height int) int {
 	if width <= 0 || height <= 0 || len(scan) < 4 {
 		return 0

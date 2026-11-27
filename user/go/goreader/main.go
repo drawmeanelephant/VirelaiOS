@@ -642,9 +642,9 @@ func (a *app) findKey(ev vi.Event) bool {
 	return a.find.OnKey(k)
 }
 
-func (a *app) scrollTick(down bool) {
+func (a *app) scrollTick(down bool) bool {
 	if a.st != loadOkay {
-		return
+		return false
 	}
 	vp := viewportRect(a.ta.W, a.ta.H, a.find.Open)
 	step := scrollStep(vp.H, a.zoom())
@@ -657,7 +657,7 @@ func (a *app) scrollTick(down bool) {
 		np, noy, turned, moved = scrollUp(a.pg, a.oy, a.maxOY(), step)
 	}
 	if !moved {
-		return
+		return false
 	}
 	if turned {
 		a.pg.page = np
@@ -668,9 +668,29 @@ func (a *app) scrollTick(down bool) {
 				markerPage+vi.Itoa64(int64(np+1))+"/"+vi.Itoa64(int64(a.pg.pages)))
 			a.markPos()
 		}
-		return
+		return true
 	}
 	a.oy = noy
+	return true
+}
+
+func (a *app) scrollTicks(delta int) bool {
+	if a.st != loadOkay || delta == 0 {
+		return false
+	}
+	down := delta > 0
+	n := delta
+	if n < 0 {
+		n = -n
+	}
+	moved := false
+	for i := 0; i < n; i++ {
+		if !a.scrollTick(down) {
+			break
+		}
+		moved = true
+	}
+	return moved
 }
 
 // handle returns whether the screen needs repainting.
@@ -774,12 +794,15 @@ func (a *app) handle(ev vi.Event) bool {
 			a.flushPos()
 			a.ta.CloseAndExit(exitQuit)
 		}
-	case evScroll:
-		if ev.Arg0&0x4000 != 0 {
+	case vi.EvMouseScroll:
+		if a.pick.Open {
+			return false
+		}
+		s := vi.DecodeScroll(ev)
+		if s.Axis != vi.ScrollVertical || s.Delta == 0 {
 			return false // horizontal ticks are not this reader's axis
 		}
-		a.scrollTick(ev.Arg0&0x8000 != 0)
-		return true
+		return a.scrollTicks(s.Delta)
 	}
 	return false
 }

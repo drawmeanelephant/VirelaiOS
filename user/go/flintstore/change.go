@@ -1,4 +1,4 @@
-package main
+package flintstore
 
 import (
 	"bytes"
@@ -10,23 +10,11 @@ import (
 	"virelai/sshlib"
 )
 
+// Canonical signature domains (ADR 0049 §Canonical bytes).
 const (
-	domainOps    = "FLINT-OPS/1\x00"
-	domainChange = "FLINT-CHANGE/1\x00"
+	DomainOps    = "FLINT-OPS/1\x00"
+	DomainChange = "FLINT-CHANGE/1\x00"
 )
-
-// Change is the JSON representation of a signed Change line in streams/<id>.jsonl.
-type Change struct {
-	ID      string  `json:"id"`
-	Parent  *string `json:"parent"`
-	Stream  string  `json:"stream"`
-	TS      int64   `json:"ts"`
-	Author  string  `json:"author"`
-	Message string  `json:"message"`
-	Ops     []Op    `json:"ops"`
-	Merged  *string `json:"merged"`
-	Sig     string  `json:"sig"`
-}
 
 func parseLowerHex(s string, wantBytes int) ([]byte, bool) {
 	if len(s) != wantBytes*2 {
@@ -50,6 +38,9 @@ func parseHex32Lower(s string) ([32]byte, bool) {
 	copy(out[:], b)
 	return out, true
 }
+
+// ParseHex32Lower decodes exactly 64 lowercase hex characters into 32 bytes.
+func ParseHex32Lower(s string) ([32]byte, bool) { return parseHex32Lower(s) }
 
 func parseHex64Lower(s string) ([64]byte, bool) {
 	var out [64]byte
@@ -126,15 +117,15 @@ func writeOptUUID(buf *bytes.Buffer, u *string) bool {
 	return true
 }
 
-// opBytes encodes a single Op into its ADR 0049 §Canonical bytes representation.
-func opBytes(op Op) ([]byte, error) {
-	code := opTypeCode(op.Type)
+// OpBytes encodes a single Op into its ADR 0049 §Canonical bytes representation.
+func OpBytes(op Op) ([]byte, error) {
+	code := OpTypeCode(op.Type)
 	if code == 0 {
-		return nil, refuse("change_malformed", "")
+		return nil, Refuse("change_malformed", "")
 	}
 	atomID, ok := ParseUUID(op.AtomID)
 	if !ok {
-		return nil, refuse("change_malformed", "")
+		return nil, Refuse("change_malformed", "")
 	}
 	var buf bytes.Buffer
 	buf.WriteByte(code)
@@ -143,30 +134,31 @@ func opBytes(op Op) ([]byte, error) {
 	writeOptStr(&buf, op.NewName)
 	writeOptSpan(&buf, op.NewSpan)
 	if !writeOptHash32(&buf, op.NewHash) {
-		return nil, refuse("change_malformed", "")
+		return nil, Refuse("change_malformed", "")
 	}
 	if !writeOptHash32(&buf, op.NewSigHash) {
-		return nil, refuse("change_malformed", "")
+		return nil, Refuse("change_malformed", "")
 	}
 	if !writeOptHash32(&buf, op.OldHash) {
-		return nil, refuse("change_malformed", "")
+		return nil, Refuse("change_malformed", "")
 	}
 	return buf.Bytes(), nil
 }
 
-// opsHash computes SHA-256("FLINT-OPS/1\x00" || u32le(n) || op_bytes(op_1) || ... || op_bytes(op_n))
+// OpsHash computes
+// SHA-256("FLINT-OPS/1\x00" || u32le(n) || op_bytes(op_1) || ... || op_bytes(op_n))
 // with ops sorted by (atom_id bytes, type code).
-func opsHash(ops []Op) ([32]byte, error) {
+func OpsHash(ops []Op) ([32]byte, error) {
 	var zero [32]byte
 	sorted := make([]Op, len(ops))
 	copy(sorted, ops)
-	sortOps(sorted)
+	SortOps(sorted)
 
 	var buf bytes.Buffer
-	buf.WriteString(domainOps)
+	buf.WriteString(DomainOps)
 	writeU32LE(&buf, uint32(len(sorted)))
 	for _, op := range sorted {
-		ob, err := opBytes(op)
+		ob, err := OpBytes(op)
 		if err != nil {
 			return zero, err
 		}
@@ -175,46 +167,47 @@ func opsHash(ops []Op) ([32]byte, error) {
 	return sshlib.SHA256Sum(buf.Bytes()), nil
 }
 
-// sigMsg computes the canonical Change preimage signed by Ed25519 per ADR 0049 §Canonical bytes:
+// SigMsg computes the canonical Change preimage signed by Ed25519 per ADR 0049
+// §Canonical bytes:
 // "FLINT-CHANGE/1\x00" || id[16] || opt(parent[16]) || stream[16]
 // || u64le(ts) || author[32] || str(message) || opt(merged[16]) || ops_hash[32]
-func sigMsg(c *Change) ([]byte, error) {
+func SigMsg(c *Change) ([]byte, error) {
 	if c == nil {
-		return nil, refuse("change_malformed", "")
+		return nil, Refuse("change_malformed", "")
 	}
 	idBytes, ok := ParseUUID(c.ID)
 	if !ok {
-		return nil, refuse("change_malformed", "")
+		return nil, Refuse("change_malformed", "")
 	}
 	streamBytes, ok := ParseUUID(c.Stream)
 	if !ok {
-		return nil, refuse("change_malformed", "")
+		return nil, Refuse("change_malformed", "")
 	}
 	if c.TS < 0 {
-		return nil, refuse("change_malformed", "")
+		return nil, Refuse("change_malformed", "")
 	}
 	authorBytes, ok := parseHex32Lower(c.Author)
 	if !ok {
-		return nil, refuse("change_malformed", "")
+		return nil, Refuse("change_malformed", "")
 	}
 	if !utf8.ValidString(c.Message) {
-		return nil, refuse("change_malformed", "")
+		return nil, Refuse("change_malformed", "")
 	}
 
 	var buf bytes.Buffer
-	buf.WriteString(domainChange)
+	buf.WriteString(DomainChange)
 	buf.Write(idBytes[:])
 	if !writeOptUUID(&buf, c.Parent) {
-		return nil, refuse("change_malformed", "")
+		return nil, Refuse("change_malformed", "")
 	}
 	buf.Write(streamBytes[:])
 	writeU64LE(&buf, uint64(c.TS))
 	buf.Write(authorBytes[:])
 	writeStr(&buf, c.Message)
 	if !writeOptUUID(&buf, c.Merged) {
-		return nil, refuse("change_malformed", "")
+		return nil, Refuse("change_malformed", "")
 	}
-	oh, err := opsHash(c.Ops)
+	oh, err := OpsHash(c.Ops)
 	if err != nil {
 		return nil, err
 	}
@@ -222,11 +215,12 @@ func sigMsg(c *Change) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// MarshalChangeLine serializes a Change as a single JSON line with sorted Ops and trailing '\n'.
+// MarshalChangeLine serializes a Change as a single JSON line with sorted Ops
+// and a trailing '\n'.
 func MarshalChangeLine(c Change) ([]byte, error) {
 	sorted := make([]Op, len(c.Ops))
 	copy(sorted, c.Ops)
-	sortOps(sorted)
+	SortOps(sorted)
 	c.Ops = sorted
 	line, err := json.Marshal(c)
 	if err != nil {
@@ -235,40 +229,42 @@ func MarshalChangeLine(c Change) ([]byte, error) {
 	return append(line, '\n'), nil
 }
 
-// ParseChange unmarshals a single JSONL line into a Change and validates all field encodings.
+// ParseChange unmarshals a single JSONL line into a Change and validates all
+// field encodings.
 func ParseChange(line []byte) (Change, error) {
 	if len(bytes.TrimSpace(line)) == 0 {
-		return Change{}, refuse("change_malformed", "")
+		return Change{}, Refuse("change_malformed", "")
 	}
 	var c Change
 	if err := json.Unmarshal(line, &c); err != nil {
-		return Change{}, refuse("change_malformed", "")
+		return Change{}, Refuse("change_malformed", "")
 	}
 	if c.Ops == nil || c.TS <= 0 {
-		return Change{}, refuse("change_malformed", "")
+		return Change{}, Refuse("change_malformed", "")
 	}
 	if _, ok := parseHex64Lower(c.Sig); !ok {
-		return Change{}, refuse("change_malformed", "")
+		return Change{}, Refuse("change_malformed", "")
 	}
-	if _, err := sigMsg(&c); err != nil {
-		return Change{}, refuse("change_malformed", "")
+	if _, err := SigMsg(&c); err != nil {
+		return Change{}, Refuse("change_malformed", "")
 	}
 	return c, nil
 }
 
-// VerifyChange recomputes sig_msg from c's parsed fields and verifies c.Sig against c.Author.
+// VerifyChange recomputes sig_msg from c's parsed fields and verifies c.Sig
+// against c.Author.
 func VerifyChange(c *Change) (bool, error) {
-	msg, err := sigMsg(c)
+	msg, err := SigMsg(c)
 	if err != nil {
-		return false, refuse("change_malformed", "")
+		return false, Refuse("change_malformed", "")
 	}
 	author, ok := parseHex32Lower(c.Author)
 	if !ok {
-		return false, refuse("change_malformed", "")
+		return false, Refuse("change_malformed", "")
 	}
 	sig, ok := parseHex64Lower(c.Sig)
 	if !ok {
-		return false, refuse("change_malformed", "")
+		return false, Refuse("change_malformed", "")
 	}
 	return ed25519.EdVerify(sig, msg, author), nil
 }

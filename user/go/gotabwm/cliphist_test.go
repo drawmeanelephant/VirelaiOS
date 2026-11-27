@@ -36,6 +36,7 @@ func stubClipGet(t *testing.T, contents *[]byte) {
 }
 
 func TestClipHistPushBoundAndOrder(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	clipHistReset(t)
 	for i := 0; i < clipHistMax+3; i++ {
@@ -52,6 +53,7 @@ func TestClipHistPushBoundAndOrder(t *testing.T) {
 }
 
 func TestClipHistPushMimeHonest(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	clipHistReset(t)
 	cliphistPush([]byte("plain text"))
@@ -62,6 +64,7 @@ func TestClipHistPushMimeHonest(t *testing.T) {
 }
 
 func TestClipHistDedupeMoveToFront(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	clipHistReset(t)
 	cliphistPush([]byte("aaa"))
@@ -76,6 +79,7 @@ func TestClipHistDedupeMoveToFront(t *testing.T) {
 }
 
 func TestClipHistPollObserves(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	clipHistReset(t)
 	var buf []byte
@@ -106,6 +110,7 @@ func TestClipHistPollObserves(t *testing.T) {
 }
 
 func TestClipHistNoteIsEchoGuarded(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	clipHistReset(t)
 	var buf []byte
@@ -121,6 +126,7 @@ func TestClipHistNoteIsEchoGuarded(t *testing.T) {
 }
 
 func TestClipHistNeverSeesPrimary(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	clipHistReset(t)
 	// serveSelPublish writes primSel through seat memory + staging files
@@ -185,6 +191,7 @@ func stubMenuWindows(t *testing.T) {
 }
 
 func TestClipMenuOpenEmpty(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	clipMenuSave(t)
 	stubMenuWindows(t)
@@ -198,6 +205,7 @@ func TestClipMenuOpenEmpty(t *testing.T) {
 }
 
 func TestClipMenuKeysAndPick(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	clipMenuSave(t)
 	stubMenuWindows(t)
@@ -266,6 +274,7 @@ func TestClipMenuKeysAndPick(t *testing.T) {
 }
 
 func TestClipMenuEscDismisses(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	clipMenuSave(t)
 	stubMenuWindows(t)
@@ -284,6 +293,7 @@ func TestClipMenuEscDismisses(t *testing.T) {
 }
 
 func TestClipMenuKeyGate(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	clipMenuSave(t)
 	clipMenuOpen = false

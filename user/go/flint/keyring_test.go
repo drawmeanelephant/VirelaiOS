@@ -106,13 +106,13 @@ type fsSnapshot struct {
 
 func storeSnapshot(h *remoteHarness) fsSnapshot {
 	snap := fsSnapshot{
-		files: make(map[string][]byte, len(h.fs.files)),
-		dirs:  make(map[string]bool, len(h.fs.dirs)),
+		files: make(map[string][]byte, len(h.fs.Files)),
+		dirs:  make(map[string]bool, len(h.fs.Dirs)),
 	}
-	for p, b := range h.fs.files {
+	for p, b := range h.fs.Files {
 		snap.files[p] = bytes.Clone(b)
 	}
-	for p := range h.fs.dirs {
+	for p := range h.fs.Dirs {
 		snap.dirs[p] = true
 	}
 	return snap
@@ -120,20 +120,20 @@ func storeSnapshot(h *remoteHarness) fsSnapshot {
 
 func assertStoreIdentical(t *testing.T, h *remoteHarness, snap fsSnapshot) {
 	t.Helper()
-	if len(h.fs.files) != len(snap.files) {
-		t.Fatalf("store file count changed: %d -> %d", len(snap.files), len(h.fs.files))
+	if len(h.fs.Files) != len(snap.files) {
+		t.Fatalf("store file count changed: %d -> %d", len(snap.files), len(h.fs.Files))
 	}
 	for p, b := range snap.files {
-		got, ok := h.fs.files[p]
+		got, ok := h.fs.Files[p]
 		if !ok || !bytes.Equal(got, b) {
 			t.Fatalf("store file %s changed or vanished", p)
 		}
 	}
-	if len(h.fs.dirs) != len(snap.dirs) {
-		t.Fatalf("store dir count changed: %d -> %d", len(snap.dirs), len(h.fs.dirs))
+	if len(h.fs.Dirs) != len(snap.dirs) {
+		t.Fatalf("store dir count changed: %d -> %d", len(snap.dirs), len(h.fs.Dirs))
 	}
 	for p := range snap.dirs {
-		if !h.fs.dirs[p] {
+		if !h.fs.Dirs[p] {
 			t.Fatalf("store dir %s vanished", p)
 		}
 	}

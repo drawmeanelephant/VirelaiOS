@@ -73,7 +73,7 @@ cross-issue collisions.
 |:---:|:---|:---|:---|
 | 10 | `WIN_RESIZE` | #224 | `arg0 = new w`, `arg1 = new h`, `arg2 = 0` (reserved). |
 | 11 | `MOUSE_RIGHT_DOWN` | #228 | `arg0 = local x`, `arg1 = local y`. |
-| 12 | `MOUSE_SCROLL` | #236 | `arg0` packed: bits 0–13 magnitude (1..8191), bit 14 = horizontal (shift+scroll), bit 15 = sign (1 = down/right, 0 = up/left). `arg1 = 0` (reserved). **Resolves #228 vs #236 kind-12 conflict by giving SCROLL the slot.** |
+| 12 | `MOUSE_SCROLL` | #236, M216k (#3950) | `arg0` packed: bits 0–13 magnitude (1..8191; magnitude 1 = one text line), bit 14 = horizontal, bit 15 = sign (1 = down/right, 0 = up/left). PageUp/PageDown synthesis keeps `flags = 0`, `arg1 = 0`. Wheel-sourced events (M216k) set `flags = SCROLL_WHEEL (0x1000) \| MOD_*` and pack window-local pointer coords `local_x \| (local_y << 16)` in `arg1`. **Resolves #228 vs #236 kind-12 conflict by giving SCROLL the slot.** |
 | 13 | `MOUSE_RIGHT_UP` | #228 | `arg0 = local x`, `arg1 = local y`. **#228 originally proposed kind 12 for R_UP — moved here so kind 12 = SCROLL.** |
 | 14 | `DRAG_ENTER` | #237 | `arg0 = payload size (≤ 512)`, `arg1 = source pid`. Posted when the pointer crosses into a window other than the source during an active drag. |
 | 15 | `DRAG_LEAVE` | #237 | `arg0 = 0`, `arg1 = source pid`. Posted when the pointer leaves a window during an active drag. |
@@ -355,6 +355,32 @@ chord amends ADR 0013 D8 first.
 This ADR is **not yet accepted**. Once M14 closes, the first post-M14
 claim that lands SHOULD mark this ADR `accepted` and append the
 implementing claim(s) here. Until then, only `proposed`.
+
+- 2026-11-23 — M216k (#3950): **kind-12 `MOUSE_SCROLL` unit, source, and
+  routing contract.**
+  - **Unit semantics:** magnitude `1` in `arg0` bits 0–13 means **one text
+    line** (vertical: one line; horizontal: one column/step; clamped to
+    `1..8191`). Notched wheels emit whole lines directly; precise trackpad
+    scroll deltas accumulate host-side in points (`12.0` pt = 1 line) and emit
+    whole lines once crossing the threshold (momentum phases ignored).
+  - **Wheel vs PageUp/PageDown synthesis:** PageUp (`0x4b`) and PageDown
+    (`0x4e`) continue to synthesize kind-12 `MOUSE_SCROLL` with `flags = 0`,
+    `arg0 = 0x0001` (up) / `0x8001` (down), `arg1 = 0`, routed to the focused
+    window's owner so existing consumers (`goreader`, `browser`) stay
+    compatible. Wheel-sourced kind-12 events set `flags` bit 12
+    (`SCROLL_WHEEL = 0x1000`) OR'd with capture-time `MOD_*` bits (bits 0–3)
+    and pack window-local pointer coordinates `local_x | (local_y << 16)` in
+    `arg1`, letting apps that also bind PageUp/PageDown as `KEY_DOWN` (card j,
+    #3949) distinguish wheel ticks from synthesized page keys without
+    double-scrolling.
+  - **Target and no-seat delivery:** wheel-sourced events target the topmost
+    visible user window under the pointer `(x, y)` (never keyboard focus).
+    Under a registered seat, wheel samples route through kind 19 `arg1[31:16]`
+    -> seat chrome/overlay hit-test -> `sys_wmctl` cmd 15 (`a3 = scroll`,
+    ADR 0015). With no seat registered (`!wm_owns_input` and `armed_global`),
+    the kernel delivers kind-12 `MOUSE_SCROLL` directly in its local path.
+  - **Deferred paths:** AGENTD `wheel` input type and RFB buttons 4 and 5 are
+    explicitly deferred to later work.
 
 ## Open issues (left for the implementing claims)
 

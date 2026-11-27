@@ -895,14 +895,14 @@ func TestCommitLogVerifyAndRollForward(t *testing.T) {
 	recPath := streamRecordPath(h.root, ws.Stream)
 	logPath := streamLogPath(h.root, ws.Stream)
 
-	h.fs.beforeWrite = func(op, path string) error {
+	h.fs.BeforeWrite = func(op, path string) error {
 		if op == "write" && path == recPath {
 			return errors.New("simulated crash before record rewrite")
 		}
 		return nil
 	}
 	rc, logs := h.runCmd("commit", "-m", "first commit\nextra detail")
-	h.fs.beforeWrite = nil
+	h.fs.BeforeWrite = nil
 	if rc != 1 {
 		t.Fatalf("expected faulted commit to return 1, got rc=%d logs=%v", rc, logs)
 	}
@@ -1029,12 +1029,12 @@ func TestCommitAndVerifyRefusals(t *testing.T) {
 
 	h.hasSecret = false
 	wroteAny := false
-	h.fs.beforeWrite = func(op, path string) error {
+	h.fs.BeforeWrite = func(op, path string) error {
 		wroteAny = true
 		return nil
 	}
 	rc, logs = h.runCmd("commit", "-m", "no secret")
-	h.fs.beforeWrite = nil
+	h.fs.BeforeWrite = nil
 	if rc != 1 || len(logs) != 1 || logs[0] != "flint: refuse secret_not_found" {
 		t.Fatalf("expected secret_not_found, got rc=%d logs=%v", rc, logs)
 	}

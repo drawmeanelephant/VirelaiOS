@@ -878,6 +878,157 @@ grep -q '^f1: FAIL warm=cold$' "artifacts/warm-mini-report.txt" \
     || { bad "f1 under off should read 'FAIL warm=cold'"; grep '^f1:' artifacts/warm-mini-report.txt | sed 's/^/      /'; }
 rm -f artifacts/warm-mini-*
 
+# --- VGATE_ONLY (M216i): a filtered run boots a subset and says PARTIAL ---
+# Same stub-runner harness. only-mini declares three cold legs; leg c's
+# assert is deliberately unsatisfiable so the failing-leg case has a
+# subject. The warm spec doubles as the checkpoint case: c1 is cold (no
+# --from-checkpoint), so VGATE_ONLY=c1 must skip the ckpt-ck base boot,
+# while VGATE_ONLY=w1 must still take it.
+ONLY_SPEC="$TMP/only-mini.spec"
+cat > "$ONLY_SPEC" <<'SPEC'
+vgate_name only-mini "stub-runner VGATE_ONLY filter check"
+vgate_file a.txt <<'EOF'
+echo only-a-line
+EOF
+vgate_file b.txt <<'EOF'
+echo only-b-line
+EOF
+vgate_file c.txt <<'EOF'
+echo only-c-line
+EOF
+vgate_run a -- --script '$RUN_DIR/a.txt' --script-after 'tasks user-el0 reaped' --script-expect only-a-line --timeout 120
+vgate_assert a serial-contains 'only-a-line'
+vgate_run b -- --script '$RUN_DIR/b.txt' --script-after 'tasks user-el0 reaped' --script-expect only-b-line --timeout 120
+vgate_assert b serial-contains 'only-b-line'
+vgate_run c -- --script '$RUN_DIR/c.txt' --script-after 'tasks user-el0 reaped' --script-expect only-c-line --timeout 120
+vgate_assert c serial-contains 'never-emitted-c'
+SPEC
+
+only_report="artifacts/only-mini-report.txt"
+
+# One tag of three: one boot, two SKIP lines, PARTIAL: 1/1, exit 0 — and
+# the text `PASS: p/t` never appears in the filtered report.
+: > "$TMP/stub.log"
+VGATE_NO_BUILD=1 VGATE_ONLY=b VZ_RUNNER_BIN="$STUB_RUNNER" STUB_VZ_LOG="$TMP/stub.log" \
+    VIRELAI_RUN_DIR_BASE="$TMP" \
+    "$MODERN_BASH" tools/gate/vgate.sh "$ONLY_SPEC" > "$TMP/vgate-only-b.out" 2>&1
+only_rc=$?
+[ "$only_rc" = 0 ] && ok "VGATE_ONLY=b: filtered run exits 0 (rc=$only_rc)" \
+    || { bad "VGATE_ONLY=b should exit 0, got rc=$only_rc"; sed -n '1,15p' "$TMP/vgate-only-b.out" | sed 's/^/      /'; }
+n_cold_only="$(grep -c '^cold$' "$TMP/stub.log" || true)"
+[ "$n_cold_only" = 1 ] && ok "VGATE_ONLY=b: exactly one leg booted (cold=$n_cold_only)" \
+    || bad "VGATE_ONLY=b should boot exactly one leg, got cold=$n_cold_only"
+[ -f "$only_report" ] || { bad "no report at $only_report"; only_report=/dev/null; }
+grep -q '^a: SKIP (VGATE_ONLY)$' "$only_report" \
+    && ok "VGATE_ONLY=b: unselected leg a records SKIP" \
+    || bad "a should read 'SKIP (VGATE_ONLY)'"; grep '^a:' "$only_report" | sed 's/^/      /'
+grep -q '^c: SKIP (VGATE_ONLY)$' "$only_report" \
+    && ok "VGATE_ONLY=b: unselected leg c records SKIP" \
+    || bad "c should read 'SKIP (VGATE_ONLY)'"
+grep -q '^b: PASS warm=cold$' "$only_report" \
+    && ok "VGATE_ONLY=b: the selected leg boots and passes" \
+    || bad "b should read 'PASS warm=cold'"; grep '^b:' "$only_report" | sed 's/^/      /'
+grep -q '^PARTIAL: 1/1$' "$only_report" \
+    && ok "VGATE_ONLY=b: the report ends PARTIAL: 1/1" \
+    || bad "report should end 'PARTIAL: 1/1'"; tail -3 "$only_report" | sed 's/^/      /'
+grep -q '^PASS: ' "$only_report" \
+    && bad "a filtered report must never contain 'PASS: p/t'" \
+    || ok "VGATE_ONLY=b: no 'PASS: p/t' line in the report"
+grep -q 'PARTIAL PASS (1/1 selected runs, 2 skipped by VGATE_ONLY)' "$TMP/vgate-only-b.out" \
+    && ok "VGATE_ONLY=b: stdout names the PARTIAL PASS shape" \
+    || bad "stdout should name 'PARTIAL PASS (1/1 selected runs, 2 skipped by VGATE_ONLY)'"
+
+# An unknown tag refuses before any boot machinery, exit 2.
+: > "$TMP/stub.log"
+VGATE_NO_BUILD=1 VGATE_ONLY=zzz VZ_RUNNER_BIN="$STUB_RUNNER" STUB_VZ_LOG="$TMP/stub.log" \
+    VIRELAI_RUN_DIR_BASE="$TMP" \
+    "$MODERN_BASH" tools/gate/vgate.sh "$ONLY_SPEC" > "$TMP/vgate-only-zzz.out" 2>&1
+only_rc=$?
+[ "$only_rc" = 2 ] && ok "VGATE_ONLY=zzz: unknown tag exits 2 (rc=$only_rc)" \
+    || bad "VGATE_ONLY=zzz should exit 2, got rc=$only_rc"
+case "$(cat "$TMP/vgate-only-zzz.out")" in
+    *"VGATE_ONLY names no such run: zzz"*) ok "VGATE_ONLY=zzz: the refusal names the tag" ;;
+    *) bad "the refusal should name the unknown tag: $(cat "$TMP/vgate-only-zzz.out")" ;;
+esac
+[ ! -s "$TMP/stub.log" ] && ok "VGATE_ONLY=zzz: no leg booted" \
+    || bad "an unknown tag must not boot anything (stub.log: $(cat "$TMP/stub.log"))"
+
+# A selected leg that fails: exit 1, FAIL: 0/1 — the filter does not launder
+# a failure into a partial pass.
+: > "$TMP/stub.log"
+VGATE_NO_BUILD=1 VGATE_ONLY=c VZ_RUNNER_BIN="$STUB_RUNNER" STUB_VZ_LOG="$TMP/stub.log" \
+    VIRELAI_RUN_DIR_BASE="$TMP" \
+    "$MODERN_BASH" tools/gate/vgate.sh "$ONLY_SPEC" > "$TMP/vgate-only-c.out" 2>&1
+only_rc=$?
+[ "$only_rc" = 1 ] && ok "VGATE_ONLY=c: a failing selected leg exits 1 (rc=$only_rc)" \
+    || bad "VGATE_ONLY=c should exit 1, got rc=$only_rc"
+grep -q '^c: FAIL warm=cold$' "$only_report" \
+    && ok "VGATE_ONLY=c: the failing leg records FAIL" \
+    || { bad "c should read 'FAIL warm=cold'"; grep '^c:' "$only_report" | sed 's/^/      /'; }
+grep -q '^FAIL: 0/1$' "$only_report" \
+    && ok "VGATE_ONLY=c: the report ends FAIL: 0/1" \
+    || bad "report should end 'FAIL: 0/1'"; tail -3 "$only_report" | sed 's/^/      /'
+
+# Filter unset: the same spec runs every leg and reports the usual result —
+# no SKIP lines, no PARTIAL (c's failing assert makes the run FAIL 2/3,
+# which is exactly the unfiltered shape the warm spec already proves).
+: > "$TMP/stub.log"
+VGATE_NO_BUILD=1 VZ_RUNNER_BIN="$STUB_RUNNER" STUB_VZ_LOG="$TMP/stub.log" \
+    VIRELAI_RUN_DIR_BASE="$TMP" \
+    "$MODERN_BASH" tools/gate/vgate.sh "$ONLY_SPEC" > "$TMP/vgate-only-all.out" 2>&1
+only_rc=$?
+n_cold_all="$(grep -c '^cold$' "$TMP/stub.log" || true)"
+[ "$only_rc" = 1 ] && [ "$n_cold_all" = 3 ] \
+    && ok "VGATE_ONLY unset: all three legs boot, run fails on c's assert (rc=$only_rc cold=$n_cold_all)" \
+    || bad "unfiltered run wrong: rc=$only_rc cold=$n_cold_all"
+grep -q '^FAIL: 2/3$' "$only_report" \
+    && ok "VGATE_ONLY unset: the report ends FAIL: 2/3 (the usual shape)" \
+    || bad "unfiltered report should end 'FAIL: 2/3'"; tail -3 "$only_report" | sed 's/^/      /'
+if grep -q 'SKIP (VGATE_ONLY)\|^PARTIAL' "$only_report"; then
+    bad "an unfiltered report must not contain SKIP/PARTIAL lines"
+else
+    ok "VGATE_ONLY unset: no SKIP/PARTIAL lines in the report"
+fi
+
+# Checkpoint gating on the warm spec: VGATE_ONLY=c1 selects only a COLD leg,
+# so the declared ckpt-ck base boot must not run; VGATE_ONLY=w1 selects a
+# warm leg, so it must.
+: > "$TMP/stub.log"
+VGATE_NO_BUILD=1 VGATE_ONLY=c1 VZ_RUNNER_BIN="$STUB_RUNNER" STUB_VZ_LOG="$TMP/stub.log" \
+    VIRELAI_RUN_DIR_BASE="$TMP" \
+    "$MODERN_BASH" tools/gate/vgate.sh "$WARM_SPEC" > "$TMP/vgate-only-c1.out" 2>&1
+only_rc=$?
+n_save_c1="$(grep -c '^save$' "$TMP/stub.log" || true)"
+n_cold_c1="$(grep -c '^cold$' "$TMP/stub.log" || true)"
+[ "$only_rc" = 0 ] && [ "$n_save_c1" = 0 ] && [ "$n_cold_c1" = 1 ] \
+    && ok "VGATE_ONLY=c1: no checkpoint base boot when no selected leg uses it (save=$n_save_c1 cold=$n_cold_c1)" \
+    || bad "VGATE_ONLY=c1 census wrong: rc=$only_rc save=$n_save_c1 cold=$n_cold_c1"
+grep -q '^ckpt-ck:' "artifacts/warm-mini-report.txt" \
+    && bad "ckpt-ck must not appear when no selected leg restores it" \
+    || ok "VGATE_ONLY=c1: no ckpt-ck row in the report"
+grep -q '^PARTIAL: 1/1$' "artifacts/warm-mini-report.txt" \
+    && ok "VGATE_ONLY=c1: PARTIAL: 1/1 (the checkpoint does not count)" \
+    || bad "report should end 'PARTIAL: 1/1'"; tail -3 "artifacts/warm-mini-report.txt" | sed 's/^/      /'
+
+: > "$TMP/stub.log"
+VGATE_NO_BUILD=1 VGATE_ONLY=w1 VZ_RUNNER_BIN="$STUB_RUNNER" STUB_VZ_LOG="$TMP/stub.log" \
+    VIRELAI_RUN_DIR_BASE="$TMP" \
+    "$MODERN_BASH" tools/gate/vgate.sh "$WARM_SPEC" > "$TMP/vgate-only-w1.out" 2>&1
+only_rc=$?
+n_save_w1="$(grep -c '^save$' "$TMP/stub.log" || true)"
+n_load_w1="$(grep -c '^load$' "$TMP/stub.log" || true)"
+n_cold_w1="$(grep -c '^cold$' "$TMP/stub.log" || true)"
+[ "$only_rc" = 0 ] && [ "$n_save_w1" = 1 ] && [ "$n_load_w1" = 1 ] && [ "$n_cold_w1" = 0 ] \
+    && ok "VGATE_ONLY=w1: the selected warm leg still takes its base boot (save=$n_save_w1 load=$n_load_w1 cold=$n_cold_w1)" \
+    || bad "VGATE_ONLY=w1 census wrong: rc=$only_rc save=$n_save_w1 load=$n_load_w1 cold=$n_cold_w1"
+grep -q '^w1: PASS warm=restored$' "artifacts/warm-mini-report.txt" \
+    && ok "VGATE_ONLY=w1: the warm leg restores and passes" \
+    || { bad "w1 should read 'PASS warm=restored'"; grep '^w1:' "artifacts/warm-mini-report.txt" | sed 's/^/      /'; }
+grep -q '^PARTIAL: 2/2$' "artifacts/warm-mini-report.txt" \
+    && ok "VGATE_ONLY=w1: PARTIAL: 2/2 counts the base boot + the leg" \
+    || bad "report should end 'PARTIAL: 2/2'"; tail -3 "artifacts/warm-mini-report.txt" | sed 's/^/      /'
+rm -f artifacts/only-mini-* artifacts/warm-mini-*
+
 # --- spec-load refusals (ADR 0059 D8's static Code=2 class) -------------------
 # These die before any build/boot machinery, so no stubs need to satisfy them
 # beyond the codesign/hv env already exported.

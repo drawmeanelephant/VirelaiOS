@@ -19,6 +19,7 @@ func stubSurface(t *testing.T, attach func(uint32, int) ([]byte, error),
 	t.Helper()
 	prevA, prevN := surfaceAttach, surfaceName
 	prevRecs, prevXY := surfaceRecs, surfaceXY
+	prevRects, prevTabs := gpu3dRects, tabs
 	surfaceAttach = attach
 	surfaceName = alive
 	// A non-nil buffer keeps surfaceAlive off the guest mmap so host tests
@@ -26,9 +27,12 @@ func stubSurface(t *testing.T, attach func(uint32, int) ([]byte, error),
 	surfaceNameBuf = []byte{0}
 	surfaceRecs = [surfaceMaxRecs]surfaceRec{}
 	surfaceXY = [256]uint32{}
+	gpu3dRects = [256]uint32{}
+	tabs = TabStrip{}
 	t.Cleanup(func() {
 		surfaceAttach, surfaceName = prevA, prevN
 		surfaceRecs, surfaceXY = prevRecs, prevXY
+		gpu3dRects, tabs = prevRects, prevTabs
 		surfaceNameBuf = nil
 	})
 }
@@ -50,6 +54,7 @@ func aliveNo(uint32, []byte) (int, int64)  { return 0, -vi.ErrEINVAL }
 // A bound owner's request registers the surface and the tick blits it into
 // the scanout at the mirrored rect.
 func TestSurfaceShareComposesAtMirrorRect(t *testing.T) {
+	resetSeatForTest(t)
 	const w, h = 4, 3
 	surf := make([]byte, w*h*4)
 	for i := range surf {
@@ -90,6 +95,7 @@ func TestSurfaceShareComposesAtMirrorRect(t *testing.T) {
 // The refused shapes: empty geometry, an over-scanout extent, a failed
 // attach, and a full record pool — none register.
 func TestSurfaceShareRefusals(t *testing.T) {
+	resetSeatForTest(t)
 	stubSurface(t, func(uint32, int) ([]byte, error) {
 		return nil, nil
 	}, aliveYes)
@@ -119,6 +125,7 @@ func TestSurfaceShareRefusals(t *testing.T) {
 // A zero handle drops the window's handoff — the release path the app uses
 // before its window dies.
 func TestSurfaceShareZeroHandleDrops(t *testing.T) {
+	resetSeatForTest(t)
 	stubSurface(t, func(uint32, int) ([]byte, error) {
 		return make([]byte, 48), nil
 	}, aliveYes)
@@ -138,6 +145,7 @@ func TestSurfaceShareZeroHandleDrops(t *testing.T) {
 // The compose never touches a dead window's pages: the name probe answers
 // EINVAL and the record is dropped instead of blitted.
 func TestSurfaceComposeDropsDeadWindow(t *testing.T) {
+	resetSeatForTest(t)
 	surf := make([]byte, 48)
 	stubSurface(t, func(uint32, int) ([]byte, error) {
 		return surf, nil
@@ -163,6 +171,7 @@ func TestSurfaceComposeDropsDeadWindow(t *testing.T) {
 // released mirror) retires the handoff exactly like the token and the
 // gpu3d context.
 func TestSurfaceDropRidesBinding(t *testing.T) {
+	resetSeatForTest(t)
 	stubSurface(t, func(uint32, int) ([]byte, error) {
 		return make([]byte, 48), nil
 	}, aliveYes)
@@ -182,6 +191,7 @@ func TestSurfaceDropRidesBinding(t *testing.T) {
 // The mirror feeds the compose rect: x|y lands in arg0, the released bit
 // clears it.
 func TestSurfaceMirrorTracksPosition(t *testing.T) {
+	resetSeatForTest(t)
 	stubSurface(t, func(uint32, int) ([]byte, error) { return nil, nil }, aliveYes)
 	surfaceNoteMirror(vi.Event{Kind: vi.EvWmWindow, Flags: 5, Arg0: 30 | 40<<16})
 	if surfaceXY[5] != 30|40<<16 {
@@ -197,6 +207,7 @@ func TestSurfaceMirrorTracksPosition(t *testing.T) {
 // path: gateRPC admits it, serveSurfaceShare attaches, and the ack reports
 // applied.
 func TestSurfaceShareEndToEnd(t *testing.T) {
+	resetSeatForTest(t)
 	stubSurface(t, func(uint32, int) ([]byte, error) {
 		return make([]byte, 48), nil
 	}, aliveYes)
@@ -215,5 +226,86 @@ func TestSurfaceShareEndToEnd(t *testing.T) {
 	}
 	if !surfaceRecs[0].live || surfaceRecs[0].win != 5 {
 		t.Fatalf("record = %+v", surfaceRecs[0])
+	}
+}
+
+// seedComposeRec plants one live handoff record directly: the compose-order
+// tests need record slots in an order that disagrees with tab focus, which
+// serveSurfaceShare's first-free-slot allocation cannot be asked to produce.
+func seedComposeRec(slot int, win uint32, w, h uint32, fill byte) {
+	pix := make([]byte, int(w)*int(h)*4)
+	for i := range pix {
+		pix[i] = fill
+	}
+	surfaceRecs[slot] = surfaceRec{live: true, win: win, w: w, h: h, pixels: pix}
+	surfaceXY[win] = 0
+	gpu3dRects[win] = w | h<<16
+}
+
+func scanByte(scan []byte, x, y int) byte {
+	return scan[(y*vi.ScanoutWidth+x)*4]
+}
+
+// Two full-viewport surfaces overlap everywhere; the focused tab's pixels
+// must win the scanout the way regionWindowAt gives it the pointer (#3940).
+func TestSurfaceComposeFocusBlitsLast(t *testing.T) {
+	resetSeatForTest(t)
+	stubSurface(t, func(uint32, int) ([]byte, error) { return nil, nil }, aliveYes)
+	seedComposeRec(0, 5, vi.ScanoutWidth, vi.ScanoutHeight, 0x11)
+	seedComposeRec(1, 6, vi.ScanoutWidth, vi.ScanoutHeight, 0x22)
+	tabs.OpenTab(5, "Mine")
+	tabs.OpenTab(6, "Sol") // first tab keeps focus; slot 1 still blits last today
+
+	scan := make([]byte, vi.ScanoutWidth*vi.ScanoutHeight*4)
+	composeSurfaces(scan)
+	if got := scanByte(scan, vi.ScanoutWidth/2, vi.ScanoutHeight/2); got != 0x11 {
+		t.Fatalf("focused-first scanout = %#x want 0x11", got)
+	}
+
+	tabs.FocusTab(6)
+	for i := range scan {
+		scan[i] = 0
+	}
+	composeSurfaces(scan)
+	if got := scanByte(scan, vi.ScanoutWidth/2, vi.ScanoutHeight/2); got != 0x22 {
+		t.Fatalf("focused-second scanout = %#x want 0x22", got)
+	}
+}
+
+// With no focused tab the compose keeps today's array order: the later
+// record still wins the overlap.
+func TestSurfaceComposeNoFocusKeepsArrayOrder(t *testing.T) {
+	resetSeatForTest(t)
+	stubSurface(t, func(uint32, int) ([]byte, error) { return nil, nil }, aliveYes)
+	seedComposeRec(0, 5, vi.ScanoutWidth, vi.ScanoutHeight, 0x11)
+	seedComposeRec(1, 6, vi.ScanoutWidth, vi.ScanoutHeight, 0x22)
+
+	scan := make([]byte, vi.ScanoutWidth*vi.ScanoutHeight*4)
+	composeSurfaces(scan)
+	if got := scanByte(scan, vi.ScanoutWidth/2, vi.ScanoutHeight/2); got != 0x22 {
+		t.Fatalf("unfocused scanout = %#x want 0x22", got)
+	}
+}
+
+// Disjoint pane rects never overlap, so the focused-last pass changes
+// nothing: both surfaces land where their mirrors put them.
+func TestSurfaceComposeDisjointPanesUnaffected(t *testing.T) {
+	resetSeatForTest(t)
+	stubSurface(t, func(uint32, int) ([]byte, error) { return nil, nil }, aliveYes)
+	seedComposeRec(0, 5, 4, 4, 0x11)
+	seedComposeRec(1, 6, 4, 4, 0x22)
+	surfaceXY[5] = 0
+	surfaceXY[6] = 8 | 8<<16
+	tabs.OpenTab(5, "Mine")
+	tabs.OpenTab(6, "Sol")
+	tabs.FocusTab(6)
+
+	scan := make([]byte, vi.ScanoutWidth*vi.ScanoutHeight*4)
+	composeSurfaces(scan)
+	if got := scanByte(scan, 1, 1); got != 0x11 {
+		t.Fatalf("left pane = %#x want 0x11", got)
+	}
+	if got := scanByte(scan, 9, 9); got != 0x22 {
+		t.Fatalf("right pane = %#x want 0x22", got)
 	}
 }

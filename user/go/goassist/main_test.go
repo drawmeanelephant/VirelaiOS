@@ -1003,3 +1003,51 @@ func TestStubAnswerIdsPinned(t *testing.T) {
 	}
 	t.Fatal("no answer marker")
 }
+
+func TestViewWheelScrollAndPageKeyNoDoubleScroll(t *testing.T) {
+	h := newFakeHost()
+	v := newTestView(h, true)
+	v.lines = make([]rline, 80)
+	for i := range v.lines {
+		v.lines[i] = rline{text: "line"}
+	}
+	v.scroll = 0
+	v.follow = false
+
+	// Wheel down (+5 lines) moves scroll offset down by 5.
+	if !v.handle(vi.Event{Kind: vi.EvMouseScroll, Flags: vi.ScrollWheel, Arg0: 0x8005}) {
+		t.Fatal("wheel down must report frame change")
+	}
+	if v.scroll != 5 {
+		t.Fatalf("after wheel +5: scroll=%d want 5", v.scroll)
+	}
+	// Wheel up (-2 lines) moves scroll offset up by 2.
+	if !v.handle(vi.Event{Kind: vi.EvMouseScroll, Flags: vi.ScrollWheel, Arg0: 0x0002}) {
+		t.Fatal("wheel up must report frame change")
+	}
+	if v.scroll != 3 {
+		t.Fatalf("after wheel -2: scroll=%d want 3", v.scroll)
+	}
+	// Horizontal wheel is ignored.
+	if v.handle(vi.Event{Kind: vi.EvMouseScroll, Flags: vi.ScrollWheel, Arg0: 0xc003}) {
+		t.Fatal("horizontal wheel must be ignored")
+	}
+	if v.scroll != 3 {
+		t.Fatalf("after horizontal wheel: scroll=%d want 3", v.scroll)
+	}
+
+	// PageDown arrives as KEY_DOWN + synthesized EvMouseScroll (Flags=0):
+	// handle must scroll once on the key and ignore the synthesized scroll event.
+	before := v.scroll
+	v.handle(keyDown(0x4e, 0, 0))
+	afterKey := v.scroll
+	if afterKey <= before {
+		t.Fatalf("PageDown key did not scroll: before=%d after=%d", before, afterKey)
+	}
+	if v.handle(vi.Event{Kind: vi.EvMouseScroll, Flags: 0, Arg0: 0x8001}) {
+		t.Fatal("synthesized PageDown EvMouseScroll must be ignored")
+	}
+	if v.scroll != afterKey {
+		t.Fatalf("synthesized PageDown EvMouseScroll double-scrolled: afterKey=%d afterScroll=%d", afterKey, v.scroll)
+	}
+}

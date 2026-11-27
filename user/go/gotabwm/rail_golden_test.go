@@ -165,6 +165,7 @@ func paintGoldenRail(t *testing.T, strip *TabStrip, hover, closeHover int) []byt
 }
 
 func TestRailCompositeGolden(t *testing.T) {
+	resetSeatForTest(t)
 	tok := theme.Current
 	theme.Current = theme.Dark
 	t.Cleanup(func() { theme.Current = tok })
@@ -178,6 +179,7 @@ func TestRailCompositeGolden(t *testing.T) {
 // falls back to the bitmap 'x' — still a full-canvas rail, pinned so the
 // fallback path can't silently drift from the fonted one's geometry.
 func TestRailCompositeGoldenDegrade(t *testing.T) {
+	resetSeatForTest(t)
 	tok := theme.Current
 	theme.Current = theme.Dark
 	t.Cleanup(func() { theme.Current = tok })
@@ -204,6 +206,7 @@ func withSpaces(t *testing.T, n, cur int) {
 // spaces is the smallest switcher; the single-space seat-rail golden
 // above stays byte-identical (spaceN==1 paints no pills).
 func TestRailCompositeGoldenSpaces2(t *testing.T) {
+	resetSeatForTest(t)
 	tok := theme.Current
 	theme.Current = theme.Dark
 	t.Cleanup(func() { theme.Current = tok })
@@ -218,6 +221,7 @@ func TestRailCompositeGoldenSpaces2(t *testing.T) {
 // golden proves the current-space treatment is positional, not an edge
 // case.
 func TestRailCompositeGoldenSpaces4(t *testing.T) {
+	resetSeatForTest(t)
 	tok := theme.Current
 	theme.Current = theme.Dark
 	t.Cleanup(func() { theme.Current = tok })
@@ -233,6 +237,7 @@ func TestRailCompositeGoldenSpaces4(t *testing.T) {
 // gate's seeded share (no FONTS.TXT) drives the --pointer-virtio click
 // from.
 func TestRailCompositeGoldenSpaces4Degrade(t *testing.T) {
+	resetSeatForTest(t)
 	tok := theme.Current
 	theme.Current = theme.Dark
 	t.Cleanup(func() { theme.Current = tok })

@@ -154,17 +154,19 @@ func surfaceAlive(id uint32) bool {
 // expects. The blit clips to the mirror's live extent and the scanout
 // edges, so a layout change shrinks instead of smearing. A window with no
 // mirror rect yet (gpu3dRects 0) is skipped until one lands.
+//
+// The focused tab's surface blits last (#3940): every undevided tab is
+// proposed the full viewport, so full-screen surfaces overlap and array
+// order is not paint order. regionWindowAt already gives the focused tab
+// the pointer; painting it last makes the scanout agree.
 func composeSurfaces(scan []byte) {
 	stride := vi.ScanoutWidth * 4
-	for i := range surfaceRecs {
-		r := &surfaceRecs[i]
-		if !r.live {
-			continue
-		}
+	focused, hasFocus := tabs.Focused()
+	blit := func(r *surfaceRec) {
 		if !surfaceAlive(r.win) {
 			vi.ConsoleLine("gotabwm: surf dead id=" + vi.Itoa64(int64(r.win)))
 			*r = surfaceRec{}
-			continue
+			return
 		}
 		xy := surfaceXY[r.win]
 		wh := gpu3dRects[r.win]
@@ -174,7 +176,7 @@ func composeSurfaces(scan []byte) {
 				r.missed = true
 				vi.ConsoleLine("gotabwm: surf nomirror id=" + vi.Itoa64(int64(r.win)))
 			}
-			continue
+			return
 		}
 		x, y := int(xy&0xffff), int(xy>>16)
 		w, h := int(r.w), int(r.h)
@@ -191,12 +193,29 @@ func composeSurfaces(scan []byte) {
 			h = vi.ScanoutHeight - y
 		}
 		if w <= 0 || h <= 0 {
-			continue
+			return
 		}
 		for row := 0; row < h; row++ {
 			dst := (y+row)*stride + x*4
 			src := row * int(r.w) * 4
 			copy(scan[dst:dst+w*4], r.pixels[src:src+w*4])
 		}
+	}
+	for i := range surfaceRecs {
+		r := &surfaceRecs[i]
+		if !r.live || (hasFocus && r.win == focused) {
+			continue
+		}
+		blit(r)
+	}
+	if !hasFocus {
+		return
+	}
+	for i := range surfaceRecs {
+		r := &surfaceRecs[i]
+		if !r.live || r.win != focused {
+			continue
+		}
+		blit(r)
 	}
 }

@@ -85,7 +85,7 @@ const maxWinEvents = 200
 // WinOpen and taskbar focus change the kernel's focused key/tty destination;
 // kind-21 WM_KEY still reaches the seat. No event-consumption ABI is implied.
 var (
-	openInputSink = vi.WinOpen
+	openInputSink = openSeatSink
 	queryWindow   = vi.WinQuery
 	openBlurProbe = vi.WinOpen
 )
@@ -106,10 +106,17 @@ func acquireLauncherFocus() bool {
 	// still settling — a chord that lands in that window must not be lost
 	// to a one-shot refusal. Bounded: a genuinely wedged sink still meets
 	// the same "Input sink unavailable" refusal after the retries.
+	// M216m (#3952): ENOSPC is not that transient. Every user window is
+	// taken and the reserve is out too; retrying it stalled the whole seat
+	// for 240 ticks (observed), so it is refused at once by name.
 	var id, r = openInputSink(launchX, launchY, launchW, uint32(launch.panelH()))
-	for tries := 0; r < 0 && tries < 120; tries++ {
+	for tries := 0; r < 0 && r != -vi.ErrENOSPC && tries < 120; tries++ {
 		vi.Sleep(2)
 		id, r = openInputSink(launchX, launchY, launchW, uint32(launch.panelH()))
+	}
+	if r == -vi.ErrENOSPC {
+		launch.err = windowLimitText
+		return false
 	}
 	if r < 0 {
 		launch.err = "Input sink unavailable"
@@ -272,6 +279,8 @@ func (p *windowPixels) upload(scan []byte, width, x, y, w, h int, rect func(int,
 }
 
 func syncSeatChrome(scan []byte) {
+	// M216m (#3952): the ceiling's exit watch rides this per-frame pass.
+	windowCeilingTick()
 	x, y, w, h := godMenuRect(vi.ScanoutWidth, vi.ScanoutHeight)
 	// M115d (#2463): the PWR button lives on the same chrome band — the
 	// chrome window's upload region widens to cover it so a hosted tab
@@ -281,10 +290,10 @@ func syncSeatChrome(scan []byte) {
 	}
 	if buttonPixels.id == 0 {
 		// Opening an ordinary window focuses it. Restore the live hosted
-		// destination immediately, including the menu sink if it is open.
+		// destination immediately, including any open overlay sink.
 		focus := hostedApp
-		if launch.open {
-			focus = launch.sink
+		if sink := overlayFocusSink(overlayCount); sink != 0 {
+			focus = sink
 		}
 		id, r := vi.WinOpen(uint32(x), uint32(y), uint32(w), uint32(h))
 		if r < 0 {
@@ -398,12 +407,7 @@ func launcherWindowEvent(e vi.Event) {
 	// A delayed mirror can name a reused id. Only a failed query proves
 	// the current sink is gone; ordinary sink KEY_DOWN/BLUR events drain
 	// on the same seat queue and are intentionally ignored.
-	if id == launch.sink {
-		if _, r := queryWindow(int(id)); r < 0 {
-			launch.sink = 0
-			dismissLauncher()
-		}
-	}
+	reapOverlaySink(id)
 }
 
 // deathMirrorStale reports whether a released registry mirror naming id is
@@ -532,6 +536,9 @@ func runWindowPhase() bool {
 		return false
 	}
 	vi.ConsoleLine(MarkerWinLeak + vi.Itoa64(int64(lid)))
+	// M216m (#3952): the probe is also the seat's reserve — the one window
+	// every modal can borrow as its sink when the kernel has none left.
+	reserveWin.id = uint32(lid)
 	return true
 }
 

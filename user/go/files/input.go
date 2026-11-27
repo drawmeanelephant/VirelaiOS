@@ -584,9 +584,9 @@ func (m *model) syncMenu() {
 	}
 	// Paste stays armed on an empty in-app queue: M202d adoption reads the
 	// machine clipboard at press time, and the refusal names what it found.
-	m.bar.Menus[1].Items[2].Disabled = false // Paste
-	m.bar.Menus[1].Items[4].Disabled = m.n == 0            // Mark
-	m.bar.Menus[1].Items[5].Disabled = m.markCount() == 0  // Unmark all
+	m.bar.Menus[1].Items[2].Disabled = false              // Paste
+	m.bar.Menus[1].Items[4].Disabled = m.n == 0           // Mark
+	m.bar.Menus[1].Items[5].Disabled = m.markCount() == 0 // Unmark all
 	selDir := false
 	if e, ok := m.selEntry(); ok && e.Dir() {
 		selDir = true
@@ -621,4 +621,30 @@ func (m *model) menuKey(ev keys.Event) bool {
 		m.menuVerb(wasBar, wasHover)
 	}
 	return true
+}
+
+func (m *model) handleScroll(ev vi.Event) bool {
+	s := vi.DecodeScroll(ev)
+	if !s.Wheel || s.Axis != vi.ScrollVertical || s.Delta == 0 {
+		return false
+	}
+	if m.banner.Open || m.bar.Open {
+		return false
+	}
+	switch m.mode {
+	case modeQuickLook:
+		return m.qlHandleScroll(ev)
+	case modeHints:
+		return m.hints.Move(s.Delta)
+	case modeNormal:
+		beforeSel, beforeTop := m.sel, m.top
+		if m.view == viewGrid {
+			m.gridMove(s.Delta, 0)
+		} else {
+			m.move(s.Delta)
+		}
+		return m.sel != beforeSel || m.top != beforeTop
+	default:
+		return false
+	}
 }

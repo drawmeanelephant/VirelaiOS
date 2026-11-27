@@ -628,6 +628,16 @@ pub var wm_owns_input: bool = false;
 /// WM's compose-N stores (written between the COMPOSITE_TICK and the final
 /// present), so a kernel blit would double-draw them.
 pub var wm_owns_user_layer: bool = false;
+/// M216o (#3954): the bound seat's pid, set with `wm_owns_user_layer` and
+/// cleared at scanout_teardown. A user window OWNED BY THE SEAT is painted
+/// by the seat straight into the same shared scanout (the seat mirrors it
+/// into the window back-buffer so non-scanout consumers — overlay previews —
+/// still see content). paint_scene must not blit it and draw_chrome must
+/// not paint it: those writes land mid-seat-pass on the live framebuffer,
+/// which both tears presented frames (and any raw snapshot that straddles
+/// the pass) and feeds a damage→upload→damage loop — the launcher repaint
+/// storm. null = no bound seat = no seat-owned windows.
+pub var seat_pid: ?usize = null;
 /// M33 SB6 (claim 6864): how many `.user` windows paint_scene actually
 /// BLITTED (the pre-seam-B composite cost) vs how many surface-backed
 /// (migrated) windows were SKIPPED while the WM owns the user layer (the
@@ -640,6 +650,9 @@ pub var migrated_skips: u64 = 0;
 /// byte live at the sample's decode (the capture-time snapshot the seat
 /// echoes back through slot-65 cmd 15 — #2896); the WM edge-detects.
 pub var wm_pointer_hook: ?*const fn (x: u32, y: u32, buttons: u8, mods: u8) void = null;
+/// M216k (#3950): the scroll-wheel fan-out (set by wm_server at REGISTER time;
+/// null when no WM). Packs kind-19 WM_POINTER with `scroll` in arg1[31:16].
+pub var wm_wheel_hook: ?*const fn (x: u32, y: u32, scroll: u16, mods: u8) void = null;
 /// The window-registry mirror fan-out (set by wm_server at REGISTER time;
 /// null when no WM). Callback gets the id + full rect + state; wm_server
 /// packs kind 20 WM_WINDOW. Called from the user-window mutation points.
@@ -1381,10 +1394,12 @@ pub const effective_chrome = chrome_mod.effective_chrome;
 pub const draw_chrome = chrome_mod.draw_chrome;
 const pointer_mod = @import("driving_award/pointer.zig");
 pub const wm_fan_pointer = pointer_mod.wm_fan_pointer;
+pub const dispatch_wheel = pointer_mod.dispatch_wheel;
 pub const TermHit = pointer_mod.TermHit;
 pub const terminalHitAt = pointer_mod.terminalHitAt;
 pub const mouse_buttons_to_flags = pointer_mod.mouse_buttons_to_flags;
 pub const wm_content_pointer = pointer_mod.wm_content_pointer;
+pub const wm_content_scroll = pointer_mod.wm_content_scroll;
 pub const pointer_tick = pointer_mod.pointer_tick;
 pub const map_pointer_axis = pointer_mod.map_pointer_axis;
 pub const cursor_pos = pointer_mod.cursor_pos;

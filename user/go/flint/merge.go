@@ -687,6 +687,7 @@ func cmdMerge(fs FS, root string, uuidGen *UUIDGen, args []string) int {
 	for _, a := range atomsByID {
 		updatedAtoms = append(updatedAtoms, a)
 	}
+	sortStoredAtoms(updatedAtoms)
 	if len(updatedAtoms) > MaxAtoms {
 		return runErr(refuse("store_too_large", "atoms"))
 	}

@@ -240,11 +240,12 @@ func main() {
 		},
 		// M193c (#3255): the target half of opens=text/vcard — a .vcf
 		// dropped on the window paints the same contact-card face the
-		// exec line opens (dropContact → openContactBlob). The repaint
-		// rides dropFresh: PollDrag runs mid-loop, so the frame + flush
-		// are the loop's to order.
+		// exec line opens (dropContact → openContactBlob). #3915 adds the
+		// archive MIME's own door (dropArchive → save + browse); both ride
+		// dropFresh: PollDrag runs mid-loop, so the frame + flush are the
+		// loop's to order.
 		DropTarget: func(offer tabapp.DragOffer) {
-			m.dropContact(offer)
+			m.dropOffer(offer)
 		},
 		DragEnd: func(delivered bool, peer uint32) {
 			m.dragOn = false
@@ -390,8 +391,9 @@ func main() {
 	for {
 		// M124a-2: seat drag frames for this window — the DragEnd receipt
 		// or cancel lands here, one poll per loop turn like StateAsk.
-		// M187d: a delivered .vcf runs DropTarget — its markers flush
-		// behind the one repaint the landing earns (dropFresh).
+		// M187d/#3915: a delivered payload runs DropTarget (contact face or
+		// archive receiver) — its markers flush behind the one repaint the
+		// landing earns (dropFresh).
 		ta.PollDrag()
 		if dropFresh {
 			dropFresh = false
@@ -428,6 +430,17 @@ func main() {
 				break
 			}
 			progress = true
+			if ev.Kind == vi.EvMouseScroll {
+				if m.handleScroll(ev) {
+					if !paint(fd, m) {
+						shutdown(ta, fd, 4)
+					}
+					vi.Sleep(1)
+					flush(&m, ta)
+					vi.ConsoleLine(markerRepaint)
+				}
+				continue
+			}
 			switch ta.Dispatch(ev) {
 			case tabapp.ActionClosed:
 				shutdown(ta, fd, 0)
@@ -858,24 +871,6 @@ func runVol() {
 //
 // The face itself lives in quick.go — this file owns only the two
 // doors: the opens=text/vcard exec line's argv hand-off (contactPath,
-// armed by openContact once the model exists) and the drop hook below,
-// where a .vcf delivered mid-session paints the same face where it
-// lands instead of M187d's serial rows.
-
-// dropFresh latches "a .vcf landed this pass" — the loop repaints and
-// flushes once after PollDrag rather than per emitted row.
-var dropFresh bool
-
-// dropContact is the DropTarget hook: the seat's opens= admission
-// already filtered the mime to text/vcard, so the payload paints where
-// it lands. The face's markers ride pending so they flush behind the
-// repaint dropFresh earns.
-func (m *model) dropContact(offer tabapp.DragOffer) {
-	dropFresh = true
-	if offer.Blob == nil {
-		m.emit(markerContact + "refused no-payload")
-		m.status = "drop: no payload"
-		return
-	}
-	m.openContactBlob(offer.Blob)
-}
+// armed by openContact once the model exists) and the drop hook in
+// drop.go, where a .vcf delivered mid-session paints the same face where
+// it lands instead of M187d's serial rows.

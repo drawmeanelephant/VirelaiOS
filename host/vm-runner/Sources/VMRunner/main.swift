@@ -3312,6 +3312,13 @@ if hostSessionMode {
     hostApplication = HostApplication(serialLog: serialLogPath, inspector: inspector,
                                       menuTarget: VMSessionRegistry.shared.router)
     hostApplication?.onStop = { reason, code in stopHostSession(reason, code: code) }
+    #if SPIKE
+    if viaVirtioEnabled, #available(macOS 27.0, *) {
+        hostApplication?.onScrollWheel = { x, y, dx, dy in
+            CustomVirtioSpike.enqueueWheel(x: x, y: y, dx: dx, dy: dy)
+        }
+    }
+    #endif
 }
 primarySession.hostApp = hostApplication
 primarySession.window = hostApplication?.window
@@ -3549,7 +3556,7 @@ if viaVirtioEnabled {
     print("  via-virtio: ENABLED (claim 9588, issue #523 item 3) — keyboard injection rides the custom-virtio INPUT queue as HID-shaped 16-byte messages; NO NSEvent/CGEvent synthesis and no window/view required (attacks #179 synthesized-drop and #151 activation wall)")
 }
 if let seq = pointerVirtioScript {
-    print("  pointer-virtio: ENABLED (claim 9367, issue #523 item 3 / #151) — \(seq.debugDescription) rides the custom-virtio INPUT queue as kind-2 absolute-pointer messages after \"\(pointerVirtioAfter ?? "winloop: present ok")\" (transport=cv-input; headless-safe, no view)")
+    print("  pointer-virtio: ENABLED (claim 9367, issue #523 item 3 / #151; M216k kind-5 wheel) — \(seq.debugDescription) rides the custom-virtio INPUT queue as kind-2 absolute-pointer / kind-5 wheel messages after \"\(pointerVirtioAfter ?? "winloop: present ok")\" (transport=cv-input; headless-safe, no view)")
 }
 if let script = pointerScript {
     print("  pointer: ENABLED (milestone eight card U4, claim 4993) — \(script.debugDescription) after \"\(pointerAfter ?? "tasks user-el0 reaped")\" via route \"\(pointerRoute)\"; trust=post:\(CGPreflightPostEventAccess()) ax:\(AXIsProcessTrusted()) (request-trust=\(pointerRequestTrust ? "on" : "off"))")

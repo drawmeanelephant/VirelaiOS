@@ -38,15 +38,20 @@ import (
 )
 
 const (
-	MarkerLaunchOpen    = "gotabwm: launcher open n="
-	MarkerLaunchFilter  = "gotabwm: launcher filter q="
-	MarkerLaunchExec    = "gotabwm: launcher exec "
-	MarkerLaunchDismiss = "gotabwm: launcher dismiss"
-	MarkerLaunchMissing = "gotabwm: launcher missing "
-	MarkerLaunchEmblem  = "gotabwm: launcher emblem "
+	MarkerLaunchOpen = "gotabwm: launcher open n="
+	// MarkerLauncherPresented is the post-present receipt (seat.go):
+	// once per DISTINCT launcher frame — the open, then each change to
+	// the filter, selection, scroll position or row count — never per
+	// repaint of identical content (M216g #3946).
+	MarkerLauncherPresented = "gotabwm: launcher presented"
+	MarkerLaunchFilter      = "gotabwm: launcher filter q="
+	MarkerLaunchExec        = "gotabwm: launcher exec "
+	MarkerLaunchDismiss     = "gotabwm: launcher dismiss"
+	MarkerLaunchMissing     = "gotabwm: launcher missing "
+	MarkerLaunchEmblem      = "gotabwm: launcher emblem "
 	// MarkerLaunchIcons latches the first paint pass that put a staged
 	// raster icon on a result row — the icon= seam's painted half.
-	MarkerLaunchIcons   = "gotabwm: launcher icons n="
+	MarkerLaunchIcons = "gotabwm: launcher icons n="
 	// M123b (#2576): the zero-match empty state — printed once per filter
 	// change from the frame that painted the shared plate, not per paint.
 	MarkerLaunchEmpty = "gotabwm: launcher empty"
@@ -150,6 +155,11 @@ type launcherState struct {
 	// first pass a raster actually blits (the decode receipt already
 	// reports declared rows; this one says pixels made the strip).
 	iconsShown bool
+	// M216g (#3946): the presented-frame dedup behind
+	// MarkerLauncherPresented — the signature of the last frame the
+	// marker named, and whether one has been named this open.
+	presentedSig    launcherPresentedSig
+	presentedMarked bool
 
 	// M191b: the filename hits. filtered rows encoded <= launchFileIdx0
 	// index into hits; hitsVisit is the entries the last walk counted
@@ -200,6 +210,34 @@ type launchVerb struct {
 	name string
 	bin  string
 	argv []string
+}
+
+// launcherPresentedSig is everything MarkerLauncherPresented's "distinct
+// frame" means: which face is up, the typed filter, the selected row,
+// the scroll offset, and the row count. A repaint of identical content
+// keeps the signature; any change the user can see moves it.
+type launcherPresentedSig struct {
+	palette bool
+	filter  string
+	sel     int
+	first   int
+	rows    int
+}
+
+// presentedFrame reports whether this presented pass carries a launcher
+// frame the marker has not named yet. It runs only behind the
+// open+painted+presented gate in compositePaint, so a failed present
+// never consumes a signature — the next successful frame still prints.
+func (l *launcherState) presentedFrame() bool {
+	sig := launcherPresentedSig{
+		palette: l.palette, filter: l.filter,
+		sel: l.sel, first: l.first, rows: len(l.filtered),
+	}
+	if l.presentedMarked && sig == l.presentedSig {
+		return false
+	}
+	l.presentedSig, l.presentedMarked = sig, true
+	return true
 }
 
 var launch launcherState
@@ -343,6 +381,9 @@ func (l *launcherState) selected() (AppEntry, bool) {
 }
 
 func openLauncher() {
+	if overlayBlocksModal(overlayLauncher) {
+		return
+	}
 	// M124a (#2580): seat chrome taking the gesture ends any armed drag
 	// — the release the drag waited on is now a menu click.
 	dragAbort("chrome")
@@ -350,11 +391,15 @@ func openLauncher() {
 		dismissLauncher()
 		return
 	}
+	closeDismissibleModals(overlayLauncher)
 	if !launch.open {
 		launch.err = ""
 		launch.prior, _ = tabs.Focused()
 		if !acquireLauncherFocus() {
 			vi.ConsoleLine("gotabwm: launcher unavailable " + launch.err)
+			if launch.err == windowLimitText {
+				noteWindowLimit("")
+			}
 			// Never claim a modal menu while an app still owns keyboard focus.
 			// The always-visible button paints the failed-open error instead.
 			launch.open = launch.sink != 0
@@ -430,6 +475,7 @@ func finishLauncher() {
 	launch.palette = false
 	launch.filter = ""
 	launch.painted = false
+	launch.presentedMarked = false
 	vi.ConsoleLine(marker)
 }
 
@@ -506,11 +552,7 @@ func (l *launcherState) execManifestRow() {
 	// Preserve the manifest's fixed argv; v1 rows still launch with argc=0.
 	_, err := execApp(bin, e.Args...)
 	if err != nil {
-		vi.ConsoleLine(MarkerLaunchMissing + e.Bin)
-		launch.err = "Launch failed: " + bin
-		// M123a (#2575): the serial marker keeps its job; the toast
-		// gives the refusal a face with a per-errno action.
-		seatRefusalErr(err, "exec "+bin, bin)
+		launch.launchFailed(bin, err)
 		return
 	}
 	// M188a: the marker reports the declared ceiling the kernel now
@@ -528,6 +570,21 @@ func (l *launcherState) execManifestRow() {
 	if releaseLauncherFocus(false) {
 		finishLauncher()
 	}
+}
+
+// launchFailed is the launcher's face for a refused exec. M216m (#3952):
+// the window ceiling is not a missing binary — the guard already printed
+// its marker and raised the notice, so the strip only names the limit.
+func (l *launcherState) launchFailed(bin string, err error) {
+	if err == errWindowLimit {
+		l.err = windowLimitText
+		return
+	}
+	vi.ConsoleLine(MarkerLaunchMissing + bin)
+	l.err = "Launch failed: " + bin
+	// M123a (#2575): the serial marker keeps its job; the toast
+	// gives the refusal a face with a per-errno action.
+	seatRefusalErr(err, "exec "+bin, bin)
 }
 
 // joinSpace renders a decoded argv for the marker. It is the inverse of the
@@ -784,9 +841,7 @@ func (l *launcherState) execVerbRow(ci int) {
 		return
 	}
 	if _, err := execApp(v.bin, v.argv...); err != nil {
-		vi.ConsoleLine(MarkerLaunchMissing + v.bin)
-		l.err = "Launch failed: " + v.bin
-		seatRefusalErr(err, "exec "+v.bin, v.bin)
+		l.launchFailed(v.bin, err)
 		return
 	}
 	vi.ConsoleLine(MarkerLaunchExec + v.bin + " argv=" + joinSpace(v.argv))
@@ -805,9 +860,7 @@ func launchExecSearch(q string) bool {
 		return false
 	}
 	if _, err := execApp(gofilesBin, "--search", q); err != nil {
-		vi.ConsoleLine(MarkerLaunchMissing + gofilesBin)
-		launch.err = "Launch failed: " + gofilesBin
-		seatRefusalErr(err, "exec "+gofilesBin, gofilesBin)
+		launch.launchFailed(gofilesBin, err)
 		return false
 	}
 	vi.ConsoleLine(MarkerLaunchSearch + q)
@@ -1149,7 +1202,7 @@ func paintLauncher(scan []byte, width, height int) int {
 		tx := x + 6
 		if name := launch.catalog[ci].IconArt; name != "" {
 			if ic := art.Load(name); ic != nil {
-				ir := widgets.Rect{X: x + 4, Y: y + (rh - launchIconPx) / 2,
+				ir := widgets.Rect{X: x + 4, Y: y + (rh-launchIconPx)/2,
 					W: launchIconPx, H: launchIconPx}
 				draw.BlitScaled(c, ic, ir)
 				tx = ir.Right() + 4

@@ -4,7 +4,10 @@ import (
 	"strings"
 	"testing"
 
+	"virelai/appkit"
+	"virelai/chords"
 	"virelai/shlib"
+	"virelai/vi"
 )
 
 // The marker values are gate contracts: go-term.spec asserts each of them
@@ -226,5 +229,50 @@ func TestStartupLinesFrom(t *testing.T) {
 				t.Errorf("%s: line %d = %q want %q", c.name, i, got[i], c.want[i])
 			}
 		}
+	}
+}
+
+func TestScrollbackFindAndHintsWheelScrollNoDoubleScroll(t *testing.T) {
+	// Scrollback find overlay: 60 hit rows in a 24-row viewport (body = 22).
+	lay := findLayout{rows: make([]int, 60)}
+	for i := range lay.rows {
+		lay.rows[i] = i
+	}
+	if !findHandleScroll(&lay, 24, vi.Event{Kind: vi.EvMouseScroll, Flags: vi.ScrollWheel, Arg0: 0x8005}) {
+		t.Fatal("wheel down must scroll find overlay")
+	}
+	if lay.top != 5 {
+		t.Fatalf("after wheel +5: top=%d want 5", lay.top)
+	}
+	if !findHandleScroll(&lay, 24, vi.Event{Kind: vi.EvMouseScroll, Flags: vi.ScrollWheel, Arg0: 0x0002}) {
+		t.Fatal("wheel up must scroll find overlay")
+	}
+	if lay.top != 3 {
+		t.Fatalf("after wheel -2: top=%d want 3", lay.top)
+	}
+	if findHandleScroll(&lay, 24, vi.Event{Kind: vi.EvMouseScroll, Flags: vi.ScrollWheel, Arg0: 0xc003}) {
+		t.Fatal("horizontal wheel must be ignored")
+	}
+	// Synthesized PageDown scroll (Flags=0) must be ignored so CSI PageDown does not double-scroll.
+	if findHandleScroll(&lay, 24, vi.Event{Kind: vi.EvMouseScroll, Flags: 0, Arg0: 0x8001}) {
+		t.Fatal("synthesized PageDown EvMouseScroll must be ignored")
+	}
+	if lay.top != 3 {
+		t.Fatalf("after synthesized scroll: top=%d want 3", lay.top)
+	}
+
+	// Chord hints overlay: wheel moves Scroll; synthesized PageDown scroll does not double-scroll.
+	h := appkit.NewChordHints(appName, chords.ScopeKernelTerminal)
+	if !hintsHandleScroll(&h, vi.Event{Kind: vi.EvMouseScroll, Flags: vi.ScrollWheel, Arg0: 0x8003}) {
+		t.Fatal("wheel down must scroll hints overlay")
+	}
+	if h.Scroll != 3 {
+		t.Fatalf("hints Scroll=%d want 3", h.Scroll)
+	}
+	if hintsHandleScroll(&h, vi.Event{Kind: vi.EvMouseScroll, Flags: 0, Arg0: 0x8001}) {
+		t.Fatal("synthesized PageDown EvMouseScroll must be ignored in hints")
+	}
+	if h.Scroll != 3 {
+		t.Fatalf("after synthesized scroll: hints Scroll=%d want 3", h.Scroll)
 	}
 }

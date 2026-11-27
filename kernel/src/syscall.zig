@@ -1346,6 +1346,14 @@ fn handle_udp_listen(args: Args, _: *exceptions.VectorFrame) u64 {
     // two distinct refusals so an ephemeral-port allocator can retry a
     // collision but must not spin on a full table.
     if (udp.owner_of(@truncate(port)) != null) return error_result(.einval);
+    // M206b residual (#3814): the ONE :5353 bind is also the receive
+    // opt-in for the mDNS group (224.0.0.251). Every other port keeps
+    // the plain unicast/broadcast-isolated shape; no new syscall and no
+    // widened table, just the narrow group admission this port needs.
+    if (@as(u16, @truncate(port)) == udp.mdns_port) {
+        if (!udp.listen_port_mdns_owned(udp.mdns_port, owner)) return error_result(.enospc);
+        return 0;
+    }
     if (!udp.listen_port_owned(@truncate(port), owner)) return error_result(.enospc);
     return 0;
 }
@@ -5253,11 +5261,23 @@ fn handle_wmctl(args: Args, _: *exceptions.VectorFrame) u64 {
             // kind-19 event at fan time — the sample's own modifier
             // context, echoed back so the report-vs-selection judgment
             // uses capture-time (not drain-time) modifiers.
+            // M216k (#3950): a3 = packed 16-bit MOUSE_SCROLL word (0 on
+            // ordinary pointer samples; nonzero routes to wm_content_scroll
+            // and posts kind-12 MOUSE_SCROLL to the hit user window without
+            // perturbing button/motion history).
             if (!wm_server.registered()) return error_result(.enosys);
             if (wm_server.registered_pid() != pid) return error_result(.eacces);
+            if (args[4] > std.math.maxInt(u16)) return error_result(.einval);
             const fwd_x: u32 = @as(u16, @truncate(args[1]));
             const fwd_y: u32 = @truncate(args[1] >> 16);
-            driving_award.wm_content_pointer(fwd_x, fwd_y, @truncate(args[2]), @truncate(args[3]));
+            const fwd_scroll: u16 = @truncate(args[4]);
+            if (fwd_scroll != 0) {
+                const mag = fwd_scroll & 0x3fff;
+                if (mag == 0 or mag > 8191) return error_result(.einval);
+                driving_award.wm_content_scroll(fwd_x, fwd_y, fwd_scroll, @truncate(args[3]));
+            } else {
+                driving_award.wm_content_pointer(fwd_x, fwd_y, @truncate(args[2]), @truncate(args[3]));
+            }
             return 0;
         },
         wm_server.wmctl_content_key => {

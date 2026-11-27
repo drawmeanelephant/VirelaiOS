@@ -79,13 +79,15 @@ enum CustomVirtioSpike {
     //   kind 1 = raw 8-byte HID keyboard boot report [mods, 0, k0..k5];
     //   kind 2 = raw 5-byte absolute-pointer report [buttons, x_lo, x_hi,
     //   y_lo, y_hi] (claim 9367), HID absolute 0..32767 coords.
-    static let inputMsgLen = 16
+    static let inputMsgLen = customVirtioInputMsgLen
     static let inputKindKeyboard: UInt8 = 1
     static let inputKindPointer: UInt8 = 2
     static let inputKindConsoleCtrl: UInt8 = 3
     static let inputKindSnapshotReq: UInt8 = 4
+    static let inputKindWheel: UInt8 = customVirtioInputKindWheel
     static let inputKeyboardReportLen = 8
     static let inputPointerReportLen = 5
+    static let inputWheelReportLen = customVirtioInputWheelReportLen
     // HID boot-protocol modifier bits (the guest's hid_modifiers_to_flags
     // reads exactly these: bit0 LCtrl, bit1 LShift, bit2 LAlt, bit3 LCmd).
     static let hidModCtrl: UInt8 = 0x01
@@ -112,16 +114,10 @@ enum CustomVirtioSpike {
     /// button 2 — only the injection grammar lacked a way to ask for it).
     /// M124e (#2584): `mc` adds the middle-button click (buttons bit2,
     /// 0x04) — the primary-selection paste gesture's injection.
-    struct PtrStep {
-        enum Mode {
-            case move, click, down, up, rightClick, middleClick
-        }
-
-        let x: UInt16
-        let y: UInt16
-        let mode: Mode
-        var label: String { "mode=\(mode) x=\(x) y=\(y)" }
-    }
+    /// M216k (#3950): `w<±n>` / `h<±n>` adds vertical/horizontal wheel steps
+    /// over kind 5 (PointerVirtioStep lives outside #if SPIKE so class-A tests
+    /// cover the parser and wire encoding).
+    typealias PtrStep = PointerVirtioStep
 
     /// Map one character of the `macKey` vocabulary to its HID usage ID +
     /// shift requirement (the guest keymap's inverse — a–z, 0–9, punctuation,
@@ -244,6 +240,15 @@ enum CustomVirtioSpike {
         case "ctrl-alt-right": return (hidModCtrl | hidModAlt, 0x4F)
         case "ctrl-alt-pageup": return (hidModCtrl | hidModAlt, 0x4B)
         case "ctrl-alt-pagedown": return (hidModCtrl | hidModAlt, 0x4E)
+        // M216d (#3943): the seat's sash-nudge and move-to-space chords —
+        // the M137a/c ctrl-alt nav block one modifier deeper, named
+        // outright for the same reason ctrl-shift-alt-r is.
+        case "ctrl-shift-alt-left": return (hidModCtrl | hidModShift | hidModAlt, 0x50)
+        case "ctrl-shift-alt-right": return (hidModCtrl | hidModShift | hidModAlt, 0x4F)
+        case "ctrl-shift-alt-up": return (hidModCtrl | hidModShift | hidModAlt, 0x52)
+        case "ctrl-shift-alt-down": return (hidModCtrl | hidModShift | hidModAlt, 0x51)
+        case "ctrl-shift-alt-pageup": return (hidModCtrl | hidModShift | hidModAlt, 0x4B)
+        case "ctrl-shift-alt-pagedown": return (hidModCtrl | hidModShift | hidModAlt, 0x4E)
         // WM2 mission-control overview (Self-hosting Lane 1, issue #707
         // card 2, port of the #971 exploration): the overview hotkey —
         // LCtrl modifier + USB HID F12 usage (0x45). The guest kind-21
@@ -333,6 +338,21 @@ enum CustomVirtioSpike {
         msg[7] = UInt8(y & 0xff)
         msg[8] = UInt8((y >> 8) & 0xff)
         return msg
+    }
+
+    /// M216k (#3950): build the fixed 16-byte kind-5 wheel message — payload
+    /// [x_lo, x_hi, y_lo, y_hi, dy_lo, dy_hi, dx_lo, dx_hi] (8 bytes).
+    static func inputWheelMessage(x: UInt16, y: UInt16, dx: Int16, dy: Int16) -> Data {
+        buildVirtioWheelMessage(x: x, y: y, dx: dx, dy: dy)
+    }
+
+    /// M216k (#3950): enqueue one live scroll-wheel event onto queue 3 on the
+    /// device delegate queue (single-threaded with every other queue access).
+    static func enqueueWheel(x: UInt16, y: UInt16, dx: Int16, dy: Int16) {
+        let msg = inputWheelMessage(x: x, y: y, dx: dx, dy: dy)
+        deviceQueue.async {
+            _ = enqueueMessageNow(msg, label: "live-wheel x=\(x) y=\(y) dy=\(dy) dx=\(dx)")
+        }
     }
 
     /// Enqueue one pre-built input message into a pre-armed receive buffer
@@ -460,6 +480,8 @@ enum CustomVirtioSpike {
                     msgs.append((inputPointerMessage(x: s.x, y: s.y, buttons: 0x01), "\(sequenceTag) move buttons=0x1 x=\(s.x) y=\(s.y)"))
                     msgs.append((inputPointerMessage(x: s.x, y: s.y, buttons: 0), "\(sequenceTag) up buttons=0x0 x=\(s.x) y=\(s.y)"))
                     held = false
+                case .wheel(let dx, let dy):
+                    msgs.append((inputWheelMessage(x: s.x, y: s.y, dx: dx, dy: dy), "\(sequenceTag) wheel x=\(s.x) y=\(s.y) dy=\(dy) dx=\(dx)"))
                 }
             }
             deliverMessages(msgs, sequenceTag: sequenceTag, index: 0, attempts: 0, pacingSeconds: pacingSeconds)

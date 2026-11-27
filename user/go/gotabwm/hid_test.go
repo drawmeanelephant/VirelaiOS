@@ -11,6 +11,7 @@ import (
 )
 
 func TestHidUsagesMatchRunner(t *testing.T) {
+	resetSeatForTest(t)
 	if hidUsageP != 0x13 {
 		t.Fatalf("hidUsageP = %#x want 0x13 (USB HID 'p')", hidUsageP)
 	}
@@ -47,9 +48,9 @@ func TestHidUsagesMatchRunner(t *testing.T) {
 // only on the focused tab. It is a badge — the tab stays closable, which the
 // second half pins so nobody quietly turns this into a lock.
 func TestHandleWmKeyFreezeToggle(t *testing.T) {
+	resetSeatForTest(t)
 	saved := tabs
 	defer func() { tabs = saved }()
-	tabs = TabStrip{}
 	if !tabs.OpenTab(3, "Calc") || !tabs.OpenTab(4, "Edit") {
 		t.Fatal("OpenTab")
 	}
@@ -102,9 +103,12 @@ func execRecorder() (*[]string, func()) {
 }
 
 func TestHandleWmKeyReopenChordReexecsLastClosed(t *testing.T) {
+	resetSeatForTest(t)
+	defer saveSeatState()()
+	resetNotify(t)
+	resetRefusal(t)
 	saved := tabs
 	defer func() { tabs = saved }()
-	tabs = TabStrip{}
 	if !tabs.OpenTab(3, "Calc") || !tabs.OpenTab(4, "Edit") {
 		t.Fatal("OpenTab")
 	}
@@ -119,10 +123,14 @@ func TestHandleWmKeyReopenChordReexecsLastClosed(t *testing.T) {
 		t.Fatalf("ctrl-shift-t execs = %v want [GOCALC.ELF]", *execs)
 	}
 	// The LIFO is drained by the reopen: a second press is an honest no-op,
-	// not a second exec.
+	// not a second exec — the M216c notice names the empty ring.
 	handleWmKey(vi.Event{Kind: vi.EvWmKey, Flags: vi.ModCtrl | vi.ModShift, Arg0: uint32(hidUsageT)})
 	if len(*execs) != 1 {
 		t.Fatalf("second ctrl-shift-t must not exec again: %v", *execs)
+	}
+	if n := notifyCount(); n != 1 || notifyQueue[0].text != noticeReopenEmpty ||
+		notifyQueue[0].action != notifyActionNone {
+		t.Fatalf("empty-reopen notice: %+v", notifyQueue)
 	}
 	// Ctrl+Shift+T must not have re-opened the tab on the strip by itself:
 	// the reopened app declares and joins as a fresh tab (D1, a re-exec).
@@ -132,9 +140,9 @@ func TestHandleWmKeyReopenChordReexecsLastClosed(t *testing.T) {
 }
 
 func TestHandleWmKeyDuplicateChordReexecsFocused(t *testing.T) {
+	resetSeatForTest(t)
 	saved := tabs
 	defer func() { tabs = saved }()
-	tabs = TabStrip{}
 	// Focus a tab with a recorded bin, then a tab with none: duplicate must
 	// follow the focus, and an honest no-op is a no-op with no exec at all.
 	if !tabs.OpenTab(4, "Edit") {
@@ -154,9 +162,9 @@ func TestHandleWmKeyDuplicateChordReexecsFocused(t *testing.T) {
 }
 
 func TestHandleWmKeyIgnoresUnboundCtrlShiftKeys(t *testing.T) {
+	resetSeatForTest(t)
 	saved := tabs
 	defer func() { tabs = saved }()
-	tabs = TabStrip{}
 	if !tabs.OpenTab(4, "Edit") {
 		t.Fatal("OpenTab")
 	}
@@ -171,6 +179,7 @@ func TestHandleWmKeyIgnoresUnboundCtrlShiftKeys(t *testing.T) {
 }
 
 func TestCtrlIndexMapsHIDNumberRow(t *testing.T) {
+	resetSeatForTest(t)
 	for usage, want := range map[uint8]int{0x1e: 1, 0x1f: 2, 0x26: 9} {
 		got, ok := ctrlIndex(usage)
 		if !ok || got != want {
@@ -185,6 +194,7 @@ func TestCtrlIndexMapsHIDNumberRow(t *testing.T) {
 }
 
 func TestAltTabNextPolicy(t *testing.T) {
+	resetSeatForTest(t)
 	if _, ok := altTabNext(0, 0, false); ok {
 		t.Fatal("zero tabs must no-op")
 	}
@@ -212,9 +222,9 @@ func TestAltTabNextPolicy(t *testing.T) {
 }
 
 func TestHandleWmKeyPinFocused(t *testing.T) {
+	resetSeatForTest(t)
 	saved := tabs
 	defer func() { tabs = saved }()
-	tabs = TabStrip{}
 	if !tabs.OpenTab(3, "Calc") || !tabs.OpenTab(4, "Edit") {
 		t.Fatal("OpenTab")
 	}
@@ -234,14 +244,23 @@ func TestHandleWmKeyPinFocused(t *testing.T) {
 	if !ok || id != 4 {
 		t.Fatalf("focus after pin = %d ok=%v want 4", id, ok)
 	}
-	// Already pinned: Pin() is false, no second mutation.
+	// M216d (#3943): the chord is a TOGGLE through the rail menu's path —
+	// the second press unpins. Unpin clears the bit and re-partitions;
+	// it does not restore the pre-pin position, so the order stays
+	// [4,3] with every pin bit down.
 	handleWmKey(vi.Event{
 		Kind:  vi.EvWmKey,
 		Flags: vi.ModCtrl | vi.ModShift,
 		Arg0:  uint32(hidUsageN),
 	})
-	if tabs.At(1).Pinned {
-		t.Fatal("second ctrl-shift-n must not pin the other tab")
+	if tabs.At(0).Pinned || tabs.At(0).ID != 4 {
+		t.Fatalf("unpin left the tab pinned or moved: %+v", tabs.At(0))
+	}
+	if tabs.At(1).Pinned || tabs.At(1).ID != 3 {
+		t.Fatalf("unpin moved the other tab: %+v", tabs.At(1))
+	}
+	if id, ok := tabs.Focused(); !ok || id != 4 {
+		t.Fatalf("focus after unpin = %d ok=%v want 4", id, ok)
 	}
 }
 
@@ -251,6 +270,7 @@ func TestHandleWmKeyPinFocused(t *testing.T) {
 // `host close` / `tab close` / focus-handoff shape as every other close.
 // Plain ctrl+w stays the editor's (unbound here — no close, no move).
 func TestHandleWmKeyMoveAndCloseChords(t *testing.T) {
+	resetSeatForTest(t)
 	saved := tabs
 	savedHosted := hostedApp
 	closed := []uint32{}
@@ -347,9 +367,9 @@ func focusIndexRecorder() (*[]int, func()) {
 }
 
 func TestHandleWmKeyCtrlTabAndDigitDispatch(t *testing.T) {
+	resetSeatForTest(t)
 	saved := tabs
 	defer func() { tabs = saved }()
-	tabs = TabStrip{}
 	for i, id := range []uint32{3, 4, 5} {
 		if !tabs.OpenTab(id, string(rune('A'+i))) {
 			t.Fatal("OpenTab")
@@ -382,6 +402,7 @@ func TestHandleWmKeyCtrlTabAndDigitDispatch(t *testing.T) {
 }
 
 func TestHandleWmKeyLauncherPrecedesCtrlChords(t *testing.T) {
+	resetSeatForTest(t)
 	stubLauncherWindows(t)
 	savedTabs := tabs
 	savedLaunch := launch
@@ -389,7 +410,6 @@ func TestHandleWmKeyLauncherPrecedesCtrlChords(t *testing.T) {
 		tabs = savedTabs
 		launch = savedLaunch
 	}()
-	tabs = TabStrip{}
 	tabs.OpenTab(3, "A")
 	tabs.OpenTab(4, "B")
 	launch = launcherState{open: true, sink: 9}
@@ -407,9 +427,9 @@ func TestHandleWmKeyLauncherPrecedesCtrlChords(t *testing.T) {
 }
 
 func TestHandleWmKeyLeavesPlainKeysToApp(t *testing.T) {
+	resetSeatForTest(t)
 	saved := tabs
 	defer func() { tabs = saved }()
-	tabs = TabStrip{}
 	tabs.OpenTab(3, "A")
 	tabs.OpenTab(4, "B")
 	indices, restore := focusIndexRecorder()
@@ -422,13 +442,13 @@ func TestHandleWmKeyLeavesPlainKeysToApp(t *testing.T) {
 }
 
 func TestHandleWmKeyAltTabNeedsKernel(t *testing.T) {
+	resetSeatForTest(t)
 	saved := tabs
 	savedHosted := hostedApp
 	defer func() {
 		tabs = saved
 		hostedApp = savedHosted
 	}()
-	tabs = TabStrip{}
 	hostedApp = 0
 	if !tabs.OpenTab(3, "A") || !tabs.OpenTab(4, "B") {
 		t.Fatal("OpenTab")
@@ -446,6 +466,7 @@ func TestHandleWmKeyAltTabNeedsKernel(t *testing.T) {
 }
 
 func TestPointerDownEdge(t *testing.T) {
+	resetSeatForTest(t)
 	if pointerDownEdge(0, 0) || pointerDownEdge(0, hidBtnLeft) {
 		t.Fatal("hover/up must not be a down edge")
 	}
@@ -458,6 +479,7 @@ func TestPointerDownEdge(t *testing.T) {
 }
 
 func TestPointerUpEdge(t *testing.T) {
+	resetSeatForTest(t)
 	if pointerUpEdge(0, 0) || pointerUpEdge(hidBtnLeft, 0) {
 		t.Fatal("hover/press must not be an up edge")
 	}
@@ -470,6 +492,7 @@ func TestPointerUpEdge(t *testing.T) {
 }
 
 func TestRailCellAtTwoTabs(t *testing.T) {
+	resetSeatForTest(t)
 	const w, n, h = 1280, 2, 22
 	if i, ok := railCellAt(320, 10, w, n, h); !ok || i != 0 {
 		t.Fatalf("tab 0 center (320,10) = %d ok=%v want 0", i, ok)
@@ -499,6 +522,7 @@ func TestRailCellAtTwoTabs(t *testing.T) {
 }
 
 func TestApplyRailClickMissesAndHostFailsClosed(t *testing.T) {
+	resetSeatForTest(t)
 	saved := tabs
 	savedHosted := hostedApp
 	savedBtn := prevPtrButtons
@@ -507,7 +531,6 @@ func TestApplyRailClickMissesAndHostFailsClosed(t *testing.T) {
 		hostedApp = savedHosted
 		prevPtrButtons = savedBtn
 	}()
-	tabs = TabStrip{}
 	hostedApp = 0
 	prevPtrButtons = 0
 	if applyRailClick(320, 10) {
@@ -537,6 +560,7 @@ func TestApplyRailClickMissesAndHostFailsClosed(t *testing.T) {
 }
 
 func TestHandleWmPointerDownEdgeOnly(t *testing.T) {
+	resetSeatForTest(t)
 	saved := tabs
 	savedHosted := hostedApp
 	savedBtn := prevPtrButtons
@@ -547,7 +571,6 @@ func TestHandleWmPointerDownEdgeOnly(t *testing.T) {
 		prevPtrButtons = savedBtn
 		railDragFrom = savedDrag
 	}()
-	tabs = TabStrip{}
 	hostedApp = 0
 	prevPtrButtons = 0
 	railDragFrom = -1
@@ -575,6 +598,7 @@ func TestHandleWmPointerDownEdgeOnly(t *testing.T) {
 }
 
 func TestRailDragReordersTwoTabs(t *testing.T) {
+	resetSeatForTest(t)
 	saved := tabs
 	savedHosted := hostedApp
 	savedBtn := prevPtrButtons
@@ -585,7 +609,6 @@ func TestRailDragReordersTwoTabs(t *testing.T) {
 		prevPtrButtons = savedBtn
 		railDragFrom = savedDrag
 	}()
-	tabs = TabStrip{}
 	hostedApp = 0
 	prevPtrButtons = 0
 	railDragFrom = -1
@@ -611,6 +634,7 @@ func TestRailDragReordersTwoTabs(t *testing.T) {
 }
 
 func TestRailDragMissesClientAreaAndSameCell(t *testing.T) {
+	resetSeatForTest(t)
 	saved := tabs
 	savedHosted := hostedApp
 	savedDrag := railDragFrom
@@ -619,7 +643,6 @@ func TestRailDragMissesClientAreaAndSameCell(t *testing.T) {
 		hostedApp = savedHosted
 		railDragFrom = savedDrag
 	}()
-	tabs = TabStrip{}
 	hostedApp = 0
 	railDragFrom = -1
 	if !tabs.OpenTab(3, "A") || !tabs.OpenTab(4, "B") {
@@ -657,6 +680,7 @@ func TestRailDragMissesClientAreaAndSameCell(t *testing.T) {
 // the cell) and the honest non-targets: cell body, rail edge rows, the last
 // cell's remainder pixels, an empty strip.
 func TestRailCloseZoneAtGeometry(t *testing.T) {
+	resetSeatForTest(t)
 	if MarkerRailHover != "gotabwm: rail-hover id=" {
 		t.Fatalf("MarkerRailHover = %q (gate grep target)", MarkerRailHover)
 	}
@@ -714,13 +738,13 @@ func TestRailCloseZoneAtGeometry(t *testing.T) {
 // M79b (#1705): hover tracks the rail cell under the pointer and clears off
 // the rail. State only — the entry marker is motion-only (updateRailHover).
 func TestRailHoverTracksCells(t *testing.T) {
+	resetSeatForTest(t)
 	saved := tabs
 	savedHover := railHover
 	defer func() {
 		tabs = saved
 		railHover = savedHover
 	}()
-	tabs = TabStrip{}
 	railHover = -1
 	if !tabs.OpenTab(3, "A") || !tabs.OpenTab(4, "B") {
 		t.Fatal("OpenTab")
@@ -754,6 +778,7 @@ func TestRailHoverTracksCells(t *testing.T) {
 // byte. The stubs are interop.go's closeWin / focusRaise seams (vi.Wmctl*
 // bypasses the host syscall hook — the raw gateway is hardwired -ENOSYS).
 func TestHandleWmPointerCloseXClosesWithoutFocusOrDrag(t *testing.T) {
+	resetSeatForTest(t)
 	saved := tabs
 	savedHosted := hostedApp
 	savedBtn := prevPtrButtons
@@ -822,7 +847,142 @@ func TestHandleWmPointerCloseXClosesWithoutFocusOrDrag(t *testing.T) {
 	}
 }
 
+// M216d (#3943): a middle press on a rail cell closes that tab through
+// applyRailClose — the close-x's own seam, so the same `host close` /
+// `tab close` markers and the same no-focus-change rule. The whole cell
+// is the target (not just the 16 px zone), a middle press on the client
+// area keeps its M124e primary-paste fate, and no drag arms.
+func TestHandleWmPointerMiddleClickClosesRailCell(t *testing.T) {
+	resetSeatForTest(t)
+	saved := tabs
+	savedHosted := hostedApp
+	savedBtn := prevPtrButtons
+	savedDrag := railDragFrom
+	savedHover := railHover
+	savedSash := sashDragging
+	savedContent := contentDown
+	closed := []uint32{}
+	raises := 0
+	prevClose, prevRaise := closeWin, focusRaise
+	closeWin = func(id uint32) int64 {
+		closed = append(closed, id)
+		return 0
+	}
+	focusRaise = func(id uint32) int64 {
+		raises++
+		return 0
+	}
+	defer func() {
+		tabs = saved
+		hostedApp = savedHosted
+		prevPtrButtons = savedBtn
+		railDragFrom = savedDrag
+		railHover = savedHover
+		sashDragging = savedSash
+		contentDown = savedContent
+		closeWin, focusRaise = prevClose, prevRaise
+	}()
+	tabs = TabStrip{}
+	hostedApp = 0
+	prevPtrButtons = 0
+	railDragFrom = -1
+	railHover = -1
+	sashDragging = false
+	contentDown = false
+	if !tabs.OpenTab(3, "A") || !tabs.OpenTab(4, "B") {
+		t.Fatal("OpenTab")
+	}
+	_ = tabs.FocusTab(4)
+	// The cell BODY — x=320 is nowhere near the close-x zone — still
+	// closes: middle-click's target is the cell, not the glyph.
+	handleWmPointer(ptrEvent(320, 10, hidBtnMiddle))
+	if len(closed) != 1 || closed[0] != 3 {
+		t.Fatalf("middle-click on cell 0 closed %v want [3]", closed)
+	}
+	if raises != 0 {
+		t.Fatalf("middle-click close must not focus: raised %d time(s)", raises)
+	}
+	if tabs.Count() != 1 || tabs.At(0).ID != 4 {
+		t.Fatalf("strip after middle-click holds %+v, want only id 4", tabs.At(0))
+	}
+	if id, _ := tabs.Focused(); id != 4 {
+		t.Fatalf("focus moved to %d; middle-click close must not change focus", id)
+	}
+	if railDragFrom != -1 || sashDragging {
+		t.Fatal("middle-click must not arm a rail drag or a sash")
+	}
+	// Client area: the middle press keeps its content fate — no close,
+	// no rail state.
+	handleWmPointer(ptrEvent(320, 360, hidBtnMiddle))
+	handleWmPointer(ptrEvent(320, 360, 0))
+	if len(closed) != 1 {
+		t.Fatalf("client-area middle press closed %v", closed)
+	}
+	if tabs.Count() != 1 {
+		t.Fatal("client-area middle press mutated the strip")
+	}
+}
+
+// M216d (#3943): the sash drag's keyboard half. ctrl+alt+shift+arrows
+// step the focused pane's NEAREST ancestor sash of that orientation by
+// 32 px through applySashDrag — the same clamp/marker/commit the pointer
+// release takes. A split-free strip and a missing orientation are honest
+// no-ops.
+func TestSashNudgeChord(t *testing.T) {
+	resetSeatForTest(t)
+	defer saveSeatState()()
+	openTwoTabs(t)
+	launch.open = false
+	prevPtrButtons = 0
+	chord := func(usage uint8) {
+		handleWmKey(vi.Event{
+			Kind:  vi.EvWmKey,
+			Flags: vi.ModCtrl | vi.ModShift | vi.ModAlt,
+			Arg0:  uint32(usage),
+		})
+	}
+	// No tree: every nudge is a silent no-op.
+	chord(hidUsageLeft)
+	chord(hidUsageUp)
+	if tabs.treeN != 0 {
+		t.Fatal("a split-free strip must not grow a tree on a nudge")
+	}
+	_, restore := rectRecorder()
+	defer restore()
+	if !applySplit(SplitVert) {
+		t.Fatal("applySplit v")
+	}
+	// Vertical sash: midpoint x=640 -> 608 on sash-left, back on right.
+	chord(hidUsageLeft)
+	if tabs.tree[0].sash != 608 {
+		t.Fatalf("sash-left: sash = %d want 608", tabs.tree[0].sash)
+	}
+	chord(hidUsageRight)
+	if tabs.tree[0].sash != 640 {
+		t.Fatalf("sash-right: sash = %d want 640", tabs.tree[0].sash)
+	}
+	// No horizontal ancestor: up/down stay silent.
+	chord(hidUsageUp)
+	chord(hidUsageDown)
+	if tabs.tree[0].sash != 640 {
+		t.Fatalf("h nudges moved the vertical sash: %d", tabs.tree[0].sash)
+	}
+	// Rotate the root to horizontal: midpoint y=360 -> 328 on sash-up.
+	if !tabs.RotatePane(uint32(vi.ScanoutWidth), uint32(vi.ScanoutHeight)) {
+		t.Fatal("RotatePane")
+	}
+	chord(hidUsageUp)
+	if tabs.tree[0].sash != 328 {
+		t.Fatalf("sash-up: sash = %d want 328", tabs.tree[0].sash)
+	}
+	chord(hidUsageDown)
+	if tabs.tree[0].sash != 360 {
+		t.Fatalf("sash-down: sash = %d want 360", tabs.tree[0].sash)
+	}
+}
+
 func TestHidUsageCharLetters(t *testing.T) {
+	resetSeatForTest(t)
 	if c, ok := hidUsageChar(0x06); !ok || c != 'c' {
 		t.Fatalf("HID c = %q ok=%v", c, ok)
 	}
@@ -838,6 +998,7 @@ func TestHidUsageCharLetters(t *testing.T) {
 }
 
 func TestLauncherCtrlSpaceToggleAndFilter(t *testing.T) {
+	resetSeatForTest(t)
 	stubLauncherWindows(t)
 	saved := launch
 	defer func() { launch = saved }()
@@ -876,6 +1037,7 @@ func TestLauncherCtrlSpaceToggleAndFilter(t *testing.T) {
 }
 
 func TestLauncherFilterIgnoresStickyCtrl(t *testing.T) {
+	resetSeatForTest(t)
 	stubLauncherWindows(t)
 	saved := launch
 	defer func() { launch = saved }()
@@ -893,6 +1055,7 @@ func TestLauncherFilterIgnoresStickyCtrl(t *testing.T) {
 }
 
 func TestLaunchRowAtHitsFirstRow(t *testing.T) {
+	resetSeatForTest(t)
 	saved := launch
 	defer func() { launch = saved }()
 	launch = launcherState{
@@ -916,6 +1079,7 @@ func TestLaunchRowAtHitsFirstRow(t *testing.T) {
 // row with `argv=` carries those arguments into the exec; a row without one
 // launches exactly as it did before the field existed.
 func TestLauncherExecCarriesTheManifestArgv(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	stubLauncherWindows(t)
 	saved := launch
@@ -951,6 +1115,7 @@ func TestLauncherExecCarriesTheManifestArgv(t *testing.T) {
 // M79c (#1706): the split-cycle chord is USB HID 'v' (0x19), like every
 // other ctrl-shift chord in the frozen table.
 func TestHidUsageVMatchesRunner(t *testing.T) {
+	resetSeatForTest(t)
 	if hidUsageV != 0x19 {
 		t.Fatalf("hidUsageV = %#x want 0x19 (USB HID 'v')", hidUsageV)
 	}
@@ -1016,10 +1181,13 @@ func openTwoTabs(t *testing.T) {
 
 // M79c (#1706): ctrl-shift-v cycles none -> V -> H -> none through the same
 // apply* paths the choreography uses, so the markers and dumps are shapes
-// the gates already pin. Fewer than two tabs is a silent no-op.
+// the gates already pin. Fewer than two tabs proposes no rects — the M216c
+// notice toast is the refusal's face, not a layout change.
 func TestSplitCycleChord(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
-	tabs = TabStrip{}
+	resetNotify(t)
+	resetRefusal(t)
 	if !tabs.OpenTab(3, "Calc") {
 		t.Fatal("OpenTab")
 	}
@@ -1031,7 +1199,10 @@ func TestSplitCycleChord(t *testing.T) {
 	launch.open = false
 	chord()
 	if tabs.Split() != SplitNone || len(*calls) != 0 {
-		t.Fatalf("one tab: split=%s rects=%d (must be a silent no-op)", tabs.Split(), len(*calls))
+		t.Fatalf("one tab: split=%s rects=%d (must propose nothing)", tabs.Split(), len(*calls))
+	}
+	if n := notifyCount(); n != 1 || notifyQueue[0].text != noticeSplitOneTab {
+		t.Fatalf("one-tab refusal notice: %+v", notifyQueue)
 	}
 	if !tabs.OpenTab(4, "Edit") {
 		t.Fatal("OpenTab")
@@ -1073,6 +1244,7 @@ func TestSplitCycleChord(t *testing.T) {
 // while armed stays swallowed, and the release commits the clamped divider
 // through the rect seam.
 func TestSashDragPointerPath(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	openTwoTabs(t)
 	launch.open = false
@@ -1130,6 +1302,7 @@ func TestSashDragPointerPath(t *testing.T) {
 // M79c (#1706): a release on the armed position is the press-on-the-divider
 // release — an honest no-op: no syscalls, no state change.
 func TestSashReleaseOnArmedPositionIsNoop(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	openTwoTabs(t)
 	launch.open = false
@@ -1157,6 +1330,7 @@ func TestSashReleaseOnArmedPositionIsNoop(t *testing.T) {
 // panes follow the tabs instead of silently swapping which app is left.
 // Unsplit reorders propose nothing.
 func TestRailReorderReappliesWhileSplit(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	openTwoTabs(t)
 	calls, restore := rectRecorder()
@@ -1204,6 +1378,7 @@ func TestRailReorderReappliesWhileSplit(t *testing.T) {
 // focusHosted helper every other focus path (alt-tab, rail click) already
 // runs. The class-B gate proves the focus lands on the guest.
 func TestHandleWmPointerPressOnToastIsChrome(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	resetNotify(t)
 	saved := tabs
@@ -1224,7 +1399,6 @@ func TestHandleWmPointerPressOnToastIsChrome(t *testing.T) {
 		contentDown = savedContent
 		launch = savedLaunch
 	}()
-	tabs = TabStrip{}
 	hostedApp = 0
 	prevPtrButtons = 0
 	railDragFrom = -1
@@ -1293,6 +1467,7 @@ func TestHandleWmPointerPressOnToastIsChrome(t *testing.T) {
 // the strip's x<launchW), so the press below is not just order-pinned, it is a
 // real overlapping rect the order decides.
 func TestToastHitPrecedesTheLauncher(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	resetNotify(t)
 	saved := tabs
@@ -1303,7 +1478,6 @@ func TestToastHitPrecedesTheLauncher(t *testing.T) {
 		launch = savedLaunch
 		prevPtrButtons = savedBtn
 	}()
-	tabs = TabStrip{}
 	prevPtrButtons = 0
 	launch = launcherState{}
 	launch.open = true
@@ -1343,6 +1517,7 @@ func TestToastHitPrecedesTheLauncher(t *testing.T) {
 // Every named chord's row must carry the number the runner and the kernel
 // assume, and the launcher's modal keys must match the registry's usages.
 func TestHidUsagesMatchRegistry(t *testing.T) {
+	resetSeatForTest(t)
 	rowUsage := func(action string) uint8 {
 		for _, r := range chords.Global.SeatRows() {
 			if r.Action == action {
@@ -1374,6 +1549,7 @@ func TestHidUsagesMatchRegistry(t *testing.T) {
 // carries must reach its action through handleWmKey — ctrl-space (closed
 // launcher) opens the launcher from the table's "launcher" row.
 func TestLauncherSummonDispatchesFromRegistry(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	stubLauncherWindows(t)
 	savedLaunch := launch
@@ -1410,6 +1586,7 @@ func TestLauncherSummonDispatchesFromRegistry(t *testing.T) {
 // attempted. The prologue's printed lines are run 08's serial asserts —
 // the host test owns the verdict, the gate owns the guest evidence.
 func TestChordFixtureAttempt(t *testing.T) {
+	resetSeatForTest(t)
 	if err := chords.Global.Validate(); err != nil {
 		t.Fatalf("shipped table must validate (the prologue is fail-closed): %v", err)
 	}
@@ -1442,6 +1619,7 @@ func TestChordFixtureAttempt(t *testing.T) {
 // every row lands in exactly one owner class and the seat class matches
 // the dispatch surface the tests pin.
 func TestChordSummaryCounts(t *testing.T) {
+	resetSeatForTest(t)
 	var kernel, seat, app int
 	for _, r := range chords.Global {
 		switch {
@@ -1461,7 +1639,9 @@ func TestChordSummaryCounts(t *testing.T) {
 	// M190e (#3240): n=69→70, seat=39→40 — the lock chord.
 	// M191a (#3242): n=70→71, app=18→19 — GOTERM's scrollback-find row.
 	// #3701: n=72→76, app=20→24 — GOCALC's four radix-row chords.
-	want := "gotabwm: chords n=76 seat=40 kernel=12 app=24"
+	// M216d (#3943): n=76→82, seat=40→46 — the sash-nudge quartet and
+	// the move-to-space pair.
+	want := "gotabwm: chords n=82 seat=46 kernel=12 app=24"
 	if got != want {
 		t.Fatalf("chordSummary = %q want %q", got, want)
 	}
@@ -1480,12 +1660,12 @@ func TestChordSummaryCounts(t *testing.T) {
 // summon-emoji execs GOEMOJI.ELF by name. The registry pins stay; the
 // state assertions now name the implemented behavior.
 func TestReservedChordsForwardAsNoOps(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	stubLauncherWindows(t)
 	savedTabs := tabs
 	defer func() { tabs = savedTabs }()
 	resetSpaces()
-	tabs = TabStrip{}
 	if !tabs.OpenTab(3, "A") || !tabs.OpenTab(4, "B") {
 		t.Fatal("OpenTab")
 	}
@@ -1542,6 +1722,7 @@ func TestReservedChordsForwardAsNoOps(t *testing.T) {
 }
 
 func TestGodMenuGestureNeverForwardsContent(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	stubLauncherWindows(t)
 	resetNotify(t)
@@ -1597,6 +1778,7 @@ func TestGodMenuGestureNeverForwardsContent(t *testing.T) {
 // echo it back uninterpreted so the kernel judges the press on capture-time
 // — not drain-time — modifiers.
 func TestContentForwardEchoesModifierStamp(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	resetNotify(t)
 	oldPtr := forwardContentPointer
@@ -1638,12 +1820,14 @@ func TestContentForwardEchoesModifierStamp(t *testing.T) {
 // honest no-op. The route marker is gate-pinned; the host test owns the
 // state consequences.
 func TestHandleWmKeyUndoChordDispatches(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
+	resetNotify(t)
+	resetRefusal(t)
 	saved := tabs
 	defer func() { tabs = saved }()
 
 	// Strip focus: the seat's own undo pops the reopen LIFO.
-	tabs = TabStrip{}
 	if !tabs.OpenTab(3, "Calc") || !tabs.CloseTab(3) {
 		t.Fatal("seed the reopen ring")
 	}
@@ -1688,6 +1872,7 @@ func TestHandleWmKeyUndoChordDispatches(t *testing.T) {
 // re-raises the tab and echoes the press through the content-key seam, so
 // `undo id=` stays the route the app actually answers.
 func TestApplyUndoRepairsKernelFocusDesync(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	saved := tabs
 	defer func() { tabs = saved }()
@@ -1749,6 +1934,7 @@ func TestApplyUndoRepairsKernelFocusDesync(t *testing.T) {
 // the input window (lastInputTick) and the app's scheduler work
 // (cpu_ticks flat). Live mode and a sub-two-tab strip never park.
 func TestFocusCycleParkAndRelease(t *testing.T) {
+	resetSeatForTest(t)
 	savedTabs, savedDemo := tabs, demoMode
 	savedInput, savedSeat := lastInputTick, seatTick
 	savedPending := cyclePending
@@ -1868,6 +2054,7 @@ func TestFocusCycleParkAndRelease(t *testing.T) {
 // so it queues behind the release — `alt-tab,ctrl-shift-f` freezes the
 // tab the cycle moves to, never the one it left.
 func TestFocusCycleQueuedActions(t *testing.T) {
+	resetSeatForTest(t)
 	savedTabs, savedDemo := tabs, demoMode
 	savedInput, savedSeat := lastInputTick, seatTick
 	savedPending, savedN := cyclePending, cycleQueueN
@@ -1918,5 +2105,155 @@ func TestFocusCycleQueuedActions(t *testing.T) {
 	}
 	if !tabs.tabs[1].Frozen || tabs.tabs[0].Frozen {
 		t.Fatalf("freeze must land on the post-cycle tab: %+v", tabs.tabs)
+	}
+}
+
+// M216e (#3944): the kind-20 mirror's unsaved bit (flags bit 12) lands on
+// the tab row through noteUnsavedMirror — set, replayed, released-mirror
+// ignored, cleared — and the marker transition is SetUnsaved's own edge.
+func TestNoteUnsavedMirror(t *testing.T) {
+	resetSeatForTest(t)
+	saved := tabs
+	defer func() { tabs = saved }()
+	if !tabs.OpenTab(3, "Edit") {
+		t.Fatal("OpenTab")
+	}
+	mirror := func(flags uint16) {
+		noteUnsavedMirror(vi.Event{Kind: vi.EvWmWindow, Flags: flags})
+	}
+	// A non-window event is ignored outright.
+	noteUnsavedMirror(vi.Event{Kind: vi.EvCompositeTick, Flags: 3 | 1<<12})
+	if tabs.At(0).Unsaved {
+		t.Fatal("a tick set the unsaved bit")
+	}
+	mirror(3 | 1<<12)
+	if !tabs.At(0).Unsaved {
+		t.Fatal("bit-12 mirror did not mark the tab unsaved")
+	}
+	mirror(3 | 1<<12) // replay: same state, still set
+	if !tabs.At(0).Unsaved {
+		t.Fatal("replayed on-mirror cleared the bit")
+	}
+	// The released mirror belongs to the dying row — it must not clear
+	// the bit the close path still has to read for its Reopen toast.
+	mirror(3 | 1<<12 | 1<<13)
+	if !tabs.At(0).Unsaved {
+		t.Fatal("released mirror cleared the bit before the close read it")
+	}
+	mirror(3)
+	if tabs.At(0).Unsaved {
+		t.Fatal("bit-12 clear mirror did not clear the tab")
+	}
+	// An id with no row is a silent no-op, not a panic.
+	mirror(9 | 1<<12)
+}
+
+func TestWheelForwardClientAreaAndSwallowChromeOverlays(t *testing.T) {
+	resetSeatForTest(t)
+	defer saveSeatState()()
+	resetNotify(t)
+
+	oldPtr, oldScroll := forwardContentPointer, forwardContentScroll
+	defer func() {
+		forwardContentPointer = oldPtr
+		forwardContentScroll = oldScroll
+	}()
+
+	type scrollCall struct {
+		x, y   uint32
+		scroll uint16
+		mods   uint8
+	}
+	var scrolls []scrollCall
+	ptrCalls := 0
+	forwardContentPointer = func(uint32, uint32, uint8, uint8) int64 {
+		ptrCalls++
+		return 0
+	}
+	forwardContentScroll = func(x, y uint32, scroll uint16, mods uint8) int64 {
+		scrolls = append(scrolls, scrollCall{x, y, scroll, mods})
+		return 0
+	}
+
+	wheelEvent := func(x, y uint32, scroll uint16, mods uint8) vi.Event {
+		return vi.Event{
+			Kind: vi.EvWmPointer,
+			Arg0: x | (y << 16),
+			Arg1: uint32(mods) | (uint32(scroll) << 16),
+		}
+	}
+
+	// Empty strip (start surface): wheel is swallowed.
+	handleWmPointer(wheelEvent(640, 360, 0x8001, 0))
+	if len(scrolls) != 0 {
+		t.Fatalf("empty strip forwarded wheel: %+v", scrolls)
+	}
+
+	if !tabs.OpenTab(4, "Reader") {
+		t.Fatal("OpenTab")
+	}
+
+	// Client area: wheel forwards coords, packed scroll word, and capture-time
+	// modifiers without invoking forwardContentPointer or altering button state.
+	prevPtrButtons = hidBtnLeft
+	railHover = -1
+	handleWmPointer(wheelEvent(640, 360, 0x8003, 0x02))
+	if len(scrolls) != 1 || scrolls[0] != (scrollCall{640, 360, 0x8003, 0x02}) {
+		t.Fatalf("client wheel = %+v want [{640 360 0x8003 0x02}]", scrolls)
+	}
+	if ptrCalls != 0 {
+		t.Fatalf("wheel invoked forwardContentPointer %d times", ptrCalls)
+	}
+	if prevPtrButtons != hidBtnLeft {
+		t.Fatalf("wheel mutated prevPtrButtons to %#x", prevPtrButtons)
+	}
+	if railHover != -1 {
+		t.Fatalf("wheel mutated railHover to %d", railHover)
+	}
+
+	// Top rail band: swallowed, railHover untouched.
+	scrolls = nil
+	handleWmPointer(wheelEvent(320, 10, 0x8001, 0))
+	if len(scrolls) != 0 || railHover != -1 {
+		t.Fatalf("rail wheel leaked: scrolls=%+v railHover=%d", scrolls, railHover)
+	}
+
+	// Bottom chrome buttons (god menu + power button): swallowed.
+	gx, gy, gw, gh := godMenuRect(vi.ScanoutWidth, vi.ScanoutHeight)
+	handleWmPointer(wheelEvent(uint32(gx+gw/2), uint32(gy+gh/2), 0x8001, 0))
+	px, py, pw, ph := powerBtnRect(vi.ScanoutWidth, vi.ScanoutHeight)
+	handleWmPointer(wheelEvent(uint32(px+pw/2), uint32(py+ph/2), 0x8001, 0))
+	if len(scrolls) != 0 {
+		t.Fatalf("chrome button wheel leaked: %+v", scrolls)
+	}
+
+	// Seat modal overlays and active gestures: every one swallows the wheel.
+	modals := []struct {
+		name  string
+		arm   func()
+		clear func()
+	}{
+		{"launcher", func() { launch.open = true }, func() { launch.open = false }},
+		{"powerMenu", func() { powerMenuOpen = true }, func() { powerMenuOpen = false }},
+		{"clipMenu", func() { clipMenuOpen = true }, func() { clipMenuOpen = false }},
+		{"railMenu", func() { railMenuOpen = true }, func() { railMenuOpen = false }},
+		{"secretAsk", func() { secretAskModal.open = true }, func() { secretAskModal.open = false }},
+		{"drag", func() { drag.armed = true }, func() { drag.armed = false }},
+		{"menuGesture", func() { menuGesture = true }, func() { menuGesture = false }},
+		{"sashDrag", func() { sashDragging = true }, func() { sashDragging = false }},
+	}
+	for _, m := range modals {
+		m.arm()
+		handleWmPointer(wheelEvent(640, 360, 0x8001, 0))
+		m.clear()
+		if len(scrolls) != 0 {
+			t.Fatalf("overlay %s leaked wheel: %+v", m.name, scrolls)
+		}
+	}
+
+	// After overlays clear, client area forwards again.
+	handleWmPointer(wheelEvent(640, 360, 0x4002, 0))
+	if len(scrolls) != 1 || scrolls[0] != (scrollCall{640, 360, 0x4002, 0}) {
+		t.Fatalf("post-overlay horizontal wheel = %+v", scrolls)
 	}
 }

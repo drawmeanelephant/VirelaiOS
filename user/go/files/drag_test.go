@@ -47,15 +47,22 @@ func TestDragOfferRefusesNoPress(t *testing.T) {
 	assertPending(t, &m, markerDragNo+"none")
 }
 
-// Directories and the volumes root refuse by name — an offer must carry
-// what it claims, and a directory is not file bytes.
+// A directory now carries (#3915): an empty subtree still offers the root
+// member. The volumes root keeps its own refusal — an offer must carry what
+// it claims, and a mount row is not a tree.
 func TestDragOfferRefusesNonFiles(t *testing.T) {
+	fs := newCarryFS()
+	fs.dir("/FM/SUB")
+	fs.install(t)
 	m := testModel(entry("SUB", true), entry("KNOWN.TXT", false))
 	m.handleClick(3, 3) // press row 0 = SUB
-	if _, _, ok := m.dragOffer(); ok {
-		t.Fatal("a directory must refuse")
+	mt, blob, ok := m.dragOffer()
+	if !ok || mt != "archive" {
+		t.Fatalf("directory carry: mime=%q ok=%v pending=%v", mt, ok, m.pending)
 	}
-	assertPending(t, &m, markerDragNo+"SUB dir")
+	if len(blob) != 1024+512 {
+		t.Fatalf("empty directory carry length = %d", len(blob))
+	}
 
 	m.path = volsPath
 	m.pressRow = 1

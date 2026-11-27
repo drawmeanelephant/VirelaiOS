@@ -3,6 +3,7 @@ package draw
 import (
 	"math/bits"
 
+	"virelai/imgscale"
 	"virelai/widgets"
 )
 
@@ -215,156 +216,24 @@ func FillLinearGradient(c *BufferCanvas, r widgets.Rect, rgbTop, rgbBot uint32) 
 
 // ---- BlitScaled ---------------------------------------------------------------
 
-// scaleCoord returns the 16.16 source-space position of destination pixel
-// rel's center: (rel + 1/2)·srcLen/dstLen − 1/2. The 128/64 divide keeps
-// the mapping exact at any integer ratio without floating point.
-func scaleCoord(rel, srcLen, dstLen int64) int64 {
-	rel = min(max(rel, 0), dstLen-1)
-	hi, lo := bits.Mul64(uint64(rel)*2+1, uint64(srcLen))
-	hi = hi<<16 | lo>>48
-	lo <<= 16
-	q, _ := bits.Div64(hi, lo, uint64(dstLen)*2)
-	return int64(q) - 32768
-}
-
-// edgeIndex clamps the bilinear tap pair at floor index i to [0, last];
-// out-of-range taps collapse onto the edge pixel so every weight lands on
-// real source data.
-func edgeIndex(i, last int64) (int64, int64) {
-	a := min(max(i, 0), last)
-	b := min(max(i+1, 0), last)
-	return a, b
-}
-
 // BlitScaled paints src into dst at an arbitrary integer ratio — the
-// upscale/downscale path for images and icons. Bilinear with 16.16 weights,
-// channels lerped premultiplied so thin alpha edges do not darken, then
-// composited by the §3.3.2 shape rule. An empty dst or invalid src is a
-// no-op. A blit that shrinks BOTH axes takes blitBox's exact area filter
-// instead: bilinear's four taps undersample a footprint wider than one
-// source pixel and speckle — #3881 measured 64px icon masters painted at
-// 16px rows and the 256px emblem at the 16px god-menu slot. A blit that
-// shrinks only one axis keeps the bilinear path.
+// upscale/downscale path for images and icons. The resampling policy is
+// imgscale's shared fixed-point core: premultiplied bilinear taps, or the
+// exact area filter when both axes shrink. Clipping and source-over
+// compositing stay here with the canvas; an empty dst or invalid src is a
+// no-op.
 func BlitScaled(c *BufferCanvas, src *BufferCanvas, dst widgets.Rect) {
 	if !valid(c) || !valid(src) || dst.W <= 0 || dst.H <= 0 {
 		return
 	}
-	if dst.W < src.W && dst.H < src.H {
-		blitBox(c, src, dst)
-		return
-	}
+	scale := imgscale.New(src.W, src.H, dst.W, dst.H)
 	x0, y0, x1, y1 := clipRect(c, dst)
-	sw, sh := int64(src.W), int64(src.H)
-	dw, dh := int64(dst.W), int64(dst.H)
 	for y := y0; y < y1; y++ {
-		sy := scaleCoord(int64(y)-int64(dst.Y), sh, dh)
-		fy := int(sy & 0xffff)
-		iy0, iy1 := edgeIndex(sy>>16, sh-1)
-		row0, row1 := int(iy0)*src.W, int(iy1)*src.W
 		for x := x0; x < x1; x++ {
-			sx := scaleCoord(int64(x)-int64(dst.X), sw, dw)
-			fx := int(sx & 0xffff)
-			ix0, ix1 := edgeIndex(sx>>16, sw-1)
-			p00 := src.Pix[row0+int(ix0)]
-			p01 := src.Pix[row0+int(ix1)]
-			p10 := src.Pix[row1+int(ix0)]
-			p11 := src.Pix[row1+int(ix1)]
-			w00 := int64(65536-fx) * int64(65536-fy)
-			w01 := int64(fx) * int64(65536-fy)
-			w10 := int64(65536-fx) * int64(fy)
-			w11 := int64(fx) * int64(fy)
-			var pa, pr, pg, pb int64
-			accum := func(p uint32, w int64) {
-				a := int64(p >> 24)
-				pa += a * w
-				pr += a * int64(p>>16&0xff) * w
-				pg += a * int64(p>>8&0xff) * w
-				pb += a * int64(p&0xff) * w
-			}
-			accum(p00, w00)
-			accum(p01, w01)
-			accum(p10, w10)
-			accum(p11, w11)
-			pa = (pa + 1<<31) >> 32
-			if pa == 0 {
+			rgb := scale.Pixel(src.Pix, x-dst.X, y-dst.Y)
+			if rgb>>24 == 0 {
 				continue
 			}
-			// Un-premultiply the weighted channel sums; pa>0 here.
-			channel := func(pm int64) uint32 {
-				pm = (pm + 1<<31) >> 32
-				return uint32(min((pm+pa/2)/pa, 255))
-			}
-			rgb := uint32(pa)<<24 | channel(pr)<<16 | channel(pg)<<8 | channel(pb)
-			i := y*c.W + x
-			c.Pix[i] = blend(c.Pix[i], rgb, samples)
-		}
-	}
-}
-
-// axisWeight normalizes a 16.16 footprint share to the bilinear path's
-// 2^16-per-axis convention: v·65536/span for v ≤ span. The 128-bit product
-// keeps the divide exact at any source size.
-func axisWeight(v, span int64) int64 {
-	hi, lo := bits.Mul64(uint64(v), 1<<16)
-	q, _ := bits.Div64(hi, lo, uint64(span))
-	return int64(q)
-}
-
-// blitBox is BlitScaled's both-axes downscale half: an exact area filter —
-// each dst pixel accumulates every source texel under its [x0,x1)×[y0,y1)
-// footprint, premultiplied, with tap weights normalized to the 16.16-per-
-// axis convention so the unpremultiply and composite rules are the
-// bilinear path's own. Footprints tile the source exactly, so the tap
-// range never needs edgeIndex's clamp.
-func blitBox(c *BufferCanvas, src *BufferCanvas, dst widgets.Rect) {
-	x0, y0, x1, y1 := clipRect(c, dst)
-	sw, sh := int64(src.W), int64(src.H)
-	dw, dh := int64(dst.W), int64(dst.H)
-	for y := y0; y < y1; y++ {
-		fy0 := (int64(y) - int64(dst.Y)) * sh * 65536 / dh
-		fy1 := (int64(y) - int64(dst.Y) + 1) * sh * 65536 / dh
-		spanY := fy1 - fy0
-		if spanY <= 0 {
-			continue
-		}
-		jy0, jy1 := fy0>>16, (fy1-1)>>16
-		for x := x0; x < x1; x++ {
-			fx0 := (int64(x) - int64(dst.X)) * sw * 65536 / dw
-			fx1 := (int64(x) - int64(dst.X) + 1) * sw * 65536 / dw
-			spanX := fx1 - fx0
-			if spanX <= 0 {
-				continue
-			}
-			var pa, pr, pg, pb, wsum int64
-			for jy := jy0; jy <= jy1; jy++ {
-				wy := min(fy1, (jy+1)<<16) - max(fy0, jy<<16)
-				wyn := axisWeight(wy, spanY)
-				row := jy * sw
-				for jx := fx0>>16; jx <= (fx1-1)>>16; jx++ {
-					wx := min(fx1, (jx+1)<<16) - max(fx0, jx<<16)
-					w := axisWeight(wx, spanX) * wyn
-					p := src.Pix[row+jx]
-					a := int64(p >> 24)
-					pa += a * w
-					pr += a * int64(p>>16&0xff) * w
-					pg += a * int64(p>>8&0xff) * w
-					pb += a * int64(p&0xff) * w
-					wsum += w
-				}
-			}
-			if wsum == 0 {
-				continue
-			}
-			pa = (pa + wsum/2) / wsum
-			if pa == 0 {
-				continue
-			}
-			// Un-premultiply the weighted channel sums; pa>0 here.
-			channel := func(pm int64) uint32 {
-				pm = (pm + wsum/2) / wsum
-				return uint32(min((pm+pa/2)/pa, 255))
-			}
-			rgb := uint32(pa)<<24 | channel(pr)<<16 | channel(pg)<<8 | channel(pb)
 			i := y*c.W + x
 			c.Pix[i] = blend(c.Pix[i], rgb, samples)
 		}

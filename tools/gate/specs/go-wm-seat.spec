@@ -2586,3 +2586,174 @@ assert best_n >= 4000, "the badge panel does not cover its rect"
 assert accent > int(ph * scale), "no scope chip / seat rule on the badge"
 assert ink >= 20, "no title text on the badge"
 PY
+
+# --- M216m (#3952) run 21: the user-window ceiling ---------------------------
+#
+# The kernel has eight user windows and the seat holds two (the client-death
+# probe, now also its reserve sink, and the Apps/PWR chrome window), so six
+# apps fill the desk. Observed on the card before this leg existed: a seventh
+# app dies `error open -1` with nothing on the seat, ctrl-space stalls the
+# seat for 240 ticks, and the lock answers `lock refused no_sink`.
+#
+# LIVE seat, six tabs exec'd in script2 (GOCALC/NOTE alternating — both are
+# staged above). Then, in fire order, every anchor a guest-printed marker:
+#
+#   gotabwm: rail n=6            script3 (+3 s, so the seat's exit watch has
+#                                taken its baseline at the ceiling): a shell
+#                                `exec GOCALC.ELF` the seat never issued. The
+#                                app dies on ENOSPC by itself; the seat names
+#                                it `launch windowless` and raises the notice.
+#   gotabwm: launch windowless   chords: ctrl-space opens the launcher on the
+#                                LENT reserve (`sink reserve lend`), return
+#                                launches the one manifest row and the guard
+#                                refuses it BEFORE exec (`launch refused`),
+#                                escape dismisses and parks the reserve.
+#   gotabwm: sink reserve park   pointer: the PWR button. The menu borrows
+#                                the reserve and holds key focus — the badge
+#                                walks to scope=seat, which it never did
+#                                while the menu had no sink.
+#   gotabwm: power open          chords2: down,down,return is the Lock row.
+#   gotabwm: locked              input-string: the passphrase; the curtain
+#                                took the reserve as its sink and gives it
+#                                back on unlock.
+#
+# The manifest is one Calc row (swapped in like run 17's Ghost catalog, which
+# is parked as GHOSTAPPS.TXT again) so `return` is unambiguous and the exit
+# watch's catalog test has its row. VAULT.BIN is a pinned 64-byte fixture:
+# an empty GVLT v2 vault sealed under `hunter2` at the codec's minimum
+# iteration count (vaultlib.SealWithKey; salt `m216m-ceil-salt!`).
+vgate_setup_python <<'PY'
+import os
+rd = os.environ["RUN_DIR"]
+share = os.environ.get("VG_SHARE") or os.path.join(rd, "share")
+os.makedirs(os.path.join(share, "GOVAULT"), exist_ok=True)
+with open(os.path.join(share, "GOVAULT", "VAULT.BIN"), "wb") as f:
+    f.write(bytes.fromhex(
+        "47564c5402000000a086010010006d3231366d2d6365696c2d73616c74210c00"
+        "6d3231366d2d6e6f6e6365216df9da631db3e6691df00807af4089fe010d2efe"))
+with open(os.path.join(share, "CEILAPPS.TXT"), "w") as f:
+    f.write("# v2 test manifest for the M216m window-ceiling leg\n"
+            "GOCALC.ELF | Calc | c | dock=true\n")
+print("staged GOVAULT/VAULT.BIN (64 bytes) + one-row CEILAPPS.TXT")
+PY
+
+vgate_file script-21.txt <<'EOF'
+set GOMAXPROCS=1
+vf rm GOTABWM.DEMO
+vf rm SESSION.TABS
+vf rm NOTIFY.HIST
+vf rm GOTABWM.IDLE.TEST
+settings set idle_minutes 120
+vf mv APPS.TXT GHOSTAPPS.TXT
+vf mv CEILAPPS.TXT APPS.TXT
+wm
+exec GOTABWM.ELF
+EOF
+
+vgate_file script2-21.txt <<'EOF'
+dui focus 0
+exec GOCALC.ELF
+exec NOTE.ELF
+exec GOCALC.ELF
+exec NOTE.ELF
+exec GOCALC.ELF
+exec NOTE.ELF
+EOF
+
+vgate_file script3-21.txt <<'EOF'
+exec GOCALC.ELF
+EOF
+
+vgate_run 21 -- \
+    --via-virtio \
+    --screen '$RUN_DIR/screen-21' \
+    --script '$RUN_DIR/script-21.txt' \
+    --script2 '$RUN_DIR/script2-21.txt' \
+    --script2-after 'gotabwm: win focus' \
+    --script3 '$RUN_DIR/script3-21.txt' \
+    --script3-after 'gotabwm: rail n=6' --script3-delay 3 \
+    --input-chords 'ctrl-space,return,escape' \
+    --input-chords-after 'gotabwm: launch windowless' \
+    --pointer-virtio '338,702,c' \
+    --pointer-virtio-after 'gotabwm: sink reserve park' \
+    --input-chords2 'down,down,return' \
+    --input-chords2-after 'gotabwm: power open' \
+    --input-string $'hunter2\n' \
+    --input-string-after 'gotabwm: locked' \
+    --script-expect 'gotabwm: unlocked' --timeout 300
+
+vgate_assert 21 serial-contains 'gotabwm: mode live'
+vgate_assert 21 serial-contains 'gotabwm: rail n=6'
+# The seventh app, from the shell: it exits on its own and the seat names it.
+vgate_assert 21 serial-contains 'gocalc: error open -1'
+vgate_assert 21 serial-contains 'gotabwm: launch windowless GOCALC.ELF pid='
+# The launcher opens at the ceiling, at once, on the reserve — and the row's
+# launch is refused before exec with the marker and the notice.
+vgate_assert 21 serial-contains 'gotabwm: launcher open n=1'
+vgate_assert 21 serial-contains 'gotabwm: launch refused GOCALC.ELF windows: limit 8'
+vgate_assert 21 serial-contains 'gotabwm: notify paint id='
+vgate_assert 21 serial-contains 'gotabwm: launcher dismiss'
+vgate_assert 21 serial-absent 'gotabwm: launcher unavailable'
+vgate_assert 21 serial-absent 'gotabwm: launcher missing'
+# Exactly the one shell exec past the ceiling: the refused launch never ran.
+vgate_assert 21 serial-exact 'gocalc: error open -1' 1
+# The power menu and the lock, with every user window taken.
+vgate_assert 21 serial-contains 'gotabwm: power open'
+vgate_assert 21 serial-contains 'gotabwm: locked'
+vgate_assert 21 serial-contains 'gotabwm: unlocked'
+vgate_assert 21 serial-absent 'gotabwm: lock refused'
+vgate_assert 21 serial-absent 'gotabwm: unlock failed'
+vgate_assert 21 serial-absent '[EXC] parking:'
+vgate_assert 21 serial-absent 'exited status=139'
+
+# The order, and the two facts a marker count cannot carry: every modal sat
+# on the ONE reserve window (three lends of the same id, each parked before
+# the next), and the power menu really held key focus (the badge reached
+# scope=seat between its open and its dismiss).
+vgate_assert 21 python <<'PY'
+import os, re, sys
+ser = open(os.environ["VG_SER"], errors="replace").read()
+
+def at(needle, start=0):
+    i = ser.find(needle, start)
+    if i < 0:
+        sys.exit("missing %r after offset %d" % (needle, start))
+    return i
+
+full = at("gotabwm: rail n=6")
+windowless = at("gotabwm: launch windowless GOCALC.ELF pid=", full)
+paint = at("gotabwm: notify paint id=", windowless)
+lend1 = at("gotabwm: sink reserve lend id=", windowless)
+opened = at("gotabwm: launcher open n=1", lend1)
+refused = at("gotabwm: launch refused GOCALC.ELF windows: limit 8", opened)
+dismissed = at("gotabwm: launcher dismiss", refused)
+power = at("gotabwm: power open", dismissed)
+seat = at("gotabwm: focus scope=seat", power)
+pdismiss = at("gotabwm: power dismiss", power)
+if not seat < pdismiss:
+    sys.exit("the power menu never held key focus: no scope=seat badge "
+             "between its open and its dismiss")
+locked = at("gotabwm: locked", pdismiss)
+unlocked = at("gotabwm: unlocked", locked)
+
+lends = [(m.start(), m.group(1)) for m in
+         re.finditer(r"(?m)^gotabwm: sink reserve lend id=(\d+) ", ser)]
+parks = [(m.start(), m.group(1)) for m in
+         re.finditer(r"(?m)^gotabwm: sink reserve park id=(\d+)$", ser)]
+if len(lends) != 3 or len(parks) != 3:
+    sys.exit("want 3 lends + 3 parks (launcher, power menu, lock), got "
+             "%d + %d" % (len(lends), len(parks)))
+ids = {i for _, i in lends} | {i for _, i in parks}
+if len(ids) != 1:
+    sys.exit("the modals used more than one window: %r" % sorted(ids))
+for (lp, _), (pp, _) in zip(lends, parks):
+    if not lp < pp:
+        sys.exit("a park precedes its lend")
+for (pp, _), (lp, _) in zip(parks, lends[1:]):
+    if not pp < lp:
+        sys.exit("the reserve was lent again before it was parked")
+if not (lends[2][0] < locked and parks[2][0] < unlocked):
+    sys.exit("the lock did not ride the reserve")
+print("M216m ceiling: windowless -> notice -> launcher on reserve id=%s -> "
+      "refused -> power (scope=seat) -> locked -> unlocked" % ids.pop())
+PY

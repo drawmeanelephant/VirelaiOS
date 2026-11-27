@@ -31,9 +31,9 @@ func boolUint(b bool) uint32 {
 }
 
 func TestSpaceSwitchCreatesAndParks(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	resetSpaces()
-	tabs = TabStrip{}
 	if !tabs.OpenTab(3, "A") || !tabs.OpenTab(4, "B") || !tabs.FocusTab(4) {
 		t.Fatal("seed")
 	}
@@ -83,9 +83,11 @@ func TestSpaceSwitchCreatesAndParks(t *testing.T) {
 }
 
 func TestSpaceCapIsFour(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
+	resetNotify(t)
+	resetRefusal(t)
 	resetSpaces()
-	tabs = TabStrip{}
 	_, restore := visRecorder()
 	defer restore()
 	for i := 0; i < 3; i++ {
@@ -102,12 +104,30 @@ func TestSpaceCapIsFour(t *testing.T) {
 	if spaceN != MaxSpaces || spaceCur != MaxSpaces-1 {
 		t.Fatalf("cap: n=%d cur=%d", spaceN, spaceCur)
 	}
+	// M216c: the cap refusal is a named notice now — one toast, and the
+	// PageUp clamp stays the silent no-op it always was.
+	if n := notifyCount(); n != 1 || notifyQueue[0].text != noticeSpacesLimit ||
+		notifyQueue[0].action != notifyActionNone {
+		t.Fatalf("cap notice: %+v", notifyQueue)
+	}
+	// Walk home, then one more PageUp clamps at space "1" — silent.
+	for i := 0; i < MaxSpaces-1; i++ {
+		if !applySpaceSwitch(-1) {
+			t.Fatalf("pageup %d", i)
+		}
+	}
+	if applySpaceSwitch(-1) {
+		t.Fatal("pageup clamp")
+	}
+	if n := notifyCount(); n != 1 {
+		t.Fatalf("clamp pushed a notice: %d", n)
+	}
 }
 
 func TestSpaceMoveCarriesTab(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	resetSpaces()
-	tabs = TabStrip{}
 	if !tabs.OpenTab(3, "Calc") || !tabs.OpenTab(4, "Edit") || !tabs.FocusTab(4) {
 		t.Fatal("seed")
 	}
@@ -161,10 +181,72 @@ func TestSpaceMoveCarriesTab(t *testing.T) {
 	}
 }
 
-func TestSummonEmojiFocusesThenExecs(t *testing.T) {
+// M216d (#3943): the chord half of the palette move — applySpaceMoveStep
+// carries the FOCUSED tab to the neighbouring space through applySpaceMove
+// itself. Next at the last space creates the slot first (the switch
+// chord's own create-on-demand); prev at the first clamps; an empty strip
+// has no focused tab and no-ops.
+func TestSpaceMoveStepCarriesFocusedTab(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	resetSpaces()
-	tabs = TabStrip{}
+	if !tabs.OpenTab(3, "Calc") || !tabs.OpenTab(4, "Edit") || !tabs.FocusTab(4) {
+		t.Fatal("seed")
+	}
+	vis, restore := visRecorder()
+	defer restore()
+
+	// Prev at the first space clamps — nothing moves, nothing creates.
+	if applySpaceMoveStep(-1) {
+		t.Fatal("space-move-prev must clamp at the first space")
+	}
+	if spaceN != 1 || spaceCur != 0 || tabs.Count() != 2 {
+		t.Fatalf("clamp mutated: n=%d cur=%d tabs=%d", spaceN, spaceCur, tabs.Count())
+	}
+
+	// Next at the last space creates "2" and carries the focused tab —
+	// the space stays DORMANT (no switch): the live strip keeps id 3.
+	if !applySpaceMoveStep(1) {
+		t.Fatal("space-move-next must create + carry")
+	}
+	if spaceN != 2 || spaceCur != 0 {
+		t.Fatalf("move-next: n=%d cur=%d", spaceN, spaceCur)
+	}
+	if tabs.Count() != 1 || tabs.At(0).ID != 3 {
+		t.Fatalf("source strip after move: %d tabs", tabs.Count())
+	}
+	if spaces[1].Strip.Count() != 1 || spaces[1].Strip.tabs[0].ID != 4 {
+		t.Fatalf("destination strip: %+v", spaces[1].Strip.tabs[0])
+	}
+	if len(*vis) != 1 || (*vis)[0] != [2]uint32{4, 0} {
+		t.Fatalf("moved window must hide: %v", *vis)
+	}
+
+	// On the now-live space "2" (one tab, focused), prev carries it home.
+	if !spaceSwitchTo(1) {
+		t.Fatal("switch to space 2")
+	}
+	*vis = nil
+	if !applySpaceMoveStep(-1) {
+		t.Fatal("space-move-prev must carry the focused tab home")
+	}
+	if spaceCur != 1 || tabs.Count() != 0 {
+		t.Fatalf("after move-prev: cur=%d live tabs=%d", spaceCur, tabs.Count())
+	}
+	if spaces[0].Strip.Count() != 2 {
+		t.Fatalf("space 1 strip: %d tabs want 2", spaces[0].Strip.Count())
+	}
+
+	// An empty live strip has no focused tab: both directions no-op.
+	if applySpaceMoveStep(1) || applySpaceMoveStep(-1) {
+		t.Fatal("an empty strip must refuse both move directions")
+	}
+}
+
+func TestSummonEmojiFocusesThenExecs(t *testing.T) {
+	resetSeatForTest(t)
+	defer saveSeatState()()
+	resetSpaces()
 	_, restoreVis := visRecorder()
 	defer restoreVis()
 	execs, restoreExec := execRecorder()
@@ -200,9 +282,9 @@ func TestSummonEmojiFocusesThenExecs(t *testing.T) {
 }
 
 func TestSpacesSessionRoundTrip(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	resetSpaces()
-	tabs = TabStrip{}
 	if !tabs.OpenTab(3, "Calc") || !tabs.OpenTab(4, "Note") || !tabs.FocusTab(3) {
 		t.Fatal("seed space 1")
 	}
@@ -268,9 +350,9 @@ func TestSpacesSessionRoundTrip(t *testing.T) {
 }
 
 func TestPanesSpacesRoundTrip(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	resetSpaces()
-	tabs = TabStrip{}
 	if !tabs.OpenTab(3, "A") || !tabs.OpenTab(4, "B") {
 		t.Fatal("seed")
 	}
@@ -331,9 +413,9 @@ func TestPanesSpacesRoundTrip(t *testing.T) {
 }
 
 func TestV1PanesSidecarStillReads(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	resetSpaces()
-	tabs = TabStrip{}
 	if !tabs.OpenTab(3, "A") || !tabs.OpenTab(4, "B") {
 		t.Fatal("seed")
 	}
@@ -354,6 +436,7 @@ func TestV1PanesSidecarStillReads(t *testing.T) {
 }
 
 func TestRailMarkerCarriesSpaceName(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	resetSpaces()
 	_, restore := visRecorder()
@@ -387,9 +470,9 @@ func TestRailMarkerCarriesSpaceName(t *testing.T) {
 // below-band and left-of-strip misses, and the two refusal shapes (a
 // single-space desktop paints no pills; an empty strip paints no rail).
 func TestSpacePillAtMirrorsPaint(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	resetSpaces()
-	tabs = TabStrip{}
 	if !tabs.OpenTab(3, "A") || !tabs.OpenTab(4, "B") {
 		t.Fatal("OpenTab")
 	}
@@ -440,9 +523,9 @@ func TestSpacePillAtMirrorsPaint(t *testing.T) {
 // LIVE space's pill is the consumed no-op: the pick marker prints (the
 // gesture happened), the switch refuses. No rail drag arms either way.
 func TestHandleWmPointerSpacePillSwitches(t *testing.T) {
+	resetSeatForTest(t)
 	defer saveSeatState()()
 	resetSpaces()
-	tabs = TabStrip{}
 	prevPtrButtons = 0
 	railDragFrom = -1
 	hostedApp = 0
@@ -500,5 +583,14 @@ func TestHandleWmPointerSpacePillSwitches(t *testing.T) {
 	}
 	if railDragFrom != -1 || len(closed) != 0 {
 		t.Fatalf("live-pill click leaked: drag=%d closed=%v", railDragFrom, closed)
+	}
+	// M216d (#3943): a MIDDLE press on the pill is not the cell close —
+	// the pill keeps its prior fate (no switch, no close, no drag).
+	prevPtrButtons = 0
+	handleWmPointer(ptrEvent(cx, cy, hidBtnMiddle))
+	handleWmPointer(ptrEvent(cx, cy, 0))
+	if spaceCur != 1 || len(closed) != 0 || railDragFrom != -1 {
+		t.Fatalf("pill middle-click leaked: cur=%d closed=%v drag=%d",
+			spaceCur, closed, railDragFrom)
 	}
 }

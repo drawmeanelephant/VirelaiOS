@@ -138,6 +138,7 @@ func (f *hostintFixture) drainClipOut() {
 }
 
 func TestHostintSeatInitAbsentCredentialIsSilent(t *testing.T) {
+	resetSeatForTest(t)
 	f := newHostintFixture(t, "")
 	f.key = nil
 	hostintSeatInit()
@@ -153,6 +154,7 @@ func TestHostintSeatInitAbsentCredentialIsSilent(t *testing.T) {
 }
 
 func TestHostintFullLoopBothDirections(t *testing.T) {
+	resetSeatForTest(t)
 	f := newHostintFixture(t, strings.Repeat("b7", 32))
 	hostintSeatInit()
 	if hostintEngine == nil {
@@ -160,7 +162,7 @@ func TestHostintFullLoopBothDirections(t *testing.T) {
 	}
 	f.plantArmed(0xBEEF, hostint.LaneClip)
 	hostintSeatTick()
-	if !f.hasLog(hostintMarkerPrefix+" armed epoch=48879 lanes=clip") {
+	if !f.hasLog(hostintMarkerPrefix + " armed epoch=48879 lanes=clip") {
 		t.Fatalf("missing armed marker: %v", f.logs)
 	}
 
@@ -171,7 +173,7 @@ func TestHostintFullLoopBothDirections(t *testing.T) {
 	if string(f.clip) != "host says hi" {
 		t.Fatalf("guest clipboard = %q", f.clip)
 	}
-	if !f.hasLog(MarkerHostintClipIn+"seq=1 len=12") {
+	if !f.hasLog(MarkerHostintClipIn + "seq=1 len=12") {
 		t.Fatalf("missing clip-in marker: %v", f.logs)
 	}
 	if !f.hasLog(MarkerHostintClipInd + "host") {
@@ -194,7 +196,7 @@ func TestHostintFullLoopBothDirections(t *testing.T) {
 	if len(outs) != 1 || string(outs[0]) != "guest says hi" {
 		t.Fatalf("clipOutPayloads = %v", outs)
 	}
-	if !f.hasLog(MarkerHostintClipOut+"seq=1 len=13") {
+	if !f.hasLog(MarkerHostintClipOut + "seq=1 len=13") {
 		t.Fatalf("missing clip-out marker: %v", f.logs)
 	}
 	if !f.hasLog(MarkerHostintClipInd + "local") {
@@ -203,6 +205,7 @@ func TestHostintFullLoopBothDirections(t *testing.T) {
 }
 
 func TestHostintClipInBadMACRefused(t *testing.T) {
+	resetSeatForTest(t)
 	f := newHostintFixture(t, strings.Repeat("b7", 32))
 	hostintSeatInit()
 	f.plantArmed(9, hostint.LaneClip)
@@ -220,6 +223,7 @@ func TestHostintClipInBadMACRefused(t *testing.T) {
 }
 
 func TestHostintClipOutBackpressuredRetries(t *testing.T) {
+	resetSeatForTest(t)
 	f := newHostintFixture(t, strings.Repeat("b7", 32))
 	hostintSeatInit()
 	f.plantArmed(9, hostint.LaneClip)
@@ -267,6 +271,7 @@ func TestHostintClipOutBackpressuredRetries(t *testing.T) {
 // M124c: a typed buffer crosses on the dedicated tag with the envelope —
 // and the badge takes the type suffix off the same classification.
 func TestHostintClipOutTyped(t *testing.T) {
+	resetSeatForTest(t)
 	f := newHostintFixture(t, strings.Repeat("b7", 32))
 	hostintSeatInit()
 	f.plantArmed(9, hostint.LaneClip)
@@ -309,6 +314,7 @@ func TestHostintClipOutTyped(t *testing.T) {
 // the badge carries type + host mark. A mislabeled payload refuses
 // unsupported_kind and never touches the buffer.
 func TestHostintClipInTyped(t *testing.T) {
+	resetSeatForTest(t)
 	f := newHostintFixture(t, strings.Repeat("b7", 32))
 	hostintSeatInit()
 	f.plantArmed(7, hostint.LaneClip)
@@ -344,6 +350,7 @@ func TestHostintClipInTyped(t *testing.T) {
 }
 
 func TestHostintClipOutNotText(t *testing.T) {
+	resetSeatForTest(t)
 	f := newHostintFixture(t, strings.Repeat("b7", 32))
 	hostintSeatInit()
 	f.plantArmed(9, hostint.LaneClip)
@@ -353,7 +360,7 @@ func TestHostintClipOutNotText(t *testing.T) {
 	if len(f.clipOutPayloads()) != 0 {
 		t.Fatal("non-UTF-8 buffer emitted as CLIP_OUT")
 	}
-	if !f.hasLog("lane=clip reason="+hostint.RefuseNotText) {
+	if !f.hasLog("lane=clip reason=" + hostint.RefuseNotText) {
 		t.Fatalf("missing payload_not_text refusal: %v", f.logs)
 	}
 }

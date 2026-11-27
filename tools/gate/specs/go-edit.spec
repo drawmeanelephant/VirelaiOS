@@ -900,10 +900,11 @@ vgate_run 12 -- \
 
 vgate_assert 12 serial-contains 'goedit: present'
 # The app's five rows (ctrl+s/z/f/g + M192g's ctrl+p quick-open — the
-# undo row is M121e's) + every seat row (40 in the shipped table) = 45;
+# undo row is M121e's) + every seat row (46 since M216d's pin/sash/space
+# chords) = 51;
 # NO kernel-terminal rows — this window is not a tty front-end, so
 # those chords do not answer here.
-vgate_assert 12 serial-contains 'goedit: hints n=45'
+vgate_assert 12 serial-contains 'goedit: hints n=51'
 vgate_assert 12 serial-contains 'goedit: hints row ctrl+s publish the buffer (save)'
 vgate_assert 12 serial-contains 'goedit: hints row ctrl+f '
 vgate_assert 12 serial-contains 'goedit: hints row ctrl+g '
@@ -958,10 +959,10 @@ vgate_run 13 -- \
     --via-virtio \
     --snapshot-out '$RUN_DIR/snap-13' \
     --script '$RUN_DIR/script-13.txt' \
-    --input-chords 'ctrl-shift-o,F,O,L,D,.,G,O,return,ctrl-g,3,return,ctrl-k,ctrl-g,5,return,ctrl-k,ctrl-g,7,return,ctrl-k,ctrl-w,home,ctrl-b,ctrl-b,right,ctrl-b,home' \
+    --input-chords 'ctrl-shift-o,F,O,L,D,.,G,O,return,ctrl-g,3,return,ctrl-k,ctrl-g,5,return,ctrl-k,ctrl-g,7,return,ctrl-k,end,left,left,left,left,left,left,left,left,left,left,right,right,right,right,right,ctrl-w,home,ctrl-b,ctrl-b,right,ctrl-b,home' \
     --input-chords-after 'goedit: present' \
     --snapshot-after 'rx-goedit-match-ok' \
-    --snapshot-after 'goedit: status line=5/15 col=1 fold=1' \
+    --snapshot-after 'goedit: status line=5/15 col=11 fold=1' \
     --script3 '$RUN_DIR/script3-13.txt' \
     --script3-after 'goedit: match none' \
     --script3-delay 5 \
@@ -1001,9 +1002,12 @@ vgate_assert 13 serial-absent 'exited status=139'
 # caret's amber block (2x8) must sit exactly 7 cells (56 px) to its left
 # on the same row.
 # M166b: snap-13-0 is the end-of-run bracket probe frame like before.
-# snap-13-1 is the mid-run folded frame, fired on the fold-on status —
-# the goto digits that follow only repaint the bottom bar, so the
-# document rows stay folded for the whole remaining chord window.
+# snap-13-1 is the mid-run folded frame: the first fold is unfolded by
+# the next goto (the leg proves reason=goto), so the anchor is `end`'s
+# unique col=11 status after the second fold-on, and the caret moves
+# that follow repaint without touching the fold — holding folded rows
+# on screen across the kind-4 round trip plus the composite lag before
+# the buffer switch drops FOLD.GO.
 vgate_assert 13 snapshot 'snap-13-0.raw' <<'PY'
 import sys
 
@@ -1280,7 +1284,7 @@ vgate_run 15 -- \
     --script2 '$RUN_DIR/script2-15.txt' \
     --script2-after 'gotabwm: mode live' \
     --script3 '$RUN_DIR/script3-15.txt' \
-    --script3-after 'goedit: settings subscribed key=theme' \
+    --script3-after 'gotabwm: ptr' \
     --pointer-virtio '400,300' \
     --pointer-virtio-after 'gotabwm: region id=' \
     --input-string $'theme=light\n' \
@@ -1315,9 +1319,10 @@ vgate_assert 15 serial-contains 'goedit: settings repaint key=theme value=light'
 # `gotabwm: region id=` the seat's — and the bare hover at (400,300),
 # anchored on the seat's apply, picks the staged i-beam. The receipt
 # prints once, after the kernel accepts the pick (the go-wm-tabs run 07
-# discipline). The move lands while GOEDIT is still the only hosted
-# window: GOSET's exec is typed at 'settings subscribed' but its
-# win_open reaches the mirror seconds after the hover sample does.
+# discipline). The move must land while GOEDIT is still the only hosted
+# window, so GOSET's exec is gated on `gotabwm: ptr` — the seat's own
+# receipt for the hover sample — rather than the earlier subscription
+# line whose GOSET win_open could beat the sample to the mirror.
 vgate_assert 15 serial-contains 'goedit: regions txt'
 vgate_assert 15 serial-contains 'gotabwm: region id='
 vgate_assert 15 serial-contains 'gotabwm: cursor shape txt'

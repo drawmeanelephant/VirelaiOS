@@ -178,6 +178,7 @@ func (f *fakeShare) seedBundle(t *testing.T) {
 }
 
 func TestCaptureCarriesSettingsSessionAndSortedDocs(t *testing.T) {
+	resetSeatForTest(t)
 	f := newFakeShare()
 	f.install(t)
 	f.put(settings.Path, []byte("#v2\ntheme=dark\n"))
@@ -223,6 +224,7 @@ func TestCaptureCarriesSettingsSessionAndSortedDocs(t *testing.T) {
 }
 
 func TestSaveSnapshotPublishesTheBundleAndLogsAfterTheWrite(t *testing.T) {
+	resetSeatForTest(t)
 	f := newFakeShare()
 	f.install(t)
 	f.put(settings.Path, []byte("#v2\n"))
@@ -262,6 +264,7 @@ func TestSaveSnapshotPublishesTheBundleAndLogsAfterTheWrite(t *testing.T) {
 }
 
 func TestSaveSnapshotSkipsUnusableDocumentsButKeepsTheState(t *testing.T) {
+	resetSeatForTest(t)
 	f := newFakeShare()
 	f.install(t)
 	f.put(settings.Path, []byte("#v2\n"))
@@ -297,6 +300,7 @@ func TestSaveSnapshotSkipsUnusableDocumentsButKeepsTheState(t *testing.T) {
 }
 
 func TestCaptureOnAnEmptyShareFailsHonestly(t *testing.T) {
+	resetSeatForTest(t)
 	f := newFakeShare()
 	f.install(t)
 	// No settings, no session, no documents: there is no state to carry, and
@@ -314,6 +318,7 @@ func TestCaptureOnAnEmptyShareFailsHonestly(t *testing.T) {
 }
 
 func TestRestoreIsANoOpWithoutTheRequest(t *testing.T) {
+	resetSeatForTest(t)
 	f := newFakeShare()
 	f.install(t)
 	f.seedBundle(t)
@@ -336,6 +341,7 @@ func TestRestoreIsANoOpWithoutTheRequest(t *testing.T) {
 }
 
 func TestRestoreRehydratesEveryFileByteExact(t *testing.T) {
+	resetSeatForTest(t)
 	f := newFakeShare()
 	f.install(t)
 	f.seedBundle(t)
@@ -389,6 +395,7 @@ func TestRestoreRehydratesEveryFileByteExact(t *testing.T) {
 // "valid settings entry, corrupt LAST entry", which is the shape a codec that
 // streamed would happily half-apply.
 func TestCorruptBundleIsRefusedWholeAndWritesNothing(t *testing.T) {
+	resetSeatForTest(t)
 	good := []byte("#v2\ntheme=amber\n")
 	doc := []byte("note body\n")
 
@@ -459,6 +466,7 @@ func TestCorruptBundleIsRefusedWholeAndWritesNothing(t *testing.T) {
 }
 
 func TestAbsentBundleReportsMissingAndWritesNothing(t *testing.T) {
+	resetSeatForTest(t)
 	f := newFakeShare()
 	f.install(t)
 	// The request is staged but the bundle is not: an absent bundle is a
@@ -482,6 +490,7 @@ func TestAbsentBundleReportsMissingAndWritesNothing(t *testing.T) {
 }
 
 func TestOversizeBundleIsRefusedWhole(t *testing.T) {
+	resetSeatForTest(t)
 	f := newFakeShare()
 	f.install(t)
 	// One byte past the cap, valid header and all. Truncating it into
@@ -502,6 +511,7 @@ func TestOversizeBundleIsRefusedWhole(t *testing.T) {
 }
 
 func TestRestoreNamesAFailedPublishInsteadOfClaimingSuccess(t *testing.T) {
+	resetSeatForTest(t)
 	f := newFakeShare()
 	f.install(t)
 	f.seedBundle(t)
@@ -521,6 +531,7 @@ func TestRestoreNamesAFailedPublishInsteadOfClaimingSuccess(t *testing.T) {
 }
 
 func TestRestoreToleratesAnExistingDocsDirectory(t *testing.T) {
+	resetSeatForTest(t)
 	f := newFakeShare()
 	f.install(t)
 	f.seedBundle(t)
@@ -554,6 +565,7 @@ func TestRestoreToleratesAnExistingDocsDirectory(t *testing.T) {
 }
 
 func TestSnapshotMarkerShapes(t *testing.T) {
+	resetSeatForTest(t)
 	cases := []struct{ got, want string }{
 		{MarkerSnapshotSaved, "gotabwm: snapshot saved "},
 		{MarkerSnapshotRestore, "gotabwm: snapshot restore "},
@@ -572,6 +584,7 @@ func TestSnapshotMarkerShapes(t *testing.T) {
 }
 
 func TestSnapshotTailShape(t *testing.T) {
+	resetSeatForTest(t)
 	if got, want := snapshotTail(1234, 5, 3), "bytes=1234 entries=5 docs=3"; got != want {
 		t.Fatalf("tail = %q want %q", got, want)
 	}
@@ -596,6 +609,7 @@ func itoaTest(v int) string {
 // the share having changed — which would quietly break the card's byte-exact
 // claim for exactly the shares with the most to lose.
 func TestCaptureDocsTakesTheAlphabeticallyFirstBeyondTheCap(t *testing.T) {
+	resetSeatForTest(t)
 	f := newFakeShare()
 	f.install(t)
 	f.dirs[docsDir] = true
@@ -638,6 +652,7 @@ func TestCaptureDocsTakesTheAlphabeticallyFirstBeyondTheCap(t *testing.T) {
 // restore marker — the share still carries the request and the next boot will
 // try the same bundle again.
 func TestRestoreReportsARequestItCouldNotConsume(t *testing.T) {
+	resetSeatForTest(t)
 	f := newFakeShare()
 	f.install(t)
 	f.seedBundle(t)

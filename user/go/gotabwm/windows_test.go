@@ -8,6 +8,7 @@ import (
 )
 
 func TestLiveWindowPhaseSuppliesOwnBlur(t *testing.T) {
+	resetSeatForTest(t)
 	oldDemo, oldOpen := demoMode, openBlurProbe
 	defer func() { demoMode, openBlurProbe = oldDemo, oldOpen }()
 	calls := 0
@@ -36,6 +37,7 @@ func TestLiveWindowPhaseSuppliesOwnBlur(t *testing.T) {
 }
 
 func TestSeatChromeBackBufferMatchesPaintAndCaches(t *testing.T) {
+	resetSeatForTest(t)
 	scan := launcherScan()
 	paintGodMenuButton(scan, vi.ScanoutWidth, vi.ScanoutHeight)
 	x, y, w, h := godMenuRect(vi.ScanoutWidth, vi.ScanoutHeight)
@@ -76,6 +78,7 @@ func TestSeatChromeBackBufferMatchesPaintAndCaches(t *testing.T) {
 // The gate greps these exact strings; a drift is a host-test failure rather
 // than a live run that silently asserts nothing.
 func TestWindowMarkerShapes(t *testing.T) {
+	resetSeatForTest(t)
 	cases := []struct{ got, want string }{
 		{MarkerWinOpen, "gotabwm: win open id="},
 		{MarkerWinChrome, "gotabwm: win chrome"},
@@ -98,6 +101,7 @@ func TestWindowMarkerShapes(t *testing.T) {
 // The size is carried through unchanged so the kernel's move-only reflow path
 // applies (no back-buffer growth to be refused).
 func TestProposedPositionIsOffScanout(t *testing.T) {
+	resetSeatForTest(t)
 	if propX < vi.ScanoutWidth && propY < vi.ScanoutHeight {
 		t.Fatalf("proposal at %d,%d is inside the %dx%d scanout — nothing to clamp",
 			propX, propY, vi.ScanoutWidth, vi.ScanoutHeight)
@@ -114,6 +118,7 @@ func TestProposedPositionIsOffScanout(t *testing.T) {
 // The window the seat opens must itself fit the scanout at its origin, or
 // user_open refuses it outright (driving_award.user_open validates).
 func TestOpenedRectFitsScanout(t *testing.T) {
+	resetSeatForTest(t)
 	if winX+winW > vi.ScanoutWidth || winY+winH > vi.ScanoutHeight {
 		t.Fatalf("opened rect %dx%d at %d,%d does not fit the scanout",
 			winW, winH, winX, winY)
@@ -126,6 +131,7 @@ func TestOpenedRectFitsScanout(t *testing.T) {
 // The client-death probe must be a DIFFERENT window from the managed one, so
 // its reaping proves the exit seam rather than re-proving the explicit close.
 func TestLeakProbeIsDistinct(t *testing.T) {
+	resetSeatForTest(t)
 	if leakW == winW && leakH == winH && leakX == winX && leakY == winY {
 		t.Fatalf("leak probe duplicates the managed window's rect")
 	}
@@ -137,6 +143,7 @@ func TestLeakProbeIsDistinct(t *testing.T) {
 // The chrome-descriptor page must be page-aligned and must not collide with
 // the scanout tag the M57a path uses.
 func TestScratchVAIsPageAlignedAndClear(t *testing.T) {
+	resetSeatForTest(t)
 	if scratchVA%vi.PageSize != 0 {
 		t.Fatalf("scratchVA %#x is not page-aligned", uint64(scratchVA))
 	}
@@ -149,6 +156,7 @@ func TestScratchVAIsPageAlignedAndClear(t *testing.T) {
 // accepts: nonzero kind within chrome_kind_all (0x7f), flags in
 // chrome_flags_all (0x01), rest_alpha <= 256 (0 here = the v1 zero-extension).
 func TestFillBorderChromeIsValid(t *testing.T) {
+	resetSeatForTest(t)
 	desc := make([]byte, vi.ChromeDescBytes)
 	fillBorderChrome(desc)
 	if len(desc) != 40 {
@@ -170,6 +178,7 @@ func TestFillBorderChromeIsValid(t *testing.T) {
 // geometry. The row's bound owner pid plus the seat's cross-owner name
 // read are the liveness proof.
 func TestStaleDeathMirrorKeepsReusedRow(t *testing.T) {
+	resetSeatForTest(t)
 	savedTabs, savedHosted := tabs, hostedApp
 	savedLaunch, savedButton := launch, buttonPixels
 	savedBinds, savedChalls := rpcBindings, rpcChallenges
@@ -250,6 +259,7 @@ func TestStaleDeathMirrorKeepsReusedRow(t *testing.T) {
 }
 
 func TestHostedWindowGetsZeroChromeAndSeatKeepsBorder(t *testing.T) {
+	resetSeatForTest(t)
 	savedScratch, savedWrite := chromeScratch, writeWindowChrome
 	defer func() { chromeScratch, writeWindowChrome = savedScratch, savedWrite }()
 	chromeScratch = make([]byte, vi.PageSize)
@@ -284,6 +294,7 @@ func TestHostedWindowGetsZeroChromeAndSeatKeepsBorder(t *testing.T) {
 
 // putU32LE must be little-endian and must not disturb neighbouring bytes.
 func TestPutU32LE(t *testing.T) {
+	resetSeatForTest(t)
 	b := make([]byte, 8)
 	putU32LE(b[0:], 0x11223344)
 	if b[0] != 0x44 || b[1] != 0x33 || b[2] != 0x22 || b[3] != 0x11 {

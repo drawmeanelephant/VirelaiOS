@@ -200,6 +200,11 @@ type app struct {
 	pend    *noteState
 	pendBad bool
 
+	// M216e (#3944): the window's kind-20 unsaved bit — syncUnsaved diffs
+	// the dirty flag once per loop pass and spends the slot-53 syscall
+	// only on a transition, never per keystroke.
+	unsavedSent bool
+
 	// lastOutline is the #a11y v1 dedupe: publish spends the RPC only when
 	// the encoded nodes changed since the last accepted write.
 	lastOutline string
@@ -318,6 +323,7 @@ func main() {
 		// is once per pass, the same discipline PollDrag keeps elsewhere.
 		a.ta.PollStateAsk()
 		a.ta.PollDrag()
+		a.syncUnsaved()
 		ev, r, ok := vi.PollEventRaw()
 		if !ok {
 			if r < 0 {
@@ -811,6 +817,17 @@ func (a *app) edit(changed bool) bool {
 		a.dirty = true
 	}
 	return changed
+}
+
+// syncUnsaved pushes the dirty bit to the window's slot-53 unsaved flag —
+// the rail dot and the seat's close-time Reopen toast read the kind-20
+// mirror it fans. The diff latch keeps the syscall off the keystroke path.
+func (a *app) syncUnsaved() {
+	if a.dirty == a.unsavedSent || a.ta == nil {
+		return
+	}
+	a.unsavedSent = a.dirty
+	vi.WinSetUnsaved(a.ta.Win, a.dirty)
 }
 
 // isSave reports whether the event is the Ctrl-S chord. Both spellings of 's'

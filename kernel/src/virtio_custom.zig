@@ -890,12 +890,18 @@ pub const input_kind_keyboard: u8 = 1;
 pub const input_kind_pointer: u8 = 2;
 pub const input_kind_console_ctrl: u8 = 3;
 pub const input_kind_snapshot_req: u8 = 4;
+/// M216k (#3950): scroll-wheel input message — 8-byte payload
+/// [x_lo, x_hi, y_lo, y_hi, dy_lo, dy_hi, dx_lo, dx_hi] (HID absolute
+/// 0..32767 coords + signed LE16 line deltas; positive dy = down, dx = right).
+pub const input_kind_wheel: u8 = 5;
 /// Kind-1 payload length: the raw HID keyboard boot report.
 pub const input_keyboard_rep_len: usize = 8;
 /// Kind-2 payload length: the raw absolute-pointer report
 /// [buttons, x_lo, x_hi, y_lo, y_hi] — the same shape the XHCI pointer's
 /// interrupt-IN reports decode from (coords are HID absolute 0..32767).
 pub const input_pointer_rep_len: usize = 5;
+/// Kind-5 payload length: [x_lo, x_hi, y_lo, y_hi, dy_lo, dy_hi, dx_lo, dx_hi].
+pub const input_wheel_rep_len: usize = 8;
 /// Kind-3 payload length: one control byte (bit0 = console-tee enable).
 pub const input_ctrl_rep_len: usize = 1;
 /// Kind-4 payload length: the snapshot request is empty.
@@ -915,6 +921,8 @@ pub var input_armed: bool = false;
 pub var input_rx_count: u32 = 0;
 /// Kind-2 pointer messages consumed and dispatched (claim 9367).
 pub var input_ptr_count: u32 = 0;
+/// Kind-5 wheel messages consumed and dispatched (M216k, #3950).
+pub var input_wheel_count: u32 = 0;
 /// Kind-3 console-control messages consumed (claim 0680).
 pub var input_ctrl_count: u32 = 0;
 /// Malformed messages dropped (bad kind / bad len / short envelope) — the
@@ -930,6 +938,10 @@ pub var on_input_report: ?*const fn (rep: []const u8) void = null;
 /// the exact path an XHCI pointer report takes (`dui` click-to-focus,
 /// cursor moves, `input` ptr-* counters). Null = count-only.
 pub var on_pointer_report: ?*const fn (rep: []const u8) void = null;
+/// M216k (#3950): the wheel decode hook — main.zig wires it to
+/// cv_wheel_dispatch (input.decode_wheel_report -> driving_award.dispatch_wheel).
+/// Null = count-only.
+pub var on_wheel_report: ?*const fn (rep: []const u8) void = null;
 
 /// Pre-arm the receive pool on queue 3 and kick once. Returns true when all
 /// EIGHT buffers are posted; false when the transport/queue is unavailable
@@ -1002,6 +1014,14 @@ fn dispatch_input_msg(msg: []const u8) void {
             input_rx_count += 1;
             snap_pending = true; // serviced from the idle seam, never inline
             snap_defer_count = 0;
+        },
+        input_kind_wheel => {
+            if (len != input_wheel_rep_len or msg.len < 4 + len) {
+                input_bad_count += 1;
+                return;
+            }
+            input_wheel_count += 1;
+            if (on_wheel_report) |hook| hook(msg[4 .. 4 + len]);
         },
         else => {
             input_bad_count += 1;
@@ -2136,6 +2156,56 @@ test "virtio_custom: kind-2 pointer messages dispatch through the pointer hook (
     try std.testing.expectEqual(@as(u32, 2), input_ptr_count);
     try std.testing.expectEqual(@as(usize, 1), test_ptr_calls);
     input_ptr_count = 0;
+    input_bad_count = 0;
+}
+
+test "virtio_custom: kind-5 wheel messages dispatch through the wheel hook (M216k)" {
+    const S = struct {
+        var calls: usize = 0;
+        var last_len: usize = 0;
+        var last_dy_lo: u8 = 0;
+        fn hook(rep: []const u8) void {
+            calls += 1;
+            last_len = rep.len;
+            if (rep.len >= 5) last_dy_lo = rep[4];
+        }
+    };
+    var msg: [input_msg_len]u8 align(16) = @splat(0);
+    const rep = [input_wheel_rep_len]u8{ 0x00, 0x40, 0x00, 0x40, 0x03, 0x00, 0x00, 0x00 };
+    msg[0] = input_kind_wheel;
+    msg[1] = 0;
+    msg[2] = @intCast(input_wheel_rep_len & 0xff);
+    msg[3] = 0;
+    @memcpy(msg[4 .. 4 + input_wheel_rep_len], &rep);
+
+    on_wheel_report = &S.hook;
+    defer on_wheel_report = null;
+    S.calls = 0;
+    S.last_len = 0;
+    S.last_dy_lo = 0;
+    input_wheel_count = 0;
+    input_bad_count = 0;
+
+    dispatch_input_msg(&msg);
+    try std.testing.expectEqual(@as(u32, 1), input_wheel_count);
+    try std.testing.expectEqual(@as(u32, 0), input_bad_count);
+    try std.testing.expectEqual(@as(usize, 1), S.calls);
+    try std.testing.expectEqual(@as(usize, 8), S.last_len);
+    try std.testing.expectEqual(@as(u8, 0x03), S.last_dy_lo);
+
+    // Wrong payload length is rejected, never partially decoded.
+    msg[2] = 5;
+    dispatch_input_msg(&msg);
+    try std.testing.expectEqual(@as(u32, 1), input_bad_count);
+    try std.testing.expectEqual(@as(u32, 1), input_wheel_count);
+
+    // Null hook still counts validly.
+    on_wheel_report = null;
+    msg[2] = @intCast(input_wheel_rep_len & 0xff);
+    dispatch_input_msg(&msg);
+    try std.testing.expectEqual(@as(u32, 2), input_wheel_count);
+    try std.testing.expectEqual(@as(usize, 1), S.calls);
+    input_wheel_count = 0;
     input_bad_count = 0;
 }
 

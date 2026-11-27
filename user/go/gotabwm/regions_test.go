@@ -18,7 +18,7 @@ func (f *regionFixture) install(t *testing.T) {
 	t.Helper()
 	oldTabs, oldBind := tabs, rpcBindings
 	oldXY, oldRects := surfaceXY, gpu3dRects
-	oldDrag, oldGhost := drag, dragGhostPainted
+	oldDrag, oldGhost := drag, dragGhostReceipt
 	oldSash, oldSashNode, oldRail := sashDragging, sashDragNode, railDragFrom
 	oldLaunch, oldPower, oldRailMenu := launch, powerMenuOpen, railMenuOpen
 	oldSecret, oldClip := secretAskModal, clipMenuOpen
@@ -27,7 +27,7 @@ func (f *regionFixture) install(t *testing.T) {
 	t.Cleanup(func() {
 		tabs, rpcBindings = oldTabs, oldBind
 		surfaceXY, gpu3dRects = oldXY, oldRects
-		drag, dragGhostPainted = oldDrag, oldGhost
+		drag, dragGhostReceipt = oldDrag, oldGhost
 		sashDragging, sashDragNode, railDragFrom = oldSash, oldSashNode, oldRail
 		launch, powerMenuOpen, railMenuOpen = oldLaunch, oldPower, oldRailMenu
 		secretAskModal, clipMenuOpen = oldSecret, oldClip
@@ -37,7 +37,7 @@ func (f *regionFixture) install(t *testing.T) {
 	tabs = TabStrip{}
 	rpcBindings = [256]rpcBinding{}
 	surfaceXY, gpu3dRects = [256]uint32{}, [256]uint32{}
-	drag, dragGhostPainted = dragSession{}, false
+	drag, dragGhostReceipt = dragSession{}, presentReceipt{}
 	sashDragging, sashDragNode, railDragFrom = false, -1, -1
 	launch, powerMenuOpen, railMenuOpen = launcherState{}, false, false
 	secretAskModal, clipMenuOpen = secretAsk{}, false
@@ -72,6 +72,7 @@ func regionReq(id uint32, slot uint8, shape uint64, x, y, w, h uint16) vi.WmRpc 
 }
 
 func TestRegionDeclareStoresAndClears(t *testing.T) {
+	resetSeatForTest(t)
 	f := &regionFixture{}
 	f.install(t)
 	f.hostTab(5, "GOEDIT.ELF", 0, 0, 1280, 720)
@@ -100,6 +101,7 @@ func TestRegionDeclareStoresAndClears(t *testing.T) {
 }
 
 func TestRegionDeclareRefusals(t *testing.T) {
+	resetSeatForTest(t)
 	f := &regionFixture{}
 	f.install(t)
 	f.hostTab(5, "GOEDIT.ELF", 0, 0, 1280, 720)
@@ -132,6 +134,7 @@ func TestRegionDeclareRefusals(t *testing.T) {
 }
 
 func TestRegionPickFollowsTheDeclaredZone(t *testing.T) {
+	resetSeatForTest(t)
 	f := &regionFixture{}
 	f.install(t)
 	f.hostTab(5, "GOEDIT.ELF", 0, 0, 1280, 720)
@@ -160,6 +163,7 @@ func TestRegionPickFollowsTheDeclaredZone(t *testing.T) {
 }
 
 func TestRegionPickTranslatesPaneOrigin(t *testing.T) {
+	resetSeatForTest(t)
 	f := &regionFixture{}
 	f.install(t)
 	// A split's second pane: the window sits at (660,0), so a sample at
@@ -183,6 +187,7 @@ func TestRegionPickTranslatesPaneOrigin(t *testing.T) {
 }
 
 func TestRegionPickYieldsToSeatOwnership(t *testing.T) {
+	resetSeatForTest(t)
 	f := &regionFixture{}
 	f.install(t)
 	f.hostTab(5, "GOEDIT.ELF", 0, 0, 1280, 720)

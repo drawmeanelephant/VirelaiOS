@@ -75,6 +75,7 @@ func wqQueryReq(winID uint8, start int) vi.WmRpc {
 }
 
 func TestServeWindowsQueryPages(t *testing.T) {
+	resetSeatForTest(t)
 	const auth = 0xbeef
 	for _, tc := range []struct {
 		name      string
@@ -139,6 +140,7 @@ func wqRowTail(m vi.WmRpc) string {
 }
 
 func TestServeWindowsQueryFlagsAndTitle(t *testing.T) {
+	resetSeatForTest(t)
 	stageTabs(t, []wqTab{
 		{id: 10, title: "Calc"},
 		{id: 11, title: "PinnedTab", pinned: true},
@@ -176,6 +178,7 @@ func TestServeWindowsQueryFlagsAndTitle(t *testing.T) {
 // A failed send ends the page without a retry (D5): the client budget,
 // not the seat, owns the timeout.
 func TestServeWindowsQuerySendFailureEndsPage(t *testing.T) {
+	resetSeatForTest(t)
 	stageTabs(t, wqTabs(8))
 	frames := captureWqSend(t, 2) // the third send fails
 	serveWindowsQuery(wqQueryReq(5, 0), 0xbeef)
@@ -186,6 +189,7 @@ func TestServeWindowsQuerySendFailureEndsPage(t *testing.T) {
 
 // No reply_to means nowhere to answer — the query is dropped, not sent.
 func TestServeWindowsQueryNoReplyTo(t *testing.T) {
+	resetSeatForTest(t)
 	stageTabs(t, wqTabs(2))
 	frames := captureWqSend(t, -1)
 	serveWindowsQuery(vi.WmRpc{Kind: wmKindWindowsQuery, ID: 5, Seq: 1, ReplyTo: 0}, 0xbeef)
@@ -199,6 +203,7 @@ func TestServeWindowsQueryNoReplyTo(t *testing.T) {
 // pid or token is refused plainly; only the bound owner's frames carry
 // rows — each quoting Pad=Bound + the session token.
 func TestServiceRPCGatesWindowsQuery(t *testing.T) {
+	resetSeatForTest(t)
 	stageTabs(t, wqTabs(2))
 	ownerTitle := ""
 	stubAuthSeams(t, func(id uint8) (string, bool) {
@@ -283,6 +288,7 @@ func TestServiceRPCGatesWindowsQuery(t *testing.T) {
 // A kind-16 frame with the reply bit set is an ack, not a request — the
 // seat must not answer its own replies.
 func TestServiceRPCSkipsWindowsQueryAck(t *testing.T) {
+	resetSeatForTest(t)
 	stageTabs(t, wqTabs(1))
 	req := vi.WmRpc{Kind: wmKindWindowsQuery | vi.WmRpcReplyFlag, ID: 0,
 		Seq: 1, ReplyTo: 3}

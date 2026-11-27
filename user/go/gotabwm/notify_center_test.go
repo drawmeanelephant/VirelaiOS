@@ -10,6 +10,7 @@ import (
 )
 
 func TestNotifyCenterKeepsHistoryAfterToastExpires(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	notifyPush(7, "saved report", 10)
 	notifyTick(10 + NotifyTicks)
@@ -22,10 +23,10 @@ func TestNotifyCenterKeepsHistoryAfterToastExpires(t *testing.T) {
 }
 
 func TestNotifyCenterMarksDeadSourcesAndDoesNotRelinkReusedIDs(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	oldTabs := tabs
 	t.Cleanup(func() { tabs = oldTabs })
-	tabs = TabStrip{}
 	tabs.OpenTab(7, "Files")
 	notifyPush(7, "copied item", 0)
 	if got := notifyCenter[0].source; got != "Files" {
@@ -42,6 +43,7 @@ func TestNotifyCenterMarksDeadSourcesAndDoesNotRelinkReusedIDs(t *testing.T) {
 }
 
 func TestNotifyCenterDismissAndClearRemoveMatchingToasts(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	notifyPush(4, "first", 0)
 	notifyPush(5, "second", 0)
@@ -63,6 +65,7 @@ func TestNotifyCenterDismissAndClearRemoveMatchingToasts(t *testing.T) {
 }
 
 func TestNotifyCenterBoundKeepsNewestHistory(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	for i := 0; i < NotifyCenterMax+2; i++ {
 		notifyPush(uint32(i+1), "item", uint64(i))
@@ -79,6 +82,7 @@ func TestNotifyCenterBoundKeepsNewestHistory(t *testing.T) {
 }
 
 func TestNotifyCenterPaintIsBoundedAndPaintMarkerFollowsPresentation(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	notifyPush(4, "center test", 0)
 	notifyCenterOpen = true
@@ -116,6 +120,7 @@ func TestNotifyCenterPaintIsBoundedAndPaintMarkerFollowsPresentation(t *testing.
 }
 
 func TestNotifyCenterClockClickOpensAndOutsideClickCloses(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	x, y, w, h := chromeRect(vi.ScanoutWidth, vi.ScanoutHeight)
 	if !notifyCenterClick(uint32(x+w/2), uint32(y+h/2)) || !notifyCenterOpen {
@@ -127,6 +132,7 @@ func TestNotifyCenterClockClickOpensAndOutsideClickCloses(t *testing.T) {
 }
 
 func TestNotifyCenterMotionDoesNotReachContent(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	savedTabs := tabs
 	savedForward := forwardContentPointer
@@ -146,7 +152,6 @@ func TestNotifyCenterMotionDoesNotReachContent(t *testing.T) {
 		contentDown = savedContent
 		launch = savedLaunch
 	})
-	tabs = TabStrip{}
 	notifyCenterOpen = true
 	prevPtrButtons = 0
 	railDragFrom = -1
@@ -177,6 +182,7 @@ func TestNotifyCenterMotionDoesNotReachContent(t *testing.T) {
 }
 
 func TestNotifyCenterRowDismissAndClearAllControls(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	notifyPush(4, "first", 0)
 	notifyPush(5, "second", 0)
@@ -202,10 +208,10 @@ func TestNotifyCenterRowDismissAndClearAllControls(t *testing.T) {
 }
 
 func TestNotifyCenterFocusFailureLatchesClosedSource(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	oldTabs := tabs
 	t.Cleanup(func() { tabs = oldTabs })
-	tabs = TabStrip{}
 	tabs.OpenTab(9, "Report")
 	notifyPush(9, "finished", 0)
 	notifyCenterOpen = true
@@ -232,6 +238,7 @@ func TestNotifyCenterFocusFailureLatchesClosedSource(t *testing.T) {
 // spot centred in the body band with its caption; an absent asset keeps
 // the caption-only degrade.
 func TestNotifyCenterEmptyPaintsStagedSpot(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	art.Reset()
 	defer art.Reset()
@@ -275,6 +282,7 @@ func TestNotifyCenterEmptyPaintsStagedSpot(t *testing.T) {
 // #3348 (#1250): the crash-snap offer's centre row carries the staged
 // oops pose at its left, the row's text yielding it the room.
 func TestCrashOfferRowPaintsMascot(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	art.Reset()
 	defer art.Reset()
@@ -311,6 +319,7 @@ func TestCrashOfferRowPaintsMascot(t *testing.T) {
 // room. The pose drops with the operation: a pct-100 row keeps the
 // pre-card layout, and an absent asset never paints.
 func TestProgressRowPaintsBusyMascot(t *testing.T) {
+	resetSeatForTest(t)
 	resetNotify(t)
 	art.Reset()
 	defer art.Reset()

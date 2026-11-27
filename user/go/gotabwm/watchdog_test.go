@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"virelai/theme"
 	"virelai/vi"
 )
 
@@ -98,6 +99,7 @@ func answer(id uint8) { watchdogNoteAnswer(id) }
 // TestWatchdogDiscoveryAsk: a fresh bound pane gets exactly one discovery
 // ask, on the first heartbeat that sees it.
 func TestWatchdogDiscoveryAsk(t *testing.T) {
+	resetSeatForTest(t)
 	f := &stateFixture{}
 	f.install(t)
 	w := &wdFixture{}
@@ -126,6 +128,7 @@ func TestWatchdogDiscoveryAsk(t *testing.T) {
 // pool; two consecutive unanswered asks wedge it, and the marker names
 // the window, the app and the round count.
 func TestWatchdogSweepRounds(t *testing.T) {
+	resetSeatForTest(t)
 	f := &stateFixture{}
 	f.install(t)
 	w := &wdFixture{}
@@ -162,6 +165,7 @@ func TestWatchdogSweepRounds(t *testing.T) {
 // prints the recovered line — silently, meaning no re-wedge on the answer
 // itself and the round counter reset.
 func TestWatchdogRecovery(t *testing.T) {
+	resetSeatForTest(t)
 	f := &stateFixture{}
 	f.install(t)
 	w := &wdFixture{}
@@ -188,6 +192,7 @@ func TestWatchdogRecovery(t *testing.T) {
 // not a modulo — a batched heartbeat step over a %10 boundary still earns
 // its round.
 func TestWatchdogTickCadence(t *testing.T) {
+	resetSeatForTest(t)
 	f := &stateFixture{}
 	f.install(t)
 	w := &wdFixture{}
@@ -218,6 +223,7 @@ func TestWatchdogTickCadence(t *testing.T) {
 // a below-threshold sample clears it, and losing focus freezes the
 // streak where it stood.
 func TestWatchdogBusyArm(t *testing.T) {
+	resetSeatForTest(t)
 	f := &stateFixture{}
 	f.install(t)
 	w := &wdFixture{}
@@ -269,6 +275,7 @@ func TestWatchdogBusyArm(t *testing.T) {
 // protocol is the liveness arm's problem — the busy sampler never scores
 // it, hot or not.
 func TestWatchdogBusyNeedsProtocolLess(t *testing.T) {
+	resetSeatForTest(t)
 	f := &stateFixture{}
 	f.install(t)
 	w := &wdFixture{}
@@ -293,6 +300,7 @@ func TestWatchdogBusyNeedsProtocolLess(t *testing.T) {
 // the test pins that a point inside a painted button names its verb and
 // a point off the strip names nothing.
 func TestWatchdogLayoutAndHit(t *testing.T) {
+	resetSeatForTest(t)
 	f := &stateFixture{}
 	f.install(t)
 	w := &wdFixture{}
@@ -337,6 +345,7 @@ func TestWatchdogLayoutAndHit(t *testing.T) {
 // TestWatchdogProbeGate: the startup probe reads the seat principal and
 // evaluates the kernel's kill-gate rule for hosted apps.
 func TestWatchdogProbeGate(t *testing.T) {
+	resetSeatForTest(t)
 	f := &stateFixture{}
 	f.install(t)
 	w := &wdFixture{}
@@ -347,12 +356,12 @@ func TestWatchdogProbeGate(t *testing.T) {
 		ok        bool
 		armed     bool
 	}{
-		{vi.UidUser, 0, true, true},                  // same-uid hosted apps
-		{vi.UidUser, wdCapProcAdmin, true, true},     // user + cap
-		{vi.UidAgent, 0, true, true},                 // agent-hosted apps
-		{vi.UidSystem, wdCapProcAdmin, true, true},   // admin reaches all
-		{vi.UidSystem, 0, true, false},               // system w/o cap: nothing hosted
-		{0, 0, false, false},                         // no identity: fail closed
+		{vi.UidUser, 0, true, true},                // same-uid hosted apps
+		{vi.UidUser, wdCapProcAdmin, true, true},   // user + cap
+		{vi.UidAgent, 0, true, true},               // agent-hosted apps
+		{vi.UidSystem, wdCapProcAdmin, true, true}, // admin reaches all
+		{vi.UidSystem, 0, true, false},             // system w/o cap: nothing hosted
+		{0, 0, false, false},                       // no identity: fail closed
 	}
 	for _, c := range cases {
 		w.uid, w.caps, w.prinOK = c.uid, c.caps, c.ok
@@ -362,8 +371,8 @@ func TestWatchdogProbeGate(t *testing.T) {
 				c.uid, c.caps, c.ok, wdKillOK, c.armed)
 		}
 	}
-	if !w.hasLog(MarkerWatchdogForceQuit + "armed") ||
-		!w.hasLog(MarkerWatchdogForceQuit + "off") {
+	if !w.hasLog(MarkerWatchdogForceQuit+"armed") ||
+		!w.hasLog(MarkerWatchdogForceQuit+"off") {
 		t.Fatalf("probe verdict lines: %v", f.logs)
 	}
 }
@@ -372,6 +381,7 @@ func TestWatchdogProbeGate(t *testing.T) {
 // and names how=close, Force arms sys_kill on the bound pid — and a
 // refused kill is reported, never claimed.
 func TestWatchdogPressVerbs(t *testing.T) {
+	resetSeatForTest(t)
 	f := &stateFixture{}
 	f.install(t)
 	w := &wdFixture{}
@@ -411,14 +421,14 @@ func TestWatchdogPressVerbs(t *testing.T) {
 	if len(w.kills) != 1 || w.kills[0] != 33 {
 		t.Fatalf("kill = %v", w.kills)
 	}
-	if !wdKilled[11] || !w.hasLog(MarkerWatchdogClosed + "id=11 how=kill") {
+	if !wdKilled[11] || !w.hasLog(MarkerWatchdogClosed+"id=11 how=kill") {
 		t.Fatalf("kill arm: killed=%v logs=%v", wdKilled[11], f.logs)
 	}
 	// A refused kill reports the errno and latches nothing.
 	openBoundTab(t, 12, 44, "Stubborn")
 	w.killRC = -vi.ErrEACCES
 	watchdogPress(12, wdActForce)
-	if wdKilled[12] || !w.hasLog(MarkerWatchdogRefused + "id=12 how=kill err=EACCES") {
+	if wdKilled[12] || !w.hasLog(MarkerWatchdogRefused+"id=12 how=kill err=EACCES") {
 		t.Fatalf("refused kill: killed=%v logs=%v", wdKilled[12], f.logs)
 	}
 	// Probe off: the verb is unreachable — a stray dispatch is a no-op
@@ -434,6 +444,7 @@ func TestWatchdogPressVerbs(t *testing.T) {
 // TestWatchdogDropClears: teardown forgets every bit — a reused window id
 // is never born wedged, never holds a dead app's kill latch.
 func TestWatchdogDropClears(t *testing.T) {
+	resetSeatForTest(t)
 	f := &stateFixture{}
 	f.install(t)
 	w := &wdFixture{}
@@ -456,6 +467,7 @@ func TestWatchdogDropClears(t *testing.T) {
 // queue a restart. Pinned at the seatCrashStatus level: the window's
 // bound owner exits 137 and the row still does not read as a crash.
 func TestWatchdogKillSuppressesCrashArm(t *testing.T) {
+	resetSeatForTest(t)
 	f := &stateFixture{}
 	f.install(t)
 	w := &wdFixture{}
@@ -475,5 +487,100 @@ func TestWatchdogKillSuppressesCrashArm(t *testing.T) {
 	// test pins — the mirror path reads it before seatCrashStatus's arm.
 	if !wdKilled[9] {
 		t.Fatal("kill latch cleared early")
+	}
+}
+
+// M216f (#3945): paint order must match pointer order — a flagged pane's
+// banner loses pixels to an open modal menu over it. The power menu sits
+// bottom-right; a horizontal split dragged to its sash floor puts the
+// bottom pane's banner strip across the menu's top edge, so the overlap
+// is real pixels, not a mocked layer order.
+func TestWatchdogBannerPaintsUnderPowerMenu(t *testing.T) {
+	resetSeatForTest(t)
+	defer saveSeatState()()
+	f := &wdFixture{}
+	f.install(t)
+	// The rest of the frame must be deterministic: no toasts, center,
+	// ghost, veil, or stray modal may paint over the overlap.
+	oldSecret, oldClip := secretAskModal, clipMenuOpen
+	oldRailMenu := railMenuOpen
+	oldCenterOpen, oldQueue, oldCenter := notifyCenterOpen, notifyQueue, notifyCenter
+	oldDrag, oldGhost := drag, dragGhostReceipt
+	oldLock, oldIdle := lockActive, idleState
+	oldRestart, oldDirty := crashRestartPending, notifyHistDirty
+	oldTheme := theme.Current
+	sashDragNode = -1
+	t.Cleanup(func() {
+		secretAskModal, clipMenuOpen = oldSecret, oldClip
+		railMenuOpen = oldRailMenu
+		notifyCenterOpen, notifyQueue, notifyCenter = oldCenterOpen, oldQueue, oldCenter
+		drag, dragGhostReceipt = oldDrag, oldGhost
+		lockActive, idleState = oldLock, oldIdle
+		crashRestartPending, notifyHistDirty = oldRestart, oldDirty
+		theme.Current = oldTheme
+	})
+	secretAskModal, clipMenuOpen, railMenuOpen = secretAsk{}, false, false
+	notifyCenterOpen, notifyQueue, notifyCenter = false, nil, nil
+	drag, dragGhostReceipt = dragSession{}, presentReceipt{}
+	lockActive, idleState = false, idleActive
+	crashRestartPending, notifyHistDirty = false, false
+	theme.Current = theme.Dark
+
+	tabs = TabStrip{}
+	if !tabs.OpenTab(3, "Top") || !tabs.OpenTab(4, "Bottom") {
+		t.Fatal("OpenTab")
+	}
+	if !tabs.SplitH() {
+		t.Fatal("SplitH")
+	}
+	// The sash floor leaves the bottom pane 120 px tall with its top at
+	// y=600 — the banner strip (600-623) crosses the power menu's top
+	// rows (622-687) for real overlap pixels.
+	if !tabs.SetSash(597, uint32(vi.ScanoutWidth), uint32(vi.ScanoutHeight)) {
+		t.Fatal("SetSash")
+	}
+	var bottom uint32
+	var maxY uint32
+	for i := 0; i < tabs.Count(); i++ {
+		id := tabs.At(i).ID
+		r, _ := tabs.rectOf(id, uint32(vi.ScanoutWidth), uint32(vi.ScanoutHeight))
+		if r.Y >= maxY {
+			maxY, bottom = r.Y, id
+		}
+	}
+	if bottom == 0 || maxY != 600 {
+		t.Fatalf("bottom pane = id %d y %d, want the sash-floor pane at y=600", bottom, maxY)
+	}
+	wdWedged[bottom] = true
+	powerMenuOpen = true
+
+	scan := make([]byte, vi.ScanoutWidth*vi.ScanoutHeight*4)
+	presents := 0
+	compositePaint(scan, 1, &presents)
+
+	px := func(x, y int) uint32 {
+		i := (y*vi.ScanoutWidth + x) * 4
+		return uint32(scan[i]) | uint32(scan[i+1])<<8 | uint32(scan[i+2])<<16 | uint32(scan[i+3])<<24
+	}
+	opaque := func(rgb uint32) uint32 { return 0xff000000 | rgb }
+
+	mx, my, mw, mh := powerMenuRect(vi.ScanoutWidth, vi.ScanoutHeight)
+	strip, _, _, _ := watchdogLayout(bottom, vi.ScanoutWidth, vi.ScanoutHeight)
+	oy0, oy1 := max(my, strip.Y), min(my+mh, strip.Y+strip.H)
+	if oy1 <= oy0 {
+		t.Fatalf("no banner/menu overlap: menu y %d-%d strip y %d-%d",
+			my, my+mh, strip.Y, strip.Y+strip.H)
+	}
+	// Sanity: the banner painted — its plate fill shows outside the menu.
+	if got := px(strip.X+strip.W/2, strip.Y+2); got != opaque(theme.Current.Surface) {
+		t.Fatalf("banner plate pixel = %#x want surface %#x", got, opaque(theme.Current.Surface))
+	}
+	// The menu's top border row inside the overlap is the menu's Rule
+	// ink — a banner painted last would leave its Surface fill there.
+	for x := mx + 8; x < mx+mw-8; x++ {
+		if got := px(x, my); got != opaque(theme.Current.Rule) {
+			t.Fatalf("overlap pixel (%d,%d) = %#x want menu rule %#x — banner painted over the menu",
+				x, my, got, opaque(theme.Current.Rule))
+		}
 	}
 }
