@@ -441,7 +441,7 @@ func Mul(a, b int) int {
 	if rc != 0 || len(logs) != 4 {
 		t.Fatalf("unexpected status output: rc=%d logs=%v", rc, logs)
 	}
-	if logs[0] != "flint: status ws=w stream=main atoms=3 staged=3 add=3 modify=0 delete=0 duplicates=0" {
+	if logs[0] != "flint: status ws=w stream=main atoms=3 staged=3 add=3 modify=0 delete=0 move=0 rename=0 duplicates=0" {
 		t.Fatalf("unexpected status header: %s", logs[0])
 	}
 
@@ -479,7 +479,7 @@ func TestDiffGroupsStagedOpsByFile(t *testing.T) {
 	// Four staged adds in one file: header + per-op lines sorted by name.
 	rc, logs := h.runCmd("diff")
 	want := []string{
-		"flint: diff ws=w stream=main files=1 staged=4 add=4 modify=0 delete=0",
+		"flint: diff ws=w stream=main files=1 staged=4 add=4 modify=0 delete=0 move=0 rename=0",
 		"flint: diff add go/sample.go sample.Add",
 		"flint: diff add go/sample.go sample.Answer",
 		"flint: diff add go/sample.go sample.Mul",
@@ -494,7 +494,7 @@ func TestDiffGroupsStagedOpsByFile(t *testing.T) {
 		t.Fatal("commit failed")
 	}
 	rc, logs = h.runCmd("diff")
-	if rc != 0 || len(logs) != 1 || logs[0] != "flint: diff ws=w stream=main files=0 staged=0 add=0 modify=0 delete=0" {
+	if rc != 0 || len(logs) != 1 || logs[0] != "flint: diff ws=w stream=main files=0 staged=0 add=0 modify=0 delete=0 move=0 rename=0" {
 		t.Fatalf("unexpected clean diff: rc=%d logs=%v", rc, logs)
 	}
 
@@ -538,7 +538,7 @@ func Mul(a, b int) int {
 
 	rc, logs = h.runCmd("diff")
 	want = []string{
-		"flint: diff ws=w stream=main files=2 staged=7 add=0 modify=1 delete=6",
+		"flint: diff ws=w stream=main files=2 staged=7 add=0 modify=1 delete=6 move=0 rename=0",
 		"flint: diff modify go/sample.go sample.Add",
 		"flint: diff delete zig/gone.zig gone.Point",
 		"flint: diff delete zig/gone.zig gone.add",
