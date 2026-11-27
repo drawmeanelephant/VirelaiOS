@@ -110,6 +110,7 @@ const virtio_gpu = @import("virtio_gpu.zig");
 const alloc = @import("alloc.zig"); // #3899: the snapshot stage's page-pool pages
 const spinlock = @import("spinlock.zig"); // #990 (claim #997): the console tee's TX lock
 const klog = @import("klog.zig"); // snap completion receipt (run-03 serialization anchor)
+const timer = @import("timer.zig"); // #3913: the wall-time backstop on a request's wait for its frame
 
 const VirtqDesc = extern struct {
     addr: u64,
@@ -988,6 +989,8 @@ fn dispatch_input_msg(msg: []const u8) void {
                 return;
             }
             input_rx_count += 1;
+            // #3913: an in-flight report keeps a pending snapshot waiting.
+            snap_input_ctr = timer.cntpct();
             if (on_input_report) |hook| hook(msg[4 .. 4 + len]);
         },
         input_kind_pointer => {
@@ -996,6 +999,8 @@ fn dispatch_input_msg(msg: []const u8) void {
                 return;
             }
             input_ptr_count += 1;
+            // #3913: same quiet window as keyboard input.
+            snap_input_ctr = timer.cntpct();
             if (on_pointer_report) |hook| hook(msg[4 .. 4 + len]);
         },
         input_kind_console_ctrl => {
@@ -1012,8 +1017,12 @@ fn dispatch_input_msg(msg: []const u8) void {
                 return;
             }
             input_rx_count += 1;
-            snap_pending = true; // serviced from the idle seam, never inline
-            snap_defer_count = 0;
+            // Armed here, streamed by the idle-pass/console seams. The arm
+            // stamps are the wall-clock origin of the settle wait and the
+            // publish count a capture must beat.
+            snap_arm_ctr = timer.cntpct();
+            snap_arm_presents = if (snap_presents_hook) |pushed| pushed() else 0;
+            snap_pending = true;
         },
         input_kind_wheel => {
             if (len != input_wheel_rep_len or msg.len < 4 + len) {
@@ -1435,10 +1444,11 @@ fn tee_send_line(line_bytes: []const u8) bool {
 /// The tee's own TX staging (BSS — runtime address discipline, claim 0015).
 var tee_tx_buf: [tee_line_cap]u8 align(16) = undefined;
 
-/// #1757: the snapshot stream's TX lock — the idle pass and the console
-/// reader both service kind-4 requests now, and the framing buffers plus
-/// `cv_scatter` are shared BSS. Same IRQ-save discipline as `tee_tx_lock`
-/// (a chunk submit spins on the host's OK ack, so holders run bounded).
+/// #1757/#3913: the snapshot stream's TX lock — the shell drain seam and
+/// the console reader both service kind-4 requests, and the framing
+/// buffers plus `cv_scatter` are shared BSS. Same IRQ-save discipline as
+/// `tee_tx_lock` (a chunk submit spins on the host's OK ack, so holders
+/// run bounded).
 var snap_tx_lock = spinlock.IrqSaveSpinlock{};
 
 // ---------------------------------------------------------------------------
@@ -1469,20 +1479,47 @@ pub const snap_tag_done: u8 = 0x03;
 /// scanout. Small enough for one descriptor per part, large enough that
 /// the round trips do not dominate.
 pub const snap_chunk_len: usize = 32768;
-/// True while a kind-4 request waits for the idle seam (set by
+/// True while a kind-4 request waits for a seam that can stream it (set by
 /// dispatch_input_msg, consumed by service_snapshot).
 pub var snap_pending: bool = false;
-/// #3731: passes a request has stayed armed waiting for pending window
-/// damage to reach the scene — bounded by snap_defer_max.
-var snap_defer_count: u32 = 0;
-/// The most idle passes a request defers before streaming anyway: an app
-/// present only marks damage and the shell drain composites on its own
-/// cadence, so a request serviced the pass it was armed could ship a
-/// pre-composite frame (the wallpaper-crop signature). 4096 passes is
-/// generous headroom for one drain under fleet load while still
-/// bounding a drain that never comes — degrading to the pre-fix frame,
-/// never a hang.
-pub const snap_defer_max: u32 = 4096;
+/// #3913: the physical-counter stamp at arm time — the wall-clock bound on
+/// how long a request waits for the scene to settle. #3731 counted idle
+/// passes instead, and the idle pump runs thousands of times per second
+/// while an app present is still inside the wm paint path, so that bound
+/// burned out in microseconds and the stream shipped the pre-composite
+/// frame (the dark splash crops on the WEB baseline). A wall clock cannot
+/// be outrun by a faster pump.
+var snap_arm_ctr: u64 = 0;
+/// The longest a request waits for the scene to settle before streaming the
+/// frame at hand. Sized well inside the host's 20 s snapshot-drain hold: a
+/// window fade advances one frame per composite, so the settled frame lands
+/// in tens of milliseconds; a second of no progress means a stuck paint
+/// (seat hold, a scene that never stops animating), where the pre-#3731
+/// frame is still the honest answer.
+pub const snap_defer_max_ns: u64 = 1_000_000_000;
+/// #3913: physical-counter stamp of the last keyboard/pointer report the
+/// guest consumed. A stream that ships while reports are still arriving
+/// captures a state no user saw: live-web boot 02 staged the
+/// post-navigation frame while the pointer sequence's parking move was
+/// still in flight, so the OS cursor was painted over the page title in
+/// the frame the exact-presentation probe graded. The settle wait
+/// therefore also waits out `snap_input_quiet_ns` of input silence.
+var snap_input_ctr: u64 = 0;
+/// #3913: the compositor's present count when the request armed. A capture
+/// must show a frame that a composite PUBLISHED after the request existed —
+/// boot 40's bookmark arm (`web: bookmarks n=2`) printed before the
+/// sidebar paint, so a clean-scene check on its own shipped the previous
+/// page and the graded sidebar plate measured zero pixels. Requiring a
+/// present since the arm is the causal reading of "capture what the paint
+/// produced"; the wall clock still bounds a scene that never paints again.
+var snap_arm_presents: u64 = 0;
+/// Optional present-count probe — set by main.zig to the compositor's
+/// `presents_pushed` so this module reads publish progress without
+/// importing the compositor. null = no publish rule (headless, tests).
+pub var snap_presents_hook: ?*const fn () u64 = null;
+/// How long the stream waits for input silence. Well under
+/// snap_defer_max_ns so the arm bound still governs the total wait.
+pub const snap_input_quiet_ns: u64 = 300_000_000;
 /// #3731: optional "a composite can still change the scene" probe — set
 /// by main.zig to driving_award.composite_pending so the deferral reads
 /// pending window damage without this module importing the compositor
@@ -1615,11 +1652,35 @@ fn snap_submit(parts: []const []const u8) bool {
     return std.mem.eql(u8, snap_ack_buf[0..3], "OK" ++ ":");
 }
 
-/// Stream the whole framebuffer (called from the console reader's idle tick
-/// after poll_input, and — since #1757 — from the scheduler idle pass right
-/// after the drain that armed the request). Two callers on two contexts
-/// means the stream itself needs serializing: the framing buffers and
-/// `cv_scatter` below are shared module BSS. One-shot per kind-4 request;
+/// Nanoseconds since the pending request armed, off the generic timer's own
+/// counter. A timer that was never programmed (`freq == 0`, host tests)
+/// reads as "the bound already expired", so the request ships at once — the
+/// pre-#3731 behavior for boots that have no clock of their own.
+fn snapElapsedNs() u64 {
+    const freq = timer.freq;
+    if (freq == 0) return std.math.maxInt(u64);
+    const delta: u64 = timer.cntpct() -% snap_arm_ctr;
+    const ns = (@as(u128, delta) * std.time.ns_per_s) / freq;
+    return @intCast(@min(ns, std.math.maxInt(u64)));
+}
+
+/// Nanoseconds since the guest last consumed a keyboard/pointer report;
+/// maxInt when no report has arrived since boot (so an idle boot never
+/// waits on the quiet window).
+fn snapInputAgeNs() u64 {
+    if (snap_input_ctr == 0) return std.math.maxInt(u64);
+    const freq = timer.freq;
+    if (freq == 0) return std.math.maxInt(u64);
+    const delta: u64 = timer.cntpct() -% snap_input_ctr;
+    const ns = (@as(u128, delta) * std.time.ns_per_s) / freq;
+    return @intCast(@min(ns, std.math.maxInt(u64)));
+}
+
+/// Stream the whole framebuffer (called from the idle-input pump and the
+/// console reader's idle tick — the request is armed by poll_input, on the
+/// pump, in the same pass). Two callers on two contexts means the stream
+/// itself needs serializing: the framing buffers and `cv_scatter` below are
+/// shared module BSS. One-shot per kind-4 request;
 /// failures increment `snap_fail_count` and end the stream early — the
 /// host-side assembly reports what it got.
 pub fn service_snapshot() void {
@@ -1634,22 +1695,28 @@ pub fn service_snapshot() void {
     // fail-counter movement (the request the winner is streaming is the
     // same one).
     if (!snap_pending) return;
-    // #3731: hold the request while a composite can still change the
-    // scene — shipping now would stream the pre-composite frame (the
-    // wallpaper-crop signature): the app present only marked damage and
-    // the shell drain composites on its own cadence while this service
-    // rides the scheduler idle pass. Bounded so a drain that never comes
-    // degrades to the pre-fix frame instead of hanging the stream.
-    if (snap_defer_count < snap_defer_max) {
-        if (snap_defer_hook) |pending| {
-            if (pending()) {
-                snap_defer_count += 1;
-                return;
+    // #3731/#3913: hold the request while a composite can still change the
+    // scene — pending window damage, a fade mid-phase — or while an input
+    // report is still in flight. The idle pass drains the scene BEFORE this
+    // call, so a still-true predicate means the drain could not settle it
+    // yet (a fade that advances per composite, a seat hold); the next pass
+    // retries. The wall clock is the only bound: pass counts are
+    // meaningless as a delay, because the pump outruns any paint (the
+    // #3913 pre-composite capture), and they are the wrong shape for a
+    // scene whose settle time is a few frames.
+    if (snap_defer_hook) |pending| {
+        if (snapElapsedNs() < snap_defer_max_ns) {
+            // A composite that can still change the scene, or an input
+            // report still in flight, keeps the request waiting.
+            if (pending() or snapInputAgeNs() < snap_input_quiet_ns) return;
+            // And the stream must carry a frame a composite actually
+            // published since the request armed.
+            if (snap_presents_hook) |pushed| {
+                if (pushed() == snap_arm_presents) return;
             }
         }
     }
     snap_pending = false;
-    snap_defer_count = 0;
     if (!cv_ready or !has_snap_queue) {
         snap_fail_count += 1;
         return;
@@ -2318,6 +2385,105 @@ test "virtio_custom: kind-4 snapshot request pends for the idle seam (claim 0680
     dispatch_input_msg(&msg);
     try std.testing.expectEqual(@as(u32, 1), input_bad_count);
     input_bad_count = 0;
+}
+
+test "virtio_custom: a kind-4 request waits for the scene to settle (#3913)" {
+    const Probe = struct {
+        var dirty: bool = false;
+        fn pending() bool {
+            return dirty;
+        }
+    };
+    defer {
+        snap_defer_hook = null;
+        snap_presents_hook = null;
+        timer.freq = 0;
+        snap_pending = false;
+        snap_fail_count = 0;
+        snap_input_ctr = 0;
+        snap_arm_presents = 0;
+    }
+    // One counter unit per nanosecond makes the wall-clock bound exact
+    // (host tests read CNTPCT_EL0 as 0, so the arm stamp IS the origin).
+    timer.freq = 1;
+    snap_defer_hook = Probe.pending;
+    var msg: [input_msg_len]u8 align(16) = undefined;
+    msg[0] = input_kind_snapshot_req;
+    msg[1] = 0;
+    msg[2] = 0;
+    msg[3] = 0;
+    snap_fail_count = 0;
+
+    // A scene that still has damage to compose — a fade mid-phase, an
+    // app's present the drain has not consumed — must NOT ship the
+    // pre-composite scanout.
+    Probe.dirty = true;
+    dispatch_input_msg(&msg);
+    try std.testing.expect(snap_pending);
+    service_snapshot();
+    try std.testing.expect(snap_pending);
+    try std.testing.expectEqual(@as(u32, 0), snap_fail_count);
+
+    // The drain settles the scene: the next pass takes the stream (cv_ready
+    // is false in a host binary, so the attempt is counted as refused).
+    Probe.dirty = false;
+    service_snapshot();
+    try std.testing.expect(!snap_pending);
+    try std.testing.expectEqual(@as(u32, 1), snap_fail_count);
+
+    // #3913: a report that arrived a moment ago keeps the request waiting
+    // even with a clean scene — the frame must include input the user
+    // already delivered (live-web boot 02's parking move was in flight).
+    // Four counts per nanosecond, so one count of silence cannot clear a
+    // 300 ms window.
+    timer.freq = 4_000_000_000;
+    dispatch_input_msg(&msg);
+    snap_input_ctr = timer.cntpct() -% 1;
+    service_snapshot();
+    try std.testing.expect(snap_pending);
+    try std.testing.expectEqual(@as(u32, 1), snap_fail_count);
+
+    // The quiet window elapses (325 ms): the clean scene takes the stream.
+    snap_input_ctr = timer.cntpct() -% 1_300_000_000;
+    service_snapshot();
+    try std.testing.expect(!snap_pending);
+    try std.testing.expectEqual(@as(u32, 2), snap_fail_count);
+    timer.freq = 1;
+
+    // A scene that never settles: the wall-clock bound expires and the
+    // frame at hand ships instead of hanging the stream. A pass-count bound
+    // is what #3731 used, and a fast pump can burn it before any paint.
+    Probe.dirty = true;
+    dispatch_input_msg(&msg);
+    snap_arm_ctr = timer.cntpct() -% snap_defer_max_ns - 1;
+    service_snapshot();
+    try std.testing.expect(!snap_pending);
+    try std.testing.expectEqual(@as(u32, 3), snap_fail_count);
+
+    // #3913: a clean, quiet scene still waits for a frame the compositor
+    // PUBLISHED after the arm — boot 40's bookmark marker prints before the
+    // sidebar paint, so a clean-scene reading alone shipped the previous
+    // page (the graded sidebar plate measured zero pixels).
+    const Pushed = struct {
+        var n: u64 = 0;
+        fn pushed() u64 {
+            return n;
+        }
+    };
+    defer Pushed.n = 0;
+    Probe.dirty = false;
+    snap_input_ctr = timer.cntpct() -% 1_300_000_000; // quiet
+    snap_presents_hook = Pushed.pushed;
+    Pushed.n = 5;
+    dispatch_input_msg(&msg);
+    try std.testing.expectEqual(@as(u64, 5), snap_arm_presents);
+    service_snapshot();
+    try std.testing.expect(snap_pending);
+    try std.testing.expectEqual(@as(u32, 3), snap_fail_count);
+    Pushed.n = 6;
+    service_snapshot();
+    try std.testing.expect(!snap_pending);
+    try std.testing.expectEqual(@as(u32, 4), snap_fail_count);
 }
 
 test "virtio_custom: console tee accumulator buffers, splits, and drops (claim 0680)" {

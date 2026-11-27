@@ -1,0 +1,18 @@
+<!doctype html>
+<html><head><title>Scripted Input Corpus Row</title></head>
+<body>
+<h1>input row</h1>
+<form><input id="q" type="search" value="x"></form>
+<p id="echo"></p>
+<p>the search box starts with the HTML value x; the echo line appears
+only when a real keystroke reaches the registered input listener, and it
+always shows the live edited value rather than the original attribute.</p>
+<script>
+document.getElementById("q").addEventListener("input", function(e) {
+  var v = e.target.value;
+  document.getElementById("echo").textContent = "typed:" + v;
+  console.log("live=" + v);
+});
+console.log("listener=ready");
+</script>
+</body></html>

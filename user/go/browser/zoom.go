@@ -20,6 +20,7 @@ package main
 import (
 	"virelai/settings"
 	"virelai/vi"
+	"virelai/webrender"
 	"virelai/webstyle"
 )
 
@@ -107,7 +108,28 @@ func (a *app) relayout() {
 	if a.pageCancelled || a.quit || a.lay == nil {
 		return
 	}
+	var focusNode *webrender.Node
+	focusEdit := a.controlEdit
+	if a.focusControl != nil {
+		focusNode = a.focusControl.node
+	}
 	a.initForms()
+	// M211d (#3913): a dispatch's writes re-enter this reflow. The focused
+	// control survives by node identity — later keystrokes keep going into
+	// it with no compensating refocus — and its edit buffer rides the live
+	// value, which the input path mirrors into the value attribute. A
+	// script that rewrote the focused value re-seats the edit at that text.
+	if focusNode != nil {
+		for _, c := range a.controls {
+			if c.node == focusNode {
+				a.focusControl = c
+				break
+			}
+		}
+		if a.focusControl != nil && a.focusControl.value != focusEdit.text {
+			a.controlEdit.reset(a.focusControl.value, 256)
+		}
+	}
 	if max := webrenderScrollMax(a); a.scroll > max {
 		a.scroll = max
 	}

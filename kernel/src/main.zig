@@ -133,6 +133,7 @@ const syscall = @import("syscall.zig"); // claim 3594: fixed syscall ABI + runti
 const exec = @import("exec.zig"); // milestone-three card 6: ESP exec — owns the shared rebuild_user_root (claims 2665/3693)
 const process = @import("process.zig"); // M173c (#3044): the receipt uid vocabulary (uid_system on the boot chain)
 const virtio_custom = @import("virtio_custom.zig"); // claim 0828: custom-virtio spike driver (DID 0x1082)
+const wm_server = @import("wm_server.zig"); // #3913: the idle-pass drain yields to a registered WM seat
 const gpu3d_device = @import("gpu3d_device.zig"); // M102b1 (issue #2162): experimental GPU3D channel (DID 0x1083)
 const virtio_file = @import("virtio_file.zig"); // M34 HF1+HF2 (issues #735/#736): host file channel client (queue 5)
 const virtio_fs = @import("virtio_fs.zig"); // M83g: standard VirtioFS/FUSE backend for /host
@@ -1289,6 +1290,9 @@ fn kernel_main(base: u64, size: u64, st: *const SystemTable, handoff_rec: *Hando
     // signature). Unconditional: the hook itself is a pure read and the
     // deferral no-ops when nothing is dirty.
     virtio_custom.snap_defer_hook = driving_award.composite_pending;
+    // #3913: and its publish probe — a capture must carry a frame a
+    // composite actually pushed after the request armed.
+    virtio_custom.snap_presents_hook = cvPresentsPushed;
     var mon = monitor.Monitor.init(
         road_pops.tee_console(),
         .{
@@ -1975,22 +1979,42 @@ var cv_push_ack_buf: [16]u8 align(16) = @as([16]u8, @splat(@as(u8, 0)));
 /// and WM output continued. Bounded and non-blocking: safe in main
 /// context on core 0 between the reap and the idle spin.
 ///
-/// #1757: service the kind-4 snapshot request in the SAME pass that armed
-/// it — this is where claim 0680's "after the input pump" order moved when
-/// the drain moved here. Two observed failures shaped the placement: a
-/// request serviced only from the console reader could sit pending past
-/// the run's end (the shell loop's servicing lagged the burst by seconds
-/// on live-term-depth run 03), and a request serviced WITHOUT the chord
-/// path's synchronous present shipped pre-composite frames. Both are
-/// closed: the hygiene chords composite before their markers print, so
-/// the pixels are on the scanout before the request can even exist, and
-/// this pass streams them the moment the request lands. Bounded: one
-/// stream of ~113 queue-4 exchanges with per-submit timeouts — the same
-/// inline cost the console reader always paid; serialized against the
-/// shell-loop caller by service_snapshot's own lock.
+/// #1757: the kind-4 snapshot request is serviced in the SAME pass that
+/// armed it — this is where claim 0680's "after the input pump" order
+/// moved when the drain moved here. Two observed failures shaped the
+/// placement: a request serviced only from the console reader could sit
+/// pending past the run's end (the shell loop's servicing lagged the burst
+/// by seconds on live-term-depth run 03), and a request serviced WITHOUT
+/// the chord path's synchronous present shipped pre-composite frames.
+/// Both are closed: the hygiene chords composite before their markers
+/// print, so the pixels are on the scanout before the request can even
+/// exist, and the idle pass streams the request right after the drain
+/// above. Bounded: one stream of ~113 queue-4 exchanges with per-submit
+/// timeouts — the same inline cost the console reader always paid;
+/// serialized against the shell-loop caller by service_snapshot's own
+/// lock.
+///
+/// #3913: the wait for a frame that is still in flight is CAUSAL, not
+/// counted. #3731 deferred on a pass counter, and this pass runs whenever
+/// a core idles — thousands of times per second, while the app's present
+/// is still in the wm's paint path. The bound therefore burned out in
+/// microseconds and the stream shipped the pre-composite frame (observed
+/// as the dark splash crops on the WEB baseline); servicing only from the
+/// shell's drain seam instead put the stream after the app had already
+/// exited (live-web boot 40 shipped the bare terminal). service_snapshot
+/// now holds the request until a composite has actually landed since it
+/// armed (`snap_defer_hook` + `snap_presents_hook`), so these idle passes
+/// are cheap probes: the request ships on the first pass after the paint,
+/// and a scene that never presents still degrades to the frame at hand
+/// after a wall-time bound instead of hanging the stream.
+/// #3913: the compositor's publish counter, as the snapshot seam's own
+/// probe type (virtio_custom must not import the compositor).
+fn cvPresentsPushed() u64 {
+    return @intCast(driving_award.presents_pushed());
+}
+
 fn cv_idle_input_pump() void {
     if (virtio_custom.cv_ready and virtio_custom.input_armed) virtio_custom.poll_input();
-    if (virtio_custom.snap_pending) virtio_custom.service_snapshot();
 }
 
 /// M183b (issue #3172): the ONE idle-pass pump — registered
@@ -2000,9 +2024,31 @@ fn cv_idle_input_pump() void {
 /// balloon_poll caps its queue submissions per pass and no-ops while
 /// `bal_ready` is false; the cv half's own `cv_ready`/`snap_pending`
 /// guards keep the flags-off boot a no-op.
+///
+/// #3913: the shim composite drains HERE, not only from the shell idle
+/// loop. A foreground app defers its own presents (`sys_win_present` only
+/// marks the window dirty — the deferred-present discipline), and the
+/// shell loop reaches its idle branch only when its console read returns:
+/// while the shell is parked in the byte read, an app's presents and the
+/// console's own lines sit unpublished (observed on live-web boots 22-38:
+/// zero composites for the whole app lifetime, so the snapshot could only
+/// ship the pre-app scanout, and on boot 40 the shell seam serviced the
+/// request only after the app had already exited). This pass is core-0
+/// main context with no lock held — the documented home for work that
+/// must not depend on the shell — and `drain` is a no-op when the scene
+/// is clean, so the cost is one paint check per idle pass. The shell
+/// loop's own drain stays: it is the tick/tray pump when this one is
+/// busy.
 fn idle_pump() void {
     virtio_balloon.balloon_poll();
     cv_idle_input_pump();
+    // Same seat guard as the shell loop: a registered WM owns the user
+    // layer and publishes its own frames.
+    if (!wm_server.registered()) _ = driving_award.drain(timer.ticks);
+    // Publish any pending kind-4 request AFTER the drain, so the stream
+    // ships the frame that consumed the app's damage (see
+    // virtio_custom.service_snapshot's causal wait).
+    if (virtio_custom.snap_pending) virtio_custom.service_snapshot();
     // Publish staged partials — but NOT the shell's own core-0 kernel
     // stage: this runs on the idle task, which can interleave with a
     // core-0 composition the shell task is still assembling. Core-0

@@ -35,7 +35,7 @@ NOTE.ELF	file,window,memory,process,debug	file,window,memory,process,debug	-
 GOEDIT.ELF	window,memory,process,debug	file,window,memory,process,debug	opens=text,binary handler contract; no file was handed in the audit window
 GOFILES.ELF	window,memory,process,debug	file,window,memory,process,debug	declared caps=file; a file manager whose file ops were unexercised in the audit window is broken under enforce
 GOTERM.ELF	window,memory,process,debug	window,memory,process,debug,term	audit note: GOTERM never reached its term path — the window open fails first under the no-seat shim; a terminal emulator's own word is term
-WEB.ELF	file,window,memory,process,debug,net	file,window,memory,process,debug,net	-
+WEB.ELF	file,window,timer,memory,process,debug,net	file,window,timer,memory,process,debug,net	-
 PULSE.ELF	window,memory,process,debug	file,window,timer,memory,process,debug,term	surface: FileOpen/FileRead + TtyAttach + EvTimer call sites (user/go/pulse)
 GOSH.ELF	file,memory,process,debug	file,memory,process,debug,term	declared caps=file,process,term; audited via -c only — the interactive path was not exercised
 GOHELP.ELF	window,memory,process,debug	file,window,memory,process,debug,term	surface: ReadFileAll for help topics + TtyAttach for the tty pane (user/go/help)
