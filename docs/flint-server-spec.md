@@ -228,8 +228,21 @@ single-writer semantics, preserved. No leases, no locking protocol.
 
 The in-guest daemon serves the same FLINT-SYNC/1 protocol but takes the
 guest CLI: `--store` (default `/host/FLINT`), `--port` (default 4748),
-`--advertise=<NAME>`, `--auth-key=<file>` and `--allow-author=<file>`. It
-has no `init`/`serve` verb; the store must already exist.
+`--advertise=<NAME>`, `--auth-key=<file>`, `--allow-author=<file>` and
+`--idle-exit=<seconds>`. It has no `init`/`serve` verb; the store must
+already exist.
+
+`FLINTD.ELF` is an ordinary supervised service. The kernel's bounded
+accept wait expiring (`ETIMEDOUT`) is a routine idle interval: the
+listener stays live and later connections are served normally. A
+terminal listener error exits non-zero so INIT's `on-failure` policy owns
+recovery; each session keeps its existing bounded recv/IO limits and the
+one-request-in-flight rule. `--idle-exit=<seconds>` (1..3600) is the
+optional bounded CLI-phase lifetime: only when it is set does the daemon
+exit 0 after that many seconds without a served connection
+(`flintd: idle exit seconds=<n>`). It defaults to zero — a persistent
+service that never idle-exits. Staged CLI lifecycles (the hub's four
+bounded phases) pass it explicitly; the shipped INIT row does not.
 
 `--advertise NAME` publishes `NAME._flint._tcp.local` through the shared
 bounded mDNS responder: PTR + SRV + TXT (`txtvers=1`,

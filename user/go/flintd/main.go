@@ -15,9 +15,16 @@
 // the shared bounded mDNS advertiser (M214c, #3920): startup burst, query
 // responder and TTL=0 goodbye on one :5353 owner. HTTPD and FLINTD stage
 // their lifecycles, so a guest never carries two owners.
+//
+// The daemon is a supervised service (M214d, #3921): the kernel's bounded
+// accept wait expiring is a routine idle interval and the listener keeps
+// serving. --idle-exit=<seconds> is the optional bounded CLI-phase
+// lifetime (default zero = persistent); a terminal listener error exits
+// non-zero so INIT's on-failure policy owns recovery.
 package main
 
 import (
+	"errors"
 	"fmt"
 
 	"virelai/flintstore"
@@ -31,10 +38,15 @@ const (
 	protoVersion = "FLINT-SYNC/1"
 	serverName   = "flintd"
 	maxLineBytes = flintstore.MaxLineBytes
+	nsPerSecond  = int64(1000 * 1000 * 1000)
+	maxIdleExitS = int64(3600)
 )
 
 var consoleFn = vi.ConsoleLine
 var exitFn = vi.Exit
+
+// nanosFn is the daemon's monotonic clock; host tests substitute it.
+var nanosFn = vi.Nanos
 
 func main() {
 	cfg, err := parseArgs(cliArgs(vi.Args()))
@@ -102,22 +114,56 @@ func main() {
 	}
 
 	sessCfg := sessionConfig{root: root, authKey: cfg.authKey, allowAuthors: cfg.allowAuthors}
+	// A supervised service is long-lived: the kernel's bounded accept wait
+	// expiring (ETIMEDOUT) is a routine idle interval, not a reason to
+	// exit. Only a configured --idle-exit phase bound, or a terminal
+	// listener error, ends the loop. Sessions stay one at a time and each
+	// keeps its own bounded recv/IO budget.
+	code := 0
+	lastActive := nanosFn()
 	for {
 		child, aerr := ln.AcceptConn()
 		if aerr != nil {
+			retry, idleExit := acceptPlan(aerr, cfg.idleExitS, nanosFn(), lastActive)
+			if retry {
+				continue
+			}
+			if idleExit {
+				consoleFn("flintd: idle exit seconds=" + fmt.Sprint(cfg.idleExitS))
+			} else {
+				consoleFn("flintd: accept failed")
+				code = 1
+			}
 			break
 		}
+		lastActive = nanosFn()
 		consoleFn("flintd: accepted")
 		serveSessionConfig(child, sessCfg, consoleFn)
 		_ = child.Close()
 		consoleFn("flintd: session close")
+		lastActive = nanosFn()
 	}
 	_ = ln.Close()
 	if adv != nil {
 		adv.Stop()
 	}
 	consoleFn("flintd: bye")
-	exitFn(0)
+	exitFn(code)
+}
+
+// acceptPlan classifies one failed AcceptConn. A bounded wait expiry is
+// retried; the optional --idle-exit CLI phase setting ends the process
+// cleanly once no connection has been served for that many seconds. Any
+// other listener error is terminal (exit non-zero so a supervisor's
+// on-failure policy can act instead of silently losing the listener).
+func acceptPlan(err error, idleExitS int64, nowNs, lastActiveNs int64) (retry, idleExit bool) {
+	if !errors.Is(err, vi.ErrConnTimeout) {
+		return false, false
+	}
+	if idleExitS > 0 && nowNs-lastActiveNs >= idleExitS*nsPerSecond {
+		return false, true
+	}
+	return true, false
 }
 
 // cliArgs drops the leading argv[0] spelling the runner/kernel may pass.
@@ -138,20 +184,25 @@ type config struct {
 	advertise       string
 	authKeyPath     string
 	allowAuthorPath string
-	authKey         *[32]byte
-	allowAuthors    map[string]bool
+	// idleExitS is the optional bounded CLI-phase lifetime: exit cleanly
+	// after this many seconds without a served connection. Zero (the
+	// default) is the persistent supervised-service behavior.
+	idleExitS int64
+	authKey   *[32]byte
+
+	allowAuthors map[string]bool
 }
 
 // parseArgs accepts --store=<dir>, --port=<n>, --advertise NAME,
-// --auth-key=<file> and --allow-author=<file>. The advertisement name is
-// validated before either listener binds.
+// --auth-key=<file>, --allow-author=<file> and --idle-exit=<seconds>.
+// The advertisement name is validated before either listener binds.
 func parseArgs(args []string) (config, error) {
 	cfg := config{store: flintstore.DefaultStoreRoot, port: defaultPort}
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch {
 		case a == "--store" || a == "--port" || a == "--advertise" ||
-			a == "--auth-key" || a == "--allow-author":
+			a == "--auth-key" || a == "--allow-author" || a == "--idle-exit":
 			if i+1 >= len(args) {
 				return cfg, flintstore.Refuse("usage", "missing flag value")
 			}
@@ -174,6 +225,12 @@ func parseArgs(args []string) (config, error) {
 				cfg.authKeyPath = args[i]
 			case "--allow-author":
 				cfg.allowAuthorPath = args[i]
+			case "--idle-exit":
+				s, ok := parseIdleExit(args[i])
+				if !ok {
+					return cfg, flintstore.Refuse("usage", "invalid idle-exit")
+				}
+				cfg.idleExitS = s
 			}
 		case hasPrefix(a, "--store="):
 			cfg.store = a[len("--store="):]
@@ -201,11 +258,40 @@ func parseArgs(args []string) (config, error) {
 			if cfg.advertise == "" {
 				return cfg, flintstore.Refuse("usage", "empty advertise name")
 			}
+		case hasPrefix(a, "--idle-exit="):
+			s, ok := parseIdleExit(a[len("--idle-exit="):])
+			if !ok {
+				return cfg, flintstore.Refuse("usage", "invalid idle-exit")
+			}
+			cfg.idleExitS = s
 		default:
 			return cfg, flintstore.Refuse("usage", "unknown flag")
 		}
 	}
 	return cfg, nil
+}
+
+// parseIdleExit bounds the optional CLI-phase lifetime. The default is
+// the persistent supervised service; a phase script chooses 1..3600 s.
+func parseIdleExit(s string) (int64, bool) {
+	if s == "" {
+		return 0, false
+	}
+	var n int64
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c < '0' || c > '9' {
+			return 0, false
+		}
+		n = n*10 + int64(c-'0')
+		if n > maxIdleExitS {
+			return 0, false
+		}
+	}
+	if n < 1 {
+		return 0, false
+	}
+	return n, true
 }
 
 func parsePort(s string) (uint16, bool) {

@@ -103,6 +103,10 @@ var (
 	ErrConnClosed = errString("vi: connection closed")
 	// ErrPeerGone: the peer's FIN/RST was observed. Fail closed, never spin.
 	ErrPeerGone = errString("vi: peer closed the connection")
+	// ErrConnTimeout: a bounded accept/recv wait expired. A long-lived
+	// service treats it as a routine idle interval, not a failure; the
+	// bounded-wait semantics of Accept/AcceptConn/Recv are unchanged.
+	ErrConnTimeout = errno(ErrETIMEDOUT)
 )
 
 // ErrServerDial: a dial to the all-zeros address. The kernel treats

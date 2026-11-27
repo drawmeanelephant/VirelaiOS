@@ -13,6 +13,7 @@ import (
 	"virelai/ed25519"
 	"virelai/flintstore"
 	"virelai/sshlib"
+	"virelai/vi"
 )
 
 // testSeed is RFC 8032 §7.1 TEST 1 (the same fixture FLINT's CLI tests pin).
@@ -749,6 +750,60 @@ func TestParseArgsWriteFlags(t *testing.T) {
 	}
 	if _, err := parseArgs([]string{"--auth-key="}); flintstore.RefusalName(err) != "usage" {
 		t.Fatalf("empty auth path: want usage, got %v", err)
+	}
+}
+
+// TestParseArgsIdleExit bounds the optional CLI-phase lifetime. The
+// default must stay zero (a persistent supervised service).
+func TestParseArgsIdleExit(t *testing.T) {
+	cfg, err := parseArgs(nil)
+	if err != nil || cfg.idleExitS != 0 {
+		t.Fatalf("default idle-exit = %d, err=%v; want persistent 0", cfg.idleExitS, err)
+	}
+	cfg, err = parseArgs([]string{"--idle-exit=30"})
+	if err != nil || cfg.idleExitS != 30 {
+		t.Fatalf("--idle-exit=30: cfg=%+v err=%v", cfg, err)
+	}
+	cfg, err = parseArgs([]string{"--idle-exit", "3600"})
+	if err != nil || cfg.idleExitS != 3600 {
+		t.Fatalf("--idle-exit 3600: cfg=%+v err=%v", cfg, err)
+	}
+	for _, bad := range []string{"--idle-exit=0", "--idle-exit=3601",
+		"--idle-exit=", "--idle-exit=2s", "--idle-exit"} {
+		if _, err := parseArgs([]string{bad}); flintstore.RefusalName(err) != "usage" {
+			t.Fatalf("%s: want usage, got %v", bad, err)
+		}
+	}
+}
+
+// TestAcceptPlanProvesSupervisedLifetime is the daemon's supervision
+// contract: bounded accept-wait expiry never ends the service; a
+// configured --idle-exit ends it cleanly after that idle span; any
+// other listener error is terminal.
+func TestAcceptPlanProvesSupervisedLifetime(t *testing.T) {
+	const sec = int64(1000 * 1000 * 1000)
+	last := int64(5 * sec)
+	// A routine 30 s wait expiry keeps the listener live.
+	if retry, exit := acceptPlan(vi.ErrConnTimeout, 0, last+30*sec, last); !retry || exit {
+		t.Fatalf("timeout with persistent default: retry=%v exit=%v", retry, exit)
+	}
+	// The optional phase bound exits only once the whole idle span elapsed.
+	if retry, exit := acceptPlan(vi.ErrConnTimeout, 30, last+29*sec, last); !retry || exit {
+		t.Fatalf("idle-exit before bound: retry=%v exit=%v", retry, exit)
+	}
+	if retry, exit := acceptPlan(vi.ErrConnTimeout, 30, last+30*sec, last); retry || !exit {
+		t.Fatalf("idle-exit at bound: retry=%v exit=%v", retry, exit)
+	}
+	// A served connection resets the idle clock (the caller passes the new
+	// lastActive), so a busy phase is not cut short.
+	if retry, exit := acceptPlan(vi.ErrConnTimeout, 30, last+31*sec, last+20*sec); !retry || exit {
+		t.Fatalf("idle-exit measured from last served connection: retry=%v exit=%v", retry, exit)
+	}
+	// Terminal listener errors never masquerade as idleness.
+	for _, err := range []error{vi.ErrConnClosed, vi.ErrPeerGone} {
+		if retry, exit := acceptPlan(err, 30, last+3600*sec, last); retry || exit {
+			t.Fatalf("%v must be terminal: retry=%v exit=%v", err, retry, exit)
+		}
 	}
 }
 

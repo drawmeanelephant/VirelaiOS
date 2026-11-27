@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -350,5 +351,90 @@ func TestRetryWaitsForPrerequisiteWithoutStoppingDependent(t *testing.T) {
 	view, _ := b.services["a-dep"].child.Snapshot("a-dep")
 	if view.Starts != 2 || view.Restart != 1 {
 		t.Fatal(view)
+	}
+}
+
+// TestShippedManifestKeepsFlintdOptIn pins the shipped default posture:
+// the FLINTD row exists with an ordinary argv and on-failure policy, is
+// disabled, and the default seat boot admits it without starting it. An
+// explicit opt-in enables it inside the existing schema/task limits; a
+// second added ELF still refuses task-budget.
+func TestShippedManifestKeepsFlintdOptIn(t *testing.T) {
+	body, err := os.ReadFile("SERVICES.JSON")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(body) > svcmanifest.MaxBytes {
+		t.Fatalf("shipped manifest is %d bytes (max %d)", len(body), svcmanifest.MaxBytes)
+	}
+	m, err := svcmanifest.Parse(body)
+	if err != nil {
+		t.Fatalf("shipped manifest: %v", err)
+	}
+	if err := svcmanifest.Validate(m); err != nil {
+		t.Fatalf("shipped manifest validate: %v", err)
+	}
+	var flintd, httpd *svcmanifest.Service
+	for i := range m.Services {
+		switch m.Services[i].Name {
+		case "flintd":
+			flintd = &m.Services[i]
+		case "httpd":
+			httpd = &m.Services[i]
+		}
+	}
+	if flintd == nil {
+		t.Fatal("shipped manifest has no flintd row")
+	}
+	if flintd.Enabled {
+		t.Fatal("flintd row must be disabled by default")
+	}
+	if flintd.Class != "on-demand" {
+		t.Fatalf("flintd class = %q, want on-demand (live opt-in)", flintd.Class)
+	}
+	if len(flintd.Argv) < 2 || flintd.Argv[0] != "FLINTD.ELF" || flintd.Argv[1] != "--advertise=flint" {
+		t.Fatalf("flintd argv = %v", flintd.Argv)
+	}
+	if flintd.Restart.Restart != "on-failure" || flintd.Restart.MaxRestarts == 0 ||
+		flintd.Restart.BackoffBaseS == 0 || flintd.Restart.BackoffCapS < flintd.Restart.BackoffBaseS {
+		t.Fatalf("flintd restart policy = %+v", flintd.Restart)
+	}
+	// The default boot (seat only) admits and starts nothing else.
+	plan, _, seat, err := admit(m, "GOTABWM.ELF", false, true)
+	if err != nil || seat != "seat" {
+		t.Fatalf("default admit: seat=%q err=%v", seat, err)
+	}
+	if !reflect.DeepEqual(plan.Order, []string{"seat"}) {
+		t.Fatalf("default boot plan = %v, want seat only", plan.Order)
+	}
+	// Explicit opt-in: one added ELF beside the seat fits the existing bound.
+	opted := manifest()
+	opted.Version = 1
+	opted.Services = nil
+	for _, s := range m.Services {
+		if s.Name == "flintd" {
+			s.Enabled = true
+		}
+		opted.Services = append(opted.Services, s)
+	}
+	if _, _, _, err := admit(opted, "GOTABWM.ELF", false, true); err != nil {
+		t.Fatalf("opt-in admit: %v", err)
+	}
+	// Two added ELFs must still refuse rather than silently exceed the bound.
+	if httpd == nil {
+		t.Fatal("shipped manifest lost the httpd row")
+	}
+	both := manifest()
+	both.Version = 1
+	both.Services = nil
+	for _, s := range m.Services {
+		if s.Name == "httpd" || s.Name == "flintd" {
+			s.Enabled = true
+		}
+		both.Services = append(both.Services, s)
+	}
+	if _, _, _, err := admit(both, "GOTABWM.ELF", false, true); err == nil ||
+		err.Error() != "task-budget" {
+		t.Fatalf("two added ELFs: want task-budget, got %v", err)
 	}
 }
