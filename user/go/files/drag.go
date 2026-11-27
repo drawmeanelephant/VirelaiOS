@@ -2,9 +2,10 @@
 // arms the seat-mediated drag through tabapp.BeginDrag → vi.DragBegin
 // (kind-24): the seat stages the payload under /host/DRAG.<win-id>, draws
 // the ghost, and delivers to whichever opens=-accepting client the release
-// lands on. The offer is the file's own bytes under its sniffed mime — the
-// frame title can only claim what the envelope actually carries, so a
-// refusal names what it refused by.
+// lands on. The offer is a file's own bytes under its sniffed mime, or — for
+// a directory (#3915) — a complete bounded tar under the `archive` MIME
+// (carry.go). The frame title can only claim what the envelope actually
+// carries, so a refusal names what it refused by.
 package main
 
 import (
@@ -36,8 +37,9 @@ func (m *model) dragOffer() (mt string, blob []byte, ok bool) {
 		m.emit(markerDragNo + name + " volume")
 		m.status = "drag: volume rows do not carry"
 	case e.Dir():
-		m.emit(markerDragNo + name + " dir")
-		m.status = "drag: directories do not carry"
+		// #3915: a supported directory carries a complete bounded tar under
+		// the archive MIME; the refusal vocabulary lives in dragDirOffer.
+		return m.dragDirOffer(e, name)
 	case e.Size > vi.DragMax:
 		m.emit(markerDragNo + name + " too-large")
 		m.status = "drag: over the " + vi.Itoa64(vi.DragMax) + "-byte cap"
